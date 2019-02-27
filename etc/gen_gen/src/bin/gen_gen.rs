@@ -90,6 +90,7 @@ fn main() {
 	.unwrap();
 	let keychain: ExtKeychain = seed.derive_keychain(false).unwrap();
 	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0);
+	/// MWC GENESIS  - here is a reward, the third zero
 	let reward = core::libtx::reward::output(&keychain, &key_id, 0).unwrap();
 	gen = gen.with_reward(reward.0, reward.1);
 
