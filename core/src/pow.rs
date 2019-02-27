@@ -69,6 +69,7 @@ pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
 	ctx.verify(&bh.pow.proof)
 }
 
+/// MWC GENESIS - genesis block, used for tests. Nice starting point to understand the generation
 /// Mines a genesis block using the internal miner
 pub fn mine_genesis_block() -> Result<Block, Error> {
 	let mut gen = genesis::genesis_dev();

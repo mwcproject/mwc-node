@@ -39,6 +39,7 @@ pub const NANO_GRIN: u64 = 1;
 /// (adjusting the reward accordingly).
 pub const BLOCK_TIME_SEC: u64 = 60;
 
+/// MWC - Here is a block reward.
 /// The block subsidy amount, one grin per second on average
 pub const REWARD: u64 = BLOCK_TIME_SEC * GRIN_BASE;
 
