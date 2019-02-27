@@ -166,6 +166,7 @@ pub fn genesis_floo() -> core::Block {
 	gen.with_reward(output, kernel)
 }
 
+/// MWC GENESIS - here how genesis block is defined. gen_gen suppose to update the numbers in this file.
 /// Mainnet genesis block
 pub fn genesis_main() -> core::Block {
 	let gen = core::Block::with_header(core::BlockHeader {
