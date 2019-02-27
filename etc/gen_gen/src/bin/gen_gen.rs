@@ -44,7 +44,7 @@ static GENESIS_RS_PATH: &str = "../../core/src/genesis.rs";
 static PLUGIN_PATH: &str = "./cuckaroo_mean_cuda_29.cuckooplugin";
 static WALLET_SEED_PATH: &str = "./wallet.seed";
 
-// MWC - here is we are generatirng the genesis block. Looks like they even generate the source for the block
+// MWC GENESIS - here is we are generatirng the genesis block. Looks like they even generate the source for the block
 // So far not clear how to introduce the transaction. It can be Coinbase transaction or wallet.seed might have some magic inside
 // and introduce something
 fn main() {
