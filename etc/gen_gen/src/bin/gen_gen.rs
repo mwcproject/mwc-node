@@ -44,6 +44,9 @@ static GENESIS_RS_PATH: &str = "../../core/src/genesis.rs";
 static PLUGIN_PATH: &str = "./cuckaroo_mean_cuda_29.cuckooplugin";
 static WALLET_SEED_PATH: &str = "./wallet.seed";
 
+// MWC GENESIS - here is we are generatirng the genesis block. Looks like they even generate the source for the block
+// So far not clear how to introduce the transaction. It can be Coinbase transaction or wallet.seed might have some magic inside
+// and introduce something
 fn main() {
 	if !path::Path::new(GENESIS_RS_PATH).exists() {
 		panic!(
@@ -87,6 +90,7 @@ fn main() {
 	.unwrap();
 	let keychain: ExtKeychain = seed.derive_keychain(false).unwrap();
 	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0);
+	/// MWC GENESIS  - here is a reward, the third zero
 	let reward = core::libtx::reward::output(&keychain, &key_id, 0).unwrap();
 	gen = gen.with_reward(reward.0, reward.1);
 
