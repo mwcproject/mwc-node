@@ -51,6 +51,7 @@ fn test_transaction_pool_block_reconciliation() {
 				&key_id,
 				0,
 				false,
+				height
 			)
 			.unwrap();
 			let genesis = BlockHeader::default();
@@ -78,6 +79,7 @@ fn test_transaction_pool_block_reconciliation() {
 				&key_id,
 				fees,
 				false,
+				header.height + 1
 			)
 			.unwrap();
 			let mut block =
@@ -174,11 +176,12 @@ fn test_transaction_pool_block_reconciliation() {
 			let key_id = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 			let fees = block_txs.iter().map(|tx| tx.fee()).sum();
 			let reward = libtx::reward::output(
-				&keychain,
-				&libtx::ProofBuilder::new(&keychain),
-				&key_id,
-				fees,
-				false,
+					&keychain,
+					&libtx::ProofBuilder::new(&keychain),
+					&key_id,
+					fees,
+					false,
+					header.height + 1
 			)
 			.unwrap();
 			let mut block = Block::new(&header, block_txs, Difficulty::min(), reward).unwrap();

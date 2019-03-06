@@ -52,8 +52,10 @@ fn test_the_transaction_pool() {
 			&key_id,
 			0,
 			false,
+			height
 		)
 		.unwrap();
+
 		let block = Block::new(&BlockHeader::default(), vec![], Difficulty::min(), reward).unwrap();
 
 		chain.update_db_for_block(&block);
