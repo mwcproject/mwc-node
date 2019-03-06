@@ -57,6 +57,7 @@ fn test_block_building_max_weight() {
 					&key_id,
 					fee,
 					false,
+					height,
 				)
 				.unwrap();
 				let mut block = Block::new(&prev_header, txs, Difficulty::min(), reward).unwrap();

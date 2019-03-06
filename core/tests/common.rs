@@ -100,7 +100,15 @@ where
 	B: ProofBuild,
 {
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
-	let reward_output = reward::output(keychain, builder, &key_id, fees, false).unwrap();
+	let reward_output = reward::output(
+		keychain,
+		builder,
+		&key_id,
+		fees,
+		false,
+		previous_header.height + 1
+	)
+	.unwrap();
 	Block::new(
 		&previous_header,
 		txs.into_iter().cloned().collect(),

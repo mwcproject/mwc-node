@@ -25,6 +25,7 @@ use crate::libtx::{
 use crate::util::{secp, static_secp_instance};
 use grin_keychain::SwitchCommitmentType;
 
+// MWC - add height because reward depends on the block height
 /// output a reward output
 pub fn output<K, B>(
 	keychain: &K,
@@ -32,12 +33,13 @@ pub fn output<K, B>(
 	key_id: &Identifier,
 	fees: u64,
 	test_mode: bool,
+	height: u64,
 ) -> Result<(Output, TxKernel), Error>
 where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let value = reward(fees);
+	let value = reward(fees, height);
 	// TODO: proper support for different switch commitment schemes
 	let switch = &SwitchCommitmentType::Regular;
 	let commit = keychain.commit(value, key_id, switch)?;
@@ -54,7 +56,7 @@ where
 
 	let secp = static_secp_instance();
 	let secp = secp.lock();
-	let over_commit = secp.commit_value(reward(fees))?;
+	let over_commit = secp.commit_value(reward(fees, height))?;
 	let out_commit = output.commitment();
 	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
 	let pubkey = excess.to_pubkey(&secp)?;

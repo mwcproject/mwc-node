@@ -41,12 +41,17 @@ pub const BLOCK_TIME_SEC: u64 = 60;
 
 /// MWC - Here is a block reward.
 /// The block subsidy amount, one grin per second on average
-pub const REWARD: u64 = BLOCK_TIME_SEC * GRIN_BASE;
+//pub const REWARD: u64 = BLOCK_TIME_SEC * GRIN_BASE;
 
 /// Actual block reward for a given total fee amount
-pub fn reward(fee: u64) -> u64 {
-	REWARD.saturating_add(fee)
+pub fn reward(fee: u64, height: u64) -> u64 {
+	// MWC has block reward schedule similar to bitcoin
+	let block_reward = calc_mwc_block_reward(height);
+	block_reward.saturating_add(fee)
 }
+
+/// MWC  genesis block reward in nanocoins (10M coins)
+pub const GENESIS_BLOCK_REWARD: u64 = 10_000_000_000_000_000;
 
 /// Nominal height for standard time intervals, hour is 60 blocks
 pub const HOUR_HEIGHT: u64 = 3600 / BLOCK_TIME_SEC;
@@ -360,6 +365,67 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
 	max(MIN_AR_SCALE, scale) as u32
 }
 
+// MWC has block reward schedule similar to bitcoin
+/// MWC Size of the block group
+const MWC_BLOCKS_PER_GROUP: u64 = 2_100_000;
+/// MWC Block reward for the first group
+pub const MWC_FIRST_GROUP_REWARD: u64 = 2_380_952_380;
+/// How much times WMC block reward is smaller than the grin one.
+pub const MWC2GRIN_BLOCK_REWARD: u64 = 25;
+const MWC_GROUPS_NUM: u64 = 32;
+/// Calculate MWC block reward. The scedure is similar to bitcoints.
+/// 1st 2.1 million blocks - 2.38095238 MWC
+/// 2nd 2.1 million blocks - 1.19047619 MWC
+/// 3rd 2.1 million blocks - 0.59523809 MWC
+/// 4th 2.1 million blocks - 0.29761904 MWC
+/// 5th 2.1 million blocks - 0.14880952 MWC
+/// 6th 2.1 million blocks - 0.07440476 MWC
+// ...
+/// 32nd 2.1 million blocks - 0.000000001 MWC
+//All blocks after that - 0 MWC (miner fees only)
+pub fn calc_mwc_block_reward(height: u64) -> u64 {
+	if height == 0 {
+		// Genesis block
+		return GENESIS_BLOCK_REWARD;
+	}
+
+	let group_num = height / MWC_BLOCKS_PER_GROUP;
+	if group_num >= MWC_GROUPS_NUM {
+		0 // far far future, no rewards, sorry
+	} else {
+		let start_reward = MWC_FIRST_GROUP_REWARD;
+		let group_div = 1 << group_num;
+		start_reward / group_div
+	}
+}
+
+/// MWC  calculate the total number of rewarded coins in all blocks including this one
+pub fn calc_mwc_block_overage(height: u64, genesis_had_reward: bool) -> u64 {
+	// including this one happens implicitly.
+	// 0 block is a genesis and it has a reward
+	let mut block_count = height + 1;
+	let mut reward_per_block = MWC_FIRST_GROUP_REWARD;
+	let mut overage: u64 = GENESIS_BLOCK_REWARD - MWC_FIRST_GROUP_REWARD;
+
+	for _x in 0..MWC_GROUPS_NUM {
+		overage += min(block_count, MWC_BLOCKS_PER_GROUP) * reward_per_block;
+		reward_per_block /= 2;
+
+		if block_count < MWC_BLOCKS_PER_GROUP {
+			break;
+		}
+
+		block_count -= MWC_BLOCKS_PER_GROUP;
+	}
+
+	if !genesis_had_reward {
+		// Deducting the first block reward if it is 0. This case is used into the tests.
+		overage -= GENESIS_BLOCK_REWARD;
+	}
+
+	overage
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;
@@ -407,5 +473,104 @@ mod test {
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 31), 0);
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 32), 512 * 32);
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 33), 1024 * 33);
+	}
+
+	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
+	#[test]
+	fn test_calc_mwc_block_reward() {
+		// Code is crucial, so just checking all groups one by one manually.
+		// We don't use the constants here because we can mess up with them as well.
+		assert_eq!(calc_mwc_block_reward(0), 10_000_000 * 1_000_000_000); // group 1, genesis 10M
+		assert_eq!(calc_mwc_block_reward(1), 2_380_952_380); // group 1
+		assert_eq!(calc_mwc_block_reward(2), 2_380_952_380); // group 1
+		assert_eq!(calc_mwc_block_reward(2_100_000 - 1), 2_380_952_380); // group 1
+		assert_eq!(
+			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP - 1),
+			MWC_FIRST_GROUP_REWARD
+		); // group 2
+		assert_eq!(calc_mwc_block_reward(2_100_000), 1_190_476_190); // group 2
+		assert_eq!(
+			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP),
+			MWC_FIRST_GROUP_REWARD / 2
+		); // group 2
+		assert_eq!(calc_mwc_block_reward(2_100_000 + 200), 1_190_476_190); // group 2
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 2 + 200), 595_238_095); // group 3
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 3 + 200), 297_619_047); // group 4
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 4 + 200), 148_809_523); // group 5
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 5 + 200), 74_404_761); // group 6
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 6 + 200), 37_202_380); // group 7
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 7 + 200), 18_601_190); // group 8
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 8 + 200), 9_300_595); // group 9
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 9 + 200), 4_650_297); // group 10
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 10 + 200), 2_325_148); // group 11
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 11 + 200), 1_162_574); // group 12
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 12 + 200), 581_287); // group 13
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 13 + 200), 290_643); // group 14
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 14 + 200), 145_321); // group 15
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 15 + 200), 72_660); // group 16
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 16 + 200), 36_330); // group 17
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 17 + 200), 18_165); // group 18
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 18 + 200), 9_082); // group 19
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 19 + 200), 4_541); // group 20
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 20 + 200), 2_270); // group 21
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 21 + 200), 1_135); // group 22
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 22 + 200), 567); // group 23
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 23 + 200), 283); // group 24
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 24 + 200), 141); // group 25
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 25 + 200), 70); // group 26
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 26 + 200), 35); // group 27
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 27 + 200), 17); // group 28
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 28 + 200), 8); // group 29
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 29 + 200), 4); // group 30
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 30 + 200), 2); // group 32
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 31 + 200), 1); // group 32
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 32 + 200), 0); // group 32+
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 320 + 200), 0); // group 32+
+	}
+
+	// MWC  testing calc_mwc_block_overage output for the schedule that documented at definition of calc_mwc_block_reward
+	#[test]
+	fn test_calc_mwc_block_overage() {
+		let genesis_reward: u64 = GENESIS_BLOCK_REWARD;
+
+		assert_eq!(calc_mwc_block_overage(0, true), genesis_reward); // Doesn't make sence to call for the genesis block
+		assert_eq!(calc_mwc_block_overage(0, false), 0); // Doesn't make sence to call for the genesis block
+		assert_eq!(
+			calc_mwc_block_overage(1, true),
+			genesis_reward + MWC_FIRST_GROUP_REWARD * 1
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(30, true),
+			genesis_reward + MWC_FIRST_GROUP_REWARD * 30
+		);
+		assert_eq!(
+			calc_mwc_block_overage(30, false),
+			MWC_FIRST_GROUP_REWARD * 30
+		);
+		// last block in the first group
+		assert_eq!(
+			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP - 1, true),
+			genesis_reward + MWC_FIRST_GROUP_REWARD * (MWC_BLOCKS_PER_GROUP - 1)
+		);
+		// first block in the second group
+		assert_eq!(
+			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (MWC_BLOCKS_PER_GROUP - 1)
+				+ MWC_FIRST_GROUP_REWARD / 2
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP + 5000, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (MWC_BLOCKS_PER_GROUP - 1)
+				+ 5001 * MWC_FIRST_GROUP_REWARD / 2
+		);
+
+		// Calculating the total number of coins
+		let total_blocks_reward = calc_mwc_block_overage(2_100_000_000 * 320, true);
+		// Expected 10M in total. The coin base is almost 20M
+		assert_eq!(total_blocks_reward, 19_999_997_577_247_620);
 	}
 }

@@ -237,7 +237,7 @@ pub fn verify_partial_sig(
 /// let secp = Secp256k1::with_caps(ContextFlag::Commit);
 /// let keychain = ExtKeychain::from_random_seed(false).unwrap();
 /// let fees = 10_000;
-/// let value = reward(fees);
+/// let value = reward(fees,1);
 /// let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 /// let switch = &SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
@@ -249,7 +249,7 @@ pub fn verify_partial_sig(
 ///		proof: rproof,
 /// };
 /// let height = 20;
-/// let over_commit = secp.commit_value(reward(fees)).unwrap();
+/// let over_commit = secp.commit_value(reward(fees,height)).unwrap();
 /// let out_commit = output.commitment();
 /// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
@@ -306,7 +306,7 @@ where
 /// let secp = Secp256k1::with_caps(ContextFlag::Commit);
 /// let keychain = ExtKeychain::from_random_seed(false).unwrap();
 /// let fees = 10_000;
-/// let value = reward(fees);
+/// let value = reward(fees,1);
 /// let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 /// let switch = &SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
@@ -318,7 +318,7 @@ where
 ///		proof: rproof,
 /// };
 /// let height = 20;
-/// let over_commit = secp.commit_value(reward(fees)).unwrap();
+/// let over_commit = secp.commit_value(reward(fees,height)).unwrap();
 /// let out_commit = output.commitment();
 /// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
