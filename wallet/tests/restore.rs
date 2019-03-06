@@ -230,7 +230,8 @@ fn setup_restore(test_dir: &str) -> Result<(), libwallet::Error> {
 
 	// assert wallet contents
 	// and a single use api for a send command
-	let amount = 60_000_000_000;
+	// MWC - normalize to MWC the spendable amount
+	let amount = global::grin_reward_2_wmc( 60_000_000_000);
 	let mut slate = Slate::blank(1);
 	wallet::controller::owner_single_use(wallet1.clone(), |sender_api| {
 		// note this will increment the block count as part of the transaction "Posting"

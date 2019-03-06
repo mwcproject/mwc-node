@@ -353,3 +353,17 @@ where
 	last_n.reverse();
 	last_n
 }
+
+/// Convert testing amount of coins from grin test to MWC test.
+/// This conversion extected to be used in the tests only so it will respect the
+/// amount to block reward proportion
+pub fn grin_coins_2_wmc( amount : f64 ) -> f64 {
+	amount / (crate::consensus::MWC2GRIN_BLOCK_REWARD as f64)
+}
+
+/// Convert testing amount of coins from grin test to MWC test.
+/// This conversion extected to be used in the tests only so it will respect the
+/// amount to block reward proportion
+pub fn grin_reward_2_wmc( amount : u64 ) -> u64 {
+	amount / crate::consensus::MWC2GRIN_BLOCK_REWARD
+}

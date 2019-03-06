@@ -66,7 +66,7 @@ fn accounts_test_impl(test_dir: &str) -> Result<(), libwallet::Error> {
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::MWC_FIRST_GROUP_REWARD;
 	let cm = global::coinbase_maturity(); // assume all testing precedes soft fork height
 
 	// test default accounts exist

@@ -270,6 +270,7 @@ mod wallet_tests {
 		// try a file exchange
 		let file_name = format!("{}/tx1.part_tx", test_dir);
 		let response_file_name = format!("{}/tx1.part_tx.response", test_dir);
+		let coins_10grin = crate::core::global::grin_coins_2_wmc(10.0).to_string();
 		let arg_vec = vec![
 			"grin",
 			"wallet",
@@ -284,7 +285,7 @@ mod wallet_tests {
 			&file_name,
 			"-g",
 			very_long_message,
-			"10",
+			&coins_10grin,
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
@@ -353,7 +354,9 @@ mod wallet_tests {
 			api.set_active_account("account_1")?;
 			let (_, wallet1_info) = api.retrieve_summary_info(true, 1)?;
 			assert_eq!(wallet1_info.last_confirmed_height, bh);
-			assert_eq!(wallet1_info.amount_currently_spendable, 10_000_000_000);
+			assert_eq!(wallet1_info.amount_currently_spendable,
+					   crate::core::global::grin_reward_2_wmc(10_000_000_000)
+			);
 			Ok(())
 		})?;
 
@@ -374,7 +377,7 @@ mod wallet_tests {
 			"Love, Yeast, Smallest",
 			"-s",
 			"smallest",
-			"10",
+			&coins_10grin,
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
@@ -435,7 +438,7 @@ mod wallet_tests {
 			"3",
 			"-s",
 			"smallest",
-			"10",
+			&coins_10grin,
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 		bh += 1;
@@ -466,7 +469,7 @@ mod wallet_tests {
 			&file_name,
 			"-g",
 			"Ain't sending",
-			"10",
+			&coins_10grin,
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
@@ -488,7 +491,7 @@ mod wallet_tests {
 			&file_name,
 			"-g",
 			"Ain't sending 2",
-			"10",
+			&coins_10grin,
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 

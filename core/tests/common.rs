@@ -91,7 +91,8 @@ where
 	K: Keychain,
 {
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
-	let reward_output = reward::output(keychain, &key_id, fees).unwrap();
+	// MWC block reward if is depends on Block height. Using this block height which is previous + 1
+	let reward_output = reward::output(keychain, &key_id, fees, previous_header.height+1).unwrap();
 	Block::new(
 		&previous_header,
 		txs.into_iter().cloned().collect(),
