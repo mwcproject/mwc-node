@@ -22,7 +22,7 @@ use std::fmt;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
-use crate::consensus::{reward, calc_mwc_block_reward,calc_mwc_block_overage};
+use crate::consensus::{calc_mwc_block_overage, calc_mwc_block_reward, reward};
 use crate::core::committed::{self, Committed};
 use crate::core::compact_block::{CompactBlock, CompactBlockBody};
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
@@ -324,7 +324,9 @@ impl BlockHeader {
 	pub fn overage(&self) -> i64 {
 		// Grin strategy: (REWARD as i64).checked_neg().unwrap_or(0)
 		// MWC strategy
-		(calc_mwc_block_reward( self.height ) as i64).checked_neg().unwrap_or(0)
+		(calc_mwc_block_reward(self.height) as i64)
+			.checked_neg()
+			.unwrap_or(0)
 	}
 
 	/// The "total overage" to use when verifying the kernel sums for a full
@@ -343,7 +345,9 @@ impl BlockHeader {
 		//if !genesis_had_reward {panic!("total_overage call with genesis_had_reward false");}
 
 		// MWC strategy:
-        (calc_mwc_block_overage(reward_count, genesis_had_reward) as i64).checked_neg().unwrap_or(0)
+		(calc_mwc_block_overage(reward_count, genesis_had_reward) as i64)
+			.checked_neg()
+			.unwrap_or(0)
 	}
 
 	/// Total kernel offset for the chain state up to and including this block.
@@ -689,7 +693,7 @@ impl Block {
 		{
 			let secp = static_secp_instance();
 			let secp = secp.lock();
-			let over_commit = secp.commit_value(reward(self.total_fees(), self.header.height ))?;
+			let over_commit = secp.commit_value(reward(self.total_fees(), self.header.height))?;
 
 			let out_adjust_sum =
 				secp.commit_sum(map_vec!(cb_outs, |x| x.commitment()), vec![over_commit])?;

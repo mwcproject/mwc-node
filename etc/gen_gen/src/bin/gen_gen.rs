@@ -138,7 +138,7 @@ fn main() {
 		}
 
 		nonce += 1;
-		println!("Incrementing nonce to {}",nonce);
+		println!("Incrementing nonce to {}", nonce);
 	}
 
 	// Set the PoW solution and make sure the block is mostly valid
@@ -270,9 +270,12 @@ fn update_genesis_rs(gen: &core::core::Block) {
 	let mut genesis_rs = fs::File::create(GENESIS_RS_PATH).unwrap();
 	genesis_rs.write_all(replaced.as_bytes()).unwrap();
 
-    for repl in replacements {
-        println!("*** WARNING *** At genesis.rs not found replacement line for {}", repl.0);
-    }
+	for repl in replacements {
+		println!(
+			"*** WARNING *** At genesis.rs not found replacement line for {}",
+			repl.0
+		);
+	}
 }
 
 fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {

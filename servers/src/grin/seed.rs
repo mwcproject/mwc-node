@@ -37,10 +37,10 @@ use crate::util::{Mutex, StopState};
 // MWC - Local etc/hosts expected to resolve mwc1.mw to localhost
 // MWC DEBUG  - need to be changed
 const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
-	"mwc1.mw",      //
+	"mwc1.mw", //
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
-	"mwc1.mw",      //
+	"mwc1.mw", //
 ];
 
 pub fn connect_and_monitor(

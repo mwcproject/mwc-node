@@ -312,7 +312,7 @@ fn two_wallets_one_seed_impl(test_dir: &str) -> Result<(), libwallet::Error> {
 	// Do some mining
 	let mut bh = 20u64;
 	// MWC  need to normalize the amounts
-	let base_amount =  global::grin_reward_2_wmc(consensus::GRIN_BASE);
+	let base_amount = global::grin_reward_2_wmc(consensus::GRIN_BASE);
 	let _ = test_framework::award_blocks_to_wallet(&chain, miner.clone(), bh as usize);
 
 	// send some funds to wallets 1

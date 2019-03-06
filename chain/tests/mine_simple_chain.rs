@@ -70,7 +70,7 @@ fn mine_genesis_reward_chain() {
 	let mut genesis = genesis::genesis_dev();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let key_id = keychain::ExtKeychain::derive_key_id(0, 1, 0, 0, 0);
-    // MWC - genesys block with reward. 0 - the height of genesis block
+	// MWC - genesys block with reward. 0 - the height of genesis block
 	let reward = reward::output(&keychain, &key_id, 0, 0).unwrap();
 	genesis = genesis.with_reward(reward.0, reward.1);
 
@@ -104,7 +104,7 @@ where
 		let prev = chain.head_header().unwrap();
 		let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter());
 		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
-		let reward = libtx::reward::output(keychain, &pk, 0, prev.height+1).unwrap();
+		let reward = libtx::reward::output(keychain, &pk, 0, prev.height + 1).unwrap();
 		let mut b =
 			core::core::Block::new(&prev, vec![], next_header_info.clone().difficulty, reward)
 				.unwrap();
@@ -414,7 +414,7 @@ fn output_header_mappings() {
 		let prev = chain.head_header().unwrap();
 		let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter());
 		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
-		let reward = libtx::reward::output(&keychain, &pk, 0, prev.height+1).unwrap();
+		let reward = libtx::reward::output(&keychain, &pk, 0, prev.height + 1).unwrap();
 		reward_outputs.push(reward.0.clone());
 		let mut b =
 			core::core::Block::new(&prev, vec![], next_header_info.clone().difficulty, reward)
@@ -514,7 +514,7 @@ where
 	let key_id = ExtKeychainPath::new(1, diff as u32, 0, 0, 0).to_identifier();
 
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
-	let reward = libtx::reward::output(kc, &key_id, fees, prev.height+1).unwrap();
+	let reward = libtx::reward::output(kc, &key_id, fees, prev.height + 1).unwrap();
 	let mut b = match core::core::Block::new(
 		prev,
 		txs.into_iter().cloned().collect(),

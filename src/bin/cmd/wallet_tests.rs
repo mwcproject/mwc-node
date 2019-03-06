@@ -354,8 +354,9 @@ mod wallet_tests {
 			api.set_active_account("account_1")?;
 			let (_, wallet1_info) = api.retrieve_summary_info(true, 1)?;
 			assert_eq!(wallet1_info.last_confirmed_height, bh);
-			assert_eq!(wallet1_info.amount_currently_spendable,
-					   crate::core::global::grin_reward_2_wmc(10_000_000_000)
+			assert_eq!(
+				wallet1_info.amount_currently_spendable,
+				crate::core::global::grin_reward_2_wmc(10_000_000_000)
 			);
 			Ok(())
 		})?;
