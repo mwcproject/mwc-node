@@ -33,20 +33,14 @@ use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 
 // DNS Seeds with contact email associated
+// MWC - all DNS hosts are updated with mwc1.mw
+// MWC - Local etc/hosts expected to resolve mwc1.mw to localhost
+// MWC DEBUG  - need to be changed
 const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
-	"mainnet.seed.grin-tech.org",      // igno.peverell@protonmail.com
-	"mainnet.seed.grin.icu",           // gary.peverell@protonmail.com
-	"mainnet.seed.713.mw",             // jasper@713.mw
-	"mainnet.seed.grin.lesceller.com", // q.lesceller@gmail.com
-	"mainnet.seed.grin.prokapi.com",   // hendi@prokapi.com
-	"grinseed.yeastplume.org",         // yeastplume@protonmail.com
+	"mwc1.mw", //
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
-	"floonet.seed.grin-tech.org",      // igno.peverell@protonmail.com
-	"floonet.seed.grin.icu",           // gary.peverell@protonmail.com
-	"floonet.seed.713.mw",             // jasper@713.mw
-	"floonet.seed.grin.lesceller.com", // q.lesceller@gmail.com
-	"floonet.seed.grin.prokapi.com",   // hendi@prokapi.com
+	"mwc1.mw", //
 ];
 
 pub fn connect_and_monitor(
