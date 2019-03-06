@@ -224,7 +224,8 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 	let keychain = ExtKeychain::from_random_seed(global::is_floonet())?;
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let (out, kernel) =
-		crate::core::libtx::reward::output(&keychain, &key_id, block_fees.fees, false).unwrap();
+		crate::core::libtx::reward::output(&keychain, &key_id, block_fees.fees, false, block_fees.height)
+			.unwrap();
 	Ok((out, kernel, block_fees))
 }
 

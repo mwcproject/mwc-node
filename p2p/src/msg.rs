@@ -42,10 +42,11 @@ const PROTOCOL_VERSION: u32 = 1;
 /// Grin's user agent with current version
 pub const USER_AGENT: &'static str = concat!("MW/Grin ", env!("CARGO_PKG_VERSION"));
 
+// MWC - Magic number are updated to be different from grin.
 /// Magic numbers expected in the header of every message
-const OTHER_MAGIC: [u8; 2] = [73, 43];
-const FLOONET_MAGIC: [u8; 2] = [83, 59];
-const MAINNET_MAGIC: [u8; 2] = [97, 61];
+const OTHER_MAGIC: [u8; 2] = [21, 19];
+const FLOONET_MAGIC: [u8; 2] = [71, 63];
+const MAINNET_MAGIC: [u8; 2] = [13, 77];
 
 // Types of messages.
 // Note: Values here are *important* so we should only add new values at the

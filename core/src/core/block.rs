@@ -22,7 +22,7 @@ use std::fmt;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
-use crate::consensus::{self, reward, REWARD};
+use crate::consensus::{self, calc_mwc_block_overage, calc_mwc_block_reward, reward};
 use crate::core::committed::{self, Committed};
 use crate::core::compact_block::{CompactBlock, CompactBlockBody};
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
@@ -368,18 +368,32 @@ impl BlockHeader {
 	/// The "overage" to use when verifying the kernel sums.
 	/// For a block header the overage is 0 - reward.
 	pub fn overage(&self) -> i64 {
-		(REWARD as i64).checked_neg().unwrap_or(0)
+		// Grin strategy: (REWARD as i64).checked_neg().unwrap_or(0)
+		// MWC strategy
+		(calc_mwc_block_reward(self.height) as i64)
+			.checked_neg()
+			.unwrap_or(0)
 	}
 
 	/// The "total overage" to use when verifying the kernel sums for a full
 	/// chain state. For a full chain state this is 0 - (height * reward).
 	pub fn total_overage(&self, genesis_had_reward: bool) -> i64 {
-		let mut reward_count = self.height;
+		let reward_count = self.height;
+		// Grin strategy:
+		/*
 		if genesis_had_reward {
 			reward_count += 1;
 		}
-
 		((reward_count * REWARD) as i64).checked_neg().unwrap_or(0)
+		*/
+
+		// MWC DEBUG - want to understand when genesis doesn;t have a reward
+		//if !genesis_had_reward {panic!("total_overage call with genesis_had_reward false");}
+
+		// MWC strategy:
+		(calc_mwc_block_overage(reward_count, genesis_had_reward) as i64)
+			.checked_neg()
+			.unwrap_or(0)
 	}
 
 	/// Total kernel offset for the chain state up to and including this block.
@@ -727,7 +741,7 @@ impl Block {
 		{
 			let secp = static_secp_instance();
 			let secp = secp.lock();
-			let over_commit = secp.commit_value(reward(self.total_fees()))?;
+			let over_commit = secp.commit_value(reward(self.total_fees(), self.header.height))?;
 
 			let out_adjust_sum =
 				secp.commit_sum(map_vec!(cb_outs, |x| x.commitment()), vec![over_commit])?;
