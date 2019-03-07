@@ -369,11 +369,11 @@ pub fn calc_mwc_block_reward(height: u64) -> u64 {
 		return GENESIS_BLOCK_REWARD;
 	}
 
-        let group_num = if global::is_floonet() {
-                 height / MWC_BLOCKS_PER_GROUP_FLOO
-        } else { 
-                 height / MWC_BLOCKS_PER_GROUP
-        };
+	let group_num = if global::is_floonet() {
+		height / MWC_BLOCKS_PER_GROUP_FLOO
+	} else {
+		height / MWC_BLOCKS_PER_GROUP
+	};
 
 	if group_num >= MWC_GROUPS_NUM {
 		0 // far far future, no rewards, sorry
@@ -386,11 +386,11 @@ pub fn calc_mwc_block_reward(height: u64) -> u64 {
 
 /// MWC  calculate the total number of rewarded coins in all blocks including this one
 pub fn calc_mwc_block_overage(height: u64, genesis_had_reward: bool) -> u64 {
-        let blocks_per_group = if global::is_floonet() {
-                 MWC_BLOCKS_PER_GROUP_FLOO
-        } else {
-                 MWC_BLOCKS_PER_GROUP
-        };
+	let blocks_per_group = if global::is_floonet() {
+		MWC_BLOCKS_PER_GROUP_FLOO
+	} else {
+		MWC_BLOCKS_PER_GROUP
+	};
 
 	// including this one happens implicitly.
 	// 0 block is a genesis and it has a reward
