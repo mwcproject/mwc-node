@@ -80,7 +80,7 @@ fn main() {
 	println!("Using bitcoin block hash {}", h1);
 
 	// build the basic parts of the genesis block header
-	let mut gen = core::genesis::genesis_main();
+	let mut gen = core::genesis::genesis_floo();
 
 	// build the wallet seed and derive a coinbase from local wallet.seed
 	let seed = wallet::WalletSeed::from_file(
@@ -88,10 +88,14 @@ fn main() {
 		&rpassword::prompt_password_stdout("Password: ").unwrap(),
 	)
 	.unwrap();
+
 	let keychain: ExtKeychain = seed.derive_keychain(false).unwrap();
 	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0);
-	// MWC - block height for genesis is 0
+	// MWC GENESIS  - here is a reward, the third zero
 	let reward = core::libtx::reward::output(&keychain, &key_id, 0, 0).unwrap();
+
+	println!("Reward: {:?}", reward);
+
 	gen = gen.with_reward(reward.0, reward.1);
 
 	{
@@ -115,8 +119,12 @@ fn main() {
 
 	let mut solver_sols = plugin::SolverSolutions::default();
 	let mut solver_stats = plugin::SolverStats::default();
-	let mut nonce = 0;
+	let mut nonce = 10000;
+
+	println!("We are trying to mine this genesis block={:?}", gen);
+
 	while solver_sols.num_sols == 0 {
+		println!("Attempt {}", nonce);
 		solver_sols = plugin::SolverSolutions::default();
 		gen.header.pow.nonce = nonce;
 		let _ = plugin_lib.run_solver(
@@ -138,7 +146,6 @@ fn main() {
 		}
 
 		nonce += 1;
-		println!("Incrementing nonce to {}", nonce);
 	}
 
 	// Set the PoW solution and make sure the block is mostly valid
@@ -177,6 +184,8 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.header.timestamp.time().second(),
 		),
 	));
+
+	println!("prev_root={}", gen.header.prev_root.to_hex());
 	replacements.push((
 		"prev_root".to_string(),
 		format!(
@@ -184,6 +193,9 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.header.prev_root.to_hex()
 		),
 	));
+
+	println!("output_root={}", gen.header.output_root.to_hex());
+
 	replacements.push((
 		"output_root".to_string(),
 		format!(
@@ -191,6 +203,8 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.header.output_root.to_hex()
 		),
 	));
+	println!("range_proof={}", gen.header.range_proof_root.to_hex());
+
 	replacements.push((
 		"range_proof_root".to_string(),
 		format!(
@@ -198,6 +212,9 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.header.range_proof_root.to_hex()
 		),
 	));
+
+	println!("kernel_root={}", gen.header.kernel_root.to_hex());
+
 	replacements.push((
 		"kernel_root".to_string(),
 		format!(
@@ -205,6 +222,12 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.header.kernel_root.to_hex()
 		),
 	));
+
+	println!(
+		"total_kernel_offset={}",
+		gen.header.total_kernel_offset.to_hex()
+	);
+
 	replacements.push((
 		"total_kernel_offset".to_string(),
 		format!(
@@ -212,11 +235,24 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.header.total_kernel_offset.to_hex()
 		),
 	));
+	println!("nonce={}", gen.header.pow.nonce);
+
 	replacements.push(("nonce".to_string(), format!("{}", gen.header.pow.nonce)));
 	replacements.push((
 		"nonces".to_string(),
 		format!("vec!{:?}", gen.header.pow.proof.nonces),
 	));
+
+	println!("nonces={:?}", gen.header.pow.proof.nonces);
+
+	println!(
+		"excess={}",
+		format!(
+			"Commitment::from_vec(util::from_hex({:x?}.to_string()).unwrap())",
+			util::to_hex(gen.kernels()[0].excess.0.to_vec())
+		)
+	);
+
 	replacements.push((
 		"excess".to_string(),
 		format!(
@@ -224,6 +260,15 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			util::to_hex(gen.kernels()[0].excess.0.to_vec())
 		),
 	));
+
+	println!(
+		"excess_sig={}",
+		format!(
+			"Signature::from_raw_data(&{:?}).unwrap()",
+			gen.kernels()[0].excess_sig.to_raw_data().to_vec()
+		)
+	);
+
 	replacements.push((
 		"excess_sig".to_string(),
 		format!(
@@ -231,6 +276,14 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			gen.kernels()[0].excess_sig.to_raw_data().to_vec(),
 		),
 	));
+
+	println!(
+		"commit={}",
+		format!(
+			"Commitment::from_vec(util::from_hex({:x?}.to_string()).unwrap())",
+			util::to_hex(gen.outputs()[0].commitment().0.to_vec())
+		)
+	);
 	replacements.push((
 		"commit".to_string(),
 		format!(
@@ -238,6 +291,11 @@ fn update_genesis_rs(gen: &core::core::Block) {
 			util::to_hex(gen.outputs()[0].commitment().0.to_vec())
 		),
 	));
+
+	println!(
+		"proof={}",
+		format!("{:?}", gen.outputs()[0].proof.bytes().to_vec())
+	);
 	replacements.push((
 		"proof".to_string(),
 		format!("{:?}", gen.outputs()[0].proof.bytes().to_vec()),
@@ -269,13 +327,6 @@ fn update_genesis_rs(gen: &core::core::Block) {
 	}
 	let mut genesis_rs = fs::File::create(GENESIS_RS_PATH).unwrap();
 	genesis_rs.write_all(replaced.as_bytes()).unwrap();
-
-	for repl in replacements {
-		println!(
-			"*** WARNING *** At genesis.rs not found replacement line for {}",
-			repl.0
-		);
-	}
 }
 
 fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {

@@ -367,7 +367,8 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
 
 // MWC has block reward schedule similar to bitcoin
 /// MWC Size of the block group
-const MWC_BLOCKS_PER_GROUP: u64 = 2_100_000;
+const MWC_BLOCKS_PER_GROUP: u64 = 2_100_000; // 4 years
+const MWC_BLOCKS_PER_GROUP_FLOO: u64 = 2_880; // 2 days
 /// MWC Block reward for the first group
 pub const MWC_FIRST_GROUP_REWARD: u64 = 2_380_952_380;
 /// How much times WMC block reward is smaller than the grin one.
@@ -389,7 +390,12 @@ pub fn calc_mwc_block_reward(height: u64) -> u64 {
 		return GENESIS_BLOCK_REWARD;
 	}
 
-	let group_num = height / MWC_BLOCKS_PER_GROUP;
+	let group_num = if global::is_floonet() {
+		height / MWC_BLOCKS_PER_GROUP_FLOO
+	} else {
+		height / MWC_BLOCKS_PER_GROUP
+	};
+
 	if group_num >= MWC_GROUPS_NUM {
 		0 // far far future, no rewards, sorry
 	} else {
@@ -401,6 +407,12 @@ pub fn calc_mwc_block_reward(height: u64) -> u64 {
 
 /// MWC  calculate the total number of rewarded coins in all blocks including this one
 pub fn calc_mwc_block_overage(height: u64, genesis_had_reward: bool) -> u64 {
+	let blocks_per_group = if global::is_floonet() {
+		MWC_BLOCKS_PER_GROUP_FLOO
+	} else {
+		MWC_BLOCKS_PER_GROUP
+	};
+
 	// including this one happens implicitly.
 	// 0 block is a genesis and it has a reward
 	let mut block_count = height + 1;
@@ -408,14 +420,14 @@ pub fn calc_mwc_block_overage(height: u64, genesis_had_reward: bool) -> u64 {
 	let mut overage: u64 = GENESIS_BLOCK_REWARD - MWC_FIRST_GROUP_REWARD;
 
 	for _x in 0..MWC_GROUPS_NUM {
-		overage += min(block_count, MWC_BLOCKS_PER_GROUP) * reward_per_block;
+		overage += min(block_count, blocks_per_group) * reward_per_block;
 		reward_per_block /= 2;
 
-		if block_count < MWC_BLOCKS_PER_GROUP {
+		if block_count < blocks_per_group {
 			break;
 		}
 
-		block_count -= MWC_BLOCKS_PER_GROUP;
+		block_count -= blocks_per_group;
 	}
 
 	if !genesis_had_reward {
