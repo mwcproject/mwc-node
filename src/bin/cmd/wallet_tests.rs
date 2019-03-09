@@ -270,7 +270,7 @@ mod wallet_tests {
 		// try a file exchange
 		let file_name = format!("{}/tx1.part_tx", test_dir);
 		let response_file_name = format!("{}/tx1.part_tx.response", test_dir);
-		let coins_10grin = crate::core::global::grin_coins_2_wmc(10.0).to_string();
+		let coins_10grin = test_framework::mwc::grin_coins_2_wmc(10.0).to_string();
 		let arg_vec = vec![
 			"grin",
 			"wallet",
@@ -356,7 +356,7 @@ mod wallet_tests {
 			assert_eq!(wallet1_info.last_confirmed_height, bh);
 			assert_eq!(
 				wallet1_info.amount_currently_spendable,
-				crate::core::global::grin_reward_2_wmc(10_000_000_000)
+				test_framework::mwc::grin_reward_2_wmc(10_000_000_000)
 			);
 			Ok(())
 		})?;

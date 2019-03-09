@@ -30,6 +30,7 @@ use grin_keychain as keychain;
 use grin_util as util;
 use std::sync::Arc;
 
+pub mod mwc;
 mod testclient;
 
 pub use self::{testclient::LocalWalletClient, testclient::WalletProxy};

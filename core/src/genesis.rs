@@ -301,11 +301,11 @@ mod test {
 		println!("floonet genesis full hash: {}\n", gen_bin.hash().to_hex());
 		assert_eq!(
 			gen_hash.to_hex(),
-			"edc758c1370d43e1d733f70f58cf187c3be8242830429b1676b89fd91ccf2dab"
+			"478a9158db2bb2c2c75a014791f070bbdc897ffc186a929b398f03cdb33978b8"
 		);
 		assert_eq!(
 			gen_bin.hash().to_hex(),
-			"91c638fc019a54e6652bd6bb3d9c5e0c17e889cef34a5c28528e7eb61a884dc4"
+			"1624e6d03e76763065615adedf69041624f07cafc675fff00a9e2b0de58f2e74"
 		);
 	}
 
