@@ -371,8 +371,6 @@ const MWC_BLOCKS_PER_GROUP: u64 = 2_100_000; // 4 years
 const MWC_BLOCKS_PER_GROUP_FLOO: u64 = 2_880; // 2 days
 /// MWC Block reward for the first group
 pub const MWC_FIRST_GROUP_REWARD: u64 = 2_380_952_380;
-/// How much times WMC block reward is smaller than the grin one.
-pub const MWC2GRIN_BLOCK_REWARD: u64 = 25;
 const MWC_GROUPS_NUM: u64 = 32;
 /// Calculate MWC block reward. The scedure is similar to bitcoints.
 /// 1st 2.1 million blocks - 2.38095238 MWC
