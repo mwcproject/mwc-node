@@ -97,7 +97,7 @@ fn basic_wallet_transactions() {
 		coinbase_info =
 			LocalServerContainer::get_wallet_info(&coinbase_wallet_config, &coinbase_seed);
 	}
-	warn!("Sending 50 Grins to recipient wallet");
+	warn!("Sending 50 MWC to recipient wallet");
 	LocalServerContainer::send_amount_to(
 		&coinbase_wallet_config,
 		"50.00",

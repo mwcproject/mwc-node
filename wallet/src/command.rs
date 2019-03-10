@@ -242,7 +242,7 @@ pub fn send(
 			let (mut slate, lock_fn) = match result {
 				Ok(s) => {
 					info!(
-						"Tx created: {} grin to {} (strategy '{}')",
+						"Tx created: {} mwc to {} (strategy '{}')",
 						core::amount_to_hr_string(args.amount, false),
 						args.dest,
 						args.selection_strategy,

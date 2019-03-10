@@ -158,11 +158,11 @@ mod wallet_tests {
 		let chain = wallet_proxy.chain.clone();
 
 		// load app yaml. If it don't exist, just say so and exit
-		let yml = load_yaml!("../grin.yml");
+		let yml = load_yaml!("../mwc.yml");
 		let app = App::from_yaml(yml);
 
 		// wallet init
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "init", "-h"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "init", "-h"];
 		// should create new wallet file
 		let client1 = LocalWalletClient::new("wallet1", wallet_proxy.tx.clone());
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec.clone())?;
@@ -194,12 +194,12 @@ mod wallet_tests {
 
 		// Create some accounts in wallet 1
 		let arg_vec = vec![
-			"grin", "wallet", "-p", "password", "account", "-c", "mining",
+			"mwc", "wallet", "-p", "password", "account", "-c", "mining",
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -211,7 +211,7 @@ mod wallet_tests {
 
 		// Create some accounts in wallet 2
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -224,7 +224,7 @@ mod wallet_tests {
 		assert!(execute_command(&app, test_dir, "wallet2", &client2, arg_vec).is_err());
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -235,11 +235,11 @@ mod wallet_tests {
 		execute_command(&app, test_dir, "wallet2", &client2, arg_vec)?;
 
 		// let's see those accounts
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "account"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "account"];
 		execute_command(&app, test_dir, "wallet2", &client2, arg_vec)?;
 
 		// let's see those accounts
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "account"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "account"];
 		execute_command(&app, test_dir, "wallet2", &client2, arg_vec)?;
 
 		// Mine a bit into wallet 1 so we have something to send
@@ -264,7 +264,7 @@ mod wallet_tests {
 		                         This part should all be truncated";
 
 		// Update info and check
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "-a", "mining", "info"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "-a", "mining", "info"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// try a file exchange
@@ -272,7 +272,7 @@ mod wallet_tests {
 		let response_file_name = format!("{}/tx1.part_tx.response", test_dir);
 		let coins_10grin = test_framework::mwc::grin_coins_2_wmc(10.0).to_string();
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -290,7 +290,7 @@ mod wallet_tests {
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -308,7 +308,7 @@ mod wallet_tests {
 		assert!(execute_command(&app, test_dir, "wallet2", &client2, arg_vec).is_err());
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -334,11 +334,11 @@ mod wallet_tests {
 		bh += 10;
 
 		// update info for each
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "-a", "mining", "info"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "-a", "mining", "info"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -363,7 +363,7 @@ mod wallet_tests {
 
 		// Self-send to same account, using smallest strategy
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -383,7 +383,7 @@ mod wallet_tests {
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -398,7 +398,7 @@ mod wallet_tests {
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec.clone())?;
 
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -422,7 +422,7 @@ mod wallet_tests {
 
 		// Try using the self-send method, splitting up outputs for the fun of it
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -457,7 +457,7 @@ mod wallet_tests {
 
 		// Another file exchange, don't send, but unlock with repair command
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -474,12 +474,12 @@ mod wallet_tests {
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "check"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "check"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// Another file exchange, cancel this time
 		let arg_vec = vec![
-			"grin",
+			"mwc",
 			"wallet",
 			"-p",
 			"password",
@@ -497,23 +497,23 @@ mod wallet_tests {
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		let arg_vec = vec![
-			"grin", "wallet", "-p", "password", "-a", "mining", "cancel", "-i", "26",
+			"mwc", "wallet", "-p", "password", "-a", "mining", "cancel", "-i", "26",
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// txs and outputs (mostly spit out for a visual in test logs)
-		let arg_vec = vec!["grin", "wallet", "-p", "password", "-a", "mining", "txs"];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "-a", "mining", "txs"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// message output (mostly spit out for a visual in test logs)
 		let arg_vec = vec![
-			"grin", "wallet", "-p", "password", "-a", "mining", "txs", "-i", "10",
+			"mwc", "wallet", "-p", "password", "-a", "mining", "txs", "-i", "10",
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// txs and outputs (mostly spit out for a visual in test logs)
 		let arg_vec = vec![
-			"grin", "wallet", "-p", "password", "-a", "mining", "outputs",
+			"mwc", "wallet", "-p", "password", "-a", "mining", "outputs",
 		];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 

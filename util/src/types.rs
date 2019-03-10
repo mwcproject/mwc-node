@@ -57,7 +57,7 @@ impl Default for LoggingConfig {
 			stdout_log_level: LogLevel::Warning,
 			log_to_file: true,
 			file_log_level: LogLevel::Info,
-			log_file_path: String::from("grin.log"),
+			log_file_path: String::from("mwc.log"),
 			log_file_append: true,
 			log_max_size: Some(1024 * 1024 * 16), // 16 megabytes default
 			tui_running: None,

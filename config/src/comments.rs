@@ -21,14 +21,14 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"[server]".to_string(),
 		"
-# Generated Server Configuration File for Grin
+# Generated Server Configuration File for MWC
 #
-# When running the grin executable without specifying any command line
+# When running the mwc executable without specifying any command line
 # arguments, it will look for this file in two places, in the following
 # order:
 #
 # -The working directory
-# -[user home]/.grin
+# -[user home]/.mwc
 #
 
 #########################################
@@ -65,7 +65,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"db_root".to_string(),
 		"
-#the directory, relative to current, in which the grin blockchain
+#the directory, relative to current, in which the mwc blockchain
 #is stored
 "
 		.to_string(),
@@ -358,7 +358,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"api_listen_interface".to_string(),
 		"
-#host IP for wallet listener, change to \"0.0.0.0\" to receive grins
+#host IP for wallet listener, change to \"0.0.0.0\" to receive mwc
 "
 		.to_string(),
 	);
@@ -402,7 +402,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"node_api_secret_path".to_string(),
 		"
-#location of the node api secret for basic auth on the Grin API
+#location of the node api secret for basic auth on the MWC API
 "
 		.to_string(),
 	);

@@ -69,7 +69,7 @@ where
 	let mut wallet_outputs: Vec<OutputResult> = Vec::new();
 
 	warn!(
-		"Scanning {} outputs in the current Grin utxo set",
+		"Scanning {} outputs in the current MWC utxo set",
 		outputs.len(),
 	);
 

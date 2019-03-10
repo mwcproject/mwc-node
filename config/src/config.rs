@@ -37,13 +37,13 @@ use crate::wallet::WalletConfig;
 
 /// The default file name to use when trying to derive
 /// the node config file location
-pub const SERVER_CONFIG_FILE_NAME: &'static str = "grin-server.toml";
+pub const SERVER_CONFIG_FILE_NAME: &'static str = "mwc-server.toml";
 /// And a wallet configuration file name
 pub const WALLET_CONFIG_FILE_NAME: &'static str = "grin-wallet.toml";
-const SERVER_LOG_FILE_NAME: &'static str = "grin-server.log";
+const SERVER_LOG_FILE_NAME: &'static str = "mwc-server.log";
 const WALLET_LOG_FILE_NAME: &'static str = "grin-wallet.log";
-const GRIN_HOME: &'static str = ".grin";
-const GRIN_CHAIN_DIR: &'static str = "chain_data";
+const MWC_HOME: &'static str = ".mwc";
+const MWC_CHAIN_DIR: &'static str = "chain_data";
 /// Wallet data directory
 pub const GRIN_WALLET_DIR: &'static str = "wallet_data";
 /// API secret file name
@@ -55,7 +55,7 @@ fn get_grin_path(chain_type: &global::ChainTypes) -> Result<PathBuf, ConfigError
 		Some(p) => p,
 		None => PathBuf::new(),
 	};
-	grin_path.push(GRIN_HOME);
+	grin_path.push(MWC_HOME);
 	grin_path.push(chain_type.shortname());
 	// Create if the default path doesn't exist
 	if !grin_path.exists() {
@@ -118,7 +118,7 @@ fn check_api_secret_file(chain_type: &global::ChainTypes) -> Result<(), ConfigEr
 /// Handles setup and detection of paths for node
 pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalConfig, ConfigError> {
 	check_api_secret_file(chain_type)?;
-	// Use config file if current directory if it exists, .grin home otherwise
+	// Use config file if current directory if it exists, .mwc home otherwise
 	if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME) {
 		GlobalConfig::new(p.to_str().unwrap())
 	} else {
@@ -146,7 +146,7 @@ pub fn initial_setup_wallet(
 	chain_type: &global::ChainTypes,
 ) -> Result<GlobalWalletConfig, ConfigError> {
 	check_api_secret_file(chain_type)?;
-	// Use config file if current directory if it exists, .grin home otherwise
+	// Use config file if current directory if it exists, .mwc home otherwise
 	if let Some(p) = check_config_current_dir(WALLET_CONFIG_FILE_NAME) {
 		GlobalWalletConfig::new(p.to_str().unwrap())
 	} else {
@@ -301,7 +301,7 @@ impl GlobalConfig {
 	pub fn update_paths(&mut self, grin_home: &PathBuf) {
 		// need to update server chain path
 		let mut chain_path = grin_home.clone();
-		chain_path.push(GRIN_CHAIN_DIR);
+		chain_path.push(MWC_CHAIN_DIR);
 		self.members.as_mut().unwrap().server.db_root = chain_path.to_str().unwrap().to_owned();
 		let mut secret_path = grin_home.clone();
 		secret_path.push(API_SECRET_FILE_NAME);

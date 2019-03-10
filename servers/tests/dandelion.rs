@@ -127,7 +127,7 @@ fn test_dandelion_timeout() {
 			LocalServerContainer::get_wallet_info(&coinbase_wallet_config, &coinbase_seed);
 	}
 
-	warn!("Sending 50 Grins to recipient wallet");
+	warn!("Sending 50 MWC to recipient wallet");
 
 	// Sending stem transaction
 	LocalServerContainer::send_amount_to(

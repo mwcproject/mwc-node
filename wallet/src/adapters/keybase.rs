@@ -32,8 +32,8 @@ const LISTEN_SLEEP_DURATION: Duration = Duration::from_millis(5000);
 const POLL_SLEEP_DURATION: Duration = Duration::from_millis(1000);
 
 // Which topic names to use for communication
-const SLATE_NEW: &str = "grin_slate_new";
-const SLATE_SIGNED: &str = "grin_slate_signed";
+const SLATE_NEW: &str = "mwc_slate_new";
+const SLATE_SIGNED: &str = "mwc_slate_signed";
 
 #[derive(Clone)]
 pub struct KeybaseWalletCommAdapter {}
@@ -269,7 +269,7 @@ fn poll(nseconds: u64, channel: &str) -> Option<Slate> {
 		sleep(POLL_SLEEP_DURATION);
 	}
 	error!(
-		"No response from @{} in {} seconds. Grin send failed!",
+		"No response from @{} in {} seconds. MWC send failed!",
 		channel, nseconds
 	);
 	None
@@ -429,14 +429,14 @@ fn notify_on_receive(keybase_notify_ttl: u16, channel: String, tx_uuid: String) 
 				};
 
 				let msg = format!(
-					"[grin wallet notice]: \
+					"[mwc wallet notice]: \
 					 you could have some coins received from @{}\n\
 					 Transaction Id: {}",
 					sender, tx_uuid
 				);
 				notify(&msg, &receiver, keybase_notify_ttl);
 				info!(
-					"tx from @{} is done, please check on grin wallet. tx uuid: {}",
+					"tx from @{} is done, please check on mwc wallet. tx uuid: {}",
 					sender, tx_uuid,
 				);
 			}

@@ -101,7 +101,7 @@ fn main() {
 	{
 		// setup a tmp chain to set block header roots
 		core::global::set_mining_mode(core::global::ChainTypes::UserTesting);
-		let tmp_chain = setup_chain(".grin.tmp", core::pow::mine_genesis_block().unwrap());
+		let tmp_chain = setup_chain(".mwc.tmp", core::pow::mine_genesis_block().unwrap());
 		tmp_chain.set_txhashset_roots(&mut gen).unwrap();
 	}
 

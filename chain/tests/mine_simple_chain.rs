@@ -59,7 +59,7 @@ fn setup(dir_name: &str, genesis: Block) -> Chain {
 fn mine_empty_chain() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	mine_some_on_top(".grin", pow::mine_genesis_block().unwrap(), &keychain);
+	mine_some_on_top(".mwc", pow::mine_genesis_block().unwrap(), &keychain);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn mine_genesis_reward_chain() {
 
 	{
 		// setup a tmp chain to hande tx hashsets
-		let tmp_chain = setup(".grin.tmp", pow::mine_genesis_block().unwrap());
+		let tmp_chain = setup(".mwc.tmp", pow::mine_genesis_block().unwrap());
 		tmp_chain.set_txhashset_roots(&mut genesis).unwrap();
 		genesis.header.output_mmr_size = 1;
 		genesis.header.kernel_mmr_size = 1;
@@ -91,7 +91,7 @@ fn mine_genesis_reward_chain() {
 	)
 	.unwrap();
 
-	mine_some_on_top(".grin.genesis", genesis, &keychain);
+	mine_some_on_top(".mwc.genesis", genesis, &keychain);
 }
 
 fn mine_some_on_top<K>(dir: &str, genesis: Block, keychain: &K)
@@ -158,7 +158,7 @@ where
 #[test]
 fn mine_forks() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
-	let chain = setup(".grin2", pow::mine_genesis_block().unwrap());
+	let chain = setup(".mwc2", pow::mine_genesis_block().unwrap());
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 
 	// add a first block to not fork genesis
@@ -202,7 +202,7 @@ fn mine_forks() {
 fn mine_losing_fork() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
-	let chain = setup(".grin3", pow::mine_genesis_block().unwrap());
+	let chain = setup(".mwc3", pow::mine_genesis_block().unwrap());
 
 	// add a first block we'll be forking from
 	let prev = chain.head_header().unwrap();
@@ -238,7 +238,7 @@ fn longer_fork() {
 	// prepare 2 chains, the 2nd will be have the forked blocks we can
 	// then send back on the 1st
 	let genesis = pow::mine_genesis_block().unwrap();
-	let chain = setup(".grin4", genesis.clone());
+	let chain = setup(".mwc4", genesis.clone());
 
 	// add blocks to both chains, 20 on the main one, only the first 5
 	// for the forked chain
@@ -274,7 +274,7 @@ fn longer_fork() {
 fn spend_in_fork_and_compact() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	util::init_test_logger();
-	let chain = setup(".grin6", pow::mine_genesis_block().unwrap());
+	let chain = setup(".mwc6", pow::mine_genesis_block().unwrap());
 	let prev = chain.head_header().unwrap();
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 
@@ -404,7 +404,7 @@ fn spend_in_fork_and_compact() {
 fn output_header_mappings() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let chain = setup(
-		".grin_header_for_output",
+		".mwc_header_for_output",
 		pow::mine_genesis_block().unwrap(),
 	);
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
@@ -535,10 +535,10 @@ where
 fn actual_diff_iter_output() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let genesis_block = pow::mine_genesis_block().unwrap();
-	let db_env = Arc::new(store::new_env(".grin".to_string()));
+	let db_env = Arc::new(store::new_env(".mwc".to_string()));
 	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 	let chain = chain::Chain::init(
-		"../.grin".to_string(),
+		"../.mwc".to_string(),
 		db_env,
 		Arc::new(NoopAdapter {}),
 		genesis_block,

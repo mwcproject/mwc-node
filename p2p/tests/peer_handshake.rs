@@ -50,7 +50,7 @@ fn peer_handshake() {
 		..p2p::P2PConfig::default()
 	};
 	let net_adapter = Arc::new(p2p::DummyAdapter {});
-	let db_env = Arc::new(store::new_env(".grin".to_string()));
+	let db_env = Arc::new(store::new_env(".mwc".to_string()));
 	let server = Arc::new(
 		p2p::Server::new(
 			db_env,

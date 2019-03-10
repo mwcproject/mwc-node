@@ -100,7 +100,7 @@ where
 		set_mining_mode(ChainTypes::AutomatedTesting);
 		let genesis_block = pow::mine_genesis_block().unwrap();
 		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
-		let dir_name = format!("{}/.grin", chain_dir);
+		let dir_name = format!("{}/.mwc", chain_dir);
 		let db_env = Arc::new(store::new_env(dir_name.to_string()));
 		let c = Chain::init(
 			dir_name.to_string(),

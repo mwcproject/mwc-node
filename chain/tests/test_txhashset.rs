@@ -39,7 +39,7 @@ fn test_unexpected_zip() {
 	let now = SystemTime::now();
 	let rand = now.duration_since(UNIX_EPOCH).unwrap().subsec_micros();
 
-	let db_root = format!(".grin_txhashset_zip");
+	let db_root = format!(".mwc_txhashset_zip");
 	clean_output_dir(&db_root);
 	let db_env = Arc::new(store::new_env(db_root.clone()));
 	let chain_store = ChainStore::new(db_env).unwrap();

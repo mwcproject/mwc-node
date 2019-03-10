@@ -618,7 +618,7 @@ pub fn wallet_command(
 		("restore", Some(_)) => command::restore(inst_wallet()),
 		("check", Some(_)) => command::check_repair(inst_wallet()),
 		_ => {
-			let msg = format!("Unknown wallet command, use 'grin help wallet' for details");
+			let msg = format!("Unknown wallet command, use 'mwc help wallet' for details");
 			return Err(ErrorKind::ArgumentError(msg).into());
 		}
 	};

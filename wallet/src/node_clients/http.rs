@@ -199,7 +199,7 @@ pub fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Err
 	match single_create_coinbase(&url, &block_fees) {
 		Err(e) => {
 			error!(
-				"Failed to get coinbase from {}. Run grin wallet listen?",
+				"Failed to get coinbase from {}. Run wmc wallet listen?",
 				url
 			);
 			error!("Underlying Error: {}", e.cause().unwrap());

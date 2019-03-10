@@ -38,16 +38,16 @@ fn clean_output_dir(dir_name: &str) {
 #[test]
 fn test_coinbase_maturity() {
 	let _ = env_logger::init();
-	clean_output_dir(".grin");
+	clean_output_dir(".mwc");
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 
 	let genesis_block = pow::mine_genesis_block().unwrap();
 
 	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 
-	let db_env = Arc::new(store::new_env(".grin".to_string()));
+	let db_env = Arc::new(store::new_env(".mwc".to_string()));
 	let chain = chain::Chain::init(
-		".grin".to_string(),
+		".mwc".to_string(),
 		db_env,
 		Arc::new(NoopAdapter {}),
 		genesis_block,
