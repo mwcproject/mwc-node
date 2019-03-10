@@ -25,7 +25,7 @@ use self::chain_test_helper::{clean_output_dir, mine_chain};
 fn test_store_indices() {
 	util::init_test_logger();
 
-	let chain_dir = ".grin_idx_1";
+	let chain_dir = ".mwc_idx_1";
 	clean_output_dir(chain_dir);
 
 	let chain = mine_chain(chain_dir, 4);

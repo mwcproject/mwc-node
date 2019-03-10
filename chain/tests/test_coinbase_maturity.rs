@@ -37,7 +37,7 @@ fn clean_output_dir(dir_name: &str) {
 #[test]
 fn test_coinbase_maturity() {
 	let _ = env_logger::init();
-	let chain_dir = ".grin_coinbase";
+	let chain_dir = ".mwc_coinbase";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 
@@ -47,7 +47,7 @@ fn test_coinbase_maturity() {
 
 	{
 		let chain = chain::Chain::init(
-			".grin".to_string(),
+			".mwc".to_string(),
 			Arc::new(NoopAdapter {}),
 			genesis_block,
 			pow::verify_size,

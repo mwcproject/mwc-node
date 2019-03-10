@@ -24,9 +24,7 @@ use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
 fn data_files() {
 // disable for merge
 /*
-<<<<<<< HEAD
 	util::init_test_logger();
-=======
 	let chain_dir = ".grin_df";
 	//new block so chain references should be freed
 	{
@@ -45,7 +43,6 @@ fn data_files() {
 			b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
 			chain.set_txhashset_roots(&mut b).unwrap();
->>>>>>> MWC changes
 
 	let chain_dir = ".grin_df";
 	clean_output_dir(chain_dir);
