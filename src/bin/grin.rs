@@ -41,7 +41,7 @@ pub mod built_info {
 pub fn info_strings() -> (String, String) {
 	(
 		format!(
-			"This is Grin version {}{}, built for {} by {}.",
+			"This is MWC version {}{}, built for {} by {}.",
 			built_info::PKG_VERSION,
 			built_info::GIT_VERSION.map_or_else(|| "".to_owned(), |v| format!(" (git {})", v)),
 			built_info::TARGET,
@@ -69,7 +69,7 @@ fn main() {
 }
 
 fn real_main() -> i32 {
-	let yml = load_yaml!("grin.yml");
+	let yml = load_yaml!("mwc.yml");
 	let args = App::from_yaml(yml).get_matches();
 	let node_config;
 

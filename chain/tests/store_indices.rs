@@ -47,7 +47,7 @@ fn test_various_store_indices() {
 		Ok(_) => println!("Initializing env logger"),
 		Err(e) => println!("env logger already initialized: {:?}", e),
 	};
-	let chain_dir = ".grin_idx_1";
+	let chain_dir = ".mwc_idx_1";
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();

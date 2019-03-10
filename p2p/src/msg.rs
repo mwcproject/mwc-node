@@ -40,7 +40,7 @@ use crate::util::read_write::read_exact;
 const PROTOCOL_VERSION: u32 = 1;
 
 /// Grin's user agent with current version
-pub const USER_AGENT: &'static str = concat!("MW/Grin ", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &'static str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
 
 // MWC - Magic number are updated to be different from grin.
 /// Magic numbers expected in the header of every message

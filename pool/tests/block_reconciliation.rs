@@ -32,7 +32,7 @@ use std::sync::Arc;
 fn test_transaction_pool_block_reconciliation() {
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
-	let db_root = ".grin_block_reconciliation".to_string();
+	let db_root = ".mwc_block_reconciliation".to_string();
 	clean_output_dir(db_root.clone());
 	{
 		let chain = Arc::new(ChainAdapter::init(db_root.clone()).unwrap());

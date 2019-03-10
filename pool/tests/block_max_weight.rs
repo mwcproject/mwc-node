@@ -37,7 +37,7 @@ fn test_block_building_max_weight() {
 
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
-	let db_root = ".grin_block_building_max_weight".to_string();
+	let db_root = ".mwc_block_building_max_weight".to_string();
 	clean_output_dir(db_root.clone());
 
 	{
