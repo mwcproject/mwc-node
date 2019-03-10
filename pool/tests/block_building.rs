@@ -32,7 +32,7 @@ fn test_transaction_pool_block_building() {
 	util::init_test_logger();
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
-	let db_root = ".grin_block_building".to_string();
+	let db_root = ".mwc_block_building".to_string();
 	clean_output_dir(db_root.clone());
 
 	{

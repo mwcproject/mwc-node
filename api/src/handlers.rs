@@ -68,7 +68,7 @@ pub fn start_rest_apis(
 	let mut apis = ApiServer::new();
 	let mut router = build_router(chain, tx_pool, peers).expect("unable to build API router");
 	if let Some(api_secret) = api_secret {
-		let api_basic_auth = format!("Basic {}", util::to_base64(&format!("grin:{}", api_secret)));
+		let api_basic_auth = format!("Basic {}", util::to_base64(&format!("mwc:{}", api_secret)));
 		let basic_auth_middleware =
 			Arc::new(BasicAuthMiddleware::new(api_basic_auth, &GRIN_BASIC_REALM));
 		router.add_middleware(basic_auth_middleware);

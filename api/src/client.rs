@@ -137,14 +137,14 @@ fn build_request(
 	})?;
 	let mut builder = Request::builder();
 	if let Some(api_secret) = api_secret {
-		let basic_auth = format!("Basic {}", to_base64(&format!("grin:{}", api_secret)));
+		let basic_auth = format!("Basic {}", to_base64(&format!("mwc:{}", api_secret)));
 		builder.header(AUTHORIZATION, basic_auth);
 	}
 
 	builder
 		.method(method)
 		.uri(uri)
-		.header(USER_AGENT, "grin-client")
+		.header(USER_AGENT, "mwc-client")
 		.header(ACCEPT, "application/json")
 		.header(CONTENT_TYPE, "application/json")
 		.body(match body {

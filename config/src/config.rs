@@ -34,9 +34,9 @@ use crate::util::LoggingConfig;
 
 /// The default file name to use when trying to derive
 /// the node config file location
-pub const SERVER_CONFIG_FILE_NAME: &'static str = "grin-server.toml";
-const SERVER_LOG_FILE_NAME: &'static str = "grin-server.log";
-const GRIN_HOME: &'static str = ".grin";
+pub const SERVER_CONFIG_FILE_NAME: &'static str = "mwc-server.toml";
+const SERVER_LOG_FILE_NAME: &'static str = "mwc-server.log";
+const GRIN_HOME: &'static str = ".mwc";
 const GRIN_CHAIN_DIR: &'static str = "chain_data";
 /// Node API secret
 pub const API_SECRET_FILE_NAME: &'static str = ".api_secret";
@@ -110,7 +110,7 @@ fn check_api_secret_file(chain_type: &global::ChainTypes) -> Result<(), ConfigEr
 /// Handles setup and detection of paths for node
 pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalConfig, ConfigError> {
 	check_api_secret_file(chain_type)?;
-	// Use config file if current directory if it exists, .grin home otherwise
+	// Use config file if current directory if it exists, .mwc home otherwise
 	if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME) {
 		GlobalConfig::new(p.to_str().unwrap())
 	} else {
