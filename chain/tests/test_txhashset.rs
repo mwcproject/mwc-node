@@ -35,7 +35,7 @@ fn clean_output_dir(dir_name: &str) {
 
 #[test]
 fn test_unexpected_zip() {
-	let db_root = format!(".grin_txhashset_zip");
+	let db_root = format!(".mwc_txhashset_zip");
 	clean_output_dir(&db_root);
 	{
 		let chain_store = ChainStore::new(&db_root).unwrap();

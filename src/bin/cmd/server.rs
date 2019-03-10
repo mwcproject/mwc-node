@@ -44,7 +44,7 @@ fn start_server_tui(config: servers::ServerConfig) {
 	// Run the UI controller.. here for now for simplicity to access
 	// everything it might need
 	if config.run_tui.unwrap_or(false) {
-		warn!("Starting GRIN in UI mode...");
+		warn!("Starting MWC in UI mode...");
 		servers::Server::start(config, |serv: servers::Server| {
 			let mut controller = ui::Controller::new().unwrap_or_else(|e| {
 				panic!("Error loading UI controller: {}", e);
@@ -53,7 +53,7 @@ fn start_server_tui(config: servers::ServerConfig) {
 		})
 		.unwrap();
 	} else {
-		warn!("Starting GRIN w/o UI...");
+		warn!("Starting MWC w/o UI...");
 		servers::Server::start(config, |serv: servers::Server| {
 			let running = Arc::new(AtomicBool::new(true));
 			let r = running.clone();
@@ -126,12 +126,12 @@ pub fn server_command(
 				start_server(server_config);
 			}
 			("", _) => {
-				println!("Subcommand required, use 'grin help server' for details");
+				println!("Subcommand required, use 'mwc help server' for details");
 			}
 			(cmd, _) => {
 				println!(":: {:?}", server_args);
 				panic!(
-					"Unknown server command '{}', use 'grin help server' for details",
+					"Unknown server command '{}', use 'mwc help server' for details",
 					cmd
 				);
 			}
