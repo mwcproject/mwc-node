@@ -93,7 +93,7 @@ fn basic_transaction_api(test_dir: &str) -> Result<(), libwallet::Error> {
 	// assert wallet contents
 	// and a single use api for a send command
 	//let amount = 60_000_000_000;
-let amount = 2_380_952_380;
+	let amount = 2_380_952_380;
 	let mut slate = Slate::blank(1);
 	wallet::controller::owner_single_use(wallet1.clone(), |sender_api| {
 		// note this will increment the block count as part of the transaction "Posting"
