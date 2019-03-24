@@ -119,7 +119,7 @@ fn main() {
 
 	let mut solver_sols = plugin::SolverSolutions::default();
 	let mut solver_stats = plugin::SolverStats::default();
-	let mut nonce = 10000;
+	let mut nonce = 1;
 
 	println!("We are trying to mine this genesis block={:?}", gen);
 
