@@ -52,7 +52,7 @@ pub fn genesis_dev() -> core::Block {
 pub fn genesis_floo() -> core::Block {
 	let gen = core::Block::with_header(core::BlockHeader {
 		height: 0,
-		timestamp: Utc.ymd(2019, 4, 3).and_hms(16, 30, 1),
+		timestamp: Utc.ymd(2019, 3, 3).and_hms(16, 30, 1),
 		prev_root: Hash::from_hex(
 			"0000000000000000000645465f62c40cb67252c733ddf1409d8fc1e029ef3587",
 		)
