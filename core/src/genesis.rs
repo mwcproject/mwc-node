@@ -76,7 +76,7 @@ pub fn genesis_floo() -> core::Block {
 		output_mmr_size: 1,
 		kernel_mmr_size: 1,
 		pow: ProofOfWork {
-			total_difficulty: Difficulty::from_num(100),
+			total_difficulty: Difficulty::from_num(10000),
 			secondary_scaling: 1856,
 			nonce: 25,
 			proof: Proof {
