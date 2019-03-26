@@ -119,19 +119,19 @@ If you join the floonet, let us know and we will send you coins to test with.
 To send coins, run the following command:
 
 ```sh
-# mwc --floonet send -m file -d tx.tx <amount>
+# mwc --floonet wallet send -m file -d tx.tx <amount>
 ```
 This will generate an output file called tx.tx. Transfer this file to the receipient who will run the following command with
 tx.tx in the present working directory.
 
 ```sh
-# mwc --floonet receive -i tx.tx
+# mwc --floonet wallet receive -i tx.tx
 ```
 This command will genearte an output file called tx.tx.response. The sender will then finalize the transaction by running the
 following command:
 
 ```sh
-# mwc --floonet finalize -i tx.tx.response
+# mwc --floonet wallet finalize -i tx.tx.response
 ```
 
 You can then confirm balances with the info command.
