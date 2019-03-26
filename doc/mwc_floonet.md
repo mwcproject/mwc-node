@@ -165,4 +165,7 @@ You must also start a wallet listener with the following command:
 mwc --floonet wallet listen
 ```
 
-Now you will be able to mine by starting your grin miner with the grin-miner binary that you have built.
+Now you will be able to mine by starting your grin miner with the grin-miner binary that you have built. Note that by default grin miner will try to connect on port 3416. For the floonet, you will need to change that parameter to 13416. The line in grin-miner.toml will look like this:
+
+stratum_server_addr = "127.0.0.1:13416"
+
