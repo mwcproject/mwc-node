@@ -106,6 +106,12 @@ To initialize your wallet run the following commands:
 # mwc --floonet wallet init -h
 ```
 
+Because your wallet is running in a different directory from your floo node, you will need to copy the .api_secret file from the floo directory to your wallet's directory so that it can connect to your node. If you do not do this, you might see a message warning that your wallet was not able to verify data against the live chain.
+
+```sh
+# cp ~/.mwc/floo/.api_secret .
+```
+
 This will initialize your wallet in the local directory. Whenever you run this wallet you must execute it from that directory.
 
 To check balance, run the following command:
