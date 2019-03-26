@@ -146,6 +146,8 @@ You can then confirm balances with the info command.
 # mwc --floonet wallet info
 ```
 
+# Mining
+
 To mine mwc, you will need to download and build the grin miner. It is 100% compatible with mwc. The repository is here:
 http://www.github.com/mimblewimble/grin-miner. Check out the project and build following the instructions in the repository.
 
