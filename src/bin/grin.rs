@@ -95,7 +95,6 @@ fn real_main() -> i32 {
                 // disabling mainnet for now. Will reenable for launch.
 		//global::ChainTypes::Mainnet
                 panic!("Mainnet is disabled for now.");
-   
 	};
 
 	// Deal with configuration file creation
