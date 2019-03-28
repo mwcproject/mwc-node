@@ -193,9 +193,7 @@ mod wallet_tests {
 		});
 
 		// Create some accounts in wallet 1
-		let arg_vec = vec![
-			"mwc", "wallet", "-p", "password", "account", "-c", "mining",
-		];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "account", "-c", "mining"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		let arg_vec = vec![
@@ -337,15 +335,7 @@ mod wallet_tests {
 		let arg_vec = vec!["mwc", "wallet", "-p", "password", "-a", "mining", "info"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
-		let arg_vec = vec![
-			"mwc",
-			"wallet",
-			"-p",
-			"password",
-			"-a",
-			"account_1",
-			"info",
-		];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "-a", "account_1", "info"];
 		execute_command(&app, test_dir, "wallet2", &client1, arg_vec)?;
 
 		// check results in wallet 2
@@ -512,9 +502,7 @@ mod wallet_tests {
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// txs and outputs (mostly spit out for a visual in test logs)
-		let arg_vec = vec![
-			"mwc", "wallet", "-p", "password", "-a", "mining", "outputs",
-		];
+		let arg_vec = vec!["mwc", "wallet", "-p", "password", "-a", "mining", "outputs"];
 		execute_command(&app, test_dir, "wallet1", &client1, arg_vec)?;
 
 		// let logging finish

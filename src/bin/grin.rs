@@ -80,10 +80,9 @@ fn real_main() -> i32 {
 	} else if args.is_present("usernet") {
 		global::ChainTypes::UserTesting
 	} else {
-                // disabling mainnet for now. Will reenable for launch.
+		// disabling mainnet for now. Will reenable for launch.
 		//global::ChainTypes::Mainnet
-                panic!("Mainnet is disabled for now.");
-   
+		panic!("Mainnet is disabled for now.");
 	};
 
 	// Deal with configuration file creation
