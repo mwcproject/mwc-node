@@ -39,9 +39,9 @@ use crate::wallet::WalletConfig;
 /// the node config file location
 pub const SERVER_CONFIG_FILE_NAME: &'static str = "mwc-server.toml";
 /// And a wallet configuration file name
-pub const WALLET_CONFIG_FILE_NAME: &'static str = "grin-wallet.toml";
+pub const WALLET_CONFIG_FILE_NAME: &'static str = "mwc-wallet.toml";
 const SERVER_LOG_FILE_NAME: &'static str = "mwc-server.log";
-const WALLET_LOG_FILE_NAME: &'static str = "grin-wallet.log";
+const WALLET_LOG_FILE_NAME: &'static str = "mwc-wallet.log";
 const MWC_HOME: &'static str = ".mwc";
 const MWC_CHAIN_DIR: &'static str = "chain_data";
 /// Wallet data directory

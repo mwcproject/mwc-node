@@ -16,19 +16,20 @@
 
 use built;
 
-use reqwest;
+//use reqwest;
 
-use flate2::read::GzDecoder;
+//use flate2::read::GzDecoder;
 use std::env;
-use std::fs::{self, File};
-use std::io::prelude::*;
-use std::io::Read;
-use std::path::{self, Path, PathBuf};
+//use std::fs::{self, File}
+//use std::io::prelude::*;
+//use std::io::Read;
+//use std::path::{self, Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-use tar::Archive;
+//use tar::Archive;
 
-const _WEB_WALLET_TAG: &str = "0.3.0.1";
+//const _WEB_WALLET_TAG: &str = "0.3.0.1";
 
 fn main() {
 	// Setting up git hooks in the project: rustfmt and so on.
@@ -70,6 +71,7 @@ fn main() {
 	}*/
 }
 
+/*
 fn _download_and_decompress(target_file: &str) -> Result<bool, Box<std::error::Error>> {
 	let req_path = format!("https://github.com/mimblewimble/grin-web-wallet/releases/download/{}/grin-web-wallet.tar.gz", _WEB_WALLET_TAG);
 	let mut resp = reqwest::get(&req_path)?;
@@ -147,4 +149,4 @@ fn _install_web_wallet() -> Result<bool, Box<std::error::Error>> {
 	}
 
 	Ok(true)
-}
+}*/
