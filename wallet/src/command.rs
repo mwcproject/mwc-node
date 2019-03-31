@@ -39,6 +39,7 @@ use crate::{
 #[derive(Clone)]
 pub struct GlobalArgs {
 	pub account: String,
+	pub owner_api_secret: Option<String>,
 	pub node_api_secret: Option<String>,
 	pub show_spent: bool,
 	pub password: Option<ZeroingString>,
@@ -146,7 +147,7 @@ pub fn owner_api(
 	let res = controller::owner_listener(
 		wallet,
 		config.owner_api_listen_addr().as_str(),
-		g_args.node_api_secret.clone(),
+		g_args.owner_api_secret.clone(),
 		g_args.tls_conf.clone(),
 		config.owner_api_include_foreign.clone(),
 	);
