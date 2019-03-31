@@ -195,6 +195,7 @@ pub fn parse_global_args(
 	if args.is_present("show_spent") {
 		show_spent = true;
 	}
+	let owner_api_secret = get_first_line(config.api_secret_path.clone());
 	let node_api_secret = get_first_line(config.node_api_secret_path.clone());
 	let password = match args.value_of("pass") {
 		None => None,
@@ -218,6 +219,7 @@ pub fn parse_global_args(
 	Ok(command::GlobalArgs {
 		account: account.to_owned(),
 		show_spent: show_spent,
+		owner_api_secret: owner_api_secret,
 		node_api_secret: node_api_secret,
 		password: password,
 		tls_conf: tls_conf,
