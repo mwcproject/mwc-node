@@ -38,7 +38,12 @@ use crate::types::{
 use chrono::prelude::{DateTime, Utc};
 
 const MAX_TRACK_SIZE: usize = 30;
-const MAX_PEER_MSG_PER_MIN: u64 = 500;
+// note: this is set to 500 in grin. We are setting it to 2000 for now because
+// it is causing disconnections occasionally and at the moment our network
+// only has two nodes. It would be very bad if people could not connect.
+// Once the network is more robust and has more peers, we will lower this to 500 or
+// implement logic to prevent disconnections on IBD.
+const MAX_PEER_MSG_PER_MIN: u64 = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Remind: don't mix up this 'State' with that 'State' in p2p/src/store.rs,
