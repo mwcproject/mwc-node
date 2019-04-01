@@ -18,7 +18,7 @@ MWC's programming language `rust` has build targets for most platforms.
 What's working so far?
 
 * Linux x86\_64 and macOS [MWC + mining + development]
-* Not Windows 10 yet [MWC kind-of builds. No mining yet. Help wanted!]
+* Not Windows 10 yet
 
 ## Requirements (only needed to build if you are downloading binaries you can skip this section)
 
