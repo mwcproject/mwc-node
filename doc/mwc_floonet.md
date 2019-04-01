@@ -8,8 +8,7 @@ is that there will be no rewards after about 64 days or so when the final halvin
 at that time, we might start a new testnet.
 
 # Setting up a full node
-To setup a full node, you must checkout and build the project. We will eventually have binaries for Linux and MacOS (as grin
-does), but for now we don't.
+To setup a full node, you must checkout and build the project or you can just download our binaries from our latest release which are hosted here: http://www.github.com/cgilliard/mwc/releases.
 
 ## Supported Platforms
 
@@ -21,7 +20,7 @@ What's working so far?
 * Linux x86\_64 and macOS [MWC + mining + development]
 * Not Windows 10 yet [MWC kind-of builds. No mining yet. Help wanted!]
 
-## Requirements
+## Requirements (only needed to build if you are downloading binaries you can skip this section)
 
 * rust 1.31+ (use [rustup]((https://www.rustup.rs/))- i.e. `curl https://sh.rustup.rs -sSf | sh; source $HOME/.cargo/env`)
   * if rust is already installed, you can simply update version with `rustup update`
@@ -41,7 +40,7 @@ apt install build-essential cmake git libgit2-dev clang libncurses5-dev libncurs
 
 There are similar packages available for centos as well but they might have a slightly different name.
 
-For Mac:
+For Mac (Only necessary if you plan to build, if you are downloading binaries skip):
 
 ```sh
 xcode-select --install
@@ -49,7 +48,7 @@ brew install pkg-config
 brew install openssl
 ```
 
-## Build steps
+## Build steps (If you are downloading binary, skip this step)
 
 ```sh
 git clone https://github.com/cgilliard/mwc.git
@@ -62,6 +61,8 @@ MWC can also be built in debug mode (without the `--release` flag, but using the
 A successful build gets you:
 
 * `target/release/mwc` - the main mwc binary
+
+If you have downloaded binary, the package will contain the mwc binary only for your specfic platform.
 
 All data, configuration and log files created and used by mwc are located in the hidden
 `~/.mwc` directory (under your user home directory) by default. You can modify all configuration
