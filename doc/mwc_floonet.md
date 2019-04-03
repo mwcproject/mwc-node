@@ -147,6 +147,10 @@ You can then confirm balances with the info command.
 # mwc --floonet wallet info
 ```
 
+# Web wallet
+
+Grin web wallet is compatible with MWC. You can check how set it up [here](https://github.com/cgilliard/mwc/blob/master/doc/web-wallet.md).
+
 # Mining
 
 To mine mwc, you will need to download and build the grin miner. It is 100% compatible with mwc. The repository is here:
