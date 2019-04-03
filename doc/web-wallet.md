@@ -52,7 +52,7 @@ Get the grin web wallet sources
 ```bash
 > git clone git@github.com:mimblewimble/grin-web-wallet.git
 ```
-Make sure that MWC node is running. Start MWC wallet in lestening mode.
+Make sure that MWC node is running. Start MWC wallet in listening mode.
 ```bash
 > cd <wallet_dir>
 > mwc wallet listen
