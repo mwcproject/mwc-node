@@ -114,8 +114,8 @@ where
 	/// Stores a transaction
 	fn store_tx(&self, uuid: &str, tx: &Transaction) -> Result<(), Error>;
 
-        /// Load a txn from specified file
-        fn load_stored_tx(&self, path: &str) -> Result<Option<Transaction>, Error>;
+	/// Load a txn from specified file
+	fn load_stored_tx(&self, path: &str) -> Result<Option<Transaction>, Error>;
 
 	/// Retrieves a stored transaction from a TxLogEntry
 	fn get_stored_tx(&self, entry: &TxLogEntry) -> Result<Option<Transaction>, Error>;

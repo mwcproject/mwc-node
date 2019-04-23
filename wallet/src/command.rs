@@ -439,34 +439,31 @@ pub fn txs(
 
 pub struct SubmitArgs {
 	pub input: String,
-        pub fluff: bool,
+	pub fluff: bool,
 }
 
 pub fn submit(
-        wallet: Arc<Mutex<WalletInst<impl NodeClient + 'static, keychain::ExtKeychain>>>,
-        args: SubmitArgs,
+	wallet: Arc<Mutex<WalletInst<impl NodeClient + 'static, keychain::ExtKeychain>>>,
+	args: SubmitArgs,
 ) -> Result<(), Error> {
-        controller::owner_single_use(wallet.clone(), |api| {
-                let stored_tx = api.load_stored_tx(&args.input)?;
-                if stored_tx.is_none() {
-                        error!(
-                                "File not found: {:?}",
-                                args.input
-                        );
-                        return Ok(());
-                }
-                api.post_tx(&stored_tx.unwrap(), args.fluff)?;
-                info!("Reposted transaction in file: {}", args.input);
-                return Ok(());
-        })?;
-        Ok(())
+	controller::owner_single_use(wallet.clone(), |api| {
+		let stored_tx = api.load_stored_tx(&args.input)?;
+		if stored_tx.is_none() {
+			error!("File not found: {:?}", args.input);
+			return Ok(());
+		}
+		api.post_tx(&stored_tx.unwrap(), args.fluff)?;
+		info!("Reposted transaction in file: {}", args.input);
+		return Ok(());
+	})?;
+	Ok(())
 }
 
 /// Repost
 pub struct RepostArgs {
-        pub id: u32,
-        pub dump_file: Option<String>,
-        pub fluff: bool,
+	pub id: u32,
+	pub dump_file: Option<String>,
+	pub fluff: bool,
 }
 
 pub fn repost(
