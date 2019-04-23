@@ -41,12 +41,12 @@ use crate::keychain::{Identifier, Keychain};
 use crate::libwallet::internal::{keys, tx, updater};
 use crate::libwallet::slate::Slate;
 use crate::libwallet::types::{
-AcctPathMapping, BlockFees, CbData, NodeClient, OutputData, OutputStatus, TxLogEntry, TxLogEntryType,
-	TxWrapper, WalletBackend, WalletInfo, OutputProof, OutputLockFn,
+	AcctPathMapping, BlockFees, CbData, NodeClient, OutputData, OutputLockFn, OutputProof,
+	OutputStatus, TxLogEntry, TxLogEntryType, TxWrapper, WalletBackend, WalletInfo,
 };
 use crate::libwallet::{Error, ErrorKind};
 use crate::util;
-use crate::util::secp::{pedersen, ContextFlag, Secp256k1, Message, key::PublicKey, Signature};
+use crate::util::secp::{key::PublicKey, pedersen, ContextFlag, Message, Secp256k1, Signature};
 
 const USER_MESSAGE_MAX_LEN: usize = 256;
 
@@ -852,9 +852,13 @@ where
 		}
 	}
 
-/// Signs a user-provided message with UTXO's blinding factor to construct a proof that
-    /// user is indeed in possession of said UTXO.
-	pub fn sign_utxo(&mut self, utxo_commitment: &str, message_hash: &str) -> Result<OutputProof, Error> {
+	/// Signs a user-provided message with UTXO's blinding factor to construct a proof that
+	/// user is indeed in possession of said UTXO.
+	pub fn sign_utxo(
+		&mut self,
+		utxo_commitment: &str,
+		message_hash: &str,
+	) -> Result<OutputProof, Error> {
 		let mut w = self.wallet.lock();
 		w.open_with_credentials()?;
 
@@ -892,27 +896,35 @@ where
 						amount: output.value,
 						msg_hash,
 						public_key,
-						signature
+						signature,
 					};
 
 					w.close()?;
 
-					return Ok(proof)
+					return Ok(proof);
 				} else {
-					return Err(ErrorKind::GenericError("Invalid message hash".to_owned()))?
+					return Err(ErrorKind::GenericError("Invalid message hash".to_owned()))?;
 				}
 			}
 		}
 
 		w.close()?;
 
-		Err(ErrorKind::GenericError(format!("UTXO with commitment {} is not found", utxo_commitment)))?
+		Err(ErrorKind::GenericError(format!(
+			"UTXO with commitment {} is not found",
+			utxo_commitment
+		)))?
 	}
 
-        /// Verify_utxo method. This method verifies an unspent output.
-	pub fn verify_utxo(&mut self, _amount: u64, msg_hash: &str, pubkey: String, signature: String) -> Result<bool, Error> {
+	/// Verify_utxo method. This method verifies an unspent output.
+	pub fn verify_utxo(
+		&mut self,
+		_amount: u64,
+		msg_hash: &str,
+		pubkey: String,
+		signature: String,
+	) -> Result<bool, Error> {
 		if let Ok(msg_hash) = Hash::from_hex(&msg_hash) {
-
 			let secp = Secp256k1::with_caps(ContextFlag::VerifyOnly);
 			let pk = util::from_hex(pubkey).unwrap();
 			let pk = PublicKey::from_slice(&secp, &pk).unwrap();
@@ -923,12 +935,10 @@ where
 			let is_verified = secp.verify(&msg, &signature, &pk).is_ok();
 
 			Ok(is_verified)
-
 		} else {
-			return Err(ErrorKind::GenericError("Invalid message hash".to_owned()))?
+			return Err(ErrorKind::GenericError("Invalid message hash".to_owned()))?;
 		}
 	}
-
 
 	/// Attempt to update outputs in wallet, return whether it was successful
 	fn update_outputs(&self, w: &mut W, update_all: bool) -> bool {

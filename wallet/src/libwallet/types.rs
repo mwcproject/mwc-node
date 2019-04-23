@@ -731,5 +731,5 @@ pub struct OutputProof {
 	pub public_key: Vec<u8>,
 
 	/// Signature (compact)
-	pub signature: Vec<u8>
+	pub signature: Vec<u8>,
 }
