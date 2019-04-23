@@ -232,6 +232,18 @@ subcommands:
                   short: i
                   long: id
                   takes_value: true
+        - submit:
+            about: Submits a transaction that has already been finalized but not submitted to the network yet
+            args:
+              - input:
+                  help: Transaction file to submit
+                  short: i
+                  long: input
+                  takes_value: true
+              - fluff:
+                  help: Fluff the transaction (ignore Dandelion relay protocol)
+                  short: f
+                  long: fluff
         - repost:
             about: Reposts a stored, completed but unconfirmed transaction to the chain, or dumps it to a file
             args:

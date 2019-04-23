@@ -779,6 +779,12 @@ where
 		Ok(())
 	}
 
+        /// Loads a stored transaction from a file
+        pub fn load_stored_tx(&self, file: &String) -> Result<Option<Transaction>, Error> {
+                let w = self.wallet.lock();
+                w.load_stored_tx(file)
+        }
+
 	/// Retrieves a stored transaction from a TxLogEntry
 	pub fn get_stored_tx(&self, entry: &TxLogEntry) -> Result<Option<Transaction>, Error> {
 		let w = self.wallet.lock();

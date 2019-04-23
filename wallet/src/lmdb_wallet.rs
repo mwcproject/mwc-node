@@ -293,6 +293,17 @@ where
 		Ok(())
 	}
 
+        fn load_stored_tx(&self, path: &str) -> Result<Option<Transaction>, Error> {
+                let tx_file = Path::new(&path).to_path_buf();
+                let mut tx_f = File::open(tx_file)?;
+                let mut content = String::new();
+                tx_f.read_to_string(&mut content)?;
+                let tx_bin = util::from_hex(content).unwrap();
+                Ok(Some(
+                        ser::deserialize::<Transaction>(&mut &tx_bin[..]).unwrap(),
+                ))
+        }
+
 	fn get_stored_tx(&self, entry: &TxLogEntry) -> Result<Option<Transaction>, Error> {
 		let filename = match entry.stored_tx.clone() {
 			Some(f) => f,
