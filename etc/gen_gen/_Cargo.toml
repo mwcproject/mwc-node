@@ -5,7 +5,7 @@ edition = "2018"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Utility to automate the generation of Grin's genesis block"
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin"
+repository = "https://github.com/cgilliard/mwc"
 keywords = [ "crypto", "grin", "mimblewimble" ]
 readme = "README.md"
 
@@ -16,11 +16,11 @@ path = "src/bin/gen_gen.rs"
 [dependencies]
 chrono = "0.4.4"
 curl = "0.4.19"
-cuckoo_miner = { path = "../../../grin-miner/cuckoo-miner" }
+#cuckoo_miner = { path = "../../../grin-miner/cuckoo-miner" }
 grin_core = { path = "../../core" }
 grin_chain = { path = "../../chain" }
 grin_keychain = { path = "../../keychain" }
-grin_miner_plugin = { path = "../../../grin-miner/plugin" }
+#grin_miner_plugin = { path = "../../../grin-miner/plugin" }
 grin_store = { path = "../../store" }
 grin_util = { path = "../../util" }
 grin_wallet = { path = "../../wallet" }
