@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate colored;
+
 use std::fs::{self, File};
 use std::io;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::path::MAIN_SEPARATOR;
+use colored::*;
 
 use crate::blake2;
 use rand::{thread_rng, Rng};
@@ -233,9 +236,9 @@ impl WalletSeed {
 		println!();
 		println!("Please back-up these words in a non-digital format.");
 
-		println!("{}", "Press ENTER when you have done so");
 
 		if wait_for_user {
+                        println!("{}", "Press ENTER when you have done so".bright_green().bold());
 			let mut line = String::new();
 			io::stdout().flush().unwrap();
 			io::stdin().read_line(&mut line).unwrap();
