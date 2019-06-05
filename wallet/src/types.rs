@@ -235,11 +235,11 @@ impl WalletSeed {
 
 		println!("{}", "Press ENTER when you have done so");
 
-                if wait_for_user {
-		    let mut line = String::new();
-		    io::stdout().flush().unwrap();
-		    io::stdin().read_line(&mut line).unwrap();
-                }
+		if wait_for_user {
+			let mut line = String::new();
+			io::stdout().flush().unwrap();
+			io::stdin().read_line(&mut line).unwrap();
+		}
 
 		Ok(())
 	}
@@ -249,7 +249,7 @@ impl WalletSeed {
 		seed_length: usize,
 		recovery_phrase: Option<util::ZeroingString>,
 		password: &str,
-                wait_for_user: bool,
+		wait_for_user: bool,
 	) -> Result<WalletSeed, Error> {
 		// create directory if it doesn't exist
 		fs::create_dir_all(&wallet_config.data_file_dir).context(ErrorKind::IO)?;

@@ -62,7 +62,7 @@ pub fn init(g_args: &GlobalArgs, args: InitArgs) -> Result<(), Error> {
 		args.list_length,
 		args.recovery_phrase,
 		&args.password,
-                false,
+		false,
 	)?;
 	info!("Wallet seed file created");
 	let client_n = HTTPNodeClient::new(
