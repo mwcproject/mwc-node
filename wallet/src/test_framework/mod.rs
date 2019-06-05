@@ -171,7 +171,7 @@ where
 	};
 	let mut wallet_config = WalletConfig::default();
 	wallet_config.data_file_dir = String::from(dir);
-	let _ = WalletSeed::init_file(&wallet_config, 32, z_string, "");
+	let _ = WalletSeed::init_file(&wallet_config, 32, z_string, "", false);
 	let mut wallet = LMDBBackend::new(wallet_config.clone(), "", n_client)
 		.unwrap_or_else(|e| panic!("Error creating wallet: {:?} Config: {:?}", e, wallet_config));
 	wallet.open_with_credentials().unwrap_or_else(|e| {
