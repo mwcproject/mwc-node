@@ -50,6 +50,7 @@ pub use self::common::EdgeType;
 pub use self::types::*;
 pub use crate::pow::cuckaroo::{new_cuckaroo_ctx, CuckarooContext};
 pub use crate::pow::cuckatoo::{new_cuckatoo_ctx, CuckatooContext};
+use crate::pow::error::{ErrorKind};
 pub use crate::pow::error::Error;
 
 const MAX_SOLS: u32 = 10;
@@ -57,6 +58,11 @@ const MAX_SOLS: u32 = 10;
 /// Validates the proof of work of a given header, and that the proof of work
 /// satisfies the requirements of the header.
 pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
+	// Disable less than C31.
+	if global::is_mainnet() && bh.pow.edge_bits() < 31 {
+		return Err(ErrorKind::Verification("C29 disabled".to_owned()))?;
+	}
+	else {
 	let mut ctx = global::create_pow_context::<u64>(
 		bh.height,
 		bh.pow.edge_bits(),
@@ -65,6 +71,7 @@ pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
 	)?;
 	ctx.set_header_nonce(bh.pre_pow(), None, false)?;
 	ctx.verify(&bh.pow.proof)
+	}
 }
 
 /// MWC GENESIS - genesis block, used for tests. Nice starting point to understand the generation
