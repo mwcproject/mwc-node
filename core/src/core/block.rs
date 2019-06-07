@@ -689,6 +689,9 @@ impl Block {
 	/// * coinbase sum verification
 	/// * kernel sum verification
 	pub fn validate_read(&self) -> Result<(), Error> {
+		if global::is_mainnet() && self.header.pow.edge_bits() < 31 {
+			return Err(Error::Other("C29 Disabled".to_string()));
+		}
 		self.body.validate_read(Weighting::AsBlock)?;
 		self.verify_kernel_lock_heights()?;
 		Ok(())
@@ -719,6 +722,9 @@ impl Block {
 		prev_kernel_offset: &BlindingFactor,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<Commitment, Error> {
+		if global::is_mainnet() && self.header.pow.edge_bits() < 31 {
+			return Err(Error::Other("C29 Disabled".to_string()));
+		}
 		self.body.validate(Weighting::AsBlock, verifier)?;
 
 		self.verify_kernel_lock_heights()?;
