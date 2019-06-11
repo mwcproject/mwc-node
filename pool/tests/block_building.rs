@@ -117,7 +117,7 @@ fn test_transaction_pool_block_building() {
 		assert!(block.kernels().contains(&root_tx_2.kernels()[0]));
 		assert!(block.kernels().contains(&root_tx_3.kernels()[0]));
 		assert!(block.kernels().contains(&child_tx_1.kernels()[0]));
-		assert!(block.kernels().contains(&child_tx_1.kernels()[0]));
+		assert!(block.kernels().contains(&child_tx_2.kernels()[0]));
 
 		// Now reconcile the transaction pool with the new block
 		// and check the resulting contents of the pool are what we expect.
