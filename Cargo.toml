@@ -42,7 +42,7 @@ grin_servers = { path = "./servers", version = "2.0.1-beta.1" }
 grin_util = { path = "./util", version = "2.0.1-beta.1" }
 
 [target.'cfg(windows)'.dependencies]
-cursive = { version = "0.12", default-features = false, features = ["pancurses-backend"] }
+cursive = { version = "0.11", default-features = false, features = ["pancurses-backend"] }
 [target.'cfg(windows)'.dependencies.pancurses]
 version = "0.16.0"
 features = ["win32"]
