@@ -6,9 +6,9 @@
 [![Release Version](https://img.shields.io/github/release/mimblewimble/grin.svg)](https://github.com/mimblewimble/grin/releases)
 [![License](https://img.shields.io/github/license/mimblewimble/grin.svg)](https://github.com/mimblewimble/grin/blob/master/LICENSE)
 
-# Grin
+# MWC
 
-Grin is an in-progress implementation of the MimbleWimble protocol. Many characteristics are still undefined but the following constitutes a first set of choices:
+MWC is an in-progress implementation of the MimbleWimble protocol forked from Grin. Many characteristics are still undefined but the following constitutes a first set of choices:
 
   * Clean and minimal implementation, and aiming to stay as such.
   * Follows the MimbleWimble protocol, which provides great anonymity and scaling characteristics.
@@ -22,27 +22,21 @@ To learn more, read our [introduction to MimbleWimble and Grin](doc/intro.md).
 
 ## Status
 
-Grin is live with mainnet. Still, much is left to be done and [contributions](CONTRIBUTING.md) are welcome (see below). Check our [mailing list archives](https://lists.launchpad.net/mimblewimble/) for the latest status.
+MWC's mainnet has not launched. Much is left to be done and [contributions](CONTRIBUTING.md) are welcome (see below). Check our [mailing list archives](https://lists.launchpad.net/mimblewimble/) for the latest status.
 
 ## Contributing
 
 To get involved, read our [contributing docs](CONTRIBUTING.md).
 
-Find us:
-
-* Chat: [Gitter](https://gitter.im/grin_community/Lobby).
-* Mailing list: join the [~MimbleWimble team](https://launchpad.net/~mimblewimble) and subscribe on Launchpad.
-* Twitter for the Grin council: [@grincouncil](https://twitter.com/grincouncil)
-
 ## Getting Started
 
 To learn more about the technology, read our [introduction](doc/intro.md).
 
-To build and try out Grin, see the [build docs](doc/build.md).
+To build and try out MWC, see the [build docs](doc/build.md).
 
 ## Philosophy
 
-Grin likes itself small and easy on the eyes. It wants to be inclusive and welcoming for all walks of life, without judgement. Grin is terribly ambitious, but not at the detriment of others, rather to further us all. It may have strong opinions to stay in line with its objectives, which doesn't mean disrespect of others' ideas.
+MWC likes itself small and easy on the eyes. It wants to be inclusive and welcoming for all walks of life, without judgement. MWC is terribly ambitious, but not at the detriment of others, rather to further us all. It may have strong opinions to stay in line with its objectives, which doesn't mean disrespect of others' ideas.
 
 We believe in pull requests, data and scientific research. We do not believe in unfounded beliefs.
 
