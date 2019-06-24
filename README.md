@@ -48,6 +48,7 @@ Andrew Poelstra for his related work and improvements.
 
 John Tromp for the Cuckoo Cycle proof of work.
 
+The [Grin developers](https://github.com/mimblewimble) for developing the foundation of this project.
 
 J.K. Rowling for making it despite extraordinary adversity.
 
