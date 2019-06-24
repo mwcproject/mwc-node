@@ -18,33 +18,33 @@ steps:
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
       sourceFolder: '$(Build.SourcesDirectory)/target/release'
-      contents: 'grin'
-      targetFolder: '$(Build.BinariesDirectory)/grin'
+      contents: 'mwc'
+      targetFolder: '$(Build.BinariesDirectory)/mwc'
   - task: ArchiveFiles@2
     displayName: Gather assets
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
-      rootFolderOrFile: '$(Build.BinariesDirectory)/grin'
+      rootFolderOrFile: '$(Build.BinariesDirectory)/mwc'
       archiveType: 'tar'
       tarCompression: 'gz'
-      archiveFile: '$(Build.ArtifactStagingDirectory)/grin-$(build.my_tag)-$(build.platform).tar.gz'
+      archiveFile: '$(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz'
   - script: |
-      openssl sha256 $(Build.ArtifactStagingDirectory)/grin-$(build.my_tag)-$(build.platform).tar.gz > $(Build.ArtifactStagingDirectory)/grin-$(build.my_tag)-$(build.platform)-sha256sum.txt
+      openssl sha256 $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz > $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
     displayName: Create Checksum
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - task: GithubRelease@0
     displayName: Github release
     condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
-      gitHubConnection: 'ignopeverell'
-      repositoryName: 'mimblewimble/grin'
+      gitHubConnection: 'mwcproject'
+      repositoryName: 'mwcproject/mwc-node'
       action: 'edit'
       target: '$(build.sourceVersion)'
       tagSource: 'manual'
       tag: '$(build.my_tag)'
       assets: |
-        $(Build.ArtifactStagingDirectory)/grin-$(build.my_tag)-$(build.platform).tar.gz
-        $(Build.ArtifactStagingDirectory)/grin-$(build.my_tag)-$(build.platform)-sha256sum.txt
+        $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz
+        $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
       title: '$(build.my_tag)'
       assetUploadMode: 'replace'
       addChangeLog: true
