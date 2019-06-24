@@ -1,6 +1,6 @@
 [![Build Status](https://dev.azure.com/mwc-project/MWC%20Project/_apis/build/status/mwcproject.mwc-node?branchName=master)](https://dev.azure.com/mwc-project/MWC%20Project/_build/latest?definitionId=1&branchName=master)
 [![Telegram Chat](https://img.shields.io/badge/chat-on%20telegram-brightgreen.svg?logo=telegram)](https://t.me/joinchat/IJTzpk33q3uBnautDTC5Sw)
-[![Discord Chat](https://img.shields.io/discord/539232227360243712.svg?label=Chat&logo=discord)](https://discordapp.com/invite/eUNwqf3)
+[![Discord Chat](https://img.shields.io/discord/539232227360243712.svg?label=chat&logo=discord)](https://discordapp.com/invite/eUNwqf3)
 [![Documentation Wiki](https://img.shields.io/badge/doc-wiki-blue.svg)](https://github.com/mwcproject/docs/wiki)
 [![Release Version](https://img.shields.io/github/release/mwcproject/mwc-node.svg)](https://github.com/mwcproject/mwc-node/releases)
 [![License](https://img.shields.io/github/license/mwcproject/mwc-node.svg)](https://github.com/mwcproject/mwc-node/blob/master/LICENSE)
