@@ -1,10 +1,9 @@
-[![Build Status](https://dev.azure.com/mimblewimble/grin/_apis/build/status/mimblewimble.grin?branchName=master)](https://dev.azure.com/mimblewimble/grin/_build/latest?definitionId=1&branchName=master)
-[![Coverage Status](https://img.shields.io/codecov/c/github/mimblewimble/grin/master.svg)](https://codecov.io/gh/mimblewimble/grin)
-[![Chat](https://img.shields.io/gitter/room/grin_community/Lobby.svg)](https://gitter.im/grin_community/Lobby)
-[![Support](https://img.shields.io/badge/support-on%20gitter-brightgreen.svg)](https://gitter.im/grin_community/support)
-[![Documentation Wiki](https://img.shields.io/badge/doc-wiki-blue.svg)](https://github.com/mimblewimble/docs/wiki)
-[![Release Version](https://img.shields.io/github/release/mimblewimble/grin.svg)](https://github.com/mimblewimble/grin/releases)
-[![License](https://img.shields.io/github/license/mimblewimble/grin.svg)](https://github.com/mimblewimble/grin/blob/master/LICENSE)
+[![Build Status](https://dev.azure.com/mwc-project/MWC%20Project/_apis/build/status/mwcproject.mwc-node?branchName=master)](https://dev.azure.com/mwc-project/MWC%20Project/_build/latest?definitionId=2&branchName=master)
+[![Telegram Chat](https://img.shields.io/badge/chat-on%20telegram-brightgreen.svg?logo=telegram)](https://t.me/joinchat/IJTzpk33q3uBnautDTC5Sw)
+[![Discord Chat](https://img.shields.io/discord/539232227360243712.svg?label=chat&logo=discord)](https://discordapp.com/invite/eUNwqf3)
+[![Documentation Wiki](https://img.shields.io/badge/doc-wiki-blue.svg)](https://github.com/mwcproject/docs/wiki)
+[![Release Version](https://img.shields.io/github/release/mwcproject/mwc-node.svg)](https://github.com/mwcproject/mwc-node/releases)
+[![License](https://img.shields.io/github/license/mwcproject/mwc-node.svg)](https://github.com/mwcproject/mwc-node/blob/master/LICENSE)
 
 # MWC
 
@@ -47,6 +46,8 @@ Tom Elvis Jedusor for the first formulation of MimbleWimble.
 Andrew Poelstra for his related work and improvements.
 
 John Tromp for the Cuckoo Cycle proof of work.
+
+The [Grin developers](https://github.com/mimblewimble) for undertaking the foundation of this project.
 
 J.K. Rowling for making it despite extraordinary adversity.
 
