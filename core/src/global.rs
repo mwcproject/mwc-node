@@ -154,27 +154,27 @@ pub fn set_mining_mode(mode: ChainTypes) {
 /// Single change point
 /// MWC: We modify this to launch with cuckarood only on both floonet and mainnet
 pub fn create_pow_context<T>(
-        _height: u64,
-        edge_bits: u8,
-        proof_size: usize,
-        max_sols: u32,
+	_height: u64,
+	edge_bits: u8,
+	proof_size: usize,
+	max_sols: u32,
 ) -> Result<Box<dyn PoWContext<T>>, pow::Error>
 where
-        T: EdgeType + 'static,
+	T: EdgeType + 'static,
 {
-        let chain_type = CHAIN_TYPE.read().clone();
-        match chain_type {
-                // Mainnet has Cuckaroo(d)29 for AR and Cuckatoo31+ for AF
-                ChainTypes::Mainnet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
-                ChainTypes::Mainnet => new_cuckarood_ctx(edge_bits, proof_size),
+	let chain_type = CHAIN_TYPE.read().clone();
+	match chain_type {
+		// Mainnet has Cuckaroo(d)29 for AR and Cuckatoo31+ for AF
+		ChainTypes::Mainnet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+		ChainTypes::Mainnet => new_cuckarood_ctx(edge_bits, proof_size),
 
-                // Same for Floonet
-                ChainTypes::Floonet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
-                ChainTypes::Floonet => new_cuckarood_ctx(edge_bits, proof_size),
+		// Same for Floonet
+		ChainTypes::Floonet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+		ChainTypes::Floonet => new_cuckarood_ctx(edge_bits, proof_size),
 
-                // Everything else is Cuckatoo only
-                _ => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
-        }
+		// Everything else is Cuckatoo only
+		_ => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+	}
 }
 
 /// The minimum acceptable edge_bits
