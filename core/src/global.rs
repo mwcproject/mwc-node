@@ -22,7 +22,7 @@ use crate::consensus::{
 	DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS, DIFFICULTY_ADJUST_WINDOW, INITIAL_DIFFICULTY,
 	MAX_BLOCK_WEIGHT, PROOFSIZE, SECOND_POW_EDGE_BITS, STATE_SYNC_THRESHOLD,
 };
-use crate::pow::{self, new_cuckaroo_ctx, new_cuckatoo_ctx, EdgeType, PoWContext};
+use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, EdgeType, PoWContext};
 /// An enum collecting sets of parameters used throughout the
 /// code wherever mining is needed. This should allow for
 /// different sets of parameters for different purposes,
@@ -152,28 +152,29 @@ pub fn set_mining_mode(mode: ChainTypes) {
 
 /// Return either a cuckoo context or a cuckatoo context
 /// Single change point
+/// MWC: We modify this to launch with cuckarood only on both floonet and mainnet
 pub fn create_pow_context<T>(
-	_height: u64,
-	edge_bits: u8,
-	proof_size: usize,
-	max_sols: u32,
+        _height: u64,
+        edge_bits: u8,
+        proof_size: usize,
+        max_sols: u32,
 ) -> Result<Box<dyn PoWContext<T>>, pow::Error>
 where
-	T: EdgeType + 'static,
+        T: EdgeType + 'static,
 {
-	let chain_type = CHAIN_TYPE.read().clone();
-	match chain_type {
-		// Mainnet has Cuckaroo29 for AR and Cuckatoo30+ for AF
-		ChainTypes::Mainnet if edge_bits == 29 => new_cuckaroo_ctx(edge_bits, proof_size),
-		ChainTypes::Mainnet => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+        let chain_type = CHAIN_TYPE.read().clone();
+        match chain_type {
+                // Mainnet has Cuckaroo(d)29 for AR and Cuckatoo31+ for AF
+                ChainTypes::Mainnet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+                ChainTypes::Mainnet => new_cuckarood_ctx(edge_bits, proof_size),
 
-		// Same for Floonet
-		ChainTypes::Floonet if edge_bits == 29 => new_cuckaroo_ctx(edge_bits, proof_size),
-		ChainTypes::Floonet => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+                // Same for Floonet
+                ChainTypes::Floonet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+                ChainTypes::Floonet => new_cuckarood_ctx(edge_bits, proof_size),
 
-		// Everything else is Cuckatoo only
-		_ => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
-	}
+                // Everything else is Cuckatoo only
+                _ => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+        }
 }
 
 /// The minimum acceptable edge_bits
