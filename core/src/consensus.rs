@@ -68,8 +68,11 @@ pub const COINBASE_MATURITY: u64 = DAY_HEIGHT;
 /// Ratio the secondary proof of work should take over the primary, as a
 /// function of block height (time). Starts at 90% losing a percent
 /// approximately every week. Represented as an integer between 0 and 100.
+/// MWC: note we are changing this to an initial 45% (since we launch
+/// approximately 1 year after grin) and we also make it go to 0
+/// over the course of 1 year. This will roughly keep us inline with grin.
 pub fn secondary_pow_ratio(height: u64) -> u64 {
-	90u64.saturating_sub(height / (2 * YEAR_HEIGHT / 90))
+	45u64.saturating_sub(height / (YEAR_HEIGHT / 45))
 }
 
 /// The AR scale damping factor to use. Dependent on block height
