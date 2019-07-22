@@ -475,15 +475,15 @@ mod test {
 		assert_eq!(calc_mwc_block_reward(1), 2_380_952_380); // group 1
 		assert_eq!(calc_mwc_block_reward(2), 2_380_952_380); // group 1
 		assert_eq!(calc_mwc_block_reward(2_100_000 - 1), 2_380_952_380); // group 1
-        assert_eq!(calc_mwc_block_reward(2_100_000), 2_380_952_380); // group 1
+		assert_eq!(calc_mwc_block_reward(2_100_000), 2_380_952_380); // group 1
 		assert_eq!(
 			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP - 1),
 			MWC_FIRST_GROUP_REWARD
 		); // group 1
 		assert_eq!(
 			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP),
-            MWC_FIRST_GROUP_REWARD
-        ); // group 1
+			MWC_FIRST_GROUP_REWARD
+		); // group 1
 		assert_eq!(calc_mwc_block_reward(2_100_000 + 1), 1_190_476_190); // group 2
 		assert_eq!(
 			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP + 1),
@@ -549,16 +549,16 @@ mod test {
 			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP - 1, true),
 			genesis_reward + MWC_FIRST_GROUP_REWARD * (MWC_BLOCKS_PER_GROUP - 1)
 		);
-        // last block in the first group
+		// last block in the first group
 		assert_eq!(
 			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP, true),
 			genesis_reward + MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
 		);
-        // first block in the second group
-        assert_eq!(
+		// first block in the second group
+		assert_eq!(
 			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP + 1, true),
-            genesis_reward
-                + MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
 				+ MWC_FIRST_GROUP_REWARD / 2
 		);
 
