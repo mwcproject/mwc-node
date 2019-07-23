@@ -474,9 +474,8 @@ fn test_secondary_pow_ratio() {
 		assert_eq!(secondary_pow_ratio(one_week), 45);
 		assert_eq!(secondary_pow_ratio(one_week + 1), 45);
 
-                let three_weeks = one_week * 3;
-                assert_eq!(secondary_pow_ratio(three_weeks), 43);
-
+		let three_weeks = one_week * 3;
+		assert_eq!(secondary_pow_ratio(three_weeks), 43);
 
 		let one_year = one_week * 52;
 		assert_eq!(secondary_pow_ratio(one_year), 0);
@@ -564,7 +563,7 @@ fn test_secondary_pow_scale() {
 				2 * YEAR_HEIGHT * 83 / 90,
 				&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
 			),
-		        13	
+			13
 		);
 		// same as above, testing lowest bound
 		let mut low_hi =
@@ -599,7 +598,7 @@ fn test_secondary_pow_scale() {
 					.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
 					.collect::<Vec<_>>()
 			),
-		        89	
+			89
 		);
 		// 40% secondary, should come up based on 70 average
 		assert_eq!(
