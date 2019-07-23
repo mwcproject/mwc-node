@@ -456,39 +456,38 @@ fn test_secondary_pow_ratio() {
 		global::set_mining_mode(global::ChainTypes::Mainnet);
 		assert_eq!(global::is_floonet(), false);
 
-		assert_eq!(secondary_pow_ratio(1), 90);
-		assert_eq!(secondary_pow_ratio(89), 90);
-		assert_eq!(secondary_pow_ratio(90), 90);
-		assert_eq!(secondary_pow_ratio(91), 90);
-		assert_eq!(secondary_pow_ratio(179), 90);
-		assert_eq!(secondary_pow_ratio(180), 90);
-		assert_eq!(secondary_pow_ratio(181), 90);
+		assert_eq!(secondary_pow_ratio(1), 45);
+		assert_eq!(secondary_pow_ratio(89), 45);
+		assert_eq!(secondary_pow_ratio(90), 45);
+		assert_eq!(secondary_pow_ratio(91), 45);
+		assert_eq!(secondary_pow_ratio(179), 45);
+		assert_eq!(secondary_pow_ratio(180), 45);
+		assert_eq!(secondary_pow_ratio(181), 45);
 
-		let one_week = 60 * 24 * 7;
-		assert_eq!(secondary_pow_ratio(one_week - 1), 90);
-		assert_eq!(secondary_pow_ratio(one_week), 90);
-		assert_eq!(secondary_pow_ratio(one_week + 1), 90);
+		let half_week = 30 * 24 * 7;
+		assert_eq!(secondary_pow_ratio(half_week - 1), 45);
+		assert_eq!(secondary_pow_ratio(half_week), 45);
+		assert_eq!(secondary_pow_ratio(half_week + 1), 45);
 
-		let two_weeks = one_week * 2;
-		assert_eq!(secondary_pow_ratio(two_weeks - 1), 89);
-		assert_eq!(secondary_pow_ratio(two_weeks), 89);
-		assert_eq!(secondary_pow_ratio(two_weeks + 1), 89);
+		let one_week = half_week * 2;
+		assert_eq!(secondary_pow_ratio(one_week - 1), 45);
+		assert_eq!(secondary_pow_ratio(one_week), 45);
+		assert_eq!(secondary_pow_ratio(one_week + 1), 45);
 
-		let t4_fork_height = 64_000;
-		assert_eq!(secondary_pow_ratio(t4_fork_height - 1), 85);
-		assert_eq!(secondary_pow_ratio(t4_fork_height), 85);
-		assert_eq!(secondary_pow_ratio(t4_fork_height + 1), 85);
+                let three_weeks = one_week * 3;
+                assert_eq!(secondary_pow_ratio(three_weeks), 43);
+
 
 		let one_year = one_week * 52;
-		assert_eq!(secondary_pow_ratio(one_year), 45);
+		assert_eq!(secondary_pow_ratio(one_year), 0);
 
 		let ninety_one_weeks = one_week * 91;
-		assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 12);
-		assert_eq!(secondary_pow_ratio(ninety_one_weeks), 12);
-		assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 12);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 0);
 
 		let two_year = one_year * 2;
-		assert_eq!(secondary_pow_ratio(two_year - 1), 1);
+		assert_eq!(secondary_pow_ratio(two_year - 1), 0);
 		assert_eq!(secondary_pow_ratio(two_year), 0);
 		assert_eq!(secondary_pow_ratio(two_year + 1), 0);
 	}
@@ -498,39 +497,39 @@ fn test_secondary_pow_ratio() {
 		global::set_mining_mode(global::ChainTypes::Floonet);
 		assert_eq!(global::is_floonet(), true);
 
-		assert_eq!(secondary_pow_ratio(1), 90);
-		assert_eq!(secondary_pow_ratio(89), 90);
-		assert_eq!(secondary_pow_ratio(90), 90);
-		assert_eq!(secondary_pow_ratio(91), 90);
-		assert_eq!(secondary_pow_ratio(179), 90);
-		assert_eq!(secondary_pow_ratio(180), 90);
-		assert_eq!(secondary_pow_ratio(181), 90);
+		assert_eq!(secondary_pow_ratio(1), 45);
+		assert_eq!(secondary_pow_ratio(89), 45);
+		assert_eq!(secondary_pow_ratio(90), 45);
+		assert_eq!(secondary_pow_ratio(91), 45);
+		assert_eq!(secondary_pow_ratio(179), 45);
+		assert_eq!(secondary_pow_ratio(180), 45);
+		assert_eq!(secondary_pow_ratio(181), 45);
 
 		let one_week = 60 * 24 * 7;
-		assert_eq!(secondary_pow_ratio(one_week - 1), 90);
-		assert_eq!(secondary_pow_ratio(one_week), 90);
-		assert_eq!(secondary_pow_ratio(one_week + 1), 90);
+		assert_eq!(secondary_pow_ratio(one_week - 1), 45);
+		assert_eq!(secondary_pow_ratio(one_week), 45);
+		assert_eq!(secondary_pow_ratio(one_week + 1), 45);
 
 		let two_weeks = one_week * 2;
-		assert_eq!(secondary_pow_ratio(two_weeks - 1), 89);
-		assert_eq!(secondary_pow_ratio(two_weeks), 89);
-		assert_eq!(secondary_pow_ratio(two_weeks + 1), 89);
+		assert_eq!(secondary_pow_ratio(two_weeks - 1), 44);
+		assert_eq!(secondary_pow_ratio(two_weeks), 44);
+		assert_eq!(secondary_pow_ratio(two_weeks + 1), 44);
 
 		let t4_fork_height = 64_000;
-		assert_eq!(secondary_pow_ratio(t4_fork_height - 1), 85);
-		assert_eq!(secondary_pow_ratio(t4_fork_height), 85);
-		assert_eq!(secondary_pow_ratio(t4_fork_height + 1), 85);
+		assert_eq!(secondary_pow_ratio(t4_fork_height - 1), 40);
+		assert_eq!(secondary_pow_ratio(t4_fork_height), 40);
+		assert_eq!(secondary_pow_ratio(t4_fork_height + 1), 40);
 
 		let one_year = one_week * 52;
-		assert_eq!(secondary_pow_ratio(one_year), 45);
+		assert_eq!(secondary_pow_ratio(one_year), 0);
 
 		let ninety_one_weeks = one_week * 91;
-		assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 12);
-		assert_eq!(secondary_pow_ratio(ninety_one_weeks), 12);
-		assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 12);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 0);
 
 		let two_year = one_year * 2;
-		assert_eq!(secondary_pow_ratio(two_year - 1), 1);
+		assert_eq!(secondary_pow_ratio(two_year - 1), 0);
 		assert_eq!(secondary_pow_ratio(two_year), 0);
 		assert_eq!(secondary_pow_ratio(two_year + 1), 0);
 	}
@@ -557,7 +556,7 @@ fn test_secondary_pow_scale() {
 		hi.is_secondary = true;
 		assert_eq!(
 			secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
-			99
+			91
 		);
 		// all secondary on 1%, factor should go down to bound (divide by 2)
 		assert_eq!(
@@ -565,7 +564,7 @@ fn test_secondary_pow_scale() {
 				2 * YEAR_HEIGHT * 83 / 90,
 				&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
 			),
-			50
+		        13	
 		);
 		// same as above, testing lowest bound
 		let mut low_hi =
@@ -589,7 +588,7 @@ fn test_secondary_pow_scale() {
 					.chain((0..(window * 9 / 10)).map(|_| hi.clone()))
 					.collect::<Vec<_>>()
 			),
-			95, // avg ar_scale of 10% * 50 + 90% * 100
+			88,
 		);
 		// 95% secondary, should come down based on 97.5 average
 		assert_eq!(
@@ -600,7 +599,7 @@ fn test_secondary_pow_scale() {
 					.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
 					.collect::<Vec<_>>()
 			),
-			97
+		        89	
 		);
 		// 40% secondary, should come up based on 70 average
 		assert_eq!(
@@ -611,7 +610,7 @@ fn test_secondary_pow_scale() {
 					.chain((0..(window * 4 / 10)).map(|_| hi.clone()))
 					.collect::<Vec<_>>()
 			),
-			73
+			70
 		);
 	}
 }
