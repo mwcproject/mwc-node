@@ -33,7 +33,7 @@ Next you will need to setup a wallet. Run the following commands:
 
 ```
 # cd offline_node
-# mwc wallet init -h
+# mwc-wallet init -h
 ```
 
 This will initialize your wallet in the same directory as your offline full node. At this point, you can now receive
@@ -54,7 +54,7 @@ to any online node to "submit" it. The next section explains how the "submit" co
 We added a new command to the mwc wallet. Here's the help message for it:
 
 ```
-# mwc --floonet wallet submit --help
+# mwc-wallet submit --help
 mwc-wallet-submit 
 Submits a transaction that has already been finalized but not submitted to the network yet
 
@@ -74,7 +74,7 @@ The command should be fairly self explanitory. You copy the transaction file whi
 your online node and run the sumbit command to submit. For example:
 
 ```
-# mwc wallet submit -i 856854b4-d9b7-4639-a47a-2edc0f5cf8ab.mwctx
+# mwc-wallet submit -i 856854b4-d9b7-4639-a47a-2edc0f5cf8ab.mwctx
 ```
 
 This will send this transaction to the network without requiring your offline node to connect to the internet.
