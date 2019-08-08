@@ -29,13 +29,15 @@ enable_stratum_server = true
 and restart your mwc-node.
 
 4.) Start your mwc-wallet listener:
-# mwc-wallet listen
+
+```# mwc-wallet listen```
 
 5.) Modify your grin-miner.toml to point to your mwc-node:
 stratum_server_addr = "127.0.0.1:3416" (that is the default port of the stratum server in the mwc-node)
 
 6.) start mining:
-# grin-miner
+
+```# grin-miner```
 
 You are done and the block rewards will go to the mwc-wallet instance that you setup.
 
