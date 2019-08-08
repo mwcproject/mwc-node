@@ -40,6 +40,7 @@ stratum_server_addr = "127.0.0.1:3416" (that is the default port of the stratum 
 ```# grin-miner```
 
 Note: you must be using either one of the C31 plugins or the C29d plugin. C29 will not work.
+
 You are done and the block rewards will go to the mwc-wallet instance that you setup.
 
 # Reward Schedule #
