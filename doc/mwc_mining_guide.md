@@ -26,7 +26,7 @@ change:
 enable_stratum_server = false
 to:
 enable_stratum_server = true
-and restart your mwc-node.
+and restart the mwc-node.
 
 4.) Start your mwc-wallet listener:
 
