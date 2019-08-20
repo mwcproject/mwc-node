@@ -645,7 +645,7 @@ impl Chain {
 	/// Currently does not write these to disk and simply deserializes
 	/// the provided data.
 	/// TODO - Write this data to disk and validate the rebuilt kernel MMR.
-	pub fn kernel_data_write(&self, reader: &mut Read) -> Result<(), Error> {
+	pub fn kernel_data_write(&self, reader: &mut dyn Read) -> Result<(), Error> {
 		let mut count = 0;
 		let mut stream = StreamingReader::new(reader, Duration::from_secs(1));
 		while let Ok(_kernel) = TxKernelEntry::read(&mut stream) {
@@ -1411,7 +1411,7 @@ fn setup_head(
 			batch.save_head(&tip)?;
 
 			if genesis.kernels().len() > 0 {
-				let (utxo_sum, kernel_sum) = (sums, genesis as &Committed).verify_kernel_sums(
+				let (utxo_sum, kernel_sum) = (sums, genesis as &dyn Committed).verify_kernel_sums(
 					genesis.header.overage(),
 					genesis.header.total_kernel_offset(),
 				)?;
