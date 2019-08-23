@@ -35,9 +35,7 @@ To build and try out MWC, see the [build docs](doc/build.md).
 
 ## Philosophy
 
-MWC likes itself small and easy on the eyes. It wants to be inclusive and welcoming for all walks of life, without judgement. MWC is terribly ambitious, but not at the detriment of others, rather to further us all. It may have strong opinions to stay in line with its objectives, which doesn't mean disrespect of others' ideas.
-
-We believe in pull requests, data and scientific research. We do not believe in unfounded beliefs.
+The goal of MWC is to build out Mimblewimble technology in a way that benefits Bitcoin holders. We gave away 6,000,000 of the total 20,000,000 MWC that will ever exist to Bitcoin holders and another 2,000,000 will be given away as part of the HODL program. We respect the Grin developers, but wanted to take a different approach. We stated our disagreements clearly to the Grin team and are moving on in the direction we envision.
 
 ## Credits
 
