@@ -82,7 +82,6 @@ impl Keychain for ExtKeychain {
 		for i in 0..p.depth {
 			ext_key = ext_key.ckd_priv(&self.secp, &mut h, p.path[i as usize])?;
 		}
-
 		match self.use_switch_commits {
 			true => Ok(self.secp.blind_switch(amount, ext_key.secret_key)?),
 			false => Ok(ext_key.secret_key),
