@@ -160,6 +160,26 @@ pub fn set_mining_mode(mode: ChainTypes) {
 	*param_ref = mode;
 }
 
+/// is this main?
+pub fn is_main() -> bool {
+        let chain_type = CHAIN_TYPE.read().clone();
+        if chain_type == ChainTypes::Mainnet {
+               return true;
+        } else {
+               return false;
+        }
+}
+
+/// is this floo?
+pub fn is_floo() -> bool {
+        let chain_type = CHAIN_TYPE.read().clone();
+        if chain_type == ChainTypes::Floonet {
+               return true;
+        } else {
+               return false;
+        }
+}
+
 /// Return either a cuckoo context or a cuckatoo context
 /// Single change point
 /// MWC: We modify this to launch with cuckarood only on both floonet and mainnet
