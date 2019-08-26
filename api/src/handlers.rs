@@ -20,7 +20,6 @@ mod server_api;
 mod transactions_api;
 mod utils;
 
-use crate::core::global;
 use self::blocks_api::BlockHandler;
 use self::blocks_api::HeaderHandler;
 use self::chain_api::ChainCompactHandler;
@@ -33,11 +32,12 @@ use self::peers_api::PeersConnectedHandler;
 use self::pool_api::PoolInfoHandler;
 use self::pool_api::PoolPushHandler;
 use self::server_api::IndexHandler;
-use self::server_api::StatusHandler;
 use self::server_api::KernelDownloadHandler;
+use self::server_api::StatusHandler;
 use self::transactions_api::TxHashSetHandler;
 use crate::auth::{BasicAuthMiddleware, GRIN_BASIC_REALM};
 use crate::chain;
+use crate::core::global;
 use crate::p2p;
 use crate::pool;
 use crate::rest::*;
@@ -67,12 +67,18 @@ pub fn start_rest_apis(
 	let mut router = build_router(chain, tx_pool, peers).expect("unable to build API router");
 	if let Some(api_secret) = api_secret {
 		let api_basic_auth = if global::is_main() {
-                    format!("Basic {}", util::to_base64(&format!("mwcmain:{}", api_secret)))
-                } else if global::is_floo() {
-                    format!("Basic {}", util::to_base64(&format!("mwcfloo:{}", api_secret)))
-                } else {
-                    format!("Basic {}", util::to_base64(&format!("mwc:{}", api_secret)))
-                };
+			format!(
+				"Basic {}",
+				util::to_base64(&format!("mwcmain:{}", api_secret))
+			)
+		} else if global::is_floo() {
+			format!(
+				"Basic {}",
+				util::to_base64(&format!("mwcfloo:{}", api_secret))
+			)
+		} else {
+			format!("Basic {}", util::to_base64(&format!("mwc:{}", api_secret)))
+		};
 		let basic_auth_middleware =
 			Arc::new(BasicAuthMiddleware::new(api_basic_auth, &GRIN_BASIC_REALM));
 		router.add_middleware(basic_auth_middleware);

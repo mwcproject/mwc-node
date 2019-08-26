@@ -223,9 +223,14 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 	warn!("Burning block fees: {:?}", block_fees);
 	let keychain = ExtKeychain::from_random_seed(global::is_floonet())?;
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let (out, kernel) =
-		crate::core::libtx::reward::output(&keychain, &key_id, block_fees.fees, false, block_fees.height)
-			.unwrap();
+	let (out, kernel) = crate::core::libtx::reward::output(
+		&keychain,
+		&key_id,
+		block_fees.fees,
+		false,
+		block_fees.height,
+	)
+	.unwrap();
 	Ok((out, kernel, block_fees))
 }
 
@@ -261,13 +266,13 @@ fn get_coinbase(
 fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> {
 	let url = format!("{}/v1/wallet/foreign/build_coinbase", dest);
 
-        let chain_type = if global::is_main() {
-                global::ChainTypes::Mainnet
-        } else if global::is_floo() {
-                global::ChainTypes::Floonet
-        } else {
-                global::ChainTypes::UserTesting
-        };
+	let chain_type = if global::is_main() {
+		global::ChainTypes::Mainnet
+	} else if global::is_floo() {
+		global::ChainTypes::Floonet
+	} else {
+		global::ChainTypes::UserTesting
+	};
 
 	match api::client::post(&url, None, &block_fees, chain_type) {
 		Err(e) => {
