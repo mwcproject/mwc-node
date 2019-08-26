@@ -2,6 +2,7 @@ use grin_api as api;
 use grin_util as util;
 
 use crate::api::*;
+use grin_core::global;
 use hyper::{Body, Request, StatusCode};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -105,7 +106,7 @@ fn test_start_api_tls() {
 fn request_with_retry(url: &str) -> Result<Vec<String>, api::Error> {
 	let mut tries = 0;
 	loop {
-		let res = api::client::get::<Vec<String>>(url, None);
+		let res = api::client::get::<Vec<String>>(url, None, global::ChainTypes::UserTesting);
 		if res.is_ok() {
 			return res;
 		}
