@@ -22,6 +22,7 @@ use crate::config::GlobalConfig;
 use crate::p2p;
 use crate::servers::ServerConfig;
 use crate::util::file::get_first_line;
+use crate::core::global;
 use term;
 
 pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig) -> i32 {
@@ -100,7 +101,15 @@ pub fn ban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Optio
 		config.api_http_addr,
 		peer_addr.to_string()
 	);
-	match api::client::post_no_ret(url.as_str(), api_secret, &params).map_err(|e| Error::API(e)) {
+
+        let chain_type = if global::is_main() {
+                global::ChainTypes::Mainnet
+        } else if global::is_floo() {
+                global::ChainTypes::Floonet
+        } else {
+                global::ChainTypes::UserTesting
+        };
+	match api::client::post_no_ret(url.as_str(), api_secret, &params, chain_type).map_err(|e| Error::API(e)) {
 		Ok(_) => writeln!(e, "Successfully banned peer {}", peer_addr.to_string()).unwrap(),
 		Err(_) => writeln!(e, "Failed to ban peer {}", peer_addr).unwrap(),
 	};
@@ -116,7 +125,16 @@ pub fn unban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Opt
 		peer_addr.to_string()
 	);
 	let res: Result<(), api::Error>;
-	res = api::client::post_no_ret(url.as_str(), api_secret, &params);
+
+        let chain_type = if global::is_main() {
+                global::ChainTypes::Mainnet
+        } else if global::is_floo() {
+                global::ChainTypes::Floonet
+        } else {
+                global::ChainTypes::UserTesting
+        };
+
+	res = api::client::post_no_ret(url.as_str(), api_secret, &params, chain_type);
 
 	match res.map_err(|e| Error::API(e)) {
 		Ok(_) => writeln!(e, "Successfully unbanned peer {}", peer_addr).unwrap(),
@@ -129,8 +147,15 @@ pub fn list_connected_peers(config: &ServerConfig, api_secret: Option<String>) {
 	let mut e = term::stdout().unwrap();
 	let url = format!("http://{}/v1/peers/connected", config.api_http_addr);
 	// let peers_info: Result<Vec<p2p::PeerInfoDisplay>, api::Error>;
+        let chain_type = if global::is_main() {
+                global::ChainTypes::Mainnet
+        } else if global::is_floo() {
+                global::ChainTypes::Floonet
+        } else {
+                global::ChainTypes::UserTesting
+        };
 
-	let peers_info = api::client::get::<Vec<p2p::types::PeerInfoDisplay>>(url.as_str(), api_secret);
+	let peers_info = api::client::get::<Vec<p2p::types::PeerInfoDisplay>>(url.as_str(), api_secret, chain_type);
 
 	match peers_info.map_err(|e| Error::API(e)) {
 		Ok(connected_peers) => {
@@ -159,7 +184,15 @@ fn get_status_from_node(
 	api_secret: Option<String>,
 ) -> Result<api::Status, Error> {
 	let url = format!("http://{}/v1/status", config.api_http_addr);
-	api::client::get::<api::Status>(url.as_str(), api_secret).map_err(|e| Error::API(e))
+        let chain_type = if global::is_main() {
+                global::ChainTypes::Mainnet
+        } else if global::is_floo() {
+                global::ChainTypes::Floonet
+        } else {
+                global::ChainTypes::UserTesting
+        };
+
+	api::client::get::<api::Status>(url.as_str(), api_secret, chain_type).map_err(|e| Error::API(e))
 }
 
 /// Error type wrapping underlying module errors.
