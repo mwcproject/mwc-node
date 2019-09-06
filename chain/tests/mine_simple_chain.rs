@@ -116,8 +116,6 @@ fn process_block(chain: &Chain, block: &Block) {
 //
 #[test]
 fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
-// disable for merge for now
-/*
 	let chain_dir = ".grin.block_a_block_b_block_b_fork_header_c_fork_block_c";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
@@ -127,46 +125,17 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(chain_dir, genesis.clone(), adapter.clone());
 
-<<<<<<< HEAD
 	let block_a = prepare_block(&kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&chain, &block_a);
-=======
-	// add coinbase data from the dev genesis block
-	let mut genesis = genesis::genesis_dev();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let key_id = keychain::ExtKeychain::derive_key_id(0, 1, 0, 0, 0);
-	// MWC - genesys block with reward. 0 - the height of genesis block
-	let reward = reward::output(&keychain, &key_id, 0, false, 0).unwrap();
-	genesis = genesis.with_reward(reward.0, reward.1);
->>>>>>> MWC changes
 
-<<<<<<< HEAD
 	let block_b = prepare_block(&kc, &block_a.header, &chain, 2);
 	let block_b_fork = prepare_block(&kc, &block_a.header, &chain, 2);
-=======
-	let tmp_chain_dir = ".mwc.tmp";
-	{
-		// setup a tmp chain to hande tx hashsets
-		let tmp_chain = setup(tmp_chain_dir, pow::mine_genesis_block().unwrap());
-		tmp_chain.set_txhashset_roots(&mut genesis).unwrap();
-		genesis.header.output_mmr_size = 1;
-		genesis.header.kernel_mmr_size = 1;
-	}
->>>>>>> Update grin to mwc names that I feel we can change.
 
 	process_block(&chain, &block_b);
 	process_block(&chain, &block_b_fork);
 
-<<<<<<< HEAD
 	let block_c = prepare_block(&kc, &block_b.header, &chain, 3);
 	process_header(&chain, &block_c.header);
-=======
-	mine_some_on_top(".mwc.genesis", genesis, &keychain);
-	// Cleanup chain directories
-	clean_output_dir(tmp_chain_dir);
-	clean_output_dir(".mwc.genesis");
-}
->>>>>>> Update grin to mwc names that I feel we can change.
 
 	assert_eq!(chain.head().unwrap(), Tip::from_header(&block_b.header));
 	assert_eq!(
@@ -183,7 +152,6 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 	);
 
 	clean_output_dir(chain_dir);
-*/
 }
 
 //
@@ -200,8 +168,6 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 //
 #[test]
 fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
-// disable for merge now
-/*
 	let chain_dir = ".grin.block_a_block_b_block_b_fork_header_c_fork_block_c_fork";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
@@ -211,38 +177,8 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(chain_dir, genesis.clone(), adapter.clone());
 
-<<<<<<< HEAD
 	let block_a = prepare_block(&kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&chain, &block_a);
-=======
-	for n in 1..4 {
-		let prev = chain.head_header().unwrap();
-		let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
-		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
-		let reward = libtx::reward::output(keychain, &pk, 0, false, prev.height + 1).unwrap();
-		let mut b =
-			core::core::Block::new(&prev, vec![], next_header_info.clone().difficulty, reward)
-				.unwrap();
-		b.header.timestamp = prev.timestamp + Duration::seconds(60);
-		b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
-
-		chain.set_txhashset_roots(&mut b).unwrap();
-
-		let edge_bits = if n == 2 {
-			global::min_edge_bits() + 1
-		} else {
-			global::min_edge_bits()
-		};
-		b.header.pow.proof.edge_bits = edge_bits;
-		pow::pow_size(
-			&mut b.header,
-			next_header_info.difficulty,
-			global::proofsize(),
-			edge_bits,
-		)
-		.unwrap();
-		b.header.pow.proof.edge_bits = edge_bits;
->>>>>>> MWC changes
 
 	let block_b = prepare_block(&kc, &block_a.header, &chain, 2);
 	let block_b_fork = prepare_block(&kc, &block_a.header, &chain, 2);
@@ -271,7 +207,6 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
 	);
 
 	clean_output_dir(chain_dir);
-*/
 }
 
 //
@@ -409,7 +344,7 @@ fn mine_reorg() {
 	const NUM_BLOCKS_MAIN: u64 = 6; // Number of blocks to mine in main chain
 	const REORG_DEPTH: u64 = 5; // Number of blocks to be discarded from main chain after reorg
 
-	const DIR_NAME: &str = ".mwc_reorg";
+	const DIR_NAME: &str = ".grin_reorg";
 	clean_output_dir(DIR_NAME);
 
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
@@ -465,7 +400,7 @@ fn mine_reorg() {
 fn mine_forks() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	{
-		let chain = init_chain(".mwc2", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".grin2", pow::mine_genesis_block().unwrap());
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 
 		// add a first block to not fork genesis
@@ -505,7 +440,7 @@ fn mine_forks() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc2");
+	clean_output_dir(".grin2");
 }
 
 #[test]
@@ -513,7 +448,7 @@ fn mine_losing_fork() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 	{
-		let chain = init_chain(".mwc3", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".grin3", pow::mine_genesis_block().unwrap());
 
 		// add a first block we'll be forking from
 		let prev = chain.head_header().unwrap();
@@ -541,7 +476,7 @@ fn mine_losing_fork() {
 		assert_eq!(chain.head_header().unwrap().hash(), b3head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc3");
+	clean_output_dir(".grin3");
 }
 
 #[test]
@@ -553,7 +488,7 @@ fn longer_fork() {
 	// then send back on the 1st
 	let genesis = pow::mine_genesis_block().unwrap();
 	{
-		let chain = init_chain(".mwc4", genesis.clone());
+		let chain = init_chain(".grin4", genesis.clone());
 
 		// add blocks to both chains, 20 on the main one, only the first 5
 		// for the forked chain
@@ -585,7 +520,7 @@ fn longer_fork() {
 		assert_eq!(head.hash(), new_head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc4");
+	clean_output_dir(".grin4");
 }
 
 #[test]
@@ -628,7 +563,6 @@ fn spend_in_fork_and_compact() {
 
 		let tx1 = build::transaction(
 			vec![
-				// MWC - reward block are from the first group
 				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
 				build::with_fee(20000),
@@ -647,7 +581,6 @@ fn spend_in_fork_and_compact() {
 
 		let tx2 = build::transaction(
 			vec![
-				// MWC - reward block are from the first group
 				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31.clone()),
 				build::with_fee(20000),
@@ -724,7 +657,7 @@ fn spend_in_fork_and_compact() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc6");
+	clean_output_dir(".grin6");
 }
 
 /// Test ability to retrieve block headers for a given output
@@ -749,7 +682,7 @@ fn output_header_mappings() {
 				&pk,
 				0,
 				false,
-				 prev.height + 1,
+				prev.height + 1,
 			)
 			.unwrap();
 			reward_outputs.push(reward.0.clone());
@@ -795,7 +728,7 @@ fn output_header_mappings() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc_header_for_output");
+	clean_output_dir(".grin_header_for_output");
 }
 
 fn prepare_block<K>(kc: &K, prev: &BlockHeader, chain: &Chain, diff: u64) -> Block
@@ -854,7 +787,7 @@ fn actual_diff_iter_output() {
 	let genesis_block = pow::mine_genesis_block().unwrap();
 	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 	let chain = chain::Chain::init(
-		"../.mwc".to_string(),
+		"../.grin".to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis_block,
 		pow::verify_size,

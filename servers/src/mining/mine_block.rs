@@ -227,8 +227,8 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let (out, kernel) =
 		crate::core::libtx::reward::output(&keychain,
-			&key_id,
 			&ProofBuilder::new(&keychain),
+			&key_id,
 			block_fees.fees,
 			false,
 			block_fees.height)
@@ -277,7 +277,13 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 	});
 
 	trace!("Sending build_coinbase request: {}", req_body);
-	let req = api::client::create_post_request(url.as_str(), None, &req_body)?;
+
+	let req = if global::is_floonet() {
+		api::client::create_post_request(url.as_str(), None, &req_body, global::ChainTypes::Floonet)?
+        } else {
+		api::client::create_post_request(url.as_str(), None, &req_body, global::ChainTypes::Mainnet)?
+        };
+
 	let res: String = api::client::send_request(req).map_err(|e| {
 		let report = format!(
 			"Failed to get coinbase from {}. Is the wallet listening? {}",
