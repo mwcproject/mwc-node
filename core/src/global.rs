@@ -17,14 +17,10 @@
 //! should be used sparingly.
 
 use crate::consensus::{
-	graph_weight, valid_header_version, HeaderInfo, BASE_EDGE_BITS, BLOCK_TIME_SEC,
+	graph_weight, HeaderInfo, BASE_EDGE_BITS, BLOCK_TIME_SEC,
 	COINBASE_MATURITY, CUT_THROUGH_HORIZON, DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS,
 	DIFFICULTY_ADJUST_WINDOW, INITIAL_DIFFICULTY, MAX_BLOCK_WEIGHT, PROOFSIZE,
 	SECOND_POW_EDGE_BITS, STATE_SYNC_THRESHOLD,
-};
-use crate::core::block::HeaderVersion;
-use crate::pow::{
-	self, new_cuckaroo_ctx, new_cuckarood_ctx, new_cuckatoo_ctx, EdgeType, PoWContext,
 };
 use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, EdgeType, PoWContext};
 /// An enum collecting sets of parameters used throughout the

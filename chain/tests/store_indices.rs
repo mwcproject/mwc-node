@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use self::core::core::hash::Hashed;
-use grin_chain as chain;
 use grin_core as core;
 use grin_util as util;
 
@@ -25,7 +24,7 @@ use self::chain_test_helper::{clean_output_dir, mine_chain};
 fn test_store_indices() {
 	util::init_test_logger();
 
-	let chain_dir = ".mwc_idx_1";
+	let chain_dir = ".grin_idx_1";
 	clean_output_dir(chain_dir);
 
 	let chain = mine_chain(chain_dir, 4);
@@ -35,21 +34,11 @@ fn test_store_indices() {
 
 	// Check the header exists in the db.
 	assert_eq!(chain.head_header().unwrap().height, 3);
-// disabling this merge for now.
-/*
-<<<<<<< HEAD
+
 	// Check header_by_height index.
 	let block_header = chain.get_header_by_height(3).unwrap();
 	let block_hash = block_header.hash();
 	assert_eq!(block_hash, chain.head().unwrap().last_block_h);
-=======
-	setup_chain(&genesis, chain_store.clone()).unwrap();
-
-	// MWC it is a first block, so height will be one
-	let reward = libtx::reward::output(&keychain, &key_id, 0, false, 1).unwrap();
-	let block = Block::new(&genesis.header, vec![], Difficulty::min(), reward).unwrap();
-	let block_hash = block.hash();
->>>>>>> MWC changes
 
 	{
 		// Block exists in the db.
@@ -74,5 +63,4 @@ fn test_store_indices() {
 
 	// Cleanup chain directory
 	clean_output_dir(chain_dir);
-*/
 }
