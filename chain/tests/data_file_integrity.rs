@@ -23,7 +23,6 @@ use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
 #[test]
 fn data_files() {
 	util::init_test_logger();
-
 	let chain_dir = ".grin_df";
 	clean_output_dir(chain_dir);
 

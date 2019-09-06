@@ -39,7 +39,6 @@ fn test_store_indices() {
 	let block_header = chain.get_header_by_height(3).unwrap();
 	let block_hash = block_header.hash();
 	assert_eq!(block_hash, chain.head().unwrap().last_block_h);
-
 	{
 		// Block exists in the db.
 		assert_eq!(chain.get_block(&block_hash).unwrap().hash(), block_hash);
