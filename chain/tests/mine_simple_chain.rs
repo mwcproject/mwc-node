@@ -763,8 +763,15 @@ where
 	let key_id = ExtKeychainPath::new(1, diff as u32, 0, 0, 0).to_identifier();
 
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
-	let reward =
-		libtx::reward::output(kc, &libtx::ProofBuilder::new(kc), &key_id, fees, false, prev.height + 1).unwrap();
+	let reward = libtx::reward::output(
+		kc,
+		&libtx::ProofBuilder::new(kc),
+		&key_id,
+		fees,
+		false,
+		prev.height + 1,
+	)
+	.unwrap();
 	let mut b = match core::core::Block::new(
 		prev,
 		txs.into_iter().cloned().collect(),
