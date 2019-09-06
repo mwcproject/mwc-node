@@ -344,7 +344,7 @@ fn mine_reorg() {
 	const NUM_BLOCKS_MAIN: u64 = 6; // Number of blocks to mine in main chain
 	const REORG_DEPTH: u64 = 5; // Number of blocks to be discarded from main chain after reorg
 
-	const DIR_NAME: &str = ".grin_reorg";
+	const DIR_NAME: &str = ".mwc_reorg";
 	clean_output_dir(DIR_NAME);
 
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
@@ -440,7 +440,7 @@ fn mine_forks() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin2");
+	clean_output_dir(".mwc2");
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn mine_losing_fork() {
 		assert_eq!(chain.head_header().unwrap().hash(), b3head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin3");
+	clean_output_dir(".mwc3");
 }
 
 #[test]
@@ -520,7 +520,7 @@ fn longer_fork() {
 		assert_eq!(head.hash(), new_head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin4");
+	clean_output_dir(".mwc4");
 }
 
 #[test]
@@ -563,6 +563,7 @@ fn spend_in_fork_and_compact() {
 
 		let tx1 = build::transaction(
 			vec![
+				// MWC - reward block are from the first group
 				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
 				build::with_fee(20000),
@@ -581,6 +582,7 @@ fn spend_in_fork_and_compact() {
 
 		let tx2 = build::transaction(
 			vec![
+				// MWC - reward block are from the first group
 				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31.clone()),
 				build::with_fee(20000),
@@ -657,7 +659,7 @@ fn spend_in_fork_and_compact() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin6");
+	clean_output_dir(".mwc6");
 }
 
 /// Test ability to retrieve block headers for a given output
@@ -728,7 +730,7 @@ fn output_header_mappings() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin_header_for_output");
+	clean_output_dir(".mwc_header_for_output");
 }
 
 fn prepare_block<K>(kc: &K, prev: &BlockHeader, chain: &Chain, diff: u64) -> Block
@@ -794,7 +796,7 @@ fn actual_diff_iter_output() {
 	let genesis_block = pow::mine_genesis_block().unwrap();
 	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 	let chain = chain::Chain::init(
-		"../.grin".to_string(),
+		"../.mwc".to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis_block,
 		pow::verify_size,
