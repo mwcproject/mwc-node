@@ -72,7 +72,7 @@ fn setup_with_status_adapter(dir_name: &str, genesis: Block, adapter: Arc<Status
 
 #[test]
 fn mine_empty_chain() {
-	let chain_dir = ".grin.empty";
+	let chain_dir = ".mwc.empty";
 	clean_output_dir(chain_dir);
 	let chain = mine_chain(chain_dir, 1);
 	assert_eq!(chain.head().unwrap().height, 0);
@@ -81,7 +81,7 @@ fn mine_empty_chain() {
 
 #[test]
 fn mine_short_chain() {
-	let chain_dir = ".grin.genesis";
+	let chain_dir = ".mwc.genesis";
 	clean_output_dir(chain_dir);
 	let chain = mine_chain(chain_dir, 4);
 	assert_eq!(chain.head().unwrap().height, 3);
@@ -116,7 +116,7 @@ fn process_block(chain: &Chain, block: &Block) {
 //
 #[test]
 fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
-	let chain_dir = ".grin.block_a_block_b_block_b_fork_header_c_fork_block_c";
+	let chain_dir = ".mwc.block_a_block_b_block_b_fork_header_c_fork_block_c";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
@@ -168,7 +168,7 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 //
 #[test]
 fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
-	let chain_dir = ".grin.block_a_block_b_block_b_fork_header_c_fork_block_c_fork";
+	let chain_dir = ".mwc.block_a_block_b_block_b_fork_header_c_fork_block_c_fork";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
@@ -224,7 +224,7 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
 //
 #[test]
 fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c() {
-	let chain_dir = ".grin.test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c";
+	let chain_dir = ".mwc.test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
@@ -280,7 +280,7 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c() {
 //
 #[test]
 fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork() {
-	let chain_dir = ".grin.test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork";
+	let chain_dir = ".mwc.test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork";
 	clean_output_dir(chain_dir);
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
@@ -398,9 +398,10 @@ fn mine_reorg() {
 
 #[test]
 fn mine_forks() {
+	let out_dir = ".mwc_mine_forks";
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	{
-		let chain = init_chain(".grin2", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(out_dir, pow::mine_genesis_block().unwrap());
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 
 		// add a first block to not fork genesis
@@ -440,15 +441,16 @@ fn mine_forks() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc2");
+	clean_output_dir(out_dir);
 }
 
 #[test]
 fn mine_losing_fork() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
+        let out_dir = ".mwc_mine_losing_fork";
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 	{
-		let chain = init_chain(".grin3", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(out_dir, pow::mine_genesis_block().unwrap());
 
 		// add a first block we'll be forking from
 		let prev = chain.head_header().unwrap();
@@ -476,7 +478,7 @@ fn mine_losing_fork() {
 		assert_eq!(chain.head_header().unwrap().hash(), b3head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc3");
+	clean_output_dir(out_dir);
 }
 
 #[test]
@@ -486,9 +488,10 @@ fn longer_fork() {
 	// to make it easier to compute the txhashset roots in the test, we
 	// prepare 2 chains, the 2nd will be have the forked blocks we can
 	// then send back on the 1st
+        let out_dir = ".mwc_longer_fork";
 	let genesis = pow::mine_genesis_block().unwrap();
 	{
-		let chain = init_chain(".grin4", genesis.clone());
+		let chain = init_chain(out_dir, genesis.clone());
 
 		// add blocks to both chains, 20 on the main one, only the first 5
 		// for the forked chain
@@ -520,7 +523,7 @@ fn longer_fork() {
 		assert_eq!(head.hash(), new_head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc4");
+	clean_output_dir(out_dir);
 }
 
 #[test]
@@ -528,10 +531,11 @@ fn spend_in_fork_and_compact() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	util::init_test_logger();
 	// Cleanup chain directory
-	clean_output_dir(".grin6");
+	let out_dir = ".mwc_spend_in_fork_and_compact";
+	clean_output_dir(out_dir);
 
 	{
-		let chain = init_chain(".grin6", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(out_dir, pow::mine_genesis_block().unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 		let pb = ProofBuilder::new(&kc);
@@ -659,16 +663,16 @@ fn spend_in_fork_and_compact() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc6");
+	clean_output_dir(out_dir);
 }
 
 /// Test ability to retrieve block headers for a given output
 #[test]
 fn output_header_mappings() {
+	let out_dir = ".mwc_init_chaindir";
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	{
-		let chain = init_chain(
-			".grin_header_for_output",
+		let chain = init_chain(out_dir,
 			pow::mine_genesis_block().unwrap(),
 		);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
@@ -730,7 +734,7 @@ fn output_header_mappings() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".mwc_header_for_output");
+	clean_output_dir(out_dir);
 }
 
 fn prepare_block<K>(kc: &K, prev: &BlockHeader, chain: &Chain, diff: u64) -> Block
