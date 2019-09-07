@@ -142,37 +142,9 @@ pub const FLOONET_FIRST_HARD_FORK: u64 = 185_040;
 /// Check whether the block version is valid at a given height, implements
 /// 6 months interval scheduled hard forks for the first 2 years.
 pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
-	let chain_type = global::CHAIN_TYPE.read().clone();
-	match chain_type {
-		global::ChainTypes::Floonet => {
-			if height < FLOONET_FIRST_HARD_FORK {
-				version == HeaderVersion::default()
-			// add branches one by one as we go from hard fork to hard fork
-			// } else if height < FLOONET_SECOND_HARD_FORK {
-			} else if height < 2 * HARD_FORK_INTERVAL {
-				version == HeaderVersion::new(2)
-			} else {
-				false
-			}
-		}
-		// everything else just like mainnet
-		_ => {
-			if height < HARD_FORK_INTERVAL {
-				version == HeaderVersion::default()
-			} else if height < 2 * HARD_FORK_INTERVAL {
-				version == HeaderVersion::new(2)
-			// uncomment branches one by one as we go from hard fork to hard fork
-			/*} else if height < 3 * HARD_FORK_INTERVAL {
-				version == HeaderVersion::new(3)
-			} else if height < 4 * HARD_FORK_INTERVAL {
-				version == HeaderVersion::new(4)
-			} else {
-				version > HeaderVersion::new(4) */
-			} else {
-				false
-			}
-		}
-	}
+	// We don't currently plan any hard forks. If we change that plan,
+	// will update.
+	version == HeaderVersion::default()
 }
 
 /// Number of blocks used to calculate difficulty adjustments
