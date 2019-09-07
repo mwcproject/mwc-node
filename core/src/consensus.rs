@@ -141,7 +141,7 @@ pub const FLOONET_FIRST_HARD_FORK: u64 = 185_040;
 
 /// Check whether the block version is valid at a given height, implements
 /// 6 months interval scheduled hard forks for the first 2 years.
-pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
+pub fn valid_header_version(_height: u64, version: HeaderVersion) -> bool {
 	// We don't currently plan any hard forks. If we change that plan,
 	// will update.
 	version == HeaderVersion::default()
