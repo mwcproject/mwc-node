@@ -447,7 +447,7 @@ fn mine_forks() {
 #[test]
 fn mine_losing_fork() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
-        let out_dir = ".mwc_mine_losing_fork";
+	let out_dir = ".mwc_mine_losing_fork";
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 	{
 		let chain = init_chain(out_dir, pow::mine_genesis_block().unwrap());
@@ -488,7 +488,7 @@ fn longer_fork() {
 	// to make it easier to compute the txhashset roots in the test, we
 	// prepare 2 chains, the 2nd will be have the forked blocks we can
 	// then send back on the 1st
-        let out_dir = ".mwc_longer_fork";
+	let out_dir = ".mwc_longer_fork";
 	let genesis = pow::mine_genesis_block().unwrap();
 	{
 		let chain = init_chain(out_dir, genesis.clone());
@@ -672,9 +672,7 @@ fn output_header_mappings() {
 	let out_dir = ".mwc_init_chaindir";
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	{
-		let chain = init_chain(out_dir,
-			pow::mine_genesis_block().unwrap(),
-		);
+		let chain = init_chain(out_dir, pow::mine_genesis_block().unwrap());
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let mut reward_outputs = vec![];
 

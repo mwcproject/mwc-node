@@ -622,8 +622,14 @@ fn hard_forks() {
 		assert_eq!(global::is_floonet(), false);
 		assert!(valid_header_version(0, HeaderVersion::new(1)));
 		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion::new(1)));
-		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion::new(1)));
-		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion::new(1)));
+		assert!(valid_header_version(
+			YEAR_HEIGHT * 10,
+			HeaderVersion::new(1)
+		));
+		assert!(valid_header_version(
+			YEAR_HEIGHT * 100,
+			HeaderVersion::new(1)
+		));
 	}
 	// Tests for floonet chain type.
 	{
@@ -631,7 +637,13 @@ fn hard_forks() {
 		assert_eq!(global::is_floonet(), true);
 		assert!(valid_header_version(0, HeaderVersion::new(1)));
 		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion::new(1)));
-		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion::new(1)));
-		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion::new(1)));
+		assert!(valid_header_version(
+			YEAR_HEIGHT * 10,
+			HeaderVersion::new(1)
+		));
+		assert!(valid_header_version(
+			YEAR_HEIGHT * 100,
+			HeaderVersion::new(1)
+		));
 	}
 }
