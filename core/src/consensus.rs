@@ -133,14 +133,8 @@ pub const BLOCK_KERNEL_WEIGHT: usize = 3;
 ///
 pub const MAX_BLOCK_WEIGHT: usize = 40_000;
 
-/// Fork every 6 months.
-pub const HARD_FORK_INTERVAL: u64 = YEAR_HEIGHT / 2;
-
-/// Floonet first hard fork height, set to happen around 2019-06-20
-pub const FLOONET_FIRST_HARD_FORK: u64 = 185_040;
-
-/// Check whether the block version is valid at a given height, implements
-/// 6 months interval scheduled hard forks for the first 2 years.
+/// Check whether the block version is valid at a given height.
+/// Currently we only use the default version. No hard forks planned.
 pub fn valid_header_version(_height: u64, version: HeaderVersion) -> bool {
 	// We don't currently plan any hard forks. If we change that plan,
 	// will update.
