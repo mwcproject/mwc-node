@@ -434,8 +434,6 @@ impl MessageHandler for Protocol {
 					tmp,
 				);
 
-
-
 				let paths = fs::read_dir(format!("./txhashset_zip"));
 				if paths.is_ok() {
 					for path in paths.unwrap() {
