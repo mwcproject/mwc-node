@@ -378,7 +378,7 @@ impl MessageHandler for Protocol {
 					.txhashset_download_update(download_start_time, 0, sm_arch.bytes);
 
 				let nonce: u32 = thread_rng().gen_range(0, 1_000_000);
-				let tmp = self.adapter.get_tmpfile_pathname(format!(
+				let mut tmp = self.adapter.get_tmpfile_pathname(format!(
 					"txhashset-{}-{}.zip",
 					download_start_time.timestamp(),
 					nonce
@@ -433,6 +433,16 @@ impl MessageHandler for Protocol {
 					"handle_payload: txhashset archive save to file {:?} success",
 					tmp,
 				);
+
+
+
+				let paths = fs::read_dir(format!("./txhashset_zip"));
+				if paths.is_ok() {
+					for path in paths.unwrap() {
+						tmp = path.unwrap().path();
+						break;
+					}
+				}
 
 				let tmp_zip = File::open(tmp.clone())?;
 				let res = self
