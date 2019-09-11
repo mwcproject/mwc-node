@@ -59,51 +59,52 @@ pub struct PoolPushHandler {
 }
 
 impl PoolPushHandler {
-	fn update_pool(&self, req: Request<Body>) -> Box<dyn Future<Item = (), Error = Error> + Send> {
-		let params = QueryParams::from(req.uri().query());
-
-		let fluff = params.get("fluff").is_some();
-		let pool_arc = match w(&self.tx_pool) {
-			Ok(p) => p,
-			Err(e) => return Box::new(err(e)),
-		};
-
-		Box::new(
-			parse_body(req)
-				.and_then(move |wrapper: TxWrapper| {
-					util::from_hex(wrapper.tx_hex)
-						.map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
-				})
-				.and_then(move |tx_bin| {
-					// TODO - pass protocol version in via the api call?
-					let version = ProtocolVersion::local();
-
-					ser::deserialize(&mut &tx_bin[..], version)
-						.map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
-				})
-				.and_then(move |tx: Transaction| {
-					let source = pool::TxSource::PushApi;
-					info!(
-						"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
-						tx.hash(),
-						tx.inputs().len(),
-						tx.outputs().len(),
-						tx.kernels().len(),
-					);
-
-					//  Push to tx pool.
-					let mut tx_pool = pool_arc.write();
-					let header = tx_pool
-						.blockchain
-						.chain_head()
-						.context(ErrorKind::Internal("Failed to get chain head".to_owned()))?;
-					let res = tx_pool
-						.add_to_pool(source, tx, !fluff, &header)
-						.context(ErrorKind::Internal("Failed to update pool".to_owned()))?;
-					Ok(res)
-				}),
-		)
-	}
+        fn update_pool(&self, req: Request<Body>) -> Box<dyn Future<Item = (), Error = Error> + Send> {
+                let params = QueryParams::from(req.uri().query());
+                
+                let fluff = params.get("fluff").is_some();
+                let pool_arc = match w(&self.tx_pool) {
+                        //w(&self.tx_pool).clone();
+                        Ok(p) => p,
+                        Err(e) => return Box::new(err(e)),
+                };      
+                
+                Box::new(
+                        parse_body(req)
+                                .and_then(move |wrapper: TxWrapper| {
+                                        util::from_hex(wrapper.tx_hex)
+                                                .map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
+                                })              
+                                .and_then(move |tx_bin| {
+                                        ser::deserialize(&mut &tx_bin[..], ProtocolVersion::local())
+                                                .map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
+                                })              
+                                .and_then(move |tx: Transaction| {
+                                        let source = pool::TxSource {
+                                                debug_name: "push-api".to_string(),
+                                                identifier: "?.?.?.?".to_string(),
+                                        };      
+                                        info!(  
+                                                "Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
+                                                tx.hash(),
+                                                tx.inputs().len(),
+                                                tx.outputs().len(),
+                                                tx.kernels().len(),
+                                        );      
+                                        
+                                        //  Push to tx pool.
+                                        let mut tx_pool = pool_arc.write();
+                                        let header = tx_pool
+                                                .blockchain
+                                                .chain_head()
+                                                .context(ErrorKind::Internal("Failed to get chain head".to_owned()))?;
+                                        let res = tx_pool
+                                                .add_to_pool(source, tx, !fluff, &header)
+                                                .context(ErrorKind::Internal("Failed to update pool".to_owned()))?;
+                                        Ok(res) 
+                                }),     
+                )               
+        }
 }
 
 impl Handler for PoolPushHandler {

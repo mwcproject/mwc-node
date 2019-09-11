@@ -18,7 +18,6 @@ use std::fs::File;
 use std::io::Read;
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::chain;
@@ -39,11 +38,6 @@ use crate::types::{
 use chrono::prelude::{DateTime, Utc};
 
 const MAX_TRACK_SIZE: usize = 30;
-// note: this is set to 500 in grin. We are setting it to 2000 for now because
-// it is causing disconnections occasionally and at the moment our network
-// only has two nodes. It would be very bad if people could not connect.
-// Once the network is more robust and has more peers, we will lower this to 500 or
-// implement logic to prevent disconnections on IBD.
 const MAX_PEER_MSG_PER_MIN: u64 = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,8 +60,6 @@ pub struct Peer {
 	// because it may be locked by different reasons, so we should wait for that, close
 	// mutex can be taken only during shutdown, it happens once
 	stop_handle: Mutex<conn::StopHandle>,
-	// Whether or not we requested a txhashset from this peer
-	state_sync_requested: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for Peer {
@@ -80,15 +72,10 @@ impl Peer {
 	// Only accept and connect can be externally used to build a peer
 	fn new(info: PeerInfo, conn: TcpStream, adapter: Arc<dyn NetAdapter>) -> std::io::Result<Peer> {
 		let state = Arc::new(RwLock::new(State::Connected));
-		let state_sync_requested = Arc::new(AtomicBool::new(false));
 		let tracking_adapter = TrackingAdapter::new(adapter);
-		let handler = Protocol::new(
-			Arc::new(tracking_adapter.clone()),
-			info.clone(),
-			state_sync_requested.clone(),
-		);
+		let handler = Protocol::new(Arc::new(tracking_adapter.clone()), info.clone());
 		let tracker = Arc::new(conn::Tracker::new());
-		let (sendh, stoph) = conn::listen(conn, info.version, tracker.clone(), handler)?;
+		let (sendh, stoph) = conn::listen(conn, tracker.clone(), handler)?;
 		let send_handle = Mutex::new(sendh);
 		let stop_handle = Mutex::new(stoph);
 		Ok(Peer {
@@ -98,7 +85,6 @@ impl Peer {
 			tracker,
 			send_handle,
 			stop_handle,
-			state_sync_requested,
 		})
 	}
 
@@ -238,10 +224,7 @@ impl Peer {
 
 	/// Send a msg with given msg_type to our peer via the connection.
 	fn send<T: Writeable>(&self, msg: T, msg_type: Type) -> Result<(), Error> {
-		let bytes = self
-			.send_handle
-			.lock()
-			.send(msg, msg_type, self.info.version)?;
+		let bytes = self.send_handle.lock().send(msg, msg_type)?;
 		self.tracker.inc_sent(bytes);
 		Ok(())
 	}
@@ -401,7 +384,6 @@ impl Peer {
 			"Asking {} for txhashset archive at {} {}.",
 			self.info.addr, height, hash
 		);
-		self.state_sync_requested.store(true, Ordering::Relaxed);
 		self.send(
 			&TxHashSetRequest { hash, height },
 			msg::Type::TxHashSetRequest,
@@ -572,16 +554,12 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.kernel_data_read()
 	}
 
-	fn kernel_data_write(&self, reader: &mut dyn Read) -> Result<bool, chain::Error> {
+	fn kernel_data_write(&self, reader: &mut Read) -> Result<bool, chain::Error> {
 		self.adapter.kernel_data_write(reader)
 	}
 
 	fn txhashset_read(&self, h: Hash) -> Option<TxHashSetRead> {
 		self.adapter.txhashset_read(h)
-	}
-
-	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error> {
-		self.adapter.txhashset_archive_header()
 	}
 
 	fn txhashset_receive_ready(&self) -> bool {

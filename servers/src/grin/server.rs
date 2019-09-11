@@ -30,16 +30,15 @@ use fs2::FileExt;
 
 use crate::api;
 use crate::api::TLSConfig;
-use crate::chain::{self, SyncState, SyncStatus};
+use crate::chain;
 use crate::common::adapters::{
 	ChainToPoolAndNetAdapter, NetToChainAdapter, PoolToChainAdapter, PoolToNetAdapter,
 };
 use crate::common::hooks::{init_chain_hooks, init_net_hooks};
 use crate::common::stats::{DiffBlock, DiffStats, PeerStats, ServerStateInfo, ServerStats};
-use crate::common::types::{Error, ServerConfig, StratumServerConfig};
+use crate::common::types::{Error, ServerConfig, StratumServerConfig, SyncState, SyncStatus};
 use crate::core::core::hash::{Hashed, ZERO_HASH};
 use crate::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
-use crate::core::ser::ProtocolVersion;
 use crate::core::{consensus, genesis, global, pow};
 use crate::grin::{dandelion_monitor, seed, sync};
 use crate::mining::stratumserver;
@@ -172,8 +171,8 @@ impl Server {
 		));
 
 		let genesis = match config.chain_type {
-			global::ChainTypes::AutomatedTesting => pow::mine_genesis_block().unwrap(),
-			global::ChainTypes::UserTesting => pow::mine_genesis_block().unwrap(),
+			global::ChainTypes::AutomatedTesting => genesis::genesis_dev(),
+			global::ChainTypes::UserTesting => genesis::genesis_dev(),
 			global::ChainTypes::Floonet => genesis::genesis_floo(),
 			global::ChainTypes::Mainnet => genesis::genesis_main(),
 		};
@@ -188,9 +187,6 @@ impl Server {
 			verifier_cache.clone(),
 			archive_mode,
 		)?);
-
-		// launching the database migration if needed
-		shared_chain.rebuild_height_for_pos()?;
 
 		pool_adapter.set_chain(shared_chain.clone());
 
@@ -391,12 +387,19 @@ impl Server {
 			self.tx_pool.clone(),
 			self.verifier_cache.clone(),
 			stop_state,
-			sync_state,
 		);
 		miner.set_debug_output_id(format!("Port {}", self.config.p2p_config.port));
 		let _ = thread::Builder::new()
 			.name("test_miner".to_string())
-			.spawn(move || miner.run_loop(wallet_listener_url));
+			.spawn(move || {
+				// TODO push this down in the run loop so miner gets paused anytime we
+				// decide to sync again
+				let secs_5 = time::Duration::from_secs(5);
+				while sync_state.is_syncing() {
+					thread::sleep(secs_5);
+				}
+				miner.run_loop(wallet_listener_url);
+			});
 	}
 
 	/// The chain head
@@ -409,15 +412,16 @@ impl Server {
 		self.chain.header_head().map_err(|e| e.into())
 	}
 
-	/// The p2p layer protocol version for this node.
-	pub fn protocol_version() -> ProtocolVersion {
-		ProtocolVersion::local()
+	/// Current p2p layer protocol version.
+	pub fn protocol_version() -> p2p::msg::ProtocolVersion {
+		p2p::msg::ProtocolVersion::default()
 	}
 
 	/// Returns a set of stats about this server. This and the ServerStats
 	/// structure
 	/// can be updated over time to include any information needed by tests or
-	/// other consumers
+	/// other
+	/// consumers
 	pub fn get_server_stats(&self) -> Result<ServerStats, Error> {
 		let stratum_stats = self.state_info.stratum_stats.read().clone();
 
