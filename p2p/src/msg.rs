@@ -142,7 +142,8 @@ pub fn read_header(
 	} else {
 		read_exact(stream, &mut head, time::Duration::from_secs(10), false)?;
 	}
-	let header = ser::deserialize::<MsgHeaderWrapper>(&mut &head[..], core::ser::ProtocolVersion::local())?;
+	let header =
+		ser::deserialize::<MsgHeaderWrapper>(&mut &head[..], core::ser::ProtocolVersion::local())?;
 	Ok(header)
 }
 
@@ -195,7 +196,11 @@ pub fn write_to_buf<T: Writeable>(msg: T, msg_type: Type) -> Result<Vec<u8>, Err
 	// build and serialize the header using the body size
 	let mut msg_buf = vec![];
 	let blen = body_buf.len() as u64;
-	ser::serialize(&mut msg_buf, core::ser::ProtocolVersion::local(), &MsgHeader::new(msg_type, blen))?;
+	ser::serialize(
+		&mut msg_buf,
+		core::ser::ProtocolVersion::local(),
+		&MsgHeader::new(msg_type, blen),
+	)?;
 	msg_buf.append(&mut body_buf);
 
 	Ok(msg_buf)
