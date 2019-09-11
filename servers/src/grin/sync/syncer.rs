@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time;
 
-use crate::chain::{self, SyncState, SyncStatus};
+use crate::chain;
+use crate::common::types::{SyncState, SyncStatus};
 use crate::core::global;
 use crate::core::pow::Difficulty;
 use crate::grin::sync::body_sync::BodySync;
@@ -86,7 +87,7 @@ impl SyncRunner {
 			// * timeout
 			if wp > MIN_PEERS
 				|| (wp == 0
-					&& self.peers.enough_outbound_peers()
+					&& self.peers.enough_peers()
 					&& head.total_difficulty > Difficulty::zero())
 				|| n > wait_secs
 			{

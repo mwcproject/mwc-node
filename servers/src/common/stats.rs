@@ -21,12 +21,11 @@ use std::time::SystemTime;
 
 use crate::core::consensus::graph_weight;
 use crate::core::core::hash::Hash;
-use crate::core::ser::ProtocolVersion;
 
 use chrono::prelude::*;
 
 use crate::chain;
-use crate::chain::SyncStatus;
+use crate::common::types::SyncStatus;
 use crate::p2p;
 
 /// Server state info collection struct, to be passed around into internals
@@ -148,7 +147,7 @@ pub struct PeerStats {
 	/// Address
 	pub addr: String,
 	/// version running
-	pub version: ProtocolVersion,
+	pub version: p2p::msg::ProtocolVersion,
 	/// Peer user agent string.
 	pub user_agent: String,
 	/// difficulty reported by peer

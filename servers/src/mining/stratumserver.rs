@@ -32,13 +32,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{cmp, thread};
 
-use crate::chain::{self, SyncState};
+use crate::chain;
 use crate::common::stats::{StratumStats, WorkerStats};
-use crate::common::types::StratumServerConfig;
+use crate::common::types::{StratumServerConfig, SyncState};
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Block;
 use crate::core::{pow, ser};
+use crate::core::ser::ProtocolVersion;
 use crate::keychain;
 use crate::mining::mine_block;
 use crate::pool;
@@ -331,7 +332,7 @@ impl Handler {
 		// Serialize the block header into pre and post nonce strings
 		let mut header_buf = vec![];
 		{
-			let mut writer = ser::BinWriter::default(&mut header_buf);
+			let mut writer = ser::BinWriter::new(&mut header_buf, ProtocolVersion::local());
 			bh.write_pre_pow(&mut writer).unwrap();
 			bh.pow.write_pre_pow(&mut writer).unwrap();
 		}

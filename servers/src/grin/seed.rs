@@ -32,11 +32,11 @@ use crate::p2p::types::PeerAddr;
 use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 
-// DNS Seeds with contact email associated
 // MWC - all DNS hosts are updated with seed1.mwc.mw
 // MWC DEBUG  - need to be changed
 const MAINNET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
+
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -174,12 +174,9 @@ fn monitor_peers(
 	);
 
 	// maintenance step first, clean up p2p server peers
-	peers.clean_peers(
-		config.peer_max_inbound_count() as usize,
-		config.peer_max_outbound_count() as usize,
-	);
+	peers.clean_peers(config.peer_max_count() as usize);
 
-	if peers.enough_outbound_peers() {
+	if peers.healthy_peers_mix() {
 		return;
 	}
 
@@ -219,13 +216,10 @@ fn monitor_peers(
 
 	// find some peers from our db
 	// and queue them up for a connection attempt
-	// intentionally make too many attempts (2x) as some (most?) will fail
-	// as many nodes in our db are not publicly accessible
-	let max_peer_attempts = 128;
 	let new_peers = peers.find_peers(
 		p2p::State::Healthy,
 		p2p::Capabilities::UNKNOWN,
-		max_peer_attempts as usize,
+		config.peer_max_count() as usize,
 	);
 
 	for p in new_peers.iter().filter(|p| !peers.is_known(p.addr)) {
@@ -291,15 +285,15 @@ fn listen_for_addrs(
 	let addrs: Vec<PeerAddr> = rx.try_iter().collect();
 
 	// If we have a healthy number of outbound peers then we are done here.
-	if peers.enough_outbound_peers() {
+	if peers.peer_count() > peers.peer_outbound_count() && peers.healthy_peers_mix() {
 		return;
 	}
 
+	// Try to connect to (up to max peers) peer addresses.
 	// Note: We drained the rx queue earlier to keep it under control.
-	// Even if there are many addresses to try we will only try a bounded number of them for safety.
+	// Even if there are many addresses to try we will only try a bounded number of them.
 	let connect_min_interval = 30;
-	let max_outbound_attempts = 128;
-	for addr in addrs.into_iter().take(max_outbound_attempts) {
+	for addr in addrs.into_iter().take(p2p.config.peer_max_count() as usize) {
 		// ignore the duplicate connecting to same peer within 30 seconds
 		let now = Utc::now();
 		if let Some(last_connect_time) = connecting_history.get(&addr) {
