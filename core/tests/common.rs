@@ -106,7 +106,7 @@ where
 		&key_id,
 		fees,
 		false,
-		previous_header.height + 1
+		previous_header.height + 1,
 	)
 	.unwrap();
 	Block::new(

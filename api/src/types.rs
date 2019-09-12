@@ -17,7 +17,6 @@ use std::sync::Arc;
 use crate::chain;
 use crate::core::core::hash::Hashed;
 use crate::core::core::merkle_proof::MerkleProof;
-use crate::core::core::{KernelFeatures, TxKernel};
 use crate::core::{core, ser};
 use crate::p2p;
 use crate::util;
@@ -84,7 +83,7 @@ pub struct Status {
 impl Status {
 	pub fn from_tip_and_peers(current_tip: chain::Tip, connections: u32) -> Status {
 		Status {
-			protocol_version: ser::ProtocolVersion::local().into(),
+			protocol_version: p2p::msg::ProtocolVersion::default().into(),
 			user_agent: p2p::msg::USER_AGENT.to_string(),
 			connections: connections,
 			tip: Tip::from_tip(current_tip),
@@ -276,11 +275,10 @@ impl OutputPrintable {
 		};
 
 		let out_id = core::OutputIdentifier::from_output(&output);
-		let res = chain.is_unspent(&out_id);
-		let (spent, block_height) = if let Ok(output_pos) = res {
-			(false, Some(output_pos.height))
-		} else {
-			(true, None)
+		let spent = chain.is_unspent(&out_id).is_err();
+		let block_height = match spent {
+			true => None,
+			false => Some(chain.get_header_for_output(&out_id)?.height),
 		};
 
 		let proof = if include_proof {
@@ -490,16 +488,10 @@ pub struct TxKernelPrintable {
 
 impl TxKernelPrintable {
 	pub fn from_txkernel(k: &core::TxKernel) -> TxKernelPrintable {
-		let features = k.features.as_string();
-		let (fee, lock_height) = match k.features {
-			KernelFeatures::Plain { fee } => (fee, 0),
-			KernelFeatures::Coinbase => (0, 0),
-			KernelFeatures::HeightLocked { fee, lock_height } => (fee, lock_height),
-		};
 		TxKernelPrintable {
-			features,
-			fee,
-			lock_height,
+			features: format!("{:?}", k.features),
+			fee: k.fee,
+			lock_height: k.lock_height,
 			excess: util::to_hex(k.excess.0.to_vec()),
 			excess_sig: util::to_hex(k.excess_sig.to_raw_data().to_vec()),
 		}
@@ -697,13 +689,6 @@ pub struct OutputListing {
 	pub last_retrieved_index: u64,
 	/// A printable version of the outputs
 	pub outputs: Vec<OutputPrintable>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocatedTxKernel {
-	pub tx_kernel: TxKernel,
-	pub height: u64,
-	pub mmr_index: u64,
 }
 
 #[derive(Serialize, Deserialize)]

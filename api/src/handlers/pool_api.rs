@@ -15,7 +15,7 @@
 use super::utils::w;
 use crate::core::core::hash::Hashed;
 use crate::core::core::Transaction;
-use crate::core::ser::{self, ProtocolVersion};
+use crate::core::ser;
 use crate::pool;
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
@@ -76,7 +76,7 @@ impl PoolPushHandler {
 						.map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
 				})
 				.and_then(move |tx_bin| {
-					ser::deserialize(&mut &tx_bin[..], ProtocolVersion::local())
+					ser::deserialize(&mut &tx_bin[..])
 						.map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
 				})
 				.and_then(move |tx: Transaction| {

@@ -163,6 +163,7 @@ fn build_request(
 			.into()
 	})?;
 	let mut builder = Request::builder();
+
 	if let Some(api_secret) = api_secret {
 		let basic_auth = if chain_type == global::ChainTypes::Floonet {
 			format!("Basic {}", to_base64(&format!("mwcfloo:{}", api_secret)))

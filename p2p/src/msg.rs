@@ -40,8 +40,9 @@ use crate::util::read_write::read_exact;
 const PROTOCOL_VERSION: u32 = 1;
 
 /// Grin's user agent with current version
-pub const USER_AGENT: &'static str = concat!("MW/Grin ", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &'static str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
 
+// MWC - Magic number are updated to be different from grin.
 /// Magic numbers expected in the header of every message
 const OTHER_MAGIC: [u8; 2] = [21, 19];
 const FLOONET_MAGIC: [u8; 2] = [17, 36];
@@ -142,8 +143,7 @@ pub fn read_header(
 	} else {
 		read_exact(stream, &mut head, time::Duration::from_secs(10), false)?;
 	}
-	let header =
-		ser::deserialize::<MsgHeaderWrapper>(&mut &head[..], core::ser::ProtocolVersion::local())?;
+	let header = ser::deserialize::<MsgHeaderWrapper>(&mut &head[..])?;
 	Ok(header)
 }
 
@@ -151,7 +151,8 @@ pub fn read_header(
 /// have a result (or timeout).
 /// Returns the item and the total bytes read.
 pub fn read_item<T: Readable>(stream: &mut dyn Read) -> Result<(T, u64), Error> {
-	let mut reader = StreamingReader::new(stream, core::ser::ProtocolVersion::local());
+	let timeout = time::Duration::from_secs(20);
+	let mut reader = StreamingReader::new(stream, timeout);
 	let res = T::read(&mut reader)?;
 	Ok((res, reader.total_bytes_read()))
 }
@@ -161,7 +162,7 @@ pub fn read_item<T: Readable>(stream: &mut dyn Read) -> Result<(T, u64), Error> 
 pub fn read_body<T: Readable>(h: &MsgHeader, stream: &mut dyn Read) -> Result<T, Error> {
 	let mut body = vec![0u8; h.msg_len as usize];
 	read_exact(stream, &mut body, time::Duration::from_secs(20), true)?;
-	ser::deserialize(&mut &body[..], core::ser::ProtocolVersion::local()).map_err(From::from)
+	ser::deserialize(&mut &body[..]).map_err(From::from)
 }
 
 /// Read (an unknown) message from the provided stream and discard it.
@@ -191,16 +192,12 @@ pub fn read_message<T: Readable>(stream: &mut dyn Read, msg_type: Type) -> Resul
 pub fn write_to_buf<T: Writeable>(msg: T, msg_type: Type) -> Result<Vec<u8>, Error> {
 	// prepare the body first so we know its serialized length
 	let mut body_buf = vec![];
-	ser::serialize(&mut body_buf, core::ser::ProtocolVersion::local(), &msg)?;
+	ser::serialize(&mut body_buf, &msg)?;
 
 	// build and serialize the header using the body size
 	let mut msg_buf = vec![];
 	let blen = body_buf.len() as u64;
-	ser::serialize(
-		&mut msg_buf,
-		core::ser::ProtocolVersion::local(),
-		&MsgHeader::new(msg_type, blen),
-	)?;
+	ser::serialize(&mut msg_buf, &MsgHeader::new(msg_type, blen))?;
 	msg_buf.append(&mut body_buf);
 
 	Ok(msg_buf)

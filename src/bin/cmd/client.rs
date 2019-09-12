@@ -102,9 +102,9 @@ pub fn ban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Optio
 		peer_addr.to_string()
 	);
 
-	let chain_type = if global::is_main() {
+	let chain_type = if global::is_mainnet() {
 		global::ChainTypes::Mainnet
-	} else if global::is_floo() {
+	} else if global::is_floonet() {
 		global::ChainTypes::Floonet
 	} else {
 		global::ChainTypes::UserTesting
@@ -128,9 +128,9 @@ pub fn unban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Opt
 	);
 	let res: Result<(), api::Error>;
 
-	let chain_type = if global::is_main() {
+	let chain_type = if global::is_mainnet() {
 		global::ChainTypes::Mainnet
-	} else if global::is_floo() {
+	} else if global::is_floonet() {
 		global::ChainTypes::Floonet
 	} else {
 		global::ChainTypes::UserTesting
@@ -149,9 +149,9 @@ pub fn list_connected_peers(config: &ServerConfig, api_secret: Option<String>) {
 	let mut e = term::stdout().unwrap();
 	let url = format!("http://{}/v1/peers/connected", config.api_http_addr);
 	// let peers_info: Result<Vec<p2p::PeerInfoDisplay>, api::Error>;
-	let chain_type = if global::is_main() {
+	let chain_type = if global::is_mainnet() {
 		global::ChainTypes::Mainnet
-	} else if global::is_floo() {
+	} else if global::is_floonet() {
 		global::ChainTypes::Floonet
 	} else {
 		global::ChainTypes::UserTesting
@@ -187,9 +187,9 @@ fn get_status_from_node(
 	api_secret: Option<String>,
 ) -> Result<api::Status, Error> {
 	let url = format!("http://{}/v1/status", config.api_http_addr);
-	let chain_type = if global::is_main() {
+	let chain_type = if global::is_mainnet() {
 		global::ChainTypes::Mainnet
-	} else if global::is_floo() {
+	} else if global::is_floonet() {
 		global::ChainTypes::Floonet
 	} else {
 		global::ChainTypes::UserTesting

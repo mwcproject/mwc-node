@@ -110,7 +110,7 @@ fn check_api_secret_file(chain_type: &global::ChainTypes) -> Result<(), ConfigEr
 /// Handles setup and detection of paths for node
 pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalConfig, ConfigError> {
 	check_api_secret_file(chain_type)?;
-	// Use config file if current directory if it exists, .mwc home otherwise
+	// Use config file if current directory if it exists, .grin home otherwise
 	if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME) {
 		GlobalConfig::new(p.to_str().unwrap())
 	} else {

@@ -26,7 +26,6 @@ use self::blocks_api::HeaderHandler;
 use self::chain_api::ChainCompactHandler;
 use self::chain_api::ChainHandler;
 use self::chain_api::ChainValidationHandler;
-use self::chain_api::KernelHandler;
 use self::chain_api::OutputHandler;
 use self::peers_api::PeerHandler;
 use self::peers_api::PeersAllHandler;
@@ -68,13 +67,14 @@ pub fn start_rest_apis(
 ) -> bool {
 	let mut apis = ApiServer::new();
 	let mut router = build_router(chain, tx_pool, peers).expect("unable to build API router");
+
 	if let Some(api_secret) = api_secret {
-		let api_basic_auth = if global::is_main() {
+		let api_basic_auth = if global::is_mainnet() {
 			format!(
 				"Basic {}",
 				util::to_base64(&format!("mwcmain:{}", api_secret))
 			)
-		} else if global::is_floo() {
+		} else if global::is_floonet() {
 			format!(
 				"Basic {}",
 				util::to_base64(&format!("mwcfloo:{}", api_secret))
@@ -133,9 +133,7 @@ pub fn build_router(
 	let output_handler = OutputHandler {
 		chain: Arc::downgrade(&chain),
 	};
-	let kernel_handler = KernelHandler {
-		chain: Arc::downgrade(&chain),
-	};
+
 	let block_handler = BlockHandler {
 		chain: Arc::downgrade(&chain),
 	};
@@ -187,7 +185,6 @@ pub fn build_router(
 	router.add_route("/v1/headers/*", Arc::new(header_handler))?;
 	router.add_route("/v1/chain", Arc::new(chain_tip_handler))?;
 	router.add_route("/v1/chain/outputs/*", Arc::new(output_handler))?;
-	router.add_route("/v1/chain/kernels/*", Arc::new(kernel_handler))?;
 	router.add_route("/v1/chain/compact", Arc::new(chain_compact_handler))?;
 	router.add_route("/v1/chain/validate", Arc::new(chain_validation_handler))?;
 	router.add_route("/v1/txhashset/*", Arc::new(txhashset_handler))?;

@@ -28,10 +28,8 @@ use crate::core::compact_block::{CompactBlock, CompactBlockBody};
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
-	transaction, Commitment, Input, KernelFeatures, Output, Transaction, TransactionBody, TxKernel,
-	Weighting,
+	transaction, Commitment, Input, Output, Transaction, TransactionBody, TxKernel, Weighting,
 };
-
 use crate::global;
 use crate::keychain::{self, BlindingFactor};
 use crate::pow::{Difficulty, Proof, ProofOfWork};
@@ -123,7 +121,7 @@ pub struct HeaderEntry {
 }
 
 impl Readable for HeaderEntry {
-	fn read(reader: &mut dyn Reader) -> Result<HeaderEntry, ser::Error> {
+	fn read(reader: &mut Reader) -> Result<HeaderEntry, ser::Error> {
 		let hash = Hash::read(reader)?;
 		let timestamp = reader.read_u64()?;
 		let total_difficulty = Difficulty::read(reader)?;
@@ -361,7 +359,7 @@ impl BlockHeader {
 	pub fn pre_pow(&self) -> Vec<u8> {
 		let mut header_buf = vec![];
 		{
-			let mut writer = ser::BinWriter::default(&mut header_buf);
+			let mut writer = ser::BinWriter::new(&mut header_buf);
 			self.write_pre_pow(&mut writer).unwrap();
 			self.pow.write_pre_pow(&mut writer).unwrap();
 			writer.write_u64(self.pow.nonce).unwrap();
@@ -377,7 +375,6 @@ impl BlockHeader {
 	/// The "overage" to use when verifying the kernel sums.
 	/// For a block header the overage is 0 - reward.
 	pub fn overage(&self) -> i64 {
-		// Grin strategy: (REWARD as i64).checked_neg().unwrap_or(0)
 		// MWC strategy
 		(calc_mwc_block_reward(self.height) as i64)
 			.checked_neg()
@@ -388,12 +385,11 @@ impl BlockHeader {
 	/// chain state. For a full chain state this is 0 - (height * reward).
 	pub fn total_overage(&self, genesis_had_reward: bool) -> i64 {
 		let reward_count = self.height;
+
 		// Grin strategy:
 		/*
-		if genesis_had_reward {
-			reward_count += 1;
-		}
-		((reward_count * REWARD) as i64).checked_neg().unwrap_or(0)
+			if genesis_had_reward {
+			((reward_count * REWARD) as i64).checked_neg().unwrap_or(0)
 		*/
 
 		// MWC DEBUG - want to understand when genesis doesn;t have a reward
@@ -659,7 +655,10 @@ impl Block {
 
 	/// Sum of all fees (inputs less outputs) in the block
 	pub fn total_fees(&self) -> u64 {
-		self.body.fee()
+		self.body
+			.kernels
+			.iter()
+			.fold(0, |acc, ref x| acc.saturating_add(x.fee))
 	}
 
 	/// Matches any output with a potential spending input, eliminating them
@@ -775,10 +774,8 @@ impl Block {
 		for k in &self.body.kernels {
 			// check we have no kernels with lock_heights greater than current height
 			// no tx can be included in a block earlier than its lock_height
-			if let KernelFeatures::HeightLocked { lock_height, .. } = k.features {
-				if lock_height > self.header.height {
-					return Err(Error::KernelLockHeight(lock_height));
-				}
+			if k.lock_height > self.header.height {
+				return Err(Error::KernelLockHeight(k.lock_height));
 			}
 		}
 		Ok(())

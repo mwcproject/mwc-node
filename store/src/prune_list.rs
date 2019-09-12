@@ -51,23 +51,15 @@ pub struct PruneList {
 }
 
 impl PruneList {
-	/// Instantiate a new prune list from the provided path and bitmap.
-	pub fn new(path: Option<PathBuf>, mut bitmap: Bitmap) -> PruneList {
-		// Note: prune list is 1-indexed so remove any 0 value for safety.
-		bitmap.remove(0);
-
+	/// Instantiate a new empty prune list
+	pub fn new() -> PruneList {
 		PruneList {
-			path,
-			bitmap,
+			path: None,
+			bitmap: Bitmap::create(),
 			pruned_cache: Bitmap::create(),
 			shift_cache: vec![],
 			leaf_shift_cache: vec![],
 		}
-	}
-
-	/// Instatiate a new empty prune list.
-	pub fn empty() -> PruneList {
-		PruneList::new(None, Bitmap::create())
 	}
 
 	/// Open an existing prune_list or create a new one.
@@ -79,7 +71,13 @@ impl PruneList {
 			Bitmap::create()
 		};
 
-		let mut prune_list = PruneList::new(Some(file_path), bitmap);
+		let mut prune_list = PruneList {
+			path: Some(file_path),
+			bitmap,
+			pruned_cache: Bitmap::create(),
+			shift_cache: vec![],
+			leaf_shift_cache: vec![],
+		};
 
 		// Now built the shift and pruned caches from the bitmap we read from disk.
 		prune_list.init_caches();
@@ -98,8 +96,7 @@ impl PruneList {
 		Ok(prune_list)
 	}
 
-	/// Init our internal shift caches.
-	pub fn init_caches(&mut self) {
+	fn init_caches(&mut self) {
 		self.build_shift_cache();
 		self.build_leaf_shift_cache();
 		self.build_pruned_cache();
@@ -155,9 +152,9 @@ impl PruneList {
 		}
 
 		if idx > self.shift_cache.len() as u64 {
-			self.shift_cache[self.shift_cache.len().saturating_sub(1)]
+			self.shift_cache[self.shift_cache.len() - 1]
 		} else {
-			self.shift_cache[(idx as usize).saturating_sub(1)]
+			self.shift_cache[idx as usize - 1]
 		}
 	}
 
@@ -167,9 +164,9 @@ impl PruneList {
 		}
 
 		self.shift_cache.clear();
-		for pos in self.bitmap.iter().filter(|x| *x > 0) {
+		for pos in self.bitmap.iter() {
 			let pos = pos as u64;
-			let prev_shift = self.get_shift(pos.saturating_sub(1));
+			let prev_shift = self.get_shift(pos - 1);
 
 			let curr_shift = if self.is_pruned_root(pos) {
 				let height = bintree_postorder_height(pos);
@@ -196,9 +193,9 @@ impl PruneList {
 		}
 
 		if idx > self.leaf_shift_cache.len() as u64 {
-			self.leaf_shift_cache[self.leaf_shift_cache.len().saturating_sub(1)]
+			self.leaf_shift_cache[self.leaf_shift_cache.len() - 1]
 		} else {
-			self.leaf_shift_cache[(idx as usize).saturating_sub(1)]
+			self.leaf_shift_cache[idx as usize - 1]
 		}
 	}
 
@@ -209,9 +206,9 @@ impl PruneList {
 
 		self.leaf_shift_cache.clear();
 
-		for pos in self.bitmap.iter().filter(|x| *x > 0) {
+		for pos in self.bitmap.iter() {
 			let pos = pos as u64;
-			let prev_shift = self.get_leaf_shift(pos.saturating_sub(1));
+			let prev_shift = self.get_leaf_shift(pos - 1);
 
 			let curr_shift = if self.is_pruned_root(pos) {
 				let height = bintree_postorder_height(pos);
@@ -232,8 +229,6 @@ impl PruneList {
 	/// list if pruning the additional node means a parent can get pruned as
 	/// well.
 	pub fn add(&mut self, pos: u64) {
-		assert!(pos > 0, "prune list 1-indexed, 0 not valid pos");
-
 		let mut current = pos;
 		loop {
 			let (parent, sibling) = family(current);
@@ -262,13 +257,12 @@ impl PruneList {
 
 	/// Convert the prune_list to a vec of pos.
 	pub fn to_vec(&self) -> Vec<u64> {
-		self.bitmap.iter().map(|x| x as u64).collect()
+		self.bitmap.to_vec().into_iter().map(|x| x as u64).collect()
 	}
 
 	/// Is the pos pruned?
 	/// Assumes the pruned_cache is fully built and up to date.
 	pub fn is_pruned(&self, pos: u64) -> bool {
-		assert!(pos > 0, "prune list 1-indexed, 0 not valid pos");
 		self.pruned_cache.contains(pos as u32)
 	}
 
@@ -289,7 +283,12 @@ impl PruneList {
 
 	/// Is the specified position a root of a pruned subtree?
 	pub fn is_pruned_root(&self, pos: u64) -> bool {
-		assert!(pos > 0, "prune list 1-indexed, 0 not valid pos");
 		self.bitmap.contains(pos as u32)
+	}
+}
+
+impl Default for PruneList {
+	fn default() -> Self {
+		Self::new()
 	}
 }

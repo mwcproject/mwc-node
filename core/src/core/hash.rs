@@ -25,9 +25,7 @@ use std::{fmt, ops};
 
 use crate::blake2::blake2b::Blake2b;
 
-use crate::ser::{
-	self, AsFixedBytes, Error, FixedLength, ProtocolVersion, Readable, Reader, Writeable, Writer,
-};
+use crate::ser::{self, AsFixedBytes, Error, FixedLength, Readable, Reader, Writeable, Writer};
 use crate::util;
 
 /// A hash consisting of all zeroes, used as a sentinel. No known preimage.
@@ -221,10 +219,6 @@ impl ser::Writer for HashWriter {
 		self.state.update(b32.as_ref());
 		Ok(())
 	}
-
-	fn protocol_version(&self) -> ProtocolVersion {
-		ProtocolVersion::local()
-	}
 }
 
 /// A trait for types that have a canonical hash
@@ -253,5 +247,4 @@ impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable> DefaultHashable
 /// Implement Hashed trait for external types here
 impl DefaultHashable for crate::util::secp::pedersen::RangeProof {}
 impl DefaultHashable for Vec<u8> {}
-impl DefaultHashable for u8 {}
 impl DefaultHashable for u64 {}
