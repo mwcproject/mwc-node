@@ -21,14 +21,14 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"[server]".to_string(),
 		"
-# Generated Server Configuration File for MWC
+# Generated Server Configuration File for Grin
 #
-# When running the mwc executable without specifying any command line
+# When running the grin executable without specifying any command line
 # arguments, it will look for this file in two places, in the following
 # order:
 #
 # -The working directory
-# -[user home]/.mwc
+# -[user home]/.grin
 #
 
 #########################################
@@ -65,7 +65,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"db_root".to_string(),
 		"
-#the directory, relative to current, in which the mwc blockchain
+#the directory, relative to current, in which the grin blockchain
 #is stored
 "
 		.to_string(),
@@ -211,14 +211,6 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"always_stem_our_txs".to_string(),
-		"
-#always stem our (pushed via api) txs regardless of stem/fluff epoch (as per Dandelion++ paper)
-"
-		.to_string(),
-	);
-
-	retval.insert(
 		"[server.p2p_config]".to_string(),
 		"#test miner wallet URL (burns if this doesn't exist)
 #test_miner_wallet_url = \"http://127.0.0.1:3415\"
@@ -274,18 +266,12 @@ fn comments() -> HashMap<String, String> {
 #how long a banned peer should stay banned
 #ban_window = 10800
 
-#maximum number of inbound peer connections
-#peer_max_inbound_count = 128
+#maximum number of peers
+#peer_max_count = 125
 
-#maximum number of outbound peer connections
-#peer_max_outbound_count = 8
-
-#preferred minimum number of outbound peers (we'll actively keep trying to add peers
-#until we get to at least this number)
-#peer_min_preferred_outbound_count = 8
-
-#amount of incoming connections temporarily allowed to exceed peer_max_inbound_count
-#peer_listener_buffer_count = 8
+#preferred minimum number of peers (we'll actively keep trying to add peers
+#until we get to at least this number
+#peer_min_preferred_count = 8
 
 # 15 = Bit flags for FULL_NODE
 #This structure needs to be changed internally, to make it more configurable

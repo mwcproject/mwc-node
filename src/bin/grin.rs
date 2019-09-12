@@ -41,7 +41,7 @@ pub mod built_info {
 pub fn info_strings() -> (String, String) {
 	(
 		format!(
-			"This is MWC version {}{}, built for {} by {}.",
+			"This is Grin version {}{}, built for {} by {}.",
 			built_info::PKG_VERSION,
 			built_info::GIT_VERSION.map_or_else(|| "".to_owned(), |v| format!(" (git {})", v)),
 			built_info::TARGET,
@@ -69,17 +69,15 @@ fn main() {
 }
 
 fn real_main() -> i32 {
-	let yml = load_yaml!("mwc.yml");
-	let args = App::from_yaml(yml)
-		.version(built_info::PKG_VERSION)
-		.get_matches();
+	let yml = load_yaml!("grin.yml");
+	let args = App::from_yaml(yml).get_matches();
 	let node_config;
 
 	// Temporary wallet warning message
 	match args.subcommand() {
 		("wallet", _) => {
 			println!();
-			println!("As of v1.1.0, the wallet has been split into a separate executable.");
+			println!("As of v1.1.0, the wallet has been split into a seperate executable.");
 			println!(
 				"Please visit https://github.com/mimblewimble/grin-wallet/releases to download"
 			);
@@ -94,9 +92,7 @@ fn real_main() -> i32 {
 	} else if args.is_present("usernet") {
 		global::ChainTypes::UserTesting
 	} else {
-		// disabling mainnet for now. Will reenable for launch.
-		//global::ChainTypes::Mainnet
-		panic!("Mainnet is disabled for now.");
+		global::ChainTypes::Mainnet
 	};
 
 	// Deal with configuration file creation
@@ -169,16 +165,6 @@ fn real_main() -> i32 {
 
 		// client commands and options
 		("client", Some(client_args)) => cmd::client_command(client_args, node_config.unwrap()),
-
-		// clean command
-		("clean", _) => {
-			let db_root_path = node_config.unwrap().members.unwrap().server.db_root;
-			println!("Cleaning chain data directory: {}", db_root_path);
-			match std::fs::remove_dir_all(db_root_path) {
-				Ok(_) => 0,
-				Err(_) => 1,
-			}
-		}
 
 		// If nothing is specified, try to just use the config file instead
 		// this could possibly become the way to configure most things

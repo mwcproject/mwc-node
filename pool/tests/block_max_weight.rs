@@ -37,7 +37,7 @@ fn test_block_building_max_weight() {
 
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
-	let db_root = ".mwc_block_building_max_weight".to_string();
+	let db_root = ".grin_block_building_max_weight".to_string();
 	clean_output_dir(db_root.clone());
 
 	{
@@ -57,7 +57,7 @@ fn test_block_building_max_weight() {
 					&key_id,
 					fee,
 					false,
-					height,
+					1,
 				)
 				.unwrap();
 				let mut block = Block::new(&prev_header, txs, Difficulty::min(), reward).unwrap();

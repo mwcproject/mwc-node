@@ -135,14 +135,11 @@ pub enum ErrorKind {
 	#[fail(display = "Committed Trait: Error summing and verifying kernel sums")]
 	Committed(committed::Error),
 	/// We cannot process data once the Grin server has been stopped.
-	#[fail(display = "Stopped (MWC Shutting Down)")]
+	#[fail(display = "Stopped (Grin Shutting Down)")]
 	Stopped,
 	/// Internal Roaring Bitmap error
 	#[fail(display = "Roaring Bitmap error")]
 	Bitmap,
-	/// Error during chain sync
-	#[fail(display = "Sync error")]
-	SyncError(String),
 }
 
 impl Display for Error {

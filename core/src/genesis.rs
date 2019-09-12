@@ -93,6 +93,8 @@ pub fn genesis_floo() -> core::Block {
 	});
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
+		fee: 0,
+		lock_height: 0,
 		excess: Commitment::from_vec(
 			util::from_hex(
 				"093d0aeae5f6aab0975096fde31e1a21fa42edfc93db318a1064156ace81f54671".to_string(),
@@ -212,6 +214,8 @@ pub fn genesis_main() -> core::Block {
 	});
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
+		fee: 0,
+		lock_height: 0,
 		excess: Commitment::from_vec(
 			util::from_hex(
 				"091abed0e4a9c1b890d9e59101ac0483e172e3624884bde3c159f3f25224373771".to_string(),
@@ -285,13 +289,13 @@ pub fn genesis_main() -> core::Block {
 mod test {
 	use super::*;
 	use crate::core::hash::Hashed;
-	use crate::ser::{self, ProtocolVersion};
+	use crate::ser::{self};
 
 	#[test]
 	fn floonet_genesis_hash() {
 		let gen_hash = genesis_floo().hash();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_floo(), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(&genesis_floo()).unwrap();
 		println!("floonet genesis full hash: {}\n", gen_bin.hash().to_hex());
 
 		assert_eq!(
@@ -308,7 +312,7 @@ mod test {
 	fn mainnet_genesis_hash() {
 		let gen_hash = genesis_main().hash();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_main(), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(&genesis_main()).unwrap();
 		println!("mainnet genesis full hash: {}\n", gen_bin.hash().to_hex());
 		assert_eq!(
 			gen_hash.to_hex(),

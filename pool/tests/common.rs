@@ -58,8 +58,7 @@ impl ChainAdapter {
 		let batch = s.batch().unwrap();
 
 		batch.save_block_header(header).unwrap();
-		batch.save_body_head(&tip).unwrap();
-		batch.save_header_head(&tip).unwrap();
+		batch.save_head(&tip).unwrap();
 
 		// Retrieve previous block_sums from the db.
 		let prev_sums = if let Ok(prev_sums) = batch.get_block_sums(&tip.prev_block_h) {
@@ -176,8 +175,7 @@ where
 {
 	let output_sum = output_values.iter().sum::<u64>() as i64;
 
-	// MWC  using different mwc reward
-	let coinbase_reward: u64 = crate::core::consensus::MWC_FIRST_GROUP_REWARD; //60_000_000_000;
+	let coinbase_reward: u64 = core::consensus::MWC_FIRST_GROUP_REWARD;
 
 	let fees: i64 = coinbase_reward as i64 - output_sum;
 	assert!(fees >= 0);
@@ -231,7 +229,10 @@ where
 }
 
 pub fn test_source() -> TxSource {
-	TxSource::Broadcast
+	TxSource {
+		debug_name: format!("test"),
+		identifier: format!("127.0.0.1"),
+	}
 }
 
 pub fn clean_output_dir(db_root: String) {

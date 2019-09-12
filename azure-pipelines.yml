@@ -16,6 +16,7 @@ trigger:
   branches:
     include:
       - master
+      - milestone/*
   tags:
     include: ['*']
 
@@ -24,8 +25,8 @@ pr:
     include: ['*']
 
 variables:
-  RUST_BACKTRACE: 'FULL'
-  RUST_FLAGS: '-C debug-assertions'
+  RUST_BACKTRACE: '1'
+  RUSTFLAGS: '-C debug-assertions'
 
 jobs:
 - job: linux
@@ -68,7 +69,7 @@ jobs:
     - template: '.ci/release.yml'
 - job: windows
   pool:
-    vmImage: vs2017-win2016
+    vmImage: windows-2019
   strategy:
     matrix:
       test:

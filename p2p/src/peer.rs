@@ -38,7 +38,7 @@ use crate::types::{
 use chrono::prelude::{DateTime, Utc};
 
 const MAX_TRACK_SIZE: usize = 30;
-const MAX_PEER_MSG_PER_MIN: u64 = 2000;
+const MAX_PEER_MSG_PER_MIN: u64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Remind: don't mix up this 'State' with that 'State' in p2p/src/store.rs,

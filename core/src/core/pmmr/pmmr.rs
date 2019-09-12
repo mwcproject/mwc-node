@@ -129,9 +129,9 @@ where
 
 	/// Computes the root of the MMR. Find all the peaks in the current
 	/// tree and "bags" them to get a single peak.
-	pub fn root(&self) -> Result<Hash, String> {
+	pub fn root(&self) -> Hash {
 		if self.is_empty() {
-			return Ok(ZERO_HASH);
+			return ZERO_HASH;
 		}
 		let mut res = None;
 		for peak in self.peaks().iter().rev() {
@@ -140,7 +140,7 @@ where
 				Some(rhash) => Some((*peak, rhash).hash_with_index(self.unpruned_size())),
 			}
 		}
-		res.ok_or_else(|| "no root, invalid tree".to_owned())
+		res.expect("no root, invalid tree")
 	}
 
 	/// Build a Merkle proof for the element at the given position.

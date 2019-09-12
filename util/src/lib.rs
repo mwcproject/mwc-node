@@ -34,8 +34,6 @@ pub use parking_lot::{RwLock, RwLockReadGuard};
 // Re-export so only has to be included once
 pub use secp256k1zkp as secp;
 
-pub mod read_write;
-
 // Logging related
 pub mod logger;
 pub use crate::logger::{init_logger, init_test_logger};
@@ -48,6 +46,9 @@ pub mod types;
 pub use crate::types::{LogLevel, LoggingConfig, ZeroingString};
 
 pub mod macros;
+
+// read_exact and write_all impls
+pub mod read_write;
 
 // other utils
 #[allow(unused_imports)]

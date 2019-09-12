@@ -32,7 +32,7 @@ use std::sync::Arc;
 fn test_transaction_pool_block_reconciliation() {
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
-	let db_root = ".mwc_block_reconciliation".to_string();
+	let db_root = ".grin_block_reconciliation".to_string();
 	clean_output_dir(db_root.clone());
 	{
 		let chain = Arc::new(ChainAdapter::init(db_root.clone()).unwrap());
@@ -51,7 +51,7 @@ fn test_transaction_pool_block_reconciliation() {
 				&key_id,
 				0,
 				false,
-				height
+				1,
 			)
 			.unwrap();
 			let genesis = BlockHeader::default();
@@ -79,7 +79,7 @@ fn test_transaction_pool_block_reconciliation() {
 				&key_id,
 				fees,
 				false,
-				header.height + 1
+				1,
 			)
 			.unwrap();
 			let mut block =
@@ -176,12 +176,12 @@ fn test_transaction_pool_block_reconciliation() {
 			let key_id = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 			let fees = block_txs.iter().map(|tx| tx.fee()).sum();
 			let reward = libtx::reward::output(
-					&keychain,
-					&libtx::ProofBuilder::new(&keychain),
-					&key_id,
-					fees,
-					false,
-					header.height + 1
+				&keychain,
+				&libtx::ProofBuilder::new(&keychain),
+				&key_id,
+				fees,
+				false,
+				1,
 			)
 			.unwrap();
 			let mut block = Block::new(&header, block_txs, Difficulty::min(), reward).unwrap();

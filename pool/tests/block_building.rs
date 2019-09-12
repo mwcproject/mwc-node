@@ -32,7 +32,7 @@ fn test_transaction_pool_block_building() {
 	util::init_test_logger();
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
-	let db_root = ".mwc_block_building".to_string();
+	let db_root = ".grin_block_building".to_string();
 	clean_output_dir(db_root.clone());
 
 	{
@@ -47,14 +47,13 @@ fn test_transaction_pool_block_building() {
 				let height = prev_header.height + 1;
 				let key_id = ExtKeychain::derive_key_id(1, height as u32, 0, 0, 0);
 				let fee = txs.iter().map(|x| x.fee()).sum();
-
 				let reward = libtx::reward::output(
 					&keychain,
 					&libtx::ProofBuilder::new(&keychain),
 					&key_id,
 					fee,
 					false,
-					height,
+					1,
 				)
 				.unwrap();
 				let mut block = Block::new(&prev_header, txs, Difficulty::min(), reward).unwrap();
@@ -126,7 +125,7 @@ fn test_transaction_pool_block_building() {
 		assert!(block.kernels().contains(&root_tx_2.kernels()[0]));
 		assert!(block.kernels().contains(&root_tx_3.kernels()[0]));
 		assert!(block.kernels().contains(&child_tx_1.kernels()[0]));
-		assert!(block.kernels().contains(&child_tx_2.kernels()[0]));
+		assert!(block.kernels().contains(&child_tx_1.kernels()[0]));
 
 		// Now reconcile the transaction pool with the new block
 		// and check the resulting contents of the pool are what we expect.
