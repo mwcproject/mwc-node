@@ -34,7 +34,11 @@ pub type ClientResponseFuture<T> = Box<dyn Future<Item = T, Error = Error> + Sen
 /// Helper function to easily issue a HTTP GET request against a given URL that
 /// returns a JSON object. Handles request building, JSON deserialization and
 /// response code checking.
-pub fn get<'a, T>(url: &'a str, api_secret: Option<String>, chain_type: ChainTypes) -> Result<T, Error>
+pub fn get<'a, T>(
+	url: &'a str,
+	api_secret: Option<String>,
+	chain_type: ChainTypes,
+) -> Result<T, Error>
 where
 	for<'de> T: Deserialize<'de>,
 {
@@ -44,7 +48,11 @@ where
 /// Helper function to easily issue an async HTTP GET request against a given
 /// URL that returns a future. Handles request building, JSON deserialization
 /// and response code checking.
-pub fn get_async<'a, T>(url: &'a str, api_secret: Option<String>, chain_type: ChainTypes) -> ClientResponseFuture<T>
+pub fn get_async<'a, T>(
+	url: &'a str,
+	api_secret: Option<String>,
+	chain_type: ChainTypes,
+) -> ClientResponseFuture<T>
 where
 	for<'de> T: Deserialize<'de> + Send + 'static,
 {
@@ -57,7 +65,11 @@ where
 /// Helper function to easily issue a HTTP GET request
 /// on a given URL that returns nothing. Handles request
 /// building and response code checking.
-pub fn get_no_ret(url: &str, api_secret: Option<String>, chain_type: ChainTypes) -> Result<(), Error> {
+pub fn get_no_ret(
+	url: &str,
+	api_secret: Option<String>,
+	chain_type: ChainTypes,
+) -> Result<(), Error> {
 	let req = build_request(url, "GET", api_secret, None, chain_type)?;
 	send_request(req)?;
 	Ok(())
@@ -67,7 +79,12 @@ pub fn get_no_ret(url: &str, api_secret: Option<String>, chain_type: ChainTypes)
 /// object as body on a given URL that returns a JSON object. Handles request
 /// building, JSON serialization and deserialization, and response code
 /// checking.
-pub fn post<IN, OUT>(url: &str, api_secret: Option<String>, input: &IN, chain_type: ChainTypes) -> Result<OUT, Error>
+pub fn post<IN, OUT>(
+	url: &str,
+	api_secret: Option<String>,
+	input: &IN,
+	chain_type: ChainTypes,
+) -> Result<OUT, Error>
 where
 	IN: Serialize,
 	for<'de> OUT: Deserialize<'de>,
@@ -101,7 +118,12 @@ where
 /// object as body on a given URL that returns nothing. Handles request
 /// building, JSON serialization, and response code
 /// checking.
-pub fn post_no_ret<IN>(url: &str, api_secret: Option<String>, input: &IN, chain_type: ChainTypes) -> Result<(), Error>
+pub fn post_no_ret<IN>(
+	url: &str,
+	api_secret: Option<String>,
+	input: &IN,
+	chain_type: ChainTypes,
+) -> Result<(), Error>
 where
 	IN: Serialize,
 {
@@ -142,16 +164,16 @@ fn build_request(
 	})?;
 	let mut builder = Request::builder();
 
-        if let Some(api_secret) = api_secret {
-                let basic_auth = if chain_type == global::ChainTypes::Floonet {
-                        format!("Basic {}", to_base64(&format!("mwcfloo:{}", api_secret)))
-                } else if chain_type == global::ChainTypes::Mainnet {
-                        format!("Basic {}", to_base64(&format!("mwcmain:{}", api_secret)))
-                } else {
-                        format!("Basic {}", to_base64(&format!("mwc:{}", api_secret)))
-                };
-                builder.header(AUTHORIZATION, basic_auth);
-        }
+	if let Some(api_secret) = api_secret {
+		let basic_auth = if chain_type == global::ChainTypes::Floonet {
+			format!("Basic {}", to_base64(&format!("mwcfloo:{}", api_secret)))
+		} else if chain_type == global::ChainTypes::Mainnet {
+			format!("Basic {}", to_base64(&format!("mwcmain:{}", api_secret)))
+		} else {
+			format!("Basic {}", to_base64(&format!("mwc:{}", api_secret)))
+		};
+		builder.header(AUTHORIZATION, basic_auth);
+	}
 
 	builder
 		.method(method)

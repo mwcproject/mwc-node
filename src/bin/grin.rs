@@ -92,7 +92,7 @@ fn real_main() -> i32 {
 	} else if args.is_present("usernet") {
 		global::ChainTypes::UserTesting
 	} else {
- 		// disabling mainnet for now. Will reenable for launch.
+		// disabling mainnet for now. Will reenable for launch.
 		//global::ChainTypes::Mainnet
 		println!("Mainnet is disabled for now. Run with --floonet option for testnet.");
 		return 0;
