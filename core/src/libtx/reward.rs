@@ -15,6 +15,7 @@
 //! Builds the blinded output and related signature proof for the block
 //! reward.
 use crate::consensus::reward;
+use crate::core::transaction::kernel_sig_msg;
 use crate::core::{KernelFeatures, Output, OutputFeatures, TxKernel};
 use crate::keychain::{Identifier, Keychain};
 use crate::libtx::error::Error;
@@ -25,7 +26,6 @@ use crate::libtx::{
 use crate::util::{secp, static_secp_instance};
 use grin_keychain::SwitchCommitmentType;
 
-// MWC - add height because reward depends on the block height
 /// output a reward output
 pub fn output<K, B>(
 	keychain: &K,
@@ -50,7 +50,7 @@ where
 
 	let output = Output {
 		features: OutputFeatures::Coinbase,
-		commit,
+		commit: commit,
 		proof: rproof,
 	};
 
@@ -61,8 +61,9 @@ where
 	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
 	let pubkey = excess.to_pubkey(&secp)?;
 
-	let features = KernelFeatures::Coinbase;
-	let msg = features.kernel_sig_msg()?;
+	// NOTE: Remember we sign the fee *and* the lock_height.
+	// For a coinbase output the fee is 0 and the lock_height is 0
+	let msg = kernel_sig_msg(0, 0, KernelFeatures::Coinbase)?;
 	let sig = match test_mode {
 		true => {
 			let test_nonce = secp::key::SecretKey::from_slice(&secp, &[1; 32])?;
@@ -83,8 +84,12 @@ where
 
 	let proof = TxKernel {
 		features: KernelFeatures::Coinbase,
-		excess,
+		excess: excess,
 		excess_sig: sig,
+		fee: 0,
+		// lock_height here is 0
+		// *not* the maturity of the coinbase output (only spendable 1,440 blocks later)
+		lock_height: 0,
 	};
 	Ok((output, proof))
 }

@@ -125,7 +125,7 @@ impl<'a> Response<'a> {
 		body: T,
 		stream: &'a mut dyn Write,
 	) -> Result<Response<'a>, Error> {
-		let body = ser::ser_vec(&body, core::ser::ProtocolVersion::local())?;
+		let body = ser::ser_vec(&body)?;
 		Ok(Response {
 			resp_type,
 			body,
@@ -135,10 +135,7 @@ impl<'a> Response<'a> {
 	}
 
 	fn write(mut self, tracker: Arc<Tracker>) -> Result<(), Error> {
-		let mut msg = ser::ser_vec(
-			&MsgHeader::new(self.resp_type, self.body.len() as u64),
-			core::ser::ProtocolVersion::local(),
-		)?;
+		let mut msg = ser::ser_vec(&MsgHeader::new(self.resp_type, self.body.len() as u64))?;
 		msg.append(&mut self.body);
 		write_all(&mut self.stream, &msg[..], time::Duration::from_secs(10))?;
 		tracker.inc_sent(msg.len() as u64);

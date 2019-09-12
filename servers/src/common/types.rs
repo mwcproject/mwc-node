@@ -496,7 +496,7 @@ impl DandelionEpoch {
 		match self.start_time {
 			None => true,
 			Some(start_time) => {
-				let epoch_secs = self.config.epoch_secs.expect("epoch seconds") as i64;
+				let epoch_secs = self.config.epoch_secs.expect("epoch_secs config missing") as i64;
 				Utc::now().timestamp().saturating_sub(start_time) > epoch_secs
 			}
 		}
@@ -511,15 +511,16 @@ impl DandelionEpoch {
 
 		// If stem_probability == 90 then we stem 90% of the time.
 		let mut rng = rand::thread_rng();
-		let stem_probability = self.config.stem_probability;
-		self.is_stem = rng.gen_range(0, 100) < stem_probability.expect("stem probability");
+		let stem_probability = self
+			.config
+			.stem_probability
+			.expect("stem_probability config missing");
+		self.is_stem = rng.gen_range(0, 100) < stem_probability;
 
 		let addr = self.relay_peer.clone().map(|p| p.info.addr);
 		info!(
 			"DandelionEpoch: next_epoch: is_stem: {} ({}%), relay: {:?}",
-			self.is_stem,
-			stem_probability.expect("stem probability"),
-			addr
+			self.is_stem, stem_probability, addr
 		);
 	}
 
