@@ -66,7 +66,7 @@ fn reload_chain(dir_name: &str) -> Chain {
 
 #[test]
 fn data_files() {
-	let chain_dir = ".grin_df";
+	let chain_dir = ".mwc_df";
 	//new block so chain references should be freed
 	{
 		let chain = setup(chain_dir);

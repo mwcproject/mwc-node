@@ -4,10 +4,10 @@ version = "2.0.0"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin"
-keywords = [ "crypto", "grin", "mimblewimble" ]
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = [ "crypto", "mwc", "mimblewimble" ]
 readme = "README.md"
-exclude = ["**/*.grin", "**/*.grin2"]
+exclude = ["**/*.mwc", "**/*.mwc", "**/*.grin", "**/*.grin"]
 build = "src/build/build.rs"
 edition = "2018"
 
@@ -16,7 +16,7 @@ members = ["api", "chain", "config", "core", "keychain", "p2p", "servers", "stor
 exclude = ["etc/gen_gen"]
 
 [[bin]]
-name = "grin"
+name = "mwc"
 path = "src/bin/grin.rs"
 
 [dependencies]
@@ -41,7 +41,7 @@ grin_servers = { path = "./servers", version = "2.0.0" }
 grin_util = { path = "./util", version = "2.0.0" }
 
 [target.'cfg(windows)'.dependencies]
-cursive = { version = "0.12", default-features = false, features = ["pancurses-backend"] }
+cursive = { version = "0.11", default-features = false, features = ["pancurses-backend"] }
 [target.'cfg(windows)'.dependencies.pancurses]
 version = "0.16.0"
 features = ["win32"]

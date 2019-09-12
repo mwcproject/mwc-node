@@ -117,7 +117,7 @@ impl Server {
 	fn one_grin_at_a_time(config: &ServerConfig) -> Result<Arc<File>, Error> {
 		let path = Path::new(&config.db_root);
 		fs::create_dir_all(path.clone())?;
-		let path = path.join("grin.lock");
+		let path = path.join("mwc.lock");
 		let lock_file = fs::OpenOptions::new()
 			.read(true)
 			.write(true)
@@ -127,7 +127,7 @@ impl Server {
 			let mut stderr = std::io::stderr();
 			writeln!(
 				&mut stderr,
-				"Failed to lock {:?} (grin server already running?)",
+				"Failed to lock {:?} (mwc server already running?)",
 				path
 			)
 			.expect("Could not write to stderr");
@@ -299,7 +299,7 @@ impl Server {
 			stop_state.clone(),
 		)?;
 
-		warn!("Grin server started.");
+		warn!("MWC server started.");
 		Ok(Server {
 			config,
 			p2p: p2p_server,

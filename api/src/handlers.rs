@@ -21,6 +21,7 @@ mod transactions_api;
 mod utils;
 mod version_api;
 
+use crate::core::global;
 use self::blocks_api::BlockHandler;
 use self::blocks_api::HeaderHandler;
 use self::chain_api::ChainCompactHandler;
@@ -66,12 +67,25 @@ pub fn start_rest_apis(
 ) -> bool {
 	let mut apis = ApiServer::new();
 	let mut router = build_router(chain, tx_pool, peers).expect("unable to build API router");
+
 	if let Some(api_secret) = api_secret {
-		let api_basic_auth = format!("Basic {}", util::to_base64(&format!("grin:{}", api_secret)));
-		let basic_auth_middleware =
-			Arc::new(BasicAuthMiddleware::new(api_basic_auth, &GRIN_BASIC_REALM));
-		router.add_middleware(basic_auth_middleware);
-	}
+                let api_basic_auth = if global::is_mainnet() {
+                        format!(
+                                "Basic {}",
+                                util::to_base64(&format!("mwcmain:{}", api_secret))
+                        )
+                } else if global::is_floonet() {
+                        format!(
+                                "Basic {}",
+                                util::to_base64(&format!("mwcfloo:{}", api_secret))
+                        )
+                } else {
+                        format!("Basic {}", util::to_base64(&format!("mwc:{}", api_secret)))
+                };
+                let basic_auth_middleware =
+                        Arc::new(BasicAuthMiddleware::new(api_basic_auth, &GRIN_BASIC_REALM));
+                router.add_middleware(basic_auth_middleware);
+        }
 
 	info!("Starting HTTP API server at {}.", addr);
 	let socket_addr: SocketAddr = addr.parse().expect("unable to parse socket address");

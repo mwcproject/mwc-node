@@ -85,7 +85,7 @@ impl UI {
 		let mut title_string = StyledString::new();
 		title_string.append(StyledString::styled(
 			format!(
-				"Grin Version {} (proto: {})",
+				"MWC Version {} (proto: {})",
 				built_info::PKG_VERSION,
 				Server::protocol_version()
 			),
