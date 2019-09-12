@@ -289,7 +289,7 @@ pub fn genesis_main() -> core::Block {
 mod test {
 	use super::*;
 	use crate::core::hash::Hashed;
-	use crate::ser::{self};
+	use crate::ser;
 
 	#[test]
 	fn floonet_genesis_hash() {

@@ -375,10 +375,10 @@ impl BlockHeader {
 	/// The "overage" to use when verifying the kernel sums.
 	/// For a block header the overage is 0 - reward.
 	pub fn overage(&self) -> i64 {
- 		// MWC strategy
+		// MWC strategy
 		(calc_mwc_block_reward(self.height) as i64)
-		.checked_neg()
-		.unwrap_or(0)
+			.checked_neg()
+			.unwrap_or(0)
 	}
 
 	/// The "total overage" to use when verifying the kernel sums for a full
