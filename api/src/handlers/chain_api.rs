@@ -232,7 +232,7 @@ impl KernelHandler {
 			if let Some(h) = params.get("min_height") {
 				let h = h
 					.parse()
-				.map_err(|_| ErrorKind::RequestError("invalid minimum height".into()))?;
+					.map_err(|_| ErrorKind::RequestError("invalid minimum height".into()))?;
 				// Default is genesis
 				min_height = if h == 0 { None } else { Some(h) };
 			}
