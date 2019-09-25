@@ -1288,7 +1288,6 @@ impl Chain {
 		Ok(Some((kernel, header.height, mmr_index)))
 	}
 
-
 	/// Gets the block header in which a given kernel mmr index appears in the txhashset.
 	pub fn get_header_for_kernel_index(
 		&self,
