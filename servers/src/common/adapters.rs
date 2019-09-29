@@ -126,7 +126,7 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		peer_info: &PeerInfo,
 		was_requested: bool,
 	) -> Result<bool, chain::Error> {
-		debug!(
+		info!(
 			"Received block {} at {} from {} [in/out/kern: {}/{}/{}] going to process.",
 			b.hash(),
 			b.header.height,
