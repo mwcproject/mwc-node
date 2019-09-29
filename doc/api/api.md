@@ -5,7 +5,8 @@ This document contains the documentation for the 3 Grin REST APIs. These endpoin
 ## Node API
 
 This endpoint is used to query a node about various information on the blockchain, networks and peers. By default, this REST API will listen on `localhost:3413`. This API is started as the same time as the Grin node.
-This endpoint requires, by default, [Basic Authentication](https://en.wikipedia.org/wiki/Basic_access_authentication). The username is `mwc` and the password can be found in the `.api_secret` file.
+This endpoint requires, by default, [Basic Authentication](https://en.wikipedia.org/wiki/Basic_access_authentication). The username is `mwcfloo` for foonet, `mwcmain` for mainnet and `mwc` for other networks. 
+The password can be found in the `.api_secret` file.
 To learn about what specific calls can be made read the [node API doc](node_api.md).
 
 ## Wallet APIs
