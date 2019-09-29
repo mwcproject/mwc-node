@@ -1361,7 +1361,7 @@ impl<'a> Extension<'a> {
 					status.on_validation(kern_count, total_kernels, 0, 0);
 				}
 				if kern_count % 1_000 == 0 {
-					debug!(
+					info!(
 						"txhashset: verify_kernel_signatures: verified {} signatures",
 						kern_count,
 					);
@@ -1408,7 +1408,7 @@ impl<'a> Extension<'a> {
 				Output::batch_verify_proofs(&commits, &proofs)?;
 				commits.clear();
 				proofs.clear();
-				debug!(
+				info!(
 					"txhashset: verify_rangeproofs: verified {} rangeproofs",
 					proof_count,
 				);

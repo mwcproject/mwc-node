@@ -93,7 +93,7 @@ impl NetEvents for EventLogger {
 	}
 
 	fn on_block_received(&self, block: &core::Block, addr: &PeerAddr) {
-		debug!(
+		info!(
 			"Received block {} at {} from {} [in/out/kern: {}/{}/{}] going to process.",
 			block.hash(),
 			block.header.height,
@@ -105,7 +105,7 @@ impl NetEvents for EventLogger {
 	}
 
 	fn on_header_received(&self, header: &core::BlockHeader, addr: &PeerAddr) {
-		debug!(
+		info!(
 			"Received block header {} at {} from {}, going to process.",
 			header.hash(),
 			header.height,

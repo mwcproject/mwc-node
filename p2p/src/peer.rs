@@ -380,7 +380,7 @@ impl Peer {
 	}
 
 	pub fn send_txhashset_request(&self, height: u64, hash: Hash) -> Result<(), Error> {
-		debug!(
+		info!(
 			"Asking {} for txhashset archive at {} {}.",
 			self.info.addr, height, hash
 		);

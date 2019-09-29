@@ -320,7 +320,7 @@ impl MessageHandler for Protocol {
 
 			Type::TxHashSetArchive => {
 				let sm_arch: TxHashSetArchive = msg.body()?;
-				debug!(
+				info!(
 					"handle_payload: txhashset archive for {} at {}. size={}",
 					sm_arch.hash, sm_arch.height, sm_arch.bytes,
 				);
@@ -386,7 +386,7 @@ impl MessageHandler for Protocol {
 					.adapter
 					.txhashset_write(sm_arch.hash, tmp_zip, &self.peer_info)?;
 
-				debug!(
+				info!(
 					"handle_payload: txhashset archive for {} at {}, DONE. Data Ok: {}",
 					sm_arch.hash, sm_arch.height, res
 				);
