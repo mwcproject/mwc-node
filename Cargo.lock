@@ -892,7 +892,7 @@ dependencies = [
 [[package]]
 name = "grin_secp256k1zkp"
 version = "0.7.7"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp#43424f0cca3e09405b1382537bef2bd6a76e0f00"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp#6f625723252f9a4965b0937002b6f3b069ddf16c"
 dependencies = [
  "arrayvec 0.3.25 (registry+https://github.com/rust-lang/crates.io-index)",
  "cc 1.0.37 (registry+https://github.com/rust-lang/crates.io-index)",
