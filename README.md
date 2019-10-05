@@ -26,7 +26,7 @@ Much is left to be done and [contributions](CONTRIBUTING.md) are welcome (see be
 
 ## Contributing
 
-To get involved, read our [contributing docs](CONTRIBUTING.md).
+To get involved, you can read our [contributing docs](CONTRIBUTING.md).
 
 ## Getting Started
 
