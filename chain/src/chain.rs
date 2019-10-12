@@ -217,7 +217,7 @@ impl Chain {
 		);
 
 		let sync_head = store.get_sync_head()?;
-		debug!(
+		info!(
 			"init: sync_head: {} @ {} [{}]",
 			sync_head.total_difficulty.to_num(),
 			sync_head.height,
