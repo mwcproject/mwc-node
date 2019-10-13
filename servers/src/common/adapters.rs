@@ -278,15 +278,16 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		bhs: &[core::BlockHeader],
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
-		info!(
-			"Received {} block headers from {}",
-			bhs.len(),
-			peer_info.addr
-		);
-
 		if bhs.len() == 0 {
 			return Ok(false);
 		}
+
+		info!(
+			"Received {} block headers from {}, height {}",
+			bhs.len(),
+			peer_info.addr,
+			bhs[0].height
+		);
 
 		// try to add headers to our header chain
 		match self.chain().sync_block_headers(bhs, self.chain_opts(true)) {
