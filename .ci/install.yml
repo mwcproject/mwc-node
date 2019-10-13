@@ -2,6 +2,8 @@ steps:
   - script: |
       git apply .ci/win.patch
       choco install -y llvm
+      curl https://sh.rustup.rs -sSf | sh -s -- -y
+      ~/.cargo/bin/rustup override set 1.37.0
     displayName: Windows Install LLVM
     condition: eq( variables['Agent.OS'], 'Windows_NT' )
   - script: |
