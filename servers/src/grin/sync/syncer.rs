@@ -116,6 +116,7 @@ impl SyncRunner {
 	));
 
 		// Wait for connections reach at least MIN_PEERS
+		info!("Waiting for the peers");
 		if let Err(e) = self.wait_for_min_peers() {
 			error!("wait_for_min_peers failed: {:?}", e);
 		}
