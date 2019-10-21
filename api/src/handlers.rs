@@ -48,6 +48,7 @@ use crate::router::{Router, RouterError};
 use crate::util;
 use crate::util::RwLock;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// Start all server HTTP handlers. Register all of them with Router
@@ -65,9 +66,11 @@ pub fn start_rest_apis(
 	peers: Arc<p2p::Peers>,
 	api_secret: Option<String>,
 	tls_config: Option<TLSConfig>,
+	server_running: Arc<AtomicBool>,
 ) -> bool {
 	let mut apis = ApiServer::new();
-	let mut router = build_router(chain, tx_pool, peers).expect("unable to build API router");
+	let mut router =
+		build_router(chain, tx_pool, peers, server_running).expect("unable to build API router");
 
 	if let Some(api_secret) = api_secret {
 		let api_basic_auth = if global::is_mainnet() {
@@ -104,6 +107,7 @@ pub fn build_router(
 	chain: Arc<chain::Chain>,
 	tx_pool: Arc<RwLock<pool::TransactionPool>>,
 	peers: Arc<p2p::Peers>,
+	server_running: Arc<AtomicBool>,
 ) -> Result<Router, RouterError> {
 	let route_list = vec![
 		"get blocks".to_string(),
@@ -157,6 +161,7 @@ pub fn build_router(
 	let status_handler = StatusHandler {
 		chain: Arc::downgrade(&chain),
 		peers: Arc::downgrade(&peers),
+		server_running: server_running.clone(),
 	};
 	let kernel_download_handler = KernelDownloadHandler {
 		peers: Arc::downgrade(&peers),

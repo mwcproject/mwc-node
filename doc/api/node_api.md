@@ -14,6 +14,7 @@
     1. [GET Chain Outputs by Height](#get-chain-outputs-by-height)
 1. [Status Endpoint](#status-endpoint)
     1. [GET Status](#get-status)
+    1. [POST Status](#post-status)
 1. [TxHashSet Endpoint](#txhashset-endpoint)
     1. [GET TxHashSet Roots](#get-txhashset-roots)
     1. [GET TxHashSet Last Outputs](#get-txhashset-last-outputs)
@@ -496,6 +497,59 @@ Returns various information about the node and the network
       }
     });
   ```
+
+### POST Status
+
+Manage the node status. 
+
+* **URL**
+
+  /v1/status
+
+* **Method:**
+
+  `POST`
+  
+* **URL Params**
+
+     **Required:**
+  `action=[str_value]`
+  
+   | action value       | Description                                                   |
+   |:-------------------|:--------------------------------------------------------------|
+   | stop_node          | Stop mwc-node                                                 |
+
+* **Data Params**
+
+  None
+
+* **Success Response:**
+
+  * **Code:** 200
+  * **Content:**
+
+    | Field                 | Type     | Description          |
+    |:----------------------|:---------|:---------------------|
+    | processed             | string[] | list of commands that was processed  |
+
+* **Error Response:**
+
+  * **Code:** 404 or 500
+
+* **Sample Call:**
+
+  ```javascript
+    $.ajax({
+      url: "/v1/status?action=stop_node",
+      dataType: "json",
+      type : "POST",
+      success : function(r) {
+        console.log(r);
+      }
+    });
+  ```
+
+
 
 ## TxHashSet Endpoint
 

@@ -20,7 +20,8 @@ use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::web::*;
 use hyper::{Body, Request, StatusCode};
-use std::sync::Weak;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 // RESTful index of available api endpoints
 // GET /v1/
@@ -64,6 +65,7 @@ impl Handler for KernelDownloadHandler {
 pub struct StatusHandler {
 	pub chain: Weak<chain::Chain>,
 	pub peers: Weak<p2p::Peers>,
+	pub server_running: Arc<AtomicBool>,
 }
 
 impl StatusHandler {
@@ -78,8 +80,48 @@ impl StatusHandler {
 	}
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusOutput {
+	// Processed actions
+	pub processed: Vec<String>,
+}
+
+impl StatusOutput {
+	pub fn new(processed: &Vec<String>) -> StatusOutput {
+		StatusOutput {
+			processed: processed.clone(),
+		}
+	}
+}
+
 impl Handler for StatusHandler {
 	fn get(&self, _req: Request<Body>) -> ResponseFuture {
 		result_to_response(self.get_status())
+	}
+
+	fn post(&self, req: Request<Body>) -> ResponseFuture {
+		if let Some(query) = req.uri().query() {
+			let mut commitments: Vec<String> = vec![];
+
+			let params = QueryParams::from(query);
+			params.process_multival_param("action", |id| commitments.push(id.to_owned()));
+
+			let mut processed = vec![];
+			for action_str in commitments {
+				if action_str == "stop_node" {
+					warn!("Stopping the node by API request...");
+					processed.push(action_str);
+					self.server_running.store(false, Ordering::SeqCst);
+				}
+			}
+
+			// stop the server...
+			result_to_response(Ok(StatusOutput::new(&processed)))
+		} else {
+			response(
+				StatusCode::BAD_REQUEST,
+				format!("Expected 'action' parameter at request"),
+			)
+		}
 	}
 }

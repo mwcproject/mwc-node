@@ -43,9 +43,10 @@ pub fn start_server(config: servers::ServerConfig) {
 fn start_server_tui(config: servers::ServerConfig) {
 	// Run the UI controller.. here for now for simplicity to access
 	// everything it might need
+	let running = Arc::new(AtomicBool::new(true));
 	if config.run_tui.unwrap_or(false) {
 		warn!("Starting MWC in UI mode...");
-		servers::Server::start(config, |serv: servers::Server| {
+		servers::Server::start(config, running.clone(), |serv: servers::Server| {
 			let mut controller = ui::Controller::new().unwrap_or_else(|e| {
 				panic!("Error loading UI controller: {}", e);
 			});
@@ -54,17 +55,18 @@ fn start_server_tui(config: servers::ServerConfig) {
 		.unwrap();
 	} else {
 		warn!("Starting MWC w/o UI...");
-		servers::Server::start(config, |serv: servers::Server| {
-			let running = Arc::new(AtomicBool::new(true));
+		servers::Server::start(config, running.clone(), |serv: servers::Server| {
 			let r = running.clone();
 			ctrlc::set_handler(move || {
 				r.store(false, Ordering::SeqCst);
 			})
 			.expect("Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill)");
 			while running.load(Ordering::SeqCst) {
-				thread::sleep(Duration::from_secs(1));
+				thread::sleep(Duration::from_millis(300));
 			}
-			warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
+			warn!(
+				"Received SIGINT (Ctrl+C), SIGTERM (kill) or Server was stopped with API request."
+			);
 			serv.stop();
 		})
 		.unwrap();
