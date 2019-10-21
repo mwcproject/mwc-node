@@ -27,6 +27,8 @@ use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, EdgeType, PoWContext
 /// different sets of parameters for different purposes,
 /// e.g. CI, User testing, production values
 use crate::util::RwLock;
+use std::sync::atomic::{Ordering, AtomicBool};
+use std::sync::Arc;
 
 /// Define these here, as they should be developer-set, not really tweakable
 /// by users
@@ -132,6 +134,10 @@ lazy_static! {
 	/// PoW context type to instantiate
 	pub static ref POW_CONTEXT_TYPE: RwLock<PoWContextTypes> =
 			RwLock::new(PoWContextTypes::Cuckoo);
+
+	/// Running flag for MWC node.
+	pub static ref SERVER_RUNNING: Arc<AtomicBool> =
+			Arc::new(AtomicBool::new(true));
 }
 
 /// Set the mining mode
@@ -353,3 +359,19 @@ where
 	last_n.reverse();
 	last_n
 }
+
+/// Checking running status if the server
+pub fn is_server_running() -> bool {
+	SERVER_RUNNING.load(Ordering::SeqCst)
+}
+
+/// Request for server stopping
+pub fn request_server_stop() {
+	SERVER_RUNNING.store(false, Ordering::SeqCst)
+}
+
+/// Get an access to the the flag responsible for stopping the server
+pub fn get_server_running_controller() -> Arc<AtomicBool> {
+	SERVER_RUNNING.clone()
+}
+
