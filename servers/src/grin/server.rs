@@ -79,10 +79,7 @@ impl Server {
 	/// Instantiates and starts a new server. Optionally takes a callback
 	/// for the server to send an ARC copy of itself, to allow another process
 	/// to poll info about the server status
-	pub fn start<F>(
-		config: ServerConfig,
-		mut info_callback: F,
-	) -> Result<(), Error>
+	pub fn start<F>(config: ServerConfig, mut info_callback: F) -> Result<(), Error>
 	where
 		F: FnMut(Server),
 	{
@@ -291,7 +288,7 @@ impl Server {
 			p2p_server.peers.clone(),
 			api_secret,
 			tls_conf,
-			global::get_server_running_controller()
+			global::get_server_running_controller(),
 		);
 
 		info!("Starting dandelion monitor: {}", &config.api_http_addr);
