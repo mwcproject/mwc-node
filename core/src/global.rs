@@ -27,7 +27,7 @@ use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, EdgeType, PoWContext
 /// different sets of parameters for different purposes,
 /// e.g. CI, User testing, production values
 use crate::util::RwLock;
-use std::sync::atomic::{Ordering, AtomicBool};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Define these here, as they should be developer-set, not really tweakable
@@ -374,4 +374,3 @@ pub fn request_server_stop() {
 pub fn get_server_running_controller() -> Arc<AtomicBool> {
 	SERVER_RUNNING.clone()
 }
-
