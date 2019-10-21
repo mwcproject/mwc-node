@@ -48,6 +48,7 @@ use crate::p2p::types::PeerAddr;
 use crate::pool;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
+use std::sync::atomic::AtomicBool;
 
 /// Grin server holding internal structures.
 pub struct Server {
@@ -79,14 +80,18 @@ impl Server {
 	/// Instantiates and starts a new server. Optionally takes a callback
 	/// for the server to send an ARC copy of itself, to allow another process
 	/// to poll info about the server status
-	pub fn start<F>(config: ServerConfig, mut info_callback: F) -> Result<(), Error>
+	pub fn start<F>(
+		config: ServerConfig,
+		server_running: Arc<AtomicBool>,
+		mut info_callback: F,
+	) -> Result<(), Error>
 	where
 		F: FnMut(Server),
 	{
 		let mining_config = config.stratum_mining_config.clone();
 		let enable_test_miner = config.run_test_miner;
 		let test_miner_wallet_url = config.test_miner_wallet_url.clone();
-		let serv = Server::new(config)?;
+		let serv = Server::new(config, server_running)?;
 
 		if let Some(c) = mining_config {
 			let enable_stratum_server = c.enable_stratum_server;
@@ -137,7 +142,7 @@ impl Server {
 	}
 
 	/// Instantiates a new server associated with the provided future reactor.
-	pub fn new(config: ServerConfig) -> Result<Server, Error> {
+	pub fn new(config: ServerConfig, server_running: Arc<AtomicBool>) -> Result<Server, Error> {
 		// Obtain our lock_file or fail immediately with an error.
 		let lock_file = Server::one_grin_at_a_time(&config)?;
 
@@ -288,6 +293,7 @@ impl Server {
 			p2p_server.peers.clone(),
 			api_secret,
 			tls_conf,
+			server_running,
 		);
 
 		info!("Starting dandelion monitor: {}", &config.api_http_addr);
