@@ -215,7 +215,7 @@ impl ApiServer {
 			))?;
 		}
 
-                let tls_conf = conf.build_server_config()?;
+		let tls_conf = conf.build_server_config()?;
 
 		thread::Builder::new()
 			.name("apis".to_string())
