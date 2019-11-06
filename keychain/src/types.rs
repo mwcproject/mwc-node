@@ -239,9 +239,9 @@ pub struct BlindingFactor([u8; SECRET_KEY_SIZE]);
 // If Zeroize will fix issue with the latest rust compiler, we can switch back
 // to derive
 impl Drop for BlindingFactor {
-    fn drop(&mut self) {
-        self.0.zeroize();
-    }
+	fn drop(&mut self) {
+		self.0.zeroize();
+	}
 }
 
 // Dummy `Debug` implementation that prevents secret leakage.
