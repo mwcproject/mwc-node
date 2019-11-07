@@ -32,7 +32,8 @@ use std::fs::File;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{io, thread};
-use tokio_rustls::ServerConfigExt;
+use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
+use tokio_rustls::TlsAcceptor;
 use tokio_tcp;
 
 /// Errors that can be returned by an ApiEndpoint implementation.
@@ -215,7 +216,14 @@ impl ApiServer {
 			))?;
 		}
 
-		let tls_conf = conf.build_server_config()?;
+        let certs = conf.load_certs()?;
+        let keys = conf.load_private_key()?;
+
+        let mut config = ServerConfig::new(NoClientAuth::new());
+        config
+            .set_single_cert(certs, keys)
+            .expect("invalid key or certificate");
+        let config = TlsAcceptor::from(Arc::new(config));
 
 		thread::Builder::new()
 			.name("apis".to_string())
@@ -223,7 +231,7 @@ impl ApiServer {
 				let listener = tokio_tcp::TcpListener::bind(&addr).expect("failed to bind");
 				let tls = listener
 					.incoming()
-					.and_then(move |s| tls_conf.accept_async(s))
+                    .and_then(move |s| config.accept(s))
 					.then(|r| match r {
 						Ok(x) => Ok::<_, io::Error>(Some(x)),
 						Err(e) => {
