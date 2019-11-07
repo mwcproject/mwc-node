@@ -11,7 +11,7 @@ edition = "2018"
 
 [dependencies]
 hyper = "0.12"
-hyper-rustls = "0.14"
+hyper-rustls = "0.16"
 fs2 = "0.4"
 futures = "0.1"
 http = "0.1"
@@ -23,7 +23,7 @@ log = "0.4"
 serde_derive = "1"
 serde_json = "1"
 chrono = "0.4.4"
-tokio =  "0.1.11"
+tokio =  "0.1.22"
 
 grin_api = { path = "../api", version = "2.4.2-beta.1" }
 grin_chain = { path = "../chain", version = "2.4.2-beta.1" }
