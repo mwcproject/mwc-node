@@ -26,7 +26,7 @@ Please check the high level connection diagram and understand the ports that are
 
 ![](Install_mac_images/architecture.png)
 
-Please note IPs `127.0.0.1` are open for only local host connections. `0.0.0.0` allow anyone to connect to your host.
+Please note IPs `127.0.0.1` are open for only local host connections. `0.0.0.0` allows anyone to connect to your host.
 
 Please adjust IPs according your needs and update your firewall rules.
 
