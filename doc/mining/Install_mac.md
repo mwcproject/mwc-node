@@ -22,43 +22,38 @@ Install 'tree', 'curl' and 'telnet' to validate the setup
 
 ## High level Architecture
 
-Please check the high level connection diagram and please understand the ports that are used by default. For P2P connection it is enough to have outbound connection. 
-
-For Stratum protocol inbound connection does required.
+Please check the high level connection diagram and understand the ports that are used by default. For P2P connections it is enough to have outbound connections. For Stratum protocol inbound connection are required.
 
 ![](Install_mac_images/architecture.png)
 
-Please note IPs `127.0.0.1` are open for local host connections. `0.0.0.0` are open for all world.
+Please note IPs `127.0.0.1` are open for only local host connections. `0.0.0.0` allow anyone to connect to your host.
 
-Please Ajust IPs according your needs and update your firewall rules.
+Please adjust IPs according your needs and update your firewall rules.
 
-Note: By default connections are not entrypted. If you need SSL connections please check how you can setup certificates. It is different topic and not covered in this document.  
-   
-   
+Note: By default connections are not entrypted. If you need SSL connections you will need to configure certificates as well. It is a different topic and is not covered in this document.
 
 ## Data Location, data clean up
 
-mwc-node and mwc-wallet data located at `~/.mwc` directory.
+mwc-node and mwc-wallet data is located in the `~/.mwc` directory.
 
-mwc-wallet data located at `~/.mwc/main/wallet_data/`. The most important is a wallet seed  `~/.mwc/main/wallet_data/wallet.seed`
+mwc-wallet data is located in the `~/.mwc/main/wallet_data/` directory. The most critical piece of data is the wallet seed founds at `~/.mwc/main/wallet_data/wallet.seed`.
 
-In case you want to do clean setup, you can delete all directory. Please note, you will **lost your wallet** in this case.  
+In case you want to do clean setup, you can delete all directory. Please note, you will **lose any funds in your wallet** in this case.  
 ```
-rm -rf ~/mwc
+rm -rf ~/.mwc
 ``` 
 
-You might need to do a clean up if you mess up with your setup and want to start from the beginning.
-
+You might need to do this to clean your setup if an error is made.
 
 ## Install of MWC node and mwc-wallet
 
-In this install I am installing everythign at the directory `~/my_mwc_install`. All commands are referred to this path.
+In this install we will install everything at `~/my_mwc_install`. All commands referred to assume this path.
 
-Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that your browser put resulting file will be located at `~/Downloads/mwc-node-XXXXX-macos.tar.gz`
+Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that resulting file will be located at `~/Downloads/mwc-node-XXXXX-macos.tar.gz`.
 
-Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that resulting file will be located at `~/Downloads/mwc-wallet-2.4.5-macos.tar.gz`
+Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that resulting file will be located at `~/Downloads/mwc-wallet-2.4.5-macos.tar.gz`.
 
-Now let's install everything into `~/my_mwc_install`
+Now let's install everything into `~/my_mwc_install`.
 
 ```bash
 mkdir ~/my_mwc_install
@@ -79,7 +74,7 @@ x mwc-wallet/
 x mwc-wallet/mwc-wallet
 ```
 
-Now your mwc node is located at `~/my_mwc_install/mwc/mwc` and your mwc-wallet is located at `~/my_mwc_install/mwc-wallet/mwc-wallet`
+Now your mwc-node is located at `~/my_mwc_install/mwc/mwc` and your mwc-wallet is located at `~/my_mwc_install/mwc-wallet/mwc-wallet`.
 
 ## Start the node
 
@@ -91,7 +86,7 @@ kbay$ ~/my_mwc_install/mwc/mwc
 ![](Install_mac_images/scr_node.png)
 
 
-mwc node has few commands. Run `~/my_mwc_install/mwc/mwc help` to explore them.
+mwc-node has few commands. Run `~/my_mwc_install/mwc/mwc help` to explore them.
 
 Please keep your node running until we setup the wallet. You should be able to see that the node was able connect to the peers and download the chain.
 
@@ -139,28 +134,27 @@ kbay$ tree ~/.mwc
 
 Please note the location of the:
 
-logs : `/Users/kbay/.mwc/mwc-server.log`  
+log file: `/Users/kbay/.mwc/mwc-server.log`  
 config: `/Users/kbay/.mwc/mwc-server.toml`
 
-Meanwhile be free to check the logs at `/Users/kbay/.mwc/mwc-server.log`
+Meanwhile feel free to check the logs at `/Users/kbay/.mwc/mwc-server.log`
 
-If everything goes well, you shouldn't see the ERROR message. Output from that command should be empty
+If everything goes well, you shouldn't see anything logged at the "ERROR" level. Output from the following command should be empty
 ```
 >  cat ~/.mwc/main/mwc-server.log | grep 'ERROR'
 ``` 
 
-**Note: Expected that it is one instance of of the node and wallet are running at the same host!**  
+**Note: It is expected that a single node and wallet only are running per host!** 
 If you try to run several instances, you will likely to see some errors.  
 
-You should wait some time until node will be able to download the blockchain data. In that case UI shows the `Current Status: Running`.
+You will need to wait a while for the node to download the blockchain data. When the download is complete, the UI will show the following: `Current Status: Running`.
 If you see this status, congratulations, your node is running. We can start with a wallet setup.
-
 
 ## Init wallet
 
-If you don't have any mwc wallet, you need to create a new one. Please note, if your already have mwc wallet, you can restore it by the mnemonic. It is covered below.
+If you don't have an mwc-wallet instance, you will need to create a new one. Please note, if you already have an mwc-wallet instance, you can restore it through mnemonic or seed file. It is covered below.
  
-Let's explore first what mwc-wallet can by running:
+Let's explore first what mwc-wallet can do by running:
 
 ```
 kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet --help
@@ -228,9 +222,9 @@ Please back-up these words in a non-digital format.
 Command 'init' completed successfully
 ```
     
-Please story recovery phrase in the secure place. That mnemonic will allow you to recovery your funds in a new wallet.
+Please store the recovery phrase in the secure place, preferably offline on a physical medium. The mnemonic will allow you to recover your funds in a new wallet even if your wallet files are destroyed.
 
-If you already has a wallet, you can init it with your existing seed and that resync it with a node. Please note, if your wallet has any coins, you will see them after resync only.
+If you already have a wallet, you can init it with your existing seed and resync it with a full node. Please note, if your wallet has any coins, you will only see them after a resyncing with the "restore" command.
 ```
 kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet init -r
 Please enter your recovery phrase:
@@ -282,7 +276,7 @@ Please note the location of the:
 logs : `/Users/kbay/.mwc/mwc-wallet.log`  
 config: `/Users/kbay/.mwc/mwc-wallet.toml`
 
-Check if there was no Errors during wallet initialization:
+Confirm that there were no errors during wallet initialization:
 
 ```
 >  cat ~/.mwc/main/mwc-wallet.log | grep 'ERROR'
@@ -290,7 +284,7 @@ Check if there was no Errors during wallet initialization:
 
 ## Start Listener for the Wallet
 
-In order to do mining mwc-wallet need to run in listening mode. It is needed to create the transactions in case your miner will found the block.
+In order to mine, mwc-wallet needs to be run in listening mode. The wallet will build the coinbase transaction for the blocks that your miner mines.
 
 ```
 kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet listen
@@ -298,9 +292,9 @@ Password:
 20191111 18:59:15.332 WARN grin_wallet_controller::controller - Starting HTTP Foreign listener API server at 127.0.0.1:3415.
 20191111 18:59:15.333 WARN grin_wallet_controller::controller - HTTP Foreign listener started.
 ```
-And your wallet will run until you will not interrupt it.
+And your wallet will run until you interrupt it.
 
-Congratulations, if you pass validation, your wallet is ready. Please keep it running until you mining.
+Congratulations, if you pass validation, your wallet is ready. Please keep it running for the duration of the time you are mining.
 
 #### Validate
 
@@ -326,10 +320,10 @@ kbay$  curl -d '{"jsonrpc": "2.0", "method": "build_coinbase", "id": 1, "params"
 
 Please update config for your mwc-node.
 
-- Stop mwc-node if it is running. Please let mwc-wallet ruuning in listening mode.
+- Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
 - Edit `~/.mwc/mwc-server.toml` with your favorite editor.
 
-Change value for `enable_stratum_server` to 
+Change the value for `enable_stratum_server` to 
 ```
 #whether stratum server is enabled
 enable_stratum_server = true
@@ -339,22 +333,22 @@ enable_stratum_server = true
 kbay$ ~/my_mwc_install/mwc/mwc
 ``` 
 
-You are ready to to run your miner locally at the same host.
+You are ready to to run your miner locally on the same host.
 
 #### Validate
 
-Check if there any errors at the node logs
+Check if there any errors are in the node logs
 ```
 >  cat ~/.mwc/main/mwc-server.log | grep 'ERROR'
 ```
 
-Check if stratum is activated. There are must be a line into the logs:
+Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
 ```
 > cat ~/.mwc/main/mwc-server.log | grep 'Stratum server started'
 20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
 ```
 
-Verify if stratum really works with telnet:
+Verify if stratum is configured correctly with telnet:
 ```
 kbay$ telnet  127.0.0.1 3416
 Trying 127.0.0.1...
@@ -366,14 +360,14 @@ Connection closed by foreign host.
 ```
 
 
-## Setup mwc-node to run miner on different host at Internet
+## Setup mwc-node to run miner on different host
 
 Please update config for your mwc-node.
 
-- Stop mwc-node if it is running. Please let mwc-wallet ruuning in listening mode.
+- Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
 - Edit `~/.mwc/mwc-server.toml` with your favorite editor.
 
-Change value for `enable_stratum_server` and `stratum_server_addr` 
+Change the value for `enable_stratum_server` and `stratum_server_addr` 
 ```
 #whether stratum server is enabled
 enable_stratum_server = true
@@ -381,7 +375,7 @@ enable_stratum_server = true
 #what port and address for the stratum server to listen on
 stratum_server_addr = "0.0.0.0:3416"
 ``` 
-stratum_server_addr need listen on 0.0.0.0 in order to accept connections from other hosts.
+stratum_server_addr needs to listen on 0.0.0.0 in order to accept connections from other hosts.
 
 - Start mwc-node
 ```
@@ -390,18 +384,18 @@ kbay$ ~/my_mwc_install/mwc/mwc
 
 #### Validate node from local host
 
-Check if there any errors at the node logs
+Check if there are any errors in the node logs
 ```
 >  cat ~/.mwc/main/mwc-server.log | grep 'ERROR'
 ```
 
-Check if stratum is activated. There are must be a line into the logs:
+Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
 ```
 > cat ~/.mwc/main/mwc-server.log | grep 'Stratum server started'
 20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
 ```
 
-Verify if stratum really works with telnet:
+Verify that stratum is configured correctly with telnet:
 ```
 kbay$ telnet  127.0.0.1 3416
 Trying 127.0.0.1...
@@ -414,16 +408,16 @@ Connection closed by foreign host.
 
 #### Obtain my public IP.
 
-Your miner will need to initiate connection to your public IP. You can get your Public IP from here  [https://whatismypublicip.com/]
+Your miner will need to initiate a connection to your public IP. You can get your Public IP from the following site  [https://whatismypublicip.com/]
 
 Please store your IP, you will need it to setup your miner and validate the setup.
 
 #### Open port at Mac OS
 
-Please do search by your self how to open port MAC OS firewall. 
+Ensure the port is open and not being blocked by the MAC OS firewall. 
 The easiest way is to disable the firewall.
 
-#### Do you have a router? Map 3416 port for income connections
+#### Do you have a router? Map 3416 port for incoming connections
 
 If you have a router you need to setup the port forwarding for income connections.
 
