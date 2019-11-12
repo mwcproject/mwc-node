@@ -28,7 +28,7 @@ Please check the high level connection diagram and understand the ports that are
 
 Please note IPs `127.0.0.1` are open for only local host connections. `0.0.0.0` allows anyone to connect to your host.
 
-Please adjust IPs according your needs and update your firewall rules.
+Please adjust IPs according to your needs and update your firewall rules.
 
 Note: By default connections are not entrypted. If you need SSL connections you will need to configure certificates as well. It is a different topic and is not covered in this document.
 
@@ -36,9 +36,9 @@ Note: By default connections are not entrypted. If you need SSL connections you 
 
 mwc-node and mwc-wallet data is located in the `~/.mwc` directory.
 
-mwc-wallet data is located in the `~/.mwc/main/wallet_data/` directory. The most critical piece of data is the wallet seed founds at `~/.mwc/main/wallet_data/wallet.seed`.
+mwc-wallet data is located in the `~/.mwc/main/wallet_data/` directory. The most critical piece of data is the wallet seed found at `~/.mwc/main/wallet_data/wallet.seed`.
 
-In case you want to do clean setup, you can delete all directory. Please note, you will **lose any funds in your wallet** in this case.  
+In case you want to do clean setup, you can delete all directories. Please note, you will **lose any funds in your wallet** in this case.  
 ```
 rm -rf ~/.mwc
 ``` 
@@ -49,9 +49,9 @@ You might need to do this to clean your setup if an error is made.
 
 In this install we will install everything at `~/my_mwc_install`. All commands referred to assume this path.
 
-Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that resulting file will be located at `~/Downloads/mwc-node-XXXXX-macos.tar.gz`.
+Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-node-XXXXX-macos.tar.gz`.
 
-Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that resulting file will be located at `~/Downloads/mwc-wallet-2.4.5-macos.tar.gz`.
+Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-wallet-2.4.5-macos.tar.gz`.
 
 Now let's install everything into `~/my_mwc_install`.
 
