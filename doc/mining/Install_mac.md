@@ -2,7 +2,7 @@
 
 ## About
 
-This document describes how to setup and **verify** the MWC full node, wallet and be ready for the mining.
+This document describes how to setup and **verify** the MWC full node, wallet and be ready for mining.
 
 ## MWC QT Wallet
 
