@@ -11,7 +11,7 @@ If you are running qt wallet or mwc713, please **do not try to use it for mining
 
 ## Preperquisited
 
-Please install homebrew at your mac. [https://brew.sh/]
+Please install homebrew on your mac. [https://brew.sh/]
 
 Install 'tree', 'curl' and 'telnet' to validate the setup
 ```
