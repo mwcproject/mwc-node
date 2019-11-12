@@ -2,12 +2,12 @@
 
 ## About
 
-This document describe how to setup and **verify** MWC node, wallet and be ready for the mining.
+This document describes how to setup and **verify** the MWC full node, wallet and be ready for the mining.
 
 ## MWC QT Wallet
 
-Please note, mwc-qt-wallet avalailable at [Wallet Download](https://www.mwc.mw/downloads) page is **not for the mining**.
-If you are running qt wallet or mwc713, please **stop it and don't use it** during the setup and verification.
+Please note, the mwc-qt-wallet is avalailable at [Wallet Download](https://www.mwc.mw/downloads) page is **not for mining**.
+If you are running qt wallet or mwc713, please **do not try to use it for mining**.
 
 ## Preperquisited
 
