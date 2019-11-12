@@ -1,4 +1,4 @@
-# Mining Setup, MAC OS
+# Mining Setup, Windows 10
 
 ## About
 
@@ -11,14 +11,9 @@ If you are running qt wallet or mwc713, please **do not try to use it for mining
 
 ## Preperquisited
 
-Please install homebrew on your mac. [https://brew.sh/]
+Init Telnet if you don't have yet [https://www.technipages.com/windows-10-enable-telnet]
 
-Install 'tree', 'curl' and 'telnet' to validate the setup
-```
-> brew install tree
-> brew install curl
-> brew install telnet
-```
+Expected that you have a PowerShell. All commands will be run from Windows 10 PowerShell.
 
 ## High level Architecture
 
@@ -38,10 +33,10 @@ mwc-node and mwc-wallet data is located in the `~/.mwc` directory.
 
 mwc-wallet data is located in the `~/.mwc/main/wallet_data/` directory. The most critical piece of data is the wallet seed found at `~/.mwc/main/wallet_data/wallet.seed`.
 
-In case you want to do clean setup, you can delete all directories. Please note, you will **lose any funds in your wallet** in this case.  
+In case you want to do clean setup, you can delete all directories. Please note, you will **lose any funds in your wallet** in this case.
 ```
 rm -rf ~/.mwc
-``` 
+```
 
 You might need to do this to clean your setup if an error is made.
 
@@ -49,44 +44,53 @@ You might need to do this to clean your setup if an error is made.
 
 In this install we will install everything at `~/my_mwc_install`. All commands referred to assume this path.
 
-Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-node-XXXXX-macos.tar.gz`.
+Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-node-XXXXX-win-x64.zip`.
 
-Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-wallet-2.4.5-macos.tar.gz`.
+Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-wallet-XXXXX-win-x64.zip`.
 
 Now let's install everything into `~/my_mwc_install`.
 
 ```bash
 mkdir ~/my_mwc_install
 cd ~/my_mwc_install
-tar -xvf ~/Downloads/mwc-node-*-macos.tar.gz
-tar -xvf ~/Downloads/mwc-wallet-*-macos.tar.gz
+expand-archive -path ~/Downloads/mwc-node-*-win-x64.zip -destinationpath .
+expand-archive -path ~/Downloads/mwc-wallet-*-win-x64.zip -destinationpath .
 ```
 
 Your output should be something like this:
 ```
-kbay$ mkdir ~/my_mwc_install
-kbay$ cd ~/my_mwc_install
-my_mwc_install kbay$ tar -xvf ~/Downloads/mwc-node-*-macos.tar.gz
-x mwc/
-x mwc/mwc
-my_mwc_install kbay$ tar -xvf ~/Downloads/mwc-wallet-*-macos.tar.gz
-x mwc-wallet/
-x mwc-wallet/mwc-wallet
+PS C:\Users\konst> mkdir ~/my_mwc_install                                                                            
+
+    Directory: C:\Users\konst
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d-----       11/11/2019  10:03 PM                my_mwc_install
+
+
+PS C:\Users\konst> cd ~/my_mwc_install      
+PS C:\Users\konst\my_mwc_install> expand-archive -path ~/Downloads/mwc-node-*-win-x64.zip -destinationpath .
+PS C:\Users\konst\my_mwc_install> expand-archive -path ~/Downloads/mwc-wallet-*-win-x64.zip -destinationpath .
+Volume serial number is 34E4-1A1F
+C:.
+├───mwc
+└───mwc-wallet
 ```
 
-Now your mwc-node is located at `~/my_mwc_install/mwc/mwc` and your mwc-wallet is located at `~/my_mwc_install/mwc-wallet/mwc-wallet`.
+Now your mwc-node is located at `~/my_mwc_install/mwc/mwc.exe` and your mwc-wallet is located at `~/my_mwc_install/mwc-wallet/mwc-wallet.exe`.
 
 ## Start the node
 
 Start the node for the first run.
 ```
-kbay$ ~/my_mwc_install/mwc/mwc
+> ~/my_mwc_install/mwc/mwc.exe
 ```
 
 ![](Install_mac_images/scr_node.png)
 
 
-mwc-node has few commands. Run `~/my_mwc_install/mwc/mwc help` to explore them.
+mwc-node has few commands. Run `~/my_mwc_install/mwc/mwc.exe help` to explore them.
 
 Please keep your node running until we setup the wallet. You should be able to see that the node was able connect to the peers and download the chain.
 
@@ -97,55 +101,65 @@ Please check that the node was able to create the files and download the data.
 
 Check the files.
 ```
-kbay$ tree ~/.mwc
-~/.mwc
-└── main
-    ├── chain_data
-    │   ├── header
-    │   │   ├── header_head
-    │   │   │   ├── pmmr_data.bin
-    │   │   │   └── pmmr_hash.bin
-    │   │   └── sync_head
-    │   │       ├── pmmr_data.bin
-    │   │       └── pmmr_hash.bin
-    │   ├── lmdb
-    │   │   ├── data.mdb
-    │   │   └── lock.mdb
-    │   ├── mwc.lock
-    │   ├── peer
-    │   │   ├── data.mdb
-    │   │   └── lock.mdb
-    │   └── txhashset
-    │       ├── kernel
-    │       │   ├── pmmr_data.bin
-    │       │   ├── pmmr_hash.bin
-    │       │   └── pmmr_size.bin
-    │       ├── output
-    │       │   ├── pmmr_data.bin
-    │       │   ├── pmmr_hash.bin
-    │       │   └── pmmr_leaf.bin
-    │       └── rangeproof
-    │           ├── pmmr_data.bin
-    │           ├── pmmr_hash.bin
-    │           └── pmmr_leaf.bin
-    ├── mwc-server.log
-    └── mwc-server.toml
-``` 
+> cd ~
+> tree /F .mwc
+C:\USERS\KONST\.MWC
+└───main
+    │   .api_secret
+    │   mwc-server.log
+    │   mwc-server.toml
+    │
+    └───chain_data
+        │   mwc.lock
+        │
+        ├───header
+        │   ├───header_head
+        │   │       pmmr_data.bin
+        │   │       pmmr_hash.bin
+        │   │
+        │   └───sync_head
+        │           pmmr_data.bin
+        │           pmmr_hash.bin
+        │
+        ├───lmdb
+        │       data.mdb
+        │       lock.mdb
+        │
+        ├───peer
+        │       data.mdb
+        │       lock.mdb
+        │
+        └───txhashset
+            ├───kernel
+            │       pmmr_data.bin
+            │       pmmr_hash.bin
+            │       pmmr_size.bin
+            │
+            ├───output
+            │       pmmr_data.bin
+            │       pmmr_hash.bin
+            │       pmmr_leaf.bin
+            │
+            └───rangeproof
+                    pmmr_data.bin
+                    pmmr_hash.bin
+                    pmmr_leaf.bin
+```
 
 Please note the location of the:
 
-log file: `~/.mwc/mwc-server.log`  
+log file: `~/.mwc/mwc-server.log`
 config: `~/.mwc/mwc-server.toml`
 
 Meanwhile feel free to check the logs at `~/.mwc/mwc-server.log`
 
 If everything goes well, you shouldn't see anything logged at the "ERROR" level. Output from the following command should be empty
 ```
->  cat ~/.mwc/main/mwc-server.log | grep 'ERROR'
-``` 
+>  cat ~/.mwc/main/mwc-server.log | Select-String -Pattern  'ERROR'
+```
 
-**Note: It is expected that a single node and wallet only are running per host!** 
-If you try to run several instances, you will likely to see some errors.  
+**Note: It is expected that a single node and wallet only are running per host!**
+If you try to run several instances, you will likely to see some errors.
 
 You will need to wait a while for the node to download the blockchain data. When the download is complete, the UI will show the following: `Current Status: Running`.
 If you see this status, congratulations, your node is running. We can start with a wallet setup.
@@ -153,11 +167,11 @@ If you see this status, congratulations, your node is running. We can start with
 ## Init wallet
 
 If you don't have an mwc-wallet instance, you will need to create a new one. Please note, if you already have an mwc-wallet instance, you can restore it through mnemonic or seed file. It is covered below.
- 
+
 Let's explore first what mwc-wallet can do by running:
 
 ```
-kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet --help
+> ~/my_mwc_install/mwc-wallet/mwc-wallet.exe --help
 mwc-wallet 2.4.5
 The Grin Team
 Reference MWC Wallet
@@ -204,16 +218,14 @@ SUBCOMMANDS:
     submit       Submits a transaction that has already been finalized but not submitted to the network yet
     txs          Display transaction information
 ```
-Any command can be explored by running `help <command>`. For example this command will show you details for 'init':  `~/my_mwc_install/mwc-wallet/mwc-wallet help init`
+Any command can be explored by running `help <command>`. For example this command will show you details for 'init':  `~/my_mwc_install/mwc-wallet/mwc-wallet.exe help init`
 
 
-To create the new wallet please run command below. We strongly recommend to setup the password for your seed. 
+To create the new wallet please run command below. We strongly recommend to setup the password for your seed.
 ```
-kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet init
+> ~/my_mwc_install/mwc-wallet/mwc-wallet.exe init
 Please enter a password for your new wallet
-Password:
-Confirm Password:
-20191111 18:13:13.180 WARN grin_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
+Password: Confirm Password: 20191111 18:13:13.180 WARN grin_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
 Your recovery phrase is:
 
 cousin cargo avoid sk ....  fee surround valve prepare
@@ -221,18 +233,16 @@ cousin cargo avoid sk ....  fee surround valve prepare
 Please back-up these words in a non-digital format.
 Command 'init' completed successfully
 ```
-    
+
 Please store the recovery phrase in the secure place, preferably offline on a physical medium. The mnemonic will allow you to recover your funds in a new wallet even if your wallet files are destroyed.
 
 If you already have a wallet, you can init it with your existing seed and resync it with a full node. Please note, if your wallet has any coins, you will only see them after a resyncing with the "restore" command.
 ```
-kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet init -r
+> ~/my_mwc_install/mwc-wallet/mwc-wallet init -r
 Please enter your recovery phrase:
-phrase> cousin cargo avoid sku  .... en coffee surround valve prepare
+phrase> cousin cargo avo .... ken coffee surround valve prepare
 Please provide a new password for the recovered wallet
-Password:
-Confirm Password:
-20191111 18:17:49.394 WARN grin_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
+Password: Confirm Password: 20191111 18:17:49.394 WARN grin_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
 Your recovery phrase is:
 
 cousin cargo avoid sk .... fee surround valve prepare
@@ -240,7 +250,7 @@ cousin cargo avoid sk .... fee surround valve prepare
 Please back-up these words in a non-digital format.
 Command 'init' completed successfully
 
-kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet check
+> ~/my_mwc_install/mwc-wallet/mwc-wallet check
 Password:
 20191111 18:22:25.359 WARN grin_wallet_controller::command - Starting wallet check...
 20191111 18:22:25.359 WARN grin_wallet_controller::command - Updating all wallet outputs, please wait ...
@@ -250,36 +260,43 @@ Password:
 20191111 18:22:25.739 WARN grin_wallet_libwallet::internal::restore - Identified 0 wallet_outputs as belonging to this wallet
 20191111 18:22:25.739 WARN grin_wallet_controller::command - Wallet check complete
 Command 'check' completed successfully
-``` 
+```
 
 #### Validation
 
 Please validate that your wallet created the files:
 
 ```
-kbay$ tree ~/.mwc
-~/.mwc
-└── main
-    ├── mwc-wallet.log
-    ├── mwc-wallet.toml
-    └── wallet_data
-        ├── db
-        │   └── lmdb
-        │       ├── data.mdb
-        │       └── lock.mdb
-        ├── saved_txs
-        └── wallet.seed
-```    
+PS C:\Users\konst> cd ~
+PS C:\Users\konst> tree /F .mwc
+Folder PATH listing for volume Windows
+Volume serial number is 34E4-1A1F
+C:\USERS\KONST\.MWC
+└───main
+    │   .api_secret
+    │   mwc-wallet.log
+    │   mwc-wallet.toml
+    │
+    └───wallet_data
+        │   wallet.seed
+        │
+        ├───db
+        │   └───lmdb
+        │           data.mdb
+        │           lock.mdb
+        │
+        └───saved_txs
+```
 
 Please note the location of the:
 
-logs : `~/.mwc/mwc-wallet.log`  
+logs : `~/.mwc/mwc-wallet.log`
 config: `~/.mwc/mwc-wallet.toml`
 
 Confirm that there were no errors during wallet initialization:
 
 ```
->  cat ~/.mwc/main/mwc-wallet.log | grep 'ERROR'
+> cat ~/.mwc/main/mwc-wallet.log | Select-String -Pattern  'ERROR'
 ```
 
 ## Start Listener for the Wallet
@@ -287,7 +304,7 @@ Confirm that there were no errors during wallet initialization:
 In order to mine, mwc-wallet needs to be run in listening mode. The wallet will build the coinbase transaction for the blocks that your miner mines.
 
 ```
-kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet listen
+> ~/my_mwc_install/mwc-wallet/mwc-wallet listen
 Password:
 20191111 18:59:15.332 WARN grin_wallet_controller::controller - Starting HTTP Foreign listener API server at 127.0.0.1:3415.
 20191111 18:59:15.333 WARN grin_wallet_controller::controller - HTTP Foreign listener started.
@@ -300,20 +317,39 @@ Congratulations, if you pass validation, your wallet is ready. Please keep it ru
 
 Please periodically check if logs don't have errors with:
 ```
-> cat ~/.mwc/main/mwc-wallet.log | grep 'ERROR'
+> cat ~/.mwc/main/mwc-wallet.log | Select-String -Pattern  'ERROR'
 ```
 
 Check if Foreign listener API runs well with the command:
 ```
-kbay$  curl -d '{"jsonrpc": "2.0", "method": "build_coinbase", "id": 1, "params": { "block_fees": 7000000}}' http://localhost:3415/v2/foreign
-{
-  "error": {
-    "code": -32602,
-    "message": "InvalidArgStructure \"block_fees\" at position 0."
-  },
-  "id": 1,
-  "jsonrpc": "2.0"
-}
+> Invoke-WebRequest -UseBasicParsing -Uri http://localhost:3415/v2/foreign -Method POST  -Body '{"jsonrpc": "2.0", "method": "build_coinbase", "id": 1, "params": { "block_fees": 7000000}}'
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : {
+                      "error": {
+                        "code": -32602,
+                        "message": "InvalidArgStructure \"block_fees\" at position 0."
+                      },
+                      "id": 1,
+                      "jsonrpc": "2.0"
+                    }
+RawContent        : HTTP/1.1 200 OK
+                    access-control-allow-origin: *
+                    access-control-allow-headers: Content-Type, Authorization
+                    Content-Length: 138
+                    Content-Type: application/json
+                    Date: Tue, 12 Nov 2019 06:35:52 GMT
+
+                    ...
+Forms             :
+Headers           : {[access-control-allow-origin, *], [access-control-allow-headers, Content-Type, Authorization], [Content-Length,
+                    138], [Content-Type, application/json]...}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        :
+RawContentLength  : 138
 ```
 
 ## Setup mwc-node to run miner locally
@@ -323,15 +359,15 @@ Please update config for your mwc-node.
 - Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
 - Edit `~/.mwc/main/mwc-server.toml` with your favorite editor.
 
-Change the value for `enable_stratum_server` to 
+Change the value for `enable_stratum_server` to
 ```
 #whether stratum server is enabled
 enable_stratum_server = true
-``` 
+```
 - Start mwc-node
 ```
-kbay$ ~/my_mwc_install/mwc/mwc
-``` 
+> ~/my_mwc_install/mwc/mwc.exe
+```
 
 You are ready to to run your miner locally on the same host.
 
@@ -339,26 +375,20 @@ You are ready to to run your miner locally on the same host.
 
 Check if there any errors are in the node logs
 ```
->  cat ~/.mwc/main/mwc-server.log | grep 'ERROR'
+>  cat ~/.mwc/main/mwc-server.log | Select-String -Pattern 'ERROR'
 ```
 
 Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
 ```
-> cat ~/.mwc/main/mwc-server.log | grep 'Stratum server started'
+> cat ~/.mwc/main/mwc-server.log | Select-String -Pattern 'Stratum server started'
 20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
 ```
 
 Verify that stratum is configured correctly with telnet:
 ```
-kbay$ telnet  127.0.0.1 3416
-Trying 127.0.0.1...
-Connected to localhost.
-Escape character is '^]'.
-{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":966,"job_id":1,"pre_pow":"000100000000000003c6000000005dca285900001d1246f8704600e3ff43c46eb36ff54493004b517ce12a4a22009e74336feac7d18ccd2b1b6a3b84381f9d7e65ad9d83ab7d9f6844a1761d301e4fa30d4af0bfbf06792019ed7e234b0a8a7528d4c46d8f130a9055c0055fc1e3ab51215f6a6cf5035c865ec1320221fdace2a63ed83db57eebea06a195a5ebfb1b06713028a1bf87cc76007cec679dc7cc6650610a16c00c326ed16be15e3d47dbf311880000000000000000000000000000000000000000000000000000000000000000000000000000078700000000000007870000000bbb860467000001a0"}}
-^C
-Connection closed by foreign host.
+> telnet  127.0.0.1 3416
+{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":1151,"job_id":0,"pre_pow":"0001000000000000047f000000005dca547e0000072fb559593ebaed969308cefd2042c2e8384fbf62497c5a4f716bde7c710b9b34c1a4b411b494185053db66c9f7f661b9507d65a334495e7915372232d5362b2f2390b11ffcefef38ca3aed681a86a54643d8616a8c0e9d3b2c94d26772a0af3f1fcb38a62f84fa18aa906b94e02df1a2fde187512461dbdb14a8785bd4c20bada01d7f2d0732b8ed59902155c765286a81267e23bab3ae57a29ced0f62000000000000000000000000000000000000000000000000000000000000000000000000000008fe00000000000008fe0000000cf02a33580000019f"}}   
 ```
-
 
 ## Setup mwc-node to run a miner on a different host
 
@@ -367,43 +397,38 @@ Please update the config for your mwc-node.
 - Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
 - Edit `~/.mwc/mwc-server.toml` with your favorite editor.
 
-Change the value for `enable_stratum_server` and `stratum_server_addr` 
+Change the value for `enable_stratum_server` and `stratum_server_addr`
 ```
 #whether stratum server is enabled
 enable_stratum_server = true
 
 #what port and address for the stratum server to listen on
 stratum_server_addr = "0.0.0.0:3416"
-``` 
+```
 stratum_server_addr needs to listen on 0.0.0.0 in order to accept connections from other hosts.
 
 - Start mwc-node
 ```
-kbay$ ~/my_mwc_install/mwc/mwc
-``` 
+> ~/my_mwc_install/mwc/mwc.exe
+```
 
 #### Validate node from local host
 
 Check if there are any errors in the node logs
 ```
->  cat ~/.mwc/main/mwc-server.log | grep 'ERROR'
+>  cat ~/.mwc/main/mwc-server.log | Select-String -Pattern 'ERROR'
 ```
 
 Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
 ```
-> cat ~/.mwc/main/mwc-server.log | grep 'Stratum server started'
+> cat ~/.mwc/main/mwc-server.log |  Select-String -Pattern 'Stratum server started'
 20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 0.0.0.0:3416
 ```
 
 Verify that stratum is configured correctly with telnet:
 ```
-kbay$ telnet  127.0.0.1 3416
-Trying 127.0.0.1...
-Connected to localhost.
-Escape character is '^]'.
-{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":966,"job_id":1,"pre_pow":"000100000000000003c6000000005dca285900001d1246f8704600e3ff43c46eb36ff54493004b517ce12a4a22009e74336feac7d18ccd2b1b6a3b84381f9d7e65ad9d83ab7d9f6844a1761d301e4fa30d4af0bfbf06792019ed7e234b0a8a7528d4c46d8f130a9055c0055fc1e3ab51215f6a6cf5035c865ec1320221fdace2a63ed83db57eebea06a195a5ebfb1b06713028a1bf87cc76007cec679dc7cc6650610a16c00c326ed16be15e3d47dbf311880000000000000000000000000000000000000000000000000000000000000000000000000000078700000000000007870000000bbb860467000001a0"}}
-^C
-Connection closed by foreign host.
+> telnet  127.0.0.1 3416
+{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":1151,"job_id":0,"pre_pow":"0001000000000000047f000000005dca547e0000072fb559593ebaed969308cefd2042c2e8384fbf62497c5a4f716bde7c710b9b34c1a4b411b494185053db66c9f7f661b9507d65a334495e7915372232d5362b2f2390b11ffcefef38ca3aed681a86a54643d8616a8c0e9d3b2c94d26772a0af3f1fcb38a62f84fa18aa906b94e02df1a2fde187512461dbdb14a8785bd4c20bada01d7f2d0732b8ed59902155c765286a81267e23bab3ae57a29ced0f62000000000000000000000000000000000000000000000000000000000000000000000000000008fe00000000000008fe0000000cf02a33580000019f"}}   
 ```
 
 #### Obtain my public IP.
@@ -414,18 +439,18 @@ Please store your IP, you will need it to setup your miner and validate the setu
 
 #### Open port at Mac OS
 
-Ensure the port is open and not being blocked by the MAC OS firewall. 
+Ensure the port is open and not being blocked by the MAC OS firewall.
 The easiest way is to disable the firewall.
 
 #### Do you have a router? Map 3416 port for incoming connections
 
 If you have a router you need to setup the port forwarding for incoming connections.
 
-If you don't know how to do that, please do the search for the phrase: how to setup 'router brand' port forwarding.   
-For example: `how to setup Negtgear port forwarding`  will return you a link  
+If you don't know how to do that, please do the search for the phrase: how to setup 'router brand' port forwarding.
+For example: `how to setup Negtgear port forwarding`  will return you a link
 [https://www.noip.com/support/knowledgebase/setting-port-forwarding-netgear-router-genie-firmware/]
 
-We recommend you just map your router port 3416 to your device local IP address.  
+We recommend you just map your router port 3416 to your device local IP address.
 
 Here is how you can find your local IP for mac [http://osxdaily.com/2010/11/21/find-ip-address-mac/]
 
@@ -443,24 +468,19 @@ Here how it looks like when I did everything properly.
 ![](Install_mac_images/port_open.png)
 
 **Please note! It doesn't make sense to continue with miner if your port is not open!** This tool works well and if your port is closed it means that the
- router, firewall or mwc-node are not configured correctly. 
- 
+ router, firewall or mwc-node are not configured correctly.
+
 #### Validate stratum connection from your miner's host
 
 If you can ssh to the miner host, please validate with telnet is miner can access the node:
 ```
-kbay$ telnet  <MWC_NODE_PUBLIC_IP> 3416
-Trying 24.4.197.142...
-Connected to localhost.
-Escape character is '^]'.
-{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":966,"job_id":1,"pre_pow":"000100000000000003c6000000005dca285900001d1246f8704600e3ff43c46eb36ff54493004b517ce12a4a22009e74336feac7d18ccd2b1b6a3b84381f9d7e65ad9d83ab7d9f6844a1761d301e4fa30d4af0bfbf06792019ed7e234b0a8a7528d4c46d8f130a9055c0055fc1e3ab51215f6a6cf5035c865ec1320221fdace2a63ed83db57eebea06a195a5ebfb1b06713028a1bf87cc76007cec679dc7cc6650610a16c00c326ed16be15e3d47dbf311880000000000000000000000000000000000000000000000000000000000000000000000000000078700000000000007870000000bbb860467000001a0"}}
-^C
-Connection closed by foreign host.
+> telnet  <MWC_NODE_PUBLIC_IP> 3416
+{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":1151,"job_id":0,"pre_pow":"0001000000000000047f000000005dca547e0000072fb559593ebaed969308cefd2042c2e8384fbf62497c5a4f716bde7c710b9b34c1a4b411b494185053db66c9f7f661b9507d65a334495e7915372232d5362b2f2390b11ffcefef38ca3aed681a86a54643d8616a8c0e9d3b2c94d26772a0af3f1fcb38a62f84fa18aa906b94e02df1a2fde187512461dbdb14a8785bd4c20bada01d7f2d0732b8ed59902155c765286a81267e23bab3ae57a29ced0f62000000000000000000000000000000000000000000000000000000000000000000000000000008fe00000000000008fe0000000cf02a33580000019f"}}   
 ```
-  
+
 #### Node setup is DONE for access from the internet.
 
-Congratulations, if you pass all validation steps, you are done with setup for mwc-node and mwc node. 
+Congratulations, if you pass all validation steps, you are done with setup for mwc-node and mwc node.
 You can finish miner setup.
 
 
