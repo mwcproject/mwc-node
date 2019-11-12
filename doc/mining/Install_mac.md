@@ -6,7 +6,7 @@ This document describes how to setup and **verify** the MWC full node, wallet an
 
 ## MWC QT Wallet
 
-Please note, the mwc-qt-wallet is avalailable at [Wallet Download](https://www.mwc.mw/downloads) page is **not for mining**.
+Please note, the mwc-qt-wallet avalailable at [Wallet Download](https://www.mwc.mw/downloads) page is **not for mining**.
 If you are running qt wallet or mwc713, please **do not try to use it for mining**.
 
 ## Preperquisited
