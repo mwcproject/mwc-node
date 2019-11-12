@@ -62,7 +62,7 @@ tar -xvf ~/Downloads/mwc-node-*-macos.tar.gz
 tar -xvf ~/Downloads/mwc-wallet-*-macos.tar.gz
 ```
 
-Your output should see something like this:
+Your output should be something like this:
 ```
 kbay$ mkdir ~/my_mwc_install
 kbay$ cd ~/my_mwc_install
