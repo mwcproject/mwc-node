@@ -87,7 +87,9 @@ Start the node for the first run.
 ```
 kbay$ ~/my_mwc_install/mwc/mwc
 ```
-![](Install_mac_images/node_screenshot.png)
+
+![](Install_mac_images/node.png)
+
 
 mwc node has few commands. Run `~/my_mwc_install/mwc/mwc help` to explore them.
 
