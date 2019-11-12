@@ -348,7 +348,7 @@ Check if stratum is activated. The following line will be present in your log fi
 20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
 ```
 
-Verify if stratum is configured correctly with telnet:
+Verify that stratum is configured correctly with telnet:
 ```
 kbay$ telnet  127.0.0.1 3416
 Trying 127.0.0.1...
@@ -360,9 +360,9 @@ Connection closed by foreign host.
 ```
 
 
-## Setup mwc-node to run miner on different host
+## Setup mwc-node to run a miner on a different host
 
-Please update config for your mwc-node.
+Please update the config for your mwc-node.
 
 - Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
 - Edit `~/.mwc/mwc-server.toml` with your favorite editor.
@@ -419,7 +419,7 @@ The easiest way is to disable the firewall.
 
 #### Do you have a router? Map 3416 port for incoming connections
 
-If you have a router you need to setup the port forwarding for income connections.
+If you have a router you need to setup the port forwarding for incoming connections.
 
 If you don't know how to do that, please do the search for the phrase: how to setup 'router brand' port forwarding.   
 For example: `how to setup Negtgear port forwarding`  will return you a link  
@@ -429,23 +429,23 @@ We recommend you just map your router port 3416 to your device local IP address.
 
 Here is how you can find your local IP for mac [http://osxdaily.com/2010/11/21/find-ip-address-mac/]
 
-#### Validate if your port is open for INCOME connections
+#### Validate if your port is open for INCOMING connections
 
 Please verify that Port Tester shows that your port is open:
 [https://www.yougetsignal.com/tools/open-ports/]
 
-Here is how looks like when I didn't open port at my router, didn't disable firewall, or didn't run mwc-node with a proper setup.
+Here is how it looks when I didn't open port at my router, didn't disable firewall, or didn't run mwc-node with a proper setup.
 
 ![](Install_mac_images/port_close.png)
 
-Here how it si looks like when I did everything properly.
+Here how it looks like when I did everything properly.
 
 ![](Install_mac_images/port_open.png)
 
-**Please note! It doesn't make sense continue with miner if your port is not open!** This tool works well and if your port is closed it is mean that 
- router, firewall or mwc-node are not configured well. 
+**Please note! It doesn't make sense to continue with miner if your port is not open!** This tool works well and if your port is closed it means that the
+ router, firewall or mwc-node are not configured correctly. 
  
-#### Validate stratum connection from your miner side
+#### Validate stratum connection from your miner's host
 
 If you can ssh to the miner host, please validate with telnet is miner can access the node:
 ```
@@ -476,16 +476,16 @@ Please follow the instruction how to set it up.
 #### GMiner
 
 If you are rinning GMiner please run.
-User name can have any value. You will see your miner at the mwc-node under this name.
+User name can have any value. You will see your miner in the mwc-node console under this name.
 
-Your server IP should be 127.0.0.1 if you run your miner on the same host where you run mwc node and mwc-wallet.
-Or you should use your mwc node public IP if it is run on different host. Please check that your port is open and 'Validate stratum connection from your miner side' is passed.
+Your server IP should be 127.0.0.1 if you run your miner on the same host that you run mwc node and mwc-wallet.
+Or you should use your mwc-node public IP if it is run on different host. Please check that your port is open and 'Validate stratum connection from your miner side' is passed.
 
-It is how you can run for C31
+To run in C31 mode:
 ```
 miner.exe --algo grin31 --server <NODE_IP>  --port 3416 --user WhatEverName
 ```
-OR for C29d
+OR for C29d:
 ```
 miner.exe --algo cuckarood29 --server <NODE_IP> --port 3416 --user WhatEverName
 ```
