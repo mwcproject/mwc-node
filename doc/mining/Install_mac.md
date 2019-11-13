@@ -504,4 +504,19 @@ OR for C29d:
 miner.exe --algo cuckarood29 --server <NODE_IP> --port 3416 --user WhatEverName
 ```
 
+## Checking your coins
+
+You might want to check how much coins you was able to main and see the output.
+
+You can view the balance with `info` command
+```
+~/my_mwc_install/mwc-wallet/mwc-wallet info
+```
+
+You can check your outputs with `outputs`
+```
+~/my_mwc_install/mwc-wallet/mwc-wallet output
+```
+
+
 
