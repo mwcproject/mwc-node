@@ -76,6 +76,20 @@ x mwc-wallet/mwc-wallet
 
 Now your mwc-node is located at `~/my_mwc_install/mwc/mwc` and your mwc-wallet is located at `~/my_mwc_install/mwc-wallet/mwc-wallet`.
 
+One common task is to send mined MWC from the mwc-wallet to the Qt wallet. In order to do that, the most convenient method is to use the "file based send". The mwc-wallet command to send is the following:
+
+```
+# mwc-wallet send -m file -d <location_to_save_file> <amount_to_send>
+```
+
+In order to receive it, you will need to click on "receive mwc by file". Select the file created in the last step. A new file saved in the same location as the file from the last step will be created with the suffix .response and this file can be finalized by the mwc-wallet with the following command:
+
+```
+# mwc-wallet finalize -i <location_of_response_file>
+```
+
+This will allow for sending of mwc from mwc-wallet into the Qt wallet.
+
 ## Start the node
 
 Start the node for the first run.
