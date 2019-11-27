@@ -1,10 +1,10 @@
 # MWC's Security Process
 
-Grin has a [code of conduct](CODE_OF_CONDUCT.md) and the handling of vulnerability disclosure is no exception. We are committed to conduct our security process in a professional and civil manner. Public shaming, under-reporting or misrepresentation of vulnerabilities will not be tolerated.
+MWC has a [code of conduct](CODE_OF_CONDUCT.md) and the handling of vulnerability disclosure is no exception. We are committed to conduct our security process in a professional and civil manner. Public shaming, under-reporting or misrepresentation of vulnerabilities will not be tolerated.
 
 ## Responsible Disclosure
 
-For all security related issues, Grin has 2 main points of contact:
+For all security related issues, MWC has 2 main points of contact:
 
 * Chris Gilliard (christopher.gilliard@gmail.com)
 * Konstantin Bay (konstantin.bay@gmail.com)
