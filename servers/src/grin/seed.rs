@@ -33,11 +33,12 @@ use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 
 // MWC - all DNS hosts are updated with seed1.mwc.mw/seed2.mwc.mw and others
-const MAINNET_DNS_SEEDS: &'static [&'static str] = &["mainnet.seed1.mwc.mw", // cpg
-                                                     "mainnet.seed2.mwc.mw", // cpg
-                                                     "40.114.69.216",        // JonB
-                                                     "24.4.197.142"          // Konstantin
-]; 
+const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
+	"mainnet.seed1.mwc.mw", // cpg
+	"mainnet.seed2.mwc.mw", // cpg
+	"40.114.69.216",        // JonB
+	"24.4.197.142",         // Konstantin
+];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
 
 pub fn connect_and_monitor(
