@@ -1,0 +1,39 @@
+This page is designed to answer some common questions regarding mwc-wallet and fixing issues around sending coins that are
+either locked or inaccessible.
+
+First thing to understand is that unlike Bitcoin wallets, MWC (which is a fork of grin), MWC wallets can get out of sync with
+their full node. This is a common occurance especially when mining. What happens is, if your miner wins a block that is
+orphaned, your wallet will not know about until you resync. When you try to send the coins without resyncing, and one of your
+outputs has been orphaned, you will get errors. It may be complicated to get out from these errors as we will discuss so, it's
+highly reccomended that before you send any coins from a mwc-wallet that has been mining, you stop your listener by termining
+mwc-wallet listen process and then run an "mwc-wallet check". This will, in most cases avoid you getting into any problems
+because any orphaned blocks will be removed from your wallet and you will then only be able to send valid transactions.
+
+So, to summarize, before sending coins from your mwc-wallet, do the following:
+
+1.) Stop your mwc-wallet listen process.
+# kill <mwc-wallet listen pid> (or otherwise exit)
+2.) Run mwc-wallet check:
+# mwc-wallet check
+3.) Send coins
+# mwc-wallet send --help (to see options for sending).
+
+Please note that if you have an orphaned block, your balance may be less than your wallet thought it was.
+
+If you don't follow this procedure or you still have problems you may have to do more to fix the problem. If you get errors with
+your send command and mwc-wallet check does not resolve them, you may need to create a new mwc-wallet directory and "restore"
+your wallet.
+
+To do this do the following:
+1.) Create a new directory in your home directory:
+# mkdir wallet_restore
+2.) Change directory to wallet_restore
+# cd wallet_restore
+3.) Init your wallet with the recovery seed:
+# mwc-wallet init -h -r
+4.) Restore the wallet:
+# mwc-wallet restore
+
+Finally, if you still have problems, in particular if your wallet says that the full node returned a 500 error, you may need
+to resync your full node. To do this, stop your full node, delete the "chain_data" directory, which is by default in
+~/.mwc/main/chain_data and restart your node. After it resyncs, you should be able to send the coins successfully.
