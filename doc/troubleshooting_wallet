@@ -39,3 +39,7 @@ Now you can try to send again and finally, if you still have problems, in partic
 node returned a 500 error, you may need to resync your full node. To do this, stop your full node, delete the "chain_data"
 directory, which is by default in ~/.mwc/main/chain_data and restart your node. After it resyncs, you should be able to
 send the coins successfully.
+
+Finally if this guide seems too complicated, we'd highly suggest that you use one of our pools which can be found on our
+mining page: https://www.mwc.mw/miners. Both pools are operated by devs that are familiar with grin and grin forks. They
+will already do all of this and you will not need to worry about dealing with these issues.
