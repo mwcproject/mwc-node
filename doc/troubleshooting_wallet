@@ -3,7 +3,7 @@ either locked or inaccessible.
 
 First thing to understand is that unlike Bitcoin wallets, MWC (which is a fork of grin) wallets can get out of sync with
 their full node. This is a common occurance especially when mining. What happens is, if your miner wins a block that is
-orphaned, your wallet will not know about until you resync. When you try to send the coins without resyncing, and one of your
+orphaned, your wallet will not know about it until you resync with the check or restore command. When you try to send the coins without resyncing, and one of your
 outputs has been orphaned, you will get errors. It may be complicated to get out from these errors as we will discuss so, it's
 highly reccomended that before you send any coins from a mwc-wallet that has been mining, you stop your listener by terminating
 mwc-wallet listen process and then run an "mwc-wallet check". This will, in most cases avoid you getting into any problems
