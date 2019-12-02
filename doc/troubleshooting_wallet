@@ -20,6 +20,12 @@ So, to summarize, before sending coins from your mwc-wallet, do the following:
 
 Please note that if you have an orphaned block, your balance may be less than your wallet thought it was.
 
+In addition to the above procedure, you may need to cancel transactions that failed. To do this use the following command:
+# mwc-wallet cancel -t <tx_id>
+
+You may obtain the txid with the following command:
+# mwc-wallet txs
+
 If you don't follow this procedure or you still have problems you may have to do more to fix the problem. If you get errors with
 your send command and mwc-wallet check does not resolve them, you may need to create a new mwc-wallet directory and "restore"
 your wallet.
