@@ -35,6 +35,7 @@ You will be prompted to enter your recovery seed phrase.
 4.) Restore the wallet:
 # mwc-wallet restore
 
-Finally, if you still have problems, in particular if your wallet says that the full node returned a 500 error, you may need
-to resync your full node. To do this, stop your full node, delete the "chain_data" directory, which is by default in
-~/.mwc/main/chain_data and restart your node. After it resyncs, you should be able to send the coins successfully.
+Now you can try to send again and finally, if you still have problems, in particular if your wallet says that the full
+node returned a 500 error, you may need to resync your full node. To do this, stop your full node, delete the "chain_data"
+directory, which is by default in ~/.mwc/main/chain_data and restart your node. After it resyncs, you should be able to
+send the coins successfully.
