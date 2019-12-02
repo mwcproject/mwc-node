@@ -31,6 +31,7 @@ To do this do the following:
 # cd wallet_restore
 3.) Init your wallet with the recovery seed:
 # mwc-wallet init -h -r
+You will be prompted to enter your recovery seed phrase.
 4.) Restore the wallet:
 # mwc-wallet restore
 
