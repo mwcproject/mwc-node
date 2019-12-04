@@ -1,4 +1,4 @@
-This document will explain the plans in the near/intermediate and long term regarding MWC. Given the successful launch of the
+This document will explain the plans in the near/intermediate and long term regarding MWC development. Given the successful launch of the
 Mainnet on 11/11 and the fact that the airdrop is going well and scheduled to be completed on January 2nd, 2020 we need to
 start talking about the roadmap for MWC. We will split this document into near, medium, and long term plans.
 
