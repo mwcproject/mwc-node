@@ -238,9 +238,14 @@ fn send_request_async(req: Request<Body>) -> Box<dyn Future<Item = String, Error
 			.and_then(|resp| {
 				if !resp.status().is_success() {
 					Either::A(err(ErrorKind::RequestError(format!(
-						"Wrong response code: {} with data {:?}",
+						"Error code: {}; Description: {}",
 						resp.status(),
-						resp.body()
+						resp.into_body()
+							.map_err(|e| { format!("Cannot read response body: {}", e) })
+							.concat2()
+							.and_then(|ch| ok(String::from_utf8_lossy(&ch.to_vec()).to_string()))
+							.wait()
+							.unwrap_or("ERROR".to_string())
 					))
 					.into()))
 				} else {
