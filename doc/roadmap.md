@@ -24,5 +24,4 @@ start talking about the roadmap for MWC. We will split this document into near, 
 - Improved privacy with coin shuffle.
 - Hardware wallets (requires hardware manufacturer support)
 
-Obviously there could be competing priorities that causes some of these things to be done earlier or later but this is a
-an idea of where things might come.
+These are some of the directions we could go. Depending on market needs, we may pick one or more of these to focus on.
