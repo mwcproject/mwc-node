@@ -158,21 +158,48 @@ fn build_request(
 	body: Option<String>,
 	chain_type: ChainTypes,
 ) -> Result<Request<Body>, Error> {
+	let basic_auth_key = if chain_type == global::ChainTypes::Floonet {
+		"mwcfloo"
+	} else if chain_type == global::ChainTypes::Mainnet {
+		"mwcmain"
+	} else {
+		"mwc"
+	};
+
+	build_request_ex(
+		url,
+		method,
+		api_secret,
+		Some(basic_auth_key.to_string()),
+		body,
+	)
+}
+
+fn build_request_ex(
+	url: &str,
+	method: &str,
+	api_secret: Option<String>,
+	basic_auth_key: Option<String>,
+	body: Option<String>,
+) -> Result<Request<Body>, Error> {
 	let uri = url.parse::<Uri>().map_err::<Error, _>(|e: InvalidUri| {
 		e.context(ErrorKind::Argument(format!("Invalid url {}", url)))
 			.into()
 	})?;
 	let mut builder = Request::builder();
 
-	if let Some(api_secret) = api_secret {
-		let basic_auth = if chain_type == global::ChainTypes::Floonet {
-			format!("Basic {}", to_base64(&format!("mwcfloo:{}", api_secret)))
-		} else if chain_type == global::ChainTypes::Mainnet {
-			format!("Basic {}", to_base64(&format!("mwcmain:{}", api_secret)))
-		} else {
-			format!("Basic {}", to_base64(&format!("mwc:{}", api_secret)))
-		};
-		builder.header(AUTHORIZATION, basic_auth);
+	if basic_auth_key.is_some() && api_secret.is_some() {
+		builder.header(
+			AUTHORIZATION,
+			format!(
+				"Basic {}",
+				to_base64(&format!(
+					"{}:{}",
+					basic_auth_key.unwrap(),
+					api_secret.unwrap()
+				))
+			),
+		);
 	}
 
 	builder
@@ -203,6 +230,21 @@ where
 		"Could not serialize data to JSON".to_owned(),
 	))?;
 	build_request(url, "POST", api_secret, Some(json), chain_type)
+}
+
+pub fn create_post_request_ex<IN>(
+	url: &str,
+	api_secret: Option<String>,
+	basic_auth_key: Option<String>,
+	input: &IN,
+) -> Result<Request<Body>, Error>
+where
+	IN: Serialize,
+{
+	let json = serde_json::to_string(input).context(ErrorKind::Internal(
+		"Could not serialize data to JSON".to_owned(),
+	))?;
+	build_request_ex(url, "POST", api_secret, basic_auth_key, Some(json))
 }
 
 fn handle_request<T>(req: Request<Body>) -> Result<T, Error>
