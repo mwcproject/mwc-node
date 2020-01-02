@@ -5,7 +5,7 @@ start talking about the roadmap for MWC. We will split this document into near, 
 # Near term
 
 - Continued support of claims process - in process
-- HODL Program details - early Q1 target
+- HODL Program details - Q1 target
 - MWC QT Wallet cold storage - Q1 target
 - HODL Program implementation - Q2 target
 
