@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,17 +19,15 @@
 
 #![cfg_attr(feature = "cargo-clippy", allow(clippy::unreadable_literal))]
 
-use chrono::prelude::{TimeZone, Utc};
-
 use crate::core;
-use crate::pow::{Difficulty, Proof, ProofOfWork};
-use crate::util;
-use crate::util::secp::constants::SINGLE_BULLET_PROOF_SIZE;
-use crate::util::secp::pedersen::{Commitment, RangeProof};
-use crate::util::secp::Signature;
-
 use crate::core::hash::Hash;
-use crate::keychain::BlindingFactor;
+use crate::pow::{Difficulty, Proof, ProofOfWork};
+use chrono::prelude::{TimeZone, Utc};
+use keychain::BlindingFactor;
+use util;
+use util::secp::constants::SINGLE_BULLET_PROOF_SIZE;
+use util::secp::pedersen::{Commitment, RangeProof};
+use util::secp::Signature;
 
 /// Genesis block definition for development networks. The proof of work size
 /// is small enough to mine it on the fly, so it does not contain its own
@@ -93,8 +91,6 @@ pub fn genesis_floo() -> core::Block {
 	});
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
-		fee: 0,
-		lock_height: 0,
 		excess: Commitment::from_vec(
 			util::from_hex(
 				"093d0aeae5f6aab0975096fde31e1a21fa42edfc93db318a1064156ace81f54671".to_string(),
@@ -212,8 +208,6 @@ pub fn genesis_main() -> core::Block {
 	});
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
-		fee: 0,
-		lock_height: 0,
 		excess: Commitment::from_vec(
 			util::from_hex(
 				"08b659fde3a41284819f45415890330272efef7ef991f833a64b746be802c8fd77".to_string(),
@@ -287,15 +281,14 @@ pub fn genesis_main() -> core::Block {
 mod test {
 	use super::*;
 	use crate::core::hash::Hashed;
-	use crate::ser;
+	use crate::ser::{self, ProtocolVersion};
 
 	#[test]
 	fn floonet_genesis_hash() {
 		let gen_hash = genesis_floo().hash();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_floo()).unwrap();
+		let gen_bin = ser::ser_vec(&genesis_floo(), ProtocolVersion(1)).unwrap();
 		println!("floonet genesis full hash: {}\n", gen_bin.hash().to_hex());
-
 		assert_eq!(
 			gen_hash.to_hex(),
 			"a10f32177e0b8de4495637c5735577512963cb3dca42ee893fc9c5fade29dfa7"
@@ -310,7 +303,7 @@ mod test {
 	fn mainnet_genesis_hash() {
 		let gen_hash = genesis_main().hash();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_main()).unwrap();
+		let gen_bin = ser::ser_vec(&genesis_main(), ProtocolVersion(1)).unwrap();
 		println!("mainnet genesis full hash: {}\n", gen_bin.hash().to_hex());
 		assert_eq!(
 			gen_hash.to_hex(),

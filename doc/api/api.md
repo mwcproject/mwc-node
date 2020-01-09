@@ -1,6 +1,6 @@
 # Grin API Documentation
 
-This document contains the documentation for the 3 Grin REST APIs. These endpoints can be grouped in two categories.
+This document contains the documentation for the MWC-Node REST API.
 
 ## Node API
 
