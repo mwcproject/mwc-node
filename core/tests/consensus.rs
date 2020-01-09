@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -86,6 +86,7 @@ fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> V
 	pairs
 		.map(|(t, d)| {
 			HeaderInfo::new(
+				diff.block_hash,
 				cur_time + t as u64,
 				d.clone(),
 				diff.secondary_scaling,
@@ -620,30 +621,18 @@ fn hard_forks() {
 	{
 		global::set_mining_mode(global::ChainTypes::Mainnet);
 		assert_eq!(global::is_floonet(), false);
-		assert!(valid_header_version(0, HeaderVersion::new(1)));
-		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion::new(1)));
-		assert!(valid_header_version(
-			YEAR_HEIGHT * 10,
-			HeaderVersion::new(1)
-		));
-		assert!(valid_header_version(
-			YEAR_HEIGHT * 100,
-			HeaderVersion::new(1)
-		));
+		assert!(valid_header_version(0, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(1)));
 	}
 	// Tests for floonet chain type.
 	{
 		global::set_mining_mode(global::ChainTypes::Floonet);
 		assert_eq!(global::is_floonet(), true);
-		assert!(valid_header_version(0, HeaderVersion::new(1)));
-		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion::new(1)));
-		assert!(valid_header_version(
-			YEAR_HEIGHT * 10,
-			HeaderVersion::new(1)
-		));
-		assert!(valid_header_version(
-			YEAR_HEIGHT * 100,
-			HeaderVersion::new(1)
-		));
+		assert!(valid_header_version(0, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(1)));
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -93,6 +93,16 @@ pub fn show_status(config: &ServerConfig, api_secret: Option<String>) {
 	println!()
 }
 
+fn get_chain_type() -> global::ChainTypes {
+	if global::is_mainnet() {
+		global::ChainTypes::Mainnet
+	} else if global::is_floonet() {
+		global::ChainTypes::Floonet
+	} else {
+		global::ChainTypes::UserTesting
+	}
+}
+
 pub fn ban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Option<String>) {
 	let params = "";
 	let mut e = term::stdout().unwrap();
@@ -101,15 +111,7 @@ pub fn ban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Optio
 		config.api_http_addr,
 		peer_addr.to_string()
 	);
-
-	let chain_type = if global::is_mainnet() {
-		global::ChainTypes::Mainnet
-	} else if global::is_floonet() {
-		global::ChainTypes::Floonet
-	} else {
-		global::ChainTypes::UserTesting
-	};
-	match api::client::post_no_ret(url.as_str(), api_secret, &params, chain_type)
+	match api::client::post_no_ret(url.as_str(), api_secret, &params, get_chain_type())
 		.map_err(|e| Error::API(e))
 	{
 		Ok(_) => writeln!(e, "Successfully banned peer {}", peer_addr.to_string()).unwrap(),
@@ -127,16 +129,7 @@ pub fn unban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Opt
 		peer_addr.to_string()
 	);
 	let res: Result<(), api::Error>;
-
-	let chain_type = if global::is_mainnet() {
-		global::ChainTypes::Mainnet
-	} else if global::is_floonet() {
-		global::ChainTypes::Floonet
-	} else {
-		global::ChainTypes::UserTesting
-	};
-
-	res = api::client::post_no_ret(url.as_str(), api_secret, &params, chain_type);
+	res = api::client::post_no_ret(url.as_str(), api_secret, &params, get_chain_type());
 
 	match res.map_err(|e| Error::API(e)) {
 		Ok(_) => writeln!(e, "Successfully unbanned peer {}", peer_addr).unwrap(),
@@ -149,16 +142,12 @@ pub fn list_connected_peers(config: &ServerConfig, api_secret: Option<String>) {
 	let mut e = term::stdout().unwrap();
 	let url = format!("http://{}/v1/peers/connected", config.api_http_addr);
 	// let peers_info: Result<Vec<p2p::PeerInfoDisplay>, api::Error>;
-	let chain_type = if global::is_mainnet() {
-		global::ChainTypes::Mainnet
-	} else if global::is_floonet() {
-		global::ChainTypes::Floonet
-	} else {
-		global::ChainTypes::UserTesting
-	};
 
-	let peers_info =
-		api::client::get::<Vec<p2p::types::PeerInfoDisplay>>(url.as_str(), api_secret, chain_type);
+	let peers_info = api::client::get::<Vec<p2p::types::PeerInfoDisplay>>(
+		url.as_str(),
+		api_secret,
+		get_chain_type(),
+	);
 
 	match peers_info.map_err(|e| Error::API(e)) {
 		Ok(connected_peers) => {
@@ -187,15 +176,8 @@ fn get_status_from_node(
 	api_secret: Option<String>,
 ) -> Result<api::Status, Error> {
 	let url = format!("http://{}/v1/status", config.api_http_addr);
-	let chain_type = if global::is_mainnet() {
-		global::ChainTypes::Mainnet
-	} else if global::is_floonet() {
-		global::ChainTypes::Floonet
-	} else {
-		global::ChainTypes::UserTesting
-	};
-
-	api::client::get::<api::Status>(url.as_str(), api_secret, chain_type).map_err(|e| Error::API(e))
+	api::client::get::<api::Status>(url.as_str(), api_secret, get_chain_type())
+		.map_err(|e| Error::API(e))
 }
 
 /// Error type wrapping underlying module errors.

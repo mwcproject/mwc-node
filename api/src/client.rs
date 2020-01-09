@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,8 +25,10 @@ use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use hyper::rt::{Future, Stream};
 use hyper::{Body, Client, Request};
 use hyper_rustls;
+use hyper_timeout::TimeoutConnector;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 pub type ClientResponseFuture<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
@@ -189,17 +191,15 @@ fn build_request_ex(
 	let mut builder = Request::builder();
 
 	if basic_auth_key.is_some() && api_secret.is_some() {
-		builder.header(
-			AUTHORIZATION,
-			format!(
-				"Basic {}",
-				to_base64(&format!(
-					"{}:{}",
-					basic_auth_key.unwrap(),
-					api_secret.unwrap()
-				))
-			),
+		let basic_auth = format!(
+			"Basic {}",
+			to_base64(&format!(
+				"{}:{}",
+				basic_auth_key.unwrap(),
+				api_secret.unwrap()
+			))
 		);
+		builder.header(AUTHORIZATION, basic_auth);
 	}
 
 	builder
@@ -272,7 +272,11 @@ where
 
 fn send_request_async(req: Request<Body>) -> Box<dyn Future<Item = String, Error = Error> + Send> {
 	let https = hyper_rustls::HttpsConnector::new(1);
-	let client = Client::builder().build::<_, Body>(https);
+	let mut connector = TimeoutConnector::new(https);
+	connector.set_connect_timeout(Some(Duration::from_secs(20)));
+	connector.set_read_timeout(Some(Duration::from_secs(20)));
+	connector.set_write_timeout(Some(Duration::from_secs(20)));
+	let client = Client::builder().build::<_, hyper::Body>(connector);
 	Box::new(
 		client
 			.request(req)
