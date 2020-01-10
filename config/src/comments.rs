@@ -325,6 +325,14 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"reorg_cache_timeout".to_string(),
+		"
+#timeout in minutes for reorg cache, default 1440
+"
+		.to_string(),
+	);
+
+	retval.insert(
 		"max_pool_size".to_string(),
 		"
 #maximum number of transactions allowed in the pool

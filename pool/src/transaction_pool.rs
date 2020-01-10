@@ -85,7 +85,7 @@ impl TransactionPool {
 		let mut cache = self.reorg_cache.write();
 		cache.push_back(entry);
 
-		// We cache 30 mins of txs but we have a hard limit to avoid catastrophic failure.
+		// We cache 1440 mins of txs but we have a hard limit to avoid catastrophic failure.
 		// For simplicity use the same value as the actual tx pool limit.
 		if cache.len() > self.config.max_pool_size {
 			let _ = cache.pop_front();
