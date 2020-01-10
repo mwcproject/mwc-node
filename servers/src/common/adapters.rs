@@ -743,7 +743,7 @@ impl ChainAdapter for ChainToPoolAndNetAdapter {
 			let _ = tx_pool.reconcile_block(b);
 
 			// First "age out" any old txs in the reorg_cache.
-			let cutoff = Utc::now() - Duration::minutes(30);
+			let cutoff = Utc::now() - Duration::minutes(tx_pool.config.reorg_cache_timeout);
 			tx_pool.truncate_reorg_cache(cutoff);
 		}
 

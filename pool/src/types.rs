@@ -108,6 +108,10 @@ pub struct PoolConfig {
 	#[serde(default = "default_accept_fee_base")]
 	pub accept_fee_base: u64,
 
+	/// Reorg cache timeout in minutes
+	#[serde(default = "default_reorg_cache_timeout")]
+	pub reorg_cache_timeout: i64,
+
 	/// Maximum capacity of the pool in number of transactions
 	#[serde(default = "default_max_pool_size")]
 	pub max_pool_size: usize,
@@ -128,6 +132,7 @@ impl Default for PoolConfig {
 		PoolConfig {
 			accept_fee_base: default_accept_fee_base(),
 			max_pool_size: default_max_pool_size(),
+			reorg_cache_timeout: default_reorg_cache_timeout(),
 			max_stempool_size: default_max_stempool_size(),
 			mineable_max_weight: default_mineable_max_weight(),
 		}
@@ -138,7 +143,10 @@ fn default_accept_fee_base() -> u64 {
 	consensus::MILLI_GRIN
 }
 fn default_max_pool_size() -> usize {
-	50_000
+	150_000
+}
+fn default_reorg_cache_timeout() -> i64 {
+	1_440
 }
 fn default_max_stempool_size() -> usize {
 	50_000
