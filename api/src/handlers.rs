@@ -53,6 +53,7 @@ use crate::pool;
 use crate::rest::{ApiServer, Error, TLSConfig};
 use crate::router::ResponseFuture;
 use crate::router::{Router, RouterError};
+use crate::util;
 use crate::util::to_base64;
 use crate::util::RwLock;
 use crate::web::*;
@@ -88,18 +89,19 @@ pub fn node_apis(
 
 	// Add basic auth to v1 API and owner v2 API
 	if let Some(api_secret) = api_secret {
-		let basic_auth_key = if global::is_mainnet() {
-			"mwcfloo"
+		let api_basic_auth = if global::is_mainnet() {
+			format!(
+				"Basic {}",
+				util::to_base64(&format!("mwcmain:{}", api_secret))
+			)
 		} else if global::is_floonet() {
-			"mwcmain"
+			format!(
+				"Basic {}",
+				util::to_base64(&format!("mwcfloo:{}", api_secret))
+			)
 		} else {
-			"mwc"
+			format!("Basic {}", util::to_base64(&format!("mwc:{}", api_secret)))
 		};
-
-		let api_basic_auth = format!(
-			"Basic {}",
-			to_base64(&format!("{}:{}", basic_auth_key, api_secret))
-		);
 
 		let basic_auth_middleware = Arc::new(BasicAuthMiddleware::new(
 			api_basic_auth,
