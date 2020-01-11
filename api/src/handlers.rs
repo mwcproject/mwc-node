@@ -53,7 +53,6 @@ use crate::pool;
 use crate::rest::{ApiServer, Error, TLSConfig};
 use crate::router::ResponseFuture;
 use crate::router::{Router, RouterError};
-use crate::util;
 use crate::util::to_base64;
 use crate::util::RwLock;
 use crate::web::*;
@@ -87,21 +86,20 @@ pub fn node_apis(
 	)
 	.expect("unable to build API router");
 
+	let basic_auth_key = if global::is_mainnet() {
+		"mwcmain"
+	} else if global::is_floonet() {
+		"mwcfloo"
+	} else {
+		"mwc"
+	};
+
 	// Add basic auth to v1 API and owner v2 API
 	if let Some(api_secret) = api_secret {
-		let api_basic_auth = if global::is_mainnet() {
-			format!(
-				"Basic {}",
-				util::to_base64(&format!("mwcmain:{}", api_secret))
-			)
-		} else if global::is_floonet() {
-			format!(
-				"Basic {}",
-				util::to_base64(&format!("mwcfloo:{}", api_secret))
-			)
-		} else {
-			format!("Basic {}", util::to_base64(&format!("mwc:{}", api_secret)))
-		};
+		let api_basic_auth = format!(
+			"Basic {}",
+			to_base64(&format!("{}:{}", basic_auth_key, api_secret))
+		);
 
 		let basic_auth_middleware = Arc::new(BasicAuthMiddleware::new(
 			api_basic_auth,
@@ -120,13 +118,6 @@ pub fn node_apis(
 
 	// Add basic auth to v2 foreign API only
 	if let Some(api_secret) = foreign_api_secret {
-		let basic_auth_key = if global::is_mainnet() {
-			"mwcfloo"
-		} else if global::is_floonet() {
-			"mwcmain"
-		} else {
-			"mwc"
-		};
 		let api_basic_auth = format!(
 			"Basic {}",
 			to_base64(&format!("{}:{}", basic_auth_key, api_secret))
