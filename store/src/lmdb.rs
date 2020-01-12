@@ -27,10 +27,10 @@ use crate::util::{RwLock, RwLockReadGuard};
 
 /// number of bytes to grow the database by when needed
 pub const ALLOC_CHUNK_SIZE: usize = 134_217_728; //128 MB
-const RESIZE_PERCENT: f32 = 0.9;
+const RESIZE_PERCENT: f32 = 0.5;
 /// Want to ensure that each resize gives us at least this %
 /// of total space free
-const RESIZE_MIN_TARGET_PERCENT: f32 = 0.65;
+const RESIZE_MIN_TARGET_PERCENT: f32 = 0.5;
 
 /// Main error type for this lmdb
 #[derive(Clone, Eq, PartialEq, Debug, Fail)]
