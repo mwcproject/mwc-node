@@ -400,6 +400,7 @@ fn mine_reorg() {
 fn mine_forks() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	{
+		clean_output_dir(".mwc2");
 		let chain = init_chain(".mwc2", pow::mine_genesis_block().unwrap());
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 
@@ -440,7 +441,7 @@ fn mine_forks() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin2");
+	clean_output_dir(".mwc2");
 }
 
 #[test]
@@ -476,7 +477,7 @@ fn mine_losing_fork() {
 		assert_eq!(chain.head_header().unwrap().hash(), b3head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin3");
+	clean_output_dir(".mwc3");
 }
 
 #[test]
@@ -488,6 +489,7 @@ fn longer_fork() {
 	// then send back on the 1st
 	let genesis = pow::mine_genesis_block().unwrap();
 	{
+		clean_output_dir(".mwc4");
 		let chain = init_chain(".mwc4", genesis.clone());
 
 		// add blocks to both chains, 20 on the main one, only the first 5
@@ -520,7 +522,7 @@ fn longer_fork() {
 		assert_eq!(head.hash(), new_head.hash());
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin4");
+	clean_output_dir(".mwc4");
 }
 
 #[test]
@@ -657,7 +659,7 @@ fn spend_in_fork_and_compact() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin6");
+	clean_output_dir(".mwc6");
 }
 
 /// Test ability to retrieve block headers for a given output
@@ -665,6 +667,7 @@ fn spend_in_fork_and_compact() {
 fn output_header_mappings() {
 	global::set_mining_mode(ChainTypes::AutomatedTesting);
 	{
+		clean_output_dir(".mwc_header_for_output");
 		let chain = init_chain(".mwc_header_for_output", pow::mine_genesis_block().unwrap());
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let mut reward_outputs = vec![];
@@ -727,7 +730,7 @@ fn output_header_mappings() {
 		}
 	}
 	// Cleanup chain directory
-	clean_output_dir(".grin_header_for_output");
+	clean_output_dir(".mwc_header_for_output");
 }
 
 fn prepare_block<K>(kc: &K, prev: &BlockHeader, chain: &Chain, diff: u64) -> Block
@@ -793,7 +796,7 @@ fn actual_diff_iter_output() {
 	let genesis_block = pow::mine_genesis_block().unwrap();
 	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 	let chain = chain::Chain::init(
-		"../.grin".to_string(),
+		"../.mwc".to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis_block,
 		pow::verify_size,
