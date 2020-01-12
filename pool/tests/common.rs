@@ -155,6 +155,7 @@ pub fn test_setup(
 	TransactionPool::new(
 		PoolConfig {
 			accept_fee_base: 0,
+			reorg_cache_timeout: 1_440,
 			max_pool_size: 50,
 			max_stempool_size: 50,
 			mineable_max_weight: 10_000,
