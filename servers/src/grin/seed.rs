@@ -37,7 +37,7 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"mainnet.seed1.mwc.mw", // cpg
 	"mainnet.seed2.mwc.mw", // cpg
 	"40.114.69.216",        // JonB
-	"24.4.197.142",         // Konstantin
+	"mwcseed.ddns.net",     // Konstantin
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
 
