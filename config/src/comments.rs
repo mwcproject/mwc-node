@@ -327,7 +327,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"reorg_cache_timeout".to_string(),
 		"
-#timeout in minutes for reorg cache, default 1440
+#timeout in minutes for reorg cache, default 30 
 "
 		.to_string(),
 	);
