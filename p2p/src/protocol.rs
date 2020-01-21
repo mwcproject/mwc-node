@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::conn::{Message, MessageHandler, Response, Tracker};
-use crate::core::core::{self, hash::Hash, CompactBlock};
+use crate::chain;
+use crate::conn::{Message, MessageHandler, Tracker};
+use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock};
 
 use crate::msg::{
-	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, PeerAddrs, Ping, Pong,
+	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, Msg, PeerAddrs, Ping, Pong,
 	TxHashSetArchive, TxHashSetRequest, Type,
 };
 use crate::types::{Error, NetAdapter, PeerInfo};
@@ -24,28 +25,39 @@ use chrono::prelude::Utc;
 use rand::{thread_rng, Rng};
 use std::cmp;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Seek, SeekFrom};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tempfile::tempfile;
 
 pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
+	state_sync_requested: Arc<AtomicBool>,
 }
 
 impl Protocol {
-	pub fn new(adapter: Arc<dyn NetAdapter>, peer_info: PeerInfo) -> Protocol {
-		Protocol { adapter, peer_info }
+	pub fn new(
+		adapter: Arc<dyn NetAdapter>,
+		peer_info: PeerInfo,
+		state_sync_requested: Arc<AtomicBool>,
+	) -> Protocol {
+		Protocol {
+			adapter,
+			peer_info,
+			state_sync_requested,
+		}
 	}
 }
 
 impl MessageHandler for Protocol {
-	fn consume<'a>(
+	fn consume(
 		&self,
-		mut msg: Message<'a>,
-		writer: &'a mut dyn Write,
+		mut msg: Message,
+		stopped: Arc<AtomicBool>,
 		tracker: Arc<Tracker>,
-	) -> Result<Option<Response<'a>>, Error> {
+	) -> Result<Option<Msg>, Error> {
 		let adapter = &self.adapter;
 
 		// If we received a msg from a banned peer then log and drop it.
@@ -64,13 +76,13 @@ impl MessageHandler for Protocol {
 				let ping: Ping = msg.body()?;
 				adapter.peer_difficulty(self.peer_info.addr, ping.total_difficulty, ping.height);
 
-				Ok(Some(Response::new(
+				Ok(Some(Msg::new(
 					Type::Pong,
 					Pong {
 						total_difficulty: adapter.total_difficulty()?,
 						height: adapter.total_height()?,
 					},
-					writer,
+					self.peer_info.version,
 				)?))
 			}
 
@@ -104,7 +116,11 @@ impl MessageHandler for Protocol {
 				);
 				let tx = adapter.get_transaction(h);
 				if let Some(tx) = tx {
-					Ok(Some(Response::new(Type::Transaction, tx, writer)?))
+					Ok(Some(Msg::new(
+						Type::Transaction,
+						tx,
+						self.peer_info.version,
+					)?))
 				} else {
 					Ok(None)
 				}
@@ -140,7 +156,7 @@ impl MessageHandler for Protocol {
 
 				let bo = adapter.get_block(h);
 				if let Some(b) = bo {
-					return Ok(Some(Response::new(Type::Block, b, writer)?));
+					return Ok(Some(Msg::new(Type::Block, b, self.peer_info.version)?));
 				}
 				Ok(None)
 			}
@@ -150,11 +166,13 @@ impl MessageHandler for Protocol {
 					"handle_payload: received block: msg_len: {}",
 					msg.header.msg_len
 				);
-				let b: core::Block = msg.body()?;
+				let b: core::UntrustedBlock = msg.body()?;
 
-				// we can't know at this level whether we requested the block or not,
-				// the boolean should be properly set in higher level adapter
-				adapter.block_received(b, &self.peer_info, false)?;
+				// We default to NONE opts here as we do not know know yet why this block was
+				// received.
+				// If we requested this block from a peer due to our node syncing then
+				// the peer adapter will override opts to reflect this.
+				adapter.block_received(b.into(), &self.peer_info, chain::Options::NONE)?;
 				Ok(None)
 			}
 
@@ -162,7 +180,11 @@ impl MessageHandler for Protocol {
 				let h: Hash = msg.body()?;
 				if let Some(b) = adapter.get_block(h) {
 					let cb: CompactBlock = b.into();
-					Ok(Some(Response::new(Type::CompactBlock, cb, writer)?))
+					Ok(Some(Msg::new(
+						Type::CompactBlock,
+						cb,
+						self.peer_info.version,
+					)?))
 				} else {
 					Ok(None)
 				}
@@ -173,9 +195,9 @@ impl MessageHandler for Protocol {
 					"handle_payload: received compact block: msg_len: {}",
 					msg.header.msg_len
 				);
-				let b: core::CompactBlock = msg.body()?;
+				let b: core::UntrustedCompactBlock = msg.body()?;
 
-				adapter.compact_block_received(b, &self.peer_info)?;
+				adapter.compact_block_received(b.into(), &self.peer_info)?;
 				Ok(None)
 			}
 
@@ -185,18 +207,18 @@ impl MessageHandler for Protocol {
 				let headers = adapter.locate_headers(&loc.hashes)?;
 
 				// serialize and send all the headers over
-				Ok(Some(Response::new(
+				Ok(Some(Msg::new(
 					Type::Headers,
 					Headers { headers },
-					writer,
+					self.peer_info.version,
 				)?))
 			}
 
 			// "header first" block propagation - if we have not yet seen this block
 			// we can go request it from some of our peers
 			Type::Header => {
-				let header: core::BlockHeader = msg.body()?;
-				adapter.header_received(header, &self.peer_info)?;
+				let header: core::UntrustedBlockHeader = msg.body()?;
+				adapter.header_received(header.into(), &self.peer_info)?;
 				Ok(None)
 			}
 
@@ -212,8 +234,9 @@ impl MessageHandler for Protocol {
 				for chunk in (0..count).collect::<Vec<_>>().chunks(chunk_size) {
 					let mut headers = vec![];
 					for _ in chunk {
-						let (header, bytes_read) = msg.streaming_read()?;
-						headers.push(header);
+						let (header, bytes_read) =
+							msg.streaming_read::<core::UntrustedBlockHeader>()?;
+						headers.push(header.into());
 						total_bytes_read += bytes_read;
 					}
 					adapter.headers_received(&headers, &self.peer_info)?;
@@ -230,10 +253,10 @@ impl MessageHandler for Protocol {
 			Type::GetPeerAddrs => {
 				let get_peers: GetPeerAddrs = msg.body()?;
 				let peers = adapter.find_peer_addrs(get_peers.capabilities);
-				Ok(Some(Response::new(
+				Ok(Some(Msg::new(
 					Type::PeerAddrs,
 					PeerAddrs { peers },
-					writer,
+					self.peer_info.version,
 				)?))
 			}
 
@@ -248,8 +271,11 @@ impl MessageHandler for Protocol {
 				let kernel_data = self.adapter.kernel_data_read()?;
 				let bytes = kernel_data.metadata()?.len();
 				let kernel_data_response = KernelDataResponse { bytes };
-				let mut response =
-					Response::new(Type::KernelDataResponse, &kernel_data_response, writer)?;
+				let mut response = Msg::new(
+					Type::KernelDataResponse,
+					&kernel_data_response,
+					self.peer_info.version,
+				)?;
 				response.add_attachment(kernel_data);
 				Ok(Some(response))
 			}
@@ -298,18 +324,20 @@ impl MessageHandler for Protocol {
 					sm_req.hash, sm_req.height
 				);
 
-				let txhashset = self.adapter.txhashset_read(sm_req.hash);
+				let txhashset_header = self.adapter.txhashset_archive_header()?;
+				let txhashset_header_hash = txhashset_header.hash();
+				let txhashset = self.adapter.txhashset_read(txhashset_header_hash);
 
 				if let Some(txhashset) = txhashset {
 					let file_sz = txhashset.reader.metadata()?.len();
-					let mut resp = Response::new(
+					let mut resp = Msg::new(
 						Type::TxHashSetArchive,
 						&TxHashSetArchive {
-							height: sm_req.height as u64,
-							hash: sm_req.hash,
+							height: txhashset_header.height as u64,
+							hash: txhashset_header_hash,
 							bytes: file_sz,
 						},
-						writer,
+						self.peer_info.version,
 					)?;
 					resp.add_attachment(txhashset.reader);
 					Ok(Some(resp))
@@ -330,6 +358,12 @@ impl MessageHandler for Protocol {
 					);
 					return Err(Error::BadMessage);
 				}
+				if !self.state_sync_requested.load(Ordering::Relaxed) {
+					error!("handle_payload: txhashset archive received but from the wrong peer",);
+					return Err(Error::BadMessage);
+				}
+				// Update the sync state requested status
+				self.state_sync_requested.store(false, Ordering::Relaxed);
 
 				let download_start_time = Utc::now();
 				self.adapter
@@ -341,6 +375,7 @@ impl MessageHandler for Protocol {
 					download_start_time.timestamp(),
 					nonce
 				));
+				let mut now = Instant::now();
 				let mut save_txhashset_to_file = |file| -> Result<(), Error> {
 					let mut tmp_zip =
 						BufWriter::new(OpenOptions::new().write(true).create_new(true).open(file)?);
@@ -356,11 +391,27 @@ impl MessageHandler for Protocol {
 							downloaded_size as u64,
 							total_size as u64,
 						);
-
+						if now.elapsed().as_secs() > 10 {
+							now = Instant::now();
+							debug!(
+								"handle_payload: txhashset archive: {}/{}",
+								downloaded_size, total_size
+							);
+						}
 						// Increase received bytes quietly (without affecting the counters).
 						// Otherwise we risk banning a peer as "abusive".
-						tracker.inc_quiet_received(size as u64)
+						tracker.inc_quiet_received(size as u64);
+
+						// check the close channel
+						if stopped.load(Ordering::Relaxed) {
+							debug!("stopping txhashset download early");
+							return Err(Error::ConnectionClose);
+						}
 					}
+					debug!(
+						"handle_payload: txhashset archive: {}/{} ... DONE",
+						downloaded_size, total_size
+					);
 					tmp_zip
 						.into_inner()
 						.map_err(|_| Error::Internal)?

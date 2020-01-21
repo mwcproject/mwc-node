@@ -1,6 +1,6 @@
 # MWC - Build, Configuration, and Running
 
-*Read this in other languages: [Español](build_ES.md), [Korean](build_KR.md), [日本語](build_JP.md).*
+*Read this in other languages: [Español](build_ES.md), [Korean](build_KR.md), [日本語](build_JP.md), [简体中文](build_ZH-CN.md).*
 
 ## Supported Platforms
 
@@ -97,7 +97,7 @@ For help on mwc commands and their switches, try:
 
 ```sh
 mwc help
-mwc wallet --help
+mwc server --help
 mwc client --help
 ```
 
@@ -136,4 +136,4 @@ Please note that all mining functions for MWC have moved into a separate, standa
 you can start mining by building and running grin-miner against your running MWC node.
 
 For grin-miner to be able to communicate with your MWC node, make sure that you have `enable_stratum_server = true`
-in your `mwc-server.toml` configuration file and you have a wallet listener running (`mwc wallet listen`). 
+in your `mwc-server.toml` configuration file and you have a wallet listener running (`mwc-wallet listen`). 

@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,15 +13,17 @@
 // limitations under the License.
 
 use super::utils::w;
-use crate::chain;
+use crate::chain::{Chain, SyncState, SyncStatus};
 use crate::p2p;
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::web::*;
+use grin_core::global;
 use hyper::{Body, Request, StatusCode};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use serde_json::json;
+use std::sync::atomic::Ordering;
+use std::sync::Weak;
 
 // RESTful index of available api endpoints
 // GET /v1/
@@ -63,19 +65,23 @@ impl Handler for KernelDownloadHandler {
 /// Status handler. Post a summary of the server status
 /// GET /v1/status
 pub struct StatusHandler {
-	pub chain: Weak<chain::Chain>,
+	pub chain: Weak<Chain>,
 	pub peers: Weak<p2p::Peers>,
-	pub server_running: Arc<AtomicBool>,
+	pub sync_state: Weak<SyncState>,
 }
 
 impl StatusHandler {
-	fn get_status(&self) -> Result<Status, Error> {
+	pub fn get_status(&self) -> Result<Status, Error> {
 		let head = w(&self.chain)?
 			.head()
 			.map_err(|e| ErrorKind::Internal(format!("can't get head: {}", e)))?;
+		let sync_status = w(&self.sync_state)?.status();
+		let (api_sync_status, api_sync_info) = sync_status_to_api(sync_status);
 		Ok(Status::from_tip_and_peers(
 			head,
 			w(&self.peers)?.peer_count(),
+			api_sync_status,
+			api_sync_info,
 		))
 	}
 }
@@ -111,7 +117,7 @@ impl Handler for StatusHandler {
 				if action_str == "stop_node" {
 					warn!("Stopping the node by API request...");
 					processed.push(action_str);
-					self.server_running.store(false, Ordering::SeqCst);
+					global::get_server_running_controller().store(false, Ordering::SeqCst);
 				}
 			}
 
@@ -123,5 +129,55 @@ impl Handler for StatusHandler {
 				format!("Expected 'action' parameter at request"),
 			)
 		}
+	}
+}
+
+/// Convert a SyncStatus in a readable API representation
+fn sync_status_to_api(sync_status: SyncStatus) -> (String, Option<serde_json::Value>) {
+	match sync_status {
+		SyncStatus::NoSync => ("no_sync".to_string(), None),
+		SyncStatus::AwaitingPeers(_) => ("awaiting_peers".to_string(), None),
+		SyncStatus::HeaderSync {
+			current_height,
+			highest_height,
+		} => (
+			"header_sync".to_string(),
+			Some(json!({ "current_height": current_height, "highest_height": highest_height })),
+		),
+		SyncStatus::TxHashsetDownload {
+			start_time: _,
+			prev_update_time: _,
+			update_time: _,
+			prev_downloaded_size: _,
+			downloaded_size,
+			total_size,
+		} => (
+			"txhashset_download".to_string(),
+			Some(json!({ "downloaded_size": downloaded_size, "total_size": total_size })),
+		),
+		SyncStatus::TxHashsetRangeProofsValidation {
+			rproofs,
+			rproofs_total,
+		} => (
+			"txhashset_rangeproofs_validation".to_string(),
+			Some(json!({ "rproofs": rproofs, "rproofs_total": rproofs_total })),
+		),
+		SyncStatus::TxHashsetKernelsValidation {
+			kernels,
+			kernels_total,
+		} => (
+			"txhashset_kernels_validation".to_string(),
+			Some(json!({ "kernels": kernels, "kernels_total": kernels_total })),
+		),
+		SyncStatus::BodySync {
+			current_height,
+			highest_height,
+		} => (
+			"body_sync".to_string(),
+			Some(json!({ "current_height": current_height, "highest_height": highest_height })),
+		),
+		SyncStatus::Shutdown => ("shutdown".to_string(), None),
+		// any other status is considered syncing (should be unreachable)
+		_ => ("syncing".to_string(), None),
 	}
 }
