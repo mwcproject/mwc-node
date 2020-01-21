@@ -40,7 +40,7 @@ steps:
       repositoryName: 'mwcproject/mwc-node'
       action: 'edit'
       target: '$(build.sourceVersion)'
-      tagSource: 'manual'
+      tagSource: 'auto'
       tag: '$(build.my_tag)'
       assets: |
         $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz
