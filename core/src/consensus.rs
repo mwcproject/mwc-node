@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,11 +18,11 @@
 //! enough, consensus-relevant constants and short functions should be kept
 //! here.
 
-use std::cmp::{max, min};
-
 use crate::core::block::HeaderVersion;
+use crate::core::hash::{Hash, ZERO_HASH};
 use crate::global;
 use crate::pow::Difficulty;
+use std::cmp::{max, min};
 
 /// A grin is divisible to 10^9, following the SI prefixes
 pub const GRIN_BASE: u64 = 1_000_000_000;
@@ -84,10 +84,12 @@ fn ar_scale_damp_factor(_height: u64) -> u64 {
 /// Cuckoo-cycle proof size (cycle length)
 pub const PROOFSIZE: usize = 42;
 
+// MWC want to keep this value: pub const DEFAULT_MIN_EDGE_BITS: u8 = 31;
 /// Default Cuckatoo Cycle edge_bits, used for mining and validating.
 pub const DEFAULT_MIN_EDGE_BITS: u8 = 31;
 
-/// Cuckaroo proof-of-work edge_bits, meant to be ASIC resistant.
+// MWC want to keep this value: pub const SECOND_POW_EDGE_BITS: u8 = 29;
+/// Cuckaroo* proof-of-work edge_bits, meant to be ASIC resistant.
 pub const SECOND_POW_EDGE_BITS: u8 = 29;
 
 /// Original reference edge_bits to compute difficulty factors for higher
@@ -133,12 +135,18 @@ pub const BLOCK_KERNEL_WEIGHT: usize = 3;
 ///
 pub const MAX_BLOCK_WEIGHT: usize = 40_000;
 
+/// Check whether the block version is valid at a given height
+/// MWC doesn't want like grin change the algorithms for mining. So version is constant
+pub fn header_version(_height: u64) -> HeaderVersion {
+	HeaderVersion(1)
+}
+
 /// Check whether the block version is valid at a given height.
 /// Currently we only use the default version. No hard forks planned.
 pub fn valid_header_version(_height: u64, version: HeaderVersion) -> bool {
 	// We don't currently plan any hard forks. If we change that plan,
 	// will update.
-	version == HeaderVersion::default()
+	version == HeaderVersion(1)
 }
 
 /// Number of blocks used to calculate difficulty adjustments
@@ -168,8 +176,10 @@ pub fn graph_weight(height: u64, edge_bits: u8) -> u64 {
 	if edge_bits < 32 && height >= expiry_height {
 		xpr_edge_bits = xpr_edge_bits.saturating_sub(1 + (height - expiry_height) / WEEK_HEIGHT);
 	}
+	// For C31 xpr_edge_bits reaches 0 at height YEAR_HEIGHT + 30 * WEEK_HEIGHT
+	// 30 weeks after Jan 15, 2020 would be Aug 12, 2020
 
-	(2 << (edge_bits - global::base_edge_bits()) as u64) * xpr_edge_bits
+	(2u64 << (edge_bits - global::base_edge_bits()) as u64) * xpr_edge_bits
 }
 
 /// Minimum difficulty, enforced in diff retargetting
@@ -194,6 +204,8 @@ pub const INITIAL_DIFFICULTY: u64 = 1_000_000 * UNIT_DIFFICULTY;
 /// take place
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeaderInfo {
+	/// Block hash, ZERO_HASH when this is a sythetic entry.
+	pub block_hash: Hash,
 	/// Timestamp of the header, 1 when not used (returned info)
 	pub timestamp: u64,
 	/// Network difficulty or next difficulty to use
@@ -207,12 +219,14 @@ pub struct HeaderInfo {
 impl HeaderInfo {
 	/// Default constructor
 	pub fn new(
+		block_hash: Hash,
 		timestamp: u64,
 		difficulty: Difficulty,
 		secondary_scaling: u32,
 		is_secondary: bool,
 	) -> HeaderInfo {
 		HeaderInfo {
+			block_hash,
 			timestamp,
 			difficulty,
 			secondary_scaling,
@@ -224,6 +238,7 @@ impl HeaderInfo {
 	/// PoW factor
 	pub fn from_ts_diff(timestamp: u64, difficulty: Difficulty) -> HeaderInfo {
 		HeaderInfo {
+			block_hash: ZERO_HASH,
 			timestamp,
 			difficulty,
 			secondary_scaling: global::initial_graph_weight(),
@@ -236,6 +251,7 @@ impl HeaderInfo {
 	/// timestamp
 	pub fn from_diff_scaling(difficulty: Difficulty, secondary_scaling: u32) -> HeaderInfo {
 		HeaderInfo {
+			block_hash: ZERO_HASH,
 			timestamp: 1,
 			difficulty,
 			secondary_scaling,

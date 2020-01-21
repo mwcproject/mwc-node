@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -279,21 +279,7 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 
 	trace!("Sending build_coinbase request: {}", req_body);
 
-	let req = if global::is_floonet() {
-		api::client::create_post_request(
-			url.as_str(),
-			None,
-			&req_body,
-			global::ChainTypes::Floonet,
-		)?
-	} else {
-		api::client::create_post_request(
-			url.as_str(),
-			None,
-			&req_body,
-			global::ChainTypes::Mainnet,
-		)?
-	};
+	let req = api::client::create_post_request(url.as_str(), None, &req_body)?;
 
 	let res: String = api::client::send_request(req).map_err(|e| {
 		let report = format!(

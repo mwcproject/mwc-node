@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,9 +19,8 @@ pub mod common;
 use self::core::core::{Output, OutputFeatures};
 use self::core::libtx::proof;
 use self::core::ser;
-use self::keychain::{ExtKeychain, Keychain};
 use grin_core as core;
-use grin_keychain as keychain;
+use keychain::{ExtKeychain, Keychain};
 
 #[test]
 fn test_output_ser_deser() {
@@ -39,8 +38,8 @@ fn test_output_ser_deser() {
 	};
 
 	let mut vec = vec![];
-	ser::serialize(&mut vec, &out).expect("serialized failed");
-	let dout: Output = ser::deserialize(&mut &vec[..]).unwrap();
+	ser::serialize_default(&mut vec, &out).expect("serialized failed");
+	let dout: Output = ser::deserialize_default(&mut &vec[..]).unwrap();
 
 	assert_eq!(dout.features, OutputFeatures::Plain);
 	assert_eq!(dout.commit, out.commit);

@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 //! High level JSON/HTTP client API
 
 use crate::core::global;
-use crate::core::global::ChainTypes;
 use crate::rest::{Error, ErrorKind};
 use crate::util::to_base64;
 use failure::{Fail, ResultExt};
@@ -25,8 +24,10 @@ use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use hyper::rt::{Future, Stream};
 use hyper::{Body, Client, Request};
 use hyper_rustls;
+use hyper_timeout::TimeoutConnector;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 pub type ClientResponseFuture<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
@@ -34,29 +35,21 @@ pub type ClientResponseFuture<T> = Box<dyn Future<Item = T, Error = Error> + Sen
 /// Helper function to easily issue a HTTP GET request against a given URL that
 /// returns a JSON object. Handles request building, JSON deserialization and
 /// response code checking.
-pub fn get<'a, T>(
-	url: &'a str,
-	api_secret: Option<String>,
-	chain_type: ChainTypes,
-) -> Result<T, Error>
+pub fn get<'a, T>(url: &'a str, api_secret: Option<String>) -> Result<T, Error>
 where
 	for<'de> T: Deserialize<'de>,
 {
-	handle_request(build_request(url, "GET", api_secret, None, chain_type)?)
+	handle_request(build_request(url, "GET", api_secret, None)?)
 }
 
 /// Helper function to easily issue an async HTTP GET request against a given
 /// URL that returns a future. Handles request building, JSON deserialization
 /// and response code checking.
-pub fn get_async<'a, T>(
-	url: &'a str,
-	api_secret: Option<String>,
-	chain_type: ChainTypes,
-) -> ClientResponseFuture<T>
+pub fn get_async<'a, T>(url: &'a str, api_secret: Option<String>) -> ClientResponseFuture<T>
 where
 	for<'de> T: Deserialize<'de> + Send + 'static,
 {
-	match build_request(url, "GET", api_secret, None, chain_type) {
+	match build_request(url, "GET", api_secret, None) {
 		Ok(req) => Box::new(handle_request_async(req)),
 		Err(e) => Box::new(err(e)),
 	}
@@ -65,12 +58,8 @@ where
 /// Helper function to easily issue a HTTP GET request
 /// on a given URL that returns nothing. Handles request
 /// building and response code checking.
-pub fn get_no_ret(
-	url: &str,
-	api_secret: Option<String>,
-	chain_type: ChainTypes,
-) -> Result<(), Error> {
-	let req = build_request(url, "GET", api_secret, None, chain_type)?;
+pub fn get_no_ret(url: &str, api_secret: Option<String>) -> Result<(), Error> {
+	let req = build_request(url, "GET", api_secret, None)?;
 	send_request(req)?;
 	Ok(())
 }
@@ -79,17 +68,12 @@ pub fn get_no_ret(
 /// object as body on a given URL that returns a JSON object. Handles request
 /// building, JSON serialization and deserialization, and response code
 /// checking.
-pub fn post<IN, OUT>(
-	url: &str,
-	api_secret: Option<String>,
-	input: &IN,
-	chain_type: ChainTypes,
-) -> Result<OUT, Error>
+pub fn post<IN, OUT>(url: &str, api_secret: Option<String>, input: &IN) -> Result<OUT, Error>
 where
 	IN: Serialize,
 	for<'de> OUT: Deserialize<'de>,
 {
-	let req = create_post_request(url, api_secret, input, chain_type)?;
+	let req = create_post_request(url, api_secret, input)?;
 	handle_request(req)
 }
 
@@ -101,14 +85,13 @@ pub fn post_async<IN, OUT>(
 	url: &str,
 	input: &IN,
 	api_secret: Option<String>,
-	chain_type: ChainTypes,
 ) -> ClientResponseFuture<OUT>
 where
 	IN: Serialize,
 	OUT: Send + 'static,
 	for<'de> OUT: Deserialize<'de>,
 {
-	match create_post_request(url, api_secret, input, chain_type) {
+	match create_post_request(url, api_secret, input) {
 		Ok(req) => Box::new(handle_request_async(req)),
 		Err(e) => Box::new(err(e)),
 	}
@@ -118,16 +101,11 @@ where
 /// object as body on a given URL that returns nothing. Handles request
 /// building, JSON serialization, and response code
 /// checking.
-pub fn post_no_ret<IN>(
-	url: &str,
-	api_secret: Option<String>,
-	input: &IN,
-	chain_type: ChainTypes,
-) -> Result<(), Error>
+pub fn post_no_ret<IN>(url: &str, api_secret: Option<String>, input: &IN) -> Result<(), Error>
 where
 	IN: Serialize,
 {
-	let req = create_post_request(url, api_secret, input, chain_type)?;
+	let req = create_post_request(url, api_secret, input)?;
 	send_request(req)?;
 	Ok(())
 }
@@ -140,12 +118,11 @@ pub fn post_no_ret_async<IN>(
 	url: &str,
 	api_secret: Option<String>,
 	input: &IN,
-	chain_type: ChainTypes,
 ) -> ClientResponseFuture<()>
 where
 	IN: Serialize,
 {
-	match create_post_request(url, api_secret, input, chain_type) {
+	match create_post_request(url, api_secret, input) {
 		Ok(req) => Box::new(send_request_async(req).and_then(|_| ok(()))),
 		Err(e) => Box::new(err(e)),
 	}
@@ -156,12 +133,11 @@ fn build_request(
 	method: &str,
 	api_secret: Option<String>,
 	body: Option<String>,
-	chain_type: ChainTypes,
 ) -> Result<Request<Body>, Error> {
-	let basic_auth_key = if chain_type == global::ChainTypes::Floonet {
-		"mwcfloo"
-	} else if chain_type == global::ChainTypes::Mainnet {
+	let basic_auth_key = if global::is_mainnet() {
 		"mwcmain"
+	} else if global::is_floonet() {
+		"mwcfloo"
 	} else {
 		"mwc"
 	};
@@ -189,17 +165,15 @@ fn build_request_ex(
 	let mut builder = Request::builder();
 
 	if basic_auth_key.is_some() && api_secret.is_some() {
-		builder.header(
-			AUTHORIZATION,
-			format!(
-				"Basic {}",
-				to_base64(&format!(
-					"{}:{}",
-					basic_auth_key.unwrap(),
-					api_secret.unwrap()
-				))
-			),
+		let basic_auth = format!(
+			"Basic {}",
+			to_base64(&format!(
+				"{}:{}",
+				basic_auth_key.unwrap(),
+				api_secret.unwrap()
+			))
 		);
+		builder.header(AUTHORIZATION, basic_auth);
 	}
 
 	builder
@@ -221,7 +195,6 @@ pub fn create_post_request<IN>(
 	url: &str,
 	api_secret: Option<String>,
 	input: &IN,
-	chain_type: ChainTypes,
 ) -> Result<Request<Body>, Error>
 where
 	IN: Serialize,
@@ -229,7 +202,7 @@ where
 	let json = serde_json::to_string(input).context(ErrorKind::Internal(
 		"Could not serialize data to JSON".to_owned(),
 	))?;
-	build_request(url, "POST", api_secret, Some(json), chain_type)
+	build_request(url, "POST", api_secret, Some(json))
 }
 
 pub fn create_post_request_ex<IN>(
@@ -272,7 +245,11 @@ where
 
 fn send_request_async(req: Request<Body>) -> Box<dyn Future<Item = String, Error = Error> + Send> {
 	let https = hyper_rustls::HttpsConnector::new(1);
-	let client = Client::builder().build::<_, Body>(https);
+	let mut connector = TimeoutConnector::new(https);
+	connector.set_connect_timeout(Some(Duration::from_secs(20)));
+	connector.set_read_timeout(Some(Duration::from_secs(20)));
+	connector.set_write_timeout(Some(Duration::from_secs(20)));
+	let client = Client::builder().build::<_, hyper::Body>(connector);
 	Box::new(
 		client
 			.request(req)
