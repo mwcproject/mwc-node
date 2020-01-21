@@ -39,9 +39,9 @@ steps:
       gitHubConnection: 'github-release'
       repositoryName: 'mwcproject/mwc-node'
       action: 'create'
-      target: '$(build.sourceVersion)'
+      target: '$(Build.SourceVersion)'
       tagSource: 'manual'
-      tag: '$(build.my_tag)'
+      tag: '$(Build.BuildNumber)'
       assets: |
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
