@@ -38,9 +38,9 @@ steps:
     inputs:
       gitHubConnection: 'github-release'
       repositoryName: 'mwcproject/mwc-node'
-      action: 'edit'
+      action: 'create'
       target: '$(build.sourceVersion)'
-      tagSource: 'auto'
+      tagSource: 'manual'
       tag: '$(build.my_tag)'
       assets: |
         $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz
