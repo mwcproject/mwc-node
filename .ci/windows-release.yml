@@ -30,6 +30,8 @@ steps:
       archiveFile: '$(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip'
   - script: |
       powershell -Command "get-filehash -algorithm sha256 $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip | Format-List |  Out-String | ForEach-Object { $_.Trim() } > $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt"
+  - script: |
+      scp -i ./uploader.pem -o 'StrictHostKeyChecking no' $FILE_PREFIX-macosx.dmg uploader\@3.228.53.68:/home/uploader/
     displayName: Create Checksum
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - task: GithubRelease@0
