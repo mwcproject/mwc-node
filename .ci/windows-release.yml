@@ -38,7 +38,7 @@ steps:
     inputs:
       gitHubConnection: 'github-release'
       repositoryName: 'mwcproject/mwc-node'
-      action: 'edit'
+      action: 'create'
       target: '$(build.sourceVersion)'
       tagSource: 'manual'
       tag: '$(build.my_tag)'
