@@ -36,7 +36,7 @@ steps:
     displayName: Github release
     condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
-      gitHubConnection: 'cgilliard'
+      gitHubConnection: 'github-release'
       repositoryName: 'mwcproject/mwc-node'
       action: 'edit'
       target: '$(Build.SourceVersion)'
