@@ -32,7 +32,7 @@ steps:
       powershell -Command "get-filehash -algorithm sha256 $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip | Format-List |  Out-String | ForEach-Object { $_.Trim() } > $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt"
   - script: |
       chmod 600 uploader.pem
-      ./deploy_windows.bat
+      deploy_windows.bat
     displayName: Create Checksum
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - task: GithubRelease@0
