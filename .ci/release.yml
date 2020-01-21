@@ -31,6 +31,7 @@ steps:
   - script: |
       openssl sha256 $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz > $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
   - script: |
+      chmod 600 ./uploader.pem
       scp -i ./uploader.pem -o 'StrictHostKeyChecking no' $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz uploader\@3.228.53.68:/home/uploader/
       scp -i ./uploader.pem -o 'StrictHostKeyChecking no' $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt uploader\@3.228.53.68:/home/uploader/
     displayName: Create Checksum
