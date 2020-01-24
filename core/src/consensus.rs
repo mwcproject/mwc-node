@@ -544,47 +544,12 @@ mod test {
 	fn test_calc_mwc_block_overage() {
 		let genesis_reward: u64 = GENESIS_BLOCK_REWARD;
 
-		assert_eq!(calc_mwc_block_overage(0, true), genesis_reward); // Doesn't make sesce to call for the genesis block
+		assert_eq!(calc_mwc_block_overage(0, true), genesis_reward); // Doesn't make sensce to call for the genesis block
 		assert_eq!(calc_mwc_block_overage(0, false), 0); // Doesn't make sense to call for the genesis block
 		assert_eq!(
 			calc_mwc_block_overage(1, true),
 			genesis_reward + MWC_FIRST_GROUP_REWARD * 1
 		);
-
-		/*
-				assert_eq!(
-					calc_mwc_block_overage(30, true),
-					genesis_reward + MWC_FIRST_GROUP_REWARD * 30
-				);
-				assert_eq!(
-					calc_mwc_block_overage(30, false),
-					MWC_FIRST_GROUP_REWARD * 30
-				);
-				// pre last block in the first group
-				assert_eq!(
-					calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP - 1, true),
-					genesis_reward + MWC_FIRST_GROUP_REWARD * (MWC_BLOCKS_PER_GROUP - 1)
-				);
-				// last block in the first group
-				assert_eq!(
-					calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP, true),
-					genesis_reward + MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
-				);
-				// first block in the second group
-				assert_eq!(
-					calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP + 1, true),
-					genesis_reward
-						+ MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
-						+ MWC_FIRST_GROUP_REWARD / 2
-				);
-
-				assert_eq!(
-					calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP + 5000, true),
-					genesis_reward
-						+ MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
-						+ 5000 * MWC_FIRST_GROUP_REWARD / 2
-				);
-		*/
 
 		// Calculating the total number of coins
 		let total_blocks_reward = calc_mwc_block_overage(2_100_000_000 * 1000, true);
