@@ -49,6 +49,10 @@ While we intend to undergo more formal audits before release, continued code rev
 * Publish their findings whichever way they choose, even if no particular bug or vulnerability was found. We can all learn from new sets of eyes and benefit from increased scrutiny.
 * Audit the project publicly. While we may disagree with some small points of design or trade-offs, we will always do so respectfully.
 
+## Forks and other modifications of MWC
+
+We will responsibly disclose any vulerabilities in MWC to any forks of MWC or Grin after they have been incorporated into a release of MWC. We will notify users that the fork has a vulnerability so upgrades can be prioritized, but we will not release details of vulnerability until forks have had time to patch and release fixes to these vulnerabilities. We will disclose to all forks we are aware of. Maintainers may contact the security contacts to make us aware of your fork.
+
 ## Useful References
 
 * [Reducing the Risks of Catastrophic Cryptocurrency Bugs](https://medium.com/mit-media-lab-digital-currency-initiative/reducing-the-risk-of-catastrophic-cryptocurrency-bugs-dcdd493c7569)
