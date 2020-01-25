@@ -137,16 +137,22 @@ pub const MAX_BLOCK_WEIGHT: usize = 40_000;
 
 /// Check whether the block version is valid at a given height
 /// MWC doesn't want like grin change the algorithms for mining. So version is constant
-pub fn header_version(_height: u64) -> HeaderVersion {
-	HeaderVersion(1)
+pub fn header_version(height: u64) -> HeaderVersion {
+	if height < MWC_C31_HARDFORK_BLOCK_HEIGHT {
+		HeaderVersion(1)
+	} else {
+		HeaderVersion(2)
+	}
 }
 
 /// Check whether the block version is valid at a given height.
 /// Currently we only use the default version. No hard forks planned.
-pub fn valid_header_version(_height: u64, version: HeaderVersion) -> bool {
-	// We don't currently plan any hard forks. If we change that plan,
-	// will update.
-	version == HeaderVersion(1)
+pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
+	if height < MWC_C31_HARDFORK_BLOCK_HEIGHT {
+		version == HeaderVersion(1)
+	} else {
+		version == HeaderVersion(2)
+	}
 }
 
 /// Number of blocks used to calculate difficulty adjustments
