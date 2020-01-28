@@ -141,6 +141,13 @@ impl SyncRunner {
 		// whether some sync is needed
 		let mut highest_height = 0;
 
+		// Header is blocked pretty often and can be locked for a long time.
+		// As a result users see the false alarming message.
+		// 'failed to obtain lock for try_header_head'
+		// To make error reasonable,
+		// We are adding counter, to reduce false alarms.
+		let mut header_block_counter = 0;
+
 		// Main syncing loop
 		loop {
 			if self.stop_state.is_stopped() {
@@ -192,9 +199,22 @@ impl SyncRunner {
 			// retry the syncer loop.
 			let maybe_header_head =
 				unwrap_or_restart_loop!(self.chain.try_header_head(time::Duration::from_secs(1)));
+
+			// We are tolerating up to 60 retrys. During chain validation the chain access is blocked.
+			// Normally in release and reasonable hardware 60 seconds more then is enough for that.
+			// There will be bunch of threads waiting for the lock.
+			if header_block_counter < 60 && maybe_header_head.is_none() {
+				header_block_counter = header_block_counter + 1;
+				thread::sleep(time::Duration::from_secs(1));
+				continue;
+			}
+
 			let header_head = unwrap_or_restart_loop!(
-				maybe_header_head.ok_or("failed to obtain lock for try_header_head")
+				maybe_header_head.ok_or("failed to obtain lock for try_header_head. Are you running debug version, has slow CPU or unreasonable long blockchain? Is it a first run and you just get txhashset archive?")
 			);
+
+			// lock was obtained, so we can reset the locking counter
+			header_block_counter = 0;
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
