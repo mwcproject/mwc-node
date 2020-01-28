@@ -61,7 +61,12 @@ impl Server {
 			config: config.clone(),
 			capabilities: capab,
 			handshake: Arc::new(Handshake::new(genesis, config.clone())),
-			peers: Arc::new(Peers::new(PeerStore::new(db_root)?, adapter, config)),
+			peers: Arc::new(Peers::new(
+				PeerStore::new(db_root)?,
+				adapter,
+				config,
+				stop_state.clone(),
+			)),
 			stop_state,
 		})
 	}
