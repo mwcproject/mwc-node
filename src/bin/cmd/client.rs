@@ -19,7 +19,6 @@ use clap::ArgMatches;
 
 use crate::api;
 use crate::config::GlobalConfig;
-use crate::core::global;
 use crate::p2p;
 use crate::servers::ServerConfig;
 use crate::util::file::get_first_line;

@@ -35,6 +35,7 @@ use crate::types::{
 };
 use chrono::prelude::*;
 use chrono::Duration;
+use grin_util::StopState;
 
 const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -43,15 +44,22 @@ pub struct Peers {
 	store: PeerStore,
 	peers: RwLock<HashMap<PeerAddr, Arc<Peer>>>,
 	config: P2PConfig,
+	stop_state: Arc<StopState>,
 }
 
 impl Peers {
-	pub fn new(store: PeerStore, adapter: Arc<dyn ChainAdapter>, config: P2PConfig) -> Peers {
+	pub fn new(
+		store: PeerStore,
+		adapter: Arc<dyn ChainAdapter>,
+		config: P2PConfig,
+		stop_state: Arc<StopState>,
+	) -> Peers {
 		Peers {
 			adapter,
 			store,
 			config,
 			peers: RwLock::new(HashMap::new()),
+			stop_state,
 		}
 	}
 
@@ -111,7 +119,10 @@ impl Peers {
 		let peers = match self.peers.try_read_for(LOCK_TIMEOUT) {
 			Some(peers) => peers,
 			None => {
-				error!("connected_peers: failed to get peers lock");
+				if !self.stop_state.is_stopped() {
+					// When stopped, peers access is locked by stopped thread
+					error!("connected_peers: failed to get peers lock");
+				}
 				return vec![];
 			}
 		};
@@ -142,10 +153,17 @@ impl Peers {
 
 	/// Get a peer we're connected to by address.
 	pub fn get_connected_peer(&self, addr: PeerAddr) -> Option<Arc<Peer>> {
+		if self.stop_state.is_stopped() {
+			return None;
+		}
+
 		let peers = match self.peers.try_read_for(LOCK_TIMEOUT) {
 			Some(peers) => peers,
 			None => {
-				error!("get_connected_peer: failed to get peers lock");
+				if !self.stop_state.is_stopped() {
+					// When stopped, peers access is locked by stopped thread
+					error!("get_connected_peer: failed to get peers lock");
+				}
 				return None;
 			}
 		};
