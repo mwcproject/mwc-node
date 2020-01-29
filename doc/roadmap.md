@@ -35,4 +35,4 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Coin shuffle.
 - Hardware wallets but requires hardware manufacturer support.
 
-There are many potential places development resources can be allocated and they will be chosen based on market needs.
+There are many potential places development resources can be allocated and they will be chosen based on market needs with highest priority given to requests that will primarily benefit and come from the buyers and hodlers of last resort.
