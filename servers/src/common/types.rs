@@ -249,6 +249,9 @@ pub struct StratumServerConfig {
 	/// Attributes the reward to a random private key instead of contacting the
 	/// wallet receiver. Mostly used for tests.
 	pub burn_reward: bool,
+
+	/// banned input stirngs...
+	pub ban_strings: Option<Vec<String>>,
 }
 
 impl Default for StratumServerConfig {
@@ -260,6 +263,7 @@ impl Default for StratumServerConfig {
 			minimum_share_difficulty: 1,
 			enable_stratum_server: Some(false),
 			stratum_server_addr: Some("127.0.0.1:3416".to_string()),
+			ban_strings: None,
 		}
 	}
 }

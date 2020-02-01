@@ -26,7 +26,7 @@ use serde;
 use serde_json;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::BufReader;
+use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -357,11 +357,22 @@ impl Handler {
 		// Validate parameters
 		let params: SubmitParams = parse_params(params)?;
 
-		let state = self.current_state.read();
 		// Find the correct version of the block to match this header
-		let b: Option<&Block> = state.current_block_versions.get(params.job_id as usize);
-		if params.height != state.current_block_versions.last().unwrap().header.height
-			|| b.is_none()
+		let b: Option<Block> = self
+			.current_state
+			.read()
+			.current_block_versions
+			.get(params.job_id as usize)
+			.map(|b| b.clone());
+		if params.height
+			!= self
+				.current_state
+				.read()
+				.current_block_versions
+				.last()
+				.unwrap()
+				.header
+				.height || b.is_none()
 		{
 			// Return error status
 			error!(
@@ -395,11 +406,11 @@ impl Handler {
 		// Get share difficulty
 		share_difficulty = b.header.pow.to_difficulty(b.header.height).to_num();
 		// If the difficulty is too low its an error
-		if share_difficulty < state.minimum_share_difficulty {
+		if share_difficulty < self.current_state.read().minimum_share_difficulty {
 			// Return error status
 			error!(
 					"(Server ID: {}) Share at height {}, hash {}, edge_bits {}, nonce {}, job_id {} rejected due to low difficulty: {}/{}",
-					self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, share_difficulty, state.minimum_share_difficulty,
+					self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, share_difficulty, self.current_state.read().minimum_share_difficulty,
 				);
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
@@ -407,7 +418,7 @@ impl Handler {
 		}
 
 		// If the difficulty is high enough, submit it (which also validates it)
-		if share_difficulty >= state.current_difficulty {
+		if share_difficulty >= self.current_state.read().current_difficulty {
 			// This is a full solution, submit it to the network
 			let res = self.chain.process_block(b.clone(), chain::Options::MINE);
 			if let Err(e) = res {
@@ -476,7 +487,7 @@ impl Handler {
 				b.header.pow.nonce,
 				params.job_id,
 				share_difficulty,
-				state.current_difficulty,
+				self.current_state.read().current_difficulty,
 				submitted_by,
 			);
 		self.workers
@@ -538,7 +549,6 @@ impl Handler {
 			{
 				{
 					debug!("resend updated block");
-					let mut state = self.current_state.write();
 					let mut wallet_listener_url: Option<String> = None;
 					if !config.burn_reward {
 						wallet_listener_url = Some(config.wallet_listener_url.clone());
@@ -551,31 +561,39 @@ impl Handler {
 						&self.chain,
 						tx_pool,
 						verifier_cache.clone(),
-						state.current_key_id.clone(),
+						self.current_state.read().current_key_id.clone(),
 						wallet_listener_url,
 					);
 
-					state.current_difficulty =
-						(new_block.header.total_difficulty() - head.total_difficulty).to_num();
+					{
+						let mut state = self.current_state.write();
 
-					state.current_key_id = block_fees.key_id();
+						state.current_difficulty =
+							(new_block.header.total_difficulty() - head.total_difficulty).to_num();
 
-					current_hash = latest_hash;
-					// set the minimum acceptable share difficulty for this block
-					state.minimum_share_difficulty =
-						cmp::min(config.minimum_share_difficulty, state.current_difficulty);
+						state.current_key_id = block_fees.key_id();
+
+						current_hash = latest_hash;
+						// set the minimum acceptable share difficulty for this block
+						state.minimum_share_difficulty =
+							cmp::min(config.minimum_share_difficulty, state.current_difficulty);
+					}
 
 					// set a new deadline for rebuilding with fresh transactions
 					deadline = Utc::now().timestamp() + config.attempt_time_per_block as i64;
 
 					self.workers.update_block_height(new_block.header.height);
 					self.workers
-						.update_network_difficulty(state.current_difficulty);
+						.update_network_difficulty(self.current_state.read().current_difficulty);
 
-					if clear_blocks {
-						state.current_block_versions.clear();
+					{
+						let mut state = self.current_state.write();
+
+						if clear_blocks {
+							state.current_block_versions.clear();
+						}
+						state.current_block_versions.push(new_block);
 					}
-					state.current_block_versions.push(new_block);
 					// Send this job to all connected workers
 				}
 				self.broadcast_job();
@@ -589,7 +607,11 @@ impl Handler {
 
 // ----------------------------------------
 // Worker Factory Thread Function
-fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
+fn accept_connections(
+	ban_substr_list: Arc<Vec<String>>,
+	listen_addr: SocketAddr,
+	handler: Arc<Handler>,
+) {
 	info!("Start tokio stratum server");
 	let listener = TcpListener::bind(&listen_addr).expect(&format!(
 		"Stratum: Failed to bind to listen address {}",
@@ -608,8 +630,25 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 			let reader = BufReader::new(reader);
 			let h = handler.clone();
 			let workers = h.workers.clone();
+			let ban_substr_list = ban_substr_list.clone();
+
 			let input = lines(reader)
 				.for_each(move |line| {
+					let mut has_ban_str = false;
+					for s in &*ban_substr_list {
+						if line.contains(s.as_str()) {
+							has_ban_str = true;
+						}
+					}
+
+					if has_ban_str {
+						info!(
+							"Worker {} is banned becase of request with banned keywords: {}",
+							worker_id, line
+						);
+						return Err(std::io::Error::new(ErrorKind::Other, "Worker is banned"));
+					}
+
 					let request = serde_json::from_str(&line)?;
 					let resp = h.handle_rpc_requests(request, worker_id);
 					workers.send_to(worker_id, resp);
@@ -679,7 +718,7 @@ impl WorkersList {
 	}
 
 	pub fn add_worker(&self, tx: Tx) -> usize {
-		let mut workers_list = self.workers_list.write();
+		//let mut workers_list = self.workers_list.write();
 		let mut stratum_stats = self.stratum_stats.write();
 		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
 		// Or just somebody want to attack the mining pool.
@@ -693,7 +732,11 @@ impl WorkersList {
 			.unwrap_or(stratum_stats.worker_stats.len());
 
 		let worker = Worker::new(worker_id, tx);
-		workers_list.insert(worker_id, worker);
+        let num_workers_val = {
+			let mut workers_list = self.workers_list.write();
+			workers_list.insert(worker_id, worker);
+            workers_list.len()
+		};
 
 		let mut worker_stats = WorkerStats::default();
 		worker_stats.is_connected = true;
@@ -706,7 +749,7 @@ impl WorkersList {
 			stratum_stats.worker_stats.push(worker_stats);
 		}
 
-		stratum_stats.num_workers = workers_list.len();
+		stratum_stats.num_workers = num_workers_val;
 		worker_id
 	}
 	pub fn remove_worker(&self, worker_id: usize) {
@@ -753,21 +796,22 @@ impl WorkersList {
 		self.update_stats(worker_id, |ws| ws.last_seen = SystemTime::now());
 	}
 
+	// f - must be very functional, no blocking allowed
 	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats) -> ()) {
 		let mut stratum_stats = self.stratum_stats.write();
 		f(&mut stratum_stats.worker_stats[worker_id]);
 	}
 
 	pub fn send_to(&self, worker_id: usize, msg: String) {
-		let rlock = self.workers_list.read();
-		let tx = rlock.get(&worker_id).unwrap().tx.clone();
-		drop(rlock);
+		let tx = self.workers_list.read().get(&worker_id).unwrap().tx.clone();
 		tx.unbounded_send(msg).expect("send failed");
 	}
 
 	pub fn broadcast(&self, msg: String) {
-		for worker in self.workers_list.read().values() {
-			let _ = worker.tx.unbounded_send(msg.clone());
+		let keys: Vec<usize> = self.workers_list.read().keys().map(|k| k.clone()).collect();
+
+		for worker_id in keys {
+			self.send_to(worker_id, msg.clone());
 		}
 	}
 
@@ -843,8 +887,9 @@ impl StratumServer {
 		let handler = Arc::new(Handler::from_stratum(&self));
 		let h = handler.clone();
 
+		let ban_strs = Arc::new(self.config.ban_strings.clone().unwrap_or(Vec::new()));
 		let _listener_th = thread::spawn(move || {
-			accept_connections(listen_addr, h);
+			accept_connections(ban_strs, listen_addr, h);
 		});
 
 		// We have started
