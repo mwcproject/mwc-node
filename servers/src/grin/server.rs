@@ -390,6 +390,7 @@ impl Server {
 			stratum_server_addr: None,
 			wallet_listener_url: config_wallet_url,
 			minimum_share_difficulty: 1,
+			ban_strings: None,
 		};
 
 		let mut miner = Miner::new(
