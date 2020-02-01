@@ -472,13 +472,13 @@ impl Handler {
 			}
 		}
 		// Log this as a valid share
-		let worker = self.workers.get_worker(worker_id)?;
-		let submitted_by = match worker.login {
-			None => worker.id.to_string(),
-			Some(login) => login.clone(),
-		};
+		if let Some(worker) = self.workers.get_worker(worker_id) {
+			let submitted_by = match worker.login {
+				None => worker.id.to_string(),
+				Some(login) => login.clone(),
+			};
 
-		info!(
+			info!(
 				"(Server ID: {}) Got share at height {}, hash {}, edge_bits {}, nonce {}, job_id {}, difficulty {}/{}, submitted by {}",
 				self.id,
 				b.header.height,
@@ -490,6 +490,8 @@ impl Handler {
 				self.current_state.read().current_difficulty,
 				submitted_by,
 			);
+		}
+
 		self.workers
 			.update_stats(worker_id, |worker_stats| worker_stats.num_accepted += 1);
 		let submit_response;
@@ -688,7 +690,7 @@ pub struct Worker {
 	agent: String,
 	login: Option<String>,
 	authenticated: bool,
-	tx: Tx,
+	tx: Arc<Tx>,
 }
 
 impl Worker {
@@ -699,7 +701,7 @@ impl Worker {
 			agent: String::from(""),
 			login: None,
 			authenticated: false,
-			tx: tx,
+			tx: Arc::new(tx),
 		}
 	}
 } // impl Worker
@@ -732,10 +734,10 @@ impl WorkersList {
 			.unwrap_or(stratum_stats.worker_stats.len());
 
 		let worker = Worker::new(worker_id, tx);
-        let num_workers_val = {
+		let num_workers_val = {
 			let mut workers_list = self.workers_list.write();
 			workers_list.insert(worker_id, worker);
-            workers_list.len()
+			workers_list.len()
 		};
 
 		let mut worker_stats = WorkerStats::default();
@@ -771,15 +773,11 @@ impl WorkersList {
 		Ok(())
 	}
 
-	pub fn get_worker(&self, worker_id: usize) -> Result<Worker, RpcError> {
-		self.workers_list
-			.read()
-			.get(&worker_id)
-			.ok_or_else(|| {
-				error!("Worker {} not found", worker_id);
-				RpcError::internal_error()
-			})
-			.map(|w| w.clone())
+	pub fn get_worker(&self, worker_id: usize) -> Option<Worker> {
+		match self.workers_list.read().get(&worker_id) {
+			Some(worker) => Some(worker.clone()),
+			_ => None,
+		}
 	}
 
 	pub fn get_stats(&self, worker_id: usize) -> Result<WorkerStats, RpcError> {
@@ -803,8 +801,12 @@ impl WorkersList {
 	}
 
 	pub fn send_to(&self, worker_id: usize, msg: String) {
-		let tx = self.workers_list.read().get(&worker_id).unwrap().tx.clone();
-		tx.unbounded_send(msg).expect("send failed");
+		if let Some(worker) = self.get_worker(worker_id) {
+			match worker.tx.unbounded_send(msg) {
+				Err(_) => warn!("Unable to send message to the worker ID {}", worker_id),
+				_ => (),
+			}
+		}
 	}
 
 	pub fn broadcast(&self, msg: String) {
