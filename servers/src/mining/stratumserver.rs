@@ -720,7 +720,7 @@ impl WorkersList {
 	}
 
 	pub fn add_worker(&self, tx: Tx) -> usize {
-		let mut workers_list = self.workers_list.write();
+		//let mut workers_list = self.workers_list.write();
 		let mut stratum_stats = self.stratum_stats.write();
 		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
 		// Or just somebody want to attack the mining pool.
@@ -735,6 +735,7 @@ impl WorkersList {
 
 		let worker = Worker::new(worker_id, tx);
 		let num_workers_val = {
+			let mut workers_list = self.workers_list.write();
 			workers_list.insert(worker_id, worker);
 			workers_list.len()
 		};
@@ -800,10 +801,12 @@ impl WorkersList {
 	}
 
 	pub fn send_to(&self, worker_id: usize, msg: String) {
-		let rlock = self.workers_list.read();
-		let tx = rlock.get(&worker_id).unwrap().tx.clone();
-		drop(rlock);
-		tx.unbounded_send(msg).expect("send failed");
+		if let Some(worker) = self.get_worker(worker_id) {
+			match worker.tx.unbounded_send(msg) {
+				Err(_) => warn!("Unable to send message to the worker ID {}", worker_id),
+				_ => (),
+			}
+		}
 	}
 
 	pub fn broadcast(&self, msg: String) {
