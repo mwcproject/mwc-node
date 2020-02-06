@@ -473,7 +473,7 @@ impl Handler {
 		}
 		// Log this as a valid share
 		if let Some(worker) = self.workers.get_worker(worker_id) {
-			let submitted_by = match worker.login {
+			let submitted_by = match &worker.login {
 				None => worker.id.to_string(),
 				Some(login) => login.clone(),
 			};
@@ -712,7 +712,7 @@ impl Worker {
 } // impl Worker
 
 struct WorkersList {
-	workers_list: Arc<RwLock<HashMap<usize, Worker>>>,
+	workers_list: Arc<RwLock<HashMap<usize, Arc<Worker>>>>,
 	stratum_stats: Arc<RwLock<StratumStats>>,
 }
 
@@ -751,7 +751,7 @@ impl WorkersList {
 			worker_id
 		};
 
-		let worker = Worker::new(worker_id, tx);
+		let worker = Arc::new(Worker::new(worker_id, tx));
 		let num_workers_val = {
 			let mut workers_list = self.workers_list.write();
 			workers_list.insert(worker_id, worker);
@@ -770,7 +770,7 @@ impl WorkersList {
 	pub fn login(&self, worker_id: usize, login: String, agent: String) -> Result<(), RpcError> {
 		if let Some(worker) = self.get_worker(worker_id) {
 			// Here is worker is a local copy, your can do what ever you want with it
-			let mut worker = worker;
+			let mut worker = worker.as_ref().clone();
 
 			worker.login = Some(login);
 			// XXX TODO Future - Validate password?
@@ -781,7 +781,7 @@ impl WorkersList {
 			{
 				let mut workers_list = self.workers_list.write();
 				if workers_list.contains_key(&worker_id) {
-					workers_list.insert(worker_id, worker);
+					workers_list.insert(worker_id, Arc::new(worker));
 				} else {
 					// should rarely happen. Possible because of race conditions
 					return Err(RpcError::internal_error());
@@ -794,7 +794,7 @@ impl WorkersList {
 		Ok(())
 	}
 
-	pub fn get_worker(&self, worker_id: usize) -> Option<Worker> {
+	pub fn get_worker(&self, worker_id: usize) -> Option<Arc<Worker>> {
 		match self.workers_list.read().get(&worker_id) {
 			Some(worker) => Some(worker.clone()),
 			_ => None,
