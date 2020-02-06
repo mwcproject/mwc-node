@@ -758,10 +758,7 @@ impl WorkersList {
 	}
 	pub fn remove_worker(&self, worker_id: usize) {
 		self.update_stats(worker_id, |ws| ws.is_connected = false);
-		self.workers_list
-			.write()
-			.remove(&worker_id)
-			.expect("Stratum: no such addr in map");
+		self.workers_list.write().remove(&worker_id);
 		self.stratum_stats.write().num_workers = self.workers_list.read().len();
 	}
 
