@@ -720,37 +720,40 @@ impl WorkersList {
 	}
 
 	pub fn add_worker(&self, tx: Tx) -> usize {
-		let mut workers_list = self.workers_list.write();
-		let mut stratum_stats = self.stratum_stats.write();
-		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
-		// Or just somebody want to attack the mining pool.
-		// let worker_id = stratum_stats.worker_stats.len();
+		let worker_id = {
+			let mut stratum_stats = self.stratum_stats.write();
+			// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
+			// Or just somebody want to attack the mining pool.
+			// let worker_id = stratum_stats.worker_stats.len();
 
-		// Instead we will reuse the ID or allocate a new one
-		let worker_id = stratum_stats
-			.worker_stats
-			.iter()
-			.position(|stat| !stat.is_connected)
-			.unwrap_or(stratum_stats.worker_stats.len());
+			// Instead we will reuse the ID or allocate a new one
+			let worker_id = stratum_stats
+				.worker_stats
+				.iter()
+				.position(|stat| !stat.is_connected)
+				.unwrap_or(stratum_stats.worker_stats.len());
+
+			let mut worker_stats = WorkerStats::default();
+			worker_stats.is_connected = true;
+			worker_stats.id = worker_id.to_string();
+			worker_stats.pow_difficulty = 1; // XXX TODO
+
+			if worker_id < stratum_stats.worker_stats.len() {
+				stratum_stats.worker_stats[worker_id] = worker_stats;
+			} else {
+				stratum_stats.worker_stats.push(worker_stats);
+			}
+			worker_id
+		};
 
 		let worker = Worker::new(worker_id, tx);
 		let num_workers_val = {
+			let mut workers_list = self.workers_list.write();
 			workers_list.insert(worker_id, worker);
 			workers_list.len()
 		};
 
-		let mut worker_stats = WorkerStats::default();
-		worker_stats.is_connected = true;
-		worker_stats.id = worker_id.to_string();
-		worker_stats.pow_difficulty = 1; // XXX TODO
-
-		if worker_id < stratum_stats.worker_stats.len() {
-			stratum_stats.worker_stats[worker_id] = worker_stats;
-		} else {
-			stratum_stats.worker_stats.push(worker_stats);
-		}
-
-		stratum_stats.num_workers = num_workers_val;
+		self.stratum_stats.write().num_workers = num_workers_val;
 		worker_id
 	}
 	pub fn remove_worker(&self, worker_id: usize) {
@@ -763,12 +766,29 @@ impl WorkersList {
 	}
 
 	pub fn login(&self, worker_id: usize, login: String, agent: String) -> Result<(), RpcError> {
-		let mut wl = self.workers_list.write();
-		let mut worker = wl.get_mut(&worker_id).ok_or(RpcError::internal_error())?;
-		worker.login = Some(login);
-		// XXX TODO Future - Validate password?
-		worker.agent = agent;
-		worker.authenticated = true;
+		if Some(worker) = self.get_worker(worker_id) {
+			// Here is worker is a local copy, your can do what ever you want with it
+			let mut worker = worker;
+
+			worker.login = Some(login);
+			// XXX TODO Future - Validate password?
+			worker.agent = agent;
+			worker.authenticated = true;
+
+			// Storing worker back on Hash table
+			{
+				let mut workers_list = self.workers_list.write();
+				if workers_list.contains_key(worker_id) {
+					workers_list.insert(worker_id, worker);
+				} else {
+					// should rarely happen. Possible because of race conditions
+					Err(RpcError::internal_error())
+				}
+			}
+		} else {
+			// should rarely happen. Possible because of race conditions
+			Err(RpcError::internal_error())
+		}
 		Ok(())
 	}
 
