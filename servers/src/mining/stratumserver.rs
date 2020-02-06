@@ -567,6 +567,11 @@ impl Handler {
 						wallet_listener_url,
 					);
 
+					info!(
+						"Mining of a new block, height={}, clear_blocks={}",
+						new_block.header.height, clear_blocks
+					);
+
 					{
 						let mut state = self.current_state.write();
 
