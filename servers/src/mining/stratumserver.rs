@@ -766,7 +766,7 @@ impl WorkersList {
 	}
 
 	pub fn login(&self, worker_id: usize, login: String, agent: String) -> Result<(), RpcError> {
-		if Some(worker) = self.get_worker(worker_id) {
+		if let Some(worker) = self.get_worker(worker_id) {
 			// Here is worker is a local copy, your can do what ever you want with it
 			let mut worker = worker;
 
@@ -778,16 +778,16 @@ impl WorkersList {
 			// Storing worker back on Hash table
 			{
 				let mut workers_list = self.workers_list.write();
-				if workers_list.contains_key(worker_id) {
+				if workers_list.contains_key(&worker_id) {
 					workers_list.insert(worker_id, worker);
 				} else {
 					// should rarely happen. Possible because of race conditions
-					Err(RpcError::internal_error())
+					return Err(RpcError::internal_error());
 				}
 			}
 		} else {
 			// should rarely happen. Possible because of race conditions
-			Err(RpcError::internal_error())
+			return Err(RpcError::internal_error());
 		}
 		Ok(())
 	}
