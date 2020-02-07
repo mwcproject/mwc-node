@@ -179,7 +179,7 @@ pub fn graph_weight(height: u64, edge_bits: u8) -> u64 {
 	if height < MWC_C31_HARDFORK_BLOCK_HEIGHT || edge_bits <= 31 {
 		(2u64 << ((edge_bits as u64) - global::base_edge_bits() as u64) as u64) * (edge_bits as u64)
 	} else {
-		0
+		1
 	}
 }
 
@@ -524,8 +524,8 @@ mod test {
 		// one year in, 31 starts going down, the rest stays the same
 		// after hard fork, constant values despite height
 		assert_eq!(graph_weight(YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(YEAR_HEIGHT, 32), 0);
-		assert_eq!(graph_weight(YEAR_HEIGHT, 33), 0);
+		assert_eq!(graph_weight(YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(YEAR_HEIGHT, 33), 1);
 
 		// 31 loses one factor per week
 		// after hard fork, constant values despite height
@@ -536,27 +536,27 @@ mod test {
 		// 2 years in, 31 still at 0, 32 starts decreasing
 		// after hard fork, constant values despite height
 		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 32), 0);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 33), 0);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 33), 1);
 
 		// 32 phaseout on hold
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 32), 0);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 32), 1);
 		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT + 30 * WEEK_HEIGHT, 32), 0);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT + 31 * WEEK_HEIGHT, 32), 0);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + 30 * WEEK_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + 31 * WEEK_HEIGHT, 32), 1);
 
 		// 3 years in, nothing changes
 		// after hard fork, constant values despite height
 		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 32), 0);
-		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 33), 0);
+		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 33), 1);
 
 		// 4 years in, still on hold
 		// after hard fork, constant values despite height
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 32), 0);
-		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 33), 0);
+		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 33), 1);
 	}
 
 	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
