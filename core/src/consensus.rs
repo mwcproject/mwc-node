@@ -727,4 +727,4 @@ mod test {
 		// Expected 20M in total. The coin base is exactly 20M
 		assert_eq!(total_blocks_reward, 20000000000000000);
 	}
-}
+
