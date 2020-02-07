@@ -724,6 +724,24 @@ impl Worker {
 			channel_q_sz: Arc::new(AtomicU16::new(0)),
 		}
 	}
+
+	pub fn send_message(&self, msg: String, msg_q_limit: u16) {
+		if self.channel_q_sz.load(Ordering::Relaxed) < msg_q_limit {
+			match self.tx.unbounded_send(msg) {
+				Err(_) => warn!("Unable to send message to the worker ID {}", self.id),
+				_ => {
+					// Success
+					self.channel_q_sz.fetch_add(1, Ordering::Relaxed);
+					()
+				}
+			}
+		} else {
+			debug!(
+				"Worker with worker_id={} is busy, sent_to will be skipped",
+				self.id
+			);
+		}
+	}
 } // impl Worker
 
 struct WorkersList {
@@ -838,23 +856,8 @@ impl WorkersList {
 
 	pub fn send_to(&self, worker_id: usize, msg: String, msg_q_limit: u16) {
 		if let Some(worker) = self.get_worker(worker_id) {
-			if worker.channel_q_sz.load(Ordering::Relaxed) < msg_q_limit {
-				match worker.tx.unbounded_send(msg) {
-					Err(_) => warn!("Unable to send message to the worker ID {}", worker_id),
-					_ => {
-						// Success
-						worker.channel_q_sz.fetch_add(1, Ordering::Relaxed);
-						()
-					}
-				}
-			} else {
-				debug!(
-					"Worker with worker_id={} is busy, sent_to will be skipped",
-					worker_id
-				);
-			}
+			worker.send_message(msg, msg_q_limit);
 		}
-		()
 	}
 
 	pub fn broadcast(&self, msg: String, msg_q_limit: u16) {
