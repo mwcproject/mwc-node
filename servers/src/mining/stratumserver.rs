@@ -45,6 +45,7 @@ use crate::pool;
 use crate::util;
 
 use futures::sync::mpsc;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 type Tx = mpsc::UnboundedSender<String>;
 
@@ -524,7 +525,8 @@ impl Handler {
 			"(Server ID: {}) sending block {} with id {} to stratum clients",
 			self.id, job_template.height, job_template.job_id,
 		);
-		self.workers.broadcast(job_request_json.clone());
+		self.workers
+			.broadcast(job_request_json.clone(), NOTIFICATION_Q_LIMIT);
 	}
 
 	pub fn run(
@@ -638,6 +640,10 @@ fn accept_connections(
 			let h = handler.clone();
 			let workers = h.workers.clone();
 			let ban_substr_list = ban_substr_list.clone();
+			let channel_q_sz: Arc<AtomicU16> = workers
+				.get_worker(worker_id)
+				.map(|w| w.channel_q_sz.clone())
+				.unwrap_or_else(|| Arc::new(AtomicU16::new(0)));
 
 			let input = lines(reader)
 				.for_each(move |line| {
@@ -658,15 +664,19 @@ fn accept_connections(
 
 					let request = serde_json::from_str(&line)?;
 					let resp = h.handle_rpc_requests(request, worker_id);
-					workers.send_to(worker_id, resp);
+					workers.send_to(worker_id, resp, MESSAGE_Q_LIMIT);
 					Ok(())
 				})
 				.map_err(|e| error!("error {}", e));
 
-			let output = rx.fold(writer, |writer, s| {
+			let output = rx.fold(writer, move |writer, s| {
 				let s2 = s + "\n";
+				let channel_q_sz = channel_q_sz.clone();
 				write_all(writer, s2.into_bytes())
-					.map(|(writer, _)| writer)
+					.map(move |(writer, _)| {
+						channel_q_sz.fetch_sub(1, Ordering::Relaxed);
+						writer
+					})
 					.map_err(|e| error!("cannot send {}", e))
 			});
 
@@ -696,7 +706,11 @@ pub struct Worker {
 	login: Option<String>,
 	authenticated: bool,
 	tx: Arc<Tx>,
+	channel_q_sz: Arc<AtomicU16>, // Size of the message channel. We don't want to push new and new messages to workers that never read.
 }
+
+const NOTIFICATION_Q_LIMIT: u16 = 5;
+const MESSAGE_Q_LIMIT: u16 = 8;
 
 impl Worker {
 	/// Creates a new Stratum Worker.
@@ -707,6 +721,7 @@ impl Worker {
 			login: None,
 			authenticated: false,
 			tx: Arc::new(tx),
+			channel_q_sz: Arc::new(AtomicU16::new(0)),
 		}
 	}
 } // impl Worker
@@ -821,20 +836,32 @@ impl WorkersList {
 		f(&mut stratum_stats.worker_stats[worker_id]);
 	}
 
-	pub fn send_to(&self, worker_id: usize, msg: String) {
+	pub fn send_to(&self, worker_id: usize, msg: String, msg_q_limit: u16) {
 		if let Some(worker) = self.get_worker(worker_id) {
-			match worker.tx.unbounded_send(msg) {
-				Err(_) => warn!("Unable to send message to the worker ID {}", worker_id),
-				_ => (),
+			if worker.channel_q_sz.load(Ordering::Relaxed) < msg_q_limit {
+				match worker.tx.unbounded_send(msg) {
+					Err(_) => warn!("Unable to send message to the worker ID {}", worker_id),
+					_ => {
+						// Success
+						worker.channel_q_sz.fetch_add(1, Ordering::Relaxed);
+						()
+					}
+				}
+			} else {
+				debug!(
+					"Worker with worker_id={} is busy, sent_to will be skipped",
+					worker_id
+				);
 			}
 		}
+		()
 	}
 
-	pub fn broadcast(&self, msg: String) {
+	pub fn broadcast(&self, msg: String, msg_q_limit: u16) {
 		let keys: Vec<usize> = self.workers_list.read().keys().map(|k| k.clone()).collect();
 
 		for worker_id in keys {
-			self.send_to(worker_id, msg.clone());
+			self.send_to(worker_id, msg.clone(), msg_q_limit);
 		}
 	}
 
