@@ -45,7 +45,6 @@ use crate::pool;
 use crate::util;
 
 use futures::sync::mpsc;
-use std::sync::atomic::{AtomicU16, Ordering};
 
 type Tx = mpsc::UnboundedSender<String>;
 
@@ -377,9 +376,9 @@ impl Handler {
 		{
 			// Return error status
 			error!(
-					"(Server ID: {}) Share at height {}, edge_bits {}, nonce {}, job_id {} submitted too late",
-					self.id, params.height, params.edge_bits, params.nonce, params.job_id,
-				);
+				"(Server ID: {}) Share at height {}, edge_bits {}, nonce {}, job_id {} submitted too late",
+				self.id, params.height, params.edge_bits, params.nonce, params.job_id,
+			);
 			self.workers.update_stats(worker_id, |ws| ws.num_stale += 1);
 			return Err(RpcError::too_late());
 		}
@@ -396,9 +395,9 @@ impl Handler {
 		if !b.header.pow.is_primary() && !b.header.pow.is_secondary() {
 			// Return error status
 			error!(
-					"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}: cuckoo size too small",
-					self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id,
-				);
+				"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}: cuckoo size too small",
+				self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id,
+			);
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
 			return Err(RpcError::cannot_validate());
@@ -410,9 +409,9 @@ impl Handler {
 		if share_difficulty < self.current_state.read().minimum_share_difficulty {
 			// Return error status
 			error!(
-					"(Server ID: {}) Share at height {}, hash {}, edge_bits {}, nonce {}, job_id {} rejected due to low difficulty: {}/{}",
-					self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, share_difficulty, self.current_state.read().minimum_share_difficulty,
-				);
+				"(Server ID: {}) Share at height {}, hash {}, edge_bits {}, nonce {}, job_id {} rejected due to low difficulty: {}/{}",
+				self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, share_difficulty, self.current_state.read().minimum_share_difficulty,
+			);
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
 			return Err(RpcError::too_low_difficulty());
@@ -425,16 +424,16 @@ impl Handler {
 			if let Err(e) = res {
 				// Return error status
 				error!(
-						"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}, {}: {}",
-						self.id,
-						params.height,
-						b.hash(),
-						params.edge_bits,
-						params.nonce,
-						params.job_id,
-						e,
-						e.backtrace().unwrap(),
-					);
+					"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}, {}: {}",
+					self.id,
+					params.height,
+					b.hash(),
+					params.edge_bits,
+					params.nonce,
+					params.job_id,
+					e,
+					e.backtrace().unwrap(),
+				);
 				self.workers
 					.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
 				return Err(RpcError::cannot_validate());
@@ -445,28 +444,28 @@ impl Handler {
 			// Log message to make it obvious we found a block
 			let stats = self.workers.get_stats(worker_id)?;
 			warn!(
-					"(Server ID: {}) Solution Found for block {}, hash {} - Yay!!! Worker ID: {}, blocks found: {}, shares: {}",
-					self.id, params.height,
-					b.hash(),
-					stats.id,
-					stats.num_blocks_found,
-					stats.num_accepted,
-				);
+				"(Server ID: {}) Solution Found for block {}, hash {} - Yay!!! Worker ID: {}, blocks found: {}, shares: {}",
+				self.id, params.height,
+				b.hash(),
+				stats.id,
+				stats.num_blocks_found,
+				stats.num_accepted,
+			);
 		} else {
 			// Do some validation but dont submit
 			let res = pow::verify_size(&b.header);
 			if !res.is_ok() {
 				// Return error status
 				error!(
-						"(Server ID: {}) Failed to validate share at height {}, hash {}, edge_bits {}, nonce {}, job_id {}. {:?}",
-						self.id,
-						params.height,
-						b.hash(),
-						params.edge_bits,
-						b.header.pow.nonce,
-						params.job_id,
-						res,
-					);
+					"(Server ID: {}) Failed to validate share at height {}, hash {}, edge_bits {}, nonce {}, job_id {}. {:?}",
+					self.id,
+					params.height,
+					b.hash(),
+					params.edge_bits,
+					b.header.pow.nonce,
+					params.job_id,
+					res,
+				);
 				self.workers
 					.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
 				return Err(RpcError::cannot_validate());
@@ -474,7 +473,7 @@ impl Handler {
 		}
 		// Log this as a valid share
 		if let Some(worker) = self.workers.get_worker(worker_id) {
-			let submitted_by = match &worker.login {
+			let submitted_by = match worker.login {
 				None => worker.id.to_string(),
 				Some(login) => login.clone(),
 			};
@@ -525,8 +524,7 @@ impl Handler {
 			"(Server ID: {}) sending block {} with id {} to stratum clients",
 			self.id, job_template.height, job_template.job_id,
 		);
-		self.workers
-			.broadcast(job_request_json.clone(), NOTIFICATION_Q_LIMIT);
+		self.workers.broadcast(job_request_json.clone());
 	}
 
 	pub fn run(
@@ -567,11 +565,6 @@ impl Handler {
 						verifier_cache.clone(),
 						self.current_state.read().current_key_id.clone(),
 						wallet_listener_url,
-					);
-
-					info!(
-						"Mining of a new block, height={}, clear_blocks={}",
-						new_block.header.height, clear_blocks
 					);
 
 					{
@@ -640,10 +633,6 @@ fn accept_connections(
 			let h = handler.clone();
 			let workers = h.workers.clone();
 			let ban_substr_list = ban_substr_list.clone();
-			let channel_q_sz: Arc<AtomicU16> = workers
-				.get_worker(worker_id)
-				.map(|w| w.channel_q_sz.clone())
-				.unwrap_or_else(|| Arc::new(AtomicU16::new(0)));
 
 			let input = lines(reader)
 				.for_each(move |line| {
@@ -664,19 +653,15 @@ fn accept_connections(
 
 					let request = serde_json::from_str(&line)?;
 					let resp = h.handle_rpc_requests(request, worker_id);
-					workers.send_to(worker_id, resp, MESSAGE_Q_LIMIT);
+					workers.send_to(worker_id, resp);
 					Ok(())
 				})
 				.map_err(|e| error!("error {}", e));
 
-			let output = rx.fold(writer, move |writer, s| {
+			let output = rx.fold(writer, |writer, s| {
 				let s2 = s + "\n";
-				let channel_q_sz = channel_q_sz.clone();
 				write_all(writer, s2.into_bytes())
-					.map(move |(writer, _)| {
-						channel_q_sz.fetch_sub(1, Ordering::Relaxed);
-						writer
-					})
+					.map(|(writer, _)| writer)
 					.map_err(|e| error!("cannot send {}", e))
 			});
 
@@ -706,11 +691,7 @@ pub struct Worker {
 	login: Option<String>,
 	authenticated: bool,
 	tx: Arc<Tx>,
-	channel_q_sz: Arc<AtomicU16>, // Size of the message channel. We don't want to push new and new messages to workers that never read.
 }
-
-const NOTIFICATION_Q_LIMIT: u16 = 5;
-const MESSAGE_Q_LIMIT: u16 = 8;
 
 impl Worker {
 	/// Creates a new Stratum Worker.
@@ -721,31 +702,12 @@ impl Worker {
 			login: None,
 			authenticated: false,
 			tx: Arc::new(tx),
-			channel_q_sz: Arc::new(AtomicU16::new(0)),
-		}
-	}
-
-	pub fn send_message(&self, msg: String, msg_q_limit: u16) {
-		if self.channel_q_sz.load(Ordering::Relaxed) < msg_q_limit {
-			match self.tx.unbounded_send(msg) {
-				Err(_) => warn!("Unable to send message to the worker ID {}", self.id),
-				_ => {
-					// Success
-					self.channel_q_sz.fetch_add(1, Ordering::Relaxed);
-					()
-				}
-			}
-		} else {
-			debug!(
-				"Worker with worker_id={} is busy, sent_to will be skipped",
-				self.id
-			);
 		}
 	}
 } // impl Worker
 
 struct WorkersList {
-	workers_list: Arc<RwLock<HashMap<usize, Arc<Worker>>>>,
+	workers_list: Arc<RwLock<HashMap<usize, Worker>>>,
 	stratum_stats: Arc<RwLock<StratumStats>>,
 }
 
@@ -758,76 +720,59 @@ impl WorkersList {
 	}
 
 	pub fn add_worker(&self, tx: Tx) -> usize {
-		let worker_id = {
-			let mut stratum_stats = self.stratum_stats.write();
-			// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
-			// Or just somebody want to attack the mining pool.
-			// let worker_id = stratum_stats.worker_stats.len();
+		let mut workers_list = self.workers_list.write();
+		let mut stratum_stats = self.stratum_stats.write();
+		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
+		// Or just somebody want to attack the mining pool.
+		// let worker_id = stratum_stats.worker_stats.len();
 
-			// Instead we will reuse the ID or allocate a new one
-			let worker_id = stratum_stats
-				.worker_stats
-				.iter()
-				.position(|stat| !stat.is_connected)
-				.unwrap_or(stratum_stats.worker_stats.len());
+		// Instead we will reuse the ID or allocate a new one
+		let worker_id = stratum_stats
+			.worker_stats
+			.iter()
+			.position(|stat| !stat.is_connected)
+			.unwrap_or(stratum_stats.worker_stats.len());
 
-			let mut worker_stats = WorkerStats::default();
-			worker_stats.is_connected = true;
-			worker_stats.id = worker_id.to_string();
-			worker_stats.pow_difficulty = 1; // XXX TODO
-
-			if worker_id < stratum_stats.worker_stats.len() {
-				stratum_stats.worker_stats[worker_id] = worker_stats;
-			} else {
-				stratum_stats.worker_stats.push(worker_stats);
-			}
-			worker_id
-		};
-
-		let worker = Arc::new(Worker::new(worker_id, tx));
+		let worker = Worker::new(worker_id, tx);
 		let num_workers_val = {
-			let mut workers_list = self.workers_list.write();
 			workers_list.insert(worker_id, worker);
 			workers_list.len()
 		};
 
-		self.stratum_stats.write().num_workers = num_workers_val;
+		let mut worker_stats = WorkerStats::default();
+		worker_stats.is_connected = true;
+		worker_stats.id = worker_id.to_string();
+		worker_stats.pow_difficulty = 1; // XXX TODO
+
+		if worker_id < stratum_stats.worker_stats.len() {
+			stratum_stats.worker_stats[worker_id] = worker_stats;
+		} else {
+			stratum_stats.worker_stats.push(worker_stats);
+		}
+
+		stratum_stats.num_workers = num_workers_val;
 		worker_id
 	}
 	pub fn remove_worker(&self, worker_id: usize) {
 		self.update_stats(worker_id, |ws| ws.is_connected = false);
-		self.workers_list.write().remove(&worker_id);
+		self.workers_list
+			.write()
+			.remove(&worker_id)
+			.expect("Stratum: no such addr in map");
 		self.stratum_stats.write().num_workers = self.workers_list.read().len();
 	}
 
 	pub fn login(&self, worker_id: usize, login: String, agent: String) -> Result<(), RpcError> {
-		if let Some(worker) = self.get_worker(worker_id) {
-			// Here is worker is a local copy, your can do what ever you want with it
-			let mut worker = worker.as_ref().clone();
-
-			worker.login = Some(login);
-			// XXX TODO Future - Validate password?
-			worker.agent = agent;
-			worker.authenticated = true;
-
-			// Storing worker back on Hash table
-			{
-				let mut workers_list = self.workers_list.write();
-				if workers_list.contains_key(&worker_id) {
-					workers_list.insert(worker_id, Arc::new(worker));
-				} else {
-					// should rarely happen. Possible because of race conditions
-					return Err(RpcError::internal_error());
-				}
-			}
-		} else {
-			// should rarely happen. Possible because of race conditions
-			return Err(RpcError::internal_error());
-		}
+		let mut wl = self.workers_list.write();
+		let mut worker = wl.get_mut(&worker_id).ok_or(RpcError::internal_error())?;
+		worker.login = Some(login);
+		// XXX TODO Future - Validate password?
+		worker.agent = agent;
+		worker.authenticated = true;
 		Ok(())
 	}
 
-	pub fn get_worker(&self, worker_id: usize) -> Option<Arc<Worker>> {
+	pub fn get_worker(&self, worker_id: usize) -> Option<Worker> {
 		match self.workers_list.read().get(&worker_id) {
 			Some(worker) => Some(worker.clone()),
 			_ => None,
@@ -854,17 +799,18 @@ impl WorkersList {
 		f(&mut stratum_stats.worker_stats[worker_id]);
 	}
 
-	pub fn send_to(&self, worker_id: usize, msg: String, msg_q_limit: u16) {
-		if let Some(worker) = self.get_worker(worker_id) {
-			worker.send_message(msg, msg_q_limit);
-		}
+	pub fn send_to(&self, worker_id: usize, msg: String) {
+		let rlock = self.workers_list.read();
+		let tx = rlock.get(&worker_id).unwrap().tx.clone();
+		drop(rlock);
+		tx.unbounded_send(msg).expect("send failed");
 	}
 
-	pub fn broadcast(&self, msg: String, msg_q_limit: u16) {
+	pub fn broadcast(&self, msg: String) {
 		let keys: Vec<usize> = self.workers_list.read().keys().map(|k| k.clone()).collect();
 
 		for worker_id in keys {
-			self.send_to(worker_id, msg.clone(), msg_q_limit);
+			self.send_to(worker_id, msg.clone());
 		}
 	}
 
