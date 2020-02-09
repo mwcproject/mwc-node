@@ -382,32 +382,42 @@ fn get_epoch_block_offset(epoch: u8) -> u64 {
 
 fn get_epoch_duration(epoch: u8) -> u64 {
 	if epoch == 2 {
+		// second epoch is 1 day on floonet and 120 days on mainnet
 		if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
 			DAY_HEIGHT
 		} else {
 			120 * DAY_HEIGHT
 		}
 	} else if epoch == 3 {
+		// third epoch is 1 day on floonet and 60 days on mainnet
 		if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
 			DAY_HEIGHT
 		} else {
 			60 * DAY_HEIGHT
 		}
 	} else if epoch == 4 {
+		// fourth epoch is 120 days
 		120 * DAY_HEIGHT
 	} else if epoch == 5 {
+		// fifth epoch is 180 days
 		180 * DAY_HEIGHT
 	} else if epoch == 6 {
+		// sixth epoch is 180 days
 		180 * DAY_HEIGHT
 	} else if epoch == 7 {
+		// seventh epoch is 1 year
 		YEAR_HEIGHT
 	} else if epoch == 8 {
+		// eigth epoch is 1 year
 		YEAR_HEIGHT
 	} else if epoch == 9 {
+		// nineth epoch is 6 years
 		6 * YEAR_HEIGHT
 	} else if epoch == 10 {
+		// tenth epoch is 10 years
 		10 * YEAR_HEIGHT
 	} else {
+		// eleventh epoch is 1667+ years
 		// epoch 11
 		876_348_910 // Just over 1667 years.
 	}
@@ -419,29 +429,29 @@ fn get_epoch_reward(epoch: u8) -> u64 {
 	} else if epoch == 1 {
 		MWC_FIRST_GROUP_REWARD
 	} else if epoch == 2 {
-		600_000_000
+		600_000_000 // 0.6 MWC
 	} else if epoch == 3 {
-		450_000_000
+		450_000_000 // 0.45 MWC
 	} else if epoch == 4 {
-		300_000_000
+		300_000_000 // 0.30 MWC
 	} else if epoch == 5 {
-		250_000_000
+		250_000_000 // 0.25 MWC
 	} else if epoch == 6 {
-		200_000_000
+		200_000_000 // 0.20 MWC
 	} else if epoch == 7 {
-		150_000_000
+		150_000_000 // 0.15 MWC
 	} else if epoch == 8 {
-		100_000_000
+		100_000_000 // 0.10 MWC
 	} else if epoch == 9 {
-		50_000_000
+		50_000_000 // 0.05 MWC
 	} else if epoch == 10 {
-		25_000_000
+		25_000_000 // 0.025 MWC
 	} else if epoch == 11 {
-		10_000_000
+		10_000_000 // 0.01 MWC
 	} else
 	/* if epoch == 12 */
 	{
-		MWC_LAST_BLOCK_REWARD
+		MWC_LAST_BLOCK_REWARD // final block reward just to make it to be 20M coins.
 	}
 }
 
