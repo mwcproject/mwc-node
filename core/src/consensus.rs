@@ -365,7 +365,11 @@ fn get_c31_hard_fork_block_height() -> u64 {
 fn get_epoch_block_offset(epoch: u8) -> u64 {
 	let mut ret = get_c31_hard_fork_block_height();
 	if epoch >= 2 {
-		ret += WEEK_HEIGHT;
+		if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+			ret += DAY_HEIGHT;
+		} else {
+			ret += WEEK_HEIGHT;
+		}
 	}
 
 	let mut i = 3;
@@ -405,7 +409,7 @@ fn get_epoch_duration(epoch: u8) -> u64 {
 		10 * YEAR_HEIGHT
 	} else {
 		// epoch 11
-		876348910
+		876_348_910 // Just over 1667 years.
 	}
 }
 
@@ -449,6 +453,7 @@ pub const MWC_LAST_BLOCK_REWARD: u64 = 1_259_600;
 
 /// Calculate MWC block reward.
 pub fn calc_mwc_block_reward(height: u64) -> u64 {
+	println!("offset 2 = {}", get_epoch_block_offset(2));
 	if height == 0 {
 		// Genesis block
 		return get_epoch_reward(0);
@@ -603,6 +608,61 @@ mod test {
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 31), 256 * 31);
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 32), 1);
 		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 33), 1);
+	}
+
+	// MWC test the epoch dates
+	#[test]
+	fn test_epoch_dates() {
+		assert_eq!(get_c31_hard_fork_block_height(), 202_500); // April 1 hard fork date
+		assert_eq!(get_epoch_block_offset(2), 212_580); // April 7 second epoch
+		assert_eq!(get_epoch_block_offset(3), 385_380); //
+		assert_eq!(get_epoch_block_offset(4), 471_780);
+		assert_eq!(get_epoch_block_offset(5), 644_580);
+		assert_eq!(get_epoch_block_offset(6), 903_780);
+		assert_eq!(get_epoch_block_offset(7), 1_162_980);
+		assert_eq!(get_epoch_block_offset(8), 1_687_140);
+		assert_eq!(get_epoch_block_offset(9), 2_211_300);
+		assert_eq!(get_epoch_block_offset(10), 5_356_260);
+		assert_eq!(get_epoch_block_offset(11), 10_597_860);
+		assert_eq!(
+			get_epoch_block_offset(11) + get_epoch_duration(11),
+			886_946_770
+		);
+
+		/*
+		fn get_epoch_duration(epoch: u8) -> u64 {
+				if epoch == 2 {
+						if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+								DAY_HEIGHT
+						} else {
+								120 * DAY_HEIGHT
+						}
+				} else if epoch == 3 {
+						if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+								DAY_HEIGHT
+						} else {
+								60 * DAY_HEIGHT
+						}
+				} else if epoch == 4 {
+						120 * DAY_HEIGHT
+				} else if epoch == 5 {
+						180 * DAY_HEIGHT
+				} else if epoch == 6 {
+						180 * DAY_HEIGHT
+				} else if epoch == 7 {
+						YEAR_HEIGHT
+				} else if epoch == 8 {
+						YEAR_HEIGHT
+				} else if epoch == 9 {
+						6 * YEAR_HEIGHT
+				} else if epoch == 10 {
+						10 * YEAR_HEIGHT
+				} else {
+						// epoch 11
+						876_348_910 // Just over 1667 years.
+				}
+		}
+		*/
 	}
 
 	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
