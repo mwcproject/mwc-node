@@ -622,17 +622,17 @@ mod test {
 	// MWC test the epoch dates
 	#[test]
 	fn test_epoch_dates() {
-		assert_eq!(get_c31_hard_fork_block_height(), 202_500); // April 1 hard fork date
-		assert_eq!(get_epoch_block_offset(2), 212_580); // April 7 second epoch
-		assert_eq!(get_epoch_block_offset(3), 385_380); //
-		assert_eq!(get_epoch_block_offset(4), 471_780);
-		assert_eq!(get_epoch_block_offset(5), 644_580);
-		assert_eq!(get_epoch_block_offset(6), 903_780);
-		assert_eq!(get_epoch_block_offset(7), 1_162_980);
-		assert_eq!(get_epoch_block_offset(8), 1_687_140);
-		assert_eq!(get_epoch_block_offset(9), 2_211_300);
-		assert_eq!(get_epoch_block_offset(10), 5_356_260);
-		assert_eq!(get_epoch_block_offset(11), 10_597_860);
+		assert_eq!(get_c31_hard_fork_block_height(), 202_500); // April 1, 2020 hard fork date
+		assert_eq!(get_epoch_block_offset(2), 212_580); // April 7, 2020 second epoch begins
+		assert_eq!(get_epoch_block_offset(3), 385_380); // August 7, 2020 third epoch begins
+		assert_eq!(get_epoch_block_offset(4), 471_780); // October 7, 2020 fourth epoch begins
+		assert_eq!(get_epoch_block_offset(5), 644_580); // February 7, 2021 fifth epoch begins
+		assert_eq!(get_epoch_block_offset(6), 903_780); // August 7, 2021 sixth epoch begins
+		assert_eq!(get_epoch_block_offset(7), 1_162_980); // February 7, 2022 seventh epoch begins
+		assert_eq!(get_epoch_block_offset(8), 1_687_140); // February 7, 2023 eighth epoch begins
+		assert_eq!(get_epoch_block_offset(9), 2_211_300); // February 7, 2024 nineth epoch begins
+		assert_eq!(get_epoch_block_offset(10), 5_356_260); // February 7, 2030 tenth epoch begins
+		assert_eq!(get_epoch_block_offset(11), 10_597_860); // February 7, 2040 eleventh epoch begins
 		assert_eq!(
 			get_epoch_block_offset(11) + get_epoch_duration(11),
 			886_946_770
@@ -991,7 +991,7 @@ mod test {
 		);
 
 		assert_eq!(
-			calc_mwc_block_overage(get_epoch_block_offset(10) + 39, true),
+			calc_mwc_block_overage(get_epoch_block_offset(10) + 1, true),
 			genesis_reward
 				+ MWC_FIRST_GROUP_REWARD * get_epoch_block_offset(2)
 				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
@@ -1002,7 +1002,7 @@ mod test {
 				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
 				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
 				+ (get_epoch_block_offset(10) - get_epoch_block_offset(9)) * get_epoch_reward(9)
-				+ get_epoch_reward(10) * 39
+				+ get_epoch_reward(10) * 1
 		);
 
 		assert_eq!(
