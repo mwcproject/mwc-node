@@ -628,41 +628,6 @@ mod test {
 			get_epoch_block_offset(11) + get_epoch_duration(11),
 			886_946_770
 		);
-
-		/*
-		fn get_epoch_duration(epoch: u8) -> u64 {
-				if epoch == 2 {
-						if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
-								DAY_HEIGHT
-						} else {
-								120 * DAY_HEIGHT
-						}
-				} else if epoch == 3 {
-						if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
-								DAY_HEIGHT
-						} else {
-								60 * DAY_HEIGHT
-						}
-				} else if epoch == 4 {
-						120 * DAY_HEIGHT
-				} else if epoch == 5 {
-						180 * DAY_HEIGHT
-				} else if epoch == 6 {
-						180 * DAY_HEIGHT
-				} else if epoch == 7 {
-						YEAR_HEIGHT
-				} else if epoch == 8 {
-						YEAR_HEIGHT
-				} else if epoch == 9 {
-						6 * YEAR_HEIGHT
-				} else if epoch == 10 {
-						10 * YEAR_HEIGHT
-				} else {
-						// epoch 11
-						876_348_910 // Just over 1667 years.
-				}
-		}
-		*/
 	}
 
 	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
