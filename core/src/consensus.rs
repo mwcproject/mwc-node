@@ -453,7 +453,6 @@ pub const MWC_LAST_BLOCK_REWARD: u64 = 1_259_600;
 
 /// Calculate MWC block reward.
 pub fn calc_mwc_block_reward(height: u64) -> u64 {
-	println!("offset 2 = {}", get_epoch_block_offset(2));
 	if height == 0 {
 		// Genesis block
 		return get_epoch_reward(0);
