@@ -8,13 +8,9 @@ steps:
   - script: |
       curl https://sh.rustup.rs -sSf | sh -s -- -y
       echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
-      ls /usr/local/opt/llvm/bin/
-      ls -al /usr/local/opt/llvm/bin/llvm-config
-      # Azure host already has llvm installed form the homebrew. But by some reasons env variables are not fixed. Below they are exported exactly as homebrew suggests.
-      export PATH="/usr/local/opt/llvm/bin:$PATH"
-      export LDFLAGS="-L/usr/local/opt/llvm/lib -Wl,-rpath,/usr/local/opt/llvm/lib"
-      export CPPFLAGS="-I/usr/local/opt/llvm/include"
-      export LLVM_CONFIG_PATH="/usr/local/opt/llvm/bin/"
+      clang --version
+      brew uninstall llvm
+      clang --version
     displayName: macOS Install Rust
     condition: eq( variables['Agent.OS'], 'Darwin' )
   - script: |
