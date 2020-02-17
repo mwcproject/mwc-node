@@ -8,6 +8,9 @@ steps:
   - script: |
       curl https://sh.rustup.rs -sSf | sh -s -- -y
       echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
+      clang --version
+      brew uninstall llvm
+      clang --version
     displayName: macOS Install Rust
     condition: eq( variables['Agent.OS'], 'Darwin' )
   - script: |
