@@ -8,10 +8,7 @@ steps:
   - script: |
       curl https://sh.rustup.rs -sSf | sh -s -- -y
       echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
-      brew install llvm
-      export PATH="/usr/local/opt/llvm/bin:$PATH"
-      export LDFLAGS="-L/usr/local/opt/llvm/lib -Wl,-rpath,/usr/local/opt/llvm/lib"
-      export CPPFLAGS="-I/usr/local/opt/llvm/include"
+      export LLVM_CONFIG_PATH="/usr/local/opt/llvm/bin/llvm-config"
     displayName: macOS Install Rust
     condition: eq( variables['Agent.OS'], 'Darwin' )
   - script: |
