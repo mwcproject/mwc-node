@@ -17,5 +17,6 @@ steps:
       sudo apt-get update -yqq
       sudo apt-get install -yqq --no-install-recommends libncursesw5-dev
       curl https://sh.rustup.rs -sSf | sh -s -- -y
+      apt list --installed
     displayName: Linux Install Dependencies
     condition: eq( variables['Agent.OS'], 'Linux' )
