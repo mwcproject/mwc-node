@@ -17,6 +17,7 @@
 //! Merkle sum trees or reorg rules). However, as long as they're simple
 //! enough, consensus-relevant constants and short functions should be kept
 //! here.
+//! da8f798fb502cf30dde067af3e7a095c786bab0afda34c851d78cf9cca99ccc6
 
 use crate::core::block::HeaderVersion;
 use crate::core::hash::{Hash, ZERO_HASH};
@@ -137,16 +138,22 @@ pub const MAX_BLOCK_WEIGHT: usize = 40_000;
 
 /// Check whether the block version is valid at a given height
 /// MWC doesn't want like grin change the algorithms for mining. So version is constant
-pub fn header_version(_height: u64) -> HeaderVersion {
-	HeaderVersion(1)
+pub fn header_version(height: u64) -> HeaderVersion {
+	if height < get_c31_hard_fork_block_height() {
+		HeaderVersion(1)
+	} else {
+		HeaderVersion(2)
+	}
 }
 
 /// Check whether the block version is valid at a given height.
 /// Currently we only use the default version. No hard forks planned.
-pub fn valid_header_version(_height: u64, version: HeaderVersion) -> bool {
-	// We don't currently plan any hard forks. If we change that plan,
-	// will update.
-	version == HeaderVersion(1)
+pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
+	if height < get_c31_hard_fork_block_height() {
+		version == HeaderVersion(1)
+	} else {
+		version == HeaderVersion(2)
+	}
 }
 
 /// Number of blocks used to calculate difficulty adjustments
@@ -168,18 +175,13 @@ pub const AR_SCALE_DAMP_FACTOR: u64 = 13;
 /// Compute weight of a graph as number of siphash bits defining the graph
 /// Must be made dependent on height to phase out C31 in early 2020
 /// Later phase outs are on hold for now
+/// MWC modification: keep the initial calculation permanently so always favor C31.
 pub fn graph_weight(height: u64, edge_bits: u8) -> u64 {
-	let mut xpr_edge_bits = edge_bits as u64;
-
-	let bits_over_min = edge_bits.saturating_sub(global::min_edge_bits());
-	let expiry_height = (1 << bits_over_min) * YEAR_HEIGHT;
-	if edge_bits < 32 && height >= expiry_height {
-		xpr_edge_bits = xpr_edge_bits.saturating_sub(1 + (height - expiry_height) / WEEK_HEIGHT);
+	if height < get_c31_hard_fork_block_height() || edge_bits <= 31 {
+		(2u64 << ((edge_bits as u64) - global::base_edge_bits() as u64) as u64) * (edge_bits as u64)
+	} else {
+		1
 	}
-	// For C31 xpr_edge_bits reaches 0 at height YEAR_HEIGHT + 30 * WEEK_HEIGHT
-	// 30 weeks after Jan 15, 2020 would be Aug 12, 2020
-
-	(2u64 << (edge_bits - global::base_edge_bits()) as u64) * xpr_edge_bits
 }
 
 /// Minimum difficulty, enforced in diff retargetting
@@ -350,73 +352,240 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
 	max(MIN_AR_SCALE, scale) as u32
 }
 
-// MWC has block reward schedule similar to bitcoin
-/// MWC Size of the block group
-const MWC_BLOCKS_PER_GROUP: u64 = 2_100_000; // 4 years
-const MWC_BLOCKS_PER_GROUP_FLOO: u64 = 2_100_000; // 4 years
-/// MWC Block reward for the first group
+/// Hard fork modifications:
+
+fn get_c31_hard_fork_block_height() -> u64 {
+	// return 202_500 for mainnet and 270_000 for floonet
+	if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+		270_000
+	} else {
+		202_500
+	}
+}
+
+fn get_epoch_block_offset(epoch: u8) -> u64 {
+	let mut ret = get_c31_hard_fork_block_height();
+	if epoch >= 2 {
+		if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+			ret += DAY_HEIGHT;
+		} else {
+			ret += WEEK_HEIGHT;
+		}
+	}
+
+	let mut i = 3;
+	while i <= epoch {
+		ret += get_epoch_duration(i - 1);
+		i = i + 1;
+	}
+	ret
+}
+
+fn get_epoch_duration(epoch: u8) -> u64 {
+	match epoch {
+		2 => {
+			// second epoch is 1 day on floonet and 120 days on mainnet
+			if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+				DAY_HEIGHT
+			} else {
+				120 * DAY_HEIGHT
+			}
+		}
+		3 => {
+			// third epoch is 1 day on floonet and 60 days on mainnet
+			if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+				DAY_HEIGHT
+			} else {
+				60 * DAY_HEIGHT
+			}
+		}
+		4 => {
+			// fourth epoch is 120 days
+			120 * DAY_HEIGHT
+		}
+		5 => {
+			// fifth epoch is 180 days
+			180 * DAY_HEIGHT
+		}
+		6 => {
+			// sixth epoch is 180 days
+			180 * DAY_HEIGHT
+		}
+		7 => {
+			// seventh epoch is 1 year
+			YEAR_HEIGHT
+		}
+		8 => {
+			// eigth epoch is 1 year
+			YEAR_HEIGHT
+		}
+		9 => {
+			// nineth epoch is 6 years
+			6 * YEAR_HEIGHT
+		}
+		10 => {
+			// tenth epoch is 10 years
+			10 * YEAR_HEIGHT
+		}
+		_ => {
+			// eleventh epoch is 1667+ years
+			// epoch 11
+			876_349_148 // Just over 1667 years.
+		}
+	}
+}
+
+fn get_epoch_reward(epoch: u8) -> u64 {
+	match epoch {
+		0 => GENESIS_BLOCK_REWARD,
+		1 => MWC_FIRST_GROUP_REWARD,
+		2 => {
+			600_000_000 // 0.6 MWC
+		}
+		3 => {
+			450_000_000 // 0.45 MWC
+		}
+		4 => {
+			300_000_000 // 0.30 MWC
+		}
+		5 => {
+			250_000_000 // 0.25 MWC
+		}
+		6 => {
+			200_000_000 // 0.20 MWC
+		}
+		7 => {
+			150_000_000 // 0.15 MWC
+		}
+		8 => {
+			100_000_000 // 0.10 MWC
+		}
+		9 => {
+			50_000_000 // 0.05 MWC
+		}
+		10 => {
+			25_000_000 // 0.025 MWC
+		}
+		11 => {
+			10_000_000 // 0.01 MWC
+		}
+		_ => {
+			/* epoch == 12 */
+			MWC_LAST_BLOCK_REWARD // final block reward just to make it to be 20M coins.
+		}
+	}
+}
+
+/// MWC Block reward for the first group - pre hard fork
 pub const MWC_FIRST_GROUP_REWARD: u64 = 2_380_952_380;
-const MWC_GROUPS_NUM: u64 = 32;
-/// Calculate MWC block reward. The scedure is similar to bitcoints.
-/// 1st 2.1 million blocks - 2.38095238 MWC
-/// 2nd 2.1 million blocks - 1.19047619 MWC
-/// 3rd 2.1 million blocks - 0.59523809 MWC
-/// 4th 2.1 million blocks - 0.29761904 MWC
-/// 5th 2.1 million blocks - 0.14880952 MWC
-/// 6th 2.1 million blocks - 0.07440476 MWC
-// ...
-/// 32nd 2.1 million blocks - 0.000000001 MWC
-//All blocks after that - 0 MWC (miner fees only)
+
+/// We have a reward after the last epoch. This is just to get exactly 20M MWC.
+pub const MWC_LAST_BLOCK_REWARD: u64 = 2_211_980;
+
+/// Calculate MWC block reward.
 pub fn calc_mwc_block_reward(height: u64) -> u64 {
 	if height == 0 {
 		// Genesis block
-		return GENESIS_BLOCK_REWARD;
+		return get_epoch_reward(0);
 	}
 
-	// Excluding the genesis block from any group
-	let group_num = if global::is_floonet() {
-		(height - 1) / MWC_BLOCKS_PER_GROUP_FLOO
-	} else {
-		(height - 1) / MWC_BLOCKS_PER_GROUP
-	};
-
-	if group_num >= MWC_GROUPS_NUM {
-		0 // far far future, no rewards, sorry
-	} else {
-		let start_reward = MWC_FIRST_GROUP_REWARD;
-		let group_div = 1 << group_num;
-		start_reward / group_div
+	if height < get_epoch_block_offset(2) {
+		return get_epoch_reward(1);
+	} else if height < get_epoch_block_offset(3) {
+		return get_epoch_reward(2);
+	} else if height < get_epoch_block_offset(4) {
+		return get_epoch_reward(3);
+	} else if height < get_epoch_block_offset(5) {
+		return get_epoch_reward(4);
+	} else if height < get_epoch_block_offset(6) {
+		return get_epoch_reward(5);
+	} else if height < get_epoch_block_offset(7) {
+		return get_epoch_reward(6);
+	} else if height < get_epoch_block_offset(8) {
+		return get_epoch_reward(7);
+	} else if height < get_epoch_block_offset(9) {
+		return get_epoch_reward(8);
+	} else if height < get_epoch_block_offset(10) {
+		return get_epoch_reward(9);
+	} else if height < get_epoch_block_offset(11) {
+		return get_epoch_reward(10);
+	} else if height < get_epoch_block_offset(11) + get_epoch_duration(11) {
+		return get_epoch_reward(11);
+	} else if height == get_epoch_block_offset(11) + get_epoch_duration(11) {
+		// last block
+		return get_epoch_reward(12);
 	}
+
+	return 0;
 }
 
 /// MWC  calculate the total number of rewarded coins in all blocks including this one
 pub fn calc_mwc_block_overage(height: u64, genesis_had_reward: bool) -> u64 {
-	let blocks_per_group = if global::is_floonet() {
-		MWC_BLOCKS_PER_GROUP_FLOO
-	} else {
-		MWC_BLOCKS_PER_GROUP
-	};
-
 	// including this one happens implicitly.
 	// Because "this block is included", but 0 block (genesis) block is excluded, we will keep height as it is
-	let mut block_count = height;
-	let mut reward_per_block = MWC_FIRST_GROUP_REWARD;
-	let mut overage: u64 = GENESIS_BLOCK_REWARD; // genesis block reward
-
-	for _x in 0..MWC_GROUPS_NUM {
-		overage += min(block_count, blocks_per_group) * reward_per_block;
-		reward_per_block /= 2;
-
-		if block_count < blocks_per_group {
-			break;
-		}
-
-		block_count -= blocks_per_group;
+	let mut overage: u64 = get_epoch_reward(0); // genesis block reward
+	if !genesis_had_reward {
+		overage -= get_epoch_reward(0);
 	}
 
-	if !genesis_had_reward {
-		// Deducting the first block reward if it is 0. This case is used into the tests.
-		overage -= GENESIS_BLOCK_REWARD;
+	if height < get_epoch_block_offset(2) {
+		return overage + height * get_epoch_reward(1);
+	}
+	overage += get_epoch_reward(1) * (get_epoch_block_offset(2) - 1);
+
+	if height < get_epoch_block_offset(3) {
+		return overage + ((height + 1) - get_epoch_block_offset(2)) * get_epoch_reward(2);
+	}
+	overage += get_epoch_reward(2) * (get_epoch_block_offset(3) - get_epoch_block_offset(2));
+
+	if height < get_epoch_block_offset(4) {
+		return overage + ((height + 1) - get_epoch_block_offset(3)) * get_epoch_reward(3);
+	}
+	overage += get_epoch_reward(3) * (get_epoch_block_offset(4) - get_epoch_block_offset(3));
+
+	if height < get_epoch_block_offset(5) {
+		return overage + ((height + 1) - get_epoch_block_offset(4)) * get_epoch_reward(4);
+	}
+	overage += get_epoch_reward(4) * (get_epoch_block_offset(5) - get_epoch_block_offset(4));
+
+	if height < get_epoch_block_offset(6) {
+		return overage + ((height + 1) - get_epoch_block_offset(5)) * get_epoch_reward(5);
+	}
+	overage += get_epoch_reward(5) * (get_epoch_block_offset(6) - get_epoch_block_offset(5));
+
+	if height < get_epoch_block_offset(7) {
+		return overage + ((height + 1) - get_epoch_block_offset(6)) * get_epoch_reward(6);
+	}
+	overage += get_epoch_reward(6) * (get_epoch_block_offset(7) - get_epoch_block_offset(6));
+
+	if height < get_epoch_block_offset(8) {
+		return overage + ((height + 1) - get_epoch_block_offset(7)) * get_epoch_reward(7);
+	}
+	overage += get_epoch_reward(7) * (get_epoch_block_offset(8) - get_epoch_block_offset(7));
+
+	if height < get_epoch_block_offset(9) {
+		return overage + ((height + 1) - get_epoch_block_offset(8)) * get_epoch_reward(8);
+	}
+	overage += get_epoch_reward(8) * (get_epoch_block_offset(9) - get_epoch_block_offset(8));
+
+	if height < get_epoch_block_offset(10) {
+		return overage + ((height + 1) - get_epoch_block_offset(9)) * get_epoch_reward(9);
+	}
+	overage += get_epoch_reward(9) * (get_epoch_block_offset(10) - get_epoch_block_offset(9));
+
+	if height < get_epoch_block_offset(11) {
+		return overage + ((height + 1) - get_epoch_block_offset(10)) * get_epoch_reward(10);
+	}
+	overage += get_epoch_reward(10) * (get_epoch_block_offset(11) - get_epoch_block_offset(10));
+
+	if height < get_epoch_block_offset(11) + get_epoch_duration(11) {
+		return overage + ((height + 1) - get_epoch_block_offset(11)) * get_epoch_reward(11);
+	}
+	overage += get_epoch_reward(11) * (get_epoch_duration(11));
+
+	// we add the last block reward to get us to 20 million
+	if height > get_epoch_block_offset(11) + get_epoch_duration(11) {
+		overage += get_epoch_reward(12);
 	}
 
 	overage
@@ -434,102 +603,215 @@ mod test {
 		assert_eq!(graph_weight(1, 33), 1024 * 33);
 
 		// one year in, 31 starts going down, the rest stays the same
-		assert_eq!(graph_weight(YEAR_HEIGHT, 31), 256 * 30);
-		assert_eq!(graph_weight(YEAR_HEIGHT, 32), 512 * 32);
-		assert_eq!(graph_weight(YEAR_HEIGHT, 33), 1024 * 33);
+		// after hard fork, constant values despite height
+		assert_eq!(graph_weight(YEAR_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(YEAR_HEIGHT, 33), 1);
 
 		// 31 loses one factor per week
-		assert_eq!(graph_weight(YEAR_HEIGHT + WEEK_HEIGHT, 31), 256 * 29);
-		assert_eq!(graph_weight(YEAR_HEIGHT + 2 * WEEK_HEIGHT, 31), 256 * 28);
-		assert_eq!(graph_weight(YEAR_HEIGHT + 32 * WEEK_HEIGHT, 31), 0);
+		// after hard fork, constant values despite height
+		assert_eq!(graph_weight(YEAR_HEIGHT + WEEK_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(YEAR_HEIGHT + 2 * WEEK_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(YEAR_HEIGHT + 32 * WEEK_HEIGHT, 31), 256 * 31);
 
 		// 2 years in, 31 still at 0, 32 starts decreasing
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 31), 0);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 32), 512 * 32);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 33), 1024 * 33);
+		// after hard fork, constant values despite height
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT, 33), 1);
 
 		// 32 phaseout on hold
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 32), 512 * 32);
-		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 31), 0);
-		assert_eq!(
-			graph_weight(2 * YEAR_HEIGHT + 30 * WEEK_HEIGHT, 32),
-			512 * 32
-		);
-		assert_eq!(
-			graph_weight(2 * YEAR_HEIGHT + 31 * WEEK_HEIGHT, 32),
-			512 * 32
-		);
+		// after hard fork, constant values despite height
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + WEEK_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + 30 * WEEK_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(2 * YEAR_HEIGHT + 31 * WEEK_HEIGHT, 32), 1);
 
 		// 3 years in, nothing changes
-		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 31), 0);
-		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 32), 512 * 32);
-		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 33), 1024 * 33);
+		// after hard fork, constant values despite height
+		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(3 * YEAR_HEIGHT, 33), 1);
 
 		// 4 years in, still on hold
-		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 31), 0);
-		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 32), 512 * 32);
-		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 33), 1024 * 33);
+		// after hard fork, constant values despite height
+		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 31), 256 * 31);
+		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 32), 1);
+		assert_eq!(graph_weight(4 * YEAR_HEIGHT, 33), 1);
+	}
+
+	// MWC test the epoch dates
+	#[test]
+	fn test_epoch_dates() {
+		assert_eq!(get_c31_hard_fork_block_height(), 202_500); // April 1, 2020 hard fork date
+		assert_eq!(get_epoch_block_offset(2), 212_580); // April 7, 2020 second epoch begins
+		assert_eq!(get_epoch_block_offset(3), 385_380); // August 7, 2020 third epoch begins
+		assert_eq!(get_epoch_block_offset(4), 471_780); // October 7, 2020 fourth epoch begins
+		assert_eq!(get_epoch_block_offset(5), 644_580); // February 7, 2021 fifth epoch begins
+		assert_eq!(get_epoch_block_offset(6), 903_780); // August 7, 2021 sixth epoch begins
+		assert_eq!(get_epoch_block_offset(7), 1_162_980); // February 7, 2022 seventh epoch begins
+		assert_eq!(get_epoch_block_offset(8), 1_687_140); // February 7, 2023 eighth epoch begins
+		assert_eq!(get_epoch_block_offset(9), 2_211_300); // February 7, 2024 nineth epoch begins
+		assert_eq!(get_epoch_block_offset(10), 5_356_260); // February 7, 2030 tenth epoch begins
+		assert_eq!(get_epoch_block_offset(11), 10_597_860); // February 7, 2040 eleventh epoch begins
+		assert_eq!(
+			get_epoch_block_offset(11) + get_epoch_duration(11),
+			886_947_008
+		);
 	}
 
 	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
 	#[test]
 	fn test_calc_mwc_block_reward() {
-		// Code is crucial, so just checking all groups one by one manually.
-		// We don't use the constants here because we can mess up with them as well.
+		// first blocks
+		assert_eq!(calc_mwc_block_reward(1), 2_380_952_380);
+		assert_eq!(calc_mwc_block_reward(2), 2_380_952_380);
+
+		// a little deeper
+		assert_eq!(calc_mwc_block_reward(100000), 2_380_952_380);
+
+		// pre hard fork block
 		assert_eq!(
-			calc_mwc_block_reward(0),
-			10_000_000 * 1_000_000_000 + 41_800_000
-		); // group 1, genesis 10M
-		assert_eq!(calc_mwc_block_reward(1), 2_380_952_380); // group 1
-		assert_eq!(calc_mwc_block_reward(2), 2_380_952_380); // group 1
-		assert_eq!(calc_mwc_block_reward(2_100_000 - 1), 2_380_952_380); // group 1
-		assert_eq!(calc_mwc_block_reward(2_100_000), 2_380_952_380); // group 1
+			calc_mwc_block_reward(get_c31_hard_fork_block_height() - 1),
+			2_380_952_380
+		);
 		assert_eq!(
-			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP - 1),
-			MWC_FIRST_GROUP_REWARD
-		); // group 1
+			calc_mwc_block_reward(get_c31_hard_fork_block_height()),
+			2_380_952_380
+		);
+
 		assert_eq!(
-			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP),
-			MWC_FIRST_GROUP_REWARD
-		); // group 1
-		assert_eq!(calc_mwc_block_reward(2_100_000 + 1), 1_190_476_190); // group 2
+			calc_mwc_block_reward(get_c31_hard_fork_block_height() + WEEK_HEIGHT - 1),
+			2_380_952_380
+		);
+
+		// reward changes 1 week after HF
 		assert_eq!(
-			calc_mwc_block_reward(MWC_BLOCKS_PER_GROUP + 1),
-			MWC_FIRST_GROUP_REWARD / 2
-		); // group 2
-		assert_eq!(calc_mwc_block_reward(2_100_000 + 200), 1_190_476_190); // group 2
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 2 + 200), 595_238_095); // group 3
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 3 + 200), 297_619_047); // group 4
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 4 + 200), 148_809_523); // group 5
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 5 + 200), 74_404_761); // group 6
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 6 + 200), 37_202_380); // group 7
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 7 + 200), 18_601_190); // group 8
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 8 + 200), 9_300_595); // group 9
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 9 + 200), 4_650_297); // group 10
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 10 + 200), 2_325_148); // group 11
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 11 + 200), 1_162_574); // group 12
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 12 + 200), 581_287); // group 13
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 13 + 200), 290_643); // group 14
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 14 + 200), 145_321); // group 15
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 15 + 200), 72_660); // group 16
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 16 + 200), 36_330); // group 17
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 17 + 200), 18_165); // group 18
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 18 + 200), 9_082); // group 19
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 19 + 200), 4_541); // group 20
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 20 + 200), 2_270); // group 21
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 21 + 200), 1_135); // group 22
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 22 + 200), 567); // group 23
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 23 + 200), 283); // group 24
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 24 + 200), 141); // group 25
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 25 + 200), 70); // group 26
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 26 + 200), 35); // group 27
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 27 + 200), 17); // group 28
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 28 + 200), 8); // group 29
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 29 + 200), 4); // group 30
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 30 + 200), 2); // group 32
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 31 + 200), 1); // group 32
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 32 + 200), 0); // group 32+
-		assert_eq!(calc_mwc_block_reward(2_100_000 * 320 + 200), 0); // group 32+
+			calc_mwc_block_reward(get_c31_hard_fork_block_height() + WEEK_HEIGHT),
+			600_000_000
+		);
+
+		// check epoch 2
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(2)),
+			600_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(2) - 1),
+			2_380_952_380
+		);
+
+		// check epoch 3
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(3)),
+			450_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(3) - 1),
+			600_000_000
+		);
+
+		// check epoch 4
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(4)),
+			300_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(4) - 1),
+			450_000_000
+		);
+
+		// check epoch 5
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(5)),
+			250_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(5) - 1),
+			300_000_000
+		);
+
+		// check epoch 6
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(6)),
+			200_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(6) - 1),
+			250_000_000
+		);
+
+		// check epoch 7
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(7)),
+			150_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(7) - 1),
+			200_000_000
+		);
+
+		// check epoch 8
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(8)),
+			100_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(8) - 1),
+			150_000_000
+		);
+
+		// check epoch 9
+		assert_eq!(calc_mwc_block_reward(get_epoch_block_offset(9)), 50_000_000);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(9) - 1),
+			100_000_000
+		);
+
+		// check epoch 10
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(10)),
+			25_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(10) - 1),
+			50_000_000
+		);
+
+		// check epoch 11
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(11)),
+			10_000_000
+		);
+
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(11) - 1),
+			25_000_000
+		);
+
+		// last block reward is special
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(11) + get_epoch_duration(11)),
+			MWC_LAST_BLOCK_REWARD
+		);
+
+		// 0
+		assert_eq!(
+			calc_mwc_block_reward(get_epoch_block_offset(11) + get_epoch_duration(11) + 1),
+			0
+		);
+
+		// far far future
+		assert_eq!(calc_mwc_block_reward(2_100_000 * 320000000 + 200), 0); // no reward
 	}
 
 	// MWC  testing calc_mwc_block_overage output for the schedule that documented at definition of calc_mwc_block_reward
@@ -537,49 +819,264 @@ mod test {
 	fn test_calc_mwc_block_overage() {
 		let genesis_reward: u64 = GENESIS_BLOCK_REWARD;
 
-		assert_eq!(calc_mwc_block_overage(0, true), genesis_reward); // Doesn't make sence to call for the genesis block
-		assert_eq!(calc_mwc_block_overage(0, false), 0); // Doesn't make sence to call for the genesis block
+		assert_eq!(calc_mwc_block_overage(0, true), genesis_reward); // Doesn't make sense to call for the genesis block
+		assert_eq!(calc_mwc_block_overage(0, false), 0); // Doesn't make sense to call for the genesis block
 		assert_eq!(
 			calc_mwc_block_overage(1, true),
 			genesis_reward + MWC_FIRST_GROUP_REWARD * 1
 		);
 
 		assert_eq!(
-			calc_mwc_block_overage(30, true),
-			genesis_reward + MWC_FIRST_GROUP_REWARD * 30
-		);
-		assert_eq!(
-			calc_mwc_block_overage(30, false),
-			MWC_FIRST_GROUP_REWARD * 30
-		);
-		// pre last block in the first group
-		assert_eq!(
-			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP - 1, true),
-			genesis_reward + MWC_FIRST_GROUP_REWARD * (MWC_BLOCKS_PER_GROUP - 1)
-		);
-		// last block in the first group
-		assert_eq!(
-			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP, true),
-			genesis_reward + MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
-		);
-		// first block in the second group
-		assert_eq!(
-			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP + 1, true),
-			genesis_reward
-				+ MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
-				+ MWC_FIRST_GROUP_REWARD / 2
+			calc_mwc_block_overage(get_c31_hard_fork_block_height(), true),
+			genesis_reward + MWC_FIRST_GROUP_REWARD * get_c31_hard_fork_block_height()
 		);
 
 		assert_eq!(
-			calc_mwc_block_overage(MWC_BLOCKS_PER_GROUP + 5000, true),
+			calc_mwc_block_overage(get_c31_hard_fork_block_height() + WEEK_HEIGHT - 1, true),
 			genesis_reward
-				+ MWC_FIRST_GROUP_REWARD * MWC_BLOCKS_PER_GROUP
-				+ 5000 * MWC_FIRST_GROUP_REWARD / 2
+				+ MWC_FIRST_GROUP_REWARD * (get_c31_hard_fork_block_height() + WEEK_HEIGHT - 1)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_c31_hard_fork_block_height() + WEEK_HEIGHT, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_c31_hard_fork_block_height() + WEEK_HEIGHT - 1)
+				+ get_epoch_reward(2) * 1
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(2), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_c31_hard_fork_block_height() + WEEK_HEIGHT - 1)
+				+ get_epoch_reward(2) * 1
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(3) - 1, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(3), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ get_epoch_reward(3)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(3) + 1, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ get_epoch_reward(3) * 2
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(4), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ get_epoch_reward(4)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(4) + 3, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ get_epoch_reward(4) * 4
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(5), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ get_epoch_reward(5)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(5) + 3, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ get_epoch_reward(5) * 4
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(6), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ get_epoch_reward(6)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(6) + 3, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ get_epoch_reward(6) * 4
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(7), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ get_epoch_reward(7)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(7) + 3, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ get_epoch_reward(7) * 4
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(8), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ get_epoch_reward(8)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(8) + 3, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ get_epoch_reward(8) * 4
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(9), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
+				+ get_epoch_reward(9)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(9) + 39, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
+				+ get_epoch_reward(9) * 40
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(10), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
+				+ (get_epoch_block_offset(10) - get_epoch_block_offset(9)) * get_epoch_reward(9)
+				+ get_epoch_reward(10)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(10) + 1, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
+				+ (get_epoch_block_offset(10) - get_epoch_block_offset(9)) * get_epoch_reward(9)
+				+ get_epoch_reward(10) * 2
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(11), true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
+				+ (get_epoch_block_offset(10) - get_epoch_block_offset(9)) * get_epoch_reward(9)
+				+ (get_epoch_block_offset(11) - get_epoch_block_offset(10)) * get_epoch_reward(10)
+				+ get_epoch_reward(11)
+		);
+
+		assert_eq!(
+			calc_mwc_block_overage(get_epoch_block_offset(11) + 39, true),
+			genesis_reward
+				+ MWC_FIRST_GROUP_REWARD * (get_epoch_block_offset(2) - 1)
+				+ (get_epoch_block_offset(3) - get_epoch_block_offset(2)) * get_epoch_reward(2)
+				+ (get_epoch_block_offset(4) - get_epoch_block_offset(3)) * get_epoch_reward(3)
+				+ (get_epoch_block_offset(5) - get_epoch_block_offset(4)) * get_epoch_reward(4)
+				+ (get_epoch_block_offset(6) - get_epoch_block_offset(5)) * get_epoch_reward(5)
+				+ (get_epoch_block_offset(7) - get_epoch_block_offset(6)) * get_epoch_reward(6)
+				+ (get_epoch_block_offset(8) - get_epoch_block_offset(7)) * get_epoch_reward(7)
+				+ (get_epoch_block_offset(9) - get_epoch_block_offset(8)) * get_epoch_reward(8)
+				+ (get_epoch_block_offset(10) - get_epoch_block_offset(9)) * get_epoch_reward(9)
+				+ (get_epoch_block_offset(11) - get_epoch_block_offset(10)) * get_epoch_reward(10)
+				+ get_epoch_reward(11) * 40
 		);
 
 		// Calculating the total number of coins
-		let total_blocks_reward = calc_mwc_block_overage(2_100_000_000 * 320, true);
+		let total_blocks_reward = calc_mwc_block_overage(2_100_000_000 * 1000, true);
 		// Expected 20M in total. The coin base is exactly 20M
-		assert_eq!(total_blocks_reward, 20_000_000 * GRIN_BASE);
+		assert_eq!(total_blocks_reward, 20000000000000000);
 	}
 }
