@@ -17,6 +17,7 @@ steps:
       sudo apt-get update -yqq
       sudo apt-get install -yqq --no-install-recommends libncursesw5-dev
       curl https://sh.rustup.rs -sSf | sh -s -- -y
+      sudo apt-get purge -yqq llvm-8 llvm-8-dev llvm-8-runtime llvm-9 llvm-9-dev llvm-9-runtime llvm-9-tools
       apt list --installed
     displayName: Linux Install Dependencies
     condition: eq( variables['Agent.OS'], 'Linux' )
