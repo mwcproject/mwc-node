@@ -28,8 +28,15 @@ use grin_keychain as keychain;
 use grin_util as util;
 use std::sync::Arc;
 
+use env_logger;
+#[macro_use]
+extern crate log;
+
 #[test]
 fn test_transaction_pool_block_reconciliation() {
+	let _ = env_logger::init();
+	warn!("Starting test_transaction_pool_block_reconciliation test...");
+
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
 	let db_root = ".grin_block_reconciliation".to_string();
