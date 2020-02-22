@@ -146,7 +146,7 @@ fn default_max_pool_size() -> usize {
 	150_000
 }
 fn default_reorg_cache_timeout() -> i64 {
-	30
+	1440 // in minutes
 }
 fn default_max_stempool_size() -> usize {
 	50_000

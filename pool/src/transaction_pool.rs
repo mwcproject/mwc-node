@@ -90,7 +90,6 @@ impl TransactionPool {
 		if cache.len() > self.config.max_pool_size {
 			let _ = cache.pop_front();
 		}
-		debug!("added tx to reorg_cache: size now {}", cache.len());
 	}
 
 	fn add_to_txpool(
@@ -191,10 +190,16 @@ impl TransactionPool {
 		// Get bucket transactions
 		let bucket_transactions = self.txpool.bucket_transactions(Weighting::NoLimit);
 
+		debug!(
+			"evict_from_txpool bucket_transactions len={}",
+			bucket_transactions.len()
+		);
+
 		// Get last transaction and remove it
 		match bucket_transactions.last() {
 			Some(evictable_transaction) => {
 				// Remove transaction
+				debug!("evict_from_txpool self.txpool.entries starting len = {},  evicting transaction {:?}", self.txpool.entries.len(), evictable_transaction );
 				self.txpool.entries = self
 					.txpool
 					.entries
@@ -212,32 +217,44 @@ impl TransactionPool {
 		let mut cache = self.reorg_cache.write();
 
 		while cache.front().map(|x| x.tx_at < cutoff).unwrap_or(false) {
-			let _ = cache.pop_front();
+			let _tx = cache.pop_front();
+			debug!(
+				"truncate_reorg_cache: for {:?},  new size: {}",
+				_tx,
+				cache.len()
+			);
 		}
-
-		debug!("truncate_reorg_cache: size: {}", cache.len());
 	}
 
 	pub fn reconcile_reorg_cache(&mut self, header: &BlockHeader) -> Result<(), PoolError> {
 		let entries = self.reorg_cache.read().iter().cloned().collect::<Vec<_>>();
-		debug!(
-			"reconcile_reorg_cache: size: {}, block: {:?} ...",
-			entries.len(),
-			header.hash(),
-		);
 		for entry in entries {
 			let _ = &self.add_to_txpool(entry.clone(), header);
 		}
-		debug!(
-			"reconcile_reorg_cache: block: {:?} ... done.",
-			header.hash()
-		);
 		Ok(())
 	}
 
 	/// Reconcile the transaction pool (both txpool and stempool) against the
 	/// provided block.
 	pub fn reconcile_block(&mut self, block: &Block) -> Result<(), PoolError> {
+		if log_enabled!(log::Level::Debug) {
+			debug!("reconcile_block Started for block {:?}", block);
+
+			debug!("---------------- BEFORE START --------------");
+			let reorg_cache = self.reorg_cache.read();
+
+			debug!("reorg_cache size: {}", reorg_cache.len());
+			for pe in reorg_cache.iter() {
+				debug!("  reorg_cache tx: {:?}", pe);
+			}
+
+			debug!("txpool size: {}", self.txpool.entries.len());
+			for pe in &self.txpool.entries {
+				debug!("  txpool tx: {:?}", pe);
+			}
+			debug!("---------------- BEFORE END --------------");
+		}
+
 		// First reconcile the txpool.
 		self.txpool.reconcile_block(block);
 		self.txpool.reconcile(None, &block.header)?;
@@ -247,6 +264,21 @@ impl TransactionPool {
 		{
 			let txpool_tx = self.txpool.all_transactions_aggregate()?;
 			self.stempool.reconcile(txpool_tx, &block.header)?;
+		}
+
+		if log_enabled!(log::Level::Debug) {
+			debug!("---------------- AFTER START --------------");
+			let reorg_cache = self.reorg_cache.read();
+
+			debug!("reorg_cache size: {}", reorg_cache.len());
+			for pe in reorg_cache.iter() {
+				debug!("  reorg_cache tx: {:?}", pe);
+			}
+			debug!("txpool size: {}", self.txpool.entries.len());
+			for pe in &self.txpool.entries {
+				debug!("  txpool tx: {:?}", pe);
+			}
+			debug!("---------------- AFTER END --------------");
 		}
 
 		Ok(())
