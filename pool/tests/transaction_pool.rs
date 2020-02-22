@@ -22,15 +22,21 @@ use self::keychain::{ExtKeychain, Keychain};
 use self::pool::TxSource;
 use self::util::RwLock;
 use crate::common::*;
+use env_logger;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_pool as pool;
 use grin_util as util;
 use std::sync::Arc;
+#[macro_use]
+extern crate log;
 
 /// Test we can add some txs to the pool (both stempool and txpool).
 #[test]
 fn test_the_transaction_pool() {
+	let _ = env_logger::init();
+	warn!("Starting test_the_transaction_pool test...");
+
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
 	let db_root = ".grin_transaction_pool".to_string();
@@ -123,6 +129,10 @@ fn test_the_transaction_pool() {
 		let mut write_pool = pool.write();
 		assert!(write_pool
 			.add_to_pool(test_source(), tx1.clone(), false, &header)
+			.map_err(|e| {
+				warn!("Get Expected err: {:?}", e);
+				e
+			})
 			.is_err());
 	}
 
@@ -133,6 +143,10 @@ fn test_the_transaction_pool() {
 		let mut write_pool = pool.write();
 		assert!(write_pool
 			.add_to_pool(test_source(), tx1a, false, &header)
+			.map_err(|e| {
+				warn!("Get Expected err: {:?}", e);
+				e
+			})
 			.is_err());
 	}
 
@@ -142,6 +156,10 @@ fn test_the_transaction_pool() {
 		let mut write_pool = pool.write();
 		assert!(write_pool
 			.add_to_pool(test_source(), bad_tx, false, &header)
+			.map_err(|e| {
+				warn!("Get Expected err: {:?}", e);
+				e
+			})
 			.is_err());
 	}
 
@@ -154,6 +172,10 @@ fn test_the_transaction_pool() {
 		let mut write_pool = pool.write();
 		assert!(write_pool
 			.add_to_pool(test_source(), tx, false, &header)
+			.map_err(|e| {
+				warn!("Get Expected err: {:?}", e);
+				e
+			})
 			.is_err());
 	}
 
@@ -163,6 +185,10 @@ fn test_the_transaction_pool() {
 		let tx3 = test_transaction(&keychain, vec![500], vec![497]);
 		assert!(write_pool
 			.add_to_pool(test_source(), tx3, false, &header)
+			.map_err(|e| {
+				warn!("Get Expected err: {:?}", e);
+				e
+			})
 			.is_err());
 		assert_eq!(write_pool.total_size(), 3);
 	}
@@ -299,6 +325,10 @@ fn test_the_transaction_pool() {
 			let mut write_pool = pool.write();
 			assert!(write_pool
 				.add_to_pool(test_source(), tx, false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 		}
 
@@ -334,6 +364,10 @@ fn test_the_transaction_pool() {
 			let mut write_pool = pool.write();
 			assert!(write_pool
 				.add_to_pool(test_source(), tx1.clone(), false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 		}
 
@@ -344,6 +378,10 @@ fn test_the_transaction_pool() {
 			let mut write_pool = pool.write();
 			assert!(write_pool
 				.add_to_pool(test_source(), tx1a, false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 		}
 
@@ -353,6 +391,10 @@ fn test_the_transaction_pool() {
 			let mut write_pool = pool.write();
 			assert!(write_pool
 				.add_to_pool(test_source(), bad_tx, false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 		}
 
@@ -365,6 +407,10 @@ fn test_the_transaction_pool() {
 			let mut write_pool = pool.write();
 			assert!(write_pool
 				.add_to_pool(test_source(), tx, false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 		}
 
@@ -374,6 +420,10 @@ fn test_the_transaction_pool() {
 			let tx3 = test_transaction(&keychain, vec![500], vec![497]);
 			assert!(write_pool
 				.add_to_pool(test_source(), tx3, false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 			assert_eq!(write_pool.total_size(), 3);
 		}
@@ -465,11 +515,19 @@ fn test_the_transaction_pool() {
 			// check we cannot add a double spend to the stempool
 			assert!(write_pool
 				.add_to_pool(test_source(), double_spend_tx.clone(), true, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 
 			// check we cannot add a double spend to the txpool
 			assert!(write_pool
 				.add_to_pool(test_source(), double_spend_tx.clone(), false, &header)
+				.map_err(|e| {
+					warn!("Get Expected err: {:?}", e);
+					e
+				})
 				.is_err());
 		}
 	}
