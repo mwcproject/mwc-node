@@ -35,6 +35,10 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Coin shuffle.
 - Hardware wallets but requires hardware manufacturer support.
 
+The exact details of the HODL Program have still not been decided but at least 50% of the MWC in the HODL Program will be distributed to holders that have MWC that has not been moved after block 202,500.
+
+If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated with either the HODL Program or the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
+
 There are many potential places development resources can be allocated and they will be chosen based on market needs with highest priority given to requests that will primarily benefit and come from the buyers and hodlers of last resort.
 
 Almost since its beginning MWC has encountered very sophisticated heavily funded attacks by various mining consortiums who have attempted to destroy the network. Consequently, while the friendly miners are greatly appreciated the operating assumption is that miners are actively hostile and malicious towards the long-term interests of the buyers and hodlers of last resort and the network.
