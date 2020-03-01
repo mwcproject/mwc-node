@@ -73,6 +73,7 @@ impl Owner {
 			chain: self.chain.clone(),
 			peers: self.peers.clone(),
 			sync_state: self.sync_state.clone(),
+			allow_to_stop: false,
 		};
 		status_handler.get_status()
 	}

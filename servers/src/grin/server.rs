@@ -88,6 +88,7 @@ impl Server {
 		config: ServerConfig,
 		logs_rx: Option<mpsc::Receiver<LogEntry>>,
 		mut info_callback: F,
+		allow_to_stop: bool,
 	) -> Result<(), Error>
 	where
 		F: FnMut(Server, Option<mpsc::Receiver<LogEntry>>),
@@ -95,7 +96,7 @@ impl Server {
 		let mining_config = config.stratum_mining_config.clone();
 		let enable_test_miner = config.run_test_miner;
 		let test_miner_wallet_url = config.test_miner_wallet_url.clone();
-		let serv = Server::new(config)?;
+		let serv = Server::new(config, allow_to_stop)?;
 
 		if let Some(c) = mining_config {
 			let enable_stratum_server = c.enable_stratum_server;
@@ -145,8 +146,11 @@ impl Server {
 		Ok(Arc::new(lock_file))
 	}
 
+	// We don't want allow_to_stop in config because it is too dangerous flag. We don't
+	// want to forget about that, make default e.t.c. That is why it is separated
+
 	/// Instantiates a new server associated with the provided future reactor.
-	pub fn new(config: ServerConfig) -> Result<Server, Error> {
+	pub fn new(config: ServerConfig, allow_to_stop: bool) -> Result<Server, Error> {
 		// Obtain our lock_file or fail immediately with an error.
 		let lock_file = Server::one_grin_at_a_time(&config)?;
 
@@ -299,6 +303,7 @@ impl Server {
 			api_secret.clone(),
 			foreign_api_secret.clone(),
 			tls_conf.clone(),
+			allow_to_stop,
 		)?;
 
 		info!("Starting dandelion monitor: {}", &config.api_http_addr);

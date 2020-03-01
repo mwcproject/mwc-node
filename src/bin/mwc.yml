@@ -46,6 +46,10 @@ subcommands:
             short: w
             long: wallet_url
             takes_value: true
+        - allow_to_stop:
+            help: Activates api to stop the node
+            long: allow_to_stop
+            takes_value: false
       subcommands:
         - config:
             about: Generate a configuration mwc-server.toml file in the current directory
