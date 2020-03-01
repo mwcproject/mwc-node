@@ -68,6 +68,7 @@ pub struct StatusHandler {
 	pub chain: Weak<Chain>,
 	pub peers: Weak<p2p::Peers>,
 	pub sync_state: Weak<SyncState>,
+	pub allow_to_stop: bool, //
 }
 
 impl StatusHandler {
@@ -114,7 +115,7 @@ impl Handler for StatusHandler {
 
 			let mut processed = vec![];
 			for action_str in commitments {
-				if action_str == "stop_node" {
+				if self.allow_to_stop && action_str == "stop_node" {
 					warn!("Stopping the node by API request...");
 					processed.push(action_str);
 					global::get_server_running_controller().store(false, Ordering::SeqCst);

@@ -14,8 +14,6 @@
 
 /// Grin server commands processing
 use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -31,15 +29,23 @@ use grin_util::logger::LogEntry;
 use std::sync::mpsc;
 
 /// wrap below to allow UI to clean up on stop
-pub fn start_server(config: servers::ServerConfig, logs_rx: Option<mpsc::Receiver<LogEntry>>) {
-	start_server_tui(config, logs_rx);
+pub fn start_server(
+	config: servers::ServerConfig,
+	logs_rx: Option<mpsc::Receiver<LogEntry>>,
+	allow_to_stop: bool,
+) {
+	start_server_tui(config, logs_rx, allow_to_stop);
 	// Just kill process for now, otherwise the process
 	// hangs around until sigint because the API server
 	// currently has no shutdown facility
 	exit(0);
 }
 
-fn start_server_tui(config: servers::ServerConfig, logs_rx: Option<mpsc::Receiver<LogEntry>>) {
+fn start_server_tui(
+	config: servers::ServerConfig,
+	logs_rx: Option<mpsc::Receiver<LogEntry>>,
+	allow_to_stop: bool,
+) {
 	// Run the UI controller.. here for now for simplicity to access
 	// everything it might need
 	if config.run_tui.unwrap_or(false) {
@@ -53,6 +59,7 @@ fn start_server_tui(config: servers::ServerConfig, logs_rx: Option<mpsc::Receive
 				});
 				controller.run(serv);
 			},
+			allow_to_stop,
 		)
 		.unwrap();
 	} else {
@@ -61,19 +68,17 @@ fn start_server_tui(config: servers::ServerConfig, logs_rx: Option<mpsc::Receive
 			config,
 			logs_rx,
 			|serv: servers::Server, _: Option<mpsc::Receiver<LogEntry>>| {
-				let running = Arc::new(AtomicBool::new(true));
-				let r = running.clone();
 				ctrlc::set_handler(move || {
-					r.store(false, Ordering::SeqCst);
 					global::request_server_stop();
 				})
 				.expect("Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill)");
-				while running.load(Ordering::SeqCst) || global::is_server_running() {
+				while global::is_server_running() {
 					thread::sleep(Duration::from_millis(300));
 				}
 				warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
 				serv.stop();
 			},
+			allow_to_stop,
 		)
 		.unwrap();
 	}
@@ -100,6 +105,7 @@ pub fn server_command(
 
 	// just get defaults from the global config
 	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
+	let mut allow_to_stop = false;
 
 	if let Some(a) = server_args {
 		if let Some(port) = a.value_of("port") {
@@ -127,12 +133,18 @@ pub fn server_command(
 			server_config.p2p_config.seeding_type = Seeding::List;
 			server_config.p2p_config.seeds = Some(seed_addrs);
 		}
+
+		allow_to_stop = a.is_present("allow_to_stop");
+	}
+
+	if allow_to_stop {
+		warn!("Starting server with activated stop_node API");
 	}
 
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(server_config, logs_rx);
+				start_server(server_config, logs_rx, allow_to_stop);
 			}
 			("", _) => {
 				println!("Subcommand required, use 'mwc help server' for details");
@@ -146,7 +158,7 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(server_config, logs_rx);
+		start_server(server_config, logs_rx, allow_to_stop);
 	}
 	0
 }

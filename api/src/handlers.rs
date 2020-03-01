@@ -75,6 +75,7 @@ pub fn node_apis(
 	api_secret: Option<String>,
 	foreign_api_secret: Option<String>,
 	tls_config: Option<TLSConfig>,
+	allow_to_stop: bool,
 ) -> Result<(), Error> {
 	// Manually build router when getting rid of v1
 	//let mut router = Router::new();
@@ -83,6 +84,7 @@ pub fn node_apis(
 		tx_pool.clone(),
 		peers.clone(),
 		sync_state.clone(),
+		allow_to_stop,
 	)
 	.expect("unable to build API router");
 
@@ -354,6 +356,7 @@ pub fn build_router(
 	tx_pool: Arc<RwLock<pool::TransactionPool>>,
 	peers: Arc<p2p::Peers>,
 	sync_state: Arc<chain::SyncState>,
+	allow_to_stop: bool,
 ) -> Result<Router, RouterError> {
 	let route_list = vec![
 		"get blocks".to_string(),
@@ -407,6 +410,7 @@ pub fn build_router(
 		chain: Arc::downgrade(&chain),
 		peers: Arc::downgrade(&peers),
 		sync_state: Arc::downgrade(&sync_state),
+		allow_to_stop,
 	};
 	let kernel_download_handler = KernelDownloadHandler {
 		peers: Arc::downgrade(&peers),
