@@ -47,7 +47,7 @@ subcommands:
             long: wallet_url
             takes_value: true
         - allow_to_stop:
-            help: Activates api to stop the node
+            help: Activates api to stop the node (non TUI only)
             long: allow_to_stop
             takes_value: false
       subcommands:
