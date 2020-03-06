@@ -1,11 +1,42 @@
-<p>There are some important things to note about exchange support for MWC. As with all POW blockchains, reorgs and double spend attacks are possible. With Mimblewimble, it is harder to detect the attacks because there are no addresses and only outputs. The network is young and reorgs have happened in our early history.
-<p>
-<p>The current mwc-wallet (2.4.6) has a check feature that can help detect double spends or coins that no longer appear after a long reorg, but it is based on the grin 2.0 wallet and has some bugs. The most reliable way to detect double spends is do a recovery from seed.
-<p>
-<p>In master of our github, we have the rebased 3.0 wallet from grin and will be releaseing it shortly. We also have made several fixes on top of the grin wallet which to fix additional bugs related to double spends and reorgs. We are still testing these features, but will release the mwc-wallet soon. It can be built from master and used for testing now.
-<p>
-<p>Reorgs are getting harder to do, but we still recommend a high number of confirmations to ensure funds are secured. Exchanges should sweep funds with a required number of confirmations to a secondary wallet before crediting user accounts. This will ensure that funds are really spendable by the exchange before the users are able to access them. This can be done by using the --min_conf parameter in mwc-wallet to make sure only confirmed funds are transfered.
-<p>
-<p>In addition to requiring a particular number of confirmations, it is necessary to check that outputs still exist on the blockchain before honoring deposits. This can be done easily by calling the APIs in the full node to determine if outputs still exist after some number of confirmations. This is because in mimblewimble, the state of a wallet may be different than the network. Please note that the wallet is not designed for use out of the box to meet all exchange needs. It is mainly designed to receive and send payments for a single user where they can maunally check which outputs have confirmed and which have not and run the 'check' or 'scan_outputs' command as required. For an exchange they must implement this logic themselves because they need to know which outputs are orphaned specifically so they know which deposits to credit and which to not credit, as many deposits/withdrawals are happening at the same time. The way to make sure the output was not reorged out or part of a double spend transaction is to query a full node. If you are using http payments, you will likely need to log the slates in a proxy and process the slate to find which outputs the deposit is associated with. After a number of confirmations are complete, the output should be checked by querying a full node to ensure the output is still present on the blockchain. Only then should the deposit be honored. For file based exchanges, it is easier because the slate file can just be parsed to find which output needs to be confrimed through a full node after sufficient confirmations. It is essential to do this.
-<p>
-<p>We prefer exchanges that have higher number of confirmations. TradeOgre currently appears to have the most confirmations. We suggest 5,000 confirmations to be really safe.
+# Overview #
+
+This document is meant as a guide for exchanges to support MWC. Please note that all software is released under the apache license and has no warranty. Exchanges should thoroughly test everything and understand their architecture before they launch. That said this is some information we have found useful to exchanges in preventing double spend attacks and block witholding attacks that may occur on MWC as any other POW blockchain.
+
+# Software that may be used to support MWC #
+
+The mwcproject repository has two main wallets that are possible for exchanges to use:
+
+mwc-wallet: https://github.com/mwcproject/mwc-wallet
+
+and mwc713: mwc713: https://github.com/mwcproject/mwc713
+
+The main difference is that mwc713 supports receive by http(s), file, and mwcmqs, and keybase, while mwc-wallet supports http(s), file, and keybase. mwc-wallet is a fork of the grin-wallet so it is much closer to grin-wallet so exchanges that already support grin-wallet may have an easier time supporting mwc-wallet than mwc713.
+
+
+# Double Spend Attacks #
+
+One of the differences between the GRIN network and the MWC network is that GRIN has a much higher hashrate. This means that the MWC network is more susceptible to double spend and block witholding attacks than GRIN. The GRIN code we forked does not handle these attacks at all and seems to rely on a high hashrate. Part of this is related to one of the differences between Mimblewimble and Bitcoin-like blockchains. In Mimblewimble, the network does not keep any transactions or spent outputs. That is part of how it scales so much better than Bitcoin, but it means that wallet software and systems around that wallet software need to handle reorgs differently. The wallet has a separate state from the network. In the latest version of mwc-wallet and mwc713 most commands call scan and we attempt to keep the state of the wallet in exactly the same state as full node it is connected to. However, this is difficult to do. GRIN also tried to do that but we found a number of cases where the state is not maintained accurately. We fixed all those that we could find, but ultimately the only way to ensure the exact state of the network is to recover the wallet from seed. Both wallets maintain a data file called the transaction log. In the transaction log, we attempt to update state of all transactions apporpriately in the latest wallet (3.1.x) for any new transactions processed by this version of the wallet. Even though the state of the transactions is updated in the transaction log, for an exchange it is not acceptable to rely on the transaction log data to determine if a deposit was a success or failure. Instead, exchanges should make a separate request to a full node before crediting the deposit to the user account. This can be done with the following HTTP request to a full node:
+
+```$ curl https://mwc713.mwc.mw/v1/chain/outputs/byids?id=<id> ```
+
+This command should only be run after sufficient confirmations are obtained. In order to find the output for a deposit, this command can be used in mwc-wallet:
+
+```mwc-wallet txs -i <tx_index>```
+
+Among other things, the output for this transaction can be obtained.
+
+All outputs from the deposit wallet should be swept to a withdrawal wallet after sufficient confirmations. The following command can be used to do this:
+
+```mwc-wallet send --min_conf 5100 -d <destination> <amount>```
+
+This command will sweep all full confirmed funds from the deposit wallet to a withdrawal (or cold storage) wallet. This procedure will ensure that:
+
+1.) All deposits are checked after sufficient confirmations before crediting to the customer account.
+2.) All available funds are transfered to the withdrawal wallet as soon as they are available. Note that the min_conf should be higher than your confirmations required to accept a deposit.
+
+Sweeping should be done on a regular basis or as neede by the exchange.
+
+# How many confirmations are needed #
+
+Number of confirmations required is a personal decision that is up to the exchange. Customers should understand the number choosen and decide which exchange to use based on that. We have been suggesting 5000+ confirmations to exchanges, but it's really a question of risk. We have had reorgs of up to 120 blocks but there's no guarantee that a higher number won't occur at some point.
+
