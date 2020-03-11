@@ -21,6 +21,8 @@ The main difference between these wallets is that mwc713 supports receive by htt
 
 ```$ curl https://mwc713.mwc.mw/v1/chain/outputs/byids?id=<id> ```
 
+Plese note that this command will only return data for outputs that have not been spent. So make sure to run this command before spending the outputs.
+
 This command should only be run after sufficient confirmations are obtained. In order to find the output for a deposit, this command can be used in mwc-wallet:
 
 ```mwc-wallet txs -i <tx_index>```
