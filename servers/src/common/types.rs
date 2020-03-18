@@ -28,6 +28,7 @@ use crate::p2p;
 use crate::pool;
 use crate::pool::types::DandelionConfig;
 use crate::store;
+use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
 #[derive(Debug)]
@@ -237,7 +238,7 @@ pub struct StratumServerConfig {
 	pub stratum_server_addr: Option<String>,
 
 	/// How long to wait before stopping the miner, recollecting transactions
-	/// and starting again
+	/// and starting again. Units: seconds
 	pub attempt_time_per_block: u32,
 
 	/// Minimum difficulty for worker shares
@@ -250,8 +251,46 @@ pub struct StratumServerConfig {
 	/// wallet receiver. Mostly used for tests.
 	pub burn_reward: bool,
 
-	/// banned input stirngs...
-	pub ban_strings: Option<Vec<String>>,
+	/// Activate IP tracking and ban
+	#[serde(default)]
+	pub ip_tracking: bool,
+
+	/// Maximum number of connections. Stratum will drop some workers if that limit will be exceeded.
+	#[serde(default)]
+	pub workers_connection_limit: i32,
+
+	/// Number of points to ban IP address
+	#[serde(default)]
+	pub ban_action_limit: i32,
+
+	/// Weight of 'submit shares' event vs ban events
+	#[serde(default)]
+	pub shares_weight: i32,
+
+	/// Timeout for worker's login
+	#[serde(default)]
+	pub worker_login_timeout_ms: i64,
+
+	/// History length used for ban IPs. After that period, ban will be lifted
+	#[serde(default)]
+	pub ip_pool_ban_history_s: i64,
+
+	/// Connection pace per IP per worker (average time interval between connections from the same IP)
+	#[serde(default)]
+	pub connection_pace_ms: i64,
+
+	/// White list of IPs
+	#[serde(default)]
+	pub ip_white_list: HashSet<String>,
+
+	/// Black list of IPs
+	#[serde(default)]
+	pub ip_black_list: HashSet<String>,
+
+	/// Number of tokio worker threads. -1, auto. You need to put some large value here if
+	/// your design does wait calls in the future handlers.
+	#[serde(default)]
+	pub stratum_tokio_workers: i32,
 }
 
 impl Default for StratumServerConfig {
@@ -263,7 +302,16 @@ impl Default for StratumServerConfig {
 			minimum_share_difficulty: 1,
 			enable_stratum_server: Some(false),
 			stratum_server_addr: Some("127.0.0.1:3416".to_string()),
-			ban_strings: None,
+			ip_tracking: true,
+			workers_connection_limit: 30000,
+			ban_action_limit: 5,
+			shares_weight: 5,
+			worker_login_timeout_ms: -1, // disable by default
+			ip_pool_ban_history_s: 3600, // 10 minutes
+			connection_pace_ms: -1,      // disable by default
+			ip_white_list: HashSet::new(),
+			ip_black_list: HashSet::new(),
+			stratum_tokio_workers: -1,
 		}
 	}
 }

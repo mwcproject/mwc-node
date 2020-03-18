@@ -43,3 +43,4 @@ pub mod global;
 pub mod libtx;
 pub mod pow;
 pub mod ser;
+pub mod stratum;

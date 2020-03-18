@@ -43,6 +43,7 @@ use crate::common::types::{Error, ServerConfig, StratumServerConfig};
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use crate::core::ser::ProtocolVersion;
+use crate::core::stratum::connections;
 use crate::core::{consensus, genesis, global, pow};
 use crate::grin::{dandelion_monitor, seed, sync};
 use crate::mining::stratumserver;
@@ -53,6 +54,7 @@ use crate::pool;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use grin_util::logger::LogEntry;
+use std::collections::HashSet;
 
 /// Grin server holding internal structures.
 pub struct Server {
@@ -96,7 +98,21 @@ impl Server {
 		let mining_config = config.stratum_mining_config.clone();
 		let enable_test_miner = config.run_test_miner;
 		let test_miner_wallet_url = config.test_miner_wallet_url.clone();
-		let serv = Server::new(config, allow_to_stop)?;
+
+		let (ban_action_limit, shares_weight, connection_pace_ms) = match mining_config.clone() {
+			Some(c) => (c.ban_action_limit, c.shares_weight, c.connection_pace_ms),
+			None => {
+				let c = StratumServerConfig::default();
+				(c.ban_action_limit, c.shares_weight, c.connection_pace_ms)
+			}
+		};
+
+		let stratum_ip_pool = Arc::new(connections::StratumIpPool::new(
+			ban_action_limit,
+			shares_weight,
+			connection_pace_ms,
+		));
+		let serv = Server::new(config, allow_to_stop, stratum_ip_pool.clone())?;
 
 		if let Some(c) = mining_config {
 			let enable_stratum_server = c.enable_stratum_server;
@@ -106,7 +122,7 @@ impl Server {
 						let mut stratum_stats = serv.state_info.stratum_stats.write();
 						stratum_stats.is_enabled = true;
 					}
-					serv.start_stratum_server(c.clone());
+					serv.start_stratum_server(c.clone(), stratum_ip_pool);
 				}
 			}
 		}
@@ -150,7 +166,11 @@ impl Server {
 	// want to forget about that, make default e.t.c. That is why it is separated
 
 	/// Instantiates a new server associated with the provided future reactor.
-	pub fn new(config: ServerConfig, allow_to_stop: bool) -> Result<Server, Error> {
+	pub fn new(
+		config: ServerConfig,
+		allow_to_stop: bool,
+		stratum_ip_pool: Arc<connections::StratumIpPool>,
+	) -> Result<Server, Error> {
 		// Obtain our lock_file or fail immediately with an error.
 		let lock_file = Server::one_grin_at_a_time(&config)?;
 
@@ -304,6 +324,7 @@ impl Server {
 			foreign_api_secret.clone(),
 			tls_conf.clone(),
 			allow_to_stop,
+			stratum_ip_pool,
 		)?;
 
 		info!("Starting dandelion monitor: {}", &config.api_http_addr);
@@ -354,7 +375,12 @@ impl Server {
 	}
 
 	/// Start a minimal "stratum" mining service on a separate thread
-	pub fn start_stratum_server(&self, config: StratumServerConfig) {
+	/// Returns ip_pool that needed for stratum API
+	pub fn start_stratum_server(
+		&self,
+		config: StratumServerConfig,
+		ip_pool: Arc<connections::StratumIpPool>,
+	) {
 		let edge_bits = global::min_edge_bits();
 		let proof_size = global::proofsize();
 		let sync_state = self.sync_state.clone();
@@ -365,6 +391,7 @@ impl Server {
 			self.tx_pool.clone(),
 			self.verifier_cache.clone(),
 			self.state_info.stratum_stats.clone(),
+			ip_pool,
 		);
 		let _ = thread::Builder::new()
 			.name("stratum_server".to_string())
@@ -395,7 +422,16 @@ impl Server {
 			stratum_server_addr: None,
 			wallet_listener_url: config_wallet_url,
 			minimum_share_difficulty: 1,
-			ban_strings: None,
+			ip_tracking: false,
+			workers_connection_limit: 30000,
+			ban_action_limit: 5,
+			shares_weight: 5,
+			worker_login_timeout_ms: -1,
+			ip_pool_ban_history_s: 3600,
+			connection_pace_ms: -1,
+			ip_white_list: HashSet::new(),
+			ip_black_list: HashSet::new(),
+			stratum_tokio_workers: -1,
 		};
 
 		let mut miner = Miner::new(
