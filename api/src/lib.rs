@@ -42,6 +42,8 @@ mod owner;
 mod owner_rpc;
 mod rest;
 mod router;
+mod stratum;
+mod stratum_rpc;
 mod types;
 
 pub use crate::auth::{

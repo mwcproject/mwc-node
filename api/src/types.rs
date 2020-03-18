@@ -734,8 +734,7 @@ mod test {
 
 	#[test]
 	fn serialize_output_printable() {
-		let hex_output =
-			"{\
+		let hex_output = "{\
 			 \"output_type\":\"Coinbase\",\
 			 \"commit\":\"083eafae5d61a85ab07b12e1a51b3918d8e6de11fc6cde641d54af53608aa77b9f\",\
 			 \"spent\":false,\
@@ -752,8 +751,7 @@ mod test {
 
 	#[test]
 	fn serialize_output() {
-		let hex_commit =
-			"{\
+		let hex_commit = "{\
 			 \"commit\":\"083eafae5d61a85ab07b12e1a51b3918d8e6de11fc6cde641d54af53608aa77b9f\",\
 			 \"height\":0,\
 			 \"mmr_index\":0\

@@ -416,6 +416,86 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"ip_tracking".to_string(),
+		"
+#activate workers activity tracking by IP and ability to ban incoming IP requests
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"workers_connection_limit".to_string(),
+		"
+#Maximum number of connections. Stratum will drop some workers if that limit will be exceeded.
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"ban_action_limit".to_string(),
+		"
+#number of 'points' to ban an IP. worker get bad points for negative activity like flooding, no activity. Positive points can compensate negative ones.
+"
+			.to_string(),
+	);
+
+	retval.insert(
+		"shares_weight".to_string(),
+		"
+#Number of positive points for correct submitted work by miner.
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"worker_login_timeout_ms".to_string(),
+		"
+#During what time interval (ms) worker is expected to log in. To disable specify -1 (default value)
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"ip_pool_ban_history_s".to_string(),
+		"
+#Auto unlock time period (seconds) for IP. How long stratum tracking IP related events
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"connection_pace_ms".to_string(),
+		"
+# Maximum connection pace per IP (average time interval between connections from the same IP). To disable specify -1 (default value)
+"
+			.to_string(),
+	);
+
+	retval.insert(
+		"ip_white_list".to_string(),
+		"
+#IP white list. If IP belong to this list, it will be always accepted. Specify list of IPs, no mask or ranges are supported
+"
+			.to_string(),
+	);
+
+	retval.insert(
+		"ip_black_list".to_string(),
+		"
+#IP black list. If IP belong to this list, it will be always banned. Specify list of IPs, no mask or ranges are supported
+"
+			.to_string(),
+	);
+
+	retval.insert(
+		"stratum_tokio_workers".to_string(),
+		"
+# Number of tokio worker threads. -1, auto. You might put some large value here if your design does wait calls in the future handlers.
+"
+			.to_string(),
+	);
+
+	retval.insert(
 		"[logging]".to_string(),
 		"
 #########################################
@@ -494,10 +574,11 @@ fn comments() -> HashMap<String, String> {
 }
 
 fn get_key(line: &str) -> String {
-	if line.contains("[") && line.contains("]") {
-		return line.to_owned();
-	} else if line.contains("=") {
+	// '=' must ch checked first because of arrays
+	if line.contains("=") {
 		return line.split("=").collect::<Vec<&str>>()[0].trim().to_owned();
+	} else if line.contains("[") && line.contains("]") {
+		return line.to_owned();
 	} else {
 		return "NOT_FOUND".to_owned();
 	}

@@ -17,8 +17,8 @@
 use futures::future::Future;
 use futures::stream::Stream;
 use tokio::io::AsyncRead;
-use tokio::io::{lines, write_all};
 use tokio::net::TcpListener;
+use tokio::runtime::Builder;
 
 use crate::util::RwLock;
 use chrono::prelude::Utc;
@@ -26,8 +26,9 @@ use serde;
 use serde_json;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufReader, ErrorKind};
+use std::io::BufReader;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{cmp, thread};
@@ -38,6 +39,7 @@ use crate::common::types::StratumServerConfig;
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Block;
+use crate::core::stratum::connections;
 use crate::core::{pow, ser};
 use crate::keychain;
 use crate::mining::mine_block;
@@ -45,6 +47,8 @@ use crate::pool;
 use crate::util;
 
 use futures::sync::mpsc;
+use futures::sync::oneshot;
+use std::cmp::min;
 
 type Tx = mpsc::UnboundedSender<String>;
 
@@ -199,42 +203,62 @@ struct Handler {
 	sync_state: Arc<SyncState>,
 	chain: Arc<chain::Chain>,
 	current_state: Arc<RwLock<State>>,
+	ip_pool: Arc<connections::StratumIpPool>,
+	worker_connections: Arc<AtomicI32>,
+	config: StratumServerConfig,
 }
 
 impl Handler {
-	pub fn new(
-		id: String,
-		stratum_stats: Arc<RwLock<StratumStats>>,
-		sync_state: Arc<SyncState>,
-		minimum_share_difficulty: u64,
-		chain: Arc<chain::Chain>,
-	) -> Self {
+	pub fn from_stratum(stratum: &StratumServer) -> Self {
+		assert!(
+			stratum.config.ip_pool_ban_history_s > 10,
+			"Stratum ip_pool_ban_history_s value must has reasonable value"
+		);
+
 		Handler {
-			id: id,
-			workers: Arc::new(WorkersList::new(stratum_stats.clone())),
-			sync_state: sync_state,
-			chain: chain,
-			current_state: Arc::new(RwLock::new(State::new(minimum_share_difficulty))),
+			id: stratum.id.clone(),
+			workers: Arc::new(WorkersList::new(stratum.stratum_stats.clone())),
+			sync_state: stratum.sync_state.clone(),
+			chain: stratum.chain.clone(),
+			current_state: Arc::new(RwLock::new(State::new(
+				stratum.config.minimum_share_difficulty,
+			))),
+			ip_pool: stratum.ip_pool.clone(),
+			worker_connections: stratum.worker_connections.clone(),
+			config: stratum.config.clone(),
 		}
 	}
-	pub fn from_stratum(stratum: &StratumServer) -> Self {
-		Handler::new(
-			stratum.id.clone(),
-			stratum.stratum_stats.clone(),
-			stratum.sync_state.clone(),
-			stratum.config.minimum_share_difficulty,
-			stratum.chain.clone(),
-		)
-	}
-	fn handle_rpc_requests(&self, request: RpcRequest, worker_id: usize) -> String {
+
+	fn handle_rpc_requests(&self, request: RpcRequest, worker_id: usize, ip: &String) -> String {
 		self.workers.last_seen(worker_id);
 
 		// Call the handler function for requested method
 		let response = match request.method.as_str() {
-			"login" => self.handle_login(request.params, worker_id),
+			"login" => match self.handle_login(request.params, worker_id) {
+				Ok(r) => {
+					self.ip_pool.report_ok_login(ip);
+					Ok(r)
+				}
+				Err(e) => {
+					self.ip_pool.report_fail_login(ip);
+					Err(e)
+				}
+			},
 			"submit" => {
 				let res = self.handle_submit(request.params, worker_id);
 				// this key_id has been used now, reset
+				let res = match res {
+					Ok(ok) => {
+						self.ip_pool.report_ok_shares(ip);
+						Ok(ok)
+					}
+					Err(rpc_err) => {
+						if rpc_err.code != RpcError::too_late().code {
+							self.ip_pool.report_fail_noise(ip);
+						};
+						Err(rpc_err)
+					}
+				};
 				if let Ok((_, true)) = res {
 					self.current_state.write().current_key_id = None;
 				}
@@ -250,6 +274,7 @@ impl Handler {
 			}
 			"status" => self.handle_status(worker_id),
 			_ => {
+				self.ip_pool.report_fail_noise(ip);
 				// Called undefined method
 				Err(RpcError::method_not_found())
 			}
@@ -274,7 +299,9 @@ impl Handler {
 		};
 		serde_json::to_string(&resp).unwrap()
 	}
+
 	fn handle_login(&self, params: Option<Value>, worker_id: usize) -> Result<Value, RpcError> {
+		// Note !!!! self.workers.login HAS to be there.
 		let params: LoginParams = parse_params(params)?;
 		self.workers.login(worker_id, params.login, params.agent)?;
 		return Ok("ok".into());
@@ -537,6 +564,17 @@ impl Handler {
 		let mut deadline: i64 = 0;
 		let mut head = self.chain.head().unwrap();
 		let mut current_hash = head.prev_block_h;
+
+		let worker_checking_period = if self.config.worker_login_timeout_ms <= 0 {
+			1000
+		} else {
+			min(1000, self.config.worker_login_timeout_ms)
+		};
+
+		let mut next_worker_checking = Utc::now().timestamp_millis() + worker_checking_period;
+		let mut next_ip_pool_checking =
+			Utc::now().timestamp_millis() + self.config.ip_pool_ban_history_s * 1000 / 10;
+
 		loop {
 			// get the latest chain state
 			head = self.chain.head().unwrap();
@@ -601,6 +639,74 @@ impl Handler {
 				self.broadcast_job();
 			}
 
+			// Check workers login statuses and do IP pool maintaince
+			let cur_time = Utc::now().timestamp_millis();
+
+			if cur_time > next_worker_checking {
+				next_worker_checking = cur_time + worker_checking_period;
+
+				if config.ip_tracking {
+					let mut banned_ips = self.ip_pool.get_banned_ips();
+
+					let mut extra_con = self.worker_connections.load(Ordering::Relaxed)
+						- self.config.workers_connection_limit;
+
+					if extra_con > 0 {
+						// we need to limit slash some connections.
+						// Let's do that with least profitable IP adresses
+						let mut ip_prof = self.ip_pool.get_ip_profitability();
+						// Last to del first
+						ip_prof.sort_by(|a, b| b.1.cmp(&a.1));
+
+						while extra_con > 0 && !ip_prof.is_empty() {
+							let prof = ip_prof.pop().unwrap();
+							warn!("Stratum need to clean {} connections. Will retire {} workers from IP {}", extra_con, prof.2, prof.0);
+							extra_con -= prof.2;
+							banned_ips.insert(prof.0);
+						}
+					}
+
+					let login_deadline = if self.config.worker_login_timeout_ms <= 0 {
+						0
+					} else {
+						cur_time - self.config.worker_login_timeout_ms
+					};
+
+					for w in self.workers.workers_list.write().values_mut() {
+						if self.config.ip_white_list.contains(&w.ip) {
+							continue; // skipping all while listed workers. They can do whatever that want.
+						}
+
+						if w.login.is_none() && w.create_time < login_deadline {
+							// Don't need to report login issue, will be processed at exit
+							warn!(
+								"Worker id:{} ip:{} banned because of login timeout",
+								w.id, w.ip
+							);
+							if let Some(s) = w.kill_switch.write().take() {
+								let _ = s.send(());
+							}
+						} else if banned_ips.contains(&w.ip) {
+							// Cleaning all workers from the ban
+							warn!(
+								"Worker id:{} ip:{} banned because IP is in the kick out list",
+								w.id, w.ip
+							);
+							// We don't want double ban just connected workers. Assume they are authenticated
+							w.authenticated = true;
+							if let Some(s) = w.kill_switch.write().take() {
+								let _ = s.send(());
+							}
+						}
+					}
+				}
+			} else if cur_time > next_ip_pool_checking {
+				next_ip_pool_checking = cur_time + self.config.ip_pool_ban_history_s * 1000 / 10;
+
+				self.ip_pool
+					.retire_old_events(cur_time - self.config.ip_pool_ban_history_s * 1000);
+			}
+
 			// sleep before restarting loop
 			thread::sleep(Duration::from_millis(5));
 		} // Main Loop
@@ -609,67 +715,140 @@ impl Handler {
 
 // ----------------------------------------
 // Worker Factory Thread Function
-fn accept_connections(
-	ban_substr_list: Arc<Vec<String>>,
-	listen_addr: SocketAddr,
-	handler: Arc<Handler>,
-) {
+// Returned runtime must be kept for a server lifetime
+fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 	info!("Start tokio stratum server");
 	let listener = TcpListener::bind(&listen_addr).expect(&format!(
 		"Stratum: Failed to bind to listen address {}",
 		listen_addr
 	));
+
+	if !handler.config.ip_white_list.is_empty() {
+		warn!(
+			"Stratum miners IP white list: {:?}",
+			handler.config.ip_white_list
+		);
+	}
+	if !handler.config.ip_black_list.is_empty() {
+		warn!(
+			"Stratum miners IP black list: {:?}",
+			handler.config.ip_black_list
+		);
+	}
+
+	if handler.config.ip_tracking {
+		warn!("Stratum miners IP tracking is ACTIVE. Parameters - connection_limit:{} connection_pace(ms):{} ban_action_limit:{} shares_weight:{} login_timeout(ms):{} ban_history(ms):{}",
+			  handler.config.workers_connection_limit,
+			  handler.config.connection_pace_ms,
+			  handler.config.ban_action_limit,
+			  handler.config.shares_weight,
+			  handler.config.worker_login_timeout_ms,
+			  handler.config.ip_pool_ban_history_s,
+		);
+	} else {
+		warn!("Stratum miners IP tracking is disabled. You might enable it if you are running public mining pool and expecting any attacks.");
+	}
+
+	let stratum_tokio_workers = handler.config.stratum_tokio_workers;
+
 	let server = listener
 		.incoming()
 		.for_each(move |socket| {
 			// Spawn a task to process the connection
+
+			let peer_addr = socket.peer_addr().unwrap();
+			let ip = peer_addr.ip().to_string();
+
+			let config = &handler.config;
+			if config.ip_white_list.contains(&ip) {
+				info!(
+					"Stratum accepting new connection for {}, it is in white list",
+					ip
+				);
+			} else if config.ip_black_list.contains(&ip) {
+				warn!(
+					"Stratum rejecting new connection for {}, it is in black list",
+					ip
+				);
+				return Ok(());
+			} else if config.ip_tracking && handler.ip_pool.is_banned(&ip, true) {
+				warn!("Rejecting connection from ip {} because ip_tracking is active and that ip is banned.", ip);
+				return Ok(());
+			} else {
+				info!("Stratum accepting new connection for {}", ip);
+			}
+
+			handler.worker_connections.fetch_add(1, Ordering::Relaxed);
+
+			let ip_pool = handler.ip_pool.clone();
+
+			// Worker IO channels
 			let (tx, rx) = mpsc::unbounded();
 
-			let worker_id = handler.workers.add_worker(tx);
+			// Worker killer switch
+			let (kill_switch, kill_switch_receiver) = oneshot::channel::<()>();
+
+			let worker_id = handler.workers.add_worker(ip.clone(), tx, kill_switch);
 			info!("Worker {} connected", worker_id);
+			ip_pool.add_worker(&ip);
 
 			let (reader, writer) = socket.split();
 			let reader = BufReader::new(reader);
 			let h = handler.clone();
 			let workers = h.workers.clone();
-			let ban_substr_list = ban_substr_list.clone();
+			let ip_clone = ip.clone();
+			let ip_clone2 = ip.clone();
+			let ip_pool_clone2 = ip_pool.clone();
 
-			let input = lines(reader)
+			let input = tokio::io::lines(reader)
 				.for_each(move |line| {
-					let mut has_ban_str = false;
-					for s in &*ban_substr_list {
-						if line.contains(s.as_str()) {
-							has_ban_str = true;
-						}
-					}
-
-					if has_ban_str {
-						info!(
-							"Worker {} is banned becase of request with banned keywords: {}",
-							worker_id, line
-						);
-						return Err(std::io::Error::new(ErrorKind::Other, "Worker is banned"));
-					}
-
+					debug!("get request: {}", line);
 					let request = serde_json::from_str(&line)?;
-					let resp = h.handle_rpc_requests(request, worker_id);
+					let resp = h.handle_rpc_requests(request, worker_id, &ip_clone);
 					workers.send_to(worker_id, resp);
 					Ok(())
 				})
-				.map_err(|e| error!("error {}", e));
+				.map_err(move |e| {
+					error!("error {}", e);
+					ip_pool_clone2.report_fail_noise(&ip_clone2);
+				});
 
 			let output = rx.fold(writer, |writer, s| {
 				let s2 = s + "\n";
-				write_all(writer, s2.into_bytes())
+				tokio::io::write_all(writer, s2.into_bytes())
 					.map(|(writer, _)| writer)
 					.map_err(|e| error!("cannot send {}", e))
 			});
 
 			let workers = handler.workers.clone();
-			let both = output.map(|_| ()).select(input);
+			let both = output
+				.map(|_| ())
+				.map_err(|_| {
+					error!("cannot send..");
+					//ip_pool_copy.report_fail_respond(&ip_copy);
+				})
+				.select(input)
+				.select2(kill_switch_receiver.fuse());
+
+			let ip_clone = ip.clone();
+			let ip_pool_clone = ip_pool.clone();
+			let worker_connections = handler.worker_connections.clone();
+
 			tokio::spawn(both.then(move |_| {
+				if let Some(worker) = workers.get_worker(worker_id) {
+					if !worker.authenticated {
+						ip_pool_clone.report_fail_login(&ip_clone);
+					}
+				};
+
+				worker_connections.fetch_sub(1, Ordering::Relaxed);
+
 				workers.remove_worker(worker_id);
 				info!("Worker {} disconnected", worker_id);
+
+				ip_pool.delete_worker(&ip);
+				println!("ip_pool: {:?}", ip_pool);
+
 				Ok(())
 			}));
 
@@ -678,7 +857,22 @@ fn accept_connections(
 		.map_err(|err| {
 			error!("accept error = {:?}", err);
 		});
-	tokio::run(server.map(|_| ()).map_err(|_| ()));
+
+	if stratum_tokio_workers > 0 {
+		// Creating runtime with specifyed number of threads
+		let mut rt = Builder::new()
+			.core_threads(stratum_tokio_workers as usize)
+			.blocking_threads(cmp::max(200, stratum_tokio_workers * 10) as usize)
+			.keep_alive(Some(Duration::from_secs(10)))
+			.name_prefix("stratum_worker_")
+			.build()
+			.unwrap();
+		rt.spawn(server.map(|_| ()).map_err(|_| ()));
+		rt.shutdown_on_idle().wait().unwrap();
+	} else {
+		// default runtime. Number of threads equal to number of CPUs
+		tokio::run(server.map(|_| ()).map_err(|_| ()));
+	}
 }
 
 // ----------------------------------------
@@ -687,21 +881,27 @@ fn accept_connections(
 #[derive(Clone)]
 pub struct Worker {
 	id: usize,
+	ip: String,
+	create_time: i64,
 	agent: String,
 	login: Option<String>,
 	authenticated: bool,
 	tx: Arc<Tx>,
+	kill_switch: Arc<RwLock<Option<oneshot::Sender<()>>>>,
 }
 
 impl Worker {
 	/// Creates a new Stratum Worker.
-	pub fn new(id: usize, tx: Tx) -> Worker {
+	pub fn new(id: usize, ip: String, tx: Tx, kill_switch: oneshot::Sender<()>) -> Worker {
 		Worker {
 			id: id,
+			ip,
+			create_time: Utc::now().timestamp_millis(),
 			agent: String::from(""),
 			login: None,
 			authenticated: false,
 			tx: Arc::new(tx),
+			kill_switch: Arc::new(RwLock::new(Some(kill_switch))),
 		}
 	}
 } // impl Worker
@@ -719,7 +919,7 @@ impl WorkersList {
 		}
 	}
 
-	pub fn add_worker(&self, tx: Tx) -> usize {
+	pub fn add_worker(&self, ip: String, tx: Tx, kill_switch: oneshot::Sender<()>) -> usize {
 		let mut workers_list = self.workers_list.write();
 		let mut stratum_stats = self.stratum_stats.write();
 		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
@@ -733,7 +933,7 @@ impl WorkersList {
 			.position(|stat| !stat.is_connected)
 			.unwrap_or(stratum_stats.worker_stats.len());
 
-		let worker = Worker::new(worker_id, tx);
+		let worker = Worker::new(worker_id, ip, tx, kill_switch);
 		let num_workers_val = {
 			workers_list.insert(worker_id, worker);
 			workers_list.len()
@@ -840,6 +1040,8 @@ pub struct StratumServer {
 	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 	sync_state: Arc<SyncState>,
 	stratum_stats: Arc<RwLock<StratumStats>>,
+	ip_pool: Arc<connections::StratumIpPool>,
+	worker_connections: Arc<AtomicI32>,
 }
 
 impl StratumServer {
@@ -850,6 +1052,7 @@ impl StratumServer {
 		tx_pool: Arc<RwLock<pool::TransactionPool>>,
 		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 		stratum_stats: Arc<RwLock<StratumStats>>,
+		ip_pool: Arc<connections::StratumIpPool>,
 	) -> StratumServer {
 		StratumServer {
 			id: String::from("0"),
@@ -859,6 +1062,8 @@ impl StratumServer {
 			verifier_cache,
 			sync_state: Arc::new(SyncState::new()),
 			stratum_stats: stratum_stats,
+			ip_pool,
+			worker_connections: Arc::new(AtomicI32::new(0)),
 		}
 	}
 
@@ -869,8 +1074,8 @@ impl StratumServer {
 	/// be submitted.
 	pub fn run_loop(&mut self, edge_bits: u32, proof_size: usize, sync_state: Arc<SyncState>) {
 		info!(
-			"(Server ID: {}) Starting stratum server with edge_bits = {}, proof_size = {}",
-			self.id, edge_bits, proof_size
+			"(Server ID: {}) Starting stratum server with edge_bits = {}, proof_size = {}, config: {:?}",
+			self.id, edge_bits, proof_size, self.config
 		);
 
 		self.sync_state = sync_state;
@@ -886,9 +1091,8 @@ impl StratumServer {
 		let handler = Arc::new(Handler::from_stratum(&self));
 		let h = handler.clone();
 
-		let ban_strs = Arc::new(self.config.ban_strings.clone().unwrap_or(Vec::new()));
 		let _listener_th = thread::spawn(move || {
-			accept_connections(ban_strs, listen_addr, h);
+			accept_connections(listen_addr, h);
 		});
 
 		// We have started

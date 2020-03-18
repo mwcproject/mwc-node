@@ -44,6 +44,7 @@ use crate::auth::{
 use crate::chain;
 use crate::chain::{Chain, SyncState};
 use crate::core::global;
+use crate::core::stratum;
 use crate::foreign::Foreign;
 use crate::foreign_rpc::ForeignRpc;
 use crate::owner::Owner;
@@ -53,6 +54,8 @@ use crate::pool;
 use crate::rest::{ApiServer, Error, TLSConfig};
 use crate::router::ResponseFuture;
 use crate::router::{Router, RouterError};
+use crate::stratum::Stratum;
+use crate::stratum_rpc::StratumRpc;
 use crate::util::to_base64;
 use crate::util::RwLock;
 use crate::web::*;
@@ -76,6 +79,7 @@ pub fn node_apis(
 	foreign_api_secret: Option<String>,
 	tls_config: Option<TLSConfig>,
 	allow_to_stop: bool,
+	stratum_ip_pool: Arc<stratum::connections::StratumIpPool>,
 ) -> Result<(), Error> {
 	// Manually build router when getting rid of v1
 	//let mut router = Router::new();
@@ -117,6 +121,9 @@ pub fn node_apis(
 		Arc::downgrade(&sync_state),
 	);
 	router.add_route("/v2/owner", Arc::new(api_handler_v2))?;
+
+	let stratum_handler_v2 = StratumAPIHandlerV2::new(stratum_ip_pool);
+	router.add_route("/v2/stratum", Arc::new(stratum_handler_v2))?;
 
 	// Add basic auth to v2 foreign API only
 	if let Some(api_secret) = foreign_api_secret {
@@ -276,6 +283,61 @@ impl ForeignAPIHandlerV2 {
 }
 
 impl crate::router::Handler for ForeignAPIHandlerV2 {
+	fn post(&self, req: Request<Body>) -> ResponseFuture {
+		Box::new(
+			self.handle_post_request(req)
+				.and_then(|r| ok(r))
+				.or_else(|e| {
+					error!("Request Error: {:?}", e);
+					ok(create_error_response(e))
+				}),
+		)
+	}
+
+	fn options(&self, _req: Request<Body>) -> ResponseFuture {
+		Box::new(ok(create_ok_response("{}")))
+	}
+}
+
+/// V2 API Handler/Wrapper for stratum
+pub struct StratumAPIHandlerV2 {
+	stratum_ip_pool: Arc<stratum::connections::StratumIpPool>,
+}
+
+impl StratumAPIHandlerV2 {
+	/// Create a new owner API handler for GET methods
+	pub fn new(stratum_ip_pool: Arc<stratum::connections::StratumIpPool>) -> Self {
+		StratumAPIHandlerV2 { stratum_ip_pool }
+	}
+
+	fn call_api(
+		&self,
+		req: Request<Body>,
+		api: Stratum,
+	) -> Box<dyn Future<Item = serde_json::Value, Error = Error> + Send> {
+		Box::new(parse_body(req).and_then(move |val: serde_json::Value| {
+			let stratum_api = &api as &dyn StratumRpc;
+			match stratum_api.handle_request(val) {
+				MaybeReply::Reply(r) => ok(r),
+				MaybeReply::DontReply => {
+					// Since it's http, we need to return something. We return [] because jsonrpc
+					// clients will parse it as an empty batch response.
+					ok(serde_json::json!([]))
+				}
+			}
+		}))
+	}
+
+	fn handle_post_request(&self, req: Request<Body>) -> NodeResponseFuture {
+		let api = Stratum::new(self.stratum_ip_pool.clone());
+		Box::new(
+			self.call_api(req, api)
+				.and_then(|resp| ok(json_response_pretty(&resp))),
+		)
+	}
+}
+
+impl crate::router::Handler for StratumAPIHandlerV2 {
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
 		Box::new(
 			self.handle_post_request(req)
