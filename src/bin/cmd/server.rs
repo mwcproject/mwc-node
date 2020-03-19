@@ -61,7 +61,8 @@ fn start_server_tui(
 			},
 			allow_to_stop,
 		)
-		.unwrap();
+		.map_err(|e| error!("Unable to start MWC in UI mode {:?}", e))
+		.expect("Unable to start MWC in UI mode");
 	} else {
 		warn!("Starting MWC w/o UI...");
 		servers::Server::start(
@@ -80,7 +81,8 @@ fn start_server_tui(
 			},
 			allow_to_stop,
 		)
-		.unwrap();
+		.map_err(|e| error!("Unable to start MWC w/o UI mode {:?}", e))
+		.expect("Unable to start MWC w/o UI mode");
 	}
 }
 
