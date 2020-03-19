@@ -252,31 +252,31 @@ pub struct StratumServerConfig {
 	pub burn_reward: bool,
 
 	/// Activate IP tracking and ban
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_ip_tracking")]
 	pub ip_tracking: bool,
 
 	/// Maximum number of connections. Stratum will drop some workers if that limit will be exceeded.
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_workers_connection_limit")]
 	pub workers_connection_limit: i32,
 
 	/// Number of points to ban IP address
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_ban_action_limit")]
 	pub ban_action_limit: i32,
 
 	/// Weight of 'submit shares' event vs ban events
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_shares_weight")]
 	pub shares_weight: i32,
 
 	/// Timeout for worker's login
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_worker_login_timeout_ms")]
 	pub worker_login_timeout_ms: i64,
 
 	/// History length used for ban IPs. After that period, ban will be lifted
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_ip_pool_ban_history_s")]
 	pub ip_pool_ban_history_s: i64,
 
 	/// Connection pace per IP per worker (average time interval between connections from the same IP)
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_connection_pace_ms")]
 	pub connection_pace_ms: i64,
 
 	/// White list of IPs
@@ -289,8 +289,35 @@ pub struct StratumServerConfig {
 
 	/// Number of tokio worker threads. -1, auto. You need to put some large value here if
 	/// your design does wait calls in the future handlers.
-	#[serde(default)]
+	#[serde(default = "StratumServerConfig::default_stratum_tokio_workers")]
 	pub stratum_tokio_workers: i32,
+}
+
+impl StratumServerConfig {
+	fn default_ip_tracking() -> bool {
+		false
+	}
+	fn default_workers_connection_limit() -> i32 {
+		10000
+	}
+	fn default_ban_action_limit() -> i32 {
+		5
+	}
+	fn default_shares_weight() -> i32 {
+		5
+	}
+	fn default_worker_login_timeout_ms() -> i64 {
+		-1
+	}
+	fn default_ip_pool_ban_history_s() -> i64 {
+		3600
+	}
+	fn default_connection_pace_ms() -> i64 {
+		-1
+	}
+	fn default_stratum_tokio_workers() -> i32 {
+		-1
+	}
 }
 
 impl Default for StratumServerConfig {
@@ -302,16 +329,16 @@ impl Default for StratumServerConfig {
 			minimum_share_difficulty: 1,
 			enable_stratum_server: Some(false),
 			stratum_server_addr: Some("127.0.0.1:3416".to_string()),
-			ip_tracking: true,
-			workers_connection_limit: 30000,
-			ban_action_limit: 5,
-			shares_weight: 5,
-			worker_login_timeout_ms: -1, // disable by default
-			ip_pool_ban_history_s: 3600, // 10 minutes
-			connection_pace_ms: -1,      // disable by default
+			ip_tracking: StratumServerConfig::default_ip_tracking(),
+			workers_connection_limit: StratumServerConfig::default_workers_connection_limit(),
+			ban_action_limit: StratumServerConfig::default_ban_action_limit(),
+			shares_weight: StratumServerConfig::default_shares_weight(),
+			worker_login_timeout_ms: StratumServerConfig::default_worker_login_timeout_ms(),
+			ip_pool_ban_history_s: StratumServerConfig::default_ip_pool_ban_history_s(),
+			connection_pace_ms: StratumServerConfig::default_connection_pace_ms(),
 			ip_white_list: HashSet::new(),
 			ip_black_list: HashSet::new(),
-			stratum_tokio_workers: -1,
+			stratum_tokio_workers: StratumServerConfig::default_stratum_tokio_workers(),
 		}
 	}
 }

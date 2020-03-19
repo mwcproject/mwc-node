@@ -175,7 +175,13 @@ impl Server {
 		stratum_ip_pool: Arc<connections::StratumIpPool>,
 	) -> Result<Server, Error> {
 		// Obtain our lock_file or fail immediately with an error.
-		let lock_file = Server::one_grin_at_a_time(&config)?;
+		let lock_file = Server::one_grin_at_a_time(&config).map_err(|e| {
+			error!(
+				"Unable to lock db. Likely your DB path is wrong. Error: {:?}",
+				e
+			);
+			e
+		})?;
 
 		// Defaults to None (optional) in config file.
 		// This translates to false here.
