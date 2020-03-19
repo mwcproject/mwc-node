@@ -16,6 +16,7 @@
 //! to collect information about server status
 
 use crate::util::RwLock;
+use std::sync::atomic::*;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -34,13 +35,13 @@ use grin_core::pow::Difficulty;
 #[derive(Clone)]
 pub struct ServerStateInfo {
 	/// Stratum stats
-	pub stratum_stats: Arc<RwLock<StratumStats>>,
+	pub stratum_stats: Arc<StratumStats>,
 }
 
 impl Default for ServerStateInfo {
 	fn default() -> ServerStateInfo {
 		ServerStateInfo {
-			stratum_stats: Arc::new(RwLock::new(StratumStats::default())),
+			stratum_stats: Arc::new(StratumStats::default()),
 		}
 	}
 }
@@ -57,7 +58,7 @@ pub struct ServerStats {
 	/// Whether we're currently syncing
 	pub sync_status: SyncStatus,
 	/// Handle to current stratum server stats
-	pub stratum_stats: StratumStats,
+	pub stratum_stats: Arc<StratumStats>,
 	/// Peer stats
 	pub peer_stats: Vec<PeerStats>,
 	/// Difficulty calculation statistics
@@ -116,22 +117,22 @@ pub struct WorkerStats {
 }
 
 /// Struct to return relevant information about the stratum server
-#[derive(Clone, Serialize, Debug)]
+#[derive(Debug)]
 pub struct StratumStats {
 	/// whether stratum server is enabled
-	pub is_enabled: bool,
+	pub is_enabled: AtomicBool,
 	/// whether stratum server is running
-	pub is_running: bool,
+	pub is_running: AtomicBool,
 	/// Number of connected workers
-	pub num_workers: usize,
+	pub num_workers: AtomicUsize,
 	/// what block height we're mining at
-	pub block_height: u64,
+	pub block_height: AtomicU64,
 	/// current network difficulty we're working on
-	pub network_difficulty: u64,
+	pub network_difficulty: AtomicU64,
 	/// cuckoo size used for mining
-	pub edge_bits: u16,
+	pub edge_bits: AtomicU16,
 	/// Individual worker status
-	pub worker_stats: Vec<WorkerStats>,
+	worker_stats: RwLock<Vec<WorkerStats>>,
 }
 
 /// Stats on the last WINDOW blocks and the difficulty calculation
@@ -214,8 +215,50 @@ impl PartialEq for DiffBlock {
 impl StratumStats {
 	/// Calculate network hashrate
 	pub fn network_hashrate(&self, height: u64) -> f64 {
-		42.0 * (self.network_difficulty as f64 / graph_weight(height, self.edge_bits as u8) as f64)
+		42.0 * (self.network_difficulty.load(Ordering::Relaxed) as f64
+			/ graph_weight(height, self.edge_bits.load(Ordering::Relaxed) as u8) as f64)
 			/ 60.0
+	}
+
+	/// Allocate a new slot for the worker. Assuming that caller will never fail.
+	/// returns worker Id for the Worker tist
+	pub fn allocate_new_worker(&self) -> usize {
+		let mut worker_stats = self.worker_stats.write();
+
+		let worker_id = worker_stats
+			.iter()
+			.position(|stat| !stat.is_connected)
+			.unwrap_or(worker_stats.len());
+
+		let mut stats = WorkerStats::default();
+		stats.is_connected = true;
+		stats.id = worker_id.to_string();
+		stats.pow_difficulty = 1;
+
+		if worker_id < worker_stats.len() {
+			worker_stats[worker_id] = stats;
+		} else {
+			worker_stats.push(stats);
+		}
+
+		worker_id
+	}
+
+	/// Get worker Stat info
+	pub fn get_stats(&self, worker_id: usize) -> Option<WorkerStats> {
+		self.worker_stats.read().get(worker_id).map(|ws| ws.clone())
+	}
+
+	/// Update stats record for the worker
+	/// callback expected to be short and non locking
+	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats) -> ()) {
+		let mut worker_stats = self.worker_stats.write();
+		f(&mut worker_stats[worker_id]);
+	}
+
+	/// Copy stat data. Expected that caller is understand the impact of this call.
+	pub fn get_worker_stats(&self) -> Vec<WorkerStats> {
+		self.worker_stats.read().clone()
 	}
 }
 
@@ -269,13 +312,13 @@ impl Default for WorkerStats {
 impl Default for StratumStats {
 	fn default() -> StratumStats {
 		StratumStats {
-			is_enabled: false,
-			is_running: false,
-			num_workers: 0,
-			block_height: 0,
-			network_difficulty: 1000,
-			edge_bits: 29,
-			worker_stats: Vec::new(),
+			is_enabled: AtomicBool::new(false),
+			is_running: AtomicBool::new(false),
+			num_workers: AtomicUsize::new(0),
+			block_height: AtomicU64::new(0),
+			network_difficulty: AtomicU64::new(1000),
+			edge_bits: AtomicU16::new(29),
+			worker_stats: RwLock::new(Vec::new()),
 		}
 	}
 }

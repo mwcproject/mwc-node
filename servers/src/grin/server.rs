@@ -55,6 +55,7 @@ use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use grin_util::logger::LogEntry;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 
 /// Grin server holding internal structures.
 pub struct Server {
@@ -119,8 +120,10 @@ impl Server {
 			if let Some(s) = enable_stratum_server {
 				if s {
 					{
-						let mut stratum_stats = serv.state_info.stratum_stats.write();
-						stratum_stats.is_enabled = true;
+						serv.state_info
+							.stratum_stats
+							.is_enabled
+							.store(true, Ordering::Relaxed);
 					}
 					serv.start_stratum_server(c.clone(), stratum_ip_pool);
 				}
@@ -468,8 +471,6 @@ impl Server {
 	/// can be updated over time to include any information needed by tests or
 	/// other consumers
 	pub fn get_server_stats(&self) -> Result<ServerStats, Error> {
-		let stratum_stats = self.state_info.stratum_stats.read().clone();
-
 		// Fill out stats on our current difficulty calculation
 		// TODO: check the overhead of calculating this again isn't too much
 		// could return it from next_difficulty, but would rather keep consensus
@@ -571,7 +572,7 @@ impl Server {
 			header_stats: header_stats,
 			sync_status: self.sync_state.status(),
 			disk_usage_gb: disk_usage_gb,
-			stratum_stats: stratum_stats,
+			stratum_stats: self.state_info.stratum_stats.clone(),
 			peer_stats: peer_stats,
 			diff_stats: diff_stats,
 			tx_stats: tx_stats,

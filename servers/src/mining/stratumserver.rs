@@ -25,16 +25,16 @@ use chrono::prelude::Utc;
 use serde;
 use serde_json;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use std::{cmp, thread};
 
+use super::stratum_data::WorkersList;
 use crate::chain::{self, SyncState};
-use crate::common::stats::{StratumStats, WorkerStats};
+use crate::common::stats::StratumStats;
 use crate::common::types::StratumServerConfig;
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
@@ -49,8 +49,6 @@ use crate::util;
 use futures::sync::mpsc;
 use futures::sync::oneshot;
 use std::cmp::min;
-
-type Tx = mpsc::UnboundedSender<String>;
 
 // ----------------------------------------
 // http://www.jsonrpc.org/specification
@@ -234,7 +232,7 @@ impl Handler {
 
 		// Call the handler function for requested method
 		let response = match request.method.as_str() {
-			"login" => match self.handle_login(request.params, worker_id) {
+			"login" => match self.handle_login(request.params, &worker_id) {
 				Ok(r) => {
 					self.ip_pool.report_ok_login(ip);
 					Ok(r)
@@ -300,10 +298,12 @@ impl Handler {
 		serde_json::to_string(&resp).unwrap()
 	}
 
-	fn handle_login(&self, params: Option<Value>, worker_id: usize) -> Result<Value, RpcError> {
+	fn handle_login(&self, params: Option<Value>, worker_id: &usize) -> Result<Value, RpcError> {
 		// Note !!!! self.workers.login HAS to be there.
 		let params: LoginParams = parse_params(params)?;
-		self.workers.login(worker_id, params.login, params.agent)?;
+		if !self.workers.login(worker_id, params.login, params.agent) {
+			return Ok("false".into()); // you migth change that response, Possible solution Error 'Unauthorized worker'
+		}
 		return Ok("ok".into());
 	}
 
@@ -314,7 +314,10 @@ impl Handler {
 
 	fn handle_status(&self, worker_id: usize) -> Result<Value, RpcError> {
 		// Return worker status in json for use by a dashboard or healthcheck.
-		let stats = self.workers.get_stats(worker_id)?;
+		let stats = self
+			.workers
+			.get_stats(worker_id)
+			.ok_or(RpcError::internal_error())?;
 		let status = WorkerStatus {
 			id: stats.id.clone(),
 			height: self
@@ -347,14 +350,16 @@ impl Handler {
 
 	// Build and return a JobTemplate for mining the current block
 	fn build_block_template(&self) -> JobTemplate {
-		let bh = self
-			.current_state
-			.read()
-			.current_block_versions
-			.last()
-			.unwrap()
-			.header
-			.clone();
+		let (bh, job_id, difficulty) = {
+			let state = self.current_state.read();
+
+			(
+				state.current_block_versions.last().unwrap().header.clone(),
+				state.current_block_versions.len() - 1,
+				state.minimum_share_difficulty,
+			)
+		};
+
 		// Serialize the block header into pre and post nonce strings
 		let mut header_buf = vec![];
 		{
@@ -365,8 +370,8 @@ impl Handler {
 		let pre_pow = util::to_hex(header_buf);
 		let job_template = JobTemplate {
 			height: bh.height,
-			job_id: (self.current_state.read().current_block_versions.len() - 1) as u64,
-			difficulty: self.current_state.read().minimum_share_difficulty,
+			job_id: job_id as u64,
+			difficulty,
 			pre_pow,
 		};
 		return job_template;
@@ -384,23 +389,22 @@ impl Handler {
 		// Validate parameters
 		let params: SubmitParams = parse_params(params)?;
 
+		let (b, header_height, minimum_share_difficulty, current_difficulty) = {
+			let state = self.current_state.read();
+
+			(
+				state
+					.current_block_versions
+					.get(params.job_id as usize)
+					.map(|b| b.clone()),
+				state.current_block_versions.last().unwrap().header.height,
+				state.minimum_share_difficulty,
+				state.current_difficulty,
+			)
+		};
+
 		// Find the correct version of the block to match this header
-		let b: Option<Block> = self
-			.current_state
-			.read()
-			.current_block_versions
-			.get(params.job_id as usize)
-			.map(|b| b.clone());
-		if params.height
-			!= self
-				.current_state
-				.read()
-				.current_block_versions
-				.last()
-				.unwrap()
-				.header
-				.height || b.is_none()
-		{
+		if params.height != header_height || b.is_none() {
 			// Return error status
 			error!(
 				"(Server ID: {}) Share at height {}, edge_bits {}, nonce {}, job_id {} submitted too late",
@@ -433,11 +437,11 @@ impl Handler {
 		// Get share difficulty
 		share_difficulty = b.header.pow.to_difficulty(b.header.height).to_num();
 		// If the difficulty is too low its an error
-		if share_difficulty < self.current_state.read().minimum_share_difficulty {
+		if share_difficulty < minimum_share_difficulty {
 			// Return error status
 			error!(
 				"(Server ID: {}) Share at height {}, hash {}, edge_bits {}, nonce {}, job_id {} rejected due to low difficulty: {}/{}",
-				self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, share_difficulty, self.current_state.read().minimum_share_difficulty,
+				self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, share_difficulty, minimum_share_difficulty,
 			);
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
@@ -445,7 +449,7 @@ impl Handler {
 		}
 
 		// If the difficulty is high enough, submit it (which also validates it)
-		if share_difficulty >= self.current_state.read().current_difficulty {
+		if share_difficulty >= current_difficulty {
 			// This is a full solution, submit it to the network
 			let res = self.chain.process_block(b.clone(), chain::Options::MINE);
 			if let Err(e) = res {
@@ -469,7 +473,10 @@ impl Handler {
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_blocks_found += 1);
 			// Log message to make it obvious we found a block
-			let stats = self.workers.get_stats(worker_id)?;
+			let stats = self
+				.workers
+				.get_stats(worker_id)
+				.ok_or(RpcError::internal_error())?;
 			warn!(
 				"(Server ID: {}) Solution Found for block {}, hash {} - Yay!!! Worker ID: {}, blocks found: {}, shares: {}",
 				self.id, params.height,
@@ -499,7 +506,7 @@ impl Handler {
 			}
 		}
 		// Log this as a valid share
-		if let Some(worker) = self.workers.get_worker(worker_id) {
+		if let Some(worker) = self.workers.get_worker(&worker_id) {
 			let submitted_by = match worker.login {
 				None => worker.id.to_string(),
 				Some(login) => login.clone(),
@@ -514,7 +521,7 @@ impl Handler {
 				b.header.pow.nonce,
 				params.job_id,
 				share_difficulty,
-				self.current_state.read().current_difficulty,
+				current_difficulty,
 				submitted_by,
 			);
 		}
@@ -672,7 +679,8 @@ impl Handler {
 						cur_time - self.config.worker_login_timeout_ms
 					};
 
-					for w in self.workers.workers_list.write().values_mut() {
+					// we are working with a snapshot. Worker can be changed during the workflow.
+					for mut w in self.workers.get_workers_list() {
 						if self.config.ip_white_list.contains(&w.ip) {
 							continue; // skipping all while listed workers. They can do whatever that want.
 						}
@@ -683,20 +691,19 @@ impl Handler {
 								"Worker id:{} ip:{} banned because of login timeout",
 								w.id, w.ip
 							);
-							if let Some(s) = w.kill_switch.write().take() {
-								let _ = s.send(());
-							}
+							w.trigger_kill_switch();
 						} else if banned_ips.contains(&w.ip) {
 							// Cleaning all workers from the ban
 							warn!(
 								"Worker id:{} ip:{} banned because IP is in the kick out list",
 								w.id, w.ip
 							);
+
 							// We don't want double ban just connected workers. Assume they are authenticated
 							w.authenticated = true;
-							if let Some(s) = w.kill_switch.write().take() {
-								let _ = s.send(());
-							}
+							self.workers.update_worker(&w);
+
+							w.trigger_kill_switch();
 						}
 					}
 				}
@@ -805,7 +812,7 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 					debug!("get request: {}", line);
 					let request = serde_json::from_str(&line)?;
 					let resp = h.handle_rpc_requests(request, worker_id, &ip_clone);
-					workers.send_to(worker_id, resp);
+					workers.send_to(&worker_id, resp);
 					Ok(())
 				})
 				.map_err(move |e| {
@@ -835,7 +842,7 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 			let worker_connections = handler.worker_connections.clone();
 
 			tokio::spawn(both.then(move |_| {
-				if let Some(worker) = workers.get_worker(worker_id) {
+				if let Some(worker) = workers.get_worker(&worker_id) {
 					if !worker.authenticated {
 						ip_pool_clone.report_fail_login(&ip_clone);
 					}
@@ -847,8 +854,6 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 				info!("Worker {} disconnected", worker_id);
 
 				ip_pool.delete_worker(&ip);
-				println!("ip_pool: {:?}", ip_pool);
-
 				Ok(())
 			}));
 
@@ -876,160 +881,6 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 }
 
 // ----------------------------------------
-// Worker Object - a connected stratum client - a miner, pool, proxy, etc...
-
-#[derive(Clone)]
-pub struct Worker {
-	id: usize,
-	ip: String,
-	create_time: i64,
-	agent: String,
-	login: Option<String>,
-	authenticated: bool,
-	tx: Arc<Tx>,
-	kill_switch: Arc<RwLock<Option<oneshot::Sender<()>>>>,
-}
-
-impl Worker {
-	/// Creates a new Stratum Worker.
-	pub fn new(id: usize, ip: String, tx: Tx, kill_switch: oneshot::Sender<()>) -> Worker {
-		Worker {
-			id: id,
-			ip,
-			create_time: Utc::now().timestamp_millis(),
-			agent: String::from(""),
-			login: None,
-			authenticated: false,
-			tx: Arc::new(tx),
-			kill_switch: Arc::new(RwLock::new(Some(kill_switch))),
-		}
-	}
-} // impl Worker
-
-struct WorkersList {
-	workers_list: Arc<RwLock<HashMap<usize, Worker>>>,
-	stratum_stats: Arc<RwLock<StratumStats>>,
-}
-
-impl WorkersList {
-	pub fn new(stratum_stats: Arc<RwLock<StratumStats>>) -> Self {
-		WorkersList {
-			workers_list: Arc::new(RwLock::new(HashMap::new())),
-			stratum_stats: stratum_stats,
-		}
-	}
-
-	pub fn add_worker(&self, ip: String, tx: Tx, kill_switch: oneshot::Sender<()>) -> usize {
-		let mut workers_list = self.workers_list.write();
-		let mut stratum_stats = self.stratum_stats.write();
-		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
-		// Or just somebody want to attack the mining pool.
-		// let worker_id = stratum_stats.worker_stats.len();
-
-		// Instead we will reuse the ID or allocate a new one
-		let worker_id = stratum_stats
-			.worker_stats
-			.iter()
-			.position(|stat| !stat.is_connected)
-			.unwrap_or(stratum_stats.worker_stats.len());
-
-		let worker = Worker::new(worker_id, ip, tx, kill_switch);
-		let num_workers_val = {
-			workers_list.insert(worker_id, worker);
-			workers_list.len()
-		};
-
-		let mut worker_stats = WorkerStats::default();
-		worker_stats.is_connected = true;
-		worker_stats.id = worker_id.to_string();
-		worker_stats.pow_difficulty = 1; // XXX TODO
-
-		if worker_id < stratum_stats.worker_stats.len() {
-			stratum_stats.worker_stats[worker_id] = worker_stats;
-		} else {
-			stratum_stats.worker_stats.push(worker_stats);
-		}
-
-		stratum_stats.num_workers = num_workers_val;
-		worker_id
-	}
-	pub fn remove_worker(&self, worker_id: usize) {
-		self.update_stats(worker_id, |ws| ws.is_connected = false);
-		self.workers_list
-			.write()
-			.remove(&worker_id)
-			.expect("Stratum: no such addr in map");
-		self.stratum_stats.write().num_workers = self.workers_list.read().len();
-	}
-
-	pub fn login(&self, worker_id: usize, login: String, agent: String) -> Result<(), RpcError> {
-		let mut wl = self.workers_list.write();
-		let mut worker = wl.get_mut(&worker_id).ok_or(RpcError::internal_error())?;
-		worker.login = Some(login);
-		// XXX TODO Future - Validate password?
-		worker.agent = agent;
-		worker.authenticated = true;
-		Ok(())
-	}
-
-	pub fn get_worker(&self, worker_id: usize) -> Option<Worker> {
-		match self.workers_list.read().get(&worker_id) {
-			Some(worker) => Some(worker.clone()),
-			_ => None,
-		}
-	}
-
-	pub fn get_stats(&self, worker_id: usize) -> Result<WorkerStats, RpcError> {
-		self.stratum_stats
-			.read()
-			.worker_stats
-			.get(worker_id)
-			.ok_or(RpcError::internal_error())
-			.map(|ws| ws.clone())
-	}
-
-	pub fn last_seen(&self, worker_id: usize) {
-		//self.stratum_stats.write().worker_stats[worker_id].last_seen = SystemTime::now();
-		self.update_stats(worker_id, |ws| ws.last_seen = SystemTime::now());
-	}
-
-	// f - must be very functional, no blocking allowed
-	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats) -> ()) {
-		let mut stratum_stats = self.stratum_stats.write();
-		f(&mut stratum_stats.worker_stats[worker_id]);
-	}
-
-	pub fn send_to(&self, worker_id: usize, msg: String) {
-		let rlock = self.workers_list.read();
-		let tx = rlock.get(&worker_id).unwrap().tx.clone();
-		drop(rlock);
-		tx.unbounded_send(msg).expect("send failed");
-	}
-
-	pub fn broadcast(&self, msg: String) {
-		let keys: Vec<usize> = self.workers_list.read().keys().map(|k| k.clone()).collect();
-
-		for worker_id in keys {
-			self.send_to(worker_id, msg.clone());
-		}
-	}
-
-	pub fn count(&self) -> usize {
-		self.workers_list.read().len()
-	}
-
-	pub fn update_block_height(&self, height: u64) {
-		let mut stratum_stats = self.stratum_stats.write();
-		stratum_stats.block_height = height;
-	}
-
-	pub fn update_network_difficulty(&self, difficulty: u64) {
-		let mut stratum_stats = self.stratum_stats.write();
-		stratum_stats.network_difficulty = difficulty;
-	}
-}
-
-// ----------------------------------------
 // Grin Stratum Server
 
 pub struct StratumServer {
@@ -1039,7 +890,7 @@ pub struct StratumServer {
 	tx_pool: Arc<RwLock<pool::TransactionPool>>,
 	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 	sync_state: Arc<SyncState>,
-	stratum_stats: Arc<RwLock<StratumStats>>,
+	stratum_stats: Arc<StratumStats>,
 	ip_pool: Arc<connections::StratumIpPool>,
 	worker_connections: Arc<AtomicI32>,
 }
@@ -1051,7 +902,7 @@ impl StratumServer {
 		chain: Arc<chain::Chain>,
 		tx_pool: Arc<RwLock<pool::TransactionPool>>,
 		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
-		stratum_stats: Arc<RwLock<StratumStats>>,
+		stratum_stats: Arc<StratumStats>,
 		ip_pool: Arc<connections::StratumIpPool>,
 	) -> StratumServer {
 		StratumServer {
@@ -1096,11 +947,10 @@ impl StratumServer {
 		});
 
 		// We have started
-		{
-			let mut stratum_stats = self.stratum_stats.write();
-			stratum_stats.is_running = true;
-			stratum_stats.edge_bits = edge_bits as u16;
-		}
+		self.stratum_stats.is_running.store(true, Ordering::Relaxed);
+		self.stratum_stats
+			.edge_bits
+			.store(edge_bits as u16, Ordering::Relaxed);
 
 		warn!(
 			"Stratum server started on {}",
