@@ -25,6 +25,7 @@ use cursive::views::{
 	BoxView, Button, Dialog, LinearLayout, OnEventView, Panel, StackView, TextView,
 };
 use cursive::Cursive;
+use std::sync::atomic;
 use std::time;
 
 use crate::tui::constants::{
@@ -333,22 +334,40 @@ impl TUIStatusListener for TUIMiningView {
 				t.set_items(diff_stats);
 			},
 		);
-		let stratum_stats = stats.stratum_stats.clone();
+		let stratum_stats = &stats.stratum_stats;
 		let stratum_network_hashrate = format!(
 			"Network Hashrate:      {:.*}",
 			2,
-			stratum_stats.network_hashrate(stratum_stats.block_height)
+			stratum_stats
+				.network_hashrate(stratum_stats.block_height.load(atomic::Ordering::Relaxed))
 		);
-		let worker_stats = stratum_stats.worker_stats;
-		let stratum_enabled = format!("Mining server enabled: {}", stratum_stats.is_enabled);
-		let stratum_is_running = format!("Mining server running: {}", stratum_stats.is_running);
-		let stratum_num_workers = format!("Number of workers:     {}", stratum_stats.num_workers);
-		let stratum_block_height = format!("Solving Block Height:  {}", stratum_stats.block_height);
+		let worker_stats = stratum_stats.get_worker_stats();
+		let stratum_enabled = format!(
+			"Mining server enabled: {}",
+			stratum_stats.is_enabled.load(atomic::Ordering::Relaxed)
+		);
+		let stratum_is_running = format!(
+			"Mining server running: {}",
+			stratum_stats.is_running.load(atomic::Ordering::Relaxed)
+		);
+		let stratum_num_workers = format!(
+			"Number of workers:     {}",
+			stratum_stats.num_workers.load(atomic::Ordering::Relaxed)
+		);
+		let stratum_block_height = format!(
+			"Solving Block Height:  {}",
+			stratum_stats.block_height.load(atomic::Ordering::Relaxed)
+		);
 		let stratum_network_difficulty = format!(
 			"Network Difficulty:    {}",
-			stratum_stats.network_difficulty
+			stratum_stats
+				.network_difficulty
+				.load(atomic::Ordering::Relaxed)
 		);
-		let stratum_edge_bits = format!("Cuckoo Size:           {}", stratum_stats.edge_bits);
+		let stratum_edge_bits = format!(
+			"Cuckoo Size:           {}",
+			stratum_stats.edge_bits.load(atomic::Ordering::Relaxed)
+		);
 
 		c.call_on_id("stratum_config_status", |t: &mut TextView| {
 			t.set_content(stratum_enabled);
