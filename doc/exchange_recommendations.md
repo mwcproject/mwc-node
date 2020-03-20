@@ -10,7 +10,7 @@ mwc-wallet: https://github.com/mwcproject/mwc-wallet
 
 and mwc713: mwc713: https://github.com/mwcproject/mwc713
 
-The main difference between these wallets is that mwc713 supports receive by http(s), file, and mwcmqs, and keybase, while mwc-wallet supports http(s), file, and keybase. mwc-wallet is a fork of the grin-wallet so it is much closer to grin-wallet. Exchanges that already support grin-wallet may have an easier time supporting mwc-wallet than mwc713.
+The main difference between these wallets is that mwc713 supports receive by http(s), file, and mwcmqs, and keybase, while mwc-wallet supports http(s), file, and keybase. mwc-wallet is a fork of the grin-wallet so it is much closer to grin-wallet. Exchanges that already support grin-wallet may have an easier time supporting mwc-wallet than mwc713. Please ensure you have the latest version of this software running in production.
 
 
 # Double Spend Attacks #
