@@ -14,6 +14,8 @@
 
 //! Mining Stratum Server
 
+extern crate hex;
+
 use futures::future::Future;
 use futures::stream::Stream;
 use tokio::io::AsyncRead;
@@ -154,12 +156,13 @@ struct SubmitParams {
 	pow: Vec<u64>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JobTemplate {
 	height: u64,
 	job_id: u64,
 	difficulty: u64,
 	pre_pow: String,
+	xn: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -340,10 +343,13 @@ impl Handler {
 	fn handle_getjobtemplate(&self) -> Result<Value, RpcError> {
 		// Build a JobTemplate from a BlockHeader and return JSON
 		let job_template = self.build_block_template();
-		let response = serde_json::to_value(&job_template).unwrap();
+		let mut job_template_clone = job_template.clone();
+		job_template_clone.xn = hex::encode(vec![rand::random::<u8>(), rand::random::<u8>()]);
+
+		let response = serde_json::to_value(&job_template_clone).unwrap();
 		debug!(
-			"(Server ID: {}) sending block {} with id {} to single worker",
-			self.id, job_template.height, job_template.job_id,
+			"(Server ID: {}) sending block {} with id {} to single worker, xn = {}",
+			self.id, job_template.height, job_template.job_id, job_template_clone.xn
 		);
 		return Ok(response);
 	}
@@ -373,6 +379,7 @@ impl Handler {
 			job_id: job_id as u64,
 			difficulty,
 			pre_pow,
+			xn: "0001".to_string(),
 		};
 		return job_template;
 	}
