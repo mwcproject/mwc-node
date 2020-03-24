@@ -437,7 +437,11 @@ impl Handler {
 		// Get share difficulty
 		share_difficulty = b.header.pow.to_difficulty(b.header.height).to_num();
 		// If the difficulty is too low its an error
-		if share_difficulty < minimum_share_difficulty {
+		if (b.header.pow.is_primary() && share_difficulty < minimum_share_difficulty * 7_936)
+			|| b.header.pow.is_secondary()
+				&& share_difficulty
+					< minimum_share_difficulty * b.header.pow.secondary_scaling as u64
+		{
 			// Return error status
 			error!(
 				"(Server ID: {}) Share at height {}, hash {}, edge_bits {}, nonce {}, job_id {} rejected due to low difficulty: {}/{}",
