@@ -2,6 +2,18 @@
 
 This document is meant as a guide for exchanges to support MWC. Please note that all software is released under the apache license and has no warranty. Exchanges should thoroughly test everything and understand their architecture before they launch. That said this is some information we have found useful to exchanges in preventing double spend attacks and block witholding attacks that may occur on MWC as with any other POW blockchain.
 
+# Deposit and Withdrawal Suggestions
+
+The MWC Team recommends that exchanges use https for deposits and file for withdrawals. Based on experience this may greatly reduce customer support inquiries. Supporting a MimbleWimble based blockchain can be technically challenging for an exchange and require more work than other blockchains. However, if implemented well then it can flow very smoothly for users and the exchange.
+
+The MWC Team is a fan of how TradeOgre has implemented withdrawals because they are broadcast immediately after user submission. This makes it very easy for users to buy and withdraw MWC extremely quickly.
+
+The QT GUI wallet is widely used and easy for buyers, sellers, miners and almost all MWC users.
+
+Deposits: *Deposit by https* is supported in the QT GUI wallet. The unsigned transactions are securely transferred between the user's wallet and the exchange's wallet. This increases the privacy of the deposit by not revealing anything about the transaction graph to the MWC peer to peer network.
+
+Withdrawals: *Withdrawal by file* is supported in the QT GUI wallet. When implemented via https this has similar security and privacy benefits as https. A difference is that the user is able to be in control of the signing process and delivers a signed transaction via file upload that enables the exchange to immediately broadcast. This means the user does not need to have their wallet online to receive transactions which increases the user's security and privacy.
+
 # Software that may be used to support MWC #
 
 The mwcproject repository has two main wallets that are possible for exchanges to use:
