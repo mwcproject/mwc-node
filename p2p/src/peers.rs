@@ -98,7 +98,7 @@ impl Peers {
 			ban_reason,
 			last_connected: Utc::now().timestamp(),
 		};
-		debug!("Banning peer {}.", addr);
+		debug!("Banning peer {}, ban_reason={:?}", addr, ban_reason);
 		self.save_peer(&peer_data)
 	}
 
@@ -271,7 +271,7 @@ impl Peers {
 
 		match self.get_connected_peer(peer_addr) {
 			Some(peer) => {
-				debug!("Banning peer {}", peer_addr);
+				debug!("Banning peer {}, ban_reason {:?}", peer_addr, ban_reason);
 				// setting peer status will get it removed at the next clean_peer
 				peer.send_ban_reason(ban_reason)?;
 				peer.set_banned();
