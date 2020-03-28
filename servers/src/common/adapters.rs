@@ -39,6 +39,47 @@ use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
 use rand::prelude::*;
+use std::sync::atomic::AtomicI64;
+use std::sync::atomic::Ordering;
+
+// NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
+// This cache will drop sequense of the events during the second
+struct EventCache {
+	event: RwLock<Hash>,
+	time: AtomicI64,
+}
+
+impl EventCache {
+	fn new() -> Self {
+		EventCache {
+			event: RwLock::new(Hash::default()),
+			time: AtomicI64::new(0),
+		}
+	}
+
+	// Check if it is contain the hash value
+	pub fn contains(&self, hash: &Hash, update: bool) -> bool {
+		let now = Utc::now().timestamp_millis();
+		let time_limit = now - 1000; // lock for a 1 second, should be enough to reduce the load.
+		if self.time.load(Ordering::Relaxed) < time_limit {
+			if update {
+				*(self.event.write()) = *hash;
+				self.time.store(now, Ordering::Relaxed);
+			}
+			return false;
+		}
+
+		if *self.event.read() == *hash {
+			true
+		} else {
+			if update {
+				*(self.event.write()) = *hash;
+				self.time.store(now, Ordering::Relaxed);
+			}
+			false
+		}
+	}
+}
 
 /// Implementation of the NetAdapter for the . Gets notified when new
 /// blocks and transactions are received and forwards to the chain and pool
@@ -51,6 +92,11 @@ pub struct NetToChainAdapter {
 	peers: OneTime<Weak<p2p::Peers>>,
 	config: ServerConfig,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
+
+	// local in mem cache
+	processed_headers: EventCache,
+	processed_blocks: EventCache,
+	processed_transactions: EventCache,
 }
 
 impl p2p::ChainAdapter for NetToChainAdapter {
@@ -89,9 +135,19 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		tx: core::Transaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
-		// nothing much we can do with a new transaction while syncing
 		if self.sync_state.is_syncing() {
 			return Ok(true);
+		}
+
+		// nothing much we can do with a new transaction while syncing
+		let tx_hash = tx.hash();
+		// For transaction we allow double processing, we want to be sure that TX will be stored in the pool
+		// because there is no recovery plan for transactions. So we want to use natural retry to help us handle failures
+		if !self.processed_transactions.contains(&tx_hash, false) {
+			info!("transaction_received, cache for {} OK", tx_hash);
+		} else {
+			info!("transaction_received, cache for {} Rejected", tx_hash);
+			return Ok(false);
 		}
 
 		let source = pool::TxSource::Broadcast;
@@ -102,11 +158,12 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 			hook.on_transaction_received(&tx);
 		}
 
-		let tx_hash = tx.hash();
-
 		let mut tx_pool = self.tx_pool.write();
 		match tx_pool.add_to_pool(source, tx, stem, &header) {
-			Ok(_) => Ok(true),
+			Ok(_) => {
+				self.processed_transactions.contains(&tx_hash, true);
+				Ok(true)
+			}
 			Err(e) => {
 				debug!("Transaction {} rejected: {:?}", tx_hash, e);
 				Ok(false)
@@ -120,9 +177,18 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		peer_info: &PeerInfo,
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
+		let b_hash = b.hash();
+		if !self.processed_blocks.contains(&b_hash, true) {
+			info!("block_received, cache for {} OK", b_hash);
+		} else {
+			info!("block_received, cache for {} Rejected", b_hash);
+			return Ok(false);
+		}
+
 		if self.chain().block_exists(b.hash())? {
 			return Ok(true);
 		}
+
 		info!(
 			"Received block {} at {} from {} [in/out/kern: {}/{}/{}] going to process.",
 			b.hash(),
@@ -245,6 +311,14 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		// No need to process this header if we have previously accepted the _full block_.
+		let bh_hash = bh.hash();
+		if !self.processed_headers.contains(&bh_hash, true) {
+			info!("header_received, cache for {} OK", bh_hash);
+		} else {
+			info!("header_received, cache for {} Rejected", bh_hash);
+			return Ok(false);
+		}
+
 		if self.chain().block_exists(bh.hash())? {
 			return Ok(true);
 		}
@@ -486,6 +560,9 @@ impl NetToChainAdapter {
 			peers: OneTime::new(),
 			config,
 			hooks,
+			processed_headers: EventCache::new(),
+			processed_blocks: EventCache::new(),
+			processed_transactions: EventCache::new(),
 		}
 	}
 
@@ -936,5 +1013,38 @@ impl pool::BlockChain for PoolToChainAdapter {
 		self.chain()
 			.verify_tx_lock_height(tx)
 			.map_err(|_| pool::PoolError::ImmatureTransaction)
+	}
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+	use std::time::Duration;
+
+	#[test]
+	fn test_event_cache() {
+		let cache = EventCache::new();
+		let def_hash1 = Hash::default();
+		let def_hash2 = Hash::default();
+		let hash2_1 =
+			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
+				.unwrap();
+		let hash2_2 =
+			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
+				.unwrap();
+		let hash3 =
+			Hash::from_hex("9686b69cab945146fd431ec4459a0eef6efbcc5553480b7454edd32f9c3b4d52")
+				.unwrap();
+
+		assert_eq!(cache.contains(&def_hash1, true), false);
+		assert_eq!(cache.contains(&def_hash2, true), true);
+		thread::sleep(Duration::from_millis(1050));
+		assert_eq!(cache.contains(&def_hash1, false), false);
+		assert_eq!(cache.contains(&def_hash1, true), false);
+		assert_eq!(cache.contains(&def_hash2, true), true);
+		assert_eq!(cache.contains(&hash2_2, false), false);
+		assert_eq!(cache.contains(&hash2_1, true), false);
+		assert_eq!(cache.contains(&hash2_2, true), true);
+		assert_eq!(cache.contains(&hash3, true), false);
 	}
 }
