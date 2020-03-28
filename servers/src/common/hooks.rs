@@ -83,7 +83,7 @@ struct EventLogger;
 
 impl NetEvents for EventLogger {
 	fn on_transaction_received(&self, tx: &core::Transaction) {
-		debug!(
+		info!(
 			"Received tx {}, [in/out/kern: {}/{}/{}] going to process.",
 			tx.hash(),
 			tx.inputs().len(),
