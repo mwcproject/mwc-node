@@ -143,11 +143,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		let tx_hash = tx.hash();
 		// For transaction we allow double processing, we want to be sure that TX will be stored in the pool
 		// because there is no recovery plan for transactions. So we want to use natural retry to help us handle failures
-		if !self.processed_transactions.contains(&tx_hash, false) {
-			info!("transaction_received, cache for {} OK", tx_hash);
+		if self.processed_transactions.contains(&tx_hash, false) {
+			debug!("transaction_received, cache for {} Rejected", tx_hash);
+			return Ok(true);
 		} else {
-			info!("transaction_received, cache for {} Rejected", tx_hash);
-			return Ok(false);
+			debug!("transaction_received, cache for {} OK", tx_hash);
 		}
 
 		let source = pool::TxSource::Broadcast;
@@ -178,11 +178,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
 		let b_hash = b.hash();
-		if !self.processed_blocks.contains(&b_hash, true) {
-			info!("block_received, cache for {} OK", b_hash);
+		if self.processed_blocks.contains(&b_hash, true) {
+			debug!("block_received, cache for {} Rejected", b_hash);
+			return Ok(true);
 		} else {
-			info!("block_received, cache for {} Rejected", b_hash);
-			return Ok(false);
+			debug!("block_received, cache for {} OK", b_hash);
 		}
 
 		if self.chain().block_exists(b.hash())? {
@@ -312,11 +312,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 	) -> Result<bool, chain::Error> {
 		// No need to process this header if we have previously accepted the _full block_.
 		let bh_hash = bh.hash();
-		if !self.processed_headers.contains(&bh_hash, true) {
-			info!("header_received, cache for {} OK", bh_hash);
+		if self.processed_headers.contains(&bh_hash, true) {
+			debug!("header_received, cache for {} Rejected", bh_hash);
+			return Ok(true);
 		} else {
-			info!("header_received, cache for {} Rejected", bh_hash);
-			return Ok(false);
+			debug!("header_received, cache for {} OK", bh_hash);
 		}
 
 		if self.chain().block_exists(bh.hash())? {
