@@ -248,3 +248,59 @@ Respond:
   }
 }
 ```
+
+## Configure your OS
+
+mwc-node doesn't manage your TCP connections, including timeouts. As a result you have to configure your OS to handle dropped connections well.
+
+### Test (optonal step for verification)
+
+First please check how Stratum handle dropped connections before your changes.
+
+1. Install miner simulatior from https://github.com/mwcproject/test   Check readme for location and usage.
+2. COnfugure startum server and start the node.
+3. Start miner simulatior with few thousands of connections.
+4. Wait untill they will be created.
+5. Unplug your network cable or turn off network. That will make all your connections stale.
+6. Check how long it takes for the node to drop all connections.
+
+### Solution for Ubuntu
+
+Note! Before modify your OS please do search and understand what you is fing first.
+
+```
+sudo vi /etc/sysctl.conf
+``` 
+Update keep alive settings. Here is a settings for ip4. Check if you need to update ip6 as well.
+```
+net.ipv4.tcp_keepalive_time = 20
+net.ipv4.tcp_keepalive_intvl = 5
+net.ipv4.tcp_keepalive_probes = 2
+```
+Update data transmission setting. Step 1, just reduce number of retry. Value 6 will give you about 12 or more seconds to disconnect from dropped value. 
+```
+net.ipv4.tcp_retries2 = 6
+```
+data transmission setting. Step 2. Prev step makes your read/write timeput 12 seconds or MORE.  More can be up to hours.
+The problem that initial RTO value that is normally 200ms is depend on socket connection quality. Slower network, larger this value.
+As a result 'fast' connections will be dropped after 12 seconds, but for slow connections, it can take hours to drop and that can be critical.
+
+to view your connections starting rto values: 
+```
+> ss -i
+.....
+tcp                               ESTAB                                 0                                   0                                                                                      192.168.1.14:3416                                                                  192.168.1.10:58988                               
+	 cubic wscale:7,7 rto:220 rtt:18.835/19.578 mss:1338 pmtu:1500 rcvmss:536 advmss:1448 cwnd:10 bytes_acked:590 segs_out:1 segs_in:3 data_segs_out:1 send 5.7Mbps lastsnd:3180 lastrcv:15536 lastack:3104 pacing_rate 11.4Mbps delivery_rate 147.1Kbps app_limited busy:76ms rcv_space:14600 rcv_ssthresh:64076 minrtt:11.134    
+tcp                               ESTAB                                 0                                   0                                                                                      192.168.1.14:3416                                                                  192.168.1.10:53400                               
+	 cubic wscale:7,7 rto:3288 rtt:408.146/719.897 ato:40 mss:1338 pmtu:1500 rcvmss:536 advmss:1448 cwnd:10 bytes_acked:940 bytes_received:188 segs_out:10 segs_in:12 data_segs_out:6 data_segs_in:4 send 262.3Kbps lastsnd:3140 lastrcv:7132 lastack:584 pacing_rate 524.5Kbps delivery_rate 40.5Kbps app_limited busy:3436ms retrans:0/2 rcv_space:14600 rcv_ssthresh:64076 minrtt:6.949
+....
+```
+In this example one socket rto is 220, another one about 15 times higher. So read/write timeouts will be propotrional.
+
+It is possible to specify rto_min value for network route.
+ 
+
+Reference:
+https://webhostinggeeks.com/howto/configure-linux-tcp-keepalive-setting/
+https://pracucci.com/linux-tcp-rto-min-max-and-tcp-retries2.html
+https://unix.stackexchange.com/questions/210367/changing-the-tcp-rto-value-in-linux
