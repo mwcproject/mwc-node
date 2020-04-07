@@ -300,7 +300,10 @@ In this example one socket rto is 220, another one about 15 times higher. So rea
 It is possible to specify rto_min value for network route.
  
 
-Reference:
+**Reference:**
+
 https://webhostinggeeks.com/howto/configure-linux-tcp-keepalive-setting/
+
 https://pracucci.com/linux-tcp-rto-min-max-and-tcp-retries2.html
+
 https://unix.stackexchange.com/questions/210367/changing-the-tcp-rto-value-in-linux
