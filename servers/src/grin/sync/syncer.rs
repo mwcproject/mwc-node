@@ -209,8 +209,23 @@ impl SyncRunner {
 				continue;
 			}
 
+			// Header expected to be blocked duting the txhashset operations because it is pretty long
+			let is_txhashset_operation = match self.sync_state.status() {
+				SyncStatus::TxHashsetDownload { .. }
+				| SyncStatus::TxHashsetSetup
+				| SyncStatus::TxHashsetRangeProofsValidation { .. }
+				| SyncStatus::TxHashsetKernelsValidation { .. }
+				| SyncStatus::TxHashsetSave
+				| SyncStatus::TxHashsetDone => true,
+				_ => false,
+			};
+			if is_txhashset_operation && maybe_header_head.is_none() {
+				thread::sleep(time::Duration::from_secs(1));
+				continue;
+			}
+
 			let header_head = unwrap_or_restart_loop!(
-				maybe_header_head.ok_or("failed to obtain lock for try_header_head. Are you running debug version, has slow CPU or unreasonable long blockchain? Is it a first run and you just get txhashset archive?")
+				maybe_header_head.ok_or("failed to obtain lock for try_header_head. This error may be caused by running the debug version of this node, having a slow CPU, or having an unusually large blockchain.")
 			);
 
 			// lock was obtained, so we can reset the locking counter
