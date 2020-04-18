@@ -484,6 +484,9 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 				if mmr_index.is_none() {
 					err_str.push("mmr_index".to_string());
 				}
+				if block_height.is_none() {
+					err_str.push("block_height".to_string());
+				}
 
 				if !err_str.is_empty() {
 					return Err(serde::de::Error::custom(format!(
@@ -498,7 +501,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 					spent: spent.unwrap(),
 					proof: proof,
 					proof_hash: proof_hash.unwrap(),
-					block_height: block_height,
+					block_height: block_height.unwrap(),
 					merkle_proof: merkle_proof,
 					mmr_index: mmr_index.unwrap(),
 				})
