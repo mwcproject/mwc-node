@@ -103,19 +103,19 @@ impl BlockChain for ChainAdapter {
 	fn chain_head(&self) -> Result<BlockHeader, PoolError> {
 		let s = self.store.read();
 		s.head_header()
-			.map_err(|_| PoolError::Other(format!("failed to get chain head")))
+			.map_err(|e| PoolError::Other(format!("failed to get chain head, {}", e)))
 	}
 
 	fn get_block_header(&self, hash: &Hash) -> Result<BlockHeader, PoolError> {
 		let s = self.store.read();
 		s.get_block_header(hash)
-			.map_err(|_| PoolError::Other(format!("failed to get block header")))
+			.map_err(|e| PoolError::Other(format!("failed to get block header, {}", e)))
 	}
 
 	fn get_block_sums(&self, hash: &Hash) -> Result<BlockSums, PoolError> {
 		let s = self.store.read();
 		s.get_block_sums(hash)
-			.map_err(|_| PoolError::Other(format!("failed to get block sums")))
+			.map_err(|e| PoolError::Other(format!("failed to get block sums, {}", e)))
 	}
 
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {

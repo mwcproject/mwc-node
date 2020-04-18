@@ -160,7 +160,7 @@ where
 
 		// check this pos is actually a leaf in the MMR
 		if !is_leaf(pos) {
-			return Err(format!("not a leaf at pos {}", pos));
+			return Err(format!("not a mmr leaf at pos {}", pos));
 		}
 
 		// check we actually have a hash in the MMR at this pos
@@ -251,7 +251,10 @@ where
 	/// Returns true if pruning is successful.
 	pub fn prune(&mut self, position: u64) -> Result<bool, String> {
 		if !is_leaf(position) {
-			return Err(format!("Node at {} is not a leaf, can't prune.", position));
+			return Err(format!(
+				"pmmr node at {} is not a leaf, can't prune.",
+				position
+			));
 		}
 
 		if self.backend.get_hash(position).is_none() {

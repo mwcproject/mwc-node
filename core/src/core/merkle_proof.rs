@@ -21,9 +21,10 @@ use crate::ser::{PMMRIndexHashable, Readable, Reader, Writeable, Writer};
 use util;
 
 /// Merkle proof errors.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Fail, Clone, Debug, PartialEq)]
 pub enum MerkleProofError {
 	/// Merkle proof root hash does not match when attempting to verify.
+	#[fail(display = "Merkle Proof root mismatch")]
 	RootMismatch,
 }
 
@@ -84,9 +85,10 @@ impl MerkleProof {
 
 	/// Convert hex string representation back to a Merkle proof instance
 	pub fn from_hex(hex: &str) -> Result<MerkleProof, String> {
-		let bytes = util::from_hex(hex.to_string()).unwrap();
+		let bytes =
+			util::from_hex(hex).map_err(|e| format!("Merkle Proof HEX conversion error, {}", e))?;
 		let res = ser::deserialize_default(&mut &bytes[..])
-			.map_err(|_| "failed to deserialize a Merkle Proof".to_string())?;
+			.map_err(|e| format!("failed to deserialize a Merkle Proof, {}", e))?;
 		Ok(res)
 	}
 

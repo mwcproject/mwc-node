@@ -28,38 +28,53 @@ use crate::p2p;
 use crate::pool;
 use crate::pool::types::DandelionConfig;
 use crate::store;
+use failure::Fail;
 use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
-#[derive(Debug)]
+#[derive(Debug, Fail)]
 pub enum Error {
 	/// Error originating from the core implementation.
+	#[fail(display = "Core error, {}", _0)]
 	Core(core::block::Error),
 	/// Error originating from the libtx implementation.
+	#[fail(display = "LibTx error, {}", _0)]
 	LibTx(libtx::Error),
 	/// Error originating from the db storage.
+	#[fail(display = "Db Store error, {}", _0)]
 	Store(store::Error),
 	/// Error originating from the blockchain implementation.
+	#[fail(display = "Blockchain error, {}", _0)]
 	Chain(chain::Error),
 	/// Error originating from the peer-to-peer network.
+	#[fail(display = "P2P error, {}", _0)]
 	P2P(p2p::Error),
 	/// Error originating from HTTP API calls.
+	#[fail(display = "Http API error, {}", _0)]
 	API(api::Error),
 	/// Error originating from the cuckoo miner
+	#[fail(display = "Cuckoo miner error, {}", _0)]
 	Cuckoo(pow::Error),
 	/// Error originating from the transaction pool.
+	#[fail(display = "Tx Pool error, {}", _0)]
 	Pool(pool::PoolError),
 	/// Error originating from the keychain.
+	#[fail(display = "Keychain error, {}", _0)]
 	Keychain(keychain::Error),
 	/// Invalid Arguments.
+	#[fail(display = "Invalid argument, {}", _0)]
 	ArgumentError(String),
 	/// Wallet communication error
+	#[fail(display = "Wallet coomunication error, {}", _0)]
 	WalletComm(String),
 	/// Error originating from some I/O operation (likely a file on disk).
+	#[fail(display = "IO error, {}", _0)]
 	IOError(std::io::Error),
 	/// Configuration error
+	#[fail(display = "Configuration error, {}", _0)]
 	Configuration(String),
 	/// General error
+	#[fail(display = "General error, {}", _0)]
 	General(String),
 }
 

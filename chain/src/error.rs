@@ -36,8 +36,8 @@ pub enum ErrorKind {
 	#[fail(display = "Block is unfit: {}", _0)]
 	Unfit(String),
 	/// Special case of orphan blocks
-	#[fail(display = "Orphan")]
-	Orphan,
+	#[fail(display = "Orphan, {}", _0)]
+	Orphan(String),
 	/// Difficulty is too low either compared to ours or the block PoW hash
 	#[fail(display = "Difficulty is too low compared to ours or the block PoW hash")]
 	DifficultyTooLow,
@@ -57,7 +57,7 @@ pub enum ErrorKind {
 	#[fail(display = "Old Block")]
 	OldBlock,
 	/// The block doesn't sum correctly or a tx signature is invalid
-	#[fail(display = "Invalid Block Proof")]
+	#[fail(display = "Invalid Block Proof, {}", _0)]
 	InvalidBlockProof(block::Error),
 	/// Block time is too old
 	#[fail(display = "Invalid Block Time")]
@@ -66,16 +66,16 @@ pub enum ErrorKind {
 	#[fail(display = "Invalid Block Height")]
 	InvalidBlockHeight,
 	/// One of the root hashes in the block is invalid
-	#[fail(display = "Invalid Root")]
-	InvalidRoot,
+	#[fail(display = "Invalid Root, {}", _0)]
+	InvalidRoot(String),
 	/// One of the MMR sizes in the block header is invalid
 	#[fail(display = "Invalid MMR Size")]
 	InvalidMMRSize,
 	/// Error from underlying keychain impl
-	#[fail(display = "Keychain Error")]
+	#[fail(display = "Keychain Error, {}", _0)]
 	Keychain(keychain::Error),
 	/// Error from underlying secp lib
-	#[fail(display = "Secp Lib Error")]
+	#[fail(display = "Secp Lib Error, {}", _0)]
 	Secp(secp::Error),
 	/// One of the inputs in the block has already been spent
 	#[fail(display = "Already Spent: {:?}", _0)]
@@ -87,14 +87,14 @@ pub enum ErrorKind {
 	#[fail(display = "Attempt to spend immature coinbase")]
 	ImmatureCoinbase,
 	/// Error validating a Merkle proof (coinbase output)
-	#[fail(display = "Error validating merkle proof")]
-	MerkleProof,
+	#[fail(display = "Error validating merkle proof, {}", _0)]
+	MerkleProof(String),
 	/// Output not found
-	#[fail(display = "Output not found")]
-	OutputNotFound,
+	#[fail(display = "Output not found, {}", _0)]
+	OutputNotFound(String),
 	/// Rangeproof not found
-	#[fail(display = "Rangeproof not found")]
-	RangeproofNotFound,
+	#[fail(display = "Rangeproof not found, {}", _0)]
+	RangeproofNotFound(String),
 	/// Tx kernel not found
 	#[fail(display = "Tx kernel not found")]
 	TxKernelNotFound,
@@ -108,19 +108,19 @@ pub enum ErrorKind {
 	#[fail(display = "Invalid TxHashSet: {}", _0)]
 	InvalidTxHashSet(String),
 	/// Internal issue when trying to save or load data from store
-	#[fail(display = "Store Error: {}, reason: {}", _1, _0)]
+	#[fail(display = "Chain Store Error: {}, reason: {}", _1, _0)]
 	StoreErr(store::Error, String),
 	/// Internal issue when trying to save or load data from append only files
-	#[fail(display = "File Read Error: {}", _0)]
+	#[fail(display = "Chain File Read Error: {}", _0)]
 	FileReadErr(String),
 	/// Error serializing or deserializing a type
-	#[fail(display = "Serialization Error")]
+	#[fail(display = "Chain Serialization Error, {}", _0)]
 	SerErr(ser::Error),
 	/// Error with the txhashset
 	#[fail(display = "TxHashSetErr: {}", _0)]
 	TxHashSetErr(String),
 	/// Tx not valid based on lock_height.
-	#[fail(display = "Transaction Lock Height")]
+	#[fail(display = "Invalid Transaction Lock Height")]
 	TxLockHeight,
 	/// No chain exists and genesis block is required
 	#[fail(display = "Genesis Block Required")]
@@ -129,10 +129,13 @@ pub enum ErrorKind {
 	#[fail(display = "Transaction Validation Error: {:?}", _0)]
 	Transaction(transaction::Error),
 	/// Anything else
-	#[fail(display = "Other Error: {}", _0)]
+	#[fail(display = "Chain other Error: {}", _0)]
 	Other(String),
 	/// Error from summing and verifying kernel sums via committed trait.
-	#[fail(display = "Committed Trait: Error summing and verifying kernel sums")]
+	#[fail(
+		display = "Committed Trait: Error summing and verifying kernel sums, {}",
+		_0
+	)]
 	Committed(committed::Error),
 	/// We cannot process data once the Grin server has been stopped.
 	#[fail(display = "Stopped (MWC Shutting Down)")]
@@ -182,7 +185,7 @@ impl Error {
 		// shorter to match on all the "not the block's fault" errors
 		match self.kind() {
 			ErrorKind::Unfit(_)
-			| ErrorKind::Orphan
+			| ErrorKind::Orphan(_)
 			| ErrorKind::StoreErr(_, _)
 			| ErrorKind::SerErr(_)
 			| ErrorKind::TxHashSetErr(_)

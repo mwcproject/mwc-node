@@ -17,7 +17,7 @@
 use crate::core::global;
 use crate::rest::{Error, ErrorKind};
 use crate::util::to_base64;
-use failure::{Fail, ResultExt};
+use failure::Fail;
 use futures::future::{err, ok, Either};
 use http::uri::{InvalidUri, Uri};
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
@@ -199,9 +199,9 @@ pub fn create_post_request<IN>(
 where
 	IN: Serialize,
 {
-	let json = serde_json::to_string(input).context(ErrorKind::Internal(
-		"Could not serialize data to JSON".to_owned(),
-	))?;
+	let json = serde_json::to_string(input).map_err(|e| {
+		ErrorKind::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
+	})?;
 	build_request(url, "POST", api_secret, Some(json))
 }
 
@@ -214,9 +214,9 @@ pub fn create_post_request_ex<IN>(
 where
 	IN: Serialize,
 {
-	let json = serde_json::to_string(input).context(ErrorKind::Internal(
-		"Could not serialize data to JSON".to_owned(),
-	))?;
+	let json = serde_json::to_string(input).map_err(|e| {
+		ErrorKind::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
+	})?;
 	build_request_ex(url, "POST", api_secret, basic_auth_key, Some(json))
 }
 
@@ -226,8 +226,7 @@ where
 {
 	let data = send_request(req)?;
 	serde_json::from_str(&data).map_err(|e| {
-		e.context(ErrorKind::ResponseError("Cannot parse response".to_owned()))
-			.into()
+		ErrorKind::ResponseError(format!("Cannot parse response: {}, {}", data, e)).into()
 	})
 }
 
@@ -237,8 +236,7 @@ where
 {
 	Box::new(send_request_async(req).and_then(|data| {
 		serde_json::from_str(&data).map_err(|e| {
-			e.context(ErrorKind::ResponseError("Cannot parse response".to_owned()))
-				.into()
+			ErrorKind::ResponseError(format!("Cannot parse response: {}, {}", data, e)).into()
 		})
 	}))
 }
@@ -264,7 +262,7 @@ fn send_request_async(req: Request<Body>) -> Box<dyn Future<Item = String, Error
 							.concat2()
 							.and_then(|ch| ok(String::from_utf8_lossy(&ch.to_vec()).to_string()))
 							.wait()
-							.unwrap_or("ERROR".to_string())
+							.unwrap_or("Unable to get any respond".to_string())
 					))
 					.into()))
 				} else {
@@ -284,7 +282,7 @@ fn send_request_async(req: Request<Body>) -> Box<dyn Future<Item = String, Error
 
 pub fn send_request(req: Request<Body>) -> Result<String, Error> {
 	let task = send_request_async(req);
-	let mut rt =
-		Runtime::new().context(ErrorKind::Internal("can't create Tokio runtime".to_owned()))?;
+	let mut rt = Runtime::new()
+		.map_err(|e| ErrorKind::Internal(format!("can't create Tokio runtime, {}", e)))?;
 	Ok(rt.block_on(task)?)
 }

@@ -26,29 +26,32 @@ pub struct Error {
 #[derive(Clone, Debug, Eq, Fail, PartialEq)]
 /// Libwallet error types
 pub enum ErrorKind {
+	/// Pre POW error
+	#[fail(display = "POW prepare error: {}", _0)]
+	PrePowError(String),
 	/// Verification error
-	#[fail(display = "Verification Error: {}", _0)]
+	#[fail(display = "POW Verification Error: {}", _0)]
 	Verification(String),
 	/// Failure to cast from/to generic integer type
-	#[fail(display = "IntegerCast")]
+	#[fail(display = "POW IntegerCast")]
 	IntegerCast,
 	/// IO Error
-	#[fail(display = "IO Error")]
+	#[fail(display = "POW IO Error")]
 	IOError,
 	/// Unexpected Edge Error
-	#[fail(display = "Edge Addition Error")]
+	#[fail(display = "POW Edge Addition Error")]
 	EdgeAddition,
 	/// Path Error
-	#[fail(display = "Path Error")]
+	#[fail(display = "POW Path Error")]
 	Path,
 	/// Invalid cycle
-	#[fail(display = "Invalid Cycle length: {}", _0)]
+	#[fail(display = "POW Invalid Cycle length: {}", _0)]
 	InvalidCycle(usize),
 	/// No Cycle
-	#[fail(display = "No Cycle")]
+	#[fail(display = "POW No Cycle")]
 	NoCycle,
 	/// No Solution
-	#[fail(display = "No Solution")]
+	#[fail(display = "POW No Solution")]
 	NoSolution,
 }
 

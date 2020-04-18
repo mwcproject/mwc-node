@@ -213,11 +213,11 @@ impl TxHashSetRoots {
 		);
 
 		if header.output_root != self.output_root(header) {
-			Err(ErrorKind::InvalidRoot.into())
+			Err(ErrorKind::InvalidRoot("Failed Output root validation".to_string()).into())
 		} else if header.range_proof_root != self.rproof_root {
-			Err(ErrorKind::InvalidRoot.into())
+			Err(ErrorKind::InvalidRoot("Failed Range Proof root validation".to_string()).into())
 		} else if header.kernel_root != self.kernel_root {
-			Err(ErrorKind::InvalidRoot.into())
+			Err(ErrorKind::InvalidRoot("Failed Kernel root validation".to_string()).into())
 		} else {
 			Ok(())
 		}

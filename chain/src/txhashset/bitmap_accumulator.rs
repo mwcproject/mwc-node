@@ -149,7 +149,7 @@ impl BitmapAccumulator {
 		let chunk_pos = pmmr::insertion_to_pmmr_index(chunk_idx + 1);
 		let rewind_pos = chunk_pos.saturating_sub(1);
 		pmmr.rewind(rewind_pos, &Bitmap::create())
-			.map_err(|e| ErrorKind::Other(e))?;
+			.map_err(|e| ErrorKind::Other(format!("pmmr rewind error, {}", e)))?;
 		Ok(())
 	}
 
@@ -171,7 +171,9 @@ impl BitmapAccumulator {
 		let last_pos = self.backend.size();
 		PMMR::at(&mut self.backend, last_pos)
 			.push(&chunk)
-			.map_err(|e| ErrorKind::Other(e).into())
+			.map_err(|e| {
+				ErrorKind::Other(format!("PMMR at for pos {} error, {}", last_pos, e)).into()
+			})
 	}
 
 	/// The root hash of the bitmap accumulator MMR.

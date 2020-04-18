@@ -22,6 +22,7 @@ use crate::config::GlobalConfig;
 use crate::p2p;
 use crate::servers::ServerConfig;
 use crate::util::file::get_first_line;
+use failure::Fail;
 use term;
 
 pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig) -> i32 {
@@ -100,7 +101,9 @@ pub fn ban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Optio
 		config.api_http_addr,
 		peer_addr.to_string()
 	);
-	match api::client::post_no_ret(url.as_str(), api_secret, &params).map_err(|e| Error::API(e)) {
+	match api::client::post_no_ret(url.as_str(), api_secret, &params)
+		.map_err(|e| Error::API(url, e))
+	{
 		Ok(_) => writeln!(e, "Successfully banned peer {}", peer_addr.to_string()).unwrap(),
 		Err(_) => writeln!(e, "Failed to ban peer {}", peer_addr).unwrap(),
 	};
@@ -118,7 +121,7 @@ pub fn unban_peer(config: &ServerConfig, peer_addr: &SocketAddr, api_secret: Opt
 	let res: Result<(), api::Error>;
 	res = api::client::post_no_ret(url.as_str(), api_secret, &params);
 
-	match res.map_err(|e| Error::API(e)) {
+	match res.map_err(|e| Error::API(url, e)) {
 		Ok(_) => writeln!(e, "Successfully unbanned peer {}", peer_addr).unwrap(),
 		Err(_) => writeln!(e, "Failed to unban peer {}", peer_addr).unwrap(),
 	};
@@ -132,7 +135,7 @@ pub fn list_connected_peers(config: &ServerConfig, api_secret: Option<String>) {
 
 	let peers_info = api::client::get::<Vec<p2p::types::PeerInfoDisplay>>(url.as_str(), api_secret);
 
-	match peers_info.map_err(|e| Error::API(e)) {
+	match peers_info.map_err(|e| Error::API(url, e)) {
 		Ok(connected_peers) => {
 			let mut index = 0;
 			for connected_peer in connected_peers {
@@ -159,12 +162,13 @@ fn get_status_from_node(
 	api_secret: Option<String>,
 ) -> Result<api::Status, Error> {
 	let url = format!("http://{}/v1/status", config.api_http_addr);
-	api::client::get::<api::Status>(url.as_str(), api_secret).map_err(|e| Error::API(e))
+	api::client::get::<api::Status>(url.as_str(), api_secret).map_err(|e| Error::API(url, e))
 }
 
 /// Error type wrapping underlying module errors.
-#[derive(Debug)]
+#[derive(Fail, Debug)]
 enum Error {
 	/// Error originating from HTTP API calls.
-	API(api::Error),
+	#[fail(display = "API call error {}, {}", _0, _1)]
+	API(String, api::Error),
 }

@@ -582,7 +582,7 @@ fn test_block_with_timelocked_tx() {
 	);
 
 	match b.validate(&BlindingFactor::zero(), vc.clone()) {
-		Err(KernelLockHeight(height)) => {
+		Err(KernelLockHeight(height, _)) => {
 			assert_eq!(height, 2);
 		}
 		_ => panic!("expecting KernelLockHeight error here"),

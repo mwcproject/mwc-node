@@ -23,7 +23,6 @@ use crate::types::*;
 use crate::util;
 use crate::util::RwLock;
 use crate::web::*;
-use failure::ResultExt;
 use futures::future::{err, ok};
 use futures::Future;
 use hyper::{Body, Request, StatusCode};
@@ -83,10 +82,10 @@ impl PoolHandler {
 		let header = tx_pool
 			.blockchain
 			.chain_head()
-			.context(ErrorKind::Internal("Failed to get chain head".to_owned()))?;
+			.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
 		let res = tx_pool
 			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
-			.context(ErrorKind::Internal("Failed to update pool".to_owned()))?;
+			.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
 		Ok(res)
 	}
 }
@@ -115,15 +114,25 @@ impl PoolPushHandler {
 		Box::new(
 			parse_body(req)
 				.and_then(move |wrapper: TxWrapper| {
-					util::from_hex(wrapper.tx_hex)
-						.map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
+					util::from_hex(wrapper.tx_hex.as_str()).map_err(|e| {
+						ErrorKind::RequestError(format!(
+							"Unable to decode transaction hex {}, {}",
+							wrapper.tx_hex, e
+						))
+						.into()
+					})
 				})
 				.and_then(move |tx_bin| {
 					// All wallet api interaction explicitly uses protocol version 1 for now.
 					let version = ProtocolVersion(1);
 
-					ser::deserialize(&mut &tx_bin[..], version)
-						.map_err(|e| ErrorKind::RequestError(format!("Bad request: {}", e)).into())
+					ser::deserialize(&mut &tx_bin[..], version).map_err(|e| {
+						ErrorKind::RequestError(format!(
+							"Unable to deserialize transaction from binary {:?}, {}",
+							tx_bin, e
+						))
+						.into()
+					})
 				})
 				.and_then(move |tx: Transaction| {
 					let source = pool::TxSource::PushApi;
@@ -137,13 +146,14 @@ impl PoolPushHandler {
 
 					//  Push to tx pool.
 					let mut tx_pool = pool_arc.write();
-					let header = tx_pool
-						.blockchain
-						.chain_head()
-						.context(ErrorKind::Internal("Failed to get chain head".to_owned()))?;
+					let header = tx_pool.blockchain.chain_head().map_err(|e| {
+						ErrorKind::Internal(format!("Failed to get chain head, {}", e))
+					})?;
 					let res = tx_pool
 						.add_to_pool(source, tx, !fluff, &header)
-						.context(ErrorKind::Internal("Failed to update pool".to_owned()))?;
+						.map_err(|e| {
+							ErrorKind::Internal(format!("Failed to update pool, {}", e))
+						})?;
 					Ok(res)
 				}),
 		)

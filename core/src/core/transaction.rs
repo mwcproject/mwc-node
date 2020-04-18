@@ -28,7 +28,6 @@ use keychain::{self, BlindingFactor};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
 use std::sync::Arc;
-use std::{error, fmt};
 use util;
 use util::secp;
 use util::secp::pedersen::{Commitment, RangeProof};
@@ -140,22 +139,31 @@ impl KernelFeatures {
 		let features = match feature_byte {
 			KernelFeatures::PLAIN_U8 => {
 				if lock_height != 0 {
-					return Err(ser::Error::CorruptedData);
+					return Err(ser::Error::CorruptedData(
+						"Invalid kernel feature lock height".to_string(),
+					));
 				}
 				KernelFeatures::Plain { fee }
 			}
 			KernelFeatures::COINBASE_U8 => {
 				if fee != 0 {
-					return Err(ser::Error::CorruptedData);
+					return Err(ser::Error::CorruptedData(
+						"Invalid kernel feature, coinbase with fee".to_string(),
+					));
 				}
 				if lock_height != 0 {
-					return Err(ser::Error::CorruptedData);
+					return Err(ser::Error::CorruptedData(
+						"Invalid kernel feature, coinbase with lock height".to_string(),
+					));
 				}
 				KernelFeatures::Coinbase
 			}
 			KernelFeatures::HEIGHT_LOCKED_U8 => KernelFeatures::HeightLocked { fee, lock_height },
-			_ => {
-				return Err(ser::Error::CorruptedData);
+			kf => {
+				return Err(ser::Error::CorruptedData(format!(
+					"Invalid kernel feature value {}",
+					kf
+				)));
 			}
 		};
 		Ok(features)
@@ -175,8 +183,11 @@ impl KernelFeatures {
 				let lock_height = reader.read_u64()?;
 				KernelFeatures::HeightLocked { fee, lock_height }
 			}
-			_ => {
-				return Err(ser::Error::CorruptedData);
+			kf => {
+				return Err(ser::Error::CorruptedData(format!(
+					"Invalid kernel feature value {}",
+					kf
+				)));
 			}
 		};
 		Ok(features)
@@ -210,61 +221,60 @@ impl Readable for KernelFeatures {
 }
 
 /// Errors thrown by Transaction validation
-#[derive(Clone, Eq, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Fail, Clone, Eq, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Error {
 	/// Underlying Secp256k1 error (signature validation or invalid public key
 	/// typically)
+	#[fail(display = "Secp256k1 error, {}", _0)]
 	Secp(secp::Error),
 	/// Underlying keychain related error
+	#[fail(display = "Keychain error, {}", _0)]
 	Keychain(keychain::Error),
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
+	#[fail(display = "Tx Kernel Sum Mismatch")]
 	KernelSumMismatch,
 	/// Restrict tx total weight.
+	#[fail(display = "Tx total weight too heavy")]
 	TooHeavy,
 	/// Error originating from an invalid lock-height
+	#[fail(display = "Tx Invalid lock height {}", _0)]
 	LockHeight(u64),
 	/// Range proof validation error
+	#[fail(display = "Tx Invalid range proof")]
 	RangeProof,
 	/// Error originating from an invalid Merkle proof
+	#[fail(display = "Tx Invalid Merkle Proof")]
 	MerkleProof,
 	/// Returns if the value hidden within the a RangeProof message isn't
 	/// repeated 3 times, indicating it's incorrect
+	#[fail(display = "Tx Invalid Proof Message")]
 	InvalidProofMessage,
 	/// Error when verifying kernel sums via committed trait.
+	#[fail(display = "Tx Verifying kernel sums error, {}", _0)]
 	Committed(committed::Error),
 	/// Error when sums do not verify correctly during tx aggregation.
 	/// Likely a "double spend" across two unconfirmed txs.
+	#[fail(display = "Tx aggregation error")]
 	AggregationError,
 	/// Validation error relating to cut-through (tx is spending its own
 	/// output).
+	#[fail(display = "Tx cut through error")]
 	CutThrough,
 	/// Validation error relating to output features.
 	/// It is invalid for a transaction to contain a coinbase output, for example.
+	#[fail(display = "Tx Invalid output feature")]
 	InvalidOutputFeatures,
 	/// Validation error relating to kernel features.
 	/// It is invalid for a transaction to contain a coinbase kernel, for example.
+	#[fail(display = "Tx Invalid kernel feature")]
 	InvalidKernelFeatures,
 	/// Signature verification error.
+	#[fail(display = "Tx Invalid signature")]
 	IncorrectSignature,
 	/// Underlying serialization error.
+	#[fail(display = "Tx Serialization error, {}", _0)]
 	Serialization(ser::Error),
-}
-
-impl error::Error for Error {
-	fn description(&self) -> &str {
-		match *self {
-			_ => "some kind of keychain error",
-		}
-	}
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			_ => write!(f, "some kind of keychain error"),
-		}
-	}
 }
 
 impl From<ser::Error> for Error {
@@ -517,6 +527,18 @@ impl PartialEq for TransactionBody {
 /// write the body as binary.
 impl Writeable for TransactionBody {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.inputs.len() > ser::READ_VEC_SIZE_LIMIT as usize
+			|| self.outputs.len() > ser::READ_VEC_SIZE_LIMIT as usize
+			|| self.kernels.len() > ser::READ_VEC_SIZE_LIMIT as usize
+		{
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"Transaction has impossibly many items: inputs {}, outputs {}, kerners {}",
+				self.inputs.len(),
+				self.outputs.len(),
+				self.kernels.len()
+			)));
+		}
+
 		ser_multiwrite!(
 			writer,
 			[write_u64, self.inputs.len() as u64],
@@ -547,8 +569,22 @@ impl Readable for TransactionBody {
 			kernel_len as usize,
 		);
 
+		if input_len > ser::READ_VEC_SIZE_LIMIT
+			|| output_len > ser::READ_VEC_SIZE_LIMIT
+			|| kernel_len > ser::READ_VEC_SIZE_LIMIT
+		{
+			return Err(ser::Error::TooLargeReadErr(format!(
+				"Transaction has impossibly many items: inputs {}, outputs {}, kerners {}",
+				input_len, output_len, kernel_len
+			)));
+		}
+
 		if tx_block_weight > global::max_block_weight() {
-			return Err(ser::Error::TooLargeReadErr);
+			return Err(ser::Error::TooLargeReadErr(format!(
+				"Tx body weight {} is too heavy. Limit value {}",
+				tx_block_weight,
+				global::max_block_weight()
+			)));
 		}
 
 		let inputs = read_multi(reader, input_len)?;
@@ -557,7 +593,7 @@ impl Readable for TransactionBody {
 
 		// Initialize tx body and verify everything is sorted.
 		let body = TransactionBody::init(inputs, outputs, kernels, true)
-			.map_err(|_| ser::Error::CorruptedData)?;
+			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read transaction, {}", e)))?;
 
 		Ok(body)
 	}
@@ -921,7 +957,8 @@ impl Readable for Transaction {
 		// Treat any validation issues as data corruption.
 		// An example of this would be reading a tx
 		// that exceeded the allowed number of inputs.
-		tx.validate_read().map_err(|_| ser::Error::CorruptedData)?;
+		tx.validate_read()
+			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read Tx, {}", e)))?;
 
 		Ok(tx)
 	}
@@ -1357,8 +1394,9 @@ impl Writeable for OutputFeatures {
 
 impl Readable for OutputFeatures {
 	fn read(reader: &mut dyn Reader) -> Result<OutputFeatures, ser::Error> {
-		let features =
-			OutputFeatures::from_u8(reader.read_u8()?).ok_or(ser::Error::CorruptedData)?;
+		let features = OutputFeatures::from_u8(reader.read_u8()?).ok_or(
+			ser::Error::CorruptedData("Unable to read output features".to_string()),
+		)?;
 		Ok(features)
 	}
 }
@@ -1711,6 +1749,11 @@ mod test {
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(3u8, 0u64, 0u64)).expect("serialized failed");
 		let res: Result<KernelFeatures, _> = ser::deserialize_default(&mut &vec[..]);
-		assert_eq!(res.err(), Some(ser::Error::CorruptedData));
+		assert_eq!(
+			res.err(),
+			Some(ser::Error::CorruptedData(
+				"Invalid kernel feature value 3".to_string()
+			))
+		);
 	}
 }

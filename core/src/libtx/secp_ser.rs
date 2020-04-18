@@ -44,10 +44,15 @@ pub mod pubkey_serde {
 		let static_secp = static_secp_instance();
 		let static_secp = static_secp.lock();
 		String::deserialize(deserializer)
-			.and_then(|string| from_hex(string).map_err(|err| Error::custom(err.to_string())))
+			.and_then(|string| {
+				from_hex(string.as_str()).map_err(|err| {
+					Error::custom(format!("Unable to decode pub key HEX {}, {}", string, err))
+				})
+			})
 			.and_then(|bytes: Vec<u8>| {
-				PublicKey::from_slice(&static_secp, &bytes)
-					.map_err(|err| Error::custom(err.to_string()))
+				PublicKey::from_slice(&static_secp, &bytes).map_err(|err| {
+					Error::custom(format!("Unable to build Pub Key from {:?}, {}", bytes, err))
+				})
 			})
 	}
 }
@@ -81,14 +86,16 @@ pub mod option_sig_serde {
 		let static_secp = static_secp_instance();
 		let static_secp = static_secp.lock();
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
-			Some(string) => from_hex(string.to_string())
-				.map_err(|err| Error::custom(err.to_string()))
+			Some(string) => from_hex(string.as_str())
+				.map_err(|err| {
+					Error::custom(format!("Fail to parse signature HEX {}, {}", string, err))
+				})
 				.and_then(|bytes: Vec<u8>| {
 					let mut b = [0u8; 64];
 					b.copy_from_slice(&bytes[0..64]);
 					secp::Signature::from_compact(&static_secp, &b)
 						.map(|val| Some(val))
-						.map_err(|err| Error::custom(err.to_string()))
+						.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 				}),
 			None => Ok(None),
 		})
@@ -123,14 +130,16 @@ pub mod option_seckey_serde {
 		let static_secp = static_secp_instance();
 		let static_secp = static_secp.lock();
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
-			Some(string) => from_hex(string.to_string())
-				.map_err(|err| Error::custom(err.to_string()))
+			Some(string) => from_hex(string.as_str())
+				.map_err(|err| {
+					Error::custom(format!("Fail to parse key from HEX {}, {}", string, err))
+				})
 				.and_then(|bytes: Vec<u8>| {
 					let mut b = [0u8; 32];
 					b.copy_from_slice(&bytes[0..32]);
 					secp::key::SecretKey::from_slice(&static_secp, &b)
 						.map(|val| Some(val))
-						.map_err(|err| Error::custom(err.to_string()))
+						.map_err(|err| Error::custom(format!("Fail to decode key, {}", err)))
 				}),
 			None => Ok(None),
 		})
@@ -161,12 +170,16 @@ pub mod sig_serde {
 		let static_secp = static_secp_instance();
 		let static_secp = static_secp.lock();
 		String::deserialize(deserializer)
-			.and_then(|string| from_hex(string).map_err(|err| Error::custom(err.to_string())))
+			.and_then(|string| {
+				from_hex(string.as_str()).map_err(|err| {
+					Error::custom(format!("Fail to parse signature HEX {}, {}", string, err))
+				})
+			})
 			.and_then(|bytes: Vec<u8>| {
 				let mut b = [0u8; 64];
 				b.copy_from_slice(&bytes[0..64]);
 				secp::Signature::from_compact(&static_secp, &b)
-					.map_err(|err| Error::custom(err.to_string()))
+					.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 			})
 	}
 }
@@ -195,8 +208,10 @@ pub mod option_commitment_serde {
 		D: Deserializer<'de>,
 	{
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
-			Some(string) => from_hex(string.to_string())
-				.map_err(|err| Error::custom(err.to_string()))
+			Some(string) => from_hex(string.as_str())
+				.map_err(|err| {
+					Error::custom(format!("Fail to parse Commit from HEX {}, {}", string, err))
+				})
 				.and_then(|bytes: Vec<u8>| Ok(Some(Commitment::from_vec(bytes.to_vec())))),
 			None => Ok(None),
 		})
@@ -209,7 +224,12 @@ where
 {
 	use serde::de::Error;
 	String::deserialize(deserializer).and_then(|string| {
-		BlindingFactor::from_hex(&string).map_err(|err| Error::custom(err.to_string()))
+		BlindingFactor::from_hex(&string).map_err(|err| {
+			Error::custom(format!(
+				"Fail to parse blinding factor HEX {}, {}",
+				string, err
+			))
+		})
 	})
 }
 
@@ -220,8 +240,11 @@ where
 {
 	use serde::de::{Error, IntoDeserializer};
 
-	let val = String::deserialize(deserializer)
-		.and_then(|string| from_hex(string).map_err(|err| Error::custom(err.to_string())))?;
+	let val = String::deserialize(deserializer).and_then(|string| {
+		from_hex(string.as_str()).map_err(|err| {
+			Error::custom(format!("Fail to parse range proof HEX {}, {}", string, err))
+		})
+	})?;
 	RangeProof::deserialize(val.into_deserializer())
 }
 
@@ -232,7 +255,11 @@ where
 {
 	use serde::de::Error;
 	String::deserialize(deserializer)
-		.and_then(|string| from_hex(string).map_err(|err| Error::custom(err.to_string())))
+		.and_then(|string| {
+			from_hex(string.as_str()).map_err(|err| {
+				Error::custom(format!("Fail to parse commitment HEX {}, {}", string, err))
+			})
+		})
 		.and_then(|bytes: Vec<u8>| Ok(Commitment::from_vec(bytes.to_vec())))
 }
 
@@ -286,7 +313,8 @@ pub mod string_or_u64 {
 			where
 				E: de::Error,
 			{
-				s.parse().map_err(de::Error::custom)
+				s.parse()
+					.map_err(|e| de::Error::custom(format!("Fail to parse u64 {}, {}", s, e)))
 			}
 		}
 		deserializer.deserialize_any(Visitor)
@@ -335,7 +363,9 @@ pub mod opt_string_or_u64 {
 			where
 				E: de::Error,
 			{
-				let val: u64 = s.parse().map_err(de::Error::custom)?;
+				let val: u64 = s
+					.parse()
+					.map_err(|e| de::Error::custom(format!("Fail to parse u64 {}, {}", s, e)))?;
 				Ok(Some(val))
 			}
 		}

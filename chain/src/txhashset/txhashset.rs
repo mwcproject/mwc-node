@@ -84,7 +84,7 @@ impl PMMRHandle<BlockHeader> {
 		if let Some(entry) = header_pmmr.get_data(pos) {
 			Ok(entry.hash())
 		} else {
-			Err(ErrorKind::Other(format!("get header hash by height")).into())
+			Err(ErrorKind::Other(format!("not found header hash for height {}", height)).into())
 		}
 	}
 
@@ -244,10 +244,16 @@ impl TxHashSet {
 						Err(ErrorKind::TxHashSetErr(format!("txhashset hash mismatch")).into())
 					}
 				} else {
-					Err(ErrorKind::OutputNotFound.into())
+					Err(ErrorKind::OutputNotFound(format!(
+						"output pmmr not found for pos {} and height {}",
+						pos, block_height
+					))
+					.into())
 				}
 			}
-			Err(grin_store::Error::NotFoundErr(_)) => Err(ErrorKind::OutputNotFound.into()),
+			Err(grin_store::Error::NotFoundErr(msg)) => {
+				Err(ErrorKind::OutputNotFound(format!("Commit not found in imdb, {}", msg)).into())
+			}
 			Err(e) => Err(ErrorKind::StoreErr(e, format!("txhashset unspent check")).into()),
 		}
 	}
@@ -366,7 +372,9 @@ impl TxHashSet {
 		let pos = self.commit_index.get_output_pos(&commit)?;
 		PMMR::at(&mut self.output_pmmr_h.backend, self.output_pmmr_h.last_pos)
 			.merkle_proof(pos)
-			.map_err(|_| ErrorKind::MerkleProof.into())
+			.map_err(|e| {
+				ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos, e)).into()
+			})
 	}
 
 	/// Compact the MMR data files and flush the rm logs
@@ -749,7 +757,7 @@ impl<'a> HeaderExtension<'a> {
 		if let Some(hash) = self.get_header_hash(pos) {
 			Ok(self.batch.get_block_header(&hash)?)
 		} else {
-			Err(ErrorKind::Other(format!("get header by height")).into())
+			Err(ErrorKind::Other(format!("not found header for height {}", height)).into())
 		}
 	}
 
@@ -757,13 +765,15 @@ impl<'a> HeaderExtension<'a> {
 	/// If these match we know the header is on the current chain.
 	pub fn is_on_current_chain(&self, header: &BlockHeader) -> Result<(), Error> {
 		if header.height > self.head.height {
-			return Err(ErrorKind::Other(format!("not on current chain, out beyond")).into());
+			return Err(
+				ErrorKind::Other(format!("header is not on current chain, out beyond")).into(),
+			);
 		}
 		let chain_header = self.get_header_by_height(header.height)?;
 		if chain_header.hash() == header.hash() {
 			Ok(())
 		} else {
-			Err(ErrorKind::Other(format!("not on current chain")).into())
+			Err(ErrorKind::Other(format!("header is not on current chain")).into())
 		}
 	}
 
@@ -776,7 +786,12 @@ impl<'a> HeaderExtension<'a> {
 	/// This may be either the header MMR or the sync MMR depending on the
 	/// extension.
 	pub fn apply_header(&mut self, header: &BlockHeader) -> Result<(), Error> {
-		self.pmmr.push(header).map_err(&ErrorKind::TxHashSetErr)?;
+		self.pmmr.push(header).map_err(|e| {
+			ErrorKind::TxHashSetErr(format!(
+				"Unable to apply header with height {}, {}",
+				header.height, e
+			))
+		})?;
 		self.head = Tip::from_header(header);
 		Ok(())
 	}
@@ -795,7 +810,9 @@ impl<'a> HeaderExtension<'a> {
 		let header_pos = pmmr::insertion_to_pmmr_index(header.height + 1);
 		self.pmmr
 			.rewind(header_pos, &Bitmap::create())
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| {
+				ErrorKind::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
+			})?;
 
 		// Update our head to reflect the header we rewound to.
 		self.head = Tip::from_header(header);
@@ -810,7 +827,7 @@ impl<'a> HeaderExtension<'a> {
 
 	/// The root of the header MMR for convenience.
 	pub fn root(&self) -> Result<Hash, Error> {
-		Ok(self.pmmr.root().map_err(|_| ErrorKind::InvalidRoot)?)
+		Ok(self.pmmr.root().map_err(|e| ErrorKind::InvalidRoot(e))?)
 	}
 
 	/// Validate the prev_root of the header against the root of the current header MMR.
@@ -820,8 +837,13 @@ impl<'a> HeaderExtension<'a> {
 		if header.height == 0 {
 			return Ok(());
 		}
-		if self.root()? != header.prev_root {
-			Err(ErrorKind::InvalidRoot.into())
+		let root = self.root()?;
+		if root != header.prev_root {
+			Err(ErrorKind::InvalidRoot(format!(
+				"Unable to validate root, Expected header.prev_root {}, get {}",
+				header.prev_root, root
+			))
+			.into())
 		} else {
 			Ok(())
 		}
@@ -999,11 +1021,11 @@ impl<'a> Extension<'a> {
 				Ok(true) => {
 					self.rproof_pmmr
 						.prune(pos)
-						.map_err(|e| ErrorKind::TxHashSetErr(e))?;
+						.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
 					Ok(pos)
 				}
 				Ok(false) => Err(ErrorKind::AlreadySpent(commit).into()),
-				Err(e) => Err(ErrorKind::TxHashSetErr(e).into()),
+				Err(e) => Err(ErrorKind::TxHashSetErr(format!("commit prune error, {}", e)).into()),
 			}
 		} else {
 			Err(ErrorKind::AlreadySpent(commit).into())
@@ -1024,13 +1046,13 @@ impl<'a> Extension<'a> {
 		let output_pos = self
 			.output_pmmr
 			.push(out)
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
 
 		// push the rangeproof to the MMR.
 		let rproof_pos = self
 			.rproof_pmmr
 			.push(&out.proof)
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr proof push error, {}", e)))?;
 
 		// The output and rproof MMRs should be exactly the same size
 		// and we should have inserted to both in exactly the same pos.
@@ -1054,7 +1076,7 @@ impl<'a> Extension<'a> {
 	fn apply_kernel(&mut self, kernel: &TxKernel) -> Result<(), Error> {
 		self.kernel_pmmr
 			.push(kernel)
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr push kernel error, {}", e)))?;
 		Ok(())
 	}
 
@@ -1067,10 +1089,9 @@ impl<'a> Extension<'a> {
 		debug!("txhashset: merkle_proof: output: {:?}", output.commit,);
 		// then calculate the Merkle Proof based on the known pos
 		let pos = self.batch.get_output_pos(&output.commit)?;
-		let merkle_proof = self
-			.output_pmmr
-			.merkle_proof(pos)
-			.map_err(&ErrorKind::TxHashSetErr)?;
+		let merkle_proof = self.output_pmmr.merkle_proof(pos).map_err(|e| {
+			ErrorKind::TxHashSetErr(format!("pmmr get merkle proof at pos {}, {}", pos, e))
+		})?;
 
 		Ok(merkle_proof)
 	}
@@ -1084,10 +1105,10 @@ impl<'a> Extension<'a> {
 		let header = self.batch.get_block_header(&self.head.last_block_h)?;
 		self.output_pmmr
 			.snapshot(&header)
-			.map_err(|e| ErrorKind::Other(e))?;
+			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
 		self.rproof_pmmr
 			.snapshot(&header)
-			.map_err(|e| ErrorKind::Other(e))?;
+			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
 		Ok(())
 	}
 
@@ -1133,13 +1154,13 @@ impl<'a> Extension<'a> {
 	) -> Result<(), Error> {
 		self.output_pmmr
 			.rewind(output_pos, rewind_rm_pos)
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("output_pmmr rewind error, {}", e)))?;
 		self.rproof_pmmr
 			.rewind(output_pos, rewind_rm_pos)
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
 		self.kernel_pmmr
 			.rewind(kernel_pos, &Bitmap::create())
-			.map_err(&ErrorKind::TxHashSetErr)?;
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e)))?;
 
 		// Update our BitmapAccumulator based on affected outputs.
 		// We want to "unspend" every rewound spent output.
@@ -1158,17 +1179,17 @@ impl<'a> Extension<'a> {
 				pmmr_root: self
 					.output_pmmr
 					.root()
-					.map_err(|_| ErrorKind::InvalidRoot)?,
+					.map_err(|e| ErrorKind::InvalidRoot(e))?,
 				bitmap_root: self.bitmap_accumulator.root(),
 			},
 			rproof_root: self
 				.rproof_pmmr
 				.root()
-				.map_err(|_| ErrorKind::InvalidRoot)?,
+				.map_err(|e| ErrorKind::InvalidRoot(e))?,
 			kernel_root: self
 				.kernel_pmmr
 				.root()
-				.map_err(|_| ErrorKind::InvalidRoot)?,
+				.map_err(|e| ErrorKind::InvalidRoot(e))?,
 		})
 	}
 
@@ -1372,8 +1393,20 @@ impl<'a> Extension<'a> {
 			// Output and corresponding rangeproof *must* exist.
 			// It is invalid for either to be missing and we fail immediately in this case.
 			match (output, proof) {
-				(None, _) => return Err(ErrorKind::OutputNotFound.into()),
-				(_, None) => return Err(ErrorKind::RangeproofNotFound.into()),
+				(None, _) => {
+					return Err(ErrorKind::OutputNotFound(format!(
+						"at verify_rangeproofs for pos {}",
+						pos
+					))
+					.into())
+				}
+				(_, None) => {
+					return Err(ErrorKind::RangeproofNotFound(format!(
+						"at verify_rangeproofs for pos {}",
+						pos
+					))
+					.into())
+				}
 				(Some(output), Some(proof)) => {
 					commits.push(output.commit);
 					proofs.push(proof);

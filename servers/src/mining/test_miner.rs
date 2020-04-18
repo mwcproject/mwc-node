@@ -106,7 +106,7 @@ impl Miner {
 				10,
 			)
 			.unwrap();
-			ctx.set_header_nonce(b.header.pre_pow(), None, true)
+			ctx.set_header_nonce(b.header.pre_pow().unwrap(), None, true)
 				.unwrap();
 			if let Ok(proofs) = ctx.find_cycles() {
 				b.header.pow.proof = proofs[0].clone();

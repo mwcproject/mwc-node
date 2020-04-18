@@ -21,7 +21,7 @@ where
 			.and_then(|body| match serde_json::from_reader(&body.to_vec()[..]) {
 				Ok(obj) => ok(obj),
 				Err(e) => {
-					err(ErrorKind::RequestError(format!("Invalid request body: {}", e)).into())
+					err(ErrorKind::RequestError(format!("Invalid request body, {}", e)).into())
 				}
 			}),
 	)
@@ -37,13 +37,20 @@ where
 		Err(e) => match e.kind() {
 			ErrorKind::Argument(msg) => response(StatusCode::BAD_REQUEST, msg.clone()),
 			ErrorKind::RequestError(msg) => response(StatusCode::BAD_REQUEST, msg.clone()),
-			ErrorKind::NotFound => response(StatusCode::NOT_FOUND, ""),
+			ErrorKind::NotFound(msg) => response(StatusCode::NOT_FOUND, msg.clone()),
 			ErrorKind::Internal(msg) => response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
 			ErrorKind::ResponseError(msg) => {
 				response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
 			}
 			// place holder
-			ErrorKind::Router(_) => response(StatusCode::INTERNAL_SERVER_ERROR, ""),
+			ErrorKind::Router(err) => response(
+				StatusCode::INTERNAL_SERVER_ERROR,
+				format!("Router Error, {}", err),
+			),
+			ErrorKind::P2pError(err) => response(
+				StatusCode::INTERNAL_SERVER_ERROR,
+				format!("P2P Error, {}", err),
+			),
 		},
 	}
 }
@@ -56,7 +63,10 @@ where
 {
 	match serde_json::to_string(s) {
 		Ok(json) => response(StatusCode::OK, json),
-		Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, ""),
+		Err(e) => response(
+			StatusCode::INTERNAL_SERVER_ERROR,
+			format!("Unable to build respond json, {}", e),
+		),
 	}
 }
 
@@ -155,7 +165,7 @@ macro_rules! must_get_query(
 	($req: expr) =>(
 		match $req.uri().query() {
 			Some(q) => q,
-			None => return Err(ErrorKind::RequestError("no query string".to_owned()))?,
+			None => return Err(ErrorKind::RequestError( format!("no query string at uri {}",$req.uri())))?,
 		}
 	));
 

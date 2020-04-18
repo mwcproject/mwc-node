@@ -820,7 +820,7 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 					Ok(())
 				})
 				.map_err(move |e| {
-					error!("error {}", e);
+					error!("error processing request to stratum, {}", e);
 					ip_pool_clone2.report_fail_noise(&ip_clone2);
 				});
 
@@ -828,15 +828,14 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 				let s2 = s + "\n";
 				tokio::io::write_all(writer, s2.into_bytes())
 					.map(|(writer, _)| writer)
-					.map_err(|e| error!("cannot send {}", e))
+					.map_err(|e| error!("stratum cannot send data to worker, {}", e))
 			});
 
 			let workers = handler.workers.clone();
 			let both = output
 				.map(|_| ())
-				.map_err(|_| {
-					error!("cannot send..");
-					//ip_pool_copy.report_fail_respond(&ip_copy);
+				.map_err(|e| {
+					error!("stratum cannot send data to worker, {:?}", e);
 				})
 				.select(input)
 				.select2(kill_switch_receiver.fuse());
@@ -863,9 +862,7 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 
 			Ok(())
 		})
-		.map_err(|err| {
-			error!("accept error = {:?}", err);
-		});
+		.map_err(|err| error!("Stratum accept connections error {}", err));
 
 	if stratum_tokio_workers > 0 {
 		// Creating runtime with specifyed number of threads
@@ -876,11 +873,19 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 			.name_prefix("stratum_worker_")
 			.build()
 			.unwrap();
-		rt.spawn(server.map(|_| ()).map_err(|_| ()));
+		rt.spawn(
+			server
+				.map(|_| ())
+				.map_err(|e| error!("Tokio unable to start stratum server, {:?}", e)),
+		);
 		rt.shutdown_on_idle().wait().unwrap();
 	} else {
 		// default runtime. Number of threads equal to number of CPUs
-		tokio::run(server.map(|_| ()).map_err(|_| ()));
+		tokio::run(
+			server
+				.map(|_| ())
+				.map_err(|e| error!("Tokio unable to start stratum server, {:?}", e)),
+		);
 	}
 }
 

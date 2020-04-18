@@ -29,22 +29,22 @@ pub struct Error {
 /// Libwallet error types
 pub enum ErrorKind {
 	/// SECP error
-	#[fail(display = "Secp Error")]
+	#[fail(display = "LibTx Secp Error, {}", _0)]
 	Secp(secp::Error),
 	/// Keychain error
-	#[fail(display = "Keychain Error")]
+	#[fail(display = "LibTx Keychain Error, {}", _0)]
 	Keychain(keychain::Error),
 	/// Transaction error
-	#[fail(display = "Transaction Error")]
+	#[fail(display = "LibTx Transaction Error, {}", _0)]
 	Transaction(transaction::Error),
 	/// Signature error
-	#[fail(display = "Signature Error")]
+	#[fail(display = "LibTx Signature Error, {}", _0)]
 	Signature(String),
 	/// Rangeproof error
-	#[fail(display = "Rangeproof Error")]
+	#[fail(display = "LibTx Rangeproof Error, {}", _0)]
 	RangeProof(String),
 	/// Other error
-	#[fail(display = "Other Error")]
+	#[fail(display = "LibTx Other Error, {}", _0)]
 	Other(String),
 }
 

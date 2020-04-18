@@ -338,7 +338,7 @@ impl Chain {
 				Ok(head)
 			}
 			Err(e) => match e.kind() {
-				ErrorKind::Orphan => {
+				ErrorKind::Orphan(msg) => {
 					let block_hash = b.hash();
 					let orphan = Orphan {
 						block: b,
@@ -349,8 +349,9 @@ impl Chain {
 					&self.orphans.add(orphan);
 
 					debug!(
-						"process_block: orphan: {:?}, # orphans {}{}",
+						"process_block: orphan: {:?}, {}, # orphans {}{}",
 						block_hash,
+						msg,
 						self.orphans.len(),
 						if self.orphans.len_evicted() > 0 {
 							format!(", # evicted {}", self.orphans.len_evicted())
@@ -358,7 +359,7 @@ impl Chain {
 							String::new()
 						},
 					);
-					Err(ErrorKind::Orphan.into())
+					Err(ErrorKind::Orphan(msg).into())
 				}
 				ErrorKind::Unfit(ref msg) => {
 					debug!(
@@ -920,8 +921,8 @@ impl Chain {
 
 		let header = match self.get_block_header(&h) {
 			Ok(header) => header,
-			Err(_) => {
-				warn!("txhashset_write: cannot find block header");
+			Err(e) => {
+				warn!("txhashset_write: cannot find block header, {}", e);
 				// This is a bannable reason
 				return Ok(true);
 			}
@@ -1441,7 +1442,7 @@ impl Chain {
 		if chain_header.hash() == header.hash() {
 			Ok(())
 		} else {
-			Err(ErrorKind::Other(format!("not on current chain")).into())
+			Err(ErrorKind::Other(format!("header is not on current chain")).into())
 		}
 	}
 

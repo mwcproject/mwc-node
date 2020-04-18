@@ -305,11 +305,13 @@ impl MessageHandler for Protocol {
 				// to read this file directly without reopening it.
 				writer.seek(SeekFrom::Start(0))?;
 
-				let mut file = writer.into_inner().map_err(|_| Error::Internal)?;
+				let mut file = writer
+					.into_inner()
+					.map_err(|e| Error::Internal(format!("Unable to update peer data, {}", e)))?;
 
 				debug!(
 					"handle_payload: kernel_data_response: file size: {}",
-					file.metadata().unwrap().len()
+					file.metadata().map_or(0, |m| m.len())
 				);
 
 				self.adapter.kernel_data_write(&mut file)?;
@@ -414,7 +416,9 @@ impl MessageHandler for Protocol {
 					);
 					tmp_zip
 						.into_inner()
-						.map_err(|_| Error::Internal)?
+						.map_err(|e| {
+							Error::Internal(format!("Unable to save txhashset data, {}", e))
+						})?
 						.sync_all()?;
 					Ok(())
 				};

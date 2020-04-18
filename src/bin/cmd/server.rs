@@ -61,7 +61,7 @@ fn start_server_tui(
 			},
 			allow_to_stop,
 		)
-		.map_err(|e| error!("Unable to start MWC in UI mode {:?}", e))
+		.map_err(|e| error!("Unable to start MWC in UI mode, {}", e))
 		.expect("Unable to start MWC in UI mode");
 	} else {
 		warn!("Starting MWC w/o UI...");
@@ -81,7 +81,7 @@ fn start_server_tui(
 			},
 			allow_to_stop,
 		)
-		.map_err(|e| error!("Unable to start MWC w/o UI mode {:?}", e))
+		.map_err(|e| error!("Unable to start MWC w/o UI mode, {}", e))
 		.expect("Unable to start MWC w/o UI mode");
 	}
 }

@@ -29,8 +29,9 @@
 //! Base58 encoder and decoder
 
 use digest::Digest;
+use failure::Fail;
 use sha2::Sha256;
-use std::{error, fmt, str};
+use std::{fmt, str};
 
 use byteorder::{ByteOrder, LittleEndian};
 
@@ -52,57 +53,31 @@ pub fn into_le_low_u32(data: &[u8; 32]) -> u32 {
 }
 
 /// An error that might occur during base58 decoding
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Fail, Debug, PartialEq, Eq, Clone)]
 pub enum Error {
 	/// Invalid character encountered
+	#[fail(display = "invalid base58 character 0x{:x}", _0)]
 	BadByte(u8),
 	/// Checksum was not correct (expected, actual)
+	#[fail(
+		display = "base58ck checksum 0x{:x} does not match expected 0x{:x}",
+		_0, _1
+	)]
 	BadChecksum(u32, u32),
 	/// The length (in bytes) of the object was not correct
 	/// Note that if the length is excessively long the provided length may be
 	/// an estimate (and the checksum step may be skipped).
+	#[fail(display = "length {} invalid for this base58 type", _0)]
 	InvalidLength(usize),
 	/// Version byte(s) were not recognized
+	#[fail(display = "version {:?} invalid for this base58 type", _0)]
 	InvalidVersion(Vec<u8>),
 	/// Checked data was less than 4 bytes
+	#[fail(display = "b58ck checksum less than 4 bytes, get {}", _0)]
 	TooShort(usize),
 	/// Any other error
+	#[fail(display = "base58 error, {}", _0)]
 	Other(String),
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			Error::BadByte(b) => write!(f, "invalid base58 character 0x{:x}", b),
-			Error::BadChecksum(exp, actual) => write!(
-				f,
-				"base58ck checksum 0x{:x} does not match expected 0x{:x}",
-				actual, exp
-			),
-			Error::InvalidLength(ell) => write!(f, "length {} invalid for this base58 type", ell),
-			Error::InvalidVersion(ref v) => {
-				write!(f, "version {:?} invalid for this base58 type", v)
-			}
-			Error::TooShort(_) => write!(f, "base58ck data not even long enough for a checksum"),
-			Error::Other(ref s) => f.write_str(s),
-		}
-	}
-}
-
-impl error::Error for Error {
-	fn cause(&self) -> Option<&dyn error::Error> {
-		None
-	}
-	fn description(&self) -> &'static str {
-		match *self {
-			Error::BadByte(_) => "invalid b58 character",
-			Error::BadChecksum(_, _) => "invalid b58ck checksum",
-			Error::InvalidLength(_) => "invalid length for b58 type",
-			Error::InvalidVersion(_) => "invalid version for b58 type",
-			Error::TooShort(_) => "b58ck data less than 4 bytes",
-			Error::Other(_) => "unknown b58 error",
-		}
-	}
 }
 
 static BASE58_CHARS: &'static [u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -388,7 +363,7 @@ mod tests {
 		assert_eq!(&_encode_slice(&[0, 0, 0, 0, 13, 36][..]), "1111211");
 
 		// Addresses
-		let addr = from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d".to_owned()).unwrap();
+		let addr = from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap();
 		assert_eq!(
 			&check_encode_slice(&addr[..]),
 			"1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH"
@@ -410,7 +385,7 @@ mod tests {
 		// Addresses
 		assert_eq!(
 			from_check("1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH").ok(),
-			Some(from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d".to_owned()).unwrap())
+			Some(from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap())
 		)
 	}
 

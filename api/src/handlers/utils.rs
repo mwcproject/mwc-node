@@ -18,7 +18,6 @@ use crate::rest::*;
 use crate::types::*;
 use crate::util;
 use crate::util::secp::pedersen::Commitment;
-use failure::ResultExt;
 use std::sync::{Arc, Weak};
 
 // All handlers use `Weak` references instead of `Arc` to avoid cycles that
@@ -34,10 +33,8 @@ pub fn get_output(
 	chain: &Weak<chain::Chain>,
 	id: &str,
 ) -> Result<(Output, OutputIdentifier), Error> {
-	let c = util::from_hex(String::from(id)).context(ErrorKind::Argument(format!(
-		"Not a valid commitment: {}",
-		id
-	)))?;
+	let c = util::from_hex(id)
+		.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
 	let commit = Commitment::from_vec(c);
 
 	// We need the features here to be able to generate the necessary hash
@@ -70,7 +67,7 @@ pub fn get_output(
 			}
 		}
 	}
-	Err(ErrorKind::NotFound)?
+	Err(ErrorKind::NotFound(format!("Output for id {}", id)))?
 }
 
 /// Retrieves an output from the chain given a commit id (a tiny bit iteratively)
@@ -80,10 +77,8 @@ pub fn get_output_v2(
 	include_proof: bool,
 	include_merkle_proof: bool,
 ) -> Result<(OutputPrintable, OutputIdentifier), Error> {
-	let c = util::from_hex(String::from(id)).context(ErrorKind::Argument(format!(
-		"Not a valid commitment: {}",
-		id
-	)))?;
+	let c = util::from_hex(id)
+		.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
 	let commit = Commitment::from_vec(c);
 
 	// We need the features here to be able to generate the necessary hash
@@ -124,7 +119,12 @@ pub fn get_output_v2(
 						}
 					}
 				}
-				Err(_) => return Err(ErrorKind::NotFound)?,
+				Err(e) => {
+					return Err(ErrorKind::NotFound(format!(
+						"Unspent output for id {} at {}, {}",
+						id, output_pos.position, e
+					)))?
+				}
 			},
 			Err(e) => {
 				trace!(
@@ -136,5 +136,5 @@ pub fn get_output_v2(
 			}
 		}
 	}
-	Err(ErrorKind::NotFound)?
+	Err(ErrorKind::NotFound(format!("Output for id {}", id)))?
 }

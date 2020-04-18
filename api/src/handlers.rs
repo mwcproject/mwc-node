@@ -51,7 +51,7 @@ use crate::owner::Owner;
 use crate::owner_rpc::OwnerRpc;
 use crate::p2p;
 use crate::pool;
-use crate::rest::{ApiServer, Error, TLSConfig};
+use crate::rest::{ApiServer, Error, ErrorKind, TLSConfig};
 use crate::router::ResponseFuture;
 use crate::router::{Router, RouterError};
 use crate::stratum::Stratum;
@@ -158,7 +158,7 @@ pub fn node_apis(
 		Ok(_) => Ok(()),
 		Err(e) => {
 			error!("HTTP API server failed to start. Err: {}", e);
-			Err(e)
+			Err(ErrorKind::Internal(format!("HTTP API server failed to start, {}", e)).into())
 		}
 	}
 }
@@ -361,7 +361,10 @@ where
 {
 	match serde_json::to_string_pretty(s) {
 		Ok(json) => response(StatusCode::OK, json),
-		Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, ""),
+		Err(e) => response(
+			StatusCode::INTERNAL_SERVER_ERROR,
+			format!("{{\"error\": \"{}\"}}", e),
+		),
 	}
 }
 

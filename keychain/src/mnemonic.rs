@@ -18,10 +18,10 @@
 //! at https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki
 
 use digest::Digest;
+use failure::Fail;
 use hmac::Hmac;
 use pbkdf2::pbkdf2;
 use sha2::{Sha256, Sha512};
-use std::fmt;
 
 lazy_static! {
 	/// List of bip39 words
@@ -29,28 +29,20 @@ lazy_static! {
 }
 
 /// An error that might occur during mnemonic decoding
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Fail, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Error {
 	/// Invalid word encountered
+	#[fail(display = "invalid bip39 word {}", _0)]
 	BadWord(String),
 	/// Checksum was not correct (expected, actual)
+	#[fail(
+		display = "bip39 checksum 0x{:x} does not match expected 0x{:x}",
+		_0, _1
+	)]
 	BadChecksum(u8, u8),
 	/// The number of words/bytes was invalid
+	#[fail(display = "invalid mnemonic/entropy length {}", _0)]
 	InvalidLength(usize),
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			Error::BadWord(ref b) => write!(f, "invalid bip39 word {}", b),
-			Error::BadChecksum(exp, actual) => write!(
-				f,
-				"checksum 0x{:x} does not match expected 0x{:x}",
-				actual, exp
-			),
-			Error::InvalidLength(ell) => write!(f, "invalid mnemonic/entropy length {}", ell),
-		}
-	}
 }
 
 /// Returns the index of a word in the wordlist
@@ -316,10 +308,10 @@ mod tests {
 			);
 			assert_eq!(
 				to_entropy(t.mnemonic).unwrap().to_vec(),
-				from_hex(t.entropy.to_string()).unwrap()
+				from_hex(t.entropy).unwrap()
 			);
 			assert_eq!(
-				from_entropy(&from_hex(t.entropy.to_string()).unwrap()).unwrap(),
+				from_entropy(&from_hex(t.entropy).unwrap()).unwrap(),
 				t.mnemonic
 			);
 		}

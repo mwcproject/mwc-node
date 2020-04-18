@@ -81,7 +81,8 @@ pub fn extract_files(from_archive: File, dest: &Path, files: Vec<PathBuf>) -> io
 	// If join() above is Ok then we successfully extracted the files.
 	// If the result is Err then we failed to extract the files.
 	res.map_err(|e| {
-		error!("failed to extract files from zip: {:?}", e);
-		io::Error::new(io::ErrorKind::Other, "failed to extract files from zip")
+		let err_msg = format!("failed to extract files from zip: {:?}", e);
+		error!("{}", err_msg);
+		io::Error::new(io::ErrorKind::Other, err_msg)
 	})
 }

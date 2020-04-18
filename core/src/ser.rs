@@ -23,10 +23,10 @@ use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::global::PROTOCOL_VERSION;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use keychain::{BlindingFactor, Identifier, IDENTIFIER_SIZE};
+use std::cmp;
 use std::fmt::{self, Debug};
 use std::io::{self, Read, Write};
 use std::marker;
-use std::{cmp, error};
 use util::secp::constants::{
 	AGG_SIGNATURE_SIZE, COMPRESSED_PUBLIC_KEY_SIZE, MAX_PROOF_SIZE, PEDERSEN_COMMITMENT_SIZE,
 	SECRET_KEY_SIZE,
@@ -36,10 +36,18 @@ use util::secp::pedersen::{Commitment, RangeProof};
 use util::secp::Signature;
 use util::secp::{ContextFlag, Secp256k1};
 
+/// Serialization size limit for a single chunk/object or array.
+/// WARNING!!! You can increase the number, but never decrease
+pub const READ_CHUNK_LIMIT: usize = 100_000;
+/// Serialization size limit for number in arrays.
+/// WARNING!!! You can increase the number, but never decrease
+pub const READ_VEC_SIZE_LIMIT: u64 = 100_000;
+
 /// Possible errors deriving from serializing or deserializing.
-#[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Fail, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Error {
 	/// Wraps an io error produced when reading or writing
+	#[fail(display = "Serialization IO error {}, {:?}", _0, _1)]
 	IOErr(
 		String,
 		#[serde(
@@ -48,7 +56,14 @@ pub enum Error {
 		)]
 		io::ErrorKind,
 	),
+	/// Wraps secp256k1 error
+	#[fail(display = "Serialization Secp error, {}", _0)]
+	SecpError(util::secp::Error),
 	/// Expected a given value that wasn't found
+	#[fail(
+		display = "Unexpected Data, expected {:?}, got {:?}",
+		expected, received
+	)]
 	UnexpectedData {
 		/// What we wanted
 		expected: Vec<u8>,
@@ -56,19 +71,29 @@ pub enum Error {
 		received: Vec<u8>,
 	},
 	/// Data wasn't in a consumable format
-	CorruptedData,
+	#[fail(display = "Serialization Corrupted data, {}", _0)]
+	CorruptedData(String),
 	/// Incorrect number of elements (when deserializing a vec via read_multi say).
-	CountError,
+	#[fail(display = "Serialization Count error, {}", _0)]
+	CountError(String),
 	/// When asked to read too much data
-	TooLargeReadErr,
+	#[fail(display = "Serialization Too large write, {}", _0)]
+	TooLargeWriteErr(String),
+	/// When asked to read too much data
+	#[fail(display = "Serialization Too large read, {}", _0)]
+	TooLargeReadErr(String),
 	/// Error from from_hex deserialization
+	#[fail(display = "Serialization Hex error {}", _0)]
 	HexError(String),
 	/// Inputs/outputs/kernels must be sorted lexicographically.
+	#[fail(display = "Serialization Broken Sort order")]
 	SortError,
 	/// Inputs/outputs/kernels must be unique.
+	#[fail(display = "Serialization Unexpected Duplicate")]
 	DuplicateError,
 	/// Block header version (hard-fork schedule).
-	InvalidBlockVersion,
+	#[fail(display = "Serialization Invalid block version, {}", _0)]
+	InvalidBlockVersion(String),
 }
 
 impl From<io::Error> for Error {
@@ -77,45 +102,9 @@ impl From<io::Error> for Error {
 	}
 }
 
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			Error::IOErr(ref e, ref _k) => write!(f, "{}", e),
-			Error::UnexpectedData {
-				expected: ref e,
-				received: ref r,
-			} => write!(f, "expected {:?}, got {:?}", e, r),
-			Error::CorruptedData => f.write_str("corrupted data"),
-			Error::CountError => f.write_str("count error"),
-			Error::SortError => f.write_str("sort order"),
-			Error::DuplicateError => f.write_str("duplicate"),
-			Error::TooLargeReadErr => f.write_str("too large read"),
-			Error::HexError(ref e) => write!(f, "hex error {:?}", e),
-			Error::InvalidBlockVersion => f.write_str("invalid block version"),
-		}
-	}
-}
-
-impl error::Error for Error {
-	fn cause(&self) -> Option<&dyn error::Error> {
-		match *self {
-			Error::IOErr(ref _e, ref _k) => Some(self),
-			_ => None,
-		}
-	}
-
-	fn description(&self) -> &str {
-		match *self {
-			Error::IOErr(ref e, _) => e,
-			Error::UnexpectedData { .. } => "unexpected data",
-			Error::CorruptedData => "corrupted data",
-			Error::CountError => "count error",
-			Error::SortError => "sort order",
-			Error::DuplicateError => "duplicate error",
-			Error::TooLargeReadErr => "too large read",
-			Error::HexError(_) => "hex error",
-			Error::InvalidBlockVersion => "invalid block version",
-		}
+impl From<util::secp::Error> for Error {
+	fn from(e: util::secp::Error) -> Error {
+		Error::SecpError(e)
 	}
 }
 
@@ -269,13 +258,24 @@ where
 	// Very rudimentary check to ensure we do not overflow anything
 	// attempting to read huge amounts of data.
 	// Probably better than checking if count * size overflows a u64 though.
-	if count > 1_000_000 {
-		return Err(Error::TooLargeReadErr);
+	// Note!!! Caller on Write responsible to data size checking.
+	// This issue normally should never happen. If you wee this error, it is mean there are
+	// datat validation at write method.
+	debug_assert!(count <= READ_VEC_SIZE_LIMIT);
+	if count > READ_VEC_SIZE_LIMIT {
+		return Err(Error::TooLargeReadErr(format!(
+			"Try to read {} items, limit is 100K",
+			count
+		)));
 	}
 
 	let res: Vec<T> = IteratingReader::new(reader, count).collect();
 	if res.len() as u64 != count {
-		return Err(Error::CountError);
+		return Err(Error::CountError(format!(
+			"Unable to read all data. Get {}, expected {}",
+			res.len(),
+			count
+		)));
 	}
 	Ok(res)
 }
@@ -433,8 +433,11 @@ impl<'a> Reader for BinReader<'a> {
 	/// Read a fixed number of bytes.
 	fn read_fixed_bytes(&mut self, len: usize) -> Result<Vec<u8>, Error> {
 		// not reading more than 100k bytes in a single read
-		if len > 100_000 {
-			return Err(Error::TooLargeReadErr);
+		if len > READ_CHUNK_LIMIT {
+			return Err(Error::TooLargeReadErr(format!(
+				"Try to read {} bytes, limit is 100K",
+				len
+			)));
 		}
 		let mut buf = vec![0; len];
 		self.source
@@ -627,7 +630,7 @@ impl Readable for Signature {
 		let a = reader.read_fixed_bytes(Signature::LEN)?;
 		let mut c = [0; Signature::LEN];
 		c[..Signature::LEN].clone_from_slice(&a[..Signature::LEN]);
-		Ok(Signature::from_raw_data(&c).unwrap())
+		Ok(Signature::from_raw_data(&c)?)
 	}
 }
 
@@ -659,7 +662,8 @@ impl Readable for PublicKey {
 	fn read(reader: &mut dyn Reader) -> Result<Self, Error> {
 		let buf = reader.read_fixed_bytes(PublicKey::LEN)?;
 		let secp = Secp256k1::with_caps(ContextFlag::None);
-		let pk = PublicKey::from_slice(&secp, &buf).map_err(|_| Error::CorruptedData)?;
+		let pk = PublicKey::from_slice(&secp, &buf)
+			.map_err(|e| Error::CorruptedData(format!("Unable to read public key, {}", e)))?;
 		Ok(pk)
 	}
 }

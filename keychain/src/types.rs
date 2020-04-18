@@ -15,13 +15,13 @@
 use rand::thread_rng;
 use std::cmp::min;
 use std::convert::TryFrom;
-use std::io::Cursor;
-use std::ops::Add;
 /// Keychain trait and its main supporting types. The Identifier is a
 /// semi-opaque structure (just bytes) to track keys within the Keychain.
 /// BlindingFactor is a useful wrapper around a private key to help with
 /// commitment generation.
-use std::{error, fmt};
+use std::fmt;
+use std::io::Cursor;
+use std::ops::Add;
 
 use crate::blake2::blake2b::blake2b;
 use crate::extkey_bip32::{self, ChildNumber};
@@ -33,6 +33,7 @@ use crate::util::secp::key::{PublicKey, SecretKey};
 use crate::util::secp::pedersen::Commitment;
 use crate::util::secp::{self, Message, Secp256k1, Signature};
 use crate::util::static_secp_instance;
+use failure::Fail;
 use zeroize::Zeroize;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -40,13 +41,20 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 // Size of an identifier in bytes
 pub const IDENTIFIER_SIZE: usize = 17;
 
-#[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+#[derive(Fail, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
 pub enum Error {
+	#[fail(display = "Keychain secp error, {}", _0)]
 	Secp(secp::Error),
+	#[fail(display = "Keychain derivation key error, {}", _0)]
 	KeyDerivation(extkey_bip32::Error),
+	#[fail(display = "Keychain Transaction error, {}", _0)]
 	Transaction(String),
+	#[fail(display = "Keychain range proof error, {}", _0)]
 	RangeProof(String),
-	SwitchCommitment,
+	#[fail(display = "Keychain unknown commitment type")]
+	SwitchCommitmentType,
+	#[fail(display = "Keychain generic error, {}", _0)]
+	GenericError(String),
 }
 
 impl From<secp::Error> for Error {
@@ -58,22 +66,6 @@ impl From<secp::Error> for Error {
 impl From<extkey_bip32::Error> for Error {
 	fn from(e: extkey_bip32::Error) -> Error {
 		Error::KeyDerivation(e)
-	}
-}
-
-impl error::Error for Error {
-	fn description(&self) -> &str {
-		match *self {
-			_ => "some kind of keychain error",
-		}
-	}
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			_ => write!(f, "some kind of keychain error"),
-		}
 	}
 }
 
@@ -111,7 +103,8 @@ impl<'de> de::Visitor<'de> for IdentifierVisitor {
 	where
 		E: de::Error,
 	{
-		let identifier = Identifier::from_hex(s).unwrap();
+		let identifier = Identifier::from_hex(s)
+			.map_err(|e| de::Error::custom(format!("Unable to parse HEX {}, {}", s, e)))?;
 		Ok(identifier)
 	}
 }
@@ -189,12 +182,13 @@ impl Identifier {
 	/// which is the blake2b (10 byte) digest of the PublicKey
 	/// corresponding to the secret key provided.
 	pub fn from_secret_key(secp: &Secp256k1, key: &SecretKey) -> Result<Identifier, Error> {
-		let key_id = PublicKey::from_secret_key(secp, key)?;
+		let key_id = PublicKey::from_secret_key(secp, key).map_err(|e| Error::Secp(e))?;
 		Ok(Identifier::from_pubkey(secp, &key_id))
 	}
 
 	pub fn from_hex(hex: &str) -> Result<Identifier, Error> {
-		let bytes = util::from_hex(hex.to_string()).unwrap();
+		let bytes = util::from_hex(hex)
+			.map_err(|e| Error::GenericError(format!("Unable to parse HEX {}, {}", hex, e)))?;
 		Ok(Identifier::from_bytes(&bytes))
 	}
 
@@ -297,7 +291,8 @@ impl BlindingFactor {
 	}
 
 	pub fn from_hex(hex: &str) -> Result<BlindingFactor, Error> {
-		let bytes = util::from_hex(hex.to_string()).unwrap();
+		let bytes = util::from_hex(hex)
+			.map_err(|e| Error::GenericError(format!("Unable to parse HEX {}, {}", hex, e)))?;
 		Ok(BlindingFactor::from_slice(&bytes))
 	}
 

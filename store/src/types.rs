@@ -284,8 +284,9 @@ where
 
 	/// Append element to append-only file by serializing it to bytes and appending the bytes.
 	fn append_elmt(&mut self, data: &T) -> io::Result<()> {
-		let mut bytes = ser::ser_vec(data, self.version)
-			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+		let mut bytes = ser::ser_vec(data, self.version).map_err(|e| {
+			io::Error::new(io::ErrorKind::Other, format!("Fail to append data, {}", e))
+		})?;
 		self.append(&mut bytes)?;
 		Ok(())
 	}
@@ -432,8 +433,12 @@ where
 
 	fn read_as_elmt(&self, pos: u64) -> io::Result<T> {
 		let data = self.read(pos)?;
-		ser::deserialize(&mut &data[..], self.version)
-			.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+		ser::deserialize(&mut &data[..], self.version).map_err(|e| {
+			io::Error::new(
+				io::ErrorKind::Other,
+				format!("Fail to deserialize data, {}", e),
+			)
+		})
 	}
 
 	// Read length bytes starting at offset from the buffer.
@@ -501,8 +506,9 @@ where
 					prune_pos = &prune_pos[1..];
 				} else {
 					// Not pruned, write to file.
-					elmt.write(&mut bin_writer)
-						.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+					elmt.write(&mut bin_writer).map_err(|e| {
+						io::Error::new(io::ErrorKind::Other, format!("Fail to write prune, {}", e))
+					})?;
 				}
 				current_pos += 1;
 			}
@@ -551,9 +557,12 @@ where
 					};
 
 					// Not pruned, write to file.
-					entry
-						.write(&mut bin_writer)
-						.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+					entry.write(&mut bin_writer).map_err(|e| {
+						io::Error::new(
+							io::ErrorKind::Other,
+							format!("Fail to write at rebuild_size_file, {}", e),
+						)
+					})?;
 
 					current_offset += size as u64;
 				}

@@ -40,10 +40,10 @@ pub enum Error {
 	NotFoundErr(String),
 	/// Wraps an error originating from RocksDB (which unfortunately returns
 	/// string errors).
-	#[fail(display = "LMDB error")]
+	#[fail(display = "LMDB error, {}", _0)]
 	LmdbErr(lmdb::error::Error),
 	/// Wraps a serialization error for Writeable or Readable
-	#[fail(display = "Serialization Error")]
+	#[fail(display = "LMDB Serialization Error, {}", _0)]
 	SerErr(String),
 }
 

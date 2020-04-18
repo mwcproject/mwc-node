@@ -18,9 +18,10 @@
 //! To use it, just have your service(s) implement the ApiEndpoint trait and
 //! register them on a ApiServer.
 
+use crate::p2p::Error as P2pError;
 use crate::router::{Handler, HandlerObj, ResponseFuture, Router, RouterError};
 use crate::web::response;
-use failure::{Backtrace, Context, Fail, ResultExt};
+use failure::{Backtrace, Context, Fail};
 use futures::sync::oneshot;
 use futures::Stream;
 use hyper::rt::Future;
@@ -44,18 +45,20 @@ pub struct Error {
 
 #[derive(Clone, Eq, PartialEq, Debug, Fail, Serialize, Deserialize)]
 pub enum ErrorKind {
-	#[fail(display = "Internal error: {}", _0)]
+	#[fail(display = "API Internal error: {}", _0)]
 	Internal(String),
-	#[fail(display = "Bad arguments: {}", _0)]
+	#[fail(display = "API Bad arguments: {}", _0)]
 	Argument(String),
-	#[fail(display = "Not found.")]
-	NotFound,
-	#[fail(display = "Request error: {}", _0)]
+	#[fail(display = "API Not found: {}", _0)]
+	NotFound(String),
+	#[fail(display = "API Request error: {}", _0)]
 	RequestError(String),
-	#[fail(display = "ResponseError error: {}", _0)]
+	#[fail(display = "API ResponseError error: {}", _0)]
 	ResponseError(String),
-	#[fail(display = "Router error: {}", _0)]
+	#[fail(display = "API Router error: {}", _0)]
 	Router(RouterError),
+	#[fail(display = "API P2P error: {}", _0)]
+	P2pError(String),
 }
 
 impl Fail for Error {
@@ -102,6 +105,14 @@ impl From<RouterError> for Error {
 	}
 }
 
+impl From<P2pError> for Error {
+	fn from(error: P2pError) -> Error {
+		Error {
+			inner: Context::new(ErrorKind::P2pError(format!("{}", error))),
+		}
+	}
+}
+
 /// TLS config
 #[derive(Clone)]
 pub struct TLSConfig {
@@ -118,10 +129,12 @@ impl TLSConfig {
 	}
 
 	fn load_certs(&self) -> Result<Vec<rustls::Certificate>, Error> {
-		let certfile = File::open(&self.certificate).context(ErrorKind::Internal(format!(
-			"failed to open file {}",
-			self.certificate
-		)))?;
+		let certfile = File::open(&self.certificate).map_err(|e| {
+			ErrorKind::Internal(format!(
+				"load_certs failed to open file {}, {}",
+				self.certificate, e
+			))
+		})?;
 		let mut reader = io::BufReader::new(certfile);
 
 		pemfile::certs(&mut reader)
@@ -129,18 +142,21 @@ impl TLSConfig {
 	}
 
 	fn load_private_key(&self) -> Result<rustls::PrivateKey, Error> {
-		let keyfile = File::open(&self.private_key).context(ErrorKind::Internal(format!(
-			"failed to open file {}",
-			self.private_key
-		)))?;
+		let keyfile = File::open(&self.private_key).map_err(|e| {
+			ErrorKind::Internal(format!(
+				"load_private_key failed to open file {}, {}",
+				self.private_key, e
+			))
+		})?;
 		let mut reader = io::BufReader::new(keyfile);
 
 		let keys = pemfile::pkcs8_private_keys(&mut reader)
 			.map_err(|_| ErrorKind::Internal("failed to load private key".to_string()))?;
 		if keys.len() != 1 {
-			return Err(ErrorKind::Internal(
-				"expected a single private key".to_string(),
-			))?;
+			return Err(ErrorKind::Internal(format!(
+				"load_private_key expected a single private key, found {}",
+				keys.len()
+			)))?;
 		}
 		Ok(keys[0].clone())
 	}
@@ -150,9 +166,7 @@ impl TLSConfig {
 		let key = self.load_private_key()?;
 		let mut cfg = rustls::ServerConfig::new(rustls::NoClientAuth::new());
 		cfg.set_single_cert(certs, key)
-			.context(ErrorKind::Internal(
-				"set single certificate failed".to_string(),
-			))?;
+			.map_err(|e| ErrorKind::Internal(format!("set single certificate failed, {}", e)))?;
 		Ok(Arc::new(cfg))
 	}
 }
@@ -209,7 +223,7 @@ impl ApiServer {
 
 				rt::run(server);
 			})
-			.map_err(|_| ErrorKind::Internal("failed to spawn API thread".to_string()).into())
+			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
 	}
 
 	/// Starts the TLS ApiServer at the provided address.
@@ -245,7 +259,7 @@ impl ApiServer {
 					.then(|r| match r {
 						Ok(x) => Ok::<_, io::Error>(Some(x)),
 						Err(e) => {
-							error!("accept_async failed: {}", e);
+							error!("API server accept_async failed, {}", e);
 							Ok(None)
 						}
 					})
@@ -256,7 +270,7 @@ impl ApiServer {
 
 				rt::run(server);
 			})
-			.map_err(|_| ErrorKind::Internal("failed to spawn API thread".to_string()).into())
+			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
 	}
 
 	/// Stops the API server, it panics in case of error

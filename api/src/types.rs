@@ -247,9 +247,12 @@ impl<'de> serde::de::Visitor<'de> for PrintableCommitmentVisitor {
 		E: serde::de::Error,
 	{
 		Ok(PrintableCommitment {
-			commit: pedersen::Commitment::from_vec(
-				util::from_hex(String::from(v)).map_err(serde::de::Error::custom)?,
-			),
+			commit: pedersen::Commitment::from_vec(util::from_hex(v).map_err(|e| {
+				serde::de::Error::custom(format!(
+					"Unable to parse pedersen Commitment {}, {}",
+					v, e
+				))
+			})?),
 		})
 	}
 }
@@ -339,8 +342,9 @@ impl OutputPrintable {
 			None => return Err(ser::Error::HexError(format!("output range_proof missing"))),
 		};
 
-		let p_vec = util::from_hex(proof_str)
-			.map_err(|_| ser::Error::HexError(format!("invalid output range_proof")))?;
+		let p_vec = util::from_hex(&proof_str).map_err(|e| {
+			ser::Error::HexError(format!("Unable to parse range_proof {}, {}", proof_str, e))
+		})?;
 		let mut p_bytes = [0; util::secp::constants::MAX_PROOF_SIZE];
 		for i in 0..p_bytes.len() {
 			p_bytes[i] = p_vec[i];
@@ -397,7 +401,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 			type Value = OutputPrintable;
 
 			fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-				formatter.write_str("a print able Output")
+				formatter.write_str("a printable Output")
 			}
 
 			fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -423,8 +427,12 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 							no_dup!(commit);
 
 							let val: String = map.next_value()?;
-							let vec =
-								util::from_hex(val.clone()).map_err(serde::de::Error::custom)?;
+							let vec = util::from_hex(val.as_str()).map_err(|e| {
+								serde::de::Error::custom(format!(
+									"Unable to parse commit {}, {}",
+									val, e
+								))
+							})?;
 							commit = Some(pedersen::Commitment::from_vec(vec));
 						}
 						Field::Spent => {
@@ -460,12 +468,28 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 					}
 				}
 
-				if output_type.is_none()
-					|| commit.is_none() || spent.is_none()
-					|| proof_hash.is_none()
-					|| mmr_index.is_none()
-				{
-					return Err(serde::de::Error::custom("invalid output"));
+				let mut err_str: Vec<String> = Vec::new();
+				if output_type.is_none() {
+					err_str.push("output type".to_string());
+				}
+				if commit.is_none() {
+					err_str.push("commit".to_string());
+				}
+				if spent.is_none() {
+					err_str.push("spent".to_string());
+				}
+				if proof_hash.is_none() {
+					err_str.push("proof_hash".to_string());
+				}
+				if mmr_index.is_none() {
+					err_str.push("mmr_index".to_string());
+				}
+
+				if !err_str.is_empty() {
+					return Err(serde::de::Error::custom(format!(
+						"invalid output, not found {}",
+						err_str.join(", ")
+					)));
 				}
 
 				Ok(OutputPrintable {
@@ -474,7 +498,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 					spent: spent.unwrap(),
 					proof: proof,
 					proof_hash: proof_hash.unwrap(),
-					block_height: block_height.unwrap(),
+					block_height: block_height,
 					merkle_proof: merkle_proof,
 					mmr_index: mmr_index.unwrap(),
 				})
