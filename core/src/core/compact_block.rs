@@ -86,13 +86,24 @@ impl Readable for CompactBlockBody {
 		let (out_full_len, kern_full_len, kern_id_len) =
 			ser_multiread!(reader, read_u64, read_u64, read_u64);
 
+		if out_full_len > ser::READ_VEC_SIZE_LIMIT
+			|| kern_full_len > ser::READ_VEC_SIZE_LIMIT
+			|| kern_id_len > ser::READ_VEC_SIZE_LIMIT
+		{
+			return Err(ser::Error::TooLargeReadErr(format!(
+				"CompactBlockBody has too many items: outputs {}, kernels {}, kernel ids {}",
+				out_full_len, kern_full_len, kern_id_len
+			)));
+		}
+
 		let out_full = read_multi(reader, out_full_len)?;
 		let kern_full = read_multi(reader, kern_full_len)?;
 		let kern_ids = read_multi(reader, kern_id_len)?;
 
 		// Initialize compact block body, verifying sort order.
-		let body = CompactBlockBody::init(out_full, kern_full, kern_ids, true)
-			.map_err(|_| ser::Error::CorruptedData)?;
+		let body = CompactBlockBody::init(out_full, kern_full, kern_ids, true).map_err(|e| {
+			ser::Error::CorruptedData(format!("Unable to read compact block, {}", e))
+		})?;
 
 		Ok(body)
 	}
@@ -100,6 +111,18 @@ impl Readable for CompactBlockBody {
 
 impl Writeable for CompactBlockBody {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.out_full.len() > ser::READ_VEC_SIZE_LIMIT as usize
+			|| self.kern_full.len() > ser::READ_VEC_SIZE_LIMIT as usize
+			|| self.kern_ids.len() > ser::READ_VEC_SIZE_LIMIT as usize
+		{
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"CompactBlockBody has too many items: outputs {}, kernels {}, kernel ids {}",
+				self.out_full.len(),
+				self.kern_full.len(),
+				self.kern_ids.len()
+			)));
+		}
+
 		ser_multiwrite!(
 			writer,
 			[write_u64, self.out_full.len() as u64],
@@ -253,7 +276,9 @@ impl Readable for UntrustedCompactBlock {
 		};
 
 		// Now validate the compact block and treat any validation error as corrupted data.
-		cb.validate_read().map_err(|_| ser::Error::CorruptedData)?;
+		cb.validate_read().map_err(|e| {
+			ser::Error::CorruptedData(format!("Failed to validate compact block, {}", e))
+		})?;
 
 		Ok(UntrustedCompactBlock(cb))
 	}

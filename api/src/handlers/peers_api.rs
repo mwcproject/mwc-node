@@ -72,8 +72,10 @@ impl PeerHandler {
 		if let Some(addr) = addr {
 			let peer_addr = PeerAddr(addr);
 			let peer_data: PeerData = w(&self.peers)?.get_peer(peer_addr).map_err(|e| {
-				let e: Error = ErrorKind::Internal(format!("get peer error: {:?}", e)).into();
-				e
+				ErrorKind::Internal(format!(
+					"Unable to get peer for address {}, {}",
+					peer_addr, e
+				))
 			})?;
 			return Ok(vec![peer_data]);
 		}
@@ -85,14 +87,24 @@ impl PeerHandler {
 		let peer_addr = PeerAddr(addr);
 		w(&self.peers)?
 			.ban_peer(peer_addr, ReasonForBan::ManualBan)
-			.map_err(|e| ErrorKind::Internal(format!("ban peer error: {:?}", e)).into())
+			.map_err(|e| {
+				ErrorKind::Internal(format!(
+					"Unable to ban peer for address {}, {}",
+					peer_addr, e
+				))
+				.into()
+			})
 	}
 
 	pub fn unban_peer(&self, addr: SocketAddr) -> Result<(), Error> {
 		let peer_addr = PeerAddr(addr);
-		w(&self.peers)?
-			.unban_peer(peer_addr)
-			.map_err(|e| ErrorKind::Internal(format!("unban peer error: {:?}", e)).into())
+		w(&self.peers)?.unban_peer(peer_addr).map_err(|e| {
+			ErrorKind::Internal(format!(
+				"Unable to unban peer for address {}, {}",
+				peer_addr, e
+			))
+			.into()
+		})
 	}
 }
 
@@ -117,7 +129,10 @@ impl Handler for PeerHandler {
 
 		match w_fut!(&self.peers).get_peer(peer_addr) {
 			Ok(peer) => json_response(&peer),
-			Err(_) => response(StatusCode::NOT_FOUND, "peer not found"),
+			Err(_) => response(
+				StatusCode::NOT_FOUND,
+				format!("peer {} not found", peer_addr),
+			),
 		}
 	}
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
@@ -148,7 +163,7 @@ impl Handler for PeerHandler {
 				Err(e) => {
 					return response(
 						StatusCode::INTERNAL_SERVER_ERROR,
-						format!("ban failed: {:?}", e),
+						format!("ban for peer {} failed, {:?}", addr, e),
 					)
 				}
 			},
@@ -157,11 +172,16 @@ impl Handler for PeerHandler {
 				Err(e) => {
 					return response(
 						StatusCode::INTERNAL_SERVER_ERROR,
-						format!("unban failed: {:?}", e),
+						format!("unban for peer {} failed, {:?}", addr, e),
 					)
 				}
 			},
-			_ => return response(StatusCode::BAD_REQUEST, "invalid command"),
+			_ => {
+				return response(
+					StatusCode::BAD_REQUEST,
+					format!("invalid command {}", command),
+				)
+			}
 		};
 	}
 }

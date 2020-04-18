@@ -40,8 +40,8 @@ use std::{
 
 pub const SEND_CHANNEL_CAP: usize = 100;
 
-const HEADER_IO_TIMEOUT: Duration = Duration::from_millis(5000);
-const CHANNEL_TIMEOUT: Duration = Duration::from_millis(3000);
+const HEADER_IO_TIMEOUT: Duration = Duration::from_millis(10000);
+const CHANNEL_TIMEOUT: Duration = Duration::from_millis(15000);
 const BODY_IO_TIMEOUT: Duration = Duration::from_millis(90000);
 
 /// A trait to be implemented in order to receive messages from the
@@ -68,7 +68,7 @@ macro_rules! try_break {
 				}
 			Err(Error::Store(_))
 			| Err(Error::Chain(_))
-			| Err(Error::Internal)
+			| Err(Error::Internal(_))
 			| Err(Error::NoDandelionRelay) => None,
 			Err(ref e) => {
 				debug!("try_break: exit the loop: {:?}", e);

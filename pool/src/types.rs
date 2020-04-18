@@ -196,41 +196,41 @@ impl TxSource {
 #[derive(Debug, Fail, PartialEq)]
 pub enum PoolError {
 	/// An invalid pool entry caused by underlying tx validation error
-	#[fail(display = "Invalid Tx {}", _0)]
+	#[fail(display = "Tx Pool Invalid Tx {}", _0)]
 	InvalidTx(transaction::Error),
 	/// An invalid pool entry caused by underlying block validation error
-	#[fail(display = "Invalid Block {}", _0)]
+	#[fail(display = "Tx Pool Invalid Block {}", _0)]
 	InvalidBlock(block::Error),
 	/// Underlying keychain error.
-	#[fail(display = "Keychain error {}", _0)]
+	#[fail(display = "Tx Pool Keychain error {}", _0)]
 	Keychain(keychain::Error),
 	/// Underlying "committed" error.
-	#[fail(display = "Committed error {}", _0)]
+	#[fail(display = "Tx Pool Committed error {}", _0)]
 	Committed(committed::Error),
 	/// Attempt to add a transaction to the pool with lock_height
 	/// greater than height of current block
-	#[fail(display = "Immature transaction")]
+	#[fail(display = "Tx Pool Immature transaction")]
 	ImmatureTransaction,
 	/// Attempt to spend a coinbase output before it has sufficiently matured.
-	#[fail(display = "Immature coinbase")]
+	#[fail(display = "Tx Pool Immature coinbase")]
 	ImmatureCoinbase,
 	/// Problem propagating a stem tx to the next Dandelion relay node.
-	#[fail(display = "Dandelion error")]
+	#[fail(display = "Tx Pool Dandelion error")]
 	DandelionError,
 	/// Transaction pool is over capacity, can't accept more transactions
-	#[fail(display = "Over capacity")]
+	#[fail(display = "Tx Pool Over capacity")]
 	OverCapacity,
 	/// Transaction fee is too low given its weight
-	#[fail(display = "Low fee transaction {}", _0)]
+	#[fail(display = "Tx Pool Low fee transaction {}", _0)]
 	LowFeeTransaction(u64),
 	/// Attempt to add a duplicate output to the pool.
-	#[fail(display = "Duplicate commitment")]
+	#[fail(display = "Tx Pool Duplicate commitment")]
 	DuplicateCommitment,
 	/// Attempt to add a duplicate tx to the pool.
-	#[fail(display = "Duplicate tx")]
+	#[fail(display = "Tx Pool Duplicate tx")]
 	DuplicateTx,
 	/// Other kinds of error (not yet pulled out into meaningful errors).
-	#[fail(display = "General pool error {}", _0)]
+	#[fail(display = "Tx Pool General error {}", _0)]
 	Other(String),
 }
 

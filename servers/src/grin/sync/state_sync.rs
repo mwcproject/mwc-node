@@ -172,23 +172,25 @@ impl StateSync {
 				.chain
 				.get_block_header(&header_head.prev_block_h)
 				.map_err(|e| {
-					error!(
-						"chain error during getting a block header {}: {:?}",
-						&header_head.prev_block_h, e
+					let err_msg = format!(
+						"chain error during getting a block header {}, {}",
+						header_head.prev_block_h, e
 					);
-					p2p::Error::Internal
+					error!("{}", err_msg);
+					p2p::Error::Internal(err_msg)
 				})?;
 			while txhashset_head.height > txhashset_height {
 				txhashset_head = self
 					.chain
 					.get_previous_header(&txhashset_head)
 					.map_err(|e| {
-						error!(
-							"chain error during getting a previous block header {}: {:?}",
+						let err_msg = format!(
+							"chain error during getting a previous block header {}, {}",
 							txhashset_head.hash(),
 							e
 						);
-						p2p::Error::Internal
+						error!("{}", err_msg);
+						p2p::Error::Internal(err_msg)
 					})?;
 			}
 			let bhash = txhashset_head.hash();
@@ -205,7 +207,9 @@ impl StateSync {
 			}
 			return Ok(peer.clone());
 		}
-		Err(p2p::Error::PeerException)
+		Err(p2p::Error::PeerException(
+			"peer, most_work_peer is not found".to_string(),
+		))
 	}
 
 	// For now this is a one-time thing (it can be slow) at initial startup.

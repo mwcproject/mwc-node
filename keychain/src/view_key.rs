@@ -173,7 +173,7 @@ impl ViewKey {
 				pub_key.add_exp_assign(secp, &blind)?;
 
 				Ok(pub_key)*/
-				Err(Error::SwitchCommitment)
+				Err(Error::SwitchCommitmentType)
 			}
 		}
 	}

@@ -173,7 +173,7 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 	fn data_as_temp_file(&self) -> Result<File, String> {
 		self.data_file
 			.as_temp_file()
-			.map_err(|_| format!("Failed to build temp data file"))
+			.map_err(|e| format!("Failed to build temp data file, {}", e))
 	}
 
 	/// Rewind the PMMR backend to the given position.
@@ -209,9 +209,13 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 	}
 
 	fn snapshot(&self, header: &BlockHeader) -> Result<(), String> {
-		self.leaf_set
-			.snapshot(header)
-			.map_err(|_| format!("Failed to save copy of leaf_set for {}", header.hash()))?;
+		self.leaf_set.snapshot(header).map_err(|e| {
+			format!(
+				"Failed to save copy of leaf_set for {}, {}",
+				header.hash(),
+				e
+			)
+		})?;
 		Ok(())
 	}
 
@@ -323,7 +327,7 @@ impl<T: PMMRable> PMMRBackend<T> {
 			.map_err(|e| {
 				io::Error::new(
 					io::ErrorKind::Interrupted,
-					format!("Could not sync pmmr to disk: {:?}", e),
+					format!("Could not sync pmmr to disk, {:?}", e),
 				)
 			})
 	}

@@ -103,7 +103,15 @@ pub fn process_block(b: &Block, ctx: &mut BlockContext<'_>) -> Result<Option<Tip
 	{
 		let is_next = b.header.prev_hash == head.last_block_h;
 		if !is_next && !ctx.batch.block_exists(&prev.hash())? {
-			return Err(ErrorKind::Orphan.into());
+			return Err(ErrorKind::Orphan(format!(
+				"Block {} at {} [in/out/kern: {}/{}/{}] is not on the chain",
+				b.hash(),
+				b.header.height,
+				b.inputs().len(),
+				b.outputs().len(),
+				b.kernels().len()
+			))
+			.into());
 		}
 	}
 
@@ -304,7 +312,9 @@ fn prev_header_store(
 	batch: &mut store::Batch<'_>,
 ) -> Result<BlockHeader, Error> {
 	let prev = batch.get_previous_header(&header).map_err(|e| match e {
-		grin_store::Error::NotFoundErr(_) => ErrorKind::Orphan,
+		grin_store::Error::NotFoundErr(_) => {
+			ErrorKind::Orphan(format!("Header: {:?}, {}", header, e))
+		}
 		_ => ErrorKind::StoreErr(e, "check prev header".into()),
 	})?;
 	Ok(prev)

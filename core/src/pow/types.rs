@@ -191,16 +191,10 @@ impl<'de> de::Visitor<'de> for DiffVisitor {
 	where
 		E: de::Error,
 	{
-		let num_in = s.parse::<u64>();
-		if num_in.is_err() {
-			return Err(de::Error::invalid_value(
-				de::Unexpected::Str(s),
-				&"a value number",
-			));
-		};
-		Ok(Difficulty {
-			num: num_in.unwrap(),
-		})
+		let num_in = s
+			.parse::<u64>()
+			.map_err(|_| de::Error::invalid_value(de::Unexpected::Str(s), &"a value number"))?;
+		Ok(Difficulty { num: num_in })
 	}
 
 	fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
@@ -427,7 +421,10 @@ impl Readable for Proof {
 	fn read(reader: &mut dyn Reader) -> Result<Proof, ser::Error> {
 		let edge_bits = reader.read_u8()?;
 		if edge_bits == 0 || edge_bits > 63 {
-			return Err(ser::Error::CorruptedData);
+			return Err(ser::Error::CorruptedData(format!(
+				"Unexpected edge bit {}",
+				edge_bits
+			)));
 		}
 
 		// prepare nonces and read the right number of bytes
@@ -436,7 +433,10 @@ impl Readable for Proof {
 		let bits_len = nonce_bits * global::proofsize();
 		let bytes_len = BitVec::bytes_len(bits_len);
 		if bytes_len < 8 {
-			return Err(ser::Error::CorruptedData);
+			return Err(ser::Error::CorruptedData(format!(
+				"Nonce length {} is too small",
+				bytes_len
+			)));
 		}
 		let bits = reader.read_fixed_bytes(bytes_len)?;
 
@@ -448,7 +448,9 @@ impl Readable for Proof {
 		//// still better to enforce to avoid any malleability
 		let end_of_data = global::proofsize() * nonce_bits;
 		if read_number(&bits, end_of_data, bytes_len * 8 - end_of_data) != 0 {
-			return Err(ser::Error::CorruptedData);
+			return Err(ser::Error::CorruptedData(
+				"Fail to read nonce as a number".to_string(),
+			));
 		}
 
 		Ok(Proof { edge_bits, nonces })
@@ -461,6 +463,7 @@ impl Writeable for Proof {
 			writer.write_u8(self.edge_bits)?;
 		}
 		let nonce_bits = self.edge_bits as usize;
+		assert!(nonce_bits < 256);
 		let mut bitvec = BitVec::new(nonce_bits * global::proofsize());
 		for (n, nonce) in self.nonces.iter().enumerate() {
 			for bit in 0..nonce_bits {
@@ -469,6 +472,9 @@ impl Writeable for Proof {
 				}
 			}
 		}
+		// caller suppose to verify the size. Here are are crashing becase it is better than data corruption.
+		// Data will be corrupted because of read that will check fo the size as well
+		assert!(bitvec.bits.len() <= ser::READ_CHUNK_LIMIT);
 		writer.write_fixed_bytes(&bitvec.bits)?;
 		Ok(())
 	}

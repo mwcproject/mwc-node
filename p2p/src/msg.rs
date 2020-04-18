@@ -308,11 +308,12 @@ impl Readable for MsgHeaderWrapper {
 				// TODO 4x the limits for now to leave ourselves space to change things.
 				let max_len = max_msg_size(msg_type) * 4;
 				if msg_len > max_len {
-					error!(
+					let err_msg = format!(
 						"Too large read {:?}, max_len: {}, msg_len: {}.",
 						msg_type, max_len, msg_len
 					);
-					return Err(ser::Error::TooLargeReadErr);
+					error!("{}", err_msg);
+					return Err(ser::Error::TooLargeReadErr(err_msg));
 				}
 
 				Ok(MsgHeaderWrapper::Known(MsgHeader {
@@ -325,11 +326,12 @@ impl Readable for MsgHeaderWrapper {
 				// Unknown msg type, but we still want to limit how big the msg is.
 				let max_len = default_max_msg_size() * 4;
 				if msg_len > max_len {
-					error!(
+					let err_msg = format!(
 						"Too large read (unknown msg type) {:?}, max_len: {}, msg_len: {}.",
 						t, max_len, msg_len
 					);
-					return Err(ser::Error::TooLargeReadErr);
+					error!("{}", err_msg);
+					return Err(ser::Error::TooLargeReadErr(err_msg));
 				}
 
 				Ok(MsgHeaderWrapper::Unknown(msg_len, t))
@@ -371,6 +373,12 @@ impl Writeable for Hand {
 		self.total_difficulty.write(writer)?;
 		self.sender_addr.write(writer)?;
 		self.receiver_addr.write(writer)?;
+		if self.user_agent.len() > 10_000 {
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"Unreasonable long User Agent. UA length is {}",
+				self.user_agent.len()
+			)));
+		}
 		writer.write_bytes(&self.user_agent)?;
 		self.genesis.write(writer)?;
 		Ok(())
@@ -386,7 +394,8 @@ impl Readable for Hand {
 		let sender_addr = PeerAddr::read(reader)?;
 		let receiver_addr = PeerAddr::read(reader)?;
 		let ua = reader.read_bytes_len_prefix()?;
-		let user_agent = String::from_utf8(ua).map_err(|_| ser::Error::CorruptedData)?;
+		let user_agent = String::from_utf8(ua)
+			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read User Agent, {}", e)))?;
 		let genesis = Hash::read(reader)?;
 		Ok(Hand {
 			version,
@@ -422,6 +431,12 @@ impl Writeable for Shake {
 		self.version.write(writer)?;
 		writer.write_u32(self.capabilities.bits())?;
 		self.total_difficulty.write(writer)?;
+		if self.user_agent.len() > 10_000 {
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"Unreasonable long User Agent. UA length is {}",
+				self.user_agent.len()
+			)));
+		}
 		writer.write_bytes(&self.user_agent)?;
 		self.genesis.write(writer)?;
 		Ok(())
@@ -435,7 +450,8 @@ impl Readable for Shake {
 		let capabilities = Capabilities::from_bits_truncate(capab);
 		let total_difficulty = Difficulty::read(reader)?;
 		let ua = reader.read_bytes_len_prefix()?;
-		let user_agent = String::from_utf8(ua).map_err(|_| ser::Error::CorruptedData)?;
+		let user_agent = String::from_utf8(ua)
+			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read User Agent, {}", e)))?;
 		let genesis = Hash::read(reader)?;
 		Ok(Shake {
 			version,
@@ -476,6 +492,11 @@ pub struct PeerAddrs {
 
 impl Writeable for PeerAddrs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.peers.len() > MAX_PEER_ADDRS as usize {
+			return Err(ser::Error::TooLargeWriteErr(
+				"peer.len larger then the limit".to_string(),
+			));
+		}
 		writer.write_u32(self.peers.len() as u32)?;
 		for p in &self.peers {
 			p.write(writer)?;
@@ -488,7 +509,9 @@ impl Readable for PeerAddrs {
 	fn read(reader: &mut dyn Reader) -> Result<PeerAddrs, ser::Error> {
 		let peer_count = reader.read_u32()?;
 		if peer_count > MAX_PEER_ADDRS {
-			return Err(ser::Error::TooLargeReadErr);
+			return Err(ser::Error::TooLargeReadErr(
+				"peer_count larger then the limit".to_string(),
+			));
 		} else if peer_count == 0 {
 			return Ok(PeerAddrs { peers: vec![] });
 		}
@@ -511,6 +534,12 @@ pub struct PeerError {
 
 impl Writeable for PeerError {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.message.len() > 10_000 {
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"Unreasonable long PeerError message. length is {}",
+				self.message.len()
+			)));
+		}
 		ser_multiwrite!(writer, [write_u32, self.code], [write_bytes, &self.message]);
 		Ok(())
 	}
@@ -520,7 +549,8 @@ impl Readable for PeerError {
 	fn read(reader: &mut dyn Reader) -> Result<PeerError, ser::Error> {
 		let code = reader.read_u32()?;
 		let msg = reader.read_bytes_len_prefix()?;
-		let message = String::from_utf8(msg).map_err(|_| ser::Error::CorruptedData)?;
+		let message = String::from_utf8(msg)
+			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read message, {}", e)))?;
 		Ok(PeerError {
 			code: code,
 			message: message,
@@ -536,6 +566,12 @@ pub struct Locator {
 
 impl Writeable for Locator {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.hashes.len() > MAX_LOCATORS as usize {
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"Storing too many locators: {}",
+				self.hashes.len()
+			)));
+		}
 		writer.write_u8(self.hashes.len() as u8)?;
 		for h in &self.hashes {
 			h.write(writer)?
@@ -548,7 +584,10 @@ impl Readable for Locator {
 	fn read(reader: &mut dyn Reader) -> Result<Locator, ser::Error> {
 		let len = reader.read_u8()?;
 		if len > (MAX_LOCATORS as u8) {
-			return Err(ser::Error::TooLargeReadErr);
+			return Err(ser::Error::TooLargeReadErr(format!(
+				"Get too many locators: {}",
+				len
+			)));
 		}
 		let mut hashes = Vec::with_capacity(len as usize);
 		for _ in 0..len {
@@ -648,7 +687,9 @@ impl Readable for BanReason {
 			Err(_) => 0,
 		};
 
-		let ban_reason = ReasonForBan::from_i32(ban_reason_i32).ok_or(ser::Error::CorruptedData)?;
+		let ban_reason = ReasonForBan::from_i32(ban_reason_i32).ok_or(
+			ser::Error::CorruptedData("Fail to read ban reason".to_string()),
+		)?;
 
 		Ok(BanReason { ban_reason })
 	}

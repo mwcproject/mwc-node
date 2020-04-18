@@ -14,7 +14,7 @@
 
 //! Public types for config modules
 
-use std::fmt;
+use failure::Fail;
 use std::io;
 use std::path::PathBuf;
 
@@ -22,40 +22,23 @@ use crate::servers::ServerConfig;
 use crate::util::logger::LoggingConfig;
 
 /// Error type wrapping config errors.
-#[derive(Debug)]
+#[derive(Debug, Fail)]
 pub enum ConfigError {
 	/// Error with parsing of config file
+	#[fail(display = "Error parsing configuration file {}, {}", _0, _1)]
 	ParseError(String, String),
 
 	/// Error with fileIO while reading config file
+	#[fail(display = "Node Config file {} IO error, {}", _0, _1)]
 	FileIOError(String, String),
 
 	/// No file found
+	#[fail(display = "Node Configuration file not found: {}", _0)]
 	FileNotFoundError(String),
 
 	/// Error serializing config values
+	#[fail(display = "Error serializing node configuration: {}", _0)]
 	SerializationError(String),
-}
-
-impl fmt::Display for ConfigError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			ConfigError::ParseError(ref file_name, ref message) => write!(
-				f,
-				"Error parsing configuration file at {} - {}",
-				file_name, message
-			),
-			ConfigError::FileIOError(ref file_name, ref message) => {
-				write!(f, "{} {}", message, file_name)
-			}
-			ConfigError::FileNotFoundError(ref file_name) => {
-				write!(f, "Configuration file not found: {}", file_name)
-			}
-			ConfigError::SerializationError(ref message) => {
-				write!(f, "Error serializing configuration: {}", message)
-			}
-		}
-	}
 }
 
 impl From<io::Error> for ConfigError {

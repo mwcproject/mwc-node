@@ -87,12 +87,12 @@ pub trait Handler {
 
 #[derive(Clone, Fail, Eq, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RouterError {
-	#[fail(display = "Route already exists")]
-	RouteAlreadyExists,
-	#[fail(display = "Route not found")]
-	RouteNotFound,
-	#[fail(display = "Value not found")]
-	NoValue,
+	#[fail(display = "Route {} already exists", _0)]
+	RouteAlreadyExists(String),
+	#[fail(display = "Route {} not found", _0)]
+	RouteNotFound(String),
+	#[fail(display = "Route value not found for {}", _0)]
+	NoValue(String),
 }
 
 #[derive(Clone)]
@@ -176,7 +176,7 @@ impl Router {
 				node.set_value(value);
 				Ok(node)
 			}
-			Some(_) => Err(RouterError::RouteAlreadyExists),
+			Some(_) => Err(RouterError::RouteAlreadyExists(route.to_string())),
 		}
 	}
 
@@ -186,7 +186,9 @@ impl Router {
 		let mut node_id = self.root();
 		collect_node_middleware(&mut handlers, self.node(node_id));
 		for key in keys {
-			node_id = self.find(node_id, key).ok_or(RouterError::RouteNotFound)?;
+			node_id = self
+				.find(node_id, key)
+				.ok_or(RouterError::RouteNotFound(path.to_string()))?;
 			let node = self.node(node_id);
 			collect_node_middleware(&mut handlers, self.node(node_id));
 			if node.key == *WILDCARD_STOP_HASH {
@@ -198,7 +200,7 @@ impl Router {
 			handlers.push(h);
 			Ok(handlers.into_iter())
 		} else {
-			Err(RouterError::NoValue)
+			Err(RouterError::NoValue(path.to_string()))
 		}
 	}
 }

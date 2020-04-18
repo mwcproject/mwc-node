@@ -115,8 +115,8 @@ impl ShortId {
 
 	/// Reconstructs a switch commit hash from a hex string.
 	pub fn from_hex(hex: &str) -> Result<ShortId, ser::Error> {
-		let bytes = util::from_hex(hex.to_string())
-			.map_err(|_| ser::Error::HexError("short_id from_hex error".to_string()))?;
+		let bytes = util::from_hex(hex)
+			.map_err(|e| ser::Error::HexError(format!("short_id from_hex error, {}", e)))?;
 		Ok(ShortId::from_bytes(&bytes))
 	}
 

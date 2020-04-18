@@ -33,9 +33,9 @@
 #[cfg(feature = "serde")]
 use serde;
 use std::default::Default;
+use std::fmt;
 use std::io::Cursor;
 use std::str::FromStr;
-use std::{error, fmt};
 
 use crate::mnemonic;
 use crate::util::secp::key::{PublicKey, SecretKey};
@@ -44,6 +44,7 @@ use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 
 use digest::generic_array::GenericArray;
 use digest::Digest;
+use failure::Fail;
 use hmac::{Hmac, Mac};
 use ripemd160::Ripemd160;
 use sha2::{Sha256, Sha512};
@@ -295,52 +296,20 @@ impl serde::Serialize for ChildNumber {
 }
 
 /// A BIP32 error
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Fail, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Error {
 	/// A pk->pk derivation was attempted on a hardened key
+	#[fail(display = "cannot derive hardened key from public key")]
 	CannotDeriveFromHardenedKey,
 	/// A secp256k1 error occured
+	#[fail(display = "secp256k1 error {}", _0)]
 	Ecdsa(secp::Error),
-	/// A child number was provided that was out of range
-	InvalidChildNumber(ChildNumber),
 	/// Error creating a master seed --- for application use
+	#[fail(display = "rng error {}", _0)]
 	RngError(String),
 	/// Error converting mnemonic to seed
+	#[fail(display = "Mnemonic error, {}", _0)]
 	MnemonicError(mnemonic::Error),
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match *self {
-			Error::CannotDeriveFromHardenedKey => {
-				f.write_str("cannot derive hardened key from public key")
-			}
-			Error::Ecdsa(ref e) => fmt::Display::fmt(e, f),
-			Error::InvalidChildNumber(ref n) => write!(f, "child number {} is invalid", n),
-			Error::RngError(ref s) => write!(f, "rng error {}", s),
-			Error::MnemonicError(ref e) => fmt::Display::fmt(e, f),
-		}
-	}
-}
-
-impl error::Error for Error {
-	fn cause(&self) -> Option<&dyn error::Error> {
-		if let Error::Ecdsa(ref e) = *self {
-			Some(e)
-		} else {
-			None
-		}
-	}
-
-	fn description(&self) -> &str {
-		match *self {
-			Error::CannotDeriveFromHardenedKey => "cannot derive hardened key from public key",
-			Error::Ecdsa(ref e) => error::Error::description(e),
-			Error::InvalidChildNumber(_) => "child number is invalid",
-			Error::RngError(_) => "rng error",
-			Error::MnemonicError(_) => "mnemonic error",
-		}
-	}
 }
 
 impl From<secp::Error> for Error {
@@ -609,7 +578,9 @@ impl FromStr for ExtendedPrivKey {
 			return Err(base58::Error::InvalidLength(data.len()));
 		}
 
-		let cn_int: u32 = Cursor::new(&data[9..13]).read_u32::<BigEndian>().unwrap();
+		let cn_int: u32 = Cursor::new(&data[9..13])
+			.read_u32::<BigEndian>()
+			.map_err(|e| base58::Error::Other(format!("u32 read error, {}", e)))?;
 		let child_number: ChildNumber = ChildNumber::from(cn_int);
 
 		let mut network = [0; 4];
@@ -622,7 +593,7 @@ impl FromStr for ExtendedPrivKey {
 			child_number: child_number,
 			chain_code: ChainCode::from(&data[13..45]),
 			secret_key: SecretKey::from_slice(&s, &data[46..78])
-				.map_err(|e| base58::Error::Other(e.to_string()))?,
+				.map_err(|e| base58::Error::Other(format!("Unable to read priv key, {}", e)))?,
 		})
 	}
 }
@@ -654,7 +625,9 @@ impl FromStr for ExtendedPubKey {
 			return Err(base58::Error::InvalidLength(data.len()));
 		}
 
-		let cn_int: u32 = Cursor::new(&data[9..13]).read_u32::<BigEndian>().unwrap();
+		let cn_int: u32 = Cursor::new(&data[9..13])
+			.read_u32::<BigEndian>()
+			.map_err(|e| base58::Error::Other(format!("u32 read error, {}", e)))?;
 		let child_number: ChildNumber = ChildNumber::from(cn_int);
 
 		let mut network = [0; 4];
@@ -667,7 +640,7 @@ impl FromStr for ExtendedPubKey {
 			child_number: child_number,
 			chain_code: ChainCode::from(&data[13..45]),
 			public_key: PublicKey::from_slice(&s, &data[45..78])
-				.map_err(|e| base58::Error::Other(e.to_string()))?,
+				.map_err(|e| base58::Error::Other(format!("Unable to read pub key, {}", e)))?,
 		})
 	}
 }
@@ -805,7 +778,7 @@ mod tests {
 	#[test]
 	fn test_vector_1() {
 		let secp = Secp256k1::new();
-		let seed = from_hex("000102030405060708090a0b0c0d0e0f".to_owned()).unwrap();
+		let seed = from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
 
 		// m
 		test_path(&secp, &seed, &[],
@@ -841,7 +814,7 @@ mod tests {
 	#[test]
 	fn test_vector_2() {
 		let secp = Secp256k1::new();
-		let seed = from_hex("fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542".to_owned()).unwrap();
+		let seed = from_hex("fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542").unwrap();
 
 		// m
 		test_path(&secp, &seed, &[],
@@ -877,7 +850,7 @@ mod tests {
 	#[test]
 	fn test_vector_3() {
 		let secp = Secp256k1::new();
-		let seed = from_hex("4b381541583be4423346c643850da4b320e46a87ae3d2a4e6da11eba819cd4acba45d239319ac14f863b8d5ab5a0d0c64d2e8a1e7d1457df2e5a3c51c73235be".to_owned()).unwrap();
+		let seed = from_hex("4b381541583be4423346c643850da4b320e46a87ae3d2a4e6da11eba819cd4acba45d239319ac14f863b8d5ab5a0d0c64d2e8a1e7d1457df2e5a3c51c73235be").unwrap();
 
 		// m
 		test_path(&secp, &seed, &[],

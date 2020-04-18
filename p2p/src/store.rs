@@ -60,6 +60,12 @@ pub struct PeerData {
 
 impl Writeable for PeerData {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.user_agent.len() > 10_000 {
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"Unreasonable long User Agent. UA length is {}",
+				self.user_agent.len()
+			)));
+		}
 		self.addr.write(writer)?;
 		ser_multiwrite!(
 			writer,
@@ -89,9 +95,12 @@ impl Readable for PeerData {
 			Ok(lc) => lc,
 		};
 
-		let user_agent = String::from_utf8(ua).map_err(|_| ser::Error::CorruptedData)?;
+		let user_agent = String::from_utf8(ua)
+			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read user agent, {}", e)))?;
 		let capabilities = Capabilities::from_bits_truncate(capab);
-		let ban_reason = ReasonForBan::from_i32(br).ok_or(ser::Error::CorruptedData)?;
+		let ban_reason = ReasonForBan::from_i32(br).ok_or(ser::Error::CorruptedData(
+			"Unable to read PeerData ban reason".to_string(),
+		))?;
 
 		match State::from_u8(fl) {
 			Some(flags) => Ok(PeerData {
@@ -103,7 +112,9 @@ impl Readable for PeerData {
 				ban_reason,
 				last_connected,
 			}),
-			None => Err(ser::Error::CorruptedData),
+			None => Err(ser::Error::CorruptedData(
+				"Unable to read PeerData State".to_string(),
+			)),
 		}
 	}
 }

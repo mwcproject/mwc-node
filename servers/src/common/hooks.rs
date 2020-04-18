@@ -235,13 +235,9 @@ impl WebHook {
 			HeaderValue::from_static("application/json"),
 		);
 
-		let future = self
-			.client
-			.request(req)
-			.map(|_res| {})
-			.map_err(move |_res| {
-				warn!("Error sending POST request to {}", url);
-			});
+		let future = self.client.request(req).map(|_res| {}).map_err(move |e| {
+			warn!("Error sending POST request to {}, error: {}", url, e);
+		});
 
 		let handle = self.runtime.executor();
 		handle.spawn(future);

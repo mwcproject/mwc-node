@@ -96,7 +96,7 @@ pub trait Committed {
 				let secp = static_secp_instance();
 				let secp = secp.lock();
 				let overage_abs = overage.checked_abs().ok_or_else(|| Error::InvalidValue)? as u64;
-				secp.commit_value(overage_abs).unwrap()
+				secp.commit_value(overage_abs)?
 			};
 			if overage < 0 {
 				input_commits.push(over_commit);

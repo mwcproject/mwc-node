@@ -82,9 +82,9 @@ pub fn rewind<B>(
 where
 	B: ProofBuild,
 {
-	let nonce = b
-		.rewind_nonce(secp, &commit)
-		.map_err(|e| ErrorKind::RangeProof(e.to_string()))?;
+	let nonce = b.rewind_nonce(secp, &commit).map_err(|e| {
+		ErrorKind::RangeProof(format!("Unable rewind for commit {:?}, {}", commit, e))
+	})?;
 	let info = secp.rewind_bullet_proof(commit, nonce, extra_data, proof);
 	if info.is_err() {
 		return Ok(None);
@@ -94,7 +94,9 @@ where
 	let amount = info.value;
 	let check = b
 		.check_output(secp, &commit, amount, info.message)
-		.map_err(|e| ErrorKind::RangeProof(e.to_string()))?;
+		.map_err(|e| {
+			ErrorKind::RangeProof(format!("Unable to check output for {:?}, {}", commit, e))
+		})?;
 
 	Ok(check.map(|(id, switch)| (amount, id, switch)))
 }
@@ -167,7 +169,11 @@ where
 		};
 		let res = blake2b(32, &commit.0, hash);
 		SecretKey::from_slice(self.keychain.secp(), res.as_bytes()).map_err(|e| {
-			ErrorKind::RangeProof(format!("Unable to create nonce: {:?}", e).to_string()).into()
+			ErrorKind::RangeProof(format!(
+				"Unable to extract nonce from commit {:?}, {}",
+				commit, e
+			))
+			.into()
 		})
 	}
 }
@@ -282,7 +288,11 @@ where
 	fn nonce(&self, commit: &Commitment) -> Result<SecretKey, Error> {
 		let res = blake2b(32, &commit.0, &self.root_hash);
 		SecretKey::from_slice(self.keychain.secp(), res.as_bytes()).map_err(|e| {
-			ErrorKind::RangeProof(format!("Unable to create nonce: {:?}", e).to_string()).into()
+			ErrorKind::RangeProof(format!(
+				"Unable to extract nonce from commit {:?}, {}",
+				commit, e
+			))
+			.into()
 		})
 	}
 }
@@ -367,7 +377,11 @@ impl ProofBuild for ViewKey {
 	fn rewind_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
 		let res = blake2b(32, &commit.0, &self.rewind_hash);
 		SecretKey::from_slice(secp, res.as_bytes()).map_err(|e| {
-			ErrorKind::RangeProof(format!("Unable to create nonce: {:?}", e).to_string()).into()
+			ErrorKind::RangeProof(format!(
+				"Unable to rewind nonce for commit {:?}, {}",
+				commit, e
+			))
+			.into()
 		})
 	}
 

@@ -100,10 +100,10 @@ pub fn get_block(
 					error!("Chain Error: {}", c);
 				}
 			},
-			self::Error::WalletComm(_) => {
+			self::Error::WalletComm(msg) => {
 				error!(
-					"Error building new block: Can't connect to wallet listener at {:?}; will retry",
-					wallet_listener_url.as_ref().unwrap()
+					"Error building new block: Can't connect to wallet listener at {:?}; {}, will retry",
+					wallet_listener_url.as_ref().unwrap_or(&"BROKEN_URL".to_string()), msg
 				);
 				thread::sleep(Duration::from_secs(wallet_retry_interval));
 			}
@@ -210,7 +210,11 @@ fn build_block(
 				_ => {
 					error!("Error setting txhashset root to build a block: {:?}", e);
 					Err(Error::Chain(
-						chain::ErrorKind::Other(format!("{:?}", e)).into(),
+						chain::ErrorKind::Other(format!(
+							"Error setting txhashset root to build a block: {:?}",
+							e
+						))
+						.into(),
 					))
 				}
 			}
@@ -232,8 +236,7 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 		block_fees.fees,
 		false,
 		block_fees.height,
-	)
-	.unwrap();
+	)?;
 	Ok((out, kernel, block_fees))
 }
 
@@ -290,7 +293,8 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 		Error::WalletComm(report)
 	})?;
 
-	let res: Value = serde_json::from_str(&res).unwrap();
+	let res: Value = serde_json::from_str(&res)
+		.map_err(|e| Error::General(format!("Unable convert result to Json, {}", e)))?;
 	trace!("Response: {}", res);
 	if res["error"] != json!(null) {
 		let report = format!(

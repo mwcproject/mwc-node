@@ -92,10 +92,8 @@ pub fn genesis_floo() -> core::Block {
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
 		excess: Commitment::from_vec(
-			util::from_hex(
-				"093d0aeae5f6aab0975096fde31e1a21fa42edfc93db318a1064156ace81f54671".to_string(),
-			)
-			.unwrap(),
+			util::from_hex("093d0aeae5f6aab0975096fde31e1a21fa42edfc93db318a1064156ace81f54671")
+				.unwrap(),
 		),
 		excess_sig: Signature::from_raw_data(&[
 			206, 29, 151, 239, 47, 44, 219, 103, 100, 240, 76, 52, 231, 174, 149, 129, 237, 164,
@@ -108,10 +106,8 @@ pub fn genesis_floo() -> core::Block {
 	let output = core::Output {
 		features: core::OutputFeatures::Coinbase,
 		commit: Commitment::from_vec(
-			util::from_hex(
-				"0905a2ebf3913c7d378660a7b60e6bda983be451cb1de8779ad0f51f4d2fb079ea".to_string(),
-			)
-			.unwrap(),
+			util::from_hex("0905a2ebf3913c7d378660a7b60e6bda983be451cb1de8779ad0f51f4d2fb079ea")
+				.unwrap(),
 		),
 		proof: RangeProof {
 			plen: SINGLE_BULLET_PROOF_SIZE,
@@ -209,10 +205,8 @@ pub fn genesis_main() -> core::Block {
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
 		excess: Commitment::from_vec(
-			util::from_hex(
-				"08b659fde3a41284819f45415890330272efef7ef991f833a64b746be802c8fd77".to_string(),
-			)
-			.unwrap(),
+			util::from_hex("08b659fde3a41284819f45415890330272efef7ef991f833a64b746be802c8fd77")
+				.unwrap(),
 		),
 		excess_sig: Signature::from_raw_data(&[
 			189, 52, 60, 137, 172, 160, 134, 69, 17, 47, 82, 86, 169, 136, 4, 240, 104, 188, 8,
@@ -225,10 +219,8 @@ pub fn genesis_main() -> core::Block {
 	let output = core::Output {
 		features: core::OutputFeatures::Coinbase,
 		commit: Commitment::from_vec(
-			util::from_hex(
-				"089dfcac475c94c978861b3dbef1e37b038cc13f9f78de9a4e14f31ed36e7a54c9".to_string(),
-			)
-			.unwrap(),
+			util::from_hex("089dfcac475c94c978861b3dbef1e37b038cc13f9f78de9a4e14f31ed36e7a54c9")
+				.unwrap(),
 		),
 		proof: RangeProof {
 			plen: SINGLE_BULLET_PROOF_SIZE,

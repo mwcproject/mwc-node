@@ -20,7 +20,6 @@ use crate::types::*;
 use crate::util;
 use crate::util::secp::pedersen::Commitment;
 use crate::web::*;
-use failure::ResultExt;
 use hyper::{Body, Request, StatusCode};
 use std::sync::Weak;
 
@@ -47,9 +46,9 @@ pub struct TxHashSetHandler {
 impl TxHashSetHandler {
 	// gets roots
 	fn get_roots(&self) -> Result<TxHashSet, Error> {
-		let res = TxHashSet::from_head(w(&self.chain)?).context(ErrorKind::Internal(
-			"failed to read roots from txhashset".to_owned(),
-		))?;
+		let res = TxHashSet::from_head(w(&self.chain)?).map_err(|e| {
+			ErrorKind::Internal(format!("failed to read roots from txhashset, {}", e))
+		})?;
 		Ok(res)
 	}
 
@@ -85,7 +84,12 @@ impl TxHashSetHandler {
 		let chain = w(&self.chain)?;
 		let outputs = chain
 			.unspent_outputs_by_pmmr_index(start_index, max, end_index)
-			.context(ErrorKind::NotFound)?;
+			.map_err(|e| {
+				ErrorKind::NotFound(format!(
+					"Unspent output for PMMR {}-{:?}, {}",
+					start_index, end_index, e
+				))
+			})?;
 		let out = OutputListing {
 			last_retrieved_index: outputs.0,
 			highest_index: outputs.1,
@@ -94,7 +98,7 @@ impl TxHashSetHandler {
 				.iter()
 				.map(|x| OutputPrintable::from_output(x, chain.clone(), None, true, true))
 				.collect::<Result<Vec<_>, _>>()
-				.context(ErrorKind::Internal("chain error".to_owned()))?,
+				.map_err(|e| ErrorKind::Internal(format!("chain error, {}", e)))?,
 		};
 		Ok(out)
 	}
@@ -108,7 +112,12 @@ impl TxHashSetHandler {
 		let chain = w(&self.chain)?;
 		let range = chain
 			.block_height_range_to_pmmr_indices(start_block_height, end_block_height)
-			.context(ErrorKind::NotFound)?;
+			.map_err(|e| {
+				ErrorKind::NotFound(format!(
+					"Block PMMR range for heights {}-{:?}, {}",
+					start_block_height, end_block_height, e
+				))
+			})?;
 		let out = OutputListing {
 			last_retrieved_index: range.0,
 			highest_index: range.1,
@@ -120,15 +129,22 @@ impl TxHashSetHandler {
 	// return a dummy output with merkle proof for position filled out
 	// (to avoid having to create a new type to pass around)
 	fn get_merkle_proof_for_output(&self, id: &str) -> Result<OutputPrintable, Error> {
-		let c = util::from_hex(String::from(id)).context(ErrorKind::Argument(format!(
-			"Not a valid commitment: {}",
-			id
-		)))?;
+		let c = util::from_hex(id)
+			.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
 		let commit = Commitment::from_vec(c);
 		let chain = w(&self.chain)?;
-		let output_pos = chain.get_output_pos(&commit).context(ErrorKind::NotFound)?;
-		let merkle_proof = chain::Chain::get_merkle_proof_for_pos(&chain, commit)
-			.map_err(|_| ErrorKind::NotFound)?;
+		let output_pos = chain.get_output_pos(&commit).map_err(|e| {
+			ErrorKind::NotFound(format!(
+				"Unable to get a MMR position for commit {}, {}",
+				id, e
+			))
+		})?;
+		let merkle_proof = chain::Chain::get_merkle_proof_for_pos(&chain, commit).map_err(|e| {
+			ErrorKind::NotFound(format!(
+				"Unable to get a merkle proof for commit {}, {}",
+				id, e
+			))
+		})?;
 		Ok(OutputPrintable {
 			output_type: OutputType::Coinbase,
 			commit: Commitment::from_vec(vec![]),

@@ -96,8 +96,8 @@ impl Hash {
 
 	/// Convert hex string back to hash.
 	pub fn from_hex(hex: &str) -> Result<Hash, Error> {
-		let bytes = util::from_hex(hex.to_string())
-			.map_err(|_| Error::HexError(format!("failed to decode {}", hex)))?;
+		let bytes = util::from_hex(hex)
+			.map_err(|e| Error::HexError(format!("failed to decode {}, {}", hex, e)))?;
 		Ok(Hash::from_vec(&bytes))
 	}
 

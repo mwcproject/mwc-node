@@ -638,13 +638,13 @@ impl NetToChainAdapter {
 			}
 			Err(e) => {
 				match e.kind() {
-					chain::ErrorKind::Orphan => {
+					chain::ErrorKind::Orphan(orph_msg) => {
 						if let Ok(previous) = previous {
 							// make sure we did not miss the parent block
 							if !self.chain().is_orphan(&previous.hash())
 								&& !self.sync_state.is_syncing()
 							{
-								debug!("process_block: received an orphan block, checking the parent: {:}", previous.hash());
+								debug!("process_block: received an orphan block: {}, checking the parent: {:}", orph_msg, previous.hash());
 								self.request_block(&previous, peer_info, chain::Options::NONE)
 							}
 						}
@@ -982,25 +982,25 @@ impl pool::BlockChain for PoolToChainAdapter {
 	fn chain_head(&self) -> Result<BlockHeader, pool::PoolError> {
 		self.chain()
 			.head_header()
-			.map_err(|_| pool::PoolError::Other(format!("failed to get head_header")))
+			.map_err(|e| pool::PoolError::Other(format!("failed to get head_header, {}", e)))
 	}
 
 	fn get_block_header(&self, hash: &Hash) -> Result<BlockHeader, pool::PoolError> {
 		self.chain()
 			.get_block_header(hash)
-			.map_err(|_| pool::PoolError::Other(format!("failed to get block_header")))
+			.map_err(|e| pool::PoolError::Other(format!("failed to get block_header, {}", e)))
 	}
 
 	fn get_block_sums(&self, hash: &Hash) -> Result<BlockSums, pool::PoolError> {
 		self.chain()
 			.get_block_sums(hash)
-			.map_err(|_| pool::PoolError::Other(format!("failed to get block_sums")))
+			.map_err(|e| pool::PoolError::Other(format!("failed to get block_sums, {}", e)))
 	}
 
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
 		self.chain()
 			.validate_tx(tx)
-			.map_err(|_| pool::PoolError::Other(format!("failed to validate tx")))
+			.map_err(|e| pool::PoolError::Other(format!("failed to validate tx, {}", e)))
 	}
 
 	fn verify_coinbase_maturity(&self, tx: &Transaction) -> Result<(), pool::PoolError> {

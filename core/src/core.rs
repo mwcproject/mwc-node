@@ -39,8 +39,8 @@ pub use self::transaction::*;
 #[derive(Fail, Debug)]
 pub enum Error {
 	/// Human readable represenation of amount is invalid
-	#[fail(display = "Amount string was invalid")]
-	InvalidAmountString,
+	#[fail(display = "Invalid amount string, {}", _0)]
+	InvalidAmountString(String),
 }
 
 /// Common method for parsing an amount from human-readable, and converting
@@ -49,7 +49,9 @@ pub enum Error {
 pub fn amount_from_hr_string(amount: &str) -> Result<u64, Error> {
 	// no i18n yet, make sure we use '.' as the separator
 	if amount.find(',').is_some() {
-		return Err(Error::InvalidAmountString);
+		return Err(Error::InvalidAmountString(
+			"Found separator ',', expected '.'".to_string(),
+		));
 	}
 	let (grins, ngrins) = match amount.find('.') {
 		None => (parse_grins(amount)?, 0),
@@ -67,7 +69,7 @@ fn parse_grins(amount: &str) -> Result<u64, Error> {
 	} else {
 		amount
 			.parse::<u64>()
-			.map_err(|_| Error::InvalidAmountString)
+			.map_err(|e| Error::InvalidAmountString(format!("Unable to parse {}, {}", amount, e)))
 	}
 }
 
@@ -83,7 +85,9 @@ fn parse_ngrins(amount: &str) -> Result<u64, Error> {
 	};
 	format!("{:0<width$}", amount, width = WIDTH)
 		.parse::<u64>()
-		.map_err(|_| Error::InvalidAmountString)
+		.map_err(|e| {
+			Error::InvalidAmountString(format!("Unable to parse nano value {}, {}", amount, e))
+		})
 }
 
 /// Common method for converting an amount to a human-readable string

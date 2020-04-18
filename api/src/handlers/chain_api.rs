@@ -21,7 +21,6 @@ use crate::types::*;
 use crate::util;
 use crate::util::secp::pedersen::Commitment;
 use crate::web::*;
-use failure::ResultExt;
 use hyper::{Body, Request, StatusCode};
 use std::sync::Weak;
 
@@ -35,7 +34,7 @@ impl ChainHandler {
 	pub fn get_tip(&self) -> Result<Tip, Error> {
 		let head = w(&self.chain)?
 			.head()
-			.map_err(|e| ErrorKind::Internal(format!("can't get head: {}", e)))?;
+			.map_err(|e| ErrorKind::Internal(format!("can't get tip: {}", e)))?;
 		Ok(Tip::from_tip(head))
 	}
 }
@@ -56,7 +55,7 @@ impl ChainValidationHandler {
 	pub fn validate_chain(&self) -> Result<(), Error> {
 		w(&self.chain)?
 			.validate(true)
-			.map_err(|_| ErrorKind::Internal("chain error".to_owned()).into())
+			.map_err(|e| ErrorKind::Internal(format!("chain fast validation error. {}", e)).into())
 	}
 }
 
@@ -66,7 +65,7 @@ impl Handler for ChainValidationHandler {
 			Ok(_) => response(StatusCode::OK, "{}"),
 			Err(e) => response(
 				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("validate failed: {}", e),
+				format!("chain validation is failed, {}", e),
 			),
 		}
 	}
@@ -83,7 +82,7 @@ impl ChainCompactHandler {
 	pub fn compact_chain(&self) -> Result<(), Error> {
 		w(&self.chain)?
 			.compact()
-			.map_err(|_| ErrorKind::Internal("chain error".to_owned()).into())
+			.map_err(|e| ErrorKind::Internal(format!("compact chain error {}", e)).into())
 	}
 }
 
@@ -93,7 +92,7 @@ impl Handler for ChainCompactHandler {
 			Ok(_) => response(StatusCode::OK, "{}"),
 			Err(e) => response(
 				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("compact failed: {}", e),
+				format!("chain compact failed: {}", e),
 			),
 		}
 	}
@@ -137,7 +136,7 @@ impl OutputHandler {
 			for commit in &commits {
 				if commit.len() != 66 {
 					return Err(ErrorKind::RequestError(format!(
-						"invalid commit length for {}",
+						"invalid commit length for {}, expected length 66",
 						commit
 					))
 					.into());
@@ -188,7 +187,12 @@ impl OutputHandler {
 		let chain = w(&self.chain)?;
 		let outputs = chain
 			.unspent_outputs_by_pmmr_index(start_index, max, end_index)
-			.context(ErrorKind::NotFound)?;
+			.map_err(|e| {
+				ErrorKind::NotFound(format!(
+					"Unspent outputs for PMMR {}-{:?}, {}",
+					start_index, end_index, e
+				))
+			})?;
 		let out = OutputListing {
 			last_retrieved_index: outputs.0,
 			highest_index: outputs.1,
@@ -205,7 +209,7 @@ impl OutputHandler {
 					)
 				})
 				.collect::<Result<Vec<_>, _>>()
-				.context(ErrorKind::Internal("chain error".to_owned()))?,
+				.map_err(|e| ErrorKind::Internal(format!("chain error, {}", e)))?,
 		};
 		Ok(out)
 	}
@@ -238,14 +242,21 @@ impl OutputHandler {
 	) -> Result<BlockOutputs, Error> {
 		let header = w(&self.chain)?
 			.get_header_by_height(block_height)
-			.map_err(|_| ErrorKind::NotFound)?;
+			.map_err(|e| {
+				ErrorKind::NotFound(format!("Header at height {}, {}", block_height, e))
+			})?;
 
 		// TODO - possible to compact away blocks we care about
 		// in the period between accepting the block and refreshing the wallet
 		let chain = w(&self.chain)?;
-		let block = chain
-			.get_block(&header.hash())
-			.map_err(|_| ErrorKind::NotFound)?;
+		let block = chain.get_block(&header.hash()).map_err(|e| {
+			ErrorKind::NotFound(format!(
+				"Block at height {} for hash {}, {}",
+				block_height,
+				header.hash(),
+				e
+			))
+		})?;
 		let outputs = block
 			.outputs()
 			.iter()
@@ -260,7 +271,9 @@ impl OutputHandler {
 				)
 			})
 			.collect::<Result<Vec<_>, _>>()
-			.context(ErrorKind::Internal("cain error".to_owned()))?;
+			.map_err(|e| {
+				ErrorKind::Internal(format!("chain read outputs from block error, {}", e))
+			})?;
 
 		Ok(BlockOutputs {
 			header: BlockHeaderInfo::from_header(&header),
@@ -277,14 +290,21 @@ impl OutputHandler {
 	) -> Result<Vec<OutputPrintable>, Error> {
 		let header = w(&self.chain)?
 			.get_header_by_height(block_height)
-			.map_err(|_| ErrorKind::NotFound)?;
+			.map_err(|e| {
+				ErrorKind::NotFound(format!("Header at height {}, {}", block_height, e))
+			})?;
 
 		// TODO - possible to compact away blocks we care about
 		// in the period between accepting the block and refreshing the wallet
 		let chain = w(&self.chain)?;
-		let block = chain
-			.get_block(&header.hash())
-			.map_err(|_| ErrorKind::NotFound)?;
+		let block = chain.get_block(&header.hash()).map_err(|e| {
+			ErrorKind::NotFound(format!(
+				"Block at height {} for hash {}, {}",
+				block_height,
+				header.hash(),
+				e
+			))
+		})?;
 		let outputs = block
 			.outputs()
 			.iter()
@@ -299,7 +319,9 @@ impl OutputHandler {
 				)
 			})
 			.collect::<Result<Vec<_>, _>>()
-			.context(ErrorKind::Internal("cain error".to_owned()))?;
+			.map_err(|e| {
+				ErrorKind::Internal(format!("chain read outputs from block error, {}", e))
+			})?;
 
 		Ok(outputs)
 	}
@@ -311,8 +333,13 @@ impl OutputHandler {
 		let query = must_get_query!(req);
 		let params = QueryParams::from(query);
 		params.process_multival_param("id", |id| {
-			if let Ok(x) = util::from_hex(String::from(id)) {
+			if let Ok(x) = util::from_hex(id) {
 				commitments.push(Commitment::from_vec(x));
+			} else {
+				warn!(
+					"Outputs API unable to decode and skip id value form the HEX {}",
+					id
+				);
 			}
 		});
 		let start_height = parse_param!(params, "start_height", 1);
@@ -388,19 +415,25 @@ pub struct KernelHandler {
 
 impl KernelHandler {
 	fn get_kernel(&self, req: Request<Body>) -> Result<Option<LocatedTxKernel>, Error> {
-		let excess = req
+		let excess_s = req
 			.uri()
 			.path()
 			.trim_end_matches('/')
 			.rsplit('/')
 			.next()
 			.ok_or(ErrorKind::RequestError("missing excess".into()))?;
-		let excess = util::from_hex(excess.to_owned())
-			.map_err(|_| ErrorKind::RequestError("invalid excess hex".into()))?;
-		if excess.len() != 33 {
-			return Err(ErrorKind::RequestError("invalid excess length".into()).into());
+		let excess_v = util::from_hex(excess_s).map_err(|e| {
+			ErrorKind::RequestError(format!("invalid excess hex {}, {}", excess_s, e))
+		})?;
+		if excess_v.len() != 33 {
+			return Err(ErrorKind::RequestError(format!(
+				"invalid excess {}, get length {}, expected 33",
+				excess_s,
+				excess_v.len()
+			))
+			.into());
 		}
-		let excess = Commitment::from_vec(excess);
+		let excess = Commitment::from_vec(excess_v);
 
 		let chain = w(&self.chain)?;
 
@@ -410,21 +443,27 @@ impl KernelHandler {
 		// Check query parameters for minimum and maximum search height
 		if let Some(q) = req.uri().query() {
 			let params = QueryParams::from(q);
-			if let Some(h) = params.get("min_height") {
-				let h = h
-					.parse()
-					.map_err(|_| ErrorKind::RequestError("invalid minimum height".into()))?;
+			if let Some(hs) = params.get("min_height") {
+				let h = hs.parse().map_err(|e| {
+					ErrorKind::RequestError(format!(
+						"invalid parameter 'min_height' value {}, {}",
+						hs, e
+					))
+				})?;
 				// Default is genesis
 				min_height = if h == 0 { None } else { Some(h) };
 			}
-			if let Some(h) = params.get("max_height") {
-				let h = h
-					.parse()
-					.map_err(|_| ErrorKind::RequestError("invalid maximum height".into()))?;
+			if let Some(hs) = params.get("max_height") {
+				let h = hs.parse().map_err(|e| {
+					ErrorKind::RequestError(format!(
+						"invalid parameter 'max_height' value {}, {}",
+						hs, e
+					))
+				})?;
 				// Default is current head
 				let head_height = chain
 					.head()
-					.map_err(|e| ErrorKind::Internal(format!("{}", e)))?
+					.map_err(|e| ErrorKind::Internal(format!("Unable to get a chain head, {}", e)))?
 					.height;
 				max_height = if h >= head_height { None } else { Some(h) };
 			}
@@ -432,7 +471,12 @@ impl KernelHandler {
 
 		let kernel = chain
 			.get_kernel_height(&excess, min_height, max_height)
-			.map_err(|e| ErrorKind::Internal(format!("{}", e)))?
+			.map_err(|e| {
+				ErrorKind::Internal(format!(
+					"Unable to get a height for the excess {}, {}",
+					excess_s, e
+				))
+			})?
 			.map(|(tx_kernel, height, mmr_index)| LocatedTxKernel {
 				tx_kernel,
 				height,
@@ -443,21 +487,32 @@ impl KernelHandler {
 
 	pub fn get_kernel_v2(
 		&self,
-		excess: String,
+		excess_s: String,
 		min_height: Option<u64>,
 		max_height: Option<u64>,
 	) -> Result<LocatedTxKernel, Error> {
-		let excess = util::from_hex(excess.to_owned())
-			.map_err(|_| ErrorKind::RequestError("invalid excess hex".into()))?;
+		let excess = util::from_hex(excess_s.as_str()).map_err(|e| {
+			ErrorKind::RequestError(format!("invalid excess hex {}, {}", excess_s, e))
+		})?;
 		if excess.len() != 33 {
-			return Err(ErrorKind::RequestError("invalid excess length".into()).into());
+			return Err(ErrorKind::RequestError(format!(
+				"invalid excess {}, get length {}, expected 33",
+				excess_s,
+				excess.len()
+			))
+			.into());
 		}
 		let excess = Commitment::from_vec(excess);
 
 		let chain = w(&self.chain)?;
 		let kernel = chain
 			.get_kernel_height(&excess, min_height, max_height)
-			.map_err(|e| ErrorKind::Internal(format!("{}", e)))?
+			.map_err(|e| {
+				ErrorKind::Internal(format!(
+					"Unable to get a height for excess {}, {}",
+					excess_s, e
+				))
+			})?
 			.map(|(tx_kernel, height, mmr_index)| LocatedTxKernel {
 				tx_kernel,
 				height,
@@ -465,7 +520,9 @@ impl KernelHandler {
 			});
 		match kernel {
 			Some(kernel) => Ok(kernel),
-			None => Err(ErrorKind::NotFound.into()),
+			None => {
+				Err(ErrorKind::NotFound(format!("kernel value for excess {}", excess_s)).into())
+			}
 		}
 	}
 }

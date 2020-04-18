@@ -109,7 +109,7 @@ impl Peers {
 	pub fn is_known(&self, addr: PeerAddr) -> Result<bool, Error> {
 		let peers = self.peers.try_read_for(LOCK_TIMEOUT).ok_or_else(|| {
 			error!("is_known: failed to get peers lock");
-			Error::Internal
+			Error::Internal("is_known: failed to get peers lock".to_string())
 		})?;
 		Ok(peers.contains_key(&addr))
 	}
@@ -278,7 +278,7 @@ impl Peers {
 				peer.stop();
 				let mut peers = self.peers.try_write_for(LOCK_TIMEOUT).ok_or_else(|| {
 					error!("ban_peer: failed to get peers lock");
-					Error::PeerException
+					Error::PeerException("ban_peer: failed to get peers lock".to_string())
 				})?;
 				peers.remove(&peer.info.addr);
 				Ok(())
@@ -606,11 +606,7 @@ impl ChainAdapter for Peers {
 				hash, peer_info.addr,
 			);
 			self.ban_peer(peer_info.addr, ReasonForBan::BadBlock)
-				.map_err(|e| {
-					let err: chain::Error =
-						chain::ErrorKind::Other(format!("ban peer error :{:?}", e)).into();
-					err
-				})?;
+				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -631,11 +627,7 @@ impl ChainAdapter for Peers {
 				hash, peer_info.addr
 			);
 			self.ban_peer(peer_info.addr, ReasonForBan::BadCompactBlock)
-				.map_err(|e| {
-					let err: chain::Error =
-						chain::ErrorKind::Other(format!("ban peer error :{:?}", e)).into();
-					err
-				})?;
+				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -651,11 +643,7 @@ impl ChainAdapter for Peers {
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr, ReasonForBan::BadBlockHeader)
-				.map_err(|e| {
-					let err: chain::Error =
-						chain::ErrorKind::Other(format!("ban peer error :{:?}", e)).into();
-					err
-				})?;
+				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -671,11 +659,7 @@ impl ChainAdapter for Peers {
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr, ReasonForBan::BadBlockHeader)
-				.map_err(|e| {
-					let err: chain::Error =
-						chain::ErrorKind::Other(format!("ban peer error :{:?}", e)).into();
-					err
-				})?;
+				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -722,11 +706,7 @@ impl ChainAdapter for Peers {
 				peer_info.addr
 			);
 			self.ban_peer(peer_info.addr, ReasonForBan::BadTxHashSet)
-				.map_err(|e| {
-					let err: chain::Error =
-						chain::ErrorKind::Other(format!("ban peer error :{:?}", e)).into();
-					err
-				})?;
+				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
 			Ok(true)
 		} else {
 			Ok(false)

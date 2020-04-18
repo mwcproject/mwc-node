@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::util::RwLock;
+use failure::Fail;
 use std::convert::From;
 use std::fs::File;
 use std::io::{self, Read};
@@ -59,29 +60,43 @@ const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
 const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
 
-#[derive(Debug)]
+#[derive(Debug, Fail)]
 pub enum Error {
+	#[fail(display = "p2p Serialization error, {}", _0)]
 	Serialization(ser::Error),
+	#[fail(display = "p2p Connection error, {}", _0)]
 	Connection(io::Error),
 	/// Header type does not match the expected message type
+	#[fail(display = "p2p bad message")]
 	BadMessage,
+	#[fail(display = "p2p message Length error")]
 	MsgLen,
+	#[fail(display = "p2p banned")]
 	Banned,
+	#[fail(display = "p2p closed connection")]
 	ConnectionClose,
+	#[fail(display = "p2p timeout")]
 	Timeout,
+	#[fail(display = "p2p store error, {}", _0)]
 	Store(grin_store::Error),
+	#[fail(display = "p2p chain error, {}", _0)]
 	Chain(chain::Error),
+	#[fail(display = "peer with self")]
 	PeerWithSelf,
+	#[fail(display = "p2p no dandelion relay")]
 	NoDandelionRelay,
-	GenesisMismatch {
-		us: Hash,
-		peer: Hash,
-	},
+	#[fail(display = "p2p genesis mismatch: {} vs peer {}", us, peer)]
+	GenesisMismatch { us: Hash, peer: Hash },
+	#[fail(display = "p2p send error, {}", _0)]
 	Send(String),
+	#[fail(display = "peer not found")]
 	PeerNotFound,
+	#[fail(display = "peer not banned")]
 	PeerNotBanned,
-	PeerException,
-	Internal,
+	#[fail(display = "peer exception, {}", _0)]
+	PeerException(String),
+	#[fail(display = "p2p internal error: {}", _0)]
+	Internal(String),
 }
 
 impl From<ser::Error> for Error {

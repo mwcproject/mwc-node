@@ -107,9 +107,9 @@ impl<'a> UTXOView<'a> {
 		match self.output_pmmr.get_data(pos) {
 			Some(output_id) => match self.rproof_pmmr.get_data(pos) {
 				Some(rproof) => Ok(output_id.into_output(rproof)),
-				None => Err(ErrorKind::RangeproofNotFound.into()),
+				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
 			},
-			None => Err(ErrorKind::OutputNotFound.into()),
+			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos)).into()),
 		}
 	}
 
@@ -162,7 +162,7 @@ impl<'a> UTXOView<'a> {
 			let header = self.batch.get_block_header(&hash)?;
 			Ok(header)
 		} else {
-			Err(ErrorKind::Other(format!("get header by height")).into())
+			Err(ErrorKind::Other(format!("get header for height {}", height)).into())
 		}
 	}
 }

@@ -64,13 +64,13 @@ pub fn monitor_transactions(
 							&verifier_cache,
 						)
 						.map_err(|e| {
-							error!("dand_mon: Problem processing fluff phase. {:?}", e);
+							error!("dand_mon: Problem processing fluff phase. {}", e);
 						});
 					}
 
 					// Now find all expired entries based on embargo timer.
 					let _ = process_expired_entries(&dandelion_config, &tx_pool).map_err(|e| {
-						error!("dand_mon: Problem processing expired entries. {:?}", e);
+						error!("dand_mon: Problem processing expired entries. {}", e);
 					});
 
 					// Handle the tx above *before* we transition to next epoch.

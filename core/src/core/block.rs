@@ -29,53 +29,67 @@ use crate::ser::{self, FixedLength, PMMRable, Readable, Reader, Writeable, Write
 use chrono::naive::{MAX_DATE, MIN_DATE};
 use chrono::prelude::{DateTime, NaiveDateTime, Utc};
 use chrono::Duration;
+use failure::Fail;
 use keychain::{self, BlindingFactor};
 use std::collections::HashSet;
-use std::fmt;
 use std::iter::FromIterator;
 use std::sync::Arc;
 use util::RwLock;
 use util::{secp, static_secp_instance};
 
 /// Errors thrown by Block validation
-#[derive(Debug, Clone, Eq, PartialEq, Fail)]
+#[derive(Fail, Debug, Clone, Eq, PartialEq)]
 pub enum Error {
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
+	#[fail(display = "Block Input/ouput vs kernel sum mismatch")]
 	KernelSumMismatch,
 	/// The total kernel sum on the block header is wrong
+	#[fail(display = "Block Invalid total kernel sum")]
 	InvalidTotalKernelSum,
 	/// Same as above but for the coinbase part of a block, including reward
+	#[fail(display = "Block Invalid total kernel sum plus reward")]
 	CoinbaseSumMismatch,
 	/// Restrict block total weight.
+	#[fail(display = "Block total weight is too heavy")]
 	TooHeavy,
 	/// Block weight (based on inputs|outputs|kernels) exceeded.
+	#[fail(display = "Block weight based on inputs outputs kernels exceeded")]
 	WeightExceeded,
 	/// Block version is invalid for a given block height
+	#[fail(display = "Block version {:?} is invalid", _0)]
 	InvalidBlockVersion(HeaderVersion),
 	/// Block time is invalid
+	#[fail(display = "Block time is invalid")]
 	InvalidBlockTime,
 	/// Invalid POW
+	#[fail(display = "Invalid POW")]
 	InvalidPow,
 	/// Kernel not valid due to lock_height exceeding block header height
-	KernelLockHeight(u64),
+	#[fail(display = "Block lock_height {} exceeding header height {}", _0, _1)]
+	KernelLockHeight(u64, u64),
 	/// Underlying tx related error
+	#[fail(display = "Block Invalid Transaction, {}", _0)]
 	Transaction(transaction::Error),
 	/// Underlying Secp256k1 error (signature validation or invalid public key
 	/// typically)
+	#[fail(display = "Secp256k1 error, {}", _0)]
 	Secp(secp::Error),
 	/// Underlying keychain related error
+	#[fail(display = "keychain error, {}", _0)]
 	Keychain(keychain::Error),
-	/// Underlying Merkle proof error
-	MerkleProof,
 	/// Error when verifying kernel sums via committed trait.
+	#[fail(display = "Block Commits error, {}", _0)]
 	Committed(committed::Error),
 	/// Validation error relating to cut-through.
 	/// Specifically the tx is spending its own output, which is not valid.
+	#[fail(display = "Block cut-through error")]
 	CutThrough,
 	/// Underlying serialization error.
+	#[fail(display = "Block serialization error, {}", _0)]
 	Serialization(ser::Error),
 	/// Other unspecified error condition
+	#[fail(display = "Block Generic error, {}", _0)]
 	Other(String),
 }
 
@@ -106,12 +120,6 @@ impl From<secp::Error> for Error {
 impl From<keychain::Error> for Error {
 	fn from(e: keychain::Error) -> Error {
 		Error::Keychain(e)
-	}
-}
-
-impl fmt::Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "Block Error (display needs implementation")
 	}
 }
 
@@ -289,7 +297,10 @@ fn read_block_header(reader: &mut dyn Reader) -> Result<BlockHeader, ser::Error>
 	if timestamp > MAX_DATE.and_hms(0, 0, 0).timestamp()
 		|| timestamp < MIN_DATE.and_hms(0, 0, 0).timestamp()
 	{
-		return Err(ser::Error::CorruptedData);
+		return Err(ser::Error::CorruptedData(format!(
+			"Incorrect timestamp {} at block header",
+			timestamp
+		)));
 	}
 
 	Ok(BlockHeader {
@@ -339,15 +350,15 @@ impl BlockHeader {
 	/// Let the cuck(at)oo miner/verifier handle the hashing
 	/// for consistency with how this call is performed everywhere
 	/// else
-	pub fn pre_pow(&self) -> Vec<u8> {
+	pub fn pre_pow(&self) -> Result<Vec<u8>, Error> {
 		let mut header_buf = vec![];
 		{
 			let mut writer = ser::BinWriter::default(&mut header_buf);
-			self.write_pre_pow(&mut writer).unwrap();
-			self.pow.write_pre_pow(&mut writer).unwrap();
-			writer.write_u64(self.pow.nonce).unwrap();
+			self.write_pre_pow(&mut writer)?;
+			self.pow.write_pre_pow(&mut writer)?;
+			writer.write_u64(self.pow.nonce)?;
 		}
-		header_buf
+		Ok(header_buf)
 	}
 
 	/// Total difficulty accumulated by the proof of work on this header
@@ -409,11 +420,12 @@ impl Readable for UntrustedBlockHeader {
 		{
 			// refuse blocks more than 12 blocks intervals in future (as in bitcoin)
 			// TODO add warning in p2p code if local time is too different from peers
-			error!(
+			let error_msg = format!(
 				"block header {} validation error: block time is more than 12 blocks in future",
 				header.hash()
 			);
-			return Err(ser::Error::CorruptedData);
+			error!("{}", error_msg);
+			return Err(ser::Error::CorruptedData(error_msg));
 		}
 
 		// Check the block version before proceeding any further.
@@ -421,23 +433,28 @@ impl Readable for UntrustedBlockHeader {
 		// and we want to halt processing as early as possible.
 		// If we receive an invalid block version then the peer is not on our hard-fork.
 		if !consensus::valid_header_version(header.height, header.version) {
-			return Err(ser::Error::InvalidBlockVersion);
+			return Err(ser::Error::InvalidBlockVersion(format!(
+				"Get header at height {} with version {}",
+				header.height, header.version.0
+			)));
 		}
 
 		if !header.pow.is_primary() && !header.pow.is_secondary() {
-			error!(
+			let error_msg = format!(
 				"block header {} validation error: invalid edge bits",
 				header.hash()
 			);
-			return Err(ser::Error::CorruptedData);
+			error!("{}", error_msg);
+			return Err(ser::Error::CorruptedData(error_msg));
 		}
 		if let Err(e) = verify_size(&header) {
-			error!(
+			let error_msg = format!(
 				"block header {} validation error: invalid POW: {}",
 				header.hash(),
 				e
 			);
-			return Err(ser::Error::CorruptedData);
+			error!("{}", error_msg);
+			return Err(ser::Error::CorruptedData(error_msg));
 		}
 		Ok(UntrustedBlockHeader(header))
 	}
@@ -797,7 +814,7 @@ impl Block {
 			// no tx can be included in a block earlier than its lock_height
 			if let KernelFeatures::HeightLocked { lock_height, .. } = k.features {
 				if lock_height > self.header.height {
-					return Err(Error::KernelLockHeight(lock_height));
+					return Err(Error::KernelLockHeight(lock_height, self.header.height));
 				}
 			}
 		}
@@ -828,7 +845,7 @@ impl Readable for UntrustedBlock {
 		// that exceeded the allowed number of inputs.
 		body.validate_read(Weighting::AsBlock).map_err(|e| {
 			error!("read validation error: {}", e);
-			ser::Error::CorruptedData
+			ser::Error::CorruptedData(format!("Fail to validate Tx body, {}", e))
 		})?;
 		let block = Block {
 			header: header.into(),

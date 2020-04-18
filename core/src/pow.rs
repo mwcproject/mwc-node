@@ -52,7 +52,7 @@ pub use crate::pow::cuckaroo::{new_cuckaroo_ctx, CuckarooContext};
 pub use crate::pow::cuckarood::{new_cuckarood_ctx, CuckaroodContext};
 pub use crate::pow::cuckaroom::{new_cuckaroom_ctx, CuckaroomContext};
 pub use crate::pow::cuckatoo::{new_cuckatoo_ctx, CuckatooContext};
-pub use crate::pow::error::Error;
+pub use crate::pow::error::{Error, ErrorKind};
 use chrono::prelude::{DateTime, NaiveDateTime, Utc};
 
 const MAX_SOLS: u32 = 10;
@@ -66,7 +66,12 @@ pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
 		bh.pow.proof.nonces.len(),
 		MAX_SOLS,
 	)?;
-	ctx.set_header_nonce(bh.pre_pow(), None, false)?;
+	ctx.set_header_nonce(
+		bh.pre_pow()
+			.map_err(|e| ErrorKind::PrePowError(format!("{}", e)))?,
+		None,
+		false,
+	)?;
 	ctx.verify(&bh.pow.proof)
 }
 
@@ -100,7 +105,12 @@ pub fn pow_size(
 		// if we found a cycle (not guaranteed) and the proof hash is higher that the
 		// diff, we're all good
 		let mut ctx = global::create_pow_context::<u32>(bh.height, sz, proof_size, MAX_SOLS)?;
-		ctx.set_header_nonce(bh.pre_pow(), None, true)?;
+		ctx.set_header_nonce(
+			bh.pre_pow()
+				.map_err(|e| ErrorKind::PrePowError(format!("{}", e)))?,
+			None,
+			true,
+		)?;
 		if let Ok(proofs) = ctx.find_cycles() {
 			bh.pow.proof = proofs[0].clone();
 			if bh.pow.to_difficulty(bh.height) >= diff {
