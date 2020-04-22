@@ -9,15 +9,17 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 2,599,963 MWC moved to a verifiable escrow wallets for HODL program and unclaimed airdrop.
 - MWC QT wallet cold storage implementation.
 - 01/21/2020 GRIN CVE patched.
-
-# Near term (0-3 months)
 - Grin 3.0 rebase.
 - Transaction pool update.
-- HODL program details.
+- HODL Program Registration Wallet.
+
+# Near term (0-3 months)
+- HODL program first payment - wallet support + backend.
+- MWCMQS support in mwc-wallet.
+- Start work on Mobile wallet.
+- Additional Grin rebases (if applicable).
 
 # Medium term (3-6 months)
-- Unclaimed airdrop use to burn, add to HODL program or additional airdrop(s).
-- HODL program implementation.
 - Website content.
 - Email list updates.
 - Website notifications.
@@ -27,7 +29,6 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Block explorer updates.
 
 # Long term (6+ months depending on priority)
-- Additional Grin rebases.
 - Decentralized exchange.
 - Mobile wallet.
 - Multisig.
