@@ -64,6 +64,8 @@ This command will sweep all full confirmed funds from the deposit wallet to a wi
 
 Sweeping should be done on a regular basis or as needed by the exchange.
 
+In addtion to this setup, it is possible to use some new settings a long with --min_conf in a single wallet to prevent double spends. See information about the new parameters here: https://github.com/mwcproject/mwc-wallet/blob/master/doc/change_outputs.md
+
 # How many confirmations are needed #
 
 Number of confirmations required is a personal decision that is up to the exchange. You can roughly estimate the cost of an attack based on number of confirmations X value of the block reward. For example, if the block reward is 0.6, it would cost 0.6 X 5000 = 3000 MWC to do a double spend. Some exchanges have different number of confirmations for different amounts deposited.
