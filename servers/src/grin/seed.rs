@@ -36,7 +36,8 @@ use crate::util::StopState;
 const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"mainnet.seed1.mwc.mw", // cpg
 	"mainnet.seed2.mwc.mw", // cpg
-	"40.114.69.216",        // JonB
+	"52.235.38.45",         // JonB
+	"51.89.98.17",          // Greg
 	"mwcseed.ddns.net",     // Konstantin
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
