@@ -48,4 +48,3 @@ J.K. Rowling for making it despite extraordinary adversity.
 ## License
 
 Apache License v2.0.
-
