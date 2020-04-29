@@ -1,4 +1,4 @@
-The MWC network has been functioning flawlessly since launch with 100% uptime. The MWC Team considers the protocol ossified with no need for a future hard fork unless a defensive action were required to protect the network.
+The MWC network was launched in November 2019 and has functioned flawlessly with 100% uptime. The MWC Team considers the protocol ossified and currently sees no need for a future hard fork unless a defensive action were required to protect the network.
 
 MWC development is progressing well and there are many areas where development resources could be allocated.
 
@@ -38,12 +38,12 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Coin shuffle.
 - Hardware wallets but requires hardware manufacturer support.
 
-The exact details of the HODL Program have still not been decided but at least 50% of the MWC in the HODL Program will be distributed to holders that have MWC that has not been moved after block 202,500.
+The exact details of the HODL Program have still not been decided. At least 50% of the 2,000,000 MWC in the HODL Program will be distributed to holders that have MWC that has not been moved after block 202,500.
 
 If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated with either the HODL Program or the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
 
-There are many potential places development resources can be allocated and they will be chosen based on market needs with highest priority given to requests that will primarily benefit and come from the buyers and hodlers of last resort.
+There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
 
 Almost since its beginning MWC has encountered very sophisticated heavily funded attacks by various mining consortiums who have attempted to destroy the network. Consequently, while the friendly miners are greatly appreciated the operating assumption is that miners are actively hostile and malicious towards the long-term interests of the buyers and hodlers of last resort and the network.
 
-MWC will be the only major coin on the C31 algorithm by November 2020 and certain off-the-shelf GPUs perform C31 efficiently relative to other algorithms. The MWC Team is aware of C31 ASIC designs that were done but abandoned by Obelisk and Innosilicon. The MWC Team would only take defensive measures like a hard fork proof of work change to protect the network against the use of ASICs in malicious and disruptive way.
+By November 2020 MWC will be the only major coin on the C31 algorithm. Certain off-the-shelf GPUs perform C31 efficiently relative to other algorithms. The MWC Team is aware of C31 ASIC designs that were done but abandoned by Obelisk and Innosilicon. The MWC Team will only take defensive measures, like a hard fork proof of work change, to protect the network against ASICs being used in a malicious or disruptive way.
