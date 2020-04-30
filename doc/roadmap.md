@@ -1,4 +1,4 @@
-The MWC network was launched in November 2019 and has functioned flawlessly with 100% uptime. The MWC Team considers the protocol ossified and currently sees no need for a future hard fork unless a defensive action were required to protect the network.
+The MWC network was launched in November 2019 and has functioned flawlessly with 100% uptime. The MWC Team considers the protocol ossified and currently sees no need for a future hard or soft fork unless a defensive action were required to protect the network.
 
 MWC development is progressing well and there are many areas where development resources could be allocated.
 
