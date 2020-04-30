@@ -14,7 +14,7 @@ What's working so far?
 
 ## Requirements
 
-* rust 1.41+ (use [rustup]((https://www.rustup.rs/))- i.e. `curl https://sh.rustup.rs -sSf | sh; source $HOME/.cargo/env`)
+* rust 1.42+ (use [rustup]((https://www.rustup.rs/))- i.e. `curl https://sh.rustup.rs -sSf | sh; source $HOME/.cargo/env`)
   * if rust is already installed, you can simply update version with `rustup update`
 * clang
 * ncurses and libs (ncurses, ncursesw5)
