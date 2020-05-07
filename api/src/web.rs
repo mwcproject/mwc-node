@@ -1,7 +1,8 @@
 use crate::rest::*;
 use crate::router::ResponseFuture;
-use futures::future::{err, ok};
-use futures::{Future, Stream};
+use bytes::Buf;
+use futures::future::ok;
+use hyper::body;
 use hyper::{Body, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -10,21 +11,17 @@ use std::fmt::Debug;
 use url::form_urlencoded;
 
 /// Parse request body
-pub fn parse_body<T>(req: Request<Body>) -> Box<dyn Future<Item = T, Error = Error> + Send>
+pub async fn parse_body<T>(req: Request<Body>) -> Result<T, Error>
 where
 	for<'de> T: Deserialize<'de> + Send + 'static,
 {
-	Box::new(
-		req.into_body()
-			.concat2()
-			.map_err(|e| ErrorKind::RequestError(format!("Failed to read request: {}", e)).into())
-			.and_then(|body| match serde_json::from_reader(&body.to_vec()[..]) {
-				Ok(obj) => ok(obj),
-				Err(e) => {
-					err(ErrorKind::RequestError(format!("Invalid request body, {}", e)).into())
-				}
-			}),
-	)
+	let raw = body::to_bytes(req.into_body())
+		.await
+		.map_err(|e| ErrorKind::RequestError(format!("Failed to read request: {}", e)))?;
+
+	serde_json::from_reader(raw.bytes()).map_err(|e| {
+		ErrorKind::RequestError(format!("Invalid request body (expected json), {}", e)).into()
+	})
 }
 
 /// Convert Result to ResponseFuture
@@ -93,7 +90,7 @@ pub fn just_response<T: Into<Body> + Debug>(status: StatusCode, text: T) -> Resp
 
 /// Text response as future
 pub fn response<T: Into<Body> + Debug>(status: StatusCode, text: T) -> ResponseFuture {
-	Box::new(ok(just_response(status, text)))
+	Box::pin(ok(just_response(status, text)))
 }
 
 pub struct QueryParams {
@@ -115,10 +112,7 @@ impl QueryParams {
 	}
 
 	pub fn get(&self, name: &str) -> Option<&String> {
-		match self.params.get(name) {
-			None => None,
-			Some(v) => v.first(),
-		}
+		self.params.get(name).and_then(|v| v.first())
 	}
 }
 
@@ -127,7 +121,7 @@ impl From<&str> for QueryParams {
 		let params = form_urlencoded::parse(query_string.as_bytes())
 			.into_owned()
 			.fold(HashMap::new(), |mut hm, (k, v)| {
-				hm.entry(k).or_insert(vec![]).push(v);
+				hm.entry(k).or_insert_with(|| vec![]).push(v);
 				hm
 			});
 		QueryParams { params }
@@ -176,7 +170,7 @@ macro_rules! parse_param(
 		None => $default,
 		Some(val) =>  match val.parse() {
 			Ok(val) => val,
-			Err(_) => return Err(ErrorKind::RequestError(format!("invalid value of parameter {}", $name)))?,
+			Err(_) => return Err(ErrorKind::RequestError(format!("invalid value of parameter {}", $name)).into()),
 		}
 	}
 	));

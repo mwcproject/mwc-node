@@ -1,6 +1,6 @@
 # Documentation structure
 
-*Read this in other languages: [Korean](table_of_contents_KR.md).*
+*Read this in other languages: [Korean](table_of_contents_KR.md), [简体中文](table_of_contents_ZH-CN.md).*
 
 ## Explaining grin
 
@@ -20,6 +20,7 @@
 - [pruning](pruning.md) - Technical explanation of pruning
 - [stratum](stratum.md) - Technical explanation of Grin Stratum RPC protocol
 - [transaction UML](https://github.com/mimblewimble/grin-wallet/blob/master/doc/transaction/basic-transaction-wf.png) - UML of an interactive transaction (aggregating transaction without `lock_height`)
+- [rangeproof output format](rangeproof_byte_format.md) - Explanation of the byte output of a range proof in a Grin transaction
 
 ## Build and use
 

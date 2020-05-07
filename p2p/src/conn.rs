@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 //! stream and make sure we get the right number of bytes out.
 
 use crate::core::ser;
-use crate::core::ser::{FixedLength, ProtocolVersion};
+use crate::core::ser::ProtocolVersion;
 use crate::msg::{
 	read_body, read_discard, read_header, read_item, write_message, Msg, MsgHeader,
 	MsgHeaderWrapper,
@@ -31,6 +31,7 @@ use crate::util::{RateCounter, RwLock};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use std::{
@@ -80,9 +81,7 @@ macro_rules! try_break {
 
 macro_rules! try_header {
 	($res:expr, $conn: expr) => {{
-		$conn
-			.set_read_timeout(Some(HEADER_IO_TIMEOUT))
-			.expect("set timeout");
+		let _ = $conn.set_read_timeout(Some(HEADER_IO_TIMEOUT));
 		try_break!($res)
 		}};
 }
@@ -125,7 +124,7 @@ impl<'a> Message<'a> {
 			let read_len = cmp::min(8000, len - written);
 			let mut buf = vec![0u8; read_len];
 			self.stream.read_exact(&mut buf[..])?;
-			writer.write_all(&mut buf)?;
+			writer.write_all(&buf)?;
 			written += read_len;
 		}
 		Ok(written)
@@ -291,18 +290,16 @@ where
 	let reader_stopped = stopped.clone();
 
 	let reader_tracker = tracker.clone();
-	let writer_tracker = tracker.clone();
+	let writer_tracker = tracker;
 
 	let reader_thread = thread::Builder::new()
 		.name("peer_read".to_string())
 		.spawn(move || {
 			loop {
 				// check the read end
-				match try_header!(read_header(&mut reader, version), &mut reader) {
+				match try_header!(read_header(&mut reader, version), &reader) {
 					Some(MsgHeaderWrapper::Known(header)) => {
-						reader
-							.set_read_timeout(Some(BODY_IO_TIMEOUT))
-							.expect("set timeout");
+						let _ = reader.set_read_timeout(Some(BODY_IO_TIMEOUT));
 						let msg = Message::from_header(header, &mut reader, version);
 
 						trace!(
@@ -347,7 +344,7 @@ where
 				reader
 					.peer_addr()
 					.map(|a| a.to_string())
-					.unwrap_or("?".to_owned())
+					.unwrap_or_else(|_| "?".to_owned())
 			);
 			let _ = reader.shutdown(Shutdown::Both);
 		})?;
@@ -356,19 +353,25 @@ where
 		.name("peer_write".to_string())
 		.spawn(move || {
 			let mut retry_send = Err(());
-			writer
-				.set_write_timeout(Some(BODY_IO_TIMEOUT))
-				.expect("set timeout");
+			let _ = writer.set_write_timeout(Some(BODY_IO_TIMEOUT));
 			loop {
 				let maybe_data = retry_send.or_else(|_| send_rx.recv_timeout(CHANNEL_TIMEOUT));
 				retry_send = Err(());
-				if let Ok(data) = maybe_data {
-					let written =
-						try_break!(write_message(&mut writer, &data, writer_tracker.clone()));
-					if written.is_none() {
-						retry_send = Ok(data);
+				match maybe_data {
+					Ok(data) => {
+						let written =
+							try_break!(write_message(&mut writer, &data, writer_tracker.clone()));
+						if written.is_none() {
+							retry_send = Ok(data);
+						}
 					}
+					Err(RecvTimeoutError::Disconnected) => {
+						debug!("peer_write: mpsc channel disconnected during recv_timeout");
+						break;
+					}
+					Err(RecvTimeoutError::Timeout) => {}
 				}
+
 				// check the close channel
 				if stopped.load(Ordering::Relaxed) {
 					break;
@@ -380,8 +383,9 @@ where
 				writer
 					.peer_addr()
 					.map(|a| a.to_string())
-					.unwrap_or("?".to_owned())
+					.unwrap_or_else(|_| "?".to_owned())
 			);
+			let _ = writer.shutdown(Shutdown::Both);
 		})?;
 	Ok((reader_thread, writer_thread))
 }

@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +23,6 @@ use crate::types::*;
 use crate::util;
 use crate::util::RwLock;
 use crate::web::*;
-use futures::future::{err, ok};
-use futures::Future;
 use hyper::{Body, Request, StatusCode};
 use std::sync::Weak;
 
@@ -83,10 +81,10 @@ impl PoolHandler {
 			.blockchain
 			.chain_head()
 			.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
-		let res = tx_pool
+		tx_pool
 			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
 			.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
-		Ok(res)
+		Ok(())
 	}
 }
 /// Dummy wrapper for the hex-encoded serialized transaction.
@@ -101,76 +99,63 @@ pub struct PoolPushHandler {
 	pub tx_pool: Weak<RwLock<pool::TransactionPool>>,
 }
 
-impl PoolPushHandler {
-	fn update_pool(&self, req: Request<Body>) -> Box<dyn Future<Item = (), Error = Error> + Send> {
-		let params = QueryParams::from(req.uri().query());
+async fn update_pool(
+	pool: Weak<RwLock<pool::TransactionPool>>,
+	req: Request<Body>,
+) -> Result<(), Error> {
+	let pool = w(&pool)?;
+	let params = QueryParams::from(req.uri().query());
+	let fluff = params.get("fluff").is_some();
 
-		let fluff = params.get("fluff").is_some();
-		let pool_arc = match w(&self.tx_pool) {
-			Ok(p) => p,
-			Err(e) => return Box::new(err(e)),
-		};
+	let wrapper: TxWrapper = parse_body(req).await?;
+	let tx_bin = util::from_hex(&wrapper.tx_hex).map_err(|e| {
+		ErrorKind::RequestError(format!(
+			"Unable to decode transaction hex {}, {}",
+			wrapper.tx_hex, e
+		))
+	})?;
 
-		Box::new(
-			parse_body(req)
-				.and_then(move |wrapper: TxWrapper| {
-					util::from_hex(wrapper.tx_hex.as_str()).map_err(|e| {
-						ErrorKind::RequestError(format!(
-							"Unable to decode transaction hex {}, {}",
-							wrapper.tx_hex, e
-						))
-						.into()
-					})
-				})
-				.and_then(move |tx_bin| {
-					// All wallet api interaction explicitly uses protocol version 1 for now.
-					let version = ProtocolVersion(1);
+	// All wallet api interaction explicitly uses protocol version 1 for now.
+	let version = ProtocolVersion(1);
+	let tx: Transaction = ser::deserialize(&mut &tx_bin[..], version).map_err(|e| {
+		ErrorKind::RequestError(format!(
+			"Unable to deserialize transaction from binary {:?}, {}",
+			tx_bin, e
+		))
+	})?;
 
-					ser::deserialize(&mut &tx_bin[..], version).map_err(|e| {
-						ErrorKind::RequestError(format!(
-							"Unable to deserialize transaction from binary {:?}, {}",
-							tx_bin, e
-						))
-						.into()
-					})
-				})
-				.and_then(move |tx: Transaction| {
-					let source = pool::TxSource::PushApi;
-					info!(
-						"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
-						tx.hash(),
-						tx.inputs().len(),
-						tx.outputs().len(),
-						tx.kernels().len(),
-					);
+	let source = pool::TxSource::PushApi;
+	info!(
+		"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
+		tx.hash(),
+		tx.inputs().len(),
+		tx.outputs().len(),
+		tx.kernels().len(),
+	);
 
-					//  Push to tx pool.
-					let mut tx_pool = pool_arc.write();
-					let header = tx_pool.blockchain.chain_head().map_err(|e| {
-						ErrorKind::Internal(format!("Failed to get chain head, {}", e))
-					})?;
-					let res = tx_pool
-						.add_to_pool(source, tx, !fluff, &header)
-						.map_err(|e| {
-							ErrorKind::Internal(format!("Failed to update pool, {}", e))
-						})?;
-					Ok(res)
-				}),
-		)
-	}
+	//  Push to tx pool.
+	let mut tx_pool = pool.write();
+	let header = tx_pool
+		.blockchain
+		.chain_head()
+		.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
+	tx_pool
+		.add_to_pool(source, tx, !fluff, &header)
+		.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
+	Ok(())
 }
 
 impl Handler for PoolPushHandler {
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
-		Box::new(
-			self.update_pool(req)
-				.and_then(|_| ok(just_response(StatusCode::OK, "")))
-				.or_else(|e| {
-					ok(just_response(
-						StatusCode::INTERNAL_SERVER_ERROR,
-						format!("failed: {}", e),
-					))
-				}),
-		)
+		let pool = self.tx_pool.clone();
+		Box::pin(async move {
+			let res = match update_pool(pool, req).await {
+				Ok(_) => just_response(StatusCode::OK, ""),
+				Err(e) => {
+					just_response(StatusCode::INTERNAL_SERVER_ERROR, format!("failed: {}", e))
+				}
+			};
+			Ok(res)
+		})
 	}
 }

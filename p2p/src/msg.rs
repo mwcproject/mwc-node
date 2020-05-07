@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ use crate::core::core::hash::Hash;
 use crate::core::core::BlockHeader;
 use crate::core::pow::Difficulty;
 use crate::core::ser::{
-	self, FixedLength, ProtocolVersion, Readable, Reader, StreamingReader, Writeable, Writer,
+	self, ProtocolVersion, Readable, Reader, StreamingReader, Writeable, Writer,
 };
 use crate::core::{consensus, global};
 use crate::types::{
@@ -31,7 +31,7 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 
 /// Grin's user agent with current version
-pub const USER_AGENT: &'static str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
 
 // MWC - Magic number are updated to be different from grin.
 /// Magic numbers expected in the header of every message
@@ -263,6 +263,9 @@ pub struct MsgHeader {
 }
 
 impl MsgHeader {
+	// 2 magic bytes + 1 type byte + 8 bytes (msg_len)
+	pub const LEN: usize = 2 + 1 + 8;
+
 	/// Creates a new message header.
 	pub fn new(msg_type: Type, len: u64) -> MsgHeader {
 		MsgHeader {
@@ -271,11 +274,6 @@ impl MsgHeader {
 			msg_len: len,
 		}
 	}
-}
-
-impl FixedLength for MsgHeader {
-	// 2 magic bytes + 1 type byte + 8 bytes (msg_len)
-	const LEN: usize = 2 + 1 + 8;
 }
 
 impl Writeable for MsgHeader {
@@ -485,7 +483,7 @@ impl Readable for GetPeerAddrs {
 
 /// Peer addresses we know of that are fresh enough, in response to
 /// GetPeerAddrs.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PeerAddrs {
 	pub peers: Vec<PeerAddr>,
 }
@@ -519,7 +517,7 @@ impl Readable for PeerAddrs {
 		for _ in 0..peer_count {
 			peers.push(PeerAddr::read(reader)?);
 		}
-		Ok(PeerAddrs { peers: peers })
+		Ok(PeerAddrs { peers })
 	}
 }
 

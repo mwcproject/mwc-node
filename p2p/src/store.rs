@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@ use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
 use grin_store::{self, option_to_not_found, to_key, Error};
 
-const DB_NAME: &'static str = "peer";
-const STORE_SUBPATH: &'static str = "peers";
+const DB_NAME: &str = "peer";
+const STORE_SUBPATH: &str = "peers";
 
-const PEER_PREFIX: u8 = 'P' as u8;
+const PEER_PREFIX: u8 = b'P';
 
 // Types of messages
 enum_from_primitive! {

@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ use crate::core::hash::{DefaultHashable, Hashed};
 use crate::global;
 use crate::pow::common::EdgeType;
 use crate::pow::error::Error;
-use crate::ser::{self, FixedLength, Readable, Reader, Writeable, Writer};
+use crate::ser::{self, Readable, Reader, Writeable, Writer};
 use rand::{thread_rng, Rng};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 /// Types for a Cuck(at)oo proof of work and its encapsulation as a fully usable
@@ -96,7 +96,7 @@ impl Difficulty {
 	}
 
 	/// Converts the difficulty into a u64
-	pub fn to_num(&self) -> u64 {
+	pub fn to_num(self) -> u64 {
 		self.num
 	}
 }
@@ -156,8 +156,9 @@ impl Readable for Difficulty {
 	}
 }
 
-impl FixedLength for Difficulty {
-	const LEN: usize = 8;
+impl Difficulty {
+	/// Difficulty is 8 bytes.
+	pub const LEN: usize = 8;
 }
 
 impl Serialize for Difficulty {
@@ -382,7 +383,7 @@ impl Proof {
 	}
 }
 
-fn extract_bits(bits: &Vec<u8>, bit_start: usize, bit_count: usize, read_from: usize) -> u64 {
+fn extract_bits(bits: &[u8], bit_start: usize, bit_count: usize, read_from: usize) -> u64 {
 	let mut buf: [u8; 8] = [0; 8];
 	buf.copy_from_slice(&bits[read_from..read_from + 8]);
 	if bit_count == 64 {
@@ -393,7 +394,7 @@ fn extract_bits(bits: &Vec<u8>, bit_start: usize, bit_count: usize, read_from: u
 	u64::from_le_bytes(buf) >> skip_bits & bit_mask
 }
 
-fn read_number(bits: &Vec<u8>, bit_start: usize, bit_count: usize) -> u64 {
+fn read_number(bits: &[u8], bit_start: usize, bit_count: usize) -> u64 {
 	if bit_count == 0 {
 		return 0;
 	}

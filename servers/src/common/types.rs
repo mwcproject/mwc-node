@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -301,11 +301,6 @@ pub struct StratumServerConfig {
 	/// Black list of IPs
 	#[serde(default)]
 	pub ip_black_list: HashSet<String>,
-
-	/// Number of tokio worker threads. -1, auto. You need to put some large value here if
-	/// your design does wait calls in the future handlers.
-	#[serde(default = "StratumServerConfig::default_stratum_tokio_workers")]
-	pub stratum_tokio_workers: i32,
 }
 
 impl StratumServerConfig {
@@ -330,9 +325,6 @@ impl StratumServerConfig {
 	fn default_connection_pace_ms() -> i64 {
 		-1
 	}
-	fn default_stratum_tokio_workers() -> i32 {
-		-1
-	}
 }
 
 impl Default for StratumServerConfig {
@@ -353,7 +345,6 @@ impl Default for StratumServerConfig {
 			connection_pace_ms: StratumServerConfig::default_connection_pace_ms(),
 			ip_white_list: HashSet::new(),
 			ip_black_list: HashSet::new(),
-			stratum_tokio_workers: StratumServerConfig::default_stratum_tokio_workers(),
 		}
 	}
 }

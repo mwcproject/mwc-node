@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -261,6 +261,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"seeding_type".to_string(),
 		"
+#All seeds/peers can be either IP address or DNS names. Port number must always be specified
 #how to seed this server, can be None, List or DNSSeed
 "
 		.to_string(),
@@ -483,14 +484,6 @@ fn comments() -> HashMap<String, String> {
 		"ip_black_list".to_string(),
 		"
 #IP black list. If IP belong to this list, it will be always banned. Specify list of IPs, no mask or ranges are supported
-"
-			.to_string(),
-	);
-
-	retval.insert(
-		"stratum_tokio_workers".to_string(),
-		"
-# Number of tokio worker threads. -1, auto. You might put some large value here if your design does wait calls in the future handlers.
 "
 			.to_string(),
 	);

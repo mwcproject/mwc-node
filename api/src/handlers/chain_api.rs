@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -169,7 +169,7 @@ impl OutputHandler {
 				outputs = [&outputs[..], &block_output_batch[..]].concat();
 			}
 		}
-		return Ok(outputs);
+		Ok(outputs)
 	}
 
 	// allows traversal of utxo set
@@ -354,7 +354,7 @@ impl OutputHandler {
 		let mut return_vec = vec![];
 		for i in (start_height..=end_height).rev() {
 			if let Ok(res) = self.outputs_at_height(i, commitments.clone(), include_rp) {
-				if res.outputs.len() > 0 {
+				if !res.outputs.is_empty() {
 					return_vec.push(res);
 				}
 			}
@@ -386,7 +386,7 @@ impl OutputHandler {
 				include_rproof,
 				include_merkle_proof,
 			) {
-				if res.len() > 0 {
+				if !res.is_empty() {
 					return_vec = [&return_vec[..], &res[..]].concat();
 				}
 			}
@@ -421,7 +421,7 @@ impl KernelHandler {
 			.trim_end_matches('/')
 			.rsplit('/')
 			.next()
-			.ok_or(ErrorKind::RequestError("missing excess".into()))?;
+			.ok_or_else(|| ErrorKind::RequestError("missing excess".into()))?;
 		let excess_v = util::from_hex(excess_s).map_err(|e| {
 			ErrorKind::RequestError(format!("invalid excess hex {}, {}", excess_s, e))
 		})?;
@@ -518,12 +518,12 @@ impl KernelHandler {
 				height,
 				mmr_index,
 			});
-		match kernel {
-			Some(kernel) => Ok(kernel),
-			None => {
-				Err(ErrorKind::NotFound(format!("kernel value for excess {}", excess_s)).into())
-			}
-		}
+		kernel.ok_or_else(|| {
+			Error::from(ErrorKind::NotFound(format!(
+				"kernel value for excess {}",
+				excess_s
+			)))
+		})
 	}
 }
 

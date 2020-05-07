@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -276,9 +276,10 @@ impl PruneList {
 		if self.bitmap.is_empty() {
 			return;
 		}
-		self.pruned_cache = Bitmap::create_with_capacity(self.bitmap.maximum().unwrap_or(1));
-		for pos in 1..=self.bitmap.maximum().unwrap_or(0) {
-			let path = path(pos as u64, self.bitmap.maximum().unwrap_or(0) as u64);
+		let maximum = self.bitmap.maximum().unwrap_or(0);
+		self.pruned_cache = Bitmap::create_with_capacity(maximum);
+		for pos in 1..(maximum + 1) {
+			let path = path(pos as u64, maximum as u64);
 			let pruned = path.into_iter().any(|x| self.bitmap.contains(x as u32));
 			if pruned {
 				self.pruned_cache.add(pos as u32)

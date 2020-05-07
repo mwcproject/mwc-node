@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -82,6 +82,16 @@ where
 			self.backend.get_hash(pos)
 		} else {
 			// If we are not a leaf get hash ignoring the remove log.
+			self.backend.get_from_file(pos)
+		}
+	}
+
+	/// Get the hash from the underlying MMR file, ignoring the leafset.
+	/// Some entries may have been removed from the leafset but not yet pruned from the file.
+	pub fn get_from_file(&self, pos: u64) -> Option<Hash> {
+		if pos > self.last_pos {
+			None
+		} else {
 			self.backend.get_from_file(pos)
 		}
 	}

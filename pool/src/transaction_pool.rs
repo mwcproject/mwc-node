@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -196,20 +196,13 @@ impl TransactionPool {
 		);
 
 		// Get last transaction and remove it
-		match bucket_transactions.last() {
-			Some(evictable_transaction) => {
-				// Remove transaction
-				debug!("evict_from_txpool self.txpool.entries starting len = {},  evicting transaction {:?}", self.txpool.entries.len(), evictable_transaction );
-				self.txpool.entries = self
-					.txpool
-					.entries
-					.iter()
-					.filter(|x| x.tx != *evictable_transaction)
-					.map(|x| x.clone())
-					.collect::<Vec<_>>();
-			}
-			None => (),
-		}
+		if let Some(evictable_transaction) = bucket_transactions.last() {
+			// Remove transaction
+			debug!("evict_from_txpool self.txpool.entries starting len = {},  evicting transaction {:?}", self.txpool.entries.len(), evictable_transaction );
+			self.txpool
+				.entries
+				.retain(|x| x.tx != *evictable_transaction);
+		};
 	}
 
 	// Old txs will "age out" after 30 mins.
@@ -228,9 +221,18 @@ impl TransactionPool {
 
 	pub fn reconcile_reorg_cache(&mut self, header: &BlockHeader) -> Result<(), PoolError> {
 		let entries = self.reorg_cache.read().iter().cloned().collect::<Vec<_>>();
+		debug!(
+			"reconcile_reorg_cache: size: {}, block: {:?} ...",
+			entries.len(),
+			header.hash(),
+		);
 		for entry in entries {
 			let _ = &self.add_to_txpool(entry.clone(), header);
 		}
+		debug!(
+			"reconcile_reorg_cache: block: {:?} ... done.",
+			header.hash()
+		);
 		Ok(())
 	}
 
@@ -309,9 +311,9 @@ impl TransactionPool {
 		}
 
 		// Check that the stempool can accept this transaction
-		if stem && self.stempool.size() > self.config.max_stempool_size {
-			return Err(PoolError::OverCapacity);
-		} else if self.total_size() > self.config.max_pool_size {
+		if stem && self.stempool.size() > self.config.max_stempool_size
+			|| self.total_size() > self.config.max_pool_size
+		{
 			return Err(PoolError::OverCapacity);
 		}
 
