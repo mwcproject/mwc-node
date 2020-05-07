@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ impl Handler for KernelDownloadHandler {
 		} else {
 			response(
 				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("requesting kernel data from peer failed (no peers)"),
+				"requesting kernel data from peer failed (no peers)".to_string(),
 			)
 		}
 	}

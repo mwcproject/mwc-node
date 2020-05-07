@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -94,7 +94,7 @@ pub mod option_sig_serde {
 					let mut b = [0u8; 64];
 					b.copy_from_slice(&bytes[0..64]);
 					secp::Signature::from_compact(&static_secp, &b)
-						.map(|val| Some(val))
+						.map(Some)
 						.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 				}),
 			None => Ok(None),
@@ -138,7 +138,7 @@ pub mod option_seckey_serde {
 					let mut b = [0u8; 32];
 					b.copy_from_slice(&bytes[0..32]);
 					secp::key::SecretKey::from_slice(&static_secp, &b)
-						.map(|val| Some(val))
+						.map(Some)
 						.map_err(|err| Error::custom(format!("Fail to decode key, {}", err)))
 				}),
 			None => Ok(None),

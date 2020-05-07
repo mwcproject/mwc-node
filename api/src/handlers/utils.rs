@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ pub fn get_output(
 		match res {
 			Ok(output_pos) => {
 				return Ok((
-					Output::new(&commit, output_pos.height, output_pos.position),
+					Output::new(&commit, output_pos.height, output_pos.pos),
 					x.clone(),
 				));
 			}
@@ -95,12 +95,13 @@ pub fn get_output_v2(
 	for x in outputs.iter() {
 		let res = chain.is_unspent(x);
 		match res {
-			Ok(output_pos) => match chain.get_unspent_output_at(output_pos.position) {
+			Ok(output_pos) => match chain.get_unspent_output_at(output_pos.pos) {
 				Ok(output) => {
-					let mut header = None;
-					if include_merkle_proof && output.is_coinbase() {
-						header = chain.get_header_by_height(output_pos.height).ok();
-					}
+					let header = if include_merkle_proof && output.is_coinbase() {
+						chain.get_header_by_height(output_pos.height).ok()
+					} else {
+						None
+					};
 					match OutputPrintable::from_output(
 						&output,
 						chain.clone(),
@@ -122,7 +123,7 @@ pub fn get_output_v2(
 				Err(e) => {
 					return Err(ErrorKind::NotFound(format!(
 						"Unspent output for id {} at {}, {}",
-						id, output_pos.position, e
+						id, output_pos.pos, e
 					)))?
 				}
 			},

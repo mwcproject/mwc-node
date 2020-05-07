@@ -20,8 +20,8 @@
 use crate::common::stats::{StratumStats, WorkerStats};
 use crate::util::RwLock;
 use chrono::prelude::Utc;
-use futures::sync::mpsc;
-use futures::sync::oneshot;
+use futures::channel::mpsc;
+use futures::channel::oneshot;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

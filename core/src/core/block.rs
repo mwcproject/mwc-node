@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,15 +25,19 @@ use crate::core::{
 };
 use crate::global;
 use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
-use crate::ser::{self, FixedLength, PMMRable, Readable, Reader, Writeable, Writer};
+use crate::ser::{
+	self, deserialize_default, serialize_default, PMMRable, Readable, Reader, Writeable, Writer,
+};
 use chrono::naive::{MAX_DATE, MIN_DATE};
 use chrono::prelude::{DateTime, NaiveDateTime, Utc};
 use chrono::Duration;
 use failure::Fail;
 use keychain::{self, BlindingFactor};
 use std::collections::HashSet;
+use std::convert::TryInto;
 use std::iter::FromIterator;
 use std::sync::Arc;
+use util::from_hex;
 use util::RwLock;
 use util::{secp, static_secp_instance};
 
@@ -172,10 +176,6 @@ impl Writeable for HeaderEntry {
 	}
 }
 
-impl FixedLength for HeaderEntry {
-	const LEN: usize = Hash::LEN + 8 + Difficulty::LEN + 4 + 1;
-}
-
 impl Hashed for HeaderEntry {
 	/// The hash of the underlying block.
 	fn hash(&self) -> Hash {
@@ -269,6 +269,12 @@ impl PMMRable for BlockHeader {
 			is_secondary: self.pow.is_secondary(),
 		}
 	}
+
+	// Size is hash + u64 + difficulty + u32 + u8.
+	fn elmt_size() -> Option<u16> {
+		const LEN: usize = Hash::LEN + 8 + Difficulty::LEN + 4 + 1;
+		Some(LEN.try_into().unwrap())
+	}
 }
 
 /// Serialization of a block header
@@ -359,6 +365,27 @@ impl BlockHeader {
 			writer.write_u64(self.pow.nonce)?;
 		}
 		Ok(header_buf)
+	}
+
+	/// Constructs a header given pre_pow string, nonce, and proof
+	pub fn from_pre_pow_and_proof(
+		pre_pow: String,
+		nonce: u64,
+		proof: Proof,
+	) -> Result<Self, Error> {
+		// Convert hex pre pow string
+		let mut header_bytes = from_hex(&pre_pow).map_err(|e| {
+			Error::Serialization(ser::Error::HexError(format!(
+				"Unable to process {}, {}",
+				pre_pow, e
+			)))
+		})?;
+		// Serialize and append serialized nonce and proof
+		serialize_default(&mut header_bytes, &nonce)?;
+		serialize_default(&mut header_bytes, &proof)?;
+
+		// Deserialize header from constructed bytes
+		Ok(deserialize_default(&mut &header_bytes[..])?)
 	}
 
 	/// Total difficulty accumulated by the proof of work on this header

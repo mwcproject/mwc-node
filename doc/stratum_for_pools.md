@@ -62,7 +62,8 @@ ip_white_list = []
 ip_black_list = []
 
 # Number of tokio worker threads. -1, auto. You might put some large value here if your design does wait calls in the future handlers.
-stratum_tokio_workers = -1
+# NOTE: Removed form 3.1.5 release
+# stratum_tokio_workers = -1
 ```
 
 
@@ -127,12 +128,7 @@ Black list of IPs. Please note, it support only IPs, no masks. Normally you shou
 
 #### stratum_tokio_workers
 
-Even Stratum Server build on Futures that provide incredible performance, handlers, that can be updated by pool developers, might not use futures correctly 
-because unfortunately not all api inplemented this way, sometimes it is easier to do sync call.
-For example, from handlers you might call some DB commands.
-
-To address this design performance problems, you can specify more tokio worker threads. As a result futures will work more like multithread for you. It 
-is not great for performance, but it can eliminate some issues.
+-- This option is removed form 3.1.5 release because mwc-node switched to async model. So there is no reasons to wait. Please migrate to sync/wait model.
 
 ## REST API  /v2/stratum
 

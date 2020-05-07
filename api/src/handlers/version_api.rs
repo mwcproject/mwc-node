@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ use crate::web::*;
 use hyper::{Body, Request};
 use std::sync::Weak;
 
-const CRATE_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Version handler. Get running node API version
 /// GET /v1/version

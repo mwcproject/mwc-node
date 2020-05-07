@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 //!
 //! Cuckarood is a variation of Cuckaroo that's tweaked at the first HardFork
 //! to maintain ASIC-Resistance, as introduced in
-//! https://www.grin-forum.org/t/mid-july-pow-hardfork-cuckaroo29-cuckarood29
+//! https://forum.grin.mw/t/mid-july-pow-hardfork-cuckaroo29-cuckarood29
 //! It uses a tweaked siphash round in which the rotation by 21 is replaced by
 //! a rotation by 25, halves the number of graph nodes in each partition,
 //! and requires cycles to alternate between even- and odd-indexed edges.
@@ -69,7 +69,7 @@ where
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {
 		if proof.proof_size() != global::proofsize() {
-			return Err(ErrorKind::Verification("wrong cycle length".to_owned()))?;
+			return Err(ErrorKind::Verification("wrong cycle length".to_owned()).into());
 		}
 		let nonces = &proof.nonces;
 		let mut uvs = vec![0u64; 2 * proof.proof_size()];
@@ -81,13 +81,13 @@ where
 		for n in 0..proof.proof_size() {
 			let dir = (nonces[n] & 1) as usize;
 			if ndir[dir] >= proof.proof_size() / 2 {
-				return Err(ErrorKind::Verification("edges not balanced".to_owned()))?;
+				return Err(ErrorKind::Verification("edges not balanced".to_owned()).into());
 			}
 			if nonces[n] > to_u64!(self.params.edge_mask) {
-				return Err(ErrorKind::Verification("edge too big".to_owned()))?;
+				return Err(ErrorKind::Verification("edge too big".to_owned()).into());
 			}
 			if n > 0 && nonces[n] <= nonces[n - 1] {
-				return Err(ErrorKind::Verification("edges not ascending".to_owned()))?;
+				return Err(ErrorKind::Verification("edges not ascending".to_owned()).into());
 			}
 			let edge = to_edge!(
 				T,
@@ -101,9 +101,7 @@ where
 			ndir[dir] += 1;
 		}
 		if xor0 | xor1 != 0 {
-			return Err(ErrorKind::Verification(
-				"endpoints don't match up".to_owned(),
-			))?;
+			return Err(ErrorKind::Verification("endpoints don't match up".to_owned()).into());
 		}
 		let mut n = 0;
 		let mut i = 0;
@@ -115,13 +113,13 @@ where
 				if uvs[k] == uvs[i] {
 					// find reverse edge endpoint identical to one at i
 					if j != i {
-						return Err(ErrorKind::Verification("branch in cycle".to_owned()))?;
+						return Err(ErrorKind::Verification("branch in cycle".to_owned()).into());
 					}
 					j = k;
 				}
 			}
 			if j == i {
-				return Err(ErrorKind::Verification("cycle dead ends".to_owned()))?;
+				return Err(ErrorKind::Verification("cycle dead ends".to_owned()).into());
 			}
 			i = j ^ 1;
 			n += 1;
@@ -132,7 +130,7 @@ where
 		if n == self.params.proof_size {
 			Ok(())
 		} else {
-			Err(ErrorKind::Verification("cycle too short".to_owned()))?
+			Err(ErrorKind::Verification("cycle too short".to_owned()).into())
 		}
 	}
 }
@@ -175,16 +173,12 @@ mod test {
 	#[test]
 	fn cuckarood19_29_vectors() {
 		let mut ctx19 = new_impl::<u64>(19, 42);
-		ctx19.params.siphash_keys = V1_19_HASH.clone();
-		assert!(ctx19
-			.verify(&Proof::new(V1_19_SOL.to_vec().clone()))
-			.is_ok());
+		ctx19.params.siphash_keys = V1_19_HASH;
+		assert!(ctx19.verify(&Proof::new(V1_19_SOL.to_vec())).is_ok());
 		assert!(ctx19.verify(&Proof::zero(42)).is_err());
 		let mut ctx29 = new_impl::<u64>(29, 42);
-		ctx29.params.siphash_keys = V2_29_HASH.clone();
-		assert!(ctx29
-			.verify(&Proof::new(V2_29_SOL.to_vec().clone()))
-			.is_ok());
+		ctx29.params.siphash_keys = V2_29_HASH;
+		assert!(ctx29.verify(&Proof::new(V2_29_SOL.to_vec())).is_ok());
 		assert!(ctx29.verify(&Proof::zero(42)).is_err());
 	}
 

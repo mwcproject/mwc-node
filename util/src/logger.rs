@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -340,7 +340,7 @@ fn send_panic_to_log() {
 			None => error!("thread '{}' panicked at '{}'{:?}", thread, msg, backtrace),
 		}
 		//also print to stderr
-		let tui_running = TUI_RUNNING.lock().clone();
+		let tui_running = *TUI_RUNNING.lock();
 		if !tui_running {
 			let config = LOGGING_CONFIG.lock();
 

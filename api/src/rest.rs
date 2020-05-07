@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,20 +22,23 @@ use crate::p2p::Error as P2pError;
 use crate::router::{Handler, HandlerObj, ResponseFuture, Router, RouterError};
 use crate::web::response;
 use failure::{Backtrace, Context, Fail};
-use futures::sync::oneshot;
-use futures::Stream;
-use hyper::rt::Future;
-use hyper::{rt, Body, Request, Server, StatusCode};
+use futures::channel::oneshot;
+use futures::TryStreamExt;
+use hyper::server::accept;
+use hyper::service::make_service_fn;
+use hyper::{Body, Request, Server, StatusCode};
 use rustls;
 use rustls::internal::pemfile;
+use rustls::{NoClientAuth, ServerConfig};
+use std::convert::Infallible;
 use std::fmt::{self, Display};
 use std::fs::File;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{io, thread};
-use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
+use tokio::net::TcpListener;
+use tokio::runtime::Runtime;
 use tokio_rustls::TlsAcceptor;
-use tokio_tcp;
 
 /// Errors that can be returned by an ApiEndpoint implementation.
 #[derive(Debug)]
@@ -208,20 +211,31 @@ impl ApiServer {
 		if self.shutdown_sender.is_some() {
 			return Err(ErrorKind::Internal(
 				"Can't start HTTP API server, it's running already".to_string(),
-			))?;
+			)
+			.into());
 		}
 		let (tx, _rx) = oneshot::channel::<()>();
 		self.shutdown_sender = Some(tx);
 		thread::Builder::new()
 			.name("apis".to_string())
 			.spawn(move || {
-				let server = Server::bind(&addr)
-					.serve(router)
+				let server = async move {
+					let server = Server::bind(&addr).serve(make_service_fn(move |_| {
+						let router = router.clone();
+						async move { Ok::<_, Infallible>(router) }
+					}));
 					// TODO graceful shutdown is unstable, investigate
 					//.with_graceful_shutdown(rx)
-					.map_err(|e| eprintln!("HTTP API server error: {}", e));
 
-				rt::run(server);
+					server.await
+				};
+
+				let mut rt = Runtime::new()
+					.map_err(|e| eprintln!("HTTP API server error: {}", e))
+					.unwrap();
+				if let Err(e) = rt.block_on(server) {
+					eprintln!("HTTP API server error: {}", e)
+				}
 			})
 			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
 	}
@@ -237,7 +251,8 @@ impl ApiServer {
 		if self.shutdown_sender.is_some() {
 			return Err(ErrorKind::Internal(
 				"Can't start HTTPS API server, it's running already".to_string(),
-			))?;
+			)
+			.into());
 		}
 
 		let certs = conf.load_certs()?;
@@ -247,28 +262,31 @@ impl ApiServer {
 		config
 			.set_single_cert(certs, keys)
 			.expect("invalid key or certificate");
-		let config = TlsAcceptor::from(Arc::new(config));
+		let acceptor = TlsAcceptor::from(Arc::new(config));
 
 		thread::Builder::new()
 			.name("apis".to_string())
 			.spawn(move || {
-				let listener = tokio_tcp::TcpListener::bind(&addr).expect("failed to bind");
-				let tls = listener
-					.incoming()
-					.and_then(move |s| config.accept(s))
-					.then(|r| match r {
-						Ok(x) => Ok::<_, io::Error>(Some(x)),
-						Err(e) => {
-							error!("API server accept_async failed, {}", e);
-							Ok(None)
-						}
-					})
-					.filter_map(|x| x);
-				let server = Server::builder(tls)
-					.serve(router)
-					.map_err(|e| eprintln!("HTTP API server error: {}", e));
+				let server = async move {
+					let mut listener = TcpListener::bind(&addr).await.expect("failed to bind");
+					let listener = listener.incoming().and_then(move |s| acceptor.accept(s));
 
-				rt::run(server);
+					let server = Server::builder(accept::from_stream(listener)).serve(
+						make_service_fn(move |_| {
+							let router = router.clone();
+							async move { Ok::<_, Infallible>(router) }
+						}),
+					);
+
+					server.await
+				};
+
+				let mut rt = Runtime::new()
+					.map_err(|e| eprintln!("HTTP API server error: {}", e))
+					.unwrap();
+				if let Err(e) = rt.block_on(server) {
+					eprintln!("HTTP API server error: {}", e)
+				}
 			})
 			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
 	}

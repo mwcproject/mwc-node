@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,14 +19,15 @@ use crate::core::verifier_cache::VerifierCache;
 use crate::core::{committed, Committed};
 use crate::libtx::secp_ser;
 use crate::ser::{
-	self, read_multi, FixedLength, PMMRable, ProtocolVersion, Readable, Reader,
-	VerifySortedAndUnique, Writeable, Writer,
+	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
+	Writeable, Writer,
 };
 use crate::{consensus, global};
 use enum_primitive::FromPrimitive;
 use keychain::{self, BlindingFactor};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
+use std::convert::TryInto;
 use std::sync::Arc;
 use util;
 use util::secp;
@@ -355,19 +356,17 @@ impl Readable for TxKernel {
 }
 
 /// We store kernels in the kernel MMR.
-/// Note: These are "variable size" to support different kernel featuere variants.
+/// Note: These are "variable size" to support different kernel feature variants.
 impl PMMRable for TxKernel {
 	type E = Self;
 
 	fn as_elmt(&self) -> Self::E {
 		self.clone()
 	}
-}
 
-/// Kernels are "variable size" but we need to implement FixedLength for legacy reasons.
-/// At some point we will refactor the MMR backend so this is no longer required.
-impl FixedLength for TxKernel {
-	const LEN: usize = 0;
+	fn elmt_size() -> Option<u16> {
+		None
+	}
 }
 
 impl KernelFeatures {
@@ -449,7 +448,7 @@ impl TxKernel {
 	}
 
 	/// Batch signature verification.
-	pub fn batch_sig_verify(tx_kernels: &Vec<TxKernel>) -> Result<(), Error> {
+	pub fn batch_sig_verify(tx_kernels: &[TxKernel]) -> Result<(), Error> {
 		let len = tx_kernels.len();
 		let mut sigs: Vec<secp::Signature> = Vec::with_capacity(len);
 		let mut pubkeys: Vec<secp::key::PublicKey> = Vec::with_capacity(len);
@@ -666,10 +665,9 @@ impl TransactionBody {
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_input(mut self, input: Input) -> TransactionBody {
-		self.inputs
-			.binary_search(&input)
-			.err()
-			.map(|e| self.inputs.insert(e, input));
+		if let Err(e) = self.inputs.binary_search(&input) {
+			self.inputs.insert(e, input)
+		};
 		self
 	}
 
@@ -677,10 +675,9 @@ impl TransactionBody {
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_output(mut self, output: Output) -> TransactionBody {
-		self.outputs
-			.binary_search(&output)
-			.err()
-			.map(|e| self.outputs.insert(e, output));
+		if let Err(e) = self.outputs.binary_search(&output) {
+			self.outputs.insert(e, output)
+		};
 		self
 	}
 
@@ -688,10 +685,9 @@ impl TransactionBody {
 	/// kernels, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_kernel(mut self, kernel: TxKernel) -> TransactionBody {
-		self.kernels
-			.binary_search(&kernel)
-			.err()
-			.map(|e| self.kernels.insert(e, kernel));
+		if let Err(e) = self.kernels.binary_search(&kernel) {
+			self.kernels.insert(e, kernel)
+		};
 		self
 	}
 
@@ -1468,17 +1464,25 @@ impl PMMRable for Output {
 	fn as_elmt(&self) -> OutputIdentifier {
 		OutputIdentifier::from_output(self)
 	}
+
+	fn elmt_size() -> Option<u16> {
+		Some(
+			(1 + secp::constants::PEDERSEN_COMMITMENT_SIZE)
+				.try_into()
+				.unwrap(),
+		)
+	}
 }
 
 impl OutputFeatures {
 	/// Is this a coinbase output?
-	pub fn is_coinbase(&self) -> bool {
-		*self == OutputFeatures::Coinbase
+	pub fn is_coinbase(self) -> bool {
+		self == OutputFeatures::Coinbase
 	}
 
 	/// Is this a plain output?
-	pub fn is_plain(&self) -> bool {
-		*self == OutputFeatures::Plain
+	pub fn is_plain(self) -> bool {
+		self == OutputFeatures::Plain
 	}
 }
 
@@ -1512,13 +1516,10 @@ impl Output {
 	}
 
 	/// Batch validates the range proofs using the commitments
-	pub fn batch_verify_proofs(
-		commits: &Vec<Commitment>,
-		proofs: &Vec<RangeProof>,
-	) -> Result<(), Error> {
+	pub fn batch_verify_proofs(commits: &[Commitment], proofs: &[RangeProof]) -> Result<(), Error> {
 		let secp = static_secp_instance();
 		secp.lock()
-			.verify_bullet_proof_multi(commits.clone(), proofs.clone(), None)?;
+			.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
 		Ok(())
 	}
 }
@@ -1587,10 +1588,6 @@ impl OutputIdentifier {
 	}
 }
 
-impl FixedLength for OutputIdentifier {
-	const LEN: usize = 1 + secp::constants::PEDERSEN_COMMITMENT_SIZE;
-}
-
 impl Writeable for OutputIdentifier {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.features.write(writer)?;
@@ -1630,7 +1627,7 @@ mod test {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 		let commit = keychain
-			.commit(5, &key_id, &SwitchCommitmentType::Regular)
+			.commit(5, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
 
 		// just some bytes for testing ser/deser
@@ -1679,12 +1676,12 @@ mod test {
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 
 		let commit = keychain
-			.commit(1003, &key_id, &SwitchCommitmentType::Regular)
+			.commit(1003, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 
 		let commit_2 = keychain
-			.commit(1003, &key_id, &SwitchCommitmentType::Regular)
+			.commit(1003, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
 
 		assert!(commit == commit_2);
@@ -1695,7 +1692,7 @@ mod test {
 		let keychain = ExtKeychain::from_seed(&[0; 32], false).unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 		let commit = keychain
-			.commit(5, &key_id, &SwitchCommitmentType::Regular)
+			.commit(5, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
 
 		let input = Input {

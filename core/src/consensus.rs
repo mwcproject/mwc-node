@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,7 +17,6 @@
 //! Merkle sum trees or reorg rules). However, as long as they're simple
 //! enough, consensus-relevant constants and short functions should be kept
 //! here.
-//! da8f798fb502cf30dde067af3e7a095c786bab0afda34c851d78cf9cca99ccc6
 
 use crate::core::block::HeaderVersion;
 use crate::core::hash::{Hash, ZERO_HASH};

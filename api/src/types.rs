@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -191,9 +191,7 @@ pub struct Output {
 impl Output {
 	pub fn new(commit: &pedersen::Commitment, height: u64, mmr_index: u64) -> Output {
 		Output {
-			commit: PrintableCommitment {
-				commit: commit.clone(),
-			},
+			commit: PrintableCommitment { commit: *commit },
 			height: height,
 			mmr_index: mmr_index,
 		}
@@ -207,7 +205,7 @@ pub struct PrintableCommitment {
 
 impl PrintableCommitment {
 	pub fn commit(&self) -> pedersen::Commitment {
-		self.commit.clone()
+		self.commit
 	}
 
 	pub fn to_vec(&self) -> Vec<u8> {
@@ -333,14 +331,14 @@ impl OutputPrintable {
 	}
 
 	pub fn commit(&self) -> Result<pedersen::Commitment, ser::Error> {
-		Ok(self.commit.clone())
+		Ok(self.commit)
 	}
 
 	pub fn range_proof(&self) -> Result<pedersen::RangeProof, ser::Error> {
-		let proof_str = match self.proof.clone() {
-			Some(p) => p,
-			None => return Err(ser::Error::HexError(format!("output range_proof missing"))),
-		};
+		let proof_str = self
+			.proof
+			.clone()
+			.ok_or_else(|| ser::Error::HexError("output range_proof missing".to_string()))?;
 
 		let p_vec = util::from_hex(&proof_str).map_err(|e| {
 			ser::Error::HexError(format!("Unable to parse range_proof {}, {}", proof_str, e))
@@ -508,7 +506,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 			}
 		}
 
-		const FIELDS: &'static [&'static str] = &[
+		const FIELDS: &[&str] = &[
 			"output_type",
 			"commit",
 			"spent",
