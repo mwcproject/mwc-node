@@ -62,7 +62,7 @@ ip_white_list = []
 ip_black_list = []
 
 # Number of tokio worker threads. -1, auto. You might put some large value here if your design does wait calls in the future handlers.
-# NOTE: Removed form 3.1.5 release
+# NOTE: Removed form 3.2.0 release
 # stratum_tokio_workers = -1
 ```
 
@@ -128,7 +128,7 @@ Black list of IPs. Please note, it support only IPs, no masks. Normally you shou
 
 #### stratum_tokio_workers
 
--- This option is removed form 3.1.5 release because mwc-node switched to async model. So there is no reasons to wait. Please migrate to sync/wait model.
+-- This option is removed form 3.2.0 release because mwc-node switched to async model. So there is no reasons to wait. Please migrate to sync/wait model.
 
 ## REST API  /v2/stratum
 

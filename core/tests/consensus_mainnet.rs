@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2019 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -73,6 +73,31 @@ impl Display for DiffBlock {
 		);
 		Display::fmt(&output, f)
 	}
+}
+
+// Builds an iterator for next difficulty calculation with the provided
+// constant time interval, difficulty and total length.
+fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> Vec<HeaderInfo> {
+	let cur_time = match cur_time {
+		Some(t) => t,
+		None => Utc::now().timestamp() as u64,
+	};
+	// watch overflow here, length shouldn't be ridiculous anyhow
+	assert!(len < std::usize::MAX as u64);
+	let diffs = vec![diff.difficulty.clone(); len as usize];
+	let times = (0..(len as usize)).map(|n| n * interval as usize).rev();
+	let pairs = times.zip(diffs.iter());
+	pairs
+		.map(|(t, d)| {
+			HeaderInfo::new(
+				diff.block_hash,
+				cur_time + t as u64,
+				d.clone(),
+				diff.secondary_scaling,
+				diff.is_secondary,
+			)
+		})
+		.collect::<Vec<_>>()
 }
 
 // Creates a new chain with a genesis at a simulated difficulty
@@ -242,6 +267,15 @@ fn print_chain_sim(chain_sim: Vec<(HeaderInfo, DiffStats)>) {
 	});
 }
 
+fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderInfo> {
+	repeat(
+		interval,
+		HeaderInfo::from_ts_diff(1, Difficulty::from_num(diff)),
+		len,
+		Some(from),
+	)
+}
+
 /// Checks different next_target adjustments and difficulty boundaries
 #[test]
 fn adjustment_scenarios() {
@@ -282,7 +316,7 @@ fn adjustment_scenarios() {
 	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize);
 	let chain_sim = add_block_repeated(600, chain_sim, 60);
 
-	println!();
+	println!("");
 	println!("*********************************************************");
 	println!("Scenario 3) Sudden drop in hashpower");
 	println!("*********************************************************");
@@ -294,7 +328,7 @@ fn adjustment_scenarios() {
 	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize);
 	let chain_sim = add_block_repeated(10, chain_sim, 10);
 
-	println!();
+	println!("");
 	println!("*********************************************************");
 	println!("Scenario 4) Sudden increase in hashpower");
 	println!("*********************************************************");
@@ -308,7 +342,7 @@ fn adjustment_scenarios() {
 	let chain_sim = add_block_repeated(60, chain_sim, 20);
 	let chain_sim = add_block_repeated(10, chain_sim, 10);
 
-	println!();
+	println!("");
 	println!("*********************************************************");
 	println!("Scenario 5) Oscillations in hashpower");
 	println!("*********************************************************");
@@ -316,46 +350,193 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 }
 
+/// Checks different next_target adjustments and difficulty boundaries
+#[test]
+fn next_target_adjustment() {
+	global::set_mining_mode(global::ChainTypes::AutomatedTesting);
+	let cur_time = Utc::now().timestamp() as u64;
+	let diff_min = Difficulty::min();
+
+	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
+	let mut hi = HeaderInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
+	hi.is_secondary = false;
+	let hinext = next_difficulty(
+		1,
+		repeat(
+			BLOCK_TIME_SEC / 4,
+			hi.clone(),
+			DIFFICULTY_ADJUST_WINDOW,
+			None,
+		),
+	);
+
+	assert_ne!(hinext.difficulty, diff_min);
+
+	// Check we don't get stuck on scale MIN_DIFFICULTY, when primary frequency is too high
+	assert_ne!(hinext.secondary_scaling, MIN_DIFFICULTY as u32);
+
+	// just enough data, right interval, should stay constant
+	let just_enough = DIFFICULTY_ADJUST_WINDOW + 1;
+	hi.difficulty = Difficulty::from_num(10000);
+	assert_eq!(
+		next_difficulty(1, repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(10000)
+	);
+
+	// check pre difficulty_data_to_vector effect on retargetting
+	assert_eq!(
+		next_difficulty(1, vec![HeaderInfo::from_ts_diff(42, hi.difficulty)]).difficulty,
+		Difficulty::from_num(14913)
+	);
+
+	// checking averaging works
+	hi.difficulty = Difficulty::from_num(500);
+	let sec = DIFFICULTY_ADJUST_WINDOW / 2;
+	let mut s1 = repeat(BLOCK_TIME_SEC, hi.clone(), sec, Some(cur_time));
+	let mut s2 = repeat_offs(
+		cur_time + (sec * BLOCK_TIME_SEC) as u64,
+		BLOCK_TIME_SEC,
+		1500,
+		DIFFICULTY_ADJUST_WINDOW / 2,
+	);
+	s2.append(&mut s1);
+	assert_eq!(
+		next_difficulty(1, s2).difficulty,
+		Difficulty::from_num(1000)
+	);
+
+	// too slow, diff goes down
+	hi.difficulty = Difficulty::from_num(1000);
+	assert_eq!(
+		next_difficulty(1, repeat(90, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(857)
+	);
+	assert_eq!(
+		next_difficulty(1, repeat(120, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(750)
+	);
+
+	// too fast, diff goes up
+	assert_eq!(
+		next_difficulty(1, repeat(55, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(1028)
+	);
+	assert_eq!(
+		next_difficulty(1, repeat(45, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(1090)
+	);
+	assert_eq!(
+		next_difficulty(1, repeat(30, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(1200)
+	);
+
+	// hitting lower time bound, should always get the same result below
+	assert_eq!(
+		next_difficulty(1, repeat(0, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(1500)
+	);
+
+	// hitting higher time bound, should always get the same result above
+	assert_eq!(
+		next_difficulty(1, repeat(300, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(500)
+	);
+	assert_eq!(
+		next_difficulty(1, repeat(400, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::from_num(500)
+	);
+
+	// We should never drop below minimum
+	hi.difficulty = Difficulty::zero();
+	assert_eq!(
+		next_difficulty(1, repeat(90, hi.clone(), just_enough, None)).difficulty,
+		Difficulty::min()
+	);
+}
+
 #[test]
 fn test_secondary_pow_ratio() {
-	global::set_mining_mode(global::ChainTypes::Mainnet);
-	assert_eq!(global::is_floonet(), false);
+	// Tests for mainnet chain type.
+	{
+		global::set_mining_mode(global::ChainTypes::Mainnet);
+		assert_eq!(global::is_floonet(), false);
 
-	assert_eq!(secondary_pow_ratio(1), 90);
-	assert_eq!(secondary_pow_ratio(89), 90);
-	assert_eq!(secondary_pow_ratio(90), 90);
-	assert_eq!(secondary_pow_ratio(91), 90);
-	assert_eq!(secondary_pow_ratio(179), 90);
-	assert_eq!(secondary_pow_ratio(180), 90);
-	assert_eq!(secondary_pow_ratio(181), 90);
+		assert_eq!(secondary_pow_ratio(1), 45);
+		assert_eq!(secondary_pow_ratio(89), 45);
+		assert_eq!(secondary_pow_ratio(90), 45);
+		assert_eq!(secondary_pow_ratio(91), 45);
+		assert_eq!(secondary_pow_ratio(179), 45);
+		assert_eq!(secondary_pow_ratio(180), 45);
+		assert_eq!(secondary_pow_ratio(181), 45);
 
-	let one_week = 60 * 24 * 7;
-	assert_eq!(secondary_pow_ratio(one_week - 1), 90);
-	assert_eq!(secondary_pow_ratio(one_week), 90);
-	assert_eq!(secondary_pow_ratio(one_week + 1), 90);
+		let half_week = 30 * 24 * 7;
+		assert_eq!(secondary_pow_ratio(half_week - 1), 45);
+		assert_eq!(secondary_pow_ratio(half_week), 45);
+		assert_eq!(secondary_pow_ratio(half_week + 1), 45);
 
-	let two_weeks = one_week * 2;
-	assert_eq!(secondary_pow_ratio(two_weeks - 1), 89);
-	assert_eq!(secondary_pow_ratio(two_weeks), 89);
-	assert_eq!(secondary_pow_ratio(two_weeks + 1), 89);
+		let one_week = half_week * 2;
+		assert_eq!(secondary_pow_ratio(one_week - 1), 45);
+		assert_eq!(secondary_pow_ratio(one_week), 45);
+		assert_eq!(secondary_pow_ratio(one_week + 1), 45);
 
-	let t4_fork_height = 64_000;
-	assert_eq!(secondary_pow_ratio(t4_fork_height - 1), 85);
-	assert_eq!(secondary_pow_ratio(t4_fork_height), 85);
-	assert_eq!(secondary_pow_ratio(t4_fork_height + 1), 85);
+		let three_weeks = one_week * 3;
+		assert_eq!(secondary_pow_ratio(three_weeks), 43);
 
-	let one_year = one_week * 52;
-	assert_eq!(secondary_pow_ratio(one_year), 45);
+		let one_year = one_week * 52;
+		assert_eq!(secondary_pow_ratio(one_year), 0);
 
-	let ninety_one_weeks = one_week * 91;
-	assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 12);
-	assert_eq!(secondary_pow_ratio(ninety_one_weeks), 12);
-	assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 12);
+		let ninety_one_weeks = one_week * 91;
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 0);
 
-	let two_year = one_year * 2;
-	assert_eq!(secondary_pow_ratio(two_year - 1), 1);
-	assert_eq!(secondary_pow_ratio(two_year), 0);
-	assert_eq!(secondary_pow_ratio(two_year + 1), 0);
+		let two_year = one_year * 2;
+		assert_eq!(secondary_pow_ratio(two_year - 1), 0);
+		assert_eq!(secondary_pow_ratio(two_year), 0);
+		assert_eq!(secondary_pow_ratio(two_year + 1), 0);
+	}
+
+	// Tests for testnet4 chain type (covers pre and post hardfork).
+	{
+		global::set_mining_mode(global::ChainTypes::Floonet);
+		assert_eq!(global::is_floonet(), true);
+
+		assert_eq!(secondary_pow_ratio(1), 45);
+		assert_eq!(secondary_pow_ratio(89), 45);
+		assert_eq!(secondary_pow_ratio(90), 45);
+		assert_eq!(secondary_pow_ratio(91), 45);
+		assert_eq!(secondary_pow_ratio(179), 45);
+		assert_eq!(secondary_pow_ratio(180), 45);
+		assert_eq!(secondary_pow_ratio(181), 45);
+
+		let one_week = 60 * 24 * 7;
+		assert_eq!(secondary_pow_ratio(one_week - 1), 45);
+		assert_eq!(secondary_pow_ratio(one_week), 45);
+		assert_eq!(secondary_pow_ratio(one_week + 1), 45);
+
+		let two_weeks = one_week * 2;
+		assert_eq!(secondary_pow_ratio(two_weeks - 1), 44);
+		assert_eq!(secondary_pow_ratio(two_weeks), 44);
+		assert_eq!(secondary_pow_ratio(two_weeks + 1), 44);
+
+		let t4_fork_height = 64_000;
+		assert_eq!(secondary_pow_ratio(t4_fork_height - 1), 40);
+		assert_eq!(secondary_pow_ratio(t4_fork_height), 40);
+		assert_eq!(secondary_pow_ratio(t4_fork_height + 1), 40);
+
+		let one_year = one_week * 52;
+		assert_eq!(secondary_pow_ratio(one_year), 0);
+
+		let ninety_one_weeks = one_week * 91;
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks - 1), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks), 0);
+		assert_eq!(secondary_pow_ratio(ninety_one_weeks + 1), 0);
+
+		let two_year = one_year * 2;
+		assert_eq!(secondary_pow_ratio(two_year - 1), 0);
+		assert_eq!(secondary_pow_ratio(two_year), 0);
+		assert_eq!(secondary_pow_ratio(two_year + 1), 0);
+	}
 }
 
 #[test]
@@ -363,105 +544,99 @@ fn test_secondary_pow_scale() {
 	let window = DIFFICULTY_ADJUST_WINDOW;
 	let mut hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 100);
 
-	global::set_mining_mode(global::ChainTypes::Mainnet);
-	assert_eq!(global::is_floonet(), false);
+	// mainnet testing
+	{
+		global::set_mining_mode(global::ChainTypes::Mainnet);
+		assert_eq!(global::is_floonet(), false);
 
-	// all primary, factor should increase so it becomes easier to find a high
-	// difficulty block
-	hi.is_secondary = false;
-	assert_eq!(
-		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
-		108
-	);
-	// all secondary on 90%, factor should go down a bit
-	hi.is_secondary = true;
-	assert_eq!(
-		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
-		99
-	);
-	// all secondary on 1%, factor should go down to bound (divide by 2)
-	assert_eq!(
-		secondary_pow_scaling(
-			2 * YEAR_HEIGHT * 83 / 90,
-			&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
-		),
-		50
-	);
-	// same as above, testing lowest bound
-	let mut low_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), MIN_AR_SCALE as u32);
-	low_hi.is_secondary = true;
-	assert_eq!(
-		secondary_pow_scaling(
-			2 * YEAR_HEIGHT,
-			&(0..window).map(|_| low_hi.clone()).collect::<Vec<_>>()
-		),
-		MIN_AR_SCALE as u32
-	);
-	// the right ratio of 95% secondary
-	let mut primary_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 50);
-	primary_hi.is_secondary = false;
-	assert_eq!(
-		secondary_pow_scaling(
-			1,
-			&(0..(window / 10))
-				.map(|_| primary_hi.clone())
-				.chain((0..(window * 9 / 10)).map(|_| hi.clone()))
-				.collect::<Vec<_>>()
-		),
-		95, // avg ar_scale of 10% * 50 + 90% * 100
-	);
-	// 95% secondary, should come down based on 97.5 average
-	assert_eq!(
-		secondary_pow_scaling(
-			1,
-			&(0..(window / 20))
-				.map(|_| primary_hi.clone())
-				.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
-				.collect::<Vec<_>>()
-		),
-		97
-	);
-	// 40% secondary, should come up based on 70 average
-	assert_eq!(
-		secondary_pow_scaling(
-			1,
-			&(0..(window * 6 / 10))
-				.map(|_| primary_hi.clone())
-				.chain((0..(window * 4 / 10)).map(|_| hi.clone()))
-				.collect::<Vec<_>>()
-		),
-		73
-	);
+		// all primary, factor should increase so it becomes easier to find a high
+		// difficulty block
+		hi.is_secondary = false;
+		assert_eq!(
+			secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
+			108
+		);
+		// all secondary on 90%, factor should go down a bit
+		hi.is_secondary = true;
+		assert_eq!(
+			secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
+			91
+		);
+		// all secondary on 1%, factor should go down to bound (divide by 2)
+		assert_eq!(
+			secondary_pow_scaling(
+				2 * YEAR_HEIGHT * 83 / 90,
+				&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
+			),
+			13
+		);
+		// same as above, testing lowest bound
+		let mut low_hi =
+			HeaderInfo::from_diff_scaling(Difficulty::from_num(10), MIN_AR_SCALE as u32);
+		low_hi.is_secondary = true;
+		assert_eq!(
+			secondary_pow_scaling(
+				2 * YEAR_HEIGHT,
+				&(0..window).map(|_| low_hi.clone()).collect::<Vec<_>>()
+			),
+			MIN_AR_SCALE as u32
+		);
+		// the right ratio of 95% secondary
+		let mut primary_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 50);
+		primary_hi.is_secondary = false;
+		assert_eq!(
+			secondary_pow_scaling(
+				1,
+				&(0..(window / 10))
+					.map(|_| primary_hi.clone())
+					.chain((0..(window * 9 / 10)).map(|_| hi.clone()))
+					.collect::<Vec<_>>()
+			),
+			88,
+		);
+		// 95% secondary, should come down based on 97.5 average
+		assert_eq!(
+			secondary_pow_scaling(
+				1,
+				&(0..(window / 20))
+					.map(|_| primary_hi.clone())
+					.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
+					.collect::<Vec<_>>()
+			),
+			89
+		);
+		// 40% secondary, should come up based on 70 average
+		assert_eq!(
+			secondary_pow_scaling(
+				1,
+				&(0..(window * 6 / 10))
+					.map(|_| primary_hi.clone())
+					.chain((0..(window * 4 / 10)).map(|_| hi.clone()))
+					.collect::<Vec<_>>()
+			),
+			70
+		);
+	}
 }
 
 #[test]
 fn hard_forks() {
-	global::set_mining_mode(global::ChainTypes::Mainnet);
-	assert_eq!(global::is_floonet(), false);
-	assert!(valid_header_version(0, HeaderVersion(1)));
-	assert!(valid_header_version(10, HeaderVersion(1)));
-	assert!(!valid_header_version(10, HeaderVersion(2)));
-
-	// Not applicable to MWC becuase we don't have hardforks
-	/*	assert!(valid_header_version(YEAR_HEIGHT / 2 - 1, HeaderVersion(1)));
-	assert!(valid_header_version(YEAR_HEIGHT / 2, HeaderVersion(2)));
-	assert!(valid_header_version(YEAR_HEIGHT / 2 + 1, HeaderVersion(2)));
-	assert!(!valid_header_version(YEAR_HEIGHT / 2, HeaderVersion(1)));
-	assert!(!valid_header_version(YEAR_HEIGHT, HeaderVersion(1)));
-
-	assert!(valid_header_version(YEAR_HEIGHT - 1, HeaderVersion(2)));
-	assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(3)));
-	assert!(valid_header_version(YEAR_HEIGHT + 1, HeaderVersion(3)));
-	assert!(!valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
-	assert!(!valid_header_version(YEAR_HEIGHT * 3 / 2, HeaderVersion(2)));
-	// v4 not active yet
-	assert!(!valid_header_version(YEAR_HEIGHT * 3 / 2, HeaderVersion(4)));
-	assert!(!valid_header_version(YEAR_HEIGHT * 3 / 2, HeaderVersion(3)));
-	assert!(!valid_header_version(YEAR_HEIGHT * 3 / 2, HeaderVersion(2)));
-	assert!(!valid_header_version(YEAR_HEIGHT * 3 / 2, HeaderVersion(1)));
-	assert!(!valid_header_version(YEAR_HEIGHT * 2, HeaderVersion(3)));
-	assert!(!valid_header_version(
-		YEAR_HEIGHT * 3 / 2 + 1,
-		HeaderVersion(3)
-	));*/
+	// Tests for mainnet chain type.
+	{
+		global::set_mining_mode(global::ChainTypes::Mainnet);
+		assert_eq!(global::is_floonet(), false);
+		assert!(valid_header_version(0, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
+		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(2)));
+		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(2)));
+	}
+	// Tests for floonet chain type.
+	{
+		global::set_mining_mode(global::ChainTypes::Floonet);
+		assert_eq!(global::is_floonet(), true);
+		assert!(valid_header_version(0, HeaderVersion(1)));
+		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
+		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(2)));
+		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(2)));
+	}
 }
