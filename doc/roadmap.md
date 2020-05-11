@@ -38,7 +38,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Coin shuffle.
 - Hardware wallets but requires hardware manufacturer support.
 
-The exact details of the HODL Program have still not been decided. At least 50% of the 2,000,000 MWC in the HODL Program will be distributed to holders that have MWC that has not been moved after block 202,500.
+The exact details of the HODL Program have still not been decided. At least 55% of the 2,000,000 MWC in the HODL Program will be distributed to holders that have MWC that has not been moved after block 212,580.
 
 If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated with either the HODL Program or the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
 
