@@ -68,7 +68,7 @@ In addtion to this setup, it is possible to use some new settings a long with --
 
 # How many confirmations are needed #
 
-Number of confirmations required is a personal decision that is up to the exchange. You can roughly estimate the cost of an attack based on number of confirmations X value of the block reward. For example, if the block reward is 0.6, it would cost 0.6 X 5000 = 3000 MWC to do a double spend. Some exchanges have different number of confirmations for different amounts deposited.
+Number of confirmations required is a personal decision that is up to the exchange. One can roughly estimate the cost of a double spend attack based on number of confirmations X value of the block reward. For example, if the block reward is 0.6, it would cost about 0.6 X 1000 = 600 MWC to do a double spend attack. Some exchanges have different number of confirmations for different amounts deposited. For small deposits, a lower number of confirmations might be acceptable and for higher amounts even more confirmations could be necessary.
 
-Customers should understand the number choosen and decide which exchange to use based on that. We have been suggesting 5000+ confirmations to exchanges, but it's really a question of risk and amounts deposited. We have had reorgs of up to 120 blocks but there's no guarantee that a higher number won't occur at some point.
+Customers should understand the number chosen and decide which exchange to use based on that. We previously suggested 5000+ confirmations to exchanges but we now do not make any recommendation about number of confirmations to exchanges because it's highly dependent on the number of coins being deposited and it's a calculation the exchange should underand based on their own risk tolerances.
 
