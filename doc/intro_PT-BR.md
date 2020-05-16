@@ -1,12 +1,12 @@
-# Introdução ao Mimblewimble e ao Grin
+# Introdução ao Mimblewimble e ao MWC
 
 *Leia isto em outros idiomas: [English](intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md), [简体中文](intro_ZH-CN.md).*
 
 O Mimblewimble é um formato e protocolo blockchain que fornece ótima escalabilidade, privacidade e fungibilidade, para isso contando com primitivas criptográficas fortes. Ele aborda as lacunas existentes em quase todos as implementações blockchain atuais.
 
-O Grin é um projeto de software de código aberto que implementa um blockchain Mimblewimble e preenche os vãos necessários para se construir um blockchain e uma criptomoeda completos.
+O MWC é um projeto de software de código aberto que implementa um blockchain Mimblewimble e preenche os vãos necessários para se construir um blockchain e uma criptomoeda completos.
 
-O principal objetivo e as características do projeto Grin são:
+O principal objetivo e as características do projeto MWC são:
 
 * Privacidade por padrão. Isto permite fungibilidade completa sem impedir a capacidade de divulgação seletiva de informações quando necessário.
 * Escalabilidade, sobretudo quanto ao número de usuários e minimamente com relação ao número de transações (<100 byte `núcleo`), resultando em uma grande economia de espaço quando comparado a outros blockchains.
@@ -16,9 +16,9 @@ O principal objetivo e as características do projeto Grin são:
 
 ## Amarra-Língua para Todos
 
-Este documento destina-se a leitores com uma boa compreensão de blockchains e criptografia básica. Tendo isto em mente, tentamos explicar o desenvolvimento técnico do Mimblewimble e como ele é aplicado no Grin. Acreditamos que este documento seja compreensível para a maioria dos leitores tecnicamente conscientes. Nosso objetivo é incentivá-los a se interessar pelo Grin e contribuir da maneira que for possível.
+Este documento destina-se a leitores com uma boa compreensão de blockchains e criptografia básica. Tendo isto em mente, tentamos explicar o desenvolvimento técnico do Mimblewimble e como ele é aplicado no MWC. Acreditamos que este documento seja compreensível para a maioria dos leitores tecnicamente conscientes. Nosso objetivo é incentivá-los a se interessar pelo MWC e contribuir da maneira que for possível.
 
-Para alcançar este objetivo, apresentaremos os principais conceitos necessários para uma boa compreensão do Grin, sendo esta uma implementação do Mimblewimble. Vamos começar com uma breve descrição de algumas propriedades relevantes da Criptografia de Curva Elíptica (CCE) de forma a sedimentar a fundação em que o Grin é baseado e, em seguida, descrever todos os elementos-chave de transações e blocos do blockchain Mimblewimble.
+Para alcançar este objetivo, apresentaremos os principais conceitos necessários para uma boa compreensão do MWC, sendo esta uma implementação do Mimblewimble. Vamos começar com uma breve descrição de algumas propriedades relevantes da Criptografia de Curva Elíptica (CCE) de forma a sedimentar a fundação em que o MWC é baseado e, em seguida, descrever todos os elementos-chave de transações e blocos do blockchain Mimblewimble.
 
 ### Um Pouquinho sobre Curvas Elípticas
 
@@ -30,7 +30,7 @@ Uma Curva Elíptica para fins de criptografia é simplesmente um grande conjunto
 
 Em CCE, se escolhermos um número muito grande _k_ como uma chave privada, `k*H` é considerada a chave pública correspondente. Mesmo tendo conhecimento do valor da chave pública `k*H`, deduzir _k_ é quase impossível (ou em outras palavras, enquanto a multiplicação é trivial, a "divisão" por pontos da curva é extremamente difícil).
 
-A fórmula anterior `(k+j)*H = k*H + j*H`, com _k_ e _j_ ambos sendo chaves privadas, demonstra que uma chave pública obtida a partir da adição de duas chaves privadas (`(k+j)*H`) é idêntica à adição das chaves públicas para cada uma dessas duas chaves privadas (`k*H + j*H`). No blockchain do Bitcoin, as carteiras Hierárquicas Determinísticas dependem fortemente desse princípio. O Mimblewimble e a implementação do Grin dependem também.
+A fórmula anterior `(k+j)*H = k*H + j*H`, com _k_ e _j_ ambos sendo chaves privadas, demonstra que uma chave pública obtida a partir da adição de duas chaves privadas (`(k+j)*H`) é idêntica à adição das chaves públicas para cada uma dessas duas chaves privadas (`k*H + j*H`). No blockchain do Bitcoin, as carteiras Hierárquicas Determinísticas dependem fortemente desse princípio. O Mimblewimble e a implementação do MWC dependem também.
 
 ### Transacionando com o Mimblewimble
 
@@ -122,7 +122,7 @@ Esta assinatura, anexada a todas as transações, juntamente com alguns dados ad
 
 #### Alguns Pontos Refinados
 
-Esta seção detalha a construção de transações discutindo como o troco deve ser introduzido e a exigência de provas de intervalo para que todos os montantes sejam comprovadamente não-negativos. Nenhum destes pontos é absolutamente necessário para entender o Mimblewimble e o Grin, por isso, se estiver com pressa, sinta-se à vontade para pular direto para [Juntando Tudo] (#juntando-tudo).
+Esta seção detalha a construção de transações discutindo como o troco deve ser introduzido e a exigência de provas de intervalo para que todos os montantes sejam comprovadamente não-negativos. Nenhum destes pontos é absolutamente necessário para entender o Mimblewimble e o MWC, por isso, se estiver com pressa, sinta-se à vontade para pular direto para [Juntando Tudo] (#juntando-tudo).
 
 ##### Troco
 

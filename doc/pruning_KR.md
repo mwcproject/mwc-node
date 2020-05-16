@@ -2,7 +2,7 @@
 
 Mimblewimble의 주된 매력 중 하나는 이론적인 공간효율성 입니다. 실제로 신뢰 할수 있거나 또는 사전에 입증된 전체 블록체인 스테이트는 아주 작을수도 있는 UTXO(unspent transaction outputs)만 나타냅니다.
 
-Grin의 블록체인에는 다음 유형의 데이터가 포함됩니다 (Mimblewimble 프로토콜에 대한 사전 지식이 있다고 가정합니다).
+MWC의 블록체인에는 다음 유형의 데이터가 포함됩니다 (Mimblewimble 프로토콜에 대한 사전 지식이 있다고 가정합니다).
 
 1. 아래를 포함하는 트랜잭션 출력값
    1. Pedersen commitment (33 bytes).

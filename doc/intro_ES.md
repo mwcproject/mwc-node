@@ -1,4 +1,4 @@
-# Introducción a Mimblewimble y Grin
+# Introducción a Mimblewimble y MWC
 
 *Lea esto en otros idiomas: [English](intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md), [简体中文](intro_ZH-CN.md).*
 
@@ -6,10 +6,10 @@ Mimblewimble es un formato y un protocolo de cadena de bloques que proporciona u
 extremadamente buenas al basarse en fuertes algoritmos criptográficos. Aborda los vacíos existentes en casi todas las 
 implementaciones actuales de cadenas de bloques.
 
-Grin es un proyecto de software de código abierto que implementa una cadena de bloques Mimblewimble y rellena los espacios 
+MWC es un proyecto de software de código abierto que implementa una cadena de bloques Mimblewimble y rellena los espacios 
 necesarios para una implementación completa de la cadena de bloques y moneda criptográfica.
 
-El objetivo principal y las características del proyecto Grin son:
+El objetivo principal y las características del proyecto MWC son:
 
 * Privacidad por defecto. Esto permite una funcionalidad completa sin excluir la posibilidad de revelar información de forma 
   selectiva cuando sea necesario.
@@ -24,13 +24,13 @@ El objetivo principal y las características del proyecto Grin son:
 ## Tongue Tying para todos
 
 Este documento está dirigido a lectores con un buen conocimiento de cadenas de bloques y de la criptografía básica. Con 
-esto en mente, tratamos de explicar el desarrollo técnico de Mimblewimble y cómo se aplica en Grin. Esperamos que este 
+esto en mente, tratamos de explicar el desarrollo técnico de Mimblewimble y cómo se aplica en MWC. Esperamos que este 
 documento sea comprensible para la mayoría de los lectores con visión técnica. Nuestro objetivo es animarles a interesarse en 
-Grin y contribuir de cualquier manera posible.
+MWC y contribuir de cualquier manera posible.
 
-Para lograr este objetivo, presentaremos los principales conceptos necesarios para una buena comprensión de Grin como 
+Para lograr este objetivo, presentaremos los principales conceptos necesarios para una buena comprensión de MWC como 
 implementación de Mimblewimble. Comenzaremos con una breve descripción de algunas propiedades relevantes de la Criptografía 
-de Curva Elíptica (ECC) para sentar las bases sobre las que se basa Grin y luego describir todos los elementos clave de las 
+de Curva Elíptica (ECC) para sentar las bases sobre las que se basa MWC y luego describir todos los elementos clave de las 
 transacciones y bloques de una cadena de bloques Mimblewimble.
 
 ### Pequeños Bits de Curvas Elípticas
@@ -54,7 +54,7 @@ la multiplicación es trivial, la "división" por puntos de curva es extremadame
 La fórmula anterior `(k+j)*H = k*H + j*H`, con _k_ y _j_ ambas claves privadas, demuestra que una clave pública obtenida de 
 la adición de dos claves privadas (`(k+j)*H`) es idéntica a la adición de las claves públicas para cada una de esas dos 
 claves privadas (`k*H + j*H`). En la cadena de bloques Bitcoin, las carteras jerárquicas deterministas se basan en gran 
-medida en este principio. Mimblewimble y la implementación de Grin también lo hacen.
+medida en este principio. Mimblewimble y la implementación de MWC también lo hacen.
 
 ### Transacciones con Mimblewimble
 
@@ -177,8 +177,8 @@ denomina  _transacción de kernel_ y es comprobada por todos los validadores.
 
 #### Algunos puntos más precisos
 
-Esta sección explica con más detalle la creación de transacciones discutiendo cómo se introduce el cambio y el requisito de pruebas de rango para que se demuestre que todos los valores no son negativos. Ninguno de los dos es absolutamente necesario para entender MimblewimbleWimble y Grin, así que si tienes prisa, no dudes en ir directamente a
-[Poniendo todo junto](https://github.com/wimel/grin/blob/master/doc/intro.md#putting-it-all-together).
+Esta sección explica con más detalle la creación de transacciones discutiendo cómo se introduce el cambio y el requisito de pruebas de rango para que se demuestre que todos los valores no son negativos. Ninguno de los dos es absolutamente necesario para entender MimblewimbleWimble y MWC, así que si tienes prisa, no dudes en ir directamente a
+[Poniendo todo junto](https://github.com/mwcproject/mwc-node/blob/master/doc/intro.md#putting-it-all-together).
 
 ##### Cambio
 
