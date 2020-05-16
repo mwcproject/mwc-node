@@ -1,13 +1,13 @@
-Mimblewimble 和 Grin 简介
+Mimblewimble 和 MWC 简介
 =====================================
 
 *阅读其它语言版本: [English](intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md).*
 
 Mimblewimble是一个区块链格式和协议，依托于健壮的加密原语，提供非常好的可扩展性、隐私和可替代性。它解决了当前几乎所有实现的区块链（与现实需求之间）差距。Mimblewimble 的白皮书在[本项目的WiKi](https://github.com/mimblewimble/docs/wiki/A-Brief-History-of-MinbleWimble-White-Paper)中可以找到，WiKi是开放的。
 
-Grin是一个实现Mimblewimble区块链的开源软件项目，并填补了（Mimblewimble协议所缺失的）实现一个完整的区块链和加密货币必需的一些东西。
+MWC是一个实现Mimblewimble区块链的开源软件项目，并填补了（Mimblewimble协议所缺失的）实现一个完整的区块链和加密货币必需的一些东西。
 
-Grin 项目的主要目的和特性如下:
+MWC 项目的主要目的和特性如下:
 
 * 隐私保护的缺省特性。 这使它具备了完全可替代性，且保留了按需选择性披露信息的能力。
 * 区块大小与交易量相适配，历史交易仅保留约100字节的交易核（_transaction kernel_）, 相比其它区块链节省了大量空间。
@@ -19,9 +19,9 @@ Grin 项目的主要目的和特性如下:
 
 **备注**：Mimblewimble 出自《哈利波特》中的一句咒语，详见：[Tongue-Tying Curse](http://harrypotter.wikia.com/wiki/Tongue-Tying_Curse)，这个标题的涵义应该是希望所有读到这篇介绍的人都可以来为这个开放社区做点贡献，真心希望如此。
  
-本文针对的读者是已经了解过区块链并了解一些基本的密码学知识的人群。我们尝试解释Mimblewimble的技术构建，以及它如何应用于Grin。我们希望这篇介绍能够浅显易懂，我们的目的是鼓励您对Grin产生兴趣，并加入Grin的开放社区，以任何您可能的方式对其做出贡献。
+本文针对的读者是已经了解过区块链并了解一些基本的密码学知识的人群。我们尝试解释Mimblewimble的技术构建，以及它如何应用于MWC。我们希望这篇介绍能够浅显易懂，我们的目的是鼓励您对MWC产生兴趣，并加入MWC的开放社区，以任何您可能的方式对其做出贡献。
 
-为了实现这个目标，我们将介绍一个主要概念：Grin是一个Mimblewimble实现。我们将从椭圆曲线密码（ECC）的简短描述开始，这是Grin的重要基础。然后描述Mimblewimble区块链交易和区块的所有关键要素。
+为了实现这个目标，我们将介绍一个主要概念：MWC是一个Mimblewimble实现。我们将从椭圆曲线密码（ECC）的简短描述开始，这是MWC的重要基础。然后描述Mimblewimble区块链交易和区块的所有关键要素。
 
 
 ## 椭圆曲线简介
@@ -36,7 +36,7 @@ Grin 项目的主要目的和特性如下:
 
 在ECC中，如果我们选择一个非常大的数字 _k_ 作为私钥，则`k * H`被作为相应的公钥。 即使人们知道公钥`k * H`的值，推导 _k_ 几乎不可能（或者换句话说，椭圆曲线点的乘法计算是微不足道的，然而曲线点的“除法”计算却极其困难。参见：[椭圆曲线密码学](https://zh.wikipedia.org/wiki/椭圆曲线密码学)。
 
-先前的公式`（k + j）* H = k * H + j * H`中， _k_ 和 _j_ 都是私钥，演示了从两个私钥的加和获取公钥`（k + j）* H`，等价于每个私钥的对应公钥加和（`k * H + j * H`）。在比特币区块链中，[分层确定性钱包(HD Wallets/BIP32)](https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki)严重依赖于这个原则。 Mimblewimble和Grin也是如此。
+先前的公式`（k + j）* H = k * H + j * H`中， _k_ 和 _j_ 都是私钥，演示了从两个私钥的加和获取公钥`（k + j）* H`，等价于每个私钥的对应公钥加和（`k * H + j * H`）。在比特币区块链中，[分层确定性钱包(HD Wallets/BIP32)](https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki)严重依赖于这个原则。 Mimblewimble和MWC也是如此。
 
 ## Mimblewimble 交易
 
@@ -133,7 +133,7 @@ _X_, 上述加法的输出值，是对所有人可见的。 但是值3只有你�
 
 ### 一些更深入的细节
 
-本节阐述创建交易，通过讨论交易的找零机制和范围证明的要求以便所有值都被证明为非负。 这些都不是了解Mimblewimble和Grin的必需内容，所以如果你想快速了解，随时可以直接跳过本节内容，直接到[Putting It All Together](#transaction-conclusion).
+本节阐述创建交易，通过讨论交易的找零机制和范围证明的要求以便所有值都被证明为非负。 这些都不是了解Mimblewimble和MWC的必需内容，所以如果你想快速了解，随时可以直接跳过本节内容，直接到[Putting It All Together](#transaction-conclusion).
 
 #### 找零
 

@@ -1,4 +1,4 @@
-# Introduktion till Mimblewimble och Grin
+# Introduktion till Mimblewimble och MWC
 
 *Läs detta på andra språk: [English](intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md), [简体中文](intro_ZH-CN.md).*
 
@@ -6,10 +6,10 @@ Mimblewimble är ett blockkedjeformat och protokoll som erbjuder extremt bra
 skalbarhet, integritet, och fungibilitet genom starka kryptografiska primitiver.
 Den angriper brister som existerar i nästan alla nuvarande blockkedjeimplementationer.
 
-Grin är ett mjukvaruprojekt med öppen källkod som implementerar en Mimblewimble-blockkedja
+MWC är ett mjukvaruprojekt med öppen källkod som implementerar en Mimblewimble-blockkedja
 och fyller igen luckorna för att skapa en fullständig blockkedja och kryptovaluta.
 
-Grin-projektets huvudsakliga mål och kännetecken är:
+MWC-projektets huvudsakliga mål och kännetecken är:
 
 * Integritet som standard. Detta möjliggör fullkomlig fungibilitet utan att
 förhindra förmågan att selektivt uppdaga information efter behov.
@@ -23,13 +23,13 @@ elliptiska kurvor (ECC) vilket har beprövats i decennier.
 ## Tungknytande för alla
 
 Detta dokument är riktat mot läsare med en bra förståelse för blockkedjor och grundläggande kryptografi.
-Med det i åtanke försöker vi förklara den tekniska uppbyggnaden av Mimblewimble och hur det appliceras i Grin.
+Med det i åtanke försöker vi förklara den tekniska uppbyggnaden av Mimblewimble och hur det appliceras i MWC.
 Vi hoppas att detta dokument är föreståeligt för de flesta tekniskt inriktade läsare. Vårt mål är att
-uppmuntra er att bli intresserade i Grin och bidra på något möjligt sätt.
+uppmuntra er att bli intresserade i MWC och bidra på något möjligt sätt.
 
 För att uppnå detta mål kommer vi att introducera de huvudsakliga begrepp som krävs för en
-bra förståelse för Grin som en  Mimblewimble-implementation. Vi kommer att börja med en kort
-beskrivning av några av elliptiska kurvornas relevanta egenskaper för att lägga grunden som Grin
+bra förståelse för MWC som en  Mimblewimble-implementation. Vi kommer att börja med en kort
+beskrivning av några av elliptiska kurvornas relevanta egenskaper för att lägga grunden som MWC
 är baserat på och därefter beskriva alla viktiga element i en Mimblewimble-blockkedjas
 transaktioner och block.
 
@@ -55,7 +55,7 @@ multiplikation med kurvpunkter är trivialt är "division" extremt svårt).
 Den föregående formeln `(k+j)*H = k*H + j*H`, med _k_ och _j_ båda som privata nycklar, demonstrerar att en publik nyckel
 erhållen av att ha adderat de två privata nycklarna är identisk med de två privata nycklarnas respektive
 publika nycklar adderade (`k*H + j*H`). I Bitcoin-blockkedjan använder hierarkiska deterministiska plånböcker (HD wallets)
-sig flitigt av denna princip. Mimblewimble och Grin-implementationer gör det också.
+sig flitigt av denna princip. Mimblewimble och MWC-implementationer gör det också.
 
 ### Transaktioner med Mimblewimble
 
@@ -179,7 +179,7 @@ för _transaktionskärna_ och kontrolleras av alla validerare.
 
 Detta stycke detaljerar byggandet av transaktioner genom att diskutera hur växel införs och kravet för "range proofs"
 så att alla belopp är bevisade att vara icke-negativa. Inget av detta är absolut nödvändigt för att förstå Mimblewimble
-och Grin, så om du har bråttom känn dig fri att hoppa direkt till [Sammanställningen av allt](#sammanställningen-av-allt).
+och MWC, så om du har bråttom känn dig fri att hoppa direkt till [Sammanställningen av allt](#sammanställningen-av-allt).
 
 #### Växel
 
