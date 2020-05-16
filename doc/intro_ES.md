@@ -178,7 +178,7 @@ denomina  _transacción de kernel_ y es comprobada por todos los validadores.
 #### Algunos puntos más precisos
 
 Esta sección explica con más detalle la creación de transacciones discutiendo cómo se introduce el cambio y el requisito de pruebas de rango para que se demuestre que todos los valores no son negativos. Ninguno de los dos es absolutamente necesario para entender MimblewimbleWimble y MWC, así que si tienes prisa, no dudes en ir directamente a
-[Poniendo todo junto](https://github.com/wimel/MWC/blob/master/doc/intro.md#putting-it-all-together).
+[Poniendo todo junto](https://github.com/mwcproject/mwc-node/blob/master/doc/intro.md#putting-it-all-together).
 
 ##### Cambio
 
