@@ -1,12 +1,12 @@
-# Grin의 작업증명
+# MWC의 작업증명
 
-이 문서는 사전지식이 없는 사람의 수준에서 Grin의 작업증명 시스템과 관련된 알고리즘 및 프로세스를 대략적으로 설명합니다. Grin의 작업 증명의 기초를 형성하는 Cuckoo Cycle 알고리즘과 그래프의 사이클에 대한 개요로 시작하겠습니다. 그런 다음 Cuckoo Cycle과 결합하여 Grin에서 마이닝 전체 형태를 형성하는 시스템인 Grin특유의 세부 정보에 대해서  설명합니다.
+이 문서는 사전지식이 없는 사람의 수준에서 MWC의 작업증명 시스템과 관련된 알고리즘 및 프로세스를 대략적으로 설명합니다. MWC의 작업 증명의 기초를 형성하는 Cuckoo Cycle 알고리즘과 그래프의 사이클에 대한 개요로 시작하겠습니다. 그런 다음 Cuckoo Cycle과 결합하여 MWC에서 마이닝 전체 형태를 형성하는 시스템인 MWC특유의 세부 정보에 대해서  설명합니다.
 
-Grin은 현재 활발하게 개발 중이며,이 중 일부 및 전부는 릴리즈 전에 변경 될 수 있습니다.
+MWC은 현재 활발하게 개발 중이며,이 중 일부 및 전부는 릴리즈 전에 변경 될 수 있습니다.
 
 ## Graphs 와 Cuckoo Cycle
 
-Grin의 기본 Proof-of-Work 알고리즘은 Cuckoo Cycle 이라고 합니다 이 알고리즘은 Bitcoin 스타일의 하드웨어 경쟁에 (ASIC을 뜻함 - 역자 주) 내성을 갖도록 특별히 설계되었습니다 . Cuckoo cycle은 이론 상으로 slution time 이 CPU 프로세서 또는 GPU 속도가 아닌 메모리 대역폭에 의해 제한된다는 메모리 바운드( [memory bound function](https://en.wikipedia.org/wiki/Memory_bound_function)) 알고리즘 입니다. 따라서 마이닝 Cuckoo cycle solution은 대부분의 상용 하드웨어에서 실행 가능해야만 하고 다른 대부분의 GPU, CPU 또는 ASIC 바인딩 된 작업 증명 알고리즘보다 훨씬 적은 에너지를 필요로 합니다.
+MWC의 기본 Proof-of-Work 알고리즘은 Cuckoo Cycle 이라고 합니다 이 알고리즘은 Bitcoin 스타일의 하드웨어 경쟁에 (ASIC을 뜻함 - 역자 주) 내성을 갖도록 특별히 설계되었습니다 . Cuckoo cycle은 이론 상으로 slution time 이 CPU 프로세서 또는 GPU 속도가 아닌 메모리 대역폭에 의해 제한된다는 메모리 바운드( [memory bound function](https://en.wikipedia.org/wiki/Memory_bound_function)) 알고리즘 입니다. 따라서 마이닝 Cuckoo cycle solution은 대부분의 상용 하드웨어에서 실행 가능해야만 하고 다른 대부분의 GPU, CPU 또는 ASIC 바인딩 된 작업 증명 알고리즘보다 훨씬 적은 에너지를 필요로 합니다.
 
 Cuckoo cyle pow의 최신 문서들과 구현은 John Tromp 의 [깃헙](https://github.com/tromp/cuckoo)에서 볼 수 있으며 이 알고리즘의 pow는 그의 작업 결과물입니다. 이 [링크](https://github.com/tromp/cuckoo/blob/master/doc/cuckoo.pdf)는 Cuckoo cycle 의 백서이고 좀 더 기술적인 디테일에 대해서 최고의 자료입니다. 
 
@@ -61,7 +61,7 @@ Cuckoo Cycle은 N 개의 노드와 M 개의 가장자리로 구성된 양분 그
 ### Cuckoo Cycle
 
 Cuckoo Cycle 알고리즘은 정확히 이 문제를 해결하기 위해 고안된 특수 알고리즘입니다. Cuckoo Cylcle 알고리즘은 노드를 두 개의 개별 배열로 가능한 위치에 매핑하는 해시에 따라 'Cuckoo Hashtable' 라고 불리는 구조에 값을 삽입하여 수행합니다. 이 문서는 기본 알고리즘에 대해서는 자세히 설명하지 않으며 [백서](https://github.com/tromp/cuckoo/blob/master/doc/cuckoo.pdf)에서 충분히 설명되어 있습니다. 또한 알고리즘에서 속도/메모리 트레이드 오프를 만드는 몇몇 변형이 있지만 이 문서의 (설명)범위를 역시 넘어갑니다.
-하지만 Grin의 작업증명의 기술적 측면을 계속 설명하기 전에 앞서 알아둬야 할 몇 가지 세부 사항이 있습니다.
+하지만 MWC의 작업증명의 기술적 측면을 계속 설명하기 전에 앞서 알아둬야 할 몇 가지 세부 사항이 있습니다.
 
 * 위의 그래프에서 '랜덤'에지는 실제로 랜덤하지 않지만 시드배정을 받은 해시함수 인 SIPHASH에 엣지 인덱스(0..N)를 넣어서 생성됩니다. 각 엣지 인덱스는 SIPHASH 함수를 두 번 사용해서 두 개의 엣지 엔드포인를 만들어 냅니다. 첫 번째 엣지 엔드포인트는 2* edge_index이고, 두 번째 엣지 엔드포인트는 2* edge_index+1 입니다. 이 함수의 시드는 블록 헤더의 해시를 기반으로 하고 관 아래에서 자세히 설명합니다.
 
@@ -74,11 +74,11 @@ Cuckoo Cycle 알고리즘은 정확히 이 문제를 해결하기 위해 고안�
 
 이 파라메터들이 실제로 어떻게 상호작용 하는지는 [이 문서](#mining-loop-difficulty-control-and-timing)를 참고하세요.
 
-Cuckoo Cycle 알고리즘이 무엇을 하려는지, 파라매터가 솔루션을 찾는데 것이 얼마나 영향을 미치는 지에 대해 기본적으로 이해하고 있으므로, Grin의 POW 시스템의 다른 부분으로 넘어갑니다.
+Cuckoo Cycle 알고리즘이 무엇을 하려는지, 파라매터가 솔루션을 찾는데 것이 얼마나 영향을 미치는 지에 대해 기본적으로 이해하고 있으므로, MWC의 POW 시스템의 다른 부분으로 넘어갑니다.
 
-## Mining in Grin
+## Mining in MWC
 
-위에서 설명한 Cuckoo Cycle은 Grin의 마이닝 프로세스의 윤곽을 설명합니다. 그러나 Grin은 Cuckoo Cycle을 여러 다른 시스템과 함께 사용하여 Proof-of-Work를 만듭니다.
+위에서 설명한 Cuckoo Cycle은 MWC의 마이닝 프로세스의 윤곽을 설명합니다. 그러나 MWC은 Cuckoo Cycle을 여러 다른 시스템과 함께 사용하여 Proof-of-Work를 만듭니다.
 
 ### 추가적인 난이도 조정에 대해서
 
@@ -142,8 +142,8 @@ Cuckoo Cycle 알고리즘이 무엇을 하려는지, 파라매터가 솔루션�
 
 ### Pooling Capability
 
-Cuckoo Cycle의 poolability에 대한 현재의 우려와는 달리 위에서 설명한 Grin의 POW 구현은 마이닝 풀에 아주 적합합니다.
-별개의 단일 그래프를 풀기 위한 노력을 증명하는 것은 어려운 반면에, Grin의 작업증명 내에서 조합 된 요소들이 결합하여 모든 마이너들의 공정성뿐만 아니라 'poolability'을 가능하게 만드는 'progress-freeness' 라는 개념을 강제합니다.
+Cuckoo Cycle의 poolability에 대한 현재의 우려와는 달리 위에서 설명한 MWC의 POW 구현은 마이닝 풀에 아주 적합합니다.
+별개의 단일 그래프를 풀기 위한 노력을 증명하는 것은 어려운 반면에, MWC의 작업증명 내에서 조합 된 요소들이 결합하여 모든 마이너들의 공정성뿐만 아니라 'poolability'을 가능하게 만드는 'progress-freeness' 라는 개념을 강제합니다.
 
 #### Progress Freeness
 
@@ -152,5 +152,5 @@ Progress-freeness 는 직업 증명의 'poolability'의 핵심이며 POW 문제�
 이러한 환경에서 소규모 광부는 적어도 1분을 매번 잃어 버리는 반면 큰 광부는 해결책을 찾으면 (바로 다음루프로) 이동할 수 있습니다.
 따라서 광업을 상대적으로 progress-free 시키기 위해서는 각 시도마다 상대적으로 적은 시간이 걸리며 다수의 솔루션을 찾는 시도가 있는 POW가 바람직합니다.
 
-Grin의 Progress - freeness는 Grin의 기본 파라매터가있는 Cuckoo의 솔루션이 일반적으로 대부분의 GPU에서 1초 이내에 발견 될 수 있고 Blake2b 난이도 체크의 추가 요구사항이 그 위에 있다는 사실에 기인합니다 .
+MWC의 Progress - freeness는 MWC의 기본 파라매터가있는 Cuckoo의 솔루션이 일반적으로 대부분의 GPU에서 1초 이내에 발견 될 수 있고 Blake2b 난이도 체크의 추가 요구사항이 그 위에 있다는 사실에 기인합니다 .
 따라서 Pool의 멤버는 현재의 네트워크 타겟 난이도에 속하는 유효한 Cuckoo 솔루션 (또는 Cuckoo 솔루션의 작은 묶음)을 제출하여 블록의 솔루션에 대해서 작업하고 있음을 증명할 수 있습니다.
