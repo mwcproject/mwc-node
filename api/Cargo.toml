@@ -24,7 +24,6 @@ log = "0.4"
 tokio = { version = "0.2", features = ["full"] }
 tokio-rustls = "0.12"
 http = "0.1.5"
-hyper-rustls = "0.19"
 hyper-timeout = "0.3"
 futures = "0.3"
 rustls = "0.16"
@@ -37,3 +36,9 @@ grin_p2p = { path = "../p2p", version = "3.2.1" }
 grin_pool = { path = "../pool", version = "3.2.1" }
 grin_store = { path = "../store", version = "3.2.1" }
 grin_util = { path = "../util", version = "3.2.1" }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+hyper-rustls = "0.19"
+
+[target.'cfg(target_os = "android")'.dependencies]
+hyper-rustls = { version = "0.20", default-features = false, features = ["webpki-tokio"] }
