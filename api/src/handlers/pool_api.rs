@@ -68,11 +68,12 @@ impl PoolHandler {
 		let pool_arc = w(&self.tx_pool)?;
 		let source = pool::TxSource::PushApi;
 		info!(
-			"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
+			"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {}, fluff: {:?})",
 			tx.hash(),
 			tx.inputs().len(),
 			tx.outputs().len(),
 			tx.kernels().len(),
+			fluff,
 		);
 
 		//  Push to tx pool.
