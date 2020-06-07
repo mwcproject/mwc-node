@@ -5,19 +5,20 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
-- BTC/MWC atomic swap on testnet.
-- 11/11/2019 Mainnet launch.
-- 01/02/2020 Airdrop concluded. About 5,400,037 MWC claimed and 599,963 unclaimed.
-- 2,599,963 MWC moved to a verifiable escrow wallets for HODL program and unclaimed airdrop.
-- MWC QT wallet cold storage implementation.
-- 01/21/2020 GRIN CVE patched.
-- Grin 3.0 rebase.
-- Transaction pool update.
+- 06/01/2020 - 2,000,000 MWC in HODL Program successfully distributed.
 - HODL Program Registration Wallet.
+- Transaction pool update.
+- Grin 3.0 rebase.
+- 01/21/2020 GRIN CVE patched.
+- MWC QT wallet cold storage implementation.
+- 2,599,963 MWC moved to a verifiable escrow wallets for HODL program and unclaimed airdrop.
+- 01/02/2020 Airdrop concluded. About 5,400,037 MWC claimed and 599,963 unclaimed.
+- 11/11/2019 Mainnet launch.
+- BTC/MWC atomic swap on testnet.
 
 # Near term (0-3 months)
-- HODL program first payment - wallet support + backend.
 - MWCMQS support in mwc-wallet.
+- TOR support in all wallets and nodes.
 - Start work on Mobile wallet.
 - Additional Grin rebases (if applicable).
 
@@ -29,6 +30,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
   - QT wallet integration.
   - MWC 713 integration.
 - Block explorer updates.
+- 235,000 Unclaimed Airdrop Funds to be distributed
 
 # Long term (6+ months depending on priority)
 - Decentralized exchange.
@@ -38,9 +40,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Coin shuffle.
 - Hardware wallets but requires hardware manufacturer support.
 
-The exact details of the HODL Program have still not been decided. At least 55% of the 2,000,000 MWC in the HODL Program will be distributed to holders that have MWC that has not been moved after block 212,580.
-
-If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated with either the HODL Program or the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
+If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated  the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
 
