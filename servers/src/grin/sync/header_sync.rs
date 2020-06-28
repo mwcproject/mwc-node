@@ -14,6 +14,7 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::chain::{self, SyncState, SyncStatus};
@@ -95,8 +96,37 @@ impl HeaderSync {
 				highest_height: highest_height,
 			});
 
-			self.syncing_peer = self.header_sync();
-			return Ok(true);
+			let peer = self.peers.most_work_peer();
+
+			if peer.is_some() {
+				let cloned_peer = peer.clone().unwrap();
+				let mut val = cloned_peer
+					.info
+					.header_sync_requested
+					.load(Ordering::Relaxed);
+				if val > 16 {
+					val = 0;
+				}
+				if val == 0 {
+					self.syncing_peer = self.header_sync(peer);
+					return Ok(true);
+				} else {
+					trace!("busy peer, skipping {:?}", peer);
+					trace!(
+						"already loading from this peer {:?}",
+						peer.clone().unwrap().info.addr
+					);
+					let now = Utc::now();
+					self.prev_header_sync = (
+						now + Duration::milliseconds(30),
+						header_head.height,
+						header_head.height,
+					);
+					return Ok(false);
+				}
+			} else {
+				warn!("peer is none");
+			}
 		}
 		Ok(false)
 	}
@@ -119,7 +149,7 @@ impl HeaderSync {
 
 		if force_sync || all_headers_received || stalling {
 			self.prev_header_sync = (
-				now + Duration::milliseconds(100),
+				now + Duration::milliseconds(30),
 				header_head.height,
 				header_head.height,
 			);
@@ -170,7 +200,7 @@ impl HeaderSync {
 			// resetting the timeout as long as we progress
 			if header_head.height > latest_height {
 				self.prev_header_sync = (
-					now + Duration::milliseconds(100),
+					now + Duration::milliseconds(30),
 					header_head.height,
 					prev_height,
 				);
@@ -179,12 +209,15 @@ impl HeaderSync {
 		}
 	}
 
-	fn header_sync(&mut self) -> Option<Arc<Peer>> {
+	fn header_sync(&mut self, peer: Option<Arc<Peer>>) -> Option<Arc<Peer>> {
 		if let Ok(header_head) = self.chain.header_head() {
 			let difficulty = header_head.total_difficulty;
 
-			if let Some(peer) = self.peers.most_work_peer() {
+			if peer.is_some() {
+				let peer = peer.unwrap();
 				if peer.info.total_difficulty() > difficulty {
+					trace!("peer = {:?}, set header sync = true", peer.info.addr);
+					peer.info.header_sync_requested.store(16, Ordering::Relaxed);
 					return self.request_headers(peer);
 				}
 			}
@@ -199,7 +232,6 @@ impl HeaderSync {
 				"sync: request_headers: asking {} for headers, {:?}",
 				peer.info.addr, locator,
 			);
-
 			let _ = peer.send_header_request(locator);
 			return Some(peer.clone());
 		}
@@ -243,7 +275,6 @@ impl HeaderSync {
 		locator.dedup_by(|a, b| a.0 == b.0);
 		debug!("sync: locator : {:?}", locator.clone());
 		self.history_locator = locator.clone();
-
 		Ok(locator.iter().map(|l| l.1).collect())
 	}
 }

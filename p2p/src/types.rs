@@ -25,6 +25,7 @@ use std::sync::Arc;
 use chrono::prelude::*;
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::sync::atomic::AtomicUsize;
 
 use grin_store;
 
@@ -460,6 +461,7 @@ pub struct PeerInfo {
 	pub addr: PeerAddr,
 	pub direction: Direction,
 	pub live_info: Arc<RwLock<PeerLiveInfo>>,
+	pub header_sync_requested: Arc<AtomicUsize>,
 }
 
 impl PeerLiveInfo {
@@ -606,6 +608,7 @@ pub trait ChainAdapter: Sync + Send {
 		&self,
 		bh: &[core::BlockHeader],
 		peer_info: &PeerInfo,
+		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error>;
 
 	/// Finds a list of block headers based on the provided locator. Tries to

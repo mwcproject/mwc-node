@@ -75,7 +75,12 @@ impl fmt::Debug for Peer {
 
 impl Peer {
 	// Only accept and connect can be externally used to build a peer
-	fn new(info: PeerInfo, conn: TcpStream, adapter: Arc<dyn NetAdapter>) -> std::io::Result<Peer> {
+	fn new(
+		info: PeerInfo,
+		conn: TcpStream,
+		adapter: Arc<dyn NetAdapter>,
+		header_cache_size: u64,
+	) -> std::io::Result<Peer> {
 		let state = Arc::new(RwLock::new(State::Connected));
 		let state_sync_requested = Arc::new(AtomicBool::new(false));
 		let tracking_adapter = TrackingAdapter::new(adapter);
@@ -83,6 +88,7 @@ impl Peer {
 			Arc::new(tracking_adapter.clone()),
 			info.clone(),
 			state_sync_requested.clone(),
+			header_cache_size,
 		);
 		let tracker = Arc::new(conn::Tracker::new());
 		let (sendh, stoph) = conn::listen(conn, info.version, tracker.clone(), handler)?;
@@ -105,11 +111,12 @@ impl Peer {
 		total_difficulty: Difficulty,
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
+		header_cache_size: u64,
 	) -> Result<Peer, Error> {
 		debug!("accept: handshaking from {:?}", conn.peer_addr());
 		let info = hs.accept(capab, total_difficulty, &mut conn);
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size)?),
 			Err(e) => {
 				debug!(
 					"accept: handshaking from {:?} failed with error: {:?}",
@@ -131,11 +138,12 @@ impl Peer {
 		self_addr: PeerAddr,
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
+		header_cache_size: u64,
 	) -> Result<Peer, Error> {
 		debug!("connect: handshaking with {:?}", conn.peer_addr());
 		let info = hs.initiate(capab, total_difficulty, self_addr, &mut conn);
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size)?),
 			Err(e) => {
 				debug!(
 					"connect: handshaking with {:?} failed with error: {:?}",
@@ -532,6 +540,16 @@ impl ChainAdapter for TrackingAdapter {
 		bh: core::BlockHeader,
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
+		trace!("peer = {:?}, set header sync = false", peer_info.addr);
+		let val = peer_info
+			.header_sync_requested
+			.fetch_sub(1, Ordering::Relaxed);
+		// check for wrap
+		if val > 16 {
+			debug!("setting a sync to 0 for peer = {}", peer_info.addr);
+			peer_info.header_sync_requested.store(0, Ordering::Relaxed);
+		}
+		trace!("header sync for {} is {}", peer_info.addr, val);
 		self.push_recv(bh.hash());
 		self.adapter.header_received(bh, peer_info)
 	}
@@ -540,8 +558,22 @@ impl ChainAdapter for TrackingAdapter {
 		&self,
 		bh: &[core::BlockHeader],
 		peer_info: &PeerInfo,
+		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error> {
-		self.adapter.headers_received(bh, peer_info)
+		trace!(
+			"peer = {:?}, set header sync = false (in headers)",
+			peer_info.addr
+		);
+		let val = peer_info
+			.header_sync_requested
+			.fetch_sub(1, Ordering::Relaxed);
+		// check for wrap
+		if val > 16 {
+			peer_info.header_sync_requested.store(0, Ordering::Relaxed);
+		}
+		trace!("header sync for {} is {}", peer_info.addr, val);
+		self.adapter
+			.headers_received(bh, peer_info, header_sync_cache_size)
 	}
 
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {

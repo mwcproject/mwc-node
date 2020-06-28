@@ -35,6 +35,7 @@ pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
 	state_sync_requested: Arc<AtomicBool>,
+	header_cache_size: u64,
 }
 
 impl Protocol {
@@ -42,11 +43,13 @@ impl Protocol {
 		adapter: Arc<dyn NetAdapter>,
 		peer_info: PeerInfo,
 		state_sync_requested: Arc<AtomicBool>,
+		header_cache_size: u64,
 	) -> Protocol {
 		Protocol {
 			adapter,
 			peer_info,
 			state_sync_requested,
+			header_cache_size,
 		}
 	}
 }
@@ -59,6 +62,7 @@ impl MessageHandler for Protocol {
 		tracker: Arc<Tracker>,
 	) -> Result<Option<Msg>, Error> {
 		let adapter = &self.adapter;
+		let header_cache_size = self.header_cache_size;
 
 		// If we received a msg from a banned peer then log and drop it.
 		// If we are getting a lot of these then maybe we are not cleaning
@@ -239,7 +243,7 @@ impl MessageHandler for Protocol {
 						headers.push(header.into());
 						total_bytes_read += bytes_read;
 					}
-					adapter.headers_received(&headers, &self.peer_info)?;
+					adapter.headers_received(&headers, &self.peer_info, header_cache_size)?;
 				}
 
 				// Now check we read the correct total number of bytes off the stream.

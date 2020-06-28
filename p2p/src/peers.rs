@@ -654,8 +654,12 @@ impl ChainAdapter for Peers {
 		&self,
 		headers: &[core::BlockHeader],
 		peer_info: &PeerInfo,
+		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error> {
-		if !self.adapter.headers_received(headers, peer_info)? {
+		if !self
+			.adapter
+			.headers_received(headers, peer_info, header_sync_cache_size)?
+		{
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr, ReasonForBan::BadBlockHeader)

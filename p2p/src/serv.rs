@@ -73,7 +73,7 @@ impl Server {
 
 	/// Starts a new TCP server and listen to incoming connections. This is a
 	/// blocking call until the TCP server stops.
-	pub fn listen(&self) -> Result<(), Error> {
+	pub fn listen(&self, header_cache_size: u64) -> Result<(), Error> {
 		// start TCP listener and handle incoming connections
 		let addr = SocketAddr::new(self.config.host, self.config.port);
 		let listener = TcpListener::bind(addr)?;
@@ -119,7 +119,7 @@ impl Server {
 						}
 						continue;
 					}
-					match self.handle_new_peer(stream) {
+					match self.handle_new_peer(stream, header_cache_size) {
 						Err(Error::ConnectionClose) => debug!("shutting down, ignoring a new peer"),
 						Err(e) => {
 							debug!("Error accepting peer {}: {:?}", peer_addr.to_string(), e);
@@ -145,7 +145,7 @@ impl Server {
 
 	/// Asks the server to connect to a new peer. Directly returns the peer if
 	/// we're already connected to the provided address.
-	pub fn connect(&self, addr: PeerAddr) -> Result<Arc<Peer>, Error> {
+	pub fn connect(&self, addr: PeerAddr, header_cache_size: u64) -> Result<Arc<Peer>, Error> {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose);
 		}
@@ -188,6 +188,7 @@ impl Server {
 					PeerAddr(addr),
 					&self.handshake,
 					self.peers.clone(),
+					header_cache_size,
 				)?;
 				let peer = Arc::new(peer);
 				self.peers.add_connected(peer.clone())?;
@@ -206,7 +207,7 @@ impl Server {
 		}
 	}
 
-	fn handle_new_peer(&self, stream: TcpStream) -> Result<(), Error> {
+	fn handle_new_peer(&self, stream: TcpStream, header_cache_size: u64) -> Result<(), Error> {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose);
 		}
@@ -219,6 +220,7 @@ impl Server {
 			total_diff,
 			&self.handshake,
 			self.peers.clone(),
+			header_cache_size,
 		)?;
 		self.peers.add_connected(Arc::new(peer))?;
 		Ok(())
@@ -334,6 +336,7 @@ impl ChainAdapter for DummyAdapter {
 		&self,
 		_: &[core::BlockHeader],
 		_: &PeerInfo,
+		_: u64,
 	) -> Result<bool, chain::Error> {
 		Ok(true)
 	}

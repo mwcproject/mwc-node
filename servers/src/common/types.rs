@@ -187,6 +187,10 @@ pub struct ServerConfig {
 	/// (To assist testing on solo chains)
 	pub skip_sync_wait: Option<bool>,
 
+	/// Header cache size
+	/// (Default: 1 year height)
+	pub header_cache_size: Option<u64>,
+
 	/// Whether to run the TUI
 	/// if enabled, this will disable logging to stdout
 	pub run_tui: Option<bool>,
@@ -234,6 +238,7 @@ impl Default for ServerConfig {
 			chain_validation_mode: ChainValidationMode::default(),
 			pool_config: pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
+			header_cache_size: Some(524160),
 			run_tui: Some(true),
 			run_test_miner: Some(false),
 			test_miner_wallet_url: None,

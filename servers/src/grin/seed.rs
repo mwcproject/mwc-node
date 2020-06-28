@@ -38,7 +38,7 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"mainnet.seed2.mwc.mw", // cpg
 	"52.235.38.45",         // JonB
 	"51.89.98.17",          // Greg
-	"207.148.27.129",	// Greg
+	"207.148.27.129",       // Greg
 	"mwcseed.ddns.net",     // Konstantin
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
@@ -49,6 +49,7 @@ pub fn connect_and_monitor(
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
 	preferred_peers: Option<Vec<PeerAddr>>,
 	stop_state: Arc<StopState>,
+	header_cache_size: u64,
 ) -> std::io::Result<thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("seed".to_string())
@@ -101,6 +102,7 @@ pub fn connect_and_monitor(
 						capabilities,
 						&rx,
 						&mut connecting_history,
+						header_cache_size,
 					);
 
 					// monitor additional peers if we need to add more
@@ -290,6 +292,7 @@ fn listen_for_addrs(
 	capab: p2p::Capabilities,
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
+	header_cache_size: u64,
 ) {
 	// Pull everything currently on the queue off the queue.
 	// Does not block so addrs may be empty.
@@ -329,7 +332,7 @@ fn listen_for_addrs(
 		let p2p_c = p2p.clone();
 		thread::Builder::new()
 			.name("peer_connect".to_string())
-			.spawn(move || match p2p_c.connect(addr) {
+			.spawn(move || match p2p_c.connect(addr, header_cache_size) {
 				Ok(p) => {
 					if p.send_peer_request(capab).is_ok() {
 						let _ = peers_c.update_state(addr, p2p::State::Healthy);

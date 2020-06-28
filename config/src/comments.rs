@@ -121,6 +121,14 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"header_cache_size".to_string(),
+		"
+#size of the header cache for syncing. (default is 1 year height = 524,160)
+"
+		.to_string(),
+	);
+
+	retval.insert(
 		"run_tui".to_string(),
 		"
 #whether to run the ncurses TUI. Ncurses must be installed and this
