@@ -119,7 +119,7 @@ impl HeaderSync {
 
 		if force_sync || all_headers_received || stalling {
 			self.prev_header_sync = (
-				now + Duration::milliseconds(300),
+				now + Duration::milliseconds(100),
 				header_head.height,
 				header_head.height,
 			);
@@ -170,7 +170,7 @@ impl HeaderSync {
 			// resetting the timeout as long as we progress
 			if header_head.height > latest_height {
 				self.prev_header_sync = (
-					now + Duration::milliseconds(300),
+					now + Duration::milliseconds(100),
 					header_head.height,
 					prev_height,
 				);
