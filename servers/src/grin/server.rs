@@ -174,6 +174,8 @@ impl Server {
 		allow_to_stop: bool,
 		stratum_ip_pool: Arc<connections::StratumIpPool>,
 	) -> Result<Server, Error> {
+		let header_cache_size = config.header_cache_size.unwrap_or(524160);
+
 		// Obtain our lock_file or fail immediately with an error.
 		let lock_file = Server::one_grin_at_a_time(&config).map_err(|e| {
 			error!(
@@ -283,6 +285,7 @@ impl Server {
 				seeder,
 				preferred_peers,
 				stop_state.clone(),
+				header_cache_size,
 			)?);
 		}
 
@@ -302,7 +305,7 @@ impl Server {
 		let _ = thread::Builder::new()
 			.name("p2p-server".to_string())
 			.spawn(move || {
-				if let Err(e) = p2p_inner.listen() {
+				if let Err(e) = p2p_inner.listen(header_cache_size) {
 					error!("P2P server failed with erorr: {:?}", e);
 				}
 			})?;
@@ -367,8 +370,8 @@ impl Server {
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
-	pub fn connect_peer(&self, addr: PeerAddr) -> Result<(), Error> {
-		self.p2p.connect(addr)?;
+	pub fn connect_peer(&self, addr: PeerAddr, header_cache_size: u64) -> Result<(), Error> {
+		self.p2p.connect(addr, header_cache_size)?;
 		Ok(())
 	}
 

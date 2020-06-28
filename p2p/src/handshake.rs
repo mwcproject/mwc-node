@@ -23,6 +23,7 @@ use crate::util::RwLock;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
 use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -144,6 +145,7 @@ impl Handshake {
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(shake.total_difficulty))),
 			direction: Direction::Outbound,
+			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 		};
 
 		// If denied then we want to close the connection
@@ -209,6 +211,7 @@ impl Handshake {
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
 			direction: Direction::Inbound,
+			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 		};
 
 		// At this point we know the published ip and port of the peer

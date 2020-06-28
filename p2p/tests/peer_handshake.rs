@@ -62,7 +62,7 @@ fn peer_handshake() {
 	);
 
 	let p2p_inner = server.clone();
-	let _ = thread::spawn(move || p2p_inner.listen());
+	let _ = thread::spawn(move || p2p_inner.listen(100_000));
 
 	thread::sleep(time::Duration::from_secs(1));
 
@@ -77,6 +77,7 @@ fn peer_handshake() {
 		my_addr,
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone()),
 		net_adapter,
+		100_000,
 	)
 	.unwrap();
 

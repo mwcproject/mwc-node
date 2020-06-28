@@ -364,6 +364,7 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		&self,
 		bhs: &[core::BlockHeader],
 		peer_info: &PeerInfo,
+		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
 		if bhs.len() == 0 {
 			return Ok(false);
@@ -377,7 +378,7 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		);
 
 		for bh in bhs {
-			let hashmap = self.header_cache.lock().unwrap();
+			let mut hashmap = self.header_cache.lock().unwrap();
 			let value = hashmap.get(&bh.height);
 			if value.is_some() {
 				// we already have something here.
@@ -386,6 +387,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 				if bh.prev_hash == *cache_value {
 					return Ok(true);
 				} else {
+					// it doesn't match! there must have
+					// been a reorg. delete this entry
+					// and continue with processing
+					// reset to this height
+					hashmap.remove(&bh.height);
 					break;
 				}
 			}
@@ -397,6 +403,9 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 				for bh in bhs {
 					let mut hashmap = self.header_cache.lock().unwrap();
 					hashmap.insert(bh.height, bh.prev_hash);
+					if bh.height > header_cache_size {
+						hashmap.remove(&(bh.height - header_cache_size));
+					}
 				}
 				Ok(true)
 			}
