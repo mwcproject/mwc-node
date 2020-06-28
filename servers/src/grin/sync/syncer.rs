@@ -30,12 +30,14 @@ pub fn run_sync(
 	peers: Arc<p2p::Peers>,
 	chain: Arc<chain::Chain>,
 	stop_state: Arc<StopState>,
+	duration_sync_long: i64,
+	duration_sync_short: i64,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("sync".to_string())
 		.spawn(move || {
 			let runner = SyncRunner::new(sync_state, peers, chain, stop_state);
-			runner.sync_loop();
+			runner.sync_loop(duration_sync_long, duration_sync_short);
 		})
 }
 
@@ -101,7 +103,7 @@ impl SyncRunner {
 	}
 
 	/// Starts the syncing loop, just spawns two threads that loop forever
-	fn sync_loop(&self) {
+	fn sync_loop(&self, duration_sync_long: i64, duration_sync_short: i64) {
 		macro_rules! unwrap_or_restart_loop(
 	($obj: expr) =>(
 		match $obj {
@@ -227,7 +229,12 @@ impl SyncRunner {
 			header_block_counter = 0;
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
-			unwrap_or_restart_loop!(header_sync.check_run(&header_head, highest_height));
+			unwrap_or_restart_loop!(header_sync.check_run(
+				&header_head,
+				highest_height,
+				duration_sync_long,
+				duration_sync_short,
+			));
 
 			let mut check_state_sync = false;
 			match self.sync_state.status() {

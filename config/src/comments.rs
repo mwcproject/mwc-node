@@ -129,6 +129,22 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"duration_sync_short".to_string(),
+		"
+#length in milliseconds to between requesting headers when short wait is desired (default is 30 ms)
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"duration_sync_long".to_string(),
+		"
+#length in milliseconds to between requesting headers when long wait is desired (default is 50 ms)
+"
+		.to_string(),
+	);
+
+	retval.insert(
 		"run_tui".to_string(),
 		"
 #whether to run the ncurses TUI. Ncurses must be installed and this
