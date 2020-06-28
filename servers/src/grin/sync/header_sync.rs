@@ -55,8 +55,10 @@ impl HeaderSync {
 		&mut self,
 		header_head: &chain::Tip,
 		highest_height: u64,
+		duration_sync_long: i64,
+		duration_sync_short: i64,
 	) -> Result<bool, chain::Error> {
-		if !self.header_sync_due(header_head) {
+		if !self.header_sync_due(header_head, duration_sync_long, duration_sync_short) {
 			return Ok(false);
 		}
 
@@ -118,7 +120,7 @@ impl HeaderSync {
 					);
 					let now = Utc::now();
 					self.prev_header_sync = (
-						now + Duration::milliseconds(30),
+						now + Duration::milliseconds(duration_sync_short),
 						header_head.height,
 						header_head.height,
 					);
@@ -131,7 +133,12 @@ impl HeaderSync {
 		Ok(false)
 	}
 
-	fn header_sync_due(&mut self, header_head: &chain::Tip) -> bool {
+	fn header_sync_due(
+		&mut self,
+		header_head: &chain::Tip,
+		duration_sync_long: i64,
+		duration_sync_short: i64,
+	) -> bool {
 		let now = Utc::now();
 		let (timeout, latest_height, prev_height) = self.prev_header_sync;
 
@@ -149,7 +156,7 @@ impl HeaderSync {
 
 		if force_sync || all_headers_received || stalling {
 			self.prev_header_sync = (
-				now + Duration::milliseconds(30),
+				now + Duration::milliseconds(duration_sync_long),
 				header_head.height,
 				header_head.height,
 			);
@@ -200,7 +207,7 @@ impl HeaderSync {
 			// resetting the timeout as long as we progress
 			if header_head.height > latest_height {
 				self.prev_header_sync = (
-					now + Duration::milliseconds(30),
+					now + Duration::milliseconds(duration_sync_short),
 					header_head.height,
 					prev_height,
 				);

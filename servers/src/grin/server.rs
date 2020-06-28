@@ -175,6 +175,8 @@ impl Server {
 		stratum_ip_pool: Arc<connections::StratumIpPool>,
 	) -> Result<Server, Error> {
 		let header_cache_size = config.header_cache_size.unwrap_or(524160);
+		let duration_sync_long = config.duration_sync_long.unwrap_or(50);
+		let duration_sync_short = config.duration_sync_short.unwrap_or(30);
 
 		// Obtain our lock_file or fail immediately with an error.
 		let lock_file = Server::one_grin_at_a_time(&config).map_err(|e| {
@@ -299,6 +301,8 @@ impl Server {
 			p2p_server.peers.clone(),
 			shared_chain.clone(),
 			stop_state.clone(),
+			duration_sync_long,
+			duration_sync_short,
 		)?;
 
 		let p2p_inner = p2p_server.clone();
