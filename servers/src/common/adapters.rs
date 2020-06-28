@@ -23,6 +23,9 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Instant;
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use crate::chain::{self, BlockStatus, ChainAdapter, Options, SyncState, SyncStatus};
 use crate::common::hooks::{ChainEvents, NetEvents};
 use crate::common::types::{ChainValidationMode, DandelionEpoch, ServerConfig};
@@ -97,6 +100,8 @@ pub struct NetToChainAdapter {
 	processed_headers: EventCache,
 	processed_blocks: EventCache,
 	processed_transactions: EventCache,
+
+	header_cache: Arc<Mutex<HashMap<u64, Hash>>>,
 }
 
 impl p2p::ChainAdapter for NetToChainAdapter {
@@ -371,9 +376,30 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 			bhs[0].height
 		);
 
+		for bh in bhs {
+			let hashmap = self.header_cache.lock().unwrap();
+			let value = hashmap.get(&bh.height);
+			if value.is_some() {
+				// we already have something here.
+				// does it match? If so return.
+				let cache_value = value.unwrap();
+				if bh.prev_hash == *cache_value {
+					return Ok(true);
+				} else {
+					break;
+				}
+			}
+		}
+
 		// try to add headers to our header chain
 		match self.chain().sync_block_headers(bhs, chain::Options::SYNC) {
-			Ok(_) => Ok(true),
+			Ok(_) => {
+				for bh in bhs {
+					let mut hashmap = self.header_cache.lock().unwrap();
+					hashmap.insert(bh.height, bh.prev_hash);
+				}
+				Ok(true)
+			}
 			Err(e) => {
 				debug!("Block headers refused by chain: {:?}", e);
 				if e.is_bad_data() {
@@ -563,6 +589,7 @@ impl NetToChainAdapter {
 			processed_headers: EventCache::new(),
 			processed_blocks: EventCache::new(),
 			processed_transactions: EventCache::new(),
+			header_cache: Arc::new(Mutex::new(HashMap::new())),
 		}
 	}
 

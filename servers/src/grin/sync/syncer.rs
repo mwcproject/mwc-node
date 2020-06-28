@@ -177,13 +177,8 @@ impl SyncRunner {
 					unwrap_or_restart_loop!(self.chain.compact());
 				}
 
-				// sleep for 10 secs but check stop signal every second
-				for _ in 1..10 {
-					thread::sleep(time::Duration::from_secs(1));
-					if self.stop_state.is_stopped() {
-						break;
-					}
-				}
+				// different approach from grin. Check more frequently.
+				thread::sleep(time::Duration::from_millis(500));
 				continue;
 			}
 
@@ -230,7 +225,6 @@ impl SyncRunner {
 
 			// lock was obtained, so we can reset the locking counter
 			header_block_counter = 0;
-
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
 			unwrap_or_restart_loop!(header_sync.check_run(&header_head, highest_height));
