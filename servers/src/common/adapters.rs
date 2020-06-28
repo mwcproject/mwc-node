@@ -378,21 +378,23 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		);
 
 		for bh in bhs {
-			let mut hashmap = self.header_cache.lock().unwrap();
-			let value = hashmap.get(&bh.height);
-			if value.is_some() {
-				// we already have something here.
-				// does it match? If so return.
-				let cache_value = value.unwrap();
-				if bh.prev_hash == *cache_value {
-					return Ok(true);
-				} else {
-					// it doesn't match! there must have
-					// been a reorg. delete this entry
-					// and continue with processing
-					// reset to this height
-					hashmap.remove(&bh.height);
-					break;
+			if header_cache_size > 0 {
+				let mut hashmap = self.header_cache.lock().unwrap();
+				let value = hashmap.get(&bh.height);
+				if value.is_some() {
+					// we already have something here.
+					// does it match? If so return.
+					let cache_value = value.unwrap();
+					if bh.prev_hash == *cache_value {
+						return Ok(true);
+					} else {
+						// it doesn't match! there must have
+						// been a reorg or someone gave us bad headers.
+						// clear the entire hashmap to be safe.
+						// go back to previous logic at this point
+						hashmap.clear();
+						break;
+					}
 				}
 			}
 		}
@@ -401,10 +403,12 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		match self.chain().sync_block_headers(bhs, chain::Options::SYNC) {
 			Ok(_) => {
 				for bh in bhs {
-					let mut hashmap = self.header_cache.lock().unwrap();
-					hashmap.insert(bh.height, bh.prev_hash);
-					if bh.height > header_cache_size {
-						hashmap.remove(&(bh.height - header_cache_size));
+					if header_cache_size > 0 {
+						let mut hashmap = self.header_cache.lock().unwrap();
+						hashmap.insert(bh.height, bh.prev_hash);
+						if bh.height > header_cache_size {
+							hashmap.remove(&(bh.height - header_cache_size));
+						}
 					}
 				}
 				Ok(true)
