@@ -303,6 +303,8 @@ pub struct P2PConfig {
 	pub peer_listener_buffer_count: Option<u32>,
 
 	pub dandelion_peer: Option<PeerAddr>,
+
+	pub socks5addr: Option<String>,
 }
 
 /// Default address for peer-to-peer connections.
@@ -324,6 +326,7 @@ impl Default for P2PConfig {
 			peer_min_preferred_outbound_count: None,
 			peer_listener_buffer_count: None,
 			dandelion_peer: None,
+			socks5addr: None,
 		}
 	}
 }
