@@ -176,19 +176,36 @@ impl Server {
 			self.config.port,
 			addr
 		);
-		match TcpStream::connect_timeout(&addr.0, Duration::from_secs(10)) {
+
+		let sock_addr;
+		let stream = if self.config.socks5addr.is_some() {
+			sock_addr = Some(addr.0);
+			let socks5_stream_ref =
+				socks::Socks5Stream::connect(&self.config.socks5addr.as_ref().unwrap(), addr.0);
+
+			match socks5_stream_ref {
+				Ok(socks5_stream) => socks5_stream.into_inner(),
+				Err(e) => {
+					return Err(Error::Connection(e));
+				}
+			}
+		} else {
+			sock_addr = Some(addr.0);
+			TcpStream::connect_timeout(&addr.0, Duration::from_secs(10))?
+		};
+		match Ok(stream) {
 			Ok(stream) => {
-				let addr = SocketAddr::new(self.config.host, self.config.port);
 				let total_diff = self.peers.total_difficulty()?;
 
 				let peer = Peer::connect(
 					stream,
 					self.capabilities,
 					total_diff,
-					PeerAddr(addr),
+					addr,
 					&self.handshake,
 					self.peers.clone(),
 					header_cache_size,
+					sock_addr,
 				)?;
 				let peer = Arc::new(peer);
 				self.peers.add_connected(peer.clone())?;

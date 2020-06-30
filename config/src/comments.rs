@@ -305,6 +305,9 @@ fn comments() -> HashMap<String, String> {
 #a list of preferred peers to connect to
 #peers_preferred = [\"192.168.0.1:3414\",\"192.168.0.2:3414\"]
 
+#socks5 proxy address.
+#socks5addr = \"127.0.0.1:9050\"
+
 #how long a banned peer should stay banned
 #ban_window = 10800
 

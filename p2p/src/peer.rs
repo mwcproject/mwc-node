@@ -16,6 +16,7 @@ use crate::util::{Mutex, RwLock};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
+use std::net::SocketAddr;
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,17 +140,37 @@ impl Peer {
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
 		header_cache_size: u64,
+		peer_addr: Option<SocketAddr>,
 	) -> Result<Peer, Error> {
-		debug!("connect: handshaking with {:?}", conn.peer_addr());
-		let info = hs.initiate(capab, total_difficulty, self_addr, &mut conn);
+		debug!("connect: handshaking with {:?}", self_addr);
+
+		let info = if peer_addr.is_some() {
+			hs.initiate(
+				capab,
+				total_difficulty,
+				self_addr,
+				&mut conn,
+				Some(peer_addr.unwrap()),
+			)
+		} else {
+			hs.initiate(capab, total_difficulty, self_addr, &mut conn, None)
+		};
 		match info {
 			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size)?),
 			Err(e) => {
-				debug!(
-					"connect: handshaking with {:?} failed with error: {:?}",
-					conn.peer_addr(),
-					e
-				);
+				if peer_addr.is_some() {
+					debug!(
+						"connect: handshaking with {:?} failed with error: {:?}",
+						peer_addr.unwrap(),
+						e
+					);
+				} else {
+					debug!(
+						"connect: handshaking with {:?} failed with error: {:?}",
+						conn.peer_addr(),
+						e
+					);
+				}
 				if let Err(e) = conn.shutdown(Shutdown::Both) {
 					debug!("Error shutting down conn: {:?}", e);
 				}
