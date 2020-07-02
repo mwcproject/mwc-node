@@ -37,6 +37,7 @@ For Mac:
 xcode-select --install
 brew install pkg-config
 brew install openssl
+brew install llvm
 ```
 
 ## Build steps
