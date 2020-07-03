@@ -1,7 +1,7 @@
 name: grin
-version: "3.2.2"
+version: "3.2.3"
 about: Lightweight implementation of the MimbleWimble protocol.
-author: The Grin Team
+author: The MWC Team
 
 args:
   - floonet:
