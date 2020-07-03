@@ -131,7 +131,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"duration_sync_short".to_string(),
 		"
-#length in milliseconds to between requesting headers when short wait is desired (default is 30 ms)
+#length in milliseconds to between requesting headers when short wait is desired (default is 100 ms)
 "
 		.to_string(),
 	);
@@ -139,7 +139,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"duration_sync_long".to_string(),
 		"
-#length in milliseconds to between requesting headers when long wait is desired (default is 50 ms)
+#length in milliseconds to between requesting headers when long wait is desired (default is 150 ms)
 "
 		.to_string(),
 	);
