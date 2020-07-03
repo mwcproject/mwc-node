@@ -5,7 +5,11 @@ other nodes will not know you are connecting to an MWC node. This is an importan
 
 # Setup
 
-Configuration of the socks5 proxy is simple. If you install a new mwc-node (with the command ```# mwc server config```, you the sample configuration file will show
+Configuration of the socks5 proxy is simple. If you install a new mwc-node with the command
+
+```# mwc server config```
+
+the sample configuration file that is created will show
 you an example of a socks5 configuration:
 
 ```
@@ -13,8 +17,8 @@ you an example of a socks5 configuration:
 #socks5addr = "127.0.0.1:9050"
 ```
 
-In the sample, config, if the second line above is uncommented, the mwc-node will attempt to connect to the loop back interface (127.0.0.1) on port 9050. This is
-the default port for TOR. If you are running tor on another port, you can change the configuration value to the port you have tor running on. To install tor
+In the sample config, if the second line above is uncommented, the mwc-node will attempt to connect to the loop back interface (127.0.0.1) on port 9050 as a socks5 proxy. This is
+the default port for TOR. If you are running TOR on another port, you can change the configuration value to the port you have TOR running on. To install TOR
 on MacOS:
 
 ```# brew install tor```
@@ -23,7 +27,7 @@ and on linux:
 
 ```# sudo apt install tor```
 
-On windows, you can download the tor browser (which will also install the tor socks5 proxy) from https://www.torproject.org/.
+On windows, you can download the TOR browser (which will also install the tor socks5 proxy) from https://www.torproject.org/.
 
 In addition to this, if your node is running on a public IP or you have port forwarding enabled, you will want to disable that so that no inbound connections are
 accepted unless you are ok with those inbound connections which will know your IP address.
