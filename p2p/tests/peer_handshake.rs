@@ -78,6 +78,7 @@ fn peer_handshake() {
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone()),
 		net_adapter,
 		100_000,
+		None,
 	)
 	.unwrap();
 
