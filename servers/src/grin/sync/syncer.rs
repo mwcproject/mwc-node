@@ -150,6 +150,7 @@ impl SyncRunner {
 		// We are adding counter, to reduce false alarms.
 		let mut header_block_counter = 0;
 
+		thread::sleep(time::Duration::from_millis(1000));
 		// Main syncing loop
 		loop {
 			if self.stop_state.is_stopped() {
