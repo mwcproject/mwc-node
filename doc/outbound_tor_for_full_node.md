@@ -23,6 +23,8 @@ on MacOS:
 
 ```# brew install tor```
 
+You may also need to run xcode-select --install and brew install git to have the prerequisites for tor.
+
 and on linux:
 
 ```# sudo apt install tor```
