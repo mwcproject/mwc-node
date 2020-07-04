@@ -34,6 +34,10 @@ On windows, you can download the TOR browser (which will also install the tor so
 In addition to this, if your node is running on a public IP or you have port forwarding enabled, you will want to disable that so that no inbound connections are
 accepted unless you are ok with those inbound connections which will know your IP address.
 
+Once tor is installed, ensure it's running
+
+```# tor```
+
 # Migration
 
 Migration is simple since the socks5 proxy option is optional, an older configuration file will still work with the newer version of the node and if you wish to
