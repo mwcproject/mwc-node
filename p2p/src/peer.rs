@@ -597,6 +597,15 @@ impl ChainAdapter for TrackingAdapter {
 			.headers_received(bh, peer_info, header_sync_cache_size)
 	}
 
+	// note: not needed because adapter is called from headers_received and header_recevied
+	fn process_add_headers_sync(
+		&self,
+		_: &[core::BlockHeader],
+		_: u64,
+	) -> Result<bool, chain::Error> {
+		unimplemented!()
+	}
+
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
 		self.adapter.locate_headers(locator)
 	}

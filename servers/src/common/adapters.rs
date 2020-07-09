@@ -101,7 +101,8 @@ pub struct NetToChainAdapter {
 	processed_blocks: EventCache,
 	processed_transactions: EventCache,
 
-	header_cache: Arc<Mutex<HashMap<u64, Hash>>>,
+	header_cache: Arc<Mutex<HashMap<u64, core::BlockHeader>>>,
+	tip_processed: Arc<Mutex<u64>>,
 }
 
 impl p2p::ChainAdapter for NetToChainAdapter {
@@ -366,46 +367,124 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		peer_info: &PeerInfo,
 		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
+		let tip_processed = {
+			let mut tip_processed = self.tip_processed.lock().unwrap();
+			let sync_head_height = self.chain().get_sync_head()?.height;
+			if *tip_processed < sync_head_height {
+				*tip_processed = sync_head_height;
+			}
+			*tip_processed
+		};
+
 		if bhs.len() == 0 {
 			return Ok(false);
 		}
 
 		info!(
-			"Received {} block headers from {}, height {}",
+			"Received {} block headers from {}, height {}, hash = {}, tip_processed = {}",
 			bhs.len(),
 			peer_info.addr,
-			bhs[0].height
+			bhs[0].height,
+			bhs[0].hash(),
+			tip_processed,
 		);
 
+		if bhs[0].height > tip_processed + 1 {
+			// we can't process this yet.
+			// try to process anything in the cache that we can
+
+			if header_cache_size > 0 {
+				for bh in bhs {
+					let mut hashmap = self.header_cache.lock().unwrap();
+					hashmap.insert(bh.height, bh.clone());
+					if bh.height > header_cache_size {
+						hashmap.remove(&(bh.height - header_cache_size));
+					}
+				}
+			}
+			return Ok(true);
+		}
+		if header_cache_size > 0 {
+			let mut itt = tip_processed + 1;
+			let mut bh_backlog: Vec<core::BlockHeader> = Vec::new();
+			let mut backlog_processed = false;
+			loop {
+				{
+					let hashmap = self.header_cache.lock().unwrap();
+					let next = hashmap.get(&itt);
+					if !next.is_some() {
+						break;
+					}
+					let next = next.unwrap();
+					//info!("adding headers to the backlog: {}", next.height);
+					bh_backlog.push(next.clone());
+				}
+
+				if bh_backlog.len() >= 256 {
+					// getting too big, process and continue
+					self.process_add_headers_sync(&bh_backlog.as_slice(), header_cache_size)?;
+					bh_backlog = Vec::new();
+					backlog_processed = true;
+				}
+
+				itt = itt + 1;
+			}
+
+			if bh_backlog.len() > 0 {
+				self.process_add_headers_sync(&bh_backlog.as_slice(), header_cache_size)?;
+				return Ok(true);
+			}
+			if backlog_processed {
+				return Ok(true);
+			}
+		}
+
+		let first_height = bhs[0].height;
 		for bh in bhs {
 			if header_cache_size > 0 {
+				// set highest processed block
 				let mut hashmap = self.header_cache.lock().unwrap();
 				let value = hashmap.get(&bh.height);
 				if value.is_some() {
 					// we already have something here.
 					// does it match? If so return.
 					let cache_value = value.unwrap();
-					if bh.prev_hash == *cache_value {
-						return Ok(true);
+					if bh.prev_hash == cache_value.prev_hash {
+						if first_height <= tip_processed {
+							return Ok(true);
+						}
 					} else {
 						// it doesn't match! there must have
 						// been a reorg or someone gave us bad headers.
 						// clear the entire hashmap to be safe.
-						// go back to previous logic at this point
+						// go back to previous logic at this point hashmap.clear();
+						let mut tip_processed = self.tip_processed.lock().unwrap();
+						*tip_processed = first_height - 1;
 						hashmap.clear();
 						break;
 					}
 				}
 			}
 		}
+		self.process_add_headers_sync(bhs, header_cache_size)
+	}
 
+	fn process_add_headers_sync(
+		&self,
+		bhs: &[core::BlockHeader],
+		header_cache_size: u64,
+	) -> Result<bool, chain::Error> {
+		let mut hashmap = self.header_cache.lock().unwrap();
 		// try to add headers to our header chain
 		match self.chain().sync_block_headers(bhs, chain::Options::SYNC) {
 			Ok(_) => {
 				for bh in bhs {
+					let mut tip_processed = self.tip_processed.lock().unwrap();
+					if *tip_processed < bh.height {
+						*tip_processed = bh.height;
+					}
 					if header_cache_size > 0 {
-						let mut hashmap = self.header_cache.lock().unwrap();
-						hashmap.insert(bh.height, bh.prev_hash);
+						hashmap.insert(bh.height, bh.clone());
 						if bh.height > header_cache_size {
 							hashmap.remove(&(bh.height - header_cache_size));
 						}
@@ -426,16 +505,49 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
 		debug!("locator: {:?}", locator);
+		let len = locator.len();
+		let mut index = 0;
+		let mut total = 1;
 
-		let header = match self.find_common_header(locator) {
+		if len > 1 {
+			let last = len - 1;
+			let mut special = true;
+			if last > 0 {
+				let hash = locator[last];
+				let hash = hash.as_bytes();
+				for i in 2..31 {
+					if hash[i] != 0 {
+						special = false;
+					}
+				}
+			}
+
+			if special {
+				index = locator[last][0];
+				total = locator[last][1];
+			}
+			debug!("special was {} [{} of {}]", special, index, total);
+		}
+
+		let header = match self.find_common_header(locator, index) {
 			Some(header) => header,
 			None => return Ok(vec![]),
 		};
 
-		let max_height = self.chain().header_head()?.height;
-
 		let header_pmmr = self.chain().header_pmmr();
 		let header_pmmr = header_pmmr.read();
+
+		let max_height;
+		loop {
+			let max_height_tmp = self
+				.chain()
+				.try_header_head(std::time::Duration::from_millis(100))?;
+
+			if max_height_tmp.is_some() {
+				max_height = max_height_tmp.unwrap().height;
+				break;
+			}
+		}
 
 		// looks like we know one, getting as many following headers as allowed
 		let hh = header.height;
@@ -603,6 +715,7 @@ impl NetToChainAdapter {
 			processed_blocks: EventCache::new(),
 			processed_transactions: EventCache::new(),
 			header_cache: Arc::new(Mutex::new(HashMap::new())),
+			tip_processed: Arc::new(Mutex::new(0)),
 		}
 	}
 
@@ -626,16 +739,49 @@ impl NetToChainAdapter {
 	}
 
 	// Find the first locator hash that refers to a known header on our main chain.
-	fn find_common_header(&self, locator: &[Hash]) -> Option<BlockHeader> {
+	fn find_common_header(&self, locator: &[Hash], index: u8) -> Option<BlockHeader> {
 		let header_pmmr = self.chain().header_pmmr();
 		let header_pmmr = header_pmmr.read();
+
+		let max;
+		loop {
+			let max_height_tmp = self
+				.chain()
+				.try_header_head(std::time::Duration::from_millis(100))
+				.unwrap();
+
+			if max_height_tmp.is_some() {
+				max = max_height_tmp.unwrap().height;
+				break;
+			}
+		}
 
 		for hash in locator {
 			if let Ok(header) = self.chain().get_block_header(&hash) {
 				if let Ok(hash_at_height) = header_pmmr.get_header_hash_by_height(header.height) {
 					if let Ok(header_at_height) = self.chain().get_block_header(&hash_at_height) {
 						if header.hash() == header_at_height.hash() {
-							return Some(header);
+							let offset_height = header.height + 512 * index as u64;
+							debug!(
+								"offset height = {}, initial height = {}",
+								offset_height, header.height
+							);
+							if offset_height >= max {
+								return Some(header);
+							}
+							let offset_header =
+								header_pmmr.get_header_hash_by_height(offset_height);
+							if offset_header.is_err() {
+								warn!("Error retrieving header {:?}", offset_header);
+								return None;
+							}
+							let header = self.chain().get_block_header(&offset_header.unwrap());
+							debug!("header.ret = {:?}", header);
+							if header.is_err() {
+								warn!("Error retrieving header {:?}", header);
+								return None;
+							}
+							return Some(header.unwrap());
 						}
 					}
 				}

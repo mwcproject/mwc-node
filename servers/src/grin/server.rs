@@ -303,6 +303,7 @@ impl Server {
 			stop_state.clone(),
 			duration_sync_long,
 			duration_sync_short,
+			header_cache_size,
 		)?;
 
 		let p2p_inner = p2p_server.clone();

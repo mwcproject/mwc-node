@@ -14,6 +14,7 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use std::convert::TryInto;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -57,6 +58,7 @@ impl HeaderSync {
 		highest_height: u64,
 		duration_sync_long: i64,
 		duration_sync_short: i64,
+		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
 		if !self.header_sync_due(header_head, duration_sync_long, duration_sync_short) {
 			return Ok(false);
@@ -92,16 +94,18 @@ impl HeaderSync {
 			_ => false,
 		};
 
+		let mut ret = false;
 		if enable_header_sync {
 			self.sync_state.update(SyncStatus::HeaderSync {
 				current_height: header_head.height,
 				highest_height: highest_height,
 			});
 
-			let peer = self.peers.most_work_peer();
-
-			if peer.is_some() {
-				let cloned_peer = peer.clone().unwrap();
+			let peers = self.peers.most_work_peers();
+			let mut count = 0;
+			let peer_count = peers.len();
+			for peer in peers {
+				let cloned_peer = peer.clone();
 				let mut val = cloned_peer
 					.info
 					.header_sync_requested
@@ -110,27 +114,27 @@ impl HeaderSync {
 					val = 0;
 				}
 				if val == 0 {
-					self.syncing_peer = self.header_sync(peer);
-					return Ok(true);
+					self.syncing_peer = self.header_sync(
+						peer,
+						count,
+						peer_count.try_into().unwrap_or(8),
+						header_cache_size,
+					);
+					count = count + 1;
+					ret = true;
 				} else {
 					trace!("busy peer, skipping {:?}", peer);
-					trace!(
-						"already loading from this peer {:?}",
-						peer.clone().unwrap().info.addr
-					);
+					trace!("already loading from this peer {:?}", peer.info.addr);
 					let now = Utc::now();
 					self.prev_header_sync = (
 						now + Duration::milliseconds(duration_sync_short),
 						header_head.height,
 						header_head.height,
 					);
-					return Ok(false);
 				}
-			} else {
-				warn!("peer is none");
 			}
 		}
-		Ok(false)
+		Ok(ret)
 	}
 
 	fn header_sync_due(
@@ -216,25 +220,56 @@ impl HeaderSync {
 		}
 	}
 
-	fn header_sync(&mut self, peer: Option<Arc<Peer>>) -> Option<Arc<Peer>> {
-		if let Ok(header_head) = self.chain.header_head() {
-			let difficulty = header_head.total_difficulty;
-
-			if peer.is_some() {
-				let peer = peer.unwrap();
-				if peer.info.total_difficulty() > difficulty {
-					trace!("peer = {:?}, set header sync = true", peer.info.addr);
-					peer.info.header_sync_requested.store(16, Ordering::Relaxed);
-					return self.request_headers(peer);
-				}
+	fn header_sync(
+		&mut self,
+		peer: Arc<Peer>,
+		index: u8,
+		peer_count: u8,
+		header_cache_size: u64,
+	) -> Option<Arc<Peer>> {
+		let header_head;
+		loop {
+			let header_head_tmp = self
+				.chain
+				.try_header_head(std::time::Duration::from_millis(100));
+			if header_head_tmp.is_err() {
+				return None;
 			}
+			let header_head_tmp_unwrapped = header_head_tmp.unwrap();
+
+			if header_head_tmp_unwrapped.is_some() {
+				header_head = header_head_tmp_unwrapped.unwrap();
+				break;
+			}
+		}
+
+		let difficulty = header_head.total_difficulty;
+
+		if peer.info.total_difficulty() > difficulty {
+			trace!("peer = {:?}, set header sync = true", peer.info.addr);
+			peer.info.header_sync_requested.store(16, Ordering::Relaxed);
+			return self.request_headers(peer, index, peer_count, header_cache_size);
 		}
 		return None;
 	}
 
 	/// Request some block headers from a peer to advance us.
-	fn request_headers(&mut self, peer: Arc<Peer>) -> Option<Arc<Peer>> {
-		if let Ok(locator) = self.get_locator() {
+	fn request_headers(
+		&mut self,
+		peer: Arc<Peer>,
+		index: u8,
+		peer_count: u8,
+		header_cache_size: u64,
+	) -> Option<Arc<Peer>> {
+		if let Ok(mut locator) = self.get_locator() {
+			if header_cache_size > 0 {
+				// we insert a final record that indicates which index to use. Ignored by older
+				// versions, but understood by current version.
+				let mut zero_hash = grin_core::core::hash::ZERO_HASH.to_vec();
+				zero_hash[0] = index;
+				zero_hash[1] = peer_count;
+				locator.push(Hash::from_vec(&zero_hash));
+			}
 			debug!(
 				"sync: request_headers: asking {} for headers, {:?}",
 				peer.info.addr, locator,

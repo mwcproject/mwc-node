@@ -32,12 +32,13 @@ pub fn run_sync(
 	stop_state: Arc<StopState>,
 	duration_sync_long: i64,
 	duration_sync_short: i64,
+	header_cache_size: u64,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("sync".to_string())
 		.spawn(move || {
 			let runner = SyncRunner::new(sync_state, peers, chain, stop_state);
-			runner.sync_loop(duration_sync_long, duration_sync_short);
+			runner.sync_loop(duration_sync_long, duration_sync_short, header_cache_size);
 		})
 }
 
@@ -103,7 +104,7 @@ impl SyncRunner {
 	}
 
 	/// Starts the syncing loop, just spawns two threads that loop forever
-	fn sync_loop(&self, duration_sync_long: i64, duration_sync_short: i64) {
+	fn sync_loop(&self, duration_sync_long: i64, duration_sync_short: i64, header_cache_size: u64) {
 		macro_rules! unwrap_or_restart_loop(
 	($obj: expr) =>(
 		match $obj {
@@ -235,6 +236,7 @@ impl SyncRunner {
 				highest_height,
 				duration_sync_long,
 				duration_sync_short,
+				header_cache_size,
 			));
 
 			let mut check_state_sync = false;

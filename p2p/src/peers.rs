@@ -670,6 +670,15 @@ impl ChainAdapter for Peers {
 		}
 	}
 
+	// note not needed to implement because adapter is called by headers_received and header_received
+	fn process_add_headers_sync(
+		&self,
+		_: &[core::BlockHeader],
+		_: u64,
+	) -> Result<bool, chain::Error> {
+		unimplemented!()
+	}
+
 	fn locate_headers(&self, hs: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
 		self.adapter.locate_headers(hs)
 	}
