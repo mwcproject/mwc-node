@@ -377,6 +377,14 @@ impl ChainAdapter for DummyAdapter {
 		unimplemented!()
 	}
 
+	fn process_add_headers_sync(
+		&self,
+		_: &[core::BlockHeader],
+		_: u64,
+	) -> Result<bool, chain::Error> {
+		unimplemented!()
+	}
+
 	fn txhashset_receive_ready(&self) -> bool {
 		false
 	}

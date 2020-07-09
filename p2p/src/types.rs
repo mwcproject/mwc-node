@@ -604,6 +604,12 @@ pub trait ChainAdapter: Sync + Send {
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error>;
 
+	fn process_add_headers_sync(
+		&self,
+		bh: &[core::BlockHeader],
+		header_cache_size: u64,
+	) -> Result<bool, chain::Error>;
+
 	/// A set of block header has been received, typically in response to a
 	/// block
 	/// header request.
