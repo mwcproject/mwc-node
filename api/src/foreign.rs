@@ -16,6 +16,7 @@
 
 use crate::chain::{Chain, SyncState};
 use crate::core::core::hash::Hash;
+use crate::core::core::hash::Hashed;
 use crate::core::core::transaction::Transaction;
 use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
@@ -327,9 +328,19 @@ impl Foreign {
 	/// * or [`Error`](struct.Error.html) if an error is encountered.
 	///
 	pub fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
+		let tx_hash = tx.hash();
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
-		pool_handler.push_transaction(tx, fluff)
+		match pool_handler.push_transaction(tx, fluff) {
+			Ok(_) => Ok(()),
+			Err(e) => {
+				warn!(
+					"Unable to push transaction {} into the pool, {}",
+					tx_hash, e
+				);
+				Err(e)
+			}
+		}
 	}
 }
