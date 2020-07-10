@@ -76,6 +76,7 @@ impl PoolHandler {
 			fluff,
 		);
 
+		let tx_hash = tx.hash().clone();
 		//  Push to tx pool.
 		let mut tx_pool = pool_arc.write();
 		let header = tx_pool
@@ -85,6 +86,9 @@ impl PoolHandler {
 		tx_pool
 			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
 			.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
+
+		info!("transaction {} was added to the pool", tx_hash);
+
 		Ok(())
 	}
 }
