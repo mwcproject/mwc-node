@@ -204,6 +204,7 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 			b.outputs().len(),
 			b.kernels().len(),
 		);
+
 		self.process_block(b, peer_info, opts)
 	}
 
@@ -246,10 +247,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 			}
 		} else {
 			// check at least the header is valid before hydrating
-			if let Err(e) = self
-				.chain()
-				.process_block_header(&cb.header, chain::Options::NONE)
-			{
+			if let Err(e) = self.chain().process_block_header(
+				&cb.header,
+				chain::Options::NONE,
+				self.get_invalid_block_hashes(),
+			) {
 				debug!("Invalid compact block header {}: {:?}", cb_hash, e.kind());
 				return Ok(!e.is_bad_data());
 			}
@@ -336,7 +338,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 
 		// pushing the new block header through the header chain pipeline
 		// we will go ask for the block if this is a new header
-		let res = self.chain().process_block_header(&bh, chain::Options::NONE);
+		let res = self.chain().process_block_header(
+			&bh,
+			chain::Options::NONE,
+			self.get_invalid_block_hashes(),
+		);
 
 		if let Err(e) = res {
 			debug!(
@@ -476,7 +482,11 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 	) -> Result<bool, chain::Error> {
 		let mut hashmap = self.header_cache.lock().unwrap();
 		// try to add headers to our header chain
-		match self.chain().sync_block_headers(bhs, chain::Options::SYNC) {
+		match self.chain().sync_block_headers(
+			bhs,
+			chain::Options::SYNC,
+			self.get_invalid_block_hashes(),
+		) {
 			Ok(_) => {
 				for bh in bhs {
 					let mut tip_processed = self.tip_processed.lock().unwrap();
@@ -725,6 +735,21 @@ impl NetToChainAdapter {
 		self.peers.init(Arc::downgrade(&peers));
 	}
 
+	fn get_invalid_block_hashes(&self) -> Vec<Hash> {
+		if self.config.invalid_block_hashes.is_some() {
+			let mut ret: Vec<Hash> = vec![];
+			for hash in self.config.invalid_block_hashes.clone().unwrap() {
+				let val = Hash::from_hex(&hash);
+				if val.is_ok() {
+					ret.push(val.unwrap());
+				}
+			}
+			ret
+		} else {
+			vec![]
+		}
+	}
+
 	fn peers(&self) -> Arc<p2p::Peers> {
 		self.peers
 			.borrow()
@@ -812,7 +837,10 @@ impl NetToChainAdapter {
 		let bhash = b.hash();
 		let previous = self.chain().get_previous_header(&b.header);
 
-		match self.chain().process_block(b, opts) {
+		match self
+			.chain()
+			.process_block(b, opts, self.get_invalid_block_hashes())
+		{
 			Ok(_) => {
 				self.validate_chain(bhash);
 				self.check_compact();

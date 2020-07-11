@@ -23,6 +23,7 @@ use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::util::RwLock;
 use chrono::prelude::Utc;
+use grin_core::core::hash::Hash;
 use serde;
 use serde_json;
 use serde_json::Value;
@@ -210,10 +211,14 @@ struct Handler {
 	ip_pool: Arc<connections::StratumIpPool>,
 	worker_connections: Arc<AtomicI32>,
 	config: StratumServerConfig,
+	invalid_block_hashes: Option<Vec<String>>,
 }
 
 impl Handler {
-	pub fn from_stratum(stratum: &StratumServer) -> Self {
+	pub fn from_stratum(
+		stratum: &StratumServer,
+		invalid_block_hashes: Option<Vec<String>>,
+	) -> Self {
 		assert!(
 			stratum.config.ip_pool_ban_history_s > 10,
 			"Stratum ip_pool_ban_history_s value must has reasonable value"
@@ -230,6 +235,22 @@ impl Handler {
 			ip_pool: stratum.ip_pool.clone(),
 			worker_connections: stratum.worker_connections.clone(),
 			config: stratum.config.clone(),
+			invalid_block_hashes: invalid_block_hashes,
+		}
+	}
+
+	fn get_invalid_block_hashes(&self) -> Vec<Hash> {
+		if self.invalid_block_hashes.is_some() {
+			let mut ret: Vec<Hash> = vec![];
+			for hash in self.invalid_block_hashes.clone().unwrap() {
+				let val = Hash::from_hex(&hash);
+				if val.is_ok() {
+					ret.push(val.unwrap());
+				}
+			}
+			ret
+		} else {
+			vec![]
 		}
 	}
 
@@ -461,7 +482,11 @@ impl Handler {
 		// If the difficulty is high enough, submit it (which also validates it)
 		if share_difficulty >= current_difficulty {
 			// This is a full solution, submit it to the network
-			let res = self.chain.process_block(b.clone(), chain::Options::MINE);
+			let res = self.chain.process_block(
+				b.clone(),
+				chain::Options::MINE,
+				self.get_invalid_block_hashes(),
+			);
 			if let Err(e) = res {
 				// Return error status
 				error!(
@@ -916,7 +941,13 @@ impl StratumServer {
 	/// existing chain anytime required and sending that to the connected
 	/// stratum miner, proxy, or pool, and accepts full solutions to
 	/// be submitted.
-	pub fn run_loop(&mut self, edge_bits: u32, proof_size: usize, sync_state: Arc<SyncState>) {
+	pub fn run_loop(
+		&mut self,
+		edge_bits: u32,
+		proof_size: usize,
+		sync_state: Arc<SyncState>,
+		invalid_block_hashes: Option<Vec<String>>,
+	) {
 		info!(
 			"(Server ID: {}) Starting stratum server with edge_bits = {}, proof_size = {}, config: {:?}",
 			self.id, edge_bits, proof_size, self.config
@@ -932,7 +963,7 @@ impl StratumServer {
 			.parse()
 			.expect("Stratum: Incorrect address ");
 
-		let handler = Arc::new(Handler::from_stratum(&self));
+		let handler = Arc::new(Handler::from_stratum(&self, invalid_block_hashes));
 		let h = handler.clone();
 
 		let _listener_th = thread::spawn(move || {

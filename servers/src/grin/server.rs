@@ -96,6 +96,12 @@ impl Server {
 	where
 		F: FnMut(Server, Option<mpsc::Receiver<LogEntry>>),
 	{
+		if config.invalid_block_hashes.is_some() {
+			let invalid_block_hashes = config.clone().invalid_block_hashes.unwrap_or(vec![]);
+			if invalid_block_hashes.len() > 0 {
+				info!("config.invalid_block_hashes = {:?}", invalid_block_hashes);
+			}
+		}
 		let mining_config = config.stratum_mining_config.clone();
 		let enable_test_miner = config.run_test_miner;
 		let test_miner_wallet_url = config.test_miner_wallet_url.clone();
@@ -403,6 +409,7 @@ impl Server {
 		let edge_bits = global::min_edge_bits();
 		let proof_size = global::proofsize();
 		let sync_state = self.sync_state.clone();
+		let invalid_block_hashes = self.config.invalid_block_hashes.clone();
 
 		let mut stratum_server = stratumserver::StratumServer::new(
 			config.clone(),
@@ -415,7 +422,12 @@ impl Server {
 		let _ = thread::Builder::new()
 			.name("stratum_server".to_string())
 			.spawn(move || {
-				stratum_server.run_loop(edge_bits as u32, proof_size, sync_state);
+				stratum_server.run_loop(
+					edge_bits as u32,
+					proof_size,
+					sync_state,
+					invalid_block_hashes,
+				);
 			});
 	}
 

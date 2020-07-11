@@ -91,14 +91,14 @@ fn mine_short_chain() {
 // Convenience wrapper for processing a full block on the test chain.
 fn process_header(chain: &Chain, header: &BlockHeader) {
 	chain
-		.process_block_header(header, chain::Options::SKIP_POW)
+		.process_block_header(header, chain::Options::SKIP_POW, vec![])
 		.unwrap();
 }
 
 // Convenience wrapper for processing a block header on the test chain.
 fn process_block(chain: &Chain, block: &Block) {
 	chain
-		.process_block(block.clone(), chain::Options::SKIP_POW)
+		.process_block(block.clone(), chain::Options::SKIP_POW, vec![])
 		.unwrap();
 }
 
@@ -362,7 +362,9 @@ fn mine_reorg() {
 		for n in 1..=NUM_BLOCKS_MAIN {
 			let b = prepare_block(&kc, &prev, &chain, n);
 			prev = b.header.clone();
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		let head = chain.head_header().unwrap();
@@ -378,7 +380,9 @@ fn mine_reorg() {
 			.unwrap();
 		let b = prepare_block(&kc, &fork_head, &chain, reorg_difficulty);
 		let reorg_head = b.header.clone();
-		chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(b, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 
 		// Check that reorg is correctly reported in block status
 		assert_eq!(
@@ -407,7 +411,9 @@ fn mine_forks() {
 		// add a first block to not fork genesis
 		let prev = chain.head_header().unwrap();
 		let b = prepare_block(&kc, &prev, &chain, 2);
-		chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(b, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 
 		// mine and add a few blocks
 
@@ -418,7 +424,9 @@ fn mine_forks() {
 
 			// process the first block to extend the chain
 			let bhash = b1.hash();
-			chain.process_block(b1, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b1, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 
 			// checking our new head
 			let head = chain.head().unwrap();
@@ -431,7 +439,9 @@ fn mine_forks() {
 
 			// process the 2nd block to build a fork with more work
 			let bhash = b2.hash();
-			chain.process_block(b2, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b2, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 
 			// checking head switch
 			let head = chain.head().unwrap();
@@ -456,7 +466,9 @@ fn mine_losing_fork() {
 		let prev = chain.head_header().unwrap();
 		let b1 = prepare_block(&kc, &prev, &chain, 2);
 		let b1head = b1.header.clone();
-		chain.process_block(b1, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(b1, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 
 		// prepare the 2 successor, sibling blocks, one with lower diff
 		let b2 = prepare_block(&kc, &b1head, &chain, 4);
@@ -465,16 +477,20 @@ fn mine_losing_fork() {
 
 		// add higher difficulty first, prepare its successor, then fork
 		// with lower diff
-		chain.process_block(b2, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(b2, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 		assert_eq!(chain.head_header().unwrap().hash(), b2head.hash());
 		let b3 = prepare_block(&kc, &b2head, &chain, 5);
 		chain
-			.process_block(bfork, chain::Options::SKIP_POW)
+			.process_block(bfork, chain::Options::SKIP_POW, vec![])
 			.unwrap();
 
 		// adding the successor
 		let b3head = b3.header.clone();
-		chain.process_block(b3, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(b3, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 		assert_eq!(chain.head_header().unwrap().hash(), b3head.hash());
 	}
 	// Cleanup chain directory
@@ -499,7 +515,9 @@ fn longer_fork() {
 		for n in 0..10 {
 			let b = prepare_block(&kc, &prev, &chain, 2 * n + 2);
 			prev = b.header.clone();
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		let forked_block = chain.get_header_by_height(5).unwrap();
@@ -512,7 +530,9 @@ fn longer_fork() {
 		for n in 0..7 {
 			let b = prepare_block(&kc, &prev, &chain, 2 * n + 11);
 			prev = b.header.clone();
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		let new_head = prev;
@@ -550,14 +570,16 @@ fn spend_rewind_spend() {
 		assert!(out_id.features.is_coinbase());
 		head = b.header.clone();
 		chain
-			.process_block(b.clone(), chain::Options::SKIP_POW)
+			.process_block(b.clone(), chain::Options::SKIP_POW, vec![])
 			.unwrap();
 
 		// now mine three further blocks
 		for n in 3..6 {
 			let b = prepare_block(&kc, &head, &chain, n);
 			head = b.header.clone();
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		// Make a note of this header as we will rewind back to here later.
@@ -580,14 +602,16 @@ fn spend_rewind_spend() {
 		let b = prepare_block_tx(&kc, &head, &chain, 6, vec![&tx1]);
 		head = b.header.clone();
 		chain
-			.process_block(b.clone(), chain::Options::SKIP_POW)
+			.process_block(b.clone(), chain::Options::SKIP_POW, vec![])
 			.unwrap();
 		chain.validate(false).unwrap();
 
 		// Now mine another block, reusing the private key for the coinbase we just spent.
 		{
 			let b = prepare_block_key_idx(&kc, &head, &chain, 7, 1);
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		// Now mine a competing block also spending the same coinbase output from earlier.
@@ -595,7 +619,7 @@ fn spend_rewind_spend() {
 		{
 			let b = prepare_block_tx(&kc, &rewind_to, &chain, 6, vec![&tx1]);
 			chain
-				.process_block(b.clone(), chain::Options::SKIP_POW)
+				.process_block(b.clone(), chain::Options::SKIP_POW, vec![])
 				.unwrap();
 			chain.validate(false).unwrap();
 		}
@@ -625,14 +649,16 @@ fn spend_in_fork_and_compact() {
 		assert!(out_id.features.is_coinbase());
 		fork_head = b.header.clone();
 		chain
-			.process_block(b.clone(), chain::Options::SKIP_POW)
+			.process_block(b.clone(), chain::Options::SKIP_POW, vec![])
 			.unwrap();
 
 		// now mine three further blocks
 		for n in 3..6 {
 			let b = prepare_block(&kc, &fork_head, &chain, n);
 			fork_head = b.header.clone();
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(b, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		// Check the height of the "fork block".
@@ -655,7 +681,7 @@ fn spend_in_fork_and_compact() {
 		let next = prepare_block_tx(&kc, &fork_head, &chain, 7, vec![&tx1]);
 		let prev_main = next.header.clone();
 		chain
-			.process_block(next.clone(), chain::Options::SKIP_POW)
+			.process_block(next.clone(), chain::Options::SKIP_POW, vec![])
 			.unwrap();
 		chain.validate(false).unwrap();
 
@@ -672,7 +698,9 @@ fn spend_in_fork_and_compact() {
 
 		let next = prepare_block_tx(&kc, &prev_main, &chain, 9, vec![&tx2]);
 		let prev_main = next.header.clone();
-		chain.process_block(next, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(next, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 
 		// Full chain validation for completeness.
 		chain.validate(false).unwrap();
@@ -680,12 +708,14 @@ fn spend_in_fork_and_compact() {
 		// mine 2 forked blocks from the first
 		let fork = prepare_block_tx(&kc, &fork_head, &chain, 6, vec![&tx1]);
 		let prev_fork = fork.header.clone();
-		chain.process_block(fork, chain::Options::SKIP_POW).unwrap();
+		chain
+			.process_block(fork, chain::Options::SKIP_POW, vec![])
+			.unwrap();
 
 		let fork_next = prepare_block_tx(&kc, &prev_fork, &chain, 8, vec![&tx2]);
 		let prev_fork = fork_next.header.clone();
 		chain
-			.process_block(fork_next, chain::Options::SKIP_POW)
+			.process_block(fork_next, chain::Options::SKIP_POW, vec![])
 			.unwrap();
 
 		chain.validate(false).unwrap();
@@ -705,7 +735,7 @@ fn spend_in_fork_and_compact() {
 		let fork_next = prepare_block(&kc, &prev_fork, &chain, 10);
 		let prev_fork = fork_next.header.clone();
 		chain
-			.process_block(fork_next, chain::Options::SKIP_POW)
+			.process_block(fork_next, chain::Options::SKIP_POW, vec![])
 			.unwrap();
 		chain.validate(false).unwrap();
 
@@ -725,7 +755,9 @@ fn spend_in_fork_and_compact() {
 		for n in 0..20 {
 			let next = prepare_block(&kc, &prev, &chain, 11 + n);
 			prev = next.header.clone();
-			chain.process_block(next, chain::Options::SKIP_POW).unwrap();
+			chain
+				.process_block(next, chain::Options::SKIP_POW, vec![])
+				.unwrap();
 		}
 
 		chain.validate(false).unwrap();
@@ -787,7 +819,9 @@ fn output_header_mappings() {
 			.unwrap();
 			b.header.pow.proof.edge_bits = edge_bits;
 
-			chain.process_block(b, chain::Options::MINE).unwrap();
+			chain
+				.process_block(b, chain::Options::MINE, vec![])
+				.unwrap();
 
 			let header_for_output = chain
 				.get_header_for_output(&OutputIdentifier::from_output(
