@@ -276,11 +276,16 @@ impl Chain {
 
 	/// Processes a single block, then checks for orphans, processing
 	/// those as well if they're found
-	pub fn process_block(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
+	pub fn process_block(
+		&self,
+		b: Block,
+		opts: Options,
+		invalid_block_hashes: Vec<Hash>,
+	) -> Result<Option<Tip>, Error> {
 		let height = b.header.height;
-		let res = self.process_block_single(b, opts);
+		let res = self.process_block_single(b, opts, invalid_block_hashes.clone());
 		if res.is_ok() {
-			self.check_orphans(height + 1);
+			self.check_orphans(height + 1, invalid_block_hashes);
 		}
 		res
 	}
@@ -309,12 +314,23 @@ impl Chain {
 	/// Attempt to add a new block to the chain.
 	/// Returns true if it has been added to the longest chain
 	/// or false if it has added to a fork (or orphan?).
-	fn process_block_single(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
+	fn process_block_single(
+		&self,
+		b: Block,
+		opts: Options,
+		invalid_block_hashes: Vec<Hash>,
+	) -> Result<Option<Tip>, Error> {
 		let (maybe_new_head, prev_head) = {
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
 			let batch = self.store.batch()?;
-			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
+			let mut ctx = self.new_ctx(
+				opts,
+				batch,
+				&mut header_pmmr,
+				&mut txhashset,
+				invalid_block_hashes,
+			)?;
 
 			let prev_head = ctx.batch.head()?;
 
@@ -390,11 +406,22 @@ impl Chain {
 	/// Process a block header received during "header first" propagation.
 	/// Note: This will update header MMR and corresponding header_head
 	/// if total work increases (on the header chain).
-	pub fn process_block_header(&self, bh: &BlockHeader, opts: Options) -> Result<(), Error> {
+	pub fn process_block_header(
+		&self,
+		bh: &BlockHeader,
+		opts: Options,
+		invalid_block_hashes: Vec<Hash>,
+	) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
 		let batch = self.store.batch()?;
-		let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
+		let mut ctx = self.new_ctx(
+			opts,
+			batch,
+			&mut header_pmmr,
+			&mut txhashset,
+			invalid_block_hashes,
+		)?;
 		pipe::process_block_header(bh, &mut ctx)?;
 		ctx.batch.commit()?;
 		Ok(())
@@ -403,7 +430,12 @@ impl Chain {
 	/// Attempt to add new headers to the header chain (or fork).
 	/// This is only ever used during sync and is based on sync_head.
 	/// We update header_head here if our total work increases.
-	pub fn sync_block_headers(&self, headers: &[BlockHeader], opts: Options) -> Result<(), Error> {
+	pub fn sync_block_headers(
+		&self,
+		headers: &[BlockHeader],
+		opts: Options,
+		invalid_block_hashes: Vec<Hash>,
+	) -> Result<(), Error> {
 		let mut sync_pmmr = self.sync_pmmr.write();
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
@@ -411,7 +443,13 @@ impl Chain {
 		// Sync the chunk of block headers, updating sync_head as necessary.
 		{
 			let batch = self.store.batch()?;
-			let mut ctx = self.new_ctx(opts, batch, &mut sync_pmmr, &mut txhashset)?;
+			let mut ctx = self.new_ctx(
+				opts,
+				batch,
+				&mut sync_pmmr,
+				&mut txhashset,
+				invalid_block_hashes.clone(),
+			)?;
 			pipe::sync_block_headers(headers, &mut ctx)?;
 			ctx.batch.commit()?;
 		}
@@ -419,7 +457,13 @@ impl Chain {
 		// Now "process" the last block header, updating header_head to match sync_head.
 		if let Some(header) = headers.last() {
 			let batch = self.store.batch()?;
-			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
+			let mut ctx = self.new_ctx(
+				opts,
+				batch,
+				&mut header_pmmr,
+				&mut txhashset,
+				invalid_block_hashes,
+			)?;
 			pipe::process_block_header(header, &mut ctx)?;
 			ctx.batch.commit()?;
 		}
@@ -433,6 +477,7 @@ impl Chain {
 		batch: store::Batch<'a>,
 		header_pmmr: &'a mut txhashset::PMMRHandle<BlockHeader>,
 		txhashset: &'a mut txhashset::TxHashSet,
+		invalid_block_hashes: Vec<Hash>,
 	) -> Result<pipe::BlockContext<'a>, Error> {
 		Ok(pipe::BlockContext {
 			opts,
@@ -441,6 +486,7 @@ impl Chain {
 			header_pmmr,
 			txhashset,
 			batch,
+			invalid_block_hashes,
 		})
 	}
 
@@ -455,7 +501,7 @@ impl Chain {
 	}
 
 	/// Check for orphans, once a block is successfully added
-	fn check_orphans(&self, mut height: u64) {
+	fn check_orphans(&self, mut height: u64, invalid_block_hashes: Vec<Hash>) {
 		let initial_height = height;
 
 		// Is there an orphan in our orphans that we can now process?
@@ -483,7 +529,11 @@ impl Chain {
 						},
 					);
 					let height = orphan.block.header.height;
-					let res = self.process_block_single(orphan.block, orphan.opts);
+					let res = self.process_block_single(
+						orphan.block,
+						orphan.opts,
+						invalid_block_hashes.clone(),
+					);
 					if res.is_ok() {
 						orphan_accepted = true;
 						height_accepted = height;

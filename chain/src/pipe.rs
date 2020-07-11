@@ -25,6 +25,7 @@ use crate::store;
 use crate::txhashset;
 use crate::types::{CommitPos, Options, Tip};
 use crate::util::RwLock;
+use grin_core::core::hash::Hash;
 use grin_store;
 use std::sync::Arc;
 
@@ -43,6 +44,9 @@ pub struct BlockContext<'a> {
 	pub batch: store::Batch<'a>,
 	/// The verifier cache (caching verifier for rangeproofs and kernel signatures)
 	pub verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+
+	/// Invalid header list
+	pub invalid_block_hashes: Vec<Hash>,
 }
 
 // Check if we already know about this block for various reasons
@@ -56,6 +60,13 @@ fn check_known(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), E
 // Validate only the proof of work in a block header.
 // Used to cheaply validate pow before checking if orphan or continuing block validation.
 fn validate_pow_only(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
+	for hash in &ctx.invalid_block_hashes {
+		if hash == &header.prev_hash {
+			error!("Invalid header found: {}. Rejecting it!", hash);
+			return Err(ErrorKind::InvalidHash.into());
+		}
+	}
+
 	if ctx.opts.contains(Options::SKIP_POW) {
 		// Some of our tests require this check to be skipped (we should revisit this).
 		return Ok(());

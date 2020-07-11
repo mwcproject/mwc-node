@@ -199,6 +199,10 @@ pub struct ServerConfig {
 	/// (Default: 1 year height)
 	pub header_cache_size: Option<u64>,
 
+	/// Invalid Block hash list
+	/// (Default: none)
+	pub invalid_block_hashes: Option<Vec<String>>,
+
 	/// Whether to run the TUI
 	/// if enabled, this will disable logging to stdout
 	pub run_tui: Option<bool>,
@@ -247,6 +251,7 @@ impl Default for ServerConfig {
 			pool_config: pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
 			header_cache_size: Some(524160),
+			invalid_block_hashes: Some(vec![]),
 			duration_sync_short: Some(30),
 			duration_sync_long: Some(50),
 			run_tui: Some(true),

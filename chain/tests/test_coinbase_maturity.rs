@@ -87,7 +87,7 @@ fn test_coinbase_maturity() {
 		assert!(coinbase_output.is_coinbase());
 
 		chain
-			.process_block(block.clone(), chain::Options::MINE)
+			.process_block(block.clone(), chain::Options::MINE, vec![])
 			.unwrap();
 
 		let prev = chain.head_header().unwrap();
@@ -170,7 +170,7 @@ fn test_coinbase_maturity() {
 			assert!(coinbase_output.is_coinbase());
 
 			chain
-				.process_block(block.clone(), chain::Options::MINE)
+				.process_block(block.clone(), chain::Options::MINE, vec![])
 				.unwrap();
 
 			let prev = chain.head_header().unwrap();
@@ -249,7 +249,9 @@ fn test_coinbase_maturity() {
 				)
 				.unwrap();
 
-				chain.process_block(block, chain::Options::MINE).unwrap();
+				chain
+					.process_block(block, chain::Options::MINE, vec![])
+					.unwrap();
 			}
 
 			let prev = chain.head_header().unwrap();
@@ -278,7 +280,7 @@ fn test_coinbase_maturity() {
 			)
 			.unwrap();
 
-			let result = chain.process_block(block, chain::Options::MINE);
+			let result = chain.process_block(block, chain::Options::MINE, vec![]);
 			match result {
 				Ok(_) => (),
 				Err(_) => panic!("we did not expect an error here"),

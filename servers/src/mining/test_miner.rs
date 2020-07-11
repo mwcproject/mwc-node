@@ -178,7 +178,7 @@ impl Miner {
 					b.hash(),
 					b.header.prev_root,
 				);
-				let res = self.chain.process_block(b, chain::Options::MINE);
+				let res = self.chain.process_block(b, chain::Options::MINE, vec![]);
 				if let Err(e) = res {
 					error!(
 						"(Server ID: {}) Error validating mined block: {:?}",

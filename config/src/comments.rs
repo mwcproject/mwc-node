@@ -145,6 +145,15 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+                "invalid_block_hashes".to_string(),
+                "
+#A list of block hashes to ignore for this node. (mostly used for testing).
+#invalid_block_hashes = [\"735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1\", \"9686b69cab945146fd431ec4459a0eef6efbcc5553480b7454edd32f9c3b4d52\"]
+"
+                .to_string(),
+	);
+
+	retval.insert(
 		"run_tui".to_string(),
 		"
 #whether to run the ncurses TUI. Ncurses must be installed and this
