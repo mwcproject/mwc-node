@@ -25,7 +25,9 @@ use std::collections::VecDeque;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 /// Local generated nonce for peer connecting.
 /// Used for self-connecting detection (on receiver side),
@@ -156,6 +158,7 @@ impl Handshake {
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(shake.total_difficulty))),
 			direction: Direction::Outbound,
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
+			last_header: Arc::new(Mutex::new(Instant::now())),
 		};
 
 		// If denied then we want to close the connection
@@ -222,6 +225,7 @@ impl Handshake {
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
 			direction: Direction::Inbound,
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
+			last_header: Arc::new(Mutex::new(Instant::now())),
 		};
 
 		// At this point we know the published ip and port of the peer
