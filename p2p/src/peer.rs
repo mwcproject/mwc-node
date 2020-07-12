@@ -40,6 +40,7 @@ use crate::types::{
 	TxHashSetRead,
 };
 use chrono::prelude::{DateTime, Utc};
+use std::time::Instant;
 
 const MAX_TRACK_SIZE: usize = 30;
 const MAX_PEER_MSG_PER_MIN: u64 = 500;
@@ -562,6 +563,10 @@ impl ChainAdapter for TrackingAdapter {
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		trace!("peer = {:?}, set header sync = false", peer_info.addr);
+
+		let mut last_header = peer_info.last_header.lock().unwrap();
+		*last_header = Instant::now();
+
 		let val = peer_info
 			.header_sync_requested
 			.fetch_sub(1, Ordering::Relaxed);
@@ -585,6 +590,10 @@ impl ChainAdapter for TrackingAdapter {
 			"peer = {:?}, set header sync = false (in headers)",
 			peer_info.addr
 		);
+
+		let mut last_header = peer_info.last_header.lock().unwrap();
+		*last_header = Instant::now();
+
 		let val = peer_info
 			.header_sync_requested
 			.fetch_sub(1, Ordering::Relaxed);

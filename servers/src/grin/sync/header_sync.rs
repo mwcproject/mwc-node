@@ -17,6 +17,7 @@ use chrono::Duration;
 use std::convert::TryInto;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::chain::{self, SyncState, SyncStatus};
 use crate::common::types::Error;
@@ -110,7 +111,18 @@ impl HeaderSync {
 					.info
 					.header_sync_requested
 					.load(Ordering::Relaxed);
-				if val > 16 {
+
+				let mut last_header = cloned_peer.info.last_header.lock().unwrap();
+				let elapsed = (*last_header).elapsed().as_millis();
+
+				// if val is over 16, we had a wrap arround
+				// too many headers sent, just go back to 0 and request again
+				// if elapsed is more than 30 seconds, we also request again
+				// because something might have gone wrong
+				if val > 16 || elapsed > 60_000 {
+					if elapsed > 60_000 {
+						*last_header = Instant::now();
+					}
 					val = 0;
 				}
 				if val == 0 {

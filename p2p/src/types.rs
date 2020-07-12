@@ -21,6 +21,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use chrono::prelude::*;
 use serde::de::{SeqAccess, Visitor};
@@ -37,6 +38,7 @@ use crate::core::pow::Difficulty;
 use crate::core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::msg::PeerAddrs;
 use crate::util::RwLock;
+use std::time::Instant;
 
 /// Maximum number of block headers a peer should ever send
 pub const MAX_BLOCK_HEADERS: u32 = 512;
@@ -465,6 +467,7 @@ pub struct PeerInfo {
 	pub direction: Direction,
 	pub live_info: Arc<RwLock<PeerLiveInfo>>,
 	pub header_sync_requested: Arc<AtomicUsize>,
+	pub last_header: Arc<Mutex<Instant>>,
 }
 
 impl PeerLiveInfo {
