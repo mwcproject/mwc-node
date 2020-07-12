@@ -61,7 +61,7 @@ fn check_known(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), E
 // Used to cheaply validate pow before checking if orphan or continuing block validation.
 fn validate_pow_only(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
 	for hash in &ctx.invalid_block_hashes {
-		if hash == &header.prev_hash {
+		if hash == &header.hash() {
 			error!("Invalid header found: {}. Rejecting it!", hash);
 			return Err(ErrorKind::InvalidHash.into());
 		}
