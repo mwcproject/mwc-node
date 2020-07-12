@@ -103,6 +103,7 @@ pub struct NetToChainAdapter {
 
 	header_cache: Arc<Mutex<HashMap<u64, core::BlockHeader>>>,
 	tip_processed: Arc<Mutex<u64>>,
+	reset_tip: Arc<Mutex<u64>>,
 }
 
 impl p2p::ChainAdapter for NetToChainAdapter {
@@ -376,9 +377,19 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 		let tip_processed = {
 			let mut tip_processed = self.tip_processed.lock().unwrap();
 			let sync_head_height = self.chain().get_sync_head()?.height;
-			if *tip_processed < sync_head_height {
+
+			let mut reset_tip = self.reset_tip.lock().unwrap();
+			if *reset_tip != 0 {
+				warn!(
+					"reset of tip to {} from {} due to differing headers.",
+					*reset_tip, *tip_processed
+				);
+				*tip_processed = *reset_tip;
+				*reset_tip = 0;
+			} else if *tip_processed < sync_head_height {
 				*tip_processed = sync_head_height;
 			}
+
 			*tip_processed
 		};
 
@@ -464,9 +475,12 @@ impl p2p::ChainAdapter for NetToChainAdapter {
 						// been a reorg or someone gave us bad headers.
 						// clear the entire hashmap to be safe.
 						// go back to previous logic at this point hashmap.clear();
-						let mut tip_processed = self.tip_processed.lock().unwrap();
-						*tip_processed = first_height - 1;
+						warn!(
+							"different header value at height = {}. clearing cache.",
+							bh.height
+						);
 						hashmap.clear();
+						*(self.reset_tip.lock().unwrap()) = first_height - 1;
 						break;
 					}
 				}
@@ -726,6 +740,7 @@ impl NetToChainAdapter {
 			processed_transactions: EventCache::new(),
 			header_cache: Arc::new(Mutex::new(HashMap::new())),
 			tip_processed: Arc::new(Mutex::new(0)),
+			reset_tip: Arc::new(Mutex::new(0)),
 		}
 	}
 
