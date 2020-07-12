@@ -315,6 +315,11 @@ pub fn is_mainnet() -> bool {
 	ChainTypes::Mainnet == *param_ref
 }
 
+/// Return chain type for this wallet
+pub fn get_chain_type() -> ChainTypes {
+	return CHAIN_TYPE.read().clone();
+}
+
 /// Converts an iterator of block difficulty data to more a more manageable
 /// vector and pads if needed (which will) only be needed for the first few
 /// blocks after genesis
