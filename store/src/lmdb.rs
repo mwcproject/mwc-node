@@ -246,7 +246,14 @@ impl Store {
 		access: &lmdb::ConstAccessor<'_>,
 		db: RwLockReadGuard<'_, Option<Arc<lmdb::Database<'static>>>>,
 	) -> Result<Option<T>, Error> {
-		let res: lmdb::error::Result<&[u8]> = access.get(&db.as_ref().unwrap(), key);
+		let db_as_ref = db.as_ref();
+		let db_as_ref = if db_as_ref.is_some() {
+			db_as_ref.unwrap()
+		} else {
+			return Err(Error::NotFoundErr("error dereffing db".to_string()));
+		};
+
+		let res: lmdb::error::Result<&[u8]> = access.get(&db_as_ref, key);
 		match res.to_opt() {
 			Ok(Some(mut res)) => match ser::deserialize(&mut res, self.version) {
 				Ok(res) => Ok(Some(res)),
@@ -270,8 +277,14 @@ impl Store {
 	/// moving forward from the provided key.
 	pub fn iter<T: ser::Readable>(&self, from: &[u8]) -> Result<SerIterator<T>, Error> {
 		let db = self.db.read();
+		let cloned_db = db.as_ref();
+		let cloned_db = if cloned_db.is_some() {
+			cloned_db.unwrap().clone()
+		} else {
+			return Err(Error::NotFoundErr("error cloning db".to_string()));
+		};
 		let tx = Arc::new(lmdb::ReadTransaction::new(self.env.clone())?);
-		let cursor = Arc::new(tx.cursor(db.as_ref().unwrap().clone()).unwrap());
+		let cursor = Arc::new(tx.cursor(cloned_db).unwrap());
 		Ok(SerIterator {
 			tx,
 			cursor,
