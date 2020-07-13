@@ -198,18 +198,21 @@ impl HeaderSync {
 								if now > *stalling_ts + Duration::seconds(120)
 									&& header_head.total_difficulty < peer.info.total_difficulty()
 								{
-									if let Err(e) = self
-										.peers
-										.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
-									{
-										error!("failed to ban peer {}: {:?}", peer.info.addr, e);
-									}
-									info!(
-										"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
-										peer.info.addr,
-										peer.info.height(),
-										peer.info.total_difficulty(),
-									);
+									// for now we disable this. Need to address fraud peers in new model though.
+									/*
+																		if let Err(e) = self
+																			.peers
+																			.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
+																		{
+																			error!("failed to ban peer {}: {:?}", peer.info.addr, e);
+																		}
+																		info!(
+																			"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
+																			peer.info.addr,
+																			peer.info.height(),
+																			peer.info.total_difficulty(),
+																		);
+									*/
 								}
 							}
 							_ => (),

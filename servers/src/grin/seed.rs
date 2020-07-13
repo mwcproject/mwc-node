@@ -55,6 +55,7 @@ pub fn connect_and_monitor(
 		.name("seed".to_string())
 		.spawn(move || {
 			let peers = p2p_server.peers.clone();
+			let mut connect_all = false;
 
 			// open a channel with a listener that connects every peer address sent below
 			// max peer count
@@ -107,6 +108,7 @@ pub fn connect_and_monitor(
 					prev_ping = Utc::now();
 					start_attempt = 0;
 					connecting_history = HashMap::new();
+					connect_all = true;
 				}
 
 				// Check for and remove expired peers from the storage
@@ -127,7 +129,12 @@ pub fn connect_and_monitor(
 						&rx,
 						&mut connecting_history,
 						header_cache_size,
+						connect_all,
 					);
+
+					if peer_count != 0 && connected_peers != 0 {
+						connect_all = false;
+					}
 
 					if peer_count == 0 {
 						// if on initial loop, we don't want to continue
@@ -331,18 +338,29 @@ fn listen_for_addrs(
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
 	header_cache_size: u64,
+	attempt_all: bool,
 ) {
 	// Pull everything currently on the queue off the queue.
 	// Does not block so addrs may be empty.
 	// We will take(max_peers) from this later but we want to drain the rx queue
 	// here to prevent it backing up.
-	let addrs: Vec<PeerAddr> = rx.try_iter().collect();
+	let mut addrs: Vec<PeerAddr> = rx.try_iter().collect();
+
+	if attempt_all {
+		for x in peers.all_peers() {
+			match x.flags {
+				p2p::State::Banned => {}
+				_ => {
+					addrs.push(x.addr);
+				}
+			}
+		}
+	}
 
 	// If we have a healthy number of outbound peers then we are done here.
 	if peers.enough_outbound_peers() {
 		return;
 	}
-
 	// Note: We drained the rx queue earlier to keep it under control.
 	// Even if there are many addresses to try we will only try a bounded number of them for safety.
 	let connect_min_interval = 30;
