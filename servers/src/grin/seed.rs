@@ -59,12 +59,13 @@ pub fn connect_and_monitor(
 			// open a channel with a listener that connects every peer address sent below
 			// max peer count
 			let (tx, rx) = mpsc::channel();
+			let seed_list = seed_list();
 
 			// check seeds first
 			connect_to_seeds_and_preferred_peers(
 				peers.clone(),
 				tx.clone(),
-				seed_list,
+				seed_list.clone(),
 				preferred_peers.clone(),
 			);
 
@@ -73,18 +74,39 @@ pub fn connect_and_monitor(
 			let mut prev_ping = Utc::now();
 			let mut start_attempt = 0;
 			let mut connecting_history: HashMap<PeerAddr, DateTime<Utc>> = HashMap::new();
-
 			loop {
 				if stop_state.is_stopped() {
 					break;
 				}
-
 				let peer_count = peers.all_peers().len();
-
 				// Pause egress peer connection request. Only for tests.
 				if stop_state.is_paused() {
 					thread::sleep(time::Duration::from_secs(1));
 					continue;
+				}
+
+				let connected_peers = if peer_count == 0 {
+					0
+				} else {
+					peers.connected_peers().len()
+				};
+
+				if connected_peers == 0 {
+					info!("No peers connected, trying to reconnect to seeds!");
+					connect_to_seeds_and_preferred_peers(
+						peers.clone(),
+						tx.clone(),
+						seed_list.clone(),
+						preferred_peers.clone(),
+					);
+
+					thread::sleep(time::Duration::from_secs(1));
+
+					prev = MIN_DATE.and_hms(0, 0, 0);
+					prev_expire_check = MIN_DATE.and_hms(0, 0, 0);
+					prev_ping = Utc::now();
+					start_attempt = 0;
+					connecting_history = HashMap::new();
 				}
 
 				// Check for and remove expired peers from the storage
@@ -269,7 +291,7 @@ fn monitor_peers(
 fn connect_to_seeds_and_preferred_peers(
 	peers: Arc<p2p::Peers>,
 	tx: mpsc::Sender<PeerAddr>,
-	seed_list: Box<dyn Fn() -> Vec<PeerAddr>>,
+	seed_list: Vec<PeerAddr>,
 	peers_preferred_list: Option<Vec<PeerAddr>>,
 ) {
 	// check if we have some peers in db
@@ -280,7 +302,7 @@ fn connect_to_seeds_and_preferred_peers(
 	let mut peer_addrs = if peers.len() > 3 {
 		peers.iter().map(|p| p.addr).collect::<Vec<_>>()
 	} else {
-		seed_list()
+		seed_list
 	};
 
 	// If we have preferred peers add them to the connection
