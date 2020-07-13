@@ -79,6 +79,8 @@ pub fn connect_and_monitor(
 					break;
 				}
 
+				let peer_count = peers.all_peers().len();
+
 				// Pause egress peer connection request. Only for tests.
 				if stop_state.is_paused() {
 					thread::sleep(time::Duration::from_secs(1));
@@ -86,7 +88,7 @@ pub fn connect_and_monitor(
 				}
 
 				// Check for and remove expired peers from the storage
-				if Utc::now() - prev_expire_check > Duration::hours(1) {
+				if peer_count > 0 && Utc::now() - prev_expire_check > Duration::hours(1) {
 					peers.remove_expired();
 
 					prev_expire_check = Utc::now();
@@ -105,6 +107,15 @@ pub fn connect_and_monitor(
 						header_cache_size,
 					);
 
+					if peer_count == 0 {
+						// if on initial loop, we don't want to continue
+						// bad network connection can cause segfaults
+						// possibly linked to store unsafe calls
+						// TODO: investigate root cause
+						thread::sleep(time::Duration::from_secs(1));
+						continue;
+					}
+
 					// monitor additional peers if we need to add more
 					monitor_peers(
 						peers.clone(),
@@ -115,6 +126,11 @@ pub fn connect_and_monitor(
 
 					prev = Utc::now();
 					start_attempt = cmp::min(6, start_attempt + 1);
+				}
+
+				if peer_count == 0 {
+					thread::sleep(time::Duration::from_secs(1));
+					continue;
 				}
 
 				// Ping connected peers on every 10s to monitor peers.
