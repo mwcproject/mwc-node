@@ -112,17 +112,11 @@ impl HeaderSync {
 					.header_sync_requested
 					.load(Ordering::Relaxed);
 
-				let mut last_header = cloned_peer.info.last_header.lock().unwrap();
-				let elapsed = (*last_header).elapsed().as_millis();
-
 				// if val is over 16, we had a wrap arround
 				// too many headers sent, just go back to 0 and request again
 				// if elapsed is more than 30 seconds, we also request again
 				// because something might have gone wrong
-				if val > 16 || elapsed > 60_000 {
-					if elapsed > 60_000 {
-						*last_header = Instant::now();
-					}
+				if val > 16 {
 					val = 0;
 				}
 				if val == 0 {
@@ -139,7 +133,7 @@ impl HeaderSync {
 					trace!("already loading from this peer {:?}", peer.info.addr);
 					let now = Utc::now();
 					self.prev_header_sync = (
-						now + Duration::milliseconds(duration_sync_short),
+						now + Duration::milliseconds(10000),
 						header_head.height,
 						header_head.height,
 					);
@@ -170,6 +164,37 @@ impl HeaderSync {
 			_ => false,
 		};
 
+		// check here for stalled peers
+		if stalling {
+			let peers = self.peers.most_work_peers();
+			let instant_now = Instant::now();
+			for peer in peers {
+				let last_header = *(peer.info.last_header.lock().unwrap());
+				let diff = if instant_now > last_header {
+					instant_now - last_header
+				} else {
+					std::time::Duration::from_millis(0)
+				};
+				if diff > std::time::Duration::from_millis(120_000)
+					&& header_head.total_difficulty < peer.info.total_difficulty()
+				{
+					if let Err(e) = self
+						.peers
+						.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
+					{
+						error!("failed to ban peer {}: {:?}", peer.info.addr, e);
+					}
+
+					info!(
+						"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
+						peer.info.addr,
+						peer.info.height(),
+						peer.info.total_difficulty(),
+					);
+				}
+			}
+		}
+
 		if force_sync || all_headers_received || stalling {
 			self.prev_header_sync = (
 				now + Duration::milliseconds(duration_sync_long),
@@ -189,38 +214,7 @@ impl HeaderSync {
 			if all_headers_received {
 				// reset the stalling start time if syncing goes well
 				self.stalling_ts = None;
-			} else {
-				if let Some(ref stalling_ts) = self.stalling_ts {
-					if let Some(ref peer) = self.syncing_peer {
-						match self.sync_state.status() {
-							SyncStatus::HeaderSync { .. } | SyncStatus::BodySync { .. } => {
-								// Ban this fraud peer which claims a higher work but can't send us the real headers
-								if now > *stalling_ts + Duration::seconds(120)
-									&& header_head.total_difficulty < peer.info.total_difficulty()
-								{
-									// for now we disable this. Need to address fraud peers in new model though.
-									/*
-																		if let Err(e) = self
-																			.peers
-																			.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
-																		{
-																			error!("failed to ban peer {}: {:?}", peer.info.addr, e);
-																		}
-																		info!(
-																			"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
-																			peer.info.addr,
-																			peer.info.height(),
-																			peer.info.total_difficulty(),
-																		);
-									*/
-								}
-							}
-							_ => (),
-						}
-					}
-				}
 			}
-			self.syncing_peer = None;
 			true
 		} else {
 			// resetting the timeout as long as we progress
