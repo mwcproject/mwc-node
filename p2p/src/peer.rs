@@ -566,6 +566,8 @@ impl ChainAdapter for TrackingAdapter {
 
 		let mut last_header = peer_info.last_header.lock().unwrap();
 		*last_header = Instant::now();
+		let mut last_header_reset = peer_info.last_header_reset.lock().unwrap();
+		*last_header_reset = Instant::now();
 
 		let val = peer_info
 			.header_sync_requested
@@ -593,6 +595,9 @@ impl ChainAdapter for TrackingAdapter {
 
 		let mut last_header = peer_info.last_header.lock().unwrap();
 		*last_header = Instant::now();
+
+		let mut last_header_reset = peer_info.last_header_reset.lock().unwrap();
+		*last_header_reset = Instant::now();
 
 		let val = peer_info
 			.header_sync_requested
