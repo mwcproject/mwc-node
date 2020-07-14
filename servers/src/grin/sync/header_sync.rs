@@ -31,6 +31,7 @@ pub struct HeaderSync {
 
 	history_locator: Vec<(u64, Hash)>,
 	prev_header_sync: (DateTime<Utc>, u64, u64),
+	last_check: Instant,
 
 	syncing_peer: Option<Arc<Peer>>,
 	stalling_ts: Option<DateTime<Utc>>,
@@ -50,6 +51,7 @@ impl HeaderSync {
 			prev_header_sync: (Utc::now(), 0, 0),
 			syncing_peer: None,
 			stalling_ts: None,
+			last_check: Instant::now(),
 		}
 	}
 
@@ -133,7 +135,7 @@ impl HeaderSync {
 					trace!("already loading from this peer {:?}", peer.info.addr);
 					let now = Utc::now();
 					self.prev_header_sync = (
-						now + Duration::milliseconds(10000),
+						now + Duration::milliseconds(duration_sync_long),
 						header_head.height,
 						header_head.height,
 					);
@@ -168,29 +170,35 @@ impl HeaderSync {
 		if stalling {
 			let peers = self.peers.most_work_peers();
 			let instant_now = Instant::now();
-			for peer in peers {
-				let last_header = *(peer.info.last_header.lock().unwrap());
-				let diff = if instant_now > last_header {
-					instant_now - last_header
-				} else {
-					std::time::Duration::from_millis(0)
-				};
-				if diff > std::time::Duration::from_millis(120_000)
-					&& header_head.total_difficulty < peer.info.total_difficulty()
-				{
-					if let Err(e) = self
-						.peers
-						.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
-					{
-						error!("failed to ban peer {}: {:?}", peer.info.addr, e);
-					}
+			let last_check = self.last_check;
 
-					info!(
-						"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
-						peer.info.addr,
-						peer.info.height(),
-						peer.info.total_difficulty(),
-					);
+			if instant_now - last_check > std::time::Duration::from_millis(10000) {
+				self.last_check = instant_now;
+
+				for peer in peers {
+					let last_header = *(peer.info.last_header.lock().unwrap());
+					let diff = if instant_now > last_header {
+						instant_now - last_header
+					} else {
+						std::time::Duration::from_millis(0)
+					};
+					if diff > std::time::Duration::from_millis(120_000)
+						&& header_head.total_difficulty < peer.info.total_difficulty()
+					{
+						if let Err(e) = self
+							.peers
+							.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
+						{
+							error!("failed to ban peer {}: {:?}", peer.info.addr, e);
+						}
+
+						info!(
+							"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
+							peer.info.addr,
+							peer.info.height(),
+							peer.info.total_difficulty(),
+						);
+					}
 				}
 			}
 		}
