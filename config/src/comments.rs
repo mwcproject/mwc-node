@@ -123,7 +123,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"header_cache_size".to_string(),
 		"
-#size of the header cache for syncing. (default is 1 year height = 524,160)
+#size of the header cache for syncing. (default is 100,000)
 "
 		.to_string(),
 	);

@@ -250,7 +250,7 @@ impl Default for ServerConfig {
 			chain_validation_mode: ChainValidationMode::default(),
 			pool_config: pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
-			header_cache_size: Some(524160),
+			header_cache_size: Some(100_000),
 			invalid_block_hashes: Some(vec![]),
 			duration_sync_short: Some(30),
 			duration_sync_long: Some(50),
