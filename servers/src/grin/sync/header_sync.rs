@@ -114,13 +114,17 @@ impl HeaderSync {
 					.header_sync_requested
 					.load(Ordering::Relaxed);
 
+				let last_header = cloned_peer.info.last_header.lock().unwrap();
+				let elapsed = (*last_header).elapsed().as_millis();
+
 				// if val is over 16, we had a wrap arround
 				// too many headers sent, just go back to 0 and request again
-				// if elapsed is more than 30 seconds, we also request again
+				// if elapsed is more than 60 seconds, we also request again
 				// because something might have gone wrong
-				if val > 16 {
+				if val > 16 || elapsed > 60_000 {
 					val = 0;
 				}
+
 				if val == 0 {
 					self.syncing_peer = self.header_sync(
 						peer,
