@@ -114,7 +114,7 @@ impl HeaderSync {
 					.header_sync_requested
 					.load(Ordering::Relaxed);
 
-				let last_header = cloned_peer.info.last_header.lock().unwrap();
+				let mut last_header = cloned_peer.info.last_header_reset.lock().unwrap();
 				let elapsed = (*last_header).elapsed().as_millis();
 
 				// if val is over 16, we had a wrap arround
@@ -123,6 +123,9 @@ impl HeaderSync {
 				// because something might have gone wrong
 				if val > 16 || elapsed > 60_000 {
 					val = 0;
+					if elapsed > 60_000 {
+						*last_header = Instant::now();
+					}
 				}
 
 				if val == 0 {
