@@ -180,7 +180,7 @@ impl Server {
 		allow_to_stop: bool,
 		stratum_ip_pool: Arc<connections::StratumIpPool>,
 	) -> Result<Server, Error> {
-		let header_cache_size = config.header_cache_size.unwrap_or(524160);
+		let header_cache_size = config.header_cache_size.unwrap_or(100_000);
 		let duration_sync_long = config.duration_sync_long.unwrap_or(150);
 		let duration_sync_short = config.duration_sync_short.unwrap_or(100);
 
