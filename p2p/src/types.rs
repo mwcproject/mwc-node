@@ -413,7 +413,7 @@ bitflags! {
 		/// Can broadcast and request txs by kernel hash.
 		const TX_KERNEL_HASH = 0b0000_1000;
 		/// Can send/receive tor addresses
-		const TOR_ADDRESS = 0b0001_0000;
+		//const TOR_ADDRESS = 0b0001_0000;
 
 		/// All nodes right now are "full nodes".
 		/// Some nodes internally may maintain longer block histories (archival_mode)
