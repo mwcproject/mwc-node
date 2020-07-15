@@ -412,6 +412,8 @@ bitflags! {
 		const PEER_LIST = 0b0000_0100;
 		/// Can broadcast and request txs by kernel hash.
 		const TX_KERNEL_HASH = 0b0000_1000;
+		/// Can send/receive tor addresses
+		const TOR_ADDRESS = 0b0001_0000;
 
 		/// All nodes right now are "full nodes".
 		/// Some nodes internally may maintain longer block histories (archival_mode)
@@ -420,7 +422,8 @@ bitflags! {
 		const FULL_NODE = Capabilities::HEADER_HIST.bits
 			| Capabilities::TXHASHSET_HIST.bits
 			| Capabilities::PEER_LIST.bits
-			| Capabilities::TX_KERNEL_HASH.bits;
+			| Capabilities::TX_KERNEL_HASH.bits
+			| Capabilities::TOR_ADDRESS.bits;
 	}
 }
 
