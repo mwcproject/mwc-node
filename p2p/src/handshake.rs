@@ -149,9 +149,9 @@ impl Handshake {
 		}
 
 		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) {
-			info!("tor enabled peer {:?}", shake.sender_addr);
+			info!("tor enabled peer {:?}", self_addr);
 		} else {
-			info!("non tor peer {:?}", shake.sender_addr);
+			info!("non tor peer {:?}", self_addr);
 		}
 
 		let negotiated_version = self.negotiate_protocol_version(shake.version)?;
