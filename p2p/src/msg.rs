@@ -68,6 +68,7 @@ enum_from_primitive! {
 		TransactionKernel = 20,
 		KernelDataRequest = 21,
 		KernelDataResponse = 22,
+		TorAddress = 23,
 	}
 }
 
@@ -107,6 +108,7 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::TransactionKernel => 32,
 		Type::KernelDataRequest => 0,
 		Type::KernelDataResponse => 8,
+		Type::TorAddress => 128,
 	}
 }
 
@@ -748,6 +750,36 @@ impl Readable for TxHashSetArchive {
 			height,
 			bytes,
 		})
+	}
+}
+
+#[derive(Debug)]
+pub struct TorAddress {
+	pub address: String,
+}
+
+impl TorAddress {
+	/// Creates a new message TorAddress.
+	pub fn new(address: String) -> TorAddress {
+		TorAddress { address }
+	}
+}
+
+impl Writeable for TorAddress {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		ser_multiwrite!(writer, [write_bytes, &self.address]);
+		Ok(())
+	}
+}
+
+impl Readable for TorAddress {
+	fn read(reader: &mut dyn Reader) -> Result<TorAddress, ser::Error> {
+		let address = String::from_utf8(reader.read_bytes_len_prefix()?);
+
+		match address {
+			Ok(address) => Ok(TorAddress { address }),
+			Err(e) => Err(ser::Error::Utf8Conversion(e.to_string())),
+		}
 	}
 }
 
