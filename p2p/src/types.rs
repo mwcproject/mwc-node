@@ -422,8 +422,7 @@ bitflags! {
 		const FULL_NODE = Capabilities::HEADER_HIST.bits
 			| Capabilities::TXHASHSET_HIST.bits
 			| Capabilities::PEER_LIST.bits
-			| Capabilities::TX_KERNEL_HASH.bits
-			| Capabilities::TOR_ADDRESS.bits;
+			| Capabilities::TX_KERNEL_HASH.bits;
 	}
 }
 
