@@ -94,6 +94,9 @@ pub enum Error {
 	/// Block header version (hard-fork schedule).
 	#[fail(display = "Serialization Invalid block version, {}", _0)]
 	InvalidBlockVersion(String),
+	/// utf8 conversion failed
+	#[fail(display = "UTF8 conversion failed")]
+	Utf8Conversion(String),
 }
 
 impl From<io::Error> for Error {

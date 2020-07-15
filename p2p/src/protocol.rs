@@ -18,8 +18,9 @@ use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock};
 
 use crate::msg::{
 	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, Msg, PeerAddrs, Ping, Pong,
-	TxHashSetArchive, TxHashSetRequest, Type,
+	TorAddress, TxHashSetArchive, TxHashSetRequest, Type,
 };
+
 use crate::types::{Error, NetAdapter, PeerInfo};
 use chrono::prelude::Utc;
 use rand::{thread_rng, Rng};
@@ -202,6 +203,15 @@ impl MessageHandler for Protocol {
 				let b: core::UntrustedCompactBlock = msg.body()?;
 
 				adapter.compact_block_received(b.into(), &self.peer_info)?;
+				Ok(None)
+			}
+
+			Type::TorAddress => {
+				let tor_address: TorAddress = msg.body()?;
+				debug!(
+					"TorAddress received from {:?}, address = {:?}",
+					self.peer_info, tor_address
+				);
 				Ok(None)
 			}
 

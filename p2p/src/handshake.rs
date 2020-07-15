@@ -16,7 +16,7 @@ use crate::conn::Tracker;
 use crate::core::core::hash::Hash;
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
-use crate::msg::{read_message, write_message, Hand, Msg, Shake, Type, USER_AGENT};
+use crate::msg::{read_message, write_message, Hand, Msg, Shake, TorAddress, Type, USER_AGENT};
 use crate::peer::Peer;
 use crate::types::{Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerInfo, PeerLiveInfo};
 use crate::util::RwLock;
@@ -150,8 +150,13 @@ impl Handshake {
 
 		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) {
 			debug!("tor enabled peer {:?}", self_addr);
+
+			// send tor address
+			let tor_address = TorAddress::new("http://12345.onion".to_string());
+			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
+			write_message(conn, &msg, self.tracker.clone())?;
 		} else {
-			debug!("non tor peer {:?}", self_addr);
+			debug!("non-tor peer {:?}", self_addr);
 		}
 
 		let negotiated_version = self.negotiate_protocol_version(shake.version)?;
