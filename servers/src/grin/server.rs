@@ -251,9 +251,15 @@ impl Server {
 			init_net_hooks(&config),
 		));
 
+		// we always support tor, so don't rely on config. This fixes
+		// the problem of old config files
+		// only for capabilities params, doesn't mean
+		// tor _MUST_ be on.
+		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
+
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
-			config.p2p_config.capabilities,
+			capab,
 			config.p2p_config.clone(),
 			net_adapter.clone(),
 			genesis.hash(),
