@@ -148,11 +148,11 @@ impl Handshake {
 			});
 		}
 
-		//if shake.capabilities.contains(Capabilities::TOR_ADDRESS) {
-		//info!("tor enabled peer {:?}", self_addr);
-		//} else {
-		//info!("non tor peer {:?}", self_addr);
-		//}
+		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) {
+			debug!("tor enabled peer {:?}", self_addr);
+		} else {
+			debug!("non tor peer {:?}", self_addr);
+		}
 
 		let negotiated_version = self.negotiate_protocol_version(shake.version)?;
 
