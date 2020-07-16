@@ -16,6 +16,8 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
+use crate::tor::config as tor_config;
+use crate::util::{secp, static_secp_instance};
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -26,7 +28,10 @@ use std::{
 	time::{self, Duration},
 };
 
+use crate::ErrorKind;
+
 use fs2::FileExt;
+use grin_util::OnionV3Address;
 use walkdir::WalkDir;
 
 use crate::api;
@@ -39,6 +44,7 @@ use crate::common::hooks::{init_chain_hooks, init_net_hooks};
 use crate::common::stats::{
 	ChainStats, DiffBlock, DiffStats, PeerStats, ServerStateInfo, ServerStats, TxStats,
 };
+
 use crate::common::types::{Error, ServerConfig, StratumServerConfig};
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
@@ -51,6 +57,7 @@ use crate::mining::test_miner::Miner;
 use crate::p2p;
 use crate::p2p::types::PeerAddr;
 use crate::pool;
+use crate::tor::process as tor_process;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use grin_util::logger::LogEntry;
@@ -384,6 +391,50 @@ impl Server {
 			sync_thread,
 			dandelion_thread,
 		})
+	}
+
+	pub fn init_tor_listener(
+		addr: &str,
+		tor_base: Option<&str>,
+	) -> Result<tor_process::TorProcess, Error> {
+		let mut process = tor_process::TorProcess::new();
+		let tor_dir = if tor_base.is_some() {
+			format!("{}/tor/listener", tor_base.unwrap())
+		} else {
+			format!("{}/tor/listener", "~/.mwc")
+		};
+
+		let secp_inst = static_secp_instance();
+		let secp = secp_inst.lock();
+		//  let mut test_rng = rand::thread_rng();
+		let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+
+		//	let mut csprng =  rand::thread_rng();
+		//let sec_key = grin_util::secp::SecretKey::new(&secp, &mut thread_rng());
+		let onion_address = OnionV3Address::from_private(&sec_key.0)
+			.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
+			.unwrap();
+		warn!(
+			"Starting TOR Hidden Service for API listener at address {}, binding to {}",
+			onion_address, addr
+		);
+
+		tor_config::output_tor_listener_config(&tor_dir, addr, &vec![sec_key])
+			.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
+			.unwrap();
+		// Start TOR process
+		let tor_path = format!("{}/torrc", tor_dir);
+		process
+			.torrc_path(&tor_path)
+			.working_dir(&tor_dir)
+			.timeout(200)
+			.completion_percent(100)
+			.launch()
+			.map_err(|e| {
+				ErrorKind::TorProcess(format!("Unable to start tor at {}, {}", tor_path, e).into())
+			})
+			.unwrap();
+		Ok(process)
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
