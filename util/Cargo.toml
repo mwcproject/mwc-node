@@ -11,6 +11,11 @@ edition = "2018"
 
 [dependencies]
 backtrace = "0.3"
+data-encoding = "2"
+ed25519-dalek = "1.0.0-pre.1"
+sha3 = "0.8"
+failure = "0.1"
+failure_derive = "0.1"
 base64 = "0.9"
 byteorder = "1"
 lazy_static = "1"
