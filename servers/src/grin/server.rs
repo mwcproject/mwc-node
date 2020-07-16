@@ -374,6 +374,26 @@ impl Server {
 			stop_state.clone(),
 		)?;
 
+		let stop_state_clone = stop_state.clone();
+		thread::Builder::new()
+			.name("tor_listener".to_string())
+			.spawn(move || {
+				let listener = Server::init_tor_listener("127.0.0.1:4000", Some("~/testtor2"));
+
+				let _ = match listener {
+					Ok(listener) => {
+						loop {
+							std::thread::sleep(std::time::Duration::from_millis(30));
+							if stop_state_clone.is_stopped() {
+								break;
+							}
+						}
+						Ok(listener)
+					}
+					Err(e) => Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e))),
+				};
+			})?;
+
 		warn!("MWC server started.");
 		Ok(Server {
 			config,
@@ -393,6 +413,7 @@ impl Server {
 		})
 	}
 
+	/// Start the tor listener for inbound connections
 	pub fn init_tor_listener(
 		addr: &str,
 		tor_base: Option<&str>,
@@ -401,20 +422,30 @@ impl Server {
 		let tor_dir = if tor_base.is_some() {
 			format!("{}/tor/listener", tor_base.unwrap())
 		} else {
-			format!("{}/tor/listener", "~/.mwc")
+			format!("{}/tor/listener", "~/.mwc/main")
 		};
+
+		let home_dir = dirs::home_dir()
+			.map(|p| p.to_str().unwrap().to_string())
+			.unwrap_or("~".to_string());
+		let tor_dir = tor_dir.replace("~", &home_dir);
+
+		// remove all other onion addresses that were previously used.
+		let dir = fs::read_dir(format!("{}/onion_service_addresses", tor_dir.clone()))?;
+		for entry in dir {
+			let dir = entry.unwrap();
+			fs::remove_dir_all(dir.path())?;
+		}
 
 		let secp_inst = static_secp_instance();
 		let secp = secp_inst.lock();
-		//  let mut test_rng = rand::thread_rng();
 		let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
 
-		//	let mut csprng =  rand::thread_rng();
-		//let sec_key = grin_util::secp::SecretKey::new(&secp, &mut thread_rng());
 		let onion_address = OnionV3Address::from_private(&sec_key.0)
 			.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
 			.unwrap();
-		warn!(
+
+		info!(
 			"Starting TOR Hidden Service for API listener at address {}, binding to {}",
 			onion_address, addr
 		);
