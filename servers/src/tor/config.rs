@@ -213,7 +213,7 @@ pub fn output_torrc(
 	let tor_data_dir = format!("./{}", TOR_DATA_DIR);
 
 	let mut props = TorRcConfig::new();
-	props.add_item("SocksPort", socks_port);
+	props.add_item("SocksPort", &format!("127.0.0.1:{}", socks_port));
 	props.add_item("DataDirectory", &tor_data_dir);
 
 	for dir in service_dirs {

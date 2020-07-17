@@ -267,6 +267,50 @@ impl Server {
 		// tor _MUST_ be on.
 		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
 
+		if config.tor_config.tor_enabled {
+			let stop_state_clone = stop_state.clone();
+			let cloned_config = config.clone();
+
+			let (input, output): (Sender<bool>, Receiver<bool>) = mpsc::channel();
+
+			thread::Builder::new()
+				.name("tor_listener".to_string())
+				.spawn(move || {
+					let listener = Server::init_tor_listener(
+						&format!(
+							"{}:{}",
+							cloned_config.p2p_config.host, cloned_config.p2p_config.port
+						),
+						Some(&cloned_config.db_root),
+						cloned_config.tor_config.socks_port,
+					);
+
+					let _ = match listener {
+						Ok(listener) => {
+							input.send(true).unwrap();
+							loop {
+								std::thread::sleep(std::time::Duration::from_millis(30));
+								if stop_state_clone.is_stopped() {
+									break;
+								}
+							}
+							Ok(listener)
+						}
+						Err(e) => {
+							input.send(false).unwrap();
+							Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
+						}
+					};
+				})?;
+
+			let resp = output.recv();
+			if resp.unwrap() {
+				info!("tor successfully started");
+			} else {
+				error!("tor failed to start!");
+			}
+		}
+
 		let socks_port = if config.tor_config.tor_enabled {
 			config.tor_config.socks_port
 		} else {
@@ -387,50 +431,6 @@ impl Server {
 			verifier_cache.clone(),
 			stop_state.clone(),
 		)?;
-
-		if config.tor_config.tor_enabled {
-			let stop_state_clone = stop_state.clone();
-			let cloned_config = config.clone();
-
-			let (input, output): (Sender<bool>, Receiver<bool>) = mpsc::channel();
-
-			thread::Builder::new()
-				.name("tor_listener".to_string())
-				.spawn(move || {
-					let listener = Server::init_tor_listener(
-						&format!(
-							"{}:{}",
-							cloned_config.p2p_config.host, cloned_config.p2p_config.port
-						),
-						Some(&cloned_config.db_root),
-						cloned_config.tor_config.socks_port,
-					);
-
-					let _ = match listener {
-						Ok(listener) => {
-							input.send(true).unwrap();
-							loop {
-								std::thread::sleep(std::time::Duration::from_millis(30));
-								if stop_state_clone.is_stopped() {
-									break;
-								}
-							}
-							Ok(listener)
-						}
-						Err(e) => {
-							input.send(false).unwrap();
-							Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
-						}
-					};
-				})?;
-
-			let resp = output.recv();
-			if resp.unwrap() {
-				info!("tor successfully started");
-			} else {
-				error!("tor failed to start!");
-			}
-		}
 
 		warn!("MWC server started.");
 		Ok(Server {
