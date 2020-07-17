@@ -233,6 +233,7 @@ pub fn output_tor_listener_config(
 	tor_config_directory: &str,
 	wallet_listener_addr: &str,
 	listener_keys: &[SecretKey],
+	socks_port: u16,
 ) -> Result<(), Error> {
 	let tor_data_dir = format!("{}{}{}", tor_config_directory, MAIN_SEPARATOR, TOR_DATA_DIR);
 
@@ -251,7 +252,7 @@ pub fn output_tor_listener_config(
 	output_torrc(
 		tor_config_directory,
 		wallet_listener_addr,
-		"0",
+		&format!("{}", socks_port),
 		&service_dirs,
 	)?;
 
@@ -334,7 +335,7 @@ mod tests {
 		let secp = secp_inst.lock();
 		let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
 		let sec_key = secp::key::SecretKey::new(&secp, &mut test_rng);
-		output_tor_listener_config(test_dir, "127.0.0.1:3415", &[sec_key])?;
+		output_tor_listener_config(test_dir, "127.0.0.1:3415", &[sec_key], 0)?;
 		clean_output_dir(test_dir);
 		Ok(())
 	}

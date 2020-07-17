@@ -40,6 +40,7 @@ use chrono::prelude::{DateTime, Utc};
 /// peers, receiving connections from other peers and keep track of all of them.
 pub struct Server {
 	pub config: P2PConfig,
+	pub socks_port: u16,
 	capabilities: Capabilities,
 	handshake: Arc<Handshake>,
 	pub peers: Arc<Peers>,
@@ -56,6 +57,7 @@ impl Server {
 		adapter: Arc<dyn ChainAdapter>,
 		genesis: Hash,
 		stop_state: Arc<StopState>,
+		socks_port: u16,
 	) -> Result<Server, Error> {
 		Ok(Server {
 			config: config.clone(),
@@ -68,6 +70,7 @@ impl Server {
 				stop_state.clone(),
 			)),
 			stop_state,
+			socks_port,
 		})
 	}
 
@@ -178,10 +181,14 @@ impl Server {
 		);
 
 		let sock_addr;
-		let stream = if self.config.socks5addr.is_some() {
+		let stream = if self.socks_port != 0 {
 			sock_addr = Some(addr.0);
 			let socks5_stream_ref =
-				socks::Socks5Stream::connect(&self.config.socks5addr.as_ref().unwrap(), addr.0);
+				socks::Socks5Stream::connect(&format!("127.0.0.1:{}", self.socks_port), addr.0);
+			info!(
+				"connecting on socks proxy to {}, addr = {}",
+				self.socks_port, addr.0
+			);
 
 			match socks5_stream_ref {
 				Ok(socks5_stream) => socks5_stream.into_inner(),
@@ -191,6 +198,7 @@ impl Server {
 			}
 		} else {
 			sock_addr = Some(addr.0);
+			info!("connection to {:?}", sock_addr);
 			TcpStream::connect_timeout(&addr.0, Duration::from_secs(10))?
 		};
 		match Ok(stream) {
