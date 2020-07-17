@@ -22,7 +22,10 @@ use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::{
 	thread::{self, JoinHandle},
 	time::{self, Duration},
@@ -264,6 +267,16 @@ impl Server {
 		// tor _MUST_ be on.
 		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
 
+		let socks_port = if config.tor_config.tor_enabled {
+			config.tor_config.socks_port
+		} else {
+			0
+		};
+		info!(
+			"socks = {}, tor_enabled = {}",
+			socks_port, config.tor_config.tor_enabled
+		);
+
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
 			capab,
@@ -271,6 +284,7 @@ impl Server {
 			net_adapter.clone(),
 			genesis.hash(),
 			stop_state.clone(),
+			socks_port,
 		)?);
 
 		// Initialize various adapters with our dynamic set of connected peers.
@@ -374,32 +388,49 @@ impl Server {
 			stop_state.clone(),
 		)?;
 
-		let stop_state_clone = stop_state.clone();
-		let cloned_config = config.clone();
-		thread::Builder::new()
-			.name("tor_listener".to_string())
-			.spawn(move || {
-				let listener = Server::init_tor_listener(
-					&format!(
-						"{}:{}",
-						cloned_config.p2p_config.host, cloned_config.p2p_config.port
-					),
-					Some(&cloned_config.db_root),
-				);
+		if config.tor_config.tor_enabled {
+			let stop_state_clone = stop_state.clone();
+			let cloned_config = config.clone();
 
-				let _ = match listener {
-					Ok(listener) => {
-						loop {
-							std::thread::sleep(std::time::Duration::from_millis(30));
-							if stop_state_clone.is_stopped() {
-								break;
+			let (input, output): (Sender<bool>, Receiver<bool>) = mpsc::channel();
+
+			thread::Builder::new()
+				.name("tor_listener".to_string())
+				.spawn(move || {
+					let listener = Server::init_tor_listener(
+						&format!(
+							"{}:{}",
+							cloned_config.p2p_config.host, cloned_config.p2p_config.port
+						),
+						Some(&cloned_config.db_root),
+						cloned_config.tor_config.socks_port,
+					);
+
+					let _ = match listener {
+						Ok(listener) => {
+							input.send(true).unwrap();
+							loop {
+								std::thread::sleep(std::time::Duration::from_millis(30));
+								if stop_state_clone.is_stopped() {
+									break;
+								}
 							}
+							Ok(listener)
 						}
-						Ok(listener)
-					}
-					Err(e) => Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e))),
-				};
-			})?;
+						Err(e) => {
+							input.send(false).unwrap();
+							Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
+						}
+					};
+				})?;
+
+			let resp = output.recv();
+			if resp.unwrap() {
+				info!("tor successfully started");
+			} else {
+				error!("tor failed to start!");
+			}
+		}
 
 		warn!("MWC server started.");
 		Ok(Server {
@@ -424,6 +455,7 @@ impl Server {
 	pub fn init_tor_listener(
 		addr: &str,
 		tor_base: Option<&str>,
+		socks_port: u16,
 	) -> Result<tor_process::TorProcess, Error> {
 		let mut process = tor_process::TorProcess::new();
 		let tor_dir = if tor_base.is_some() {
@@ -457,11 +489,11 @@ impl Server {
 			.unwrap();
 
 		info!(
-			"Starting TOR Hidden Service for API listener at address {}, binding to {}",
+			"Starting TOR inbound listener at address http://{}.onion, binding to {}",
 			onion_address, addr
 		);
 
-		tor_config::output_tor_listener_config(&tor_dir, addr, &vec![sec_key])
+		tor_config::output_tor_listener_config(&tor_dir, addr, &vec![sec_key], socks_port)
 			.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
 			.unwrap();
 		// Start TOR process
