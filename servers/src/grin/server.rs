@@ -375,10 +375,17 @@ impl Server {
 		)?;
 
 		let stop_state_clone = stop_state.clone();
+		let cloned_config = config.clone();
 		thread::Builder::new()
 			.name("tor_listener".to_string())
 			.spawn(move || {
-				let listener = Server::init_tor_listener("127.0.0.1:4000", Some("~/testtor2"));
+				let listener = Server::init_tor_listener(
+					&format!(
+						"{}:{}",
+						cloned_config.p2p_config.host, cloned_config.p2p_config.port
+					),
+					Some(&cloned_config.db_root),
+				);
 
 				let _ = match listener {
 					Ok(listener) => {
@@ -431,10 +438,14 @@ impl Server {
 		let tor_dir = tor_dir.replace("~", &home_dir);
 
 		// remove all other onion addresses that were previously used.
-		let dir = fs::read_dir(format!("{}/onion_service_addresses", tor_dir.clone()))?;
-		for entry in dir {
-			let dir = entry.unwrap();
-			fs::remove_dir_all(dir.path())?;
+
+		let onion_service_dir = format!("{}/onion_service_addresses", tor_dir.clone());
+		if std::path::Path::new(&onion_service_dir).exists() {
+			let dir = fs::read_dir(onion_service_dir)?;
+			for entry in dir {
+				let dir = entry.unwrap();
+				fs::remove_dir_all(dir.path())?;
+			}
 		}
 
 		let secp_inst = static_secp_instance();
