@@ -16,11 +16,16 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
+use crate::tor::client::Client;
 use crate::tor::config as tor_config;
 use crate::util::{secp, static_secp_instance};
+use serde_json::json;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -30,6 +35,7 @@ use std::{
 	thread::{self, JoinHandle},
 	time::{self, Duration},
 };
+use sysinfo::{Process, ProcessExt, Signal};
 
 use crate::ErrorKind;
 
@@ -276,7 +282,7 @@ impl Server {
 			thread::Builder::new()
 				.name("tor_listener".to_string())
 				.spawn(move || {
-					let listener = Server::init_tor_listener(
+					let res = Server::init_tor_listener(
 						&format!(
 							"{}:{}",
 							cloned_config.p2p_config.host, cloned_config.p2p_config.port
@@ -285,13 +291,79 @@ impl Server {
 						cloned_config.tor_config.socks_port,
 					);
 
-					let _ = match listener {
-						Ok(listener) => {
+					let _ = match res {
+						Ok(res) => {
+							let (mut listener, mut onion_address) = res;
 							input.send(true).unwrap();
 							loop {
-								std::thread::sleep(std::time::Duration::from_millis(30));
+								std::thread::sleep(std::time::Duration::from_millis(10000));
 								if stop_state_clone.is_stopped() {
 									break;
+								}
+								let cloned_cloned_config = cloned_config.clone();
+								let req = json!({});
+
+								let addr = SocketAddr::new(
+									IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+									cloned_config.tor_config.socks_port,
+								);
+								let client = Client::new(true, Some(addr)).unwrap();
+								let req = client
+									.create_post_request(
+										&format!("http://{}.onion", onion_address),
+										None,
+										None,
+										&req,
+									)
+									.unwrap();
+								let res = client.send_request(req);
+								if res.is_err() {
+									error!(
+										"Error couldn't connect to address [{}], {:?}",
+										onion_address, res
+									);
+									// Note: this is not the best way to do this. Ideally we create an http
+									// listener service that listens as a hidden service.
+									// TODO: implement that.
+									let resp_str = format!("{:?}", res);
+									if resp_str.contains("deadline")
+										|| resp_str.contains("HostUnreachable")
+									{
+										error!(
+											"timeout, restart tor! [{}] {:?}",
+											onion_address, res
+										);
+										let pid_file_name = format!(
+											"{}/tor/listener/pid",
+											cloned_cloned_config.db_root
+										);
+										// kill off PID if its already running
+										if Path::new(&pid_file_name).exists() {
+											let pid = fs::read_to_string(&pid_file_name).unwrap();
+											let pid = pid.parse::<i32>().unwrap();
+											let process = Process::new(pid, None, 0);
+											let _ = process.kill(Signal::Kill);
+										}
+
+										info!("killed tor process due to timeout!");
+
+										let res = Server::init_tor_listener(
+											&format!(
+												"{}:{}",
+												cloned_config.p2p_config.host,
+												cloned_config.p2p_config.port
+											),
+											Some(&cloned_config.db_root),
+											cloned_config.tor_config.socks_port,
+										)
+										.unwrap();
+										listener = res.0;
+										onion_address = res.1;
+									} else {
+										info!("tor is ok! [{}] {:?}", onion_address, res);
+									}
+								} else {
+									info!("Connect success! {:?}, {}", res, onion_address);
 								}
 							}
 							Ok(listener)
@@ -456,7 +528,7 @@ impl Server {
 		addr: &str,
 		tor_base: Option<&str>,
 		socks_port: u16,
-	) -> Result<tor_process::TorProcess, Error> {
+	) -> Result<(tor_process::TorProcess, String), Error> {
 		let mut process = tor_process::TorProcess::new();
 		let tor_dir = if tor_base.is_some() {
 			format!("{}/tor/listener", tor_base.unwrap())
@@ -508,7 +580,7 @@ impl Server {
 				ErrorKind::TorProcess(format!("Unable to start tor at {}, {}", tor_path, e).into())
 			})
 			.unwrap();
-		Ok(process)
+		Ok((process, onion_address.to_string()))
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
