@@ -271,13 +271,15 @@ impl Server {
 		// only for capabilities params, doesn't mean
 		// tor _MUST_ be on.
 		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
+		let mut onion_address = None;
 
 		if config.tor_config.tor_enabled {
 			let stop_state_clone = stop_state.clone();
 			let cloned_config = config.clone();
 			let cloned_chain = shared_chain.clone();
 
-			let (input, output): (Sender<bool>, Receiver<bool>) = mpsc::channel();
+			let (input, output): (Sender<Option<String>>, Receiver<Option<String>>) =
+				mpsc::channel();
 			let sync_state_clone = sync_state.clone();
 
 			thread::Builder::new()
@@ -296,7 +298,9 @@ impl Server {
 					let _ = match res {
 						Ok(res) => {
 							let (mut listener, mut onion_address) = res;
-							input.send(true).unwrap();
+							input
+								.send(Some(format!("http://{}.onion", onion_address.clone())))
+								.unwrap();
 							let mut tor_timeout_count = 0;
 							loop {
 								// sleep a total of 10 seconds, but check stop state every second
@@ -391,15 +395,16 @@ impl Server {
 							Ok(listener)
 						}
 						Err(e) => {
-							input.send(false).unwrap();
+							input.send(None).unwrap();
 							Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
 						}
 					};
 				})?;
 
 			let resp = output.recv();
-			if resp.unwrap() {
-				info!("tor successfully started");
+			onion_address = resp.unwrap_or(None);
+			if onion_address.is_some() {
+				info!("tor successfully started: resp = {:?}", onion_address);
 			} else {
 				error!("tor failed to start!");
 			}
@@ -423,6 +428,7 @@ impl Server {
 			genesis.hash(),
 			stop_state.clone(),
 			socks_port,
+			onion_address,
 		)?);
 
 		// Initialize various adapters with our dynamic set of connected peers.

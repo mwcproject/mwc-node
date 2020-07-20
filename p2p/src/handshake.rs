@@ -68,11 +68,12 @@ pub struct Handshake {
 	config: P2PConfig,
 	protocol_version: ProtocolVersion,
 	tracker: Arc<Tracker>,
+	onion_address: Option<String>,
 }
 
 impl Handshake {
 	/// Creates a new handshake handler
-	pub fn new(genesis: Hash, config: P2PConfig) -> Handshake {
+	pub fn new(genesis: Hash, config: P2PConfig, onion_address: Option<String>) -> Handshake {
 		Handshake {
 			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
 			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
@@ -80,6 +81,7 @@ impl Handshake {
 			config,
 			protocol_version: ProtocolVersion::local(),
 			tracker: Arc::new(Tracker::new()),
+			onion_address: onion_address,
 		}
 	}
 
@@ -148,11 +150,15 @@ impl Handshake {
 			});
 		}
 
-		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) {
-			debug!("tor enabled peer {:?}", self_addr);
+		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) && self.onion_address.is_some() {
+			let onion_address = self.onion_address.as_ref().unwrap().to_string();
+			debug!(
+				"tor enabled peer {:?}, sending onion_address = {}",
+				self_addr, onion_address
+			);
 
 			// send tor address
-			let tor_address = TorAddress::new("http://12345.onion".to_string());
+			let tor_address = TorAddress::new(onion_address);
 			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
 			write_message(conn, &msg, self.tracker.clone())?;
 		} else {
@@ -171,6 +177,7 @@ impl Handshake {
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
+			onion_address: Arc::new(None),
 		};
 
 		// If denied then we want to close the connection
@@ -239,6 +246,7 @@ impl Handshake {
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
+			onion_address: Arc::new(None),
 		};
 
 		// At this point we know the published ip and port of the peer
