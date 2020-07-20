@@ -69,6 +69,23 @@ const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
 const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
 
+pub struct Connectable {
+	pub peer_addr: Option<PeerAddr>,
+	pub onion_address: Option<String>,
+}
+
+impl Connectable {
+	pub fn new(
+		peer_addr: Option<PeerAddr>,
+		onion_address: Option<String>,
+	) -> Result<Connectable, Error> {
+		Ok(Connectable {
+			peer_addr,
+			onion_address,
+		})
+	}
+}
+
 #[derive(Debug, Fail)]
 pub enum Error {
 	#[fail(display = "p2p Serialization error, {}", _0)]

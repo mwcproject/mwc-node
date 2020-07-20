@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
-use std::net::{IpAddr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
@@ -155,7 +155,7 @@ impl Server {
 		}
 
 		if Peer::is_denied(&self.config, addr) {
-			debug!("connect_peer: peer {} denied, not connecting.", addr);
+			debug!("connect_peer: peer {:?} denied, not connecting.", addr);
 			return Err(Error::ConnectionClose);
 		}
 
@@ -184,15 +184,13 @@ impl Server {
 		let sock_addr;
 		let stream = if self.socks_port != 0 {
 			sock_addr = Some(addr.0);
-			let socks5_stream_ref =
-				socks::Socks5Stream::connect(&format!("127.0.0.1:{}", self.socks_port), addr.0);
-			info!(
-				"connecting on socks proxy to {}, addr = {}",
-				self.socks_port, addr.0
-			);
-
+			let proxy_addr =
+				SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
+			// this is for onion addresses
+			//let target_addr: socks::TargetAddr = socks::TargetAddr::Domain("www.example.com".to_string(), 80);
+			let socks5_stream_ref = tor_stream::TorStream::connect_with_address(proxy_addr, addr.0);
 			match socks5_stream_ref {
-				Ok(socks5_stream) => socks5_stream.into_inner(),
+				Ok(socks5_stream) => socks5_stream.unwrap(),
 				Err(e) => {
 					return Err(Error::Connection(e));
 				}
