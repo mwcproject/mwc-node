@@ -231,7 +231,7 @@ impl StateSync {
 		}
 	}
 
-	fn state_sync_reset(&mut self) {
+	pub fn state_sync_reset(&mut self) {
 		self.prev_state_sync = None;
 		self.state_sync_peer = None;
 	}

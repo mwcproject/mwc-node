@@ -19,7 +19,6 @@
 use crate::tor::client::Client;
 use crate::tor::config as tor_config;
 use crate::util::{secp, static_secp_instance};
-use serde_json::json;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -276,8 +275,10 @@ impl Server {
 		if config.tor_config.tor_enabled {
 			let stop_state_clone = stop_state.clone();
 			let cloned_config = config.clone();
+			let cloned_chain = shared_chain.clone();
 
 			let (input, output): (Sender<bool>, Receiver<bool>) = mpsc::channel();
+			let sync_state_clone = sync_state.clone();
 
 			thread::Builder::new()
 				.name("tor_listener".to_string())
@@ -287,6 +288,7 @@ impl Server {
 							"{}:{}",
 							cloned_config.p2p_config.host, cloned_config.p2p_config.port
 						),
+						&cloned_config.api_http_addr,
 						Some(&cloned_config.db_root),
 						cloned_config.tor_config.socks_port,
 					);
@@ -295,74 +297,94 @@ impl Server {
 						Ok(res) => {
 							let (mut listener, mut onion_address) = res;
 							input.send(true).unwrap();
+							let mut tor_timeout_count = 0;
 							loop {
-								std::thread::sleep(std::time::Duration::from_millis(10000));
-								if stop_state_clone.is_stopped() {
+								// sleep a total of 10 seconds, but check stop state every second
+								let mut stopped = false;
+								for _ in 1..100 {
+									std::thread::sleep(std::time::Duration::from_millis(100));
+									if stop_state_clone.is_stopped() {
+										stopped = true;
+									}
+								}
+								if stopped {
 									break;
 								}
 								let cloned_cloned_config = cloned_config.clone();
-								let req = json!({});
 
 								let addr = SocketAddr::new(
 									IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
 									cloned_config.tor_config.socks_port,
 								);
+
+								info!("sync state = status = {:?}", sync_state_clone.status());
 								let client = Client::new(true, Some(addr)).unwrap();
 								let req = client
-									.create_post_request(
-										&format!("http://{}.onion", onion_address),
+									.create_get_request(
+										&format!("http://{}.onion:8080/v1/status", onion_address),
 										None,
 										None,
-										&req,
 									)
 									.unwrap();
 								let res = client.send_request(req);
+
 								if res.is_err() {
 									error!(
 										"Error couldn't connect to address [{}], {:?}",
 										onion_address, res
 									);
-									// Note: this is not the best way to do this. Ideally we create an http
-									// listener service that listens as a hidden service.
-									// TODO: implement that.
-									let resp_str = format!("{:?}", res);
-									if resp_str.contains("deadline")
-										|| resp_str.contains("HostUnreachable")
-									{
-										error!(
-											"timeout, restart tor! [{}] {:?}",
-											onion_address, res
-										);
-										let pid_file_name = format!(
-											"{}/tor/listener/pid",
-											cloned_cloned_config.db_root
-										);
-										// kill off PID if its already running
-										if Path::new(&pid_file_name).exists() {
-											let pid = fs::read_to_string(&pid_file_name).unwrap();
-											let pid = pid.parse::<i32>().unwrap();
-											let process = Process::new(pid, None, 0);
-											let _ = process.kill(Signal::Kill);
-										}
+									tor_timeout_count = tor_timeout_count + 1;
+									// only restart tor after second timeout in a row.
+									if tor_timeout_count < 2 {
+										continue;
+									}
 
-										info!("killed tor process due to timeout!");
+									// restarting so, reset counter.
+									tor_timeout_count = 0;
+									error!("timeout, restart tor! [{}] {:?}", onion_address, res);
+									let pid_file_name = format!(
+										"{}/tor/listener/pid",
+										cloned_cloned_config.db_root
+									);
+									// kill off PID if its already running
+									if Path::new(&pid_file_name).exists() {
+										let pid = fs::read_to_string(&pid_file_name).unwrap();
+										let pid = pid.parse::<i32>().unwrap();
+										let process = Process::new(pid, None, 0);
+										let _ = process.kill(Signal::Kill);
+									}
 
-										let res = Server::init_tor_listener(
-											&format!(
-												"{}:{}",
-												cloned_config.p2p_config.host,
-												cloned_config.p2p_config.port
-											),
-											Some(&cloned_config.db_root),
-											cloned_config.tor_config.socks_port,
-										)
-										.unwrap();
-										listener = res.0;
-										onion_address = res.1;
-									} else {
-										info!("tor is ok! [{}] {:?}", onion_address, res);
+									info!("killed tor process due to timeout!");
+
+									let res = Server::init_tor_listener(
+										&format!(
+											"{}:{}",
+											cloned_config.p2p_config.host,
+											cloned_config.p2p_config.port
+										),
+										&cloned_config.api_http_addr,
+										Some(&cloned_config.db_root),
+										cloned_config.tor_config.socks_port,
+									)
+									.unwrap();
+									listener = res.0;
+									onion_address = res.1;
+									let status = sync_state_clone.status();
+									let dl = match status {
+										SyncStatus::TxHashsetDownload { .. } => true,
+										_ => false,
+									};
+
+									if dl {
+										let height = cloned_chain.get_sync_head().unwrap().height;
+										sync_state_clone.update(SyncStatus::HeaderSync {
+											current_height: height,
+											highest_height: height,
+										});
 									}
 								} else {
+									// reset counter on success
+									tor_timeout_count = 0;
 									info!("Connect success! {:?}, {}", res, onion_address);
 								}
 							}
@@ -526,6 +548,7 @@ impl Server {
 	/// Start the tor listener for inbound connections
 	pub fn init_tor_listener(
 		addr: &str,
+		api_addr: &str,
 		tor_base: Option<&str>,
 		socks_port: u16,
 	) -> Result<(tor_process::TorProcess, String), Error> {
@@ -565,9 +588,15 @@ impl Server {
 			onion_address, addr
 		);
 
-		tor_config::output_tor_listener_config(&tor_dir, addr, &vec![sec_key], socks_port)
-			.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
-			.unwrap();
+		tor_config::output_tor_listener_config(
+			&tor_dir,
+			addr,
+			api_addr,
+			&vec![sec_key],
+			socks_port,
+		)
+		.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
+		.unwrap();
 		// Start TOR process
 		let tor_path = format!("{}/torrc", tor_dir);
 		process

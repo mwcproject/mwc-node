@@ -205,6 +205,7 @@ pub fn output_onion_service_config(
 pub fn output_torrc(
 	tor_config_directory: &str,
 	wallet_listener_addr: &str,
+	api_listener_addr: &str,
 	socks_port: &str,
 	service_dirs: &[String],
 ) -> Result<(), Error> {
@@ -221,6 +222,7 @@ pub fn output_torrc(
 		props.add_item("HiddenServiceDir", &service_file_name);
 		props.add_item("HiddenServiceVersion", &format!("3"));
 		props.add_item("HiddenServicePort", &format!("80 {}", wallet_listener_addr));
+		props.add_item("HiddenServicePort", &format!("8080 {}", api_listener_addr));
 	}
 
 	props.write_to_file(&torrc_file_path)?;
@@ -232,6 +234,7 @@ pub fn output_torrc(
 pub fn output_tor_listener_config(
 	tor_config_directory: &str,
 	wallet_listener_addr: &str,
+	api_listener_addr: &str,
 	listener_keys: &[SecretKey],
 	socks_port: u16,
 ) -> Result<(), Error> {
@@ -252,6 +255,7 @@ pub fn output_tor_listener_config(
 	output_torrc(
 		tor_config_directory,
 		wallet_listener_addr,
+		api_listener_addr,
 		&format!("{}", socks_port),
 		&service_dirs,
 	)?;
@@ -268,7 +272,7 @@ pub fn _output_tor_sender_config(
 	fs::create_dir_all(&tor_config_dir)
 		.map_err(|e| ErrorKind::IO(format!("Unable to create dir {}, {}", tor_config_dir, e)))?;
 
-	output_torrc(tor_config_dir, "", socks_listener_addr, &[])?;
+	output_torrc(tor_config_dir, "", "", socks_listener_addr, &[])?;
 
 	Ok(())
 }
