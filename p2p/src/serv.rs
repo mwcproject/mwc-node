@@ -58,11 +58,12 @@ impl Server {
 		genesis: Hash,
 		stop_state: Arc<StopState>,
 		socks_port: u16,
+		onion_address: Option<String>,
 	) -> Result<Server, Error> {
 		Ok(Server {
 			config: config.clone(),
 			capabilities: capab,
-			handshake: Arc::new(Handshake::new(genesis, config.clone())),
+			handshake: Arc::new(Handshake::new(genesis, config.clone(), onion_address)),
 			peers: Arc::new(Peers::new(
 				PeerStore::new(db_root)?,
 				adapter,

@@ -57,7 +57,7 @@ impl Protocol {
 
 impl MessageHandler for Protocol {
 	fn consume(
-		&self,
+		&mut self,
 		mut msg: Message,
 		stopped: Arc<AtomicBool>,
 		tracker: Arc<Tracker>,
@@ -212,6 +212,7 @@ impl MessageHandler for Protocol {
 					"TorAddress received from {:?}, address = {:?}",
 					self.peer_info, tor_address
 				);
+				self.peer_info.onion_address = Arc::new(Some(tor_address.address));
 				Ok(None)
 			}
 

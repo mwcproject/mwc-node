@@ -58,6 +58,7 @@ fn peer_handshake() {
 			Hash::from_vec(&vec![]),
 			Arc::new(StopState::new()),
 			0,
+			None,
 		)
 		.unwrap(),
 	);
@@ -76,7 +77,7 @@ fn peer_handshake() {
 		p2p::Capabilities::UNKNOWN,
 		Difficulty::min(),
 		my_addr,
-		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone()),
+		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
 		net_adapter,
 		100_000,
 		None,
