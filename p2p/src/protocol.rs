@@ -22,6 +22,7 @@ use crate::msg::{
 	TorAddress, TxHashSetArchive, TxHashSetRequest, Type,
 };
 
+use crate::types::Capabilities;
 use crate::types::PeerAddr;
 use crate::types::{Error, NetAdapter, PeerInfo};
 use chrono::prelude::Utc;
@@ -287,6 +288,19 @@ impl MessageHandler for Protocol {
 			Type::GetPeerAddrs => {
 				let get_peers: GetPeerAddrs = msg.body()?;
 				let peers = adapter.find_peer_addrs(get_peers.capabilities);
+
+				// if this peer does not support TOR, do not send them the tor peers.
+				// doing so will cause them to ban us because it's not part of the old protocol.
+				let peers = if !get_peers.capabilities.contains(Capabilities::TOR_ADDRESS) {
+					let mut peers_filtered = vec![];
+					for peer in peers {
+						peers_filtered.push(peer);
+					}
+					peers_filtered
+				} else {
+					peers
+				};
+
 				Ok(Some(Msg::new(
 					Type::PeerAddrs,
 					PeerAddrs { peers },

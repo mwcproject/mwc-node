@@ -78,7 +78,6 @@ impl Peers {
 			last_banned: 0,
 			ban_reason: ReasonForBan::None,
 			last_connected: Utc::now().timestamp(),
-			onion_address: "".to_string(),
 		};
 		debug!("Saving newly connected peer {}.", peer_data.addr);
 		self.save_peer(&peer_data)?;
@@ -98,7 +97,6 @@ impl Peers {
 			last_banned: Utc::now().timestamp(),
 			ban_reason,
 			last_connected: Utc::now().timestamp(),
-			onion_address: "".to_string(),
 		};
 		debug!("Banning peer {}, ban_reason={:?}", addr, ban_reason);
 		self.save_peer(&peer_data)
@@ -775,7 +773,6 @@ impl NetAdapter for Peers {
 				last_banned: 0,
 				ban_reason: ReasonForBan::None,
 				last_connected: Utc::now().timestamp(),
-				onion_address: "".to_string(),
 			};
 			if let Err(e) = self.save_peer(&peer) {
 				error!("Could not save received peer address: {:?}", e);

@@ -106,7 +106,7 @@ impl Handshake {
 		total_difficulty: Difficulty,
 		self_addr: PeerAddr,
 		conn: &mut TcpStream,
-		peer_addr: Option<SocketAddr>,
+		peer_addr: Option<PeerAddr>,
 	) -> Result<PeerInfo, Error> {
 		// Set explicit timeouts on the tcp stream for hand/shake messages.
 		// Once the peer is up and running we will set new values for these.
@@ -116,18 +116,12 @@ impl Handshake {
 
 		// prepare the first part of the handshake
 		let nonce = self.next_nonce();
-
-		let sock_addr = if peer_addr.is_some() {
-			peer_addr.unwrap()
-		} else {
-			match conn.peer_addr() {
-				Ok(addr) => addr,
-				Err(_) => {
-					return Err(Error::ConnectionClose);
-				}
+		let peer_addr = peer_addr.unwrap_or(match conn.peer_addr() {
+			Ok(addr) => PeerAddr::Ip(addr),
+			Err(_) => {
+				return Err(Error::ConnectionClose);
 			}
-		};
-		let peer_addr = PeerAddr::Ip(sock_addr);
+		});
 
 		let hand = Hand {
 			version: self.protocol_version,

@@ -187,16 +187,14 @@ impl Server {
 			addr
 		);
 
-		let sock_addr;
+		let peer_addr;
 
-		let stream = match addr {
+		let stream = match addr.clone() {
 			PeerAddr::Ip(address) => {
 				if self.socks_port != 0 {
-					sock_addr = Some(address);
+					peer_addr = Some(PeerAddr::Ip(address));
 					let proxy_addr =
 						SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
-					// this is for onion addresses
-					//let target_addr: socks::TargetAddr = socks::TargetAddr::Domain("www.example.com".to_string(), 80);
 					let socks5_stream_ref =
 						tor_stream::TorStream::connect_with_address(proxy_addr, address);
 					match socks5_stream_ref {
@@ -206,14 +204,30 @@ impl Server {
 						}
 					}
 				} else {
-					sock_addr = Some(address);
-					info!("connection to {:?}", sock_addr);
+					peer_addr = Some(PeerAddr::Ip(address));
+					info!("connection to {:?}", peer_addr);
 					TcpStream::connect_timeout(&address, Duration::from_secs(10))?
 				}
 			}
-			PeerAddr::Onion(_) => {
-				// not implemented yet
-				return Err(Error::ConnectionClose);
+			PeerAddr::Onion(onion_address) => {
+				peer_addr = None;
+				if self.socks_port != 0 {
+					let proxy_addr =
+						SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
+					let onion_target: socks::TargetAddr =
+						socks::TargetAddr::Domain(onion_address, 80);
+					let socks5_stream_ref =
+						tor_stream::TorStream::connect_with_address(proxy_addr, onion_target);
+					match socks5_stream_ref {
+						Ok(socks5_stream) => socks5_stream.unwrap(),
+						Err(e) => {
+							return Err(Error::Connection(e));
+						}
+					}
+				} else {
+					// can't connect to this because we don't have a socks proxy.
+					return Err(Error::ConnectionClose);
+				}
 			}
 		};
 
@@ -229,7 +243,7 @@ impl Server {
 					&self.handshake,
 					self.peers.clone(),
 					header_cache_size,
-					sock_addr,
+					peer_addr,
 					(*self).clone(),
 				)?;
 				let peer = Arc::new(peer);
