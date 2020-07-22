@@ -18,7 +18,10 @@ use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::msg::{read_message, write_message, Hand, Msg, Shake, TorAddress, Type, USER_AGENT};
 use crate::peer::Peer;
-use crate::types::{Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerInfo, PeerLiveInfo};
+use crate::types::{
+	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
+	PeerLiveInfo,
+};
 use crate::util::RwLock;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
@@ -124,8 +127,7 @@ impl Handshake {
 				}
 			}
 		};
-
-		let peer_addr = PeerAddr(sock_addr);
+		let peer_addr = PeerAddr::Ip(sock_addr);
 
 		let hand = Hand {
 			version: self.protocol_version,
@@ -133,8 +135,8 @@ impl Handshake {
 			nonce,
 			genesis: self.genesis,
 			total_difficulty,
-			sender_addr: self_addr,
-			receiver_addr: peer_addr,
+			sender_addr: self_addr.clone(),
+			receiver_addr: peer_addr.clone(),
 			user_agent: USER_AGENT.to_string(),
 		};
 
@@ -182,7 +184,7 @@ impl Handshake {
 
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
-		if Peer::is_denied(&self.config, peer_info.addr) {
+		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
 			return Err(Error::ConnectionClose);
 		}
 
@@ -221,7 +223,7 @@ impl Handshake {
 		} else {
 			// check the nonce to see if we are trying to connect to ourselves
 			let nonces = self.nonces.read();
-			let addr = resolve_peer_addr(hand.sender_addr, &conn);
+			let addr = resolve_peer_addr(hand.sender_addr.clone(), &conn);
 			if nonces.contains(&hand.nonce) {
 				// save ip addresses of ourselves
 				let mut addrs = self.addrs.write();
@@ -253,7 +255,7 @@ impl Handshake {
 		// so check if we are configured to explicitly allow or deny it.
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
-		if Peer::is_denied(&self.config, peer_info.addr) {
+		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
 			return Err(Error::ConnectionClose);
 		}
 
@@ -289,10 +291,15 @@ impl Handshake {
 
 /// Resolve the correct peer_addr based on the connection and the advertised port.
 fn resolve_peer_addr(advertised: PeerAddr, conn: &TcpStream) -> PeerAddr {
-	let port = advertised.0.port();
-	if let Ok(addr) = conn.peer_addr() {
-		PeerAddr(SocketAddr::new(addr.ip(), port))
-	} else {
-		advertised
+	match advertised {
+		Ip(socket_addr) => {
+			let port = socket_addr.port();
+			if let Ok(addr) = conn.peer_addr() {
+				PeerAddr::Ip(SocketAddr::new(addr.ip(), port))
+			} else {
+				advertised
+			}
+		}
+		Onion(_) => advertised,
 	}
 }

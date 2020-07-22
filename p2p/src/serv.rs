@@ -38,6 +38,7 @@ use chrono::prelude::{DateTime, Utc};
 
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.
+#[derive(Clone)]
 pub struct Server {
 	pub config: P2PConfig,
 	pub socks_port: u16,
@@ -101,19 +102,24 @@ impl Server {
 					// we do not want.
 					stream.set_nonblocking(false)?;
 
-					let mut peer_addr = PeerAddr(peer_addr);
+					let mut peer_addr = PeerAddr::Ip(peer_addr);
 
 					// attempt to see if it an ipv4-mapped ipv6
 					// if yes convert to ipv4
-					if peer_addr.0.is_ipv6() {
-						if let IpAddr::V6(ipv6) = peer_addr.0.ip() {
-							if let Some(ipv4) = ipv6.to_ipv4() {
-								peer_addr = PeerAddr(SocketAddr::V4(SocketAddrV4::new(
-									ipv4,
-									peer_addr.0.port(),
-								)))
+					match peer_addr {
+						PeerAddr::Ip(socket_addr) => {
+							if socket_addr.is_ipv6() {
+								if let IpAddr::V6(ipv6) = socket_addr.ip() {
+									if let Some(ipv4) = ipv6.to_ipv4() {
+										peer_addr = PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
+											ipv4,
+											socket_addr.port(),
+										)))
+									}
+								}
 							}
 						}
+						_ => {}
 					}
 
 					if self.check_undesirable(&stream) {
@@ -154,7 +160,7 @@ impl Server {
 			return Err(Error::ConnectionClose);
 		}
 
-		if Peer::is_denied(&self.config, addr) {
+		if Peer::is_denied(&self.config, addr.clone()) {
 			debug!("connect_peer: peer {:?} denied, not connecting.", addr);
 			return Err(Error::ConnectionClose);
 		}
@@ -168,7 +174,7 @@ impl Server {
 			}
 		}
 
-		if let Some(p) = self.peers.get_connected_peer(addr) {
+		if let Some(p) = self.peers.get_connected_peer(addr.clone()) {
 			// if we're already connected to the addr, just return the peer
 			trace!("connect_peer: already connected {}", addr);
 			return Ok(p);
@@ -182,24 +188,35 @@ impl Server {
 		);
 
 		let sock_addr;
-		let stream = if self.socks_port != 0 {
-			sock_addr = Some(addr.0);
-			let proxy_addr =
-				SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
-			// this is for onion addresses
-			//let target_addr: socks::TargetAddr = socks::TargetAddr::Domain("www.example.com".to_string(), 80);
-			let socks5_stream_ref = tor_stream::TorStream::connect_with_address(proxy_addr, addr.0);
-			match socks5_stream_ref {
-				Ok(socks5_stream) => socks5_stream.unwrap(),
-				Err(e) => {
-					return Err(Error::Connection(e));
+
+		let stream = match addr {
+			PeerAddr::Ip(address) => {
+				if self.socks_port != 0 {
+					sock_addr = Some(address);
+					let proxy_addr =
+						SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
+					// this is for onion addresses
+					//let target_addr: socks::TargetAddr = socks::TargetAddr::Domain("www.example.com".to_string(), 80);
+					let socks5_stream_ref =
+						tor_stream::TorStream::connect_with_address(proxy_addr, address);
+					match socks5_stream_ref {
+						Ok(socks5_stream) => socks5_stream.unwrap(),
+						Err(e) => {
+							return Err(Error::Connection(e));
+						}
+					}
+				} else {
+					sock_addr = Some(address);
+					info!("connection to {:?}", sock_addr);
+					TcpStream::connect_timeout(&address, Duration::from_secs(10))?
 				}
 			}
-		} else {
-			sock_addr = Some(addr.0);
-			info!("connection to {:?}", sock_addr);
-			TcpStream::connect_timeout(&addr.0, Duration::from_secs(10))?
+			PeerAddr::Onion(_) => {
+				// not implemented yet
+				return Err(Error::ConnectionClose);
+			}
 		};
+
 		match Ok(stream) {
 			Ok(stream) => {
 				let total_diff = self.peers.total_difficulty()?;
@@ -213,6 +230,7 @@ impl Server {
 					self.peers.clone(),
 					header_cache_size,
 					sock_addr,
+					(*self).clone(),
 				)?;
 				let peer = Arc::new(peer);
 				self.peers.add_connected(peer.clone())?;
@@ -245,6 +263,7 @@ impl Server {
 			&self.handshake,
 			self.peers.clone(),
 			header_cache_size,
+			self.clone(),
 		)?;
 		self.peers.add_connected(Arc::new(peer))?;
 		Ok(())
@@ -271,14 +290,14 @@ impl Server {
 			return true;
 		}
 		if let Ok(peer_addr) = stream.peer_addr() {
-			let peer_addr = PeerAddr(peer_addr);
-			if self.peers.is_banned(peer_addr) {
+			let peer_addr = PeerAddr::Ip(peer_addr.clone());
+			if self.peers.is_banned(peer_addr.clone()) {
 				debug!("Peer {} banned, refusing connection.", peer_addr);
 				return true;
 			}
 			// The call to is_known() can fail due to contention on the peers map.
 			// If it fails we want to default to refusing the connection.
-			match self.peers.is_known(peer_addr) {
+			match self.peers.is_known(peer_addr.clone()) {
 				Ok(true) => {
 					debug!("Peer {} already known, refusing connection.", peer_addr);
 					return true;

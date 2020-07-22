@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::serv::Server;
 use crate::util::{Mutex, RwLock};
 use std::fmt;
 use std::fs::File;
@@ -82,6 +83,7 @@ impl Peer {
 		conn: TcpStream,
 		adapter: Arc<dyn NetAdapter>,
 		header_cache_size: u64,
+		server: Server,
 	) -> std::io::Result<Peer> {
 		let state = Arc::new(RwLock::new(State::Connected));
 		let state_sync_requested = Arc::new(AtomicBool::new(false));
@@ -91,6 +93,7 @@ impl Peer {
 			info.clone(),
 			state_sync_requested.clone(),
 			header_cache_size,
+			server,
 		);
 		let tracker = Arc::new(conn::Tracker::new());
 		let (sendh, stoph) = conn::listen(conn, info.version, tracker.clone(), handler)?;
@@ -114,11 +117,12 @@ impl Peer {
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
 		header_cache_size: u64,
+		server: Server,
 	) -> Result<Peer, Error> {
 		debug!("accept: handshaking from {:?}", conn.peer_addr());
 		let info = hs.accept(capab, total_difficulty, &mut conn);
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size, server)?),
 			Err(e) => {
 				debug!(
 					"accept: handshaking from {:?} failed with error: {:?}",
@@ -142,6 +146,7 @@ impl Peer {
 		adapter: Arc<dyn NetAdapter>,
 		header_cache_size: u64,
 		peer_addr: Option<SocketAddr>,
+		server: Server,
 	) -> Result<Peer, Error> {
 		debug!("connect: handshaking with {:?}", self_addr);
 
@@ -157,7 +162,7 @@ impl Peer {
 			hs.initiate(capab, total_difficulty, self_addr, &mut conn, None)
 		};
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size, server)?),
 			Err(e) => {
 				if peer_addr.is_some() {
 					debug!(
