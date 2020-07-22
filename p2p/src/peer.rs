@@ -17,7 +17,6 @@ use crate::util::{Mutex, RwLock};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::net::SocketAddr;
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,7 +144,7 @@ impl Peer {
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
 		header_cache_size: u64,
-		peer_addr: Option<SocketAddr>,
+		peer_addr: Option<PeerAddr>,
 		server: Server,
 	) -> Result<Peer, Error> {
 		debug!("connect: handshaking with {:?}", self_addr);
@@ -156,7 +155,7 @@ impl Peer {
 				total_difficulty,
 				self_addr,
 				&mut conn,
-				Some(peer_addr.unwrap()),
+				Some(peer_addr.clone().unwrap()),
 			)
 		} else {
 			hs.initiate(capab, total_difficulty, self_addr, &mut conn, None)

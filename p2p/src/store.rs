@@ -56,8 +56,6 @@ pub struct PeerData {
 	pub ban_reason: ReasonForBan,
 	/// Time when we last connected to this peer.
 	pub last_connected: i64,
-	/// Onion address. If not enabled, use ""
-	pub onion_address: String,
 }
 
 impl Writeable for PeerData {
@@ -104,8 +102,6 @@ impl Readable for PeerData {
 			"Unable to read PeerData ban reason".to_string(),
 		))?;
 
-		let onion_address = "".to_string();
-
 		match State::from_u8(fl) {
 			Some(flags) => Ok(PeerData {
 				addr,
@@ -115,7 +111,6 @@ impl Readable for PeerData {
 				last_banned: lb,
 				ban_reason,
 				last_connected,
-				onion_address,
 			}),
 			None => Err(ser::Error::CorruptedData(
 				"Unable to read PeerData State".to_string(),
