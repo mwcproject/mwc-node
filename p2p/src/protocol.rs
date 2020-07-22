@@ -294,7 +294,12 @@ impl MessageHandler for Protocol {
 				let peers = if !get_peers.capabilities.contains(Capabilities::TOR_ADDRESS) {
 					let mut peers_filtered = vec![];
 					for peer in peers {
-						peers_filtered.push(peer);
+						match peer.clone() {
+							PeerAddr::Onion(_) => {}
+							_ => {
+								peers_filtered.push(peer);
+							}
+						}
 					}
 					peers_filtered
 				} else {
