@@ -23,7 +23,7 @@ use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
 use grin_store::{self, option_to_not_found, to_key, Error};
 
-const DB_NAME: &str = "peer";
+const DB_NAME: &str = "peerV2";
 const STORE_SUBPATH: &str = "peers";
 
 const PEER_PREFIX: u8 = b'P';
@@ -56,6 +56,8 @@ pub struct PeerData {
 	pub ban_reason: ReasonForBan,
 	/// Time when we last connected to this peer.
 	pub last_connected: i64,
+	/// Onion address. If not enabled, use ""
+	pub onion_address: String,
 }
 
 impl Writeable for PeerData {
@@ -102,6 +104,8 @@ impl Readable for PeerData {
 			"Unable to read PeerData ban reason".to_string(),
 		))?;
 
+		let onion_address = "".to_string();
+
 		match State::from_u8(fl) {
 			Some(flags) => Ok(PeerData {
 				addr,
@@ -111,6 +115,7 @@ impl Readable for PeerData {
 				last_banned: lb,
 				ban_reason,
 				last_connected,
+				onion_address,
 			}),
 			None => Err(ser::Error::CorruptedData(
 				"Unable to read PeerData State".to_string(),
@@ -132,15 +137,15 @@ impl PeerStore {
 	}
 
 	pub fn save_peer(&self, p: &PeerData) -> Result<(), Error> {
-		debug!("save_peer: {:?} marked {:?}", p.addr, p.flags);
+		debug!("save_peer: {:?} marked {:?}", p.addr.clone(), p.flags);
 
 		let batch = self.db.batch()?;
-		batch.put_ser(&peer_key(p.addr)[..], p)?;
+		batch.put_ser(&peer_key(p.addr.clone())[..], p)?;
 		batch.commit()
 	}
 
 	pub fn get_peer(&self, peer_addr: PeerAddr) -> Result<PeerData, Error> {
-		option_to_not_found(self.db.get_ser(&peer_key(peer_addr)[..]), || {
+		option_to_not_found(self.db.get_ser(&peer_key(peer_addr.clone())[..]), || {
 			format!("Peer at address: {}", peer_addr)
 		})
 	}
@@ -189,10 +194,10 @@ impl PeerStore {
 	pub fn update_state(&self, peer_addr: PeerAddr, new_state: State) -> Result<(), Error> {
 		let batch = self.db.batch()?;
 
-		let mut peer =
-			option_to_not_found(batch.get_ser::<PeerData>(&peer_key(peer_addr)[..]), || {
-				format!("Peer at address: {}", peer_addr)
-			})?;
+		let mut peer = option_to_not_found(
+			batch.get_ser::<PeerData>(&peer_key(peer_addr.clone())[..]),
+			|| format!("Peer at address: {}", peer_addr),
+		)?;
 		peer.flags = new_state;
 		if new_state == State::Banned {
 			peer.last_banned = Utc::now().timestamp();

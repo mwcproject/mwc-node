@@ -194,7 +194,7 @@ impl HeaderSync {
 					{
 						if let Err(e) = self
 							.peers
-							.ban_peer(peer.info.addr, ReasonForBan::FraudHeight)
+							.ban_peer(peer.info.addr.clone(), ReasonForBan::FraudHeight)
 						{
 							error!("failed to ban peer {}: {:?}", peer.info.addr, e);
 						}

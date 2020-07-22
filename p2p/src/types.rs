@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::types::PeerAddr::Ip;
+use crate::types::PeerAddr::Onion;
 use failure::Fail;
 use std::convert::From;
 use std::fmt;
@@ -68,23 +70,6 @@ const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
 /// The peer listener buffer count. Allows temporarily accepting more connections
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
 const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
-
-pub struct Connectable {
-	pub peer_addr: Option<PeerAddr>,
-	pub onion_address: Option<String>,
-}
-
-impl Connectable {
-	pub fn new(
-		peer_addr: Option<PeerAddr>,
-		onion_address: Option<String>,
-	) -> Result<Connectable, Error> {
-		Ok(Connectable {
-			peer_addr,
-			onion_address,
-		})
-	}
-}
 
 #[derive(Debug, Fail)]
 pub enum Error {
@@ -146,26 +131,41 @@ impl From<io::Error> for Error {
 	}
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct PeerAddr(pub SocketAddr);
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PeerAddr {
+	Ip(SocketAddr),
+	Onion(String),
+}
 
 impl Writeable for PeerAddr {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		match self.0 {
-			SocketAddr::V4(sav4) => {
-				ser_multiwrite!(
-					writer,
-					[write_u8, 0],
-					[write_fixed_bytes, &sav4.ip().octets().to_vec()],
-					[write_u16, sav4.port()]
-				);
-			}
-			SocketAddr::V6(sav6) => {
-				writer.write_u8(1)?;
-				for seg in &sav6.ip().segments() {
-					writer.write_u16(*seg)?;
+		match self {
+			Ip(ip) => match ip {
+				SocketAddr::V4(sav4) => {
+					ser_multiwrite!(
+						writer,
+						[write_u8, 0],
+						[write_fixed_bytes, &sav4.ip().octets().to_vec()],
+						[write_u16, sav4.port()]
+					);
 				}
-				writer.write_u16(sav6.port())?;
+				SocketAddr::V6(sav6) => {
+					writer.write_u8(1)?;
+					for seg in &sav6.ip().segments() {
+						writer.write_u16(*seg)?;
+					}
+					writer.write_u16(sav6.port())?;
+				}
+			},
+			Onion(onion) => {
+				if onion.len() > 100 {
+					return Err(ser::Error::TooLargeWriteErr(format!(
+						"Unreasonable long onion address. UA length is {}",
+						onion.len()
+					)));
+				}
+				writer.write_u8(2)?;
+				writer.write_bytes(onion)?;
 			}
 		}
 		Ok(())
@@ -178,21 +178,26 @@ impl Readable for PeerAddr {
 		if v4_or_v6 == 0 {
 			let ip = reader.read_fixed_bytes(4)?;
 			let port = reader.read_u16()?;
-			Ok(PeerAddr(SocketAddr::V4(SocketAddrV4::new(
+			Ok(PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
 				Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
 				port,
 			))))
-		} else {
+		} else if v4_or_v6 == 1 {
 			let ip = try_iter_map_vec!(0..8, |_| reader.read_u16());
 			let ipv6 = Ipv6Addr::new(ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7]);
 			let port = reader.read_u16()?;
 			if let Some(ipv4) = ipv6.to_ipv4() {
-				Ok(PeerAddr(SocketAddr::V4(SocketAddrV4::new(ipv4, port))))
+				Ok(PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(ipv4, port))))
 			} else {
-				Ok(PeerAddr(SocketAddr::V6(SocketAddrV6::new(
+				Ok(PeerAddr::Ip(SocketAddr::V6(SocketAddrV6::new(
 					ipv6, port, 0, 0,
 				))))
 			}
+		} else {
+			// '2' is used for onion addresses now
+			let oa = reader.read_bytes_len_prefix()?;
+			let onion_address = String::from_utf8(oa).unwrap_or("".to_string());
+			Ok(PeerAddr::Onion(onion_address))
 		}
 	}
 }
@@ -213,13 +218,13 @@ impl<'de> Visitor<'de> for PeerAddrs {
 		while let Some(entry) = access.next_element::<&str>()? {
 			match SocketAddr::from_str(entry) {
 				// Try to parse IP address first
-				Ok(ip) => peers.push(PeerAddr(ip)),
+				Ok(ip) => peers.push(PeerAddr::Ip(ip)),
 				// If that fails it's probably a DNS record
 				Err(_) => {
 					let socket_addrs = entry
 						.to_socket_addrs()
 						.expect(format!("Unable to resolve DNS: {}", entry).as_str());
-					peers.append(&mut socket_addrs.map(|addr| PeerAddr(addr)).collect());
+					peers.append(&mut socket_addrs.map(|addr| PeerAddr::Ip(addr)).collect());
 				}
 			}
 		}
@@ -240,10 +245,17 @@ impl std::hash::Hash for PeerAddr {
 	/// If loopback address then we care about ip and port.
 	/// If regular address then we only care about the ip and ignore the port.
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		if self.0.ip().is_loopback() {
-			self.0.hash(state);
-		} else {
-			self.0.ip().hash(state);
+		match self {
+			Ip(ip) => {
+				if ip.ip().is_loopback() {
+					ip.hash(state);
+				} else {
+					ip.ip().hash(state);
+				}
+			}
+			Onion(onion) => {
+				onion.hash(state);
+			}
 		}
 	}
 }
@@ -252,10 +264,21 @@ impl PartialEq for PeerAddr {
 	/// If loopback address then we care about ip and port.
 	/// If regular address then we only care about the ip and ignore the port.
 	fn eq(&self, other: &PeerAddr) -> bool {
-		if self.0.ip().is_loopback() {
-			self.0 == other.0
-		} else {
-			self.0.ip() == other.0.ip()
+		match self {
+			Ip(ip) => match other {
+				Ip(other_ip) => {
+					if ip.ip().is_loopback() {
+						ip == other_ip
+					} else {
+						ip.ip() == other_ip.ip()
+					}
+				}
+				_ => false,
+			},
+			Onion(onion) => match other {
+				Onion(other_onion) => onion == other_onion,
+				_ => false,
+			},
 		}
 	}
 }
@@ -264,7 +287,10 @@ impl Eq for PeerAddr {}
 
 impl std::fmt::Display for PeerAddr {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		write!(f, "{}", self.0)
+		match self {
+			Ip(ip) => write!(f, "{}", ip),
+			Onion(onion) => write!(f, "{}", onion),
+		}
 	}
 }
 
@@ -273,16 +299,21 @@ impl PeerAddr {
 	/// defaults to port 3414 on mainnet and 13414 on floonet.
 	pub fn from_ip(addr: IpAddr) -> PeerAddr {
 		let port = if global::is_floonet() { 13414 } else { 3414 };
-		PeerAddr(SocketAddr::new(addr, port))
+		PeerAddr::Ip(SocketAddr::new(addr, port))
 	}
 
 	/// If the ip is loopback then our key is "ip:port" (mainly for local usernet testing).
 	/// Otherwise we only care about the ip (we disallow multiple peers on the same ip address).
 	pub fn as_key(&self) -> String {
-		if self.0.ip().is_loopback() {
-			format!("{}:{}", self.0.ip(), self.0.port())
-		} else {
-			format!("{}", self.0.ip())
+		match self {
+			Ip(ip) => {
+				if ip.ip().is_loopback() {
+					format!("{}:{}", ip.ip(), ip.port())
+				} else {
+					format!("{}", ip.ip())
+				}
+			}
+			Onion(onion) => format!("{}", onion),
 		}
 	}
 }
@@ -562,7 +593,7 @@ impl From<PeerInfo> for PeerInfoDisplay {
 			capabilities: info.capabilities,
 			user_agent: info.user_agent.clone(),
 			version: info.version,
-			addr: info.addr,
+			addr: info.clone().addr,
 			direction: info.direction,
 			total_difficulty: info.total_difficulty(),
 			height: info.height(),

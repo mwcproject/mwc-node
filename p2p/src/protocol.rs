@@ -15,12 +15,14 @@
 use crate::chain;
 use crate::conn::{Message, MessageHandler, Tracker};
 use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock};
+use crate::serv::Server;
 
 use crate::msg::{
 	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, Msg, PeerAddrs, Ping, Pong,
 	TorAddress, TxHashSetArchive, TxHashSetRequest, Type,
 };
 
+use crate::types::PeerAddr;
 use crate::types::{Error, NetAdapter, PeerInfo};
 use chrono::prelude::Utc;
 use rand::{thread_rng, Rng};
@@ -37,6 +39,7 @@ pub struct Protocol {
 	peer_info: PeerInfo,
 	state_sync_requested: Arc<AtomicBool>,
 	header_cache_size: u64,
+	server: Server,
 }
 
 impl Protocol {
@@ -45,12 +48,14 @@ impl Protocol {
 		peer_info: PeerInfo,
 		state_sync_requested: Arc<AtomicBool>,
 		header_cache_size: u64,
+		server: Server,
 	) -> Protocol {
 		Protocol {
 			adapter,
 			peer_info,
 			state_sync_requested,
 			header_cache_size,
+			server,
 		}
 	}
 }
@@ -68,7 +73,7 @@ impl MessageHandler for Protocol {
 		// If we received a msg from a banned peer then log and drop it.
 		// If we are getting a lot of these then maybe we are not cleaning
 		// banned peers up correctly?
-		if adapter.is_banned(self.peer_info.addr) {
+		if adapter.is_banned(self.peer_info.addr.clone()) {
 			debug!(
 				"handler: consume: peer {:?} banned, received: {:?}, dropping.",
 				self.peer_info.addr, msg.header.msg_type,
@@ -79,7 +84,11 @@ impl MessageHandler for Protocol {
 		match msg.header.msg_type {
 			Type::Ping => {
 				let ping: Ping = msg.body()?;
-				adapter.peer_difficulty(self.peer_info.addr, ping.total_difficulty, ping.height);
+				adapter.peer_difficulty(
+					self.peer_info.addr.clone(),
+					ping.total_difficulty,
+					ping.height,
+				);
 
 				Ok(Some(Msg::new(
 					Type::Pong,
@@ -93,7 +102,11 @@ impl MessageHandler for Protocol {
 
 			Type::Pong => {
 				let pong: Pong = msg.body()?;
-				adapter.peer_difficulty(self.peer_info.addr, pong.total_difficulty, pong.height);
+				adapter.peer_difficulty(
+					self.peer_info.addr.clone(),
+					pong.total_difficulty,
+					pong.height,
+				);
 				Ok(None)
 			}
 
@@ -212,6 +225,12 @@ impl MessageHandler for Protocol {
 					"TorAddress received from {:?}, address = {:?}",
 					self.peer_info, tor_address
 				);
+				let peer = self.server.peers.get_peer(self.peer_info.addr.clone());
+				if peer.is_ok() {
+					let mut peer = peer.unwrap();
+					peer.addr = PeerAddr::Onion(tor_address.address.clone());
+					self.server.peers.save_peer(&peer)?;
+				}
 				self.peer_info.onion_address = Arc::new(Some(tor_address.address));
 				Ok(None)
 			}

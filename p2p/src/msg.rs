@@ -200,15 +200,20 @@ pub fn read_message<T: Readable>(
 	version: ProtocolVersion,
 	msg_type: Type,
 ) -> Result<T, Error> {
+	error!("a");
 	match read_header(stream, version)? {
 		MsgHeaderWrapper::Known(header) => {
+			error!("c");
 			if header.msg_type == msg_type {
+				error!("d");
 				read_body(&header, stream, version)
 			} else {
+				error!("e");
 				Err(Error::BadMessage)
 			}
 		}
 		MsgHeaderWrapper::Unknown(msg_len, _) => {
+			error!("f");
 			read_discard(msg_len, stream)?;
 			Err(Error::BadMessage)
 		}
