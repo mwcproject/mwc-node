@@ -173,7 +173,6 @@ impl Handshake {
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
-			onion_address: Arc::new(None),
 		};
 
 		// If denied then we want to close the connection
@@ -242,7 +241,6 @@ impl Handshake {
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
-			onion_address: Arc::new(None),
 		};
 
 		// At this point we know the published ip and port of the peer

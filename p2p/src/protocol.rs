@@ -232,7 +232,6 @@ impl MessageHandler for Protocol {
 					peer.addr = PeerAddr::Onion(tor_address.address.clone());
 					self.server.peers.save_peer(&peer)?;
 				}
-				self.peer_info.onion_address = Arc::new(Some(tor_address.address));
 				Ok(None)
 			}
 
@@ -287,7 +286,8 @@ impl MessageHandler for Protocol {
 
 			Type::GetPeerAddrs => {
 				let get_peers: GetPeerAddrs = msg.body()?;
-				let peers = adapter.find_peer_addrs(get_peers.capabilities);
+				let peers =
+					adapter.find_peer_addrs(get_peers.capabilities & !Capabilities::TOR_ADDRESS);
 
 				// if this peer does not support TOR, do not send them the tor peers.
 				// doing so will cause them to ban us because it's not part of the old protocol.

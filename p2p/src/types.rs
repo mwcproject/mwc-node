@@ -517,7 +517,6 @@ pub struct PeerInfo {
 	pub header_sync_requested: Arc<AtomicUsize>,
 	pub last_header: Arc<Mutex<Instant>>,
 	pub last_header_reset: Arc<Mutex<Instant>>,
-	pub onion_address: Arc<Option<String>>,
 }
 
 impl PeerLiveInfo {
