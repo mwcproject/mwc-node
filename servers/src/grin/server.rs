@@ -299,7 +299,7 @@ impl Server {
 						Ok(res) => {
 							let (mut listener, mut onion_address) = res;
 							input
-								.send(Some(format!("http://{}.onion", onion_address.clone())))
+								.send(Some(format!("{}.onion", onion_address.clone())))
 								.unwrap();
 							let mut tor_timeout_count = 0;
 							loop {
