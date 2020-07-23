@@ -19,6 +19,7 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::{Duration, MIN_DATE};
+use grin_p2p::PeerAddr::Onion;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::collections::HashMap;
@@ -388,18 +389,31 @@ fn listen_for_addrs(
 		let p2p_c = p2p.clone();
 		thread::Builder::new()
 			.name("peer_connect".to_string())
-			.spawn(
-				move || match p2p_c.connect(addr.clone(), header_cache_size) {
-					Ok(p) => {
-						if p.send_peer_request(capab).is_ok() {
-							let _ = peers_c.update_state(addr, p2p::State::Healthy);
+			.spawn(move || {
+				// if we don't have a socks port, and it's onion, don't set as defunct because
+				// we don't know.
+				let update_possible = if p2p_c.socks_port == 0 {
+					match addr.clone() {
+						Onion(_) => false,
+						_ => true,
+					}
+				} else {
+					true
+				};
+
+				if update_possible {
+					match p2p_c.connect(addr.clone(), header_cache_size) {
+						Ok(p) => {
+							if p.send_peer_request(capab).is_ok() {
+								let _ = peers_c.update_state(addr, p2p::State::Healthy);
+							}
+						}
+						Err(_) => {
+							let _ = peers_c.update_state(addr, p2p::State::Defunct);
 						}
 					}
-					Err(_) => {
-						let _ = peers_c.update_state(addr, p2p::State::Defunct);
-					}
-				},
-			)
+				}
+			})
 			.expect("failed to launch peer_connect thread");
 	}
 
