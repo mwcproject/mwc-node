@@ -573,36 +573,40 @@ impl Server {
 		// remove all other onion addresses that were previously used.
 
 		let onion_service_dir = format!("{}/onion_service_addresses", tor_dir.clone());
+		let mut onion_address = "".to_string();
+		let mut found = false;
 		if std::path::Path::new(&onion_service_dir).exists() {
-			let dir = fs::read_dir(onion_service_dir)?;
-			for entry in dir {
-				let dir = entry.unwrap();
-				fs::remove_dir_all(dir.path())?;
+			for entry in fs::read_dir(onion_service_dir)? {
+				onion_address = entry.unwrap().file_name().into_string().unwrap();
+				found = true;
 			}
 		}
 
-		let secp_inst = static_secp_instance();
-		let secp = secp_inst.lock();
-		let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+		if !found {
+			let secp_inst = static_secp_instance();
+			let secp = secp_inst.lock();
+			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
 
-		let onion_address = OnionV3Address::from_private(&sec_key.0)
-			.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
+			onion_address = OnionV3Address::from_private(&sec_key.0)
+				.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
+				.unwrap()
+				.to_string();
+			tor_config::output_tor_listener_config(
+				&tor_dir,
+				addr,
+				api_addr,
+				&vec![sec_key],
+				socks_port,
+			)
+			.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
 			.unwrap();
+		}
 
 		info!(
 			"Starting TOR inbound listener at address http://{}.onion, binding to {}",
 			onion_address, addr
 		);
 
-		tor_config::output_tor_listener_config(
-			&tor_dir,
-			addr,
-			api_addr,
-			&vec![sec_key],
-			socks_port,
-		)
-		.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
-		.unwrap();
 		// Start TOR process
 		let tor_path = format!("{}/torrc", tor_dir);
 		process

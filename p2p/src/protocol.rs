@@ -16,6 +16,7 @@ use crate::chain;
 use crate::conn::{Message, MessageHandler, Tracker};
 use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock};
 use crate::serv::Server;
+use crate::types::PeerAddr::Onion;
 
 use crate::msg::{
 	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, Msg, PeerAddrs, Ping, Pong,
@@ -315,7 +316,27 @@ impl MessageHandler for Protocol {
 
 			Type::PeerAddrs => {
 				let peer_addrs: PeerAddrs = msg.body()?;
-				adapter.peer_addrs_received(peer_addrs.peers);
+				let mut peers: Vec<PeerAddr> = Vec::new();
+				for peer in peer_addrs.peers {
+					match peer.clone() {
+						Onion(address) => {
+							let self_address = self.server.self_onion_address.as_ref();
+							if self_address.is_none() {
+								peers.push(peer);
+							} else {
+								if &address != self_address.unwrap() {
+									peers.push(peer);
+								} else {
+									debug!("Not pushing self onion address = {}", address);
+								}
+							}
+						}
+						_ => {
+							peers.push(peer);
+						}
+					}
+				}
+				adapter.peer_addrs_received(peers);
 				Ok(None)
 			}
 

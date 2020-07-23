@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::types::PeerAddr::Onion;
 use std::fs::File;
 use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
@@ -46,6 +47,7 @@ pub struct Server {
 	handshake: Arc<Handshake>,
 	pub peers: Arc<Peers>,
 	stop_state: Arc<StopState>,
+	pub self_onion_address: Option<String>,
 }
 
 // TODO TLS
@@ -64,7 +66,11 @@ impl Server {
 		Ok(Server {
 			config: config.clone(),
 			capabilities: capab,
-			handshake: Arc::new(Handshake::new(genesis, config.clone(), onion_address)),
+			handshake: Arc::new(Handshake::new(
+				genesis,
+				config.clone(),
+				onion_address.clone(),
+			)),
 			peers: Arc::new(Peers::new(
 				PeerStore::new(db_root)?,
 				adapter,
@@ -73,6 +79,7 @@ impl Server {
 			)),
 			stop_state,
 			socks_port,
+			self_onion_address: onion_address,
 		})
 	}
 
@@ -171,6 +178,20 @@ impl Server {
 			if addrs.contains(&addr) {
 				debug!("connect: ignore connecting to PeerWithSelf, addr: {}", addr);
 				return Err(Error::PeerWithSelf);
+			}
+		}
+
+		// check if the onion address is self
+		if global::is_production_mode() && self.self_onion_address.is_some() {
+			match addr.clone() {
+				Onion(address) => {
+					if self.self_onion_address.as_ref().unwrap() == &address {
+						debug!("error trying to connect with self: {}", address);
+						return Err(Error::PeerWithSelf);
+					}
+					debug!("not self, connecting to {}", address);
+				}
+				_ => {}
 			}
 		}
 
