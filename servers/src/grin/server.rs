@@ -422,7 +422,7 @@ impl Server {
 
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
-			config.p2p_config.capabilities,
+			capab,
 			config.p2p_config.clone(),
 			net_adapter.clone(),
 			genesis.hash(),
