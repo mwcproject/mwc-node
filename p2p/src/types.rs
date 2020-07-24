@@ -289,7 +289,10 @@ impl std::fmt::Display for PeerAddr {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 		match self {
 			Ip(ip) => write!(f, "{}", ip),
-			Onion(onion) => write!(f, "{}", onion),
+			Onion(onion) => {
+				let onion_address = &onion.to_string()[0..20];
+				write!(f, "tor://{}", onion_address)
+			}
 		}
 	}
 }
@@ -478,6 +481,8 @@ enum_from_primitive! {
 	pub enum Direction {
 		Inbound = 0,
 		Outbound = 1,
+		InboundTor = 2,
+		OutboundTor = 3,
 	}
 }
 
@@ -538,11 +543,11 @@ impl PeerInfo {
 	}
 
 	pub fn is_outbound(&self) -> bool {
-		self.direction == Direction::Outbound
+		self.direction == Direction::Outbound || self.direction == Direction::OutboundTor
 	}
 
 	pub fn is_inbound(&self) -> bool {
-		self.direction == Direction::Inbound
+		self.direction == Direction::Inbound || self.direction == Direction::InboundTor
 	}
 
 	/// The current height of the peer.

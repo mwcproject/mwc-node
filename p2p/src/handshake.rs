@@ -169,7 +169,11 @@ impl Handshake {
 			addr: peer_addr,
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(shake.total_difficulty))),
-			direction: Direction::Outbound,
+			direction: if self.onion_address.is_some() {
+				Direction::OutboundTor
+			} else {
+				Direction::Outbound
+			},
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
@@ -234,10 +238,14 @@ impl Handshake {
 		let peer_info = PeerInfo {
 			capabilities: hand.capabilities,
 			user_agent: hand.user_agent,
-			addr: resolve_peer_addr(hand.sender_addr, &conn),
+			addr: resolve_peer_addr(hand.sender_addr.clone(), &conn),
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
-			direction: Direction::Inbound,
+			direction: if self.onion_address.is_some() {
+				Direction::InboundTor
+			} else {
+				Direction::Inbound
+			},
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),

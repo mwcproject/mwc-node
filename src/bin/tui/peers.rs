@@ -192,7 +192,7 @@ impl TUIStatusListener for TUIPeerView {
 				stats
 					.peer_stats
 					.iter()
-					.filter(|x| x.direction == "Outbound")
+					.filter(|x| x.direction == "Outbound" || x.direction == "Outbound (TOR)")
 					.count(),
 			));
 		});
