@@ -49,19 +49,18 @@ fn peer_handshake() {
 		..p2p::P2PConfig::default()
 	};
 	let net_adapter = Arc::new(p2p::DummyAdapter {});
-	let server = Arc::new(
-		p2p::Server::new(
-			".grin",
-			p2p::Capabilities::UNKNOWN,
-			p2p_config.clone(),
-			net_adapter.clone(),
-			Hash::from_vec(&vec![]),
-			Arc::new(StopState::new()),
-			0,
-			None,
-		)
-		.unwrap(),
-	);
+	let server_inner = p2p::Server::new(
+		".grin",
+		p2p::Capabilities::UNKNOWN,
+		p2p_config.clone(),
+		net_adapter.clone(),
+		Hash::from_vec(&vec![]),
+		Arc::new(StopState::new()),
+		0,
+		None,
+	)
+	.unwrap();
+	let server = Arc::new(server_inner.clone());
 
 	let p2p_inner = server.clone();
 	let _ = thread::spawn(move || p2p_inner.listen(100_000));
@@ -71,16 +70,17 @@ fn peer_handshake() {
 	let addr = SocketAddr::new(p2p_config.host, p2p_config.port);
 	let socket = TcpStream::connect_timeout(&addr, time::Duration::from_secs(10)).unwrap();
 
-	let my_addr = PeerAddr("127.0.0.1:5000".parse().unwrap());
+	let my_addr = PeerAddr::Ip("127.0.0.1:5000".parse().unwrap());
 	let peer = Peer::connect(
 		socket,
 		p2p::Capabilities::UNKNOWN,
 		Difficulty::min(),
-		my_addr,
+		my_addr.clone(),
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
 		net_adapter,
 		100_000,
 		None,
+		server_inner,
 	)
 	.unwrap();
 
