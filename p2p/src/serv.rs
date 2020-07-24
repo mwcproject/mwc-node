@@ -209,9 +209,12 @@ impl Server {
 		);
 
 		let peer_addr;
+		let self_addr;
 
 		let stream = match addr.clone() {
 			PeerAddr::Ip(address) => {
+				// we do this, not a good solution, but for now, we'll use it. Other side usually detects with ip.
+				self_addr = PeerAddr::Ip(address);
 				if self.socks_port != 0 {
 					peer_addr = Some(PeerAddr::Ip(address));
 					let proxy_addr =
@@ -231,8 +234,14 @@ impl Server {
 				}
 			}
 			PeerAddr::Onion(onion_address) => {
-				peer_addr = None;
 				if self.socks_port != 0 {
+					self_addr = PeerAddr::Onion(
+						self.self_onion_address
+							.as_ref()
+							.unwrap_or(&"unknown".to_string())
+							.to_string(),
+					);
+					peer_addr = Some(PeerAddr::Onion(onion_address.clone()));
 					let proxy_addr =
 						SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
 					let onion_target: socks::TargetAddr =
@@ -260,7 +269,7 @@ impl Server {
 					stream,
 					self.capabilities,
 					total_diff,
-					addr,
+					self_addr,
 					&self.handshake,
 					self.peers.clone(),
 					header_cache_size,
