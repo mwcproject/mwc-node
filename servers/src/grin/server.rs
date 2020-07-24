@@ -16,17 +16,30 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
+use crate::tor::client::Client;
+use crate::tor::config as tor_config;
+use crate::util::{secp, static_secp_instance};
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::{
 	thread::{self, JoinHandle},
 	time::{self, Duration},
 };
+use sysinfo::{Process, ProcessExt, Signal};
+
+use crate::ErrorKind;
 
 use fs2::FileExt;
+use grin_util::OnionV3Address;
 use walkdir::WalkDir;
 
 use crate::api;
@@ -39,6 +52,7 @@ use crate::common::hooks::{init_chain_hooks, init_net_hooks};
 use crate::common::stats::{
 	ChainStats, DiffBlock, DiffStats, PeerStats, ServerStateInfo, ServerStats, TxStats,
 };
+
 use crate::common::types::{Error, ServerConfig, StratumServerConfig};
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
@@ -51,6 +65,7 @@ use crate::mining::test_miner::Miner;
 use crate::p2p;
 use crate::p2p::types::PeerAddr;
 use crate::pool;
+use crate::tor::process as tor_process;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use grin_util::logger::LogEntry;
@@ -251,6 +266,160 @@ impl Server {
 			init_net_hooks(&config),
 		));
 
+		// we always support tor, so don't rely on config. This fixes
+		// the problem of old config files
+		// only for capabilities params, doesn't mean
+		// tor _MUST_ be on.
+		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
+		let mut onion_address = None;
+
+		if config.tor_config.tor_enabled {
+			let stop_state_clone = stop_state.clone();
+			let cloned_config = config.clone();
+			let cloned_chain = shared_chain.clone();
+
+			let (input, output): (Sender<Option<String>>, Receiver<Option<String>>) =
+				mpsc::channel();
+			let sync_state_clone = sync_state.clone();
+
+			thread::Builder::new()
+				.name("tor_listener".to_string())
+				.spawn(move || {
+					let res = Server::init_tor_listener(
+						&format!(
+							"{}:{}",
+							cloned_config.p2p_config.host, cloned_config.p2p_config.port
+						),
+						&cloned_config.api_http_addr,
+						Some(&cloned_config.db_root),
+						cloned_config.tor_config.socks_port,
+					);
+
+					let _ = match res {
+						Ok(res) => {
+							let (mut listener, mut onion_address) = res;
+							input
+								.send(Some(format!("{}.onion", onion_address.clone())))
+								.unwrap();
+							let mut tor_timeout_count = 0;
+							loop {
+								// sleep a total of 10 seconds, but check stop state every second
+								let mut stopped = false;
+								for _ in 1..100 {
+									std::thread::sleep(std::time::Duration::from_millis(100));
+									if stop_state_clone.is_stopped() {
+										stopped = true;
+									}
+								}
+								if stopped {
+									break;
+								}
+								let cloned_cloned_config = cloned_config.clone();
+
+								let addr = SocketAddr::new(
+									IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+									cloned_config.tor_config.socks_port,
+								);
+
+								info!("sync state = status = {:?}", sync_state_clone.status());
+								let client = Client::new(true, Some(addr)).unwrap();
+								let req = client
+									.create_get_request(
+										&format!("http://{}.onion:8080/v1/status", onion_address),
+										None,
+										None,
+									)
+									.unwrap();
+								let res = client.send_request(req);
+
+								if res.is_err() {
+									error!(
+										"Error couldn't connect to address [{}], {:?}",
+										onion_address, res
+									);
+									tor_timeout_count = tor_timeout_count + 1;
+									// only restart tor after second timeout in a row.
+									if tor_timeout_count < 2 {
+										continue;
+									}
+
+									// restarting so, reset counter.
+									tor_timeout_count = 0;
+									error!("timeout, restart tor! [{}] {:?}", onion_address, res);
+									let pid_file_name = format!(
+										"{}/tor/listener/pid",
+										cloned_cloned_config.db_root
+									);
+									// kill off PID if its already running
+									if Path::new(&pid_file_name).exists() {
+										let pid = fs::read_to_string(&pid_file_name).unwrap();
+										let pid = pid.parse::<i32>().unwrap();
+										let process = Process::new(pid, None, 0);
+										let _ = process.kill(Signal::Kill);
+									}
+
+									info!("killed tor process due to timeout!");
+
+									let res = Server::init_tor_listener(
+										&format!(
+											"{}:{}",
+											cloned_config.p2p_config.host,
+											cloned_config.p2p_config.port
+										),
+										&cloned_config.api_http_addr,
+										Some(&cloned_config.db_root),
+										cloned_config.tor_config.socks_port,
+									)
+									.unwrap();
+									listener = res.0;
+									onion_address = res.1;
+									let status = sync_state_clone.status();
+									let dl = match status {
+										SyncStatus::TxHashsetDownload { .. } => true,
+										_ => false,
+									};
+
+									if dl {
+										let height = cloned_chain.get_sync_head().unwrap().height;
+										sync_state_clone.update(SyncStatus::HeaderSync {
+											current_height: height,
+											highest_height: height,
+										});
+									}
+								} else {
+									// reset counter on success
+									tor_timeout_count = 0;
+									info!("Connect success! {:?}, {}", res, onion_address);
+								}
+							}
+							Ok(listener)
+						}
+						Err(e) => {
+							input.send(None).unwrap();
+							Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
+						}
+					};
+				})?;
+
+			let resp = output.recv();
+			onion_address = resp.unwrap_or(None);
+			if onion_address.is_some() {
+				info!("tor successfully started: resp = {:?}", onion_address);
+			} else {
+				error!("tor failed to start!");
+			}
+		}
+
+		let socks_port = if config.tor_config.tor_enabled {
+			config.tor_config.socks_port
+		} else {
+			0
+		};
+		info!(
+			"socks = {}, tor_enabled = {}",
+			socks_port, config.tor_config.tor_enabled
+		);
+
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
 			config.p2p_config.capabilities,
@@ -258,6 +427,8 @@ impl Server {
 			net_adapter.clone(),
 			genesis.hash(),
 			stop_state.clone(),
+			socks_port,
+			onion_address,
 		)?);
 
 		// Initialize various adapters with our dynamic set of connected peers.
@@ -378,6 +549,77 @@ impl Server {
 			sync_thread,
 			dandelion_thread,
 		})
+	}
+
+	/// Start the tor listener for inbound connections
+	pub fn init_tor_listener(
+		addr: &str,
+		api_addr: &str,
+		tor_base: Option<&str>,
+		socks_port: u16,
+	) -> Result<(tor_process::TorProcess, String), Error> {
+		let mut process = tor_process::TorProcess::new();
+		let tor_dir = if tor_base.is_some() {
+			format!("{}/tor/listener", tor_base.unwrap())
+		} else {
+			format!("{}/tor/listener", "~/.mwc/main")
+		};
+
+		let home_dir = dirs::home_dir()
+			.map(|p| p.to_str().unwrap().to_string())
+			.unwrap_or("~".to_string());
+		let tor_dir = tor_dir.replace("~", &home_dir);
+
+		// remove all other onion addresses that were previously used.
+
+		let onion_service_dir = format!("{}/onion_service_addresses", tor_dir.clone());
+		let mut onion_address = "".to_string();
+		let mut found = false;
+		if std::path::Path::new(&onion_service_dir).exists() {
+			for entry in fs::read_dir(onion_service_dir)? {
+				onion_address = entry.unwrap().file_name().into_string().unwrap();
+				found = true;
+			}
+		}
+
+		if !found {
+			let secp_inst = static_secp_instance();
+			let secp = secp_inst.lock();
+			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+
+			onion_address = OnionV3Address::from_private(&sec_key.0)
+				.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
+				.unwrap()
+				.to_string();
+			tor_config::output_tor_listener_config(
+				&tor_dir,
+				addr,
+				api_addr,
+				&vec![sec_key],
+				socks_port,
+			)
+			.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
+			.unwrap();
+		}
+
+		info!(
+			"Starting TOR inbound listener at address http://{}.onion, binding to {}",
+			onion_address, addr
+		);
+
+		// Start TOR process
+		let tor_path = format!("{}/torrc", tor_dir);
+		process
+			.torrc_path(&tor_path)
+			.working_dir(&tor_dir)
+			.timeout(200)
+			.completion_percent(100)
+			.launch()
+			.map_err(|e| {
+				ErrorKind::TorProcess(format!("Unable to start tor at {}, {}", tor_path, e).into())
+			})
+			.unwrap();
+		Ok((process, onion_address.to_string()))
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.

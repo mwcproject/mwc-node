@@ -18,7 +18,10 @@ use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::msg::{read_message, write_message, Hand, Msg, Shake, Type, USER_AGENT};
 use crate::peer::Peer;
-use crate::types::{Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerInfo, PeerLiveInfo};
+use crate::types::{
+	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
+	PeerLiveInfo,
+};
 use crate::util::RwLock;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
@@ -68,11 +71,12 @@ pub struct Handshake {
 	config: P2PConfig,
 	protocol_version: ProtocolVersion,
 	tracker: Arc<Tracker>,
+	onion_address: Option<String>,
 }
 
 impl Handshake {
 	/// Creates a new handshake handler
-	pub fn new(genesis: Hash, config: P2PConfig) -> Handshake {
+	pub fn new(genesis: Hash, config: P2PConfig, onion_address: Option<String>) -> Handshake {
 		Handshake {
 			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
 			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
@@ -80,6 +84,7 @@ impl Handshake {
 			config,
 			protocol_version: ProtocolVersion::local(),
 			tracker: Arc::new(Tracker::new()),
+			onion_address: onion_address,
 		}
 	}
 
@@ -101,7 +106,7 @@ impl Handshake {
 		total_difficulty: Difficulty,
 		self_addr: PeerAddr,
 		conn: &mut TcpStream,
-		peer_addr: Option<SocketAddr>,
+		peer_addr: Option<PeerAddr>,
 	) -> Result<PeerInfo, Error> {
 		// Set explicit timeouts on the tcp stream for hand/shake messages.
 		// Once the peer is up and running we will set new values for these.
@@ -111,19 +116,12 @@ impl Handshake {
 
 		// prepare the first part of the handshake
 		let nonce = self.next_nonce();
-
-		let sock_addr = if peer_addr.is_some() {
-			peer_addr.unwrap()
-		} else {
-			match conn.peer_addr() {
-				Ok(addr) => addr,
-				Err(_) => {
-					return Err(Error::ConnectionClose);
-				}
+		let peer_addr = peer_addr.unwrap_or(match conn.peer_addr() {
+			Ok(addr) => PeerAddr::Ip(addr),
+			Err(_) => {
+				return Err(Error::ConnectionClose);
 			}
-		};
-
-		let peer_addr = PeerAddr(sock_addr);
+		});
 
 		let hand = Hand {
 			version: self.protocol_version,
@@ -131,8 +129,8 @@ impl Handshake {
 			nonce,
 			genesis: self.genesis,
 			total_difficulty,
-			sender_addr: self_addr,
-			receiver_addr: peer_addr,
+			sender_addr: self_addr.clone(),
+			receiver_addr: peer_addr.clone(),
 			user_agent: USER_AGENT.to_string(),
 		};
 
@@ -148,6 +146,21 @@ impl Handshake {
 			});
 		}
 
+		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) && self.onion_address.is_some() {
+			let onion_address = self.onion_address.as_ref().unwrap().to_string();
+			debug!(
+				"tor enabled peer {:?}, sending onion_address = {}",
+				self_addr, onion_address
+			);
+
+			// send tor address
+			let tor_address = TorAddress::new(onion_address);
+			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
+			write_message(conn, &msg, self.tracker.clone())?;
+		} else {
+			debug!("non-tor peer {:?}", self_addr);
+		}
+
 		let negotiated_version = self.negotiate_protocol_version(shake.version)?;
 
 		let peer_info = PeerInfo {
@@ -156,7 +169,11 @@ impl Handshake {
 			addr: peer_addr,
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(shake.total_difficulty))),
-			direction: Direction::Outbound,
+			direction: if self.onion_address.is_some() {
+				Direction::OutboundTor
+			} else {
+				Direction::Outbound
+			},
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
@@ -164,7 +181,7 @@ impl Handshake {
 
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
-		if Peer::is_denied(&self.config, peer_info.addr) {
+		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
 			return Err(Error::ConnectionClose);
 		}
 
@@ -203,7 +220,7 @@ impl Handshake {
 		} else {
 			// check the nonce to see if we are trying to connect to ourselves
 			let nonces = self.nonces.read();
-			let addr = resolve_peer_addr(hand.sender_addr, &conn);
+			let addr = resolve_peer_addr(hand.sender_addr.clone(), &conn);
 			if nonces.contains(&hand.nonce) {
 				// save ip addresses of ourselves
 				let mut addrs = self.addrs.write();
@@ -221,10 +238,14 @@ impl Handshake {
 		let peer_info = PeerInfo {
 			capabilities: hand.capabilities,
 			user_agent: hand.user_agent,
-			addr: resolve_peer_addr(hand.sender_addr, &conn),
+			addr: resolve_peer_addr(hand.sender_addr.clone(), &conn),
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
-			direction: Direction::Inbound,
+			direction: if self.onion_address.is_some() {
+				Direction::InboundTor
+			} else {
+				Direction::Inbound
+			},
 			header_sync_requested: Arc::new(AtomicUsize::new(0)),
 			last_header: Arc::new(Mutex::new(Instant::now())),
 			last_header_reset: Arc::new(Mutex::new(Instant::now())),
@@ -234,7 +255,7 @@ impl Handshake {
 		// so check if we are configured to explicitly allow or deny it.
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
-		if Peer::is_denied(&self.config, peer_info.addr) {
+		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
 			return Err(Error::ConnectionClose);
 		}
 
@@ -270,10 +291,15 @@ impl Handshake {
 
 /// Resolve the correct peer_addr based on the connection and the advertised port.
 fn resolve_peer_addr(advertised: PeerAddr, conn: &TcpStream) -> PeerAddr {
-	let port = advertised.0.port();
-	if let Ok(addr) = conn.peer_addr() {
-		PeerAddr(SocketAddr::new(addr.ip(), port))
-	} else {
-		advertised
+	match advertised {
+		Ip(socket_addr) => {
+			let port = socket_addr.port();
+			if let Ok(addr) = conn.peer_addr() {
+				PeerAddr::Ip(SocketAddr::new(addr.ip(), port))
+			} else {
+				advertised
+			}
+		}
+		Onion(_) => advertised,
 	}
 }

@@ -35,9 +35,13 @@ use grin_pool as pool;
 use grin_store as store;
 use grin_util as util;
 
+mod error;
+pub use crate::error::{Error, ErrorKind};
+
 pub mod common;
 mod grin;
 mod mining;
+mod tor;
 
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};

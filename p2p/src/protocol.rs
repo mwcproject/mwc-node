@@ -15,12 +15,16 @@
 use crate::chain;
 use crate::conn::{Message, MessageHandler, Tracker};
 use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock};
+use crate::serv::Server;
+use crate::types::PeerAddr::Onion;
 
 use crate::msg::{
 	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, Msg, PeerAddrs, Ping, Pong,
 	TorAddress, TxHashSetArchive, TxHashSetRequest, Type,
 };
 
+use crate::types::Capabilities;
+use crate::types::PeerAddr;
 use crate::types::{Error, NetAdapter, PeerInfo};
 use chrono::prelude::Utc;
 use rand::{thread_rng, Rng};
@@ -37,6 +41,7 @@ pub struct Protocol {
 	peer_info: PeerInfo,
 	state_sync_requested: Arc<AtomicBool>,
 	header_cache_size: u64,
+	server: Server,
 }
 
 impl Protocol {
@@ -45,19 +50,21 @@ impl Protocol {
 		peer_info: PeerInfo,
 		state_sync_requested: Arc<AtomicBool>,
 		header_cache_size: u64,
+		server: Server,
 	) -> Protocol {
 		Protocol {
 			adapter,
 			peer_info,
 			state_sync_requested,
 			header_cache_size,
+			server,
 		}
 	}
 }
 
 impl MessageHandler for Protocol {
 	fn consume(
-		&self,
+		&mut self,
 		mut msg: Message,
 		stopped: Arc<AtomicBool>,
 		tracker: Arc<Tracker>,
@@ -68,7 +75,7 @@ impl MessageHandler for Protocol {
 		// If we received a msg from a banned peer then log and drop it.
 		// If we are getting a lot of these then maybe we are not cleaning
 		// banned peers up correctly?
-		if adapter.is_banned(self.peer_info.addr) {
+		if adapter.is_banned(self.peer_info.addr.clone()) {
 			debug!(
 				"handler: consume: peer {:?} banned, received: {:?}, dropping.",
 				self.peer_info.addr, msg.header.msg_type,
@@ -79,7 +86,11 @@ impl MessageHandler for Protocol {
 		match msg.header.msg_type {
 			Type::Ping => {
 				let ping: Ping = msg.body()?;
-				adapter.peer_difficulty(self.peer_info.addr, ping.total_difficulty, ping.height);
+				adapter.peer_difficulty(
+					self.peer_info.addr.clone(),
+					ping.total_difficulty,
+					ping.height,
+				);
 
 				Ok(Some(Msg::new(
 					Type::Pong,
@@ -93,7 +104,11 @@ impl MessageHandler for Protocol {
 
 			Type::Pong => {
 				let pong: Pong = msg.body()?;
-				adapter.peer_difficulty(self.peer_info.addr, pong.total_difficulty, pong.height);
+				adapter.peer_difficulty(
+					self.peer_info.addr.clone(),
+					pong.total_difficulty,
+					pong.height,
+				);
 				Ok(None)
 			}
 
@@ -212,6 +227,12 @@ impl MessageHandler for Protocol {
 					"TorAddress received from {:?}, address = {:?}",
 					self.peer_info, tor_address
 				);
+				let peer = self.server.peers.get_peer(self.peer_info.addr.clone());
+				if peer.is_ok() {
+					let mut peer = peer.unwrap();
+					peer.addr = PeerAddr::Onion(tor_address.address.clone());
+					self.server.peers.save_peer(&peer)?;
+				}
 				Ok(None)
 			}
 
@@ -266,7 +287,26 @@ impl MessageHandler for Protocol {
 
 			Type::GetPeerAddrs => {
 				let get_peers: GetPeerAddrs = msg.body()?;
-				let peers = adapter.find_peer_addrs(get_peers.capabilities);
+				let peers =
+					adapter.find_peer_addrs(get_peers.capabilities & !Capabilities::TOR_ADDRESS);
+
+				// if this peer does not support TOR, do not send them the tor peers.
+				// doing so will cause them to ban us because it's not part of the old protocol.
+				let peers = if !get_peers.capabilities.contains(Capabilities::TOR_ADDRESS) {
+					let mut peers_filtered = vec![];
+					for peer in peers {
+						match peer.clone() {
+							PeerAddr::Onion(_) => {}
+							_ => {
+								peers_filtered.push(peer);
+							}
+						}
+					}
+					peers_filtered
+				} else {
+					peers
+				};
+
 				Ok(Some(Msg::new(
 					Type::PeerAddrs,
 					PeerAddrs { peers },
@@ -276,7 +316,27 @@ impl MessageHandler for Protocol {
 
 			Type::PeerAddrs => {
 				let peer_addrs: PeerAddrs = msg.body()?;
-				adapter.peer_addrs_received(peer_addrs.peers);
+				let mut peers: Vec<PeerAddr> = Vec::new();
+				for peer in peer_addrs.peers {
+					match peer.clone() {
+						Onion(address) => {
+							let self_address = self.server.self_onion_address.as_ref();
+							if self_address.is_none() {
+								peers.push(peer);
+							} else {
+								if &address != self_address.unwrap() {
+									peers.push(peer);
+								} else {
+									debug!("Not pushing self onion address = {}", address);
+								}
+							}
+						}
+						_ => {
+							peers.push(peer);
+						}
+					}
+				}
+				adapter.peer_addrs_received(peers);
 				Ok(None)
 			}
 
