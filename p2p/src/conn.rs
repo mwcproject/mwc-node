@@ -49,7 +49,7 @@ const BODY_IO_TIMEOUT: Duration = Duration::from_millis(90000);
 /// connection. Allows providing an optional response.
 pub trait MessageHandler: Send + 'static {
 	fn consume<'a>(
-		&self,
+		&mut self,
 		msg: Message<'a>,
 		stopped: Arc<AtomicBool>,
 		tracker: Arc<Tracker>,
@@ -276,7 +276,7 @@ fn poll<H>(
 	conn: TcpStream,
 	conn_handle: ConnHandle,
 	version: ProtocolVersion,
-	handler: H,
+	mut handler: H,
 	send_rx: mpsc::Receiver<Msg>,
 	stopped: Arc<AtomicBool>,
 	tracker: Arc<Tracker>,

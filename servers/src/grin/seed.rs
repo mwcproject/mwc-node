@@ -19,6 +19,7 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::{Duration, MIN_DATE};
+use grin_p2p::PeerAddr::Onion;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::collections::HashMap;
@@ -198,7 +199,7 @@ fn monitor_peers(
 				let interval = Utc::now().timestamp() - x.last_banned;
 				// Unban peer
 				if interval >= config.ban_window() {
-					if let Err(e) = peers.unban_peer(x.addr) {
+					if let Err(e) = peers.unban_peer(x.addr.clone()) {
 						error!("failed to unban peer {}: {:?}", x.addr, e);
 					}
 					debug!(
@@ -248,7 +249,7 @@ fn monitor_peers(
 			p.info.addr,
 		);
 		let _ = p.send_peer_request(p2p::Capabilities::PEER_LIST);
-		connected_peers.push(p.info.addr)
+		connected_peers.push(p.info.addr.clone())
 	}
 
 	// Attempt to connect to preferred peers if there is some
@@ -268,7 +269,7 @@ fn monitor_peers(
 	// peer will see another as defunct eventually, gives us a chance to retry
 	if defuncts.len() > 0 {
 		defuncts.shuffle(&mut thread_rng());
-		let _ = peers.update_state(defuncts[0].addr, p2p::State::Healthy);
+		let _ = peers.update_state(defuncts[0].addr.clone(), p2p::State::Healthy);
 	}
 
 	// find some peers from our db
@@ -287,8 +288,8 @@ fn monitor_peers(
 	// The call to is_known() may fail due to contention on the peers map.
 	// Do not attempt any connection where is_known() fails for any reason.
 	for p in new_peers {
-		if let Ok(false) = peers.is_known(p.addr) {
-			tx.send(p.addr).unwrap();
+		if let Ok(false) = peers.is_known(p.addr.clone()) {
+			tx.send(p.addr.clone()).unwrap();
 		}
 	}
 }
@@ -307,7 +308,7 @@ fn connect_to_seeds_and_preferred_peers(
 
 	// if so, get their addresses, otherwise use our seeds
 	let mut peer_addrs = if peers.len() > 3 {
-		peers.iter().map(|p| p.addr).collect::<Vec<_>>()
+		peers.iter().map(|p| p.addr.clone()).collect::<Vec<_>>()
 	} else {
 		seed_list
 	};
@@ -382,20 +383,35 @@ fn listen_for_addrs(
 				}
 			}
 		}
-		connecting_history.insert(addr, now);
+		connecting_history.insert(addr.clone(), now);
 
 		let peers_c = peers.clone();
 		let p2p_c = p2p.clone();
 		thread::Builder::new()
 			.name("peer_connect".to_string())
-			.spawn(move || match p2p_c.connect(addr, header_cache_size) {
-				Ok(p) => {
-					if p.send_peer_request(capab).is_ok() {
-						let _ = peers_c.update_state(addr, p2p::State::Healthy);
+			.spawn(move || {
+				// if we don't have a socks port, and it's onion, don't set as defunct because
+				// we don't know.
+				let update_possible = if p2p_c.socks_port == 0 {
+					match addr.clone() {
+						Onion(_) => false,
+						_ => true,
 					}
-				}
-				Err(_) => {
-					let _ = peers_c.update_state(addr, p2p::State::Defunct);
+				} else {
+					true
+				};
+
+				if update_possible {
+					match p2p_c.connect(addr.clone(), header_cache_size) {
+						Ok(p) => {
+							if p.send_peer_request(capab).is_ok() {
+								let _ = peers_c.update_state(addr, p2p::State::Healthy);
+							}
+						}
+						Err(_) => {
+							let _ = peers_c.update_state(addr, p2p::State::Defunct);
+						}
+					}
 				}
 			})
 			.expect("failed to launch peer_connect thread");
@@ -446,7 +462,7 @@ fn resolve_dns_to_addrs(dns_records: &Vec<String>) -> Vec<PeerAddr> {
 		match dns.to_socket_addrs() {
 			Ok(addrs) => addresses.append(
 				&mut addrs
-					.map(|addr| PeerAddr(addr))
+					.map(|addr| PeerAddr::Ip(addr))
 					.filter(|addr| !addresses.contains(addr))
 					.collect(),
 			),

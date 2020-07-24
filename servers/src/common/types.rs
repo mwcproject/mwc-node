@@ -151,6 +151,24 @@ impl Default for ChainValidationMode {
 	}
 }
 
+/// Type for Tor Configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TorConfig {
+	/// Whether to start tor listener on listener startup (default true)
+	pub tor_enabled: bool,
+	/// The port for the tor socks proxy to bind to
+	pub socks_port: u16,
+}
+
+impl Default for TorConfig {
+	fn default() -> TorConfig {
+		TorConfig {
+			tor_enabled: false,
+			socks_port: 51234,
+		}
+	}
+}
+
 /// Full server configuration, aggregating configurations required for the
 /// different components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -231,6 +249,10 @@ pub struct ServerConfig {
 	/// Configuration for the webhooks that trigger on certain events
 	#[serde(default)]
 	pub webhook_config: WebHooksConfig,
+
+	/// Tor Configuration
+	#[serde(default)]
+	pub tor_config: TorConfig,
 }
 
 impl Default for ServerConfig {
@@ -258,6 +280,7 @@ impl Default for ServerConfig {
 			run_test_miner: Some(false),
 			test_miner_wallet_url: None,
 			webhook_config: WebHooksConfig::default(),
+			tor_config: TorConfig::default(),
 		}
 	}
 }
@@ -457,7 +480,7 @@ impl DandelionEpoch {
 		let stem_probability = self.config.stem_probability;
 		self.is_stem = rng.gen_range(0, 100) < stem_probability;
 
-		let addr = self.relay_peer.clone().map(|p| p.info.addr);
+		let addr = self.relay_peer.clone().map(|p| p.info.addr.clone());
 		info!(
 			"DandelionEpoch: next_epoch: is_stem: {} ({}%), relay: {:?}",
 			self.is_stem, stem_probability, addr
@@ -494,7 +517,7 @@ impl DandelionEpoch {
 			self.relay_peer = peers.outgoing_connected_peers().first().cloned();
 			info!(
 				"DandelionEpoch: relay_peer: new peer chosen: {:?}",
-				self.relay_peer.clone().map(|p| p.info.addr)
+				self.relay_peer.clone().map(|p| p.info.addr.clone())
 			);
 		}
 
