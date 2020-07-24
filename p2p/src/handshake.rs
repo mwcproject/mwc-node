@@ -16,7 +16,7 @@ use crate::conn::Tracker;
 use crate::core::core::hash::Hash;
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
-use crate::msg::{read_message, write_message, Hand, Msg, Shake, Type, USER_AGENT};
+use crate::msg::{read_message, write_message, Hand, Msg, Shake, TorAddress, Type, USER_AGENT};
 use crate::peer::Peer;
 use crate::types::{
 	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
