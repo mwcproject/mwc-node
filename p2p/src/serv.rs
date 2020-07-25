@@ -229,7 +229,6 @@ impl Server {
 					}
 				} else {
 					peer_addr = Some(PeerAddr::Ip(address));
-					info!("connection to {:?}", peer_addr);
 					TcpStream::connect_timeout(&address, Duration::from_secs(10))?
 				}
 			}
