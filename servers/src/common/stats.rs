@@ -277,7 +277,7 @@ impl PeerStats {
 		let direction = match peer.info.direction {
 			p2p::types::Direction::Inbound => "Inbound",
 			p2p::types::Direction::Outbound => "Outbound",
-			p2p::types::Direction::InboundTor => "Inbound (TOR)",
+			p2p::types::Direction::InboundTor => "Inbound  (TOR)",
 			p2p::types::Direction::OutboundTor => "Outbound (TOR)",
 		};
 		PeerStats {
