@@ -19,6 +19,7 @@
 use crate::tor::client::Client;
 use crate::tor::config as tor_config;
 use crate::util::{secp, static_secp_instance};
+use chrono::Utc;
 use std::convert::TryInto;
 use std::fs;
 use std::fs::File;
