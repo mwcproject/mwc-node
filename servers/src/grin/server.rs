@@ -19,6 +19,7 @@
 use crate::tor::client::Client;
 use crate::tor::config as tor_config;
 use crate::util::{secp, static_secp_instance};
+use std::convert::TryInto;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -354,11 +355,13 @@ impl Server {
 									if Path::new(&pid_file_name).exists() {
 										let pid = fs::read_to_string(&pid_file_name).unwrap();
 										let pid = pid.parse::<i32>().unwrap();
-										let process = Process::new(pid, None, 0);
+										let process =
+											Process::new(pid.try_into().unwrap(), None, 0);
 										let _ = process.kill(Signal::Kill);
 									}
 
 									info!("killed tor process due to timeout!");
+									thread::sleep(time::Duration::from_secs(10));
 
 									let res = Server::init_tor_listener(
 										&format!(
