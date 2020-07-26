@@ -323,6 +323,32 @@ impl Server {
 								);
 
 								info!("sync state = status = {:?}", sync_state_clone.status());
+								let mut do_check_tor = false;
+
+								// only check TOR if we're not progressing in a txhashset download.
+								if let SyncStatus::TxHashsetDownload {
+									start_time: _a,
+									prev_update_time,
+									update_time: _c,
+									prev_downloaded_size: _d,
+									downloaded_size: _e,
+									total_size: _f,
+								} = sync_state_clone.status()
+								{
+									let diff =
+										Utc::now().timestamp() - prev_update_time.timestamp();
+									if diff > 60 {
+										do_check_tor = true;
+									}
+									info!("diff = {}", diff);
+								} else {
+									do_check_tor = true;
+								}
+
+								if !do_check_tor {
+									continue;
+								}
+
 								let client = Client::new(true, Some(addr)).unwrap();
 								let req = client
 									.create_get_request(
