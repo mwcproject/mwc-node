@@ -240,16 +240,16 @@ impl TorProcess {
 				stdout_timeout_tx.send(Err(Error::Timeout)).unwrap_or(());
 			});
 		let stdout_thread = thread::spawn(move || {
-			stdout_tx
-				.send(Self::parse_tor_stdout(stdout, completion_percent))
-				.unwrap_or(());
+			let stdout = Self::parse_tor_stdout(stdout, completion_percent);
+			stdout_tx.send(Ok(())).unwrap_or(());
+			// now we start reading again forever so buffers don't fill
+			let pts_res = Self::parse_tor_stdout(stdout.unwrap(), completion_percent * 100);
+			if pts_res.is_err() {
+				error!("parse_tor_stdout generated error: {:?}", pts_res);
+			}
 		});
 		match stdout_rx.recv().unwrap() {
-			Ok(stdout) => {
-				stdout_thread.join().unwrap();
-				self.stdout = Some(stdout);
-				Ok(self)
-			}
+			Ok(()) => Ok(self),
 			Err(err) => {
 				self.kill().unwrap_or(());
 				stdout_thread.join().unwrap();
