@@ -206,7 +206,7 @@ impl TorProcess {
 			.args(&self.args)
 			.stdin(Stdio::piped())
 			.stdout(Stdio::piped())
-			.stderr(Stdio::piped())
+			.stderr(Stdio::null())
 			.spawn()
 			.map_err(|err| {
 				let msg = format!("TOR executable (`{}`) not found. Please ensure TOR is installed and on the path: {:?}", err, Self::get_tor_cmd());
