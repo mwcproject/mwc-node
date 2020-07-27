@@ -309,6 +309,7 @@ impl Server {
 									std::thread::sleep(std::time::Duration::from_millis(100));
 									if stop_state_clone.is_stopped() {
 										stopped = true;
+										break;
 									}
 								}
 								if stopped {
@@ -377,55 +378,10 @@ impl Server {
 									// restarting so, reset counter.
 									tor_timeout_count = 0;
 									warn!("tor is very slow now! [{}] {:?}", onion_address, res);
-
-								/*
-								let pid_file_name = format!(
-									"{}/tor/listener/pid",
-									cloned_cloned_config.db_root
-								);
-								// kill off PID if its already running
-								if Path::new(&pid_file_name).exists() {
-									let pid = fs::read_to_string(&pid_file_name).unwrap();
-									let pid = pid.parse::<i32>().unwrap();
-									let process =
-										Process::new(pid.try_into().unwrap(), None, 0);
-									let _ = process.kill(Signal::Kill);
-								}
-
-								info!("killed tor process due to timeout!");
-								thread::sleep(time::Duration::from_secs(10));
-
-								let res = Server::init_tor_listener(
-									&format!(
-										"{}:{}",
-										cloned_config.p2p_config.host,
-										cloned_config.p2p_config.port
-									),
-									&cloned_config.api_http_addr,
-									Some(&cloned_config.db_root),
-									cloned_config.tor_config.socks_port,
-								)
-								.unwrap();
-								listener = res.0;
-								onion_address = res.1;
-								let status = sync_state_clone.status();
-								let dl = match status {
-									SyncStatus::TxHashsetDownload { .. } => true,
-									_ => false,
-								};
-
-								if dl {
-									let height = cloned_chain.get_sync_head().unwrap().height;
-									sync_state_clone.update(SyncStatus::HeaderSync {
-										current_height: height,
-										highest_height: height,
-									});
-								}
-								*/
 								} else {
 									// reset counter on success
 									tor_timeout_count = 0;
-									info!("Connect success! {:?}, {}", res, onion_address);
+									debug!("tor is healthy");
 								}
 							}
 							Ok(listener)
