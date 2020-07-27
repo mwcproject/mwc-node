@@ -367,7 +367,7 @@ impl Server {
 									);
 									tor_timeout_count = tor_timeout_count + 1;
 									// only restart tor after second timeout in a row.
-									if tor_timeout_count < 2 {
+									if tor_timeout_count < 5 {
 										continue;
 									}
 
