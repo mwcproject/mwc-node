@@ -396,6 +396,7 @@ impl Server {
 						}
 						Err(e) => {
 							input.send(None).unwrap();
+							error!("failed to start tor due to {}", e);
 							Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
 						}
 					};
@@ -407,6 +408,8 @@ impl Server {
 				info!("tor successfully started: resp = {:?}", onion_address);
 			} else {
 				error!("tor failed to start!");
+				println!("Failed to start tor. See log for details");
+				std::process::exit(-1);
 			}
 		}
 
@@ -609,17 +612,18 @@ impl Server {
 
 		// Start TOR process
 		let tor_path = format!("{}/torrc", tor_dir);
-		process
+		let res = process
 			.torrc_path(&tor_path)
 			.working_dir(&tor_dir)
 			.timeout(200)
 			.completion_percent(100)
-			.launch()
-			.map_err(|e| {
-				ErrorKind::TorProcess(format!("Unable to start tor at {}, {}", tor_path, e).into())
-			})
-			.unwrap();
-		Ok((process, onion_address.to_string()))
+			.launch();
+
+		if res.is_err() {
+			Err(Error::Configuration("Unable to start tor".to_string()))
+		} else {
+			Ok((process, onion_address.to_string()))
+		}
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
