@@ -241,12 +241,13 @@ impl TorProcess {
 			});
 		let stdout_thread = thread::spawn(move || {
 			let stdout = Self::parse_tor_stdout(stdout, completion_percent);
-			stdout_tx.send(Ok(())).unwrap_or(());
-			// now we start reading again forever so buffers don't fill
-			let pts_res = Self::parse_tor_stdout(stdout.unwrap(), completion_percent * 100);
-			if pts_res.is_err() {
-				error!("parse_tor_stdout generated error: {:?}", pts_res);
+			if stdout.is_ok() {
+				stdout_tx.send(Ok(())).unwrap_or(());
+			} else {
+				stdout_tx.send(Err(Error::ProcessNotStarted)).unwrap();
 			}
+			// now we start reading again forever so buffers don't fill
+			let _ = Self::parse_tor_stdout(stdout.unwrap(), completion_percent * 100);
 		});
 		match stdout_rx.recv().unwrap() {
 			Ok(()) => Ok(self),
