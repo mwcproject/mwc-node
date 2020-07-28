@@ -606,7 +606,7 @@ impl Server {
 		}
 
 		info!(
-			"Starting TOR inbound listener at address http://{}.onion, binding to {}",
+			"Starting TOR inbound listener at address {}.onion, binding to {}",
 			onion_address, addr
 		);
 
