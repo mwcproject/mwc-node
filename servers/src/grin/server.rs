@@ -20,6 +20,7 @@ use crate::tor::client::Client;
 use crate::tor::config as tor_config;
 use crate::util::{secp, static_secp_instance};
 use chrono::Utc;
+use spinner::SpinnerBuilder;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -290,6 +291,8 @@ impl Server {
 				mpsc::channel();
 			let sync_state_clone = sync_state.clone();
 
+			let sp = SpinnerBuilder::new("Starting TOR, please wait...".into()).start();
+
 			thread::Builder::new()
 				.name("tor_listener".to_string())
 				.spawn(move || {
@@ -403,6 +406,7 @@ impl Server {
 				})?;
 
 			let resp = output.recv();
+			sp.update(format!("Finished!"));
 			onion_address = resp.unwrap_or(None);
 			if onion_address.is_some() {
 				info!("tor successfully started: resp = {:?}", onion_address);
