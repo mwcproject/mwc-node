@@ -274,6 +274,14 @@ impl Server {
 		let mut onion_address = None;
 
 		if config.tor_config.tor_enabled {
+			if !config.p2p_config.host.is_loopback() {
+				error!("If tor is enabled, host must be '127.0.0.1'.");
+				println!("If tor is enabled, host must be '127.0.0.1'.");
+				return Err(Error::Configuration(
+					"If tor is enabled, host must be '127.0.0.1'.".to_owned(),
+				));
+			}
+
 			let stop_state_clone = stop_state.clone();
 			let _cloned_config = config.clone();
 			let _cloned_chain = shared_chain.clone();
