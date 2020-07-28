@@ -103,12 +103,7 @@ pub fn connect_and_monitor(
 					);
 
 					thread::sleep(time::Duration::from_secs(1));
-
-					prev = MIN_DATE.and_hms(0, 0, 0);
-					prev_expire_check = MIN_DATE.and_hms(0, 0, 0);
-					prev_ping = Utc::now();
 					start_attempt = 0;
-					connecting_history = HashMap::new();
 					connect_all = true;
 				}
 
@@ -132,6 +127,8 @@ pub fn connect_and_monitor(
 						header_cache_size,
 						connect_all,
 					);
+					prev = Utc::now();
+					start_attempt = cmp::min(6, start_attempt + 1);
 
 					if peer_count != 0 && connected_peers != 0 {
 						connect_all = false;
@@ -153,9 +150,6 @@ pub fn connect_and_monitor(
 						tx.clone(),
 						preferred_peers.clone(),
 					);
-
-					prev = Utc::now();
-					start_attempt = cmp::min(6, start_attempt + 1);
 				}
 
 				if peer_count == 0 {
@@ -383,6 +377,7 @@ fn listen_for_addrs(
 				}
 			}
 		}
+
 		connecting_history.insert(addr.clone(), now);
 
 		let peers_c = peers.clone();

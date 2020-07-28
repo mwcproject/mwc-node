@@ -216,17 +216,7 @@ impl<'de> Visitor<'de> for PeerAddrs {
 		let mut peers = Vec::with_capacity(access.size_hint().unwrap_or(0));
 
 		while let Some(entry) = access.next_element::<&str>()? {
-			match SocketAddr::from_str(entry) {
-				// Try to parse IP address first
-				Ok(ip) => peers.push(PeerAddr::Ip(ip)),
-				// If that fails it's probably a DNS record
-				Err(_) => {
-					let socket_addrs = entry
-						.to_socket_addrs()
-						.expect(format!("Unable to resolve DNS: {}", entry).as_str());
-					peers.append(&mut socket_addrs.map(|addr| PeerAddr::Ip(addr)).collect());
-				}
-			}
+			peers.push(PeerAddr::from_str(entry));
 		}
 		Ok(PeerAddrs { peers })
 	}
@@ -303,6 +293,21 @@ impl PeerAddr {
 	pub fn from_ip(addr: IpAddr) -> PeerAddr {
 		let port = if global::is_floonet() { 13414 } else { 3414 };
 		PeerAddr::Ip(SocketAddr::new(addr, port))
+	}
+
+	pub fn from_str(addr: &str) -> PeerAddr {
+		let socket_addr = SocketAddr::from_str(addr);
+		if socket_addr.is_err() {
+			let socket_addrs = addr.to_socket_addrs();
+			if socket_addrs.is_ok() {
+				let vec: Vec<SocketAddr> = socket_addrs.unwrap().collect();
+				PeerAddr::Ip(vec[0])
+			} else {
+				PeerAddr::Onion(addr.to_string())
+			}
+		} else {
+			PeerAddr::Ip(socket_addr.unwrap())
+		}
 	}
 
 	/// If the ip is loopback then our key is "ip:port" (mainly for local usernet testing).
