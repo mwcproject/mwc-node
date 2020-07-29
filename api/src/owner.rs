@@ -18,10 +18,10 @@ use crate::chain::{Chain, SyncState};
 use crate::handlers::chain_api::{ChainCompactHandler, ChainValidationHandler};
 use crate::handlers::peers_api::{PeerHandler, PeersConnectedHandler};
 use crate::handlers::server_api::StatusHandler;
-use crate::p2p::types::PeerInfoDisplay;
 use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::types::Status;
+use grin_p2p::types::PeerInfoDisplayLegacy;
 use std::net::SocketAddr;
 use std::sync::Weak;
 
@@ -135,7 +135,7 @@ impl Owner {
 	/// * or [`Error`](struct.Error.html) if an error is encountered.
 	///
 
-	pub fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplay>, Error> {
+	pub fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
 		let peers_connected_handler = PeersConnectedHandler {
 			peers: self.peers.clone(),
 		};

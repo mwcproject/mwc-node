@@ -15,10 +15,10 @@
 //! JSON-RPC Stub generation for the Owner API
 
 use crate::owner::Owner;
-use crate::p2p::types::PeerInfoDisplay;
 use crate::p2p::PeerData;
 use crate::rest::ErrorKind;
 use crate::types::Status;
+use grin_p2p::types::PeerInfoDisplayLegacy;
 use std::net::SocketAddr;
 
 /// Public definition used to generate Node jsonrpc api.
@@ -291,7 +291,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplay>, ErrorKind>;
+	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, ErrorKind>;
 
 	/**
 	Networked version of [Owner::ban_peer](struct.Node.html#method.ban_peer).
@@ -371,7 +371,7 @@ impl OwnerRpc for Owner {
 		Owner::get_peers(self, addr).map_err(|e| e.kind().clone())
 	}
 
-	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplay>, ErrorKind> {
+	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, ErrorKind> {
 		Owner::get_connected_peers(self).map_err(|e| e.kind().clone())
 	}
 
