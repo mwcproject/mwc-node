@@ -16,17 +16,12 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
-use crate::tor::client::Client;
 use crate::tor::config as tor_config;
 use crate::util::{secp, static_secp_instance};
-use chrono::Utc;
 use spinner::SpinnerBuilder;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -290,7 +285,6 @@ impl Server {
 
 				let (input, output): (Sender<Option<String>>, Receiver<Option<String>>) =
 					mpsc::channel();
-				let sync_state_clone = sync_state.clone();
 
 				let sp = SpinnerBuilder::new("Starting TOR, please wait...".into()).start();
 
@@ -313,93 +307,10 @@ impl Server {
 								input
 									.send(Some(format!("{}.onion", onion_address.clone())))
 									.unwrap();
-								let mut tor_timeout_count = 0;
 								loop {
-									// sleep a total of 10 seconds, but check stop state every second
-									let mut stopped = false;
-									for _ in 1..100 {
-										std::thread::sleep(std::time::Duration::from_millis(100));
-										if stop_state_clone.is_stopped() {
-											stopped = true;
-											break;
-										}
-									}
-									if stopped {
+									std::thread::sleep(std::time::Duration::from_millis(10));
+									if stop_state_clone.is_stopped() {
 										break;
-									}
-									let _cloned_cloned_config = _cloned_config.clone();
-
-									let addr = SocketAddr::new(
-										IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-										_cloned_config.tor_config.socks_port,
-									);
-
-									info!("sync state = status = {:?}", sync_state_clone.status());
-									let mut do_check_tor = false;
-
-									// only check TOR if we're not progressing in a txhashset download.
-									if let SyncStatus::TxHashsetDownload {
-										start_time: _a,
-										prev_update_time,
-										update_time: _c,
-										prev_downloaded_size: _d,
-										downloaded_size: _e,
-										total_size: _f,
-									} = sync_state_clone.status()
-									{
-										let diff =
-											Utc::now().timestamp() - prev_update_time.timestamp();
-										if diff > 60 {
-											do_check_tor = true;
-										}
-										info!("diff = {}", diff);
-									} else {
-										do_check_tor = true;
-									}
-
-									if !do_check_tor {
-										// reset counter too
-										tor_timeout_count = 0;
-										continue;
-									}
-
-									let client = Client::new(true, Some(addr)).unwrap();
-									let req = client
-										.create_get_request(
-											&format!(
-												"http://{}.onion:8080/v1/status",
-												onion_address
-											),
-											None,
-											None,
-										)
-										.unwrap();
-									let res = client.send_request(req);
-
-									if res.is_err() {
-										info!(
-											"Error couldn't connect to address [{}], {:?}",
-											onion_address, res
-										);
-										tor_timeout_count = tor_timeout_count + 1;
-										// only restart tor after second timeout in a row.
-										if tor_timeout_count < 8 {
-											continue;
-										}
-
-										// we don't seem to need to restart tor.
-										// with other fixes, it eventually recovers. So for now,
-										// we comment this out and just print the rror messages.
-										// restarting so, reset counter.
-										tor_timeout_count = 0;
-										warn!(
-											"tor is very slow now! [{}] {:?}",
-											onion_address, res
-										);
-									} else {
-										// reset counter on success
-										tor_timeout_count = 0;
-										debug!("tor is healthy");
 									}
 								}
 								Ok(listener)
