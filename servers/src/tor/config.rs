@@ -235,7 +235,8 @@ pub fn output_tor_listener_config(
 	tor_config_directory: &str,
 	wallet_listener_addr: &str,
 	api_listener_addr: &str,
-	listener_keys: &[SecretKey],
+	listener_keys: Option<&[SecretKey]>,
+	onion_address: Option<String>,
 	socks_port: u16,
 ) -> Result<(), Error> {
 	let tor_data_dir = format!("{}{}{}", tor_config_directory, MAIN_SEPARATOR, TOR_DATA_DIR);
@@ -246,9 +247,14 @@ pub fn output_tor_listener_config(
 
 	let mut service_dirs = vec![];
 
-	for k in listener_keys {
-		let service_dir = output_onion_service_config(tor_config_directory, &k)?;
-		service_dirs.push(service_dir.to_string());
+	if listener_keys.is_some() {
+		let listener_keys = listener_keys.unwrap();
+		for k in listener_keys {
+			let service_dir = output_onion_service_config(tor_config_directory, &k)?;
+			service_dirs.push(service_dir.to_string());
+		}
+	} else if onion_address.is_some() {
+		service_dirs.push(onion_address.unwrap());
 	}
 
 	// hidden service listener doesn't need a socks port

@@ -373,7 +373,7 @@ impl Server {
 								let res = client.send_request(req);
 
 								if res.is_err() {
-									error!(
+									info!(
 										"Error couldn't connect to address [{}], {:?}",
 										onion_address, res
 									);
@@ -589,25 +589,33 @@ impl Server {
 			}
 		}
 
+		let mut sec_key_vec = None;
+		let scoped_vec;
+		let mut existing_onion = None;
 		if !found {
 			let secp_inst = static_secp_instance();
 			let secp = secp_inst.lock();
 			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+			scoped_vec = vec![sec_key.clone()];
+			sec_key_vec = Some((scoped_vec).as_slice());
 
 			onion_address = OnionV3Address::from_private(&sec_key.0)
 				.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
 				.unwrap()
 				.to_string();
-			tor_config::output_tor_listener_config(
-				&tor_dir,
-				addr,
-				api_addr,
-				&vec![sec_key],
-				socks_port,
-			)
-			.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
-			.unwrap();
+		} else {
+			existing_onion = Some(onion_address.clone());
 		}
+		tor_config::output_tor_listener_config(
+			&tor_dir,
+			addr,
+			api_addr,
+			sec_key_vec,
+			existing_onion,
+			socks_port,
+		)
+		.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
+		.unwrap();
 
 		info!(
 			"Starting TOR inbound listener at address {}.onion, binding to {}",
