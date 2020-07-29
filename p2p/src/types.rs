@@ -583,6 +583,18 @@ impl PeerInfo {
 	}
 }
 
+/// This is needed for legacy purposes
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerInfoDisplayLegacy {
+	pub capabilities: Capabilities,
+	pub user_agent: String,
+	pub version: ProtocolVersion,
+	pub addr: String,
+	pub direction: Direction,
+	pub total_difficulty: Difficulty,
+	pub height: u64,
+}
+
 /// Flatten out a PeerInfo and nested PeerLiveInfo (taking a read lock on it)
 /// so we can serialize/deserialize the data for the API and the TUI.
 #[derive(Clone, Debug, Serialize, Deserialize)]

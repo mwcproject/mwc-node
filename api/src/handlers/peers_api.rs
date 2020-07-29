@@ -18,6 +18,7 @@ use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::web::*;
+use grin_p2p::types::PeerInfoDisplayLegacy;
 use hyper::{Body, Request, StatusCode};
 use std::net::SocketAddr;
 use std::sync::Weak;
@@ -38,13 +39,34 @@ pub struct PeersConnectedHandler {
 }
 
 impl PeersConnectedHandler {
-	pub fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplay>, Error> {
+	pub fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
 		let peers = w(&self.peers)?
 			.connected_peers()
 			.iter()
 			.map(|p| p.info.clone().into())
 			.collect::<Vec<PeerInfoDisplay>>();
-		Ok(peers)
+
+		let mut peers_ret: Vec<PeerInfoDisplayLegacy> = Vec::new();
+
+		for peer in peers {
+			let peer_addr_str = match peer.addr {
+				// for tor we just return this because older wallets
+				// can't process this.
+				PeerAddr::Onion(_) => format!("127.0.0.1:{}", 3414),
+				PeerAddr::Ip(ip) => format!("{}:{}", ip.ip(), ip.port()),
+			};
+			let peer_display = PeerInfoDisplayLegacy {
+				capabilities: peer.capabilities,
+				user_agent: peer.user_agent,
+				version: peer.version,
+				addr: peer_addr_str,
+				direction: peer.direction,
+				total_difficulty: peer.total_difficulty,
+				height: peer.height,
+			};
+			peers_ret.push(peer_display);
+		}
+		Ok(peers_ret)
 	}
 }
 
@@ -55,7 +77,27 @@ impl Handler for PeersConnectedHandler {
 			.iter()
 			.map(|p| p.info.clone().into())
 			.collect();
-		json_response(&peers)
+
+		let mut peers_ret: Vec<PeerInfoDisplayLegacy> = Vec::new();
+		for peer in peers.clone() {
+			let peer_addr_str = match peer.addr {
+				// for tor we just return this because older wallets
+				// can't process this.
+				PeerAddr::Onion(_) => format!("127.0.0.1:{}", 3414),
+				PeerAddr::Ip(ip) => format!("{}:{}", ip.ip(), ip.port()),
+			};
+			let peer_display = PeerInfoDisplayLegacy {
+				capabilities: peer.capabilities,
+				user_agent: peer.user_agent,
+				version: peer.version,
+				addr: peer_addr_str,
+				direction: peer.direction,
+				total_difficulty: peer.total_difficulty,
+				height: peer.height,
+			};
+			peers_ret.push(peer_display);
+		}
+		json_response(&peers_ret)
 	}
 }
 
