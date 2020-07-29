@@ -158,6 +158,10 @@ pub struct TorConfig {
 	pub tor_enabled: bool,
 	/// The port for the tor socks proxy to bind to
 	pub socks_port: u16,
+	/// Tor running externally (default false)
+	pub tor_external: bool,
+	/// Onion address to use, only applicable with external tor
+	pub onion_address: Option<String>,
 }
 
 impl Default for TorConfig {
@@ -165,6 +169,8 @@ impl Default for TorConfig {
 		TorConfig {
 			tor_enabled: false,
 			socks_port: 51234,
+			tor_external: false,
+			onion_address: Some("".to_string()),
 		}
 	}
 }
