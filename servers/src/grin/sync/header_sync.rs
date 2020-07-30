@@ -108,6 +108,10 @@ impl HeaderSync {
 			let mut count = 0;
 			let peer_count = peers.len();
 			for peer in peers {
+				if count >= 4 {
+					// limit to 4 peers
+					break;
+				}
 				let cloned_peer = peer.clone();
 				let mut val = cloned_peer
 					.info
@@ -148,6 +152,8 @@ impl HeaderSync {
 					);
 				}
 			}
+			// sleep a little while here
+			std::thread::sleep(std::time::Duration::from_millis(1000));
 		}
 		Ok(ret)
 	}
