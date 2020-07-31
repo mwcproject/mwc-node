@@ -162,6 +162,8 @@ impl Handler for PeerHandler {
 			peer_addr = PeerAddr::from_ip(ip_addr);
 		} else if let Ok(addr) = command.parse() {
 			peer_addr = PeerAddr::Ip(addr);
+		} else if let Ok(onion) = command.parse() {
+			peer_addr = PeerAddr::Onion(onion);
 		} else {
 			return response(
 				StatusCode::BAD_REQUEST,
