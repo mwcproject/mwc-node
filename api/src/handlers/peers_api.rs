@@ -190,6 +190,8 @@ impl Handler for PeerHandler {
 					PeerAddr::from_ip(ip_addr)
 				} else if let Ok(addr) = a.parse() {
 					PeerAddr::Ip(addr)
+				} else if let Ok(addr) = a.parse() {
+					PeerAddr::Onion(addr)
 				} else {
 					return response(
 						StatusCode::BAD_REQUEST,
