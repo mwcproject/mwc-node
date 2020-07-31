@@ -147,7 +147,7 @@ pub enum ErrorKind {
 	#[fail(display = "Roaring Bitmap error")]
 	Bitmap,
 	/// Error during chain sync
-	#[fail(display = "Sync error")]
+	#[fail(display = "Sync error {}", _0)]
 	SyncError(String),
 }
 

@@ -164,7 +164,8 @@ impl SyncRunner {
 			let currently_syncing = self.sync_state.is_syncing();
 
 			// check whether syncing is generally needed, when we compare our state with others
-			let (needs_syncing, most_work_height) = unwrap_or_restart_loop!(self.needs_syncing());
+			let (needs_syncing, most_work_height, total_difficulty) =
+				unwrap_or_restart_loop!(self.needs_syncing());
 			if most_work_height > 0 {
 				// we can occasionally get a most work height of 0 if read locks fail
 				highest_height = most_work_height;
@@ -191,11 +192,11 @@ impl SyncRunner {
 			if try_smart_sync {
 				// only try once
 				try_smart_sync = false;
-				let res = self.smart_sync();
+				let res = self.smart_sync(total_difficulty);
 				match res {
 					Err(e) => {
 						warn!(
-							"Smart sync failed due to {}. Continuing with standard sync.",
+							"Smart sync failed due to {:?}. Continuing with standard sync.",
 							e
 						);
 					}
@@ -290,7 +291,7 @@ impl SyncRunner {
 		}
 	}
 
-	fn smart_sync(&self) -> Result<(), chain::Error> {
+	fn smart_sync(&self, most_work_difficulty: u64) -> Result<(), chain::Error> {
 		Err(
 			chain::ErrorKind::SyncError("smart_sync failed, reverting to regular sync".to_string())
 				.into(),
@@ -299,7 +300,7 @@ impl SyncRunner {
 
 	/// Whether we're currently syncing the chain or we're fully caught up and
 	/// just receiving blocks through gossip.
-	fn needs_syncing(&self) -> Result<(bool, u64), chain::Error> {
+	fn needs_syncing(&self) -> Result<(bool, u64, u64), chain::Error> {
 		let local_diff = self.chain.head()?.total_difficulty;
 		let mut is_syncing = self.sync_state.is_syncing();
 		let peer = self.peers.most_work_peer();
@@ -308,7 +309,7 @@ impl SyncRunner {
 			p.info.clone()
 		} else {
 			warn!("sync: no peers available, disabling sync");
-			return Ok((false, 0));
+			return Ok((false, 0, 0));
 		};
 
 		// if we're already syncing, we're caught up if no peer has a higher
@@ -332,7 +333,7 @@ impl SyncRunner {
 					Err(e) => {
 						error!("failed to get difficulty iterator: {:?}", e);
 						// we handle 0 height in the caller
-						return Ok((false, 0));
+						return Ok((false, 0, 0));
 					}
 				};
 				diff_iter
@@ -352,6 +353,10 @@ impl SyncRunner {
 				is_syncing = true;
 			}
 		}
-		Ok((is_syncing, peer_info.height()))
+		Ok((
+			is_syncing,
+			peer_info.height(),
+			peer_info.total_difficulty().to_num(),
+		))
 	}
 }
