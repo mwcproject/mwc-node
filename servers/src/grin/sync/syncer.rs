@@ -151,6 +151,7 @@ impl SyncRunner {
 		// We are adding counter, to reduce false alarms.
 		let mut header_block_counter = 0;
 
+		let mut try_smart_sync = true;
 		thread::sleep(time::Duration::from_millis(1000));
 		// Main syncing loop
 		loop {
@@ -184,6 +185,22 @@ impl SyncRunner {
 				// different approach from grin. Check more frequently.
 				thread::sleep(time::Duration::from_millis(500));
 				continue;
+			}
+
+			// needs syncing. first try smart sync
+			if try_smart_sync {
+				// only try once
+				try_smart_sync = false;
+				let res = self.smart_sync();
+				match res {
+					Err(e) => {
+						warn!(
+							"Smart sync failed due to {}. Continuing with standard sync.",
+							e
+						);
+					}
+					_ => {}
+				}
 			}
 
 			// if syncing is needed
@@ -271,6 +288,13 @@ impl SyncRunner {
 				state_sync.check_run(&header_head, &head, &tail, highest_height);
 			}
 		}
+	}
+
+	fn smart_sync(&self) -> Result<(), chain::Error> {
+		Err(
+			chain::ErrorKind::SyncError("smart_sync failed, reverting to regular sync".to_string())
+				.into(),
+		)
 	}
 
 	/// Whether we're currently syncing the chain or we're fully caught up and
