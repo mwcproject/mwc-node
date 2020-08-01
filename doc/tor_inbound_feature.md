@@ -7,11 +7,11 @@ make it on by default.
 
 You must install TOR and include it in your path. On mac, this can be done with the following command:
 
-```brew install tor```
+```# brew install tor```
 
 On Ubuntu Linux:
 
-```sudo apt install tor```
+```# sudo apt install tor```
 
 On PC:
 
