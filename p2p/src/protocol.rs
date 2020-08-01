@@ -220,18 +220,25 @@ impl MessageHandler for Protocol {
 				adapter.compact_block_received(b.into(), &self.peer_info)?;
 				Ok(None)
 			}
-
 			Type::TorAddress => {
 				let tor_address: TorAddress = msg.body()?;
-				debug!(
+				info!(
 					"TorAddress received from {:?}, address = {:?}",
 					self.peer_info, tor_address
 				);
-				let peer = self.server.peers.get_peer(self.peer_info.addr.clone());
-				if peer.is_ok() {
-					let mut peer = peer.unwrap();
-					peer.addr = PeerAddr::Onion(tor_address.address.clone());
-					self.server.peers.save_peer(&peer)?;
+
+				let new_peer_addr = PeerAddr::Onion(tor_address.address.clone());
+				error!("new peer = {:?}", new_peer_addr);
+				if self.server.peers.is_banned(new_peer_addr.clone()) {
+					let peer = self.server.peers.get_peer(self.peer_info.addr.clone())?;
+					warn!("banned peer tried to connect! {:?}", peer);
+				} else {
+					let peer = self.server.peers.get_peer(self.peer_info.addr.clone());
+					if peer.is_ok() {
+						let mut peer = peer.unwrap();
+						peer.addr = new_peer_addr;
+						self.server.peers.save_peer(&peer)?;
+					}
 				}
 				Ok(None)
 			}

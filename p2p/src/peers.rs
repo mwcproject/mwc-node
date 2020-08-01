@@ -70,6 +70,10 @@ impl Peers {
 			error!("add_connected: failed to get peers lock");
 			Error::Timeout
 		})?;
+
+		if self.is_banned(peer.info.addr.clone()) {
+			return Err(Error::Banned);
+		}
 		let peer_data = PeerData {
 			addr: peer.info.addr.clone(),
 			capabilities: peer.info.capabilities,
@@ -271,7 +275,7 @@ impl Peers {
 
 		match self.get_connected_peer(peer_addr.clone()) {
 			Some(peer) => {
-				debug!("Banning peer {}, ban_reason {:?}", peer_addr, ban_reason);
+				info!("Banning peer {}, ban_reason {:?}", peer_addr, ban_reason);
 				// setting peer status will get it removed at the next clean_peer
 				peer.send_ban_reason(ban_reason)?;
 				peer.set_banned();
@@ -289,7 +293,7 @@ impl Peers {
 
 	/// Unban a peer, checks if it exists and banned then unban
 	pub fn unban_peer(&self, peer_addr: PeerAddr) -> Result<(), Error> {
-		debug!("unban_peer: peer {}", peer_addr);
+		info!("unban_peer: peer {}", peer_addr);
 		// check if peer exist
 		self.get_peer(peer_addr.clone())?;
 		if self.is_banned(peer_addr.clone()) {
