@@ -425,6 +425,7 @@ impl Server {
 			duration_sync_long,
 			duration_sync_short,
 			header_cache_size,
+			config.p2p_config.peers_preferred.clone().map(|p| p.peers),
 		)?;
 
 		let p2p_inner = p2p_server.clone();

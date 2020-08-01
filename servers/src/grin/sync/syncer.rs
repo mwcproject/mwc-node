@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use grin_p2p::PeerAddr;
 use std::sync::Arc;
 use std::thread;
 use std::time;
@@ -33,12 +34,18 @@ pub fn run_sync(
 	duration_sync_long: i64,
 	duration_sync_short: i64,
 	header_cache_size: u64,
+	preferred_peers: Option<Vec<PeerAddr>>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("sync".to_string())
 		.spawn(move || {
 			let runner = SyncRunner::new(sync_state, peers, chain, stop_state);
-			runner.sync_loop(duration_sync_long, duration_sync_short, header_cache_size);
+			runner.sync_loop(
+				duration_sync_long,
+				duration_sync_short,
+				header_cache_size,
+				preferred_peers,
+			);
 		})
 }
 
@@ -104,7 +111,13 @@ impl SyncRunner {
 	}
 
 	/// Starts the syncing loop, just spawns two threads that loop forever
-	fn sync_loop(&self, duration_sync_long: i64, duration_sync_short: i64, header_cache_size: u64) {
+	fn sync_loop(
+		&self,
+		duration_sync_long: i64,
+		duration_sync_short: i64,
+		header_cache_size: u64,
+		peers_preferred: Option<Vec<PeerAddr>>,
+	) {
 		macro_rules! unwrap_or_restart_loop(
 	($obj: expr) =>(
 		match $obj {
@@ -192,7 +205,7 @@ impl SyncRunner {
 			if try_smart_sync {
 				// only try once
 				try_smart_sync = false;
-				let res = self.smart_sync(total_difficulty);
+				let res = self.smart_sync(total_difficulty, peers_preferred.clone());
 				match res {
 					Err(e) => {
 						warn!(
@@ -291,7 +304,26 @@ impl SyncRunner {
 		}
 	}
 
-	fn smart_sync(&self, most_work_difficulty: u64) -> Result<(), chain::Error> {
+	/// Smart sync is attempted once by calling the peers that are in the peers_preferred list.
+	/// if it fails, we revert to standard syncing procedures which may be slower.
+	fn smart_sync(
+		&self,
+		most_work_difficulty: u64,
+		peers_preferred: Option<Vec<PeerAddr>>,
+	) -> Result<(), chain::Error> {
+		let peers_preferred = peers_preferred.unwrap_or(vec![]);
+		info!("peers = {:?}", peers_preferred);
+
+		let mut pp = vec![];
+		for peer in peers_preferred {
+			let peer = self.peers.get_connected_peer(peer);
+			if peer.is_some() {
+				pp.push(peer.unwrap());
+			}
+		}
+
+		info!("pp = {:?}", pp);
+
 		Err(
 			chain::ErrorKind::SyncError("smart_sync failed, reverting to regular sync".to_string())
 				.into(),
