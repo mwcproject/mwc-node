@@ -23,6 +23,7 @@ use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -560,7 +561,13 @@ impl Server {
 		);
 
 		// Start TOR process
-		let tor_path = format!("{}/torrc", tor_dir);
+		let tor_path = PathBuf::from(format!("{}/torrc", tor_dir));
+		let tor_path = fs::canonicalize(&tor_path)?;
+		let tor_path = tor_path
+			.into_os_string()
+			.into_string()
+			.unwrap_or(format!("{}/torrc", tor_dir));
+
 		let res = process
 			.torrc_path(&tor_path)
 			.working_dir(&tor_dir)
