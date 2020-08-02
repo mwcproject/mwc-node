@@ -67,6 +67,9 @@ socks_port = 51234
 tor_external = false
 onion_address = ""
 ```
+# TUI details
+
+![TOR Inbound Image](https://github.com/mwcproject/mwc-node/blob/master/doc/Screen%20Shot%202020-08-01%20at%204.52.13%20PM.png "TOR Inbound")
 
 # Conclusion
 
