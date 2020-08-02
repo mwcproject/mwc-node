@@ -280,7 +280,7 @@ impl std::fmt::Display for PeerAddr {
 		match self {
 			Ip(ip) => write!(f, "{}", ip),
 			Onion(onion) => {
-				let onion_address = &onion.to_string()[0..20];
+				let onion_address = &onion.to_string();
 				write!(f, "tor://{}", onion_address)
 			}
 		}
