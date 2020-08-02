@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use grin_p2p::Peer;
 use grin_p2p::PeerAddr;
 use std::sync::Arc;
 use std::thread;
@@ -322,12 +323,36 @@ impl SyncRunner {
 			}
 		}
 
-		info!("pp = {:?}", pp);
+		info!("pp.len = {}, pp = {:?}", pp.len(), pp);
 
-		Err(
-			chain::ErrorKind::SyncError("smart_sync failed, reverting to regular sync".to_string())
+		if pp.len() == 0 {
+			Err(
+				chain::ErrorKind::SyncError("no smart sync servers specified, please use peers_preferred in mwc-server.toml to specify them, reverting to regular sync".to_string())
 				.into(),
-		)
+			)
+		} else {
+			if let Err(e) = self.do_smart_sync(pp, most_work_difficulty) {
+				Err(chain::ErrorKind::SyncError(
+					format!("smart_sync failed due to {}, reverting to regular sync", e)
+						.to_string(),
+				)
+				.into())
+			} else {
+				Ok(())
+			}
+		}
+	}
+
+	fn do_smart_sync(
+		&self,
+		smart_peers: Vec<Arc<Peer>>,
+		most_work_difficulty: u64,
+	) -> Result<(), chain::Error> {
+		for peer in smart_peers {
+			let res = peer.send_ping(Difficulty::from_num(most_work_difficulty), 0);
+			info!("res from peer {:?} was {:?}", peer, res);
+		}
+		Ok(())
 	}
 
 	/// Whether we're currently syncing the chain or we're fully caught up and
