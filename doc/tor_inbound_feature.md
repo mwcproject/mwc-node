@@ -78,4 +78,6 @@ You will also notice that you can both connect to .onion addresses (which are TO
 
 # Conclusion
 
-Inbound TOR connections is a powerful feature.
+Inbound TOR connections is a powerful feature. It will enable a much greater degree of durability to the MWC network and improve one of the important properties of money. We are not aware of another project that has this feature integrated into the node in such a detailed manner. The network will be more durable because
+it will be impossible for anyone to know exactly where the network is running. Even mining can move behind TOR if needed. For now it is probably more profitable
+to mine with regular IP based connections due to latency though.
