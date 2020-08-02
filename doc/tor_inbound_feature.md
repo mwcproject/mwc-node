@@ -69,7 +69,12 @@ onion_address = ""
 ```
 # TUI details
 
+When running with TOR enabled you should see details like this in your TUI:
+
 ![TOR Inbound Image](https://github.com/mwcproject/mwc-node/blob/master/doc/Screen%20Shot%202020-08-01%20at%204.52.13%20PM.png "TOR Inbound")
+
+You will notice that "Direction" indicates (TOR) when you have tor enabled. There are both inbound and outbound connections that are displayed in the image above.
+You will also notice that you can both connect to .onion addresses (which are TOR enabled nodes) and IP based addresses.
 
 # Conclusion
 
