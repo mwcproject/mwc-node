@@ -20,7 +20,7 @@ On Ubuntu Linux:
 On PC:
 
 Download the tor browser from [The TOR Project](https://www.torproject.org/download/).
-Then add the tor binary (tor.exe) to your path. For instructions on how to do that see [this](https://docs.alfresco.com/4.2/tasks/fot-addpath.html).
+Then add the tor binary (tor.exe) to your path. For instructions on how to do that see [this](https://docs.alfresco.com/4.2/tasks/fot-addpath.html) or [this](https://www.architectryan.com/2018/03/17/add-to-the-path-on-windows-10/).
 
 # Configuration
 
