@@ -496,6 +496,21 @@ impl Server {
 		})
 	}
 
+	#[cfg(not(target_os = "windows"))]
+	fn adjust_canonicalization<P: AsRef<Path>>(p: P) -> String {
+		p.as_ref().display().to_string()
+	}
+
+	#[cfg(target_os = "windows")]
+	fn adjust_canonicalization<P: AsRef<Path>>(p: P) -> String {
+		const VERBATIM_PREFIX: &str = r#"\\?\"#;
+		let p = p.as_ref().display().to_string();
+		if p.starts_with(VERBATIM_PREFIX) {
+			p[VERBATIM_PREFIX.len()..].to_string()
+		} else {
+			p
+		}
+	}
 	/// Start the tor listener for inbound connections
 	pub fn init_tor_listener(
 		addr: &str,
@@ -563,10 +578,7 @@ impl Server {
 		// Start TOR process
 		let tor_path = PathBuf::from(format!("{}/torrc", tor_dir));
 		let tor_path = fs::canonicalize(&tor_path)?;
-		let tor_path = tor_path
-			.into_os_string()
-			.into_string()
-			.unwrap_or(format!("{}/torrc", tor_dir));
+		let tor_path = Server::adjust_canonicalization(tor_path);
 
 		let res = process
 			.torrc_path(&tor_path)
