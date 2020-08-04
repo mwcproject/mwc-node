@@ -18,6 +18,7 @@ use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::web::*;
+use grin_p2p::types::Direction;
 use grin_p2p::types::PeerInfoDisplayLegacy;
 use hyper::{Body, Request, StatusCode};
 use std::net::SocketAddr;
@@ -55,12 +56,21 @@ impl PeersConnectedHandler {
 				PeerAddr::Onion(_) => format!("127.0.0.1:{}", 3414),
 				PeerAddr::Ip(ip) => format!("{}:{}", ip.ip(), ip.port()),
 			};
+
+			let peer_direction = if peer.direction == Direction::OutboundTor {
+				Direction::Outbound
+			} else if peer.direction == Direction::InboundTor {
+				Direction::Inbound
+			} else {
+				peer.direction
+			};
+
 			let peer_display = PeerInfoDisplayLegacy {
 				capabilities: peer.capabilities,
 				user_agent: peer.user_agent,
 				version: peer.version,
 				addr: peer_addr_str,
-				direction: peer.direction,
+				direction: peer_direction,
 				total_difficulty: peer.total_difficulty,
 				height: peer.height,
 			};
@@ -86,12 +96,21 @@ impl Handler for PeersConnectedHandler {
 				PeerAddr::Onion(_) => format!("127.0.0.1:{}", 3414),
 				PeerAddr::Ip(ip) => format!("{}:{}", ip.ip(), ip.port()),
 			};
+
+			let peer_direction = if peer.direction == Direction::OutboundTor {
+				Direction::Outbound
+			} else if peer.direction == Direction::InboundTor {
+				Direction::Inbound
+			} else {
+				peer.direction
+			};
+
 			let peer_display = PeerInfoDisplayLegacy {
 				capabilities: peer.capabilities,
 				user_agent: peer.user_agent,
 				version: peer.version,
 				addr: peer_addr_str,
-				direction: peer.direction,
+				direction: peer_direction,
 				total_difficulty: peer.total_difficulty,
 				height: peer.height,
 			};
