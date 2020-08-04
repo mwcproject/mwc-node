@@ -247,7 +247,7 @@ impl TorProcess {
 				stdout_tx.send(Err(Error::ProcessNotStarted)).unwrap();
 			}
 			// now we start reading again forever so buffers don't fill
-			let _ = Self::parse_tor_stdout(stdout.unwrap(), completion_percent * 100);
+			let _ = Self::parse_tor_stdout(stdout.unwrap(), u8::max_value());
 		});
 		match stdout_rx.recv().unwrap() {
 			Ok(()) => Ok(self),
@@ -276,6 +276,9 @@ impl TorProcess {
 			> 0
 		{
 			{
+				if completion_perc == u8::max_value() {
+					continue;
+				} // we just keep consuming the lines.
 				if raw_line.len() < timestamp_len + 1 {
 					return Err(Error::InvalidLogLine(raw_line));
 				}
@@ -290,7 +293,6 @@ impl TorProcess {
 								.and_then(|c| c.name("perc"))
 								.and_then(|pc| pc.as_str().parse::<u8>().ok())
 								.ok_or_else(|| Error::InvalidBootstrapLine(line.to_string()))?;
-
 							if perc >= completion_perc {
 								break;
 							}
