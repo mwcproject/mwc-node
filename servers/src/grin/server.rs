@@ -272,10 +272,10 @@ impl Server {
 
 		if config.tor_config.tor_enabled {
 			if !config.p2p_config.host.is_loopback() {
-				error!("If tor is enabled, host must be '127.0.0.1'.");
-				println!("If tor is enabled, host must be '127.0.0.1'.");
+				error!("If Tor is enabled, host must be '127.0.0.1'.");
+				println!("If Tor is enabled, host must be '127.0.0.1'.");
 				return Err(Error::Configuration(
-					"If tor is enabled, host must be '127.0.0.1'.".to_owned(),
+					"If Tor is enabled, host must be '127.0.0.1'.".to_owned(),
 				));
 			}
 
@@ -318,7 +318,7 @@ impl Server {
 							}
 							Err(e) => {
 								input.send(None).unwrap();
-								error!("failed to start tor due to {}", e);
+								error!("failed to start Tor due to {}", e);
 								Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
 							}
 						};
@@ -328,9 +328,9 @@ impl Server {
 				sp.update(format!("Finished!"));
 				onion_address = resp.unwrap_or(None);
 				if onion_address.is_some() {
-					info!("tor successfully started: resp = {:?}", onion_address);
+					info!("Tor successfully started: resp = {:?}", onion_address);
 				} else {
-					error!("tor failed to start!");
+					error!("Tor failed to start!");
 					println!("Failed to start tor. See log for details");
 					std::process::exit(-1);
 				}
@@ -339,13 +339,13 @@ impl Server {
 
 				if onion_address.is_none() {
 					error!("onion_address must be specified with external tor. Halting!");
-					println!("onion_address must be specified with extenral tor. Halting!");
+					println!("onion_address must be specified with external tor. Halting!");
 					std::process::exit(-1);
 				}
 				let otemp = onion_address.clone().unwrap();
 				if otemp == "" {
 					error!("onion_address must be specified with external tor. Halting!");
-					println!("onion_address must be specified with extenral tor. Halting!");
+					println!("onion_address must be specified with external tor. Halting!");
 					std::process::exit(-1);
 				}
 				info!(
@@ -511,7 +511,7 @@ impl Server {
 			p
 		}
 	}
-	/// Start the tor listener for inbound connections
+	/// Start the Tor listener for inbound connections
 	pub fn init_tor_listener(
 		addr: &str,
 		api_addr: &str,
@@ -571,11 +571,11 @@ impl Server {
 		.unwrap();
 
 		info!(
-			"Starting TOR inbound listener at address {}.onion, binding to {}",
+			"Starting Tor inbound listener at address {}.onion, binding to {}",
 			onion_address, addr
 		);
 
-		// Start TOR process
+		// Start Tor process
 		let tor_path = PathBuf::from(format!("{}/torrc", tor_dir));
 		let tor_path = fs::canonicalize(&tor_path)?;
 		let tor_path = Server::adjust_canonicalization(tor_path);

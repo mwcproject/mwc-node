@@ -84,7 +84,7 @@ pub enum Error {
 	Regex(String, regex::Error),
 	#[fail(display = "Tor process not running")]
 	ProcessNotStarted,
-	#[fail(display = "Waiting for tor respond timeout")]
+	#[fail(display = "Waiting for Tor respond timeout")]
 	Timeout,
 }
 
@@ -209,7 +209,7 @@ impl TorProcess {
 			.stderr(Stdio::null())
 			.spawn()
 			.map_err(|err| {
-				let msg = format!("TOR executable (`{}`) not found. Please ensure TOR is installed and on the path: {:?}", err, Self::get_tor_cmd());
+				let msg = format!("Tor executable (`{}`) not found. Please ensure Tor is installed and on the path: {:?}", err, Self::get_tor_cmd());
 				Error::Process(msg)
 			})?;
 
@@ -264,7 +264,7 @@ impl TorProcess {
 		completion_perc: u8,
 	) -> Result<BufReader<ChildStdout>, Error> {
 		let re_bootstrap = Regex::new(r"^\[notice\] Bootstrapped (?P<perc>[0-9]+)%(.*): ")
-			.map_err(|err| Error::Regex("Failed to parse tor output".to_string(), err))?;
+			.map_err(|err| Error::Regex("Failed to parse Tor output".to_string(), err))?;
 
 		let timestamp_len = "May 16 02:50:08.792".len();
 		let mut warnings = Vec::new();
@@ -272,7 +272,7 @@ impl TorProcess {
 
 		while stdout
 			.read_line(&mut raw_line)
-			.map_err(|err| Error::Process(format!("Unable to parse tor output, {}", err)))?
+			.map_err(|err| Error::Process(format!("Unable to parse Tor output, {}", err)))?
 			> 0
 		{
 			{
@@ -312,7 +312,7 @@ impl TorProcess {
 		if let Some(ref mut process) = self.process {
 			Ok(process
 				.kill()
-				.map_err(|err| Error::Process(format!("Fail to kill tor process, {}", err)))?)
+				.map_err(|err| Error::Process(format!("Fail to kill Tor process, {}", err)))?)
 		} else {
 			Err(Error::ProcessNotStarted)
 		}
