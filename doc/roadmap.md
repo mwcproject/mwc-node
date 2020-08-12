@@ -5,16 +5,19 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
-- 06/01/2020 - 2,000,000 MWC in HODL Program successfully distributed.
-- HODL Program Registration Wallet.
+- 08/03/2020 - TOR inbound connections (mwc-node 4.0.0-beta.1).
+- 07/04/2020 - TOR outbound connections (mwc-node 3.2.3).
+- 06/19/2020 - TOR transactions (QT wallet 1.0.22).
+- 06/30/2020 - HODL Program concluded. 2,000,000 MWC successfully distributed.
+- 04/07/2020 - HODL Program registration (QT 1.0.15).
 - Transaction pool update.
-- Grin 3.0 rebase.
-- 01/21/2020 GRIN CVE patched.
-- MWC QT wallet cold storage implementation.
-- 2,599,963 MWC moved to a verifiable escrow wallets for HODL program and unclaimed airdrop.
+- 01/22/2020 - Grin 3.0 rebase (mwc-node 3.0.0).
+- 01/21/2020 - GRIN CVE patched.
+- 01/04/2020 - 2,599,963 MWC moved to a verifiable escrow wallets for HODL program and unclaimed airdrop.
 - 01/02/2020 Airdrop concluded. About 5,400,037 MWC claimed and 599,963 unclaimed.
+- 12/21/2019 - MWC QT wallet cold storage implementation (QT 1.0.11).
 - 11/11/2019 Mainnet launch.
-- BTC/MWC atomic swap on testnet.
+- 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
 # Near term (0-3 months)
 - MWCMQS support in mwc-wallet.
@@ -40,7 +43,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - Coin shuffle.
 - Hardware wallets but requires hardware manufacturer support.
 
-If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated  the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
+If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
 
