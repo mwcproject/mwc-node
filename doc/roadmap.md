@@ -5,6 +5,8 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
+- MWCMQS support in mwc-wallet.
+- TOR support in all wallets and nodes.
 - 08/03/2020 - TOR inbound connections (mwc-node 4.0.0-beta.1).
 - 07/04/2020 - TOR outbound connections (mwc-node 3.2.3).
 - 06/19/2020 - TOR transactions (QT wallet 1.0.22).
@@ -20,9 +22,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
 # Near term (0-3 months)
-- MWCMQS support in mwc-wallet.
-- TOR support in all wallets and nodes.
-- Start work on Mobile wallet.
+- Release moible.
 - Additional Grin rebases (if applicable).
 
 # Medium term (3-6 months)
