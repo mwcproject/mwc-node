@@ -22,6 +22,8 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
 # Near term (0-3 months)
+- Complete HODL program.
+- Release Atomic Swap support.
 - Release moible.
 - Additional Grin rebases (if applicable).
 
