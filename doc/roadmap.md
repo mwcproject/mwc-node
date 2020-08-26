@@ -21,13 +21,10 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 11/11/2019 Mainnet launch.
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
-# Near term (0-3 months)
-- Complete HODL program.
+To be done: (If you want to help please contact us in discord.)
 - Release Atomic Swap support.
 - Release moible.
 - Additional Grin rebases (if applicable).
-
-# Medium term (3-6 months)
 - Website content.
 - Email list updates.
 - Website notifications.
@@ -36,8 +33,6 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
   - MWC 713 integration.
 - Block explorer updates.
 - 235,000 Unclaimed Airdrop Funds to be distributed
-
-# Long term (6+ months depending on priority)
 - Decentralized exchange.
 - Mobile wallet.
 - Multisig.
