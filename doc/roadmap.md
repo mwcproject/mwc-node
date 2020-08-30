@@ -23,7 +23,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 
 To be done: (If you want to help please contact us in discord.)
 - Release Atomic Swap support.
-- Release moible.
+- Release mobile.
 - Additional Grin rebases (if applicable).
 - Website content.
 - Email list updates.
