@@ -34,7 +34,6 @@ pub struct StateSync {
 
 	prev_state_sync: Option<DateTime<Utc>>,
 	state_sync_peer: Option<Arc<Peer>>,
-	sync_started: bool,
 }
 
 impl StateSync {
@@ -49,7 +48,6 @@ impl StateSync {
 			chain,
 			prev_state_sync: None,
 			state_sync_peer: None,
-			sync_started: false,
 		}
 	}
 
@@ -82,8 +80,6 @@ impl StateSync {
 		// check peer connection status of this sync
 		if let Some(ref peer) = self.state_sync_peer {
 			if let SyncStatus::TxHashsetDownload { .. } = self.sync_state.status() {
-				self.sync_started = true;
-
 				if !peer.is_connected() {
 					sync_need_restart = true;
 					info!(
@@ -91,12 +87,6 @@ impl StateSync {
 						peer.info.addr,
 					);
 				}
-			} else if header_head.height == highest_height && self.sync_started {
-				sync_need_restart = true;
-				info!(
-					"state_sync: peer connection lost (header version): {:?}. restart",
-					peer.info.addr,
-				);
 			}
 		}
 
@@ -111,6 +101,7 @@ impl StateSync {
 		} else {
 			false
 		};
+
 		if sync_need_restart || done {
 			self.state_sync_reset();
 			self.sync_state.clear_sync_error();
@@ -119,6 +110,7 @@ impl StateSync {
 		if done {
 			return false;
 		}
+
 		// run fast sync if applicable, normally only run one-time, except restart in error
 		if sync_need_restart || header_head.height == highest_height {
 			let (go, download_timeout) = self.state_sync_due();
@@ -224,6 +216,7 @@ impl StateSync {
 	fn state_sync_due(&mut self) -> (bool, bool) {
 		let now = Utc::now();
 		let mut download_timeout = false;
+
 		match self.prev_state_sync {
 			None => {
 				self.prev_state_sync = Some(now);
@@ -238,7 +231,7 @@ impl StateSync {
 		}
 	}
 
-	pub fn state_sync_reset(&mut self) {
+	fn state_sync_reset(&mut self) {
 		self.prev_state_sync = None;
 		self.state_sync_peer = None;
 	}

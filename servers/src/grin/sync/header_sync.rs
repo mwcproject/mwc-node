@@ -14,10 +14,7 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use std::convert::TryInto;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::chain::{self, SyncState, SyncStatus};
 use crate::common::types::Error;
@@ -31,7 +28,6 @@ pub struct HeaderSync {
 
 	history_locator: Vec<(u64, Hash)>,
 	prev_header_sync: (DateTime<Utc>, u64, u64),
-	last_check: Instant,
 
 	syncing_peer: Option<Arc<Peer>>,
 	stalling_ts: Option<DateTime<Utc>>,
@@ -51,7 +47,6 @@ impl HeaderSync {
 			prev_header_sync: (Utc::now(), 0, 0),
 			syncing_peer: None,
 			stalling_ts: None,
-			last_check: Instant::now(),
 		}
 	}
 
@@ -59,11 +54,8 @@ impl HeaderSync {
 		&mut self,
 		header_head: &chain::Tip,
 		highest_height: u64,
-		duration_sync_long: i64,
-		duration_sync_short: i64,
-		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
-		if !self.header_sync_due(header_head, duration_sync_long, duration_sync_short) {
+		if !self.header_sync_due(header_head) {
 			return Ok(false);
 		}
 
@@ -97,73 +89,19 @@ impl HeaderSync {
 			_ => false,
 		};
 
-		let mut ret = false;
 		if enable_header_sync {
 			self.sync_state.update(SyncStatus::HeaderSync {
 				current_height: header_head.height,
 				highest_height: highest_height,
 			});
 
-			let peers = self.peers.most_work_peers();
-			let mut count = 0;
-			let peer_count = peers.len();
-			for peer in peers {
-				if count >= 4 {
-					// limit to 4 peers
-					break;
-				}
-				let cloned_peer = peer.clone();
-				let mut val = cloned_peer
-					.info
-					.header_sync_requested
-					.load(Ordering::Relaxed);
-
-				let mut last_header = cloned_peer.info.last_header_reset.lock().unwrap();
-				let elapsed = (*last_header).elapsed().as_millis();
-
-				// if val is over 16, we had a wrap arround
-				// too many headers sent, just go back to 0 and request again
-				// if elapsed is more than 60 seconds, we also request again
-				// because something might have gone wrong
-				if val > 16 || elapsed > 60_000 {
-					val = 0;
-					if elapsed > 60_000 {
-						*last_header = Instant::now();
-					}
-				}
-
-				if val == 0 {
-					self.syncing_peer = self.header_sync(
-						peer,
-						count,
-						peer_count.try_into().unwrap_or(8),
-						header_cache_size,
-					);
-					count = count + 1;
-					ret = true;
-				} else {
-					trace!("busy peer, skipping {:?}", peer);
-					trace!("already loading from this peer {:?}", peer.info.addr);
-					let now = Utc::now();
-					self.prev_header_sync = (
-						now + Duration::milliseconds(duration_sync_long),
-						header_head.height,
-						header_head.height,
-					);
-				}
-			}
-			// sleep a little while here
-			std::thread::sleep(std::time::Duration::from_millis(1000));
+			self.syncing_peer = self.header_sync();
+			return Ok(true);
 		}
-		Ok(ret)
+		Ok(false)
 	}
 
-	fn header_sync_due(
-		&mut self,
-		header_head: &chain::Tip,
-		duration_sync_long: i64,
-		duration_sync_short: i64,
-	) -> bool {
+	fn header_sync_due(&mut self, header_head: &chain::Tip) -> bool {
 		let now = Utc::now();
 		let (timeout, latest_height, prev_height) = self.prev_header_sync;
 
@@ -179,46 +117,9 @@ impl HeaderSync {
 			_ => false,
 		};
 
-		// check here for stalled peers
-		if stalling {
-			let peers = self.peers.most_work_peers();
-			let instant_now = Instant::now();
-			let last_check = self.last_check;
-
-			if instant_now - last_check > std::time::Duration::from_millis(10000) {
-				self.last_check = instant_now;
-
-				for peer in peers {
-					let last_header = *(peer.info.last_header.lock().unwrap());
-					let diff = if instant_now > last_header {
-						instant_now - last_header
-					} else {
-						std::time::Duration::from_millis(0)
-					};
-					if diff > std::time::Duration::from_millis(120_000)
-						&& header_head.total_difficulty < peer.info.total_difficulty()
-					{
-						if let Err(e) = self
-							.peers
-							.ban_peer(peer.info.addr.clone(), ReasonForBan::FraudHeight)
-						{
-							error!("failed to ban peer {}: {:?}", peer.info.addr, e);
-						}
-
-						info!(
-							"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
-							peer.info.addr,
-							peer.info.height(),
-							peer.info.total_difficulty(),
-						);
-					}
-				}
-			}
-		}
-
 		if force_sync || all_headers_received || stalling {
 			self.prev_header_sync = (
-				now + Duration::milliseconds(duration_sync_long),
+				now + Duration::seconds(10),
 				header_head.height,
 				header_head.height,
 			);
@@ -235,75 +136,67 @@ impl HeaderSync {
 			if all_headers_received {
 				// reset the stalling start time if syncing goes well
 				self.stalling_ts = None;
+			} else {
+				if let Some(ref stalling_ts) = self.stalling_ts {
+					if let Some(ref peer) = self.syncing_peer {
+						match self.sync_state.status() {
+							SyncStatus::HeaderSync { .. } | SyncStatus::BodySync { .. } => {
+								// Ban this fraud peer which claims a higher work but can't send us the real headers
+								if now > *stalling_ts + Duration::seconds(120)
+									&& header_head.total_difficulty < peer.info.total_difficulty()
+								{
+									if let Err(e) = self
+										.peers
+										.ban_peer(peer.info.addr.clone(), ReasonForBan::FraudHeight)
+									{
+										error!("failed to ban peer {}: {:?}", peer.info.addr, e);
+									}
+									info!(
+										"sync: ban a fraud peer: {}, claimed height: {}, total difficulty: {}",
+										peer.info.addr,
+										peer.info.height(),
+										peer.info.total_difficulty(),
+									);
+								}
+							}
+							_ => (),
+						}
+					}
+				}
 			}
+			self.syncing_peer = None;
 			true
 		} else {
 			// resetting the timeout as long as we progress
 			if header_head.height > latest_height {
-				self.prev_header_sync = (
-					now + Duration::milliseconds(duration_sync_short),
-					header_head.height,
-					prev_height,
-				);
+				self.prev_header_sync =
+					(now + Duration::seconds(2), header_head.height, prev_height);
 			}
 			false
 		}
 	}
 
-	fn header_sync(
-		&mut self,
-		peer: Arc<Peer>,
-		index: u8,
-		peer_count: u8,
-		header_cache_size: u64,
-	) -> Option<Arc<Peer>> {
-		let header_head;
-		loop {
-			let header_head_tmp = self
-				.chain
-				.try_header_head(std::time::Duration::from_millis(100));
-			if header_head_tmp.is_err() {
-				return None;
+	fn header_sync(&mut self) -> Option<Arc<Peer>> {
+		if let Ok(header_head) = self.chain.header_head() {
+			let difficulty = header_head.total_difficulty;
+
+			if let Some(peer) = self.peers.most_work_peer() {
+				if peer.info.total_difficulty() > difficulty {
+					return self.request_headers(peer);
+				}
 			}
-			let header_head_tmp_unwrapped = header_head_tmp.unwrap();
-
-			if header_head_tmp_unwrapped.is_some() {
-				header_head = header_head_tmp_unwrapped.unwrap();
-				break;
-			}
-		}
-
-		let difficulty = header_head.total_difficulty;
-
-		if peer.info.total_difficulty() > difficulty {
-			trace!("peer = {:?}, set header sync = true", peer.info.addr);
-			peer.info.header_sync_requested.store(16, Ordering::Relaxed);
-			return self.request_headers(peer, index, peer_count, header_cache_size);
 		}
 		return None;
 	}
 
 	/// Request some block headers from a peer to advance us.
-	fn request_headers(
-		&mut self,
-		peer: Arc<Peer>,
-		index: u8,
-		peer_count: u8,
-		header_cache_size: u64,
-	) -> Option<Arc<Peer>> {
-		if let Ok(mut locator) = self.get_locator() {
-			if header_cache_size > 0 {
-				// we insert a final record that indicates which index to use. Ignored by older
-				// versions, but understood by current version.
-				let mut zero_hash = grin_core::core::hash::ZERO_HASH.to_vec();
-				zero_hash[0] = index;
-				zero_hash[1] = peer_count;
-				locator.push(Hash::from_vec(&zero_hash));
-			}
+	fn request_headers(&mut self, peer: Arc<Peer>) -> Option<Arc<Peer>> {
+		if let Ok(locator) = self.get_locator() {
 			debug!(
 				"sync: request_headers: asking {} for headers, {:?}",
 				peer.info.addr, locator,
 			);
+
 			let _ = peer.send_header_request(locator);
 			return Some(peer.clone());
 		}
@@ -347,6 +240,7 @@ impl HeaderSync {
 		locator.dedup_by(|a, b| a.0 == b.0);
 		debug!("sync: locator : {:?}", locator.clone());
 		self.history_locator = locator.clone();
+
 		Ok(locator.iter().map(|l| l.1).collect())
 	}
 }
