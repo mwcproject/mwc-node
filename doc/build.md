@@ -7,7 +7,7 @@
 Longer term, most platforms will likely be supported to some extent.
 MWC's programming language `rust` has build targets for most platforms.
 
-What's working so far?
+What's working so far:
 
 * Linux x86\_64 and macOS [MWC + mining + development]
 * Windows 10 yet [MWC builds, some slowness but overall can work]
@@ -31,7 +31,7 @@ For Debian-based distributions (Debian, Ubuntu, Mint, etc), all in one line (exc
 apt install build-essential cmake git libgit2-dev clang libncurses5-dev libncursesw5-dev zlib1g-dev pkg-config libssl-dev llvm
 ```
 
-For Mac:
+For Macintosh:
 
 ```sh
 xcode-select --install
