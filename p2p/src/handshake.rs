@@ -149,7 +149,7 @@ impl Handshake {
 		if shake.capabilities.contains(Capabilities::TOR_ADDRESS) && self.onion_address.is_some() {
 			let onion_address = self.onion_address.as_ref().unwrap().to_string();
 			debug!(
-				"tor enabled peer {:?}, sending onion_address = {}",
+				"Tor enabled peer {:?}, sending onion_address = {}",
 				self_addr, onion_address
 			);
 
@@ -158,7 +158,7 @@ impl Handshake {
 			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
 			write_message(conn, &msg, self.tracker.clone())?;
 		} else {
-			debug!("non-tor peer {:?}", self_addr);
+			debug!("non-Tor peer {:?}", self_addr);
 		}
 
 		let negotiated_version = self.negotiate_protocol_version(shake.version)?;
