@@ -37,7 +37,9 @@ pub fn create_zip(dst_file: &File, src_dir: &Path, files: Vec<PathBuf>) -> io::R
 		let file_path = src_dir.join(x);
 		if let Ok(file) = File::open(file_path.clone()) {
 			info!("compress: {:?} -> {:?}", file_path, x);
-			writer.get_mut().start_file_from_path(x, options)?;
+			writer
+				.get_mut()
+				.start_file(x.clone().into_os_string().into_string().unwrap(), options)?;
 			io::copy(&mut BufReader::new(file), &mut writer)?;
 			// Flush the BufWriter after each file so we start then next one correctly.
 			writer.flush()?;
@@ -57,7 +59,7 @@ pub fn extract_files(from_archive: File, dest: &Path, files: Vec<PathBuf>) -> io
 		let mut archive = zip_rs::ZipArchive::new(from_archive).expect("archive file exists");
 		for x in files {
 			if let Ok(file) = archive.by_name(x.to_str().expect("valid path")) {
-				let path = dest.join(file.sanitized_name());
+				let path = dest.join(file.name());
 				let parent_dir = path.parent().expect("valid parent dir");
 				fs::create_dir_all(&parent_dir).expect("create parent dir");
 				let outfile = fs::File::create(&path).expect("file created");

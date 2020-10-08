@@ -105,6 +105,8 @@ impl Foreign {
 	/// * `height` - block height.
 	/// * `hash` - block hash.
 	/// * `commit` - output commitment.
+	/// * `include_proof` - include range proofs for outputs. Default: false
+	/// * `include_merkle_proof` - include merkle proofs (for unspent coinbase outputs).  Default: false
 	///
 	/// # Returns
 	/// * Result Containing:
@@ -117,12 +119,18 @@ impl Foreign {
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
+		include_proof: Option<bool>,
+		include_merkle_proof: Option<bool>,
 	) -> Result<BlockPrintable, Error> {
 		let block_handler = BlockHandler {
 			chain: self.chain.clone(),
 		};
 		let hash = block_handler.parse_inputs(height, hash, commit)?;
-		block_handler.get_block(&hash, true, true)
+		block_handler.get_block(
+			&hash,
+			include_proof.unwrap_or(false),
+			include_merkle_proof.unwrap_or(false),
+		)
 	}
 
 	/// Returns the node version and block header version (used by grin-wallet).
