@@ -128,7 +128,7 @@ impl Foreign {
 		let hash = block_handler.parse_inputs(height, hash, commit)?;
 		block_handler.get_block(
 			&hash,
-			include_proof.unwrap_or(false),
+			include_proof.unwrap_or(true),
 			include_merkle_proof.unwrap_or(false),
 		)
 	}
