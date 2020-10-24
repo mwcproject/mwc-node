@@ -108,7 +108,7 @@ struct GrinFilter;
 impl Filter for GrinFilter {
 	fn filter(&self, record: &Record<'_>) -> Response {
 		if let Some(module_path) = record.module_path() {
-			if module_path.starts_with("grin") {
+			if module_path.starts_with("grin") || module_path.starts_with("mwc") {
 				return Response::Neutral;
 			}
 		}
