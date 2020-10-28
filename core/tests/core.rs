@@ -89,20 +89,19 @@ fn tx_double_ser_deser() {
 }
 
 #[test]
-#[should_panic(expected = "Keychain Error")]
 fn test_zero_commit_fails() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 
 	// blinding should fail as signing with a zero r*G shouldn't work
-	build::transaction(
+	let res = build::transaction(
 		KernelFeatures::Plain { fee: 0 },
 		vec![input(10, key_id1.clone()), output(10, key_id1)],
 		&keychain,
 		&builder,
-	)
-	.unwrap();
+	);
+	assert!(res.is_err());
 }
 
 fn verifier_cache() -> Arc<RwLock<dyn VerifierCache>> {
