@@ -5,6 +5,7 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
+- October 2020, 235,000 Unclaimed Airdrop Funds are distributed
 - MWCMQS support in mwc-wallet.
 - TOR support in all wallets and nodes.
 - 08/03/2020 - TOR inbound connections (mwc-node 4.0.0-beta.1).
@@ -22,19 +23,19 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
 To be done: (If you want to help please contact us in discord.)
-- Release Atomic Swap support.
-- Release mobile.
-- Additional Grin rebases (if applicable).
+- Release Atomic Swap support. Dec 2021  
+- Mobile node.   March 2021
+- Grin rebase. November 2021
 - Website content.
 - Email list updates.
 - Website notifications.
-- BTC/MWC atomic swaps.
+- BTC/MWC atomic swaps.   Dec 2021
   - QT wallet integration.
   - MWC 713 integration.
 - Block explorer updates.
-- 235,000 Unclaimed Airdrop Funds to be distributed
-- Decentralized exchange.
-- Mobile wallet.
+- Mobile wallet.  March 2021
+- Non Interactive Transactions  2021
+- Decentralized exchange.  2021
 - Multisig.
 - Lightning network.
 - Coin shuffle.
