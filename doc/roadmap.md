@@ -23,13 +23,13 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
 To be done: (If you want to help please contact us in discord.)
-- Release Atomic Swap support. Dec 2021  
+- Release Atomic Swap support. Dec 2020  
 - Mobile node.   March 2021
-- Grin rebase. November 2021
+- Grin rebase. November 2020
 - Website content.
 - Email list updates.
 - Website notifications.
-- BTC/MWC atomic swaps.   Dec 2021
+- BTC/MWC atomic swaps.   Dec 2020
   - QT wallet integration.
   - MWC 713 integration.
 - Block explorer updates.
