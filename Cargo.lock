@@ -44,12 +44,6 @@ dependencies = [
 
 [[package]]
 name = "ansi_term"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30275ad0ad84ec1c06dde3b3f7d23c6006b7d76d61a85e7060b426b747eff70d"
-
-[[package]]
-name = "ansi_term"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee49baf6cb617b853aa8d93bf420db2383fab46d314482ca2803b40d5fde979b"
@@ -375,7 +369,7 @@ version = "2.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37e58ac78573c40708d45522f0d80fa2f01cc4f9b4e2bf749807255454312002"
 dependencies = [
- "ansi_term 0.11.0",
+ "ansi_term",
  "atty",
  "bitflags 1.2.1",
  "strsim 0.8.0",
@@ -690,9 +684,9 @@ dependencies = [
 
 [[package]]
 name = "data-encoding"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4d0e2d24e5ee3b23a01de38eefdcd978907890701f08ffffd4cb457ca4ee8d6"
+checksum = "993a608597367c6377b258c25d7120740f00ed23a2252b729b1932dd7866f908"
 
 [[package]]
 name = "difference"
@@ -1188,7 +1182,7 @@ dependencies = [
  "pancurses",
  "serde",
  "serde_json",
- "term 0.6.1",
+ "term",
 ]
 
 [[package]]
@@ -1405,7 +1399,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "spinner",
  "sysinfo",
  "timer",
  "tokio",
@@ -2367,7 +2360,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f81e1644e1b54f5a68959a29aa86cde704219254669da328ecfdf6a1f09d427"
 dependencies = [
- "ansi_term 0.11.0",
+ "ansi_term",
  "ctor",
  "difference",
  "output_vt100",
@@ -2640,9 +2633,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.4.1"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8963b85b8ce3074fecffde43b4b0dded83ce2f367dc8d363afc56679f3ee820b"
+checksum = "38cf2c13ed4745de91a5eb834e11c00bcc3709e773173b2ce4c56c9fbde04b9c"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -2652,9 +2645,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.6.20"
+version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cab7a364d15cde1e505267766a2d3c4e22a843e1a601f0fa7564c0f82ced11c"
+checksum = "3b181ba2dcf07aaccad5448e8ead58db5b742cf85dfe035e2227f137a539a189"
 
 [[package]]
 name = "remove_dir_all"
@@ -2954,11 +2947,10 @@ dependencies = [
 
 [[package]]
 name = "signal-hook-registry"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3e12110bc539e657a646068aaf5eb5b63af9d0c1f7b29c97113fad80e15f035"
+checksum = "ce32ea0c6c56d5eacaeb814fbed9960547021d3edd010ded1425f180536b20ab"
 dependencies = [
- "arc-swap",
  "libc",
 ]
 
@@ -3015,16 +3007,6 @@ name = "spin"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
-
-[[package]]
-name = "spinner"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "300b9c83fcc6f91a2017cc277eba53853b7fd76231b37ac0c68563af2c6b916b"
-dependencies = [
- "ansi_term 0.7.5",
- "term 0.2.14",
-]
 
 [[package]]
 name = "stable_deref_trait"
@@ -3127,16 +3109,6 @@ dependencies = [
  "redox_syscall",
  "remove_dir_all",
  "winapi 0.3.9",
-]
-
-[[package]]
-name = "term"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2077e54d38055cf1ca0fd7933a2e00cd3ec8f6fed352b2a377f06dcdaaf3281"
-dependencies = [
- "kernel32-sys",
- "winapi 0.2.8",
 ]
 
 [[package]]
