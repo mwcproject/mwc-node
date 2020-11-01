@@ -51,7 +51,7 @@ impl HeaderHandler {
 			}
 		}
 		check_block_param(&input)?;
-		let vec = util::from_hex(input.as_str())
+		let vec = util::from_hex(&input)
 			.map_err(|e| ErrorKind::Argument(format!("invalid input: {}, {}", input, e)))?;
 		let h = Hash::from_vec(&vec);
 		let header = w(&self.chain)?
@@ -61,8 +61,15 @@ impl HeaderHandler {
 	}
 
 	fn get_header_for_output(&self, commit_id: String) -> Result<BlockHeaderPrintable, Error> {
-		let oid = get_output(&self.chain, &commit_id)?.1;
-		match w(&self.chain)?.get_header_for_output(&oid) {
+		let oid = match get_output(&self.chain, &commit_id)? {
+			Some((_, o)) => o,
+			None => {
+				return Err(
+					ErrorKind::NotFound(format!("Commit id {} not found", commit_id)).into(),
+				)
+			}
+		};
+		match w(&self.chain)?.get_header_for_output(oid.commitment()) {
 			Ok(header) => Ok(BlockHeaderPrintable::from_header(&header)),
 			Err(e) => Err(ErrorKind::NotFound(format!(
 				"Header for output {}, {}",
@@ -101,8 +108,13 @@ impl HeaderHandler {
 			return Ok(hash);
 		}
 		if let Some(commit) = commit {
-			let oid = get_output_v2(&self.chain, &commit, false, false)?.1;
-			match w(&self.chain)?.get_header_for_output(&oid) {
+			let oid = match get_output_v2(&self.chain, &commit, false, false)? {
+				Some((_, o)) => o,
+				None => {
+					return Err(ErrorKind::NotFound(format!("Output {} not found", commit)).into())
+				}
+			};
+			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
 				Ok(header) => return Ok(header.hash()),
 				Err(e) => {
 					return Err(ErrorKind::NotFound(format!(
@@ -151,7 +163,7 @@ impl BlockHandler {
 		let block = chain
 			.get_block(h)
 			.map_err(|e| ErrorKind::NotFound(format!("Block for hash {}, {}", h, e)))?;
-		BlockPrintable::from_block(&block, chain, include_proof, include_merkle_proof).map_err(
+		BlockPrintable::from_block(&block, &chain, include_proof, include_merkle_proof).map_err(
 			|e| {
 				ErrorKind::Internal(format!("chain error, broken block for hash {}. {}", h, e))
 					.into()
@@ -164,7 +176,7 @@ impl BlockHandler {
 		let block = chain
 			.get_block(h)
 			.map_err(|e| ErrorKind::NotFound(format!("Block for hash {}, {}", h, e)))?;
-		CompactBlockPrintable::from_compact_block(&block.into(), chain).map_err(|e| {
+		CompactBlockPrintable::from_compact_block(&block.into(), &chain).map_err(|e| {
 			ErrorKind::Internal(format!(
 				"chain error, broken compact block for hash {}, {}",
 				h, e
@@ -187,7 +199,7 @@ impl BlockHandler {
 			}
 		}
 		check_block_param(&input)?;
-		let vec = util::from_hex(input.as_str())
+		let vec = util::from_hex(&input)
 			.map_err(|e| ErrorKind::Argument(format!("invalid input {}, {}", input, e)))?;
 		Ok(Hash::from_vec(&vec))
 	}
@@ -214,8 +226,11 @@ impl BlockHandler {
 			return Ok(hash);
 		}
 		if let Some(commit) = commit {
-			let oid = get_output_v2(&self.chain, &commit, false, false)?.1;
-			match w(&self.chain)?.get_header_for_output(&oid) {
+			let oid = match get_output_v2(&self.chain, &commit, false, false)? {
+				Some((_, o)) => o,
+				None => return Err(ErrorKind::NotFound(format!("Output {}", commit)).into()),
+			};
+			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
 				Ok(header) => return Ok(header.hash()),
 				Err(e) => {
 					return Err(ErrorKind::NotFound(format!(

@@ -118,9 +118,9 @@ fn create_chain_sim(diff: u64) -> Vec<(HeaderInfo, DiffStats)> {
 	)]
 }
 
-fn get_diff_stats(chain_sim: &Vec<HeaderInfo>) -> DiffStats {
+fn get_diff_stats(chain_sim: &[HeaderInfo]) -> DiffStats {
 	// Fill out some difficulty stats for convenience
-	let diff_iter = chain_sim.clone();
+	let diff_iter = chain_sim.to_vec();
 	let last_blocks: Vec<HeaderInfo> = global::difficulty_data_to_vector(diff_iter.iter().cloned());
 
 	let mut last_time = last_blocks[0].timestamp;
@@ -279,8 +279,7 @@ fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderInfo>
 /// Checks different next_target adjustments and difficulty boundaries
 #[test]
 fn adjustment_scenarios() {
-	// Use production parameters for genesis diff
-	global::set_mining_mode(global::ChainTypes::Mainnet);
+	global::set_local_chain_type(global::ChainTypes::Mainnet);
 
 	// Genesis block with initial diff
 	let chain_sim = create_chain_sim(global::initial_block_difficulty());
@@ -353,7 +352,7 @@ fn adjustment_scenarios() {
 /// Checks different next_target adjustments and difficulty boundaries
 #[test]
 fn next_target_adjustment() {
-	global::set_mining_mode(global::ChainTypes::AutomatedTesting);
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	let cur_time = Utc::now().timestamp() as u64;
 	let diff_min = Difficulty::min();
 
@@ -456,11 +455,8 @@ fn next_target_adjustment() {
 
 #[test]
 fn test_secondary_pow_ratio() {
-	// Tests for mainnet chain type.
+	global::set_local_chain_type(global::ChainTypes::Mainnet);
 	{
-		global::set_mining_mode(global::ChainTypes::Mainnet);
-		assert_eq!(global::is_floonet(), false);
-
 		assert_eq!(secondary_pow_ratio(1), 45);
 		assert_eq!(secondary_pow_ratio(89), 45);
 		assert_eq!(secondary_pow_ratio(90), 45);
@@ -498,7 +494,7 @@ fn test_secondary_pow_ratio() {
 
 	// Tests for testnet4 chain type (covers pre and post hardfork).
 	{
-		global::set_mining_mode(global::ChainTypes::Floonet);
+		global::set_local_chain_type(global::ChainTypes::Floonet);
 		assert_eq!(global::is_floonet(), true);
 
 		assert_eq!(secondary_pow_ratio(1), 45);
@@ -541,89 +537,84 @@ fn test_secondary_pow_ratio() {
 
 #[test]
 fn test_secondary_pow_scale() {
+	global::set_local_chain_type(global::ChainTypes::Mainnet);
+
 	let window = DIFFICULTY_ADJUST_WINDOW;
 	let mut hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 100);
 
-	// mainnet testing
-	{
-		global::set_mining_mode(global::ChainTypes::Mainnet);
-		assert_eq!(global::is_floonet(), false);
-
-		// all primary, factor should increase so it becomes easier to find a high
-		// difficulty block
-		hi.is_secondary = false;
-		assert_eq!(
-			secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
-			108
-		);
-		// all secondary on 90%, factor should go down a bit
-		hi.is_secondary = true;
-		assert_eq!(
-			secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
-			91
-		);
-		// all secondary on 1%, factor should go down to bound (divide by 2)
-		assert_eq!(
-			secondary_pow_scaling(
-				2 * YEAR_HEIGHT * 83 / 90,
-				&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
-			),
-			13
-		);
-		// same as above, testing lowest bound
-		let mut low_hi =
-			HeaderInfo::from_diff_scaling(Difficulty::from_num(10), MIN_AR_SCALE as u32);
-		low_hi.is_secondary = true;
-		assert_eq!(
-			secondary_pow_scaling(
-				2 * YEAR_HEIGHT,
-				&(0..window).map(|_| low_hi.clone()).collect::<Vec<_>>()
-			),
-			MIN_AR_SCALE as u32
-		);
-		// the right ratio of 95% secondary
-		let mut primary_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 50);
-		primary_hi.is_secondary = false;
-		assert_eq!(
-			secondary_pow_scaling(
-				1,
-				&(0..(window / 10))
-					.map(|_| primary_hi.clone())
-					.chain((0..(window * 9 / 10)).map(|_| hi.clone()))
-					.collect::<Vec<_>>()
-			),
-			88,
-		);
-		// 95% secondary, should come down based on 97.5 average
-		assert_eq!(
-			secondary_pow_scaling(
-				1,
-				&(0..(window / 20))
-					.map(|_| primary_hi.clone())
-					.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
-					.collect::<Vec<_>>()
-			),
-			89
-		);
-		// 40% secondary, should come up based on 70 average
-		assert_eq!(
-			secondary_pow_scaling(
-				1,
-				&(0..(window * 6 / 10))
-					.map(|_| primary_hi.clone())
-					.chain((0..(window * 4 / 10)).map(|_| hi.clone()))
-					.collect::<Vec<_>>()
-			),
-			70
-		);
-	}
+	// all primary, factor should increase so it becomes easier to find a high
+	// difficulty block
+	hi.is_secondary = false;
+	assert_eq!(
+		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
+		108
+	);
+	// all secondary on 90%, factor should go down a bit
+	hi.is_secondary = true;
+	assert_eq!(
+		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
+		91
+	);
+	// all secondary on 1%, factor should go down to bound (divide by 2)
+	assert_eq!(
+		secondary_pow_scaling(
+			2 * YEAR_HEIGHT * 83 / 90,
+			&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
+		),
+		13
+	);
+	// same as above, testing lowest bound
+	let mut low_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), MIN_AR_SCALE as u32);
+	low_hi.is_secondary = true;
+	assert_eq!(
+		secondary_pow_scaling(
+			2 * YEAR_HEIGHT,
+			&(0..window).map(|_| low_hi.clone()).collect::<Vec<_>>()
+		),
+		MIN_AR_SCALE as u32
+	);
+	// the right ratio of 95% secondary
+	let mut primary_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 50);
+	primary_hi.is_secondary = false;
+	assert_eq!(
+		secondary_pow_scaling(
+			1,
+			&(0..(window / 10))
+				.map(|_| primary_hi.clone())
+				.chain((0..(window * 9 / 10)).map(|_| hi.clone()))
+				.collect::<Vec<_>>()
+		),
+		88,
+	);
+	// 95% secondary, should come down based on 97.5 average
+	assert_eq!(
+		secondary_pow_scaling(
+			1,
+			&(0..(window / 20))
+				.map(|_| primary_hi.clone())
+				.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
+				.collect::<Vec<_>>()
+		),
+		89
+	);
+	// 40% secondary, should come up based on 70 average
+	assert_eq!(
+		secondary_pow_scaling(
+			1,
+			&(0..(window * 6 / 10))
+				.map(|_| primary_hi.clone())
+				.chain((0..(window * 4 / 10)).map(|_| hi.clone()))
+				.collect::<Vec<_>>()
+		),
+		70
+	);
 }
 
 #[test]
 fn hard_forks() {
 	// Tests for mainnet chain type.
 	{
-		global::set_mining_mode(global::ChainTypes::Mainnet);
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
 		assert_eq!(global::is_floonet(), false);
 		assert!(valid_header_version(0, HeaderVersion(1)));
 		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
@@ -632,7 +623,7 @@ fn hard_forks() {
 	}
 	// Tests for floonet chain type.
 	{
-		global::set_mining_mode(global::ChainTypes::Floonet);
+		global::set_local_chain_type(global::ChainTypes::Floonet);
 		assert_eq!(global::is_floonet(), true);
 		assert!(valid_header_version(0, HeaderVersion(1)));
 		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));

@@ -1,6 +1,6 @@
 [package]
 name = "grin_util"
-version = "4.1.0"
+version = "5.0.0"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -12,26 +12,26 @@ edition = "2018"
 [dependencies]
 backtrace = "0.3"
 data-encoding = "2"
-ed25519-dalek = "1.0.0-pre.1"
+ed25519-dalek = "1"
 sha3 = "0.8"
-failure = "0.1"
-failure_derive = "0.1"
-base64 = "0.9"
+base64 = "0.12"
 byteorder = "1"
 lazy_static = "1"
 rand = "0.6"
 serde = "1"
 serde_derive = "1"
-log4rs = { version = "0.8.1", features = ["rolling_file_appender", "compound_policy", "size_trigger", "fixed_window_roller"] }
+log4rs = { version = "0.12", features = ["rolling_file_appender", "compound_policy", "size_trigger", "fixed_window_roller"] }
 log = "0.4"
 walkdir = "2"
 zip = { version = "0.5", default-features = false }
-parking_lot = {version = "0.6"}
-zeroize = "0.9"
+parking_lot = "0.10"
+zeroize = { version = "1.1", features =["zeroize_derive"] }
+failure = "0.1"
+failure_derive = "0.1"
 
 [dependencies.grin_secp256k1zkp]
 git = "https://github.com/mwcproject/rust-secp256k1-zkp"
 #tag = "grin_integration_28"
 #path = "../../rust-secp256k1-zkp"
-version = "0.7.7"
+version = "0.7.9"
 features = ["bullet-proof-sizing"]

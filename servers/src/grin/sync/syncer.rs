@@ -141,13 +141,6 @@ impl SyncRunner {
 		// whether some sync is needed
 		let mut highest_height = 0;
 
-		// Header is blocked pretty often and can be locked for a long time.
-		// As a result users see the false alarming message.
-		// 'failed to obtain lock for try_header_head'
-		// To make error reasonable,
-		// We are adding counter, to reduce false alarms.
-		let mut header_block_counter = 0;
-
 		// Main syncing loop
 		loop {
 			if self.stop_state.is_stopped() {
@@ -190,46 +183,7 @@ impl SyncRunner {
 			// if syncing is needed
 			let head = unwrap_or_restart_loop!(self.chain.head());
 			let tail = self.chain.tail().unwrap_or_else(|_| head.clone());
-
-			// We still do not fully understand what is blocking this but if this blocks here after
-			// we download and validate the txhashet we do not reliably proceed to block_sync,
-			// potentially blocking for an extended period of time (> 10 mins).
-			// Does not appear to be deadlock as it does resolve itself eventually.
-			// So as a workaround we try_header_head with a relatively short timeout and simply
-			// retry the syncer loop.
-			let maybe_header_head =
-				unwrap_or_restart_loop!(self.chain.try_header_head(time::Duration::from_secs(1)));
-
-			// We are tolerating up to 60 retrys. During chain validation the chain access is blocked.
-			// Normally in release and reasonable hardware 60 seconds more then is enough for that.
-			// There will be bunch of threads waiting for the lock.
-			if header_block_counter < 60 && maybe_header_head.is_none() {
-				header_block_counter = header_block_counter + 1;
-				thread::sleep(time::Duration::from_secs(1));
-				continue;
-			}
-
-			// Header expected to be blocked duting the txhashset operations because it is pretty long
-			let is_txhashset_operation = match self.sync_state.status() {
-				SyncStatus::TxHashsetDownload { .. }
-				| SyncStatus::TxHashsetSetup
-				| SyncStatus::TxHashsetRangeProofsValidation { .. }
-				| SyncStatus::TxHashsetKernelsValidation { .. }
-				| SyncStatus::TxHashsetSave
-				| SyncStatus::TxHashsetDone => true,
-				_ => false,
-			};
-			if is_txhashset_operation && maybe_header_head.is_none() {
-				thread::sleep(time::Duration::from_secs(1));
-				continue;
-			}
-
-			let header_head = unwrap_or_restart_loop!(
-				maybe_header_head.ok_or("failed to obtain lock for try_header_head. This error may be caused by running the debug version of this node, having a slow CPU, or having an unusually large blockchain.")
-			);
-
-			// lock was obtained, so we can reset the locking counter
-			header_block_counter = 0;
+			let header_head = unwrap_or_restart_loop!(self.chain.header_head());
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
@@ -249,14 +203,8 @@ impl SyncRunner {
 						continue;
 					}
 
-					let check_run = match body_sync.check_run(&head, highest_height) {
-						Ok(v) => v,
-						Err(e) => {
-							error!("check_run failed: {:?}", e);
-							continue;
-						}
-					};
-
+					let check_run =
+						unwrap_or_restart_loop!(body_sync.check_run(&head, highest_height));
 					if check_run {
 						check_state_sync = true;
 					}
@@ -314,7 +262,7 @@ impl SyncRunner {
 			};
 
 			let peer_diff = peer_info.total_difficulty();
-			if peer_diff > local_diff.clone() + threshold.clone() {
+			if peer_diff > local_diff + threshold {
 				info!(
 					"sync: total_difficulty {}, peer_difficulty {}, threshold {} (last 5 blocks), enabling sync",
 					local_diff,

@@ -1,6 +1,6 @@
 [package]
 name = "grin"
-version = "4.1.0"
+version = "5.0.0"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -21,37 +21,37 @@ path = "src/bin/grin.rs"
 
 [dependencies]
 blake2-rfc = "0.2"
-chrono = "0.4.4"
-clap = { version = "2.31", features = ["yaml"] }
+chrono = "0.4.11"
+clap = { version = "2.33", features = ["yaml"] }
 ctrlc = { version = "3.1", features = ["termination"] }
 humansize = "1.1.0"
 serde = "1"
 serde_json = "1"
 log = "0.4"
-term = "0.5"
+term = "0.6"
 failure = "0.1"
 failure_derive = "0.1"
 
-grin_api = { path = "./api", version = "4.1.0" }
-grin_config = { path = "./config", version = "4.1.0" }
-grin_chain = { path = "./chain", version = "4.1.0" }
-grin_core = { path = "./core", version = "4.1.0" }
-grin_keychain = { path = "./keychain", version = "4.1.0" }
-grin_p2p = { path = "./p2p", version = "4.1.0" }
-grin_servers = { path = "./servers", version = "4.1.0" }
-grin_util = { path = "./util", version = "4.1.0" }
+grin_api = { path = "./api", version = "5.0.0" }
+grin_config = { path = "./config", version = "5.0.0" }
+grin_chain = { path = "./chain", version = "5.0.0" }
+grin_core = { path = "./core", version = "5.0.0" }
+grin_keychain = { path = "./keychain", version = "5.0.0" }
+grin_p2p = { path = "./p2p", version = "5.0.0" }
+grin_servers = { path = "./servers", version = "5.0.0" }
+grin_util = { path = "./util", version = "5.0.0" }
 
 [target.'cfg(windows)'.dependencies]
-cursive = { version = "0.12", default-features = false, features = ["pancurses-backend"] }
+cursive = { version = "0.15", default-features = false, features = ["pancurses-backend"] }
 [target.'cfg(windows)'.dependencies.pancurses]
 version = "0.16.0"
 features = ["win32"]
 [target.'cfg(unix)'.dependencies]
-cursive = "0.12"
+cursive = "0.15"
 
 [build-dependencies]
-built = "0.3"
+built = { version = "0.4", features = ["git2"]}
 
 [dev-dependencies]
-grin_chain = { path = "./chain", version = "4.1.0" }
-grin_store = { path = "./store", version = "4.1.0" }
+grin_chain = { path = "./chain", version = "5.0.0" }
+grin_store = { path = "./store", version = "5.0.0" }

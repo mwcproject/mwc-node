@@ -225,7 +225,9 @@ pub fn verify_partial_sig(
 /// use core::core::transaction::KernelFeatures;
 /// use core::core::{Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
+/// use core::global;
 ///
+/// global::set_local_chain_type(global::ChainTypes::Floonet);
 /// let secp = Secp256k1::with_caps(ContextFlag::Commit);
 /// let keychain = ExtKeychain::from_random_seed(false).unwrap();
 /// let fees = 10_000;
@@ -234,12 +236,8 @@ pub fn verify_partial_sig(
 /// let switch = SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
 /// let builder = proof::ProofBuilder::new(&keychain);
-/// let rproof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
-/// let output = Output {
-///     features: OutputFeatures::Coinbase,
-///     commit: commit,
-///     proof: rproof,
-/// };
+/// let proof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
+/// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
@@ -291,8 +289,10 @@ where
 /// use core::core::transaction::KernelFeatures;
 /// use core::core::{Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
+/// use core::global;
 ///
 /// // Create signature
+/// global::set_local_chain_type(global::ChainTypes::Floonet);
 /// let secp = Secp256k1::with_caps(ContextFlag::Commit);
 /// let keychain = ExtKeychain::from_random_seed(false).unwrap();
 /// let fees = 10_000;
@@ -301,12 +301,8 @@ where
 /// let switch = SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
 /// let builder = proof::ProofBuilder::new(&keychain);
-/// let rproof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
-/// let output = Output {
-///     features: OutputFeatures::Coinbase,
-///     commit: commit,
-///     proof: rproof,
-/// };
+/// let proof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
+/// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
@@ -441,6 +437,16 @@ pub fn verify_single(
 	)
 }
 
+/// Verify a batch of signatures.
+pub fn verify_batch(
+	secp: &Secp256k1,
+	sigs: &Vec<Signature>,
+	msgs: &Vec<Message>,
+	pubkeys: &Vec<PublicKey>,
+) -> bool {
+	aggsig::verify_batch(secp, sigs, msgs, pubkeys)
+}
+
 /// Just a simple sig, creates its own nonce, etc
 pub fn sign_with_blinding(
 	secp: &Secp256k1,
@@ -449,7 +455,6 @@ pub fn sign_with_blinding(
 	pubkey_sum: Option<&PublicKey>,
 ) -> Result<Signature, Error> {
 	let skey = &blinding.secret_key(&secp)?;
-	//let pubkey_sum = PublicKey::from_secret_key(&secp, &skey)?;
 	let sig = aggsig::sign_single(secp, &msg, skey, None, None, None, pubkey_sum, None)?;
 	Ok(sig)
 }

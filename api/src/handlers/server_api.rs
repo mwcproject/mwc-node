@@ -39,29 +39,6 @@ impl Handler for IndexHandler {
 	}
 }
 
-pub struct KernelDownloadHandler {
-	pub peers: Weak<p2p::Peers>,
-}
-
-impl Handler for KernelDownloadHandler {
-	fn post(&self, _req: Request<Body>) -> ResponseFuture {
-		if let Some(peer) = w_fut!(&self.peers).most_work_peer() {
-			match peer.send_kernel_data_request() {
-				Ok(_) => response(StatusCode::OK, "{}"),
-				Err(e) => response(
-					StatusCode::INTERNAL_SERVER_ERROR,
-					format!("requesting kernel data from peer failed: {:?}", e),
-				),
-			}
-		} else {
-			response(
-				StatusCode::INTERNAL_SERVER_ERROR,
-				"requesting kernel data from peer failed (no peers)".to_string(),
-			)
-		}
-	}
-}
-
 /// Status handler. Post a summary of the server status
 /// GET /v1/status
 pub struct StatusHandler {
@@ -145,16 +122,11 @@ fn sync_status_to_api(sync_status: SyncStatus) -> (String, Option<serde_json::Va
 			"header_sync".to_string(),
 			Some(json!({ "current_height": current_height, "highest_height": highest_height })),
 		),
-		SyncStatus::TxHashsetDownload {
-			start_time: _,
-			prev_update_time: _,
-			update_time: _,
-			prev_downloaded_size: _,
-			downloaded_size,
-			total_size,
-		} => (
+		SyncStatus::TxHashsetDownload(stats) => (
 			"txhashset_download".to_string(),
-			Some(json!({ "downloaded_size": downloaded_size, "total_size": total_size })),
+			Some(
+				json!({ "downloaded_size": stats.downloaded_size, "total_size": stats.total_size }),
+			),
 		),
 		SyncStatus::TxHashsetRangeProofsValidation {
 			rproofs,

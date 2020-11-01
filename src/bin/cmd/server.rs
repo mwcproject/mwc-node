@@ -94,19 +94,9 @@ fn start_server_tui(
 /// configuration.
 pub fn server_command(
 	server_args: Option<&ArgMatches<'_>>,
-	mut global_config: GlobalConfig,
+	global_config: GlobalConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 ) -> i32 {
-	global::set_mining_mode(
-		global_config
-			.members
-			.as_mut()
-			.unwrap()
-			.server
-			.clone()
-			.chain_type,
-	);
-
 	// just get defaults from the global config
 	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
 	let mut allow_to_stop = false;
@@ -132,7 +122,7 @@ pub fn server_command(
 		if let Some(seeds) = a.values_of("seed") {
 			let peers = seeds
 				.filter_map(|s| s.parse().ok())
-				.map(|sa| PeerAddr::Ip(sa))
+				.map(PeerAddr::Ip)
 				.collect();
 			server_config.p2p_config.seeding_type = Seeding::List;
 			server_config.p2p_config.seeds = Some(PeerAddrs { peers });

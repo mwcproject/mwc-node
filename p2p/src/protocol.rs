@@ -19,8 +19,8 @@ use crate::serv::Server;
 use crate::types::PeerAddr::Onion;
 
 use crate::msg::{
-	BanReason, GetPeerAddrs, Headers, KernelDataResponse, Locator, Msg, PeerAddrs, Ping, Pong,
-	TorAddress, TxHashSetArchive, TxHashSetRequest, Type,
+	BanReason, GetPeerAddrs, Headers, Locator, Msg, PeerAddrs, Ping, Pong, TorAddress,
+	TxHashSetArchive, TxHashSetRequest, Type,
 };
 
 use crate::types::Capabilities;
@@ -30,11 +30,10 @@ use chrono::prelude::Utc;
 use rand::{thread_rng, Rng};
 use std::cmp;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Seek, SeekFrom};
+use std::io::{BufWriter, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tempfile::tempfile;
 
 pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
@@ -63,9 +62,9 @@ impl Protocol {
 }
 
 impl MessageHandler for Protocol {
-	fn consume(
+	fn consume<R: Read>(
 		&mut self,
-		mut msg: Message,
+		mut msg: Message<R>,
 		stopped: Arc<AtomicBool>,
 		tracker: Arc<Tracker>,
 	) -> Result<Option<Msg>, Error> {
@@ -174,7 +173,7 @@ impl MessageHandler for Protocol {
 					msg.header.msg_len,
 				);
 
-				let bo = adapter.get_block(h);
+				let bo = adapter.get_block(h, &self.peer_info);
 				if let Some(b) = bo {
 					return Ok(Some(Msg::new(Type::Block, b, self.peer_info.version)?));
 				}
@@ -198,7 +197,7 @@ impl MessageHandler for Protocol {
 
 			Type::GetCompactBlock => {
 				let h: Hash = msg.body()?;
-				if let Some(b) = adapter.get_block(h) {
+				if let Some(b) = adapter.get_block(h, &self.peer_info) {
 					let cb: CompactBlock = b.into();
 					Ok(Some(Msg::new(
 						Type::CompactBlock,
@@ -272,16 +271,17 @@ impl MessageHandler for Protocol {
 				total_bytes_read += bytes_read;
 
 				// Read chunks of headers off the stream and pass them off to the adapter.
-				let chunk_size = 32;
-				for chunk in (0..count).collect::<Vec<_>>().chunks(chunk_size) {
-					let mut headers = vec![];
-					for _ in chunk {
-						let (header, bytes_read) =
-							msg.streaming_read::<core::UntrustedBlockHeader>()?;
-						headers.push(header.into());
-						total_bytes_read += bytes_read;
+				let chunk_size = 32u16;
+				let mut headers = Vec::with_capacity(chunk_size as usize);
+				for i in 1..=count {
+					let (header, bytes_read) =
+						msg.streaming_read::<core::UntrustedBlockHeader>()?;
+					headers.push(header.into());
+					total_bytes_read += bytes_read;
+					if i % chunk_size == 0 || i == count {
+						adapter.headers_received(&headers, &self.peer_info, header_cache_size)?;
+						headers.clear();
 					}
-					adapter.headers_received(&headers, &self.peer_info, header_cache_size)?;
 				}
 
 				// Now check we read the correct total number of bytes off the stream.
@@ -346,60 +346,6 @@ impl MessageHandler for Protocol {
 				adapter.peer_addrs_received(peers);
 				Ok(None)
 			}
-
-			Type::KernelDataRequest => {
-				debug!("handle_payload: kernel_data_request");
-				let kernel_data = self.adapter.kernel_data_read()?;
-				let bytes = kernel_data.metadata()?.len();
-				let kernel_data_response = KernelDataResponse { bytes };
-				let mut response = Msg::new(
-					Type::KernelDataResponse,
-					&kernel_data_response,
-					self.peer_info.version,
-				)?;
-				response.add_attachment(kernel_data);
-				Ok(Some(response))
-			}
-
-			Type::KernelDataResponse => {
-				let response: KernelDataResponse = msg.body()?;
-				debug!(
-					"handle_payload: kernel_data_response: bytes: {}",
-					response.bytes
-				);
-
-				let mut writer = BufWriter::new(tempfile()?);
-
-				let total_size = response.bytes as usize;
-				let mut remaining_size = total_size;
-
-				while remaining_size > 0 {
-					let size = msg.copy_attachment(remaining_size, &mut writer)?;
-					remaining_size = remaining_size.saturating_sub(size);
-
-					// Increase received bytes quietly (without affecting the counters).
-					// Otherwise we risk banning a peer as "abusive".
-					tracker.inc_quiet_received(size as u64);
-				}
-
-				// Remember to seek back to start of the file as the caller is likely
-				// to read this file directly without reopening it.
-				writer.seek(SeekFrom::Start(0))?;
-
-				let mut file = writer
-					.into_inner()
-					.map_err(|e| Error::Internal(format!("Unable to update peer data, {}", e)))?;
-
-				debug!(
-					"handle_payload: kernel_data_response: file size: {}",
-					file.metadata().map_or(0, |m| m.len())
-				);
-
-				self.adapter.kernel_data_write(&mut file)?;
-
-				Ok(None)
-			}
-
 			Type::TxHashSetRequest => {
 				let sm_req: TxHashSetRequest = msg.body()?;
 				debug!(

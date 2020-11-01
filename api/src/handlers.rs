@@ -34,7 +34,6 @@ use self::peers_api::PeersConnectedHandler;
 use self::pool_api::PoolInfoHandler;
 use self::pool_api::PoolPushHandler;
 use self::server_api::IndexHandler;
-use self::server_api::KernelDownloadHandler;
 use self::server_api::StatusHandler;
 use self::transactions_api::TxHashSetHandler;
 use self::version_api::VersionHandler;
@@ -43,6 +42,7 @@ use crate::auth::{
 };
 use crate::chain;
 use crate::chain::{Chain, SyncState};
+use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::global;
 use crate::core::stratum;
 use crate::foreign::Foreign;
@@ -51,6 +51,7 @@ use crate::owner::Owner;
 use crate::owner_rpc::OwnerRpc;
 use crate::p2p;
 use crate::pool;
+use crate::pool::{BlockChain, PoolAdapter};
 use crate::rest::{ApiServer, Error, ErrorKind, TLSConfig};
 use crate::router::ResponseFuture;
 use crate::router::{Router, RouterError};
@@ -67,10 +68,10 @@ use std::sync::{Arc, Weak};
 
 /// Listener version, providing same API but listening for requests on a
 /// port and wrapping the calls
-pub fn node_apis(
+pub fn node_apis<B, P, V>(
 	addr: &str,
 	chain: Arc<chain::Chain>,
-	tx_pool: Arc<RwLock<pool::TransactionPool>>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
 	peers: Arc<p2p::Peers>,
 	sync_state: Arc<chain::SyncState>,
 	api_secret: Option<String>,
@@ -78,7 +79,12 @@ pub fn node_apis(
 	tls_config: Option<TLSConfig>,
 	allow_to_stop: bool,
 	stratum_ip_pool: Arc<stratum::connections::StratumIpPool>,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+	V: VerifierCache + 'static,
+{
 	// Manually build router when getting rid of v1
 	//let mut router = Router::new();
 	let mut router = build_router(
@@ -215,17 +221,27 @@ impl crate::router::Handler for OwnerAPIHandlerV2 {
 }
 
 /// V2 API Handler/Wrapper for foreign functions
-pub struct ForeignAPIHandlerV2 {
+pub struct ForeignAPIHandlerV2<B, P, V>
+where
+	B: BlockChain,
+	P: PoolAdapter,
+	V: VerifierCache + 'static,
+{
 	pub chain: Weak<Chain>,
-	pub tx_pool: Weak<RwLock<pool::TransactionPool>>,
+	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
 	pub sync_state: Weak<SyncState>,
 }
 
-impl ForeignAPIHandlerV2 {
+impl<B, P, V> ForeignAPIHandlerV2<B, P, V>
+where
+	B: BlockChain,
+	P: PoolAdapter,
+	V: VerifierCache + 'static,
+{
 	/// Create a new foreign API handler for GET methods
 	pub fn new(
 		chain: Weak<Chain>,
-		tx_pool: Weak<RwLock<pool::TransactionPool>>,
+		tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
 		sync_state: Weak<SyncState>,
 	) -> Self {
 		ForeignAPIHandlerV2 {
@@ -236,7 +252,12 @@ impl ForeignAPIHandlerV2 {
 	}
 }
 
-impl crate::router::Handler for ForeignAPIHandlerV2 {
+impl<B, P, V> crate::router::Handler for ForeignAPIHandlerV2<B, P, V>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+	V: VerifierCache + 'static,
+{
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
 		let api = Foreign::new(
 			self.chain.clone(),
@@ -376,13 +397,22 @@ fn response<T: Into<Body>>(status: StatusCode, text: T) -> Response<Body> {
 }
 
 // Legacy V1 router
-pub fn build_router(
+#[deprecated(
+	since = "4.0.0",
+	note = "The V1 Node API will be removed in grin 5.0.0. Please migrate to the V2 API as soon as possible."
+)]
+pub fn build_router<B, P, V>(
 	chain: Arc<chain::Chain>,
-	tx_pool: Arc<RwLock<pool::TransactionPool>>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
 	peers: Arc<p2p::Peers>,
 	sync_state: Arc<chain::SyncState>,
 	allow_to_stop: bool,
-) -> Result<Router, RouterError> {
+) -> Result<Router, RouterError>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+	V: VerifierCache + 'static,
+{
 	let route_list = vec![
 		"get blocks".to_string(),
 		"get headers".to_string(),
@@ -437,9 +467,6 @@ pub fn build_router(
 		sync_state: Arc::downgrade(&sync_state),
 		allow_to_stop,
 	};
-	let kernel_download_handler = KernelDownloadHandler {
-		peers: Arc::downgrade(&peers),
-	};
 	let txhashset_handler = TxHashSetHandler {
 		chain: Arc::downgrade(&chain),
 	};
@@ -474,7 +501,6 @@ pub fn build_router(
 	router.add_route("/v1/chain/validate", Arc::new(chain_validation_handler))?;
 	router.add_route("/v1/txhashset/*", Arc::new(txhashset_handler))?;
 	router.add_route("/v1/status", Arc::new(status_handler))?;
-	router.add_route("/v1/kerneldownload", Arc::new(kernel_download_handler))?;
 	router.add_route("/v1/pool", Arc::new(pool_info_handler))?;
 	router.add_route("/v1/pool/push_tx", Arc::new(pool_push_handler))?;
 	router.add_route("/v1/peers/all", Arc::new(peers_all_handler))?;

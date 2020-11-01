@@ -24,9 +24,14 @@
 extern crate bitflags;
 
 #[macro_use]
+extern crate enum_primitive;
+
+#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate lazy_static;
 
 use failure;
 use grin_core as core;
@@ -35,6 +40,7 @@ use grin_util as util;
 
 mod chain;
 mod error;
+pub mod linked_list;
 pub mod pipe;
 pub mod store;
 pub mod txhashset;
@@ -46,5 +52,6 @@ pub use crate::chain::{Chain, MAX_ORPHAN_SIZE};
 pub use crate::error::{Error, ErrorKind};
 pub use crate::store::ChainStore;
 pub use crate::types::{
-	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetWriteStatus,
+	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetDownloadStats,
+	TxHashsetWriteStatus,
 };

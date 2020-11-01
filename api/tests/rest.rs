@@ -2,6 +2,7 @@ use grin_api as api;
 use grin_util as util;
 
 use crate::api::*;
+use grin_core::global;
 use hyper::{Body, Request, StatusCode};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -63,6 +64,7 @@ fn build_router() -> Router {
 
 #[test]
 fn test_start_api() {
+	global::set_local_chain_type(global::ChainTypes::Floonet);
 	util::init_test_logger();
 	let mut server = ApiServer::new();
 	let mut router = build_router();
@@ -87,6 +89,7 @@ fn test_start_api() {
 #[ignore]
 #[test]
 fn test_start_api_tls() {
+	global::set_local_chain_type(global::ChainTypes::Floonet);
 	util::init_test_logger();
 	let tls_conf = TLSConfig::new(
 		"tests/fullchain.pem".to_string(),

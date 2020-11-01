@@ -103,13 +103,13 @@ pub fn genesis_floo() -> core::Block {
 		])
 		.unwrap(),
 	};
-	let output = core::Output {
-		features: core::OutputFeatures::Coinbase,
-		commit: Commitment::from_vec(
+	let output = core::Output::new(
+		core::OutputFeatures::Coinbase,
+		Commitment::from_vec(
 			util::from_hex("0905a2ebf3913c7d378660a7b60e6bda983be451cb1de8779ad0f51f4d2fb079ea")
 				.unwrap(),
 		),
-		proof: RangeProof {
+		RangeProof {
 			plen: SINGLE_BULLET_PROOF_SIZE,
 			proof: [
 				207, 70, 243, 199, 101, 231, 4, 202, 173, 57, 169, 221, 164, 31, 29, 146, 28, 166,
@@ -152,7 +152,7 @@ pub fn genesis_floo() -> core::Block {
 				66, 36, 107, 210, 50, 38, 167, 100, 224,
 			],
 		},
-	};
+	);
 	gen.with_reward(output, kernel)
 }
 
@@ -216,13 +216,13 @@ pub fn genesis_main() -> core::Block {
 		])
 		.unwrap(),
 	};
-	let output = core::Output {
-		features: core::OutputFeatures::Coinbase,
-		commit: Commitment::from_vec(
+	let output = core::Output::new(
+		core::OutputFeatures::Coinbase,
+		Commitment::from_vec(
 			util::from_hex("089dfcac475c94c978861b3dbef1e37b038cc13f9f78de9a4e14f31ed36e7a54c9")
 				.unwrap(),
 		),
-		proof: RangeProof {
+		RangeProof {
 			plen: SINGLE_BULLET_PROOF_SIZE,
 			proof: [
 				39, 189, 154, 255, 86, 63, 70, 66, 231, 125, 153, 190, 221, 206, 198, 108, 50, 76,
@@ -265,7 +265,7 @@ pub fn genesis_main() -> core::Block {
 				188,
 			],
 		},
-	};
+	);
 	gen.with_reward(output, kernel)
 }
 
@@ -273,10 +273,13 @@ pub fn genesis_main() -> core::Block {
 mod test {
 	use super::*;
 	use crate::core::hash::Hashed;
+	use crate::global;
 	use crate::ser::{self, ProtocolVersion};
+	use util::ToHex;
 
 	#[test]
 	fn floonet_genesis_hash() {
+		global::set_local_chain_type(global::ChainTypes::Floonet);
 		let gen_hash = genesis_floo().hash();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
 		let gen_bin = ser::ser_vec(&genesis_floo(), ProtocolVersion(1)).unwrap();
@@ -293,6 +296,7 @@ mod test {
 
 	#[test]
 	fn mainnet_genesis_hash() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
 		let gen_hash = genesis_main().hash();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
 		let gen_bin = ser::ser_vec(&genesis_main(), ProtocolVersion(1)).unwrap();

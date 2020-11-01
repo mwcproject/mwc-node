@@ -1,6 +1,6 @@
 # MWC - Build, Configuration, and Running
 
-*Read this in other languages: [Español](build_ES.md), [Korean](build_KR.md), [日本語](build_JP.md), [简体中文](build_ZH-CN.md).*
+*Read this in other languages: [Español](translations/build_ES.md), [Korean](translations/build_KR.md), [日本語](translations/build_JP.md), [简体中文](translations/build_ZH-CN.md).*
 
 ## Supported Platforms
 
