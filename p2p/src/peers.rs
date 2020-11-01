@@ -15,7 +15,6 @@
 use crate::util::RwLock;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -439,7 +438,12 @@ impl Peers {
 	/// Iterate over the peer list and prune all peers we have
 	/// lost connection to or have been deemed problematic.
 	/// Also avoid connected peer count getting too high.
-	pub fn clean_peers(&self, max_inbound_count: usize, max_outbound_count: usize) {
+	pub fn clean_peers(
+		&self,
+		max_inbound_count: usize,
+		max_outbound_count: usize,
+		preferred_peers: &[PeerAddr],
+	) {
 		let mut rm = vec![];
 
 		// build a list of peers to be cleaned up
@@ -487,12 +491,13 @@ impl Peers {
 		let excess_outgoing_count =
 			(self.peer_outbound_count() as usize).saturating_sub(max_outbound_count);
 		if excess_outgoing_count > 0 {
-			let mut addrs = self
+			let mut addrs: Vec<_> = self
 				.outgoing_connected_peers()
 				.iter()
+				.filter(|x| !preferred_peers.contains(&x.info.addr))
 				.take(excess_outgoing_count)
 				.map(|x| x.info.addr.clone())
-				.collect::<Vec<_>>();
+				.collect();
 			rm.append(&mut addrs);
 		}
 
@@ -500,12 +505,13 @@ impl Peers {
 		let excess_incoming_count =
 			(self.peer_inbound_count() as usize).saturating_sub(max_inbound_count);
 		if excess_incoming_count > 0 {
-			let mut addrs = self
+			let mut addrs: Vec<_> = self
 				.incoming_connected_peers()
 				.iter()
+				.filter(|x| !preferred_peers.contains(&x.info.addr))
 				.take(excess_incoming_count)
 				.map(|x| x.info.addr.clone())
-				.collect::<Vec<_>>();
+				.collect();
 			rm.append(&mut addrs);
 		}
 
@@ -689,16 +695,8 @@ impl ChainAdapter for Peers {
 		self.adapter.locate_headers(hs)
 	}
 
-	fn get_block(&self, h: Hash) -> Option<core::Block> {
-		self.adapter.get_block(h)
-	}
-
-	fn kernel_data_read(&self) -> Result<File, chain::Error> {
-		self.adapter.kernel_data_read()
-	}
-
-	fn kernel_data_write(&self, reader: &mut dyn Read) -> Result<bool, chain::Error> {
-		self.adapter.kernel_data_write(reader)
+	fn get_block(&self, h: Hash, peer_info: &PeerInfo) -> Option<core::Block> {
+		self.adapter.get_block(h, peer_info)
 	}
 
 	fn txhashset_read(&self, h: Hash) -> Option<TxHashSetRead> {

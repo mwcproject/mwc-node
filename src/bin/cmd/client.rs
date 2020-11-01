@@ -62,7 +62,7 @@ pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig)
 
 pub fn show_status(config: &ServerConfig, api_secret: Option<String>) {
 	println!();
-	let title = format!("MWC Server Status");
+	let title = "MWC Server Status".to_string();
 	if term::stdout().is_none() {
 		println!("Could not open terminal");
 		return;
@@ -137,8 +137,7 @@ pub fn list_connected_peers(config: &ServerConfig, api_secret: Option<String>) {
 
 	match peers_info.map_err(|e| Error::API(url, e)) {
 		Ok(connected_peers) => {
-			let mut index = 0;
-			for connected_peer in connected_peers {
+			for (index, connected_peer) in connected_peers.into_iter().enumerate() {
 				writeln!(e, "Peer {}:", index).unwrap();
 				writeln!(e, "Capabilities: {:?}", connected_peer.capabilities).unwrap();
 				writeln!(e, "User agent: {}", connected_peer.user_agent).unwrap();
@@ -148,7 +147,6 @@ pub fn list_connected_peers(config: &ServerConfig, api_secret: Option<String>) {
 				writeln!(e, "Total difficulty: {}", connected_peer.total_difficulty).unwrap();
 				writeln!(e, "Direction: {:?}", connected_peer.direction).unwrap();
 				println!();
-				index = index + 1;
 			}
 		}
 		Err(_) => writeln!(e, "Failed to get connected peers").unwrap(),

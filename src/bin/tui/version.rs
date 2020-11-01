@@ -17,30 +17,24 @@
 use cursive::direction::Orientation;
 use cursive::traits::Identifiable;
 use cursive::view::View;
-use cursive::views::{BoxView, LinearLayout, TextView};
-use cursive::Cursive;
+use cursive::views::{LinearLayout, ResizedView, TextView};
 
 use crate::tui::constants::VIEW_VERSION;
-use crate::tui::types::TUIStatusListener;
 
 use crate::info_strings;
-use crate::servers::ServerStats;
 
 pub struct TUIVersionView;
 
-impl TUIStatusListener for TUIVersionView {
+impl TUIVersionView {
 	/// Create basic status view
-	fn create() -> Box<dyn View> {
+	pub fn create() -> Box<dyn View> {
 		let (basic_info, detailed_info) = info_strings();
-		let basic_status_view = BoxView::with_full_screen(
+		let basic_status_view = ResizedView::with_full_screen(
 			LinearLayout::new(Orientation::Vertical)
 				.child(TextView::new(basic_info))
 				.child(TextView::new(" "))
 				.child(TextView::new(detailed_info)),
 		);
-		Box::new(basic_status_view.with_id(VIEW_VERSION))
+		Box::new(basic_status_view.with_name(VIEW_VERSION))
 	}
-
-	/// update
-	fn update(_c: &mut Cursive, _stats: &ServerStats) {}
 }

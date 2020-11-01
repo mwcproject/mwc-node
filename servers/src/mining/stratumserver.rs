@@ -23,7 +23,6 @@ use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::util::RwLock;
 use chrono::prelude::Utc;
-use grin_core::core::hash::Hash;
 use serde;
 use serde_json;
 use serde_json::Value;
@@ -38,14 +37,14 @@ use crate::chain::{self, SyncState};
 use crate::common::stats::StratumStats;
 use crate::common::types::StratumServerConfig;
 use crate::core::core::hash::Hashed;
-use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Block;
 use crate::core::stratum::connections;
 use crate::core::{pow, ser};
 use crate::keychain;
 use crate::mining::mine_block;
-use crate::pool;
 use crate::util;
+use crate::util::ToHex;
+use crate::{ServerTxPool, ServerVerifierCache};
 use std::cmp::min;
 
 // ----------------------------------------
@@ -211,14 +210,10 @@ struct Handler {
 	ip_pool: Arc<connections::StratumIpPool>,
 	worker_connections: Arc<AtomicI32>,
 	config: StratumServerConfig,
-	invalid_block_hashes: Option<Vec<String>>,
 }
 
 impl Handler {
-	pub fn from_stratum(
-		stratum: &StratumServer,
-		invalid_block_hashes: Option<Vec<String>>,
-	) -> Self {
+	pub fn from_stratum(stratum: &StratumServer) -> Self {
 		assert!(
 			stratum.config.ip_pool_ban_history_s > 10,
 			"Stratum ip_pool_ban_history_s value must has reasonable value"
@@ -235,22 +230,6 @@ impl Handler {
 			ip_pool: stratum.ip_pool.clone(),
 			worker_connections: stratum.worker_connections.clone(),
 			config: stratum.config.clone(),
-			invalid_block_hashes: invalid_block_hashes,
-		}
-	}
-
-	fn get_invalid_block_hashes(&self) -> Vec<Hash> {
-		if self.invalid_block_hashes.is_some() {
-			let mut ret: Vec<Hash> = vec![];
-			for hash in self.invalid_block_hashes.clone().unwrap() {
-				let val = Hash::from_hex(&hash);
-				if val.is_ok() {
-					ret.push(val.unwrap());
-				}
-			}
-			ret
-		} else {
-			vec![]
 		}
 	}
 
@@ -394,7 +373,7 @@ impl Handler {
 			bh.write_pre_pow(&mut writer).unwrap();
 			bh.pow.write_pre_pow(&mut writer).unwrap();
 		}
-		let pre_pow = util::to_hex(header_buf);
+		let pre_pow = util::to_hex(&header_buf);
 		let job_template = JobTemplate {
 			height: bh.height,
 			job_id: job_id as u64,
@@ -482,11 +461,7 @@ impl Handler {
 		// If the difficulty is high enough, submit it (which also validates it)
 		if share_difficulty >= current_difficulty {
 			// This is a full solution, submit it to the network
-			let res = self.chain.process_block(
-				b.clone(),
-				chain::Options::MINE,
-				self.get_invalid_block_hashes(),
-			);
+			let res = self.chain.process_block(b.clone(), chain::Options::MINE);
 			if let Err(e) = res {
 				// Return error status
 				error!(
@@ -523,7 +498,7 @@ impl Handler {
 		} else {
 			// Do some validation but dont submit
 			let res = pow::verify_size(&b.header);
-			if !res.is_ok() {
+			if res.is_err() {
 				// Return error status
 				error!(
 					"(Server ID: {}) Failed to validate share at height {}, hash {}, edge_bits {}, nonce {}, job_id {}. {:?}",
@@ -563,12 +538,11 @@ impl Handler {
 
 		self.workers
 			.update_stats(worker_id, |worker_stats| worker_stats.num_accepted += 1);
-		let submit_response;
-		if share_is_block {
-			submit_response = format!("blockfound - {}", b.hash().to_hex());
+		let submit_response = if share_is_block {
+			format!("blockfound - {}", b.hash().to_hex())
 		} else {
-			submit_response = "ok".to_string();
-		}
+			"ok".to_string()
+		};
 		return Ok((
 			serde_json::to_value(submit_response).unwrap(),
 			share_is_block,
@@ -593,14 +567,14 @@ impl Handler {
 			"(Server ID: {}) sending block {} with id {} to stratum clients",
 			self.id, job_template.height, job_template.job_id,
 		);
-		self.workers.broadcast(job_request_json.clone());
+		self.workers.broadcast(job_request_json);
 	}
 
 	pub fn run(
 		&self,
 		config: &StratumServerConfig,
-		tx_pool: &Arc<RwLock<pool::TransactionPool>>,
-		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+		tx_pool: &ServerTxPool,
+		verifier_cache: ServerVerifierCache,
 	) {
 		debug!("Run main loop");
 		let mut deadline: i64 = 0;
@@ -631,10 +605,11 @@ impl Handler {
 			{
 				{
 					debug!("resend updated block");
-					let mut wallet_listener_url: Option<String> = None;
-					if !config.burn_reward {
-						wallet_listener_url = Some(config.wallet_listener_url.clone());
-					}
+					let wallet_listener_url = if !config.burn_reward {
+						Some(config.wallet_listener_url.clone())
+					} else {
+						None
+					};
 					// If this is a new block, clear the current_block version history
 					let clear_blocks = current_hash != latest_hash;
 
@@ -788,10 +763,9 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 	}
 
 	let task = async move {
-		let mut listener = TcpListener::bind(&listen_addr).await.expect(&format!(
-			"Stratum: Failed to bind to listen address {}",
-			listen_addr
-		));
+		let mut listener = TcpListener::bind(&listen_addr).await.unwrap_or_else(|_| {
+			panic!("Stratum: Failed to bind to listen address {}", listen_addr)
+		});
 		let server = listener
 			.incoming()
 			.filter_map(|s| async { s.map_err(|e| error!("accept error = {:?}", e)).ok() })
@@ -905,8 +879,8 @@ pub struct StratumServer {
 	id: String,
 	config: StratumServerConfig,
 	chain: Arc<chain::Chain>,
-	tx_pool: Arc<RwLock<pool::TransactionPool>>,
-	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+	pub tx_pool: ServerTxPool,
+	verifier_cache: ServerVerifierCache,
 	sync_state: Arc<SyncState>,
 	stratum_stats: Arc<StratumStats>,
 	ip_pool: Arc<connections::StratumIpPool>,
@@ -918,8 +892,8 @@ impl StratumServer {
 	pub fn new(
 		config: StratumServerConfig,
 		chain: Arc<chain::Chain>,
-		tx_pool: Arc<RwLock<pool::TransactionPool>>,
-		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+		tx_pool: ServerTxPool,
+		verifier_cache: ServerVerifierCache,
 		stratum_stats: Arc<StratumStats>,
 		ip_pool: Arc<connections::StratumIpPool>,
 	) -> StratumServer {
@@ -941,13 +915,7 @@ impl StratumServer {
 	/// existing chain anytime required and sending that to the connected
 	/// stratum miner, proxy, or pool, and accepts full solutions to
 	/// be submitted.
-	pub fn run_loop(
-		&mut self,
-		edge_bits: u32,
-		proof_size: usize,
-		sync_state: Arc<SyncState>,
-		invalid_block_hashes: Option<Vec<String>>,
-	) {
+	pub fn run_loop(&mut self, edge_bits: u32, proof_size: usize, sync_state: Arc<SyncState>) {
 		info!(
 			"(Server ID: {}) Starting stratum server with edge_bits = {}, proof_size = {}, config: {:?}",
 			self.id, edge_bits, proof_size, self.config
@@ -963,7 +931,7 @@ impl StratumServer {
 			.parse()
 			.expect("Stratum: Incorrect address ");
 
-		let handler = Arc::new(Handler::from_stratum(&self, invalid_block_hashes));
+		let handler = Arc::new(Handler::from_stratum(&self));
 		let h = handler.clone();
 
 		let _listener_th = thread::spawn(move || {
@@ -998,7 +966,7 @@ where
 {
 	params
 		.and_then(|v| serde_json::from_value(v).ok())
-		.ok_or(RpcError::invalid_request())
+		.ok_or_else(RpcError::invalid_request)
 }
 
 #[cfg(test)]

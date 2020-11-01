@@ -18,8 +18,9 @@ use chrono::prelude::Utc;
 use cursive::direction::Orientation;
 use cursive::traits::Identifiable;
 use cursive::view::View;
-use cursive::views::{BoxView, LinearLayout, TextView};
+use cursive::views::{LinearLayout, ResizedView, TextView};
 use cursive::Cursive;
+use std::borrow::Cow;
 
 use crate::tui::constants::VIEW_BASIC_STATUS;
 use crate::tui::types::TUIStatusListener;
@@ -32,11 +33,11 @@ const NANO_TO_MILLIS: f64 = 1.0 / 1_000_000.0;
 pub struct TUIStatusView;
 
 impl TUIStatusView {
-	fn update_sync_status(sync_status: SyncStatus) -> String {
+	pub fn update_sync_status(sync_status: SyncStatus) -> Cow<'static, str> {
 		match sync_status {
-			SyncStatus::Initial => "Initializing".to_string(),
-			SyncStatus::NoSync => "Running".to_string(),
-			SyncStatus::AwaitingPeers(_) => "Waiting for peers".to_string(),
+			SyncStatus::Initial => Cow::Borrowed("Initializing"),
+			SyncStatus::NoSync => Cow::Borrowed("Running"),
+			SyncStatus::AwaitingPeers(_) => Cow::Borrowed("Waiting for peers"),
 			SyncStatus::HeaderSync {
 				current_height,
 				highest_height,
@@ -46,43 +47,32 @@ impl TUIStatusView {
 				} else {
 					current_height * 100 / highest_height
 				};
-				format!("Sync step 1/7: Downloading headers: {}%", percent)
+				Cow::Owned(format!("Sync step 1/7: Downloading headers: {}%", percent))
 			}
-			SyncStatus::TxHashsetDownload {
-				start_time,
-				prev_update_time,
-				update_time: _,
-				prev_downloaded_size,
-				downloaded_size,
-				total_size,
-			} => {
-				if total_size > 0 {
-					let percent = if total_size > 0 {
-						downloaded_size * 100 / total_size
-					} else {
-						0
-					};
-					let start = prev_update_time.timestamp_nanos();
+			SyncStatus::TxHashsetDownload(stat) => {
+				if stat.total_size > 0 {
+					let percent = stat.downloaded_size * 100 / stat.total_size;
+					let start = stat.prev_update_time.timestamp_nanos();
 					let fin = Utc::now().timestamp_nanos();
 					let dur_ms = (fin - start) as f64 * NANO_TO_MILLIS;
 
-					format!("Sync step 2/7: Downloading {}(MB) chain state for state sync: {}% at {:.1?}(kB/s)",
-							total_size / 1_000_000,
+					Cow::Owned(format!("Sync step 2/7: Downloading {}(MB) chain state for state sync: {}% at {:.1?}(kB/s)",
+							stat.total_size / 1_000_000,
 							percent,
-							if dur_ms > 1.0f64 { downloaded_size.saturating_sub(prev_downloaded_size) as f64 / dur_ms as f64 } else { 0f64 },
-					)
+							if dur_ms > 1.0f64 { stat.downloaded_size.saturating_sub(stat.prev_downloaded_size) as f64 / dur_ms as f64 } else { 0f64 },
+					))
 				} else {
-					let start = start_time.timestamp_millis();
+					let start = stat.start_time.timestamp_millis();
 					let fin = Utc::now().timestamp_millis();
 					let dur_secs = (fin - start) / 1000;
 
-					format!("Sync step 2/7: Downloading chain state for state sync. Waiting remote peer to start: {}s",
+					Cow::Owned(format!("Sync step 2/7: Downloading chain state for state sync. Waiting remote peer to start: {}s",
 							dur_secs,
-					)
+					))
 				}
 			}
 			SyncStatus::TxHashsetSetup => {
-				"Sync step 3/7: Preparing chain state for validation".to_string()
+				Cow::Borrowed("Sync step 3/7: Preparing chain state for validation")
 			}
 			SyncStatus::TxHashsetRangeProofsValidation {
 				rproofs,
@@ -93,10 +83,10 @@ impl TUIStatusView {
 				} else {
 					0
 				};
-				format!(
+				Cow::Owned(format!(
 					"Sync step 4/7: Validating chain state - range proofs: {}%",
 					r_percent
-				)
+				))
 			}
 			SyncStatus::TxHashsetKernelsValidation {
 				kernels,
@@ -107,16 +97,16 @@ impl TUIStatusView {
 				} else {
 					0
 				};
-				format!(
+				Cow::Owned(format!(
 					"Sync step 5/7: Validating chain state - kernels: {}%",
 					k_percent
-				)
+				))
 			}
 			SyncStatus::TxHashsetSave => {
-				"Sync step 6/7: Finalizing chain state for state sync".to_string()
+				Cow::Borrowed("Sync step 6/7: Finalizing chain state for state sync")
 			}
 			SyncStatus::TxHashsetDone => {
-				"Sync step 6/7: Finalized chain state for state sync".to_string()
+				Cow::Borrowed("Sync step 6/7: Finalized chain state for state sync")
 			}
 			SyncStatus::BodySync {
 				current_height,
@@ -127,32 +117,30 @@ impl TUIStatusView {
 				} else {
 					current_height * 100 / highest_height
 				};
-				format!("Sync step 7/7: Downloading blocks: {}%", percent)
+				Cow::Owned(format!("Sync step 7/7: Downloading blocks: {}%", percent))
 			}
-			SyncStatus::Shutdown => "Shutting down, closing connections".to_string(),
+			SyncStatus::Shutdown => Cow::Borrowed("Shutting down, closing connections"),
 		}
 	}
-}
 
-impl TUIStatusListener for TUIStatusView {
 	/// Create basic status view
-	fn create() -> Box<dyn View> {
-		let basic_status_view = BoxView::with_full_screen(
+	pub fn create() -> impl View {
+		let basic_status_view = ResizedView::with_full_screen(
 			LinearLayout::new(Orientation::Vertical)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Current Status:               "))
-						.child(TextView::new("Starting").with_id("basic_current_status")),
+						.child(TextView::new("Starting").with_name("basic_current_status")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Connected Peers:              "))
-						.child(TextView::new("0").with_id("connected_peers")),
+						.child(TextView::new("0").with_name("connected_peers")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Disk Usage (GB):              "))
-						.child(TextView::new("0").with_id("disk_usage")),
+						.child(TextView::new("0").with_name("disk_usage")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal).child(TextView::new(
@@ -162,22 +150,22 @@ impl TUIStatusListener for TUIStatusView {
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Header Tip Hash:              "))
-						.child(TextView::new("  ").with_id("basic_header_tip_hash")),
+						.child(TextView::new("  ").with_name("basic_header_tip_hash")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Header Chain Height:          "))
-						.child(TextView::new("  ").with_id("basic_header_chain_height")),
+						.child(TextView::new("  ").with_name("basic_header_chain_height")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Header Cumulative Difficulty: "))
-						.child(TextView::new("  ").with_id("basic_header_total_difficulty")),
+						.child(TextView::new("  ").with_name("basic_header_total_difficulty")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Header Tip Timestamp:         "))
-						.child(TextView::new("  ").with_id("basic_header_timestamp")),
+						.child(TextView::new("  ").with_name("basic_header_timestamp")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal).child(TextView::new(
@@ -187,22 +175,22 @@ impl TUIStatusListener for TUIStatusView {
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Chain Tip Hash:               "))
-						.child(TextView::new("  ").with_id("tip_hash")),
+						.child(TextView::new("  ").with_name("tip_hash")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Chain Height:                 "))
-						.child(TextView::new("  ").with_id("chain_height")),
+						.child(TextView::new("  ").with_name("chain_height")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Chain Cumulative Difficulty:  "))
-						.child(TextView::new("  ").with_id("basic_total_difficulty")),
+						.child(TextView::new("  ").with_name("basic_total_difficulty")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Chain Tip Timestamp:          "))
-						.child(TextView::new("  ").with_id("chain_timestamp")),
+						.child(TextView::new("  ").with_name("chain_timestamp")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal).child(TextView::new(
@@ -212,17 +200,17 @@ impl TUIStatusListener for TUIStatusView {
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Transaction Pool Size:        "))
-						.child(TextView::new("0").with_id("tx_pool_size"))
+						.child(TextView::new("0").with_name("tx_pool_size"))
 						.child(TextView::new(" ("))
-						.child(TextView::new("0").with_id("tx_pool_kernels"))
+						.child(TextView::new("0").with_name("tx_pool_kernels"))
 						.child(TextView::new(")")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
 						.child(TextView::new("Stem Pool Size:               "))
-						.child(TextView::new("0").with_id("stem_pool_size"))
+						.child(TextView::new("0").with_name("stem_pool_size"))
 						.child(TextView::new(" ("))
-						.child(TextView::new("0").with_id("stem_pool_kernels"))
+						.child(TextView::new("0").with_name("stem_pool_kernels"))
 						.child(TextView::new(")")),
 				)
 				.child(
@@ -232,69 +220,69 @@ impl TUIStatusListener for TUIStatusView {
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
-						.child(TextView::new("  ").with_id("basic_mining_config_status")),
+						.child(TextView::new("  ").with_name("basic_mining_config_status")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
-						.child(TextView::new("  ").with_id("basic_mining_status")),
+						.child(TextView::new("  ").with_name("basic_mining_status")),
 				)
 				.child(
 					LinearLayout::new(Orientation::Horizontal)
-						.child(TextView::new("  ").with_id("basic_network_info")),
+						.child(TextView::new("  ").with_name("basic_network_info")),
 				), //.child(logo_view)
 		);
-		Box::new(basic_status_view.with_id(VIEW_BASIC_STATUS))
+		basic_status_view.with_name(VIEW_BASIC_STATUS)
 	}
+}
 
+impl TUIStatusListener for TUIStatusView {
 	fn update(c: &mut Cursive, stats: &ServerStats) {
 		let basic_status = TUIStatusView::update_sync_status(stats.sync_status);
 
-		c.call_on_id("basic_current_status", |t: &mut TextView| {
+		c.call_on_name("basic_current_status", |t: &mut TextView| {
 			t.set_content(basic_status);
 		});
-		c.call_on_id("connected_peers", |t: &mut TextView| {
+		c.call_on_name("connected_peers", |t: &mut TextView| {
 			t.set_content(stats.peer_count.to_string());
 		});
-		c.call_on_id("disk_usage", |t: &mut TextView| {
+		c.call_on_name("disk_usage", |t: &mut TextView| {
 			t.set_content(stats.disk_usage_gb.clone());
 		});
-		c.call_on_id("tip_hash", |t: &mut TextView| {
+		c.call_on_name("tip_hash", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.last_block_h.to_string() + "...");
 		});
-		c.call_on_id("chain_height", |t: &mut TextView| {
+		c.call_on_name("chain_height", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.height.to_string());
 		});
-		c.call_on_id("basic_total_difficulty", |t: &mut TextView| {
+		c.call_on_name("basic_total_difficulty", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.total_difficulty.to_string());
 		});
-		c.call_on_id("chain_timestamp", |t: &mut TextView| {
+		c.call_on_name("chain_timestamp", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.latest_timestamp.to_string());
 		});
-		if let Some(header_stats) = &stats.header_stats {
-			c.call_on_id("basic_header_tip_hash", |t: &mut TextView| {
-				t.set_content(header_stats.last_block_h.to_string() + "...");
-			});
-			c.call_on_id("basic_header_chain_height", |t: &mut TextView| {
-				t.set_content(header_stats.height.to_string());
-			});
-			c.call_on_id("basic_header_total_difficulty", |t: &mut TextView| {
-				t.set_content(header_stats.total_difficulty.to_string());
-			});
-			c.call_on_id("basic_header_timestamp", |t: &mut TextView| {
-				t.set_content(header_stats.latest_timestamp.to_string());
-			});
-		}
+		c.call_on_name("basic_header_tip_hash", |t: &mut TextView| {
+			t.set_content(stats.header_stats.last_block_h.to_string() + "...");
+		});
+		c.call_on_name("basic_header_chain_height", |t: &mut TextView| {
+			t.set_content(stats.header_stats.height.to_string());
+		});
+		c.call_on_name("basic_header_total_difficulty", |t: &mut TextView| {
+			t.set_content(stats.header_stats.total_difficulty.to_string());
+		});
+		c.call_on_name("basic_header_timestamp", |t: &mut TextView| {
+			t.set_content(stats.header_stats.latest_timestamp.to_string());
+		});
 		if let Some(tx_stats) = &stats.tx_stats {
-			c.call_on_id("tx_pool_size", |t: &mut TextView| {
+			c.call_on_name("tx_pool_size", |t: &mut TextView| {
 				t.set_content(tx_stats.tx_pool_size.to_string());
 			});
-			c.call_on_id("stem_pool_size", |t: &mut TextView| {
+			c.call_on_name("stem_pool_size", |t: &mut TextView| {
 				t.set_content(tx_stats.stem_pool_size.to_string());
 			});
-			c.call_on_id("tx_pool_kernels", |t: &mut TextView| {
+			c.call_on_name("tx_pool_kernels", |t: &mut TextView| {
 				t.set_content(tx_stats.tx_pool_kernels.to_string());
 			});
-			c.call_on_id("stem_pool_kernels", |t: &mut TextView| {
+			c.call_on_name("stem_pool_kernels", |t: &mut TextView| {
 				t.set_content(tx_stats.stem_pool_kernels.to_string());
 			});
 		}

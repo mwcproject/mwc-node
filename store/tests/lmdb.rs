@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use grin_core as core;
 use grin_store as store;
 use grin_util as util;
 
-use grin_core::ser::{self, Readable, Reader, Writeable, Writer};
-
+use crate::core::global;
+use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use std::fs;
 
 const WRITE_CHUNK_SIZE: usize = 20;
-const TEST_ALLOC_SIZE: usize = store::lmdb::ALLOC_CHUNK_SIZE / 8 / WRITE_CHUNK_SIZE;
+const TEST_ALLOC_SIZE: usize = store::lmdb::ALLOC_CHUNK_SIZE_DEFAULT / 8 / WRITE_CHUNK_SIZE;
 
 #[derive(Clone)]
 struct PhatChunkStruct {
@@ -35,7 +36,7 @@ impl PhatChunkStruct {
 }
 
 impl Readable for PhatChunkStruct {
-	fn read(reader: &mut dyn Reader) -> Result<PhatChunkStruct, ser::Error> {
+	fn read<R: Reader>(reader: &mut R) -> Result<PhatChunkStruct, ser::Error> {
 		let mut retval = PhatChunkStruct::new();
 		for _ in 0..TEST_ALLOC_SIZE {
 			retval.phatness = reader.read_u64()?;
@@ -59,6 +60,7 @@ fn clean_output_dir(test_dir: &str) {
 }
 
 fn setup(test_dir: &str) {
+	global::set_local_chain_type(global::ChainTypes::Mainnet);
 	util::init_test_logger();
 	clean_output_dir(test_dir);
 }
@@ -75,9 +77,9 @@ fn lmdb_allocate() -> Result<(), store::Error> {
 		for i in 0..WRITE_CHUNK_SIZE * 2 {
 			println!("Allocating chunk: {}", i);
 			let chunk = PhatChunkStruct::new();
-			let mut key_val = format!("phat_chunk_set_1_{}", i).as_bytes().to_vec();
+			let key_val = format!("phat_chunk_set_1_{}", i);
 			let batch = store.batch()?;
-			let key = store::to_key(b'P', &mut key_val);
+			let key = store::to_key(b'P', &key_val);
 			batch.put_ser(&key, &chunk)?;
 			batch.commit()?;
 		}
@@ -91,9 +93,9 @@ fn lmdb_allocate() -> Result<(), store::Error> {
 		for i in 0..WRITE_CHUNK_SIZE * 2 {
 			println!("Allocating chunk: {}", i);
 			let chunk = PhatChunkStruct::new();
-			let mut key_val = format!("phat_chunk_set_2_{}", i).as_bytes().to_vec();
+			let key_val = format!("phat_chunk_set_2_{}", i);
 			let batch = store.batch()?;
-			let key = store::to_key(b'P', &mut key_val);
+			let key = store::to_key(b'P', &key_val);
 			batch.put_ser(&key, &chunk)?;
 			batch.commit()?;
 		}

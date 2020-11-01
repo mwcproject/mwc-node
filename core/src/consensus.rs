@@ -113,13 +113,13 @@ pub const CUT_THROUGH_HORIZON: u32 = WEEK_HEIGHT as u32;
 pub const STATE_SYNC_THRESHOLD: u32 = 2 * DAY_HEIGHT as u32;
 
 /// Weight of an input when counted against the max block weight capacity
-pub const BLOCK_INPUT_WEIGHT: usize = 1;
+pub const BLOCK_INPUT_WEIGHT: u64 = 1;
 
 /// Weight of an output when counted against the max block weight capacity
-pub const BLOCK_OUTPUT_WEIGHT: usize = 21;
+pub const BLOCK_OUTPUT_WEIGHT: u64 = 21;
 
 /// Weight of a kernel when counted against the max block weight capacity
-pub const BLOCK_KERNEL_WEIGHT: usize = 3;
+pub const BLOCK_KERNEL_WEIGHT: u64 = 3;
 
 /// Total maximum block weight. At current sizes, this means a maximum
 /// theoretical size of:
@@ -133,25 +133,69 @@ pub const BLOCK_KERNEL_WEIGHT: usize = 3;
 /// `(1 * 2) + (21 * 2) + (3 * 1) = 47` (weight per tx)
 /// `40_000 / 47 = 851` (txs per block)
 ///
-pub const MAX_BLOCK_WEIGHT: usize = 40_000;
+pub const MAX_BLOCK_WEIGHT: u64 = 40_000;
+
+// We want to keep the grin test cases for NRD kernels.
+// note!!! Currently NRD is disabled in MWC network. We need hardfork to activate it
+
+/// AutomatedTesting and UserTesting HF1 height.
+pub const TESTING_FIRST_HARD_FORK: u64 = 3;
+/// AutomatedTesting and UserTesting HF2 height.
+pub const TESTING_SECOND_HARD_FORK: u64 = 6;
+/// AutomatedTesting and UserTesting HF3 height.
+pub const TESTING_THIRD_HARD_FORK: u64 = 9;
 
 /// Check whether the block version is valid at a given height
 /// MWC doesn't want like grin change the algorithms for mining. So version is constant
 pub fn header_version(height: u64) -> HeaderVersion {
-	if height < get_c31_hard_fork_block_height() {
-		HeaderVersion(1)
-	} else {
-		HeaderVersion(2)
+	let chain_type = global::get_chain_type();
+	match chain_type {
+		global::ChainTypes::Mainnet | global::ChainTypes::Floonet => {
+			if height < get_c31_hard_fork_block_height() {
+				HeaderVersion(1)
+			} else {
+				HeaderVersion(2)
+			}
+		}
+		// Note!!!! We need that to cover NRD tests.
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+			if height < TESTING_FIRST_HARD_FORK {
+				HeaderVersion(1)
+			} else if height < TESTING_SECOND_HARD_FORK {
+				HeaderVersion(2)
+			} else if height < TESTING_THIRD_HARD_FORK {
+				HeaderVersion(3)
+			} else {
+				HeaderVersion(4)
+			}
+		}
 	}
 }
 
 /// Check whether the block version is valid at a given height.
 /// Currently we only use the default version. No hard forks planned.
 pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
-	if height < get_c31_hard_fork_block_height() {
-		version == HeaderVersion(1)
-	} else {
-		version == HeaderVersion(2)
+	let chain_type = global::get_chain_type();
+	match chain_type {
+		global::ChainTypes::Mainnet | global::ChainTypes::Floonet => {
+			if height < get_c31_hard_fork_block_height() {
+				version == HeaderVersion(1)
+			} else {
+				version == HeaderVersion(2)
+			}
+		}
+		// Note!!!! We need that to cover NRD tests.
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+			if height < TESTING_FIRST_HARD_FORK {
+				version == HeaderVersion(1)
+			} else if height < TESTING_SECOND_HARD_FORK {
+				version == HeaderVersion(2)
+			} else if height < TESTING_THIRD_HARD_FORK {
+				version == HeaderVersion(3)
+			} else {
+				version == HeaderVersion(4)
+			}
+		}
 	}
 }
 
@@ -355,7 +399,7 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
 
 fn get_c31_hard_fork_block_height() -> u64 {
 	// return 202_500 for mainnet and 270_000 for floonet
-	if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+	if global::get_chain_type() == global::ChainTypes::Floonet {
 		270_000
 	} else {
 		202_500
@@ -365,7 +409,7 @@ fn get_c31_hard_fork_block_height() -> u64 {
 fn get_epoch_block_offset(epoch: u8) -> u64 {
 	let mut ret = get_c31_hard_fork_block_height();
 	if epoch >= 2 {
-		if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+		if global::get_chain_type() == global::ChainTypes::Floonet {
 			ret += DAY_HEIGHT;
 		} else {
 			ret += WEEK_HEIGHT;
@@ -384,7 +428,7 @@ fn get_epoch_duration(epoch: u8) -> u64 {
 	match epoch {
 		2 => {
 			// second epoch is 1 day on floonet and 120 days on mainnet
-			if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+			if global::get_chain_type() == global::ChainTypes::Floonet {
 				DAY_HEIGHT
 			} else {
 				120 * DAY_HEIGHT
@@ -392,7 +436,7 @@ fn get_epoch_duration(epoch: u8) -> u64 {
 		}
 		3 => {
 			// third epoch is 1 day on floonet and 60 days on mainnet
-			if *global::CHAIN_TYPE.read() == global::ChainTypes::Floonet {
+			if global::get_chain_type() == global::ChainTypes::Floonet {
 				DAY_HEIGHT
 			} else {
 				60 * DAY_HEIGHT
@@ -596,6 +640,8 @@ mod test {
 
 	#[test]
 	fn test_graph_weight() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
 		// initial weights
 		assert_eq!(graph_weight(1, 31), 256 * 31);
 		assert_eq!(graph_weight(1, 32), 512 * 32);
@@ -642,6 +688,8 @@ mod test {
 	// MWC test the epoch dates
 	#[test]
 	fn test_epoch_dates() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
 		assert_eq!(get_c31_hard_fork_block_height(), 202_500); // April 1, 2020 hard fork date
 		assert_eq!(get_epoch_block_offset(2), 212_580); // April 7, 2020 second epoch begins
 		assert_eq!(get_epoch_block_offset(3), 385_380); // August 7, 2020 third epoch begins
@@ -662,6 +710,8 @@ mod test {
 	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
 	#[test]
 	fn test_calc_mwc_block_reward() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
 		// first blocks
 		assert_eq!(calc_mwc_block_reward(1), 2_380_952_380);
 		assert_eq!(calc_mwc_block_reward(2), 2_380_952_380);
@@ -816,6 +866,8 @@ mod test {
 	// MWC  testing calc_mwc_block_overage output for the schedule that documented at definition of calc_mwc_block_reward
 	#[test]
 	fn test_calc_mwc_block_overage() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
 		let genesis_reward: u64 = GENESIS_BLOCK_REWARD;
 
 		assert_eq!(calc_mwc_block_overage(0, true), genesis_reward); // Doesn't make sense to call for the genesis block

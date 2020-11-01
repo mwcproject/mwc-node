@@ -108,6 +108,14 @@ impl From<RouterError> for Error {
 	}
 }
 
+impl From<crate::chain::Error> for Error {
+	fn from(error: crate::chain::Error) -> Error {
+		Error {
+			inner: Context::new(ErrorKind::Internal(error.to_string())),
+		}
+	}
+}
+
 impl From<P2pError> for Error {
 	fn from(error: P2pError) -> Error {
 		Error {

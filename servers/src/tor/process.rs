@@ -46,8 +46,6 @@
 //! Derived from from from https://github.com/Dhole/rust-tor-controller.git
 
 extern crate chrono;
-extern crate regex;
-extern crate timer;
 
 use failure::Fail;
 use regex::Regex;

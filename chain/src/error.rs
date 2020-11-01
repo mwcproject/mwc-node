@@ -125,12 +125,18 @@ pub enum ErrorKind {
 	/// Tx not valid based on lock_height.
 	#[fail(display = "Invalid Transaction Lock Height")]
 	TxLockHeight,
+	/// Tx is not valid due to NRD relative_height restriction.
+	#[fail(display = "NRD Relative Height")]
+	NRDRelativeHeight,
 	/// No chain exists and genesis block is required
 	#[fail(display = "Genesis Block Required")]
 	GenesisBlockRequired,
 	/// Error from underlying tx handling
 	#[fail(display = "Transaction Validation Error: {:?}", _0)]
 	Transaction(transaction::Error),
+	/// Error from underlying block handling
+	#[fail(display = "Block Validation Error: {:?}", _0)]
+	Block(block::Error),
 	/// Anything else
 	#[fail(display = "Chain other Error: {}", _0)]
 	Other(String),

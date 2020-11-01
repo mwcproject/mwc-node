@@ -35,12 +35,11 @@ use crate::util::StopState;
 
 // MWC - all DNS hosts are updated with seed1.mwc.mw/seed2.mwc.mw and others
 const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
-	"mainnet.seed1.mwc.mw", // cpg
-	"mainnet.seed2.mwc.mw", // cpg
-	"52.235.38.45",         // JonB
-	"51.89.98.17",          // Greg
-	"207.148.27.129",       // Greg
-	"mwcseed.ddns.net",     // Konstantin
+	"mainnet.seed1.mwc.mw",      // cpg
+	"mainnet.seed2.mwc.mw",      // cpg
+	"greg1.mainnet.seed.mwc.mw", // Greg
+	"greg2.mainnet.seed.mwc.mw", // Greg
+	"mwcseed.ddns.net",          // Konstantin
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
 
@@ -48,10 +47,12 @@ pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
 	capabilities: p2p::Capabilities,
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
-	preferred_peers: Option<Vec<PeerAddr>>,
+	preferred_peers: &[PeerAddr],
 	stop_state: Arc<StopState>,
 	header_cache_size: u64,
 ) -> std::io::Result<thread::JoinHandle<()>> {
+	let preferred_peers = preferred_peers.to_vec();
+
 	thread::Builder::new()
 		.name("seed".to_string())
 		.spawn(move || {
@@ -68,7 +69,7 @@ pub fn connect_and_monitor(
 				peers.clone(),
 				tx.clone(),
 				seed_list.clone(),
-				preferred_peers.clone(),
+				&preferred_peers,
 			);
 
 			let mut prev = MIN_DATE.and_hms(0, 0, 0);
@@ -99,7 +100,7 @@ pub fn connect_and_monitor(
 						peers.clone(),
 						tx.clone(),
 						seed_list.clone(),
-						preferred_peers.clone(),
+						&preferred_peers,
 					);
 
 					thread::sleep(time::Duration::from_secs(1));
@@ -148,7 +149,7 @@ pub fn connect_and_monitor(
 						peers.clone(),
 						p2p_server.config.clone(),
 						tx.clone(),
-						preferred_peers.clone(),
+						&preferred_peers,
 					);
 				}
 
@@ -161,8 +162,8 @@ pub fn connect_and_monitor(
 				if Utc::now() - prev_ping > Duration::seconds(10) {
 					let total_diff = peers.total_difficulty();
 					let total_height = peers.total_height();
-					if total_diff.is_ok() && total_height.is_ok() {
-						peers.check_all(total_diff.unwrap(), total_height.unwrap());
+					if let (Ok(total_diff), Ok(total_height)) = (total_diff, total_height) {
+						peers.check_all(total_diff, total_height);
 						prev_ping = Utc::now();
 					} else {
 						error!("failed to get peers difficulty and/or height");
@@ -178,7 +179,7 @@ fn monitor_peers(
 	peers: Arc<p2p::Peers>,
 	config: p2p::P2PConfig,
 	tx: mpsc::Sender<PeerAddr>,
-	preferred_peers_list: Option<Vec<PeerAddr>>,
+	preferred_peers: &[PeerAddr],
 ) {
 	// regularly check if we need to acquire more peers  and if so, gets
 	// them from db
@@ -226,6 +227,7 @@ fn monitor_peers(
 	peers.clean_peers(
 		config.peer_max_inbound_count() as usize,
 		config.peer_max_outbound_count() as usize,
+		preferred_peers,
 	);
 
 	if peers.enough_outbound_peers() {
@@ -246,22 +248,20 @@ fn monitor_peers(
 		connected_peers.push(p.info.addr.clone())
 	}
 
-	// Attempt to connect to preferred peers if there is some
-	if let Some(preferred_peers) = preferred_peers_list {
-		for p in preferred_peers {
-			if !connected_peers.is_empty() {
-				if !connected_peers.contains(&p) {
-					tx.send(p).unwrap();
-				}
-			} else {
-				tx.send(p).unwrap();
+	// Attempt to connect to any preferred peers.
+	for p in preferred_peers {
+		if !connected_peers.is_empty() {
+			if !connected_peers.contains(p) {
+				tx.send(p.clone()).unwrap();
 			}
+		} else {
+			tx.send(p.clone()).unwrap();
 		}
 	}
 
 	// take a random defunct peer and mark it healthy: over a long period any
 	// peer will see another as defunct eventually, gives us a chance to retry
-	if defuncts.len() > 0 {
+	if !defuncts.is_empty() {
 		defuncts.shuffle(&mut thread_rng());
 		let _ = peers.update_state(defuncts[0].addr.clone(), p2p::State::Healthy);
 	}
@@ -294,7 +294,7 @@ fn connect_to_seeds_and_preferred_peers(
 	peers: Arc<p2p::Peers>,
 	tx: mpsc::Sender<PeerAddr>,
 	seed_list: Vec<PeerAddr>,
-	peers_preferred_list: Option<Vec<PeerAddr>>,
+	peers_preferred: &[PeerAddr],
 ) {
 	// check if we have some peers in db
 	// look for peers that are able to give us other peers (via PEER_LIST capability)
@@ -307,13 +307,10 @@ fn connect_to_seeds_and_preferred_peers(
 		seed_list
 	};
 
-	// If we have preferred peers add them to the connection
-	match peers_preferred_list {
-		Some(mut peers_preferred) => peer_addrs.append(&mut peers_preferred),
-		None => trace!("No preferred peers"),
-	};
+	// If we have preferred peers add them to the initial list
+	peer_addrs.extend_from_slice(peers_preferred);
 
-	if peer_addrs.len() == 0 {
+	if peer_addrs.is_empty() {
 		warn!("No seeds were retrieved.");
 	}
 
@@ -371,10 +368,8 @@ fn listen_for_addrs(
 					last_connect_time.format("%H:%M:%S%.3f").to_string(),
 				);
 				continue;
-			} else {
-				if let Some(history) = connecting_history.get_mut(&addr) {
-					*history = now;
-				}
+			} else if let Some(history) = connecting_history.get_mut(&addr) {
+				*history = now;
 			}
 		}
 
@@ -457,7 +452,7 @@ fn resolve_dns_to_addrs(dns_records: &Vec<String>) -> Vec<PeerAddr> {
 		match dns.to_socket_addrs() {
 			Ok(addrs) => addresses.append(
 				&mut addrs
-					.map(|addr| PeerAddr::Ip(addr))
+					.map(PeerAddr::Ip)
 					.filter(|addr| !addresses.contains(addr))
 					.collect(),
 			),

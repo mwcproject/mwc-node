@@ -15,9 +15,6 @@ args:
 subcommands:
   - clean:
       about: Clean MWC chain data
-  - wallet:
-      about: As of v1.1.0, the wallet has been split into a separate executable. See https://github.com/mwcproject/mwc-wallet/releases
-      usage: As of v1.1.0, the wallet has been split into a separate executable. See https://github.com/mwcproject/mwc-wallet/releases to download
   - server:
       about: Control the MWC server
       args:
