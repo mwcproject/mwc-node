@@ -31,6 +31,7 @@ use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 use util;
 use util::secp;
+use util::secp::key::PublicKey;
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::static_secp_instance;
 use util::RwLock;
@@ -1854,10 +1855,12 @@ enum_from_primitive! {
 	#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 	#[repr(u8)]
 	pub enum OutputFeatures {
-		/// Plain output (the default for Grin txs).
+		/// Legacy default plain output for the traditional Mimblewimble. i.e. Plain output w/o R&P'.
 		Plain = 0,
 		/// A coinbase output.
 		Coinbase = 1,
+		/// Plain output w/ R&P'
+		PlainWrnp = 2,
 	}
 }
 
@@ -1877,7 +1880,7 @@ impl Readable for OutputFeatures {
 	}
 }
 
-/// Output for a transaction, defining the new ownership of coins that are being
+/// Output w/o R&P' for a transaction, defining the new ownership of coins that are being
 /// transferred. The commitment is a blinded value for the output while the
 /// range proof guarantees the commitment includes a positive value without
 /// overflow and the ownership of the private key.
@@ -1947,9 +1950,14 @@ impl OutputFeatures {
 		self == OutputFeatures::Coinbase
 	}
 
-	/// Is this a plain output?
+	/// Is this a plain output w/o R&P'?
 	pub fn is_plain(self) -> bool {
 		self == OutputFeatures::Plain
+	}
+
+	/// Is this a plain output w/ R&P'?
+	pub fn is_plain_wrnp(self) -> bool {
+		self == OutputFeatures::PlainWrnp
 	}
 }
 
@@ -2015,6 +2023,150 @@ impl Output {
 }
 
 impl AsRef<OutputIdentifier> for Output {
+	fn as_ref(&self) -> &OutputIdentifier {
+		&self.identifier
+	}
+}
+
+/// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct OutputWrnp {
+	/// Output identifier (features and commitment).
+	#[serde(flatten)]
+	pub identifier: OutputIdentifier,
+	/// Public nonce R for generating Ephemeral key.
+	pub nonce: PublicKey,
+	/// One-time public key P' which is calculated by H(A')*G+B
+	pub onetime_pubkey: PublicKey,
+	/// Rangeproof associated with the commitment.
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::rangeproof_from_hex"
+	)]
+	pub proof: RangeProof,
+}
+
+impl Ord for OutputWrnp {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.identifier.cmp(&other.identifier)
+	}
+}
+
+impl PartialOrd for OutputWrnp {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl PartialEq for OutputWrnp {
+	fn eq(&self, other: &Self) -> bool {
+		self.identifier == other.identifier
+	}
+}
+
+impl Eq for OutputWrnp {}
+
+impl AsRef<Commitment> for OutputWrnp {
+	fn as_ref(&self) -> &Commitment {
+		&self.identifier.commit
+	}
+}
+
+/// Implementation of Writeable for a transaction Output, defines how to write
+/// an Output as binary.
+impl Writeable for OutputWrnp {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.identifier.write(writer)?;
+		self.nonce.write(writer)?;
+		self.onetime_pubkey.write(writer)?;
+		self.proof.write(writer)?;
+		Ok(())
+	}
+}
+
+/// Implementation of Readable for a transaction Output, defines how to read
+/// an Output from a binary stream.
+impl Readable for OutputWrnp {
+	fn read<R: Reader>(reader: &mut R) -> Result<OutputWrnp, ser::Error> {
+		Ok(OutputWrnp {
+			identifier: OutputIdentifier::read(reader)?,
+			nonce: PublicKey::read(reader)?,
+			onetime_pubkey: PublicKey::read(reader)?,
+			proof: RangeProof::read(reader)?,
+		})
+	}
+}
+
+impl OutputWrnp {
+	/// Create a new output with the provided features, commitment, R, P' and rangeproof.
+	pub fn new(
+		features: OutputFeatures,
+		commit: Commitment,
+		nonce: PublicKey,
+		onetime_pubkey: PublicKey,
+		proof: RangeProof,
+	) -> OutputWrnp {
+		OutputWrnp {
+			identifier: OutputIdentifier { features, commit },
+			nonce,
+			onetime_pubkey,
+			proof,
+		}
+	}
+
+	/// Output identifier.
+	pub fn identifier(&self) -> OutputIdentifier {
+		self.identifier
+	}
+
+	/// Commitment for the output
+	pub fn commitment(&self) -> Commitment {
+		self.identifier.commitment()
+	}
+
+	/// Output features.
+	pub fn features(&self) -> OutputFeatures {
+		self.identifier.features
+	}
+
+	/// Is this a coinbase output?
+	pub fn is_coinbase(&self) -> bool {
+		self.identifier.is_coinbase()
+	}
+
+	/// Is this a plain output?
+	pub fn is_plain(&self) -> bool {
+		self.identifier.is_plain()
+	}
+
+	/// Range proof for the output
+	pub fn proof(&self) -> RangeProof {
+		self.proof
+	}
+
+	/// Get range proof as byte slice
+	pub fn proof_bytes(&self) -> &[u8] {
+		&self.proof.proof[..]
+	}
+
+	/// Validates the range proof using the commitment
+	pub fn verify_proof(&self) -> Result<(), Error> {
+		let secp = static_secp_instance();
+		secp.lock()
+			.verify_bullet_proof(self.commitment(), self.proof, None)?;
+		Ok(())
+	}
+
+	/// Batch validates the range proofs using the commitments
+	pub fn batch_verify_proofs(commits: &[Commitment], proofs: &[RangeProof]) -> Result<(), Error> {
+		let secp = static_secp_instance();
+		secp.lock()
+			.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
+		Ok(())
+	}
+}
+
+impl AsRef<OutputIdentifier> for OutputWrnp {
 	fn as_ref(&self) -> &OutputIdentifier {
 		&self.identifier
 	}

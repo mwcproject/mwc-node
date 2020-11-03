@@ -20,7 +20,9 @@ use crate::core::core::committed::Committed;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::pmmr::{self, Backend, ReadonlyPMMR, RewindablePMMR, PMMR};
-use crate::core::core::{Block, BlockHeader, KernelFeatures, Output, OutputIdentifier, TxKernel};
+use crate::core::core::{
+	Block, BlockHeader, KernelFeatures, Output, OutputIdentifier, OutputWrnp, TxKernel,
+};
 use crate::core::global;
 use crate::core::ser::{PMMRable, ProtocolVersion};
 use crate::error::{Error, ErrorKind};
@@ -42,6 +44,7 @@ use std::time::Instant;
 const TXHASHSET_SUBDIR: &str = "txhashset";
 
 const OUTPUT_SUBDIR: &str = "output";
+const OUTPUT_WRNP_SUBDIR: &str = "output_wrnp";
 const RANGE_PROOF_SUBDIR: &str = "rangeproof";
 const KERNEL_SUBDIR: &str = "kernel";
 
@@ -145,10 +148,12 @@ impl PMMRHandle<BlockHeader> {
 /// pruning enabled.
 pub struct TxHashSet {
 	output_pmmr_h: PMMRHandle<OutputIdentifier>,
+	output_wrnp_pmmr_h: PMMRHandle<OutputWrnp>,
 	rproof_pmmr_h: PMMRHandle<RangeProof>,
 	kernel_pmmr_h: PMMRHandle<TxKernel>,
 
 	bitmap_accumulator: BitmapAccumulator,
+	bitmap_accumulator_wrnp: BitmapAccumulator,
 
 	// chain store used as index of commitments to MMR positions
 	commit_index: Arc<ChainStore>,
@@ -170,6 +175,15 @@ impl TxHashSet {
 			header,
 		)?;
 
+		let output_wrnp_pmmr_h = PMMRHandle::new(
+			Path::new(&root_dir)
+				.join(TXHASHSET_SUBDIR)
+				.join(OUTPUT_WRNP_SUBDIR),
+			true,
+			ProtocolVersion(1),
+			header,
+		)?;
+
 		let rproof_pmmr_h = PMMRHandle::new(
 			Path::new(&root_dir)
 				.join(TXHASHSET_SUBDIR)
@@ -181,6 +195,7 @@ impl TxHashSet {
 
 		// Initialize the bitmap accumulator from the current output PMMR.
 		let bitmap_accumulator = TxHashSet::bitmap_accumulator(&output_pmmr_h)?;
+		let bitmap_accumulator_wrnp = TxHashSet::bitmap_accumulator_wrnp(&output_wrnp_pmmr_h)?;
 
 		let mut maybe_kernel_handle: Option<PMMRHandle<TxKernel>> = None;
 		let versions = vec![ProtocolVersion(2), ProtocolVersion(1)];
@@ -226,9 +241,11 @@ impl TxHashSet {
 		if let Some(kernel_pmmr_h) = maybe_kernel_handle {
 			Ok(TxHashSet {
 				output_pmmr_h,
+				output_wrnp_pmmr_h,
 				rproof_pmmr_h,
 				kernel_pmmr_h,
 				bitmap_accumulator,
+				bitmap_accumulator_wrnp,
 				commit_index,
 			})
 		} else {
@@ -247,9 +264,21 @@ impl TxHashSet {
 		Ok(bitmap_accumulator)
 	}
 
+	// Build a new bitmap accumulator for the provided output PMMR.
+	fn bitmap_accumulator_wrnp(
+		pmmr_h: &PMMRHandle<OutputWrnp>,
+	) -> Result<BitmapAccumulator, Error> {
+		let pmmr = ReadonlyPMMR::at(&pmmr_h.backend, pmmr_h.last_pos);
+		let size = pmmr::n_leaves(pmmr_h.last_pos);
+		let mut bitmap_accumulator = BitmapAccumulator::new();
+		bitmap_accumulator.init(&mut pmmr.leaf_idx_iter(0), size)?;
+		Ok(bitmap_accumulator)
+	}
+
 	/// Close all backend file handles
 	pub fn release_backend_files(&mut self) {
 		self.output_pmmr_h.backend.release_files();
+		self.output_wrnp_pmmr_h.backend.release_files();
 		self.rproof_pmmr_h.backend.release_files();
 		self.kernel_pmmr_h.backend.release_files();
 	}
