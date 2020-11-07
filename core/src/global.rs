@@ -40,8 +40,13 @@ use util::OneTime;
 /// We negotiate compatible versions with each peer via Hand/Shake.
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
-/// NOTE, grin bump the protocol version to 1000, but in any case fo far 1,2,3 are supported.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
+/// This defines the p2p layer protocol version for this node.
+/// NOTE:
+/// 	- grin bump the protocol version to 1000 since v4.1.0
+/// 	- grin will bump the protocol version to 2000 from HF4.
+/// 	- so far 1,2,3 are used in mwc. 2 for 4.1.0 release. 3 in current master.
+/// 	- anyway mwc will use a new protocol version in next HF, either 1000 or 2000.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1_000);
 
 /// Automated testing edge_bits
 pub const AUTOMATED_TESTING_MIN_EDGE_BITS: u8 = 10;

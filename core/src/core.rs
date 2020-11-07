@@ -23,6 +23,7 @@ pub mod id;
 pub mod merkle_proof;
 pub mod pmmr;
 pub mod transaction;
+pub mod transaction_v2;
 pub mod verifier_cache;
 
 use crate::consensus::GRIN_BASE;
@@ -34,6 +35,7 @@ pub use self::committed::Committed;
 pub use self::compact_block::*;
 pub use self::id::ShortId;
 pub use self::transaction::*;
+pub use self::transaction_v2::*;
 
 /// Common errors
 #[derive(Fail, Debug)]

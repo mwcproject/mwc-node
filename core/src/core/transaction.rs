@@ -15,6 +15,7 @@
 //! Transactions
 
 use crate::core::hash::{DefaultHashable, Hashed};
+use crate::core::transaction_v2::CommitWithSig;
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{committed, Committed};
 use crate::libtx::{aggsig, secp_ser};
@@ -1705,6 +1706,11 @@ impl From<Inputs> for Vec<CommitWrapper> {
 				commits.sort_unstable();
 				commits
 			}
+			Inputs::CommitsWithSig(inputs) => {
+				let mut commits: Vec<_> = inputs.iter().map(|input| input.into()).collect();
+				commits.sort_unstable();
+				commits
+			}
 		}
 	}
 }
@@ -1714,6 +1720,11 @@ impl From<&Inputs> for Vec<CommitWrapper> {
 		match inputs {
 			Inputs::CommitOnly(inputs) => inputs.clone(),
 			Inputs::FeaturesAndCommit(inputs) => {
+				let mut commits: Vec<_> = inputs.iter().map(|input| input.into()).collect();
+				commits.sort_unstable();
+				commits
+			}
+			Inputs::CommitsWithSig(inputs) => {
 				let mut commits: Vec<_> = inputs.iter().map(|input| input.into()).collect();
 				commits.sort_unstable();
 				commits
@@ -1736,6 +1747,8 @@ pub enum Inputs {
 	CommitOnly(Vec<CommitWrapper>),
 	/// Vec of inputs.
 	FeaturesAndCommit(Vec<Input>),
+	/// Vec of commitments with signature
+	CommitsWithSig(Vec<CommitWithSig>),
 }
 
 impl From<&[Input]> for Inputs {
@@ -1747,6 +1760,12 @@ impl From<&[Input]> for Inputs {
 impl From<&[CommitWrapper]> for Inputs {
 	fn from(commits: &[CommitWrapper]) -> Self {
 		Inputs::CommitOnly(commits.to_vec())
+	}
+}
+
+impl From<&[CommitWithSig]> for Inputs {
+	fn from(commits_with_sig: &[CommitWithSig]) -> Self {
+		Inputs::CommitWithSig(commits_with_sig.to_vec())
 	}
 }
 
@@ -1784,6 +1803,7 @@ impl Writeable for Inputs {
 			match self {
 				Inputs::CommitOnly(inputs) => inputs.write(writer)?,
 				Inputs::FeaturesAndCommit(inputs) => inputs.write(writer)?,
+				Inputs::CommitsWithSig(inputs) => inputs.write(writer)?,
 			}
 		} else {
 			// Otherwise we are writing full data and need to consider our inputs variant and protocol version.
@@ -1804,6 +1824,15 @@ impl Writeable for Inputs {
 						inputs.write(writer)?;
 					}
 				},
+				Inputs::CommitWithSig(inputs) => match writer.protocol_version().value() {
+					0..=3 => {
+						return Err(ser::Error::UnsupportedProtocolVersion(format!(
+							"get version {}, expecting version >=3",
+							writer.protocol_version().value()
+						)))
+					}
+					1000..=ProtocolVersion::MAX => inputs.write(writer)?,
+				},
 			}
 		}
 		Ok(())
@@ -1816,6 +1845,16 @@ impl Inputs {
 		match self {
 			Inputs::CommitOnly(inputs) => inputs.len(),
 			Inputs::FeaturesAndCommit(inputs) => inputs.len(),
+			Inputs::CommitsWithSig(inputs) => inputs.len(),
+		}
+	}
+
+	/// Get inner vector of inputs w/ sig
+	pub fn inputs_with_sig(&self) -> Vec<CommitWithSig> {
+		match self {
+			Inputs::CommitOnly(_) => vec![],
+			Inputs::FeaturesAndCommit(_) => vec![],
+			Inputs::CommitsWithSig(inputs) => inputs.clone(),
 		}
 	}
 
@@ -1825,18 +1864,20 @@ impl Inputs {
 	}
 
 	/// Verify inputs are sorted and unique.
-	fn verify_sorted_and_unique(&self) -> Result<(), ser::Error> {
+	pub fn verify_sorted_and_unique(&self) -> Result<(), ser::Error> {
 		match self {
 			Inputs::CommitOnly(inputs) => inputs.verify_sorted_and_unique(),
 			Inputs::FeaturesAndCommit(inputs) => inputs.verify_sorted_and_unique(),
+			Inputs::CommitsWithSig(inputs) => inputs.verify_sorted_and_unique(),
 		}
 	}
 
 	/// Sort the inputs.
-	fn sort_unstable(&mut self) {
+	pub fn sort_unstable(&mut self) {
 		match self {
 			Inputs::CommitOnly(inputs) => inputs.sort_unstable(),
 			Inputs::FeaturesAndCommit(inputs) => inputs.sort_unstable(),
+			Inputs::CommitsWithSig(inputs) => inputs.sort_unstable(),
 		}
 	}
 
@@ -1845,6 +1886,7 @@ impl Inputs {
 		match self {
 			Inputs::CommitOnly(_) => "v3",
 			Inputs::FeaturesAndCommit(_) => "v2",
+			Inputs::CommitsWithSig(_) => "v1_000",
 		}
 	}
 }
@@ -1880,7 +1922,7 @@ impl Readable for OutputFeatures {
 	}
 }
 
-/// Output w/o R&P' for a transaction, defining the new ownership of coins that are being
+/// Legacy output w/o R&P' for a transaction, defining the new ownership of coins that are being
 /// transferred. The commitment is a blinded value for the output while the
 /// range proof guarantees the commitment includes a positive value without
 /// overflow and the ownership of the private key.
@@ -2023,150 +2065,6 @@ impl Output {
 }
 
 impl AsRef<OutputIdentifier> for Output {
-	fn as_ref(&self) -> &OutputIdentifier {
-		&self.identifier
-	}
-}
-
-/// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct OutputWrnp {
-	/// Output identifier (features and commitment).
-	#[serde(flatten)]
-	pub identifier: OutputIdentifier,
-	/// Public nonce R for generating Ephemeral key.
-	pub nonce: PublicKey,
-	/// One-time public key P' which is calculated by H(A')*G+B
-	pub onetime_pubkey: PublicKey,
-	/// Rangeproof associated with the commitment.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::rangeproof_from_hex"
-	)]
-	pub proof: RangeProof,
-}
-
-impl Ord for OutputWrnp {
-	fn cmp(&self, other: &Self) -> Ordering {
-		self.identifier.cmp(&other.identifier)
-	}
-}
-
-impl PartialOrd for OutputWrnp {
-	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		Some(self.cmp(other))
-	}
-}
-
-impl PartialEq for OutputWrnp {
-	fn eq(&self, other: &Self) -> bool {
-		self.identifier == other.identifier
-	}
-}
-
-impl Eq for OutputWrnp {}
-
-impl AsRef<Commitment> for OutputWrnp {
-	fn as_ref(&self) -> &Commitment {
-		&self.identifier.commit
-	}
-}
-
-/// Implementation of Writeable for a transaction Output, defines how to write
-/// an Output as binary.
-impl Writeable for OutputWrnp {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		self.identifier.write(writer)?;
-		self.nonce.write(writer)?;
-		self.onetime_pubkey.write(writer)?;
-		self.proof.write(writer)?;
-		Ok(())
-	}
-}
-
-/// Implementation of Readable for a transaction Output, defines how to read
-/// an Output from a binary stream.
-impl Readable for OutputWrnp {
-	fn read<R: Reader>(reader: &mut R) -> Result<OutputWrnp, ser::Error> {
-		Ok(OutputWrnp {
-			identifier: OutputIdentifier::read(reader)?,
-			nonce: PublicKey::read(reader)?,
-			onetime_pubkey: PublicKey::read(reader)?,
-			proof: RangeProof::read(reader)?,
-		})
-	}
-}
-
-impl OutputWrnp {
-	/// Create a new output with the provided features, commitment, R, P' and rangeproof.
-	pub fn new(
-		features: OutputFeatures,
-		commit: Commitment,
-		nonce: PublicKey,
-		onetime_pubkey: PublicKey,
-		proof: RangeProof,
-	) -> OutputWrnp {
-		OutputWrnp {
-			identifier: OutputIdentifier { features, commit },
-			nonce,
-			onetime_pubkey,
-			proof,
-		}
-	}
-
-	/// Output identifier.
-	pub fn identifier(&self) -> OutputIdentifier {
-		self.identifier
-	}
-
-	/// Commitment for the output
-	pub fn commitment(&self) -> Commitment {
-		self.identifier.commitment()
-	}
-
-	/// Output features.
-	pub fn features(&self) -> OutputFeatures {
-		self.identifier.features
-	}
-
-	/// Is this a coinbase output?
-	pub fn is_coinbase(&self) -> bool {
-		self.identifier.is_coinbase()
-	}
-
-	/// Is this a plain output?
-	pub fn is_plain(&self) -> bool {
-		self.identifier.is_plain()
-	}
-
-	/// Range proof for the output
-	pub fn proof(&self) -> RangeProof {
-		self.proof
-	}
-
-	/// Get range proof as byte slice
-	pub fn proof_bytes(&self) -> &[u8] {
-		&self.proof.proof[..]
-	}
-
-	/// Validates the range proof using the commitment
-	pub fn verify_proof(&self) -> Result<(), Error> {
-		let secp = static_secp_instance();
-		secp.lock()
-			.verify_bullet_proof(self.commitment(), self.proof, None)?;
-		Ok(())
-	}
-
-	/// Batch validates the range proofs using the commitments
-	pub fn batch_verify_proofs(commits: &[Commitment], proofs: &[RangeProof]) -> Result<(), Error> {
-		let secp = static_secp_instance();
-		secp.lock()
-			.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
-		Ok(())
-	}
-}
-
-impl AsRef<OutputIdentifier> for OutputWrnp {
 	fn as_ref(&self) -> &OutputIdentifier {
 		&self.identifier
 	}
