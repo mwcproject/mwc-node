@@ -214,7 +214,7 @@ impl Server {
 		let stream = match addr.clone() {
 			PeerAddr::Ip(address) => {
 				// we do this, not a good solution, but for now, we'll use it. Other side usually detects with ip.
-				self_addr = PeerAddr::Ip(address);
+				self_addr = PeerAddr::Ip(SocketAddr::new(self.config.host, self.config.port));
 				if self.socks_port != 0 {
 					peer_addr = Some(PeerAddr::Ip(address));
 					let proxy_addr =
