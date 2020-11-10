@@ -27,7 +27,7 @@ If you want to help please contact us in discord.
 - Atomic swaps for more coins.  January 2020
 - Mobile node.    March 2021
 - Mobile wallet.  March 2021
-- Non Interactive Transactions.  2021
+- Non-interactive transaction scheme (NIT).  2021
 - Decentralized exchange.  2021
 - Multisig.
 - Lightning network.
