@@ -60,3 +60,5 @@ Claim 3 to MWC hodlers (Hodl program + some unclaimed airdrop) | 330,000 | 6/29/
 Claim 4 to MWC hodlers (Remaining Dev fund + remaining unclaimed airdrop) | 471,000 | 10/5/20 | 2,261,046.00 | 9,934,433.00 | https://www.mwc.mw/mimble-wimble-coin-articles/mwc-decentralization-distribution-of-dev-fund-and-unclaimed-airdrop-fund
 Claim 5 to MWC hodlers (Unclaimed from claim 4)	| 500,000 |	10/26/20 | 32,734.00 | 9,967,167.00 | https://www.mwc.mw/mimble-wimble-coin-articles/update-on-the-last-dev-fund-distribution
 					
+Note: Dev fund was registered for the HODL distribution 1,2,3.
+					
