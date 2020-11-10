@@ -31,7 +31,7 @@ If you want to help please contact us in discord.
 - Decentralized exchange.  2021
 - Multisig.
 - Lightning network.
-- reduce transactions linkability.
+- Minimize transactions traceability.
 - Hardware wallets. Requires hardware manufacturer support.
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
