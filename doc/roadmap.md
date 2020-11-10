@@ -1,4 +1,4 @@
-The MWC network was launched in November 2019 and has functioned flawlessly with 100% uptime. The MWC Team considers the protocol ossified and currently sees no need for a future hard or soft fork unless a defensive action were required to protect the network.
+The MWC network was launched in November 2019 and has functioned flawlessly with 100% uptime. 
 
 MWC development is progressing well and there are many areas where development resources could be allocated.
 
@@ -22,15 +22,11 @@ To be done: (If you want to help please contact us in discord.)
 - Release Atomic Swap support. Dec 2020  
 - Mobile node.   March 2021
 - Grin rebase. November 2020
-- Website content.
-- Email list updates.
-- Website notifications.
 - BTC/MWC atomic swaps.   Dec 2020
   - QT wallet integration.
   - MWC 713 integration.
-- Block explorer updates.
 - Mobile wallet.  March 2021
-- Non Interactive Transactions  2021
+- Non Interactive Transactions.  2021
 - Decentralized exchange.  2021
 - Multisig.
 - Lightning network.
@@ -38,8 +34,6 @@ To be done: (If you want to help please contact us in discord.)
 - Hardware wallets. Requires hardware manufacturer support.
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
-
-Almost since its beginning MWC has encountered very sophisticated heavily funded attacks by various mining consortiums who have attempted to destroy the network. Consequently, while the friendly miners are greatly appreciated the operating assumption is that miners are actively hostile and malicious towards the long-term interests of the buyers and hodlers of last resort and the network.
 
 By November 2020 MWC will be the only major coin on the C31 algorithm. Certain off-the-shelf GPUs perform C31 efficiently relative to other algorithms. The MWC Team is aware of C31 ASIC designs that were done but abandoned by Obelisk and Innosilicon. The MWC Team will only take defensive measures, like a hard fork proof of work change, to protect the network against ASICs being used in a malicious or disruptive way.
 
