@@ -1860,6 +1860,18 @@ impl Inputs {
 		}
 	}
 
+	/// Vector of input commitments (which attached with a signature) to verify.
+	pub fn inputs_wsig_committed(&self) -> Vec<Commitment> {
+		match self {
+			Inputs::CommitOnly(_) => vec![],
+			Inputs::FeaturesAndCommit(_) => vec![],
+			Inputs::CommitsWithSig(inputs) => inputs
+				.iter()
+				.map(|c| c.commit.clone())
+				.collect::<Vec<Commitment>>(),
+		}
+	}
+
 	/// Empty inputs?
 	pub fn is_empty(&self) -> bool {
 		self.len() == 0

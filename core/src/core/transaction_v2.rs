@@ -641,13 +641,14 @@ impl TransactionBodyV2 {
 		};
 		if !outputs_with_rnp.is_empty() {
 			let mut commits = vec![];
+			let mut extra_commits_data: Vec<Vec<u8>> = vec![];
 			let mut proofs = vec![];
 			for x in &outputs_with_rnp {
 				commits.push(x.commitment());
 				proofs.push(x.proof);
-				//todo: Hash(R||P') as the extra commit info
+				extra_commits_data.push(x.extra_commit_data());
 			}
-			OutputWithRnp::batch_verify_proofs(&commits, &proofs)?;
+			OutputWithRnp::batch_verify_proofs(&commits, extra_commits_data, &proofs)?;
 		}
 
 		// Find all the kernels that have not yet been verified.
@@ -1232,6 +1233,12 @@ impl OutputWithRnp {
 		self.identifier.commitment()
 	}
 
+	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures)
+	pub fn extra_commit_data(&self) -> Vec<u8> {
+		let extra_commit_data = (self.nonce, self.onetime_pubkey, self.identifier.features).hash();
+		extra_commit_data.to_vec()
+	}
+
 	/// Output features.
 	pub fn features(&self) -> OutputFeatures {
 		self.identifier.features
@@ -1257,20 +1264,27 @@ impl OutputWithRnp {
 		&self.proof.proof[..]
 	}
 
-	/// Validates the range proof using the commitment
+	/// Validates the range proof using the commitment and extra_commit_data
 	pub fn verify_proof(&self) -> Result<(), Error> {
+		let extra_commit_data = self.extra_commit_data();
 		let secp = static_secp_instance();
 		secp.lock()
-			.verify_bullet_proof(self.commitment(), self.proof, None)?;
+			.verify_bullet_proof(self.commitment(), self.proof, Some(extra_commit_data))?;
 		Ok(())
 	}
 
 	/// Batch validates the range proofs using the commitments
-	/// todo: Hash(R||P') as the extra commit info
-	pub fn batch_verify_proofs(commits: &[Commitment], proofs: &[RangeProof]) -> Result<(), Error> {
+	pub fn batch_verify_proofs(
+		commits: &[Commitment],
+		extra_commits_data: Vec<Vec<u8>>,
+		proofs: &[RangeProof],
+	) -> Result<(), Error> {
 		let secp = static_secp_instance();
-		secp.lock()
-			.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
+		secp.lock().verify_bullet_proof_multi(
+			commits.to_vec(),
+			proofs.to_vec(),
+			Some(extra_commits_data),
+		)?;
 		Ok(())
 	}
 }
