@@ -48,3 +48,15 @@ There are many potential places development resources can be allocated. They wil
 Almost since its beginning MWC has encountered very sophisticated heavily funded attacks by various mining consortiums who have attempted to destroy the network. Consequently, while the friendly miners are greatly appreciated the operating assumption is that miners are actively hostile and malicious towards the long-term interests of the buyers and hodlers of last resort and the network.
 
 By November 2020 MWC will be the only major coin on the C31 algorithm. Certain off-the-shelf GPUs perform C31 efficiently relative to other algorithms. The MWC Team is aware of C31 ASIC designs that were done but abandoned by Obelisk and Innosilicon. The MWC Team will only take defensive measures, like a hard fork proof of work change, to protect the network against ASICs being used in a malicious or disruptive way.
+
+# Distrubution
+
+Funds distribution | Completed at Height | Date | Coins claimed | Total claimed | Announcements
+--- | --- | --- | --- | --- | --- |
+AIRDROP to Bitcoin HODLers	| | 1/2/20 | 5,400,037.41 | 5,400,037.41 | https://www.mwc.mw/mimble-wimble-coin-articles/claims-for-airdrop-closed |
+Claim 1 to MWC hodlers (Hodl program) | 305,000 | 6/11/20 | 7,699.73 | 5,407,737.14 | https://www.mwc.mw/mimble-wimble-coin-articles/hodl-program-status-update |
+Claim 2 to MWC hodlers (Hodl program) | 314,760 | 6/18/20 | 774,065.02 | 6,181,802.16 | https://www.mwc.mw/mimble-wimble-coin-articles/hodl-program-status-update
+Claim 3 to MWC hodlers (Hodl program + some unclaimed airdrop) | 330,000 | 6/29/20 | 1,491,584.84 | 7,673,387.00 | https://blockfolio.com/coin/MWC_2/signal/GlEchsHvsn
+Claim 4 to MWC hodlers (Remaining Dev fund + remaining unclaimed airdrop) | 471,000 | 10/5/20 | 2,261,046.00 | 9,934,433.00 | https://www.mwc.mw/mimble-wimble-coin-articles/mwc-decentralization-distribution-of-dev-fund-and-unclaimed-airdrop-fund
+Claim 5 to MWC hodlers (Unclaimed from claim 4)	| 500,000 |	10/26/20 | 32,734.00 | 9,967,167.00 | https://www.mwc.mw/mimble-wimble-coin-articles/update-on-the-last-dev-fund-distribution
+					
