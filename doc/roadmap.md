@@ -20,12 +20,12 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 
 # To be done
 If you want to help please contact us in discord.
-- Release Atomic Swap support. Dec 2020  
-- Mobile node.   March 2021
-- Grin rebase. November 2020
-- BTC/MWC atomic swaps.   Dec 2020
+- BTC/MWC atomic swaps.   December 2020
   - QT wallet integration.
   - MWC 713 integration.
+- Grin rebase. December 2020
+- Atomic swaps for more coins.  January 2020
+- Mobile node.    March 2021
 - Mobile wallet.  March 2021
 - Non Interactive Transactions.  2021
 - Decentralized exchange.  2021
