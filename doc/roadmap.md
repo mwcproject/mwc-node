@@ -5,21 +5,17 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
-- October 2020, 235,000 Unclaimed Airdrop Funds are distributed
+- 10/26/20 - All funds completely distributed to the MWC hodlers.
 - MWCMQS support in mwc-wallet.
 - TOR support in all wallets and nodes.
 - 08/03/2020 - TOR inbound connections (mwc-node 4.0.0-beta.1).
 - 07/04/2020 - TOR outbound connections (mwc-node 3.2.3).
 - 06/19/2020 - TOR transactions (QT wallet 1.0.22).
-- 06/30/2020 - HODL Program concluded. 2,000,000 MWC successfully distributed.
 - 04/07/2020 - HODL Program registration (QT 1.0.15).
-- Transaction pool update.
 - 01/22/2020 - Grin 3.0 rebase (mwc-node 3.0.0).
 - 01/21/2020 - GRIN CVE patched.
-- 01/04/2020 - 2,599,963 MWC moved to a verifiable escrow wallets for HODL program and unclaimed airdrop.
-- 01/02/2020 Airdrop concluded. About 5,400,037 MWC claimed and 599,963 unclaimed.
 - 12/21/2019 - MWC QT wallet cold storage implementation (QT 1.0.11).
-- 11/11/2019 Mainnet launch.
+- 11/11/2019 - Mainnet launch.
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
 To be done: (If you want to help please contact us in discord.)
@@ -39,9 +35,7 @@ To be done: (If you want to help please contact us in discord.)
 - Multisig.
 - Lightning network.
 - Coin shuffle.
-- Hardware wallets but requires hardware manufacturer support.
-
-If there is any fork that does not have the consensus of the MWC developer team then any outputs created on any fork that are associated the Unclaimed Airdrop Program will either be burned or added to the developer fund on those fork(s).
+- Hardware wallets. Requires hardware manufacturer support.
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
 
@@ -49,7 +43,7 @@ Almost since its beginning MWC has encountered very sophisticated heavily funded
 
 By November 2020 MWC will be the only major coin on the C31 algorithm. Certain off-the-shelf GPUs perform C31 efficiently relative to other algorithms. The MWC Team is aware of C31 ASIC designs that were done but abandoned by Obelisk and Innosilicon. The MWC Team will only take defensive measures, like a hard fork proof of work change, to protect the network against ASICs being used in a malicious or disruptive way.
 
-# Distrubution
+# Distribution
 
 Funds distribution | Completed at Height | Date | Coins claimed | Total claimed | Announcements
 --- | --- | --- | --- | --- | --- |
@@ -60,5 +54,7 @@ Claim 3 to MWC hodlers (Hodl program + some unclaimed airdrop) | 330,000 | 6/29/
 Claim 4 to MWC hodlers (Remaining Dev fund + remaining unclaimed airdrop) | 471,000 | 10/5/20 | 2,261,046.00 | 9,934,433.00 | https://www.mwc.mw/mimble-wimble-coin-articles/mwc-decentralization-distribution-of-dev-fund-and-unclaimed-airdrop-fund
 Claim 5 to MWC hodlers (Unclaimed from claim 4)	| 500,000 |	10/26/20 | 32,734.00 | 9,967,167.00 | https://www.mwc.mw/mimble-wimble-coin-articles/update-on-the-last-dev-fund-distribution
 					
-Note: Dev fund was registered for the HODL distribution 1,2,3.
+- Dev fund was registered for the HODL distribution 1,2,3.
+- Currently all funds (HODL and dev) completely distributed to MWC hodlers.
+					
 					
