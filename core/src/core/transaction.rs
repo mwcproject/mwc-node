@@ -1505,11 +1505,13 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 
 	let tx = aggregate(txs)?;
 
-	let mk_inputs: Vec<_> = mk_tx.inputs().into();
-	for mk_input in mk_inputs {
+	{
+		let mk_inputs: Vec<_> = mk_tx.inputs().into();
 		let tx_inputs: Vec<_> = tx.inputs().into();
-		if !tx_inputs.contains(&mk_input) && !inputs.contains(&mk_input) {
-			inputs.push(mk_input);
+		for mk_input in mk_inputs {
+			if !tx_inputs.contains(&mk_input) && !inputs.contains(&mk_input) {
+				inputs.push(mk_input);
+			}
 		}
 	}
 	for mk_output in mk_tx.outputs() {
@@ -1560,7 +1562,7 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 
 /// A transaction input.
 ///
-/// Primarily a reference to an output being spent by the transaction.
+/// Primarily a reference to an output being spub fn inputs(pent by the transaction.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct Input {
 	/// The features of the output being spent.

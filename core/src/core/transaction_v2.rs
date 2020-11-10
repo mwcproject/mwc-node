@@ -291,7 +291,7 @@ impl TransactionBodyV2 {
 		&self.kernels
 	}
 
-	/// Builds a new body with the provided inputs added. Existing
+	/// Builds a new body with the provided inputs (w/o signature) added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_input(mut self, input: Input) -> TransactionBodyV2 {
@@ -316,13 +316,38 @@ impl TransactionBodyV2 {
 		self
 	}
 
-	/// Fully replace inputs.
+	/// Builds a new body with the provided inputs (w/ signature) added. Existing
+	/// inputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_input_wsig(mut self, input_with_sig: CommitWithSig) -> TransactionBodyV2 {
+		match &mut self.inputs_with_sig {
+			Inputs::FeaturesAndCommit(_) | Inputs::CommitOnly(_) => {
+				panic!(
+					"with_input_wsig failed at impossible case that wrong self.inputs_with_sig type."
+				);
+			}
+			Inputs::CommitsWithSig(inputs) => {
+				if let Err(e) = inputs.binary_search(&input_with_sig) {
+					inputs.insert(e, input_with_sig)
+				};
+			}
+		};
+		self
+	}
+
+	/// Fully replace inputs (w/o signature).
 	pub fn replace_inputs(mut self, inputs: Inputs) -> TransactionBodyV2 {
 		self.inputs = inputs;
 		self
 	}
 
-	/// Builds a new TransactionBodyV2 with the provided output added. Existing
+	/// Fully replace inputs (w/ signature).
+	pub fn replace_inputs_wsig(mut self, inputs_with_sig: Inputs) -> TransactionBodyV2 {
+		self.inputs_with_sig = inputs_with_sig;
+		self
+	}
+
+	/// Builds a new TransactionBodyV2 with the provided output (w/o R&P') added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_output(mut self, output: Output) -> TransactionBodyV2 {
@@ -332,9 +357,25 @@ impl TransactionBodyV2 {
 		self
 	}
 
-	/// Fully replace outputs.
+	/// Builds a new TransactionBodyV2 with the provided output (w/o R&P') added. Existing
+	/// outputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_output_wrnp(mut self, output_with_rnp: OutputWithRnp) -> TransactionBodyV2 {
+		if let Err(e) = self.outputs_with_rnp.binary_search(&output_with_rnp) {
+			self.outputs_with_rnp.insert(e, output_with_rnp)
+		};
+		self
+	}
+
+	/// Fully replace outputs (w/o R&P').
 	pub fn replace_outputs(mut self, outputs: &[Output]) -> TransactionBodyV2 {
 		self.outputs = outputs.to_vec();
+		self
+	}
+
+	/// Fully replace outputs (w/ R&P').
+	pub fn replace_outputs_wrnp(mut self, outputs_with_rnp: &[OutputWithRnp]) -> TransactionBodyV2 {
+		self.outputs_with_rnp = outputs_with_rnp.to_vec();
 		self
 	}
 
@@ -713,10 +754,23 @@ impl TransactionV2 {
 
 	/// Creates a new transaction initialized with
 	/// the provided inputs, outputs, kernels
-	pub fn new(inputs: Inputs, outputs: &[Output], kernels: &[TxKernel]) -> TransactionV2 {
+	pub fn new(
+		inputs: Inputs,
+		inputs_with_sig: Inputs,
+		outputs: &[Output],
+		outputs_with_rnp: &[OutputWithRnp],
+		kernels: &[TxKernel],
+	) -> TransactionV2 {
 		// Initialize a new tx body and sort everything.
-		let body = TransactionBodyV2::init(inputs, outputs, kernels, false)
-			.expect("sorting, not verifying");
+		let body = TransactionBodyV2::init(
+			inputs,
+			inputs_with_sig,
+			outputs,
+			outputs_with_rnp,
+			kernels,
+			false,
+		)
+		.expect("sorting, not verifying");
 
 		TransactionV2 {
 			offset: BlindingFactor::zero(),
@@ -730,7 +784,7 @@ impl TransactionV2 {
 		TransactionV2 { offset, ..self }
 	}
 
-	/// Builds a new transaction with the provided inputs added. Existing
+	/// Builds a new transaction with the provided inputs (w/o signature) added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_input(self, input: Input) -> TransactionV2 {
@@ -740,12 +794,32 @@ impl TransactionV2 {
 		}
 	}
 
-	/// Builds a new transaction with the provided output added. Existing
+	/// Builds a new transaction with the provided inputs (w/ signature) added. Existing
+	/// inputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_input_wsig(self, input_with_sig: CommitWithSig) -> TransactionV2 {
+		TransactionV2 {
+			body: self.body.with_input_wsig(input_with_sig),
+			..self
+		}
+	}
+
+	/// Builds a new transaction with the provided output (w/o R&P') added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_output(self, output: Output) -> TransactionV2 {
 		TransactionV2 {
 			body: self.body.with_output(output),
+			..self
+		}
+	}
+
+	/// Builds a new transaction with the provided output (w/ R&P') added. Existing
+	/// outputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_output_wrnp(self, output_with_rnp: OutputWithRnp) -> TransactionV2 {
+		TransactionV2 {
+			body: self.body.with_output_wrnp(output_with_rnp),
 			..self
 		}
 	}
@@ -768,14 +842,24 @@ impl TransactionV2 {
 		}
 	}
 
-	/// Get inputs
+	/// Get inputs w/o signature
 	pub fn inputs(&self) -> Inputs {
 		self.body.inputs()
 	}
 
-	/// Get outputs
+	/// Get inputs w/ signature
+	pub fn inputs_with_sig(&self) -> Inputs {
+		self.body.inputs_with_sig()
+	}
+
+	/// Get outputs w/o R&P'
 	pub fn outputs(&self) -> &[Output] {
 		&self.body.outputs()
+	}
+
+	/// Get outputs w/ R&P'
+	pub fn outputs_with_rnp(&self) -> &[OutputWithRnp] {
+		&self.body.outputs_with_rnp()
 	}
 
 	/// Get kernels
@@ -854,17 +938,22 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 		return Ok(txs[0].clone());
 	}
 
-	let (n_inputs, n_outputs, n_kernels) =
-		txs.iter()
-			.fold((0, 0, 0), |(inputs, outputs, kernels), tx| {
-				(
-					inputs + tx.inputs().len(),
-					outputs + tx.outputs().len(),
-					kernels + tx.kernels().len(),
-				)
-			});
+	let (n_inputs, n_inputs_with_sig, n_outputs, n_outputs_with_rnp, n_kernels) = txs.iter().fold(
+		(0, 0, 0, 0, 0),
+		|(inputs, inputs_with_sig, outputs, outputs_with_rnp, kernels), tx| {
+			(
+				inputs + tx.inputs().len(),
+				inputs_with_sig + tx.inputs_with_sig().len(),
+				outputs + tx.outputs().len(),
+				outputs_with_rnp + tx.outputs_with_rnp().len(),
+				kernels + tx.kernels().len(),
+			)
+		},
+	);
 	let mut inputs: Vec<CommitWrapper> = Vec::with_capacity(n_inputs);
+	let mut inputs_with_sig: Vec<CommitWithSig> = Vec::with_capacity(inputs_with_sig);
 	let mut outputs: Vec<Output> = Vec::with_capacity(n_outputs);
+	let mut outputs_with_rnp: Vec<OutputWithRnp> = Vec::with_capacity(outputs_with_rnp);
 	let mut kernels: Vec<TxKernel> = Vec::with_capacity(n_kernels);
 
 	// we will sum these together at the end to give us the overall offset for the
@@ -876,7 +965,9 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 
 		let tx_inputs: Vec<_> = tx.inputs().into();
 		inputs.extend_from_slice(&tx_inputs);
+		inputs_with_sig.extend_from_slice(&tx.inputs_with_sig().inputs_with_sig());
 		outputs.extend_from_slice(tx.outputs());
+		outputs_with_rnp.extend_from_slice(tx.outputs_with_rnp());
 		kernels.extend_from_slice(tx.kernels());
 	}
 
@@ -890,8 +981,14 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 	//   * full set of tx kernels
 	//   * sum of all kernel offsets
 	// Note: We sort input/outputs/kernels when building the transaction body internally.
-	let tx = TransactionV2::new(Inputs::from(inputs), outputs, &kernels)
-		.with_offset(total_kernel_offset);
+	let tx = TransactionV2::new(
+		Inputs::from(inputs),
+		Inputs::from(inputs_with_sig),
+		&outputs,
+		&outputs_with_rnp,
+		&kernels,
+	)
+	.with_offset(total_kernel_offset);
 
 	Ok(tx)
 }
@@ -900,7 +997,9 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 /// transactions
 pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 	let mut inputs: Vec<CommitWrapper> = vec![];
+	let mut inputs_with_sig: Vec<CommitWithSig> = vec![];
 	let mut outputs: Vec<Output> = vec![];
+	let mut outputs_with_rnp: Vec<OutputWithRnp> = vec![];
 	let mut kernels: Vec<TxKernel> = vec![];
 
 	// we will subtract these at the end to give us the overall offset for the
@@ -909,18 +1008,39 @@ pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<Transa
 
 	let tx = aggregate(txs)?;
 
-	let mk_inputs: Vec<_> = mk_tx.inputs().into();
-	for mk_input in mk_inputs {
+	// find all inputs which is not included in txs
+	{
+		let mk_inputs: Vec<_> = mk_tx.inputs().into();
 		let tx_inputs: Vec<_> = tx.inputs().into();
-		if !tx_inputs.contains(&mk_input) && !inputs.contains(&mk_input) {
-			inputs.push(mk_input);
+		for mk_input in mk_inputs {
+			if !tx_inputs.contains(&mk_input) && !inputs.contains(&mk_input) {
+				inputs.push(mk_input);
+			}
 		}
 	}
+	// find all inputs_with_sig which is not included in txs
+	{
+		let mk_inputs: Vec<_> = mk_tx.inputs_with_sig().inputs_with_sig();
+		let tx_inputs: Vec<_> = tx.inputs_with_sig().inputs_with_sig();
+		for mk_input in mk_inputs {
+			if !tx_inputs.contains(&mk_input) && !inputs_with_sig.contains(&mk_input) {
+				inputs_with_sig.push(mk_input);
+			}
+		}
+	}
+	// find all outputs which is not included in txs
 	for mk_output in mk_tx.outputs() {
 		if !tx.outputs().contains(&mk_output) && !outputs.contains(mk_output) {
 			outputs.push(*mk_output);
 		}
 	}
+	// find all outputs_with_rnp which is not included in txs
+	for mk_output in mk_tx.outputs_with_rnp() {
+		if !tx.outputs_with_rnp().contains(&mk_output) && !outputs_with_rnp.contains(mk_output) {
+			outputs_with_rnp.push(*mk_output);
+		}
+	}
+	// find all kernels which is not included in txs
 	for mk_kernel in mk_tx.kernels() {
 		if !tx.kernels().contains(&mk_kernel) && !kernels.contains(mk_kernel) {
 			kernels.push(*mk_kernel);
@@ -954,17 +1074,23 @@ pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<Transa
 
 	// Sorting them lexicographically
 	inputs.sort_unstable();
+	inputs_with_sig.sort_unstable();
 	outputs.sort_unstable();
+	outputs_with_rnp.sort_unstable();
 	kernels.sort_unstable();
 
 	// Build a new tx from the above data.
-	Ok(
-		TransactionV2::new(Inputs::from(inputs.as_slice()), &outputs, &kernels)
-			.with_offset(total_kernel_offset),
+	Ok(TransactionV2::new(
+		Inputs::from(inputs.as_slice()),
+		Inputs::from(inputs_with_sig.as_slice()),
+		&outputs,
+		&outputs_with_rnp,
+		&kernels,
 	)
+	.with_offset(total_kernel_offset))
 }
 
-/// The Input in a transaction when spending an output w/ R&P'.
+/// The Input with signature in a transaction when spending an output w/ R&P'.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(transparent)]
 pub struct CommitWithSig {
@@ -1015,8 +1141,10 @@ pub struct OutputWithRnp {
 	#[serde(flatten)]
 	pub identifier: OutputIdentifier,
 	/// Public nonce R for generating Ephemeral key.
+	#[serde(with = "secp_ser::pubkey_serde")]
 	pub nonce: PublicKey,
 	/// One-time public key P' which is calculated by H(A')*G+B
+	#[serde(with = "secp_ser::pubkey_serde")]
 	pub onetime_pubkey: PublicKey,
 	/// Rangeproof associated with the commitment.
 	#[serde(
