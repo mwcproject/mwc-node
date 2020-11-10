@@ -1135,9 +1135,9 @@ impl CommitWithSig {
 	}
 }
 
-/// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.
+/// IdentifierWithRnp w/ R&P' for a transaction, a new type for non-interactive transaction feature, used by OutputWithRnp.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct OutputWithRnp {
+pub struct IdentifierWithRnp {
 	/// Output identifier (features and commitment).
 	#[serde(flatten)]
 	pub identifier: OutputIdentifier,
@@ -1147,79 +1147,84 @@ pub struct OutputWithRnp {
 	/// One-time public key P' which is calculated by H(A')*G+B
 	#[serde(with = "secp_ser::pubkey_serde")]
 	pub onetime_pubkey: PublicKey,
-	/// Rangeproof associated with the commitment.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::rangeproof_from_hex"
-	)]
-	pub proof: RangeProof,
 }
 
-impl Ord for OutputWithRnp {
+impl Ord for IdentifierWithRnp {
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.identifier.cmp(&other.identifier)
 	}
 }
 
-impl PartialOrd for OutputWithRnp {
+impl PartialOrd for IdentifierWithRnp {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		Some(self.cmp(other))
 	}
 }
 
-impl PartialEq for OutputWithRnp {
+impl PartialEq for IdentifierWithRnp {
 	fn eq(&self, other: &Self) -> bool {
 		self.identifier == other.identifier
 	}
 }
 
-impl Eq for OutputWithRnp {}
+impl Eq for IdentifierWithRnp {}
 
-impl AsRef<Commitment> for OutputWithRnp {
+impl AsRef<Commitment> for IdentifierWithRnp {
 	fn as_ref(&self) -> &Commitment {
 		&self.identifier.commit
 	}
 }
 
-/// Implementation of Writeable for a transaction Output, defines how to write
-/// an Output as binary.
-impl Writeable for OutputWithRnp {
+/// Implementation of Writeable for it, defines how to write it as binary.
+impl Writeable for IdentifierWithRnp {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.identifier.write(writer)?;
 		self.nonce.write(writer)?;
 		self.onetime_pubkey.write(writer)?;
-		self.proof.write(writer)?;
 		Ok(())
 	}
 }
 
-/// Implementation of Readable for a transaction Output, defines how to read
-/// an Output from a binary stream.
-impl Readable for OutputWithRnp {
-	fn read<R: Reader>(reader: &mut R) -> Result<OutputWithRnp, ser::Error> {
-		Ok(OutputWithRnp {
+/// Implementation of Readable for it, defines how to read it from a binary stream.
+impl Readable for IdentifierWithRnp {
+	fn read<R: Reader>(reader: &mut R) -> Result<IdentifierWithRnp, ser::Error> {
+		Ok(IdentifierWithRnp {
 			identifier: OutputIdentifier::read(reader)?,
 			nonce: PublicKey::read(reader)?,
 			onetime_pubkey: PublicKey::read(reader)?,
-			proof: RangeProof::read(reader)?,
 		})
 	}
 }
 
-impl OutputWithRnp {
-	/// Create a new output with the provided features, commitment, R, P' and rangeproof.
+impl PMMRable for IdentifierWithRnp {
+	type E = Self;
+
+	fn as_elmt(&self) -> IdentifierWithRnp {
+		*self
+	}
+
+	fn elmt_size() -> Option<u16> {
+		Some(
+			(1 + secp::constants::PEDERSEN_COMMITMENT_SIZE
+				+ 2 * secp::constants::COMPRESSED_PUBLIC_KEY_SIZE)
+				.try_into()
+				.unwrap(),
+		)
+	}
+}
+
+impl IdentifierWithRnp {
+	/// Create with the provided features, commitment, R, P'.
 	pub fn new(
 		features: OutputFeatures,
 		commit: Commitment,
 		nonce: PublicKey,
 		onetime_pubkey: PublicKey,
-		proof: RangeProof,
-	) -> OutputWithRnp {
-		OutputWithRnp {
+	) -> IdentifierWithRnp {
+		IdentifierWithRnp {
 			identifier: OutputIdentifier { features, commit },
 			nonce,
 			onetime_pubkey,
-			proof,
 		}
 	}
 
@@ -1252,6 +1257,118 @@ impl OutputWithRnp {
 	/// Is this a plain output?
 	pub fn is_plain(&self) -> bool {
 		self.identifier.is_plain()
+	}
+}
+
+/// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct OutputWithRnp {
+	/// Output identifier (features and commitment) with R and P'.
+	#[serde(flatten)]
+	pub identifier_with_rnp: IdentifierWithRnp,
+	/// Rangeproof associated with the commitment.
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::rangeproof_from_hex"
+	)]
+	pub proof: RangeProof,
+}
+
+impl Ord for OutputWithRnp {
+	fn cmp(&self, other: &Self) -> Ordering {
+		self.identifier_with_rnp.cmp(&other.identifier_with_rnp)
+	}
+}
+
+impl PartialOrd for OutputWithRnp {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl PartialEq for OutputWithRnp {
+	fn eq(&self, other: &Self) -> bool {
+		self.identifier_with_rnp == other.identifier_with_rnp
+	}
+}
+
+impl Eq for OutputWithRnp {}
+
+impl AsRef<Commitment> for OutputWithRnp {
+	fn as_ref(&self) -> &Commitment {
+		self.identifier_with_rnp.as_ref()
+	}
+}
+
+/// Implementation of Writeable for a transaction Output, defines how to write
+/// an Output as binary.
+impl Writeable for OutputWithRnp {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.identifier_with_rnp.write(writer)?;
+		self.proof.write(writer)?;
+		Ok(())
+	}
+}
+
+/// Implementation of Readable for a transaction Output, defines how to read
+/// an Output from a binary stream.
+impl Readable for OutputWithRnp {
+	fn read<R: Reader>(reader: &mut R) -> Result<OutputWithRnp, ser::Error> {
+		Ok(OutputWithRnp {
+			identifier_with_rnp: IdentifierWithRnp::read(reader)?,
+			proof: RangeProof::read(reader)?,
+		})
+	}
+}
+
+impl OutputWithRnp {
+	/// Create a new output with the provided features, commitment, R, P' and rangeproof.
+	pub fn new(
+		features: OutputFeatures,
+		commit: Commitment,
+		nonce: PublicKey,
+		onetime_pubkey: PublicKey,
+		proof: RangeProof,
+	) -> OutputWithRnp {
+		OutputWithRnp {
+			identifier_with_rnp: IdentifierWithRnp::new(
+				OutputIdentifier { features, commit },
+				commit,
+				nonce,
+				onetime_pubkey,
+			),
+			proof,
+		}
+	}
+
+	/// Output identifier.
+	pub fn identifier(&self) -> OutputIdentifier {
+		self.identifier_with_rnp.identifier()
+	}
+
+	/// Commitment for the output
+	pub fn commitment(&self) -> Commitment {
+		self.identifier_with_rnp.commitment()
+	}
+
+	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures)
+	pub fn extra_commit_data(&self) -> Vec<u8> {
+		self.identifier_with_rnp.extra_commit_data()
+	}
+
+	/// Output features.
+	pub fn features(&self) -> OutputFeatures {
+		self.identifier_with_rnp.features()
+	}
+
+	/// Is this a coinbase output?
+	pub fn is_coinbase(&self) -> bool {
+		self.identifier_with_rnp.is_coinbase()
+	}
+
+	/// Is this a plain output?
+	pub fn is_plain(&self) -> bool {
+		self.identifier_with_rnp.is_plain()
 	}
 
 	/// Range proof for the output

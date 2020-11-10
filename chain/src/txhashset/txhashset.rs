@@ -21,7 +21,7 @@ use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::pmmr::{self, Backend, ReadonlyPMMR, RewindablePMMR, PMMR};
 use crate::core::core::{
-	Block, BlockHeader, KernelFeatures, Output, OutputIdentifier, OutputWrnp, TxKernel,
+	Block, BlockHeader, IdentifierWithRnp, KernelFeatures, Output, OutputIdentifier, TxKernel,
 };
 use crate::core::global;
 use crate::core::ser::{PMMRable, ProtocolVersion};
@@ -148,7 +148,7 @@ impl PMMRHandle<BlockHeader> {
 /// pruning enabled.
 pub struct TxHashSet {
 	output_pmmr_h: PMMRHandle<OutputIdentifier>,
-	output_wrnp_pmmr_h: PMMRHandle<OutputWrnp>,
+	output_wrnp_pmmr_h: PMMRHandle<IdentifierWithRnp>,
 	rproof_pmmr_h: PMMRHandle<RangeProof>,
 	kernel_pmmr_h: PMMRHandle<TxKernel>,
 
@@ -266,7 +266,7 @@ impl TxHashSet {
 
 	// Build a new bitmap accumulator for the provided output PMMR.
 	fn bitmap_accumulator_wrnp(
-		pmmr_h: &PMMRHandle<OutputWrnp>,
+		pmmr_h: &PMMRHandle<IdentifierWithRnp>,
 	) -> Result<BitmapAccumulator, Error> {
 		let pmmr = ReadonlyPMMR::at(&pmmr_h.backend, pmmr_h.last_pos);
 		let size = pmmr::n_leaves(pmmr_h.last_pos);
