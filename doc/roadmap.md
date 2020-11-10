@@ -18,7 +18,8 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 11/11/2019 - Mainnet launch.
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
-To be done: (If you want to help please contact us in discord.)
+# To be done
+If you want to help please contact us in discord.
 - Release Atomic Swap support. Dec 2020  
 - Mobile node.   March 2021
 - Grin rebase. November 2020
@@ -30,7 +31,7 @@ To be done: (If you want to help please contact us in discord.)
 - Decentralized exchange.  2021
 - Multisig.
 - Lightning network.
-- Coin shuffle.
+- reduce transactions linkability.
 - Hardware wallets. Requires hardware manufacturer support.
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
