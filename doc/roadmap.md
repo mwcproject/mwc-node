@@ -38,7 +38,7 @@ There are many potential places development resources can be allocated. They wil
 
 By November 2020 MWC will be the only major coin on the C31 algorithm. Certain off-the-shelf GPUs perform C31 efficiently relative to other algorithms. The MWC Team is aware of C31 ASIC designs that were done but abandoned by Obelisk and Innosilicon. The MWC Team will only take defensive measures, like a hard fork proof of work change, to protect the network against ASICs being used in a malicious or disruptive way.
 
-# Distribution
+# Initial stock distribution
 
 Funds distribution | Completed at Height | Date | Coins claimed | Total claimed | Announcements
 --- | --- | --- | --- | --- | --- |
