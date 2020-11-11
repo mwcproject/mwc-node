@@ -216,17 +216,8 @@ impl<'de> Visitor<'de> for PeerAddrs {
 		let mut peers = Vec::with_capacity(access.size_hint().unwrap_or(0));
 
 		while let Some(entry) = access.next_element::<&str>()? {
-			match SocketAddr::from_str(entry) {
-				// Try to parse IP address first
-				Ok(ip) => peers.push(PeerAddr::Ip(ip)),
-				// If that fails it's probably a DNS record
-				Err(_) => {
-					let socket_addrs = entry.to_socket_addrs().map_err(|e| {
-						serde::de::Error::custom(format!("Unable to resolve DNS: {}, {}", entry, e))
-					})?;
-					peers.append(&mut socket_addrs.map(|ip| PeerAddr::Ip(ip)).collect());
-				}
-			}
+			// There is Onion addresses, we need to handle them
+			peers.push(PeerAddr::from_str(entry));
 		}
 		Ok(PeerAddrs { peers })
 	}
