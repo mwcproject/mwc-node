@@ -14,10 +14,10 @@
 
 //! Transactions
 
+use crate::core::committed;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction_v2::CommitWithSig;
 use crate::core::verifier_cache::VerifierCache;
-use crate::core::{committed, Committed};
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
 	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
@@ -752,7 +752,7 @@ impl Readable for TransactionBody {
 	}
 }
 
-impl Committed for TransactionBody {
+impl committed::Committed for TransactionBody {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		let inputs: Vec<_> = self.inputs().into();
 		inputs.iter().map(|x| x.commitment()).collect()
@@ -1193,7 +1193,7 @@ impl Readable for Transaction {
 	}
 }
 
-impl Committed for Transaction {
+impl committed::Committed for Transaction {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -1936,6 +1936,12 @@ impl Readable for OutputFeatures {
 	}
 }
 
+/// Each output type must have a commitment function to retrieve the commit.
+pub trait Commit {
+	/// Commitment for the output
+	fn commitment(&self) -> Commitment;
+}
+
 /// Legacy output w/o R&P' for a transaction, defining the new ownership of coins that are being
 /// transferred. The commitment is a blinded value for the output while the
 /// range proof guarantees the commitment includes a positive value without
@@ -2017,6 +2023,13 @@ impl OutputFeatures {
 	}
 }
 
+impl Commit for Output {
+	/// Commitment for the output
+	fn commitment(&self) -> Commitment {
+		self.identifier.commitment()
+	}
+}
+
 impl Output {
 	/// Create a new output with the provided features, commitment and rangeproof.
 	pub fn new(features: OutputFeatures, commit: Commitment, proof: RangeProof) -> Output {
@@ -2029,11 +2042,6 @@ impl Output {
 	/// Output identifier.
 	pub fn identifier(&self) -> OutputIdentifier {
 		self.identifier
-	}
-
-	/// Commitment for the output
-	pub fn commitment(&self) -> Commitment {
-		self.identifier.commitment()
 	}
 
 	/// Output features.

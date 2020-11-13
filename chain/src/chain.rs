@@ -19,8 +19,8 @@ use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
-	Block, BlockHeader, BlockSums, Committed, Inputs, KernelFeatures, Output, OutputIdentifier,
-	Transaction, TxKernel,
+	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
+	OutputIdentifier, Transaction, TxKernel,
 };
 use crate::core::global;
 use crate::core::pow;
@@ -199,6 +199,13 @@ impl Chain {
 			&mut sync_pmmr,
 			&mut txhashset,
 		)?;
+
+		// Migrate the output_pos index to the new format which include the OutputFeatures.
+		{
+			let batch = store.batch()?;
+			txhashset.clear_output_pos_index(&batch)?;
+			batch.commit()?;
+		}
 
 		// Initialize the output_pos index based on UTXO set
 		// and NRD kernel_pos index based recent kernel history.
@@ -664,6 +671,18 @@ impl Chain {
 		let txhashset = self.txhashset.read();
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.validate_inputs(inputs, batch)
+		})
+	}
+
+	/// Retrieves the accomplished input/s info
+	pub fn get_accomplished_inputs(
+		&self,
+		inputs: &[Commitment],
+	) -> Result<Vec<IdentifierWithRnp>, Error> {
+		let header_pmmr = self.header_pmmr.read();
+		let txhashset = self.txhashset.read();
+		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
+			utxo.get_accomplished_inputs(inputs, batch)
 		})
 	}
 

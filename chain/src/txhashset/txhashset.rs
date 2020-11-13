@@ -528,6 +528,14 @@ impl TxHashSet {
 		Ok(())
 	}
 
+	/// To migrate the output_pos index to the new format which include the OutputFeatures,
+	/// we just need clear the old index, so as to let the init_output_pos_index function to rebuild it.
+	/// Run it only once on chain init.
+	pub fn clear_output_pos_index(&self, batch: &Batch<'_>) -> Result<(), Error> {
+		// clear it before rebuilding with new format
+		batch.clear_output_pos_height()?
+	}
+
 	/// (Re)build the output_pos index to be consistent with the current UTXO set.
 	/// Remove any "stale" index entries that do not correspond to outputs in the UTXO set.
 	/// Add any missing index entries based on UTXO set.
@@ -542,7 +550,7 @@ impl TxHashSet {
 			ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos);
 
 		// Iterate over the current output_pos index, removing any entries that
-		// do not point to to the expected output.
+		// do not point to the expected output.
 		let mut removed_count = 0;
 		for (key, (pos, _)) in batch.output_pos_iter()? {
 			if let Some(out) = output_pmmr.get_data(pos) {
@@ -563,10 +571,10 @@ impl TxHashSet {
 			removed_count
 		);
 
-		let mut outputs_pos: Vec<(Commitment, u64)> = vec![];
+		let mut outputs_pos: Vec<(OutputIdentifier, u64)> = vec![];
 		for pos in output_pmmr.leaf_pos_iter() {
 			if let Some(out) = output_pmmr.get_data(pos) {
-				outputs_pos.push((out.commit, pos));
+				outputs_pos.push((out, pos));
 			}
 		}
 
@@ -574,7 +582,7 @@ impl TxHashSet {
 
 		outputs_pos.retain(|x| {
 			batch
-				.get_output_pos_height(&x.0)
+				.get_output_pos_height(&x.0.commit)
 				.map(|p| p.is_none())
 				.unwrap_or(true)
 		});
@@ -1045,10 +1053,12 @@ pub struct Extension<'a> {
 	head: Tip,
 
 	output_pmmr: PMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
+	output_wrnp_pmmr: PMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 	rproof_pmmr: PMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 	kernel_pmmr: PMMR<'a, TxKernel, PMMRBackend<TxKernel>>,
 
 	bitmap_accumulator: BitmapAccumulator,
+	bitmap_accumulator_wrnp: BitmapAccumulator,
 
 	/// Rollback flag.
 	rollback: bool,
@@ -1064,6 +1074,11 @@ impl<'a> Committed for Extension<'a> {
 		for pos in self.output_pmmr.leaf_pos_iter() {
 			if let Some(out) = self.output_pmmr.get_data(pos) {
 				commitments.push(out.commit);
+			}
+		}
+		for pos in self.output_wrnp_pmmr.leaf_pos_iter() {
+			if let Some(out) = self.output_wrnp_pmmr.get_data(pos) {
+				commitments.push(out.commitment());
 			}
 		}
 		commitments
@@ -1090,6 +1105,10 @@ impl<'a> Extension<'a> {
 				&mut trees.output_pmmr_h.backend,
 				trees.output_pmmr_h.last_pos,
 			),
+			output_wrnp_pmmr: PMMR::at(
+				&mut trees.output_wrnp_pmmr_h.backend,
+				trees.output_wrnp_pmmr_h.last_pos,
+			),
 			rproof_pmmr: PMMR::at(
 				&mut trees.rproof_pmmr_h.backend,
 				trees.rproof_pmmr_h.last_pos,
@@ -1099,6 +1118,7 @@ impl<'a> Extension<'a> {
 				trees.kernel_pmmr_h.last_pos,
 			),
 			bitmap_accumulator: trees.bitmap_accumulator.clone(),
+			bitmap_accumulator_wrnp: trees.bitmap_accumulator_wrnp.clone(),
 			rollback: false,
 		}
 	}

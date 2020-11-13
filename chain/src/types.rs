@@ -17,7 +17,7 @@
 use chrono::prelude::{DateTime, Utc};
 
 use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
-use crate::core::core::{Block, BlockHeader, HeaderVersion};
+use crate::core::core::{Block, BlockHeader, HeaderVersion, OutputFeatures};
 use crate::core::pow::Difficulty;
 use crate::core::ser::{self, PMMRIndexHashable, Readable, Reader, Writeable, Writer};
 use crate::error::{Error, ErrorKind};
@@ -306,6 +306,8 @@ impl OutputRoots {
 /// Minimal struct representing a known MMR position and associated block height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CommitPos {
+	/// The output features
+	pub features: OutputFeatures,
 	/// MMR position
 	pub pos: u64,
 	/// Block height
@@ -314,14 +316,20 @@ pub struct CommitPos {
 
 impl Readable for CommitPos {
 	fn read<R: Reader>(reader: &mut R) -> Result<CommitPos, ser::Error> {
+		let features = OutputFeatures::read(reader)?;
 		let pos = reader.read_u64()?;
 		let height = reader.read_u64()?;
-		Ok(CommitPos { pos, height })
+		Ok(CommitPos {
+			features,
+			pos,
+			height,
+		})
 	}
 }
 
 impl Writeable for CommitPos {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_u8(self.features as u8)?;
 		writer.write_u64(self.pos)?;
 		writer.write_u64(self.height)?;
 		Ok(())

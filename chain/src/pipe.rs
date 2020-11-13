@@ -432,6 +432,13 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 }
 
 fn validate_block(block: &Block, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
+	let extension = &ext.extension;
+	let header_extension = &ext.header_extension;
+	// todo: new Block structure or reusing old one?
+	// let accomplished_inputs = extension
+	// 	.utxo_view(header_extension)
+	// 	.get_accomplished_inputs(&block.inputs_with_sig())?;
+
 	let prev = ctx.batch.get_previous_header(&block.header)?;
 	block
 		.validate(&prev.total_kernel_offset, ctx.verifier_cache.clone())

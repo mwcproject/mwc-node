@@ -17,19 +17,23 @@
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::pmmr::{self, ReadonlyPMMR};
 use crate::core::core::{
-	Block, BlockHeader, IdentifierWithRnp, Inputs, Output, OutputIdentifier, Transaction,
+	Block, BlockHeader, Commit, IdentifierWithRnp, Inputs, Output, OutputFeatures,
+	OutputIdentifier, Transaction,
 };
 use crate::core::global;
 use crate::error::{Error, ErrorKind};
 use crate::store::Batch;
 use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
+use grin_core::core::OutputWithRnp;
 use grin_store::pmmr::PMMRBackend;
+use grin_util::ToHex;
 
 /// Readonly view of the UTXO set (based on output MMR).
 pub struct UTXOView<'a> {
 	header_pmmr: ReadonlyPMMR<'a, BlockHeader, PMMRBackend<BlockHeader>>,
 	output_pmmr: ReadonlyPMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
+	output_wrnp_pmmr: ReadonlyPMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 	rproof_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 }
 
@@ -38,11 +42,13 @@ impl<'a> UTXOView<'a> {
 	pub fn new(
 		header_pmmr: ReadonlyPMMR<'a, BlockHeader, PMMRBackend<BlockHeader>>,
 		output_pmmr: ReadonlyPMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
+		output_wrnp_pmmr: ReadonlyPMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 		rproof_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 	) -> UTXOView<'a> {
 		UTXOView {
 			header_pmmr,
 			output_pmmr,
+			output_wrnp_pmmr,
 			rproof_pmmr,
 		}
 	}
@@ -142,11 +148,28 @@ impl<'a> UTXOView<'a> {
 	}
 
 	// Output is valid if it would not result in a duplicate commitment in the output MMR.
-	fn validate_output(&self, output: &Output, batch: &Batch<'_>) -> Result<(), Error> {
-		if let Ok(pos) = batch.get_output_pos(&output.commitment()) {
-			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
-				if out_mmr.commitment() == output.commitment() {
-					return Err(ErrorKind::DuplicateCommitment(output.commitment()).into());
+	fn validate_output(&self, output: &dyn Commit, batch: &Batch<'_>) -> Result<(), Error> {
+		if let Ok(commit_pos) = batch.get_output_pos_height(&output.commitment()) {
+			if let Some(cp) = commit_pos {
+				match cp.features {
+					OutputFeatures::PlainWrnp => {
+						if let Some(out_mmr) = self.output_wrnp_pmmr.get_data(cp.pos) {
+							if out_mmr.commitment() == output.commitment() {
+								return Err(
+									ErrorKind::DuplicateCommitment(output.commitment()).into()
+								);
+							}
+						}
+					}
+					_ => {
+						if let Some(out_mmr) = self.output_pmmr.get_data(cp.pos) {
+							if out_mmr.commitment() == output.commitment() {
+								return Err(
+									ErrorKind::DuplicateCommitment(output.commitment()).into()
+								);
+							}
+						}
+					}
 				}
 			}
 		}
@@ -162,6 +185,34 @@ impl<'a> UTXOView<'a> {
 			},
 			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos)).into()),
 		}
+	}
+
+	/// Retrieves the accomplished input/s info
+	pub fn get_accomplished_inputs(
+		&self,
+		inputs: &[Commitment],
+		batch: &Batch<'_>,
+	) -> Result<Vec<IdentifierWithRnp>, Error> {
+		let mut accomplished_inputs: Vec<IdentifierWithRnp> = vec![];
+		for input in inputs {
+			if let Ok(commit_pos) = batch.get_output_pos_height(input) {
+				if let Some(cp) = commit_pos {
+					match cp.features {
+						OutputFeatures::PlainWrnp => {
+							if let Some(output) = self.output_wrnp_pmmr.get_data(cp.pos) {
+								if output.commitment() == *input {
+									accomplished_inputs.push(output);
+								} else {
+									warn!("get_accomplished_inputs - mmr data mismatching for commit {} at position {}", input.to_hex(), cp.pos);
+								}
+							}
+						}
+						_ => {}
+					}
+				}
+			}
+		}
+		Ok(accomplished_inputs)
 	}
 
 	/// Verify we are not attempting to spend any coinbase outputs

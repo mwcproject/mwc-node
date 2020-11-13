@@ -14,13 +14,13 @@
 
 //! Transactions new version to support nit feature
 
+use crate::core::committed;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction::{
-	CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputIdentifier, TxKernel,
-	Weighting,
+	Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
+	OutputIdentifier, TxKernel, Weighting,
 };
 use crate::core::verifier_cache::VerifierCache;
-use crate::core::{committed, Committed};
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
 	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
@@ -176,7 +176,7 @@ impl Readable for TransactionBodyV2 {
 	}
 }
 
-impl Committed for TransactionBodyV2 {
+impl committed::Committed for TransactionBodyV2 {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		let inputs: Vec<_> = self.inputs().into();
 		let mut commits = inputs.iter().map(|x| x.commitment()).collect();
@@ -724,7 +724,7 @@ impl Readable for TransactionV2 {
 	}
 }
 
-impl Committed for TransactionV2 {
+impl committed::Committed for TransactionV2 {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -1321,6 +1321,12 @@ impl Readable for OutputWithRnp {
 	}
 }
 
+impl Commit for OutputWithRnp {
+	/// Commitment for the output
+	fn commitment(&self) -> Commitment {
+		self.identifier_with_rnp.commitment()
+	}
+}
 impl OutputWithRnp {
 	/// Create a new output with the provided features, commitment, R, P' and rangeproof.
 	pub fn new(
@@ -1331,12 +1337,7 @@ impl OutputWithRnp {
 		proof: RangeProof,
 	) -> OutputWithRnp {
 		OutputWithRnp {
-			identifier_with_rnp: IdentifierWithRnp::new(
-				OutputIdentifier { features, commit },
-				commit,
-				nonce,
-				onetime_pubkey,
-			),
+			identifier_with_rnp: IdentifierWithRnp::new(features, commit, nonce, onetime_pubkey),
 			proof,
 		}
 	}
@@ -1344,11 +1345,6 @@ impl OutputWithRnp {
 	/// Output identifier.
 	pub fn identifier(&self) -> OutputIdentifier {
 		self.identifier_with_rnp.identifier()
-	}
-
-	/// Commitment for the output
-	pub fn commitment(&self) -> Commitment {
-		self.identifier_with_rnp.commitment()
 	}
 
 	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures)
