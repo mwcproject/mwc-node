@@ -26,7 +26,6 @@ pr:
 variables:
   RUST_BACKTRACE: '1'
   RUSTFLAGS: '-C debug-assertions'
-  RUST_TEST_TASKS: 1
 
 jobs:
 - job: linux
@@ -84,8 +83,7 @@ jobs:
         PLATFORM: win-x64
   steps:
     - script: |
-        git apply .ci/win.patch
-        choco install -y llvm
+        choco install -y llvm --version 11.0.0
       displayName: Windows Install Dependencies
     - template: '.ci/test.yml'
     - template: '.ci/windows-release.yml'
