@@ -29,10 +29,10 @@ steps:
       tarCompression: 'gz'
       archiveFile: '$(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz'
   - script: |
-      openssl sha256 $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz > $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
+      cd $(Build.ArtifactStagingDirectory) && openssl sha256 mwc-node-$(build.my_tag)-$(build.platform).tar.gz > mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
     displayName: Create Checksum
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
-  - task: GithubRelease@1
+  - task: GithubRelease@0
     displayName: Github release
     condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
@@ -44,5 +44,6 @@ steps:
       assets: |
         $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz
         $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
+      title: '$(build.my_tag)'
       assetUploadMode: 'replace'
       addChangeLog: true
