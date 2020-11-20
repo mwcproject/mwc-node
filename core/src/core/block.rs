@@ -20,8 +20,9 @@ use crate::core::compact_block::CompactBlock;
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
-	pmmr, transaction, Commitment, Inputs, KernelFeatures, Output, Transaction, TransactionBody,
-	TxKernel, Weighting,
+	pmmr, transaction, transaction_v2, Commitment, IdentifierWithRnp, Inputs, KernelFeatures,
+	Output, Transaction, TransactionBody, TransactionBodyV2, TransactionV2, TxKernel,
+	VersionedTransactionBody, Weighting,
 };
 use crate::global;
 use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
@@ -527,7 +528,7 @@ pub struct Block {
 	/// The header with metadata and commitments to the rest of the data
 	pub header: BlockHeader,
 	/// The body - inputs/outputs/kernels
-	pub body: TransactionBody,
+	pub body: VersionedTransactionBody,
 }
 
 impl Hashed for Block {
@@ -544,7 +545,10 @@ impl Writeable for Block {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.header.write(writer)?;
 		if !writer.serialization_mode().is_hash_mode() {
-			self.body.write(writer)?;
+			match self.body {
+				VersionedTransactionBody::V1(body) => body.write(writer)?,
+				VersionedTransactionBody::V2(body) => body.write(writer)?,
+			}
 		}
 		Ok(())
 	}
@@ -555,7 +559,20 @@ impl Writeable for Block {
 impl Readable for Block {
 	fn read<R: Reader>(reader: &mut R) -> Result<Block, ser::Error> {
 		let header = BlockHeader::read(reader)?;
-		let body = TransactionBody::read(reader)?;
+		let body = match header.version {
+			HeaderVersion(1) | HeaderVersion(2) => VersionedTransactionBody::V1 {
+				body: TransactionBody::read(reader)?,
+			},
+			HeaderVersion(3) => VersionedTransactionBody::V2 {
+				body: TransactionBodyV2::read(reader)?,
+			},
+			_ => {
+				return Err(ser::Error::CorruptedData(format!(
+					"unexpected header version {}",
+					header.version.0
+				)));
+			}
+		};
 		Ok(Block { header, body })
 	}
 }
@@ -581,7 +598,9 @@ impl Default for Block {
 	fn default() -> Block {
 		Block {
 			header: Default::default(),
-			body: Default::default(),
+			body: VersionedTransactionBody::V1 {
+				body: Default::default(),
+			},
 		}
 	}
 }
@@ -649,7 +668,60 @@ impl Block {
 		// Finally return the full block.
 		// Note: we have not actually validated the block here,
 		// caller must validate the block.
-		Ok(Block { header, body })
+		Ok(Block {
+			header,
+			body: VersionedTransactionBody::V1 { body },
+		})
+	}
+
+	/// Hydrate a block from a compact block.
+	/// Note: caller must validate the block themselves, we do not validate it
+	/// here.
+	pub fn hydrate_from_v2(cb: CompactBlock, txs: &[TransactionV2]) -> Result<Block, Error> {
+		trace!("block: hydrate_from: {}, {} txs", cb.hash(), txs.len(),);
+
+		let header = cb.header.clone();
+
+		let mut inputs = vec![];
+		let mut inputs_with_sig = vec![];
+		let mut outputs = vec![];
+		let mut outputs_with_rnp = vec![];
+		let mut kernels = vec![];
+
+		// collect all the inputs, outputs and kernels from the txs
+		for tx in txs {
+			let tx_inputs: Vec<_> = tx.inputs().into();
+			inputs.extend_from_slice(tx_inputs.as_slice());
+			inputs_with_sig.extend_from_slice(tx.inputs_with_sig().inputs_with_sig().as_slice());
+			outputs.extend_from_slice(tx.outputs());
+			outputs_with_rnp.extend_from_slice(tx.outputs_with_rnp());
+			kernels.extend_from_slice(tx.kernels());
+		}
+
+		let mut outputs = outputs.to_vec();
+		let mut kernels = kernels.to_vec();
+
+		// include the full outputs and kernels from the compact block
+		outputs.extend_from_slice(cb.out_full());
+		kernels.extend_from_slice(cb.kern_full());
+
+		// Initialize a tx body and sort everything.
+		let body = TransactionBodyV2::init(
+			inputs.into(),
+			inputs_with_sig.into(),
+			&outputs,
+			&outputs_with_rnp,
+			&kernels,
+			false,
+		)?;
+
+		// Finally return the full block.
+		// Note: we have not actually validated the block here,
+		// caller must validate the block.
+		Ok(Block {
+			header,
+			body: VersionedTransactionBody::V2 { body },
+		})
 	}
 
 	/// Build a new empty block from a specified header
@@ -711,12 +783,73 @@ impl Block {
 		Ok(block)
 	}
 
+	/// Builds a new block ready to mine from the header of the previous block,
+	/// a vector of transactions and the reward information. Checks
+	/// that all transactions are valid and calculates the Merkle tree.
+	pub fn from_reward_v2(
+		prev: &BlockHeader,
+		txs: &[TransactionV2],
+		reward_out: Output,
+		reward_kern: TxKernel,
+		difficulty: Difficulty,
+	) -> Result<Block, Error> {
+		// A block is just a big transaction, aggregate and add the reward output
+		// and reward kernel. At this point the tx is technically invalid but the
+		// tx body is valid if we account for the reward (i.e. as a block).
+		let agg_tx = transaction_v2::aggregate(txs)?
+			.with_output(reward_out)
+			.with_kernel(reward_kern);
+
+		// Now add the kernel offset of the previous block for a total
+		let total_kernel_offset = committed::sum_kernel_offsets(
+			vec![agg_tx.offset.clone(), prev.total_kernel_offset.clone()],
+			vec![],
+		)?;
+
+		// Determine the height and associated version for the new header.
+		let height = prev.height + 1;
+		let version = consensus::header_version(height);
+
+		let now = Utc::now().timestamp();
+		let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(now, 0), Utc);
+
+		// Now build the block with all the above information.
+		// Note: We have not validated the block here.
+		// Caller must validate the block as necessary.
+		let block = Block {
+			header: BlockHeader {
+				version,
+				height,
+				timestamp,
+				prev_hash: prev.hash(),
+				total_kernel_offset,
+				pow: ProofOfWork {
+					total_difficulty: difficulty + prev.pow.total_difficulty,
+					..Default::default()
+				},
+				..Default::default()
+			},
+			body: agg_tx.into(),
+		};
+		Ok(block)
+	}
+
 	/// Consumes this block and returns a new block with the coinbase output
 	/// and kernels added
 	pub fn with_reward(mut self, reward_out: Output, reward_kern: TxKernel) -> Block {
-		self.body.outputs = vec![reward_out];
-		self.body.kernels = vec![reward_kern];
+		self.body = VersionedTransactionBody::V1 {
+			body: TransactionBody {
+				outputs: vec![reward_out],
+				kernels: vec![reward_kern],
+				..Default::default()
+			},
+		};
 		self
+	}
+
+	/// Get inner vector of inputs w/ sig
+	pub fn inputs_with_sig(&self) -> Inputs {
+		self.body.inputs_with_sig()
 	}
 
 	/// Get inputs
@@ -775,8 +908,10 @@ impl Block {
 		&self,
 		prev_kernel_offset: &BlindingFactor,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
+		accomplished_inputs: &[IdentifierWithRnp],
 	) -> Result<Commitment, Error> {
-		self.body.validate(Weighting::AsBlock, verifier)?;
+		self.body
+			.validate(Weighting::AsBlock, verifier, accomplished_inputs)?;
 
 		self.verify_kernel_lock_heights()?;
 		self.verify_nrd_kernels_for_header_version()?;
@@ -798,14 +933,14 @@ impl Block {
 	pub fn verify_coinbase(&self) -> Result<(), Error> {
 		let cb_outs = self
 			.body
-			.outputs
+			.outputs()
 			.iter()
 			.filter(|out| out.is_coinbase())
 			.collect::<Vec<&Output>>();
 
 		let cb_kerns = self
 			.body
-			.kernels
+			.kernels()
 			.iter()
 			.filter(|kernel| kernel.is_coinbase())
 			.collect::<Vec<&TxKernel>>();
@@ -877,7 +1012,20 @@ impl Readable for UntrustedBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<UntrustedBlock, ser::Error> {
 		// we validate header here before parsing the body
 		let header = UntrustedBlockHeader::read(reader)?;
-		let body = TransactionBody::read(reader)?;
+		let body = match header.version {
+			HeaderVersion(1) | HeaderVersion(2) => VersionedTransactionBody::V1 {
+				body: TransactionBody::read(reader)?,
+			},
+			HeaderVersion(3) => VersionedTransactionBody::V2 {
+				body: TransactionBodyV2::read(reader)?,
+			},
+			_ => {
+				return Err(ser::Error::CorruptedData(format!(
+					"unexpected header version {}",
+					header.version.0
+				)));
+			}
+		};
 
 		// Now "lightweight" validation of the block.
 		// Treat any validation issues as data corruption.

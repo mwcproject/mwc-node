@@ -21,14 +21,17 @@ use self::core::core::hash::{Hash, Hashed};
 use self::core::core::id::ShortId;
 use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::{
-	transaction, Block, BlockHeader, HeaderVersion, OutputIdentifier, Transaction, Weighting,
+	transaction, versioned_transaction, Block, BlockHeader, HeaderVersion, IdentifierWithRnp,
+	OutputIdentifier, Transaction, VersionedTransaction, Weighting,
 };
 use self::core::global;
+use self::util::secp::pedersen::Commitment;
 use self::util::RwLock;
 use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use chrono::prelude::*;
 use grin_core as core;
+use grin_core::core::Committed;
 use grin_util as util;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -87,12 +90,21 @@ where
 		self.blockchain.chain_head()
 	}
 
+	/// Retrieves the accomplished input/s info from chain data.
+	/// Note: the output/s in tx pool is forbidden be used as input, refers to §2.2.1 of eprint.iacr.org/2020/1064.pdf
+	pub fn get_accomplished_inputs(
+		&self,
+		inputs: &[Commitment],
+	) -> Result<Vec<IdentifierWithRnp>, PoolError> {
+		self.blockchain.get_accomplished_inputs(inputs)
+	}
+
 	// Add tx to stempool (passing in all txs from txpool to validate against).
 	fn add_to_stempool(
 		&mut self,
 		entry: &PoolEntry,
 		header: &BlockHeader,
-		extra_tx: Option<Transaction>,
+		extra_tx: Option<VersionedTransaction>,
 	) -> Result<(), PoolError> {
 		self.stempool.add_to_pool(entry.clone(), extra_tx, header)
 	}
@@ -114,7 +126,7 @@ where
 		if entry.tx.kernels().len() > 1 {
 			let txs = self.txpool.find_matching_transactions(entry.tx.kernels());
 			if !txs.is_empty() {
-				let tx = transaction::deaggregate(entry.tx, &txs)?;
+				let tx = versioned_transaction::deaggregate(entry.tx, &txs)?;
 				return Ok(PoolEntry::new(tx, TxSource::Deaggregate));
 			}
 		}
@@ -136,7 +148,7 @@ where
 	/// with respect to current header version.
 	fn verify_kernel_variants(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
 		header: &BlockHeader,
 	) -> Result<(), PoolError> {
 		if tx.kernels().iter().any(|k| k.is_nrd()) {
@@ -155,7 +167,7 @@ where
 	pub fn add_to_pool(
 		&mut self,
 		src: TxSource,
-		tx: Transaction,
+		tx: VersionedTransaction,
 		stem: bool,
 		header: &BlockHeader,
 	) -> Result<(), PoolError> {
@@ -190,10 +202,25 @@ where
 			return acceptability;
 		}
 
+		let inputs_wsig_commit = tx
+			.inputs_with_sig()
+			.unwrap_or(transaction::Inputs::default())
+			.commits();
+		let accomplished_inputs = self.get_accomplished_inputs(&inputs_wsig_commit)?;
+
 		// Make sure the transaction is valid before anything else.
 		// Validate tx accounting for max tx weight.
-		tx.validate(Weighting::AsTransaction, self.verifier_cache.clone())
-			.map_err(PoolError::InvalidTx)?;
+		if Ok(false)
+			== tx
+				.validate(
+					Weighting::AsTransaction,
+					self.verifier_cache.clone(),
+					Some(&accomplished_inputs),
+				)
+				.map_err(PoolError::InvalidTx)?
+		{
+			return Err(PoolError::InvalidInputsSig);
+		}
 
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
@@ -367,7 +394,7 @@ where
 	}
 
 	/// Retrieve individual transaction for the given kernel hash.
-	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Option<Transaction> {
+	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Option<VersionedTransaction> {
 		self.txpool.retrieve_tx_by_kernel_hash(hash)
 	}
 
@@ -379,13 +406,13 @@ where
 		hash: Hash,
 		nonce: u64,
 		kern_ids: &[ShortId],
-	) -> (Vec<Transaction>, Vec<ShortId>) {
+	) -> (Vec<VersionedTransaction>, Vec<ShortId>) {
 		self.txpool.retrieve_transactions(hash, nonce, kern_ids)
 	}
 
 	/// Whether the transaction is acceptable to the pool, given both how
 	/// full the pool is and the transaction weight.
-	fn is_acceptable(&self, tx: &Transaction, stem: bool) -> Result<(), PoolError> {
+	fn is_acceptable(&self, tx: &VersionedTransaction, stem: bool) -> Result<(), PoolError> {
 		if self.total_size() > self.config.max_pool_size {
 			return Err(PoolError::OverCapacity);
 		}
@@ -417,7 +444,7 @@ where
 
 	/// Returns a vector of transactions from the txpool so we can build a
 	/// block from them.
-	pub fn prepare_mineable_transactions(&self) -> Result<Vec<Transaction>, PoolError> {
+	pub fn prepare_mineable_transactions(&self) -> Result<Vec<VersionedTransaction>, PoolError> {
 		self.txpool
 			.prepare_mineable_transactions(self.config.mineable_max_weight)
 	}

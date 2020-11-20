@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transactions new version to support nit feature
+//! Transactions V2. To support NIT(Non-Interactive Transaction) feature.
 
 use crate::core::committed;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction::{
-	Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
-	OutputIdentifier, TxKernel, Weighting,
+	self, Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
+	OutputIdentifier, Transaction, TransactionBody, TxKernel, Weighting,
 };
 use crate::core::verifier_cache::VerifierCache;
 use crate::libtx::{aggsig, secp_ser};
@@ -56,6 +56,35 @@ pub struct TransactionBodyV2 {
 	pub outputs_with_rnp: Vec<OutputWithRnp>,
 	/// List of kernels that make up this transaction (usually a single kernel).
 	pub kernels: Vec<TxKernel>,
+}
+
+// V1 to V2 conversion
+impl From<TransactionBody> for TransactionBodyV2 {
+	fn from(body: TransactionBody) -> Self {
+		TransactionBodyV2 {
+			inputs: body.inputs(),
+			inputs_with_sig: Inputs::CommitsWithSig(vec![]),
+			outputs: body.outputs().to_vec(),
+			outputs_with_rnp: vec![],
+			kernels: body.kernels().to_vec(),
+		}
+	}
+}
+
+// V2 to V1 conversion
+impl TryFrom<TransactionBodyV2> for TransactionBody {
+	type Error = &'static str;
+	fn try_from(body: TransactionBodyV2) -> Result<Self, Self::Error> {
+		if body.is_v1_compatible() {
+			Ok(TransactionBody {
+				inputs: body.inputs(),
+				outputs: body.outputs().to_vec(),
+				kernels: body.kernels().to_vec(),
+			})
+		} else {
+			Err("some v2 transaction body contents can not convert to v1")
+		}
+	}
 }
 
 /// Implementation of Writeable for a body, defines how to
@@ -209,13 +238,16 @@ impl Default for TransactionBodyV2 {
 	}
 }
 
-impl From<Transaction> for TransactionBodyV2 {
-	fn from(tx: Transaction) -> Self {
-		tx.body
-	}
-}
-
 impl TransactionBodyV2 {
+	/// Whether it is v1 compatible
+	pub fn is_v1_compatible(&self) -> bool {
+		if self.inputs_with_sig.is_empty() && self.outputs_with_rnp.is_empty() {
+			true
+		} else {
+			false
+		}
+	}
+
 	/// Creates a new empty transaction (no inputs or outputs, zero fee).
 	pub fn empty() -> TransactionBodyV2 {
 		TransactionBodyV2 {
@@ -602,20 +634,24 @@ impl TransactionBodyV2 {
 		&self,
 		weighting: Weighting,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-		//todo: accomplished_inputs: Vec<OutputWithRnp>,
-	) -> Result<(), Error> {
+		accomplished_inputs: Option<&[IdentifierWithRnp]>,
+	) -> Result<bool, Error> {
+		let mut inputs_sig_validated = false;
 		self.validate_read(weighting)?;
 
-		// Find all the inputs w/ sig that have not yet been verified.
-		let inputs_with_sig = {
-			let mut verifier = verifier.write();
-			verifier.filter_input_with_sig_unverified(&self.inputs_with_sig.inputs_with_sig())
-		};
+		let mut inputs_with_sig: Vec<CommitWithSig> = vec![];
+		if accomplished_inputs.is_some() {
+			// Find all the inputs w/ sig that have not yet been verified.
+			inputs_with_sig = {
+				let mut verifier = verifier.write();
+				verifier.filter_input_with_sig_unverified(&self.inputs_with_sig.inputs_with_sig())
+			};
 
-		// Verify the unverified inputs signatures.
-		// Todo: signature verification need the public key (i.e. that P') also, the CommitWithSig data is
-		//      incomplete for verification. The P' has to be queried from chain UTXOs set.
-		//CommitWithSig::batch_sig_verify(&inputs_with_sig, &accomplished_inputs)?;
+			// Verify the unverified inputs signatures.
+			// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
+			CommitWithSig::batch_sig_verify(&inputs_with_sig, accomplished_inputs.unwrap())?;
+			inputs_sig_validated = true;
+		}
 
 		// Find all the outputs that have not had their rangeproofs verified.
 		let outputs = {
@@ -666,9 +702,11 @@ impl TransactionBodyV2 {
 			verifier.add_rangeproof_verified(outputs);
 			verifier.add_rangeproof_verified_v2(outputs_with_rnp);
 			verifier.add_kernel_sig_verified(kernels);
-			verifier.add_input_with_sig_verified(inputs_with_sig);
+			if accomplished_inputs.is_some() {
+				verifier.add_input_with_sig_verified(inputs_with_sig);
+			}
 		}
-		Ok(())
+		Ok(inputs_sig_validated)
 	}
 }
 
@@ -684,6 +722,27 @@ pub struct TransactionV2 {
 	pub offset: BlindingFactor,
 	/// The transaction body - inputs/outputs/kernels
 	pub body: TransactionBodyV2,
+}
+
+// V1 to V2 conversion
+impl From<Transaction> for TransactionV2 {
+	fn from(tx: Transaction) -> Self {
+		TransactionV2 {
+			offset: tx.offset,
+			body: TransactionBodyV2::from(tx.body),
+		}
+	}
+}
+
+// V2 to V1 conversion
+impl TryFrom<TransactionV2> for Transaction {
+	type Error = &'static str;
+	fn try_from(body: TransactionV2) -> Result<Self, Self::Error> {
+		Ok(Transaction {
+			offset: tx.offset,
+			body: TransactionBody::try_from(tx.body)?,
+		})
+	}
 }
 
 impl DefaultHashable for TransactionV2 {}
@@ -901,11 +960,14 @@ impl TransactionV2 {
 		&self,
 		weighting: Weighting,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-	) -> Result<(), Error> {
+		accomplished_inputs: Option<&[IdentifierWithRnp]>,
+	) -> Result<bool, Error> {
 		self.body.verify_features()?;
-		self.body.validate(weighting, verifier)?;
+		let inputs_sig_validated = self
+			.body
+			.validate(weighting, verifier, accomplished_inputs)?;
 		self.verify_kernel_sums(self.overage(), self.offset.clone())?;
-		Ok(())
+		Ok(inputs_sig_validated)
 	}
 
 	/// Can be used to compare txs by their fee/weight ratio.
@@ -939,22 +1001,20 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 		return Ok(txs[0].clone());
 	}
 
-	let (n_inputs, n_inputs_with_sig, n_outputs, n_outputs_with_rnp, n_kernels) = txs.iter().fold(
-		(0, 0, 0, 0, 0),
-		|(inputs, inputs_with_sig, outputs, outputs_with_rnp, kernels), tx| {
+	let (n_inputs, n_inputs_with_sig, n_outputs, n_outputs_with_rnp, n_kernels) =
+		txs.iter().fold((0, 0, 0, 0, 0), |(i1, i2, o1, o2, k), tx| {
 			(
-				inputs + tx.inputs().len(),
-				inputs_with_sig + tx.inputs_with_sig().len(),
-				outputs + tx.outputs().len(),
-				outputs_with_rnp + tx.outputs_with_rnp().len(),
-				kernels + tx.kernels().len(),
+				i1 + tx.inputs().len(),
+				i2 + tx.inputs_with_sig().len(),
+				o1 + tx.outputs().len(),
+				o2 + tx.outputs_with_rnp().len(),
+				k + tx.kernels().len(),
 			)
-		},
-	);
+		});
 	let mut inputs: Vec<CommitWrapper> = Vec::with_capacity(n_inputs);
-	let mut inputs_with_sig: Vec<CommitWithSig> = Vec::with_capacity(inputs_with_sig);
+	let mut inputs_with_sig: Vec<CommitWithSig> = Vec::with_capacity(n_inputs_with_sig);
 	let mut outputs: Vec<Output> = Vec::with_capacity(n_outputs);
-	let mut outputs_with_rnp: Vec<OutputWithRnp> = Vec::with_capacity(outputs_with_rnp);
+	let mut outputs_with_rnp: Vec<OutputWithRnp> = Vec::with_capacity(n_outputs_with_rnp);
 	let mut kernels: Vec<TxKernel> = Vec::with_capacity(n_kernels);
 
 	// we will sum these together at the end to give us the overall offset for the
@@ -1133,6 +1193,43 @@ impl CommitWithSig {
 	pub fn commitment(&self) -> Commitment {
 		self.commit
 	}
+
+	/// Batch signature verification.
+	/// Because of VerifierCache, it's not a requirement here that both vectors has same size,
+	/// but they must be in same order, and each input commit must be included in the accomplished_inputs vector.
+	pub fn batch_sig_verify(
+		inputs_with_sig: &[CommitWithSig],
+		accomplished_inputs: &[IdentifierWithRnp],
+	) -> Result<(), Error> {
+		let len = inputs_with_sig.len();
+		let mut sigs = Vec::with_capacity(len);
+		let mut pubkeys = Vec::with_capacity(len);
+		let mut msgs = Vec::with_capacity(len);
+
+		let mut rnp_iter = accomplished_inputs.iter();
+		for input_with_sig in inputs_with_sig {
+			sigs.push(input_with_sig.sig.clone());
+			loop {
+				let rnp = rnp_iter.next().ok_or(Error::IncorrectSignature)?;
+				if rnp.commitment() == input_with_sig.commit {
+					pubkeys.push(rnp.onetime_pubkey.clone());
+					msgs.push(
+						secp::Message::from_slice(rnp.extra_commit_data().as_slice()).unwrap(),
+					);
+					break;
+				}
+			}
+		}
+
+		let secp = static_secp_instance();
+		let secp = secp.lock();
+
+		if !aggsig::verify_batch(&secp, &sigs, &msgs, &pubkeys) {
+			return Err(Error::IncorrectSignature);
+		}
+
+		Ok(())
+	}
 }
 
 /// IdentifierWithRnp w/ R&P' for a transaction, a new type for non-interactive transaction feature, used by OutputWithRnp.
@@ -1148,6 +1245,7 @@ pub struct IdentifierWithRnp {
 	#[serde(with = "secp_ser::pubkey_serde")]
 	pub onetime_pubkey: PublicKey,
 }
+impl DefaultHashable for IdentifierWithRnp {}
 
 impl Ord for IdentifierWithRnp {
 	fn cmp(&self, other: &Self) -> Ordering {
@@ -1238,7 +1336,8 @@ impl IdentifierWithRnp {
 		self.identifier.commitment()
 	}
 
-	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures)
+	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures).
+	/// This data is also used for input signing message.
 	pub fn extra_commit_data(&self) -> Vec<u8> {
 		let extra_commit_data = (self.nonce, self.onetime_pubkey, self.identifier.features).hash();
 		extra_commit_data.to_vec()

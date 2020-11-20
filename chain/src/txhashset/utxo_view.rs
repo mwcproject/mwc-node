@@ -16,8 +16,9 @@
 
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::pmmr::{self, ReadonlyPMMR};
+use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
-	Block, BlockHeader, Commit, IdentifierWithRnp, Inputs, Output, OutputFeatures,
+	Block, BlockHeader, Commit, CommitWithSig, IdentifierWithRnp, Inputs, Output, OutputFeatures,
 	OutputIdentifier, Transaction,
 };
 use crate::core::global;
@@ -27,7 +28,8 @@ use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use grin_core::core::OutputWithRnp;
 use grin_store::pmmr::PMMRBackend;
-use grin_util::ToHex;
+use grin_util::{RwLock, ToHex};
+use std::sync::Arc;
 
 /// Readonly view of the UTXO set (based on output MMR).
 pub struct UTXOView<'a> {
@@ -81,7 +83,7 @@ impl<'a> UTXOView<'a> {
 		self.validate_inputs(&tx.inputs(), batch)
 	}
 
-	/// Validate the provided inputs.
+	/// Validate the provided inputs (w/o signature).
 	/// Returns a vec of output identifiers corresponding to outputs
 	/// that would be spent by the provided inputs.
 	pub fn validate_inputs(
@@ -119,6 +121,57 @@ impl<'a> UTXOView<'a> {
 					.collect();
 				outputs_spent
 			}
+			Inputs::CommitsWithSig(_) => Err(ErrorKind::Other(
+				"wrong function called. use validate_inputs_with_sig instead.".into(),
+			)
+			.into()),
+		}
+	}
+
+	/// Validate the provided inputs (w/ signature).
+	/// Returns a vec of output IdentifierWithRnp corresponding to outputs
+	/// that would be spent by the provided inputs.
+	/// Note: inputs signature validation is here.
+	pub fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+		batch: &Batch<'_>,
+	) -> Result<Vec<(IdentifierWithRnp, CommitPos)>, Error> {
+		match inputs {
+			Inputs::CommitOnly(_) | Inputs::FeaturesAndCommit(_) => Err(ErrorKind::Other(
+				"wrong function called. use validate_inputs instead.".into(),
+			)
+			.into()),
+			Inputs::CommitsWithSig(inputs) => {
+				let outputs_spent: Result<Vec<_>, Error> = inputs
+					.iter()
+					.map(|input| {
+						self.validate_input_with_sig(input.commitment(), batch)
+							.and_then(|(out, pos)| {
+								// Unspent output found.
+								Ok((out, pos))
+							})
+					})
+					.collect();
+
+				// signature validation
+				let mut inputs_with_sig = {
+					let mut verifier = verifier.write();
+					verifier.filter_input_with_sig_unverified(inputs)
+				};
+
+				// get vec<IdentifierWithRnp> only
+				let rnps = outputs_spent?
+					.iter()
+					.map(|o| o.0.clone())
+					.collect::<Vec<IdentifierWithRnp>>();
+
+				// Verify the unverified inputs signatures.
+				// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
+				CommitWithSig::batch_sig_verify(&inputs_with_sig, &rnps)?;
+				outputs_spent
+			}
 		}
 	}
 
@@ -133,6 +186,31 @@ impl<'a> UTXOView<'a> {
 		let pos = batch.get_output_pos_height(&input)?;
 		if let Some(pos) = pos {
 			if let Some(out) = self.output_pmmr.get_data(pos.pos) {
+				if out.commitment() == input {
+					return Ok((out, pos));
+				} else {
+					error!("input mismatch: {:?}, {:?}, {:?}", out, pos, input);
+					return Err(ErrorKind::Other(
+						"input mismatch (output_pos index mismatch?)".into(),
+					)
+					.into());
+				}
+			}
+		}
+		Err(ErrorKind::AlreadySpent(input).into())
+	}
+
+	// Input is valid if it is spending an (unspent) output which currently exists in the output MMR.
+	// Note: (1) We lookup by commitment. Caller must compare the full input as necessary.
+	//       (2) It's caller's responsibility to validate the input signature.
+	fn validate_input_with_sig(
+		&self,
+		input: Commitment,
+		batch: &Batch<'_>,
+	) -> Result<(IdentifierWithRnp, CommitPos), Error> {
+		let commit_pos = batch.get_output_pos_height(&input)?;
+		if let Some(cp) = commit_pos {
+			if let Some(out) = self.output_wrnp_pmmr.get_data(cp.pos) {
 				if out.commitment() == input {
 					return Ok((out, pos));
 				} else {

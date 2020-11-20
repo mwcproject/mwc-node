@@ -138,10 +138,6 @@ pub fn process_block(
 	// as we may have processed it "header first" and not yet processed the full block.
 	process_block_header(&b.header, ctx)?;
 
-	// Validate the block itself, make sure it is internally consistent.
-	// Use the verifier_cache for verifying rangeproofs and kernel signatures.
-	validate_block(b, ctx)?;
-
 	// Start a chain extension unit of work dependent on the success of the
 	// internal validation and saving operations
 	let header_pmmr = &mut ctx.header_pmmr;
@@ -149,6 +145,10 @@ pub fn process_block(
 	let batch = &mut ctx.batch;
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
 		let fork_point = rewind_and_apply_fork(&prev, ext, batch)?;
+
+		// Validate the block itself, make sure it is internally consistent.
+		// Use the verifier_cache for verifying rangeproofs and kernel signatures.
+		validate_block(b, ctx, ext)?;
 
 		// Check any coinbase being spent have matured sufficiently.
 		// This needs to be done within the context of a potentially
@@ -431,17 +431,25 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 	Ok(())
 }
 
-fn validate_block(block: &Block, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
+fn validate_block(
+	block: &Block,
+	ctx: &mut BlockContext<'_>,
+	ext: &txhashset::ExtensionPair<'_>,
+) -> Result<(), Error> {
 	let extension = &ext.extension;
 	let header_extension = &ext.header_extension;
-	// todo: new Block structure or reusing old one?
-	// let accomplished_inputs = extension
-	// 	.utxo_view(header_extension)
-	// 	.get_accomplished_inputs(&block.inputs_with_sig())?;
+	let commits = block.inputs_with_sig().commits();
+	let accomplished_inputs = extension
+		.utxo_view(header_extension)
+		.get_accomplished_inputs(&commits, &ctx.batch)?;
 
 	let prev = ctx.batch.get_previous_header(&block.header)?;
 	block
-		.validate(&prev.total_kernel_offset, ctx.verifier_cache.clone())
+		.validate(
+			&prev.total_kernel_offset,
+			ctx.verifier_cache.clone(),
+			&accomplished_inputs,
+		)
 		.map_err(ErrorKind::InvalidBlockProof)?;
 	Ok(())
 }

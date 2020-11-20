@@ -157,8 +157,10 @@ pub fn header_version(height: u64) -> HeaderVersion {
 		global::ChainTypes::Mainnet | global::ChainTypes::Floonet => {
 			if height < get_c31_hard_fork_block_height() {
 				HeaderVersion(1)
-			} else {
+			} else if height < get_nit_hard_fork_block_height() {
 				HeaderVersion(2)
+			} else {
+				HeaderVersion(3)
 			}
 		}
 		// Note!!!! We need that to cover NRD tests.
@@ -407,6 +409,14 @@ fn get_c31_hard_fork_block_height() -> u64 {
 		270_000
 	} else {
 		202_500
+	}
+}
+
+fn get_nit_hard_fork_block_height() -> u64 {
+	if global::get_chain_type() == global::ChainTypes::Floonet {
+		774_000 //that is around Mar. 1, 2021
+	} else {
+		768_000 //that is around May. 1, 2021
 	}
 }
 

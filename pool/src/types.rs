@@ -19,12 +19,15 @@ use self::core::consensus;
 use self::core::core::block;
 use self::core::core::committed;
 use self::core::core::hash::Hash;
-use self::core::core::transaction::{self, Transaction};
-use self::core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
+use self::core::core::transaction;
+use self::core::core::versioned_transaction::{self, VersionedTransaction};
+use self::core::core::{BlockHeader, BlockSums, IdentifierWithRnp, Inputs, OutputIdentifier};
+use self::util::secp::pedersen::Commitment;
 use chrono::prelude::*;
 use failure::Fail;
 use grin_core as core;
 use grin_keychain as keychain;
+use grin_util as util;
 
 /// Dandelion "epoch" length.
 const DANDELION_EPOCH_SECS: u16 = 600;
@@ -163,11 +166,11 @@ pub struct PoolEntry {
 	/// Timestamp of when this tx was originally added to the pool.
 	pub tx_at: DateTime<Utc>,
 	/// The transaction itself.
-	pub tx: Transaction,
+	pub tx: VersionedTransaction,
 }
 
 impl PoolEntry {
-	pub fn new(tx: Transaction, src: TxSource) -> PoolEntry {
+	pub fn new(tx: VersionedTransaction, src: TxSource) -> PoolEntry {
 		PoolEntry {
 			src,
 			tx_at: Utc::now(),
@@ -207,6 +210,9 @@ pub enum PoolError {
 	/// An invalid pool entry caused by underlying tx validation error
 	#[fail(display = "Tx Pool Invalid Tx {}", _0)]
 	InvalidTx(transaction::Error),
+	/// An invalid pool entry caused by underlying tx validation error
+	#[fail(display = "Tx Pool Invalid Tx for Invalid InputsSig")]
+	InvalidInputsSig,
 	/// An invalid pool entry caused by underlying block validation error
 	#[fail(display = "Tx Pool Invalid Block {}", _0)]
 	InvalidBlock(block::Error),
@@ -287,20 +293,34 @@ pub trait BlockChain: Sync + Send {
 
 	/// Verify any coinbase outputs being spent
 	/// have matured sufficiently.
-	fn verify_tx_lock_height(&self, tx: &transaction::Transaction) -> Result<(), PoolError>;
+	fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), PoolError>;
 
 	/// Validate a transaction against the current utxo.
-	fn validate_tx(&self, tx: &Transaction) -> Result<(), PoolError>;
+	fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), PoolError>;
 
-	/// Validate inputs against the current utxo.
+	/// Validate inputs (w/o signature) against the current utxo.
 	/// Returns the vec of output identifiers that would be spent
 	/// by these inputs if they can all be successfully spent.
 	fn validate_inputs(&self, inputs: &Inputs) -> Result<Vec<OutputIdentifier>, PoolError>;
+
+	/// Validate inputs (w/ signature) against the current utxo.
+	/// Returns the vec of output identifiers that would be spent
+	/// by these inputs if they can all be successfully spent.
+	fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+	) -> Result<Vec<IdentifierWithRnp>, PoolError>;
 
 	fn chain_head(&self) -> Result<BlockHeader, PoolError>;
 
 	fn get_block_header(&self, hash: &Hash) -> Result<BlockHeader, PoolError>;
 	fn get_block_sums(&self, hash: &Hash) -> Result<BlockSums, PoolError>;
+
+	/// Retrieves the accomplished input/s info from chain data
+	fn get_accomplished_inputs(
+		&self,
+		inputs: &[Commitment],
+	) -> Result<Vec<IdentifierWithRnp>, PoolError>;
 }
 
 /// Bridge between the transaction pool and the rest of the system. Handles

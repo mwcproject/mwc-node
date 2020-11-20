@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transactions
+//! Transactions V1. Native Mimblewimble Interactive Transaction.
 
 use crate::core::committed;
 use crate::core::hash::{DefaultHashable, Hashed};
@@ -853,6 +853,7 @@ impl TransactionBody {
 					inputs.insert(e, input)
 				};
 			}
+			Inputs::CommitsWithSig(_) => {}
 		};
 		self
 	}
@@ -1860,15 +1861,12 @@ impl Inputs {
 		}
 	}
 
-	/// Vector of input commitments (which attached with a signature) to verify.
-	pub fn inputs_wsig_committed(&self) -> Vec<Commitment> {
+	/// Vector of input commitments.
+	pub fn commits(&self) -> Vec<Commitment> {
 		match self {
-			Inputs::CommitOnly(_) => vec![],
-			Inputs::FeaturesAndCommit(_) => vec![],
-			Inputs::CommitsWithSig(inputs) => inputs
-				.iter()
-				.map(|c| c.commit.clone())
-				.collect::<Vec<Commitment>>(),
+			Inputs::CommitOnly(inputs) => inputs.iter().map(|c| c.commit.clone()).collect(),
+			Inputs::FeaturesAndCommit(inputs) => inputs.iter().map(|c| c.commit.clone()).collect(),
+			Inputs::CommitsWithSig(inputs) => inputs.iter().map(|c| c.commit.clone()).collect(),
 		}
 	}
 

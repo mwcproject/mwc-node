@@ -33,13 +33,16 @@ use crate::common::types::{ChainValidationMode, DandelionEpoch, ServerConfig};
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::transaction::Transaction;
 use crate::core::core::verifier_cache::VerifierCache;
-use crate::core::core::{BlockHeader, BlockSums, CompactBlock, Inputs, OutputIdentifier};
+use crate::core::core::{
+	BlockHeader, BlockSums, CompactBlock, IdentifierWithRnp, Inputs, OutputIdentifier,
+};
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::core::{core, global};
 use crate::p2p;
 use crate::p2p::types::PeerInfo;
 use crate::pool::{self, BlockChain, PoolAdapter};
+use crate::util::secp::pedersen::Commitment;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
@@ -1159,6 +1162,15 @@ impl pool::BlockChain for PoolToChainAdapter {
 		self.chain()
 			.get_block_sums(hash)
 			.map_err(|e| pool::PoolError::Other(format!("failed to get block_sums, {}", e)))
+	}
+
+	fn get_accomplished_inputs(
+		&self,
+		inputs: &[Commitment],
+	) -> Result<Vec<IdentifierWithRnp>, pool::PoolError> {
+		self.chain().get_accomplished_inputs(inputs).map_err(|e| {
+			pool::PoolError::Other(format!("failed to get_accomplished_inputs for {}", e))
+		})
 	}
 
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
