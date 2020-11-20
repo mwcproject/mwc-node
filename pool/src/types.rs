@@ -315,12 +315,6 @@ pub trait BlockChain: Sync + Send {
 
 	fn get_block_header(&self, hash: &Hash) -> Result<BlockHeader, PoolError>;
 	fn get_block_sums(&self, hash: &Hash) -> Result<BlockSums, PoolError>;
-
-	/// Retrieves the accomplished input/s info from chain data
-	fn get_accomplished_inputs(
-		&self,
-		inputs: &[Commitment],
-	) -> Result<Vec<IdentifierWithRnp>, PoolError>;
 }
 
 /// Bridge between the transaction pool and the rest of the system. Handles

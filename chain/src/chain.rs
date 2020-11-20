@@ -659,7 +659,7 @@ impl Chain {
 		})
 	}
 
-	/// Validates inputs against the current utxo.
+	/// Validates inputs (w/o signature) against the current utxo.
 	/// Each input must spend an unspent output.
 	/// Returns the vec of output identifiers and their pos of the outputs
 	/// that would be spent by the inputs.
@@ -674,15 +674,19 @@ impl Chain {
 		})
 	}
 
-	/// Retrieves the accomplished input/s info
-	pub fn get_accomplished_inputs(
+	/// Validates inputs (w/ signature) against the current utxo.
+	/// Each input must spend an unspent output.
+	/// Returns the vec of output IdentifierWithRnp and their pos of the outputs that would be spent by the inputs.
+	/// Note: inputs signature validation is here.
+	pub fn validate_inputs_with_sig(
 		&self,
-		inputs: &[Commitment],
-	) -> Result<Vec<IdentifierWithRnp>, Error> {
+		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<(IdentifierWithRnp, CommitPos)>, Error> {
 		let header_pmmr = self.header_pmmr.read();
 		let txhashset = self.txhashset.read();
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
-			utxo.get_accomplished_inputs(inputs, batch)
+			utxo.validate_inputs_with_sig(inputs, verifier, batch)
 		})
 	}
 

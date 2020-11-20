@@ -265,34 +265,6 @@ impl<'a> UTXOView<'a> {
 		}
 	}
 
-	/// Retrieves the accomplished input/s info
-	pub fn get_accomplished_inputs(
-		&self,
-		inputs: &[Commitment],
-		batch: &Batch<'_>,
-	) -> Result<Vec<IdentifierWithRnp>, Error> {
-		let mut accomplished_inputs: Vec<IdentifierWithRnp> = vec![];
-		for input in inputs {
-			if let Ok(commit_pos) = batch.get_output_pos_height(input) {
-				if let Some(cp) = commit_pos {
-					match cp.features {
-						OutputFeatures::PlainWrnp => {
-							if let Some(output) = self.output_wrnp_pmmr.get_data(cp.pos) {
-								if output.commitment() == *input {
-									accomplished_inputs.push(output);
-								} else {
-									warn!("get_accomplished_inputs - mmr data mismatching for commit {} at position {}", input.to_hex(), cp.pos);
-								}
-							}
-						}
-						_ => {}
-					}
-				}
-			}
-		}
-		Ok(accomplished_inputs)
-	}
-
 	/// Verify we are not attempting to spend any coinbase outputs
 	/// that have not sufficiently matured.
 	pub fn verify_coinbase_maturity(

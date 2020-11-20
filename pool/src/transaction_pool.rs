@@ -90,15 +90,6 @@ where
 		self.blockchain.chain_head()
 	}
 
-	/// Retrieves the accomplished input/s info from chain data.
-	/// Note: the output/s in tx pool is forbidden be used as input, refers to §2.2.1 of eprint.iacr.org/2020/1064.pdf
-	pub fn get_accomplished_inputs(
-		&self,
-		inputs: &[Commitment],
-	) -> Result<Vec<IdentifierWithRnp>, PoolError> {
-		self.blockchain.get_accomplished_inputs(inputs)
-	}
-
 	// Add tx to stempool (passing in all txs from txpool to validate against).
 	fn add_to_stempool(
 		&mut self,
@@ -202,21 +193,11 @@ where
 			return acceptability;
 		}
 
-		let inputs_wsig_commit = tx
-			.inputs_with_sig()
-			.unwrap_or(transaction::Inputs::default())
-			.commits();
-		let accomplished_inputs = self.get_accomplished_inputs(&inputs_wsig_commit)?;
-
 		// Make sure the transaction is valid before anything else.
 		// Validate tx accounting for max tx weight.
 		if Ok(false)
 			== tx
-				.validate(
-					Weighting::AsTransaction,
-					self.verifier_cache.clone(),
-					Some(&accomplished_inputs),
-				)
+				.validate(Weighting::AsTransaction, self.verifier_cache.clone())
 				.map_err(PoolError::InvalidTx)?
 		{
 			return Err(PoolError::InvalidInputsSig);

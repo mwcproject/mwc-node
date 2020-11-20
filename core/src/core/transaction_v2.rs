@@ -634,24 +634,8 @@ impl TransactionBodyV2 {
 		&self,
 		weighting: Weighting,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-		accomplished_inputs: Option<&[IdentifierWithRnp]>,
-	) -> Result<bool, Error> {
-		let mut inputs_sig_validated = false;
+	) -> Result<(), Error> {
 		self.validate_read(weighting)?;
-
-		let mut inputs_with_sig: Vec<CommitWithSig> = vec![];
-		if accomplished_inputs.is_some() {
-			// Find all the inputs w/ sig that have not yet been verified.
-			inputs_with_sig = {
-				let mut verifier = verifier.write();
-				verifier.filter_input_with_sig_unverified(&self.inputs_with_sig.inputs_with_sig())
-			};
-
-			// Verify the unverified inputs signatures.
-			// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
-			CommitWithSig::batch_sig_verify(&inputs_with_sig, accomplished_inputs.unwrap())?;
-			inputs_sig_validated = true;
-		}
 
 		// Find all the outputs that have not had their rangeproofs verified.
 		let outputs = {
@@ -702,11 +686,8 @@ impl TransactionBodyV2 {
 			verifier.add_rangeproof_verified(outputs);
 			verifier.add_rangeproof_verified_v2(outputs_with_rnp);
 			verifier.add_kernel_sig_verified(kernels);
-			if accomplished_inputs.is_some() {
-				verifier.add_input_with_sig_verified(inputs_with_sig);
-			}
 		}
-		Ok(inputs_sig_validated)
+		Ok(())
 	}
 }
 
@@ -960,14 +941,11 @@ impl TransactionV2 {
 		&self,
 		weighting: Weighting,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-		accomplished_inputs: Option<&[IdentifierWithRnp]>,
-	) -> Result<bool, Error> {
+	) -> Result<(), Error> {
 		self.body.verify_features()?;
-		let inputs_sig_validated = self
-			.body
-			.validate(weighting, verifier, accomplished_inputs)?;
+		self.body.validate(weighting, verifier)?;
 		self.verify_kernel_sums(self.overage(), self.offset.clone())?;
-		Ok(inputs_sig_validated)
+		Ok(())
 	}
 
 	/// Can be used to compare txs by their fee/weight ratio.

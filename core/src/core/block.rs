@@ -908,10 +908,8 @@ impl Block {
 		&self,
 		prev_kernel_offset: &BlindingFactor,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-		accomplished_inputs: &[IdentifierWithRnp],
 	) -> Result<Commitment, Error> {
-		self.body
-			.validate(Weighting::AsBlock, verifier, accomplished_inputs)?;
+		self.body.validate(Weighting::AsBlock, verifier)?;
 
 		self.verify_kernel_lock_heights()?;
 		self.verify_nrd_kernels_for_header_version()?;

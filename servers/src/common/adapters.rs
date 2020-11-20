@@ -1164,15 +1164,6 @@ impl pool::BlockChain for PoolToChainAdapter {
 			.map_err(|e| pool::PoolError::Other(format!("failed to get block_sums, {}", e)))
 	}
 
-	fn get_accomplished_inputs(
-		&self,
-		inputs: &[Commitment],
-	) -> Result<Vec<IdentifierWithRnp>, pool::PoolError> {
-		self.chain().get_accomplished_inputs(inputs).map_err(|e| {
-			pool::PoolError::Other(format!("failed to get_accomplished_inputs for {}", e))
-		})
-	}
-
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
 		self.chain()
 			.validate_tx(tx)
@@ -1182,6 +1173,16 @@ impl pool::BlockChain for PoolToChainAdapter {
 	fn validate_inputs(&self, inputs: &Inputs) -> Result<Vec<OutputIdentifier>, pool::PoolError> {
 		self.chain()
 			.validate_inputs(inputs)
+			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
+			.map_err(|_| pool::PoolError::Other("failed to validate tx".to_string()))
+	}
+
+	fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+	) -> Result<Vec<IdentifierWithRnp>, pool::PoolError> {
+		self.chain()
+			.validate_inputs_with_sig(inputs)
 			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
 			.map_err(|_| pool::PoolError::Other("failed to validate tx".to_string()))
 	}

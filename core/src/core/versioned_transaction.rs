@@ -149,13 +149,10 @@ impl VersionedTransactionBody {
 		&self,
 		weighting: Weighting,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-		accomplished_inputs: Option<&[IdentifierWithRnp]>,
 	) -> Result<(), Error> {
 		match self {
 			VersionedTransactionBody::V1 { body } => body.validate(weighting, verifier),
-			VersionedTransactionBody::V2 { body } => {
-				body.validate(weighting, verifier, accomplished_inputs)
-			}
+			VersionedTransactionBody::V2 { body } => body.validate(weighting, verifier),
 		}
 	}
 }
@@ -310,15 +307,10 @@ impl VersionedTransaction {
 		&self,
 		weighting: Weighting,
 		verifier: Arc<RwLock<dyn VerifierCache>>,
-		accomplished_inputs: Option<&[IdentifierWithRnp]>,
-	) -> Result<bool, Error> {
+	) -> Result<(), Error> {
 		match self {
-			VersionedTransaction::V1 { tx } => {
-				tx.validate(weighting, verifier_cache).and_then(Ok(true))
-			}
-			VersionedTransaction::V2 { tx } => {
-				tx.validate(weighting, verifier_cache, accomplished_inputs)
-			}
+			VersionedTransaction::V1 { tx } => tx.validate(weighting, verifier_cache),
+			VersionedTransaction::V2 { tx } => tx.validate(weighting, verifier_cache),
 		}
 	}
 }
