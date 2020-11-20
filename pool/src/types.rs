@@ -20,14 +20,17 @@ use self::core::core::block;
 use self::core::core::committed;
 use self::core::core::hash::Hash;
 use self::core::core::transaction;
+use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::versioned_transaction::{self, VersionedTransaction};
 use self::core::core::{BlockHeader, BlockSums, IdentifierWithRnp, Inputs, OutputIdentifier};
 use self::util::secp::pedersen::Commitment;
+use self::util::RwLock;
 use chrono::prelude::*;
 use failure::Fail;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;
+use std::sync::Arc;
 
 /// Dandelion "epoch" length.
 const DANDELION_EPOCH_SECS: u16 = 600;
@@ -309,6 +312,7 @@ pub trait BlockChain: Sync + Send {
 	fn validate_inputs_with_sig(
 		&self,
 		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<Vec<IdentifierWithRnp>, PoolError>;
 
 	fn chain_head(&self) -> Result<BlockHeader, PoolError>;

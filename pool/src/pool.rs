@@ -161,7 +161,7 @@ where
 		let tx = versioned_transaction::aggregate(&txs)?;
 
 		// Validate the single aggregate transaction "as pool", not subject to tx weight limits.
-		tx.validate(Weighting::NoLimit, self.verifier_cache.clone(), None)?;
+		tx.validate(Weighting::NoLimit, self.verifier_cache.clone())?;
 
 		Ok(Some(tx))
 	}
@@ -273,14 +273,14 @@ where
 	/// We look for unspent outputs in the current txpool and then in the current utxo.
 	pub fn locate_spends(
 		&self,
-		tx: &Transaction,
-		extra_tx: Option<Transaction>,
+		tx: &VersionedTransaction,
+		extra_tx: Option<VersionedTransaction>,
 	) -> Result<(Vec<OutputIdentifier>, Vec<OutputIdentifier>), PoolError> {
 		let mut inputs: Vec<_> = tx.inputs().into();
 
 		let agg_tx = self
 			.all_transactions_aggregate(extra_tx)?
-			.unwrap_or(Transaction::empty());
+			.unwrap_or(VersionedTransaction::from(Transaction::empty()));
 		let mut outputs: Vec<OutputIdentifier> = agg_tx
 			.outputs()
 			.iter()
@@ -301,7 +301,7 @@ where
 
 	fn apply_tx_to_block_sums(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
 		header: &BlockHeader,
 	) -> Result<BlockSums, PoolError> {
 		let overage = tx.overage();

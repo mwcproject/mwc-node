@@ -20,7 +20,8 @@ use self::core::consensus;
 use self::core::core::hash::Hash;
 use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction, TxKernel,
+	Block, BlockHeader, BlockSums, IdentifierWithRnp, Inputs, KernelFeatures, OutputIdentifier,
+	Transaction, TxKernel,
 };
 use self::core::genesis;
 use self::core::global;
@@ -147,6 +148,17 @@ impl BlockChain for ChainAdapter {
 	fn validate_inputs(&self, inputs: &Inputs) -> Result<Vec<OutputIdentifier>, PoolError> {
 		self.chain
 			.validate_inputs(inputs)
+			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
+			.map_err(|_| PoolError::Other("failed to validate inputs".into()))
+	}
+
+	fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<IdentifierWithRnp>, PoolError> {
+		self.chain
+			.validate_inputs_with_sig(inputs, verifier)
 			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
 			.map_err(|_| PoolError::Other("failed to validate inputs".into()))
 	}
