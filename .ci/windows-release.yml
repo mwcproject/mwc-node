@@ -27,12 +27,12 @@ steps:
     inputs:
       rootFolderOrFile: '$(Build.BinariesDirectory)\mwc'
       archiveType: 'zip'
-      archiveFile: '$(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip'
+      archiveFile: '$(Build.ArtifactStagingDirectory)\grin-$(build.my_tag)-$(build.platform).zip'
   - script: |
-      powershell -Command "get-filehash -algorithm sha256 $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip | Format-List |  Out-String | ForEach-Object { $_.Trim() } > $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt"
+      powershell -Command "cd $(Build.ArtifactStagingDirectory); get-filehash -algorithm sha256 mwc-node-$(build.my_tag)-$(build.platform).zip | Format-List |  Out-String | ForEach-Object { $_.Trim() } > mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt"
     displayName: Create Checksum
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
-  - task: GithubRelease@1
+  - task: GithubRelease@0
     displayName: Github release
     condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
@@ -44,5 +44,6 @@ steps:
       assets: |
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
+      title: '$(build.my_tag)'
       assetUploadMode: 'replace'
       addChangeLog: true
