@@ -84,6 +84,7 @@ jobs:
   steps:
     - script: |
         choco install -y llvm
+        choco install -y openssl
       displayName: Windows Install Dependencies
     - template: '.ci/test.yml'
     - template: '.ci/windows-release.yml'
