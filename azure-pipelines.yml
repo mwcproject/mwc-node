@@ -84,7 +84,7 @@ jobs:
   steps:
     - script: |
         choco install visualstudio2019buildtools
-        choco install -y llvm --version
+        choco install -y llvm
       displayName: Windows Install Dependencies
     - template: '.ci/test.yml'
     - template: '.ci/windows-release.yml'
