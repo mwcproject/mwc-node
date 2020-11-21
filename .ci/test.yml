@@ -1,5 +1,7 @@
 steps:
-  - script: 'cargo test --all'
+  - script: |
+      "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"
+      cargo test --all
     displayName: Windows Cargo Test
     condition: and(eq( variables['Agent.OS'], 'Windows_NT' ), eq( variables['CI_JOB'], 'test-all' ))
   - script: 'cargo test --all'
