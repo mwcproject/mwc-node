@@ -1,5 +1,5 @@
 steps:
-  - script: 'windows_test.bat'
+  - script: '.ci\win64_cargo.bat test --all'
     displayName: Windows Cargo Test
     condition: and(eq( variables['Agent.OS'], 'Windows_NT' ), eq( variables['CI_JOB'], 'test-all' ))
   - script: 'cargo test --all'
