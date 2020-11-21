@@ -1,7 +1,7 @@
 steps:
   - script: '.ci\win64_cargo.bat test --all'
     displayName: Cargo Test All
-  - script: '.ci\win64_cargo.bat build --release'
+  - script: 'build_static64.bat'
     displayName: Build Release
   - script: |
       SET MY_TAG=$(Build.SourceBranch)
