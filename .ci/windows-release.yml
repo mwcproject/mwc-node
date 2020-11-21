@@ -1,8 +1,8 @@
 steps:
-  - script: 'cargo test --all'
+  - script: '.ci\win64_cargo.bat test --all'
     displayName: Cargo Test All
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
-  - script: 'cargo build --release'
+  - script: '.ci\win64_cargo.bat build --release'
     displayName: Build Release
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - script: |
