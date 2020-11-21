@@ -1,10 +1,8 @@
 steps:
   - script: '.ci\win64_cargo.bat test --all'
     displayName: Cargo Test All
-    condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - script: '.ci\win64_cargo.bat build --release'
     displayName: Build Release
-    condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - script: |
       SET MY_TAG=$(Build.SourceBranch)
       SET MY_TAG=%MY_TAG:~10%
