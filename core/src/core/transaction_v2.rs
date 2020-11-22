@@ -18,7 +18,7 @@ use crate::core::committed;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction::{
 	self, Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
-	OutputIdentifier, Transaction, TransactionBody, TxKernel, Weighting,
+	OutputIdentifier, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel, Weighting,
 };
 use crate::core::verifier_cache::VerifierCache;
 use crate::libtx::{aggsig, secp_ser};
@@ -238,6 +238,294 @@ impl Default for TransactionBodyV2 {
 	}
 }
 
+impl TxBodyImpl for TransactionBodyV2 {
+	/// Sort the inputs|outputs|kernels.
+	fn sort(&mut self) {
+		self.inputs.sort_unstable();
+		self.inputs_with_sig.sort_unstable();
+		self.outputs.sort_unstable();
+		self.outputs_with_rnp.sort_unstable();
+		self.kernels.sort_unstable();
+	}
+
+	/// Transaction inputs w/o signature.
+	fn inputs(&self) -> Inputs {
+		self.inputs.clone()
+	}
+
+	/// Transaction outputs w/o R&P'.
+	fn outputs(&self) -> &[Output] {
+		&self.outputs
+	}
+
+	/// Transaction kernels.
+	fn kernels(&self) -> &[TxKernel] {
+		&self.kernels
+	}
+
+	/// Total fee for a TransactionBodyV2 is the sum of fees of all fee carrying kernels.
+	fn fee(&self) -> u64 {
+		self.kernels
+			.iter()
+			.filter_map(|k| match k.features {
+				KernelFeatures::Coinbase => None,
+				KernelFeatures::Plain { fee } => Some(fee),
+				KernelFeatures::HeightLocked { fee, .. } => Some(fee),
+				KernelFeatures::NoRecentDuplicate { fee, .. } => Some(fee),
+			})
+			.fold(0, |acc, fee| acc.saturating_add(fee))
+	}
+
+	fn overage(&self) -> i64 {
+		self.fee() as i64
+	}
+
+	/// Calculate transaction weight
+	fn body_weight(&self) -> u64 {
+		TransactionBodyV2::weight(
+			(self.inputs.len() as u64).saturating_add(self.inputs_with_sig.len() as u64),
+			(self.outputs.len() as u64).saturating_add(self.outputs_with_rnp.len() as u64),
+			self.kernels.len() as u64,
+		)
+	}
+
+	/// Calculate weight of transaction using block weighing
+	fn body_weight_as_block(&self) -> u64 {
+		TransactionBodyV2::weight_as_block(
+			self.inputs.len() as u64,
+			self.inputs_with_sig.len() as u64,
+			self.outputs.len() as u64,
+			self.outputs_with_rnp.len() as u64,
+			self.kernels.len() as u64,
+		)
+	}
+
+	/// Calculate transaction weight from transaction details. This is non
+	/// consensus critical and compared to block weight, incentivizes spending
+	/// more outputs (to lower the fee).
+	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		let body_weight = num_outputs
+			.saturating_mul(4)
+			.saturating_add(num_kernels)
+			.saturating_sub(num_inputs);
+		max(body_weight, 1)
+	}
+
+	/// Calculate transaction weight using block weighing from transaction
+	/// details. Consensus critical and uses consensus weight values.
+	fn weight_as_block(
+		num_inputs: u64,
+		num_inputs_with_sig: u64,
+		num_outputs: u64,
+		num_outputs_with_rnp: u64,
+		num_kernels: u64,
+	) -> u64 {
+		let body_weight = num_inputs
+			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
+			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
+			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64));
+
+		num_inputs_with_sig
+			.saturating_mul(consensus::BLOCK_INPUT_WITH_SIG_WEIGHT as u64)
+			.saturating_add(
+				num_outputs_with_rnp.saturating_mul(consensus::BLOCK_OUTPUT_WITH_RNP_WEIGHT as u64),
+			)
+			.saturating_add(body_weight)
+	}
+
+	/// Lock height of a body is the max lock height of the kernels.
+	fn lock_height(&self) -> u64 {
+		self.kernels
+			.iter()
+			.filter_map(|x| match x.features {
+				KernelFeatures::HeightLocked { lock_height, .. } => Some(lock_height),
+				_ => None,
+			})
+			.max()
+			.unwrap_or(0)
+	}
+
+	/// Verify the body is not too big in terms of number of inputs|outputs|kernels.
+	/// Weight rules vary depending on the "weight type" (block or tx or pool).
+	fn verify_weight(&self, weighting: Weighting) -> Result<(), Error> {
+		// A coinbase reward is a single output and a single kernel (for now).
+		// We need to account for this when verifying max tx weights.
+		let coinbase_weight = consensus::BLOCK_OUTPUT_WEIGHT + consensus::BLOCK_KERNEL_WEIGHT;
+
+		// If "tx" body then remember to reduce the max_block_weight by the weight of a kernel.
+		// If "limited tx" then compare against the provided max_weight.
+		// If "block" body then verify weight based on full set of inputs|outputs|kernels.
+		// If "pool" body then skip weight verification (pool can be larger than single block).
+		//
+		// Note: Taking a max tx and building a block from it we need to allow room
+		// for the additional coinbase reward (1 output + 1 kernel).
+		//
+		let max_weight = match weighting {
+			Weighting::AsTransaction => global::max_block_weight().saturating_sub(coinbase_weight),
+			Weighting::AsLimitedTransaction(max_weight) => {
+				min(global::max_block_weight(), max_weight).saturating_sub(coinbase_weight)
+			}
+			Weighting::AsBlock => global::max_block_weight(),
+			Weighting::NoLimit => {
+				// We do not verify "tx as pool" weight so we are done here.
+				return Ok(());
+			}
+		};
+
+		if self.body_weight_as_block() > max_weight {
+			return Err(Error::TooHeavy);
+		}
+		Ok(())
+	}
+
+	// It is never valid to have multiple duplicate NRD kernels (by public excess)
+	// in the same transaction or block. We check this here.
+	// We skip this check if NRD feature is not enabled.
+	fn verify_no_nrd_duplicates(&self) -> Result<(), Error> {
+		if !global::is_nrd_enabled() {
+			return Ok(());
+		}
+
+		let mut nrd_excess: Vec<Commitment> = self
+			.kernels
+			.iter()
+			.filter(|x| match x.features {
+				KernelFeatures::NoRecentDuplicate { .. } => true,
+				_ => false,
+			})
+			.map(|x| x.excess())
+			.collect();
+
+		// Sort and dedup and compare length to look for duplicates.
+		nrd_excess.sort();
+		let original_count = nrd_excess.len();
+		nrd_excess.dedup();
+		let dedup_count = nrd_excess.len();
+		if original_count == dedup_count {
+			Ok(())
+		} else {
+			Err(Error::InvalidNRDRelativeHeight)
+		}
+	}
+
+	// Verify that inputs|outputs|kernels are sorted in lexicographical order
+	// and that there are no duplicates (they are all unique within this transaction).
+	fn verify_sorted(&self) -> Result<(), Error> {
+		self.inputs.verify_sorted_and_unique()?;
+		self.inputs_with_sig.verify_sorted_and_unique()?;
+		self.outputs.verify_sorted_and_unique()?;
+		self.outputs_with_rnp.verify_sorted_and_unique()?;
+		self.kernels.verify_sorted_and_unique()?;
+		Ok(())
+	}
+
+	/// Verify we have no invalid outputs or kernels in the transaction
+	/// due to invalid features.
+	/// Specifically, a transaction cannot contain a coinbase output or a coinbase kernel.
+	fn verify_features(&self) -> Result<(), Error> {
+		self.verify_output_features()?;
+		self.verify_kernel_features()?;
+		Ok(())
+	}
+
+	// Verify we have no outputs tagged as OutputFeatures::Coinbase, and no outputs_with_rnp tagged as OutputFeatures::Plain.
+	fn verify_output_features(&self) -> Result<(), Error> {
+		if self.outputs.iter().any(|x| x.is_coinbase()) {
+			return Err(Error::InvalidOutputFeatures);
+		}
+		if self
+			.outputs_with_rnp
+			.iter()
+			.any(|x| x.is_coinbase() || x.is_plain())
+		{
+			return Err(Error::InvalidOutputFeatures);
+		}
+		Ok(())
+	}
+
+	// Verify we have no kernels tagged as KernelFeatures::Coinbase.
+	fn verify_kernel_features(&self) -> Result<(), Error> {
+		if self.kernels.iter().any(|x| x.is_coinbase()) {
+			return Err(Error::InvalidKernelFeatures);
+		}
+		Ok(())
+	}
+
+	/// "Lightweight" validation that we can perform quickly during read/deserialization.
+	/// Subset of full validation that skips expensive verification steps, specifically -
+	/// * rangeproof verification
+	/// * kernel signature verification
+	fn validate_read(&self, weighting: Weighting) -> Result<(), Error> {
+		self.verify_weight(weighting)?;
+		self.verify_no_nrd_duplicates()?;
+		self.verify_sorted()?;
+		Ok(())
+	}
+
+	/// Validates all relevant parts of a transaction body. Checks the
+	/// excess value against the signature as well as range proofs for each
+	/// output.
+	fn validate(
+		&self,
+		weighting: Weighting,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<(), Error> {
+		self.validate_read(weighting)?;
+
+		// Find all the outputs that have not had their rangeproofs verified.
+		let outputs = {
+			let mut verifier = verifier.write();
+			verifier.filter_rangeproof_unverified(&self.outputs)
+		};
+
+		// Now batch verify all those unverified rangeproofs
+		if !outputs.is_empty() {
+			let mut commits = vec![];
+			let mut proofs = vec![];
+			for x in &outputs {
+				commits.push(x.commitment());
+				proofs.push(x.proof);
+			}
+			Output::batch_verify_proofs(&commits, &proofs)?;
+		}
+
+		// rangeproofs verification for outputs_with_rnp
+		let outputs_with_rnp = {
+			let mut verifier = verifier.write();
+			verifier.filter_rangeproof_unverified_v2(&self.outputs_with_rnp)
+		};
+		if !outputs_with_rnp.is_empty() {
+			let mut commits = vec![];
+			let mut extra_commits_data: Vec<Vec<u8>> = vec![];
+			let mut proofs = vec![];
+			for x in &outputs_with_rnp {
+				commits.push(x.commitment());
+				proofs.push(x.proof);
+				extra_commits_data.push(x.extra_commit_data());
+			}
+			OutputWithRnp::batch_verify_proofs(&commits, extra_commits_data, &proofs)?;
+		}
+
+		// Find all the kernels that have not yet been verified.
+		let kernels = {
+			let mut verifier = verifier.write();
+			verifier.filter_kernel_sig_unverified(&self.kernels)
+		};
+
+		// Verify the unverified tx kernels.
+		TxKernel::batch_sig_verify(&kernels)?;
+
+		// Cache the successful verification results for the new outputs and kernels.
+		{
+			let mut verifier = verifier.write();
+			verifier.add_rangeproof_verified(outputs);
+			verifier.add_rangeproof_verified_v2(outputs_with_rnp);
+			verifier.add_kernel_sig_verified(kernels);
+		}
+		Ok(())
+	}
+}
+
 impl TransactionBodyV2 {
 	/// Whether it is v1 compatible
 	pub fn is_v1_compatible(&self) -> bool {
@@ -257,15 +545,6 @@ impl TransactionBodyV2 {
 			outputs_with_rnp: vec![],
 			kernels: vec![],
 		}
-	}
-
-	/// Sort the inputs|outputs|kernels.
-	pub fn sort(&mut self) {
-		self.inputs.sort_unstable();
-		self.inputs_with_sig.sort_unstable();
-		self.outputs.sort_unstable();
-		self.outputs_with_rnp.sort_unstable();
-		self.kernels.sort_unstable();
 	}
 
 	/// Creates a new transaction body initialized with
@@ -298,29 +577,14 @@ impl TransactionBodyV2 {
 		Ok(body)
 	}
 
-	/// Transaction inputs w/o signature.
-	pub fn inputs(&self) -> Inputs {
-		self.inputs.clone()
-	}
-
 	/// Transaction inputs w/ signature.
 	pub fn inputs_with_sig(&self) -> Inputs {
 		self.inputs_with_sig.clone()
 	}
 
-	/// Transaction outputs w/o R&P'.
-	pub fn outputs(&self) -> &[Output] {
-		&self.outputs
-	}
-
 	/// Transaction outputs w/ R&P'.
 	pub fn outputs_with_rnp(&self) -> &[OutputWithRnp] {
 		&self.outputs_with_rnp
-	}
-
-	/// Transaction kernels.
-	pub fn kernels(&self) -> &[TxKernel] {
-		&self.kernels
 	}
 
 	/// Builds a new body with the provided inputs (w/o signature) added. Existing
@@ -427,270 +691,7 @@ impl TransactionBodyV2 {
 		self.kernels.push(kernel);
 		self
 	}
-
-	/// Total fee for a TransactionBodyV2 is the sum of fees of all fee carrying kernels.
-	pub fn fee(&self) -> u64 {
-		self.kernels
-			.iter()
-			.filter_map(|k| match k.features {
-				KernelFeatures::Coinbase => None,
-				KernelFeatures::Plain { fee } => Some(fee),
-				KernelFeatures::HeightLocked { fee, .. } => Some(fee),
-				KernelFeatures::NoRecentDuplicate { fee, .. } => Some(fee),
-			})
-			.fold(0, |acc, fee| acc.saturating_add(fee))
-	}
-
-	fn overage(&self) -> i64 {
-		self.fee() as i64
-	}
-
-	/// Calculate transaction weight
-	pub fn body_weight(&self) -> u64 {
-		TransactionBodyV2::weight(
-			(self.inputs.len() as u64).saturating_add(self.inputs_with_sig.len() as u64),
-			(self.outputs.len() as u64).saturating_add(self.outputs_with_rnp.len() as u64),
-			self.kernels.len() as u64,
-		)
-	}
-
-	/// Calculate weight of transaction using block weighing
-	pub fn body_weight_as_block(&self) -> u64 {
-		TransactionBodyV2::weight_as_block(
-			self.inputs.len() as u64,
-			self.inputs_with_sig.len() as u64,
-			self.outputs.len() as u64,
-			self.outputs_with_rnp.len() as u64,
-			self.kernels.len() as u64,
-		)
-	}
-
-	/// Calculate transaction weight from transaction details. This is non
-	/// consensus critical and compared to block weight, incentivizes spending
-	/// more outputs (to lower the fee).
-	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		let body_weight = num_outputs
-			.saturating_mul(4)
-			.saturating_add(num_kernels)
-			.saturating_sub(num_inputs);
-		max(body_weight, 1)
-	}
-
-	/// Calculate transaction weight using block weighing from transaction
-	/// details. Consensus critical and uses consensus weight values.
-	pub fn weight_as_block(
-		num_inputs: u64,
-		num_inputs_with_sig: u64,
-		num_outputs: u64,
-		num_outputs_with_rnp: u64,
-		num_kernels: u64,
-	) -> u64 {
-		let body_weight = num_inputs
-			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
-			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
-			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64));
-
-		num_inputs_with_sig
-			.saturating_mul(consensus::BLOCK_INPUT_WITH_SIG_WEIGHT as u64)
-			.saturating_add(
-				num_outputs_with_rnp.saturating_mul(consensus::BLOCK_OUTPUT_WITH_RNP_WEIGHT as u64),
-			)
-			.saturating_add(body_weight)
-	}
-
-	/// Lock height of a body is the max lock height of the kernels.
-	pub fn lock_height(&self) -> u64 {
-		self.kernels
-			.iter()
-			.filter_map(|x| match x.features {
-				KernelFeatures::HeightLocked { lock_height, .. } => Some(lock_height),
-				_ => None,
-			})
-			.max()
-			.unwrap_or(0)
-	}
-
-	/// Verify the body is not too big in terms of number of inputs|outputs|kernels.
-	/// Weight rules vary depending on the "weight type" (block or tx or pool).
-	fn verify_weight(&self, weighting: Weighting) -> Result<(), Error> {
-		// A coinbase reward is a single output and a single kernel (for now).
-		// We need to account for this when verifying max tx weights.
-		let coinbase_weight = consensus::BLOCK_OUTPUT_WEIGHT + consensus::BLOCK_KERNEL_WEIGHT;
-
-		// If "tx" body then remember to reduce the max_block_weight by the weight of a kernel.
-		// If "limited tx" then compare against the provided max_weight.
-		// If "block" body then verify weight based on full set of inputs|outputs|kernels.
-		// If "pool" body then skip weight verification (pool can be larger than single block).
-		//
-		// Note: Taking a max tx and building a block from it we need to allow room
-		// for the additional coinbase reward (1 output + 1 kernel).
-		//
-		let max_weight = match weighting {
-			Weighting::AsTransaction => global::max_block_weight().saturating_sub(coinbase_weight),
-			Weighting::AsLimitedTransaction(max_weight) => {
-				min(global::max_block_weight(), max_weight).saturating_sub(coinbase_weight)
-			}
-			Weighting::AsBlock => global::max_block_weight(),
-			Weighting::NoLimit => {
-				// We do not verify "tx as pool" weight so we are done here.
-				return Ok(());
-			}
-		};
-
-		if self.body_weight_as_block() > max_weight {
-			return Err(Error::TooHeavy);
-		}
-		Ok(())
-	}
-
-	// It is never valid to have multiple duplicate NRD kernels (by public excess)
-	// in the same transaction or block. We check this here.
-	// We skip this check if NRD feature is not enabled.
-	fn verify_no_nrd_duplicates(&self) -> Result<(), Error> {
-		if !global::is_nrd_enabled() {
-			return Ok(());
-		}
-
-		let mut nrd_excess: Vec<Commitment> = self
-			.kernels
-			.iter()
-			.filter(|x| match x.features {
-				KernelFeatures::NoRecentDuplicate { .. } => true,
-				_ => false,
-			})
-			.map(|x| x.excess())
-			.collect();
-
-		// Sort and dedup and compare length to look for duplicates.
-		nrd_excess.sort();
-		let original_count = nrd_excess.len();
-		nrd_excess.dedup();
-		let dedup_count = nrd_excess.len();
-		if original_count == dedup_count {
-			Ok(())
-		} else {
-			Err(Error::InvalidNRDRelativeHeight)
-		}
-	}
-
-	// Verify that inputs|outputs|kernels are sorted in lexicographical order
-	// and that there are no duplicates (they are all unique within this transaction).
-	fn verify_sorted(&self) -> Result<(), Error> {
-		self.inputs.verify_sorted_and_unique()?;
-		self.inputs_with_sig.verify_sorted_and_unique()?;
-		self.outputs.verify_sorted_and_unique()?;
-		self.outputs_with_rnp.verify_sorted_and_unique()?;
-		self.kernels.verify_sorted_and_unique()?;
-		Ok(())
-	}
-
-	/// Verify we have no invalid outputs or kernels in the transaction
-	/// due to invalid features.
-	/// Specifically, a transaction cannot contain a coinbase output or a coinbase kernel.
-	pub fn verify_features(&self) -> Result<(), Error> {
-		self.verify_output_features()?;
-		self.verify_kernel_features()?;
-		Ok(())
-	}
-
-	// Verify we have no outputs tagged as OutputFeatures::Coinbase, and no outputs_with_rnp tagged as OutputFeatures::Plain.
-	fn verify_output_features(&self) -> Result<(), Error> {
-		if self.outputs.iter().any(|x| x.is_coinbase()) {
-			return Err(Error::InvalidOutputFeatures);
-		}
-		if self
-			.outputs_with_rnp
-			.iter()
-			.any(|x| x.is_coinbase() || x.is_plain())
-		{
-			return Err(Error::InvalidOutputFeatures);
-		}
-		Ok(())
-	}
-
-	// Verify we have no kernels tagged as KernelFeatures::Coinbase.
-	fn verify_kernel_features(&self) -> Result<(), Error> {
-		if self.kernels.iter().any(|x| x.is_coinbase()) {
-			return Err(Error::InvalidKernelFeatures);
-		}
-		Ok(())
-	}
-
-	/// "Lightweight" validation that we can perform quickly during read/deserialization.
-	/// Subset of full validation that skips expensive verification steps, specifically -
-	/// * rangeproof verification
-	/// * kernel signature verification
-	pub fn validate_read(&self, weighting: Weighting) -> Result<(), Error> {
-		self.verify_weight(weighting)?;
-		self.verify_no_nrd_duplicates()?;
-		self.verify_sorted()?;
-		Ok(())
-	}
-
-	/// Validates all relevant parts of a transaction body. Checks the
-	/// excess value against the signature as well as range proofs for each
-	/// output.
-	pub fn validate(
-		&self,
-		weighting: Weighting,
-		verifier: Arc<RwLock<dyn VerifierCache>>,
-	) -> Result<(), Error> {
-		self.validate_read(weighting)?;
-
-		// Find all the outputs that have not had their rangeproofs verified.
-		let outputs = {
-			let mut verifier = verifier.write();
-			verifier.filter_rangeproof_unverified(&self.outputs)
-		};
-
-		// Now batch verify all those unverified rangeproofs
-		if !outputs.is_empty() {
-			let mut commits = vec![];
-			let mut proofs = vec![];
-			for x in &outputs {
-				commits.push(x.commitment());
-				proofs.push(x.proof);
-			}
-			Output::batch_verify_proofs(&commits, &proofs)?;
-		}
-
-		// rangeproofs verification for outputs_with_rnp
-		let outputs_with_rnp = {
-			let mut verifier = verifier.write();
-			verifier.filter_rangeproof_unverified_v2(&self.outputs_with_rnp)
-		};
-		if !outputs_with_rnp.is_empty() {
-			let mut commits = vec![];
-			let mut extra_commits_data: Vec<Vec<u8>> = vec![];
-			let mut proofs = vec![];
-			for x in &outputs_with_rnp {
-				commits.push(x.commitment());
-				proofs.push(x.proof);
-				extra_commits_data.push(x.extra_commit_data());
-			}
-			OutputWithRnp::batch_verify_proofs(&commits, extra_commits_data, &proofs)?;
-		}
-
-		// Find all the kernels that have not yet been verified.
-		let kernels = {
-			let mut verifier = verifier.write();
-			verifier.filter_kernel_sig_unverified(&self.kernels)
-		};
-
-		// Verify the unverified tx kernels.
-		TxKernel::batch_sig_verify(&kernels)?;
-
-		// Cache the successful verification results for the new outputs and kernels.
-		{
-			let mut verifier = verifier.write();
-			verifier.add_rangeproof_verified(outputs);
-			verifier.add_rangeproof_verified_v2(outputs_with_rnp);
-			verifier.add_kernel_sig_verified(kernels);
-		}
-		Ok(())
-	}
 }
-
 /// A transaction
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransactionV2 {
@@ -781,6 +782,65 @@ impl committed::Committed for TransactionV2 {
 impl Default for TransactionV2 {
 	fn default() -> TransactionV2 {
 		TransactionV2::empty()
+	}
+}
+
+impl TxImpl for TransactionV2 {
+	fn inputs(&self) -> Inputs {
+		self.body.inputs()
+	}
+
+	fn outputs(&self) -> &[Output] {
+		&self.body.outputs()
+	}
+
+	fn kernels(&self) -> &[TxKernel] {
+		&self.body.kernels()
+	}
+
+	fn fee(&self) -> u64 {
+		self.body.fee()
+	}
+
+	fn overage(&self) -> i64 {
+		self.body.overage()
+	}
+
+	fn lock_height(&self) -> u64 {
+		self.body.lock_height()
+	}
+
+	fn validate_read(&self) -> Result<(), Error> {
+		self.body.validate_read(Weighting::AsTransaction)?;
+		self.body.verify_features()?;
+		Ok(())
+	}
+
+	fn validate(
+		&self,
+		weighting: Weighting,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<(), Error> {
+		self.body.verify_features()?;
+		self.body.validate(weighting, verifier)?;
+		self.verify_kernel_sums(self.overage(), self.offset.clone())?;
+		Ok(())
+	}
+
+	fn fee_to_weight(&self) -> u64 {
+		self.fee() * 1_000 / self.tx_weight() as u64
+	}
+
+	fn tx_weight(&self) -> u64 {
+		self.body.body_weight()
+	}
+
+	fn tx_weight_as_block(&self) -> u64 {
+		self.body.body_weight_as_block()
+	}
+
+	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		TransactionBodyV2::weight(num_inputs, num_outputs, num_kernels)
 	}
 }
 
@@ -883,90 +943,14 @@ impl TransactionV2 {
 		}
 	}
 
-	/// Get inputs w/o signature
-	pub fn inputs(&self) -> Inputs {
-		self.body.inputs()
-	}
-
 	/// Get inputs w/ signature
 	pub fn inputs_with_sig(&self) -> Inputs {
 		self.body.inputs_with_sig()
 	}
 
-	/// Get outputs w/o R&P'
-	pub fn outputs(&self) -> &[Output] {
-		&self.body.outputs()
-	}
-
 	/// Get outputs w/ R&P'
 	pub fn outputs_with_rnp(&self) -> &[OutputWithRnp] {
 		&self.body.outputs_with_rnp()
-	}
-
-	/// Get kernels
-	pub fn kernels(&self) -> &[TxKernel] {
-		&self.body.kernels()
-	}
-
-	/// Total fee for a transaction is the sum of fees of all kernels.
-	pub fn fee(&self) -> u64 {
-		self.body.fee()
-	}
-
-	/// Total overage across all kernels.
-	pub fn overage(&self) -> i64 {
-		self.body.overage()
-	}
-
-	/// Lock height of a transaction is the max lock height of the kernels.
-	pub fn lock_height(&self) -> u64 {
-		self.body.lock_height()
-	}
-
-	/// "Lightweight" validation that we can perform quickly during read/deserialization.
-	/// Subset of full validation that skips expensive verification steps, specifically -
-	/// * rangeproof verification (on the body)
-	/// * kernel signature verification (on the body)
-	/// * kernel sum verification
-	pub fn validate_read(&self) -> Result<(), Error> {
-		self.body.validate_read(Weighting::AsTransaction)?;
-		self.body.verify_features()?;
-		Ok(())
-	}
-
-	/// Validates all relevant parts of a fully built transaction. Checks the
-	/// excess value against the signature as well as range proofs for each
-	/// output.
-	pub fn validate(
-		&self,
-		weighting: Weighting,
-		verifier: Arc<RwLock<dyn VerifierCache>>,
-	) -> Result<(), Error> {
-		self.body.verify_features()?;
-		self.body.validate(weighting, verifier)?;
-		self.verify_kernel_sums(self.overage(), self.offset.clone())?;
-		Ok(())
-	}
-
-	/// Can be used to compare txs by their fee/weight ratio.
-	/// Don't use these values for anything else though due to precision multiplier.
-	pub fn fee_to_weight(&self) -> u64 {
-		self.fee() * 1_000 / self.tx_weight() as u64
-	}
-
-	/// Calculate transaction weight
-	pub fn tx_weight(&self) -> u64 {
-		self.body.body_weight()
-	}
-
-	/// Calculate transaction weight as a block
-	pub fn tx_weight_as_block(&self) -> u64 {
-		self.body.body_weight_as_block()
-	}
-
-	/// Calculate transaction weight from transaction details
-	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		TransactionBodyV2::weight(num_inputs, num_outputs, num_kernels)
 	}
 }
 

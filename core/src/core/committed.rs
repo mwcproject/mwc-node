@@ -14,6 +14,7 @@
 
 //! The Committed trait and associated errors.
 
+use enum_dispatch::enum_dispatch;
 use failure::Fail;
 use keychain;
 use keychain::BlindingFactor;
@@ -54,6 +55,7 @@ impl From<keychain::Error> for Error {
 /// containing Pedersen commitments.
 /// Handles the collection of the commitments as well as their
 /// summing, taking potential explicit overages of fees into account.
+#[enum_dispatch]
 pub trait Committed {
 	/// Gather the kernel excesses and sum them.
 	fn sum_kernel_excesses(
