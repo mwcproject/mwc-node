@@ -259,6 +259,15 @@ impl VersionedTransaction {
 		}
 	}
 
+	/// Fully replace inputs (note: inputs w/o signature).
+	pub fn replace_inputs(mut self, inputs: Inputs) -> VersionedTransaction {
+		match self {
+			VersionedTransaction::V1 { tx } => tx.body.replace_inputs(inputs),
+			VersionedTransaction::V2 { tx } => tx.body.replace_inputs(inputs),
+		}
+		self.clone()
+	}
+
 	/// Get inputs w/ signature
 	pub fn inputs_with_sig(&self) -> Option<Inputs> {
 		match self {

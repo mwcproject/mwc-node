@@ -213,6 +213,8 @@ where
 			None
 		};
 
+		//todo: double-check the logic here for new transaction structure, add test cases to cover that.
+
 		// Locate outputs being spent from pool and current utxo.
 		let (spent_pool, spent_utxo) = if stem {
 			self.stempool.locate_spends(tx, extra_tx.clone())
@@ -264,7 +266,7 @@ where
 		spent_pool: &[OutputIdentifier],
 		spent_utxo: &[OutputIdentifier],
 	) -> Result<PoolEntry, PoolError> {
-		let tx = entry.tx;
+		let mut tx = entry.tx;
 		debug!(
 			"convert_tx_v2: {} ({} -> v2)",
 			tx.hash(),
@@ -275,10 +277,7 @@ where
 		inputs.extend_from_slice(spent_pool);
 		inputs.sort_unstable();
 
-		let tx = Transaction {
-			body: tx.body.replace_inputs(inputs.as_slice().into()),
-			..tx
-		};
+		tx.replace_inputs(inputs.as_slice().into());
 
 		// Validate the tx to ensure our converted inputs are correct.
 		tx.validate(Weighting::AsTransaction, self.verifier_cache.clone())?;
