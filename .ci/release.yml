@@ -2,8 +2,12 @@ steps:
   - script: 'cargo test --all'
     displayName: Cargo Test All
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
+  - script: './build_static_linux.sh'
+    displayName: Build Linux Release
+    condition: and(eq( variables['Agent.OS'], 'Windows_NT' ), eq( variables['CI_JOB'], 'test-all' ))
   - script: './build_static.sh'
-    displayName: Build Release
+    displayName: Build MacOS Release
+    condition: and(eq( variables['Agent.OS'], 'Darwin' ), eq( variables['CI_JOB'], 'test-all' ))
   - script: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}
