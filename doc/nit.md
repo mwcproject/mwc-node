@@ -88,7 +88,12 @@ To Be Defined.
 ## Drawbacks
 [drawbacks]: #drawbacks
 
-As described in §2.2.1 of NIT paper, the cut-through in same block and in txpool/stempool is frozen for NITs. The cut-through between the blocks is still feasible, which is great to reduce weight for non-archive nodes. 
+Shortly, as described in §2.2.1 of NIT paper, the cut-through in same block and in transaction pool (i.e. mempool) is frozen for NITs. The cut-through across the blocks is still feasible, which is great to reduce weight for non-archive nodes. 
+
+In detail:
+1. The fundamental difference from Bitcoin or any other Non-MW blockchain still keeps here, the MWC blockchain still can shrink over time. No changes here for NIT. Technically speaking, this is done by cut-through across blocks.
+2. Theoretically, the cut-through in "same block"/"transaction pool" is also helpful for transaction graph obscuring. But practically, because this ONLY works for the kind of 0-Confirmation Transaction, it does not make a lot of sense in reality. In most of cases, zeroconf transactions are completely insecure in blockchain because of double-spend possibility.
+3. For NIT, there's another insecure case for zeroconf NIT besides the double-spend, the dishonest receiver could use it to deny the receiving. So we just freeze this (cut-through in "same block"/"transaction pool"), but I don't think this freezing is a real "drawback" in any sense.
 
 ## Rationale and alternatives
 [rationale-and-alternatives]: #rationale-and-alternatives
