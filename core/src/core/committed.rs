@@ -61,7 +61,7 @@ pub trait Committed {
 	fn sum_kernel_excesses(
 		&self,
 		offset: &BlindingFactor,
-	) -> Result<(Commitment, Commitment), Error> {
+	) -> Result<(Commitment, Commitment), crate::core::committed::Error> {
 		// then gather the kernel excess commitments
 		let kernel_commits = self.kernels_committed();
 
@@ -86,7 +86,7 @@ pub trait Committed {
 	}
 
 	/// Gathers commitments and sum them.
-	fn sum_commitments(&self, overage: i64) -> Result<Commitment, Error> {
+	fn sum_commitments(&self, overage: i64) -> Result<Commitment, crate::core::committed::Error> {
 		// gather the commitments
 		let mut input_commits = self.inputs_committed();
 		let mut output_commits = self.outputs_committed();
@@ -126,7 +126,7 @@ pub trait Committed {
 		&self,
 		overage: i64,
 		kernel_offset: BlindingFactor,
-	) -> Result<(Commitment, Commitment), Error> {
+	) -> Result<(Commitment, Commitment), crate::core::committed::Error> {
 		// Sum all input|output|overage commitments.
 		let utxo_sum = self.sum_commitments(overage)?;
 

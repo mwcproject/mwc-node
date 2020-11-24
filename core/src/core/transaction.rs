@@ -14,7 +14,7 @@
 
 //! Transactions V1. Native Mimblewimble Interactive Transaction.
 
-use crate::core::committed;
+use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction_v2::CommitWithSig;
 use crate::core::verifier_cache::VerifierCache;
@@ -24,6 +24,7 @@ use crate::ser::{
 	Writeable, Writer,
 };
 use crate::{consensus, global};
+use enum_dispatch::enum_dispatch;
 use enum_primitive::FromPrimitive;
 use keychain::{self, BlindingFactor};
 use std::cmp::Ordering;
@@ -32,7 +33,6 @@ use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 use util;
 use util::secp;
-use util::secp::key::PublicKey;
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::static_secp_instance;
 use util::RwLock;
@@ -806,15 +806,6 @@ pub trait TxBodyImpl {
 	/// Calculate weight of transaction using block weighing
 	fn body_weight_as_block(&self) -> u64;
 
-	/// Calculate transaction weight from transaction details. This is non
-	/// consensus critical and compared to block weight, incentivizes spending
-	/// more outputs (to lower the fee).
-	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64;
-
-	/// Calculate transaction weight using block weighing from transaction
-	/// details. Consensus critical and uses consensus weight values.
-	fn weight_as_block(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64;
-
 	/// Lock height of a body is the max lock height of the kernels.
 	fn lock_height(&self) -> u64;
 
@@ -917,21 +908,6 @@ impl TxBodyImpl for TransactionBody {
 			self.outputs.len() as u64,
 			self.kernels.len() as u64,
 		)
-	}
-
-	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		let body_weight = num_outputs
-			.saturating_mul(4)
-			.saturating_add(num_kernels)
-			.saturating_sub(num_inputs);
-		max(body_weight, 1)
-	}
-
-	fn weight_as_block(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		num_inputs
-			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
-			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
-			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64))
 	}
 
 	fn lock_height(&self) -> u64 {
@@ -1108,6 +1084,32 @@ impl TransactionBody {
 		}
 	}
 
+	/// Creates a new transaction body initialized with
+	/// the provided inputs, outputs and kernels.
+	/// Guarantees inputs, outputs, kernels are sorted lexicographically.
+	pub fn init(
+		inputs: Inputs,
+		outputs: &[Output],
+		kernels: &[TxKernel],
+		verify_sorted: bool,
+	) -> Result<TransactionBody, Error> {
+		let mut body = TransactionBody {
+			inputs,
+			outputs: outputs.to_vec(),
+			kernels: kernels.to_vec(),
+		};
+
+		if verify_sorted {
+			// If we are verifying sort order then verify and
+			// return an error if not sorted lexicographically.
+			body.verify_sorted()?;
+		} else {
+			// If we are not verifying sort order then sort in place and return.
+			body.sort();
+		}
+		Ok(body)
+	}
+
 	/// Builds a new body with the provided inputs added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
@@ -1166,6 +1168,26 @@ impl TransactionBody {
 		self.kernels.clear();
 		self.kernels.push(kernel);
 		self
+	}
+
+	/// Calculate transaction weight from transaction details. This is non
+	/// consensus critical and compared to block weight, incentivizes spending
+	/// more outputs (to lower the fee).
+	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		let body_weight = num_outputs
+			.saturating_mul(4)
+			.saturating_add(num_kernels)
+			.saturating_sub(num_inputs);
+		max(body_weight, 1)
+	}
+
+	/// Calculate transaction weight using block weighing from transaction
+	/// details. Consensus critical and uses consensus weight values.
+	pub fn weight_as_block(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		num_inputs
+			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
+			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
+			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64))
 	}
 }
 
@@ -1287,9 +1309,6 @@ pub trait TxImpl: Sync + Send {
 
 	/// Calculate transaction weight as a block
 	fn tx_weight_as_block(&self) -> u64;
-
-	/// Calculate transaction weight from transaction details
-	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64;
 }
 
 impl TxImpl for Transaction {
@@ -1344,10 +1363,6 @@ impl TxImpl for Transaction {
 
 	fn tx_weight_as_block(&self) -> u64 {
 		self.body.body_weight_as_block()
-	}
-
-	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		TransactionBody::weight(num_inputs, num_outputs, num_kernels)
 	}
 }
 
@@ -1415,6 +1430,11 @@ impl Transaction {
 			body: self.body.replace_kernel(kernel),
 			..self
 		}
+	}
+
+	/// Calculate transaction weight from transaction details
+	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		TransactionBody::weight(num_inputs, num_outputs, num_kernels)
 	}
 }
 
@@ -1829,7 +1849,7 @@ impl From<&[CommitWrapper]> for Inputs {
 
 impl From<&[CommitWithSig]> for Inputs {
 	fn from(commits_with_sig: &[CommitWithSig]) -> Self {
-		Inputs::CommitWithSig(commits_with_sig.to_vec())
+		Inputs::CommitsWithSig(commits_with_sig.to_vec())
 	}
 }
 

@@ -20,8 +20,8 @@ use crate::core::compact_block::CompactBlock;
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
-	pmmr, transaction, transaction_v2, Commitment, IdentifierWithRnp, Inputs, KernelFeatures,
-	Output, Transaction, TransactionBody, TransactionBodyV2, TransactionV2, TxKernel,
+	pmmr, transaction, transaction_v2, Commit, Commitment, Inputs, KernelFeatures, Output,
+	Transaction, TransactionBody, TransactionBodyV2, TransactionV2, TxBodyImpl, TxImpl, TxKernel,
 	VersionedTransactionBody, Weighting,
 };
 use crate::global;
@@ -560,12 +560,10 @@ impl Readable for Block {
 	fn read<R: Reader>(reader: &mut R) -> Result<Block, ser::Error> {
 		let header = BlockHeader::read(reader)?;
 		let body = match header.version {
-			HeaderVersion(1) | HeaderVersion(2) => VersionedTransactionBody::V1 {
-				body: TransactionBody::read(reader)?,
-			},
-			HeaderVersion(3) => VersionedTransactionBody::V2 {
-				body: TransactionBodyV2::read(reader)?,
-			},
+			HeaderVersion(1) | HeaderVersion(2) => {
+				VersionedTransactionBody::V1(TransactionBody::read(reader)?)
+			}
+			HeaderVersion(3) => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
 			_ => {
 				return Err(ser::Error::CorruptedData(format!(
 					"unexpected header version {}",
@@ -598,9 +596,7 @@ impl Default for Block {
 	fn default() -> Block {
 		Block {
 			header: Default::default(),
-			body: VersionedTransactionBody::V1 {
-				body: Default::default(),
-			},
+			body: VersionedTransactionBody::V1(Default::default()),
 		}
 	}
 }
@@ -670,7 +666,7 @@ impl Block {
 		// caller must validate the block.
 		Ok(Block {
 			header,
-			body: VersionedTransactionBody::V1 { body },
+			body: VersionedTransactionBody::V1(body),
 		})
 	}
 
@@ -707,8 +703,8 @@ impl Block {
 
 		// Initialize a tx body and sort everything.
 		let body = TransactionBodyV2::init(
-			inputs.into(),
-			inputs_with_sig.into(),
+			inputs.as_slice().into(),
+			inputs_with_sig.as_slice().into(),
 			&outputs,
 			&outputs_with_rnp,
 			&kernels,
@@ -720,7 +716,7 @@ impl Block {
 		// caller must validate the block.
 		Ok(Block {
 			header,
-			body: VersionedTransactionBody::V2 { body },
+			body: VersionedTransactionBody::V2(body),
 		})
 	}
 
@@ -837,18 +833,16 @@ impl Block {
 	/// Consumes this block and returns a new block with the coinbase output
 	/// and kernels added
 	pub fn with_reward(mut self, reward_out: Output, reward_kern: TxKernel) -> Block {
-		self.body = VersionedTransactionBody::V1 {
-			body: TransactionBody {
-				outputs: vec![reward_out],
-				kernels: vec![reward_kern],
-				..Default::default()
-			},
-		};
+		self.body = VersionedTransactionBody::V1(TransactionBody {
+			outputs: vec![reward_out],
+			kernels: vec![reward_kern],
+			..Default::default()
+		});
 		self
 	}
 
 	/// Get inner vector of inputs w/ sig
-	pub fn inputs_with_sig(&self) -> Inputs {
+	pub fn inputs_with_sig(&self) -> Option<Inputs> {
 		self.body.inputs_with_sig()
 	}
 
@@ -1009,14 +1003,12 @@ pub struct UntrustedBlock(Block);
 impl Readable for UntrustedBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<UntrustedBlock, ser::Error> {
 		// we validate header here before parsing the body
-		let header = UntrustedBlockHeader::read(reader)?;
+		let header = BlockHeader::from(UntrustedBlockHeader::read(reader)?);
 		let body = match header.version {
-			HeaderVersion(1) | HeaderVersion(2) => VersionedTransactionBody::V1 {
-				body: TransactionBody::read(reader)?,
-			},
-			HeaderVersion(3) => VersionedTransactionBody::V2 {
-				body: TransactionBodyV2::read(reader)?,
-			},
+			HeaderVersion(1) | HeaderVersion(2) => {
+				VersionedTransactionBody::V1(TransactionBody::read(reader)?)
+			}
+			HeaderVersion(3) => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
 			_ => {
 				return Err(ser::Error::CorruptedData(format!(
 					"unexpected header version {}",

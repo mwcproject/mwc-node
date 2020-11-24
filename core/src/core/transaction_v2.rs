@@ -17,17 +17,15 @@
 use crate::core::committed;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction::{
-	self, Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
+	Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
 	OutputIdentifier, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel, Weighting,
 };
 use crate::core::verifier_cache::VerifierCache;
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
-	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
-	Writeable, Writer,
+	self, read_multi, PMMRable, Readable, Reader, VerifySortedAndUnique, Writeable, Writer,
 };
 use crate::{consensus, global};
-use enum_primitive::FromPrimitive;
 use keychain::{self, BlindingFactor};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
@@ -39,7 +37,6 @@ use util::secp::key::PublicKey;
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::static_secp_instance;
 use util::RwLock;
-use util::ToHex;
 
 /// TransactionBodyV2 is a common abstraction for transaction and block.
 /// Not a perfect and clean structure design here, 2 inputs vectors and 2 outputs vectors in one structure,
@@ -239,7 +236,6 @@ impl Default for TransactionBodyV2 {
 }
 
 impl TxBodyImpl for TransactionBodyV2 {
-	/// Sort the inputs|outputs|kernels.
 	fn sort(&mut self) {
 		self.inputs.sort_unstable();
 		self.inputs_with_sig.sort_unstable();
@@ -248,22 +244,18 @@ impl TxBodyImpl for TransactionBodyV2 {
 		self.kernels.sort_unstable();
 	}
 
-	/// Transaction inputs w/o signature.
 	fn inputs(&self) -> Inputs {
 		self.inputs.clone()
 	}
 
-	/// Transaction outputs w/o R&P'.
 	fn outputs(&self) -> &[Output] {
 		&self.outputs
 	}
 
-	/// Transaction kernels.
 	fn kernels(&self) -> &[TxKernel] {
 		&self.kernels
 	}
 
-	/// Total fee for a TransactionBodyV2 is the sum of fees of all fee carrying kernels.
 	fn fee(&self) -> u64 {
 		self.kernels
 			.iter()
@@ -280,7 +272,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		self.fee() as i64
 	}
 
-	/// Calculate transaction weight
 	fn body_weight(&self) -> u64 {
 		TransactionBodyV2::weight(
 			(self.inputs.len() as u64).saturating_add(self.inputs_with_sig.len() as u64),
@@ -289,7 +280,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		)
 	}
 
-	/// Calculate weight of transaction using block weighing
 	fn body_weight_as_block(&self) -> u64 {
 		TransactionBodyV2::weight_as_block(
 			self.inputs.len() as u64,
@@ -300,40 +290,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		)
 	}
 
-	/// Calculate transaction weight from transaction details. This is non
-	/// consensus critical and compared to block weight, incentivizes spending
-	/// more outputs (to lower the fee).
-	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		let body_weight = num_outputs
-			.saturating_mul(4)
-			.saturating_add(num_kernels)
-			.saturating_sub(num_inputs);
-		max(body_weight, 1)
-	}
-
-	/// Calculate transaction weight using block weighing from transaction
-	/// details. Consensus critical and uses consensus weight values.
-	fn weight_as_block(
-		num_inputs: u64,
-		num_inputs_with_sig: u64,
-		num_outputs: u64,
-		num_outputs_with_rnp: u64,
-		num_kernels: u64,
-	) -> u64 {
-		let body_weight = num_inputs
-			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
-			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
-			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64));
-
-		num_inputs_with_sig
-			.saturating_mul(consensus::BLOCK_INPUT_WITH_SIG_WEIGHT as u64)
-			.saturating_add(
-				num_outputs_with_rnp.saturating_mul(consensus::BLOCK_OUTPUT_WITH_RNP_WEIGHT as u64),
-			)
-			.saturating_add(body_weight)
-	}
-
-	/// Lock height of a body is the max lock height of the kernels.
 	fn lock_height(&self) -> u64 {
 		self.kernels
 			.iter()
@@ -345,8 +301,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 			.unwrap_or(0)
 	}
 
-	/// Verify the body is not too big in terms of number of inputs|outputs|kernels.
-	/// Weight rules vary depending on the "weight type" (block or tx or pool).
 	fn verify_weight(&self, weighting: Weighting) -> Result<(), Error> {
 		// A coinbase reward is a single output and a single kernel (for now).
 		// We need to account for this when verifying max tx weights.
@@ -378,9 +332,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		Ok(())
 	}
 
-	// It is never valid to have multiple duplicate NRD kernels (by public excess)
-	// in the same transaction or block. We check this here.
-	// We skip this check if NRD feature is not enabled.
 	fn verify_no_nrd_duplicates(&self) -> Result<(), Error> {
 		if !global::is_nrd_enabled() {
 			return Ok(());
@@ -408,8 +359,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		}
 	}
 
-	// Verify that inputs|outputs|kernels are sorted in lexicographical order
-	// and that there are no duplicates (they are all unique within this transaction).
 	fn verify_sorted(&self) -> Result<(), Error> {
 		self.inputs.verify_sorted_and_unique()?;
 		self.inputs_with_sig.verify_sorted_and_unique()?;
@@ -419,16 +368,29 @@ impl TxBodyImpl for TransactionBodyV2 {
 		Ok(())
 	}
 
-	/// Verify we have no invalid outputs or kernels in the transaction
-	/// due to invalid features.
-	/// Specifically, a transaction cannot contain a coinbase output or a coinbase kernel.
+	fn inputs_outputs_committed(&self) -> Vec<Commitment> {
+		let mut commits = self.inputs_committed();
+		commits.extend_from_slice(self.outputs_committed().as_slice());
+		commits.sort_unstable();
+		commits
+	}
+
+	fn verify_cut_through(&self) -> Result<(), Error> {
+		let commits = self.inputs_outputs_committed();
+		for pair in commits.windows(2) {
+			if pair[0] == pair[1] {
+				return Err(Error::CutThrough);
+			}
+		}
+		Ok(())
+	}
+
 	fn verify_features(&self) -> Result<(), Error> {
 		self.verify_output_features()?;
 		self.verify_kernel_features()?;
 		Ok(())
 	}
 
-	// Verify we have no outputs tagged as OutputFeatures::Coinbase, and no outputs_with_rnp tagged as OutputFeatures::Plain.
 	fn verify_output_features(&self) -> Result<(), Error> {
 		if self.outputs.iter().any(|x| x.is_coinbase()) {
 			return Err(Error::InvalidOutputFeatures);
@@ -443,7 +405,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		Ok(())
 	}
 
-	// Verify we have no kernels tagged as KernelFeatures::Coinbase.
 	fn verify_kernel_features(&self) -> Result<(), Error> {
 		if self.kernels.iter().any(|x| x.is_coinbase()) {
 			return Err(Error::InvalidKernelFeatures);
@@ -451,10 +412,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		Ok(())
 	}
 
-	/// "Lightweight" validation that we can perform quickly during read/deserialization.
-	/// Subset of full validation that skips expensive verification steps, specifically -
-	/// * rangeproof verification
-	/// * kernel signature verification
 	fn validate_read(&self, weighting: Weighting) -> Result<(), Error> {
 		self.verify_weight(weighting)?;
 		self.verify_no_nrd_duplicates()?;
@@ -462,9 +419,6 @@ impl TxBodyImpl for TransactionBodyV2 {
 		Ok(())
 	}
 
-	/// Validates all relevant parts of a transaction body. Checks the
-	/// excess value against the signature as well as range proofs for each
-	/// output.
 	fn validate(
 		&self,
 		weighting: Weighting,
@@ -691,7 +645,41 @@ impl TransactionBodyV2 {
 		self.kernels.push(kernel);
 		self
 	}
+
+	/// Calculate transaction weight from transaction details. This is non
+	/// consensus critical and compared to block weight, incentivizes spending
+	/// more outputs (to lower the fee).
+	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		let body_weight = num_outputs
+			.saturating_mul(4)
+			.saturating_add(num_kernels)
+			.saturating_sub(num_inputs);
+		max(body_weight, 1)
+	}
+
+	/// Calculate transaction weight using block weighing from transaction
+	/// details. Consensus critical and uses consensus weight values.
+	fn weight_as_block(
+		num_inputs: u64,
+		num_inputs_with_sig: u64,
+		num_outputs: u64,
+		num_outputs_with_rnp: u64,
+		num_kernels: u64,
+	) -> u64 {
+		let body_weight = num_inputs
+			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
+			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
+			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64));
+
+		num_inputs_with_sig
+			.saturating_mul(consensus::BLOCK_INPUT_WITH_SIG_WEIGHT as u64)
+			.saturating_add(
+				num_outputs_with_rnp.saturating_mul(consensus::BLOCK_OUTPUT_WITH_RNP_WEIGHT as u64),
+			)
+			.saturating_add(body_weight)
+	}
 }
+
 /// A transaction
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransactionV2 {
@@ -719,7 +707,7 @@ impl From<Transaction> for TransactionV2 {
 // V2 to V1 conversion
 impl TryFrom<TransactionV2> for Transaction {
 	type Error = &'static str;
-	fn try_from(body: TransactionV2) -> Result<Self, Self::Error> {
+	fn try_from(tx: TransactionV2) -> Result<Self, Self::Error> {
 		Ok(Transaction {
 			offset: tx.offset,
 			body: TransactionBody::try_from(tx.body)?,
@@ -838,10 +826,6 @@ impl TxImpl for TransactionV2 {
 	fn tx_weight_as_block(&self) -> u64 {
 		self.body.body_weight_as_block()
 	}
-
-	fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		TransactionBodyV2::weight(num_inputs, num_outputs, num_kernels)
-	}
 }
 
 impl TransactionV2 {
@@ -951,6 +935,11 @@ impl TransactionV2 {
 	/// Get outputs w/ R&P'
 	pub fn outputs_with_rnp(&self) -> &[OutputWithRnp] {
 		&self.body.outputs_with_rnp()
+	}
+
+	/// Calculate transaction weight from transaction details
+	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		TransactionBodyV2::weight(num_inputs, num_outputs, num_kernels)
 	}
 }
 
@@ -1115,7 +1104,6 @@ pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<Transa
 
 /// The Input with signature in a transaction when spending an output w/ R&P'.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(transparent)]
 pub struct CommitWithSig {
 	#[serde(
 		serialize_with = "secp_ser::as_hex",
@@ -1143,7 +1131,7 @@ impl Writeable for CommitWithSig {
 /// Implementation of Readable for a transaction Input, defines how to read
 /// an Input from a binary stream.
 impl Readable for CommitWithSig {
-	fn read(reader: &mut dyn Reader) -> Result<CommitWithSig, ser::Error> {
+	fn read<R: Reader>(reader: &mut R) -> Result<CommitWithSig, ser::Error> {
 		let commit = Commitment::read(reader)?;
 		let sig = secp::Signature::read(reader)?;
 		Ok(CommitWithSig { commit, sig })

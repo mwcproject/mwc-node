@@ -1,39 +1,25 @@
 //! Versioned Transactions.
 
-use crate::core::committed;
-use crate::core::hash::{DefaultHashable, Hashed};
+use crate::core::committed::Committed;
+use crate::core::hash::DefaultHashable;
 use crate::core::transaction::{
-	self, Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
-	OutputIdentifier, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel, Weighting,
+	self, Error, Inputs, Output, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel,
+	Weighting,
 };
-use crate::core::transaction_v2::{
-	self, IdentifierWithRnp, OutputWithRnp, TransactionBodyV2, TransactionV2,
-};
+use crate::core::transaction_v2::{self, OutputWithRnp, TransactionBodyV2, TransactionV2};
 use crate::core::verifier_cache::VerifierCache;
-use crate::libtx::{aggsig, secp_ser};
-use crate::ser::{
-	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
-	Writeable, Writer,
-};
-use crate::{consensus, global};
+use crate::ser::{self, Writeable, Writer};
 use enum_dispatch::enum_dispatch;
-use enum_primitive::FromPrimitive;
 use keychain::{self, BlindingFactor};
-use std::cmp::Ordering;
-use std::cmp::{max, min};
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::sync::Arc;
 use util;
-use util::secp;
-use util::secp::key::PublicKey;
-use util::secp::pedersen::{Commitment, RangeProof};
-use util::static_secp_instance;
+use util::secp::pedersen::Commitment;
 use util::RwLock;
-use util::ToHex;
 
 /// Enum of various flavors/versions of TransactionBody.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[enum_dispatch(Committed, TxBodyImpl)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VersionedTransactionBody {
 	/// The version before HF2, which support interactive tx only.
 	V1(TransactionBody),
@@ -72,8 +58,8 @@ impl VersionedTransactionBody {
 }
 
 /// Enum of various flavors/versions of Transaction.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[enum_dispatch(Committed, TxImpl)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum VersionedTransaction {
 	/// The version before HF2, which support interactive tx only.
 	V1(Transaction),
@@ -95,36 +81,24 @@ impl Writeable for VersionedTransaction {
 
 impl DefaultHashable for VersionedTransaction {}
 
-impl From<Transaction> for VersionedTransaction {
-	fn from(tx: Transaction) -> Self {
-		VersionedTransaction::V1(tx)
-	}
-}
-
-impl From<TransactionV2> for VersionedTransaction {
-	fn from(tx: TransactionV2) -> Self {
-		VersionedTransaction::V2(tx)
-	}
-}
-
-impl TryFrom<VersionedTransaction> for Transaction {
-	type Error = &'static str;
-	fn try_from(tx_ex: VersionedTransaction) -> Result<Self, Self::Error> {
-		match tx_ex {
-			VersionedTransaction::V1(tx) => Ok(tx),
-			VersionedTransaction::V2(tx) => Transaction::try_from(tx),
-		}
-	}
-}
-
-impl From<VersionedTransaction> for TransactionV2 {
-	fn from(tx: VersionedTransaction) -> Self {
-		match tx_ex {
-			VersionedTransaction::V1(tx) => TransactionV2::from(tx),
-			VersionedTransaction::V2(tx) => tx,
-		}
-	}
-}
+// impl TryFrom<VersionedTransaction> for Transaction {
+// 	type Error = &'static str;
+// 	fn try_from(tx_ex: VersionedTransaction) -> Result<Self, Self::Error> {
+// 		match tx_ex {
+// 			VersionedTransaction::V1(tx) => Ok(tx),
+// 			VersionedTransaction::V2(tx) => Transaction::try_from(tx),
+// 		}
+// 	}
+// }
+//
+// impl From<VersionedTransaction> for TransactionV2 {
+// 	fn from(tx_ex: VersionedTransaction) -> Self {
+// 		match tx_ex {
+// 			VersionedTransaction::V1(tx) => TransactionV2::from(tx),
+// 			VersionedTransaction::V2(tx) => tx,
+// 		}
+// 	}
+// }
 
 impl VersionedTransaction {
 	/// Is it the version after HF2?
