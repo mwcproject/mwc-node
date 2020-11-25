@@ -34,6 +34,9 @@ pub struct StateSync {
 
 	prev_state_sync: Option<DateTime<Utc>>,
 	state_sync_peer: Option<Arc<Peer>>,
+
+	last_logged_time: i64,
+	last_download_size: u64,
 }
 
 impl StateSync {
@@ -48,6 +51,8 @@ impl StateSync {
 			chain,
 			prev_state_sync: None,
 			state_sync_peer: None,
+			last_logged_time: 0,
+			last_download_size: 0,
 		}
 	}
 
@@ -209,6 +214,24 @@ impl StateSync {
 		let now = Utc::now();
 		let mut download_timeout = false;
 
+		if let SyncStatus::TxHashsetDownload(status) = self.sync_state.status() {
+			if self.last_download_size < status.downloaded_size {
+				self.prev_state_sync = Some(now); // reset the timer
+				self.last_download_size = status.downloaded_size;
+
+				let pass_time = now.timestamp() - self.last_logged_time;
+				if pass_time > 5 {
+					info!(
+						"Downloading {} MB chain state, done {} MB",
+						status.total_size / 1_048_576,
+						status.downloaded_size / 1_048_576
+					);
+
+					self.last_logged_time += pass_time;
+				}
+			}
+		}
+
 		match self.prev_state_sync {
 			None => {
 				self.prev_state_sync = Some(now);
@@ -226,5 +249,7 @@ impl StateSync {
 	fn state_sync_reset(&mut self) {
 		self.prev_state_sync = None;
 		self.state_sync_peer = None;
+		self.last_logged_time = 0;
+		self.last_download_size = 0;
 	}
 }
