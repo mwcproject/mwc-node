@@ -394,11 +394,13 @@ fn listen_for_addrs(
 				if update_possible {
 					match p2p_c.connect(addr.clone(), header_cache_size) {
 						Ok(p) => {
+							debug!("Sending peer request to {}", addr);
 							if p.send_peer_request(capab).is_ok() {
 								let _ = peers_c.update_state(addr, p2p::State::Healthy);
 							}
 						}
-						Err(_) => {
+						Err(e) => {
+							debug!("Connection to the peer {} was rejected, {}", addr, e);
 							let _ = peers_c.update_state(addr, p2p::State::Defunct);
 						}
 					}
