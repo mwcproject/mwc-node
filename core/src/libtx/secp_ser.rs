@@ -23,16 +23,14 @@ use util::{from_hex, ToHex};
 pub mod pubkey_serde {
 	use serde::{Deserialize, Deserializer, Serializer};
 	use util::secp::key::PublicKey;
-	use util::{from_hex, static_secp_instance, ToHex};
+	use util::{from_hex, ToHex};
 
 	///
 	pub fn serialize<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
-		serializer.serialize_str(&key.serialize_vec(&static_secp, true).to_hex())
+		serializer.serialize_str(&key.serialize_vec(true).to_hex())
 	}
 
 	///
@@ -41,8 +39,6 @@ pub mod pubkey_serde {
 		D: Deserializer<'de>,
 	{
 		use serde::de::Error;
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -50,7 +46,7 @@ pub mod pubkey_serde {
 				})
 			})
 			.and_then(|bytes: Vec<u8>| {
-				PublicKey::from_slice(&static_secp, &bytes).map_err(|err| {
+				PublicKey::from_slice(&bytes).map_err(|err| {
 					Error::custom(format!("Unable to build Pub Key from {:?}, {}", bytes, err))
 				})
 			})
@@ -106,7 +102,7 @@ pub mod option_sig_serde {
 pub mod option_seckey_serde {
 	use crate::serde::{Deserialize, Deserializer, Serializer};
 	use serde::de::Error;
-	use util::{from_hex, secp, static_secp_instance, ToHex};
+	use util::{from_hex, secp, ToHex};
 
 	///
 	pub fn serialize<S>(
@@ -127,8 +123,6 @@ pub mod option_seckey_serde {
 	where
 		D: Deserializer<'de>,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
@@ -137,7 +131,7 @@ pub mod option_seckey_serde {
 				.and_then(|bytes: Vec<u8>| {
 					let mut b = [0u8; 32];
 					b.copy_from_slice(&bytes[0..32]);
-					secp::key::SecretKey::from_slice(&static_secp, &b)
+					secp::key::SecretKey::from_slice(&b)
 						.map(Some)
 						.map_err(|err| Error::custom(format!("Fail to decode key, {}", err)))
 				}),
@@ -408,7 +402,7 @@ mod test {
 		pub fn random() -> SerTest {
 			let static_secp = static_secp_instance();
 			let secp = static_secp.lock();
-			let sk = SecretKey::new(&secp, &mut thread_rng());
+			let sk = SecretKey::new(&mut thread_rng());
 			let mut msg = [0u8; 32];
 			thread_rng().fill(&mut msg);
 			let msg = Message::from_slice(&msg).unwrap();

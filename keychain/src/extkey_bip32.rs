@@ -323,7 +323,7 @@ impl From<secp::Error> for Error {
 impl ExtendedPrivKey {
 	/// Construct a new master key from a seed value
 	pub fn new_master<H>(
-		secp: &Secp256k1,
+		_secp: &Secp256k1,
 		hasher: &mut H,
 		seed: &[u8],
 	) -> Result<ExtendedPrivKey, Error>
@@ -339,7 +339,7 @@ impl ExtendedPrivKey {
 			depth: 0,
 			parent_fingerprint: Default::default(),
 			child_number: ChildNumber::from_normal_idx(0),
-			secret_key: SecretKey::from_slice(secp, &result[..32]).map_err(Error::Ecdsa)?,
+			secret_key: SecretKey::from_slice(&result[..32]).map_err(Error::Ecdsa)?,
 			chain_code: ChainCode::from(&result[32..]),
 		})
 	}
@@ -390,8 +390,7 @@ impl ExtendedPrivKey {
 			ChildNumber::Normal { .. } => {
 				// Non-hardened key: compute public data and use that
 				hasher.append_sha512(
-					&PublicKey::from_secret_key(secp, &self.secret_key)?.serialize_vec(secp, true)
-						[..],
+					&PublicKey::from_secret_key(secp, &self.secret_key)?.serialize_vec(true)[..],
 				);
 			}
 			ChildNumber::Hardened { .. } => {
@@ -404,9 +403,8 @@ impl ExtendedPrivKey {
 
 		hasher.append_sha512(&be_n);
 		let result = hasher.result_sha512();
-		let mut sk = SecretKey::from_slice(secp, &result[..32]).map_err(Error::Ecdsa)?;
-		sk.add_assign(secp, &self.secret_key)
-			.map_err(Error::Ecdsa)?;
+		let mut sk = SecretKey::from_slice(&result[..32]).map_err(Error::Ecdsa)?;
+		sk.add_assign(&self.secret_key).map_err(Error::Ecdsa)?;
 
 		Ok(ExtendedPrivKey {
 			network: self.network,
@@ -427,7 +425,7 @@ impl ExtendedPrivKey {
 		// Compute extended public key
 		let pk: ExtendedPubKey = ExtendedPubKey::from_private::<H>(&secp, self, hasher);
 		// Do SHA256 of just the ECDSA pubkey
-		let sha2_res = hasher.sha_256(&pk.public_key.serialize_vec(&secp, true)[..]);
+		let sha2_res = hasher.sha_256(&pk.public_key.serialize_vec(true)[..]);
 		// do RIPEMD160
 		hasher.ripemd_160(&sha2_res)
 	}
@@ -477,7 +475,7 @@ impl ExtendedPubKey {
 	/// Compute the scalar tweak added to this key to get a child key
 	pub fn ckd_pub_tweak<H>(
 		&self,
-		secp: &Secp256k1,
+		_secp: &Secp256k1,
 		hasher: &mut H,
 		i: ChildNumber,
 	) -> Result<(SecretKey, ChainCode), Error>
@@ -488,14 +486,14 @@ impl ExtendedPubKey {
 			ChildNumber::Hardened { .. } => Err(Error::CannotDeriveFromHardenedKey),
 			ChildNumber::Normal { index: n } => {
 				hasher.init_sha512(&self.chain_code[..]);
-				hasher.append_sha512(&self.public_key.serialize_vec(secp, true)[..]);
+				hasher.append_sha512(&self.public_key.serialize_vec(true)[..]);
 				let mut be_n = [0; 4];
 				BigEndian::write_u32(&mut be_n, n);
 				hasher.append_sha512(&be_n);
 
 				let result = hasher.result_sha512();
 
-				let secret_key = SecretKey::from_slice(secp, &result[..32])?;
+				let secret_key = SecretKey::from_slice(&result[..32])?;
 				let chain_code = ChainCode::from(&result[32..]);
 				Ok((secret_key, chain_code))
 			}
@@ -527,12 +525,12 @@ impl ExtendedPubKey {
 	}
 
 	/// Returns the HASH160 of the chaincode
-	pub fn identifier<H>(&self, secp: &Secp256k1, hasher: &mut H) -> [u8; 20]
+	pub fn identifier<H>(&self, _secp: &Secp256k1, hasher: &mut H) -> [u8; 20]
 	where
 		H: BIP32Hasher,
 	{
 		// Do SHA256 of just the ECDSA pubkey
-		let sha2_res = hasher.sha_256(&self.public_key.serialize_vec(secp, true)[..]);
+		let sha2_res = hasher.sha_256(&self.public_key.serialize_vec(true)[..]);
 		// do RIPEMD160
 		hasher.ripemd_160(&sha2_res)
 	}
@@ -566,7 +564,6 @@ impl FromStr for ExtendedPrivKey {
 	type Err = base58::Error;
 
 	fn from_str(inp: &str) -> Result<ExtendedPrivKey, base58::Error> {
-		let s = Secp256k1::without_caps();
 		let data = base58::from_check(inp)?;
 
 		if data.len() != 78 {
@@ -587,7 +584,7 @@ impl FromStr for ExtendedPrivKey {
 			parent_fingerprint: Fingerprint::from(&data[5..9]),
 			child_number: child_number,
 			chain_code: ChainCode::from(&data[13..45]),
-			secret_key: SecretKey::from_slice(&s, &data[46..78])
+			secret_key: SecretKey::from_slice(&data[46..78])
 				.map_err(|e| base58::Error::Other(format!("Unable to read priv key, {}", e)))?,
 		})
 	}
@@ -595,7 +592,6 @@ impl FromStr for ExtendedPrivKey {
 
 impl fmt::Display for ExtendedPubKey {
 	fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let secp = Secp256k1::without_caps();
 		let mut ret = [0; 78];
 		ret[0..4].copy_from_slice(&self.network[0..4]);
 		ret[4] = self.depth as u8;
@@ -604,7 +600,7 @@ impl fmt::Display for ExtendedPubKey {
 		BigEndian::write_u32(&mut ret[9..13], u32::from(self.child_number));
 
 		ret[13..45].copy_from_slice(&self.chain_code[..]);
-		ret[45..78].copy_from_slice(&self.public_key.serialize_vec(&secp, true)[..]);
+		ret[45..78].copy_from_slice(&self.public_key.serialize_vec(true)[..]);
 		fmt.write_str(&base58::check_encode_slice(&ret[..]))
 	}
 }
@@ -613,7 +609,6 @@ impl FromStr for ExtendedPubKey {
 	type Err = base58::Error;
 
 	fn from_str(inp: &str) -> Result<ExtendedPubKey, base58::Error> {
-		let s = Secp256k1::without_caps();
 		let data = base58::from_check(inp)?;
 
 		if data.len() != 78 {
@@ -634,7 +629,7 @@ impl FromStr for ExtendedPubKey {
 			parent_fingerprint: Fingerprint::from(&data[5..9]),
 			child_number: child_number,
 			chain_code: ChainCode::from(&data[13..45]),
-			public_key: PublicKey::from_slice(&s, &data[45..78])
+			public_key: PublicKey::from_slice(&data[45..78])
 				.map_err(|e| base58::Error::Other(format!("Unable to read pub key, {}", e)))?,
 		})
 	}

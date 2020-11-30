@@ -1530,12 +1530,12 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 		let positive_key = vec![mk_tx.offset]
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
-			.filter_map(|x| x.secret_key(&secp).ok())
+			.filter_map(|x| x.secret_key().ok())
 			.collect::<Vec<_>>();
 		let negative_keys = kernel_offsets
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
-			.filter_map(|x| x.secret_key(&secp).ok())
+			.filter_map(|x| x.secret_key().ok())
 			.collect::<Vec<_>>();
 
 		if positive_key.is_empty() && negative_keys.is_empty() {

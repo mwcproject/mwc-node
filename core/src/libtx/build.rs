@@ -213,8 +213,8 @@ where
 	let msg = kernel.msg_to_sign()?;
 
 	// Generate kernel public excess and associated signature.
-	let excess = BlindingFactor::rand(&keychain.secp());
-	let skey = excess.secret_key(&keychain.secp())?;
+	let excess = BlindingFactor::rand();
+	let skey = excess.secret_key()?;
 	kernel.excess = keychain.secp().commit(0, skey)?;
 	let pubkey = &kernel.excess.to_pubkey(&keychain.secp())?;
 	kernel.excess_sig = aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))?;

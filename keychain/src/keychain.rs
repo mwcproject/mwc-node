@@ -166,14 +166,14 @@ impl Keychain for ExtKeychain {
 		let keys = blind_sum
 			.positive_blinding_factors
 			.iter()
-			.filter_map(|b| b.secret_key(&self.secp).ok())
+			.filter_map(|b| b.secret_key().ok())
 			.collect::<Vec<SecretKey>>();
 		pos_keys.extend(keys);
 
 		let keys = blind_sum
 			.negative_blinding_factors
 			.iter()
-			.filter_map(|b| b.secret_key(&self.secp).ok())
+			.filter_map(|b| b.secret_key().ok())
 			.collect::<Vec<SecretKey>>();
 		neg_keys.extend(keys);
 
@@ -198,7 +198,7 @@ impl Keychain for ExtKeychain {
 		msg: &Message,
 		blinding: &BlindingFactor,
 	) -> Result<Signature, Error> {
-		let skey = &blinding.secret_key(&self.secp)?;
+		let skey = &blinding.secret_key()?;
 		let sig = self.secp.sign(msg, &skey)?;
 		Ok(sig)
 	}
@@ -245,27 +245,21 @@ mod test {
 	fn secret_key_addition() {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-		let skey1 = SecretKey::from_slice(
-			&keychain.secp,
-			&[
-				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-				0, 0, 0, 1,
-			],
-		)
+		let skey1 = SecretKey::from_slice(&[
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 1,
+		])
 		.unwrap();
 
-		let skey2 = SecretKey::from_slice(
-			&keychain.secp,
-			&[
-				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-				0, 0, 0, 2,
-			],
-		)
+		let skey2 = SecretKey::from_slice(&[
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 2,
+		])
 		.unwrap();
 
 		// adding secret keys 1 and 2 to give secret key 3
 		let mut skey3 = skey1.clone();
-		skey3.add_assign(&keychain.secp, &skey2).unwrap();
+		skey3.add_assign(&skey2).unwrap();
 
 		// create commitments for secret keys 1, 2 and 3
 		// all committing to the value 0 (which is what we do for tx_kernels)
