@@ -436,7 +436,7 @@ impl ProofBuild for ViewKey {
 			key = key.ckd_pub(&secp, &mut hasher, child_number)?;
 		}
 		let pub_key = key.commit(secp, amount, switch)?;
-		if commit.to_pubkey(&secp)? == pub_key {
+		if commit.to_pubkey()? == pub_key {
 			Ok(Some((id, switch)))
 		} else {
 			Ok(None)

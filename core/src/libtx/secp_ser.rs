@@ -57,19 +57,15 @@ pub mod pubkey_serde {
 pub mod option_sig_serde {
 	use crate::serde::{Deserialize, Deserializer, Serializer};
 	use serde::de::Error;
-	use util::{from_hex, secp, static_secp_instance, ToHex};
+	use util::{from_hex, secp, ToHex};
 
 	///
 	pub fn serialize<S>(sig: &Option<secp::Signature>, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
 		match sig {
-			Some(sig) => {
-				serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
-			}
+			Some(sig) => serializer.serialize_str(&(&sig.serialize_compact()[..]).to_hex()),
 			None => serializer.serialize_none(),
 		}
 	}
@@ -79,8 +75,6 @@ pub mod option_sig_serde {
 	where
 		D: Deserializer<'de>,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
@@ -89,7 +83,7 @@ pub mod option_sig_serde {
 				.and_then(|bytes: Vec<u8>| {
 					let mut b = [0u8; 64];
 					b.copy_from_slice(&bytes[0..64]);
-					secp::Signature::from_compact(&static_secp, &b)
+					secp::Signature::from_compact(&b)
 						.map(Some)
 						.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 				}),
@@ -144,16 +138,14 @@ pub mod option_seckey_serde {
 pub mod sig_serde {
 	use crate::serde::{Deserialize, Deserializer, Serializer};
 	use serde::de::Error;
-	use util::{from_hex, secp, static_secp_instance, ToHex};
+	use util::{from_hex, secp, ToHex};
 
 	///
 	pub fn serialize<S>(sig: &secp::Signature, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
-		serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
+		serializer.serialize_str(&(&sig.serialize_compact()[..]).to_hex())
 	}
 
 	///
@@ -161,8 +153,6 @@ pub mod sig_serde {
 	where
 		D: Deserializer<'de>,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock();
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -172,7 +162,7 @@ pub mod sig_serde {
 			.and_then(|bytes: Vec<u8>| {
 				let mut b = [0u8; 64];
 				b.copy_from_slice(&bytes[0..64]);
-				secp::Signature::from_compact(&static_secp, &b)
+				secp::Signature::from_compact(&b)
 					.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 			})
 	}
