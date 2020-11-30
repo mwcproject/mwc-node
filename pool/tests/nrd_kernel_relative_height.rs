@@ -82,7 +82,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 		let excess = BlindingFactor::rand();
 		let skey = excess.secret_key().unwrap();
 		kernel.excess = keychain.secp().commit(0, skey).unwrap();
-		let pubkey = &kernel.excess.to_pubkey(&keychain.secp()).unwrap();
+		let pubkey = &kernel.excess.to_pubkey().unwrap();
 		kernel.excess_sig =
 			aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 		kernel.verify().unwrap();

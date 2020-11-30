@@ -177,7 +177,7 @@ impl Keychain for ExtKeychain {
 			.collect::<Vec<SecretKey>>();
 		neg_keys.extend(keys);
 
-		let sum = self.secp.blind_sum(pos_keys, neg_keys)?;
+		let sum = secp::Secp256k1::blind_sum(pos_keys, neg_keys)?;
 		Ok(BlindingFactor::from_secret_key(sum))
 	}
 
@@ -268,10 +268,7 @@ mod test {
 		let commit_3 = keychain.secp.commit(0, skey3.clone()).unwrap();
 
 		// now sum commitments for keys 1 and 2
-		let sum = keychain
-			.secp
-			.commit_sum(vec![commit_1, commit_2], vec![])
-			.unwrap();
+		let sum = secp::Secp256k1::commit_sum(vec![commit_1, commit_2], vec![]).unwrap();
 
 		// confirm the commitment for key 3 matches the sum of the commitments 1 and 2
 		assert_eq!(sum, commit_3);
