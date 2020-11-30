@@ -17,7 +17,7 @@
 //! as a facade.
 
 use crate::tor::config as tor_config;
-use crate::util::{secp, static_secp_instance};
+use crate::util::secp;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -553,9 +553,7 @@ impl Server {
 		let scoped_vec;
 		let mut existing_onion = None;
 		if !found {
-			let secp_inst = static_secp_instance();
-			let secp = secp_inst.lock();
-			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+			let sec_key = secp::key::SecretKey::new(&mut rand::thread_rng());
 			scoped_vec = vec![sec_key.clone()];
 			sec_key_vec = Some((scoped_vec).as_slice());
 

@@ -34,7 +34,6 @@ use util::secp::constants::{
 use util::secp::key::PublicKey;
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::secp::Signature;
-use util::secp::{ContextFlag, Secp256k1};
 
 /// Serialization size limit for a single chunk/object or array.
 /// WARNING!!! You can increase the number, but never decrease
@@ -674,8 +673,7 @@ impl Writeable for Signature {
 impl Writeable for PublicKey {
 	// Write the public key in compressed form
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		let secp = Secp256k1::with_caps(ContextFlag::None);
-		writer.write_fixed_bytes(self.serialize_vec(&secp, true))?;
+		writer.write_fixed_bytes(self.serialize_vec(true))?;
 		Ok(())
 	}
 }
@@ -684,8 +682,7 @@ impl Readable for PublicKey {
 	// Read the public key in compressed form
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, Error> {
 		let buf = reader.read_fixed_bytes(COMPRESSED_PUBLIC_KEY_SIZE)?;
-		let secp = Secp256k1::with_caps(ContextFlag::None);
-		let pk = PublicKey::from_slice(&secp, &buf)
+		let pk = PublicKey::from_slice(&buf)
 			.map_err(|e| Error::CorruptedData(format!("Unable to read public key, {}", e)))?;
 		Ok(pk)
 	}
