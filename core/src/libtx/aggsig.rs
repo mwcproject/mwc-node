@@ -243,8 +243,8 @@ pub fn verify_partial_sig(
 /// let out_commit = output.commitment();
 /// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
-/// let excess = secp.commit_sum(vec![out_commit], vec![over_commit]).unwrap();
-/// let pubkey = excess.to_pubkey(&secp).unwrap();
+/// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
+/// let pubkey = excess.to_pubkey().unwrap();
 /// let sig = aggsig::sign_from_key_id(&secp, &keychain, &msg, value, &key_id, None, Some(&pubkey)).unwrap();
 /// ```
 
@@ -308,8 +308,8 @@ where
 /// let out_commit = output.commitment();
 /// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
-/// let excess = secp.commit_sum(vec![out_commit], vec![over_commit]).unwrap();
-/// let pubkey = excess.to_pubkey(&secp).unwrap();
+/// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
+/// let pubkey = excess.to_pubkey().unwrap();
 /// let sig = aggsig::sign_from_key_id(&secp, &keychain, &msg, value, &key_id, None, Some(&pubkey)).unwrap();
 ///
 /// // Verify the signature from the excess commit
@@ -324,7 +324,7 @@ pub fn verify_single_from_commit(
 	msg: &Message,
 	commit: &Commitment,
 ) -> Result<(), Error> {
-	let pubkey = commit.to_pubkey(secp)?;
+	let pubkey = commit.to_pubkey()?;
 	if !verify_single(secp, sig, msg, None, &pubkey, Some(&pubkey), false) {
 		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
 	}

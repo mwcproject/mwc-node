@@ -52,8 +52,8 @@ where
 	let secp = secp.lock();
 	let over_commit = secp.commit_value(reward(fees, height))?;
 	let out_commit = output.commitment();
-	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
-	let pubkey = excess.to_pubkey(&secp)?;
+	let excess = secp::Secp256k1::commit_sum(vec![out_commit], vec![over_commit])?;
+	let pubkey = excess.to_pubkey()?;
 
 	let features = KernelFeatures::Coinbase;
 	let msg = features.kernel_sig_msg()?;

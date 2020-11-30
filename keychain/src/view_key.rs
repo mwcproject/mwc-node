@@ -152,7 +152,7 @@ impl ViewKey {
 		amount: u64,
 		switch: SwitchCommitmentType,
 	) -> Result<PublicKey, Error> {
-		let value_key = secp.commit_value(amount)?.to_pubkey(secp)?;
+		let value_key = secp.commit_value(amount)?.to_pubkey()?;
 		let pub_key = PublicKey::from_combination(vec![&self.public_key, &value_key])?;
 		match switch {
 			SwitchCommitmentType::None => Ok(pub_key),
