@@ -1356,8 +1356,8 @@ dependencies = [
 
 [[package]]
 name = "grin_secp256k1zkp"
-version = "0.7.9"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp#63c81977c6d3ff04332bb9b34a4d8ea959d92d74"
+version = "0.7.10"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp#7fec028ecdeaab3b7b1dc6c6310c9cc05042c5d9"
 dependencies = [
  "arrayvec 0.3.25",
  "cc",

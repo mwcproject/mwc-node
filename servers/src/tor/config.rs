@@ -313,7 +313,7 @@ mod tests {
 
 	use rand::rngs::mock::StepRng;
 
-	use crate::util::{self, secp, static_secp_instance};
+	use crate::util::{self, secp};
 
 	pub fn clean_output_dir(test_dir: &str) {
 		let _ = fs::remove_dir_all(test_dir);
@@ -328,10 +328,8 @@ mod tests {
 	fn test_service_config() -> Result<(), Error> {
 		let test_dir = "target/test_output/onion_service";
 		setup(test_dir);
-		let secp_inst = static_secp_instance();
-		let secp = secp_inst.lock();
 		let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
-		let sec_key = secp::key::SecretKey::new(&secp, &mut test_rng);
+		let sec_key = secp::key::SecretKey::new(&mut test_rng);
 		output_onion_service_config(test_dir, &sec_key)?;
 		clean_output_dir(test_dir);
 		Ok(())
@@ -341,10 +339,8 @@ mod tests {
 	fn test_output_tor_config() -> Result<(), Error> {
 		let test_dir = "./target/test_output/tor";
 		setup(test_dir);
-		let secp_inst = static_secp_instance();
-		let secp = secp_inst.lock();
 		let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
-		let sec_key = secp::key::SecretKey::new(&secp, &mut test_rng);
+		let sec_key = secp::key::SecretKey::new(&mut test_rng);
 		output_tor_listener_config(
 			test_dir,
 			"127.0.0.1:3415",
