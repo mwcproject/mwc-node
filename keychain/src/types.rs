@@ -168,8 +168,8 @@ impl Identifier {
 		self.0
 	}
 
-	pub fn from_pubkey(secp: &Secp256k1, pubkey: &PublicKey) -> Identifier {
-		let bytes = pubkey.serialize_vec(secp, true);
+	pub fn from_pubkey(pubkey: &PublicKey) -> Identifier {
+		let bytes = pubkey.serialize_vec(true);
 		let identifier = blake2b(IDENTIFIER_SIZE, &[], &bytes[..]);
 		Identifier::from_bytes(&identifier.as_bytes())
 	}
@@ -179,7 +179,7 @@ impl Identifier {
 	/// corresponding to the secret key provided.
 	pub fn from_secret_key(secp: &Secp256k1, key: &SecretKey) -> Result<Identifier, Error> {
 		let key_id = PublicKey::from_secret_key(secp, key).map_err(|e| Error::Secp(e))?;
-		Ok(Identifier::from_pubkey(secp, &key_id))
+		Ok(Identifier::from_pubkey(&key_id))
 	}
 
 	pub fn from_hex(hex: &str) -> Result<Identifier, Error> {
@@ -255,8 +255,8 @@ impl BlindingFactor {
 		self.0 == ZERO_KEY.as_ref()
 	}
 
-	pub fn rand(secp: &Secp256k1) -> BlindingFactor {
-		BlindingFactor::from_secret_key(SecretKey::new(secp, &mut thread_rng()))
+	pub fn rand() -> BlindingFactor {
+		BlindingFactor::from_secret_key(SecretKey::new(&mut thread_rng()))
 	}
 
 	pub fn from_hex(hex: &str) -> Result<BlindingFactor, Error> {
@@ -266,26 +266,26 @@ impl BlindingFactor {
 
 	// Handle "zero" blinding_factor correctly, by returning the "zero" key.
 	// We need this for some of the tests.
-	pub fn secret_key(&self, secp: &Secp256k1) -> Result<SecretKey, Error> {
+	pub fn secret_key(&self) -> Result<SecretKey, Error> {
 		if self.is_zero() {
 			Ok(ZERO_KEY)
 		} else {
-			SecretKey::from_slice(secp, &self.0).map_err(Error::Secp)
+			SecretKey::from_slice(&self.0).map_err(Error::Secp)
 		}
 	}
 
 	// Convenient (and robust) way to add two blinding_factors together.
 	// Handles "zero" blinding_factors correctly.
-	pub fn add(&self, other: &BlindingFactor, secp: &Secp256k1) -> Result<BlindingFactor, Error> {
+	pub fn add(&self, other: &BlindingFactor) -> Result<BlindingFactor, Error> {
 		let keys = vec![self, other]
 			.into_iter()
 			.filter(|x| !x.is_zero())
-			.filter_map(|x| x.secret_key(&secp).ok())
+			.filter_map(|x| x.secret_key().ok())
 			.collect::<Vec<_>>();
 		if keys.is_empty() {
 			Ok(BlindingFactor::zero())
 		} else {
-			let sum = secp.blind_sum(keys, vec![])?;
+			let sum = Secp256k1::blind_sum(keys, vec![])?;
 			Ok(BlindingFactor::from_secret_key(sum))
 		}
 	}
@@ -296,15 +296,11 @@ impl BlindingFactor {
 	/// This prevents an actor from being able to sum a set of inputs, outputs
 	/// and kernels from a block to identify and reconstruct a particular tx
 	/// from a block. You would need both k1, k2 to do this.
-	pub fn split(
-		&self,
-		blind_1: &BlindingFactor,
-		secp: &Secp256k1,
-	) -> Result<BlindingFactor, Error> {
+	pub fn split(&self, blind_1: &BlindingFactor) -> Result<BlindingFactor, Error> {
 		// use blind_sum to subtract skey_1 from our key such that skey = skey_1 + skey_2
-		let skey = self.secret_key(secp)?;
-		let skey_1 = blind_1.secret_key(secp)?;
-		let skey_2 = secp.blind_sum(vec![skey], vec![skey_1])?;
+		let skey = self.secret_key()?;
+		let skey_1 = blind_1.secret_key()?;
+		let skey_2 = Secp256k1::blind_sum(vec![skey], vec![skey_1])?;
 		Ok(BlindingFactor::from_secret_key(skey_2))
 	}
 }
@@ -509,7 +505,6 @@ mod test {
 	use crate::types::{BlindingFactor, ExtKeychainPath, Identifier};
 	use crate::util::secp::constants::SECRET_KEY_SIZE;
 	use crate::util::secp::key::{SecretKey, ZERO_KEY};
-	use crate::util::secp::Secp256k1;
 	use std::slice::from_raw_parts;
 
 	// This tests cleaning of BlindingFactor (e.g. secret key) on Drop.
@@ -543,15 +538,14 @@ mod test {
 	// split a key, sum the split keys and confirm the sum matches the original key
 	#[test]
 	fn split_blinding_factor() {
-		let secp = Secp256k1::new();
-		let skey_in = SecretKey::new(&secp, &mut thread_rng());
+		let skey_in = SecretKey::new(&mut thread_rng());
 		let blind = BlindingFactor::from_secret_key(skey_in.clone());
-		let blind_1 = BlindingFactor::rand(&secp);
-		let blind_2 = blind.split(&blind_1, &secp).unwrap();
+		let blind_1 = BlindingFactor::rand();
+		let blind_2 = blind.split(&blind_1).unwrap();
 
-		let mut skey_sum = blind_1.secret_key(&secp).unwrap();
-		let skey_2 = blind_2.secret_key(&secp).unwrap();
-		skey_sum.add_assign(&secp, &skey_2).unwrap();
+		let mut skey_sum = blind_1.secret_key().unwrap();
+		let skey_2 = blind_2.secret_key().unwrap();
+		skey_sum.add_assign(&skey_2).unwrap();
 		assert_eq!(skey_in, skey_sum);
 	}
 
@@ -559,12 +553,11 @@ mod test {
 	// the same key that we started with (k + 0 = k)
 	#[test]
 	fn zero_key_addition() {
-		let secp = Secp256k1::new();
-		let skey_in = SecretKey::new(&secp, &mut thread_rng());
+		let skey_in = SecretKey::new(&mut thread_rng());
 		let skey_zero = ZERO_KEY;
 
 		let mut skey_out = skey_in.clone();
-		skey_out.add_assign(&secp, &skey_zero).unwrap();
+		skey_out.add_assign(&skey_zero).unwrap();
 
 		assert_eq!(skey_in, skey_out);
 	}

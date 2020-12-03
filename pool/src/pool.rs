@@ -29,7 +29,6 @@ use grin_util as util;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use util::static_secp_instance;
 
 pub struct Pool<B, V>
 where
@@ -306,11 +305,7 @@ where
 	) -> Result<BlockSums, PoolError> {
 		let overage = tx.overage();
 
-		let offset = {
-			let secp = static_secp_instance();
-			let secp = secp.lock();
-			header.total_kernel_offset().add(&tx.offset, &secp)
-		}?;
+		let offset = header.total_kernel_offset().add(&tx.offset)?;
 
 		let block_sums = self.blockchain.get_block_sums(&header.hash())?;
 
