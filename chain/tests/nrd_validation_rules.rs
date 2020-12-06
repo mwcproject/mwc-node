@@ -115,10 +115,10 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// // Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand(&keychain.secp());
-	let skey = excess.secret_key(&keychain.secp()).unwrap();
+	let excess = BlindingFactor::rand();
+	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey(&keychain.secp()).unwrap();
+	let pubkey = &kernel.excess.to_pubkey().unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
@@ -231,10 +231,10 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// // Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand(&keychain.secp());
-	let skey = excess.secret_key(&keychain.secp()).unwrap();
+	let excess = BlindingFactor::rand();
+	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey(&keychain.secp()).unwrap();
+	let pubkey = &kernel.excess.to_pubkey().unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
@@ -330,10 +330,10 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// // Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand(&keychain.secp());
-	let skey = excess.secret_key(&keychain.secp()).unwrap();
+	let excess = BlindingFactor::rand();
+	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey(&keychain.secp()).unwrap();
+	let pubkey = &kernel.excess.to_pubkey().unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
