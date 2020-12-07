@@ -20,8 +20,8 @@ use self::core::core::id::{ShortId, ShortIdentifiable};
 use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::{transaction, versioned_transaction};
 use self::core::core::{
-	Block, BlockHeader, BlockSums, Committed, OutputIdentifier, Transaction, TxKernel,
-	VersionedTransaction, Weighting,
+	Block, BlockHeader, BlockSums, Commit, Committed, OutputIdentifier, Transaction, TxImpl,
+	TxKernel, VersionedTransaction, Weighting,
 };
 use self::util::RwLock;
 use crate::types::{BlockChain, PoolEntry, PoolError};
@@ -135,7 +135,7 @@ where
 		// Verify these txs produce an aggregated tx below max_weight.
 		// Return a vec of all the valid txs.
 		let header = self.blockchain.chain_head()?;
-		let valid_txs = self.validate_raw_txs(&txs, None, &header, weighting)?;
+		let valid_txs = self.validate_raw_txs(txs.as_slice(), None, &header, weighting)?;
 		Ok(valid_txs)
 	}
 
@@ -229,7 +229,7 @@ where
 	) -> Result<BlockSums, PoolError> {
 		// Validate the tx, conditionally checking against weight limits,
 		// based on weight verification type.
-		tx.validate(weighting, self.verifier_cache.clone(), None)?;
+		tx.validate(weighting, self.verifier_cache.clone())?;
 
 		// Validate the tx against current chain state.
 		// Check all inputs are in the current UTXO set.
@@ -242,11 +242,11 @@ where
 
 	pub fn validate_raw_txs(
 		&self,
-		txs: &[Transaction],
-		extra_tx: Option<Transaction>,
+		txs: &[VersionedTransaction],
+		extra_tx: Option<VersionedTransaction>,
 		header: &BlockHeader,
 		weighting: Weighting,
-	) -> Result<Vec<Transaction>, PoolError> {
+	) -> Result<Vec<VersionedTransaction>, PoolError> {
 		let mut valid_txs = vec![];
 
 		for tx in txs {
@@ -258,7 +258,7 @@ where
 			candidate_txs.push(tx.clone());
 
 			// Build a single aggregate tx from candidate txs.
-			let agg_tx = transaction::aggregate(&candidate_txs)?;
+			let agg_tx = versioned_transaction::aggregate(&candidate_txs)?;
 
 			// We know the tx is valid if the entire aggregate tx is valid.
 			if self.validate_raw_tx(&agg_tx, header, weighting).is_ok() {
@@ -306,7 +306,7 @@ where
 	) -> Result<BlockSums, PoolError> {
 		let overage = tx.overage();
 
-		let offset = header.total_kernel_offset().add(&tx.offset)?;
+		let offset = header.total_kernel_offset().add(tx.offset())?;
 
 		let block_sums = self.blockchain.get_block_sums(&header.hash())?;
 
@@ -525,7 +525,7 @@ impl Bucket {
 		let mut raw_txs = self.raw_txs.clone();
 		raw_txs.push(new_tx);
 		let agg_tx = versioned_transaction::aggregate(&raw_txs)?;
-		agg_tx.validate(weighting, verifier_cache, None)?;
+		agg_tx.validate(weighting, verifier_cache)?;
 		Ok(Bucket {
 			fee_to_weight: agg_tx.fee_to_weight(),
 			raw_txs,

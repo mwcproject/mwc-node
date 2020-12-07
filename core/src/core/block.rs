@@ -545,10 +545,7 @@ impl Writeable for Block {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.header.write(writer)?;
 		if !writer.serialization_mode().is_hash_mode() {
-			match self.body {
-				VersionedTransactionBody::V1(body) => body.write(writer)?,
-				VersionedTransactionBody::V2(body) => body.write(writer)?,
-			}
+			self.body.write(writer)?;
 		}
 		Ok(())
 	}

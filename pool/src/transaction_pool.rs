@@ -21,17 +21,15 @@ use self::core::core::hash::{Hash, Hashed};
 use self::core::core::id::ShortId;
 use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::{
-	transaction, versioned_transaction, Block, BlockHeader, HeaderVersion, IdentifierWithRnp,
-	OutputIdentifier, Transaction, VersionedTransaction, Weighting,
+	versioned_transaction, Block, BlockHeader, HeaderVersion, OutputIdentifier, TxImpl,
+	VersionedTransaction, Weighting,
 };
 use self::core::global;
-use self::util::secp::pedersen::Commitment;
 use self::util::RwLock;
 use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use chrono::prelude::*;
 use grin_core as core;
-use grin_core::core::Committed;
 use grin_util as util;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -195,13 +193,8 @@ where
 
 		// Make sure the transaction is valid before anything else.
 		// Validate tx accounting for max tx weight.
-		if Ok(false)
-			== tx
-				.validate(Weighting::AsTransaction, self.verifier_cache.clone())
-				.map_err(PoolError::InvalidTx)?
-		{
-			return Err(PoolError::InvalidInputsSig);
-		}
+		tx.validate(Weighting::AsTransaction, self.verifier_cache.clone())
+			.map_err(PoolError::InvalidTx)?;
 
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
@@ -277,7 +270,7 @@ where
 		inputs.extend_from_slice(spent_pool);
 		inputs.sort_unstable();
 
-		tx.replace_inputs(inputs.as_slice().into());
+		tx = tx.replace_inputs(inputs.as_slice().into());
 
 		// Validate the tx to ensure our converted inputs are correct.
 		tx.validate(Weighting::AsTransaction, self.verifier_cache.clone())?;

@@ -21,7 +21,8 @@ use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::pmmr::{self, Backend, ReadonlyPMMR, RewindablePMMR, PMMR};
 use crate::core::core::{
-	Block, BlockHeader, IdentifierWithRnp, KernelFeatures, Output, OutputIdentifier, TxKernel,
+	Block, BlockHeader, Commit, IdentifierWithRnp, KernelFeatures, Output, OutputIdentifier,
+	TxKernel,
 };
 use crate::core::global;
 use crate::core::ser::{PMMRable, ProtocolVersion};
@@ -604,14 +605,15 @@ impl TxHashSet {
 			let hash = header_pmmr.get_header_hash_by_height(search_height + 1)?;
 			let h = batch.get_block_header(&hash)?;
 			while i < total_outputs {
-				let (commit, pos) = outputs_pos[i];
+				let (out_id, pos) = outputs_pos[i];
 				if pos > h.output_mmr_size {
 					// Note: MMR position is 1-based and not 0-based, so here must be '>' instead of '>='
 					break;
 				}
 				batch.save_output_pos_height(
-					&commit,
+					&out_id.commit,
 					CommitPos {
+						features: out_id.features,
 						pos,
 						height: h.height,
 					},
@@ -689,13 +691,18 @@ where
 		let header_pmmr = ReadonlyPMMR::at(&handle.backend, handle.last_pos);
 		let output_pmmr =
 			ReadonlyPMMR::at(&trees.output_pmmr_h.backend, trees.output_pmmr_h.last_pos);
+		let output_wrnp_pmmr = ReadonlyPMMR::at(
+			&trees.output_wrnp_pmmr_h.backend,
+			trees.output_wrnp_pmmr_h.last_pos,
+		);
+
 		let rproof_pmmr =
 			ReadonlyPMMR::at(&trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.last_pos);
 
 		// Create a new batch here to pass into the utxo_view.
 		// Discard it (rollback) after we finish with the utxo_view.
 		let batch = trees.commit_index.batch()?;
-		let utxo = UTXOView::new(header_pmmr, output_pmmr, rproof_pmmr);
+		let utxo = UTXOView::new(header_pmmr, output_pmmr, output_wrnp_pmmr, rproof_pmmr);
 		res = inner(&utxo, &batch);
 	}
 	res
@@ -1134,6 +1141,7 @@ impl<'a> Extension<'a> {
 		UTXOView::new(
 			header_ext.pmmr.readonly_pmmr(),
 			self.output_pmmr.readonly_pmmr(),
+			self.output_wrnp_pmmr.readonly_pmmr(),
 			self.rproof_pmmr.readonly_pmmr(),
 		)
 	}
@@ -1158,6 +1166,7 @@ impl<'a> Extension<'a> {
 			batch.save_output_pos_height(
 				&out.commitment(),
 				CommitPos {
+					features: out.identifier.features,
 					pos,
 					height: b.header.height,
 				},

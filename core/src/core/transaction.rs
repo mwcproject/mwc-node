@@ -415,6 +415,9 @@ pub enum Error {
 	/// Underlying serialization error.
 	#[fail(display = "Tx Serialization error, {}", _0)]
 	Serialization(ser::Error),
+	/// Generic error.
+	#[fail(display = "Generic error, {}", _0)]
+	Generic(String),
 }
 
 impl From<ser::Error> for Error {
@@ -1424,6 +1427,12 @@ impl Transaction {
 		}
 	}
 
+	/// Fully replace inputs.
+	pub fn replace_inputs(mut self, inputs: Inputs) -> Transaction {
+		self.body = self.body.replace_inputs(inputs);
+		self
+	}
+
 	/// Builds a new transaction replacing any existing kernels with the provided kernel.
 	pub fn replace_kernel(self, kernel: TxKernel) -> Transaction {
 		Transaction {
@@ -1762,6 +1771,22 @@ impl From<&Input> for CommitWrapper {
 	}
 }
 
+impl From<CommitWithSig> for CommitWrapper {
+	fn from(input: CommitWithSig) -> Self {
+		CommitWrapper {
+			commit: input.commitment(),
+		}
+	}
+}
+
+impl From<&CommitWithSig> for CommitWrapper {
+	fn from(input: &CommitWithSig) -> Self {
+		CommitWrapper {
+			commit: input.commitment(),
+		}
+	}
+}
+
 impl AsRef<Commitment> for CommitWrapper {
 	fn as_ref(&self) -> &Commitment {
 		&self.commit
@@ -1908,8 +1933,8 @@ impl Writeable for Inputs {
 						inputs.write(writer)?;
 					}
 				},
-				Inputs::CommitWithSig(inputs) => match writer.protocol_version().value() {
-					0..=3 => {
+				Inputs::CommitsWithSig(inputs) => match writer.protocol_version().value() {
+					0..=999 => {
 						return Err(ser::Error::UnsupportedProtocolVersion(format!(
 							"get version {}, expecting version >=3",
 							writer.protocol_version().value()

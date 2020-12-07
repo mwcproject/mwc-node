@@ -39,11 +39,35 @@ impl From<TransactionV2> for VersionedTransactionBody {
 	}
 }
 
+/// Implementation of Writeable, defines how to write the transaction body as binary.
+impl Writeable for VersionedTransactionBody {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		match self {
+			VersionedTransactionBody::V1(body) => body.write(writer)?,
+			VersionedTransactionBody::V2(body) => body.write(writer)?,
+		}
+		Ok(())
+	}
+}
+
 impl VersionedTransactionBody {
+	/// Fully replace inputs (note: inputs w/o signature).
+	pub fn replace_inputs(mut self, inputs: Inputs) -> VersionedTransactionBody {
+		match self {
+			VersionedTransactionBody::V1(body) => {
+				self = VersionedTransactionBody::V1(body.replace_inputs(inputs))
+			}
+			VersionedTransactionBody::V2(body) => {
+				self = VersionedTransactionBody::V2(body.replace_inputs(inputs))
+			}
+		};
+		self
+	}
+
 	/// Get inner vector of inputs w/ sig
 	pub fn inputs_with_sig(&self) -> Option<Inputs> {
 		match self {
-			VersionedTransactionBody::V1(body) => None,
+			VersionedTransactionBody::V1(_body) => None,
 			VersionedTransactionBody::V2(body) => Some(body.inputs_with_sig()),
 		}
 	}
@@ -51,7 +75,7 @@ impl VersionedTransactionBody {
 	/// Transaction outputs w/ R&P'.
 	pub fn outputs_with_rnp(&self) -> Option<&[OutputWithRnp]> {
 		match self {
-			VersionedTransactionBody::V1(body) => None,
+			VersionedTransactionBody::V1(_body) => None,
 			VersionedTransactionBody::V2(body) => Some(body.outputs_with_rnp()),
 		}
 	}
@@ -81,47 +105,58 @@ impl Writeable for VersionedTransaction {
 
 impl DefaultHashable for VersionedTransaction {}
 
-// impl TryFrom<VersionedTransaction> for Transaction {
-// 	type Error = &'static str;
-// 	fn try_from(tx_ex: VersionedTransaction) -> Result<Self, Self::Error> {
-// 		match tx_ex {
-// 			VersionedTransaction::V1(tx) => Ok(tx),
-// 			VersionedTransaction::V2(tx) => Transaction::try_from(tx),
-// 		}
-// 	}
-// }
-//
-// impl From<VersionedTransaction> for TransactionV2 {
-// 	fn from(tx_ex: VersionedTransaction) -> Self {
-// 		match tx_ex {
-// 			VersionedTransaction::V1(tx) => TransactionV2::from(tx),
-// 			VersionedTransaction::V2(tx) => tx,
-// 		}
-// 	}
-// }
-
 impl VersionedTransaction {
 	/// Is it the version after HF2?
 	pub fn not_v1_version(&self) -> bool {
 		match self {
-			VersionedTransaction::V1(tx) => false,
-			VersionedTransaction::V2(tx) => true,
+			VersionedTransaction::V1(_tx) => false,
+			VersionedTransaction::V2(_tx) => true,
+		}
+	}
+
+	/// Offset
+	pub fn offset(&self) -> &BlindingFactor {
+		match self {
+			VersionedTransaction::V1(tx) => &tx.offset,
+			VersionedTransaction::V2(tx) => &tx.offset,
+		}
+	}
+
+	/// Because of conflict with enum_dispatch, we can not implement our own 'from'/'into'.
+	pub fn to_v1(&self) -> Result<Transaction, Error> {
+		match self {
+			VersionedTransaction::V1(tx) => Ok(tx.clone()),
+			VersionedTransaction::V2(tx) => {
+				Transaction::try_from(tx.clone()).map_err(|e| Error::Generic(e.to_string()))
+			}
+		}
+	}
+
+	/// Because of conflict with enum_dispatch, we can not implement our own 'from'/'into'.
+	pub fn to_v2(&self) -> TransactionV2 {
+		match self {
+			VersionedTransaction::V1(tx) => TransactionV2::from(tx.clone()),
+			VersionedTransaction::V2(tx) => tx.clone(),
 		}
 	}
 
 	/// Fully replace inputs (note: inputs w/o signature).
 	pub fn replace_inputs(mut self, inputs: Inputs) -> VersionedTransaction {
 		match self {
-			VersionedTransaction::V1(tx) => tx.body.replace_inputs(inputs),
-			VersionedTransaction::V2(tx) => tx.body.replace_inputs(inputs),
-		}
-		self.clone()
+			VersionedTransaction::V1(tx) => {
+				self = VersionedTransaction::V1(tx.replace_inputs(inputs))
+			}
+			VersionedTransaction::V2(tx) => {
+				self = VersionedTransaction::V2(tx.replace_inputs(inputs))
+			}
+		};
+		self
 	}
 
 	/// Get inputs w/ signature
 	pub fn inputs_with_sig(&self) -> Option<Inputs> {
 		match self {
-			VersionedTransaction::V1(tx) => None,
+			VersionedTransaction::V1(_tx) => None,
 			VersionedTransaction::V2(tx) => Some(tx.body.inputs_with_sig()),
 		}
 	}
@@ -129,7 +164,7 @@ impl VersionedTransaction {
 	/// Get outputs w/ R&P'
 	pub fn outputs_with_rnp(&self) -> Option<&[OutputWithRnp]> {
 		match self {
-			VersionedTransaction::V1(tx) => None,
+			VersionedTransaction::V1(_tx) => None,
 			VersionedTransaction::V2(tx) => Some(tx.body.outputs_with_rnp()),
 		}
 	}
@@ -142,17 +177,15 @@ pub fn aggregate(txs: &[VersionedTransaction]) -> Result<VersionedTransaction, E
 		// Backward compatibility to support Pre-HF2
 		let txs_v1 = txs
 			.iter()
-			.map(|tx| Transaction::try_from(tx.clone())?)
+			.map(|tx| tx.to_v1().unwrap())
 			.collect::<Vec<Transaction>>();
-		Ok(VersionedTransaction::from(transaction::aggregate(&txs_v1)?))
+		Ok(transaction::aggregate(&txs_v1)?.into())
 	} else {
 		let txs_v2 = txs
 			.iter()
-			.map(|tx| TransactionV2::from(tx.clone()))
+			.map(|tx| tx.to_v2())
 			.collect::<Vec<TransactionV2>>();
-		Ok(VersionedTransaction::from(transaction_v2::aggregate(
-			&txs_v2,
-		)?))
+		Ok(transaction_v2::aggregate(&txs_v2)?.into())
 	}
 }
 
@@ -165,20 +198,14 @@ pub fn deaggregate(
 		// Backward compatibility to support Pre-HF2
 		let txs_v1 = txs
 			.iter()
-			.map(|tx| Transaction::try_from(tx.clone())?)
+			.map(|tx| tx.to_v1().unwrap())
 			.collect::<Vec<Transaction>>();
-		Ok(VersionedTransaction::from(transaction::deaggregate(
-			Transaction::try_from(mk_tx)?,
-			&txs_v1,
-		)?))
+		Ok(transaction::deaggregate(mk_tx.to_v1()?, &txs_v1)?.into())
 	} else {
 		let txs_v2 = txs
 			.iter()
-			.map(|tx| TransactionV2::from(tx.clone()))
+			.map(|tx| tx.to_v2())
 			.collect::<Vec<TransactionV2>>();
-		Ok(VersionedTransaction::from(transaction_v2::deaggregate(
-			TransactionV2::from(mk_tx),
-			&txs_v2,
-		)?))
+		Ok(transaction_v2::deaggregate(mk_tx.to_v2(), &txs_v2)?.into())
 	}
 }

@@ -14,7 +14,7 @@
 
 //! Transactions V2. To support NIT(Non-Interactive Transaction) feature.
 
-use crate::core::committed;
+use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction::{
 	Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
@@ -32,9 +32,9 @@ use std::cmp::{max, min};
 use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 use util;
-use util::secp;
 use util::secp::key::PublicKey;
 use util::secp::pedersen::{Commitment, RangeProof};
+use util::secp::{self, Secp256k1};
 use util::static_secp_instance;
 use util::RwLock;
 
@@ -132,8 +132,13 @@ impl Readable for TransactionBodyV2 {
 
 		// Quick block weight check before proceeding.
 		// Note: We use weight_as_block here (inputs have weight).
-		let tx_block_weight =
-			TransactionBodyV2::weight_as_block(num_inputs, num_outputs, num_kernels);
+		let tx_block_weight = TransactionBodyV2::weight_as_block(
+			num_inputs,
+			num_inputs_with_sig,
+			num_outputs,
+			num_outputs_with_rnp,
+			num_kernels,
+		);
 
 		if num_inputs > ser::READ_VEC_SIZE_LIMIT
 			|| num_inputs_with_sig > ser::READ_VEC_SIZE_LIMIT
@@ -157,7 +162,7 @@ impl Readable for TransactionBodyV2 {
 
 		// Read protocol version specific inputs.
 		let inputs = match reader.protocol_version().value() {
-			0..=3 => {
+			0..=999 => {
 				return Err(ser::Error::UnsupportedProtocolVersion(format!(
 					"get version {}, expecting version >=1000",
 					reader.protocol_version().value()
@@ -171,7 +176,7 @@ impl Readable for TransactionBodyV2 {
 
 		// Read protocol version specific inputs_with_sig.
 		let inputs_with_sig = match reader.protocol_version().value() {
-			0..=3 => {
+			0..=999 => {
 				return Err(ser::Error::UnsupportedProtocolVersion(format!(
 					"get version {}, expecting version >=1000",
 					reader.protocol_version().value()
@@ -202,20 +207,21 @@ impl Readable for TransactionBodyV2 {
 	}
 }
 
-impl committed::Committed for TransactionBodyV2 {
+impl Committed for TransactionBodyV2 {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		let inputs: Vec<_> = self.inputs().into();
-		let mut commits = inputs.iter().map(|x| x.commitment()).collect();
+		let mut commits: Vec<Commitment> = inputs.iter().map(|x| x.commitment()).collect();
 
 		let inputs_with_sig: Vec<_> = self.inputs_with_sig().into();
-		let commits_part2 = inputs_with_sig.iter().map(|x| x.commitment()).collect();
+		let commits_part2: Vec<Commitment> =
+			inputs_with_sig.iter().map(|x| x.commitment()).collect();
 		commits.extend(commits_part2);
 		commits
 	}
 
 	fn outputs_committed(&self) -> Vec<Commitment> {
-		let mut commits = self.outputs().iter().map(|x| x.commitment()).collect();
-		let commits_part2 = self
+		let mut commits: Vec<Commitment> = self.outputs().iter().map(|x| x.commitment()).collect();
+		let commits_part2: Vec<Commitment> = self
 			.outputs_with_rnp()
 			.iter()
 			.map(|x| x.commitment())
@@ -753,7 +759,7 @@ impl Readable for TransactionV2 {
 	}
 }
 
-impl committed::Committed for TransactionV2 {
+impl Committed for TransactionV2 {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -919,6 +925,12 @@ impl TransactionV2 {
 		}
 	}
 
+	/// Fully replace inputs.
+	pub fn replace_inputs(mut self, inputs: Inputs) -> TransactionV2 {
+		self.body = self.body.replace_inputs(inputs);
+		self
+	}
+
 	/// Builds a new transaction replacing any existing kernels with the provided kernel.
 	pub fn replace_kernel(self, kernel: TxKernel) -> TransactionV2 {
 		TransactionV2 {
@@ -994,8 +1006,8 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 	//   * sum of all kernel offsets
 	// Note: We sort input/outputs/kernels when building the transaction body internally.
 	let tx = TransactionV2::new(
-		Inputs::from(inputs),
-		Inputs::from(inputs_with_sig),
+		Inputs::from(inputs.as_slice()),
+		Inputs::from(inputs_with_sig.as_slice()),
 		&outputs,
 		&outputs_with_rnp,
 		&kernels,
@@ -1063,23 +1075,21 @@ pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<Transa
 
 	// now compute the total kernel offset
 	let total_kernel_offset = {
-		let secp = static_secp_instance();
-		let secp = secp.lock();
 		let positive_key = vec![mk_tx.offset]
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
-			.filter_map(|x| x.secret_key(&secp).ok())
+			.filter_map(|x| x.secret_key().ok())
 			.collect::<Vec<_>>();
 		let negative_keys = kernel_offsets
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
-			.filter_map(|x| x.secret_key(&secp).ok())
+			.filter_map(|x| x.secret_key().ok())
 			.collect::<Vec<_>>();
 
 		if positive_key.is_empty() && negative_keys.is_empty() {
 			BlindingFactor::zero()
 		} else {
-			let sum = secp.blind_sum(positive_key, negative_keys)?;
+			let sum = Secp256k1::blind_sum(positive_key, negative_keys)?;
 			BlindingFactor::from_secret_key(sum)
 		}
 	};
@@ -1105,6 +1115,7 @@ pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<Transa
 /// The Input with signature in a transaction when spending an output w/ R&P'.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct CommitWithSig {
+	/// The commitment of Input.
 	#[serde(
 		serialize_with = "secp_ser::as_hex",
 		deserialize_with = "secp_ser::commitment_from_hex"
@@ -1289,7 +1300,12 @@ impl IdentifierWithRnp {
 	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures).
 	/// This data is also used for input signing message.
 	pub fn extra_commit_data(&self) -> Vec<u8> {
-		let extra_commit_data = (self.nonce, self.onetime_pubkey, self.identifier.features).hash();
+		let extra_commit_data = (
+			self.nonce.serialize_vec(true).as_ref().to_vec(),
+			self.onetime_pubkey.serialize_vec(true).as_ref().to_vec(),
+			self.identifier.features as u8,
+		)
+			.hash();
 		extra_commit_data.to_vec()
 	}
 

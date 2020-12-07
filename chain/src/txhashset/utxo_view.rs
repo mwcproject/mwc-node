@@ -19,16 +19,15 @@ use crate::core::core::pmmr::{self, ReadonlyPMMR};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, Commit, CommitWithSig, IdentifierWithRnp, Inputs, Output, OutputFeatures,
-	OutputIdentifier, Transaction,
+	OutputIdentifier, Transaction, TxImpl,
 };
 use crate::core::global;
 use crate::error::{Error, ErrorKind};
 use crate::store::Batch;
 use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
-use grin_core::core::OutputWithRnp;
 use grin_store::pmmr::PMMRBackend;
-use grin_util::{RwLock, ToHex};
+use grin_util::RwLock;
 use std::sync::Arc;
 
 /// Readonly view of the UTXO set (based on output MMR).
@@ -212,9 +211,9 @@ impl<'a> UTXOView<'a> {
 		if let Some(cp) = commit_pos {
 			if let Some(out) = self.output_wrnp_pmmr.get_data(cp.pos) {
 				if out.commitment() == input {
-					return Ok((out, pos));
+					return Ok((out, cp));
 				} else {
-					error!("input mismatch: {:?}, {:?}, {:?}", out, pos, input);
+					error!("input mismatch: {:?}, {:?}, {:?}", out, cp, input);
 					return Err(ErrorKind::Other(
 						"input mismatch (output_pos index mismatch?)".into(),
 					)

@@ -436,10 +436,6 @@ fn validate_block(
 	ctx: &mut BlockContext<'_>,
 	ext: &txhashset::ExtensionPair<'_>,
 ) -> Result<(), Error> {
-	let extension = &ext.extension;
-	let header_extension = &ext.header_extension;
-	let commits = block.inputs_with_sig().commits();
-
 	let prev = ctx.batch.get_previous_header(&block.header)?;
 	block
 		.validate(&prev.total_kernel_offset, ctx.verifier_cache.clone())

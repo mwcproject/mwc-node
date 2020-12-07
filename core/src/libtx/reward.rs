@@ -15,6 +15,7 @@
 //! Builds the blinded output and related signature proof for the block
 //! reward.
 use crate::consensus::reward;
+use crate::core::transaction::Commit;
 use crate::core::{KernelFeatures, Output, OutputFeatures, TxKernel};
 use crate::libtx::error::Error;
 use crate::libtx::{

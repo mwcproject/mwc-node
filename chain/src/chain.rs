@@ -20,7 +20,7 @@ use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
-	OutputIdentifier, Transaction, TxKernel,
+	OutputIdentifier, Transaction, TxImpl, TxKernel,
 };
 use crate::core::global;
 use crate::core::pow;
