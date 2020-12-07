@@ -15,7 +15,7 @@
 use super::utils::w;
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
-use crate::core::core::Transaction;
+use crate::core::core::{Transaction, TxImpl};
 use crate::core::ser::{self, ProtocolVersion};
 use crate::pool::{self, BlockChain, PoolAdapter, PoolEntry};
 use crate::rest::*;

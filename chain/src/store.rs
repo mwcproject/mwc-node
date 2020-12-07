@@ -20,7 +20,7 @@ use crate::core::core::{Block, BlockHeader, BlockSums};
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::linked_list::MultiIndex;
-use crate::types::{CommitPos, Tip};
+use crate::types::{CommitPos, CommitPosHt, Tip};
 use crate::util::secp::pedersen::Commitment;
 use croaring::Bitmap;
 use grin_store as store;
@@ -311,7 +311,7 @@ impl<'a> Batch<'a> {
 	/// Clear all entries from the (output_pos, height) index.
 	pub fn clear_output_pos_index(&self) -> Result<(), Error> {
 		let key = to_key(OUTPUT_POS_PREFIX, &mut "".to_string().into_bytes());
-		for (k, _) in self.db.iter::<OUTPUT_POS_PREFIX>(&key)? {
+		for (k, _) in self.db.iter::<(u64, u64)>(&key)? {
 			self.db.delete(&k)?;
 		}
 		Ok(())
@@ -500,6 +500,6 @@ impl<'a> Iterator for DifficultyIter<'a> {
 /// Init the NRD "recent history" kernel index backed by the underlying db.
 /// List index supports multiple entries per key, maintaining insertion order.
 /// Allows for fast lookup of the most recent entry per excess commitment.
-pub fn nrd_recent_kernel_index() -> MultiIndex<CommitPos> {
+pub fn nrd_recent_kernel_index() -> MultiIndex<CommitPosHt> {
 	MultiIndex::init(NRD_KERNEL_LIST_PREFIX, NRD_KERNEL_ENTRY_PREFIX)
 }

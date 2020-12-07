@@ -31,7 +31,9 @@ use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::BitmapAccumulator;
 use crate::txhashset::{RewindableKernelView, UTXOView};
-use crate::types::{CommitPos, OutputRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus};
+use crate::types::{
+	CommitPos, CommitPosHt, OutputRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus,
+};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip};
 use croaring::Bitmap;
@@ -507,7 +509,7 @@ impl TxHashSet {
 									.get_header_hash_by_height(current_header.height + 1)?;
 								current_header = batch.get_block_header(&hash)?;
 							}
-							let new_pos = CommitPos {
+							let new_pos = CommitPosHt {
 								pos: current_pos,
 								height: current_header.height,
 							};
@@ -534,7 +536,7 @@ impl TxHashSet {
 	/// Run it only once on chain init.
 	pub fn clear_output_pos_index(&self, batch: &Batch<'_>) -> Result<(), Error> {
 		// clear it before rebuilding with new format
-		batch.clear_output_pos_height()?
+		Ok(batch.clear_output_pos_index()?)
 	}
 
 	/// (Re)build the output_pos index to be consistent with the current UTXO set.
@@ -1287,7 +1289,7 @@ impl<'a> Extension<'a> {
 	) -> Result<(), Error> {
 		for kernel in kernels {
 			let pos = self.apply_kernel(kernel)?;
-			let commit_pos = CommitPos { pos, height };
+			let commit_pos = CommitPosHt { pos, height };
 			apply_kernel_rules(kernel, commit_pos, batch)?;
 		}
 		Ok(())
@@ -1932,7 +1934,7 @@ fn input_pos_to_rewind(
 }
 
 /// If NRD enabled then enforce NRD relative height rules.
-fn apply_kernel_rules(kernel: &TxKernel, pos: CommitPos, batch: &Batch<'_>) -> Result<(), Error> {
+fn apply_kernel_rules(kernel: &TxKernel, pos: CommitPosHt, batch: &Batch<'_>) -> Result<(), Error> {
 	if !global::is_nrd_enabled() {
 		return Ok(());
 	}

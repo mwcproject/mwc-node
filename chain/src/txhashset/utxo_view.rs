@@ -143,33 +143,33 @@ impl<'a> UTXOView<'a> {
 			)
 			.into()),
 			Inputs::CommitsWithSig(inputs) => {
-				let outputs_spent: Result<Vec<_>, Error> = inputs
-					.iter()
-					.map(|input| {
+				let mut outputs_spent = vec![];
+				for input in inputs {
+					outputs_spent.push(
 						self.validate_input_with_sig(input.commitment(), batch)
 							.and_then(|(out, pos)| {
 								// Unspent output found.
 								Ok((out, pos))
-							})
-					})
-					.collect();
+							})?,
+					);
+				}
 
 				// signature validation
-				let mut inputs_with_sig = {
+				let inputs_with_sig = {
 					let mut verifier = verifier.write();
 					verifier.filter_input_with_sig_unverified(inputs)
 				};
 
 				// get vec<IdentifierWithRnp> only
-				let rnps = outputs_spent?
+				let rnps = outputs_spent
 					.iter()
-					.map(|o| o.0.clone())
+					.map(|o| o.0)
 					.collect::<Vec<IdentifierWithRnp>>();
 
 				// Verify the unverified inputs signatures.
 				// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
 				CommitWithSig::batch_sig_verify(&inputs_with_sig, &rnps)?;
-				outputs_spent
+				Ok(outputs_spent)
 			}
 		}
 	}

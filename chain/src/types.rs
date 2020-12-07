@@ -303,7 +303,7 @@ impl OutputRoots {
 	}
 }
 
-/// Minimal struct representing a known MMR position and associated block height.
+/// Minimal struct representing a known MMR position and associated block height for a commitment, including the Output feature.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CommitPos {
 	/// The output features
@@ -330,6 +330,31 @@ impl Readable for CommitPos {
 impl Writeable for CommitPos {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		writer.write_u8(self.features as u8)?;
+		writer.write_u64(self.pos)?;
+		writer.write_u64(self.height)?;
+		Ok(())
+	}
+}
+
+/// Minimal struct representing a known MMR position and associated block height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CommitPosHt {
+	/// MMR position
+	pub pos: u64,
+	/// Block height
+	pub height: u64,
+}
+
+impl Readable for CommitPosHt {
+	fn read<R: Reader>(reader: &mut R) -> Result<CommitPosHt, ser::Error> {
+		let pos = reader.read_u64()?;
+		let height = reader.read_u64()?;
+		Ok(CommitPosHt { pos, height })
+	}
+}
+
+impl Writeable for CommitPosHt {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		writer.write_u64(self.pos)?;
 		writer.write_u64(self.height)?;
 		Ok(())

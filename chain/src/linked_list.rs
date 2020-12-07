@@ -16,7 +16,7 @@
 
 use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::store::Batch;
-use crate::types::CommitPos;
+use crate::types::{CommitPos, CommitPosHt};
 use crate::util::secp::pedersen::Commitment;
 use enum_primitive::FromPrimitive;
 use grin_store as store;
@@ -475,6 +475,12 @@ pub trait PosEntry: Readable + Writeable + Copy {
 }
 
 impl PosEntry for CommitPos {
+	fn pos(&self) -> u64 {
+		self.pos
+	}
+}
+
+impl PosEntry for CommitPosHt {
 	fn pos(&self) -> u64 {
 		self.pos
 	}

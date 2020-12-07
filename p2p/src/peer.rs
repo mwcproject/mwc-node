@@ -26,6 +26,7 @@ use lru_cache::LruCache;
 use crate::chain;
 use crate::conn;
 use crate::core::core::hash::{Hash, Hashed};
+use crate::core::core::TxImpl;
 use crate::core::pow::Difficulty;
 use crate::core::ser::Writeable;
 use crate::core::{core, global};
