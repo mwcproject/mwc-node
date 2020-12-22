@@ -5,6 +5,7 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
+- MWC/BTC MWC/BCH atomic swaps.   December 2020
 - 10/26/20 - All funds completely distributed to the MWC hodlers.
 - MWCMQS support in mwc-wallet.
 - TOR support in all wallets and nodes.
@@ -20,9 +21,6 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 
 # To be done
 If you want to help please contact us in discord.
-- BTC/MWC atomic swaps.   December 2020
-  - QT wallet integration.
-  - MWC 713 integration.
 - Grin rebase. December 2020
 - Atomic swaps for more coins.  January 2020
 - Mobile node.    March 2021
@@ -30,7 +28,6 @@ If you want to help please contact us in discord.
 - Non-interactive transaction scheme (NIT).  2021
 - Decentralized exchange.  2021
 - Multisig.
-- Lightning network.
 - Minimize transactions traceability.
 - Hardware wallets. Requires hardware manufacturer support.
 
