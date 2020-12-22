@@ -5,7 +5,7 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
-- MWC/BTC MWC/BCH atomic swaps.   December 2020
+- 12/16/20 MWC/BTC & MWC/BCH atomic swaps.
 - 10/26/20 - All funds completely distributed to the MWC hodlers.
 - MWCMQS support in mwc-wallet.
 - TOR support in all wallets and nodes.
