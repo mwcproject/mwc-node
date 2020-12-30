@@ -368,6 +368,17 @@ pub fn is_mainnet() -> bool {
 	}
 }
 
+/// Get a network name
+pub fn get_network_name() -> String {
+	let name = match get_chain_type() {
+		ChainTypes::AutomatedTesting => "automatedtests",
+		ChainTypes::UserTesting => "usertestnet",
+		ChainTypes::Floonet => "floonet",
+		ChainTypes::Mainnet => "mainnet",
+	};
+	name.to_string()
+}
+
 /// Converts an iterator of block difficulty data to more a more manageable
 /// vector and pads if needed (which will) only be needed for the first few
 /// blocks after genesis

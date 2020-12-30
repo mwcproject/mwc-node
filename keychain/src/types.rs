@@ -20,6 +20,7 @@
 use rand::thread_rng;
 use std::cmp::min;
 use std::convert::TryFrom;
+use std::error::Error as StdError;
 use std::fmt;
 use std::io::Cursor;
 
@@ -43,7 +44,7 @@ pub const IDENTIFIER_SIZE: usize = 17;
 #[derive(Fail, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
 pub enum Error {
 	#[fail(display = "Keychain secp error, {}", _0)]
-	Secp(secp::Error),
+	Secp(String),
 	#[fail(display = "Keychain derivation key error, {}", _0)]
 	KeyDerivation(extkey_bip32::Error),
 	#[fail(display = "Keychain Transaction error, {}", _0)]
@@ -56,9 +57,13 @@ pub enum Error {
 	GenericError(String),
 }
 
+// we have to use e.description  because of the bug at rust-secp256k1-zkp
+#[allow(deprecated)]
+
 impl From<secp::Error> for Error {
 	fn from(e: secp::Error) -> Error {
-		Error::Secp(e)
+		// secp::Error to_string is broken, in past biilds.
+		Error::Secp(format!("{}", e.description()))
 	}
 }
 
@@ -174,11 +179,15 @@ impl Identifier {
 		Identifier::from_bytes(&identifier.as_bytes())
 	}
 
+	// we have to use e.description  because of the bug at rust-secp256k1-zkp
+	#[allow(deprecated)]
+
 	/// Return the identifier of the secret key
 	/// which is the blake2b (10 byte) digest of the PublicKey
 	/// corresponding to the secret key provided.
 	pub fn from_secret_key(secp: &Secp256k1, key: &SecretKey) -> Result<Identifier, Error> {
-		let key_id = PublicKey::from_secret_key(secp, key).map_err(|e| Error::Secp(e))?;
+		let key_id = PublicKey::from_secret_key(secp, key)
+			.map_err(|e| Error::Secp(format!("{}", e.description())))?;
 		Ok(Identifier::from_pubkey(&key_id))
 	}
 
@@ -264,13 +273,16 @@ impl BlindingFactor {
 		Ok(BlindingFactor::from_slice(&bytes))
 	}
 
+	// we have to use e.description  because of the bug at rust-secp256k1-zkp
+	#[allow(deprecated)]
+
 	// Handle "zero" blinding_factor correctly, by returning the "zero" key.
 	// We need this for some of the tests.
 	pub fn secret_key(&self) -> Result<SecretKey, Error> {
 		if self.is_zero() {
 			Ok(ZERO_KEY)
 		} else {
-			SecretKey::from_slice(&self.0).map_err(Error::Secp)
+			SecretKey::from_slice(&self.0).map_err(|e| Error::Secp(format!("{}", e.description())))
 		}
 	}
 
