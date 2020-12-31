@@ -247,3 +247,71 @@ In order to make sure that the wallet is active, that transaction should be rela
 **More ideas how it is possible to validate if wallet was active?**
 
 **Can we proof the ownership of the output without revealing the output veiw key?**
+
+# Traceability with Multisig
+
+Another method of reducing traceability is multisig that need to be done.
+
+The idea is using natural MW feature by putting multiple inputs/output into the same multisig transactions.
+
+Here is a workflow that illustrame an idea for example above.   
+
+1. Wallets A, B, E  publish there addresses at message pool as ready to participate in such transaction. Wallets 
+are publishing there public key (same that we use for slatepacks)
+
+2. Randomly every wallet select the time to start. For example Wallet A starting this action. Wallet A 
+selecting B & E to be part of the deal.
+
+3. Wallet A creating transaction with one input and one (may be more) output to self. Transaction is encrypted
+similar to slatepack and send to other parties (wallets B & E). Because only addressers can read the data, 
+outside observer can't find out what inputs/outputs are in the slate.
+
+4. Wallets A, B & E deciding who is collecting the outputs. It need to be random wallet, it is critical for security.
+For Example, let's say Wallet E was elected.  
+
+5. Other parties (Wallet B & E) adding one or more inputs and outputs into the same slate and send i back to 
+wallet E. Slate will be encrypted so outside observer can't find out what inputs/outputs are in the slate.
+
+6. Wallet E collecting response. Each response can be verified that sum of inputs/outputs is 0. Now Wallet E can
+Build a single multisig transactions that include inputs/outputs from Wallets A, B and E.
+
+7. Then all parties sign that transaction. How to sign such transaction is open question. The slate is posted.
+
+As a result on this operation for any tracing tool it will be impossible to say what input/output belong to what wallet.
+More wallets participate in the deal is better.
+
+Also, wallet that collect outputs (wallet E) can tolerate is some walllet never respond back or refuse to process with multisig.
+
+## Attacking
+
+Becuase none of parties knows the amount and blinding factor of outputs, I think it is impossible to steal the funds.
+For example Wallet E will not be able to remove outputs of wallet A and put there it's own out. So here we are good.
+
+From that deal, all wallets that participate know the set of wallets that contribute and it is fine. Observer can get 
+exactly the same information. Here there is no information leak.
+
+Wallet that collect responsed at step #6 is the only one who can trace the inputs to outputs. If that wallet is not 
+honets and it report about mapping, then this deal will not help for tracability. Because of that wallet that collect into
+need to be elected randomly, so honest wallets will have a chance to process as well.
+
+Another alternative is not elect the single wallet to collect thet data. We can collect in chunks, but the collector selection 
+still need to be random. For example we have wallets A,B,C,D,E.  Wallet A can collect data from A,B,C.  D colelct from D & E.
+Then C collect the results and initate multisig. This method may be more tolerant to non honest playes, but it is not 
+resilient to problem when some wallet doesn't respond.
+
+**What do you think?**
+
+The election process is open question. We will continue with that later. There are are many possibilities, but let's
+decide on the major details before go with minor.
+
+# Traceability with Multikernel
+
+Similar to multisig every participant can update the slate with it's own input/output and a kernel. The multikernel 
+transactions are valid on the node. 
+
+**The question: Will it be possible to separate the kernels with matched inputs/outputs?**  
+
+## Attacking
+
+The same what we have for Multisig. Data collector get information that allow to trace the data.
+
