@@ -1,4 +1,4 @@
-# Distribited Message pool,  traceability, Swap Marketplace
+# Distributed Message pool,  traceability, Swap Marketplace
 
 
 # Background.
