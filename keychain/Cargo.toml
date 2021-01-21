@@ -1,6 +1,6 @@
 [package]
 name = "grin_keychain"
-version = "4.2.1"
+version = "4.2.2"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Chain implementation for grin, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -28,4 +28,4 @@ ripemd160 = "0.7"
 sha2 = "0.7"
 pbkdf2 = "0.2"
 
-grin_util = { path = "../util", version = "4.2.1" }
+grin_util = { path = "../util", version = "4.2.2" }
