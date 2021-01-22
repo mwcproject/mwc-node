@@ -26,7 +26,7 @@ steps:
     inputs:
       rootFolderOrFile: '$(Build.BinariesDirectory)\mwc'
       archiveType: 'zip'
-      archiveFile: '$(Build.ArtifactStagingDirectory)\grin-$(build.my_tag)-$(build.platform).zip'
+      archiveFile: '$(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip'
   - script: |
       powershell -Command "cd $(Build.ArtifactStagingDirectory); get-filehash -algorithm sha256 mwc-node-$(build.my_tag)-$(build.platform).zip | Format-List |  Out-String | ForEach-Object { $_.Trim() } > mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt"
     displayName: Create Checksum
