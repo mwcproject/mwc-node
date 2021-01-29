@@ -1394,22 +1394,21 @@ impl Commit for OutputWithRnp {
 }
 impl OutputWithRnp {
 	/// Create a new output with the provided features, commitment, R, P' and rangeproof.
-	pub fn new(
-		features: OutputFeatures,
-		commit: Commitment,
-		nonce: PublicKey,
-		onetime_pubkey: PublicKey,
-		proof: RangeProof,
-	) -> OutputWithRnp {
+	pub fn new(identifier_with_rnp: IdentifierWithRnp, proof: RangeProof) -> OutputWithRnp {
 		OutputWithRnp {
-			identifier_with_rnp: IdentifierWithRnp::new(features, commit, nonce, onetime_pubkey),
+			identifier_with_rnp,
 			proof,
 		}
 	}
 
-	/// Output identifier.
+	/// Output identifier only (w/o R&P').
 	pub fn identifier(&self) -> OutputIdentifier {
 		self.identifier_with_rnp.identifier()
+	}
+
+	/// Output identifier w/ R&P'.
+	pub fn identifier_with_rnp(&self) -> IdentifierWithRnp {
+		self.identifier_with_rnp
 	}
 
 	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures)

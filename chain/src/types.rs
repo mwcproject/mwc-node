@@ -271,10 +271,14 @@ impl TxHashSetRoots {
 /// A helper for the various output roots.
 #[derive(Debug)]
 pub struct OutputRoots {
-	/// The output PMMR root
+	/// The output w/o R&P' PMMR root
 	pub pmmr_root: Hash,
-	/// The bitmap accumulator root
+	/// The bitmap accumulator root for Output w/o R&P'
 	pub bitmap_root: Hash,
+	/// The output w/ R&P' PMMR root
+	pub pmmr_wrnp_root: Hash,
+	/// The bitmap accumulator root for Output w/ R&P'
+	pub bitmap_wrnp_root: Hash,
 }
 
 impl OutputRoots {
@@ -285,21 +289,33 @@ impl OutputRoots {
 	pub fn root(&self, header: &BlockHeader) -> Hash {
 		if header.version < HeaderVersion(3) {
 			self.output_root()
+		} else if header.version < HeaderVersion(4) {
+			self.merged_root_v3(header)
 		} else {
-			self.merged_root(header)
+			self.merged_root_v4(header)
 		}
 	}
 
-	/// The root of the underlying output PMMR.
+	/// The root of the underlying output PMMR. For HeaderVersion(1) and HeaderVersion(2).
 	fn output_root(&self) -> Hash {
 		self.pmmr_root
 	}
 
 	/// Hash the root of the output PMMR and the root of the bitmap accumulator
 	/// together with the size of the output PMMR (for consistency with existing PMMR impl).
-	/// H(pmmr_size | pmmr_root | bitmap_root)
-	fn merged_root(&self, header: &BlockHeader) -> Hash {
+	/// H(pmmr_size | pmmr_root | bitmap_root). For HeaderVersion(3)
+	fn merged_root_v3(&self, header: &BlockHeader) -> Hash {
 		(self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size)
+	}
+
+	/// Hash the root of the output PMMR and the root of the bitmap accumulator
+	/// together with the size of the output PMMR (for consistency with existing PMMR impl).
+	/// H(pmmr_size | pmmr_root | bitmap_root). For HeaderVersion(4)+
+	fn merged_root_v4(&self, header: &BlockHeader) -> Hash {
+		let h1 = (self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size);
+		let h2 =
+			(self.pmmr_wrnp_root, self.bitmap_wrnp_root).hash_with_index(header.output_mmr_size);
+		(h1, h2).hash_with_index(header.output_mmr_size)
 	}
 }
 

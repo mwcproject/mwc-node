@@ -293,9 +293,9 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Get output_pos from index.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<CommitPos, Error> {
 		match self.get_output_pos_height(commit)? {
-			Some(pos) => Ok(pos.pos),
+			Some(pos) => Ok(pos),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
 				commit

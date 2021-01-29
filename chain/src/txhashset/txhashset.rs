@@ -21,8 +21,8 @@ use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::pmmr::{self, Backend, ReadonlyPMMR, RewindablePMMR, PMMR};
 use crate::core::core::{
-	Block, BlockHeader, Commit, IdentifierWithRnp, KernelFeatures, Output, OutputIdentifier,
-	TxKernel,
+	Block, BlockHeader, Commit, IdentifierWithRnp, KernelFeatures, Output, OutputFeatures,
+	OutputIdentifier, TxKernel,
 };
 use crate::core::global;
 use crate::core::ser::{PMMRable, ProtocolVersion};
@@ -37,6 +37,7 @@ use crate::types::{
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip};
 use croaring::Bitmap;
+use grin_core::core::OutputWithRnp;
 use grin_store;
 use grin_store::pmmr::{clean_files_by_prefix, PMMRBackend};
 use std::fs::{self, File};
@@ -49,6 +50,7 @@ const TXHASHSET_SUBDIR: &str = "txhashset";
 const OUTPUT_SUBDIR: &str = "output";
 const OUTPUT_WRNP_SUBDIR: &str = "output_wrnp";
 const RANGE_PROOF_SUBDIR: &str = "rangeproof";
+const RANGE_PROOF_WRNP_SUBDIR: &str = "rangeproof_wrnp";
 const KERNEL_SUBDIR: &str = "kernel";
 
 const TXHASHSET_ZIP: &str = "txhashset_snapshot";
@@ -153,6 +155,7 @@ pub struct TxHashSet {
 	output_pmmr_h: PMMRHandle<OutputIdentifier>,
 	output_wrnp_pmmr_h: PMMRHandle<IdentifierWithRnp>,
 	rproof_pmmr_h: PMMRHandle<RangeProof>,
+	rproof_wrnp_pmmr_h: PMMRHandle<RangeProof>,
 	kernel_pmmr_h: PMMRHandle<TxKernel>,
 
 	bitmap_accumulator: BitmapAccumulator,
@@ -191,6 +194,15 @@ impl TxHashSet {
 			Path::new(&root_dir)
 				.join(TXHASHSET_SUBDIR)
 				.join(RANGE_PROOF_SUBDIR),
+			true,
+			ProtocolVersion(1),
+			header,
+		)?;
+
+		let rproof_wrnp_pmmr_h = PMMRHandle::new(
+			Path::new(&root_dir)
+				.join(TXHASHSET_SUBDIR)
+				.join(RANGE_PROOF_WRNP_SUBDIR),
 			true,
 			ProtocolVersion(1),
 			header,
@@ -246,6 +258,7 @@ impl TxHashSet {
 				output_pmmr_h,
 				output_wrnp_pmmr_h,
 				rproof_pmmr_h,
+				rproof_wrnp_pmmr_h,
 				kernel_pmmr_h,
 				bitmap_accumulator,
 				bitmap_accumulator_wrnp,
@@ -283,6 +296,7 @@ impl TxHashSet {
 		self.output_pmmr_h.backend.release_files();
 		self.output_wrnp_pmmr_h.backend.release_files();
 		self.rproof_pmmr_h.backend.release_files();
+		self.rproof_wrnp_pmmr_h.backend.release_files();
 		self.kernel_pmmr_h.backend.release_files();
 	}
 
@@ -294,19 +308,36 @@ impl TxHashSet {
 		commit: Commitment,
 	) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
 		match self.commit_index.get_output_pos_height(&commit) {
-			Ok(Some(pos)) => {
-				let output_pmmr: ReadonlyPMMR<'_, OutputIdentifier, _> =
-					ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos);
-				if let Some(out) = output_pmmr.get_data(pos.pos) {
-					if out.commitment() == commit {
-						Ok(Some((out, pos)))
+			Ok(Some(pos)) => match pos.features {
+				OutputFeatures::Coinbase | OutputFeatures::Plain => {
+					let output_pmmr: ReadonlyPMMR<'_, OutputIdentifier, _> =
+						ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos);
+					if let Some(out) = output_pmmr.get_data(pos.pos) {
+						if out.commitment() == commit {
+							Ok(Some((out, pos)))
+						} else {
+							Ok(None)
+						}
 					} else {
 						Ok(None)
 					}
-				} else {
-					Ok(None)
 				}
-			}
+				OutputFeatures::PlainWrnp => {
+					let output_wrnp_pmmr: ReadonlyPMMR<'_, OutputIdentifier, _> = ReadonlyPMMR::at(
+						&self.output_wrnp_pmmr_h.backend,
+						self.output_wrnp_pmmr_h.last_pos,
+					);
+					if let Some(out) = output_wrnp_pmmr.get_data(pos.pos) {
+						if out.commitment() == commit {
+							Ok(Some((out.identifier(), pos)))
+						} else {
+							Ok(None)
+						}
+					} else {
+						Ok(None)
+					}
+				}
+			},
 			Ok(None) => Ok(None),
 			Err(e) => Err(ErrorKind::StoreErr(e, "txhashset unspent check".to_string()).into()),
 		}
@@ -321,10 +352,29 @@ impl TxHashSet {
 			.get_last_n_insertions(distance)
 	}
 
+	/// returns the last N nodes inserted into the tree (i.e. the 'bottom'
+	/// nodes at level 0
+	pub fn last_n_output_wrnp(&self, distance: u64) -> Vec<(Hash, IdentifierWithRnp)> {
+		ReadonlyPMMR::at(
+			&self.output_wrnp_pmmr_h.backend,
+			self.output_wrnp_pmmr_h.last_pos,
+		)
+		.get_last_n_insertions(distance)
+	}
+
 	/// as above, for range proofs
 	pub fn last_n_rangeproof(&self, distance: u64) -> Vec<(Hash, RangeProof)> {
 		ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, self.rproof_pmmr_h.last_pos)
 			.get_last_n_insertions(distance)
+	}
+
+	/// as above, for range proofs
+	pub fn last_n_rangeproof_wrnp(&self, distance: u64) -> Vec<(Hash, RangeProof)> {
+		ReadonlyPMMR::at(
+			&self.rproof_wrnp_pmmr_h.backend,
+			self.rproof_wrnp_pmmr_h.last_pos,
+		)
+		.get_last_n_insertions(distance)
 	}
 
 	/// as above, for kernels
@@ -350,10 +400,28 @@ impl TxHashSet {
 		ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos)
 			.elements_from_pmmr_index(start_index, max_count, max_index)
 	}
+	/// returns outputs from the given pmmr index up to the
+	/// specified limit. Also returns the last index actually populated
+	/// max index is the last PMMR index to consider, not leaf index
+	pub fn outputs_wrnp_by_pmmr_index(
+		&self,
+		start_index: u64,
+		max_count: u64,
+		max_index: Option<u64>,
+	) -> (u64, Vec<IdentifierWithRnp>) {
+		ReadonlyPMMR::at(
+			&self.output_wrnp_pmmr_h.backend,
+			self.output_wrnp_pmmr_h.last_pos,
+		)
+		.elements_from_pmmr_index(start_index, max_count, max_index)
+	}
 
 	/// highest output insertion index available
-	pub fn highest_output_insertion_index(&self) -> u64 {
-		self.output_pmmr_h.last_pos
+	pub fn highest_output_insertion_index(&self) -> (u64, u64) {
+		(
+			self.output_pmmr_h.last_pos,
+			self.output_wrnp_pmmr_h.last_pos,
+		)
 	}
 
 	/// As above, for rangeproofs
@@ -365,6 +433,20 @@ impl TxHashSet {
 	) -> (u64, Vec<RangeProof>) {
 		ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, self.rproof_pmmr_h.last_pos)
 			.elements_from_pmmr_index(start_index, max_count, max_index)
+	}
+
+	/// As above, for rangeproofs
+	pub fn rangeproofs_wrnp_by_pmmr_index(
+		&self,
+		start_index: u64,
+		max_count: u64,
+		max_index: Option<u64>,
+	) -> (u64, Vec<RangeProof>) {
+		ReadonlyPMMR::at(
+			&self.rproof_wrnp_pmmr_h.backend,
+			self.rproof_wrnp_pmmr_h.last_pos,
+		)
+		.elements_from_pmmr_index(start_index, max_count, max_index)
 	}
 
 	/// Find a kernel with a given excess. Work backwards from `max_index` to `min_index`
@@ -394,8 +476,16 @@ impl TxHashSet {
 	pub fn roots(&self) -> TxHashSetRoots {
 		let output_pmmr =
 			ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos);
+		let output_wrnp_pmmr = ReadonlyPMMR::at(
+			&self.output_wrnp_pmmr_h.backend,
+			self.output_wrnp_pmmr_h.last_pos,
+		);
 		let rproof_pmmr =
 			ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, self.rproof_pmmr_h.last_pos);
+		let rproof_wrnp_pmmr = ReadonlyPMMR::at(
+			&self.rproof_wrnp_pmmr_h.backend,
+			self.rproof_wrnp_pmmr_h.last_pos,
+		);
 		let kernel_pmmr =
 			ReadonlyPMMR::at(&self.kernel_pmmr_h.backend, self.kernel_pmmr_h.last_pos);
 
@@ -1148,7 +1238,7 @@ impl<'a> Extension<'a> {
 		)
 	}
 
-	/// Apply a new block to the current txhashet extension (output, rangeproof, kernel MMRs).
+	/// Apply a new block to the current txhashset extension (output, rangeproof, kernel MMRs).
 	/// Returns a vec of commit_pos representing the pos and height of the outputs spent
 	/// by this block.
 	pub fn apply_block(
@@ -1158,6 +1248,7 @@ impl<'a> Extension<'a> {
 		batch: &Batch<'_>,
 	) -> Result<(), Error> {
 		let mut affected_pos = vec![];
+		let mut affected_rnp_pos = vec![];
 
 		// Apply the output to the output and rangeproof MMRs.
 		// Add pos to affected_pos to update the accumulator later on.
@@ -1240,15 +1331,78 @@ impl<'a> Extension<'a> {
 		let commit = out.commitment();
 
 		if let Ok(pos) = batch.get_output_pos(&commit) {
-			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
-				if out_mmr.commitment() == commit {
-					return Err(ErrorKind::DuplicateCommitment(commit).into());
+			match pos.features {
+				OutputFeatures::Plain | OutputFeatures::Coinbase => {
+					if let Some(out_mmr) = self.output_pmmr.get_data(pos.pos) {
+						if out_mmr.commitment() == commit {
+							return Err(ErrorKind::DuplicateCommitment(commit).into());
+						}
+					}
+				}
+				OutputFeatures::PlainWrnp => {
+					if let Some(out_mmr) = self.output_wrnp_pmmr.get_data(pos.pos) {
+						if out_mmr.commitment() == commit {
+							return Err(ErrorKind::DuplicateCommitment(commit).into());
+						}
+					}
+				}
+			}
+		}
+
+		// push the new output to the MMR.
+		let output_pos = self
+			.output_pmmr
+			.push(&out.identifier())
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
+
+		// push the rangeproof to the MMR.
+		let rproof_pos = self
+			.rproof_pmmr
+			.push(&out.proof())
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr proof push error, {}", e)))?;
+
+		// The output and rproof MMRs should be exactly the same size
+		// and we should have inserted to both in exactly the same pos.
+		{
+			if self.output_pmmr.unpruned_size() != self.rproof_pmmr.unpruned_size() {
+				return Err(
+					ErrorKind::Other("output vs rproof MMRs different sizes".to_string()).into(),
+				);
+			}
+
+			if output_pos != rproof_pos {
+				return Err(
+					ErrorKind::Other("output vs rproof MMRs different pos".to_string()).into(),
+				);
+			}
+		}
+		Ok(output_pos)
+	}
+
+	fn apply_output_rnp(&mut self, out: &OutputWithRnp, batch: &Batch<'_>) -> Result<u64, Error> {
+		let commit = out.commitment();
+
+		if let Ok(pos) = batch.get_output_pos(&commit) {
+			match pos.features {
+				OutputFeatures::Plain | OutputFeatures::Coinbase => {
+					if let Some(out_mmr) = self.output_pmmr.get_data(pos.pos) {
+						if out_mmr.commitment() == commit {
+							return Err(ErrorKind::DuplicateCommitment(commit).into());
+						}
+					}
+				}
+				OutputFeatures::PlainWrnp => {
+					if let Some(out_mmr) = self.output_wrnp_pmmr.get_data(pos.pos) {
+						if out_mmr.commitment() == commit {
+							return Err(ErrorKind::DuplicateCommitment(commit).into());
+						}
+					}
 				}
 			}
 		}
 		// push the new output to the MMR.
 		let output_pos = self
-			.output_pmmr
+			.output_wrnp_pmmr
 			.push(&out.identifier())
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
 

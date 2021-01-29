@@ -39,6 +39,12 @@ impl From<TransactionV2> for VersionedTransactionBody {
 	}
 }
 
+impl From<VersionedTransaction> for VersionedTransactionBody {
+	fn from(tx: VersionedTransaction) -> Self {
+		tx.body()
+	}
+}
+
 /// Implementation of Writeable, defines how to write the transaction body as binary.
 impl Writeable for VersionedTransactionBody {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
@@ -51,6 +57,34 @@ impl Writeable for VersionedTransactionBody {
 }
 
 impl VersionedTransactionBody {
+	/// Builds a new transaction with the provided output added. Existing
+	/// outputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_output(self, output: Output) -> VersionedTransactionBody {
+		match self {
+			VersionedTransactionBody::V1(tx) => {
+				VersionedTransactionBody::V1(tx.with_output(output))
+			}
+			VersionedTransactionBody::V2(tx) => {
+				VersionedTransactionBody::V2(tx.with_output(output))
+			}
+		}
+	}
+
+	/// Builds a new transaction with the provided kernel added. Existing
+	/// kernels, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_kernel(self, kernel: TxKernel) -> VersionedTransactionBody {
+		match self {
+			VersionedTransactionBody::V1(tx) => {
+				VersionedTransactionBody::V1(tx.with_kernel(kernel))
+			}
+			VersionedTransactionBody::V2(tx) => {
+				VersionedTransactionBody::V2(tx.with_kernel(kernel))
+			}
+		}
+	}
+
 	/// Fully replace inputs (note: inputs w/o signature).
 	pub fn replace_inputs(mut self, inputs: Inputs) -> VersionedTransactionBody {
 		match self {
@@ -72,11 +106,30 @@ impl VersionedTransactionBody {
 		}
 	}
 
+	/// Transaction outputs w/o R&P'.
+	pub fn outputs(&self) -> &[Output] {
+		match self {
+			VersionedTransactionBody::V1(body) => body.outputs(),
+			VersionedTransactionBody::V2(body) => body.outputs(),
+		}
+	}
+
 	/// Transaction outputs w/ R&P'.
 	pub fn outputs_with_rnp(&self) -> Option<&[OutputWithRnp]> {
 		match self {
 			VersionedTransactionBody::V1(_body) => None,
 			VersionedTransactionBody::V2(body) => Some(body.outputs_with_rnp()),
+		}
+	}
+
+	/// "Lightweight" validation that we can perform quickly during read/deserialization.
+	/// Subset of full validation that skips expensive verification steps, specifically -
+	/// * rangeproof verification
+	/// * kernel signature verification
+	pub fn validate_read(&self, weighting: Weighting) -> Result<(), Error> {
+		match self {
+			VersionedTransactionBody::V1(body) => body.validate_read(weighting),
+			VersionedTransactionBody::V2(body) => body.validate_read(weighting),
 		}
 	}
 }
@@ -114,6 +167,14 @@ impl VersionedTransaction {
 		}
 	}
 
+	/// Body
+	pub fn body(&self) -> VersionedTransactionBody {
+		match self {
+			VersionedTransaction::V1(tx) => VersionedTransactionBody::V1(tx.body.clone()),
+			VersionedTransaction::V2(tx) => VersionedTransactionBody::V2(tx.body.clone()),
+		}
+	}
+
 	/// Offset
 	pub fn offset(&self) -> &BlindingFactor {
 		match self {
@@ -137,6 +198,26 @@ impl VersionedTransaction {
 		match self {
 			VersionedTransaction::V1(tx) => TransactionV2::from(tx.clone()),
 			VersionedTransaction::V2(tx) => tx.clone(),
+		}
+	}
+
+	/// Builds a new transaction with the provided output added. Existing
+	/// outputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_output(self, output: Output) -> VersionedTransaction {
+		match self {
+			VersionedTransaction::V1(tx) => VersionedTransaction::V1(tx.with_output(output)),
+			VersionedTransaction::V2(tx) => VersionedTransaction::V2(tx.with_output(output)),
+		}
+	}
+
+	/// Builds a new transaction with the provided kernel added. Existing
+	/// kernels, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_kernel(self, kernel: TxKernel) -> VersionedTransaction {
+		match self {
+			VersionedTransaction::V1(tx) => VersionedTransaction::V1(tx.with_kernel(kernel)),
+			VersionedTransaction::V2(tx) => VersionedTransaction::V2(tx.with_kernel(kernel)),
 		}
 	}
 

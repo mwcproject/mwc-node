@@ -67,6 +67,7 @@ where
 
 		// Manually set the mmr sizes for a "valid" block (increment prev output and kernel counts).
 		block.header.output_mmr_size = pmmr::insertion_to_pmmr_index(prev.output_mmr_count() + 1);
+		//block.header.output_wrnp_mmr_size = Some(pmmr::insertion_to_pmmr_index(prev.output_wrnp_mmr_count() + 1));
 		block.header.kernel_mmr_size = pmmr::insertion_to_pmmr_index(prev.kernel_mmr_count() + 1);
 	} else {
 		chain.set_txhashset_roots(&mut block)?;

@@ -367,7 +367,10 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 	// Assume 0 inputs and estimate a lower bound on the full block weight.
 	let num_outputs = header
 		.output_mmr_count()
-		.saturating_sub(prev.output_mmr_count());
+		.saturating_sub(prev.output_mmr_count())
+		+ header
+			.output_wrnp_mmr_count()
+			.saturating_sub(prev.output_wrnp_mmr_count());
 	let num_kernels = header
 		.kernel_mmr_count()
 		.saturating_sub(prev.kernel_mmr_count());

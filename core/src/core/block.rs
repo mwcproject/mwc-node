@@ -20,9 +20,9 @@ use crate::core::compact_block::CompactBlock;
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
-	pmmr, transaction, transaction_v2, Commit, Commitment, Inputs, KernelFeatures, Output,
-	Transaction, TransactionBody, TransactionBodyV2, TransactionV2, TxBodyImpl, TxImpl, TxKernel,
-	VersionedTransactionBody, Weighting,
+	pmmr, transaction, versioned_transaction, Commit, Commitment, Inputs, KernelFeatures, Output,
+	OutputWithRnp, Transaction, TransactionBody, TransactionBodyV2, TransactionV2, TxBodyImpl,
+	TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody, Weighting,
 };
 use crate::global;
 use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
@@ -38,7 +38,7 @@ use std::convert::TryInto;
 use std::sync::Arc;
 use util::from_hex;
 use util::RwLock;
-use util::{secp, static_secp_instance};
+use util::{secp, secp::PublicKey, static_secp_instance};
 
 /// Errors thrown by Block validation
 #[derive(Fail, Debug, Clone, Eq, PartialEq)]
@@ -231,10 +231,16 @@ pub struct BlockHeader {
 	/// We can derive the kernel offset sum for *this* block from
 	/// the total kernel offset of the previous block header.
 	pub total_kernel_offset: BlindingFactor,
-	/// Total size of the output MMR after applying this block
+	/// Total size of the output (w/o R&P') MMR after applying this block
 	pub output_mmr_size: u64,
+	/// Total size of the output (w/ R&P') MMR after applying this block.
+	/// New element since HeaderVersion(3).
+	pub output_wrnp_mmr_size: Option<u64>,
 	/// Total size of the kernel MMR after applying this block
 	pub kernel_mmr_size: u64,
+	/// Total (R-P') for all outputs and inputs since the genesis block.
+	/// New element since HeaderVersion(3).
+	pub total_rmp: Option<PublicKey>,
 	/// Proof of work and related
 	pub pow: ProofOfWork,
 }
@@ -253,7 +259,9 @@ impl Default for BlockHeader {
 			kernel_root: ZERO_HASH,
 			total_kernel_offset: BlindingFactor::zero(),
 			output_mmr_size: 0,
+			output_wrnp_mmr_size: None,
 			kernel_mmr_size: 0,
+			total_rmp: None,
 			pow: ProofOfWork::default(),
 		}
 	}
@@ -299,7 +307,17 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 	let range_proof_root = Hash::read(reader)?;
 	let kernel_root = Hash::read(reader)?;
 	let total_kernel_offset = BlindingFactor::read(reader)?;
-	let (output_mmr_size, kernel_mmr_size) = ser_multiread!(reader, read_u64, read_u64);
+	let (output_mmr_size, output_wrnp_mmr_size, kernel_mmr_size, total_rmp) = match version {
+		HeaderVersion(0) | HeaderVersion(1) | HeaderVersion(2) => {
+			let (s1, s2) = ser_multiread!(reader, read_u64, read_u64);
+			(s1, None, s2, None)
+		}
+		HeaderVersion(3) | _ => {
+			let (s1, s2, s3) = ser_multiread!(reader, read_u64, read_u64, read_u64);
+			let total_rmp = PublicKey::read(reader)?;
+			(s1, Some(s2), s3, Some(total_rmp))
+		}
+	};
 	let pow = ProofOfWork::read(reader)?;
 
 	if timestamp > MAX_DATE.and_hms(0, 0, 0).timestamp()
@@ -322,7 +340,9 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 		kernel_root,
 		total_kernel_offset,
 		output_mmr_size,
+		output_wrnp_mmr_size,
 		kernel_mmr_size,
+		total_rmp,
 		pow,
 	})
 }
@@ -338,19 +358,44 @@ impl BlockHeader {
 	/// Write the pre-hash portion of the header
 	pub fn write_pre_pow<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.version.write(writer)?;
-		ser_multiwrite!(
-			writer,
-			[write_u64, self.height],
-			[write_i64, self.timestamp.timestamp()],
-			[write_fixed_bytes, &self.prev_hash],
-			[write_fixed_bytes, &self.prev_root],
-			[write_fixed_bytes, &self.output_root],
-			[write_fixed_bytes, &self.range_proof_root],
-			[write_fixed_bytes, &self.kernel_root],
-			[write_fixed_bytes, &self.total_kernel_offset],
-			[write_u64, self.output_mmr_size],
-			[write_u64, self.kernel_mmr_size]
-		);
+		match self.version {
+			HeaderVersion(0) | HeaderVersion(1) | HeaderVersion(2) => {
+				ser_multiwrite!(
+					writer,
+					[write_u64, self.height],
+					[write_i64, self.timestamp.timestamp()],
+					[write_fixed_bytes, &self.prev_hash],
+					[write_fixed_bytes, &self.prev_root],
+					[write_fixed_bytes, &self.output_root],
+					[write_fixed_bytes, &self.range_proof_root],
+					[write_fixed_bytes, &self.kernel_root],
+					[write_fixed_bytes, &self.total_kernel_offset],
+					[write_u64, self.output_mmr_size],
+					[write_u64, self.kernel_mmr_size]
+				);
+			}
+			HeaderVersion(3) | _ => {
+				let total_rmp = self
+					.total_rmp
+					.unwrap_or(PublicKey::new())
+					.serialize_vec(true);
+				ser_multiwrite!(
+					writer,
+					[write_u64, self.height],
+					[write_i64, self.timestamp.timestamp()],
+					[write_fixed_bytes, &self.prev_hash],
+					[write_fixed_bytes, &self.prev_root],
+					[write_fixed_bytes, &self.output_root],
+					[write_fixed_bytes, &self.range_proof_root],
+					[write_fixed_bytes, &self.kernel_root],
+					[write_fixed_bytes, &self.total_kernel_offset],
+					[write_u64, self.output_mmr_size],
+					[write_u64, self.output_wrnp_mmr_size.unwrap_or(0)],
+					[write_u64, self.kernel_mmr_size],
+					[write_fixed_bytes, &total_rmp]
+				);
+			}
+		}
 		Ok(())
 	}
 
@@ -390,12 +435,20 @@ impl BlockHeader {
 		Ok(deserialize_default(&mut &header_bytes[..])?)
 	}
 
-	/// Total number of outputs (spent and unspent) based on output MMR size committed to in this block.
+	/// Total number of outputs (w/o R&P') (spent and unspent) based on output MMR size committed to in this block.
 	/// Note: *Not* the number of outputs in this block but total up to and including this block.
 	/// The MMR size is the total number of hashes contained in the full MMR structure.
 	/// We want the corresponding number of leaves in the MMR given the size.
 	pub fn output_mmr_count(&self) -> u64 {
 		pmmr::n_leaves(self.output_mmr_size)
+	}
+
+	/// Total number of outputs (w/ R&P') (spent and unspent) based on output MMR size committed to in this block.
+	/// Note: *Not* the number of outputs in this block but total up to and including this block.
+	/// The MMR size is the total number of hashes contained in the full MMR structure.
+	/// We want the corresponding number of leaves in the MMR given the size.
+	pub fn output_wrnp_mmr_count(&self) -> u64 {
+		pmmr::n_leaves(self.output_wrnp_mmr_size.unwrap_or(0))
 	}
 
 	/// Total number of kernels based on kernel MMR size committed to in this block.
@@ -443,6 +496,11 @@ impl BlockHeader {
 	/// Total kernel offset for the chain state up to and including this block.
 	pub fn total_kernel_offset(&self) -> BlindingFactor {
 		self.total_kernel_offset.clone()
+	}
+
+	/// Total (R-P') for the chain state up to and including this block.
+	pub fn total_rmp(&self) -> PublicKey {
+		self.total_rmp.unwrap_or(PublicKey::new()).clone()
 	}
 }
 
@@ -504,9 +562,10 @@ impl Readable for UntrustedBlockHeader {
 		}
 
 		// Validate global output and kernel MMR sizes against upper bounds based on block height.
+		// todo: NIT weight difference from IT weight
 		let global_weight = TransactionBody::weight_as_block(
 			0,
-			header.output_mmr_count(),
+			header.output_mmr_count() + header.output_wrnp_mmr_count(),
 			header.kernel_mmr_count(),
 		);
 		if global_weight > global::max_block_weight() * (header.height + 1) {
@@ -609,7 +668,7 @@ impl Block {
 	#[warn(clippy::new_ret_no_self)]
 	pub fn new(
 		prev: &BlockHeader,
-		txs: &[Transaction],
+		txs: &[VersionedTransaction],
 		difficulty: Difficulty,
 		reward_output: (Output, TxKernel),
 	) -> Result<Block, Error> {
@@ -625,12 +684,8 @@ impl Block {
 		Ok(block)
 	}
 
-	/// Hydrate a block from a compact block.
-	/// Note: caller must validate the block themselves, we do not validate it
-	/// here.
-	pub fn hydrate_from(cb: CompactBlock, txs: &[Transaction]) -> Result<Block, Error> {
-		trace!("block: hydrate_from: {}, {} txs", cb.hash(), txs.len(),);
-
+	// Hydrate a block from a compact block.
+	fn hydrate_from_v1(cb: CompactBlock, txs: &[Transaction]) -> Result<Block, Error> {
 		let header = cb.header.clone();
 
 		let mut inputs = vec![];
@@ -670,10 +725,28 @@ impl Block {
 	/// Hydrate a block from a compact block.
 	/// Note: caller must validate the block themselves, we do not validate it
 	/// here.
-	pub fn hydrate_from_v2(cb: CompactBlock, txs: &[TransactionV2]) -> Result<Block, Error> {
+	pub fn hydrate_from(cb: CompactBlock, txs: &[VersionedTransaction]) -> Result<Block, Error> {
 		trace!("block: hydrate_from: {}, {} txs", cb.hash(), txs.len(),);
 
 		let header = cb.header.clone();
+		if header.version < HeaderVersion(3) {
+			let not_v1 = txs.iter().any(|tx| tx.not_v1_version());
+			if not_v1 {
+				return Err(Error::Other(
+					"hydrate from new transaction version".to_string(),
+				));
+			}
+			let v1_txs = txs
+				.iter()
+				.map(|tx| tx.to_v1().unwrap())
+				.collect::<Vec<Transaction>>();
+			return Block::hydrate_from_v1(cb, &v1_txs);
+		}
+
+		let v2_txs = txs
+			.iter()
+			.map(|tx| tx.to_v2())
+			.collect::<Vec<TransactionV2>>();
 
 		let mut inputs = vec![];
 		let mut inputs_with_sig = vec![];
@@ -682,7 +755,7 @@ impl Block {
 		let mut kernels = vec![];
 
 		// collect all the inputs, outputs and kernels from the txs
-		for tx in txs {
+		for tx in v2_txs {
 			let tx_inputs: Vec<_> = tx.inputs().into();
 			inputs.extend_from_slice(tx_inputs.as_slice());
 			inputs_with_sig.extend_from_slice(tx.inputs_with_sig().inputs_with_sig().as_slice());
@@ -730,7 +803,7 @@ impl Block {
 	/// that all transactions are valid and calculates the Merkle tree.
 	pub fn from_reward(
 		prev: &BlockHeader,
-		txs: &[Transaction],
+		txs: &[VersionedTransaction],
 		reward_out: Output,
 		reward_kern: TxKernel,
 		difficulty: Difficulty,
@@ -738,64 +811,13 @@ impl Block {
 		// A block is just a big transaction, aggregate and add the reward output
 		// and reward kernel. At this point the tx is technically invalid but the
 		// tx body is valid if we account for the reward (i.e. as a block).
-		let agg_tx = transaction::aggregate(txs)?
+		let agg_tx = versioned_transaction::aggregate(txs)?
 			.with_output(reward_out)
 			.with_kernel(reward_kern);
 
 		// Now add the kernel offset of the previous block for a total
 		let total_kernel_offset = committed::sum_kernel_offsets(
-			vec![agg_tx.offset.clone(), prev.total_kernel_offset.clone()],
-			vec![],
-		)?;
-
-		// Determine the height and associated version for the new header.
-		let height = prev.height + 1;
-		let version = consensus::header_version(height);
-
-		let now = Utc::now().timestamp();
-		let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(now, 0), Utc);
-
-		// Now build the block with all the above information.
-		// Note: We have not validated the block here.
-		// Caller must validate the block as necessary.
-		let block = Block {
-			header: BlockHeader {
-				version,
-				height,
-				timestamp,
-				prev_hash: prev.hash(),
-				total_kernel_offset,
-				pow: ProofOfWork {
-					total_difficulty: difficulty + prev.pow.total_difficulty,
-					..Default::default()
-				},
-				..Default::default()
-			},
-			body: agg_tx.into(),
-		};
-		Ok(block)
-	}
-
-	/// Builds a new block ready to mine from the header of the previous block,
-	/// a vector of transactions and the reward information. Checks
-	/// that all transactions are valid and calculates the Merkle tree.
-	pub fn from_reward_v2(
-		prev: &BlockHeader,
-		txs: &[TransactionV2],
-		reward_out: Output,
-		reward_kern: TxKernel,
-		difficulty: Difficulty,
-	) -> Result<Block, Error> {
-		// A block is just a big transaction, aggregate and add the reward output
-		// and reward kernel. At this point the tx is technically invalid but the
-		// tx body is valid if we account for the reward (i.e. as a block).
-		let agg_tx = transaction_v2::aggregate(txs)?
-			.with_output(reward_out)
-			.with_kernel(reward_kern);
-
-		// Now add the kernel offset of the previous block for a total
-		let total_kernel_offset = committed::sum_kernel_offsets(
-			vec![agg_tx.offset.clone(), prev.total_kernel_offset.clone()],
+			vec![agg_tx.offset().clone(), prev.total_kernel_offset.clone()],
 			vec![],
 		)?;
 
@@ -830,11 +852,7 @@ impl Block {
 	/// Consumes this block and returns a new block with the coinbase output
 	/// and kernels added
 	pub fn with_reward(mut self, reward_out: Output, reward_kern: TxKernel) -> Block {
-		self.body = VersionedTransactionBody::V1(TransactionBody {
-			outputs: vec![reward_out],
-			kernels: vec![reward_kern],
-			..Default::default()
-		});
+		self.body = self.body.with_output(reward_out).with_kernel(reward_kern);
 		self
 	}
 
@@ -843,14 +861,19 @@ impl Block {
 		self.body.inputs_with_sig()
 	}
 
-	/// Get inputs
+	/// Get inner vector of inputs w/o sig
 	pub fn inputs(&self) -> Inputs {
 		self.body.inputs()
 	}
 
-	/// Get outputs
+	/// Get outputs w/o R&P'
 	pub fn outputs(&self) -> &[Output] {
 		&self.body.outputs()
+	}
+
+	/// Get outputs w/ R&P'
+	pub fn outputs_with_rnp(&self) -> Option<&[OutputWithRnp]> {
+		self.body.outputs_with_rnp()
 	}
 
 	/// Get kernels

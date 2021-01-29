@@ -35,6 +35,7 @@ use crate::types::{
 };
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::{util::RwLock, ChainStore};
+use grin_core::core::OutputWithRnp;
 use grin_store::Error::NotFoundErr;
 use grin_util::ToHex;
 use std::collections::HashMap;
@@ -1316,7 +1317,7 @@ impl Chain {
 		Ok(self.txhashset.read().get_output_pos(commit)?)
 	}
 
-	/// outputs by insertion index
+	/// outputs (w/o R&P') by insertion index
 	pub fn unspent_outputs_by_pmmr_index(
 		&self,
 		start_index: u64,
@@ -1326,7 +1327,7 @@ impl Chain {
 		let txhashset = self.txhashset.read();
 		let last_index = match max_pmmr_index {
 			Some(i) => i,
-			None => txhashset.highest_output_insertion_index(),
+			None => txhashset.highest_output_insertion_index().0,
 		};
 		let outputs = txhashset.outputs_by_pmmr_index(start_index, max_count, max_pmmr_index);
 		let rangeproofs =
@@ -1340,6 +1341,34 @@ impl Chain {
 		let mut output_vec: Vec<Output> = vec![];
 		for (ref x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
 			output_vec.push(Output::new(x.features, x.commitment(), y));
+		}
+		Ok((outputs.0, last_index, output_vec))
+	}
+
+	/// outputs (w/ R&P') by insertion index
+	pub fn unspent_outputs_wrnp_by_pmmr_index(
+		&self,
+		start_index: u64,
+		max_count: u64,
+		max_pmmr_index: Option<u64>,
+	) -> Result<(u64, u64, Vec<OutputWithRnp>), Error> {
+		let txhashset = self.txhashset.read();
+		let last_index = match max_pmmr_index {
+			Some(i) => i,
+			None => txhashset.highest_output_insertion_index().1,
+		};
+		let outputs = txhashset.outputs_wrnp_by_pmmr_index(start_index, max_count, max_pmmr_index);
+		let rangeproofs =
+			txhashset.rangeproofs_wrnp_by_pmmr_index(start_index, max_count, max_pmmr_index);
+		if outputs.0 != rangeproofs.0 || outputs.1.len() != rangeproofs.1.len() {
+			return Err(ErrorKind::TxHashSetErr(String::from(
+				"Output and rangeproof sets don't match",
+			))
+			.into());
+		}
+		let mut output_vec: Vec<OutputWithRnp> = vec![];
+		for (ref x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
+			output_vec.push(OutputWithRnp::new(x.features, x.commitment(), y));
 		}
 		Ok((outputs.0, last_index, output_vec))
 	}
