@@ -287,7 +287,7 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Iterator over the output_pos index.
-	pub fn output_pos_iter(&self) -> Result<SerIterator<(u64, u64)>, Error> {
+	pub fn output_pos_iter(&self) -> Result<SerIterator<CommitPos>, Error> {
 		let key = to_key(COMMIT_POS_PREFIX, "");
 		self.db.iter(&key)
 	}

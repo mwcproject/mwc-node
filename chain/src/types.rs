@@ -230,8 +230,8 @@ impl TxHashsetWriteStatus for SyncState {
 pub struct TxHashSetRoots {
 	/// Output roots
 	pub output_roots: OutputRoots,
-	/// Range Proof root
-	pub rproof_root: Hash,
+	/// Range Proof roots
+	pub rproof_roots: RangeproofRoots,
 	/// Kernel root
 	pub kernel_root: Hash,
 }
@@ -242,6 +242,13 @@ impl TxHashSetRoots {
 	/// as part of pipe::validate_header().
 	pub fn output_root(&self, header: &BlockHeader) -> Hash {
 		self.output_roots.root(header)
+	}
+
+	/// Accessor for the output PMMR root (rules here are block height dependent).
+	/// We assume the header version is consistent with the block height, validated
+	/// as part of pipe::validate_header().
+	pub fn rproof_root(&self, header: &BlockHeader) -> Hash {
+		self.rproof_roots.root(header)
 	}
 
 	/// Validate roots against the provided block header.
@@ -258,7 +265,7 @@ impl TxHashSetRoots {
 
 		if header.output_root != self.output_root(header) {
 			Err(ErrorKind::InvalidRoot("Failed Output root validation".to_string()).into())
-		} else if header.range_proof_root != self.rproof_root {
+		} else if header.range_proof_root != self.rproof_root(header) {
 			Err(ErrorKind::InvalidRoot("Failed Range Proof root validation".to_string()).into())
 		} else if header.kernel_root != self.kernel_root {
 			Err(ErrorKind::InvalidRoot("Failed Kernel root validation".to_string()).into())
@@ -289,10 +296,8 @@ impl OutputRoots {
 	pub fn root(&self, header: &BlockHeader) -> Hash {
 		if header.version < HeaderVersion(3) {
 			self.output_root()
-		} else if header.version < HeaderVersion(4) {
-			self.merged_root_v3(header)
 		} else {
-			self.merged_root_v4(header)
+			self.merged_root(header)
 		}
 	}
 
@@ -303,19 +308,43 @@ impl OutputRoots {
 
 	/// Hash the root of the output PMMR and the root of the bitmap accumulator
 	/// together with the size of the output PMMR (for consistency with existing PMMR impl).
-	/// H(pmmr_size | pmmr_root | bitmap_root). For HeaderVersion(3)
-	fn merged_root_v3(&self, header: &BlockHeader) -> Hash {
-		(self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size)
+	/// H(pmmr_size | pmmr_root | bitmap_root). For HeaderVersion(3)+
+	fn merged_root(&self, header: &BlockHeader) -> Hash {
+		let h1 = (self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size);
+		let h2 = (self.pmmr_wrnp_root, self.bitmap_wrnp_root)
+			.hash_with_index(header.output_wrnp_mmr_size.unwrap_or(0));
+		(h1, h2).hash_with_index(header.output_mmr_size + header.output_wrnp_mmr_size.unwrap_or(0))
+	}
+}
+
+/// A helper for the various rangeproof roots.
+#[derive(Debug)]
+pub struct RangeproofRoots {
+	/// The 1st rangeproof PMMR root
+	pub rangeproof_root: Hash,
+	/// The 2nd rangeproof PMMR root
+	pub rangeproof_wrnp_root: Hash,
+}
+
+impl RangeproofRoots {
+	/// The root of our rangeproof PMMR. The rules here are block height specific.
+	/// We use the merged root here for header version 3 and later.
+	/// We assume the header version is consistent with the block height, validated
+	/// as part of pipe::validate_header().
+	pub fn root(&self, header: &BlockHeader) -> Hash {
+		if header.version < HeaderVersion(3) {
+			self.rangeproof_root
+		} else {
+			self.merged_root(header)
+		}
 	}
 
-	/// Hash the root of the output PMMR and the root of the bitmap accumulator
-	/// together with the size of the output PMMR (for consistency with existing PMMR impl).
-	/// H(pmmr_size | pmmr_root | bitmap_root). For HeaderVersion(4)+
-	fn merged_root_v4(&self, header: &BlockHeader) -> Hash {
-		let h1 = (self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size);
-		let h2 =
-			(self.pmmr_wrnp_root, self.bitmap_wrnp_root).hash_with_index(header.output_mmr_size);
-		(h1, h2).hash_with_index(header.output_mmr_size)
+	/// Hash the root of the two rangeproof PMMR,
+	/// together with the size of the rangeproof PMMR (for consistency with existing PMMR impl).
+	/// H(pmmr_size | pmmr_root). For HeaderVersion(3)+
+	fn merged_root(&self, header: &BlockHeader) -> Hash {
+		(self.rangeproof_root, self.rangeproof_wrnp_root)
+			.hash_with_index(header.output_mmr_size + header.output_wrnp_mmr_size.unwrap_or(0))
 	}
 }
 

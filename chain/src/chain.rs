@@ -199,6 +199,7 @@ impl Chain {
 			&mut header_pmmr,
 			&mut sync_pmmr,
 			&mut txhashset,
+			verifier_cache.clone(),
 		)?;
 
 		// Migrate the output_pos index to the new format which include the OutputFeatures.
@@ -312,7 +313,12 @@ impl Chain {
 		let inputs: Vec<_> =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				let previous_header = batch.get_previous_header(&block.header)?;
-				pipe::rewind_and_apply_fork(&previous_header, ext, batch)?;
+				pipe::rewind_and_apply_fork(
+					&previous_header,
+					ext,
+					batch,
+					self.verifier_cache.clone(),
+				)?;
 				ext.extension
 					.utxo_view(ext.header_extension)
 					.validate_inputs(&block.inputs(), batch)
@@ -735,7 +741,7 @@ impl Chain {
 		// latest block header. Rewind the extension to the specified header to
 		// ensure the view is consistent.
 		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			pipe::rewind_and_apply_fork(&header, ext, batch)?;
+			pipe::rewind_and_apply_fork(&header, ext, batch, self.verifier_cache.clone())?;
 			ext.extension
 				.validate(&self.genesis, fast_validation, &NoStatus, &header)?;
 			Ok(())
@@ -767,7 +773,12 @@ impl Chain {
 		let (prev_root, roots, sizes) =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				let previous_header = batch.get_previous_header(&b.header)?;
-				pipe::rewind_and_apply_fork(&previous_header, ext, batch)?;
+				pipe::rewind_and_apply_fork(
+					&previous_header,
+					ext,
+					batch,
+					self.verifier_cache.clone(),
+				)?;
 
 				let extension = &mut ext.extension;
 				let header_extension = &mut ext.header_extension;
@@ -776,7 +787,7 @@ impl Chain {
 				let prev_root = header_extension.root()?;
 
 				// Apply the latest block to the chain state via the extension.
-				extension.apply_block(b, header_extension, batch)?;
+				extension.apply_block(b, header_extension, batch, self.verifier_cache.clone())?;
 
 				Ok((prev_root, extension.roots()?, extension.sizes()))
 			})?;
@@ -796,7 +807,7 @@ impl Chain {
 
 		// Set the output, rangeproof and kernel MMR roots.
 		b.header.output_root = roots.output_root(&b.header);
-		b.header.range_proof_root = roots.rproof_root;
+		b.header.range_proof_root = roots.rproof_root(&b.header);
 		b.header.kernel_root = roots.kernel_root;
 
 		Ok(())
@@ -812,7 +823,7 @@ impl Chain {
 		let mut txhashset = self.txhashset.write();
 		let merkle_proof =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-				pipe::rewind_and_apply_fork(&header, ext, batch)?;
+				pipe::rewind_and_apply_fork(&header, ext, batch, self.verifier_cache.clone())?;
 				ext.extension.merkle_proof(out_id, batch)
 			})?;
 
@@ -840,7 +851,7 @@ impl Chain {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
 		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			pipe::rewind_and_apply_fork(&header, ext, batch)?;
+			pipe::rewind_and_apply_fork(&header, ext, batch, self.verifier_cache.clone())?;
 			ext.extension.snapshot(batch)?;
 
 			// prepare the zip
@@ -1367,8 +1378,8 @@ impl Chain {
 			.into());
 		}
 		let mut output_vec: Vec<OutputWithRnp> = vec![];
-		for (ref x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
-			output_vec.push(OutputWithRnp::new(x.features, x.commitment(), y));
+		for (&x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
+			output_vec.push(OutputWithRnp::new(x, y));
 		}
 		Ok((outputs.0, last_index, output_vec))
 	}
@@ -1640,6 +1651,7 @@ fn setup_head(
 	header_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	sync_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	txhashset: &mut txhashset::TxHashSet,
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 ) -> Result<(), Error> {
 	let mut batch = store.batch()?;
 
@@ -1690,7 +1702,7 @@ fn setup_head(
 				let header = batch.get_block_header(&head.last_block_h)?;
 
 				let res = txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-					pipe::rewind_and_apply_fork(&header, ext, batch)?;
+					pipe::rewind_and_apply_fork(&header, ext, batch, verifier_cache.clone())?;
 
 					let extension = &mut ext.extension;
 
@@ -1738,7 +1750,12 @@ fn setup_head(
 					let prev_header = batch.get_block_header(&head.prev_block_h)?;
 
 					txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-						pipe::rewind_and_apply_fork(&prev_header, ext, batch)
+						pipe::rewind_and_apply_fork(
+							&prev_header,
+							ext,
+							batch,
+							verifier_cache.clone(),
+						)
 					})?;
 
 					// Now "undo" the latest block and forget it ever existed.
@@ -1772,7 +1789,7 @@ fn setup_head(
 			}
 			txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
 				ext.extension
-					.apply_block(&genesis, ext.header_extension, batch)
+					.apply_block(&genesis, ext.header_extension, batch, verifier_cache)
 			})?;
 
 			// Save the block_sums to the db for use later.

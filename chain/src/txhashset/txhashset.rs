@@ -20,6 +20,7 @@ use crate::core::core::committed::Committed;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::pmmr::{self, Backend, ReadonlyPMMR, RewindablePMMR, PMMR};
+use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, Commit, IdentifierWithRnp, KernelFeatures, Output, OutputFeatures,
 	OutputIdentifier, TxKernel,
@@ -32,10 +33,10 @@ use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::BitmapAccumulator;
 use crate::txhashset::{RewindableKernelView, UTXOView};
 use crate::types::{
-	CommitPos, CommitPosHt, OutputRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus,
+	CommitPos, CommitPosHt, OutputRoots, RangeproofRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus,
 };
 use crate::util::secp::pedersen::{Commitment, RangeProof};
-use crate::util::{file, secp_static, zip};
+use crate::util::{file, secp_static, zip, RwLock};
 use croaring::Bitmap;
 use grin_core::core::OutputWithRnp;
 use grin_store;
@@ -323,7 +324,7 @@ impl TxHashSet {
 					}
 				}
 				OutputFeatures::PlainWrnp => {
-					let output_wrnp_pmmr: ReadonlyPMMR<'_, OutputIdentifier, _> = ReadonlyPMMR::at(
+					let output_wrnp_pmmr: ReadonlyPMMR<'_, IdentifierWithRnp, _> = ReadonlyPMMR::at(
 						&self.output_wrnp_pmmr_h.backend,
 						self.output_wrnp_pmmr_h.last_pos,
 					);
@@ -493,8 +494,13 @@ impl TxHashSet {
 			output_roots: OutputRoots {
 				pmmr_root: output_pmmr.root(),
 				bitmap_root: self.bitmap_accumulator.root(),
+				pmmr_wrnp_root: output_wrnp_pmmr.root(),
+				bitmap_wrnp_root: self.bitmap_accumulator_wrnp.root(),
 			},
-			rproof_root: rproof_pmmr.root(),
+			rproof_roots: RangeproofRoots {
+				rangeproof_root: rproof_pmmr.root(),
+				rangeproof_wrnp_root: rproof_wrnp_pmmr.root(),
+			},
 			kernel_root: kernel_pmmr.root(),
 		}
 	}
@@ -641,18 +647,40 @@ impl TxHashSet {
 
 		let output_pmmr =
 			ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos);
+		let output_wrnp_pmmr = ReadonlyPMMR::at(
+			&self.output_wrnp_pmmr_h.backend,
+			self.output_wrnp_pmmr_h.last_pos,
+		);
 
 		// Iterate over the current output_pos index, removing any entries that
 		// do not point to the expected output.
 		let mut removed_count = 0;
-		for (key, (pos, _)) in batch.output_pos_iter()? {
-			if let Some(out) = output_pmmr.get_data(pos) {
-				if let Ok(pos_via_mmr) = batch.get_output_pos(&out.commitment()) {
-					// If the pos matches and the index key matches the commitment
-					// then keep the entry, other we want to clean it up.
-					if pos == pos_via_mmr && batch.is_match_output_pos_key(&key, &out.commitment())
-					{
-						continue;
+		for (key, pos) in batch.output_pos_iter()? {
+			match pos.features {
+				OutputFeatures::Coinbase | OutputFeatures::Plain => {
+					if let Some(out) = output_pmmr.get_data(pos.pos) {
+						if let Ok(pos_via_mmr) = batch.get_output_pos(&out.commitment()) {
+							// If the pos matches and the index key matches the commitment
+							// then keep the entry, other we want to clean it up.
+							if pos == pos_via_mmr
+								&& batch.is_match_output_pos_key(&key, &out.commitment())
+							{
+								continue;
+							}
+						}
+					}
+				}
+				OutputFeatures::PlainWrnp => {
+					if let Some(out) = output_wrnp_pmmr.get_data(pos.pos) {
+						if let Ok(pos_via_mmr) = batch.get_output_pos(&out.commitment()) {
+							// If the pos matches and the index key matches the commitment
+							// then keep the entry, other we want to clean it up.
+							if pos == pos_via_mmr
+								&& batch.is_match_output_pos_key(&key, &out.commitment())
+							{
+								continue;
+							}
+						}
 					}
 				}
 			}
@@ -660,9 +688,13 @@ impl TxHashSet {
 			removed_count += 1;
 		}
 		debug!(
-			"init_output_pos_index: removed {} stale index entries",
-			removed_count
+			"init_output_pos_index: removed {} stale index entries, took {}s",
+			removed_count,
+			now.elapsed().as_secs()
 		);
+
+		// search height for all outputs w/o R&P'
+		let now = Instant::now();
 
 		let mut outputs_pos: Vec<(OutputIdentifier, u64)> = vec![];
 		for pos in output_pmmr.leaf_pos_iter() {
@@ -671,7 +703,7 @@ impl TxHashSet {
 			}
 		}
 
-		debug!("init_output_pos_index: {} utxos", outputs_pos.len());
+		debug!("init_output_pos_index: {} output utxos", outputs_pos.len());
 
 		outputs_pos.retain(|x| {
 			batch
@@ -681,45 +713,89 @@ impl TxHashSet {
 		});
 
 		debug!(
-			"init_output_pos_index: {} utxos with missing index entries",
+			"init_output_pos_index: {} output utxos with missing index entries",
 			outputs_pos.len()
 		);
 
-		if outputs_pos.is_empty() {
-			return Ok(());
+		if !outputs_pos.is_empty() {
+			let total_outputs = search_save_output_pos_height(outputs_pos, header_pmmr, batch)?;
+			debug!(
+				"init_output_pos_index: added entries for {} utxos, took {}s",
+				total_outputs,
+				now.elapsed().as_secs(),
+			);
 		}
 
-		let total_outputs = outputs_pos.len();
-		let max_height = batch.head()?.height;
+		// search height for all outputs w/ R&P'
+		let now = Instant::now();
 
-		let mut i = 0;
-		for search_height in 0..max_height {
-			let hash = header_pmmr.get_header_hash_by_height(search_height + 1)?;
-			let h = batch.get_block_header(&hash)?;
-			while i < total_outputs {
-				let (out_id, pos) = outputs_pos[i];
-				if pos > h.output_mmr_size {
-					// Note: MMR position is 1-based and not 0-based, so here must be '>' instead of '>='
-					break;
-				}
-				batch.save_output_pos_height(
-					&out_id.commit,
-					CommitPos {
-						features: out_id.features,
-						pos,
-						height: h.height,
-					},
-				)?;
-				i += 1;
+		let mut outputs_pos: Vec<(OutputIdentifier, u64)> = vec![];
+		for pos in output_wrnp_pmmr.leaf_pos_iter() {
+			if let Some(out) = output_wrnp_pmmr.get_data(pos) {
+				outputs_pos.push((out.identifier(), pos));
 			}
 		}
+
 		debug!(
-			"init_output_pos_index: added entries for {} utxos, took {}s",
-			total_outputs,
-			now.elapsed().as_secs(),
+			"init_output_pos_index: {} output_wrnp utxos",
+			outputs_pos.len()
 		);
+
+		outputs_pos.retain(|x| {
+			batch
+				.get_output_pos_height(&x.0.commit)
+				.map(|p| p.is_none())
+				.unwrap_or(true)
+		});
+
+		debug!(
+			"init_output_pos_index: {} output_wrnp utxos with missing index entries",
+			outputs_pos.len()
+		);
+
+		if !outputs_pos.is_empty() {
+			let total_outputs = search_save_output_pos_height(outputs_pos, header_pmmr, batch)?;
+			debug!(
+				"init_output_pos_index: added entries for {} utxos, took {}s",
+				total_outputs,
+				now.elapsed().as_secs(),
+			);
+		}
+
 		Ok(())
 	}
+}
+
+fn search_save_output_pos_height(
+	outputs_pos: Vec<(OutputIdentifier, u64)>,
+	header_pmmr: &PMMRHandle<BlockHeader>,
+	batch: &Batch<'_>,
+) -> Result<usize, Error> {
+	let total_outputs = outputs_pos.len();
+	let max_height = batch.head()?.height;
+
+	let mut i = 0;
+	for search_height in 0..max_height {
+		let hash = header_pmmr.get_header_hash_by_height(search_height + 1)?;
+		let h = batch.get_block_header(&hash)?;
+		while i < total_outputs {
+			let (out_id, pos) = outputs_pos[i];
+			if pos > h.output_mmr_size {
+				// Note: MMR position is 1-based and not 0-based, so here must be '>' instead of '>='
+				break;
+			}
+			batch.save_output_pos_height(
+				&out_id.commit,
+				CommitPos {
+					features: out_id.features,
+					pos,
+					height: h.height,
+				},
+			)?;
+			i += 1;
+		}
+	}
+	return Ok(total_outputs);
 }
 
 /// Starts a new unit of work to extend (or rewind) the chain with additional
@@ -781,6 +857,7 @@ where
 	let res: Result<T, Error>;
 	{
 		let header_pmmr = ReadonlyPMMR::at(&handle.backend, handle.last_pos);
+
 		let output_pmmr =
 			ReadonlyPMMR::at(&trees.output_pmmr_h.backend, trees.output_pmmr_h.last_pos);
 		let output_wrnp_pmmr = ReadonlyPMMR::at(
@@ -790,11 +867,21 @@ where
 
 		let rproof_pmmr =
 			ReadonlyPMMR::at(&trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.last_pos);
+		let rproof_wrnp_pmmr = ReadonlyPMMR::at(
+			&trees.rproof_wrnp_pmmr_h.backend,
+			trees.rproof_wrnp_pmmr_h.last_pos,
+		);
 
 		// Create a new batch here to pass into the utxo_view.
 		// Discard it (rollback) after we finish with the utxo_view.
 		let batch = trees.commit_index.batch()?;
-		let utxo = UTXOView::new(header_pmmr, output_pmmr, output_wrnp_pmmr, rproof_pmmr);
+		let utxo = UTXOView::new(
+			header_pmmr,
+			output_pmmr,
+			output_wrnp_pmmr,
+			rproof_pmmr,
+			rproof_wrnp_pmmr,
+		);
 		res = inner(&utxo, &batch);
 	}
 	res
@@ -1154,6 +1241,7 @@ pub struct Extension<'a> {
 	output_pmmr: PMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
 	output_wrnp_pmmr: PMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 	rproof_pmmr: PMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
+	rproof_wrnp_pmmr: PMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 	kernel_pmmr: PMMR<'a, TxKernel, PMMRBackend<TxKernel>>,
 
 	bitmap_accumulator: BitmapAccumulator,
@@ -1212,6 +1300,10 @@ impl<'a> Extension<'a> {
 				&mut trees.rproof_pmmr_h.backend,
 				trees.rproof_pmmr_h.last_pos,
 			),
+			rproof_wrnp_pmmr: PMMR::at(
+				&mut trees.rproof_wrnp_pmmr_h.backend,
+				trees.rproof_wrnp_pmmr_h.last_pos,
+			),
 			kernel_pmmr: PMMR::at(
 				&mut trees.kernel_pmmr_h.backend,
 				trees.kernel_pmmr_h.last_pos,
@@ -1235,6 +1327,7 @@ impl<'a> Extension<'a> {
 			self.output_pmmr.readonly_pmmr(),
 			self.output_wrnp_pmmr.readonly_pmmr(),
 			self.rproof_pmmr.readonly_pmmr(),
+			self.rproof_wrnp_pmmr.readonly_pmmr(),
 		)
 	}
 
@@ -1246,9 +1339,10 @@ impl<'a> Extension<'a> {
 		b: &Block,
 		header_ext: &HeaderExtension<'_>,
 		batch: &Batch<'_>,
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<(), Error> {
 		let mut affected_pos = vec![];
-		let mut affected_rnp_pos = vec![];
+		let mut affected_wrnp_pos = vec![];
 
 		// Apply the output to the output and rangeproof MMRs.
 		// Add pos to affected_pos to update the accumulator later on.
@@ -1260,6 +1354,18 @@ impl<'a> Extension<'a> {
 				&out.commitment(),
 				CommitPos {
 					features: out.identifier.features,
+					pos,
+					height: b.header.height,
+				},
+			)?;
+		}
+		for out in b.outputs_with_rnp().unwrap_or(&vec![]) {
+			let pos = self.apply_output_rnp(out, batch)?;
+			affected_wrnp_pos.push(pos);
+			batch.save_output_pos_height(
+				&out.commitment(),
+				CommitPos {
+					features: out.identifier_with_rnp.features(),
 					pos,
 					height: b.header.height,
 				},
@@ -1283,12 +1389,29 @@ impl<'a> Extension<'a> {
 		let spent: Vec<_> = spent.into_iter().map(|(_, pos)| pos).collect();
 		batch.save_spent_index(&b.hash(), &spent)?;
 
+		// Repeat for inputs with sig
+		if let Some(inputs) = b.inputs_with_sig() {
+			let spent = self.utxo_view(header_ext).validate_inputs_with_sig(
+				&inputs,
+				verifier_cache,
+				batch,
+			)?;
+			for (out, pos) in &spent {
+				self.apply_input_with_sig(out.commitment(), *pos)?;
+				affected_wrnp_pos.push(pos.pos);
+				batch.delete_output_pos_height(&out.commitment())?;
+			}
+			let spent: Vec<_> = spent.into_iter().map(|(_, pos)| pos).collect();
+			batch.save_spent_index(&b.hash(), &spent)?;
+		}
+
 		// Apply the kernels to the kernel MMR.
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
 		self.apply_kernels(b.kernels(), b.header.height, batch)?;
 
 		// Update our BitmapAccumulator based on affected outputs (both spent and created).
 		self.apply_to_bitmap_accumulator(&affected_pos)?;
+		self.apply_to_bitmap_accumulator_wrnp(&affected_wrnp_pos)?;
 
 		// Update the head of the extension to reflect the block we just applied.
 		self.head = Tip::from_header(&b.header);
@@ -1312,12 +1435,43 @@ impl<'a> Extension<'a> {
 		)
 	}
 
+	fn apply_to_bitmap_accumulator_wrnp(&mut self, output_pos: &[u64]) -> Result<(), Error> {
+		let mut output_idx: Vec<_> = output_pos
+			.iter()
+			.map(|x| pmmr::n_leaves(*x).saturating_sub(1))
+			.collect();
+		output_idx.sort_unstable();
+		let min_idx = output_idx.first().cloned().unwrap_or(0);
+		let size = pmmr::n_leaves(self.output_wrnp_pmmr.last_pos);
+		self.bitmap_accumulator_wrnp.apply(
+			output_idx,
+			self.output_wrnp_pmmr
+				.leaf_idx_iter(BitmapAccumulator::chunk_start_idx(min_idx)),
+			size,
+		)
+	}
+
 	// Prune output and rangeproof PMMRs based on provided pos.
 	// Input is not valid if we cannot prune successfully.
 	fn apply_input(&mut self, commit: Commitment, pos: CommitPos) -> Result<(), Error> {
 		match self.output_pmmr.prune(pos.pos) {
 			Ok(true) => {
 				self.rproof_pmmr
+					.prune(pos.pos)
+					.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
+				Ok(())
+			}
+			Ok(false) => Err(ErrorKind::AlreadySpent(commit).into()),
+			Err(e) => Err(ErrorKind::TxHashSetErr(e).into()),
+		}
+	}
+
+	// Prune output and rangeproof PMMRs based on provided pos.
+	// Input is not valid if we cannot prune successfully.
+	fn apply_input_with_sig(&mut self, commit: Commitment, pos: CommitPos) -> Result<(), Error> {
+		match self.output_wrnp_pmmr.prune(pos.pos) {
+			Ok(true) => {
+				self.rproof_wrnp_pmmr
 					.prune(pos.pos)
 					.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
 				Ok(())
@@ -1403,7 +1557,7 @@ impl<'a> Extension<'a> {
 		// push the new output to the MMR.
 		let output_pos = self
 			.output_wrnp_pmmr
-			.push(&out.identifier())
+			.push(&out.identifier_with_rnp())
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
 
 		// push the rangeproof to the MMR.
@@ -1472,10 +1626,24 @@ impl<'a> Extension<'a> {
 		debug!("txhashset: merkle_proof: output: {:?}", out_id.commit);
 		// then calculate the Merkle Proof based on the known pos
 		let pos = batch.get_output_pos(&out_id.commit)?;
-		let merkle_proof = self.output_pmmr.merkle_proof(pos).map_err(|e| {
-			ErrorKind::TxHashSetErr(format!("pmmr get merkle proof at pos {}, {}", pos, e))
-		})?;
-
+		let merkle_proof = match pos.features {
+			OutputFeatures::Coinbase | OutputFeatures::Plain => {
+				self.output_pmmr.merkle_proof(pos.pos).map_err(|e| {
+					ErrorKind::TxHashSetErr(format!(
+						"output pmmr get merkle proof at pos {}, {}",
+						pos.pos, e
+					))
+				})?
+			}
+			OutputFeatures::PlainWrnp => {
+				self.output_wrnp_pmmr.merkle_proof(pos.pos).map_err(|e| {
+					ErrorKind::TxHashSetErr(format!(
+						"output_wrnp pmmr get merkle proof at pos {}, {}",
+						pos.pos, e
+					))
+				})?
+			}
+		};
 		Ok(merkle_proof)
 	}
 
@@ -1489,7 +1657,13 @@ impl<'a> Extension<'a> {
 		self.output_pmmr
 			.snapshot(&header)
 			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
+		self.output_wrnp_pmmr
+			.snapshot(&header)
+			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
 		self.rproof_pmmr
+			.snapshot(&header)
+			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
+		self.rproof_wrnp_pmmr
 			.snapshot(&header)
 			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
 		Ok(())
@@ -1645,11 +1819,22 @@ impl<'a> Extension<'a> {
 					.root()
 					.map_err(|e| ErrorKind::InvalidRoot(e))?,
 				bitmap_root: self.bitmap_accumulator.root(),
+				pmmr_wrnp_root: self
+					.output_wrnp_pmmr
+					.root()
+					.map_err(|e| ErrorKind::InvalidRoot(e))?,
+				bitmap_wrnp_root: self.bitmap_accumulator_wrnp.root(),
 			},
-			rproof_root: self
-				.rproof_pmmr
-				.root()
-				.map_err(|e| ErrorKind::InvalidRoot(e))?,
+			rproof_roots: RangeproofRoots {
+				rangeproof_root: self
+					.rproof_pmmr
+					.root()
+					.map_err(|e| ErrorKind::InvalidRoot(e))?,
+				rangeproof_wrnp_root: self
+					.rproof_wrnp_pmmr
+					.root()
+					.map_err(|e| ErrorKind::InvalidRoot(e))?,
+			},
 			kernel_root: self
 				.kernel_pmmr
 				.root()

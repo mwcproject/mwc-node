@@ -147,8 +147,9 @@ pub fn process_block(
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
+	let verifier_cache = ctx.verifier_cache.clone();
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		let fork_point = rewind_and_apply_fork(&prev, ext, batch)?;
+		let fork_point = rewind_and_apply_fork(&prev, ext, batch, verifier_cache.clone())?;
 
 		// Check any coinbase being spent have matured sufficiently.
 		// This needs to be done within the context of a potentially
@@ -168,7 +169,7 @@ pub fn process_block(
 		// Apply the block to the txhashset state.
 		// Validate the txhashset roots and sizes against the block header.
 		// Block is invalid if there are any discrepencies.
-		apply_block_to_txhashset(b, ext, batch)?;
+		apply_block_to_txhashset(b, ext, batch, verifier_cache.clone())?;
 
 		// If applying this block does not increase the work on the chain then
 		// we know we have not yet updated the chain to produce a new chain head.
@@ -490,9 +491,10 @@ fn apply_block_to_txhashset(
 	block: &Block,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 ) -> Result<(), Error> {
 	ext.extension
-		.apply_block(block, ext.header_extension, batch)?;
+		.apply_block(block, ext.header_extension, batch, verifier_cache)?;
 	ext.extension.validate_roots(&block.header)?;
 	ext.extension.validate_sizes(&block.header)?;
 	Ok(())
@@ -591,6 +593,7 @@ pub fn rewind_and_apply_fork(
 	header: &BlockHeader,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 ) -> Result<BlockHeader, Error> {
 	let extension = &mut ext.extension;
 	let header_extension = &mut ext.header_extension;
@@ -632,7 +635,7 @@ pub fn rewind_and_apply_fork(
 		// Re-verify block_sums to set the block_sums up on this fork correctly.
 		verify_block_sums(&fb, batch)?;
 		// Re-apply the blocks.
-		apply_block_to_txhashset(&fb, ext, batch)?;
+		apply_block_to_txhashset(&fb, ext, batch, verifier_cache.clone())?;
 	}
 
 	Ok(fork_point)

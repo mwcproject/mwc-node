@@ -36,6 +36,7 @@ pub struct UTXOView<'a> {
 	output_pmmr: ReadonlyPMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
 	output_wrnp_pmmr: ReadonlyPMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 	rproof_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
+	rproof_wrnp_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 }
 
 impl<'a> UTXOView<'a> {
@@ -45,12 +46,14 @@ impl<'a> UTXOView<'a> {
 		output_pmmr: ReadonlyPMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
 		output_wrnp_pmmr: ReadonlyPMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 		rproof_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
+		rproof_wrnp_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 	) -> UTXOView<'a> {
 		UTXOView {
 			header_pmmr,
 			output_pmmr,
 			output_wrnp_pmmr,
 			rproof_pmmr,
+			rproof_wrnp_pmmr,
 		}
 	}
 
