@@ -25,7 +25,7 @@ use std::time::Duration;
 use crate::api;
 use crate::chain;
 use crate::common::types::Error;
-use crate::core::core::{Output, TxKernel};
+use crate::core::core::{Output, TxImpl, TxKernel};
 use crate::core::libtx::secp_ser;
 use crate::core::libtx::ProofBuilder;
 use crate::core::{consensus, core, global};

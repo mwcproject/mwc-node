@@ -382,7 +382,7 @@ impl ChainAdapter for DummyAdapter {
 	fn total_height(&self) -> Result<u64, chain::Error> {
 		Ok(0)
 	}
-	fn get_transaction(&self, _h: Hash) -> Option<core::Transaction> {
+	fn get_transaction(&self, _h: Hash) -> Option<core::VersionedTransaction> {
 		None
 	}
 
@@ -391,7 +391,7 @@ impl ChainAdapter for DummyAdapter {
 	}
 	fn transaction_received(
 		&self,
-		_: core::Transaction,
+		_: core::VersionedTransaction,
 		_stem: bool,
 	) -> Result<bool, chain::Error> {
 		Ok(true)

@@ -335,7 +335,7 @@ impl Peer {
 	/// dropped if the remote peer is known to already have the transaction.
 	/// We support broadcast of lightweight tx kernel hash
 	/// so track known txs by kernel hash.
-	pub fn send_transaction(&self, tx: &core::Transaction) -> Result<bool, Error> {
+	pub fn send_transaction(&self, tx: &core::VersionedTransaction) -> Result<bool, Error> {
 		let kernel = &tx.kernels()[0];
 
 		if self
@@ -363,7 +363,7 @@ impl Peer {
 	/// Sends the provided stem transaction to the remote peer.
 	/// Note: tracking adapter is ignored for stem transactions (while under
 	/// embargo).
-	pub fn send_stem_transaction(&self, tx: &core::Transaction) -> Result<(), Error> {
+	pub fn send_stem_transaction(&self, tx: &core::VersionedTransaction) -> Result<(), Error> {
 		debug!("Send (stem) tx {} to {}", tx.hash(), self.info.addr);
 		self.send(tx, msg::Type::StemTransaction)
 	}
@@ -483,7 +483,7 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.total_height()
 	}
 
-	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction> {
+	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::VersionedTransaction> {
 		self.adapter.get_transaction(kernel_hash)
 	}
 
@@ -498,7 +498,7 @@ impl ChainAdapter for TrackingAdapter {
 
 	fn transaction_received(
 		&self,
-		tx: core::Transaction,
+		tx: core::VersionedTransaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
 		// Do not track the tx hash for stem txs.

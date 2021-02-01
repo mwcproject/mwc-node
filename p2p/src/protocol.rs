@@ -151,7 +151,7 @@ impl MessageHandler for Protocol {
 					msg.header.msg_len
 				);
 				let tx: core::Transaction = msg.body()?;
-				adapter.transaction_received(tx, false)?;
+				adapter.transaction_received(tx.into(), false)?;
 				Ok(None)
 			}
 
@@ -161,7 +161,7 @@ impl MessageHandler for Protocol {
 					msg.header.msg_len
 				);
 				let tx: core::Transaction = msg.body()?;
-				adapter.transaction_received(tx, true)?;
+				adapter.transaction_received(tx.into(), true)?;
 				Ok(None)
 			}
 

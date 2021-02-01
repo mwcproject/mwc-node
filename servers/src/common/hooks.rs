@@ -23,6 +23,7 @@ use crate::chain::BlockStatus;
 use crate::common::types::{ServerConfig, WebHooksConfig};
 use crate::core::core;
 use crate::core::core::hash::Hashed;
+use crate::core::core::transaction::TxImpl;
 use crate::p2p::types::PeerAddr;
 use futures::TryFutureExt;
 use grin_util::ToHex;
@@ -63,7 +64,7 @@ pub fn init_chain_hooks(config: &ServerConfig) -> Vec<Box<dyn ChainEvents + Send
 /// Trait to be implemented by Network Event Hooks
 pub trait NetEvents {
 	/// Triggers when a new transaction arrives
-	fn on_transaction_received(&self, tx: &core::Transaction) {}
+	fn on_transaction_received(&self, tx: &core::VersionedTransaction) {}
 
 	/// Triggers when a new block arrives
 	fn on_block_received(&self, block: &core::Block, addr: &PeerAddr) {}
@@ -83,7 +84,7 @@ pub trait ChainEvents {
 struct EventLogger;
 
 impl NetEvents for EventLogger {
-	fn on_transaction_received(&self, tx: &core::Transaction) {
+	fn on_transaction_received(&self, tx: &core::VersionedTransaction) {
 		info!(
 			"Received tx {}, [in/out/kern: {}/{}/{}] going to process.",
 			tx.hash(),
@@ -323,7 +324,7 @@ impl ChainEvents for WebHook {
 
 impl NetEvents for WebHook {
 	/// Triggers when a new transaction arrives
-	fn on_transaction_received(&self, tx: &core::Transaction) {
+	fn on_transaction_received(&self, tx: &core::VersionedTransaction) {
 		let payload = json!({
 			"hash": tx.hash().to_hex(),
 			"data": tx

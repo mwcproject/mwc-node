@@ -19,7 +19,7 @@ use crate::core::core::pmmr::{self, ReadonlyPMMR};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, Commit, CommitWithSig, IdentifierWithRnp, Inputs, Output, OutputFeatures,
-	OutputIdentifier, Transaction, TxImpl,
+	OutputIdentifier, TxImpl, VersionedTransaction,
 };
 use crate::core::global;
 use crate::error::{Error, ErrorKind};
@@ -76,13 +76,31 @@ impl<'a> UTXOView<'a> {
 	/// No duplicate outputs.
 	pub fn validate_tx(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
 		batch: &Batch<'_>,
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
 		for output in tx.outputs() {
 			self.validate_output(output, batch)?;
 		}
-		self.validate_inputs(&tx.inputs(), batch)
+		let mut res: Vec<(OutputIdentifier, CommitPos)> =
+			self.validate_inputs(&tx.inputs(), batch)?;
+
+		if let Some(outputs) = tx.outputs_with_rnp() {
+			for output in outputs {
+				self.validate_output(output, batch)?;
+			}
+			if let Some(inputs) = tx.inputs_with_sig() {
+				let res2: Vec<(IdentifierWithRnp, CommitPos)> =
+					self.validate_inputs_with_sig(&inputs, verifier_cache, batch)?;
+				res.extend(
+					res2.iter()
+						.map(|r| (r.0.identifier(), r.1))
+						.collect::<Vec<(OutputIdentifier, CommitPos)>>(),
+				);
+			}
+		}
+		Ok(res)
 	}
 
 	/// Validate the provided inputs (w/o signature).

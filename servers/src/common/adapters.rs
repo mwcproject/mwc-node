@@ -31,8 +31,8 @@ use std::sync::Mutex;
 use crate::common::hooks::{ChainEvents, NetEvents};
 use crate::common::types::{ChainValidationMode, DandelionEpoch, ServerConfig};
 use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::transaction::Transaction;
 use crate::core::core::verifier_cache::VerifierCache;
+use crate::core::core::versioned_transaction::VersionedTransaction;
 use crate::core::core::{
 	BlockHeader, BlockSums, CompactBlock, IdentifierWithRnp, Inputs, OutputIdentifier,
 };
@@ -42,7 +42,6 @@ use crate::core::{core, global};
 use crate::p2p;
 use crate::p2p::types::PeerInfo;
 use crate::pool::{self, BlockChain, PoolAdapter};
-use crate::util::secp::pedersen::Commitment;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
@@ -130,7 +129,7 @@ where
 		Ok(self.chain().head()?.height)
 	}
 
-	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction> {
+	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::VersionedTransaction> {
 		self.tx_pool.read().retrieve_tx_by_kernel_hash(kernel_hash)
 	}
 
@@ -154,7 +153,7 @@ where
 
 	fn transaction_received(
 		&self,
-		tx: core::Transaction,
+		tx: core::VersionedTransaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
 		if self.sync_state.is_syncing() {
@@ -1164,7 +1163,7 @@ impl pool::BlockChain for PoolToChainAdapter {
 			.map_err(|e| pool::PoolError::Other(format!("failed to get block_sums, {}", e)))
 	}
 
-	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), pool::PoolError> {
 		self.chain()
 			.validate_tx(tx)
 			.map_err(|e| pool::PoolError::Other(format!("failed to validate tx, {}", e)))
@@ -1180,9 +1179,10 @@ impl pool::BlockChain for PoolToChainAdapter {
 	fn validate_inputs_with_sig(
 		&self,
 		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<Vec<IdentifierWithRnp>, pool::PoolError> {
 		self.chain()
-			.validate_inputs_with_sig(inputs)
+			.validate_inputs_with_sig(inputs, verifier)
 			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
 			.map_err(|_| pool::PoolError::Other("failed to validate tx".to_string()))
 	}
@@ -1193,7 +1193,7 @@ impl pool::BlockChain for PoolToChainAdapter {
 			.map_err(|_| pool::PoolError::ImmatureCoinbase)
 	}
 
-	fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
+	fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), pool::PoolError> {
 		self.chain()
 			.verify_tx_lock_height(tx)
 			.map_err(|_| pool::PoolError::ImmatureTransaction)

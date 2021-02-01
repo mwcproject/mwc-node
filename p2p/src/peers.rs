@@ -363,7 +363,7 @@ impl Peers {
 	/// Broadcasts the provided transaction to all our connected peers.
 	/// A peer implementation may drop the broadcast request
 	/// if it knows the remote peer already has the transaction.
-	pub fn broadcast_transaction(&self, tx: &core::Transaction) {
+	pub fn broadcast_transaction(&self, tx: &core::VersionedTransaction) {
 		let count = self.broadcast("transaction", |p| p.send_transaction(tx));
 		debug!(
 			"broadcast_transaction: {} to {} peers, done.",
@@ -581,7 +581,7 @@ impl ChainAdapter for Peers {
 		self.adapter.total_height()
 	}
 
-	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction> {
+	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::VersionedTransaction> {
 		self.adapter.get_transaction(kernel_hash)
 	}
 
@@ -595,7 +595,7 @@ impl ChainAdapter for Peers {
 
 	fn transaction_received(
 		&self,
-		tx: core::Transaction,
+		tx: core::VersionedTransaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
 		self.adapter.transaction_received(tx, stem)

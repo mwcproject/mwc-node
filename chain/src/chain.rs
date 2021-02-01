@@ -20,7 +20,7 @@ use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
-	OutputIdentifier, Transaction, TxImpl, TxKernel,
+	OutputIdentifier, TxImpl, TxKernel, VersionedTransaction,
 };
 use crate::core::global;
 use crate::core::pow;
@@ -629,8 +629,8 @@ impl Chain {
 	}
 
 	/// Validate the tx against the current UTXO set and recent kernels (NRD relative lock heights).
-	pub fn validate_tx(&self, tx: &Transaction) -> Result<(), Error> {
-		self.validate_tx_against_utxo(tx)?;
+	pub fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), Error> {
+		self.validate_tx_against_utxo(tx, self.verifier_cache.clone())?;
 		self.validate_tx_kernels(tx)?;
 		Ok(())
 	}
@@ -639,7 +639,7 @@ impl Chain {
 	/// Applies the kernels to the current kernel MMR in a readonly extension.
 	/// The extension and the db batch are discarded.
 	/// The batch ensures duplicate NRD kernels within the tx are handled correctly.
-	fn validate_tx_kernels(&self, tx: &Transaction) -> Result<(), Error> {
+	fn validate_tx_kernels(&self, tx: &VersionedTransaction) -> Result<(), Error> {
 		let has_nrd_kernel = tx.kernels().iter().any(|k| match k.features {
 			KernelFeatures::NoRecentDuplicate { .. } => true,
 			_ => false,
@@ -657,12 +657,13 @@ impl Chain {
 
 	fn validate_tx_against_utxo(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
 		let header_pmmr = self.header_pmmr.read();
 		let txhashset = self.txhashset.read();
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
-			utxo.validate_tx(tx, batch)
+			utxo.validate_tx(tx, batch, verifier_cache)
 		})
 	}
 
@@ -716,7 +717,7 @@ impl Chain {
 
 	/// Verify that the tx has a lock_height that is less than or equal to
 	/// the height of the next block.
-	pub fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), Error> {
+	pub fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), Error> {
 		let height = self.next_block_height()?;
 		if tx.lock_height() <= height {
 			Ok(())

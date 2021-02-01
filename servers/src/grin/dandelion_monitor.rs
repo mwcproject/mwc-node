@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use crate::common::adapters::DandelionAdapter;
 use crate::core::core::hash::Hashed;
-use crate::core::core::transaction;
 use crate::core::core::verifier_cache::VerifierCache;
+use crate::core::core::{transaction, TxImpl};
 use crate::pool::{BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TxSource};
 use crate::util::StopState;
 use crate::{ServerTxPool, ServerVerifierCache};

@@ -105,7 +105,7 @@ where
 			.chain_head()
 			.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
 		tx_pool
-			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
+			.add_to_pool(source, tx.into(), !fluff.unwrap_or(false), &header)
 			.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
 
 		info!("transaction {} was added to the pool", tx_hash);
@@ -176,7 +176,7 @@ where
 		.chain_head()
 		.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
 	tx_pool
-		.add_to_pool(source, tx, !fluff, &header)
+		.add_to_pool(source, tx.into(), !fluff, &header)
 		.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
 	Ok(())
 }
