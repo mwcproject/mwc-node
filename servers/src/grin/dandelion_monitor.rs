@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::common::adapters::DandelionAdapter;
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
-use crate::core::core::{transaction, TxImpl};
+use crate::core::core::{transaction, versioned_transaction, TxImpl};
 use crate::pool::{BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TxSource};
 use crate::util::StopState;
 use crate::{ServerTxPool, ServerVerifierCache};
@@ -146,7 +146,7 @@ fn process_fluff_phase(
 		fluffable_txs.len()
 	);
 
-	let agg_tx = transaction::aggregate(&fluffable_txs)?;
+	let agg_tx = versioned_transaction::aggregate(&fluffable_txs)?;
 	agg_tx.validate(
 		transaction::Weighting::AsTransaction,
 		verifier_cache.clone(),

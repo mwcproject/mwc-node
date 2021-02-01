@@ -1323,6 +1323,14 @@ impl IdentifierWithRnp {
 	pub fn is_plain(&self) -> bool {
 		self.identifier.is_plain()
 	}
+
+	/// Converts this identifier to a full output, provided a RangeProof
+	pub fn into_output(self, proof: RangeProof) -> OutputWithRnp {
+		OutputWithRnp {
+			identifier_with_rnp: self,
+			proof,
+		}
+	}
 }
 
 /// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.

@@ -26,6 +26,7 @@ use crate::error::{Error, ErrorKind};
 use crate::store::Batch;
 use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
+use grin_core::core::OutputWithRnp;
 use grin_store::pmmr::PMMRBackend;
 use grin_util::RwLock;
 use std::sync::Arc;
@@ -274,10 +275,21 @@ impl<'a> UTXOView<'a> {
 		Ok(())
 	}
 
-	/// Retrieves an unspent output using its PMMR position
+	/// Retrieves an unspent output (w/o R&P') using its PMMR position
 	pub fn get_unspent_output_at(&self, pos: u64) -> Result<Output, Error> {
 		match self.output_pmmr.get_data(pos) {
 			Some(output_id) => match self.rproof_pmmr.get_data(pos) {
+				Some(rproof) => Ok(output_id.into_output(rproof)),
+				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
+			},
+			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos)).into()),
+		}
+	}
+
+	/// Retrieves an unspent output (w/ R&P') using its PMMR position
+	pub fn get_unspent_output_wrnp_at(&self, pos: u64) -> Result<OutputWithRnp, Error> {
+		match self.output_wrnp_pmmr.get_data(pos) {
+			Some(output_id) => match self.rproof_wrnp_pmmr.get_data(pos) {
 				Some(rproof) => Ok(output_id.into_output(rproof)),
 				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
 			},
