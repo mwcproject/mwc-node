@@ -208,6 +208,16 @@ impl Readable for HeaderVersion {
 	}
 }
 
+impl HeaderVersion {
+	/// The max protocol version supported.
+	pub const MAX: u16 = std::u16::MAX;
+
+	/// Header version as u16 to allow for convenient exhaustive matching on values.
+	pub fn value(self) -> u16 {
+		self.0
+	}
+}
+
 /// Block header, fairly standard compared to other blockchains.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BlockHeader {
@@ -619,13 +629,7 @@ impl Readable for Block {
 			HeaderVersion(1) | HeaderVersion(2) => {
 				VersionedTransactionBody::V1(TransactionBody::read(reader)?)
 			}
-			HeaderVersion(3) => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
-			_ => {
-				return Err(ser::Error::CorruptedData(format!(
-					"unexpected header version {}",
-					header.version.0
-				)));
-			}
+			HeaderVersion(3) | _ => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
 		};
 		Ok(Block { header, body })
 	}

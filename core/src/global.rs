@@ -43,9 +43,9 @@ use util::OneTime;
 /// This defines the p2p layer protocol version for this node.
 /// NOTE:
 /// 	- grin bump the protocol version to 1000 since v4.1.0
-/// 	- grin will bump the protocol version to 2000 from HF4.
-/// 	- so far 1,2,3 are used in mwc. 2 for 4.1.0 release. 3 in current master.
-/// 	- anyway mwc will use a new protocol version in next HF, either 1000 or 2000.
+/// 	- grin didn't bump the protocol version to 2000 from HF4 (v5.x.x).
+/// 	- so far 1,2,3 are used in mwc. 2 for 4.1.0 release. 3 for 4.2.0.
+/// 	- mwc will bump the protocol version to 1000 in next HF (v6.0.0).
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1_000);
 
 /// Automated testing edge_bits

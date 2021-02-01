@@ -347,9 +347,32 @@ impl Peer {
 		}
 
 		if !self.tracking_adapter.has_recv(kernel.hash()) {
-			debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
-			self.send(tx, msg::Type::Transaction)?;
-			Ok(true)
+			match self.info.version.value() {
+				// Versions before HF2
+				0..=3 => {
+					if let Ok(v1_tx) = tx.to_v1() {
+						debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
+						self.send(v1_tx, msg::Type::Transaction)?;
+						Ok(true)
+					} else {
+						debug!(
+							"Not sending tx {} to {} (old protocol ver: {})",
+							tx.hash(),
+							self.info.addr,
+							self.info.version
+						);
+						Ok(false)
+					}
+				}
+				// HF2 version
+				1000..=1999 => {
+					debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
+					self.send(tx.to_v2(), msg::Type::Transaction)?;
+					Ok(true)
+				}
+				// don't send to versions with big jump and undefined versions.
+				_ => Ok(false),
+			}
 		} else {
 			debug!(
 				"Not sending tx {} to {} (already seen)",
