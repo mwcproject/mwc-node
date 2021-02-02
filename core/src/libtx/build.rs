@@ -259,6 +259,7 @@ mod test {
 	use super::*;
 	use crate::core::transaction::Weighting;
 	use crate::core::verifier_cache::{LruVerifierCache, VerifierCache};
+	use crate::core::TxImpl;
 	use crate::global;
 	use crate::libtx::ProofBuilder;
 	use keychain::{ExtKeychain, ExtKeychainPath};

@@ -22,12 +22,13 @@ use grin_util as util;
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Error, Options};
 use crate::core::core::{
-	Block, BlockHeader, KernelFeatures, NRDRelativeHeight, Transaction, TxKernel,
+	Block, BlockHeader, KernelFeatures, NRDRelativeHeight, Transaction, TxImpl, TxKernel,
 };
 use crate::core::libtx::{aggsig, build, reward, ProofBuilder};
 use crate::core::{consensus, global, pow};
 use crate::keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Identifier, Keychain};
 use chrono::Duration;
+use grin_core::core::VersionedTransaction;
 
 fn build_block<K>(
 	chain: &Chain,
@@ -65,6 +66,10 @@ where
 	)
 	.unwrap();
 
+	let txs = txs
+		.iter()
+		.map(|tx| tx.clone().ver())
+		.collect::<Vec<VersionedTransaction>>();
 	let mut block = Block::new(prev, &txs, next_header_info.clone().difficulty, reward)?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);

@@ -21,7 +21,7 @@ use self::core::core::hash::Hash;
 use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{
 	Block, BlockHeader, BlockSums, IdentifierWithRnp, Inputs, KernelFeatures, OutputIdentifier,
-	Transaction, TxKernel,
+	Transaction, TxImpl, TxKernel,
 };
 use self::core::genesis;
 use self::core::global;
@@ -34,6 +34,7 @@ use self::util::RwLock;
 use chrono::Duration;
 use grin_chain as chain;
 use grin_core as core;
+use grin_core::core::VersionedTransaction;
 use grin_keychain as keychain;
 use grin_pool as pool;
 use grin_util as util;
@@ -74,7 +75,7 @@ where
 	}
 }
 
-pub fn add_block<K>(chain: &Chain, txs: &[Transaction], keychain: &K)
+pub fn add_block<K>(chain: &Chain, txs: &[VersionedTransaction], keychain: &K)
 where
 	K: Keychain,
 {
@@ -137,7 +138,7 @@ impl BlockChain for ChainAdapter {
 			.map_err(|e| PoolError::Other(format!("failed to get block sums, {}", e)))
 	}
 
-	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), pool::PoolError> {
 		self.chain.validate_tx(tx).map_err(|e| match e.kind() {
 			chain::ErrorKind::Transaction(txe) => txe.into(),
 			chain::ErrorKind::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
@@ -169,7 +170,7 @@ impl BlockChain for ChainAdapter {
 			.map_err(|_| PoolError::ImmatureCoinbase)
 	}
 
-	fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), PoolError> {
+	fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), PoolError> {
 		self.chain
 			.verify_tx_lock_height(tx)
 			.map_err(|_| PoolError::ImmatureTransaction)

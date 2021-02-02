@@ -16,7 +16,7 @@ use self::chain::types::{NoopAdapter, Tip};
 use self::chain::Chain;
 use self::core::core::hash::Hashed;
 use self::core::core::verifier_cache::LruVerifierCache;
-use self::core::core::{Block, BlockHeader, KernelFeatures, Transaction};
+use self::core::core::{Block, BlockHeader, Commit, KernelFeatures, Transaction, TxImpl};
 use self::core::global::ChainTypes;
 use self::core::libtx::{self, build, ProofBuilder};
 use self::core::pow::Difficulty;
@@ -34,6 +34,7 @@ use std::sync::Arc;
 mod chain_test_helper;
 
 use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
+use grin_core::core::VersionedTransaction;
 
 /// Adapter to retrieve last status
 pub struct StatusAdapter {
@@ -891,7 +892,11 @@ where
 		prev.height + 1,
 	)
 	.unwrap();
-	let mut b = match core::core::Block::new(prev, txs, Difficulty::from_num(diff), reward) {
+	let txs = txs
+		.iter()
+		.map(|tx| tx.clone().ver())
+		.collect::<Vec<VersionedTransaction>>();
+	let mut b = match core::core::Block::new(prev, &txs, Difficulty::from_num(diff), reward) {
 		Err(e) => panic!("{:?}", e),
 		Ok(b) => b,
 	};

@@ -18,6 +18,7 @@ use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction_v2::CommitWithSig;
 use crate::core::verifier_cache::VerifierCache;
+use crate::core::VersionedTransaction;
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
 	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
@@ -1389,6 +1390,11 @@ impl Transaction {
 			offset: BlindingFactor::zero(),
 			body,
 		}
+	}
+
+	/// Encapsulated as Versioned Tx
+	pub fn ver(self) -> VersionedTransaction {
+		VersionedTransaction::V1(self)
 	}
 
 	/// Creates a new transaction using this transaction as a template

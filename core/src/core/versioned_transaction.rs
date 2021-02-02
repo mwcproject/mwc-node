@@ -98,6 +98,32 @@ impl VersionedTransactionBody {
 		self
 	}
 
+	/// Fully replace outputs.
+	pub fn replace_outputs(mut self, outputs: &[Output]) -> VersionedTransactionBody {
+		match self {
+			VersionedTransactionBody::V1(body) => {
+				self = VersionedTransactionBody::V1(body.replace_outputs(outputs))
+			}
+			VersionedTransactionBody::V2(body) => {
+				self = VersionedTransactionBody::V2(body.replace_outputs(outputs))
+			}
+		};
+		self
+	}
+
+	/// Builds a new TransactionBodyV2 replacing any existing kernels with the provided kernel.
+	pub fn replace_kernel(mut self, kernel: TxKernel) -> VersionedTransactionBody {
+		match self {
+			VersionedTransactionBody::V1(body) => {
+				self = VersionedTransactionBody::V1(body.replace_kernel(kernel))
+			}
+			VersionedTransactionBody::V2(body) => {
+				self = VersionedTransactionBody::V2(body.replace_kernel(kernel))
+			}
+		};
+		self
+	}
+
 	/// Get inner vector of inputs w/ sig
 	pub fn inputs_with_sig(&self) -> Option<Inputs> {
 		match self {

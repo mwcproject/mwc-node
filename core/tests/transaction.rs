@@ -18,7 +18,9 @@ pub mod common;
 use crate::common::tx1i10_v2_compatible;
 use crate::core::core::transaction::{self, Error};
 use crate::core::core::verifier_cache::LruVerifierCache;
-use crate::core::core::{KernelFeatures, Output, OutputFeatures, Transaction, Weighting};
+use crate::core::core::{
+	Commit, KernelFeatures, Output, OutputFeatures, Transaction, TxImpl, Weighting,
+};
 use crate::core::global;
 use crate::core::libtx::build;
 use crate::core::libtx::proof::{self, ProofBuilder};

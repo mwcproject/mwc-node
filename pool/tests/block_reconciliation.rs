@@ -16,6 +16,7 @@ pub mod common;
 
 use self::core::core::hash::Hashed;
 use self::core::core::verifier_cache::LruVerifierCache;
+use self::core::core::TxImpl;
 use self::core::global;
 use self::keychain::{ExtKeychain, Keychain};
 use self::util::RwLock;
@@ -56,7 +57,7 @@ fn test_transaction_pool_block_reconciliation() {
 	let initial_tx = test_transaction_spending_coinbase(&keychain, &header_1, vec![10, 20, 30, 40]);
 
 	// Mine that initial tx so we can spend it with multiple txs.
-	add_block(&chain, &[initial_tx], &keychain);
+	add_block(&chain, &[initial_tx.ver()], &keychain);
 
 	let header = chain.head_header().unwrap();
 
@@ -113,7 +114,7 @@ fn test_transaction_pool_block_reconciliation() {
 	assert_eq!(pool.total_size(), 0);
 
 	for tx in &txs_to_add {
-		pool.add_to_pool(test_source(), tx.clone(), false, &header)
+		pool.add_to_pool(test_source(), tx.clone().ver(), false, &header)
 			.unwrap();
 	}
 
@@ -130,7 +131,12 @@ fn test_transaction_pool_block_reconciliation() {
 	// - Output conflict w/ 8
 	let block_tx_4 = test_transaction(&keychain, vec![40], vec![9, 31]);
 
-	let block_txs = &[block_tx_1, block_tx_2, block_tx_3, block_tx_4];
+	let block_txs = &[
+		block_tx_1.ver(),
+		block_tx_2.ver(),
+		block_tx_3.ver(),
+		block_tx_4.ver(),
+	];
 	add_block(&chain, block_txs, &keychain);
 	let block = chain.get_block(&chain.head().unwrap().hash()).unwrap();
 

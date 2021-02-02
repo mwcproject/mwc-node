@@ -21,6 +21,7 @@ use crate::core::transaction::{
 	OutputIdentifier, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel, Weighting,
 };
 use crate::core::verifier_cache::VerifierCache;
+use crate::core::versioned_transaction::VersionedTransaction;
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
 	self, read_multi, PMMRable, Readable, Reader, VerifySortedAndUnique, Writeable, Writer,
@@ -867,6 +868,11 @@ impl TransactionV2 {
 			offset: BlindingFactor::zero(),
 			body,
 		}
+	}
+
+	/// Encapsulated as Versioned Tx
+	pub fn ver(self) -> VersionedTransaction {
+		VersionedTransaction::V2(self)
 	}
 
 	/// Creates a new transaction using this transaction as a template

@@ -16,7 +16,8 @@
 
 use grin_core::core::hash::DefaultHashable;
 use grin_core::core::{
-	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
+	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction, TxImpl,
+	VersionedTransaction,
 };
 use grin_core::libtx::{
 	build::{self, input, output},
@@ -130,7 +131,12 @@ where
 		previous_header.height + 1,
 	)
 	.unwrap();
-	Block::new(&previous_header, txs, Difficulty::min(), reward_output).unwrap()
+
+	let txs = txs
+		.iter()
+		.map(|tx| VersionedTransaction::V1(tx.clone()))
+		.collect::<Vec<VersionedTransaction>>();
+	Block::new(&previous_header, &txs, Difficulty::min(), reward_output).unwrap()
 }
 
 // utility producing a transaction that spends an output with the provided
