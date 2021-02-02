@@ -324,8 +324,9 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 		}
 		HeaderVersion(3) | _ => {
 			let (s1, s2, s3) = ser_multiread!(reader, read_u64, read_u64, read_u64);
-			let total_rmp = PublicKey::read(reader)?;
-			(s1, Some(s2), s3, Some(total_rmp))
+			let rmp = reader.read_fixed_bytes(secp::constants::COMPRESSED_PUBLIC_KEY_SIZE)?;
+			let total_rmp = PublicKey::from_slice(&rmp).ok();
+			(s1, Some(s2), s3, total_rmp)
 		}
 	};
 	let pow = ProofOfWork::read(reader)?;
@@ -385,10 +386,11 @@ impl BlockHeader {
 				);
 			}
 			HeaderVersion(3) | _ => {
-				let total_rmp = self
-					.total_rmp
-					.unwrap_or(PublicKey::new())
-					.serialize_vec(true);
+				let total_rmp: Vec<u8> = if let Some(rmp) = self.total_rmp {
+					rmp.serialize_vec(true).as_ref().to_vec()
+				} else {
+					[0u8; secp::constants::COMPRESSED_PUBLIC_KEY_SIZE].to_vec()
+				};
 				ser_multiwrite!(
 					writer,
 					[write_u64, self.height],
