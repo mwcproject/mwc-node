@@ -366,6 +366,26 @@ impl Readable for BlockHeader {
 }
 
 impl BlockHeader {
+	/// Create a default HF2 block header, only used for tests.
+	pub fn default_v3() -> BlockHeader {
+		BlockHeader {
+			version: HeaderVersion(3),
+			height: 0,
+			timestamp: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc),
+			prev_hash: ZERO_HASH,
+			prev_root: ZERO_HASH,
+			output_root: ZERO_HASH,
+			range_proof_root: ZERO_HASH,
+			kernel_root: ZERO_HASH,
+			total_kernel_offset: BlindingFactor::zero(),
+			output_mmr_size: 0,
+			output_wrnp_mmr_size: Some(0),
+			kernel_mmr_size: 0,
+			total_rmp: Some(PublicKey::new()),
+			pow: ProofOfWork::default(),
+		}
+	}
+
 	/// Write the pre-hash portion of the header
 	pub fn write_pre_pow<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.version.write(writer)?;

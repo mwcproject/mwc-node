@@ -74,8 +74,12 @@ fn test_unexpected_zip() {
 			"output/badfile",
 			"output/pmmr_data.bin",
 			"output/pmmr_hash.bin",
+			"output_wrnp/pmmr_data.bin",
+			"output_wrnp/pmmr_hash.bin",
 			"rangeproof/pmmr_data.bin",
 			"rangeproof/pmmr_hash.bin",
+			"rangeproof_wrnp/pmmr_data.bin",
+			"rangeproof_wrnp/pmmr_hash.bin",
 		];
 		assert_eq!(
 			files,
@@ -103,6 +107,67 @@ fn test_unexpected_zip() {
 			"output/pmmr_hash.bin",
 			"rangeproof/pmmr_data.bin",
 			"rangeproof/pmmr_hash.bin",
+		];
+		assert_eq!(
+			files,
+			expected_files
+				.iter()
+				.map(|x| PathBuf::from(x))
+				.collect::<Vec<_>>()
+		);
+	}
+	// Cleanup chain directory
+	clean_output_dir(&db_root);
+}
+
+#[test]
+fn test_hf2_unexpected_zip() {
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	let db_root = format!(".mwc_hf2_txhashset_zip");
+	clean_output_dir(&db_root);
+	{
+		let chain_store = ChainStore::new(&db_root).unwrap();
+		let store = Arc::new(chain_store);
+		txhashset::TxHashSet::open(db_root.clone(), store.clone(), None).unwrap();
+
+		// Then add strange files in the original txhashset folder
+		File::create(&Path::new(&db_root).join("txhashset").join("badfile"))
+			.expect("problem creating a file");
+		File::create(
+			&Path::new(&db_root)
+				.join("txhashset")
+				.join("output_wrnp")
+				.join("badfile"),
+		)
+		.expect("problem creating a file");
+
+		let head = BlockHeader::default_v3();
+		assert!(txhashset::zip_read(db_root.clone(), &head).is_ok());
+		let _ = fs::remove_dir_all(
+			Path::new(&db_root).join(format!("txhashset_zip_{}", head.hash().to_string())),
+		);
+		let zip_path = Path::new(&db_root).join(format!(
+			"txhashset_snapshot_{}.zip",
+			head.hash().to_string()
+		));
+		let zip_file = File::open(zip_path).unwrap();
+		let _ = fs::remove_dir_all(Path::new(&db_root).join("txhashset"));
+		assert!(txhashset::zip_write(PathBuf::from(db_root.clone()), zip_file, &head).is_ok());
+
+		// Check that the new txhashset dir contains *only* the expected files
+		// No "badfiles" and no "size" file.
+		let files = file::list_files(&Path::new(&db_root).join("txhashset"));
+		let expected_files: Vec<_> = vec![
+			"kernel/pmmr_data.bin",
+			"kernel/pmmr_hash.bin",
+			"output/pmmr_data.bin",
+			"output/pmmr_hash.bin",
+			"output_wrnp/pmmr_data.bin",
+			"output_wrnp/pmmr_hash.bin",
+			"rangeproof/pmmr_data.bin",
+			"rangeproof/pmmr_hash.bin",
+			"rangeproof_wrnp/pmmr_data.bin",
+			"rangeproof_wrnp/pmmr_hash.bin",
 		];
 		assert_eq!(
 			files,
