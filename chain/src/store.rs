@@ -16,7 +16,7 @@
 
 use crate::core::consensus::HeaderInfo;
 use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::{Block, BlockHeader, BlockSums};
+use crate::core::core::{Block, BlockHeader, BlockSums, OutputFeatures};
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::linked_list::MultiIndex;
@@ -125,9 +125,9 @@ impl ChainStore {
 	}
 
 	/// Get PMMR pos for the given output commitment.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<(OutputFeatures, u64), Error> {
 		match self.get_output_pos_height(commit)? {
-			Some(pos) => Ok(pos.pos),
+			Some(pos) => Ok((pos.features, pos.pos)),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
 				commit
@@ -351,14 +351,21 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Get the block input bitmap based on our spent index.
-	/// Fallback to legacy block input bitmap from the db.
-	pub fn get_block_input_bitmap(&self, bh: &Hash) -> Result<Bitmap, Error> {
-		let bitmap = self
-			.get_spent_index(bh)?
+	pub fn get_block_input_bitmap(&self, bh: &Hash) -> Result<(Bitmap, Bitmap), Error> {
+		let p = self.get_spent_index(bh)?;
+		let bitmap = p
+			.clone()
 			.into_iter()
+			.filter(|x| x.features != OutputFeatures::PlainWrnp)
 			.map(|x| x.pos.try_into().unwrap())
 			.collect();
-		Ok(bitmap)
+
+		let bitmap_wrnp = p
+			.into_iter()
+			.filter(|x| x.features == OutputFeatures::PlainWrnp)
+			.map(|x| x.pos.try_into().unwrap())
+			.collect();
+		Ok((bitmap, bitmap_wrnp))
 	}
 
 	/// Get the "spent index" from the db for the specified block.

@@ -340,7 +340,7 @@ impl TxHashSet {
 				}
 			},
 			Ok(None) => Ok(None),
-			Err(e) => Err(ErrorKind::StoreErr(e, "txhashset unspent check".to_string()).into()),
+			Err(e) => Err(ErrorKind::StoreErr(e, "txhashset un-spend check".to_string()).into()),
 		}
 	}
 
@@ -506,18 +506,31 @@ impl TxHashSet {
 	}
 
 	/// Return Commit's MMR position
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<(OutputFeatures, u64), Error> {
 		Ok(self.commit_index.get_output_pos(&commit)?)
 	}
 
 	/// build a new merkle proof for the given position.
 	pub fn merkle_proof(&mut self, commit: Commitment) -> Result<MerkleProof, Error> {
-		let pos = self.commit_index.get_output_pos(&commit)?;
-		PMMR::at(&mut self.output_pmmr_h.backend, self.output_pmmr_h.last_pos)
+		let (feature, pos) = self.commit_index.get_output_pos(&commit)?;
+		match feature {
+			OutputFeatures::Coinbase | OutputFeatures::Plain => {
+				PMMR::at(&mut self.output_pmmr_h.backend, self.output_pmmr_h.last_pos)
+					.merkle_proof(pos)
+					.map_err(|e| {
+						ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos, e))
+							.into()
+					})
+			}
+			OutputFeatures::PlainWrnp => PMMR::at(
+				&mut self.output_wrnp_pmmr_h.backend,
+				self.output_wrnp_pmmr_h.last_pos,
+			)
 			.merkle_proof(pos)
 			.map_err(|e| {
 				ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos, e)).into()
-			})
+			}),
+		}
 	}
 
 	/// Compact the MMR data files and flush the rm logs
@@ -535,12 +548,18 @@ impl TxHashSet {
 		debug!("txhashset: check_compact output mmr backend...");
 		self.output_pmmr_h
 			.backend
-			.check_compact(horizon_header.output_mmr_size, &rewind_rm_pos)?;
+			.check_compact(horizon_header.output_mmr_size, &rewind_rm_pos.0)?;
+		self.output_wrnp_pmmr_h
+			.backend
+			.check_compact(horizon_header.output_mmr_size, &rewind_rm_pos.1)?;
 
 		debug!("txhashset: check_compact rangeproof mmr backend...");
 		self.rproof_pmmr_h
 			.backend
-			.check_compact(horizon_header.output_mmr_size, &rewind_rm_pos)?;
+			.check_compact(horizon_header.output_mmr_size, &rewind_rm_pos.0)?;
+		self.rproof_wrnp_pmmr_h
+			.backend
+			.check_compact(horizon_header.output_mmr_size, &rewind_rm_pos.1)?;
 
 		debug!("txhashset: ... compaction finished");
 
@@ -1730,37 +1749,57 @@ impl<'a> Extension<'a> {
 		let header = &block.header;
 		let prev_header = batch.get_previous_header(&header)?;
 
-		// The spent index allows us to conveniently "unspend" everything in a block.
+		// The spent index allows us to conveniently "un-spend" everything in a block.
 		let spent = batch.get_spent_index(&header.hash());
 
 		let spent_pos: Vec<_> = if let Ok(ref spent) = spent {
-			spent.iter().map(|x| x.pos).collect()
+			spent
+				.iter()
+				.filter(|x| x.features != OutputFeatures::PlainWrnp)
+				.map(|x| x.pos)
+				.collect()
 		} else {
-			warn!(
-				"rewind_single_block: fallback to legacy input bitmap for block {} at {}",
-				header.hash(),
-				header.height
-			);
-			let bitmap = batch.get_block_input_bitmap(&header.hash())?;
-			bitmap.iter().map(|x| x.into()).collect()
+			vec![]
+		};
+		let spent_wrnp_pos: Vec<_> = if let Ok(ref spent) = spent {
+			spent
+				.iter()
+				.filter(|x| x.features == OutputFeatures::PlainWrnp)
+				.map(|x| x.pos)
+				.collect()
+		} else {
+			vec![]
 		};
 
 		if header.height == 0 {
-			self.rewind_mmrs_to_pos(0, 0, &spent_pos)?;
+			self.rewind_mmrs_to_pos(0, 0, 0, &spent_pos, &spent_wrnp_pos)?;
 		} else {
 			let prev = batch.get_previous_header(header)?;
-			self.rewind_mmrs_to_pos(prev.output_mmr_size, prev.kernel_mmr_size, &spent_pos)?;
+			self.rewind_mmrs_to_pos(
+				prev.output_mmr_size,
+				prev.output_wrnp_mmr_size.unwrap_or(0),
+				prev.kernel_mmr_size,
+				&spent_pos,
+				&spent_wrnp_pos,
+			)?;
 		}
 
 		// Update our BitmapAccumulator based on affected outputs.
-		// We want to "unspend" every rewound spent output.
+		// We want to "un-spend" every rewound spent output.
 		// Treat last_pos as an affected output to ensure we rebuild far enough back.
 		let mut affected_pos = spent_pos;
 		affected_pos.push(self.output_pmmr.last_pos);
+		let mut affected_wrnp_pos = spent_wrnp_pos;
+		affected_wrnp_pos.push(self.output_wrnp_pmmr.last_pos);
 
 		// Remove any entries from the output_pos created by the block being rewound.
 		let mut missing_count = 0;
 		for out in block.outputs() {
+			if batch.delete_output_pos_height(&out.commitment()).is_err() {
+				missing_count += 1;
+			}
+		}
+		for out in block.outputs_with_rnp().unwrap_or(&vec![]) {
 			if batch.delete_output_pos_height(&out.commitment()).is_err() {
 				missing_count += 1;
 			}
@@ -1791,8 +1830,17 @@ impl<'a> Extension<'a> {
 		// The output_pos index should be updated to reflect the old pos 1 when unspent.
 		if let Ok(spent) = spent {
 			for pos in spent {
-				if let Some(out) = self.output_pmmr.get_data(pos.pos) {
-					batch.save_output_pos_height(&out.commitment(), pos)?;
+				match pos.features {
+					OutputFeatures::Coinbase | OutputFeatures::Plain => {
+						if let Some(out) = self.output_pmmr.get_data(pos.pos) {
+							batch.save_output_pos_height(&out.commitment(), pos)?;
+						}
+					}
+					OutputFeatures::PlainWrnp => {
+						if let Some(out) = self.output_wrnp_pmmr.get_data(pos.pos) {
+							batch.save_output_pos_height(&out.commitment(), pos)?;
+						}
+					}
 				}
 			}
 		}
@@ -2309,16 +2357,19 @@ fn input_pos_to_rewind(
 	block_header: &BlockHeader,
 	head_header: &BlockHeader,
 	batch: &Batch<'_>,
-) -> Result<Bitmap, Error> {
+) -> Result<(Bitmap, Bitmap), Error> {
 	let mut bitmap = Bitmap::create();
+	let mut bitmap_wrnp = Bitmap::create();
 	let mut current = head_header.clone();
 	while current.height > block_header.height {
-		if let Ok(block_bitmap) = batch.get_block_input_bitmap(&current.hash()) {
+		if let Ok((block_bitmap, block_bitmap_wrnp)) = batch.get_block_input_bitmap(&current.hash())
+		{
 			bitmap.or_inplace(&block_bitmap);
+			bitmap_wrnp.or_inplace(&block_bitmap_wrnp);
 		}
 		current = batch.get_previous_header(&current)?;
 	}
-	Ok(bitmap)
+	Ok((bitmap, bitmap_wrnp))
 }
 
 /// If NRD enabled then enforce NRD relative height rules.

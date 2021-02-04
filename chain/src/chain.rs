@@ -20,7 +20,7 @@ use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
-	OutputIdentifier, TxImpl, TxKernel, VersionedTransaction,
+	OutputFeatures, OutputIdentifier, TxImpl, TxKernel, VersionedTransaction,
 };
 use crate::core::global;
 use crate::core::pow;
@@ -1331,7 +1331,7 @@ impl Chain {
 	}
 
 	/// Return Commit's MMR position
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<(OutputFeatures, u64), Error> {
 		Ok(self.txhashset.read().get_output_pos(commit)?)
 	}
 
