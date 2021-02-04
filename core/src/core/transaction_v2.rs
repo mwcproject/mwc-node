@@ -22,6 +22,7 @@ use crate::core::transaction::{
 };
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::versioned_transaction::VersionedTransaction;
+use crate::core::VersionedTransactionBody;
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
 	self, read_multi, PMMRable, Readable, Reader, VerifySortedAndUnique, Writeable, Writer,
@@ -163,13 +164,11 @@ impl Readable for TransactionBodyV2 {
 
 		// Read protocol version specific inputs.
 		let inputs = match reader.protocol_version().value() {
-			0..=999 => {
-				return Err(ser::Error::UnsupportedProtocolVersion(format!(
-					"get version {}, expecting version >=1000",
-					reader.protocol_version().value()
-				)))
+			0..=2 => {
+				let inputs: Vec<Input> = read_multi(reader, num_inputs)?;
+				Inputs::from(inputs.as_slice())
 			}
-			1_000..=ser::ProtocolVersion::MAX => {
+			3..=ser::ProtocolVersion::MAX => {
 				let inputs: Vec<CommitWrapper> = read_multi(reader, num_inputs)?;
 				Inputs::from(inputs.as_slice())
 			}
@@ -177,13 +176,13 @@ impl Readable for TransactionBodyV2 {
 
 		// Read protocol version specific inputs_with_sig.
 		let inputs_with_sig = match reader.protocol_version().value() {
-			0..=999 => {
+			0..=2 => {
 				return Err(ser::Error::UnsupportedProtocolVersion(format!(
-					"get version {}, expecting version >=1000",
+					"get version {}, expecting version >=3",
 					reader.protocol_version().value()
 				)))
 			}
-			1_000..=ser::ProtocolVersion::MAX => {
+			3..=ser::ProtocolVersion::MAX => {
 				let inputs_with_sig: Vec<CommitWithSig> = read_multi(reader, num_inputs_with_sig)?;
 				Inputs::from(inputs_with_sig.as_slice())
 			}
@@ -495,6 +494,11 @@ impl TransactionBodyV2 {
 		} else {
 			false
 		}
+	}
+
+	/// Encapsulated as Versioned Tx Body
+	pub fn ver(self) -> VersionedTransactionBody {
+		VersionedTransactionBody::V2(self)
 	}
 
 	/// Creates a new empty transaction (no inputs or outputs, zero fee).

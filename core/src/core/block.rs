@@ -616,7 +616,25 @@ impl Writeable for Block {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.header.write(writer)?;
 		if !writer.serialization_mode().is_hash_mode() {
-			self.body.write(writer)?;
+			match self.header.version.value() {
+				// before HF2
+				0..=2 => {
+					if self.body.not_v1_version() {
+						return Err(ser::Error::CorruptedData("version not matched".to_owned()));
+					} else {
+						self.body.write(writer)?;
+					}
+				}
+				// after HF2
+				3 | _ => {
+					if !self.body.not_v1_version() {
+						// force to be v2 format
+						self.body.to_v2().ver().write(writer)?;
+					} else {
+						self.body.write(writer)?;
+					}
+				}
+			}
 		}
 		Ok(())
 	}
@@ -627,11 +645,9 @@ impl Writeable for Block {
 impl Readable for Block {
 	fn read<R: Reader>(reader: &mut R) -> Result<Block, ser::Error> {
 		let header = BlockHeader::read(reader)?;
-		let body = match header.version {
-			HeaderVersion(1) | HeaderVersion(2) => {
-				VersionedTransactionBody::V1(TransactionBody::read(reader)?)
-			}
-			HeaderVersion(3) | _ => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
+		let body = match header.version.value() {
+			0..=2 => VersionedTransactionBody::V1(TransactionBody::read(reader)?),
+			3 | _ => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
 		};
 		Ok(Block { header, body })
 	}

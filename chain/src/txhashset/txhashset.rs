@@ -927,10 +927,11 @@ pub fn extending<'a, F, T>(
 where
 	F: FnOnce(&mut ExtensionPair<'_>, &Batch<'_>) -> Result<T, Error>,
 {
-	let sizes: (u64, u64, u64);
+	let sizes: (u64, u64, u64, u64, u64);
 	let res: Result<T, Error>;
 	let rollback: bool;
 	let bitmap_accumulator: BitmapAccumulator;
+	let bitmap_accumulator_wrnp: BitmapAccumulator;
 
 	let head = batch.head()?;
 	let header_head = batch.header_head()?;
@@ -953,6 +954,7 @@ where
 		rollback = extension_pair.extension.rollback;
 		sizes = extension_pair.extension.sizes();
 		bitmap_accumulator = extension_pair.extension.bitmap_accumulator.clone();
+		bitmap_accumulator_wrnp = extension_pair.extension.bitmap_accumulator_wrnp.clone();
 	}
 
 	// During an extension we do not want to modify the header_extension (and only read from it).
@@ -980,11 +982,14 @@ where
 				trees.rproof_pmmr_h.backend.sync()?;
 				trees.kernel_pmmr_h.backend.sync()?;
 				trees.output_pmmr_h.last_pos = sizes.0;
-				trees.rproof_pmmr_h.last_pos = sizes.1;
-				trees.kernel_pmmr_h.last_pos = sizes.2;
+				trees.output_wrnp_pmmr_h.last_pos = sizes.1;
+				trees.rproof_pmmr_h.last_pos = sizes.2;
+				trees.rproof_wrnp_pmmr_h.last_pos = sizes.3;
+				trees.kernel_pmmr_h.last_pos = sizes.4;
 
 				// Update our bitmap_accumulator based on our extension
 				trees.bitmap_accumulator = bitmap_accumulator;
+				trees.bitmap_accumulator_wrnp = bitmap_accumulator_wrnp;
 			}
 
 			trace!("TxHashSet extension done.");
@@ -1690,8 +1695,15 @@ impl<'a> Extension<'a> {
 
 		if head_header.height <= header.height {
 			// Nothing to rewind but we do want to truncate the MMRs at header for consistency.
-			self.rewind_mmrs_to_pos(header.output_mmr_size, header.kernel_mmr_size, &[])?;
+			self.rewind_mmrs_to_pos(
+				header.output_mmr_size,
+				header.output_wrnp_mmr_size.unwrap_or(0),
+				header.kernel_mmr_size,
+				&[],
+				&[],
+			)?;
 			self.apply_to_bitmap_accumulator(&[header.output_mmr_size])?;
+			self.apply_to_bitmap_accumulator_wrnp(&[header.output_wrnp_mmr_size.unwrap_or(0)])?;
 		} else {
 			let mut affected_pos = vec![];
 			let mut current = head_header;
@@ -1793,8 +1805,10 @@ impl<'a> Extension<'a> {
 	fn rewind_mmrs_to_pos(
 		&mut self,
 		output_pos: u64,
+		output_wrnp_pos: u64,
 		kernel_pos: u64,
 		spent_pos: &[u64],
+		spent_wrnp_pos: &[u64],
 	) -> Result<(), Error> {
 		let bitmap: Bitmap = spent_pos.iter().map(|x| *x as u32).collect();
 		self.output_pmmr
@@ -1803,6 +1817,15 @@ impl<'a> Extension<'a> {
 		self.rproof_pmmr
 			.rewind(output_pos, &bitmap)
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
+
+		let bitmap: Bitmap = spent_wrnp_pos.iter().map(|x| *x as u32).collect();
+		self.output_wrnp_pmmr
+			.rewind(output_wrnp_pos, &bitmap)
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("output_pmmr rewind error, {}", e)))?;
+		self.rproof_wrnp_pmmr
+			.rewind(output_wrnp_pos, &bitmap)
+			.map_err(|e| ErrorKind::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
+
 		self.kernel_pmmr
 			.rewind(kernel_pos, &Bitmap::create())
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e)))?;
@@ -1857,7 +1880,9 @@ impl<'a> Extension<'a> {
 		}
 		if (
 			header.output_mmr_size,
+			header.output_wrnp_mmr_size.unwrap_or(0),
 			header.output_mmr_size,
+			header.output_wrnp_mmr_size.unwrap_or(0),
 			header.kernel_mmr_size,
 		) != self.sizes()
 		{
@@ -1874,7 +1899,13 @@ impl<'a> Extension<'a> {
 		if let Err(e) = self.output_pmmr.validate() {
 			return Err(ErrorKind::InvalidTxHashSet(e).into());
 		}
+		if let Err(e) = self.output_wrnp_pmmr.validate() {
+			return Err(ErrorKind::InvalidTxHashSet(e).into());
+		}
 		if let Err(e) = self.rproof_pmmr.validate() {
+			return Err(ErrorKind::InvalidTxHashSet(e).into());
+		}
+		if let Err(e) = self.rproof_wrnp_pmmr.validate() {
 			return Err(ErrorKind::InvalidTxHashSet(e).into());
 		}
 		if let Err(e) = self.kernel_pmmr.validate() {
@@ -1882,9 +1913,11 @@ impl<'a> Extension<'a> {
 		}
 
 		debug!(
-			"txhashset: validated the output {}, rproof {}, kernel {} mmrs, took {}s",
+			"txhashset: validated the output {}, rproof {}, output_wrnp {}, rproof_wrnp {}, kernel {} mmrs, took {}s",
 			self.output_pmmr.unpruned_size(),
 			self.rproof_pmmr.unpruned_size(),
+			self.output_wrnp_pmmr.unpruned_size(),
+			self.rproof_wrnp_pmmr.unpruned_size(),
 			self.kernel_pmmr.unpruned_size(),
 			now.elapsed().as_secs(),
 		);
@@ -1979,10 +2012,12 @@ impl<'a> Extension<'a> {
 	}
 
 	/// Sizes of each of the MMRs
-	pub fn sizes(&self) -> (u64, u64, u64) {
+	pub fn sizes(&self) -> (u64, u64, u64, u64, u64) {
 		(
 			self.output_pmmr.unpruned_size(),
+			self.output_wrnp_pmmr.unpruned_size(),
 			self.rproof_pmmr.unpruned_size(),
+			self.rproof_wrnp_pmmr.unpruned_size(),
 			self.kernel_pmmr.unpruned_size(),
 		)
 	}
@@ -2032,34 +2067,48 @@ impl<'a> Extension<'a> {
 		let mut proofs: Vec<RangeProof> = Vec::with_capacity(1_000);
 
 		let mut proof_count = 0;
-		let total_rproofs = self.output_pmmr.n_unpruned_leaves();
+		let total_rproofs =
+			self.output_pmmr.n_unpruned_leaves() + self.output_wrnp_pmmr.n_unpruned_leaves();
+		let cutoff = self.output_pmmr.n_unpruned_leaves();
 
-		for pos in self.output_pmmr.leaf_pos_iter() {
-			let output = self.output_pmmr.get_data(pos);
-			let proof = self.rproof_pmmr.get_data(pos);
-
+		for pos in self
+			.output_pmmr
+			.leaf_pos_iter()
+			.chain(self.output_wrnp_pmmr.leaf_pos_iter())
+		{
 			// Output and corresponding rangeproof *must* exist.
 			// It is invalid for either to be missing and we fail immediately in this case.
-			match (output, proof) {
-				(None, _) => {
-					return Err(ErrorKind::OutputNotFound(format!(
-						"at verify_rangeproofs for pos {}",
-						pos
-					))
-					.into())
-				}
-				(_, None) => {
-					return Err(ErrorKind::RangeproofNotFound(format!(
-						"at verify_rangeproofs for pos {}",
-						pos
-					))
-					.into())
-				}
-				(Some(output), Some(proof)) => {
-					commits.push(output.commit);
-					proofs.push(proof);
-				}
-			}
+			let (commit, proof) = if proof_count < cutoff {
+				(
+					self.output_pmmr
+						.get_data(pos)
+						.ok_or(ErrorKind::OutputNotFound(
+							"at verify_rangeproofs for pos ".to_owned() + &pos.to_string(),
+						))?
+						.commitment(),
+					self.rproof_pmmr
+						.get_data(pos)
+						.ok_or(ErrorKind::RangeproofNotFound(
+							"at verify_rangeproofs for pos {}".to_owned() + &pos.to_string(),
+						))?,
+				)
+			} else {
+				(
+					self.output_wrnp_pmmr
+						.get_data(pos)
+						.ok_or(ErrorKind::OutputNotFound(
+							"at verify_rangeproofs for pos ".to_owned() + &pos.to_string(),
+						))?
+						.commitment(),
+					self.rproof_wrnp_pmmr
+						.get_data(pos)
+						.ok_or(ErrorKind::RangeproofNotFound(
+							"at verify_rangeproofs for pos {}".to_owned() + &pos.to_string(),
+						))?,
+				)
+			};
+			commits.push(commit);
+			proofs.push(proof);
 
 			proof_count += 1;
 
@@ -2091,7 +2140,7 @@ impl<'a> Extension<'a> {
 		debug!(
 			"txhashset: verified {} rangeproofs, pmmr size {}, took {}s",
 			proof_count,
-			self.rproof_pmmr.unpruned_size(),
+			self.rproof_pmmr.unpruned_size() + self.rproof_wrnp_pmmr.unpruned_size(),
 			now.elapsed().as_secs(),
 		);
 		Ok(())

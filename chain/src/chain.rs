@@ -798,8 +798,14 @@ impl Chain {
 		// depends on the output_mmr_size
 		{
 			// Carefully destructure these correctly...
-			let (output_mmr_size, _, kernel_mmr_size) = sizes;
+			let (output_mmr_size, output_wrnp_mmr_size, _, _, kernel_mmr_size) = sizes;
 			b.header.output_mmr_size = output_mmr_size;
+			b.header.output_wrnp_mmr_size = match b.header.version.value() {
+				// before HF2
+				0..=2 => None,
+				// after HF2
+				3 | _ => Some(output_wrnp_mmr_size),
+			};
 			b.header.kernel_mmr_size = kernel_mmr_size;
 		}
 

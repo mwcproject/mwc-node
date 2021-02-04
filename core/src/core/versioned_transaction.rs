@@ -57,16 +57,42 @@ impl Writeable for VersionedTransactionBody {
 }
 
 impl VersionedTransactionBody {
+	/// Is it the version after HF2?
+	pub fn not_v1_version(&self) -> bool {
+		match self {
+			VersionedTransactionBody::V1(_body) => false,
+			VersionedTransactionBody::V2(_body) => true,
+		}
+	}
+
+	/// Because of conflict with enum_dispatch, we can not implement our own 'from'/'into'.
+	pub fn to_v1(&self) -> Result<TransactionBody, Error> {
+		match self {
+			VersionedTransactionBody::V1(body) => Ok(body.clone()),
+			VersionedTransactionBody::V2(body) => {
+				TransactionBody::try_from(body.clone()).map_err(|e| Error::Generic(e.to_string()))
+			}
+		}
+	}
+
+	/// Because of conflict with enum_dispatch, we can not implement our own 'from'/'into'.
+	pub fn to_v2(&self) -> TransactionBodyV2 {
+		match self {
+			VersionedTransactionBody::V1(body) => TransactionBodyV2::from(body.clone()),
+			VersionedTransactionBody::V2(body) => body.clone(),
+		}
+	}
+
 	/// Builds a new transaction with the provided output added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
 	pub fn with_output(self, output: Output) -> VersionedTransactionBody {
 		match self {
-			VersionedTransactionBody::V1(tx) => {
-				VersionedTransactionBody::V1(tx.with_output(output))
+			VersionedTransactionBody::V1(body) => {
+				VersionedTransactionBody::V1(body.with_output(output))
 			}
-			VersionedTransactionBody::V2(tx) => {
-				VersionedTransactionBody::V2(tx.with_output(output))
+			VersionedTransactionBody::V2(body) => {
+				VersionedTransactionBody::V2(body.with_output(output))
 			}
 		}
 	}
@@ -76,11 +102,11 @@ impl VersionedTransactionBody {
 	/// Sort order is maintained.
 	pub fn with_kernel(self, kernel: TxKernel) -> VersionedTransactionBody {
 		match self {
-			VersionedTransactionBody::V1(tx) => {
-				VersionedTransactionBody::V1(tx.with_kernel(kernel))
+			VersionedTransactionBody::V1(body) => {
+				VersionedTransactionBody::V1(body.with_kernel(kernel))
 			}
-			VersionedTransactionBody::V2(tx) => {
-				VersionedTransactionBody::V2(tx.with_kernel(kernel))
+			VersionedTransactionBody::V2(body) => {
+				VersionedTransactionBody::V2(body.with_kernel(kernel))
 			}
 		}
 	}

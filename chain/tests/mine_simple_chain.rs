@@ -503,6 +503,7 @@ fn longer_fork() {
 		// for the forked chain
 		let mut prev = chain.head_header().unwrap();
 		for n in 0..10 {
+			println!("check point l1.{}", n);
 			let b = prepare_block(&kc, &prev, &chain, 2 * n + 2);
 			prev = b.header.clone();
 			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
@@ -516,9 +517,12 @@ fn longer_fork() {
 
 		let mut prev = forked_block;
 		for n in 0..7 {
+			println!("check point l2.{}", n);
 			let b = prepare_block(&kc, &prev, &chain, 2 * n + 11);
+			println!("check point l2.{}.1", n);
 			prev = b.header.clone();
 			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			println!("check point l2.{}.2", n);
 		}
 
 		let new_head = prev;
