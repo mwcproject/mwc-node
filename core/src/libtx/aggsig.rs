@@ -223,7 +223,7 @@ pub fn verify_partial_sig(
 /// use util::secp::{ContextFlag, Secp256k1};
 /// use core::libtx::{aggsig, proof};
 /// use core::core::transaction::KernelFeatures;
-/// use core::core::{Output, OutputFeatures};
+/// use core::core::{Commit, Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
 /// use core::global;
 ///
@@ -287,7 +287,7 @@ where
 /// use util::secp::key::{PublicKey, SecretKey};
 /// use util::secp::{ContextFlag, Secp256k1};
 /// use core::core::transaction::KernelFeatures;
-/// use core::core::{Output, OutputFeatures};
+/// use core::core::{Commit, Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
 /// use core::global;
 ///

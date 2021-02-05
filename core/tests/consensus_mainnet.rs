@@ -617,17 +617,35 @@ fn hard_forks() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
 		assert_eq!(global::is_floonet(), false);
 		assert!(valid_header_version(0, HeaderVersion(1)));
+		assert!(valid_header_version(
+			get_c31_hard_fork_block_height(),
+			HeaderVersion(2)
+		));
 		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(2)));
+		assert!(valid_header_version(
+			get_nit_hard_fork_block_height(),
+			HeaderVersion(3)
+		));
+		assert!(valid_header_version(YEAR_HEIGHT * 2, HeaderVersion(3)));
+		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(3)));
+		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(3)));
 	}
 	// Tests for floonet chain type.
 	{
 		global::set_local_chain_type(global::ChainTypes::Floonet);
 		assert_eq!(global::is_floonet(), true);
 		assert!(valid_header_version(0, HeaderVersion(1)));
+		assert!(valid_header_version(
+			get_c31_hard_fork_block_height(),
+			HeaderVersion(2)
+		));
 		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(2)));
+		assert!(valid_header_version(
+			get_nit_hard_fork_block_height(),
+			HeaderVersion(3)
+		));
+		assert!(valid_header_version(YEAR_HEIGHT * 2, HeaderVersion(3)));
+		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(3)));
+		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(3)));
 	}
 }

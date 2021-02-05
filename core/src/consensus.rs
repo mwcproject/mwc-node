@@ -403,9 +403,10 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
 	max(MIN_AR_SCALE, scale) as u32
 }
 
-/// Hard fork modifications:
+/*----- 	Hard fork related modifications 	-----*/
 
-fn get_c31_hard_fork_block_height() -> u64 {
+/// HF1 block height. Remove C32+ PoW algorithm and only keep C31 as AT(Asic Tuned/Tweaked/Targeted) algorithm.
+pub fn get_c31_hard_fork_block_height() -> u64 {
 	// return 202_500 for mainnet and 270_000 for floonet
 	if global::get_chain_type() == global::ChainTypes::Floonet {
 		270_000
@@ -414,7 +415,8 @@ fn get_c31_hard_fork_block_height() -> u64 {
 	}
 }
 
-fn get_nit_hard_fork_block_height() -> u64 {
+/// HF2 block height. Add NIT(Non-Interactive Transaction).
+pub fn get_nit_hard_fork_block_height() -> u64 {
 	if global::get_chain_type() == global::ChainTypes::Floonet {
 		774_000 //that is around Mar. 1, 2021
 	} else {
