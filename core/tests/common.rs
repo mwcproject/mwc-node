@@ -134,7 +134,7 @@ where
 
 	let txs = txs
 		.iter()
-		.map(|tx| VersionedTransaction::V1(tx.clone()))
+		.map(|tx| VersionedTransaction::V3(tx.clone()))
 		.collect::<Vec<VersionedTransaction>>();
 	Block::new(&previous_header, &txs, Difficulty::min(), reward_output).unwrap()
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transactions V2. To support NIT(Non-Interactive Transaction) feature.
+//! Transactions V4. To support NIT(Non-Interactive Transaction) feature.
 
 use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
@@ -40,11 +40,11 @@ use util::secp::{self, Secp256k1};
 use util::static_secp_instance;
 use util::RwLock;
 
-/// TransactionBodyV2 is a common abstraction for transaction and block.
+/// TransactionBodyV4 is a common abstraction for transaction and block.
 /// Not a perfect and clean structure design here, 2 inputs vectors and 2 outputs vectors in one structure,
 /// but it is for implementing a mixing of NIT and IT schemes.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct TransactionBodyV2 {
+pub struct TransactionBodyV4 {
 	/// List of inputs (w/o signature) spent by the transaction.
 	pub inputs: Inputs,
 	/// List of inputs (w/ signature) spent by the transaction.
@@ -57,10 +57,10 @@ pub struct TransactionBodyV2 {
 	pub kernels: Vec<TxKernel>,
 }
 
-// V1 to V2 conversion
-impl From<TransactionBody> for TransactionBodyV2 {
+// V3/V2 to V4 conversion
+impl From<TransactionBody> for TransactionBodyV4 {
 	fn from(body: TransactionBody) -> Self {
-		TransactionBodyV2 {
+		TransactionBodyV4 {
 			inputs: body.inputs(),
 			inputs_with_sig: Inputs::CommitsWithSig(vec![]),
 			outputs: body.outputs().to_vec(),
@@ -70,25 +70,25 @@ impl From<TransactionBody> for TransactionBodyV2 {
 	}
 }
 
-// V2 to V1 conversion
-impl TryFrom<TransactionBodyV2> for TransactionBody {
+// V4 to V3/V2 conversion
+impl TryFrom<TransactionBodyV4> for TransactionBody {
 	type Error = &'static str;
-	fn try_from(body: TransactionBodyV2) -> Result<Self, Self::Error> {
-		if body.is_v1_compatible() {
+	fn try_from(body: TransactionBodyV4) -> Result<Self, Self::Error> {
+		if body.is_v3_compatible() {
 			Ok(TransactionBody {
 				inputs: body.inputs(),
 				outputs: body.outputs().to_vec(),
 				kernels: body.kernels().to_vec(),
 			})
 		} else {
-			Err("some v2 transaction body contents can not convert to v1")
+			Err("some v4 transaction body contents can not convert to v3/v2")
 		}
 	}
 }
 
 /// Implementation of Writeable for a body, defines how to
 /// write the body as binary.
-impl Writeable for TransactionBodyV2 {
+impl Writeable for TransactionBodyV4 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		if self.inputs.len() > ser::READ_VEC_SIZE_LIMIT as usize
 			|| self.inputs_with_sig.len() > ser::READ_VEC_SIZE_LIMIT as usize
@@ -127,14 +127,14 @@ impl Writeable for TransactionBodyV2 {
 
 /// Implementation of Readable for a body, defines how to read a
 /// body from a binary stream.
-impl Readable for TransactionBodyV2 {
-	fn read<R: Reader>(reader: &mut R) -> Result<TransactionBodyV2, ser::Error> {
+impl Readable for TransactionBodyV4 {
+	fn read<R: Reader>(reader: &mut R) -> Result<TransactionBodyV4, ser::Error> {
 		let (num_inputs, num_inputs_with_sig, num_outputs, num_outputs_with_rnp, num_kernels) =
 			ser_multiread!(reader, read_u64, read_u64, read_u64, read_u64, read_u64);
 
 		// Quick block weight check before proceeding.
 		// Note: We use weight_as_block here (inputs have weight).
-		let tx_block_weight = TransactionBodyV2::weight_as_block(
+		let tx_block_weight = TransactionBodyV4::weight_as_block(
 			num_inputs,
 			num_inputs_with_sig,
 			num_outputs,
@@ -193,7 +193,7 @@ impl Readable for TransactionBodyV2 {
 		let kernels = read_multi(reader, num_kernels)?;
 
 		// Initialize tx body and verify everything is sorted.
-		let body = TransactionBodyV2::init(
+		let body = TransactionBodyV4::init(
 			inputs,
 			inputs_with_sig,
 			&outputs,
@@ -207,7 +207,7 @@ impl Readable for TransactionBodyV2 {
 	}
 }
 
-impl Committed for TransactionBodyV2 {
+impl Committed for TransactionBodyV4 {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		let inputs: Vec<_> = self.inputs().into();
 		let mut commits: Vec<Commitment> = inputs.iter().map(|x| x.commitment()).collect();
@@ -235,13 +235,13 @@ impl Committed for TransactionBodyV2 {
 	}
 }
 
-impl Default for TransactionBodyV2 {
-	fn default() -> TransactionBodyV2 {
-		TransactionBodyV2::empty()
+impl Default for TransactionBodyV4 {
+	fn default() -> TransactionBodyV4 {
+		TransactionBodyV4::empty()
 	}
 }
 
-impl TxBodyImpl for TransactionBodyV2 {
+impl TxBodyImpl for TransactionBodyV4 {
 	fn sort(&mut self) {
 		self.inputs.sort_unstable();
 		self.inputs_with_sig.sort_unstable();
@@ -279,7 +279,7 @@ impl TxBodyImpl for TransactionBodyV2 {
 	}
 
 	fn body_weight(&self) -> u64 {
-		TransactionBodyV2::weight(
+		TransactionBodyV4::weight(
 			(self.inputs.len() as u64).saturating_add(self.inputs_with_sig.len() as u64),
 			(self.outputs.len() as u64).saturating_add(self.outputs_with_rnp.len() as u64),
 			self.kernels.len() as u64,
@@ -287,7 +287,7 @@ impl TxBodyImpl for TransactionBodyV2 {
 	}
 
 	fn body_weight_as_block(&self) -> u64 {
-		TransactionBodyV2::weight_as_block(
+		TransactionBodyV4::weight_as_block(
 			self.inputs.len() as u64,
 			self.inputs_with_sig.len() as u64,
 			self.outputs.len() as u64,
@@ -486,9 +486,9 @@ impl TxBodyImpl for TransactionBodyV2 {
 	}
 }
 
-impl TransactionBodyV2 {
-	/// Whether it is v1 compatible
-	pub fn is_v1_compatible(&self) -> bool {
+impl TransactionBodyV4 {
+	/// Whether it is v3 compatible
+	pub fn is_v3_compatible(&self) -> bool {
 		if self.inputs_with_sig.is_empty() && self.outputs_with_rnp.is_empty() {
 			true
 		} else {
@@ -498,12 +498,12 @@ impl TransactionBodyV2 {
 
 	/// Encapsulated as Versioned Tx Body
 	pub fn ver(self) -> VersionedTransactionBody {
-		VersionedTransactionBody::V2(self)
+		VersionedTransactionBody::V4(self)
 	}
 
 	/// Creates a new empty transaction (no inputs or outputs, zero fee).
-	pub fn empty() -> TransactionBodyV2 {
-		TransactionBodyV2 {
+	pub fn empty() -> TransactionBodyV4 {
+		TransactionBodyV4 {
 			inputs: Inputs::default(),
 			inputs_with_sig: Inputs::CommitsWithSig(vec![]),
 			outputs: vec![],
@@ -522,8 +522,8 @@ impl TransactionBodyV2 {
 		outputs_with_rnp: &[OutputWithRnp],
 		kernels: &[TxKernel],
 		verify_sorted: bool,
-	) -> Result<TransactionBodyV2, Error> {
-		let mut body = TransactionBodyV2 {
+	) -> Result<TransactionBodyV4, Error> {
+		let mut body = TransactionBodyV4 {
 			inputs,
 			inputs_with_sig,
 			outputs: outputs.to_vec(),
@@ -555,7 +555,7 @@ impl TransactionBodyV2 {
 	/// Builds a new body with the provided inputs (w/o signature) added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_input(mut self, input: Input) -> TransactionBodyV2 {
+	pub fn with_input(mut self, input: Input) -> TransactionBodyV4 {
 		match &mut self.inputs {
 			Inputs::CommitOnly(inputs) => {
 				let commit = input.into();
@@ -580,7 +580,7 @@ impl TransactionBodyV2 {
 	/// Builds a new body with the provided inputs (w/ signature) added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_input_wsig(mut self, input_with_sig: CommitWithSig) -> TransactionBodyV2 {
+	pub fn with_input_wsig(mut self, input_with_sig: CommitWithSig) -> TransactionBodyV4 {
 		match &mut self.inputs_with_sig {
 			Inputs::FeaturesAndCommit(_) | Inputs::CommitOnly(_) => {
 				panic!(
@@ -597,31 +597,31 @@ impl TransactionBodyV2 {
 	}
 
 	/// Fully replace inputs (w/o signature).
-	pub fn replace_inputs(mut self, inputs: Inputs) -> TransactionBodyV2 {
+	pub fn replace_inputs(mut self, inputs: Inputs) -> TransactionBodyV4 {
 		self.inputs = inputs;
 		self
 	}
 
 	/// Fully replace inputs (w/ signature).
-	pub fn replace_inputs_wsig(mut self, inputs_with_sig: Inputs) -> TransactionBodyV2 {
+	pub fn replace_inputs_wsig(mut self, inputs_with_sig: Inputs) -> TransactionBodyV4 {
 		self.inputs_with_sig = inputs_with_sig;
 		self
 	}
 
-	/// Builds a new TransactionBodyV2 with the provided output (w/o R&P') added. Existing
+	/// Builds a new TransactionBodyV4 with the provided output (w/o R&P') added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_output(mut self, output: Output) -> TransactionBodyV2 {
+	pub fn with_output(mut self, output: Output) -> TransactionBodyV4 {
 		if let Err(e) = self.outputs.binary_search(&output) {
 			self.outputs.insert(e, output)
 		};
 		self
 	}
 
-	/// Builds a new TransactionBodyV2 with the provided output (w/o R&P') added. Existing
+	/// Builds a new TransactionBodyV4 with the provided output (w/o R&P') added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_output_wrnp(mut self, output_with_rnp: OutputWithRnp) -> TransactionBodyV2 {
+	pub fn with_output_wrnp(mut self, output_with_rnp: OutputWithRnp) -> TransactionBodyV4 {
 		if let Err(e) = self.outputs_with_rnp.binary_search(&output_with_rnp) {
 			self.outputs_with_rnp.insert(e, output_with_rnp)
 		};
@@ -629,29 +629,29 @@ impl TransactionBodyV2 {
 	}
 
 	/// Fully replace outputs (w/o R&P').
-	pub fn replace_outputs(mut self, outputs: &[Output]) -> TransactionBodyV2 {
+	pub fn replace_outputs(mut self, outputs: &[Output]) -> TransactionBodyV4 {
 		self.outputs = outputs.to_vec();
 		self
 	}
 
 	/// Fully replace outputs (w/ R&P').
-	pub fn replace_outputs_wrnp(mut self, outputs_with_rnp: &[OutputWithRnp]) -> TransactionBodyV2 {
+	pub fn replace_outputs_wrnp(mut self, outputs_with_rnp: &[OutputWithRnp]) -> TransactionBodyV4 {
 		self.outputs_with_rnp = outputs_with_rnp.to_vec();
 		self
 	}
 
-	/// Builds a new TransactionBodyV2 with the provided kernel added. Existing
+	/// Builds a new TransactionBodyV4 with the provided kernel added. Existing
 	/// kernels, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_kernel(mut self, kernel: TxKernel) -> TransactionBodyV2 {
+	pub fn with_kernel(mut self, kernel: TxKernel) -> TransactionBodyV4 {
 		if let Err(e) = self.kernels.binary_search(&kernel) {
 			self.kernels.insert(e, kernel)
 		};
 		self
 	}
 
-	/// Builds a new TransactionBodyV2 replacing any existing kernels with the provided kernel.
-	pub fn replace_kernel(mut self, kernel: TxKernel) -> TransactionBodyV2 {
+	/// Builds a new TransactionBodyV4 replacing any existing kernels with the provided kernel.
+	pub fn replace_kernel(mut self, kernel: TxKernel) -> TransactionBodyV4 {
 		self.kernels.clear();
 		self.kernels.push(kernel);
 		self
@@ -693,7 +693,7 @@ impl TransactionBodyV2 {
 
 /// A transaction
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TransactionV2 {
+pub struct TransactionV4 {
 	/// The kernel "offset" k2
 	/// excess is k1G after splitting the key k = k1 + k2
 	#[serde(
@@ -702,23 +702,23 @@ pub struct TransactionV2 {
 	)]
 	pub offset: BlindingFactor,
 	/// The transaction body - inputs/outputs/kernels
-	pub body: TransactionBodyV2,
+	pub body: TransactionBodyV4,
 }
 
-// V1 to V2 conversion
-impl From<Transaction> for TransactionV2 {
+// V3/V2 to V4 conversion
+impl From<Transaction> for TransactionV4 {
 	fn from(tx: Transaction) -> Self {
-		TransactionV2 {
+		TransactionV4 {
 			offset: tx.offset,
-			body: TransactionBodyV2::from(tx.body),
+			body: TransactionBodyV4::from(tx.body),
 		}
 	}
 }
 
-// V2 to V1 conversion
-impl TryFrom<TransactionV2> for Transaction {
+// V4 to V3/V2 conversion
+impl TryFrom<TransactionV4> for Transaction {
 	type Error = &'static str;
-	fn try_from(tx: TransactionV2) -> Result<Self, Self::Error> {
+	fn try_from(tx: TransactionV4) -> Result<Self, Self::Error> {
 		Ok(Transaction {
 			offset: tx.offset,
 			body: TransactionBody::try_from(tx.body)?,
@@ -726,18 +726,18 @@ impl TryFrom<TransactionV2> for Transaction {
 	}
 }
 
-impl DefaultHashable for TransactionV2 {}
+impl DefaultHashable for TransactionV4 {}
 
 /// PartialEq
-impl PartialEq for TransactionV2 {
-	fn eq(&self, tx: &TransactionV2) -> bool {
+impl PartialEq for TransactionV4 {
+	fn eq(&self, tx: &TransactionV4) -> bool {
 		self.body == tx.body && self.offset == tx.offset
 	}
 }
 
 /// Implementation of Writeable for a fully blinded transaction, defines how to
 /// write the transaction as binary.
-impl Writeable for TransactionV2 {
+impl Writeable for TransactionV4 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.offset.write(writer)?;
 		self.body.write(writer)?;
@@ -747,11 +747,11 @@ impl Writeable for TransactionV2 {
 
 /// Implementation of Readable for a transaction, defines how to read a full
 /// transaction from a binary stream.
-impl Readable for TransactionV2 {
-	fn read<R: Reader>(reader: &mut R) -> Result<TransactionV2, ser::Error> {
+impl Readable for TransactionV4 {
+	fn read<R: Reader>(reader: &mut R) -> Result<TransactionV4, ser::Error> {
 		let offset = BlindingFactor::read(reader)?;
-		let body = TransactionBodyV2::read(reader)?;
-		let tx = TransactionV2 { offset, body };
+		let body = TransactionBodyV4::read(reader)?;
+		let tx = TransactionV4 { offset, body };
 
 		// Now "lightweight" validation of the tx.
 		// Treat any validation issues as data corruption.
@@ -764,7 +764,7 @@ impl Readable for TransactionV2 {
 	}
 }
 
-impl Committed for TransactionV2 {
+impl Committed for TransactionV4 {
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -778,13 +778,13 @@ impl Committed for TransactionV2 {
 	}
 }
 
-impl Default for TransactionV2 {
-	fn default() -> TransactionV2 {
-		TransactionV2::empty()
+impl Default for TransactionV4 {
+	fn default() -> TransactionV4 {
+		TransactionV4::empty()
 	}
 }
 
-impl TxImpl for TransactionV2 {
+impl TxImpl for TransactionV4 {
 	fn inputs(&self) -> Inputs {
 		self.body.inputs()
 	}
@@ -839,10 +839,10 @@ impl TxImpl for TransactionV2 {
 	}
 }
 
-impl TransactionV2 {
+impl TransactionV4 {
 	/// Creates a new empty transaction (no inputs or outputs, zero fee).
-	pub fn empty() -> TransactionV2 {
-		TransactionV2 {
+	pub fn empty() -> TransactionV4 {
+		TransactionV4 {
 			offset: BlindingFactor::zero(),
 			body: Default::default(),
 		}
@@ -856,9 +856,9 @@ impl TransactionV2 {
 		outputs: &[Output],
 		outputs_with_rnp: &[OutputWithRnp],
 		kernels: &[TxKernel],
-	) -> TransactionV2 {
+	) -> TransactionV4 {
 		// Initialize a new tx body and sort everything.
-		let body = TransactionBodyV2::init(
+		let body = TransactionBodyV4::init(
 			inputs,
 			inputs_with_sig,
 			outputs,
@@ -868,7 +868,7 @@ impl TransactionV2 {
 		)
 		.expect("sorting, not verifying");
 
-		TransactionV2 {
+		TransactionV4 {
 			offset: BlindingFactor::zero(),
 			body,
 		}
@@ -876,20 +876,20 @@ impl TransactionV2 {
 
 	/// Encapsulated as Versioned Tx
 	pub fn ver(self) -> VersionedTransaction {
-		VersionedTransaction::V2(self)
+		VersionedTransaction::V4(self)
 	}
 
 	/// Creates a new transaction using this transaction as a template
 	/// and with the specified offset.
-	pub fn with_offset(self, offset: BlindingFactor) -> TransactionV2 {
-		TransactionV2 { offset, ..self }
+	pub fn with_offset(self, offset: BlindingFactor) -> TransactionV4 {
+		TransactionV4 { offset, ..self }
 	}
 
 	/// Builds a new transaction with the provided inputs (w/o signature) added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_input(self, input: Input) -> TransactionV2 {
-		TransactionV2 {
+	pub fn with_input(self, input: Input) -> TransactionV4 {
+		TransactionV4 {
 			body: self.body.with_input(input),
 			..self
 		}
@@ -898,8 +898,8 @@ impl TransactionV2 {
 	/// Builds a new transaction with the provided inputs (w/ signature) added. Existing
 	/// inputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_input_wsig(self, input_with_sig: CommitWithSig) -> TransactionV2 {
-		TransactionV2 {
+	pub fn with_input_wsig(self, input_with_sig: CommitWithSig) -> TransactionV4 {
+		TransactionV4 {
 			body: self.body.with_input_wsig(input_with_sig),
 			..self
 		}
@@ -908,8 +908,8 @@ impl TransactionV2 {
 	/// Builds a new transaction with the provided output (w/o R&P') added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_output(self, output: Output) -> TransactionV2 {
-		TransactionV2 {
+	pub fn with_output(self, output: Output) -> TransactionV4 {
+		TransactionV4 {
 			body: self.body.with_output(output),
 			..self
 		}
@@ -918,8 +918,8 @@ impl TransactionV2 {
 	/// Builds a new transaction with the provided output (w/ R&P') added. Existing
 	/// outputs, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_output_wrnp(self, output_with_rnp: OutputWithRnp) -> TransactionV2 {
-		TransactionV2 {
+	pub fn with_output_wrnp(self, output_with_rnp: OutputWithRnp) -> TransactionV4 {
+		TransactionV4 {
 			body: self.body.with_output_wrnp(output_with_rnp),
 			..self
 		}
@@ -928,22 +928,22 @@ impl TransactionV2 {
 	/// Builds a new transaction with the provided kernel added. Existing
 	/// kernels, if any, are kept intact.
 	/// Sort order is maintained.
-	pub fn with_kernel(self, kernel: TxKernel) -> TransactionV2 {
-		TransactionV2 {
+	pub fn with_kernel(self, kernel: TxKernel) -> TransactionV4 {
+		TransactionV4 {
 			body: self.body.with_kernel(kernel),
 			..self
 		}
 	}
 
 	/// Fully replace inputs.
-	pub fn replace_inputs(mut self, inputs: Inputs) -> TransactionV2 {
+	pub fn replace_inputs(mut self, inputs: Inputs) -> TransactionV4 {
 		self.body = self.body.replace_inputs(inputs);
 		self
 	}
 
 	/// Builds a new transaction replacing any existing kernels with the provided kernel.
-	pub fn replace_kernel(self, kernel: TxKernel) -> TransactionV2 {
-		TransactionV2 {
+	pub fn replace_kernel(self, kernel: TxKernel) -> TransactionV4 {
+		TransactionV4 {
 			body: self.body.replace_kernel(kernel),
 			..self
 		}
@@ -961,15 +961,15 @@ impl TransactionV2 {
 
 	/// Calculate transaction weight from transaction details
 	pub fn weight(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		TransactionBodyV2::weight(num_inputs, num_outputs, num_kernels)
+		TransactionBodyV4::weight(num_inputs, num_outputs, num_kernels)
 	}
 }
 
 /// Aggregate a vec of txs into a multi-kernel tx.
-pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
+pub fn aggregate(txs: &[TransactionV4]) -> Result<TransactionV4, Error> {
 	// convenience short-circuiting
 	if txs.is_empty() {
-		return Ok(TransactionV2::empty());
+		return Ok(TransactionV4::empty());
 	} else if txs.len() == 1 {
 		return Ok(txs[0].clone());
 	}
@@ -1015,7 +1015,7 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 	//   * full set of tx kernels
 	//   * sum of all kernel offsets
 	// Note: We sort input/outputs/kernels when building the transaction body internally.
-	let tx = TransactionV2::new(
+	let tx = TransactionV4::new(
 		Inputs::from(inputs.as_slice()),
 		Inputs::from(inputs_with_sig.as_slice()),
 		&outputs,
@@ -1029,7 +1029,7 @@ pub fn aggregate(txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
 
 /// Attempt to deaggregate a multi-kernel transaction based on multiple
 /// transactions
-pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<TransactionV2, Error> {
+pub fn deaggregate(mk_tx: TransactionV4, txs: &[TransactionV4]) -> Result<TransactionV4, Error> {
 	let mut inputs: Vec<CommitWrapper> = vec![];
 	let mut inputs_with_sig: Vec<CommitWithSig> = vec![];
 	let mut outputs: Vec<Output> = vec![];
@@ -1112,7 +1112,7 @@ pub fn deaggregate(mk_tx: TransactionV2, txs: &[TransactionV2]) -> Result<Transa
 	kernels.sort_unstable();
 
 	// Build a new tx from the above data.
-	Ok(TransactionV2::new(
+	Ok(TransactionV4::new(
 		Inputs::from(inputs.as_slice()),
 		Inputs::from(inputs_with_sig.as_slice()),
 		&outputs,

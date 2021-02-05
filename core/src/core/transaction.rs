@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transactions V1. Native Mimblewimble Interactive Transaction.
+//! Transactions V3. Native Mimblewimble Interactive Transaction.
 
 use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
-use crate::core::transaction_v2::CommitWithSig;
+use crate::core::transaction_v4::CommitWithSig;
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{VersionedTransaction, VersionedTransactionBody};
 use crate::libtx::{aggsig, secp_ser};
@@ -1090,7 +1090,7 @@ impl TransactionBody {
 
 	/// Encapsulated as Versioned Tx Body
 	pub fn ver(self) -> VersionedTransactionBody {
-		VersionedTransactionBody::V1(self)
+		VersionedTransactionBody::V3(self)
 	}
 
 	/// Creates a new transaction body initialized with
@@ -1399,7 +1399,7 @@ impl Transaction {
 
 	/// Encapsulated as Versioned Tx
 	pub fn ver(self) -> VersionedTransaction {
-		VersionedTransaction::V1(self)
+		VersionedTransaction::V3(self)
 	}
 
 	/// Creates a new transaction using this transaction as a template
@@ -2015,7 +2015,7 @@ impl Inputs {
 		match self {
 			Inputs::CommitOnly(_) => "v3",
 			Inputs::FeaturesAndCommit(_) => "v2",
-			Inputs::CommitsWithSig(_) => "v1_000",
+			Inputs::CommitsWithSig(_) => "v4",
 		}
 	}
 }

@@ -137,12 +137,16 @@ impl MessageHandler for Protocol {
 				let tx = adapter.get_transaction(h);
 				if let Some(tx) = tx {
 					match self.peer_info.version.value() {
+						// Note: here is not a missing special handling for v2.
+						//		 currently, all transactions in v3 will be converted into v2 when adding to pool (add_to_pool/convert_tx_v2),
+						//		 refer to https://github.com/mimblewimble/grin/pull/3419 for detail.
+						//
 						// Versions before HF2
 						0..=3 => {
-							if let Ok(v1_tx) = tx.to_v1() {
+							if let Ok(v3_tx) = tx.to_v3() {
 								Ok(Some(Msg::new(
 									Type::Transaction,
-									v1_tx,
+									v3_tx,
 									self.peer_info.version,
 								)?))
 							} else {

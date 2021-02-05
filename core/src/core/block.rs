@@ -21,7 +21,7 @@ use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
 	pmmr, transaction, versioned_transaction, Commit, Commitment, Inputs, KernelFeatures, Output,
-	OutputWithRnp, Transaction, TransactionBody, TransactionBodyV2, TransactionV2, TxBodyImpl,
+	OutputWithRnp, Transaction, TransactionBody, TransactionBodyV4, TransactionV4, TxBodyImpl,
 	TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody, Weighting,
 };
 use crate::global;
@@ -639,7 +639,7 @@ impl Writeable for Block {
 			match self.header.version.value() {
 				// before HF2
 				0..=2 => {
-					if self.body.not_v1_version() {
+					if self.body.not_v3_version() {
 						return Err(ser::Error::CorruptedData("version not matched".to_owned()));
 					} else {
 						self.body.write(writer)?;
@@ -647,9 +647,9 @@ impl Writeable for Block {
 				}
 				// after HF2
 				3 | _ => {
-					if !self.body.not_v1_version() {
-						// force to be v2 format
-						self.body.to_v2().ver().write(writer)?;
+					if !self.body.not_v3_version() {
+						// force to be v4 format
+						self.body.to_v4().ver().write(writer)?;
 					} else {
 						self.body.write(writer)?;
 					}
@@ -666,8 +666,8 @@ impl Readable for Block {
 	fn read<R: Reader>(reader: &mut R) -> Result<Block, ser::Error> {
 		let header = BlockHeader::read(reader)?;
 		let body = match header.version.value() {
-			0..=2 => VersionedTransactionBody::V1(TransactionBody::read(reader)?),
-			3 | _ => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
+			0..=2 => VersionedTransactionBody::V3(TransactionBody::read(reader)?),
+			3 | _ => VersionedTransactionBody::V4(TransactionBodyV4::read(reader)?),
 		};
 		Ok(Block { header, body })
 	}
@@ -694,7 +694,7 @@ impl Default for Block {
 	fn default() -> Block {
 		Block {
 			header: Default::default(),
-			body: VersionedTransactionBody::V1(Default::default()),
+			body: VersionedTransactionBody::V3(Default::default()),
 		}
 	}
 }
@@ -727,7 +727,7 @@ impl Block {
 	}
 
 	// Hydrate a block from a compact block.
-	fn hydrate_from_v1(cb: CompactBlock, txs: &[Transaction]) -> Result<Block, Error> {
+	fn hydrate_from_v3(cb: CompactBlock, txs: &[Transaction]) -> Result<Block, Error> {
 		let header = cb.header.clone();
 
 		let mut inputs = vec![];
@@ -760,7 +760,7 @@ impl Block {
 		// caller must validate the block.
 		Ok(Block {
 			header,
-			body: VersionedTransactionBody::V1(body),
+			body: VersionedTransactionBody::V3(body),
 		})
 	}
 
@@ -772,23 +772,23 @@ impl Block {
 
 		let header = cb.header.clone();
 		if header.version < HeaderVersion(3) {
-			let not_v1 = txs.iter().any(|tx| tx.not_v1_version());
-			if not_v1 {
+			let not_v3 = txs.iter().any(|tx| tx.not_v3_version());
+			if not_v3 {
 				return Err(Error::Other(
 					"hydrate from new transaction version".to_string(),
 				));
 			}
-			let v1_txs = txs
+			let v3_txs = txs
 				.iter()
-				.map(|tx| tx.to_v1().unwrap())
+				.map(|tx| tx.to_v3().unwrap())
 				.collect::<Vec<Transaction>>();
-			return Block::hydrate_from_v1(cb, &v1_txs);
+			return Block::hydrate_from_v3(cb, &v3_txs);
 		}
 
-		let v2_txs = txs
+		let v4_txs = txs
 			.iter()
-			.map(|tx| tx.to_v2())
-			.collect::<Vec<TransactionV2>>();
+			.map(|tx| tx.to_v4())
+			.collect::<Vec<TransactionV4>>();
 
 		let mut inputs = vec![];
 		let mut inputs_with_sig = vec![];
@@ -797,7 +797,7 @@ impl Block {
 		let mut kernels = vec![];
 
 		// collect all the inputs, outputs and kernels from the txs
-		for tx in v2_txs {
+		for tx in v4_txs {
 			let tx_inputs: Vec<_> = tx.inputs().into();
 			inputs.extend_from_slice(tx_inputs.as_slice());
 			inputs_with_sig.extend_from_slice(tx.inputs_with_sig().inputs_with_sig().as_slice());
@@ -814,7 +814,7 @@ impl Block {
 		kernels.extend_from_slice(cb.kern_full());
 
 		// Initialize a tx body and sort everything.
-		let body = TransactionBodyV2::init(
+		let body = TransactionBodyV4::init(
 			inputs.as_slice().into(),
 			inputs_with_sig.as_slice().into(),
 			&outputs,
@@ -828,7 +828,7 @@ impl Block {
 		// caller must validate the block.
 		Ok(Block {
 			header,
-			body: VersionedTransactionBody::V2(body),
+			body: VersionedTransactionBody::V4(body),
 		})
 	}
 
@@ -1068,9 +1068,9 @@ impl Readable for UntrustedBlock {
 		let header = BlockHeader::from(UntrustedBlockHeader::read(reader)?);
 		let body = match header.version {
 			HeaderVersion(1) | HeaderVersion(2) => {
-				VersionedTransactionBody::V1(TransactionBody::read(reader)?)
+				VersionedTransactionBody::V3(TransactionBody::read(reader)?)
 			}
-			HeaderVersion(3) => VersionedTransactionBody::V2(TransactionBodyV2::read(reader)?),
+			HeaderVersion(3) => VersionedTransactionBody::V4(TransactionBodyV4::read(reader)?),
 			_ => {
 				return Err(ser::Error::CorruptedData(format!(
 					"unexpected header version {}",

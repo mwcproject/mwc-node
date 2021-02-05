@@ -348,11 +348,15 @@ impl Peer {
 
 		if !self.tracking_adapter.has_recv(kernel.hash()) {
 			match self.info.version.value() {
+				// Note: here is not a missing special handling for v2.
+				//		 currently, all transactions in v3 will be converted into v2 when adding to pool (add_to_pool/convert_tx_v2),
+				//		 refer to https://github.com/mimblewimble/grin/pull/3419 for detail.
+				//
 				// Versions before HF2
 				0..=3 => {
-					if let Ok(v1_tx) = tx.to_v1() {
+					if let Ok(v3_tx) = tx.to_v3() {
 						debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
-						self.send(v1_tx, msg::Type::Transaction)?;
+						self.send(v3_tx, msg::Type::Transaction)?;
 						Ok(true)
 					} else {
 						debug!(
@@ -367,7 +371,7 @@ impl Peer {
 				// HF2 version
 				1000..=1999 => {
 					debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
-					self.send(tx.to_v2(), msg::Type::Transaction)?;
+					self.send(tx.to_v4(), msg::Type::Transaction)?;
 					Ok(true)
 				}
 				// don't send to versions with big jump and undefined versions.
