@@ -24,11 +24,11 @@ Here are the details: https://comit.network/blog/2020/07/02/tor-poc/
 
 # libp2p initial use cases.
 
-For this proposal, only wallets need to exchange messages toward other wallets, MWC nodes aren't invovled.
+For this proposal, only mwc-wallets need to exchange messages toward other mwc-wallets, mwc-nodes aren't invovled.
 
 Libp2p nodes maintain the libp2p network. In order to join the network a libp2p node need to join any other libp2p node. 
 
-The problem is that a wallet only know its own MWC node and is not able to discover other wallets on the network to communicate with.
+The problem is that a mwc-wallet only know its own mwc-node and is not able to discover other mwc-wallets on the network to communicate with.
 
 Possible solutions:
 1. Have a bootstrap node that know and maintain the addresses of other network participants.
@@ -39,18 +39,16 @@ Option 2 add communication load to the MWC nodes but will greatly improve on dec
 
 The mwc-wallet will join the libp2p network as follow:
 
-1. mwc-node getting it's peer connections. As long mwc-node is found the peer that joined libp2p, it will join that peer.
-2. If mwc-node doesn't found such mwc-node peer, DNS node will be used. The DNS nodes will be upgraded so they will participaate 
-in p2p network.
-3. mwc-wallet start and connecting to the mwc-node. It is expepcted that the mwc-node already joined p2p network at steps 1 and 2.
-So mwc-wallet joining mwc-node.
+1. mwc-node getting it's peer connections. As long one of its peer already joined the libp2p, it will be able to join the libp2p network.
+2. If mwc-node doesn't found a mwc-node on the libp2p network, it will connect to the mwc-seed-node (The mwc-seed-nodes will be upgraded to participate 
+in libp2p network)
+3. mwc-wallet start and connect to the libp2p network with help of it's mwc-node.
 
-# Swap marketplace 
 
-Solution for Swap Marketplace will use the publisher/subscriber. Wallets that are participating in the swap marketpace 
-need to provision and join the topic. That will allow p2p network route traffic optimally. 
+# Atomic Swap Marketplace 
 
-For swap marketplace we will have one topic per swap secondary currency coin.
+Atomic Swap Marketplace will use the publisher/subscriber model for message pool maintenance. Mwc-wallets, that are participating in the atomic swap marketpace need listen for new messages. 
+
 
 ### Placing/getting the offers. 
 
