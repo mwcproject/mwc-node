@@ -126,9 +126,29 @@ Proof evaluation:
 4. Check if the message is valid. The timestamp is much current time.
 5. Check if the signature is valid.
 
-Please note, **all proofs are losing privacy**, I don’t think we can be better.
+#### Privacy impact
 
-The user will be able to select what trades can be used for proofs.
+Please note, **any proof that publicly made is a privacy leak**. In order to proof participation in the swap trade, the wallet 
+disclosure information abotu the swap trade and any disclosure by definition is privacy leak.
+
+For example, if wallet provides the proof about BTC Swap deal, it disclosure the Locking Script details so another party can
+validate that Swap trade really happens and this wallet really participated.
+
+Disclosure details allows to reconstruct the script, calculate the Hash and Lock Address. By Lock address from BTC 
+blockchain we can read the Locking amount (Swap Trade amoount), find from what address BTC funds was deposited and to what 
+address BTC adress benefit from swap. Also it is possible to check if trade was finished successfully or the BTC amount was refunded back. 
+
+There are no direct information about MWC transactions. But information about the swap trade and it's time can provide some information
+about MWC part of the trade as well. For example it is known at what time the BTC funds was locked, so likely MWC funds was locked a little earlier.
+It is know when BTC funds was redeem. The MWC funds was redeems a little later. Those fact might help to guess what 
+inputs/iutputs participated in this swap trade on MWC side.
+
+Also since BTC amount is known and exchange rate can be estimated, it is possible to guess the MWC amount at the swap deal. 
+ 
+Because of MimbleWimble protocol it is still impossible to identify the wallet address.
+
+On MWC side all those leaks will be covered with improved traceablity. It is expected the output from swap will go through the CoinJoin
+and after that it will be really hard to trace anything.
 
 ### Swap chat
 
