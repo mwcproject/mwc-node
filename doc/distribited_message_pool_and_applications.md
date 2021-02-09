@@ -152,7 +152,7 @@ and after that it will be really hard to trace anything.
 
 ### Swap chat
 
-With messaging and p2p connection we can organize p2p secure. t might be needed if
+With messaging and p2p connection we can organize p2p secure. It might be needed if
 both parties want to talk and discuss the swap trade deal. Later it can be used to 
 coordinate the trade.
 
