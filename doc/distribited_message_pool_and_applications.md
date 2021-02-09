@@ -1,48 +1,45 @@
-# Distributed Message pool,  traceability, Swap Marketplace
+# Distributed Message pool, Traceability, Atomic Swap Marketplace
 
 
 # Background.
 
-We are going to introduce the improved traceability and swap marketplace feature. This 
-document is describing the overall design, pros and cons.
+We are going to introduce the improved traceability and atomic swaps marketplace feature. This 
+document is describing the overall design.
 
 # Distributed messaging.
-For atomic swaps marketplace and improved traceability we need to maintain some kind "Message pool" with short live messages. 
+For atomic swaps marketplace and improved on mimblewimble coinjoin we need to maintain some kind "message pool". 
 
-With the traditional messaging based on publisher/subscriber, we can achieve the same goal. In this case 
-p2p network will provide the transport and the 'message pool' data can be built locally.
+With the traditional publisher/subscriber model, we can achieve this. P2P network will provide the transport and the 'message pool' data for the wallets.
 
 For transport implementation we can use libp2p ( https://libp2p.io/ ) that support publisher/subscriber functionality.
 This library exist on many planforms including rust and well maintained.
 
-Performance should be good enough to handle much more data. Polkadot and Etherium 2.0 using libp2p as a primary transport
+This library performance can handle more then required data. Polkadot and Ethereum 2.0 using libp2p as a primary transport
 for node communication. The library can handle flooding attacks enough, so it can be adopted for the blockchain.
 
-Also libp2p support direct p2p communication, so wallets potentially can use it instead MQS or TOR. But that 
-can be done later because we don't want to introduce too many changes at a time.
+Also libp2p support direct p2p communication. So in the future wallets can potentially use it instead MQS or TOR. 
 
-Currently libp2p doesn't designed to hide the connection address, but it should be possible to run it with a tor.
-Tor provides proxy interface and libp2p can be conected. Here are the details: https://comit.network/blog/2020/07/02/tor-poc/
+Currently libp2p doesn't designed to hide the connection address, but it should be possible to run it with TOR.
+Here are the details: https://comit.network/blog/2020/07/02/tor-poc/
 
 # libp2p initial use cases.
 
-At current stage, only wallets need to exchange with the messages. There is nothing what nodes need to send/receive.
+For this proposal, only wallets need to exchange messages toward other wallets, MWC nodes aren't invovled.
 
-libp2p does maintain the p2p network. In order to join the network, the new node need to join any node from the network. 
+Libp2p nodes maintain the libp2p network. In order to join the network a libp2p node need to join any other libp2p node. 
 
-The problem is that wallet knows only the node as a peer. And only nodes know more peers form the network. 
+The problem is that a wallet only know its own MWC node and is not able to discover other wallets on the network to communicate with.
 
-The possible solutions:
-1. Have a botstrap node with know address.
-2. Add wmc-node into the p2p network.
+Possible solutions:
+1. Have a bootstrap node that know and maintain the addresses of other network participants.
+2. Have MWC nodes and MWC wallets join the libp2p network.
 
-Choice number 1 is a centralized approach. The second coice will add some load to the nodes and will double the number of the nodes.
+Option 1 is a centralized approach and not desirable.
+Option 2 add communication load to the MWC nodes but will greatly improve on decentralisation.
 
-But very likely in the future we might adopt libp2p for nodes as well. As a result number two has more advantages. 
+The mwc-wallet will join the libp2p network as follow:
 
-In this case the mwc-wallet p2p join workflow is.
-
-1. mwc-node getting it's peer connections. As long node found the peer that joined p2p, it will join that peer.
+1. mwc-node getting it's peer connections. As long mwc-node is found the peer that joined libp2p, it will join that peer.
 2. If mwc-node doesn't found such mwc-node peer, DNS node will be used. The DNS nodes will be upgraded so they will participaate 
 in p2p network.
 3. mwc-wallet start and connecting to the mwc-node. It is expepcted that the mwc-node already joined p2p network at steps 1 and 2.
