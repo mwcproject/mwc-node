@@ -58,7 +58,7 @@ For swap marketplace we will have one topic per swap secondary currency coin.
 ### Placing/getting the offers. 
 
 When qt-wallet publishing offer, it will send the message every 5-10 minutes.
-```json
+```
 {
   "peer_address" : "dkjsdskjh dsfakjhdfskljh",   
   "currency" : "BTC",
@@ -104,7 +104,7 @@ Buyer own the Refund PK with private Key.  The seller owns Redeem PK with a priv
 The proof is the Pubic Key from the script, message and signature.
 
 The proof will looks like:
-```json
+```
 {
   "id" : 1,
   "currency" : "BTC",
