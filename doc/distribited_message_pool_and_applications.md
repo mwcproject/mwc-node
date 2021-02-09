@@ -4,12 +4,12 @@
 # Background.
 
 We are going to introduce the improved traceability and swap marketplace feature. This 
-document is describing the overall design, proc and cons.
+document is describing the overall design, pros and cons.
 
 # Distributed messaging.
-For swap marketplace and improved traceability we need to maintain some kind "Message pool" with short live messages. 
+For atomic swaps marketplace and improved traceability we need to maintain some kind "Message pool" with short live messages. 
 
-With the traditional Messaging based on publisher/subscriber, we can achieve the same goal. In this case 
+With the traditional messaging based on publisher/subscriber, we can achieve the same goal. In this case 
 p2p network will provide the transport and the 'message pool' data can be built locally.
 
 For transport implementation we can use libp2p ( https://libp2p.io/ ) that support publisher/subscriber functionality.
