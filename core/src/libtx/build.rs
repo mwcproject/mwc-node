@@ -107,7 +107,7 @@ where
 	build_input(value, OutputFeatures::Coinbase, key_id)
 }
 
-/// Adds an output with the provided value and key identifier from the
+/// Adds an output (w/o R&P') with the provided value and key identifier from the
 /// keychain.
 pub fn output<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
 where
@@ -142,6 +142,22 @@ where
 		},
 	)
 }
+
+// Adds a NIT output (w/ R&P') with the provided value and key identifier from the keychain.
+// pub fn output_wrnp<K, B>(
+// 	value: u64,
+// 	key_id: Identifier,
+// 	recipient_address: PublicKey,
+// ) -> Box<Append<K, B>>
+// where
+// 	K: Keychain,
+// 	B: ProofBuild,
+// {
+// 	Box::new(
+// 		move |build, (tx, kern, sum)| -> (Transaction, TxKernel, BlindSum) {
+// 		},
+// 	)
+// }
 
 /// Adds a known excess value on the transaction being built. Usually used in
 /// combination with the initial_tx function when a new transaction is built

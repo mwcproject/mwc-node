@@ -16,8 +16,8 @@
 
 use grin_core::core::hash::DefaultHashable;
 use grin_core::core::{
-	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction, TxImpl,
-	VersionedTransaction,
+	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
+	TransactionV4, TxImpl, VersionedTransaction,
 };
 use grin_core::libtx::{
 	build::{self, input, output},
@@ -66,6 +66,24 @@ pub fn tx1i1o() -> Transaction {
 
 	tx
 }
+
+// utility producing a NIT transaction with a single input and output
+// #[allow(dead_code)]
+// pub fn tx1i1o_v4() -> TransactionV4 {
+// 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+// 	let builder = ProofBuilder::new(&keychain);
+// 	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+// 	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+//
+// 	let tx = build::transaction(
+// 		KernelFeatures::Plain { fee: 2 },
+// 		&[input(5, key_id1), output(3, key_id2)],
+// 		&keychain,
+// 		&builder,
+// 	).unwrap();
+//
+// 	tx
+// }
 
 #[allow(dead_code)]
 pub fn tx1i10_v2_compatible() -> Transaction {

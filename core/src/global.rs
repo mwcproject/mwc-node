@@ -109,7 +109,7 @@ pub const TXHASHSET_ARCHIVE_INTERVAL: u64 = 12 * 60;
 
 /// Types of chain a server can run with, dictates the genesis block and
 /// and mining parameters used.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChainTypes {
 	/// For CI testing
 	AutomatedTesting,
