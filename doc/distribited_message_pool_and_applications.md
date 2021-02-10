@@ -1,18 +1,18 @@
-# Distributed Message pool, Traceability, Atomic Swap Marketplace
+# Distributed Message pool, Improved Coinjoin participation, Atomic Swap Marketplace
 
 
 # Background.
 
-We are going to introduce the improved traceability and atomic swaps marketplace feature. This 
+We are going to introduce a distributed message pool, improved coinjoin participation and atomic swaps marketplace feature. This 
 document is describing the overall design.
 
 # Distributed messaging.
-For atomic swaps marketplace and improved on mimblewimble coinjoin we need to maintain some kind "message pool". 
+For atomic swaps marketplace and improved coinjoin participation we propose to create a "message pool". 
 
-With the traditional publisher/subscriber model, we can achieve this. P2P network will provide the transport and the 'message pool' data for the wallets.
+This can be achieve with traditional publisher/subscriber model. P2P network will provide the transport and the "message pool" data for the wallets.
 
 For transport implementation we can use libp2p ( https://libp2p.io/ ) that support publisher/subscriber functionality.
-This library exist on many planforms including rust and well maintained.
+This library exist on many planforms including rust and it is well maintained.
 
 This library performance can handle more then required data. Polkadot and Ethereum 2.0 using libp2p as a primary transport
 for node communication. The library can handle flooding attacks enough, so it can be adopted for the blockchain.
@@ -52,7 +52,7 @@ Atomic Swap Marketplace will use the publisher/subscriber model for message pool
 
 ### Placing/getting the offers. 
 
-When qt-wallet publishing offer, it will send the message every 5-10 minutes.
+When qt-wallet publishing offer, it will send the message every few minutes.
 ```
 {
   "peer_address" : "dkjsdskjh dsfakjhdfskljh", 
@@ -76,10 +76,9 @@ When qt-wallet publishing offer, it will send the message every 5-10 minutes.
   ]
 }
 ```
-Every message is unencrypted and have the information about the offer and information about last trades. Wallet that
-claims that Atomic Swap proof exist, will need to show them by demand.
+Every message is unencrypted and have the information about the atomic swap offer. Optionally user can use a past trade proof to build his reputation score.
 
-'anchor_output' is a special verifiable output that was published during last 24 hour. The purpose of this output
+'anchor_output' is a special verifiable mwc-output that is published by the creater for each atomic swap offer. during last 24 hour. The purpose of this output
 is to prevent massive flooding that is not easy to filter out. In order to flood, attacker will need to pay 
 at least transaction fee to create such output. The honest players will need to pay transaction fee at least once in 24 hours as well. 
 
