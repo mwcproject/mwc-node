@@ -55,10 +55,17 @@ Atomic Swap Marketplace will use the publisher/subscriber model for message pool
 When qt-wallet publishing offer, it will send the message every 5-10 minutes.
 ```
 {
-  "peer_address" : "dkjsdskjh dsfakjhdfskljh",   
+  "peer_address" : "dkjsdskjh dsfakjhdfskljh", 
+  "time" : 328768536,      // current time  
   "currency" : "BTC",
   ...  swap trade deal detals,
-  "proof" : [
+  
+  "anchor_output": {
+      "commit" : "4376538763896586784364586",
+      "public_key" : "6748369356438965854643856784356",
+      "signature" : "47564387643857634875683476538765"
+  }  
+  "swap_proofs" : [
     {
       "id" : 1,
       "currency" : "BTC",
@@ -70,11 +77,40 @@ When qt-wallet publishing offer, it will send the message every 5-10 minutes.
 }
 ```
 Every message is unencrypted and have the information about the offer and information about last trades. Wallet that
-claims that proof exist, will need to show them  by demand.
+claims that Atomic Swap proof exist, will need to show them by demand.
 
-Qt-wallet that looking for the offer will need to listen on the topic. During next 5-10 minute wallet will receive all
-offers that are exist on the market. **It is expected that user will need wait for 5-10 minutes until the offer 'message pool'
-will be filled.** 
+'anchor_output' is a special verifiable output that was published during last 24 hour. The purpose of this output
+is to prevent massive flooding that is not easy to filter out. In order to flood, attacker will need to pay 
+at least transaction fee to create such output. The honest players will need to pay transaction fee at least once in 24 hours as well. 
+
+Qt-wallet that looking for the offer, will need to listen on the topic. During next 5-10 minute wallet will receive all
+offers that are exist on the market. **It is expected that user will need to wait for 5-10 minutes until the offer 'message pool'
+will be completed.** 
+
+Please note, that before start listening, the wallet need to obtain from the node a list of outputs that was published during last 24 hours.
+Any of those outputs can be Anchor Output.
+
+Every offer can be quickly validated by checking if anchor_output=>commit does exist and anchor_output=>public_key
+show the commit amount. The message can be calculated as 'peer_address' + 'time' from the offer message. The
+anchor_output=>signature must match that message and public key.
+
+### Anchor output
+
+Currently every wallet has viewing public key that can be used to reveal output amount, but not allow to spend it.
+All wallets has such root public key that is used for blockchain scanning to recognize spendable outputs. Normally 
+the root public key is kept in the secret unless wallet want to disclosure it's balance and transactions.
+
+For anchor output wallet need to create another derivative public key (anchor PK). As a result anchor output will be different from the 
+rest, so the wallet can publish the anchor PK, to make possible to read the amount of the anchor output.
+The ownership of anchor PK is proving the ownership of the anchor output.
+
+mwc-wallet will need to be able to maintain such output, re spent it when swap offer need to be places. The amount 
+will be less then 1 MWC. To create anchor output the wallet will create anchor PK from seed secret derivative and then use it 
+for this output initialization. Normally mwc-wallet doesn't mix that anchor output with the rest spendable outputs
+because of the privacy impact. Observer who knows Anchor PK can conclude that this output belong to that wallet. 
+
+The not honest players can be banned by peer address or libp2p sender address. As a result the attacker traffic can be 
+filtered out by the mwc-wallet. 
 
 ### Swap proof
 
@@ -121,7 +157,7 @@ Proof evaluation:
 4. Check if the message is valid. The timestamp is much current time.
 5. Check if the signature is valid.
 
-#### Privacy impact
+#### Privacy impact, Atomic Swap Proof
 
 Please note, **any proof that publicly made is a privacy leak**. In order to proof participation in the swap trade, the wallet 
 disclosure information abotu the swap trade and any disclosure by definition is privacy leak.
@@ -145,13 +181,20 @@ Because of MimbleWimble protocol it is still impossible to identify the wallet a
 On MWC side all those leaks will be covered with improved traceablity. It is expected the output from swap will go through the CoinJoin
 and after that it will be really hard to trace anything.
 
+#### Privacy impact, Anchor Output
+
+Anchor Output will reveal amount and wallet that owns it. Because of that wallet will never mix it with other outputs.
+If creation amount will be 1 MWC and fee is 0.005, that output will be good for swap trading during 200 days.
+
+Also the outputs from Anchor output was created, need to be cleared with CoinJoin.
+
 ### Swap chat
 
 With messaging and p2p connection we can organize p2p secure. It might be needed if
 both parties want to talk and discuss the swap trade deal. Later it can be used to 
 coordinate the trade.
 
-## Swap marketplace attacking.
+## Atomic Swap marketplace attacking.
 
 Attacker can flood the p2p network with messages. The network has it's own flood
 prevention rules, but still attacker can create a lot of fake orders. 
