@@ -28,6 +28,11 @@ fn round_trips(addr: &Address) {
 	assert_eq!(Address::from_str(&addr.to_string()).unwrap(), *addr,);
 }
 
+fn check_pubkeys(addr: &str, view: &PublicKey, spend: &PublicKey) {
+	let addr = Address::from_str(addr).unwrap();
+	assert_eq!(addr.get_inner_pubkeys(), (view, spend));
+}
+
 // A lite version of generating some wrong characters, without the checking of duplicate positions.
 fn simulate_wrong_characters(
 	num_mistakes: usize,
@@ -151,6 +156,7 @@ fn test_lite_address() {
 	let addr = Address::from_one_pubkey(&pubkey, ChainTypes::Mainnet);
 	assert_eq!(&addr.to_string(), addr_str);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
 
 	// same public key as above but in compressed form
 	let pubkey = PublicKey::from_slice(
@@ -161,6 +167,7 @@ fn test_lite_address() {
 	let addr = Address::from_one_pubkey(&pubkey, ChainTypes::Mainnet);
 	assert_eq!(&addr.to_string(), addr_str);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
 
 	// another public key
 	let pubkey = PublicKey::from_slice(
@@ -174,6 +181,7 @@ fn test_lite_address() {
 		"mwc1q80yvs0zjmat3yg569aezqmvsry3kdsmy9r9scy4k47vrynvhh77gdgunyk"
 	);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
 
 	// test the hrp
 	let addr = Address::from_one_pubkey(&pubkey, ChainTypes::Floonet);
@@ -189,6 +197,7 @@ fn test_lite_address() {
 		"mwu1q80yvs0zjmat3yg569aezqmvsry3kdsmy9r9scy4k47vrynvhh77gmhxs03"
 	);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
 
 	assert_eq!(addr.to_string().len(), 63);
 }
@@ -210,6 +219,7 @@ fn test_stealth_address() {
 	let addr = Address::from_pubkey(&pubkey_view, &pubkey_spend, ChainTypes::Mainnet);
 	assert_eq!(&addr.to_string(), addr_str);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey_view, &pubkey_spend);
 
 	// test the hrp
 	let addr = Address::from_pubkey(&pubkey_view, &pubkey_spend, ChainTypes::Floonet);
@@ -228,11 +238,12 @@ fn test_ephemeral_key() {
 	let (pri_view, pub_view) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
 	let (_pri_spend, pub_spend) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
 
-	//--- rests for address::InnerAddr::StealthAddr ---
+	//--- tests for address::InnerAddr::StealthAddr ---
 
 	let addr = Address::from_pubkey(&pub_view, &pub_spend, ChainTypes::Mainnet);
 	println!("address: {}", addr);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pub_view, &pub_spend);
 
 	// check the shared ephemeral key is same both on rx and tx sides.
 	let (private_nonce, public_nonce) =
@@ -259,6 +270,7 @@ fn test_ephemeral_key() {
 
 	let addr = Address::from_one_pubkey(&pub_view, ChainTypes::Mainnet);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pub_view, &pub_view);
 
 	// check the shared ephemeral key is same both on rx and tx sides.
 	let (private_nonce, public_nonce) =
@@ -292,6 +304,7 @@ fn test_calculations_complexity() {
 
 	let addr = Address::from_pubkey(&pub_view, &pub_spend, ChainTypes::Mainnet);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pub_view, &pub_spend);
 
 	let (private_nonce, public_nonce) =
 		keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
@@ -345,6 +358,7 @@ fn test_default_display() {
 	assert_eq!(Address::from_one_pubkey(&pubkey, ChainTypes::Mainnet), addr);
 
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
 	println!(
 		"pubkey: {}, mainnet address: {}, string len: {}",
 		pubkey_str,
@@ -364,6 +378,7 @@ fn test_default_display() {
 	let pubkey_view = PublicKey::from_slice(&util::from_hex(pubkey_view_str).unwrap()).unwrap();
 	let addr = Address::from_pubkey(&pubkey_view, &pubkey, ChainTypes::Mainnet);
 	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey_view, &pubkey);
 	println!("pubkeys: ({},{})", pubkey_view_str, pubkey_str);
 	println!(
 		"mainnet address: {}, address string len: {}",
