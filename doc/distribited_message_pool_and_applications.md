@@ -236,8 +236,16 @@ coordinate the trade.
 
 ## Atomic Swap marketplace attacking.
 
-Attacker can flood the p2p network with messages. The network has it's own flood
-prevention rules, but still attacker can create a lot of fake orders. 
+Attacker can try to flood the p2p network with messages. Unfortunately libp2p doesn't mitigate that automatically,
+but gossipsub handler allow to validate every message. Because validation is done by every node, the invalid message 
+will not be propagated through the network.
+
+Here are the rules that we are going to apply:
+- Validate integrity output.
+- Validate that the message with the same integrity output is not published too often (allow publish one message in 15 seconds)
+
+Those rules should be enough to prevent ddos attacks (integrity outputs cost coins, so attack will be expensive). Also, because of the
+nature p2p network, any such attack will be able to partly slowdown the network. Some messages still will be able to go through. 
 
 The wallet will receive all of them. Wallet can only request the proofs. That is expected to be slow,
 but eventually, after few minutes the peers that send 'dishonest' proof messages can be banned. 
