@@ -14,10 +14,12 @@ This can be achieve with traditional publisher/subscriber model. P2P network wil
 For transport implementation we can use libp2p ( https://libp2p.io/ ) that support publisher/subscriber functionality.
 This library exist on many platforms including rust and it is well maintained.
 
-This library performance can handle more then required data. Polkadot and Ethereum 2.0 using libp2p as a primary transport
-for node communication. The library can handle flooding attacks enough, so it can be adopted for the blockchain.
+Here is a description of the functionality that we are going to use:  https://docs.libp2p.io/concepts/publish-subscribe/
 
-Also libp2p support direct p2p communication. So in the future wallets can potentially use it instead MQS or TOR. 
+The peers discovery will be done by mwc-node.
+
+Also libp2p support direct p2p communication and has Kademlia discovery protocol. So in the future wallets can potentially
+use it instead MQS or TOR, but libp2p doesn't solve firewall problem. For now we are using TOR to mitigate that.
 
 Currently libp2p doesn't designed to hide the connection address, but it should be possible to run it with TOR.
 Here are the details: https://comit.network/blog/2020/07/02/tor-poc/
@@ -31,10 +33,10 @@ Libp2p nodes maintain the libp2p network. In order to join the network a libp2p 
 The problem is that a mwc-wallet only know its own mwc-node and is not able to discover other mwc-wallets on the network to communicate with.
 
 Possible solutions:
-1. Have a bootstrap node that know and maintain the addresses of other network participants.
-2. Have MWC nodes and MWC wallets join the libp2p network.
+1. Have a bootstrap node, use Kademlia to discover and maintain the addresses of other network participants.
+2. Have MWC nodes and MWC wallets join the libp2p network and use mwc-node peer discovery to join publish-subscribe network.
 
-Option 1 is a centralized approach and not desirable.
+Option 1 is a centralized approach, include Kademlia, and not desirable.
 Option 2 add communication load to the MWC nodes but will greatly improve on decentralisation.
 
 The mwc-wallet will join the libp2p network as follow:
@@ -43,7 +45,7 @@ The mwc-wallet will join the libp2p network as follow:
 2. If mwc-node doesn't found a mwc-node on the libp2p network, it will connect to the mwc-seed-node (The mwc-seed-nodes will be upgraded to participate 
 in libp2p network)
 3. mwc-wallet start and connect to the libp2p network with help of it's mwc-node.
-
+4. Periodically mwc-wallet requesting the list of the mwc-node peers, so it can maintain minimal number of connection to publish-subscribe network. 
 
 # Atomic Swap Marketplace 
 
