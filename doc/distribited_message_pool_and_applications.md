@@ -369,3 +369,71 @@ That will be relatively hard because:
 smaller number of the merged transactions. But in this case that still ok. Some fraction of outputs can be observed, but 
 it is not enough to build the graph who-pay-who. Probability will be very low.   
 
+# Changes
+
+## rust-libp2p-tokio--socks5
+
+This is a small library that provide connection to the TOR socks service. Plus it add tor support to libp2p multiaddress.
+There was few changes that was made:
+- It use default TOR socks port 9050. I make that port setting to be mandatory. The problem is error reporting. There is no way to 
+find that nothing works because of that port.
+- ping example was adopted to our needs. 
+
+## libp2p
+
+Libp2p  dpesn't work out of the box, but still I wasn't be able to find anything better. Because of that we adopted gossipsub and enhance it to meed our needs.
+For MWC project we are planning to use gossipsub only with TOR addresses because of the privacy.
+
+Please check the explanation of the gossipsub first:  https://docs.libp2p.io/concepts/publish-subscribe/
+It is our starting point. Also please note, libp2p gossipsub original design in not responsible for peer discovery. MWC implementation fixing that. 
+
+Here are changed that was made:
+- Every peers got additional String address. Because we are using only TOR connections, with address it is possible to call back to any peer. 
+  libp2p using IP address for income connections, but it is not for the code that we are using. Those libp2p components are expected to work inside local network.
+  With TOR address, it needed, that can limit can be lifted as well.
+- gossipsub reserved topic "Peers" for internal needs. Every gossipsub respond back on this topic to it's own peer with a full poeer list. 
+That response happens:
+  * After initial connection. That list can be used for bootstraping (see below the details).
+  * Periodically node updates random peer with it's peer list (There is no request to the node for list of peers).
+- peer blacklist logic is changed. Original libp2p design maintain blacklisted_peers that is managed by this service caller. 
+  Originally libp2p kept connection from blacklisted nodes, but ignore traffic from them. Here are the MWC features.
+  * blacklist peers are is managed by the service caller and but service. Service add peer to the ban list if:
+      1. Peer sent us invalid message. First invalid will be classify as attack, the message will be dropped and peer blacklisted.
+      2. Peer violate integrity rules (for example, sending spam).  
+  * Blacklisted peers will be disconnected. There is no reasons to maintain connection.
+  * If blacklisted connection, it will be disconnected as early as possible. But first connection will be accepted, the protocol
+   exchange will be finished. We need to do that to recognize the peer by id.
+  * Blacklisted node has expiration time. By default it is one hour. Timeout is necessary because peer can be blacklisted because of network fluctuations 
+    or user mistakes. After some time connections can be restored. mwc-node using the similar rules and so far it works fine.   
+- Message validation and routing logic was changed. Original gossipsub functionality has feature to validate the income messages. The messages are stored in the cache,
+ then after validation, they will be forwarded to the network. The peer score wil be updated depend on validation results.  
+ The problem is that it is not finished, there is no hook to get the data for validation. The only workflow that is goes form the node to the caller are the messages
+ that suppose to be what caller is subscribed to. The change is: if massage validation is on, caller will get all the messages and it is expected that caller will 
+ validate all of them and process only that are interesting for the caller. Since caller knows the topics for subscription, it can be done.  
+- Nodes are responsible for limiting connections to peers. In order to balance the network, node will start closing connections to some peers randomly 
+until the total number of connection will be below double 'mesh_n_high' value. mesh_n_high default value is 12. So the node will maintain 24 or less connections.
+- Note, the node will always accept a new connection, send back the list of the peers. Limiting connections to peers happens eventually. This method
+should allow to bootstrap and maintain distributed network. 
+- gossipsub connection keep alive had a timeout 30 seconds. Even example didn't work well. I changed keep_alive value to "Yes". 
+  The node will close extra connection if the will be too many of them. 
+- Bootstraping process is on the caller. It is caller responsibility to find the node that belong to the network and join it. 
+Normally it is enough to find one node that is already in the network. It will 
+
+Note:
+- NWC network is not part of the message. It is not needed because if by mistake the connection will be made to the wrong network, 
+  the node will ba banned out because integrity commit values will be invalid. Since it happens naturally, we don't want to add anything extra.
+  
+## mwc-node
+
+- Add setting 'libp2p_port': libp2p gossipsub tor socks port for listeniong. It is licated in to the config file. Default values: 3417 for mainnett, 13417 for floonet.
+- Tor config provisioning get a new line `HiddenServicePort  81 127.0.0.1:<libp2p_port>`
+- Add new mode mwc-node/servers/src/grin/libp2p.rs.  Here located all caller to gossipsub logic:
+   * `add_new_peer( peer: &PeerAddr )`  - Method that mwc-node server calls when it discover the peers with onion address. Probably they are gossipsub nodes, so we should try them.
+   * `pub async fn run_libp2p_node( tor_socks_port: u16, onion_address: String, libp2p_port: u16 ) -> Result<(), Error>`  - libp2p main method. There all logic happens:
+      - Building network transport, initialize the swarm and start listening
+      - validate all income message. For every message response with `gossip.report_message_validation_result` call
+      - Processing Peer list from the nodes that it was connected. That list will be kept just in case we will need more peers.
+      - 
+   * logs filter include messages form 'libp2p'
+- Get `get_tor_address` for the node. mwc-wallet will use it for the bootstrap. 
+- Update seeds with onion addresses. Now DNS understand that onion  address is good to connect, the normal DNS records will be connected to IPs 
