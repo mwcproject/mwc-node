@@ -56,6 +56,10 @@ pub enum ErrorKind {
 	/// Checking for onion address
 	#[fail(display = "Address is not an Onion v3 Address: {}", _0)]
 	NotOnion(String),
+
+	/// Generic Error
+	#[fail(display = "libp2p Error, {}", _0)]
+	LibP2P(String),
 }
 
 impl Fail for Error {

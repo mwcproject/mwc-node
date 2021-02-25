@@ -29,7 +29,7 @@ macro_rules! no_dup {
 	($field:ident) => {
 		if $field.is_some() {
 			return Err(serde::de::Error::duplicate_field("$field"));
-			}
+		}
 	};
 }
 
