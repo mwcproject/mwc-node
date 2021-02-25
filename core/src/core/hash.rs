@@ -218,6 +218,19 @@ impl<D: DefaultHashable> Hashed for D {
 impl<D: DefaultHashable> DefaultHashable for &D {}
 impl<D: DefaultHashable, E: DefaultHashable> DefaultHashable for (D, E) {}
 impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable> DefaultHashable for (D, E, F) {}
+impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable, G: DefaultHashable> DefaultHashable
+	for (D, E, F, G)
+{
+}
+impl<
+		D: DefaultHashable,
+		E: DefaultHashable,
+		F: DefaultHashable,
+		G: DefaultHashable,
+		H: DefaultHashable,
+	> DefaultHashable for (D, E, F, G, H)
+{
+}
 
 /// Implement Hashed trait for external types here
 impl DefaultHashable for util::secp::pedersen::RangeProof {}

@@ -23,6 +23,7 @@
 
 pub mod aggsig;
 pub mod build;
+pub mod build_v4;
 mod error;
 pub mod proof;
 pub mod reward;

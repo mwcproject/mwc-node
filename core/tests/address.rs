@@ -76,6 +76,7 @@ fn test_bech32_error_detection() {
 
 	let addr_str_len = addr_strs[0].len();
 	const TOTAL_TESTS: usize = 1_000_000;
+	let _invalid_checksum = format!("{}", bech32::Error::InvalidChecksum);
 
 	// 4-random-mistakes always can be detected.
 	let mut valid_count = 0;
@@ -87,7 +88,7 @@ fn test_bech32_error_detection() {
 				Ok(_) => {
 					assert_eq!(*addr, wrong_addr);
 				}
-				Err(Error::Bech32(bech32::Error::InvalidChecksum)) => {
+				Err(Error::Bech32(_invalid_checksum)) => {
 					valid_count += 1;
 					if valid_count % 10_000 == 0 {
 						println!("4-random-mistakes passed {} tests", valid_count);
@@ -104,6 +105,7 @@ fn test_bech32_error_detection() {
 	}
 	println!();
 
+	let _invalid_checksum = format!("{}", bech32::Error::InvalidChecksum);
 	// 99.999% 16-random-mistakes can be detected.
 	let mut detected = 0;
 	let mut missed = 0;
@@ -118,7 +120,7 @@ fn test_bech32_error_detection() {
 						println!("detection missed: {}", wrong_addr);
 					}
 				}
-				Err(Error::Bech32(bech32::Error::InvalidChecksum)) => {
+				Err(Error::Bech32(_invalid_checksum)) => {
 					detected += 1;
 					if detected % 10_000 == 0 {
 						println!("6-random-mistakes passed {} tests", detected);
@@ -330,8 +332,7 @@ fn test_calculations_complexity() {
 	let start = Utc::now().timestamp_nanos();
 	for _ in 0..10_000 {
 		assert_eq!(
-			addr.get_view_tag_for_rx(keychain.secp(), &pri_view, &public_nonce)
-				.unwrap(),
+			Address::get_view_tag_for_rx(keychain.secp(), &pri_view, &public_nonce).unwrap(),
 			addr.get_view_tag_for_tx(keychain.secp(), &private_nonce)
 				.unwrap(),
 		);

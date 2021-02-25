@@ -13,7 +13,9 @@
 // limitations under the License.
 
 //! libtx specific errors
+use crate::address;
 use crate::core::transaction;
+use crate::ser;
 use failure::{Backtrace, Context, Fail};
 use keychain;
 use std::fmt::{self, Display};
@@ -43,6 +45,15 @@ pub enum ErrorKind {
 	/// Rangeproof error
 	#[fail(display = "LibTx Rangeproof Error, {}", _0)]
 	RangeProof(String),
+	/// PaymentId error
+	#[fail(display = "Invalid PaymentId Error")]
+	InvalidPaymentId,
+	/// Ser error
+	#[fail(display = "Ser Error, {}", _0)]
+	Ser(ser::Error),
+	/// Address error.
+	#[fail(display = "Address error, {}", _0)]
+	Address(address::Error),
 	/// Other error
 	#[fail(display = "LibTx Other Error, {}", _0)]
 	Other(String),
@@ -85,6 +96,14 @@ impl From<Context<ErrorKind>> for Error {
 	}
 }
 
+impl From<address::Error> for Error {
+	fn from(error: address::Error) -> Error {
+		Error {
+			inner: Context::new(ErrorKind::Address(error)),
+		}
+	}
+}
+
 impl From<secp::Error> for Error {
 	fn from(error: secp::Error) -> Error {
 		Error {
@@ -97,6 +116,14 @@ impl From<keychain::Error> for Error {
 	fn from(error: keychain::Error) -> Error {
 		Error {
 			inner: Context::new(ErrorKind::Keychain(error)),
+		}
+	}
+}
+
+impl From<ser::Error> for Error {
+	fn from(error: ser::Error) -> Error {
+		Error {
+			inner: Context::new(ErrorKind::Ser(error)),
 		}
 	}
 }

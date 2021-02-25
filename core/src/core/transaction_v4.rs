@@ -14,6 +14,7 @@
 
 //! Transactions V4. To support NIT(Non-Interactive Transaction) feature.
 
+use crate::address::{self, Address};
 use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction::{
@@ -34,7 +35,7 @@ use std::cmp::{max, min};
 use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 use util;
-use util::secp::key::PublicKey;
+use util::secp::key::{PublicKey, SecretKey};
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::secp::{self, Secp256k1};
 use util::static_secp_instance;
@@ -456,14 +457,12 @@ impl TxBodyImpl for TransactionBodyV4 {
 		};
 		if !outputs_with_rnp.is_empty() {
 			let mut commits = vec![];
-			let mut extra_commits_data: Vec<Vec<u8>> = vec![];
 			let mut proofs = vec![];
 			for x in &outputs_with_rnp {
 				commits.push(x.commitment());
 				proofs.push(x.proof);
-				extra_commits_data.push(x.extra_commit_data());
 			}
-			OutputWithRnp::batch_verify_proofs(&commits, extra_commits_data, &proofs)?;
+			OutputWithRnp::batch_verify_proofs(&commits, &proofs)?;
 		}
 
 		// Find all the kernels that have not yet been verified.
@@ -1184,9 +1183,7 @@ impl CommitWithSig {
 				let rnp = rnp_iter.next().ok_or(Error::IncorrectSignature)?;
 				if rnp.commitment() == input_with_sig.commit {
 					pubkeys.push(rnp.onetime_pubkey.clone());
-					msgs.push(
-						secp::Message::from_slice(rnp.extra_commit_data().as_slice()).unwrap(),
-					);
+					msgs.push(secp::Message::from_slice(rnp.input_sig_msg().as_slice()).unwrap());
 					break;
 				}
 			}
@@ -1215,6 +1212,9 @@ pub struct IdentifierWithRnp {
 	/// One-time public key P' which is calculated by H(A')*G+B
 	#[serde(with = "secp_ser::pubkey_serde")]
 	pub onetime_pubkey: PublicKey,
+	/// The "view tag" of a Stealth Address, i.e. the first byte of the shared secret.
+	/// For Stealth Address (A,B): "view tag" = `Hash(a*R) === Hash(r*A)`.
+	pub view_tag: u8,
 }
 impl DefaultHashable for IdentifierWithRnp {}
 
@@ -1250,6 +1250,7 @@ impl Writeable for IdentifierWithRnp {
 		self.identifier.write(writer)?;
 		self.nonce.write(writer)?;
 		self.onetime_pubkey.write(writer)?;
+		self.view_tag.write(writer)?;
 		Ok(())
 	}
 }
@@ -1261,6 +1262,7 @@ impl Readable for IdentifierWithRnp {
 			identifier: OutputIdentifier::read(reader)?,
 			nonce: PublicKey::read(reader)?,
 			onetime_pubkey: PublicKey::read(reader)?,
+			view_tag: reader.read_u8()?,
 		})
 	}
 }
@@ -1274,7 +1276,7 @@ impl PMMRable for IdentifierWithRnp {
 
 	fn elmt_size() -> Option<u16> {
 		Some(
-			(1 + secp::constants::PEDERSEN_COMMITMENT_SIZE
+			(2 + secp::constants::PEDERSEN_COMMITMENT_SIZE
 				+ 2 * secp::constants::COMPRESSED_PUBLIC_KEY_SIZE)
 				.try_into()
 				.unwrap(),
@@ -1289,11 +1291,13 @@ impl IdentifierWithRnp {
 		commit: Commitment,
 		nonce: PublicKey,
 		onetime_pubkey: PublicKey,
+		view_tag: u8,
 	) -> IdentifierWithRnp {
 		IdentifierWithRnp {
 			identifier: OutputIdentifier { features, commit },
 			nonce,
 			onetime_pubkey,
+			view_tag,
 		}
 	}
 
@@ -1307,16 +1311,32 @@ impl IdentifierWithRnp {
 		self.identifier.commitment()
 	}
 
-	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures).
-	/// This data is also used for input signing message.
-	pub fn extra_commit_data(&self) -> Vec<u8> {
-		let extra_commit_data = (
+	/// Get signing message for Input P'-signature.
+	/// Msg = Hash(OutputFeatures || commit || view_tag || R || H(index | Rangeproof)).
+	/// Note:
+	///   - Message include the hash of rangeproof which has a proof message with a timestamp, to kill the replay attack.
+	///   - Instead of using rangeproof hash, we use the rangeproof MMR leaf node hash which always prepends the node's position in the MMR,
+	///     this helps to avoid the real hash computation and enables a directly reading the MMR leaf node hash.
+	pub fn input_sig_msg(&self) -> Vec<u8> {
+		(
+			self.identifier,
+			self.view_tag,
 			self.nonce.serialize_vec(true).as_ref().to_vec(),
-			self.onetime_pubkey.serialize_vec(true).as_ref().to_vec(),
-			self.identifier.features as u8,
 		)
-			.hash();
-		extra_commit_data.to_vec()
+			.hash()
+			.to_vec()
+	}
+
+	/// Get signing message for Output R signature.
+	/// Msg = Hash(OutputFeatures || commit || view_tag || P').
+	pub fn output_rr_sig_msg(&self) -> Vec<u8> {
+		(
+			self.identifier,
+			self.view_tag,
+			self.onetime_pubkey.serialize_vec(true).as_ref().to_vec(),
+		)
+			.hash()
+			.to_vec()
 	}
 
 	/// Output features.
@@ -1340,6 +1360,71 @@ impl IdentifierWithRnp {
 			identifier_with_rnp: self,
 			proof,
 		}
+	}
+
+	/// Check the "view tag" of the Stealth Address on rx side, i.e. the first byte of the shared secret.
+	/// It helps to reduce the time to scan the output ownership by at least 65%.
+	/// For Stealth Address (A,B):
+	///   "view tag" = `Hash(a*R) === Hash(r*A)`.
+	/// This function is used for the wallet scanning on the UTXO sets to collect incoming payments, as the 1st step.
+	pub fn check_view_tag_for_rx(
+		&self,
+		secp: &Secp256k1,
+		private_view_key: &SecretKey,
+	) -> Result<bool, Error> {
+		let view_tag = Address::get_view_tag_for_rx(secp, private_view_key, &self.nonce)?;
+		if view_tag == self.view_tag {
+			Ok(true)
+		} else {
+			Ok(false)
+		}
+	}
+
+	/// Get the Ephemeral key on rx side, with the spec of https://eprint.iacr.org/2020/1064.pdf
+	/// Return the shared ephemeral key `q` if the calculated one-time-public-key `P'` is same as the one in this Output.
+	/// This function is also used for the wallet scanning on the UTXO sets to collect incoming payments, as the 2nd step
+	/// after the "view tag" checking.
+	pub fn get_ephemeral_key_for_rx(
+		&self,
+		secp: &Secp256k1,
+		private_view_key: &SecretKey,
+		recipient: &Address,
+	) -> Result<SecretKey, Error> {
+		let (q, pp_apos) =
+			recipient.get_ephemeral_key_for_rx(secp, private_view_key, &self.nonce)?;
+		if pp_apos == self.onetime_pubkey {
+			Ok(q)
+		} else {
+			Err(Error::Address(address::Error::IncorrectKey))
+		}
+	}
+
+	/// Calculate the "view tag" of the Stealth Address on tx creation, i.e. the first byte of the shared secret
+	/// For Stealth Address (A,B):
+	///   "view tag" = `Hash(a*R) === Hash(r*A)`.
+	pub fn get_view_tag_for_tx(
+		&self,
+		secp: &Secp256k1,
+		private_nonce: &SecretKey,
+		recipient: &Address,
+	) -> Result<u8, Error> {
+		if self.nonce == PublicKey::from_secret_key(secp, private_nonce)? {
+			Ok(recipient.get_view_tag_for_tx(secp, private_nonce)?)
+		} else {
+			Err(Error::Address(address::Error::IncorrectKey))
+		}
+	}
+
+	/// Get the Ephemeral key on tx creation, with the spec of https://eprint.iacr.org/2020/1064.pdf
+	/// Calculate one-time-public-key `P'` and the shared ephemeral key `q` when creating an Output for a new transaction.
+	pub fn get_ephemeral_key_for_tx(
+		&self,
+		secp: &Secp256k1,
+		private_nonce: &SecretKey,
+		recipient: &Address,
+	) -> Result<(SecretKey, PublicKey), Error> {
+		let (q, pp_apos) = recipient.get_ephemeral_key_for_tx(secp, private_nonce)?;
+		Ok((q, pp_apos))
 	}
 }
 
@@ -1429,11 +1514,6 @@ impl OutputWithRnp {
 		self.identifier_with_rnp
 	}
 
-	/// Extra commit data for bullet proof. ExtraCommit = Hash(R || P' || OutputFeatures)
-	pub fn extra_commit_data(&self) -> Vec<u8> {
-		self.identifier_with_rnp.extra_commit_data()
-	}
-
 	/// Output features.
 	pub fn features(&self) -> OutputFeatures {
 		self.identifier_with_rnp.features()
@@ -1461,25 +1541,17 @@ impl OutputWithRnp {
 
 	/// Validates the range proof using the commitment and extra_commit_data
 	pub fn verify_proof(&self) -> Result<(), Error> {
-		let extra_commit_data = self.extra_commit_data();
 		let secp = static_secp_instance();
 		secp.lock()
-			.verify_bullet_proof(self.commitment(), self.proof, Some(extra_commit_data))?;
+			.verify_bullet_proof(self.commitment(), self.proof, None)?;
 		Ok(())
 	}
 
 	/// Batch validates the range proofs using the commitments
-	pub fn batch_verify_proofs(
-		commits: &[Commitment],
-		extra_commits_data: Vec<Vec<u8>>,
-		proofs: &[RangeProof],
-	) -> Result<(), Error> {
+	pub fn batch_verify_proofs(commits: &[Commitment], proofs: &[RangeProof]) -> Result<(), Error> {
 		let secp = static_secp_instance();
-		secp.lock().verify_bullet_proof_multi(
-			commits.to_vec(),
-			proofs.to_vec(),
-			Some(extra_commits_data),
-		)?;
+		secp.lock()
+			.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
 		Ok(())
 	}
 }

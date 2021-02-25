@@ -453,12 +453,23 @@ pub trait Keychain: Sync + Send + Clone {
 		id: &Identifier,
 		switch: SwitchCommitmentType,
 	) -> Result<SecretKey, Error>;
+
+	/// Commitment with the key ID and value
 	fn commit(
 		&self,
 		amount: u64,
 		id: &Identifier,
 		switch: SwitchCommitmentType,
 	) -> Result<Commitment, Error>;
+
+	/// Commitment with the secret key and value, also return the blinding factor used.
+	fn commit_with_key(
+		&self,
+		amount: u64,
+		key: SecretKey,
+		switch: SwitchCommitmentType,
+	) -> Result<Commitment, Error>;
+
 	fn blind_sum(&self, blind_sum: &BlindSum) -> Result<BlindingFactor, Error>;
 	fn sign(
 		&self,
@@ -471,7 +482,7 @@ pub trait Keychain: Sync + Send + Clone {
 	fn secp(&self) -> &Secp256k1;
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum SwitchCommitmentType {
 	None,
 	Regular,

@@ -27,14 +27,14 @@ use util::secp::key::{PublicKey, SecretKey};
 use util::secp::{self, Secp256k1};
 
 /// Address error.
-#[derive(Clone, PartialEq, Debug, Fail)]
+#[derive(Fail, Clone, Eq, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Error {
 	/// HRP(Human Readable Part) error
 	#[fail(display = "HRP Error")]
 	HRP,
 	/// Bech32 encoding error
 	#[fail(display = "Bech32: {}", 0)]
-	Bech32(bech32::Error),
+	Bech32(String),
 	/// Secp Error
 	#[fail(display = "Secp error")]
 	Secp(secp::Error),
@@ -60,7 +60,7 @@ pub enum Error {
 
 impl From<bech32::Error> for Error {
 	fn from(inner: bech32::Error) -> Error {
-		Error::Bech32(inner)
+		Error::Bech32(inner.to_string())
 	}
 }
 
@@ -262,7 +262,6 @@ impl Address {
 	/// Calculation Complexity: 1 point-multiply + 1 hash.
 	///   comparing the "3 point-multiply + 2 point-add + 3 hash", this is about 1/3 complexity.
 	pub fn get_view_tag_for_rx(
-		&self,
 		secp: &Secp256k1,
 		private_view_key: &SecretKey,
 		public_nonce: &PublicKey,

@@ -14,6 +14,7 @@
 
 //! Transactions V3. Native Mimblewimble Interactive Transaction.
 
+use crate::address;
 use crate::core::committed::{self, Committed};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::transaction_v4::CommitWithSig;
@@ -416,9 +417,18 @@ pub enum Error {
 	/// Underlying serialization error.
 	#[fail(display = "Tx Serialization error, {}", _0)]
 	Serialization(ser::Error),
+	/// Address error.
+	#[fail(display = "Address error, {}", _0)]
+	Address(address::Error),
 	/// Generic error.
 	#[fail(display = "Generic error, {}", _0)]
 	Generic(String),
+}
+
+impl From<address::Error> for Error {
+	fn from(e: address::Error) -> Error {
+		Error::Address(e)
+	}
 }
 
 impl From<ser::Error> for Error {
