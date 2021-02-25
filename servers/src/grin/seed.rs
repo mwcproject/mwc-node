@@ -39,9 +39,16 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"mainnet.seed2.mwc.mw",      // cpg
 	"greg1.mainnet.seed.mwc.mw", // Greg
 	"greg2.mainnet.seed.mwc.mw", // Greg
-	"mwcseed.ddns.net",          // Konstantin
+	"mwcseed.ddns.net",          // cpg
+	"bsvrlu2vab3frt24bqwkfo5kqm35v2pmlv3dvqg5bgc72a3cwyizuyqd.onion",
+	"r6dkxkiyg5grfhyftj3cusxvxm34e63lg5ed2zy4zbrwh4pwrcmvmpid.onion",
 ];
-const FLOONET_DNS_SEEDS: &'static [&'static str] = &["seed1.mwc.mw", "seed2.mwc.mw"];
+const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
+	"seed1.mwc.mw",
+	"seed2.mwc.mw",
+	"nvo4xrfnn46vhaocnswea564bnmbgfjib7fqpa2my3e3ren4iujnzeyd.onion",
+	"627qgblkpc4ayr5fe6tfg6ryhev7kmjhge2ualab7ajxk5gbs3v7bmqd.onion",
+];
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -71,6 +78,8 @@ pub fn connect_and_monitor(
 				seed_list.clone(),
 				&preferred_peers,
 			);
+
+			super::libp2p::set_seed_list(&seed_list);
 
 			let mut prev = MIN_DATE.and_hms(0, 0, 0);
 			let mut prev_expire_check = MIN_DATE.and_hms(0, 0, 0);
@@ -396,6 +405,14 @@ fn listen_for_addrs(
 						Ok(p) => {
 							debug!("Sending peer request to {}", addr);
 							if p.send_peer_request(capab).is_ok() {
+								match addr {
+									PeerAddr::Onion(_) => {
+										if let Err(_) = super::libp2p::add_new_peer(&addr) {
+											error!("Unable to add libp2p peer {}", addr);
+										}
+									}
+									_ => (),
+								};
 								let _ = peers_c.update_state(addr, p2p::State::Healthy);
 							}
 						}
@@ -435,12 +452,16 @@ pub fn default_dns_seeds() -> Box<dyn Fn() -> Vec<PeerAddr> + Send> {
 			&net_seeds
 				.iter()
 				.map(|s| {
-					s.to_string()
-						+ if global::is_floonet() {
-							":13414"
-						} else {
-							":3414"
-						}
+					if s.ends_with(".onion") {
+						s.to_string()
+					} else {
+						s.to_string()
+							+ if global::is_floonet() {
+								":13414"
+							} else {
+								":3414"
+							}
+					}
 				})
 				.collect(),
 		)
@@ -450,16 +471,20 @@ pub fn default_dns_seeds() -> Box<dyn Fn() -> Vec<PeerAddr> + Send> {
 fn resolve_dns_to_addrs(dns_records: &Vec<String>) -> Vec<PeerAddr> {
 	let mut addresses: Vec<PeerAddr> = vec![];
 	for dns in dns_records {
-		debug!("Retrieving addresses from dns {}", dns);
-		match dns.to_socket_addrs() {
-			Ok(addrs) => addresses.append(
-				&mut addrs
-					.map(PeerAddr::Ip)
-					.filter(|addr| !addresses.contains(addr))
-					.collect(),
-			),
-			Err(e) => debug!("Failed to resolve dns {:?} got error {:?}", dns, e),
-		};
+		if dns.ends_with(".onion") {
+			addresses.push(PeerAddr::from_str(&dns))
+		} else {
+			debug!("Retrieving addresses from dns {}", dns);
+			match dns.to_socket_addrs() {
+				Ok(addrs) => addresses.append(
+					&mut addrs
+						.map(PeerAddr::Ip)
+						.filter(|addr| !addresses.contains(addr))
+						.collect(),
+				),
+				Err(e) => debug!("Failed to resolve dns {:?} got error {:?}", dns, e),
+			};
+		}
 	}
 	debug!("Resolved addresses: {:?}", addresses);
 	addresses

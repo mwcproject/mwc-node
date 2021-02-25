@@ -352,6 +352,36 @@ pub trait OwnerRpc: Sync + Send {
 	```
 	 */
 	fn unban_peer(&self, peer_addr: SocketAddr) -> Result<(), ErrorKind>;
+
+	/**
+	Networked version of [Owner::get_tor_address](struct.Owner.html#method.get_tor_address).
+
+	# Json rpc example
+
+	```
+	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"method": "get_tor_address",
+		"params": [],
+		"id": 1
+	}
+	# "#
+	# ,
+	# r#"
+	{
+		"id": 1,
+		"jsonrpc": "2.0",
+		"result": {
+			"Ok": null
+		}
+	}
+	# "#
+	# );
+	```
+	 */
+	fn get_tor_address(&self) -> Result<Option<String>, ErrorKind>;
 }
 
 impl OwnerRpc for Owner {
@@ -382,6 +412,10 @@ impl OwnerRpc for Owner {
 	fn unban_peer(&self, addr: SocketAddr) -> Result<(), ErrorKind> {
 		Owner::unban_peer(self, addr).map_err(|e| e.kind().clone())
 	}
+
+	fn get_tor_address(&self) -> Result<Option<String>, ErrorKind> {
+		Ok(Owner::get_tor_address(self))
+	}
 }
 
 #[doc(hidden)]
@@ -391,7 +425,7 @@ macro_rules! doctest_helper_json_rpc_owner_assert_response {
 		// create temporary grin server, run jsonrpc request on node api, delete server, return
 		// json response.
 
-			{
+		{
 			/*use grin_servers::test_framework::framework::run_doctest;
 			use grin_util as util;
 			use serde_json;
@@ -425,6 +459,6 @@ macro_rules! doctest_helper_json_rpc_owner_assert_response {
 					serde_json::to_string_pretty(&expected_response).unwrap()
 				);
 				}*/
-			}
+		}
 	};
 }
