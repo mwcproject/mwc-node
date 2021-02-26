@@ -154,6 +154,22 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"libp2p_enabled".to_string(),
+		"
+#Start gossipsub libp2p node. Node will be started only if Tor is enabled. Default value: true
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"libp2p_port".to_string(),
+		"
+#libp2p node local port. libp2p node is run only with TOR. Note, this setting doesn't affect libp2p address at the network.
+"
+			.to_string(),
+	);
+
+	retval.insert(
 		"run_tui".to_string(),
 		"
 #whether to run the ncurses TUI. Ncurses must be installed and this

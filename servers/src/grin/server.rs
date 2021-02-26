@@ -65,7 +65,8 @@ use crate::tor::process as tor_process;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use grin_util::logger::LogEntry;
-use std::collections::HashSet;
+use grin_util::secp::pedersen::{Commitment, RangeProof};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
@@ -277,6 +278,8 @@ impl Server {
 		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
 		let mut onion_address = None;
 
+		api::reset_server_onion_address();
+
 		if config.tor_config.tor_enabled {
 			if !config.p2p_config.host.is_loopback() {
 				error!("If Tor is enabled, host must be '127.0.0.1'.");
@@ -288,8 +291,7 @@ impl Server {
 
 			if !config.tor_config.tor_external {
 				let stop_state_clone = stop_state.clone();
-				let _cloned_config = config.clone();
-				let _cloned_chain = shared_chain.clone();
+				let cloned_config = config.clone();
 
 				let (input, output): (Sender<Option<String>>, Receiver<Option<String>>) =
 					mpsc::channel();
@@ -302,11 +304,12 @@ impl Server {
 						let res = Server::init_tor_listener(
 							&format!(
 								"{}:{}",
-								_cloned_config.p2p_config.host, _cloned_config.p2p_config.port
+								cloned_config.p2p_config.host, cloned_config.p2p_config.port
 							),
-							&_cloned_config.api_http_addr,
-							Some(&_cloned_config.db_root),
-							_cloned_config.tor_config.socks_port,
+							&cloned_config.api_http_addr,
+							cloned_config.libp2p_port,
+							Some(&cloned_config.db_root),
+							cloned_config.tor_config.socks_port,
 						);
 
 						let _ = match res {
@@ -371,6 +374,64 @@ impl Server {
 			"socks = {}, tor_enabled = {}",
 			socks_port, config.tor_config.tor_enabled
 		);
+
+		// Initialize libp2p server
+		if config.libp2p_enabled.unwrap_or(true) {
+			if let Some(onion_address) = onion_address.clone() {
+				let libp2p_port = config.libp2p_port;
+				let tor_socks_port = config.tor_config.socks_port;
+				api::set_server_onion_address(&onion_address);
+
+				let clone_shared_chain = shared_chain.clone();
+
+				let onion_address = onion_address.clone();
+				thread::Builder::new()
+					.name("libp2p_node".to_string())
+					.spawn(move || {
+						let output_validation_fn =
+							move |commit: &Commitment| -> Option<RangeProof> {
+								match clone_shared_chain.get_output_pos(commit) {
+									Ok(pos) => {
+										let tip_height = match clone_shared_chain.head() {
+											Ok(tip) => tip.height,
+											Err(_) => return None,
+										};
+
+										// Accept only outputs from the last 24 hours. Plus add extra hour just for syncing. We better let
+										// user trade some extra time then have service interruption
+										if pos < tip_height - 1440 - 60 {
+											return None;
+										}
+
+										match clone_shared_chain.get_unspent_output_at(pos) {
+											Ok(out) => Some(out.proof),
+											Err(_) => None,
+										}
+									}
+									Err(_) => None,
+								}
+							};
+
+						let libp2p_node_runner = super::libp2p::run_libp2p_node(
+							tor_socks_port,
+							onion_address,
+							libp2p_port,
+							output_validation_fn,
+							HashMap::new(),
+						);
+
+						info!("Starting gossipsub libp2p server");
+						let mut rt = tokio::runtime::Runtime::new().unwrap();
+
+						match rt.block_on(libp2p_node_runner) {
+							Ok(_) => info!("libp2p node is exited"),
+							Err(e) => error!("Unable to start libp2p node, {}", e),
+						}
+						// Swarm is not valid any more, let's update our global instance.
+						super::libp2p::reset_libp2p_swarm();
+					})?;
+			};
+		}
 
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
@@ -522,6 +583,7 @@ impl Server {
 	pub fn init_tor_listener(
 		addr: &str,
 		api_addr: &str,
+		libp2p_port: u16,
 		tor_base: Option<&str>,
 		socks_port: u16,
 	) -> Result<(tor_process::TorProcess, String), Error> {
@@ -568,6 +630,7 @@ impl Server {
 			&tor_dir,
 			addr,
 			api_addr,
+			libp2p_port,
 			sec_key_vec,
 			existing_onion,
 			socks_port,

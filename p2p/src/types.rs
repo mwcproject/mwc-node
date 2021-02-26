@@ -325,6 +325,24 @@ impl PeerAddr {
 			Onion(onion) => format!("{}", onion),
 		}
 	}
+
+	pub fn tor_pubkey(&self) -> Result<String, Error> {
+		match self {
+			Ip(_ip) => {
+				return Err(Error::Internal(
+					"requested TOR pub key from IP address".to_string(),
+				))
+			}
+			Onion(onion) => {
+				if onion.ends_with(".onion") {
+					let onion = &onion[..(onion.len() - ".onion".len())];
+					return Ok(onion.to_string());
+				} else {
+					return Ok(onion.clone());
+				}
+			}
+		}
+	}
 }
 
 /// Configuration for the peer-to-peer server.

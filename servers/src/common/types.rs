@@ -237,6 +237,12 @@ pub struct ServerConfig {
 	/// Test miner wallet URL
 	pub test_miner_wallet_url: Option<String>,
 
+	/// Enable libp2p server. It can run only with TOR. Needed for wallets to send messages to each other.
+	pub libp2p_enabled: Option<bool>,
+
+	/// libp2p connection port (will be activated with Tor)
+	pub libp2p_port: u16,
+
 	/// Configuration for the peer-to-peer server
 	pub p2p_config: p2p::P2PConfig,
 
@@ -285,6 +291,8 @@ impl Default for ServerConfig {
 			run_tui: Some(true),
 			run_test_miner: Some(false),
 			test_miner_wallet_url: None,
+			libp2p_enabled: Some(true),
+			libp2p_port: 3417,
 			webhook_config: WebHooksConfig::default(),
 			tor_config: TorConfig::default(),
 		}

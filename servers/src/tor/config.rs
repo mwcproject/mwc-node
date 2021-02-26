@@ -206,6 +206,7 @@ pub fn output_torrc(
 	tor_config_directory: &str,
 	wallet_listener_addr: &str,
 	api_listener_addr: &str,
+	libp2p_port: u16,
 	socks_port: &str,
 	service_dirs: &[String],
 ) -> Result<(), Error> {
@@ -223,6 +224,10 @@ pub fn output_torrc(
 		props.add_item("HiddenServiceVersion", &format!("3"));
 		props.add_item("HiddenServicePort", &format!("80 {}", wallet_listener_addr));
 		props.add_item("HiddenServicePort", &format!("8080 {}", api_listener_addr));
+		props.add_item(
+			"HiddenServicePort",
+			&format!("81 127.0.0.1:{}", libp2p_port),
+		);
 	}
 
 	props.write_to_file(&torrc_file_path)?;
@@ -235,6 +240,7 @@ pub fn output_tor_listener_config(
 	tor_config_directory: &str,
 	wallet_listener_addr: &str,
 	api_listener_addr: &str,
+	libp2p_port: u16,
 	listener_keys: Option<&[SecretKey]>,
 	onion_address: Option<String>,
 	socks_port: u16,
@@ -262,23 +268,10 @@ pub fn output_tor_listener_config(
 		tor_config_directory,
 		wallet_listener_addr,
 		api_listener_addr,
+		libp2p_port,
 		&format!("{}", socks_port),
 		&service_dirs,
 	)?;
-
-	Ok(())
-}
-
-/// output tor config for a send
-pub fn _output_tor_sender_config(
-	tor_config_dir: &str,
-	socks_listener_addr: &str,
-) -> Result<(), Error> {
-	// create data directory if it doesn't exist
-	fs::create_dir_all(&tor_config_dir)
-		.map_err(|e| ErrorKind::IO(format!("Unable to create dir {}, {}", tor_config_dir, e)))?;
-
-	output_torrc(tor_config_dir, "", "", socks_listener_addr, &[])?;
 
 	Ok(())
 }
@@ -345,6 +338,7 @@ mod tests {
 			test_dir,
 			"127.0.0.1:3415",
 			"127.0.0.1:3416",
+			1234,
 			Some(&[sec_key]),
 			None,
 			0,
