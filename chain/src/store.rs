@@ -45,6 +45,8 @@ pub const NRD_KERNEL_ENTRY_PREFIX: u8 = b'k';
 const BLOCK_INPUT_BITMAP_PREFIX: u8 = b'B';
 const BLOCK_SUMS_PREFIX: u8 = b'M';
 const BLOCK_SPENT_PREFIX: u8 = b'S';
+const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C';
+const BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX: u8 = b'R';
 
 /// All chain-related database operations
 pub struct ChainStore {
@@ -225,6 +227,42 @@ impl<'a> Batch<'a> {
 		Ok(())
 	}
 
+	/// We maintain a "spent" commitments for each full block to allow validation of input against spent output
+	/// for blocks within the horizon. These data will be deleted when chain is compact.
+	pub fn save_spent_commitments(&self, h: &Hash, spent: &[Commitment]) -> Result<(), Error> {
+		self.db.put_ser(
+			&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, h)[..],
+			&spent.to_vec(),
+		)?;
+		Ok(())
+	}
+
+	/// An iterator to all "spent" commit in db
+	pub fn spent_commitment_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
+		let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
+		self.db.iter(&key)
+	}
+
+	/// We maintain kernel public excess  commitments for each full block to allow detection of kernel duplication.
+	/// for blocks within the horizon. These data will be deleted when chain is compact.
+	pub fn save_kernel_excess_commitments(
+		&self,
+		h: &Hash,
+		kernel: &[Commitment],
+	) -> Result<(), Error> {
+		self.db.put_ser(
+			&to_key(BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX, h)[..],
+			&kernel.to_vec(),
+		)?;
+		Ok(())
+	}
+
+	/// An iterator to all kernel public excess commitment in db
+	pub fn kernel_excess_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
+		let key = to_key(BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX, "");
+		self.db.iter(&key)
+	}
+
 	/// Migrate a block stored in the db by serializing it using the provided protocol version.
 	/// Block may have been read using a previous protocol version but we do not actually care.
 	pub fn migrate_block(&self, b: &Block, version: ProtocolVersion) -> Result<(), Error> {
@@ -248,6 +286,8 @@ impl<'a> Batch<'a> {
 		{
 			let _ = self.delete_block_sums(bh);
 			let _ = self.delete_spent_index(bh);
+			let _ = self.delete_spent_commitment_index(bh);
+			let _ = self.delete_kernel_excess_commitment_index(bh);
 		}
 
 		Ok(())
@@ -323,6 +363,17 @@ impl<'a> Batch<'a> {
 		let _ = self.db.delete(&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh));
 
 		self.db.delete(&to_key(BLOCK_SPENT_PREFIX, bh))
+	}
+
+	/// Delete the block spent commitments.
+	fn delete_spent_commitment_index(&self, bh: &Hash) -> Result<(), Error> {
+		self.db.delete(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, bh))
+	}
+
+	/// Delete the kernelexcess commitment
+	fn delete_kernel_excess_commitment_index(&self, bh: &Hash) -> Result<(), Error> {
+		self.db
+			.delete(&to_key(BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX, bh))
 	}
 
 	/// Save block_sums for the block.

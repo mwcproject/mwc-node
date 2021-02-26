@@ -235,6 +235,9 @@ pub enum PoolError {
 	/// Attempt to add a duplicate output to the pool.
 	#[fail(display = "Tx Pool Duplicate commitment")]
 	DuplicateCommitment,
+	/// Attempt to add a duplicate kernel or output duplicate to spent to the pool.
+	#[fail(display = "Tx Pool Duplicate kernel or duplicate output to spent")]
+	DuplicateKernelOrDuplicateSpent,
 	/// Attempt to add a duplicate tx to the pool.
 	#[fail(display = "Tx Pool Duplicate tx")]
 	DuplicateTx,
@@ -301,6 +304,7 @@ pub trait BlockChain: Sync + Send {
 
 	fn get_block_header(&self, hash: &Hash) -> Result<BlockHeader, PoolError>;
 	fn get_block_sums(&self, hash: &Hash) -> Result<BlockSums, PoolError>;
+	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), PoolError>;
 }
 
 /// Bridge between the transaction pool and the rest of the system. Handles

@@ -198,6 +198,8 @@ where
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
 
+		self.blockchain.replay_attack_check(tx)?;
+
 		// If stem we want to account for the txpool.
 		let extra_tx = if stem {
 			self.txpool.all_transactions_aggregate(None)?

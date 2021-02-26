@@ -18,7 +18,9 @@ use crate::core::consensus;
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Committed;
-use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIdentifier, TransactionBody};
+use crate::core::core::{
+	block, Block, BlockHeader, BlockSums, HeaderVersion, OutputIdentifier, TransactionBody,
+};
 use crate::core::global;
 use crate::core::pow;
 use crate::error::{Error, ErrorKind};
@@ -75,6 +77,61 @@ fn check_known(header: &BlockHeader, head: &Tip, ctx: &BlockContext<'_>) -> Resu
 	Ok(())
 }
 
+///check the outputs of this block against the spent output in the lmdb within the horizon.
+///beyond that, the blocks are compacted.
+pub fn check_against_spent_output(
+	tx: &TransactionBody,
+	batch: &mut store::Batch<'_>,
+) -> Result<(), Error> {
+	let mut spent_commits = HashSet::new();
+
+	for (_key, commit_list) in batch.spent_commitment_iter()? {
+		for commitment in commit_list {
+			//check if there is any duplication of the outputs in this bloc.
+			spent_commits.insert(commitment);
+		}
+	}
+
+	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
+	for commit in output_commits {
+		if spent_commits.contains(&commit) {
+			error!("output contains spent commtiment:{:?}", commit);
+			return Err(
+				ErrorKind::Other("output invalid, could be a replay attack".to_string()).into(),
+			);
+		}
+	}
+
+	Ok(())
+}
+///check the public excess of the kernels against the db to detect replay attack.
+pub fn check_against_duplicate_kernel(
+	tx: &TransactionBody,
+	batch: &mut store::Batch<'_>,
+) -> Result<(), Error> {
+	let mut kernel_excess = HashSet::new();
+
+	for (_key, commit_list) in batch.kernel_excess_iter()? {
+		for commitment in commit_list {
+			//check if there is any duplication of the outputs in this bloc.
+			kernel_excess.insert(commitment);
+		}
+	}
+
+	let kernel_excess_list = tx.kernels.iter().map(|kernel| kernel.excess);
+	for kernel in kernel_excess_list {
+		if kernel_excess.contains(&kernel) {
+			error!("duplication of kernel:{:?}", kernel);
+			return Err(ErrorKind::Other(
+				"kernel invalid due to duplication, could be a replay attack".to_string(),
+			)
+			.into());
+		}
+	}
+
+	Ok(())
+}
+
 // Validate only the proof of work in a block header.
 // Used to cheaply validate pow before checking if orphan or continuing block validation.
 fn validate_pow_only(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
@@ -124,6 +181,8 @@ pub fn process_block(
 
 	// Check if we have already processed this block previously.
 	check_known(&b.header, &head, ctx)?;
+
+	replay_attack_check(b, &mut ctx.batch)?;
 
 	// Quick pow validation. No point proceeding if this is invalid.
 	// We want to do this before we add the block to the orphan pool so we
@@ -200,6 +259,15 @@ pub fn process_block(
 	} else {
 		Ok((None, fork_point))
 	}
+}
+
+///
+pub fn replay_attack_check(b: &Block, batch: &mut store::Batch<'_>) -> Result<(), Error> {
+	if b.header.version >= HeaderVersion(3) {
+		check_against_spent_output(&b.body, batch)?;
+		check_against_duplicate_kernel(&b.body, batch)?; //by public excess
+	}
+	Ok(())
 }
 
 /// Sync a chunk of block headers.

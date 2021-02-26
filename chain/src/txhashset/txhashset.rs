@@ -1119,18 +1119,29 @@ impl<'a> Extension<'a> {
 		// Apply inputs to remove spent outputs from the output and rangeproof MMRs.
 		// Add spent_pos to affected_pos to update the accumulator later on.
 		// Remove the spent outputs from the output_pos index.
+		//save the spent commitment in the db for replay attack detection.
 		let spent = self
 			.utxo_view(header_ext)
 			.validate_inputs(&b.inputs(), batch)?;
+		let mut spent_commitments = Vec::new();
 		for (out, pos) in &spent {
 			self.apply_input(out.commitment(), *pos)?;
 			affected_pos.push(pos.pos);
 			batch.delete_output_pos_height(&out.commitment())?;
+			//Update the spent commitments with the spent commitments.
+			spent_commitments.push(out.commitment().clone());
+		}
+		//get the kernel excess commitment from this block.
+		let mut kernel_excess_list = Vec::new();
+		for kernel in &b.body.kernels {
+			kernel_excess_list.push(kernel.excess().clone());
 		}
 
 		// Update the spent index with spent pos.
-		let spent: Vec<_> = spent.into_iter().map(|(_, pos)| pos).collect();
-		batch.save_spent_index(&b.hash(), &spent)?;
+		let spent_pos: Vec<_> = spent.into_iter().map(|(_, pos)| pos).collect();
+		batch.save_spent_index(&b.hash(), &spent_pos)?;
+		batch.save_spent_commitments(&b.hash(), spent_commitments.as_slice())?;
+		batch.save_kernel_excess_commitments(&b.hash(), kernel_excess_list.as_slice())?;
 
 		// Apply the kernels to the kernel MMR.
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.

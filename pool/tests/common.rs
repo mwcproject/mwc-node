@@ -162,6 +162,11 @@ impl BlockChain for ChainAdapter {
 			.verify_tx_lock_height(tx)
 			.map_err(|_| PoolError::ImmatureTransaction)
 	}
+	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), PoolError> {
+		self.chain
+			.replay_attack_check(tx)
+			.map_err(|_| PoolError::DuplicateKernelOrDuplicateSpent)
+	}
 }
 
 pub fn init_transaction_pool<B, V>(

@@ -589,7 +589,8 @@ fn spend_rewind_spend() {
 		// Now mine another block, reusing the private key for the coinbase we just spent.
 		{
 			let b = prepare_block_key_idx(&kc, &head, &chain, 7, 1);
-			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+			//due to recent change of checking output against spent output, this process will fail.
+			assert!(chain.process_block(b, chain::Options::SKIP_POW).is_err());
 		}
 
 		// Now mine a competing block also spending the same coinbase output from earlier.
@@ -628,15 +629,17 @@ fn spend_in_fork_and_compact() {
 			.process_block(b.clone(), chain::Options::SKIP_POW)
 			.unwrap();
 
-		// now mine three further blocks
-		for n in 3..6 {
+		//only mine 2 blocks because from height 6 it will be header version 3 and it
+		//will trigger replay attack check.
+		for n in 3..5 {
+			//only mine 2 blocks because from height 6 it will be header version 3 and it
 			let b = prepare_block(&kc, &fork_head, &chain, n);
 			fork_head = b.header.clone();
 			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
 		}
 
 		// Check the height of the "fork block".
-		assert_eq!(fork_head.height, 4);
+		assert_eq!(fork_head.height, 3);
 		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
 		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0).to_identifier();
 		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0).to_identifier();
@@ -676,6 +679,18 @@ fn spend_in_fork_and_compact() {
 
 		// Full chain validation for completeness.
 		chain.validate(false).unwrap();
+		// check state
+		let head = chain.head_header().unwrap();
+		assert_eq!(head.height, 5);
+		assert_eq!(head.hash(), prev_main.hash());
+		assert!(chain
+			.get_unspent(tx2.outputs()[0].commitment())
+			.unwrap()
+			.is_some());
+		assert!(chain
+			.get_unspent(tx1.outputs()[0].commitment())
+			.unwrap()
+			.is_none());
 
 		// mine 2 forked blocks from the first
 		let fork = prepare_block_tx(&kc, &fork_head, &chain, 6, &[tx1.clone()]);
@@ -692,7 +707,7 @@ fn spend_in_fork_and_compact() {
 
 		// check state
 		let head = chain.head_header().unwrap();
-		assert_eq!(head.height, 6);
+		assert_eq!(head.height, 5);
 		assert_eq!(head.hash(), prev_main.hash());
 		assert!(chain
 			.get_unspent(tx2.outputs()[0].commitment())
@@ -713,7 +728,7 @@ fn spend_in_fork_and_compact() {
 
 		// check state
 		let head = chain.head_header().unwrap();
-		assert_eq!(head.height, 7);
+		assert_eq!(head.height, 6);
 		assert_eq!(head.hash(), prev_fork.hash());
 		assert!(chain
 			.get_unspent(tx2.outputs()[0].commitment())
