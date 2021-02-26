@@ -611,8 +611,6 @@ pub fn build_integrity_message(
 	ser.push_vec(&integrity_pub_key.serialize_vec(true));
 	ser.push_vec(&signature.serialize_compact());
 
-	println!("Verification header size: {}", ser.data_len());
-
 	ser.push_vec(message_data);
 	Ok(ser.to_vec())
 }
