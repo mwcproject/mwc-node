@@ -471,6 +471,9 @@ pub trait Keychain: Sync + Send + Clone {
 	) -> Result<Commitment, Error>;
 
 	fn blind_sum(&self, blind_sum: &BlindSum) -> Result<BlindingFactor, Error>;
+
+	/// ecdsa signature
+	/// (not used anymore, to be removed)
 	fn sign(
 		&self,
 		msg: &Message,
@@ -478,8 +481,15 @@ pub trait Keychain: Sync + Send + Clone {
 		id: &Identifier,
 		switch: SwitchCommitmentType,
 	) -> Result<Signature, Error>;
+
+	/// ecdsa signature
+	/// (not used anymore, to be removed)
 	fn sign_with_blinding(&self, _: &Message, _: &BlindingFactor) -> Result<Signature, Error>;
+
 	fn secp(&self) -> &Secp256k1;
+
+	/// Schnorr signature
+	fn schnorr_sign(&self, msg: &[u8], private_key: &SecretKey) -> Result<Signature, Error>;
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize, PartialOrd, Ord)]

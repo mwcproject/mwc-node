@@ -204,17 +204,17 @@ impl Address {
 	/// Return the shared ephemeral key `q` and the one-time-public-key `P'`.
 	///
 	/// Note: propose to use get_ephemeral_key_for_rx/get_ephemeral_key_for_tx instead of this one.
-	fn get_ephemeral_key(
+	pub fn get_ephemeral_key(
 		&self,
 		secp: &Secp256k1,
 		arr_raa: &PublicKey,
-	) -> Result<(SecretKey, PublicKey), Error> {
+	) -> Result<(SecretKey, PublicKey, SecretKey), Error> {
 		let bb = self.get_spend_pubkey();
 
 		// Normally the loop here will break at first hash.
 		for i in 0..2 {
 			// Calculate `A'=Hash(a*R)*G == Hash(r*A)*G`.
-			if let Ok(h) = SecretKey::from_slice(
+			if let Ok(a_apos) = SecretKey::from_slice(
 				(
 					format!("ecp{}", i).as_bytes().to_vec(),
 					arr_raa.serialize_vec(true).as_ref().to_vec(),
@@ -222,7 +222,7 @@ impl Address {
 					.hash()
 					.as_bytes(),
 			) {
-				let aa_apos = PublicKey::from_secret_key(secp, &h)?;
+				let aa_apos = PublicKey::from_secret_key(secp, &a_apos)?;
 
 				// Calculate `q = Hash(A'+B)`.
 				if let Ok(q) = SecretKey::from_slice(
@@ -247,7 +247,7 @@ impl Address {
 					) {
 						let mut pp_apos = bb.clone();
 						pp_apos.add_exp_assign(secp, &h)?;
-						return Ok((q, pp_apos));
+						return Ok((q, pp_apos, a_apos));
 					}
 				}
 			}
@@ -300,6 +300,7 @@ impl Address {
 		a_rr.mul_assign(secp, private_view_key)?;
 
 		self.get_ephemeral_key(secp, &a_rr)
+			.and_then(|(q, pp_apos, _a_apos)| Ok((q, pp_apos)))
 	}
 
 	/// Get the "view tag" of the Stealth Address on tx side, i.e. the first byte of the shared secret
@@ -336,6 +337,7 @@ impl Address {
 		r_aa.mul_assign(secp, private_nonce)?;
 
 		self.get_ephemeral_key(secp, &r_aa)
+			.and_then(|(q, pp_apos, _a_apos)| Ok((q, pp_apos)))
 	}
 
 	/// Serialize to u8 vector: either 33-bytes or 65-bytes in raw data.

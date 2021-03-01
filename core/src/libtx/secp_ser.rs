@@ -256,6 +256,23 @@ where
 	serializer.serialize_str(&bytes.to_hex())
 }
 
+/// Seralizes a byte string into hex with "..." in the middle
+pub fn as_trim_hex<T, S>(bytes: T, serializer: S) -> Result<S::Ok, S::Error>
+where
+	T: AsRef<[u8]>,
+	S: Serializer,
+{
+	let bytes_ref = bytes.as_ref();
+	let size = bytes_ref.len();
+	if size > 12 {
+		let prefix = bytes_ref[0..6].to_vec().to_hex();
+		let suffix = bytes_ref[size - 6..].to_vec().to_hex();
+		serializer.serialize_str(format!("{}...{} ({})", prefix, suffix, size).as_str())
+	} else {
+		serializer.serialize_str(&bytes.to_hex())
+	}
+}
+
 /// Used to ensure u64s are serialised in json
 /// as strings by default, since it can't be guaranteed that consumers
 /// will know what to do with u64 literals (e.g. Javascript). However,

@@ -44,7 +44,7 @@ use util::RwLock;
 /// TransactionBodyV4 is a common abstraction for transaction and block.
 /// Not a perfect and clean structure design here, 2 inputs vectors and 2 outputs vectors in one structure,
 /// but it is for implementing a mixing of NIT and IT schemes.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct TransactionBodyV4 {
 	/// List of inputs (w/o signature) spent by the transaction.
 	pub inputs: Inputs,
@@ -691,7 +691,7 @@ impl TransactionBodyV4 {
 }
 
 /// A transaction
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct TransactionV4 {
 	/// The kernel "offset" k2
 	/// excess is k1G after splitting the key k = k1 + k2
@@ -1431,16 +1431,13 @@ impl IdentifierWithRnp {
 }
 
 /// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize)]
 pub struct OutputWithRnp {
 	/// Output identifier (features and commitment) with R and P'.
 	#[serde(flatten)]
 	pub identifier_with_rnp: IdentifierWithRnp,
 	/// Rangeproof associated with the commitment.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::rangeproof_from_hex"
-	)]
+	#[serde(serialize_with = "secp_ser::as_trim_hex")]
 	pub proof: RangeProof,
 }
 

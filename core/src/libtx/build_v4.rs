@@ -32,13 +32,14 @@
 //! )
 
 use crate::address::Address;
+use crate::core::hash::Hash;
 use crate::core::{
-	IdentifierWithRnp, Input, KernelFeatures, Output, OutputFeatures, OutputWithRnp, TransactionV4,
-	TxKernel,
+	CommitWithSig, IdentifierWithRnp, Input, KernelFeatures, Output, OutputFeatures, OutputWithRnp,
+	TransactionV4, TxKernel,
 };
 use crate::libtx::build::Context;
 use crate::libtx::proof::{self, PaymentId, ProofBuild};
-use crate::libtx::{aggsig, Error};
+use crate::libtx::{aggsig, Error, ErrorKind};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
 use util::secp::{PublicKey, SecretKey};
 
@@ -102,6 +103,94 @@ where
 {
 	debug!("Building input (spending coinbase): {}, {}", value, key_id);
 	build_input(value, OutputFeatures::Coinbase, key_id)
+}
+
+/// Adds an input with the provided value and blinding key to the transaction
+/// being built.
+fn build_input_with_sig<K, B>(
+	value: u64,
+	private_view_key: SecretKey,
+	private_spend_key: SecretKey,
+	spending: IdentifierWithRnp,
+	addr: Address,
+	rp_hash: Hash,
+) -> Box<AppendV4<K, B>>
+where
+	K: Keychain,
+	B: ProofBuild,
+{
+	Box::new(
+		move |build, acc| -> Result<(TransactionV4, BlindSum), Error> {
+			if let Ok((tx, sum)) = acc {
+				let switch = SwitchCommitmentType::Regular;
+				let msg = spending.input_sig_msg(rp_hash);
+				let mut a_rr = spending.nonce.clone();
+				a_rr.mul_assign(build.keychain.secp(), &private_view_key)?;
+
+				let (ephemeral_key_q, pp_apos, a_apos) =
+					addr.get_ephemeral_key(build.keychain.secp(), &a_rr)?;
+				let commit =
+					build
+						.keychain
+						.commit_with_key(value, ephemeral_key_q.clone(), switch)?;
+				if pp_apos == spending.onetime_pubkey && commit == spending.commitment() {
+					let mut p_apos = a_apos;
+					p_apos.add_assign(&private_spend_key)?;
+					let sig = build.keychain.schnorr_sign(&msg, &p_apos)?;
+					let input = CommitWithSig {
+						commit: spending.commitment(),
+						sig,
+					};
+
+					// Calculate the actual blinding factor for commitment type of SwitchCommitmentType::Regular.
+					let blind = match switch {
+						SwitchCommitmentType::Regular => {
+							build.keychain.secp().blind_switch(value, ephemeral_key_q)?
+						}
+						SwitchCommitmentType::None => ephemeral_key_q,
+					};
+
+					Ok((
+						tx.with_input_wsig(input),
+						sum.sub_blinding_factor(BlindingFactor::from_secret_key(blind)),
+					))
+				} else {
+					Err(ErrorKind::Other("incorrect key".to_string()).into())
+				}
+			} else {
+				acc
+			}
+		},
+	)
+}
+
+/// Adds an input with the provided value and blinding key to the transaction
+/// being built.
+pub fn input_with_sig<K, B>(
+	value: u64,
+	private_view_key: SecretKey,
+	private_spend_key: SecretKey,
+	spending: IdentifierWithRnp,
+	addr: Address,
+	rp_hash: Hash,
+) -> Box<AppendV4<K, B>>
+where
+	K: Keychain,
+	B: ProofBuild,
+{
+	debug!(
+		"Building input with sig (spending non-interactive-transaction output): {}, {}",
+		value,
+		addr.to_string()
+	);
+	build_input_with_sig(
+		value,
+		private_view_key,
+		private_spend_key,
+		spending,
+		addr,
+		rp_hash,
+	)
 }
 
 /// Adds an output (w/o R&P') with the provided value and key identifier from the
@@ -323,6 +412,7 @@ mod test {
 	use util::RwLock;
 
 	use super::*;
+	use crate::core::hash::Hashed;
 	use crate::core::transaction::Weighting;
 	use crate::core::verifier_cache::{LruVerifierCache, VerifierCache};
 	use crate::core::TxImpl;
@@ -378,7 +468,7 @@ mod test {
 	}
 
 	#[test]
-	fn nit_2i1o() {
+	fn nit_2i1o1no() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let builder = ProofBuilder::new(&keychain);
@@ -412,7 +502,7 @@ mod test {
 	}
 
 	#[test]
-	fn nit_1i1o() {
+	fn nit_1i1no() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let builder = ProofBuilder::new(&keychain);
@@ -439,5 +529,139 @@ mod test {
 		.unwrap();
 
 		tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+	}
+
+	#[test]
+	fn nit_1i1ni1o1no() {
+		let vc = verifier_cache();
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let keychain = ExtKeychain::from_random_seed(false).unwrap();
+		let builder = ProofBuilder::new(&keychain);
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
+
+		// prepare a non-interactive transaction output
+		let (pri_view, pub_view) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let recipient_addr =
+			Address::from_one_pubkey(&pub_view, global::ChainTypes::AutomatedTesting);
+		let payment_id = PaymentId::new();
+		let (pri_nonce, _pub_nonce) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+
+		let tx = transaction(
+			KernelFeatures::Plain { fee: 2 },
+			&[
+				input(20, key_id1),
+				output_wrnp(18, pri_nonce, recipient_addr.clone(), payment_id, 1),
+			],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+		tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+
+		// use it as the input in a new transaction
+		let spending_output = tx.outputs_with_rnp().first().unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
+		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+
+		let (_pri_view2, pub_view2) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let recipient_addr2 =
+			Address::from_one_pubkey(&pub_view2, global::ChainTypes::AutomatedTesting);
+		let payment_id2 = PaymentId::new();
+		let (pri_nonce2, _pub_nonce2) =
+			keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let simulated_index: u64 = 100;
+		let simulated_rp_hash = (simulated_index, spending_output.proof).hash();
+
+		let tx = transaction(
+			KernelFeatures::Plain { fee: 2 },
+			&[
+				input_with_sig(
+					18,
+					pri_view.clone(),
+					pri_view,
+					spending_output.identifier_with_rnp(),
+					recipient_addr.clone(),
+					simulated_rp_hash,
+				),
+				input(12, key_id2),
+				output(6, key_id3),
+				output_wrnp(22, pri_nonce2, recipient_addr2, payment_id2, 2),
+			],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+
+		// Note: tx.validate() does not verify the Input signature, which is the job of chain validation against utxo set
+		tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+
+		//println!("nit 1i1ni 1o1no: {}", serde_json::to_string_pretty(&tx).unwrap())
+	}
+
+	#[test]
+	fn nit_1ni2no() {
+		let vc = verifier_cache();
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let keychain = ExtKeychain::from_random_seed(false).unwrap();
+		let builder = ProofBuilder::new(&keychain);
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
+
+		// prepare a non-interactive transaction output
+		let (pri_view, pub_view) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let recipient_addr =
+			Address::from_one_pubkey(&pub_view, global::ChainTypes::AutomatedTesting);
+		let payment_id = PaymentId::new();
+		let (pri_nonce, _pub_nonce) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+
+		let tx = transaction(
+			KernelFeatures::Plain { fee: 2 },
+			&[
+				input(20, key_id1),
+				output_wrnp(18, pri_nonce, recipient_addr.clone(), payment_id, 1),
+			],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+		tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+
+		// use it as the input in a new transaction
+		let spending_output = tx.outputs_with_rnp().first().unwrap();
+
+		let (_pri_view2, pub_view2) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let recipient_addr2 =
+			Address::from_one_pubkey(&pub_view2, global::ChainTypes::AutomatedTesting);
+		let payment_id2 = PaymentId::new();
+		let (pri_nonce2, _pub_nonce2) =
+			keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let simulated_index: u64 = 100;
+		let simulated_rp_hash = (simulated_index, spending_output.proof).hash();
+
+		let (pri_nonce3, _pub_nonce3) =
+			keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+
+		let tx = transaction(
+			KernelFeatures::Plain { fee: 2 },
+			&[
+				input_with_sig(
+					18,
+					pri_view.clone(),
+					pri_view,
+					spending_output.identifier_with_rnp(),
+					recipient_addr.clone(),
+					simulated_rp_hash,
+				),
+				output_wrnp(6, pri_nonce3, recipient_addr, payment_id, 2),
+				output_wrnp(10, pri_nonce2, recipient_addr2, payment_id2, 2),
+			],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+
+		// Note: tx.validate() does not verify the Input signature, which is the job of chain validation against utxo set
+		tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+
+		println!("nit 1ni2no: {}", serde_json::to_string_pretty(&tx).unwrap())
 	}
 }

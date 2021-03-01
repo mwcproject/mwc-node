@@ -220,6 +220,26 @@ impl Keychain for ExtKeychain {
 	fn secp(&self) -> &Secp256k1 {
 		&self.secp
 	}
+
+	/// Schnorr signature
+	fn schnorr_sign(
+		&self,
+		signing_msg: &[u8],
+		private_key: &SecretKey,
+	) -> Result<Signature, Error> {
+		let msg = Message::from_slice(signing_msg)?;
+		let pk = PublicKey::from_secret_key(self.secp(), private_key)?;
+		Ok(secp::aggsig::sign_single(
+			self.secp(),
+			&msg,
+			private_key,
+			None,
+			None,
+			None,
+			Some(&pk),
+			None,
+		)?)
+	}
 }
 
 #[cfg(test)]
