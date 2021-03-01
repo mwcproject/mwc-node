@@ -16,7 +16,7 @@
 
 use crate::address::{self, Address};
 use crate::core::committed::{self, Committed};
-use crate::core::hash::{DefaultHashable, Hashed};
+use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::core::transaction::{
 	Commit, CommitWrapper, Error, Input, Inputs, KernelFeatures, Output, OutputFeatures,
 	OutputIdentifier, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel, Weighting,
@@ -1169,7 +1169,7 @@ impl CommitWithSig {
 	/// but they must be in same order, and each input commit must be included in the accomplished_inputs vector.
 	pub fn batch_sig_verify(
 		inputs_with_sig: &[CommitWithSig],
-		accomplished_inputs: &[IdentifierWithRnp],
+		accomplished_inputs: &[(IdentifierWithRnp, Hash)],
 	) -> Result<(), Error> {
 		let len = inputs_with_sig.len();
 		let mut sigs = Vec::with_capacity(len);
@@ -1179,13 +1179,14 @@ impl CommitWithSig {
 		let mut rnp_iter = accomplished_inputs.iter();
 		for input_with_sig in inputs_with_sig {
 			sigs.push(input_with_sig.sig.clone());
-			loop {
-				let rnp = rnp_iter.next().ok_or(Error::IncorrectSignature)?;
-				if rnp.commitment() == input_with_sig.commit {
-					pubkeys.push(rnp.onetime_pubkey.clone());
-					msgs.push(secp::Message::from_slice(rnp.input_sig_msg().as_slice()).unwrap());
-					break;
-				}
+			let rnp = rnp_iter.next().ok_or(Error::IncorrectSignature)?;
+			if rnp.0.commitment() == input_with_sig.commit {
+				pubkeys.push(rnp.0.onetime_pubkey.clone());
+				msgs.push(
+					secp::Message::from_slice(rnp.0.input_sig_msg(rnp.1).as_slice()).unwrap(),
+				);
+			} else {
+				return Err(Error::IncorrectSignature);
 			}
 		}
 
@@ -1317,11 +1318,12 @@ impl IdentifierWithRnp {
 	///   - Message include the hash of rangeproof which has a proof message with a timestamp, to kill the replay attack.
 	///   - Instead of using rangeproof hash, we use the rangeproof MMR leaf node hash which always prepends the node's position in the MMR,
 	///     this helps to avoid the real hash computation and enables a directly reading the MMR leaf node hash.
-	pub fn input_sig_msg(&self) -> Vec<u8> {
+	pub fn input_sig_msg(&self, rp_hash: Hash) -> Vec<u8> {
 		(
 			self.identifier,
 			self.view_tag,
 			self.nonce.serialize_vec(true).as_ref().to_vec(),
+			rp_hash,
 		)
 			.hash()
 			.to_vec()

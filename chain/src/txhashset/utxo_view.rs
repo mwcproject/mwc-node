@@ -167,31 +167,28 @@ impl<'a> UTXOView<'a> {
 			Inputs::CommitsWithSig(inputs) => {
 				let mut outputs_spent = vec![];
 				for input in inputs {
-					outputs_spent.push(
-						self.validate_input_with_sig(input.commitment(), batch)
-							.and_then(|(out, pos)| {
-								// Unspent output found.
-								Ok((out, pos))
-							})?,
-					);
+					outputs_spent.push(self.validate_input_with_sig(input.commitment(), batch)?);
 				}
 
-				// signature validation
+				// Signature validation
 				let inputs_with_sig = {
 					let mut verifier = verifier.write();
 					verifier.filter_input_with_sig_unverified(inputs)
 				};
 
-				// get vec<IdentifierWithRnp> only
+				// Get Vec<IdentifierWithRnp> only
 				let rnps = outputs_spent
 					.iter()
-					.map(|o| o.0)
-					.collect::<Vec<IdentifierWithRnp>>();
+					.map(|o| (o.0, o.1))
+					.collect::<Vec<(IdentifierWithRnp, Hash)>>();
 
 				// Verify the unverified inputs signatures.
 				// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
 				CommitWithSig::batch_sig_verify(&inputs_with_sig, &rnps)?;
-				Ok(outputs_spent)
+				Ok(outputs_spent
+					.iter()
+					.map(|o| (o.0, o.2))
+					.collect::<Vec<(IdentifierWithRnp, CommitPos)>>())
 			}
 		}
 	}
@@ -228,19 +225,24 @@ impl<'a> UTXOView<'a> {
 		&self,
 		input: Commitment,
 		batch: &Batch<'_>,
-	) -> Result<(IdentifierWithRnp, CommitPos), Error> {
+	) -> Result<(IdentifierWithRnp, Hash, CommitPos), Error> {
 		let commit_pos = batch.get_output_pos_height(&input)?;
 		if let Some(cp) = commit_pos {
 			if let Some(out) = self.output_wrnp_pmmr.get_data(cp.pos) {
-				if out.commitment() == input {
-					return Ok((out, cp));
+				return if out.commitment() == input {
+					if let Some(h) = self.rproof_wrnp_pmmr.get_hash(cp.pos) {
+						Ok((out, h, cp))
+					} else {
+						error!("rproof not exist: {:?}, {:?}, {:?}", out, cp, input);
+						Err(ErrorKind::Other("rproof not exist".into()).into())
+					}
 				} else {
 					error!("input mismatch: {:?}, {:?}, {:?}", out, cp, input);
-					return Err(ErrorKind::Other(
-						"input mismatch (output_pos index mismatch?)".into(),
+					Err(
+						ErrorKind::Other("input mismatch (output_pos index mismatch?)".into())
+							.into(),
 					)
-					.into());
-				}
+				};
 			}
 		}
 		Err(ErrorKind::AlreadySpent(input).into())
