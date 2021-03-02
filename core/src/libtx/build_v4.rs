@@ -127,15 +127,21 @@ where
 				let mut a_rr = spending.nonce.clone();
 				a_rr.mul_assign(build.keychain.secp(), &private_view_key)?;
 
-				let (ephemeral_key_q, pp_apos, a_apos) =
+				let (ephemeral_key_q, pp_apos, hash_aa_apos) =
 					addr.get_ephemeral_key(build.keychain.secp(), &a_rr)?;
 				let commit =
 					build
 						.keychain
 						.commit_with_key(value, ephemeral_key_q.clone(), switch)?;
 				if pp_apos == spending.onetime_pubkey && commit == spending.commitment() {
-					let mut p_apos = a_apos;
+					let mut p_apos = hash_aa_apos;
 					p_apos.add_assign(&private_spend_key)?;
+					if pp_apos != PublicKey::from_secret_key(build.keychain.secp(), &p_apos)? {
+						error!(
+							"build_input_with_sig: one-time public key P' and private p' not match"
+						);
+						return Err(ErrorKind::Other("incorrect key".to_string()).into());
+					}
 					let sig = build.keychain.schnorr_sign(&msg, &p_apos)?;
 					let input = CommitWithSig {
 						commit: spending.commitment(),

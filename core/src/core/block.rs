@@ -25,6 +25,7 @@ use crate::core::{
 	TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody, Weighting,
 };
 use crate::global;
+use crate::libtx::secp_ser;
 use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
 use crate::ser::{
 	self, deserialize_default, serialize_default, PMMRable, Readable, Reader, Writeable, Writer,
@@ -240,6 +241,10 @@ pub struct BlockHeader {
 	/// Total accumulated sum of kernel offsets since genesis block.
 	/// We can derive the kernel offset sum for *this* block from
 	/// the total kernel offset of the previous block header.
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::blind_from_hex"
+	)]
 	pub total_kernel_offset: BlindingFactor,
 	/// Total size of the output (w/o R&P') MMR after applying this block
 	pub output_mmr_size: u64,

@@ -17,6 +17,7 @@
 //! Primary hash function used in the protocol
 //!
 
+use crate::libtx::secp_ser;
 use crate::ser::{self, Error, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use blake2::blake2b::Blake2b;
 use byteorder::{BigEndian, ByteOrder};
@@ -29,7 +30,13 @@ pub const ZERO_HASH: Hash = Hash([0; 32]);
 /// A hash to uniquely (or close enough) identify one of the main blockchain
 /// constructs. Used pervasively for blocks, transactions and outputs.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
-pub struct Hash([u8; 32]);
+pub struct Hash(
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::u8_32_from_hex"
+	)]
+	[u8; 32],
+);
 
 impl DefaultHashable for Hash {}
 

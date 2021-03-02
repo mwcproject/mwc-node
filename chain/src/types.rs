@@ -226,7 +226,7 @@ impl TxHashsetWriteStatus for SyncState {
 }
 
 /// A helper for the various txhashset MMR roots.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct TxHashSetRoots {
 	/// Output roots
 	pub output_roots: OutputRoots,
@@ -276,7 +276,7 @@ impl TxHashSetRoots {
 }
 
 /// A helper for the various output roots.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct OutputRoots {
 	/// The output w/o R&P' PMMR root
 	pub pmmr_root: Hash,
@@ -318,7 +318,7 @@ impl OutputRoots {
 }
 
 /// A helper for the various rangeproof roots.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct RangeproofRoots {
 	/// The 1st rangeproof PMMR root
 	pub rangeproof_root: Hash,

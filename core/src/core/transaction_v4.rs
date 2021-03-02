@@ -179,7 +179,7 @@ impl Readable for TransactionBodyV4 {
 		let inputs_with_sig = match reader.protocol_version().value() {
 			0..=2 => {
 				return Err(ser::Error::UnsupportedProtocolVersion(format!(
-					"get version {}, expecting version >=3",
+					"(read for TransactionBodyV4) get version {}, expecting version >=3",
 					reader.protocol_version().value()
 				)))
 			}

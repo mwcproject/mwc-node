@@ -1941,7 +1941,7 @@ impl Writeable for Inputs {
 				Inputs::CommitOnly(inputs) => match writer.protocol_version().value() {
 					0..=2 => {
 						return Err(ser::Error::UnsupportedProtocolVersion(format!(
-							"get version {}, expecting version >=3",
+							"(write for Inputs::CommitOnly) get version {}, expecting version >=3",
 							writer.protocol_version().value()
 						)))
 					}
@@ -1957,7 +1957,7 @@ impl Writeable for Inputs {
 				Inputs::CommitsWithSig(inputs) => match writer.protocol_version().value() {
 					0..=999 => {
 						return Err(ser::Error::UnsupportedProtocolVersion(format!(
-							"get version {}, expecting version >=3",
+							"(write for Inputs::CommitsWithSig) get version {}, expecting version >=1000",
 							writer.protocol_version().value()
 						)))
 					}

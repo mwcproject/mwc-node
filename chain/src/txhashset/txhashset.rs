@@ -856,6 +856,8 @@ where
 
 	trees.output_pmmr_h.backend.discard();
 	trees.rproof_pmmr_h.backend.discard();
+	trees.output_wrnp_pmmr_h.backend.discard();
+	trees.rproof_wrnp_pmmr_h.backend.discard();
 	trees.kernel_pmmr_h.backend.discard();
 
 	trace!("TxHashSet (readonly) extension done.");
@@ -985,6 +987,8 @@ where
 			debug!("Error returned, discarding txhashset extension: {}", e);
 			trees.output_pmmr_h.backend.discard();
 			trees.rproof_pmmr_h.backend.discard();
+			trees.output_wrnp_pmmr_h.backend.discard();
+			trees.rproof_wrnp_pmmr_h.backend.discard();
 			trees.kernel_pmmr_h.backend.discard();
 			Err(e)
 		}
@@ -993,12 +997,16 @@ where
 				trace!("Rollbacking txhashset extension. sizes {:?}", sizes);
 				trees.output_pmmr_h.backend.discard();
 				trees.rproof_pmmr_h.backend.discard();
+				trees.output_wrnp_pmmr_h.backend.discard();
+				trees.rproof_wrnp_pmmr_h.backend.discard();
 				trees.kernel_pmmr_h.backend.discard();
 			} else {
 				trace!("Committing txhashset extension. sizes {:?}", sizes);
 				child_batch.commit()?;
 				trees.output_pmmr_h.backend.sync()?;
 				trees.rproof_pmmr_h.backend.sync()?;
+				trees.output_wrnp_pmmr_h.backend.sync()?;
+				trees.rproof_wrnp_pmmr_h.backend.sync()?;
 				trees.kernel_pmmr_h.backend.sync()?;
 				trees.output_pmmr_h.last_pos = sizes.0;
 				trees.output_wrnp_pmmr_h.last_pos = sizes.1;
@@ -1560,6 +1568,7 @@ impl<'a> Extension<'a> {
 	fn apply_output_rnp(&mut self, out: &OutputWithRnp, batch: &Batch<'_>) -> Result<u64, Error> {
 		let commit = out.commitment();
 
+		// Duplicate commitment is forbidden, no matter it's duplicated to output_pmmr or output_wrnp_pmmr.
 		if let Ok(pos) = batch.get_output_pos(&commit) {
 			match pos.features {
 				OutputFeatures::Plain | OutputFeatures::Coinbase => {
@@ -1586,14 +1595,14 @@ impl<'a> Extension<'a> {
 
 		// push the rangeproof to the MMR.
 		let rproof_pos = self
-			.rproof_pmmr
+			.rproof_wrnp_pmmr
 			.push(&out.proof())
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr proof push error, {}", e)))?;
 
 		// The output and rproof MMRs should be exactly the same size
 		// and we should have inserted to both in exactly the same pos.
 		{
-			if self.output_pmmr.unpruned_size() != self.rproof_pmmr.unpruned_size() {
+			if self.output_wrnp_pmmr.unpruned_size() != self.rproof_wrnp_pmmr.unpruned_size() {
 				return Err(
 					ErrorKind::Other("output vs rproof MMRs different sizes".to_string()).into(),
 				);

@@ -201,7 +201,7 @@ impl Address {
 	/// where 'a' is the private view key, a*G=A. 'R' is the public nonce, R=r*G.
 	///
 	/// Calculation Complexity: 3 point-multiply + 2 point-add + 3 hash.
-	/// Return the shared ephemeral key `q` and the one-time-public-key `P'`.
+	/// Return the shared ephemeral key `q`, the one-time-public-key `P'`, and `Hash(A')`.
 	///
 	/// Note: propose to use get_ephemeral_key_for_rx/get_ephemeral_key_for_tx instead of this one.
 	pub fn get_ephemeral_key(
@@ -247,7 +247,7 @@ impl Address {
 					) {
 						let mut pp_apos = bb.clone();
 						pp_apos.add_exp_assign(secp, &h)?;
-						return Ok((q, pp_apos, a_apos));
+						return Ok((q, pp_apos, h));
 					}
 				}
 			}
