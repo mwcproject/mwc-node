@@ -204,7 +204,7 @@ pub fn output_onion_service_config(
 /// output torrc file given a list of hidden service directories
 pub fn output_torrc(
 	tor_config_directory: &str,
-	wallet_listener_addr: &str,
+	server_p2p_listener_addr: &str,
 	api_listener_addr: &str,
 	libp2p_port: u16,
 	socks_port: &str,
@@ -222,7 +222,10 @@ pub fn output_torrc(
 		let service_file_name = format!("./{}{}{}", HIDDEN_SERVICES_DIR, MAIN_SEPARATOR, dir);
 		props.add_item("HiddenServiceDir", &service_file_name);
 		props.add_item("HiddenServiceVersion", &format!("3"));
-		props.add_item("HiddenServicePort", &format!("80 {}", wallet_listener_addr));
+		props.add_item(
+			"HiddenServicePort",
+			&format!("80 {}", server_p2p_listener_addr),
+		);
 		props.add_item("HiddenServicePort", &format!("8080 {}", api_listener_addr));
 		props.add_item(
 			"HiddenServicePort",
@@ -238,7 +241,7 @@ pub fn output_torrc(
 /// output entire tor config for a list of secret keys
 pub fn output_tor_listener_config(
 	tor_config_directory: &str,
-	wallet_listener_addr: &str,
+	server_p2p_listener_addr: &str,
 	api_listener_addr: &str,
 	libp2p_port: u16,
 	listener_keys: Option<&[SecretKey]>,
@@ -266,7 +269,7 @@ pub fn output_tor_listener_config(
 	// hidden service listener doesn't need a socks port
 	output_torrc(
 		tor_config_directory,
-		wallet_listener_addr,
+		server_p2p_listener_addr,
 		api_listener_addr,
 		libp2p_port,
 		&format!("{}", socks_port),

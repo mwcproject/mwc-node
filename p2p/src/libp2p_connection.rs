@@ -38,12 +38,12 @@ use libp2p::gossipsub::{
 };
 use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
-use crate::{Error, ErrorKind};
+use crate::types::Error;
+use crate::PeerAddr;
 use async_std::task;
 use chrono::Utc;
 use futures::{future, prelude::*};
-use grin_p2p::PeerAddr;
-use grin_util::secp::pedersen::{Commitment, RangeProof};
+use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::rand::{thread_rng, Rng};
 use grin_util::Mutex;
 use libp2p::core::network::NetworkInfo;
@@ -55,9 +55,9 @@ use std::{
 	time::Duration,
 };
 
-use blake2_rfc::blake2b::blake2b;
 use grin_core::core::hash::Hash;
-use grin_util::secp::key::{PublicKey, SecretKey};
+use grin_core::core::TxKernel;
+use grin_core::libtx::aggsig;
 use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -81,6 +81,11 @@ lazy_static! {
 pub const INTEGRITY_CALL_HISTORY_LEN_LIMIT: usize = 10;
 // call interval limit, in second.
 pub const INTEGRITY_CALL_MAX_PERIOD: i64 = 15;
+
+/// Number of top block when integrity fee is valid
+pub const INTEGRITY_FEE_VALID_BLOCKS: u64 = 1440;
+/// Minimum integrity fee value in term of Base fees
+pub const INTEGRITY_FEE_MIN_X: u64 = 10;
 
 /// Init Swarm instance. App expecting to have only single instance for everybody.
 pub fn init_libp2p_swarm(swarm: Swarm<Gossipsub>) {
@@ -120,14 +125,14 @@ pub fn add_new_peer(peer: &PeerAddr) -> Result<(), Error> {
 	info!("libp2p adding a new peer {}", peer);
 	let addr = format!(
 		"/onion3/{}:81",
-		peer.tor_pubkey().map_err(|e| ErrorKind::LibP2P(format!(
+		peer.tor_pubkey().map_err(|e| Error::Libp2pError(format!(
 			"Unable to retrieve TOR pk from the peer address, {}",
 			e
 		)))?
 	);
 
 	let p = PeerId::from_multihash(THIS_NODE.clone().into(), addr)
-		.map_err(|e| ErrorKind::LibP2P(format!("Unable to build the peer id, {:?}", e)))?;
+		.map_err(|e| Error::Libp2pError(format!("Unable to build the peer id, {:?}", e)))?;
 	let cur_time = Utc::now().timestamp() as u64;
 	let mut peer_list = LIBP2P_PEERS.lock();
 	if let Some((peers, time)) = peer_list.get_mut(&THIS_NODE) {
@@ -144,12 +149,13 @@ pub fn add_new_peer(peer: &PeerAddr) -> Result<(), Error> {
 
 /// Created libp2p listener for Socks5 tor address.
 /// tor_socks_port - listener port, param from  SocksPort 127.0.0.1:51234
-/// output_validation_fn - output validation method. Return RangeProof if that output was seen during last 24 hours (last 1440 blocks)
+/// output_validation_fn - kernel excess validation method. Return height RangeProof if that output was seen during last 24 hours (last 1440 blocks)
 pub async fn run_libp2p_node(
 	tor_socks_port: u16,
 	onion_address: String,
 	libp2p_port: u16,
-	output_validation_fn: impl Fn(&Commitment) -> Option<RangeProof>,
+	fee_base: u64,
+	kernel_validation_fn: impl Fn(&Commitment) -> Option<TxKernel>,
 	message_handlers: HashMap<String, fn(Vec<u8>) -> ()>,
 ) -> Result<(), Error> {
 	// need to remove '.onion' ending first
@@ -158,9 +164,9 @@ pub async fn run_libp2p_node(
 	// Init Tor address configs..
 	// 80 comes from: /tor/listener/torrc   HiddenServicePort 80 0.0.0.0:13425
 	let addr_str = format!("/onion3/{}:81", onion_address);
-	let addr = addr_str.parse::<Multiaddr>().map_err(|e| {
-		ErrorKind::NotOnion(format!("Unable to construct onion multiaddress, {}", e))
-	})?;
+	let addr = addr_str
+		.parse::<Multiaddr>()
+		.map_err(|e| Error::Internal(format!("Unable to construct onion multiaddress, {}", e)))?;
 
 	let mut map = HashMap::new();
 	map.insert(addr.clone(), libp2p_port);
@@ -173,13 +179,13 @@ pub async fn run_libp2p_node(
 	// Building transport
 	let dh_keys = noise::Keypair::<X25519Spec>::new()
 		.into_authentic(&id_keys)
-		.map_err(|e| ErrorKind::LibP2P(format!("Unable to build p2p keys, {}", e)))?;
+		.map_err(|e| Error::Libp2pError(format!("Unable to build p2p keys, {}", e)))?;
 	let noise = NoiseConfig::xx(dh_keys).into_authenticated(addr_str.to_string());
 	let tcp = Socks5TokioTcpConfig::new(tor_socks_port)
 		.nodelay(true)
 		.onion_map(map);
 	let transport = DnsConfig::new(tcp)
-		.map_err(|e| ErrorKind::LibP2P(format!("Unable to build a transport, {}", e)))?;
+		.map_err(|e| Error::Libp2pError(format!("Unable to build a transport, {}", e)))?;
 
 	let transport = transport
 		.upgrade(Version::V1)
@@ -224,7 +230,7 @@ pub async fn run_libp2p_node(
 		.build();
 
 	Swarm::listen_on(&mut swarm, addr.clone())
-		.map_err(|e| ErrorKind::LibP2P(format!("Unable to start listening, {}", e)))?;
+		.map_err(|e| Error::Libp2pError(format!("Unable to start listening, {}", e)))?;
 
 	/*   // It is ping pong handler
 	 future::poll_fn(move |cx: &mut Context<'_>| loop {
@@ -330,8 +336,9 @@ pub async fn run_libp2p_node(
 									if !validate_integrity_message(
 										&peer_id,
 										&message.data,
-										&output_validation_fn,
+										&kernel_validation_fn,
 										&mut requests_cash,
+										fee_base,
 									) {
 										let _ = gossip.report_message_validation_result(
 											&id,
@@ -437,11 +444,13 @@ pub async fn run_libp2p_node(
 }
 
 // return true if this message is valid. It is caller responsibility to make sure that valid_outputs cache is well maintained
-fn validate_integrity_message(
+// output_validation_fn  - lookup for the kernel excess and returns it's height
+pub fn validate_integrity_message(
 	peer_id: &PeerId,
 	message: &Vec<u8>,
-	output_validation_fn: impl Fn(&Commitment) -> Option<RangeProof>,
+	output_validation_fn: impl Fn(&Commitment) -> Option<TxKernel>,
 	requests_cash: &mut HashMap<Commitment, VecDeque<i64>>,
+	fee_base: u64,
 ) -> bool {
 	let mut ser = SimplePopSerializer::new(message);
 	if ser.version != 1 {
@@ -453,34 +462,13 @@ fn validate_integrity_message(
 		return false;
 	}
 
-	let integrity_commit = Commitment::from_vec(ser.pop_vec());
-	let integrity_rangeproof = match (output_validation_fn)(&integrity_commit) {
-		Some(r) => r.clone(),
-		None => {
-			debug!(
-				"Get invalid message from peer {}. Integrity_commit is not found in the cache",
-				peer_id
-			);
-			return false;
-		}
-	};
-
-	let integrity_pub_key = match PublicKey::from_slice(&ser.pop_vec()) {
-		Ok(p) => p,
+	// Let's check signature first. The kernel search might take time. Signature checking should be faster.
+	let integrity_kernel_excess = Commitment::from_vec(ser.pop_vec());
+	let integrity_pk = match integrity_kernel_excess.to_pubkey() {
+		Ok(pk) => pk,
 		Err(e) => {
 			debug!(
-				"Get invalid message from peer {}. Unable to read integrity public key, {}",
-				peer_id, e
-			);
-			return false;
-		}
-	};
-
-	let signature = match Signature::from_compact(&ser.pop_vec()) {
-		Ok(s) => s,
-		Err(e) => {
-			debug!(
-				"Get invalid message from peer {}. Unable to read signature, {}",
+				"Get invalid message from peer {}. integrity_kernel is not valid, {}",
 				peer_id, e
 			);
 			return false;
@@ -501,37 +489,49 @@ fn validate_integrity_message(
 			return false;
 		}
 	};
-	if secp
-		.verify(&msg_message, &signature, &integrity_pub_key)
-		.is_err()
-	{
-		debug!(
-			"Get invalid message from peer {}. Invalid signature, public key and message",
-			peer_id
-		);
-		return false;
-	}
 
-	// Check if public ket belong to the output...
-	let rewind_hash = blake2b(32, &[], &integrity_pub_key.serialize_vec(true)[..])
-		.as_bytes()
-		.to_vec();
-	let commit_hash = blake2b(32, &integrity_commit.0, &rewind_hash);
-	let commit_nonce = match SecretKey::from_slice(commit_hash.as_bytes()) {
+	let signature = match Signature::from_compact(&ser.pop_vec()) {
 		Ok(s) => s,
 		Err(e) => {
 			debug!(
-				"Get invalid message from peer {}. Unable to create nonce to check commit, {}",
+				"Get invalid message from peer {}. Unable to read signature, {}",
 				peer_id, e
 			);
 			return false;
 		}
 	};
 
-	let info = secp.rewind_bullet_proof(integrity_commit, commit_nonce, None, integrity_rangeproof);
-	if info.is_err() {
+	match aggsig::verify_completed_sig(
+		&secp,
+		&signature,
+		&integrity_pk,
+		Some(&integrity_pk),
+		&msg_message,
+	) {
+		Ok(()) => (),
+		Err(e) => {
+			debug!(
+				"Get invalid message from peer {}. Integrity kernel signature is invalid, {}",
+				peer_id, e
+			);
+			return false;
+		}
+	}
+
+	let integrity_kernel = match (output_validation_fn)(&integrity_kernel_excess) {
+		Some(r) => r.clone(),
+		None => {
+			debug!(
+				"Get invalid message from peer {}. integrity_kernel is not found at the blockchain",
+				peer_id
+			);
+			return false;
+		}
+	};
+
+	if integrity_kernel.features.get_fee() < fee_base * INTEGRITY_FEE_MIN_X {
 		debug!(
-			"Get invalid message from peer {}. Integrity commit ownership is not provided.",
+			"Get invalid message from peer {}. integrity_kernel fee is below minimal level of 10X accepted base fee",
 			peer_id
 		);
 		return false;
@@ -539,7 +539,7 @@ fn validate_integrity_message(
 
 	// Updating calls history cash.
 	let now = Utc::now().timestamp();
-	match requests_cash.get_mut(&integrity_commit) {
+	match requests_cash.get_mut(&integrity_kernel_excess) {
 		Some(calls) => {
 			calls.push_back(now);
 			while calls.len() > INTEGRITY_CALL_HISTORY_LEN_LIMIT {
@@ -549,11 +549,11 @@ fn validate_integrity_message(
 		None => {
 			let mut calls: VecDeque<i64> = VecDeque::new();
 			calls.push_back(now);
-			requests_cash.insert(integrity_commit.clone(), calls);
+			requests_cash.insert(integrity_kernel_excess.clone(), calls);
 		}
 	}
 	// Checking if ths peer sent too many messages
-	let call_history = requests_cash.get(&integrity_commit).unwrap();
+	let call_history = requests_cash.get(&integrity_kernel_excess).unwrap();
 	if call_history.len() >= INTEGRITY_CALL_HISTORY_LEN_LIMIT {
 		let call_period = (call_history.back().unwrap() - call_history.front().unwrap())
 			/ (call_history.len() - 1) as i64;
@@ -581,34 +581,23 @@ pub fn read_integrity_message(message: &Vec<u8>) -> Vec<u8> {
 	// Skipping header data. The header size if not known because bulletproof size can vary.
 	ser.skip_vec();
 	ser.skip_vec();
-	ser.skip_vec();
 
 	// Here is the data
 	ser.pop_vec()
 }
 
 /// Helper method for the wallet that allow to build a message with integrity_output
-/// peer_id  - libp2p peer to sign the image
-/// integrity_output  - output that we are using for signature
-/// integrity_pub_key & integrity_secret - secret and public key to sign the message
-/// message_data - message to put into the package
+/// kernel_excess  - kernel (public key) with a fee
+/// signature - the PeerId data (PK & address) must be singed with this signature. See validate_integrity_message code for deatils
+/// message_data - message to send, that is written into the package
 pub fn build_integrity_message(
-	peer_id: &PeerId,
-	integrity_output: &Commitment,
-	integrity_pub_key: &PublicKey,
-	integrity_secret: &SecretKey,
+	kernel_excess: &Commitment,
+	signature: &Signature,
 	message_data: &[u8],
 ) -> Result<Vec<u8>, Error> {
-	let msg_hash = Hash::from_vec(&peer_id.to_bytes());
-	let msg_message = Message::from_slice(msg_hash.as_bytes())?;
-
-	let secp = Secp256k1::new();
-	let signature = secp.sign(&msg_message, integrity_secret)?;
-
 	let mut ser = SimplePushSerializer::new(1);
 
-	ser.push_vec(&integrity_output.0);
-	ser.push_vec(&integrity_pub_key.serialize_vec(true));
+	ser.push_vec(&kernel_excess.0);
 	ser.push_vec(&signature.serialize_compact());
 
 	ser.push_vec(message_data);
@@ -617,47 +606,36 @@ pub fn build_integrity_message(
 
 #[test]
 fn test_integrity() -> Result<(), Error> {
-	use grin_core::libtx::secp_ser;
+	use grin_core::core::KernelFeatures;
 	use grin_util::from_hex;
-	use serde::de::value::{Error as ValueError, StrDeserializer};
-	use serde::de::IntoDeserializer;
 
-	let peer_id = PeerId::random("/onion3/what_ever_address:77".to_string());
-	let integrity_output = Commitment::from_vec(
-		from_hex("08a655eccae831ee0f76740b86d1dcfa49cc56b3d188ae0aba7f5d07437809ae9b").unwrap(),
+	// It is peer form wallet's test. We know commit and signature for it.
+	let peer_id = PeerId::from_bytes( &from_hex("000100220020720661bf2f0d7c81c2980db83bb973be2816cf5a0da2da9aacd0ad47d534215c001c2f6f6e696f6e332f776861745f657665725f616464726573733a3737").unwrap() ).unwrap();
+
+	let integrity_kernel = Commitment::from_vec(
+		from_hex("08a8f99853d65cee63c973a78a005f4646b777262440a8bfa090694a339a388865").unwrap(),
 	);
-	let deserializer: StrDeserializer<ValueError> = "0ec2ad284424bced592403def7e6e0d458f7243f0f15028d9bcc23c4b2f5519524a209821cccdc0bd4cec45559462fa3acae2c0d514d45a001c2ca296ba7165107c6141b55a93993969ceffea934efed0dd39675dcce48c7e5b98d92167f835c7525a43d397ce9b0276b934b818f1190b1c302d70ca7962870be4fbdee57327d79945c76e451d83f02bbdd72b588871a155806415c6deb7d95f5ecc251955d6bbc3ff137c7767994844d0e9b5e9db7861e7970f7870f7b35a43acfbd34fa1b15597bef738f88ad12c67eb50f398c5cfdea6f17fa92ab443167eb2d58da4aa420b675b9fe63e9913c8d54de9b03c64c7933959d1891374356d4f573a54b6225b5611ef29b39d4f85a8ee8af6e2059f8cad8f0da14a93379c881e864af6cd7ea0267d59a24ca4adaaf28c8444e6a544f37fb5b38b6b61ab9513c4e8967b85b8f05d7e83840fc251f1fd178f621da1d5d76f32ee451882c2227f23ff1fa04406572e65303c931c6f0cc703b661333858c2a8ff09d6ec1c6f661f6602eb35cbcf47385b9ce5b6ed620ea97c29db273087ab9930c0312f1e8eee83666e10ebf759e05cdb361ec8ad6e5ffe9e33e1a8ddd622b8197f2fd865292c8dca24ea2c5876e4b628b8cfad44594912db6c8df788c90a96c7169c7d904d8f230974df06d0f1b4b86a713be42c011148ac734fd75e71446b5352b2693a9b824aa424f059a7f4470f73a00fb29cb4f1f845f06f85fb4f6276aa095db6c5579b7e1e4fdb907ca1ab45395265e181e051933d60a2aaf1f20667094f38925f9a23c2de1da3008aed631cef05f3382ae3024b1464c54a1f848fda85a76407bebb0ec404d657534e3909ddad34fb6c78128a076047e48912bf68b36b548029787ae3e0f855724903346214e444c1fe5e9d5ce387adc0c6cdbdcb1397d8e035158e1b120a9d58ad5bf830a9aa6cb".into_deserializer();
-	let integrity_proof = secp_ser::rangeproof_from_hex(deserializer).unwrap();
-
-	let integrity_pub_key = PublicKey::from_slice(
-		&from_hex("024f2192db5d6878124108e4cf7d2621163ff1e35cb1c86e21b810aa15eb9b1226").unwrap(),
-	)
-	.unwrap();
-	let integrity_secret = SecretKey::from_slice(
-		&from_hex("e6a04d60249a1d43684308aa6528601181052f009f7732a9ec2aeb690d0fef0d").unwrap(),
-	)
-	.unwrap();
+	let integrity_signature = Signature::from_compact(&from_hex("102a84ec71494d69c1b4cca181b7715beea1ebd0822efb4d6440a0f2be75119b56270affac659214c27903347676c27063dc7f5f2f0c6a8441cab73d16aa7ebe").unwrap()).unwrap();
 
 	let message: Vec<u8> = vec![1, 2, 3, 4, 3, 2, 1];
 
-	let encoded_message = build_integrity_message(
-		&peer_id,
-		&integrity_output,
-		&integrity_pub_key,
-		&integrity_secret,
-		&message,
-	)
-	.unwrap();
+	let encoded_message =
+		build_integrity_message(&integrity_kernel, &integrity_signature, &message).unwrap();
 
 	// Validation use case
 	let mut requests_cache: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
 
-	let empty_output_validation_fn = |_commit: &Commitment| -> Option<RangeProof> { None };
+	let empty_output_validation_fn = |_commit: &Commitment| -> Option<TxKernel> { None };
 
-	let mut valid_outputs = HashMap::<Commitment, RangeProof>::new();
-	valid_outputs.insert(integrity_output, integrity_proof);
+	let fee_base: u64 = 1_000_000;
+
+	let mut valid_kernels = HashMap::<Commitment, TxKernel>::new();
+	valid_kernels.insert(
+		integrity_kernel,
+		TxKernel::with_features(KernelFeatures::Plain { fee: fee_base * 10 }),
+	);
 	let output_validation_fn =
-		|commit: &Commitment| -> Option<RangeProof> { valid_outputs.get(commit).cloned() };
+		|commit: &Commitment| -> Option<TxKernel> { valid_kernels.get(commit).cloned() };
 
 	// Valid outputs is empty, should fail.
 	assert_eq!(
@@ -665,7 +643,8 @@ fn test_integrity() -> Result<(), Error> {
 			&peer_id,
 			&encoded_message,
 			empty_output_validation_fn,
-			&mut requests_cache
+			&mut requests_cache,
+			fee_base
 		),
 		false
 	);
@@ -676,12 +655,13 @@ fn test_integrity() -> Result<(), Error> {
 			&peer_id,
 			&encoded_message,
 			output_validation_fn,
-			&mut requests_cache
+			&mut requests_cache,
+			fee_base
 		),
 		true
 	);
 	assert!(requests_cache.len() == 1);
-	assert!(requests_cache.get(&integrity_output).unwrap().len() == 1); // call history is onw as well
+	assert!(requests_cache.get(&integrity_kernel).unwrap().len() == 1); // call history is onw as well
 
 	requests_cache.clear();
 	assert_eq!(
@@ -689,7 +669,8 @@ fn test_integrity() -> Result<(), Error> {
 			&PeerId::random("another_peer_address".to_string()),
 			&encoded_message,
 			output_validation_fn,
-			&mut requests_cache
+			&mut requests_cache,
+			fee_base
 		),
 		false
 	);
@@ -702,12 +683,13 @@ fn test_integrity() -> Result<(), Error> {
 				&peer_id,
 				&encoded_message,
 				output_validation_fn,
-				&mut requests_cache
+				&mut requests_cache,
+				fee_base
 			),
 			true
 		);
 		assert!(requests_cache.len() == 1);
-		assert!(requests_cache.get(&integrity_output).unwrap().len() == i + 1); // call history is onw as well
+		assert!(requests_cache.get(&integrity_kernel).unwrap().len() == i + 1); // call history is onw as well
 	}
 	// And now all next request will got to spam
 	assert_eq!(
@@ -715,36 +697,39 @@ fn test_integrity() -> Result<(), Error> {
 			&peer_id,
 			&encoded_message,
 			output_validation_fn,
-			&mut requests_cache
+			&mut requests_cache,
+			fee_base
 		),
 		false
 	);
 	assert!(
-		requests_cache.get(&integrity_output).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
+		requests_cache.get(&integrity_kernel).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
 	); // call history is onw as well
 	assert_eq!(
 		validate_integrity_message(
 			&peer_id,
 			&encoded_message,
 			output_validation_fn,
-			&mut requests_cache
+			&mut requests_cache,
+			fee_base
 		),
 		false
 	);
 	assert!(
-		requests_cache.get(&integrity_output).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
+		requests_cache.get(&integrity_kernel).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
 	); // call history is onw as well
 	assert_eq!(
 		validate_integrity_message(
 			&peer_id,
 			&encoded_message,
 			output_validation_fn,
-			&mut requests_cache
+			&mut requests_cache,
+			fee_base
 		),
 		false
 	);
 	assert!(
-		requests_cache.get(&integrity_output).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
+		requests_cache.get(&integrity_kernel).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
 	); // call history is onw as well
 
 	assert_eq!(read_integrity_message(&encoded_message), message);

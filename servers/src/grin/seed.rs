@@ -29,6 +29,7 @@ use std::{cmp, str, thread, time};
 
 use crate::core::global;
 use crate::p2p;
+use crate::p2p::libp2p_connection;
 use crate::p2p::types::PeerAddr;
 use crate::p2p::ChainAdapter;
 use crate::util::StopState;
@@ -79,7 +80,7 @@ pub fn connect_and_monitor(
 				&preferred_peers,
 			);
 
-			super::libp2p::set_seed_list(&seed_list);
+			libp2p_connection::set_seed_list(&seed_list);
 
 			let mut prev = MIN_DATE.and_hms(0, 0, 0);
 			let mut prev_expire_check = MIN_DATE.and_hms(0, 0, 0);
@@ -407,7 +408,7 @@ fn listen_for_addrs(
 							if p.send_peer_request(capab).is_ok() {
 								match addr {
 									PeerAddr::Onion(_) => {
-										if let Err(_) = super::libp2p::add_new_peer(&addr) {
+										if let Err(_) = libp2p_connection::add_new_peer(&addr) {
 											error!("Unable to add libp2p peer {}", addr);
 										}
 									}

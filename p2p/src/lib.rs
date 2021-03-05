@@ -36,8 +36,12 @@ extern crate serde_derive;
 #[macro_use]
 extern crate log;
 
+#[macro_use]
+extern crate lazy_static;
+
 mod conn;
 pub mod handshake;
+pub mod libp2p_connection;
 pub mod msg;
 mod peer;
 mod peers;
@@ -54,4 +58,9 @@ pub use crate::store::{PeerData, State};
 pub use crate::types::{
 	Capabilities, ChainAdapter, Direction, Error, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
 	Seeding, TxHashSetRead, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+};
+
+pub use crate::libp2p_connection::{
+	add_new_peer, build_integrity_message, get_libp2p_connections, read_integrity_message,
+	run_libp2p_node, set_seed_list,
 };

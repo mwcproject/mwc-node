@@ -26,9 +26,6 @@ extern crate serde_derive;
 #[macro_use]
 extern crate log;
 
-#[macro_use]
-extern crate lazy_static;
-
 use grin_api as api;
 use grin_chain as chain;
 use grin_core as core;
@@ -49,8 +46,3 @@ mod tor;
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};
 pub use crate::grin::server::{Server, ServerTxPool, ServerVerifierCache};
-
-pub use crate::grin::libp2p::{
-	add_new_peer, build_integrity_message, get_libp2p_connections, read_integrity_message,
-	run_libp2p_node, set_seed_list,
-};
