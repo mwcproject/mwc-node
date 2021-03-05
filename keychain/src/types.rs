@@ -489,7 +489,7 @@ pub trait Keychain: Sync + Send + Clone {
 	fn secp(&self) -> &Secp256k1;
 
 	/// Schnorr signature
-	fn schnorr_sign(&self, msg: &[u8], private_key: &SecretKey) -> Result<Signature, Error>;
+	fn schnorr_sign(&self, msg: &Message, private_key: &SecretKey) -> Result<Signature, Error>;
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize, PartialOrd, Ord)]

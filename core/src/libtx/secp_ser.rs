@@ -296,9 +296,9 @@ where
 {
 	let bytes_ref = bytes.as_ref();
 	let size = bytes_ref.len();
-	if size > 12 {
-		let prefix = bytes_ref[0..6].to_vec().to_hex();
-		let suffix = bytes_ref[size - 6..].to_vec().to_hex();
+	if size > 32 {
+		let prefix = bytes_ref[0..16].to_vec().to_hex();
+		let suffix = bytes_ref[size - 16..].to_vec().to_hex();
 		serializer.serialize_str(format!("{}...{} [{}]", prefix, suffix, size).as_str())
 	} else {
 		serializer.serialize_str(&bytes.to_hex())

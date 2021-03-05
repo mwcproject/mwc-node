@@ -222,12 +222,7 @@ impl Keychain for ExtKeychain {
 	}
 
 	/// Schnorr signature
-	fn schnorr_sign(
-		&self,
-		signing_msg: &[u8],
-		private_key: &SecretKey,
-	) -> Result<Signature, Error> {
-		let msg = Message::from_slice(signing_msg)?;
+	fn schnorr_sign(&self, msg: &Message, private_key: &SecretKey) -> Result<Signature, Error> {
 		let pk = PublicKey::from_secret_key(self.secp(), private_key)?;
 		Ok(secp::aggsig::sign_single(
 			self.secp(),

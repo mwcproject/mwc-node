@@ -37,14 +37,14 @@ use std::sync::Arc;
 use util;
 use util::secp::key::{PublicKey, SecretKey};
 use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::{self, Secp256k1};
+use util::secp::{self, Secp256k1, Signature};
 use util::static_secp_instance;
 use util::RwLock;
 
 /// TransactionBodyV4 is a common abstraction for transaction and block.
 /// Not a perfect and clean structure design here, 2 inputs vectors and 2 outputs vectors in one structure,
 /// but it is for implementing a mixing of NIT and IT schemes.
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct TransactionBodyV4 {
 	/// List of inputs (w/o signature) spent by the transaction.
 	pub inputs: Inputs,
@@ -691,7 +691,7 @@ impl TransactionBodyV4 {
 }
 
 /// A transaction
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransactionV4 {
 	/// The kernel "offset" k2
 	/// excess is k1G after splitting the key k = k1 + k2
@@ -1132,7 +1132,7 @@ pub struct CommitWithSig {
 	pub commit: Commitment,
 	/// The signature for the spending output P'.
 	#[serde(with = "secp_ser::sig_serde")]
-	pub sig: secp::Signature,
+	pub sig: Signature,
 }
 
 impl DefaultHashable for CommitWithSig {}
@@ -1153,7 +1153,7 @@ impl Writeable for CommitWithSig {
 impl Readable for CommitWithSig {
 	fn read<R: Reader>(reader: &mut R) -> Result<CommitWithSig, ser::Error> {
 		let commit = Commitment::read(reader)?;
-		let sig = secp::Signature::read(reader)?;
+		let sig = Signature::read(reader)?;
 		Ok(CommitWithSig { commit, sig })
 	}
 }
@@ -1182,9 +1182,7 @@ impl CommitWithSig {
 			let rnp = rnp_iter.next().ok_or(Error::IncorrectSignature)?;
 			if rnp.0.commitment() == input_with_sig.commit {
 				pubkeys.push(rnp.0.onetime_pubkey.clone());
-				msgs.push(
-					secp::Message::from_slice(rnp.0.input_sig_msg(rnp.1).as_slice()).unwrap(),
-				);
+				msgs.push(rnp.0.input_sig_msg(rnp.1));
 			} else {
 				return Err(Error::IncorrectSignature);
 			}
@@ -1210,6 +1208,9 @@ pub struct IdentifierWithRnp {
 	/// Public nonce R for generating Ephemeral key.
 	#[serde(with = "secp_ser::pubkey_serde")]
 	pub nonce: PublicKey,
+	/// R signature as the spending coin ownership proof by equation (2) of https://eprint.iacr.org/2020/1064.pdf.
+	#[serde(with = "secp_ser::sig_serde")]
+	pub r_sig: Signature,
 	/// One-time public key P' which is calculated by H(A')*G+B
 	#[serde(with = "secp_ser::pubkey_serde")]
 	pub onetime_pubkey: PublicKey,
@@ -1250,6 +1251,7 @@ impl Writeable for IdentifierWithRnp {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.identifier.write(writer)?;
 		self.nonce.write(writer)?;
+		self.r_sig.write(writer)?;
 		self.onetime_pubkey.write(writer)?;
 		self.view_tag.write(writer)?;
 		Ok(())
@@ -1262,6 +1264,7 @@ impl Readable for IdentifierWithRnp {
 		Ok(IdentifierWithRnp {
 			identifier: OutputIdentifier::read(reader)?,
 			nonce: PublicKey::read(reader)?,
+			r_sig: Signature::read(reader)?,
 			onetime_pubkey: PublicKey::read(reader)?,
 			view_tag: reader.read_u8()?,
 		})
@@ -1278,7 +1281,8 @@ impl PMMRable for IdentifierWithRnp {
 	fn elmt_size() -> Option<u16> {
 		Some(
 			(2 + secp::constants::PEDERSEN_COMMITMENT_SIZE
-				+ 2 * secp::constants::COMPRESSED_PUBLIC_KEY_SIZE)
+				+ 2 * secp::constants::COMPRESSED_PUBLIC_KEY_SIZE
+				+ secp::constants::COMPACT_SIGNATURE_SIZE)
 				.try_into()
 				.unwrap(),
 		)
@@ -1291,12 +1295,14 @@ impl IdentifierWithRnp {
 		features: OutputFeatures,
 		commit: Commitment,
 		nonce: PublicKey,
+		r_sig: Signature,
 		onetime_pubkey: PublicKey,
 		view_tag: u8,
 	) -> IdentifierWithRnp {
 		IdentifierWithRnp {
 			identifier: OutputIdentifier { features, commit },
 			nonce,
+			r_sig,
 			onetime_pubkey,
 			view_tag,
 		}
@@ -1318,27 +1324,35 @@ impl IdentifierWithRnp {
 	///   - Message include the hash of rangeproof which has a proof message with a timestamp, to kill the replay attack.
 	///   - Instead of using rangeproof hash, we use the rangeproof MMR leaf node hash which always prepends the node's position in the MMR,
 	///     this helps to avoid the real hash computation and enables a directly reading the MMR leaf node hash.
-	pub fn input_sig_msg(&self, rp_hash: Hash) -> Vec<u8> {
-		(
-			self.identifier,
-			self.view_tag,
-			self.nonce.serialize_vec(true).as_ref().to_vec(),
-			rp_hash,
+	pub fn input_sig_msg(&self, rp_hash: Hash) -> secp::Message {
+		secp::Message::from_slice(
+			(
+				self.identifier,
+				self.view_tag,
+				self.nonce.serialize_vec(true).as_ref().to_vec(),
+				rp_hash,
+			)
+				.hash()
+				.to_vec()
+				.as_slice(),
 		)
-			.hash()
-			.to_vec()
+		.unwrap()
 	}
 
 	/// Get signing message for Output R signature.
 	/// Msg = Hash(OutputFeatures || commit || view_tag || P').
-	pub fn output_rr_sig_msg(&self) -> Vec<u8> {
-		(
-			self.identifier,
-			self.view_tag,
-			self.onetime_pubkey.serialize_vec(true).as_ref().to_vec(),
+	pub fn output_rr_sig_msg(&self) -> secp::Message {
+		secp::Message::from_slice(
+			(
+				self.identifier,
+				self.view_tag,
+				self.onetime_pubkey.serialize_vec(true).as_ref().to_vec(),
+			)
+				.hash()
+				.to_vec()
+				.as_slice(),
 		)
-			.hash()
-			.to_vec()
+		.unwrap()
 	}
 
 	/// Output features.
@@ -1428,16 +1442,42 @@ impl IdentifierWithRnp {
 		let (q, pp_apos) = recipient.get_ephemeral_key_for_tx(secp, private_nonce)?;
 		Ok((q, pp_apos))
 	}
+
+	/// Batch signature verification.
+	pub fn batch_sig_verify(outputs: &[IdentifierWithRnp]) -> Result<(), Error> {
+		let len = outputs.len();
+		let mut sigs = Vec::with_capacity(len);
+		let mut pubkeys = Vec::with_capacity(len);
+		let mut msgs = Vec::with_capacity(len);
+
+		for identifier_with_rnp in outputs {
+			sigs.push(identifier_with_rnp.r_sig.clone());
+			pubkeys.push(identifier_with_rnp.nonce.clone());
+			msgs.push(identifier_with_rnp.output_rr_sig_msg());
+		}
+
+		let secp = static_secp_instance();
+		let secp = secp.lock();
+
+		if !aggsig::verify_batch(&secp, &sigs, &msgs, &pubkeys) {
+			return Err(Error::IncorrectSignature);
+		}
+
+		Ok(())
+	}
 }
 
 /// Output w/ R&P' for a transaction, a new type of output for non-interactive transaction feature.
-#[derive(Debug, Copy, Clone, Serialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct OutputWithRnp {
 	/// Output identifier (features and commitment) with R and P'.
 	#[serde(flatten)]
 	pub identifier_with_rnp: IdentifierWithRnp,
 	/// Rangeproof associated with the commitment.
-	#[serde(serialize_with = "secp_ser::as_trim_hex")]
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::rangeproof_from_hex"
+	)]
 	pub proof: RangeProof,
 }
 

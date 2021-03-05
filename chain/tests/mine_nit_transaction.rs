@@ -102,6 +102,7 @@ fn mine_block_with_nit_tx() {
 	assert_eq!(chain.head().unwrap().height as u32, height - 1);
 
 	// prepare a non-interactive transaction output in block #9
+
 	let (pri_view, pub_view) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
 	let recipient_addr = Address::from_one_pubkey(&pub_view, global::ChainTypes::AutomatedTesting);
 	let payment_id = PaymentId::new();
@@ -131,11 +132,12 @@ fn mine_block_with_nit_tx() {
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
 
-	// use it as the input in a new transaction in block #10
+	// a new transaction (1ni-1o1no) in block #10
+
 	let spending_output = tx.outputs_with_rnp().first().unwrap();
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
 
-	let (_pri_view2, pub_view2) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let (pri_view2, pub_view2) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
 	let recipient_addr2 =
 		Address::from_one_pubkey(&pub_view2, global::ChainTypes::AutomatedTesting);
 	let payment_id2 = PaymentId::new();
@@ -145,10 +147,6 @@ fn mine_block_with_nit_tx() {
 		.unwrap()
 		.1;
 	let simulated_rp_hash = (simulated_index - 1, spending_output.proof).hash();
-	println!(
-		"simulated_index: {}, simulated_rp_hash: {:?}",
-		simulated_index, simulated_rp_hash
-	);
 
 	let tx = build_v4::transaction(
 		KernelFeatures::Plain { fee: 20000 },
@@ -161,8 +159,8 @@ fn mine_block_with_nit_tx() {
 				recipient_addr.clone(),
 				simulated_rp_hash,
 			),
-			build_v4::output(value - 80000, key_id2),
-			build_v4::output_wrnp(40000, pri_nonce2, recipient_addr2, payment_id2, 10),
+			build_v4::output(value - 80000, key_id2.clone()),
+			build_v4::output_wrnp(40000, pri_nonce2, recipient_addr2.clone(), payment_id2, 10),
 		],
 		&keychain,
 		&pb,
@@ -170,9 +168,129 @@ fn mine_block_with_nit_tx() {
 	.unwrap();
 
 	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
-	let block = build_block(&chain, &keychain, &key_id3, vec![tx]);
+	let block = build_block(&chain, &keychain, &key_id3, vec![tx.clone()]);
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
+	//println!("transaction 1ni1o1no: {}", serde_json::to_string_pretty(&tx).unwrap());
+
+	// a new transaction (1i1ni-2no) in block #11
+
+	let spending_output1 = tx.outputs_with_rnp().first().unwrap();
+
+	let (pri_view3, pub_view3) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let recipient_addr3 =
+		Address::from_one_pubkey(&pub_view3, global::ChainTypes::AutomatedTesting);
+	let payment_id3 = PaymentId::new();
+	let (pri_nonce3, pub_nonce3) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+
+	let (pri_view4, pub_view4) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let recipient_addr4 =
+		Address::from_one_pubkey(&pub_view4, global::ChainTypes::AutomatedTesting);
+	let payment_id4 = PaymentId::new();
+	let (pri_nonce4, _pub_nonce4) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+
+	let simulated_index: u64 = chain
+		.get_output_pos(&spending_output1.commitment())
+		.unwrap()
+		.1;
+	let simulated_rp_hash = (simulated_index - 1, spending_output1.proof).hash();
+
+	let tx = build_v4::transaction(
+		KernelFeatures::Plain { fee: 30000 },
+		&[
+			build_v4::input(value - 80000, key_id2.clone()),
+			build_v4::input_with_sig(
+				40000,
+				pri_view2.clone(),
+				pri_view2,
+				spending_output1.identifier_with_rnp(),
+				recipient_addr2.clone(),
+				simulated_rp_hash,
+			),
+			build_v4::output_wrnp(90000, pri_nonce3, recipient_addr3.clone(), payment_id3, 11),
+			build_v4::output_wrnp(
+				value - 160000,
+				pri_nonce4,
+				recipient_addr4.clone(),
+				payment_id4,
+				11,
+			),
+		],
+		&keychain,
+		&pb,
+	)
+	.unwrap();
+
+	let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier();
+	let block = build_block(&chain, &keychain, &key_id4, vec![tx.clone()]);
+	chain.process_block(block, Options::MINE).unwrap();
+	chain.validate(false).unwrap();
+	println!(
+		"transaction 1i1ni2no: {}",
+		serde_json::to_string_pretty(&tx).unwrap()
+	);
+
+	// a new transaction (2ni-1no) in block #12
+
+	let o1 = tx.outputs_with_rnp().first().unwrap();
+	let o2 = tx.outputs_with_rnp().last().unwrap();
+	let (spending_output2, spending_output3) = if o1.identifier_with_rnp().nonce == pub_nonce3 {
+		(o1, o2)
+	} else {
+		(o2, o1)
+	};
+
+	let (_pri_view5, _pub_view5) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let recipient_addr5 =
+		Address::from_one_pubkey(&pub_view4, global::ChainTypes::AutomatedTesting);
+	let payment_id5 = PaymentId::new();
+	let (pri_nonce5, _pub_nonce5) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+
+	let simulated_index2: u64 = chain
+		.get_output_pos(&spending_output2.commitment())
+		.unwrap()
+		.1;
+	let simulated_rp_hash2 = (simulated_index2 - 1, spending_output2.proof).hash();
+	let simulated_index3: u64 = chain
+		.get_output_pos(&spending_output3.commitment())
+		.unwrap()
+		.1;
+	let simulated_rp_hash3 = (simulated_index3 - 1, spending_output3.proof).hash();
+
+	let tx = build_v4::transaction(
+		KernelFeatures::Plain { fee: 40000 },
+		&[
+			build_v4::input_with_sig(
+				90000,
+				pri_view3.clone(),
+				pri_view3,
+				spending_output2.identifier_with_rnp(),
+				recipient_addr3.clone(),
+				simulated_rp_hash2,
+			),
+			build_v4::input_with_sig(
+				value - 160000,
+				pri_view4.clone(),
+				pri_view4,
+				spending_output3.identifier_with_rnp(),
+				recipient_addr4.clone(),
+				simulated_rp_hash3,
+			),
+			build_v4::output_wrnp(value - 110000, pri_nonce5, recipient_addr5, payment_id5, 12),
+		],
+		&keychain,
+		&pb,
+	)
+	.unwrap();
+
+	let key_id5 = ExtKeychainPath::new(1, 5, 0, 0, 0).to_identifier();
+	let block = build_block(&chain, &keychain, &key_id5, vec![tx.clone()]);
+	chain.process_block(block, Options::MINE).unwrap();
+	chain.validate(false).unwrap();
+	println!(
+		"transaction 2ni1no: {}",
+		serde_json::to_string_pretty(&tx).unwrap()
+	);
 
 	clean_output_dir(chain_dir);
 }

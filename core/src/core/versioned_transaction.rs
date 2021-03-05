@@ -19,7 +19,7 @@ use util::RwLock;
 
 /// Enum of various flavors/versions of TransactionBody.
 #[enum_dispatch(Committed, TxBodyImpl)]
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VersionedTransactionBody {
 	/// The version before HF2, which support interactive tx only.
 	V3(TransactionBody),
@@ -188,7 +188,7 @@ impl VersionedTransactionBody {
 
 /// Enum of various flavors/versions of Transaction.
 #[enum_dispatch(Committed, TxImpl)]
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum VersionedTransaction {
 	/// The version before HF2, which support interactive tx only.
 	V3(Transaction),

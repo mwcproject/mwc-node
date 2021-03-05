@@ -32,16 +32,16 @@
 //! )
 
 use crate::address::Address;
-use crate::core::hash::Hash;
+use crate::core::hash::{Hash, Hashed};
 use crate::core::{
-	CommitWithSig, IdentifierWithRnp, Input, KernelFeatures, Output, OutputFeatures, OutputWithRnp,
-	TransactionV4, TxKernel,
+	CommitWithSig, IdentifierWithRnp, Input, KernelFeatures, Output, OutputFeatures,
+	OutputIdentifier, OutputWithRnp, TransactionV4, TxKernel,
 };
 use crate::libtx::build::Context;
 use crate::libtx::proof::{self, PaymentId, ProofBuild};
 use crate::libtx::{aggsig, Error, ErrorKind};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
-use util::secp::{PublicKey, SecretKey};
+use util::secp::{self, PublicKey, SecretKey};
 
 /// Function type returned by the transaction combinators. Transforms a
 /// (TransactionV4, BlindSum) tuple into another, given the provided context.
@@ -123,7 +123,8 @@ where
 		move |build, acc| -> Result<(TransactionV4, BlindSum), Error> {
 			if let Ok((tx, sum)) = acc {
 				let switch = SwitchCommitmentType::Regular;
-				let msg = spending.input_sig_msg(rp_hash);
+				let input_sig_msg = spending.input_sig_msg(rp_hash);
+
 				let mut a_rr = spending.nonce.clone();
 				a_rr.mul_assign(build.keychain.secp(), &private_view_key)?;
 
@@ -142,7 +143,7 @@ where
 						);
 						return Err(ErrorKind::Other("incorrect key".to_string()).into());
 					}
-					let sig = build.keychain.schnorr_sign(&msg, &p_apos)?;
+					let sig = build.keychain.schnorr_sign(&input_sig_msg, &p_apos)?;
 					let input = CommitWithSig {
 						commit: spending.commitment(),
 						sig,
@@ -260,6 +261,21 @@ where
 				.keychain
 				.commit_with_key(value, ephemeral_key_q.clone(), switch)?;
 
+			let output_rr_sig_msg = secp::Message::from_slice(
+				(
+					OutputIdentifier::new(OutputFeatures::PlainWrnp, &commit),
+					view_tag,
+					pp_apos.serialize_vec(true).as_ref().to_vec(),
+				)
+					.hash()
+					.to_vec()
+					.as_slice(),
+			)
+			.unwrap();
+			let r_sig = build
+				.keychain
+				.schnorr_sign(&output_rr_sig_msg, &private_nonce)?;
+
 			debug!(
 				"Building NIT output: {}, {:?} for recipient: {}",
 				value,
@@ -293,6 +309,7 @@ where
 						OutputFeatures::PlainWrnp,
 						commit,
 						public_nonce,
+						r_sig,
 						pp_apos,
 						view_tag,
 					),
