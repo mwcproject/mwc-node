@@ -1748,16 +1748,21 @@ dependencies = [
 name = "grin_p2p"
 version = "4.2.2"
 dependencies = [
+ "async-std",
  "bitflags 1.2.1",
  "chrono",
  "enum_primitive",
  "failure",
  "failure_derive",
+ "futures 0.3.13",
  "grin_chain",
  "grin_core",
  "grin_pool",
  "grin_store",
  "grin_util",
+ "lazy_static",
+ "libp2p",
+ "libp2p-tokio-socks5",
  "log",
  "lru-cache",
  "net2",
@@ -1767,6 +1772,7 @@ dependencies = [
  "serde_derive",
  "socks",
  "tempfile",
+ "tokio 0.2.25",
  "tor-stream",
 ]
 
@@ -1807,8 +1813,6 @@ dependencies = [
 name = "grin_servers"
 version = "4.2.2"
 dependencies = [
- "async-std",
- "blake2-rfc",
  "chrono",
  "dirs 1.0.5",
  "ed25519-dalek",
@@ -1828,9 +1832,6 @@ dependencies = [
  "hyper",
  "hyper-rustls 0.20.0",
  "hyper-rustls 0.21.0",
- "lazy_static",
- "libp2p",
- "libp2p-tokio-socks5",
  "lmdb-zero",
  "log",
  "rand 0.6.5",

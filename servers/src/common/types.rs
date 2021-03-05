@@ -238,6 +238,7 @@ pub struct ServerConfig {
 	pub test_miner_wallet_url: Option<String>,
 
 	/// Enable libp2p server. It can run only with TOR. Needed for wallets to send messages to each other.
+	/// Default value: enabled
 	pub libp2p_enabled: Option<bool>,
 
 	/// libp2p connection port (will be activated with Tor)

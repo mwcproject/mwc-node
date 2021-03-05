@@ -175,6 +175,23 @@ impl KernelFeatures {
 		Ok(msg)
 	}
 
+	/// Get paid fee for this kernel
+	pub fn get_fee(&self) -> u64 {
+		match self {
+			KernelFeatures::Plain { fee } => fee,
+			KernelFeatures::Coinbase => &0,
+			KernelFeatures::HeightLocked {
+				fee,
+				lock_height: _,
+			} => fee,
+			KernelFeatures::NoRecentDuplicate {
+				fee,
+				relative_height: _,
+			} => fee,
+		}
+		.clone()
+	}
+
 	/// Write tx kernel features out in v1 protocol format.
 	/// Always include the fee and lock_height, writing 0 value if unused.
 	fn write_v1<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {

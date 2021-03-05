@@ -108,6 +108,8 @@ pub enum Error {
 	PeerException(String),
 	#[fail(display = "p2p internal error: {}", _0)]
 	Internal(String),
+	#[fail(display = "libp2p error: {}", _0)]
+	Libp2pError(String),
 }
 
 impl From<ser::Error> for Error {

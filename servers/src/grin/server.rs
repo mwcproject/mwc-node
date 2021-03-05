@@ -59,13 +59,16 @@ use crate::grin::{dandelion_monitor, seed, sync};
 use crate::mining::stratumserver;
 use crate::mining::test_miner::Miner;
 use crate::p2p;
+use crate::p2p::libp2p_connection;
 use crate::p2p::types::PeerAddr;
 use crate::pool;
 use crate::tor::process as tor_process;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
+use chrono::Utc;
+use grin_core::core::TxKernel;
 use grin_util::logger::LogEntry;
-use grin_util::secp::pedersen::{Commitment, RangeProof};
+use grin_util::secp::pedersen::Commitment;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
@@ -380,6 +383,7 @@ impl Server {
 			if let Some(onion_address) = onion_address.clone() {
 				let libp2p_port = config.libp2p_port;
 				let tor_socks_port = config.tor_config.socks_port;
+				let fee_base = config.pool_config.accept_fee_base;
 				api::set_server_onion_address(&onion_address);
 
 				let clone_shared_chain = shared_chain.clone();
@@ -388,34 +392,55 @@ impl Server {
 				thread::Builder::new()
 					.name("libp2p_node".to_string())
 					.spawn(move || {
-						let output_validation_fn =
-							move |commit: &Commitment| -> Option<RangeProof> {
-								match clone_shared_chain.get_output_pos(commit) {
-									Ok(pos) => {
-										let tip_height = match clone_shared_chain.head() {
-											Ok(tip) => tip.height,
-											Err(_) => return None,
-										};
+						let requested_kernel_cache: RwLock<HashMap<Commitment, TxKernel>> =
+							RwLock::new(HashMap::new());
+						let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
 
-										// Accept only outputs from the last 24 hours. Plus add extra hour just for syncing. We better let
-										// user trade some extra time then have service interruption
-										if pos < tip_height - 1440 - 60 {
-											return None;
-										}
-
-										match clone_shared_chain.get_unspent_output_at(pos) {
-											Ok(out) => Some(out.proof),
-											Err(_) => None,
-										}
-									}
-									Err(_) => None,
+						let output_validation_fn = move |excess: &Commitment| -> Option<TxKernel> {
+							let cur_time = Utc::now().timestamp();
+							// let's clean cache every hour. Filling out the cache shouldn't be a big deal.
+							{
+								let mut last_time_cache_cleanup = last_time_cache_cleanup.write();
+								if cur_time - 3600 > *last_time_cache_cleanup {
+									requested_kernel_cache.write().clear();
+									*last_time_cache_cleanup = cur_time;
 								}
+							}
+
+							// Checking if we hit the cache
+							if let Some(tx) = requested_kernel_cache.read().get(excess) {
+								return Some(tx.clone());
+							}
+
+							// Tip is needed in order to request from last 24 hours (1440 blocks)
+							let tip_height = match clone_shared_chain.head() {
+								Ok(tip) => tip.height,
+								Err(_) => return None,
 							};
 
-						let libp2p_node_runner = super::libp2p::run_libp2p_node(
+							// !!! Note, get_kernel_height does iteration through the MMR. That will work until we
+							// Ban nodes that sent us incorrect excess. For now it should work fine. Normally
+							// peers reusing the integrity kernels so cache hit should happen most of the time.
+							match clone_shared_chain.get_kernel_height(
+								excess,
+								Some(tip_height - libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS),
+								None,
+							) {
+								Ok(Some((tx_kernel, _, _))) => {
+									requested_kernel_cache
+										.write()
+										.insert(excess.clone(), tx_kernel.clone());
+									Some(tx_kernel)
+								}
+								_ => None,
+							}
+						};
+
+						let libp2p_node_runner = libp2p_connection::run_libp2p_node(
 							tor_socks_port,
 							onion_address,
 							libp2p_port,
+							fee_base,
 							output_validation_fn,
 							HashMap::new(),
 						);
@@ -428,7 +453,7 @@ impl Server {
 							Err(e) => error!("Unable to start libp2p node, {}", e),
 						}
 						// Swarm is not valid any more, let's update our global instance.
-						super::libp2p::reset_libp2p_swarm();
+						libp2p_connection::reset_libp2p_swarm();
 					})?;
 			};
 		}
