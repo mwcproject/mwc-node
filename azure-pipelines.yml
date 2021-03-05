@@ -51,7 +51,8 @@ jobs:
   steps:
     - script: |
         sudo apt-get update -yqq
-        sudo apt-get purge --auto-remove clang
+        sudo apt list --installed
+        sudo apt-get purge --auto-remove llvm
         sudo apt install clang-8 git curl make build-essential mesa-utils libgl1-mesa-dev openssl libssl-dev -y
         sudo apt-get install -yqq --no-install-recommends libncursesw5-dev
       displayName: Linux Install Dependencies
