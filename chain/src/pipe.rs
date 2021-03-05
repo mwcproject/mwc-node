@@ -83,49 +83,22 @@ pub fn check_against_spent_output(
 	tx: &TransactionBody,
 	batch: &mut store::Batch<'_>,
 ) -> Result<(), Error> {
-	let mut spent_commits = HashSet::new();
-
-	for (_key, commit_list) in batch.spent_commitment_iter()? {
-		for commitment in commit_list {
-			//check if there is any duplication of the outputs in this bloc.
-			spent_commits.insert(commitment);
-		}
-	}
-
 	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
 	for commit in output_commits {
-		if spent_commits.contains(&commit) {
-			error!("output contains spent commtiment:{:?}", commit);
-			return Err(
-				ErrorKind::Other("output invalid, could be a replay attack".to_string()).into(),
-			);
-		}
-	}
-
-	Ok(())
-}
-///check the public excess of the kernels against the db to detect replay attack.
-pub fn check_against_duplicate_kernel(
-	tx: &TransactionBody,
-	batch: &mut store::Batch<'_>,
-) -> Result<(), Error> {
-	let mut kernel_excess = HashSet::new();
-
-	for (_key, commit_list) in batch.kernel_excess_iter()? {
-		for commitment in commit_list {
-			//check if there is any duplication of the outputs in this bloc.
-			kernel_excess.insert(commitment);
-		}
-	}
-
-	let kernel_excess_list = tx.kernels.iter().map(|kernel| kernel.excess);
-	for kernel in kernel_excess_list {
-		if kernel_excess.contains(&kernel) {
-			error!("duplication of kernel:{:?}", kernel);
-			return Err(ErrorKind::Other(
-				"kernel invalid due to duplication, could be a replay attack".to_string(),
-			)
-			.into());
+		let commit_hash = batch.get_spent_commitments(&commit)?; // check to see if this commitment is in the spent records in db
+		if let Some(c_hash) = commit_hash {
+			//if this is not a block on the chain, it is fine.
+			let mut commit_found = true;
+			let _ = batch
+				.get_block_header(&c_hash)
+				.map_err(|_e| commit_found = false);
+			if commit_found {
+				error!("output contains spent commtiment:{:?}", commit);
+				return Err(ErrorKind::Other(
+					"output invalid, could be a replay attack".to_string(),
+				)
+				.into());
+			}
 		}
 	}
 
@@ -265,7 +238,6 @@ pub fn process_block(
 pub fn replay_attack_check(b: &Block, batch: &mut store::Batch<'_>) -> Result<(), Error> {
 	if b.header.version >= HeaderVersion(3) {
 		check_against_spent_output(&b.body, batch)?;
-		check_against_duplicate_kernel(&b.body, batch)?; //by public excess
 	}
 	Ok(())
 }

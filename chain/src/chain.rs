@@ -703,7 +703,6 @@ impl Chain {
 		{
 			let mut batch = self.store.batch()?;
 			pipe::check_against_spent_output(&tx.body, &mut batch)?;
-			pipe::check_against_duplicate_kernel(&tx.body, &mut batch)?;
 			batch.commit()?;
 		}
 		Ok(())

@@ -187,13 +187,13 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	// Confirm we cannot add tx2 to stempool with tx1 in previous block (NRD relative_height=2)
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx2.clone(), true, &header),
-		Err(PoolError::DuplicateKernelOrDuplicateSpent)
+		Err(PoolError::NRDKernelRelativeHeight)
 	);
 
 	// Confirm we cannot add tx2 to txpool with tx1 in previous block (NRD relative_height=2)
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx2.clone(), false, &header),
-		Err(PoolError::DuplicateKernelOrDuplicateSpent)
+		Err(PoolError::NRDKernelRelativeHeight)
 	);
 
 	// Add another block so NRD relative_height rule is now met.
@@ -203,36 +203,36 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	// Confirm we can now add tx2 to stempool with NRD relative_height rule met.
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx2.clone(), true, &header),
-		Err(PoolError::DuplicateKernelOrDuplicateSpent)
+		Ok(())
 	);
 	assert_eq!(pool.total_size(), 0);
 	assert_eq!(pool.txpool.size(), 0);
-	assert_eq!(pool.stempool.size(), 0);
+	assert_eq!(pool.stempool.size(), 1);
 
 	// Confirm we cannot yet add tx3 to stempool (NRD relative_height=1)
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx3.clone(), true, &header),
-		Err(PoolError::DuplicateKernelOrDuplicateSpent)
+		Err(PoolError::NRDKernelRelativeHeight)
 	);
 
 	// Confirm we can now add tx2 to txpool with NRD relative_height rule met.
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx2.clone(), false, &header),
-		Err(PoolError::DuplicateKernelOrDuplicateSpent)
+		Ok(())
 	);
 
 	// Confirm we cannot yet add tx3 to txpool (NRD relative_height=1)
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx3.clone(), false, &header),
-		Err(PoolError::DuplicateKernelOrDuplicateSpent)
+		Err(PoolError::NRDKernelRelativeHeight)
 	);
 
-	assert_eq!(pool.total_size(), 0);
-	assert_eq!(pool.txpool.size(), 0);
+	assert_eq!(pool.total_size(), 1);
+	assert_eq!(pool.txpool.size(), 1);
 	assert_eq!(pool.stempool.size(), 0);
 
 	let txs = pool.prepare_mineable_transactions().unwrap();
-	assert_eq!(txs.len(), 0);
+	assert_eq!(txs.len(), 1);
 
 	// Mine block containing tx2 from the txpool.
 	add_block(&chain, &txs, &keychain);
@@ -245,24 +245,24 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	assert_eq!(pool.stempool.size(), 0);
 
 	// Confirm we can now add tx3 to stempool with tx2 in immediate previous block (NRD relative_height=1)
-	// assert_eq!(
-	// 	pool.add_to_pool(test_source(), tx3.clone(), true, &header),
-	// 	Ok(())
-	// );
-	//
-	// assert_eq!(pool.total_size(), 0);
-	// assert_eq!(pool.txpool.size(), 0);
-	// assert_eq!(pool.stempool.size(), 0);
-	//
-	// // Confirm we can now add tx3 to txpool with tx2 in immediate previous block (NRD relative_height=1)
-	// assert_eq!(
-	// 	pool.add_to_pool(test_source(), tx3.clone(), false, &header),
-	// 	Ok(())
-	// );
-	//
-	// assert_eq!(pool.total_size(), 1);
-	// assert_eq!(pool.txpool.size(), 1);
-	// assert_eq!(pool.stempool.size(), 0);
+	assert_eq!(
+		pool.add_to_pool(test_source(), tx3.clone(), true, &header),
+		Ok(())
+	);
+
+	assert_eq!(pool.total_size(), 0);
+	assert_eq!(pool.txpool.size(), 0);
+	assert_eq!(pool.stempool.size(), 1);
+
+	// Confirm we can now add tx3 to txpool with tx2 in immediate previous block (NRD relative_height=1)
+	assert_eq!(
+		pool.add_to_pool(test_source(), tx3.clone(), false, &header),
+		Ok(())
+	);
+
+	assert_eq!(pool.total_size(), 1);
+	assert_eq!(pool.txpool.size(), 1);
+	assert_eq!(pool.stempool.size(), 0);
 
 	// Cleanup db directory
 	clean_output_dir(db_root.into());

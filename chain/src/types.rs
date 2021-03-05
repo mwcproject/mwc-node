@@ -328,6 +328,32 @@ impl Writeable for CommitPos {
 	}
 }
 
+/// Minimal struct representing a block header hash and height
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HashHeight {
+	/// hasher
+	pub hash: Hash,
+	/// Block height
+	pub height: u64,
+}
+
+impl Readable for HashHeight {
+	fn read<R: Reader>(reader: &mut R) -> Result<HashHeight, ser::Error> {
+		let hash = Hash::read(reader)?;
+		let height = reader.read_u64()?;
+
+		Ok(HashHeight { hash, height })
+	}
+}
+
+impl Writeable for HashHeight {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.hash.write(writer)?;
+		writer.write_u64(self.height)?;
+		Ok(())
+	}
+}
+
 /// The tip of a fork. A handle to the fork ancestry from its leaf in the
 /// blockchain tree. References the max height and the latest and previous
 /// blocks

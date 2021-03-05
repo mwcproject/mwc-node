@@ -28,7 +28,7 @@ use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::BitmapAccumulator;
 use crate::txhashset::{RewindableKernelView, UTXOView};
-use crate::types::{CommitPos, OutputRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus};
+use crate::types::{CommitPos, HashHeight, OutputRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip};
 use croaring::Bitmap;
@@ -1123,25 +1123,21 @@ impl<'a> Extension<'a> {
 		let spent = self
 			.utxo_view(header_ext)
 			.validate_inputs(&b.inputs(), batch)?;
-		let mut spent_commitments = Vec::new();
 		for (out, pos) in &spent {
 			self.apply_input(out.commitment(), *pos)?;
 			affected_pos.push(pos.pos);
 			batch.delete_output_pos_height(&out.commitment())?;
-			//Update the spent commitments with the spent commitments.
-			spent_commitments.push(out.commitment().clone());
-		}
-		//get the kernel excess commitment from this block.
-		let mut kernel_excess_list = Vec::new();
-		for kernel in &b.body.kernels {
-			kernel_excess_list.push(kernel.excess().clone());
+			//save the spent commitments.
+			let hh = HashHeight {
+				hash: b.hash().clone(),
+				height: b.header.height.clone(),
+			};
+			batch.save_spent_commitments(&out.commitment().clone(), &hh)?;
 		}
 
 		// Update the spent index with spent pos.
 		let spent_pos: Vec<_> = spent.into_iter().map(|(_, pos)| pos).collect();
 		batch.save_spent_index(&b.hash(), &spent_pos)?;
-		batch.save_spent_commitments(&b.hash(), spent_commitments.as_slice())?;
-		batch.save_kernel_excess_commitments(&b.hash(), kernel_excess_list.as_slice())?;
 
 		// Apply the kernels to the kernel MMR.
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
