@@ -23,13 +23,19 @@ use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Options};
 use crate::core::address::Address;
 use crate::core::core::hash::Hashed;
-use crate::core::core::{Block, KernelFeatures, TransactionV4, TxImpl, VersionedTransaction};
+use crate::core::core::transaction::Weighting;
+use crate::core::core::verifier_cache::LruVerifierCache;
+use crate::core::core::{
+	Block, CommitWithSig, Inputs, KernelFeatures, TransactionV4, TxImpl, VersionedTransaction,
+};
 use crate::core::libtx::{build_v4, reward, PaymentId, ProofBuilder};
 use crate::core::{consensus, global, pow};
 use crate::keychain::{ExtKeychain, ExtKeychainPath, Identifier, Keychain};
 use chrono::Duration;
 use grin_core::core::Commit;
 use rand::thread_rng;
+use std::sync::Arc;
+use util::RwLock;
 
 fn build_block<K>(
 	chain: &Chain,
@@ -84,6 +90,8 @@ fn mine_block_with_nit_tx() {
 
 	util::init_test_logger();
 
+	let vc = Arc::new(RwLock::new(LruVerifierCache::new()));
+
 	let chain_dir = ".grin.nit_tx";
 	clean_output_dir(chain_dir);
 
@@ -126,6 +134,7 @@ fn mine_block_with_nit_tx() {
 		&pb,
 	)
 	.unwrap();
+	tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
 
 	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id9, vec![tx.clone()]);
@@ -166,6 +175,7 @@ fn mine_block_with_nit_tx() {
 		&pb,
 	)
 	.unwrap();
+	tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
 
 	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id3, vec![tx.clone()]);
@@ -220,6 +230,7 @@ fn mine_block_with_nit_tx() {
 		&pb,
 	)
 	.unwrap();
+	tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
 
 	let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id4, vec![tx.clone()]);
@@ -240,9 +251,9 @@ fn mine_block_with_nit_tx() {
 		(o2, o1)
 	};
 
-	let (_pri_view5, _pub_view5) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let (pri_view5, pub_view5) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
 	let recipient_addr5 =
-		Address::from_one_pubkey(&pub_view4, global::ChainTypes::AutomatedTesting);
+		Address::from_one_pubkey(&pub_view5, global::ChainTypes::AutomatedTesting);
 	let payment_id5 = PaymentId::new();
 	let (pri_nonce5, _pub_nonce5) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
 
@@ -276,12 +287,26 @@ fn mine_block_with_nit_tx() {
 				recipient_addr4.clone(),
 				simulated_rp_hash3,
 			),
-			build_v4::output_wrnp(value - 110000, pri_nonce5, recipient_addr5, payment_id5, 12),
+			build_v4::output_wrnp(
+				value - 110000,
+				pri_nonce5,
+				recipient_addr5.clone(),
+				payment_id5,
+				12,
+			),
 		],
 		&keychain,
 		&pb,
 	)
 	.unwrap();
+	tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+	let sig_saved = tx
+		.inputs_with_sig()
+		.inputs_with_sig()
+		.first()
+		.unwrap()
+		.sig
+		.clone();
 
 	let key_id5 = ExtKeychainPath::new(1, 5, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id5, vec![tx.clone()]);
@@ -291,6 +316,75 @@ fn mine_block_with_nit_tx() {
 		"transaction 2ni1no: {}",
 		serde_json::to_string_pretty(&tx).unwrap()
 	);
+
+	// a transaction with wrong input signature (1ni-2o) in block #13
+
+	let spending_output = tx.outputs_with_rnp().first().unwrap();
+	let key_id6 = ExtKeychainPath::new(1, 6, 0, 0, 0).to_identifier();
+	let key_id7 = ExtKeychainPath::new(1, 7, 0, 0, 0).to_identifier();
+
+	let simulated_index: u64 = chain
+		.get_output_pos(&spending_output.commitment())
+		.unwrap()
+		.1;
+	let simulated_rp_hash = (simulated_index - 1, spending_output.proof).hash();
+
+	let tx = build_v4::transaction(
+		KernelFeatures::Plain { fee: 20000 },
+		&[
+			build_v4::input_with_sig(
+				value - 110000,
+				pri_view5.clone(),
+				pri_view5,
+				spending_output.identifier_with_rnp(),
+				recipient_addr5.clone(),
+				simulated_rp_hash,
+			),
+			build_v4::output(value - 110000 - 20000 - 80000, key_id6.clone()),
+			build_v4::output(80000, key_id7.clone()),
+		],
+		&keychain,
+		&pb,
+	)
+	.unwrap();
+	tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
+
+	let mut wrong_tx = tx.clone();
+	let inputs = Inputs::CommitsWithSig(vec![CommitWithSig {
+		commit: wrong_tx
+			.body
+			.inputs_with_sig
+			.commits()
+			.first()
+			.unwrap()
+			.clone(),
+		sig: sig_saved,
+	}]);
+	wrong_tx.body = wrong_tx.body.replace_inputs_wsig(inputs);
+
+	// manually build this block
+	let key_id8 = ExtKeychainPath::new(1, 8, 0, 0, 0).to_identifier();
+	let prev = chain.head_header().unwrap();
+	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
+	let fee = wrong_tx.fee();
+	let reward = reward::output(
+		&keychain,
+		&ProofBuilder::new(&keychain),
+		&key_id8,
+		fee,
+		false,
+		13,
+	)
+	.unwrap();
+
+	let txs = vec![wrong_tx.ver()];
+	let mut block = Block::new(&prev, &txs, next_header_info.clone().difficulty, reward).unwrap();
+
+	block.header.timestamp = prev.timestamp + Duration::seconds(60);
+	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
+
+	//todo: assert IncorrectSignature
+	assert!(chain.set_txhashset_roots(&mut block).is_err());
 
 	clean_output_dir(chain_dir);
 }

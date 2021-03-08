@@ -33,6 +33,11 @@ pub trait VerifierCache: Sync + Send {
 		&mut self,
 		accomplished_inputs_with_sig: &[(IdentifierWithRnp, Hash, CommitWithSig)],
 	) -> Vec<(IdentifierWithRnp, Hash, CommitWithSig)>;
+	/// Takes a vec of IdentifierWithRnp and returns those which have not yet been verified.
+	fn filter_r_sig_unverified(
+		&mut self,
+		identifiers_with_rnp: &[IdentifierWithRnp],
+	) -> Vec<IdentifierWithRnp>;
 	/// Takes a vec of tx outputs (w/o R&P') and returns those outputs
 	/// that have not yet had their rangeproofs verified.
 	fn filter_rangeproof_unverified(&mut self, outputs: &[Output]) -> Vec<Output>;
@@ -49,6 +54,8 @@ pub trait VerifierCache: Sync + Send {
 		&mut self,
 		accomplished_inputs_with_sig: Vec<(IdentifierWithRnp, Hash, CommitWithSig)>,
 	);
+	/// Adds a vec of IdentifierWithRnp to the cache (used in conjunction with the the filter above).
+	fn add_r_sig_verified(&mut self, identifiers_with_rnp: Vec<IdentifierWithRnp>);
 	/// Adds a vec of outputs (w/o R&P') to the cache (used in conjunction with the the filter above).
 	fn add_rangeproof_verified(&mut self, outputs: Vec<Output>);
 	/// Adds a vec of outputs (w/ R&P') to the cache (used in conjunction with the the filter above).
@@ -114,6 +121,23 @@ impl VerifierCache for LruVerifierCache {
 		res
 	}
 
+	fn filter_r_sig_unverified(
+		&mut self,
+		identifiers_with_rnp: &[IdentifierWithRnp],
+	) -> Vec<IdentifierWithRnp> {
+		let res = identifiers_with_rnp
+			.iter()
+			.filter(|x| !self.r_sig_verification_cache.contains_key(&x.hash()))
+			.cloned()
+			.collect::<Vec<_>>();
+		trace!(
+			"lru_verifier_cache: Output R sigs: {}, not cached (must verify): {}",
+			identifiers_with_rnp.len(),
+			res.len()
+		);
+		res
+	}
+
 	fn filter_rangeproof_unverified(&mut self, outputs: &[Output]) -> Vec<Output> {
 		let res = outputs
 			.iter()
@@ -165,6 +189,12 @@ impl VerifierCache for LruVerifierCache {
 	) {
 		for i in accomplished_inputs_with_sig {
 			self.input_sig_verification_cache.insert(i.hash(), ());
+		}
+	}
+
+	fn add_r_sig_verified(&mut self, identifiers_with_rnp: Vec<IdentifierWithRnp>) {
+		for o in identifiers_with_rnp {
+			self.r_sig_verification_cache.insert(o.hash(), ());
 		}
 	}
 

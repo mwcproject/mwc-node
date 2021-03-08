@@ -474,12 +474,22 @@ impl TxBodyImpl for TransactionBodyV4 {
 		// Verify the unverified tx kernels.
 		TxKernel::batch_sig_verify(&kernels)?;
 
+		// Find all the IdentifierWithRnp that have not yet been verified.
+		let identifiers_with_rnp = {
+			let mut verifier = verifier.write();
+			verifier.filter_r_sig_unverified(&self.identifiers_with_rnp())
+		};
+
+		// Verify the unverified IdentifierWithRnp.
+		IdentifierWithRnp::batch_sig_verify(&identifiers_with_rnp)?;
+
 		// Cache the successful verification results for the new outputs and kernels.
 		{
 			let mut verifier = verifier.write();
 			verifier.add_rangeproof_verified(outputs);
 			verifier.add_rangeproof_wrnp_verified(outputs_with_rnp);
 			verifier.add_kernel_sig_verified(kernels);
+			verifier.add_r_sig_verified(identifiers_with_rnp);
 		}
 		Ok(())
 	}
@@ -549,6 +559,14 @@ impl TransactionBodyV4 {
 	/// Transaction outputs w/ R&P'.
 	pub fn outputs_with_rnp(&self) -> &[OutputWithRnp] {
 		&self.outputs_with_rnp
+	}
+
+	/// Identifiers w/ R&P'.
+	pub fn identifiers_with_rnp(&self) -> Vec<IdentifierWithRnp> {
+		self.outputs_with_rnp
+			.iter()
+			.map(|o| o.identifier_with_rnp.clone())
+			.collect::<Vec<IdentifierWithRnp>>()
 	}
 
 	/// Builds a new body with the provided inputs (w/o signature) added. Existing

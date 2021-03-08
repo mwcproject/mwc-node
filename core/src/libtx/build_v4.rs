@@ -685,6 +685,36 @@ mod test {
 		// Note: tx.validate() does not verify the Input signature, which is the job of chain validation against utxo set
 		tx.validate(Weighting::AsTransaction, vc.clone()).unwrap();
 
-		println!("nit 1ni2no: {}", serde_json::to_string_pretty(&tx).unwrap())
+		println!("nit 1ni2no: {}", serde_json::to_string_pretty(&tx).unwrap());
+
+		// Wrong R Signature should validate fail
+		let mut wrong_tx = tx.clone();
+		wrong_tx.body.outputs_with_rnp[0].identifier_with_rnp.r_sig =
+			wrong_tx.body.outputs_with_rnp[1].identifier_with_rnp.r_sig;
+		assert_eq!(
+			wrong_tx.validate(Weighting::AsTransaction, vc.clone()),
+			Err(crate::core::transaction::Error::IncorrectSignature)
+		);
+
+		// Wrong R should validate fail
+		let mut wrong_tx = tx.clone();
+		wrong_tx.body.outputs_with_rnp[0].identifier_with_rnp.nonce =
+			wrong_tx.body.outputs_with_rnp[1].identifier_with_rnp.nonce;
+		assert_eq!(
+			wrong_tx.validate(Weighting::AsTransaction, vc.clone()),
+			Err(crate::core::transaction::Error::IncorrectSignature)
+		);
+
+		// Wrong P' should validate fail
+		let mut wrong_tx = tx.clone();
+		wrong_tx.body.outputs_with_rnp[0]
+			.identifier_with_rnp
+			.onetime_pubkey = wrong_tx.body.outputs_with_rnp[1]
+			.identifier_with_rnp
+			.onetime_pubkey;
+		assert_eq!(
+			wrong_tx.validate(Weighting::AsTransaction, vc.clone()),
+			Err(crate::core::transaction::Error::IncorrectSignature)
+		);
 	}
 }
