@@ -165,30 +165,30 @@ impl<'a> UTXOView<'a> {
 			)
 			.into()),
 			Inputs::CommitsWithSig(inputs) => {
-				let mut outputs_spent = vec![];
+				let mut accomplished_inputs_with_sig = vec![];
+				let mut res: Vec<(IdentifierWithRnp, CommitPos)> = vec![];
 				for input in inputs {
-					outputs_spent.push(self.validate_input_with_sig(input.commitment(), batch)?);
+					let validated = self.validate_input_with_sig(input.commitment(), batch)?;
+					accomplished_inputs_with_sig.push((validated.0, validated.1, input.clone()));
+					res.push((validated.0, validated.2));
 				}
 
 				// Signature validation
-				let inputs_with_sig = {
+				let filtered_accomplished_inputs_with_sig = {
 					let mut verifier = verifier.write();
-					verifier.filter_input_with_sig_unverified(inputs)
+					verifier.filter_input_with_sig_unverified(&accomplished_inputs_with_sig)
 				};
-
-				// Get Vec<IdentifierWithRnp> only
-				let rnps = outputs_spent
-					.iter()
-					.map(|o| (o.0, o.1))
-					.collect::<Vec<(IdentifierWithRnp, Hash)>>();
 
 				// Verify the unverified inputs signatures.
 				// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
-				CommitWithSig::batch_sig_verify(&inputs_with_sig, &rnps)?;
-				Ok(outputs_spent
-					.iter()
-					.map(|o| (o.0, o.2))
-					.collect::<Vec<(IdentifierWithRnp, CommitPos)>>())
+				CommitWithSig::batch_sig_verify(&filtered_accomplished_inputs_with_sig)?;
+
+				// Cache the successful verification results for the new inputs_with_sig.
+				{
+					let mut verifier = verifier.write();
+					verifier.add_input_with_sig_verified(filtered_accomplished_inputs_with_sig);
+				}
+				Ok(res)
 			}
 		}
 	}

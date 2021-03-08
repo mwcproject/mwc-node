@@ -16,7 +16,7 @@
 //! We pass a "caching verifier" into the block validation processing with this.
 
 use crate::core::hash::{Hash, Hashed};
-use crate::core::{CommitWithSig, Output, OutputWithRnp, TxKernel};
+use crate::core::{CommitWithSig, IdentifierWithRnp, Output, OutputWithRnp, TxKernel};
 use lru_cache::LruCache;
 
 /// Verifier cache for caching expensive verification results.
@@ -31,32 +31,41 @@ pub trait VerifierCache: Sync + Send {
 	/// Takes a vec of inputs with sig and returns those inputs that have not yet been verified.
 	fn filter_input_with_sig_unverified(
 		&mut self,
-		inputs_with_sig: &[CommitWithSig],
-	) -> Vec<CommitWithSig>;
+		accomplished_inputs_with_sig: &[(IdentifierWithRnp, Hash, CommitWithSig)],
+	) -> Vec<(IdentifierWithRnp, Hash, CommitWithSig)>;
 	/// Takes a vec of tx outputs (w/o R&P') and returns those outputs
 	/// that have not yet had their rangeproofs verified.
 	fn filter_rangeproof_unverified(&mut self, outputs: &[Output]) -> Vec<Output>;
 	/// Takes a vec of tx outputs (w/ R&P') and returns those outputs
 	/// that have not yet had their rangeproofs verified.
-	fn filter_rangeproof_unverified_v2(&mut self, outputs: &[OutputWithRnp]) -> Vec<OutputWithRnp>;
+	fn filter_rangeproof_wrnp_unverified(
+		&mut self,
+		outputs: &[OutputWithRnp],
+	) -> Vec<OutputWithRnp>;
 	/// Adds a vec of tx kernels to the cache (used in conjunction with the the filter above).
 	fn add_kernel_sig_verified(&mut self, kernels: Vec<TxKernel>);
 	/// Adds a vec of inputs with sig  to the cache (used in conjunction with the the filter above).
-	fn add_input_with_sig_verified(&mut self, inputs_with_sig: Vec<CommitWithSig>);
+	fn add_input_with_sig_verified(
+		&mut self,
+		accomplished_inputs_with_sig: Vec<(IdentifierWithRnp, Hash, CommitWithSig)>,
+	);
 	/// Adds a vec of outputs (w/o R&P') to the cache (used in conjunction with the the filter above).
 	fn add_rangeproof_verified(&mut self, outputs: Vec<Output>);
 	/// Adds a vec of outputs (w/ R&P') to the cache (used in conjunction with the the filter above).
-	fn add_rangeproof_verified_v2(&mut self, outputs: Vec<OutputWithRnp>);
+	fn add_rangeproof_wrnp_verified(&mut self, outputs: Vec<OutputWithRnp>);
 }
 
 /// An implementation of verifier_cache using lru_cache.
 /// - Caches tx kernels by kernel hash.
-/// - Caches for input signature by input hash, do not sharing with kernel cache.
-/// - Caches outputs by output rangeproof hash (rangeproofs are committed to separately).
+/// - Caches input signature by input hash.
+/// - Caches Outputs by output rangeproof hash (rangeproofs are committed to separately).
+/// - Caches OutputWithRnp by output rangeproof hash (rangeproofs are committed to separately).
 pub struct LruVerifierCache {
 	kernel_sig_verification_cache: LruCache<Hash, ()>,
 	input_sig_verification_cache: LruCache<Hash, ()>,
+	r_sig_verification_cache: LruCache<Hash, ()>,
 	rangeproof_verification_cache: LruCache<Hash, ()>,
+	rangeproof_wrnp_verification_cache: LruCache<Hash, ()>,
 }
 
 impl LruVerifierCache {
@@ -66,7 +75,9 @@ impl LruVerifierCache {
 		LruVerifierCache {
 			kernel_sig_verification_cache: LruCache::new(50_000),
 			input_sig_verification_cache: LruCache::new(50_000),
+			r_sig_verification_cache: LruCache::new(50_000),
 			rangeproof_verification_cache: LruCache::new(50_000),
+			rangeproof_wrnp_verification_cache: LruCache::new(50_000),
 		}
 	}
 }
@@ -88,16 +99,16 @@ impl VerifierCache for LruVerifierCache {
 
 	fn filter_input_with_sig_unverified(
 		&mut self,
-		inputs_with_sig: &[CommitWithSig],
-	) -> Vec<CommitWithSig> {
-		let res = inputs_with_sig
+		accomplished_inputs_with_sig: &[(IdentifierWithRnp, Hash, CommitWithSig)],
+	) -> Vec<(IdentifierWithRnp, Hash, CommitWithSig)> {
+		let res = accomplished_inputs_with_sig
 			.iter()
 			.filter(|x| !self.input_sig_verification_cache.contains_key(&x.hash()))
 			.cloned()
 			.collect::<Vec<_>>();
 		trace!(
 			"lru_verifier_cache: input sigs: {}, not cached (must verify): {}",
-			inputs_with_sig.len(),
+			accomplished_inputs_with_sig.len(),
 			res.len()
 		);
 		res
@@ -121,12 +132,15 @@ impl VerifierCache for LruVerifierCache {
 		res
 	}
 
-	fn filter_rangeproof_unverified_v2(&mut self, outputs: &[OutputWithRnp]) -> Vec<OutputWithRnp> {
+	fn filter_rangeproof_wrnp_unverified(
+		&mut self,
+		outputs: &[OutputWithRnp],
+	) -> Vec<OutputWithRnp> {
 		let res = outputs
 			.iter()
 			.filter(|x| {
 				!self
-					.rangeproof_verification_cache
+					.rangeproof_wrnp_verification_cache
 					.contains_key(&x.proof.hash())
 			})
 			.cloned()
@@ -145,8 +159,11 @@ impl VerifierCache for LruVerifierCache {
 		}
 	}
 
-	fn add_input_with_sig_verified(&mut self, inputs_with_sig: Vec<CommitWithSig>) {
-		for i in inputs_with_sig {
+	fn add_input_with_sig_verified(
+		&mut self,
+		accomplished_inputs_with_sig: Vec<(IdentifierWithRnp, Hash, CommitWithSig)>,
+	) {
+		for i in accomplished_inputs_with_sig {
 			self.input_sig_verification_cache.insert(i.hash(), ());
 		}
 	}
@@ -158,9 +175,9 @@ impl VerifierCache for LruVerifierCache {
 		}
 	}
 
-	fn add_rangeproof_verified_v2(&mut self, outputs: Vec<OutputWithRnp>) {
+	fn add_rangeproof_wrnp_verified(&mut self, outputs: Vec<OutputWithRnp>) {
 		for o in outputs {
-			self.rangeproof_verification_cache
+			self.rangeproof_wrnp_verification_cache
 				.insert(o.proof.hash(), ());
 		}
 	}

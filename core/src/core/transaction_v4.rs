@@ -453,7 +453,7 @@ impl TxBodyImpl for TransactionBodyV4 {
 		// rangeproofs verification for outputs_with_rnp
 		let outputs_with_rnp = {
 			let mut verifier = verifier.write();
-			verifier.filter_rangeproof_unverified_v2(&self.outputs_with_rnp)
+			verifier.filter_rangeproof_wrnp_unverified(&self.outputs_with_rnp)
 		};
 		if !outputs_with_rnp.is_empty() {
 			let mut commits = vec![];
@@ -478,7 +478,7 @@ impl TxBodyImpl for TransactionBodyV4 {
 		{
 			let mut verifier = verifier.write();
 			verifier.add_rangeproof_verified(outputs);
-			verifier.add_rangeproof_verified_v2(outputs_with_rnp);
+			verifier.add_rangeproof_wrnp_verified(outputs_with_rnp);
 			verifier.add_kernel_sig_verified(kernels);
 		}
 		Ok(())
@@ -1165,24 +1165,19 @@ impl CommitWithSig {
 	}
 
 	/// Batch signature verification.
-	/// Because of VerifierCache, it's not a requirement here that both vectors has same size,
-	/// but they must be in same order, and each input commit must be included in the accomplished_inputs vector.
 	pub fn batch_sig_verify(
-		inputs_with_sig: &[CommitWithSig],
-		accomplished_inputs: &[(IdentifierWithRnp, Hash)],
+		accomplished_inputs_with_sig: &[(IdentifierWithRnp, Hash, CommitWithSig)],
 	) -> Result<(), Error> {
-		let len = inputs_with_sig.len();
+		let len = accomplished_inputs_with_sig.len();
 		let mut sigs = Vec::with_capacity(len);
 		let mut pubkeys = Vec::with_capacity(len);
 		let mut msgs = Vec::with_capacity(len);
 
-		let mut rnp_iter = accomplished_inputs.iter();
-		for input_with_sig in inputs_with_sig {
-			sigs.push(input_with_sig.sig.clone());
-			let rnp = rnp_iter.next().ok_or(Error::IncorrectSignature)?;
-			if rnp.0.commitment() == input_with_sig.commit {
-				pubkeys.push(rnp.0.onetime_pubkey.clone());
-				msgs.push(rnp.0.input_sig_msg(rnp.1));
+		for (rnp, h, input) in accomplished_inputs_with_sig {
+			sigs.push(input.sig.clone());
+			if rnp.commitment() == input.commit {
+				pubkeys.push(rnp.onetime_pubkey.clone());
+				msgs.push(rnp.input_sig_msg(*h));
 			} else {
 				return Err(Error::IncorrectSignature);
 			}
