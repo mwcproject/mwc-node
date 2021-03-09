@@ -24,19 +24,19 @@ all information about the peers. Here the proposed workflow:
 1. Wallet start listening on CoinJoin messages and advertise that it is ready to participate. Part 
    of advertisement should be the number of expected coinjoin transactions (T).
 2. Listening to the traffic will allow to learn information about other participants and detect who behave honestly.
-3. Over time each participant will be able to build a pool of participants who will agree to build a transaction with the same T value.
+3. Over time each participant will be able to build a pool of participants who agree to build a transaction with the same T value.
 4. Because T is known, the expected number of participants can be selected as T*2 and any wallet can start the building the transaction.
    The first few participants will pay less fees. For example for T=5 and, of participants 10, assuming all transactions has 1 input, 1 output and 1 kernel, 
    the fees will looks like: `0.000,  0.001,  0.002, 0.003, 0.005, 0.007, 0.008, 0.008, 0.008, 0.008` So the first participant 
    will pay nothing, second will pay 0.001 MWC, the last four will pay 0.008 each. The fees values can vary because participants can include 
-   any transactions without limitations. But it is important to understand that first participants paying much smaller fees then the rest of the pool. 
-5. The initiator will build a transaction, for example it can be self transaction. Select the random participant and send encrypted message to him.
+   any transactions without limitations. But it is important to understand that first participants are paying much smaller fees then the rest of the pool. 
+5. The initiator will build a transaction, for example it can include a self transaction. Select the random participant and send encrypted message to him.
 6. Whoever gets the message, will add it's own transaction and aggregate the result. After aggregation it will be impossible to learn 
    how to trace inputs/outputs. Then another participant will be selected and aggregated transaction will be sent.
 7. Eventually all 10 participants will be able to add inputs/outputs and result of aggregation will be posted to the network.
    For mwc network it is be a regular coinjoin multikernel transaction.
 
-If some of participants will behave not honestly, others will be able to learn that fact by observing the traffic, remove him 
+If some of participants are dishonest, others will be able to learn that fact by observing the traffic, remove him 
 from the Coinjoin pool and retry. With every attempts to create a coinjoin transaction, all participants need to be regenerated outputs.
 
 Please note, there are some natural features of this method:
