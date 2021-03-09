@@ -13,7 +13,7 @@ The mwc-wallet will inspect the blocks and indentify the outputs that are potent
 It will assume outputs are untraceable if the block contain multiple transactions (more then T kernels and T outputs) 
 Value of T need to be defined by user, more is better. Value of 5 should give good privacy assuming no observer was tracking transactions from mempool in the past.
 
-Over some time period, because of the cut-though, the number of kernels and outputs will decline. Because of that
+Over a certain time period, because of the cut-though, the number of kernels and outputs will decline. Because of that
 wallet will need to track it's old outputs and periodically spend them. The time period will depend on network activity. *** @Suem can confirm
 
 ## Coinjoin pool overview
