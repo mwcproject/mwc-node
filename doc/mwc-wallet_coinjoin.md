@@ -23,7 +23,7 @@ all information about the peers. Here the proposed workflow:
 
 1. Wallet start listening on CoinJoin messages and advertise that it is ready to participate. Part 
    of advertisement should be the number of expected coinjoin transactions (T).
-2. Listening the traffic will allow to learn information about other participants and detect who behave honestly.
+2. Listening to the traffic will allow to learn information about other participants and detect who behave honestly.
 3. Over the time each participant will be able to build a pool of participants who will agree to build a transaction with the same T value.
 4. Because T is known, the expected number of participants can be selected as T*2 and any wallet can start the building the transaction.
    The first few participants will pay less fees. For example for T=5 and, of participants 10, assuming all transactions has 1 input, 1 output and 1 kernel, 
