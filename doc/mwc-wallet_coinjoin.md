@@ -18,8 +18,8 @@ wallet will need to track it's old outputs and periodically spend them. The time
 
 ## Coinjoin pool overview
 
-To build the coinjoin transaction, multiple participant should exchange with it's own transactions in a way, so none of them will be able to learn 
-all information about the peers. The workflow is this:
+To build the coinjoin transaction, multiple participants should exchange with it's own transactions in a way, so none of them will be able to learn 
+all information about the peers. Here the proposed workflow:
 
 1. Wallet start listening on CoinJoin messages and advertise that it is ready to participate. Part 
    of advertisement should be the number of expected coinjoin transactions (T).
