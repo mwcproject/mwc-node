@@ -536,6 +536,8 @@ pub async fn run_libp2p_node(
 		Poll::Pending as Poll<()>
 	}));
 
+	reset_libp2p_swarm();
+
 	Ok(())
 }
 
