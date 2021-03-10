@@ -861,6 +861,36 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), ErrorKind>;
+
+	/**
+	Networked version of [Owner::get_tor_address](struct.Owner.html#method.get_tor_address).
+
+	# Json rpc example
+
+	```
+	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"method": "get_tor_address",
+		"params": [],
+		"id": 1
+	}
+	# "#
+	# ,
+	# r#"
+	{
+		"id": 1,
+		"jsonrpc": "2.0",
+		"result": {
+			"Ok": null
+		}
+	}
+	# "#
+	# );
+	```
+	 */
+	fn get_tor_address(&self) -> Result<Option<String>, ErrorKind>;
 }
 
 impl<B, P, V> ForeignRpc for Foreign<B, P, V>
@@ -986,6 +1016,10 @@ where
 	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), ErrorKind> {
 		Foreign::push_transaction(self, tx, fluff).map_err(|e| e.kind().clone())
+	}
+
+	fn get_tor_address(&self) -> Result<Option<String>, ErrorKind> {
+		Ok(Foreign::get_tor_address(self))
 	}
 }
 

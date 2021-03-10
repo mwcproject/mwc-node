@@ -61,6 +61,6 @@ pub use crate::types::{
 };
 
 pub use crate::libp2p_connection::{
-	add_new_peer, build_integrity_message, get_libp2p_connections, read_integrity_message,
+	add_new_peer, build_integrity_message, get_libp2p_connections, read_message_data,
 	run_libp2p_node, set_seed_list,
 };
