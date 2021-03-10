@@ -66,7 +66,7 @@ macro_rules! try_break {
 				// to avoid the heavy polling which will consume CPU 100%
 				thread::sleep(Duration::from_millis(10));
 				None
-				}
+			}
 			Err(Error::Store(_))
 			| Err(Error::Chain(_))
 			| Err(Error::Internal(_))
@@ -74,8 +74,8 @@ macro_rules! try_break {
 			Err(ref e) => {
 				debug!("try_break: exit the loop: {:?}", e);
 				break;
-				}
 			}
+		}
 	};
 }
 
@@ -83,7 +83,7 @@ macro_rules! try_header {
 	($res:expr, $conn: expr) => {{
 		let _ = $conn.set_read_timeout(Some(HEADER_IO_TIMEOUT));
 		try_break!($res)
-		}};
+	}};
 }
 
 /// A message as received by the connection. Provides access to the message

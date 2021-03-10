@@ -392,31 +392,36 @@ impl Server {
 				thread::Builder::new()
 					.name("libp2p_node".to_string())
 					.spawn(move || {
-						let requested_kernel_cache: RwLock<HashMap<Commitment, TxKernel>> =
+						let requested_kernel_cache: RwLock<HashMap<Commitment, (TxKernel, u64)>> =
 							RwLock::new(HashMap::new());
 						let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
 
-						let output_validation_fn = move |excess: &Commitment| -> Option<TxKernel> {
+						let output_validation_fn = move |excess: &Commitment| -> Result<
+							Option<TxKernel>,
+							grin_p2p::Error,
+						> {
+							// Tip is needed in order to request from last 24 hours (1440 blocks)
+							let tip_height = clone_shared_chain.head()?.height;
+
 							let cur_time = Utc::now().timestamp();
-							// let's clean cache every hour. Filling out the cache shouldn't be a big deal.
+							// let's clean cache every 10 minutes. Removing all expired items
 							{
 								let mut last_time_cache_cleanup = last_time_cache_cleanup.write();
-								if cur_time - 3600 > *last_time_cache_cleanup {
-									requested_kernel_cache.write().clear();
+								if cur_time - 600 > *last_time_cache_cleanup {
+									let min_height = tip_height
+										- libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS
+										- libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS / 12;
+									requested_kernel_cache
+										.write()
+										.retain(|_k, v| v.1 > min_height);
 									*last_time_cache_cleanup = cur_time;
 								}
 							}
 
 							// Checking if we hit the cache
 							if let Some(tx) = requested_kernel_cache.read().get(excess) {
-								return Some(tx.clone());
+								return Ok(Some(tx.clone().0));
 							}
-
-							// Tip is needed in order to request from last 24 hours (1440 blocks)
-							let tip_height = match clone_shared_chain.head() {
-								Ok(tip) => tip.height,
-								Err(_) => return None,
-							};
 
 							// !!! Note, get_kernel_height does iteration through the MMR. That will work until we
 							// Ban nodes that sent us incorrect excess. For now it should work fine. Normally
@@ -425,14 +430,14 @@ impl Server {
 								excess,
 								Some(tip_height - libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS),
 								None,
-							) {
-								Ok(Some((tx_kernel, _, _))) => {
+							)? {
+								Some((tx_kernel, height, _)) => {
 									requested_kernel_cache
 										.write()
-										.insert(excess.clone(), tx_kernel.clone());
-									Some(tx_kernel)
+										.insert(excess.clone(), (tx_kernel.clone(), height));
+									Ok(Some(tx_kernel))
 								}
-								_ => None,
+								None => Ok(None),
 							}
 						};
 
@@ -442,7 +447,6 @@ impl Server {
 							libp2p_port,
 							fee_base,
 							output_validation_fn,
-							HashMap::new(),
 						);
 
 						info!("Starting gossipsub libp2p server");

@@ -34,7 +34,7 @@ use libp2p::{
 use libp2p_tokio_socks5::Socks5TokioTcpConfig;
 
 use libp2p::gossipsub::{
-	self, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity, ValidationMode,
+	self, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity, MessageId, ValidationMode,
 };
 use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
@@ -73,7 +73,14 @@ lazy_static! {
 	static ref LIBP2P_SWARM: Mutex<Option<Swarm<Gossipsub>>> = Mutex::new(None);
 	static ref LIBP2P_PEERS: Mutex<HashMap<PeerId, (Vec<PeerId>, u64)>> =
 		Mutex::new(HashMap::new());
-	static ref THIS_NODE: PeerId = PeerId::random("".to_string());
+	// Just a temp reusable peer hash needed for LIBP2P_PEERS keys (hash must be the same)
+	static ref TMP_HASH: PeerId = PeerId::random("".to_string());
+
+	static ref THIS_PEER_ID: Mutex<Option<PeerId>> = Mutex::new(None);
+
+	// Message handlers arguments: topic hash, message (no header), paid integrity fee
+	//   Handler must return false if the message is incorrect, so the peer must be banned.
+	static ref LIBP2P_MESSAGE_HANDLERS: Mutex<HashMap<TopicHash, (fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool, Topic)>> = Mutex::new(HashMap::new());
 }
 
 // Message with same integrity output consensus
@@ -86,6 +93,13 @@ pub const INTEGRITY_CALL_MAX_PERIOD: i64 = 15;
 pub const INTEGRITY_FEE_VALID_BLOCKS: u64 = 1440;
 /// Minimum integrity fee value in term of Base fees
 pub const INTEGRITY_FEE_MIN_X: u64 = 10;
+
+pub fn get_this_peer_id() -> Option<PeerId> {
+	THIS_PEER_ID.lock().clone()
+}
+pub fn set_this_peer_id(peer_id: &PeerId) {
+	THIS_PEER_ID.lock().replace(peer_id.clone());
+}
 
 /// Init Swarm instance. App expecting to have only single instance for everybody.
 pub fn init_libp2p_swarm(swarm: Swarm<Gossipsub>) {
@@ -110,6 +124,65 @@ pub fn set_seed_list(seed_list: &Vec<PeerAddr>) {
 	}
 }
 
+pub fn get_libp2p_running() -> bool {
+	LIBP2P_SWARM.lock().is_some()
+}
+
+/// Stop listening on the topic
+pub fn remove_topic(topic: &str) {
+	// remove topic and handler
+	let topic = Topic::new(topic);
+	let mut handlers = LIBP2P_MESSAGE_HANDLERS.lock();
+	if handlers.remove(&topic.hash()).is_some() {
+		// Let's Unregister in the swarm
+		match &mut *LIBP2P_SWARM.lock() {
+			Some(swarm) => match swarm.unsubscribe(&topic) {
+				Ok(res) => {
+					if !res {
+						warn!("Not found expected subscribed topic {}", topic);
+					}
+				}
+				Err(e) => warn!("Unable to unsubscribe from the topic {}", e),
+			},
+			None => (),
+		}
+	}
+}
+
+/// Start listen on topic
+/// Message handlers arguments: topic hash, message (no header), paid integrity fee
+//   Handler must return false if the message is incorrect, so the peer must be banned.
+pub fn add_topic(
+	topic: &str,
+	handler: fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool,
+) {
+	let mut handlers = LIBP2P_MESSAGE_HANDLERS.lock();
+	let topic = Topic::new(topic);
+	let _ = handlers.insert(topic.hash(), (handler, topic.clone()));
+
+	// Let's Unregister in the swarm
+	match &mut *LIBP2P_SWARM.lock() {
+		Some(swarm) => match swarm.subscribe(&topic) {
+			Ok(_res) => (),
+			Err(e) => warn!("Unable to subscribe to the topic {:?}", e),
+		},
+		None => (),
+	}
+}
+
+pub fn publish_message(topic: &Topic, integrity_message: Vec<u8>) -> Option<MessageId> {
+	match &mut *LIBP2P_SWARM.lock() {
+		Some(swarm) => match swarm.publish(topic.clone(), integrity_message) {
+			Ok(msg_id) => Some(msg_id),
+			Err(e) => {
+				warn!("Unable to publish libp2p message, {}", e);
+				None
+			}
+		},
+		None => None,
+	}
+}
+
 /// Request number of established connections to libp2p
 pub fn get_libp2p_connections() -> u32 {
 	match &*LIBP2P_SWARM.lock() {
@@ -120,7 +193,7 @@ pub fn get_libp2p_connections() -> u32 {
 	}
 }
 
-/// Reporting new discovered mwc-wallet peer. That might be libp2p reep as well
+/// Reporting new discovered mwc-wallet peer. That might be libp2p node as well
 pub fn add_new_peer(peer: &PeerAddr) -> Result<(), Error> {
 	info!("libp2p adding a new peer {}", peer);
 	let addr = format!(
@@ -131,17 +204,17 @@ pub fn add_new_peer(peer: &PeerAddr) -> Result<(), Error> {
 		)))?
 	);
 
-	let p = PeerId::from_multihash(THIS_NODE.clone().into(), addr)
+	let p = PeerId::from_multihash(TMP_HASH.clone().into(), addr)
 		.map_err(|e| Error::Libp2pError(format!("Unable to build the peer id, {:?}", e)))?;
 	let cur_time = Utc::now().timestamp() as u64;
 	let mut peer_list = LIBP2P_PEERS.lock();
-	if let Some((peers, time)) = peer_list.get_mut(&THIS_NODE) {
+	if let Some((peers, time)) = peer_list.get_mut(&TMP_HASH) {
 		if !peers.contains(&p) {
 			peers.push(p);
 		}
 		*time = cur_time;
 	} else {
-		peer_list.insert(THIS_NODE.clone(), (vec![p], cur_time));
+		peer_list.insert(TMP_HASH.clone(), (vec![p], cur_time));
 	}
 
 	Ok(())
@@ -155,11 +228,14 @@ pub async fn run_libp2p_node(
 	onion_address: String,
 	libp2p_port: u16,
 	fee_base: u64,
-	kernel_validation_fn: impl Fn(&Commitment) -> Option<TxKernel>,
-	message_handlers: HashMap<String, fn(Vec<u8>) -> ()>,
+	kernel_validation_fn: impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>,
 ) -> Result<(), Error> {
 	// need to remove '.onion' ending first
-	let onion_address = &onion_address[..(onion_address.len() - ".onion".len())];
+	let onion_address = if onion_address.ends_with(".onion") {
+		&onion_address[..(onion_address.len() - ".onion".len())]
+	} else {
+		&onion_address
+	};
 
 	// Init Tor address configs..
 	// 80 comes from: /tor/listener/torrc   HiddenServicePort 80 0.0.0.0:13425
@@ -175,6 +251,7 @@ pub async fn run_libp2p_node(
 	// Each time will join with a new p2p node ID. I think it is fine, let's keep p2p network dynamic
 	let id_keys = Keypair::generate_ed25519();
 	let this_peer_id = PeerId::from_public_key(id_keys.public(), addr_str.clone());
+	set_this_peer_id(&this_peer_id);
 
 	// Building transport
 	let dh_keys = noise::Keypair::<X25519Spec>::new()
@@ -242,17 +319,21 @@ pub async fn run_libp2p_node(
 	})
 	.await;*/
 
-	init_libp2p_swarm(swarm);
-
 	// Special topic for peer reporting. We don't need to listen on it and we
 	// don't want the node forward that message as well
 	let peer_topic = Topic::new(libp2p::gossipsub::PEER_TOPIC).hash();
 
-	// Convert massage topics to hash
-	let message_handlers: HashMap<TopicHash, fn(Vec<u8>) -> ()> = message_handlers
-		.into_iter()
-		.map(|(k, v)| (Topic::new(k).hash(), v))
-		.collect();
+	// Subscribe to the topics that we are ready to listen
+	LIBP2P_MESSAGE_HANDLERS
+		.lock()
+		.iter()
+		.for_each(|(_topic_hash, (_fn, topic))| {
+			if let Err(e) = swarm.subscribe(&topic) {
+				error!("Unable initial subscribe to the topic, {:?}", e);
+			}
+		});
+
+	init_libp2p_swarm(swarm);
 
 	let mut requests_cash: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
 	let mut last_cash_clean = Instant::now();
@@ -333,34 +414,49 @@ pub async fn run_libp2p_node(
 									// We get the regular message and we need to validate it now.
 
 									let gossip = swarm.get_behaviour();
-									if !validate_integrity_message(
+
+									let acceptance = match validate_integrity_message(
 										&peer_id,
 										&message.data,
 										&kernel_validation_fn,
 										&mut requests_cash,
 										fee_base,
 									) {
-										let _ = gossip.report_message_validation_result(
-											&id,
-											&peer_id,
-											MessageAcceptance::Reject,
-										);
-										debug!("report_message_validation_result failed because of integrity validation");
-										continue;
-									}
+										Ok(integrity_fee) => {
+											if integrity_fee > 0 {
+												let mut acceptance = MessageAcceptance::Accept;
 
-									// Message is valid, let's report that
+												if let Some((handler, _topic)) =
+													LIBP2P_MESSAGE_HANDLERS
+														.lock()
+														.get(&message.topic)
+												{
+													if !(handler)(
+														&peer_id,
+														&message.topic,
+														read_message_data(&message.data),
+														integrity_fee,
+													) {
+														// false mean that message was invalid, so we can ban the peer
+														acceptance = MessageAcceptance::Reject;
+													}
+												}
+												acceptance
+											} else {
+												// Invalid message
+												MessageAcceptance::Reject
+											}
+										}
+										Err(e) => {
+											warn!("Message is skipped, Unable to verify the message because of some error. {:?}", e);
+											MessageAcceptance::Ignore
+										}
+									};
+
+									debug!("report_message_validation_result as {:?}", acceptance);
 									let _ = gossip.report_message_validation_result(
-										&id,
-										&peer_id,
-										MessageAcceptance::Accept,
+										&id, &peer_id, acceptance,
 									);
-									debug!("report_message_validation_result as accepted");
-
-									// Here we can process the message. Let's check first if it is our topic
-									if let Some(handler) = message_handlers.get(&message.topic) {
-										(handler)(message.data);
-									}
 								}
 							}
 							_ => {}
@@ -443,15 +539,16 @@ pub async fn run_libp2p_node(
 	Ok(())
 }
 
-// return true if this message is valid. It is caller responsibility to make sure that valid_outputs cache is well maintained
+// return paid fee if this message is valid. It is caller responsibility to make sure that valid_outputs cache is well maintained
+//  Otherwise return 0, fee is invalid
 // output_validation_fn  - lookup for the kernel excess and returns it's height
 pub fn validate_integrity_message(
 	peer_id: &PeerId,
 	message: &Vec<u8>,
-	output_validation_fn: impl Fn(&Commitment) -> Option<TxKernel>,
+	output_validation_fn: impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>,
 	requests_cash: &mut HashMap<Commitment, VecDeque<i64>>,
 	fee_base: u64,
-) -> bool {
+) -> Result<u64, Error> {
 	let mut ser = SimplePopSerializer::new(message);
 	if ser.version != 1 {
 		debug!(
@@ -459,7 +556,7 @@ pub fn validate_integrity_message(
 			ser.version, peer_id
 		);
 		debug_assert!(false); // Upgrade me
-		return false;
+		return Ok(0);
 	}
 
 	// Let's check signature first. The kernel search might take time. Signature checking should be faster.
@@ -471,7 +568,7 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. integrity_kernel is not valid, {}",
 				peer_id, e
 			);
-			return false;
+			return Ok(0);
 		}
 	};
 
@@ -486,7 +583,7 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Unable to build a message, {}",
 				peer_id, e
 			);
-			return false;
+			return Ok(0);
 		}
 	};
 
@@ -497,7 +594,7 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Unable to read signature, {}",
 				peer_id, e
 			);
-			return false;
+			return Ok(0);
 		}
 	};
 
@@ -514,27 +611,29 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Integrity kernel signature is invalid, {}",
 				peer_id, e
 			);
-			return false;
+			return Ok(0);
 		}
 	}
 
-	let integrity_kernel = match (output_validation_fn)(&integrity_kernel_excess) {
+	let integrity_kernel = match (output_validation_fn)(&integrity_kernel_excess)? {
 		Some(r) => r.clone(),
 		None => {
 			debug!(
 				"Get invalid message from peer {}. integrity_kernel is not found at the blockchain",
 				peer_id
 			);
-			return false;
+			return Ok(0);
 		}
 	};
 
-	if integrity_kernel.features.get_fee() < fee_base * INTEGRITY_FEE_MIN_X {
+	let integrity_fee = integrity_kernel.features.get_fee();
+
+	if integrity_fee < fee_base * INTEGRITY_FEE_MIN_X {
 		debug!(
 			"Get invalid message from peer {}. integrity_kernel fee is below minimal level of 10X accepted base fee",
 			peer_id
 		);
-		return false;
+		return Ok(0);
 	}
 
 	// Updating calls history cash.
@@ -562,16 +661,19 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Message sending period is {}, limit {}",
 				peer_id, call_period, INTEGRITY_CALL_MAX_PERIOD
 			);
-			return false;
+			return Ok(0);
 		}
 	}
 
-	debug!("Validated the message from peer {}", peer_id);
-	return true;
+	debug!(
+		"Validated the message from peer {} with integrity fee {}",
+		peer_id, integrity_fee
+	);
+	return Ok(integrity_fee);
 }
 
 /// Skip the header and return the message data
-pub fn read_integrity_message(message: &Vec<u8>) -> Vec<u8> {
+pub fn read_message_data(message: &Vec<u8>) -> Vec<u8> {
 	let mut ser = SimplePopSerializer::new(message);
 	if ser.version != 1 {
 		debug_assert!(false); // Upgrade me
@@ -625,17 +727,22 @@ fn test_integrity() -> Result<(), Error> {
 	// Validation use case
 	let mut requests_cache: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
 
-	let empty_output_validation_fn = |_commit: &Commitment| -> Option<TxKernel> { None };
+	let empty_output_validation_fn =
+		|_commit: &Commitment| -> Result<Option<TxKernel>, Error> { Ok(None) };
 
 	let fee_base: u64 = 1_000_000;
 
 	let mut valid_kernels = HashMap::<Commitment, TxKernel>::new();
+	let paid_integrity_fee = fee_base * 10;
 	valid_kernels.insert(
 		integrity_kernel,
-		TxKernel::with_features(KernelFeatures::Plain { fee: fee_base * 10 }),
+		TxKernel::with_features(KernelFeatures::Plain {
+			fee: paid_integrity_fee,
+		}),
 	);
-	let output_validation_fn =
-		|commit: &Commitment| -> Option<TxKernel> { valid_kernels.get(commit).cloned() };
+	let output_validation_fn = |commit: &Commitment| -> Result<Option<TxKernel>, Error> {
+		Ok(valid_kernels.get(commit).cloned())
+	};
 
 	// Valid outputs is empty, should fail.
 	assert_eq!(
@@ -645,8 +752,9 @@ fn test_integrity() -> Result<(), Error> {
 			empty_output_validation_fn,
 			&mut requests_cache,
 			fee_base
-		),
-		false
+		)
+		.unwrap(),
+		0
 	);
 	assert!(requests_cache.is_empty());
 
@@ -657,8 +765,9 @@ fn test_integrity() -> Result<(), Error> {
 			output_validation_fn,
 			&mut requests_cache,
 			fee_base
-		),
-		true
+		)
+		.unwrap(),
+		paid_integrity_fee
 	);
 	assert!(requests_cache.len() == 1);
 	assert!(requests_cache.get(&integrity_kernel).unwrap().len() == 1); // call history is onw as well
@@ -671,8 +780,9 @@ fn test_integrity() -> Result<(), Error> {
 			output_validation_fn,
 			&mut requests_cache,
 			fee_base
-		),
-		false
+		)
+		.unwrap(),
+		0
 	);
 	assert!(requests_cache.len() == 0);
 
@@ -685,8 +795,9 @@ fn test_integrity() -> Result<(), Error> {
 				output_validation_fn,
 				&mut requests_cache,
 				fee_base
-			),
-			true
+			)
+			.unwrap(),
+			paid_integrity_fee
 		);
 		assert!(requests_cache.len() == 1);
 		assert!(requests_cache.get(&integrity_kernel).unwrap().len() == i + 1); // call history is onw as well
@@ -699,8 +810,9 @@ fn test_integrity() -> Result<(), Error> {
 			output_validation_fn,
 			&mut requests_cache,
 			fee_base
-		),
-		false
+		)
+		.unwrap(),
+		0
 	);
 	assert!(
 		requests_cache.get(&integrity_kernel).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
@@ -712,8 +824,9 @@ fn test_integrity() -> Result<(), Error> {
 			output_validation_fn,
 			&mut requests_cache,
 			fee_base
-		),
-		false
+		)
+		.unwrap(),
+		0
 	);
 	assert!(
 		requests_cache.get(&integrity_kernel).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
@@ -725,14 +838,15 @@ fn test_integrity() -> Result<(), Error> {
 			output_validation_fn,
 			&mut requests_cache,
 			fee_base
-		),
-		false
+		)
+		.unwrap(),
+		0
 	);
 	assert!(
 		requests_cache.get(&integrity_kernel).unwrap().len() == INTEGRITY_CALL_HISTORY_LEN_LIMIT
 	); // call history is onw as well
 
-	assert_eq!(read_integrity_message(&encoded_message), message);
+	assert_eq!(read_message_data(&encoded_message), message);
 
 	Ok(())
 }

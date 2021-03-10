@@ -19,6 +19,7 @@ use crate::core::core::hash::Hash;
 use crate::core::core::hash::Hashed;
 use crate::core::core::transaction::Transaction;
 use crate::core::core::verifier_cache::VerifierCache;
+use crate::get_server_onion_address;
 use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
 use crate::handlers::pool_api::PoolHandler;
@@ -361,5 +362,10 @@ where
 				Err(e)
 			}
 		}
+	}
+
+	/// Get TOR address on this node. Return none if TOR is not running.
+	pub fn get_tor_address(&self) -> Option<String> {
+		get_server_onion_address()
 	}
 }

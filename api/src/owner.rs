@@ -195,8 +195,4 @@ impl Owner {
 		};
 		peer_handler.unban_peer(addr)
 	}
-
-	pub fn get_tor_address(&self) -> Option<String> {
-		get_server_onion_address()
-	}
 }
