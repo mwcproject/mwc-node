@@ -209,6 +209,13 @@ impl Readable for TransactionBodyV4 {
 }
 
 impl Committed for TransactionBodyV4 {
+	fn outputs_r_committed(&self) -> Vec<Commitment> {
+		self.outputs_with_rnp()
+			.iter()
+			.map(|x| Commitment::from_pubkey(&x.identifier_with_rnp.nonce).unwrap())
+			.collect()
+	}
+
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		let inputs: Vec<_> = self.inputs().into();
 		let mut commits: Vec<Commitment> = inputs.iter().map(|x| x.commitment()).collect();
@@ -782,6 +789,10 @@ impl Readable for TransactionV4 {
 }
 
 impl Committed for TransactionV4 {
+	fn outputs_r_committed(&self) -> Vec<Commitment> {
+		self.body.outputs_r_committed()
+	}
+
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -802,6 +813,10 @@ impl Default for TransactionV4 {
 }
 
 impl TxImpl for TransactionV4 {
+	fn offset(&self) -> BlindingFactor {
+		self.offset.clone()
+	}
+
 	fn inputs(&self) -> Inputs {
 		self.body.inputs()
 	}
@@ -1209,6 +1224,34 @@ impl CommitWithSig {
 		}
 
 		Ok(())
+	}
+}
+
+/// Various Output Id variants.
+/// Used as the returns of Input/s validation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum OutputIds {
+	/// Output w/t R&P', with rangeproof detached.
+	Identifier(OutputIdentifier),
+	/// Output w/ R&P' (from Non-Interactive Transaction), with rangeproof detached.
+	IdentifierW(IdentifierWithRnp),
+}
+
+impl OutputIds {
+	/// Whether an Output Id is IdentifierW.
+	pub fn is_id_with_rnp(&self) -> bool {
+		match self {
+			OutputIds::Identifier(_id) => false,
+			OutputIds::IdentifierW(_id) => true,
+		}
+	}
+
+	/// Get the inner IdentifierWithRnp.
+	pub fn identifier_with_rnp(&self) -> Option<IdentifierWithRnp> {
+		match self {
+			OutputIds::Identifier(_id) => None,
+			OutputIds::IdentifierW(id) => Some(*id),
+		}
 	}
 }
 

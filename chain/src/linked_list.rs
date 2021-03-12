@@ -15,8 +15,8 @@
 //! Implements "linked list" storage primitive for lmdb index supporting multiple entries.
 
 use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
+use crate::core::{CommitPos, CommitPosHt};
 use crate::store::Batch;
-use crate::types::{CommitPos, CommitPosHt};
 use crate::util::secp::pedersen::Commitment;
 use enum_primitive::FromPrimitive;
 use grin_store as store;

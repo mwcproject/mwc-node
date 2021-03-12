@@ -21,12 +21,12 @@ use self::core::core::hash::Hash;
 use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{
 	Block, BlockHeader, BlockSums, IdentifierWithRnp, Inputs, KernelFeatures, OutputIdentifier,
-	Transaction, TxImpl, TxKernel,
+	OutputIds, Transaction, TxImpl, TxKernel, VersionedTransaction,
 };
 use self::core::genesis;
-use self::core::global;
 use self::core::libtx::{build, reward, ProofBuilder};
 use self::core::pow;
+use self::core::{global, CommitPos};
 use self::keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain};
 use self::pool::types::*;
 use self::pool::TransactionPool;
@@ -34,7 +34,6 @@ use self::util::RwLock;
 use chrono::Duration;
 use grin_chain as chain;
 use grin_core as core;
-use grin_core::core::VersionedTransaction;
 use grin_keychain as keychain;
 use grin_pool as pool;
 use grin_util as util;
@@ -138,7 +137,10 @@ impl BlockChain for ChainAdapter {
 			.map_err(|e| PoolError::Other(format!("failed to get block sums, {}", e)))
 	}
 
-	fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(
+		&self,
+		tx: &VersionedTransaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, pool::PoolError> {
 		self.chain.validate_tx(tx).map_err(|e| match e.kind() {
 			chain::ErrorKind::Transaction(txe) => txe.into(),
 			chain::ErrorKind::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,

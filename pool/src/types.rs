@@ -22,7 +22,10 @@ use self::core::core::hash::Hash;
 use self::core::core::transaction;
 use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::versioned_transaction::VersionedTransaction;
-use self::core::core::{BlockHeader, BlockSums, IdentifierWithRnp, Inputs, OutputIdentifier};
+use self::core::core::{
+	BlockHeader, BlockSums, IdentifierWithRnp, Inputs, OutputIdentifier, OutputIds,
+};
+use self::core::CommitPos;
 use self::util::RwLock;
 use chrono::prelude::*;
 use failure::Fail;
@@ -298,7 +301,10 @@ pub trait BlockChain: Sync + Send {
 	fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), PoolError>;
 
 	/// Validate a transaction against the current utxo.
-	fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), PoolError>;
+	fn validate_tx(
+		&self,
+		tx: &VersionedTransaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, PoolError>;
 
 	/// Validate inputs (w/o signature) against the current utxo.
 	/// Returns the vec of output identifiers that would be spent

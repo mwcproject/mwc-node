@@ -19,12 +19,12 @@ use crate::core::core::pmmr::{self, ReadonlyPMMR};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, Commit, CommitWithSig, IdentifierWithRnp, Inputs, Output, OutputFeatures,
-	OutputIdentifier, TxImpl, VersionedTransaction,
+	OutputIdentifier, OutputIds, TxImpl, VersionedTransaction,
 };
 use crate::core::global;
+use crate::core::CommitPos;
 use crate::error::{Error, ErrorKind};
 use crate::store::Batch;
-use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use grin_core::core::OutputWithRnp;
 use grin_store::pmmr::PMMRBackend;
@@ -65,11 +65,32 @@ impl<'a> UTXOView<'a> {
 		&self,
 		block: &Block,
 		batch: &Batch<'_>,
-	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 		for output in block.outputs() {
 			self.validate_output(output, batch)?;
 		}
-		self.validate_inputs(&block.inputs(), batch)
+		let mut res: Vec<(OutputIds, CommitPos)> = self
+			.validate_inputs(&block.inputs(), batch)?
+			.into_iter()
+			.map(|(id, pos)| (OutputIds::Identifier(id), pos))
+			.collect::<Vec<(OutputIds, CommitPos)>>();
+
+		if let Some(outputs) = block.outputs_with_rnp() {
+			for output in outputs {
+				self.validate_output(output, batch)?;
+			}
+			if let Some(inputs) = block.inputs_with_sig() {
+				let res2: Vec<(IdentifierWithRnp, CommitPos)> =
+					self.validate_inputs_with_sig(&inputs, verifier_cache, batch)?;
+				res.extend(
+					res2.into_iter()
+						.map(|(id, pos)| (OutputIds::IdentifierW(id), pos))
+						.collect::<Vec<(OutputIds, CommitPos)>>(),
+				);
+			}
+		}
+		Ok(res)
 	}
 
 	/// Validate a transaction against the current UTXO set.
@@ -80,12 +101,15 @@ impl<'a> UTXOView<'a> {
 		tx: &VersionedTransaction,
 		batch: &Batch<'_>,
 		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
-	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 		for output in tx.outputs() {
 			self.validate_output(output, batch)?;
 		}
-		let mut res: Vec<(OutputIdentifier, CommitPos)> =
-			self.validate_inputs(&tx.inputs(), batch)?;
+		let mut res: Vec<(OutputIds, CommitPos)> = self
+			.validate_inputs(&tx.inputs(), batch)?
+			.into_iter()
+			.map(|(id, pos)| (OutputIds::Identifier(id), pos))
+			.collect::<Vec<(OutputIds, CommitPos)>>();
 
 		if let Some(outputs) = tx.outputs_with_rnp() {
 			for output in outputs {
@@ -95,12 +119,13 @@ impl<'a> UTXOView<'a> {
 				let res2: Vec<(IdentifierWithRnp, CommitPos)> =
 					self.validate_inputs_with_sig(&inputs, verifier_cache, batch)?;
 				res.extend(
-					res2.iter()
-						.map(|r| (r.0.identifier(), r.1))
-						.collect::<Vec<(OutputIdentifier, CommitPos)>>(),
+					res2.into_iter()
+						.map(|(id, pos)| (OutputIds::IdentifierW(id), pos))
+						.collect::<Vec<(OutputIds, CommitPos)>>(),
 				);
 			}
 		}
+
 		Ok(res)
 	}
 

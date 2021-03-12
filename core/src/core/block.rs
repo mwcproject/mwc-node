@@ -39,7 +39,7 @@ use std::convert::TryInto;
 use std::sync::Arc;
 use util::from_hex;
 use util::RwLock;
-use util::{secp, secp::PublicKey, static_secp_instance};
+use util::{secp, secp_static};
 
 /// Errors thrown by Block validation
 #[derive(Fail, Debug, Clone, Eq, PartialEq)]
@@ -253,9 +253,11 @@ pub struct BlockHeader {
 	pub output_wrnp_mmr_size: Option<u64>,
 	/// Total size of the kernel MMR after applying this block
 	pub kernel_mmr_size: u64,
-	/// Total (R-P') for all outputs and inputs since the genesis block.
+	/// Total accumulated sum of (R-P') for all spent outputs since the genesis block.
+	/// We can derive the sum of (R-P') for all spent outputs in *this* block from
+	/// the total_spent_rmp of the previous block header.
 	/// New element since HeaderVersion(3).
-	pub total_rmp: Option<PublicKey>,
+	pub total_spent_rmp: Option<Commitment>,
 	/// Proof of work and related
 	pub pow: ProofOfWork,
 }
@@ -276,7 +278,7 @@ impl Default for BlockHeader {
 			output_mmr_size: 0,
 			output_wrnp_mmr_size: None,
 			kernel_mmr_size: 0,
-			total_rmp: None,
+			total_spent_rmp: None,
 			pow: ProofOfWork::default(),
 		}
 	}
@@ -322,16 +324,15 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 	let range_proof_root = Hash::read(reader)?;
 	let kernel_root = Hash::read(reader)?;
 	let total_kernel_offset = BlindingFactor::read(reader)?;
-	let (output_mmr_size, output_wrnp_mmr_size, kernel_mmr_size, total_rmp) = match version {
+	let (output_mmr_size, output_wrnp_mmr_size, kernel_mmr_size, total_spent_rmp) = match version {
 		HeaderVersion(0) | HeaderVersion(1) | HeaderVersion(2) => {
 			let (s1, s2) = ser_multiread!(reader, read_u64, read_u64);
 			(s1, None, s2, None)
 		}
 		HeaderVersion(3) | _ => {
 			let (s1, s2, s3) = ser_multiread!(reader, read_u64, read_u64, read_u64);
-			let rmp = reader.read_fixed_bytes(secp::constants::COMPRESSED_PUBLIC_KEY_SIZE)?;
-			let total_rmp = PublicKey::from_slice(&rmp).ok();
-			(s1, Some(s2), s3, total_rmp)
+			let total_spent_rmp = Some(Commitment::read(reader)?);
+			(s1, Some(s2), s3, total_spent_rmp)
 		}
 	};
 	let pow = ProofOfWork::read(reader)?;
@@ -358,7 +359,7 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 		output_mmr_size,
 		output_wrnp_mmr_size,
 		kernel_mmr_size,
-		total_rmp,
+		total_spent_rmp,
 		pow,
 	})
 }
@@ -386,7 +387,7 @@ impl BlockHeader {
 			output_mmr_size: 0,
 			output_wrnp_mmr_size: Some(0),
 			kernel_mmr_size: 0,
-			total_rmp: Some(PublicKey::new()),
+			total_spent_rmp: Some(secp_static::commit_to_zero_value()),
 			pow: ProofOfWork::default(),
 		}
 	}
@@ -411,11 +412,9 @@ impl BlockHeader {
 				);
 			}
 			HeaderVersion(3) | _ => {
-				let total_rmp: Vec<u8> = if let Some(rmp) = self.total_rmp {
-					rmp.serialize_vec(true).as_ref().to_vec()
-				} else {
-					[0u8; secp::constants::COMPRESSED_PUBLIC_KEY_SIZE].to_vec()
-				};
+				let total_rmp = self
+					.total_spent_rmp
+					.unwrap_or(secp_static::commit_to_zero_value());
 				ser_multiwrite!(
 					writer,
 					[write_u64, self.height],
@@ -428,9 +427,9 @@ impl BlockHeader {
 					[write_fixed_bytes, &self.total_kernel_offset],
 					[write_u64, self.output_mmr_size],
 					[write_u64, self.output_wrnp_mmr_size.unwrap_or(0)],
-					[write_u64, self.kernel_mmr_size],
-					[write_fixed_bytes, &total_rmp]
+					[write_u64, self.kernel_mmr_size]
 				);
+				total_rmp.write(writer)?;
 			}
 		}
 		Ok(())
@@ -535,9 +534,9 @@ impl BlockHeader {
 		self.total_kernel_offset.clone()
 	}
 
-	/// Total (R-P') for the chain state up to and including this block.
-	pub fn total_rmp(&self) -> PublicKey {
-		self.total_rmp.unwrap_or(PublicKey::new()).clone()
+	/// Total spent outputs (R-P') sum for the chain state up to and including this block.
+	pub fn total_spent_rmp(&self) -> Option<Commitment> {
+		self.total_spent_rmp
 	}
 }
 
@@ -681,6 +680,10 @@ impl Readable for Block {
 /// Provides all information from a block that allows the calculation of total
 /// Pedersen commitment.
 impl Committed for Block {
+	fn outputs_r_committed(&self) -> Vec<Commitment> {
+		self.body.outputs_r_committed()
+	}
+
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -1005,7 +1008,7 @@ impl Block {
 			.collect::<Vec<&TxKernel>>();
 
 		{
-			let secp = static_secp_instance();
+			let secp = secp_static::static_secp_instance();
 			let secp = secp.lock();
 			let over_commit = secp.commit_value(reward(self.total_fees(), self.header.height))?;
 

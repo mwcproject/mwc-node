@@ -15,18 +15,17 @@
 //! Implementation of the chain block acceptance (or refusal) pipeline.
 
 use crate::core::consensus;
-use crate::core::core::hash::Hashed;
+use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Committed;
-use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIdentifier, TransactionBody};
-use crate::core::global;
+use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIds, TransactionBody};
 use crate::core::pow;
+use crate::core::{global, CommitPos};
 use crate::error::{Error, ErrorKind};
 use crate::store;
 use crate::txhashset;
-use crate::types::{CommitPos, Options, Tip};
+use crate::types::{Options, Tip};
 use crate::util::RwLock;
-use grin_core::core::hash::Hash;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -158,13 +157,16 @@ pub fn process_block(
 		verify_coinbase_maturity(b, ext, batch)?;
 
 		// Validate the block against the UTXO set.
-		validate_utxo(b, ext, batch)?;
+		let spending_output_ids = validate_utxo(b, ext, batch, verifier_cache.clone())?
+			.into_iter()
+			.map(|(id, _pos)| id)
+			.collect::<Vec<OutputIds>>();
 
 		// Using block_sums (utxo_sum, kernel_sum) for the previous block from the db
 		// we can verify_kernel_sums across the full UTXO sum and full kernel sum
 		// accounting for inputs/outputs/kernels in this new block.
 		// We know there are no double-spends etc. if this verifies successfully.
-		verify_block_sums(b, batch)?;
+		verify_block_sums(b, batch, &spending_output_ids)?;
 
 		// Apply the block to the txhashset state.
 		// Validate the txhashset roots and sizes against the block header.
@@ -459,7 +461,11 @@ fn verify_coinbase_maturity(
 /// Verify kernel sums across the full utxo and kernel sets based on block_sums
 /// of previous block accounting for the inputs|outputs|kernels of the new block.
 /// Saves the new block_sums to the db via the current batch if successful.
-fn verify_block_sums(b: &Block, batch: &store::Batch<'_>) -> Result<(), Error> {
+fn verify_block_sums(
+	b: &Block,
+	batch: &store::Batch<'_>,
+	spending_output_ids: &[OutputIds],
+) -> Result<(), Error> {
 	// Retrieve the block_sums for the previous block.
 	let block_sums = batch.get_block_sums(&b.header.prev_hash)?;
 
@@ -472,13 +478,22 @@ fn verify_block_sums(b: &Block, batch: &store::Batch<'_>) -> Result<(), Error> {
 
 	// Verify the kernel sums for the block_sums with the new block applied.
 	let (utxo_sum, kernel_sum) =
-		(block_sums, b as &dyn Committed).verify_kernel_sums(overage, offset)?;
+		(block_sums.clone(), b as &dyn Committed).verify_kernel_sums(overage, offset.clone())?;
+
+	// Verify the kernel sums equation (2) for the block_sums with the new block applied.
+	let rmp_sum = (block_sums, b as &dyn Committed).verify_kernel_sums_eqn2(
+		offset,
+		kernel_sum,
+		None,
+		&spending_output_ids,
+	)?;
 
 	batch.save_block_sums(
 		&b.hash(),
 		BlockSums {
 			utxo_sum,
 			kernel_sum,
+			rmp_sum: Some(rmp_sum),
 		},
 	)?;
 
@@ -631,9 +646,12 @@ pub fn rewind_and_apply_fork(
 		// Re-verify coinbase maturity along this fork.
 		verify_coinbase_maturity(&fb, ext, batch)?;
 		// Validate the block against the UTXO set.
-		validate_utxo(&fb, ext, batch)?;
+		let spending_output_ids = validate_utxo(&fb, ext, batch, verifier_cache.clone())?
+			.into_iter()
+			.map(|(id, _pos)| id)
+			.collect::<Vec<OutputIds>>();
 		// Re-verify block_sums to set the block_sums up on this fork correctly.
-		verify_block_sums(&fb, batch)?;
+		verify_block_sums(&fb, batch, &spending_output_ids)?;
 		// Re-apply the blocks.
 		apply_block_to_txhashset(&fb, ext, batch, verifier_cache.clone())?;
 	}
@@ -648,10 +666,11 @@ fn validate_utxo(
 	block: &Block,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
-) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 	let extension = &ext.extension;
 	let header_extension = &ext.header_extension;
 	extension
 		.utxo_view(header_extension)
-		.validate_block(block, batch)
+		.validate_block(block, batch, verifier_cache)
 }

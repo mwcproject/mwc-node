@@ -45,3 +45,6 @@ pub mod libtx;
 pub mod pow;
 pub mod ser;
 pub mod stratum;
+pub mod types;
+
+pub use self::types::*;

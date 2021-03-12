@@ -767,6 +767,11 @@ impl Readable for TransactionBody {
 }
 
 impl committed::Committed for TransactionBody {
+	fn outputs_r_committed(&self) -> Vec<Commitment> {
+		let zero_commit = util::secp_static::commit_to_zero_value();
+		vec![zero_commit]
+	}
+
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		let inputs: Vec<_> = self.inputs().into();
 		inputs.iter().map(|x| x.commitment()).collect()
@@ -1263,6 +1268,10 @@ impl Readable for Transaction {
 }
 
 impl committed::Committed for Transaction {
+	fn outputs_r_committed(&self) -> Vec<Commitment> {
+		self.body.outputs_r_committed()
+	}
+
 	fn inputs_committed(&self) -> Vec<Commitment> {
 		self.body.inputs_committed()
 	}
@@ -1285,6 +1294,9 @@ impl Default for Transaction {
 /// Common implementations for all versions of Transaction
 #[enum_dispatch]
 pub trait TxImpl: Sync + Send {
+	/// Get offset
+	fn offset(&self) -> BlindingFactor;
+
 	/// Get inputs w/o signature
 	fn inputs(&self) -> Inputs;
 
@@ -1331,6 +1343,10 @@ pub trait TxImpl: Sync + Send {
 }
 
 impl TxImpl for Transaction {
+	fn offset(&self) -> BlindingFactor {
+		self.offset.clone()
+	}
+
 	fn inputs(&self) -> Inputs {
 		self.body.inputs()
 	}

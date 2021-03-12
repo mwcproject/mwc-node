@@ -17,9 +17,9 @@
 use chrono::prelude::{DateTime, Utc};
 
 use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
-use crate::core::core::{Block, BlockHeader, HeaderVersion, OutputFeatures};
+use crate::core::core::{Block, BlockHeader, HeaderVersion};
 use crate::core::pow::Difficulty;
-use crate::core::ser::{self, PMMRIndexHashable, Readable, Reader, Writeable, Writer};
+use crate::core::ser::{self, PMMRIndexHashable};
 use crate::error::{Error, ErrorKind};
 use crate::util::{RwLock, RwLockWriteGuard};
 
@@ -345,64 +345,6 @@ impl RangeproofRoots {
 	fn merged_root(&self, header: &BlockHeader) -> Hash {
 		(self.rangeproof_root, self.rangeproof_wrnp_root)
 			.hash_with_index(header.output_mmr_size + header.output_wrnp_mmr_size.unwrap_or(0))
-	}
-}
-
-/// Minimal struct representing a known MMR position and associated block height for a commitment, including the Output feature.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CommitPos {
-	/// The output features
-	pub features: OutputFeatures,
-	/// MMR position
-	pub pos: u64,
-	/// Block height
-	pub height: u64,
-}
-
-impl Readable for CommitPos {
-	fn read<R: Reader>(reader: &mut R) -> Result<CommitPos, ser::Error> {
-		let features = OutputFeatures::read(reader)?;
-		let pos = reader.read_u64()?;
-		let height = reader.read_u64()?;
-		Ok(CommitPos {
-			features,
-			pos,
-			height,
-		})
-	}
-}
-
-impl Writeable for CommitPos {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		writer.write_u8(self.features as u8)?;
-		writer.write_u64(self.pos)?;
-		writer.write_u64(self.height)?;
-		Ok(())
-	}
-}
-
-/// Minimal struct representing a known MMR position and associated block height.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CommitPosHt {
-	/// MMR position
-	pub pos: u64,
-	/// Block height
-	pub height: u64,
-}
-
-impl Readable for CommitPosHt {
-	fn read<R: Reader>(reader: &mut R) -> Result<CommitPosHt, ser::Error> {
-		let pos = reader.read_u64()?;
-		let height = reader.read_u64()?;
-		Ok(CommitPosHt { pos, height })
-	}
-}
-
-impl Writeable for CommitPosHt {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		writer.write_u64(self.pos)?;
-		writer.write_u64(self.height)?;
-		Ok(())
 	}
 }
 

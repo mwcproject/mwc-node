@@ -20,8 +20,8 @@ use self::core::core::id::{ShortId, ShortIdentifiable};
 use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::{transaction, versioned_transaction};
 use self::core::core::{
-	Block, BlockHeader, BlockSums, Commit, Committed, OutputIdentifier, Transaction, TxImpl,
-	TxKernel, VersionedTransaction, Weighting,
+	Block, BlockHeader, BlockSums, Commit, Committed, OutputIdentifier, OutputIds, Transaction,
+	TxImpl, TxKernel, VersionedTransaction, Weighting,
 };
 use self::util::RwLock;
 use crate::types::{BlockChain, PoolEntry, PoolError};
@@ -234,9 +234,14 @@ where
 		// Validate the tx against current chain state.
 		// Check all inputs are in the current UTXO set.
 		// Check all outputs are unique in current UTXO set.
-		self.blockchain.validate_tx(tx)?;
+		let spending_output_ids = self
+			.blockchain
+			.validate_tx(tx)?
+			.iter()
+			.map(|(id, _pos)| *id)
+			.collect::<Vec<OutputIds>>();
 
-		let new_sums = self.apply_tx_to_block_sums(tx, header)?;
+		let new_sums = self.apply_tx_to_block_sums(tx, header, spending_output_ids)?;
 		Ok(new_sums)
 	}
 
@@ -303,6 +308,7 @@ where
 		&self,
 		tx: &VersionedTransaction,
 		header: &BlockHeader,
+		spending_output_ids: Vec<OutputIds>,
 	) -> Result<BlockSums, PoolError> {
 		let overage = tx.overage();
 
@@ -312,12 +318,20 @@ where
 
 		// Verify the kernel sums for the block_sums with the new tx applied,
 		// accounting for overage and offset.
-		let (utxo_sum, kernel_sum) =
-			(block_sums, tx as &dyn Committed).verify_kernel_sums(overage, offset)?;
+		let (utxo_sum, kernel_sum) = (block_sums.clone(), tx as &dyn Committed)
+			.verify_kernel_sums(overage, offset.clone())?;
+
+		let rmp_sum = (block_sums, tx as &dyn Committed).verify_kernel_sums_eqn2(
+			offset,
+			kernel_sum,
+			None,
+			&spending_output_ids,
+		)?;
 
 		Ok(BlockSums {
 			utxo_sum,
 			kernel_sum,
+			rmp_sum: Some(rmp_sum),
 		})
 	}
 

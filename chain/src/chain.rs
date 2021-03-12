@@ -20,22 +20,20 @@ use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
-	OutputFeatures, OutputIdentifier, TxImpl, TxKernel, VersionedTransaction,
+	OutputFeatures, OutputIdentifier, OutputIds, TxImpl, TxKernel, VersionedTransaction,
 };
-use crate::core::global;
 use crate::core::pow;
-use crate::core::ser::ProtocolVersion;
+use crate::core::{consensus, global};
+use crate::core::{ser::ProtocolVersion, CommitPos};
 use crate::error::{Error, ErrorKind};
 use crate::pipe;
 use crate::store;
 use crate::txhashset;
 use crate::txhashset::{PMMRHandle, TxHashSet};
-use crate::types::{
-	BlockStatus, ChainAdapter, CommitPos, NoStatus, Options, Tip, TxHashsetWriteStatus,
-};
+use crate::types::{BlockStatus, ChainAdapter, NoStatus, Options, Tip, TxHashsetWriteStatus};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::{util::RwLock, ChainStore};
-use grin_core::core::OutputWithRnp;
+use grin_core::core::{HeaderVersion, OutputWithRnp};
 use grin_store::Error::NotFoundErr;
 use grin_util::ToHex;
 use std::collections::HashMap;
@@ -629,10 +627,13 @@ impl Chain {
 	}
 
 	/// Validate the tx against the current UTXO set and recent kernels (NRD relative lock heights).
-	pub fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), Error> {
-		self.validate_tx_against_utxo(tx, self.verifier_cache.clone())?;
+	pub fn validate_tx(
+		&self,
+		tx: &VersionedTransaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
+		let res = self.validate_tx_against_utxo(tx, self.verifier_cache.clone())?;
 		self.validate_tx_kernels(tx)?;
-		Ok(())
+		Ok(res)
 	}
 
 	/// Validates NRD relative height locks against "recent" kernel history.
@@ -659,7 +660,7 @@ impl Chain {
 		&self,
 		tx: &VersionedTransaction,
 		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
-	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 		let header_pmmr = self.header_pmmr.read();
 		let txhashset = self.txhashset.read();
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
@@ -1135,7 +1136,7 @@ impl Chain {
 
 				// Validate the extension, generating the utxo_sum and kernel_sum.
 				// Full validation, including rangeproofs and kernel signature verification.
-				let (utxo_sum, kernel_sum) =
+				let (utxo_sum, kernel_sum, rmp_sum) =
 					extension.validate(&self.genesis, false, status, &header)?;
 
 				// Save the block_sums (utxo_sum, kernel_sum) to the db for use later.
@@ -1144,6 +1145,7 @@ impl Chain {
 					BlockSums {
 						utxo_sum,
 						kernel_sum,
+						rmp_sum,
 					},
 				)?;
 
@@ -1729,6 +1731,18 @@ fn setup_head(
 						// to calculate the utxo_sum and kernel_sum at this block height.
 						let (utxo_sum, kernel_sum) =
 							extension.validate_kernel_sums(&genesis.header, &header)?;
+						let rmp_sum = if header.height < consensus::get_nit_hard_fork_block_height()
+							|| header.version < HeaderVersion(3)
+						{
+							None
+						} else {
+							Some(extension.verify_kernel_sums_eqn2(
+								header.total_kernel_offset(),
+								kernel_sum,
+								header.total_spent_rmp,
+								&vec![],
+							)?)
+						};
 
 						// Save the block_sums to the db for use later.
 						batch.save_block_sums(
@@ -1736,6 +1750,7 @@ fn setup_head(
 							BlockSums {
 								utxo_sum,
 								kernel_sum,
+								rmp_sum,
 							},
 						)?;
 					}
@@ -1785,13 +1800,15 @@ fn setup_head(
 			batch.save_body_head(&Tip::from_header(&genesis.header))?;
 
 			if !genesis.kernels().is_empty() {
-				let (utxo_sum, kernel_sum) = (sums, genesis as &dyn Committed).verify_kernel_sums(
-					genesis.header.overage(),
-					genesis.header.total_kernel_offset(),
-				)?;
+				let (utxo_sum, kernel_sum) = (sums.clone(), genesis as &dyn Committed)
+					.verify_kernel_sums(
+						genesis.header.overage(),
+						genesis.header.total_kernel_offset(),
+					)?;
 				sums = BlockSums {
 					utxo_sum,
 					kernel_sum,
+					rmp_sum: None,
 				};
 			}
 			txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {

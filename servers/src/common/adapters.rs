@@ -34,11 +34,11 @@ use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::versioned_transaction::VersionedTransaction;
 use crate::core::core::{
-	BlockHeader, BlockSums, CompactBlock, IdentifierWithRnp, Inputs, OutputIdentifier,
+	BlockHeader, BlockSums, CompactBlock, IdentifierWithRnp, Inputs, OutputIdentifier, OutputIds,
 };
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
-use crate::core::{core, global};
+use crate::core::{core, global, CommitPos};
 use crate::p2p;
 use crate::p2p::types::PeerInfo;
 use crate::pool::{self, BlockChain, PoolAdapter};
@@ -1163,7 +1163,10 @@ impl pool::BlockChain for PoolToChainAdapter {
 			.map_err(|e| pool::PoolError::Other(format!("failed to get block_sums, {}", e)))
 	}
 
-	fn validate_tx(&self, tx: &VersionedTransaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(
+		&self,
+		tx: &VersionedTransaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, pool::PoolError> {
 		self.chain()
 			.validate_tx(tx)
 			.map_err(|e| pool::PoolError::Other(format!("failed to validate tx, {}", e)))

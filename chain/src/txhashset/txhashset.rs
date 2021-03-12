@@ -15,30 +15,27 @@
 //! Utility structs to handle the 3 MMRs (output, rangeproof,
 //! kernel) along the overall header MMR conveniently and transactionally.
 
-use crate::core::consensus::WEEK_HEIGHT;
+use crate::core::consensus::{self, WEEK_HEIGHT};
 use crate::core::core::committed::Committed;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::pmmr::{self, Backend, ReadonlyPMMR, RewindablePMMR, PMMR};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
-	Block, BlockHeader, Commit, IdentifierWithRnp, KernelFeatures, Output, OutputFeatures,
-	OutputIdentifier, TxKernel,
+	Block, BlockHeader, Commit, HeaderVersion, IdentifierWithRnp, KernelFeatures, Output,
+	OutputFeatures, OutputIdentifier, OutputWithRnp, TxKernel,
 };
-use crate::core::global;
 use crate::core::ser::{PMMRable, ProtocolVersion};
+use crate::core::{global, CommitPos, CommitPosHt};
 use crate::error::{Error, ErrorKind};
 use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::BitmapAccumulator;
 use crate::txhashset::{RewindableKernelView, UTXOView};
-use crate::types::{
-	CommitPos, CommitPosHt, OutputRoots, RangeproofRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus,
-};
+use crate::types::{OutputRoots, RangeproofRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip, RwLock};
 use croaring::Bitmap;
-use grin_core::core::OutputWithRnp;
 use grin_store;
 use grin_store::pmmr::{clean_files_by_prefix, PMMRBackend};
 use std::fs::{self, File};
@@ -1288,6 +1285,19 @@ impl<'a> Committed for Extension<'a> {
 		vec![]
 	}
 
+	fn outputs_r_committed(&self) -> Vec<Commitment> {
+		let mut commitments = vec![];
+		for pos in self.output_wrnp_pmmr.leaf_pos_iter() {
+			if let Some(out) = self.output_wrnp_pmmr.get_data(pos) {
+				commitments.push(
+					Commitment::from_pubkey(&out.nonce)
+						.unwrap_or(secp_static::commit_to_zero_value()),
+				);
+			}
+		}
+		commitments
+	}
+
 	fn outputs_committed(&self) -> Vec<Commitment> {
 		let mut commitments = vec![];
 		for pos in self.output_pmmr.leaf_pos_iter() {
@@ -2006,6 +2016,32 @@ impl<'a> Extension<'a> {
 		Ok((utxo_sum, kernel_sum))
 	}
 
+	/// Validate full kernel sums against the provided header (for overage and kernel_offset).
+	/// This is an expensive operation as we need to retrieve all the UTXOs from the respective MMRs.
+	/// For a significantly faster way of validating full kernel sums see BlockSums.
+	pub fn validate_kernel_sums_eqn2(
+		&self,
+		header: &BlockHeader,
+		kernel_sum: Commitment,
+	) -> Result<Commitment, Error> {
+		let now = Instant::now();
+
+		let total_spent_rmp = header.total_spent_rmp();
+		let rmp_sum = self.verify_kernel_sums_eqn2(
+			header.total_kernel_offset(),
+			kernel_sum,
+			total_spent_rmp,
+			&vec![],
+		)?;
+
+		debug!(
+			"txhashset: validated total kernel sums on equation(2), took {}s",
+			now.elapsed().as_secs(),
+		);
+
+		Ok(rmp_sum)
+	}
+
 	/// Validate the txhashset state against the provided block header.
 	/// A "fast validation" will skip rangeproof verification and kernel signature verification.
 	pub fn validate(
@@ -2014,19 +2050,26 @@ impl<'a> Extension<'a> {
 		fast_validation: bool,
 		status: &dyn TxHashsetWriteStatus,
 		header: &BlockHeader,
-	) -> Result<(Commitment, Commitment), Error> {
+	) -> Result<(Commitment, Commitment, Option<Commitment>), Error> {
 		self.validate_mmrs()?;
 		self.validate_roots(header)?;
 		self.validate_sizes(header)?;
 
 		if self.head.height == 0 {
 			let zero_commit = secp_static::commit_to_zero_value();
-			return Ok((zero_commit, zero_commit));
+			return Ok((zero_commit, zero_commit, None));
 		}
 
 		// The real magicking happens here. Sum of kernel excesses should equal
 		// sum of unspent outputs minus total supply.
 		let (output_sum, kernel_sum) = self.validate_kernel_sums(genesis, header)?;
+		let rmp_sum = if header.height < consensus::get_nit_hard_fork_block_height()
+			|| header.version < HeaderVersion(3)
+		{
+			None
+		} else {
+			Some(self.validate_kernel_sums_eqn2(header, kernel_sum)?)
+		};
 
 		// These are expensive verification step (skipped for "fast validation").
 		if !fast_validation {
@@ -2035,9 +2078,12 @@ impl<'a> Extension<'a> {
 
 			// Verify all the kernel signatures.
 			self.verify_kernel_signatures(status)?;
+
+			// Verify all the R signatures.
+			//todo
 		}
 
-		Ok((output_sum, kernel_sum))
+		Ok((output_sum, kernel_sum, rmp_sum))
 	}
 
 	/// Force the rollback of this extension, no matter the result

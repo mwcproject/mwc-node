@@ -6,7 +6,9 @@ use crate::core::transaction::{
 	self, Error, Inputs, Output, Transaction, TransactionBody, TxBodyImpl, TxImpl, TxKernel,
 	Weighting,
 };
-use crate::core::transaction_v4::{self, OutputWithRnp, TransactionBodyV4, TransactionV4};
+use crate::core::transaction_v4::{
+	self, OutputIds, OutputWithRnp, TransactionBodyV4, TransactionV4,
+};
 use crate::core::verifier_cache::VerifierCache;
 use crate::ser::{self, Writeable, Writer};
 use enum_dispatch::enum_dispatch;
@@ -62,6 +64,14 @@ impl VersionedTransactionBody {
 		match self {
 			VersionedTransactionBody::V3(_body) => false,
 			VersionedTransactionBody::V4(_body) => true,
+		}
+	}
+
+	/// Whether the Equation (2) validation is needed: P'+(E+s*G)=Rc+Ro
+	pub fn validation_eqn2_needed(&self) -> bool {
+		match self {
+			VersionedTransactionBody::V3(_body) => false,
+			VersionedTransactionBody::V4(body) => !body.is_v3_compatible(),
 		}
 	}
 
@@ -216,6 +226,14 @@ impl VersionedTransaction {
 		match self {
 			VersionedTransaction::V3(_tx) => false,
 			VersionedTransaction::V4(_tx) => true,
+		}
+	}
+
+	/// Whether the Equation (2) validation is needed: P'+(E+s*G)=Rc+Ro
+	pub fn validation_eqn2_needed(&self) -> bool {
+		match self {
+			VersionedTransaction::V3(_tx) => false,
+			VersionedTransaction::V4(tx) => !tx.body.is_v3_compatible(),
 		}
 	}
 
