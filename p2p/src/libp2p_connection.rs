@@ -184,12 +184,10 @@ pub fn publish_message(topic: &Topic, integrity_message: Vec<u8>) -> Option<Mess
 }
 
 /// Request number of established connections to libp2p
-pub fn get_libp2p_connections() -> u32 {
+pub fn get_libp2p_connections() -> Vec<PeerId> {
 	match &*LIBP2P_SWARM.lock() {
-		Some(swarm) => Swarm::network_info(swarm)
-			.connection_counters()
-			.num_connections(),
-		None => 0,
+		Some(swarm) => Swarm::network_info(swarm).into_peers(),
+		None => vec![],
 	}
 }
 
@@ -229,6 +227,7 @@ pub async fn run_libp2p_node(
 	libp2p_port: u16,
 	fee_base: u64,
 	kernel_validation_fn: impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>,
+	stop_mutex: std::sync::Arc<std::sync::Mutex<u32>>,
 ) -> Result<(), Error> {
 	// need to remove '.onion' ending first
 	let onion_address = if onion_address.ends_with(".onion") {
@@ -252,6 +251,8 @@ pub async fn run_libp2p_node(
 	let id_keys = Keypair::generate_ed25519();
 	let this_peer_id = PeerId::from_public_key(id_keys.public(), addr_str.clone());
 	set_this_peer_id(&this_peer_id);
+
+	println!("Starting libp2p, this peer: {}", this_peer_id);
 
 	// Building transport
 	let dh_keys = noise::Keypair::<X25519Spec>::new()
@@ -533,7 +534,11 @@ pub async fn run_libp2p_node(
 			None => (),
 		};
 
-		Poll::Pending as Poll<()>
+		if *stop_mutex.lock().unwrap() == 0 {
+			Poll::Ready(()) // Exiting
+		} else {
+			Poll::Pending as Poll<()>
+		}
 	}));
 
 	reset_libp2p_swarm();

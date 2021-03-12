@@ -447,6 +447,7 @@ impl Server {
 							libp2p_port,
 							fee_base,
 							output_validation_fn,
+							std::sync::Arc::new(std::sync::Mutex::new(1)), // passing new obj, because we never will stop the libp2p process
 						);
 
 						info!("Starting gossipsub libp2p server");
