@@ -528,13 +528,14 @@ pub async fn run_libp2p_node(
 										}
 									};
 
-									match address.parse::<Multiaddr>() {
+									let multiaddress = format!("/onion3/{}:81", address);
+									match multiaddress.parse::<Multiaddr>() {
 										Ok(addr) => {
 											address_to_connect = Some(addr);
 											break;
 										}
 										Err(e) => {
-											warn!("Unable to construct onion multiaddress from the peer address. Will skip it, {}", e);
+											warn!("Unable to construct onion multiaddress from {} the peer address. Will skip it, {}", multiaddress, e);
 											continue;
 										}
 									}
