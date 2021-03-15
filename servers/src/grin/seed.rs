@@ -80,7 +80,7 @@ pub fn connect_and_monitor(
 				&preferred_peers,
 			);
 
-			libp2p_connection::set_seed_list(&seed_list);
+			libp2p_connection::set_seed_list(&seed_list, true);
 
 			let mut prev = MIN_DATE.and_hms(0, 0, 0);
 			let mut prev_expire_check = MIN_DATE.and_hms(0, 0, 0);
