@@ -2080,7 +2080,7 @@ impl<'a> Extension<'a> {
 			self.verify_kernel_signatures(status)?;
 
 			// Verify all the R signatures.
-			//todo
+			self.verify_r_signatures(status)?;
 		}
 
 		Ok((output_sum, kernel_sum, rmp_sum))
@@ -2157,6 +2157,44 @@ impl<'a> Extension<'a> {
 			"txhashset: verified {} kernel signatures, pmmr size {}, took {}s",
 			kern_count,
 			self.kernel_pmmr.unpruned_size(),
+			now.elapsed().as_secs(),
+		);
+
+		Ok(())
+	}
+
+	fn verify_r_signatures(&self, status: &dyn TxHashsetWriteStatus) -> Result<(), Error> {
+		let now = Instant::now();
+		const R_SIG_BATCH_SIZE: usize = 5_000;
+
+		let mut r_sig_count = 0;
+		let total_r_sigs = pmmr::n_leaves(self.output_wrnp_pmmr.unpruned_size());
+		let mut ids_wrnp: Vec<IdentifierWithRnp> = Vec::with_capacity(R_SIG_BATCH_SIZE);
+		for n in 1..self.output_wrnp_pmmr.unpruned_size() + 1 {
+			if pmmr::is_leaf(n) {
+				let id_wrnp = self
+					.output_wrnp_pmmr
+					.get_data(n)
+					.ok_or_else(|| ErrorKind::OutputNotFound("wrnp".to_string()))?;
+				ids_wrnp.push(id_wrnp);
+			}
+
+			if ids_wrnp.len() >= R_SIG_BATCH_SIZE || n >= self.output_wrnp_pmmr.unpruned_size() {
+				IdentifierWithRnp::batch_sig_verify(&ids_wrnp)?;
+				r_sig_count += ids_wrnp.len() as u64;
+				ids_wrnp.clear();
+				status.on_validation_rsigs(r_sig_count, total_r_sigs);
+				debug!(
+					"txhashset: verify_r_signatures: verified {} signatures",
+					r_sig_count,
+				);
+			}
+		}
+
+		debug!(
+			"txhashset: verified {} R signatures, pmmr size {}, took {}s",
+			r_sig_count,
+			self.output_wrnp_pmmr.unpruned_size(),
 			now.elapsed().as_secs(),
 		);
 
