@@ -328,7 +328,7 @@ impl PeerAddr {
 		}
 	}
 
-	pub fn tor_pubkey(&self) -> Result<String, Error> {
+	pub fn tor_address(&self) -> Result<String, Error> {
 		match self {
 			Ip(_ip) => {
 				return Err(Error::Internal(

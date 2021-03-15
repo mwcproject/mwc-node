@@ -21,8 +21,8 @@ use crate::util::secp;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
-use std::path::Path;
 use std::path::PathBuf;
+use std::path::{Path, MAIN_SEPARATOR};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -35,7 +35,7 @@ use std::{
 use crate::ErrorKind;
 
 use fs2::FileExt;
-use grin_util::OnionV3Address;
+use grin_util::{from_hex, to_hex, OnionV3Address};
 use walkdir::WalkDir;
 
 use crate::api;
@@ -68,7 +68,9 @@ use crate::util::{RwLock, StopState};
 use chrono::Utc;
 use grin_core::core::TxKernel;
 use grin_util::logger::LogEntry;
+use grin_util::secp::constants::SECRET_KEY_SIZE;
 use grin_util::secp::pedersen::Commitment;
+use grin_util::secp::SecretKey;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
@@ -279,11 +281,10 @@ impl Server {
 		// only for capabilities params, doesn't mean
 		// tor _MUST_ be on.
 		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
-		let mut onion_address = None;
 
 		api::reset_server_onion_address();
 
-		if config.tor_config.tor_enabled {
+		let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
 			if !config.p2p_config.host.is_loopback() {
 				error!("If Tor is enabled, host must be '127.0.0.1'.");
 				println!("If Tor is enabled, host must be '127.0.0.1'.");
@@ -317,10 +318,12 @@ impl Server {
 
 						let _ = match res {
 							Ok(res) => {
-								let (listener, onion_address) = res;
+								let (listener, onion_address, secret) = res;
 								input
 									.send(Some(format!("{}.onion", onion_address.clone())))
 									.unwrap();
+								input.send(Some(to_hex(&secret.0))).unwrap();
+
 								loop {
 									std::thread::sleep(std::time::Duration::from_millis(10));
 									if stop_state_clone.is_stopped() {
@@ -339,7 +342,7 @@ impl Server {
 
 				let resp = output.recv();
 				println!("Finished with TOR");
-				onion_address = resp.unwrap_or(None);
+				let onion_address = resp.unwrap_or(None);
 				if onion_address.is_some() {
 					info!("Tor successfully started: resp = {:?}", onion_address);
 				} else {
@@ -347,8 +350,13 @@ impl Server {
 					println!("Failed to start tor. See log for details");
 					std::process::exit(-1);
 				}
+				let secret = output.recv().map_err(|e| {
+					Error::General(format!("Unable to read the data from pipe, {}", e))
+				})?;
+				debug_assert!(secret.is_some());
+				(onion_address, secret)
 			} else {
-				onion_address = config.tor_config.onion_address.clone();
+				let onion_address = config.tor_config.onion_address.clone();
 
 				if onion_address.is_none() {
 					error!("onion_address must be specified with external tor. Halting!");
@@ -365,8 +373,11 @@ impl Server {
 					"Tor configured to run externally! Onion address = {:?}.",
 					otemp.clone()
 				);
+				(onion_address, None)
 			}
-		}
+		} else {
+			(None, None)
+		};
 
 		let socks_port = if config.tor_config.tor_enabled {
 			config.tor_config.socks_port
@@ -379,27 +390,30 @@ impl Server {
 		);
 
 		// Initialize libp2p server
-		if config.libp2p_enabled.unwrap_or(true) {
-			if let Some(onion_address) = onion_address.clone() {
-				let libp2p_port = config.libp2p_port;
-				let tor_socks_port = config.tor_config.socks_port;
-				let fee_base = config.pool_config.accept_fee_base;
-				api::set_server_onion_address(&onion_address);
+		if config.libp2p_enabled.unwrap_or(true) && onion_address.is_some() && tor_secret.is_some()
+		{
+			let onion_address = onion_address.clone().unwrap();
+			let tor_secret = tor_secret.unwrap();
+			let tor_secret = from_hex(&tor_secret).map_err(|e| {
+				Error::General(format!("Unable to parse secret hex {}, {}", tor_secret, e))
+			})?;
 
-				let clone_shared_chain = shared_chain.clone();
+			let libp2p_port = config.libp2p_port;
+			let tor_socks_port = config.tor_config.socks_port;
+			let fee_base = config.pool_config.accept_fee_base;
+			api::set_server_onion_address(&onion_address);
 
-				let onion_address = onion_address.clone();
-				thread::Builder::new()
-					.name("libp2p_node".to_string())
-					.spawn(move || {
-						let requested_kernel_cache: RwLock<HashMap<Commitment, (TxKernel, u64)>> =
-							RwLock::new(HashMap::new());
-						let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
+			let clone_shared_chain = shared_chain.clone();
 
-						let output_validation_fn = move |excess: &Commitment| -> Result<
-							Option<TxKernel>,
-							grin_p2p::Error,
-						> {
+			thread::Builder::new()
+				.name("libp2p_node".to_string())
+				.spawn(move || {
+					let requested_kernel_cache: RwLock<HashMap<Commitment, (TxKernel, u64)>> =
+						RwLock::new(HashMap::new());
+					let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
+
+					let output_validation_fn =
+						move |excess: &Commitment| -> Result<Option<TxKernel>, grin_p2p::Error> {
 							// Tip is needed in order to request from last 24 hours (1440 blocks)
 							let tip_height = clone_shared_chain.head()?.height;
 
@@ -441,26 +455,28 @@ impl Server {
 							}
 						};
 
-						let libp2p_node_runner = libp2p_connection::run_libp2p_node(
-							tor_socks_port,
-							onion_address,
-							libp2p_port,
-							fee_base,
-							output_validation_fn,
-							std::sync::Arc::new(std::sync::Mutex::new(1)), // passing new obj, because we never will stop the libp2p process
-						);
+					let mut secret: [u8; SECRET_KEY_SIZE] = [0; SECRET_KEY_SIZE];
+					secret.copy_from_slice(&tor_secret);
 
-						info!("Starting gossipsub libp2p server");
-						let mut rt = tokio::runtime::Runtime::new().unwrap();
+					let libp2p_node_runner = libp2p_connection::run_libp2p_node(
+						tor_socks_port,
+						&secret,
+						libp2p_port,
+						fee_base,
+						output_validation_fn,
+						std::sync::Arc::new(std::sync::Mutex::new(1)), // passing new obj, because we never will stop the libp2p process
+					);
 
-						match rt.block_on(libp2p_node_runner) {
-							Ok(_) => info!("libp2p node is exited"),
-							Err(e) => error!("Unable to start libp2p node, {}", e),
-						}
-						// Swarm is not valid any more, let's update our global instance.
-						libp2p_connection::reset_libp2p_swarm();
-					})?;
-			};
+					info!("Starting gossipsub libp2p server");
+					let mut rt = tokio::runtime::Runtime::new().unwrap();
+
+					match rt.block_on(libp2p_node_runner) {
+						Ok(_) => info!("libp2p node is exited"),
+						Err(e) => error!("Unable to start libp2p node, {}", e),
+					}
+					// Swarm is not valid any more, let's update our global instance.
+					libp2p_connection::reset_libp2p_swarm();
+				})?;
 		}
 
 		let p2p_server = Arc::new(p2p::Server::new(
@@ -610,13 +626,14 @@ impl Server {
 		}
 	}
 	/// Start the Tor listener for inbound connections
+	/// Return (<tor_process>, <onion_address>, <secret for tor address>)
 	pub fn init_tor_listener(
 		addr: &str,
 		api_addr: &str,
 		libp2p_port: u16,
 		tor_base: Option<&str>,
 		socks_port: u16,
-	) -> Result<(tor_process::TorProcess, String), Error> {
+	) -> Result<(tor_process::TorProcess, String, SecretKey), Error> {
 		let mut process = tor_process::TorProcess::new();
 		let tor_dir = if tor_base.is_some() {
 			format!("{}/tor/listener", tor_base.unwrap())
@@ -635,16 +652,36 @@ impl Server {
 		let mut onion_address = "".to_string();
 		let mut found = false;
 		if std::path::Path::new(&onion_service_dir).exists() {
-			for entry in fs::read_dir(onion_service_dir)? {
+			for entry in fs::read_dir(onion_service_dir.clone())? {
 				onion_address = entry.unwrap().file_name().into_string().unwrap();
+
+				if fs::metadata(format!(
+					"{}{}{}{}{}",
+					onion_service_dir,
+					MAIN_SEPARATOR,
+					onion_address,
+					MAIN_SEPARATOR,
+					crate::tor::config::SEC_KEY_FILE_COPY
+				))
+				.is_err()
+				{
+					// Secret copy doesn't exist, we can't reuse this tor directory. Creating a new one
+					let onion_dir =
+						format!("{}{}{}", onion_service_dir, MAIN_SEPARATOR, onion_address);
+					if fs::remove_dir_all(onion_dir.clone()).is_err() {
+						error!("Unable to clean TOR directory {}", onion_dir);
+					}
+					break;
+				}
 				found = true;
+				break;
 			}
 		}
 
 		let mut sec_key_vec = None;
 		let scoped_vec;
 		let mut existing_onion = None;
-		if !found {
+		let secret = if !found {
 			let sec_key = secp::key::SecretKey::new(&mut rand::thread_rng());
 			scoped_vec = vec![sec_key.clone()];
 			sec_key_vec = Some((scoped_vec).as_slice());
@@ -653,9 +690,28 @@ impl Server {
 				.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
 				.unwrap()
 				.to_string();
+			sec_key
 		} else {
 			existing_onion = Some(onion_address.clone());
+			// Read Secret from the file.
+			let sec = tor_config::read_sec_key_file(&format!(
+				"{}{}{}",
+				onion_service_dir, MAIN_SEPARATOR, onion_address
+			))
+			.map_err(|e| Error::General(format!("Unable to read tor secret, {}", e)))?;
+			sec
+		};
+
+		// Let's validate secret & found onion address
+		let addr_to_test = OnionV3Address::from_private(&secret.0)
+			.map_err(|e| Error::General(format!("Unable to build onion address, {}", e)))?;
+		if addr_to_test.to_string() != onion_address {
+			return Err(Error::General(
+				"Internal error. Tor key doesn't match onion address".to_string(),
+			)
+			.into());
 		}
+
 		tor_config::output_tor_listener_config(
 			&tor_dir,
 			addr,
@@ -688,7 +744,7 @@ impl Server {
 		if res.is_err() {
 			Err(Error::Configuration("Unable to start tor".to_string()))
 		} else {
-			Ok((process, onion_address.to_string()))
+			Ok((process, onion_address.to_string(), secret))
 		}
 	}
 

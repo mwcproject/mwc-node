@@ -17,17 +17,18 @@ use crate::util::secp::key::SecretKey;
 use crate::{Error, ErrorKind};
 use grin_util::OnionV3Address;
 
-use ed25519_dalek::ExpandedSecretKey;
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
+use ed25519_dalek::{ExpandedSecretKey, SECRET_KEY_LENGTH};
 
 use std::convert::TryFrom;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, MAIN_SEPARATOR};
 
 use failure::ResultExt;
 
+pub const SEC_KEY_FILE_COPY: &str = "secret_key";
 const SEC_KEY_FILE: &str = "hs_ed25519_secret_key";
 const PUB_KEY_FILE: &str = "hs_ed25519_public_key";
 const HOSTNAME_FILE: &str = "hostname";
@@ -130,6 +131,39 @@ pub fn create_onion_service_sec_key_file(
 	Ok(())
 }
 
+pub fn create_sec_key_file(os_directory: &str, sec_key: &DalekSecretKey) -> Result<(), Error> {
+	let key_file_path = &format!("{}{}{}", os_directory, MAIN_SEPARATOR, SEC_KEY_FILE_COPY);
+	let mut file = File::create(key_file_path)
+		.map_err(|e| ErrorKind::IO(format!("Unable to create file {}, {}", key_file_path, e)))?;
+	file.write(&sec_key.to_bytes()).map_err(|e| {
+		ErrorKind::IO(format!(
+			"Unable to write into file {}, {}",
+			key_file_path, e
+		))
+	})?;
+	Ok(())
+}
+
+pub fn read_sec_key_file(os_directory: &str) -> Result<SecretKey, Error> {
+	let key_file_path = &format!("{}{}{}", os_directory, MAIN_SEPARATOR, SEC_KEY_FILE_COPY);
+	let mut file = File::open(key_file_path)
+		.map_err(|e| ErrorKind::IO(format!("Unable to create file {}, {}", key_file_path, e)))?;
+
+	let mut buf: [u8; SECRET_KEY_LENGTH] = [0; SECRET_KEY_LENGTH];
+
+	let sz = file
+		.read(&mut buf)
+		.map_err(|e| ErrorKind::IO(format!("Unable to read from file {}, {}", key_file_path, e)))?;
+	if sz != buf.len() {
+		return Err(
+			ErrorKind::IO(format!("Not found expected data at file {}", key_file_path)).into(),
+		);
+	}
+
+	let sk = SecretKey::from_slice(&buf)?;
+	Ok(sk)
+}
+
 pub fn create_onion_service_pub_key_file(
 	os_directory: &str,
 	pub_key: &DalekPublicKey,
@@ -191,6 +225,7 @@ pub fn output_onion_service_config(
 	fs::create_dir_all(&hs_dir_file_path)
 		.map_err(|e| ErrorKind::IO(format!("Unable to create dir {}, {}", hs_dir_file_path, e)))?;
 
+	create_sec_key_file(&hs_dir_file_path, &d_sec_key)?;
 	create_onion_service_sec_key_file(&hs_dir_file_path, &d_sec_key)?;
 	create_onion_service_pub_key_file(&hs_dir_file_path, &address.to_ed25519()?)?;
 	create_onion_service_hostname_file(&hs_dir_file_path, &address.to_string())?;
