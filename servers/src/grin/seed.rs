@@ -47,8 +47,8 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
 	"seed1.mwc.mw",
 	"seed2.mwc.mw",
-	"nvo4xrfnn46vhaocnswea564bnmbgfjib7fqpa2my3e3ren4iujnzeyd.onion",
-	"627qgblkpc4ayr5fe6tfg6ryhev7kmjhge2ualab7ajxk5gbs3v7bmqd.onion",
+	"vstdjxrzh67udhm3fedanul2sy7fwudasjmwxy54pady6dxclty2zmqd.onion",
+	"kin4i3wohlsqlzrdwdlowh2kaa7wtkxsvp6asn7vttspnrwowgquglyd.onion",
 ];
 
 pub fn connect_and_monitor(
