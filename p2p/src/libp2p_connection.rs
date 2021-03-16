@@ -44,7 +44,7 @@ use async_std::task;
 use chrono::Utc;
 use futures::{future, prelude::*};
 use grin_util::secp::pedersen::Commitment;
-use grin_util::secp::rand::{thread_rng, Rng};
+use grin_util::secp::rand::Rng;
 use grin_util::{Mutex, OnionV3Address, OnionV3AddressError};
 use libp2p::core::network::NetworkInfo;
 use rand::seq::SliceRandom;
@@ -341,203 +341,180 @@ pub async fn run_libp2p_node(
 
 	let mut requests_cash: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
 	let mut last_cash_clean = Instant::now();
-	let stop_mutex2 = stop_mutex.clone();
+	let mut last_reconnect = Instant::now();
 	// Kick it off
 	// Event processing future...
-	task::block_on(future::join(
-		future::poll_fn(move |cx: &mut Context<'_>| {
-			let mut swarm = LIBP2P_SWARM.lock();
-			match &mut *swarm {
-				Some(swarm) => {
-					loop {
-						match swarm.poll_next_unpin(cx) {
-							Poll::Ready(Some(gossip_event)) => match gossip_event {
-								GossipsubEvent::Message {
-									propagation_source: peer_id,
-									message_id: id,
-									message,
-								} => {
-									debug!("Get libp2p message from {}, with ID {}, topic {}, data: {}",
+	task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
+		let mut swarm = LIBP2P_SWARM.lock();
+		match &mut *swarm {
+			Some(swarm) => {
+				loop {
+					let event = swarm.poll_next_unpin(cx);
+					//debug!("swarm.poll_next_unpin event: {:?}", event);
+					match event {
+						Poll::Ready(Some(gossip_event)) => match gossip_event {
+							GossipsubEvent::Message {
+								propagation_source: peer_id,
+								message_id: id,
+								message,
+							} => {
+								debug!(
+									"Get libp2p message from {}, with ID {}, topic {}, data: {}",
 									peer_id,
 									id,
 									message.topic,
-								    String::from_utf8_lossy(&read_message_data(&message.data)).to_string(),
+									String::from_utf8_lossy(&read_message_data(&message.data))
+										.to_string(),
 								);
 
-									if message.topic == peer_topic {
-										// We get new peers to connect. Let's update that
-										if !Swarm::is_connected(&swarm, &peer_id) {
-											error!(
+								if message.topic == peer_topic {
+									// We get new peers to connect. Let's update that
+									if !Swarm::is_connected(&swarm, &peer_id) {
+										error!(
 											"Get topic from nodes that we are not connected to."
 										);
-											let gossip = swarm.get_behaviour();
-											let _ = gossip.report_message_validation_result(
-												&id,
-												&peer_id,
-												MessageAcceptance::Reject,
-											);
-											gossip.disconnect_peer(peer_id, true);
-											continue;
-										} else {
-											// report validation for this message
-											let gossip = swarm.get_behaviour();
-											if let Err(e) = gossip.report_message_validation_result(
-												&id,
-												&peer_id,
-												MessageAcceptance::Ignore,
-											) {
-												error!("report_message_validation_result failed for error {}", e);
-											}
+										let gossip = swarm.get_behaviour();
+										let _ = gossip.report_message_validation_result(
+											&id,
+											&peer_id,
+											MessageAcceptance::Reject,
+										);
+										gossip.disconnect_peer(peer_id, true);
+										continue;
+									} else {
+										// report validation for this message
+										let gossip = swarm.get_behaviour();
+										if let Err(e) = gossip.report_message_validation_result(
+											&id,
+											&peer_id,
+											MessageAcceptance::Ignore,
+										) {
+											error!("report_message_validation_result failed for error {}", e);
 										}
+									}
 
-										let mut serializer =
-											SimplePopSerializer::new(&message.data);
-										if serializer.version != 1 {
-											warn!("Get peer info data of unexpected version. Probably your client need to be upgraded");
-											continue;
-										}
+									let mut serializer = SimplePopSerializer::new(&message.data);
+									if serializer.version != 1 {
+										warn!("Get peer info data of unexpected version. Probably your client need to be upgraded");
+										continue;
+									}
 
-										let sz = serializer.pop_u16() as usize;
-										if sz > gossipsub::PEER_EXCHANGE_NUMBER_LIMIT {
-											warn!("Get too many peers from {}", peer_id);
-											// let's ban it, probably it is an attacker...
-											let gossip = swarm.get_behaviour();
-											gossip.disconnect_peer(peer_id, true);
-											continue;
-										}
+									let sz = serializer.pop_u16() as usize;
+									if sz > gossipsub::PEER_EXCHANGE_NUMBER_LIMIT {
+										warn!("Get too many peers from {}", peer_id);
+										// let's ban it, probably it is an attacker...
+										let gossip = swarm.get_behaviour();
+										gossip.disconnect_peer(peer_id, true);
+										continue;
+									}
 
-										let mut peer_arr = vec![];
-										for _i in 0..sz {
-											let peer_data = serializer.pop_vec();
-											match PeerId::from_bytes(&peer_data) {
-												Ok(peer) => match peer.as_onion_address() {
-													Ok(addr) => peer_arr.push(addr),
-													Err(e) => {
-														error!("Get from libp2p peer without Dalek PK {}, {}", peer, e);
-														continue;
-													}
-												},
+									let mut peer_arr = vec![];
+									for _i in 0..sz {
+										let peer_data = serializer.pop_vec();
+										match PeerId::from_bytes(&peer_data) {
+											Ok(peer) => match peer.as_onion_address() {
+												Ok(addr) => peer_arr.push(addr),
 												Err(e) => {
-													warn!("Unable to decode the libp2p peer form the peer update message, {}", e);
+													error!("Get from libp2p peer without Dalek PK {}, {}", peer, e);
 													continue;
 												}
+											},
+											Err(e) => {
+												warn!("Unable to decode the libp2p peer form the peer update message, {}", e);
+												continue;
 											}
 										}
-										info!("Get {} peers from {}. Will process them later when we will need to increase connection number", peer_arr.len(), peer_id);
+									}
+									info!("Get {} peers from {}. Will process them later when we will need to increase connection number", peer_arr.len(), peer_id);
 
-										if let Ok(addr) = peer_id.as_onion_address() {
-											let mut new_peers_list = LIBP2P_PEERS.lock();
+									if let Ok(addr) = peer_id.as_onion_address() {
+										let mut new_peers_list = LIBP2P_PEERS.lock();
 
-											(*new_peers_list).insert(
-												addr,
-												(peer_arr, Utc::now().timestamp() as u64),
-											);
-										} else {
-											error!(
+										(*new_peers_list).insert(
+											addr,
+											(peer_arr, Utc::now().timestamp() as u64),
+										);
+									} else {
+										error!(
 											"Internal Error. Getting peer without onion address {}",
 											peer_id
 										);
-										}
-									} else {
-										// We get the regular message and we need to validate it now.
-
-										let gossip = swarm.get_behaviour();
-
-										let acceptance = match validate_integrity_message(
-											&peer_id,
-											&message.data,
-											&kernel_validation_fn,
-											&mut requests_cash,
-											fee_base,
-										) {
-											Ok(integrity_fee) => {
-												if integrity_fee > 0 {
-													let mut acceptance = MessageAcceptance::Accept;
-
-													if let Some((handler, _topic)) =
-														LIBP2P_MESSAGE_HANDLERS
-															.lock()
-															.get(&message.topic)
-													{
-														if !(handler)(
-															&peer_id,
-															&message.topic,
-															read_message_data(&message.data),
-															integrity_fee,
-														) {
-															// false mean that message was invalid, so we can ban the peer
-															acceptance = MessageAcceptance::Reject;
-														}
-													}
-													acceptance
-												} else {
-													// Invalid message
-													MessageAcceptance::Reject
-												}
-											}
-											Err(e) => {
-												warn!("Message is skipped, Unable to verify the message because of some error. {:?}", e);
-												MessageAcceptance::Ignore
-											}
-										};
-
-										debug!(
-											"report_message_validation_result as {:?}",
-											acceptance
-										);
-										let _ = gossip.report_message_validation_result(
-											&id, &peer_id, acceptance,
-										);
 									}
+								} else {
+									// We get the regular message and we need to validate it now.
+
+									let gossip = swarm.get_behaviour();
+
+									let acceptance = match validate_integrity_message(
+										&peer_id,
+										&message.data,
+										&kernel_validation_fn,
+										&mut requests_cash,
+										fee_base,
+									) {
+										Ok(integrity_fee) => {
+											if integrity_fee > 0 {
+												let mut acceptance = MessageAcceptance::Accept;
+
+												if let Some((handler, _topic)) =
+													LIBP2P_MESSAGE_HANDLERS
+														.lock()
+														.get(&message.topic)
+												{
+													if !(handler)(
+														&peer_id,
+														&message.topic,
+														read_message_data(&message.data),
+														integrity_fee,
+													) {
+														// false mean that message was invalid, so we can ban the peer
+														acceptance = MessageAcceptance::Reject;
+													}
+												}
+												acceptance
+											} else {
+												// Invalid message
+												MessageAcceptance::Reject
+											}
+										}
+										Err(e) => {
+											warn!("Message is skipped, Unable to verify the message because of some error. {:?}", e);
+											MessageAcceptance::Ignore
+										}
+									};
+
+									debug!("report_message_validation_result as {:?}", acceptance);
+									let _ = gossip.report_message_validation_result(
+										&id, &peer_id, acceptance,
+									);
 								}
-								_ => {}
-							},
-							Poll::Ready(None) | Poll::Pending => break,
+							}
+							_ => {}
+						},
+						Poll::Ready(None) | Poll::Pending => {
+							break;
 						}
 					}
-
-					// cleanup expired requests_cash values
-					let history_time_limit = Utc::now().timestamp()
-						- INTEGRITY_CALL_HISTORY_LEN_LIMIT as i64 * INTEGRITY_CALL_MAX_PERIOD;
-					if last_cash_clean + Duration::from_secs(600) < Instant::now() {
-						// Let's do clean up...
-						requests_cash.retain(|_commit, history| {
-							*history.back().unwrap_or(&0) > history_time_limit
-						});
-						last_cash_clean = Instant::now();
-					}
 				}
-				None => (),
-			};
 
-			if *stop_mutex.lock().unwrap() == 0 {
-				info!("Exiting libp2p polling task");
-				Poll::Ready(()) // Exiting
-			} else {
-				Poll::Pending as Poll<()>
-			}
-		}),
-		// reconnection task
-		async {
-			let mut interval = tokio::time::interval(Duration::from_secs(1));
-			let mut counter = 0;
-			let rng = &mut thread_rng();
-			loop {
-				interval.tick().await;
-				if *stop_mutex2.lock().unwrap() == 0 {
-					info!("Exiting libp2p connection task");
-					break;
+				// cleanup expired requests_cash values
+				let history_time_limit = Utc::now().timestamp()
+					- INTEGRITY_CALL_HISTORY_LEN_LIMIT as i64 * INTEGRITY_CALL_MAX_PERIOD;
+				let now = Instant::now();
+				if last_cash_clean + Duration::from_secs(600) < now {
+					last_cash_clean = now;
+					// Let's do clean up...
+					requests_cash.retain(|_commit, history| {
+						*history.back().unwrap_or(&0) > history_time_limit
+					});
 				}
-				counter += 1;
-				if counter < 10 {
-					continue;
-				}
-				counter = 0;
 
-				let mut swarm = LIBP2P_SWARM.lock();
-				if let Some(swarm) = &mut *swarm {
+				// Will try to reconnect if needed every 15 seconds.
+				if last_reconnect + Duration::from_secs(14) < now {
+					last_reconnect = now;
 					// let's try to make a new connection if needed
 					let nw_info: NetworkInfo = Swarm::network_info(&swarm);
+					let mut rng = rand::thread_rng();
 
 					debug!(
 						"Processing libp2p reconnection task. Has connections: {}",
@@ -553,7 +530,7 @@ pub async fn run_libp2p_node(
 							// cloned to unblock the mutex
 							let mut libp2p_peers = LIBP2P_PEERS.lock();
 							let peers: Vec<String> = libp2p_peers.keys().cloned().collect();
-							if let Some(peer_id) = peers.choose(rng) {
+							if let Some(peer_id) = peers.choose(&mut rng) {
 								if let Some(peers) = libp2p_peers.get_mut(peer_id) {
 									if !peers.0.is_empty() {
 										let tor_address =
@@ -637,8 +614,16 @@ pub async fn run_libp2p_node(
 					}
 				}
 			}
-		},
-	));
+			None => (),
+		};
+
+		if *stop_mutex.lock().unwrap() == 0 {
+			info!("Exiting libp2p polling task");
+			Poll::Ready(()) // Exiting
+		} else {
+			Poll::Pending as Poll<()>
+		}
+	}));
 
 	reset_libp2p_swarm();
 

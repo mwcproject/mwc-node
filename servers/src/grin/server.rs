@@ -468,7 +468,13 @@ impl Server {
 					);
 
 					info!("Starting gossipsub libp2p server");
-					let mut rt = tokio::runtime::Runtime::new().unwrap();
+					// Using basic_scheduler because default seems buggy. After some time it start polling on the loop if
+					// we return Polling
+					let mut rt = tokio::runtime::Builder::new()
+						.basic_scheduler()
+						.enable_all()
+						.build()
+						.unwrap();
 
 					match rt.block_on(libp2p_node_runner) {
 						Ok(_) => info!("libp2p node is exited"),
