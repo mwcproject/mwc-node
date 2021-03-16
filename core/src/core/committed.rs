@@ -174,7 +174,7 @@ pub trait Committed {
 		kernel_sum: Commitment,
 		total_spent_rmp: Option<Commitment>,
 		spending_output_ids: &[OutputIds],
-	) -> Result<Commitment, crate::core::committed::Error> {
+	) -> Result<(Commitment, Commitment), crate::core::committed::Error> {
 		// Sum all Input P' and Output R.
 		let inputs_p_committed = spending_output_ids
 			.iter()
@@ -193,7 +193,18 @@ pub trait Committed {
 			return Err(Error::KernelSumEqn2Mismatch);
 		}
 
-		Ok(rmp_sum)
+		// Calculate spending outputs (R-P')
+		let spending_outputs_r_committed = spending_output_ids
+			.iter()
+			.filter(|id| id.is_id_with_rnp())
+			.map(|id| {
+				Commitment::from_pubkey(&id.identifier_with_rnp().unwrap().nonce)
+					.unwrap_or(secp_static::commit_to_zero_value())
+			})
+			.collect::<Vec<Commitment>>();
+		let spending_rmp_sum = sum_commits(spending_outputs_r_committed, inputs_p_committed)?;
+
+		Ok((rmp_sum, spending_rmp_sum))
 	}
 }
 

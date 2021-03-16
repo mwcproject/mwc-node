@@ -1736,12 +1736,13 @@ fn setup_head(
 						{
 							None
 						} else {
-							Some(extension.verify_kernel_sums_eqn2(
+							let (rmp_sum, _spending_rmp_sum) = extension.verify_kernel_sums_eqn2(
 								header.total_kernel_offset(),
 								kernel_sum,
 								header.total_spent_rmp,
 								&vec![],
-							)?)
+							)?;
+							Some(rmp_sum)
 						};
 
 						// Save the block_sums to the db for use later.

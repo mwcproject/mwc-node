@@ -25,6 +25,7 @@ use self::core::core::{
 	VersionedTransaction, Weighting,
 };
 use self::core::global;
+use self::util::secp::pedersen::Commitment;
 use self::util::RwLock;
 use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
@@ -417,7 +418,9 @@ where
 
 	/// Returns a vector of transactions from the txpool so we can build a
 	/// block from them.
-	pub fn prepare_mineable_transactions(&self) -> Result<Vec<VersionedTransaction>, PoolError> {
+	pub fn prepare_mineable_transactions(
+		&self,
+	) -> Result<(Vec<VersionedTransaction>, Option<Commitment>), PoolError> {
 		self.txpool
 			.prepare_mineable_transactions(self.config.mineable_max_weight)
 	}

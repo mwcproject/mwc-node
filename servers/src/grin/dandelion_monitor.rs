@@ -130,7 +130,7 @@ fn process_fluff_phase(
 
 	let header = tx_pool.chain_head()?;
 
-	let fluffable_txs = {
+	let (fluffable_txs, _spending_rmp_sum) = {
 		let txpool_tx = tx_pool.txpool.all_transactions_aggregate(None)?;
 		let txs: Vec<_> = all_entries.into_iter().map(|x| x.tx).collect();
 		tx_pool.stempool.validate_raw_txs(

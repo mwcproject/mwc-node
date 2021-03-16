@@ -18,7 +18,9 @@ use crate::core::consensus;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Committed;
-use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIds, TransactionBody};
+use crate::core::core::{
+	block, Block, BlockHeader, BlockSums, HeaderVersion, OutputIds, TransactionBody,
+};
 use crate::core::pow;
 use crate::core::{global, CommitPos};
 use crate::error::{Error, ErrorKind};
@@ -481,19 +483,22 @@ fn verify_block_sums(
 		(block_sums.clone(), b as &dyn Committed).verify_kernel_sums(overage, offset.clone())?;
 
 	// Verify the kernel sums equation (2) for the block_sums with the new block applied.
-	let rmp_sum = (block_sums, b as &dyn Committed).verify_kernel_sums_eqn2(
-		offset,
-		kernel_sum,
-		None,
-		&spending_output_ids,
-	)?;
+	let rmp_sum = if b.header.height < consensus::get_nit_hard_fork_block_height()
+		|| b.header.version < HeaderVersion(3)
+	{
+		None
+	} else {
+		let (rmp_sum, _spending_rmp_sum) = (block_sums, b as &dyn Committed)
+			.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
+		Some(rmp_sum)
+	};
 
 	batch.save_block_sums(
 		&b.hash(),
 		BlockSums {
 			utxo_sum,
 			kernel_sum,
-			rmp_sum: Some(rmp_sum),
+			rmp_sum,
 		},
 	)?;
 

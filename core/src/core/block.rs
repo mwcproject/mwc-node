@@ -722,8 +722,14 @@ impl Block {
 		difficulty: Difficulty,
 		reward_output: (Output, TxKernel),
 	) -> Result<Block, Error> {
-		let mut block =
-			Block::from_reward(prev, txs, reward_output.0, reward_output.1, difficulty)?;
+		let mut block = Block::from_reward(
+			prev,
+			txs,
+			reward_output.0,
+			reward_output.1,
+			difficulty,
+			None,
+		)?;
 
 		// Now set the pow on the header so block hashing works as expected.
 		{
@@ -857,6 +863,7 @@ impl Block {
 		reward_out: Output,
 		reward_kern: TxKernel,
 		difficulty: Difficulty,
+		spending_rmp_sum: Option<Commitment>,
 	) -> Result<Block, Error> {
 		// A block is just a big transaction, aggregate and add the reward output
 		// and reward kernel. At this point the tx is technically invalid but the
@@ -875,6 +882,24 @@ impl Block {
 		let height = prev.height + 1;
 		let version = consensus::header_version(height);
 
+		// Add the sum of (R-P') of the previous block for a new total
+		let total_spent_rmp =
+			if height < consensus::get_nit_hard_fork_block_height() || version < HeaderVersion(3) {
+				None
+			} else {
+				if let Some(ref rmp) = prev.total_spent_rmp {
+					Some(committed::sum_commits(
+						vec![
+							spending_rmp_sum.unwrap_or(secp_static::commit_to_zero_value()),
+							rmp.clone(),
+						],
+						vec![],
+					)?)
+				} else {
+					spending_rmp_sum
+				}
+			};
+
 		let now = Utc::now().timestamp();
 		let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(now, 0), Utc);
 
@@ -892,6 +917,7 @@ impl Block {
 					total_difficulty: difficulty + prev.pow.total_difficulty,
 					..Default::default()
 				},
+				total_spent_rmp,
 				..Default::default()
 			},
 			body: agg_tx.into(),

@@ -153,15 +153,15 @@ fn build_block(
 	// If this fails for *any* reason then fallback to an empty vec of txs.
 	// This will allow us to mine an "empty" block if the txpool is in an
 	// invalid (and unexpected) state.
-	let txs = match tx_pool.read().prepare_mineable_transactions() {
-		Ok(txs) => txs,
+	let (txs, spending_rmp_sum) = match tx_pool.read().prepare_mineable_transactions() {
+		Ok((txs, spending_rmp_sum)) => (txs, spending_rmp_sum),
 		Err(e) => {
 			error!(
 				"build_block: Failed to prepare mineable txs from txpool: {:?}",
 				e
 			);
 			warn!("build_block: Falling back to mining empty block.");
-			vec![]
+			(vec![], None)
 		}
 	};
 
@@ -175,7 +175,14 @@ fn build_block(
 	};
 
 	let (output, kernel, block_fees) = get_coinbase(wallet_listener_url, block_fees)?;
-	let mut b = core::Block::from_reward(&head, &txs, output, kernel, difficulty.difficulty)?;
+	let mut b = core::Block::from_reward(
+		&head,
+		&txs,
+		output,
+		kernel,
+		difficulty.difficulty,
+		spending_rmp_sum,
+	)?;
 
 	// making sure we're not spending time mining a useless block
 	b.validate(&head.total_kernel_offset, verifier_cache)?;

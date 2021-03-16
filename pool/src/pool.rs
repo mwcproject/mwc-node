@@ -15,14 +15,17 @@
 //! Transaction pool implementation.
 //! Used for both the txpool and stempool layers in the pool.
 
+use self::core::consensus;
+use self::core::core::committed;
 use self::core::core::hash::{Hash, Hashed};
 use self::core::core::id::{ShortId, ShortIdentifiable};
 use self::core::core::verifier_cache::VerifierCache;
 use self::core::core::{transaction, versioned_transaction};
 use self::core::core::{
-	Block, BlockHeader, BlockSums, Commit, Committed, OutputIdentifier, OutputIds, Transaction,
-	TxImpl, TxKernel, VersionedTransaction, Weighting,
+	Block, BlockHeader, BlockSums, Commit, Committed, HeaderVersion, OutputIdentifier, OutputIds,
+	Transaction, TxImpl, TxKernel, VersionedTransaction, Weighting,
 };
+use self::util::secp::pedersen::Commitment;
 use self::util::RwLock;
 use crate::types::{BlockChain, PoolEntry, PoolError};
 use grin_core as core;
@@ -121,7 +124,7 @@ where
 	pub fn prepare_mineable_transactions(
 		&self,
 		max_weight: u64,
-	) -> Result<Vec<VersionedTransaction>, PoolError> {
+	) -> Result<(Vec<VersionedTransaction>, Option<Commitment>), PoolError> {
 		let weighting = Weighting::AsLimitedTransaction(max_weight);
 
 		// Sort the txs in the pool via the "bucket" logic to -
@@ -135,8 +138,9 @@ where
 		// Verify these txs produce an aggregated tx below max_weight.
 		// Return a vec of all the valid txs.
 		let header = self.blockchain.chain_head()?;
-		let valid_txs = self.validate_raw_txs(txs.as_slice(), None, &header, weighting)?;
-		Ok(valid_txs)
+		let (valid_txs, spending_rmp_sum) =
+			self.validate_raw_txs(txs.as_slice(), None, &header, weighting)?;
+		Ok((valid_txs, spending_rmp_sum))
 	}
 
 	pub fn all_transactions(&self) -> Vec<VersionedTransaction> {
@@ -226,7 +230,7 @@ where
 		tx: &VersionedTransaction,
 		header: &BlockHeader,
 		weighting: Weighting,
-	) -> Result<BlockSums, PoolError> {
+	) -> Result<(BlockSums, Option<Commitment>), PoolError> {
 		// Validate the tx, conditionally checking against weight limits,
 		// based on weight verification type.
 		tx.validate(weighting, self.verifier_cache.clone())?;
@@ -241,8 +245,10 @@ where
 			.map(|(id, _pos)| *id)
 			.collect::<Vec<OutputIds>>();
 
-		let new_sums = self.apply_tx_to_block_sums(tx, header, spending_output_ids)?;
-		Ok(new_sums)
+		let (new_sums, spending_rmp_sum) =
+			self.apply_tx_to_block_sums(tx, header, spending_output_ids)?;
+
+		Ok((new_sums, spending_rmp_sum))
 	}
 
 	pub fn validate_raw_txs(
@@ -251,8 +257,9 @@ where
 		extra_tx: Option<VersionedTransaction>,
 		header: &BlockHeader,
 		weighting: Weighting,
-	) -> Result<Vec<VersionedTransaction>, PoolError> {
+	) -> Result<(Vec<VersionedTransaction>, Option<Commitment>), PoolError> {
 		let mut valid_txs = vec![];
+		let mut spending_rmp_sums: Vec<Commitment> = vec![];
 
 		for tx in txs {
 			let mut candidate_txs = vec![];
@@ -266,12 +273,19 @@ where
 			let agg_tx = versioned_transaction::aggregate(&candidate_txs)?;
 
 			// We know the tx is valid if the entire aggregate tx is valid.
-			if self.validate_raw_tx(&agg_tx, header, weighting).is_ok() {
-				valid_txs.push(tx.clone());
+			let (_new_sums, spending_rmp_sum) = self.validate_raw_tx(&agg_tx, header, weighting)?;
+			valid_txs.push(tx.clone());
+			if let Some(rmp) = spending_rmp_sum {
+				spending_rmp_sums.push(rmp);
 			}
 		}
 
-		Ok(valid_txs)
+		if spending_rmp_sums.len() > 0 {
+			let spending_rmp_sum = committed::sum_commits(spending_rmp_sums, vec![])?;
+			Ok((valid_txs, Some(spending_rmp_sum)))
+		} else {
+			Ok((valid_txs, None))
+		}
 	}
 
 	/// Lookup unspent outputs to be spent by the provided transaction.
@@ -309,7 +323,7 @@ where
 		tx: &VersionedTransaction,
 		header: &BlockHeader,
 		spending_output_ids: Vec<OutputIds>,
-	) -> Result<BlockSums, PoolError> {
+	) -> Result<(BlockSums, Option<Commitment>), PoolError> {
 		let overage = tx.overage();
 
 		let offset = header.total_kernel_offset().add(tx.offset())?;
@@ -321,18 +335,30 @@ where
 		let (utxo_sum, kernel_sum) = (block_sums.clone(), tx as &dyn Committed)
 			.verify_kernel_sums(overage, offset.clone())?;
 
-		let rmp_sum = (block_sums, tx as &dyn Committed).verify_kernel_sums_eqn2(
-			offset,
-			kernel_sum,
-			None,
-			&spending_output_ids,
-		)?;
+		if header.height < consensus::get_nit_hard_fork_block_height()
+			|| header.version < HeaderVersion(3)
+		{
+			Ok((
+				BlockSums {
+					utxo_sum,
+					kernel_sum,
+					rmp_sum: None,
+				},
+				None,
+			))
+		} else {
+			let (rmp_sum, spending_rmp_sum) = (block_sums, tx as &dyn Committed)
+				.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
 
-		Ok(BlockSums {
-			utxo_sum,
-			kernel_sum,
-			rmp_sum: Some(rmp_sum),
-		})
+			Ok((
+				BlockSums {
+					utxo_sum,
+					kernel_sum,
+					rmp_sum: Some(rmp_sum),
+				},
+				Some(spending_rmp_sum),
+			))
+		}
 	}
 
 	pub fn reconcile(

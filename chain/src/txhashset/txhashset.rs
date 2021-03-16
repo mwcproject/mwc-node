@@ -2027,7 +2027,7 @@ impl<'a> Extension<'a> {
 		let now = Instant::now();
 
 		let total_spent_rmp = header.total_spent_rmp();
-		let rmp_sum = self.verify_kernel_sums_eqn2(
+		let (rmp_sum, _spending_rmp_sum) = self.verify_kernel_sums_eqn2(
 			header.total_kernel_offset(),
 			kernel_sum,
 			total_spent_rmp,
@@ -2080,7 +2080,11 @@ impl<'a> Extension<'a> {
 			self.verify_kernel_signatures(status)?;
 
 			// Verify all the R signatures.
-			self.verify_r_signatures(status)?;
+			if header.height >= consensus::get_nit_hard_fork_block_height()
+				&& header.version >= HeaderVersion(3)
+			{
+				self.verify_r_signatures(status)?;
+			}
 		}
 
 		Ok((output_sum, kernel_sum, rmp_sum))
