@@ -2269,9 +2269,9 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
-version = "0.2.88"
+version = "0.2.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03b07a082330a35e43f63177cc01689da34fbffa0105e1246cf0311472cac73a"
+checksum = "538c092e5586f4cdd7dd8078c4a79220e3e168880218124dcbce860f0ea938c6"
 
 [[package]]
 name = "libgit2-sys"
@@ -2308,7 +2308,7 @@ dependencies = [
 [[package]]
 name = "libp2p"
 version = "0.35.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "atomic",
  "bytes 1.0.1",
@@ -2334,7 +2334,7 @@ dependencies = [
 [[package]]
 name = "libp2p-core"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "asn1_der",
  "bs58",
@@ -2369,7 +2369,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dns"
 version = "0.27.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "futures 0.3.13",
  "libp2p-core",
@@ -2379,7 +2379,7 @@ dependencies = [
 [[package]]
 name = "libp2p-gossipsub"
 version = "0.28.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "asynchronous-codec",
  "base64 0.13.0",
@@ -2404,7 +2404,7 @@ dependencies = [
 [[package]]
 name = "libp2p-mplex"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "asynchronous-codec",
  "bytes 1.0.1",
@@ -2421,7 +2421,7 @@ dependencies = [
 [[package]]
 name = "libp2p-noise"
 version = "0.29.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "bytes 1.0.1",
  "curve25519-dalek",
@@ -2442,7 +2442,7 @@ dependencies = [
 [[package]]
 name = "libp2p-ping"
 version = "0.27.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "futures 0.3.13",
  "libp2p-core",
@@ -2456,7 +2456,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm"
 version = "0.27.2"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "either",
  "futures 0.3.13",
@@ -2471,7 +2471,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-derive"
 version = "0.22.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "quote 1.0.9",
  "syn 1.0.64",
@@ -2480,7 +2480,7 @@ dependencies = [
 [[package]]
 name = "libp2p-tcp"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "async-io",
  "futures 0.3.13",
@@ -2515,7 +2515,7 @@ dependencies = [
 [[package]]
 name = "libp2p-yamux"
 version = "0.30.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "futures 0.3.13",
  "libp2p-core",
@@ -2713,9 +2713,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5dede4e2065b3842b8b0af444119f3aa331cc7cc2dd20388bfb0f5d5a38823a"
+checksum = "2182a122f3b7f3f5329cb1972cee089ba2459a0a80a56935e6e674f096f8d839"
 dependencies = [
  "libc",
  "log",
@@ -2798,14 +2798,14 @@ dependencies = [
 
 [[package]]
 name = "multimap"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1255076139a83bb467426e7f8d0134968a8118844faa755985e077cf31850333"
+checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 
 [[package]]
 name = "multistream-select"
 version = "0.10.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "bytes 1.0.1",
  "futures 0.3.13",
@@ -3098,7 +3098,7 @@ dependencies = [
 [[package]]
 name = "parity-multiaddr"
 version = "0.11.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#d2526cda54aac087b7f586c777e5383918728b36"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#819e427c5051d0dd8c0ee630f57230115ffc132c"
 dependencies = [
  "arrayref",
  "bs58",
@@ -4423,7 +4423,7 @@ checksum = "8d56477f6ed99e10225f38f9f75f872f29b8b8bd8c0b946f63345bb144e9eeda"
 dependencies = [
  "autocfg 1.0.1",
  "libc",
- "mio 0.7.9",
+ "mio 0.7.10",
  "pin-project-lite 0.2.6",
 ]
 

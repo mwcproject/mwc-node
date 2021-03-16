@@ -289,7 +289,7 @@ pub async fn run_libp2p_node(
 
 	// Set a custom gossipsub
 	let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
-		.heartbeat_interval(Duration::from_secs(5)) // This is set to aid debugging by not cluttering the log space
+		.heartbeat_interval(Duration::from_secs(15)) // This is set to aid debugging by not cluttering the log space
 		.validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
 		.validate_messages() // !!!!! Now we are responsible for validation of all incoming traffic!!!!
 		.accept_dalek_pk_peers_only()
