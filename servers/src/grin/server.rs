@@ -311,7 +311,7 @@ impl Server {
 								cloned_config.p2p_config.host, cloned_config.p2p_config.port
 							),
 							&cloned_config.api_http_addr,
-							cloned_config.libp2p_port,
+							cloned_config.libp2p_port.unwrap_or(3417),
 							Some(&cloned_config.db_root),
 							cloned_config.tor_config.socks_port,
 						);
@@ -461,7 +461,7 @@ impl Server {
 					let libp2p_node_runner = libp2p_connection::run_libp2p_node(
 						tor_socks_port,
 						&secret,
-						libp2p_port,
+						libp2p_port.unwrap_or(3417),
 						fee_base,
 						output_validation_fn,
 						std::sync::Arc::new(std::sync::Mutex::new(1)), // passing new obj, because we never will stop the libp2p process
