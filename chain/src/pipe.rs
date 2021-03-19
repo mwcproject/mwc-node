@@ -408,6 +408,17 @@ fn prev_header_store(
 	Ok(prev)
 }
 
+fn check_bad_header(header: &BlockHeader) -> Result<(), Error> {
+	let bad_hashes = [Hash::from_hex(
+		"00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725",
+	)?];
+	if bad_hashes.contains(&header.hash()) {
+		Err(ErrorKind::InvalidBlockProof(block::Error::Other("explicit bad header".into())).into())
+	} else {
+		Ok(())
+	}
+}
+
 /// First level of block validation that only needs to act on the block header
 /// to make it as cheap as possible. The different validations are also
 /// arranged by order of cost to have as little DoS surface as possible.
@@ -430,6 +441,9 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 		// time progression
 		return Err(ErrorKind::InvalidBlockTime.into());
 	}
+
+	// Check the header hash against a list of known bad headers.
+	check_bad_header(header)?;
 
 	// We can determine output and kernel counts for this block based on mmr sizes from previous header.
 	// Assume 0 inputs and estimate a lower bound on the full block weight.
