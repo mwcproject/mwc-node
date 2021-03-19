@@ -41,8 +41,9 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"greg1.mainnet.seed.mwc.mw", // Greg
 	"greg2.mainnet.seed.mwc.mw", // Greg
 	"mwcseed.ddns.net",          // cpg
-	"bsvrlu2vab3frt24bqwkfo5kqm35v2pmlv3dvqg5bgc72a3cwyizuyqd.onion",
-	"r6dkxkiyg5grfhyftj3cusxvxm34e63lg5ed2zy4zbrwh4pwrcmvmpid.onion",
+	                             // Commented because those addresses will be changed after this deployment.
+	                             //"bsvrlu2vab3frt24bqwkfo5kqm35v2pmlv3dvqg5bgc72a3cwyizuyqd.onion",
+	                             //"r6dkxkiyg5grfhyftj3cusxvxm34e63lg5ed2zy4zbrwh4pwrcmvmpid.onion",
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
 	"seed1.mwc.mw",
