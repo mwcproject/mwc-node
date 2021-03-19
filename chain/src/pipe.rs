@@ -14,8 +14,6 @@
 
 //! Implementation of the chain block acceptance (or refusal) pipeline.
 
-use grin_core::core::hash::Hash;
-
 use crate::core::consensus;
 use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::VerifierCache;
@@ -412,7 +410,7 @@ fn prev_header_store(
 
 fn check_bad_header(header: &BlockHeader) -> Result<(), Error> {
 	let bad_hashes = [Hash::from_hex(
-		"0002897182d8cf7631e86d56ad546b7cf0893bda811592aa9312ae633ce04813",
+		"00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725",
 	)?];
 	if bad_hashes.contains(&header.hash()) {
 		Err(ErrorKind::InvalidBlockProof(block::Error::Other("explicit bad header".into())).into())
