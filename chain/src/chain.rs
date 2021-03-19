@@ -250,7 +250,7 @@ impl Chain {
 	/// Known bad block that we must rewind prior to if seen on "current chain".
 	fn rewind_bad_block(&self) -> Result<(), Error> {
 		let hash =
-			Hash::from_hex("0002897182d8cf7631e86d56ad546b7cf0893bda811592aa9312ae633ce04813")?;
+			Hash::from_hex("00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725")?;
 
 		if let Ok(header) = self.get_block_header(&hash) {
 			if self.is_on_current_chain(&header).is_ok() {
