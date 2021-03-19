@@ -171,7 +171,7 @@ impl GlobalConfig {
 			global::ChainTypes::Floonet => {
 				defaults.api_http_addr = "127.0.0.1:13413".to_owned();
 				defaults.p2p_config.port = 13414;
-				defaults.libp2p_port = 13417;
+				defaults.libp2p_port = Some(13417);
 				defaults
 					.stratum_mining_config
 					.as_mut()
@@ -185,7 +185,7 @@ impl GlobalConfig {
 			}
 			global::ChainTypes::UserTesting => {
 				defaults.api_http_addr = "127.0.0.1:23413".to_owned();
-				defaults.libp2p_port = 23417;
+				defaults.libp2p_port = Some(23417);
 				defaults.p2p_config.port = 23414;
 				defaults.p2p_config.seeding_type = p2p::Seeding::None;
 				defaults
