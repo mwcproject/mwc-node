@@ -229,23 +229,38 @@ impl<'a> Batch<'a> {
 
 	/// We maintain a "spent" commitments for each full block to allow validation of input against spent output
 	/// for blocks within the horizon. These data will be deleted when chain is compact.
-	pub fn save_spent_commitments(&self, spent: &Commitment, hh: &HashHeight) -> Result<(), Error> {
-		self.db
-			.put_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..], &hh)?;
+	pub fn save_spent_commitments(&self, spent: &Commitment, hh: HashHeight) -> Result<(), Error> {
+		let hash_list = self
+			.db
+			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
+		let mut spent_list;
+		if let Some(list) = hash_list {
+			spent_list = list;
+		} else {
+			spent_list = Vec::new();
+		}
+		spent_list.push(hh);
+		self.db.put_ser(
+			&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
+			&spent_list.to_vec(),
+		)?;
 		Ok(())
 	}
 
 	/// get spent commitment
-	pub fn get_spent_commitments(&self, spent: &Commitment) -> Result<Option<Hash>, Error> {
+	pub fn get_spent_commitments(
+		&self,
+		spent: &Commitment,
+	) -> Result<Option<Vec<HashHeight>>, Error> {
 		self.db
 			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))
 	}
 
-	/// An iterator to all "spent" commit in db
-	pub fn spent_commitment_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
-		let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
-		self.db.iter(&key)
-	}
+	// /// An iterator to all "spent" commit in db
+	// pub fn spent_commitment_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
+	// 	let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
+	// 	self.db.iter(&key)
+	// }
 
 	/// Migrate a block stored in the db by serializing it using the provided protocol version.
 	/// Block may have been read using a previous protocol version but we do not actually care.
@@ -267,12 +282,12 @@ impl<'a> Batch<'a> {
 		match inputs {
 			Inputs::CommitOnly(inputs) => {
 				for input in inputs {
-					let _ = self.delete_spent_commitments(&input.commitment());
+					let _ = self.delete_spent_commitments(&input.commitment(), bh);
 				}
 			}
 			Inputs::FeaturesAndCommit(inputs) => {
 				for input in inputs {
-					let _ = self.delete_spent_commitments(&input.commitment());
+					let _ = self.delete_spent_commitments(&input.commitment(), bh);
 				}
 			}
 		}
@@ -312,14 +327,26 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Delete the commitment for a spent output.
-	pub fn delete_spent_commitments(&self, spent: &Commitment) -> Result<(), Error> {
-		// self.db.delete(
-		// 	&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
-		// 	&h,
-		// )?;
-		// Ok(())
-		self.db
-			.delete(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))
+	pub fn delete_spent_commitments(&self, spent: &Commitment, hash: &Hash) -> Result<(), Error> {
+		let hash_list = self.get_spent_commitments(spent)?;
+		let hash_list_unwrap = hash_list.unwrap();
+		let mut filtered_list = Vec::new();
+		filtered_list = hash_list_unwrap
+			.iter()
+			.filter(|hash_height| hash_height.hash != *hash)
+			.collect();
+
+		if filtered_list.len() != 0 {
+			self.db.put_ser(
+				&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
+				&filtered_list.to_vec(),
+			)?;
+		} else {
+			self.db
+				.delete(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
+		}
+
+		Ok(())
 	}
 
 	/// When using the output_pos iterator we have access to the index keys but not the

@@ -1132,7 +1132,7 @@ impl<'a> Extension<'a> {
 				hash: b.hash().clone(),
 				height: b.header.height.clone(),
 			};
-			batch.save_spent_commitments(&out.commitment().clone(), &hh)?;
+			batch.save_spent_commitments(&out.commitment().clone(), hh)?;
 		}
 
 		// Update the spent index with spent pos.

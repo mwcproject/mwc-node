@@ -88,16 +88,14 @@ pub fn check_against_spent_output(
 		let commit_hash = batch.get_spent_commitments(&commit)?; // check to see if this commitment is in the spent records in db
 		if let Some(c_hash) = commit_hash {
 			//if this is not a block on the chain, it is fine.
-			let mut commit_found = true;
-			let _ = batch
-				.get_block_header(&c_hash)
-				.map_err(|_e| commit_found = false);
-			if commit_found {
-				error!("output contains spent commtiment:{:?}", commit);
-				return Err(ErrorKind::Other(
-					"output invalid, could be a replay attack".to_string(),
-				)
-				.into());
+			for hash_val in c_hash {
+				if batch.get_block_header(&hash_val.hash).is_ok() {
+					error!("output contains spent commtiment:{:?}", commit);
+					return Err(ErrorKind::Other(
+						"output invalid, could be a replay attack".to_string(),
+					)
+					.into());
+				}
 			}
 		}
 	}
