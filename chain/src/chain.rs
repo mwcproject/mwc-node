@@ -50,6 +50,7 @@ pub const MAX_ORPHAN_SIZE: usize = 200;
 /// When evicting, very old orphans are evicted first
 const MAX_ORPHAN_AGE_SECS: u64 = 300;
 
+/// Banned block. We don't accept any blockchain with this has
 pub const BLOCK_TO_BAN: &str = "00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725";
 
 #[derive(Debug, Clone)]
