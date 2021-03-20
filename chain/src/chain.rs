@@ -304,8 +304,9 @@ impl Chain {
 					// Cleanup all subsequent bad blocks (back from old head).
 					let mut current = batch.get_block_header(&old_head.hash())?;
 					while current.height > new_head.height {
+						let prev_block = batch.get_previous_header(&current)?;
 						let _ = batch.delete_block(&current.hash());
-						current = batch.get_previous_header(&current)?;
+						current = prev_block;
 					}
 
 					batch.commit()?;
@@ -329,8 +330,9 @@ impl Chain {
 					// cleanup all subsequent bad headers (back from old header_head).
 					let mut current = batch.get_block_header(&old_header_head.hash())?;
 					while current.height > new_head.height {
+						let prev_hdr = batch.get_previous_header(&current)?;
 						let _ = batch.delete_block_header(&current.hash());
-						current = batch.get_previous_header(&current)?;
+						current = prev_hdr;
 					}
 
 					batch.commit()?;
