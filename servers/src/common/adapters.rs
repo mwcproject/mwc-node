@@ -341,6 +341,19 @@ where
 	) -> Result<bool, chain::Error> {
 		// No need to process this header if we have previously accepted the _full block_.
 		let bh_hash = bh.hash();
+
+		// A shortcut to refuse the known bad block header.
+		if bh_hash
+			== Hash::from_hex("00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725")?
+		{
+			debug!(
+				"header_received: known bad header {} at {} refused by chain",
+				bh_hash, bh.height,
+			);
+			// serious enough to need to ban the peer
+			return Ok(false);
+		}
+
 		if self.processed_headers.contains(&bh_hash, true) {
 			debug!("header_received, cache for {} Rejected", bh_hash);
 			return Ok(true);
