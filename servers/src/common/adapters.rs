@@ -343,9 +343,7 @@ where
 		let bh_hash = bh.hash();
 
 		// A shortcut to refuse the known bad block header.
-		if bh_hash
-			== Hash::from_hex("00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725")?
-		{
+		if bh_hash == Hash::from_hex(crate::chain::BLOCK_TO_BAN)? {
 			debug!(
 				"header_received: known bad header {} at {} refused by chain",
 				bh_hash, bh.height,
@@ -423,6 +421,11 @@ where
 		};
 
 		if bhs.is_empty() {
+			return Ok(false);
+		}
+		let bad_block = Hash::from_hex(crate::chain::BLOCK_TO_BAN)?;
+		if bhs.iter().find(|h| h.hash() == bad_block).is_some() {
+			debug!("headers_received: found known bad header, all data is rejected");
 			return Ok(false);
 		}
 

@@ -50,6 +50,8 @@ pub const MAX_ORPHAN_SIZE: usize = 200;
 /// When evicting, very old orphans are evicted first
 const MAX_ORPHAN_AGE_SECS: u64 = 300;
 
+pub const BLOCK_TO_BAN: &str = "00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725";
+
 #[derive(Debug, Clone)]
 struct Orphan {
 	block: Block,
@@ -252,8 +254,7 @@ impl Chain {
 
 	/// Known bad block that we must rewind prior to if seen on "current chain".
 	fn rewind_bad_block(&self) -> Result<(), Error> {
-		let hash =
-			Hash::from_hex("00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725")?;
+		let hash = Hash::from_hex(BLOCK_TO_BAN)?;
 
 		if let Ok(header) = self.get_block_header(&hash) {
 			if self.is_on_current_chain(&header).is_ok() {
