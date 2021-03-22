@@ -5,8 +5,9 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
-- 12/16/20 MWC/BTC & MWC/BCH atomic swaps.
-- 10/26/20 - All funds completely distributed to the MWC hodlers.
+- 30/12/2020 Grin rebase.
+- 12/16/2020 MWC/BTC & MWC/BCH atomic swaps.
+- 10/26/2020 - All funds completely distributed to the MWC hodlers.
 - MWCMQS support in mwc-wallet.
 - TOR support in all wallets and nodes.
 - 08/03/2020 - TOR inbound connections (mwc-node 4.0.0-beta.1).
@@ -21,12 +22,12 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 
 # To be done
 If you want to help please contact us in discord.
-- Grin rebase. December 2020
-- Atomic swaps for more coins.  January 2020
-- Mobile node.    March 2021
-- Mobile wallet.  March 2021
+- Atomic swaps for more coins (LTC, ZCash, Dash, Doge).  March 2020
+- Decentralized exchange. May 2021
+- Mobile wallet.  April 2021
 - Non-interactive transaction scheme (NIT).  2021
-- Decentralized exchange.  2021
+- Alternative node implementation. We can port Grin++ and have simplified node that validate concensus only. Summer 2021
+- Mobile node.
 - Multisig.
 - Minimize transactions traceability.
 - Hardware wallets. Requires hardware manufacturer support.
