@@ -537,7 +537,7 @@ fn verify_coinbase_maturity(
 /// Verify kernel sums across the full utxo and kernel sets based on block_sums
 /// of previous block accounting for the inputs|outputs|kernels of the new block.
 /// Saves the new block_sums to the db via the current batch if successful.
-fn verify_block_sums(b: &Block, batch: &store::Batch<'_>) -> Result<(), Error> {
+pub fn verify_block_sums(b: &Block, batch: &store::Batch<'_>) -> Result<(), Error> {
 	// Retrieve the block_sums for the previous block.
 	let block_sums = batch.get_block_sums(&b.header.prev_hash)?;
 

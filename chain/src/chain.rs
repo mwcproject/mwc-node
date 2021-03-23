@@ -35,9 +35,11 @@ use crate::types::{
 };
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::{util::RwLock, ChainStore};
+use grin_core::core::verifier_cache::LruVerifierCache;
+use grin_core::core::Weighting;
 use grin_store::Error::NotFoundErr;
 use grin_util::ToHex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -234,6 +236,84 @@ impl Chain {
 		chain.rebuild_sync_mmr(&header_head)?;
 
 		chain.log_heads()?;
+
+		let mut processed_blocks: HashSet<u64> = HashSet::new();
+		let mut max_block: u64 = 0;
+
+		{
+			let batch = chain.store.batch()?;
+			let mut header_pmmr = chain.header_pmmr.write();
+			let mut txhashset = chain.txhashset.write();
+
+			let ctx = chain.new_ctx(Options::NONE, batch, &mut header_pmmr, &mut txhashset)?;
+
+			println!("Reading blocks form DB...");
+
+			let mut blocks: Vec<Block> = Vec::new();
+			for (_, b) in ctx.batch.blocks_iter()? {
+				blocks.push(b);
+			}
+			blocks.sort_by(|b1, b2| b1.header.height.cmp(&b2.header.height));
+
+			println!("Found {} blocks. Validating...", blocks.len());
+
+			let mut counter = 0;
+			// validating all blocks, including orphans
+			for block in blocks {
+				if block.header.height < 2 {
+					continue; // we need get_previous_header, so skipping first
+				}
+
+				max_block = std::cmp::max(max_block, block.header.height);
+
+				counter += 1;
+				if counter % 10000 == 0 {
+					println!("Processing... now on block {}", block.header.height);
+				}
+
+				let prev_hdr = match ctx.batch.get_previous_header(&block.header) {
+					Ok(hdr) => hdr,
+					Err(_) => {
+						println!("Prev header is not found for {}", block.header.height);
+						continue; // orohan block - it is ok. Another block with the same height must exist
+					}
+				};
+
+				// just need to be sure
+				if !processed_blocks.insert(block.header.height) {
+					//println!("Block {} processed twice", block.header.height);
+				}
+
+				// validate block with block's method
+				let verifier = Arc::new(RwLock::new(LruVerifierCache::new()));
+				if block
+					.validate(&prev_hdr.total_kernel_offset, verifier)
+					.is_err()
+				{
+					println!("Validation error at block height: {}", block.header.height);
+				}
+
+				// another method to validate and check if no new coins are introduced
+				if pipe::verify_block_sums(&block, &ctx.batch).is_err() {
+					println!(
+						"verify_block_sums error at block height: {}",
+						block.header.height
+					);
+				}
+			}
+		}
+
+		println!("WE ARE DONE, max block: {}", max_block);
+
+		for i in 1..max_block {
+			if !processed_blocks.contains(&i) {
+				println!("Block {} was not processed", i);
+			}
+		}
+
+		panic!("WE ARE DONE");
+
+		//chain.validate(false);
 
 		Ok(chain)
 	}
