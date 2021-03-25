@@ -30,6 +30,7 @@ use crate::types::{CommitPos, Options, Tip};
 use crate::util::RwLock;
 use grin_core::core::hash::Hash;
 use std::collections::HashSet;
+use std::iter::FromIterator;
 use std::sync::Arc;
 
 /// Contextual information required to process a new block and either reject or
@@ -81,20 +82,50 @@ fn check_known(header: &BlockHeader, head: &Tip, ctx: &BlockContext<'_>) -> Resu
 ///beyond that, the blocks are compacted.
 pub fn check_against_spent_output(
 	tx: &TransactionBody,
-	batch: &mut store::Batch<'_>,
+	fork_point_height: Option<u64>,
+	local_branch_blocks: Option<Vec<Hash>>,
+	header_extension: &txhashset::HeaderExtension<'_>,
+	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
 	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
+	let tip = batch.head().unwrap();
+	let fork_height = fork_point_height.unwrap_or(tip.height);
+	//convert the list of local branch bocks header hashes to a hash set for quick search
+	let local_branch_blocks_list = local_branch_blocks.unwrap_or(Vec::new());
+	let local_branch_blocks_set = HashSet::<&Hash>::from_iter(local_branch_blocks_list.iter());
+
 	for commit in output_commits {
 		let commit_hash = batch.get_spent_commitments(&commit)?; // check to see if this commitment is in the spent records in db
 		if let Some(c_hash) = commit_hash {
-			//if this is not a block on the chain, it is fine.
 			for hash_val in c_hash {
-				if batch.get_block_header(&hash_val.hash).is_ok() {
-					error!("output contains spent commtiment:{:?}", commit);
+				//first check the local branch.
+				if hash_val.height > fork_height && local_branch_blocks_set.contains(&hash_val.hash)
+				{
+					//first check the local branch.
+					error!(
+						"output contains spent commtiment:{:?} from local branch",
+						commit
+					);
 					return Err(ErrorKind::Other(
 						"output invalid, could be a replay attack".to_string(),
 					)
 					.into());
+				} else if hash_val.height <= fork_height {
+					let header = batch.get_block_header(&hash_val.hash)?;
+					if header.height != hash_val.height {
+						//this should not happen! todo
+						warn!("the height data is messed up in the lmdb");
+					}
+					if header_extension.is_on_current_chain(&header, batch).is_ok() {
+						error!(
+							"output contains spent commtiment:{:?} from the main chain",
+							commit
+						);
+						return Err(ErrorKind::Other(
+							"output invalid, could be a replay attack".to_string(),
+						)
+						.into());
+					}
 				}
 			}
 		}
@@ -153,8 +184,6 @@ pub fn process_block(
 	// Check if we have already processed this block previously.
 	check_known(&b.header, &head, ctx)?;
 
-	replay_attack_check(b, &mut ctx.batch)?;
-
 	// Quick pow validation. No point proceeding if this is invalid.
 	// We want to do this before we add the block to the orphan pool so we
 	// want to do this now and not later during header validation.
@@ -178,7 +207,11 @@ pub fn process_block(
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		let fork_point = rewind_and_apply_fork(&prev, ext, batch)?;
+		let fork_point_local_blocks = rewind_and_apply_fork(&prev, ext, batch)?;
+		let fork_point = fork_point_local_blocks.0;
+		let local_branch_blocks = fork_point_local_blocks.1;
+
+		replay_attack_check(b, fork_point.height, local_branch_blocks, ext, batch)?;
 
 		// Check any coinbase being spent have matured sufficiently.
 		// This needs to be done within the context of a potentially
@@ -233,9 +266,21 @@ pub fn process_block(
 }
 
 ///
-pub fn replay_attack_check(b: &Block, batch: &mut store::Batch<'_>) -> Result<(), Error> {
+pub fn replay_attack_check(
+	b: &Block,
+	fork_point_height: u64,
+	local_branch_blocks: Vec<Hash>,
+	ext: &txhashset::ExtensionPair<'_>,
+	batch: &store::Batch<'_>,
+) -> Result<(), Error> {
 	if b.header.version >= HeaderVersion(3) {
-		check_against_spent_output(&b.body, batch)?;
+		check_against_spent_output(
+			&b.body,
+			Some(fork_point_height),
+			Some(local_branch_blocks),
+			ext.header_extension,
+			batch,
+		)?;
 	}
 	Ok(())
 }
@@ -626,7 +671,7 @@ pub fn rewind_and_apply_fork(
 	header: &BlockHeader,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
-) -> Result<BlockHeader, Error> {
+) -> Result<(BlockHeader, Vec<Hash>), Error> {
 	let extension = &mut ext.extension;
 	let header_extension = &mut ext.header_extension;
 
@@ -655,7 +700,7 @@ pub fn rewind_and_apply_fork(
 	}
 	fork_hashes.reverse();
 
-	for h in fork_hashes {
+	for h in fork_hashes.clone() {
 		let fb = batch
 			.get_block(&h)
 			.map_err(|e| ErrorKind::StoreErr(e, "getting forked blocks".to_string()))?;
@@ -670,7 +715,7 @@ pub fn rewind_and_apply_fork(
 		apply_block_to_txhashset(&fb, ext, batch)?;
 	}
 
-	Ok(fork_point)
+	Ok((fork_point, fork_hashes)) //change the signature so we can have the local branch information.
 }
 
 /// Validate block inputs and outputs against utxo.
