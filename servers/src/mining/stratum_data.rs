@@ -125,9 +125,9 @@ impl WorkersMap {
 	/// Return : number of registered workers
 	fn remove(&self, worker_id: &usize) -> usize {
 		let mut workers = self.workers.write();
-		workers
-			.remove(&worker_id)
-			.expect("Stratum: no such addr in map");
+		if workers.remove(&worker_id).is_none() {
+			error!("Stratum: no such addr in map for worker {}", worker_id);
+		}
 		workers.len()
 	}
 
@@ -224,7 +224,9 @@ impl WorkersList {
 
 	pub fn send_to(&self, worker_id: &usize, msg: String) {
 		if let Some(tx) = self.workers_map.get_tx(worker_id) {
-			tx.unbounded_send(msg).expect("send failed");
+			if tx.unbounded_send(msg).is_err() {
+				error!("Unable to send message to worker {}", worker_id)
+			}
 		}
 	}
 

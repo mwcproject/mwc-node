@@ -26,7 +26,7 @@ use chrono::prelude::Utc;
 use serde;
 use serde_json;
 use serde_json::Value;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,7 +130,7 @@ impl RpcError {
 
 impl From<RpcError> for Value {
 	fn from(e: RpcError) -> Self {
-		serde_json::to_value(e).unwrap()
+		serde_json::to_value(e).unwrap_or(Value::Null)
 	}
 }
 
@@ -301,7 +301,7 @@ impl Handler {
 				error: None,
 			},
 		};
-		serde_json::to_string(&resp).unwrap()
+		serde_json::to_string(&resp).unwrap_or("{}".to_string())
 	}
 
 	fn handle_login(&self, params: Option<Value>, worker_id: &usize) -> Result<Value, RpcError> {
@@ -339,14 +339,14 @@ impl Handler {
 			rejected: stats.num_rejected,
 			stale: stats.num_stale,
 		};
-		let response = serde_json::to_value(&status).unwrap();
+		let response = serde_json::to_value(&status).unwrap_or(Value::Null);
 		return Ok(response);
 	}
 	// Handle GETJOBTEMPLATE message
 	fn handle_getjobtemplate(&self) -> Result<Value, RpcError> {
 		// Build a JobTemplate from a BlockHeader and return JSON
 		let job_template = self.build_block_template();
-		let response = serde_json::to_value(&job_template).unwrap();
+		let response = serde_json::to_value(&job_template).unwrap_or(Value::Null);
 		debug!(
 			"(Server ID: {}) sending block {} with id {} to single worker",
 			self.id, job_template.height, job_template.job_id,
@@ -544,7 +544,7 @@ impl Handler {
 			"ok".to_string()
 		};
 		return Ok((
-			serde_json::to_value(submit_response).unwrap(),
+			serde_json::to_value(submit_response).unwrap_or(Value::Null),
 			share_is_block,
 		));
 	} // handle submit a solution
@@ -553,16 +553,17 @@ impl Handler {
 		debug!("broadcast job");
 		// Package new block into RpcRequest
 		let job_template = self.build_block_template();
-		let job_template_json = serde_json::to_string(&job_template).unwrap();
+		let job_template_json = serde_json::to_string(&job_template).unwrap_or("{}".to_string());
 		// Issue #1159 - use a serde_json Value type to avoid extra quoting
-		let job_template_value: Value = serde_json::from_str(&job_template_json).unwrap();
+		let job_template_value: Value =
+			serde_json::from_str(&job_template_json).unwrap_or(Value::Null);
 		let job_request = RpcRequest {
 			id: JsonId::StrId(String::from("Stratum")),
 			jsonrpc: String::from("2.0"),
 			method: String::from("job"),
 			params: Some(job_template_value),
 		};
-		let job_request_json = serde_json::to_string(&job_request).unwrap();
+		let job_request_json = serde_json::to_string(&job_request).unwrap_or("{}".to_string());
 		debug!(
 			"(Server ID: {}) sending block {} with id {} to stratum clients",
 			self.id, job_template.height, job_template.job_id,
@@ -763,14 +764,24 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 	}
 
 	let task = async move {
-		let mut listener = TcpListener::bind(&listen_addr).await.unwrap_or_else(|_| {
-			panic!("Stratum: Failed to bind to listen address {}", listen_addr)
-		});
+		let mut listener = match TcpListener::bind(&listen_addr).await {
+			Ok(listener) => listener,
+			Err(e) => {
+				error!(
+					"Stratum: Failed to bind to listen address {}, {}",
+					listen_addr, e
+				);
+				return;
+			}
+		};
+
 		let server = listener
 			.incoming()
 			.filter_map(|s| async { s.map_err(|e| error!("accept error = {:?}", e)).ok() })
 			.for_each(move |socket| {
-				let peer_addr = socket.peer_addr().unwrap();
+				let peer_addr = socket
+					.peer_addr()
+					.unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 1234));
 				let ip = peer_addr.ip().to_string();
 
 				let handler = handler.clone();
