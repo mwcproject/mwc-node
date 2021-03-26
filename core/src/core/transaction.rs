@@ -1162,6 +1162,13 @@ impl PartialEq for Transaction {
 	}
 }
 
+// /// Eq
+// impl Eq for Transaction {
+// 	fn assert_receiver_is_total_eq(tx: &Transaction) -> bool {
+// 		self.body == tx.body && self.offset == tx.offset
+// 	}
+// }
+
 /// Implementation of Writeable for a fully blinded transaction, defines how to
 /// write the transaction as binary.
 impl Writeable for Transaction {

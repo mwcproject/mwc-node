@@ -27,6 +27,7 @@ use grin_core as core;
 use keychain::{ExtKeychain, Keychain};
 use std::sync::Arc;
 use util::RwLock;
+use util::ToHex;
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.
@@ -55,6 +56,16 @@ fn test_transaction_json_ser_deser() {
 	let str = serde_json::to_string(&tx1).unwrap();
 	println!("{}", str);
 	let tx2: Transaction = serde_json::from_str(&str).unwrap();
+	assert_eq!(tx1, tx2);
+}
+
+// test transaction equal
+#[test]
+fn test_transaction_equal() {
+	let tx1 = tx1i10_v2_compatible();
+	let tx2 = tx1.clone();
+	assert_eq!(tx1.offset, tx2.offset);
+	assert_eq!(tx1.body, tx2.body);
 	assert_eq!(tx1, tx2);
 }
 

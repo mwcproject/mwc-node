@@ -30,6 +30,7 @@ use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, Tx
 use chrono::prelude::*;
 use grin_core as core;
 use grin_util as util;
+use lru_cache::LruCache;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -53,6 +54,8 @@ where
 	pub verifier_cache: Arc<RwLock<V>>,
 	/// The pool adapter
 	pub adapter: Arc<P>,
+	///the replay attack cache
+	pub replay_verifier_cache: Arc<RwLock<LruCache<Hash, ()>>>,
 }
 
 impl<B, P, V> TransactionPool<B, P, V>
@@ -80,6 +83,7 @@ where
 			blockchain: chain,
 			verifier_cache,
 			adapter,
+			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(100))),
 		}
 	}
 
@@ -198,7 +202,23 @@ where
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
 
-		self.blockchain.replay_attack_check(tx)?;
+		{
+			let mut replay_cache = self.replay_verifier_cache.write();
+			let mut tx_need_to_verify = false;
+			let kernel_list = tx.body.kernels.clone();
+			for kernel in kernel_list.clone() {
+				if !replay_cache.contains_key(&kernel.hash()) {
+					tx_need_to_verify = true;
+					break;
+				}
+			}
+			if tx_need_to_verify {
+				self.blockchain.replay_attack_check(tx)?;
+			}
+			for kernel in kernel_list {
+				replay_cache.insert(kernel.hash(), ());
+			}
+		}
 
 		// If stem we want to account for the txpool.
 		let extra_tx = if stem {

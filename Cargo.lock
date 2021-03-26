@@ -1783,6 +1783,7 @@ dependencies = [
  "grin_keychain",
  "grin_util",
  "log",
+ "lru-cache",
  "rand 0.6.5",
  "serde",
  "serde_derive",
