@@ -29,6 +29,8 @@ use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use chrono::prelude::*;
 use grin_core as core;
+use grin_core::ser;
+use grin_keychain::base58;
 use grin_util as util;
 use lru_cache::LruCache;
 use std::collections::VecDeque;
@@ -55,7 +57,7 @@ where
 	/// The pool adapter
 	pub adapter: Arc<P>,
 	///the replay attack cache
-	pub replay_verifier_cache: Arc<RwLock<LruCache<Hash, ()>>>,
+	pub replay_verifier_cache: Arc<RwLock<LruCache<[u8; 32], ()>>>,
 }
 
 impl<B, P, V> TransactionPool<B, P, V>
@@ -204,19 +206,19 @@ where
 
 		{
 			let mut replay_cache = self.replay_verifier_cache.write();
+			let mut vec = Vec::new();
+			ser::serialize_default(&mut vec, &tx);
+			// let mut sha2 = Sha256::new();
+			// sha2.input(vec);
+			// let tx_hash = sha2.result();
+			let tx_hash = base58::sha256d_hash(&vec);
 			let mut tx_need_to_verify = false;
-			let kernel_list = tx.body.kernels.clone();
-			for kernel in kernel_list.clone() {
-				if !replay_cache.contains_key(&kernel.hash()) {
-					tx_need_to_verify = true;
-					break;
-				}
+			if !replay_cache.contains_key(&tx_hash) {
+				tx_need_to_verify = true;
 			}
 			if tx_need_to_verify {
 				self.blockchain.replay_attack_check(tx)?;
-			}
-			for kernel in kernel_list {
-				replay_cache.insert(kernel.hash(), ());
+				replay_cache.insert(tx_hash, ());
 			}
 		}
 
