@@ -828,6 +828,111 @@ fn output_header_mappings() {
 	clean_output_dir(".mwc_header_for_output");
 }
 
+/// Test the duplicate rangeproof bug
+#[test]
+fn test_overflow_cached_rangeproof() {
+	clean_output_dir(".mwc_overflow");
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+
+	util::init_test_logger();
+	{
+		let chain = init_chain(".mwc_overflow", pow::mine_genesis_block().unwrap());
+		let prev = chain.head_header().unwrap();
+		let kc = ExtKeychain::from_random_seed(false).unwrap();
+		let pb = ProofBuilder::new(&kc);
+
+		let mut head = prev;
+
+		// mine the first block and keep track of the block_hash
+		// so we can spend the coinbase later
+		let b = prepare_block(&kc, &head, &chain, 2);
+
+		assert!(b.outputs()[0].is_coinbase());
+		head = b.header.clone();
+		chain
+			.process_block(b.clone(), chain::Options::SKIP_POW)
+			.unwrap();
+
+		// now mine three further blocks
+		for n in 3..6 {
+			let b = prepare_block(&kc, &head, &chain, n);
+			head = b.header.clone();
+			chain.process_block(b, chain::Options::SKIP_POW).unwrap();
+		}
+
+		// create a few keys for use in txns
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0).to_identifier();
+		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0).to_identifier();
+		let key_id32 = ExtKeychainPath::new(1, 32, 0, 0, 0).to_identifier();
+
+		// build a regular transaction so we have a rangeproof to copy
+		let tx1 = build::transaction(
+			KernelFeatures::Plain { fee: 20000 },
+			&[
+				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+
+		// mine block with tx1
+		let next = prepare_block_tx(&kc, &head, &chain, 7, &[tx1.clone()]);
+		let prev_main = next.header.clone();
+		chain
+			.process_block(next.clone(), chain::Options::SKIP_POW)
+			.unwrap();
+		chain.validate(false).unwrap();
+
+		// create a second tx that contains a negative output
+		// and a positive output for 1m grin
+		let mut tx2 = build::transaction(
+			KernelFeatures::Plain { fee: 0 },
+			&[
+				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000 + 1_000_000_000_000_000,
+					key_id31.clone(),
+				),
+				build::output_negative(1_000_000_000_000_000, key_id32.clone()),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+
+		// make sure tx1 only has one output as expected
+		assert_eq!(tx1.body.outputs.len(), 1);
+		let last_rp = tx1.body.outputs[0].proof;
+
+		// overwrite all our rangeproofs with the rangeproof from last block
+		for i in 0..tx2.body.outputs.len() {
+			tx2.body.outputs[i].proof = last_rp;
+		}
+
+		let next = prepare_block_tx(&kc, &prev_main, &chain, 8, &[tx2.clone()]);
+		// process_block fails with verifier_cache disabled or with correct verifier_cache
+		// implementations
+		let res = chain.process_block(next, chain::Options::SKIP_POW);
+
+		match res {
+			Err(e) => {
+				// error should contain "Invalid Block Proof"
+				// TODO: Better way to check error
+				let error_string = format!("{}", e.to_string());
+				assert_eq!(error_string.contains("Invalid Block Proof"), true);
+			}
+			Ok(_) => {
+				// the block was accepted. This is wrong.
+				panic!("Negative output accepted into block!");
+			}
+		}
+	}
+	clean_output_dir(".mwc_overflow");
+}
+
 // Use diff as both diff *and* key_idx for convenience (deterministic private key for test blocks)
 fn prepare_block<K>(kc: &K, prev: &BlockHeader, chain: &Chain, diff: u64) -> Block
 where

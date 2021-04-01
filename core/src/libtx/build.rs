@@ -35,6 +35,7 @@ use crate::core::{Input, KernelFeatures, Output, OutputFeatures, Transaction, Tx
 use crate::libtx::proof::{self, ProofBuild};
 use crate::libtx::{aggsig, Error};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
+use util::secp::Secp256k1;
 
 /// Context information available to transaction combinators.
 pub struct Context<'a, K, B>
@@ -105,6 +106,49 @@ where
 {
 	debug!("Building input (spending coinbase): {}, {}", value, key_id);
 	build_input(value, OutputFeatures::Coinbase, key_id)
+}
+
+/// Build a negative output. This function must not be used outside of tests.
+/// The commitment will be an inversion of the value passed in and the value is
+/// subtracted from the sum.
+pub fn output_negative<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
+where
+	K: Keychain,
+	B: ProofBuild,
+{
+	Box::new(
+		move |build, acc| -> Result<(Transaction, BlindSum), Error> {
+			let (tx, sum) = acc?;
+
+			// TODO: proper support for different switch commitment schemes
+			let switch = SwitchCommitmentType::Regular;
+
+			let commit = build.keychain.commit(value, &key_id, switch)?;
+
+			// invert commitment
+			let commit = Secp256k1::commit_sum(vec![], vec![commit])?;
+
+			debug!("Building output: {}, {:?}", value, commit);
+
+			// build a proof with a rangeproof of 0 as a placeholder
+			// the test will replace this later
+			let proof = proof::create(
+				build.keychain,
+				build.builder,
+				0,
+				&key_id,
+				switch,
+				commit,
+				None,
+			)?;
+
+			// we return the output and the value is subtracted instead of added
+			Ok((
+				tx.with_output(Output::new(OutputFeatures::Plain, commit, proof)),
+				sum.sub_key_id(key_id.to_value_path(value)),
+			))
+		},
+	)
 }
 
 /// Adds an output with the provided value and key identifier from the
