@@ -1,0 +1,20 @@
+steps:
+- script: |
+   cd /home/vsts/work/1/s/api && cargo fetch  && cargo doc --offline --no-deps
+   mkdir /home/vsts/work/1/gitpages/Node && cd /home/vsts/work/1/gitpages/Node && git clone https://anything:$(github_pat)@github.com/$(ghpages_user)/$(ghpages_repo).git .
+   
+   cd  /home/vsts/work/1/gitpages/Node
+   git config user.name $(ghpages_user)
+   git checkout master
+   cp -a /home/vsts/work/1/s/target/doc/* /home/vsts/work/1/gitpages/Node/
+   echo '<meta http-equiv=refresh content=0;url=grin_api/trait.OwnerRpc.html>' > /home/vsts/work/1/gitpages/Node/index.html && \
+   git add --all
+   git commit -m"Pipelines-Bot: Updated site via $(Build.SourceVersion)";
+   git push https://$(github_pat)@github.com/mwcproject/mwcproject.github.io.git
+   
+   curl https://api.github.com/repos/$(ghpages_user)/$(ghpages_repo)/pages/builds/latest -i -v \
+       -X GET \
+       -H "Accept: application/vnd.github.mister-fantastic-preview+json" \
+       -H "Authorization: Basic $(ghpages_auth_header)"
+  displayName: 'Create and Push Docs'
+  condition: succeeded()
