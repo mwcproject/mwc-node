@@ -24,13 +24,14 @@ pr:
     include: ['*']
 
 variables:
-  RUST_BACKTRACE: '1'
+  RUST_BACKTRACE: 'FULL'
   RUSTFLAGS: '-C debug-assertions'
+  RUST_TEST_TASKS: 1
 
 jobs:
 - job: linux
   pool:
-    vmImage: ubuntu-latest
+    vmImage: ubuntu-16.04
   strategy:
     matrix:
       servers:
@@ -49,17 +50,12 @@ jobs:
         CI_JOB: release
         PLATFORM: linux-amd64
   steps:
-    - script: |
-        sudo apt-get update -yqq
-        sudo apt-get purge --auto-remove clang-11 clang-format-11 llvm-11 llvm-11-dev llvm-11-tools llvm-11-runtime clang-10 clang-format-10 llvm-10 llvm-10-dev llvm-10-tools llvm-10-runtime clang-9 clang-format-9 llvm-9 llvm-9-dev llvm-9-tools llvm-9-runtime
-        sudo apt install clang-8 git curl make build-essential mesa-utils libgl1-mesa-dev openssl libssl-dev -y
-        sudo apt-get install -yqq --no-install-recommends libncursesw5-dev
-      displayName: Linux Install Dependencies
+    - template: '.ci/install.yml'
     - template: '.ci/test.yml'
     - template: '.ci/release.yml'
 - job: macos
   pool:
-    vmImage: macos-latest
+    vmImage: macos-10.14
   strategy:
     matrix:
       test:
@@ -68,9 +64,7 @@ jobs:
         CI_JOB: release
         PLATFORM: macos
   steps:
-    - script: |
-        brew uninstall llvm
-      displayName: macOS Uninstall LLVM
+    - template: '.ci/install.yml'
     - template: '.ci/test.yml'
     - template: '.ci/release.yml'
 - job: windows
@@ -84,9 +78,6 @@ jobs:
         CI_JOB: release
         PLATFORM: win-x64
   steps:
-    - script: |
-        choco install -y llvm
-        choco install -y openssl
-      displayName: Windows Install Dependencies
+    - template: '.ci/install.yml'
     - template: '.ci/test.yml'
     - template: '.ci/windows-release.yml'
