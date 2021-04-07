@@ -90,7 +90,7 @@ fn test_nrd_kernels_disabled() {
 	);
 
 	assert_eq!(pool.total_size(), 0);
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions().unwrap();
 	assert_eq!(txs.len(), 0);
 
 	// Cleanup db directory

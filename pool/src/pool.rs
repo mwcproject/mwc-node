@@ -273,10 +273,12 @@ where
 			let agg_tx = versioned_transaction::aggregate(&candidate_txs)?;
 
 			// We know the tx is valid if the entire aggregate tx is valid.
-			let (_new_sums, spending_rmp_sum) = self.validate_raw_tx(&agg_tx, header, weighting)?;
-			valid_txs.push(tx.clone());
-			if let Some(rmp) = spending_rmp_sum {
-				spending_rmp_sums.push(rmp);
+			let res = self.validate_raw_tx(&agg_tx, header, weighting);
+			if let Ok((_new_sums, spending_rmp_sum)) = res {
+				valid_txs.push(tx.clone());
+				if let Some(rmp) = spending_rmp_sum {
+					spending_rmp_sums.push(rmp);
+				}
 			}
 		}
 

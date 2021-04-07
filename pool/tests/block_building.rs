@@ -82,7 +82,7 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 		assert_eq!(pool.total_size(), 5);
 	}
 
-	let txs = pool.prepare_mineable_transactions()?;
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions()?;
 
 	add_block(&chain, &txs, &keychain);
 

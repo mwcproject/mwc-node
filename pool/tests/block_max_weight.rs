@@ -97,9 +97,9 @@ fn test_block_building_max_weight() {
 	// Check we added them all to the txpool successfully.
 	assert_eq!(pool.total_size(), 6);
 
-	// // Prepare some "mineable" txs from the txpool.
-	// // Note: We cannot fit all the txs from the txpool into a block.
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	// Prepare some "mineable" txs from the txpool.
+	// Note: We cannot fit all the txs from the txpool into a block.
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions().unwrap();
 
 	// Fees and weights of the "mineable" txs.
 	assert_eq!(

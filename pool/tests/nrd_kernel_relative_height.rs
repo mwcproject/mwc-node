@@ -170,7 +170,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	assert_eq!(pool.txpool.size(), 1);
 	assert_eq!(pool.stempool.size(), 0);
 
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions().unwrap();
 	assert_eq!(txs.len(), 1);
 
 	// Mine block containing tx1 from the txpool.
@@ -231,7 +231,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	assert_eq!(pool.txpool.size(), 1);
 	assert_eq!(pool.stempool.size(), 0);
 
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions().unwrap();
 	assert_eq!(txs.len(), 1);
 
 	// Mine block containing tx2 from the txpool.

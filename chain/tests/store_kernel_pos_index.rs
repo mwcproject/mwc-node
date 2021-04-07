@@ -14,8 +14,8 @@
 
 use crate::chain::linked_list::{ListIndex, ListWrapper, PruneableListIndex, RewindableListIndex};
 use crate::chain::store::{self, ChainStore};
-use crate::chain::types::CommitPosHt;
 use crate::core::global;
+use crate::core::types::CommitPosHt;
 use crate::util::secp::pedersen::Commitment;
 use grin_chain as chain;
 use grin_core as core;
