@@ -25,6 +25,7 @@ use std::time::Duration;
 use crate::api;
 use crate::chain;
 use crate::common::types::Error;
+use crate::core::core::hash::Hashed;
 use crate::core::core::{Output, TxImpl, TxKernel};
 use crate::core::libtx::secp_ser;
 use crate::core::libtx::ProofBuilder;
@@ -175,6 +176,7 @@ fn build_block(
 	};
 
 	let (output, kernel, block_fees) = get_coinbase(wallet_listener_url, block_fees)?;
+	let block_sums = chain.get_block_sums(&head.hash())?;
 	let mut b = core::Block::from_reward(
 		&head,
 		&txs,
@@ -182,6 +184,7 @@ fn build_block(
 		kernel,
 		difficulty.difficulty,
 		spending_rmp_sum,
+		Some(block_sums),
 	)?;
 
 	// making sure we're not spending time mining a useless block

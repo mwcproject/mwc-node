@@ -20,9 +20,10 @@ use crate::core::compact_block::CompactBlock;
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
-	pmmr, transaction, versioned_transaction, Commit, Commitment, Inputs, KernelFeatures, Output,
-	OutputWithRnp, Transaction, TransactionBody, TransactionBodyV4, TransactionV4, TxBodyImpl,
-	TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody, Weighting,
+	pmmr, transaction, versioned_transaction, BlockSums, Commit, Commitment, Inputs,
+	KernelFeatures, Output, OutputWithRnp, Transaction, TransactionBody, TransactionBodyV4,
+	TransactionV4, TxBodyImpl, TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody,
+	Weighting,
 };
 use crate::global;
 use crate::libtx::secp_ser;
@@ -729,6 +730,7 @@ impl Block {
 			reward_output.1,
 			difficulty,
 			None,
+			None,
 		)?;
 
 		// Now set the pow on the header so block hashing works as expected.
@@ -864,6 +866,7 @@ impl Block {
 		reward_kern: TxKernel,
 		difficulty: Difficulty,
 		spending_rmp_sum: Option<Commitment>,
+		block_sums: Option<BlockSums>,
 	) -> Result<Block, Error> {
 		// A block is just a big transaction, aggregate and add the reward output
 		// and reward kernel. At this point the tx is technically invalid but the
@@ -883,22 +886,33 @@ impl Block {
 		let version = consensus::header_version(height);
 
 		// Add the sum of (R-P') of the previous block for a new total
-		let total_spent_rmp =
-			if height < consensus::get_nit_hard_fork_block_height() || version < HeaderVersion(3) {
-				None
+		let total_spent_rmp = if height < consensus::get_nit_hard_fork_block_height() {
+			None
+		} else if height == consensus::get_nit_hard_fork_block_height() {
+			// Bootstrap of 1st header for nit hard fork.
+			// The initial total spent (R-P') is a fake value which just takes total (E'+s*G).
+			let total_overage = (calc_mwc_block_overage(height, true) as i64)
+				.checked_neg()
+				.unwrap_or(0);
+			let (_utxo_sum, kernel_sum) = (block_sums.unwrap(), &agg_tx as &dyn Committed)
+				.verify_kernel_sums(total_overage, total_kernel_offset.clone())?;
+			Some(committed::commit_add_offset(
+				kernel_sum,
+				total_kernel_offset.clone(),
+			)?)
+		} else {
+			if let Some(ref rmp) = prev.total_spent_rmp {
+				Some(committed::sum_commits(
+					vec![
+						spending_rmp_sum.unwrap_or(secp_static::commit_to_zero_value()),
+						rmp.clone(),
+					],
+					vec![],
+				)?)
 			} else {
-				if let Some(ref rmp) = prev.total_spent_rmp {
-					Some(committed::sum_commits(
-						vec![
-							spending_rmp_sum.unwrap_or(secp_static::commit_to_zero_value()),
-							rmp.clone(),
-						],
-						vec![],
-					)?)
-				} else {
-					spending_rmp_sum
-				}
-			};
+				spending_rmp_sum
+			}
+		};
 
 		let now = Utc::now().timestamp();
 		let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(now, 0), Utc);
