@@ -69,15 +69,13 @@ use grin_util::secp::SecretKey;
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
-/* libp2p imports
 use crate::p2p::libp2p_connection;
-use grin_util::from_hex;
-use grin_core::core::TxKernel;
-use grin_util::secp::pedersen::Commitment;
-use grin_util::secp::constants::SECRET_KEY_SIZE;
-use std::collections::HashMap;
 use chrono::Utc;
-*/
+use grin_core::core::TxKernel;
+use grin_util::from_hex;
+use grin_util::secp::constants::SECRET_KEY_SIZE;
+use grin_util::secp::pedersen::Commitment;
+use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
 pub type ServerTxPool =
@@ -289,7 +287,7 @@ impl Server {
 
 		api::reset_server_onion_address();
 
-		let (onion_address, _tor_secret) = if config.tor_config.tor_enabled {
+		let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
 			if !config.p2p_config.host.is_loopback() {
 				error!("If Tor is enabled, host must be '127.0.0.1'.");
 				println!("If Tor is enabled, host must be '127.0.0.1'.");
@@ -395,7 +393,6 @@ impl Server {
 		);
 
 		// Initialize libp2p server
-		/*		Disabling libp2p for now. Let's wait until release
 		if config.libp2p_enabled.unwrap_or(true) && onion_address.is_some() && tor_secret.is_some()
 		{
 			let onion_address = onion_address.clone().unwrap();
@@ -483,7 +480,7 @@ impl Server {
 					// Swarm is not valid any more, let's update our global instance.
 					libp2p_connection::reset_libp2p_swarm();
 				})?;
-		}*/
+		}
 
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
