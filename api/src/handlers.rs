@@ -145,6 +145,7 @@ where
 	}
 
 	let api_handler_v2 = ForeignAPIHandlerV2::new(
+		Arc::downgrade(&peers),
 		Arc::downgrade(&chain),
 		Arc::downgrade(&tx_pool),
 		Arc::downgrade(&sync_state),
@@ -227,6 +228,7 @@ where
 	P: PoolAdapter,
 	V: VerifierCache + 'static,
 {
+	pub peers: Weak<grin_p2p::Peers>,
 	pub chain: Weak<Chain>,
 	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
 	pub sync_state: Weak<SyncState>,
@@ -240,11 +242,13 @@ where
 {
 	/// Create a new foreign API handler for GET methods
 	pub fn new(
+		peers: Weak<grin_p2p::Peers>,
 		chain: Weak<Chain>,
 		tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
 		sync_state: Weak<SyncState>,
 	) -> Self {
 		ForeignAPIHandlerV2 {
+			peers,
 			chain,
 			tx_pool,
 			sync_state,
@@ -260,6 +264,7 @@ where
 {
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
 		let api = Foreign::new(
+			self.peers.clone(),
 			self.chain.clone(),
 			self.tx_pool.clone(),
 			self.sync_state.clone(),

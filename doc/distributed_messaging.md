@@ -138,7 +138,7 @@ Note:
         - Processing Peer list from the nodes that it was connected. That list will be kept just in case we will need more peers.
         -
     * logs filter include messages form 'libp2p'
-- Get `get_tor_address` for the node. mwc-wallet will use it for the bootstrap.
+- Get `get_libp2p_peers` for the node. mwc-wallet will use it for the bootstrap.
 - Update seeds with onion addresses. Now DNS understand that onion  address is good to connect, the normal DNS records will be connected to IPs 
 
 ## mwc-wallett

@@ -762,6 +762,17 @@ pub struct PoolInfo {
 	pub pool_size: usize,
 }
 
+/// Libp2p peers from the node
+/// There are libp2p peers node  is connected to and node peers with tor addresses
+/// libp2p peers are preferable, nodes wit tor addresses can be used to expand the network
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Libp2pPeers {
+	/// Libp2p prres
+	pub libp2p_peers: Vec<String>,
+	/// Other nodes. There is a high chance that they are running libp2p network
+	pub node_peers: Vec<String>,
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;

@@ -19,7 +19,6 @@ use crate::core::core::hash::Hash;
 use crate::core::core::hash::Hashed;
 use crate::core::core::transaction::Transaction;
 use crate::core::core::verifier_cache::VerifierCache;
-use crate::get_server_onion_address;
 use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
 use crate::handlers::pool_api::PoolHandler;
@@ -32,10 +31,12 @@ use crate::types::{
 	Version,
 };
 use crate::util::RwLock;
+use crate::Libp2pPeers;
+use grin_p2p::libp2p_connection;
 use std::sync::Weak;
 
 /// Main interface into all node API functions.
-/// Node APIs are split into two seperate blocks of functionality
+/// Node APIs are split into two separate blocks of functionality
 /// called the ['Owner'](struct.Owner.html) and ['Foreign'](struct.Foreign.html) APIs
 ///
 /// Methods in this API are intended to be 'single use'.
@@ -47,6 +48,7 @@ where
 	P: PoolAdapter,
 	V: VerifierCache + 'static,
 {
+	pub peers: Weak<grin_p2p::Peers>,
 	pub chain: Weak<Chain>,
 	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
 	pub sync_state: Weak<SyncState>,
@@ -62,6 +64,7 @@ where
 	/// API calls will operate on this instance of node API.
 	///
 	/// # Arguments
+	/// * `peers` - A non-owning reference of the peers.
 	/// * `chain` - A non-owning reference of the chain.
 	/// * `tx_pool` - A non-owning reference of the transaction pool.
 	/// * `peers` - A non-owning reference of the peers.
@@ -72,11 +75,13 @@ where
 	///
 
 	pub fn new(
+		peers: Weak<grin_p2p::Peers>,
 		chain: Weak<Chain>,
 		tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
 		sync_state: Weak<SyncState>,
 	) -> Self {
 		Foreign {
+			peers,
 			chain,
 			tx_pool,
 			sync_state,
@@ -365,7 +370,28 @@ where
 	}
 
 	/// Get TOR address on this node. Return none if TOR is not running.
-	pub fn get_tor_address(&self) -> Option<String> {
-		get_server_onion_address()
+	pub fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
+		//get_server_onion_address()
+		let libp2p_peers: Vec<String> = libp2p_connection::get_libp2p_connections()
+			.iter()
+			.map(|peer| peer.to_string())
+			.collect();
+
+		let node_peers = if let Some(peers) = self.peers.upgrade() {
+			let connected_peers: Vec<String> = peers
+				.connected_peers()
+				.iter()
+				.map(|peer| peer.info.addr.tor_address().unwrap_or("".to_string()))
+				.filter(|addr| !addr.is_empty())
+				.collect();
+			connected_peers
+		} else {
+			vec![]
+		};
+
+		Ok(Libp2pPeers {
+			libp2p_peers,
+			node_peers,
+		})
 	}
 }

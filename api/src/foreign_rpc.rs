@@ -25,7 +25,7 @@ use crate::types::{
 	BlockHeaderPrintable, BlockPrintable, LocatedTxKernel, OutputListing, OutputPrintable, Tip,
 	Version,
 };
-use crate::util;
+use crate::{util, Libp2pPeers};
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `grin` with defaults, the V2 api is available at
@@ -863,7 +863,7 @@ pub trait ForeignRpc: Sync + Send {
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), ErrorKind>;
 
 	/**
-	Networked version of [Owner::get_tor_address](struct.Owner.html#method.get_tor_address).
+	Networked version of [Owner::get_libp2p_peers](struct.Owner.html#method.get_libp2p_peers).
 
 	# Json rpc example
 
@@ -872,7 +872,7 @@ pub trait ForeignRpc: Sync + Send {
 	# r#"
 	{
 		"jsonrpc": "2.0",
-		"method": "get_tor_address",
+		"method": "get_libp2p_peers",
 		"params": [],
 		"id": 1
 	}
@@ -883,14 +883,17 @@ pub trait ForeignRpc: Sync + Send {
 		"id": 1,
 		"jsonrpc": "2.0",
 		"result": {
-			"Ok": null
+			"Ok": {
+				"libp2p_peers": [],
+				"node_peers": [],
+			}
 		}
 	}
 	# "#
 	# );
 	```
 	 */
-	fn get_tor_address(&self) -> Result<Option<String>, ErrorKind>;
+	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, ErrorKind>;
 }
 
 impl<B, P, V> ForeignRpc for Foreign<B, P, V>
@@ -1018,8 +1021,8 @@ where
 		Foreign::push_transaction(self, tx, fluff).map_err(|e| e.kind().clone())
 	}
 
-	fn get_tor_address(&self) -> Result<Option<String>, ErrorKind> {
-		Ok(Foreign::get_tor_address(self))
+	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, ErrorKind> {
+		Foreign::get_libp2p_peers(self).map_err(|e| e.kind().clone())
 	}
 }
 
