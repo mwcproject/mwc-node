@@ -417,10 +417,17 @@ pub fn get_c31_hard_fork_block_height() -> u64 {
 
 /// HF2 block height. Add NIT(Non-Interactive Transaction).
 pub fn get_nit_hard_fork_block_height() -> u64 {
-	if global::get_chain_type() == global::ChainTypes::Floonet {
-		774_000 //that is around Mar. 1, 2021
-	} else {
-		768_000 //that is around May. 1, 2021
+	let chain_type = global::get_chain_type();
+	match chain_type {
+		global::ChainTypes::Mainnet => {
+			919_850 // around 2021-08-15
+		}
+		global::ChainTypes::Floonet => {
+			833_450 // around 2021-06-15
+		}
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+			TESTING_SECOND_HARD_FORK
+		}
 	}
 }
 

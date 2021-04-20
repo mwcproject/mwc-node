@@ -358,7 +358,7 @@ where
 					kernel_sum,
 					rmp_sum: Some(rmp_sum),
 				},
-				Some(spending_rmp_sum),
+				spending_rmp_sum,
 			))
 		}
 	}

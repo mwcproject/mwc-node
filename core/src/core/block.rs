@@ -258,6 +258,7 @@ pub struct BlockHeader {
 	/// We can derive the sum of (R-P') for all spent outputs in *this* block from
 	/// the total_spent_rmp of the previous block header.
 	/// New element since HeaderVersion(3).
+	#[serde(with = "secp_ser::option_commitment_serde")]
 	pub total_spent_rmp: Option<Commitment>,
 	/// Proof of work and related
 	pub pow: ProofOfWork,
@@ -722,6 +723,7 @@ impl Block {
 		txs: &[VersionedTransaction],
 		difficulty: Difficulty,
 		reward_output: (Output, TxKernel),
+		block_sums: Option<BlockSums>,
 	) -> Result<Block, Error> {
 		let mut block = Block::from_reward(
 			prev,
@@ -730,7 +732,7 @@ impl Block {
 			reward_output.1,
 			difficulty,
 			None,
-			None,
+			block_sums,
 		)?;
 
 		// Now set the pow on the header so block hashing works as expected.
@@ -891,11 +893,13 @@ impl Block {
 		} else if height == consensus::get_nit_hard_fork_block_height() {
 			// Bootstrap of 1st header for nit hard fork.
 			// The initial total spent (R-P') is a fake value which just takes total (E'+s*G).
-			let total_overage = (calc_mwc_block_overage(height, true) as i64)
+			let overage = (calc_mwc_block_reward(height) as i64)
 				.checked_neg()
 				.unwrap_or(0);
+			// println!("block::from_reward - block #{}, overage = {}", height, overage);
 			let (_utxo_sum, kernel_sum) = (block_sums.unwrap(), &agg_tx as &dyn Committed)
-				.verify_kernel_sums(total_overage, total_kernel_offset.clone())?;
+				.verify_kernel_sums(overage, total_kernel_offset.clone())?;
+			// println!("block::from_reward - block #{}, kernel_sum = {:?}, total_kernel_offset = {:?}", height, kernel_sum, total_kernel_offset);
 			Some(committed::commit_add_offset(
 				kernel_sum,
 				total_kernel_offset.clone(),

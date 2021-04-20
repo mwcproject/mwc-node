@@ -51,7 +51,7 @@ where
 
 	let secp = static_secp_instance();
 	let secp = secp.lock();
-	let over_commit = secp.commit_value(reward(fees, height))?;
+	let over_commit = secp.commit_value(value)?;
 	let out_commit = output.commitment();
 	let excess = secp::Secp256k1::commit_sum(vec![out_commit], vec![over_commit])?;
 	let pubkey = excess.to_pubkey()?;

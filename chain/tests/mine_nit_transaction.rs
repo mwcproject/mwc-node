@@ -63,7 +63,15 @@ where
 		.iter()
 		.map(|tx| tx.clone().ver())
 		.collect::<Vec<VersionedTransaction>>();
-	let mut block = Block::new(&prev, &txs, next_header_info.clone().difficulty, reward).unwrap();
+	let block_sum = chain.get_block_sums(&prev.hash()).unwrap();
+	let mut block = Block::new(
+		&prev,
+		&txs,
+		next_header_info.clone().difficulty,
+		reward,
+		Some(block_sum),
+	)
+	.unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -104,6 +112,13 @@ fn mine_block_with_nit_tx() {
 	for n in 1..height {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
 		let block = build_block(&chain, &keychain, &key_id, vec![]);
+		if n >= consensus::TESTING_SECOND_HARD_FORK as u32 {
+			println!(
+				"block #{}: {}",
+				n,
+				serde_json::to_string_pretty(&block).unwrap()
+			);
+		}
 		chain.process_block(block, Options::MINE).unwrap();
 	}
 
@@ -138,6 +153,11 @@ fn mine_block_with_nit_tx() {
 
 	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id9, vec![tx.clone()]);
+	println!(
+		"block #{}: {}",
+		block.header.height,
+		serde_json::to_string_pretty(&block).unwrap()
+	);
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
 
@@ -179,6 +199,11 @@ fn mine_block_with_nit_tx() {
 
 	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id3, vec![tx.clone()]);
+	println!(
+		"block #{}: {}",
+		block.header.height,
+		serde_json::to_string_pretty(&block).unwrap()
+	);
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
 	//println!("transaction 1ni1o1no: {}", serde_json::to_string_pretty(&tx).unwrap());
@@ -234,6 +259,11 @@ fn mine_block_with_nit_tx() {
 
 	let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id4, vec![tx.clone()]);
+	println!(
+		"block #{}: {}",
+		block.header.height,
+		serde_json::to_string_pretty(&block).unwrap()
+	);
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
 	println!(
@@ -310,6 +340,11 @@ fn mine_block_with_nit_tx() {
 
 	let key_id5 = ExtKeychainPath::new(1, 5, 0, 0, 0).to_identifier();
 	let block = build_block(&chain, &keychain, &key_id5, vec![tx.clone()]);
+	println!(
+		"block #{}: {}",
+		block.header.height,
+		serde_json::to_string_pretty(&block).unwrap()
+	);
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
 	println!(
@@ -378,7 +413,15 @@ fn mine_block_with_nit_tx() {
 	.unwrap();
 
 	let txs = vec![wrong_tx.ver()];
-	let mut block = Block::new(&prev, &txs, next_header_info.clone().difficulty, reward).unwrap();
+	let block_sum = chain.get_block_sums(&prev.hash()).unwrap();
+	let mut block = Block::new(
+		&prev,
+		&txs,
+		next_header_info.clone().difficulty,
+		reward,
+		Some(block_sum),
+	)
+	.unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;

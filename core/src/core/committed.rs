@@ -174,7 +174,7 @@ pub trait Committed {
 		kernel_sum: Commitment,
 		total_spent_rmp: Option<Commitment>,
 		spending_output_ids: &[OutputIds],
-	) -> Result<(Commitment, Commitment), crate::core::committed::Error> {
+	) -> Result<(Commitment, Option<Commitment>), crate::core::committed::Error> {
 		// Sum all Input P' and Output R.
 		let inputs_p_committed = spending_output_ids
 			.iter()
@@ -187,7 +187,8 @@ pub trait Committed {
 		let rmp_sum = self.sum_eqn2_commitments(total_spent_rmp, &inputs_p_committed)?;
 
 		// Sum the kernel excesses accounting for the kernel offset.
-		let kernel_sum_plus_offset = commit_add_offset(kernel_sum, kernel_offset)?;
+		let kernel_sum_plus_offset = commit_add_offset(kernel_sum.clone(), kernel_offset.clone())?;
+		// println!("committed::verify_kernel_sums_eqn2 - rmp_sum = {:?}, kernel_sum_plus_offset = {:?}, kernel_sum = {:?}, total_kernel_offset = {:?}", rmp_sum, kernel_sum_plus_offset, kernel_sum, kernel_offset);
 
 		if rmp_sum != kernel_sum_plus_offset {
 			return Err(Error::KernelSumEqn2Mismatch);
@@ -202,7 +203,15 @@ pub trait Committed {
 					.unwrap_or(secp_static::commit_to_zero_value())
 			})
 			.collect::<Vec<Commitment>>();
-		let spending_rmp_sum = sum_commits(spending_outputs_r_committed, inputs_p_committed)?;
+		let spending_rmp_sum =
+			if spending_outputs_r_committed.is_empty() && inputs_p_committed.is_empty() {
+				None
+			} else {
+				Some(sum_commits(
+					spending_outputs_r_committed,
+					inputs_p_committed,
+				)?)
+			};
 
 		Ok((rmp_sum, spending_rmp_sum))
 	}
