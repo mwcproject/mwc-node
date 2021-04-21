@@ -41,9 +41,12 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"greg1.mainnet.seed.mwc.mw",                                      // Greg
 	"greg2.mainnet.seed.mwc.mw",                                      // Greg
 	"mwcseed.ddns.net",                                               // cpg
-	"n4ac7b65tgtachkh5ii5zytmjkbqc3bq64rhllhz4npyrbxvz7ic5byd.onion", // 2sy-main-master-tor
 	"uukwrgtxogz6kkpcejssb7aenb7ey7pr3h5i4llhse445dfpbp63osyd.onion", // 2o_main_410_tor
+	"xsjhexie5v7gxmdkvzkzb4qifywnolb6v22wzvppscs2gog6ljribuad.onion", // 2m_main_floo_master_tor
+	"ltjbwsexjixh5p2qxjohxd342fxhag7ljuvkjnnmkuu6wer6cg4skoad.onion", // 2mb_main_410_tor
 	"wmksifwk6gh22qydmbbnv7iyphnr7jfmwsazgxbo244mkwa2k2fol2yd.onion", // 2p_main_410_arch_tor
+	"z5ys2rogjas46tpyu343m4tamkiog6pkpznfwpu3iff55b7xypd3wcad.onion", // 2p_main_410_tor
+	"n4ac7b65tgtachkh5ii5zytmjkbqc3bq64rhllhz4npyrbxvz7ic5byd.onion", // 2sy_main_master_tor
 ];
 const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
 	"seed1.mwc.mw",
