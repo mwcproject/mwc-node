@@ -91,8 +91,8 @@ pub const INTEGRITY_CALL_HISTORY_LEN_LIMIT: usize = 10;
 // call interval limit, in second.
 pub const INTEGRITY_CALL_MAX_PERIOD: i64 = 15;
 
-/// Number of top block when integrity fee is valid
-pub const INTEGRITY_FEE_VALID_BLOCKS: u64 = 1440;
+/// Number of top block when integrity fee is valid.  24 hours + 3 blocks. 3 blocks it is a minimum confirmations numbers that is required
+pub const INTEGRITY_FEE_VALID_BLOCKS: u64 = 1443;
 /// Minimum integrity fee value in term of Base fees
 pub const INTEGRITY_FEE_MIN_X: u64 = 10;
 
