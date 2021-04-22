@@ -1805,6 +1805,7 @@ dependencies = [
  "hyper",
  "hyper-rustls 0.20.0",
  "hyper-rustls 0.21.0",
+ "libp2p",
  "lmdb-zero",
  "log",
  "rand 0.6.5",
