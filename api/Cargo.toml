@@ -29,6 +29,7 @@ futures = "0.3"
 rustls = "0.17"
 url = "2.1"
 bytes = "0.5"
+chrono = { version = "0.4.11", features = ["serde"] }
 
 grin_core = { path = "../core", version = "4.3.0" }
 grin_chain = { path = "../chain", version = "4.3.0" }

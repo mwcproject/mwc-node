@@ -34,6 +34,7 @@ lazy_static = "1"
 async-std = "1.9"
 tokio = {version = "0.2", features = ["full"] }
 ed25519-dalek = "1"
+serde_json = "1"
 
 grin_core = { path = "../core", version = "4.3.0" }
 grin_store = { path = "../store", version = "4.3.0" }

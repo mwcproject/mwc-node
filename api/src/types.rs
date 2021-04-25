@@ -20,6 +20,7 @@ use crate::core::{core, ser};
 use crate::p2p;
 use crate::util::secp::pedersen;
 use crate::util::{self, ToHex};
+use grin_p2p::libp2p_connection;
 use serde;
 use serde::de::MapAccess;
 use serde::ser::SerializeStruct;
@@ -771,6 +772,15 @@ pub struct Libp2pPeers {
 	pub libp2p_peers: Vec<String>,
 	/// Other nodes. There is a high chance that they are running libp2p network
 	pub node_peers: Vec<String>,
+}
+
+/// Libp2p message from this node
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Libp2pMessages {
+	/// Libp2p peers
+	pub current_time: i64,
+	/// Other nodes. There is a high chance that they are running libp2p network
+	pub libp2p_messages: Vec<libp2p_connection::ReceivedMessage>,
 }
 
 #[cfg(test)]

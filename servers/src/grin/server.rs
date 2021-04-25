@@ -75,8 +75,6 @@ use grin_core::core::TxKernel;
 use grin_util::from_hex;
 use grin_util::secp::constants::SECRET_KEY_SIZE;
 use grin_util::secp::pedersen::Commitment;
-use libp2p::gossipsub::TopicHash;
-use libp2p::PeerId;
 use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
@@ -409,6 +407,10 @@ impl Server {
 			api::set_server_onion_address(&onion_address);
 
 			let clone_shared_chain = shared_chain.clone();
+			let libp2p_topics = config
+				.libp2p_topics
+				.clone()
+				.unwrap_or(vec!["SwapMarketplace".to_string()]);
 
 			thread::Builder::new()
 				.name("libp2p_node".to_string())
@@ -463,7 +465,9 @@ impl Server {
 					let mut secret: [u8; SECRET_KEY_SIZE] = [0; SECRET_KEY_SIZE];
 					secret.copy_from_slice(&tor_secret);
 
-					libp2p_connection::add_topic("SwapMarketplace", libp2p_listener_handler);
+					for t in &libp2p_topics {
+						libp2p_connection::add_topic(t, 1);
+					}
 
 					let libp2p_node_runner = libp2p_connection::run_libp2p_node(
 						tor_socks_port,
@@ -1022,20 +1026,4 @@ impl Server {
 		stop.stop();
 		info!("stop_test_miner - stop",);
 	}
-}
-
-fn libp2p_listener_handler(peer_id: &PeerId, topic: &TopicHash, data: Vec<u8>, fee: u64) -> bool {
-	let message_str = match String::from_utf8(data.clone()) {
-		Ok(s) => s,
-		Err(e) => {
-			warn!("Unable to read libp2p message {:?}, {}", data, e);
-			return false;
-		}
-	};
-
-	debug!(
-		"Get a message from {}, on topic {},  data {}, fee {}",
-		peer_id, topic, message_str, fee
-	);
-	true
 }

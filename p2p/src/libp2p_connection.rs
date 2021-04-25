@@ -59,6 +59,7 @@ use grin_core::core::hash::Hash;
 use grin_core::core::TxKernel;
 use grin_core::libtx::aggsig;
 use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
+use grin_util::RwLock;
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::time::Instant;
@@ -70,19 +71,42 @@ impl libp2p::core::Executor for TokioExecutor {
 	}
 }
 
+/// Message that was received from libp2p gossipsub network
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReceivedMessage {
+	/// Unix timestamp when this message was received
+	pub timestamp: i64,
+	/// Peer who send the message
+	pub peer_id: String,
+	/// Topic that received the message
+	pub topic: String,
+	/// Integrity fee that was paid
+	pub fee: u64,
+	/// The message.
+	pub message: String,
+}
+
+const MESSAGING_RECEIVED_LIMIT: usize = 1000;
+
 lazy_static! {
 	static ref LIBP2P_SWARM: Mutex<Option<Swarm<Gossipsub>>> = Mutex::new(None);
 	/// Discovered Peer Onion addresses
-	static ref LIBP2P_PEERS: Mutex<HashMap<String, (Vec<String>, u64)>> =
-		Mutex::new(HashMap::new());
+	static ref LIBP2P_PEERS: RwLock<HashMap<String, (Vec<String>, u64)>> =
+		RwLock::new(HashMap::new());
 
-	static ref THIS_PEER_ID: Mutex<Option<PeerId>> = Mutex::new(None);
+	static ref THIS_PEER_ID: RwLock<Option<PeerId>> = RwLock::new(None);
 	// Message handlers arguments: topic hash, message (no header), paid integrity fee
 	//   Handler must return false if the message is incorrect, so the peer must be banned.
-	static ref LIBP2P_MESSAGE_HANDLERS: Mutex<HashMap<TopicHash, (fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool, Topic)>> = Mutex::new(HashMap::new());
+	static ref LIBP2P_MESSAGE_HANDLERS: RwLock<HashMap<TopicHash, (fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool, Topic)>> = RwLock::new(HashMap::new());
 
 	/// Seeds peer list. Will use it if not connections are available.
-	static ref SEED_LIST: Mutex<Vec<PeerAddr>> = Mutex::new(vec![]);
+	static ref SEED_LIST: RwLock<Vec<PeerAddr>> = RwLock::new(vec![]);
+
+	// Topics that we are listening now
+	static ref MESSAGING_TOPICS: RwLock<HashMap<TopicHash, (String, Topic, u64)>> = RwLock::new(HashMap::new());
+
+	/// Received messages
+	static ref MESSAGING_RECEIVED: RwLock<VecDeque<ReceivedMessage>> = RwLock::new(VecDeque::new());
 }
 
 // Message with same integrity output consensus
@@ -97,10 +121,10 @@ pub const INTEGRITY_FEE_VALID_BLOCKS: u64 = 1443;
 pub const INTEGRITY_FEE_MIN_X: u64 = 10;
 
 pub fn get_this_peer_id() -> Option<PeerId> {
-	THIS_PEER_ID.lock().clone()
+	THIS_PEER_ID.read().clone()
 }
 pub fn set_this_peer_id(peer_id: &PeerId) {
-	THIS_PEER_ID.lock().replace(peer_id.clone());
+	THIS_PEER_ID.write().replace(peer_id.clone());
 }
 
 /// Init Swarm instance. App expecting to have only single instance for everybody.
@@ -115,7 +139,7 @@ pub fn reset_libp2p_swarm() {
 /// Report the seed list. We will add them as a found peers. That should be enough for bootstraping
 pub fn set_seed_list(seed_list: &Vec<PeerAddr>, update_seed_list: bool) {
 	if update_seed_list {
-		*SEED_LIST.lock() = seed_list.clone();
+		*SEED_LIST.write() = seed_list.clone();
 	}
 
 	for s in seed_list {
@@ -134,11 +158,117 @@ pub fn get_libp2p_running() -> bool {
 	LIBP2P_SWARM.lock().is_some()
 }
 
+/// Get topics that we are listening
+pub fn get_topics() -> Vec<(String, Topic, u64)> {
+	MESSAGING_TOPICS
+		.read()
+		.iter()
+		.map(|(_k, v)| v.clone())
+		.collect()
+}
+
+fn listener_handler(peer_id: &PeerId, topic: &TopicHash, data: Vec<u8>, fee: u64) -> bool {
+	if let Some((topic_str, _topic, min_fee)) = MESSAGING_TOPICS.read().get(topic) {
+		if fee >= *min_fee {
+			// Parse message. It should be Json string
+			let message_str = match String::from_utf8(data) {
+				Ok(s) => s,
+				Err(_) => return false,
+			};
+			if serde_json::from_str::<serde_json::Value>(&message_str).is_err() {
+				return false;
+			}
+
+			debug!(
+				"Get a message from {}, on topic {},  data {}, fee {}",
+				peer_id, topic_str, message_str, fee
+			);
+
+			// Everything looks good so far. We can keep the data
+			{
+				let mut messages = MESSAGING_RECEIVED.write();
+				messages.retain(|m| m.message != message_str);
+				messages.push_back(ReceivedMessage {
+					timestamp: Utc::now().timestamp(),
+					peer_id: peer_id.get_address().unwrap_or("".to_string()),
+					topic: topic_str.clone(),
+					fee,
+					message: message_str,
+				});
+				while messages.len() > MESSAGING_RECEIVED_LIMIT {
+					messages.pop_front();
+				}
+			}
+		}
+	}
+	true
+}
+
+/// Start listening on the topic
+pub fn add_topic(topic_str: &String, min_fee: u64) -> bool {
+	let topic = Topic::new(topic_str.clone());
+
+	match MESSAGING_TOPICS
+		.write()
+		.insert(topic.hash(), (topic_str.clone(), topic, min_fee))
+	{
+		Some(_) => (), // Data updated, already subscribed
+		None => {
+			add_topic_to_libp2p(&topic_str, listener_handler);
+			return true;
+		}
+	}
+	return false;
+}
+
+/// Remove topic from listening
+pub fn remove_topic(topic_str: &String) -> bool {
+	let topic = Topic::new(topic_str.clone());
+
+	match MESSAGING_TOPICS.write().remove(&topic.hash()) {
+		Some(_) => {
+			remove_topic_from_libp2p(&topic_str);
+			return true;
+		}
+		None => (),
+	}
+	return false;
+}
+
+pub fn inject_received_messaged(inject_msgs: Vec<ReceivedMessage>) {
+	let mut messages = MESSAGING_RECEIVED.write();
+
+	for inj_msg in inject_msgs {
+		messages.retain(|m| m.message != inj_msg.message);
+		messages.push_back(inj_msg);
+	}
+
+	while messages.len() > MESSAGING_RECEIVED_LIMIT {
+		messages.pop_front();
+	}
+}
+
+/// Read received messages
+pub fn get_received_messages(delete: bool) -> VecDeque<ReceivedMessage> {
+	if delete {
+		let mut res: VecDeque<ReceivedMessage> = VecDeque::new();
+		res.append(&mut *MESSAGING_RECEIVED.write());
+		res
+	} else {
+		MESSAGING_RECEIVED.read().clone()
+	}
+}
+
+/// Get number of received messages
+pub fn get_received_messages_num() -> usize {
+	MESSAGING_RECEIVED.read().len()
+}
+
 /// Stop listening on the topic
-pub fn remove_topic(topic: &str) {
+pub fn remove_topic_from_libp2p(topic: &str) {
 	// remove topic and handler
 	let topic = Topic::new(topic);
-	let mut handlers = LIBP2P_MESSAGE_HANDLERS.lock();
+	let mut handlers = LIBP2P_MESSAGE_HANDLERS.write();
 	if handlers.remove(&topic.hash()).is_some() {
 		// Let's Unregister in the swarm
 		match &mut *LIBP2P_SWARM.lock() {
@@ -158,11 +288,11 @@ pub fn remove_topic(topic: &str) {
 /// Start listen on topic
 /// Message handlers arguments: topic hash, message (no header), paid integrity fee
 //   Handler must return false if the message is incorrect, so the peer must be banned.
-pub fn add_topic(
+pub fn add_topic_to_libp2p(
 	topic: &str,
 	handler: fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool,
 ) {
-	let mut handlers = LIBP2P_MESSAGE_HANDLERS.lock();
+	let mut handlers = LIBP2P_MESSAGE_HANDLERS.write();
 	let topic = Topic::new(topic);
 	let _ = handlers.insert(topic.hash(), (handler, topic.clone()));
 
@@ -208,7 +338,7 @@ pub fn add_new_peer(peer: &PeerAddr) -> Result<(), Error> {
 	})?;
 
 	let cur_time = Utc::now().timestamp() as u64;
-	let mut peer_list = LIBP2P_PEERS.lock();
+	let mut peer_list = LIBP2P_PEERS.write();
 	if let Some((peers, time)) = peer_list.get_mut("SELF") {
 		if !peers.contains(&addr) {
 			peers.push(addr);
@@ -329,7 +459,7 @@ pub async fn run_libp2p_node(
 
 	// Subscribe to the topics that we are ready to listen
 	LIBP2P_MESSAGE_HANDLERS
-		.lock()
+		.read()
 		.iter()
 		.for_each(|(_topic_hash, (_fn, topic))| {
 			if let Err(e) = swarm.subscribe(&topic) {
@@ -428,7 +558,7 @@ pub async fn run_libp2p_node(
 									info!("Get {} peers from {}. Will process them later when we will need to increase connection number", peer_arr.len(), peer_id);
 
 									if let Ok(addr) = peer_id.as_onion_address() {
-										let mut new_peers_list = LIBP2P_PEERS.lock();
+										let mut new_peers_list = LIBP2P_PEERS.write();
 
 										(*new_peers_list).insert(
 											addr,
@@ -458,7 +588,7 @@ pub async fn run_libp2p_node(
 
 												if let Some((handler, _topic)) =
 													LIBP2P_MESSAGE_HANDLERS
-														.lock()
+														.read()
 														.get(&message.topic)
 												{
 													if !(handler)(
@@ -528,7 +658,7 @@ pub async fn run_libp2p_node(
 						let mut address_to_connect: Option<Multiaddr> = None;
 						loop {
 							// cloned to unblock the mutex
-							let mut libp2p_peers = LIBP2P_PEERS.lock();
+							let mut libp2p_peers = LIBP2P_PEERS.write();
 							let peers: Vec<String> = libp2p_peers.keys().cloned().collect();
 							if let Some(peer_id) = peers.choose(&mut rng) {
 								if let Some(peers) = libp2p_peers.get_mut(peer_id) {
@@ -596,7 +726,7 @@ pub async fn run_libp2p_node(
 							&& nw_info.connection_counters().num_connections() == 0
 						{
 							info!("Retry connect to libp2p seeds peers...");
-							let seed_list = SEED_LIST.lock().clone();
+							let seed_list = SEED_LIST.read().clone();
 							set_seed_list(&seed_list, false);
 						}
 

@@ -241,6 +241,10 @@ pub struct ServerConfig {
 	/// Default value: enabled
 	pub libp2p_enabled: Option<bool>,
 
+	/// Topics that node will listen on and collect the data.
+	/// Default: SwapMarketplace
+	pub libp2p_topics: Option<Vec<String>>,
+
 	/// libp2p connection port (will be activated with Tor)
 	pub libp2p_port: Option<u16>,
 
@@ -294,6 +298,7 @@ impl Default for ServerConfig {
 			test_miner_wallet_url: None,
 			libp2p_enabled: Some(true),
 			libp2p_port: Some(3417),
+			libp2p_topics: None,
 			webhook_config: WebHooksConfig::default(),
 			tor_config: TorConfig::default(),
 		}

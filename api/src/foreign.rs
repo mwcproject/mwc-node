@@ -31,7 +31,8 @@ use crate::types::{
 	Version,
 };
 use crate::util::RwLock;
-use crate::Libp2pPeers;
+use crate::{Libp2pMessages, Libp2pPeers};
+use chrono::Utc;
 use grin_p2p::libp2p_connection;
 use std::sync::Weak;
 
@@ -392,6 +393,16 @@ where
 		Ok(Libp2pPeers {
 			libp2p_peers,
 			node_peers,
+		})
+	}
+
+	pub fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
+		Ok(Libp2pMessages {
+			current_time: Utc::now().timestamp(),
+			libp2p_messages: libp2p_connection::get_received_messages(false)
+				.iter()
+				.cloned()
+				.collect(),
 		})
 	}
 }
