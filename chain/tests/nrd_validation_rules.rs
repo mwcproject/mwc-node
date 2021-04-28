@@ -191,11 +191,9 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	let block_valid_10 = build_block(&chain, &keychain, &key_id10, vec![])?;
 	chain.process_block(block_valid_10, Options::NONE)?;
 
-	// Block at height 11 is valid with tx2 as NRD rule is met (relative_height=2) but it will fail due to replay attack.
-	let block_invalid_11 = build_block(&chain, &keychain, &key_id11, vec![tx2.clone()])?;
-	assert!(chain
-		.process_block(block_invalid_11, Options::NONE)
-		.is_err());
+	// Block at height 11 is valid with tx2 as NRD rule is met (relative_height=2).
+	let block_valid_11 = build_block(&chain, &keychain, &key_id11, vec![tx2.clone()])?;
+	chain.process_block(block_valid_11, Options::NONE)?;
 
 	clean_output_dir(chain_dir);
 	Ok(())
@@ -291,11 +289,9 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	let block_valid_9 = build_block(&chain, &keychain, &key_id9, vec![tx1.clone()])?;
 	chain.process_block(block_valid_9, Options::NONE)?;
 
-	// Block at height 10 is valid with tx2 as NRD rule is met (relative_height=1) and fail with replay attack check.
-	let block_invalid_10 = build_block(&chain, &keychain, &key_id10, vec![tx2.clone()])?;
-	assert!(chain
-		.process_block(block_invalid_10, Options::NONE)
-		.is_err());
+	// Block at height 10 is valid with tx2 as NRD rule is met (relative_height=1).
+	let block_valid_10 = build_block(&chain, &keychain, &key_id10, vec![tx2.clone()])?;
+	chain.process_block(block_valid_10, Options::NONE)?;
 
 	clean_output_dir(chain_dir);
 	Ok(())
@@ -342,8 +338,6 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
 
-	//	let  (mut kernel, excess)  = getRandomKenel(&keychain, 2000)?;
-
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
 	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
@@ -372,73 +366,9 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	)
 	.unwrap();
 
-	let mut kernel2 = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-		fee: 20000,
-		relative_height: NRDRelativeHeight::new(2)?,
-	});
-	// // Construct the message to be signed.
-	let msg2 = kernel2.msg_to_sign().unwrap();
-
-	// // Generate a kernel with public excess and associated signature.
-	let excess2 = BlindingFactor::rand();
-	let skey2 = excess2.secret_key().unwrap();
-	kernel2.excess = keychain.secp().commit(0, skey2).unwrap();
-	let pubkey2 = &kernel2.excess.to_pubkey().unwrap();
-	kernel2.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg2, &excess2, Some(&pubkey2)).unwrap();
-	kernel2.verify().unwrap();
-	//	let  (kernel2, excess2) = getRandomKenel(&keychain, 2000)?;
-
-	let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier();
-	let key_id5 = ExtKeychainPath::new(1, 5, 0, 0, 0).to_identifier();
-	let key_id6 = ExtKeychainPath::new(1, 6, 0, 0, 0).to_identifier();
-	let key_id7 = ExtKeychainPath::new(1, 7, 0, 0, 0).to_identifier();
-
-	let tx3 = build::transaction_with_kernel(
-		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id4.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id5.clone()),
-		],
-		kernel2.clone(),
-		excess2.clone(),
-		&keychain,
-		&builder,
-	)
-	.unwrap();
-
-	let mut kernel3 = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-		fee: 20000,
-		relative_height: NRDRelativeHeight::new(2)?,
-	});
-	// // Construct the message to be signed.
-	let msg3 = kernel3.msg_to_sign().unwrap();
-
-	// // Generate a kernel with public excess and associated signature.
-	let excess3 = BlindingFactor::rand();
-	let skey3 = excess3.secret_key().unwrap();
-	kernel3.excess = keychain.secp().commit(0, skey3).unwrap();
-	let pubkey3 = &kernel3.excess.to_pubkey().unwrap();
-	kernel3.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg3, &excess3, Some(&pubkey3)).unwrap();
-	kernel3.verify().unwrap();
-	//	let  (kernel3, excess3)  = getRandomKenel(&keychain, 2000)?;
-
-	let tx4 = build::transaction_with_kernel(
-		&[
-			build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id5.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id6.clone()),
-		],
-		kernel3.clone(),
-		excess3.clone(),
-		&keychain,
-		&builder,
-	)
-	.unwrap();
-
 	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
 	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0).to_identifier();
 	let key_id11 = ExtKeychainPath::new(1, 11, 0, 0, 0).to_identifier();
-	let key_id12 = ExtKeychainPath::new(1, 12, 0, 0, 0).to_identifier();
 
 	// Block containing tx1 is valid.
 	let block_valid_9 =
@@ -453,58 +383,25 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	// Process an alternative "fork" block also at height 9.
 	// The "other" block at height 9 should not affect this one in terms of NRD kernels
 	// as the recent kernel index should be rewound.
-	let block_invalid_9b =
-		build_block_from_prev(&header_8, &chain, &keychain, &key_id9, vec![tx1.clone()])?;
-	assert!(chain
-		.process_block(block_invalid_9b, Options::NONE)
-		.is_err());
-
-	// Process an alternative block at height 10 on this same fork.
 	let block_valid_9b =
-		build_block_from_prev(&header_8, &chain, &keychain, &key_id10, vec![tx3.clone()])?;
+		build_block_from_prev(&header_8, &chain, &keychain, &key_id9, vec![tx1.clone()])?;
 	chain.process_block(block_valid_9b.clone(), Options::NONE)?;
 
 	// Process an alternative block at height 10 on this same fork.
-	let block_valid_10b = build_block_from_prev(
-		&block_valid_9b.header,
-		&chain,
-		&keychain,
-		&key_id11,
-		vec![tx4.clone()],
-	)?;
+	let block_valid_10b =
+		build_block_from_prev(&block_valid_9b.header, &chain, &keychain, &key_id10, vec![])?;
 	chain.process_block(block_valid_10b.clone(), Options::NONE)?;
 
-	// Block at height 11 is valid with tx1 as NRD rule is met (relative_height=2) but fail with replay attack check
-	let block_invalid_11b = build_block_from_prev(
+	// Block at height 11 is valid with tx2 as NRD rule is met (relative_height=2).
+	let block_valid_11b = build_block_from_prev(
 		&block_valid_10b.header,
 		&chain,
 		&keychain,
-		&key_id9,
-		vec![tx1.clone()],
+		&key_id11,
+		vec![tx2.clone()],
 	)?;
-	assert!(chain
-		.process_block(block_invalid_11b, Options::NONE)
-		.is_err());
+	chain.process_block(block_valid_11b, Options::NONE)?;
 
 	clean_output_dir(chain_dir);
 	Ok(())
-}
-
-fn getRandomKenel(keychain: &ExtKeychain, fee: u64) -> Result<(TxKernel, BlindingFactor), Error> {
-	let mut kernel2 = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-		fee: fee,
-		relative_height: NRDRelativeHeight::new(2)?,
-	});
-	// // Construct the message to be signed.
-	let msg2 = kernel2.msg_to_sign().unwrap();
-
-	// // Generate a kernel with public excess and associated signature.
-	let excess2 = BlindingFactor::rand();
-	let skey2 = excess2.secret_key().unwrap();
-	kernel2.excess = keychain.secp().commit(0, skey2).unwrap();
-	let pubkey2 = &kernel2.excess.to_pubkey().unwrap();
-	kernel2.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg2, &excess2, Some(&pubkey2)).unwrap();
-	kernel2.verify().unwrap();
-	Ok((kernel2, excess2))
 }

@@ -811,13 +811,11 @@ impl Chain {
 	/// (need to be version 3 or bigger)
 	/// Do we need to do the check here? we are doing check for every tx regardless of the kernel version.
 	pub fn replay_attack_check(&self, tx: &Transaction) -> Result<(), Error> {
-		{
-			let mut batch = self.store.batch()?;
-			pipe::check_against_spent_output(&tx.body, &mut batch)?;
-			pipe::check_against_duplicate_kernel(&tx.body, &mut batch)?;
-			batch.commit()?;
-		}
-		Ok(())
+		let mut header_pmmr = self.header_pmmr.write();
+		txhashset::header_extending_readonly(&mut header_pmmr, &self.store(), |ext, batch| {
+			pipe::check_against_spent_output(&tx.body, None, None, ext, batch)?;
+			Ok(())
+		})
 	}
 
 	/// Validate the current chain state.

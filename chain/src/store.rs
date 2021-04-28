@@ -16,12 +16,13 @@
 
 use crate::core::consensus::HeaderInfo;
 use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::{Block, BlockHeader, BlockSums};
+use crate::core::core::{Block, BlockHeader, BlockSums, Inputs};
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::linked_list::MultiIndex;
-use crate::types::{CommitPos, Tip};
+use crate::types::{CommitPos, HashHeight, Tip};
 use crate::util::secp::pedersen::Commitment;
+
 use croaring::Bitmap;
 use grin_store as store;
 use grin_store::{option_to_not_found, to_key, Error, SerIterator};
@@ -46,7 +47,6 @@ const BLOCK_INPUT_BITMAP_PREFIX: u8 = b'B';
 const BLOCK_SUMS_PREFIX: u8 = b'M';
 const BLOCK_SPENT_PREFIX: u8 = b'S';
 const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C';
-const BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX: u8 = b'R';
 
 /// All chain-related database operations
 pub struct ChainStore {
@@ -229,39 +229,38 @@ impl<'a> Batch<'a> {
 
 	/// We maintain a "spent" commitments for each full block to allow validation of input against spent output
 	/// for blocks within the horizon. These data will be deleted when chain is compact.
-	pub fn save_spent_commitments(&self, h: &Hash, spent: &[Commitment]) -> Result<(), Error> {
+	pub fn save_spent_commitments(&self, spent: &Commitment, hh: HashHeight) -> Result<(), Error> {
+		let hash_list = self
+			.db
+			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
+		let mut spent_list;
+		if let Some(list) = hash_list {
+			spent_list = list;
+		} else {
+			spent_list = Vec::new();
+		}
+		spent_list.push(hh);
 		self.db.put_ser(
-			&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, h)[..],
-			&spent.to_vec(),
+			&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
+			&spent_list.to_vec(),
 		)?;
 		Ok(())
 	}
 
-	/// An iterator to all "spent" commit in db
-	pub fn spent_commitment_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
-		let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
-		self.db.iter(&key)
-	}
-
-	/// We maintain kernel public excess  commitments for each full block to allow detection of kernel duplication.
-	/// for blocks within the horizon. These data will be deleted when chain is compact.
-	pub fn save_kernel_excess_commitments(
+	/// get spent commitment
+	pub fn get_spent_commitments(
 		&self,
-		h: &Hash,
-		kernel: &[Commitment],
-	) -> Result<(), Error> {
-		self.db.put_ser(
-			&to_key(BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX, h)[..],
-			&kernel.to_vec(),
-		)?;
-		Ok(())
+		spent: &Commitment,
+	) -> Result<Option<Vec<HashHeight>>, Error> {
+		self.db
+			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))
 	}
 
-	/// An iterator to all kernel public excess commitment in db
-	pub fn kernel_excess_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
-		let key = to_key(BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX, "");
-		self.db.iter(&key)
-	}
+	// /// An iterator to all "spent" commit in db
+	// pub fn spent_commitment_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
+	// 	let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
+	// 	self.db.iter(&key)
+	// }
 
 	/// Migrate a block stored in the db by serializing it using the provided protocol version.
 	/// Block may have been read using a previous protocol version but we do not actually care.
@@ -275,20 +274,32 @@ impl<'a> Batch<'a> {
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
 		self.db.delete(key)
 	}
-
 	/// Delete a full block. Does not delete any record associated with a block
 	/// header.
 	pub fn delete_block(&self, bh: &Hash) -> Result<(), Error> {
-		self.db.delete(&to_key(BLOCK_PREFIX, bh)[..])?;
+		let block = self.get_block(bh)?;
+		let inputs = block.inputs();
+		match inputs {
+			Inputs::CommitOnly(inputs) => {
+				for input in inputs {
+					let _ = self.delete_spent_commitments(&input.commitment(), bh);
+				}
+			}
+			Inputs::FeaturesAndCommit(inputs) => {
+				for input in inputs {
+					let _ = self.delete_spent_commitments(&input.commitment(), bh);
+				}
+			}
+		}
 
 		// Best effort at deleting associated data for this block.
 		// Not an error if these fail.
 		{
 			let _ = self.delete_block_sums(bh);
 			let _ = self.delete_spent_index(bh);
-			let _ = self.delete_spent_commitment_index(bh);
-			let _ = self.delete_kernel_excess_commitment_index(bh);
 		}
+
+		self.db.delete(&to_key(BLOCK_PREFIX, bh)[..])?;
 
 		Ok(())
 	}
@@ -318,6 +329,29 @@ impl<'a> Batch<'a> {
 	/// Delete the output_pos index entry for a spent output.
 	pub fn delete_output_pos_height(&self, commit: &Commitment) -> Result<(), Error> {
 		self.db.delete(&to_key(OUTPUT_POS_PREFIX, commit))
+	}
+
+	/// Delete the commitment for a spent output.
+	pub fn delete_spent_commitments(&self, spent: &Commitment, hash: &Hash) -> Result<(), Error> {
+		let hash_list = self.get_spent_commitments(spent)?;
+		let hash_list_unwrap = hash_list.unwrap();
+		let mut filtered_list = Vec::new();
+		filtered_list = hash_list_unwrap
+			.iter()
+			.filter(|hash_height| hash_height.hash != *hash)
+			.collect();
+
+		if filtered_list.len() != 0 {
+			self.db.put_ser(
+				&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
+				&filtered_list.to_vec(),
+			)?;
+		} else {
+			self.db
+				.delete(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
+		}
+
+		Ok(())
 	}
 
 	/// When using the output_pos iterator we have access to the index keys but not the
@@ -368,17 +402,6 @@ impl<'a> Batch<'a> {
 		let _ = self.db.delete(&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh));
 
 		self.db.delete(&to_key(BLOCK_SPENT_PREFIX, bh))
-	}
-
-	/// Delete the block spent commitments.
-	fn delete_spent_commitment_index(&self, bh: &Hash) -> Result<(), Error> {
-		self.db.delete(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, bh))
-	}
-
-	/// Delete the kernelexcess commitment
-	fn delete_kernel_excess_commitment_index(&self, bh: &Hash) -> Result<(), Error> {
-		self.db
-			.delete(&to_key(BLOCK_KERNEL_EXCESS_COMMITMENT_PREFIX, bh))
 	}
 
 	/// Save block_sums for the block.

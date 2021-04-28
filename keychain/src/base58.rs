@@ -36,7 +36,7 @@ use std::{fmt, str};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Sha256dHash
-fn sha256d_hash(data: &[u8]) -> [u8; 32] {
+pub fn sha256d_hash(data: &[u8]) -> [u8; 32] {
 	let mut ret = [0; 32];
 	let mut sha2 = Sha256::new();
 	sha2.input(data);
