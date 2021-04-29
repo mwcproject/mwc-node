@@ -51,7 +51,7 @@ use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::rand::Rng;
 use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
 use grin_util::RwLock;
-use grin_util::{to_hex, Mutex, OnionV3Address, OnionV3AddressError, ToHex};
+use grin_util::{Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use libp2p::core::network::NetworkInfo;
 use rand::seq::SliceRandom;
 use std::collections::VecDeque;

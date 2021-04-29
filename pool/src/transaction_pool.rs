@@ -207,7 +207,8 @@ where
 		{
 			let mut replay_cache = self.replay_verifier_cache.write();
 			let mut vec = Vec::new();
-			ser::serialize_default(&mut vec, &tx);
+			ser::serialize_default(&mut vec, &tx)
+				.map_err(|e| PoolError::Other(format!("Unable to serialize tx, {}", e)))?;
 			// let mut sha2 = Sha256::new();
 			// sha2.input(vec);
 			// let tx_hash = sha2.result();

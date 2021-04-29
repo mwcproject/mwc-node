@@ -334,9 +334,8 @@ impl<'a> Batch<'a> {
 	/// Delete the commitment for a spent output.
 	pub fn delete_spent_commitments(&self, spent: &Commitment, hash: &Hash) -> Result<(), Error> {
 		let hash_list = self.get_spent_commitments(spent)?;
-		let hash_list_unwrap = hash_list.unwrap();
-		let mut filtered_list = Vec::new();
-		filtered_list = hash_list_unwrap
+		let hash_list_unwrap = hash_list.unwrap_or(vec![]);
+		let filtered_list: Vec<&HashHeight> = hash_list_unwrap
 			.iter()
 			.filter(|hash_height| hash_height.hash != *hash)
 			.collect();
