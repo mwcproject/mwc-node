@@ -38,31 +38,31 @@ use libp2p::gossipsub::{
 };
 use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
+use crate::core::global;
 use crate::types::Error;
 use crate::PeerAddr;
 use async_std::task;
 use chrono::Utc;
 use futures::{future, prelude::*};
+use grin_core::core::hash::Hash;
+use grin_core::core::TxKernel;
+use grin_core::libtx::aggsig;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::rand::Rng;
-use grin_util::{Mutex, OnionV3Address, OnionV3AddressError};
+use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
+use grin_util::RwLock;
+use grin_util::{to_hex, Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use libp2p::core::network::NetworkInfo;
 use rand::seq::SliceRandom;
+use std::collections::VecDeque;
+use std::convert::TryInto;
+use std::time::Instant;
 use std::{
 	collections::HashMap,
 	pin::Pin,
 	task::{Context, Poll},
 	time::Duration,
 };
-
-use grin_core::core::hash::Hash;
-use grin_core::core::TxKernel;
-use grin_core::libtx::aggsig;
-use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
-use grin_util::RwLock;
-use std::collections::VecDeque;
-use std::convert::TryInto;
-use std::time::Instant;
 
 struct TokioExecutor;
 impl libp2p::core::Executor for TokioExecutor {
@@ -167,6 +167,14 @@ pub fn get_topics() -> Vec<(String, Topic, u64)> {
 		.collect()
 }
 
+fn get_message_version() -> u16 {
+	if global::is_mainnet() {
+		1
+	} else {
+		256
+	}
+}
+
 fn listener_handler(peer_id: &PeerId, topic: &TopicHash, data: Vec<u8>, fee: u64) -> bool {
 	if let Some((topic_str, _topic, min_fee)) = MESSAGING_TOPICS.read().get(topic) {
 		if fee >= *min_fee {
@@ -186,11 +194,12 @@ fn listener_handler(peer_id: &PeerId, topic: &TopicHash, data: Vec<u8>, fee: u64
 
 			// Everything looks good so far. We can keep the data
 			{
+				let peer = peer_id.get_address().unwrap_or("?".to_string());
 				let mut messages = MESSAGING_RECEIVED.write();
-				messages.retain(|m| m.message != message_str);
+				messages.retain(|m| m.message != message_str && m.peer_id != peer);
 				messages.push_back(ReceivedMessage {
 					timestamp: Utc::now().timestamp(),
-					peer_id: peer_id.get_address().unwrap_or("".to_string()),
+					peer_id: peer,
 					topic: topic_str.clone(),
 					fee,
 					message: message_str,
@@ -239,7 +248,7 @@ pub fn inject_received_messaged(inject_msgs: Vec<ReceivedMessage>) {
 	let mut messages = MESSAGING_RECEIVED.write();
 
 	for inj_msg in inject_msgs {
-		messages.retain(|m| m.message != inj_msg.message);
+		messages.retain(|m| m.message != inj_msg.message && m.peer_id != inj_msg.peer_id);
 		messages.push_back(inj_msg);
 	}
 
@@ -255,7 +264,10 @@ pub fn get_received_messages(delete: bool) -> VecDeque<ReceivedMessage> {
 		res.append(&mut *MESSAGING_RECEIVED.write());
 		res
 	} else {
-		MESSAGING_RECEIVED.read().clone()
+		let mut messages = MESSAGING_RECEIVED.write();
+		let time_limit = Utc::now().timestamp() - 600; // 10 minutes it is really more than enough for our needs.
+		messages.retain(|m| m.timestamp > time_limit);
+		messages.clone()
 	}
 }
 
@@ -771,12 +783,12 @@ pub fn validate_integrity_message(
 	fee_base: u64,
 ) -> Result<u64, Error> {
 	let mut ser = SimplePopSerializer::new(message);
-	if ser.version != 1 {
+	if ser.version != get_message_version() {
 		debug!(
 			"Get message with invalid version {} from peer {}",
 			ser.version, peer_id
 		);
-		debug_assert!(false); // Upgrade me
+		// Will be rejected and peer will be banned
 		return Ok(0);
 	}
 
@@ -840,8 +852,8 @@ pub fn validate_integrity_message(
 		Some(r) => r.clone(),
 		None => {
 			debug!(
-				"Get invalid message from peer {}. integrity_kernel is not found at the blockchain",
-				peer_id
+				"Get invalid message from peer {}. integrity_kernel {} is not found at the blockchain",
+				peer_id, integrity_kernel_excess.to_hex()
 			);
 			return Ok(0);
 		}
@@ -896,8 +908,8 @@ pub fn validate_integrity_message(
 /// Skip the header and return the message data
 pub fn read_message_data(message: &Vec<u8>) -> Vec<u8> {
 	let mut ser = SimplePopSerializer::new(message);
-	if ser.version != 1 {
-		debug_assert!(false); // Upgrade me
+	if ser.version != get_message_version() {
+		// Probably wrong network. But may be wrong version as well. We don't want to read it
 		return vec![];
 	}
 
@@ -918,7 +930,7 @@ pub fn build_integrity_message(
 	signature: &Signature,
 	message_data: &[u8],
 ) -> Result<Vec<u8>, Error> {
-	let mut ser = SimplePushSerializer::new(1);
+	let mut ser = SimplePushSerializer::new(get_message_version());
 
 	ser.push_vec(&kernel_excess.0);
 	ser.push_vec(&signature.serialize_compact());

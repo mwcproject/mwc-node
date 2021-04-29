@@ -34,8 +34,8 @@ use crate::p2p::types::PeerAddr;
 use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 
-// MWC - all DNS hosts are updated with seed1.mwc.mw/seed2.mwc.mw and others
-const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
+/// MWC - all DNS hosts are updated with seed1.mwc.mw/seed2.mwc.mw and others
+pub const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"mainnet.seed1.mwc.mw",                                           // cpg
 	"mainnet.seed2.mwc.mw",                                           // cpg
 	"greg1.mainnet.seed.mwc.mw",                                      // Greg
@@ -48,7 +48,8 @@ const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
 	"z5ys2rogjas46tpyu343m4tamkiog6pkpznfwpu3iff55b7xypd3wcad.onion", // 2p_main_410_tor
 	"n4ac7b65tgtachkh5ii5zytmjkbqc3bq64rhllhz4npyrbxvz7ic5byd.onion", // 2sy_main_master_tor
 ];
-const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
+/// DNS Seed for floonet
+pub const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
 	"seed1.mwc.mw",
 	"seed2.mwc.mw",
 	"wt635fgwmhokk25lv7y2jvrg63mokg7nfni5owrtzalz3nx22dgjytid.onion", // 2sy-floo-master-tor

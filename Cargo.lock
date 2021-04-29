@@ -161,7 +161,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d0864d84b8e07b145449be9a8537db86bf9de5ce03b913214694643b4743502"
 dependencies = [
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -177,16 +177,16 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.4.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb877970c7b440ead138f6321a3b5395d6061183af779340b65e20c0fede9146"
+checksum = "871f9bb5e0a22eeb7e8cf16641feb87c9dc67032ccf8ff49e772eb9941d3a965"
 dependencies = [
  "async-task",
  "concurrent-queue",
  "fastrand",
  "futures-lite",
  "once_cell",
- "vec-arena",
+ "slab",
 ]
 
 [[package]]
@@ -207,9 +207,9 @@ dependencies = [
 
 [[package]]
 name = "async-io"
-version = "1.4.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcb9af4888a70ad78ecb5efcb0ba95d66a3cf54a88b62ae81559954c7588c7a2"
+checksum = "4bbfd5cf2794b1e908ea8457e6c45f8f8f1f6ec5f74617bf4662623f47503c3b"
 dependencies = [
  "concurrent-queue",
  "fastrand",
@@ -219,8 +219,8 @@ dependencies = [
  "once_cell",
  "parking",
  "polling",
+ "slab",
  "socket2 0.4.0",
- "vec-arena",
  "waker-fn",
  "winapi 0.3.9",
 ]
@@ -329,11 +329,12 @@ checksum = "cdb031dd78e28731d87d56cc8ffef4a8f36ca26c38fe2de700543e627f8a464a"
 
 [[package]]
 name = "backtrace"
-version = "0.3.57"
+version = "0.3.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78ed203b9ba68b242c62b3fb7480f589dd49829be1edb3fe8fc8b4ffda2dcb8d"
+checksum = "88fb5a785d6b44fd9d6700935608639af1b8356de1e55d5f7c2740f4faa15d82"
 dependencies = [
  "addr2line",
+ "cc",
  "cfg-if 1.0.0",
  "libc",
  "miniz_oxide",
@@ -912,7 +913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e98e2ad1a782e33928b96fc3948e7c355e5af34ba4de7670fe8bac2a3b2006d"
 dependencies = [
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -1003,7 +1004,7 @@ dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
  "strsim 0.10.0",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -1014,7 +1015,7 @@ checksum = "29b5acf0dea37a7f66f7b25d2c5e93fd46f8f6968b1a5d7a3e02e97768afc95a"
 dependencies = [
  "darling_core",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -1063,7 +1064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fd78930633bd1c6e35c4b42b1df7b0cbc6bc191146e512bb3bedf243fcc3901"
 dependencies = [
  "libc",
- "redox_users",
+ "redox_users 0.3.5",
  "winapi 0.3.9",
 ]
 
@@ -1079,12 +1080,12 @@ dependencies = [
 
 [[package]]
 name = "dirs-sys"
-version = "0.3.5"
+version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e93d7f5705de3e49895a2b5e0b8855a1c27f080192ae9c32a6432d50741a57a"
+checksum = "03d86534ed367a67548dc68113a0f5db55432fdfbb6e6f9d77704397d95d5780"
 dependencies = [
  "libc",
- "redox_users",
+ "redox_users 0.4.0",
  "winapi 0.3.9",
 ]
 
@@ -1172,7 +1173,7 @@ checksum = "e5c450cf304c9e18d45db562025a14fb1ca0f5c769b6f609309f81d4c31de455"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -1202,7 +1203,7 @@ dependencies = [
  "darling",
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -1242,7 +1243,7 @@ checksum = "aa4da3c766cd7a0db8242e326e9e4e081edd567072893ed320008189715366a4"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "synstructure",
 ]
 
@@ -1254,9 +1255,9 @@ checksum = "e88a8acf291dafb59c2d96e8f59828f3838bb1a70398823ade51a84de6a6deed"
 
 [[package]]
 name = "fastrand"
-version = "1.4.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca5faf057445ce5c9d4329e382b2ce7ca38550ef3b73a5348362d5f24e0c7fe3"
+checksum = "77b705829d1e87f762c2df6da140b26af5839e1033aa84aa5f56bb688e4e1bdb"
 dependencies = [
  "instant",
 ]
@@ -1269,7 +1270,7 @@ checksum = "1d34cfa13a63ae058bfa601fe9e313bbdb3746427c1459185464ce0fcf62e1e8"
 dependencies = [
  "cfg-if 1.0.0",
  "libc",
- "redox_syscall 0.2.6",
+ "redox_syscall 0.2.7",
  "winapi 0.3.9",
 ]
 
@@ -1418,7 +1419,7 @@ dependencies = [
  "proc-macro-hack",
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -2244,9 +2245,9 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
-version = "0.2.93"
+version = "0.2.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9385f66bf6105b241aa65a61cb923ef20efc665cb9f9bb50ac2f0c4b7f378d41"
+checksum = "18794a8ad5b29321f790b55d93dfba91e125cb1a9edbd4f8e3150acc771c1a5e"
 
 [[package]]
 name = "libgit2-sys"
@@ -2283,7 +2284,7 @@ dependencies = [
 [[package]]
 name = "libp2p"
 version = "0.35.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "atomic",
  "bytes 1.0.1",
@@ -2309,7 +2310,7 @@ dependencies = [
 [[package]]
 name = "libp2p-core"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "asn1_der",
  "bs58",
@@ -2344,7 +2345,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dns"
 version = "0.27.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "futures 0.3.14",
  "libp2p-core",
@@ -2354,7 +2355,7 @@ dependencies = [
 [[package]]
 name = "libp2p-gossipsub"
 version = "0.28.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "asynchronous-codec",
  "base64 0.13.0",
@@ -2379,7 +2380,7 @@ dependencies = [
 [[package]]
 name = "libp2p-mplex"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "asynchronous-codec",
  "bytes 1.0.1",
@@ -2396,7 +2397,7 @@ dependencies = [
 [[package]]
 name = "libp2p-noise"
 version = "0.29.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "bytes 1.0.1",
  "curve25519-dalek",
@@ -2417,7 +2418,7 @@ dependencies = [
 [[package]]
 name = "libp2p-ping"
 version = "0.27.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "futures 0.3.14",
  "libp2p-core",
@@ -2431,7 +2432,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm"
 version = "0.27.2"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "either",
  "futures 0.3.14",
@@ -2446,16 +2447,16 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-derive"
 version = "0.22.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
 name = "libp2p-tcp"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "async-io",
  "futures 0.3.14",
@@ -2490,7 +2491,7 @@ dependencies = [
 [[package]]
 name = "libp2p-yamux"
 version = "0.30.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "futures 0.3.14",
  "libp2p-core",
@@ -2766,7 +2767,7 @@ dependencies = [
  "proc-macro-error",
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "synstructure",
 ]
 
@@ -2779,7 +2780,7 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 [[package]]
 name = "multistream-select"
 version = "0.10.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "bytes 1.0.1",
  "futures 0.3.14",
@@ -3062,7 +3063,7 @@ dependencies = [
 [[package]]
 name = "parity-multiaddr"
 version = "0.11.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#79ee64d1189a2da5ec32a1b6f26c74e811e69578"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#7ecd5176844079a909036be355bf4d5ec47f7810"
 dependencies = [
  "arrayref",
  "bs58",
@@ -3126,7 +3127,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "instant",
  "libc",
- "redox_syscall 0.2.6",
+ "redox_syscall 0.2.7",
  "smallvec",
  "winapi 0.3.9",
 ]
@@ -3205,7 +3206,7 @@ checksum = "3be26700300be6d9d23264c73211d8190e755b6b5ca7a1b28230025511b52a5e"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -3216,7 +3217,7 @@ checksum = "48c950132583b500556b1efd71d45b319029f2b71518d979fcc208e16b42426f"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -3313,7 +3314,7 @@ dependencies = [
  "proc-macro-error-attr",
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "version_check 0.9.3",
 ]
 
@@ -3396,7 +3397,7 @@ dependencies = [
  "itertools",
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -3675,9 +3676,9 @@ checksum = "41cc0f7e4d5d4544e8861606a285bb08d3e70712ccc7d2b84d7c0ccfaf4b05ce"
 
 [[package]]
 name = "redox_syscall"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8270314b5ccceb518e7e578952f0b72b88222d02e8f77f5ecf7abbb673539041"
+checksum = "85dd92e586f7355c633911e11f77f3d12f04b1b1bd76a198bd34ae3af8341ef2"
 dependencies = [
  "bitflags 1.2.1",
 ]
@@ -3694,10 +3695,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex"
-version = "1.4.5"
+name = "redox_users"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "957056ecddbeba1b26965114e191d2e8589ce74db242b6ea25fc4062427a5c19"
+checksum = "528532f3d801c87aec9def2add9ca802fe569e44a544afe633765267840abe64"
+dependencies = [
+ "getrandom 0.2.2",
+ "redox_syscall 0.2.7",
+]
+
+[[package]]
+name = "regex"
+version = "1.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a26af418b574bd56588335b3a3659a65725d4e636eb1016c2f9e3b38c7cc759"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -3946,7 +3957,7 @@ checksum = "b093b7a2bb58203b5da3056c05b4ec1fed827dcfdb37347a8841695263b3d06d"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -4193,9 +4204,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.69"
+version = "1.0.71"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48fe99c6bd8b1cc636890bcc071842de909d902c81ac7dab53ba33c421ab8ffb"
+checksum = "ad184cc9470f9117b2ac6817bfe297307418819ba40552f9b3846f05c33d5373"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
@@ -4210,7 +4221,7 @@ checksum = "b834f2d66f734cb897113e34aaff2f1ab4719ca946f9a7358dba8f8064148701"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "unicode-xid 0.2.1",
 ]
 
@@ -4236,7 +4247,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "rand 0.8.3",
- "redox_syscall 0.2.6",
+ "redox_syscall 0.2.7",
  "remove_dir_all",
  "winapi 0.3.9",
 ]
@@ -4296,7 +4307,7 @@ checksum = "7765189610d8241a44529806d6fd1f2e0a08734313a35d5b3a556f92b381f3c0"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -4407,7 +4418,7 @@ checksum = "e44da00bfc73a25f814cd8d7e57a68a5c31b74b3152a0a1d1f590c97ed06265a"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
 ]
 
 [[package]]
@@ -4669,12 +4680,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbdbff6266a24120518560b5dc983096efb98462e51d0d68169895b237be3e5d"
 
 [[package]]
-name = "vec-arena"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34b2f665b594b07095e3ac3f718e13c2197143416fae4c5706cffb7b1af8d7f1"
-
-[[package]]
 name = "vec_map"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4758,7 +4763,7 @@ dependencies = [
  "log",
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "wasm-bindgen-shared",
 ]
 
@@ -4792,7 +4797,7 @@ checksum = "d53739ff08c8a68b0fdbcd54c372b8ab800b1449ab3c9d706503bc7dd1621b2c"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "wasm-bindgen-backend",
  "wasm-bindgen-shared",
 ]
@@ -5000,7 +5005,7 @@ checksum = "a2c1e130bebaeab2f23886bf9acbaca14b092408c452543c857f66399cd6dab1"
 dependencies = [
  "proc-macro2 1.0.26",
  "quote 1.0.9",
- "syn 1.0.69",
+ "syn 1.0.71",
  "synstructure",
 ]
 

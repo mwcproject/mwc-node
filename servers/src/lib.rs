@@ -45,4 +45,5 @@ mod tor;
 
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};
+pub use crate::grin::seed::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
 pub use crate::grin::server::{Server, ServerTxPool, ServerVerifierCache};
