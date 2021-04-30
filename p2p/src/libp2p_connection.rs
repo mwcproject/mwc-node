@@ -43,6 +43,7 @@ use crate::types::Error;
 use crate::PeerAddr;
 use async_std::task;
 use chrono::Utc;
+use ed25519_dalek::PublicKey as DalekPublicKey;
 use futures::{future, prelude::*};
 use grin_core::core::hash::Hash;
 use grin_core::core::TxKernel;
@@ -97,7 +98,7 @@ lazy_static! {
 	static ref THIS_PEER_ID: RwLock<Option<PeerId>> = RwLock::new(None);
 	// Message handlers arguments: topic hash, message (no header), paid integrity fee
 	//   Handler must return false if the message is incorrect, so the peer must be banned.
-	static ref LIBP2P_MESSAGE_HANDLERS: RwLock<HashMap<TopicHash, (fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool, Topic)>> = RwLock::new(HashMap::new());
+	static ref LIBP2P_MESSAGE_HANDLERS: RwLock<HashMap<TopicHash, (fn(sender_address: &String, topic: &TopicHash, Vec<u8>, u64) -> bool, Topic)>> = RwLock::new(HashMap::new());
 
 	/// Seeds peer list. Will use it if not connections are available.
 	static ref SEED_LIST: RwLock<Vec<PeerAddr>> = RwLock::new(vec![]);
@@ -175,7 +176,7 @@ fn get_message_version() -> u16 {
 	}
 }
 
-fn listener_handler(peer_id: &PeerId, topic: &TopicHash, data: Vec<u8>, fee: u64) -> bool {
+fn listener_handler(sender_address: &String, topic: &TopicHash, data: Vec<u8>, fee: u64) -> bool {
 	if let Some((topic_str, _topic, min_fee)) = MESSAGING_TOPICS.read().get(topic) {
 		if fee >= *min_fee {
 			// Parse message. It should be Json string
@@ -189,17 +190,16 @@ fn listener_handler(peer_id: &PeerId, topic: &TopicHash, data: Vec<u8>, fee: u64
 
 			debug!(
 				"Get a message from {}, on topic {},  data {}, fee {}",
-				peer_id, topic_str, message_str, fee
+				sender_address, topic_str, message_str, fee
 			);
 
 			// Everything looks good so far. We can keep the data
 			{
-				let peer = peer_id.get_address().unwrap_or("?".to_string());
 				let mut messages = MESSAGING_RECEIVED.write();
-				messages.retain(|m| m.message != message_str && m.peer_id != peer);
+				messages.retain(|m| m.message != message_str && m.peer_id != *sender_address);
 				messages.push_back(ReceivedMessage {
 					timestamp: Utc::now().timestamp(),
-					peer_id: peer,
+					peer_id: sender_address.clone(),
 					topic: topic_str.clone(),
 					fee,
 					message: message_str,
@@ -302,7 +302,7 @@ pub fn remove_topic_from_libp2p(topic: &str) {
 //   Handler must return false if the message is incorrect, so the peer must be banned.
 pub fn add_topic_to_libp2p(
 	topic: &str,
-	handler: fn(peer_id: &PeerId, topic: &TopicHash, Vec<u8>, u64) -> bool,
+	handler: fn(sender_address: &String, topic: &TopicHash, Vec<u8>, u64) -> bool,
 ) {
 	let mut handlers = LIBP2P_MESSAGE_HANDLERS.write();
 	let topic = Topic::new(topic);
@@ -594,7 +594,7 @@ pub async fn run_libp2p_node(
 										&mut requests_cash,
 										fee_base,
 									) {
-										Ok(integrity_fee) => {
+										Ok((integrity_fee, sender_address)) => {
 											if integrity_fee > 0 {
 												let mut acceptance = MessageAcceptance::Accept;
 
@@ -604,7 +604,7 @@ pub async fn run_libp2p_node(
 														.get(&message.topic)
 												{
 													if !(handler)(
-														&peer_id,
+														&sender_address,
 														&message.topic,
 														read_message_data(&message.data),
 														integrity_fee,
@@ -781,7 +781,7 @@ pub fn validate_integrity_message(
 	output_validation_fn: impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>,
 	requests_cash: &mut HashMap<Commitment, VecDeque<i64>>,
 	fee_base: u64,
-) -> Result<u64, Error> {
+) -> Result<(u64, String), Error> {
 	let mut ser = SimplePopSerializer::new(message);
 	if ser.version != get_message_version() {
 		debug!(
@@ -789,7 +789,7 @@ pub fn validate_integrity_message(
 			ser.version, peer_id
 		);
 		// Will be rejected and peer will be banned
-		return Ok(0);
+		return Ok((0, String::new()));
 	}
 
 	// Let's check signature first. The kernel search might take time. Signature checking should be faster.
@@ -801,14 +801,24 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. integrity_kernel is not valid, {}",
 				peer_id, e
 			);
-			return Ok(0);
+			return Ok((0, String::new()));
 		}
 	};
 
 	let secp = Secp256k1::with_caps(ContextFlag::VerifyOnly);
 
 	// Checking if public key match the signature.
-	let msg_hash = Hash::from_vec(&peer_id.to_bytes());
+	let sender_address_pk = match DalekPublicKey::from_bytes(&ser.pop_vec()) {
+		Ok(pk) => pk,
+		Err(e) => {
+			debug!(
+				"Get invalid message from peer {}. Unable to decode sender address PK, {}",
+				peer_id, e
+			);
+			return Ok((0, String::new()));
+		}
+	};
+	let msg_hash = Hash::from_vec(&sender_address_pk.to_bytes());
 	let msg_message = match Message::from_slice(msg_hash.as_bytes()) {
 		Ok(m) => m,
 		Err(e) => {
@@ -816,9 +826,11 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Unable to build a message, {}",
 				peer_id, e
 			);
-			return Ok(0);
+			return Ok((0, String::new()));
 		}
 	};
+
+	let sender_address = PeerId::onion_v3_from_pubkey(&sender_address_pk);
 
 	let signature = match Signature::from_compact(&ser.pop_vec()) {
 		Ok(s) => s,
@@ -827,7 +839,7 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Unable to read signature, {}",
 				peer_id, e
 			);
-			return Ok(0);
+			return Ok((0, String::new()));
 		}
 	};
 
@@ -844,7 +856,7 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Integrity kernel signature is invalid, {}",
 				peer_id, e
 			);
-			return Ok(0);
+			return Ok((0, String::new()));
 		}
 	}
 
@@ -855,7 +867,7 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. integrity_kernel {} is not found at the blockchain",
 				peer_id, integrity_kernel_excess.to_hex()
 			);
-			return Ok(0);
+			return Ok((0, String::new()));
 		}
 	};
 
@@ -866,7 +878,7 @@ pub fn validate_integrity_message(
 			"Get invalid message from peer {}. integrity_kernel fee is below minimal level of 10X accepted base fee",
 			peer_id
 		);
-		return Ok(0);
+		return Ok((0, String::new()));
 	}
 
 	// Updating calls history cash.
@@ -894,15 +906,15 @@ pub fn validate_integrity_message(
 				"Get invalid message from peer {}. Message sending period is {}, limit {}",
 				peer_id, call_period, INTEGRITY_CALL_MAX_PERIOD
 			);
-			return Ok(0);
+			return Ok((0, String::new()));
 		}
 	}
 
 	debug!(
-		"Validated the message from peer {} with integrity fee {}",
-		peer_id, integrity_fee
+		"Validated the message from peer {} with integrity fee {}, sender address {}",
+		peer_id, integrity_fee, sender_address
 	);
-	return Ok(integrity_fee);
+	return Ok((integrity_fee, sender_address));
 }
 
 /// Skip the header and return the message data
@@ -916,6 +928,7 @@ pub fn read_message_data(message: &Vec<u8>) -> Vec<u8> {
 	// Skipping header data. The header size if not known because bulletproof size can vary.
 	ser.skip_vec();
 	ser.skip_vec();
+	ser.skip_vec();
 
 	// Here is the data
 	ser.pop_vec()
@@ -927,12 +940,14 @@ pub fn read_message_data(message: &Vec<u8>) -> Vec<u8> {
 /// message_data - message to send, that is written into the package
 pub fn build_integrity_message(
 	kernel_excess: &Commitment,
+	tor_pk: &DalekPublicKey,
 	signature: &Signature,
 	message_data: &[u8],
 ) -> Result<Vec<u8>, Error> {
 	let mut ser = SimplePushSerializer::new(get_message_version());
 
 	ser.push_vec(&kernel_excess.0);
+	ser.push_vec(tor_pk.as_bytes());
 	ser.push_vec(&signature.serialize_compact());
 
 	ser.push_vec(message_data);
@@ -948,6 +963,8 @@ fn test_integrity() -> Result<(), Error> {
 
 	// It is peer form wallet's test. We know commit and signature for it.
 	let peer_id = PeerId::from_bytes( &from_hex("000100220020720661bf2f0d7c81c2980db83bb973be2816cf5a0da2da9aacd0ad47d534215c001c2f6f6e696f6e332f776861745f657665725f616464726573733a3737").unwrap() ).unwrap();
+	let peer_pk = peer_id.as_dalek_pubkey().unwrap();
+	let onion_address = PeerId::onion_v3_from_pubkey(&peer_pk);
 
 	let integrity_kernel = Commitment::from_vec(
 		from_hex("08a8f99853d65cee63c973a78a005f4646b777262440a8bfa090694a339a388865").unwrap(),
@@ -957,7 +974,8 @@ fn test_integrity() -> Result<(), Error> {
 	let message: Vec<u8> = vec![1, 2, 3, 4, 3, 2, 1];
 
 	let encoded_message =
-		build_integrity_message(&integrity_kernel, &integrity_signature, &message).unwrap();
+		build_integrity_message(&integrity_kernel, &peer_pk, &integrity_signature, &message)
+			.unwrap();
 
 	// Validation use case
 	let mut requests_cache: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
@@ -988,22 +1006,24 @@ fn test_integrity() -> Result<(), Error> {
 			&mut requests_cache,
 			fee_base
 		)
-		.unwrap(),
+		.unwrap()
+		.0,
 		0
 	);
 	assert!(requests_cache.is_empty());
 
-	assert_eq!(
-		validate_integrity_message(
-			&peer_id,
-			&encoded_message,
-			output_validation_fn,
-			&mut requests_cache,
-			fee_base
-		)
-		.unwrap(),
-		paid_integrity_fee
-	);
+	let res = validate_integrity_message(
+		&peer_id,
+		&encoded_message,
+		output_validation_fn,
+		&mut requests_cache,
+		fee_base,
+	)
+	.unwrap();
+
+	assert_eq!(res.0, paid_integrity_fee);
+	assert_eq!(res.1, onion_address);
+
 	assert!(requests_cache.len() == 1);
 	assert!(requests_cache.get(&integrity_kernel).unwrap().len() == 1); // call history is onw as well
 
@@ -1016,7 +1036,8 @@ fn test_integrity() -> Result<(), Error> {
 			&mut requests_cache,
 			fee_base
 		)
-		.unwrap(),
+		.unwrap()
+		.0,
 		0
 	);
 	assert!(requests_cache.len() == 0);
@@ -1031,7 +1052,8 @@ fn test_integrity() -> Result<(), Error> {
 				&mut requests_cache,
 				fee_base
 			)
-			.unwrap(),
+			.unwrap()
+			.0,
 			paid_integrity_fee
 		);
 		assert!(requests_cache.len() == 1);
@@ -1046,7 +1068,8 @@ fn test_integrity() -> Result<(), Error> {
 			&mut requests_cache,
 			fee_base
 		)
-		.unwrap(),
+		.unwrap()
+		.0,
 		0
 	);
 	assert!(
@@ -1060,7 +1083,8 @@ fn test_integrity() -> Result<(), Error> {
 			&mut requests_cache,
 			fee_base
 		)
-		.unwrap(),
+		.unwrap()
+		.0,
 		0
 	);
 	assert!(
@@ -1074,7 +1098,8 @@ fn test_integrity() -> Result<(), Error> {
 			&mut requests_cache,
 			fee_base
 		)
-		.unwrap(),
+		.unwrap()
+		.0,
 		0
 	);
 	assert!(
