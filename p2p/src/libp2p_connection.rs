@@ -196,7 +196,7 @@ fn listener_handler(sender_address: &String, topic: &TopicHash, data: Vec<u8>, f
 			// Everything looks good so far. We can keep the data
 			{
 				let mut messages = MESSAGING_RECEIVED.write();
-				messages.retain(|m| m.message != message_str && m.peer_id != *sender_address);
+				messages.retain(|m| m.message != message_str || m.peer_id != *sender_address);
 				messages.push_back(ReceivedMessage {
 					timestamp: Utc::now().timestamp(),
 					peer_id: sender_address.clone(),
