@@ -248,7 +248,7 @@ pub fn inject_received_messaged(inject_msgs: Vec<ReceivedMessage>) {
 	let mut messages = MESSAGING_RECEIVED.write();
 
 	for inj_msg in inject_msgs {
-		messages.retain(|m| m.message != inj_msg.message && m.peer_id != inj_msg.peer_id);
+		messages.retain(|m| m.message != inj_msg.message || m.peer_id != inj_msg.peer_id);
 		messages.push_back(inj_msg);
 	}
 
