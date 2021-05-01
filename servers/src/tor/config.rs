@@ -373,6 +373,7 @@ mod tests {
 
 	#[test]
 	fn test_output_tor_config() -> Result<(), Error> {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		let test_dir = "./target/test_output/tor";
 		setup(test_dir);
 		let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
