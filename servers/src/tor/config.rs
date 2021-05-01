@@ -27,6 +27,7 @@ use std::io::{Read, Write};
 use std::path::{Path, MAIN_SEPARATOR};
 
 use failure::ResultExt;
+use grin_core::global;
 
 pub const SEC_KEY_FILE_COPY: &str = "secret_key";
 const SEC_KEY_FILE: &str = "hs_ed25519_secret_key";
@@ -264,7 +265,11 @@ pub fn output_torrc(
 		props.add_item("HiddenServicePort", &format!("8080 {}", api_listener_addr));
 		props.add_item(
 			"HiddenServicePort",
-			&format!("81 127.0.0.1:{}", libp2p_port),
+			&format!(
+				"{} 127.0.0.1:{}",
+				global::get_tor_libp2p_port(),
+				libp2p_port
+			),
 		);
 	}
 

@@ -368,6 +368,15 @@ pub fn is_mainnet() -> bool {
 	}
 }
 
+/// Tor port for libp2p network
+pub fn get_tor_libp2p_port() -> u16 {
+	if is_mainnet() {
+		81
+	} else {
+		82
+	}
+}
+
 /// Get a network name
 pub fn get_network_name() -> String {
 	let name = match get_chain_type() {

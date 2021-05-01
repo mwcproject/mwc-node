@@ -380,7 +380,11 @@ pub async fn run_libp2p_node(
 
 	// Init Tor address configs..
 	// 80 comes from: /tor/listener/torrc   HiddenServicePort 80 0.0.0.0:13425
-	let addr_str = format!("/onion3/{}:81", onion_address.to_string());
+	let addr_str = format!(
+		"/onion3/{}:{}",
+		onion_address.to_string(),
+		global::get_tor_libp2p_port()
+	);
 	let addr = addr_str
 		.parse::<Multiaddr>()
 		.map_err(|e| Error::Internal(format!("Unable to construct onion multiaddress, {}", e)))?;
@@ -659,8 +663,9 @@ pub async fn run_libp2p_node(
 					let mut rng = rand::thread_rng();
 
 					debug!(
-						"Processing libp2p reconnection task. Has connections: {}",
-						nw_info.connection_counters().num_connections()
+						"Processing libp2p reconnection task. Has connections: {},  {:?}",
+						nw_info.connection_counters().num_connections(),
+						nw_info.connection_counters()
 					);
 
 					if nw_info.connection_counters().num_connections()
@@ -712,7 +717,11 @@ pub async fn run_libp2p_node(
 											}
 										};
 
-										let multiaddress = format!("/onion3/{}:81", address);
+										let multiaddress = format!(
+											"/onion3/{}:{}",
+											address,
+											global::get_tor_libp2p_port()
+										);
 										match multiaddress.parse::<Multiaddr>() {
 											Ok(addr) => {
 												address_to_connect = Some(addr);
