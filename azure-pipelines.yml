@@ -26,6 +26,9 @@ pr:
 variables:
   RUST_BACKTRACE: '1'
   RUSTFLAGS: '-C debug-assertions'
+  ghpages_user: 'mwcproject'
+  ghpages_repo: 'mwcproject.github.io'
+  ghpages_auth_header: '$(echo -n "${ghpages_user}:$(github_pat)" | base64);'
 
 jobs:
 - job: linux
@@ -90,3 +93,14 @@ jobs:
       displayName: Windows Install Dependencies
     - template: '.ci/test.yml'
     - template: '.ci/windows-release.yml'
+- job: Docs
+  timeoutInMinutes: 60
+  pool:
+    vmImage: ubuntu-latest
+  strategy:
+    matrix:
+      release:
+        CI_JOB: release
+        PLATFORM: linux-amd64
+  steps:
+    - template: '.ci/pushdocs.yml'
