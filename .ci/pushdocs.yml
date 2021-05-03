@@ -1,7 +1,7 @@
 steps:
 - script: |
    cd /home/vsts/work/1/s/api && cargo fetch  && cargo doc --offline --no-deps
-   mkdir /home/vsts/work/1/gitpages/Node && cd /home/vsts/work/1/gitpages/Node && git clone https://anything:$(github_pat)@github.com/$(ghpages_user)/$(ghpages_repo).git .
+   mkdir -p /home/vsts/work/1/gitpages/Node && cd /home/vsts/work/1/gitpages/Node && git clone https://anything:$(github_pat)@github.com/$(ghpages_user)/$(ghpages_repo).git .
    
    cd  /home/vsts/work/1/gitpages/Node
    git config user.name $(ghpages_user)
