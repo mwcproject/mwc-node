@@ -465,28 +465,40 @@ impl Server {
 					let mut secret: [u8; SECRET_KEY_SIZE] = [0; SECRET_KEY_SIZE];
 					secret.copy_from_slice(&tor_secret);
 
-					for t in &libp2p_topics {
-						libp2p_connection::add_topic(t, 1);
+					let validation_fn = Arc::new(output_validation_fn);
+
+					let libp2p_stopper = Arc::new(std::sync::Mutex::new(1));
+
+					loop {
+						for t in &libp2p_topics {
+							libp2p_connection::add_topic(t, 1);
+						}
+
+						let libp2p_node_runner = libp2p_connection::run_libp2p_node(
+							tor_socks_port,
+							&secret,
+							libp2p_port.unwrap_or(3417),
+							fee_base,
+							validation_fn.clone(),
+							libp2p_stopper.clone(), // passing new obj, because we never will stop the libp2p process
+						);
+
+						info!("Starting gossipsub libp2p server");
+						let mut rt = tokio::runtime::Runtime::new().unwrap();
+
+						match rt.block_on(libp2p_node_runner) {
+							Ok(_) => info!("libp2p node is exited"),
+							Err(e) => error!("Unable to start libp2p node, {}", e),
+						}
+						// Swarm is not valid any more, let's update our global instance.
+						libp2p_connection::reset_libp2p_swarm();
+
+						if *libp2p_stopper.lock().unwrap() == 0 {
+							// Should never happen for the node
+							debug_assert!(false);
+							break;
+						}
 					}
-
-					let libp2p_node_runner = libp2p_connection::run_libp2p_node(
-						tor_socks_port,
-						&secret,
-						libp2p_port.unwrap_or(3417),
-						fee_base,
-						output_validation_fn,
-						std::sync::Arc::new(std::sync::Mutex::new(1)), // passing new obj, because we never will stop the libp2p process
-					);
-
-					info!("Starting gossipsub libp2p server");
-					let mut rt = tokio::runtime::Runtime::new().unwrap();
-
-					match rt.block_on(libp2p_node_runner) {
-						Ok(_) => info!("libp2p node is exited"),
-						Err(e) => error!("Unable to start libp2p node, {}", e),
-					}
-					// Swarm is not valid any more, let's update our global instance.
-					libp2p_connection::reset_libp2p_swarm();
 				})?;
 		}
 

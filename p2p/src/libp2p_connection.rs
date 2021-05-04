@@ -57,6 +57,7 @@ use libp2p::core::network::NetworkInfo;
 use rand::seq::SliceRandom;
 use std::collections::VecDeque;
 use std::convert::TryInto;
+use std::sync::Arc;
 use std::time::Instant;
 use std::{
 	collections::HashMap,
@@ -371,7 +372,7 @@ pub async fn run_libp2p_node(
 	tor_secret: &[u8; 32],
 	libp2p_port: u16,
 	fee_base: u64,
-	kernel_validation_fn: impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>,
+	kernel_validation_fn: Arc<impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>>,
 	stop_mutex: std::sync::Arc<std::sync::Mutex<u32>>,
 ) -> Result<(), Error> {
 	// Generate Onion address.
@@ -594,7 +595,7 @@ pub async fn run_libp2p_node(
 									let acceptance = match validate_integrity_message(
 										&peer_id,
 										&message.data,
-										&kernel_validation_fn,
+										kernel_validation_fn.clone(),
 										&mut requests_cash,
 										fee_base,
 									) {
@@ -667,6 +668,15 @@ pub async fn run_libp2p_node(
 						nw_info.connection_counters().num_connections(),
 						nw_info.connection_counters()
 					);
+
+					// We are leaking on oputgoing connection. The leak is slow, but we really don't want to go through all libp2p code.
+					// In case of leak, we will restart the swarm.
+					// Note, the leak is minor, it takes about 4-5 days to build 400 leaked connections. In this case node trying to establish
+					// connections constantly.
+					if nw_info.connection_counters().num_pending_outgoing() > 100 {
+						info!("Restarting libp2p engine...");
+						return Poll::Ready(()); // Exiting
+					}
 
 					if nw_info.connection_counters().num_connections()
 						< connections_number_low as u32
@@ -787,7 +797,7 @@ pub async fn run_libp2p_node(
 pub fn validate_integrity_message(
 	peer_id: &PeerId,
 	message: &Vec<u8>,
-	output_validation_fn: impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>,
+	output_validation_fn: Arc<impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>>,
 	requests_cash: &mut HashMap<Commitment, VecDeque<i64>>,
 	fee_base: u64,
 ) -> Result<(u64, String), Error> {
