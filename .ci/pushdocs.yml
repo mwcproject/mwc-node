@@ -1,10 +1,11 @@
 steps:
 - script: |
    cd /home/vsts/work/1/s/api && cargo fetch  && cargo doc --offline --no-deps
-   mkdir -p /home/vsts/work/1/gitpages/Node && cd /home/vsts/work/1/gitpages && git clone https://anything:$(github_pat)@github.com/$(ghpages_user)/$(ghpages_repo).git .
+   mkdir -p /home/vsts/work/1/gitpages && cd /home/vsts/work/1/gitpages && git clone https://anything:$(github_pat)@github.com/$(ghpages_user)/$(ghpages_repo).git .
    
    git config user.name $(ghpages_user)
    git checkout master
+   mkdir -p /home/vsts/work/1/gitpages/Node
    cp -a /home/vsts/work/1/s/target/doc/* /home/vsts/work/1/gitpages/Node/
    cd  /home/vsts/work/1/gitpages/Node
    echo '<meta http-equiv=refresh content=0;url=grin_api/trait.OwnerRpc.html>' > /home/vsts/work/1/gitpages/Node/index.html && \
