@@ -1001,6 +1001,7 @@ fn test_integrity() -> Result<(), Error> {
 
 	let empty_output_validation_fn =
 		|_commit: &Commitment| -> Result<Option<TxKernel>, Error> { Ok(None) };
+	let empty_output_validation_fn = Arc::new(empty_output_validation_fn);
 
 	let fee_base: u64 = 1_000_000;
 
@@ -1015,13 +1016,14 @@ fn test_integrity() -> Result<(), Error> {
 	let output_validation_fn = |commit: &Commitment| -> Result<Option<TxKernel>, Error> {
 		Ok(valid_kernels.get(commit).cloned())
 	};
+	let output_validation_fn = Arc::new(output_validation_fn);
 
 	// Valid outputs is empty, should fail.
 	assert_eq!(
 		validate_integrity_message(
 			&peer_id,
 			&encoded_message,
-			empty_output_validation_fn,
+			empty_output_validation_fn.clone(),
 			&mut requests_cache,
 			fee_base
 		)
@@ -1034,7 +1036,7 @@ fn test_integrity() -> Result<(), Error> {
 	let res = validate_integrity_message(
 		&peer_id,
 		&encoded_message,
-		output_validation_fn,
+		output_validation_fn.clone(),
 		&mut requests_cache,
 		fee_base,
 	)
@@ -1051,7 +1053,7 @@ fn test_integrity() -> Result<(), Error> {
 		validate_integrity_message(
 			&PeerId::random(),
 			&encoded_message,
-			output_validation_fn,
+			output_validation_fn.clone(),
 			&mut requests_cache,
 			fee_base
 		)
@@ -1067,7 +1069,7 @@ fn test_integrity() -> Result<(), Error> {
 			validate_integrity_message(
 				&peer_id,
 				&encoded_message,
-				output_validation_fn,
+				output_validation_fn.clone(),
 				&mut requests_cache,
 				fee_base
 			)
@@ -1083,7 +1085,7 @@ fn test_integrity() -> Result<(), Error> {
 		validate_integrity_message(
 			&peer_id,
 			&encoded_message,
-			output_validation_fn,
+			output_validation_fn.clone(),
 			&mut requests_cache,
 			fee_base
 		)
@@ -1098,7 +1100,7 @@ fn test_integrity() -> Result<(), Error> {
 		validate_integrity_message(
 			&peer_id,
 			&encoded_message,
-			output_validation_fn,
+			output_validation_fn.clone(),
 			&mut requests_cache,
 			fee_base
 		)
@@ -1113,7 +1115,7 @@ fn test_integrity() -> Result<(), Error> {
 		validate_integrity_message(
 			&peer_id,
 			&encoded_message,
-			output_validation_fn,
+			output_validation_fn.clone(),
 			&mut requests_cache,
 			fee_base
 		)
