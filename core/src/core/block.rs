@@ -728,7 +728,8 @@ impl Block {
 		let mut block = Block::from_reward(
 			prev,
 			txs,
-			reward_output.0,
+			Some(reward_output.0),
+			None,
 			reward_output.1,
 			difficulty,
 			None,
@@ -864,18 +865,29 @@ impl Block {
 	pub fn from_reward(
 		prev: &BlockHeader,
 		txs: &[VersionedTransaction],
-		reward_out: Output,
+		reward_out: Option<Output>,
+		nit_reward_out: Option<OutputWithRnp>,
 		reward_kern: TxKernel,
 		difficulty: Difficulty,
 		spending_rmp_sum: Option<Commitment>,
 		block_sums: Option<BlockSums>,
 	) -> Result<Block, Error> {
+		if reward_out.is_none() && nit_reward_out.is_none() {
+			return Err(Error::Other("none reward output".to_string()));
+		}
+
 		// A block is just a big transaction, aggregate and add the reward output
 		// and reward kernel. At this point the tx is technically invalid but the
 		// tx body is valid if we account for the reward (i.e. as a block).
-		let agg_tx = versioned_transaction::aggregate(txs)?
-			.with_output(reward_out)
-			.with_kernel(reward_kern);
+		let agg_tx = if let Some(reward_output) = reward_out {
+			versioned_transaction::aggregate(txs)?
+				.with_output(reward_output)
+				.with_kernel(reward_kern)
+		} else {
+			versioned_transaction::aggregate(txs)?
+				.with_output_wrnp(nit_reward_out.unwrap())
+				.with_kernel(reward_kern)
+		};
 
 		// Now add the kernel offset of the previous block for a total
 		let total_kernel_offset = committed::sum_kernel_offsets(

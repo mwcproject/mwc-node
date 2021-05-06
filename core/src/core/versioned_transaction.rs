@@ -281,6 +281,18 @@ impl VersionedTransaction {
 		}
 	}
 
+	/// Builds a new transaction with the provided output added. Existing
+	/// outputs, if any, are kept intact.
+	/// Sort order is maintained.
+	pub fn with_output_wrnp(self, output: OutputWithRnp) -> VersionedTransaction {
+		match self {
+			VersionedTransaction::V3(tx) => {
+				VersionedTransaction::V4(TransactionV4::from(tx).with_output_wrnp(output))
+			}
+			VersionedTransaction::V4(tx) => VersionedTransaction::V4(tx.with_output_wrnp(output)),
+		}
+	}
+
 	/// Builds a new transaction with the provided kernel added. Existing
 	/// kernels, if any, are kept intact.
 	/// Sort order is maintained.
