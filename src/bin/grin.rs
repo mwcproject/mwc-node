@@ -175,7 +175,7 @@ fn real_main() -> i32 {
 		// clean command
 		("clean", _) => {
 			let db_root_path = node_config.unwrap().members.unwrap().server.db_root;
-			println!("Cleaning chain data directory: {}", db_root_path);
+			warn!("Cleaning chain data directory: {}", db_root_path);
 			match std::fs::remove_dir_all(db_root_path) {
 				Ok(_) => 0,
 				Err(_) => 1,

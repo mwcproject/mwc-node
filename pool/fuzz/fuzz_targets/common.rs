@@ -113,7 +113,7 @@ impl BlockChain for ChainAdapter {
 // Same as from pool/tests/common.rs
 pub fn clean_output_dir(db_root: String) {
 	if let Err(e) = fs::remove_dir_all(db_root) {
-		println!("cleaning output dir failed - {:?}", e)
+		error!("cleaning output dir failed - {:?}", e)
 	}
 }
 

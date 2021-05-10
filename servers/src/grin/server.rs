@@ -290,7 +290,6 @@ impl Server {
 		let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
 			if !config.p2p_config.host.is_loopback() {
 				error!("If Tor is enabled, host must be '127.0.0.1'.");
-				println!("If Tor is enabled, host must be '127.0.0.1'.");
 				return Err(Error::Configuration(
 					"If Tor is enabled, host must be '127.0.0.1'.".to_owned(),
 				));
@@ -344,13 +343,12 @@ impl Server {
 					})?;
 
 				let resp = output.recv();
-				println!("Finished with TOR");
+				info!("Finished with TOR");
 				let onion_address = resp.unwrap_or(None);
 				if onion_address.is_some() {
 					info!("Tor successfully started: resp = {:?}", onion_address);
 				} else {
 					error!("Tor failed to start!");
-					println!("Failed to start tor. See log for details");
 					std::process::exit(-1);
 				}
 				let secret = output.recv().map_err(|e| {
@@ -363,13 +361,11 @@ impl Server {
 
 				if onion_address.is_none() {
 					error!("onion_address must be specified with external tor. Halting!");
-					println!("onion_address must be specified with external tor. Halting!");
 					std::process::exit(-1);
 				}
 				let otemp = onion_address.clone().unwrap();
 				if otemp == "" {
 					error!("onion_address must be specified with external tor. Halting!");
-					println!("onion_address must be specified with external tor. Halting!");
 					std::process::exit(-1);
 				}
 				info!(

@@ -239,10 +239,10 @@ impl ApiServer {
 				};
 
 				let mut rt = Runtime::new()
-					.map_err(|e| eprintln!("HTTP API server error: {}", e))
+					.map_err(|e| error!("HTTP API server error: {}", e))
 					.unwrap();
 				if let Err(e) = rt.block_on(server) {
-					eprintln!("HTTP API server error: {}", e)
+					error!("HTTP API server error: {}", e)
 				}
 			})
 			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
@@ -290,10 +290,10 @@ impl ApiServer {
 				};
 
 				let mut rt = Runtime::new()
-					.map_err(|e| eprintln!("HTTP API server error: {}", e))
+					.map_err(|e| error!("HTTP API server error: {}", e))
 					.unwrap();
 				if let Err(e) = rt.block_on(server) {
-					eprintln!("HTTP API server error: {}", e)
+					error!("HTTP API server error: {}", e)
 				}
 			})
 			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())

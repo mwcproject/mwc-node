@@ -400,7 +400,7 @@ pub async fn run_libp2p_node(
 	let this_peer_id = PeerId::from_public_key(id_keys.public());
 	set_this_peer_id(&this_peer_id);
 
-	println!("Starting libp2p, this peer: {}", this_peer_id);
+	warn!("Starting libp2p, this peer: {}", this_peer_id);
 	debug_assert_eq!(this_peer_id.to_string(), onion_address.to_string());
 
 	// Building transport
@@ -463,7 +463,7 @@ pub async fn run_libp2p_node(
 	/*   // It is ping pong handler
 	 future::poll_fn(move |cx: &mut Context<'_>| loop {
 		match swarm.poll_next_unpin(cx) {
-			Poll::Ready(Some(event)) => println!("{:?}", event),
+			Poll::Ready(Some(event)) => info!("{:?}", event),
 			Poll::Ready(None) => return Poll::Ready(()),
 			Poll::Pending => return Poll::Pending,
 		}

@@ -343,15 +343,6 @@ fn send_panic_to_log() {
 			}
 			None => error!("thread '{}' panicked at '{}'{:?}", thread, msg, backtrace),
 		}
-		//also print to stderr
-		let tui_running = *TUI_RUNNING.lock();
-		if !tui_running {
-			let config = LOGGING_CONFIG.lock();
-
-			eprintln!(
-				"Thread '{}' panicked with message:\n\"{}\"\nSee {} for further details.",
-				thread, msg, config.log_file_path
-			);
-		}
+		// Node should never print to stdout/std error because it can run without terminal access
 	}));
 }

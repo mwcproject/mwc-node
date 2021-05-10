@@ -43,7 +43,7 @@ fn generate<W: ser::Writeable>(
 	let dir_path = Path::new("corpus").join(target);
 	if !dir_path.is_dir() {
 		fs::create_dir_all(&dir_path).map_err(|e| {
-			println!("fail: {}", e);
+			error!("fail: {}", e);
 			ser::Error::IOErr("can't create corpus directory".to_owned(), e.kind())
 		})?;
 	}
