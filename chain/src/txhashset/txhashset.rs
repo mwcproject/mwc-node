@@ -2027,7 +2027,7 @@ impl<'a> Extension<'a> {
 		let now = Instant::now();
 
 		let total_spent_rmp = header.total_spent_rmp();
-		let (rmp_sum, _spending_rmp_sum) = self.verify_kernel_sums_eqn2(
+		let (rmp_sum, _) = self.verify_kernel_sums_eqn2(
 			header.total_kernel_offset(),
 			kernel_sum,
 			total_spent_rmp,

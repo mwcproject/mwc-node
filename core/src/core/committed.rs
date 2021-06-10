@@ -166,7 +166,7 @@ pub trait Committed {
 	/// Verify the equation (2) sum of the kernel excesses equals the
 	/// sum of the Outputs R, taking into account the kernel_offset and Inputs P'.
 	/// Note:
-	/// - as the input parameter, the "total_spent_rmp" is the from the previous block header.
+	/// - parameter "total_spent_rmp" is only needed for block & chain validation.
 	/// - parameter "spending_output_ids" should be empty for chain validation.
 	fn verify_kernel_sums_eqn2(
 		&self,

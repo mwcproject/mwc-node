@@ -17,8 +17,8 @@
 use crate::core::consensus;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::verifier_cache::VerifierCache;
-use crate::core::core::Committed;
 use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIds, TransactionBody};
+use crate::core::core::{committed, Committed};
 use crate::core::pow;
 use crate::core::{global, CommitPos};
 use crate::error::{Error, ErrorKind};
@@ -484,15 +484,22 @@ fn verify_block_sums(
 	let rmp_sum = if b.header.height < consensus::get_nit_hard_fork_block_height() {
 		None
 	} else {
-		let total_spent_rmp = if b.header.height == consensus::get_nit_hard_fork_block_height() {
-			b.header.total_spent_rmp
+		let (rmp_sum, spending_rmp_sum) = (block_sums.clone(), b as &dyn Committed)
+			.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
+		let prev_h = batch.get_block_header(&b.header.prev_hash)?;
+		if b.header.height == consensus::get_nit_hard_fork_block_height() {
+			// The initial total spent (R-P') is a fake value which just takes SUM(E')+TotalOffset*G of previous block.
+			let total_spent_rmp = committed::commit_add_offset(
+				block_sums.kernel_sum,
+				prev_h.total_kernel_offset.clone(),
+			)?;
+			if Some(total_spent_rmp) != b.header.total_spent_rmp {
+				return Err(committed::Error::KernelSumEqn2Mismatch.into());
+			}
 		} else {
-			let prev = batch.get_block_header(&b.header.prev_hash)?;
-			prev.total_spent_rmp
-		};
-
-		let (rmp_sum, _spending_rmp_sum) = (block_sums, b as &dyn Committed)
-			.verify_kernel_sums_eqn2(offset, kernel_sum, total_spent_rmp, &spending_output_ids)?;
+			b.header
+				.verify_total_spent_rmp(prev_h.total_spent_rmp, spending_rmp_sum)?;
+		}
 		Some(rmp_sum)
 	};
 

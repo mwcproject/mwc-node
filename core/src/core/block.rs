@@ -52,6 +52,9 @@ pub enum Error {
 	/// The total kernel sum on the block header is wrong
 	#[fail(display = "Block Invalid total kernel sum")]
 	InvalidTotalKernelSum,
+	/// The total spent rmp sum on the block header is wrong
+	#[fail(display = "Block Invalid total spent rmp sum")]
+	InvalidTotalSpentRmpSum,
 	/// Same as above but for the coinbase part of a block, including reward
 	#[fail(display = "Block Invalid total kernel sum plus reward")]
 	CoinbaseSumMismatch,
@@ -540,6 +543,39 @@ impl BlockHeader {
 	pub fn total_spent_rmp(&self) -> Option<Commitment> {
 		self.total_spent_rmp
 	}
+
+	/// Verify total_spent_rmp with the one in previous block and the SUM(R-P') of current block.
+	pub fn verify_total_spent_rmp(
+		&self,
+		prev_spent_rmp: Option<Commitment>,
+		spending_rmp_sum: Option<Commitment>,
+	) -> Result<(), Error> {
+		match (self.total_spent_rmp, prev_spent_rmp, spending_rmp_sum) {
+			(None, None, None) => Ok(()),
+			(Some(total_spent_rmp), Some(prev), Some(this)) => {
+				if committed::sum_commits(vec![prev], vec![this])? == total_spent_rmp {
+					Ok(())
+				} else {
+					Err(Error::InvalidTotalSpentRmpSum)
+				}
+			}
+			(_, _, None) => {
+				if self.total_spent_rmp == prev_spent_rmp {
+					Ok(())
+				} else {
+					Err(Error::InvalidTotalSpentRmpSum)
+				}
+			}
+			(_, None, _) => {
+				if self.total_spent_rmp == spending_rmp_sum {
+					Ok(())
+				} else {
+					Err(Error::InvalidTotalSpentRmpSum)
+				}
+			}
+			(None, _, _) => Err(Error::InvalidTotalSpentRmpSum),
+		}
+	}
 }
 
 impl From<UntrustedBlockHeader> for BlockHeader {
@@ -904,29 +940,21 @@ impl Block {
 			None
 		} else if height == consensus::get_nit_hard_fork_block_height() {
 			// Bootstrap of 1st header for nit hard fork.
-			// The initial total spent (R-P') is a fake value which just takes total (E'+s*G).
-			let overage = (calc_mwc_block_reward(height) as i64)
-				.checked_neg()
-				.unwrap_or(0);
-			// println!("block::from_reward - block #{}, overage = {}", height, overage);
-			let (_utxo_sum, kernel_sum) = (block_sums.unwrap(), &agg_tx as &dyn Committed)
-				.verify_kernel_sums(overage, total_kernel_offset.clone())?;
-			// println!("block::from_reward - block #{}, kernel_sum = {:?}, total_kernel_offset = {:?}", height, kernel_sum, total_kernel_offset);
+			// The initial total spent (R-P') is a fake value which just takes SUM(E')+TotalOffset*G of previous block.
+			// Here we use "previous" kernel_sum and total_kernel_offset because the "spending SUM(R-P')" must be none in this 1st nit block.
 			Some(committed::commit_add_offset(
-				kernel_sum,
-				total_kernel_offset.clone(),
+				block_sums.unwrap().kernel_sum,
+				prev.total_kernel_offset.clone(),
 			)?)
 		} else {
-			if let Some(ref rmp) = prev.total_spent_rmp {
+			if let Some(spending_rmp_sum) = spending_rmp_sum {
 				Some(committed::sum_commits(
-					vec![
-						spending_rmp_sum.unwrap_or(secp_static::commit_to_zero_value()),
-						rmp.clone(),
-					],
+					vec![spending_rmp_sum, prev.total_spent_rmp.unwrap()],
 					vec![],
 				)?)
 			} else {
-				spending_rmp_sum
+				// keep it as same as before if no new spending (R-P')
+				prev.total_spent_rmp.clone()
 			}
 		};
 

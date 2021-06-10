@@ -20,7 +20,8 @@ use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
-	OutputFeatures, OutputIdentifier, OutputIds, TxImpl, TxKernel, VersionedTransaction,
+	OutputFeatures, OutputIdentifier, OutputIds, OutputWithRnp, TxImpl, TxKernel,
+	VersionedTransaction,
 };
 use crate::core::pow;
 use crate::core::{consensus, global};
@@ -32,10 +33,8 @@ use crate::txhashset;
 use crate::txhashset::{PMMRHandle, TxHashSet};
 use crate::types::{BlockStatus, ChainAdapter, NoStatus, Options, Tip, TxHashsetWriteStatus};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
-use crate::{util::RwLock, ChainStore};
-use grin_core::core::{HeaderVersion, OutputWithRnp};
+use crate::{util::RwLock, util::ToHex, ChainStore};
 use grin_store::Error::NotFoundErr;
-use grin_util::ToHex;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -1732,17 +1731,10 @@ fn setup_head(
 						let (utxo_sum, kernel_sum) =
 							extension.validate_kernel_sums(&genesis.header, &header)?;
 						let rmp_sum = if header.height < consensus::get_nit_hard_fork_block_height()
-							|| header.version < HeaderVersion(3)
 						{
 							None
 						} else {
-							let (rmp_sum, _spending_rmp_sum) = extension.verify_kernel_sums_eqn2(
-								header.total_kernel_offset(),
-								kernel_sum,
-								header.total_spent_rmp,
-								&vec![],
-							)?;
-							Some(rmp_sum)
+							Some(extension.validate_kernel_sums_eqn2(&header, kernel_sum)?)
 						};
 
 						// Save the block_sums to the db for use later.
