@@ -26,15 +26,16 @@ use crate::core::core::hash::Hashed;
 use crate::core::core::transaction::Weighting;
 use crate::core::core::verifier_cache::LruVerifierCache;
 use crate::core::core::{
-	Block, CommitWithSig, Inputs, KernelFeatures, TransactionV4, TxImpl, VersionedTransaction,
+	committed, Block, Commit, CommitWithSig, Committed, Inputs, KernelFeatures, OutputIds,
+	TransactionV4, TxImpl, VersionedTransaction,
 };
 use crate::core::libtx::{build_v4, reward, PaymentId, ProofBuilder};
 use crate::core::{consensus, global, pow};
 use crate::keychain::{ExtKeychain, ExtKeychainPath, Identifier, Keychain};
 use chrono::Duration;
-use grin_core::core::Commit;
 use rand::thread_rng;
 use std::sync::Arc;
+use util::secp::key::{PublicKey, SecretKey};
 use util::RwLock;
 
 fn build_block<K>(
@@ -47,31 +48,98 @@ where
 	K: Keychain,
 {
 	let prev = chain.head_header().unwrap();
+	let height = prev.height + 1;
 	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
-	let fee = txs.iter().map(|x| x.fee()).sum();
-	let reward = reward::output(
-		keychain,
-		&ProofBuilder::new(keychain),
-		key_id,
-		fee,
-		false,
-		1,
-	)
-	.unwrap();
-
 	let txs = txs
 		.iter()
 		.map(|tx| tx.clone().ver())
 		.collect::<Vec<VersionedTransaction>>();
-	let block_sum = chain.get_block_sums(&prev.hash()).unwrap();
-	let mut block = Block::new(
-		&prev,
-		&txs,
-		next_header_info.clone().difficulty,
-		reward,
-		Some(block_sum),
-	)
-	.unwrap();
+	let fees = txs.iter().map(|x| x.fee()).sum();
+
+	let mut block = if height < consensus::get_nit_hard_fork_block_height() {
+		let reward = reward::output(
+			keychain,
+			&ProofBuilder::new(keychain),
+			key_id,
+			fees,
+			false,
+			1,
+		)
+		.unwrap();
+
+		let block_sum = chain.get_block_sums(&prev.hash()).unwrap();
+		Block::new(
+			&prev,
+			&txs,
+			next_header_info.clone().difficulty,
+			reward,
+			Some(block_sum),
+		)
+		.unwrap()
+	} else {
+		let keychain = ExtKeychain::from_random_seed(global::is_floonet()).unwrap();
+
+		let prikey = SecretKey::from_slice(&[2; 32]).unwrap();
+		let pubkey = PublicKey::from_secret_key(keychain.secp(), &prikey).unwrap();
+		let recipient_addr = Address::from_one_pubkey(&pubkey, global::get_chain_type());
+
+		let builder = ProofBuilder::new(&keychain);
+		let payment_id = PaymentId::new();
+
+		let (pri_nonce, _pub_nonce) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+		let (output, kernel) = crate::core::libtx::reward::nit_output(
+			&keychain,
+			&builder,
+			pri_nonce,
+			recipient_addr,
+			payment_id,
+			fees,
+			false,
+			height,
+		)
+		.unwrap();
+
+		let block_sums = chain.get_block_sums(&prev.hash()).unwrap();
+
+		// Get spending output SUM(R-P')
+		let mut spending_rmp_sums = vec![];
+		for tx in &txs {
+			let overage = tx.overage();
+			let spending_output_ids = chain
+				.validate_tx(tx)
+				.unwrap()
+				.iter()
+				.map(|(id, _pos)| *id)
+				.collect::<Vec<OutputIds>>();
+			let offset = prev.total_kernel_offset().add(tx.offset()).unwrap();
+			let (_utxo_sum, kernel_sum) = (block_sums.clone(), &tx.clone() as &dyn Committed)
+				.verify_kernel_sums(overage, offset.clone())
+				.unwrap();
+			let (_rmp_sum, spending_rmp_sum) = (block_sums.clone(), &tx.clone() as &dyn Committed)
+				.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)
+				.unwrap();
+			if let Some(rmp) = spending_rmp_sum {
+				spending_rmp_sums.push(rmp);
+			}
+		}
+		let spending_rmp_sum = if spending_rmp_sums.len() > 0 {
+			Some(committed::sum_commits(spending_rmp_sums, vec![]).unwrap())
+		} else {
+			None
+		};
+
+		Block::from_reward(
+			&prev,
+			&txs,
+			None,
+			Some(output),
+			kernel,
+			next_header_info.clone().difficulty,
+			spending_rmp_sum,
+			Some(block_sums),
+		)
+		.unwrap()
+	};
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -112,7 +180,7 @@ fn mine_block_with_nit_tx() {
 	for n in 1..height {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
 		let block = build_block(&chain, &keychain, &key_id, vec![]);
-		if n >= consensus::TESTING_SECOND_HARD_FORK as u32 {
+		if n >= consensus::TESTING_SECOND_HARD_FORK as u32 - 1 {
 			println!(
 				"block #{}: {}",
 				n,

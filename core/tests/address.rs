@@ -21,7 +21,7 @@ use keychain::{ExtKeychain, Keychain};
 use rand::{distributions::Uniform, thread_rng, Rng};
 use std::str::FromStr;
 use util;
-use util::secp::key::PublicKey;
+use util::secp::key::{PublicKey, SecretKey};
 use util::ToHex;
 
 fn round_trips(addr: &Address) {
@@ -202,6 +202,24 @@ fn test_lite_address() {
 	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
 
 	assert_eq!(addr.to_string().len(), 63);
+
+	// an useful address which will be used for tests in all other module.
+	let prikey = SecretKey::from_slice(&[2; 32]).unwrap();
+	let keychain = ExtKeychain::from_random_seed(false).unwrap();
+	let pubkey = PublicKey::from_secret_key(keychain.secp(), &prikey).unwrap();
+	let addr = Address::from_one_pubkey(&pubkey, ChainTypes::Mainnet);
+	assert_eq!(
+		&addr.to_string(),
+		"mwc1qf49ke5fkzqev4x7j46uajq92f4zan6kcpty5yvm5c3g6wf2dqanq0wszju"
+	);
+	round_trips(&addr);
+	check_pubkeys(&addr.to_string(), &pubkey, &pubkey);
+
+	let addr = Address::from_one_pubkey(&pubkey, ChainTypes::AutomatedTesting);
+	assert_eq!(
+		&addr.to_string(),
+		"mwa1qf49ke5fkzqev4x7j46uajq92f4zan6kcpty5yvm5c3g6wf2dqanqdl9en2"
+	);
 }
 
 #[test]

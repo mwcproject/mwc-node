@@ -484,8 +484,6 @@ fn verify_block_sums(
 	let rmp_sum = if b.header.height < consensus::get_nit_hard_fork_block_height() {
 		None
 	} else {
-		let (rmp_sum, spending_rmp_sum) = (block_sums.clone(), b as &dyn Committed)
-			.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
 		let prev_h = batch.get_block_header(&b.header.prev_hash)?;
 		if b.header.height == consensus::get_nit_hard_fork_block_height() {
 			// The initial total spent (R-P') is a fake value which just takes SUM(E')+TotalOffset*G of previous block.
@@ -496,11 +494,17 @@ fn verify_block_sums(
 			if Some(total_spent_rmp) != b.header.total_spent_rmp {
 				return Err(committed::Error::KernelSumEqn2Mismatch.into());
 			}
+			// The initial 'rmp_sum' = SUM(R) + 'total_spent_rmp' of the 1st block.
+			let mut output_r_commits = b.outputs_r_committed();
+			output_r_commits.push(total_spent_rmp);
+			Some(committed::sum_commits(output_r_commits, vec![])?)
 		} else {
+			let (rmp_sum, spending_rmp_sum) = (block_sums.clone(), b as &dyn Committed)
+				.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
 			b.header
 				.verify_total_spent_rmp(prev_h.total_spent_rmp, spending_rmp_sum)?;
+			Some(rmp_sum)
 		}
-		Some(rmp_sum)
 	};
 
 	batch.save_block_sums(
