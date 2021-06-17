@@ -320,7 +320,7 @@ impl TxHashSet {
 						Ok(None)
 					}
 				}
-				OutputFeatures::PlainWrnp => {
+				OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => {
 					let output_wrnp_pmmr: ReadonlyPMMR<'_, IdentifierWithRnp, _> = ReadonlyPMMR::at(
 						&self.output_wrnp_pmmr_h.backend,
 						self.output_wrnp_pmmr_h.last_pos,
@@ -519,7 +519,7 @@ impl TxHashSet {
 							.into()
 					})
 			}
-			OutputFeatures::PlainWrnp => PMMR::at(
+			OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => PMMR::at(
 				&mut self.output_wrnp_pmmr_h.backend,
 				self.output_wrnp_pmmr_h.last_pos,
 			)
@@ -686,7 +686,7 @@ impl TxHashSet {
 						}
 					}
 				}
-				OutputFeatures::PlainWrnp => {
+				OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => {
 					if let Some(out) = output_wrnp_pmmr.get_data(pos.pos) {
 						if let Ok(pos_via_mmr) = batch.get_output_pos(&out.commitment()) {
 							// If the pos matches and the index key matches the commitment
@@ -1535,7 +1535,7 @@ impl<'a> Extension<'a> {
 						}
 					}
 				}
-				OutputFeatures::PlainWrnp => {
+				OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => {
 					if let Some(out_mmr) = self.output_wrnp_pmmr.get_data(pos.pos) {
 						if out_mmr.commitment() == commit {
 							return Err(ErrorKind::DuplicateCommitment(commit).into());
@@ -1588,7 +1588,7 @@ impl<'a> Extension<'a> {
 						}
 					}
 				}
-				OutputFeatures::PlainWrnp => {
+				OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => {
 					if let Some(out_mmr) = self.output_wrnp_pmmr.get_data(pos.pos) {
 						if out_mmr.commitment() == commit {
 							return Err(ErrorKind::DuplicateCommitment(commit).into());
@@ -1678,7 +1678,7 @@ impl<'a> Extension<'a> {
 					))
 				})?
 			}
-			OutputFeatures::PlainWrnp => {
+			OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => {
 				self.output_wrnp_pmmr.merkle_proof(pos.pos).map_err(|e| {
 					ErrorKind::TxHashSetErr(format!(
 						"output_wrnp pmmr get merkle proof at pos {}, {}",
@@ -1855,7 +1855,7 @@ impl<'a> Extension<'a> {
 							batch.save_output_pos_height(&out.commitment(), pos)?;
 						}
 					}
-					OutputFeatures::PlainWrnp => {
+					OutputFeatures::PlainWrnp | OutputFeatures::CoinbaseWrnp => {
 						if let Some(out) = self.output_wrnp_pmmr.get_data(pos.pos) {
 							batch.save_output_pos_height(&out.commitment(), pos)?;
 						}

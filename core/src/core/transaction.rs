@@ -2058,6 +2058,8 @@ enum_from_primitive! {
 		Coinbase = 1,
 		/// Plain output w/ R&P'
 		PlainWrnp = 2,
+		/// Coinbase output w/ R&P'
+		CoinbaseWrnp = 3,
 	}
 }
 
@@ -2150,7 +2152,10 @@ impl Readable for Output {
 impl OutputFeatures {
 	/// Is this a coinbase output?
 	pub fn is_coinbase(self) -> bool {
-		self == OutputFeatures::Coinbase
+		match self {
+			OutputFeatures::Coinbase | OutputFeatures::CoinbaseWrnp => true,
+			_ => false,
+		}
 	}
 
 	/// Is this a plain output w/o R&P'?
