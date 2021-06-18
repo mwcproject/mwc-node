@@ -5,6 +5,10 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
+- 30/05/2021 Mobile wallet, v1.
+- 20/05/2021 Decentralized exchange.
+- 20/03/2021 Atomic swaps for more coins (LTC, ZCash, Dash, Doge).
+- 20/03/2021 Reply attack implementation (The feature will be activated with NIT).
 - 30/12/2020 Grin rebase.
 - 12/16/2020 MWC/BTC & MWC/BCH atomic swaps.
 - 10/26/2020 - All funds completely distributed to the MWC hodlers.
@@ -22,18 +26,17 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 
 # To be done
 If you want to help please contact us in discord.
-- Atomic swaps for more coins (LTC, ZCash, Dash, Doge).  March 2020
-- Decentralized exchange. May 2021
-- Mobile wallet.  April 2021
+- Atomic swaps for ETH and ERC-20 tokens.  July 2020
+- Extend Mobile wallet with additional functionality. 
 - Non-interactive transaction scheme (NIT).  2021
 - Alternative node implementation. We can port Grin++ and have simplified node that validate concensus only. Summer 2021
 - Mobile node.
+- Switch from binaries to library model (required for iOS support).  
 - Multisig.
-- Minimize transactions traceability.
+- Minimize transactions traceability .
 - Hardware wallets. Requires hardware manufacturer support.
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
-
 
 # Initial stock distribution
 
