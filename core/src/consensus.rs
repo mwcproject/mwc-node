@@ -158,7 +158,9 @@ pub fn header_version(height: u64) -> HeaderVersion {
 			}
 		}
 		// Note!!!! We need that to cover NRD tests.
-		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+		global::ChainTypes::AutomatedTesting
+		| global::ChainTypes::UserTesting
+		| global::ChainTypes::PerfTesting => {
 			if height < TESTING_FIRST_HARD_FORK {
 				HeaderVersion(1)
 			} else if height < TESTING_SECOND_HARD_FORK {
@@ -185,7 +187,9 @@ pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
 			}
 		}
 		// Note!!!! We need that to cover NRD tests.
-		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+		global::ChainTypes::AutomatedTesting
+		| global::ChainTypes::UserTesting
+		| global::ChainTypes::PerfTesting => {
 			if height < TESTING_FIRST_HARD_FORK {
 				version == HeaderVersion(1)
 			} else if height < TESTING_SECOND_HARD_FORK {
