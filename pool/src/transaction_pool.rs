@@ -200,17 +200,10 @@ where
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
 
-		// If stem we want to account for the txpool.
-		let extra_tx = if stem {
-			self.txpool.all_transactions_aggregate(None)?
-		} else {
-			None
-		};
-
-		//todo: double-check the logic here for new transaction structure, add test cases to cover that.
-
 		// Locate outputs being spent from pool and current utxo.
+		let mut extra_tx = None;
 		let (spent_pool, spent_utxo) = if stem {
+			extra_tx = self.txpool.all_transactions_aggregate(None)?;
 			self.stempool.locate_spends(tx, extra_tx.clone())
 		} else {
 			self.txpool.locate_spends(tx, None)

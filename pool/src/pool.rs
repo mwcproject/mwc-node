@@ -29,6 +29,7 @@ use self::util::secp::pedersen::Commitment;
 use self::util::RwLock;
 use crate::types::{BlockChain, PoolEntry, PoolError};
 use grin_core as core;
+use grin_core::consensus::get_nit_hard_fork_block_height;
 use grin_util as util;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -297,26 +298,53 @@ where
 		tx: &VersionedTransaction,
 		extra_tx: Option<VersionedTransaction>,
 	) -> Result<(Vec<OutputIdentifier>, Vec<OutputIdentifier>), PoolError> {
-		let mut inputs: Vec<_> = tx.inputs().into();
-
 		let agg_tx = self
 			.all_transactions_aggregate(extra_tx)?
 			.unwrap_or(VersionedTransaction::from(Transaction::empty()));
+
 		let mut outputs: Vec<OutputIdentifier> = agg_tx
 			.outputs()
 			.iter()
 			.map(|out| out.identifier())
 			.collect();
 
+		let header = self.blockchain.chain_head()?;
+		let mut inputs: Vec<_> = tx.inputs().into();
+
 		// By applying cut_through to tx inputs and agg_tx outputs we can
 		// determine the outputs being spent from the pool and those still unspent
 		// that need to be looked up via the current utxo.
-		let (spent_utxo, _, _, spent_pool) =
+		let (spent_utxo, outputs, _, spent_pool) =
 			transaction::cut_through(&mut inputs[..], &mut outputs[..])?;
 
 		// Lookup remaining outputs to be spent from the current utxo.
-		let spent_utxo = self.blockchain.validate_inputs(&spent_utxo.into())?;
+		let mut spent_utxo = self.blockchain.validate_inputs(&spent_utxo.into())?;
 
+		if header.height > get_nit_hard_fork_block_height() {
+			// Note: No more cut-through in the pool since the NIT hardfork, but 0-conf transaction is still feasible.
+			let mut outputs = outputs.to_vec();
+			if let Some(outputs_with_rnp) = agg_tx.outputs_with_rnp() {
+				outputs.extend(
+					outputs_with_rnp
+						.iter()
+						.map(|out| out.identifier())
+						.collect::<Vec<OutputIdentifier>>(),
+				);
+			}
+			if let Some(inputs) = tx.inputs_with_sig() {
+				let mut inputs: Vec<_> = inputs.into();
+				let (spent_nit_utxo, _, _, spent_nit_pool) =
+					transaction::cut_through(&mut inputs[..], &mut outputs[..])?;
+				let spent_nit_utxo = self
+					.blockchain
+					.validate_inputs_with_sig(&spent_nit_utxo.into(), self.verifier_cache.clone())?
+					.iter()
+					.map(|i| i.identifier())
+					.collect::<Vec<_>>();
+				spent_utxo.extend(spent_nit_utxo);
+				spent_pool.to_vec().extend(spent_nit_pool);
+			}
+		}
 		Ok((spent_pool.to_vec(), spent_utxo))
 	}
 

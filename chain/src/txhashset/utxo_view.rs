@@ -332,25 +332,90 @@ impl<'a> UTXOView<'a> {
 		height: u64,
 		batch: &Batch<'_>,
 	) -> Result<(), Error> {
-		let inputs: Vec<_> = inputs.into();
+		let pos = match inputs {
+			Inputs::CommitOnly(_) => {
+				let inputs: Vec<_> = inputs.into();
+				// Lookup the outputs being spent.
+				let spent: Result<Vec<_>, _> = inputs
+					.iter()
+					.map(|x| self.validate_input(x.commitment(), batch))
+					.collect();
 
-		// Lookup the outputs being spent.
-		let spent: Result<Vec<_>, _> = inputs
-			.iter()
-			.map(|x| self.validate_input(x.commitment(), batch))
-			.collect();
+				// Find the max pos of any coinbase being spent.
+				spent?
+					.iter()
+					.filter_map(|(out, pos)| {
+						if out.features.is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max()
+			}
+			Inputs::FeaturesAndCommit(inputs) => {
+				let it_inputs: Vec<_> = inputs
+					.iter()
+					.filter(|x| x.features == OutputFeatures::Coinbase)
+					.collect();
+				let spent_it: Result<Vec<_>, _> = it_inputs
+					.iter()
+					.map(|x| self.validate_input(x.commitment(), batch))
+					.collect();
+				let it_pos = spent_it?
+					.iter()
+					.filter_map(|(out, pos)| {
+						if out.features.is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max();
 
-		// Find the max pos of any coinbase being spent.
-		let pos = spent?
-			.iter()
-			.filter_map(|(out, pos)| {
-				if out.features.is_coinbase() {
-					Some(pos.pos)
-				} else {
-					None
+				let nit_inputs: Vec<_> = inputs
+					.iter()
+					.filter(|x| x.features == OutputFeatures::CoinbaseWrnp)
+					.collect();
+				let spent_nit: Result<Vec<_>, _> = nit_inputs
+					.iter()
+					.map(|x| self.validate_input_with_sig(x.commitment(), batch))
+					.collect();
+				let nit_pos = spent_nit?
+					.iter()
+					.filter_map(|(out, _h, pos)| {
+						if out.features().is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max();
+
+				match (it_pos, nit_pos) {
+					(None, None) => None,
+					(None, Some(_)) => nit_pos,
+					(Some(_), None) => it_pos,
+					(Some(it), Some(nit)) => Some(std::cmp::max(it, nit)),
 				}
-			})
-			.max();
+			}
+			Inputs::CommitsWithSig(inputs) => {
+				let spent: Result<Vec<_>, _> = inputs
+					.iter()
+					.map(|x| self.validate_input_with_sig(x.commitment(), batch))
+					.collect();
+				spent?
+					.iter()
+					.filter_map(|(out, _h, pos)| {
+						if out.features().is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max()
+			}
+		};
 
 		if let Some(pos) = pos {
 			// If we have not yet reached 1440 blocks then
