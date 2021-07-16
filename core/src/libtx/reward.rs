@@ -116,7 +116,7 @@ where
 
 	let output_rr_sig_msg = secp::Message::from_slice(
 		(
-			OutputIdentifier::new(OutputFeatures::PlainWrnp, &commit),
+			OutputIdentifier::new(OutputFeatures::CoinbaseWrnp, &commit),
 			view_tag,
 			pp_apos.serialize_vec(true).as_ref().to_vec(),
 		)
@@ -141,7 +141,7 @@ where
 
 	let output = OutputWithRnp::new(
 		IdentifierWithRnp::new(
-			OutputFeatures::PlainWrnp,
+			OutputFeatures::CoinbaseWrnp,
 			commit,
 			public_nonce,
 			r_sig,

@@ -14,16 +14,17 @@
 
 //! Blocks and blockheaders
 
-use crate::consensus::{self, calc_mwc_block_overage, calc_mwc_block_reward, reward};
+use crate::consensus::{
+	self, calc_mwc_block_overage, calc_mwc_block_reward, get_nit_hard_fork_block_height, reward,
+};
 use crate::core::committed::{self, Committed};
 use crate::core::compact_block::CompactBlock;
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
-	pmmr, transaction, versioned_transaction, BlockSums, Commit, Commitment, Inputs,
-	KernelFeatures, Output, OutputWithRnp, Transaction, TransactionBody, TransactionBodyV4,
-	TransactionV4, TxBodyImpl, TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody,
-	Weighting,
+	pmmr, transaction, versioned_transaction, BlockSums, Commitment, Inputs, KernelFeatures,
+	Output, OutputWithRnp, Transaction, TransactionBody, TransactionBodyV4, TransactionV4,
+	TxBodyImpl, TxImpl, TxKernel, VersionedTransaction, VersionedTransactionBody, Weighting,
 };
 use crate::global;
 use crate::libtx::secp_ser;
@@ -1077,12 +1078,22 @@ impl Block {
 	/// Check the sum of coinbase-marked outputs match
 	/// the sum of coinbase-marked kernels accounting for fees.
 	pub fn verify_coinbase(&self) -> Result<(), Error> {
-		let cb_outs = self
-			.body
-			.outputs()
-			.iter()
-			.filter(|out| out.is_coinbase())
-			.collect::<Vec<&Output>>();
+		let cb_outs = if self.header.height < get_nit_hard_fork_block_height() {
+			self.body
+				.outputs()
+				.iter()
+				.filter(|out| out.is_coinbase())
+				.map(|out| out.identifier())
+				.collect::<Vec<_>>()
+		} else {
+			self.body
+				.outputs_with_rnp()
+				.unwrap()
+				.iter()
+				.filter(|out| out.is_coinbase())
+				.map(|out| out.identifier())
+				.collect::<Vec<_>>()
+		};
 
 		let cb_kerns = self
 			.body
