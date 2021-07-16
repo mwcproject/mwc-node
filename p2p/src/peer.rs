@@ -26,6 +26,7 @@ use lru_cache::LruCache;
 use crate::chain;
 use crate::conn;
 use crate::core::core::hash::{Hash, Hashed};
+use crate::core::core::TxImpl;
 use crate::core::pow::Difficulty;
 use crate::core::ser::Writeable;
 use crate::core::{core, global};
@@ -334,7 +335,7 @@ impl Peer {
 	/// dropped if the remote peer is known to already have the transaction.
 	/// We support broadcast of lightweight tx kernel hash
 	/// so track known txs by kernel hash.
-	pub fn send_transaction(&self, tx: &core::Transaction) -> Result<bool, Error> {
+	pub fn send_transaction(&self, tx: &core::VersionedTransaction) -> Result<bool, Error> {
 		let kernel = &tx.kernels()[0];
 
 		if self
@@ -346,9 +347,36 @@ impl Peer {
 		}
 
 		if !self.tracking_adapter.has_recv(kernel.hash()) {
-			debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
-			self.send(tx, msg::Type::Transaction)?;
-			Ok(true)
+			match self.info.version.value() {
+				// Note: here is not a missing special handling for v2.
+				//		 currently, all transactions in v3 will be converted into v2 when adding to pool (add_to_pool/convert_tx_v2),
+				//		 refer to https://github.com/mimblewimble/grin/pull/3419 for detail.
+				//
+				// Versions before HF2
+				0..=3 => {
+					if let Ok(v3_tx) = tx.to_v3() {
+						debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
+						self.send(v3_tx, msg::Type::Transaction)?;
+						Ok(true)
+					} else {
+						debug!(
+							"Not sending tx {} to {} (old protocol ver: {})",
+							tx.hash(),
+							self.info.addr,
+							self.info.version
+						);
+						Ok(false)
+					}
+				}
+				// HF2 version
+				1000..=1999 => {
+					debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
+					self.send(tx.to_v4(), msg::Type::Transaction)?;
+					Ok(true)
+				}
+				// don't send to versions with big jump and undefined versions.
+				_ => Ok(false),
+			}
 		} else {
 			debug!(
 				"Not sending tx {} to {} (already seen)",
@@ -362,7 +390,7 @@ impl Peer {
 	/// Sends the provided stem transaction to the remote peer.
 	/// Note: tracking adapter is ignored for stem transactions (while under
 	/// embargo).
-	pub fn send_stem_transaction(&self, tx: &core::Transaction) -> Result<(), Error> {
+	pub fn send_stem_transaction(&self, tx: &core::VersionedTransaction) -> Result<(), Error> {
 		debug!("Send (stem) tx {} to {}", tx.hash(), self.info.addr);
 		self.send(tx, msg::Type::StemTransaction)
 	}
@@ -482,7 +510,7 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.total_height()
 	}
 
-	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction> {
+	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::VersionedTransaction> {
 		self.adapter.get_transaction(kernel_hash)
 	}
 
@@ -497,7 +525,7 @@ impl ChainAdapter for TrackingAdapter {
 
 	fn transaction_received(
 		&self,
-		tx: core::Transaction,
+		tx: core::VersionedTransaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
 		// Do not track the tx hash for stem txs.

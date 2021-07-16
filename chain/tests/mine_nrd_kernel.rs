@@ -21,7 +21,9 @@ use grin_util as util;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Options};
-use crate::core::core::{Block, KernelFeatures, NRDRelativeHeight, Transaction};
+use crate::core::core::{
+	Block, KernelFeatures, NRDRelativeHeight, Transaction, TxImpl, VersionedTransaction,
+};
 use crate::core::libtx::{build, reward, ProofBuilder};
 use crate::core::{consensus, global, pow};
 use crate::keychain::{ExtKeychain, ExtKeychainPath, Identifier, Keychain};
@@ -44,6 +46,10 @@ where
 	)
 	.unwrap();
 
+	let txs = txs
+		.iter()
+		.map(|tx| tx.clone().ver())
+		.collect::<Vec<VersionedTransaction>>();
 	let mut block = Block::new(&prev, &txs, next_header_info.clone().difficulty, reward).unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);

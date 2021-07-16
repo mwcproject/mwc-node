@@ -19,24 +19,22 @@ use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
 use crate::core::core::merkle_proof::MerkleProof;
 use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
-	Block, BlockHeader, BlockSums, Committed, Inputs, KernelFeatures, Output, OutputIdentifier,
-	Transaction, TxKernel,
+	Block, BlockHeader, BlockSums, Committed, IdentifierWithRnp, Inputs, KernelFeatures, Output,
+	OutputFeatures, OutputIdentifier, OutputIds, OutputWithRnp, TxImpl, TxKernel,
+	VersionedTransaction,
 };
-use crate::core::global;
 use crate::core::pow;
-use crate::core::ser::ProtocolVersion;
+use crate::core::{consensus, global};
+use crate::core::{ser::ProtocolVersion, CommitPos};
 use crate::error::{Error, ErrorKind};
 use crate::pipe;
 use crate::store;
 use crate::txhashset;
 use crate::txhashset::{PMMRHandle, TxHashSet};
-use crate::types::{
-	BlockStatus, ChainAdapter, CommitPos, NoStatus, Options, Tip, TxHashsetWriteStatus,
-};
+use crate::types::{BlockStatus, ChainAdapter, NoStatus, Options, Tip, TxHashsetWriteStatus};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
-use crate::{util::RwLock, ChainStore};
+use crate::{util::RwLock, util::ToHex, ChainStore};
 use grin_store::Error::NotFoundErr;
-use grin_util::ToHex;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -198,7 +196,15 @@ impl Chain {
 			&mut header_pmmr,
 			&mut sync_pmmr,
 			&mut txhashset,
+			verifier_cache.clone(),
 		)?;
+
+		// Migrate the output_pos index to the new format which include the OutputFeatures.
+		{
+			let batch = store.batch()?;
+			txhashset.clear_output_pos_index(&batch)?;
+			batch.commit()?;
+		}
 
 		// Initialize the output_pos index based on UTXO set
 		// and NRD kernel_pos index based recent kernel history.
@@ -304,7 +310,12 @@ impl Chain {
 		let inputs: Vec<_> =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				let previous_header = batch.get_previous_header(&block.header)?;
-				pipe::rewind_and_apply_fork(&previous_header, ext, batch)?;
+				pipe::rewind_and_apply_fork(
+					&previous_header,
+					ext,
+					batch,
+					self.verifier_cache.clone(),
+				)?;
 				ext.extension
 					.utxo_view(ext.header_extension)
 					.validate_inputs(&block.inputs(), batch)
@@ -615,17 +626,20 @@ impl Chain {
 	}
 
 	/// Validate the tx against the current UTXO set and recent kernels (NRD relative lock heights).
-	pub fn validate_tx(&self, tx: &Transaction) -> Result<(), Error> {
-		self.validate_tx_against_utxo(tx)?;
+	pub fn validate_tx(
+		&self,
+		tx: &VersionedTransaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
+		let res = self.validate_tx_against_utxo(tx, self.verifier_cache.clone())?;
 		self.validate_tx_kernels(tx)?;
-		Ok(())
+		Ok(res)
 	}
 
 	/// Validates NRD relative height locks against "recent" kernel history.
 	/// Applies the kernels to the current kernel MMR in a readonly extension.
 	/// The extension and the db batch are discarded.
 	/// The batch ensures duplicate NRD kernels within the tx are handled correctly.
-	fn validate_tx_kernels(&self, tx: &Transaction) -> Result<(), Error> {
+	fn validate_tx_kernels(&self, tx: &VersionedTransaction) -> Result<(), Error> {
 		let has_nrd_kernel = tx.kernels().iter().any(|k| match k.features {
 			KernelFeatures::NoRecentDuplicate { .. } => true,
 			_ => false,
@@ -643,16 +657,17 @@ impl Chain {
 
 	fn validate_tx_against_utxo(
 		&self,
-		tx: &Transaction,
-	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+		tx: &VersionedTransaction,
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 		let header_pmmr = self.header_pmmr.read();
 		let txhashset = self.txhashset.read();
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
-			utxo.validate_tx(tx, batch)
+			utxo.validate_tx(tx, batch, verifier_cache)
 		})
 	}
 
-	/// Validates inputs against the current utxo.
+	/// Validates inputs (w/o signature) against the current utxo.
 	/// Each input must spend an unspent output.
 	/// Returns the vec of output identifiers and their pos of the outputs
 	/// that would be spent by the inputs.
@@ -664,6 +679,22 @@ impl Chain {
 		let txhashset = self.txhashset.read();
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.validate_inputs(inputs, batch)
+		})
+	}
+
+	/// Validates inputs (w/ signature) against the current utxo.
+	/// Each input must spend an unspent output.
+	/// Returns the vec of output IdentifierWithRnp and their pos of the outputs that would be spent by the inputs.
+	/// Note: inputs signature validation is here.
+	pub fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<(IdentifierWithRnp, CommitPos)>, Error> {
+		let header_pmmr = self.header_pmmr.read();
+		let txhashset = self.txhashset.read();
+		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
+			utxo.validate_inputs_with_sig(inputs, verifier, batch)
 		})
 	}
 
@@ -686,7 +717,7 @@ impl Chain {
 
 	/// Verify that the tx has a lock_height that is less than or equal to
 	/// the height of the next block.
-	pub fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), Error> {
+	pub fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), Error> {
 		let height = self.next_block_height()?;
 		if tx.lock_height() <= height {
 			Ok(())
@@ -711,7 +742,7 @@ impl Chain {
 		// latest block header. Rewind the extension to the specified header to
 		// ensure the view is consistent.
 		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			pipe::rewind_and_apply_fork(&header, ext, batch)?;
+			pipe::rewind_and_apply_fork(&header, ext, batch, self.verifier_cache.clone())?;
 			ext.extension
 				.validate(&self.genesis, fast_validation, &NoStatus, &header)?;
 			Ok(())
@@ -743,7 +774,12 @@ impl Chain {
 		let (prev_root, roots, sizes) =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				let previous_header = batch.get_previous_header(&b.header)?;
-				pipe::rewind_and_apply_fork(&previous_header, ext, batch)?;
+				pipe::rewind_and_apply_fork(
+					&previous_header,
+					ext,
+					batch,
+					self.verifier_cache.clone(),
+				)?;
 
 				let extension = &mut ext.extension;
 				let header_extension = &mut ext.header_extension;
@@ -752,7 +788,7 @@ impl Chain {
 				let prev_root = header_extension.root()?;
 
 				// Apply the latest block to the chain state via the extension.
-				extension.apply_block(b, header_extension, batch)?;
+				extension.apply_block(b, header_extension, batch, self.verifier_cache.clone())?;
 
 				Ok((prev_root, extension.roots()?, extension.sizes()))
 			})?;
@@ -762,8 +798,14 @@ impl Chain {
 		// depends on the output_mmr_size
 		{
 			// Carefully destructure these correctly...
-			let (output_mmr_size, _, kernel_mmr_size) = sizes;
+			let (output_mmr_size, output_wrnp_mmr_size, _, _, kernel_mmr_size) = sizes;
 			b.header.output_mmr_size = output_mmr_size;
+			b.header.output_wrnp_mmr_size = match b.header.version.value() {
+				// before HF2
+				0..=2 => None,
+				// after HF2
+				3 | _ => Some(output_wrnp_mmr_size),
+			};
 			b.header.kernel_mmr_size = kernel_mmr_size;
 		}
 
@@ -772,7 +814,7 @@ impl Chain {
 
 		// Set the output, rangeproof and kernel MMR roots.
 		b.header.output_root = roots.output_root(&b.header);
-		b.header.range_proof_root = roots.rproof_root;
+		b.header.range_proof_root = roots.rproof_root(&b.header);
 		b.header.kernel_root = roots.kernel_root;
 
 		Ok(())
@@ -788,7 +830,7 @@ impl Chain {
 		let mut txhashset = self.txhashset.write();
 		let merkle_proof =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-				pipe::rewind_and_apply_fork(&header, ext, batch)?;
+				pipe::rewind_and_apply_fork(&header, ext, batch, self.verifier_cache.clone())?;
 				ext.extension.merkle_proof(out_id, batch)
 			})?;
 
@@ -816,7 +858,7 @@ impl Chain {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
 		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			pipe::rewind_and_apply_fork(&header, ext, batch)?;
+			pipe::rewind_and_apply_fork(&header, ext, batch, self.verifier_cache.clone())?;
 			ext.extension.snapshot(batch)?;
 
 			// prepare the zip
@@ -1093,7 +1135,7 @@ impl Chain {
 
 				// Validate the extension, generating the utxo_sum and kernel_sum.
 				// Full validation, including rangeproofs and kernel signature verification.
-				let (utxo_sum, kernel_sum) =
+				let (utxo_sum, kernel_sum, rmp_sum) =
 					extension.validate(&self.genesis, false, status, &header)?;
 
 				// Save the block_sums (utxo_sum, kernel_sum) to the db for use later.
@@ -1102,6 +1144,7 @@ impl Chain {
 					BlockSums {
 						utxo_sum,
 						kernel_sum,
+						rmp_sum,
 					},
 				)?;
 
@@ -1289,11 +1332,11 @@ impl Chain {
 	}
 
 	/// Return Commit's MMR position
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<(OutputFeatures, u64), Error> {
 		Ok(self.txhashset.read().get_output_pos(commit)?)
 	}
 
-	/// outputs by insertion index
+	/// outputs (w/o R&P') by insertion index
 	pub fn unspent_outputs_by_pmmr_index(
 		&self,
 		start_index: u64,
@@ -1303,7 +1346,7 @@ impl Chain {
 		let txhashset = self.txhashset.read();
 		let last_index = match max_pmmr_index {
 			Some(i) => i,
-			None => txhashset.highest_output_insertion_index(),
+			None => txhashset.highest_output_insertion_index().0,
 		};
 		let outputs = txhashset.outputs_by_pmmr_index(start_index, max_count, max_pmmr_index);
 		let rangeproofs =
@@ -1317,6 +1360,34 @@ impl Chain {
 		let mut output_vec: Vec<Output> = vec![];
 		for (ref x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
 			output_vec.push(Output::new(x.features, x.commitment(), y));
+		}
+		Ok((outputs.0, last_index, output_vec))
+	}
+
+	/// outputs (w/ R&P') by insertion index
+	pub fn unspent_outputs_wrnp_by_pmmr_index(
+		&self,
+		start_index: u64,
+		max_count: u64,
+		max_pmmr_index: Option<u64>,
+	) -> Result<(u64, u64, Vec<OutputWithRnp>), Error> {
+		let txhashset = self.txhashset.read();
+		let last_index = match max_pmmr_index {
+			Some(i) => i,
+			None => txhashset.highest_output_insertion_index().1,
+		};
+		let outputs = txhashset.outputs_wrnp_by_pmmr_index(start_index, max_count, max_pmmr_index);
+		let rangeproofs =
+			txhashset.rangeproofs_wrnp_by_pmmr_index(start_index, max_count, max_pmmr_index);
+		if outputs.0 != rangeproofs.0 || outputs.1.len() != rangeproofs.1.len() {
+			return Err(ErrorKind::TxHashSetErr(String::from(
+				"Output and rangeproof sets don't match",
+			))
+			.into());
+		}
+		let mut output_vec: Vec<OutputWithRnp> = vec![];
+		for (&x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
+			output_vec.push(OutputWithRnp::new(x, y));
 		}
 		Ok((outputs.0, last_index, output_vec))
 	}
@@ -1588,6 +1659,7 @@ fn setup_head(
 	header_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	sync_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	txhashset: &mut txhashset::TxHashSet,
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 ) -> Result<(), Error> {
 	let mut batch = store.batch()?;
 
@@ -1638,7 +1710,7 @@ fn setup_head(
 				let header = batch.get_block_header(&head.last_block_h)?;
 
 				let res = txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-					pipe::rewind_and_apply_fork(&header, ext, batch)?;
+					pipe::rewind_and_apply_fork(&header, ext, batch, verifier_cache.clone())?;
 
 					let extension = &mut ext.extension;
 
@@ -1658,6 +1730,12 @@ fn setup_head(
 						// to calculate the utxo_sum and kernel_sum at this block height.
 						let (utxo_sum, kernel_sum) =
 							extension.validate_kernel_sums(&genesis.header, &header)?;
+						let rmp_sum = if header.height < consensus::get_nit_hard_fork_block_height()
+						{
+							None
+						} else {
+							Some(extension.validate_kernel_sums_eqn2(&header, kernel_sum)?)
+						};
 
 						// Save the block_sums to the db for use later.
 						batch.save_block_sums(
@@ -1665,6 +1743,7 @@ fn setup_head(
 							BlockSums {
 								utxo_sum,
 								kernel_sum,
+								rmp_sum,
 							},
 						)?;
 					}
@@ -1686,7 +1765,12 @@ fn setup_head(
 					let prev_header = batch.get_block_header(&head.prev_block_h)?;
 
 					txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-						pipe::rewind_and_apply_fork(&prev_header, ext, batch)
+						pipe::rewind_and_apply_fork(
+							&prev_header,
+							ext,
+							batch,
+							verifier_cache.clone(),
+						)
 					})?;
 
 					// Now "undo" the latest block and forget it ever existed.
@@ -1709,18 +1793,20 @@ fn setup_head(
 			batch.save_body_head(&Tip::from_header(&genesis.header))?;
 
 			if !genesis.kernels().is_empty() {
-				let (utxo_sum, kernel_sum) = (sums, genesis as &dyn Committed).verify_kernel_sums(
-					genesis.header.overage(),
-					genesis.header.total_kernel_offset(),
-				)?;
+				let (utxo_sum, kernel_sum) = (sums.clone(), genesis as &dyn Committed)
+					.verify_kernel_sums(
+						genesis.header.overage(),
+						genesis.header.total_kernel_offset(),
+					)?;
 				sums = BlockSums {
 					utxo_sum,
 					kernel_sum,
+					rmp_sum: None,
 				};
 			}
 			txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
 				ext.extension
-					.apply_block(&genesis, ext.header_extension, batch)
+					.apply_block(&genesis, ext.header_extension, batch, verifier_cache)
 			})?;
 
 			// Save the block_sums to the db for use later.

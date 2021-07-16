@@ -17,7 +17,9 @@
 use grin_core::core::hash::DefaultHashable;
 use grin_core::core::{
 	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
+	TransactionV4, TxImpl, VersionedTransaction,
 };
+use grin_core::libtx::build_v4;
 use grin_core::libtx::{
 	build::{self, input, output},
 	proof::{ProofBuild, ProofBuilder},
@@ -58,6 +60,25 @@ pub fn tx1i1o() -> Transaction {
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2 },
 		&[input(5, key_id1), output(3, key_id2)],
+		&keychain,
+		&builder,
+	)
+	.unwrap();
+
+	tx
+}
+
+// utility producing a NIT transaction with a single input and output
+#[allow(dead_code)]
+pub fn tx1i1o_v4() -> TransactionV4 {
+	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let builder = ProofBuilder::new(&keychain);
+	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+
+	let tx = build_v4::transaction(
+		KernelFeatures::Plain { fee: 2 },
+		&[build_v4::input(5, key_id1), build_v4::output(3, key_id2)],
 		&keychain,
 		&builder,
 	)
@@ -130,7 +151,19 @@ where
 		previous_header.height + 1,
 	)
 	.unwrap();
-	Block::new(&previous_header, txs, Difficulty::min(), reward_output).unwrap()
+
+	let txs = txs
+		.iter()
+		.map(|tx| VersionedTransaction::V3(tx.clone()))
+		.collect::<Vec<VersionedTransaction>>();
+	Block::new(
+		&previous_header,
+		&txs,
+		Difficulty::min(),
+		reward_output,
+		None,
+	)
+	.unwrap()
 }
 
 // utility producing a transaction that spends an output with the provided

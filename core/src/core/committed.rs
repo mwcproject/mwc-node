@@ -14,6 +14,8 @@
 
 //! The Committed trait and associated errors.
 
+use crate::core::OutputIds;
+use enum_dispatch::enum_dispatch;
 use failure::Fail;
 use keychain;
 use keychain::BlindingFactor;
@@ -33,6 +35,9 @@ pub enum Error {
 	/// Kernel sums do not equal output sums.
 	#[fail(display = "Kernel sum mismatch")]
 	KernelSumMismatch,
+	/// Kernel sums do not equal output R and input P' sums.
+	#[fail(display = "Kernel sum eqn2 mismatch")]
+	KernelSumEqn2Mismatch,
 	/// Committed overage (fee or reward) is invalid
 	#[fail(display = "Invalid value")]
 	InvalidValue,
@@ -54,12 +59,13 @@ impl From<keychain::Error> for Error {
 /// containing Pedersen commitments.
 /// Handles the collection of the commitments as well as their
 /// summing, taking potential explicit overages of fees into account.
+#[enum_dispatch]
 pub trait Committed {
 	/// Gather the kernel excesses and sum them.
 	fn sum_kernel_excesses(
 		&self,
 		offset: &BlindingFactor,
-	) -> Result<(Commitment, Commitment), Error> {
+	) -> Result<(Commitment, Commitment), crate::core::committed::Error> {
 		// then gather the kernel excess commitments
 		let kernel_commits = self.kernels_committed();
 
@@ -84,7 +90,7 @@ pub trait Committed {
 	}
 
 	/// Gathers commitments and sum them.
-	fn sum_commitments(&self, overage: i64) -> Result<Commitment, Error> {
+	fn sum_commitments(&self, overage: i64) -> Result<Commitment, crate::core::committed::Error> {
 		// gather the commitments
 		let mut input_commits = self.inputs_committed();
 		let mut output_commits = self.outputs_committed();
@@ -108,6 +114,25 @@ pub trait Committed {
 		sum_commits(output_commits, input_commits)
 	}
 
+	/// Gathers commitments and sum them.
+	/// Sum all Input P' and Output R.
+	fn sum_eqn2_commitments(
+		&self,
+		total_spent_rmp: Option<Commitment>,
+		inputs_p_committed: &[Commitment],
+	) -> Result<Commitment, crate::core::committed::Error> {
+		// gather the commitments
+		let input_commits = inputs_p_committed.to_vec();
+		let mut output_commits = self.outputs_r_committed();
+		if let Some(rmp) = total_spent_rmp {
+			output_commits.push(rmp);
+		}
+		sum_commits(output_commits, input_commits)
+	}
+
+	/// Vector of output R commitments to verify.
+	fn outputs_r_committed(&self) -> Vec<Commitment>;
+
 	/// Vector of input commitments to verify.
 	fn inputs_committed(&self) -> Vec<Commitment>;
 
@@ -124,7 +149,7 @@ pub trait Committed {
 		&self,
 		overage: i64,
 		kernel_offset: BlindingFactor,
-	) -> Result<(Commitment, Commitment), Error> {
+	) -> Result<(Commitment, Commitment), crate::core::committed::Error> {
 		// Sum all input|output|overage commitments.
 		let utxo_sum = self.sum_commitments(overage)?;
 
@@ -136,6 +161,59 @@ pub trait Committed {
 		}
 
 		Ok((utxo_sum, kernel_sum))
+	}
+
+	/// Verify the equation (2) sum of the kernel excesses equals the
+	/// sum of the Outputs R, taking into account the kernel_offset and Inputs P'.
+	/// Note:
+	/// - parameter "total_spent_rmp" is only needed for block & chain validation.
+	/// - parameter "spending_output_ids" should be empty for chain validation.
+	fn verify_kernel_sums_eqn2(
+		&self,
+		kernel_offset: BlindingFactor,
+		kernel_sum: Commitment,
+		total_spent_rmp: Option<Commitment>,
+		spending_output_ids: &[OutputIds],
+	) -> Result<(Commitment, Option<Commitment>), crate::core::committed::Error> {
+		// Sum all Input P' and Output R.
+		let inputs_p_committed = spending_output_ids
+			.iter()
+			.filter(|id| id.is_id_with_rnp())
+			.map(|id| {
+				Commitment::from_pubkey(&id.identifier_with_rnp().unwrap().onetime_pubkey)
+					.unwrap_or(secp_static::commit_to_zero_value())
+			})
+			.collect::<Vec<Commitment>>();
+		let rmp_sum = self.sum_eqn2_commitments(total_spent_rmp, &inputs_p_committed)?;
+
+		// Sum the kernel excesses accounting for the kernel offset.
+		let kernel_sum_plus_offset = commit_add_offset(kernel_sum.clone(), kernel_offset.clone())?;
+		// println!("committed::verify_kernel_sums_eqn2 - rmp_sum = {:?}, kernel_sum_plus_offset = {:?}, kernel_sum = {:?}, total_kernel_offset = {:?}", rmp_sum, kernel_sum_plus_offset, kernel_sum, kernel_offset);
+
+		if rmp_sum != kernel_sum_plus_offset {
+			return Err(Error::KernelSumEqn2Mismatch);
+		}
+
+		// Calculate spending outputs (R-P')
+		let spending_outputs_r_committed = spending_output_ids
+			.iter()
+			.filter(|id| id.is_id_with_rnp())
+			.map(|id| {
+				Commitment::from_pubkey(&id.identifier_with_rnp().unwrap().nonce)
+					.unwrap_or(secp_static::commit_to_zero_value())
+			})
+			.collect::<Vec<Commitment>>();
+		let spending_rmp_sum =
+			if spending_outputs_r_committed.is_empty() && inputs_p_committed.is_empty() {
+				None
+			} else {
+				Some(sum_commits(
+					spending_outputs_r_committed,
+					inputs_p_committed,
+				)?)
+			};
+
+		Ok((rmp_sum, spending_rmp_sum))
 	}
 }
 
@@ -173,4 +251,19 @@ fn to_secrets(bf: Vec<BlindingFactor>) -> Vec<SecretKey> {
 		.filter(|x| *x != BlindingFactor::zero())
 		.filter_map(|x| x.secret_key().ok())
 		.collect::<Vec<_>>()
+}
+
+/// Util for adding an offset on a commitment.
+pub fn commit_add_offset(
+	sum: Commitment,
+	offset: BlindingFactor,
+) -> Result<Commitment, crate::core::committed::Error> {
+	let secp = static_secp_instance();
+	let secp = secp.lock();
+	let mut commits = vec![sum];
+	if offset != BlindingFactor::zero() {
+		let offset_commit = secp.commit(0, offset.secret_key()?)?;
+		commits.push(offset_commit);
+	}
+	Ok(secp::Secp256k1::commit_sum(commits, vec![])?)
 }

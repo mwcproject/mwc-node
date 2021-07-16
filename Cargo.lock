@@ -154,6 +154,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3441f0f7b02788e948e47f457ca01f1d7e6d92c693bc132c22b087d3141c03ff"
 
 [[package]]
+name = "bech32"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdcf67bb7ba7797a081cd19009948ab533af7c355d5caf1d08c777582d351e9c"
+
+[[package]]
 name = "bindgen"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -841,6 +847,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum_dispatch"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b748aeb1b8c58d317739aa3171a2752ca3e76b8077c13dc748f327aebc0a72"
+dependencies = [
+ "once_cell",
+ "proc-macro2 1.0.24",
+ "quote 1.0.7",
+ "syn 1.0.48",
+]
+
+[[package]]
 name = "enum_primitive"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1241,6 +1259,7 @@ dependencies = [
  "rand 0.6.5",
  "serde",
  "serde_derive",
+ "serde_json",
 ]
 
 [[package]]
@@ -1265,10 +1284,12 @@ dependencies = [
 name = "grin_core"
 version = "5.0.0"
 dependencies = [
+ "bech32",
  "blake2-rfc",
  "byteorder",
  "chrono",
  "croaring-mw",
+ "enum_dispatch",
  "enum_primitive",
  "failure",
  "failure_derive",
@@ -1352,12 +1373,13 @@ dependencies = [
  "rand 0.6.5",
  "serde",
  "serde_derive",
+ "serde_json",
 ]
 
 [[package]]
 name = "grin_secp256k1zkp"
 version = "0.7.10"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp#d095616130874b3882880eab758ac2df435c029a"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp#dc041cad9a1148522c4b31e82dbeba11be37ad82"
 dependencies = [
  "arrayvec 0.3.25",
  "cc",

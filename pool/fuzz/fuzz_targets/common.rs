@@ -89,7 +89,10 @@ impl BlockChain for ChainAdapter {
 			.map_err(|_| PoolError::Other("failed to get block sums".into()))
 	}
 
-	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(
+		&self,
+		tx: &Transaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, pool::PoolError> {
 		self.chain.validate_tx(tx).map_err(|e| match e.kind() {
 			chain::ErrorKind::Transaction(txe) => txe.into(),
 			chain::ErrorKind::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,

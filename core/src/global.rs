@@ -40,8 +40,13 @@ use util::OneTime;
 /// We negotiate compatible versions with each peer via Hand/Shake.
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
-/// NOTE, grin bump the protocol version to 1000, but in any case fo far 1,2,3 are supported.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
+/// This defines the p2p layer protocol version for this node.
+/// NOTE:
+/// 	- grin bump the protocol version to 1000 since v4.1.0
+/// 	- grin didn't bump the protocol version to 2000 from HF4 (v5.x.x).
+/// 	- so far 1,2,3 are used in mwc. 2 for 4.1.0 release. 3 for 4.2.0.
+/// 	- mwc will bump the protocol version to 1000 in next HF (v6.0.0).
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1_000);
 
 /// Automated testing edge_bits
 pub const AUTOMATED_TESTING_MIN_EDGE_BITS: u8 = 10;
@@ -76,7 +81,7 @@ pub const TESTING_INITIAL_GRAPH_WEIGHT: u32 = 1;
 /// Testing initial block difficulty
 pub const TESTING_INITIAL_DIFFICULTY: u64 = 1;
 
-/// Testing max_block_weight (artifically low, just enough to support a few txs).
+/// Testing max_block_weight (artificially low, just enough to support a few txs).
 pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
@@ -104,7 +109,7 @@ pub const TXHASHSET_ARCHIVE_INTERVAL: u64 = 12 * 60;
 
 /// Types of chain a server can run with, dictates the genesis block and
 /// and mining parameters used.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChainTypes {
 	/// For CI testing
 	AutomatedTesting,

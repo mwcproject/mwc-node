@@ -23,6 +23,7 @@
 
 pub mod aggsig;
 pub mod build;
+pub mod build_v4;
 mod error;
 pub mod proof;
 pub mod reward;
@@ -31,7 +32,7 @@ pub mod secp_ser;
 use crate::consensus;
 use crate::core::Transaction;
 
-pub use self::proof::ProofBuilder;
+pub use self::proof::{PaymentId, ProofBuilder};
 pub use crate::libtx::error::{Error, ErrorKind};
 
 const DEFAULT_BASE_FEE: u64 = consensus::MILLI_GRIN;

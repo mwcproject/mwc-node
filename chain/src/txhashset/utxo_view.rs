@@ -16,19 +16,28 @@
 
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::pmmr::{self, ReadonlyPMMR};
-use crate::core::core::{Block, BlockHeader, Inputs, Output, OutputIdentifier, Transaction};
+use crate::core::core::verifier_cache::VerifierCache;
+use crate::core::core::{
+	Block, BlockHeader, Commit, CommitWithSig, IdentifierWithRnp, Inputs, Output, OutputFeatures,
+	OutputIdentifier, OutputIds, TxImpl, VersionedTransaction,
+};
 use crate::core::global;
+use crate::core::CommitPos;
 use crate::error::{Error, ErrorKind};
 use crate::store::Batch;
-use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
+use grin_core::core::OutputWithRnp;
 use grin_store::pmmr::PMMRBackend;
+use grin_util::RwLock;
+use std::sync::Arc;
 
 /// Readonly view of the UTXO set (based on output MMR).
 pub struct UTXOView<'a> {
 	header_pmmr: ReadonlyPMMR<'a, BlockHeader, PMMRBackend<BlockHeader>>,
 	output_pmmr: ReadonlyPMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
+	output_wrnp_pmmr: ReadonlyPMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 	rproof_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
+	rproof_wrnp_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 }
 
 impl<'a> UTXOView<'a> {
@@ -36,12 +45,16 @@ impl<'a> UTXOView<'a> {
 	pub fn new(
 		header_pmmr: ReadonlyPMMR<'a, BlockHeader, PMMRBackend<BlockHeader>>,
 		output_pmmr: ReadonlyPMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
+		output_wrnp_pmmr: ReadonlyPMMR<'a, IdentifierWithRnp, PMMRBackend<IdentifierWithRnp>>,
 		rproof_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
+		rproof_wrnp_pmmr: ReadonlyPMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 	) -> UTXOView<'a> {
 		UTXOView {
 			header_pmmr,
 			output_pmmr,
+			output_wrnp_pmmr,
 			rproof_pmmr,
+			rproof_wrnp_pmmr,
 		}
 	}
 
@@ -52,11 +65,32 @@ impl<'a> UTXOView<'a> {
 		&self,
 		block: &Block,
 		batch: &Batch<'_>,
-	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 		for output in block.outputs() {
 			self.validate_output(output, batch)?;
 		}
-		self.validate_inputs(&block.inputs(), batch)
+		let mut res: Vec<(OutputIds, CommitPos)> = self
+			.validate_inputs(&block.inputs(), batch)?
+			.into_iter()
+			.map(|(id, pos)| (OutputIds::Identifier(id), pos))
+			.collect::<Vec<(OutputIds, CommitPos)>>();
+
+		if let Some(outputs) = block.outputs_with_rnp() {
+			for output in outputs {
+				self.validate_output(output, batch)?;
+			}
+			if let Some(inputs) = block.inputs_with_sig() {
+				let res2: Vec<(IdentifierWithRnp, CommitPos)> =
+					self.validate_inputs_with_sig(&inputs, verifier_cache, batch)?;
+				res.extend(
+					res2.into_iter()
+						.map(|(id, pos)| (OutputIds::IdentifierW(id), pos))
+						.collect::<Vec<(OutputIds, CommitPos)>>(),
+				);
+			}
+		}
+		Ok(res)
 	}
 
 	/// Validate a transaction against the current UTXO set.
@@ -64,16 +98,38 @@ impl<'a> UTXOView<'a> {
 	/// No duplicate outputs.
 	pub fn validate_tx(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
 		batch: &Batch<'_>,
-	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 		for output in tx.outputs() {
 			self.validate_output(output, batch)?;
 		}
-		self.validate_inputs(&tx.inputs(), batch)
+		let mut res: Vec<(OutputIds, CommitPos)> = self
+			.validate_inputs(&tx.inputs(), batch)?
+			.into_iter()
+			.map(|(id, pos)| (OutputIds::Identifier(id), pos))
+			.collect::<Vec<(OutputIds, CommitPos)>>();
+
+		if let Some(outputs) = tx.outputs_with_rnp() {
+			for output in outputs {
+				self.validate_output(output, batch)?;
+			}
+			if let Some(inputs) = tx.inputs_with_sig() {
+				let res2: Vec<(IdentifierWithRnp, CommitPos)> =
+					self.validate_inputs_with_sig(&inputs, verifier_cache, batch)?;
+				res.extend(
+					res2.into_iter()
+						.map(|(id, pos)| (OutputIds::IdentifierW(id), pos))
+						.collect::<Vec<(OutputIds, CommitPos)>>(),
+				);
+			}
+		}
+
+		Ok(res)
 	}
 
-	/// Validate the provided inputs.
+	/// Validate the provided inputs (w/o signature).
 	/// Returns a vec of output identifiers corresponding to outputs
 	/// that would be spent by the provided inputs.
 	pub fn validate_inputs(
@@ -111,6 +167,54 @@ impl<'a> UTXOView<'a> {
 					.collect();
 				outputs_spent
 			}
+			Inputs::CommitsWithSig(_) => Err(ErrorKind::Other(
+				"wrong function called. use validate_inputs_with_sig instead.".into(),
+			)
+			.into()),
+		}
+	}
+
+	/// Validate the provided inputs (w/ signature).
+	/// Returns a vec of output IdentifierWithRnp corresponding to outputs
+	/// that would be spent by the provided inputs.
+	/// Note: inputs signature validation is here.
+	pub fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+		batch: &Batch<'_>,
+	) -> Result<Vec<(IdentifierWithRnp, CommitPos)>, Error> {
+		match inputs {
+			Inputs::CommitOnly(_) | Inputs::FeaturesAndCommit(_) => Err(ErrorKind::Other(
+				"wrong function called. use validate_inputs instead.".into(),
+			)
+			.into()),
+			Inputs::CommitsWithSig(inputs) => {
+				let mut accomplished_inputs_with_sig = vec![];
+				let mut res: Vec<(IdentifierWithRnp, CommitPos)> = vec![];
+				for input in inputs {
+					let validated = self.validate_input_with_sig(input.commitment(), batch)?;
+					accomplished_inputs_with_sig.push((validated.0, validated.1, input.clone()));
+					res.push((validated.0, validated.2));
+				}
+
+				// Signature validation
+				let filtered_accomplished_inputs_with_sig = {
+					let mut verifier = verifier.write();
+					verifier.filter_input_with_sig_unverified(&accomplished_inputs_with_sig)
+				};
+
+				// Verify the unverified inputs signatures.
+				// Signature verification need public key (i.e. that P' in this context), the P' has to be queried from chain UTXOs set.
+				CommitWithSig::batch_sig_verify(&filtered_accomplished_inputs_with_sig)?;
+
+				// Cache the successful verification results for the new inputs_with_sig.
+				{
+					let mut verifier = verifier.write();
+					verifier.add_input_with_sig_verified(filtered_accomplished_inputs_with_sig);
+				}
+				Ok(res)
+			}
 		}
 	}
 
@@ -139,22 +243,80 @@ impl<'a> UTXOView<'a> {
 		Err(ErrorKind::AlreadySpent(input).into())
 	}
 
+	// Input is valid if it is spending an (unspent) output which currently exists in the output MMR.
+	// Note: (1) We lookup by commitment. Caller must compare the full input as necessary.
+	//       (2) It's caller's responsibility to validate the input signature.
+	fn validate_input_with_sig(
+		&self,
+		input: Commitment,
+		batch: &Batch<'_>,
+	) -> Result<(IdentifierWithRnp, Hash, CommitPos), Error> {
+		let commit_pos = batch.get_output_pos_height(&input)?;
+		if let Some(cp) = commit_pos {
+			if let Some(out) = self.output_wrnp_pmmr.get_data(cp.pos) {
+				return if out.commitment() == input {
+					if let Some(h) = self.rproof_wrnp_pmmr.get_hash(cp.pos) {
+						Ok((out, h, cp))
+					} else {
+						error!("rproof not exist: {:?}, {:?}, {:?}", out, cp, input);
+						Err(ErrorKind::Other("rproof not exist".into()).into())
+					}
+				} else {
+					error!("input mismatch: {:?}, {:?}, {:?}", out, cp, input);
+					Err(
+						ErrorKind::Other("input mismatch (output_pos index mismatch?)".into())
+							.into(),
+					)
+				};
+			}
+		}
+		Err(ErrorKind::AlreadySpent(input).into())
+	}
+
 	// Output is valid if it would not result in a duplicate commitment in the output MMR.
-	fn validate_output(&self, output: &Output, batch: &Batch<'_>) -> Result<(), Error> {
-		if let Ok(pos) = batch.get_output_pos(&output.commitment()) {
-			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
-				if out_mmr.commitment() == output.commitment() {
-					return Err(ErrorKind::DuplicateCommitment(output.commitment()).into());
+	fn validate_output(&self, output: &dyn Commit, batch: &Batch<'_>) -> Result<(), Error> {
+		if let Ok(commit_pos) = batch.get_output_pos_height(&output.commitment()) {
+			if let Some(cp) = commit_pos {
+				match cp.features {
+					OutputFeatures::PlainWrnp => {
+						if let Some(out_mmr) = self.output_wrnp_pmmr.get_data(cp.pos) {
+							if out_mmr.commitment() == output.commitment() {
+								return Err(
+									ErrorKind::DuplicateCommitment(output.commitment()).into()
+								);
+							}
+						}
+					}
+					_ => {
+						if let Some(out_mmr) = self.output_pmmr.get_data(cp.pos) {
+							if out_mmr.commitment() == output.commitment() {
+								return Err(
+									ErrorKind::DuplicateCommitment(output.commitment()).into()
+								);
+							}
+						}
+					}
 				}
 			}
 		}
 		Ok(())
 	}
 
-	/// Retrieves an unspent output using its PMMR position
+	/// Retrieves an unspent output (w/o R&P') using its PMMR position
 	pub fn get_unspent_output_at(&self, pos: u64) -> Result<Output, Error> {
 		match self.output_pmmr.get_data(pos) {
 			Some(output_id) => match self.rproof_pmmr.get_data(pos) {
+				Some(rproof) => Ok(output_id.into_output(rproof)),
+				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
+			},
+			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos)).into()),
+		}
+	}
+
+	/// Retrieves an unspent output (w/ R&P') using its PMMR position
+	pub fn get_unspent_output_wrnp_at(&self, pos: u64) -> Result<OutputWithRnp, Error> {
+		match self.output_wrnp_pmmr.get_data(pos) {
+			Some(output_id) => match self.rproof_wrnp_pmmr.get_data(pos) {
 				Some(rproof) => Ok(output_id.into_output(rproof)),
 				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
 			},
@@ -170,25 +332,90 @@ impl<'a> UTXOView<'a> {
 		height: u64,
 		batch: &Batch<'_>,
 	) -> Result<(), Error> {
-		let inputs: Vec<_> = inputs.into();
+		let pos = match inputs {
+			Inputs::CommitOnly(_) => {
+				let inputs: Vec<_> = inputs.into();
+				// Lookup the outputs being spent.
+				let spent: Result<Vec<_>, _> = inputs
+					.iter()
+					.map(|x| self.validate_input(x.commitment(), batch))
+					.collect();
 
-		// Lookup the outputs being spent.
-		let spent: Result<Vec<_>, _> = inputs
-			.iter()
-			.map(|x| self.validate_input(x.commitment(), batch))
-			.collect();
+				// Find the max pos of any coinbase being spent.
+				spent?
+					.iter()
+					.filter_map(|(out, pos)| {
+						if out.features.is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max()
+			}
+			Inputs::FeaturesAndCommit(inputs) => {
+				let it_inputs: Vec<_> = inputs
+					.iter()
+					.filter(|x| x.features == OutputFeatures::Coinbase)
+					.collect();
+				let spent_it: Result<Vec<_>, _> = it_inputs
+					.iter()
+					.map(|x| self.validate_input(x.commitment(), batch))
+					.collect();
+				let it_pos = spent_it?
+					.iter()
+					.filter_map(|(out, pos)| {
+						if out.features.is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max();
 
-		// Find the max pos of any coinbase being spent.
-		let pos = spent?
-			.iter()
-			.filter_map(|(out, pos)| {
-				if out.features.is_coinbase() {
-					Some(pos.pos)
-				} else {
-					None
+				let nit_inputs: Vec<_> = inputs
+					.iter()
+					.filter(|x| x.features == OutputFeatures::CoinbaseWrnp)
+					.collect();
+				let spent_nit: Result<Vec<_>, _> = nit_inputs
+					.iter()
+					.map(|x| self.validate_input_with_sig(x.commitment(), batch))
+					.collect();
+				let nit_pos = spent_nit?
+					.iter()
+					.filter_map(|(out, _h, pos)| {
+						if out.features().is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max();
+
+				match (it_pos, nit_pos) {
+					(None, None) => None,
+					(None, Some(_)) => nit_pos,
+					(Some(_), None) => it_pos,
+					(Some(it), Some(nit)) => Some(std::cmp::max(it, nit)),
 				}
-			})
-			.max();
+			}
+			Inputs::CommitsWithSig(inputs) => {
+				let spent: Result<Vec<_>, _> = inputs
+					.iter()
+					.map(|x| self.validate_input_with_sig(x.commitment(), batch))
+					.collect();
+				spent?
+					.iter()
+					.filter_map(|(out, _h, pos)| {
+						if out.features().is_coinbase() {
+							Some(pos.pos)
+						} else {
+							None
+						}
+					})
+					.max()
+			}
+		};
 
 		if let Some(pos) = pos {
 			// If we have not yet reached 1440 blocks then

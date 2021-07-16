@@ -22,8 +22,8 @@ use grin_util as util;
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{pipe, Chain, Options};
 use crate::core::core::verifier_cache::LruVerifierCache;
-use crate::core::core::{block, pmmr, transaction};
-use crate::core::core::{Block, KernelFeatures, Transaction, Weighting};
+use crate::core::core::{block, pmmr, transaction, Commit, TxImpl};
+use crate::core::core::{Block, KernelFeatures, Transaction, VersionedTransaction, Weighting};
 use crate::core::libtx::{build, reward, ProofBuilder};
 use crate::core::{consensus, global, pow};
 use crate::keychain::{ExtKeychain, ExtKeychainPath, Keychain, SwitchCommitmentType};
@@ -55,7 +55,11 @@ where
 	)
 	.unwrap();
 
-	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward)?;
+	let txs = txs
+		.iter()
+		.map(|tx| tx.clone().ver())
+		.collect::<Vec<VersionedTransaction>>();
+	let mut block = Block::new(&prev, &txs, next_header_info.clone().difficulty, reward)?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -67,6 +71,7 @@ where
 
 		// Manually set the mmr sizes for a "valid" block (increment prev output and kernel counts).
 		block.header.output_mmr_size = pmmr::insertion_to_pmmr_index(prev.output_mmr_count() + 1);
+		//block.header.output_wrnp_mmr_size = Some(pmmr::insertion_to_pmmr_index(prev.output_wrnp_mmr_count() + 1));
 		block.header.kernel_mmr_size = pmmr::insertion_to_pmmr_index(prev.kernel_mmr_count() + 1);
 	} else {
 		chain.set_txhashset_roots(&mut block)?;
@@ -147,7 +152,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 
 	// Transaction will not validate against the chain (utxo).
 	assert_eq!(
-		chain.validate_tx(&tx).map_err(|e| e.kind()),
+		chain.validate_tx(&tx.clone().ver()).map_err(|e| e.kind()),
 		Err(chain::ErrorKind::DuplicateCommitment(commit)),
 	);
 

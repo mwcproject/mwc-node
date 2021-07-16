@@ -15,18 +15,17 @@
 //! Implementation of the chain block acceptance (or refusal) pipeline.
 
 use crate::core::consensus;
-use crate::core::core::hash::Hashed;
+use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::verifier_cache::VerifierCache;
-use crate::core::core::Committed;
-use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIdentifier, TransactionBody};
-use crate::core::global;
+use crate::core::core::{block, Block, BlockHeader, BlockSums, OutputIds, TransactionBody};
+use crate::core::core::{committed, Committed};
 use crate::core::pow;
+use crate::core::{global, CommitPos};
 use crate::error::{Error, ErrorKind};
 use crate::store;
 use crate::txhashset;
-use crate::types::{CommitPos, Options, Tip};
+use crate::types::{Options, Tip};
 use crate::util::RwLock;
-use grin_core::core::hash::Hash;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -147,8 +146,9 @@ pub fn process_block(
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
+	let verifier_cache = ctx.verifier_cache.clone();
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		let fork_point = rewind_and_apply_fork(&prev, ext, batch)?;
+		let fork_point = rewind_and_apply_fork(&prev, ext, batch, verifier_cache.clone())?;
 
 		// Check any coinbase being spent have matured sufficiently.
 		// This needs to be done within the context of a potentially
@@ -157,18 +157,21 @@ pub fn process_block(
 		verify_coinbase_maturity(b, ext, batch)?;
 
 		// Validate the block against the UTXO set.
-		validate_utxo(b, ext, batch)?;
+		let spending_output_ids = validate_utxo(b, ext, batch, verifier_cache.clone())?
+			.into_iter()
+			.map(|(id, _pos)| id)
+			.collect::<Vec<OutputIds>>();
 
 		// Using block_sums (utxo_sum, kernel_sum) for the previous block from the db
 		// we can verify_kernel_sums across the full UTXO sum and full kernel sum
 		// accounting for inputs/outputs/kernels in this new block.
 		// We know there are no double-spends etc. if this verifies successfully.
-		verify_block_sums(b, batch)?;
+		verify_block_sums(b, batch, &spending_output_ids)?;
 
 		// Apply the block to the txhashset state.
 		// Validate the txhashset roots and sizes against the block header.
 		// Block is invalid if there are any discrepencies.
-		apply_block_to_txhashset(b, ext, batch)?;
+		apply_block_to_txhashset(b, ext, batch, verifier_cache.clone())?;
 
 		// If applying this block does not increase the work on the chain then
 		// we know we have not yet updated the chain to produce a new chain head.
@@ -367,7 +370,10 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 	// Assume 0 inputs and estimate a lower bound on the full block weight.
 	let num_outputs = header
 		.output_mmr_count()
-		.saturating_sub(prev.output_mmr_count());
+		.saturating_sub(prev.output_mmr_count())
+		+ header
+			.output_wrnp_mmr_count()
+			.saturating_sub(prev.output_wrnp_mmr_count());
 	let num_kernels = header
 		.kernel_mmr_count()
 		.saturating_sub(prev.kernel_mmr_count());
@@ -455,7 +461,11 @@ fn verify_coinbase_maturity(
 /// Verify kernel sums across the full utxo and kernel sets based on block_sums
 /// of previous block accounting for the inputs|outputs|kernels of the new block.
 /// Saves the new block_sums to the db via the current batch if successful.
-fn verify_block_sums(b: &Block, batch: &store::Batch<'_>) -> Result<(), Error> {
+fn verify_block_sums(
+	b: &Block,
+	batch: &store::Batch<'_>,
+	spending_output_ids: &[OutputIds],
+) -> Result<(), Error> {
 	// Retrieve the block_sums for the previous block.
 	let block_sums = batch.get_block_sums(&b.header.prev_hash)?;
 
@@ -468,13 +478,41 @@ fn verify_block_sums(b: &Block, batch: &store::Batch<'_>) -> Result<(), Error> {
 
 	// Verify the kernel sums for the block_sums with the new block applied.
 	let (utxo_sum, kernel_sum) =
-		(block_sums, b as &dyn Committed).verify_kernel_sums(overage, offset)?;
+		(block_sums.clone(), b as &dyn Committed).verify_kernel_sums(overage, offset.clone())?;
+
+	// Verify the kernel sums equation (2) for the block_sums with the new block applied.
+	let rmp_sum = if b.header.height < consensus::get_nit_hard_fork_block_height() {
+		None
+	} else {
+		let prev_h = batch.get_block_header(&b.header.prev_hash)?;
+		if b.header.height == consensus::get_nit_hard_fork_block_height() {
+			// The initial total spent (R-P') is a fake value which just takes SUM(E')+TotalOffset*G of previous block.
+			let total_spent_rmp = committed::commit_add_offset(
+				block_sums.kernel_sum,
+				prev_h.total_kernel_offset.clone(),
+			)?;
+			if Some(total_spent_rmp) != b.header.total_spent_rmp {
+				return Err(committed::Error::KernelSumEqn2Mismatch.into());
+			}
+			// The initial 'rmp_sum' = SUM(R) + 'total_spent_rmp' of the 1st block.
+			let mut output_r_commits = b.outputs_r_committed();
+			output_r_commits.push(total_spent_rmp);
+			Some(committed::sum_commits(output_r_commits, vec![])?)
+		} else {
+			let (rmp_sum, spending_rmp_sum) = (block_sums.clone(), b as &dyn Committed)
+				.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
+			b.header
+				.verify_total_spent_rmp(prev_h.total_spent_rmp, spending_rmp_sum)?;
+			Some(rmp_sum)
+		}
+	};
 
 	batch.save_block_sums(
 		&b.hash(),
 		BlockSums {
 			utxo_sum,
 			kernel_sum,
+			rmp_sum,
 		},
 	)?;
 
@@ -487,9 +525,10 @@ fn apply_block_to_txhashset(
 	block: &Block,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 ) -> Result<(), Error> {
 	ext.extension
-		.apply_block(block, ext.header_extension, batch)?;
+		.apply_block(block, ext.header_extension, batch, verifier_cache)?;
 	ext.extension.validate_roots(&block.header)?;
 	ext.extension.validate_sizes(&block.header)?;
 	Ok(())
@@ -588,6 +627,7 @@ pub fn rewind_and_apply_fork(
 	header: &BlockHeader,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 ) -> Result<BlockHeader, Error> {
 	let extension = &mut ext.extension;
 	let header_extension = &mut ext.header_extension;
@@ -625,11 +665,14 @@ pub fn rewind_and_apply_fork(
 		// Re-verify coinbase maturity along this fork.
 		verify_coinbase_maturity(&fb, ext, batch)?;
 		// Validate the block against the UTXO set.
-		validate_utxo(&fb, ext, batch)?;
+		let spending_output_ids = validate_utxo(&fb, ext, batch, verifier_cache.clone())?
+			.into_iter()
+			.map(|(id, _pos)| id)
+			.collect::<Vec<OutputIds>>();
 		// Re-verify block_sums to set the block_sums up on this fork correctly.
-		verify_block_sums(&fb, batch)?;
+		verify_block_sums(&fb, batch, &spending_output_ids)?;
 		// Re-apply the blocks.
-		apply_block_to_txhashset(&fb, ext, batch)?;
+		apply_block_to_txhashset(&fb, ext, batch, verifier_cache.clone())?;
 	}
 
 	Ok(fork_point)
@@ -642,10 +685,11 @@ fn validate_utxo(
 	block: &Block,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
-) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+	verifier_cache: Arc<RwLock<dyn VerifierCache>>,
+) -> Result<Vec<(OutputIds, CommitPos)>, Error> {
 	let extension = &ext.extension;
 	let header_extension = &ext.header_extension;
 	extension
 		.utxo_view(header_extension)
-		.validate_block(block, batch)
+		.validate_block(block, batch, verifier_cache)
 }

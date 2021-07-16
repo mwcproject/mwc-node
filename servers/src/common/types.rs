@@ -22,7 +22,7 @@ use rand::prelude::*;
 use crate::api;
 use crate::chain;
 use crate::core::global::ChainTypes;
-use crate::core::{core, libtx, pow};
+use crate::core::{address, core, libtx, pow};
 use crate::keychain;
 use crate::p2p;
 use crate::pool;
@@ -61,6 +61,9 @@ pub enum Error {
 	/// Error originating from the keychain.
 	#[fail(display = "Keychain error, {}", _0)]
 	Keychain(keychain::Error),
+	/// Error originating from the keychain.
+	#[fail(display = "Address error, {}", _0)]
+	Address(address::Error),
 	/// Invalid Arguments.
 	#[fail(display = "Invalid argument, {}", _0)]
 	ArgumentError(String),
@@ -126,6 +129,12 @@ impl From<pool::PoolError> for Error {
 impl From<keychain::Error> for Error {
 	fn from(e: keychain::Error) -> Error {
 		Error::Keychain(e)
+	}
+}
+
+impl From<address::Error> for Error {
+	fn from(e: address::Error) -> Error {
+		Error::Address(e)
 	}
 }
 
@@ -311,6 +320,9 @@ pub struct StratumServerConfig {
 	/// Base address to the HTTP wallet receiver
 	pub wallet_listener_url: String,
 
+	/// The mining reward address after HF2 (for Non-Interactive Transaction scheme)
+	pub mining_reward_address: Option<String>,
+
 	/// Attributes the reward to a random private key instead of contacting the
 	/// wallet receiver. Mostly used for tests.
 	pub burn_reward: bool,
@@ -380,6 +392,7 @@ impl Default for StratumServerConfig {
 	fn default() -> StratumServerConfig {
 		StratumServerConfig {
 			wallet_listener_url: "http://127.0.0.1:3415".to_string(),
+			mining_reward_address: None,
 			burn_reward: false,
 			attempt_time_per_block: 15,
 			minimum_share_difficulty: 1,

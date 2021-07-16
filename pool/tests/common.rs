@@ -20,12 +20,13 @@ use self::core::consensus;
 use self::core::core::hash::Hash;
 use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction, TxKernel,
+	Block, BlockHeader, BlockSums, IdentifierWithRnp, Inputs, KernelFeatures, OutputIdentifier,
+	OutputIds, Transaction, TxImpl, TxKernel, VersionedTransaction,
 };
 use self::core::genesis;
-use self::core::global;
 use self::core::libtx::{build, reward, ProofBuilder};
 use self::core::pow;
+use self::core::{global, CommitPos};
 use self::keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain};
 use self::pool::types::*;
 use self::pool::TransactionPool;
@@ -73,7 +74,7 @@ where
 	}
 }
 
-pub fn add_block<K>(chain: &Chain, txs: &[Transaction], keychain: &K)
+pub fn add_block<K>(chain: &Chain, txs: &[VersionedTransaction], keychain: &K)
 where
 	K: Keychain,
 {
@@ -136,7 +137,10 @@ impl BlockChain for ChainAdapter {
 			.map_err(|e| PoolError::Other(format!("failed to get block sums, {}", e)))
 	}
 
-	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(
+		&self,
+		tx: &VersionedTransaction,
+	) -> Result<Vec<(OutputIds, CommitPos)>, pool::PoolError> {
 		self.chain.validate_tx(tx).map_err(|e| match e.kind() {
 			chain::ErrorKind::Transaction(txe) => txe.into(),
 			chain::ErrorKind::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
@@ -151,13 +155,24 @@ impl BlockChain for ChainAdapter {
 			.map_err(|_| PoolError::Other("failed to validate inputs".into()))
 	}
 
+	fn validate_inputs_with_sig(
+		&self,
+		inputs: &Inputs,
+		verifier: Arc<RwLock<dyn VerifierCache>>,
+	) -> Result<Vec<IdentifierWithRnp>, PoolError> {
+		self.chain
+			.validate_inputs_with_sig(inputs, verifier)
+			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
+			.map_err(|_| PoolError::Other("failed to validate inputs".into()))
+	}
+
 	fn verify_coinbase_maturity(&self, inputs: &Inputs) -> Result<(), PoolError> {
 		self.chain
 			.verify_coinbase_maturity(inputs)
 			.map_err(|_| PoolError::ImmatureCoinbase)
 	}
 
-	fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), PoolError> {
+	fn verify_tx_lock_height(&self, tx: &VersionedTransaction) -> Result<(), PoolError> {
 		self.chain
 			.verify_tx_lock_height(tx)
 			.map_err(|_| PoolError::ImmatureTransaction)

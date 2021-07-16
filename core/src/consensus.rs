@@ -112,11 +112,15 @@ pub const CUT_THROUGH_HORIZON: u32 = WEEK_HEIGHT as u32;
 /// easier to reason about.
 pub const STATE_SYNC_THRESHOLD: u32 = 2 * DAY_HEIGHT as u32;
 
-/// Weight of an input when counted against the max block weight capacity
+/// Weight of an input w/o signature when counted against the max block weight capacity
 pub const BLOCK_INPUT_WEIGHT: u64 = 1;
+/// Weight of an input w/ signature when counted against the max block weight capacity
+pub const BLOCK_INPUT_WITH_SIG_WEIGHT: u64 = 3;
 
-/// Weight of an output when counted against the max block weight capacity
+/// Weight of an output w/o R&P' when counted against the max block weight capacity
 pub const BLOCK_OUTPUT_WEIGHT: u64 = 21;
+/// Weight of an output w/ R&P' when counted against the max block weight capacity
+pub const BLOCK_OUTPUT_WITH_RNP_WEIGHT: u64 = 23;
 
 /// Weight of a kernel when counted against the max block weight capacity
 pub const BLOCK_KERNEL_WEIGHT: u64 = 3;
@@ -153,8 +157,10 @@ pub fn header_version(height: u64) -> HeaderVersion {
 		global::ChainTypes::Mainnet | global::ChainTypes::Floonet => {
 			if height < get_c31_hard_fork_block_height() {
 				HeaderVersion(1)
-			} else {
+			} else if height < get_nit_hard_fork_block_height() {
 				HeaderVersion(2)
+			} else {
+				HeaderVersion(3)
 			}
 		}
 		// Note!!!! We need that to cover NRD tests.
@@ -180,8 +186,10 @@ pub fn valid_header_version(height: u64, version: HeaderVersion) -> bool {
 		global::ChainTypes::Mainnet | global::ChainTypes::Floonet => {
 			if height < get_c31_hard_fork_block_height() {
 				version == HeaderVersion(1)
-			} else {
+			} else if height < get_nit_hard_fork_block_height() {
 				version == HeaderVersion(2)
+			} else {
+				version == HeaderVersion(3)
 			}
 		}
 		// Note!!!! We need that to cover NRD tests.
@@ -395,14 +403,31 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
 	max(MIN_AR_SCALE, scale) as u32
 }
 
-/// Hard fork modifications:
+/*----- 	Hard fork related modifications 	-----*/
 
-fn get_c31_hard_fork_block_height() -> u64 {
+/// HF1 block height. Remove C32+ PoW algorithm and only keep C31 as AT(Asic Tuned/Tweaked/Targeted) algorithm.
+pub fn get_c31_hard_fork_block_height() -> u64 {
 	// return 202_500 for mainnet and 270_000 for floonet
 	if global::get_chain_type() == global::ChainTypes::Floonet {
 		270_000
 	} else {
 		202_500
+	}
+}
+
+/// HF2 block height. Add NIT(Non-Interactive Transaction).
+pub fn get_nit_hard_fork_block_height() -> u64 {
+	let chain_type = global::get_chain_type();
+	match chain_type {
+		global::ChainTypes::Mainnet => {
+			919_850 // around 2021-08-15
+		}
+		global::ChainTypes::Floonet => {
+			833_450 // around 2021-06-15
+		}
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+			TESTING_SECOND_HARD_FORK
+		}
 	}
 }
 

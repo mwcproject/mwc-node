@@ -442,6 +442,14 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"mining_reward_address".to_string(),
+		"
+#the receiver address to which coinbase rewards will be sent, after HF2 (for Non-Interactive Transaction scheme).
+"
+			.to_string(),
+	);
+
+	retval.insert(
 		"burn_reward".to_string(),
 		"
 #whether to ignore the reward (mostly for testing)

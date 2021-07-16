@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Utility functions to build Grin transactions. Handles the blinding of
+//! Utility functions to build Grin interactive transactions. Handles the blinding of
 //! inputs and outputs, maintaining the sum of blinding factors, producing
 //! the excess signature, etc.
 //!
@@ -50,7 +50,7 @@ where
 
 /// Function type returned by the transaction combinators. Transforms a
 /// (Transaction, BlindSum) tuple into another, given the provided context.
-/// Will return an Err if seomthing went wrong at any point during transaction building.
+/// Will return an Err if something went wrong at any point during transaction building.
 pub type Append<K, B> = dyn for<'a> Fn(
 	&'a mut Context<'_, K, B>,
 	Result<(Transaction, BlindSum), Error>,
@@ -107,7 +107,7 @@ where
 	build_input(value, OutputFeatures::Coinbase, key_id)
 }
 
-/// Adds an output with the provided value and key identifier from the
+/// Adds an output (w/o R&P') with the provided value and key identifier from the
 /// keychain.
 pub fn output<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
 where
@@ -259,6 +259,7 @@ mod test {
 	use super::*;
 	use crate::core::transaction::Weighting;
 	use crate::core::verifier_cache::{LruVerifierCache, VerifierCache};
+	use crate::core::TxImpl;
 	use crate::global;
 	use crate::libtx::ProofBuilder;
 	use keychain::{ExtKeychain, ExtKeychainPath};

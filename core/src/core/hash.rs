@@ -17,6 +17,7 @@
 //! Primary hash function used in the protocol
 //!
 
+use crate::libtx::secp_ser;
 use crate::ser::{self, Error, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use blake2::blake2b::Blake2b;
 use byteorder::{BigEndian, ByteOrder};
@@ -29,7 +30,13 @@ pub const ZERO_HASH: Hash = Hash([0; 32]);
 /// A hash to uniquely (or close enough) identify one of the main blockchain
 /// constructs. Used pervasively for blocks, transactions and outputs.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
-pub struct Hash([u8; 32]);
+pub struct Hash(
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::u8_32_from_hex"
+	)]
+	[u8; 32],
+);
 
 impl DefaultHashable for Hash {}
 
@@ -218,6 +225,19 @@ impl<D: DefaultHashable> Hashed for D {
 impl<D: DefaultHashable> DefaultHashable for &D {}
 impl<D: DefaultHashable, E: DefaultHashable> DefaultHashable for (D, E) {}
 impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable> DefaultHashable for (D, E, F) {}
+impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable, G: DefaultHashable> DefaultHashable
+	for (D, E, F, G)
+{
+}
+impl<
+		D: DefaultHashable,
+		E: DefaultHashable,
+		F: DefaultHashable,
+		G: DefaultHashable,
+		H: DefaultHashable,
+	> DefaultHashable for (D, E, F, G, H)
+{
+}
 
 /// Implement Hashed trait for external types here
 impl DefaultHashable for util::secp::pedersen::RangeProof {}

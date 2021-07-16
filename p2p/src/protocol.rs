@@ -14,7 +14,8 @@
 
 use crate::chain;
 use crate::conn::{Message, MessageHandler, Tracker};
-use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock};
+use crate::core::core::{self, hash::Hash, hash::Hashed, CompactBlock, HeaderVersion};
+use crate::core::ser::ProtocolVersion;
 use crate::serv::Server;
 use crate::types::PeerAddr::Onion;
 
@@ -135,11 +136,32 @@ impl MessageHandler for Protocol {
 				);
 				let tx = adapter.get_transaction(h);
 				if let Some(tx) = tx {
-					Ok(Some(Msg::new(
-						Type::Transaction,
-						tx,
-						self.peer_info.version,
-					)?))
+					match self.peer_info.version.value() {
+						// Note: here is not a missing special handling for v2.
+						//		 currently, all transactions in v3 will be converted into v2 when adding to pool (add_to_pool/convert_tx_v2),
+						//		 refer to https://github.com/mimblewimble/grin/pull/3419 for detail.
+						//
+						// Versions before HF2
+						0..=3 => {
+							if let Ok(v3_tx) = tx.to_v3() {
+								Ok(Some(Msg::new(
+									Type::Transaction,
+									v3_tx,
+									self.peer_info.version,
+								)?))
+							} else {
+								Ok(None)
+							}
+						}
+						// HF2 version
+						1000..=1999 => Ok(Some(Msg::new(
+							Type::Transaction,
+							tx,
+							self.peer_info.version,
+						)?)),
+						// don't send to versions with big jump and undefined versions.
+						_ => Ok(None),
+					}
 				} else {
 					Ok(None)
 				}
@@ -151,7 +173,7 @@ impl MessageHandler for Protocol {
 					msg.header.msg_len
 				);
 				let tx: core::Transaction = msg.body()?;
-				adapter.transaction_received(tx, false)?;
+				adapter.transaction_received(tx.into(), false)?;
 				Ok(None)
 			}
 
@@ -161,7 +183,7 @@ impl MessageHandler for Protocol {
 					msg.header.msg_len
 				);
 				let tx: core::Transaction = msg.body()?;
-				adapter.transaction_received(tx, true)?;
+				adapter.transaction_received(tx.into(), true)?;
 				Ok(None)
 			}
 
@@ -175,9 +197,14 @@ impl MessageHandler for Protocol {
 
 				let bo = adapter.get_block(h, &self.peer_info);
 				if let Some(b) = bo {
-					return Ok(Some(Msg::new(Type::Block, b, self.peer_info.version)?));
+					if is_compatible_node(b.header.version, self.peer_info.version) {
+						Ok(Some(Msg::new(Type::Block, b, self.peer_info.version)?))
+					} else {
+						Ok(None)
+					}
+				} else {
+					Ok(None)
 				}
-				Ok(None)
 			}
 
 			Type::Block => {
@@ -198,12 +225,16 @@ impl MessageHandler for Protocol {
 			Type::GetCompactBlock => {
 				let h: Hash = msg.body()?;
 				if let Some(b) = adapter.get_block(h, &self.peer_info) {
-					let cb: CompactBlock = b.into();
-					Ok(Some(Msg::new(
-						Type::CompactBlock,
-						cb,
-						self.peer_info.version,
-					)?))
+					if is_compatible_node(b.header.version, self.peer_info.version) {
+						let cb: CompactBlock = b.into();
+						Ok(Some(Msg::new(
+							Type::CompactBlock,
+							cb,
+							self.peer_info.version,
+						)?))
+					} else {
+						Ok(None)
+					}
 				} else {
 					Ok(None)
 				}
@@ -248,11 +279,19 @@ impl MessageHandler for Protocol {
 				let headers = adapter.locate_headers(&loc.hashes)?;
 
 				// serialize and send all the headers over
-				Ok(Some(Msg::new(
-					Type::Headers,
-					Headers { headers },
-					self.peer_info.version,
-				)?))
+				if let Some(h) = headers.last() {
+					if is_compatible_node(h.version, self.peer_info.version) {
+						Ok(Some(Msg::new(
+							Type::Headers,
+							Headers { headers },
+							self.peer_info.version,
+						)?))
+					} else {
+						Ok(None)
+					}
+				} else {
+					Ok(None)
+				}
 			}
 
 			// "header first" block propagation - if we have not yet seen this block
@@ -354,22 +393,26 @@ impl MessageHandler for Protocol {
 				);
 
 				let txhashset_header = self.adapter.txhashset_archive_header()?;
-				let txhashset_header_hash = txhashset_header.hash();
-				let txhashset = self.adapter.txhashset_read(txhashset_header_hash);
+				if is_compatible_node(txhashset_header.version, self.peer_info.version) {
+					let txhashset_header_hash = txhashset_header.hash();
+					let txhashset = self.adapter.txhashset_read(txhashset_header_hash);
 
-				if let Some(txhashset) = txhashset {
-					let file_sz = txhashset.reader.metadata()?.len();
-					let mut resp = Msg::new(
-						Type::TxHashSetArchive,
-						&TxHashSetArchive {
-							height: txhashset_header.height as u64,
-							hash: txhashset_header_hash,
-							bytes: file_sz,
-						},
-						self.peer_info.version,
-					)?;
-					resp.add_attachment(txhashset.reader);
-					Ok(Some(resp))
+					if let Some(txhashset) = txhashset {
+						let file_sz = txhashset.reader.metadata()?.len();
+						let mut resp = Msg::new(
+							Type::TxHashSetArchive,
+							&TxHashSetArchive {
+								height: txhashset_header.height as u64,
+								hash: txhashset_header_hash,
+								bytes: file_sz,
+							},
+							self.peer_info.version,
+						)?;
+						resp.add_attachment(txhashset.reader);
+						Ok(Some(resp))
+					} else {
+						Ok(None)
+					}
 				} else {
 					Ok(None)
 				}
@@ -482,6 +525,21 @@ impl MessageHandler for Protocol {
 			Type::Error | Type::Hand | Type::Shake => {
 				debug!("Received an unexpected msg: {:?}", msg.header.msg_type);
 				Ok(None)
+			}
+		}
+	}
+}
+
+// Util to check whether the peer protocol version is compatible with the block header version.
+fn is_compatible_node(h_version: HeaderVersion, p_version: ProtocolVersion) -> bool {
+	match h_version.value() {
+		0..=2 => true,
+		3..=HeaderVersion::MAX => {
+			// avoid sending HF2 blocks to nodes with old versions.
+			if p_version < ProtocolVersion(1000) {
+				false
+			} else {
+				true
 			}
 		}
 	}

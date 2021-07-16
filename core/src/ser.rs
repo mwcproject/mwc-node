@@ -99,6 +99,9 @@ pub enum Error {
 	/// Unsupported protocol version
 	#[fail(display = "unsupported protocol version, {}", _0)]
 	UnsupportedProtocolVersion(String),
+	/// Invalid switch commitment type
+	#[fail(display = "Invalid switch commitment type, {}", _0)]
+	InvalidSwitchType(u8),
 }
 
 impl From<io::Error> for Error {
@@ -829,6 +832,18 @@ impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable> Writeable for (A, B
 		Writeable::write(&self.1, writer)?;
 		Writeable::write(&self.2, writer)?;
 		Writeable::write(&self.3, writer)
+	}
+}
+
+impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable> Writeable
+	for (A, B, C, D, E)
+{
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		Writeable::write(&self.0, writer)?;
+		Writeable::write(&self.1, writer)?;
+		Writeable::write(&self.2, writer)?;
+		Writeable::write(&self.3, writer)?;
+		Writeable::write(&self.4, writer)
 	}
 }
 

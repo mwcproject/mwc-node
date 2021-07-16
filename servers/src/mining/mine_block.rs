@@ -18,6 +18,7 @@
 use chrono::prelude::{DateTime, NaiveDateTime, Utc};
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -25,9 +26,11 @@ use std::time::Duration;
 use crate::api;
 use crate::chain;
 use crate::common::types::Error;
-use crate::core::core::{Output, TxKernel};
+use crate::core::address::Address;
+use crate::core::core::hash::Hashed;
+use crate::core::core::{Output, TxImpl, TxKernel};
 use crate::core::libtx::secp_ser;
-use crate::core::libtx::ProofBuilder;
+use crate::core::libtx::{PaymentId, ProofBuilder};
 use crate::core::{consensus, core, global};
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
 use crate::{ServerTxPool, ServerVerifierCache};
@@ -73,6 +76,7 @@ pub fn get_block(
 	verifier_cache: ServerVerifierCache,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
+	mining_reward_address: Option<String>,
 ) -> (core::Block, BlockFees) {
 	let wallet_retry_interval = 5;
 	// get the latest chain state and build a block on top of it
@@ -82,6 +86,7 @@ pub fn get_block(
 		verifier_cache.clone(),
 		key_id.clone(),
 		wallet_listener_url.clone(),
+		mining_reward_address.clone(),
 	);
 	while let Err(e) = result {
 		let mut new_key_id = key_id.to_owned();
@@ -122,6 +127,7 @@ pub fn get_block(
 			verifier_cache.clone(),
 			new_key_id,
 			wallet_listener_url.clone(),
+			mining_reward_address.clone(),
 		);
 	}
 	return result.unwrap();
@@ -135,6 +141,7 @@ fn build_block(
 	verifier_cache: ServerVerifierCache,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
+	mining_reward_address: Option<String>,
 ) -> Result<(core::Block, BlockFees), Error> {
 	let head = chain.head_header()?;
 
@@ -153,15 +160,15 @@ fn build_block(
 	// If this fails for *any* reason then fallback to an empty vec of txs.
 	// This will allow us to mine an "empty" block if the txpool is in an
 	// invalid (and unexpected) state.
-	let txs = match tx_pool.read().prepare_mineable_transactions() {
-		Ok(txs) => txs,
+	let (txs, spending_rmp_sum) = match tx_pool.read().prepare_mineable_transactions() {
+		Ok((txs, spending_rmp_sum)) => (txs, spending_rmp_sum),
 		Err(e) => {
 			error!(
 				"build_block: Failed to prepare mineable txs from txpool: {:?}",
 				e
 			);
 			warn!("build_block: Falling back to mining empty block.");
-			vec![]
+			(vec![], None)
 		}
 	};
 
@@ -174,8 +181,34 @@ fn build_block(
 		height,
 	};
 
-	let (output, kernel, block_fees) = get_coinbase(wallet_listener_url, block_fees)?;
-	let mut b = core::Block::from_reward(&head, &txs, output, kernel, difficulty.difficulty)?;
+	let mut b = if height < consensus::get_nit_hard_fork_block_height() {
+		let (output, kernel, _block_fees) = get_coinbase(wallet_listener_url, block_fees.clone())?;
+		let block_sums = chain.get_block_sums(&head.hash())?;
+		core::Block::from_reward(
+			&head,
+			&txs,
+			Some(output),
+			None,
+			kernel,
+			difficulty.difficulty,
+			spending_rmp_sum,
+			Some(block_sums),
+		)?
+	} else {
+		let (output, kernel, _block_fees) =
+			get_nit_coinbase(mining_reward_address, block_fees.clone())?;
+		let block_sums = chain.get_block_sums(&head.hash())?;
+		core::Block::from_reward(
+			&head,
+			&txs,
+			None,
+			Some(output),
+			kernel,
+			difficulty.difficulty,
+			spending_rmp_sum,
+			Some(block_sums),
+		)?
+	};
 
 	// making sure we're not spending time mining a useless block
 	b.validate(&head.total_kernel_offset, verifier_cache)?;
@@ -238,6 +271,34 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 	Ok((out, kernel, block_fees))
 }
 
+///
+/// Probably only want to do this when testing.
+///
+fn burn_reward_nit(
+	block_fees: BlockFees,
+) -> Result<(core::OutputWithRnp, core::TxKernel, BlockFees), Error> {
+	warn!("Burning block fees: {:?}", block_fees);
+	let keychain = ExtKeychain::from_random_seed(global::is_floonet())?;
+	let builder = ProofBuilder::new(&keychain);
+
+	let (_pri_view, pub_view) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let recipient_addr = Address::from_one_pubkey(&pub_view, global::get_chain_type());
+	let payment_id = PaymentId::new();
+
+	let (pri_nonce, _pub_nonce) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let (out, kernel) = crate::core::libtx::reward::nit_output(
+		&keychain,
+		&builder,
+		pri_nonce,
+		recipient_addr,
+		payment_id,
+		block_fees.fees,
+		false,
+		block_fees.height,
+	)?;
+	Ok((out, kernel, block_fees))
+}
+
 // Connect to the wallet listener and get coinbase.
 // Warning: If a wallet listener URL is not provided the reward will be "burnt"
 fn get_coinbase(
@@ -255,11 +316,30 @@ fn get_coinbase(
 			let kernel = res.kernel;
 			let key_id = res.key_id;
 			let block_fees = BlockFees {
-				key_id: key_id,
+				key_id,
 				..block_fees
 			};
 
 			debug!("get_coinbase: {:?}", block_fees);
+			return Ok((output, kernel, block_fees));
+		}
+	}
+}
+
+// Get coinbase for HF2 (Non-Interactive Transaction).
+// Warning: If the mining reward address is not provided the reward will be "burnt"
+fn get_nit_coinbase(
+	mining_reward_address: Option<String>,
+	block_fees: BlockFees,
+) -> Result<(core::OutputWithRnp, core::TxKernel, BlockFees), Error> {
+	match mining_reward_address {
+		None => {
+			return burn_reward_nit(block_fees);
+		}
+		Some(mining_reward_address) => {
+			let (output, kernel, block_fees) =
+				create_nit_coinbase(&mining_reward_address, &block_fees)?;
+			debug!("get_nit_coinbase: {:?}", block_fees);
 			return Ok((output, kernel, block_fees));
 		}
 	}
@@ -315,4 +395,33 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 	};
 
 	Ok(ret_val)
+}
+
+/// Create a coinbase NIT output for the given block_fees.
+fn create_nit_coinbase(
+	mining_reward_address: &str,
+	block_fees: &BlockFees,
+) -> Result<(core::OutputWithRnp, core::TxKernel, BlockFees), Error> {
+	debug!(
+		"create_nit_coinbase: {:?} for wallet {}",
+		block_fees, mining_reward_address
+	);
+	let recipient_addr = Address::from_str(mining_reward_address)?;
+
+	let keychain = ExtKeychain::from_random_seed(global::is_floonet())?;
+	let builder = ProofBuilder::new(&keychain);
+	let payment_id = PaymentId::new();
+
+	let (pri_nonce, _pub_nonce) = keychain.secp().generate_keypair(&mut thread_rng()).unwrap();
+	let (out, kernel) = crate::core::libtx::reward::nit_output(
+		&keychain,
+		&builder,
+		pri_nonce,
+		recipient_addr,
+		payment_id,
+		block_fees.fees,
+		false,
+		block_fees.height,
+	)?;
+	Ok((out, kernel, block_fees.clone()))
 }

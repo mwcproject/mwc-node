@@ -15,16 +15,21 @@
 //! Transaction pool implementation.
 //! Used for both the txpool and stempool layers in the pool.
 
+use self::core::consensus;
+use self::core::core::committed;
 use self::core::core::hash::{Hash, Hashed};
 use self::core::core::id::{ShortId, ShortIdentifiable};
-use self::core::core::transaction;
 use self::core::core::verifier_cache::VerifierCache;
+use self::core::core::{transaction, versioned_transaction};
 use self::core::core::{
-	Block, BlockHeader, BlockSums, Committed, OutputIdentifier, Transaction, TxKernel, Weighting,
+	Block, BlockHeader, BlockSums, Commit, Committed, HeaderVersion, OutputIdentifier, OutputIds,
+	Transaction, TxImpl, TxKernel, VersionedTransaction, Weighting,
 };
+use self::util::secp::pedersen::Commitment;
 use self::util::RwLock;
 use crate::types::{BlockChain, PoolEntry, PoolError};
 use grin_core as core;
+use grin_core::consensus::get_nit_hard_fork_block_height;
 use grin_util as util;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -59,12 +64,12 @@ where
 
 	/// Does the transaction pool contain an entry for the given transaction?
 	/// Transactions are compared by their kernels.
-	pub fn contains_tx(&self, tx: &Transaction) -> bool {
+	pub fn contains_tx(&self, tx: &VersionedTransaction) -> bool {
 		self.entries.iter().any(|x| x.tx.kernels() == tx.kernels())
 	}
 
 	/// Query the tx pool for an individual tx matching the given kernel hash.
-	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Option<Transaction> {
+	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Option<VersionedTransaction> {
 		for x in &self.entries {
 			for k in x.tx.kernels() {
 				if k.hash() == hash {
@@ -84,7 +89,7 @@ where
 		hash: Hash,
 		nonce: u64,
 		kern_ids: &[ShortId],
-	) -> (Vec<Transaction>, Vec<ShortId>) {
+	) -> (Vec<VersionedTransaction>, Vec<ShortId>) {
 		let mut txs = vec![];
 		let mut found_ids = vec![];
 
@@ -120,7 +125,7 @@ where
 	pub fn prepare_mineable_transactions(
 		&self,
 		max_weight: u64,
-	) -> Result<Vec<Transaction>, PoolError> {
+	) -> Result<(Vec<VersionedTransaction>, Option<Commitment>), PoolError> {
 		let weighting = Weighting::AsLimitedTransaction(max_weight);
 
 		// Sort the txs in the pool via the "bucket" logic to -
@@ -134,11 +139,12 @@ where
 		// Verify these txs produce an aggregated tx below max_weight.
 		// Return a vec of all the valid txs.
 		let header = self.blockchain.chain_head()?;
-		let valid_txs = self.validate_raw_txs(&txs, None, &header, weighting)?;
-		Ok(valid_txs)
+		let (valid_txs, spending_rmp_sum) =
+			self.validate_raw_txs(txs.as_slice(), None, &header, weighting)?;
+		Ok((valid_txs, spending_rmp_sum))
 	}
 
-	pub fn all_transactions(&self) -> Vec<Transaction> {
+	pub fn all_transactions(&self) -> Vec<VersionedTransaction> {
 		self.entries.iter().map(|x| x.tx.clone()).collect()
 	}
 
@@ -148,8 +154,8 @@ where
 	/// Returns the extra tx if provided and pool is empty.
 	pub fn all_transactions_aggregate(
 		&self,
-		extra_tx: Option<Transaction>,
-	) -> Result<Option<Transaction>, PoolError> {
+		extra_tx: Option<VersionedTransaction>,
+	) -> Result<Option<VersionedTransaction>, PoolError> {
 		let mut txs = self.all_transactions();
 		if txs.is_empty() {
 			return Ok(extra_tx);
@@ -157,7 +163,7 @@ where
 
 		txs.extend(extra_tx);
 
-		let tx = transaction::aggregate(&txs)?;
+		let tx = versioned_transaction::aggregate(&txs)?;
 
 		// Validate the single aggregate transaction "as pool", not subject to tx weight limits.
 		tx.validate(Weighting::NoLimit, self.verifier_cache.clone())?;
@@ -171,7 +177,7 @@ where
 	pub fn add_to_pool(
 		&mut self,
 		entry: PoolEntry,
-		extra_tx: Option<Transaction>,
+		extra_tx: Option<VersionedTransaction>,
 		header: &BlockHeader,
 	) -> Result<(), PoolError> {
 		// Combine all the txs from the pool with any extra txs provided.
@@ -193,7 +199,7 @@ where
 			// Create a single aggregated tx from the existing pool txs and the
 			// new entry
 			txs.push(entry.tx.clone());
-			transaction::aggregate(&txs)?
+			versioned_transaction::aggregate(&txs)?
 		};
 
 		// Validate aggregated tx (existing pool + new tx), ignoring tx weight limits.
@@ -222,10 +228,10 @@ where
 
 	fn validate_raw_tx(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
 		header: &BlockHeader,
 		weighting: Weighting,
-	) -> Result<BlockSums, PoolError> {
+	) -> Result<(BlockSums, Option<Commitment>), PoolError> {
 		// Validate the tx, conditionally checking against weight limits,
 		// based on weight verification type.
 		tx.validate(weighting, self.verifier_cache.clone())?;
@@ -233,20 +239,28 @@ where
 		// Validate the tx against current chain state.
 		// Check all inputs are in the current UTXO set.
 		// Check all outputs are unique in current UTXO set.
-		self.blockchain.validate_tx(tx)?;
+		let spending_output_ids = self
+			.blockchain
+			.validate_tx(tx)?
+			.iter()
+			.map(|(id, _pos)| *id)
+			.collect::<Vec<OutputIds>>();
 
-		let new_sums = self.apply_tx_to_block_sums(tx, header)?;
-		Ok(new_sums)
+		let (new_sums, spending_rmp_sum) =
+			self.apply_tx_to_block_sums(tx, header, spending_output_ids)?;
+
+		Ok((new_sums, spending_rmp_sum))
 	}
 
 	pub fn validate_raw_txs(
 		&self,
-		txs: &[Transaction],
-		extra_tx: Option<Transaction>,
+		txs: &[VersionedTransaction],
+		extra_tx: Option<VersionedTransaction>,
 		header: &BlockHeader,
 		weighting: Weighting,
-	) -> Result<Vec<Transaction>, PoolError> {
+	) -> Result<(Vec<VersionedTransaction>, Option<Commitment>), PoolError> {
 		let mut valid_txs = vec![];
+		let mut spending_rmp_sums: Vec<Commitment> = vec![];
 
 		for tx in txs {
 			let mut candidate_txs = vec![];
@@ -257,72 +271,129 @@ where
 			candidate_txs.push(tx.clone());
 
 			// Build a single aggregate tx from candidate txs.
-			let agg_tx = transaction::aggregate(&candidate_txs)?;
+			let agg_tx = versioned_transaction::aggregate(&candidate_txs)?;
 
 			// We know the tx is valid if the entire aggregate tx is valid.
-			if self.validate_raw_tx(&agg_tx, header, weighting).is_ok() {
+			let res = self.validate_raw_tx(&agg_tx, header, weighting);
+			if let Ok((_new_sums, spending_rmp_sum)) = res {
 				valid_txs.push(tx.clone());
+				if let Some(rmp) = spending_rmp_sum {
+					spending_rmp_sums.push(rmp);
+				}
 			}
 		}
 
-		Ok(valid_txs)
+		if spending_rmp_sums.len() > 0 {
+			let spending_rmp_sum = committed::sum_commits(spending_rmp_sums, vec![])?;
+			Ok((valid_txs, Some(spending_rmp_sum)))
+		} else {
+			Ok((valid_txs, None))
+		}
 	}
 
 	/// Lookup unspent outputs to be spent by the provided transaction.
 	/// We look for unspent outputs in the current txpool and then in the current utxo.
 	pub fn locate_spends(
 		&self,
-		tx: &Transaction,
-		extra_tx: Option<Transaction>,
+		tx: &VersionedTransaction,
+		extra_tx: Option<VersionedTransaction>,
 	) -> Result<(Vec<OutputIdentifier>, Vec<OutputIdentifier>), PoolError> {
-		let mut inputs: Vec<_> = tx.inputs().into();
-
 		let agg_tx = self
 			.all_transactions_aggregate(extra_tx)?
-			.unwrap_or(Transaction::empty());
+			.unwrap_or(VersionedTransaction::from(Transaction::empty()));
+
 		let mut outputs: Vec<OutputIdentifier> = agg_tx
 			.outputs()
 			.iter()
 			.map(|out| out.identifier())
 			.collect();
 
+		let header = self.blockchain.chain_head()?;
+		let mut inputs: Vec<_> = tx.inputs().into();
+
 		// By applying cut_through to tx inputs and agg_tx outputs we can
 		// determine the outputs being spent from the pool and those still unspent
 		// that need to be looked up via the current utxo.
-		let (spent_utxo, _, _, spent_pool) =
+		let (spent_utxo, outputs, _, spent_pool) =
 			transaction::cut_through(&mut inputs[..], &mut outputs[..])?;
 
 		// Lookup remaining outputs to be spent from the current utxo.
-		let spent_utxo = self.blockchain.validate_inputs(&spent_utxo.into())?;
+		let mut spent_utxo = self.blockchain.validate_inputs(&spent_utxo.into())?;
 
+		if header.height > get_nit_hard_fork_block_height() {
+			// Note: No more cut-through in the pool since the NIT hardfork, but 0-conf transaction is still feasible.
+			let mut outputs = outputs.to_vec();
+			if let Some(outputs_with_rnp) = agg_tx.outputs_with_rnp() {
+				outputs.extend(
+					outputs_with_rnp
+						.iter()
+						.map(|out| out.identifier())
+						.collect::<Vec<OutputIdentifier>>(),
+				);
+			}
+			if let Some(inputs) = tx.inputs_with_sig() {
+				let mut inputs: Vec<_> = inputs.into();
+				let (spent_nit_utxo, _, _, spent_nit_pool) =
+					transaction::cut_through(&mut inputs[..], &mut outputs[..])?;
+				let spent_nit_utxo = self
+					.blockchain
+					.validate_inputs_with_sig(&spent_nit_utxo.into(), self.verifier_cache.clone())?
+					.iter()
+					.map(|i| i.identifier())
+					.collect::<Vec<_>>();
+				spent_utxo.extend(spent_nit_utxo);
+				spent_pool.to_vec().extend(spent_nit_pool);
+			}
+		}
 		Ok((spent_pool.to_vec(), spent_utxo))
 	}
 
 	fn apply_tx_to_block_sums(
 		&self,
-		tx: &Transaction,
+		tx: &VersionedTransaction,
 		header: &BlockHeader,
-	) -> Result<BlockSums, PoolError> {
+		spending_output_ids: Vec<OutputIds>,
+	) -> Result<(BlockSums, Option<Commitment>), PoolError> {
 		let overage = tx.overage();
 
-		let offset = header.total_kernel_offset().add(&tx.offset)?;
+		let offset = header.total_kernel_offset().add(tx.offset())?;
 
 		let block_sums = self.blockchain.get_block_sums(&header.hash())?;
 
 		// Verify the kernel sums for the block_sums with the new tx applied,
 		// accounting for overage and offset.
-		let (utxo_sum, kernel_sum) =
-			(block_sums, tx as &dyn Committed).verify_kernel_sums(overage, offset)?;
+		let (utxo_sum, kernel_sum) = (block_sums.clone(), tx as &dyn Committed)
+			.verify_kernel_sums(overage, offset.clone())?;
 
-		Ok(BlockSums {
-			utxo_sum,
-			kernel_sum,
-		})
+		if header.height < consensus::get_nit_hard_fork_block_height()
+			|| header.version < HeaderVersion(3)
+		{
+			Ok((
+				BlockSums {
+					utxo_sum,
+					kernel_sum,
+					rmp_sum: None,
+				},
+				None,
+			))
+		} else {
+			let (rmp_sum, spending_rmp_sum) = (block_sums, tx as &dyn Committed)
+				.verify_kernel_sums_eqn2(offset, kernel_sum, None, &spending_output_ids)?;
+
+			Ok((
+				BlockSums {
+					utxo_sum,
+					kernel_sum,
+					rmp_sum: Some(rmp_sum),
+				},
+				spending_rmp_sum,
+			))
+		}
 	}
 
 	pub fn reconcile(
 		&mut self,
-		extra_tx: Option<Transaction>,
+		extra_tx: Option<VersionedTransaction>,
 		header: &BlockHeader,
 	) -> Result<(), PoolError> {
 		let existing_entries = self.entries.clone();
@@ -349,7 +420,7 @@ where
 	/// containing the tx it depends on.
 	/// Sorting the buckets by fee_to_weight will therefore preserve dependency ordering,
 	/// maximizing both cut-through and overall fees.
-	fn bucket_transactions(&self, weighting: Weighting) -> Vec<Transaction> {
+	fn bucket_transactions(&self, weighting: Weighting) -> Vec<VersionedTransaction> {
 		let mut tx_buckets: Vec<Bucket> = Vec::new();
 		let mut output_commits = HashMap::new();
 		let mut rejected = HashSet::new();
@@ -361,13 +432,12 @@ where
 			let mut insert_pos = None;
 			let mut is_rejected = false;
 
-			let tx_inputs: Vec<_> = entry.tx.inputs().into();
-			for input in tx_inputs {
-				if rejected.contains(&input.commitment()) {
+			for input in entry.tx.inputs_committed() {
+				if rejected.contains(&input) {
 					// Depends on a rejected tx, so reject this one.
 					is_rejected = true;
 					continue;
-				} else if let Some(pos) = output_commits.get(&input.commitment()) {
+				} else if let Some(pos) = output_commits.get(&input) {
 					if insert_pos.is_some() {
 						// Multiple dependencies so reject this tx (pick it up in next block).
 						is_rejected = true;
@@ -381,8 +451,8 @@ where
 
 			// If this tx is rejected then store all output commitments in our rejected set.
 			if is_rejected {
-				for out in entry.tx.outputs() {
-					rejected.insert(out.commitment());
+				for out in entry.tx.outputs_committed() {
+					rejected.insert(out);
 				}
 
 				// Done with this entry (rejected), continue to next entry.
@@ -447,7 +517,7 @@ where
 	}
 
 	/// TODO - This is kernel based. How does this interact with NRD?
-	pub fn find_matching_transactions(&self, kernels: &[TxKernel]) -> Vec<Transaction> {
+	pub fn find_matching_transactions(&self, kernels: &[TxKernel]) -> Vec<VersionedTransaction> {
 		// While the inputs outputs can be cut-through the kernel will stay intact
 		// In order to deaggregate tx we look for tx with the same kernel
 		let mut found_txs = vec![];
@@ -498,7 +568,7 @@ where
 }
 
 struct Bucket {
-	raw_txs: Vec<Transaction>,
+	raw_txs: Vec<VersionedTransaction>,
 	fee_to_weight: u64,
 	age_idx: usize,
 }
@@ -506,9 +576,9 @@ struct Bucket {
 impl Bucket {
 	/// Construct a new bucket with the given tx.
 	/// also specifies an "age_idx" so we can sort buckets by age
-	/// as well as fee_to_weight. Txs are maintainedin the pool in insert order
+	/// as well as fee_to_weight. Txs are maintained in the pool in insert order
 	/// so buckets with low age_idx contain oldest txs.
-	fn new(tx: Transaction, age_idx: usize) -> Bucket {
+	fn new(tx: VersionedTransaction, age_idx: usize) -> Bucket {
 		Bucket {
 			fee_to_weight: tx.fee_to_weight(),
 			raw_txs: vec![tx],
@@ -518,17 +588,17 @@ impl Bucket {
 
 	fn aggregate_with_tx(
 		&self,
-		new_tx: Transaction,
+		new_tx: VersionedTransaction,
 		weighting: Weighting,
 		verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 	) -> Result<Bucket, PoolError> {
 		let mut raw_txs = self.raw_txs.clone();
 		raw_txs.push(new_tx);
-		let agg_tx = transaction::aggregate(&raw_txs)?;
+		let agg_tx = versioned_transaction::aggregate(&raw_txs)?;
 		agg_tx.validate(weighting, verifier_cache)?;
 		Ok(Bucket {
 			fee_to_weight: agg_tx.fee_to_weight(),
-			raw_txs: raw_txs,
+			raw_txs,
 			age_idx: self.age_idx,
 		})
 	}

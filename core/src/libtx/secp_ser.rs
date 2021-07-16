@@ -247,6 +247,38 @@ where
 		.and_then(|bytes: Vec<u8>| Ok(Commitment::from_vec(bytes.to_vec())))
 }
 
+struct ExpectedString(pub String);
+impl serde::de::Expected for ExpectedString {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+		write!(f, "{}", self.0)
+	}
+}
+
+/// Creates a [u8; 32] from a hex string
+pub fn u8_32_from_hex<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+where
+	D: Deserializer<'de>,
+{
+	use serde::de::Error;
+	String::deserialize(deserializer)
+		.and_then(|string| {
+			from_hex(&string).map_err(|err| {
+				Error::custom(format!("Fail to parse [u8; 32] HEX {}, {}", string, err))
+			})
+		})
+		.and_then(|bytes: Vec<u8>| {
+			let mut ret = [0u8; 32];
+			match bytes.len() {
+				32 => ret[..].copy_from_slice(&bytes),
+				_ => Err(serde::de::Error::invalid_length(
+					bytes.len(),
+					&ExpectedString("a 32-byte hex string".to_owned()),
+				))?,
+			}
+			Ok(ret)
+		})
+}
+
 /// Seralizes a byte string into hex
 pub fn as_hex<T, S>(bytes: T, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -254,6 +286,23 @@ where
 	S: Serializer,
 {
 	serializer.serialize_str(&bytes.to_hex())
+}
+
+/// Seralizes a byte string into hex with "..." in the middle
+pub fn as_trim_hex<T, S>(bytes: T, serializer: S) -> Result<S::Ok, S::Error>
+where
+	T: AsRef<[u8]>,
+	S: Serializer,
+{
+	let bytes_ref = bytes.as_ref();
+	let size = bytes_ref.len();
+	if size > 32 {
+		let prefix = bytes_ref[0..16].to_vec().to_hex();
+		let suffix = bytes_ref[size - 16..].to_vec().to_hex();
+		serializer.serialize_str(format!("{}...{} [{}]", prefix, suffix, size).as_str())
+	} else {
+		serializer.serialize_str(&bytes.to_hex())
+	}
 }
 
 /// Used to ensure u64s are serialised in json

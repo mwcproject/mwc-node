@@ -57,7 +57,7 @@ fn test_nrd_kernels_disabled() {
 	// Spend the initial coinbase.
 	let header_1 = chain.get_header_by_height(1).unwrap();
 	let tx = test_transaction_spending_coinbase(&keychain, &header_1, vec![10, 20, 30, 40]);
-	add_block(&chain, &[tx], &keychain);
+	add_block(&chain, &[tx.ver()], &keychain);
 
 	let tx_1 = test_transaction_with_kernel_features(
 		&keychain,
@@ -73,7 +73,7 @@ fn test_nrd_kernels_disabled() {
 	assert!(header.version < HeaderVersion(4));
 
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),
+		pool.add_to_pool(test_source(), tx_1.clone().ver(), false, &header),
 		Err(PoolError::NRDKernelNotEnabled)
 	);
 
@@ -85,12 +85,12 @@ fn test_nrd_kernels_disabled() {
 
 	// NRD kernel support not enabled via feature flag, so not valid.
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),
+		pool.add_to_pool(test_source(), tx_1.clone().ver(), false, &header),
 		Err(PoolError::NRDKernelNotEnabled)
 	);
 
 	assert_eq!(pool.total_size(), 0);
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions().unwrap();
 	assert_eq!(txs.len(), 0);
 
 	// Cleanup db directory

@@ -15,10 +15,12 @@
 //! Transaction integration tests
 
 pub mod common;
-use crate::common::tx1i10_v2_compatible;
+use crate::common::{tx1i10_v2_compatible, tx1i1o};
 use crate::core::core::transaction::{self, Error};
 use crate::core::core::verifier_cache::LruVerifierCache;
-use crate::core::core::{KernelFeatures, Output, OutputFeatures, Transaction, Weighting};
+use crate::core::core::{
+	Commit, KernelFeatures, Output, OutputFeatures, Transaction, TxImpl, Weighting,
+};
 use crate::core::global;
 use crate::core::libtx::build;
 use crate::core::libtx::proof::{self, ProofBuilder};
@@ -27,6 +29,42 @@ use grin_core as core;
 use keychain::{ExtKeychain, Keychain};
 use std::sync::Arc;
 use util::RwLock;
+
+// Test all used transaction versions.
+// So far, 4 versions have been used:
+//   v2: transaction input is a format with {feature, commit}; transaction kernels changed in v2 due to “variable size kernels”.
+//   v3: transaction input changed in v3 due to “commit only” inputs upgrading.
+//   v4: NIT(Non-Interactive Transaction).
+#[test]
+fn test_transaction_versions() {
+	let v2_tx = tx1i10_v2_compatible();
+	println!(
+		"a transaction in v2: {}",
+		serde_json::to_string_pretty(&v2_tx).unwrap()
+	);
+	println!();
+	let value = serde_json::to_value(&v2_tx).unwrap();
+	assert_eq!(value["body"]["inputs"][0]["features"], "Plain");
+	assert!(value["body"]["inputs"][0]["commit"].is_string());
+
+	let v3_tx = tx1i1o();
+	println!(
+		"a transaction in v3: {}",
+		serde_json::to_string_pretty(&v3_tx).unwrap()
+	);
+	println!();
+	let value = serde_json::to_value(&v3_tx).unwrap();
+	assert!(value["body"]["inputs"][0].is_string());
+
+	let v4_tx = tx1i1o().ver();
+	println!(
+		"a v3 transaction encapsulated as v4 compatible: {}",
+		serde_json::to_string_pretty(&v4_tx).unwrap()
+	);
+	println!();
+	let value = serde_json::to_value(&v4_tx).unwrap();
+	assert!(value["V3"]["body"]["inputs"][0].is_string());
+}
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.

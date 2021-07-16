@@ -134,7 +134,7 @@ impl TxHashSetHandler {
 			.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
 		let commit = Commitment::from_vec(c);
 		let chain = w(&self.chain)?;
-		let output_pos = chain.get_output_pos(&commit).map_err(|e| {
+		let (output_feature, output_pos) = chain.get_output_pos(&commit).map_err(|e| {
 			ErrorKind::NotFound(format!(
 				"Unable to get a MMR position for commit {}, {}",
 				id, e
@@ -147,7 +147,10 @@ impl TxHashSetHandler {
 			))
 		})?;
 		Ok(OutputPrintable {
-			output_type: OutputType::Coinbase,
+			output_type: match output_feature {
+				OutputFeatures::Coinbase => OutputType::Coinbase,
+				_ => OutputType::Transaction,
+			},
 			commit: Commitment::from_vec(vec![]),
 			spent: false,
 			proof: None,

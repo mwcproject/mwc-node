@@ -16,11 +16,11 @@
 
 use crate::core::consensus::HeaderInfo;
 use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::{Block, BlockHeader, BlockSums};
+use crate::core::core::{Block, BlockHeader, BlockSums, OutputFeatures};
 use crate::core::pow::Difficulty;
-use crate::core::ser::ProtocolVersion;
+use crate::core::{ser::ProtocolVersion, CommitPos, CommitPosHt};
 use crate::linked_list::MultiIndex;
-use crate::types::{CommitPos, Tip};
+use crate::types::Tip;
 use crate::util::secp::pedersen::Commitment;
 use croaring::Bitmap;
 use grin_store as store;
@@ -35,14 +35,16 @@ const BLOCK_PREFIX: u8 = b'b';
 const HEAD_PREFIX: u8 = b'H';
 const TAIL_PREFIX: u8 = b'T';
 const HEADER_HEAD_PREFIX: u8 = b'G';
+/// This prefix can be and can ONLY be removed when all nodes has been upgraded to v6.0 or higher version
 const OUTPUT_POS_PREFIX: u8 = b'p';
+/// Do not remove above one even the following one is replacing it since v6.0
+const COMMIT_POS_PREFIX: u8 = b'P';
 
 /// Prefix for NRD kernel pos index lists.
 pub const NRD_KERNEL_LIST_PREFIX: u8 = b'K';
 /// Prefix for NRD kernel pos index entries.
 pub const NRD_KERNEL_ENTRY_PREFIX: u8 = b'k';
 
-const BLOCK_INPUT_BITMAP_PREFIX: u8 = b'B';
 const BLOCK_SUMS_PREFIX: u8 = b'M';
 const BLOCK_SPENT_PREFIX: u8 = b'S';
 
@@ -123,9 +125,9 @@ impl ChainStore {
 	}
 
 	/// Get PMMR pos for the given output commitment.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<(OutputFeatures, u64), Error> {
 		match self.get_output_pos_height(commit)? {
-			Some(pos) => Ok(pos.pos),
+			Some(pos) => Ok((pos.features, pos.pos)),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
 				commit
@@ -135,7 +137,7 @@ impl ChainStore {
 
 	/// Get PMMR pos and block height for the given output commitment.
 	pub fn get_output_pos_height(&self, commit: &Commitment) -> Result<Option<CommitPos>, Error> {
-		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit))
+		self.db.get_ser(&to_key(COMMIT_POS_PREFIX, commit))
 	}
 
 	/// Builds a new batch to be used with this store.
@@ -267,32 +269,32 @@ impl<'a> Batch<'a> {
 	/// Save output_pos and block height to index.
 	pub fn save_output_pos_height(&self, commit: &Commitment, pos: CommitPos) -> Result<(), Error> {
 		self.db
-			.put_ser(&to_key(OUTPUT_POS_PREFIX, commit)[..], &pos)
+			.put_ser(&to_key(COMMIT_POS_PREFIX, commit)[..], &pos)
 	}
 
 	/// Delete the output_pos index entry for a spent output.
 	pub fn delete_output_pos_height(&self, commit: &Commitment) -> Result<(), Error> {
-		self.db.delete(&to_key(OUTPUT_POS_PREFIX, commit))
+		self.db.delete(&to_key(COMMIT_POS_PREFIX, commit))
 	}
 
 	/// When using the output_pos iterator we have access to the index keys but not the
 	/// original commitment that the key is constructed from. So we need a way of comparing
 	/// a key with another commitment without reconstructing the commitment from the key bytes.
 	pub fn is_match_output_pos_key(&self, key: &[u8], commit: &Commitment) -> bool {
-		let commit_key = to_key(OUTPUT_POS_PREFIX, commit);
+		let commit_key = to_key(COMMIT_POS_PREFIX, commit);
 		commit_key == key
 	}
 
 	/// Iterator over the output_pos index.
-	pub fn output_pos_iter(&self) -> Result<SerIterator<(u64, u64)>, Error> {
-		let key = to_key(OUTPUT_POS_PREFIX, "");
+	pub fn output_pos_iter(&self) -> Result<SerIterator<CommitPos>, Error> {
+		let key = to_key(COMMIT_POS_PREFIX, "");
 		self.db.iter(&key)
 	}
 
 	/// Get output_pos from index.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
+	pub fn get_output_pos(&self, commit: &Commitment) -> Result<CommitPos, Error> {
 		match self.get_output_pos_height(commit)? {
-			Some(pos) => Ok(pos.pos),
+			Some(pos) => Ok(pos),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
 				commit
@@ -302,7 +304,16 @@ impl<'a> Batch<'a> {
 
 	/// Get output_pos and block height from index.
 	pub fn get_output_pos_height(&self, commit: &Commitment) -> Result<Option<CommitPos>, Error> {
-		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit))
+		self.db.get_ser(&to_key(COMMIT_POS_PREFIX, commit))
+	}
+
+	/// Clear all entries from the (output_pos, height) index.
+	pub fn clear_output_pos_index(&self) -> Result<(), Error> {
+		let key = to_key(OUTPUT_POS_PREFIX, &mut "".to_string().into_bytes());
+		for (k, _) in self.db.iter::<(u64, u64)>(&key)? {
+			self.db.delete(&k)?;
+		}
+		Ok(())
 	}
 
 	/// Get the previous header.
@@ -319,9 +330,6 @@ impl<'a> Batch<'a> {
 
 	/// Delete the block spent index.
 	fn delete_spent_index(&self, bh: &Hash) -> Result<(), Error> {
-		// Clean up the legacy input bitmap as well.
-		let _ = self.db.delete(&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh));
-
 		self.db.delete(&to_key(BLOCK_SPENT_PREFIX, bh))
 	}
 
@@ -343,25 +351,21 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Get the block input bitmap based on our spent index.
-	/// Fallback to legacy block input bitmap from the db.
-	pub fn get_block_input_bitmap(&self, bh: &Hash) -> Result<Bitmap, Error> {
-		if let Ok(spent) = self.get_spent_index(bh) {
-			let bitmap = spent
-				.into_iter()
-				.map(|x| x.pos.try_into().unwrap())
-				.collect();
-			Ok(bitmap)
-		} else {
-			self.get_legacy_input_bitmap(bh)
-		}
-	}
+	pub fn get_block_input_bitmap(&self, bh: &Hash) -> Result<(Bitmap, Bitmap), Error> {
+		let p = self.get_spent_index(bh)?;
+		let bitmap = p
+			.clone()
+			.into_iter()
+			.filter(|x| x.features != OutputFeatures::PlainWrnp)
+			.map(|x| x.pos.try_into().unwrap())
+			.collect();
 
-	fn get_legacy_input_bitmap(&self, bh: &Hash) -> Result<Bitmap, Error> {
-		option_to_not_found(
-			self.db
-				.get_with(&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh), Bitmap::deserialize),
-			|| "legacy block input bitmap".to_string(),
-		)
+		let bitmap_wrnp = p
+			.into_iter()
+			.filter(|x| x.features == OutputFeatures::PlainWrnp)
+			.map(|x| x.pos.try_into().unwrap())
+			.collect();
+		Ok((bitmap, bitmap_wrnp))
 	}
 
 	/// Get the "spent index" from the db for the specified block.
@@ -488,6 +492,6 @@ impl<'a> Iterator for DifficultyIter<'a> {
 /// Init the NRD "recent history" kernel index backed by the underlying db.
 /// List index supports multiple entries per key, maintaining insertion order.
 /// Allows for fast lookup of the most recent entry per excess commitment.
-pub fn nrd_recent_kernel_index() -> MultiIndex<CommitPos> {
+pub fn nrd_recent_kernel_index() -> MultiIndex<CommitPosHt> {
 	MultiIndex::init(NRD_KERNEL_LIST_PREFIX, NRD_KERNEL_ENTRY_PREFIX)
 }

@@ -102,6 +102,17 @@ impl TUIStatusView {
 					k_percent
 				))
 			}
+			SyncStatus::TxHashsetRsigsValidation { rsigs, rsigs_total } => {
+				let r_percent = if rsigs_total > 0 {
+					(rsigs * 100) / rsigs_total
+				} else {
+					0
+				};
+				Cow::Owned(format!(
+					"Sync step 5/7: Validating chain state - output R Signatures: {}%",
+					r_percent
+				))
+			}
 			SyncStatus::TxHashsetSave => {
 				Cow::Borrowed("Sync step 6/7: Finalizing chain state for state sync")
 			}

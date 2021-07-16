@@ -20,9 +20,10 @@ use crate::core::core::hash::Hashed;
 use crate::core::core::id::ShortIdentifiable;
 use crate::core::core::transaction::{
 	self, KernelFeatures, NRDRelativeHeight, Output, OutputFeatures, OutputIdentifier, Transaction,
+	TxImpl,
 };
 use crate::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
-use crate::core::core::{Committed, CompactBlock};
+use crate::core::core::{Commit, Committed, CompactBlock};
 use crate::core::libtx::build::{self, input, output};
 use crate::core::libtx::ProofBuilder;
 use crate::core::{global, pow, ser};

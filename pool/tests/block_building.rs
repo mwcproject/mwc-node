@@ -16,6 +16,7 @@ pub mod common;
 
 use self::core::core::hash::Hashed;
 use self::core::core::verifier_cache::LruVerifierCache;
+use self::core::core::TxImpl;
 use self::core::global;
 use self::keychain::{ExtKeychain, Keychain};
 use self::pool::PoolError;
@@ -57,7 +58,7 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 	let initial_tx = test_transaction_spending_coinbase(&keychain, &header_1, vec![10, 20, 30, 40]);
 
 	// Mine that initial tx so we can spend it with multiple txs.
-	add_block(&chain, &[initial_tx], &keychain);
+	add_block(&chain, &[initial_tx.ver()], &keychain);
 
 	let header = chain.head_header().unwrap();
 
@@ -70,18 +71,18 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 
 	{
 		// Add the three root txs to the pool.
-		pool.add_to_pool(test_source(), root_tx_1.clone(), false, &header)?;
-		pool.add_to_pool(test_source(), root_tx_2.clone(), false, &header)?;
-		pool.add_to_pool(test_source(), root_tx_3.clone(), false, &header)?;
+		pool.add_to_pool(test_source(), root_tx_1.clone().ver(), false, &header)?;
+		pool.add_to_pool(test_source(), root_tx_2.clone().ver(), false, &header)?;
+		pool.add_to_pool(test_source(), root_tx_3.clone().ver(), false, &header)?;
 
 		// Now add the two child txs to the pool.
-		pool.add_to_pool(test_source(), child_tx_1.clone(), false, &header)?;
-		pool.add_to_pool(test_source(), child_tx_2.clone(), false, &header)?;
+		pool.add_to_pool(test_source(), child_tx_1.clone().ver(), false, &header)?;
+		pool.add_to_pool(test_source(), child_tx_2.clone().ver(), false, &header)?;
 
 		assert_eq!(pool.total_size(), 5);
 	}
 
-	let txs = pool.prepare_mineable_transactions()?;
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions()?;
 
 	add_block(&chain, &txs, &keychain);
 

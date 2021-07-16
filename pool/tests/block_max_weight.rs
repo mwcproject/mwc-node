@@ -17,6 +17,7 @@
 pub mod common;
 use self::core::core::hash::Hashed;
 use self::core::core::verifier_cache::LruVerifierCache;
+use self::core::core::TxImpl;
 use self::core::global;
 use self::keychain::{ExtKeychain, Keychain};
 use self::util::RwLock;
@@ -58,7 +59,7 @@ fn test_block_building_max_weight() {
 		test_transaction_spending_coinbase(&keychain, &header_1, vec![100, 200, 300, 1000]);
 
 	// Mine that initial tx so we can spend it with multiple txs.
-	add_block(&chain, &[initial_tx], &keychain);
+	add_block(&chain, &[initial_tx.ver()], &keychain);
 
 	let header = chain.head_header().unwrap();
 
@@ -89,15 +90,16 @@ fn test_block_building_max_weight() {
 
 	// Populate our txpool with the txs.
 	for tx in txs {
-		pool.add_to_pool(test_source(), tx, false, &header).unwrap();
+		pool.add_to_pool(test_source(), tx.ver(), false, &header)
+			.unwrap();
 	}
 
 	// Check we added them all to the txpool successfully.
 	assert_eq!(pool.total_size(), 6);
 
-	// // Prepare some "mineable" txs from the txpool.
-	// // Note: We cannot fit all the txs from the txpool into a block.
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	// Prepare some "mineable" txs from the txpool.
+	// Note: We cannot fit all the txs from the txpool into a block.
+	let (txs, _spending_rmp_sum) = pool.prepare_mineable_transactions().unwrap();
 
 	// Fees and weights of the "mineable" txs.
 	assert_eq!(

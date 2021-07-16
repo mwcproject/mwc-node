@@ -15,7 +15,7 @@
 use self::chain::types::NoopAdapter;
 use self::chain::ErrorKind;
 use self::core::core::verifier_cache::LruVerifierCache;
-use self::core::core::KernelFeatures;
+use self::core::core::{KernelFeatures, TxImpl};
 use self::core::global::{self, ChainTypes};
 use self::core::libtx::{self, build, ProofBuilder};
 use self::core::pow::Difficulty;
@@ -110,7 +110,7 @@ fn test_coinbase_maturity() {
 		)
 		.unwrap();
 
-		let txs = &[coinbase_txn.clone()];
+		let txs = &[coinbase_txn.clone().ver()];
 		let fees = txs.iter().map(|tx| tx.fee()).sum();
 		let reward = libtx::reward::output(&keychain, &builder, &key_id3, fees, false, 1).unwrap();
 		let mut block = core::core::Block::new(&prev, txs, Difficulty::min(), reward).unwrap();
@@ -192,7 +192,7 @@ fn test_coinbase_maturity() {
 			)
 			.unwrap();
 
-			let txs = &[coinbase_txn.clone()];
+			let txs = &[coinbase_txn.clone().ver()];
 			let fees = txs.iter().map(|tx| tx.fee()).sum();
 			let reward =
 				libtx::reward::output(&keychain, &builder, &key_id3, fees, false, 1).unwrap();
@@ -259,7 +259,7 @@ fn test_coinbase_maturity() {
 				.verify_coinbase_maturity(&coinbase_txn.inputs())
 				.unwrap();
 
-			let txs = &[coinbase_txn];
+			let txs = &[coinbase_txn.ver()];
 			let fees = txs.iter().map(|tx| tx.fee()).sum();
 			let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
 			let reward =

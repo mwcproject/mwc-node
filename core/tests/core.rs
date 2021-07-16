@@ -20,9 +20,10 @@ use self::core::core::block::BlockHeader;
 use self::core::core::block::Error::KernelLockHeight;
 use self::core::core::hash::{Hashed, ZERO_HASH};
 use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
+use self::core::core::versioned_transaction::{aggregate, deaggregate};
 use self::core::core::{
-	aggregate, deaggregate, KernelFeatures, Output, OutputFeatures, OutputIdentifier, Transaction,
-	TxKernel, Weighting,
+	KernelFeatures, Output, OutputFeatures, OutputIdentifier, Transaction, TxImpl, TxKernel,
+	Weighting,
 };
 use self::core::libtx::build::{self, initial_tx, input, output, with_excess};
 use self::core::libtx::{aggsig, ProofBuilder};
@@ -266,7 +267,7 @@ fn transaction_cut_through() {
 	let vc = verifier_cache();
 
 	// now build a "cut_through" tx from tx1 and tx2
-	let tx3 = aggregate(&[tx1, tx2]).unwrap();
+	let tx3 = aggregate(&[tx1.ver(), tx2.ver()]).unwrap();
 
 	assert!(tx3.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 }
@@ -287,9 +288,15 @@ fn multi_kernel_transaction_deaggregation() {
 	assert!(tx3.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 	assert!(tx4.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
-	let tx1234 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone(), tx4.clone()]).unwrap();
-	let tx12 = aggregate(&[tx1, tx2]).unwrap();
-	let tx34 = aggregate(&[tx3, tx4]).unwrap();
+	let tx1234 = aggregate(&[
+		tx1.clone().ver(),
+		tx2.clone().ver(),
+		tx3.clone().ver(),
+		tx4.clone().ver(),
+	])
+	.unwrap();
+	let tx12 = aggregate(&[tx1.ver(), tx2.ver()]).unwrap();
+	let tx34 = aggregate(&[tx3.ver(), tx4.ver()]).unwrap();
 
 	assert!(tx1234
 		.validate(Weighting::AsTransaction, vc.clone())
@@ -324,8 +331,8 @@ fn multi_kernel_transaction_deaggregation_2() {
 	assert!(tx2.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 	assert!(tx3.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
-	let tx123 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone()]).unwrap();
-	let tx12 = aggregate(&[tx1, tx2]).unwrap();
+	let tx123 = aggregate(&[tx1.clone().ver(), tx2.clone().ver(), tx3.clone().ver()]).unwrap();
+	let tx12 = aggregate(&[tx1.ver(), tx2.ver()]).unwrap();
 
 	assert!(tx123.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 	assert!(tx12.validate(Weighting::AsTransaction, vc.clone()).is_ok());
@@ -334,7 +341,7 @@ fn multi_kernel_transaction_deaggregation_2() {
 	assert!(deaggregated_tx3
 		.validate(Weighting::AsTransaction, vc.clone())
 		.is_ok());
-	assert_eq!(tx3, deaggregated_tx3);
+	assert_eq!(tx3.ver(), deaggregated_tx3);
 }
 
 #[test]
@@ -350,9 +357,9 @@ fn multi_kernel_transaction_deaggregation_3() {
 	assert!(tx2.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 	assert!(tx3.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
-	let tx123 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone()]).unwrap();
-	let tx13 = aggregate(&[tx1, tx3]).unwrap();
-	let tx2 = aggregate(&[tx2]).unwrap();
+	let tx123 = aggregate(&[tx1.clone().ver(), tx2.clone().ver(), tx3.clone().ver()]).unwrap();
+	let tx13 = aggregate(&[tx1.ver(), tx3.ver()]).unwrap();
+	let tx2 = aggregate(&[tx2.ver()]).unwrap();
 
 	assert!(tx123.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 	assert!(tx2.validate(Weighting::AsTransaction, vc.clone()).is_ok());
@@ -382,22 +389,23 @@ fn multi_kernel_transaction_deaggregation_4() {
 	assert!(tx5.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
 	let tx12345 = aggregate(&[
-		tx1.clone(),
-		tx2.clone(),
-		tx3.clone(),
-		tx4.clone(),
-		tx5.clone(),
+		tx1.clone().ver(),
+		tx2.clone().ver(),
+		tx3.clone().ver(),
+		tx4.clone().ver(),
+		tx5.clone().ver(),
 	])
 	.unwrap();
 	assert!(tx12345
 		.validate(Weighting::AsTransaction, vc.clone())
 		.is_ok());
 
-	let deaggregated_tx5 = deaggregate(tx12345, &[tx1, tx2, tx3, tx4]).unwrap();
+	let deaggregated_tx5 =
+		deaggregate(tx12345, &[tx1.ver(), tx2.ver(), tx3.ver(), tx4.ver()]).unwrap();
 	assert!(deaggregated_tx5
 		.validate(Weighting::AsTransaction, vc.clone())
 		.is_ok());
-	assert_eq!(tx5, deaggregated_tx5);
+	assert_eq!(tx5.ver(), deaggregated_tx5);
 }
 
 #[test]
@@ -418,15 +426,15 @@ fn multi_kernel_transaction_deaggregation_5() {
 	assert!(tx5.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
 	let tx12345 = aggregate(&[
-		tx1.clone(),
-		tx2.clone(),
-		tx3.clone(),
-		tx4.clone(),
-		tx5.clone(),
+		tx1.clone().ver(),
+		tx2.clone().ver(),
+		tx3.clone().ver(),
+		tx4.clone().ver(),
+		tx5.clone().ver(),
 	])
 	.unwrap();
-	let tx12 = aggregate(&[tx1, tx2]).unwrap();
-	let tx34 = aggregate(&[tx3, tx4]).unwrap();
+	let tx12 = aggregate(&[tx1.ver(), tx2.ver()]).unwrap();
+	let tx34 = aggregate(&[tx3.ver(), tx4.ver()]).unwrap();
 
 	assert!(tx12345
 		.validate(Weighting::AsTransaction, vc.clone())
@@ -436,7 +444,7 @@ fn multi_kernel_transaction_deaggregation_5() {
 	assert!(deaggregated_tx5
 		.validate(Weighting::AsTransaction, vc.clone())
 		.is_ok());
-	assert_eq!(tx5, deaggregated_tx5);
+	assert_eq!(tx5.ver(), deaggregated_tx5);
 }
 
 // Attempt to deaggregate a multi-kernel transaction
@@ -452,23 +460,23 @@ fn basic_transaction_deaggregation() {
 	assert!(tx2.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
 	// now build a "cut_through" tx from tx1 and tx2
-	let tx3 = aggregate(&[tx1.clone(), tx2.clone()]).unwrap();
+	let tx3 = aggregate(&[tx1.clone().ver(), tx2.clone().ver()]).unwrap();
 
 	assert!(tx3.validate(Weighting::AsTransaction, vc.clone()).is_ok());
 
-	let deaggregated_tx1 = deaggregate(tx3.clone(), &[tx2.clone()]).unwrap();
+	let deaggregated_tx1 = deaggregate(tx3.clone(), &[tx2.clone().ver()]).unwrap();
 
 	assert!(deaggregated_tx1
 		.validate(Weighting::AsTransaction, vc.clone())
 		.is_ok());
-	assert_eq!(tx1, deaggregated_tx1);
+	assert_eq!(tx1.clone().ver(), deaggregated_tx1);
 
-	let deaggregated_tx2 = deaggregate(tx3, &[tx1]).unwrap();
+	let deaggregated_tx2 = deaggregate(tx3, &[tx1.ver()]).unwrap();
 
 	assert!(deaggregated_tx2
 		.validate(Weighting::AsTransaction, vc.clone())
 		.is_ok());
-	assert_eq!(tx2, deaggregated_tx2);
+	assert_eq!(tx2.ver(), deaggregated_tx2);
 }
 
 #[test]

@@ -15,6 +15,7 @@
 use super::utils::{get_output, get_output_v2, w};
 use crate::chain;
 use crate::core::core::hash::Hashed;
+use crate::core::core::Commit;
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;

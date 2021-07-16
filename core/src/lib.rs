@@ -36,6 +36,7 @@ extern crate failure_derive;
 #[macro_use]
 pub mod macros;
 
+pub mod address;
 pub mod consensus;
 pub mod core;
 pub mod genesis;
@@ -44,3 +45,6 @@ pub mod libtx;
 pub mod pow;
 pub mod ser;
 pub mod stratum;
+pub mod types;
+
+pub use self::types::*;

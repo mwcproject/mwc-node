@@ -124,6 +124,7 @@ impl Server {
 		let mining_config = config.stratum_mining_config.clone();
 		let enable_test_miner = config.run_test_miner;
 		let test_miner_wallet_url = config.test_miner_wallet_url.clone();
+		let mut mining_reward_address = None;
 
 		let (ban_action_limit, shares_weight, connection_pace_ms) = match mining_config.clone() {
 			Some(c) => (c.ban_action_limit, c.shares_weight, c.connection_pace_ms),
@@ -150,6 +151,7 @@ impl Server {
 							.is_enabled
 							.store(true, Ordering::Relaxed);
 					}
+					mining_reward_address = c.mining_reward_address.clone();
 					serv.start_stratum_server(c, stratum_ip_pool);
 				}
 			}
@@ -157,7 +159,11 @@ impl Server {
 
 		if let Some(s) = enable_test_miner {
 			if s {
-				serv.start_test_miner(test_miner_wallet_url, serv.stop_state.clone());
+				serv.start_test_miner(
+					test_miner_wallet_url,
+					mining_reward_address,
+					serv.stop_state.clone(),
+				);
 			}
 		}
 
@@ -650,6 +656,7 @@ impl Server {
 	pub fn start_test_miner(
 		&self,
 		wallet_listener_url: Option<String>,
+		mining_reward_address: Option<String>,
 		stop_state: Arc<StopState>,
 	) {
 		info!("start_test_miner - start",);
@@ -665,6 +672,7 @@ impl Server {
 			enable_stratum_server: None,
 			stratum_server_addr: None,
 			wallet_listener_url: config_wallet_url,
+			mining_reward_address: mining_reward_address.clone(),
 			minimum_share_difficulty: 1,
 			ip_tracking: false,
 			workers_connection_limit: 30000,
@@ -688,7 +696,7 @@ impl Server {
 		miner.set_debug_output_id(format!("Port {}", self.config.p2p_config.port));
 		let _ = thread::Builder::new()
 			.name("test_miner".to_string())
-			.spawn(move || miner.run_loop(wallet_listener_url));
+			.spawn(move || miner.run_loop(wallet_listener_url, mining_reward_address));
 	}
 
 	/// The chain head

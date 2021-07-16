@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::chain;
-use crate::chain::types::CommitPos;
 use crate::core::core::OutputIdentifier;
+use crate::core::CommitPos;
 use crate::rest::*;
 use crate::types::*;
 use crate::util;

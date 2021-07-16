@@ -605,10 +605,13 @@ impl Handler {
 			{
 				{
 					debug!("resend updated block");
-					let wallet_listener_url = if !config.burn_reward {
-						Some(config.wallet_listener_url.clone())
+					let (wallet_listener_url, mining_reward_address) = if !config.burn_reward {
+						(
+							Some(config.wallet_listener_url.clone()),
+							config.mining_reward_address.clone(),
+						)
 					} else {
-						None
+						(None, None)
 					};
 					// If this is a new block, clear the current_block version history
 					let clear_blocks = current_hash != latest_hash;
@@ -620,6 +623,7 @@ impl Handler {
 						verifier_cache.clone(),
 						self.current_state.read().current_key_id.clone(),
 						wallet_listener_url,
+						mining_reward_address,
 					);
 
 					{
