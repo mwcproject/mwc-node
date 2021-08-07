@@ -1,5 +1,4 @@
-The MWC network was launched in November 2019 and has functioned flawlessly with 100% uptime. 
-
+The MWC network was launched in November 2019.
 MWC development is progressing well and there are many areas where development resources could be allocated.
 
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
