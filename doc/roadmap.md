@@ -26,14 +26,14 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 
 # To be done
 If you want to help please contact us in discord.
-- Atomic swaps for ETH and ERC-20 tokens.  July 2020
+- Atomic swaps for ETH and ERC-20 tokens. Q3 2021
 - Extend Mobile wallet with additional functionality. 
-- Non-interactive transaction scheme (NIT).  2021
-- Alternative node implementation. We can port Grin++ and have simplified node that validate concensus only. Summer 2021
+- Non-interactive transaction scheme (NIT). H1 2022
+- Alternative node implementation. We can port Grin++ and have simplified node that validate concensus only. 
 - Mobile node.
 - Switch from binaries to library model (required for iOS support).  
 - Multisig.
-- Minimize transactions traceability .
+- Minimize transactions traceability (Coinjoin pool)
 - Hardware wallets. Requires hardware manufacturer support.
 
 There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
