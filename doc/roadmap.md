@@ -5,7 +5,7 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
-- 30/05/2021 Mobile wallet, v1.
+- 30/05/2021 Mobile wallet, Android v1.
 - 20/05/2021 Decentralized exchange.
 - 20/03/2021 Atomic swaps for more coins (LTC, ZCash, Dash, Doge).
 - 20/03/2021 Reply attack implementation (The feature will be activated with NIT).
