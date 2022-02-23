@@ -9,8 +9,7 @@ RUN apt -y install curl
 
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 
-RUN apt -y install build-essential cmake git libgit2-dev clang libncurses5-dev \
-		   libncursesw5-dev locales zlib1g-dev pkg-config libssl-dev llvm tor
+RUN apt -y install build-essential cmake git libgit2-dev clang libncurses5-dev libncursesw5-dev locales zlib1g-dev pkg-config libssl-dev llvm tor
 
 WORKDIR /root
 
