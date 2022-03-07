@@ -27,7 +27,6 @@ use grin_core as core;
 use keychain::{ExtKeychain, Keychain};
 use std::sync::Arc;
 use util::RwLock;
-use util::ToHex;
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.

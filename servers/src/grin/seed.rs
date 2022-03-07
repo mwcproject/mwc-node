@@ -25,7 +25,7 @@ use rand::thread_rng;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::sync::{mpsc, Arc};
-use std::{cmp, str, thread, time};
+use std::{cmp, thread, time};
 
 use crate::core::global;
 use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
