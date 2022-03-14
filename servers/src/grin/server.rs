@@ -64,6 +64,7 @@ use crate::pool;
 use crate::tor::process as tor_process;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
+use futures::channel::oneshot;
 use grin_util::logger::LogEntry;
 use grin_util::secp::SecretKey;
 use std::collections::HashSet;
@@ -118,6 +119,8 @@ impl Server {
 		logs_rx: Option<mpsc::Receiver<LogEntry>>,
 		mut info_callback: F,
 		allow_to_stop: bool,
+		stop_state: Option<Arc<StopState>>,
+		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<(), Error>
 	where
 		F: FnMut(Server, Option<mpsc::Receiver<LogEntry>>),
@@ -147,7 +150,13 @@ impl Server {
 			shares_weight,
 			connection_pace_ms,
 		));
-		let serv = Server::new(config, allow_to_stop, stratum_ip_pool.clone())?;
+		let serv = Server::new(
+			config,
+			allow_to_stop,
+			stratum_ip_pool.clone(),
+			stop_state,
+			api_chan,
+		)?;
 
 		if let Some(c) = mining_config {
 			let enable_stratum_server = c.enable_stratum_server;
@@ -207,6 +216,8 @@ impl Server {
 		config: ServerConfig,
 		allow_to_stop: bool,
 		stratum_ip_pool: Arc<connections::StratumIpPool>,
+		stop_state: Option<Arc<StopState>>,
+		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<Server, Error> {
 		let header_cache_size = config.header_cache_size.unwrap_or(25_000);
 		//let duration_sync_long = config.duration_sync_long.unwrap_or(150);
@@ -228,7 +239,11 @@ impl Server {
 			Some(b) => b,
 		};
 
-		let stop_state = Arc::new(StopState::new());
+		let stop_state = if stop_state.is_some() {
+			stop_state.unwrap()
+		} else {
+			Arc::new(StopState::new())
+		};
 
 		// Shared cache for verification results.
 		// We cache rangeproof verification and kernel signature verification.
@@ -599,6 +614,8 @@ impl Server {
 			tls_conf,
 			allow_to_stop,
 			stratum_ip_pool,
+			api_chan,
+			stop_state.clone(),
 		)?;
 
 		info!("Starting dandelion monitor: {}", &config.api_http_addr);

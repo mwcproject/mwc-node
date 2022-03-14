@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ctrlc;
+use futures::channel::oneshot;
 
 use crate::config::GlobalConfig;
 use crate::core::global;
@@ -35,11 +36,9 @@ pub fn start_server(
 	config: servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	allow_to_stop: bool,
+	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
-	start_server_tui(config, logs_rx, allow_to_stop);
-	// Just kill process for now, otherwise the process
-	// hangs around until sigint because the API server
-	// currently has no shutdown facility
+	start_server_tui(config, logs_rx, allow_to_stop, api_chan);
 	exit(0);
 }
 
@@ -47,6 +46,7 @@ fn start_server_tui(
 	config: servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	allow_to_stop: bool,
+	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
 	// Run the UI controller.. here for now for simplicity to access
 	// everything it might need
@@ -62,6 +62,8 @@ fn start_server_tui(
 				controller.run(serv);
 			},
 			allow_to_stop,
+			None,
+			api_chan,
 		)
 		.map_err(|e| error!("Unable to start MWC in UI mode, {}", e))
 		.expect("Unable to start MWC in UI mode");
@@ -82,6 +84,8 @@ fn start_server_tui(
 				serv.stop();
 			},
 			allow_to_stop,
+			None,
+			api_chan,
 		)
 		.map_err(|e| error!("Unable to start MWC w/o UI mode, {}", e))
 		.expect("Unable to start MWC w/o UI mode");
@@ -96,6 +100,7 @@ pub fn server_command(
 	server_args: Option<&ArgMatches<'_>>,
 	global_config: GlobalConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
+	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) -> i32 {
 	// just get defaults from the global config
 	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
@@ -138,7 +143,7 @@ pub fn server_command(
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(server_config, logs_rx, allow_to_stop);
+				start_server(server_config, logs_rx, allow_to_stop, api_chan);
 			}
 			("", _) => {
 				println!("Subcommand required, use 'mwc help server' for details");
@@ -152,7 +157,7 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(server_config, logs_rx, allow_to_stop);
+		start_server(server_config, logs_rx, allow_to_stop, api_chan);
 	}
 	0
 }

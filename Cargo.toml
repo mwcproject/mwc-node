@@ -24,13 +24,15 @@ blake2-rfc = "0.2"
 chrono = "0.4.11"
 clap = { version = "2.33", features = ["yaml"] }
 ctrlc = { version = "3.1", features = ["termination"] }
-humansize = "1.1.0"
-serde = "1"
-serde_json = "1"
-log = "0.4"
-term = "0.6"
 failure = "0.1"
 failure_derive = "0.1"
+futures = "0.3.19"
+humansize = "1.1.0"
+log = "0.4"
+serde = "1"
+serde_json = "1"
+term = "0.6"
+
 
 grin_api = { path = "./api", version = "4.4.2" }
 grin_config = { path = "./config", version = "4.4.2" }
