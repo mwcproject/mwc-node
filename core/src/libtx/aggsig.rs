@@ -17,6 +17,7 @@
 //! [Rust Aggsig library](https://github.com/mimblewimble/rust-secp256k1-zkp/blob/master/src/aggsig.rs)
 
 use crate::libtx::error::{Error, ErrorKind};
+use blake2::blake2b::Blake2b;
 use keychain::{BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
 use util::secp::key::{PublicKey, SecretKey};
 use util::secp::pedersen::Commitment;
@@ -457,4 +458,92 @@ pub fn sign_with_blinding(
 	let skey = &blinding.secret_key()?;
 	let sig = aggsig::sign_single(secp, &msg, skey, None, None, None, pubkey_sum, None)?;
 	Ok(sig)
+}
+
+/// A dual-key "batch" Schnorr signature.
+pub struct BatchSignature(Signature);
+
+/// Creates a "batch" Schnorr signature for two secret keys (sk1, sk2)
+/// These are nothing more than regular schnorr signatures using a single
+/// key (sk) that's calculated from sk1 and sk2 using the formula:
+///
+/// sk = sk1 + sk2 * blake2b(pk1||pk2)
+pub fn sign_dual_key(
+	secp: &Secp256k1,
+	msg: &Message,
+	sk1: &SecretKey,
+	sk2: &SecretKey,
+) -> Result<BatchSignature, Error> {
+	let pk1 = PublicKey::from_secret_key(&secp, &sk1)?;
+	let pk2 = PublicKey::from_secret_key(&secp, &sk2)?;
+
+	let mut hasher = Blake2b::new(32);
+	hasher.update(pk1.0.as_ref());
+	hasher.update(pk2.0.as_ref());
+
+	let mut sk = SecretKey::from_slice(hasher.finalize().as_bytes())?;
+	sk.mul_assign(&sk2)?;
+	sk.add_assign(&sk1)?;
+
+	let pubkey = PublicKey::from_secret_key(&secp, &sk)?;
+	let sig = sign_single(&secp, &msg, &sk, None, Some(&pubkey))?;
+
+	Ok(BatchSignature(sig))
+}
+
+/// Combines the two public keys of a "batch" signature into the composite
+/// public key that the signature is verifiable against.
+///
+/// Returns pk = pk1 + pk2 * blake2b(pk1||pk2)
+pub fn build_composite_pubkey(
+	secp: &Secp256k1,
+	pk1: &PublicKey,
+	pk2: &PublicKey,
+) -> Result<PublicKey, Error> {
+	let mut hasher = Blake2b::new(32);
+	hasher.update(pk1.0.as_ref());
+	hasher.update(pk2.0.as_ref());
+	let sk = SecretKey::from_slice(hasher.finalize().as_bytes())?;
+
+	let mut pk = pk2.clone();
+	pk.mul_assign(&secp, &sk)?;
+	let pubkey = PublicKey::from_combination(vec![&pk1, &pk])?;
+
+	Ok(pubkey)
+}
+
+/// Verifies a two-key "batch" Schnorr signature.
+pub fn verify_dual_key(
+	secp: &Secp256k1,
+	msg: &Message,
+	sig: &BatchSignature,
+	pk1: &PublicKey,
+	pk2: &PublicKey,
+) -> Result<(), Error> {
+	let pubkey = build_composite_pubkey(&secp, &pk1, &pk2)?;
+
+	verify_completed_sig(&secp, &sig.0, &pubkey, Some(&pubkey), &msg)
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+	use rand::{thread_rng, Rng};
+
+	#[test]
+	fn batch_signature() {
+		let secp = Secp256k1::with_caps(secp::ContextFlag::Commit);
+
+		let mut msg_bytes = [0; 32];
+		thread_rng().fill(&mut msg_bytes);
+		let msg = Message::from_slice(&msg_bytes).unwrap();
+
+		let sk1 = SecretKey::new(&mut thread_rng());
+		let sk2 = SecretKey::new(&mut thread_rng());
+		let batch_sig = sign_dual_key(&secp, &msg, &sk1, &sk2).unwrap();
+
+		let pk1 = PublicKey::from_secret_key(&secp, &sk1).unwrap();
+		let pk2 = PublicKey::from_secret_key(&secp, &sk2).unwrap();
+		verify_dual_key(&secp, &msg, &batch_sig, &pk1, &pk2).unwrap();
+	}
 }
