@@ -14,7 +14,7 @@
 
 //! Transactions
 
-use crate::core::hash::{DefaultHashable, Hashed};
+use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::core::verifier_cache::VerifierCache;
 use crate::core::{committed, Committed};
 use crate::libtx::{aggsig, secp_ser};
@@ -456,6 +456,32 @@ impl From<committed::Error> for Error {
 	}
 }
 
+/// A proof of possession of E and X (if present)
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(untagged)]
+pub enum KernelProof {
+	/// Traditional interactive kernels do not contain a stealth excess,
+	/// so its proof consists only of a simple schnorr signature for E.
+	Interactive {
+		/// The signature proving the excess is a valid public key, which signs
+		/// the features.
+		#[serde(with = "secp_ser::sig_serde")]
+		excess_sig: secp::Signature,
+	},
+	/// Kernels for non-interactive transactions include an additional "stealth" excess,
+	/// and their signatures are 2-key "batch" signatures proving knowledge of E and X.
+	NonInteractive {
+		/// The stealth excess X.
+		#[serde(
+			serialize_with = "secp_ser::as_hex",
+			deserialize_with = "secp_ser::commitment_from_hex"
+		)]
+		stealth_excess: Commitment,
+		/// The "batch" signature proving knowledge of the excess and stealth excess.
+		signature: aggsig::BatchSignature,
+	},
+}
+
 /// A proof that a transaction sums to zero. Includes both the transaction's
 /// Pedersen commitment and the signature, that guarantees that the commitments
 /// amount to zero.
@@ -473,10 +499,9 @@ pub struct TxKernel {
 		deserialize_with = "secp_ser::commitment_from_hex"
 	)]
 	pub excess: Commitment,
-	/// The signature proving the excess is a valid public key, which signs
-	/// the transaction fee.
-	#[serde(with = "secp_ser::sig_serde")]
-	pub excess_sig: secp::Signature,
+	/// The proof of knowledge of the private excess and optional stealth excess.
+	#[serde(flatten)]
+	pub proof: KernelProof,
 }
 
 impl DefaultHashable for TxKernel {}
@@ -496,7 +521,7 @@ impl Writeable for TxKernel {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.features.write(writer)?;
 		self.excess.write(writer)?;
-		self.excess_sig.write(writer)?;
+		self.excess_sig().write(writer)?;
 		Ok(())
 	}
 }
@@ -506,7 +531,9 @@ impl Readable for TxKernel {
 		Ok(TxKernel {
 			features: KernelFeatures::read(reader)?,
 			excess: Commitment::read(reader)?,
-			excess_sig: secp::Signature::read(reader)?,
+			proof: KernelProof::Interactive {
+				excess_sig: secp::Signature::read(reader)?,
+			},
 		})
 	}
 }
@@ -585,6 +612,16 @@ impl TxKernel {
 		self.excess
 	}
 
+	pub fn excess_sig(&self) -> secp::Signature {
+		match self.proof {
+			KernelProof::Interactive { excess_sig } => excess_sig,
+			KernelProof::NonInteractive {
+				stealth_excess,
+				signature,
+			} => signature.get(),
+		}
+	}
+
 	/// The msg signed as part of the tx kernel.
 	/// Based on kernel features and associated fields (fee and lock_height).
 	pub fn msg_to_sign(&self) -> Result<secp::Message, Error> {
@@ -598,7 +635,7 @@ impl TxKernel {
 	pub fn verify(&self) -> Result<(), Error> {
 		let secp = static_secp_instance();
 		let secp = secp.lock();
-		let sig = &self.excess_sig;
+		let sig = &self.excess_sig();
 		// Verify aggsig directly in libsecp
 		let pubkey = &self.excess.to_pubkey()?;
 		if !aggsig::verify_single(
@@ -626,7 +663,7 @@ impl TxKernel {
 		let secp = secp.lock();
 
 		for tx_kernel in tx_kernels {
-			sigs.push(tx_kernel.excess_sig);
+			sigs.push(tx_kernel.excess_sig());
 			pubkeys.push(tx_kernel.excess.to_pubkey()?);
 			msgs.push(tx_kernel.msg_to_sign()?);
 		}
@@ -636,6 +673,18 @@ impl TxKernel {
 		}
 
 		Ok(())
+	}
+
+	pub fn new_interactive(
+		features: KernelFeatures,
+		excess: Commitment,
+		excess_sig: secp::Signature,
+	) -> TxKernel {
+		TxKernel {
+			features,
+			excess: excess,
+			proof: KernelProof::Interactive { excess_sig },
+		}
 	}
 
 	/// Build an empty tx kernel with zero values.
@@ -648,7 +697,9 @@ impl TxKernel {
 		TxKernel {
 			features,
 			excess: Commitment::from_vec(vec![0; 33]),
-			excess_sig: secp::Signature::from_raw_data(&[0; 64]).unwrap(),
+			proof: KernelProof::Interactive {
+				excess_sig: secp::Signature::from_raw_data(&[0; 64]).unwrap(),
+			},
 		}
 	}
 }
@@ -1554,6 +1605,43 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 	)
 }
 
+/// Proof of ownership of the output being spent.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum InputProof {
+	/// For interactive transactions, there's no output public key P to prove knowledge of,
+	/// so a balanced MW transaction is the only proof needed.
+	Interactive,
+	/// Non-interactive transactions require a signature proving ownership of the referenced output.
+	Noninteractive {
+		/// The hash of the output being spent.
+		output_hash: Hash,
+		/// The one-time public key P of the output being spent.
+		output_pk: secp::PublicKey,
+		/// The "doubling" key D, chosen by the sender.
+		doubling_pk: secp::PublicKey,
+		/// The signature ψ proving knowledge of the discrete logarithm of P and D
+		sig: aggsig::BatchSignature,
+	},
+}
+
+impl Default for InputProof {
+	fn default() -> Self {
+		InputProof::Interactive
+	}
+}
+
+impl Writeable for InputProof {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Ok(())
+	}
+}
+
+impl Readable for InputProof {
+	fn read<R: Reader>(reader: &mut R) -> Result<InputProof, ser::Error> {
+		Ok(InputProof::Interactive)
+	}
+}
+
 /// A transaction input.
 ///
 /// Primarily a reference to an output being spent by the transaction.
@@ -1568,6 +1656,9 @@ pub struct Input {
 		deserialize_with = "secp_ser::commitment_from_hex"
 	)]
 	pub commit: Commitment,
+	/// The input type: Interactive or non-interactive.
+	#[serde(default)]
+	pub proof: InputProof,
 }
 
 impl DefaultHashable for Input {}
@@ -1584,6 +1675,7 @@ impl From<&OutputIdentifier> for Input {
 		Input {
 			features: out.features,
 			commit: out.commit,
+			proof: InputProof::Interactive,
 		}
 	}
 }
@@ -1594,6 +1686,7 @@ impl Writeable for Input {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.features.write(writer)?;
 		self.commit.write(writer)?;
+		self.proof.write(writer)?;
 		Ok(())
 	}
 }
@@ -1604,7 +1697,8 @@ impl Readable for Input {
 	fn read<R: Reader>(reader: &mut R) -> Result<Input, ser::Error> {
 		let features = OutputFeatures::read(reader)?;
 		let commit = Commitment::read(reader)?;
-		Ok(Input::new(features, commit))
+		let proof = InputProof::read(reader)?;
+		Ok(Input::new(features, commit, proof))
 	}
 }
 
@@ -1615,8 +1709,12 @@ impl Readable for Input {
 impl Input {
 	/// Build a new input from the data required to identify and verify an
 	/// output being spent.
-	pub fn new(features: OutputFeatures, commit: Commitment) -> Input {
-		Input { features, commit }
+	pub fn new(features: OutputFeatures, commit: Commitment, proof: InputProof) -> Input {
+		Input {
+			features,
+			commit,
+			proof,
+		}
 	}
 
 	/// The input commitment which _partially_ identifies the output being
@@ -1756,6 +1854,7 @@ impl From<&[OutputIdentifier]> for Inputs {
 			.map(|out| Input {
 				features: out.features,
 				commit: out.commit,
+				proof: InputProof::Interactive,
 			})
 			.collect();
 		inputs.sort_unstable();
@@ -1875,6 +1974,19 @@ impl Readable for OutputFeatures {
 	}
 }
 
+/// Public keys R & P and output signature.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct OutputKeys {
+	/// The ephemeral key R chosen by the sender.
+	pub ephemeral_pk: secp::PublicKey,
+	/// The one-time output public key P.
+	pub output_pk: secp::PublicKey,
+	/// The proof of possession ρ for key R.
+	/// Signs the entire output.
+	#[serde(with = "secp_ser::sig_serde")]
+	pub sig: secp::Signature,
+}
+
 /// Output for a transaction, defining the new ownership of coins that are being
 /// transferred. The commitment is a blinded value for the output while the
 /// range proof guarantees the commitment includes a positive value without
@@ -1890,6 +2002,9 @@ pub struct Output {
 		deserialize_with = "secp_ser::rangeproof_from_hex"
 	)]
 	pub proof: RangeProof,
+	/// Public keys and signature. Only included in non-interactive transactions.
+	#[serde(flatten)]
+	pub keys: Option<OutputKeys>,
 }
 
 impl Ord for Output {
@@ -1935,6 +2050,7 @@ impl Readable for Output {
 		Ok(Output {
 			identifier: OutputIdentifier::read(reader)?,
 			proof: RangeProof::read(reader)?,
+			keys: None,
 		})
 	}
 }
@@ -1953,10 +2069,15 @@ impl OutputFeatures {
 
 impl Output {
 	/// Create a new output with the provided features, commitment and rangeproof.
-	pub fn new(features: OutputFeatures, commit: Commitment, proof: RangeProof) -> Output {
+	pub fn new_interactive(
+		features: OutputFeatures,
+		commit: Commitment,
+		proof: RangeProof,
+	) -> Output {
 		Output {
 			identifier: OutputIdentifier { features, commit },
 			proof,
+			keys: None,
 		}
 	}
 
@@ -2069,10 +2190,11 @@ impl OutputIdentifier {
 	}
 
 	/// Converts this identifier to a full output, provided a RangeProof
-	pub fn into_output(self, proof: RangeProof) -> Output {
+	pub fn into_output(self, proof: RangeProof, keys: Option<OutputKeys>) -> Output {
 		Output {
 			identifier: self,
 			proof,
+			keys,
 		}
 	}
 }
@@ -2152,7 +2274,9 @@ mod test {
 		let kernel = TxKernel {
 			features: KernelFeatures::Plain { fee: 10 },
 			excess: commit,
-			excess_sig: sig.clone(),
+			proof: KernelProof::Interactive {
+				excess_sig: sig.clone(),
+			},
 		};
 
 		// Test explicit protocol version.
@@ -2162,7 +2286,7 @@ mod test {
 			let kernel2: TxKernel = ser::deserialize(&mut &vec[..], version).unwrap();
 			assert_eq!(kernel2.features, KernelFeatures::Plain { fee: 10 });
 			assert_eq!(kernel2.excess, commit);
-			assert_eq!(kernel2.excess_sig, sig.clone());
+			assert_eq!(kernel2.excess_sig(), sig.clone());
 		}
 
 		// Test with "default" protocol version.
@@ -2171,7 +2295,7 @@ mod test {
 		let kernel2: TxKernel = ser::deserialize_default(&mut &vec[..]).unwrap();
 		assert_eq!(kernel2.features, KernelFeatures::Plain { fee: 10 });
 		assert_eq!(kernel2.excess, commit);
-		assert_eq!(kernel2.excess_sig, sig.clone());
+		assert_eq!(kernel2.excess_sig(), sig.clone());
 	}
 
 	#[test]
@@ -2192,7 +2316,9 @@ mod test {
 				lock_height: 100,
 			},
 			excess: commit,
-			excess_sig: sig.clone(),
+			proof: KernelProof::Interactive {
+				excess_sig: sig.clone(),
+			},
 		};
 
 		// Test explicit protocol version.
@@ -2202,7 +2328,7 @@ mod test {
 			let kernel2: TxKernel = ser::deserialize(&mut &vec[..], version).unwrap();
 			assert_eq!(kernel.features, kernel2.features);
 			assert_eq!(kernel2.excess, commit);
-			assert_eq!(kernel2.excess_sig, sig.clone());
+			assert_eq!(kernel2.excess_sig(), sig.clone());
 		}
 
 		// Test with "default" protocol version.
@@ -2211,7 +2337,7 @@ mod test {
 		let kernel2: TxKernel = ser::deserialize_default(&mut &vec[..]).unwrap();
 		assert_eq!(kernel.features, kernel2.features);
 		assert_eq!(kernel2.excess, commit);
-		assert_eq!(kernel2.excess_sig, sig.clone());
+		assert_eq!(kernel2.excess_sig(), sig.clone());
 	}
 
 	#[test]
@@ -2234,7 +2360,9 @@ mod test {
 				relative_height: NRDRelativeHeight(100),
 			},
 			excess: commit,
-			excess_sig: sig.clone(),
+			proof: KernelProof::Interactive {
+				excess_sig: sig.clone(),
+			},
 		};
 
 		// Test explicit protocol version.
@@ -2244,7 +2372,7 @@ mod test {
 			let kernel2: TxKernel = ser::deserialize(&mut &vec[..], version).unwrap();
 			assert_eq!(kernel.features, kernel2.features);
 			assert_eq!(kernel2.excess, commit);
-			assert_eq!(kernel2.excess_sig, sig.clone());
+			assert_eq!(kernel2.excess_sig(), sig.clone());
 		}
 
 		// Test with "default" protocol version.
@@ -2253,7 +2381,7 @@ mod test {
 		let kernel2: TxKernel = ser::deserialize_default(&mut &vec[..]).unwrap();
 		assert_eq!(kernel.features, kernel2.features);
 		assert_eq!(kernel2.excess, commit);
-		assert_eq!(kernel2.excess_sig, sig.clone());
+		assert_eq!(kernel2.excess_sig(), sig.clone());
 	}
 
 	#[test]
@@ -2281,7 +2409,9 @@ mod test {
 			aggsig::sign_single(&keychain.secp(), &msg, &skey, None, Some(&pubkey)).unwrap();
 
 		kernel.excess = excess;
-		kernel.excess_sig = excess_sig;
+		kernel.proof = KernelProof::Interactive {
+			excess_sig: excess_sig,
+		};
 
 		// Check the signature verifies.
 		assert_eq!(kernel.verify(), Ok(()));
@@ -2340,6 +2470,7 @@ mod test {
 		let input = Input {
 			features: OutputFeatures::Plain,
 			commit,
+			proof: InputProof::Interactive,
 		};
 
 		let block_hash =
@@ -2356,6 +2487,7 @@ mod test {
 		let input = Input {
 			features: OutputFeatures::Coinbase,
 			commit,
+			proof: InputProof::Interactive,
 		};
 
 		let short_id = input.short_id(&block_hash, nonce);

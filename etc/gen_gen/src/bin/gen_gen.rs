@@ -223,7 +223,7 @@ fn update_genesis_rs(gen: &core::core::Block) {
 		"excess_sig".to_string(),
 		format!(
 			"Signature::from_raw_data(&{:?}).unwrap()",
-			gen.kernels()[0].excess_sig.to_raw_data().to_vec(),
+			gen.kernels()[0].excess_sig().to_raw_data().to_vec(),
 		),
 	));
 	replacements.push((

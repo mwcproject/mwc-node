@@ -155,7 +155,7 @@ impl<'a> UTXOView<'a> {
 	pub fn get_unspent_output_at(&self, pos: u64) -> Result<Output, Error> {
 		match self.output_pmmr.get_data(pos) {
 			Some(output_id) => match self.rproof_pmmr.get_data(pos) {
-				Some(rproof) => Ok(output_id.into_output(rproof)),
+				Some(rproof) => Ok(output_id.into_output(rproof, None)),
 				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
 			},
 			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos)).into()),

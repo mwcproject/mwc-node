@@ -238,7 +238,7 @@ pub fn verify_partial_sig(
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
 /// let builder = proof::ProofBuilder::new(&keychain);
 /// let proof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
-/// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
+/// let output = Output::new_interactive(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
@@ -303,7 +303,7 @@ where
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
 /// let builder = proof::ProofBuilder::new(&keychain);
 /// let proof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
-/// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
+/// let output = Output::new_interactive(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
@@ -461,7 +461,14 @@ pub fn sign_with_blinding(
 }
 
 /// A dual-key "batch" Schnorr signature.
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct BatchSignature(Signature);
+
+impl BatchSignature {
+	pub fn get(&self) -> Signature {
+		self.0
+	}
+}
 
 /// Creates a "batch" Schnorr signature for two secret keys (sk1, sk2)
 /// These are nothing more than regular schnorr signatures using a single

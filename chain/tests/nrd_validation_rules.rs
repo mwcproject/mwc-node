@@ -22,7 +22,7 @@ use grin_util as util;
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Error, Options};
 use crate::core::core::{
-	Block, BlockHeader, KernelFeatures, NRDRelativeHeight, Transaction, TxKernel,
+	Block, BlockHeader, KernelFeatures, KernelProof, NRDRelativeHeight, Transaction, TxKernel,
 };
 use crate::core::libtx::{aggsig, build, reward, ProofBuilder};
 use crate::core::{consensus, global, pow};
@@ -119,8 +119,10 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
 	let pubkey = &kernel.excess.to_pubkey().unwrap();
-	kernel.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
+	kernel.proof = KernelProof::Interactive {
+		excess_sig: aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))
+			.unwrap(),
+	};
 	kernel.verify().unwrap();
 
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
@@ -235,8 +237,10 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
 	let pubkey = &kernel.excess.to_pubkey().unwrap();
-	kernel.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
+	kernel.proof = KernelProof::Interactive {
+		excess_sig: aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))
+			.unwrap(),
+	};
 	kernel.verify().unwrap();
 
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
@@ -334,8 +338,10 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
 	let pubkey = &kernel.excess.to_pubkey().unwrap();
-	kernel.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
+	kernel.proof = KernelProof::Interactive {
+		excess_sig: aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))
+			.unwrap(),
+	};
 	kernel.verify().unwrap();
 
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();

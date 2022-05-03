@@ -1439,7 +1439,7 @@ impl Chain {
 		}
 		let mut output_vec: Vec<Output> = vec![];
 		for (ref x, &y) in outputs.1.iter().zip(rangeproofs.1.iter()) {
-			output_vec.push(Output::new(x.features, x.commitment(), y));
+			output_vec.push(Output::new_interactive(x.features, x.commitment(), y));
 		}
 		Ok((outputs.0, last_index, output_vec))
 	}

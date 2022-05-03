@@ -89,21 +89,21 @@ pub fn genesis_floo() -> core::Block {
 		},
 		..Default::default()
 	});
-	let kernel = core::TxKernel {
-		features: core::KernelFeatures::Coinbase,
-		excess: Commitment::from_vec(
+	let kernel = core::TxKernel::new_interactive(
+		core::KernelFeatures::Coinbase,
+		Commitment::from_vec(
 			util::from_hex("093d0aeae5f6aab0975096fde31e1a21fa42edfc93db318a1064156ace81f54671")
 				.unwrap(),
 		),
-		excess_sig: Signature::from_raw_data(&[
+		Signature::from_raw_data(&[
 			206, 29, 151, 239, 47, 44, 219, 103, 100, 240, 76, 52, 231, 174, 149, 129, 237, 164,
 			234, 60, 232, 149, 90, 94, 161, 93, 131, 148, 120, 81, 161, 155, 170, 177, 250, 64, 66,
 			25, 44, 82, 164, 227, 150, 5, 10, 166, 52, 150, 22, 179, 15, 50, 81, 15, 114, 9, 52,
 			239, 234, 80, 82, 118, 146, 30,
 		])
 		.unwrap(),
-	};
-	let output = core::Output::new(
+	);
+	let output = core::Output::new_interactive(
 		core::OutputFeatures::Coinbase,
 		Commitment::from_vec(
 			util::from_hex("0905a2ebf3913c7d378660a7b60e6bda983be451cb1de8779ad0f51f4d2fb079ea")
@@ -202,21 +202,21 @@ pub fn genesis_main() -> core::Block {
 		},
 		..Default::default()
 	});
-	let kernel = core::TxKernel {
-		features: core::KernelFeatures::Coinbase,
-		excess: Commitment::from_vec(
+	let kernel = core::TxKernel::new_interactive(
+		core::KernelFeatures::Coinbase,
+		Commitment::from_vec(
 			util::from_hex("08b659fde3a41284819f45415890330272efef7ef991f833a64b746be802c8fd77")
 				.unwrap(),
 		),
-		excess_sig: Signature::from_raw_data(&[
+		Signature::from_raw_data(&[
 			189, 52, 60, 137, 172, 160, 134, 69, 17, 47, 82, 86, 169, 136, 4, 240, 104, 188, 8,
 			185, 90, 170, 220, 90, 88, 177, 222, 171, 198, 244, 149, 15, 238, 91, 152, 234, 248,
 			34, 72, 175, 213, 52, 179, 29, 165, 113, 70, 167, 30, 159, 163, 45, 67, 2, 136, 169,
 			248, 200, 90, 86, 70, 192, 73, 37,
 		])
 		.unwrap(),
-	};
-	let output = core::Output::new(
+	);
+	let output = core::Output::new_interactive(
 		core::OutputFeatures::Coinbase,
 		Commitment::from_vec(
 			util::from_hex("089dfcac475c94c978861b3dbef1e37b038cc13f9f78de9a4e14f31ed36e7a54c9")

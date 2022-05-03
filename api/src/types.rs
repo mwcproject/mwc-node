@@ -551,7 +551,7 @@ impl TxKernelPrintable {
 			fee,
 			lock_height,
 			excess: k.excess.to_hex(),
-			excess_sig: (&k.excess_sig.to_raw_data()[..]).to_hex(),
+			excess_sig: (&k.excess_sig().to_raw_data()[..]).to_hex(),
 		}
 	}
 }

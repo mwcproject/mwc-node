@@ -346,7 +346,8 @@ fn remove_coinbase_output_flag() {
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let output = b.outputs()[0];
-	let output = Output::new(OutputFeatures::Plain, output.commitment(), output.proof());
+	let output =
+		Output::new_interactive(OutputFeatures::Plain, output.commitment(), output.proof());
 	let b = Block {
 		body: b.body.replace_outputs(&[output]),
 		..b
