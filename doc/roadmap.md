@@ -4,6 +4,8 @@ MWC development is progressing well and there are many areas where development r
 This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
 
 # Completed
+- 03/31/2022 - NIT scheme security
+- 12/29/2021 - Atomic swaps for ETH and ERC-20 tokens.
 - 30/05/2021 Mobile wallet, Android v1.
 - 20/05/2021 Decentralized exchange.
 - 20/03/2021 Atomic swaps for more coins (LTC, ZCash, Dash, Doge).
@@ -23,12 +25,14 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 11/11/2019 - Mainnet launch.
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
 
+
+
 # To be done
 If you want to help please contact us in discord.
-- Atomic swaps for ETH and ERC-20 tokens. Q3 2021
+-
 - Extend Mobile wallet with additional functionality. 
-- Non-interactive transaction scheme (NIT). H1 2022
-- Alternative node implementation. We can port Grin++ and have simplified node that validate concensus only. 
+- Non-interactive transaction scheme (NIT). Q4-2022
+- trustless aggregators system for transactions obfuscation
 - Mobile node.
 - Switch from binaries to library model (required for iOS support).  
 - Multisig.
@@ -49,7 +53,8 @@ Claim 4 to MWC hodlers (Remaining Dev fund + remaining unclaimed airdrop) | 471,
 Claim 5 to MWC hodlers (Unclaimed from claim 4)	| 500,000 |	10/26/20 | 32,734.00 | 9,967,167.00 | https://www.mwc.mw/mimble-wimble-coin-articles/update-on-the-last-dev-fund-distribution
 					
 - Dev fund was registered for the HODL distribution 1,2,3.
-- All MWC premined funds (Airdrop, HODL and Dev fund) are completely distributed to MWC hodlers.
-- Developement is solely financed by donations.
+- All MWC premined funds (Airdrop, HODL and Dev fund) are completely distributed to MWC hodlers.  
+
+**Developement is solely financed by donations.**
 					
 					
