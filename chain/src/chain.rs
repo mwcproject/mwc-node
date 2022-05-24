@@ -178,6 +178,8 @@ impl Chain {
 		// DB migrations to be run prior to the chain being used.
 		// Migrate full blocks to protocol version v3.
 		Chain::migrate_db_v2_v3(&store)?;
+		// Migrate output positions from commitment-based to ID-based.
+		Chain::migrate_db_outputs(&store)?;
 
 		// open the txhashset, creating a new one if necessary
 		let mut txhashset = txhashset::TxHashSet::open(db_root.clone(), store.clone(), None)?;
@@ -711,9 +713,9 @@ impl Chain {
 	/// Returns Err if something went wrong beyond not finding the output.
 	pub fn get_unspent(
 		&self,
-		commit: Commitment,
+		output_id: Hash,
 	) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
-		self.txhashset.read().get_unspent(commit)
+		self.txhashset.read().get_unspent(output_id)
 	}
 
 	/// Retrieves an unspent output using its PMMR position
@@ -920,9 +922,9 @@ impl Chain {
 
 	/// Return a merkle proof valid for the current output pmmr state at the
 	/// given pos
-	pub fn get_merkle_proof_for_pos(&self, commit: Commitment) -> Result<MerkleProof, Error> {
+	pub fn get_merkle_proof_for_pos(&self, output_id: Hash) -> Result<MerkleProof, Error> {
 		let mut txhashset = self.txhashset.write();
-		txhashset.merkle_proof(commit)
+		txhashset.merkle_proof(output_id)
 	}
 
 	/// Provides a reading view into the current txhashset state as well as
@@ -1412,8 +1414,8 @@ impl Chain {
 	}
 
 	/// Return Commit's MMR position
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		Ok(self.txhashset.read().get_output_pos(commit)?)
+	pub fn get_output_pos(&self, output_id: &Hash) -> Result<u64, Error> {
+		Ok(self.txhashset.read().get_output_pos(&output_id)?)
 	}
 
 	/// outputs by insertion index
@@ -1550,16 +1552,28 @@ impl Chain {
 		Ok(())
 	}
 
+	/// Migrate our local db outputs from commitment-based to ID-based.
+	fn migrate_db_outputs(store: &ChainStore) -> Result<(), Error> {
+		let batch = store.batch()?;
+		let migrated_count = batch.migrate_output_positions()?;
+		debug!(
+			"migrate_db_outputs: migrated {} output position entries",
+			migrated_count
+		);
+		batch.commit()?;
+		Ok(())
+	}
+
 	/// Gets the block header in which a given output appears in the txhashset.
-	pub fn get_header_for_output(&self, commit: Commitment) -> Result<BlockHeader, Error> {
+	pub fn get_header_for_output(&self, output_id: Hash) -> Result<BlockHeader, Error> {
 		let header_pmmr = self.header_pmmr.read();
 		let txhashset = self.txhashset.read();
-		let (_, pos) = match txhashset.get_unspent(commit)? {
+		let (_, pos) = match txhashset.get_unspent(output_id)? {
 			Some(o) => o,
 			None => {
 				return Err(ErrorKind::OutputNotFound(format!(
-					"Not found commit {}",
-					commit.to_hex()
+					"Not found output {}",
+					output_id.to_hex()
 				))
 				.into())
 			}

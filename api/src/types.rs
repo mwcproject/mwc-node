@@ -294,7 +294,7 @@ impl OutputPrintable {
 			OutputType::Transaction
 		};
 
-		let pos = chain.get_unspent(output.commitment())?;
+		let pos = chain.get_unspent(output.id())?;
 
 		let spent = pos.is_none();
 

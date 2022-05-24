@@ -259,14 +259,14 @@ impl TxHashSet {
 	/// Then we check the entry in the output MMR and confirm the hash matches.
 	pub fn get_unspent(
 		&self,
-		commit: Commitment,
+		output_id: Hash,
 	) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
-		match self.commit_index.get_output_pos_height(&commit) {
+		match self.commit_index.get_output_pos_height(&output_id) {
 			Ok(Some(pos)) => {
 				let output_pmmr: ReadonlyPMMR<'_, OutputIdentifier, _> =
 					ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.last_pos);
 				if let Some(out) = output_pmmr.get_data(pos.pos) {
-					if out.commitment() == commit {
+					if out.id() == output_id {
 						Ok(Some((out, pos)))
 					} else {
 						Ok(None)
@@ -378,17 +378,17 @@ impl TxHashSet {
 	}
 
 	/// Return Commit's MMR position
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		Ok(self.commit_index.get_output_pos(&commit)?)
+	pub fn get_output_pos(&self, output_id: &Hash) -> Result<u64, Error> {
+		Ok(self.commit_index.get_output_pos(&output_id)?)
 	}
 
 	/// build a new merkle proof for the given position.
-	pub fn merkle_proof(&mut self, commit: Commitment) -> Result<MerkleProof, Error> {
-		let pos = self.commit_index.get_output_pos(&commit)?;
+	pub fn merkle_proof(&mut self, output_id: Hash) -> Result<MerkleProof, Error> {
+		let pos = self.commit_index.get_output_pos(&output_id)?;
 		PMMR::at(&mut self.output_pmmr_h.backend, self.output_pmmr_h.last_pos)
 			.merkle_proof(pos)
 			.map_err(|e| {
-				ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos, e)).into()
+				ErrorKind::MerkleProof(format!("ID {:?}, pos {}, {}", output_id, pos, e)).into()
 			})
 	}
 
@@ -517,11 +517,10 @@ impl TxHashSet {
 		let mut removed_count = 0;
 		for (key, (pos, _)) in batch.output_pos_iter()? {
 			if let Some(out) = output_pmmr.get_data(pos) {
-				if let Ok(pos_via_mmr) = batch.get_output_pos(&out.commitment()) {
+				if let Ok(pos_via_mmr) = batch.get_output_pos(&out.id()) {
 					// If the pos matches and the index key matches the commitment
 					// then keep the entry, other we want to clean it up.
-					if pos == pos_via_mmr && batch.is_match_output_pos_key(&key, &out.commitment())
-					{
+					if pos == pos_via_mmr && batch.is_match_output_pos_key(&key, &out.id()) {
 						continue;
 					}
 				}
@@ -534,10 +533,10 @@ impl TxHashSet {
 			removed_count
 		);
 
-		let mut outputs_pos: Vec<(Commitment, u64)> = vec![];
+		let mut outputs_pos: Vec<(Hash, u64)> = vec![];
 		for pos in output_pmmr.leaf_pos_iter() {
 			if let Some(out) = output_pmmr.get_data(pos) {
-				outputs_pos.push((out.commit, pos));
+				outputs_pos.push((out.id(), pos));
 			}
 		}
 
@@ -567,13 +566,13 @@ impl TxHashSet {
 			let hash = header_pmmr.get_header_hash_by_height(search_height + 1)?;
 			let h = batch.get_block_header(&hash)?;
 			while i < total_outputs {
-				let (commit, pos) = outputs_pos[i];
+				let (output_id, pos) = outputs_pos[i];
 				if pos > h.output_mmr_size {
 					// Note: MMR position is 1-based and not 0-based, so here must be '>' instead of '>='
 					break;
 				}
 				batch.save_output_pos_height(
-					&commit,
+					&output_id,
 					CommitPos {
 						pos,
 						height: h.height,
@@ -1110,7 +1109,7 @@ impl<'a> Extension<'a> {
 			let pos = self.apply_output(out, batch)?;
 			affected_pos.push(pos);
 			batch.save_output_pos_height(
-				&out.commitment(),
+				&out.id(),
 				CommitPos {
 					pos,
 					height: b.header.height,
@@ -1129,7 +1128,7 @@ impl<'a> Extension<'a> {
 		for (out, pos) in &spent {
 			self.apply_input(out.commitment(), *pos)?;
 			affected_pos.push(pos.pos);
-			batch.delete_output_pos_height(&out.commitment())?;
+			batch.delete_output_pos_height(&out.id())?;
 			//save the spent commitments.
 			let hh = HashHeight {
 				hash: b.hash().clone(),
@@ -1187,12 +1186,12 @@ impl<'a> Extension<'a> {
 	}
 
 	fn apply_output(&mut self, out: &Output, batch: &Batch<'_>) -> Result<u64, Error> {
-		let commit = out.commitment();
+		let output_id = out.id();
 
-		if let Ok(pos) = batch.get_output_pos(&commit) {
+		if let Ok(pos) = batch.get_output_pos(&output_id) {
 			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
-				if out_mmr.commitment() == commit {
-					return Err(ErrorKind::DuplicateCommitment(commit).into());
+				if out_mmr.id() == output_id {
+					return Err(ErrorKind::DuplicateCommitment(out_mmr.commitment()).into());
 				}
 			}
 		}
@@ -1267,7 +1266,7 @@ impl<'a> Extension<'a> {
 		let out_id = out_id.as_ref();
 		debug!("txhashset: merkle_proof: output: {:?}", out_id.commit);
 		// then calculate the Merkle Proof based on the known pos
-		let pos = batch.get_output_pos(&out_id.commit)?;
+		let pos = batch.get_output_pos(&out_id.id())?;
 		let merkle_proof = self.output_pmmr.merkle_proof(pos).map_err(|e| {
 			ErrorKind::TxHashSetErr(format!("pmmr get merkle proof at pos {}, {}", pos, e))
 		})?;
@@ -1371,7 +1370,7 @@ impl<'a> Extension<'a> {
 		// Remove any entries from the output_pos created by the block being rewound.
 		let mut missing_count = 0;
 		for out in block.outputs() {
-			if batch.delete_output_pos_height(&out.commitment()).is_err() {
+			if batch.delete_output_pos_height(&out.id()).is_err() {
 				missing_count += 1;
 			}
 		}
@@ -1402,7 +1401,7 @@ impl<'a> Extension<'a> {
 		if let Ok(spent) = spent {
 			for pos in spent {
 				if let Some(out) = self.output_pmmr.get_data(pos.pos) {
-					batch.save_output_pos_height(&out.commitment(), pos)?;
+					batch.save_output_pos_height(&out.id(), pos)?;
 				}
 			}
 		}

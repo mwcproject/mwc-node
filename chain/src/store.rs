@@ -36,7 +36,8 @@ const BLOCK_PREFIX: u8 = b'b';
 const HEAD_PREFIX: u8 = b'H';
 const TAIL_PREFIX: u8 = b'T';
 const HEADER_HEAD_PREFIX: u8 = b'G';
-const OUTPUT_POS_PREFIX: u8 = b'p';
+const OUTPUT_ID_POS_PREFIX: u8 = b'o';
+const OUTPUT_COMMIT_POS_PREFIX: u8 = b'p'; // deprecated
 
 /// Prefix for NRD kernel pos index lists.
 pub const NRD_KERNEL_LIST_PREFIX: u8 = b'K';
@@ -125,19 +126,19 @@ impl ChainStore {
 	}
 
 	/// Get PMMR pos for the given output commitment.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		match self.get_output_pos_height(commit)? {
+	pub fn get_output_pos(&self, output_id: &Hash) -> Result<u64, Error> {
+		match self.get_output_pos_height(output_id)? {
 			Some(pos) => Ok(pos.pos),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
-				commit
+				output_id
 			))),
 		}
 	}
 
 	/// Get PMMR pos and block height for the given output commitment.
-	pub fn get_output_pos_height(&self, commit: &Commitment) -> Result<Option<CommitPos>, Error> {
-		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit))
+	pub fn get_output_pos_height(&self, output_id: &Hash) -> Result<Option<CommitPos>, Error> {
+		self.db.get_ser(&to_key(OUTPUT_ID_POS_PREFIX, output_id))
 	}
 
 	/// Builds a new batch to be used with this store.
@@ -270,6 +271,26 @@ impl<'a> Batch<'a> {
 		Ok(())
 	}
 
+	/// Migrate output positions from commitment-based to ID-based keys.
+	pub fn migrate_output_positions(&self) -> Result<usize, Error> {
+		let start_key = to_key(OUTPUT_COMMIT_POS_PREFIX, "");
+
+		let mut migrated_count = 0;
+		let commit_pos_iter: SerIterator<(u64, u64)> = self.db.iter(&start_key)?;
+		for (key, (pos, height)) in commit_pos_iter {
+			// Recover commitment from key, which is in format 'p:commitment'
+			let commit = Commitment::from_vec(key[2..].to_vec());
+
+			// Save output position in new format
+			self.save_output_pos_height(&commit.hash(), CommitPos { pos, height })?;
+
+			// Delete the old entry
+			self.db.delete(&key)?;
+			migrated_count += 1;
+		}
+		Ok(migrated_count)
+	}
+
 	/// Low level function to delete directly by raw key.
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
 		self.db.delete(key)
@@ -321,14 +342,14 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Save output_pos and block height to index.
-	pub fn save_output_pos_height(&self, commit: &Commitment, pos: CommitPos) -> Result<(), Error> {
+	pub fn save_output_pos_height(&self, output_id: &Hash, pos: CommitPos) -> Result<(), Error> {
 		self.db
-			.put_ser(&to_key(OUTPUT_POS_PREFIX, commit)[..], &pos)
+			.put_ser(&to_key(OUTPUT_ID_POS_PREFIX, output_id)[..], &pos)
 	}
 
 	/// Delete the output_pos index entry for a spent output.
-	pub fn delete_output_pos_height(&self, commit: &Commitment) -> Result<(), Error> {
-		self.db.delete(&to_key(OUTPUT_POS_PREFIX, commit))
+	pub fn delete_output_pos_height(&self, output_id: &Hash) -> Result<(), Error> {
+		self.db.delete(&to_key(OUTPUT_ID_POS_PREFIX, output_id))
 	}
 
 	/// Delete the commitment for a spent output.
@@ -356,31 +377,31 @@ impl<'a> Batch<'a> {
 	/// When using the output_pos iterator we have access to the index keys but not the
 	/// original commitment that the key is constructed from. So we need a way of comparing
 	/// a key with another commitment without reconstructing the commitment from the key bytes.
-	pub fn is_match_output_pos_key(&self, key: &[u8], commit: &Commitment) -> bool {
-		let commit_key = to_key(OUTPUT_POS_PREFIX, commit);
+	pub fn is_match_output_pos_key(&self, key: &[u8], output_id: &Hash) -> bool {
+		let commit_key = to_key(OUTPUT_ID_POS_PREFIX, output_id);
 		commit_key == key
 	}
 
 	/// Iterator over the output_pos index.
 	pub fn output_pos_iter(&self) -> Result<SerIterator<(u64, u64)>, Error> {
-		let key = to_key(OUTPUT_POS_PREFIX, "");
+		let key = to_key(OUTPUT_ID_POS_PREFIX, "");
 		self.db.iter(&key)
 	}
 
 	/// Get output_pos from index.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		match self.get_output_pos_height(commit)? {
+	pub fn get_output_pos(&self, output_id: &Hash) -> Result<u64, Error> {
+		match self.get_output_pos_height(output_id)? {
 			Some(pos) => Ok(pos.pos),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
-				commit
+				output_id
 			))),
 		}
 	}
 
 	/// Get output_pos and block height from index.
-	pub fn get_output_pos_height(&self, commit: &Commitment) -> Result<Option<CommitPos>, Error> {
-		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit))
+	pub fn get_output_pos_height(&self, output_id: &Hash) -> Result<Option<CommitPos>, Error> {
+		self.db.get_ser(&to_key(OUTPUT_ID_POS_PREFIX, output_id))
 	}
 
 	/// Get the previous header.

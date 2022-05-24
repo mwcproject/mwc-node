@@ -14,6 +14,7 @@
 
 use super::utils::w;
 use crate::chain;
+use crate::core::core::hash::Hashed;
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
@@ -133,19 +134,21 @@ impl TxHashSetHandler {
 		let c = util::from_hex(id)
 			.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
 		let commit = Commitment::from_vec(c);
+		let output_id = commit.hash();
 		let chain = w(&self.chain)?;
-		let output_pos = chain.get_output_pos(&commit).map_err(|e| {
+		let output_pos = chain.get_output_pos(&output_id).map_err(|e| {
 			ErrorKind::NotFound(format!(
 				"Unable to get a MMR position for commit {}, {}",
 				id, e
 			))
 		})?;
-		let merkle_proof = chain::Chain::get_merkle_proof_for_pos(&chain, commit).map_err(|e| {
-			ErrorKind::NotFound(format!(
-				"Unable to get a merkle proof for commit {}, {}",
-				id, e
-			))
-		})?;
+		let merkle_proof =
+			chain::Chain::get_merkle_proof_for_pos(&chain, output_id).map_err(|e| {
+				ErrorKind::NotFound(format!(
+					"Unable to get a merkle proof for commit {}, {}",
+					id, e
+				))
+			})?;
 		Ok(OutputPrintable {
 			output_type: OutputType::Coinbase,
 			commit: Commitment::from_vec(vec![]),

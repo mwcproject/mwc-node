@@ -36,6 +36,8 @@ use util::static_secp_instance;
 use util::RwLock;
 use util::ToHex;
 
+impl DefaultHashable for Commitment {}
+
 /// Relative height field on NRD kernel variant.
 /// u16 representing a height between 1 and MAX (consensus::WEEK_HEIGHT).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -612,11 +614,12 @@ impl TxKernel {
 		self.excess
 	}
 
+	/// Return the kernel signature.
 	pub fn excess_sig(&self) -> secp::Signature {
 		match self.proof {
 			KernelProof::Interactive { excess_sig } => excess_sig,
 			KernelProof::NonInteractive {
-				stealth_excess,
+				stealth_excess: _,
 				signature,
 			} => signature.get(),
 		}
@@ -675,6 +678,7 @@ impl TxKernel {
 		Ok(())
 	}
 
+	/// Creates an interactive TxKernel.
 	pub fn new_interactive(
 		features: KernelFeatures,
 		excess: Commitment,
@@ -1607,39 +1611,15 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 
 /// Proof of ownership of the output being spent.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-pub enum InputProof {
-	/// For interactive transactions, there's no output public key P to prove knowledge of,
-	/// so a balanced MW transaction is the only proof needed.
-	Interactive,
-	/// Non-interactive transactions require a signature proving ownership of the referenced output.
-	Noninteractive {
-		/// The hash of the output being spent.
-		output_hash: Hash,
-		/// The one-time public key P of the output being spent.
-		output_pk: secp::PublicKey,
-		/// The "doubling" key D, chosen by the sender.
-		doubling_pk: secp::PublicKey,
-		/// The signature ψ proving knowledge of the discrete logarithm of P and D
-		sig: aggsig::BatchSignature,
-	},
-}
-
-impl Default for InputProof {
-	fn default() -> Self {
-		InputProof::Interactive
-	}
-}
-
-impl Writeable for InputProof {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		Ok(())
-	}
-}
-
-impl Readable for InputProof {
-	fn read<R: Reader>(reader: &mut R) -> Result<InputProof, ser::Error> {
-		Ok(InputProof::Interactive)
-	}
+pub struct InputProof {
+	/// The hash of the output being spent.
+	output_hash: Hash,
+	/// The one-time public key P of the output being spent.
+	output_pk: secp::PublicKey,
+	/// The "doubling" key D, chosen by the sender.
+	doubling_pk: secp::PublicKey,
+	/// The signature ψ proving knowledge of the discrete logarithm of P and D
+	sig: aggsig::BatchSignature,
 }
 
 /// A transaction input.
@@ -1656,9 +1636,10 @@ pub struct Input {
 		deserialize_with = "secp_ser::commitment_from_hex"
 	)]
 	pub commit: Commitment,
-	/// The input type: Interactive or non-interactive.
-	#[serde(default)]
-	pub proof: InputProof,
+	/// Proof of ownership of the referenced output. Only needed for non-interactive transctions.
+	/// For interactive transactions, there's no output public key P to prove knowledge of,
+	/// so a balanced MW transaction is the only proof needed.
+	pub proof: Option<InputProof>,
 }
 
 impl DefaultHashable for Input {}
@@ -1675,7 +1656,7 @@ impl From<&OutputIdentifier> for Input {
 		Input {
 			features: out.features,
 			commit: out.commit,
-			proof: InputProof::Interactive,
+			proof: None,
 		}
 	}
 }
@@ -1686,7 +1667,6 @@ impl Writeable for Input {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.features.write(writer)?;
 		self.commit.write(writer)?;
-		self.proof.write(writer)?;
 		Ok(())
 	}
 }
@@ -1697,8 +1677,7 @@ impl Readable for Input {
 	fn read<R: Reader>(reader: &mut R) -> Result<Input, ser::Error> {
 		let features = OutputFeatures::read(reader)?;
 		let commit = Commitment::read(reader)?;
-		let proof = InputProof::read(reader)?;
-		Ok(Input::new(features, commit, proof))
+		Ok(Input::new(features, commit, None))
 	}
 }
 
@@ -1709,7 +1688,7 @@ impl Readable for Input {
 impl Input {
 	/// Build a new input from the data required to identify and verify an
 	/// output being spent.
-	pub fn new(features: OutputFeatures, commit: Commitment, proof: InputProof) -> Input {
+	pub fn new(features: OutputFeatures, commit: Commitment, proof: Option<InputProof>) -> Input {
 		Input {
 			features,
 			commit,
@@ -1854,7 +1833,7 @@ impl From<&[OutputIdentifier]> for Inputs {
 			.map(|out| Input {
 				features: out.features,
 				commit: out.commit,
-				proof: InputProof::Interactive,
+				proof: None,
 			})
 			.collect();
 		inputs.sort_unstable();
@@ -2091,6 +2070,11 @@ impl Output {
 		self.identifier.commitment()
 	}
 
+	/// Unique ID of the output
+	pub fn id(&self) -> Hash {
+		self.identifier.id()
+	}
+
 	/// Output features.
 	pub fn features(&self) -> OutputFeatures {
 		self.identifier.features
@@ -2177,6 +2161,11 @@ impl OutputIdentifier {
 	/// Our commitment.
 	pub fn commitment(&self) -> Commitment {
 		self.commit
+	}
+
+	/// Unique ID of the output.
+	pub fn id(&self) -> Hash {
+		self.commit.hash() // TODO: Return output hash for non-interactive transactions
 	}
 
 	/// Is this a coinbase output?
@@ -2470,7 +2459,7 @@ mod test {
 		let input = Input {
 			features: OutputFeatures::Plain,
 			commit,
-			proof: InputProof::Interactive,
+			proof: None,
 		};
 
 		let block_hash =
@@ -2487,7 +2476,7 @@ mod test {
 		let input = Input {
 			features: OutputFeatures::Coinbase,
 			commit,
-			proof: InputProof::Interactive,
+			proof: None,
 		};
 
 		let short_id = input.short_id(&block_hash, nonce);

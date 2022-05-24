@@ -32,7 +32,7 @@
 //! )
 
 use crate::core::{
-	Input, InputProof, KernelFeatures, KernelProof, Output, OutputFeatures, Transaction, TxKernel,
+	Input, KernelFeatures, KernelProof, Output, OutputFeatures, Transaction, TxKernel,
 };
 use crate::libtx::proof::{self, ProofBuild};
 use crate::libtx::{aggsig, Error};
@@ -73,7 +73,7 @@ where
 						.keychain
 						.commit(value, &key_id, SwitchCommitmentType::Regular)?;
 				// TODO: proper support for different switch commitment schemes
-				let input = Input::new(features, commit, InputProof::Interactive);
+				let input = Input::new(features, commit, None);
 				Ok((
 					tx.with_input(input),
 					sum.sub_key_id(key_id.to_value_path(value)),

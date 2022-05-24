@@ -69,7 +69,7 @@ impl HeaderHandler {
 				)
 			}
 		};
-		match w(&self.chain)?.get_header_for_output(oid.commitment()) {
+		match w(&self.chain)?.get_header_for_output(oid.id()) {
 			Ok(header) => Ok(BlockHeaderPrintable::from_header(&header)),
 			Err(e) => Err(ErrorKind::NotFound(format!(
 				"Header for output {}, {}",
@@ -114,7 +114,7 @@ impl HeaderHandler {
 					return Err(ErrorKind::NotFound(format!("Output {} not found", commit)).into())
 				}
 			};
-			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
+			match w(&self.chain)?.get_header_for_output(oid.id()) {
 				Ok(header) => return Ok(header.hash()),
 				Err(e) => {
 					return Err(ErrorKind::NotFound(format!(
@@ -230,7 +230,7 @@ impl BlockHandler {
 				Some((_, o)) => o,
 				None => return Err(ErrorKind::NotFound(format!("Output {}", commit)).into()),
 			};
-			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
+			match w(&self.chain)?.get_header_for_output(oid.id()) {
 				Ok(header) => return Ok(header.hash()),
 				Err(e) => {
 					return Err(ErrorKind::NotFound(format!(

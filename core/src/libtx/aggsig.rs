@@ -465,6 +465,7 @@ pub fn sign_with_blinding(
 pub struct BatchSignature(Signature);
 
 impl BatchSignature {
+	/// Get the underlying Signature object.
 	pub fn get(&self) -> Signature {
 		self.0
 	}

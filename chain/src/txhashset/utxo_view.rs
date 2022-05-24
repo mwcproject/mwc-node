@@ -122,10 +122,10 @@ impl<'a> UTXOView<'a> {
 		input: Commitment,
 		batch: &Batch<'_>,
 	) -> Result<(OutputIdentifier, CommitPos), Error> {
-		let pos = batch.get_output_pos_height(&input)?;
+		let pos = batch.get_output_pos_height(&input.hash())?;
 		if let Some(pos) = pos {
 			if let Some(out) = self.output_pmmr.get_data(pos.pos) {
-				if out.commitment() == input {
+				if out.id() == input.hash() {
 					return Ok((out, pos));
 				} else {
 					error!("input mismatch: {:?}, {:?}, {:?}", out, pos, input);
@@ -141,7 +141,7 @@ impl<'a> UTXOView<'a> {
 
 	// Output is valid if it would not result in a duplicate commitment in the output MMR.
 	fn validate_output(&self, output: &Output, batch: &Batch<'_>) -> Result<(), Error> {
-		if let Ok(pos) = batch.get_output_pos(&output.commitment()) {
+		if let Ok(pos) = batch.get_output_pos(&output.id()) {
 			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
 				if out_mmr.commitment() == output.commitment() {
 					return Err(ErrorKind::DuplicateCommitment(output.commitment()).into());
