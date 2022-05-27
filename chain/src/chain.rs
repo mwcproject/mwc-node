@@ -1552,13 +1552,18 @@ impl Chain {
 		Ok(())
 	}
 
-	/// Migrate our local db outputs from commitment-based to ID-based.
+	/// Migrate our local db output position and spent entries from commitment-based to ID-based.
 	fn migrate_db_outputs(store: &ChainStore) -> Result<(), Error> {
 		let batch = store.batch()?;
-		let migrated_count = batch.migrate_output_positions()?;
+		let migrated_positions = batch.migrate_output_positions()?;
 		debug!(
 			"migrate_db_outputs: migrated {} output position entries",
-			migrated_count
+			migrated_positions
+		);
+		let migrated_spent = batch.migrate_spent_commitments()?;
+		debug!(
+			"migrate_db_outputs: migrated {} spent commitment entries",
+			migrated_spent
 		);
 		batch.commit()?;
 		Ok(())

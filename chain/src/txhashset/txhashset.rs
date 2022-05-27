@@ -1126,7 +1126,7 @@ impl<'a> Extension<'a> {
 			.utxo_view(header_ext)
 			.validate_inputs(&b.inputs(), batch)?;
 		for (out, pos) in &spent {
-			self.apply_input(out.commitment(), *pos)?;
+			self.apply_input(out.id(), *pos)?;
 			affected_pos.push(pos.pos);
 			batch.delete_output_pos_height(&out.id())?;
 			//save the spent commitments.
@@ -1134,7 +1134,7 @@ impl<'a> Extension<'a> {
 				hash: b.hash().clone(),
 				height: b.header.height.clone(),
 			};
-			batch.save_spent_commitments(&out.commitment().clone(), hh)?;
+			batch.save_spent_id(&out.id(), hh)?;
 		}
 
 		// Update the spent index with spent pos.
@@ -1172,7 +1172,7 @@ impl<'a> Extension<'a> {
 
 	// Prune output and rangeproof PMMRs based on provided pos.
 	// Input is not valid if we cannot prune successfully.
-	fn apply_input(&mut self, commit: Commitment, pos: CommitPos) -> Result<(), Error> {
+	fn apply_input(&mut self, output_id: Hash, pos: CommitPos) -> Result<(), Error> {
 		match self.output_pmmr.prune(pos.pos) {
 			Ok(true) => {
 				self.rproof_pmmr
@@ -1180,7 +1180,7 @@ impl<'a> Extension<'a> {
 					.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
 				Ok(())
 			}
-			Ok(false) => Err(ErrorKind::AlreadySpent(commit).into()),
+			Ok(false) => Err(ErrorKind::AlreadySpent(output_id).into()),
 			Err(e) => Err(ErrorKind::TxHashSetErr(e).into()),
 		}
 	}
@@ -1191,7 +1191,7 @@ impl<'a> Extension<'a> {
 		if let Ok(pos) = batch.get_output_pos(&output_id) {
 			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
 				if out_mmr.id() == output_id {
-					return Err(ErrorKind::DuplicateCommitment(out_mmr.commitment()).into());
+					return Err(ErrorKind::DuplicateOutputId(out_mmr.id()).into());
 				}
 			}
 		}

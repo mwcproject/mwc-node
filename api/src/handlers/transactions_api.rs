@@ -133,7 +133,7 @@ impl TxHashSetHandler {
 	fn get_merkle_proof_for_output(&self, id: &str) -> Result<OutputPrintable, Error> {
 		let c = util::from_hex(id)
 			.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
-		let commit = Commitment::from_vec(c);
+		let commit = Commitment::from_vec(c); // todo: switch to output ID
 		let output_id = commit.hash();
 		let chain = w(&self.chain)?;
 		let output_pos = chain.get_output_pos(&output_id).map_err(|e| {

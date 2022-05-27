@@ -1696,10 +1696,15 @@ impl Input {
 		}
 	}
 
-	/// The input commitment which _partially_ identifies the output being
+	/// The output ID which _partially_ identifies the output being
 	/// spent. In the presence of a fork we need additional info to uniquely
 	/// identify the output. Specifically the block hash (to correctly
 	/// calculate lock_height for coinbase outputs).
+	pub fn output_id(&self) -> Hash {
+		self.commit.hash() // todo: return output hash for NITX outputs
+	}
+
+	/// The commitment of the output being spent.
 	pub fn commitment(&self) -> Commitment {
 		self.commit
 	}
@@ -1800,6 +1805,11 @@ impl CommitWrapper {
 	/// Wrapped commitment.
 	pub fn commitment(&self) -> Commitment {
 		self.commit
+	}
+
+	/// Output identifier.
+	pub fn output_id(&self) -> Hash {
+		self.commit.hash()
 	}
 }
 /// Wrapper around a vec of inputs.
@@ -2137,7 +2147,7 @@ pub struct OutputIdentifier {
 		serialize_with = "secp_ser::as_hex",
 		deserialize_with = "secp_ser::commitment_from_hex"
 	)]
-	pub commit: Commitment,
+	pub commit: Commitment, // todo: replace with output ID
 }
 
 impl DefaultHashable for OutputIdentifier {}

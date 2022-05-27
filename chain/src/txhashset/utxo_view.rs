@@ -21,7 +21,7 @@ use crate::core::global;
 use crate::error::{Error, ErrorKind};
 use crate::store::Batch;
 use crate::types::CommitPos;
-use crate::util::secp::pedersen::{Commitment, RangeProof};
+use crate::util::secp::pedersen::RangeProof;
 use grin_store::pmmr::PMMRBackend;
 
 /// Readonly view of the UTXO set (based on output MMR).
@@ -86,7 +86,7 @@ impl<'a> UTXOView<'a> {
 				let outputs_spent: Result<Vec<_>, Error> = inputs
 					.iter()
 					.map(|input| {
-						self.validate_input(input.commitment(), batch)
+						self.validate_input(input.output_id(), batch)
 							.and_then(|(out, pos)| Ok((out, pos)))
 					})
 					.collect();
@@ -96,7 +96,7 @@ impl<'a> UTXOView<'a> {
 				let outputs_spent: Result<Vec<_>, Error> = inputs
 					.iter()
 					.map(|input| {
-						self.validate_input(input.commitment(), batch)
+						self.validate_input(input.output_id(), batch)
 							.and_then(|(out, pos)| {
 								// Unspent output found.
 								// Check input matches full output identifier.
@@ -116,16 +116,16 @@ impl<'a> UTXOView<'a> {
 
 	// Input is valid if it is spending an (unspent) output
 	// that currently exists in the output MMR.
-	// Note: We lookup by commitment. Caller must compare the full input as necessary.
+	// Note: We lookup by ID. Caller must compare the full input as necessary.
 	fn validate_input(
 		&self,
-		input: Commitment,
+		input: Hash,
 		batch: &Batch<'_>,
 	) -> Result<(OutputIdentifier, CommitPos), Error> {
-		let pos = batch.get_output_pos_height(&input.hash())?;
+		let pos = batch.get_output_pos_height(&input)?;
 		if let Some(pos) = pos {
 			if let Some(out) = self.output_pmmr.get_data(pos.pos) {
-				if out.id() == input.hash() {
+				if out.id() == input {
 					return Ok((out, pos));
 				} else {
 					error!("input mismatch: {:?}, {:?}, {:?}", out, pos, input);
@@ -143,8 +143,8 @@ impl<'a> UTXOView<'a> {
 	fn validate_output(&self, output: &Output, batch: &Batch<'_>) -> Result<(), Error> {
 		if let Ok(pos) = batch.get_output_pos(&output.id()) {
 			if let Some(out_mmr) = self.output_pmmr.get_data(pos) {
-				if out_mmr.commitment() == output.commitment() {
-					return Err(ErrorKind::DuplicateCommitment(output.commitment()).into());
+				if out_mmr.id() == output.id() {
+					return Err(ErrorKind::DuplicateOutputId(output.id()).into());
 				}
 			}
 		}
@@ -175,7 +175,7 @@ impl<'a> UTXOView<'a> {
 		// Lookup the outputs being spent.
 		let spent: Result<Vec<_>, _> = inputs
 			.iter()
-			.map(|x| self.validate_input(x.commitment(), batch))
+			.map(|x| self.validate_input(x.output_id(), batch))
 			.collect();
 
 		// Find the max pos of any coinbase being spent.

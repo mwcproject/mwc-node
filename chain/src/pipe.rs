@@ -87,25 +87,22 @@ pub fn check_against_spent_output(
 	header_extension: &txhashset::HeaderExtension<'_>,
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
-	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
+	let output_ids = tx.outputs.iter().map(|output| output.id());
 	let tip = batch.head().unwrap();
 	let fork_height = fork_point_height.unwrap_or(tip.height);
 	//convert the list of local branch bocks header hashes to a hash set for quick search
 	let local_branch_blocks_list = local_branch_blocks.unwrap_or(Vec::new());
 	let local_branch_blocks_set = HashSet::<&Hash>::from_iter(local_branch_blocks_list.iter());
 
-	for commit in output_commits {
-		let commit_hash = batch.get_spent_commitments(&commit)?; // check to see if this commitment is in the spent records in db
-		if let Some(c_hash) = commit_hash {
+	for id in output_ids {
+		let id_hash = batch.get_spent_ids(&id)?; // check to see if this output id is in the spent records in db
+		if let Some(c_hash) = id_hash {
 			for hash_val in c_hash {
 				//first check the local branch.
 				if hash_val.height > fork_height && local_branch_blocks_set.contains(&hash_val.hash)
 				{
 					//first check the local branch.
-					error!(
-						"output contains spent commtiment:{:?} from local branch",
-						commit
-					);
+					error!("output contains spent id:{:?} from local branch", id);
 					return Err(ErrorKind::Other(
 						"output invalid, could be a replay attack".to_string(),
 					)
@@ -117,10 +114,7 @@ pub fn check_against_spent_output(
 						warn!("the height data is messed up in the lmdb");
 					}
 					if header_extension.is_on_current_chain(&header, batch).is_ok() {
-						error!(
-							"output contains spent commtiment:{:?} from the main chain",
-							commit
-						);
+						error!("output contains spent id:{:?} from the main chain", id);
 						return Err(ErrorKind::Other(
 							"output invalid, could be a replay attack".to_string(),
 						)

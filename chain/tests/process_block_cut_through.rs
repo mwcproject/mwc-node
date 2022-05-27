@@ -21,6 +21,7 @@ use grin_util as util;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{pipe, Chain, Options};
+use crate::core::core::hash::Hashed;
 use crate::core::core::verifier_cache::LruVerifierCache;
 use crate::core::core::{block, pmmr, transaction};
 use crate::core::core::{Block, KernelFeatures, Transaction, Weighting};
@@ -148,7 +149,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	// Transaction will not validate against the chain (utxo).
 	assert_eq!(
 		chain.validate_tx(&tx).map_err(|e| e.kind()),
-		Err(chain::ErrorKind::DuplicateCommitment(commit)),
+		Err(chain::ErrorKind::DuplicateOutputId(commit.hash())),
 	);
 
 	// Build a block with this single invalid transaction.

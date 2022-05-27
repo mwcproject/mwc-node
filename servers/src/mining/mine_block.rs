@@ -87,10 +87,8 @@ pub fn get_block(
 		let mut new_key_id = key_id.to_owned();
 		match e {
 			self::Error::Chain(c) => match c.kind() {
-				chain::ErrorKind::DuplicateCommitment(_) => {
-					debug!(
-						"Duplicate commit for potential coinbase detected. Trying next derivation."
-					);
+				chain::ErrorKind::DuplicateOutputId(_) => {
+					debug!("Duplicate output ID for potential coinbase detected. Trying next derivation.");
 					// use the next available key to generate a different coinbase commitment
 					new_key_id = None;
 				}
@@ -197,12 +195,12 @@ fn build_block(
 		Ok(_) => Ok((b, block_fees)),
 		Err(e) => {
 			match e.kind() {
-				// If this is a duplicate commitment then likely trying to use
+				// If this is a duplicate output ID then likely trying to use
 				// a key that hass already been derived but not in the wallet
 				// for some reason, allow caller to retry.
-				chain::ErrorKind::DuplicateCommitment(e) => Err(Error::Chain(
-					chain::ErrorKind::DuplicateCommitment(e).into(),
-				)),
+				chain::ErrorKind::DuplicateOutputId(e) => {
+					Err(Error::Chain(chain::ErrorKind::DuplicateOutputId(e).into()))
+				}
 
 				// Some other issue, possibly duplicate kernel
 				_ => {
