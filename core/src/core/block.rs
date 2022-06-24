@@ -789,6 +789,8 @@ impl Block {
 			self.block_kernel_offset(prev_kernel_offset.clone())?,
 		)?;
 
+		// todo: Verify stealth sums
+
 		Ok(kernel_sum)
 	}
 

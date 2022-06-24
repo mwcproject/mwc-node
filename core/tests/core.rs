@@ -43,10 +43,10 @@ fn test_setup() {
 fn simple_tx_ser() {
 	let tx = tx2i1o();
 
-	// Default protocol version (3).
+	// Default protocol version (4).
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &tx).expect("serialization failed");
-	assert_eq!(vec.len(), 945);
+	assert_eq!(vec.len(), 946);
 
 	// Explicit protocol version 3.
 	let mut vec = Vec::new();
@@ -84,10 +84,15 @@ fn simple_tx_ser() {
 	ser::serialize(&mut vec, ser::ProtocolVersion(3), &tx).expect("serialization failed");
 	assert_eq!(vec.len(), 945);
 
+	// Explicit protocol version 4.
+	let mut vec = Vec::new();
+	ser::serialize(&mut vec, ser::ProtocolVersion(4), &tx).expect("serialization failed");
+	assert_eq!(vec.len(), 948);
+
 	// And default protocol version for completeness.
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &tx).expect("serialization failed");
-	assert_eq!(vec.len(), 945);
+	assert_eq!(vec.len(), 948);
 }
 
 #[test]

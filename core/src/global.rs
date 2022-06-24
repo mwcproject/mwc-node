@@ -41,7 +41,7 @@ use util::OneTime;
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
 /// NOTE, grin bump the protocol version to 1000, but in any case fo far 1,2,3 are supported.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(4);
 
 /// Automated testing edge_bits
 pub const AUTOMATED_TESTING_MIN_EDGE_BITS: u8 = 10;

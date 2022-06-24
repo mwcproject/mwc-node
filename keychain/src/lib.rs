@@ -28,6 +28,7 @@ extern crate lazy_static;
 pub mod base58;
 pub mod extkey_bip32;
 pub mod mnemonic;
+pub mod stealth;
 mod types;
 pub mod view_key;
 

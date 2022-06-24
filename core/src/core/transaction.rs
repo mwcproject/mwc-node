@@ -432,6 +432,9 @@ pub enum Error {
 	/// Underlying serialization error.
 	#[fail(display = "Tx Serialization error, {}", _0)]
 	Serialization(ser::Error),
+	/// Error in AggSig library.
+	#[fail(display = "Tx Error, {}", _0)]
+	AggSigError(String),
 }
 
 impl From<ser::Error> for Error {
@@ -614,6 +617,23 @@ impl TxKernel {
 		self.excess
 	}
 
+	/// Return the public key the signature proves knowledge of.
+	pub fn excess_pubkey(&self) -> Result<secp::PublicKey, Error> {
+		let pubkey = match self.proof {
+			KernelProof::Interactive { excess_sig: _ } => self.excess.to_pubkey()?,
+			KernelProof::NonInteractive {
+				stealth_excess,
+				signature: _,
+			} => aggsig::build_composite_pubkey(
+				&secp::Secp256k1::new(),
+				&self.excess.to_pubkey()?,
+				&stealth_excess.to_pubkey()?,
+			)
+			.map_err(|e| Error::AggSigError(e.to_string()))?,
+		};
+		Ok(pubkey)
+	}
+
 	/// Return the kernel signature.
 	pub fn excess_sig(&self) -> secp::Signature {
 		match self.proof {
@@ -640,7 +660,7 @@ impl TxKernel {
 		let secp = secp.lock();
 		let sig = &self.excess_sig();
 		// Verify aggsig directly in libsecp
-		let pubkey = &self.excess.to_pubkey()?;
+		let pubkey = &self.excess_pubkey()?;
 		if !aggsig::verify_single(
 			&secp,
 			&sig,
@@ -667,7 +687,7 @@ impl TxKernel {
 
 		for tx_kernel in tx_kernels {
 			sigs.push(tx_kernel.excess_sig());
-			pubkeys.push(tx_kernel.excess.to_pubkey()?);
+			pubkeys.push(tx_kernel.excess_pubkey()?);
 			msgs.push(tx_kernel.msg_to_sign()?);
 		}
 
@@ -686,7 +706,7 @@ impl TxKernel {
 	) -> TxKernel {
 		TxKernel {
 			features,
-			excess: excess,
+			excess,
 			proof: KernelProof::Interactive { excess_sig },
 		}
 	}
@@ -1202,6 +1222,8 @@ pub struct Transaction {
 		deserialize_with = "secp_ser::blind_from_hex"
 	)]
 	pub offset: BlindingFactor,
+	/// The stealth offset
+	pub stealth_offset: Option<BlindingFactor>,
 	/// The transaction body - inputs/outputs/kernels
 	pub body: TransactionBody,
 }
@@ -1211,7 +1233,7 @@ impl DefaultHashable for Transaction {}
 /// PartialEq
 impl PartialEq for Transaction {
 	fn eq(&self, tx: &Transaction) -> bool {
-		self.body == tx.body && self.offset == tx.offset
+		self.body == tx.body && self.offset == tx.offset && self.stealth_offset == tx.stealth_offset
 	}
 }
 
@@ -1220,6 +1242,14 @@ impl PartialEq for Transaction {
 impl Writeable for Transaction {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.offset.write(writer)?;
+		if writer.protocol_version().value() >= 4 {
+			if let Some(stealth_offset) = self.stealth_offset.as_ref() {
+				writer.write_u8(1)?;
+				stealth_offset.write(writer)?;
+			} else {
+				writer.write_u8(0)?;
+			}
+		}
 		self.body.write(writer)?;
 		Ok(())
 	}
@@ -1230,8 +1260,16 @@ impl Writeable for Transaction {
 impl Readable for Transaction {
 	fn read<R: Reader>(reader: &mut R) -> Result<Transaction, ser::Error> {
 		let offset = BlindingFactor::read(reader)?;
+		let mut stealth_offset = None;
+		if reader.protocol_version().value() >= 4 && reader.read_u8()? == 1 {
+			stealth_offset = Some(BlindingFactor::read(reader)?);
+		};
 		let body = TransactionBody::read(reader)?;
-		let tx = Transaction { offset, body };
+		let tx = Transaction {
+			offset,
+			stealth_offset,
+			body,
+		};
 
 		// Now "lightweight" validation of the tx.
 		// Treat any validation issues as data corruption.
@@ -1269,6 +1307,7 @@ impl Transaction {
 	pub fn empty() -> Transaction {
 		Transaction {
 			offset: BlindingFactor::zero(),
+			stealth_offset: None,
 			body: Default::default(),
 		}
 	}
@@ -1282,6 +1321,7 @@ impl Transaction {
 
 		Transaction {
 			offset: BlindingFactor::zero(),
+			stealth_offset: None,
 			body,
 		}
 	}
@@ -1290,6 +1330,15 @@ impl Transaction {
 	/// and with the specified offset.
 	pub fn with_offset(self, offset: BlindingFactor) -> Transaction {
 		Transaction { offset, ..self }
+	}
+
+	/// Creates a new transaction using this transaction as a template
+	/// and with the specified stealth offset.
+	pub fn with_stealth_offset(self, stealth_offset: BlindingFactor) -> Transaction {
+		Transaction {
+			stealth_offset: Some(stealth_offset),
+			..self
+		}
 	}
 
 	/// Builds a new transaction with the provided inputs added. Existing
@@ -1609,17 +1658,34 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 	)
 }
 
-/// Proof of ownership of the output being spent.
+/// Proof of possession (ownership) of the output being spent.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct InputProof {
 	/// The hash of the output being spent.
-	output_hash: Hash,
+	output_id: Hash,
 	/// The one-time public key P of the output being spent.
 	output_pk: secp::PublicKey,
 	/// The "doubling" key D, chosen by the sender.
 	doubling_pk: secp::PublicKey,
 	/// The signature ψ proving knowledge of the discrete logarithm of P and D
 	sig: aggsig::BatchSignature,
+}
+
+impl InputProof {
+	/// Create a new proof of possession (PoP) for the input.
+	pub fn new(
+		output_id: Hash,
+		output_pk: secp::PublicKey,
+		doubling_pk: secp::PublicKey,
+		sig: aggsig::BatchSignature,
+	) -> InputProof {
+		InputProof {
+			output_id,
+			output_pk,
+			doubling_pk,
+			sig,
+		}
+	}
 }
 
 /// A transaction input.
@@ -1884,8 +1950,11 @@ impl Writeable for Inputs {
 				},
 				Inputs::FeaturesAndCommit(inputs) => match writer.protocol_version().value() {
 					0..=2 => inputs.write(writer)?,
-					3..=ProtocolVersion::MAX => {
+					3 => {
 						let inputs: Vec<CommitWrapper> = self.into();
+						inputs.write(writer)?;
+					}
+					4..=ProtocolVersion::MAX => {
 						inputs.write(writer)?;
 					}
 				},
@@ -2067,6 +2136,26 @@ impl Output {
 			identifier: OutputIdentifier { features, commit },
 			proof,
 			keys: None,
+		}
+	}
+
+	/// Create a new output for a non-interactive transaction with the provided attributes.
+	pub fn new_nitx(
+		features: OutputFeatures,
+		commit: Commitment,
+		proof: RangeProof,
+		ephemeral_pk: secp::PublicKey,
+		output_pk: secp::PublicKey,
+		sig: secp::Signature,
+	) -> Output {
+		Output {
+			identifier: OutputIdentifier { features, commit },
+			proof,
+			keys: Some(OutputKeys {
+				ephemeral_pk,
+				output_pk,
+				sig,
+			}),
 		}
 	}
 
