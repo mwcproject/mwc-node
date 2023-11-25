@@ -38,13 +38,14 @@ pub mod client;
 mod foreign;
 mod foreign_rpc;
 mod handlers;
+pub mod json_rpc;
 mod owner;
 mod owner_rpc;
 mod rest;
 mod router;
 mod stratum;
 mod stratum_rpc;
-mod types;
+pub mod types;
 
 pub use crate::auth::{
 	BasicAuthMiddleware, BasicAuthURIMiddleware, MWC_BASIC_REALM, MWC_FOREIGN_BASIC_REALM,
