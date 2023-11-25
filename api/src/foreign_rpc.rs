@@ -25,7 +25,9 @@ use crate::types::{
 	BlockHeaderPrintable, BlockPrintable, LocatedTxKernel, OutputListing, OutputPrintable, Tip,
 	Version,
 };
-use crate::{util, Libp2pMessages, Libp2pPeers};
+use crate::util;
+#[cfg(feature = "marketplace")]
+use crate::{Libp2pMessages, Libp2pPeers};
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `grin` with defaults, the V2 api is available at
@@ -861,7 +863,7 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), ErrorKind>;
-
+	/*
 	/**
 	Networked version of [Owner::get_libp2p_peers](struct.Owner.html#method.get_libp2p_peers).
 
@@ -894,13 +896,15 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, ErrorKind>;
-
+	*/
+	/*
 	/**
 		Networked version of [Owner::get_libp2p_messages](struct.Owner.html#method.get_libp2p_messages).
 
 		// No example because if current time dynamic nature.
 	*/
 	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, ErrorKind>;
+	*/
 }
 
 impl<B, P, V> ForeignRpc for Foreign<B, P, V>
@@ -1027,11 +1031,11 @@ where
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), ErrorKind> {
 		Foreign::push_transaction(self, tx, fluff).map_err(|e| e.kind().clone())
 	}
-
+	#[cfg(feature = "marketplace")]
 	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, ErrorKind> {
 		Foreign::get_libp2p_peers(self).map_err(|e| e.kind().clone())
 	}
-
+	#[cfg(feature = "marketplace")]
 	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, ErrorKind> {
 		Foreign::get_libp2p_messages(self).map_err(|e| e.kind().clone())
 	}

@@ -31,8 +31,11 @@ use crate::types::{
 	Version,
 };
 use crate::util::RwLock;
+#[cfg(feature = "marketplace")]
 use crate::{Libp2pMessages, Libp2pPeers};
+#[cfg(feature = "marketplace")]
 use chrono::Utc;
+#[cfg(feature = "marketplace")]
 use grin_p2p::libp2p_connection;
 use std::sync::Weak;
 
@@ -370,6 +373,7 @@ where
 		}
 	}
 
+	#[cfg(feature = "marketplace")]
 	/// Get TOR address on this node. Return none if TOR is not running.
 	pub fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
 		//get_server_onion_address()
@@ -395,7 +399,7 @@ where
 			node_peers,
 		})
 	}
-
+	#[cfg(feature = "marketplace")]
 	pub fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
 		Ok(Libp2pMessages {
 			current_time: Utc::now().timestamp(),

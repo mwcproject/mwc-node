@@ -20,6 +20,7 @@ use crate::core::{core, ser};
 use crate::p2p;
 use crate::util::secp::pedersen;
 use crate::util::{self, ToHex};
+#[cfg(feature = "marketplace")]
 use grin_p2p::libp2p_connection;
 use serde;
 use serde::de::MapAccess;
@@ -773,7 +774,7 @@ pub struct Libp2pPeers {
 	/// Other nodes. There is a high chance that they are running libp2p network
 	pub node_peers: Vec<String>,
 }
-
+#[cfg(feature = "marketplace")]
 /// Libp2p message from this node
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Libp2pMessages {
