@@ -668,7 +668,7 @@ impl BlockPrintable {
 			.map(|output| {
 				OutputPrintable::from_output(
 					output,
-					chain.clone(),
+					chain,
 					Some(&block.header),
 					include_proof,
 					include_merkle_proof,

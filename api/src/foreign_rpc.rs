@@ -895,9 +895,10 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
+	#[cfg(feature = "marketplace")]
 	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, ErrorKind>;
-	*/
-	/*
+
+
 	/**
 		Networked version of [Owner::get_libp2p_messages](struct.Owner.html#method.get_libp2p_messages).
 
@@ -1031,6 +1032,7 @@ where
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), ErrorKind> {
 		Foreign::push_transaction(self, tx, fluff).map_err(|e| e.kind().clone())
 	}
+	/*
 	#[cfg(feature = "marketplace")]
 	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, ErrorKind> {
 		Foreign::get_libp2p_peers(self).map_err(|e| e.kind().clone())
@@ -1039,6 +1041,7 @@ where
 	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, ErrorKind> {
 		Foreign::get_libp2p_messages(self).map_err(|e| e.kind().clone())
 	}
+	*/
 }
 
 #[doc(hidden)]
