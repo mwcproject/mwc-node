@@ -70,12 +70,19 @@ use grin_util::secp::SecretKey;
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
+#[cfg(feature = "marketplace")]
 use crate::p2p::libp2p_connection;
+#[cfg(feature = "marketplace")]
 use chrono::Utc;
+#[cfg(feature = "marketplace")]
 use grin_core::core::TxKernel;
+#[cfg(feature = "marketplace")]
 use grin_util::from_hex;
+#[cfg(feature = "marketplace")]
 use grin_util::secp::constants::SECRET_KEY_SIZE;
+#[cfg(feature = "marketplace")]
 use grin_util::secp::pedersen::Commitment;
+#[cfg(feature = "marketplace")]
 use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
@@ -403,6 +410,7 @@ impl Server {
 			socks_port, config.tor_config.tor_enabled
 		);
 
+		#[cfg(feature = "marketplace")]
 		// Initialize libp2p server
 		if config.libp2p_enabled.unwrap_or(true) && onion_address.is_some() && tor_secret.is_some()
 		{
