@@ -83,7 +83,7 @@ pub trait OwnerRpc: Sync + Send {
 	{
 		"jsonrpc": "2.0",
 		"method": "validate_chain",
-		"params": [],
+		"params": ["false"],
 		"id": 1
 	}
 	# "#
@@ -100,7 +100,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn validate_chain(&self) -> Result<(), ErrorKind>;
+	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), ErrorKind>;
 
 	/**
 	Networked version of [Owner::compact_chain](struct.Owner.html#method.compact_chain).
@@ -359,8 +359,8 @@ impl OwnerRpc for Owner {
 		Owner::get_status(self).map_err(|e| e.kind().clone())
 	}
 
-	fn validate_chain(&self) -> Result<(), ErrorKind> {
-		Owner::validate_chain(self).map_err(|e| e.kind().clone())
+	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), ErrorKind> {
+		Owner::validate_chain(self, assume_valid_rangeproofs_kernels).map_err(|e| e.kind().clone())
 	}
 
 	fn compact_chain(&self) -> Result<(), ErrorKind> {

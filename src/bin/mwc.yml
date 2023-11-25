@@ -77,3 +77,11 @@ subcommands:
                   long: peer
                   required: true
                   takes_value: true
+        - verify-chain:
+            about: Trigger a verication of the rangeproofs, kernel signatures and excesses.
+            args:
+                - fast:
+                    help:  if present, will skip verification of rangeproofs, kernel signatures and will only validate the sum of kernel excesses. 
+                    short: f
+                    long: fast
+                    takes_value: false

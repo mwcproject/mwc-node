@@ -52,9 +52,9 @@ pub struct ChainValidationHandler {
 }
 
 impl ChainValidationHandler {
-	pub fn validate_chain(&self) -> Result<(), Error> {
+	pub fn validate_chain(&self, fast_validation: bool) -> Result<(), Error> {
 		w(&self.chain)?
-			.validate(false)
+			.validate(fast_validation)
 			.map_err(|e| ErrorKind::Internal(format!("chain fast validation error. {}", e)).into())
 	}
 }
