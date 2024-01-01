@@ -43,7 +43,7 @@ steps:
     displayName: Github release
     condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
-      gitHubConnection: 'github.com_bayk'
+      gitHubConnection: 'github.com_vekamo'
       repositoryName: 'mwcproject/mwc-node'
       action: 'edit'
       tagSource: "Git tag"
