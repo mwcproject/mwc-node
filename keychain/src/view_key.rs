@@ -80,7 +80,7 @@ impl ViewKey {
 		})
 	}
 
-	fn rewind_hash(public_root_key: PublicKey) -> Vec<u8> {
+	pub fn rewind_hash(public_root_key: PublicKey) -> Vec<u8> {
 		let ser = public_root_key.serialize_vec(true);
 		blake2b(32, &[], &ser[..]).as_bytes().to_vec()
 	}
