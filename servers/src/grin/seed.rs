@@ -30,7 +30,6 @@ use std::{cmp, thread, time};
 use crate::core::global;
 use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
 use crate::p2p;
-#[cfg(feature = "marketplace")]
 use crate::p2p::libp2p_connection;
 use crate::p2p::types::PeerAddr;
 use crate::p2p::ChainAdapter;
@@ -65,7 +64,6 @@ pub fn connect_and_monitor(
 				&preferred_peers,
 			);
 
-			#[cfg(feature = "marketplace")]
 			libp2p_connection::set_seed_list(&seed_list, true);
 
 			let mut prev = MIN_DATE.and_hms(0, 0, 0);
@@ -392,7 +390,6 @@ fn listen_for_addrs(
 						Ok(p) => {
 							debug!("Sending peer request to {}", addr);
 							if p.send_peer_request(capab).is_ok() {
-								#[cfg(feature = "marketplace")]
 								match addr {
 									PeerAddr::Onion(_) => {
 										if let Err(_) = libp2p_connection::add_new_peer(&addr) {

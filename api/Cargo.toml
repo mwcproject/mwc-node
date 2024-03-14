@@ -45,6 +45,3 @@ hyper-rustls = "0.20"
 
 [target.'cfg(target_os = "android")'.dependencies]
 hyper-rustls = { version = "0.21", default-features = false, features = ["webpki-tokio"] }
-
-[features]
-marketplace = ["grin_p2p/marketplace"]
