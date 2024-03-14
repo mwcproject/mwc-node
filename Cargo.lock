@@ -1821,7 +1821,6 @@ dependencies = [
  "log4rs",
  "parking_lot 0.10.2",
  "rand 0.6.5",
- "rustc-serialize",
  "serde",
  "serde_derive",
  "sha3",
