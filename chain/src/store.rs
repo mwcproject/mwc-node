@@ -23,7 +23,7 @@ use crate::linked_list::MultiIndex;
 use crate::types::{CommitPos, HashHeight, Tip};
 use crate::util::secp::pedersen::Commitment;
 
-use croaring::Bitmap;
+use croaring::{Bitmap, Portable};
 use grin_store as store;
 use grin_store::{option_to_not_found, to_key, Error, SerIterator};
 use std::convert::TryInto;
@@ -436,8 +436,10 @@ impl<'a> Batch<'a> {
 
 	fn get_legacy_input_bitmap(&self, bh: &Hash) -> Result<Bitmap, Error> {
 		option_to_not_found(
-			self.db
-				.get_with(&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh), Bitmap::deserialize),
+			self.db.get_with(
+				&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh),
+				Bitmap::deserialize::<Portable>,
+			),
 			|| "legacy block input bitmap".to_string(),
 		)
 	}

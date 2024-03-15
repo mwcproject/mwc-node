@@ -21,8 +21,8 @@ use croaring::Bitmap;
 // We need to make sure we safely handle 0 safely.
 #[test]
 fn test_zero_value() {
-	// Create a bitmap with a 0 value in it.
-	let mut bitmap = Bitmap::create();
+	// new a bitmap with a 0 value in it.
+	let mut bitmap = Bitmap::new();
 	bitmap.add(0);
 
 	// Instantiate a prune list from our existing bitmap.

@@ -148,7 +148,7 @@ impl BitmapAccumulator {
 		let mut pmmr = PMMR::at(&mut self.backend, last_pos);
 		let chunk_pos = pmmr::insertion_to_pmmr_index(chunk_idx + 1);
 		let rewind_pos = chunk_pos.saturating_sub(1);
-		pmmr.rewind(rewind_pos, &Bitmap::create())
+		pmmr.rewind(rewind_pos, &Bitmap::new())
 			.map_err(|e| ErrorKind::Other(format!("pmmr rewind error, {}", e)))?;
 		Ok(())
 	}

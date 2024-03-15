@@ -192,7 +192,7 @@ fn pmmr_compact_leaf_sibling() {
 		assert_eq!(backend.get_from_file(1).unwrap(), pos_1_hash);
 
 		// aggressively compact the PMMR files
-		backend.check_compact(1, &Bitmap::create()).unwrap();
+		backend.check_compact(1, &Bitmap::new()).unwrap();
 
 		// check pos 1, 2, 3 are in the state we expect after compacting
 		{
@@ -252,7 +252,7 @@ fn pmmr_prune_compact() {
 		}
 
 		// compact
-		backend.check_compact(2, &Bitmap::create()).unwrap();
+		backend.check_compact(2, &Bitmap::new()).unwrap();
 
 		// recheck the root and stored data
 		{
@@ -302,7 +302,7 @@ fn pmmr_reload() {
 			assert_eq!(backend.unpruned_size(), mmr_size);
 
 			// now check and compact the backend
-			backend.check_compact(1, &Bitmap::create()).unwrap();
+			backend.check_compact(1, &Bitmap::new()).unwrap();
 			assert_eq!(backend.unpruned_size(), mmr_size);
 			backend.sync().unwrap();
 			assert_eq!(backend.unpruned_size(), mmr_size);
@@ -316,7 +316,7 @@ fn pmmr_reload() {
 			backend.sync().unwrap();
 			assert_eq!(backend.unpruned_size(), mmr_size);
 
-			backend.check_compact(4, &Bitmap::create()).unwrap();
+			backend.check_compact(4, &Bitmap::new()).unwrap();
 
 			backend.sync().unwrap();
 			assert_eq!(backend.unpruned_size(), mmr_size);
@@ -330,7 +330,7 @@ fn pmmr_reload() {
 			assert_eq!(backend.unpruned_size(), mmr_size);
 		}
 
-		// create a new backend referencing the data files
+		// new a new backend referencing the data files
 		// and check everything still works as expected
 		{
 			let mut backend =
@@ -414,7 +414,7 @@ fn pmmr_rewind() {
 		backend.sync().unwrap();
 
 		// and compact the MMR to remove the pruned elements
-		backend.check_compact(6, &Bitmap::create()).unwrap();
+		backend.check_compact(6, &Bitmap::new()).unwrap();
 		backend.sync().unwrap();
 
 		println!("root1 {:?}, root2 {:?}, root3 {:?}", root1, root2, root3);
@@ -459,7 +459,7 @@ fn pmmr_rewind() {
 
 		{
 			let mut pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut backend, 10);
-			pmmr.rewind(5, &Bitmap::create()).unwrap();
+			pmmr.rewind(5, &Bitmap::new()).unwrap();
 			assert_eq!(pmmr.root().unwrap(), root1);
 		}
 		backend.sync().unwrap();
@@ -507,7 +507,7 @@ fn pmmr_compact_single_leaves() {
 		backend.sync().unwrap();
 
 		// compact
-		backend.check_compact(2, &Bitmap::create()).unwrap();
+		backend.check_compact(2, &Bitmap::new()).unwrap();
 
 		{
 			let mut pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut backend, mmr_size);
@@ -518,7 +518,7 @@ fn pmmr_compact_single_leaves() {
 		backend.sync().unwrap();
 
 		// compact
-		backend.check_compact(2, &Bitmap::create()).unwrap();
+		backend.check_compact(2, &Bitmap::new()).unwrap();
 	}
 
 	teardown(data_dir);
@@ -551,7 +551,7 @@ fn pmmr_compact_entire_peak() {
 		backend.sync().unwrap();
 
 		// compact
-		backend.check_compact(2, &Bitmap::create()).unwrap();
+		backend.check_compact(2, &Bitmap::new()).unwrap();
 
 		// now check we have pruned up to and including the peak at pos 7
 		// hash still available in underlying hash file
@@ -665,7 +665,7 @@ fn pmmr_compact_horizon() {
 
 		// recheck stored data
 		{
-			// recreate backend
+			// renew backend
 			let backend = store::pmmr::PMMRBackend::<TestElem>::new(
 				data_dir.to_string(),
 				true,
@@ -677,7 +677,7 @@ fn pmmr_compact_horizon() {
 			assert_eq!(backend.data_size(), 19);
 			assert_eq!(backend.hash_size(), 35);
 
-			// check we can read a hash by pos correctly from recreated backend
+			// check we can read a hash by pos correctly from renewd backend
 			assert_eq!(backend.get_hash(7), Some(pos_7_hash));
 			assert_eq!(backend.get_from_file(7), Some(pos_7_hash));
 
@@ -702,12 +702,12 @@ fn pmmr_compact_horizon() {
 			}
 
 			// compact some more
-			backend.check_compact(9, &Bitmap::create()).unwrap();
+			backend.check_compact(9, &Bitmap::new()).unwrap();
 		}
 
 		// recheck stored data
 		{
-			// recreate backend
+			// renew backend
 			let backend = store::pmmr::PMMRBackend::<TestElem>::new(
 				data_dir.to_string(),
 				true,
@@ -721,7 +721,7 @@ fn pmmr_compact_horizon() {
 			assert_eq!(backend.data_size(), 13);
 			assert_eq!(backend.hash_size(), 27);
 
-			// check we can read a hash by pos correctly from recreated backend
+			// check we can read a hash by pos correctly from renewd backend
 			// get_hash() and get_from_file() should return the same value
 			// and we only store leaves in the leaf_set so pos 7 still has a hash in there
 			assert_eq!(backend.get_hash(7), Some(pos_7_hash));
@@ -773,7 +773,7 @@ fn compact_twice() {
 		}
 
 		// compact
-		backend.check_compact(2, &Bitmap::create()).unwrap();
+		backend.check_compact(2, &Bitmap::new()).unwrap();
 
 		// recheck the root and stored data
 		{
@@ -800,7 +800,7 @@ fn compact_twice() {
 		}
 
 		// compact
-		backend.check_compact(2, &Bitmap::create()).unwrap();
+		backend.check_compact(2, &Bitmap::new()).unwrap();
 
 		// recheck the root and stored data
 		{
@@ -820,21 +820,21 @@ fn cleanup_rewind_files_test() {
 	let prefix_to_save = "bar";
 	let seconds_to_delete_after = 100;
 
-	// create the scenario
+	// new the scenario
 	let (data_dir, _) = setup("cleanup_rewind_files_test");
-	// create some files with the delete prefix that aren't yet old enough to delete
-	create_numbered_files(&data_dir, expected, prefix_to_delete, 0, 0);
-	// create some files with the delete prefix that are old enough to delete
-	create_numbered_files(
+	// new some files with the delete prefix that aren't yet old enough to delete
+	new_numbered_files(&data_dir, expected, prefix_to_delete, 0, 0);
+	// new some files with the delete prefix that are old enough to delete
+	new_numbered_files(
 		&data_dir,
 		expected,
 		prefix_to_delete,
 		seconds_to_delete_after + 1,
 		expected,
 	);
-	// create some files with the save prefix that are old enough to delete, but will be saved because they don't start
+	// new some files with the save prefix that are old enough to delete, but will be saved because they don't start
 	// with the right prefix
-	create_numbered_files(
+	new_numbered_files(
 		&data_dir,
 		expected,
 		prefix_to_save,
@@ -885,13 +885,13 @@ fn cleanup_rewind_files_test() {
 	teardown(data_dir);
 }
 
-/// Create some files for testing with, for example
+/// new some files for testing with, for example
 ///
 /// ```text
-/// create_numbered_files(".", 3, "hello.txt.", 100, 2)
+/// new_numbered_files(".", 3, "hello.txt.", 100, 2)
 /// ```
 ///
-/// will create files
+/// will new files
 ///
 /// ```text
 /// hello.txt.2
@@ -901,7 +901,7 @@ fn cleanup_rewind_files_test() {
 ///
 /// in the current working directory that are all 100 seconds old (modified and accessed time)
 ///
-fn create_numbered_files(
+fn new_numbered_files(
 	data_dir: &str,
 	num_files: u32,
 	prefix: &str,

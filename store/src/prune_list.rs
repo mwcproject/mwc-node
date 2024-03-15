@@ -24,7 +24,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use croaring::Bitmap;
+use croaring::{Bitmap, Portable};
 
 use crate::core::core::pmmr::{bintree_postorder_height, family, path};
 use crate::{read_bitmap, save_via_temp_file};
@@ -59,7 +59,7 @@ impl PruneList {
 		PruneList {
 			path,
 			bitmap,
-			pruned_cache: Bitmap::create(),
+			pruned_cache: Bitmap::new(),
 			shift_cache: vec![],
 			leaf_shift_cache: vec![],
 		}
@@ -67,7 +67,7 @@ impl PruneList {
 
 	/// Instatiate a new empty prune list.
 	pub fn empty() -> PruneList {
-		PruneList::new(None, Bitmap::create())
+		PruneList::new(None, Bitmap::new())
 	}
 
 	/// Open an existing prune_list or create a new one.
@@ -76,7 +76,7 @@ impl PruneList {
 		let bitmap = if file_path.exists() {
 			read_bitmap(&file_path)?
 		} else {
-			Bitmap::create()
+			Bitmap::new()
 		};
 
 		let mut prune_list = PruneList::new(Some(file_path), bitmap);
@@ -87,9 +87,9 @@ impl PruneList {
 		if !prune_list.bitmap.is_empty() {
 			debug!("bitmap {} pos ({} bytes), pruned_cache {} pos ({} bytes), shift_cache {}, leaf_shift_cache {}",
 				prune_list.bitmap.cardinality(),
-				prune_list.bitmap.get_serialized_size_in_bytes(),
+				prune_list.bitmap.get_serialized_size_in_bytes::<Portable>(),
 				prune_list.pruned_cache.cardinality(),
-				prune_list.pruned_cache.get_serialized_size_in_bytes(),
+				prune_list.pruned_cache.get_serialized_size_in_bytes::<Portable>(),
 				prune_list.shift_cache.len(),
 				prune_list.leaf_shift_cache.len(),
 			);
@@ -115,7 +115,7 @@ impl PruneList {
 		// Write the updated bitmap file to disk.
 		if let Some(ref path) = self.path {
 			save_via_temp_file(path, ".tmp", |file| {
-				file.write_all(&self.bitmap.serialize())
+				file.write_all(&self.bitmap.serialize::<Portable>())
 			})?;
 		}
 
@@ -275,7 +275,7 @@ impl PruneList {
 			return;
 		}
 		let maximum = self.bitmap.maximum().unwrap_or(0);
-		self.pruned_cache = Bitmap::create_with_capacity(maximum);
+		self.pruned_cache = Bitmap::with_container_capacity(maximum);
 		for pos in 1..(maximum + 1) {
 			let pruned = path(pos as u64, maximum as u64).any(|x| self.bitmap.contains(x as u32));
 			if pruned {
