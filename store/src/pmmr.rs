@@ -410,7 +410,7 @@ impl<T: PMMRable> PMMRBackend<T> {
 	}
 
 	fn pos_to_rm(&self, cutoff_pos: u64, rewind_rm_pos: &Bitmap) -> (Bitmap, Bitmap) {
-		let mut expanded = Bitmap::create();
+		let mut expanded = Bitmap::new();
 
 		let leaf_pos_to_rm =
 			self.leaf_set

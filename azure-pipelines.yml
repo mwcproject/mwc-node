@@ -76,7 +76,7 @@ jobs:
     - template: '.ci/release.yml'
 - job: windows
   pool:
-    vmImage: windows-latest
+    vmImage: windows-2019
   strategy:
     matrix:
       test:

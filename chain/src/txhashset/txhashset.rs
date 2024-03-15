@@ -56,8 +56,8 @@ pub struct PMMRHandle<T: PMMRable> {
 }
 
 impl<T: PMMRable> PMMRHandle<T> {
-	/// Constructor to create a PMMR handle from an existing directory structure on disk.
-	/// Creates the backend files as necessary if they do not already exist.
+	/// Constructor to new a PMMR handle from an existing directory structure on disk.
+	/// news the backend files as necessary if they do not already exist.
 	pub fn new<P: AsRef<Path>>(
 		path: P,
 		prunable: bool,
@@ -655,7 +655,7 @@ where
 		let rproof_pmmr =
 			ReadonlyPMMR::at(&trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.last_pos);
 
-		// Create a new batch here to pass into the utxo_view.
+		// new a new batch here to pass into the utxo_view.
 		// Discard it (rollback) after we finish with the utxo_view.
 		let batch = trees.commit_index.batch()?;
 		let utxo = UTXOView::new(header_pmmr, output_pmmr, rproof_pmmr);
@@ -667,7 +667,7 @@ where
 /// Rewindable (but still readonly) view on the kernel MMR.
 /// The underlying backend is readonly. But we permit the PMMR to be "rewound"
 /// via last_pos.
-/// We create a new db batch for this view and discard it (rollback)
+/// We new a new db batch for this view and discard it (rollback)
 /// when we are done with the view.
 pub fn rewindable_kernel_view<F, T>(trees: &TxHashSet, inner: F) -> Result<T, Error>
 where
@@ -678,7 +678,7 @@ where
 		let kernel_pmmr =
 			RewindablePMMR::at(&trees.kernel_pmmr_h.backend, trees.kernel_pmmr_h.last_pos);
 
-		// Create a new batch here to pass into the kernel_view.
+		// new a new batch here to pass into the kernel_view.
 		// Discard it (rollback) after we finish with the kernel_view.
 		let batch = trees.commit_index.batch()?;
 		let header = batch.head_header()?;
@@ -712,7 +712,7 @@ where
 	let head = batch.head()?;
 	let header_head = batch.header_head()?;
 
-	// create a child transaction so if the state is rolled back by itself, all
+	// new a child transaction so if the state is rolled back by itself, all
 	// index saving can be undone
 	let child_batch = batch.child()?;
 	{
@@ -817,7 +817,7 @@ where
 	let res: Result<T, Error>;
 	let rollback: bool;
 
-	// create a child transaction so if the state is rolled back by itself, all
+	// new a child transaction so if the state is rolled back by itself, all
 	// index saving can be undone
 	let child_batch = batch.child()?;
 
@@ -961,11 +961,9 @@ impl<'a> HeaderExtension<'a> {
 		);
 
 		let header_pos = pmmr::insertion_to_pmmr_index(header.height + 1);
-		self.pmmr
-			.rewind(header_pos, &Bitmap::create())
-			.map_err(|e| {
-				ErrorKind::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
-			})?;
+		self.pmmr.rewind(header_pos, &Bitmap::new()).map_err(|e| {
+			ErrorKind::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
+		})?;
 
 		// Update our head to reflect the header we rewound to.
 		self.head = Tip::from_header(header);
@@ -1146,7 +1144,7 @@ impl<'a> Extension<'a> {
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
 		self.apply_kernels(b.kernels(), b.header.height, batch)?;
 
-		// Update our BitmapAccumulator based on affected outputs (both spent and created).
+		// Update our BitmapAccumulator based on affected outputs (both spent and newd).
 		self.apply_to_bitmap_accumulator(&affected_pos)?;
 
 		// Update the head of the extension to reflect the block we just applied.
@@ -1368,7 +1366,7 @@ impl<'a> Extension<'a> {
 		let mut affected_pos = spent_pos;
 		affected_pos.push(self.output_pmmr.last_pos);
 
-		// Remove any entries from the output_pos created by the block being rewound.
+		// Remove any entries from the output_pos newd by the block being rewound.
 		let mut missing_count = 0;
 		for out in block.outputs() {
 			if batch.delete_output_pos_height(&out.commitment()).is_err() {
@@ -1426,7 +1424,7 @@ impl<'a> Extension<'a> {
 			.rewind(output_pos, &bitmap)
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
 		self.kernel_pmmr
-			.rewind(kernel_pos, &Bitmap::create())
+			.rewind(kernel_pos, &Bitmap::new())
 			.map_err(|e| ErrorKind::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e)))?;
 		Ok(())
 	}
@@ -1741,7 +1739,7 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 		}
 	}
 
-	// otherwise, create the zip archive
+	// otherwise, new the zip archive
 	let path_to_be_cleanup = {
 		// Temp txhashset directory
 		let temp_txhashset_path = Path::new(&root_dir).join(format!(
@@ -1767,7 +1765,7 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 	};
 
 	debug!(
-		"zip_read: {} at {}: created zip file: {:?}",
+		"zip_read: {} at {}: newd zip file: {:?}",
 		header.hash(),
 		header.height,
 		zip_path
@@ -1872,7 +1870,7 @@ fn input_pos_to_rewind(
 	head_header: &BlockHeader,
 	batch: &Batch<'_>,
 ) -> Result<Bitmap, Error> {
-	let mut bitmap = Bitmap::create();
+	let mut bitmap = Bitmap::new();
 	let mut current = head_header.clone();
 	while current.height > block_header.height {
 		if let Ok(block_bitmap) = batch.get_block_input_bitmap(&current.hash()) {
