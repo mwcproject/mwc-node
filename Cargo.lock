@@ -1683,14 +1683,13 @@ dependencies = [
 
 [[package]]
 name = "grin_secp256k1zkp"
-version = "0.7.10"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.7.10#916bebb3df5e1d4188a385c1f97af3474772d2e5"
+version = "0.7.13"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.7.13#efc5684c8f4f91af6ae09a4d0ff1698053eb86de"
 dependencies = [
  "arrayvec 0.3.25",
  "cc",
  "libc",
  "rand 0.5.6",
- "rustc-serialize",
  "serde",
  "serde_json",
  "zeroize",
@@ -3657,12 +3656,6 @@ name = "rustc-demangle"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dead70b0b5e03e9c814bcb6b01e03e68f7c57a80aa48c72ec92152ab3e818d49"
-
-[[package]]
-name = "rustc-serialize"
-version = "0.3.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe834bc780604f4674073badbad26d7219cadfb4a2275802db12cbae17498401"
 
 [[package]]
 name = "rustc_version"
