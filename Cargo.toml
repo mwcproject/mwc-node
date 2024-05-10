@@ -1,5 +1,5 @@
 [package]
-name = "grin"
+name = "mwc"
 version = "4.4.2"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
