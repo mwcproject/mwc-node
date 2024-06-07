@@ -22,6 +22,7 @@ use crate::web::*;
 use grin_core::global;
 use hyper::{Body, Request, StatusCode};
 use serde_json::json;
+use std::convert::TryInto;
 use std::sync::atomic::Ordering;
 use std::sync::Weak;
 
@@ -57,7 +58,12 @@ impl StatusHandler {
 		let (api_sync_status, api_sync_info) = sync_status_to_api(sync_status);
 		Ok(Status::from_tip_and_peers(
 			head,
-			w(&self.peers)?.peer_count(),
+			w(&self.peers)?
+				.iter()
+				.connected()
+				.count()
+				.try_into()
+				.unwrap(),
 			api_sync_status,
 			api_sync_info,
 		))

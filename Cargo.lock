@@ -1474,35 +1474,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grin"
-version = "4.4.2"
-dependencies = [
- "blake2-rfc",
- "built",
- "chrono",
- "clap",
- "ctrlc",
- "cursive",
- "failure",
- "failure_derive",
- "futures 0.3.21",
- "grin_api",
- "grin_chain",
- "grin_config",
- "grin_core",
- "grin_keychain",
- "grin_p2p",
- "grin_servers",
- "grin_store",
- "grin_util",
- "humansize",
- "log",
- "serde",
- "serde_json",
- "term",
-]
-
-[[package]]
 name = "grin_api"
 version = "4.4.2"
 dependencies = [
@@ -2681,6 +2652,35 @@ dependencies = [
  "pin-project 1.0.8",
  "smallvec",
  "unsigned-varint 0.7.0",
+]
+
+[[package]]
+name = "mwc"
+version = "4.4.2"
+dependencies = [
+ "blake2-rfc",
+ "built",
+ "chrono",
+ "clap",
+ "ctrlc",
+ "cursive",
+ "failure",
+ "failure_derive",
+ "futures 0.3.21",
+ "grin_api",
+ "grin_chain",
+ "grin_config",
+ "grin_core",
+ "grin_keychain",
+ "grin_p2p",
+ "grin_servers",
+ "grin_store",
+ "grin_util",
+ "humansize",
+ "log",
+ "serde",
+ "serde_json",
+ "term",
 ]
 
 [[package]]

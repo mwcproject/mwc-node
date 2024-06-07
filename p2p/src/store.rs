@@ -164,24 +164,27 @@ impl PeerStore {
 		count: usize,
 	) -> Result<Vec<PeerData>, Error> {
 		let mut peers = self
-			.db
-			.iter::<PeerData>(&to_key(PEER_PREFIX, ""))?
-			.map(|(_, v)| v)
+			.peers_iter()?
 			.filter(|p| p.flags == state && p.capabilities.contains(cap))
 			.collect::<Vec<_>>();
 		peers[..].shuffle(&mut thread_rng());
 		Ok(peers.iter().take(count).cloned().collect())
 	}
 
+	/// Iterator over all known peers.
+	pub fn peers_iter(&self) -> Result<impl Iterator<Item = PeerData>, Error> {
+		let key = to_key(PEER_PREFIX, "");
+		let protocol_version = self.db.protocol_version();
+		self.db.iter(&key, move |_, mut v| {
+			ser::deserialize(&mut v, protocol_version).map_err(From::from)
+		})
+	}
+
 	/// List all known peers
 	/// Used for /v1/peers/all api endpoint
 	pub fn all_peers(&self) -> Result<Vec<PeerData>, Error> {
-		let key = to_key(PEER_PREFIX, "");
-		Ok(self
-			.db
-			.iter::<PeerData>(&key)?
-			.map(|(_, v)| v)
-			.collect::<Vec<_>>())
+		let peers: Vec<PeerData> = self.peers_iter()?.collect();
+		Ok(peers)
 	}
 
 	/// Convenience method to load a peer data, update its status and save it
@@ -209,7 +212,7 @@ impl PeerStore {
 	{
 		let mut to_remove = vec![];
 
-		for x in self.all_peers()? {
+		for x in self.peers_iter()? {
 			if predicate(&x) {
 				to_remove.push(x)
 			}

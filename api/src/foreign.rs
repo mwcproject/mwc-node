@@ -380,8 +380,9 @@ where
 
 		let node_peers = if let Some(peers) = self.peers.upgrade() {
 			let connected_peers: Vec<String> = peers
-				.connected_peers()
 				.iter()
+				.connected()
+				.into_iter()
 				.map(|peer| peer.info.addr.tor_address().unwrap_or("".to_string()))
 				.filter(|addr| !addr.is_empty())
 				.collect();

@@ -20,8 +20,7 @@
 use chrono::prelude::{DateTime, Utc};
 use chrono::{Duration, MIN_DATE};
 use grin_p2p::PeerAddr::Onion;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::sync::{mpsc, Arc};
@@ -75,7 +74,7 @@ pub fn connect_and_monitor(
 				if stop_state.is_stopped() {
 					break;
 				}
-				let peer_count = peers.all_peers().len();
+				let peer_count = peers.all_peer_data().len();
 				// Pause egress peer connection request. Only for tests.
 				if stop_state.is_paused() {
 					thread::sleep(time::Duration::from_secs(1));
@@ -85,7 +84,7 @@ pub fn connect_and_monitor(
 				let connected_peers = if peer_count == 0 {
 					0
 				} else {
-					peers.connected_peers().len()
+					peers.iter().connected().count()
 				};
 
 				if connected_peers == 0 {
@@ -175,14 +174,14 @@ fn monitor_peers(
 	tx: mpsc::Sender<PeerAddr>,
 	preferred_peers: &[PeerAddr],
 ) {
-	// regularly check if we need to acquire more peers  and if so, gets
+	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
-	let total_count = peers.all_peers().len();
+	let mut total_count = 0;
 	let mut healthy_count = 0;
 	let mut banned_count = 0;
 	let mut defuncts = vec![];
 
-	for x in peers.all_peers() {
+	for x in peers.all_peer_data().into_iter() {
 		match x.flags {
 			p2p::State::Banned => {
 				let interval = Utc::now().timestamp() - x.last_banned;
@@ -202,15 +201,26 @@ fn monitor_peers(
 			p2p::State::Healthy => healthy_count += 1,
 			p2p::State::Defunct => defuncts.push(x),
 		}
+		total_count += 1;
 	}
+
+	let peers_count = peers.iter().connected().count();
+
+	let max_diff = peers.max_peer_difficulty();
+	let most_work_count = peers
+		.iter()
+		.outbound()
+		.with_difficulty(|x| x >= max_diff)
+		.connected()
+		.count();
 
 	debug!(
 		"monitor_peers: on {}:{}, {} connected ({} most_work). \
 		 all {} = {} healthy + {} banned + {} defunct",
 		config.host,
 		config.port,
-		peers.peer_count(),
-		peers.most_work_peers().len(),
+		peers_count,
+		most_work_count,
 		total_count,
 		healthy_count,
 		banned_count,
@@ -228,10 +238,14 @@ fn monitor_peers(
 		return;
 	}
 
-	// loop over connected peers
+	// loop over connected peers that can provide peer lists
 	// ask them for their list of peers
 	let mut connected_peers: Vec<PeerAddr> = vec![];
-	for p in peers.connected_peers() {
+	for p in peers
+		.iter()
+		.with_capabilities(p2p::Capabilities::PEER_LIST)
+		.connected()
+	{
 		trace!(
 			"monitor_peers: {}:{} ask {} for more peers",
 			config.host,
@@ -253,11 +267,10 @@ fn monitor_peers(
 		}
 	}
 
-	// take a random defunct peer and mark it healthy: over a long period any
+	// take a random defunct peer and mark it healthy: over a long enough period any
 	// peer will see another as defunct eventually, gives us a chance to retry
-	if !defuncts.is_empty() {
-		defuncts.shuffle(&mut thread_rng());
-		let _ = peers.update_state(defuncts[0].addr.clone(), p2p::State::Healthy);
+	if let Some(peer) = defuncts.into_iter().choose(&mut thread_rng()) {
+		let _ = peers.update_state(peer.addr, p2p::State::Healthy);
 	}
 
 	// find some peers from our db
@@ -333,7 +346,7 @@ fn listen_for_addrs(
 	let mut addrs: Vec<PeerAddr> = rx.try_iter().collect();
 
 	if attempt_all {
-		for x in peers.all_peers() {
+		for x in peers.all_peer_data() {
 			match x.flags {
 				p2p::State::Banned => {}
 				_ => {
@@ -388,18 +401,20 @@ fn listen_for_addrs(
 				if update_possible {
 					match p2p_c.connect(addr.clone(), header_cache_size) {
 						Ok(p) => {
-							debug!("Sending peer request to {}", addr);
-							if p.send_peer_request(capab).is_ok() {
-								match addr {
-									PeerAddr::Onion(_) => {
-										if let Err(_) = libp2p_connection::add_new_peer(&addr) {
-											error!("Unable to add libp2p peer {}", addr);
+							if p.info.capabilities.contains(p2p::Capabilities::PEER_LIST) {
+								debug!("Sending peer request to {}", addr);
+								if p.send_peer_request(capab).is_ok() {
+									match addr {
+										PeerAddr::Onion(_) => {
+											if let Err(_) = libp2p_connection::add_new_peer(&addr) {
+												error!("Unable to add libp2p peer {}", addr);
+											}
 										}
-									}
-									_ => (),
-								};
-								let _ = peers_c.update_state(addr, p2p::State::Healthy);
+										_ => (),
+									};
+								}
 							}
+							let _ = peers_c.update_state(addr, p2p::State::Healthy);
 						}
 						Err(e) => {
 							debug!("Connection to the peer {} was rejected, {}", addr, e);
