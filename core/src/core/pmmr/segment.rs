@@ -210,6 +210,16 @@ impl<T> Segment<T> {
 			.zip(&self.hashes)
 			.map(|(&p, &h)| (p, h))
 	}
+
+	/// Segment proof
+	pub fn proof(&self) -> &SegmentProof {
+		&self.proof
+	}
+
+	/// Segment identifier
+	pub fn id(&self) -> SegmentIdentifier {
+		self.identifier
+	}
 }
 
 impl<T> Segment<T>
@@ -599,6 +609,11 @@ impl SegmentProof {
 		proof.hashes.extend(peaks?);
 
 		Ok(proof)
+	}
+
+	/// Size of the proof in hashes.
+	pub fn size(&self) -> usize {
+		self.hashes.len()
 	}
 
 	/// Reconstruct PMMR root using this proof
