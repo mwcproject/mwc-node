@@ -289,7 +289,7 @@ pub fn replay_attack_check(
 /// This is only used during header sync.
 /// Will update header_head locally if this batch of headers increases total work.
 /// Returns the updated sync_head, which may be on a fork.
-pub fn sync_block_headers(
+pub fn process_block_headers(
 	headers: &[BlockHeader],
 	sync_head: Tip,
 	ctx: &mut BlockContext<'_>,
@@ -299,7 +299,7 @@ pub fn sync_block_headers(
 	}
 	let last_header = headers.last().expect("last header");
 
-    let head = ctx.batch.header_head()?;
+	let head = ctx.batch.header_head()?;
 
 	// Validate each header in the chunk and add to our db.
 	// Note: This batch may be rolled back later if the MMR does not validate successfully.
@@ -312,27 +312,26 @@ pub fn sync_block_headers(
 	// Now apply this entire chunk of headers to the header MMR.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
 		rewind_and_apply_header_fork(&last_header, ext, batch)?;
-        // If previous sync_head is not on the "current" chain then
-        // these headers are on an alternative fork to sync_head.
-        let alt_fork = !ext.is_on_current_chain(sync_head, batch)?;
+		// If previous sync_head is not on the "current" chain then
+		// these headers are on an alternative fork to sync_head.
+		let alt_fork = !ext.is_on_current_chain(sync_head, batch)?;
 
-        // Update our "header_head" if this batch results in an increase in total work.
-        // Otherwise rollback this header extension.
-        // Note the outer batch may still be committed to db assuming no errors occur in the extension.
-        if has_more_work(last_header, &head) {
-            let header_head = last_header.into();
-            update_header_head(&header_head, &batch)?;
-        } else {
-            ext.force_rollback();
-        };
+		// Update our "header_head" if this batch results in an increase in total work.
+		// Otherwise rollback this header extension.
+		// Note the outer batch may still be committed to db assuming no errors occur in the extension.
+		if has_more_work(last_header, &head) {
+			let header_head = last_header.into();
+			update_header_head(&header_head, &batch)?;
+		} else {
+			ext.force_rollback();
+		};
 
-        Ok(())
-        if alt_fork || has_more_work(last_header, &sync_head) {
-            Ok(Some(last_header.into()))
-        } else {
-            Ok(None)
-        }
-    })
+		if alt_fork || has_more_work(last_header, &sync_head) {
+			Ok(Some(last_header.into()))
+		} else {
+			Ok(None)
+		}
+	})
 }
 
 /// Process a block header. Update the header MMR and corresponding header_head if this header
@@ -385,7 +384,7 @@ pub fn process_block_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) ->
 		update_header_head(&Tip::from_header(header), &mut ctx.batch)?;
 	}
 
-    Ok(())
+	Ok(())
 }
 
 /// Quick check to reject recently handled blocks.

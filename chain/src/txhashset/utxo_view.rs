@@ -156,9 +156,9 @@ impl<'a> UTXOView<'a> {
 		match self.output_pmmr.get_data(pos0) {
 			Some(output_id) => match self.rproof_pmmr.get_data(pos0) {
 				Some(rproof) => Ok(output_id.into_output(rproof)),
-				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos)).into()),
+				None => Err(ErrorKind::RangeproofNotFound(format!("at position {}", pos0)).into()),
 			},
-			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos)).into()),
+			None => Err(ErrorKind::OutputNotFound(format!("at position {}", pos0)).into()),
 		}
 	}
 

@@ -17,7 +17,7 @@
 
 use std::marker;
 
-use crate::core::pmmr::{bintree_postorder_height, Backend, ReadonlyPMMR};
+use crate::core::pmmr::{round_up_to_leaf_pos, Backend, ReadonlyPMMR};
 use crate::ser::PMMRable;
 
 /// Rewindable (but still readonly) view of a PMMR.

@@ -18,7 +18,9 @@ use std::sync::Arc;
 
 use crate::chain::{self, SyncState, SyncStatus};
 use crate::common::types::Error;
-use crate::core::core::hash::{Hash, Hashed};
+use crate::core::core::hash::Hash;
+use crate::core::core::hash::Hashed;
+use crate::core::pow::Difficulty;
 use crate::p2p::{self, types::ReasonForBan, Capabilities, Peer};
 
 pub struct HeaderSync {
@@ -48,18 +50,19 @@ impl HeaderSync {
 
 	pub fn check_run(&mut self, sync_head: chain::Tip) -> Result<bool, chain::Error> {
 		// We only want to run header_sync for some sync states.
+		// We only want to run header_sync for some sync states.
 		let do_run = match self.sync_state.status() {
 			SyncStatus::BodySync { .. }
 			| SyncStatus::HeaderSync { .. }
 			| SyncStatus::TxHashsetDone => true,
 			SyncStatus::NoSync | SyncStatus::Initial | SyncStatus::AwaitingPeers(_) => {
-				let sync_head = self.chain.get_sync_head()?;
+				let sync_head_sync = self.chain.get_sync_head()?;
 				debug!(
 					"sync: initial transition to HeaderSync. sync_head: {} at {}, resetting to: {} at {}",
+					sync_head_sync.hash(),
+					sync_head_sync.height,
 					sync_head.hash(),
 					sync_head.height,
-					header_head.hash(),
-					header_head.height,
 				);
 
 				// Reset sync_head to header_head on transition to HeaderSync,
@@ -70,7 +73,7 @@ impl HeaderSync {
 				// correctly, so reset any previous (and potentially stale) sync_head to match
 				// our last known "good" header_head.
 				//
-				self.chain.rebuild_sync_mmr(&header_head)?;
+				self.chain.rebuild_sync_mmr(&sync_head)?;
 				true
 			}
 			_ => false,

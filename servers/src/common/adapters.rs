@@ -401,6 +401,12 @@ where
 		peer_info: &PeerInfo,
 		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
+		info!(
+			"Received {} block headers from {}",
+			bhs.len(),
+			peer_info.addr
+		);
+
 		let tip_processed = {
 			let mut tip_processed = self.tip_processed.lock().unwrap();
 			let sync_head_height = self.chain().get_sync_head()?.height;

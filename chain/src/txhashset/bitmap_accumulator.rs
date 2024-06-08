@@ -430,7 +430,11 @@ impl Readable for BitmapBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
 		let n_chunks = reader.read_u8()?;
 		if n_chunks as usize > BitmapBlock::NCHUNKS {
-			return Err(ser::Error::TooLargeReadErr);
+			return Err(ser::Error::TooLargeReadErr(format!(
+				"Requested {} chunks, limit is {}",
+				n_chunks,
+				BitmapBlock::NCHUNKS
+			)));
 		}
 		let n_bits = n_chunks as usize * BitmapChunk::LEN_BITS;
 
@@ -483,7 +487,9 @@ impl Writeable for BitmapBlockSerialization {
 
 impl Readable for BitmapBlockSerialization {
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
-		Self::from_u8(reader.read_u8()?).ok_or(ser::Error::CorruptedData)
+		Self::from_u8(reader.read_u8()?).ok_or(ser::Error::CorruptedData(format!(
+			"Failed to read the next byte"
+		)))
 	}
 }
 

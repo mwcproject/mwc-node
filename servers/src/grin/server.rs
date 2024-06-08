@@ -73,6 +73,7 @@ use std::sync::atomic::Ordering;
 use crate::p2p::libp2p_connection;
 use chrono::Utc;
 use grin_core::core::TxKernel;
+use grin_p2p::Capabilities;
 use grin_util::from_hex;
 use grin_util::secp::constants::SECRET_KEY_SIZE;
 use grin_util::secp::pedersen::Commitment;
@@ -294,12 +295,6 @@ impl Server {
 			init_net_hooks(&config),
 		));
 
-		// we always support tor, so don't rely on config. This fixes
-		// the problem of old config files
-		// only for capabilities params, doesn't mean
-		// tor _MUST_ be on.
-		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
-
 		api::reset_server_onion_address();
 
 		let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
@@ -513,9 +508,14 @@ impl Server {
 				})?;
 		}
 
+		// Use our default capabilities here.
+		// We will advertize these to our peers during hand/shake.
+		let capabilities = Capabilities::default();
+		debug!("Capabilities: {:?}", capabilities);
+
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
-			capab,
+			capabilities,
 			config.p2p_config.clone(),
 			net_adapter.clone(),
 			genesis.hash(),
@@ -556,7 +556,6 @@ impl Server {
 
 			connect_thread = Some(seed::connect_and_monitor(
 				p2p_server.clone(),
-				config.p2p_config.capabilities,
 				seeder,
 				&preferred_peers,
 				stop_state.clone(),

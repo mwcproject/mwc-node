@@ -411,7 +411,7 @@ impl TxHashSet {
 		PMMR::at(&mut self.output_pmmr_h.backend, self.output_pmmr_h.size)
 			.merkle_proof(pos0)
 			.map_err(|e| {
-				ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos, e)).into()
+				ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos0, e)).into()
 			})
 	}
 
@@ -1688,14 +1688,14 @@ impl<'a> Extension<'a> {
 				(None, _) => {
 					return Err(ErrorKind::OutputNotFound(format!(
 						"at verify_rangeproofs for pos {}",
-						pos
+						pos0
 					))
 					.into())
 				}
 				(_, None) => {
 					return Err(ErrorKind::RangeproofNotFound(format!(
 						"at verify_rangeproofs for pos {}",
-						pos
+						pos0
 					))
 					.into())
 				}

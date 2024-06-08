@@ -1826,7 +1826,7 @@ fn setup_head(
 			})?;
 		}
 
-		if sync_pmmr.last_pos == 0 {
+		if sync_pmmr.size == 0 {
 			txhashset::header_extending(sync_pmmr, &mut batch, |ext, _| {
 				ext.apply_header(&genesis.header)
 			})?;

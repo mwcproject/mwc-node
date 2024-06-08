@@ -265,7 +265,7 @@ impl PruneList {
 		self.shift_cache.truncate(idx as usize);
 		self.leaf_shift_cache.truncate(idx as usize);
 
-		self.bitmap.remove_range_closed(cleanup_pos1)
+		self.bitmap.remove_range(cleanup_pos1)
 	}
 
 	/// Push the node at the provided position in the prune list.
@@ -352,22 +352,6 @@ impl PruneList {
 		self.leaf_shift_cache.as_slice()
 	}
 
-	/// Convert the prune_list to a vec of pos.
-	pub fn to_vec(&self) -> Vec<u64> {
-		self.bitmap.iter().map(|x| x as u64).collect()
-	}
-
-	/// Internal shift cache as slice.
-	pub fn shift_cache(&self) -> &[u64] {
-		self.shift_cache.as_slice()
-	}
-
-	/// Internal leaf shift cache as slice.
-	/// only used in store/tests/prune_list.rs tests
-	pub fn leaf_shift_cache(&self) -> &[u64] {
-		self.leaf_shift_cache.as_slice()
-	}
-
 	/// Is the specified position a root of a pruned subtree?
 	pub fn is_pruned_root(&self, pos0: u64) -> bool {
 		self.bitmap.contains(1 + pos0 as u32)
@@ -403,74 +387,6 @@ impl PruneList {
 	/// Return a clone of our internal bitmap.
 	pub fn bitmap(&self) -> Bitmap {
 		self.bitmap.clone()
-	}
-
-	/// Iterator over the entries in the prune list (pruned roots).
-	pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
-		self.bitmap.iter().map(|x| x as u64)
-	}
-
-	/// Iterator over the pruned "bintree range" for each pruned root.
-	pub fn pruned_bintree_range_iter(&self) -> impl Iterator<Item = Range<u64>> + '_ {
-		self.iter().map(|x| pmmr::bintree_range(x))
-	}
-
-	/// Iterator over all pos that are *not* pruned based on current prune_list.
-	pub fn unpruned_iter(&self, cutoff_pos: u64) -> impl Iterator<Item = u64> + '_ {
-		UnprunedIterator::new(self.pruned_bintree_range_iter())
-			.take_while(move |x| *x <= cutoff_pos)
-	}
-
-	/// Iterator over all leaf pos that are *not* pruned based on current prune_list.
-	/// Note this is not necessarily the same as the "leaf_set" as an output
-	/// can be spent but not yet pruned.
-	pub fn unpruned_leaf_iter(&self, cutoff_pos: u64) -> impl Iterator<Item = u64> + '_ {
-		self.unpruned_iter(cutoff_pos).filter(|x| pmmr::is_leaf(*x))
-	}
-
-	/// Return a clone of our internal bitmap.
-	pub fn bitmap(&self) -> Bitmap {
-		self.bitmap.clone()
-	}
-}
-
-struct UnprunedIterator<I> {
-	inner: I,
-	current_excl_range: Option<Range<u64>>,
-	current_pos: u64,
-}
-
-impl<I: Iterator<Item = Range<u64>>> UnprunedIterator<I> {
-	fn new(mut inner: I) -> UnprunedIterator<I> {
-		let current_excl_range = inner.next();
-		UnprunedIterator {
-			inner,
-			current_excl_range,
-			current_pos: 1,
-		}
-	}
-}
-
-impl<I: Iterator<Item = Range<u64>>> Iterator for UnprunedIterator<I> {
-	type Item = u64;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		if let Some(range) = &self.current_excl_range {
-			if self.current_pos < range.start {
-				let next = self.current_pos;
-				self.current_pos += 1;
-				Some(next)
-			} else {
-				// skip the entire excluded range, moving to next excluded range as necessary
-				self.current_pos = range.end;
-				self.current_excl_range = self.inner.next();
-				self.next()
-			}
-		} else {
-			let next = self.current_pos;
-			self.current_pos += 1;
-			Some(next)
-		}
 	}
 }
 
