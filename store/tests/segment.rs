@@ -46,8 +46,8 @@ fn prunable_mmr() {
 	let last_pos = mmr.unpruned_size();
 	let root = mmr.root().unwrap();
 
-	let mut bitmap = Bitmap::create();
-	bitmap.add_range(0..n_leaves as u64);
+	let mut bitmap = Bitmap::new();
+	bitmap.add_range(0..n_leaves);
 
 	let id = SegmentIdentifier { height: 3, idx: 1 };
 
@@ -56,7 +56,7 @@ fn prunable_mmr() {
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
-		mmr.get_hash(30).unwrap()
+		mmr.get_hash(29).unwrap()
 	);
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
 
@@ -64,7 +64,7 @@ fn prunable_mmr() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[8, 9, 13]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate
@@ -72,7 +72,7 @@ fn prunable_mmr() {
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
-		mmr.get_hash(30).unwrap()
+		mmr.get_hash(29).unwrap()
 	);
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
 
@@ -80,7 +80,7 @@ fn prunable_mmr() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[10, 11]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate
@@ -88,7 +88,7 @@ fn prunable_mmr() {
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
-		mmr.get_hash(30).unwrap()
+		mmr.get_hash(29).unwrap()
 	);
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
 
@@ -96,7 +96,7 @@ fn prunable_mmr() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[14, 15]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate
@@ -104,7 +104,7 @@ fn prunable_mmr() {
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
-		mmr.get_hash(30).unwrap()
+		mmr.get_hash(29).unwrap()
 	);
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
 
@@ -112,7 +112,7 @@ fn prunable_mmr() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[12]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
@@ -129,7 +129,7 @@ fn prunable_mmr() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[76, 77]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate
@@ -141,7 +141,7 @@ fn prunable_mmr() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[78]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate
@@ -172,13 +172,13 @@ fn pruned_segment() {
 	let last_pos = mmr.unpruned_size();
 	let root = mmr.root().unwrap();
 
-	let mut bitmap = Bitmap::create();
-	bitmap.add_range(0..n_leaves as u64);
+	let mut bitmap = Bitmap::new();
+	bitmap.add_range(0..n_leaves);
 
 	// Prune all leaves of segment 1
 	prune(&mut mmr, &mut bitmap, &[4, 5, 6, 7]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate the empty segment 1
@@ -191,7 +191,7 @@ fn pruned_segment() {
 		segment
 			.first_unpruned_parent(last_pos, Some(&bitmap))
 			.unwrap(),
-		(ba.get_hash(14).unwrap(), 14)
+		(ba.get_hash(13).unwrap(), 14)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
@@ -200,7 +200,7 @@ fn pruned_segment() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[0, 1, 2, 3]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate the empty segment 1 again
@@ -213,7 +213,7 @@ fn pruned_segment() {
 		segment
 			.first_unpruned_parent(last_pos, Some(&bitmap))
 			.unwrap(),
-		(ba.get_hash(15).unwrap(), 15)
+		(ba.get_hash(14).unwrap(), 15)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
@@ -222,7 +222,7 @@ fn pruned_segment() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[8, 9, 10, 11, 12, 13, 14, 15]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate the empty segment 1 again
@@ -245,7 +245,7 @@ fn pruned_segment() {
 	for i in 16..n_leaves {
 		mmr.push(&TestElem([i / 7, i / 5, i / 3, i])).unwrap();
 	}
-	bitmap.add_range(16..n_leaves as u64);
+	bitmap.add_range(16..n_leaves);
 	let last_pos = mmr.unpruned_size();
 	let root = mmr.root().unwrap();
 
@@ -253,7 +253,7 @@ fn pruned_segment() {
 	// The root of this segment is a direct peak of the full MMR
 	prune(&mut mmr, &mut bitmap, &[16, 17, 18, 19]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate segment 4
@@ -266,7 +266,7 @@ fn pruned_segment() {
 		segment
 			.first_unpruned_parent(last_pos, Some(&bitmap))
 			.unwrap(),
-		(ba.get_hash(38).unwrap(), 38)
+		(ba.get_hash(37).unwrap(), 38)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
@@ -281,7 +281,7 @@ fn pruned_segment() {
 			.first_unpruned_parent(last_pos, Some(&bitmap))
 			.unwrap()
 			.1,
-		segment.segment_pos_range(last_pos).1
+		1 + segment.segment_pos_range(last_pos).1
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_some());
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
@@ -291,7 +291,7 @@ fn pruned_segment() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[22]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Segment 5 should be unchanged
@@ -304,7 +304,7 @@ fn pruned_segment() {
 	let mut mmr = PMMR::at(&mut ba, last_pos);
 	prune(&mut mmr, &mut bitmap, &[20, 21]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	// Validate segment 5 again
@@ -317,7 +317,7 @@ fn pruned_segment() {
 			.first_unpruned_parent(last_pos, Some(&bitmap))
 			.unwrap()
 			.1,
-		segment.segment_pos_range(last_pos).1
+		1 + segment.segment_pos_range(last_pos).1
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_some());
 	segment.validate(last_pos, Some(&bitmap), root).unwrap();
@@ -342,13 +342,13 @@ fn ser_round_trip() {
 	for i in 0..n_leaves {
 		mmr.push(&TestElem([i / 7, i / 5, i / 3, i])).unwrap();
 	}
-	let mut bitmap = Bitmap::create();
-	bitmap.add_range(0..n_leaves as u64);
+	let mut bitmap = Bitmap::new();
+	bitmap.add_range(0..n_leaves);
 	let last_pos = mmr.unpruned_size();
 
 	prune(&mut mmr, &mut bitmap, &[0, 1]);
 	ba.sync().unwrap();
-	ba.check_compact(last_pos, &Bitmap::create()).unwrap();
+	ba.check_compact(last_pos, &Bitmap::new()).unwrap();
 	ba.sync().unwrap();
 
 	let mmr = ReadonlyPMMR::at(&ba, last_pos);
@@ -378,8 +378,7 @@ where
 	B: Backend<T>,
 {
 	for &leaf_idx in leaf_idxs {
-		mmr.prune(pmmr::insertion_to_pmmr_index(leaf_idx + 1))
-			.unwrap();
+		mmr.prune(pmmr::insertion_to_pmmr_index(leaf_idx)).unwrap();
 		bitmap.remove(leaf_idx as u32);
 	}
 }

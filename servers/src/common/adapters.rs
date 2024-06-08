@@ -527,9 +527,29 @@ where
 		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
 		let mut hashmap = self.header_cache.lock().unwrap();
+
+		// Read our sync_head if we are in header_sync.
+		// If not then we can ignore this batch of headers.
+		let sync_head = match self.sync_state.status() {
+			SyncStatus::HeaderSync { sync_head, .. } => sync_head,
+			_ => {
+				debug!("headers_received: ignoring as not in header_sync");
+				return Ok(true);
+			}
+		};
+
 		// try to add headers to our header chain
-		match self.chain().sync_block_headers(bhs, chain::Options::SYNC) {
-			Ok(_) => {
+		match self
+			.chain()
+			.sync_block_headers(bhs, sync_head, chain::Options::SYNC)
+		{
+			Ok(sync_head) => {
+				// If we have an updated sync_head after processing this batch of headers
+				// then update our sync_state so we can request relevant headers in the next batch.
+				if let Some(sync_head) = sync_head {
+					self.sync_state.update_header_sync(sync_head);
+				}
+
 				for bh in bhs {
 					let mut tip_processed = self.tip_processed.lock().unwrap();
 					if *tip_processed < bh.height {

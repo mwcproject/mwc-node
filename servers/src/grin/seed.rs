@@ -36,7 +36,6 @@ use crate::util::StopState;
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
-	capabilities: p2p::Capabilities,
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
 	preferred_peers: &[PeerAddr],
 	stop_state: Arc<StopState>,
@@ -115,7 +114,6 @@ pub fn connect_and_monitor(
 					listen_for_addrs(
 						peers.clone(),
 						p2p_server.clone(),
-						capabilities,
 						&rx,
 						&mut connecting_history,
 						header_cache_size,
@@ -333,7 +331,6 @@ fn connect_to_seeds_and_preferred_peers(
 fn listen_for_addrs(
 	peers: Arc<p2p::Peers>,
 	p2p: Arc<p2p::Server>,
-	capab: p2p::Capabilities,
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
 	header_cache_size: u64,
@@ -401,9 +398,12 @@ fn listen_for_addrs(
 				if update_possible {
 					match p2p_c.connect(addr.clone(), header_cache_size) {
 						Ok(p) => {
+							// If peer advertizes PEER_LIST then ask it for more peers that support PEER_LIST.
+							// We want to build a local db of possible peers to connect to.
+							// We do not necessarily care (at this point in time) what other capabilities these peers support.
 							if p.info.capabilities.contains(p2p::Capabilities::PEER_LIST) {
 								debug!("Sending peer request to {}", addr);
-								if p.send_peer_request(capab).is_ok() {
+								if p.send_peer_request(p2p::Capabilities::PEER_LIST).is_ok() {
 									match addr {
 										PeerAddr::Onion(_) => {
 											if let Err(_) = libp2p_connection::add_new_peer(&addr) {
