@@ -762,7 +762,9 @@ fn spend_in_fork_and_compact() {
 /// Test ability to retrieve block headers for a given output
 #[test]
 fn output_header_mappings() {
+	clean_output_dir(".grin_header_for_output");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	util::init_test_logger();
 	{
 		clean_output_dir(".mwc_header_for_output");
 		let chain = init_chain(".mwc_header_for_output", pow::mine_genesis_block().unwrap());
@@ -771,7 +773,8 @@ fn output_header_mappings() {
 
 		for n in 1..15 {
 			let prev = chain.head_header().unwrap();
-			let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
+			let next_header_info =
+				consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
 			let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
 			let reward = libtx::reward::output(
 				&keychain,
