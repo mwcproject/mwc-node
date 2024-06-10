@@ -500,8 +500,7 @@ impl Default for Capabilities {
 			| Capabilities::PEER_LIST
 			| Capabilities::TX_KERNEL_HASH
 			| Capabilities::TOR_ADDRESS
-		// To be enabled once we start supporting the various PIBD segment msgs.
-		// | Capabilities::PIBD_HIST
+			| Capabilities::PIBD_HIST
 	}
 }
 
