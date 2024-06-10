@@ -226,6 +226,7 @@ pub fn verify_partial_sig(
 /// use core::core::transaction::KernelFeatures;
 /// use core::core::{Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
+/// use std::convert::TryInto;
 /// use core::global;
 ///
 /// global::set_local_chain_type(global::ChainTypes::Floonet);
@@ -242,7 +243,7 @@ pub fn verify_partial_sig(
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
-/// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
+/// let features = KernelFeatures::HeightLocked{fee: 1.into(), lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
 /// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
 /// let pubkey = excess.to_pubkey().unwrap();
@@ -290,6 +291,7 @@ where
 /// use core::core::transaction::KernelFeatures;
 /// use core::core::{Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
+/// use std::convert::TryInto;
 /// use core::global;
 ///
 /// // Create signature
@@ -307,7 +309,7 @@ where
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
-/// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
+/// let features = KernelFeatures::HeightLocked{fee: 1.into(), lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
 /// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
 /// let pubkey = excess.to_pubkey().unwrap();

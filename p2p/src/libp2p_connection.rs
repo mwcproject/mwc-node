@@ -890,7 +890,7 @@ pub fn validate_integrity_message(
 		}
 	};
 
-	let integrity_fee = integrity_kernel.features.get_fee();
+	let integrity_fee = integrity_kernel.features.get_fee_pessimistic();
 
 	if integrity_fee < fee_base * INTEGRITY_FEE_MIN_X {
 		debug!(

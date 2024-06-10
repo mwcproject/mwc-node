@@ -569,7 +569,7 @@ fn spend_rewind_spend() {
 		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0).to_identifier();
 
 		let tx1 = build::transaction(
-			KernelFeatures::Plain { fee: 20000 },
+			KernelFeatures::Plain { fee: 20000.into() },
 			&[
 				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
@@ -645,7 +645,7 @@ fn spend_in_fork_and_compact() {
 		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0).to_identifier();
 
 		let tx1 = build::transaction(
-			KernelFeatures::Plain { fee: 20000 },
+			KernelFeatures::Plain { fee: 20000.into() },
 			&[
 				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
@@ -663,7 +663,7 @@ fn spend_in_fork_and_compact() {
 		chain.validate(false).unwrap();
 
 		let tx2 = build::transaction(
-			KernelFeatures::Plain { fee: 20000 },
+			KernelFeatures::Plain { fee: 20000.into() },
 			&[
 				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
 				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31.clone()),
@@ -899,7 +899,8 @@ where
 	let proof_size = global::proofsize();
 	let key_id = ExtKeychainPath::new(1, key_idx, 0, 0, 0).to_identifier();
 
-	let fees = txs.iter().map(|tx| tx.fee()).sum();
+	let height = prev.height + 1;
+	let fees = txs.iter().map(|tx| tx.fee(height)).sum();
 	let reward = libtx::reward::output(
 		kc,
 		&libtx::ProofBuilder::new(kc),
