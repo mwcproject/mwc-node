@@ -14,18 +14,27 @@
 
 //! Message types that transit over the network and related serialization code.
 
+use crate::chain::txhashset::BitmapSegment;
 use crate::conn::Tracker;
 use crate::core::core::hash::Hash;
-use crate::core::core::BlockHeader;
+use crate::core::core::transaction::{OutputIdentifier, TxKernel};
+use crate::core::core::{
+	BlockHeader, Segment, SegmentIdentifier, Transaction, UntrustedBlock, UntrustedBlockHeader,
+	UntrustedCompactBlock,
+};
 use crate::core::pow::Difficulty;
 use crate::core::ser::{
 	self, ProtocolVersion, Readable, Reader, StreamingReader, Writeable, Writer,
 };
 use crate::core::{consensus, global};
 use crate::types::{
-	Capabilities, Error, PeerAddr, ReasonForBan, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	AttachmentMeta, AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan,
+	MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
 };
+use crate::util::secp::pedersen::RangeProof;
+use bytes::Bytes;
 use num::FromPrimitive;
+use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -67,6 +76,14 @@ enum_from_primitive! {
 		GetTransaction = 19,
 		TransactionKernel = 20,
 		TorAddress = 23,
+		GetOutputBitmapSegment = 24,
+		OutputBitmapSegment = 25,
+		GetOutputSegment = 26,
+		OutputSegment = 27,
+		GetRangeProofSegment = 28,
+		RangeProofSegment = 29,
+		GetKernelSegment = 30,
+		KernelSegment = 31,
 	}
 }
 
@@ -105,6 +122,14 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::GetTransaction => 32,
 		Type::TransactionKernel => 32,
 		Type::TorAddress => 128,
+		Type::GetOutputBitmapSegment => 41,
+		Type::OutputBitmapSegment => 2 * max_block_size(),
+		Type::GetOutputSegment => 41,
+		Type::OutputSegment => 2 * max_block_size(),
+		Type::GetRangeProofSegment => 41,
+		Type::RangeProofSegment => 2 * max_block_size(),
+		Type::GetKernelSegment => 41,
+		Type::KernelSegment => 2 * max_block_size(),
 	}
 }
 
@@ -714,6 +739,207 @@ impl Readable for TxHashSetRequest {
 			hash: Hash::read(reader)?,
 			height: reader.read_u64()?,
 		})
+	}
+}
+
+/// Request to get a segment of a (P)MMR at a particular block.
+pub struct SegmentRequest {
+	/// The hash of the block the MMR is associated with
+	pub block_hash: Hash,
+	/// The identifier of the requested segment
+	pub identifier: SegmentIdentifier,
+}
+
+impl Readable for SegmentRequest {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let block_hash = Readable::read(reader)?;
+		let identifier = Readable::read(reader)?;
+		Ok(Self {
+			block_hash,
+			identifier,
+		})
+	}
+}
+
+impl Writeable for SegmentRequest {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.block_hash, writer)?;
+		Writeable::write(&self.identifier, writer)
+	}
+}
+
+/// Response to a (P)MMR segment request.
+pub struct SegmentResponse<T> {
+	/// The hash of the block the MMR is associated with
+	pub block_hash: Hash,
+	/// The MMR segment
+	pub segment: Segment<T>,
+}
+
+impl<T: Readable> Readable for SegmentResponse<T> {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let block_hash = Readable::read(reader)?;
+		let segment = Readable::read(reader)?;
+		Ok(Self {
+			block_hash,
+			segment,
+		})
+	}
+}
+
+impl<T: Writeable> Writeable for SegmentResponse<T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.block_hash, writer)?;
+		Writeable::write(&self.segment, writer)
+	}
+}
+
+/// Response to an output PMMR segment request.
+pub struct OutputSegmentResponse {
+	/// The segment response
+	pub response: SegmentResponse<OutputIdentifier>,
+	/// The root hash of the output bitmap MMR
+	pub output_bitmap_root: Hash,
+}
+
+impl Readable for OutputSegmentResponse {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let response = Readable::read(reader)?;
+		let output_bitmap_root = Readable::read(reader)?;
+		Ok(Self {
+			response,
+			output_bitmap_root,
+		})
+	}
+}
+
+impl Writeable for OutputSegmentResponse {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.response, writer)?;
+		Writeable::write(&self.output_bitmap_root, writer)
+	}
+}
+
+/// Response to an output bitmap MMR segment request.
+pub struct OutputBitmapSegmentResponse {
+	/// The hash of the block the MMR is associated with
+	pub block_hash: Hash,
+	/// The MMR segment
+	pub segment: BitmapSegment,
+	/// The root hash of the output PMMR
+	pub output_root: Hash,
+}
+
+impl Readable for OutputBitmapSegmentResponse {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let block_hash = Readable::read(reader)?;
+		let segment = Readable::read(reader)?;
+		let output_root = Readable::read(reader)?;
+		Ok(Self {
+			block_hash,
+			segment,
+			output_root,
+		})
+	}
+}
+
+impl Writeable for OutputBitmapSegmentResponse {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.block_hash, writer)?;
+		Writeable::write(&self.segment, writer)?;
+		Writeable::write(&self.output_root, writer)
+	}
+}
+
+pub enum Message {
+	Unknown(u8),
+	Ping(Ping),
+	Pong(Pong),
+	BanReason(BanReason),
+	TransactionKernel(Hash),
+	GetTransaction(Hash),
+	Transaction(Transaction),
+	StemTransaction(Transaction),
+	GetBlock(Hash),
+	Block(UntrustedBlock),
+	GetCompactBlock(Hash),
+	CompactBlock(UntrustedCompactBlock),
+	GetHeaders(Locator),
+	Header(UntrustedBlockHeader),
+	Headers(Vec<BlockHeader>),
+	GetPeerAddrs(GetPeerAddrs),
+	PeerAddrs(PeerAddrs),
+	TxHashSetRequest(TxHashSetRequest),
+	TxHashSetArchive(TxHashSetArchive),
+	Attachment(AttachmentUpdate, Option<Bytes>),
+	TorAddress(TorAddress),
+	GetOutputBitmapSegment(SegmentRequest),
+	OutputBitmapSegment(OutputBitmapSegmentResponse),
+	GetOutputSegment(SegmentRequest),
+	OutputSegment(OutputSegmentResponse),
+	GetRangeProofSegment(SegmentRequest),
+	RangeProofSegment(SegmentResponse<RangeProof>),
+	GetKernelSegment(SegmentRequest),
+	KernelSegment(SegmentResponse<TxKernel>),
+}
+
+impl fmt::Display for Message {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Message::Unknown(_) => write!(f, "unknown"),
+			Message::Ping(_) => write!(f, "ping"),
+			Message::Pong(_) => write!(f, "pong"),
+			Message::BanReason(_) => write!(f, "ban reason"),
+			Message::TransactionKernel(_) => write!(f, "tx kernel"),
+			Message::GetTransaction(_) => write!(f, "get tx"),
+			Message::Transaction(_) => write!(f, "tx"),
+			Message::StemTransaction(_) => write!(f, "stem tx"),
+			Message::GetBlock(_) => write!(f, "get block"),
+			Message::Block(_) => write!(f, "block"),
+			Message::GetCompactBlock(_) => write!(f, "get compact block"),
+			Message::CompactBlock(_) => write!(f, "compact block"),
+			Message::GetHeaders(_) => write!(f, "get headers"),
+			Message::Header(_) => write!(f, "header"),
+			Message::Headers(_) => write!(f, "headers"),
+			Message::GetPeerAddrs(_) => write!(f, "get peer addrs"),
+			Message::PeerAddrs(_) => write!(f, "peer addrs"),
+			Message::TxHashSetRequest(_) => write!(f, "tx hash set request"),
+			Message::TxHashSetArchive(_) => write!(f, "tx hash set"),
+			Message::Attachment(_, _) => write!(f, "attachment"),
+			Message::TorAddress(_) => write!(f, "tor address"),
+			Message::GetOutputBitmapSegment(_) => write!(f, "get output bitmap segment"),
+			Message::OutputBitmapSegment(_) => write!(f, "output bitmap segment"),
+			Message::GetOutputSegment(_) => write!(f, "get output segment"),
+			Message::OutputSegment(_) => write!(f, "output segment"),
+			Message::GetRangeProofSegment(_) => write!(f, "get range proof segment"),
+			Message::RangeProofSegment(_) => write!(f, "range proof segment"),
+			Message::GetKernelSegment(_) => write!(f, "get kernel segment"),
+			Message::KernelSegment(_) => write!(f, "kernel segment"),
+		}
+	}
+}
+
+impl fmt::Debug for Message {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "Consume({})", self)
+	}
+}
+
+pub enum Consumed {
+	Response(Msg),
+	Attachment(Arc<AttachmentMeta>, File),
+	None,
+	Disconnect,
+}
+
+impl fmt::Debug for Consumed {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Consumed::Response(msg) => write!(f, "Consumed::Response({:?})", msg.header.msg_type),
+			Consumed::Attachment(meta, _) => write!(f, "Consumed::Attachment({:?})", meta.size),
+			Consumed::None => write!(f, "Consumed::None"),
+			Consumed::Disconnect => write!(f, "Consumed::Disconnect"),
+		}
 	}
 }
 

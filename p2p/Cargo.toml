@@ -35,6 +35,7 @@ async-std = "1.9"
 tokio = {version = "0.2", features = ["full"] }
 ed25519-dalek = "1"
 serde_json = "1"
+bytes = "0.5"
 
 grin_core = { path = "../core", version = "4.4.2" }
 grin_store = { path = "../store", version = "4.4.2" }

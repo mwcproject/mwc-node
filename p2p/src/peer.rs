@@ -24,8 +24,10 @@ use std::sync::Arc;
 use lru_cache::LruCache;
 
 use crate::chain;
+use crate::chain::txhashset::BitmapChunk;
 use crate::conn;
 use crate::core::core::hash::{Hash, Hashed};
+use crate::core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
 use crate::core::pow::Difficulty;
 use crate::core::ser::Writeable;
 use crate::core::{core, global};
@@ -36,6 +38,7 @@ use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
 	TxHashSetRead,
 };
+use crate::util::secp::pedersen::RangeProof;
 use chrono::prelude::{DateTime, Utc};
 use std::time::Instant;
 
@@ -644,6 +647,38 @@ impl ChainAdapter for TrackingAdapter {
 
 	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
 		self.adapter.get_tmpfile_pathname(tmpfile_name)
+	}
+
+	fn get_kernel_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<TxKernel>, chain::Error> {
+		self.adapter.get_kernel_segment(hash, id)
+	}
+
+	fn get_bitmap_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<(Segment<BitmapChunk>, Hash), chain::Error> {
+		self.adapter.get_bitmap_segment(hash, id)
+	}
+
+	fn get_output_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<(Segment<OutputIdentifier>, Hash), chain::Error> {
+		self.adapter.get_output_segment(hash, id)
+	}
+
+	fn get_rangeproof_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<RangeProof>, chain::Error> {
+		self.adapter.get_rangeproof_segment(hash, id)
 	}
 }
 

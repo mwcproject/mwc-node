@@ -39,6 +39,7 @@ extern crate log;
 #[macro_use]
 extern crate lazy_static;
 
+mod codec;
 mod conn;
 pub mod handshake;
 pub mod libp2p_connection;
