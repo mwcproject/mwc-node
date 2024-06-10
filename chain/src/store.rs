@@ -18,7 +18,7 @@ use crate::core::consensus::HeaderInfo;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::{Block, BlockHeader, BlockSums, Inputs};
 use crate::core::pow::Difficulty;
-use crate::core::ser::ProtocolVersion;
+use crate::core::ser::{ProtocolVersion, Readable, Writeable};
 use crate::linked_list::MultiIndex;
 use crate::types::{CommitPos, HashHeight, Tip};
 use crate::util::secp::pedersen::Commitment;
@@ -48,6 +48,11 @@ const BLOCK_INPUT_BITMAP_PREFIX: u8 = b'B';
 const BLOCK_SUMS_PREFIX: u8 = b'M';
 const BLOCK_SPENT_PREFIX: u8 = b'S';
 const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C';
+
+/// Prefix for various boolean flags stored in the db.
+const BOOL_FLAG_PREFIX: u8 = b'B';
+/// Boolean flag for v3 migration.
+const BLOCKS_V3_MIGRATED: &str = "blocks_v3_migrated";
 
 /// All chain-related database operations
 pub struct ChainStore {
@@ -251,6 +256,27 @@ impl<'a> Batch<'a> {
 	// 	let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
 	// 	self.db.iter(&key)
 	// }
+
+	/// DB flag representing full migration of blocks to v3 version.
+	/// Default to false if flag not present.
+	pub fn is_blocks_v3_migrated(&self) -> Result<bool, Error> {
+		let migrated: Option<BoolFlag> = self
+			.db
+			.get_ser(&to_key(BOOL_FLAG_PREFIX, BLOCKS_V3_MIGRATED))?;
+		match migrated {
+			None => Ok(false),
+			Some(x) => Ok(x.into()),
+		}
+	}
+
+	/// Set DB flag representing full migration of blocks to v3 version.
+	pub fn set_blocks_v3_migrated(&self, migrated: bool) -> Result<(), Error> {
+		self.db.put_ser(
+			&to_key(BOOL_FLAG_PREFIX, BLOCKS_V3_MIGRATED)[..],
+			&BoolFlag(migrated),
+		)?;
+		Ok(())
+	}
 
 	/// Migrate a block stored in the db reading from one protocol version and writing
 	/// with new protocol version.
@@ -590,4 +616,26 @@ impl<'a> Iterator for DifficultyIter<'a> {
 /// Allows for fast lookup of the most recent entry per excess commitment.
 pub fn nrd_recent_kernel_index() -> MultiIndex<CommitPos> {
 	MultiIndex::init(NRD_KERNEL_LIST_PREFIX, NRD_KERNEL_ENTRY_PREFIX)
+}
+
+struct BoolFlag(bool);
+
+impl From<BoolFlag> for bool {
+	fn from(b: BoolFlag) -> Self {
+		b.0
+	}
+}
+
+impl Readable for BoolFlag {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let x = reader.read_u8()?;
+		Ok(BoolFlag(1 & x == 1))
+	}
+}
+
+impl Writeable for BoolFlag {
+	fn write<W: ser::Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_u8(self.0.into())?;
+		Ok(())
+	}
 }
