@@ -17,6 +17,7 @@
 //! configurable with either no peers, a user-defined list or a preset
 //! list of DNS records (the default).
 
+use crate::core::pow::Difficulty;
 use chrono::prelude::{DateTime, Utc};
 use chrono::{Duration, MIN_DATE};
 use grin_p2p::PeerAddr::Onion;
@@ -202,15 +203,10 @@ fn monitor_peers(
 		total_count += 1;
 	}
 
-	let peers_count = peers.iter().connected().count();
-
-	let max_diff = peers.max_peer_difficulty();
-	let most_work_count = peers
-		.iter()
-		.outbound()
-		.with_difficulty(|x| x >= max_diff)
-		.connected()
-		.count();
+	let peers_iter = || peers.iter().connected();
+	let peers_count = peers_iter().count();
+	let max_diff = peers_iter().max_difficulty().unwrap_or(Difficulty::zero());
+	let most_work_count = peers_iter().with_difficulty(|x| x >= max_diff).count();
 
 	debug!(
 		"monitor_peers: on {}:{}, {} connected ({} most_work). \
