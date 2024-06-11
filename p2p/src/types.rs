@@ -489,6 +489,8 @@ bitflags! {
 		const TOR_ADDRESS = 0b0001_0000;
 		   /// Can provide PIBD segments during initial byte download (fast sync).
 		const PIBD_HIST = 0b0010_0000;
+		/// Can provide historical blocks for archival sync.
+		const BLOCK_HIST = 0b0100_0000;
 	}
 }
 
