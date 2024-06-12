@@ -517,8 +517,12 @@ where
 				prune_pos = &prune_pos[1..];
 			} else {
 				// Not pruned, write to file.
-				elmt.write(&mut bin_writer)
-					.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+				elmt.write(&mut bin_writer).map_err(|e| {
+					io::Error::new(
+						io::ErrorKind::Other,
+						format!("Fail to write at write_tmp_pruned, {}", e),
+					)
+				})?;
 			}
 			current_pos += 1;
 		}

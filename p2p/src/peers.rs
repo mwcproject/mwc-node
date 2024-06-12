@@ -75,7 +75,7 @@ impl Peers {
 				Error::Timeout
 			})?;
 			peer_data = PeerData {
-				addr: peer.info.addr,
+				addr: peer.info.addr.clone(),
 				capabilities: peer.info.capabilities,
 				user_agent: peer.info.user_agent.clone(),
 				flags: State::Healthy,
@@ -84,9 +84,8 @@ impl Peers {
 				last_connected: Utc::now().timestamp(),
 			};
 			debug!("Adding newly connected peer {}.", peer_data.addr);
-			peers.insert(peer_data.addr, peer);
+			peers.insert(peer_data.addr.clone(), peer);
 		}
-		debug!("Saving newly connected peer {}.", peer_data.addr);
 		if let Err(e) = self.save_peer(&peer_data) {
 			error!("Could not save connected peer address: {:?}", e);
 		}

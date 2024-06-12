@@ -143,7 +143,7 @@ impl PeerStore {
 		let batch = self.db.batch()?;
 		for pd in p {
 			debug!("save_peers: {:?} marked {:?}", pd.addr, pd.flags);
-			batch.put_ser(&peer_key(pd.addr)[..], &pd)?;
+			batch.put_ser(&peer_key(pd.addr.clone())[..], &pd)?;
 		}
 		batch.commit()
 	}
