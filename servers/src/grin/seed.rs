@@ -21,6 +21,7 @@ use crate::core::pow::Difficulty;
 use chrono::prelude::{DateTime, Utc};
 use chrono::{Duration, MIN_DATE};
 use grin_p2p::PeerAddr::Onion;
+use grin_p2p::{msg::PeerAddrs, P2PConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
@@ -38,12 +39,10 @@ use crate::util::StopState;
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
-	preferred_peers: &[PeerAddr],
+	config: P2PConfig,
 	stop_state: Arc<StopState>,
 	header_cache_size: u64,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-	let preferred_peers = preferred_peers.to_vec();
-
 	thread::Builder::new()
 		.name("seed".to_string())
 		.spawn(move || {
@@ -56,11 +55,11 @@ pub fn connect_and_monitor(
 			let seed_list = seed_list();
 
 			// check seeds first
-			connect_to_seeds_and_preferred_peers(
+			connect_to_seeds_and_peers(
 				peers.clone(),
 				tx.clone(),
 				seed_list.clone(),
-				&preferred_peers,
+				config.clone(),
 			);
 
 			libp2p_connection::set_seed_list(&seed_list, true);
@@ -89,11 +88,11 @@ pub fn connect_and_monitor(
 
 				if connected_peers == 0 {
 					info!("No peers connected, trying to reconnect to seeds!");
-					connect_to_seeds_and_preferred_peers(
+					connect_to_seeds_and_peers(
 						peers.clone(),
 						tx.clone(),
 						seed_list.clone(),
-						&preferred_peers,
+						config.clone(),
 					);
 
 					thread::sleep(time::Duration::from_secs(1));
@@ -137,12 +136,7 @@ pub fn connect_and_monitor(
 					}
 
 					// monitor additional peers if we need to add more
-					monitor_peers(
-						peers.clone(),
-						p2p_server.config.clone(),
-						tx.clone(),
-						&preferred_peers,
-					);
+					monitor_peers(peers.clone(), p2p_server.config.clone(), tx.clone());
 				}
 
 				if peer_count == 0 {
@@ -167,12 +161,7 @@ pub fn connect_and_monitor(
 		})
 }
 
-fn monitor_peers(
-	peers: Arc<p2p::Peers>,
-	config: p2p::P2PConfig,
-	tx: mpsc::Sender<PeerAddr>,
-	preferred_peers: &[PeerAddr],
-) {
+fn monitor_peers(peers: Arc<p2p::Peers>, config: p2p::P2PConfig, tx: mpsc::Sender<PeerAddr>) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
 	let mut total_count = 0;
@@ -225,7 +214,7 @@ fn monitor_peers(
 	peers.clean_peers(
 		config.peer_max_inbound_count() as usize,
 		config.peer_max_outbound_count() as usize,
-		preferred_peers,
+		config.clone(),
 	);
 
 	if peers.enough_outbound_peers() {
@@ -251,13 +240,14 @@ fn monitor_peers(
 	}
 
 	// Attempt to connect to any preferred peers.
-	for p in preferred_peers {
+	let peers_preferred = config.peers_preferred.unwrap_or(PeerAddrs::default());
+	for p in peers_preferred {
 		if !connected_peers.is_empty() {
-			if !connected_peers.contains(p) {
-				tx.send(p.clone()).unwrap();
+			if !connected_peers.contains(&p) {
+				let _ = tx.send(p);
 			}
 		} else {
-			tx.send(p.clone()).unwrap();
+			let _ = tx.send(p);
 		}
 	}
 
@@ -291,33 +281,50 @@ fn monitor_peers(
 
 // Check if we have any pre-existing peer in db. If so, start with those,
 // otherwise use the seeds provided.
-fn connect_to_seeds_and_preferred_peers(
+fn connect_to_seeds_and_peers(
 	peers: Arc<p2p::Peers>,
 	tx: mpsc::Sender<PeerAddr>,
 	seed_list: Vec<PeerAddr>,
-	peers_preferred: &[PeerAddr],
+	config: P2PConfig,
 ) {
+	let peers_deny = config.peers_deny.unwrap_or(PeerAddrs::default());
+
+	// If "peers_allow" is explicitly configured then just use this list
+	// remembering to filter out "peers_deny".
+	if let Some(peers) = config.peers_allow {
+		for addr in peers.difference(peers_deny.as_slice()) {
+			let _ = tx.send(addr);
+		}
+		return;
+	}
+
+	// Always try our "peers_preferred" remembering to filter out "peers_deny".
+	if let Some(peers) = config.peers_preferred {
+		for addr in peers.difference(peers_deny.as_slice()) {
+			let _ = tx.send(addr);
+		}
+	}
+
 	// check if we have some peers in db
 	// look for peers that are able to give us other peers (via PEER_LIST capability)
 	let peers = peers.find_peers(p2p::State::Healthy, p2p::Capabilities::PEER_LIST, 100);
 
 	// if so, get their addresses, otherwise use our seeds
-	let mut peer_addrs = if peers.len() > 3 {
+	let peer_addrs = if peers.len() > 3 {
 		peers.iter().map(|p| p.addr.clone()).collect::<Vec<_>>()
 	} else {
 		seed_list
 	};
 
-	// If we have preferred peers add them to the initial list
-	peer_addrs.extend_from_slice(peers_preferred);
-
 	if peer_addrs.is_empty() {
 		warn!("No seeds were retrieved.");
 	}
 
-	// connect to this first set of addresses
+	// connect to this initial set of peer addresses (either seeds or from our local db).
 	for addr in peer_addrs {
-		tx.send(addr).unwrap();
+		if !peers_deny.as_slice().contains(&addr) {
+			let _ = tx.send(addr);
+		}
 	}
 }
 

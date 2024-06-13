@@ -536,7 +536,7 @@ impl Server {
 		let mut connect_thread = None;
 
 		if config.p2p_config.seeding_type != p2p::Seeding::Programmatic {
-			let seeder = match config.p2p_config.seeding_type {
+			let seed_list = match config.p2p_config.seeding_type {
 				p2p::Seeding::None => {
 					warn!("No seed configured, will stay solo until connected to");
 					seed::predefined_seeds(vec![])
@@ -553,15 +553,10 @@ impl Server {
 				_ => unreachable!(),
 			};
 
-			let preferred_peers = match &config.p2p_config.peers_preferred {
-				Some(addrs) => addrs.peers.clone(),
-				None => vec![],
-			};
-
 			connect_thread = Some(seed::connect_and_monitor(
 				p2p_server.clone(),
-				seeder,
-				&preferred_peers,
+				seed_list,
+				config.p2p_config.clone(),
 				stop_state.clone(),
 				header_cache_size,
 			)?);
