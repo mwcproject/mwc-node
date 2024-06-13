@@ -814,7 +814,6 @@ impl Server {
 		config: StratumServerConfig,
 		ip_pool: Arc<connections::StratumIpPool>,
 	) {
-		let edge_bits = global::min_edge_bits();
 		let proof_size = global::proofsize();
 		let sync_state = self.sync_state.clone();
 
@@ -829,7 +828,7 @@ impl Server {
 		let _ = thread::Builder::new()
 			.name("stratum_server".to_string())
 			.spawn(move || {
-				stratum_server.run_loop(edge_bits as u32, proof_size, sync_state);
+				stratum_server.run_loop(proof_size, sync_state);
 			});
 	}
 

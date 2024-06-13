@@ -38,6 +38,7 @@ use crate::common::stats::StratumStats;
 use crate::common::types::StratumServerConfig;
 use crate::core::core::hash::Hashed;
 use crate::core::core::Block;
+use crate::core::global;
 use crate::core::stratum::connections;
 use crate::core::{pow, ser};
 use crate::keychain;
@@ -516,6 +517,7 @@ impl Handler {
 			}
 		}
 		// Log this as a valid share
+		self.workers.update_edge_bits(params.edge_bits as u16);
 		if let Some(worker) = self.workers.get_worker(&worker_id) {
 			let submitted_by = match worker.login {
 				None => worker.id.to_string(),
@@ -597,10 +599,9 @@ impl Handler {
 			head = self.chain.head().unwrap();
 			let latest_hash = head.last_block_h;
 
-			// Build a new block if:
-			//    There is a new block on the chain
-			// or We are rebuilding the current one to include new transactions
-			// and there is at least one worker connected
+			// Build a new block if there is at least one worker and
+			// There is a new block on the chain or its time to rebuild
+			// the current one to include new transactions
 			if (current_hash != latest_hash || Utc::now().timestamp() >= deadline)
 				&& self.workers.count() > 0
 			{
@@ -611,7 +612,7 @@ impl Handler {
 					} else {
 						None
 					};
-					// If this is a new block, clear the current_block version history
+					// If this is a new block we will clear the current_block version history
 					let clear_blocks = current_hash != latest_hash;
 
 					// Build the new block (version)
@@ -644,6 +645,12 @@ impl Handler {
 					self.workers
 						.update_network_difficulty(self.current_state.read().current_difficulty);
 
+					// Update the mining stats
+					self.workers.update_block_height(new_block.header.height);
+					let difficulty = new_block.header.total_difficulty() - head.total_difficulty;
+					self.workers.update_network_difficulty(difficulty.to_num());
+					self.workers.update_network_hashrate();
+
 					{
 						let mut state = self.current_state.write();
 
@@ -652,8 +659,8 @@ impl Handler {
 						}
 						state.current_block_versions.push(new_block);
 					}
-					// Send this job to all connected workers
 				}
+				// Send this job to all connected workers
 				self.broadcast_job();
 			}
 
@@ -926,10 +933,10 @@ impl StratumServer {
 	/// existing chain anytime required and sending that to the connected
 	/// stratum miner, proxy, or pool, and accepts full solutions to
 	/// be submitted.
-	pub fn run_loop(&mut self, edge_bits: u32, proof_size: usize, sync_state: Arc<SyncState>) {
+	pub fn run_loop(&mut self, proof_size: usize, sync_state: Arc<SyncState>) {
 		info!(
-			"(Server ID: {}) Starting stratum server with edge_bits = {}, proof_size = {}, config: {:?}",
-			self.id, edge_bits, proof_size, self.config
+			"(Server ID: {}) Starting stratum server with proof_size = {}",
+			self.id, proof_size
 		);
 
 		self.sync_state = sync_state;
@@ -953,7 +960,10 @@ impl StratumServer {
 		self.stratum_stats.is_running.store(true, Ordering::Relaxed);
 		self.stratum_stats
 			.edge_bits
-			.store(edge_bits as u16, Ordering::Relaxed);
+			.store(global::min_edge_bits() as u16 + 1, Ordering::Relaxed);
+		self.stratum_stats
+			.minimum_share_difficulty
+			.store(self.config.minimum_share_difficulty, Ordering::Relaxed);
 
 		warn!(
 			"Stratum server started on {}",

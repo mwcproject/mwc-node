@@ -16,11 +16,11 @@
 //! to collect information about server status
 
 use crate::util::RwLock;
+use atomic_float::AtomicF64;
 use std::sync::atomic::*;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::core::consensus::graph_weight;
 use crate::core::core::hash::Hash;
 use crate::core::ser::ProtocolVersion;
 
@@ -130,8 +130,14 @@ pub struct StratumStats {
 	pub block_height: AtomicU64,
 	/// current network difficulty we're working on
 	pub network_difficulty: AtomicU64,
-	/// cuckoo size used for mining
+	/// cuckoo size of last share submitted
 	pub edge_bits: AtomicU16,
+	/// Number of blocks found by all workers
+	pub blocks_found: AtomicUsize,
+	/// current network Hashrate (for edge_bits)
+	pub network_hashrate: atomic_float::AtomicF64,
+	/// The minimum acceptable share difficulty to request from miners
+	pub minimum_share_difficulty: AtomicU64,
 	/// Individual worker status
 	worker_stats: RwLock<Vec<WorkerStats>>,
 }
@@ -216,16 +222,9 @@ impl PartialEq for DiffBlock {
 }
 
 impl StratumStats {
-	/// Calculate network hashrate
-	pub fn network_hashrate(&self, height: u64) -> f64 {
-		42.0 * (self.network_difficulty.load(Ordering::Relaxed) as f64
-			/ graph_weight(height, self.edge_bits.load(Ordering::Relaxed) as u8) as f64)
-			/ 60.0
-	}
-
 	/// Allocate a new slot for the worker. Assuming that caller will never fail.
 	/// returns worker Id for the Worker tist
-	pub fn allocate_new_worker(&self) -> usize {
+	pub fn allocate_new_worker(&self, pow_difficulty: u64) -> usize {
 		let mut worker_stats = self.worker_stats.write();
 
 		let worker_id = worker_stats
@@ -236,7 +235,7 @@ impl StratumStats {
 		let mut stats = WorkerStats::default();
 		stats.is_connected = true;
 		stats.id = worker_id.to_string();
-		stats.pow_difficulty = 1;
+		stats.pow_difficulty = pow_difficulty;
 
 		if worker_id < worker_stats.len() {
 			worker_stats[worker_id] = stats;
@@ -322,8 +321,11 @@ impl Default for StratumStats {
 			is_running: AtomicBool::new(false),
 			num_workers: AtomicUsize::new(0),
 			block_height: AtomicU64::new(0),
-			network_difficulty: AtomicU64::new(1000),
-			edge_bits: AtomicU16::new(29),
+			network_difficulty: AtomicU64::new(0),
+			edge_bits: AtomicU16::new(0),
+			blocks_found: AtomicUsize::new(0),
+			network_hashrate: AtomicF64::new(0.0),
+			minimum_share_difficulty: AtomicU64::new(1),
 			worker_stats: RwLock::new(Vec::new()),
 		}
 	}
