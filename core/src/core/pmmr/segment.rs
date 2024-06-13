@@ -464,6 +464,7 @@ where
 		mmr_size: u64,
 		bitmap: Option<&Bitmap>,
 		mmr_root: Hash,
+		hash_last_pos: u64,
 		other_root: Hash,
 		other_is_left: bool,
 	) -> Result<(), SegmentError> {
@@ -476,6 +477,7 @@ where
 			last,
 			segment_root,
 			segment_unpruned_pos,
+			hash_last_pos,
 			other_root,
 			other_is_left,
 		)
@@ -715,6 +717,7 @@ impl SegmentProof {
 		segment_last_pos: u64,
 		segment_root: Hash,
 		segment_unpruned_pos: u64,
+		hash_last_pos: u64,
 		other_root: Hash,
 		other_is_left: bool,
 	) -> Result<(), SegmentError> {
@@ -726,9 +729,9 @@ impl SegmentProof {
 			segment_unpruned_pos,
 		)?;
 		let root = if other_is_left {
-			(other_root, root).hash_with_index(last_pos)
+			(other_root, root).hash_with_index(hash_last_pos)
 		} else {
-			(root, other_root).hash_with_index(last_pos)
+			(root, other_root).hash_with_index(hash_last_pos)
 		};
 		if root == mmr_root {
 			Ok(())
