@@ -24,12 +24,10 @@ use crate::global::PROTOCOL_VERSION;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use bytes::Buf;
 use keychain::{BlindingFactor, Identifier, IDENTIFIER_SIZE};
-use serde::__private::from_utf8_lossy;
 use std::convert::TryInto;
 use std::fmt::{self, Debug};
 use std::io::{self, Read, Write};
-use std::marker::PhantomData;
-use std::{cmp, marker};
+use std::{cmp, marker, string};
 use util::secp::constants::{
 	AGG_SIGNATURE_SIZE, COMPRESSED_PUBLIC_KEY_SIZE, MAX_PROOF_SIZE, PEDERSEN_COMMITMENT_SIZE,
 	SECRET_KEY_SIZE,
@@ -1197,7 +1195,7 @@ where
 				b"Other" => Ok(Field::field16),
 				b"UnexpectedEof" => Ok(Field::field17),
 				_ => {
-					let value = &from_utf8_lossy(value);
+					let value = &string::String::from_utf8_lossy(value);
 					Err(serde::de::Error::unknown_variant(value, VARIANTS))
 				}
 			}
@@ -1213,13 +1211,13 @@ where
 		}
 	}
 	struct Visitor<'de> {
-		marker: PhantomData<io::ErrorKind>,
-		lifetime: PhantomData<&'de ()>,
+		marker: marker::PhantomData<io::ErrorKind>,
+		lifetime: marker::PhantomData<&'de ()>,
 	}
 	impl<'de> serde::de::Visitor<'de> for Visitor<'de> {
 		type Value = io::ErrorKind;
-		fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-			std::fmt::Formatter::write_str(formatter, "enum io::ErrorKind")
+		fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+			fmt::Formatter::write_str(formatter, "enum io::ErrorKind")
 		}
 		fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
 		where
@@ -1421,8 +1419,8 @@ where
 		"ErrorKind",
 		VARIANTS,
 		Visitor {
-			marker: PhantomData::<io::ErrorKind>,
-			lifetime: PhantomData,
+			marker: marker::PhantomData::<io::ErrorKind>,
+			lifetime: marker::PhantomData,
 		},
 	)
 }
