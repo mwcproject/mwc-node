@@ -91,7 +91,7 @@ pub fn to_entropy(mnemonic: &str) -> Result<Vec<u8>, Error> {
 
 	let mut hash = [0; 32];
 	let mut sha2sum = Sha256::default();
-	sha2sum.update(&entropy.clone());
+	sha2sum.update(&entropy);
 	hash.copy_from_slice(sha2sum.finalize().as_slice());
 
 	let actual = (hash[0] >> (8 - checksum_bits)) & mask;
