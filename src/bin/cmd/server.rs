@@ -18,7 +18,6 @@ use std::thread;
 use std::time::Duration;
 
 use clap::ArgMatches;
-use ctrlc;
 use futures::channel::oneshot;
 
 use crate::config::GlobalConfig;

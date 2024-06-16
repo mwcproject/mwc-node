@@ -30,8 +30,6 @@ use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::sync::atomic::AtomicUsize;
 
-use grin_store;
-
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
 use crate::core::core;

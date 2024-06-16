@@ -242,12 +242,11 @@ impl TryFrom<u16> for NRDRelativeHeight {
 	type Error = Error;
 
 	fn try_from(height: u16) -> Result<Self, Self::Error> {
-		if height == 0 {
-			Err(Error::InvalidNRDRelativeHeight)
-		} else if height
-			> NRDRelativeHeight::MAX
-				.try_into()
-				.expect("WEEK_HEIGHT const should fit in u16")
+		if height == 0
+			|| height
+				> NRDRelativeHeight::MAX
+					.try_into()
+					.expect("WEEK_HEIGHT const should fit in u16")
 		{
 			Err(Error::InvalidNRDRelativeHeight)
 		} else {

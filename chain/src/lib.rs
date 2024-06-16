@@ -33,7 +33,6 @@ extern crate log;
 #[macro_use]
 extern crate lazy_static;
 
-use failure;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;

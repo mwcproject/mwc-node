@@ -27,7 +27,6 @@ use futures::TryStreamExt;
 use hyper::server::accept;
 use hyper::service::make_service_fn;
 use hyper::{Body, Request, Server, StatusCode};
-use rustls;
 use rustls::internal::pemfile;
 use rustls::{NoClientAuth, ServerConfig};
 use std::convert::Infallible;
