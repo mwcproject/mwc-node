@@ -280,4 +280,10 @@ impl WorkersList {
 			.edge_bits
 			.store(edge_bits, Ordering::Relaxed);
 	}
+
+	pub fn increment_block_found(&self) {
+		self.stratum_stats
+			.blocks_found
+			.fetch_add(1, Ordering::Relaxed);
+	}
 }
