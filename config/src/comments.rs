@@ -19,7 +19,7 @@ use std::collections::HashMap;
 fn comments() -> HashMap<String, String> {
 	let mut retval = HashMap::new();
 	retval.insert(
-		"[server]".to_string(),
+		"config_file_version".to_string(),
 		"
 # Generated Server Configuration File for MWC
 #
@@ -31,7 +31,13 @@ fn comments() -> HashMap<String, String> {
 # -[user home]/.mwc
 #
 
-#########################################
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"[server]".to_string(),
+		"#########################################
 ### SERVER CONFIGURATION              ###
 #########################################
 

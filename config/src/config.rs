@@ -20,7 +20,6 @@ use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::io::BufReader;
-use std::io::Read;
 use std::path::PathBuf;
 
 use crate::comments::insert_comments;
@@ -141,6 +140,7 @@ pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalCon
 impl Default for ConfigMembers {
 	fn default() -> ConfigMembers {
 		ConfigMembers {
+			config_file_version: Some(1),
 			server: ServerConfig::default(),
 			logging: Some(LoggingConfig::default()),
 		}
@@ -224,10 +224,14 @@ impl GlobalConfig {
 
 	/// Read config
 	fn read_config(mut self) -> Result<GlobalConfig, ConfigError> {
-		let mut file = File::open(self.config_file_path.as_mut().unwrap())?;
-		let mut contents = String::new();
-		file.read_to_string(&mut contents)?;
-		let fixed = GlobalConfig::fix_warning_level(contents);
+		let config_file_path = self.config_file_path.as_ref().unwrap();
+		let contents = fs::read_to_string(config_file_path)?;
+		let migrated = GlobalConfig::migrate_config_file_version_none_to_2(contents.clone());
+		if contents != migrated {
+			fs::write(config_file_path, &migrated)?;
+		}
+
+		let fixed = GlobalConfig::fix_warning_level(migrated);
 		let decoded: Result<ConfigMembers, toml::de::Error> = toml::from_str(&fixed);
 		match decoded {
 			Ok(gc) => {
@@ -305,6 +309,46 @@ impl GlobalConfig {
 		let mut file = File::create(name)?;
 		file.write_all(commented_config.as_bytes())?;
 		Ok(())
+	}
+
+	/// It is placeholder for the future migration. Please check how it is done at grin
+	///  MWC doesn't have anything to migrate yet
+	fn migrate_config_file_version_none_to_2(config_str: String) -> String {
+		// Parse existing config and return unchanged if not eligible for migration
+
+		// Nothing to migrate in MWC. Keeping commented code as example
+		/*let mut config: ConfigMembers =
+			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone())).unwrap();
+		if config.config_file_version != None {
+			return config_str;
+		}
+
+		// Apply changes both textually and structurally
+
+		let config_str = config_str.replace("\n#########################################\n### SERVER CONFIGURATION              ###", "\nconfig_file_version = 2\n\n#########################################\n### SERVER CONFIGURATION              ###");
+		config.config_file_version = Some(2);
+
+		let config_str = config_str.replace(
+			"\naccept_fee_base = 1000000\n",
+			"\naccept_fee_base = 500000\n",
+		);
+		if config.server.pool_config.accept_fee_base == 1000000 {
+			config.server.pool_config.accept_fee_base = 500000;
+		}
+
+		let config_str = config_str.replace(
+			"\n#a setting to 1000000 will be overridden to 500000 to respect the fixfees RFC\n",
+			"\n",
+		);
+
+		// Verify equivalence
+
+		assert_eq!(
+			config,
+			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone())).unwrap()
+		);*/
+
+		config_str
 	}
 
 	// For forwards compatibility old config needs `Warning` log level changed to standard log::Level `WARN`
