@@ -132,6 +132,10 @@ pub trait OwnerRpc: Sync + Send {
 	 */
 	fn compact_chain(&self) -> Result<(), ErrorKind>;
 
+	fn reset_chain_head(&self, hash: String) -> Result<(), ErrorKind>;
+
+	fn invalidate_header(&self, hash: String) -> Result<(), ErrorKind>;
+
 	/**
 	Networked version of [Owner::get_peers](struct.Owner.html#method.get_peers).
 
@@ -361,6 +365,14 @@ impl OwnerRpc for Owner {
 
 	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), ErrorKind> {
 		Owner::validate_chain(self, assume_valid_rangeproofs_kernels).map_err(|e| e.kind().clone())
+	}
+
+	fn reset_chain_head(&self, hash: String) -> Result<(), ErrorKind> {
+		Owner::reset_chain_head(self, hash).map_err(|e| e.kind().clone())
+	}
+
+	fn invalidate_header(&self, hash: String) -> Result<(), ErrorKind> {
+		Owner::invalidate_header(self, hash).map_err(|e| e.kind().clone())
 	}
 
 	fn compact_chain(&self) -> Result<(), ErrorKind> {

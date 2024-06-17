@@ -802,8 +802,6 @@ where
 {
 	let batch = store.batch()?;
 
-	// Note: Extending either the sync_head or header_head MMR here.
-	// Use underlying MMR to determine the "head".
 	let head = match handle.head_hash() {
 		Ok(hash) => {
 			let header = batch.get_block_header(&hash)?;
@@ -840,8 +838,6 @@ where
 	// index saving can be undone
 	let child_batch = batch.child()?;
 
-	// Note: Extending either the sync_head or header_head MMR here.
-	// Use underlying MMR to determine the "head".
 	let head = match handle.head_hash() {
 		Ok(hash) => {
 			if let Ok(header) = child_batch.get_block_header(&hash) {

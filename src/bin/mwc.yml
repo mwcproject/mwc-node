@@ -85,3 +85,15 @@ subcommands:
                     short: f
                     long: fast
                     takes_value: false
+        - resetchainhead:
+            about: Resets the local chain head
+            args:
+              - hash:
+                  help: The header hash to reset to
+                  required: true
+        - invalidateheader:
+            about: Adds header hash to denylist
+            args:
+              - hash:
+                  help: The header hash to invalidate
+                  required: true

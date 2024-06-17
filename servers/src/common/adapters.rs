@@ -211,7 +211,7 @@ where
 			debug!("block_received, cache for {} OK", b_hash);
 		}
 
-		if self.chain().block_exists(b.hash())? {
+		if self.chain().is_known(&b.header).is_err() {
 			return Ok(true);
 		}
 
@@ -234,9 +234,10 @@ where
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		// No need to process this compact block if we have previously accepted the _full block_.
-		if self.chain().block_exists(cb.hash())? {
+		if self.chain().is_known(&cb.header).is_err() {
 			return Ok(true);
 		}
+
 		let bhash = cb.hash();
 		debug!(
 			"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
