@@ -17,7 +17,6 @@
 pub mod common;
 use crate::common::tx1i10_v2_compatible;
 use crate::core::core::transaction::{self, Error};
-use crate::core::core::verifier_cache::LruVerifierCache;
 use crate::core::core::{
 	FeeFields, KernelFeatures, Output, OutputFeatures, Transaction, TxKernel, Weighting,
 };
@@ -27,8 +26,6 @@ use crate::core::libtx::{build, tx_fee};
 use crate::core::{consensus, ser};
 use grin_core as core;
 use keychain::{ExtKeychain, Keychain};
-use std::sync::Arc;
-use util::RwLock;
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.
@@ -121,12 +118,10 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
-
 	// Transaction should fail validation due to cut-through.
 	let height = 42; // arbitrary
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, verifier_cache.clone(), height),
+		tx.validate(Weighting::AsTransaction, height),
 		Err(Error::CutThrough),
 	);
 
@@ -144,7 +139,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, verifier_cache.clone(), height)?;
+	tx.validate(Weighting::AsTransaction, height)?;
 
 	// Transaction validates via lightweight "read" validation as well.
 	tx.validate_read()?;
@@ -186,12 +181,10 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
-
 	// Transaction should fail validation due to cut-through.
 	let height = 42; // arbitrary
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, verifier_cache.clone(), height),
+		tx.validate(Weighting::AsTransaction, height),
 		Err(Error::CutThrough),
 	);
 
@@ -209,7 +202,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, verifier_cache.clone(), height)?;
+	tx.validate(Weighting::AsTransaction, height)?;
 
 	// Transaction validates via lightweight "read" validation as well.
 	tx.validate_read()?;
@@ -234,7 +227,7 @@ fn test_fee_fields() -> Result<(), Error> {
 			fee: FeeFields::new(1, 42).unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::REWARD, key_id1.clone()),
+			build::coinbase_input(consensus::calc_mwc_block_reward(1), key_id1.clone()),
 			build::output(60_000_000_000 - 84 - 42 - 21, key_id1.clone()),
 		],
 		&keychain,

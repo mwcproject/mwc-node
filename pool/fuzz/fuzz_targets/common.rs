@@ -18,7 +18,6 @@ use self::chain::types::{NoopAdapter, Options};
 use self::chain::Chain;
 use self::core::consensus;
 use self::core::core::hash::Hash;
-use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{Block, BlockHeader, BlockSums, KernelFeatures, Transaction};
 use self::core::genesis;
 use self::core::global;
@@ -120,7 +119,7 @@ pub fn clean_output_dir(db_root: String) {
 pub struct PoolFuzzer {
 	pub chain: Arc<Chain>,
 	pub keychain: ExtKeychain,
-	pub pool: TransactionPool<ChainAdapter, NoopPoolAdapter, LruVerifierCache>,
+	pub pool: TransactionPool<ChainAdapter, NoopPoolAdapter>,
 }
 
 impl PoolFuzzer {
@@ -131,15 +130,11 @@ impl PoolFuzzer {
 
 		let genesis = genesis_block(&keychain);
 		let chain = Arc::new(Self::init_chain(db_root, genesis));
-		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 
 		// Initialize a new pool with our chain adapter.
-		let pool = Self::init_transaction_pool(
-			Arc::new(ChainAdapter {
-				chain: chain.clone(),
-			}),
-			verifier_cache.clone(),
-		);
+		let pool = Self::init_transaction_pool(Arc::new(ChainAdapter {
+			chain: chain.clone(),
+		}));
 
 		let ret = Self {
 			chain,
@@ -239,26 +234,20 @@ impl PoolFuzzer {
 	}
 
 	fn init_chain(dir_name: &str, genesis: Block) -> Chain {
-		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 		Chain::init(
 			dir_name.to_string(),
 			Arc::new(NoopAdapter {}),
 			genesis,
 			pow::verify_size,
-			verifier_cache,
 			false,
 		)
 		.unwrap()
 	}
 
 	// Same as from pool/tests/common.rs
-	fn init_transaction_pool<B, V>(
-		chain: Arc<B>,
-		verifier_cache: Arc<RwLock<V>>,
-	) -> TransactionPool<B, NoopPoolAdapter, V>
+	fn init_transaction_pool<B>(chain: Arc<B>) -> TransactionPool<B, NoopPoolAdapter>
 	where
 		B: BlockChain,
-		V: VerifierCache + 'static,
 	{
 		TransactionPool::new(
 			PoolConfig {

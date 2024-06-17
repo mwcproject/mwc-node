@@ -43,7 +43,7 @@ use crate::keychain;
 use crate::mining::mine_block;
 use crate::util;
 use crate::util::ToHex;
-use crate::{ServerTxPool, ServerVerifierCache};
+use crate::ServerTxPool;
 use std::cmp::min;
 
 // ----------------------------------------
@@ -572,12 +572,7 @@ impl Handler {
 		self.workers.broadcast(job_request_json);
 	}
 
-	pub fn run(
-		&self,
-		config: &StratumServerConfig,
-		tx_pool: &ServerTxPool,
-		verifier_cache: ServerVerifierCache,
-	) {
+	pub fn run(&self, config: &StratumServerConfig, tx_pool: &ServerTxPool) {
 		debug!("Run main loop");
 		let mut deadline: i64 = 0;
 		let mut head = self.chain.head().unwrap();
@@ -618,7 +613,6 @@ impl Handler {
 					let (new_block, block_fees) = mine_block::get_block(
 						&self.chain,
 						tx_pool,
-						verifier_cache.clone(),
 						self.current_state.read().current_key_id.clone(),
 						wallet_listener_url,
 					);
@@ -897,7 +891,6 @@ pub struct StratumServer {
 	config: StratumServerConfig,
 	chain: Arc<chain::Chain>,
 	pub tx_pool: ServerTxPool,
-	verifier_cache: ServerVerifierCache,
 	sync_state: Arc<SyncState>,
 	stratum_stats: Arc<StratumStats>,
 	ip_pool: Arc<connections::StratumIpPool>,
@@ -910,7 +903,6 @@ impl StratumServer {
 		config: StratumServerConfig,
 		chain: Arc<chain::Chain>,
 		tx_pool: ServerTxPool,
-		verifier_cache: ServerVerifierCache,
 		stratum_stats: Arc<StratumStats>,
 		ip_pool: Arc<connections::StratumIpPool>,
 	) -> StratumServer {
@@ -919,7 +911,6 @@ impl StratumServer {
 			config,
 			chain,
 			tx_pool,
-			verifier_cache,
 			sync_state: Arc::new(SyncState::new()),
 			stratum_stats: stratum_stats,
 			ip_pool,
@@ -974,7 +965,7 @@ impl StratumServer {
 			thread::sleep(Duration::from_millis(50));
 		}
 
-		handler.run(&self.config, &self.tx_pool, self.verifier_cache.clone());
+		handler.run(&self.config, &self.tx_pool);
 	} // fn run_loop()
 } // StratumServer
 

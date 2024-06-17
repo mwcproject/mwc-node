@@ -145,6 +145,9 @@ pub const TESTING_SECOND_HARD_FORK: u64 = 6;
 /// AutomatedTesting and UserTesting HF3 height.
 pub const TESTING_THIRD_HARD_FORK: u64 = 9;
 
+/// Fork every 3 blocks
+pub const TESTING_HARD_FORK_INTERVAL: u64 = 3;
+
 /// Check whether the block version is valid at a given height
 /// MWC doesn't want like grin change the algorithms for mining. So version is constant
 pub fn header_version(height: u64) -> HeaderVersion {

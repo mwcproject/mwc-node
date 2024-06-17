@@ -33,7 +33,6 @@ use crate::common::hooks::{ChainEvents, NetEvents};
 use crate::common::types::{ChainValidationMode, DandelionEpoch, ServerConfig};
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::transaction::Transaction;
-use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::{
 	BlockHeader, BlockSums, CompactBlock, Inputs, OutputIdentifier, Segment, SegmentIdentifier,
 	TxKernel,
@@ -100,16 +99,14 @@ impl EventCache {
 /// Implementation of the NetAdapter for the . Gets notified when new
 /// blocks and transactions are received and forwards to the chain and pool
 /// implementations.
-pub struct NetToChainAdapter<B, P, V>
+pub struct NetToChainAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	sync_state: Arc<SyncState>,
 	chain: Weak<chain::Chain>,
-	tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
-	verifier_cache: Arc<RwLock<V>>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<p2p::Peers>>,
 	config: ServerConfig,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
@@ -124,11 +121,10 @@ where
 	reset_tip: Arc<Mutex<u64>>,
 }
 
-impl<B, P, V> p2p::ChainAdapter for NetToChainAdapter<B, P, V>
+impl<B, P> p2p::ChainAdapter for NetToChainAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	fn total_difficulty(&self) -> Result<Difficulty, chain::Error> {
 		Ok(self.chain().head()?.total_difficulty)
@@ -319,10 +315,7 @@ where
 			};
 
 			if let Ok(prev) = self.chain().get_previous_header(&cb.header) {
-				if block
-					.validate(&prev.total_kernel_offset, self.verifier_cache.clone())
-					.is_ok()
-				{
+				if block.validate(&prev.total_kernel_offset).is_ok() {
 					debug!(
 						"successfully hydrated block: {} at {} ({})",
 						block.header.hash(),
@@ -800,18 +793,16 @@ where
 	}
 }
 
-impl<B, P, V> NetToChainAdapter<B, P, V>
+impl<B, P> NetToChainAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	/// Construct a new NetToChainAdapter instance
 	pub fn new(
 		sync_state: Arc<SyncState>,
 		chain: Arc<chain::Chain>,
-		tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
-		verifier_cache: Arc<RwLock<V>>,
+		tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 		config: ServerConfig,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	) -> Self {
@@ -819,7 +810,6 @@ where
 			sync_state,
 			chain: Arc::downgrade(&chain),
 			tx_pool,
-			verifier_cache,
 			peers: OneTime::new(),
 			config,
 			hooks,
@@ -1041,22 +1031,20 @@ where
 /// Implementation of the ChainAdapter for the network. Gets notified when the
 ///  accepted a new block, asking the pool to update its state and
 /// the network to broadcast the block
-pub struct ChainToPoolAndNetAdapter<B, P, V>
+pub struct ChainToPoolAndNetAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
-	tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<p2p::Peers>>,
 	hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 }
 
-impl<B, P, V> ChainAdapter for ChainToPoolAndNetAdapter<B, P, V>
+impl<B, P> ChainAdapter for ChainToPoolAndNetAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	fn block_accepted(&self, b: &core::Block, status: BlockStatus, opts: Options) {
 		// Trigger all registered "on_block_accepted" hooks (logging and webhooks).
@@ -1099,15 +1087,14 @@ where
 	}
 }
 
-impl<B, P, V> ChainToPoolAndNetAdapter<B, P, V>
+impl<B, P> ChainToPoolAndNetAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	/// Construct a ChainToPoolAndNetAdapter instance.
 	pub fn new(
-		tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
+		tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 		hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 	) -> Self {
 		ChainToPoolAndNetAdapter {

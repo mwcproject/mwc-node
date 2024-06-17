@@ -1010,7 +1010,9 @@ fn test_integrity() -> Result<(), Error> {
 	valid_kernels.insert(
 		integrity_kernel,
 		TxKernel::with_features(KernelFeatures::Plain {
-			fee: paid_integrity_fee,
+			fee: paid_integrity_fee
+				.try_into()
+				.expect("Failed to convert the paid_integrity_fee"),
 		}),
 	);
 	let output_validation_fn = |commit: &Commitment| -> Result<Option<TxKernel>, Error> {

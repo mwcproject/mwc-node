@@ -51,7 +51,6 @@ use crate::common::stats::{
 
 use crate::common::types::{Error, ServerConfig, StratumServerConfig};
 use crate::core::core::hash::Hashed;
-use crate::core::core::verifier_cache::LruVerifierCache;
 use crate::core::ser::ProtocolVersion;
 use crate::core::stratum::connections;
 use crate::core::{consensus, genesis, global, pow};
@@ -80,10 +79,7 @@ use grin_util::secp::pedersen::Commitment;
 use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
-pub type ServerTxPool =
-	Arc<RwLock<pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter, LruVerifierCache>>>;
-/// Arcified thread-safe LruVerifierCache
-pub type ServerVerifierCache = Arc<RwLock<LruVerifierCache>>;
+pub type ServerTxPool = Arc<RwLock<pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
 
 /// Grin server holding internal structures.
 pub struct Server {
@@ -95,9 +91,6 @@ pub struct Server {
 	pub chain: Arc<chain::Chain>,
 	/// in-memory transaction pool
 	pub tx_pool: ServerTxPool,
-	/// Shared cache for verification results when
-	/// verifying rangeproof and kernel signatures.
-	verifier_cache: ServerVerifierCache,
 	/// Whether we're currently syncing
 	pub sync_state: Arc<SyncState>,
 	/// To be passed around to collect stats and info
@@ -246,16 +239,11 @@ impl Server {
 			Arc::new(StopState::new())
 		};
 
-		// Shared cache for verification results.
-		// We cache rangeproof verification and kernel signature verification.
-		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
-
 		let pool_adapter = Arc::new(PoolToChainAdapter::new());
 		let pool_net_adapter = Arc::new(PoolToNetAdapter::new(config.dandelion_config.clone()));
 		let tx_pool = Arc::new(RwLock::new(pool::TransactionPool::new(
 			config.pool_config.clone(),
 			pool_adapter.clone(),
-			verifier_cache.clone(),
 			pool_net_adapter.clone(),
 		)));
 
@@ -280,7 +268,6 @@ impl Server {
 			chain_adapter.clone(),
 			genesis.clone(),
 			pow::verify_size,
-			verifier_cache.clone(),
 			archive_mode,
 		)?);
 
@@ -290,7 +277,6 @@ impl Server {
 			sync_state.clone(),
 			shared_chain.clone(),
 			tx_pool.clone(),
-			verifier_cache.clone(),
 			config.clone(),
 			init_net_hooks(&config),
 		));
@@ -621,7 +607,6 @@ impl Server {
 			config.dandelion_config.clone(),
 			tx_pool.clone(),
 			pool_net_adapter,
-			verifier_cache.clone(),
 			stop_state.clone(),
 		)?;
 
@@ -631,7 +616,6 @@ impl Server {
 			p2p: p2p_server,
 			chain: shared_chain,
 			tx_pool,
-			verifier_cache,
 			sync_state,
 			state_info: ServerStateInfo {
 				..Default::default()
@@ -821,7 +805,6 @@ impl Server {
 			config,
 			self.chain.clone(),
 			self.tx_pool.clone(),
-			self.verifier_cache.clone(),
 			self.state_info.stratum_stats.clone(),
 			ip_pool,
 		);
@@ -869,7 +852,6 @@ impl Server {
 			config,
 			self.chain.clone(),
 			self.tx_pool.clone(),
-			self.verifier_cache.clone(),
 			stop_state,
 			sync_state,
 		);
