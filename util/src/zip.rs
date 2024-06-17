@@ -59,7 +59,7 @@ pub fn extract_files(from_archive: File, dest: &Path, files: Vec<PathBuf>) -> io
 		let mut archive = zip_rs::ZipArchive::new(from_archive).expect("archive file exists");
 		for x in files {
 			if let Ok(file) = archive.by_name(x.to_str().expect("valid path")) {
-				let path = dest.join(file.name());
+				let path = dest.join(file.mangled_name());
 				let parent_dir = path.parent().expect("valid parent dir");
 				fs::create_dir_all(&parent_dir).expect("create parent dir");
 				let outfile = fs::File::create(&path).expect("file created");
