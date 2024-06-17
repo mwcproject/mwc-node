@@ -1133,4 +1133,77 @@ mod test {
 		// Expected 20M in total. The coin base is exactly 20M
 		assert_eq!(total_blocks_reward, 20000000000000000);
 	}
+
+	// Brute force test to validate that calc_mwc_block_reward and calc_mwc_block_overage are in sync fo all blocks
+	// Please note, the test is slow, it checking values for every block that will be generated until reward will be gone
+	// Test is 'ignore' because it takes about an hour to run
+	#[test]
+	#[ignore]
+	fn test_rewards_full_cycle() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
+		let mut total_coins: u64 = GENESIS_BLOCK_REWARD;
+		let mut height: u64 = 0;
+		let mut zero_reward_blocks = 0;
+
+		let total_blocks = get_epoch_block_offset(12);
+
+		while zero_reward_blocks < 100 {
+			assert_eq!(calc_mwc_block_overage(height, true), total_coins);
+			height += 1;
+			let r = calc_mwc_block_reward(height);
+			total_coins += r;
+			if r == 0 {
+				zero_reward_blocks += 1;
+			}
+			if height % 1000000 == 0 {
+				println!(
+					"Current height={}, reward={}, coins={}, progress={:.1}%",
+					height,
+					r,
+					total_coins,
+					height as f64 / total_blocks as f64 * 100.0
+				);
+			}
+		}
+
+		println!(
+			"Finished with height={}, reward={}, coins={}",
+			height,
+			calc_mwc_block_reward(height),
+			total_coins
+		);
+
+		assert_eq!(total_coins, 20000000000000000);
+		assert!(height > get_epoch_block_offset(12) + 99);
+
+		// Test finished with output:
+		//		Current height=884000000, reward=10000000, coins=19970529927788020, progress=99.7%
+		//		Current height=885000000, reward=10000000, coins=19980529927788020, progress=99.8%
+		//		Current height=886000000, reward=10000000, coins=19990529927788020, progress=99.9%
+		//		Finished with height=886947108, reward=0, coins=20000000000000000
+		//		test consensus::test::test_rewards_full_cycle ... ok
+	}
+
+	// Testing last 1M blocks, srating from the event: height=886000000, reward=10000000, coins=19990529927788020, progress=99.9%
+	#[test]
+	fn test_last_epoch() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
+		let mut total_coins: u64 = 19990529927788020;
+		let mut height: u64 = 886000000;
+		let mut zero_reward_blocks = 0;
+
+		while zero_reward_blocks < 100 {
+			assert_eq!(calc_mwc_block_overage(height, true), total_coins);
+			height += 1;
+			let r = calc_mwc_block_reward(height);
+			total_coins += r;
+			if r == 0 {
+				zero_reward_blocks += 1;
+			}
+		}
+		assert_eq!(total_coins, 20000000000000000);
+		assert!(height > get_epoch_block_offset(12) + 99);
+	}
 }
