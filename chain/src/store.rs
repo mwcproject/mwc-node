@@ -36,7 +36,8 @@ const BLOCK_PREFIX: u8 = b'b';
 const HEAD_PREFIX: u8 = b'H';
 const TAIL_PREFIX: u8 = b'T';
 const HEADER_HEAD_PREFIX: u8 = b'G';
-const OUTPUT_POS_PREFIX: u8 = b'p';
+const OUTPUT_ID_POS_PREFIX: u8 = b'o';
+const OUTPUT_COMMIT_POS_PREFIX: u8 = b'p'; // deprecated
 
 /// Prefix for NRD kernel pos index lists.
 pub const NRD_KERNEL_LIST_PREFIX: u8 = b'K';
@@ -46,7 +47,8 @@ pub const NRD_KERNEL_ENTRY_PREFIX: u8 = b'k';
 const BLOCK_INPUT_BITMAP_PREFIX: u8 = b'B';
 const BLOCK_SUMS_PREFIX: u8 = b'M';
 const BLOCK_SPENT_PREFIX: u8 = b'S';
-const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C';
+const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C'; // deprecated
+const BLOCK_SPENT_ID_PREFIX: u8 = b's';
 
 /// All chain-related database operations
 pub struct ChainStore {
@@ -125,19 +127,19 @@ impl ChainStore {
 	}
 
 	/// Get PMMR pos for the given output commitment.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		match self.get_output_pos_height(commit)? {
+	pub fn get_output_pos(&self, output_id: &Hash) -> Result<u64, Error> {
+		match self.get_output_pos_height(output_id)? {
 			Some(pos) => Ok(pos.pos),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
-				commit
+				output_id
 			))),
 		}
 	}
 
 	/// Get PMMR pos and block height for the given output commitment.
-	pub fn get_output_pos_height(&self, commit: &Commitment) -> Result<Option<CommitPos>, Error> {
-		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit))
+	pub fn get_output_pos_height(&self, output_id: &Hash) -> Result<Option<CommitPos>, Error> {
+		self.db.get_ser(&to_key(OUTPUT_ID_POS_PREFIX, output_id))
 	}
 
 	/// Builds a new batch to be used with this store.
@@ -227,12 +229,10 @@ impl<'a> Batch<'a> {
 		Ok(())
 	}
 
-	/// We maintain a "spent" commitments for each full block to allow validation of input against spent output
+	/// We maintain a "spent" ids for each full block to allow validation of input against spent output
 	/// for blocks within the horizon. These data will be deleted when chain is compact.
-	pub fn save_spent_commitments(&self, spent: &Commitment, hh: HashHeight) -> Result<(), Error> {
-		let hash_list = self
-			.db
-			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
+	pub fn save_spent_id(&self, spent: &Hash, hh: HashHeight) -> Result<(), Error> {
+		let hash_list = self.db.get_ser(&to_key(BLOCK_SPENT_ID_PREFIX, spent))?;
 		let mut spent_list;
 		if let Some(list) = hash_list {
 			spent_list = list;
@@ -241,26 +241,16 @@ impl<'a> Batch<'a> {
 		}
 		spent_list.push(hh);
 		self.db.put_ser(
-			&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
+			&to_key(BLOCK_SPENT_ID_PREFIX, spent)[..],
 			&spent_list.to_vec(),
 		)?;
 		Ok(())
 	}
 
-	/// get spent commitment
-	pub fn get_spent_commitments(
-		&self,
-		spent: &Commitment,
-	) -> Result<Option<Vec<HashHeight>>, Error> {
-		self.db
-			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))
+	/// get spent id
+	pub fn get_spent_ids(&self, spent: &Hash) -> Result<Option<Vec<HashHeight>>, Error> {
+		self.db.get_ser(&to_key(BLOCK_SPENT_ID_PREFIX, spent))
 	}
-
-	// /// An iterator to all "spent" commit in db
-	// pub fn spent_commitment_iter(&self) -> Result<SerIterator<Vec<Commitment>>, Error> {
-	// 	let key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
-	// 	self.db.iter(&key)
-	// }
 
 	/// Migrate a block stored in the db by serializing it using the provided protocol version.
 	/// Block may have been read using a previous protocol version but we do not actually care.
@@ -268,6 +258,46 @@ impl<'a> Batch<'a> {
 		self.db
 			.put_ser_with_version(&to_key(BLOCK_PREFIX, b.hash())[..], b, version)?;
 		Ok(())
+	}
+
+	/// Migrate output positions from commitment-based to ID-based keys.
+	pub fn migrate_output_positions(&self) -> Result<usize, Error> {
+		let start_key = to_key(OUTPUT_COMMIT_POS_PREFIX, "");
+
+		let mut migrated_count = 0;
+		let commit_pos_iter: SerIterator<(u64, u64)> = self.db.iter(&start_key)?;
+		for (key, (pos, height)) in commit_pos_iter {
+			// Recover commitment from key, which is in format 'p:commitment'
+			let commit = Commitment::from_vec(key[2..].to_vec());
+
+			// Save output position in new format
+			self.save_output_pos_height(&commit.hash(), CommitPos { pos, height })?;
+
+			// Delete the old entry
+			self.db.delete(&key)?;
+			migrated_count += 1;
+		}
+		Ok(migrated_count)
+	}
+
+	/// Migrate spent commitments to output IDs.
+	pub fn migrate_spent_commitments(&self) -> Result<usize, Error> {
+		let start_key = to_key(BLOCK_SPENT_COMMITMENT_PREFIX, "");
+
+		let mut migrated_count = 0;
+		let commit_pos_iter: SerIterator<HashHeight> = self.db.iter(&start_key)?;
+		for (key, hash_height) in commit_pos_iter {
+			// Recover commitment from key, which is in format 'S:commitment'
+			let commit = Commitment::from_vec(key[2..].to_vec());
+
+			// Save spent id in new format
+			self.save_spent_id(&commit.hash(), hash_height)?;
+
+			// Delete the old entry
+			self.db.delete(&key)?;
+			migrated_count += 1;
+		}
+		Ok(migrated_count)
 	}
 
 	/// Low level function to delete directly by raw key.
@@ -282,12 +312,12 @@ impl<'a> Batch<'a> {
 		match inputs {
 			Inputs::CommitOnly(inputs) => {
 				for input in inputs {
-					let _ = self.delete_spent_commitments(&input.commitment(), bh);
+					let _ = self.delete_spent_id(&input.output_id(), bh);
 				}
 			}
 			Inputs::FeaturesAndCommit(inputs) => {
 				for input in inputs {
-					let _ = self.delete_spent_commitments(&input.commitment(), bh);
+					let _ = self.delete_spent_id(&input.output_id(), bh);
 				}
 			}
 		}
@@ -321,19 +351,19 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Save output_pos and block height to index.
-	pub fn save_output_pos_height(&self, commit: &Commitment, pos: CommitPos) -> Result<(), Error> {
+	pub fn save_output_pos_height(&self, output_id: &Hash, pos: CommitPos) -> Result<(), Error> {
 		self.db
-			.put_ser(&to_key(OUTPUT_POS_PREFIX, commit)[..], &pos)
+			.put_ser(&to_key(OUTPUT_ID_POS_PREFIX, output_id)[..], &pos)
 	}
 
 	/// Delete the output_pos index entry for a spent output.
-	pub fn delete_output_pos_height(&self, commit: &Commitment) -> Result<(), Error> {
-		self.db.delete(&to_key(OUTPUT_POS_PREFIX, commit))
+	pub fn delete_output_pos_height(&self, output_id: &Hash) -> Result<(), Error> {
+		self.db.delete(&to_key(OUTPUT_ID_POS_PREFIX, output_id))
 	}
 
-	/// Delete the commitment for a spent output.
-	pub fn delete_spent_commitments(&self, spent: &Commitment, hash: &Hash) -> Result<(), Error> {
-		let hash_list = self.get_spent_commitments(spent)?;
+	/// Delete the id for a spent output.
+	pub fn delete_spent_id(&self, spent: &Hash, hash: &Hash) -> Result<(), Error> {
+		let hash_list = self.get_spent_ids(spent)?;
 		let hash_list_unwrap = hash_list.unwrap_or(vec![]);
 		let filtered_list: Vec<&HashHeight> = hash_list_unwrap
 			.iter()
@@ -342,12 +372,11 @@ impl<'a> Batch<'a> {
 
 		if filtered_list.len() != 0 {
 			self.db.put_ser(
-				&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
+				&to_key(BLOCK_SPENT_ID_PREFIX, spent)[..],
 				&filtered_list.to_vec(),
 			)?;
 		} else {
-			self.db
-				.delete(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
+			self.db.delete(&to_key(BLOCK_SPENT_ID_PREFIX, spent))?;
 		}
 
 		Ok(())
@@ -356,31 +385,31 @@ impl<'a> Batch<'a> {
 	/// When using the output_pos iterator we have access to the index keys but not the
 	/// original commitment that the key is constructed from. So we need a way of comparing
 	/// a key with another commitment without reconstructing the commitment from the key bytes.
-	pub fn is_match_output_pos_key(&self, key: &[u8], commit: &Commitment) -> bool {
-		let commit_key = to_key(OUTPUT_POS_PREFIX, commit);
+	pub fn is_match_output_pos_key(&self, key: &[u8], output_id: &Hash) -> bool {
+		let commit_key = to_key(OUTPUT_ID_POS_PREFIX, output_id);
 		commit_key == key
 	}
 
 	/// Iterator over the output_pos index.
 	pub fn output_pos_iter(&self) -> Result<SerIterator<(u64, u64)>, Error> {
-		let key = to_key(OUTPUT_POS_PREFIX, "");
+		let key = to_key(OUTPUT_ID_POS_PREFIX, "");
 		self.db.iter(&key)
 	}
 
 	/// Get output_pos from index.
-	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		match self.get_output_pos_height(commit)? {
+	pub fn get_output_pos(&self, output_id: &Hash) -> Result<u64, Error> {
+		match self.get_output_pos_height(output_id)? {
 			Some(pos) => Ok(pos.pos),
 			None => Err(Error::NotFoundErr(format!(
 				"Output position for: {:?}",
-				commit
+				output_id
 			))),
 		}
 	}
 
 	/// Get output_pos and block height from index.
-	pub fn get_output_pos_height(&self, commit: &Commitment) -> Result<Option<CommitPos>, Error> {
-		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit))
+	pub fn get_output_pos_height(&self, output_id: &Hash) -> Result<Option<CommitPos>, Error> {
+		self.db.get_ser(&to_key(OUTPUT_ID_POS_PREFIX, output_id))
 	}
 
 	/// Get the previous header.

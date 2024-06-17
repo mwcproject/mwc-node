@@ -46,7 +46,7 @@ where
 
 	let proof = proof::create(keychain, builder, value, key_id, switch, commit, None)?;
 
-	let output = Output::new(OutputFeatures::Coinbase, commit, proof);
+	let output = Output::new_interactive(OutputFeatures::Coinbase, commit, proof);
 
 	let secp = static_secp_instance();
 	let secp = secp.lock();
@@ -75,10 +75,6 @@ where
 		}
 	};
 
-	let kernel = TxKernel {
-		features: KernelFeatures::Coinbase,
-		excess,
-		excess_sig: sig,
-	};
+	let kernel = TxKernel::new_interactive(KernelFeatures::Coinbase, excess, sig);
 	Ok((output, kernel))
 }

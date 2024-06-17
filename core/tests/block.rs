@@ -346,7 +346,8 @@ fn remove_coinbase_output_flag() {
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let output = b.outputs()[0];
-	let output = Output::new(OutputFeatures::Plain, output.commitment(), output.proof());
+	let output =
+		Output::new_interactive(OutputFeatures::Plain, output.commitment(), output.proof());
 	let b = Block {
 		body: b.body.replace_outputs(&[output]),
 		..b
@@ -533,7 +534,7 @@ fn block_single_tx_serialized_size() {
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
-	// Default protocol version (3)
+	// Default protocol version (4)
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b).expect("serialization failed");
 	assert_eq!(vec.len(), 2_669);
@@ -575,10 +576,10 @@ fn block_single_tx_serialized_size() {
 	ser::serialize(&mut vec, ser::ProtocolVersion(3), &b).expect("serialization failed");
 	assert_eq!(vec.len(), 2_669);
 
-	// Default protocol version (3) for completeness
+	// Default protocol version (4) for completeness
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b).expect("serialization failed");
-	assert_eq!(vec.len(), 2_669);
+	assert_eq!(vec.len(), 2_670);
 }
 
 #[test]

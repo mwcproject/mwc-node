@@ -77,7 +77,7 @@ fn test_output_ser_deser() {
 	let builder = ProofBuilder::new(&keychain);
 	let proof = proof::create(&keychain, &builder, 5, &key_id, switch, commit, None).unwrap();
 
-	let out = Output::new(OutputFeatures::Plain, commit, proof);
+	let out = Output::new_interactive(OutputFeatures::Plain, commit, proof);
 
 	let mut vec = vec![];
 	ser::serialize_default(&mut vec, &out).expect("serialized failed");

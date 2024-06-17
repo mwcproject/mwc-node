@@ -21,8 +21,8 @@ use self::core::core::block::Error::KernelLockHeight;
 use self::core::core::hash::{Hashed, ZERO_HASH};
 use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{
-	aggregate, deaggregate, KernelFeatures, Output, OutputFeatures, OutputIdentifier, Transaction,
-	TxKernel, Weighting,
+	aggregate, deaggregate, KernelFeatures, KernelProof, Output, OutputFeatures, OutputIdentifier,
+	Transaction, TxKernel, Weighting,
 };
 use self::core::libtx::build::{self, initial_tx, input, output, with_excess};
 use self::core::libtx::{aggsig, ProofBuilder};
@@ -43,10 +43,10 @@ fn test_setup() {
 fn simple_tx_ser() {
 	let tx = tx2i1o();
 
-	// Default protocol version (3).
+	// Default protocol version (4).
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &tx).expect("serialization failed");
-	assert_eq!(vec.len(), 945);
+	assert_eq!(vec.len(), 946);
 
 	// Explicit protocol version 3.
 	let mut vec = Vec::new();
@@ -84,10 +84,15 @@ fn simple_tx_ser() {
 	ser::serialize(&mut vec, ser::ProtocolVersion(3), &tx).expect("serialization failed");
 	assert_eq!(vec.len(), 945);
 
+	// Explicit protocol version 4.
+	let mut vec = Vec::new();
+	ser::serialize(&mut vec, ser::ProtocolVersion(4), &tx).expect("serialization failed");
+	assert_eq!(vec.len(), 948);
+
 	// And default protocol version for completeness.
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &tx).expect("serialization failed");
-	assert_eq!(vec.len(), 945);
+	assert_eq!(vec.len(), 948);
 }
 
 #[test]
@@ -202,8 +207,10 @@ fn build_two_half_kernels() {
 	let skey = excess.secret_key().unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
 	let pubkey = &kernel.excess.to_pubkey().unwrap();
-	kernel.excess_sig =
-		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
+	kernel.proof = KernelProof::Interactive {
+		excess_sig: aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))
+			.unwrap(),
+	};
 	kernel.verify().unwrap();
 
 	let tx1 = build::transaction_with_kernel(

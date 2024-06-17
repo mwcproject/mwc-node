@@ -31,7 +31,9 @@
 //!   ]
 //! )
 
-use crate::core::{Input, KernelFeatures, Output, OutputFeatures, Transaction, TxKernel};
+use crate::core::{
+	Input, KernelFeatures, KernelProof, Output, OutputFeatures, Transaction, TxKernel,
+};
 use crate::libtx::proof::{self, ProofBuild};
 use crate::libtx::{aggsig, Error};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
@@ -71,7 +73,7 @@ where
 						.keychain
 						.commit(value, &key_id, SwitchCommitmentType::Regular)?;
 				// TODO: proper support for different switch commitment schemes
-				let input = Input::new(features, commit);
+				let input = Input::new(features, commit, None);
 				Ok((
 					tx.with_input(input),
 					sum.sub_key_id(key_id.to_value_path(value)),
@@ -136,7 +138,11 @@ where
 			)?;
 
 			Ok((
-				tx.with_output(Output::new(OutputFeatures::Plain, commit, proof)),
+				tx.with_output(Output::new_interactive(
+					OutputFeatures::Plain,
+					commit,
+					proof,
+				)),
 				sum.add_key_id(key_id.to_value_path(value)),
 			))
 		},
@@ -217,7 +223,9 @@ where
 	let skey = excess.secret_key()?;
 	kernel.excess = keychain.secp().commit(0, skey)?;
 	let pubkey = &kernel.excess.to_pubkey()?;
-	kernel.excess_sig = aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))?;
+	kernel.proof = KernelProof::Interactive {
+		excess_sig: aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))?,
+	};
 	kernel.verify()?;
 	transaction_with_kernel(elems, kernel, excess, keychain, builder)
 }

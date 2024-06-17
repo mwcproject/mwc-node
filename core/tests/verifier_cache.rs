@@ -37,7 +37,7 @@ fn test_verifier_cache_rangeproofs() {
 	let builder = proof::ProofBuilder::new(&keychain);
 	let proof = proof::create(&keychain, &builder, 5, &key_id, switch, commit, None).unwrap();
 
-	let out = Output::new(OutputFeatures::Plain, commit, proof);
+	let out = Output::new_interactive(OutputFeatures::Plain, commit, proof);
 
 	// Check our output is not verified according to the cache.
 	{

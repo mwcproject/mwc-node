@@ -294,7 +294,7 @@ impl OutputPrintable {
 			OutputType::Transaction
 		};
 
-		let pos = chain.get_unspent(output.commitment())?;
+		let pos = chain.get_unspent(output.id())?;
 
 		let spent = pos.is_none();
 
@@ -551,7 +551,7 @@ impl TxKernelPrintable {
 			fee,
 			lock_height,
 			excess: k.excess.to_hex(),
-			excess_sig: (&k.excess_sig.to_raw_data()[..]).to_hex(),
+			excess_sig: (&k.excess_sig().to_raw_data()[..]).to_hex(),
 		}
 	}
 }

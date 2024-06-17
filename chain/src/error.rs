@@ -13,11 +13,11 @@
 // limitations under the License.
 
 //! Error types for chain
+use crate::core::core::hash::Hash;
 use crate::core::core::{block, committed, transaction};
 use crate::core::ser;
 use crate::keychain;
 use crate::util::secp;
-use crate::util::secp::pedersen::Commitment;
 use failure::{Backtrace, Context, Fail};
 use grin_store as store;
 use std::fmt::{self, Display};
@@ -82,10 +82,10 @@ pub enum ErrorKind {
 	Secp(secp::Error),
 	/// One of the inputs in the block has already been spent
 	#[fail(display = "Already Spent: {:?}", _0)]
-	AlreadySpent(Commitment),
-	/// An output with that commitment already exists (should be unique)
-	#[fail(display = "Duplicate Commitment: {:?}", _0)]
-	DuplicateCommitment(Commitment),
+	AlreadySpent(Hash),
+	/// An output with that ID already exists (should be unique)
+	#[fail(display = "Duplicate Output ID: {:?}", _0)]
+	DuplicateOutputId(Hash),
 	/// Attempt to spend a coinbase output before it sufficiently matures.
 	#[fail(display = "Attempt to spend immature coinbase")]
 	ImmatureCoinbase,

@@ -14,6 +14,7 @@
 
 use crate::chain;
 use crate::chain::types::CommitPos;
+use crate::core::core::hash::Hashed;
 use crate::core::core::OutputIdentifier;
 use crate::rest::*;
 use crate::types::*;
@@ -36,8 +37,8 @@ fn get_unspent(
 ) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
 	let c = util::from_hex(id)
 		.map_err(|_| ErrorKind::Argument(format!("Not a valid commitment: {}", id)))?;
-	let commit = Commitment::from_vec(c);
-	let res = chain.get_unspent(commit)?;
+	let commit = Commitment::from_vec(c); // todo: switch to output ID
+	let res = chain.get_unspent(commit.hash())?;
 	Ok(res)
 }
 

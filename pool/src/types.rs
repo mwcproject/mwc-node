@@ -233,8 +233,8 @@ pub enum PoolError {
 	#[fail(display = "Tx Pool Low fee transaction {}", _0)]
 	LowFeeTransaction(u64),
 	/// Attempt to add a duplicate output to the pool.
-	#[fail(display = "Tx Pool Duplicate commitment")]
-	DuplicateCommitment,
+	#[fail(display = "Tx Pool Duplicate output ID")]
+	DuplicateOutputId,
 	/// Attempt to add a duplicate kernel or output duplicate to spent to the pool.
 	#[fail(display = "Tx Pool Duplicate kernel or duplicate output to spent")]
 	DuplicateKernelOrDuplicateSpent,
