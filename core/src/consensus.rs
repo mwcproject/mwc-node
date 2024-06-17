@@ -630,7 +630,7 @@ pub fn calc_mwc_block_overage(height: u64, genesis_had_reward: bool) -> u64 {
 	overage += get_epoch_reward(11) * (get_epoch_duration(11));
 
 	// we add the last block reward to get us to 20 million
-	if height > get_epoch_block_offset(11) + get_epoch_duration(11) {
+	if height >= get_epoch_block_offset(11) + get_epoch_duration(11) {
 		overage += get_epoch_reward(12);
 	}
 
