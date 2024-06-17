@@ -23,7 +23,7 @@ use crate::consensus::{
 	INITIAL_DIFFICULTY, KERNEL_WEIGHT, MAX_BLOCK_WEIGHT, OUTPUT_WEIGHT, PROOFSIZE,
 	SECOND_POW_EDGE_BITS, STATE_SYNC_THRESHOLD,
 };
-use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, BitVec, PoWContext};
+use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -492,7 +492,7 @@ where
 #[inline]
 pub fn header_size_bytes(edge_bits: u8) -> usize {
 	let size = 2 + 2 * 8 + 5 * 32 + 32 + 2 * 8;
-	let proof_size = 8 + 4 + 8 + 1 + BitVec::bytes_len(edge_bits as usize * proofsize());
+	let proof_size = 8 + 4 + 8 + 1 + Proof::pack_len(edge_bits);
 	size + proof_size
 }
 

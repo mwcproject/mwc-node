@@ -23,6 +23,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 /// proof of work within a block header.
 use std::cmp::{max, min};
 use std::ops::{Add, Div, Mul, Sub};
+use std::u64;
 use std::{fmt, iter};
 
 /// Generic trait for a solver/verifier providing common interface into Cuckoo-family PoW
@@ -357,6 +358,11 @@ impl Proof {
 		}
 	}
 
+	/// Number of bytes required store a proof of given edge bits
+	pub fn pack_len(bit_width: u8) -> usize {
+		(bit_width as usize * global::proofsize() + 7) / 8
+	}
+
 	/// Builds a proof with random POW data,
 	/// needed so that tests that ignore POW
 	/// don't fail due to duplicate hashes
@@ -381,10 +387,49 @@ impl Proof {
 		self.nonces.len()
 	}
 
+	/// Pack the nonces of the proof to their exact bit size as described above
+	pub fn pack_nonces(&self) -> Vec<u8> {
+		let mut compressed = vec![0u8; Proof::pack_len(self.edge_bits)];
+		pack_bits(
+			self.edge_bits,
+			&self.nonces[0..self.nonces.len()],
+			&mut compressed,
+		);
+		compressed
+	}
+
 	/// Difficulty achieved by this proof with given scaling factor
 	fn scaled_difficulty(&self, scale: u64) -> u64 {
 		let diff = ((scale as u128) << 64) / (max(1, self.hash().to_u64()) as u128);
 		min(diff, <u64>::max_value() as u128) as u64
+	}
+}
+
+/// Pack an array of u64s into `compressed` at the specified bit width. Caller
+/// must ensure `compressed` is the right size
+fn pack_bits(bit_width: u8, uncompressed: &[u64], mut compressed: &mut [u8]) {
+	// We will use a `u64` as a mini buffer of 64 bits.
+	// We accumulate bits in it until capacity, at which point we just copy this
+	// mini buffer to compressed.
+	let mut mini_buffer = 0u64;
+	let mut remaining = 64;
+	for el in uncompressed {
+		mini_buffer |= el << (64 - remaining);
+		if bit_width < remaining {
+			remaining -= bit_width;
+		} else {
+			compressed[..8].copy_from_slice(&mini_buffer.to_le_bytes());
+			compressed = &mut compressed[8..];
+			mini_buffer = el >> remaining;
+			remaining = 64 + remaining - bit_width;
+		}
+	}
+	let mut remainder = compressed.len() % 8;
+	if remainder == 0 {
+		remainder = 8;
+	}
+	if mini_buffer > 0 {
+		compressed[..].copy_from_slice(&mini_buffer.to_le_bytes()[..remainder]);
 	}
 }
 
@@ -436,8 +481,7 @@ impl Readable for Proof {
 		// prepare nonces and read the right number of bytes
 		let mut nonces = Vec::with_capacity(global::proofsize());
 		let nonce_bits = edge_bits as usize;
-		let bits_len = nonce_bits * global::proofsize();
-		let bytes_len = BitVec::bytes_len(bits_len);
+		let bytes_len = Proof::pack_len(edge_bits);
 		if bytes_len < 8 {
 			return Err(ser::Error::CorruptedData(format!(
 				"Nonce length {} is too small",
@@ -468,46 +512,7 @@ impl Writeable for Proof {
 		if writer.serialization_mode() != ser::SerializationMode::Hash {
 			writer.write_u8(self.edge_bits)?;
 		}
-		let nonce_bits = self.edge_bits as usize;
-		assert!(nonce_bits < 256);
-		let mut bitvec = BitVec::new(nonce_bits * global::proofsize());
-		for (n, nonce) in self.nonces.iter().enumerate() {
-			for bit in 0..nonce_bits {
-				if nonce & (1 << bit) != 0 {
-					bitvec.set_bit_at(n * nonce_bits + (bit as usize))
-				}
-			}
-		}
-		// caller suppose to verify the size. Here are are crashing becase it is better than data corruption.
-		// Data will be corrupted because of read that will check fo the size as well
-		assert!(bitvec.bits.len() <= ser::READ_CHUNK_LIMIT);
-		writer.write_fixed_bytes(&bitvec.bits)?;
-		Ok(())
-	}
-}
-
-/// A bit vector
-// TODO this could likely be optimized by writing whole bytes (or even words)
-// in the `BitVec` at once, dealing with the truncation, instead of bits by bits
-pub struct BitVec {
-	bits: Vec<u8>,
-}
-
-impl BitVec {
-	/// Number of bytes required to store the provided number of bits
-	#[inline]
-	pub fn bytes_len(bits_len: usize) -> usize {
-		(bits_len + 7) / 8
-	}
-
-	fn new(bits_len: usize) -> BitVec {
-		BitVec {
-			bits: vec![0; BitVec::bytes_len(bits_len)],
-		}
-	}
-
-	fn set_bit_at(&mut self, pos: usize) {
-		self.bits[pos / 8] |= 1 << (pos % 8) as u8;
+		writer.write_fixed_bytes(&self.pack_nonces())
 	}
 }
 
