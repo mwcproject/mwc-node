@@ -1637,11 +1637,17 @@ impl Chain {
 			total += 1;
 
 			// We want to migrate all blocks that cannot be read via v3 protocol version.
-			let block_v3: Result<Block, _> =
-				ser::deserialize(&mut Cursor::new(&v), ProtocolVersion(3));
+			let block_v3: Result<Block, _> = ser::deserialize(
+				&mut Cursor::new(&v),
+				ProtocolVersion(3),
+				ser::DeserializationMode::default(),
+			);
 			if block_v3.is_err() {
-				let block_v2: Result<Block, _> =
-					ser::deserialize(&mut Cursor::new(&v), ProtocolVersion(2));
+				let block_v2: Result<Block, _> = ser::deserialize(
+					&mut Cursor::new(&v),
+					ProtocolVersion(2),
+					ser::DeserializationMode::default(),
+				);
 				if block_v2.is_ok() {
 					keys_to_migrate.push(k);
 				}

@@ -19,7 +19,6 @@
 //! here.
 
 use crate::core::block::HeaderVersion;
-use crate::core::hash::{Hash, ZERO_HASH};
 use crate::global;
 use crate::pow::Difficulty;
 use std::cmp::{max, min};
@@ -249,11 +248,11 @@ pub const UNIT_DIFFICULTY: u64 =
 pub const INITIAL_DIFFICULTY: u64 = 1_000_000 * UNIT_DIFFICULTY;
 
 /// Minimal header information required for the Difficulty calculation to
-/// take place
+/// take place. Used to iterate through a number of blocks. Note that an instance
+/// of this is unable to calculate its own hash, due to an optimization that prevents
+/// the header's PoW proof nonces from being deserialized on read
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HeaderInfo {
-	/// Block hash, ZERO_HASH when this is a sythetic entry.
-	pub block_hash: Hash,
+pub struct HeaderDifficultyInfo {
 	/// Timestamp of the header, 1 when not used (returned info)
 	pub timestamp: u64,
 	/// Network difficulty or next difficulty to use
@@ -264,17 +263,15 @@ pub struct HeaderInfo {
 	pub is_secondary: bool,
 }
 
-impl HeaderInfo {
+impl HeaderDifficultyInfo {
 	/// Default constructor
 	pub fn new(
-		block_hash: Hash,
 		timestamp: u64,
 		difficulty: Difficulty,
 		secondary_scaling: u32,
 		is_secondary: bool,
-	) -> HeaderInfo {
-		HeaderInfo {
-			block_hash,
+	) -> HeaderDifficultyInfo {
+		HeaderDifficultyInfo {
 			timestamp,
 			difficulty,
 			secondary_scaling,
@@ -284,9 +281,8 @@ impl HeaderInfo {
 
 	/// Constructor from a timestamp and difficulty, setting a default secondary
 	/// PoW factor
-	pub fn from_ts_diff(timestamp: u64, difficulty: Difficulty) -> HeaderInfo {
-		HeaderInfo {
-			block_hash: ZERO_HASH,
+	pub fn from_ts_diff(timestamp: u64, difficulty: Difficulty) -> HeaderDifficultyInfo {
+		HeaderDifficultyInfo {
 			timestamp,
 			difficulty,
 			secondary_scaling: global::initial_graph_weight(),
@@ -297,9 +293,11 @@ impl HeaderInfo {
 
 	/// Constructor from a difficulty and secondary factor, setting a default
 	/// timestamp
-	pub fn from_diff_scaling(difficulty: Difficulty, secondary_scaling: u32) -> HeaderInfo {
-		HeaderInfo {
-			block_hash: ZERO_HASH,
+	pub fn from_diff_scaling(
+		difficulty: Difficulty,
+		secondary_scaling: u32,
+	) -> HeaderDifficultyInfo {
+		HeaderDifficultyInfo {
 			timestamp: 1,
 			difficulty,
 			secondary_scaling,
@@ -331,9 +329,9 @@ pub fn clamp(actual: u64, goal: u64, clamp_factor: u64) -> u64 {
 ///
 /// The secondary proof-of-work factor is calculated along the same lines, as
 /// an adjustment on the deviation against the ideal value.
-pub fn next_difficulty<T>(height: u64, cursor: T) -> HeaderInfo
+pub fn next_difficulty<T>(height: u64, cursor: T) -> HeaderDifficultyInfo
 where
-	T: IntoIterator<Item = HeaderInfo>,
+	T: IntoIterator<Item = HeaderDifficultyInfo>,
 {
 	// Create vector of difficulty data running from earliest
 	// to latest, and pad with simulated pre-genesis data to allow earlier
@@ -364,16 +362,16 @@ where
 	// minimum difficulty avoids getting stuck due to dampening
 	let difficulty = max(MIN_DIFFICULTY, diff_sum * BLOCK_TIME_SEC / adj_ts);
 
-	HeaderInfo::from_diff_scaling(Difficulty::from_num(difficulty), sec_pow_scaling)
+	HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(difficulty), sec_pow_scaling)
 }
 
 /// Count, in units of 1/100 (a percent), the number of "secondary" (AR) blocks in the provided window of blocks.
-pub fn ar_count(_height: u64, diff_data: &[HeaderInfo]) -> u64 {
+pub fn ar_count(_height: u64, diff_data: &[HeaderDifficultyInfo]) -> u64 {
 	100 * diff_data.iter().filter(|n| n.is_secondary).count() as u64
 }
 
 /// Factor by which the secondary proof of work difficulty will be adjusted
-pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
+pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderDifficultyInfo]) -> u32 {
 	// Get the scaling factor sum of the last DIFFICULTY_ADJUST_WINDOW elements
 	let scale_sum: u64 = diff_data.iter().map(|dd| dd.secondary_scaling as u64).sum();
 

@@ -19,7 +19,7 @@ use num::FromPrimitive;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
+use crate::core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
 use grin_store::{self, option_to_not_found, to_key, Error};
 
@@ -149,9 +149,10 @@ impl PeerStore {
 	}
 
 	pub fn get_peer(&self, peer_addr: PeerAddr) -> Result<PeerData, Error> {
-		option_to_not_found(self.db.get_ser(&peer_key(peer_addr.clone())[..]), || {
-			format!("Peer at address: {}", peer_addr)
-		})
+		option_to_not_found(
+			self.db.get_ser(&peer_key(peer_addr.clone())[..], None),
+			|| format!("Peer at address: {}", peer_addr),
+		)
 	}
 
 	pub fn exists_peer(&self, peer_addr: PeerAddr) -> Result<bool, Error> {
@@ -185,7 +186,8 @@ impl PeerStore {
 		let key = to_key(PEER_PREFIX, "");
 		let protocol_version = self.db.protocol_version();
 		self.db.iter(&key, move |_, mut v| {
-			ser::deserialize(&mut v, protocol_version).map_err(From::from)
+			ser::deserialize(&mut v, protocol_version, DeserializationMode::default())
+				.map_err(From::from)
 		})
 	}
 
@@ -202,7 +204,7 @@ impl PeerStore {
 		let batch = self.db.batch()?;
 
 		let mut peer = option_to_not_found(
-			batch.get_ser::<PeerData>(&peer_key(peer_addr.clone())[..]),
+			batch.get_ser::<PeerData>(&peer_key(peer_addr.clone())[..], None),
 			|| format!("Peer at address: {}", peer_addr),
 		)?;
 		peer.flags = new_state;

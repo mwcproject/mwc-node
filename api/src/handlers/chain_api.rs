@@ -290,7 +290,7 @@ impl OutputHandler {
 			})?;
 
 		Ok(BlockOutputs {
-			header: BlockHeaderInfo::from_header(&header),
+			header: BlockHeaderDifficultyInfo::from_header(&header),
 			outputs: outputs,
 		})
 	}

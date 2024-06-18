@@ -50,7 +50,7 @@ use crate::common::stats::{
 };
 
 use crate::common::types::{Error, ServerConfig, StratumServerConfig};
-use crate::core::core::hash::Hashed;
+use crate::core::core::hash::{Hashed, ZERO_HASH};
 use crate::core::ser::ProtocolVersion;
 use crate::core::stratum::connections;
 use crate::core::{consensus, genesis, global, pow};
@@ -887,7 +887,7 @@ impl Server {
 		// code clean. This may be handy for testing but not really needed
 		// for release
 		let diff_stats = {
-			let last_blocks: Vec<consensus::HeaderInfo> =
+			let last_blocks: Vec<consensus::HeaderDifficultyInfo> =
 				global::difficulty_data_to_vector(self.chain.difficulty_iter()?)
 					.into_iter()
 					.collect();
@@ -903,9 +903,17 @@ impl Server {
 
 					height += 1;
 
+					// We need to query again for the actual block hash, as
+					// the difficulty iterator doesn't contain enough info to
+					// create a hash
+					let block_hash = match self.chain.get_header_by_height(height as u64) {
+						Ok(h) => h.hash(),
+						Err(_) => ZERO_HASH,
+					};
+
 					DiffBlock {
 						block_height: height,
-						block_hash: next.block_hash,
+						block_hash,
 						difficulty: next.difficulty.to_num(),
 						time: next.timestamp,
 						duration: next.timestamp - prev.timestamp,

@@ -15,7 +15,7 @@
 use super::utils::w;
 use crate::core::core::hash::Hashed;
 use crate::core::core::Transaction;
-use crate::core::ser::{self, ProtocolVersion};
+use crate::core::ser::{self, DeserializationMode, ProtocolVersion};
 use crate::pool::{self, BlockChain, PoolAdapter, PoolEntry};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
@@ -146,12 +146,15 @@ where
 
 	// All wallet api interaction explicitly uses protocol version 1 for now.
 	let version = ProtocolVersion(1);
-	let tx: Transaction = ser::deserialize(&mut &tx_bin[..], version).map_err(|e| {
-		ErrorKind::RequestError(format!(
-			"Unable to deserialize transaction from binary {:?}, {}",
-			tx_bin, e
-		))
-	})?;
+	let tx: Transaction =
+		ser::deserialize(&mut &tx_bin[..], version, DeserializationMode::default()).map_err(
+			|e| {
+				ErrorKind::RequestError(format!(
+					"Unable to deserialize transaction from binary {:?}, {}",
+					tx_bin, e
+				))
+			},
+		)?;
 
 	let source = pool::TxSource::PushApi;
 	info!(
