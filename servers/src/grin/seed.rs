@@ -471,7 +471,8 @@ pub fn default_dns_seeds() -> Box<dyn Fn() -> Vec<PeerAddr> + Send> {
 	})
 }
 
-fn resolve_dns_to_addrs(dns_records: &Vec<String>) -> Vec<PeerAddr> {
+/// Convenience function to resolve dns addresses from DNS records
+pub fn resolve_dns_to_addrs(dns_records: &Vec<String>) -> Vec<PeerAddr> {
 	let mut addresses: Vec<PeerAddr> = vec![];
 	for dns in dns_records {
 		if dns.ends_with(".onion") {
