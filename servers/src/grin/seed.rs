@@ -64,8 +64,8 @@ pub fn connect_and_monitor(
 
 			libp2p_connection::set_seed_list(&seed_list, true);
 
-			let mut prev = MIN_DATE.and_hms(0, 0, 0);
-			let mut prev_expire_check = MIN_DATE.and_hms(0, 0, 0);
+			let mut prev = DateTime::<Utc>::MIN_UTC;
+			let mut prev_expire_check = DateTime::<Utc>::MIN_UTC;
 			let mut prev_ping = Utc::now();
 			let mut start_attempt = 0;
 			let mut connecting_history: HashMap<PeerAddr, DateTime<Utc>> = HashMap::new();
