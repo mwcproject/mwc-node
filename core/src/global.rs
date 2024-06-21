@@ -194,6 +194,11 @@ thread_local! {
 	pub static NRD_FEATURE_ENABLED: Cell<Option<bool>> = Cell::new(None);
 }
 
+/// Set the global chain_type using an override
+pub fn set_global_chain_type(new_type: ChainTypes) {
+	GLOBAL_CHAIN_TYPE.set(new_type, true);
+}
+
 /// Set the chain type on a per-thread basis via thread_local storage.
 pub fn set_local_chain_type(new_type: ChainTypes) {
 	CHAIN_TYPE.with(|chain_type| chain_type.set(Some(new_type)))
@@ -227,6 +232,11 @@ pub fn init_global_nrd_enabled(enabled: bool) {
 	GLOBAL_NRD_FEATURE_ENABLED.init(enabled)
 }
 
+/// Set the global NRD feature flag using override.
+pub fn set_global_nrd_enabled(enabled: bool) {
+	GLOBAL_NRD_FEATURE_ENABLED.set(enabled, true)
+}
+
 /// Explicitly enable the NRD global feature flag.
 pub fn set_local_nrd_enabled(enabled: bool) {
 	NRD_FEATURE_ENABLED.with(|flag| flag.set(Some(enabled)))
@@ -255,6 +265,11 @@ pub fn is_nrd_enabled() -> bool {
 /// Will panic if we attempt to re-initialize this (via OneTime).
 pub fn init_global_accept_fee_base(new_base: u64) {
 	GLOBAL_ACCEPT_FEE_BASE.init(new_base)
+}
+
+/// The global accept fee base may be reset using override.
+pub fn set_global_accept_fee_base(new_base: u64) {
+	GLOBAL_ACCEPT_FEE_BASE.set(new_base, true)
 }
 
 /// Set the accept fee base on a per-thread basis via thread_local storage.
