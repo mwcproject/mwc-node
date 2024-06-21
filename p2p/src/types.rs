@@ -14,7 +14,6 @@
 
 use crate::types::PeerAddr::Ip;
 use crate::types::PeerAddr::Onion;
-use failure::Fail;
 use std::convert::From;
 use std::fmt;
 use std::fs::File;
@@ -32,12 +31,12 @@ use std::sync::atomic::AtomicUsize;
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
-use crate::core::core;
-use crate::core::core::hash::Hash;
-use crate::core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::core::global;
-use crate::core::pow::Difficulty;
-use crate::core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
+use crate::grin_core::core;
+use crate::grin_core::core::hash::Hash;
+use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::grin_core::global;
+use crate::grin_core::pow::Difficulty;
+use crate::grin_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::msg::PeerAddrs;
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
@@ -72,46 +71,46 @@ const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
 const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-	#[fail(display = "p2p Serialization error, {}", _0)]
+	#[error("p2p Serialization error, {0}")]
 	Serialization(ser::Error),
-	#[fail(display = "p2p Connection error, {}", _0)]
+	#[error("p2p Connection error, {0}")]
 	Connection(io::Error),
 	/// Header type does not match the expected message type
-	#[fail(display = "p2p bad message")]
+	#[error("p2p bad message")]
 	BadMessage,
-	#[fail(display = "p2p unexpected message {}", _0)]
+	#[error("p2p unexpected message {0}")]
 	UnexpectedMessage(String),
-	#[fail(display = "p2p message Length error")]
+	#[error("p2p message Length error")]
 	MsgLen,
-	#[fail(display = "p2p banned")]
+	#[error("p2p banned")]
 	Banned,
-	#[fail(display = "p2p closed connection")]
+	#[error("p2p closed connection")]
 	ConnectionClose,
-	#[fail(display = "p2p timeout")]
+	#[error("p2p timeout")]
 	Timeout,
-	#[fail(display = "p2p store error, {}", _0)]
+	#[error("p2p store error, {0}")]
 	Store(grin_store::Error),
-	#[fail(display = "p2p chain error, {}", _0)]
+	#[error("p2p chain error, {0}")]
 	Chain(chain::Error),
-	#[fail(display = "peer with self")]
+	#[error("peer with self")]
 	PeerWithSelf,
-	#[fail(display = "p2p no dandelion relay")]
+	#[error("p2p no dandelion relay")]
 	NoDandelionRelay,
-	#[fail(display = "p2p genesis mismatch: {} vs peer {}", us, peer)]
+	#[error("p2p genesis mismatch: {us} vs peer {peer}")]
 	GenesisMismatch { us: Hash, peer: Hash },
-	#[fail(display = "p2p send error, {}", _0)]
+	#[error("p2p send error, {0}")]
 	Send(String),
-	#[fail(display = "peer not found")]
+	#[error("peer not found")]
 	PeerNotFound,
-	#[fail(display = "peer not banned")]
+	#[error("peer not banned")]
 	PeerNotBanned,
-	#[fail(display = "peer exception, {}", _0)]
+	#[error("peer exception, {0}")]
 	PeerException(String),
-	#[fail(display = "p2p internal error: {}", _0)]
+	#[error("p2p internal error: {0}")]
 	Internal(String),
-	#[fail(display = "libp2p error: {}", _0)]
+	#[error("libp2p error: {0}")]
 	Libp2pError(String),
 }
 

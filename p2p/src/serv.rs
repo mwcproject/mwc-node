@@ -23,11 +23,11 @@ use std::time::Duration;
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
-use crate::core::core;
-use crate::core::core::hash::Hash;
-use crate::core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::core::global;
-use crate::core::pow::Difficulty;
+use crate::grin_core::core;
+use crate::grin_core::core::hash::Hash;
+use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::grin_core::global;
+use crate::grin_core::pow::Difficulty;
 use crate::handshake::Handshake;
 use crate::peer::Peer;
 use crate::peers::Peers;

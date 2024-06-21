@@ -44,10 +44,10 @@ pub const READ_CHUNK_LIMIT: usize = 100_000;
 pub const READ_VEC_SIZE_LIMIT: u64 = 100_000;
 
 /// Possible errors deriving from serializing or deserializing.
-#[derive(Fail, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Error {
 	/// Wraps an io error produced when reading or writing
-	#[fail(display = "Serialization IO error {}, {:?}", _0, _1)]
+	#[error("Serialization IO error {0}, {1:?}")]
 	IOErr(
 		String,
 		#[serde(
@@ -57,13 +57,10 @@ pub enum Error {
 		io::ErrorKind,
 	),
 	/// Wraps secp256k1 error
-	#[fail(display = "Serialization Secp error, {}", _0)]
+	#[error("Serialization Secp error, {0}")]
 	SecpError(util::secp::Error),
 	/// Expected a given value that wasn't found
-	#[fail(
-		display = "Unexpected Data, expected {:?}, got {:?}",
-		expected, received
-	)]
+	#[error("Unexpected Data, expected {expected:?}, got {received:?}")]
 	UnexpectedData {
 		/// What we wanted
 		expected: Vec<u8>,
@@ -71,34 +68,34 @@ pub enum Error {
 		received: Vec<u8>,
 	},
 	/// Data wasn't in a consumable format
-	#[fail(display = "Serialization Corrupted data, {}", _0)]
+	#[error("Serialization Corrupted data, {0}")]
 	CorruptedData(String),
 	/// Incorrect number of elements (when deserializing a vec via read_multi say).
-	#[fail(display = "Serialization Count error, {}", _0)]
+	#[error("Serialization Count error, {0}")]
 	CountError(String),
 	/// When asked to read too much data
-	#[fail(display = "Serialization Too large write, {}", _0)]
+	#[error("Serialization Too large write, {0}")]
 	TooLargeWriteErr(String),
 	/// When asked to read too much data
-	#[fail(display = "Serialization Too large read, {}", _0)]
+	#[error("Serialization Too large read, {0}")]
 	TooLargeReadErr(String),
 	/// Error from from_hex deserialization
-	#[fail(display = "Serialization Hex error {}", _0)]
+	#[error("Serialization Hex error {0}")]
 	HexError(String),
 	/// Inputs/outputs/kernels must be sorted lexicographically.
-	#[fail(display = "Serialization Broken Sort order")]
+	#[error("Serialization Broken Sort order")]
 	SortError,
 	/// Inputs/outputs/kernels must be unique.
-	#[fail(display = "Serialization Unexpected Duplicate")]
+	#[error("Serialization Unexpected Duplicate")]
 	DuplicateError,
 	/// Block header version (hard-fork schedule).
-	#[fail(display = "Serialization Invalid block version, {}", _0)]
+	#[error("Serialization Invalid block version, {0}")]
 	InvalidBlockVersion(String),
 	/// utf8 conversion failed
-	#[fail(display = "UTF8 conversion failed")]
+	#[error("UTF8 conversion failed")]
 	Utf8Conversion(String),
 	/// Unsupported protocol version
-	#[fail(display = "unsupported protocol version, {}", _0)]
+	#[error("unsupported protocol version, {0}")]
 	UnsupportedProtocolVersion(String),
 }
 

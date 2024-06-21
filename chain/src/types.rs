@@ -20,7 +20,7 @@ use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
 use crate::core::core::{Block, BlockHeader, HeaderVersion};
 use crate::core::pow::Difficulty;
 use crate::core::ser::{self, PMMRIndexHashable, Readable, Reader, Writeable, Writer};
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
 use crate::util::{RwLock, RwLockWriteGuard};
 
 bitflags! {
@@ -276,11 +276,17 @@ impl TxHashSetRoots {
 		);
 
 		if header.output_root != self.output_root(header) {
-			Err(ErrorKind::InvalidRoot("Failed Output root validation".to_string()).into())
+			Err(Error::InvalidRoot(
+				"Failed Output root validation".to_string(),
+			))
 		} else if header.range_proof_root != self.rproof_root {
-			Err(ErrorKind::InvalidRoot("Failed Range Proof root validation".to_string()).into())
+			Err(Error::InvalidRoot(
+				"Failed Range Proof root validation".to_string(),
+			))
 		} else if header.kernel_root != self.kernel_root {
-			Err(ErrorKind::InvalidRoot("Failed Kernel root validation".to_string()).into())
+			Err(Error::InvalidRoot(
+				"Failed Kernel root validation".to_string(),
+			))
 		} else {
 			Ok(())
 		}

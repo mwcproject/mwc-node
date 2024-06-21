@@ -27,7 +27,7 @@ use crate::core::core::{
 };
 use crate::core::global;
 use crate::core::ser::{PMMRable, ProtocolVersion};
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
 use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::{BitmapAccumulator, BitmapChunk};
@@ -86,7 +86,7 @@ impl PMMRHandle<BlockHeader> {
 				head.hash(),
 				head.height
 			);
-			return Err(ErrorKind::Other("header PMMR inconsistent".to_string()).into());
+			return Err(Error::Other("header PMMR inconsistent".to_string()));
 		}
 
 		// use next header pos to find our size.
@@ -111,14 +111,17 @@ impl PMMRHandle<BlockHeader> {
 	/// Get the header hash at the specified height based on the current header MMR state.
 	pub fn get_header_hash_by_height(&self, height: u64) -> Result<Hash, Error> {
 		if height >= self.size {
-			return Err(ErrorKind::InvalidHeaderHeight(height).into());
+			return Err(Error::InvalidHeaderHeight(height));
 		}
 		let pos = pmmr::insertion_to_pmmr_index(height);
 		let header_pmmr = ReadonlyPMMR::at(&self.backend, self.size);
 		if let Some(entry) = header_pmmr.get_data(pos) {
 			Ok(entry.hash())
 		} else {
-			Err(ErrorKind::Other(format!("not found header hash for height {}", height)).into())
+			Err(Error::Other(format!(
+				"not found header hash for height {}",
+				height
+			)))
 		}
 	}
 
@@ -126,14 +129,14 @@ impl PMMRHandle<BlockHeader> {
 	/// Find the last leaf pos based on MMR size and return its header hash.
 	pub fn head_hash(&self) -> Result<Hash, Error> {
 		if self.size == 0 {
-			return Err(ErrorKind::Other("MMR empty, no head".to_string()).into());
+			return Err(Error::Other("MMR empty, no head".to_string()));
 		}
 		let header_pmmr = ReadonlyPMMR::at(&self.backend, self.size);
 		let leaf_pos = pmmr::bintree_rightmost(self.size - 1);
 		if let Some(entry) = header_pmmr.get_data(leaf_pos) {
 			Ok(entry.hash())
 		} else {
-			Err(ErrorKind::Other("failed to find head hash".to_string()).into())
+			Err(Error::Other("failed to find head hash".to_string()))
 		}
 	}
 }
@@ -236,7 +239,9 @@ impl TxHashSet {
 				commit_index,
 			})
 		} else {
-			Err(ErrorKind::TxHashSetErr("failed to open kernel PMMR".to_string()).into())
+			Err(Error::TxHashSetErr(
+				"failed to open kernel PMMR".to_string(),
+			))
 		}
 	}
 
@@ -280,7 +285,7 @@ impl TxHashSet {
 				}
 			}
 			Ok(None) => Ok(None),
-			Err(e) => Err(ErrorKind::StoreErr(e, "txhashset unspent check".to_string()).into()),
+			Err(e) => Err(Error::StoreErr(e, "txhashset unspent check".to_string())),
 		}
 	}
 
@@ -414,9 +419,7 @@ impl TxHashSet {
 		let pos0 = self.commit_index.get_output_pos(&commit)?;
 		PMMR::at(&mut self.output_pmmr_h.backend, self.output_pmmr_h.size)
 			.merkle_proof(pos0)
-			.map_err(|e| {
-				ErrorKind::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos0, e)).into()
-			})
+			.map_err(|e| Error::MerkleProof(format!("Commit {:?}, pos {}, {}", commit, pos0, e)))
 	}
 
 	/// Compact the MMR data files and flush the rm logs
@@ -932,7 +935,10 @@ impl<'a> HeaderExtension<'a> {
 		if let Some(hash) = self.get_header_hash_by_height(height) {
 			Ok(batch.get_block_header(&hash)?)
 		} else {
-			Err(ErrorKind::Other(format!("not found header for height {}", height)).into())
+			Err(Error::Other(format!(
+				"not found header for height {}",
+				height
+			)))
 		}
 	}
 
@@ -961,7 +967,7 @@ impl<'a> HeaderExtension<'a> {
 	/// extension.
 	pub fn apply_header(&mut self, header: &BlockHeader) -> Result<(), Error> {
 		self.pmmr.push(header).map_err(|e| {
-			ErrorKind::TxHashSetErr(format!(
+			Error::TxHashSetErr(format!(
 				"Unable to apply header with height {}, {}",
 				header.height, e
 			))
@@ -983,7 +989,7 @@ impl<'a> HeaderExtension<'a> {
 
 		let header_pos = 1 + pmmr::insertion_to_pmmr_index(header.height);
 		self.pmmr.rewind(header_pos, &Bitmap::new()).map_err(|e| {
-			ErrorKind::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
+			Error::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
 		})?;
 
 		// Update our head to reflect the header we rewound to.
@@ -999,7 +1005,7 @@ impl<'a> HeaderExtension<'a> {
 
 	/// The root of the header MMR for convenience.
 	pub fn root(&self) -> Result<Hash, Error> {
-		Ok(self.pmmr.root().map_err(|e| ErrorKind::InvalidRoot(e))?)
+		Ok(self.pmmr.root().map_err(|e| Error::InvalidRoot(e))?)
 	}
 
 	/// Validate the prev_root of the header against the root of the current header MMR.
@@ -1011,11 +1017,10 @@ impl<'a> HeaderExtension<'a> {
 		}
 		let root = self.root()?;
 		if root != header.prev_root {
-			Err(ErrorKind::InvalidRoot(format!(
+			Err(Error::InvalidRoot(format!(
 				"Unable to validate root, Expected header.prev_root {}, get {}",
 				header.prev_root, root
-			))
-			.into())
+			)))
 		} else {
 			Ok(())
 		}
@@ -1216,11 +1221,11 @@ impl<'a> Extension<'a> {
 			Ok(true) => {
 				self.rproof_pmmr
 					.prune(pos.pos - 1)
-					.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
+					.map_err(|e| Error::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
 				Ok(())
 			}
-			Ok(false) => Err(ErrorKind::AlreadySpent(commit).into()),
-			Err(e) => Err(ErrorKind::TxHashSetErr(e).into()),
+			Ok(false) => Err(Error::AlreadySpent(commit)),
+			Err(e) => Err(Error::TxHashSetErr(e)),
 		}
 	}
 
@@ -1230,7 +1235,7 @@ impl<'a> Extension<'a> {
 		if let Ok(pos0) = batch.get_output_pos(&commit) {
 			if let Some(out_mmr) = self.output_pmmr.get_data(pos0) {
 				if out_mmr.commitment() == commit {
-					return Err(ErrorKind::DuplicateCommitment(commit).into());
+					return Err(Error::DuplicateCommitment(commit));
 				}
 			}
 		}
@@ -1238,27 +1243,27 @@ impl<'a> Extension<'a> {
 		let output_pos = self
 			.output_pmmr
 			.push(&out.identifier())
-			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
+			.map_err(|e| Error::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
 
 		// push the rangeproof to the MMR.
 		let rproof_pos = self
 			.rproof_pmmr
 			.push(&out.proof())
-			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr proof push error, {}", e)))?;
+			.map_err(|e| Error::TxHashSetErr(format!("pmmr proof push error, {}", e)))?;
 
 		// The output and rproof MMRs should be exactly the same size
 		// and we should have inserted to both in exactly the same pos.
 		{
 			if self.output_pmmr.unpruned_size() != self.rproof_pmmr.unpruned_size() {
-				return Err(
-					ErrorKind::Other("output vs rproof MMRs different sizes".to_string()).into(),
-				);
+				return Err(Error::Other(
+					"output vs rproof MMRs different sizes".to_string(),
+				));
 			}
 
 			if output_pos != rproof_pos {
-				return Err(
-					ErrorKind::Other("output vs rproof MMRs different pos".to_string()).into(),
-				);
+				return Err(Error::Other(
+					"output vs rproof MMRs different pos".to_string(),
+				));
 			}
 		}
 		Ok(1 + output_pos)
@@ -1274,7 +1279,7 @@ impl<'a> Extension<'a> {
 		for output_identifier in leaf_data {
 			self.output_pmmr
 				.push(&output_identifier)
-				.map_err(&ErrorKind::TxHashSetErr)?;
+				.map_err(&Error::TxHashSetErr)?;
 		}
 		Ok(())
 	}
@@ -1286,7 +1291,7 @@ impl<'a> Extension<'a> {
 		for proof in leaf_data {
 			self.rproof_pmmr
 				.push(&proof)
-				.map_err(&ErrorKind::TxHashSetErr)?;
+				.map_err(&Error::TxHashSetErr)?;
 		}
 		Ok(())
 	}
@@ -1317,7 +1322,7 @@ impl<'a> Extension<'a> {
 		for kernel in leaf_data {
 			self.kernel_pmmr
 				.push(&kernel)
-				.map_err(&ErrorKind::TxHashSetErr)?;
+				.map_err(&Error::TxHashSetErr)?;
 		}
 		Ok(())
 	}
@@ -1327,7 +1332,7 @@ impl<'a> Extension<'a> {
 		let pos = self
 			.kernel_pmmr
 			.push(kernel)
-			.map_err(|e| ErrorKind::TxHashSetErr(format!("pmmr push kernel error, {}", e)))?;
+			.map_err(|e| Error::TxHashSetErr(format!("pmmr push kernel error, {}", e)))?;
 		Ok(1 + pos)
 	}
 
@@ -1346,7 +1351,7 @@ impl<'a> Extension<'a> {
 		// then calculate the Merkle Proof based on the known pos
 		let pos0 = batch.get_output_pos(&out_id.commit)?;
 		let merkle_proof = self.output_pmmr.merkle_proof(pos0).map_err(|e| {
-			ErrorKind::TxHashSetErr(format!("pmmr get merkle proof at pos {}, {}", pos0, e))
+			Error::TxHashSetErr(format!("pmmr get merkle proof at pos {}, {}", pos0, e))
 		})?;
 
 		Ok(merkle_proof)
@@ -1361,10 +1366,10 @@ impl<'a> Extension<'a> {
 		let header = batch.get_block_header(&self.head.last_block_h)?;
 		self.output_pmmr
 			.snapshot(&header)
-			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
+			.map_err(|e| Error::Other(format!("pmmr snapshot error, {}", e)))?;
 		self.rproof_pmmr
 			.snapshot(&header)
-			.map_err(|e| ErrorKind::Other(format!("pmmr snapshot error, {}", e)))?;
+			.map_err(|e| Error::Other(format!("pmmr snapshot error, {}", e)))?;
 		Ok(())
 	}
 
@@ -1498,13 +1503,13 @@ impl<'a> Extension<'a> {
 		let bitmap: Bitmap = spent_pos.iter().map(|x| *x as u32).collect();
 		self.output_pmmr
 			.rewind(output_pos, &bitmap)
-			.map_err(|e| ErrorKind::TxHashSetErr(format!("output_pmmr rewind error, {}", e)))?;
+			.map_err(|e| Error::TxHashSetErr(format!("output_pmmr rewind error, {}", e)))?;
 		self.rproof_pmmr
 			.rewind(output_pos, &bitmap)
-			.map_err(|e| ErrorKind::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
+			.map_err(|e| Error::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
 		self.kernel_pmmr
 			.rewind(kernel_pos, &Bitmap::new())
-			.map_err(|e| ErrorKind::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e)))?;
+			.map_err(|e| Error::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e)))?;
 		Ok(())
 	}
 
@@ -1513,20 +1518,11 @@ impl<'a> Extension<'a> {
 	pub fn roots(&self) -> Result<TxHashSetRoots, Error> {
 		Ok(TxHashSetRoots {
 			output_roots: OutputRoots {
-				pmmr_root: self
-					.output_pmmr
-					.root()
-					.map_err(|e| ErrorKind::InvalidRoot(e))?,
+				pmmr_root: self.output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 				bitmap_root: self.bitmap_accumulator.root(),
 			},
-			rproof_root: self
-				.rproof_pmmr
-				.root()
-				.map_err(|e| ErrorKind::InvalidRoot(e))?,
-			kernel_root: self
-				.kernel_pmmr
-				.root()
-				.map_err(|e| ErrorKind::InvalidRoot(e))?,
+			rproof_root: self.rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			kernel_root: self.kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 		})
 	}
 
@@ -1549,7 +1545,7 @@ impl<'a> Extension<'a> {
 			header.kernel_mmr_size,
 		) != self.sizes()
 		{
-			Err(ErrorKind::InvalidMMRSize.into())
+			Err(Error::InvalidMMRSize)
 		} else {
 			Ok(())
 		}
@@ -1560,13 +1556,13 @@ impl<'a> Extension<'a> {
 
 		// validate all hashes and sums within the trees
 		if let Err(e) = self.output_pmmr.validate() {
-			return Err(ErrorKind::InvalidTxHashSet(e).into());
+			return Err(Error::InvalidTxHashSet(e));
 		}
 		if let Err(e) = self.rproof_pmmr.validate() {
-			return Err(ErrorKind::InvalidTxHashSet(e).into());
+			return Err(Error::InvalidTxHashSet(e));
 		}
 		if let Err(e) = self.kernel_pmmr.validate() {
-			return Err(ErrorKind::InvalidTxHashSet(e).into());
+			return Err(Error::InvalidTxHashSet(e));
 		}
 
 		debug!(
@@ -1687,7 +1683,7 @@ impl<'a> Extension<'a> {
 				let kernel = self
 					.kernel_pmmr
 					.get_data(n)
-					.ok_or_else(|| ErrorKind::TxKernelNotFound)?;
+					.ok_or_else(|| Error::TxKernelNotFound)?;
 				tx_kernels.push(kernel);
 			}
 
@@ -1730,18 +1726,16 @@ impl<'a> Extension<'a> {
 			// It is invalid for either to be missing and we fail immediately in this case.
 			match (output, proof) {
 				(None, _) => {
-					return Err(ErrorKind::OutputNotFound(format!(
+					return Err(Error::OutputNotFound(format!(
 						"at verify_rangeproofs for pos {}",
 						pos0
-					))
-					.into())
+					)))
 				}
 				(_, None) => {
-					return Err(ErrorKind::RangeproofNotFound(format!(
+					return Err(Error::RangeproofNotFound(format!(
 						"at verify_rangeproofs for pos {}",
 						pos0
-					))
-					.into())
+					)))
 				}
 				(Some(output), Some(proof)) => {
 					commits.push(output.commit);
@@ -1920,7 +1914,7 @@ pub fn txhashset_replace(from: PathBuf, to: PathBuf) -> Result<(), Error> {
 	// rename the 'from' folder as the 'to' folder
 	if let Err(e) = fs::rename(from.join(TXHASHSET_SUBDIR), to.join(TXHASHSET_SUBDIR)) {
 		error!("hashset_replace fail on {}. err: {}", TXHASHSET_SUBDIR, e);
-		Err(ErrorKind::TxHashSetErr("txhashset replacing fail".to_string()).into())
+		Err(Error::TxHashSetErr("txhashset replacing fail".to_string()))
 	} else {
 		Ok(())
 	}
@@ -1978,7 +1972,7 @@ fn apply_kernel_rules(kernel: &TxKernel, pos: CommitPos, batch: &Batch<'_>) -> R
 					pos.height, prev, relative_height
 				);
 				if diff < relative_height.into() {
-					return Err(ErrorKind::NRDRelativeHeight.into());
+					return Err(Error::NRDRelativeHeight);
 				}
 			}
 			debug!(

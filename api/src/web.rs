@@ -16,11 +16,10 @@ where
 {
 	let raw = body::to_bytes(req.into_body())
 		.await
-		.map_err(|e| ErrorKind::RequestError(format!("Failed to read request: {}", e)))?;
+		.map_err(|e| Error::RequestError(format!("Failed to read request: {}", e)))?;
 
-	serde_json::from_reader(raw.bytes()).map_err(|e| {
-		ErrorKind::RequestError(format!("Invalid request body (expected json), {}", e)).into()
-	})
+	serde_json::from_reader(raw.bytes())
+		.map_err(|e| Error::RequestError(format!("Invalid request body (expected json), {}", e)))
 }
 
 /// Convert Result to ResponseFuture
@@ -30,20 +29,18 @@ where
 {
 	match res {
 		Ok(s) => json_response_pretty(&s),
-		Err(e) => match e.kind() {
-			ErrorKind::Argument(msg) => response(StatusCode::BAD_REQUEST, msg.clone()),
-			ErrorKind::RequestError(msg) => response(StatusCode::BAD_REQUEST, msg.clone()),
-			ErrorKind::NotFound(msg) => response(StatusCode::NOT_FOUND, msg.clone()),
-			ErrorKind::Internal(msg) => response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-			ErrorKind::ResponseError(msg) => {
-				response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
-			}
+		Err(e) => match e {
+			Error::Argument(msg) => response(StatusCode::BAD_REQUEST, msg.clone()),
+			Error::RequestError(msg) => response(StatusCode::BAD_REQUEST, msg.clone()),
+			Error::NotFound(msg) => response(StatusCode::NOT_FOUND, msg.clone()),
+			Error::Internal(msg) => response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+			Error::ResponseError(msg) => response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
 			// place holder
-			ErrorKind::Router(err) => response(
+			Error::Router(err) => response(
 				StatusCode::INTERNAL_SERVER_ERROR,
 				format!("Router Error, {}", err),
 			),
-			ErrorKind::P2pError(err) => response(
+			Error::P2pError(err) => response(
 				StatusCode::INTERNAL_SERVER_ERROR,
 				format!("P2P Error, {}", err),
 			),
@@ -158,7 +155,7 @@ macro_rules! must_get_query(
 	($req: expr) =>(
 		match $req.uri().query() {
 			Some(q) => q,
-			None => return Err(ErrorKind::RequestError( format!("no query string at uri {}",$req.uri())))?,
+			None => return Err(Error::RequestError( format!("no query string at uri {}",$req.uri())))?,
 		}
 	));
 
@@ -169,7 +166,7 @@ macro_rules! parse_param(
 		None => $default,
 		Some(val) =>  match val.parse() {
 			Ok(val) => val,
-			Err(_) => return Err(ErrorKind::RequestError(format!("invalid value of parameter {}", $name)).into()),
+			Err(_) => return Err(Error::RequestError(format!("invalid value of parameter {}", $name))),
 		}
 	}
 	));

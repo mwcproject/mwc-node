@@ -77,7 +77,12 @@ impl Display for DiffBlock {
 
 // Builds an iterator for next difficulty calculation with the provided
 // constant time interval, difficulty and total length.
-fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> Vec<HeaderInfo> {
+fn repeat(
+	interval: u64,
+	diff: HeaderDifficultyInfo,
+	len: u64,
+	cur_time: Option<u64>,
+) -> Vec<HeaderDifficultyInfo> {
 	let cur_time = match cur_time {
 		Some(t) => t,
 		None => Utc::now().timestamp() as u64,
@@ -89,8 +94,8 @@ fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> V
 	let pairs = times.zip(diffs.iter());
 	pairs
 		.map(|(t, d)| {
-			HeaderInfo::new(
-				diff.block_hash,
+			HeaderDifficultyInfo::new(
+				diff.hash,
 				cur_time + t as u64,
 				d.clone(),
 				diff.secondary_scaling,
@@ -276,10 +281,10 @@ fn print_chain_sim(chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>) {
 	});
 }
 
-fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderInfo> {
+fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderDifficultyInfo> {
 	repeat(
 		interval,
-		HeaderInfo::from_ts_diff(1, Difficulty::from_num(diff)),
+		HeaderDifficultyInfo::from_ts_diff(1, Difficulty::from_num(diff)),
 		len,
 		Some(from),
 	)
@@ -366,7 +371,7 @@ fn next_target_adjustment() {
 	let diff_min = Difficulty::min();
 
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
-	let mut hi = HeaderInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
+	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
 	let hinext = next_difficulty(
 		1,
@@ -393,7 +398,11 @@ fn next_target_adjustment() {
 
 	// check pre difficulty_data_to_vector effect on retargetting
 	assert_eq!(
-		next_difficulty(1, vec![HeaderInfo::from_ts_diff(42, hi.difficulty)]).difficulty,
+		next_difficulty(
+			1,
+			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)]
+		)
+		.difficulty,
 		Difficulty::from_num(14913)
 	);
 

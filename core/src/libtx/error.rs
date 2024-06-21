@@ -14,96 +14,46 @@
 
 //! libtx specific errors
 use crate::core::transaction;
-use failure::{Backtrace, Context, Fail};
-use std::fmt::{self, Display};
 use util::secp;
 
 /// Lib tx error definition
-#[derive(Debug)]
-pub struct Error {
-	inner: Context<ErrorKind>,
-}
-
-#[derive(Clone, Debug, Eq, Fail, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq, Serialize, Deserialize)]
 /// Libwallet error types
-pub enum ErrorKind {
+pub enum Error {
 	/// SECP error
-	#[fail(display = "LibTx Secp Error, {}", _0)]
+	#[error("LibTx Secp Error, {0}")]
 	Secp(secp::Error),
 	/// Keychain error
-	#[fail(display = "LibTx Keychain Error, {}", _0)]
+	#[error("LibTx Keychain Error, {0}")]
 	Keychain(keychain::Error),
 	/// Transaction error
-	#[fail(display = "LibTx Transaction Error, {}", _0)]
+	#[error("LibTx Transaction Error, {0}")]
 	Transaction(transaction::Error),
 	/// Signature error
-	#[fail(display = "LibTx Signature Error, {}", _0)]
+	#[error("LibTx Signature Error, {0}")]
 	Signature(String),
 	/// Rangeproof error
-	#[fail(display = "LibTx Rangeproof Error, {}", _0)]
+	#[error("LibTx Rangeproof Error, {0}")]
 	RangeProof(String),
 	/// Other error
-	#[fail(display = "LibTx Other Error, {}", _0)]
+	#[error("LibTx Other Error, {0}")]
 	Other(String),
-}
-
-impl Fail for Error {
-	fn cause(&self) -> Option<&dyn Fail> {
-		self.inner.cause()
-	}
-
-	fn backtrace(&self) -> Option<&Backtrace> {
-		self.inner.backtrace()
-	}
-}
-
-impl Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		Display::fmt(&self.inner, f)
-	}
-}
-
-impl Error {
-	/// Return errorkind
-	pub fn kind(&self) -> ErrorKind {
-		self.inner.get_context().clone()
-	}
-}
-
-impl From<ErrorKind> for Error {
-	fn from(kind: ErrorKind) -> Error {
-		Error {
-			inner: Context::new(kind),
-		}
-	}
-}
-
-impl From<Context<ErrorKind>> for Error {
-	fn from(inner: Context<ErrorKind>) -> Error {
-		Error { inner }
-	}
 }
 
 impl From<secp::Error> for Error {
 	fn from(error: secp::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Secp(error)),
-		}
+		Error::Secp(error)
 	}
 }
 
 impl From<keychain::Error> for Error {
 	fn from(error: keychain::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Keychain(error)),
-		}
+		Error::Keychain(error)
 	}
 }
 
 impl From<transaction::Error> for Error {
 	fn from(error: transaction::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Transaction(error)),
-		}
+		Error::Transaction(error)
 	}
 }

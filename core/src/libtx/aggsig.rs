@@ -16,7 +16,7 @@
 //! This module interfaces into the underlying
 //! [Rust Aggsig library](https://github.com/mimblewimble/rust-secp256k1-zkp/blob/master/src/aggsig.rs)
 
-use crate::libtx::error::{Error, ErrorKind};
+use crate::libtx::error::Error;
 use blake2::blake2b::Blake2b;
 use keychain::{BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
 use util::secp::key::{PublicKey, SecretKey};
@@ -193,7 +193,7 @@ pub fn verify_partial_sig(
 		pubkey_sum,
 		true,
 	) {
-		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
+		return Err(Error::Signature("Signature validation error".to_string()));
 	}
 	Ok(())
 }
@@ -329,7 +329,7 @@ pub fn verify_single_from_commit(
 ) -> Result<(), Error> {
 	let pubkey = commit.to_pubkey()?;
 	if !verify_single(secp, sig, msg, None, &pubkey, Some(&pubkey), false) {
-		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
+		return Err(Error::Signature("Signature validation error".to_string()));
 	}
 	Ok(())
 }
@@ -397,7 +397,7 @@ pub fn verify_completed_sig(
 	msg: &secp::Message,
 ) -> Result<(), Error> {
 	if !verify_single(secp, sig, msg, None, pubkey, pubkey_sum, true) {
-		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
+		return Err(Error::Signature("Signature validation error".to_string()));
 	}
 	Ok(())
 }

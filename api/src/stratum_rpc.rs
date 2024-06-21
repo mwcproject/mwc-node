@@ -70,7 +70,7 @@ pub trait StratumRpc: Sync + Send {
 	fn get_ip_list(
 		&self,
 		banned: Option<bool>,
-	) -> Result<Vec<stratum::connections::StratumIpPrintable>, ErrorKind>;
+	) -> Result<Vec<stratum::connections::StratumIpPrintable>, Error>;
 
 	/**
 	Clean IP data. As a result, if it is banned, it will become active.
@@ -94,7 +94,7 @@ pub trait StratumRpc: Sync + Send {
 	}
 
 	*/
-	fn clean_ip(&self, ip: String) -> Result<(), ErrorKind>;
+	fn clean_ip(&self, ip: String) -> Result<(), Error>;
 
 	/*
 	 Get single IP info stratum IP pool
@@ -128,28 +128,22 @@ pub trait StratumRpc: Sync + Send {
 	  }
 	}
 	*/
-	fn get_ip_info(
-		&self,
-		ip: String,
-	) -> Result<stratum::connections::StratumIpPrintable, ErrorKind>;
+	fn get_ip_info(&self, ip: String) -> Result<stratum::connections::StratumIpPrintable, Error>;
 }
 
 impl StratumRpc for Stratum {
 	fn get_ip_list(
 		&self,
 		banned: Option<bool>,
-	) -> Result<Vec<stratum::connections::StratumIpPrintable>, ErrorKind> {
-		Stratum::get_ip_list(self, banned).map_err(|e: Error| e.kind().clone())
+	) -> Result<Vec<stratum::connections::StratumIpPrintable>, Error> {
+		Stratum::get_ip_list(self, banned)
 	}
 
-	fn clean_ip(&self, ip: String) -> Result<(), ErrorKind> {
-		Stratum::clean_ip(self, &ip).map_err(|e| e.kind().clone())
+	fn clean_ip(&self, ip: String) -> Result<(), Error> {
+		Stratum::clean_ip(self, &ip)
 	}
 
-	fn get_ip_info(
-		&self,
-		ip: String,
-	) -> Result<stratum::connections::StratumIpPrintable, ErrorKind> {
-		Stratum::get_ip_info(self, &ip).map_err(|e| e.kind().clone())
+	fn get_ip_info(&self, ip: String) -> Result<stratum::connections::StratumIpPrintable, Error> {
+		Stratum::get_ip_info(self, &ip)
 	}
 }

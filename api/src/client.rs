@@ -15,10 +15,9 @@
 //! High level JSON/HTTP client API
 
 use crate::core::global;
-use crate::rest::{Error, ErrorKind};
+use crate::rest::Error;
 use crate::util::to_base64;
-use failure::Fail;
-use http::uri::{InvalidUri, Uri};
+use http::uri::Uri;
 use hyper::body;
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use hyper::{Body, Client, Request};
@@ -192,10 +191,9 @@ fn build_request_ex(
 	body: Option<String>,
 ) -> Result<Request<Body>, Error> {
 	// Checking only. Uri has issues with Builder 'uri()' method
-	let _ = url.parse::<Uri>().map_err::<Error, _>(|e: InvalidUri| {
-		e.context(ErrorKind::Argument(format!("Invalid url {}", url)))
-			.into()
-	})?;
+	let _ = url
+		.parse::<Uri>()
+		.map_err::<Error, _>(|e| Error::Argument(format!("Invalid url {}, {}", url, e)))?;
 
 	let mut builder = Request::builder();
 
@@ -221,9 +219,7 @@ fn build_request_ex(
 			None => Body::empty(),
 			Some(json) => json.into(),
 		})
-		.map_err(|e| {
-			ErrorKind::RequestError(format!("Bad request {} {}: {}", method, url, e)).into()
-		})
+		.map_err(|e| Error::RequestError(format!("Bad request {} {}: {}", method, url, e)))
 }
 
 pub fn create_post_request<IN>(
@@ -235,7 +231,7 @@ where
 	IN: Serialize,
 {
 	let json = serde_json::to_string(input).map_err(|e| {
-		ErrorKind::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
+		Error::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
 	})?;
 	build_request(url, "POST", api_secret, Some(json))
 }
@@ -250,7 +246,7 @@ where
 	IN: Serialize,
 {
 	let json = serde_json::to_string(input).map_err(|e| {
-		ErrorKind::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
+		Error::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
 	})?;
 	build_request_ex(url, "POST", api_secret, basic_auth_key, Some(json))
 }
@@ -260,9 +256,8 @@ where
 	for<'de> T: Deserialize<'de>,
 {
 	let data = send_request(req, timeout)?;
-	serde_json::from_str(&data).map_err(|e| {
-		ErrorKind::ResponseError(format!("Cannot parse response: {}, {}", data, e)).into()
-	})
+	serde_json::from_str(&data)
+		.map_err(|e| Error::ResponseError(format!("Cannot parse response: {}, {}", data, e)))
 }
 
 async fn handle_request_async<T>(req: Request<Body>) -> Result<T, Error>
@@ -271,7 +266,7 @@ where
 {
 	let data = send_request_async(req, TimeOut::default()).await?;
 	let ser = serde_json::from_str(&data)
-		.map_err(|e| ErrorKind::ResponseError(format!("Cannot parse response: {}, {}", data, e)))?;
+		.map_err(|e| Error::ResponseError(format!("Cannot parse response: {}, {}", data, e)))?;
 	Ok(ser)
 }
 
@@ -291,22 +286,21 @@ async fn send_request_async(req: Request<Body>, timeout: TimeOut) -> Result<Stri
 	let resp = client
 		.request(req)
 		.await
-		.map_err(|e| ErrorKind::RequestError(format!("Cannot make request: {}", e)))?;
+		.map_err(|e| Error::RequestError(format!("Cannot make request: {}", e)))?;
 
 	let status = resp.status().clone();
 
 	// Read body first because we want to return it in case of error.
 	let raw = body::to_bytes(resp)
 		.await
-		.map_err(|e| ErrorKind::RequestError(format!("Cannot read response body: {}", e)))?;
+		.map_err(|e| Error::RequestError(format!("Cannot read response body: {}", e)))?;
 	let response_body = String::from_utf8_lossy(&raw).to_string();
 
 	if !status.is_success() {
-		return Err(ErrorKind::RequestError(format!(
+		return Err(Error::RequestError(format!(
 			"Wrong response code: {} with data {}",
 			status, response_body
-		))
-		.into());
+		)));
 	}
 	Ok(response_body)
 }
@@ -316,6 +310,6 @@ pub fn send_request(req: Request<Body>, timeout: TimeOut) -> Result<String, Erro
 		.basic_scheduler()
 		.enable_all()
 		.build()
-		.map_err(|e| ErrorKind::Internal(format!("can't create Tokio runtime, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("can't create Tokio runtime, {}", e)))?;
 	rt.block_on(send_request_async(req, timeout))
 }

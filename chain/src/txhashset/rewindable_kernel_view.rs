@@ -16,7 +16,7 @@
 
 use crate::core::core::pmmr::{ReadablePMMR, ReadonlyPMMR, RewindablePMMR};
 use crate::core::core::{BlockHeader, TxKernel};
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
 use grin_store::pmmr::PMMRBackend;
 
 /// Rewindable (but readonly) view of the kernel set (based on kernel MMR).
@@ -40,7 +40,7 @@ impl<'a> RewindableKernelView<'a> {
 	pub fn rewind(&mut self, header: &BlockHeader) -> Result<(), Error> {
 		self.pmmr
 			.rewind(header.kernel_mmr_size)
-			.map_err(|e| ErrorKind::TxHashSetErr(e))?;
+			.map_err(|e| Error::TxHashSetErr(e))?;
 
 		// Update our header to reflect the one we rewound to.
 		self.header = header.clone();
@@ -57,13 +57,12 @@ impl<'a> RewindableKernelView<'a> {
 		let root = self
 			.readonly_pmmr()
 			.root()
-			.map_err(|e| ErrorKind::InvalidRoot(e))?;
+			.map_err(|e| Error::InvalidRoot(e))?;
 		if root != self.header.kernel_root {
-			return Err(ErrorKind::InvalidTxHashSet(format!(
+			return Err(Error::InvalidTxHashSet(format!(
 				"Kernel root at {} does not match",
 				self.header.height
-			))
-			.into());
+			)));
 		}
 		Ok(())
 	}

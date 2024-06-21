@@ -32,8 +32,6 @@ use std::{
 	time::{self, Duration},
 };
 
-use crate::ErrorKind;
-
 use fs2::FileExt;
 use grin_util::{to_hex, OnionV3Address};
 use walkdir::WalkDir;
@@ -333,7 +331,10 @@ impl Server {
 							Err(e) => {
 								input.send(None).unwrap();
 								error!("failed to start Tor due to {}", e);
-								Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
+								Err(crate::Error::TorConfig(format!(
+									"Failed to init tor, {}",
+									e
+								)))
 							}
 						};
 					})?;
@@ -705,7 +706,9 @@ impl Server {
 			sec_key_vec = Some((scoped_vec).as_slice());
 
 			onion_address = OnionV3Address::from_private(&sec_key.0)
-				.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
+				.map_err(|e| {
+					crate::Error::TorConfig(format!("Unable to build onion address, {}", e))
+				})
 				.unwrap()
 				.to_string();
 			sec_key
@@ -739,7 +742,7 @@ impl Server {
 			existing_onion,
 			socks_port,
 		)
-		.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
+		.map_err(|e| crate::Error::TorConfig(format!("Failed to configure tor, {}", e).into()))
 		.unwrap();
 
 		info!(

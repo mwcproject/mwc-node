@@ -21,10 +21,10 @@ use crate::ser::{PMMRIndexHashable, Readable, Reader, Writeable, Writer};
 use util::ToHex;
 
 /// Merkle proof errors.
-#[derive(Fail, Clone, Debug, PartialEq)]
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum MerkleProofError {
 	/// Merkle proof root hash does not match when attempting to verify.
-	#[fail(display = "Merkle Proof root mismatch")]
+	#[error("Merkle Proof root mismatch")]
 	RootMismatch,
 }
 

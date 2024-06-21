@@ -36,7 +36,7 @@ use grin_store as store;
 use grin_util as util;
 
 mod error;
-pub use crate::error::{Error, ErrorKind};
+pub use crate::error::Error;
 
 pub mod common;
 mod grin;

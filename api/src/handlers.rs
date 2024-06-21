@@ -51,7 +51,7 @@ use crate::owner_rpc::OwnerRpc;
 use crate::p2p;
 use crate::pool;
 use crate::pool::{BlockChain, PoolAdapter};
-use crate::rest::{ApiServer, Error, ErrorKind, TLSConfig};
+use crate::rest::{ApiServer, Error, TLSConfig};
 use crate::router::ResponseFuture;
 use crate::router::{Router, RouterError};
 use crate::stratum::Stratum;
@@ -180,7 +180,7 @@ where
 		Ok(_) => Ok(()),
 		Err(e) => {
 			error!("HTTP API server failed to start. Err: {}", e);
-			Err(ErrorKind::Internal(format!("HTTP API server failed to start, {}", e)).into())
+			Err(Error::Internal(format!("HTTP API server failed to start, {}", e)).into())
 		}
 	}
 }

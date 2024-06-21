@@ -65,7 +65,8 @@ where
 	)
 	.unwrap();
 
-	let mut block = Block::new(prev, &txs, next_header_info.clone().difficulty, reward)?;
+	let mut block = Block::new(prev, &txs, next_header_info.clone().difficulty, reward)
+		.map_err(|e| Error::Block(e))?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;

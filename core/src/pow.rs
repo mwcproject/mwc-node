@@ -52,7 +52,7 @@ pub use crate::pow::cuckarood::{new_cuckarood_ctx, CuckaroodContext};
 pub use crate::pow::cuckaroom::{new_cuckaroom_ctx, CuckaroomContext};
 pub use crate::pow::cuckarooz::{new_cuckarooz_ctx, CuckaroozContext};
 pub use crate::pow::cuckatoo::{new_cuckatoo_ctx, CuckatooContext};
-pub use crate::pow::error::{Error, ErrorKind};
+pub use crate::pow::error::Error;
 use chrono::prelude::{DateTime, NaiveDateTime, Utc};
 
 const MAX_SOLS: u32 = 10;
@@ -68,7 +68,7 @@ pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
 	)?;
 	ctx.set_header_nonce(
 		bh.pre_pow()
-			.map_err(|e| ErrorKind::PrePowError(format!("{}", e)))?,
+			.map_err(|e| Error::PrePowError(format!("{}", e)))?,
 		None,
 		false,
 	)?;
@@ -107,7 +107,7 @@ pub fn pow_size(
 		let mut ctx = global::create_pow_context::<u32>(bh.height, sz, proof_size, MAX_SOLS)?;
 		ctx.set_header_nonce(
 			bh.pre_pow()
-				.map_err(|e| ErrorKind::PrePowError(format!("{}", e)))?,
+				.map_err(|e| Error::PrePowError(format!("{}", e)))?,
 			None,
 			true,
 		)?;

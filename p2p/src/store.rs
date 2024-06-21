@@ -19,7 +19,7 @@ use num::FromPrimitive;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-use crate::core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
+use crate::grin_core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
 use grin_store::{self, option_to_not_found, to_key, Error};
 

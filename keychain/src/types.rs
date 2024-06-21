@@ -33,7 +33,6 @@ use crate::util::secp::key::{PublicKey, SecretKey, ZERO_KEY};
 use crate::util::secp::pedersen::Commitment;
 use crate::util::secp::{self, Message, Secp256k1, Signature};
 use crate::util::ToHex;
-use failure::Fail;
 use zeroize::Zeroize;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -41,19 +40,19 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 // Size of an identifier in bytes
 pub const IDENTIFIER_SIZE: usize = 17;
 
-#[derive(Fail, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
 pub enum Error {
-	#[fail(display = "Keychain secp error, {}", _0)]
+	#[error("Keychain secp error, {0}")]
 	Secp(String),
-	#[fail(display = "Keychain derivation key error, {}", _0)]
+	#[error("Keychain derivation key error, {0}")]
 	KeyDerivation(extkey_bip32::Error),
-	#[fail(display = "Keychain Transaction error, {}", _0)]
+	#[error("Keychain Transaction error, {0}")]
 	Transaction(String),
-	#[fail(display = "Keychain range proof error, {}", _0)]
+	#[error("Keychain range proof error, {0}")]
 	RangeProof(String),
-	#[fail(display = "Keychain unknown commitment type")]
+	#[error("Keychain unknown commitment type")]
 	SwitchCommitmentType,
-	#[fail(display = "Keychain generic error, {}", _0)]
+	#[error("Keychain generic error, {0}")]
 	GenericError(String),
 }
 

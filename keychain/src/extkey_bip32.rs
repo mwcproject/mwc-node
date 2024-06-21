@@ -44,7 +44,6 @@ use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 
 use digest::generic_array::GenericArray;
 use digest::Digest;
-use failure::Fail;
 use hmac::{Hmac, Mac, NewMac};
 use ripemd160::Ripemd160;
 use sha2::{Sha256, Sha512};
@@ -298,19 +297,19 @@ impl serde::Serialize for ChildNumber {
 }
 
 /// A BIP32 error
-#[derive(Fail, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Error {
 	/// A pk->pk derivation was attempted on a hardened key
-	#[fail(display = "cannot derive hardened key from public key")]
+	#[error("cannot derive hardened key from public key")]
 	CannotDeriveFromHardenedKey,
 	/// A secp256k1 error occured
-	#[fail(display = "secp256k1 error {}", _0)]
+	#[error("secp256k1 error {0}")]
 	Ecdsa(secp::Error),
 	/// Error creating a master seed --- for application use
-	#[fail(display = "rng error {}", _0)]
+	#[error("rng error {0}")]
 	RngError(String),
 	/// Error converting mnemonic to seed
-	#[fail(display = "Mnemonic error, {}", _0)]
+	#[error("Mnemonic error, {0}")]
 	MnemonicError(mnemonic::Error),
 }
 

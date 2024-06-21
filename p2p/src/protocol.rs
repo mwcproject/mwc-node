@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::conn::MessageHandler;
-use crate::core::core::{hash::Hashed, CompactBlock};
+use crate::grin_core::core::{hash::Hashed, CompactBlock};
 use crate::{chain, Capabilities};
 
 use crate::msg::{

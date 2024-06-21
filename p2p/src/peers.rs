@@ -22,11 +22,11 @@ use rand::prelude::*;
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
-use crate::core::core;
-use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::core::global;
-use crate::core::pow::Difficulty;
+use crate::grin_core::core;
+use crate::grin_core::core::hash::{Hash, Hashed};
+use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::grin_core::global;
+use crate::grin_core::pow::Difficulty;
 use crate::msg::PeerAddrs;
 use crate::peer::Peer;
 use crate::store::{PeerData, PeerStore, State};
@@ -512,7 +512,7 @@ impl ChainAdapter for Peers {
 				peer_info.addr.clone(),
 			);
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadBlock)
-				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
+				.map_err(|e| chain::Error::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -534,7 +534,7 @@ impl ChainAdapter for Peers {
 				peer_info.addr.clone()
 			);
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadCompactBlock)
-				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
+				.map_err(|e| chain::Error::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -550,7 +550,7 @@ impl ChainAdapter for Peers {
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadBlockHeader)
-				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
+				.map_err(|e| chain::Error::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -570,7 +570,7 @@ impl ChainAdapter for Peers {
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadBlockHeader)
-				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
+				.map_err(|e| chain::Error::Other(format!("ban peer error {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)
@@ -618,7 +618,7 @@ impl ChainAdapter for Peers {
 				peer_info.addr.clone()
 			);
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadTxHashSet)
-				.map_err(|e| chain::ErrorKind::Other(format!("ban peer error {}", e)))?;
+				.map_err(|e| chain::Error::Other(format!("ban peer error {}", e)))?;
 			Ok(true)
 		} else {
 			Ok(false)

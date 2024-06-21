@@ -135,7 +135,7 @@ impl PeerHandler {
 		if let Some(addr) = addr {
 			let peer_addr = PeerAddr::Ip(addr);
 			let peer_data: PeerData = w(&self.peers)?.get_peer(peer_addr.clone()).map_err(|e| {
-				ErrorKind::Internal(format!(
+				Error::Internal(format!(
 					"Unable to get peer for address {}, {}",
 					peer_addr, e
 				))
@@ -151,22 +151,20 @@ impl PeerHandler {
 		w(&self.peers)?
 			.ban_peer(peer_addr.clone(), ReasonForBan::ManualBan)
 			.map_err(|e| {
-				ErrorKind::Internal(format!(
+				Error::Internal(format!(
 					"Unable to ban peer for address {}, {}",
 					peer_addr, e
 				))
-				.into()
 			})
 	}
 
 	pub fn unban_peer(&self, addr: SocketAddr) -> Result<(), Error> {
 		let peer_addr = PeerAddr::Ip(addr);
 		w(&self.peers)?.unban_peer(peer_addr.clone()).map_err(|e| {
-			ErrorKind::Internal(format!(
+			Error::Internal(format!(
 				"Unable to unban peer for address {}, {}",
 				peer_addr, e
 			))
-			.into()
 		})
 	}
 }

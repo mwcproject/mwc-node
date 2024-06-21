@@ -15,8 +15,7 @@ serde = "1"
 serde_derive = "1"
 toml = "0.5"
 dirs = "2.0"
-failure = "0.1"
-failure_derive = "0.1"
+thiserror = "1"
 
 grin_core = { path = "../core", version = "5.2.0" }
 grin_servers = { path = "../servers", version = "5.2.0" }

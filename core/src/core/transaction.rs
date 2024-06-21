@@ -555,61 +555,61 @@ impl Readable for KernelFeatures {
 }
 
 /// Errors thrown by Transaction validation
-#[derive(Fail, Clone, Eq, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(thiserror::Error, Clone, Eq, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Error {
 	/// Underlying Secp256k1 error (signature validation or invalid public key
 	/// typically)
-	#[fail(display = "Secp256k1 error, {}", _0)]
+	#[error("Secp256k1 error, {0}")]
 	Secp(secp::Error),
 	/// Underlying keychain related error
-	#[fail(display = "Keychain error, {}", _0)]
+	#[error("Keychain error, {0}")]
 	Keychain(keychain::Error),
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
-	#[fail(display = "Tx Kernel Sum Mismatch")]
+	#[error("Tx Kernel Sum Mismatch")]
 	KernelSumMismatch,
 	/// Restrict tx total weight.
-	#[fail(display = "Tx total weight too heavy")]
+	#[error("Tx total weight too heavy")]
 	TooHeavy,
 	/// Error originating from an invalid lock-height
-	#[fail(display = "Tx Invalid lock height {}", _0)]
+	#[error("Tx Invalid lock height {0}")]
 	LockHeight(u64),
 	/// Range proof validation error
-	#[fail(display = "Tx Invalid range proof")]
+	#[error("Tx Invalid range proof")]
 	RangeProof,
 	/// Error originating from an invalid Merkle proof
-	#[fail(display = "Tx Invalid Merkle Proof")]
+	#[error("Tx Invalid Merkle Proof")]
 	MerkleProof,
 	/// Returns if the value hidden within the a RangeProof message isn't
 	/// repeated 3 times, indicating it's incorrect
-	#[fail(display = "Tx Invalid Proof Message")]
+	#[error("Tx Invalid Proof Message")]
 	InvalidProofMessage,
 	/// Error when verifying kernel sums via committed trait.
-	#[fail(display = "Tx Verifying kernel sums error, {}", _0)]
+	#[error("Tx Verifying kernel sums error, {0}")]
 	Committed(committed::Error),
 	/// Validation error relating to cut-through (tx is spending its own
 	/// output).
-	#[fail(display = "Tx cut through error")]
+	#[error("Tx cut through error")]
 	CutThrough,
 	/// Validation error relating to output features.
 	/// It is invalid for a transaction to contain a coinbase output, for example.
-	#[fail(display = "Tx Invalid output feature")]
+	#[error("Tx Invalid output feature")]
 	InvalidOutputFeatures,
 	/// Validation error relating to kernel features.
 	/// It is invalid for a transaction to contain a coinbase kernel, for example.
-	#[fail(display = "Tx Invalid kernel feature")]
+	#[error("Tx Invalid kernel feature")]
 	InvalidKernelFeatures,
 	/// feeshift is limited to 4 bits and fee must be positive and fit in 40 bits.
-	#[fail(display = "Invalid Fee Fields, {}", _0)]
+	#[error("Invalid Fee Fields, {0}")]
 	InvalidFeeFields(String),
 	/// NRD kernel relative height is limited to 1 week duration and must be greater than 0.
-	#[fail(display = "Invalid NRD kernel relative height")]
+	#[error("Invalid NRD kernel relative height")]
 	InvalidNRDRelativeHeight,
 	/// Signature verification error.
-	#[fail(display = "Tx Invalid signature")]
+	#[error("Tx Invalid signature")]
 	IncorrectSignature,
 	/// Underlying serialization error.
-	#[fail(display = "Tx Serialization error, {}", _0)]
+	#[error("Tx Serialization error, {0}")]
 	Serialization(ser::Error),
 }
 

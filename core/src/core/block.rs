@@ -30,68 +30,67 @@ use crate::ser::{
 use chrono::naive::{MAX_DATE, MIN_DATE};
 use chrono::prelude::{DateTime, NaiveDateTime, Utc};
 use chrono::Duration;
-use failure::Fail;
 use keychain::{self, BlindingFactor};
 use std::convert::TryInto;
 use util::from_hex;
 use util::{secp, static_secp_instance};
 
 /// Errors thrown by Block validation
-#[derive(Fail, Debug, Clone, Eq, PartialEq)]
+#[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
 pub enum Error {
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
-	#[fail(display = "Block Input/ouput vs kernel sum mismatch")]
+	#[error("Block Input/ouput vs kernel sum mismatch")]
 	KernelSumMismatch,
 	/// The total kernel sum on the block header is wrong
-	#[fail(display = "Block Invalid total kernel sum")]
+	#[error("Block Invalid total kernel sum")]
 	InvalidTotalKernelSum,
 	/// Same as above but for the coinbase part of a block, including reward
-	#[fail(display = "Block Invalid total kernel sum plus reward")]
+	#[error("Block Invalid total kernel sum plus reward")]
 	CoinbaseSumMismatch,
 	/// Restrict block total weight.
-	#[fail(display = "Block total weight is too heavy")]
+	#[error("Block total weight is too heavy")]
 	TooHeavy,
 	/// Block version is invalid for a given block height
-	#[fail(display = "Block version {:?} is invalid", _0)]
+	#[error("Block version {0:?} is invalid")]
 	InvalidBlockVersion(HeaderVersion),
 	/// Block time is invalid
-	#[fail(display = "Block time is invalid")]
+	#[error("Block time is invalid")]
 	InvalidBlockTime,
 	/// Invalid POW
-	#[fail(display = "Invalid POW")]
+	#[error("Invalid POW")]
 	InvalidPow,
 	/// Kernel not valid due to lock_height exceeding block header height
-	#[fail(display = "Block lock_height {} exceeding header height {}", _0, _1)]
+	#[error("Block lock_height {0} exceeding header height {0}")]
 	KernelLockHeight(u64, u64),
 	/// NRD kernels are not valid prior to HF3.
-	#[fail(display = "NRD kernels are not valid prior to HF3")]
+	#[error("NRD kernels are not valid prior to HF3")]
 	NRDKernelPreHF3,
 	/// NRD kernels are not valid if disabled locally via "feature flag".
-	#[fail(display = "NRD kernels are not valid, disabled locally via 'feature flag'")]
+	#[error("NRD kernels are not valid, disabled locally via 'feature flag'")]
 	NRDKernelNotEnabled,
 	/// Underlying tx related error
-	#[fail(display = "Block Invalid Transaction, {}", _0)]
+	#[error("Block Invalid Transaction, {0}")]
 	Transaction(transaction::Error),
 	/// Underlying Secp256k1 error (signature validation or invalid public key
 	/// typically)
-	#[fail(display = "Secp256k1 error, {}", _0)]
+	#[error("Secp256k1 error, {0}")]
 	Secp(secp::Error),
 	/// Underlying keychain related error
-	#[fail(display = "keychain error, {}", _0)]
+	#[error("keychain error, {0}")]
 	Keychain(keychain::Error),
 	/// Error when verifying kernel sums via committed trait.
-	#[fail(display = "Block Commits error, {}", _0)]
+	#[error("Block Commits error, {0}")]
 	Committed(committed::Error),
 	/// Validation error relating to cut-through.
 	/// Specifically the tx is spending its own output, which is not valid.
-	#[fail(display = "Block cut-through error")]
+	#[error("Block cut-through error")]
 	CutThrough,
 	/// Underlying serialization error.
-	#[fail(display = "Block serialization error, {}", _0)]
+	#[error("Block serialization error, {0}")]
 	Serialization(ser::Error),
 	/// Other unspecified error condition
-	#[fail(display = "Block Generic error, {}", _0)]
+	#[error("Block Generic error, {0}")]
 	Other(String),
 }
 

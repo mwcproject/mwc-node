@@ -52,7 +52,8 @@ where
 	)
 	.unwrap();
 
-	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward)?;
+	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward)
+		.map_err(|e| chain::Error::Block(e))?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -92,7 +93,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	util::init_test_logger();
 	clean_output_dir(chain_dir);
 
-	let keychain = ExtKeychain::from_random_seed(false)?;
+	let keychain = ExtKeychain::from_random_seed(false).map_err(|e| chain::Error::Keychain(e))?;
 	let pb = ProofBuilder::new(&keychain);
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
@@ -127,11 +128,13 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	.expect("valid tx");
 
 	// The offending commitment, reused in both an input and an output.
-	let commit = keychain.commit(
-		consensus::MWC_FIRST_GROUP_REWARD,
-		&key_id1,
-		SwitchCommitmentType::Regular,
-	)?;
+	let commit = keychain
+		.commit(
+			consensus::MWC_FIRST_GROUP_REWARD,
+			&key_id1,
+			SwitchCommitmentType::Regular,
+		)
+		.map_err(|e| chain::Error::Keychain(e))?;
 	let inputs: Vec<_> = tx.inputs().into();
 	assert!(inputs.iter().any(|input| input.commitment() == commit));
 	assert!(tx
@@ -148,8 +151,8 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 
 	// Transaction will not validate against the chain (utxo).
 	assert_eq!(
-		chain.validate_tx(&tx).map_err(|e| e.kind()),
-		Err(chain::ErrorKind::DuplicateCommitment(commit)),
+		chain.validate_tx(&tx),
+		Err(chain::Error::DuplicateCommitment(commit)),
 	);
 
 	// Build a block with this single invalid transaction.
@@ -178,12 +181,12 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 		let batch = store.batch()?;
 
 		let mut ctx = chain.new_ctx(Options::NONE, batch, &mut header_pmmr, &mut txhashset)?;
-		let res = pipe::process_block(&block, &mut ctx).map_err(|e| e.kind());
+		let res = pipe::process_block(&block, &mut ctx);
 		assert_eq!(
 			res,
-			Err(chain::ErrorKind::InvalidBlockProof(
-				block::Error::Transaction(transaction::Error::CutThrough)
-			))
+			Err(chain::Error::InvalidBlockProof(block::Error::Transaction(
+				transaction::Error::CutThrough
+			)))
 		);
 	}
 

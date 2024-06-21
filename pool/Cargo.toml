@@ -17,8 +17,7 @@ serde_derive = "1"
 lru-cache = "0.1"
 log = "0.4"
 chrono = "0.4.11"
-failure = "0.1"
-failure_derive = "0.1"
+thiserror = "1"
 
 grin_core = { path = "../core", version = "5.2.0" }
 grin_keychain = { path = "../keychain", version = "5.2.0" }

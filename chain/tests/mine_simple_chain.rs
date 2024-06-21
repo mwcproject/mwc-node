@@ -34,6 +34,7 @@ use grin_chain::{BlockStatus, ChainAdapter, Options};
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;
+use grin_util::secp;
 use std::sync::Arc;
 
 mod chain_test_helper;
@@ -852,7 +853,8 @@ where
 			let commit = build.keychain.commit(value, &key_id, switch)?;
 
 			// invert commitment
-			let commit = build.keychain.secp().commit_sum(vec![], vec![commit])?;
+			let commit = secp::Secp256k1::commit_sum(vec![], vec![commit])?;
+			//build.keychain.secp().commit_sum(vec![], vec![commit])?;
 
 			eprintln!("Building output: {}, {:?}", value, commit);
 
@@ -919,8 +921,14 @@ fn test_overflow_cached_rangeproof() {
 		let tx1 = build::transaction(
 			KernelFeatures::Plain { fee: 20000.into() },
 			&[
-				build::coinbase_input(consensus::REWARD, key_id2.clone()),
-				build::output(consensus::REWARD - 20000, key_id30.clone()),
+				build::coinbase_input(
+					consensus::calc_mwc_block_reward(chain.head().unwrap().height),
+					key_id2.clone(),
+				),
+				build::output(
+					consensus::calc_mwc_block_reward(chain.head().unwrap().height) - 20000,
+					key_id30.clone(),
+				),
 			],
 			&kc,
 			&pb,
@@ -940,9 +948,13 @@ fn test_overflow_cached_rangeproof() {
 		let mut tx2 = build::transaction(
 			KernelFeatures::Plain { fee: 0.into() },
 			&[
-				build::input(consensus::REWARD - 20000, key_id30.clone()),
+				build::input(
+					consensus::calc_mwc_block_reward(chain.head().unwrap().height) - 20000,
+					key_id30.clone(),
+				),
 				build::output(
-					consensus::REWARD - 20000 + 1_000_000_000_000_000,
+					consensus::calc_mwc_block_reward(chain.head().unwrap().height) - 20000
+						+ 1_000_000_000_000_000,
 					key_id31.clone(),
 				),
 				build_output_negative(1_000_000_000_000_000, key_id32.clone()),
@@ -967,10 +979,10 @@ fn test_overflow_cached_rangeproof() {
 		let res = chain.process_block(next, chain::Options::SKIP_POW);
 
 		assert_eq!(
-			res.unwrap_err().kind(),
-			chain::ErrorKind::InvalidBlockProof(block::Error::Transaction(
-				transaction::Error::Secp(util::secp::Error::InvalidRangeProof)
-			))
+			res.unwrap_err(),
+			chain::Error::InvalidBlockProof(block::Error::Transaction(transaction::Error::Secp(
+				util::secp::Error::InvalidRangeProof
+			)))
 		);
 	}
 	clean_output_dir(".grin_overflow");

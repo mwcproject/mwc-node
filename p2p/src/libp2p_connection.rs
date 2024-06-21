@@ -38,7 +38,7 @@ use libp2p::gossipsub::{
 };
 use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
-use crate::core::global;
+use crate::grin_core::global;
 use crate::types::Error;
 use crate::PeerAddr;
 use async_std::task;

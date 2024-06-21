@@ -98,10 +98,10 @@ where
 		let header = tx_pool
 			.blockchain
 			.chain_head()
-			.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
+			.map_err(|e| Error::Internal(format!("Failed to get chain head, {}", e)))?;
 		tx_pool
 			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
-			.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
+			.map_err(|e| Error::Internal(format!("Failed to update pool, {}", e)))?;
 
 		info!("transaction {} was added to the pool", tx_hash);
 
@@ -138,7 +138,7 @@ where
 
 	let wrapper: TxWrapper = parse_body(req).await?;
 	let tx_bin = util::from_hex(&wrapper.tx_hex).map_err(|e| {
-		ErrorKind::RequestError(format!(
+		Error::RequestError(format!(
 			"Unable to decode transaction hex {}, {}",
 			wrapper.tx_hex, e
 		))
@@ -149,7 +149,7 @@ where
 	let tx: Transaction =
 		ser::deserialize(&mut &tx_bin[..], version, DeserializationMode::default()).map_err(
 			|e| {
-				ErrorKind::RequestError(format!(
+				Error::RequestError(format!(
 					"Unable to deserialize transaction from binary {:?}, {}",
 					tx_bin, e
 				))
@@ -170,10 +170,10 @@ where
 	let header = tx_pool
 		.blockchain
 		.chain_head()
-		.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("Failed to get chain head, {}", e)))?;
 	tx_pool
 		.add_to_pool(source, tx, !fluff, &header)
-		.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("Failed to update pool, {}", e)))?;
 	Ok(())
 }
 
