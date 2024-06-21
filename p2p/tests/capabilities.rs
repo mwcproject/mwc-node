@@ -43,6 +43,7 @@ fn default_capabilities() {
 	assert!(x.contains(Capabilities::TX_KERNEL_HASH));
 	assert!(x.contains(Capabilities::TOR_ADDRESS));
 	assert!(x.contains(Capabilities::PIBD_HIST));
+	assert!(x.contains(Capabilities::PIBD_HIST_1));
 
 	assert_eq!(
 		x,
@@ -52,5 +53,6 @@ fn default_capabilities() {
 			| Capabilities::TX_KERNEL_HASH
 			| Capabilities::TOR_ADDRESS
 			| Capabilities::PIBD_HIST
+			| Capabilities::PIBD_HIST_1
 	);
 }
