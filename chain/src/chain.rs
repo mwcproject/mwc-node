@@ -306,6 +306,7 @@ impl Chain {
 	/// restart the output PMMRs from scratch
 	pub fn reset_chain_head_to_genesis(&self) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
+		let mut sync_pmmr = self.sync_pmmr.write();
 		let mut txhashset = self.txhashset.write();
 		let batch = self.store.batch()?;
 
@@ -321,6 +322,7 @@ impl Chain {
 			&self.genesis,
 			&self.store,
 			&mut header_pmmr,
+			&mut sync_pmmr,
 			&mut txhashset,
 			true,
 		)?;
