@@ -40,6 +40,7 @@ pub struct StateSync {
 	last_logged_time: i64,
 	last_download_size: u64,
 
+	pibd_aborted: bool,
 	earliest_zero_pibd_peer_time: Option<DateTime<Utc>>,
 }
 
@@ -57,6 +58,7 @@ impl StateSync {
 			state_sync_peer: None,
 			last_logged_time: 0,
 			last_download_size: 0,
+			pibd_aborted: false,
 			earliest_zero_pibd_peer_time: None,
 		}
 	}
@@ -65,6 +67,12 @@ impl StateSync {
 	/// peers for continuing PIBD
 	pub fn set_earliest_zero_pibd_peer_time(&mut self, t: Option<DateTime<Utc>>) {
 		self.earliest_zero_pibd_peer_time = t;
+	}
+
+	/// Flag to abort PIBD process within StateSync, intentionally separate from `sync_state`,
+	/// which can be reset between calls
+	pub fn set_pibd_aborted(&mut self) {
+		self.pibd_aborted = true;
 	}
 
 	/// Check whether state sync should run and triggers a state download when
@@ -95,7 +103,7 @@ impl StateSync {
 		let using_pibd = !matches!(
 			self.sync_state.status(),
 			SyncStatus::TxHashsetPibd { aborted: true, .. },
-		);
+		) && !self.pibd_aborted;
 
 		// Check whether we've errored and should restart pibd
 		if using_pibd {
@@ -320,6 +328,7 @@ impl StateSync {
 						.update_pibd_progress(true, true, 0, 1, &archive_header);
 					self.sync_state
 						.set_sync_error(chain::Error::AbortingPIBDError);
+					self.set_pibd_aborted();
 					return false;
 				}
 			} else {
