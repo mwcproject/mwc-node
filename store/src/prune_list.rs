@@ -258,7 +258,8 @@ impl PruneList {
 		}
 
 		// Note: We will treat this as a "closed range" below (croaring api weirdness).
-		let cleanup_pos1 = (lc0 + 1)..size;
+		// Note: After croaring upgrade to 1.0.2 we provide an inclusive range directly
+		let cleanup_pos1 = (lc0 + 1)..=size;
 
 		// Find point where we can truncate based on bitmap "rank" (index) of pos to the left of subtree.
 		let idx = self.bitmap.rank(lc0);
