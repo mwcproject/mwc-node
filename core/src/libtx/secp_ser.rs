@@ -23,14 +23,16 @@ use util::{from_hex, ToHex};
 pub mod pubkey_serde {
 	use serde::{Deserialize, Deserializer, Serializer};
 	use util::secp::key::PublicKey;
-	use util::{from_hex, ToHex};
+	use util::{from_hex, static_secp_instance, ToHex};
 
 	///
 	pub fn serialize<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		serializer.serialize_str(&key.serialize_vec(true).to_hex())
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
+		serializer.serialize_str(&key.serialize_vec(&static_secp, true).to_hex())
 	}
 
 	///
@@ -39,6 +41,8 @@ pub mod pubkey_serde {
 		D: Deserializer<'de>,
 	{
 		use serde::de::Error;
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -46,7 +50,7 @@ pub mod pubkey_serde {
 				})
 			})
 			.and_then(|bytes: Vec<u8>| {
-				PublicKey::from_slice(&bytes).map_err(|err| {
+				PublicKey::from_slice(&static_secp, &bytes).map_err(|err| {
 					Error::custom(format!("Unable to build Pub Key from {:?}, {}", bytes, err))
 				})
 			})
@@ -57,15 +61,19 @@ pub mod pubkey_serde {
 pub mod option_sig_serde {
 	use crate::serde::{Deserialize, Deserializer, Serializer};
 	use serde::de::Error;
-	use util::{from_hex, secp, ToHex};
+	use util::{from_hex, secp, static_secp_instance, ToHex};
 
 	///
 	pub fn serialize<S>(sig: &Option<secp::Signature>, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
 		match sig {
-			Some(sig) => serializer.serialize_str(&(&sig.serialize_compact()[..]).to_hex()),
+			Some(sig) => {
+				serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
+			}
 			None => serializer.serialize_none(),
 		}
 	}
@@ -75,6 +83,8 @@ pub mod option_sig_serde {
 	where
 		D: Deserializer<'de>,
 	{
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
@@ -86,7 +96,7 @@ pub mod option_sig_serde {
 					}
 					let mut b = [0u8; 64];
 					b.copy_from_slice(&bytes[0..64]);
-					secp::Signature::from_compact(&b)
+					secp::Signature::from_compact(&static_secp, &b)
 						.map(Some)
 						.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 				}),
@@ -99,7 +109,7 @@ pub mod option_sig_serde {
 pub mod option_seckey_serde {
 	use crate::serde::{Deserialize, Deserializer, Serializer};
 	use serde::de::Error;
-	use util::{from_hex, secp, ToHex};
+	use util::{from_hex, secp, static_secp_instance, ToHex};
 
 	///
 	pub fn serialize<S>(
@@ -120,6 +130,8 @@ pub mod option_seckey_serde {
 	where
 		D: Deserializer<'de>,
 	{
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
@@ -131,7 +143,7 @@ pub mod option_seckey_serde {
 					}
 					let mut b = [0u8; 32];
 					b.copy_from_slice(&bytes[0..32]);
-					secp::key::SecretKey::from_slice(&b)
+					secp::key::SecretKey::from_slice(&static_secp, &b)
 						.map(Some)
 						.map_err(|err| Error::custom(format!("Fail to decode key, {}", err)))
 				}),
@@ -144,14 +156,16 @@ pub mod option_seckey_serde {
 pub mod sig_serde {
 	use crate::serde::{Deserialize, Deserializer, Serializer};
 	use serde::de::Error;
-	use util::{from_hex, secp, ToHex};
+	use util::{from_hex, secp, static_secp_instance, ToHex};
 
 	///
 	pub fn serialize<S>(sig: &secp::Signature, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		serializer.serialize_str(&(&sig.serialize_compact()[..]).to_hex())
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
+		serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
 	}
 
 	///
@@ -159,6 +173,8 @@ pub mod sig_serde {
 	where
 		D: Deserializer<'de>,
 	{
+		let static_secp = static_secp_instance();
+		let static_secp = static_secp.lock();
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -171,7 +187,7 @@ pub mod sig_serde {
 				}
 				let mut b = [0u8; 64];
 				b.copy_from_slice(&bytes[0..64]);
-				secp::Signature::from_compact(&b)
+				secp::Signature::from_compact(&static_secp, &b)
 					.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
 			})
 	}
@@ -401,7 +417,7 @@ mod test {
 		pub fn random() -> SerTest {
 			let static_secp = static_secp_instance();
 			let secp = static_secp.lock();
-			let sk = SecretKey::new(&mut thread_rng());
+			let sk = SecretKey::new(&secp, &mut thread_rng());
 			let mut msg = [0u8; 32];
 			thread_rng().fill(&mut msg);
 			let msg = Message::from_slice(&msg).unwrap();

@@ -27,6 +27,7 @@ use std::io::{Read, Write};
 use std::path::{Path, MAIN_SEPARATOR};
 
 use grin_core::global;
+use grin_util::secp::Secp256k1;
 
 pub const SEC_KEY_FILE_COPY: &str = "secret_key";
 const SEC_KEY_FILE: &str = "hs_ed25519_secret_key";
@@ -144,7 +145,7 @@ pub fn create_sec_key_file(os_directory: &str, sec_key: &DalekSecretKey) -> Resu
 	Ok(())
 }
 
-pub fn read_sec_key_file(os_directory: &str) -> Result<SecretKey, Error> {
+pub fn read_sec_key_file(os_directory: &str, secp: &Secp256k1) -> Result<SecretKey, Error> {
 	let key_file_path = &format!("{}{}{}", os_directory, MAIN_SEPARATOR, SEC_KEY_FILE_COPY);
 	let mut file = File::open(key_file_path)
 		.map_err(|e| Error::IO(format!("Unable to create file {}, {}", key_file_path, e)))?;
@@ -158,7 +159,7 @@ pub fn read_sec_key_file(os_directory: &str) -> Result<SecretKey, Error> {
 		return Err(Error::IO(format!("Not found expected data at file {}", key_file_path)).into());
 	}
 
-	let sk = SecretKey::from_slice(&buf)?;
+	let sk = SecretKey::from_slice(secp, &buf)?;
 	Ok(sk)
 }
 
@@ -344,6 +345,7 @@ pub fn _complete_tor_address(input: &str) -> Result<String, Error> {
 mod tests {
 	use super::*;
 
+	use grin_util::secp::ContextFlag;
 	use rand::rngs::mock::StepRng;
 
 	use crate::util::{self, secp};
@@ -361,8 +363,9 @@ mod tests {
 	fn test_service_config() -> Result<(), Error> {
 		let test_dir = "target/test_output/onion_service";
 		setup(test_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::None);
 		let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
-		let sec_key = secp::key::SecretKey::new(&mut test_rng);
+		let sec_key = secp::key::SecretKey::new(&secp, &mut test_rng);
 		output_onion_service_config(test_dir, &sec_key)?;
 		clean_output_dir(test_dir);
 		Ok(())
@@ -373,8 +376,9 @@ mod tests {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		let test_dir = "./target/test_output/tor";
 		setup(test_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::None);
 		let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
-		let sec_key = secp::key::SecretKey::new(&mut test_rng);
+		let sec_key = secp::key::SecretKey::new(&secp, &mut test_rng);
 		output_tor_listener_config(
 			test_dir,
 			"127.0.0.1:3415",

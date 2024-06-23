@@ -781,7 +781,7 @@ impl TxKernel {
 		let secp = secp.lock();
 		let sig = &self.excess_sig;
 		// Verify aggsig directly in libsecp
-		let pubkey = &self.excess.to_pubkey()?;
+		let pubkey = &self.excess.to_pubkey(&secp)?;
 		if !aggsig::verify_single(
 			&secp,
 			&sig,
@@ -808,7 +808,7 @@ impl TxKernel {
 
 		for tx_kernel in tx_kernels {
 			sigs.push(tx_kernel.excess_sig);
-			pubkeys.push(tx_kernel.excess.to_pubkey()?);
+			pubkeys.push(tx_kernel.excess.to_pubkey(&secp)?);
 			msgs.push(tx_kernel.msg_to_sign()?);
 		}
 
@@ -1732,21 +1732,23 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 
 	// now compute the total kernel offset
 	let total_kernel_offset = {
+		let secp = static_secp_instance();
+		let secp = secp.lock();
 		let positive_key = vec![mk_tx.offset]
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
-			.filter_map(|x| x.secret_key().ok())
+			.filter_map(|x| x.secret_key(&secp).ok())
 			.collect::<Vec<_>>();
 		let negative_keys = kernel_offsets
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
-			.filter_map(|x| x.secret_key().ok())
+			.filter_map(|x| x.secret_key(&secp).ok())
 			.collect::<Vec<_>>();
 
 		if positive_key.is_empty() && negative_keys.is_empty() {
 			BlindingFactor::zero()
 		} else {
-			let sum = secp::Secp256k1::blind_sum(positive_key, negative_keys)?;
+			let sum = secp.blind_sum(positive_key, negative_keys)?;
 			BlindingFactor::from_secret_key(sum)
 		}
 	};
@@ -2490,7 +2492,7 @@ mod test {
 		let skey = keychain
 			.derive_key(0, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
-		let pubkey = excess.to_pubkey().unwrap();
+		let pubkey = excess.to_pubkey(keychain.secp()).unwrap();
 
 		let excess_sig =
 			aggsig::sign_single(&keychain.secp(), &msg, &skey, None, Some(&pubkey)).unwrap();

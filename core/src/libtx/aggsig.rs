@@ -327,7 +327,7 @@ pub fn verify_single_from_commit(
 	msg: &Message,
 	commit: &Commitment,
 ) -> Result<(), Error> {
-	let pubkey = commit.to_pubkey()?;
+	let pubkey = commit.to_pubkey(secp)?;
 	if !verify_single(secp, sig, msg, None, &pubkey, Some(&pubkey), false) {
 		return Err(Error::Signature("Signature validation error".to_string()));
 	}
@@ -467,7 +467,7 @@ pub fn sign_with_blinding(
 	blinding: &BlindingFactor,
 	pubkey_sum: Option<&PublicKey>,
 ) -> Result<Signature, Error> {
-	let skey = &blinding.secret_key()?;
+	let skey = &blinding.secret_key(secp)?;
 	let sig = aggsig::sign_single(secp, &msg, skey, None, None, None, pubkey_sum, None)?;
 	Ok(sig)
 }
@@ -493,9 +493,9 @@ pub fn sign_dual_key(
 	hasher.update(pk1.0.as_ref());
 	hasher.update(pk2.0.as_ref());
 
-	let mut sk = SecretKey::from_slice(hasher.finalize().as_bytes())?;
-	sk.mul_assign(&sk2)?;
-	sk.add_assign(&sk1)?;
+	let mut sk = SecretKey::from_slice(secp, hasher.finalize().as_bytes())?;
+	sk.mul_assign(secp, &sk2)?;
+	sk.add_assign(secp, &sk1)?;
 
 	let pubkey = PublicKey::from_secret_key(&secp, &sk)?;
 	let sig = sign_single(&secp, &msg, &sk, None, Some(&pubkey))?;
@@ -515,11 +515,11 @@ pub fn build_composite_pubkey(
 	let mut hasher = Blake2b::new(32);
 	hasher.update(pk1.0.as_ref());
 	hasher.update(pk2.0.as_ref());
-	let sk = SecretKey::from_slice(hasher.finalize().as_bytes())?;
+	let sk = SecretKey::from_slice(secp, hasher.finalize().as_bytes())?;
 
 	let mut pk = pk2.clone();
-	pk.mul_assign(&secp, &sk)?;
-	let pubkey = PublicKey::from_combination(vec![&pk1, &pk])?;
+	pk.mul_assign(secp, &sk)?;
+	let pubkey = PublicKey::from_combination(secp, vec![&pk1, &pk])?;
 
 	Ok(pubkey)
 }
@@ -550,8 +550,8 @@ mod test {
 		thread_rng().fill(&mut msg_bytes);
 		let msg = Message::from_slice(&msg_bytes).unwrap();
 
-		let sk1 = SecretKey::new(&mut thread_rng());
-		let sk2 = SecretKey::new(&mut thread_rng());
+		let sk1 = SecretKey::new(&secp, &mut thread_rng());
+		let sk2 = SecretKey::new(&secp, &mut thread_rng());
 		let batch_sig = sign_dual_key(&secp, &msg, &sk1, &sk2).unwrap();
 
 		let pk1 = PublicKey::from_secret_key(&secp, &sk1).unwrap();

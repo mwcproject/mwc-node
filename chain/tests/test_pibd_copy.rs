@@ -260,8 +260,8 @@ fn test_pibd_copy_impl(
 	dest_root_dir: &str,
 	dest_template_dir: Option<&str>,
 ) {
-	global::set_local_chain_type(global::ChainTypes::Testnet);
-	let mut genesis = genesis::genesis_test();
+	global::set_local_chain_type(global::ChainTypes::Floonet);
+	let mut genesis = genesis::genesis_floo();
 
 	if is_test_chain {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);

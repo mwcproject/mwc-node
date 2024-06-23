@@ -853,8 +853,7 @@ where
 			let commit = build.keychain.commit(value, &key_id, switch)?;
 
 			// invert commitment
-			let commit = secp::Secp256k1::commit_sum(vec![], vec![commit])?;
-			//build.keychain.secp().commit_sum(vec![], vec![commit])?;
+			let commit = build.keychain.secp().commit_sum(vec![], vec![commit])?;
 
 			eprintln!("Building output: {}, {:?}", value, commit);
 

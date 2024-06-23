@@ -71,11 +71,11 @@ pub trait Committed {
 			let secp = secp.lock();
 			let mut commits = vec![kernel_sum];
 			if *offset != BlindingFactor::zero() {
-				let key = offset.secret_key()?;
+				let key = offset.secret_key(&secp)?;
 				let offset_commit = secp.commit(0, key)?;
 				commits.push(offset_commit);
 			}
-			secp::Secp256k1::commit_sum(commits, vec![])?
+			secp.commit_sum(commits, vec![])?
 		};
 
 		Ok((kernel_sum, kernel_sum_plus_offset))
@@ -145,7 +145,9 @@ pub fn sum_commits(
 	let zero_commit = secp_static::commit_to_zero_value();
 	positive.retain(|x| *x != zero_commit);
 	negative.retain(|x| *x != zero_commit);
-	Ok(secp::Secp256k1::commit_sum(positive, negative)?)
+	let secp = static_secp_instance();
+	let secp = secp.lock();
+	Ok(secp.commit_sum(positive, negative)?)
 }
 
 /// Utility function to take sets of positive and negative kernel offsets as
@@ -155,20 +157,22 @@ pub fn sum_kernel_offsets(
 	positive: Vec<BlindingFactor>,
 	negative: Vec<BlindingFactor>,
 ) -> Result<BlindingFactor, Error> {
-	let positive = to_secrets(positive);
-	let negative = to_secrets(negative);
+	let secp = static_secp_instance();
+	let secp = secp.lock();
+	let positive = to_secrets(positive, &secp);
+	let negative = to_secrets(negative, &secp);
 
 	if positive.is_empty() {
 		Ok(BlindingFactor::zero())
 	} else {
-		let sum = secp::Secp256k1::blind_sum(positive, negative)?;
+		let sum = secp.blind_sum(positive, negative)?;
 		Ok(BlindingFactor::from_secret_key(sum))
 	}
 }
 
-fn to_secrets(bf: Vec<BlindingFactor>) -> Vec<SecretKey> {
+fn to_secrets(bf: Vec<BlindingFactor>, secp: &secp::Secp256k1) -> Vec<SecretKey> {
 	bf.into_iter()
 		.filter(|x| *x != BlindingFactor::zero())
-		.filter_map(|x| x.secret_key().ok())
+		.filter_map(|x| x.secret_key(secp).ok())
 		.collect::<Vec<_>>()
 }

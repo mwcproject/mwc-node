@@ -33,7 +33,7 @@ use std::{
 };
 
 use fs2::FileExt;
-use grin_util::{to_hex, OnionV3Address};
+use grin_util::{static_secp_instance, to_hex, OnionV3Address};
 use walkdir::WalkDir;
 
 use crate::api;
@@ -701,7 +701,10 @@ impl Server {
 		let scoped_vec;
 		let mut existing_onion = None;
 		let secret = if !found {
-			let sec_key = secp::key::SecretKey::new(&mut rand::thread_rng());
+			let secp = static_secp_instance();
+			let secp = secp.lock();
+
+			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
 			scoped_vec = vec![sec_key.clone()];
 			sec_key_vec = Some((scoped_vec).as_slice());
 
@@ -713,12 +716,15 @@ impl Server {
 				.to_string();
 			sec_key
 		} else {
+			let secp = static_secp_instance();
+			let secp = secp.lock();
+
 			existing_onion = Some(onion_address.clone());
 			// Read Secret from the file.
-			let sec = tor_config::read_sec_key_file(&format!(
-				"{}{}{}",
-				onion_service_dir, MAIN_SEPARATOR, onion_address
-			))
+			let sec = tor_config::read_sec_key_file(
+				&format!("{}{}{}", onion_service_dir, MAIN_SEPARATOR, onion_address),
+				&secp,
+			)
 			.map_err(|e| Error::General(format!("Unable to read tor secret, {}", e)))?;
 			sec
 		};

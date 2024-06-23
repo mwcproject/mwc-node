@@ -146,7 +146,9 @@ where
 
 		let private_hash = blake2b(32, &[], &private_root_key.0).as_bytes().to_vec();
 
-		let public_root_key = keychain.public_root_key().serialize_vec(true);
+		let public_root_key = keychain
+			.public_root_key()
+			.serialize_vec(keychain.secp(), true);
 		let rewind_hash = blake2b(32, &[], &public_root_key[..]).as_bytes().to_vec();
 
 		Self {
@@ -163,7 +165,7 @@ where
 			&self.rewind_hash
 		};
 		let res = blake2b(32, &commit.0, hash);
-		SecretKey::from_slice(res.as_bytes()).map_err(|e| {
+		SecretKey::from_slice(self.keychain.secp(), res.as_bytes()).map_err(|e| {
 			Error::RangeProof(format!(
 				"Unable to extract nonce from commit {:?}, {}",
 				commit, e
@@ -280,7 +282,7 @@ where
 
 	fn nonce(&self, commit: &Commitment) -> Result<SecretKey, Error> {
 		let res = blake2b(32, &commit.0, &self.root_hash);
-		SecretKey::from_slice(res.as_bytes()).map_err(|e| {
+		SecretKey::from_slice(self.keychain.secp(), res.as_bytes()).map_err(|e| {
 			Error::RangeProof(format!(
 				"Unable to extract nonce from commit {:?}, {}",
 				commit, e
@@ -365,9 +367,9 @@ where
 }
 
 impl ProofBuild for ViewKey {
-	fn rewind_nonce(&self, _secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
+	fn rewind_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
 		let res = blake2b(32, &commit.0, &self.rewind_hash);
-		SecretKey::from_slice(res.as_bytes()).map_err(|e| {
+		SecretKey::from_slice(secp, res.as_bytes()).map_err(|e| {
 			Error::RangeProof(format!(
 				"Unable to rewind nonce for commit {:?}, {}",
 				commit, e
@@ -430,10 +432,10 @@ impl ProofBuild for ViewKey {
 			if child_number.is_hardened() {
 				return Ok(None);
 			}
-			key = key.ckd_pub(&secp, &mut hasher, child_number)?;
+			key = key.ckd_pub(secp, &mut hasher, child_number)?;
 		}
 		let pub_key = key.commit(secp, amount, switch)?;
-		if commit.to_pubkey()? == pub_key {
+		if commit.to_pubkey(secp)? == pub_key {
 			Ok(Some((id, switch)))
 		} else {
 			Ok(None)

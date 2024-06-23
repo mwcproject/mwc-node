@@ -23,9 +23,11 @@ use self::core::core::{
 };
 use crate::types::{BlockChain, PoolEntry, PoolError};
 use grin_core as core;
+use grin_util as util;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use util::static_secp_instance;
 
 pub struct Pool<B>
 where
@@ -299,7 +301,11 @@ where
 	) -> Result<BlockSums, PoolError> {
 		let overage = tx.overage(header.height);
 
-		let offset = header.total_kernel_offset().add(&tx.offset)?;
+		let offset = {
+			let secp = static_secp_instance();
+			let secp = secp.lock();
+			header.total_kernel_offset().add(&tx.offset, &secp)
+		}?;
 
 		let block_sums = self.blockchain.get_block_sums(&header.hash())?;
 

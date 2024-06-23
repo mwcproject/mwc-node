@@ -194,10 +194,10 @@ fn build_two_half_kernels() {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand();
-	let skey = excess.secret_key().unwrap();
+	let excess = BlindingFactor::rand(keychain.secp());
+	let skey = excess.secret_key(keychain.secp()).unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey().unwrap();
+	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
