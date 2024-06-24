@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -384,21 +384,16 @@ where
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
-		match pool_handler.push_transaction(tx, fluff) {
-			Ok(_) => Ok(()),
-			Err(e) => {
-				warn!(
-					"Unable to push transaction {} into the pool, {}",
-					tx_hash, e
-				);
-				Err(e)
-			}
-		}
+		pool_handler.push_transaction(tx, fluff).map_err(|e| {
+			warn!(
+				"Unable to push transaction {} into the pool, {}",
+				tx_hash, e
+			);
+			e
+		})
 	}
 
-	/// Get TOR address on this node. Return none if TOR is not running.
 	pub fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
-		//get_server_onion_address()
 		let libp2p_peers: Vec<String> = libp2p_connection::get_libp2p_connections()
 			.iter()
 			.map(|peer| peer.to_string())

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -104,8 +104,6 @@ impl Handler for StatusHandler {
 					global::get_server_running_controller().store(false, Ordering::SeqCst);
 				}
 			}
-
-			// stop the server...
 			result_to_response(Ok(StatusOutput::new(&processed)))
 		} else {
 			response(

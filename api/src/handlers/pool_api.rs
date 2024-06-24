@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -170,10 +170,10 @@ where
 	let header = tx_pool
 		.blockchain
 		.chain_head()
-		.map_err(|e| Error::Internal(format!("Failed to get chain head, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("Failed to get chain head: {}", e)))?;
 	tx_pool
 		.add_to_pool(source, tx, !fluff, &header)
-		.map_err(|e| Error::Internal(format!("Failed to update pool, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("Failed to update pool: {}", e)))?;
 	Ok(())
 }
 

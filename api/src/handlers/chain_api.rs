@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ impl ChainHandler {
 	pub fn get_tip(&self) -> Result<Tip, Error> {
 		let head = w(&self.chain)?
 			.head()
-			.map_err(|e| Error::Internal(format!("can't get tip: {}", e)))?;
+			.map_err(|e| Error::Internal(format!("can't get head: {}", e)))?;
 		Ok(Tip::from_tip(head))
 	}
 }
@@ -53,9 +53,12 @@ pub struct ChainValidationHandler {
 
 impl ChainValidationHandler {
 	pub fn validate_chain(&self, fast_validation: bool) -> Result<(), Error> {
-		w(&self.chain)?
-			.validate(fast_validation)
-			.map_err(|e| Error::Internal(format!("chain fast validation error. {}", e)))
+		w(&self.chain)?.validate(fast_validation).map_err(|e| {
+			Error::Internal(format!(
+				"chain fast validation ({}) error: {}",
+				fast_validation, e
+			))
+		})
 	}
 }
 
@@ -434,8 +437,7 @@ impl KernelHandler {
 				"invalid excess {}, get length {}, expected 33",
 				excess_s,
 				excess_v.len()
-			))
-			.into());
+			)));
 		}
 		let excess = Commitment::from_vec(excess_v);
 
@@ -520,12 +522,7 @@ impl KernelHandler {
 				height,
 				mmr_index,
 			});
-		kernel.ok_or_else(|| {
-			Error::from(Error::NotFound(format!(
-				"kernel value for excess {}",
-				excess_s
-			)))
-		})
+		kernel.ok_or_else(|| Error::NotFound(format!("kernel value for excess {}", excess_s)))
 	}
 }
 

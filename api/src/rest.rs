@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -51,7 +51,10 @@ pub enum Error {
 	#[error("API ResponseError error: {0}")]
 	ResponseError(String),
 	#[error("API Router error: {0}")]
-	Router(RouterError),
+	Router {
+		#[from]
+		source: RouterError,
+	},
 	#[error("API P2P error: {0}")]
 	P2pError(String),
 }
@@ -59,12 +62,6 @@ pub enum Error {
 impl From<crate::chain::Error> for Error {
 	fn from(error: crate::chain::Error) -> Error {
 		Error::Internal(error.to_string())
-	}
-}
-
-impl From<RouterError> for Error {
-	fn from(error: RouterError) -> Error {
-		Error::Router(error)
 	}
 }
 
@@ -111,7 +108,7 @@ impl TLSConfig {
 			return Err(Error::Internal(format!(
 				"load_private_key expected a single private key, found {}",
 				keys.len()
-			)))?;
+			)));
 		}
 		Ok(keys[0].clone())
 	}
@@ -174,6 +171,7 @@ impl ApiServer {
 		let m = oneshot::channel::<()>();
 		let tx = std::mem::replace(tx, m.0);
 		self.shutdown_sender = Some(tx);
+
 		thread::Builder::new()
 			.name("apis".to_string())
 			.spawn(move || {
@@ -214,13 +212,17 @@ impl ApiServer {
 				"Can't start HTTPS API server, it's running already".to_string(),
 			));
 		}
+
 		let rx = &mut api_chan.1;
 		let tx = &mut api_chan.0;
 
+		// Jones's trick to update memory
 		let m = oneshot::channel::<()>();
 		let tx = std::mem::replace(tx, m.0);
 		self.shutdown_sender = Some(tx);
 
+		// Building certificates here because we want to handle certificates failures with panic.
+		// It is a fatal error on node start, not a regular error to log
 		let certs = conf.load_certs()?;
 		let keys = conf.load_private_key()?;
 
@@ -228,6 +230,7 @@ impl ApiServer {
 		config
 			.set_single_cert(certs, keys)
 			.expect("invalid key or certificate");
+
 		let acceptor = TlsAcceptor::from(Arc::new(config));
 
 		thread::Builder::new()

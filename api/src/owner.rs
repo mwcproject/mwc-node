@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -98,6 +98,7 @@ impl Owner {
 	}
 
 	/// Trigger a validation of the chain state.
+	///
 	/// # Arguments
 	/// * `assume_valid_rangeproofs_kernels` -  if false, will validate rangeproofs, kernel signatures and sum of kernel excesses. if true, will only validate the sum of kernel excesses should equal the sum of unspent outputs minus total supply.
 	///

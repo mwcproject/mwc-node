@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -782,7 +782,7 @@ pub struct PoolInfo {
 /// libp2p peers are preferable, nodes wit tor addresses can be used to expand the network
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Libp2pPeers {
-	/// Libp2p prres
+	/// Libp2p peers
 	pub libp2p_peers: Vec<String>,
 	/// Other nodes. There is a high chance that they are running libp2p network
 	pub node_peers: Vec<String>,

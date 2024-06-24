@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -224,29 +224,23 @@ impl Handler for PeerHandler {
 
 		match command {
 			"ban" => match w_fut!(&self.peers).ban_peer(addr.clone(), ReasonForBan::ManualBan) {
-				Ok(_) => return response(StatusCode::OK, "{}"),
-				Err(e) => {
-					return response(
-						StatusCode::INTERNAL_SERVER_ERROR,
-						format!("ban for peer {} failed, {:?}", addr, e),
-					)
-				}
+				Ok(_) => response(StatusCode::OK, "{}"),
+				Err(e) => response(
+					StatusCode::INTERNAL_SERVER_ERROR,
+					format!("ban for peer {} failed, {:?}", addr, e),
+				),
 			},
 			"unban" => match w_fut!(&self.peers).unban_peer(addr.clone()) {
-				Ok(_) => return response(StatusCode::OK, "{}"),
-				Err(e) => {
-					return response(
-						StatusCode::INTERNAL_SERVER_ERROR,
-						format!("unban for peer {} failed, {:?}", addr, e),
-					)
-				}
+				Ok(_) => response(StatusCode::OK, "{}"),
+				Err(e) => response(
+					StatusCode::INTERNAL_SERVER_ERROR,
+					format!("unban for peer {} failed, {:?}", addr, e),
+				),
 			},
-			_ => {
-				return response(
-					StatusCode::BAD_REQUEST,
-					format!("invalid command {}", command),
-				)
-			}
-		};
+			_ => response(
+				StatusCode::BAD_REQUEST,
+				format!("invalid command {}", command),
+			),
+		}
 	}
 }

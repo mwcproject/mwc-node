@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ impl HeaderHandler {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
 						height, e
-					)))?
+					)))
 				}
 			}
 		}
@@ -66,7 +66,10 @@ impl HeaderHandler {
 		let oid = match get_output(&self.chain, &commit_id)? {
 			Some((_, o)) => o,
 			None => {
-				return Err(Error::NotFound(format!("Commit id {} not found", commit_id)).into())
+				return Err(Error::NotFound(format!(
+					"Commit id {} not found",
+					commit_id
+				)))
 			}
 		};
 		match w(&self.chain)?.get_header_for_output(oid.commitment()) {
@@ -74,7 +77,7 @@ impl HeaderHandler {
 			Err(e) => Err(Error::NotFound(format!(
 				"Header for output {}, {}",
 				commit_id, e
-			)))?,
+			))),
 		}
 	}
 
@@ -83,7 +86,7 @@ impl HeaderHandler {
 		let header = chain
 			.get_block_header(h)
 			.map_err(|e| Error::NotFound(format!("Block header for hash {}, {}", h, e)))?;
-		return Ok(BlockHeaderPrintable::from_header(&header));
+		Ok(BlockHeaderPrintable::from_header(&header))
 	}
 
 	// Try to get hash from height, hash or output commit
@@ -100,7 +103,7 @@ impl HeaderHandler {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
 						height, e
-					)))?
+					)))
 				}
 			}
 		}
@@ -110,7 +113,7 @@ impl HeaderHandler {
 		if let Some(commit) = commit {
 			let oid = match get_output_v2(&self.chain, &commit, false, false)? {
 				Some((_, o)) => o,
-				None => return Err(Error::NotFound(format!("Output {} not found", commit)).into()),
+				None => return Err(Error::NotFound(format!("Output {} not found", commit))),
 			};
 			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
 				Ok(header) => return Ok(header.hash()),
@@ -118,14 +121,14 @@ impl HeaderHandler {
 					return Err(Error::NotFound(format!(
 						"Header for output {:?}, {}",
 						oid, e
-					)))?
+					)))
 				}
 			}
 		}
-		return Err(Error::Argument(format!(
+		Err(Error::Argument(format!(
 			"not a valid hash {:?}, height {:?} or output commit {:?}",
 			hash, height, commit
-		)))?;
+		)))
 	}
 }
 
@@ -162,7 +165,7 @@ impl BlockHandler {
 			.get_block(h)
 			.map_err(|e| Error::NotFound(format!("Block for hash {}, {}", h, e)))?;
 		BlockPrintable::from_block(&block, &chain, include_proof, include_merkle_proof).map_err(
-			|e| Error::Internal(format!("chain error, broken block for hash {}. {}", h, e)).into(),
+			|e| Error::Internal(format!("chain error, broken block for hash {}. {}", h, e)),
 		)
 	}
 
@@ -249,7 +252,6 @@ impl BlockHandler {
 				"chain error, broken compact block for hash {}, {}",
 				h, e
 			))
-			.into()
 		})
 	}
 
@@ -262,7 +264,7 @@ impl BlockHandler {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
 						height, e
-					)))?
+					)))
 				}
 			}
 		}
@@ -286,7 +288,7 @@ impl BlockHandler {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
 						height, e
-					)))?
+					)))
 				}
 			}
 		}
@@ -304,14 +306,14 @@ impl BlockHandler {
 					return Err(Error::NotFound(format!(
 						"Header for output {:?}, {}",
 						oid, e
-					)))?
+					)))
 				}
 			}
 		}
-		return Err(Error::Argument(format!(
+		Err(Error::Argument(format!(
 			"not a valid hash {:?}, height {:?} or output commit {:?}",
 			hash, height, commit
-		)))?;
+		)))
 	}
 }
 
@@ -323,7 +325,7 @@ fn check_block_param(input: &str) -> Result<(), Error> {
 		return Err(Error::Argument(format!(
 			"Not a valid hash or height value {}",
 			input
-		)))?;
+		)));
 	}
 	Ok(())
 }
@@ -335,7 +337,7 @@ impl Handler for BlockHandler {
 			Err(e) => {
 				return response(
 					StatusCode::BAD_REQUEST,
-					format!("failed to parse request: {}", e),
+					format!("failed to parse input: {}", e),
 				);
 			}
 			Ok(h) => h,

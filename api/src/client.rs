@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -196,7 +196,6 @@ fn build_request_ex(
 		.map_err::<Error, _>(|e| Error::Argument(format!("Invalid url {}, {}", url, e)))?;
 
 	let mut builder = Request::builder();
-
 	if basic_auth_key.is_some() && api_secret.is_some() {
 		let basic_auth = format!(
 			"Basic {}",
@@ -272,12 +271,12 @@ where
 
 async fn send_request_async(req: Request<Body>, timeout: TimeOut) -> Result<String, Error> {
 	let https = hyper_rustls::HttpsConnector::new();
-	let mut connector = TimeoutConnector::new(https);
 	let (connect, read, write) = (
 		Some(timeout.connect),
 		Some(timeout.read),
 		Some(timeout.write),
 	);
+	let mut connector = TimeoutConnector::new(https);
 	connector.set_connect_timeout(connect);
 	connector.set_read_timeout(read);
 	connector.set_write_timeout(write);
@@ -310,6 +309,6 @@ pub fn send_request(req: Request<Body>, timeout: TimeOut) -> Result<String, Erro
 		.basic_scheduler()
 		.enable_all()
 		.build()
-		.map_err(|e| Error::Internal(format!("can't create Tokio runtime, {}", e)))?;
+		.map_err(|e| Error::RequestError(format!("can't create Tokio runtime, {}", e)))?;
 	rt.block_on(send_request_async(req, timeout))
 }

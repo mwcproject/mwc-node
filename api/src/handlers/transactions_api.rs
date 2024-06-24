@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ impl TxHashSetHandler {
 	fn get_roots(&self) -> Result<TxHashSet, Error> {
 		let chain = w(&self.chain)?;
 		TxHashSet::from_head(&chain)
-			.map_err(|e| Error::Internal(format!("failed to read roots from txhashset, {}", e)))
+			.map_err(|e| Error::Internal(format!("failed to read roots from txhashset: {}", e)))
 	}
 
 	// gets last n outputs inserted in to the tree
@@ -97,7 +97,7 @@ impl TxHashSetHandler {
 				.iter()
 				.map(|x| OutputPrintable::from_output(x, &chain, None, true, true))
 				.collect::<Result<Vec<_>, _>>()
-				.map_err(|e| Error::Internal(format!("chain error, {}", e)))?,
+				.map_err(|e| Error::Internal(format!("chain error: {}", e)))?,
 		};
 		Ok(out)
 	}
@@ -129,7 +129,7 @@ impl TxHashSetHandler {
 	// (to avoid having to create a new type to pass around)
 	fn get_merkle_proof_for_output(&self, id: &str) -> Result<OutputPrintable, Error> {
 		let c = util::from_hex(id)
-			.map_err(|e| Error::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
+			.map_err(|e| Error::Argument(format!("Not a valid commitment: {}, {}", id, e)))?;
 		let commit = Commitment::from_vec(c);
 		let chain = w(&self.chain)?;
 		let output_pos = chain.get_output_pos(&commit).map_err(|e| {

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -88,8 +88,7 @@ where
 	B: BlockChain + 'static,
 	P: PoolAdapter + 'static,
 {
-	// Manually build router when getting rid of v1
-	//let mut router = Router::new();
+	// Adding legacy owner v1 API
 	let mut router = build_router(
 		chain.clone(),
 		tx_pool.clone(),
@@ -113,7 +112,6 @@ where
 			"Basic {}",
 			to_base64(&format!("{}:{}", basic_auth_key, api_secret))
 		);
-
 		let basic_auth_middleware = Arc::new(BasicAuthMiddleware::new(
 			api_basic_auth,
 			&MWC_BASIC_REALM,
@@ -122,12 +120,12 @@ where
 		router.add_middleware(basic_auth_middleware);
 	}
 
-	let api_handler_v2 = OwnerAPIHandlerV2::new(
+	let api_handler = OwnerAPIHandlerV2::new(
 		Arc::downgrade(&chain),
 		Arc::downgrade(&peers),
 		Arc::downgrade(&sync_state),
 	);
-	router.add_route("/v2/owner", Arc::new(api_handler_v2))?;
+	router.add_route("/v2/owner", Arc::new(api_handler))?;
 
 	let stratum_handler_v2 = StratumAPIHandlerV2::new(stratum_ip_pool);
 	router.add_route("/v2/stratum", Arc::new(stratum_handler_v2))?;
@@ -138,7 +136,6 @@ where
 			"Basic {}",
 			to_base64(&format!("{}:{}", basic_auth_key, api_secret))
 		);
-
 		let basic_auth_middleware = Arc::new(BasicAuthURIMiddleware::new(
 			api_basic_auth,
 			&MWC_FOREIGN_BASIC_REALM,
@@ -147,13 +144,13 @@ where
 		router.add_middleware(basic_auth_middleware);
 	}
 
-	let api_handler_v2 = ForeignAPIHandlerV2::new(
+	let api_handler = ForeignAPIHandlerV2::new(
 		Arc::downgrade(&peers),
 		Arc::downgrade(&chain),
 		Arc::downgrade(&tx_pool),
 		Arc::downgrade(&sync_state),
 	);
-	router.add_route("/v2/foreign", Arc::new(api_handler_v2))?;
+	router.add_route("/v2/foreign", Arc::new(api_handler))?;
 
 	let mut apis = ApiServer::new();
 	warn!("Starting HTTP Node APIs server at {}.", addr);
@@ -180,7 +177,10 @@ where
 		Ok(_) => Ok(()),
 		Err(e) => {
 			error!("HTTP API server failed to start. Err: {}", e);
-			Err(Error::Internal(format!("HTTP API server failed to start, {}", e)).into())
+			Err(Error::Internal(format!(
+				"HTTP API server failed to start, {}",
+				e
+			)))
 		}
 	}
 }
