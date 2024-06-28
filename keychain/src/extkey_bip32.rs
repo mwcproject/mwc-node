@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -131,7 +131,7 @@ impl BIP32Hasher for BIP32GrinHasher {
 	}
 	fn result_sha512(&mut self) -> [u8; 64] {
 		let mut result = [0; 64];
-		result.copy_from_slice(self.hmac_sha512.clone().finalize().into_bytes().as_slice());
+		result.copy_from_slice(&self.hmac_sha512.to_owned().finalize().into_bytes());
 		result
 	}
 	fn sha_256(&self, input: &[u8]) -> [u8; 32] {
@@ -652,7 +652,7 @@ mod tests {
 
 	use digest::generic_array::GenericArray;
 	use digest::Digest;
-	use hmac::{Hmac, Mac, NewMac};
+	use hmac::{Hmac, Mac};
 	use ripemd160::Ripemd160;
 	use sha2::{Sha256, Sha512};
 
@@ -691,7 +691,7 @@ mod tests {
 		}
 		fn result_sha512(&mut self) -> [u8; 64] {
 			let mut result = [0; 64];
-			result.copy_from_slice(self.hmac_sha512.clone().finalize().into_bytes().as_slice());
+			result.copy_from_slice(&self.hmac_sha512.to_owned().finalize().into_bytes());
 			result
 		}
 		fn sha_256(&self, input: &[u8]) -> [u8; 32] {

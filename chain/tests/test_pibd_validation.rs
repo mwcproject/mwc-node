@@ -227,7 +227,7 @@ fn test_pibd_chain_validation_sample() {
 }
 
 #[test]
-//#[ignore]
+#[ignore]
 // As above, but run on a real instance of a chain pointed where you like
 fn test_pibd_chain_validation_real() {
 	util::init_test_logger();

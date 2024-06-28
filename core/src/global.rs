@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ use util::OneTime;
 /// We negotiate compatible versions with each peer via Hand/Shake.
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
-/// NOTE, grin bump the protocol version to 1000, but in any case fo far 1,2,3 are supported.
+/// NOTE, grin bump the protocol version to 1000, but in any case so far 1,2,3 are supported.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
 
 /// Automated testing edge_bits
@@ -169,7 +169,7 @@ lazy_static! {
 	/// to be overridden on a per-thread basis (for testing).
 	pub static ref GLOBAL_CHAIN_TYPE: OneTime<ChainTypes> = OneTime::new();
 
-	  /// Global acccept fee base that must be initialized once on node startup.
+	/// Global acccept fee base that must be initialized once on node startup.
 	/// This is accessed via get_acccept_fee_base() which allows the global value
 	/// to be overridden on a per-thread basis (for testing).
 	pub static ref GLOBAL_ACCEPT_FEE_BASE: OneTime<u64> = OneTime::new();
@@ -210,13 +210,12 @@ pub fn set_local_chain_type(new_type: ChainTypes) {
 pub fn get_chain_type() -> ChainTypes {
 	CHAIN_TYPE.with(|chain_type| match chain_type.get() {
 		None => {
-			if GLOBAL_CHAIN_TYPE.is_init() {
-				let chain_type = GLOBAL_CHAIN_TYPE.borrow();
-				set_local_chain_type(chain_type);
-				chain_type
-			} else {
+			if !GLOBAL_CHAIN_TYPE.is_init() {
 				panic!("GLOBAL_CHAIN_TYPE and CHAIN_TYPE unset. Consider set_local_chain_type() in tests.");
 			}
+			let chain_type = GLOBAL_CHAIN_TYPE.borrow();
+			set_local_chain_type(chain_type);
+			chain_type
 		}
 		Some(chain_type) => chain_type,
 	})

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,11 +43,11 @@ fn bench_peak_map() {
 	let increments = vec![1_000_000u64, 10_000_000u64, 100_000_000u64];
 
 	for v in increments {
-		let start = Utc::now().timestamp_nanos();
+		let start = Utc::now().timestamp_nanos_opt().unwrap();
 		for i in 0..v {
 			let _ = pmmr::peak_map_height(i);
 		}
-		let fin = Utc::now().timestamp_nanos();
+		let fin = Utc::now().timestamp_nanos_opt().unwrap();
 		let dur_ms = (fin - start) as f64 * nano_to_millis;
 		println!("{:9?} peak_map_height() in {:9.3?}ms", v, dur_ms);
 	}

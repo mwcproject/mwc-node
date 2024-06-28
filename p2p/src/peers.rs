@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -570,7 +570,7 @@ impl ChainAdapter for Peers {
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadBlockHeader)
-				.map_err(|e| chain::Error::Other(format!("ban peer error {}", e)))?;
+				.map_err(|e| chain::Error::Other(format!("ban peer error: {}", e)))?;
 			Ok(false)
 		} else {
 			Ok(true)

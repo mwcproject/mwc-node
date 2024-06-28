@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -140,7 +140,9 @@ impl Server {
 						continue;
 					}
 					match self.handle_new_peer(stream, header_cache_size) {
-						Err(Error::ConnectionClose) => debug!("shutting down, ignoring a new peer"),
+						Err(Error::ConnectionClose(err)) => {
+							debug!("shutting down, ignoring a new peer, {}", err)
+						}
 						Err(e) => {
 							debug!("Error accepting peer {}: {:?}", peer_addr.to_string(), e);
 							let _ = self.peers.add_banned(peer_addr, ReasonForBan::BadHandshake);
@@ -167,12 +169,14 @@ impl Server {
 	/// we're already connected to the provided address.
 	pub fn connect(&self, addr: PeerAddr, header_cache_size: u64) -> Result<Arc<Peer>, Error> {
 		if self.stop_state.is_stopped() {
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from("node is stopping")));
 		}
 
 		if Peer::is_denied(&self.config, addr.clone()) {
 			debug!("connect_peer: peer {:?} denied, not connecting.", addr);
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from(
+				"Peer is denied because it is in config black list",
+			)));
 		}
 
 		if global::is_production_mode() {
@@ -186,9 +190,9 @@ impl Server {
 
 		// check if the onion address is self
 		if global::is_production_mode() && self.self_onion_address.is_some() {
-			match addr.clone() {
+			match &addr {
 				Onion(address) => {
-					if self.self_onion_address.as_ref().unwrap() == &address {
+					if self.self_onion_address.as_ref().unwrap() == address {
 						debug!("error trying to connect with self: {}", address);
 						return Err(Error::PeerWithSelf);
 					}
@@ -258,7 +262,10 @@ impl Server {
 					}
 				} else {
 					// can't connect to this because we don't have a socks proxy.
-					return Err(Error::ConnectionClose);
+					return Err(Error::ConnectionClose(format!(
+						"Failed connect to Tor address {} because Tor socks is not configured",
+						onion_address
+					)));
 				}
 			}
 		};
@@ -297,7 +304,7 @@ impl Server {
 
 	fn handle_new_peer(&self, stream: TcpStream, header_cache_size: u64) -> Result<(), Error> {
 		if self.stop_state.is_stopped() {
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from("Server is stopping")));
 		}
 		let total_diff = self.peers.total_difficulty()?;
 

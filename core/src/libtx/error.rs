@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,14 +21,26 @@ use util::secp;
 /// Libwallet error types
 pub enum Error {
 	/// SECP error
-	#[error("LibTx Secp Error, {0}")]
-	Secp(secp::Error),
+	#[error("LibTx Secp Error, {source:?}")]
+	Secp {
+		/// SECP error
+		#[from]
+		source: secp::Error,
+	},
 	/// Keychain error
-	#[error("LibTx Keychain Error, {0}")]
-	Keychain(keychain::Error),
+	#[error("LibTx Keychain Error, {source:?}")]
+	Keychain {
+		/// Keychain error
+		#[from]
+		source: keychain::Error,
+	},
 	/// Transaction error
-	#[error("LibTx Transaction Error, {0}")]
-	Transaction(transaction::Error),
+	#[error("LibTx Transaction Error, {source:?}")]
+	Transaction {
+		/// Transaction error
+		#[from]
+		source: transaction::Error,
+	},
 	/// Signature error
 	#[error("LibTx Signature Error, {0}")]
 	Signature(String),
@@ -38,22 +50,4 @@ pub enum Error {
 	/// Other error
 	#[error("LibTx Other Error, {0}")]
 	Other(String),
-}
-
-impl From<secp::Error> for Error {
-	fn from(error: secp::Error) -> Error {
-		Error::Secp(error)
-	}
-}
-
-impl From<keychain::Error> for Error {
-	fn from(error: keychain::Error) -> Error {
-		Error::Keychain(error)
-	}
-}
-
-impl From<transaction::Error> for Error {
-	fn from(error: transaction::Error) -> Error {
-		Error::Transaction(error)
-	}
 }

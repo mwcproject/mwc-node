@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -226,7 +226,7 @@ impl GlobalConfig {
 	fn read_config(mut self) -> Result<GlobalConfig, ConfigError> {
 		let config_file_path = self.config_file_path.as_ref().unwrap();
 		let contents = fs::read_to_string(config_file_path)?;
-		let migrated = GlobalConfig::migrate_config_file_version_none_to_2(contents.clone());
+		let migrated = GlobalConfig::migrate_config_file_version_none_to_1(contents.clone());
 		if contents != migrated {
 			fs::write(config_file_path, &migrated)?;
 		}
@@ -313,7 +313,7 @@ impl GlobalConfig {
 
 	/// It is placeholder for the future migration. Please check how it is done at grin
 	///  MWC doesn't have anything to migrate yet
-	fn migrate_config_file_version_none_to_2(config_str: String) -> String {
+	fn migrate_config_file_version_none_to_1(config_str: String) -> String {
 		// Parse existing config and return unchanged if not eligible for migration
 
 		// Nothing to migrate in MWC. Keeping commented code as example

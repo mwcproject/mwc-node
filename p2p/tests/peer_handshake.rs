@@ -58,7 +58,7 @@ fn peer_handshake() {
 	};
 	let net_adapter = Arc::new(p2p::DummyAdapter {});
 	let server_inner = p2p::Server::new(
-		".grin",
+		".mwc",
 		p2p::Capabilities::UNKNOWN,
 		p2p_config.clone(),
 		net_adapter.clone(),

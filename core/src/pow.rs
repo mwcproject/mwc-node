@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ pub use crate::pow::cuckaroom::{new_cuckaroom_ctx, CuckaroomContext};
 pub use crate::pow::cuckarooz::{new_cuckarooz_ctx, CuckaroozContext};
 pub use crate::pow::cuckatoo::{new_cuckatoo_ctx, CuckatooContext};
 pub use crate::pow::error::Error;
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+use chrono::prelude::DateTime;
 
 const MAX_SOLS: u32 = 10;
 
@@ -125,10 +125,7 @@ pub fn pow_size(
 		// and if we're back where we started, update the time (changes the hash as
 		// well)
 		if bh.pow.nonce == start_nonce {
-			bh.timestamp = DateTime::from_naive_utc_and_offset(
-				NaiveDateTime::from_timestamp_opt(0, 0).unwrap(),
-				Utc,
-			);
+			bh.timestamp = DateTime::from_timestamp(0, 0).unwrap().to_utc();
 		}
 	}
 }

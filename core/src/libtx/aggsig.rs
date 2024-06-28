@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -75,7 +75,7 @@ pub fn create_secnonce(secp: &Secp256k1) -> Result<SecretKey, Error> {
 ///
 /// let secp = Secp256k1::with_caps(ContextFlag::SignOnly);
 /// let secret_nonce = aggsig::create_secnonce(&secp).unwrap();
-/// let secret_key = SecretKey::new(&mut thread_rng());
+/// let secret_key = SecretKey::new(&secp, &mut thread_rng());
 /// let pub_nonce_sum = PublicKey::from_secret_key(&secp, &secret_nonce).unwrap();
 /// // ... Add all other participating nonces
 /// let pub_key_sum = PublicKey::from_secret_key(&secp, &secret_key).unwrap();
@@ -145,7 +145,7 @@ pub fn calculate_partial_sig(
 ///
 /// let secp = Secp256k1::with_caps(ContextFlag::Full);
 /// let secret_nonce = aggsig::create_secnonce(&secp).unwrap();
-/// let secret_key = SecretKey::new(&mut thread_rng());
+/// let secret_key = SecretKey::new(&secp, &mut thread_rng());
 /// let pub_nonce_sum = PublicKey::from_secret_key(&secp, &secret_nonce).unwrap();
 /// // ... Add all other participating nonces
 /// let pub_key_sum = PublicKey::from_secret_key(&secp, &secret_key).unwrap();
@@ -245,8 +245,8 @@ pub fn verify_partial_sig(
 /// let out_commit = output.commitment();
 /// let features = KernelFeatures::HeightLocked{fee: 1.into(), lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
-/// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
-/// let pubkey = excess.to_pubkey().unwrap();
+/// let excess = secp.commit_sum(vec![out_commit], vec![over_commit]).unwrap();
+/// let pubkey = excess.to_pubkey(&secp).unwrap();
 /// let sig = aggsig::sign_from_key_id(&secp, &keychain, &msg, value, &key_id, None, Some(&pubkey)).unwrap();
 /// ```
 
@@ -311,8 +311,8 @@ where
 /// let out_commit = output.commitment();
 /// let features = KernelFeatures::HeightLocked{fee: 1.into(), lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
-/// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
-/// let pubkey = excess.to_pubkey().unwrap();
+/// let excess = secp.commit_sum(vec![out_commit], vec![over_commit]).unwrap();
+/// let pubkey = excess.to_pubkey(&secp).unwrap();
 /// let sig = aggsig::sign_from_key_id(&secp, &keychain, &msg, value, &key_id, None, Some(&pubkey)).unwrap();
 ///
 /// // Verify the signature from the excess commit
@@ -362,7 +362,7 @@ pub fn verify_single_from_commit(
 ///
 /// let secp = Secp256k1::with_caps(ContextFlag::Full);
 /// let secret_nonce = aggsig::create_secnonce(&secp).unwrap();
-/// let secret_key = SecretKey::new(&mut thread_rng());
+/// let secret_key = SecretKey::new(&secp, &mut thread_rng());
 /// let pub_nonce_sum = PublicKey::from_secret_key(&secp, &secret_nonce).unwrap();
 /// // ... Add all other participating nonces
 /// let pub_key_sum = PublicKey::from_secret_key(&secp, &secret_key).unwrap();

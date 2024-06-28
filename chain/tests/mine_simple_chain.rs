@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,6 @@ use grin_chain::{BlockStatus, ChainAdapter, Options};
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;
-use grin_util::secp;
 use std::sync::Arc;
 
 mod chain_test_helper;
@@ -786,7 +785,7 @@ fn output_header_mappings() {
 				&pk,
 				0,
 				false,
-				n,
+				prev.height + 1,
 			)
 			.unwrap();
 			reward_outputs.push(reward.0.clone());
@@ -816,7 +815,7 @@ fn output_header_mappings() {
 			chain.process_block(b, chain::Options::MINE).unwrap();
 
 			let header_for_output = chain
-				.get_header_for_output(reward_outputs[n as usize - 1].commitment())
+				.get_header_for_output(reward_outputs[n - 1].commitment())
 				.unwrap();
 			assert_eq!(header_for_output.height, n as u64);
 
@@ -979,7 +978,7 @@ fn test_overflow_cached_rangeproof() {
 
 		assert_eq!(
 			res.unwrap_err(),
-			chain::Error::InvalidBlockProof(block::Error::Transaction(transaction::Error::Secp(
+			chain::Error::Block(block::Error::Transaction(transaction::Error::Secp(
 				util::secp::Error::InvalidRangeProof
 			)))
 		);

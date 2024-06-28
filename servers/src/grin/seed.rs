@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 
 use crate::core::pow::Difficulty;
 use chrono::prelude::{DateTime, Utc};
-use chrono::{Duration, MIN_DATE};
+use chrono::Duration;
 use grin_p2p::PeerAddr::Onion;
 use grin_p2p::{msg::PeerAddrs, P2PConfig};
 use rand::prelude::*;
@@ -66,9 +66,11 @@ pub fn connect_and_monitor(
 
 			let mut prev = DateTime::<Utc>::MIN_UTC;
 			let mut prev_expire_check = DateTime::<Utc>::MIN_UTC;
+
 			let mut prev_ping = Utc::now();
 			let mut start_attempt = 0;
 			let mut connecting_history: HashMap<PeerAddr, DateTime<Utc>> = HashMap::new();
+
 			loop {
 				if stop_state.is_stopped() {
 					break;
@@ -119,8 +121,6 @@ pub fn connect_and_monitor(
 						header_cache_size,
 						connect_all,
 					);
-					prev = Utc::now();
-					start_attempt = cmp::min(6, start_attempt + 1);
 
 					if peer_count != 0 && connected_peers != 0 {
 						connect_all = false;
@@ -137,6 +137,9 @@ pub fn connect_and_monitor(
 
 					// monitor additional peers if we need to add more
 					monitor_peers(peers.clone(), p2p_server.config.clone(), tx.clone());
+
+					prev = Utc::now();
+					start_attempt = cmp::min(6, start_attempt + 1);
 				}
 
 				if peer_count == 0 {
@@ -360,6 +363,7 @@ fn listen_for_addrs(
 	if peers.enough_outbound_peers() {
 		return;
 	}
+
 	// Note: We drained the rx queue earlier to keep it under control.
 	// Even if there are many addresses to try we will only try a bounded number of them for safety.
 	let connect_min_interval = 30;
@@ -379,7 +383,6 @@ fn listen_for_addrs(
 				*history = now;
 			}
 		}
-
 		connecting_history.insert(addr.clone(), now);
 
 		let peers_c = peers.clone();

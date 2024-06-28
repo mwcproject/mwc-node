@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@ use crate::util::RwLock;
 pub const ALLOC_CHUNK_SIZE_DEFAULT: usize = 134_217_728; //128 MB
 /// And for test mode, to avoid too much disk allocation on windows
 pub const ALLOC_CHUNK_SIZE_DEFAULT_TEST: usize = 1_048_576; //1 MB
-const RESIZE_PERCENT: f32 = 0.5;
+const RESIZE_PERCENT: f32 = 0.9;
 /// Want to ensure that each resize gives us at least this %
 /// of total space free
-const RESIZE_MIN_TARGET_PERCENT: f32 = 0.25;
+const RESIZE_MIN_TARGET_PERCENT: f32 = 0.65;
 
 /// Main error type for this lmdb
 #[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
@@ -45,7 +45,7 @@ pub enum Error {
 	LmdbErr(lmdb::error::Error),
 	/// Wraps a serialization error for Writeable or Readable
 	#[error("LMDB Serialization Error, {0}")]
-	SerErr(String),
+	SerErr(ser::Error),
 	/// File handling error
 	#[error("File handling Error: {0}")]
 	FileErr(String),
@@ -62,7 +62,7 @@ impl From<lmdb::error::Error> for Error {
 
 impl From<ser::Error> for Error {
 	fn from(e: ser::Error) -> Error {
-		Error::SerErr(e.to_string())
+		Error::SerErr(e)
 	}
 }
 
@@ -309,15 +309,12 @@ impl Store {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let db = self.db.read();
-		let cloned_db = db.as_ref();
-		let cloned_db = if cloned_db.is_some() {
-			cloned_db.unwrap().clone()
-		} else {
-			return Err(Error::NotFoundErr("error cloning db".to_string()));
-		};
+		let lock = self.db.read();
+		let db = lock
+			.as_ref()
+			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
 		let tx = Arc::new(lmdb::ReadTransaction::new(self.env.clone())?);
-		let cursor = Arc::new(tx.cursor(cloned_db)?);
+		let cursor = Arc::new(tx.cursor(db.clone())?);
 		Ok(PrefixIterator::new(tx, cursor, prefix, deserialize))
 	}
 

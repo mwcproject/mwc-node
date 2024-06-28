@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -237,8 +237,8 @@ pub enum PoolError {
 	#[error("Tx Pool Duplicate commitment")]
 	DuplicateCommitment,
 	/// Attempt to add a duplicate kernel or output duplicate to spent to the pool.
-	#[error("Tx Pool Duplicate kernel or duplicate output to spent")]
-	DuplicateKernelOrDuplicateSpent,
+	#[error("Tx Pool Duplicate kernel or duplicate output to spent, {0}")]
+	DuplicateKernelOrDuplicateSpent(String),
 	/// Attempt to add a duplicate tx to the pool.
 	#[error("Tx Pool Duplicate tx")]
 	DuplicateTx,

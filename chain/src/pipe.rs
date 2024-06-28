@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -57,7 +57,7 @@ pub fn init_invalid_lock_hashes(hashed: &Option<Vec<String>>) -> Result<(), Erro
 		let mut hashes = INVALID_BLOCK_HASHES.write();
 		for h in hs {
 			hashes.insert(Hash::from_hex(h).map_err(|e| {
-				Error::Other(format!("Unable to harse hash hex string {}, {}", h, e))
+				Error::Other(format!("Unable to parse hash hex string {}, {}", h, e))
 			})?);
 		}
 	}
@@ -284,7 +284,7 @@ pub fn replay_attack_check(
 	Ok(())
 }
 
-/// Sync a chunk of block headers.
+/// Process a batch of sequential block headers.
 /// This is only used during header sync.
 /// Will update header_head locally if this batch of headers increases total work.
 /// Returns the updated sync_head, which may be on a fork.
@@ -313,6 +313,7 @@ pub fn process_block_headers(
 	// Now apply this entire chunk of headers to the header MMR.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
 		rewind_and_apply_header_fork(&last_header, ext, batch, ctx_specific_validation)?;
+
 		// If previous sync_head is not on the "current" chain then
 		// these headers are on an alternative fork to sync_head.
 		let alt_fork = !ext.is_on_current_chain(sync_head, batch)?;
@@ -440,7 +441,9 @@ fn check_bad_header(header: &BlockHeader) -> Result<(), Error> {
 		"00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725",
 	)?];
 	if bad_hashes.contains(&header.hash()) {
-		Err(Error::InvalidBlockProof(block::Error::Other("explicit bad header".into())).into())
+		Err(Error::Block(block::Error::Other(
+			"explicit bad header".into(),
+		)))
 	} else {
 		Ok(())
 	}
@@ -763,7 +766,7 @@ pub fn rewind_and_apply_fork(
 	}
 	fork_hashes.reverse();
 
-	for h in fork_hashes.clone() {
+	for h in &fork_hashes {
 		let fb = batch
 			.get_block(&h)
 			.map_err(|e| Error::StoreErr(e, "getting forked blocks".to_string()))?;

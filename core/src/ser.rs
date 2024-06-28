@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -316,8 +316,8 @@ where
 	// attempting to read huge amounts of data.
 	// Probably better than checking if count * size overflows a u64 though.
 	// Note!!! Caller on Write responsible to data size checking.
-	// This issue normally should never happen. If you wee this error, it is mean there are
-	// datat validation at write method.
+	// This issue normally should never happen. If you see this error, it is mean there are
+	// data validation issue at write method.
 	debug_assert!(count <= READ_VEC_SIZE_LIMIT);
 	if count > READ_VEC_SIZE_LIMIT {
 		return Err(Error::TooLargeReadErr(format!(
@@ -1155,8 +1155,8 @@ where
 	struct FieldVisitor;
 	impl<'de> serde::de::Visitor<'de> for FieldVisitor {
 		type Value = Field;
-		fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-			std::fmt::Formatter::write_str(formatter, "variant identifier")
+		fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+			fmt::Formatter::write_str(formatter, "variant identifier")
 		}
 		fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
 		where

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -122,13 +122,13 @@ where
 		//   * maintain dependency ordering
 		//   * maximize cut-through
 		//   * maximize overall fees
-		let header = self.blockchain.chain_head()?;
 		let txs = self.bucket_transactions(weighting);
 
 		// Iteratively apply the txs to the current chain state,
 		// rejecting any that do not result in a valid state.
 		// Verify these txs produce an aggregated tx below max_weight.
 		// Return a vec of all the valid txs.
+		let header = self.blockchain.chain_head()?;
 		let valid_txs = self.validate_raw_txs(&txs, None, &header, weighting)?;
 		Ok(valid_txs)
 	}

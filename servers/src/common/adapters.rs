@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ const OUTPUT_SEGMENT_HEIGHT_RANGE: Range<u8> = 11..16;
 const RANGEPROOF_SEGMENT_HEIGHT_RANGE: Range<u8> = 7..12;
 
 // NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
-// This cache will drop sequense of the events during the second
+// This cache will drop sequence of the events during the second
 struct EventCache {
 	event: RwLock<Hash>,
 	time: AtomicI64,
@@ -161,11 +161,11 @@ where
 		tx: core::Transaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
+		// nothing much we can do with a new transaction while syncing
 		if self.sync_state.is_syncing() {
 			return Ok(true);
 		}
 
-		// nothing much we can do with a new transaction while syncing
 		let tx_hash = tx.hash();
 		// For transaction we allow double processing, we want to be sure that TX will be stored in the pool
 		// because there is no recovery plan for transactions. So we want to use natural retry to help us handle failures
@@ -224,7 +224,6 @@ where
 			b.outputs().len(),
 			b.kernels().len(),
 		);
-
 		self.process_block(b, peer_info, opts)
 	}
 
@@ -1407,9 +1406,12 @@ impl pool::BlockChain for PoolToChainAdapter {
 	}
 
 	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
-		self.chain()
-			.replay_attack_check(tx)
-			.map_err(|_| pool::PoolError::DuplicateKernelOrDuplicateSpent)
+		self.chain().replay_attack_check(tx).map_err(|e| {
+			pool::PoolError::DuplicateKernelOrDuplicateSpent(format!(
+				"Replay attack detected, {}",
+				e
+			))
+		})
 	}
 }
 

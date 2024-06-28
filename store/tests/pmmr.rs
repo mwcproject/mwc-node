@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -330,7 +330,7 @@ fn pmmr_reload() {
 			assert_eq!(backend.unpruned_size(), mmr_size);
 		}
 
-		// new a new backend referencing the data files
+		// create a new backend referencing the data files
 		// and check everything still works as expected
 		{
 			let mut backend =
@@ -665,7 +665,7 @@ fn pmmr_compact_horizon() {
 
 		// recheck stored data
 		{
-			// renew backend
+			// recreate backend
 			let backend = store::pmmr::PMMRBackend::<TestElem>::new(
 				data_dir.to_string(),
 				true,
@@ -677,7 +677,7 @@ fn pmmr_compact_horizon() {
 			assert_eq!(backend.data_size(), 19);
 			assert_eq!(backend.hash_size(), 35);
 
-			// check we can read a hash by pos correctly from renewd backend
+			// check we can read a hash by pos correctly from recreated backend
 			assert_eq!(backend.get_hash(6), Some(pos_6_hash));
 			assert_eq!(backend.get_from_file(6), Some(pos_6_hash));
 
@@ -707,7 +707,7 @@ fn pmmr_compact_horizon() {
 
 		// recheck stored data
 		{
-			// renew backend
+			// recreate backend
 			let backend = store::pmmr::PMMRBackend::<TestElem>::new(
 				data_dir.to_string(),
 				true,
@@ -721,7 +721,7 @@ fn pmmr_compact_horizon() {
 			assert_eq!(backend.data_size(), 13);
 			assert_eq!(backend.hash_size(), 27);
 
-			// check we can read a hash by pos correctly from renewd backend
+			// check we can read a hash by pos correctly from recreated backend
 			// get_hash() and get_from_file() should return the same value
 			// and we only store leaves in the leaf_set so pos 6 still has a hash in there
 			assert_eq!(backend.get_hash(6), Some(pos_6_hash));
@@ -820,21 +820,21 @@ fn cleanup_rewind_files_test() {
 	let prefix_to_save = "bar";
 	let seconds_to_delete_after = 100;
 
-	// new the scenario
+	// create the scenario
 	let (data_dir, _) = setup("cleanup_rewind_files_test");
-	// new some files with the delete prefix that aren't yet old enough to delete
-	new_numbered_files(&data_dir, expected, prefix_to_delete, 0, 0);
-	// new some files with the delete prefix that are old enough to delete
-	new_numbered_files(
+	// create some files with the delete prefix that aren't yet old enough to delete
+	create_numbered_files(&data_dir, expected, prefix_to_delete, 0, 0);
+	// create some files with the delete prefix that are old enough to delete
+	create_numbered_files(
 		&data_dir,
 		expected,
 		prefix_to_delete,
 		seconds_to_delete_after + 1,
 		expected,
 	);
-	// new some files with the save prefix that are old enough to delete, but will be saved because they don't start
+	// create some files with the save prefix that are old enough to delete, but will be saved because they don't start
 	// with the right prefix
-	new_numbered_files(
+	create_numbered_files(
 		&data_dir,
 		expected,
 		prefix_to_save,
@@ -885,13 +885,13 @@ fn cleanup_rewind_files_test() {
 	teardown(data_dir);
 }
 
-/// new some files for testing with, for example
+/// Create some files for testing with, for example
 ///
 /// ```text
-/// new_numbered_files(".", 3, "hello.txt.", 100, 2)
+/// create_numbered_files(".", 3, "hello.txt.", 100, 2)
 /// ```
 ///
-/// will new files
+/// will create files
 ///
 /// ```text
 /// hello.txt.2
@@ -901,7 +901,7 @@ fn cleanup_rewind_files_test() {
 ///
 /// in the current working directory that are all 100 seconds old (modified and accessed time)
 ///
-fn new_numbered_files(
+fn create_numbered_files(
 	data_dir: &str,
 	num_files: u32,
 	prefix: &str,

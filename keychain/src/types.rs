@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ pub enum Error {
 	#[error("Keychain range proof error, {0}")]
 	RangeProof(String),
 	#[error("Keychain unknown commitment type")]
-	SwitchCommitmentType,
+	SwitchCommitment,
 	#[error("Keychain generic error, {0}")]
 	GenericError(String),
 }
@@ -521,8 +521,8 @@ mod test {
 	use crate::types::{BlindingFactor, ExtKeychainPath, Identifier};
 	use crate::util::secp::constants::SECRET_KEY_SIZE;
 	use crate::util::secp::key::{SecretKey, ZERO_KEY};
+	use crate::util::secp::Secp256k1;
 	use std::slice::from_raw_parts;
-	use util::secp::{ContextFlag, Secp256k1};
 
 	// This tests cleaning of BlindingFactor (e.g. secret key) on Drop.
 	// To make this test fail, just remove `Zeroize` derive from `BlindingFactor` definition.

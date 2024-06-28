@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@ use self::core::genesis;
 use grin_core as core;
 use grin_util as util;
 
-mod chain_test_helper;
-
 use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
+
+mod chain_test_helper;
 
 #[test]
 fn data_files() {

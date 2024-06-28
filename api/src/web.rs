@@ -36,10 +36,7 @@ where
 			Error::Internal(msg) => response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
 			Error::ResponseError(msg) => response(StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
 			// place holder
-			Error::Router(err) => response(
-				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("Router Error, {}", err),
-			),
+			Error::Router { .. } => response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
 			Error::P2pError(err) => response(
 				StatusCode::INTERNAL_SERVER_ERROR,
 				format!("P2P Error, {}", err),

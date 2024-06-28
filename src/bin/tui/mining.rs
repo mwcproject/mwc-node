@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 use std::cmp::Ordering;
 
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+use chrono::prelude::{DateTime, Utc};
 use cursive::direction::Orientation;
 use cursive::event::Key;
 use cursive::traits::{Nameable, Resizable};
@@ -65,15 +65,15 @@ impl StratumWorkerColumn {
 
 impl TableViewItem<StratumWorkerColumn> for WorkerStats {
 	fn to_column(&self, column: StratumWorkerColumn) -> String {
-		let naive_datetime = NaiveDateTime::from_timestamp_opt(
+		let datetime = DateTime::from_timestamp(
 			self.last_seen
 				.duration_since(time::UNIX_EPOCH)
 				.unwrap()
 				.as_secs() as i64,
 			0,
 		)
-		.unwrap_or_default();
-		let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(naive_datetime, Utc);
+		.unwrap_or_default()
+		.to_utc();
 
 		match column {
 			StratumWorkerColumn::Id => self.id.clone(),
@@ -128,9 +128,9 @@ impl DiffColumn {
 
 impl TableViewItem<DiffColumn> for DiffBlock {
 	fn to_column(&self, column: DiffColumn) -> String {
-		let naive_datetime =
-			NaiveDateTime::from_timestamp_opt(self.time as i64, 0).unwrap_or_default();
-		let datetime: DateTime<Utc> = DateTime::from_naive_utc_and_offset(naive_datetime, Utc);
+		let datetime: DateTime<Utc> = DateTime::from_timestamp(self.time as i64, 0)
+			.unwrap_or_default()
+			.to_utc();
 
 		match column {
 			DiffColumn::Height => self.block_height.to_string(),
@@ -343,7 +343,6 @@ impl TUIStatusListener for TUIMiningView {
 			"Blocks Found:          {}",
 			stratum_stats.blocks_found.load(atomic::Ordering::Relaxed)
 		);
-
 		let stratum_block_height = match num_workers {
 			0 => "Solving Block Height:  n/a".to_string(),
 			_ => format!(

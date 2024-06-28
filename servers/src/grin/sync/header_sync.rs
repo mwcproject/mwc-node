@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,7 +49,6 @@ impl HeaderSync {
 	}
 
 	pub fn check_run(&mut self, sync_head: chain::Tip) -> Result<bool, chain::Error> {
-		// We only want to run header_sync for some sync states.
 		// We only want to run header_sync for some sync states.
 		let do_run = match self.sync_state.status() {
 			SyncStatus::BodySync { .. }

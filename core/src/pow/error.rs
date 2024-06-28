@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
 
 //! Cuckatoo specific errors
 
-use std::io;
-
 /// Cuckatoo solver or validation error
 #[derive(Debug, thiserror::Error)]
 /// Libwallet error types
@@ -27,8 +25,12 @@ pub enum Error {
 	#[error("POW Verification Error: {0}")]
 	Verification(String),
 	/// IO Error
-	#[error("POW IO Error, {0}")]
-	IOError(io::Error),
+	#[error("POW IO Error, {source:?}")]
+	IOError {
+		/// Io Error Convert
+		#[from]
+		source: std::io::Error,
+	},
 	/// Unexpected Edge Error
 	#[error("POW Edge Addition Error")]
 	EdgeAddition,
@@ -44,10 +46,4 @@ pub enum Error {
 	/// No Solution
 	#[error("POW No Solution")]
 	NoSolution,
-}
-
-impl From<io::Error> for Error {
-	fn from(error: io::Error) -> Error {
-		Error::IOError(error)
-	}
 }

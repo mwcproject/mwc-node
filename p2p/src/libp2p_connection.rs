@@ -50,7 +50,7 @@ use grin_core::core::TxKernel;
 use grin_core::libtx::aggsig;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::rand::Rng;
-use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
+use grin_util::secp::{Message, Secp256k1, Signature};
 use grin_util::{static_secp_instance, RwLock};
 use grin_util::{Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use libp2p::core::network::NetworkInfo;
@@ -983,6 +983,7 @@ pub fn build_integrity_message(
 fn test_integrity() -> Result<(), Error> {
 	use grin_core::core::KernelFeatures;
 	use grin_util::from_hex;
+	use grin_util::secp::ContextFlag;
 
 	// It is peer form wallet's test. We know commit and signature for it.
 	let peer_id = PeerId::from_bytes( &from_hex("000100220020720661bf2f0d7c81c2980db83bb973be2816cf5a0da2da9aacd0ad47d534215c001c2f6f6e696f6e332f776861745f657665725f616464726573733a3737").unwrap() ).unwrap();

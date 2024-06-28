@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -172,7 +172,8 @@ impl FeeFields {
 
 	/// Extract fee_shift field
 	pub fn fee_shift(&self, height: u64) -> u8 {
-		if consensus::header_version(height) < HeaderVersion(5) {
+		// MWC NOTE, header version 3 is a next future hardfork, we don't know when it happens.
+		if consensus::header_version(height) < HeaderVersion(3) {
 			0
 		} else {
 			((self.0 >> FeeFields::FEE_BITS) & FeeFields::FEE_SHIFT_MASK) as u8
@@ -181,6 +182,7 @@ impl FeeFields {
 
 	/// Extract fee field
 	pub fn fee(&self, height: u64) -> u64 {
+		// MWC NOTE, header version 3 is a next future hardfork, we don't know when it happens.
 		if consensus::header_version(height) < HeaderVersion(3) {
 			self.0
 		} else {
@@ -1535,7 +1537,9 @@ impl Transaction {
 
 	/// Transaction minimum acceptable fee
 	pub fn accept_fee(&self, height: u64) -> u64 {
-		if consensus::header_version(height) < HeaderVersion(5) {
+		// Note MWC. Header Version 3  is future versions for the mainnet,
+		// This feature is related to miners only, there is no consensus breaking.
+		if consensus::header_version(height) < HeaderVersion(3) {
 			Transaction::old_weight_by_iok(
 				self.body.inputs.len() as u64,
 				self.body.outputs.len() as u64,

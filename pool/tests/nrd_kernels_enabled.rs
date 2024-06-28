@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,22 +55,22 @@ fn test_nrd_kernels_enabled() {
 	let tx = test_transaction_spending_coinbase(
 		&keychain,
 		&header_1,
-		vec![1_000 * mg, 2_000 * mg, 3_000 * mg, 4_000 * mg],
+		vec![100 * mg, 200 * mg, 300 * mg, 400 * mg],
 	);
 	add_block(&chain, &[tx], &keychain);
 
 	let tx_1 = test_transaction_with_kernel_features(
 		&keychain,
-		vec![1_000 * mg, 2_000 * mg],
-		vec![2_400 * mg],
+		vec![100 * mg, 200 * mg],
+		vec![240 * mg],
 		KernelFeatures::NoRecentDuplicate {
-			fee: (600 * mg as u32).into(),
+			fee: (60 * mg as u32).into(),
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 	);
 
 	let header = chain.head_header().unwrap();
-	assert!(header.version < HeaderVersion(4));
+	assert!(header.version < HeaderVersion(3)); // in MWC activating NRD from V3
 
 	assert_eq!(
 		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),

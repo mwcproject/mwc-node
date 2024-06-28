@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -65,7 +65,8 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 
 	let header = chain.head_header().unwrap();
 
-	assert_eq!(header.height, consensus::TESTING_THIRD_HARD_FORK);
+	// Note, in MWC NRD will be activated from Header 3. But 4 for the testing does work well too
+	assert_eq!(header.height, 4 * consensus::TESTING_HARD_FORK_INTERVAL);
 	assert_eq!(header.version, HeaderVersion(4));
 
 	let (tx1, tx2, tx3) = {

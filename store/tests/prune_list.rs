@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,13 +26,13 @@ fn test_is_pruned() {
 	assert_eq!(pl.is_pruned(2), false);
 
 	pl.append(1);
+	pl.flush().unwrap();
 
 	assert_eq!(pl.iter().collect::<Vec<_>>(), [2]);
 	assert_eq!(pl.is_pruned(0), false);
 	assert_eq!(pl.is_pruned(1), true);
 	assert_eq!(pl.is_pruned(2), false);
 	assert_eq!(pl.is_pruned(3), false);
-	assert_eq!(pl.is_pruned(4), false);
 
 	let mut pl = PruneList::empty();
 	pl.append(0);
@@ -47,6 +47,10 @@ fn test_is_pruned() {
 	assert_eq!(pl.is_pruned(3), false);
 
 	pl.append(3);
+
+	// Flushing the prune_list removes any individual leaf positions.
+	// This assumes we will track these outside the prune_list via the leaf_set.
+	pl.flush().unwrap();
 
 	assert_eq!(pl.len(), 2);
 	assert_eq!(pl.to_vec(), [3, 4]);

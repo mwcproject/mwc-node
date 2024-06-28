@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -67,10 +67,10 @@ fn next_target_adjustment() {
 	let sec = DIFFICULTY_ADJUST_WINDOW / 2;
 	let mut s1 = repeat(BLOCK_TIME_SEC, hi.clone(), sec, Some(cur_time));
 	let mut s2 = repeat_offs(
-		cur_time + (sec * BLOCK_TIME_SEC) as u64,
 		BLOCK_TIME_SEC,
 		1500,
-		DIFFICULTY_ADJUST_WINDOW / 2,
+		sec,
+		cur_time + (sec * BLOCK_TIME_SEC) as u64,
 	);
 	s2.append(&mut s1);
 	assert_eq!(
@@ -157,7 +157,7 @@ fn repeat(
 		.collect::<Vec<_>>()
 }
 
-fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderDifficultyInfo> {
+fn repeat_offs(interval: u64, diff: u64, len: u64, from: u64) -> Vec<HeaderDifficultyInfo> {
 	repeat(
 		interval,
 		HeaderDifficultyInfo::from_ts_diff(1, Difficulty::from_num(diff)),

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -86,8 +86,8 @@ pub enum Error {
 	MsgLen,
 	#[error("p2p banned")]
 	Banned,
-	#[error("p2p closed connection")]
-	ConnectionClose,
+	#[error("p2p closed connection, {0}")]
+	ConnectionClose(String),
 	#[error("p2p timeout")]
 	Timeout,
 	#[error("p2p store error, {0}")]
@@ -484,7 +484,7 @@ bitflags! {
 		const TX_KERNEL_HASH = 0b0000_1000;
 		/// Can send/receive tor addresses
 		const TOR_ADDRESS = 0b0001_0000;
-		   /// Can provide PIBD segments during initial byte download (fast sync).
+		/// Can provide PIBD segments during initial byte download (fast sync).
 		const PIBD_HIST = 0b0010_0000;
 		/// Can provide historical blocks for archival sync.
 		const BLOCK_HIST = 0b0100_0000;

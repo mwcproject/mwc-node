@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -349,6 +349,7 @@ impl PruneList {
 	}
 
 	/// Internal leaf shift cache as slice.
+	/// only used in store/tests/prune_list.rs tests
 	pub fn leaf_shift_cache(&self) -> &[u64] {
 		self.leaf_shift_cache.as_slice()
 	}

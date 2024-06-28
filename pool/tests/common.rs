@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -159,9 +159,9 @@ impl BlockChain for ChainAdapter {
 			.map_err(|_| PoolError::ImmatureTransaction)
 	}
 	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), PoolError> {
-		self.chain
-			.replay_attack_check(tx)
-			.map_err(|_| PoolError::DuplicateKernelOrDuplicateSpent)
+		self.chain.replay_attack_check(tx).map_err(|e| {
+			PoolError::DuplicateKernelOrDuplicateSpent(format!("Replay attack detected, {}", e))
+		})
 	}
 }
 

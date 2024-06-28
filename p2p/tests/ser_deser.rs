@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,15 +55,15 @@ fn test_capabilities() {
 
 	assert_eq!(
 		expected,
-		p2p::types::Capabilities::from_bits_truncate(0b1011111 as u32),
+		p2p::types::Capabilities::from_bits_truncate(0b111111 as u32),
 	);
 
 	assert_eq!(
 		expected,
-		p2p::types::Capabilities::from_bits_truncate(0b01011111 as u32),
+		p2p::types::Capabilities::from_bits_truncate(0b0111111 as u32),
 	);
 
-	assert!(p2p::types::Capabilities::from_bits_truncate(0b01011111 as u32).contains(expected));
+	assert!(p2p::types::Capabilities::from_bits_truncate(0b0111111 as u32).contains(expected));
 
 	assert!(
 		p2p::types::Capabilities::from_bits_truncate(0b00101111 as u32)

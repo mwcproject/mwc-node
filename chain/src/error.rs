@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,9 +53,6 @@ pub enum Error {
 	/// Peer abusively sending us an old block we already have
 	#[error("Old Block")]
 	OldBlock,
-	/// The block doesn't sum correctly or a tx signature is invalid
-	#[error("Invalid Block Proof, {0}")]
-	InvalidBlockProof(block::Error),
 	/// Block time is too old
 	#[error("Invalid Block Time")]
 	InvalidBlockTime,
@@ -69,11 +66,19 @@ pub enum Error {
 	#[error("Invalid MMR Size")]
 	InvalidMMRSize,
 	/// Error from underlying keychain impl
-	#[error("Keychain Error, {0}")]
-	Keychain(keychain::Error),
+	#[error("Keychain Error, {source:?}")]
+	Keychain {
+		#[from]
+		/// Conversion
+		source: keychain::Error,
+	},
 	/// Error from underlying secp lib
-	#[error("Secp Lib Error, {0}")]
-	Secp(secp::Error),
+	#[error("Secp Lib Error, {source:?}")]
+	Secp {
+		#[from]
+		/// Conversion
+		source: secp::Error,
+	},
 	/// One of the inputs in the block has already been spent
 	#[error("Already Spent: {0:?}")]
 	AlreadySpent(Commitment),
@@ -111,8 +116,12 @@ pub enum Error {
 	#[error("Chain File Read Error: {0}")]
 	FileReadErr(String),
 	/// Error serializing or deserializing a type
-	#[error("Chain Serialization Error, {0}")]
-	SerErr(ser::Error),
+	#[error("Chain Serialization Error, {source:?}")]
+	SerErr {
+		#[from]
+		/// Conversion
+		source: ser::Error,
+	},
 	/// Error with the txhashset
 	#[error("TxHashSetErr: {0}")]
 	TxHashSetErr(String),
@@ -143,8 +152,12 @@ pub enum Error {
 	#[error("Chain other Error: {0}")]
 	Other(String),
 	/// Error from summing and verifying kernel sums via committed trait.
-	#[error("Committed Trait: Error summing and verifying kernel sums, {0}")]
-	Committed(committed::Error),
+	#[error("Committed Trait: Error summing and verifying kernel sums, {source:?}")]
+	Committed {
+		#[from]
+		/// Conversion
+		source: committed::Error,
+	},
 	/// We cannot process data once the Grin server has been stopped.
 	#[error("Stopped (MWC Shutting Down)")]
 	Stopped,
@@ -172,8 +185,12 @@ pub enum Error {
 	#[error("Invalid segment height")]
 	InvalidSegmentHeight,
 	/// Error from the core calls
-	#[error("Core error, {0}")]
-	CoreErr(core::Error),
+	#[error("Core error, {source:?}")]
+	CoreErr {
+		/// Source error
+		#[from]
+		source: core::Error,
+	},
 	/// Other issue with segment
 	#[error("Invalid segment: {0}")]
 	InvalidSegment(String),
@@ -208,20 +225,8 @@ impl From<io::Error> for Error {
 	}
 }
 
-impl From<ser::Error> for Error {
-	fn from(error: ser::Error) -> Error {
-		Error::SerErr(error)
-	}
-}
-
-impl From<core::Error> for Error {
-	fn from(error: core::Error) -> Error {
-		Error::CoreErr(error)
-	}
-}
-
-impl From<committed::Error> for Error {
-	fn from(error: committed::Error) -> Error {
-		Error::Committed(error)
+impl From<block::Error> for Error {
+	fn from(e: block::Error) -> Error {
+		Error::Block(e)
 	}
 }

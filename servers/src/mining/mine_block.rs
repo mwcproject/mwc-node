@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 //! Build a block to mine: gathers transactions from the pool, assembles
 //! them into a block and returns it.
 
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+use chrono::prelude::{DateTime, Utc};
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -168,11 +168,11 @@ fn build_block(
 
 	b.header.pow.nonce = thread_rng().gen();
 	b.header.pow.secondary_scaling = difficulty.secondary_scaling;
-	let ts = NaiveDateTime::from_timestamp_opt(now_sec, 0);
+	let ts = DateTime::from_timestamp(now_sec, 0);
 	if ts.is_none() {
 		return Err(Error::General("Utc::now into timestamp".into()));
 	}
-	b.header.timestamp = DateTime::from_naive_utc_and_offset(ts.unwrap(), Utc);
+	b.header.timestamp = ts.unwrap().to_utc();
 
 	debug!(
 		"Built new block with {} inputs and {} outputs, block difficulty: {}, cumulative difficulty {}",
@@ -266,9 +266,7 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 	});
 
 	trace!("Sending build_coinbase request: {}", req_body);
-
 	let req = api::client::create_post_request(url.as_str(), None, &req_body)?;
-
 	let timeout = api::client::TimeOut::default();
 	let res: String = api::client::send_request(req, timeout).map_err(|e| {
 		let report = format!(

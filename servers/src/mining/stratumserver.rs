@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -634,10 +634,6 @@ impl Handler {
 					// set a new deadline for rebuilding with fresh transactions
 					deadline = Utc::now().timestamp() + config.attempt_time_per_block as i64;
 
-					self.workers.update_block_height(new_block.header.height);
-					self.workers
-						.update_network_difficulty(self.current_state.read().current_difficulty);
-
 					// Update the mining stats
 					self.workers.update_block_height(new_block.header.height);
 					let difficulty = new_block.header.total_difficulty() - head.total_difficulty;
@@ -647,9 +643,11 @@ impl Handler {
 					{
 						let mut state = self.current_state.write();
 
+						// If this is a new block we will clear the current_block version history
 						if clear_blocks {
 							state.current_block_versions.clear();
 						}
+						// Add this new block candidate onto our list of block versions for this height
 						state.current_block_versions.push(new_block);
 					}
 				}

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -235,20 +235,20 @@ fn test_fee_fields() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	let hf4_height = 4 * consensus::TESTING_HARD_FORK_INTERVAL;
+	let hf2_height = 2 * consensus::TESTING_HARD_FORK_INTERVAL;
 	assert_eq!(
-		tx.accept_fee(hf4_height),
+		tx.accept_fee(hf2_height),
 		(1 * 1 + 1 * 21 + 1 * 3) * 500_000
 	);
-	assert_eq!(tx.fee(hf4_height), 42);
-	assert_eq!(tx.fee(hf4_height), 42);
-	assert_eq!(tx.shifted_fee(hf4_height), 21);
+	assert_eq!(tx.fee(hf2_height), 42);
+	assert_eq!(tx.fee(hf2_height), 42);
+	assert_eq!(tx.shifted_fee(hf2_height), 21);
 	assert_eq!(
-		tx.accept_fee(hf4_height - 1),
+		tx.accept_fee(hf2_height - 1),
 		(1 * 4 + 1 * 1 - 1 * 1) * 1_000_000
 	);
-	assert_eq!(tx.fee(hf4_height - 1), 42 + (1u64 << 40));
-	assert_eq!(tx.shifted_fee(hf4_height - 1), 42 + (1u64 << 40));
+	assert_eq!(tx.fee(hf2_height - 1), 42 + (1u64 << 40));
+	assert_eq!(tx.shifted_fee(hf2_height - 1), 42 + (1u64 << 40));
 
 	tx.body.kernels.append(&mut vec![
 		TxKernel::with_features(KernelFeatures::Plain {
@@ -257,9 +257,9 @@ fn test_fee_fields() -> Result<(), Error> {
 		TxKernel::with_features(KernelFeatures::Plain { fee: 21.into() }),
 	]);
 
-	assert_eq!(tx.fee(hf4_height), 147);
-	assert_eq!(tx.shifted_fee(hf4_height), 36);
-	assert_eq!(tx.aggregate_fee_fields(hf4_height), FeeFields::new(2, 147));
+	assert_eq!(tx.fee(hf2_height), 147);
+	assert_eq!(tx.shifted_fee(hf2_height), 36);
+	assert_eq!(tx.aggregate_fee_fields(hf2_height), FeeFields::new(2, 147));
 	assert_eq!(tx_fee(1, 1, 3), 15_500_000);
 
 	Ok(())

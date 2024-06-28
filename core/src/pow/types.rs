@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -491,7 +491,6 @@ impl Readable for Proof {
 				)));
 			}
 			let bits = reader.read_fixed_bytes(bytes_len)?;
-
 			for n in 0..global::proofsize() {
 				nonces.push(read_number(&bits, n * nonce_bits, nonce_bits));
 			}

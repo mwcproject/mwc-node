@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -617,7 +617,7 @@ impl Chain {
 			},
 		);
 
-		Err(Error::Orphan("".to_string()))
+		Err(Error::Orphan(String::new()))
 	}
 
 	/// Attempt to add a new block to the chain.

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -210,6 +210,7 @@ impl<T> Segment<T> {
 		self.identifier.segment_pos_range(mmr_size)
 	}
 
+	/// TODO - binary_search_by_key() here (can we assume these are sorted by pos?)
 	fn get_hash(&self, pos0: u64) -> Result<Hash, SegmentError> {
 		self.hash_pos
 			.iter()

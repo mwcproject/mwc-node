@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -93,7 +93,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	util::init_test_logger();
 	clean_output_dir(chain_dir);
 
-	let keychain = ExtKeychain::from_random_seed(false).map_err(|e| chain::Error::Keychain(e))?;
+	let keychain = ExtKeychain::from_random_seed(false)?;
 	let pb = ProofBuilder::new(&keychain);
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
@@ -128,13 +128,11 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	.expect("valid tx");
 
 	// The offending commitment, reused in both an input and an output.
-	let commit = keychain
-		.commit(
-			consensus::MWC_FIRST_GROUP_REWARD,
-			&key_id1,
-			SwitchCommitmentType::Regular,
-		)
-		.map_err(|e| chain::Error::Keychain(e))?;
+	let commit = keychain.commit(
+		consensus::MWC_FIRST_GROUP_REWARD,
+		&key_id1,
+		SwitchCommitmentType::Regular,
+	)?;
 	let inputs: Vec<_> = tx.inputs().into();
 	assert!(inputs.iter().any(|input| input.commitment() == commit));
 	assert!(tx
@@ -184,7 +182,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 		let res = pipe::process_block(&block, &mut ctx);
 		assert_eq!(
 			res,
-			Err(chain::Error::InvalidBlockProof(block::Error::Transaction(
+			Err(chain::Error::Block(block::Error::Transaction(
 				transaction::Error::CutThrough
 			)))
 		);

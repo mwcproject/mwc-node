@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -275,8 +275,8 @@ fn decode_message(
 		Type::KernelSegment => Message::KernelSegment(msg.body()?),
 		Type::Error | Type::Hand | Type::Shake | Type::Headers => {
 			return Err(Error::UnexpectedMessage(format!(
-				"get message with type {}",
-				header.msg_type as i32
+				"get message with type {:?} (code {})",
+				header.msg_type, header.msg_type as u32
 			)))
 		}
 		Type::TorAddress => Message::TorAddress(msg.body()?),

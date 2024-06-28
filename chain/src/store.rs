@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ use crate::core::ser::{DeserializationMode, ProtocolVersion, Readable, Writeable
 use crate::linked_list::MultiIndex;
 use crate::types::{CommitPos, HashHeight, Tip};
 use crate::util::secp::pedersen::Commitment;
-
 use croaring::Bitmap;
 use grin_core::ser;
 use grin_store as store;
@@ -340,6 +339,7 @@ impl<'a> Batch<'a> {
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
 		self.db.delete(key)
 	}
+
 	/// Delete a full block. Does not delete any record associated with a block
 	/// header.
 	pub fn delete_block(&self, bh: &Hash) -> Result<(), Error> {
@@ -358,14 +358,14 @@ impl<'a> Batch<'a> {
 			}
 		}
 
+		self.db.delete(&to_key(BLOCK_PREFIX, bh)[..])?;
+
 		// Best effort at deleting associated data for this block.
 		// Not an error if these fail.
 		{
 			let _ = self.delete_block_sums(bh);
 			let _ = self.delete_spent_index(bh);
 		}
-
-		self.db.delete(&to_key(BLOCK_PREFIX, bh)[..])?;
 
 		Ok(())
 	}

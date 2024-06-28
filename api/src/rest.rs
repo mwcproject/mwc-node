@@ -50,7 +50,7 @@ pub enum Error {
 	RequestError(String),
 	#[error("API ResponseError error: {0}")]
 	ResponseError(String),
-	#[error("API Router error: {0}")]
+	#[error("API Router error: {source:?}")]
 	Router {
 		#[from]
 		source: RouterError,

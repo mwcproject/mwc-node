@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,8 +27,7 @@ use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
 use crate::ser::{
 	self, deserialize_default, serialize_default, PMMRable, Readable, Reader, Writeable, Writer,
 };
-use chrono::naive::{MAX_DATE, MIN_DATE};
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use keychain::{self, BlindingFactor};
 use std::convert::TryInto;
@@ -40,7 +39,7 @@ use util::{secp, static_secp_instance};
 pub enum Error {
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
-	#[error("Block Input/ouput vs kernel sum mismatch")]
+	#[error("Block Input/output vs kernel sum mismatch")]
 	KernelSumMismatch,
 	/// The total kernel sum on the block header is wrong
 	#[error("Block Invalid total kernel sum")]
@@ -61,7 +60,7 @@ pub enum Error {
 	#[error("Invalid POW")]
 	InvalidPow,
 	/// Kernel not valid due to lock_height exceeding block header height
-	#[error("Block lock_height {0} exceeding header height {0}")]
+	#[error("Block lock_height {0} exceeding header height {1}")]
 	KernelLockHeight(u64, u64),
 	/// NRD kernels are not valid prior to HF3.
 	#[error("NRD kernels are not valid prior to HF3")]
@@ -240,10 +239,7 @@ impl Default for BlockHeader {
 		BlockHeader {
 			version: HeaderVersion(1),
 			height: 0,
-			timestamp: DateTime::from_naive_utc_and_offset(
-				NaiveDateTime::from_timestamp_opt(0, 0).unwrap(),
-				Utc,
-			),
+			timestamp: DateTime::from_timestamp(0, 0).unwrap().to_utc(),
 			prev_hash: ZERO_HASH,
 			prev_root: ZERO_HASH,
 			output_root: ZERO_HASH,
@@ -300,16 +296,8 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 	let (output_mmr_size, kernel_mmr_size) = ser_multiread!(reader, read_u64, read_u64);
 	let pow = ProofOfWork::read(reader)?;
 
-	if timestamp
-		> chrono::NaiveDate::MAX
-			.and_hms_opt(0, 0, 0)
-			.unwrap()
-			.timestamp()
-		|| timestamp
-			< chrono::NaiveDate::MIN
-				.and_hms_opt(0, 0, 0)
-				.unwrap()
-				.timestamp()
+	if timestamp > chrono::DateTime::<Utc>::MAX_UTC.timestamp()
+		|| timestamp < chrono::DateTime::<Utc>::MIN_UTC.timestamp()
 	{
 		return Err(ser::Error::CorruptedData(format!(
 			"Incorrect timestamp {} at block header",
@@ -317,7 +305,7 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 		)));
 	}
 
-	let ts = NaiveDateTime::from_timestamp_opt(timestamp, 0);
+	let ts = DateTime::from_timestamp(timestamp, 0);
 	if ts.is_none() {
 		return Err(ser::Error::CorruptedData("Timestamp is None".into()));
 	}
@@ -325,7 +313,7 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 	Ok(BlockHeader {
 		version,
 		height,
-		timestamp: DateTime::from_naive_utc_and_offset(ts.unwrap(), Utc),
+		timestamp: ts.unwrap(),
 		prev_hash,
 		prev_root,
 		output_root,
@@ -697,12 +685,13 @@ impl Block {
 		let version = consensus::header_version(height);
 
 		let now = Utc::now().timestamp();
-		let ts = NaiveDateTime::from_timestamp_opt(now, 0);
+
+		let ts = DateTime::from_timestamp(now, 0);
 		if ts.is_none() {
 			return Err(Error::Other("Converting Utc::now() into timestamp".into()));
 		}
 
-		let timestamp = DateTime::from_naive_utc_and_offset(ts.unwrap(), Utc);
+		let timestamp = ts.unwrap();
 		// Now build the block with all the above information.
 		// Note: We have not validated the block here.
 		// Caller must validate the block as necessary.

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ pub trait Backend<T: PMMRable> {
 
 	/// Rebuilding a PMMR locally from PIBD segments requires pruned subtree support.
 	/// This allows us to append an existing pruned subtree directly without the underlying leaf nodes.
-	fn append_pruned_subtree(&mut self, hash: Hash, pos: u64) -> Result<(), String>;
+	fn append_pruned_subtree(&mut self, hash: Hash, pos0: u64) -> Result<(), String>;
 
 	/// Append a single hash to the pmmr
 	fn append_hash(&mut self, hash: Hash) -> Result<(), String>;

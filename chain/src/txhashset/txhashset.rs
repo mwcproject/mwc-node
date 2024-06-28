@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -113,8 +113,8 @@ pub struct PMMRHandle<T: PMMRable> {
 }
 
 impl<T: PMMRable> PMMRHandle<T> {
-	/// Constructor to new a PMMR handle from an existing directory structure on disk.
-	/// news the backend files as necessary if they do not already exist.
+	/// Constructor to create a PMMR handle from an existing directory structure on disk.
+	/// Creates the backend files as necessary if they do not already exist.
 	pub fn new<P: AsRef<Path>>(
 		path: P,
 		prunable: bool,
@@ -786,7 +786,7 @@ where
 		let output_pmmr = ReadonlyPMMR::at(&trees.output_pmmr_h.backend, trees.output_pmmr_h.size);
 		let rproof_pmmr = ReadonlyPMMR::at(&trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.size);
 
-		// new a new batch here to pass into the utxo_view.
+		// Create a new batch here to pass into the utxo_view.
 		// Discard it (rollback) after we finish with the utxo_view.
 		let batch = trees.commit_index.batch()?;
 		let utxo = UTXOView::new(header_pmmr, output_pmmr, rproof_pmmr);
@@ -798,7 +798,7 @@ where
 /// Rewindable (but still readonly) view on the kernel MMR.
 /// The underlying backend is readonly. But we permit the PMMR to be "rewound"
 /// via size.
-/// We new a new db batch for this view and discard it (rollback)
+/// We create a new db batch for this view and discard it (rollback)
 /// when we are done with the view.
 pub fn rewindable_kernel_view<F, T>(trees: &TxHashSet, inner: F) -> Result<T, Error>
 where
@@ -809,7 +809,7 @@ where
 		let kernel_pmmr =
 			RewindablePMMR::at(&trees.kernel_pmmr_h.backend, trees.kernel_pmmr_h.size);
 
-		// new a new batch here to pass into the kernel_view.
+		// Create a new batch here to pass into the kernel_view.
 		// Discard it (rollback) after we finish with the kernel_view.
 		let batch = trees.commit_index.batch()?;
 		let header = batch.head_header()?;
@@ -843,7 +843,7 @@ where
 	let head = batch.head()?;
 	let header_head = batch.header_head()?;
 
-	// new a child transaction so if the state is rolled back by itself, all
+	// create a child transaction so if the state is rolled back by itself, all
 	// index saving can be undone
 	let child_batch = batch.child()?;
 	{
@@ -946,7 +946,7 @@ where
 	let res: Result<T, Error>;
 	let rollback: bool;
 
-	// new a child transaction so if the state is rolled back by itself, all
+	// create a child transaction so if the state is rolled back by itself, all
 	// index saving can be undone
 	let child_batch = batch.child()?;
 
@@ -1298,7 +1298,7 @@ impl<'a> Extension<'a> {
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
 		self.apply_kernels(b.kernels(), b.header.height, batch)?;
 
-		// Update our BitmapAccumulator based on affected outputs (both spent and newd).
+		// Update our BitmapAccumulator based on affected outputs (both spent and created).
 		self.apply_to_bitmap_accumulator(&affected_pos)?;
 
 		// Update the head of the extension to reflect the block we just applied.
@@ -1682,7 +1682,7 @@ impl<'a> Extension<'a> {
 		let mut affected_pos = spent_pos;
 		affected_pos.push(self.output_pmmr.size);
 
-		// Remove any entries from the output_pos newd by the block being rewound.
+		// Remove any entries from the output_pos created by the block being rewound.
 		let mut missing_count = 0;
 		for out in block.outputs() {
 			if batch.delete_output_pos_height(&out.commitment()).is_err() {
@@ -2101,7 +2101,7 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 		}
 	}
 
-	// otherwise, new the zip archive
+	// otherwise, create the zip archive
 	let path_to_be_cleanup = {
 		// Temp txhashset directory
 		let temp_txhashset_path = Path::new(&root_dir).join(format!(
@@ -2127,7 +2127,7 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 	};
 
 	debug!(
-		"zip_read: {} at {}: newd zip file: {:?}",
+		"zip_read: {} at {}: created zip file: {:?}",
 		header.hash(),
 		header.height,
 		zip_path

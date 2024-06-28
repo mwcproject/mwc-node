@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -98,6 +98,7 @@ where
 		if cache.len() > self.config.max_pool_size {
 			let _ = cache.pop_front();
 		}
+		debug!("added tx to reorg_cache: size now {}", cache.len());
 	}
 
 	// Deaggregate this tx against the txpool.

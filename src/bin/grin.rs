@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -126,9 +126,9 @@ fn real_main() -> i32 {
 		}
 	}
 
-	let mut config = node_config.clone().unwrap();
-	let mut logging_config = config.members.as_mut().unwrap().logging.clone().unwrap();
-	logging_config.tui_running = config.members.as_mut().unwrap().server.run_tui;
+	let config = node_config.clone().unwrap();
+	let mut logging_config = config.members.as_ref().unwrap().logging.clone().unwrap();
+	logging_config.tui_running = config.members.as_ref().unwrap().server.run_tui;
 
 	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
 		Box::leak(Box::new(oneshot::channel::<()>()));
