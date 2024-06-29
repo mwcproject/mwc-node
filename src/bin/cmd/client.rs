@@ -248,8 +248,9 @@ pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig)
 	0
 }
 /// Error type wrapping underlying module errors.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum Error {
 	/// RPC Error
+	#[error("RPC error: {0}")]
 	RPCError(String),
 }
