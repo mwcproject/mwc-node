@@ -769,7 +769,12 @@ impl Server {
 			.launch();
 
 		if res.is_err() {
-			Err(Error::Configuration("Unable to start tor".to_string()))
+			Err(Error::Configuration(format!(
+				"Unable to start tor due error: {}  Started with config: {}, working dir: {}",
+				res.err().unwrap(),
+				tor_path,
+				tor_dir
+			)))
 		} else {
 			Ok((process, onion_address.to_string(), secret))
 		}
