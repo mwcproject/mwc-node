@@ -168,7 +168,7 @@ pub enum Error {
 	#[error("Sync error")]
 	SyncError(String),
 	/// PIBD segment related error
-	#[error("Segment error, {source:?}")]
+	#[error("Segment error, {source}")]
 	SegmentError {
 		#[from]
 		/// Conversion
