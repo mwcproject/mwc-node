@@ -35,10 +35,16 @@ pub const MAX_CACHED_SEGMENTS: usize = 15;
 /// deciding the segment isn't going to arrive. The syncer will then re-request the segment
 pub const SEGMENT_REQUEST_TIMEOUT_SECS: i64 = 60;
 
-/// Number of simultaneous requests for segments we should make. Note this is currently
+/// Number of simultaneous requests for segments we should make per available peer. Note this is currently
 /// divisible by 3 to try and evenly spread requests amount the 3 main MMRs (Bitmap segments
 /// will always be requested first)
-pub const SEGMENT_REQUEST_COUNT: usize = 15;
+pub const SEGMENT_REQUEST_PER_PEER: usize = 3;
+/// Maximum number of simultaneous requests. Please note, the data will be processed in a single thread, so
+/// the throughput will not be high. 12 should load CPU pretty well at the end of sync process.
+pub const SEGMENT_REQUEST_LIMIT: usize = 12;
+
+/// Maximum stale requests per peer. If there are more requests, no new data will be requested
+pub const STALE_REQUESTS_PER_PEER: u32 = 5;
 
 /// If the syncer hasn't seen a max work peer that supports PIBD in this number of seconds
 /// give up and revert back to the txhashset.zip download method

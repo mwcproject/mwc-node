@@ -20,6 +20,7 @@ use crate::core::ser;
 use crate::keychain;
 use crate::util::secp;
 use crate::util::secp::pedersen::Commitment;
+use grin_core::core::hash::Hash;
 use grin_store as store;
 use std::io;
 
@@ -179,8 +180,8 @@ pub enum Error {
 	#[error("Aborting PIBD error")]
 	AbortingPIBDError,
 	/// The segmenter is associated to a different block header
-	#[error("Segmenter header mismatch")]
-	SegmenterHeaderMismatch,
+	#[error("Segmenter header mismatch, available {0} at height {1}")]
+	SegmenterHeaderMismatch(Hash, u64),
 	/// Segment height not within allowed range
 	#[error("Invalid segment height")]
 	InvalidSegmentHeight,

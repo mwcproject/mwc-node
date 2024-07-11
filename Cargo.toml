@@ -53,3 +53,7 @@ built = { version = "0.4", features = ["git2"]}
 [dev-dependencies]
 grin_chain = { path = "./chain", version = "5.3.2" }
 grin_store = { path = "./store", version = "5.3.2" }
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true

@@ -267,12 +267,15 @@ fn decode_message(
 		Type::TxHashSetArchive => Message::TxHashSetArchive(msg.body()?),
 		Type::GetOutputBitmapSegment => Message::GetOutputBitmapSegment(msg.body()?),
 		Type::OutputBitmapSegment => Message::OutputBitmapSegment(msg.body()?),
+		Type::StartPibdSyncRequest => Message::StartPibdSyncRequest(msg.body()?),
+		Type::PibdSyncState => Message::PibdSyncState(msg.body()?),
 		Type::GetOutputSegment => Message::GetOutputSegment(msg.body()?),
 		Type::OutputSegment => Message::OutputSegment(msg.body()?),
 		Type::GetRangeProofSegment => Message::GetRangeProofSegment(msg.body()?),
 		Type::RangeProofSegment => Message::RangeProofSegment(msg.body()?),
 		Type::GetKernelSegment => Message::GetKernelSegment(msg.body()?),
 		Type::KernelSegment => Message::KernelSegment(msg.body()?),
+		Type::HasAnotherArchiveHeader => Message::HasAnotherArchiveHeader(msg.body()?),
 		Type::Error | Type::Hand | Type::Shake | Type::Headers => {
 			return Err(Error::UnexpectedMessage(format!(
 				"get message with type {:?} (code {})",

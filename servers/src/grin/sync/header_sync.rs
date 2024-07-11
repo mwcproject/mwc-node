@@ -19,7 +19,6 @@ use std::sync::Arc;
 use crate::chain::{self, SyncState, SyncStatus};
 use crate::common::types::Error;
 use crate::core::core::hash::Hash;
-use crate::core::core::hash::Hashed;
 use crate::core::pow::Difficulty;
 use crate::p2p::{self, types::ReasonForBan, Capabilities, Peer};
 
@@ -53,28 +52,10 @@ impl HeaderSync {
 		let do_run = match self.sync_state.status() {
 			SyncStatus::BodySync { .. }
 			| SyncStatus::HeaderSync { .. }
-			| SyncStatus::TxHashsetDone => true,
-			SyncStatus::NoSync | SyncStatus::Initial | SyncStatus::AwaitingPeers(_) => {
-				let sync_head_sync = self.chain.get_sync_head()?;
-				debug!(
-					"sync: initial transition to HeaderSync. sync_head: {} at {}, resetting to: {} at {}",
-					sync_head_sync.hash(),
-					sync_head_sync.height,
-					sync_head.hash(),
-					sync_head.height,
-				);
-
-				// Reset sync_head to header_head on transition to HeaderSync,
-				// but ONLY on initial transition to HeaderSync state.
-				//
-				// The header_head and sync_head may diverge here in the presence of a fork
-				// in the header chain. Ensure we track the new advertised header chain here
-				// correctly, so reset any previous (and potentially stale) sync_head to match
-				// our last known "good" header_head.
-				//
-				self.chain.rebuild_sync_mmr(&sync_head)?;
-				true
-			}
+			| SyncStatus::TxHashsetDone
+			| SyncStatus::NoSync
+			| SyncStatus::Initial
+			| SyncStatus::AwaitingPeers(_) => true,
 			_ => false,
 		};
 

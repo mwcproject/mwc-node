@@ -41,7 +41,6 @@ pub fn connect_and_monitor(
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
 	config: P2PConfig,
 	stop_state: Arc<StopState>,
-	header_cache_size: u64,
 ) -> std::io::Result<thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("seed".to_string())
@@ -118,7 +117,6 @@ pub fn connect_and_monitor(
 						p2p_server.clone(),
 						&rx,
 						&mut connecting_history,
-						header_cache_size,
 						connect_all,
 					);
 
@@ -339,7 +337,6 @@ fn listen_for_addrs(
 	p2p: Arc<p2p::Server>,
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
-	header_cache_size: u64,
 	attempt_all: bool,
 ) {
 	// Pull everything currently on the queue off the queue.
@@ -402,7 +399,7 @@ fn listen_for_addrs(
 				};
 
 				if update_possible {
-					match p2p_c.connect(addr.clone(), header_cache_size) {
+					match p2p_c.connect(addr.clone()) {
 						Ok(p) => {
 							// If peer advertizes PEER_LIST then ask it for more peers that support PEER_LIST.
 							// We want to build a local db of possible peers to connect to.

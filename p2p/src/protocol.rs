@@ -17,12 +17,15 @@ use crate::grin_core::core::{hash::Hashed, CompactBlock};
 use crate::{chain, Capabilities};
 
 use crate::msg::{
-	Consumed, Headers, Message, Msg, OutputBitmapSegmentResponse, OutputSegmentResponse, PeerAddrs,
-	Pong, SegmentRequest, SegmentResponse, TxHashSetArchive, Type,
+	ArchiveHeaderData, Consumed, Headers, Message, Msg, OutputBitmapSegmentResponse,
+	OutputSegmentResponse, PeerAddrs, PibdSyncState, Pong, SegmentRequest, SegmentResponse,
+	TxHashSetArchive, Type,
 };
+use crate::peer::PeerPibdStatus;
 use crate::serv::Server;
 use crate::types::{AttachmentMeta, Error, NetAdapter, PeerAddr, PeerAddr::Onion, PeerInfo};
 use chrono::prelude::Utc;
+use grin_util::Mutex;
 use rand::{thread_rng, Rng};
 use std::fs::{self, File};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,8 +35,8 @@ pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
 	state_sync_requested: Arc<AtomicBool>,
-	header_cache_size: u64,
 	server: Server,
+	pibd_status: Arc<Mutex<PeerPibdStatus>>,
 }
 
 impl Protocol {
@@ -41,15 +44,23 @@ impl Protocol {
 		adapter: Arc<dyn NetAdapter>,
 		peer_info: PeerInfo,
 		state_sync_requested: Arc<AtomicBool>,
-		header_cache_size: u64,
 		server: Server,
+		pibd_status: Arc<Mutex<PeerPibdStatus>>,
 	) -> Protocol {
 		Protocol {
 			adapter,
 			peer_info,
 			state_sync_requested,
-			header_cache_size,
 			server,
+			pibd_status,
+		}
+	}
+
+	fn report_pibd_response(&self, success: bool) {
+		if success {
+			let mut pibd_status = self.pibd_status.lock();
+			pibd_status.no_response_requests = 0;
+			pibd_status.no_response_time = None;
 		}
 	}
 }
@@ -236,7 +247,7 @@ impl MessageHandler for Protocol {
 			}
 
 			Message::Headers(data) => {
-				adapter.headers_received(&data.headers, &self.peer_info, self.header_cache_size)?;
+				adapter.headers_received(&data.headers, &self.peer_info)?;
 				Consumed::None
 			}
 
@@ -365,26 +376,79 @@ impl MessageHandler for Protocol {
 
 				Consumed::Attachment(Arc::new(meta), file)
 			}
-
+			Message::StartPibdSyncRequest(sm_req) => {
+				debug!(
+					"handle_payload: start PIBD request for {} at {}",
+					sm_req.hash, sm_req.height
+				);
+				match self.adapter.prepare_segmenter() {
+					Ok(segmenter) => {
+						let header = segmenter.header();
+						let header_hash = header.hash();
+						if header_hash == sm_req.hash && header.height == sm_req.height {
+							if let Ok(bitmap_root_hash) = segmenter.bitmap_root() {
+								// we can start the sync process, let's prepare the segmenter
+								Consumed::Response(Msg::new(
+									Type::PibdSyncState,
+									&PibdSyncState {
+										header_height: header.height,
+										header_hash: header_hash,
+										output_bitmap_root: bitmap_root_hash,
+									},
+									self.peer_info.version,
+								)?)
+							} else {
+								Consumed::None
+							}
+						} else {
+							Consumed::Response(Msg::new(
+								Type::HasAnotherArchiveHeader,
+								&ArchiveHeaderData {
+									height: header.height,
+									hash: header_hash,
+								},
+								self.peer_info.version,
+							)?)
+						}
+					}
+					Err(e) => {
+						warn!(
+							"Unable to prepare segment for PIBD request for {} at {}. Error: {}",
+							sm_req.hash, sm_req.height, e
+						);
+						Consumed::None
+					}
+				}
+			}
 			Message::GetOutputBitmapSegment(req) => {
 				let SegmentRequest {
 					block_hash,
 					identifier,
 				} = req;
-				if let Ok((segment, output_root)) =
-					self.adapter.get_bitmap_segment(block_hash, identifier)
-				{
-					Consumed::Response(Msg::new(
+
+				match self.adapter.get_bitmap_segment(block_hash, identifier) {
+					Ok(segment) => Consumed::Response(Msg::new(
 						Type::OutputBitmapSegment,
 						OutputBitmapSegmentResponse {
 							block_hash,
 							segment: segment.into(),
-							output_root,
 						},
 						self.peer_info.version,
-					)?)
-				} else {
-					Consumed::None
+					)?),
+					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+						Consumed::Response(Msg::new(
+							Type::HasAnotherArchiveHeader,
+							&ArchiveHeaderData {
+								height: height,
+								hash: hash,
+							},
+							self.peer_info.version,
+						)?)
+					}
+					Err(e) => {
+						warn!("Failed to process GetOutputBitmapSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						Consumed::None
+					}
 				}
 			}
 			Message::GetOutputSegment(req) => {
@@ -392,22 +456,32 @@ impl MessageHandler for Protocol {
 					block_hash,
 					identifier,
 				} = req;
-				if let Ok((segment, output_bitmap_root)) =
-					self.adapter.get_output_segment(block_hash, identifier)
-				{
-					Consumed::Response(Msg::new(
+
+				match self.adapter.get_output_segment(block_hash, identifier) {
+					Ok(segment) => Consumed::Response(Msg::new(
 						Type::OutputSegment,
 						OutputSegmentResponse {
 							response: SegmentResponse {
 								block_hash,
 								segment,
 							},
-							output_bitmap_root,
 						},
 						self.peer_info.version,
-					)?)
-				} else {
-					Consumed::None
+					)?),
+					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+						Consumed::Response(Msg::new(
+							Type::HasAnotherArchiveHeader,
+							&ArchiveHeaderData {
+								height: height,
+								hash: hash,
+							},
+							self.peer_info.version,
+						)?)
+					}
+					Err(e) => {
+						warn!("Failed to process GetOutputSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						Consumed::None
+					}
 				}
 			}
 			Message::GetRangeProofSegment(req) => {
@@ -415,17 +489,29 @@ impl MessageHandler for Protocol {
 					block_hash,
 					identifier,
 				} = req;
-				if let Ok(segment) = self.adapter.get_rangeproof_segment(block_hash, identifier) {
-					Consumed::Response(Msg::new(
+				match self.adapter.get_rangeproof_segment(block_hash, identifier) {
+					Ok(segment) => Consumed::Response(Msg::new(
 						Type::RangeProofSegment,
 						SegmentResponse {
 							block_hash,
 							segment,
 						},
 						self.peer_info.version,
-					)?)
-				} else {
-					Consumed::None
+					)?),
+					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+						Consumed::Response(Msg::new(
+							Type::HasAnotherArchiveHeader,
+							&ArchiveHeaderData {
+								height: height,
+								hash: hash,
+							},
+							self.peer_info.version,
+						)?)
+					}
+					Err(e) => {
+						warn!("Failed to process GetRangeProofSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						Consumed::None
+					}
 				}
 			}
 			Message::GetKernelSegment(req) => {
@@ -433,48 +519,77 @@ impl MessageHandler for Protocol {
 					block_hash,
 					identifier,
 				} = req;
-				if let Ok(segment) = self.adapter.get_kernel_segment(block_hash, identifier) {
-					Consumed::Response(Msg::new(
+
+				match self.adapter.get_kernel_segment(block_hash, identifier) {
+					Ok(segment) => Consumed::Response(Msg::new(
 						Type::KernelSegment,
 						SegmentResponse {
 							block_hash,
 							segment,
 						},
 						self.peer_info.version,
-					)?)
-				} else {
-					Consumed::None
+					)?),
+					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+						Consumed::Response(Msg::new(
+							Type::HasAnotherArchiveHeader,
+							&ArchiveHeaderData {
+								height: height,
+								hash: hash,
+							},
+							self.peer_info.version,
+						)?)
+					}
+					Err(e) => {
+						warn!("Failed to process GetKernelSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						Consumed::None
+					}
 				}
+			}
+			Message::PibdSyncState(req) => {
+				self.report_pibd_response(true);
+				debug!("Received PibdSyncState from peer {:?}. Header height={}, output_bitmap_root={}", self.peer_info.addr, req.header_height, req.output_bitmap_root);
+				{
+					let mut status = self.pibd_status.lock();
+					status.update_pibd_status(
+						req.header_hash,
+						req.header_height,
+						Some(req.output_bitmap_root),
+					);
+				}
+				Consumed::None
+			}
+			Message::HasAnotherArchiveHeader(req) => {
+				debug!(
+					"Received HasAnotherArchiveHeader from peer {:?}. Has header at height {}",
+					self.peer_info.addr, req.height
+				);
+				let mut status = self.pibd_status.lock();
+				status.update_pibd_status(req.hash, req.height, None);
+				Consumed::None
 			}
 			Message::OutputBitmapSegment(req) => {
 				let OutputBitmapSegmentResponse {
 					block_hash,
 					segment,
-					output_root,
 				} = req;
-				trace!(
-					"Received Output Bitmap Segment: bh, output_root: {}, {}",
-					block_hash,
-					output_root
-				);
-				adapter.receive_bitmap_segment(block_hash, output_root, segment.into())?;
+				debug!("Received Output Bitmap Segment: bh: {}", block_hash);
+				adapter
+					.receive_bitmap_segment(block_hash, segment.into())
+					.and_then(|ok| {
+						self.report_pibd_response(ok);
+						Ok(ok)
+					})?;
 				Consumed::None
 			}
 			Message::OutputSegment(req) => {
-				let OutputSegmentResponse {
-					response,
-					output_bitmap_root,
-				} = req;
-				trace!(
-					"Received Output Segment: bh, bitmap_root: {}, {}",
-					response.block_hash,
-					output_bitmap_root
-				);
-				adapter.receive_output_segment(
-					response.block_hash,
-					output_bitmap_root,
-					response.segment.into(),
-				)?;
+				let OutputSegmentResponse { response } = req;
+				debug!("Received Output Segment: bh, {}", response.block_hash,);
+				adapter
+					.receive_output_segment(response.block_hash, response.segment.into())
+					.and_then(|ok| {
+						self.report_pibd_response(ok);
+						Ok(ok)
+					})?;
 				Consumed::None
 			}
 			Message::RangeProofSegment(req) => {
@@ -482,8 +597,13 @@ impl MessageHandler for Protocol {
 					block_hash,
 					segment,
 				} = req;
-				trace!("Received Rangeproof Segment: bh: {}", block_hash);
-				adapter.receive_rangeproof_segment(block_hash, segment.into())?;
+				debug!("Received Rangeproof Segment: bh: {}", block_hash);
+				adapter
+					.receive_rangeproof_segment(block_hash, segment.into())
+					.and_then(|ok| {
+						self.report_pibd_response(ok);
+						Ok(ok)
+					})?;
 				Consumed::None
 			}
 			Message::KernelSegment(req) => {
@@ -491,8 +611,13 @@ impl MessageHandler for Protocol {
 					block_hash,
 					segment,
 				} = req;
-				trace!("Received Kernel Segment: bh: {}", block_hash);
-				adapter.receive_kernel_segment(block_hash, segment.into())?;
+				debug!("Received Kernel Segment: bh: {}", block_hash);
+				adapter
+					.receive_kernel_segment(block_hash, segment.into())
+					.and_then(|ok| {
+						self.report_pibd_response(ok);
+						Ok(ok)
+					})?;
 				Consumed::None
 			}
 			Message::Unknown(_) => Consumed::None,

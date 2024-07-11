@@ -19,7 +19,8 @@ use crate::core::pmmr::{self, Backend, ReadablePMMR, ReadonlyPMMR};
 use crate::ser::{Error, PMMRIndexHashable, PMMRable, Readable, Reader, Writeable, Writer};
 use croaring::Bitmap;
 use std::cmp::min;
-use std::fmt::Debug;
+use std::fmt;
+use std::fmt::{Debug, Display};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Possible segment types, according to this desegmenter
@@ -78,6 +79,12 @@ pub struct SegmentIdentifier {
 	pub height: u8,
 	/// Zero-based index of the segment
 	pub idx: u64,
+}
+
+impl Display for SegmentIdentifier {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "(h:{}, idx:{})", self.height, self.idx)
+	}
 }
 
 impl Readable for SegmentIdentifier {
@@ -536,32 +543,6 @@ where
 			segment_unpruned_pos,
 		)
 	}
-
-	/// Check validity of the segment by calculating its root and validating the merkle proof
-	/// This function assumes a final hashing step together with `other_root`
-	pub fn validate_with(
-		&self,
-		mmr_size: u64,
-		bitmap: Option<&Bitmap>,
-		mmr_root: Hash,
-		hash_last_pos: u64,
-		other_root: Hash,
-		other_is_left: bool,
-	) -> Result<(), SegmentError> {
-		let (first, last) = self.segment_pos_range(mmr_size);
-		let (segment_root, segment_unpruned_pos) = self.first_unpruned_parent(mmr_size, bitmap)?;
-		self.proof.validate_with(
-			mmr_size,
-			mmr_root,
-			first,
-			last,
-			segment_root,
-			segment_unpruned_pos,
-			hash_last_pos,
-			other_root,
-			other_is_left,
-		)
-	}
 }
 
 impl<T: Readable> Readable for Segment<T> {
@@ -780,39 +761,6 @@ impl SegmentProof {
 			segment_root,
 			segment_unpruned_pos,
 		)?;
-		if root == mmr_root {
-			Ok(())
-		} else {
-			Err(SegmentError::Mismatch)
-		}
-	}
-
-	/// Check validity of the proof by equating the reconstructed root with the actual root
-	/// This function assumes a final hashing step together with `other_root`
-	pub fn validate_with(
-		&self,
-		last_pos: u64,
-		mmr_root: Hash,
-		segment_first_pos: u64,
-		segment_last_pos: u64,
-		segment_root: Hash,
-		segment_unpruned_pos: u64,
-		hash_last_pos: u64,
-		other_root: Hash,
-		other_is_left: bool,
-	) -> Result<(), SegmentError> {
-		let root = self.reconstruct_root(
-			last_pos,
-			segment_first_pos,
-			segment_last_pos,
-			segment_root,
-			segment_unpruned_pos,
-		)?;
-		let root = if other_is_left {
-			(other_root, root).hash_with_index(hash_last_pos)
-		} else {
-			(root, other_root).hash_with_index(hash_last_pos)
-		};
 		if root == mmr_root {
 			Ok(())
 		} else {

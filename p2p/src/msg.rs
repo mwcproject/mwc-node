@@ -77,14 +77,17 @@ enum_from_primitive! {
 		GetTransaction = 19,
 		TransactionKernel = 20,
 		TorAddress = 23,
-		GetOutputBitmapSegment = 24,
-		OutputBitmapSegment = 25,
-		GetOutputSegment = 26,
-		OutputSegment = 27,
-		GetRangeProofSegment = 28,
-		RangeProofSegment = 29,
-		GetKernelSegment = 30,
-		KernelSegment = 31,
+		StartPibdSyncRequest = 24,
+		GetOutputBitmapSegment = 25,
+		OutputBitmapSegment = 26,
+		GetOutputSegment = 27,
+		OutputSegment = 28,
+		GetRangeProofSegment = 29,
+		RangeProofSegment = 30,
+		GetKernelSegment = 31,
+		KernelSegment = 32,
+		HasAnotherArchiveHeader = 33,
+		PibdSyncState = 34,
 	}
 }
 
@@ -117,7 +120,7 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::CompactBlock => max_block_size() / 10,
 		Type::StemTransaction => max_block_size(),
 		Type::Transaction => max_block_size(),
-		Type::TxHashSetRequest => 40,
+		Type::TxHashSetRequest => 40, // 32+8=40
 		Type::TxHashSetArchive => 64,
 		Type::BanReason => 64,
 		Type::GetTransaction => 32,
@@ -131,6 +134,9 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::RangeProofSegment => 2 * max_block_size(),
 		Type::GetKernelSegment => 41,
 		Type::KernelSegment => 2 * max_block_size(),
+		Type::StartPibdSyncRequest => 40, // 32+8=40
+		Type::HasAnotherArchiveHeader => 40,
+		Type::PibdSyncState => 72, // 32 + 8 + 32 = 72
 	}
 }
 
@@ -763,16 +769,15 @@ impl Readable for BanReason {
 	}
 }
 
-/// Request to get an archive of the full txhashset store, required to sync
-/// a new node.
-pub struct TxHashSetRequest {
+/// Request to get PIBD sync request
+pub struct ArchiveHeaderData {
 	/// Hash of the block for which the txhashset should be provided
 	pub hash: Hash,
 	/// Height of the corresponding block
 	pub height: u64,
 }
 
-impl Writeable for TxHashSetRequest {
+impl Writeable for ArchiveHeaderData {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.hash.write(writer)?;
 		writer.write_u64(self.height)?;
@@ -780,11 +785,39 @@ impl Writeable for TxHashSetRequest {
 	}
 }
 
-impl Readable for TxHashSetRequest {
-	fn read<R: Reader>(reader: &mut R) -> Result<TxHashSetRequest, ser::Error> {
-		Ok(TxHashSetRequest {
+impl Readable for ArchiveHeaderData {
+	fn read<R: Reader>(reader: &mut R) -> Result<ArchiveHeaderData, ser::Error> {
+		Ok(ArchiveHeaderData {
 			hash: Hash::read(reader)?,
 			height: reader.read_u64()?,
+		})
+	}
+}
+
+pub struct PibdSyncState {
+	/// Hash of the block for which the txhashset should be provided
+	pub header_hash: Hash,
+	/// Height of the corresponding block
+	pub header_height: u64,
+	/// output bitmap root hash
+	pub output_bitmap_root: Hash,
+}
+
+impl Writeable for PibdSyncState {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.header_hash.write(writer)?;
+		writer.write_u64(self.header_height)?;
+		self.output_bitmap_root.write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for PibdSyncState {
+	fn read<R: Reader>(reader: &mut R) -> Result<PibdSyncState, ser::Error> {
+		Ok(PibdSyncState {
+			header_hash: Hash::read(reader)?,
+			header_height: reader.read_u64()?,
+			output_bitmap_root: Hash::read(reader)?,
 		})
 	}
 }
@@ -845,25 +878,18 @@ impl<T: Writeable> Writeable for SegmentResponse<T> {
 pub struct OutputSegmentResponse {
 	/// The segment response
 	pub response: SegmentResponse<OutputIdentifier>,
-	/// The root hash of the output bitmap MMR
-	pub output_bitmap_root: Hash,
 }
 
 impl Readable for OutputSegmentResponse {
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
 		let response = Readable::read(reader)?;
-		let output_bitmap_root = Readable::read(reader)?;
-		Ok(Self {
-			response,
-			output_bitmap_root,
-		})
+		Ok(Self { response })
 	}
 }
 
 impl Writeable for OutputSegmentResponse {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		Writeable::write(&self.response, writer)?;
-		Writeable::write(&self.output_bitmap_root, writer)
+		Writeable::write(&self.response, writer)
 	}
 }
 
@@ -873,19 +899,15 @@ pub struct OutputBitmapSegmentResponse {
 	pub block_hash: Hash,
 	/// The MMR segment
 	pub segment: BitmapSegment,
-	/// The root hash of the output PMMR
-	pub output_root: Hash,
 }
 
 impl Readable for OutputBitmapSegmentResponse {
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
 		let block_hash = Readable::read(reader)?;
 		let segment = Readable::read(reader)?;
-		let output_root = Readable::read(reader)?;
 		Ok(Self {
 			block_hash,
 			segment,
-			output_root,
 		})
 	}
 }
@@ -893,8 +915,7 @@ impl Readable for OutputBitmapSegmentResponse {
 impl Writeable for OutputBitmapSegmentResponse {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		Writeable::write(&self.block_hash, writer)?;
-		Writeable::write(&self.segment, writer)?;
-		Writeable::write(&self.output_root, writer)
+		Writeable::write(&self.segment, writer)
 	}
 }
 
@@ -916,10 +937,12 @@ pub enum Message {
 	Headers(HeadersData),
 	GetPeerAddrs(GetPeerAddrs),
 	PeerAddrs(PeerAddrs),
-	TxHashSetRequest(TxHashSetRequest),
+	TxHashSetRequest(ArchiveHeaderData),
 	TxHashSetArchive(TxHashSetArchive),
 	Attachment(AttachmentUpdate, Option<Bytes>),
 	TorAddress(TorAddress),
+	StartPibdSyncRequest(ArchiveHeaderData),
+	PibdSyncState(PibdSyncState),
 	GetOutputBitmapSegment(SegmentRequest),
 	OutputBitmapSegment(OutputBitmapSegmentResponse),
 	GetOutputSegment(SegmentRequest),
@@ -928,6 +951,7 @@ pub enum Message {
 	RangeProofSegment(SegmentResponse<RangeProof>),
 	GetKernelSegment(SegmentRequest),
 	KernelSegment(SegmentResponse<TxKernel>),
+	HasAnotherArchiveHeader(ArchiveHeaderData),
 }
 
 /// We receive 512 headers from a peer.
@@ -973,6 +997,11 @@ impl fmt::Display for Message {
 			Message::RangeProofSegment(_) => write!(f, "range proof segment"),
 			Message::GetKernelSegment(_) => write!(f, "get kernel segment"),
 			Message::KernelSegment(_) => write!(f, "kernel segment"),
+			Message::PibdSyncState(_) => write!(f, "PIBD sync state"),
+			Message::StartPibdSyncRequest(_) => write!(f, "start PIBD sync"),
+			Message::HasAnotherArchiveHeader(_) => {
+				write!(f, "PIBD error, has another archive header")
+			}
 		}
 	}
 }

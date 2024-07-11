@@ -194,7 +194,7 @@ impl Controller {
 	pub fn run(&mut self, server: Server) {
 		let stat_update_interval = 1;
 		let mut next_stat_update = Utc::now().timestamp() + stat_update_interval;
-		let delay = time::Duration::from_millis(50);
+		let delay = time::Duration::from_millis(250);
 		while self.ui.step() {
 			if let Some(message) = self.rx.try_iter().next() {
 				match message {

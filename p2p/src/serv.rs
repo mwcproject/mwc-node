@@ -39,6 +39,7 @@ use crate::types::{
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
+use grin_chain::txhashset::Segmenter;
 
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.
@@ -88,7 +89,7 @@ impl Server {
 
 	/// Starts a new TCP server and listen to incoming connections. This is a
 	/// blocking call until the TCP server stops.
-	pub fn listen(&self, header_cache_size: u64) -> Result<(), Error> {
+	pub fn listen(&self) -> Result<(), Error> {
 		// start TCP listener and handle incoming connections
 		let addr = SocketAddr::new(self.config.host, self.config.port);
 		let listener = TcpListener::bind(addr)?;
@@ -139,7 +140,7 @@ impl Server {
 						}
 						continue;
 					}
-					match self.handle_new_peer(stream, header_cache_size) {
+					match self.handle_new_peer(stream) {
 						Err(Error::ConnectionClose(err)) => {
 							debug!("shutting down, ignoring a new peer, {}", err)
 						}
@@ -167,7 +168,7 @@ impl Server {
 
 	/// Asks the server to connect to a new peer. Directly returns the peer if
 	/// we're already connected to the provided address.
-	pub fn connect(&self, addr: PeerAddr, header_cache_size: u64) -> Result<Arc<Peer>, Error> {
+	pub fn connect(&self, addr: PeerAddr) -> Result<Arc<Peer>, Error> {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose(String::from("node is stopping")));
 		}
@@ -281,7 +282,6 @@ impl Server {
 					self_addr,
 					&self.handshake,
 					self.peers.clone(),
-					header_cache_size,
 					peer_addr,
 					(*self).clone(),
 				)?;
@@ -302,7 +302,7 @@ impl Server {
 		}
 	}
 
-	fn handle_new_peer(&self, stream: TcpStream, header_cache_size: u64) -> Result<(), Error> {
+	fn handle_new_peer(&self, stream: TcpStream) -> Result<(), Error> {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose(String::from("Server is stopping")));
 		}
@@ -315,7 +315,6 @@ impl Server {
 			total_diff,
 			&self.handshake,
 			self.peers.clone(),
-			header_cache_size,
 			self.clone(),
 		)?;
 		self.peers.add_connected(Arc::new(peer))?;
@@ -432,7 +431,6 @@ impl ChainAdapter for DummyAdapter {
 		&self,
 		_: &[core::BlockHeader],
 		_: &PeerInfo,
-		_: u64,
 	) -> Result<bool, chain::Error> {
 		Ok(true)
 	}
@@ -447,14 +445,6 @@ impl ChainAdapter for DummyAdapter {
 	}
 
 	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error> {
-		unimplemented!()
-	}
-
-	fn process_add_headers_sync(
-		&self,
-		_: &[core::BlockHeader],
-		_: u64,
-	) -> Result<bool, chain::Error> {
 		unimplemented!()
 	}
 
@@ -488,6 +478,10 @@ impl ChainAdapter for DummyAdapter {
 		unimplemented!()
 	}
 
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error> {
+		unimplemented!()
+	}
+
 	fn get_kernel_segment(
 		&self,
 		_hash: Hash,
@@ -500,7 +494,7 @@ impl ChainAdapter for DummyAdapter {
 		&self,
 		_hash: Hash,
 		_id: SegmentIdentifier,
-	) -> Result<(Segment<BitmapChunk>, Hash), chain::Error> {
+	) -> Result<Segment<BitmapChunk>, chain::Error> {
 		unimplemented!()
 	}
 
@@ -508,7 +502,7 @@ impl ChainAdapter for DummyAdapter {
 		&self,
 		_hash: Hash,
 		_id: SegmentIdentifier,
-	) -> Result<(Segment<OutputIdentifier>, Hash), chain::Error> {
+	) -> Result<Segment<OutputIdentifier>, chain::Error> {
 		unimplemented!()
 	}
 
@@ -523,7 +517,6 @@ impl ChainAdapter for DummyAdapter {
 	fn receive_bitmap_segment(
 		&self,
 		_block_hash: Hash,
-		_output_root: Hash,
 		_segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error> {
 		unimplemented!()
@@ -532,7 +525,6 @@ impl ChainAdapter for DummyAdapter {
 	fn receive_output_segment(
 		&self,
 		_block_hash: Hash,
-		_bitmap_root: Hash,
 		_segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error> {
 		unimplemented!()

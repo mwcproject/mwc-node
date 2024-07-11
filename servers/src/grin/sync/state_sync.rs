@@ -14,6 +14,11 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use grin_core::core::hash::Hash;
+use grin_core::core::BlockHeader;
+use grin_p2p::ReasonForBan;
+use grin_util::secp::rand::Rng;
+use rand::seq::SliceRandom;
 use std::sync::Arc;
 
 use crate::chain::{self, pibd_params, SyncState, SyncStatus};
@@ -42,7 +47,12 @@ pub struct StateSync {
 
 	pibd_aborted: bool,
 	earliest_zero_pibd_peer_time: Option<DateTime<Utc>>,
+
+	// Used bitmap_output_root, in case of error we better to bun all related peers
+	output_bitmap_root_header_hash: Option<Hash>,
 }
+
+const MIN_START_PIBD_RESPONCE_LIMIT_SEC: i64 = 60;
 
 impl StateSync {
 	pub fn new(
@@ -60,6 +70,7 @@ impl StateSync {
 			last_download_size: 0,
 			pibd_aborted: false,
 			earliest_zero_pibd_peer_time: None,
+			output_bitmap_root_header_hash: None,
 		}
 	}
 
@@ -108,14 +119,33 @@ impl StateSync {
 		// Check whether we've errored and should restart pibd
 		if using_pibd {
 			if let SyncStatus::TxHashsetPibd { errored: true, .. } = self.sync_state.status() {
+				// So far in case of error, it is allways something bad happens, we was under attack, data that we got
+				// is not valid as whole, even all the blocks was fine.
+
+				// That is why we really want to ban all perrs that supported original bitmap_output hash
+				// Reason for that - that so far it is the only way to fool the node. All other hashes are part of the headers
+
+				if let Some(output_bitmap_root_header_hash) = self.output_bitmap_root_header_hash {
+					// let's check for supporters and ban who ever commited to the same hash
+					for peer in self.peers.iter() {
+						if peer.commited_to_pibd_bitmap_output_root(&output_bitmap_root_header_hash)
+						{
+							if let Err(err) = self
+								.peers
+								.ban_peer(peer.info.addr.clone(), ReasonForBan::PibdFailure)
+							{
+								error!("Unable to ban the peer {}, error {}", &peer.info.addr, err);
+							}
+						}
+					}
+					self.output_bitmap_root_header_hash = None;
+				}
+
 				let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
 				error!("PIBD Reported Failure - Restarting Sync");
 				// reset desegmenter state
-				let desegmenter = self.chain.desegmenter(&archive_header).unwrap();
+				self.chain.reset_desegmenter();
 
-				if let Some(d) = desegmenter.write().as_mut() {
-					d.reset();
-				};
 				if let Err(e) = self.chain.reset_pibd_head() {
 					error!("pibd_sync restart: reset pibd_head error = {}", e);
 				}
@@ -180,40 +210,70 @@ impl StateSync {
 					self.sync_state
 						.update_pibd_progress(false, false, 0, 1, &archive_header);
 				}
-				// Continue our PIBD process (which returns true if all segments are in)
-				if self.continue_pibd() {
-					let desegmenter = self.chain.desegmenter(&archive_header).unwrap();
-					// All segments in, validate
-					if let Some(d) = desegmenter.write().as_mut() {
-						if let Ok(true) = d.check_progress(self.sync_state.clone()) {
-							if let Err(e) = d.check_update_leaf_set_state() {
-								error!("error updating PIBD leaf set: {}", e);
-								self.sync_state.update_pibd_progress(
-									false,
-									true,
-									0,
-									1,
-									&archive_header,
-								);
-								return false;
-							}
-							if let Err(e) = d.validate_complete_state(
-								self.sync_state.clone(),
-								stop_state.clone(),
-							) {
-								error!("error validating PIBD state: {}", e);
-								self.sync_state.update_pibd_progress(
-									false,
-									true,
-									0,
-									1,
-									&archive_header,
-								);
-								return false;
-							}
-							return true;
+
+				let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
+
+				self.ban_inactive_pibd_peers();
+				self.make_pibd_hand_shake(&archive_header);
+
+				let mut has_segmenter = true;
+				if self.chain.get_desegmenter(&archive_header).read().is_none() {
+					has_segmenter = false;
+					if let Some(bitmap_output_root) =
+						self.select_pibd_bitmap_output_root(&archive_header)
+					{
+						self.output_bitmap_root_header_hash =
+							Some((bitmap_output_root, archive_header.hash()).hash());
+						if let Err(e) = self
+							.chain
+							.create_desegmenter(&archive_header, bitmap_output_root)
+						{
+							error!(
+								"Unable to create desegmenter for header at {}, Error: {}",
+								archive_header.height, e
+							);
+						} else {
+							has_segmenter = true;
 						}
-					};
+					}
+				}
+
+				if has_segmenter {
+					// Continue our PIBD process (which returns true if all segments are in)
+					if self.continue_pibd(&archive_header) {
+						let desegmenter = self.chain.get_desegmenter(&archive_header);
+						// All segments in, validate
+						if let Some(d) = desegmenter.write().as_mut() {
+							if let Ok(true) = d.check_progress(self.sync_state.clone()) {
+								if let Err(e) = d.check_update_leaf_set_state() {
+									error!("error updating PIBD leaf set: {}", e);
+									self.sync_state.update_pibd_progress(
+										false,
+										true,
+										0,
+										1,
+										&archive_header,
+									);
+									return false;
+								}
+								if let Err(e) = d.validate_complete_state(
+									self.sync_state.clone(),
+									stop_state.clone(),
+								) {
+									error!("error validating PIBD state: {}", e);
+									self.sync_state.update_pibd_progress(
+										false,
+										true,
+										0,
+										1,
+										&archive_header,
+									);
+									return false;
+								}
+								return true;
+							}
+						};
+					}
 				}
 			} else {
 				let (go, download_timeout) = self.state_sync_due();
@@ -248,12 +308,145 @@ impl StateSync {
 		true
 	}
 
+	fn get_pibd_qualify_peers(&self, archive_header: &BlockHeader) -> Vec<Arc<Peer>> {
+		// First, get max difficulty or greater peers
+		self.peers
+			.iter()
+			.connected()
+			.into_iter()
+			.filter(|peer| {
+				peer.info.height() > archive_header.height
+					&& peer.info.capabilities.contains(Capabilities::PIBD_HIST)
+			})
+			.collect()
+	}
+
+	fn get_pibd_ready_peers(&self) -> Vec<Arc<Peer>> {
+		if let Some(output_bitmap_root_header_hash) = self.output_bitmap_root_header_hash.as_ref() {
+			// First, get max difficulty or greater peers
+			self.peers
+				.iter()
+				.connected()
+				.into_iter()
+				.filter(|peer| {
+					let pibd_status = peer.pibd_status.lock();
+					match &pibd_status.output_bitmap_root {
+						Some(output_bitmap_root) => {
+							let peer_output_bitmap_root_header_hash =
+								(output_bitmap_root, pibd_status.header_hash).hash();
+							output_bitmap_root_header_hash == &peer_output_bitmap_root_header_hash
+								&& pibd_status.no_response_requests
+									<= pibd_params::STALE_REQUESTS_PER_PEER
+						}
+						None => false,
+					}
+				})
+				.collect()
+		} else {
+			vec![]
+		}
+	}
+
+	fn ban_inactive_pibd_peers(&self) {
+		let none_active_time_limit = Utc::now().timestamp() - MIN_START_PIBD_RESPONCE_LIMIT_SEC;
+		let mut banned_peers: Vec<Arc<Peer>> = Vec::new();
+		for peer in self.peers.iter().connected().into_iter() {
+			if let Some((requests, time)) = peer.get_pibd_no_response_state() {
+				// we can ban this peer if during long time we didn't hear back any correct responses
+				if time < none_active_time_limit && requests > pibd_params::STALE_REQUESTS_PER_PEER
+				{
+					banned_peers.push(peer.clone());
+				}
+			}
+		}
+		for peer in banned_peers {
+			if let Err(err) = self
+				.peers
+				.ban_peer(peer.info.addr.clone(), ReasonForBan::PibdInactive)
+			{
+				error!("Unable to ban the peer {}, error {}", &peer.info.addr, err);
+			}
+		}
+	}
+
+	fn make_pibd_hand_shake(&self, archive_header: &BlockHeader) {
+		let peers = self.get_pibd_qualify_peers(archive_header);
+
+		// Minimal interval to send request for starting the PIBD sync process
+
+		let last_handshake_time = Utc::now().timestamp() - MIN_START_PIBD_RESPONCE_LIMIT_SEC;
+
+		for peer in peers {
+			let mut need_sync = false;
+			{
+				// we don't want keep lock for a long time, that is why using need_sync to make api call later
+				let mut pibd_status = peer.pibd_status.lock();
+				if (pibd_status.header_height < archive_header.height
+					|| pibd_status.output_bitmap_root.is_none())
+					&& pibd_status.initiate_pibd_request_time < last_handshake_time
+				{
+					pibd_status.initiate_pibd_request_time = last_handshake_time;
+					need_sync = true;
+				}
+			}
+
+			if need_sync {
+				if let Err(e) =
+					peer.send_start_pibd_sync_request(archive_header.height, archive_header.hash())
+				{
+					info!(
+						"Error sending start_pibd_sync_request to peer at {}, reason: {:?}",
+						peer.info.addr, e
+					);
+				}
+			}
+		}
+	}
+
+	// Select a random peer and take it hash.
+	// Alternative approach is select the largest group, but I think it is less attack resistant.
+	// Download process takes time, so even if we ban all group after, still majority will be able to control
+	// the sync process. Using random will give a chances to even single 'good' peer.
+	fn select_pibd_bitmap_output_root(&self, archive_header: &BlockHeader) -> Option<Hash> {
+		let header_hash = archive_header.hash();
+
+		let handshake_time_limit = Utc::now().timestamp() - MIN_START_PIBD_RESPONCE_LIMIT_SEC / 2;
+
+		let mut min_handshake_time = handshake_time_limit + 1;
+
+		let mut rng = rand::thread_rng();
+
+		let output_bitmap_roots: Vec<Hash> = self
+			.peers
+			.iter()
+			.into_iter()
+			.filter_map(|peer| {
+				let pibd_status = peer.pibd_status.lock();
+				if pibd_status.header_height == archive_header.height
+					&& pibd_status.header_hash == header_hash
+					&& pibd_status.output_bitmap_root.is_some()
+				{
+					min_handshake_time =
+						std::cmp::min(min_handshake_time, pibd_status.initiate_pibd_request_time);
+					Some(pibd_status.output_bitmap_root.unwrap())
+				} else {
+					None
+				}
+			})
+			.collect();
+
+		if output_bitmap_roots.is_empty() || min_handshake_time >= handshake_time_limit {
+			return None;
+		}
+
+		return Some(output_bitmap_roots[rng.gen_range(0, output_bitmap_roots.len())]);
+	}
+
 	/// Continue the PIBD process, returning true if the desegmenter is reporting
 	/// that the process is done
-	fn continue_pibd(&mut self) -> bool {
+	fn continue_pibd(&mut self, archive_header: &BlockHeader) -> bool {
 		// Check the state of our chain to figure out what we should be requesting next
-		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
-		let desegmenter = self.chain.desegmenter(&archive_header).unwrap();
+		let desegmenter = self.chain.get_desegmenter(&archive_header);
 
 		// Remove stale requests, if we haven't recieved the segment within a minute re-request
 		// TODO: verify timing
@@ -274,8 +467,12 @@ impl StateSync {
 			}
 		}
 
-		// TODO and consider: number here depends on how many simultaneous
-		// requests we want to send to peers
+		let pibd_peers = self.get_pibd_ready_peers();
+		let desired_segments_num = std::cmp::min(
+			pibd_params::SEGMENT_REQUEST_LIMIT,
+			pibd_params::SEGMENT_REQUEST_PER_PEER * pibd_peers.len(),
+		);
+
 		let mut next_segment_ids = vec![];
 		if let Some(d) = desegmenter.write().as_mut() {
 			if let Ok(true) = d.check_progress(self.sync_state.clone()) {
@@ -284,7 +481,20 @@ impl StateSync {
 			// Figure out the next segments we need
 			// (12 is divisible by 3, to try and evenly spread the requests among the 3
 			// main pmmrs. Bitmaps segments will always be requested first)
-			next_segment_ids = d.next_desired_segments(pibd_params::SEGMENT_REQUEST_COUNT);
+			next_segment_ids = d.next_desired_segments(std::cmp::max(1, desired_segments_num));
+		}
+
+		// Choose a random "most work" peer, preferring outbound if at all possible.
+		let mut outbound_peers: Vec<Arc<Peer>> = Vec::new();
+		let mut inbound_peers: Vec<Arc<Peer>> = Vec::new();
+		let mut rng = rand::thread_rng();
+
+		for p in pibd_peers {
+			if p.info.is_outbound() {
+				outbound_peers.push(p);
+			} else if p.info.is_inbound() {
+				inbound_peers.push(p);
+			}
 		}
 
 		// For each segment, pick a desirable peer and send message
@@ -295,80 +505,63 @@ impl StateSync {
 				continue;
 			}
 
-			// TODO: urg
-			let peers = self.peers.clone();
-
-			// First, get max difficulty or greater peers
-			let peers_iter = || peers.iter().connected();
-			let max_diff = peers_iter().max_difficulty().unwrap_or(Difficulty::zero());
-			let peers_iter_max = || peers_iter().with_difficulty(|x| x >= max_diff);
-
-			// Then, further filter by PIBD capabilities v1
-			let peers_iter_pibd = || {
-				peers_iter_max()
-					.with_capabilities(Capabilities::PIBD_HIST)
-					.connected()
-			};
-
-			// If there are no suitable PIBD-Enabled peers, AND there hasn't been one for a minute,
-			// abort PIBD and fall back to txhashset download
-			// Waiting a minute helps ensures that the cancellation isn't simply due to a single non-PIBD enabled
-			// peer having the max difficulty
-			if peers_iter_pibd().count() == 0 {
-				if let None = self.earliest_zero_pibd_peer_time {
-					self.set_earliest_zero_pibd_peer_time(Some(Utc::now()));
-				}
-				if self.earliest_zero_pibd_peer_time.unwrap()
-					+ Duration::seconds(pibd_params::TXHASHSET_ZIP_FALLBACK_TIME_SECS)
-					< Utc::now()
-				{
-					// random abort test
-					info!("No PIBD-enabled max-difficulty peers for the past {} seconds - Aborting PIBD and falling back to TxHashset.zip download", pibd_params::TXHASHSET_ZIP_FALLBACK_TIME_SECS);
-					self.sync_state
-						.update_pibd_progress(true, true, 0, 1, &archive_header);
-					self.sync_state
-						.set_sync_error(chain::Error::AbortingPIBDError);
-					self.set_pibd_aborted();
-					return false;
-				}
-			} else {
-				self.set_earliest_zero_pibd_peer_time(None)
-			}
-
-			// Choose a random "most work" peer, preferring outbound if at all possible.
-			let peer = peers_iter_pibd()
-				.outbound()
-				.choose_random()
-				.or_else(|| peers_iter_pibd().inbound().choose_random());
+			let peer = outbound_peers
+				.choose(&mut rng)
+				.or_else(|| inbound_peers.choose(&mut rng));
 			trace!("Chosen peer is {:?}", peer);
 
-			if let Some(p) = peer {
-				// add to list of segments that are being tracked
-				self.sync_state.add_pibd_segment(seg_id);
-				let res = match seg_id.segment_type {
-					SegmentType::Bitmap => p.send_bitmap_segment_request(
-						archive_header.hash(),
-						seg_id.identifier.clone(),
-					),
-					SegmentType::Output => p.send_output_segment_request(
-						archive_header.hash(),
-						seg_id.identifier.clone(),
-					),
-					SegmentType::RangeProof => p.send_rangeproof_segment_request(
-						archive_header.hash(),
-						seg_id.identifier.clone(),
-					),
-					SegmentType::Kernel => p.send_kernel_segment_request(
-						archive_header.hash(),
-						seg_id.identifier.clone(),
-					),
-				};
-				if let Err(e) = res {
-					info!(
-						"Error sending request to peer at {}, reason: {:?}",
-						p.info.addr, e
-					);
-					self.sync_state.remove_pibd_segment(seg_id);
+			match peer {
+				None => {
+					// If there are no suitable PIBD-Enabled peers, AND there hasn't been one for a minute,
+					// abort PIBD and fall back to txhashset download
+					// Waiting a minute helps ensures that the cancellation isn't simply due to a single non-PIBD enabled
+					// peer having the max difficulty
+					if let None = self.earliest_zero_pibd_peer_time {
+						self.set_earliest_zero_pibd_peer_time(Some(Utc::now()));
+					}
+					if self.earliest_zero_pibd_peer_time.unwrap()
+						+ Duration::seconds(pibd_params::TXHASHSET_ZIP_FALLBACK_TIME_SECS)
+						< Utc::now()
+					{
+						// random abort test
+						info!("No PIBD-enabled max-difficulty peers for the past {} seconds - Aborting PIBD and falling back to TxHashset.zip download", pibd_params::TXHASHSET_ZIP_FALLBACK_TIME_SECS);
+						self.sync_state
+							.update_pibd_progress(true, true, 0, 1, &archive_header);
+						self.sync_state
+							.set_sync_error(chain::Error::AbortingPIBDError);
+						self.set_pibd_aborted();
+						return false;
+					}
+				}
+				Some(p) => {
+					self.set_earliest_zero_pibd_peer_time(None);
+
+					self.sync_state.add_pibd_segment(seg_id);
+					let res = match seg_id.segment_type {
+						SegmentType::Bitmap => p.send_bitmap_segment_request(
+							archive_header.hash(),
+							seg_id.identifier.clone(),
+						),
+						SegmentType::Output => p.send_output_segment_request(
+							archive_header.hash(),
+							seg_id.identifier.clone(),
+						),
+						SegmentType::RangeProof => p.send_rangeproof_segment_request(
+							archive_header.hash(),
+							seg_id.identifier.clone(),
+						),
+						SegmentType::Kernel => p.send_kernel_segment_request(
+							archive_header.hash(),
+							seg_id.identifier.clone(),
+						),
+					};
+					if let Err(e) = res {
+						info!(
+							"Error sending request to peer at {}, reason: {:?}",
+							p.info.addr, e
+						);
+						self.sync_state.remove_pibd_segment(seg_id);
+					}
 				}
 			}
 		}

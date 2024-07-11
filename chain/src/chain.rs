@@ -158,7 +158,6 @@ pub struct Chain {
 	orphans: Arc<OrphanBlockPool>,
 	txhashset: Arc<RwLock<txhashset::TxHashSet>>,
 	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
-	sync_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
 	pibd_segmenter: Arc<RwLock<Option<Segmenter>>>,
 	pibd_desegmenter: Arc<RwLock<Option<Desegmenter>>>,
 	// POW verification function
@@ -194,21 +193,8 @@ impl Chain {
 			ProtocolVersion(1),
 			None,
 		)?;
-		let mut sync_pmmr = PMMRHandle::new(
-			Path::new(&db_root).join("header").join("sync_head"),
-			false,
-			ProtocolVersion(1),
-			None,
-		)?;
 
-		setup_head(
-			&genesis,
-			&store,
-			&mut header_pmmr,
-			&mut sync_pmmr,
-			&mut txhashset,
-			false,
-		)?;
+		setup_head(&genesis, &store, &mut header_pmmr, &mut txhashset, false)?;
 
 		// Initialize the output_pos index based on UTXO set
 		// and NRD kernel_pos index based recent kernel history.
@@ -226,7 +212,6 @@ impl Chain {
 			orphans: Arc::new(OrphanBlockPool::new()),
 			txhashset: Arc::new(RwLock::new(txhashset)),
 			header_pmmr: Arc::new(RwLock::new(header_pmmr)),
-			sync_pmmr: Arc::new(RwLock::new(sync_pmmr)),
 			pibd_segmenter: Arc::new(RwLock::new(None)),
 			pibd_desegmenter: Arc::new(RwLock::new(None)),
 			pow_verifier,
@@ -238,9 +223,6 @@ impl Chain {
 		// If known bad block exists on "current chain" then rewind prior to this.
 		// Suppress any errors here in case we cannot find
 		chain.rewind_bad_block()?;
-
-		let header_head = chain.header_head()?;
-		chain.rebuild_sync_mmr(&header_head)?;
 
 		chain.log_heads()?;
 
@@ -306,7 +288,6 @@ impl Chain {
 	/// restart the output PMMRs from scratch
 	pub fn reset_chain_head_to_genesis(&self) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
-		let mut sync_pmmr = self.sync_pmmr.write();
 		let mut txhashset = self.txhashset.write();
 		let batch = self.store.batch()?;
 
@@ -322,7 +303,6 @@ impl Chain {
 			&self.genesis,
 			&self.store,
 			&mut header_pmmr,
-			&mut sync_pmmr,
 			&mut txhashset,
 			true,
 		)?;
@@ -482,16 +462,6 @@ impl Chain {
 		};
 		log_head("head", self.head()?);
 		log_head("header_head", self.header_head()?);
-		log_head("sync_head", self.get_sync_head()?);
-
-		// Needed for Node State tracking...
-		let sync_head = self.get_sync_head()?;
-		info!(
-			"init: sync_head: {} @ {} [{}]",
-			sync_head.total_difficulty.to_num(),
-			sync_head.height,
-			sync_head.last_block_h,
-		);
 
 		Ok(())
 	}
@@ -986,7 +956,7 @@ impl Chain {
 		b.header.prev_root = prev_root;
 
 		// Set the output, rangeproof and kernel MMR roots.
-		b.header.output_root = roots.output_root(&b.header);
+		b.header.output_root = roots.output_root;
 		b.header.range_proof_root = roots.rproof_root;
 		b.header.kernel_root = roots.kernel_root;
 
@@ -1128,30 +1098,45 @@ impl Chain {
 		))
 	}
 
-	/// instantiate desegmenter (in same lazy fashion as segmenter, though this should not be as
-	/// expensive an operation)
-	pub fn desegmenter(
+	/// instantiate desegmenter for this header. Expected that handshake is done and as a result, header with bitmap_root_hash is known
+	pub fn create_desegmenter(
 		&self,
 		archive_header: &BlockHeader,
-	) -> Result<Arc<RwLock<Option<Desegmenter>>>, Error> {
+		bitmap_root_hash: Hash,
+	) -> Result<(), Error> {
+		let desegmenter = self.init_desegmenter(archive_header, bitmap_root_hash)?;
+		*self.pibd_desegmenter.write() = Some(desegmenter);
+		Ok(())
+	}
+
+	/// instantiate desegmenter (in same lazy fashion as segmenter, though this should not be as
+	/// expensive an operation)
+	pub fn get_desegmenter(
+		&self,
+		archive_header: &BlockHeader,
+	) -> Arc<RwLock<Option<Desegmenter>>> {
 		// Use our cached desegmenter if we have one and the associated header matches.
 		if let Some(d) = self.pibd_desegmenter.write().as_ref() {
 			if d.header() == archive_header {
-				return Ok(self.pibd_desegmenter.clone());
+				return self.pibd_desegmenter.clone();
 			}
 		}
+		return Arc::new(RwLock::new(None));
+	}
 
-		let desegmenter = self.init_desegmenter(archive_header)?;
-		let mut cache = self.pibd_desegmenter.write();
-		*cache = Some(desegmenter.clone());
-
-		Ok(self.pibd_desegmenter.clone())
+	/// Reset desegmenter associated with this seesion
+	pub fn reset_desegmenter(&self) {
+		*self.pibd_desegmenter.write() = None
 	}
 
 	/// initialize a desegmenter, which is capable of extending the hashset by appending
 	/// PIBD segments of the three PMMR trees + Bitmap PMMR
 	/// header should be the same header as selected for the txhashset.zip archive
-	fn init_desegmenter(&self, header: &BlockHeader) -> Result<Desegmenter, Error> {
+	fn init_desegmenter(
+		&self,
+		header: &BlockHeader,
+		bitmap_root_hash: Hash,
+	) -> Result<Desegmenter, Error> {
 		debug!(
 			"init_desegmenter: initializing new desegmenter for {} at {}",
 			header.hash(),
@@ -1162,6 +1147,7 @@ impl Chain {
 			self.txhashset(),
 			self.header_pmmr.clone(),
 			header.clone(),
+			bitmap_root_hash,
 			self.genesis.header.clone(),
 			self.store.clone(),
 		))
@@ -1228,21 +1214,6 @@ impl Chain {
 			count,
 		);
 
-		Ok(())
-	}
-
-	/// Rebuild the sync MMR based on current header_head.
-	/// We rebuild the sync MMR when first entering sync mode so ensure we
-	/// have an MMR we can safely rewind based on the headers received from a peer.
-	pub fn rebuild_sync_mmr(&self, head: &Tip) -> Result<(), Error> {
-		let mut sync_pmmr = self.sync_pmmr.write();
-		let mut batch = self.store.batch()?;
-		let header = batch.get_block_header(&head.hash())?;
-		txhashset::header_extending(&mut sync_pmmr, &mut batch, |ext, batch| {
-			self.rewind_and_apply_header_fork(&header, ext, batch)?;
-			Ok(())
-		})?;
-		batch.commit()?;
 		Ok(())
 	}
 
@@ -1914,14 +1885,6 @@ impl Chain {
 		}
 	}
 
-	/// Get the tip of the current "sync" header chain.
-	/// This may be significantly different to current header chain.
-	pub fn get_sync_head(&self) -> Result<Tip, Error> {
-		let hash = self.sync_pmmr.read().head_hash()?;
-		let header = self.store.get_block_header(&hash)?;
-		Ok(Tip::from_header(&header))
-	}
-
 	/// Gets multiple headers at the provided heights.
 	/// Note: Uses the sync pmmr, not the header pmmr.
 	/// Note: This is based on the provided sync_head to support syncing against a fork.
@@ -1961,7 +1924,6 @@ fn setup_head(
 	genesis: &Block,
 	store: &store::ChainStore,
 	header_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
-	sync_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	txhashset: &mut txhashset::TxHashSet,
 	resetting_pibd: bool,
 ) -> Result<(), Error> {
@@ -1975,12 +1937,6 @@ fn setup_head(
 
 		if header_pmmr.size == 0 {
 			txhashset::header_extending(header_pmmr, &mut batch, |ext, _| {
-				ext.apply_header(&genesis.header)
-			})?;
-		}
-
-		if sync_pmmr.size == 0 {
-			txhashset::header_extending(sync_pmmr, &mut batch, |ext, _| {
 				ext.apply_header(&genesis.header)
 			})?;
 		}

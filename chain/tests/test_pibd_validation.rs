@@ -80,6 +80,12 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 		// This is going to use the same block as horizon_header
 		let segmenter = src_chain.segmenter().unwrap();
 
+		let bitmap_root = segmenter.bitmap_root().unwrap();
+		println!(
+			"Bitmap segmenter reports output bitmap root hash is {:?}",
+			bitmap_root
+		);
+
 		// BITMAP - Read + Validate, Also recreate bitmap accumulator for target tx hash set
 		// Predict number of leaves (chunks) in the bitmap MMR from the number of outputs
 		let bitmap_mmr_num_leaves =
@@ -108,19 +114,12 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 
 		for sid in identifier_iter {
 			println!("Getting bitmap segment with Segment Identifier {:?}", sid);
-			let (bitmap_segment, output_root_hash) = segmenter.bitmap_segment(sid).unwrap();
-			println!(
-				"Bitmap segmenter reports output root hash is {:?}",
-				output_root_hash
-			);
+			let bitmap_segment = segmenter.bitmap_segment(sid).unwrap();
 			// Validate bitmap segment with provided output hash
-			if let Err(e) = bitmap_segment.validate_with(
+			if let Err(e) = bitmap_segment.validate(
 				bitmap_pmmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
 				None,
-				horizon_header.output_root, // Output root we're checking for
-				horizon_header.output_mmr_size,
-				output_root_hash, // Other root
-				true,
+				bitmap_root,
 			) {
 				panic!("Unable to validate bitmap_root: {}", e);
 			}
@@ -149,19 +148,12 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 
 		for sid in identifier_iter {
 			println!("Getting output segment with Segment Identifier {:?}", sid);
-			let (output_segment, bitmap_root_hash) = segmenter.output_segment(sid).unwrap();
-			println!(
-				"Output segmenter reports bitmap hash is {:?}",
-				bitmap_root_hash
-			);
+			let output_segment = segmenter.output_segment(sid).unwrap();
 			// Validate Output
-			if let Err(e) = output_segment.validate_with(
+			if let Err(e) = output_segment.validate(
 				horizon_header.output_mmr_size, // Last MMR pos at the height being validated
 				Some(&bitmap),
 				horizon_header.output_root, // Output root we're checking for
-				horizon_header.output_mmr_size,
-				bitmap_root_hash, // Other root
-				false,
 			) {
 				panic!("Unable to validate output segment root: {}", e);
 			}
@@ -232,6 +224,6 @@ fn test_pibd_chain_validation_sample() {
 fn test_pibd_chain_validation_real() {
 	util::init_test_logger();
 	// if testing against a real chain, insert location here
-	let src_root_dir = format!("/Users/bay/.grin/main/chain_data");
+	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
 	test_pibd_chain_validation_impl(false, &src_root_dir);
 }

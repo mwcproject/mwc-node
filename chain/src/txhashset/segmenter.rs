@@ -70,16 +70,8 @@ impl Segmenter {
 		Ok(segment)
 	}
 
-	/// The root of the output PMMR based on size from the header.
-	fn output_root(&self) -> Result<Hash, Error> {
-		let txhashset = self.txhashset.read();
-		let pmmr = txhashset.output_pmmr_at(&self.header);
-		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
-		Ok(root)
-	}
-
 	/// The root of the bitmap snapshot PMMR.
-	fn bitmap_root(&self) -> Result<Hash, Error> {
+	pub fn bitmap_root(&self) -> Result<Hash, Error> {
 		let pmmr = self.bitmap_snapshot.readonly_pmmr();
 		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
 		Ok(root)
@@ -87,14 +79,10 @@ impl Segmenter {
 
 	/// Create a utxo bitmap segment based on our bitmap "snapshot" and return it with
 	/// the corresponding output root.
-	pub fn bitmap_segment(
-		&self,
-		id: SegmentIdentifier,
-	) -> Result<(Segment<BitmapChunk>, Hash), Error> {
+	pub fn bitmap_segment(&self, id: SegmentIdentifier) -> Result<Segment<BitmapChunk>, Error> {
 		let now = Instant::now();
 		let bitmap_pmmr = self.bitmap_snapshot.readonly_pmmr();
 		let segment = Segment::from_pmmr(id, &bitmap_pmmr, false)?;
-		let output_root = self.output_root()?;
 		debug!(
 			"bitmap_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
 			segment.id().height,
@@ -104,19 +92,18 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
-		Ok((segment, output_root))
+		Ok(segment)
 	}
 
 	/// Create an output segment and return it with the corresponding bitmap root.
 	pub fn output_segment(
 		&self,
 		id: SegmentIdentifier,
-	) -> Result<(Segment<OutputIdentifier>, Hash), Error> {
+	) -> Result<Segment<OutputIdentifier>, Error> {
 		let now = Instant::now();
 		let txhashset = self.txhashset.read();
 		let output_pmmr = txhashset.output_pmmr_at(&self.header);
 		let segment = Segment::from_pmmr(id, &output_pmmr, true)?;
-		let bitmap_root = self.bitmap_root()?;
 		debug!(
 			"output_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
 			segment.id().height,
@@ -126,7 +113,7 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
-		Ok((segment, bitmap_root))
+		Ok(segment)
 	}
 
 	/// Create a rangeproof segment.

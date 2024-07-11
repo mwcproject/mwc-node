@@ -71,7 +71,7 @@ fn peer_handshake() {
 	let server = Arc::new(server_inner.clone());
 
 	let p2p_inner = server.clone();
-	let _ = thread::spawn(move || p2p_inner.listen(100_000));
+	let _ = thread::spawn(move || p2p_inner.listen());
 
 	thread::sleep(time::Duration::from_secs(1));
 
@@ -86,7 +86,6 @@ fn peer_handshake() {
 		my_addr.clone(),
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
 		net_adapter,
-		100_000,
 		None,
 		server_inner,
 	)

@@ -210,7 +210,6 @@ impl Server {
 		stop_state: Option<Arc<StopState>>,
 		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<Server, Error> {
-		let header_cache_size = config.header_cache_size.unwrap_or(25_000);
 		//let duration_sync_long = config.duration_sync_long.unwrap_or(150);
 		//let duration_sync_short = config.duration_sync_short.unwrap_or(100);
 
@@ -544,7 +543,6 @@ impl Server {
 				seed_list,
 				config.p2p_config.clone(),
 				stop_state.clone(),
-				header_cache_size,
 			)?);
 		}
 
@@ -564,7 +562,7 @@ impl Server {
 		let _ = thread::Builder::new()
 			.name("p2p-server".to_string())
 			.spawn(move || {
-				if let Err(e) = p2p_inner.listen(header_cache_size) {
+				if let Err(e) = p2p_inner.listen() {
 					error!("P2P server failed with erorr: {:?}", e);
 				}
 			})?;
@@ -780,8 +778,8 @@ impl Server {
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
-	pub fn connect_peer(&self, addr: PeerAddr, header_cache_size: u64) -> Result<(), Error> {
-		self.p2p.connect(addr, header_cache_size)?;
+	pub fn connect_peer(&self, addr: PeerAddr) -> Result<(), Error> {
+		self.p2p.connect(addr)?;
 		Ok(())
 	}
 

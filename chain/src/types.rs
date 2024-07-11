@@ -18,9 +18,9 @@ use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 
 use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
-use crate::core::core::{pmmr, Block, BlockHeader, HeaderVersion, SegmentTypeIdentifier};
+use crate::core::core::{pmmr, Block, BlockHeader, SegmentTypeIdentifier};
 use crate::core::pow::Difficulty;
-use crate::core::ser::{self, PMMRIndexHashable, Readable, Reader, Writeable, Writer};
+use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::error::Error;
 use crate::util::{RwLock, RwLockWriteGuard};
 
@@ -369,7 +369,7 @@ impl TxHashsetWriteStatus for SyncState {
 #[derive(Debug)]
 pub struct TxHashSetRoots {
 	/// Output roots
-	pub output_roots: OutputRoots,
+	pub output_root: Hash,
 	/// Range Proof root
 	pub rproof_root: Hash,
 	/// Kernel root
@@ -377,26 +377,17 @@ pub struct TxHashSetRoots {
 }
 
 impl TxHashSetRoots {
-	/// Accessor for the output PMMR root (rules here are block height dependent).
-	/// We assume the header version is consistent with the block height, validated
-	/// as part of pipe::validate_header().
-	pub fn output_root(&self, header: &BlockHeader) -> Hash {
-		self.output_roots.root(header)
-	}
-
 	/// Validate roots against the provided block header.
 	pub fn validate(&self, header: &BlockHeader) -> Result<(), Error> {
 		debug!(
-			"validate roots: {} at {}, {} vs. {} (original: {}, merged: {})",
+			"validate roots: {} at {}, {} vs. {}",
 			header.hash(),
 			header.height,
 			header.output_root,
-			self.output_root(header),
-			self.output_roots.pmmr_root,
-			self.output_roots.merged_root(header),
+			self.output_root,
 		);
 
-		if header.output_root != self.output_root(header) {
+		if header.output_root != self.output_root {
 			Err(Error::InvalidRoot(
 				"Failed Output root validation".to_string(),
 			))
@@ -414,6 +405,11 @@ impl TxHashSetRoots {
 	}
 }
 
+// Note, In MWC there is no merged root. The only purpose for the merge root is to simplify syncronization.
+// In MWC sync process is not related to the blockchain. MWC using PIBD start handshake to receive
+// the output bitmap root from the peers. In case if bitmap is forged, the whole process will fail at the end,
+// node will detect that ban forger peers.
+/*
 /// A helper for the various output roots.
 #[derive(Debug)]
 pub struct OutputRoots {
@@ -447,7 +443,7 @@ impl OutputRoots {
 	fn merged_root(&self, header: &BlockHeader) -> Hash {
 		(self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size)
 	}
-}
+}*/
 
 /// Minimal struct representing a known MMR position and associated block height.
 #[derive(Clone, Copy, Debug, PartialEq)]

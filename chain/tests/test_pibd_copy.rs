@@ -87,15 +87,16 @@ impl SegmenterResponder {
 		self.chain.clone()
 	}
 
-	pub fn get_bitmap_segment(&self, seg_id: SegmentIdentifier) -> (Segment<BitmapChunk>, Hash) {
+	pub fn get_bitmap_root_hash(&self) -> Hash {
+		self.chain.segmenter().unwrap().bitmap_root().unwrap()
+	}
+
+	pub fn get_bitmap_segment(&self, seg_id: SegmentIdentifier) -> Segment<BitmapChunk> {
 		let segmenter = self.chain.segmenter().unwrap();
 		segmenter.bitmap_segment(seg_id).unwrap()
 	}
 
-	pub fn get_output_segment(
-		&self,
-		seg_id: SegmentIdentifier,
-	) -> (Segment<OutputIdentifier>, Hash) {
+	pub fn get_output_segment(&self, seg_id: SegmentIdentifier) -> Segment<OutputIdentifier> {
 		let segmenter = self.chain.segmenter().unwrap();
 		segmenter.output_segment(seg_id).unwrap()
 	}
@@ -174,11 +175,18 @@ impl DesegmenterRequestor {
 		}
 	}
 
+	pub fn init_desegmenter(&mut self, bitmap_root_hash: Hash) {
+		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
+		self.chain
+			.create_desegmenter(&archive_header, bitmap_root_hash)
+			.unwrap();
+	}
+
 	// Emulate `continue_pibd` function, which would be called from state sync
 	// return whether is complete
 	pub fn continue_pibd(&mut self) -> bool {
 		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
-		let desegmenter = self.chain.desegmenter(&archive_header).unwrap();
+		let desegmenter = self.chain.get_desegmenter(&archive_header);
 
 		// Apply segments... TODO: figure out how this should be called, might
 		// need to be a separate thread.
@@ -205,17 +213,15 @@ impl DesegmenterRequestor {
 			// Perform request and response
 			match seg_id.segment_type {
 				SegmentType::Bitmap => {
-					let (seg, output_root) =
-						self.responder.get_bitmap_segment(seg_id.identifier.clone());
+					let seg = self.responder.get_bitmap_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_bitmap_segment(seg, output_root).unwrap();
+						d.add_bitmap_segment(seg).unwrap();
 					}
 				}
 				SegmentType::Output => {
-					let (seg, bitmap_root) =
-						self.responder.get_output_segment(seg_id.identifier.clone());
+					let seg = self.responder.get_output_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_output_segment(seg, Some(bitmap_root)).unwrap();
+						d.add_output_segment(seg).unwrap();
 					}
 				}
 				SegmentType::RangeProof => {
@@ -242,16 +248,10 @@ impl DesegmenterRequestor {
 		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
 		debug!("Archive Header is {:?}", archive_header);
 		debug!("TXHashset output root is {:?}", roots);
-		debug!(
-			"TXHashset merged output root is {:?}",
-			roots.output_roots.root(&archive_header)
-		);
+		debug!("TXHashset merged output root is {:?}", roots.output_root);
 		assert_eq!(archive_header.range_proof_root, roots.rproof_root);
 		assert_eq!(archive_header.kernel_root, roots.kernel_root);
-		assert_eq!(
-			archive_header.output_root,
-			roots.output_roots.root(&archive_header)
-		);
+		assert_eq!(archive_header.output_root, roots.output_root);
 	}
 }
 fn test_pibd_copy_impl(
@@ -279,6 +279,7 @@ fn test_pibd_copy_impl(
 	}
 
 	let src_responder = Arc::new(SegmenterResponder::new(src_root_dir, genesis.clone()));
+	let bitmap_root_hash = src_responder.get_bitmap_root_hash();
 	let mut dest_requestor =
 		DesegmenterRequestor::new(dest_root_dir, genesis.clone(), src_responder);
 
@@ -289,6 +290,8 @@ fn test_pibd_copy_impl(
 			return;
 		}
 	}
+
+	dest_requestor.init_desegmenter(bitmap_root_hash);
 
 	// Perform until desegmenter reports it's done
 	while !dest_requestor.continue_pibd() {}
@@ -327,12 +330,9 @@ fn test_pibd_copy_real() {
 	let copy_headers_to_template = false;
 
 	// if testing against a real chain, insert location here
-	let src_root_dir = format!("/home/yeastplume/Projects/grin-project/servers/floo-1/chain_data");
-	let dest_template_dir = format!(
-		"/home/yeastplume/Projects/grin-project/servers/floo-pibd-1/chain_data_headers_only"
-	);
-	let dest_root_dir =
-		format!("/home/yeastplume/Projects/grin-project/servers/floo-pibd-1/chain_data_test_copy");
+	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
+	let dest_template_dir = format!("/Users/bay/.mwc/_floo2/chain_data");
+	let dest_root_dir = format!("/Users/bay/.mwc/_floo2/chain_data");
 	if copy_headers_to_template {
 		clean_output_dir(&dest_template_dir);
 		test_pibd_copy_impl(false, &src_root_dir, &dest_template_dir, None);

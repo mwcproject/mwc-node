@@ -40,6 +40,7 @@ use crate::grin_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, 
 use crate::msg::PeerAddrs;
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
+use grin_chain::txhashset::Segmenter;
 use std::time::Instant;
 
 /// Maximum number of block headers a peer should ever send
@@ -526,6 +527,8 @@ enum_from_primitive! {
 		ManualBan = 5,
 		FraudHeight = 6,
 		BadHandshake = 7,
+		PibdFailure = 8,
+		PibdInactive = 9,
 	}
 }
 
@@ -701,12 +704,6 @@ pub trait ChainAdapter: Sync + Send {
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error>;
 
-	fn process_add_headers_sync(
-		&self,
-		bh: &[core::BlockHeader],
-		header_cache_size: u64,
-	) -> Result<bool, chain::Error>;
-
 	/// A set of block header has been received, typically in response to a
 	/// block
 	/// header request.
@@ -714,7 +711,6 @@ pub trait ChainAdapter: Sync + Send {
 		&self,
 		bh: &[core::BlockHeader],
 		peer_info: &PeerInfo,
-		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error>;
 
 	/// Finds a list of block headers based on the provided locator. Tries to
@@ -766,6 +762,9 @@ pub trait ChainAdapter: Sync + Send {
 	/// Delete file if tmp file already exists
 	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf;
 
+	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error>;
+
 	fn get_kernel_segment(
 		&self,
 		hash: Hash,
@@ -776,13 +775,13 @@ pub trait ChainAdapter: Sync + Send {
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<(Segment<BitmapChunk>, Hash), chain::Error>;
+	) -> Result<Segment<BitmapChunk>, chain::Error>;
 
 	fn get_output_segment(
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<(Segment<OutputIdentifier>, Hash), chain::Error>;
+	) -> Result<Segment<OutputIdentifier>, chain::Error>;
 
 	fn get_rangeproof_segment(
 		&self,
@@ -793,14 +792,12 @@ pub trait ChainAdapter: Sync + Send {
 	fn receive_bitmap_segment(
 		&self,
 		block_hash: Hash,
-		output_root: Hash,
 		segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error>;
 
 	fn receive_output_segment(
 		&self,
 		block_hash: Hash,
-		bitmap_root: Hash,
 		segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error>;
 

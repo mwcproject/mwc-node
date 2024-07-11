@@ -37,6 +37,7 @@ use crate::types::{
 use crate::util::secp::pedersen::RangeProof;
 use chrono::prelude::*;
 use chrono::Duration;
+use grin_chain::txhashset::Segmenter;
 use grin_util::StopState;
 
 const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -561,12 +562,8 @@ impl ChainAdapter for Peers {
 		&self,
 		headers: &[core::BlockHeader],
 		peer_info: &PeerInfo,
-		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error> {
-		if !self
-			.adapter
-			.headers_received(headers, peer_info, header_sync_cache_size)?
-		{
+		if !self.adapter.headers_received(headers, peer_info)? {
 			// if the peer sent us a block header that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(peer_info.addr.clone(), ReasonForBan::BadBlockHeader)
@@ -575,15 +572,6 @@ impl ChainAdapter for Peers {
 		} else {
 			Ok(true)
 		}
-	}
-
-	// note not needed to implement because adapter is called by headers_received and header_received
-	fn process_add_headers_sync(
-		&self,
-		_: &[core::BlockHeader],
-		_: u64,
-	) -> Result<bool, chain::Error> {
-		unimplemented!()
 	}
 
 	fn locate_headers(&self, hs: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
@@ -643,6 +631,11 @@ impl ChainAdapter for Peers {
 		self.adapter.get_tmpfile_pathname(tmpfile_name)
 	}
 
+	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error> {
+		self.adapter.prepare_segmenter()
+	}
+
 	fn get_kernel_segment(
 		&self,
 		hash: Hash,
@@ -655,7 +648,7 @@ impl ChainAdapter for Peers {
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<(Segment<BitmapChunk>, Hash), chain::Error> {
+	) -> Result<Segment<BitmapChunk>, chain::Error> {
 		self.adapter.get_bitmap_segment(hash, id)
 	}
 
@@ -663,7 +656,7 @@ impl ChainAdapter for Peers {
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<(Segment<OutputIdentifier>, Hash), chain::Error> {
+	) -> Result<Segment<OutputIdentifier>, chain::Error> {
 		self.adapter.get_output_segment(hash, id)
 	}
 
@@ -678,21 +671,17 @@ impl ChainAdapter for Peers {
 	fn receive_bitmap_segment(
 		&self,
 		block_hash: Hash,
-		output_root: Hash,
 		segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error> {
-		self.adapter
-			.receive_bitmap_segment(block_hash, output_root, segment)
+		self.adapter.receive_bitmap_segment(block_hash, segment)
 	}
 
 	fn receive_output_segment(
 		&self,
 		block_hash: Hash,
-		bitmap_root: Hash,
 		segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error> {
-		self.adapter
-			.receive_output_segment(block_hash, bitmap_root, segment)
+		self.adapter.receive_output_segment(block_hash, segment)
 	}
 
 	fn receive_rangeproof_segment(

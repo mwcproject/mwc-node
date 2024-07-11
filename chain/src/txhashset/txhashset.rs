@@ -32,7 +32,7 @@ use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::{BitmapAccumulator, BitmapChunk};
 use crate::txhashset::{RewindableKernelView, UTXOView};
-use crate::types::{CommitPos, HashHeight, OutputRoots, Tip, TxHashSetRoots, TxHashsetWriteStatus};
+use crate::types::{CommitPos, HashHeight, Tip, TxHashSetRoots, TxHashsetWriteStatus};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip, StopState};
 use crate::SyncState;
@@ -488,10 +488,7 @@ impl TxHashSet {
 		let kernel_pmmr = ReadonlyPMMR::at(&self.kernel_pmmr_h.backend, self.kernel_pmmr_h.size);
 
 		Ok(TxHashSetRoots {
-			output_roots: OutputRoots {
-				pmmr_root: output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
-				bitmap_root: self.bitmap_accumulator.root(),
-			},
+			output_root: output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 			rproof_root: rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 			kernel_root: kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 		})
@@ -1749,10 +1746,7 @@ impl<'a> Extension<'a> {
 	/// and kernel MMRs.
 	pub fn roots(&self) -> Result<TxHashSetRoots, Error> {
 		Ok(TxHashSetRoots {
-			output_roots: OutputRoots {
-				pmmr_root: self.output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
-				bitmap_root: self.bitmap_accumulator.root(),
-			},
+			output_root: self.output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 			rproof_root: self.rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 			kernel_root: self.kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
 		})

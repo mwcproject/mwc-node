@@ -42,6 +42,7 @@ pub struct Desegmenter {
 	txhashset: Arc<RwLock<TxHashSet>>,
 	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
 	archive_header: BlockHeader,
+	bitmap_root_hash: Hash, // bitmap root hash must come as a result of handshake process
 	store: Arc<store::ChainStore>,
 
 	genesis: BlockHeader,
@@ -78,6 +79,7 @@ impl Desegmenter {
 		txhashset: Arc<RwLock<TxHashSet>>,
 		header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
 		archive_header: BlockHeader,
+		bitmap_root_hash: Hash,
 		genesis: BlockHeader,
 		store: Arc<store::ChainStore>,
 	) -> Desegmenter {
@@ -86,6 +88,7 @@ impl Desegmenter {
 			txhashset,
 			header_pmmr,
 			archive_header,
+			bitmap_root_hash,
 			store,
 			genesis,
 			bitmap_accumulator: BitmapAccumulator::new(),
@@ -653,19 +656,12 @@ impl Desegmenter {
 	}
 
 	/// Adds and validates a bitmap chunk
-	pub fn add_bitmap_segment(
-		&mut self,
-		segment: Segment<BitmapChunk>,
-		output_root_hash: Hash,
-	) -> Result<(), Error> {
+	pub fn add_bitmap_segment(&mut self, segment: Segment<BitmapChunk>) -> Result<(), Error> {
 		trace!("pibd_desegmenter: add bitmap segment");
-		segment.validate_with(
+		segment.validate(
 			self.bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
 			None,
-			self.archive_header.output_root, // Output root we're checking for
-			self.archive_header.output_mmr_size,
-			output_root_hash, // Other root
-			true,
+			self.bitmap_root_hash,
 		)?;
 		trace!("pibd_desegmenter: adding segment to cache");
 		// All okay, add to our cached list of bitmap segments
@@ -778,24 +774,17 @@ impl Desegmenter {
 	}
 
 	/// Adds a output segment
-	pub fn add_output_segment(
-		&mut self,
-		segment: Segment<OutputIdentifier>,
-		_bitmap_root: Option<Hash>,
-	) -> Result<(), Error> {
+	pub fn add_output_segment(&mut self, segment: Segment<OutputIdentifier>) -> Result<(), Error> {
 		trace!("pibd_desegmenter: add output segment");
 		// TODO: This, something very wrong, probably need to reset entire body sync
 		// check bitmap root matches what we already have
 		/*if bitmap_root != Some(self.bitmap_accumulator.root()) {
 
 		}*/
-		segment.validate_with(
+		segment.validate(
 			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
 			self.bitmap_cache.as_ref(),
 			self.archive_header.output_root, // Output root we're checking for
-			self.archive_header.output_mmr_size,
-			self.bitmap_accumulator.root(), // Other root
-			false,
 		)?;
 		self.cache_output_segment(segment);
 		Ok(())

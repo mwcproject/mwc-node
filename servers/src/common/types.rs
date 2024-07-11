@@ -218,10 +218,6 @@ pub struct ServerConfig {
 	/// (Default: 50 ms)
 	pub duration_sync_long: Option<i64>,
 
-	/// Header cache size
-	/// Set to 0 for now
-	pub header_cache_size: Option<u64>,
-
 	/// Invalid Block hash list
 	/// (Default: none)
 	pub invalid_block_hashes: Option<Vec<String>>,
@@ -288,7 +284,6 @@ impl Default for ServerConfig {
 			chain_validation_mode: ChainValidationMode::default(),
 			pool_config: pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
-			header_cache_size: Some(0),
 			invalid_block_hashes: Some(vec![]),
 			duration_sync_short: Some(30),
 			duration_sync_long: Some(50),
