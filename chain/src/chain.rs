@@ -1083,6 +1083,18 @@ impl Chain {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
 
+		let local_output_mmr_size = txhashset.output_mmr_size();
+		let local_kernel_mmr_size = txhashset.kernel_mmr_size();
+		let local_rangeproof_mmr_size = txhashset.rangeproof_mmr_size();
+
+		if header.output_mmr_size > local_output_mmr_size
+			|| header.kernel_mmr_size > local_kernel_mmr_size
+			|| header.output_mmr_size > local_rangeproof_mmr_size
+		{
+			return Err(Error::ChainInSyncing(format!("Header expected mmr size: output:{} kernel:{}.  Chains mmr size: output:{} kernel:{} rangeproof:{}",
+													 header.output_mmr_size, header.kernel_mmr_size, local_output_mmr_size, local_kernel_mmr_size, local_rangeproof_mmr_size)));
+		}
+
 		let bitmap_snapshot =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				ext.extension.rewind(header, batch)?;

@@ -198,6 +198,9 @@ pub enum Error {
 	/// Sync MMR is reorganized
 	#[error("MMR is reorganized: {0}")]
 	SyncMMRChanged(String),
+	/// The blockchain is in sync process, not all data is available
+	#[error("Chain is syncing, data is not complete")]
+	ChainInSyncing(String),
 }
 
 impl Error {
