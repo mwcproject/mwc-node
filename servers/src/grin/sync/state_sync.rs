@@ -52,8 +52,6 @@ pub struct StateSync {
 	output_bitmap_root_header_hash: Option<Hash>,
 }
 
-const MIN_START_PIBD_RESPONCE_LIMIT_SEC: i64 = 60;
-
 impl StateSync {
 	pub fn new(
 		sync_state: Arc<SyncState>,
@@ -240,39 +238,56 @@ impl StateSync {
 
 				if has_segmenter {
 					// Continue our PIBD process (which returns true if all segments are in)
-					if self.continue_pibd(&archive_header) {
-						let desegmenter = self.chain.get_desegmenter(&archive_header);
-						// All segments in, validate
-						if let Some(d) = desegmenter.write().as_mut() {
-							if let Ok(true) = d.check_progress(self.sync_state.clone()) {
-								if let Err(e) = d.check_update_leaf_set_state() {
-									error!("error updating PIBD leaf set: {}", e);
-									self.sync_state.update_pibd_progress(
-										false,
-										true,
-										0,
-										1,
-										&archive_header,
-									);
-									return false;
+					match self.continue_pibd(&archive_header) {
+						Ok(true) => {
+							let desegmenter = self.chain.get_desegmenter(&archive_header);
+							// All segments in, validate
+							if let Some(d) = desegmenter.write().as_mut() {
+								if let Ok(true) = d.check_progress(self.sync_state.clone()) {
+									if let Err(e) = d.check_update_leaf_set_state() {
+										error!("error updating PIBD leaf set: {}", e);
+										self.sync_state.update_pibd_progress(
+											false,
+											true,
+											0,
+											1,
+											&archive_header,
+										);
+										return false;
+									}
+									if let Err(e) = d.validate_complete_state(
+										self.sync_state.clone(),
+										stop_state.clone(),
+									) {
+										error!("error validating PIBD state: {}", e);
+										self.sync_state.update_pibd_progress(
+											false,
+											true,
+											0,
+											1,
+											&archive_header,
+										);
+										return false;
+									}
+									return true;
 								}
-								if let Err(e) = d.validate_complete_state(
-									self.sync_state.clone(),
-									stop_state.clone(),
-								) {
-									error!("error validating PIBD state: {}", e);
-									self.sync_state.update_pibd_progress(
-										false,
-										true,
-										0,
-										1,
-										&archive_header,
-									);
-									return false;
-								}
-								return true;
-							}
-						};
+							};
+						}
+						Ok(false) => (), // nothing to do, continue
+						Err(e) => {
+							// need to restart the sync process, but not ban the peers, it is not there fault
+							error!("Need to restart the PIBD resync because of the error {}", e);
+							// resetting to none, so no peers will be banned
+							self.output_bitmap_root_header_hash = None;
+							self.sync_state.update_pibd_progress(
+								false,
+								true,
+								0,
+								1,
+								&archive_header,
+							);
+							return false;
+						}
 					}
 				}
 			} else {
@@ -348,7 +363,8 @@ impl StateSync {
 	}
 
 	fn ban_inactive_pibd_peers(&self) {
-		let none_active_time_limit = Utc::now().timestamp() - MIN_START_PIBD_RESPONCE_LIMIT_SEC;
+		let none_active_time_limit =
+			Utc::now().timestamp() - pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS;
 		let mut banned_peers: Vec<Arc<Peer>> = Vec::new();
 		for peer in self.peers.iter().connected().into_iter() {
 			if let Some((requests, time)) = peer.get_pibd_no_response_state() {
@@ -374,7 +390,8 @@ impl StateSync {
 
 		// Minimal interval to send request for starting the PIBD sync process
 
-		let last_handshake_time = Utc::now().timestamp() - MIN_START_PIBD_RESPONCE_LIMIT_SEC;
+		let last_handshake_time =
+			Utc::now().timestamp() - pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS;
 
 		for peer in peers {
 			let mut need_sync = false;
@@ -410,7 +427,8 @@ impl StateSync {
 	fn select_pibd_bitmap_output_root(&self, archive_header: &BlockHeader) -> Option<Hash> {
 		let header_hash = archive_header.hash();
 
-		let handshake_time_limit = Utc::now().timestamp() - MIN_START_PIBD_RESPONCE_LIMIT_SEC / 2;
+		let handshake_time_limit =
+			Utc::now().timestamp() - pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS / 2;
 
 		let mut min_handshake_time = handshake_time_limit + 1;
 
@@ -444,7 +462,7 @@ impl StateSync {
 
 	/// Continue the PIBD process, returning true if the desegmenter is reporting
 	/// that the process is done
-	fn continue_pibd(&mut self, archive_header: &BlockHeader) -> bool {
+	fn continue_pibd(&mut self, archive_header: &BlockHeader) -> Result<bool, grin_chain::Error> {
 		// Check the state of our chain to figure out what we should be requesting next
 		let desegmenter = self.chain.get_desegmenter(&archive_header);
 
@@ -462,7 +480,7 @@ impl StateSync {
 					error!("error applying segment: {}", e);
 					self.sync_state
 						.update_pibd_progress(false, true, 0, 1, &archive_header);
-					return false;
+					return Ok(false);
 				}
 			}
 		}
@@ -476,12 +494,12 @@ impl StateSync {
 		let mut next_segment_ids = vec![];
 		if let Some(d) = desegmenter.write().as_mut() {
 			if let Ok(true) = d.check_progress(self.sync_state.clone()) {
-				return true;
+				return Ok(true);
 			}
 			// Figure out the next segments we need
 			// (12 is divisible by 3, to try and evenly spread the requests among the 3
 			// main pmmrs. Bitmaps segments will always be requested first)
-			next_segment_ids = d.next_desired_segments(std::cmp::max(1, desired_segments_num));
+			next_segment_ids = d.next_desired_segments(std::cmp::max(1, desired_segments_num))?;
 		}
 
 		// Choose a random "most work" peer, preferring outbound if at all possible.
@@ -530,7 +548,7 @@ impl StateSync {
 						self.sync_state
 							.set_sync_error(chain::Error::AbortingPIBDError);
 						self.set_pibd_aborted();
-						return false;
+						return Ok(false);
 					}
 				}
 				Some(p) => {
@@ -565,7 +583,7 @@ impl StateSync {
 				}
 			}
 		}
-		false
+		Ok(false)
 	}
 
 	fn request_state(&self, header_head: &chain::Tip) -> Result<Arc<Peer>, p2p::Error> {

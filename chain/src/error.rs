@@ -195,6 +195,9 @@ pub enum Error {
 	/// Other issue with segment
 	#[error("Invalid segment: {0}")]
 	InvalidSegment(String),
+	/// Sync MMR is reorganized
+	#[error("MMR is reorganized: {0}")]
+	SyncMMRChanged(String),
 }
 
 impl Error {

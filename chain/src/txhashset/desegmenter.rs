@@ -34,6 +34,7 @@ use crate::pibd_params;
 use crate::store;
 use crate::txhashset;
 
+use crate::Error::SyncMMRChanged;
 use croaring::Bitmap;
 
 /// Desegmenter for rebuilding a txhashset from PIBD segments
@@ -446,7 +447,10 @@ impl Desegmenter {
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_segments(&mut self, max_elements: usize) -> Vec<SegmentTypeIdentifier> {
+	pub fn next_desired_segments(
+		&mut self,
+		max_elements: usize,
+	) -> Result<Vec<SegmentTypeIdentifier>, Error> {
 		let mut return_vec = vec![];
 		// First check for required bitmap elements
 		if self.bitmap_cache.is_none() {
@@ -463,7 +467,7 @@ impl Desegmenter {
 					if !self.has_bitmap_segment_with_id(id) {
 						return_vec.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id));
 						if return_vec.len() >= max_elements {
-							return return_vec;
+							return Ok(return_vec);
 						}
 					}
 				}
@@ -488,10 +492,14 @@ impl Desegmenter {
 			);
 
 			let mut elems_added = 0;
+			let mut found_output_first = false;
 			while let Some(output_id) = output_identifier_iter.next() {
 				// Advance output iterator to next needed position
-				let (_first, last) =
+				let (first, last) =
 					output_id.segment_pos_range(self.archive_header.output_mmr_size);
+				if first == local_output_mmr_size {
+					found_output_first = true;
+				}
 				if last <= local_output_mmr_size {
 					continue;
 				}
@@ -507,15 +515,23 @@ impl Desegmenter {
 				}
 			}
 
+			if !found_output_first && local_output_mmr_size > 1 {
+				return Err(SyncMMRChanged("Outputs MMR is not aligned".into()));
+			}
+
 			let mut rangeproof_identifier_iter = SegmentIdentifier::traversal_iter(
 				self.archive_header.output_mmr_size,
 				self.default_rangeproof_segment_height,
 			);
 
 			elems_added = 0;
+			let mut found_rangeproof_first = false;
 			while let Some(rp_id) = rangeproof_identifier_iter.next() {
-				let (_first, last) = rp_id.segment_pos_range(self.archive_header.output_mmr_size);
+				let (first, last) = rp_id.segment_pos_range(self.archive_header.output_mmr_size);
 				// Advance rangeproof iterator to next needed position
+				if first == local_rangeproof_mmr_size {
+					found_rangeproof_first = true;
+				}
 				if last <= local_rangeproof_mmr_size {
 					continue;
 				}
@@ -531,15 +547,23 @@ impl Desegmenter {
 				}
 			}
 
+			if !found_rangeproof_first && local_rangeproof_mmr_size > 1 {
+				return Err(SyncMMRChanged("Rangeproof MMR is not aligned".into()));
+			}
+
 			let mut kernel_identifier_iter = SegmentIdentifier::traversal_iter(
 				self.archive_header.kernel_mmr_size,
 				self.default_kernel_segment_height,
 			);
 
 			elems_added = 0;
+			let mut found_kernel_checkpoint = false;
 			while let Some(k_id) = kernel_identifier_iter.next() {
 				// Advance kernel iterator to next needed position
-				let (_first, last) = k_id.segment_pos_range(self.archive_header.kernel_mmr_size);
+				let (first, last) = k_id.segment_pos_range(self.archive_header.kernel_mmr_size);
+				if local_kernel_mmr_size == first {
+					found_kernel_checkpoint = true;
+				}
 				// Advance rangeproof iterator to next needed position
 				if last <= local_kernel_mmr_size {
 					continue;
@@ -555,11 +579,15 @@ impl Desegmenter {
 					break;
 				}
 			}
+
+			if !found_kernel_checkpoint && local_kernel_mmr_size > 1 {
+				return Err(SyncMMRChanged("Kernel MMR is not aligned".into()));
+			}
 		}
 		if return_vec.is_empty() && self.bitmap_cache.is_some() {
 			self.all_segments_complete = true;
 		}
-		return_vec
+		Ok(return_vec)
 	}
 
 	/// 'Finalize' the bitmap accumulator, storing an in-memory copy of the bitmap for
