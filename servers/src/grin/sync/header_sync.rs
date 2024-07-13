@@ -180,7 +180,7 @@ impl HeaderSync {
 
 		// Choose a random "most work" peer, preferring outbound if at all possible.
 		peers_iter().outbound().choose_random().or_else(|| {
-			warn!("no suitable outbound peer for header sync, considering inbound");
+			debug!("no suitable outbound peer for header sync, considering inbound");
 			peers_iter().inbound().choose_random()
 		})
 	}
