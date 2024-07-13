@@ -674,12 +674,14 @@ where
 	fn receive_bitmap_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error> {
-		debug!(
-			"Received bitmap segment {} for block_hash: {}",
+		info!(
+			"Received bitmap segment {} for block_hash: {}, bitmap_root_hash: {}",
 			segment.identifier().idx,
-			block_hash
+			block_hash,
+			bitmap_root_hash
 		);
 		// TODO: Entire process needs to be restarted if the horizon block
 		// has changed (perhaps not here, NB this has to go somewhere)
@@ -695,7 +697,7 @@ where
 			.write()
 			.as_mut()
 		{
-			let res = d.add_bitmap_segment(segment);
+			let res = d.add_bitmap_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
 					"Validation of incoming bitmap segment failed: {:?}, reason: {}",
@@ -717,12 +719,14 @@ where
 	fn receive_output_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error> {
-		debug!(
-			"Received output segment {} for block_hash: {}",
+		info!(
+			"Received output segment {} for block_hash: {}, bitmap_root_hash: {}",
 			segment.identifier().idx,
 			block_hash,
+			bitmap_root_hash
 		);
 		let archive_header = self.chain().txhashset_archive_header_header_only()?;
 		if archive_header.hash() != block_hash {
@@ -736,7 +740,7 @@ where
 			.write()
 			.as_mut()
 		{
-			let res = d.add_output_segment(segment);
+			let res = d.add_output_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
 					"Validation of incoming output segment failed: {:?}, reason: {}",
@@ -758,12 +762,14 @@ where
 	fn receive_rangeproof_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<RangeProof>,
 	) -> Result<bool, chain::Error> {
-		debug!(
-			"Received proof segment {} for block_hash: {}",
+		info!(
+			"Received proof segment {} for block_hash: {}, bitmap_root_hash: {}",
 			segment.identifier().idx,
 			block_hash,
+			bitmap_root_hash
 		);
 		let archive_header = self.chain().txhashset_archive_header_header_only()?;
 		if archive_header.hash() != block_hash {
@@ -777,7 +783,7 @@ where
 			.write()
 			.as_mut()
 		{
-			let res = d.add_rangeproof_segment(segment);
+			let res = d.add_rangeproof_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
 					"Validation of incoming rangeproof segment failed: {:?}, reason: {}",
@@ -799,12 +805,14 @@ where
 	fn receive_kernel_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<bool, chain::Error> {
-		debug!(
-			"Received kernel segment {} for block_hash: {}",
+		info!(
+			"Received kernel segment {} for block_hash: {}, bitmap_root_hash: {}",
 			segment.identifier().idx,
 			block_hash,
+			bitmap_root_hash
 		);
 		let archive_header = self.chain().txhashset_archive_header_header_only()?;
 		if archive_header.hash() != block_hash {
@@ -818,7 +826,7 @@ where
 			.write()
 			.as_mut()
 		{
-			let res = d.add_kernel_segment(segment);
+			let res = d.add_kernel_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
 					"Validation of incoming rangeproof segment failed: {:?}, reason: {}",

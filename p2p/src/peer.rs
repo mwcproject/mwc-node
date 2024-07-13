@@ -488,10 +488,13 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		debug!(
-			"Requesting peer {} for outputs bitmap, hash {}, id {}",
-			self.info.addr, h, identifier
-		);
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for outputs bitmap, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
 		self.report_pibd_request();
 		self.send(
 			&SegmentRequest {
@@ -507,10 +510,13 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		debug!(
-			"Requesting peer {} for outputs, hash {}, id {}",
-			self.info.addr, h, identifier
-		);
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for outputs, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
 		self.report_pibd_request();
 		self.send(
 			&SegmentRequest {
@@ -526,10 +532,13 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		debug!(
-			"Requesting peer {} for rangeproofs, hash {}, id {}",
-			self.info.addr, h, identifier
-		);
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for rangeproofs, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
 		self.report_pibd_request();
 		self.send(
 			&SegmentRequest {
@@ -545,10 +554,13 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		debug!(
-			"Requesting peer {} for kernels, hash {}, id {}",
-			self.info.addr, h, identifier
-		);
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for kernels, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
 		self.report_pibd_request();
 		self.send(
 			&SegmentRequest {
@@ -838,33 +850,41 @@ impl ChainAdapter for TrackingAdapter {
 	fn receive_bitmap_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_bitmap_segment(block_hash, segment)
+		self.adapter
+			.receive_bitmap_segment(block_hash, bitmap_root_hash, segment)
 	}
 
 	fn receive_output_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_output_segment(block_hash, segment)
+		self.adapter
+			.receive_output_segment(block_hash, bitmap_root_hash, segment)
 	}
 
 	fn receive_rangeproof_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<RangeProof>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_rangeproof_segment(block_hash, segment)
+		self.adapter
+			.receive_rangeproof_segment(block_hash, bitmap_root_hash, segment)
 	}
 
 	fn receive_kernel_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_kernel_segment(block_hash, segment)
+		self.adapter
+			.receive_kernel_segment(block_hash, bitmap_root_hash, segment)
 	}
 }
 

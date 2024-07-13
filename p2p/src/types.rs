@@ -792,24 +792,28 @@ pub trait ChainAdapter: Sync + Send {
 	fn receive_bitmap_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error>;
 
 	fn receive_output_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error>;
 
 	fn receive_rangeproof_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<RangeProof>,
 	) -> Result<bool, chain::Error>;
 
 	fn receive_kernel_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<bool, chain::Error>;
 }

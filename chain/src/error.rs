@@ -195,12 +195,12 @@ pub enum Error {
 	/// Other issue with segment
 	#[error("Invalid segment: {0}")]
 	InvalidSegment(String),
-	/// Sync MMR is reorganized
-	#[error("MMR is reorganized: {0}")]
-	SyncMMRChanged(String),
 	/// The blockchain is in sync process, not all data is available
 	#[error("Chain is syncing, data is not complete")]
 	ChainInSyncing(String),
+	/// Invalid bitmap root hash. Probably old traffic or somebody attacking as
+	#[error("Invalid bitmap root hash")]
+	InvalidBitmapRoot,
 }
 
 impl Error {

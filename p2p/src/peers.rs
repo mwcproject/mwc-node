@@ -671,33 +671,41 @@ impl ChainAdapter for Peers {
 	fn receive_bitmap_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<BitmapChunk>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_bitmap_segment(block_hash, segment)
+		self.adapter
+			.receive_bitmap_segment(block_hash, bitmap_root_hash, segment)
 	}
 
 	fn receive_output_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<OutputIdentifier>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_output_segment(block_hash, segment)
+		self.adapter
+			.receive_output_segment(block_hash, bitmap_root_hash, segment)
 	}
 
 	fn receive_rangeproof_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<RangeProof>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_rangeproof_segment(block_hash, segment)
+		self.adapter
+			.receive_rangeproof_segment(block_hash, bitmap_root_hash, segment)
 	}
 
 	fn receive_kernel_segment(
 		&self,
 		block_hash: Hash,
+		bitmap_root_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<bool, chain::Error> {
-		self.adapter.receive_kernel_segment(block_hash, segment)
+		self.adapter
+			.receive_kernel_segment(block_hash, bitmap_root_hash, segment)
 	}
 }
 

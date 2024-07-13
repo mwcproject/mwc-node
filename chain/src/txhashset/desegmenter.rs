@@ -34,7 +34,6 @@ use crate::pibd_params;
 use crate::store;
 use crate::txhashset;
 
-use crate::Error::SyncMMRChanged;
 use croaring::Bitmap;
 
 /// Desegmenter for rebuilding a txhashset from PIBD segments
@@ -84,7 +83,10 @@ impl Desegmenter {
 		genesis: BlockHeader,
 		store: Arc<store::ChainStore>,
 	) -> Desegmenter {
-		trace!("Creating new desegmenter");
+		info!(
+			"Creating new desegmenter for bitmap_root_hash {}, height {}",
+			bitmap_root_hash, archive_header.height
+		);
 		let mut retval = Desegmenter {
 			txhashset,
 			header_pmmr,
@@ -492,14 +494,10 @@ impl Desegmenter {
 			);
 
 			let mut elems_added = 0;
-			let mut found_output_first = false;
 			while let Some(output_id) = output_identifier_iter.next() {
 				// Advance output iterator to next needed position
-				let (first, last) =
+				let (_first, last) =
 					output_id.segment_pos_range(self.archive_header.output_mmr_size);
-				if first == local_output_mmr_size {
-					found_output_first = true;
-				}
 				if last <= local_output_mmr_size {
 					continue;
 				}
@@ -515,23 +513,15 @@ impl Desegmenter {
 				}
 			}
 
-			if !found_output_first && local_output_mmr_size > 1 {
-				return Err(SyncMMRChanged("Outputs MMR is not aligned".into()));
-			}
-
 			let mut rangeproof_identifier_iter = SegmentIdentifier::traversal_iter(
 				self.archive_header.output_mmr_size,
 				self.default_rangeproof_segment_height,
 			);
 
 			elems_added = 0;
-			let mut found_rangeproof_first = false;
 			while let Some(rp_id) = rangeproof_identifier_iter.next() {
-				let (first, last) = rp_id.segment_pos_range(self.archive_header.output_mmr_size);
+				let (_first, last) = rp_id.segment_pos_range(self.archive_header.output_mmr_size);
 				// Advance rangeproof iterator to next needed position
-				if first == local_rangeproof_mmr_size {
-					found_rangeproof_first = true;
-				}
 				if last <= local_rangeproof_mmr_size {
 					continue;
 				}
@@ -547,23 +537,15 @@ impl Desegmenter {
 				}
 			}
 
-			if !found_rangeproof_first && local_rangeproof_mmr_size > 1 {
-				return Err(SyncMMRChanged("Rangeproof MMR is not aligned".into()));
-			}
-
 			let mut kernel_identifier_iter = SegmentIdentifier::traversal_iter(
 				self.archive_header.kernel_mmr_size,
 				self.default_kernel_segment_height,
 			);
 
 			elems_added = 0;
-			let mut found_kernel_checkpoint = false;
 			while let Some(k_id) = kernel_identifier_iter.next() {
 				// Advance kernel iterator to next needed position
-				let (first, last) = k_id.segment_pos_range(self.archive_header.kernel_mmr_size);
-				if local_kernel_mmr_size == first {
-					found_kernel_checkpoint = true;
-				}
+				let (_first, last) = k_id.segment_pos_range(self.archive_header.kernel_mmr_size);
 				// Advance rangeproof iterator to next needed position
 				if last <= local_kernel_mmr_size {
 					continue;
@@ -578,10 +560,6 @@ impl Desegmenter {
 				if elems_added == max_elements / 3 {
 					break;
 				}
-			}
-
-			if !found_kernel_checkpoint && local_kernel_mmr_size > 1 {
-				return Err(SyncMMRChanged("Kernel MMR is not aligned".into()));
 			}
 		}
 		if return_vec.is_empty() && self.bitmap_cache.is_some() {
@@ -684,7 +662,15 @@ impl Desegmenter {
 	}
 
 	/// Adds and validates a bitmap chunk
-	pub fn add_bitmap_segment(&mut self, segment: Segment<BitmapChunk>) -> Result<(), Error> {
+	pub fn add_bitmap_segment(
+		&mut self,
+		segment: Segment<BitmapChunk>,
+		bitmap_root_hash: Hash,
+	) -> Result<(), Error> {
+		if bitmap_root_hash != self.bitmap_root_hash {
+			return Err(Error::InvalidBitmapRoot);
+		}
+
 		trace!("pibd_desegmenter: add bitmap segment");
 		segment.validate(
 			self.bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
@@ -802,13 +788,16 @@ impl Desegmenter {
 	}
 
 	/// Adds a output segment
-	pub fn add_output_segment(&mut self, segment: Segment<OutputIdentifier>) -> Result<(), Error> {
-		trace!("pibd_desegmenter: add output segment");
-		// TODO: This, something very wrong, probably need to reset entire body sync
-		// check bitmap root matches what we already have
-		/*if bitmap_root != Some(self.bitmap_accumulator.root()) {
+	pub fn add_output_segment(
+		&mut self,
+		segment: Segment<OutputIdentifier>,
+		bitmap_root_hash: Hash,
+	) -> Result<(), Error> {
+		if bitmap_root_hash != self.bitmap_root_hash {
+			return Err(Error::InvalidBitmapRoot);
+		}
 
-		}*/
+		trace!("pibd_desegmenter: add output segment");
 		segment.validate(
 			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
 			self.bitmap_cache.as_ref(),
@@ -906,7 +895,15 @@ impl Desegmenter {
 	}
 
 	/// Adds a Rangeproof segment
-	pub fn add_rangeproof_segment(&mut self, segment: Segment<RangeProof>) -> Result<(), Error> {
+	pub fn add_rangeproof_segment(
+		&mut self,
+		segment: Segment<RangeProof>,
+		bitmap_root_hash: Hash,
+	) -> Result<(), Error> {
+		if bitmap_root_hash != self.bitmap_root_hash {
+			return Err(Error::InvalidBitmapRoot);
+		}
+
 		trace!("pibd_desegmenter: add rangeproof segment");
 		segment.validate(
 			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
@@ -1001,7 +998,14 @@ impl Desegmenter {
 	}
 
 	/// Adds a Kernel segment
-	pub fn add_kernel_segment(&mut self, segment: Segment<TxKernel>) -> Result<(), Error> {
+	pub fn add_kernel_segment(
+		&mut self,
+		segment: Segment<TxKernel>,
+		bitmap_root_hash: Hash,
+	) -> Result<(), Error> {
+		if bitmap_root_hash != self.bitmap_root_hash {
+			return Err(Error::InvalidBitmapRoot);
+		}
 		trace!("pibd_desegmenter: add kernel segment");
 		segment.validate(
 			self.archive_header.kernel_mmr_size, // Last MMR pos at the height being validated

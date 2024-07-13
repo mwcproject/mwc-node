@@ -25,6 +25,7 @@ use crate::peer::PeerPibdStatus;
 use crate::serv::Server;
 use crate::types::{AttachmentMeta, Error, NetAdapter, PeerAddr, PeerAddr::Onion, PeerInfo};
 use chrono::prelude::Utc;
+use grin_core::core::hash::Hash;
 use grin_util::Mutex;
 use rand::{thread_rng, Rng};
 use std::fs::{self, File};
@@ -62,6 +63,11 @@ impl Protocol {
 			pibd_status.no_response_requests = 0;
 			pibd_status.no_response_time = None;
 		}
+	}
+
+	fn get_peer_output_bitmap_root(&self) -> Option<Hash> {
+		let pibd_status = self.pibd_status.lock();
+		pibd_status.output_bitmap_root.clone()
 	}
 }
 
@@ -573,23 +579,32 @@ impl MessageHandler for Protocol {
 					segment,
 				} = req;
 				debug!("Received Output Bitmap Segment: bh: {}", block_hash);
-				adapter
-					.receive_bitmap_segment(block_hash, segment.into())
-					.and_then(|ok| {
-						self.report_pibd_response(ok);
-						Ok(ok)
-					})?;
+
+				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
+					adapter
+						.receive_bitmap_segment(block_hash, output_bitmap_root, segment.into())
+						.and_then(|ok| {
+							self.report_pibd_response(ok);
+							Ok(ok)
+						})?;
+				}
 				Consumed::None
 			}
 			Message::OutputSegment(req) => {
 				let OutputSegmentResponse { response } = req;
 				debug!("Received Output Segment: bh, {}", response.block_hash,);
-				adapter
-					.receive_output_segment(response.block_hash, response.segment.into())
-					.and_then(|ok| {
-						self.report_pibd_response(ok);
-						Ok(ok)
-					})?;
+				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
+					adapter
+						.receive_output_segment(
+							response.block_hash,
+							output_bitmap_root,
+							response.segment.into(),
+						)
+						.and_then(|ok| {
+							self.report_pibd_response(ok);
+							Ok(ok)
+						})?;
+				}
 				Consumed::None
 			}
 			Message::RangeProofSegment(req) => {
@@ -598,12 +613,14 @@ impl MessageHandler for Protocol {
 					segment,
 				} = req;
 				debug!("Received Rangeproof Segment: bh: {}", block_hash);
-				adapter
-					.receive_rangeproof_segment(block_hash, segment.into())
-					.and_then(|ok| {
-						self.report_pibd_response(ok);
-						Ok(ok)
-					})?;
+				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
+					adapter
+						.receive_rangeproof_segment(block_hash, output_bitmap_root, segment.into())
+						.and_then(|ok| {
+							self.report_pibd_response(ok);
+							Ok(ok)
+						})?;
+				}
 				Consumed::None
 			}
 			Message::KernelSegment(req) => {
@@ -612,12 +629,14 @@ impl MessageHandler for Protocol {
 					segment,
 				} = req;
 				debug!("Received Kernel Segment: bh: {}", block_hash);
-				adapter
-					.receive_kernel_segment(block_hash, segment.into())
-					.and_then(|ok| {
-						self.report_pibd_response(ok);
-						Ok(ok)
-					})?;
+				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
+					adapter
+						.receive_kernel_segment(block_hash, output_bitmap_root, segment.into())
+						.and_then(|ok| {
+							self.report_pibd_response(ok);
+							Ok(ok)
+						})?;
+				}
 				Consumed::None
 			}
 			Message::Unknown(_) => Consumed::None,

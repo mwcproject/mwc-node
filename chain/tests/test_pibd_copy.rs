@@ -184,7 +184,7 @@ impl DesegmenterRequestor {
 
 	// Emulate `continue_pibd` function, which would be called from state sync
 	// return whether is complete
-	pub fn continue_pibd(&mut self) -> bool {
+	pub fn continue_pibd(&mut self, bitmap_root_hash: Hash) -> bool {
 		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
 		let desegmenter = self.chain.get_desegmenter(&archive_header);
 
@@ -215,13 +215,13 @@ impl DesegmenterRequestor {
 				SegmentType::Bitmap => {
 					let seg = self.responder.get_bitmap_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_bitmap_segment(seg).unwrap();
+						d.add_bitmap_segment(seg, bitmap_root_hash).unwrap();
 					}
 				}
 				SegmentType::Output => {
 					let seg = self.responder.get_output_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_output_segment(seg).unwrap();
+						d.add_output_segment(seg, bitmap_root_hash).unwrap();
 					}
 				}
 				SegmentType::RangeProof => {
@@ -229,13 +229,13 @@ impl DesegmenterRequestor {
 						.responder
 						.get_rangeproof_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_rangeproof_segment(seg).unwrap();
+						d.add_rangeproof_segment(seg, bitmap_root_hash).unwrap();
 					}
 				}
 				SegmentType::Kernel => {
 					let seg = self.responder.get_kernel_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_kernel_segment(seg).unwrap();
+						d.add_kernel_segment(seg, bitmap_root_hash).unwrap();
 					}
 				}
 			};
@@ -294,7 +294,7 @@ fn test_pibd_copy_impl(
 	dest_requestor.init_desegmenter(bitmap_root_hash);
 
 	// Perform until desegmenter reports it's done
-	while !dest_requestor.continue_pibd() {}
+	while !dest_requestor.continue_pibd(bitmap_root_hash) {}
 
 	dest_requestor.check_roots();
 }

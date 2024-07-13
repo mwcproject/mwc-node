@@ -84,6 +84,18 @@ impl StateSync {
 		self.pibd_aborted = true;
 	}
 
+	fn reset_chain(&mut self) {
+		if let Err(e) = self.chain.reset_pibd_head() {
+			error!("pibd_sync restart: reset pibd_head error = {}", e);
+		}
+		if let Err(e) = self.chain.reset_chain_head_to_genesis() {
+			error!("pibd_sync restart: chain reset to genesis error = {}", e);
+		}
+		if let Err(e) = self.chain.reset_prune_lists() {
+			error!("pibd_sync restart: reset prune lists error = {}", e);
+		}
+	}
+
 	/// Check whether state sync should run and triggers a state download when
 	/// it's time (we have all headers). Returns true as long as state sync
 	/// needs monitoring, false when it's either done or turned off.
@@ -125,6 +137,7 @@ impl StateSync {
 
 				if let Some(output_bitmap_root_header_hash) = self.output_bitmap_root_header_hash {
 					// let's check for supporters and ban who ever commited to the same hash
+					warn!("Because of PIBD sync error banning peers that was involved. output_bitmap_root_header_hash={}", output_bitmap_root_header_hash);
 					for peer in self.peers.iter() {
 						if peer.commited_to_pibd_bitmap_output_root(&output_bitmap_root_header_hash)
 						{
@@ -143,16 +156,7 @@ impl StateSync {
 				error!("PIBD Reported Failure - Restarting Sync");
 				// reset desegmenter state
 				self.chain.reset_desegmenter();
-
-				if let Err(e) = self.chain.reset_pibd_head() {
-					error!("pibd_sync restart: reset pibd_head error = {}", e);
-				}
-				if let Err(e) = self.chain.reset_chain_head_to_genesis() {
-					error!("pibd_sync restart: chain reset to genesis error = {}", e);
-				}
-				if let Err(e) = self.chain.reset_prune_lists() {
-					error!("pibd_sync restart: reset prune lists error = {}", e);
-				}
+				self.reset_chain();
 				self.sync_state
 					.update_pibd_progress(false, false, 0, 1, &archive_header);
 				sync_need_restart = true;
@@ -222,6 +226,11 @@ impl StateSync {
 					{
 						self.output_bitmap_root_header_hash =
 							Some((bitmap_output_root, archive_header.hash()).hash());
+						// Restting chain because PIBD is not tolarate to the output bitmaps change.
+						// Sinse we dont handle that (it is posible to handle by merging bitmaps), we
+						// better to reset the chain.
+						// Note, every 12 hours the root will be changed, so PIBD process must finish before
+						self.reset_chain();
 						if let Err(e) = self
 							.chain
 							.create_desegmenter(&archive_header, bitmap_output_root)
@@ -411,9 +420,14 @@ impl StateSync {
 				if let Err(e) =
 					peer.send_start_pibd_sync_request(archive_header.height, archive_header.hash())
 				{
-					info!(
+					warn!(
 						"Error sending start_pibd_sync_request to peer at {}, reason: {:?}",
 						peer.info.addr, e
+					);
+				} else {
+					info!(
+						"Sending handshake start_pibd_sync_request to peer at {}",
+						peer.info.addr
 					);
 				}
 			}
@@ -453,10 +467,16 @@ impl StateSync {
 			})
 			.collect();
 
-		if output_bitmap_roots.is_empty() || min_handshake_time >= handshake_time_limit {
+		if output_bitmap_roots.is_empty()
+			|| (min_handshake_time >= handshake_time_limit && output_bitmap_roots.len() < 3)
+		{
 			return None;
 		}
 
+		info!(
+			"selecting pibd bitmap_output_root from {:?}",
+			output_bitmap_roots
+		);
 		return Some(output_bitmap_roots[rng.gen_range(0, output_bitmap_roots.len())]);
 	}
 
@@ -486,21 +506,6 @@ impl StateSync {
 		}
 
 		let pibd_peers = self.get_pibd_ready_peers();
-		let desired_segments_num = std::cmp::min(
-			pibd_params::SEGMENT_REQUEST_LIMIT,
-			pibd_params::SEGMENT_REQUEST_PER_PEER * pibd_peers.len(),
-		);
-
-		let mut next_segment_ids = vec![];
-		if let Some(d) = desegmenter.write().as_mut() {
-			if let Ok(true) = d.check_progress(self.sync_state.clone()) {
-				return Ok(true);
-			}
-			// Figure out the next segments we need
-			// (12 is divisible by 3, to try and evenly spread the requests among the 3
-			// main pmmrs. Bitmaps segments will always be requested first)
-			next_segment_ids = d.next_desired_segments(std::cmp::max(1, desired_segments_num))?;
-		}
 
 		// Choose a random "most work" peer, preferring outbound if at all possible.
 		let mut outbound_peers: Vec<Arc<Peer>> = Vec::new();
@@ -515,6 +520,28 @@ impl StateSync {
 			}
 		}
 
+		let peer_num = if outbound_peers.len() > 0 {
+			outbound_peers.len()
+		} else {
+			inbound_peers.len()
+		};
+
+		let desired_segments_num = std::cmp::min(
+			pibd_params::SEGMENT_REQUEST_LIMIT,
+			pibd_params::SEGMENT_REQUEST_PER_PEER * peer_num,
+		);
+
+		let mut next_segment_ids = vec![];
+		if let Some(d) = desegmenter.write().as_mut() {
+			if let Ok(true) = d.check_progress(self.sync_state.clone()) {
+				return Ok(true);
+			}
+			// Figure out the next segments we need
+			// (12 is divisible by 3, to try and evenly spread the requests among the 3
+			// main pmmrs. Bitmaps segments will always be requested first)
+			next_segment_ids = d.next_desired_segments(std::cmp::max(1, desired_segments_num))?;
+		}
+
 		// For each segment, pick a desirable peer and send message
 		// (Provided we're not waiting for a response for this message from someone else)
 		for seg_id in next_segment_ids.iter() {
@@ -526,7 +553,10 @@ impl StateSync {
 			let peer = outbound_peers
 				.choose(&mut rng)
 				.or_else(|| inbound_peers.choose(&mut rng));
-			trace!("Chosen peer is {:?}", peer);
+			debug!(
+				"Has {} PIBD ready peers, Chosen peer is {:?}",
+				peer_num, peer
+			);
 
 			match peer {
 				None => {
