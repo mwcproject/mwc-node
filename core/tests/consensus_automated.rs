@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -13,8 +13,8 @@
 
 use chrono::Utc;
 use grin_core::consensus::{
-	next_difficulty, HeaderInfo, AR_SCALE_DAMP_FACTOR, BLOCK_TIME_SEC, DIFFICULTY_ADJUST_WINDOW,
-	MIN_DIFFICULTY,
+	next_difficulty, HeaderDifficultyInfo, AR_SCALE_DAMP_FACTOR, BLOCK_TIME_SEC,
+	DIFFICULTY_ADJUST_WINDOW, MIN_DIFFICULTY,
 };
 use grin_core::global;
 use grin_core::pow::Difficulty;
@@ -27,7 +27,7 @@ fn next_target_adjustment() {
 	let diff_min = Difficulty::min();
 
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
-	let mut hi = HeaderInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
+	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
 	let hinext = next_difficulty(
 		1,
@@ -54,7 +54,11 @@ fn next_target_adjustment() {
 
 	// check pre difficulty_data_to_vector effect on retargetting
 	assert_eq!(
-		next_difficulty(1, vec![HeaderInfo::from_ts_diff(42, hi.difficulty)]).difficulty,
+		next_difficulty(
+			1,
+			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)]
+		)
+		.difficulty,
 		Difficulty::from_num(14913)
 	);
 
@@ -63,10 +67,10 @@ fn next_target_adjustment() {
 	let sec = DIFFICULTY_ADJUST_WINDOW / 2;
 	let mut s1 = repeat(BLOCK_TIME_SEC, hi.clone(), sec, Some(cur_time));
 	let mut s2 = repeat_offs(
-		cur_time + (sec * BLOCK_TIME_SEC) as u64,
 		BLOCK_TIME_SEC,
 		1500,
-		DIFFICULTY_ADJUST_WINDOW / 2,
+		sec,
+		cur_time + (sec * BLOCK_TIME_SEC) as u64,
 	);
 	s2.append(&mut s1);
 	assert_eq!(
@@ -125,7 +129,12 @@ fn next_target_adjustment() {
 
 // Builds an iterator for next difficulty calculation with the provided
 // constant time interval, difficulty and total length.
-fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> Vec<HeaderInfo> {
+fn repeat(
+	interval: u64,
+	diff: HeaderDifficultyInfo,
+	len: u64,
+	cur_time: Option<u64>,
+) -> Vec<HeaderDifficultyInfo> {
 	let cur_time = match cur_time {
 		Some(t) => t,
 		None => Utc::now().timestamp() as u64,
@@ -137,8 +146,8 @@ fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> V
 	let pairs = times.zip(diffs.iter());
 	pairs
 		.map(|(t, d)| {
-			HeaderInfo::new(
-				diff.block_hash,
+			HeaderDifficultyInfo::new(
+				None,
 				cur_time + t as u64,
 				*d,
 				diff.secondary_scaling,
@@ -148,10 +157,10 @@ fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> V
 		.collect::<Vec<_>>()
 }
 
-fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderInfo> {
+fn repeat_offs(interval: u64, diff: u64, len: u64, from: u64) -> Vec<HeaderDifficultyInfo> {
 	repeat(
 		interval,
-		HeaderInfo::from_ts_diff(1, Difficulty::from_num(diff)),
+		HeaderDifficultyInfo::from_ts_diff(1, Difficulty::from_num(diff)),
 		len,
 		Some(from),
 	)

@@ -138,6 +138,26 @@ impl HTTPNodeClient {
 		e.reset().unwrap();
 	}
 
+	pub fn reset_chain_head(&self, hash: String) {
+		let mut e = term::stdout().unwrap();
+		let params = json!([hash]);
+		match self.send_json_request::<()>("reset_chain_head", &params) {
+			Ok(_) => writeln!(e, "Successfully reset chain head {}", hash).unwrap(),
+			Err(_) => writeln!(e, "Failed to reset chain head {}", hash).unwrap(),
+		}
+		e.reset().unwrap();
+	}
+
+	pub fn invalidate_header(&self, hash: String) {
+		let mut e = term::stdout().unwrap();
+		let params = json!([hash]);
+		match self.send_json_request::<()>("invalidate_header", &params) {
+			Ok(_) => writeln!(e, "Successfully invalidated header: {}", hash).unwrap(),
+			Err(_) => writeln!(e, "Failed to invalidate header: {}", hash).unwrap(),
+		}
+		e.reset().unwrap();
+	}
+
 	pub fn verify_chain(&self, assume_valid_rangeproofs_kernels: bool) {
 		let mut e = term::stdout().unwrap();
 		let params = json!([assume_valid_rangeproofs_kernels]);
@@ -193,6 +213,14 @@ pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig)
 		("listconnectedpeers", Some(_)) => {
 			node_client.list_connected_peers();
 		}
+		("resetchainhead", Some(args)) => {
+			let hash = args.value_of("hash").unwrap();
+			node_client.reset_chain_head(hash.to_string());
+		}
+		("invalidateheader", Some(args)) => {
+			let hash = args.value_of("hash").unwrap();
+			node_client.invalidate_header(hash.to_string());
+		}
 		("verify-chain", Some(args)) => {
 			let assume_valid_rangeproofs_kernels = args.is_present("fast");
 			node_client.verify_chain(assume_valid_rangeproofs_kernels);
@@ -220,8 +248,9 @@ pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig)
 	0
 }
 /// Error type wrapping underlying module errors.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum Error {
 	/// RPC Error
+	#[error("RPC error: {0}")]
 	RPCError(String),
 }

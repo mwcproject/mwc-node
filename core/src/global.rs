@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +16,16 @@
 //! having to pass them all over the place, but aren't consensus values.
 //! should be used sparingly.
 
+use crate::consensus;
 use crate::consensus::{
-	graph_weight, HeaderInfo, BASE_EDGE_BITS, BLOCK_KERNEL_WEIGHT, BLOCK_OUTPUT_WEIGHT,
-	BLOCK_TIME_SEC, COINBASE_MATURITY, CUT_THROUGH_HORIZON, DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS,
-	DIFFICULTY_ADJUST_WINDOW, INITIAL_DIFFICULTY, MAX_BLOCK_WEIGHT, PROOFSIZE,
+	graph_weight, HeaderDifficultyInfo, BASE_EDGE_BITS, BLOCK_TIME_SEC, COINBASE_MATURITY,
+	CUT_THROUGH_HORIZON, DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS, DIFFICULTY_ADJUST_WINDOW,
+	INITIAL_DIFFICULTY, KERNEL_WEIGHT, MAX_BLOCK_WEIGHT, OUTPUT_WEIGHT, PROOFSIZE,
 	SECOND_POW_EDGE_BITS, STATE_SYNC_THRESHOLD,
 };
-use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext};
+use crate::core::block::Block;
+use crate::genesis;
+use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,7 +43,7 @@ use util::OneTime;
 /// We negotiate compatible versions with each peer via Hand/Shake.
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
-/// NOTE, grin bump the protocol version to 1000, but in any case fo far 1,2,3 are supported.
+/// NOTE, grin bump the protocol version to 1000, but in any case so far 1,2,3 are supported.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
 
 /// Automated testing edge_bits
@@ -78,6 +81,9 @@ pub const TESTING_INITIAL_DIFFICULTY: u64 = 1;
 
 /// Testing max_block_weight (artifically low, just enough to support a few txs).
 pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
+
+/// Default unit of fee per tx weight, making each output cost about a Grincent
+pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_GRIN; // Keeping default base is same, no changes for MWC     GRIN_BASE / 100 / 20; // 500_000
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
 /// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
@@ -163,6 +169,12 @@ lazy_static! {
 	/// to be overridden on a per-thread basis (for testing).
 	pub static ref GLOBAL_CHAIN_TYPE: OneTime<ChainTypes> = OneTime::new();
 
+	/// Global acccept fee base that must be initialized once on node startup.
+	/// This is accessed via get_acccept_fee_base() which allows the global value
+	/// to be overridden on a per-thread basis (for testing).
+	pub static ref GLOBAL_ACCEPT_FEE_BASE: OneTime<u64> = OneTime::new();
+
+
 	/// Global feature flag for NRD kernel support.
 	/// If enabled NRD kernels are treated as valid after HF3 (based on header version).
 	/// If disabled NRD kernels are invalid regardless of header version or block height.
@@ -177,8 +189,16 @@ thread_local! {
 	/// Mainnet|Floonet|UserTesting|AutomatedTesting
 	pub static CHAIN_TYPE: Cell<Option<ChainTypes>> = Cell::new(None);
 
+	/// minimum transaction fee per unit of transaction weight for mempool acceptance
+	pub static ACCEPT_FEE_BASE: Cell<Option<u64>> = Cell::new(None);
+
 	/// Local feature flag for NRD kernel support.
 	pub static NRD_FEATURE_ENABLED: Cell<Option<bool>> = Cell::new(None);
+}
+
+/// Set the global chain_type using an override
+pub fn set_global_chain_type(new_type: ChainTypes) {
+	GLOBAL_CHAIN_TYPE.set(new_type, true);
 }
 
 /// Set the chain type on a per-thread basis via thread_local storage.
@@ -190,16 +210,24 @@ pub fn set_local_chain_type(new_type: ChainTypes) {
 pub fn get_chain_type() -> ChainTypes {
 	CHAIN_TYPE.with(|chain_type| match chain_type.get() {
 		None => {
-			if GLOBAL_CHAIN_TYPE.is_init() {
-				let chain_type = GLOBAL_CHAIN_TYPE.borrow();
-				set_local_chain_type(chain_type);
-				chain_type
-			} else {
+			if !GLOBAL_CHAIN_TYPE.is_init() {
 				panic!("GLOBAL_CHAIN_TYPE and CHAIN_TYPE unset. Consider set_local_chain_type() in tests.");
 			}
+			let chain_type = GLOBAL_CHAIN_TYPE.borrow();
+			set_local_chain_type(chain_type);
+			chain_type
 		}
 		Some(chain_type) => chain_type,
 	})
+}
+
+/// Return genesis block for the active chain type
+pub fn get_genesis_block() -> Block {
+	match get_chain_type() {
+		ChainTypes::Mainnet => genesis::genesis_main(),
+		ChainTypes::Floonet => genesis::genesis_floo(),
+		_ => genesis::genesis_dev(),
+	}
 }
 
 /// One time initialization of the global chain_type.
@@ -212,6 +240,11 @@ pub fn init_global_chain_type(new_type: ChainTypes) {
 /// Will panic if we attempt to re-initialize this (via OneTime).
 pub fn init_global_nrd_enabled(enabled: bool) {
 	GLOBAL_NRD_FEATURE_ENABLED.init(enabled)
+}
+
+/// Set the global NRD feature flag using override.
+pub fn set_global_nrd_enabled(enabled: bool) {
+	GLOBAL_NRD_FEATURE_ENABLED.set(enabled, true)
 }
 
 /// Explicitly enable the NRD global feature flag.
@@ -235,6 +268,40 @@ pub fn is_nrd_enabled() -> bool {
 			}
 		}
 		Some(flag) => flag,
+	})
+}
+
+/// One time initialization of the global accept fee base
+/// Will panic if we attempt to re-initialize this (via OneTime).
+pub fn init_global_accept_fee_base(new_base: u64) {
+	GLOBAL_ACCEPT_FEE_BASE.init(new_base)
+}
+
+/// The global accept fee base may be reset using override.
+pub fn set_global_accept_fee_base(new_base: u64) {
+	GLOBAL_ACCEPT_FEE_BASE.set(new_base, true)
+}
+
+/// Set the accept fee base on a per-thread basis via thread_local storage.
+pub fn set_local_accept_fee_base(new_base: u64) {
+	ACCEPT_FEE_BASE.with(|base| base.set(Some(new_base)))
+}
+
+/// Accept Fee Base
+/// Look at thread local config first. If not set fallback to global config.
+/// Default to grin-cent/20 if global config unset.
+pub fn get_accept_fee_base() -> u64 {
+	ACCEPT_FEE_BASE.with(|base| match base.get() {
+		None => {
+			let base = if GLOBAL_ACCEPT_FEE_BASE.is_init() {
+				GLOBAL_ACCEPT_FEE_BASE.borrow()
+			} else {
+				DEFAULT_ACCEPT_FEE_BASE
+			};
+			set_local_accept_fee_base(base);
+			base
+		}
+		Some(base) => base,
 	})
 }
 
@@ -331,7 +398,7 @@ pub fn max_block_weight() -> u64 {
 
 /// Maximum allowed transaction weight (1 weight unit ~= 32 bytes)
 pub fn max_tx_weight() -> u64 {
-	let coinbase_weight = BLOCK_OUTPUT_WEIGHT + BLOCK_KERNEL_WEIGHT;
+	let coinbase_weight = OUTPUT_WEIGHT + KERNEL_WEIGHT;
 	max_block_weight().saturating_sub(coinbase_weight) as u64
 }
 
@@ -415,13 +482,14 @@ pub fn get_network_name() -> String {
 /// vector and pads if needed (which will) only be needed for the first few
 /// blocks after genesis
 
-pub fn difficulty_data_to_vector<T>(cursor: T) -> Vec<HeaderInfo>
+pub fn difficulty_data_to_vector<T>(cursor: T) -> Vec<HeaderDifficultyInfo>
 where
-	T: IntoIterator<Item = HeaderInfo>,
+	T: IntoIterator<Item = HeaderDifficultyInfo>,
 {
 	// Convert iterator to vector, so we can append to it if necessary
 	let needed_block_count = DIFFICULTY_ADJUST_WINDOW as usize + 1;
-	let mut last_n: Vec<HeaderInfo> = cursor.into_iter().take(needed_block_count).collect();
+	let mut last_n: Vec<HeaderDifficultyInfo> =
+		cursor.into_iter().take(needed_block_count).collect();
 
 	// Only needed just after blockchain launch... basically ensures there's
 	// always enough data by simulating perfectly timed pre-genesis
@@ -439,11 +507,59 @@ where
 		let mut last_ts = last_n.last().unwrap().timestamp;
 		for _ in n..needed_block_count {
 			last_ts = last_ts.saturating_sub(last_ts_delta);
-			last_n.push(HeaderInfo::from_ts_diff(last_ts, last_diff));
+			last_n.push(HeaderDifficultyInfo::from_ts_diff(last_ts, last_diff));
 		}
 	}
 	last_n.reverse();
 	last_n
+}
+
+/// Calculates the size of a header (in bytes) given a number of edge bits in the PoW
+#[inline]
+pub fn header_size_bytes(edge_bits: u8) -> usize {
+	let size = 2 + 2 * 8 + 5 * 32 + 32 + 2 * 8;
+	let proof_size = 8 + 4 + 8 + 1 + Proof::pack_len(edge_bits);
+	size + proof_size
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+	use crate::core::Block;
+	use crate::genesis::*;
+	use crate::pow::mine_genesis_block;
+	use crate::ser::{BinWriter, Writeable};
+
+	fn test_header_len(genesis: Block) {
+		let mut raw = Vec::<u8>::with_capacity(1_024);
+		let mut writer = BinWriter::new(&mut raw, ProtocolVersion::local());
+		genesis.header.write(&mut writer).unwrap();
+		assert_eq!(raw.len(), header_size_bytes(genesis.header.pow.edge_bits()));
+	}
+
+	#[test]
+	fn automated_testing_header_len() {
+		set_local_chain_type(ChainTypes::AutomatedTesting);
+		test_header_len(mine_genesis_block().unwrap());
+	}
+
+	#[test]
+	fn user_testing_header_len() {
+		set_local_chain_type(ChainTypes::UserTesting);
+		test_header_len(mine_genesis_block().unwrap());
+	}
+
+	#[test]
+	fn floonet_header_len() {
+		set_local_chain_type(ChainTypes::Floonet);
+		test_header_len(genesis_floo());
+	}
+
+	#[test]
+	fn mainnet_header_len() {
+		set_local_chain_type(ChainTypes::Mainnet);
+		test_header_len(genesis_main());
+	}
 }
 
 /// Checking running status if the server

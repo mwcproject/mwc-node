@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
 
 //! Lightweight readonly view into kernel MMR for convenience.
 
-use crate::core::core::pmmr::RewindablePMMR;
+use crate::core::core::pmmr::{ReadablePMMR, ReadonlyPMMR, RewindablePMMR};
 use crate::core::core::{BlockHeader, TxKernel};
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
 use grin_store::pmmr::PMMRBackend;
 
 /// Rewindable (but readonly) view of the kernel set (based on kernel MMR).
@@ -40,7 +40,7 @@ impl<'a> RewindableKernelView<'a> {
 	pub fn rewind(&mut self, header: &BlockHeader) -> Result<(), Error> {
 		self.pmmr
 			.rewind(header.kernel_mmr_size)
-			.map_err(|e| ErrorKind::TxHashSetErr(e))?;
+			.map_err(|e| Error::TxHashSetErr(e))?;
 
 		// Update our header to reflect the one we rewound to.
 		self.header = header.clone();
@@ -54,14 +54,21 @@ impl<'a> RewindableKernelView<'a> {
 	/// fast sync where a reorg past the horizon could allow a whole rewrite of
 	/// the kernel set.
 	pub fn validate_root(&self) -> Result<(), Error> {
-		let root = self.pmmr.root().map_err(|e| ErrorKind::InvalidRoot(e))?;
+		let root = self
+			.readonly_pmmr()
+			.root()
+			.map_err(|e| Error::InvalidRoot(e))?;
 		if root != self.header.kernel_root {
-			return Err(ErrorKind::InvalidTxHashSet(format!(
+			return Err(Error::InvalidTxHashSet(format!(
 				"Kernel root at {} does not match",
 				self.header.height
-			))
-			.into());
+			)));
 		}
 		Ok(())
+	}
+
+	/// Readonly view of our internal data.
+	pub fn readonly_pmmr(&self) -> ReadonlyPMMR<TxKernel, PMMRBackend<TxKernel>> {
+		self.pmmr.as_readonly()
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -88,7 +88,7 @@ pub trait ListIndex {
 	/// Key is "prefix|commit".
 	/// Note the key for an individual entry in the list is "prefix|commit|pos".
 	fn get_list(&self, batch: &Batch<'_>, commit: Commitment) -> Result<Option<Self::List>, Error> {
-		batch.db.get_ser(&self.list_key(commit))
+		batch.db.get_ser(&self.list_key(commit), None)
 	}
 
 	/// Returns one of "head", "tail" or "middle" entry variants.
@@ -99,7 +99,7 @@ pub trait ListIndex {
 		commit: Commitment,
 		pos: u64,
 	) -> Result<Option<Self::Entry>, Error> {
-		batch.db.get_ser(&self.entry_key(commit, pos))
+		batch.db.get_ser(&self.entry_key(commit, pos), None)
 	}
 
 	/// Peek the head of the list for the specified commitment.
@@ -394,12 +394,12 @@ impl<T: PosEntry> PruneableListIndex for MultiIndex<T> {
 		let mut list_count = 0;
 		let mut entry_count = 0;
 		let prefix = to_key(self.list_prefix, "");
-		for (key, _) in batch.db.iter::<ListWrapper<T>>(&prefix)? {
+		for key in batch.db.iter(&prefix, |k, _| Ok(k.to_vec()))? {
 			let _ = batch.delete(&key);
 			list_count += 1;
 		}
 		let prefix = to_key(self.entry_prefix, "");
-		for (key, _) in batch.db.iter::<ListEntry<T>>(&prefix)? {
+		for key in batch.db.iter(&prefix, |k, _| Ok(k.to_vec()))? {
 			let _ = batch.delete(&key);
 			entry_count += 1;
 		}

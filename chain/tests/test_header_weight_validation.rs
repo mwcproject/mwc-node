@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ use grin_keychain as keychain;
 mod chain_test_helper;
 
 use self::chain_test_helper::{clean_output_dir, mine_chain};
-use crate::chain::{Chain, ErrorKind, Options};
+use crate::chain::{Chain, Error, Options};
 use crate::core::{
 	consensus,
 	core::{block, Block},
@@ -36,8 +36,15 @@ fn build_block(chain: &Chain) -> Block {
 
 	let prev = chain.head_header().unwrap();
 	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
-	let reward =
-		reward::output(&keychain, &ProofBuilder::new(&keychain), &pk, 0, false, 1).unwrap();
+	let reward = reward::output(
+		&keychain,
+		&ProofBuilder::new(&keychain),
+		&pk,
+		0,
+		false,
+		prev.height + 1,
+	)
+	.unwrap();
 	let mut block = Block::new(&prev, &[], next_header_info.clone().difficulty, reward).unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
@@ -72,12 +79,10 @@ fn test_header_weight_validation() {
 	// Note: We will validate this even if just processing the header.
 	header.output_mmr_size = 1_000;
 
-	let res = chain
-		.process_block_header(&header, Options::NONE)
-		.map_err(|e| e.kind());
+	let res = chain.process_block_header(&header, Options::NONE);
 
 	// Weight validation is done via transaction body and results in a slightly counter-intuitive tx error.
-	assert_eq!(res, Err(ErrorKind::Block(block::Error::TooHeavy)));
+	assert_eq!(res, Err(Error::Block(block::Error::TooHeavy)));
 
 	clean_output_dir(chain_dir);
 }

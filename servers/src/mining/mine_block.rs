@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 //! Build a block to mine: gathers transactions from the pool, assembles
 //! them into a block and returns it.
 
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+use chrono::prelude::{DateTime, Utc};
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -30,7 +30,7 @@ use crate::core::libtx::secp_ser;
 use crate::core::libtx::ProofBuilder;
 use crate::core::{consensus, core, global};
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
-use crate::{ServerTxPool, ServerVerifierCache};
+use crate::ServerTxPool;
 
 /// Fees in block to use for coinbase amount calculation
 /// (Duplicated from Grin wallet project)
@@ -70,24 +70,17 @@ pub struct CbData {
 pub fn get_block(
 	chain: &Arc<chain::Chain>,
 	tx_pool: &ServerTxPool,
-	verifier_cache: ServerVerifierCache,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
 ) -> (core::Block, BlockFees) {
 	let wallet_retry_interval = 5;
 	// get the latest chain state and build a block on top of it
-	let mut result = build_block(
-		chain,
-		tx_pool,
-		verifier_cache.clone(),
-		key_id.clone(),
-		wallet_listener_url.clone(),
-	);
+	let mut result = build_block(chain, tx_pool, key_id.clone(), wallet_listener_url.clone());
 	while let Err(e) = result {
 		let mut new_key_id = key_id.to_owned();
 		match e {
-			self::Error::Chain(c) => match c.kind() {
-				chain::ErrorKind::DuplicateCommitment(_) => {
+			self::Error::Chain(c) => match c {
+				chain::Error::DuplicateCommitment(_) => {
 					debug!(
 						"Duplicate commit for potential coinbase detected. Trying next derivation."
 					);
@@ -116,13 +109,7 @@ pub fn get_block(
 			thread::sleep(Duration::from_millis(100));
 		}
 
-		result = build_block(
-			chain,
-			tx_pool,
-			verifier_cache.clone(),
-			new_key_id,
-			wallet_listener_url.clone(),
-		);
+		result = build_block(chain, tx_pool, new_key_id, wallet_listener_url.clone());
 	}
 	return result.unwrap();
 }
@@ -132,7 +119,6 @@ pub fn get_block(
 fn build_block(
 	chain: &Arc<chain::Chain>,
 	tx_pool: &ServerTxPool,
-	verifier_cache: ServerVerifierCache,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
 ) -> Result<(core::Block, BlockFees), Error> {
@@ -166,7 +152,7 @@ fn build_block(
 	};
 
 	// build the coinbase and the block itself
-	let fees = txs.iter().map(|tx| tx.fee()).sum();
+	let fees = txs.iter().map(|tx| tx.fee(head.height)).sum();
 	let height = head.height + 1;
 	let block_fees = BlockFees {
 		fees,
@@ -178,11 +164,15 @@ fn build_block(
 	let mut b = core::Block::from_reward(&head, &txs, output, kernel, difficulty.difficulty)?;
 
 	// making sure we're not spending time mining a useless block
-	b.validate(&head.total_kernel_offset, verifier_cache)?;
+	b.validate(&head.total_kernel_offset)?;
 
 	b.header.pow.nonce = thread_rng().gen();
 	b.header.pow.secondary_scaling = difficulty.secondary_scaling;
-	b.header.timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(now_sec, 0), Utc);
+	let ts = DateTime::from_timestamp(now_sec, 0);
+	if ts.is_none() {
+		return Err(Error::General("Utc::now into timestamp".into()));
+	}
+	b.header.timestamp = ts.unwrap().to_utc();
 
 	debug!(
 		"Built new block with {} inputs and {} outputs, block difficulty: {}, cumulative difficulty {}",
@@ -196,24 +186,21 @@ fn build_block(
 	match chain.set_txhashset_roots(&mut b) {
 		Ok(_) => Ok((b, block_fees)),
 		Err(e) => {
-			match e.kind() {
+			match e {
 				// If this is a duplicate commitment then likely trying to use
 				// a key that hass already been derived but not in the wallet
 				// for some reason, allow caller to retry.
-				chain::ErrorKind::DuplicateCommitment(e) => Err(Error::Chain(
-					chain::ErrorKind::DuplicateCommitment(e).into(),
-				)),
+				chain::Error::DuplicateCommitment(e) => {
+					Err(Error::Chain(chain::Error::DuplicateCommitment(e)))
+				}
 
 				// Some other issue, possibly duplicate kernel
 				_ => {
 					error!("Error setting txhashset root to build a block: {:?}", e);
-					Err(Error::Chain(
-						chain::ErrorKind::Other(format!(
-							"Error setting txhashset root to build a block: {:?}",
-							e
-						))
-						.into(),
-					))
+					Err(Error::Chain(chain::Error::Other(format!(
+						"Error setting txhashset root to build a block: {:?}",
+						e
+					))))
 				}
 			}
 		}
@@ -279,9 +266,7 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 	});
 
 	trace!("Sending build_coinbase request: {}", req_body);
-
 	let req = api::client::create_post_request(url.as_str(), None, &req_body)?;
-
 	let timeout = api::client::TimeOut::default();
 	let res: String = api::client::send_request(req, timeout).map_err(|e| {
 		let report = format!(

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,23 +15,20 @@
 //! Implementation of the chain block acceptance (or refusal) pipeline.
 
 use crate::core::consensus;
-use crate::core::core::hash::Hashed;
-use crate::core::core::verifier_cache::VerifierCache;
+use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::Committed;
 use crate::core::core::{
 	block, Block, BlockHeader, BlockSums, HeaderVersion, OutputIdentifier, TransactionBody,
 };
 use crate::core::global;
 use crate::core::pow;
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
 use crate::store;
 use crate::txhashset;
 use crate::types::{CommitPos, Options, Tip};
-use crate::util::RwLock;
-use grin_core::core::hash::Hash;
+use grin_util::RwLock;
 use std::collections::HashSet;
 use std::iter::FromIterator;
-use std::sync::Arc;
 
 /// Contextual information required to process a new block and either reject or
 /// accept it.
@@ -40,14 +37,14 @@ pub struct BlockContext<'a> {
 	pub opts: Options,
 	/// The pow verifier to use when processing a block.
 	pub pow_verifier: fn(&BlockHeader) -> Result<(), pow::Error>,
+	/// Custom fn allowing arbitrary header validation rules (denylist) to be applied.
+	pub header_allowed: Box<dyn Fn(&BlockHeader) -> Result<(), Error>>,
 	/// The active txhashset (rewindable MMRs) to use for block processing.
 	pub txhashset: &'a mut txhashset::TxHashSet,
 	/// The active header MMR handle.
 	pub header_pmmr: &'a mut txhashset::PMMRHandle<BlockHeader>,
 	/// The active batch to use for block processing.
 	pub batch: store::Batch<'a>,
-	/// The verifier cache (caching verifier for rangeproofs and kernel signatures)
-	pub verifier_cache: Arc<RwLock<dyn VerifierCache>>,
 }
 
 lazy_static! {
@@ -60,7 +57,7 @@ pub fn init_invalid_lock_hashes(hashed: &Option<Vec<String>>) -> Result<(), Erro
 		let mut hashes = INVALID_BLOCK_HASHES.write();
 		for h in hs {
 			hashes.insert(Hash::from_hex(h).map_err(|e| {
-				ErrorKind::Other(format!("Unable to harse hash hex string {}, {}", h, e))
+				Error::Other(format!("Unable to parse hash hex string {}, {}", h, e))
 			})?);
 		}
 	}
@@ -106,7 +103,7 @@ pub fn check_against_spent_output(
 						"output contains spent commtiment:{:?} from local branch",
 						commit
 					);
-					return Err(ErrorKind::Other(
+					return Err(Error::Other(
 						"output invalid, could be a replay attack".to_string(),
 					)
 					.into());
@@ -121,7 +118,7 @@ pub fn check_against_spent_output(
 							"output contains spent commtiment:{:?} from the main chain",
 							commit
 						);
-						return Err(ErrorKind::Other(
+						return Err(Error::Other(
 							"output invalid, could be a replay attack".to_string(),
 						)
 						.into());
@@ -140,7 +137,7 @@ fn validate_pow_only(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result
 	let hash = header.hash();
 	if INVALID_BLOCK_HASHES.read().contains(&hash) {
 		error!("Invalid header found: {}. Rejecting it!", hash);
-		return Err(ErrorKind::InvalidHash.into());
+		return Err(Error::InvalidHash.into());
 	}
 
 	if ctx.opts.contains(Options::SKIP_POW) {
@@ -148,14 +145,14 @@ fn validate_pow_only(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result
 		return Ok(());
 	}
 	if !header.pow.is_primary() && !header.pow.is_secondary() {
-		return Err(ErrorKind::LowEdgebits.into());
+		return Err(Error::LowEdgebits);
 	}
 	if (ctx.pow_verifier)(header).is_err() {
 		error!(
 			"pipe: error validating header with cuckoo edge_bits {}",
 			header.pow.edge_bits(),
 		);
-		return Err(ErrorKind::InvalidPow.into());
+		return Err(Error::InvalidPow);
 	}
 	Ok(())
 }
@@ -206,8 +203,10 @@ pub fn process_block(
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
+	let ctx_specific_validation = &ctx.header_allowed;
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		let fork_point_local_blocks = rewind_and_apply_fork(&prev, ext, batch)?;
+		let fork_point_local_blocks =
+			rewind_and_apply_fork(&prev, ext, batch, ctx_specific_validation)?;
 		let fork_point = fork_point_local_blocks.0;
 		let local_branch_blocks = fork_point_local_blocks.1;
 
@@ -285,43 +284,55 @@ pub fn replay_attack_check(
 	Ok(())
 }
 
-/// Sync a chunk of block headers.
+/// Process a batch of sequential block headers.
 /// This is only used during header sync.
-pub fn sync_block_headers(
+/// Will update header_head locally if this batch of headers increases total work.
+/// Returns the updated sync_head, which may be on a fork.
+pub fn process_block_headers(
 	headers: &[BlockHeader],
+	sync_head: Tip,
 	ctx: &mut BlockContext<'_>,
-) -> Result<(), Error> {
+) -> Result<Option<Tip>, Error> {
 	if headers.is_empty() {
-		return Ok(());
+		return Ok(None);
 	}
 	let last_header = headers.last().expect("last header");
 
-	// Check if we know about all these headers. If so we can accept them quickly.
-	// If they *do not* increase total work on the sync chain we are done.
-	// If they *do* increase total work then we should process them to update sync_head.
-	let sync_head = {
-		let hash = ctx.header_pmmr.head_hash()?;
-		let header = ctx.batch.get_block_header(&hash)?;
-		Tip::from_header(&header)
-	};
-
-	if let Ok(existing) = ctx.batch.get_block_header(&last_header.hash()) {
-		if !has_more_work(&existing, &sync_head) {
-			return Ok(());
-		}
-	}
+	let head = ctx.batch.header_head()?;
 
 	// Validate each header in the chunk and add to our db.
 	// Note: This batch may be rolled back later if the MMR does not validate successfully.
+	// Note: This batch may later be committed even if the MMR itself is rollbacked.
 	for header in headers {
 		validate_header(header, ctx)?;
 		add_block_header(header, &ctx.batch)?;
 	}
 
-	// Now apply this entire chunk of headers to the sync MMR (ctx is sync MMR specific).
+	let ctx_specific_validation = &ctx.header_allowed;
+
+	// Now apply this entire chunk of headers to the header MMR.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		rewind_and_apply_header_fork(&last_header, ext, batch)?;
-		Ok(())
+		rewind_and_apply_header_fork(&last_header, ext, batch, ctx_specific_validation)?;
+
+		// If previous sync_head is not on the "current" chain then
+		// these headers are on an alternative fork to sync_head.
+		let alt_fork = !ext.is_on_current_chain(sync_head, batch)?;
+
+		// Update our "header_head" if this batch results in an increase in total work.
+		// Otherwise rollback this header extension.
+		// Note the outer batch may still be committed to db assuming no errors occur in the extension.
+		if has_more_work(last_header, &head) {
+			let header_head = last_header.into();
+			update_header_head(&header_head, &batch)?;
+		} else {
+			ext.force_rollback();
+		};
+
+		if alt_fork || has_more_work(last_header, &sync_head) {
+			Ok(Some(last_header.into()))
+		} else {
+			Ok(None)
+		}
 	})
 }
 
@@ -356,10 +367,12 @@ pub fn process_block_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) ->
 	// We want to validate this individual header before applying it to our header PMMR.
 	validate_header(header, ctx)?;
 
+	let ctx_specific_validation = &ctx.header_allowed;
+
 	// Apply the header to the header PMMR, making sure we put the extension in the correct state
 	// based on previous header first.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		rewind_and_apply_header_fork(&prev_header, ext, batch)?;
+		rewind_and_apply_header_fork(&prev_header, ext, batch, ctx_specific_validation)?;
 		ext.validate_root(header)?;
 		ext.apply_header(header)?;
 		if !has_more_work(&header, &header_head) {
@@ -383,7 +396,7 @@ pub fn process_block_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) ->
 fn check_known_head(header: &BlockHeader, head: &Tip) -> Result<(), Error> {
 	let bh = header.hash();
 	if bh == head.last_block_h || bh == head.prev_block_h {
-		return Err(ErrorKind::Unfit("already known in head".to_string()).into());
+		return Err(Error::Unfit("already known in head".to_string()));
 	}
 	Ok(())
 }
@@ -400,16 +413,16 @@ fn check_known_store(
 				// TODO - we flag this as an "abusive peer" but only in the case
 				// where we have the full block in our store.
 				// So this is not a particularly exhaustive check.
-				Err(ErrorKind::OldBlock.into())
+				Err(Error::OldBlock)
 			} else {
-				Err(ErrorKind::Unfit("already known in store".to_string()).into())
+				Err(Error::Unfit("already known in store".to_string()))
 			}
 		}
 		Ok(false) => {
 			// Not yet processed this block, we can proceed.
 			Ok(())
 		}
-		Err(e) => Err(ErrorKind::StoreErr(e, "pipe get this block".to_owned()).into()),
+		Err(e) => Err(Error::StoreErr(e, "pipe get this block".to_owned())),
 	}
 }
 
@@ -428,9 +441,42 @@ fn check_bad_header(header: &BlockHeader) -> Result<(), Error> {
 		"00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725",
 	)?];
 	if bad_hashes.contains(&header.hash()) {
-		Err(ErrorKind::InvalidBlockProof(block::Error::Other("explicit bad header".into())).into())
+		Err(Error::Block(block::Error::Other(
+			"explicit bad header".into(),
+		)))
 	} else {
 		Ok(())
+	}
+}
+
+/// Apply any "header_invalidated" (aka denylist) rules provided as part of the context.
+fn validate_header_ctx(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
+	// Apply any custom header validation rules via the context.
+	(ctx.header_allowed)(header)
+}
+
+/// Validate header against an explicit "denylist" of header hashes.
+/// Returns a "Block" error which is "bad_data" and will result in peer being banned.
+pub fn validate_header_denylist(header: &BlockHeader, denylist: &[Hash]) -> Result<(), Error> {
+	if denylist.is_empty() {
+		return Ok(());
+	}
+
+	// Assume our denylist is a manageable size for now.
+	// Log it here to occasionally remind us.
+	debug!(
+		"validate_header_denylist: {} at {}, denylist: {:?}",
+		header.hash(),
+		header.height,
+		denylist
+	);
+
+	if denylist.contains(&header.hash()) {
+		return Err(Error::Block(block::Error::Other(
+			"header hash denied".into(),
+		)));
+	} else {
+		return Ok(());
 	}
 }
 
@@ -438,23 +484,26 @@ fn check_bad_header(header: &BlockHeader) -> Result<(), Error> {
 /// to make it as cheap as possible. The different validations are also
 /// arranged by order of cost to have as little DoS surface as possible.
 fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
+	// Apply any ctx specific header validation (denylist) rules.
+	validate_header_ctx(header, ctx)?;
+
 	// First I/O cost, delayed as late as possible.
 	let prev = prev_header_store(header, &mut ctx.batch)?;
 
 	// This header height must increase the height from the previous header by exactly 1.
 	if header.height != prev.height + 1 {
-		return Err(ErrorKind::InvalidBlockHeight.into());
+		return Err(Error::InvalidBlockHeight);
 	}
 
 	// This header must have a valid header version for its height.
 	if !consensus::valid_header_version(header.height, header.version) {
-		return Err(ErrorKind::InvalidBlockVersion(header.version).into());
+		return Err(Error::InvalidBlockVersion(header.version));
 	}
 
 	if header.timestamp <= prev.timestamp {
 		// prevent time warp attacks and some timestamp manipulations by forcing strict
 		// time progression
-		return Err(ErrorKind::InvalidBlockTime.into());
+		return Err(Error::InvalidBlockTime);
 	}
 
 	// Check the header hash against a list of known bad headers.
@@ -471,13 +520,13 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 
 	// Each block must contain at least 1 kernel and 1 output for the block reward.
 	if num_outputs == 0 || num_kernels == 0 {
-		return Err(ErrorKind::InvalidMMRSize.into());
+		return Err(Error::InvalidMMRSize);
 	}
 
 	// Block header is invalid (and block is invalid) if this lower bound is too heavy for a full block.
-	let weight = TransactionBody::weight_as_block(0, num_outputs, num_kernels);
+	let weight = TransactionBody::weight_by_iok(0, num_outputs, num_kernels);
 	if weight > global::max_block_weight() {
-		return Err(ErrorKind::Block(block::Error::TooHeavy).into());
+		return Err(Error::Block(block::Error::TooHeavy));
 	}
 
 	// verify the proof of work and related parameters
@@ -492,13 +541,13 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 		validate_pow_only(header, ctx)?;
 
 		if header.total_difficulty() <= prev.total_difficulty() {
-			return Err(ErrorKind::DifficultyTooLow.into());
+			return Err(Error::DifficultyTooLow);
 		}
 
 		let target_difficulty = header.total_difficulty() - prev.total_difficulty();
 
 		if header.pow.to_difficulty(header.height) < target_difficulty {
-			return Err(ErrorKind::DifficultyTooLow.into());
+			return Err(Error::DifficultyTooLow);
 		}
 
 		// explicit check to ensure total_difficulty has increased by exactly
@@ -513,7 +562,7 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 				target_difficulty.to_num(),
 				next_header_info.difficulty.to_num()
 			);
-			return Err(ErrorKind::WrongTotalDifficulty.into());
+			return Err(Error::WrongTotalDifficulty);
 		}
 		// check the secondary PoW scaling factor if applicable
 		if header.pow.secondary_scaling != next_header_info.secondary_scaling {
@@ -521,7 +570,7 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 				"validate_header: header secondary scaling {} != {}",
 				header.pow.secondary_scaling, next_header_info.secondary_scaling
 			);
-			return Err(ErrorKind::InvalidScaling.into());
+			return Err(Error::InvalidScaling);
 		}
 	}
 
@@ -531,8 +580,8 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 fn validate_block(block: &Block, ctx: &mut BlockContext<'_>) -> Result<(), Error> {
 	let prev = ctx.batch.get_previous_header(&block.header)?;
 	block
-		.validate(&prev.total_kernel_offset, ctx.verifier_cache.clone())
-		.map_err(ErrorKind::InvalidBlockProof)?;
+		.validate(&prev.total_kernel_offset)
+		.map_err(|e| Error::Block(e))?;
 	Ok(())
 }
 
@@ -604,7 +653,7 @@ fn update_body_tail(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Er
 	let tip = Tip::from_header(bh);
 	batch
 		.save_body_tail(&tip)
-		.map_err(|e| ErrorKind::StoreErr(e, "pipe save body tail".to_owned()))?;
+		.map_err(|e| Error::StoreErr(e, "pipe save body tail".to_owned()))?;
 	debug!("body tail {} @ {}", bh.hash(), bh.height);
 	Ok(())
 }
@@ -613,14 +662,14 @@ fn update_body_tail(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Er
 fn add_block_header(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Error> {
 	batch
 		.save_block_header(bh)
-		.map_err(|e| ErrorKind::StoreErr(e, "pipe save header".to_owned()))?;
+		.map_err(|e| Error::StoreErr(e, "pipe save header".to_owned()))?;
 	Ok(())
 }
 
-fn update_header_head(head: &Tip, batch: &mut store::Batch<'_>) -> Result<(), Error> {
+fn update_header_head(head: &Tip, batch: &store::Batch<'_>) -> Result<(), Error> {
 	batch
 		.save_header_head(&head)
-		.map_err(|e| ErrorKind::StoreErr(e, "pipe save header head".to_owned()))?;
+		.map_err(|e| Error::StoreErr(e, "pipe save header head".to_owned()))?;
 
 	debug!(
 		"header head updated to {} at {}",
@@ -630,10 +679,10 @@ fn update_header_head(head: &Tip, batch: &mut store::Batch<'_>) -> Result<(), Er
 	Ok(())
 }
 
-fn update_head(head: &Tip, batch: &mut store::Batch<'_>) -> Result<(), Error> {
+fn update_head(head: &Tip, batch: &store::Batch<'_>) -> Result<(), Error> {
 	batch
 		.save_body_head(&head)
-		.map_err(|e| ErrorKind::StoreErr(e, "pipe save body".to_owned()))?;
+		.map_err(|e| Error::StoreErr(e, "pipe save body".to_owned()))?;
 
 	debug!("head updated to {} at {}", head.last_block_h, head.height);
 
@@ -650,10 +699,11 @@ pub fn rewind_and_apply_header_fork(
 	header: &BlockHeader,
 	ext: &mut txhashset::HeaderExtension<'_>,
 	batch: &store::Batch<'_>,
+	ctx_specific_validation: &dyn Fn(&BlockHeader) -> Result<(), Error>,
 ) -> Result<(), Error> {
 	let mut fork_hashes = vec![];
 	let mut current = header.clone();
-	while current.height > 0 && ext.is_on_current_chain(&current, batch).is_err() {
+	while current.height > 0 && !ext.is_on_current_chain(&current, batch)? {
 		fork_hashes.push(current.hash());
 		current = batch.get_previous_header(&current)?;
 	}
@@ -668,7 +718,12 @@ pub fn rewind_and_apply_header_fork(
 	for h in fork_hashes {
 		let header = batch
 			.get_block_header(&h)
-			.map_err(|e| ErrorKind::StoreErr(e, "getting forked headers".to_string()))?;
+			.map_err(|e| Error::StoreErr(e, "getting forked headers".to_string()))?;
+
+		// Re-validate every header being re-applied.
+		// This makes it possible to check all header hashes against the ctx specific "denylist".
+		(ctx_specific_validation)(&header)?;
+
 		ext.validate_root(&header)?;
 		ext.apply_header(&header)?;
 	}
@@ -685,20 +740,17 @@ pub fn rewind_and_apply_fork(
 	header: &BlockHeader,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
+	ctx_specific_validation: &dyn Fn(&BlockHeader) -> Result<(), Error>,
 ) -> Result<(BlockHeader, Vec<Hash>), Error> {
 	let extension = &mut ext.extension;
 	let header_extension = &mut ext.header_extension;
 
 	// Prepare the header MMR.
-	rewind_and_apply_header_fork(header, header_extension, batch)?;
+	rewind_and_apply_header_fork(header, header_extension, batch, ctx_specific_validation)?;
 
 	// Rewind the txhashset extension back to common ancestor based on header MMR.
 	let mut current = batch.head_header()?;
-	while current.height > 0
-		&& header_extension
-			.is_on_current_chain(&current, batch)
-			.is_err()
-	{
+	while current.height > 0 && !header_extension.is_on_current_chain(&current, batch)? {
 		current = batch.get_previous_header(&current)?;
 	}
 	let fork_point = current;
@@ -714,10 +766,10 @@ pub fn rewind_and_apply_fork(
 	}
 	fork_hashes.reverse();
 
-	for h in fork_hashes.clone() {
+	for h in &fork_hashes {
 		let fb = batch
 			.get_block(&h)
-			.map_err(|e| ErrorKind::StoreErr(e, "getting forked blocks".to_string()))?;
+			.map_err(|e| Error::StoreErr(e, "getting forked blocks".to_string()))?;
 
 		// Re-verify coinbase maturity along this fork.
 		verify_coinbase_maturity(&fb, ext, batch)?;

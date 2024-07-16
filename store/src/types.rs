@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,11 +12,11 @@
 // limitations under the License.
 
 //! Common storage-related types
-use memmap;
 use tempfile::tempfile;
 
-use crate::core::ser::{
-	self, BinWriter, ProtocolVersion, Readable, Reader, StreamingReader, Writeable, Writer,
+use crate::grin_core::ser::{
+	self, BinWriter, DeserializationMode, ProtocolVersion, Readable, Reader, StreamingReader,
+	Writeable, Writer,
 };
 use std::fmt::Debug;
 use std::fs::{self, File, OpenOptions};
@@ -99,6 +99,14 @@ where
 		Ok(self.size_unsync())
 	}
 
+	/// Append a slice of multiple elements to the file.
+	/// Will not be written to disk until flush() is subsequently called.
+	/// Alternatively discard() may be called to discard any pending changes.
+	pub fn extend_from_slice(&mut self, data: &[T]) -> io::Result<u64> {
+		self.file.append_elmts(data)?;
+		Ok(self.size_unsync())
+	}
+
 	/// Read an element from the file by position.
 	/// Assumes we have already "shifted" the position to account for pruned data.
 	/// Note: PMMR API is 1-indexed, but backend storage is 0-indexed.
@@ -146,10 +154,16 @@ where
 	}
 
 	/// Write the file out to disk, pruning removed elements.
-	pub fn save_prune(&mut self, prune_pos: &[u64]) -> io::Result<()> {
+	pub fn write_tmp_pruned(&self, prune_pos: &[u64]) -> io::Result<()> {
 		// Need to convert from 1-index to 0-index (don't ask).
 		let prune_idx: Vec<_> = prune_pos.iter().map(|x| x - 1).collect();
-		self.file.save_prune(prune_idx.as_slice())
+		self.file.write_tmp_pruned(prune_idx.as_slice())
+	}
+
+	/// Replace with file at tmp path.
+	/// Rebuild and initialize from new file.
+	pub fn replace_with_tmp(&mut self) -> io::Result<()> {
+		self.file.replace_with_tmp()
 	}
 }
 
@@ -281,6 +295,14 @@ where
 		Ok(())
 	}
 
+	/// Iterate over the slice and append each element.
+	fn append_elmts(&mut self, data: &[T]) -> io::Result<()> {
+		for x in data {
+			self.append_elmt(x)?;
+		}
+		Ok(())
+	}
+
 	/// Append data to the file. Until the append-only file is synced, data is
 	/// only written to memory.
 	pub fn append(&mut self, bytes: &mut [u8]) -> io::Result<()> {
@@ -289,7 +311,7 @@ where
 			let offset = if next_pos == 0 {
 				0
 			} else {
-				let prev_entry = size_file.read_as_elmt(next_pos.saturating_sub(1))?;
+				let prev_entry = size_file.read_as_elmt(next_pos - 1)?;
 				prev_entry.offset + prev_entry.size as u64
 			};
 			size_file.append_elmt(&SizeEntry {
@@ -354,8 +376,7 @@ where
 				if self.buffer_start_pos == 0 {
 					file.set_len(0)?;
 				} else {
-					let (offset, size) =
-						self.offset_and_size(self.buffer_start_pos.saturating_sub(1))?;
+					let (offset, size) = self.offset_and_size(self.buffer_start_pos - 1)?;
 					file.set_len(offset + size as u64)?;
 				};
 			}
@@ -423,12 +444,14 @@ where
 
 	fn read_as_elmt(&self, pos: u64) -> io::Result<T> {
 		let data = self.read(pos)?;
-		ser::deserialize(&mut &data[..], self.version).map_err(|e| {
-			io::Error::new(
-				io::ErrorKind::Other,
-				format!("Fail to deserialize data, {}", e),
-			)
-		})
+		ser::deserialize(&mut &data[..], self.version, DeserializationMode::default()).map_err(
+			|e| {
+				io::Error::new(
+					io::ErrorKind::Other,
+					format!("Fail to deserialize data, {}", e),
+				)
+			},
+		)
 	}
 
 	// Read length bytes starting at offset from the buffer.
@@ -474,40 +497,47 @@ where
 		Ok(file)
 	}
 
+	fn tmp_path(&self) -> PathBuf {
+		self.path.with_extension("tmp")
+	}
+
 	/// Saves a copy of the current file content, skipping data at the provided
 	/// prune positions. prune_pos must be ordered.
-	pub fn save_prune(&mut self, prune_pos: &[u64]) -> io::Result<()> {
-		let tmp_path = self.path.with_extension("tmp");
+	pub fn write_tmp_pruned(&self, prune_pos: &[u64]) -> io::Result<()> {
+		let reader = File::open(&self.path)?;
+		let mut buf_reader = BufReader::new(reader);
+		let mut streaming_reader = StreamingReader::new(&mut buf_reader, self.version);
 
-		// Scope the reader and writer to within the block so we can safely replace files later on.
-		{
-			let reader = File::open(&self.path)?;
-			let mut buf_reader = BufReader::new(reader);
-			let mut streaming_reader = StreamingReader::new(&mut buf_reader, self.version);
+		let mut buf_writer = BufWriter::new(File::create(&self.tmp_path())?);
+		let mut bin_writer = BinWriter::new(&mut buf_writer, self.version);
 
-			let mut buf_writer = BufWriter::new(File::create(&tmp_path)?);
-			let mut bin_writer = BinWriter::new(&mut buf_writer, self.version);
-
-			let mut current_pos = 0;
-			let mut prune_pos = prune_pos;
-			while let Ok(elmt) = T::read(&mut streaming_reader) {
-				if prune_pos.contains(&current_pos) {
-					// Pruned pos, moving on.
-					prune_pos = &prune_pos[1..];
-				} else {
-					// Not pruned, write to file.
-					elmt.write(&mut bin_writer).map_err(|e| {
-						io::Error::new(io::ErrorKind::Other, format!("Fail to write prune, {}", e))
-					})?;
-				}
-				current_pos += 1;
+		let mut current_pos = 0;
+		let mut prune_pos = prune_pos;
+		while let Ok(elmt) = T::read(&mut streaming_reader) {
+			if prune_pos.contains(&current_pos) {
+				// Pruned pos, moving on.
+				prune_pos = &prune_pos[1..];
+			} else {
+				// Not pruned, write to file.
+				elmt.write(&mut bin_writer).map_err(|e| {
+					io::Error::new(
+						io::ErrorKind::Other,
+						format!("Fail to write at write_tmp_pruned, {}", e),
+					)
+				})?;
 			}
-			buf_writer.flush()?;
+			current_pos += 1;
 		}
+		buf_writer.flush()?;
+		Ok(())
+	}
 
+	/// Replace the underlying file with the file at tmp path.
+	/// Rebuild and initialize from the new file.
+	pub fn replace_with_tmp(&mut self) -> io::Result<()> {
 		// Replace the underlying file -
 		// pmmr_data.tmp -> pmmr_data.bin
-		self.replace(&tmp_path)?;
+		self.replace(&self.tmp_path())?;
 
 		// Now rebuild our size file to reflect the pruned data file.
 		// This will replace the underlying file internally.

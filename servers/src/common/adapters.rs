@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,33 +22,42 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Instant;
 
+use crate::chain::txhashset::BitmapChunk;
 use crate::chain::{
 	self, BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, TxHashsetDownloadStats,
 };
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 use crate::common::hooks::{ChainEvents, NetEvents};
 use crate::common::types::{ChainValidationMode, DandelionEpoch, ServerConfig};
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::transaction::Transaction;
-use crate::core::core::verifier_cache::VerifierCache;
-use crate::core::core::{BlockHeader, BlockSums, CompactBlock, Inputs, OutputIdentifier};
+use crate::core::core::{
+	BlockHeader, BlockSums, CompactBlock, Inputs, OutputIdentifier, Segment, SegmentIdentifier,
+	SegmentType, SegmentTypeIdentifier, TxKernel,
+};
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::core::{core, global};
 use crate::p2p;
 use crate::p2p::types::PeerInfo;
 use crate::pool::{self, BlockChain, PoolAdapter};
+use crate::util::secp::pedersen::RangeProof;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
+use grin_chain::txhashset::Segmenter;
 use rand::prelude::*;
+use std::ops::Range;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+const KERNEL_SEGMENT_HEIGHT_RANGE: Range<u8> = 9..14;
+const BITMAP_SEGMENT_HEIGHT_RANGE: Range<u8> = 9..14;
+const OUTPUT_SEGMENT_HEIGHT_RANGE: Range<u8> = 11..16;
+const RANGEPROOF_SEGMENT_HEIGHT_RANGE: Range<u8> = 7..12;
+
 // NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
-// This cache will drop sequense of the events during the second
+// This cache will drop sequence of the events during the second
 struct EventCache {
 	event: RwLock<Hash>,
 	time: AtomicI64,
@@ -89,16 +98,14 @@ impl EventCache {
 /// Implementation of the NetAdapter for the . Gets notified when new
 /// blocks and transactions are received and forwards to the chain and pool
 /// implementations.
-pub struct NetToChainAdapter<B, P, V>
+pub struct NetToChainAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	sync_state: Arc<SyncState>,
 	chain: Weak<chain::Chain>,
-	tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
-	verifier_cache: Arc<RwLock<V>>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<p2p::Peers>>,
 	config: ServerConfig,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
@@ -107,17 +114,12 @@ where
 	processed_headers: EventCache,
 	processed_blocks: EventCache,
 	processed_transactions: EventCache,
-
-	header_cache: Arc<Mutex<HashMap<u64, core::BlockHeader>>>,
-	tip_processed: Arc<Mutex<u64>>,
-	reset_tip: Arc<Mutex<u64>>,
 }
 
-impl<B, P, V> p2p::ChainAdapter for NetToChainAdapter<B, P, V>
+impl<B, P> p2p::ChainAdapter for NetToChainAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	fn total_difficulty(&self) -> Result<Difficulty, chain::Error> {
 		Ok(self.chain().head()?.total_difficulty)
@@ -154,11 +156,11 @@ where
 		tx: core::Transaction,
 		stem: bool,
 	) -> Result<bool, chain::Error> {
+		// nothing much we can do with a new transaction while syncing
 		if self.sync_state.is_syncing() {
 			return Ok(true);
 		}
 
-		// nothing much we can do with a new transaction while syncing
 		let tx_hash = tx.hash();
 		// For transaction we allow double processing, we want to be sure that TX will be stored in the pool
 		// because there is no recovery plan for transactions. So we want to use natural retry to help us handle failures
@@ -204,7 +206,7 @@ where
 			debug!("block_received, cache for {} OK", b_hash);
 		}
 
-		if self.chain().block_exists(b.hash())? {
+		if self.chain().is_known(&b.header).is_err() {
 			return Ok(true);
 		}
 
@@ -217,7 +219,6 @@ where
 			b.outputs().len(),
 			b.kernels().len(),
 		);
-
 		self.process_block(b, peer_info, opts)
 	}
 
@@ -227,9 +228,10 @@ where
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		// No need to process this compact block if we have previously accepted the _full block_.
-		if self.chain().block_exists(cb.hash())? {
+		if self.chain().is_known(&cb.header).is_err() {
 			return Ok(true);
 		}
+
 		let bhash = cb.hash();
 		debug!(
 			"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
@@ -270,7 +272,7 @@ where
 				.chain()
 				.process_block_header(&cb.header, chain::Options::NONE)
 			{
-				debug!("Invalid compact block header {}: {:?}", cb_hash, e.kind());
+				debug!("Invalid compact block header {}: {:?}", cb_hash, e);
 				return Ok(!e.is_bad_data());
 			}
 
@@ -308,10 +310,7 @@ where
 			};
 
 			if let Ok(prev) = self.chain().get_previous_header(&cb.header) {
-				if block
-					.validate(&prev.total_kernel_offset, self.verifier_cache.clone())
-					.is_ok()
-				{
+				if block.validate(&prev.total_kernel_offset).is_ok() {
 					debug!(
 						"successfully hydrated block: {} at {} ({})",
 						block.header.hash(),
@@ -373,11 +372,7 @@ where
 		let res = self.chain().process_block_header(&bh, chain::Options::NONE);
 
 		if let Err(e) = res {
-			debug!(
-				"Block header {} refused by chain: {:?}",
-				bh.hash(),
-				e.kind()
-			);
+			debug!("Block header {} refused by chain: {:?}", bh.hash(), e);
 			if e.is_bad_data() {
 				return Ok(false);
 			} else {
@@ -399,26 +394,12 @@ where
 		&self,
 		bhs: &[core::BlockHeader],
 		peer_info: &PeerInfo,
-		header_cache_size: u64,
 	) -> Result<bool, chain::Error> {
-		let tip_processed = {
-			let mut tip_processed = self.tip_processed.lock().unwrap();
-			let sync_head_height = self.chain().get_sync_head()?.height;
-
-			let mut reset_tip = self.reset_tip.lock().unwrap();
-			if *reset_tip != 0 {
-				warn!(
-					"reset of tip to {} from {} due to differing headers.",
-					*reset_tip, *tip_processed
-				);
-				*tip_processed = *reset_tip;
-				*reset_tip = 0;
-			} else if *tip_processed < sync_head_height {
-				*tip_processed = sync_head_height;
-			}
-
-			*tip_processed
-		};
+		info!(
+			"Received {} block headers from {}",
+			bhs.len(),
+			peer_info.addr
+		);
 
 		if bhs.is_empty() {
 			return Ok(false);
@@ -429,118 +410,26 @@ where
 			return Ok(false);
 		}
 
-		info!(
-			"Received {} block headers from {}, height {}, hash = {}, tip_processed = {}",
-			bhs.len(),
-			peer_info.addr,
-			bhs[0].height,
-			bhs[0].hash(),
-			tip_processed,
-		);
-
-		if bhs[0].height > tip_processed + 1 {
-			// we can't process this yet.
-			// try to process anything in the cache that we can
-
-			if header_cache_size > 0 {
-				for bh in bhs {
-					let mut hashmap = self.header_cache.lock().unwrap();
-					hashmap.insert(bh.height, bh.clone());
-					if bh.height > header_cache_size {
-						hashmap.remove(&(bh.height - header_cache_size));
-					}
-				}
-			}
-			return Ok(true);
-		}
-		if header_cache_size > 0 {
-			let mut itt = tip_processed + 1;
-			let mut bh_backlog: Vec<core::BlockHeader> = Vec::new();
-			let mut backlog_processed = false;
-			loop {
-				{
-					let hashmap = self.header_cache.lock().unwrap();
-					let next = hashmap.get(&itt);
-					if !next.is_some() {
-						break;
-					}
-					let next = next.unwrap();
-					//info!("adding headers to the backlog: {}", next.height);
-					bh_backlog.push(next.clone());
-				}
-
-				if bh_backlog.len() >= 256 {
-					// getting too big, process and continue
-					self.process_add_headers_sync(&bh_backlog.as_slice(), header_cache_size)?;
-					bh_backlog = Vec::new();
-					backlog_processed = true;
-				}
-
-				itt = itt + 1;
-			}
-
-			if bh_backlog.len() > 0 {
-				self.process_add_headers_sync(&bh_backlog.as_slice(), header_cache_size)?;
+		// Read our sync_head if we are in header_sync.
+		// If not then we can ignore this batch of headers.
+		let sync_head = match self.sync_state.status() {
+			SyncStatus::HeaderSync { sync_head, .. } => sync_head,
+			_ => {
+				debug!("headers_received: ignoring as not in header_sync");
 				return Ok(true);
 			}
-			if backlog_processed {
-				return Ok(true);
-			}
-		}
+		};
 
-		let first_height = bhs[0].height;
-		for bh in bhs {
-			if header_cache_size > 0 {
-				// set highest processed block
-				let mut hashmap = self.header_cache.lock().unwrap();
-				let value = hashmap.get(&bh.height);
-				if value.is_some() {
-					// we already have something here.
-					// does it match? If so return.
-					let cache_value = value.unwrap();
-					if bh.prev_hash == cache_value.prev_hash {
-						if first_height <= tip_processed {
-							return Ok(true);
-						}
-					} else {
-						// it doesn't match! there must have
-						// been a reorg or someone gave us bad headers.
-						// clear the entire hashmap to be safe.
-						// go back to previous logic at this point hashmap.clear();
-						warn!(
-							"different header value at height = {}. clearing cache.",
-							bh.height
-						);
-						hashmap.clear();
-						*(self.reset_tip.lock().unwrap()) = first_height - 1;
-						break;
-					}
-				}
-			}
-		}
-		self.process_add_headers_sync(bhs, header_cache_size)
-	}
-
-	fn process_add_headers_sync(
-		&self,
-		bhs: &[core::BlockHeader],
-		header_cache_size: u64,
-	) -> Result<bool, chain::Error> {
-		let mut hashmap = self.header_cache.lock().unwrap();
 		// try to add headers to our header chain
-		match self.chain().sync_block_headers(bhs, chain::Options::SYNC) {
-			Ok(_) => {
-				for bh in bhs {
-					let mut tip_processed = self.tip_processed.lock().unwrap();
-					if *tip_processed < bh.height {
-						*tip_processed = bh.height;
-					}
-					if header_cache_size > 0 {
-						hashmap.insert(bh.height, bh.clone());
-						if bh.height > header_cache_size {
-							hashmap.remove(&(bh.height - header_cache_size));
-						}
-					}
+		match self
+			.chain()
+			.sync_block_headers(bhs, sync_head, chain::Options::SYNC)
+		{
+			Ok(sync_head) => {
+				// If we have an updated sync_head after processing this batch of headers
+				// then update our sync_state so we can request relevant headers in the next batch.
+				if let Some(sync_head) = sync_head {
+					self.sync_state.update_header_sync(sync_head);
 				}
 				Ok(true)
 			}
@@ -677,9 +566,9 @@ where
 				if is_bad_data {
 					self.chain().clean_txhashset_sandbox();
 					error!("Failed to save txhashset archive: bad data");
-					self.sync_state.set_sync_error(
-						chain::ErrorKind::TxHashSetErr("bad txhashset data".to_string()).into(),
-					);
+					self.sync_state.set_sync_error(chain::Error::TxHashSetErr(
+						"bad txhashset data".to_string(),
+					));
 				} else {
 					info!("Received valid txhashset data for {}.", h);
 				}
@@ -701,20 +590,272 @@ where
 	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
 		self.chain().get_tmpfile_pathname(tmpfile_name)
 	}
+
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error> {
+		self.chain().segmenter()
+	}
+
+	fn get_kernel_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<TxKernel>, chain::Error> {
+		if !KERNEL_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		let segmenter = self.chain().segmenter()?;
+		let head_hash = segmenter.header().hash();
+		if head_hash != hash {
+			return Err(chain::Error::SegmenterHeaderMismatch(
+				head_hash,
+				segmenter.header().height,
+			));
+		}
+		segmenter.kernel_segment(id)
+	}
+
+	fn get_bitmap_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<BitmapChunk>, chain::Error> {
+		if !BITMAP_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		let segmenter = self.chain().segmenter()?;
+		let head_hash = segmenter.header().hash();
+		if head_hash != hash {
+			return Err(chain::Error::SegmenterHeaderMismatch(
+				head_hash,
+				segmenter.header().height,
+			));
+		}
+		segmenter.bitmap_segment(id)
+	}
+
+	fn get_output_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<OutputIdentifier>, chain::Error> {
+		if !OUTPUT_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		let segmenter = self.chain().segmenter()?;
+		let head_hash = segmenter.header().hash();
+		if head_hash != hash {
+			return Err(chain::Error::SegmenterHeaderMismatch(
+				head_hash,
+				segmenter.header().height,
+			));
+		}
+		segmenter.output_segment(id)
+	}
+
+	fn get_rangeproof_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<RangeProof>, chain::Error> {
+		if !RANGEPROOF_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		let segmenter = self.chain().segmenter()?;
+		let head_hash = segmenter.header().hash();
+		if head_hash != hash {
+			return Err(chain::Error::SegmenterHeaderMismatch(
+				head_hash,
+				segmenter.header().height,
+			));
+		}
+		segmenter.rangeproof_segment(id)
+	}
+
+	fn receive_bitmap_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<BitmapChunk>,
+	) -> Result<bool, chain::Error> {
+		info!(
+			"Received bitmap segment {} for block_hash: {}, bitmap_root_hash: {}",
+			segment.identifier().idx,
+			block_hash,
+			bitmap_root_hash
+		);
+		// TODO: Entire process needs to be restarted if the horizon block
+		// has changed (perhaps not here, NB this has to go somewhere)
+		let archive_header = self.chain().txhashset_archive_header_header_only()?;
+		if archive_header.hash() != block_hash {
+			return Ok(false);
+		}
+		let identifier = segment.identifier().clone();
+		let mut retval = Ok(true);
+		if let Some(d) = self
+			.chain()
+			.get_desegmenter(&archive_header)
+			.write()
+			.as_mut()
+		{
+			let res = d.add_bitmap_segment(segment, bitmap_root_hash);
+			if let Err(e) = res {
+				error!(
+					"Validation of incoming bitmap segment failed: {:?}, reason: {}",
+					identifier, e
+				);
+				retval = Err(e);
+			}
+		} else {
+			retval = Ok(false);
+		}
+		// Remove segment from outgoing list
+		self.sync_state.remove_pibd_segment(&SegmentTypeIdentifier {
+			segment_type: SegmentType::Bitmap,
+			identifier,
+		});
+		retval
+	}
+
+	fn receive_output_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<OutputIdentifier>,
+	) -> Result<bool, chain::Error> {
+		info!(
+			"Received output segment {} for block_hash: {}, bitmap_root_hash: {}",
+			segment.identifier().idx,
+			block_hash,
+			bitmap_root_hash
+		);
+		let archive_header = self.chain().txhashset_archive_header_header_only()?;
+		if archive_header.hash() != block_hash {
+			return Ok(false);
+		}
+		let identifier = segment.identifier().clone();
+		let mut retval = Ok(true);
+		if let Some(d) = self
+			.chain()
+			.get_desegmenter(&archive_header)
+			.write()
+			.as_mut()
+		{
+			let res = d.add_output_segment(segment, bitmap_root_hash);
+			if let Err(e) = res {
+				error!(
+					"Validation of incoming output segment failed: {:?}, reason: {}",
+					identifier, e
+				);
+				retval = Err(e);
+			}
+		} else {
+			retval = Ok(false);
+		}
+		// Remove segment from outgoing list
+		self.sync_state.remove_pibd_segment(&SegmentTypeIdentifier {
+			segment_type: SegmentType::Output,
+			identifier,
+		});
+		retval
+	}
+
+	fn receive_rangeproof_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<RangeProof>,
+	) -> Result<bool, chain::Error> {
+		info!(
+			"Received proof segment {} for block_hash: {}, bitmap_root_hash: {}",
+			segment.identifier().idx,
+			block_hash,
+			bitmap_root_hash
+		);
+		let archive_header = self.chain().txhashset_archive_header_header_only()?;
+		if archive_header.hash() != block_hash {
+			return Ok(false);
+		}
+		let identifier = segment.identifier().clone();
+		let mut retval = Ok(true);
+		if let Some(d) = self
+			.chain()
+			.get_desegmenter(&archive_header)
+			.write()
+			.as_mut()
+		{
+			let res = d.add_rangeproof_segment(segment, bitmap_root_hash);
+			if let Err(e) = res {
+				error!(
+					"Validation of incoming rangeproof segment failed: {:?}, reason: {}",
+					identifier, e
+				);
+				retval = Err(e);
+			}
+		} else {
+			retval = Ok(false);
+		}
+		// Remove segment from outgoing list
+		self.sync_state.remove_pibd_segment(&SegmentTypeIdentifier {
+			segment_type: SegmentType::RangeProof,
+			identifier,
+		});
+		retval
+	}
+
+	fn receive_kernel_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<TxKernel>,
+	) -> Result<bool, chain::Error> {
+		info!(
+			"Received kernel segment {} for block_hash: {}, bitmap_root_hash: {}",
+			segment.identifier().idx,
+			block_hash,
+			bitmap_root_hash
+		);
+		let archive_header = self.chain().txhashset_archive_header_header_only()?;
+		if archive_header.hash() != block_hash {
+			return Ok(false);
+		}
+		let identifier = segment.identifier().clone();
+		let mut retval = Ok(true);
+		if let Some(d) = self
+			.chain()
+			.get_desegmenter(&archive_header)
+			.write()
+			.as_mut()
+		{
+			let res = d.add_kernel_segment(segment, bitmap_root_hash);
+			if let Err(e) = res {
+				error!(
+					"Validation of incoming rangeproof segment failed: {:?}, reason: {}",
+					identifier, e
+				);
+				retval = Err(e);
+			}
+		} else {
+			retval = Ok(false);
+		}
+		// Remove segment from outgoing list
+		self.sync_state.remove_pibd_segment(&SegmentTypeIdentifier {
+			segment_type: SegmentType::Kernel,
+			identifier,
+		});
+		retval
+	}
 }
 
-impl<B, P, V> NetToChainAdapter<B, P, V>
+impl<B, P> NetToChainAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	/// Construct a new NetToChainAdapter instance
 	pub fn new(
 		sync_state: Arc<SyncState>,
 		chain: Arc<chain::Chain>,
-		tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
-		verifier_cache: Arc<RwLock<V>>,
+		tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 		config: ServerConfig,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	) -> Self {
@@ -722,16 +863,12 @@ where
 			sync_state,
 			chain: Arc::downgrade(&chain),
 			tx_pool,
-			verifier_cache,
 			peers: OneTime::new(),
 			config,
 			hooks,
 			processed_headers: EventCache::new(),
 			processed_blocks: EventCache::new(),
 			processed_transactions: EventCache::new(),
-			header_cache: Arc::new(Mutex::new(HashMap::new())),
-			tip_processed: Arc::new(Mutex::new(0)),
-			reset_tip: Arc::new(Mutex::new(0)),
 		}
 	}
 
@@ -806,8 +943,8 @@ where
 				Ok(false)
 			}
 			Err(e) => {
-				match e.kind() {
-					chain::ErrorKind::Orphan(orph_msg) => {
+				match e {
+					chain::Error::Orphan(orph_msg) => {
 						if let Ok(previous) = previous {
 							// make sure we did not miss the parent block
 							if !self.chain().is_orphan(&previous.hash())
@@ -820,11 +957,7 @@ where
 						Ok(true)
 					}
 					_ => {
-						debug!(
-							"process_block: block {} refused by chain: {}",
-							bhash,
-							e.kind()
-						);
+						debug!("process_block: block {} refused by chain: {}", bhash, e);
 						Ok(true)
 					}
 				}
@@ -861,11 +994,6 @@ where
 	}
 
 	fn check_compact(&self) {
-		// Skip compaction if we are syncing.
-		if self.sync_state.is_syncing() {
-			return;
-		}
-
 		// Roll the dice to trigger compaction at 1/COMPACTION_CHECK chance per block,
 		// uses a different thread to avoid blocking the caller thread (likely a peer)
 		let mut rng = thread_rng();
@@ -949,29 +1077,29 @@ where
 /// Implementation of the ChainAdapter for the network. Gets notified when the
 ///  accepted a new block, asking the pool to update its state and
 /// the network to broadcast the block
-pub struct ChainToPoolAndNetAdapter<B, P, V>
+pub struct ChainToPoolAndNetAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
-	tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<p2p::Peers>>,
 	hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 }
 
-impl<B, P, V> ChainAdapter for ChainToPoolAndNetAdapter<B, P, V>
+impl<B, P> ChainAdapter for ChainToPoolAndNetAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	fn block_accepted(&self, b: &core::Block, status: BlockStatus, opts: Options) {
-		// not broadcasting blocks received through sync
+		// Trigger all registered "on_block_accepted" hooks (logging and webhooks).
+		for hook in &self.hooks {
+			hook.on_block_accepted(b, status);
+		}
+
+		// Suppress broadcast of new blocks received during sync.
 		if !opts.contains(chain::Options::SYNC) {
-			for hook in &self.hooks {
-				hook.on_block_accepted(b, status);
-			}
 			// If we mined the block then we want to broadcast the compact block.
 			// If we received the block from another node then broadcast "header first"
 			// to minimize network traffic.
@@ -1005,15 +1133,14 @@ where
 	}
 }
 
-impl<B, P, V> ChainToPoolAndNetAdapter<B, P, V>
+impl<B, P> ChainToPoolAndNetAdapter<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	/// Construct a ChainToPoolAndNetAdapter instance.
 	pub fn new(
-		tx_pool: Arc<RwLock<pool::TransactionPool<B, P, V>>>,
+		tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 		hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 	) -> Self {
 		ChainToPoolAndNetAdapter {
@@ -1203,9 +1330,12 @@ impl pool::BlockChain for PoolToChainAdapter {
 	}
 
 	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
-		self.chain()
-			.replay_attack_check(tx)
-			.map_err(|_| pool::PoolError::DuplicateKernelOrDuplicateSpent)
+		self.chain().replay_attack_check(tx).map_err(|e| {
+			pool::PoolError::DuplicateKernelOrDuplicateSpent(format!(
+				"Replay attack detected, {}",
+				e
+			))
+		})
 	}
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 //! Rangeproof library functions
 
-use crate::libtx::error::{Error, ErrorKind};
+use crate::libtx::error::Error;
 use blake2::blake2b::blake2b;
 use keychain::extkey_bip32::BIP32GrinHasher;
 use keychain::{Identifier, Keychain, SwitchCommitmentType, ViewKey};
@@ -79,9 +79,9 @@ pub fn rewind<B>(
 where
 	B: ProofBuild,
 {
-	let nonce = b.rewind_nonce(secp, &commit).map_err(|e| {
-		ErrorKind::RangeProof(format!("Unable rewind for commit {:?}, {}", commit, e))
-	})?;
+	let nonce = b
+		.rewind_nonce(secp, &commit)
+		.map_err(|e| Error::RangeProof(format!("Unable rewind for commit {:?}, {}", commit, e)))?;
 	let info = secp.rewind_bullet_proof(commit, nonce, extra_data, proof);
 	if info.is_err() {
 		return Ok(None);
@@ -92,7 +92,7 @@ where
 	let check = b
 		.check_output(secp, &commit, amount, info.message)
 		.map_err(|e| {
-			ErrorKind::RangeProof(format!("Unable to check output for {:?}, {}", commit, e))
+			Error::RangeProof(format!("Unable to check output for {:?}, {}", commit, e))
 		})?;
 
 	Ok(check.map(|(id, switch)| (amount, id, switch)))
@@ -146,7 +146,9 @@ where
 
 		let private_hash = blake2b(32, &[], &private_root_key.0).as_bytes().to_vec();
 
-		let public_root_key = keychain.public_root_key().serialize_vec(true);
+		let public_root_key = keychain
+			.public_root_key()
+			.serialize_vec(keychain.secp(), true);
 		let rewind_hash = blake2b(32, &[], &public_root_key[..]).as_bytes().to_vec();
 
 		Self {
@@ -163,12 +165,11 @@ where
 			&self.rewind_hash
 		};
 		let res = blake2b(32, &commit.0, hash);
-		SecretKey::from_slice(res.as_bytes()).map_err(|e| {
-			ErrorKind::RangeProof(format!(
+		SecretKey::from_slice(self.keychain.secp(), res.as_bytes()).map_err(|e| {
+			Error::RangeProof(format!(
 				"Unable to extract nonce from commit {:?}, {}",
 				commit, e
 			))
-			.into()
 		})
 	}
 }
@@ -281,12 +282,11 @@ where
 
 	fn nonce(&self, commit: &Commitment) -> Result<SecretKey, Error> {
 		let res = blake2b(32, &commit.0, &self.root_hash);
-		SecretKey::from_slice(res.as_bytes()).map_err(|e| {
-			ErrorKind::RangeProof(format!(
+		SecretKey::from_slice(self.keychain.secp(), res.as_bytes()).map_err(|e| {
+			Error::RangeProof(format!(
 				"Unable to extract nonce from commit {:?}, {}",
 				commit, e
 			))
-			.into()
 		})
 	}
 }
@@ -367,14 +367,13 @@ where
 }
 
 impl ProofBuild for ViewKey {
-	fn rewind_nonce(&self, _secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
+	fn rewind_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
 		let res = blake2b(32, &commit.0, &self.rewind_hash);
-		SecretKey::from_slice(res.as_bytes()).map_err(|e| {
-			ErrorKind::RangeProof(format!(
+		SecretKey::from_slice(secp, res.as_bytes()).map_err(|e| {
+			Error::RangeProof(format!(
 				"Unable to rewind nonce for commit {:?}, {}",
 				commit, e
 			))
-			.into()
 		})
 	}
 
@@ -433,10 +432,10 @@ impl ProofBuild for ViewKey {
 			if child_number.is_hardened() {
 				return Ok(None);
 			}
-			key = key.ckd_pub(&secp, &mut hasher, child_number)?;
+			key = key.ckd_pub(secp, &mut hasher, child_number)?;
 		}
 		let pub_key = key.commit(secp, amount, switch)?;
-		if commit.to_pubkey()? == pub_key {
+		if commit.to_pubkey(secp)? == pub_key {
 			Ok(Some((id, switch)))
 		} else {
 			Ok(None)

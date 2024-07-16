@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,11 +22,8 @@
 
 #[macro_use]
 extern crate log;
-use failure;
 #[macro_use]
-extern crate failure_derive;
-#[macro_use]
-extern crate grin_core as core;
+extern crate grin_core;
 extern crate grin_util as util;
 
 //use grin_core as core;

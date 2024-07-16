@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -77,7 +77,12 @@ impl Display for DiffBlock {
 
 // Builds an iterator for next difficulty calculation with the provided
 // constant time interval, difficulty and total length.
-fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> Vec<HeaderInfo> {
+fn repeat(
+	interval: u64,
+	diff: HeaderDifficultyInfo,
+	len: u64,
+	cur_time: Option<u64>,
+) -> Vec<HeaderDifficultyInfo> {
 	let cur_time = match cur_time {
 		Some(t) => t,
 		None => Utc::now().timestamp() as u64,
@@ -89,8 +94,8 @@ fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> V
 	let pairs = times.zip(diffs.iter());
 	pairs
 		.map(|(t, d)| {
-			HeaderInfo::new(
-				diff.block_hash,
+			HeaderDifficultyInfo::new(
+				diff.hash,
 				cur_time + t as u64,
 				d.clone(),
 				diff.secondary_scaling,
@@ -101,27 +106,31 @@ fn repeat(interval: u64, diff: HeaderInfo, len: u64, cur_time: Option<u64>) -> V
 }
 
 // Creates a new chain with a genesis at a simulated difficulty
-fn create_chain_sim(diff: u64) -> Vec<(HeaderInfo, DiffStats)> {
+fn create_chain_sim(diff: u64) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	println!(
 		"adding create: {}, {}",
 		Utc::now().timestamp(),
 		Difficulty::from_num(diff)
 	);
-	let return_vec = vec![HeaderInfo::from_ts_diff(
+	let return_vec = vec![HeaderDifficultyInfo::from_ts_diff(
 		Utc::now().timestamp() as u64,
 		Difficulty::from_num(diff),
 	)];
 	let diff_stats = get_diff_stats(&return_vec);
 	vec![(
-		HeaderInfo::from_ts_diff(Utc::now().timestamp() as u64, Difficulty::from_num(diff)),
+		HeaderDifficultyInfo::from_ts_diff(
+			Utc::now().timestamp() as u64,
+			Difficulty::from_num(diff),
+		),
 		diff_stats,
 	)]
 }
 
-fn get_diff_stats(chain_sim: &[HeaderInfo]) -> DiffStats {
+fn get_diff_stats(chain_sim: &[HeaderDifficultyInfo]) -> DiffStats {
 	// Fill out some difficulty stats for convenience
 	let diff_iter = chain_sim.to_vec();
-	let last_blocks: Vec<HeaderInfo> = global::difficulty_data_to_vector(diff_iter.iter().cloned());
+	let last_blocks: Vec<HeaderDifficultyInfo> =
+		global::difficulty_data_to_vector(diff_iter.iter().cloned());
 
 	let mut last_time = last_blocks[0].timestamp;
 	let tip_height = chain_sim.len();
@@ -132,10 +141,11 @@ fn get_diff_stats(chain_sim: &[HeaderInfo]) -> DiffStats {
 
 	let mut i = 1;
 
-	let sum_blocks: Vec<HeaderInfo> = global::difficulty_data_to_vector(diff_iter.iter().cloned())
-		.into_iter()
-		.take(DIFFICULTY_ADJUST_WINDOW as usize)
-		.collect();
+	let sum_blocks: Vec<HeaderDifficultyInfo> =
+		global::difficulty_data_to_vector(diff_iter.iter().cloned())
+			.into_iter()
+			.take(DIFFICULTY_ADJUST_WINDOW as usize)
+			.collect();
 
 	let sum_entries: Vec<DiffBlock> = sum_blocks
 		.iter()
@@ -195,19 +205,23 @@ fn get_diff_stats(chain_sim: &[HeaderInfo]) -> DiffStats {
 // from the difficulty adjustment at interval seconds from the previous block
 fn add_block(
 	interval: u64,
-	chain_sim: Vec<(HeaderInfo, DiffStats)>,
-) -> Vec<(HeaderInfo, DiffStats)> {
+	chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>,
+) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	let mut ret_chain_sim = chain_sim.clone();
-	let mut return_chain: Vec<HeaderInfo> = chain_sim.clone().iter().map(|e| e.0.clone()).collect();
+	let mut return_chain: Vec<HeaderDifficultyInfo> =
+		chain_sim.clone().iter().map(|e| e.0.clone()).collect();
 	// get last interval
 	let diff = next_difficulty(1, return_chain.clone());
 	let last_elem = chain_sim.first().unwrap().clone().0;
 	let time = last_elem.timestamp + interval;
-	return_chain.insert(0, HeaderInfo::from_ts_diff(time, diff.difficulty));
+	return_chain.insert(0, HeaderDifficultyInfo::from_ts_diff(time, diff.difficulty));
 	let diff_stats = get_diff_stats(&return_chain);
 	ret_chain_sim.insert(
 		0,
-		(HeaderInfo::from_ts_diff(time, diff.difficulty), diff_stats),
+		(
+			HeaderDifficultyInfo::from_ts_diff(time, diff.difficulty),
+			diff_stats,
+		),
 	);
 	ret_chain_sim
 }
@@ -215,9 +229,9 @@ fn add_block(
 // Adds another n 'blocks' to the iterator, with difficulty calculated
 fn add_block_repeated(
 	interval: u64,
-	chain_sim: Vec<(HeaderInfo, DiffStats)>,
+	chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>,
 	iterations: usize,
-) -> Vec<(HeaderInfo, DiffStats)> {
+) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	let mut return_chain = chain_sim;
 	for _ in 0..iterations {
 		return_chain = add_block(interval, return_chain.clone());
@@ -227,7 +241,7 @@ fn add_block_repeated(
 
 // Prints the contents of the iterator and its difficulties.. useful for
 // tweaking
-fn print_chain_sim(chain_sim: Vec<(HeaderInfo, DiffStats)>) {
+fn print_chain_sim(chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>) {
 	let mut chain_sim = chain_sim;
 	chain_sim.reverse();
 	let mut last_time = 0;
@@ -267,10 +281,10 @@ fn print_chain_sim(chain_sim: Vec<(HeaderInfo, DiffStats)>) {
 	});
 }
 
-fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderInfo> {
+fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderDifficultyInfo> {
 	repeat(
 		interval,
-		HeaderInfo::from_ts_diff(1, Difficulty::from_num(diff)),
+		HeaderDifficultyInfo::from_ts_diff(1, Difficulty::from_num(diff)),
 		len,
 		Some(from),
 	)
@@ -357,7 +371,7 @@ fn next_target_adjustment() {
 	let diff_min = Difficulty::min();
 
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
-	let mut hi = HeaderInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
+	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
 	let hinext = next_difficulty(
 		1,
@@ -384,7 +398,11 @@ fn next_target_adjustment() {
 
 	// check pre difficulty_data_to_vector effect on retargetting
 	assert_eq!(
-		next_difficulty(1, vec![HeaderInfo::from_ts_diff(42, hi.difficulty)]).difficulty,
+		next_difficulty(
+			1,
+			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)]
+		)
+		.difficulty,
 		Difficulty::from_num(14913)
 	);
 
@@ -540,7 +558,7 @@ fn test_secondary_pow_scale() {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
 
 	let window = DIFFICULTY_ADJUST_WINDOW;
-	let mut hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 100);
+	let mut hi = HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(10), 100);
 
 	// all primary, factor should increase so it becomes easier to find a high
 	// difficulty block
@@ -564,7 +582,8 @@ fn test_secondary_pow_scale() {
 		13
 	);
 	// same as above, testing lowest bound
-	let mut low_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), MIN_AR_SCALE as u32);
+	let mut low_hi =
+		HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(10), MIN_AR_SCALE as u32);
 	low_hi.is_secondary = true;
 	assert_eq!(
 		secondary_pow_scaling(
@@ -574,7 +593,7 @@ fn test_secondary_pow_scale() {
 		MIN_AR_SCALE as u32
 	);
 	// the right ratio of 95% secondary
-	let mut primary_hi = HeaderInfo::from_diff_scaling(Difficulty::from_num(10), 50);
+	let mut primary_hi = HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(10), 50);
 	primary_hi.is_secondary = false;
 	assert_eq!(
 		secondary_pow_scaling(

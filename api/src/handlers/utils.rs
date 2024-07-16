@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ use std::sync::{Arc, Weak};
 // boilerplate of dealing with `Weak`.
 pub fn w<T>(weak: &Weak<T>) -> Result<Arc<T>, Error> {
 	weak.upgrade()
-		.ok_or_else(|| ErrorKind::Internal("failed to upgrade weak reference".to_owned()).into())
+		.ok_or_else(|| Error::Internal("failed to upgrade weak reference".to_owned()))
 }
 
 /// Internal function to retrieves an output by a given commitment
@@ -35,7 +35,7 @@ fn get_unspent(
 	id: &str,
 ) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
 	let c = util::from_hex(id)
-		.map_err(|_| ErrorKind::Argument(format!("Not a valid commitment: {}", id)))?;
+		.map_err(|_| Error::Argument(format!("Not a valid commitment: {}", id)))?;
 	let commit = Commitment::from_vec(c);
 	let res = chain.get_unspent(commit)?;
 	Ok(res)
@@ -71,7 +71,7 @@ pub fn get_output_v2(
 		None => return Ok(None),
 	};
 
-	let output = chain.get_unspent_output_at(pos.pos)?;
+	let output = chain.get_unspent_output_at(pos.pos - 1)?;
 	let header = if include_merkle_proof && output.is_coinbase() {
 		chain.get_header_by_height(pos.height).ok()
 	} else {

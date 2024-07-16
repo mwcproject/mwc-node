@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +16,11 @@ pub mod common;
 
 use self::core::consensus;
 use self::core::core::hash::Hashed;
-use self::core::core::verifier_cache::LruVerifierCache;
 use self::core::core::{HeaderVersion, KernelFeatures, NRDRelativeHeight, TxKernel};
 use self::core::global;
 use self::core::libtx::aggsig;
 use self::keychain::{BlindingFactor, ExtKeychain, Keychain};
 use self::pool::types::PoolError;
-use self::util::RwLock;
 use crate::common::*;
 use grin_core as core;
 use grin_keychain as keychain;
@@ -34,6 +32,7 @@ use std::sync::Arc;
 fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_accept_fee_base(10);
 	global::set_local_nrd_enabled(true);
 
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
@@ -43,15 +42,11 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 
 	let genesis = genesis_block(&keychain);
 	let chain = Arc::new(init_chain(db_root, genesis));
-	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 
 	// Initialize a new pool with our chain adapter.
-	let mut pool = init_transaction_pool(
-		Arc::new(ChainAdapter {
-			chain: chain.clone(),
-		}),
-		verifier_cache,
-	);
+	let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+		chain: chain.clone(),
+	}));
 
 	add_some_blocks(&chain, 3, &keychain);
 
@@ -59,30 +54,33 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 
 	// Now create tx to spend an early coinbase (now matured).
 	// Provides us with some useful outputs to test with.
-	let initial_tx = test_transaction_spending_coinbase(&keychain, &header_1, vec![10, 20, 30, 40]);
+	let initial_tx =
+		test_transaction_spending_coinbase(&keychain, &header_1, vec![1_000, 2_000, 3_000, 4_000]);
 
 	// Mine that initial tx so we can spend it with multiple txs.
 	add_block(&chain, &[initial_tx], &keychain);
 
-	add_some_blocks(&chain, 5, &keychain);
+	// mine past HF4 to see effect of set_local_accept_fee_base
+	add_some_blocks(&chain, 8, &keychain);
 
 	let header = chain.head_header().unwrap();
 
-	assert_eq!(header.height, consensus::TESTING_THIRD_HARD_FORK);
+	// Note, in MWC NRD will be activated from Header 3. But 4 for the testing does work well too
+	assert_eq!(header.height, 4 * consensus::TESTING_HARD_FORK_INTERVAL);
 	assert_eq!(header.version, HeaderVersion(4));
 
 	let (tx1, tx2, tx3) = {
 		let mut kernel = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-			fee: 6,
+			fee: 600.into(),
 			relative_height: NRDRelativeHeight::new(2)?,
 		});
 		let msg = kernel.msg_to_sign().unwrap();
 
 		// Generate a kernel with public excess and associated signature.
-		let excess = BlindingFactor::rand();
-		let skey = excess.secret_key().unwrap();
+		let excess = BlindingFactor::rand(keychain.secp());
+		let skey = excess.secret_key(keychain.secp()).unwrap();
 		kernel.excess = keychain.secp().commit(0, skey).unwrap();
-		let pubkey = &kernel.excess.to_pubkey().unwrap();
+		let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 		kernel.excess_sig =
 			aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 		kernel.verify().unwrap();
@@ -95,23 +93,23 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 
 		let tx1 = test_transaction_with_kernel(
 			&keychain,
-			vec![10, 20],
-			vec![24],
+			vec![1_000, 2_000],
+			vec![2_400],
 			kernel.clone(),
 			excess.clone(),
 		);
 
 		let tx2 = test_transaction_with_kernel(
 			&keychain,
-			vec![24],
-			vec![18],
+			vec![2_400],
+			vec![1_800],
 			kernel2.clone(),
 			excess.clone(),
 		);
 
 		// Now reuse kernel excess for tx3 but with NRD relative_height=1 (and different fee).
 		let mut kernel_short = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-			fee: 3,
+			fee: 300.into(),
 			relative_height: NRDRelativeHeight::new(1)?,
 		});
 		let msg_short = kernel_short.msg_to_sign().unwrap();
@@ -123,8 +121,8 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 
 		let tx3 = test_transaction_with_kernel(
 			&keychain,
-			vec![18],
-			vec![15],
+			vec![1_800],
+			vec![1_500],
 			kernel_short.clone(),
 			excess.clone(),
 		);

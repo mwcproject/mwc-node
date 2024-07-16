@@ -16,20 +16,19 @@ use crate::hex::from_hex;
 use data_encoding::BASE32;
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
-use failure::Fail;
 use sha3::{Digest, Sha3_256};
 use std::convert::TryFrom;
 use std::fmt;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 /// OnionV3 Address Errors
-#[derive(Fail)]
+#[derive(thiserror::Error)]
 pub enum OnionV3Error {
 	/// Error decoding an address from a string
-	#[fail(display = "Unable to decode Onion address from a string, {}", _0)]
+	#[error("Unable to decode Onion address from a string, {0}")]
 	AddressDecoding(String),
 	/// Error with given private key
-	#[fail(display = "Invalid private key, {}", _0)]
+	#[error("Invalid private key, {0}")]
 	InvalidPrivateKey(String),
 }
 

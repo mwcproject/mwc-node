@@ -14,7 +14,7 @@
 //! Implementation of Cuckatoo Cycle designed by John Tromp.
 use crate::global;
 use crate::pow::common::{CuckooParams, Link};
-use crate::pow::error::{Error, ErrorKind};
+use crate::pow::error::Error;
 use crate::pow::{PoWContext, Proof};
 use byteorder::{BigEndian, WriteBytesExt};
 use croaring::Bitmap;
@@ -46,7 +46,7 @@ impl Graph {
 	/// Create a new graph with given parameters
 	pub fn new(max_edges: u64, max_sols: u32, proof_size: usize) -> Result<Graph, Error> {
 		if max_edges >= u64::max_value() / 2 {
-			return Err(ErrorKind::Verification("graph is to big to build".to_string()).into());
+			return Err(Error::Verification("graph is to big to build".to_string()));
 		}
 		let max_nodes = 2 * max_edges;
 		Ok(Graph {
@@ -79,7 +79,7 @@ impl Graph {
 	/// Add an edge to the graph
 	pub fn add_edge(&mut self, u: u64, mut v: u64) -> Result<(), Error> {
 		if u >= self.max_nodes || v >= self.max_nodes {
-			return Err(ErrorKind::EdgeAddition.into());
+			return Err(Error::EdgeAddition);
 		}
 		v = v + self.max_nodes;
 		let adj_u = self.adj_list[(u ^ 1) as usize];
@@ -92,7 +92,7 @@ impl Graph {
 		let ulink = self.links.len() as u64;
 		let vlink = (self.links.len() + 1) as u64;
 		if vlink == self.nil {
-			return Err(ErrorKind::EdgeAddition.into());
+			return Err(Error::EdgeAddition);
 		}
 		self.links.push(Link {
 			next: self.adj_list[u as usize],
@@ -246,7 +246,7 @@ impl CuckatooContext {
 			self.verify_impl(&s)?;
 		}
 		if self.graph.solutions.is_empty() {
-			Err(ErrorKind::NoSolution.into())
+			Err(Error::NoSolution)
 		} else {
 			Ok(self.graph.solutions.clone())
 		}
@@ -255,28 +255,56 @@ impl CuckatooContext {
 	/// Verify that given edges are ascending and form a cycle in a header-generated
 	/// graph
 	pub fn verify_impl(&self, proof: &Proof) -> Result<(), Error> {
-		if proof.proof_size() != global::proofsize() {
-			return Err(ErrorKind::Verification("wrong cycle length".to_owned()).into());
+		let size = proof.proof_size();
+		if size != global::proofsize() {
+			return Err(Error::Verification("wrong cycle length".to_owned()));
 		}
 		let nonces = &proof.nonces;
-		let mut uvs = vec![0u64; 2 * proof.proof_size()];
-		let mut xor0: u64 = (self.params.proof_size as u64 / 2) & 1;
+		let mut uvs = vec![0u64; 2 * size];
+		let mask = u64::MAX >> (size as u64).leading_zeros(); // round size up to 2-power - 1
+		let mut xor0: u64 = (size as u64 / 2) & 1;
 		let mut xor1: u64 = xor0;
+		// the next two arrays form a linked list of nodes with matching bits 6..1
+		let mut headu = vec![2 * size; 1 + mask as usize];
+		let mut headv = vec![2 * size; 1 + mask as usize];
+		let mut prev = vec![0usize; 2 * size];
 
-		for n in 0..proof.proof_size() {
+		for n in 0..size {
 			if nonces[n] > self.params.edge_mask {
-				return Err(ErrorKind::Verification("edge too big".to_owned()).into());
+				return Err(Error::Verification("edge too big".to_owned()));
 			}
 			if n > 0 && nonces[n] <= nonces[n - 1] {
-				return Err(ErrorKind::Verification("edges not ascending".to_owned()).into());
+				return Err(Error::Verification("edges not ascending".to_owned()));
 			}
-			uvs[2 * n] = self.params.sipnode(nonces[n], 0)?;
-			uvs[2 * n + 1] = self.params.sipnode(nonces[n], 1)?;
-			xor0 ^= uvs[2 * n];
-			xor1 ^= uvs[2 * n + 1];
+			let u = self.params.sipnode(nonces[n], 0)?;
+			let v = self.params.sipnode(nonces[n], 1)?;
+
+			uvs[2 * n] = u;
+			let ubits = (u >> 1 & mask) as usize; // larger shifts work too, up to edgebits-6
+			prev[2 * n] = headu[ubits];
+			headu[ubits] = 2 * n;
+
+			uvs[2 * n + 1] = v;
+			let vbits = (v >> 1 & mask) as usize;
+			prev[2 * n + 1] = headv[vbits];
+			headv[vbits] = 2 * n + 1;
+
+			xor0 ^= u;
+			xor1 ^= v;
 		}
 		if xor0 | xor1 != 0 {
-			return Err(ErrorKind::Verification("endpoints don't match up".to_owned()).into());
+			return Err(Error::Verification("endpoints don't match up".to_owned()));
+		}
+		// make prev lists circular
+		for n in 0..size {
+			if prev[2 * n] == 2 * size {
+				let ubits = (uvs[2 * n] >> 1 & mask) as usize;
+				prev[2 * n] = headu[ubits];
+			}
+			if prev[2 * n + 1] == 2 * size {
+				let vbits = (uvs[2 * n + 1] >> 1 & mask) as usize;
+				prev[2 * n + 1] = headv[vbits];
+			}
 		}
 		let mut n = 0;
 		let mut i = 0;
@@ -286,20 +314,20 @@ impl CuckatooContext {
 			j = i;
 			let mut k = j;
 			loop {
-				k = (k + 2) % (2 * self.params.proof_size);
+				k = prev[k];
 				if k == i {
 					break;
 				}
 				if uvs[k] >> 1 == uvs[i] >> 1 {
 					// find other edge endpoint matching one at i
 					if j != i {
-						return Err(ErrorKind::Verification("branch in cycle".to_owned()).into());
+						return Err(Error::Verification("branch in cycle".to_owned()));
 					}
 					j = k;
 				}
 			}
 			if j == i || uvs[j] == uvs[i] {
-				return Err(ErrorKind::Verification("cycle dead ends".to_owned()).into());
+				return Err(Error::Verification("cycle dead ends".to_owned()));
 			}
 			i = j ^ 1;
 			n += 1;
@@ -307,10 +335,10 @@ impl CuckatooContext {
 				break;
 			}
 		}
-		if n == self.params.proof_size {
+		if n == size {
 			Ok(())
 		} else {
-			Err(ErrorKind::Verification("cycle too short".to_owned()).into())
+			Err(Error::Verification("cycle too short".to_owned()))
 		}
 	}
 }
@@ -457,13 +485,13 @@ mod test {
 		let mut header = [0u8; 80];
 		header[0] = 1u8;
 		ctx.set_header_nonce(header.to_vec(), Some(20), false)?;
-		assert!(!ctx.verify(&Proof::new(V1_29.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(V1_29.to_vec())).is_err());
 		header[0] = 0u8;
 		ctx.set_header_nonce(header.to_vec(), Some(20), false)?;
 		assert!(ctx.verify(&Proof::new(V1_29.to_vec())).is_ok());
 		let mut bad_proof = V1_29;
 		bad_proof[0] = 0x48a9e1;
-		assert!(!ctx.verify(&Proof::new(bad_proof.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(bad_proof.to_vec())).is_err());
 		Ok(())
 	}
 

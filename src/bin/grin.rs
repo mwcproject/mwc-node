@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -126,9 +126,9 @@ fn real_main() -> i32 {
 		}
 	}
 
-	let mut config = node_config.clone().unwrap();
-	let mut logging_config = config.members.as_mut().unwrap().logging.clone().unwrap();
-	logging_config.tui_running = config.members.as_mut().unwrap().server.run_tui;
+	let config = node_config.clone().unwrap();
+	let mut logging_config = config.members.as_ref().unwrap().logging.clone().unwrap();
+	logging_config.tui_running = config.members.as_ref().unwrap().server.run_tui;
 
 	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
 		Box::leak(Box::new(oneshot::channel::<()>()));
@@ -152,9 +152,9 @@ fn real_main() -> i32 {
 
 	log_build_info();
 
-	// Initialize our global chain_type and feature flags (NRD kernel support currently).
+	// Initialize our global chain_type and feature flags (NRD kernel support currently), accept_fee_base.
 	// These are read via global and not read from config beyond this point.
-	global::init_global_chain_type(config.members.unwrap().server.chain_type);
+	global::init_global_chain_type(config.members.as_ref().unwrap().server.chain_type);
 	info!("Chain: {:?}", global::get_chain_type());
 	match global::get_chain_type() {
 		global::ChainTypes::Mainnet => {
@@ -166,6 +166,16 @@ fn real_main() -> i32 {
 			global::init_global_nrd_enabled(true);
 		}
 	}
+	global::init_global_accept_fee_base(
+		config
+			.members
+			.as_ref()
+			.unwrap()
+			.server
+			.pool_config
+			.accept_fee_base,
+	);
+	info!("Accept Fee Base: {:?}", global::get_accept_fee_base());
 	log_feature_flags();
 
 	// Execute subcommand

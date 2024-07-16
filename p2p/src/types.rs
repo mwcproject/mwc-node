@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 use crate::types::PeerAddr::Ip;
 use crate::types::PeerAddr::Onion;
-use failure::Fail;
 use std::convert::From;
 use std::fmt;
 use std::fs::File;
@@ -30,16 +29,18 @@ use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::sync::atomic::AtomicUsize;
 
-use grin_store;
-
 use crate::chain;
-use crate::core::core;
-use crate::core::core::hash::Hash;
-use crate::core::global;
-use crate::core::pow::Difficulty;
-use crate::core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
+use crate::chain::txhashset::BitmapChunk;
+use crate::grin_core::core;
+use crate::grin_core::core::hash::Hash;
+use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::grin_core::global;
+use crate::grin_core::pow::Difficulty;
+use crate::grin_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::msg::PeerAddrs;
+use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
+use grin_chain::txhashset::Segmenter;
 use std::time::Instant;
 
 /// Maximum number of block headers a peer should ever send
@@ -71,44 +72,46 @@ const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
 const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-	#[fail(display = "p2p Serialization error, {}", _0)]
+	#[error("p2p Serialization error, {0}")]
 	Serialization(ser::Error),
-	#[fail(display = "p2p Connection error, {}", _0)]
+	#[error("p2p Connection error, {0}")]
 	Connection(io::Error),
 	/// Header type does not match the expected message type
-	#[fail(display = "p2p bad message")]
+	#[error("p2p bad message")]
 	BadMessage,
-	#[fail(display = "p2p message Length error")]
+	#[error("p2p unexpected message {0}")]
+	UnexpectedMessage(String),
+	#[error("p2p message Length error")]
 	MsgLen,
-	#[fail(display = "p2p banned")]
+	#[error("p2p banned")]
 	Banned,
-	#[fail(display = "p2p closed connection")]
-	ConnectionClose,
-	#[fail(display = "p2p timeout")]
+	#[error("p2p closed connection, {0}")]
+	ConnectionClose(String),
+	#[error("p2p timeout")]
 	Timeout,
-	#[fail(display = "p2p store error, {}", _0)]
+	#[error("p2p store error, {0}")]
 	Store(grin_store::Error),
-	#[fail(display = "p2p chain error, {}", _0)]
+	#[error("p2p chain error, {0}")]
 	Chain(chain::Error),
-	#[fail(display = "peer with self")]
+	#[error("peer with self")]
 	PeerWithSelf,
-	#[fail(display = "p2p no dandelion relay")]
+	#[error("p2p no dandelion relay")]
 	NoDandelionRelay,
-	#[fail(display = "p2p genesis mismatch: {} vs peer {}", us, peer)]
+	#[error("p2p genesis mismatch: {us} vs peer {peer}")]
 	GenesisMismatch { us: Hash, peer: Hash },
-	#[fail(display = "p2p send error, {}", _0)]
+	#[error("p2p send error, {0}")]
 	Send(String),
-	#[fail(display = "peer not found")]
+	#[error("peer not found")]
 	PeerNotFound,
-	#[fail(display = "peer not banned")]
+	#[error("peer not banned")]
 	PeerNotBanned,
-	#[fail(display = "peer exception, {}", _0)]
+	#[error("peer exception, {0}")]
 	PeerException(String),
-	#[fail(display = "p2p internal error: {}", _0)]
+	#[error("p2p internal error: {0}")]
 	Internal(String),
-	#[fail(display = "libp2p error: {}", _0)]
+	#[error("libp2p error: {0}")]
 	Libp2pError(String),
 }
 
@@ -360,10 +363,6 @@ pub struct P2PConfig {
 	/// The list of seed nodes, if using Seeding as a seed type
 	pub seeds: Option<PeerAddrs>,
 
-	/// Capabilities expose by this node, also conditions which other peers this
-	/// node will have an affinity toward when connection.
-	pub capabilities: Capabilities,
-
 	pub peers_allow: Option<PeerAddrs>,
 
 	pub peers_deny: Option<PeerAddrs>,
@@ -391,7 +390,6 @@ impl Default for P2PConfig {
 		P2PConfig {
 			host: ipaddr,
 			port: 3414,
-			capabilities: Capabilities::FULL_NODE,
 			seeding_type: Seeding::default(),
 			seeds: None,
 			peers_allow: None,
@@ -479,8 +477,7 @@ bitflags! {
 		/// Can provide full history of headers back to genesis
 		/// (for at least one arbitrary fork).
 		const HEADER_HIST = 0b0000_0001;
-		/// Can provide block headers and the TxHashSet for some recent-enough
-		/// height.
+		/// Can provide recent txhashset archive for fast sync.
 		const TXHASHSET_HIST = 0b0000_0010;
 		/// Can provide a list of healthy peers
 		const PEER_LIST = 0b0000_0100;
@@ -488,16 +485,22 @@ bitflags! {
 		const TX_KERNEL_HASH = 0b0000_1000;
 		/// Can send/receive tor addresses
 		const TOR_ADDRESS = 0b0001_0000;
+		/// Can provide PIBD segments during initial byte download (fast sync).
+		const PIBD_HIST = 0b0010_0000;
+		/// Can provide historical blocks for archival sync.
+		const BLOCK_HIST = 0b0100_0000;
+	}
+}
 
-		/// All nodes right now are "full nodes".
-		/// Some nodes internally may maintain longer block histories (archival_mode)
-		/// but we do not advertise this to other nodes.
-		/// All nodes by default will accept lightweight "kernel first" tx broadcast.
-		const FULL_NODE = Capabilities::HEADER_HIST.bits
-			| Capabilities::TXHASHSET_HIST.bits
-			| Capabilities::PEER_LIST.bits
-			| Capabilities::TX_KERNEL_HASH.bits
-			| Capabilities::TOR_ADDRESS.bits;
+/// Default capabilities.
+impl Default for Capabilities {
+	fn default() -> Self {
+		Capabilities::HEADER_HIST
+			| Capabilities::TXHASHSET_HIST
+			| Capabilities::PEER_LIST
+			| Capabilities::TX_KERNEL_HASH
+			| Capabilities::TOR_ADDRESS
+			| Capabilities::PIBD_HIST
 	}
 }
 
@@ -524,6 +527,8 @@ enum_from_primitive! {
 		ManualBan = 5,
 		FraudHeight = 6,
 		BadHandshake = 7,
+		PibdFailure = 8,
+		PibdInactive = 9,
 	}
 }
 
@@ -699,12 +704,6 @@ pub trait ChainAdapter: Sync + Send {
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error>;
 
-	fn process_add_headers_sync(
-		&self,
-		bh: &[core::BlockHeader],
-		header_cache_size: u64,
-	) -> Result<bool, chain::Error>;
-
 	/// A set of block header has been received, typically in response to a
 	/// block
 	/// header request.
@@ -712,7 +711,6 @@ pub trait ChainAdapter: Sync + Send {
 		&self,
 		bh: &[core::BlockHeader],
 		peer_info: &PeerInfo,
-		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error>;
 
 	/// Finds a list of block headers based on the provided locator. Tries to
@@ -763,6 +761,61 @@ pub trait ChainAdapter: Sync + Send {
 	/// Get a tmp file path in above specific tmp dir (create tmp dir if not exist)
 	/// Delete file if tmp file already exists
 	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf;
+
+	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error>;
+
+	fn get_kernel_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<TxKernel>, chain::Error>;
+
+	fn get_bitmap_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<BitmapChunk>, chain::Error>;
+
+	fn get_output_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<OutputIdentifier>, chain::Error>;
+
+	fn get_rangeproof_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<RangeProof>, chain::Error>;
+
+	fn receive_bitmap_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<BitmapChunk>,
+	) -> Result<bool, chain::Error>;
+
+	fn receive_output_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<OutputIdentifier>,
+	) -> Result<bool, chain::Error>;
+
+	fn receive_rangeproof_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<RangeProof>,
+	) -> Result<bool, chain::Error>;
+
+	fn receive_kernel_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<TxKernel>,
+	) -> Result<bool, chain::Error>;
 }
 
 /// Additional methods required by the protocol that don't need to be
@@ -780,4 +833,20 @@ pub trait NetAdapter: ChainAdapter {
 
 	/// Is this peer currently banned?
 	fn is_banned(&self, addr: PeerAddr) -> bool;
+}
+
+#[derive(Clone, Debug)]
+pub struct AttachmentMeta {
+	pub size: usize,
+	pub hash: Hash,
+	pub height: u64,
+	pub start_time: DateTime<Utc>,
+	pub path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct AttachmentUpdate {
+	pub read: usize,
+	pub left: usize,
+	pub meta: Arc<AttachmentMeta>,
 }

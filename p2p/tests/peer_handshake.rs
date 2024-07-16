@@ -58,7 +58,7 @@ fn peer_handshake() {
 	};
 	let net_adapter = Arc::new(p2p::DummyAdapter {});
 	let server_inner = p2p::Server::new(
-		".grin",
+		".mwc",
 		p2p::Capabilities::UNKNOWN,
 		p2p_config.clone(),
 		net_adapter.clone(),
@@ -71,7 +71,7 @@ fn peer_handshake() {
 	let server = Arc::new(server_inner.clone());
 
 	let p2p_inner = server.clone();
-	let _ = thread::spawn(move || p2p_inner.listen(100_000));
+	let _ = thread::spawn(move || p2p_inner.listen());
 
 	thread::sleep(time::Duration::from_secs(1));
 
@@ -86,7 +86,6 @@ fn peer_handshake() {
 		my_addr.clone(),
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
 		net_adapter,
-		100_000,
 		None,
 		server_inner,
 	)
@@ -101,5 +100,5 @@ fn peer_handshake() {
 
 	let server_peer = server.peers.get_connected_peer(my_addr).unwrap();
 	assert_eq!(server_peer.info.total_difficulty(), Difficulty::min());
-	assert!(server.peers.peer_count() > 0);
+	assert!(server.peers.iter().connected().count() > 0);
 }

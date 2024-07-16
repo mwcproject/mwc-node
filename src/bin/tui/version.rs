@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 //! Version and build info
 
 use cursive::direction::Orientation;
-use cursive::traits::Identifiable;
+use cursive::traits::Nameable;
 use cursive::view::View;
 use cursive::views::{LinearLayout, ResizedView, TextView};
 

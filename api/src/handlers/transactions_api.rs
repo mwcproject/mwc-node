@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -47,10 +47,8 @@ impl TxHashSetHandler {
 	// gets roots
 	fn get_roots(&self) -> Result<TxHashSet, Error> {
 		let chain = w(&self.chain)?;
-		let res = TxHashSet::from_head(&chain).map_err(|e| {
-			ErrorKind::Internal(format!("failed to read roots from txhashset, {}", e))
-		})?;
-		Ok(res)
+		TxHashSet::from_head(&chain)
+			.map_err(|e| Error::Internal(format!("failed to read roots from txhashset: {}", e)))
 	}
 
 	// gets last n outputs inserted in to the tree
@@ -86,7 +84,7 @@ impl TxHashSetHandler {
 		let outputs = chain
 			.unspent_outputs_by_pmmr_index(start_index, max, end_index)
 			.map_err(|e| {
-				ErrorKind::NotFound(format!(
+				Error::NotFound(format!(
 					"Unspent output for PMMR {}-{:?}, {}",
 					start_index, end_index, e
 				))
@@ -99,7 +97,7 @@ impl TxHashSetHandler {
 				.iter()
 				.map(|x| OutputPrintable::from_output(x, &chain, None, true, true))
 				.collect::<Result<Vec<_>, _>>()
-				.map_err(|e| ErrorKind::Internal(format!("chain error, {}", e)))?,
+				.map_err(|e| Error::Internal(format!("chain error: {}", e)))?,
 		};
 		Ok(out)
 	}
@@ -114,7 +112,7 @@ impl TxHashSetHandler {
 		let range = chain
 			.block_height_range_to_pmmr_indices(start_block_height, end_block_height)
 			.map_err(|e| {
-				ErrorKind::NotFound(format!(
+				Error::NotFound(format!(
 					"Block PMMR range for heights {}-{:?}, {}",
 					start_block_height, end_block_height, e
 				))
@@ -131,17 +129,17 @@ impl TxHashSetHandler {
 	// (to avoid having to create a new type to pass around)
 	fn get_merkle_proof_for_output(&self, id: &str) -> Result<OutputPrintable, Error> {
 		let c = util::from_hex(id)
-			.map_err(|e| ErrorKind::Argument(format!("Not a valid commitment {}, {}", id, e)))?;
+			.map_err(|e| Error::Argument(format!("Not a valid commitment: {}, {}", id, e)))?;
 		let commit = Commitment::from_vec(c);
 		let chain = w(&self.chain)?;
 		let output_pos = chain.get_output_pos(&commit).map_err(|e| {
-			ErrorKind::NotFound(format!(
+			Error::NotFound(format!(
 				"Unable to get a MMR position for commit {}, {}",
 				id, e
 			))
 		})?;
 		let merkle_proof = chain::Chain::get_merkle_proof_for_pos(&chain, commit).map_err(|e| {
-			ErrorKind::NotFound(format!(
+			Error::NotFound(format!(
 				"Unable to get a merkle proof for commit {}, {}",
 				id, e
 			))

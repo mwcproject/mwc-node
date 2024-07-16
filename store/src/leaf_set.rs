@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 use croaring::{Bitmap, Portable};
 
-use crate::core::core::hash::Hashed;
-use crate::core::core::pmmr;
-use crate::core::core::BlockHeader;
+use crate::grin_core::core::hash::Hashed;
+use crate::grin_core::core::pmmr;
+use crate::grin_core::core::BlockHeader;
 use crate::prune_list::PruneList;
 use crate::{read_bitmap, save_via_temp_file};
 
@@ -96,7 +96,7 @@ impl LeafSet {
 	/// Only applicable for the output MMR.
 	fn unpruned_pre_cutoff(&self, cutoff_pos: u64, prune_list: &PruneList) -> Bitmap {
 		(1..=cutoff_pos)
-			.filter(|&x| pmmr::is_leaf(x) && !prune_list.is_pruned(x))
+			.filter(|&x| pmmr::is_leaf(x - 1) && !prune_list.is_pruned(x - 1))
 			.map(|x| x as u32)
 			.collect()
 	}
@@ -114,7 +114,7 @@ impl LeafSet {
 
 		// First remove pos from leaf_set that were
 		// added after the point we are rewinding to.
-		let to_remove = ((cutoff_pos + 1) as u32)..bitmap.maximum().unwrap_or(0);
+		let to_remove = ((cutoff_pos + 1) as u32)..=bitmap.maximum().unwrap_or(0);
 		bitmap.remove_range(to_remove);
 
 		// Then add back output pos to the leaf_set
@@ -133,7 +133,7 @@ impl LeafSet {
 	pub fn rewind(&mut self, cutoff_pos: u64, rewind_rm_pos: &Bitmap) {
 		// First remove pos from leaf_set that were
 		// added after the point we are rewinding to.
-		let to_remove = ((cutoff_pos + 1) as u32)..self.bitmap.maximum().unwrap_or(0);
+		let to_remove = ((cutoff_pos + 1) as u32)..=self.bitmap.maximum().unwrap_or(0);
 		self.bitmap.remove_range(to_remove);
 
 		// Then add back output pos to the leaf_set
@@ -142,13 +142,13 @@ impl LeafSet {
 	}
 
 	/// Append a new position to the leaf_set.
-	pub fn add(&mut self, pos: u64) {
-		self.bitmap.add(pos as u32);
+	pub fn add(&mut self, pos0: u64) {
+		self.bitmap.add(1 + pos0 as u32);
 	}
 
 	/// Remove the provided position from the leaf_set.
-	pub fn remove(&mut self, pos: u64) {
-		self.bitmap.remove(pos as u32);
+	pub fn remove(&mut self, pos0: u64) {
+		self.bitmap.remove(1 + pos0 as u32);
 	}
 
 	/// Saves the utxo file tagged with block hash as filename suffix.
@@ -187,13 +187,18 @@ impl LeafSet {
 	}
 
 	/// Whether the leaf_set includes the provided position.
-	pub fn includes(&self, pos: u64) -> bool {
-		self.bitmap.contains(pos as u32)
+	pub fn includes(&self, pos0: u64) -> bool {
+		self.bitmap.contains(1 + pos0 as u32)
 	}
 
 	/// Number of positions stored in the leaf_set.
 	pub fn len(&self) -> usize {
 		self.bitmap.cardinality() as usize
+	}
+
+	/// Number of positions up to index n in the leaf set
+	pub fn n_unpruned_leaves_to_index(&self, to_index: u64) -> u64 {
+		self.bitmap.range_cardinality(0u32..to_index as u32)
 	}
 
 	/// Is the leaf_set empty.

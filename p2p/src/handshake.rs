@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::conn::Tracker;
-use crate::core::core::hash::Hash;
-use crate::core::pow::Difficulty;
-use crate::core::ser::ProtocolVersion;
+use crate::grin_core::core::hash::Hash;
+use crate::grin_core::pow::Difficulty;
+use crate::grin_core::ser::ProtocolVersion;
 use crate::msg::{read_message, write_message, Hand, Msg, Shake, TorAddress, Type, USER_AGENT};
 use crate::peer::Peer;
 use crate::types::{
@@ -118,8 +118,11 @@ impl Handshake {
 		let nonce = self.next_nonce();
 		let peer_addr = peer_addr.unwrap_or(match conn.peer_addr() {
 			Ok(addr) => PeerAddr::Ip(addr),
-			Err(_) => {
-				return Err(Error::ConnectionClose);
+			Err(e) => {
+				return Err(Error::ConnectionClose(format!(
+					"unable to get peer address, {}",
+					e
+				)))
 			}
 		});
 
@@ -182,7 +185,10 @@ impl Handshake {
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
 		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(format!(
+				"{:?} is denied",
+				peer_info.addr
+			)));
 		}
 
 		debug!(
@@ -256,7 +262,9 @@ impl Handshake {
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
 		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from(
+				"Peer denied because it is in config black list",
+			)));
 		}
 
 		// send our reply with our info

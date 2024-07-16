@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 mod common;
 
-use self::core::core::pmmr::{VecBackend, PMMR};
+use self::core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use crate::common::TestElem;
 use grin_core as core;
 
@@ -37,7 +37,7 @@ fn leaf_pos_and_idx_iter_test() {
 		pmmr.leaf_idx_iter(0).collect::<Vec<_>>()
 	);
 	assert_eq!(
-		vec![1, 2, 4, 5, 8],
+		vec![0, 1, 3, 4, 7],
 		pmmr.leaf_pos_iter().collect::<Vec<_>>()
 	);
 }
@@ -61,7 +61,7 @@ fn leaf_pos_and_idx_iter_hash_only_test() {
 		pmmr.leaf_idx_iter(0).collect::<Vec<_>>()
 	);
 	assert_eq!(
-		vec![1, 2, 4, 5, 8],
+		vec![0, 1, 3, 4, 7],
 		pmmr.leaf_pos_iter().collect::<Vec<_>>()
 	);
 }

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ extern crate bitflags;
 extern crate enum_primitive;
 
 #[macro_use]
-extern crate grin_core as core;
+extern crate grin_core;
 use grin_chain as chain;
 use grin_util as util;
 
@@ -39,6 +39,7 @@ extern crate log;
 #[macro_use]
 extern crate lazy_static;
 
+mod codec;
 mod conn;
 pub mod handshake;
 pub mod libp2p_connection;
@@ -47,7 +48,7 @@ mod peer;
 mod peers;
 mod protocol;
 mod serv;
-mod store;
+pub mod store;
 pub mod types;
 
 pub use crate::conn::SEND_CHANNEL_CAP;

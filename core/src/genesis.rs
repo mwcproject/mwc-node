@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@ use crate::core::hash::Hash;
 use crate::pow::{Difficulty, Proof, ProofOfWork};
 use chrono::prelude::{TimeZone, Utc};
 use keychain::BlindingFactor;
-use util;
 use util::secp::constants::SINGLE_BULLET_PROOF_SIZE;
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::secp::Signature;
@@ -35,7 +34,7 @@ use util::secp::Signature;
 pub fn genesis_dev() -> core::Block {
 	core::Block::with_header(core::BlockHeader {
 		height: 0,
-		timestamp: Utc.ymd(1997, 8, 4).and_hms(0, 0, 0),
+		timestamp: Utc.with_ymd_and_hms(1997, 8, 4, 0, 0, 0).unwrap(),
 		pow: ProofOfWork {
 			nonce: 0,
 			..Default::default()
@@ -48,7 +47,7 @@ pub fn genesis_dev() -> core::Block {
 pub fn genesis_floo() -> core::Block {
 	let gen = core::Block::with_header(core::BlockHeader {
 		height: 0,
-		timestamp: Utc.ymd(2019, 5, 26).and_hms(16, 30, 1),
+		timestamp: Utc.with_ymd_and_hms(2019, 5, 26, 16, 30, 1).unwrap(),
 		prev_root: Hash::from_hex(
 			"000000000000000000257647fb29ce964ddf2b27c639ae60c4c90fafe5c42e53",
 		)
@@ -161,7 +160,7 @@ pub fn genesis_floo() -> core::Block {
 pub fn genesis_main() -> core::Block {
 	let gen = core::Block::with_header(core::BlockHeader {
 		height: 0,
-		timestamp: Utc.ymd(2019, 11, 11).and_hms(9, 0, 0),
+		timestamp: Utc.with_ymd_and_hms(2019, 11, 11, 9, 0, 0).unwrap(),
 		prev_root: Hash::from_hex(
 			"00000000000000000004f2fb2ee749923a8131028aeae637070b0b4145617d42",
 		)

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,6 @@
 //! Base58 encoder and decoder
 
 use digest::Digest;
-use failure::Fail;
 use sha2::Sha256;
 use std::{fmt, str};
 
@@ -53,30 +52,27 @@ pub fn into_le_low_u32(data: &[u8; 32]) -> u32 {
 }
 
 /// An error that might occur during base58 decoding
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq, Clone)]
 pub enum Error {
 	/// Invalid character encountered
-	#[fail(display = "invalid base58 character 0x{:x}", _0)]
+	#[error("invalid base58 character 0x{0:x}")]
 	BadByte(u8),
 	/// Checksum was not correct (expected, actual)
-	#[fail(
-		display = "base58ck checksum 0x{:x} does not match expected 0x{:x}",
-		_0, _1
-	)]
+	#[error("base58ck checksum 0x{0:x} does not match expected 0x{1:x}")]
 	BadChecksum(u32, u32),
 	/// The length (in bytes) of the object was not correct
 	/// Note that if the length is excessively long the provided length may be
 	/// an estimate (and the checksum step may be skipped).
-	#[fail(display = "length {} invalid for this base58 type", _0)]
+	#[error("length {0} invalid for this base58 type")]
 	InvalidLength(usize),
 	/// Version byte(s) were not recognized
-	#[fail(display = "version {:?} invalid for this base58 type", _0)]
+	#[error("version {0:?} invalid for this base58 type")]
 	InvalidVersion(Vec<u8>),
 	/// Checked data was less than 4 bytes
-	#[fail(display = "b58ck checksum less than 4 bytes, get {}", _0)]
+	#[error("b58ck checksum less than 4 bytes, get {0}")]
 	TooShort(usize),
 	/// Any other error
-	#[fail(display = "base58 error, {}", _0)]
+	#[error("base58 error, {0}")]
 	Other(String),
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ use self::chain::types::{NoopAdapter, Options};
 use self::chain::Chain;
 use self::core::consensus;
 use self::core::core::hash::Hash;
-use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{
 	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction, TxKernel,
 };
@@ -29,13 +28,12 @@ use self::core::pow;
 use self::keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain};
 use self::pool::types::*;
 use self::pool::TransactionPool;
-use self::util::RwLock;
 use chrono::Duration;
 use grin_chain as chain;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_pool as pool;
-use grin_util as util;
+use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
 
@@ -52,13 +50,11 @@ where
 }
 
 pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
-	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 	Chain::init(
 		dir_name.to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis,
 		pow::verify_size,
-		verifier_cache,
 		false,
 	)
 	.unwrap()
@@ -80,7 +76,7 @@ where
 	let prev = chain.head_header().unwrap();
 	let height = prev.height + 1;
 	let next_header_info = consensus::next_difficulty(height, chain.difficulty_iter().unwrap());
-	let fee = txs.iter().map(|x| x.fee()).sum();
+	let fee = txs.iter().map(|x| x.fee(height)).sum();
 	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
 		keychain,
@@ -137,9 +133,9 @@ impl BlockChain for ChainAdapter {
 	}
 
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
-		self.chain.validate_tx(tx).map_err(|e| match e.kind() {
-			chain::ErrorKind::Transaction(txe) => txe.into(),
-			chain::ErrorKind::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
+		self.chain.validate_tx(tx).map_err(|e| match e {
+			chain::Error::Transaction { source: txe } => txe.into(),
+			chain::Error::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
 			_ => PoolError::Other("failed to validate tx".into()),
 		})
 	}
@@ -163,30 +159,25 @@ impl BlockChain for ChainAdapter {
 			.map_err(|_| PoolError::ImmatureTransaction)
 	}
 	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), PoolError> {
-		self.chain
-			.replay_attack_check(tx)
-			.map_err(|_| PoolError::DuplicateKernelOrDuplicateSpent)
+		self.chain.replay_attack_check(tx).map_err(|e| {
+			PoolError::DuplicateKernelOrDuplicateSpent(format!("Replay attack detected, {}", e))
+		})
 	}
 }
 
-pub fn init_transaction_pool<B, V>(
-	chain: Arc<B>,
-	verifier_cache: Arc<RwLock<V>>,
-) -> TransactionPool<B, NoopPoolAdapter, V>
+pub fn init_transaction_pool<B>(chain: Arc<B>) -> TransactionPool<B, NoopPoolAdapter>
 where
 	B: BlockChain,
-	V: VerifierCache + 'static,
 {
 	TransactionPool::new(
 		PoolConfig {
-			accept_fee_base: 0,
+			accept_fee_base: default_accept_fee_base(),
 			reorg_cache_timeout: 1_440,
 			max_pool_size: 50,
 			max_stempool_size: 50,
 			mineable_max_weight: 10_000,
 		},
 		chain.clone(),
-		verifier_cache.clone(),
 		Arc::new(NoopPoolAdapter {}),
 	)
 }
@@ -220,7 +211,9 @@ where
 	}
 
 	build::transaction(
-		KernelFeatures::Plain { fee: fees as u64 },
+		KernelFeatures::Plain {
+			fee: (fees as u64).try_into().unwrap(),
+		},
 		&tx_elements,
 		keychain,
 		&ProofBuilder::new(keychain),
@@ -245,7 +238,9 @@ where
 		keychain,
 		input_values,
 		output_values,
-		KernelFeatures::Plain { fee: fees as u64 },
+		KernelFeatures::Plain {
+			fee: (fees as u64).try_into().unwrap(),
+		},
 	)
 }
 

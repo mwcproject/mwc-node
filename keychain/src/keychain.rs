@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -166,18 +166,18 @@ impl Keychain for ExtKeychain {
 		let keys = blind_sum
 			.positive_blinding_factors
 			.iter()
-			.filter_map(|b| b.secret_key().ok())
+			.filter_map(|b| b.secret_key(&self.secp).ok())
 			.collect::<Vec<SecretKey>>();
 		pos_keys.extend(keys);
 
 		let keys = blind_sum
 			.negative_blinding_factors
 			.iter()
-			.filter_map(|b| b.secret_key().ok())
+			.filter_map(|b| b.secret_key(&self.secp).ok())
 			.collect::<Vec<SecretKey>>();
 		neg_keys.extend(keys);
 
-		let sum = secp::Secp256k1::blind_sum(pos_keys, neg_keys)?;
+		let sum = self.secp.blind_sum(pos_keys, neg_keys)?;
 		Ok(BlindingFactor::from_secret_key(sum))
 	}
 
@@ -198,7 +198,7 @@ impl Keychain for ExtKeychain {
 		msg: &Message,
 		blinding: &BlindingFactor,
 	) -> Result<Signature, Error> {
-		let skey = &blinding.secret_key()?;
+		let skey = &blinding.secret_key(&self.secp)?;
 		let sig = self.secp.sign(msg, &skey)?;
 		Ok(sig)
 	}
@@ -245,21 +245,27 @@ mod test {
 	fn secret_key_addition() {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-		let skey1 = SecretKey::from_slice(&[
-			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			0, 0, 1,
-		])
+		let skey1 = SecretKey::from_slice(
+			&keychain.secp,
+			&[
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 1,
+			],
+		)
 		.unwrap();
 
-		let skey2 = SecretKey::from_slice(&[
-			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			0, 0, 2,
-		])
+		let skey2 = SecretKey::from_slice(
+			&keychain.secp,
+			&[
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 2,
+			],
+		)
 		.unwrap();
 
 		// adding secret keys 1 and 2 to give secret key 3
 		let mut skey3 = skey1.clone();
-		skey3.add_assign(&skey2).unwrap();
+		skey3.add_assign(&keychain.secp, &skey2).unwrap();
 
 		// create commitments for secret keys 1, 2 and 3
 		// all committing to the value 0 (which is what we do for tx_kernels)
@@ -268,7 +274,10 @@ mod test {
 		let commit_3 = keychain.secp.commit(0, skey3.clone()).unwrap();
 
 		// now sum commitments for keys 1 and 2
-		let sum = secp::Secp256k1::commit_sum(vec![commit_1, commit_2], vec![]).unwrap();
+		let sum = keychain
+			.secp
+			.commit_sum(vec![commit_1, commit_2], vec![])
+			.unwrap();
 
 		// confirm the commitment for key 3 matches the sum of the commitments 1 and 2
 		assert_eq!(sum, commit_3);

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,14 +33,14 @@ where
 {
 	let prev = chain.head_header().unwrap();
 	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
-	let fee = txs.iter().map(|x| x.fee()).sum();
+	let fee = txs.iter().map(|x| x.fee(prev.height + 1)).sum();
 	let reward = reward::output(
 		keychain,
 		&ProofBuilder::new(keychain),
 		key_id,
 		fee,
 		false,
-		1,
+		prev.height + 1,
 	)
 	.unwrap();
 
@@ -91,7 +91,7 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
-			fee: 20000,
+			fee: 20000.into(),
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 		&[
@@ -138,7 +138,7 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
-			fee: 20000,
+			fee: 20000.into(),
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 		&[

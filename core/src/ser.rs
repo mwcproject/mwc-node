@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,13 +22,12 @@
 use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::global::PROTOCOL_VERSION;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use bytes::Buf;
 use keychain::{BlindingFactor, Identifier, IDENTIFIER_SIZE};
-use serde::__private::from_utf8_lossy;
 use std::convert::TryInto;
 use std::fmt::{self, Debug};
 use std::io::{self, Read, Write};
-use std::marker::PhantomData;
-use std::{cmp, marker};
+use std::{cmp, marker, string};
 use util::secp::constants::{
 	AGG_SIGNATURE_SIZE, COMPRESSED_PUBLIC_KEY_SIZE, MAX_PROOF_SIZE, PEDERSEN_COMMITMENT_SIZE,
 	SECRET_KEY_SIZE,
@@ -36,6 +35,7 @@ use util::secp::constants::{
 use util::secp::key::PublicKey;
 use util::secp::pedersen::{Commitment, RangeProof};
 use util::secp::Signature;
+use util::secp::{ContextFlag, Secp256k1};
 
 /// Serialization size limit for a single chunk/object or array.
 /// WARNING!!! You can increase the number, but never decrease
@@ -45,10 +45,10 @@ pub const READ_CHUNK_LIMIT: usize = 100_000;
 pub const READ_VEC_SIZE_LIMIT: u64 = 100_000;
 
 /// Possible errors deriving from serializing or deserializing.
-#[derive(Fail, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Error {
 	/// Wraps an io error produced when reading or writing
-	#[fail(display = "Serialization IO error {}, {:?}", _0, _1)]
+	#[error("Serialization IO error {0}, {1:?}")]
 	IOErr(
 		String,
 		#[serde(
@@ -58,13 +58,10 @@ pub enum Error {
 		io::ErrorKind,
 	),
 	/// Wraps secp256k1 error
-	#[fail(display = "Serialization Secp error, {}", _0)]
+	#[error("Serialization Secp error, {0}")]
 	SecpError(util::secp::Error),
 	/// Expected a given value that wasn't found
-	#[fail(
-		display = "Unexpected Data, expected {:?}, got {:?}",
-		expected, received
-	)]
+	#[error("Unexpected Data, expected {expected:?}, got {received:?}")]
 	UnexpectedData {
 		/// What we wanted
 		expected: Vec<u8>,
@@ -72,40 +69,46 @@ pub enum Error {
 		received: Vec<u8>,
 	},
 	/// Data wasn't in a consumable format
-	#[fail(display = "Serialization Corrupted data, {}", _0)]
+	#[error("Serialization Corrupted data, {0}")]
 	CorruptedData(String),
 	/// Incorrect number of elements (when deserializing a vec via read_multi say).
-	#[fail(display = "Serialization Count error, {}", _0)]
+	#[error("Serialization Count error, {0}")]
 	CountError(String),
 	/// When asked to read too much data
-	#[fail(display = "Serialization Too large write, {}", _0)]
+	#[error("Serialization Too large write, {0}")]
 	TooLargeWriteErr(String),
 	/// When asked to read too much data
-	#[fail(display = "Serialization Too large read, {}", _0)]
+	#[error("Serialization Too large read, {0}")]
 	TooLargeReadErr(String),
 	/// Error from from_hex deserialization
-	#[fail(display = "Serialization Hex error {}", _0)]
+	#[error("Serialization Hex error {0}")]
 	HexError(String),
 	/// Inputs/outputs/kernels must be sorted lexicographically.
-	#[fail(display = "Serialization Broken Sort order")]
+	#[error("Serialization Broken Sort order")]
 	SortError,
 	/// Inputs/outputs/kernels must be unique.
-	#[fail(display = "Serialization Unexpected Duplicate")]
+	#[error("Serialization Unexpected Duplicate")]
 	DuplicateError,
 	/// Block header version (hard-fork schedule).
-	#[fail(display = "Serialization Invalid block version, {}", _0)]
+	#[error("Serialization Invalid block version, {0}")]
 	InvalidBlockVersion(String),
 	/// utf8 conversion failed
-	#[fail(display = "UTF8 conversion failed")]
+	#[error("UTF8 conversion failed")]
 	Utf8Conversion(String),
 	/// Unsupported protocol version
-	#[fail(display = "unsupported protocol version, {}", _0)]
+	#[error("unsupported protocol version, {0}")]
 	UnsupportedProtocolVersion(String),
 }
 
 impl From<io::Error> for Error {
 	fn from(e: io::Error) -> Error {
 		Error::IOErr(format!("{}", e), e.kind())
+	}
+}
+
+impl From<io::ErrorKind> for Error {
+	fn from(e: io::ErrorKind) -> Error {
+		Error::IOErr(format!("{}", io::Error::from(e)), e)
 	}
 }
 
@@ -199,9 +202,27 @@ pub trait Writer {
 	}
 }
 
+/// Signal to a deserializable object how much of its data should be deserialized
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum DeserializationMode {
+	/// Deserialize everything sufficiently to fully reconstruct the object
+	Full,
+	/// For Block Headers, skip reading proof
+	SkipPow,
+}
+
+impl DeserializationMode {
+	/// Default deserialization mode
+	pub fn default() -> Self {
+		DeserializationMode::Full
+	}
+}
+
 /// Implementations defined how different numbers and binary structures are
 /// read from an underlying stream or container (depending on implementation).
 pub trait Reader {
+	/// The mode this reader is reading from
+	fn deserialization_mode(&self) -> DeserializationMode;
 	/// Read a u8 from the underlying Read
 	fn read_u8(&mut self) -> Result<u8, Error>;
 	/// Read a u16 from the underlying Read
@@ -295,8 +316,8 @@ where
 	// attempting to read huge amounts of data.
 	// Probably better than checking if count * size overflows a u64 though.
 	// Note!!! Caller on Write responsible to data size checking.
-	// This issue normally should never happen. If you wee this error, it is mean there are
-	// datat validation at write method.
+	// This issue normally should never happen. If you see this error, it is mean there are
+	// data validation issue at write method.
 	debug_assert!(count <= READ_VEC_SIZE_LIMIT);
 	if count > READ_VEC_SIZE_LIMIT {
 		return Err(Error::TooLargeReadErr(format!(
@@ -389,14 +410,19 @@ where
 pub fn deserialize<T: Readable, R: Read>(
 	source: &mut R,
 	version: ProtocolVersion,
+	mode: DeserializationMode,
 ) -> Result<T, Error> {
-	let mut reader = BinReader::new(source, version);
+	let mut reader = BinReader::new(source, version, mode);
 	T::read(&mut reader)
 }
 
 /// Deserialize a Readable based on our default "local" protocol version.
 pub fn deserialize_default<T: Readable, R: Read>(source: &mut R) -> Result<T, Error> {
-	deserialize(source, ProtocolVersion::local())
+	deserialize(
+		source,
+		ProtocolVersion::local(),
+		DeserializationMode::default(),
+	)
 }
 
 /// Serializes a Writeable into any std::io::Write implementation.
@@ -426,12 +452,17 @@ pub fn ser_vec<W: Writeable>(thing: &W, version: ProtocolVersion) -> Result<Vec<
 pub struct BinReader<'a, R: Read> {
 	source: &'a mut R,
 	version: ProtocolVersion,
+	deser_mode: DeserializationMode,
 }
 
 impl<'a, R: Read> BinReader<'a, R> {
 	/// Constructor for a new BinReader for the provided source and protocol version.
-	pub fn new(source: &'a mut R, version: ProtocolVersion) -> Self {
-		BinReader { source, version }
+	pub fn new(source: &'a mut R, version: ProtocolVersion, mode: DeserializationMode) -> Self {
+		BinReader {
+			source,
+			version,
+			deser_mode: mode,
+		}
 	}
 }
 
@@ -442,6 +473,9 @@ fn map_io_err(err: io::Error) -> Error {
 /// Utility wrapper for an underlying byte Reader. Defines higher level methods
 /// to read numbers, byte vectors, hashes, etc.
 impl<'a, R: Read> Reader for BinReader<'a, R> {
+	fn deserialization_mode(&self) -> DeserializationMode {
+		self.deser_mode
+	}
 	fn read_u8(&mut self) -> Result<u8, Error> {
 		self.source.read_u8().map_err(map_io_err)
 	}
@@ -505,6 +539,7 @@ pub struct StreamingReader<'a> {
 	total_bytes_read: u64,
 	version: ProtocolVersion,
 	stream: &'a mut dyn Read,
+	deser_mode: DeserializationMode,
 }
 
 impl<'a> StreamingReader<'a> {
@@ -515,6 +550,7 @@ impl<'a> StreamingReader<'a> {
 			total_bytes_read: 0,
 			version,
 			stream,
+			deser_mode: DeserializationMode::Full,
 		}
 	}
 
@@ -526,6 +562,9 @@ impl<'a> StreamingReader<'a> {
 
 /// Note: We use read_fixed_bytes() here to ensure our "async" I/O behaves as expected.
 impl<'a> Reader for StreamingReader<'a> {
+	fn deserialization_mode(&self) -> DeserializationMode {
+		self.deser_mode
+	}
 	fn read_u8(&mut self) -> Result<u8, Error> {
 		let buf = self.read_fixed_bytes(1)?;
 		Ok(buf[0])
@@ -563,6 +602,118 @@ impl<'a> Reader for StreamingReader<'a> {
 		let mut buf = vec![0u8; len];
 		self.stream.read_exact(&mut buf)?;
 		self.total_bytes_read += len as u64;
+		Ok(buf)
+	}
+
+	fn expect_u8(&mut self, val: u8) -> Result<u8, Error> {
+		let b = self.read_u8()?;
+		if b == val {
+			Ok(b)
+		} else {
+			Err(Error::UnexpectedData {
+				expected: vec![val],
+				received: vec![b],
+			})
+		}
+	}
+
+	fn protocol_version(&self) -> ProtocolVersion {
+		self.version
+	}
+}
+
+/// Protocol version-aware wrapper around a `Buf` impl
+pub struct BufReader<'a, B: Buf> {
+	inner: &'a mut B,
+	version: ProtocolVersion,
+	bytes_read: usize,
+	deser_mode: DeserializationMode,
+}
+
+impl<'a, B: Buf> BufReader<'a, B> {
+	/// Construct a new BufReader
+	pub fn new(buf: &'a mut B, version: ProtocolVersion) -> Self {
+		Self {
+			inner: buf,
+			version,
+			bytes_read: 0,
+			deser_mode: DeserializationMode::Full,
+		}
+	}
+
+	/// Check whether the buffer has enough bytes remaining to perform a read
+	fn has_remaining(&mut self, len: usize) -> Result<(), Error> {
+		if self.inner.remaining() >= len {
+			self.bytes_read += len;
+			Ok(())
+		} else {
+			Err(io::ErrorKind::UnexpectedEof.into())
+		}
+	}
+
+	/// The total bytes read
+	pub fn bytes_read(&self) -> u64 {
+		self.bytes_read as u64
+	}
+
+	/// Convenience function to read from the buffer and deserialize
+	pub fn body<T: Readable>(&mut self) -> Result<T, Error> {
+		T::read(self)
+	}
+}
+
+impl<'a, B: Buf> Reader for BufReader<'a, B> {
+	fn deserialization_mode(&self) -> DeserializationMode {
+		self.deser_mode
+	}
+
+	fn read_u8(&mut self) -> Result<u8, Error> {
+		self.has_remaining(1)?;
+		Ok(self.inner.get_u8())
+	}
+
+	fn read_u16(&mut self) -> Result<u16, Error> {
+		self.has_remaining(2)?;
+		Ok(self.inner.get_u16())
+	}
+
+	fn read_u32(&mut self) -> Result<u32, Error> {
+		self.has_remaining(4)?;
+		Ok(self.inner.get_u32())
+	}
+
+	fn read_u64(&mut self) -> Result<u64, Error> {
+		self.has_remaining(8)?;
+		Ok(self.inner.get_u64())
+	}
+
+	fn read_i32(&mut self) -> Result<i32, Error> {
+		self.has_remaining(4)?;
+		Ok(self.inner.get_i32())
+	}
+
+	fn read_i64(&mut self) -> Result<i64, Error> {
+		self.has_remaining(8)?;
+		Ok(self.inner.get_i64())
+	}
+
+	fn read_bytes_len_prefix(&mut self) -> Result<Vec<u8>, Error> {
+		let len = self.read_u64()?;
+		self.read_fixed_bytes(len as usize)
+	}
+
+	fn read_fixed_bytes(&mut self, len: usize) -> Result<Vec<u8>, Error> {
+		// not reading more than 100k bytes in a single read
+		if len > 100_000 {
+			return Err(Error::TooLargeReadErr(format!(
+				"read unexpected large chunk of {} bytes",
+				len
+			)));
+		}
+		self.has_remaining(len)?;
+
+		let mut buf = vec![0; len];
+		self.inner.copy_to_slice(&mut buf[..]);
 		Ok(buf)
 	}
 
@@ -675,7 +826,8 @@ impl Writeable for Signature {
 impl Writeable for PublicKey {
 	// Write the public key in compressed form
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		writer.write_fixed_bytes(self.serialize_vec(true))?;
+		let secp = Secp256k1::with_caps(ContextFlag::None);
+		writer.write_fixed_bytes(self.serialize_vec(&secp, true))?;
 		Ok(())
 	}
 }
@@ -684,7 +836,8 @@ impl Readable for PublicKey {
 	// Read the public key in compressed form
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, Error> {
 		let buf = reader.read_fixed_bytes(COMPRESSED_PUBLIC_KEY_SIZE)?;
-		let pk = PublicKey::from_slice(&buf)
+		let secp = Secp256k1::with_caps(ContextFlag::None);
+		let pk = PublicKey::from_slice(&secp, &buf)
 			.map_err(|e| Error::CorruptedData(format!("Unable to read public key, {}", e)))?;
 		Ok(pk)
 	}
@@ -1002,8 +1155,8 @@ where
 	struct FieldVisitor;
 	impl<'de> serde::de::Visitor<'de> for FieldVisitor {
 		type Value = Field;
-		fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-			std::fmt::Formatter::write_str(formatter, "variant identifier")
+		fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+			fmt::Formatter::write_str(formatter, "variant identifier")
 		}
 		fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
 		where
@@ -1084,7 +1237,7 @@ where
 				b"Other" => Ok(Field::field16),
 				b"UnexpectedEof" => Ok(Field::field17),
 				_ => {
-					let value = &from_utf8_lossy(value);
+					let value = &string::String::from_utf8_lossy(value);
 					Err(serde::de::Error::unknown_variant(value, VARIANTS))
 				}
 			}
@@ -1100,13 +1253,13 @@ where
 		}
 	}
 	struct Visitor<'de> {
-		marker: PhantomData<io::ErrorKind>,
-		lifetime: PhantomData<&'de ()>,
+		marker: marker::PhantomData<io::ErrorKind>,
+		lifetime: marker::PhantomData<&'de ()>,
 	}
 	impl<'de> serde::de::Visitor<'de> for Visitor<'de> {
 		type Value = io::ErrorKind;
-		fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-			std::fmt::Formatter::write_str(formatter, "enum io::ErrorKind")
+		fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+			fmt::Formatter::write_str(formatter, "enum io::ErrorKind")
 		}
 		fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
 		where
@@ -1308,8 +1461,8 @@ where
 		"ErrorKind",
 		VARIANTS,
 		Visitor {
-			marker: PhantomData::<io::ErrorKind>,
-			lifetime: PhantomData,
+			marker: marker::PhantomData::<io::ErrorKind>,
+			lifetime: marker::PhantomData,
 		},
 	)
 }

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 //! This module interfaces into the underlying
 //! [Rust Aggsig library](https://github.com/mimblewimble/rust-secp256k1-zkp/blob/master/src/aggsig.rs)
 
-use crate::libtx::error::{Error, ErrorKind};
+use crate::libtx::error::Error;
 use blake2::blake2b::Blake2b;
 use keychain::{BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
 use util::secp::key::{PublicKey, SecretKey};
@@ -75,7 +75,7 @@ pub fn create_secnonce(secp: &Secp256k1) -> Result<SecretKey, Error> {
 ///
 /// let secp = Secp256k1::with_caps(ContextFlag::SignOnly);
 /// let secret_nonce = aggsig::create_secnonce(&secp).unwrap();
-/// let secret_key = SecretKey::new(&mut thread_rng());
+/// let secret_key = SecretKey::new(&secp, &mut thread_rng());
 /// let pub_nonce_sum = PublicKey::from_secret_key(&secp, &secret_nonce).unwrap();
 /// // ... Add all other participating nonces
 /// let pub_key_sum = PublicKey::from_secret_key(&secp, &secret_key).unwrap();
@@ -145,7 +145,7 @@ pub fn calculate_partial_sig(
 ///
 /// let secp = Secp256k1::with_caps(ContextFlag::Full);
 /// let secret_nonce = aggsig::create_secnonce(&secp).unwrap();
-/// let secret_key = SecretKey::new(&mut thread_rng());
+/// let secret_key = SecretKey::new(&secp, &mut thread_rng());
 /// let pub_nonce_sum = PublicKey::from_secret_key(&secp, &secret_nonce).unwrap();
 /// // ... Add all other participating nonces
 /// let pub_key_sum = PublicKey::from_secret_key(&secp, &secret_key).unwrap();
@@ -193,7 +193,7 @@ pub fn verify_partial_sig(
 		pubkey_sum,
 		true,
 	) {
-		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
+		return Err(Error::Signature("Signature validation error".to_string()));
 	}
 	Ok(())
 }
@@ -226,6 +226,7 @@ pub fn verify_partial_sig(
 /// use core::core::transaction::KernelFeatures;
 /// use core::core::{Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
+/// use std::convert::TryInto;
 /// use core::global;
 ///
 /// global::set_local_chain_type(global::ChainTypes::Floonet);
@@ -242,10 +243,10 @@ pub fn verify_partial_sig(
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
-/// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
+/// let features = KernelFeatures::HeightLocked{fee: 1.into(), lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
-/// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
-/// let pubkey = excess.to_pubkey().unwrap();
+/// let excess = secp.commit_sum(vec![out_commit], vec![over_commit]).unwrap();
+/// let pubkey = excess.to_pubkey(&secp).unwrap();
 /// let sig = aggsig::sign_from_key_id(&secp, &keychain, &msg, value, &key_id, None, Some(&pubkey)).unwrap();
 /// ```
 
@@ -290,6 +291,7 @@ where
 /// use core::core::transaction::KernelFeatures;
 /// use core::core::{Output, OutputFeatures};
 /// use keychain::{Keychain, ExtKeychain, SwitchCommitmentType};
+/// use std::convert::TryInto;
 /// use core::global;
 ///
 /// // Create signature
@@ -307,10 +309,10 @@ where
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(fees, height)).unwrap();
 /// let out_commit = output.commitment();
-/// let features = KernelFeatures::HeightLocked{fee: 0, lock_height: height};
+/// let features = KernelFeatures::HeightLocked{fee: 1.into(), lock_height: height};
 /// let msg = features.kernel_sig_msg().unwrap();
-/// let excess = Secp256k1::commit_sum(vec![out_commit], vec![over_commit]).unwrap();
-/// let pubkey = excess.to_pubkey().unwrap();
+/// let excess = secp.commit_sum(vec![out_commit], vec![over_commit]).unwrap();
+/// let pubkey = excess.to_pubkey(&secp).unwrap();
 /// let sig = aggsig::sign_from_key_id(&secp, &keychain, &msg, value, &key_id, None, Some(&pubkey)).unwrap();
 ///
 /// // Verify the signature from the excess commit
@@ -325,9 +327,9 @@ pub fn verify_single_from_commit(
 	msg: &Message,
 	commit: &Commitment,
 ) -> Result<(), Error> {
-	let pubkey = commit.to_pubkey()?;
+	let pubkey = commit.to_pubkey(secp)?;
 	if !verify_single(secp, sig, msg, None, &pubkey, Some(&pubkey), false) {
-		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
+		return Err(Error::Signature("Signature validation error".to_string()));
 	}
 	Ok(())
 }
@@ -360,7 +362,7 @@ pub fn verify_single_from_commit(
 ///
 /// let secp = Secp256k1::with_caps(ContextFlag::Full);
 /// let secret_nonce = aggsig::create_secnonce(&secp).unwrap();
-/// let secret_key = SecretKey::new(&mut thread_rng());
+/// let secret_key = SecretKey::new(&secp, &mut thread_rng());
 /// let pub_nonce_sum = PublicKey::from_secret_key(&secp, &secret_nonce).unwrap();
 /// // ... Add all other participating nonces
 /// let pub_key_sum = PublicKey::from_secret_key(&secp, &secret_key).unwrap();
@@ -395,7 +397,7 @@ pub fn verify_completed_sig(
 	msg: &secp::Message,
 ) -> Result<(), Error> {
 	if !verify_single(secp, sig, msg, None, pubkey, pubkey_sum, true) {
-		return Err(ErrorKind::Signature("Signature validation error".to_string()).into());
+		return Err(Error::Signature("Signature validation error".to_string()));
 	}
 	Ok(())
 }
@@ -411,6 +413,16 @@ pub fn add_signatures(
 	Ok(sig)
 }
 
+/// Subtract a partial signature from a completed signature
+/// see https://github.com/mimblewimble/rust-secp256k1-zkp/blob/e9e4f09bd0c85da914774a52219457ba10ac3e57/src/aggsig.rs#L267
+pub fn subtract_signature(
+	secp: &Secp256k1,
+	sig: &Signature,
+	partial_sig: &Signature,
+) -> Result<(Signature, Option<Signature>), Error> {
+	let sig = aggsig::subtract_partial_signature(secp, sig, partial_sig)?;
+	Ok(sig)
+}
 /// Just a simple sig, creates its own nonce if not provided
 pub fn sign_single(
 	secp: &Secp256k1,
@@ -455,7 +467,7 @@ pub fn sign_with_blinding(
 	blinding: &BlindingFactor,
 	pubkey_sum: Option<&PublicKey>,
 ) -> Result<Signature, Error> {
-	let skey = &blinding.secret_key()?;
+	let skey = &blinding.secret_key(secp)?;
 	let sig = aggsig::sign_single(secp, &msg, skey, None, None, None, pubkey_sum, None)?;
 	Ok(sig)
 }
@@ -481,9 +493,9 @@ pub fn sign_dual_key(
 	hasher.update(pk1.0.as_ref());
 	hasher.update(pk2.0.as_ref());
 
-	let mut sk = SecretKey::from_slice(hasher.finalize().as_bytes())?;
-	sk.mul_assign(&sk2)?;
-	sk.add_assign(&sk1)?;
+	let mut sk = SecretKey::from_slice(secp, hasher.finalize().as_bytes())?;
+	sk.mul_assign(secp, &sk2)?;
+	sk.add_assign(secp, &sk1)?;
 
 	let pubkey = PublicKey::from_secret_key(&secp, &sk)?;
 	let sig = sign_single(&secp, &msg, &sk, None, Some(&pubkey))?;
@@ -503,11 +515,11 @@ pub fn build_composite_pubkey(
 	let mut hasher = Blake2b::new(32);
 	hasher.update(pk1.0.as_ref());
 	hasher.update(pk2.0.as_ref());
-	let sk = SecretKey::from_slice(hasher.finalize().as_bytes())?;
+	let sk = SecretKey::from_slice(secp, hasher.finalize().as_bytes())?;
 
 	let mut pk = pk2.clone();
-	pk.mul_assign(&secp, &sk)?;
-	let pubkey = PublicKey::from_combination(vec![&pk1, &pk])?;
+	pk.mul_assign(secp, &sk)?;
+	let pubkey = PublicKey::from_combination(secp, vec![&pk1, &pk])?;
 
 	Ok(pubkey)
 }
@@ -538,8 +550,8 @@ mod test {
 		thread_rng().fill(&mut msg_bytes);
 		let msg = Message::from_slice(&msg_bytes).unwrap();
 
-		let sk1 = SecretKey::new(&mut thread_rng());
-		let sk2 = SecretKey::new(&mut thread_rng());
+		let sk1 = SecretKey::new(&secp, &mut thread_rng());
+		let sk2 = SecretKey::new(&secp, &mut thread_rng());
 		let batch_sig = sign_dual_key(&secp, &msg, &sk1, &sk2).unwrap();
 
 		let pk1 = PublicKey::from_secret_key(&secp, &sk1).unwrap();

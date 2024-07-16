@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 fn comments() -> HashMap<String, String> {
 	let mut retval = HashMap::new();
 	retval.insert(
-		"[server]".to_string(),
+		"config_file_version".to_string(),
 		"
 # Generated Server Configuration File for MWC
 #
@@ -31,7 +31,13 @@ fn comments() -> HashMap<String, String> {
 # -[user home]/.mwc
 #
 
-#########################################
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"[server]".to_string(),
+		"#########################################
 ### SERVER CONFIGURATION              ###
 #########################################
 
@@ -317,7 +323,7 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"[server.p2p_config.capabilities]".to_string(),
+		"[server.pool_config]".to_string(),
 		"#If the seeding type is List, the list of peers to connect to can
 #be specified as follows:
 #seeds = [\"192.168.0.1:3414\",\"192.168.0.2:3414\"]
@@ -346,19 +352,9 @@ fn comments() -> HashMap<String, String> {
 #amount of incoming connections temporarily allowed to exceed peer_max_inbound_count
 #peer_listener_buffer_count = 8
 
-# 15 = Bit flags for FULL_NODE
-#This structure needs to be changed internally, to make it more configurable
-
 # A preferred dandelion_peer, mainly used for testing dandelion
 # dandelion_peer = \"10.0.0.1:13144\"
 
-"
-		.to_string(),
-	);
-
-	retval.insert(
-		"[server.pool_config]".to_string(),
-		"
 #########################################
 ### MEMPOOL CONFIGURATION             ###
 #########################################

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
 
 use super::utils::w;
 use crate::core::core::hash::Hashed;
-use crate::core::core::verifier_cache::VerifierCache;
 use crate::core::core::Transaction;
-use crate::core::ser::{self, ProtocolVersion};
+use crate::core::ser::{self, DeserializationMode, ProtocolVersion};
 use crate::pool::{self, BlockChain, PoolAdapter, PoolEntry};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
@@ -29,20 +28,18 @@ use std::sync::Weak;
 
 /// Get basic information about the transaction pool.
 /// GET /v1/pool
-pub struct PoolInfoHandler<B, P, V>
+pub struct PoolInfoHandler<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
-	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
+	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 }
 
-impl<B, P, V> Handler for PoolInfoHandler<B, P, V>
+impl<B, P> Handler for PoolInfoHandler<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	fn get(&self, _req: Request<Body>) -> ResponseFuture {
 		let pool_arc = w_fut!(&self.tx_pool);
@@ -54,20 +51,18 @@ where
 	}
 }
 
-pub struct PoolHandler<B, P, V>
+pub struct PoolHandler<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
-	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
+	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 }
 
-impl<B, P, V> PoolHandler<B, P, V>
+impl<B, P> PoolHandler<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	pub fn get_pool_size(&self) -> Result<usize, Error> {
 		let pool_arc = w(&self.tx_pool)?;
@@ -103,10 +98,10 @@ where
 		let header = tx_pool
 			.blockchain
 			.chain_head()
-			.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
+			.map_err(|e| Error::Internal(format!("Failed to get chain head, {}", e)))?;
 		tx_pool
 			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
-			.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
+			.map_err(|e| Error::Internal(format!("Failed to update pool, {}", e)))?;
 
 		info!("transaction {} was added to the pool", tx_hash);
 
@@ -121,23 +116,21 @@ struct TxWrapper {
 
 /// Push new transaction to our local transaction pool.
 /// POST /v1/pool/push_tx
-pub struct PoolPushHandler<B, P, V>
+pub struct PoolPushHandler<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
-	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
+	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 }
 
-async fn update_pool<B, P, V>(
-	pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
+async fn update_pool<B, P>(
+	pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	req: Request<Body>,
 ) -> Result<(), Error>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	let pool = w(&pool)?;
 	let params = QueryParams::from(req.uri().query());
@@ -145,7 +138,7 @@ where
 
 	let wrapper: TxWrapper = parse_body(req).await?;
 	let tx_bin = util::from_hex(&wrapper.tx_hex).map_err(|e| {
-		ErrorKind::RequestError(format!(
+		Error::RequestError(format!(
 			"Unable to decode transaction hex {}, {}",
 			wrapper.tx_hex, e
 		))
@@ -153,12 +146,15 @@ where
 
 	// All wallet api interaction explicitly uses protocol version 1 for now.
 	let version = ProtocolVersion(1);
-	let tx: Transaction = ser::deserialize(&mut &tx_bin[..], version).map_err(|e| {
-		ErrorKind::RequestError(format!(
-			"Unable to deserialize transaction from binary {:?}, {}",
-			tx_bin, e
-		))
-	})?;
+	let tx: Transaction =
+		ser::deserialize(&mut &tx_bin[..], version, DeserializationMode::default()).map_err(
+			|e| {
+				Error::RequestError(format!(
+					"Unable to deserialize transaction from binary {:?}, {}",
+					tx_bin, e
+				))
+			},
+		)?;
 
 	let source = pool::TxSource::PushApi;
 	info!(
@@ -174,18 +170,17 @@ where
 	let header = tx_pool
 		.blockchain
 		.chain_head()
-		.map_err(|e| ErrorKind::Internal(format!("Failed to get chain head, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("Failed to get chain head: {}", e)))?;
 	tx_pool
 		.add_to_pool(source, tx, !fluff, &header)
-		.map_err(|e| ErrorKind::Internal(format!("Failed to update pool, {}", e)))?;
+		.map_err(|e| Error::Internal(format!("Failed to update pool: {}", e)))?;
 	Ok(())
 }
 
-impl<B, P, V> Handler for PoolPushHandler<B, P, V>
+impl<B, P> Handler for PoolPushHandler<B, P>
 where
 	B: BlockChain + 'static,
 	P: PoolAdapter + 'static,
-	V: VerifierCache + 'static,
 {
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
 		let pool = self.tx_pool.clone();

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 //! at https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki
 
 use digest::Digest;
-use failure::Fail;
 use hmac::Hmac;
 use pbkdf2::pbkdf2;
 use sha2::{Sha256, Sha512};
@@ -29,19 +28,16 @@ lazy_static! {
 }
 
 /// An error that might occur during mnemonic decoding
-#[derive(Fail, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Error {
 	/// Invalid word encountered
-	#[fail(display = "invalid bip39 word {}", _0)]
+	#[error("invalid bip39 word {0}")]
 	BadWord(String),
 	/// Checksum was not correct (expected, actual)
-	#[fail(
-		display = "bip39 checksum 0x{:x} does not match expected 0x{:x}",
-		_0, _1
-	)]
+	#[error("bip39 checksum 0x{0:x} does not match expected 0x{1:x}")]
 	BadChecksum(u8, u8),
 	/// The number of words/bytes was invalid
-	#[fail(display = "invalid mnemonic/entropy length {}", _0)]
+	#[error("invalid mnemonic/entropy length {0}")]
 	InvalidLength(usize),
 }
 
@@ -91,7 +87,7 @@ pub fn to_entropy(mnemonic: &str) -> Result<Vec<u8>, Error> {
 
 	let mut hash = [0; 32];
 	let mut sha2sum = Sha256::default();
-	sha2sum.update(&entropy.clone());
+	sha2sum.update(&entropy);
 	hash.copy_from_slice(sha2sum.finalize().as_slice());
 
 	let actual = (hash[0] >> (8 - checksum_bits)) & mask;

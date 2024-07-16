@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ use crate::web::*;
 use grin_core::global;
 use hyper::{Body, Request, StatusCode};
 use serde_json::json;
+use std::convert::TryInto;
 use std::sync::atomic::Ordering;
 use std::sync::Weak;
 
@@ -52,12 +53,17 @@ impl StatusHandler {
 	pub fn get_status(&self) -> Result<Status, Error> {
 		let head = w(&self.chain)?
 			.head()
-			.map_err(|e| ErrorKind::Internal(format!("Unable to get chain tip, {}", e)))?;
+			.map_err(|e| Error::Internal(format!("Unable to get chain tip, {}", e)))?;
 		let sync_status = w(&self.sync_state)?.status();
 		let (api_sync_status, api_sync_info) = sync_status_to_api(sync_status);
 		Ok(Status::from_tip_and_peers(
 			head,
-			w(&self.peers)?.peer_count(),
+			w(&self.peers)?
+				.iter()
+				.connected()
+				.count()
+				.try_into()
+				.unwrap(),
 			api_sync_status,
 			api_sync_info,
 		))
@@ -98,8 +104,6 @@ impl Handler for StatusHandler {
 					global::get_server_running_controller().store(false, Ordering::SeqCst);
 				}
 			}
-
-			// stop the server...
 			result_to_response(Ok(StatusOutput::new(&processed)))
 		} else {
 			response(
@@ -116,11 +120,12 @@ fn sync_status_to_api(sync_status: SyncStatus) -> (String, Option<serde_json::Va
 		SyncStatus::NoSync => ("no_sync".to_string(), None),
 		SyncStatus::AwaitingPeers(_) => ("awaiting_peers".to_string(), None),
 		SyncStatus::HeaderSync {
-			current_height,
+			sync_head,
 			highest_height,
+			..
 		} => (
 			"header_sync".to_string(),
-			Some(json!({ "current_height": current_height, "highest_height": highest_height })),
+			Some(json!({ "current_height": sync_head.height, "highest_height": highest_height })),
 		),
 		SyncStatus::TxHashsetDownload(stats) => (
 			"txhashset_download".to_string(),

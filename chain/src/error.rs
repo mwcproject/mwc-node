@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,276 +13,227 @@
 // limitations under the License.
 
 //! Error types for chain
+use crate::core::core;
+use crate::core::core::pmmr::segment;
 use crate::core::core::{block, committed, transaction};
 use crate::core::ser;
 use crate::keychain;
 use crate::util::secp;
 use crate::util::secp::pedersen::Commitment;
-use failure::{Backtrace, Context, Fail};
+use grin_core::core::hash::Hash;
 use grin_store as store;
-use std::fmt::{self, Display};
 use std::io;
 
-/// Error definition
-#[derive(Debug, Fail)]
-pub struct Error {
-	inner: Context<ErrorKind>,
-}
-
 /// Chain error definitions
-#[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub enum ErrorKind {
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+pub enum Error {
 	/// The block doesn't fit anywhere in our chain
-	#[fail(display = "Block is unfit: {}", _0)]
+	#[error("Block is unfit: {0}")]
 	Unfit(String),
 	/// Special case of orphan blocks
-	#[fail(display = "Orphan, {}", _0)]
+	#[error("Orphan, {0}")]
 	Orphan(String),
 	/// Difficulty is too low either compared to ours or the block PoW hash
-	#[fail(display = "Difficulty is too low compared to ours or the block PoW hash")]
+	#[error("Difficulty is too low compared to ours or the block PoW hash")]
 	DifficultyTooLow,
 	/// Addition of difficulties on all previous block is wrong
-	#[fail(display = "Addition of difficulties on all previous blocks is wrong")]
+	#[error("Addition of difficulties on all previous blocks is wrong")]
 	WrongTotalDifficulty,
 	/// Block header edge_bits is lower than our min
-	#[fail(display = "Cuckoo Size too small")]
+	#[error("Cuckoo Size too small")]
 	LowEdgebits,
 	/// Block header invalid hash, explicitly rejected
-	#[fail(display = "Block hash explicitly rejected by chain")]
+	#[error("Block hash explicitly rejected by chain")]
 	InvalidHash,
 	/// Scaling factor between primary and secondary PoW is invalid
-	#[fail(display = "Wrong scaling factor")]
+	#[error("Wrong scaling factor")]
 	InvalidScaling,
 	/// The proof of work is invalid
-	#[fail(display = "Invalid PoW")]
+	#[error("Invalid PoW")]
 	InvalidPow,
 	/// Peer abusively sending us an old block we already have
-	#[fail(display = "Old Block")]
+	#[error("Old Block")]
 	OldBlock,
-	/// The block doesn't sum correctly or a tx signature is invalid
-	#[fail(display = "Invalid Block Proof, {}", _0)]
-	InvalidBlockProof(block::Error),
 	/// Block time is too old
-	#[fail(display = "Invalid Block Time")]
+	#[error("Invalid Block Time")]
 	InvalidBlockTime,
 	/// Block height is invalid (not previous + 1)
-	#[fail(display = "Invalid Block Height")]
+	#[error("Invalid Block Height")]
 	InvalidBlockHeight,
 	/// One of the root hashes in the block is invalid
-	#[fail(display = "Invalid Root, {}", _0)]
+	#[error("Invalid Root, {0}")]
 	InvalidRoot(String),
 	/// One of the MMR sizes in the block header is invalid
-	#[fail(display = "Invalid MMR Size")]
+	#[error("Invalid MMR Size")]
 	InvalidMMRSize,
 	/// Error from underlying keychain impl
-	#[fail(display = "Keychain Error, {}", _0)]
-	Keychain(keychain::Error),
+	#[error("Keychain Error, {source:?}")]
+	Keychain {
+		#[from]
+		/// Conversion
+		source: keychain::Error,
+	},
 	/// Error from underlying secp lib
-	#[fail(display = "Secp Lib Error, {}", _0)]
-	Secp(secp::Error),
+	#[error("Secp Lib Error, {source:?}")]
+	Secp {
+		#[from]
+		/// Conversion
+		source: secp::Error,
+	},
 	/// One of the inputs in the block has already been spent
-	#[fail(display = "Already Spent: {:?}", _0)]
+	#[error("Already Spent: {0:?}")]
 	AlreadySpent(Commitment),
 	/// An output with that commitment already exists (should be unique)
-	#[fail(display = "Duplicate Commitment: {:?}", _0)]
+	#[error("Duplicate Commitment: {0:?}")]
 	DuplicateCommitment(Commitment),
 	/// Attempt to spend a coinbase output before it sufficiently matures.
-	#[fail(display = "Attempt to spend immature coinbase")]
+	#[error("Attempt to spend immature coinbase")]
 	ImmatureCoinbase,
 	/// Error validating a Merkle proof (coinbase output)
-	#[fail(display = "Error validating merkle proof, {}", _0)]
+	#[error("Error validating merkle proof, {0}")]
 	MerkleProof(String),
 	/// Output not found
-	#[fail(display = "Output not found, {}", _0)]
+	#[error("Output not found, {0}")]
 	OutputNotFound(String),
 	/// Rangeproof not found
-	#[fail(display = "Rangeproof not found, {}", _0)]
+	#[error("Rangeproof not found, {0}")]
 	RangeproofNotFound(String),
 	/// Tx kernel not found
-	#[fail(display = "Tx kernel not found")]
+	#[error("Tx kernel not found")]
 	TxKernelNotFound,
 	/// output spent
-	#[fail(display = "Output is spent")]
+	#[error("Output is spent")]
 	OutputSpent,
 	/// Invalid block version, either a mistake or outdated software
-	#[fail(display = "Invalid Block Version: {:?}", _0)]
+	#[error("Invalid Block Version: {0:?}")]
 	InvalidBlockVersion(block::HeaderVersion),
 	/// We've been provided a bad txhashset
-	#[fail(display = "Invalid TxHashSet: {}", _0)]
+	#[error("Invalid TxHashSet: {0}")]
 	InvalidTxHashSet(String),
 	/// Internal issue when trying to save or load data from store
-	#[fail(display = "Chain Store Error: {}, reason: {}", _1, _0)]
+	#[error("Chain Store Error: {1}, reason: {0}")]
 	StoreErr(store::Error, String),
 	/// Internal issue when trying to save or load data from append only files
-	#[fail(display = "Chain File Read Error: {}", _0)]
+	#[error("Chain File Read Error: {0}")]
 	FileReadErr(String),
 	/// Error serializing or deserializing a type
-	#[fail(display = "Chain Serialization Error, {}", _0)]
-	SerErr(ser::Error),
+	#[error("Chain Serialization Error, {source:?}")]
+	SerErr {
+		#[from]
+		/// Conversion
+		source: ser::Error,
+	},
 	/// Error with the txhashset
-	#[fail(display = "TxHashSetErr: {}", _0)]
+	#[error("TxHashSetErr: {0}")]
 	TxHashSetErr(String),
 	/// Tx not valid based on lock_height.
-	#[fail(display = "Invalid Transaction Lock Height")]
+	#[error("Invalid Transaction Lock Height")]
 	TxLockHeight,
 	/// Tx is not valid due to NRD relative_height restriction.
-	#[fail(display = "NRD Relative Height")]
+	#[error("NRD Relative Height")]
 	NRDRelativeHeight,
 	/// No chain exists and genesis block is required
-	#[fail(display = "Genesis Block Required")]
+	#[error("Genesis Block Required")]
 	GenesisBlockRequired,
 	/// Error from underlying tx handling
-	#[fail(display = "Transaction Validation Error: {:?}", _0)]
-	Transaction(transaction::Error),
+	#[error("Transaction Validation Error: {source:?}")]
+	Transaction {
+		/// Conversion
+		#[from]
+		source: transaction::Error,
+	},
 	/// Error from underlying block handling
-	#[fail(display = "Block Validation Error: {:?}", _0)]
+	#[error("Block Validation Error: {0:?}")]
 	Block(block::Error),
+	/// Attempt to retrieve a header at a height greater than
+	/// the max allowed by u64 limits
+	#[error("Invalid Header Height: {0:?}")]
+	InvalidHeaderHeight(u64),
 	/// Anything else
-	#[fail(display = "Chain other Error: {}", _0)]
+	#[error("Chain other Error: {0}")]
 	Other(String),
 	/// Error from summing and verifying kernel sums via committed trait.
-	#[fail(
-		display = "Committed Trait: Error summing and verifying kernel sums, {}",
-		_0
-	)]
-	Committed(committed::Error),
+	#[error("Committed Trait: Error summing and verifying kernel sums, {source:?}")]
+	Committed {
+		#[from]
+		/// Conversion
+		source: committed::Error,
+	},
 	/// We cannot process data once the Grin server has been stopped.
-	#[fail(display = "Stopped (MWC Shutting Down)")]
+	#[error("Stopped (MWC Shutting Down)")]
 	Stopped,
 	/// Internal Roaring Bitmap error
-	#[fail(display = "Roaring Bitmap error")]
+	#[error("Roaring Bitmap error")]
 	Bitmap,
 	/// Error during chain sync
-	#[fail(display = "Sync error")]
+	#[error("Sync error")]
 	SyncError(String),
-}
-
-impl Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let cause = match self.cause() {
-			Some(c) => format!("{}", c),
-			None => String::from("Unknown"),
-		};
-		let backtrace = match self.backtrace() {
-			Some(b) => format!("{}", b),
-			None => String::from("Unknown"),
-		};
-		let output = format!(
-			"{} \n Cause: {} \n Backtrace: {}",
-			self.inner, cause, backtrace
-		);
-		Display::fmt(&output, f)
-	}
+	/// PIBD segment related error
+	#[error("Segment error, {source}")]
+	SegmentError {
+		#[from]
+		/// Conversion
+		source: segment::SegmentError,
+	},
+	/// We've decided to halt the PIBD process due to lack of supporting peers or
+	/// otherwise failing to progress for a certain amount of time
+	#[error("Aborting PIBD error")]
+	AbortingPIBDError,
+	/// The segmenter is associated to a different block header
+	#[error("Segmenter header mismatch, available {0} at height {1}")]
+	SegmenterHeaderMismatch(Hash, u64),
+	/// Segment height not within allowed range
+	#[error("Invalid segment height")]
+	InvalidSegmentHeight,
+	/// Error from the core calls
+	#[error("Core error, {source:?}")]
+	CoreErr {
+		/// Source error
+		#[from]
+		source: core::Error,
+	},
+	/// Other issue with segment
+	#[error("Invalid segment: {0}")]
+	InvalidSegment(String),
+	/// The blockchain is in sync process, not all data is available
+	#[error("Chain is syncing, data is not complete")]
+	ChainInSyncing(String),
+	/// Invalid bitmap root hash. Probably old traffic or somebody attacking as
+	#[error("Invalid bitmap root hash")]
+	InvalidBitmapRoot,
 }
 
 impl Error {
-	/// get kind
-	pub fn kind(&self) -> ErrorKind {
-		self.inner.get_context().clone()
-	}
-	/// get cause
-	pub fn cause(&self) -> Option<&dyn Fail> {
-		self.inner.cause()
-	}
-	/// get backtrace
-	pub fn backtrace(&self) -> Option<&Backtrace> {
-		self.inner.backtrace()
-	}
-
 	/// Whether the error is due to a block that was intrinsically wrong
 	pub fn is_bad_data(&self) -> bool {
 		// shorter to match on all the "not the block's fault" errors
-		match self.kind() {
-			ErrorKind::Unfit(_)
-			| ErrorKind::Orphan(_)
-			| ErrorKind::StoreErr(_, _)
-			| ErrorKind::SerErr(_)
-			| ErrorKind::TxHashSetErr(_)
-			| ErrorKind::GenesisBlockRequired
-			| ErrorKind::Other(_) => false,
+		match self {
+			Error::Unfit(_)
+			| Error::Orphan(_)
+			| Error::StoreErr(_, _)
+			| Error::SerErr { .. }
+			| Error::TxHashSetErr(_)
+			| Error::GenesisBlockRequired
+			| Error::Other(_) => false,
 			_ => true,
-		}
-	}
-}
-
-impl From<ErrorKind> for Error {
-	fn from(kind: ErrorKind) -> Error {
-		Error {
-			inner: Context::new(kind),
-		}
-	}
-}
-
-impl From<Context<ErrorKind>> for Error {
-	fn from(inner: Context<ErrorKind>) -> Error {
-		Error { inner: inner }
-	}
-}
-
-impl From<block::Error> for Error {
-	fn from(error: block::Error) -> Error {
-		let ec = error.clone();
-		Error {
-			inner: error.context(ErrorKind::InvalidBlockProof(ec)),
 		}
 	}
 }
 
 impl From<store::Error> for Error {
 	fn from(error: store::Error) -> Error {
-		let ec = error.clone();
-		Error {
-			//inner: error.context();Context::new(ErrorKind::StoreErr(error.clone(),
-			// format!("{:?}", error))),
-			inner: error.context(ErrorKind::StoreErr(ec.clone(), format!("{:?}", ec))),
-		}
-	}
-}
-
-impl From<keychain::Error> for Error {
-	fn from(error: keychain::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Keychain(error)),
-		}
-	}
-}
-
-impl From<transaction::Error> for Error {
-	fn from(error: transaction::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Transaction(error)),
-		}
-	}
-}
-
-impl From<committed::Error> for Error {
-	fn from(error: committed::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Committed(error)),
-		}
+		Error::StoreErr(error.clone(), format!("{:?}", error))
 	}
 }
 
 impl From<io::Error> for Error {
 	fn from(e: io::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::TxHashSetErr(e.to_string())),
-		}
+		Error::TxHashSetErr(e.to_string())
 	}
 }
 
-impl From<ser::Error> for Error {
-	fn from(error: ser::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::SerErr(error)),
-		}
-	}
-}
-
-impl From<secp::Error> for Error {
-	fn from(e: secp::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Secp(e)),
-		}
+impl From<block::Error> for Error {
+	fn from(e: block::Error) -> Error {
+		Error::Block(e)
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,11 +18,10 @@ use self::chain::types::{NoopAdapter, Options};
 use self::chain::Chain;
 use self::core::consensus;
 use self::core::core::hash::Hash;
-use self::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use self::core::core::{Block, BlockHeader, BlockSums, KernelFeatures, Transaction};
 use self::core::genesis;
 use self::core::global;
-use self::core::libtx::{build, reward, ProofBuilder};
+use self::core::libtx::{build, reward, ProofBuilder, DEFAULT_BASE_FEE};
 use self::core::pow;
 use self::keychain::{ExtKeychain, ExtKeychainPath, Keychain};
 use self::pool::types::*;
@@ -91,8 +90,8 @@ impl BlockChain for ChainAdapter {
 
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
 		self.chain.validate_tx(tx).map_err(|e| match e.kind() {
-			chain::ErrorKind::Transaction(txe) => txe.into(),
-			chain::ErrorKind::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
+			chain::Error::Transaction(txe) => txe.into(),
+			chain::Error::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
 			_ => PoolError::Other("failed to validate tx".into()),
 		})
 	}
@@ -120,7 +119,7 @@ pub fn clean_output_dir(db_root: String) {
 pub struct PoolFuzzer {
 	pub chain: Arc<Chain>,
 	pub keychain: ExtKeychain,
-	pub pool: TransactionPool<ChainAdapter, NoopPoolAdapter, LruVerifierCache>,
+	pub pool: TransactionPool<ChainAdapter, NoopPoolAdapter>,
 }
 
 impl PoolFuzzer {
@@ -131,15 +130,11 @@ impl PoolFuzzer {
 
 		let genesis = genesis_block(&keychain);
 		let chain = Arc::new(Self::init_chain(db_root, genesis));
-		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 
 		// Initialize a new pool with our chain adapter.
-		let pool = Self::init_transaction_pool(
-			Arc::new(ChainAdapter {
-				chain: chain.clone(),
-			}),
-			verifier_cache.clone(),
-		);
+		let pool = Self::init_transaction_pool(Arc::new(ChainAdapter {
+			chain: chain.clone(),
+		}));
 
 		let ret = Self {
 			chain,
@@ -239,30 +234,24 @@ impl PoolFuzzer {
 	}
 
 	fn init_chain(dir_name: &str, genesis: Block) -> Chain {
-		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
 		Chain::init(
 			dir_name.to_string(),
 			Arc::new(NoopAdapter {}),
 			genesis,
 			pow::verify_size,
-			verifier_cache,
 			false,
 		)
 		.unwrap()
 	}
 
 	// Same as from pool/tests/common.rs
-	fn init_transaction_pool<B, V>(
-		chain: Arc<B>,
-		verifier_cache: Arc<RwLock<V>>,
-	) -> TransactionPool<B, NoopPoolAdapter, V>
+	fn init_transaction_pool<B>(chain: Arc<B>) -> TransactionPool<B, NoopPoolAdapter>
 	where
 		B: BlockChain,
-		V: VerifierCache + 'static,
 	{
 		TransactionPool::new(
 			PoolConfig {
-				accept_fee_base: 0,
+				accept_fee_base: DEFAULT_BASE_FEE,
 				max_pool_size: 50,
 				max_stempool_size: 50,
 				mineable_max_weight: 10_000,

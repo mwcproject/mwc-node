@@ -1,5 +1,5 @@
-name: grin
-version: "4.1.0"
+name: mwc
+version: "5.3.0"
 about: Lightweight implementation of the MimbleWimble protocol.
 author: The MWC Team
 
@@ -77,6 +77,12 @@ subcommands:
                   long: peer
                   required: true
                   takes_value: true
+        - resetchainhead:
+            about: Resets the local chain head
+            args:
+                - hash:
+                    help: The header hash to reset to
+                    required: true
         - verify-chain:
             about: Trigger a verication of the rangeproofs, kernel signatures and excesses.
             args:
@@ -85,3 +91,9 @@ subcommands:
                     short: f
                     long: fast
                     takes_value: false
+        - invalidateheader:
+            about: Adds header hash to denylist
+            args:
+                - hash:
+                    help: The header hash to invalidate
+                    required: true

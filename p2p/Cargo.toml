@@ -1,6 +1,6 @@
 [package]
 name = "grin_p2p"
-version = "4.4.2"
+version = "5.3.2"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Chain implementation for grin, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -16,8 +16,7 @@ lru-cache = "0.1"
 tor-stream = "0.2"
 net2 = "0.2"
 socks = "0.3.2"
-failure = "0.1"
-failure_derive = "0.1"
+thiserror = "1"
 num = "0.2"
 rand = "0.6"
 serde = "1"
@@ -35,11 +34,12 @@ async-std = "1.9"
 tokio = {version = "0.2", features = ["full"] }
 ed25519-dalek = "1"
 serde_json = "1"
+bytes = "0.5"
 
-grin_core = { path = "../core", version = "4.4.2" }
-grin_store = { path = "../store", version = "4.4.2" }
-grin_util = { path = "../util", version = "4.4.2" }
-grin_chain = { path = "../chain", version = "4.4.2" }
+grin_core = { path = "../core", version = "5.3.2" }
+grin_store = { path = "../store", version = "5.3.2" }
+grin_util = { path = "../util", version = "5.3.2" }
+grin_chain = { path = "../chain", version = "5.3.2" }
 
 [dev-dependencies]
-grin_pool = { path = "../pool", version = "4.4.2" }
+grin_pool = { path = "../pool", version = "5.3.2" }

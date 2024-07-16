@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp::min;
 use std::convert::TryFrom;
 use std::time::Instant;
 
@@ -19,9 +20,11 @@ use bit_vec::BitVec;
 use croaring::Bitmap;
 
 use crate::core::core::hash::{DefaultHashable, Hash};
-use crate::core::core::pmmr::{self, ReadonlyPMMR, VecBackend, PMMR};
+use crate::core::core::pmmr::segment::{Segment, SegmentIdentifier, SegmentProof};
+use crate::core::core::pmmr::{self, Backend, ReadablePMMR, ReadonlyPMMR, VecBackend, PMMR};
 use crate::core::ser::{self, PMMRable, Readable, Reader, Writeable, Writer};
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
+use enum_primitive::FromPrimitive;
 
 /// The "bitmap accumulator" allows us to commit to a specific bitmap by splitting it into
 /// fragments and inserting these fragments into an MMR to produce an overall root hash.
@@ -47,10 +50,12 @@ pub struct BitmapAccumulator {
 }
 
 impl BitmapAccumulator {
+	const NBITS: u64 = BitmapChunk::LEN_BITS as u64;
+
 	/// Crate a new empty bitmap accumulator.
 	pub fn new() -> BitmapAccumulator {
 		BitmapAccumulator {
-			backend: VecBackend::new_hash_only(),
+			backend: VecBackend::new(),
 		}
 	}
 
@@ -62,12 +67,12 @@ impl BitmapAccumulator {
 	/// Find the start of the first "chunk" of 1024 bits from the provided idx.
 	/// Zero the last 10 bits to round down to multiple of 1024.
 	pub fn chunk_start_idx(idx: u64) -> u64 {
-		idx & !0x3ff
+		idx & !(Self::NBITS - 1)
 	}
 
 	/// The first 1024 belong to chunk 0, the next 1024 to chunk 1 etc.
 	fn chunk_idx(idx: u64) -> u64 {
-		idx / 1024
+		idx / Self::NBITS
 	}
 
 	/// Apply the provided idx iterator to our bitmap accumulator.
@@ -88,12 +93,13 @@ impl BitmapAccumulator {
 
 		let mut idx_iter = idx.into_iter().filter(|&x| x < size).peekable();
 		while let Some(x) = idx_iter.peek() {
-			if *x < chunk_idx * 1024 {
+			if *x < chunk_idx * Self::NBITS {
+				// NOTE we never get here if idx starts from from_idx
 				// skip until we reach our first chunk
 				idx_iter.next();
-			} else if *x < (chunk_idx + 1) * 1024 {
+			} else if *x < (chunk_idx + 1) * Self::NBITS {
 				let idx = idx_iter.next().expect("next after peek");
-				chunk.set(idx % 1024, true);
+				chunk.set(idx % Self::NBITS, true);
 			} else {
 				self.append_chunk(chunk)?;
 				chunk_idx += 1;
@@ -121,6 +127,8 @@ impl BitmapAccumulator {
 	/// If size is 1 then we will have a single chunk.
 	/// If size is 1023 then we will have a single chunk (bits 0 to 1023 inclusive).
 	/// If the size is 1024 then we will have two chunks.
+	/// TODO: first argument is an iterator for no good reason;
+	/// might as well pass from_idx as first argument
 	pub fn apply<T, U>(&mut self, invalidated_idx: T, idx: U, size: u64) -> Result<(), Error>
 	where
 		T: IntoIterator<Item = u64>,
@@ -146,10 +154,9 @@ impl BitmapAccumulator {
 		let chunk_idx = BitmapAccumulator::chunk_idx(from_idx);
 		let last_pos = self.backend.size();
 		let mut pmmr = PMMR::at(&mut self.backend, last_pos);
-		let chunk_pos = pmmr::insertion_to_pmmr_index(chunk_idx + 1);
-		let rewind_pos = chunk_pos.saturating_sub(1);
+		let rewind_pos = pmmr::insertion_to_pmmr_index(chunk_idx);
 		pmmr.rewind(rewind_pos, &Bitmap::new())
-			.map_err(|e| ErrorKind::Other(format!("pmmr rewind error, {}", e)))?;
+			.map_err(|e| Error::Other(format!("pmmr rewind error, {}", e)))?;
 		Ok(())
 	}
 
@@ -171,20 +178,35 @@ impl BitmapAccumulator {
 		let last_pos = self.backend.size();
 		PMMR::at(&mut self.backend, last_pos)
 			.push(&chunk)
-			.map_err(|e| {
-				ErrorKind::Other(format!("PMMR at for pos {} error, {}", last_pos, e)).into()
-			})
+			.map_err(|e| Error::Other(format!("PMMR at for pos {} error, {}", last_pos, e)))
 	}
 
 	/// The root hash of the bitmap accumulator MMR.
 	pub fn root(&self) -> Hash {
-		ReadonlyPMMR::at(&self.backend, self.backend.size()).root()
+		self.readonly_pmmr().root().expect("no root, invalid tree")
+	}
+
+	/// Readonly access to our internal data.
+	pub fn readonly_pmmr(&self) -> ReadonlyPMMR<BitmapChunk, VecBackend<BitmapChunk>> {
+		ReadonlyPMMR::at(&self.backend, self.backend.size())
+	}
+
+	/// Return a raw in-memory bitmap of this accumulator
+	pub fn as_bitmap(&self) -> Result<Bitmap, Error> {
+		let mut bitmap = Bitmap::new();
+		for (chunk_index, chunk_pos) in self.backend.leaf_pos_iter().enumerate() {
+			//TODO: Unwrap
+			let chunk = self.backend.get_data(chunk_pos as u64).unwrap();
+			let additive = chunk.set_iter(chunk_index * 1024).collect::<Vec<u32>>();
+			bitmap.add_many(&additive);
+		}
+		Ok(bitmap)
 	}
 }
 
 /// A bitmap "chunk" representing 1024 contiguous bits of the overall bitmap.
 /// The first 1024 bits belong in one chunk. The next 1024 bits in the next chunk, etc.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BitmapChunk(BitVec);
 
 impl BitmapChunk {
@@ -208,6 +230,16 @@ impl BitmapChunk {
 	/// Does this bitmap chunk have any bits set to 1?
 	pub fn any(&self) -> bool {
 		self.0.any()
+	}
+
+	/// Iterator over the integer set represented by this chunk, applying the given
+	/// offset to the values
+	pub fn set_iter(&self, idx_offset: usize) -> impl Iterator<Item = u32> + '_ {
+		self.0
+			.iter()
+			.enumerate()
+			.filter(|(_, val)| *val)
+			.map(move |(idx, _)| (idx as u32 + idx_offset as u32))
 	}
 }
 
@@ -237,5 +269,340 @@ impl Readable for BitmapChunk {
 	/// and the "hash only" backend means we never actually read these chunks.
 	fn read<R: Reader>(_reader: &mut R) -> Result<BitmapChunk, ser::Error> {
 		Ok(BitmapChunk::new())
+	}
+}
+
+///
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BitmapSegment {
+	identifier: SegmentIdentifier,
+	blocks: Vec<BitmapBlock>,
+	proof: SegmentProof,
+}
+
+impl Writeable for BitmapSegment {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.identifier, writer)?;
+		writer.write_u16(self.blocks.len() as u16)?;
+		for block in &self.blocks {
+			Writeable::write(block, writer)?;
+		}
+		Writeable::write(&self.proof, writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for BitmapSegment {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let identifier: SegmentIdentifier = Readable::read(reader)?;
+
+		let n_blocks = reader.read_u16()? as usize;
+		let mut blocks = Vec::<BitmapBlock>::with_capacity(n_blocks);
+		for _ in 0..n_blocks {
+			blocks.push(Readable::read(reader)?);
+		}
+		let proof = Readable::read(reader)?;
+
+		Ok(Self {
+			identifier,
+			blocks,
+			proof,
+		})
+	}
+}
+
+// TODO: this can be sped up with some `unsafe` code
+impl From<Segment<BitmapChunk>> for BitmapSegment {
+	fn from(segment: Segment<BitmapChunk>) -> Self {
+		let (identifier, _, _, _, leaf_data, proof) = segment.parts();
+
+		let mut chunks_left = leaf_data.len();
+		let mut blocks =
+			Vec::with_capacity((chunks_left + BitmapBlock::NCHUNKS - 1) / BitmapBlock::NCHUNKS);
+		while chunks_left > 0 {
+			let n_chunks = min(BitmapBlock::NCHUNKS, chunks_left);
+			chunks_left = chunks_left.saturating_sub(n_chunks);
+			blocks.push(BitmapBlock::new(n_chunks));
+		}
+
+		for (chunk_idx, chunk) in leaf_data.into_iter().enumerate() {
+			assert_eq!(chunk.0.len(), BitmapChunk::LEN_BITS);
+			let block = &mut blocks
+				.get_mut(chunk_idx / BitmapBlock::NCHUNKS)
+				.unwrap()
+				.inner;
+			let offset = (chunk_idx % BitmapBlock::NCHUNKS) * BitmapChunk::LEN_BITS;
+			for (i, _) in chunk.0.iter().enumerate().filter(|&(_, v)| v) {
+				block.set(offset + i, true);
+			}
+		}
+
+		Self {
+			identifier,
+			blocks,
+			proof,
+		}
+	}
+}
+
+// TODO: this can be sped up with some `unsafe` code
+impl From<BitmapSegment> for Segment<BitmapChunk> {
+	fn from(segment: BitmapSegment) -> Self {
+		let BitmapSegment {
+			identifier,
+			blocks,
+			proof,
+		} = segment;
+
+		// Count the number of chunks taking into account that the final block might be smaller
+		let n_chunks = (blocks.len() - 1) * BitmapBlock::NCHUNKS
+			+ blocks.last().map(|b| b.n_chunks()).unwrap_or(0);
+		let mut leaf_pos = Vec::with_capacity(n_chunks);
+		let mut chunks = Vec::with_capacity(n_chunks);
+		let offset = (1 << identifier.height) * identifier.idx;
+		for i in 0..(n_chunks as u64) {
+			leaf_pos.push(pmmr::insertion_to_pmmr_index(offset + i));
+			chunks.push(BitmapChunk::new());
+		}
+
+		for (block_idx, block) in blocks.into_iter().enumerate() {
+			assert!(block.inner.len() <= BitmapBlock::NBITS as usize);
+			let offset = block_idx * BitmapBlock::NCHUNKS;
+			for (i, _) in block.inner.iter().enumerate().filter(|&(_, v)| v) {
+				chunks
+					.get_mut(offset + i / BitmapChunk::LEN_BITS)
+					.unwrap()
+					.0
+					.set(i % BitmapChunk::LEN_BITS, true);
+			}
+		}
+
+		Segment::from_parts(identifier, Vec::new(), Vec::new(), leaf_pos, chunks, proof)
+	}
+}
+
+/// A block of 2^16 bits that provides an efficient (de)serialization
+/// depending on the bitmap occupancy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BitmapBlock {
+	inner: BitVec,
+}
+
+impl BitmapBlock {
+	/// Maximum number of bits in a block
+	const NBITS: u32 = 1 << 16;
+	/// Maximum number of chunks in a block
+	const NCHUNKS: usize = Self::NBITS as usize / BitmapChunk::LEN_BITS;
+
+	fn new(n_chunks: usize) -> Self {
+		assert!(n_chunks <= BitmapBlock::NCHUNKS);
+		Self {
+			inner: BitVec::from_elem(n_chunks * BitmapChunk::LEN_BITS, false),
+		}
+	}
+
+	fn n_chunks(&self) -> usize {
+		let length = self.inner.len();
+		assert_eq!(length % BitmapChunk::LEN_BITS, 0);
+		let n_chunks = length / BitmapChunk::LEN_BITS;
+		assert!(n_chunks <= BitmapBlock::NCHUNKS);
+		n_chunks
+	}
+}
+
+impl Writeable for BitmapBlock {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		let length = self.inner.len();
+		assert!(length <= Self::NBITS as usize);
+		assert_eq!(length % BitmapChunk::LEN_BITS, 0);
+		writer.write_u8((length / BitmapChunk::LEN_BITS) as u8)?;
+
+		let count_pos = self.inner.iter().filter(|&v| v).count() as u32;
+
+		// Negative count needs to be adjusted if the block is not full,
+		// which affects the choice of serialization mode and size written
+		let count_neg = length as u32 - count_pos;
+
+		let threshold = Self::NBITS / 16;
+		if count_pos < threshold {
+			// Write positive indices
+			Writeable::write(&BitmapBlockSerialization::Positive, writer)?;
+			writer.write_u16(count_pos as u16)?;
+			for (i, _) in self.inner.iter().enumerate().filter(|&(_, v)| v) {
+				writer.write_u16(i as u16)?;
+			}
+		} else if count_neg < threshold {
+			// Write negative indices
+			Writeable::write(&BitmapBlockSerialization::Negative, writer)?;
+			writer.write_u16(count_neg as u16)?;
+			for (i, _) in self.inner.iter().enumerate().filter(|&(_, v)| !v) {
+				writer.write_u16(i as u16)?;
+			}
+		} else {
+			// Write raw bytes
+			Writeable::write(&BitmapBlockSerialization::Raw, writer)?;
+			let bytes = self.inner.to_bytes();
+			assert!(bytes.len() <= Self::NBITS as usize / 8);
+			writer.write_fixed_bytes(&bytes)?;
+		}
+
+		Ok(())
+	}
+}
+
+impl Readable for BitmapBlock {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let n_chunks = reader.read_u8()?;
+		if n_chunks as usize > BitmapBlock::NCHUNKS {
+			return Err(ser::Error::TooLargeReadErr(format!(
+				"Requested {} chunks, limit is {}",
+				n_chunks,
+				BitmapBlock::NCHUNKS
+			)));
+		}
+		let n_bits = n_chunks as usize * BitmapChunk::LEN_BITS;
+
+		let mode = Readable::read(reader)?;
+		let inner = match mode {
+			BitmapBlockSerialization::Raw => {
+				// Raw bytes
+				let bytes = reader.read_fixed_bytes(n_bits / 8)?;
+				BitVec::from_bytes(&bytes)
+			}
+			BitmapBlockSerialization::Positive => {
+				// Positive indices
+				let mut inner = BitVec::from_elem(n_bits, false);
+				let n = reader.read_u16()?;
+				for _ in 0..n {
+					inner.set(reader.read_u16()? as usize, true);
+				}
+				inner
+			}
+			BitmapBlockSerialization::Negative => {
+				// Negative indices
+				let mut inner = BitVec::from_elem(n_bits, true);
+				let n = reader.read_u16()?;
+				for _ in 0..n {
+					inner.set(reader.read_u16()? as usize, false);
+				}
+				inner
+			}
+		};
+
+		Ok(BitmapBlock { inner })
+	}
+}
+
+enum_from_primitive! {
+	#[derive(Debug, Clone, Copy, PartialEq)]
+	#[repr(u8)]
+	enum BitmapBlockSerialization {
+		Raw = 0,
+		Positive = 1,
+		Negative = 2,
+	}
+}
+
+impl Writeable for BitmapBlockSerialization {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_u8(*self as u8)
+	}
+}
+
+impl Readable for BitmapBlockSerialization {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		Self::from_u8(reader.read_u8()?).ok_or(ser::Error::CorruptedData(format!(
+			"Failed to read the next byte"
+		)))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::core::ser::{
+		BinReader, BinWriter, DeserializationMode, ProtocolVersion, Readable, Writeable,
+	};
+	use byteorder::ReadBytesExt;
+	use grin_util::secp::rand::Rng;
+	use rand::thread_rng;
+	use std::io::Cursor;
+
+	fn test_roundtrip(entries: usize, inverse: bool, encoding: u8, length: usize, n_blocks: usize) {
+		let mut rng = thread_rng();
+		let mut block = BitmapBlock::new(n_blocks);
+		if inverse {
+			block.inner.negate();
+		}
+
+		let range_size = n_blocks * BitmapChunk::LEN_BITS as usize;
+
+		// Flip `entries` bits in random spots
+		let mut count = 0;
+		while count < entries {
+			let idx = rng.gen_range(0, range_size);
+			if block.inner.get(idx).unwrap() == inverse {
+				count += 1;
+				block.inner.set(idx, !inverse);
+			}
+		}
+
+		// Serialize
+		let mut cursor = Cursor::new(Vec::<u8>::new());
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1));
+		Writeable::write(&block, &mut writer).unwrap();
+
+		// Check encoding type and length
+		cursor.set_position(1);
+		assert_eq!(cursor.read_u8().unwrap(), encoding);
+		let actual_length = cursor.get_ref().len();
+		assert_eq!(actual_length, length);
+		assert!(actual_length <= 2 + BitmapBlock::NBITS as usize / 8);
+
+		// Deserialize
+		cursor.set_position(0);
+		let mut reader = BinReader::new(
+			&mut cursor,
+			ProtocolVersion(1),
+			DeserializationMode::default(),
+		);
+		let block2: BitmapBlock = Readable::read(&mut reader).unwrap();
+		assert_eq!(block, block2);
+	}
+
+	#[test]
+	fn block_ser_roundtrip() {
+		let threshold = BitmapBlock::NBITS as usize / 16;
+		let entries = thread_rng().gen_range(threshold, 4 * threshold);
+		test_roundtrip(entries, false, 0, 2 + BitmapBlock::NBITS as usize / 8, 64);
+		test_roundtrip(entries, true, 0, 2 + BitmapBlock::NBITS as usize / 8, 64);
+	}
+
+	#[test]
+	fn sparse_block_ser_roundtrip() {
+		let entries =
+			thread_rng().gen_range(BitmapChunk::LEN_BITS, BitmapBlock::NBITS as usize / 16);
+		test_roundtrip(entries, false, 1, 4 + 2 * entries, 64);
+	}
+
+	#[test]
+	fn sparse_unfull_block_ser_roundtrip() {
+		let entries =
+			thread_rng().gen_range(BitmapChunk::LEN_BITS, BitmapBlock::NBITS as usize / 16);
+		test_roundtrip(entries, false, 1, 4 + 2 * entries, 61);
+	}
+
+	#[test]
+	fn abdundant_block_ser_roundtrip() {
+		let entries =
+			thread_rng().gen_range(BitmapChunk::LEN_BITS, BitmapBlock::NBITS as usize / 16);
+		test_roundtrip(entries, true, 2, 4 + 2 * entries, 64);
+	}
+
+	#[test]
+	fn abdundant_unfull_block_ser_roundtrip() {
+		let entries =
+			thread_rng().gen_range(BitmapChunk::LEN_BITS, BitmapBlock::NBITS as usize / 16);
+		test_roundtrip(entries, true, 2, 4 + 2 * entries, 61);
 	}
 }

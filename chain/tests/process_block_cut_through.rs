@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,15 +21,12 @@ use grin_util as util;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{pipe, Chain, Options};
-use crate::core::core::verifier_cache::LruVerifierCache;
 use crate::core::core::{block, pmmr, transaction};
-use crate::core::core::{Block, KernelFeatures, Transaction, Weighting};
+use crate::core::core::{Block, FeeFields, KernelFeatures, Transaction, Weighting};
 use crate::core::libtx::{build, reward, ProofBuilder};
 use crate::core::{consensus, global, pow};
 use crate::keychain::{ExtKeychain, ExtKeychainPath, Keychain, SwitchCommitmentType};
-use crate::util::RwLock;
 use chrono::Duration;
-use std::sync::Arc;
 
 fn build_block<K>(
 	chain: &Chain,
@@ -43,7 +40,7 @@ where
 	let prev = chain.head_header().unwrap();
 	let next_height = prev.height + 1;
 	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter()?);
-	let fee = txs.iter().map(|x| x.fee()).sum();
+	let fee = txs.iter().map(|x| x.fee(next_height)).sum();
 	let key_id = ExtKeychainPath::new(1, next_height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
 		keychain,
@@ -55,7 +52,8 @@ where
 	)
 	.unwrap();
 
-	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward)?;
+	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward)
+		.map_err(|e| chain::Error::Block(e))?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -66,6 +64,9 @@ where
 		chain.set_prev_root_only(&mut block.header)?;
 
 		// Manually set the mmr sizes for a "valid" block (increment prev output and kernel counts).
+		// The 2 lines below were bogus before when using 1-based positions.
+		// They worked only for even output_mmr_count()s
+		// But it was actually correct for 0-based position!
 		block.header.output_mmr_size = pmmr::insertion_to_pmmr_index(prev.output_mmr_count() + 1);
 		block.header.kernel_mmr_size = pmmr::insertion_to_pmmr_index(prev.kernel_mmr_count() + 1);
 	} else {
@@ -111,7 +112,9 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	// Note: We reuse key_ids resulting in an input and an output sharing the same commitment.
 	// The input is coinbase and the output is plain.
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 0 },
+		KernelFeatures::Plain {
+			fee: FeeFields::zero(),
+		},
 		&[
 			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
 			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
@@ -137,18 +140,17 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 		.iter()
 		.any(|output| output.commitment() == commit));
 
-	let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
-
 	// Transaction is invalid due to cut-through.
+	let height = 7;
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, verifier_cache.clone()),
+		tx.validate(Weighting::AsTransaction, height),
 		Err(transaction::Error::CutThrough),
 	);
 
 	// Transaction will not validate against the chain (utxo).
 	assert_eq!(
-		chain.validate_tx(&tx).map_err(|e| e.kind()),
-		Err(chain::ErrorKind::DuplicateCommitment(commit)),
+		chain.validate_tx(&tx),
+		Err(chain::Error::DuplicateCommitment(commit)),
 	);
 
 	// Build a block with this single invalid transaction.
@@ -157,7 +159,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	// The block is invalid due to cut-through.
 	let prev = chain.head_header()?;
 	assert_eq!(
-		block.validate(&prev.total_kernel_offset(), verifier_cache),
+		block.validate(&prev.total_kernel_offset()),
 		Err(block::Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -177,12 +179,12 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 		let batch = store.batch()?;
 
 		let mut ctx = chain.new_ctx(Options::NONE, batch, &mut header_pmmr, &mut txhashset)?;
-		let res = pipe::process_block(&block, &mut ctx).map_err(|e| e.kind());
+		let res = pipe::process_block(&block, &mut ctx);
 		assert_eq!(
 			res,
-			Err(chain::ErrorKind::InvalidBlockProof(
-				block::Error::Transaction(transaction::Error::CutThrough)
-			))
+			Err(chain::Error::Block(block::Error::Transaction(
+				transaction::Error::CutThrough
+			)))
 		);
 	}
 

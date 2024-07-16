@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,19 +18,18 @@ use crate::chain::{Chain, SyncState};
 use crate::core::core::hash::Hash;
 use crate::core::core::hash::Hashed;
 use crate::core::core::transaction::Transaction;
-use crate::core::core::verifier_cache::VerifierCache;
 use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
 use crate::handlers::pool_api::PoolHandler;
 use crate::handlers::transactions_api::TxHashSetHandler;
 use crate::handlers::version_api::VersionHandler;
 use crate::pool::{self, BlockChain, PoolAdapter, PoolEntry};
-use crate::rest::*;
 use crate::types::{
 	BlockHeaderPrintable, BlockPrintable, LocatedTxKernel, OutputListing, OutputPrintable, Tip,
 	Version,
 };
 use crate::util::RwLock;
+use crate::{rest::*, BlockListing};
 use crate::{Libp2pMessages, Libp2pPeers};
 use chrono::Utc;
 use grin_p2p::libp2p_connection;
@@ -43,23 +42,21 @@ use std::sync::Weak;
 /// Methods in this API are intended to be 'single use'.
 ///
 
-pub struct Foreign<B, P, V>
+pub struct Foreign<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	pub peers: Weak<grin_p2p::Peers>,
 	pub chain: Weak<Chain>,
-	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
+	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
 }
 
-impl<B, P, V> Foreign<B, P, V>
+impl<B, P> Foreign<B, P>
 where
 	B: BlockChain,
 	P: PoolAdapter,
-	V: VerifierCache + 'static,
 {
 	/// Create a new API instance with the chain, transaction pool, peers and `sync_state`. All subsequent
 	/// API calls will operate on this instance of node API.
@@ -68,7 +65,6 @@ where
 	/// * `peers` - A non-owning reference of the peers.
 	/// * `chain` - A non-owning reference of the chain.
 	/// * `tx_pool` - A non-owning reference of the transaction pool.
-	/// * `peers` - A non-owning reference of the peers.
 	/// * `sync_state` - A non-owning reference of the `sync_state`.
 	///
 	/// # Returns
@@ -78,7 +74,7 @@ where
 	pub fn new(
 		peers: Weak<grin_p2p::Peers>,
 		chain: Weak<Chain>,
-		tx_pool: Weak<RwLock<pool::TransactionPool<B, P, V>>>,
+		tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 		sync_state: Weak<SyncState>,
 	) -> Self {
 		Foreign {
@@ -149,6 +145,36 @@ where
 			include_proof.unwrap_or(true),
 			include_merkle_proof.unwrap_or(false),
 		)
+	}
+
+	/// Returns a [`BlockListing`](types/struct.BlockListing.html) of available blocks
+	/// between `min_height` and `max_height`
+	/// The method will query the database for blocks starting at the block height `min_height`
+	/// and continue until `max_height`, skipping any blocks that aren't available.
+	///
+	/// # Arguments
+	/// * `start_height` - starting height to lookup.
+	/// * `end_height` - ending height to to lookup.
+	/// * 'max` - The max number of blocks to return.
+	///   Note this is overriden with BLOCK_TRANSFER_LIMIT if BLOCK_TRANSFER_LIMIT is exceeded
+	///
+	/// # Returns
+	/// * Result Containing:
+	/// * A [`BlockListing`](types/struct.BlockListing.html)
+	/// * or [`Error`](struct.Error.html) if an error is encountered.
+	///
+
+	pub fn get_blocks(
+		&self,
+		start_height: u64,
+		end_height: u64,
+		max: u64,
+		include_proof: Option<bool>,
+	) -> Result<BlockListing, Error> {
+		let block_handler = BlockHandler {
+			chain: self.chain.clone(),
+		};
+		block_handler.get_blocks(start_height, end_height, max, include_proof)
 	}
 
 	/// Returns the node version and block header version (used by grin-wallet).
@@ -358,21 +384,16 @@ where
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
-		match pool_handler.push_transaction(tx, fluff) {
-			Ok(_) => Ok(()),
-			Err(e) => {
-				warn!(
-					"Unable to push transaction {} into the pool, {}",
-					tx_hash, e
-				);
-				Err(e)
-			}
-		}
+		pool_handler.push_transaction(tx, fluff).map_err(|e| {
+			warn!(
+				"Unable to push transaction {} into the pool, {}",
+				tx_hash, e
+			);
+			e
+		})
 	}
 
-	/// Get TOR address on this node. Return none if TOR is not running.
 	pub fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
-		//get_server_onion_address()
 		let libp2p_peers: Vec<String> = libp2p_connection::get_libp2p_connections()
 			.iter()
 			.map(|peer| peer.to_string())
@@ -380,8 +401,9 @@ where
 
 		let node_peers = if let Some(peers) = self.peers.upgrade() {
 			let connected_peers: Vec<String> = peers
-				.connected_peers()
 				.iter()
+				.connected()
+				.into_iter()
 				.map(|peer| peer.info.addr.tor_address().unwrap_or("".to_string()))
 				.filter(|addr| !addr.is_empty())
 				.collect();

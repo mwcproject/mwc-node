@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,14 @@
 
 mod common;
 use crate::common::{new_block, tx1i2o, tx2i1o, txspend1i1o};
-use crate::core::consensus::{self, BLOCK_OUTPUT_WEIGHT};
+use crate::core::consensus::{self, OUTPUT_WEIGHT};
 use crate::core::core::block::{Block, BlockHeader, Error, HeaderVersion, UntrustedBlockHeader};
 use crate::core::core::hash::Hashed;
 use crate::core::core::id::ShortIdentifiable;
 use crate::core::core::transaction::{
-	self, KernelFeatures, NRDRelativeHeight, Output, OutputFeatures, OutputIdentifier, Transaction,
+	self, FeeFields, KernelFeatures, NRDRelativeHeight, Output, OutputFeatures, OutputIdentifier,
+	Transaction,
 };
-use crate::core::core::verifier_cache::{LruVerifierCache, VerifierCache};
 use crate::core::core::{Committed, CompactBlock};
 use crate::core::libtx::build::{self, input, output};
 use crate::core::libtx::ProofBuilder;
@@ -29,8 +29,7 @@ use crate::core::{global, pow, ser};
 use chrono::Duration;
 use grin_core as core;
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
-use std::sync::Arc;
-use util::{secp, RwLock, ToHex};
+use util::{secp, ToHex};
 
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {
@@ -38,16 +37,12 @@ fn test_setup() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 }
 
-fn verifier_cache() -> Arc<RwLock<dyn VerifierCache>> {
-	Arc::new(RwLock::new(LruVerifierCache::new()))
-}
-
 #[test]
 fn too_large_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let max_out = global::max_block_weight() / BLOCK_OUTPUT_WEIGHT;
+	let max_out = global::max_block_weight() / OUTPUT_WEIGHT;
 
 	let mut pks = vec![];
 	for n in 0..(max_out + 1) {
@@ -61,7 +56,7 @@ fn too_large_block() {
 
 	parts.append(&mut vec![input(500000, pks.pop().unwrap())]);
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 2 },
+		KernelFeatures::Plain { fee: 2.into() },
 		&parts,
 		&keychain,
 		&builder,
@@ -71,9 +66,7 @@ fn too_large_block() {
 	let prev = BlockHeader::default();
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx], &keychain, &builder, &prev, &key_id);
-	assert!(b
-		.validate(&BlindingFactor::zero(), verifier_cache())
-		.is_err());
+	assert!(b.validate(&BlindingFactor::zero()).is_err());
 }
 
 #[test]
@@ -95,7 +88,6 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Enable the global NRD feature flag. NRD kernels valid at HF3 at height 9.
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(true);
-
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
@@ -103,7 +95,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
-			fee: 2,
+			fee: 2.into(),
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 		&[input(7, key_id1), output(5, key_id2)],
@@ -130,7 +122,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Block is invalid at header version 3 if it contains an NRD kernel.
 	assert_eq!(b.header.version, HeaderVersion(3));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), verifier_cache()),
+		b.validate(&BlindingFactor::zero()),
 		Err(Error::NRDKernelPreHF3)
 	);
 
@@ -151,9 +143,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Block is valid at header version 4 (at HF height) if it contains an NRD kernel.
 	assert_eq!(b.header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(b.header.version, HeaderVersion(4));
-	assert!(b
-		.validate(&BlindingFactor::zero(), verifier_cache())
-		.is_ok());
+	assert!(b.validate(&BlindingFactor::zero()).is_ok());
 
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK;
 	let prev = BlockHeader {
@@ -171,9 +161,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 
 	// Block is valid at header version 4 if it contains an NRD kernel.
 	assert_eq!(b.header.version, HeaderVersion(4));
-	assert!(b
-		.validate(&BlindingFactor::zero(), verifier_cache())
-		.is_ok());
+	assert!(b.validate(&BlindingFactor::zero()).is_ok());
 }
 
 #[test]
@@ -188,7 +176,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
-			fee: 2,
+			fee: 2.into(),
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 		&[input(7, key_id1), output(5, key_id2)],
@@ -216,7 +204,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	// Block is invalid as NRD not enabled.
 	assert_eq!(b.header.version, HeaderVersion(3));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), verifier_cache()),
+		b.validate(&BlindingFactor::zero()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 
@@ -238,7 +226,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	assert_eq!(b.header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(b.header.version, HeaderVersion(4));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), verifier_cache()),
+		b.validate(&BlindingFactor::zero()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 
@@ -259,7 +247,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	// Block is invalid as NRD not enabled.
 	assert_eq!(b.header.version, HeaderVersion(4));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), verifier_cache()),
+		b.validate(&BlindingFactor::zero()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 }
@@ -276,7 +264,7 @@ fn block_with_cut_through() {
 
 	let btx1 = tx2i1o();
 	let btx2 = build::transaction(
-		KernelFeatures::Plain { fee: 2 },
+		KernelFeatures::Plain { fee: 2.into() },
 		&[input(7, key_id1), output(5, key_id2.clone())],
 		&keychain,
 		&builder,
@@ -292,8 +280,7 @@ fn block_with_cut_through() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	b.validate(&BlindingFactor::zero(), verifier_cache())
-		.unwrap();
+	b.validate(&BlindingFactor::zero()).unwrap();
 	assert_eq!(b.inputs().len(), 3);
 	assert_eq!(b.outputs().len(), 3);
 }
@@ -329,9 +316,7 @@ fn empty_block_with_coinbase_is_valid() {
 
 	// the block should be valid here (single coinbase output with corresponding
 	// txn kernel)
-	assert!(b
-		.validate(&BlindingFactor::zero(), verifier_cache())
-		.is_ok());
+	assert!(b.validate(&BlindingFactor::zero()).is_ok());
 }
 
 #[test]
@@ -357,7 +342,7 @@ fn remove_coinbase_output_flag() {
 		.verify_kernel_sums(b.header.overage(), b.header.total_kernel_offset())
 		.is_ok());
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), verifier_cache()),
+		b.validate(&BlindingFactor::zero()),
 		Err(Error::CoinbaseSumMismatch)
 	);
 }
@@ -374,7 +359,9 @@ fn remove_coinbase_kernel_flag() {
 	let mut b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
 	let mut kernel = b.kernels()[0].clone();
-	kernel.features = KernelFeatures::Plain { fee: 0 };
+	kernel.features = KernelFeatures::Plain {
+		fee: FeeFields::zero(),
+	};
 	b.body = b.body.replace_kernel(kernel);
 
 	// Flipping the coinbase flag results in kernels not summing correctly.
@@ -386,7 +373,7 @@ fn remove_coinbase_kernel_flag() {
 	// Also results in the block no longer validating correctly
 	// because the message being signed on each tx kernel includes the kernel features.
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), verifier_cache()),
+		b.validate(&BlindingFactor::zero()),
 		Err(Error::Transaction(transaction::Error::IncorrectSignature))
 	);
 }
@@ -762,7 +749,7 @@ fn same_amount_outputs_copy_range_proof() {
 	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 1 },
+		KernelFeatures::Plain { fee: 1.into() },
 		&[input(7, key_id1), output(3, key_id2), output(3, key_id3)],
 		&keychain,
 		&builder,
@@ -786,7 +773,7 @@ fn same_amount_outputs_copy_range_proof() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	match b.validate(&BlindingFactor::zero(), verifier_cache()) {
+	match b.validate(&BlindingFactor::zero()) {
 		Err(Error::Transaction(transaction::Error::Secp(secp::Error::InvalidRangeProof))) => {}
 		_ => panic!("Bad range proof should be invalid"),
 	}
@@ -803,7 +790,7 @@ fn wrong_amount_range_proof() {
 	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 
 	let tx1 = build::transaction(
-		KernelFeatures::Plain { fee: 1 },
+		KernelFeatures::Plain { fee: 1.into() },
 		&[
 			input(7, key_id1.clone()),
 			output(3, key_id2.clone()),
@@ -814,7 +801,7 @@ fn wrong_amount_range_proof() {
 	)
 	.unwrap();
 	let tx2 = build::transaction(
-		KernelFeatures::Plain { fee: 1 },
+		KernelFeatures::Plain { fee: 1.into() },
 		&[input(7, key_id1), output(2, key_id2), output(4, key_id3)],
 		&keychain,
 		&builder,
@@ -838,7 +825,7 @@ fn wrong_amount_range_proof() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	match b.validate(&BlindingFactor::zero(), verifier_cache()) {
+	match b.validate(&BlindingFactor::zero()) {
 		Err(Error::Transaction(transaction::Error::Secp(secp::Error::InvalidRangeProof))) => {}
 		_ => panic!("Bad range proof should be invalid"),
 	}
@@ -894,7 +881,9 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	let builder = ProofBuilder::new(&keychain);
 
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 0 },
+		KernelFeatures::Plain {
+			fee: FeeFields::zero(),
+		},
 		&[
 			build::input(10, key_id1.clone()),
 			build::input(10, key_id2.clone()),
@@ -913,7 +902,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 
 	// The block should fail validation due to cut-through.
 	assert_eq!(
-		block.validate(&BlindingFactor::zero(), verifier_cache()),
+		block.validate(&BlindingFactor::zero()),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -934,7 +923,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Block validates successfully after applying cut-through.
-	block.validate(&BlindingFactor::zero(), verifier_cache())?;
+	block.validate(&BlindingFactor::zero())?;
 
 	// Block validates via lightweight "read" validation.
 	block.validate_read()?;
@@ -958,7 +947,9 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	let builder = ProofBuilder::new(&keychain);
 
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 0 },
+		KernelFeatures::Plain {
+			fee: FeeFields::zero(),
+		},
 		&[
 			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
 			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
@@ -980,7 +971,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 
 	// The block should fail validation due to cut-through.
 	assert_eq!(
-		block.validate(&BlindingFactor::zero(), verifier_cache()),
+		block.validate(&BlindingFactor::zero()),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -1001,7 +992,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Block validates successfully after applying cut-through.
-	block.validate(&BlindingFactor::zero(), verifier_cache())?;
+	block.validate(&BlindingFactor::zero())?;
 
 	// Block validates via lightweight "read" validation.
 	block.validate_read()?;

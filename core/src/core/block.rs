@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ use crate::consensus::{self, calc_mwc_block_overage, calc_mwc_block_reward, rewa
 use crate::core::committed::{self, Committed};
 use crate::core::compact_block::CompactBlock;
 use crate::core::hash::{DefaultHashable, Hash, Hashed, ZERO_HASH};
-use crate::core::verifier_cache::VerifierCache;
 use crate::core::{
 	pmmr, transaction, Commitment, Inputs, KernelFeatures, Output, Transaction, TransactionBody,
 	TxKernel, Weighting,
@@ -28,73 +27,69 @@ use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
 use crate::ser::{
 	self, deserialize_default, serialize_default, PMMRable, Readable, Reader, Writeable, Writer,
 };
-use chrono::naive::{MAX_DATE, MIN_DATE};
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use failure::Fail;
 use keychain::{self, BlindingFactor};
 use std::convert::TryInto;
-use std::sync::Arc;
 use util::from_hex;
-use util::RwLock;
 use util::{secp, static_secp_instance};
 
 /// Errors thrown by Block validation
-#[derive(Fail, Debug, Clone, Eq, PartialEq)]
+#[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
 pub enum Error {
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
-	#[fail(display = "Block Input/ouput vs kernel sum mismatch")]
+	#[error("Block Input/output vs kernel sum mismatch")]
 	KernelSumMismatch,
 	/// The total kernel sum on the block header is wrong
-	#[fail(display = "Block Invalid total kernel sum")]
+	#[error("Block Invalid total kernel sum")]
 	InvalidTotalKernelSum,
 	/// Same as above but for the coinbase part of a block, including reward
-	#[fail(display = "Block Invalid total kernel sum plus reward")]
+	#[error("Block Invalid total kernel sum plus reward")]
 	CoinbaseSumMismatch,
 	/// Restrict block total weight.
-	#[fail(display = "Block total weight is too heavy")]
+	#[error("Block total weight is too heavy")]
 	TooHeavy,
 	/// Block version is invalid for a given block height
-	#[fail(display = "Block version {:?} is invalid", _0)]
+	#[error("Block version {0:?} is invalid")]
 	InvalidBlockVersion(HeaderVersion),
 	/// Block time is invalid
-	#[fail(display = "Block time is invalid")]
+	#[error("Block time is invalid")]
 	InvalidBlockTime,
 	/// Invalid POW
-	#[fail(display = "Invalid POW")]
+	#[error("Invalid POW")]
 	InvalidPow,
 	/// Kernel not valid due to lock_height exceeding block header height
-	#[fail(display = "Block lock_height {} exceeding header height {}", _0, _1)]
+	#[error("Block lock_height {0} exceeding header height {1}")]
 	KernelLockHeight(u64, u64),
 	/// NRD kernels are not valid prior to HF3.
-	#[fail(display = "NRD kernels are not valid prior to HF3")]
+	#[error("NRD kernels are not valid prior to HF3")]
 	NRDKernelPreHF3,
 	/// NRD kernels are not valid if disabled locally via "feature flag".
-	#[fail(display = "NRD kernels are not valid, disabled locally via 'feature flag'")]
+	#[error("NRD kernels are not valid, disabled locally via 'feature flag'")]
 	NRDKernelNotEnabled,
 	/// Underlying tx related error
-	#[fail(display = "Block Invalid Transaction, {}", _0)]
+	#[error("Block Invalid Transaction, {0}")]
 	Transaction(transaction::Error),
 	/// Underlying Secp256k1 error (signature validation or invalid public key
 	/// typically)
-	#[fail(display = "Secp256k1 error, {}", _0)]
+	#[error("Secp256k1 error, {0}")]
 	Secp(secp::Error),
 	/// Underlying keychain related error
-	#[fail(display = "keychain error, {}", _0)]
+	#[error("keychain error, {0}")]
 	Keychain(keychain::Error),
 	/// Error when verifying kernel sums via committed trait.
-	#[fail(display = "Block Commits error, {}", _0)]
+	#[error("Block Commits error, {0}")]
 	Committed(committed::Error),
 	/// Validation error relating to cut-through.
 	/// Specifically the tx is spending its own output, which is not valid.
-	#[fail(display = "Block cut-through error")]
+	#[error("Block cut-through error")]
 	CutThrough,
 	/// Underlying serialization error.
-	#[fail(display = "Block serialization error, {}", _0)]
+	#[error("Block serialization error, {0}")]
 	Serialization(ser::Error),
 	/// Other unspecified error condition
-	#[fail(display = "Block Generic error, {}", _0)]
+	#[error("Block Generic error, {0}")]
 	Other(String),
 }
 
@@ -244,7 +239,7 @@ impl Default for BlockHeader {
 		BlockHeader {
 			version: HeaderVersion(1),
 			height: 0,
-			timestamp: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc),
+			timestamp: DateTime::from_timestamp(0, 0).unwrap().to_utc(),
 			prev_hash: ZERO_HASH,
 			prev_root: ZERO_HASH,
 			output_root: ZERO_HASH,
@@ -301,8 +296,8 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 	let (output_mmr_size, kernel_mmr_size) = ser_multiread!(reader, read_u64, read_u64);
 	let pow = ProofOfWork::read(reader)?;
 
-	if timestamp > MAX_DATE.and_hms(0, 0, 0).timestamp()
-		|| timestamp < MIN_DATE.and_hms(0, 0, 0).timestamp()
+	if timestamp > chrono::DateTime::<Utc>::MAX_UTC.timestamp()
+		|| timestamp < chrono::DateTime::<Utc>::MIN_UTC.timestamp()
 	{
 		return Err(ser::Error::CorruptedData(format!(
 			"Incorrect timestamp {} at block header",
@@ -310,10 +305,15 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 		)));
 	}
 
+	let ts = DateTime::from_timestamp(timestamp, 0);
+	if ts.is_none() {
+		return Err(ser::Error::CorruptedData("Timestamp is None".into()));
+	}
+
 	Ok(BlockHeader {
 		version,
 		height,
-		timestamp: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(timestamp, 0), Utc),
+		timestamp: ts.unwrap(),
 		prev_hash,
 		prev_root,
 		output_root,
@@ -503,11 +503,8 @@ impl Readable for UntrustedBlockHeader {
 		}
 
 		// Validate global output and kernel MMR sizes against upper bounds based on block height.
-		let global_weight = TransactionBody::weight_as_block(
-			0,
-			header.output_mmr_count(),
-			header.kernel_mmr_count(),
-		);
+		let global_weight =
+			TransactionBody::weight_by_iok(0, header.output_mmr_count(), header.kernel_mmr_count());
 		if global_weight > global::max_block_weight() * (header.height + 1) {
 			return Err(ser::Error::CorruptedData(
 				"Tx global weight is exceed the limit".to_string(),
@@ -688,8 +685,13 @@ impl Block {
 		let version = consensus::header_version(height);
 
 		let now = Utc::now().timestamp();
-		let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(now, 0), Utc);
 
+		let ts = DateTime::from_timestamp(now, 0);
+		if ts.is_none() {
+			return Err(Error::Other("Converting Utc::now() into timestamp".into()));
+		}
+
+		let timestamp = ts.unwrap();
 		// Now build the block with all the above information.
 		// Note: We have not validated the block here.
 		// Caller must validate the block as necessary.
@@ -736,7 +738,7 @@ impl Block {
 
 	/// Sum of all fees (inputs less outputs) in the block
 	pub fn total_fees(&self) -> u64 {
-		self.body.fee()
+		self.body.fee(self.header.height)
 	}
 
 	/// "Lightweight" validation that we can perform quickly during read/deserialization.
@@ -771,12 +773,8 @@ impl Block {
 	/// Validates all the elements in a block that can be checked without
 	/// additional data. Includes commitment sums and kernels, Merkle
 	/// trees, reward, etc.
-	pub fn validate(
-		&self,
-		prev_kernel_offset: &BlindingFactor,
-		verifier: Arc<RwLock<dyn VerifierCache>>,
-	) -> Result<Commitment, Error> {
-		self.body.validate(Weighting::AsBlock, verifier)?;
+	pub fn validate(&self, prev_kernel_offset: &BlindingFactor) -> Result<Commitment, Error> {
+		self.body.validate(Weighting::AsBlock)?;
 
 		self.verify_kernel_lock_heights()?;
 		self.verify_nrd_kernels_for_header_version()?;
@@ -815,13 +813,10 @@ impl Block {
 			let secp = secp.lock();
 			let over_commit = secp.commit_value(reward(self.total_fees(), self.header.height))?;
 
-			let out_adjust_sum = secp::Secp256k1::commit_sum(
-				map_vec!(cb_outs, |x| x.commitment()),
-				vec![over_commit],
-			)?;
+			let out_adjust_sum =
+				secp.commit_sum(map_vec!(cb_outs, |x| x.commitment()), vec![over_commit])?;
 
-			let kerns_sum =
-				secp::Secp256k1::commit_sum(cb_kerns.iter().map(|x| x.excess).collect(), vec![])?;
+			let kerns_sum = secp.commit_sum(cb_kerns.iter().map(|x| x.excess).collect(), vec![])?;
 
 			// Verify the kernel sum equals the output sum accounting for block fees.
 			if kerns_sum != out_adjust_sum {

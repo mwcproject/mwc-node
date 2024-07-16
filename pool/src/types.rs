@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ use self::core::core::committed;
 use self::core::core::hash::Hash;
 use self::core::core::transaction::{self, Transaction};
 use self::core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
+use self::core::global::DEFAULT_ACCEPT_FEE_BASE;
 use chrono::prelude::*;
-use failure::Fail;
 use grin_core as core;
 use grin_keychain as keychain;
 
@@ -138,8 +138,9 @@ impl Default for PoolConfig {
 	}
 }
 
-fn default_accept_fee_base() -> u64 {
-	consensus::MILLI_GRIN
+/// make output (of weight 21) cost about 1 Grin-cent by default, keeping a round number
+pub fn default_accept_fee_base() -> u64 {
+	DEFAULT_ACCEPT_FEE_BASE
 }
 fn default_max_pool_size() -> usize {
 	150_000
@@ -202,56 +203,56 @@ impl TxSource {
 }
 
 /// Possible errors when interacting with the transaction pool.
-#[derive(Debug, Fail, PartialEq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum PoolError {
 	/// An invalid pool entry caused by underlying tx validation error
-	#[fail(display = "Tx Pool Invalid Tx {}", _0)]
+	#[error("Tx Pool Invalid Tx {0}")]
 	InvalidTx(transaction::Error),
 	/// An invalid pool entry caused by underlying block validation error
-	#[fail(display = "Tx Pool Invalid Block {}", _0)]
+	#[error("Tx Pool Invalid Block {0}")]
 	InvalidBlock(block::Error),
 	/// Underlying keychain error.
-	#[fail(display = "Tx Pool Keychain error {}", _0)]
+	#[error("Tx Pool Keychain error {0}")]
 	Keychain(keychain::Error),
 	/// Underlying "committed" error.
-	#[fail(display = "Tx Pool Committed error {}", _0)]
+	#[error("Tx Pool Committed error {0}")]
 	Committed(committed::Error),
 	/// Attempt to add a transaction to the pool with lock_height
 	/// greater than height of current block
-	#[fail(display = "Tx Pool Immature transaction")]
+	#[error("Tx Pool Immature transaction")]
 	ImmatureTransaction,
 	/// Attempt to spend a coinbase output before it has sufficiently matured.
-	#[fail(display = "Tx Pool Immature coinbase")]
+	#[error("Tx Pool Immature coinbase")]
 	ImmatureCoinbase,
 	/// Problem propagating a stem tx to the next Dandelion relay node.
-	#[fail(display = "Tx Pool Dandelion error")]
+	#[error("Tx Pool Dandelion error")]
 	DandelionError,
 	/// Transaction pool is over capacity, can't accept more transactions
-	#[fail(display = "Tx Pool Over capacity")]
+	#[error("Tx Pool Over capacity")]
 	OverCapacity,
 	/// Transaction fee is too low given its weight
-	#[fail(display = "Tx Pool Low fee transaction {}", _0)]
+	#[error("Tx Pool Low fee transaction {0}")]
 	LowFeeTransaction(u64),
 	/// Attempt to add a duplicate output to the pool.
-	#[fail(display = "Tx Pool Duplicate commitment")]
+	#[error("Tx Pool Duplicate commitment")]
 	DuplicateCommitment,
 	/// Attempt to add a duplicate kernel or output duplicate to spent to the pool.
-	#[fail(display = "Tx Pool Duplicate kernel or duplicate output to spent")]
-	DuplicateKernelOrDuplicateSpent,
+	#[error("Tx Pool Duplicate kernel or duplicate output to spent, {0}")]
+	DuplicateKernelOrDuplicateSpent(String),
 	/// Attempt to add a duplicate tx to the pool.
-	#[fail(display = "Tx Pool Duplicate tx")]
+	#[error("Tx Pool Duplicate tx")]
 	DuplicateTx,
 	/// NRD kernels will not be accepted by the txpool/stempool pre-HF3.
-	#[fail(display = "NRD kernel pre-HF3")]
+	#[error("NRD kernel pre-HF3")]
 	NRDKernelPreHF3,
 	/// NRD kernels are not valid if disabled locally via "feature flag".
-	#[fail(display = "NRD kernel not enabled")]
+	#[error("NRD kernel not enabled")]
 	NRDKernelNotEnabled,
 	/// NRD kernels are not valid if relative_height rule not met.
-	#[fail(display = "NRD kernel relative height")]
+	#[error("NRD kernel relative height")]
 	NRDKernelRelativeHeight,
 	/// Other kinds of error (not yet pulled out into meaningful errors).
-	#[fail(display = "Tx Pool General error {}", _0)]
+	#[error("Tx Pool General error {0}")]
 	Other(String),
 }
 

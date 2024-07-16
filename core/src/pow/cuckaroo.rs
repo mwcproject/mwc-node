@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 
 use crate::global;
 use crate::pow::common::CuckooParams;
-use crate::pow::error::{Error, ErrorKind};
+use crate::pow::error::Error;
 use crate::pow::siphash::siphash_block;
 use crate::pow::{PoWContext, Proof};
 
@@ -57,30 +57,58 @@ impl PoWContext for CuckarooContext {
 	}
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {
-		if proof.proof_size() != global::proofsize() {
-			return Err(ErrorKind::Verification("wrong cycle length".to_owned()).into());
+		let size = proof.proof_size();
+		if size != global::proofsize() {
+			return Err(Error::Verification("wrong cycle length".to_owned()));
 		}
 		let nonces = &proof.nonces;
-		let mut uvs = vec![0u64; 2 * proof.proof_size()];
+		let mut uvs = vec![0u64; 2 * size];
 		let mut xor0: u64 = 0;
 		let mut xor1: u64 = 0;
+		let mask = u64::MAX >> (size as u64).leading_zeros(); // round size up to 2-power - 1
+													  // the next three arrays form a linked list of nodes with matching bits 6..1
+		let mut headu = vec![2 * size; 1 + mask as usize];
+		let mut headv = vec![2 * size; 1 + mask as usize];
+		let mut prev = vec![0usize; 2 * size];
 
-		for n in 0..proof.proof_size() {
+		for n in 0..size {
 			if nonces[n] > self.params.edge_mask {
-				return Err(ErrorKind::Verification("edge too big".to_owned()).into());
+				return Err(Error::Verification("edge too big".to_owned()));
 			}
 			if n > 0 && nonces[n] <= nonces[n - 1] {
-				return Err(ErrorKind::Verification("edges not ascending".to_owned()).into());
+				return Err(Error::Verification("edges not ascending".to_owned()));
 			}
 			// 21 is standard siphash rotation constant
 			let edge: u64 = siphash_block(&self.params.siphash_keys, nonces[n], 21, false);
-			uvs[2 * n] = edge & self.params.node_mask;
-			xor0 ^= uvs[2 * n];
-			uvs[2 * n + 1] = (edge >> 32) & self.params.node_mask;
-			xor1 ^= uvs[2 * n + 1];
+			let u = edge & self.params.node_mask;
+			let v = (edge >> 32) & self.params.node_mask;
+
+			uvs[2 * n] = u;
+			let ubits = (u & mask) as usize;
+			prev[2 * n] = headu[ubits];
+			headu[ubits] = 2 * n;
+
+			uvs[2 * n + 1] = v;
+			let vbits = (v & mask) as usize;
+			prev[2 * n + 1] = headv[vbits];
+			headv[vbits] = 2 * n + 1;
+
+			xor0 ^= u;
+			xor1 ^= v;
 		}
 		if xor0 | xor1 != 0 {
-			return Err(ErrorKind::Verification("endpoints don't match up".to_owned()).into());
+			return Err(Error::Verification("endpoints don't match up".to_owned()));
+		}
+		// make prev lists circular
+		for n in 0..size {
+			if prev[2 * n] == 2 * size {
+				let ubits = (uvs[2 * n] & mask) as usize;
+				prev[2 * n] = headu[ubits];
+			}
+			if prev[2 * n + 1] == 2 * size {
+				let vbits = (uvs[2 * n + 1] & mask) as usize;
+				prev[2 * n + 1] = headv[vbits];
+			}
 		}
 		let mut n = 0;
 		let mut i = 0;
@@ -90,20 +118,20 @@ impl PoWContext for CuckarooContext {
 			j = i;
 			let mut k = j;
 			loop {
-				k = (k + 2) % (2 * self.params.proof_size);
+				k = prev[k];
 				if k == i {
 					break;
 				}
 				if uvs[k] == uvs[i] {
 					// find other edge endpoint matching one at i
 					if j != i {
-						return Err(ErrorKind::Verification("branch in cycle".to_owned()).into());
+						return Err(Error::Verification("branch in cycle".to_owned()));
 					}
 					j = k;
 				}
 			}
 			if j == i {
-				return Err(ErrorKind::Verification("cycle dead ends".to_owned()).into());
+				return Err(Error::Verification("cycle dead ends".to_owned()));
 			}
 			i = j ^ 1;
 			n += 1;
@@ -111,10 +139,10 @@ impl PoWContext for CuckarooContext {
 				break;
 			}
 		}
-		if n == self.params.proof_size {
+		if n == size {
 			Ok(())
 		} else {
-			Err(ErrorKind::Verification("cycle too short".to_owned()).into())
+			Err(Error::Verification("cycle too short".to_owned()))
 		}
 	}
 }
@@ -159,7 +187,9 @@ mod test {
 		let mut ctx = new_impl(19, 42);
 		ctx.params.siphash_keys = V1_19_HASH;
 		assert!(ctx.verify(&Proof::new(V1_19_SOL.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(V2_19_SOL.to_vec())).is_err());
 		ctx.params.siphash_keys = V2_19_HASH.clone();
+		assert!(ctx.verify(&Proof::new(V1_19_SOL.to_vec())).is_err());
 		assert!(ctx.verify(&Proof::new(V2_19_SOL.to_vec())).is_ok());
 		assert!(ctx.verify(&Proof::zero(42)).is_err());
 	}

@@ -18,6 +18,7 @@
 // Worker Object - a connected stratum client - a miner, pool, proxy, etc...
 
 use crate::common::stats::{StratumStats, WorkerStats};
+use crate::core::consensus::graph_weight;
 use crate::util::RwLock;
 use chrono::prelude::Utc;
 use futures::channel::mpsc;
@@ -159,7 +160,11 @@ impl WorkersList {
 		// Or just somebody want to attack the mining pool.
 		// let worker_id = stratum_stats.worker_stats.len();
 
-		let worker_id = self.stratum_stats.allocate_new_worker();
+		let worker_id = self.stratum_stats.allocate_new_worker(
+			self.stratum_stats
+				.minimum_share_difficulty
+				.load(Ordering::Relaxed),
+		);
 		let worker = Worker::new(worker_id, ip, tx, kill_switch);
 
 		let num_workers = self.workers_map.add(&worker_id, worker);
@@ -252,5 +257,33 @@ impl WorkersList {
 		self.stratum_stats
 			.network_difficulty
 			.store(difficulty, Ordering::Relaxed);
+	}
+
+	pub fn update_network_hashrate(&self) {
+		let network_hashrate = 42.0
+			* (self
+				.stratum_stats
+				.network_difficulty
+				.load(Ordering::Relaxed) as f64
+				/ graph_weight(
+					self.stratum_stats.block_height.load(Ordering::Relaxed),
+					self.stratum_stats.edge_bits.load(Ordering::Relaxed) as u8,
+				) as f64) / 60.0;
+
+		self.stratum_stats
+			.network_hashrate
+			.store(network_hashrate, Ordering::Relaxed);
+	}
+
+	pub fn update_edge_bits(&self, edge_bits: u16) {
+		self.stratum_stats
+			.edge_bits
+			.store(edge_bits, Ordering::Relaxed);
+	}
+
+	pub fn increment_block_found(&self) {
+		self.stratum_stats
+			.blocks_found
+			.fetch_add(1, Ordering::Relaxed);
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,86 +13,37 @@
 // limitations under the License.
 
 //! Cuckatoo specific errors
-use failure::{Backtrace, Context, Fail};
-use std::fmt::{self, Display};
-use std::io;
 
 /// Cuckatoo solver or validation error
-#[derive(Debug)]
-pub struct Error {
-	inner: Context<ErrorKind>,
-}
-
-#[derive(Clone, Debug, Eq, Fail, PartialEq)]
+#[derive(Debug, thiserror::Error)]
 /// Libwallet error types
-pub enum ErrorKind {
+pub enum Error {
 	/// Pre POW error
-	#[fail(display = "POW prepare error: {}", _0)]
+	#[error("POW prepare error: {0}")]
 	PrePowError(String),
 	/// Verification error
-	#[fail(display = "POW Verification Error: {}", _0)]
+	#[error("POW Verification Error: {0}")]
 	Verification(String),
 	/// IO Error
-	#[fail(display = "POW IO Error")]
-	IOError,
+	#[error("POW IO Error, {source:?}")]
+	IOError {
+		/// Io Error Convert
+		#[from]
+		source: std::io::Error,
+	},
 	/// Unexpected Edge Error
-	#[fail(display = "POW Edge Addition Error")]
+	#[error("POW Edge Addition Error")]
 	EdgeAddition,
 	/// Path Error
-	#[fail(display = "POW Path Error")]
+	#[error("POW Path Error")]
 	Path,
 	/// Invalid cycle
-	#[fail(display = "POW Invalid Cycle length: {}", _0)]
+	#[error("POW Invalid Cycle length: {0}")]
 	InvalidCycle(usize),
 	/// No Cycle
-	#[fail(display = "POW No Cycle")]
+	#[error("POW No Cycle")]
 	NoCycle,
 	/// No Solution
-	#[fail(display = "POW No Solution")]
+	#[error("POW No Solution")]
 	NoSolution,
-}
-
-impl Fail for Error {
-	fn cause(&self) -> Option<&dyn Fail> {
-		self.inner.cause()
-	}
-
-	fn backtrace(&self) -> Option<&Backtrace> {
-		self.inner.backtrace()
-	}
-}
-
-impl Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		Display::fmt(&self.inner, f)
-	}
-}
-
-impl Error {
-	/// Return errorkind
-	pub fn kind(&self) -> ErrorKind {
-		self.inner.get_context().clone()
-	}
-}
-
-impl From<ErrorKind> for Error {
-	fn from(kind: ErrorKind) -> Error {
-		Error {
-			inner: Context::new(kind),
-		}
-	}
-}
-
-impl From<Context<ErrorKind>> for Error {
-	fn from(inner: Context<ErrorKind>) -> Error {
-		Error { inner }
-	}
-}
-
-impl From<io::Error> for Error {
-	fn from(_error: io::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::IOError),
-		}
-	}
 }

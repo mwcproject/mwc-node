@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,19 +24,25 @@ use std::sync::Arc;
 use lru_cache::LruCache;
 
 use crate::chain;
+use crate::chain::txhashset::BitmapChunk;
 use crate::conn;
-use crate::core::core::hash::{Hash, Hashed};
-use crate::core::pow::Difficulty;
-use crate::core::ser::Writeable;
-use crate::core::{core, global};
+use crate::grin_core::core::hash::{Hash, Hashed};
+use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::grin_core::pow::Difficulty;
+use crate::grin_core::ser::Writeable;
+use crate::grin_core::{core, global};
 use crate::handshake::Handshake;
-use crate::msg::{self, BanReason, GetPeerAddrs, Locator, Msg, Ping, TxHashSetRequest, Type};
+use crate::msg::{
+	self, ArchiveHeaderData, BanReason, GetPeerAddrs, Locator, Msg, Ping, SegmentRequest, Type,
+};
 use crate::protocol::Protocol;
 use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
 	TxHashSetRead,
 };
+use crate::util::secp::pedersen::RangeProof;
 use chrono::prelude::{DateTime, Utc};
+use grin_chain::txhashset::Segmenter;
 use std::time::Instant;
 
 const MAX_TRACK_SIZE: usize = 30;
@@ -49,6 +55,60 @@ const MAX_PEER_MSG_PER_MIN: u64 = 500;
 enum State {
 	Connected,
 	Banned,
+}
+
+pub struct PeerPibdStatus {
+	/// Hash of the block for which the txhashset should be provided
+	pub header_hash: Hash,
+	/// Height of the corresponding block
+	pub header_height: u64,
+	/// output bitmap root hash
+	pub output_bitmap_root: Option<Hash>,
+	// History of commited output_bitmaps + header hashes. Needed to ban the peer in case of misbehaviour
+	pub output_bitmap_root_header_history: Vec<Hash>,
+	/// Time when request for pibd start was sent last time (timestamp in seconds)
+	pub initiate_pibd_request_time: i64,
+	/// Number of requests that was sent after success response recieved
+	pub no_response_requests: u32,
+	/// Time when first no responsive request was sent
+	pub no_response_time: Option<i64>,
+}
+
+impl PeerPibdStatus {
+	pub fn default() -> PeerPibdStatus {
+		PeerPibdStatus {
+			header_hash: Hash::default(),
+			header_height: 0,
+			output_bitmap_root: None,
+			output_bitmap_root_header_history: Vec::new(),
+			initiate_pibd_request_time: 0,
+			no_response_requests: 0,
+			no_response_time: None,
+		}
+	}
+
+	pub fn update_pibd_status(
+		&mut self,
+		header_hash: Hash,
+		header_height: u64,
+		output_bitmap_root: Option<Hash>,
+	) {
+		self.header_hash = header_hash;
+		self.header_height = header_height;
+
+		match output_bitmap_root {
+			Some(hash) => {
+				let hist_hash = (hash, header_hash).hash();
+				if !self.output_bitmap_root_header_history.contains(&hist_hash) {
+					self.output_bitmap_root_header_history.push(hist_hash);
+				}
+				self.output_bitmap_root = Some(hash);
+			}
+			None => {
+				self.output_bitmap_root = None;
+			}
+		}
+	}
 }
 
 pub struct Peer {
@@ -64,6 +124,8 @@ pub struct Peer {
 	stop_handle: Mutex<conn::StopHandle>,
 	// Whether or not we requested a txhashset from this peer
 	state_sync_requested: Arc<AtomicBool>,
+	// PIBD available data status
+	pub pibd_status: Arc<Mutex<PeerPibdStatus>>,
 }
 
 impl fmt::Debug for Peer {
@@ -78,18 +140,18 @@ impl Peer {
 		info: PeerInfo,
 		conn: TcpStream,
 		adapter: Arc<dyn NetAdapter>,
-		header_cache_size: u64,
 		server: Server,
 	) -> std::io::Result<Peer> {
 		let state = Arc::new(RwLock::new(State::Connected));
 		let state_sync_requested = Arc::new(AtomicBool::new(false));
 		let tracking_adapter = TrackingAdapter::new(adapter);
+		let pibd_status = Arc::new(Mutex::new(PeerPibdStatus::default()));
 		let handler = Protocol::new(
 			Arc::new(tracking_adapter.clone()),
 			info.clone(),
 			state_sync_requested.clone(),
-			header_cache_size,
 			server,
+			pibd_status.clone(),
 		);
 		let tracker = Arc::new(conn::Tracker::new());
 		let (sendh, stoph) = conn::listen(conn, info.version, tracker.clone(), handler)?;
@@ -103,6 +165,7 @@ impl Peer {
 			send_handle,
 			stop_handle,
 			state_sync_requested,
+			pibd_status,
 		})
 	}
 
@@ -112,13 +175,12 @@ impl Peer {
 		total_difficulty: Difficulty,
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
-		header_cache_size: u64,
 		server: Server,
 	) -> Result<Peer, Error> {
 		debug!("accept: handshaking from {:?}", conn.peer_addr());
 		let info = hs.accept(capab, total_difficulty, &mut conn);
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size, server)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, server)?),
 			Err(e) => {
 				debug!(
 					"accept: handshaking from {:?} failed with error: {:?}",
@@ -140,7 +202,6 @@ impl Peer {
 		self_addr: PeerAddr,
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
-		header_cache_size: u64,
 		peer_addr: Option<PeerAddr>,
 		server: Server,
 	) -> Result<Peer, Error> {
@@ -158,7 +219,7 @@ impl Peer {
 			hs.initiate(capab, total_difficulty, self_addr, &mut conn, None)
 		};
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter, header_cache_size, server)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, server)?),
 			Err(e) => {
 				if peer_addr.is_some() {
 					debug!(
@@ -236,27 +297,13 @@ impl Peer {
 
 	/// Whether the peer is considered abusive, mostly for spammy nodes
 	pub fn is_abusive(&self) -> bool {
-		let rec = self.tracker.received_bytes.read();
-		let sent = self.tracker.sent_bytes.read();
-		rec.count_per_min() > MAX_PEER_MSG_PER_MIN || sent.count_per_min() > MAX_PEER_MSG_PER_MIN
+		let rec = self.tracker().received_bytes.read();
+		rec.count_per_min() > MAX_PEER_MSG_PER_MIN
 	}
 
-	/// Number of bytes sent to the peer
-	pub fn last_min_sent_bytes(&self) -> Option<u64> {
-		let sent_bytes = self.tracker.sent_bytes.read();
-		Some(sent_bytes.bytes_per_min())
-	}
-
-	/// Number of bytes received from the peer
-	pub fn last_min_received_bytes(&self) -> Option<u64> {
-		let received_bytes = self.tracker.received_bytes.read();
-		Some(received_bytes.bytes_per_min())
-	}
-
-	pub fn last_min_message_counts(&self) -> Option<(u64, u64)> {
-		let received_bytes = self.tracker.received_bytes.read();
-		let sent_bytes = self.tracker.sent_bytes.read();
-		Some((sent_bytes.count_per_min(), received_bytes.count_per_min()))
+	/// Tracker tracks sent/received bytes and message counts per minute.
+	pub fn tracker(&self) -> &conn::Tracker {
+		&self.tracker
 	}
 
 	/// Set this peer status to banned
@@ -411,8 +458,116 @@ impl Peer {
 		);
 		self.state_sync_requested.store(true, Ordering::Relaxed);
 		self.send(
-			&TxHashSetRequest { hash, height },
+			&ArchiveHeaderData { hash, height },
 			msg::Type::TxHashSetRequest,
+		)
+	}
+
+	pub fn send_start_pibd_sync_request(&self, height: u64, hash: Hash) -> Result<(), Error> {
+		info!(
+			"Asking peer {} for pibd sync at {} {}.",
+			self.info.addr, height, hash
+		);
+		self.report_pibd_request();
+		self.send(
+			&ArchiveHeaderData { hash, height },
+			msg::Type::StartPibdSyncRequest,
+		)
+	}
+
+	fn report_pibd_request(&self) {
+		let mut pibd_status = self.pibd_status.lock();
+		pibd_status.no_response_requests += 1;
+		if pibd_status.no_response_time.is_none() {
+			pibd_status.no_response_time = Some(Utc::now().timestamp());
+		}
+	}
+
+	pub fn send_bitmap_segment_request(
+		&self,
+		h: Hash,
+		identifier: SegmentIdentifier,
+	) -> Result<(), Error> {
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for outputs bitmap, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
+		self.report_pibd_request();
+		self.send(
+			&SegmentRequest {
+				block_hash: h,
+				identifier,
+			},
+			msg::Type::GetOutputBitmapSegment,
+		)
+	}
+
+	pub fn send_output_segment_request(
+		&self,
+		h: Hash,
+		identifier: SegmentIdentifier,
+	) -> Result<(), Error> {
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for outputs, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
+		self.report_pibd_request();
+		self.send(
+			&SegmentRequest {
+				block_hash: h,
+				identifier,
+			},
+			msg::Type::GetOutputSegment,
+		)
+	}
+
+	pub fn send_rangeproof_segment_request(
+		&self,
+		h: Hash,
+		identifier: SegmentIdentifier,
+	) -> Result<(), Error> {
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for rangeproofs, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
+		self.report_pibd_request();
+		self.send(
+			&SegmentRequest {
+				block_hash: h,
+				identifier,
+			},
+			msg::Type::GetRangeProofSegment,
+		)
+	}
+
+	pub fn send_kernel_segment_request(
+		&self,
+		h: Hash,
+		identifier: SegmentIdentifier,
+	) -> Result<(), Error> {
+		if log::log_enabled!(log::Level::Debug) {
+			let pibd_status = self.pibd_status.lock();
+			debug!(
+				"Requesting peer {} for kernels, hash {}, id {}, output_bitmap_root: {:?}, height {}",
+				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
+			);
+		}
+		self.report_pibd_request();
+		self.send(
+			&SegmentRequest {
+				block_hash: h,
+				identifier,
+			},
+			msg::Type::GetKernelSegment,
 		)
 	}
 
@@ -431,6 +586,26 @@ impl Peer {
 		match self.stop_handle.try_lock() {
 			Some(mut handle) => handle.wait(),
 			None => error!("can't get stop lock for peer"),
+		}
+	}
+
+	/// check if this peer ever commited for specific pibd hash
+	pub fn commited_to_pibd_bitmap_output_root(
+		&self,
+		output_bitmap_root_header_hash: &Hash,
+	) -> bool {
+		let status = self.pibd_status.lock();
+		status
+			.output_bitmap_root_header_history
+			.contains(&output_bitmap_root_header_hash)
+	}
+
+	///
+	pub fn get_pibd_no_response_state(&self) -> Option<(u32, i64)> {
+		let status = self.pibd_status.lock();
+		match status.no_response_time {
+			None => None,
+			Some(time) => Some((status.no_response_requests, time)),
 		}
 	}
 }
@@ -565,7 +740,6 @@ impl ChainAdapter for TrackingAdapter {
 		&self,
 		bh: &[core::BlockHeader],
 		peer_info: &PeerInfo,
-		header_sync_cache_size: u64,
 	) -> Result<bool, chain::Error> {
 		trace!(
 			"peer = {:?}, set header sync = false (in headers)",
@@ -586,17 +760,7 @@ impl ChainAdapter for TrackingAdapter {
 			peer_info.header_sync_requested.store(0, Ordering::Relaxed);
 		}
 		trace!("header sync for {} is {}", peer_info.addr, val);
-		self.adapter
-			.headers_received(bh, peer_info, header_sync_cache_size)
-	}
-
-	// note: not needed because adapter is called from headers_received and header_recevied
-	fn process_add_headers_sync(
-		&self,
-		_: &[core::BlockHeader],
-		_: u64,
-	) -> Result<bool, chain::Error> {
-		unimplemented!()
+		self.adapter.headers_received(bh, peer_info)
 	}
 
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
@@ -644,6 +808,83 @@ impl ChainAdapter for TrackingAdapter {
 
 	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
 		self.adapter.get_tmpfile_pathname(tmpfile_name)
+	}
+
+	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error> {
+		self.adapter.prepare_segmenter()
+	}
+
+	fn get_kernel_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<TxKernel>, chain::Error> {
+		self.adapter.get_kernel_segment(hash, id)
+	}
+
+	fn get_bitmap_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<BitmapChunk>, chain::Error> {
+		self.adapter.get_bitmap_segment(hash, id)
+	}
+
+	fn get_output_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<OutputIdentifier>, chain::Error> {
+		self.adapter.get_output_segment(hash, id)
+	}
+
+	fn get_rangeproof_segment(
+		&self,
+		hash: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<RangeProof>, chain::Error> {
+		self.adapter.get_rangeproof_segment(hash, id)
+	}
+
+	fn receive_bitmap_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<BitmapChunk>,
+	) -> Result<bool, chain::Error> {
+		self.adapter
+			.receive_bitmap_segment(block_hash, bitmap_root_hash, segment)
+	}
+
+	fn receive_output_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<OutputIdentifier>,
+	) -> Result<bool, chain::Error> {
+		self.adapter
+			.receive_output_segment(block_hash, bitmap_root_hash, segment)
+	}
+
+	fn receive_rangeproof_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<RangeProof>,
+	) -> Result<bool, chain::Error> {
+		self.adapter
+			.receive_rangeproof_segment(block_hash, bitmap_root_hash, segment)
+	}
+
+	fn receive_kernel_segment(
+		&self,
+		block_hash: Hash,
+		bitmap_root_hash: Hash,
+		segment: Segment<TxKernel>,
+	) -> Result<bool, chain::Error> {
+		self.adapter
+			.receive_kernel_segment(block_hash, bitmap_root_hash, segment)
 	}
 }
 

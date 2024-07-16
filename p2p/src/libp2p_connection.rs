@@ -38,7 +38,7 @@ use libp2p::gossipsub::{
 };
 use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
-use crate::core::global;
+use crate::grin_core::global;
 use crate::types::Error;
 use crate::PeerAddr;
 use async_std::task;
@@ -50,8 +50,8 @@ use grin_core::core::TxKernel;
 use grin_core::libtx::aggsig;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::rand::Rng;
-use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
-use grin_util::RwLock;
+use grin_util::secp::{Message, Secp256k1, Signature};
+use grin_util::{static_secp_instance, RwLock};
 use grin_util::{Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use libp2p::core::network::NetworkInfo;
 use rand::seq::SliceRandom;
@@ -592,12 +592,16 @@ pub async fn run_libp2p_node(
 
 									let gossip = swarm.get_behaviour();
 
+									let secp = static_secp_instance();
+									let secp = secp.lock();
+
 									let acceptance = match validate_integrity_message(
 										&peer_id,
 										&message.data,
 										kernel_validation_fn.clone(),
 										&mut requests_cash,
 										fee_base,
+										&secp,
 									) {
 										Ok((integrity_fee, sender_address)) => {
 											if integrity_fee > 0 {
@@ -800,6 +804,7 @@ pub fn validate_integrity_message(
 	output_validation_fn: Arc<impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>>,
 	requests_cash: &mut HashMap<Commitment, VecDeque<i64>>,
 	fee_base: u64,
+	secp: &Secp256k1,
 ) -> Result<(u64, String), Error> {
 	let mut ser = SimplePopSerializer::new(message);
 	if ser.version != get_message_version() {
@@ -813,7 +818,7 @@ pub fn validate_integrity_message(
 
 	// Let's check signature first. The kernel search might take time. Signature checking should be faster.
 	let integrity_kernel_excess = Commitment::from_vec(ser.pop_vec());
-	let integrity_pk = match integrity_kernel_excess.to_pubkey() {
+	let integrity_pk = match integrity_kernel_excess.to_pubkey(secp) {
 		Ok(pk) => pk,
 		Err(e) => {
 			debug!(
@@ -823,8 +828,6 @@ pub fn validate_integrity_message(
 			return Ok((0, String::new()));
 		}
 	};
-
-	let secp = Secp256k1::with_caps(ContextFlag::VerifyOnly);
 
 	// Checking if public key match the signature.
 	let sender_address_pk = match DalekPublicKey::from_bytes(&ser.pop_vec()) {
@@ -851,7 +854,7 @@ pub fn validate_integrity_message(
 
 	let sender_address = PeerId::onion_v3_from_pubkey(&sender_address_pk);
 
-	let signature = match Signature::from_compact(&ser.pop_vec()) {
+	let signature = match Signature::from_compact(&secp, &ser.pop_vec()) {
 		Ok(s) => s,
 		Err(e) => {
 			debug!(
@@ -863,7 +866,7 @@ pub fn validate_integrity_message(
 	};
 
 	match aggsig::verify_completed_sig(
-		&secp,
+		secp,
 		&signature,
 		&integrity_pk,
 		Some(&integrity_pk),
@@ -890,7 +893,7 @@ pub fn validate_integrity_message(
 		}
 	};
 
-	let integrity_fee = integrity_kernel.features.get_fee();
+	let integrity_fee = integrity_kernel.features.get_fee_pessimistic();
 
 	if integrity_fee < fee_base * INTEGRITY_FEE_MIN_X {
 		debug!(
@@ -962,12 +965,13 @@ pub fn build_integrity_message(
 	tor_pk: &DalekPublicKey,
 	signature: &Signature,
 	message_data: &[u8],
+	secp: &Secp256k1,
 ) -> Result<Vec<u8>, Error> {
 	let mut ser = SimplePushSerializer::new(get_message_version());
 
 	ser.push_vec(&kernel_excess.0);
 	ser.push_vec(tor_pk.as_bytes());
-	ser.push_vec(&signature.serialize_compact());
+	ser.push_vec(&signature.serialize_compact(secp));
 
 	ser.push_vec(message_data);
 	Ok(ser.to_vec())
@@ -979,22 +983,30 @@ pub fn build_integrity_message(
 fn test_integrity() -> Result<(), Error> {
 	use grin_core::core::KernelFeatures;
 	use grin_util::from_hex;
+	use grin_util::secp::ContextFlag;
 
 	// It is peer form wallet's test. We know commit and signature for it.
 	let peer_id = PeerId::from_bytes( &from_hex("000100220020720661bf2f0d7c81c2980db83bb973be2816cf5a0da2da9aacd0ad47d534215c001c2f6f6e696f6e332f776861745f657665725f616464726573733a3737").unwrap() ).unwrap();
 	let peer_pk = peer_id.as_dalek_pubkey().unwrap();
 	let onion_address = PeerId::onion_v3_from_pubkey(&peer_pk);
 
+	let secp = Secp256k1::with_caps(ContextFlag::Full);
+
 	let integrity_kernel = Commitment::from_vec(
 		from_hex("08a8f99853d65cee63c973a78a005f4646b777262440a8bfa090694a339a388865").unwrap(),
 	);
-	let integrity_signature = Signature::from_compact(&from_hex("102a84ec71494d69c1b4cca181b7715beea1ebd0822efb4d6440a0f2be75119b56270affac659214c27903347676c27063dc7f5f2f0c6a8441cab73d16aa7ebe").unwrap()).unwrap();
+	let integrity_signature = Signature::from_compact(&secp, &from_hex("102a84ec71494d69c1b4cca181b7715beea1ebd0822efb4d6440a0f2be75119b56270affac659214c27903347676c27063dc7f5f2f0c6a8441cab73d16aa7ebe").unwrap()).unwrap();
 
 	let message: Vec<u8> = vec![1, 2, 3, 4, 3, 2, 1];
 
-	let encoded_message =
-		build_integrity_message(&integrity_kernel, &peer_pk, &integrity_signature, &message)
-			.unwrap();
+	let encoded_message = build_integrity_message(
+		&integrity_kernel,
+		&peer_pk,
+		&integrity_signature,
+		&message,
+		&secp,
+	)
+	.unwrap();
 
 	// Validation use case
 	let mut requests_cache: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
@@ -1010,7 +1022,9 @@ fn test_integrity() -> Result<(), Error> {
 	valid_kernels.insert(
 		integrity_kernel,
 		TxKernel::with_features(KernelFeatures::Plain {
-			fee: paid_integrity_fee,
+			fee: paid_integrity_fee
+				.try_into()
+				.expect("Failed to convert the paid_integrity_fee"),
 		}),
 	);
 	let output_validation_fn = |commit: &Commitment| -> Result<Option<TxKernel>, Error> {
@@ -1025,7 +1039,8 @@ fn test_integrity() -> Result<(), Error> {
 			&encoded_message,
 			empty_output_validation_fn.clone(),
 			&mut requests_cache,
-			fee_base
+			fee_base,
+			&secp
 		)
 		.unwrap()
 		.0,
@@ -1039,6 +1054,7 @@ fn test_integrity() -> Result<(), Error> {
 		output_validation_fn.clone(),
 		&mut requests_cache,
 		fee_base,
+		&secp,
 	)
 	.unwrap();
 
@@ -1055,7 +1071,8 @@ fn test_integrity() -> Result<(), Error> {
 			&encoded_message,
 			output_validation_fn.clone(),
 			&mut requests_cache,
-			fee_base
+			fee_base,
+			&secp
 		)
 		.unwrap()
 		.0,
@@ -1071,7 +1088,8 @@ fn test_integrity() -> Result<(), Error> {
 				&encoded_message,
 				output_validation_fn.clone(),
 				&mut requests_cache,
-				fee_base
+				fee_base,
+				&secp
 			)
 			.unwrap()
 			.0,
@@ -1087,7 +1105,8 @@ fn test_integrity() -> Result<(), Error> {
 			&encoded_message,
 			output_validation_fn.clone(),
 			&mut requests_cache,
-			fee_base
+			fee_base,
+			&secp
 		)
 		.unwrap()
 		.0,
@@ -1102,7 +1121,8 @@ fn test_integrity() -> Result<(), Error> {
 			&encoded_message,
 			output_validation_fn.clone(),
 			&mut requests_cache,
-			fee_base
+			fee_base,
+			&secp
 		)
 		.unwrap()
 		.0,
@@ -1117,7 +1137,8 @@ fn test_integrity() -> Result<(), Error> {
 			&encoded_message,
 			output_validation_fn.clone(),
 			&mut requests_cache,
-			fee_base
+			fee_base,
+			&secp
 		)
 		.unwrap()
 		.0,

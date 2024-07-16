@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,21 +14,31 @@
 
 //! Message types that transit over the network and related serialization code.
 
+use crate::chain::txhashset::BitmapSegment;
 use crate::conn::Tracker;
-use crate::core::core::hash::Hash;
-use crate::core::core::BlockHeader;
-use crate::core::pow::Difficulty;
-use crate::core::ser::{
-	self, ProtocolVersion, Readable, Reader, StreamingReader, Writeable, Writer,
+use crate::grin_core::core::hash::Hash;
+use crate::grin_core::core::transaction::{OutputIdentifier, TxKernel};
+use crate::grin_core::core::{
+	BlockHeader, Segment, SegmentIdentifier, Transaction, UntrustedBlock, UntrustedBlockHeader,
+	UntrustedCompactBlock,
 };
-use crate::core::{consensus, global};
+use crate::grin_core::pow::Difficulty;
+use crate::grin_core::ser::{
+	self, DeserializationMode, ProtocolVersion, Readable, Reader, StreamingReader, Writeable,
+	Writer,
+};
+use crate::grin_core::{consensus, global};
 use crate::types::{
-	Capabilities, Error, PeerAddr, ReasonForBan, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	AttachmentMeta, AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan,
+	MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
 };
+use crate::util::secp::pedersen::RangeProof;
+use bytes::Bytes;
 use num::FromPrimitive;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::Arc;
+use std::{fmt, thread, time::Duration};
 
 /// Grin's user agent with current version
 pub const USER_AGENT: &str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
@@ -67,12 +77,23 @@ enum_from_primitive! {
 		GetTransaction = 19,
 		TransactionKernel = 20,
 		TorAddress = 23,
+		StartPibdSyncRequest = 24,
+		GetOutputBitmapSegment = 25,
+		OutputBitmapSegment = 26,
+		GetOutputSegment = 27,
+		OutputSegment = 28,
+		GetRangeProofSegment = 29,
+		RangeProofSegment = 30,
+		GetKernelSegment = 31,
+		KernelSegment = 32,
+		HasAnotherArchiveHeader = 33,
+		PibdSyncState = 34,
 	}
 }
 
 /// Max theoretical size of a block filled with outputs.
 fn max_block_size() -> u64 {
-	(global::max_block_weight() / consensus::BLOCK_OUTPUT_WEIGHT * 708) as u64
+	(global::max_block_weight() / consensus::OUTPUT_WEIGHT * 708) as u64
 }
 
 // Max msg size when msg type is unknown.
@@ -99,12 +120,23 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::CompactBlock => max_block_size() / 10,
 		Type::StemTransaction => max_block_size(),
 		Type::Transaction => max_block_size(),
-		Type::TxHashSetRequest => 40,
+		Type::TxHashSetRequest => 40, // 32+8=40
 		Type::TxHashSetArchive => 64,
 		Type::BanReason => 64,
 		Type::GetTransaction => 32,
 		Type::TransactionKernel => 32,
 		Type::TorAddress => 128,
+		Type::GetOutputBitmapSegment => 41,
+		Type::OutputBitmapSegment => 2 * max_block_size(),
+		Type::GetOutputSegment => 41,
+		Type::OutputSegment => 2 * max_block_size(),
+		Type::GetRangeProofSegment => 41,
+		Type::RangeProofSegment => 2 * max_block_size(),
+		Type::GetKernelSegment => 41,
+		Type::KernelSegment => 2 * max_block_size(),
+		Type::StartPibdSyncRequest => 40, // 32+8=40
+		Type::HasAnotherArchiveHeader => 40,
+		Type::PibdSyncState => 72, // 32 + 8 + 32 = 72
 	}
 }
 
@@ -155,7 +187,8 @@ pub fn read_header<R: Read>(
 ) -> Result<MsgHeaderWrapper, Error> {
 	let mut head = vec![0u8; MsgHeader::LEN];
 	stream.read_exact(&mut head)?;
-	let header: MsgHeaderWrapper = ser::deserialize(&mut &head[..], version)?;
+	let header: MsgHeaderWrapper =
+		ser::deserialize(&mut &head[..], version, DeserializationMode::default())?;
 	Ok(header)
 }
 
@@ -180,7 +213,7 @@ pub fn read_body<T: Readable, R: Read>(
 ) -> Result<T, Error> {
 	let mut body = vec![0u8; h.msg_len as usize];
 	stream.read_exact(&mut body)?;
-	ser::deserialize(&mut &body[..], version).map_err(From::from)
+	ser::deserialize(&mut &body[..], version, DeserializationMode::default()).map_err(From::from)
 }
 
 /// Read (an unknown) message from the provided stream and discard it.
@@ -216,6 +249,17 @@ pub fn write_message<W: Write>(
 	msg: &Msg,
 	tracker: Arc<Tracker>,
 ) -> Result<(), Error> {
+	// Introduce a delay so messages are spaced at least 150ms apart.
+	// This gives a max msg rate of 60000/150 = 400 messages per minute.
+	// Exceeding 500 messages per minute will result in being banned as abusive.
+	if let Some(elapsed) = tracker.sent_bytes.read().elapsed_since_last_msg() {
+		let min_interval: u64 = 150;
+		let sleep_ms = min_interval.saturating_sub(elapsed);
+		if sleep_ms > 0 {
+			thread::sleep(Duration::from_millis(sleep_ms))
+		}
+	}
+
 	let mut buf = ser::ser_vec(&msg.header, msg.version)?;
 	buf.extend(&msg.body[..]);
 	stream.write_all(&buf[..])?;
@@ -519,6 +563,40 @@ impl Readable for PeerAddrs {
 	}
 }
 
+impl IntoIterator for PeerAddrs {
+	type Item = PeerAddr;
+	type IntoIter = std::vec::IntoIter<Self::Item>;
+	fn into_iter(self) -> Self::IntoIter {
+		self.peers.into_iter()
+	}
+}
+
+impl Default for PeerAddrs {
+	fn default() -> Self {
+		PeerAddrs { peers: vec![] }
+	}
+}
+
+impl PeerAddrs {
+	pub fn as_slice(&self) -> &[PeerAddr] {
+		self.peers.as_slice()
+	}
+
+	pub fn contains(&self, addr: &PeerAddr) -> bool {
+		self.peers.contains(addr)
+	}
+
+	pub fn difference(&self, other: &[PeerAddr]) -> PeerAddrs {
+		let peers = self
+			.peers
+			.iter()
+			.filter(|x| !other.contains(x))
+			.cloned()
+			.collect();
+		PeerAddrs { peers }
+	}
+}
+
 /// We found some issue in the communication, sending an error back, usually
 /// followed by closing the connection.
 pub struct PeerError {
@@ -691,16 +769,15 @@ impl Readable for BanReason {
 	}
 }
 
-/// Request to get an archive of the full txhashset store, required to sync
-/// a new node.
-pub struct TxHashSetRequest {
+/// Request to get PIBD sync request
+pub struct ArchiveHeaderData {
 	/// Hash of the block for which the txhashset should be provided
 	pub hash: Hash,
 	/// Height of the corresponding block
 	pub height: u64,
 }
 
-impl Writeable for TxHashSetRequest {
+impl Writeable for ArchiveHeaderData {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.hash.write(writer)?;
 		writer.write_u64(self.height)?;
@@ -708,12 +785,248 @@ impl Writeable for TxHashSetRequest {
 	}
 }
 
-impl Readable for TxHashSetRequest {
-	fn read<R: Reader>(reader: &mut R) -> Result<TxHashSetRequest, ser::Error> {
-		Ok(TxHashSetRequest {
+impl Readable for ArchiveHeaderData {
+	fn read<R: Reader>(reader: &mut R) -> Result<ArchiveHeaderData, ser::Error> {
+		Ok(ArchiveHeaderData {
 			hash: Hash::read(reader)?,
 			height: reader.read_u64()?,
 		})
+	}
+}
+
+pub struct PibdSyncState {
+	/// Hash of the block for which the txhashset should be provided
+	pub header_hash: Hash,
+	/// Height of the corresponding block
+	pub header_height: u64,
+	/// output bitmap root hash
+	pub output_bitmap_root: Hash,
+}
+
+impl Writeable for PibdSyncState {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.header_hash.write(writer)?;
+		writer.write_u64(self.header_height)?;
+		self.output_bitmap_root.write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for PibdSyncState {
+	fn read<R: Reader>(reader: &mut R) -> Result<PibdSyncState, ser::Error> {
+		Ok(PibdSyncState {
+			header_hash: Hash::read(reader)?,
+			header_height: reader.read_u64()?,
+			output_bitmap_root: Hash::read(reader)?,
+		})
+	}
+}
+
+/// Request to get a segment of a (P)MMR at a particular block.
+pub struct SegmentRequest {
+	/// The hash of the block the MMR is associated with
+	pub block_hash: Hash,
+	/// The identifier of the requested segment
+	pub identifier: SegmentIdentifier,
+}
+
+impl Readable for SegmentRequest {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let block_hash = Readable::read(reader)?;
+		let identifier = Readable::read(reader)?;
+		Ok(Self {
+			block_hash,
+			identifier,
+		})
+	}
+}
+
+impl Writeable for SegmentRequest {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.block_hash, writer)?;
+		Writeable::write(&self.identifier, writer)
+	}
+}
+
+/// Response to a (P)MMR segment request.
+pub struct SegmentResponse<T> {
+	/// The hash of the block the MMR is associated with
+	pub block_hash: Hash,
+	/// The MMR segment
+	pub segment: Segment<T>,
+}
+
+impl<T: Readable> Readable for SegmentResponse<T> {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let block_hash = Readable::read(reader)?;
+		let segment = Readable::read(reader)?;
+		Ok(Self {
+			block_hash,
+			segment,
+		})
+	}
+}
+
+impl<T: Writeable> Writeable for SegmentResponse<T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.block_hash, writer)?;
+		Writeable::write(&self.segment, writer)
+	}
+}
+
+/// Response to an output PMMR segment request.
+pub struct OutputSegmentResponse {
+	/// The segment response
+	pub response: SegmentResponse<OutputIdentifier>,
+}
+
+impl Readable for OutputSegmentResponse {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let response = Readable::read(reader)?;
+		Ok(Self { response })
+	}
+}
+
+impl Writeable for OutputSegmentResponse {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.response, writer)
+	}
+}
+
+/// Response to an output bitmap MMR segment request.
+pub struct OutputBitmapSegmentResponse {
+	/// The hash of the block the MMR is associated with
+	pub block_hash: Hash,
+	/// The MMR segment
+	pub segment: BitmapSegment,
+}
+
+impl Readable for OutputBitmapSegmentResponse {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let block_hash = Readable::read(reader)?;
+		let segment = Readable::read(reader)?;
+		Ok(Self {
+			block_hash,
+			segment,
+		})
+	}
+}
+
+impl Writeable for OutputBitmapSegmentResponse {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.block_hash, writer)?;
+		Writeable::write(&self.segment, writer)
+	}
+}
+
+pub enum Message {
+	Unknown(u8),
+	Ping(Ping),
+	Pong(Pong),
+	BanReason(BanReason),
+	TransactionKernel(Hash),
+	GetTransaction(Hash),
+	Transaction(Transaction),
+	StemTransaction(Transaction),
+	GetBlock(Hash),
+	Block(UntrustedBlock),
+	GetCompactBlock(Hash),
+	CompactBlock(UntrustedCompactBlock),
+	GetHeaders(Locator),
+	Header(UntrustedBlockHeader),
+	Headers(HeadersData),
+	GetPeerAddrs(GetPeerAddrs),
+	PeerAddrs(PeerAddrs),
+	TxHashSetRequest(ArchiveHeaderData),
+	TxHashSetArchive(TxHashSetArchive),
+	Attachment(AttachmentUpdate, Option<Bytes>),
+	TorAddress(TorAddress),
+	StartPibdSyncRequest(ArchiveHeaderData),
+	PibdSyncState(PibdSyncState),
+	GetOutputBitmapSegment(SegmentRequest),
+	OutputBitmapSegment(OutputBitmapSegmentResponse),
+	GetOutputSegment(SegmentRequest),
+	OutputSegment(OutputSegmentResponse),
+	GetRangeProofSegment(SegmentRequest),
+	RangeProofSegment(SegmentResponse<RangeProof>),
+	GetKernelSegment(SegmentRequest),
+	KernelSegment(SegmentResponse<TxKernel>),
+	HasAnotherArchiveHeader(ArchiveHeaderData),
+}
+
+/// We receive 512 headers from a peer.
+/// But we process them in smaller batches of 32 headers.
+/// HeadersData wraps the current batch and a count of the headers remaining after this batch.
+pub struct HeadersData {
+	/// Batch of headers currently being processed.
+	pub headers: Vec<BlockHeader>,
+	/// Number of headers stil to be processed after this current batch.
+	/// 0 indicates this is the final batch from the larger set of headers received from the peer.
+	pub remaining: u64,
+}
+
+impl fmt::Display for Message {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Message::Unknown(_) => write!(f, "unknown"),
+			Message::Ping(_) => write!(f, "ping"),
+			Message::Pong(_) => write!(f, "pong"),
+			Message::BanReason(_) => write!(f, "ban reason"),
+			Message::TransactionKernel(_) => write!(f, "tx kernel"),
+			Message::GetTransaction(_) => write!(f, "get tx"),
+			Message::Transaction(_) => write!(f, "tx"),
+			Message::StemTransaction(_) => write!(f, "stem tx"),
+			Message::GetBlock(_) => write!(f, "get block"),
+			Message::Block(_) => write!(f, "block"),
+			Message::GetCompactBlock(_) => write!(f, "get compact block"),
+			Message::CompactBlock(_) => write!(f, "compact block"),
+			Message::GetHeaders(_) => write!(f, "get headers"),
+			Message::Header(_) => write!(f, "header"),
+			Message::Headers(_) => write!(f, "headers"),
+			Message::GetPeerAddrs(_) => write!(f, "get peer addrs"),
+			Message::PeerAddrs(_) => write!(f, "peer addrs"),
+			Message::TxHashSetRequest(_) => write!(f, "tx hash set request"),
+			Message::TxHashSetArchive(_) => write!(f, "tx hash set"),
+			Message::Attachment(_, _) => write!(f, "attachment"),
+			Message::TorAddress(_) => write!(f, "tor address"),
+			Message::GetOutputBitmapSegment(_) => write!(f, "get output bitmap segment"),
+			Message::OutputBitmapSegment(_) => write!(f, "output bitmap segment"),
+			Message::GetOutputSegment(_) => write!(f, "get output segment"),
+			Message::OutputSegment(_) => write!(f, "output segment"),
+			Message::GetRangeProofSegment(_) => write!(f, "get range proof segment"),
+			Message::RangeProofSegment(_) => write!(f, "range proof segment"),
+			Message::GetKernelSegment(_) => write!(f, "get kernel segment"),
+			Message::KernelSegment(_) => write!(f, "kernel segment"),
+			Message::PibdSyncState(_) => write!(f, "PIBD sync state"),
+			Message::StartPibdSyncRequest(_) => write!(f, "start PIBD sync"),
+			Message::HasAnotherArchiveHeader(_) => {
+				write!(f, "PIBD error, has another archive header")
+			}
+		}
+	}
+}
+
+impl fmt::Debug for Message {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "Consume({})", self)
+	}
+}
+
+pub enum Consumed {
+	Response(Msg),
+	Attachment(Arc<AttachmentMeta>, File),
+	None,
+	Disconnect,
+}
+
+impl fmt::Debug for Consumed {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Consumed::Response(msg) => write!(f, "Consumed::Response({:?})", msg.header.msg_type),
+			Consumed::Attachment(meta, _) => write!(f, "Consumed::Attachment({:?})", meta.size),
+			Consumed::None => write!(f, "Consumed::None"),
+			Consumed::Disconnect => write!(f, "Consumed::Disconnect"),
+		}
 	}
 }
 

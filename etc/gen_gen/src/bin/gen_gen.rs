@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,7 +33,6 @@ use grin_util::{self as util, ToHex};
 use grin_wallet as wallet;
 
 use grin_core::core::hash::Hashed;
-use grin_core::core::verifier_cache::LruVerifierCache;
 use grin_keychain::{BlindingFactor, ExtKeychain, Keychain};
 
 static BCHAIN_INFO_URL: &str = "https://blockchain.info/latestblock";
@@ -141,11 +140,7 @@ fn main() {
 	assert!(gen.header.pow.is_secondary(), "Not a secondary header");
 	println!("Built genesis:\n{:?}", gen);
 	core::pow::verify_size(&gen.header).unwrap();
-	gen.validate(
-		&BlindingFactor::zero(),
-		Arc::new(util::RwLock::new(LruVerifierCache::new())),
-	)
-	.unwrap();
+	gen.validate(&BlindingFactor::zero()).unwrap();
 
 	println!("\nFinal genesis cyclehash: {}", gen.hash().to_hex());
 	let gen_bin = core::ser::ser_vec(&gen).unwrap();
@@ -269,9 +264,6 @@ fn update_genesis_rs(gen: &core::core::Block) {
 fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {
 	util::init_test_logger();
 	let _ = fs::remove_dir_all(dir_name);
-	let verifier_cache = Arc::new(util::RwLock::new(
-		core::core::verifier_cache::LruVerifierCache::new(),
-	));
 	let db_env = Arc::new(store::new_env(dir_name.to_string()));
 	chain::Chain::init(
 		dir_name.to_string(),
@@ -279,7 +271,6 @@ fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {
 		Arc::new(chain::types::NoopAdapter {}),
 		genesis,
 		core::pow::verify_size,
-		verifier_cache,
 		false,
 		Arc::new(util::StopState::new()),
 	)

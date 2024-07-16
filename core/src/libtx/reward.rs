@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -52,14 +52,14 @@ where
 	let secp = secp.lock();
 	let over_commit = secp.commit_value(reward(fees, height))?;
 	let out_commit = output.commitment();
-	let excess = secp::Secp256k1::commit_sum(vec![out_commit], vec![over_commit])?;
-	let pubkey = excess.to_pubkey()?;
+	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
+	let pubkey = excess.to_pubkey(&secp)?;
 
 	let features = KernelFeatures::Coinbase;
 	let msg = features.kernel_sig_msg()?;
 	let sig = match test_mode {
 		true => {
-			let test_nonce = secp::key::SecretKey::from_slice(&[1; 32])?;
+			let test_nonce = secp::key::SecretKey::from_slice(&secp, &[1; 32])?;
 			aggsig::sign_from_key_id(
 				&secp,
 				keychain,

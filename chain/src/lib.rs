@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,7 +33,6 @@ extern crate log;
 #[macro_use]
 extern crate lazy_static;
 
-use failure;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;
@@ -41,6 +40,7 @@ use grin_util as util;
 mod chain;
 mod error;
 pub mod linked_list;
+pub mod pibd_params;
 pub mod pipe;
 pub mod store;
 pub mod txhashset;
@@ -49,7 +49,7 @@ pub mod types;
 // Re-export the base interface
 
 pub use crate::chain::{Chain, BLOCK_TO_BAN, MAX_ORPHAN_SIZE};
-pub use crate::error::{Error, ErrorKind};
+pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{
 	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetDownloadStats,

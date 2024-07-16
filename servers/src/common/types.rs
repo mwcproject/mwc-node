@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,53 +28,52 @@ use crate::p2p;
 use crate::pool;
 use crate::pool::types::DandelionConfig;
 use crate::store;
-use failure::Fail;
 use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
 	/// Error originating from the core implementation.
-	#[fail(display = "Core error, {}", _0)]
+	#[error("Core error, {0}")]
 	Core(core::block::Error),
 	/// Error originating from the libtx implementation.
-	#[fail(display = "LibTx error, {}", _0)]
+	#[error("LibTx error, {0}")]
 	LibTx(libtx::Error),
 	/// Error originating from the db storage.
-	#[fail(display = "Db Store error, {}", _0)]
+	#[error("Db Store error, {0}")]
 	Store(store::Error),
 	/// Error originating from the blockchain implementation.
-	#[fail(display = "Blockchain error, {}", _0)]
+	#[error("Blockchain error, {0}")]
 	Chain(chain::Error),
 	/// Error originating from the peer-to-peer network.
-	#[fail(display = "P2P error, {}", _0)]
+	#[error("P2P error, {0}")]
 	P2P(p2p::Error),
 	/// Error originating from HTTP API calls.
-	#[fail(display = "Http API error, {}", _0)]
+	#[error("Http API error, {0}")]
 	API(api::Error),
 	/// Error originating from the cuckoo miner
-	#[fail(display = "Cuckoo miner error, {}", _0)]
+	#[error("Cuckoo miner error, {0}")]
 	Cuckoo(pow::Error),
 	/// Error originating from the transaction pool.
-	#[fail(display = "Tx Pool error, {}", _0)]
+	#[error("Tx Pool error, {0}")]
 	Pool(pool::PoolError),
 	/// Error originating from the keychain.
-	#[fail(display = "Keychain error, {}", _0)]
+	#[error("Keychain error, {0}")]
 	Keychain(keychain::Error),
 	/// Invalid Arguments.
-	#[fail(display = "Invalid argument, {}", _0)]
+	#[error("Invalid argument, {0}")]
 	ArgumentError(String),
 	/// Wallet communication error
-	#[fail(display = "Wallet coomunication error, {}", _0)]
+	#[error("Wallet coomunication error, {0}")]
 	WalletComm(String),
 	/// Error originating from some I/O operation (likely a file on disk).
-	#[fail(display = "IO error, {}", _0)]
+	#[error("IO error, {0}")]
 	IOError(std::io::Error),
 	/// Configuration error
-	#[fail(display = "Configuration error, {}", _0)]
+	#[error("Configuration error, {0}")]
 	Configuration(String),
 	/// General error
-	#[fail(display = "General error, {}", _0)]
+	#[error("General error, {0}")]
 	General(String),
 }
 
@@ -219,10 +218,6 @@ pub struct ServerConfig {
 	/// (Default: 50 ms)
 	pub duration_sync_long: Option<i64>,
 
-	/// Header cache size
-	/// Set to 0 for now
-	pub header_cache_size: Option<u64>,
-
 	/// Invalid Block hash list
 	/// (Default: none)
 	pub invalid_block_hashes: Option<Vec<String>>,
@@ -289,7 +284,6 @@ impl Default for ServerConfig {
 			chain_validation_mode: ChainValidationMode::default(),
 			pool_config: pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
-			header_cache_size: Some(0),
 			invalid_block_hashes: Some(vec![]),
 			duration_sync_short: Some(30),
 			duration_sync_long: Some(50),
@@ -493,11 +487,11 @@ impl DandelionEpoch {
 	/// Choose a new outbound stem relay peer.
 	pub fn next_epoch(&mut self, peers: &Arc<p2p::Peers>) {
 		self.start_time = Some(Utc::now().timestamp());
-		self.relay_peer = peers.outgoing_connected_peers().first().cloned();
+		self.relay_peer = peers.iter().outbound().connected().choose_random();
 
 		// If stem_probability == 90 then we stem 90% of the time.
-		let mut rng = rand::thread_rng();
 		let stem_probability = self.config.stem_probability;
+		let mut rng = rand::thread_rng();
 		self.is_stem = rng.gen_range(0, 100) < stem_probability;
 
 		let addr = self.relay_peer.clone().map(|p| p.info.addr.clone());
@@ -534,7 +528,7 @@ impl DandelionEpoch {
 		}
 
 		if update_relay {
-			self.relay_peer = peers.outgoing_connected_peers().first().cloned();
+			self.relay_peer = peers.iter().outbound().connected().choose_random();
 			info!(
 				"DandelionEpoch: relay_peer: new peer chosen: {:?}",
 				self.relay_peer.clone().map(|p| p.info.addr.clone())

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use futures::future::{self, Future};
-use hyper;
 use hyper::service::Service;
 use hyper::{Body, Method, Request, Response, StatusCode};
 use std::collections::hash_map::DefaultHasher;
@@ -87,13 +86,13 @@ pub trait Handler {
 	}
 }
 
-#[derive(Clone, Fail, Eq, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, thiserror::Error, Eq, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RouterError {
-	#[fail(display = "Route {} already exists", _0)]
+	#[error("Route {0} already exists")]
 	RouteAlreadyExists(String),
-	#[fail(display = "Route {} not found", _0)]
+	#[error("Route {0} not found")]
 	RouteNotFound(String),
-	#[fail(display = "Route value not found for {}", _0)]
+	#[error("Route value not found for {0}")]
 	NoValue(String),
 }
 

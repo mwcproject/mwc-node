@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ pub mod id;
 pub mod merkle_proof;
 pub mod pmmr;
 pub mod transaction;
-pub mod verifier_cache;
 
 use crate::consensus::GRIN_BASE;
 use util::secp::pedersen::Commitment;
@@ -33,13 +32,14 @@ pub use self::block_sums::*;
 pub use self::committed::Committed;
 pub use self::compact_block::*;
 pub use self::id::ShortId;
+pub use self::pmmr::segment::*;
 pub use self::transaction::*;
 
 /// Common errors
-#[derive(Fail, Debug)]
+#[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
 pub enum Error {
 	/// Human readable represenation of amount is invalid
-	#[fail(display = "Invalid amount string, {}", _0)]
+	#[error("Invalid amount string, {0}")]
 	InvalidAmountString(String),
 }
 

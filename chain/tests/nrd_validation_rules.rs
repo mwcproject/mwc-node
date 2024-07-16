@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ where
 {
 	let next_header_info =
 		consensus::next_difficulty(prev.height, chain.difficulty_iter().unwrap());
-	let fee = txs.iter().map(|x| x.fee()).sum();
+	let fee = txs.iter().map(|x| x.fee(prev.height + 1)).sum();
 	let reward = reward::output(
 		keychain,
 		&ProofBuilder::new(keychain),
@@ -65,7 +65,8 @@ where
 	)
 	.unwrap();
 
-	let mut block = Block::new(prev, &txs, next_header_info.clone().difficulty, reward)?;
+	let mut block = Block::new(prev, &txs, next_header_info.clone().difficulty, reward)
+		.map_err(|e| Error::Block(e))?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -107,7 +108,7 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	assert_eq!(chain.head()?.height, 8);
 
 	let mut kernel = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-		fee: 20000,
+		fee: 20000.into(),
 		relative_height: NRDRelativeHeight::new(2)?,
 	});
 
@@ -115,10 +116,10 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// // Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand();
-	let skey = excess.secret_key().unwrap();
+	let excess = BlindingFactor::rand(keychain.secp());
+	let skey = excess.secret_key(keychain.secp()).unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey().unwrap();
+	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
@@ -223,7 +224,7 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	assert_eq!(chain.head()?.height, 8);
 
 	let mut kernel = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-		fee: 20000,
+		fee: 20000.into(),
 		relative_height: NRDRelativeHeight::new(1)?,
 	});
 
@@ -231,10 +232,10 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// // Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand();
-	let skey = excess.secret_key().unwrap();
+	let excess = BlindingFactor::rand(keychain.secp());
+	let skey = excess.secret_key(keychain.secp()).unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey().unwrap();
+	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();
@@ -322,7 +323,7 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	assert_eq!(header_8.height, 8);
 
 	let mut kernel = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
-		fee: 20000,
+		fee: 20000.into(),
 		relative_height: NRDRelativeHeight::new(2)?,
 	});
 
@@ -330,10 +331,10 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	let msg = kernel.msg_to_sign().unwrap();
 
 	// // Generate a kernel with public excess and associated signature.
-	let excess = BlindingFactor::rand();
-	let skey = excess.secret_key().unwrap();
+	let excess = BlindingFactor::rand(keychain.secp());
+	let skey = excess.secret_key(keychain.secp()).unwrap();
 	kernel.excess = keychain.secp().commit(0, skey).unwrap();
-	let pubkey = &kernel.excess.to_pubkey().unwrap();
+	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify().unwrap();

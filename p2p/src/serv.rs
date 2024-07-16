@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,10 +22,12 @@ use std::thread;
 use std::time::Duration;
 
 use crate::chain;
-use crate::core::core;
-use crate::core::core::hash::Hash;
-use crate::core::global;
-use crate::core::pow::Difficulty;
+use crate::chain::txhashset::BitmapChunk;
+use crate::grin_core::core;
+use crate::grin_core::core::hash::Hash;
+use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::grin_core::global;
+use crate::grin_core::pow::Difficulty;
 use crate::handshake::Handshake;
 use crate::peer::Peer;
 use crate::peers::Peers;
@@ -34,8 +36,10 @@ use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
 	TxHashSetRead,
 };
+use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
+use grin_chain::txhashset::Segmenter;
 
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.
@@ -55,7 +59,7 @@ impl Server {
 	/// Creates a new idle p2p server with no peers
 	pub fn new(
 		db_root: &str,
-		capab: Capabilities,
+		capabilities: Capabilities,
 		config: P2PConfig,
 		adapter: Arc<dyn ChainAdapter>,
 		genesis: Hash,
@@ -65,7 +69,7 @@ impl Server {
 	) -> Result<Server, Error> {
 		Ok(Server {
 			config: config.clone(),
-			capabilities: capab,
+			capabilities,
 			handshake: Arc::new(Handshake::new(
 				genesis,
 				config.clone(),
@@ -85,7 +89,7 @@ impl Server {
 
 	/// Starts a new TCP server and listen to incoming connections. This is a
 	/// blocking call until the TCP server stops.
-	pub fn listen(&self, header_cache_size: u64) -> Result<(), Error> {
+	pub fn listen(&self) -> Result<(), Error> {
 		// start TCP listener and handle incoming connections
 		let addr = SocketAddr::new(self.config.host, self.config.port);
 		let listener = TcpListener::bind(addr)?;
@@ -136,8 +140,10 @@ impl Server {
 						}
 						continue;
 					}
-					match self.handle_new_peer(stream, header_cache_size) {
-						Err(Error::ConnectionClose) => debug!("shutting down, ignoring a new peer"),
+					match self.handle_new_peer(stream) {
+						Err(Error::ConnectionClose(err)) => {
+							debug!("shutting down, ignoring a new peer, {}", err)
+						}
 						Err(e) => {
 							debug!("Error accepting peer {}: {:?}", peer_addr.to_string(), e);
 							let _ = self.peers.add_banned(peer_addr, ReasonForBan::BadHandshake);
@@ -162,14 +168,16 @@ impl Server {
 
 	/// Asks the server to connect to a new peer. Directly returns the peer if
 	/// we're already connected to the provided address.
-	pub fn connect(&self, addr: PeerAddr, header_cache_size: u64) -> Result<Arc<Peer>, Error> {
+	pub fn connect(&self, addr: PeerAddr) -> Result<Arc<Peer>, Error> {
 		if self.stop_state.is_stopped() {
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from("node is stopping")));
 		}
 
 		if Peer::is_denied(&self.config, addr.clone()) {
 			debug!("connect_peer: peer {:?} denied, not connecting.", addr);
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from(
+				"Peer is denied because it is in config black list",
+			)));
 		}
 
 		if global::is_production_mode() {
@@ -183,9 +191,9 @@ impl Server {
 
 		// check if the onion address is self
 		if global::is_production_mode() && self.self_onion_address.is_some() {
-			match addr.clone() {
+			match &addr {
 				Onion(address) => {
-					if self.self_onion_address.as_ref().unwrap() == &address {
+					if self.self_onion_address.as_ref().unwrap() == address {
 						debug!("error trying to connect with self: {}", address);
 						return Err(Error::PeerWithSelf);
 					}
@@ -255,7 +263,10 @@ impl Server {
 					}
 				} else {
 					// can't connect to this because we don't have a socks proxy.
-					return Err(Error::ConnectionClose);
+					return Err(Error::ConnectionClose(format!(
+						"Failed connect to Tor address {} because Tor socks is not configured",
+						onion_address
+					)));
 				}
 			}
 		};
@@ -271,7 +282,6 @@ impl Server {
 					self_addr,
 					&self.handshake,
 					self.peers.clone(),
-					header_cache_size,
 					peer_addr,
 					(*self).clone(),
 				)?;
@@ -292,9 +302,9 @@ impl Server {
 		}
 	}
 
-	fn handle_new_peer(&self, stream: TcpStream, header_cache_size: u64) -> Result<(), Error> {
+	fn handle_new_peer(&self, stream: TcpStream) -> Result<(), Error> {
 		if self.stop_state.is_stopped() {
-			return Err(Error::ConnectionClose);
+			return Err(Error::ConnectionClose(String::from("Server is stopping")));
 		}
 		let total_diff = self.peers.total_difficulty()?;
 
@@ -305,7 +315,6 @@ impl Server {
 			total_diff,
 			&self.handshake,
 			self.peers.clone(),
-			header_cache_size,
 			self.clone(),
 		)?;
 		self.peers.add_connected(Arc::new(peer))?;
@@ -326,7 +335,7 @@ impl Server {
 	/// different sets of peers themselves. In addition, it prevent potential
 	/// duplicate connections, malicious or not.
 	fn check_undesirable(&self, stream: &TcpStream) -> bool {
-		if self.peers.peer_inbound_count()
+		if self.peers.iter().inbound().connected().count() as u32
 			>= self.config.peer_max_inbound_count() + self.config.peer_listener_buffer_count()
 		{
 			debug!("Accepting new connection will exceed peer limit, refusing connection.");
@@ -422,7 +431,6 @@ impl ChainAdapter for DummyAdapter {
 		&self,
 		_: &[core::BlockHeader],
 		_: &PeerInfo,
-		_: u64,
 	) -> Result<bool, chain::Error> {
 		Ok(true)
 	}
@@ -437,14 +445,6 @@ impl ChainAdapter for DummyAdapter {
 	}
 
 	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error> {
-		unimplemented!()
-	}
-
-	fn process_add_headers_sync(
-		&self,
-		_: &[core::BlockHeader],
-		_: u64,
-	) -> Result<bool, chain::Error> {
 		unimplemented!()
 	}
 
@@ -475,6 +475,78 @@ impl ChainAdapter for DummyAdapter {
 	}
 
 	fn get_tmpfile_pathname(&self, _tmpfile_name: String) -> PathBuf {
+		unimplemented!()
+	}
+
+	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error> {
+		unimplemented!()
+	}
+
+	fn get_kernel_segment(
+		&self,
+		_hash: Hash,
+		_id: SegmentIdentifier,
+	) -> Result<Segment<TxKernel>, chain::Error> {
+		unimplemented!()
+	}
+
+	fn get_bitmap_segment(
+		&self,
+		_hash: Hash,
+		_id: SegmentIdentifier,
+	) -> Result<Segment<BitmapChunk>, chain::Error> {
+		unimplemented!()
+	}
+
+	fn get_output_segment(
+		&self,
+		_hash: Hash,
+		_id: SegmentIdentifier,
+	) -> Result<Segment<OutputIdentifier>, chain::Error> {
+		unimplemented!()
+	}
+
+	fn get_rangeproof_segment(
+		&self,
+		_hash: Hash,
+		_id: SegmentIdentifier,
+	) -> Result<Segment<RangeProof>, chain::Error> {
+		unimplemented!()
+	}
+
+	fn receive_bitmap_segment(
+		&self,
+		_block_hash: Hash,
+		_bitmap_root_hash: Hash,
+		_segment: Segment<BitmapChunk>,
+	) -> Result<bool, chain::Error> {
+		unimplemented!()
+	}
+
+	fn receive_output_segment(
+		&self,
+		_block_hash: Hash,
+		_bitmap_root_hash: Hash,
+		_segment: Segment<OutputIdentifier>,
+	) -> Result<bool, chain::Error> {
+		unimplemented!()
+	}
+
+	fn receive_rangeproof_segment(
+		&self,
+		_block_hash: Hash,
+		_bitmap_root_hash: Hash,
+		_segment: Segment<RangeProof>,
+	) -> Result<bool, chain::Error> {
+		unimplemented!()
+	}
+
+	fn receive_kernel_segment(
+		&self,
+		_block_hash: Hash,
+		_bitmap_root_hash: Hash,
+		_segment: Segment<TxKernel>,
+	) -> Result<bool, chain::Error> {
 		unimplemented!()
 	}
 }

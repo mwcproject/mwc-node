@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,10 +16,10 @@
 use std::fs;
 use std::{io, time};
 
-use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::pmmr::{self, family, Backend};
-use crate::core::core::BlockHeader;
-use crate::core::ser::{PMMRable, ProtocolVersion};
+use crate::grin_core::core::hash::{Hash, Hashed};
+use crate::grin_core::core::pmmr::{self, family, Backend};
+use crate::grin_core::core::BlockHeader;
+use crate::grin_core::ser::{PMMRable, ProtocolVersion};
 use crate::leaf_set::LeafSet;
 use crate::prune_list::PruneList;
 use crate::types::{AppendOnlyFile, DataFile, SizeEntry, SizeInfo};
@@ -65,69 +65,100 @@ pub struct PMMRBackend<T: PMMRable> {
 impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 	/// Append the provided data and hashes to the backend storage.
 	/// Add the new leaf pos to our leaf_set if this is a prunable MMR.
-	#[allow(unused_variables)]
-	fn append(&mut self, data: &T, hashes: Vec<Hash>) -> Result<(), String> {
+	fn append(&mut self, data: &T, hashes: &[Hash]) -> Result<(), String> {
 		let size = self
 			.data_file
 			.append(&data.as_elmt())
 			.map_err(|e| format!("Failed to append data to file. {}", e))?;
 
-		for h in &hashes {
-			self.hash_file
-				.append(h)
-				.map_err(|e| format!("Failed to append hash to file. {}", e))?;
-		}
+		self.hash_file
+			.extend_from_slice(hashes)
+			.map_err(|e| format!("Failed to append hash to file. {}", e))?;
 
 		if self.prunable {
 			// (Re)calculate the latest pos given updated size of data file
 			// and the total leaf_shift, and add to our leaf_set.
-			let pos = pmmr::insertion_to_pmmr_index(size + self.prune_list.get_total_leaf_shift());
+			let pos =
+				pmmr::insertion_to_pmmr_index(size + self.prune_list.get_total_leaf_shift() - 1);
 			self.leaf_set.add(pos);
 		}
 
 		Ok(())
 	}
 
-	fn get_from_file(&self, position: u64) -> Option<Hash> {
-		if self.is_compacted(position) {
-			return None;
+	// Supports appending a pruned subtree (single root hash) to an existing hash file.
+	// Update the prune_list "shift cache" to reflect the new pruned leaf pos in the subtree.
+	fn append_pruned_subtree(&mut self, hash: Hash, pos0: u64) -> Result<(), String> {
+		if !self.prunable {
+			return Err("Not prunable, cannot append pruned subtree.".into());
 		}
-		let shift = self.prune_list.get_shift(position);
-		self.hash_file.read(position - shift)
+
+		self.hash_file
+			.append(&hash)
+			.map_err(|e| format!("Failed to append subtree hash to file. {}", e))?;
+
+		self.prune_list.append(pos0);
+
+		Ok(())
 	}
 
-	fn get_data_from_file(&self, position: u64) -> Option<T::E> {
-		if !pmmr::is_leaf(position) {
+	fn append_hash(&mut self, hash: Hash) -> Result<(), String> {
+		self.hash_file
+			.append(&hash)
+			.map_err(|e| format!("Failed to append hash to file. {}", e))?;
+		Ok(())
+	}
+
+	fn get_from_file(&self, pos0: u64) -> Option<Hash> {
+		if self.is_compacted(pos0) {
 			return None;
 		}
-		if self.is_compacted(position) {
+		let shift = self.prune_list.get_shift(pos0);
+		self.hash_file.read(1 + pos0 - shift)
+	}
+
+	fn get_peak_from_file(&self, pos0: u64) -> Option<Hash> {
+		let shift = self.prune_list.get_shift(pos0);
+		self.hash_file.read(1 + pos0 - shift)
+	}
+
+	fn get_data_from_file(&self, pos0: u64) -> Option<T::E> {
+		if !pmmr::is_leaf(pos0) {
 			return None;
 		}
-		let flatfile_pos = pmmr::n_leaves(position);
-		let shift = self.prune_list.get_leaf_shift(position);
+		if self.is_compacted(pos0) {
+			return None;
+		}
+		let flatfile_pos = pmmr::n_leaves(pos0 + 1);
+		let shift = self.prune_list.get_leaf_shift(1 + pos0);
 		self.data_file.read(flatfile_pos - shift)
 	}
 
 	/// Get the hash at pos.
 	/// Return None if pos is a leaf and it has been removed (or pruned or
 	/// compacted).
-	fn get_hash(&self, pos: u64) -> Option<Hash> {
-		if self.prunable && pmmr::is_leaf(pos) && !self.leaf_set.includes(pos) {
+	fn get_hash(&self, pos0: u64) -> Option<Hash> {
+		if self.prunable && pmmr::is_leaf(pos0) && !self.leaf_set.includes(pos0) {
 			return None;
 		}
-		self.get_from_file(pos)
+		self.get_from_file(pos0)
 	}
 
 	/// Get the data at pos.
 	/// Return None if it has been removed or if pos is not a leaf node.
-	fn get_data(&self, pos: u64) -> Option<T::E> {
-		if !pmmr::is_leaf(pos) {
+	fn get_data(&self, pos0: u64) -> Option<T::E> {
+		if !pmmr::is_leaf(pos0) {
 			return None;
 		}
-		if self.prunable && !self.leaf_set.includes(pos) {
+		if self.prunable && !self.leaf_set.includes(pos0) {
 			return None;
 		}
-		self.get_data_from_file(pos)
+		self.get_data_from_file(pos0)
+	}
+
+	/// Remove leaf from leaf set
+	fn remove_from_leaf_set(&mut self, pos0: u64) {
+		self.leaf_set.remove(pos0);
 	}
 
 	/// Returns an iterator over all the leaf positions.
@@ -135,7 +166,7 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 	/// For a non-prunable PMMR this is *all* leaves (this is not yet implemented).
 	fn leaf_pos_iter(&self) -> Box<dyn Iterator<Item = u64> + '_> {
 		if self.prunable {
-			Box::new(self.leaf_set.iter())
+			Box::new(self.leaf_set.iter().map(|x| x - 1))
 		} else {
 			panic!("leaf_pos_iter not implemented for non-prunable PMMR")
 		}
@@ -149,6 +180,14 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 		}
 	}
 
+	fn n_unpruned_leaves_to_index(&self, to_index: u64) -> u64 {
+		if self.prunable {
+			self.leaf_set.n_unpruned_leaves_to_index(to_index)
+		} else {
+			pmmr::n_leaves(pmmr::insertion_to_pmmr_index(to_index))
+		}
+	}
+
 	/// Returns an iterator over all the leaf insertion indices (0-indexed).
 	/// If our pos are [1,2,4,5,8] (first 5 leaf pos) then our insertion indices are [0,1,2,3,4]
 	fn leaf_idx_iter(&self, from_idx: u64) -> Box<dyn Iterator<Item = u64> + '_> {
@@ -157,7 +196,7 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 		// iterate, skipping everything prior to this
 		// pass in from_idx=0 then we want to convert to pos=1
 
-		let from_pos = pmmr::insertion_to_pmmr_index(from_idx + 1);
+		let from_pos = 1 + pmmr::insertion_to_pmmr_index(from_idx);
 
 		if self.prunable {
 			Box::new(
@@ -179,21 +218,37 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 		}
 
 		// Rewind the hash file accounting for pruned/compacted pos
-		let shift = self.prune_list.get_shift(position);
+		let shift = if position == 0 {
+			0
+		} else {
+			self.prune_list.get_shift(position - 1)
+		};
 		self.hash_file.rewind(position - shift);
 
 		// Rewind the data file accounting for pruned/compacted pos
 		let flatfile_pos = pmmr::n_leaves(position);
-		let leaf_shift = self.prune_list.get_leaf_shift(position);
+		let leaf_shift = if position == 0 {
+			0
+		} else {
+			self.prune_list.get_leaf_shift(position)
+		};
 		self.data_file.rewind(flatfile_pos - leaf_shift);
 
 		Ok(())
 	}
 
+	fn reset_prune_list(&mut self) {
+		let bitmap = Bitmap::new();
+		self.prune_list = PruneList::new(Some(self.data_dir.join(PMMR_PRUN_FILE)), bitmap);
+		if let Err(e) = self.prune_list.flush() {
+			error!("Flushing reset prune list: {}", e);
+		}
+	}
+
 	/// Remove by insertion position.
-	fn remove(&mut self, pos: u64) -> Result<(), String> {
+	fn remove(&mut self, pos0: u64) -> Result<(), String> {
 		assert!(self.prunable, "Remove on non-prunable MMR");
-		self.leaf_set.remove(pos);
+		self.leaf_set.remove(pos0);
 		Ok(())
 	}
 
@@ -282,16 +337,23 @@ impl<T: PMMRable> PMMRBackend<T> {
 		})
 	}
 
-	fn is_pruned(&self, pos: u64) -> bool {
-		self.prune_list.is_pruned(pos)
+	fn is_pruned(&self, pos0: u64) -> bool {
+		self.prune_list.is_pruned(pos0)
 	}
 
-	fn is_pruned_root(&self, pos: u64) -> bool {
-		self.prune_list.is_pruned_root(pos)
+	fn is_pruned_root(&self, pos0: u64) -> bool {
+		self.prune_list.is_pruned_root(pos0)
 	}
 
-	fn is_compacted(&self, pos: u64) -> bool {
-		self.is_pruned(pos) && !self.is_pruned_root(pos)
+	// Check if pos is pruned but not a pruned root itself.
+	// Checking for pruned root is faster so we do this check first.
+	// We can do a fast initial check as well -
+	// if its in the current leaf_set then we know it is not compacted.
+	fn is_compacted(&self, pos0: u64) -> bool {
+		if self.leaf_set.includes(pos0) {
+			return false;
+		}
+		!self.is_pruned_root(pos0) && self.is_pruned(pos0)
 	}
 
 	/// Number of hashes in the PMMR stored by this backend. Only produces the
@@ -319,10 +381,11 @@ impl<T: PMMRable> PMMRBackend<T> {
 			.and(self.hash_file.flush())
 			.and(self.data_file.flush())
 			.and(self.sync_leaf_set())
+			.and(self.prune_list.flush())
 			.map_err(|e| {
 				io::Error::new(
 					io::ErrorKind::Interrupted,
-					format!("Could not sync pmmr to disk, {:?}", e),
+					format!("Could not sync pmmr to disk: {:?}", e),
 				)
 			})
 	}
@@ -358,22 +421,22 @@ impl<T: PMMRable> PMMRBackend<T> {
 		// on the cutoff_pos provided.
 		let (leaves_removed, pos_to_rm) = self.pos_to_rm(cutoff_pos, rewind_rm_pos);
 
-		// 1. Save compact copy of the hash file, skipping removed data.
+		// Save compact copy of the hash file, skipping removed data.
 		{
-			let pos_to_rm = map_vec!(pos_to_rm, |pos| {
-				let shift = self.prune_list.get_shift(pos.into());
-				pos as u64 - shift
+			let pos_to_rm = map_vec!(pos_to_rm, |pos1| {
+				let shift = self.prune_list.get_shift(pos1 as u64 - 1);
+				pos1 as u64 - shift
 			});
 
-			self.hash_file.save_prune(&pos_to_rm)?;
+			self.hash_file.write_tmp_pruned(&pos_to_rm)?;
 		}
 
-		// 2. Save compact copy of the data file, skipping removed leaves.
+		// Save compact copy of the data file, skipping removed leaves.
 		{
 			let leaf_pos_to_rm = pos_to_rm
 				.iter()
-				.filter(|&x| pmmr::is_leaf(x.into()))
 				.map(|x| x as u64)
+				.filter(|x| pmmr::is_leaf(x - 1))
 				.collect::<Vec<_>>();
 
 			let pos_to_rm = map_vec!(leaf_pos_to_rm, |&pos| {
@@ -382,22 +445,30 @@ impl<T: PMMRable> PMMRBackend<T> {
 				flat_pos - shift
 			});
 
-			self.data_file.save_prune(&pos_to_rm)?;
+			self.data_file.write_tmp_pruned(&pos_to_rm)?;
 		}
 
-		// 3. Update the prune list and write to disk.
+		// Replace hash and data files with compact copies.
+		// Rebuild and intialize from the new files.
 		{
-			for pos in leaves_removed.iter() {
-				self.prune_list.add(pos.into());
-			}
+			debug!("compact: about to replace hash and data files and rebuild...");
+			self.hash_file.replace_with_tmp()?;
+			self.data_file.replace_with_tmp()?;
+			debug!("compact: ...finished replacing and rebuilding");
+		}
+
+		// Update the prune list and write to disk.
+		{
+			let mut bitmap = self.prune_list.bitmap();
+			bitmap.or_inplace(&leaves_removed);
+			self.prune_list = PruneList::new(Some(self.data_dir.join(PMMR_PRUN_FILE)), bitmap);
 			self.prune_list.flush()?;
 		}
 
-		// 4. Write the leaf_set to disk.
+		// Write the leaf_set to disk.
 		// Optimize the bitmap storage in the process.
 		self.leaf_set.flush()?;
 
-		// 5. cleanup rewind files
 		self.clean_rewind_files()?;
 
 		Ok(true)
@@ -420,19 +491,19 @@ impl<T: PMMRable> PMMRBackend<T> {
 			expanded.add(x);
 			let mut current = x as u64;
 			loop {
-				let (parent, sibling) = family(current);
-				let sibling_pruned = self.is_pruned_root(sibling);
+				let (parent0, sibling0) = family(current - 1);
+				let sibling_pruned = self.is_pruned_root(sibling0);
 
 				// if sibling previously pruned
 				// push it back onto list of pos to remove
 				// so we can remove it and traverse up to parent
 				if sibling_pruned {
-					expanded.add(sibling as u32);
+					expanded.add(1 + sibling0 as u32);
 				}
 
-				if sibling_pruned || expanded.contains(sibling as u32) {
-					expanded.add(parent as u32);
-					current = parent;
+				if sibling_pruned || expanded.contains(1 + sibling0 as u32) {
+					expanded.add(1 + parent0 as u32);
+					current = 1 + parent0;
 				} else {
 					break;
 				}
@@ -448,8 +519,8 @@ fn removed_excl_roots(removed: &Bitmap) -> Bitmap {
 	removed
 		.iter()
 		.filter(|pos| {
-			let (parent_pos, _) = family(*pos as u64);
-			removed.contains(parent_pos as u32)
+			let (parent_pos0, _) = family(*pos as u64 - 1);
+			removed.contains(1 + parent_pos0 as u32)
 		})
 		.collect()
 }

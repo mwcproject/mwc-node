@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -19,7 +19,7 @@
 //! here.
 
 use crate::core::block::HeaderVersion;
-use crate::core::hash::{Hash, ZERO_HASH};
+use crate::core::hash::Hash;
 use crate::global;
 use crate::pow::Difficulty;
 use std::cmp::{max, min};
@@ -113,13 +113,13 @@ pub const CUT_THROUGH_HORIZON: u32 = WEEK_HEIGHT as u32;
 pub const STATE_SYNC_THRESHOLD: u32 = 2 * DAY_HEIGHT as u32;
 
 /// Weight of an input when counted against the max block weight capacity
-pub const BLOCK_INPUT_WEIGHT: u64 = 1;
+pub const INPUT_WEIGHT: u64 = 1;
 
 /// Weight of an output when counted against the max block weight capacity
-pub const BLOCK_OUTPUT_WEIGHT: u64 = 21;
+pub const OUTPUT_WEIGHT: u64 = 21;
 
 /// Weight of a kernel when counted against the max block weight capacity
-pub const BLOCK_KERNEL_WEIGHT: u64 = 3;
+pub const KERNEL_WEIGHT: u64 = 3;
 
 /// Total maximum block weight. At current sizes, this means a maximum
 /// theoretical size of:
@@ -144,6 +144,9 @@ pub const TESTING_FIRST_HARD_FORK: u64 = 3;
 pub const TESTING_SECOND_HARD_FORK: u64 = 6;
 /// AutomatedTesting and UserTesting HF3 height.
 pub const TESTING_THIRD_HARD_FORK: u64 = 9;
+
+/// Fork every 3 blocks
+pub const TESTING_HARD_FORK_INTERVAL: u64 = 3;
 
 /// Check whether the block version is valid at a given height
 /// MWC doesn't want like grin change the algorithms for mining. So version is constant
@@ -246,11 +249,13 @@ pub const UNIT_DIFFICULTY: u64 =
 pub const INITIAL_DIFFICULTY: u64 = 1_000_000 * UNIT_DIFFICULTY;
 
 /// Minimal header information required for the Difficulty calculation to
-/// take place
+/// take place. Used to iterate through a number of blocks. Note that an instance
+/// of this is unable to calculate its own hash, due to an optimization that prevents
+/// the header's PoW proof nonces from being deserialized on read
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HeaderInfo {
-	/// Block hash, ZERO_HASH when this is a sythetic entry.
-	pub block_hash: Hash,
+pub struct HeaderDifficultyInfo {
+	/// Hash of this block
+	pub hash: Option<Hash>,
 	/// Timestamp of the header, 1 when not used (returned info)
 	pub timestamp: u64,
 	/// Network difficulty or next difficulty to use
@@ -261,17 +266,17 @@ pub struct HeaderInfo {
 	pub is_secondary: bool,
 }
 
-impl HeaderInfo {
+impl HeaderDifficultyInfo {
 	/// Default constructor
 	pub fn new(
-		block_hash: Hash,
+		hash: Option<Hash>,
 		timestamp: u64,
 		difficulty: Difficulty,
 		secondary_scaling: u32,
 		is_secondary: bool,
-	) -> HeaderInfo {
-		HeaderInfo {
-			block_hash,
+	) -> HeaderDifficultyInfo {
+		HeaderDifficultyInfo {
+			hash,
 			timestamp,
 			difficulty,
 			secondary_scaling,
@@ -281,9 +286,9 @@ impl HeaderInfo {
 
 	/// Constructor from a timestamp and difficulty, setting a default secondary
 	/// PoW factor
-	pub fn from_ts_diff(timestamp: u64, difficulty: Difficulty) -> HeaderInfo {
-		HeaderInfo {
-			block_hash: ZERO_HASH,
+	pub fn from_ts_diff(timestamp: u64, difficulty: Difficulty) -> HeaderDifficultyInfo {
+		HeaderDifficultyInfo {
+			hash: None,
 			timestamp,
 			difficulty,
 			secondary_scaling: global::initial_graph_weight(),
@@ -294,9 +299,12 @@ impl HeaderInfo {
 
 	/// Constructor from a difficulty and secondary factor, setting a default
 	/// timestamp
-	pub fn from_diff_scaling(difficulty: Difficulty, secondary_scaling: u32) -> HeaderInfo {
-		HeaderInfo {
-			block_hash: ZERO_HASH,
+	pub fn from_diff_scaling(
+		difficulty: Difficulty,
+		secondary_scaling: u32,
+	) -> HeaderDifficultyInfo {
+		HeaderDifficultyInfo {
+			hash: None,
 			timestamp: 1,
 			difficulty,
 			secondary_scaling,
@@ -328,9 +336,9 @@ pub fn clamp(actual: u64, goal: u64, clamp_factor: u64) -> u64 {
 ///
 /// The secondary proof-of-work factor is calculated along the same lines, as
 /// an adjustment on the deviation against the ideal value.
-pub fn next_difficulty<T>(height: u64, cursor: T) -> HeaderInfo
+pub fn next_difficulty<T>(height: u64, cursor: T) -> HeaderDifficultyInfo
 where
-	T: IntoIterator<Item = HeaderInfo>,
+	T: IntoIterator<Item = HeaderDifficultyInfo>,
 {
 	// Create vector of difficulty data running from earliest
 	// to latest, and pad with simulated pre-genesis data to allow earlier
@@ -361,16 +369,16 @@ where
 	// minimum difficulty avoids getting stuck due to dampening
 	let difficulty = max(MIN_DIFFICULTY, diff_sum * BLOCK_TIME_SEC / adj_ts);
 
-	HeaderInfo::from_diff_scaling(Difficulty::from_num(difficulty), sec_pow_scaling)
+	HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(difficulty), sec_pow_scaling)
 }
 
 /// Count, in units of 1/100 (a percent), the number of "secondary" (AR) blocks in the provided window of blocks.
-pub fn ar_count(_height: u64, diff_data: &[HeaderInfo]) -> u64 {
+pub fn ar_count(_height: u64, diff_data: &[HeaderDifficultyInfo]) -> u64 {
 	100 * diff_data.iter().filter(|n| n.is_secondary).count() as u64
 }
 
 /// Factor by which the secondary proof of work difficulty will be adjusted
-pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderInfo]) -> u32 {
+pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderDifficultyInfo]) -> u32 {
 	// Get the scaling factor sum of the last DIFFICULTY_ADJUST_WINDOW elements
 	let scale_sum: u64 = diff_data.iter().map(|dd| dd.secondary_scaling as u64).sum();
 
@@ -1129,5 +1137,78 @@ mod test {
 		let total_blocks_reward = calc_mwc_block_overage(2_100_000_000 * 1000, true);
 		// Expected 20M in total. The coin base is exactly 20M
 		assert_eq!(total_blocks_reward, 20000000000000000);
+	}
+
+	// Brute force test to validate that calc_mwc_block_reward and calc_mwc_block_overage are in sync fo all blocks
+	// Please note, the test is slow, it checking values for every block that will be generated until reward will be gone
+	// Test is 'ignore' because it takes about an hour to run
+	#[test]
+	#[ignore]
+	fn test_rewards_full_cycle() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
+		let mut total_coins: u64 = GENESIS_BLOCK_REWARD;
+		let mut height: u64 = 0;
+		let mut zero_reward_blocks = 0;
+
+		let total_blocks = get_epoch_block_offset(12);
+
+		while zero_reward_blocks < 100 {
+			assert_eq!(calc_mwc_block_overage(height, true), total_coins);
+			height += 1;
+			let r = calc_mwc_block_reward(height);
+			total_coins += r;
+			if r == 0 {
+				zero_reward_blocks += 1;
+			}
+			if height % 1000000 == 0 {
+				println!(
+					"Current height={}, reward={}, coins={}, progress={:.1}%",
+					height,
+					r,
+					total_coins,
+					height as f64 / total_blocks as f64 * 100.0
+				);
+			}
+		}
+
+		println!(
+			"Finished with height={}, reward={}, coins={}",
+			height,
+			calc_mwc_block_reward(height),
+			total_coins
+		);
+
+		assert_eq!(total_coins, 20000000000000000);
+		assert!(height > get_epoch_block_offset(12) + 99);
+
+		// Test finished with output:
+		//		Current height=884000000, reward=10000000, coins=19970529927788020, progress=99.7%
+		//		Current height=885000000, reward=10000000, coins=19980529927788020, progress=99.8%
+		//		Current height=886000000, reward=10000000, coins=19990529927788020, progress=99.9%
+		//		Finished with height=886947108, reward=0, coins=20000000000000000
+		//		test consensus::test::test_rewards_full_cycle ... ok
+	}
+
+	// Testing last 1M blocks, srating from the event: height=886000000, reward=10000000, coins=19990529927788020, progress=99.9%
+	#[test]
+	fn test_last_epoch() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
+		let mut total_coins: u64 = 19990529927788020;
+		let mut height: u64 = 886000000;
+		let mut zero_reward_blocks = 0;
+
+		while zero_reward_blocks < 100 {
+			assert_eq!(calc_mwc_block_overage(height, true), total_coins);
+			height += 1;
+			let r = calc_mwc_block_reward(height);
+			total_coins += r;
+			if r == 0 {
+				zero_reward_blocks += 1;
+			}
+		}
+		assert_eq!(total_coins, 20000000000000000);
+		assert!(height > get_epoch_block_offset(12) + 99);
 	}
 }

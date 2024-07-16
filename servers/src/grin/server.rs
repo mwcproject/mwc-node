@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@
 
 use crate::tor::config as tor_config;
 use crate::util::secp;
-use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -27,15 +26,14 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::{convert::TryInto, fs};
 use std::{
 	thread::{self, JoinHandle},
 	time::{self, Duration},
 };
 
-use crate::ErrorKind;
-
 use fs2::FileExt;
-use grin_util::{to_hex, OnionV3Address};
+use grin_util::{static_secp_instance, to_hex, OnionV3Address};
 use walkdir::WalkDir;
 
 use crate::api;
@@ -48,10 +46,8 @@ use crate::common::hooks::{init_chain_hooks, init_net_hooks};
 use crate::common::stats::{
 	ChainStats, DiffBlock, DiffStats, PeerStats, ServerStateInfo, ServerStats, TxStats,
 };
-
 use crate::common::types::{Error, ServerConfig, StratumServerConfig};
-use crate::core::core::hash::Hashed;
-use crate::core::core::verifier_cache::LruVerifierCache;
+use crate::core::core::hash::{Hashed, ZERO_HASH};
 use crate::core::ser::ProtocolVersion;
 use crate::core::stratum::connections;
 use crate::core::{consensus, genesis, global, pow};
@@ -73,16 +69,14 @@ use std::sync::atomic::Ordering;
 use crate::p2p::libp2p_connection;
 use chrono::Utc;
 use grin_core::core::TxKernel;
+use grin_p2p::Capabilities;
 use grin_util::from_hex;
 use grin_util::secp::constants::SECRET_KEY_SIZE;
 use grin_util::secp::pedersen::Commitment;
 use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
-pub type ServerTxPool =
-	Arc<RwLock<pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter, LruVerifierCache>>>;
-/// Arcified thread-safe LruVerifierCache
-pub type ServerVerifierCache = Arc<RwLock<LruVerifierCache>>;
+pub type ServerTxPool = Arc<RwLock<pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
 
 /// Grin server holding internal structures.
 pub struct Server {
@@ -94,9 +88,6 @@ pub struct Server {
 	pub chain: Arc<chain::Chain>,
 	/// in-memory transaction pool
 	pub tx_pool: ServerTxPool,
-	/// Shared cache for verification results when
-	/// verifying rangeproof and kernel signatures.
-	verifier_cache: ServerVerifierCache,
 	/// Whether we're currently syncing
 	pub sync_state: Arc<SyncState>,
 	/// To be passed around to collect stats and info
@@ -219,7 +210,6 @@ impl Server {
 		stop_state: Option<Arc<StopState>>,
 		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<Server, Error> {
-		let header_cache_size = config.header_cache_size.unwrap_or(25_000);
 		//let duration_sync_long = config.duration_sync_long.unwrap_or(150);
 		//let duration_sync_short = config.duration_sync_short.unwrap_or(100);
 
@@ -245,16 +235,11 @@ impl Server {
 			Arc::new(StopState::new())
 		};
 
-		// Shared cache for verification results.
-		// We cache rangeproof verification and kernel signature verification.
-		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
-
 		let pool_adapter = Arc::new(PoolToChainAdapter::new());
 		let pool_net_adapter = Arc::new(PoolToNetAdapter::new(config.dandelion_config.clone()));
 		let tx_pool = Arc::new(RwLock::new(pool::TransactionPool::new(
 			config.pool_config.clone(),
 			pool_adapter.clone(),
-			verifier_cache.clone(),
 			pool_net_adapter.clone(),
 		)));
 
@@ -279,7 +264,6 @@ impl Server {
 			chain_adapter.clone(),
 			genesis.clone(),
 			pow::verify_size,
-			verifier_cache.clone(),
 			archive_mode,
 		)?);
 
@@ -289,16 +273,9 @@ impl Server {
 			sync_state.clone(),
 			shared_chain.clone(),
 			tx_pool.clone(),
-			verifier_cache.clone(),
 			config.clone(),
 			init_net_hooks(&config),
 		));
-
-		// we always support tor, so don't rely on config. This fixes
-		// the problem of old config files
-		// only for capabilities params, doesn't mean
-		// tor _MUST_ be on.
-		let capab = config.p2p_config.capabilities | p2p::Capabilities::TOR_ADDRESS;
 
 		api::reset_server_onion_address();
 
@@ -352,7 +329,10 @@ impl Server {
 							Err(e) => {
 								input.send(None).unwrap();
 								error!("failed to start Tor due to {}", e);
-								Err(ErrorKind::TorConfig(format!("Failed to init tor, {}", e)))
+								Err(crate::Error::TorConfig(format!(
+									"Failed to init tor, {}",
+									e
+								)))
 							}
 						};
 					})?;
@@ -513,9 +493,18 @@ impl Server {
 				})?;
 		}
 
+		// Initialize our capabilities.
+		// Currently either "default" or with optional "archive_mode" (block history) support enabled.
+		let capabilities = if let Some(true) = config.archive_mode {
+			Capabilities::default() | Capabilities::BLOCK_HIST
+		} else {
+			Capabilities::default()
+		};
+		debug!("Capabilities: {:?}", capabilities);
+
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
-			capab,
+			capabilities,
 			config.p2p_config.clone(),
 			net_adapter.clone(),
 			genesis.hash(),
@@ -532,7 +521,7 @@ impl Server {
 		let mut connect_thread = None;
 
 		if config.p2p_config.seeding_type != p2p::Seeding::Programmatic {
-			let seeder = match config.p2p_config.seeding_type {
+			let seed_list = match config.p2p_config.seeding_type {
 				p2p::Seeding::None => {
 					warn!("No seed configured, will stay solo until connected to");
 					seed::predefined_seeds(vec![])
@@ -549,18 +538,11 @@ impl Server {
 				_ => unreachable!(),
 			};
 
-			let preferred_peers = match &config.p2p_config.peers_preferred {
-				Some(addrs) => addrs.peers.clone(),
-				None => vec![],
-			};
-
 			connect_thread = Some(seed::connect_and_monitor(
 				p2p_server.clone(),
-				config.p2p_config.capabilities,
-				seeder,
-				&preferred_peers,
+				seed_list,
+				config.p2p_config.clone(),
 				stop_state.clone(),
-				header_cache_size,
 			)?);
 		}
 
@@ -580,7 +562,7 @@ impl Server {
 		let _ = thread::Builder::new()
 			.name("p2p-server".to_string())
 			.spawn(move || {
-				if let Err(e) = p2p_inner.listen(header_cache_size) {
+				if let Err(e) = p2p_inner.listen() {
 					error!("P2P server failed with erorr: {:?}", e);
 				}
 			})?;
@@ -623,7 +605,6 @@ impl Server {
 			config.dandelion_config.clone(),
 			tx_pool.clone(),
 			pool_net_adapter,
-			verifier_cache.clone(),
 			stop_state.clone(),
 		)?;
 
@@ -633,7 +614,6 @@ impl Server {
 			p2p: p2p_server,
 			chain: shared_chain,
 			tx_pool,
-			verifier_cache,
 			sync_state,
 			state_info: ServerStateInfo {
 				..Default::default()
@@ -718,22 +698,30 @@ impl Server {
 		let scoped_vec;
 		let mut existing_onion = None;
 		let secret = if !found {
-			let sec_key = secp::key::SecretKey::new(&mut rand::thread_rng());
+			let secp = static_secp_instance();
+			let secp = secp.lock();
+
+			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
 			scoped_vec = vec![sec_key.clone()];
 			sec_key_vec = Some((scoped_vec).as_slice());
 
 			onion_address = OnionV3Address::from_private(&sec_key.0)
-				.map_err(|e| ErrorKind::TorConfig(format!("Unable to build onion address, {}", e)))
+				.map_err(|e| {
+					crate::Error::TorConfig(format!("Unable to build onion address, {}", e))
+				})
 				.unwrap()
 				.to_string();
 			sec_key
 		} else {
+			let secp = static_secp_instance();
+			let secp = secp.lock();
+
 			existing_onion = Some(onion_address.clone());
 			// Read Secret from the file.
-			let sec = tor_config::read_sec_key_file(&format!(
-				"{}{}{}",
-				onion_service_dir, MAIN_SEPARATOR, onion_address
-			))
+			let sec = tor_config::read_sec_key_file(
+				&format!("{}{}{}", onion_service_dir, MAIN_SEPARATOR, onion_address),
+				&secp,
+			)
 			.map_err(|e| Error::General(format!("Unable to read tor secret, {}", e)))?;
 			sec
 		};
@@ -757,7 +745,7 @@ impl Server {
 			existing_onion,
 			socks_port,
 		)
-		.map_err(|e| ErrorKind::TorConfig(format!("Failed to configure tor, {}", e).into()))
+		.map_err(|e| crate::Error::TorConfig(format!("Failed to configure tor, {}", e).into()))
 		.unwrap();
 
 		info!(
@@ -778,15 +766,20 @@ impl Server {
 			.launch();
 
 		if res.is_err() {
-			Err(Error::Configuration("Unable to start tor".to_string()))
+			Err(Error::Configuration(format!(
+				"Unable to start tor due error: {}  Started with config: {}, working dir: {}",
+				res.err().unwrap(),
+				tor_path,
+				tor_dir
+			)))
 		} else {
 			Ok((process, onion_address.to_string(), secret))
 		}
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
-	pub fn connect_peer(&self, addr: PeerAddr, header_cache_size: u64) -> Result<(), Error> {
-		self.p2p.connect(addr, header_cache_size)?;
+	pub fn connect_peer(&self, addr: PeerAddr) -> Result<(), Error> {
+		self.p2p.connect(addr)?;
 		Ok(())
 	}
 
@@ -800,7 +793,13 @@ impl Server {
 
 	/// Number of peers
 	pub fn peer_count(&self) -> u32 {
-		self.p2p.peers.peer_count()
+		self.p2p
+			.peers
+			.iter()
+			.connected()
+			.count()
+			.try_into()
+			.unwrap()
 	}
 
 	/// Start a minimal "stratum" mining service on a separate thread
@@ -810,7 +809,6 @@ impl Server {
 		config: StratumServerConfig,
 		ip_pool: Arc<connections::StratumIpPool>,
 	) {
-		let edge_bits = global::min_edge_bits();
 		let proof_size = global::proofsize();
 		let sync_state = self.sync_state.clone();
 
@@ -818,14 +816,13 @@ impl Server {
 			config,
 			self.chain.clone(),
 			self.tx_pool.clone(),
-			self.verifier_cache.clone(),
 			self.state_info.stratum_stats.clone(),
 			ip_pool,
 		);
 		let _ = thread::Builder::new()
 			.name("stratum_server".to_string())
 			.spawn(move || {
-				stratum_server.run_loop(edge_bits as u32, proof_size, sync_state);
+				stratum_server.run_loop(proof_size, sync_state);
 			});
 	}
 
@@ -866,7 +863,6 @@ impl Server {
 			config,
 			self.chain.clone(),
 			self.tx_pool.clone(),
-			self.verifier_cache.clone(),
 			stop_state,
 			sync_state,
 		);
@@ -902,7 +898,7 @@ impl Server {
 		// code clean. This may be handy for testing but not really needed
 		// for release
 		let diff_stats = {
-			let last_blocks: Vec<consensus::HeaderInfo> =
+			let last_blocks: Vec<consensus::HeaderDifficultyInfo> =
 				global::difficulty_data_to_vector(self.chain.difficulty_iter()?)
 					.into_iter()
 					.collect();
@@ -918,9 +914,11 @@ impl Server {
 
 					height += 1;
 
+					let block_hash = next.hash.unwrap_or(ZERO_HASH);
+
 					DiffBlock {
 						block_height: height,
-						block_hash: next.block_hash,
+						block_hash,
 						difficulty: next.difficulty.to_num(),
 						time: next.timestamp,
 						duration: next.timestamp - prev.timestamp,
@@ -944,7 +942,8 @@ impl Server {
 		let peer_stats = self
 			.p2p
 			.peers
-			.connected_peers()
+			.iter()
+			.connected()
 			.into_iter()
 			.map(|p| PeerStats::from_peer(&p))
 			.collect();

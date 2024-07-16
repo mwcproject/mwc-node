@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ use grin_store as store;
 use grin_util as util;
 
 mod error;
-pub use crate::error::{Error, ErrorKind};
+pub use crate::error::Error;
 
 pub mod common;
 mod grin;
@@ -46,4 +46,4 @@ mod tor;
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};
 pub use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
-pub use crate::grin::server::{Server, ServerTxPool, ServerVerifierCache};
+pub use crate::grin::server::{Server, ServerTxPool};

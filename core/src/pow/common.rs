@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,10 @@
 //! Common types and traits for cuckoo family of solvers
 
 use crate::pow::error::Error;
-use crate::pow::num::{PrimInt, ToPrimitive};
 use crate::pow::siphash::siphash24;
 use blake2::blake2b::blake2b;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use num::{PrimInt, ToPrimitive};
 use std::fmt;
 use std::hash::Hash;
 use std::io::Cursor;
@@ -82,7 +82,7 @@ pub fn create_siphash_keys(header: &[u8]) -> Result<[u64; 4], Error> {
 /// Utility struct to calculate commonly used Cuckoo parameters calculated
 /// from header, nonce, edge_bits, etc.
 pub struct CuckooParams {
-	pub edge_bits: u8,
+	//pub edge_bits: u8,
 	pub proof_size: usize,
 	pub num_edges: u64,
 	pub siphash_keys: [u64; 4],
@@ -98,7 +98,7 @@ impl CuckooParams {
 		let num_nodes = 1u64 << node_bits;
 		let node_mask = num_nodes - 1;
 		Ok(CuckooParams {
-			edge_bits,
+			//edge_bits,
 			proof_size,
 			num_edges,
 			siphash_keys: [0; 4],

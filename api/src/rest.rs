@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,109 +18,50 @@
 //! To use it, just have your service(s) implement the ApiEndpoint trait and
 //! register them on a ApiServer.
 
-use crate::p2p::Error as P2pError;
 use crate::router::{Handler, HandlerObj, ResponseFuture, Router, RouterError};
 use crate::web::response;
-use failure::{Backtrace, Context, Fail};
 use futures::channel::oneshot;
 use futures::TryStreamExt;
 use hyper::server::accept;
 use hyper::service::make_service_fn;
 use hyper::{Body, Request, Server, StatusCode};
-use rustls;
 use rustls::internal::pemfile;
 use rustls::{NoClientAuth, ServerConfig};
 use std::convert::Infallible;
-use std::fmt::{self, Display};
 use std::fs::File;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{io, thread};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
+use tokio::stream::StreamExt;
 use tokio_rustls::TlsAcceptor;
 
 /// Errors that can be returned by an ApiEndpoint implementation.
-#[derive(Debug)]
-pub struct Error {
-	inner: Context<ErrorKind>,
-}
-
-#[derive(Clone, Eq, PartialEq, Debug, Fail, Serialize, Deserialize)]
-pub enum ErrorKind {
-	#[fail(display = "API Internal error: {}", _0)]
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error, Serialize, Deserialize)]
+pub enum Error {
+	#[error("API Internal error: {0}")]
 	Internal(String),
-	#[fail(display = "API Bad arguments: {}", _0)]
+	#[error("API Bad arguments: {0}")]
 	Argument(String),
-	#[fail(display = "API Not found: {}", _0)]
+	#[error("API Not found: {0}")]
 	NotFound(String),
-	#[fail(display = "API Request error: {}", _0)]
+	#[error("API Request error: {0}")]
 	RequestError(String),
-	#[fail(display = "API ResponseError error: {}", _0)]
+	#[error("API ResponseError error: {0}")]
 	ResponseError(String),
-	#[fail(display = "API Router error: {}", _0)]
-	Router(RouterError),
-	#[fail(display = "API P2P error: {}", _0)]
+	#[error("API Router error: {source:?}")]
+	Router {
+		#[from]
+		source: RouterError,
+	},
+	#[error("API P2P error: {0}")]
 	P2pError(String),
-}
-
-impl Fail for Error {
-	fn cause(&self) -> Option<&dyn Fail> {
-		self.inner.cause()
-	}
-
-	fn backtrace(&self) -> Option<&Backtrace> {
-		self.inner.backtrace()
-	}
-}
-
-impl Display for Error {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		Display::fmt(&self.inner, f)
-	}
-}
-
-impl Error {
-	pub fn kind(&self) -> &ErrorKind {
-		self.inner.get_context()
-	}
-}
-
-impl From<ErrorKind> for Error {
-	fn from(kind: ErrorKind) -> Error {
-		Error {
-			inner: Context::new(kind),
-		}
-	}
-}
-
-impl From<Context<ErrorKind>> for Error {
-	fn from(inner: Context<ErrorKind>) -> Error {
-		Error { inner: inner }
-	}
-}
-
-impl From<RouterError> for Error {
-	fn from(error: RouterError) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Router(error)),
-		}
-	}
 }
 
 impl From<crate::chain::Error> for Error {
 	fn from(error: crate::chain::Error) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::Internal(error.to_string())),
-		}
-	}
-}
-
-impl From<P2pError> for Error {
-	fn from(error: P2pError) -> Error {
-		Error {
-			inner: Context::new(ErrorKind::P2pError(format!("{}", error))),
-		}
+		Error::Internal(error.to_string())
 	}
 }
 
@@ -141,7 +82,7 @@ impl TLSConfig {
 
 	fn load_certs(&self) -> Result<Vec<rustls::Certificate>, Error> {
 		let certfile = File::open(&self.certificate).map_err(|e| {
-			ErrorKind::Internal(format!(
+			Error::Internal(format!(
 				"load_certs failed to open file {}, {}",
 				self.certificate, e
 			))
@@ -149,12 +90,12 @@ impl TLSConfig {
 		let mut reader = io::BufReader::new(certfile);
 
 		pemfile::certs(&mut reader)
-			.map_err(|_| ErrorKind::Internal("failed to load certificate".to_string()).into())
+			.map_err(|_| Error::Internal("failed to load certificate".to_string()))
 	}
 
 	fn load_private_key(&self) -> Result<rustls::PrivateKey, Error> {
 		let keyfile = File::open(&self.private_key).map_err(|e| {
-			ErrorKind::Internal(format!(
+			Error::Internal(format!(
 				"load_private_key failed to open file {}, {}",
 				self.private_key, e
 			))
@@ -162,12 +103,12 @@ impl TLSConfig {
 		let mut reader = io::BufReader::new(keyfile);
 
 		let keys = pemfile::pkcs8_private_keys(&mut reader)
-			.map_err(|_| ErrorKind::Internal("failed to load private key".to_string()))?;
+			.map_err(|_| Error::Internal("failed to load private key".to_string()))?;
 		if keys.len() != 1 {
-			return Err(ErrorKind::Internal(format!(
+			return Err(Error::Internal(format!(
 				"load_private_key expected a single private key, found {}",
 				keys.len()
-			)))?;
+			)));
 		}
 		Ok(keys[0].clone())
 	}
@@ -177,7 +118,7 @@ impl TLSConfig {
 		let key = self.load_private_key()?;
 		let mut cfg = rustls::ServerConfig::new(rustls::NoClientAuth::new());
 		cfg.set_single_cert(certs, key)
-			.map_err(|e| ErrorKind::Internal(format!("set single certificate failed, {}", e)))?;
+			.map_err(|e| Error::Internal(format!("set single certificate failed, {}", e)))?;
 		Ok(Arc::new(cfg))
 	}
 }
@@ -219,10 +160,9 @@ impl ApiServer {
 		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<thread::JoinHandle<()>, Error> {
 		if self.shutdown_sender.is_some() {
-			return Err(ErrorKind::Internal(
+			return Err(Error::Internal(
 				"Can't start HTTP API server, it's running already".to_string(),
-			)
-			.into());
+			));
 		}
 		let rx = &mut api_chan.1;
 		let tx = &mut api_chan.0;
@@ -231,6 +171,7 @@ impl ApiServer {
 		let m = oneshot::channel::<()>();
 		let tx = std::mem::replace(tx, m.0);
 		self.shutdown_sender = Some(tx);
+
 		thread::Builder::new()
 			.name("apis".to_string())
 			.spawn(move || {
@@ -254,7 +195,7 @@ impl ApiServer {
 					error!("HTTP API server error: {}", e)
 				}
 			})
-			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
+			.map_err(|e| Error::Internal(format!("failed to spawn API thread. {}", e)))
 	}
 
 	/// Starts the TLS ApiServer at the provided address.
@@ -267,18 +208,21 @@ impl ApiServer {
 		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<thread::JoinHandle<()>, Error> {
 		if self.shutdown_sender.is_some() {
-			return Err(ErrorKind::Internal(
+			return Err(Error::Internal(
 				"Can't start HTTPS API server, it's running already".to_string(),
-			)
-			.into());
+			));
 		}
+
 		let rx = &mut api_chan.1;
 		let tx = &mut api_chan.0;
 
+		// Jones's trick to update memory
 		let m = oneshot::channel::<()>();
 		let tx = std::mem::replace(tx, m.0);
 		self.shutdown_sender = Some(tx);
 
+		// Building certificates here because we want to handle certificates failures with panic.
+		// It is a fatal error on node start, not a regular error to log
 		let certs = conf.load_certs()?;
 		let keys = conf.load_private_key()?;
 
@@ -286,6 +230,7 @@ impl ApiServer {
 		config
 			.set_single_cert(certs, keys)
 			.expect("invalid key or certificate");
+
 		let acceptor = TlsAcceptor::from(Arc::new(config));
 
 		thread::Builder::new()
@@ -293,7 +238,10 @@ impl ApiServer {
 			.spawn(move || {
 				let server = async move {
 					let mut listener = TcpListener::bind(&addr).await.expect("failed to bind");
-					let listener = listener.incoming().and_then(move |s| acceptor.accept(s));
+					let listener = listener
+						.incoming()
+						.and_then(move |s| acceptor.accept(s))
+						.filter(|r| r.is_ok());
 
 					let server = Server::builder(accept::from_stream(listener))
 						.serve(make_service_fn(move |_| {
@@ -314,7 +262,7 @@ impl ApiServer {
 					error!("HTTP API server error: {}", e)
 				}
 			})
-			.map_err(|e| ErrorKind::Internal(format!("failed to spawn API thread. {}", e)).into())
+			.map_err(|e| Error::Internal(format!("failed to spawn API thread. {}", e)))
 	}
 
 	/// Stops the API server, it panics in case of error

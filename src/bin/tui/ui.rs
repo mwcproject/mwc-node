@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,14 +23,12 @@ use cursive::theme::PaletteColor::{
 	Background, Highlight, HighlightInactive, Primary, Shadow, View,
 };
 use cursive::theme::{BaseColor, BorderStyle, Color, Theme};
-use cursive::traits::Boxable;
-use cursive::traits::Identifiable;
+use cursive::traits::{Nameable, Resizable};
 use cursive::utils::markup::StyledString;
 use cursive::views::{
 	CircularFocus, Dialog, LinearLayout, Panel, SelectView, StackView, TextView, ViewRef,
 };
-use cursive::Cursive;
-use cursive::CursiveExt;
+use cursive::{CursiveRunnable, CursiveRunner};
 use std::sync::mpsc;
 use std::{thread, time};
 
@@ -44,7 +42,7 @@ use grin_core::global;
 use grin_util::logger::LogEntry;
 
 pub struct UI {
-	cursive: Cursive,
+	cursive: CursiveRunner<CursiveRunnable>,
 	ui_rx: mpsc::Receiver<UIMessage>,
 	ui_tx: mpsc::Sender<UIMessage>,
 	controller_tx: mpsc::Sender<ControllerMessage>,
@@ -72,7 +70,7 @@ impl UI {
 		let (ui_tx, ui_rx) = mpsc::channel::<UIMessage>();
 
 		let mut grin_ui = UI {
-			cursive: Cursive::default(),
+			cursive: cursive::default().into_runner(),
 			ui_tx,
 			ui_rx,
 			controller_tx,
@@ -125,9 +123,7 @@ impl UI {
 		let controller_tx_clone = grin_ui.controller_tx.clone();
 		grin_ui.cursive.add_global_callback('q', move |c| {
 			let content = StyledString::styled("Shutting down...", Color::Light(BaseColor::Yellow));
-			c.add_layer(CircularFocus::wrap_tab(Dialog::around(TextView::new(
-				content,
-			))));
+			c.add_layer(CircularFocus::new(Dialog::around(TextView::new(content))).wrap_tab());
 			controller_tx_clone
 				.send(ControllerMessage::Shutdown)
 				.unwrap();
@@ -198,7 +194,7 @@ impl Controller {
 	pub fn run(&mut self, server: Server) {
 		let stat_update_interval = 1;
 		let mut next_stat_update = Utc::now().timestamp() + stat_update_interval;
-		let delay = time::Duration::from_millis(50);
+		let delay = time::Duration::from_millis(250);
 		while self.ui.step() {
 			if let Some(message) = self.rx.try_iter().next() {
 				match message {

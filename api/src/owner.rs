@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
 //! Owner API External Definition
 
 use crate::chain::{Chain, SyncState};
-use crate::handlers::chain_api::{ChainCompactHandler, ChainValidationHandler};
+use crate::core::core::hash::Hash;
+use crate::handlers::chain_api::{ChainCompactHandler, ChainResetHandler, ChainValidationHandler};
 use crate::handlers::peers_api::{PeerHandler, PeersConnectedHandler};
 use crate::handlers::server_api::StatusHandler;
 use crate::p2p::{self, PeerData};
@@ -97,6 +98,7 @@ impl Owner {
 	}
 
 	/// Trigger a validation of the chain state.
+	///
 	/// # Arguments
 	/// * `assume_valid_rangeproofs_kernels` -  if false, will validate rangeproofs, kernel signatures and sum of kernel excesses. if true, will only validate the sum of kernel excesses should equal the sum of unspent outputs minus total supply.
 	///
@@ -126,6 +128,26 @@ impl Owner {
 			chain: self.chain.clone(),
 		};
 		chain_compact_handler.compact_chain()
+	}
+
+	pub fn reset_chain_head(&self, hash: String) -> Result<(), Error> {
+		let hash =
+			Hash::from_hex(&hash).map_err(|_| Error::RequestError("invalid header hash".into()))?;
+		let handler = ChainResetHandler {
+			chain: self.chain.clone(),
+			sync_state: self.sync_state.clone(),
+		};
+		handler.reset_chain_head(hash)
+	}
+
+	pub fn invalidate_header(&self, hash: String) -> Result<(), Error> {
+		let hash =
+			Hash::from_hex(&hash).map_err(|_| Error::RequestError("invalid header hash".into()))?;
+		let handler = ChainResetHandler {
+			chain: self.chain.clone(),
+			sync_state: self.sync_state.clone(),
+		};
+		handler.invalidate_header(hash)
 	}
 
 	/// Retrieves information about stored peers.

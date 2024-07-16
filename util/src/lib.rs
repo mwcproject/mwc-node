@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,8 +33,7 @@ pub use ov3::OnionV3Address;
 pub use ov3::OnionV3Error as OnionV3AddressError;
 
 // Re-export so only has to be included once
-pub use parking_lot::Mutex;
-pub use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+pub use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // Re-export so only has to be included once
 pub use secp256k1zkp as secp;
@@ -92,8 +91,15 @@ where
 	/// Initializes the OneTime, should only be called once after construction.
 	/// Will panic (via assert) if called more than once.
 	pub fn init(&self, value: T) {
+		self.set(value, false);
+	}
+
+	/// Allows the one time to be set again with an override.
+	pub fn set(&self, value: T, is_override: bool) {
 		let mut inner = self.inner.write();
-		assert!(inner.is_none());
+		if !is_override {
+			assert!(inner.is_none());
+		}
 		*inner = Some(value);
 	}
 

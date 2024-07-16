@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 use crate::chain;
 use crate::core::core::hash::Hashed;
 use crate::core::core::merkle_proof::MerkleProof;
-use crate::core::core::{KernelFeatures, TxKernel};
+use crate::core::core::{FeeFields, KernelFeatures, TxKernel};
 use crate::core::{core, ser};
 use crate::p2p;
 use crate::util::secp::pedersen;
@@ -528,6 +528,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TxKernelPrintable {
 	pub features: String,
+	pub fee_shift: u8,
 	pub fee: u64,
 	pub lock_height: u64,
 	pub excess: String,
@@ -537,17 +538,21 @@ pub struct TxKernelPrintable {
 impl TxKernelPrintable {
 	pub fn from_txkernel(k: &core::TxKernel) -> TxKernelPrintable {
 		let features = k.features.as_string();
-		let (fee, lock_height) = match k.features {
+		let (fee_fields, lock_height) = match k.features {
 			KernelFeatures::Plain { fee } => (fee, 0),
-			KernelFeatures::Coinbase => (0, 0),
+			KernelFeatures::Coinbase => (FeeFields::zero(), 0),
 			KernelFeatures::HeightLocked { fee, lock_height } => (fee, lock_height),
 			KernelFeatures::NoRecentDuplicate {
 				fee,
 				relative_height,
 			} => (fee, relative_height.into()),
 		};
+		// Printing for the most advanced version that we have. In prev versions the shift is 0, we should be good
+		let fee = fee_fields.fee(u64::MAX);
+		let fee_shift: u8 = fee_fields.fee_shift(u64::MAX);
 		TxKernelPrintable {
 			features,
+			fee_shift,
 			fee,
 			lock_height,
 			excess: k.excess.to_hex(),
@@ -558,7 +563,7 @@ impl TxKernelPrintable {
 
 // Just the information required for wallet reconstruction
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BlockHeaderInfo {
+pub struct BlockHeaderDifficultyInfo {
 	// Hash
 	pub hash: String,
 	/// Height of this block since the genesis block (height 0)
@@ -567,9 +572,9 @@ pub struct BlockHeaderInfo {
 	pub previous: String,
 }
 
-impl BlockHeaderInfo {
-	pub fn from_header(header: &core::BlockHeader) -> BlockHeaderInfo {
-		BlockHeaderInfo {
+impl BlockHeaderDifficultyInfo {
+	pub fn from_header(header: &core::BlockHeader) -> BlockHeaderDifficultyInfo {
+		BlockHeaderDifficultyInfo {
 			hash: header.hash().to_hex(),
 			height: header.height,
 			previous: header.prev_hash.to_hex(),
@@ -733,7 +738,7 @@ impl CompactBlockPrintable {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BlockOutputs {
 	/// The block header
-	pub header: BlockHeaderInfo,
+	pub header: BlockHeaderDifficultyInfo,
 	/// A printable version of the outputs
 	pub outputs: Vec<OutputPrintable>,
 }
@@ -748,6 +753,15 @@ pub struct OutputListing {
 	pub last_retrieved_index: u64,
 	/// A printable version of the outputs
 	pub outputs: Vec<OutputPrintable>,
+}
+
+// For traversing a set of all available blocks
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BlockListing {
+	/// The last height retrieved
+	pub last_retrieved_height: u64,
+	/// A printable version of the retrieved Blocks
+	pub blocks: Vec<BlockPrintable>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -768,7 +782,7 @@ pub struct PoolInfo {
 /// libp2p peers are preferable, nodes wit tor addresses can be used to expand the network
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Libp2pPeers {
-	/// Libp2p prres
+	/// Libp2p peers
 	pub libp2p_peers: Vec<String>,
 	/// Other nodes. There is a high chance that they are running libp2p network
 	pub node_peers: Vec<String>,

@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 //! Public types for config modules
 
-use failure::Fail;
 use std::io;
 use std::path::PathBuf;
 
@@ -22,22 +21,22 @@ use crate::servers::ServerConfig;
 use crate::util::logger::LoggingConfig;
 
 /// Error type wrapping config errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
 	/// Error with parsing of config file
-	#[fail(display = "Error parsing configuration file {}, {}", _0, _1)]
+	#[error("Error parsing configuration file {0}, {1}")]
 	ParseError(String, String),
 
 	/// Error with fileIO while reading config file
-	#[fail(display = "Node Config file {} IO error, {}", _0, _1)]
+	#[error("Node Config file {0} IO error, {1}")]
 	FileIOError(String, String),
 
 	/// No file found
-	#[fail(display = "Node Configuration file not found: {}", _0)]
+	#[error("Node Configuration file not found: {0}")]
 	FileNotFoundError(String),
 
 	/// Error serializing config values
-	#[fail(display = "Error serializing node configuration: {}", _0)]
+	#[error("Error serializing node configuration: {0}")]
 	SerializationError(String),
 }
 
@@ -71,6 +70,8 @@ pub struct GlobalConfig {
 /// want serialised or deserialised
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ConfigMembers {
+	/// Config file version (None == version 1)
+	pub config_file_version: Option<u32>,
 	/// Server config
 	#[serde(default)]
 	pub server: ServerConfig,

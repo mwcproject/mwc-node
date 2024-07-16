@@ -1,4 +1,4 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2021 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,8 +33,6 @@ pub use self::types::*;
 use crate::core::{Block, BlockHeader};
 use crate::genesis;
 use crate::global;
-use chrono;
-use num;
 
 #[macro_use]
 mod common;
@@ -54,8 +52,8 @@ pub use crate::pow::cuckarood::{new_cuckarood_ctx, CuckaroodContext};
 pub use crate::pow::cuckaroom::{new_cuckaroom_ctx, CuckaroomContext};
 pub use crate::pow::cuckarooz::{new_cuckarooz_ctx, CuckaroozContext};
 pub use crate::pow::cuckatoo::{new_cuckatoo_ctx, CuckatooContext};
-pub use crate::pow::error::{Error, ErrorKind};
-use chrono::prelude::{DateTime, NaiveDateTime, Utc};
+pub use crate::pow::error::Error;
+use chrono::prelude::DateTime;
 
 const MAX_SOLS: u32 = 10;
 
@@ -70,7 +68,7 @@ pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
 	)?;
 	ctx.set_header_nonce(
 		bh.pre_pow()
-			.map_err(|e| ErrorKind::PrePowError(format!("{}", e)))?,
+			.map_err(|e| Error::PrePowError(format!("{}", e)))?,
 		None,
 		false,
 	)?;
@@ -109,7 +107,7 @@ pub fn pow_size(
 		let mut ctx = global::create_pow_context::<u32>(bh.height, sz, proof_size, MAX_SOLS)?;
 		ctx.set_header_nonce(
 			bh.pre_pow()
-				.map_err(|e| ErrorKind::PrePowError(format!("{}", e)))?,
+				.map_err(|e| Error::PrePowError(format!("{}", e)))?,
 			None,
 			true,
 		)?;
@@ -127,7 +125,7 @@ pub fn pow_size(
 		// and if we're back where we started, update the time (changes the hash as
 		// well)
 		if bh.pow.nonce == start_nonce {
-			bh.timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc);
+			bh.timestamp = DateTime::from_timestamp(0, 0).unwrap().to_utc();
 		}
 	}
 }
