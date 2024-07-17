@@ -83,6 +83,7 @@ impl BodySync {
 		let head = self.chain.head()?;
 		let header_head = self.chain.header_head()?;
 		let fork_point = self.chain.fork_point()?;
+		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
 
 		if self.chain.check_txhashset_needed(&fork_point)? {
 			trace!(
@@ -96,7 +97,7 @@ impl BodySync {
 			let peers_iter = || {
 				// If we are running with archive mode enabled we only want to sync
 				// from other archive nodes.
-				let cap = if self.archive_mode() {
+				let cap = if self.archive_mode() && head.height <= archive_header.height {
 					Capabilities::BLOCK_HIST
 				} else {
 					Capabilities::UNKNOWN
