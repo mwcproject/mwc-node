@@ -25,13 +25,13 @@ use crate::pow::Difficulty;
 use std::cmp::{max, min};
 
 /// A grin is divisible to 10^9, following the SI prefixes
-pub const GRIN_BASE: u64 = 1_000_000_000;
+pub const MWC_BASE: u64 = 1_000_000_000;
 /// Milligrin, a thousand of a grin
-pub const MILLI_GRIN: u64 = GRIN_BASE / 1_000;
+pub const MILLI_MWC: u64 = MWC_BASE / 1_000;
 /// Microgrin, a thousand of a milligrin
-pub const MICRO_GRIN: u64 = MILLI_GRIN / 1_000;
+pub const MICRO_MWC: u64 = MILLI_MWC / 1_000;
 /// Nanogrin, smallest unit, takes a billion to make a grin
-pub const NANO_GRIN: u64 = 1;
+pub const NANO_MWC: u64 = 1;
 
 /// Block interval, in seconds, the network will tune its next_target for. Note
 /// that we may reduce this value in the future as we get more data on mining
@@ -112,14 +112,23 @@ pub const CUT_THROUGH_HORIZON: u32 = WEEK_HEIGHT as u32;
 /// easier to reason about.
 pub const STATE_SYNC_THRESHOLD: u32 = 2 * DAY_HEIGHT as u32;
 
-/// Weight of an input when counted against the max block weight capacity
-pub const INPUT_WEIGHT: u64 = 1;
+/// Size Weight of an input when counted against the max block weight capacity
+pub const BLOCK_INPUT_WEIGHT: u64 = 1;
 
-/// Weight of an output when counted against the max block weight capacity
-pub const OUTPUT_WEIGHT: u64 = 21;
+/// Size Weight of an output when counted against the max block weight capacity
+pub const BLOCK_OUTPUT_WEIGHT: u64 = 21;
 
-/// Weight of a kernel when counted against the max block weight capacity
-pub const KERNEL_WEIGHT: u64 = 3;
+/// Size Weight of a kernel when counted against the max block weight capacity
+pub const BLOCK_KERNEL_WEIGHT: u64 = 3;
+
+/// Transaction fee weight of input
+pub const TXFEE_INPUT_WEIGHT: u64 = 1;
+
+/// Transaction fee weight of output
+pub const TXFEE_OUTPUT_WEIGHT: u64 = 4;
+
+/// Transaction fee weight of kernel
+pub const TXFEE_KERNEL_WEIGHT: u64 = 1;
 
 /// Total maximum block weight. At current sizes, this means a maximum
 /// theoretical size of:

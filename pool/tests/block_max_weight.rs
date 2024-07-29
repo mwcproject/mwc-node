@@ -82,7 +82,7 @@ fn test_block_building_max_weight() {
 		[2_500_000, 90_000, 80_000, 30_000, 70_000, 60_000]
 	);
 	assert_eq!(
-		txs.iter().map(|x| x.weight()).collect::<Vec<_>>(),
+		txs.iter().map(|x| x.weight_size()).collect::<Vec<_>>(),
 		[88, 46, 46, 25, 46, 46]
 	);
 	assert_eq!(
@@ -110,7 +110,7 @@ fn test_block_building_max_weight() {
 		[2_500_000, 90_000, 80_000, 70_000]
 	);
 	assert_eq!(
-		txs.iter().map(|x| x.weight()).collect::<Vec<_>>(),
+		txs.iter().map(|x| x.weight_size()).collect::<Vec<_>>(),
 		[88, 46, 46, 46]
 	);
 	assert_eq!(

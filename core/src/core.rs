@@ -24,7 +24,7 @@ pub mod merkle_proof;
 pub mod pmmr;
 pub mod transaction;
 
-use crate::consensus::GRIN_BASE;
+use crate::consensus::MWC_BASE;
 use util::secp::pedersen::Commitment;
 
 pub use self::block::*;
@@ -60,7 +60,7 @@ pub fn amount_from_hr_string(amount: &str) -> Result<u64, Error> {
 			(parse_grins(gs)?, parse_ngrins(&tail[1..])?)
 		}
 	};
-	Ok(grins * GRIN_BASE + ngrins)
+	Ok(grins * MWC_BASE + ngrins)
 }
 
 fn parse_grins(amount: &str) -> Result<u64, Error> {
@@ -74,7 +74,7 @@ fn parse_grins(amount: &str) -> Result<u64, Error> {
 }
 
 lazy_static! {
-	static ref WIDTH: usize = (GRIN_BASE as f64).log(10.0) as usize + 1;
+	static ref WIDTH: usize = (MWC_BASE as f64).log(10.0) as usize + 1;
 }
 
 fn parse_ngrins(amount: &str) -> Result<u64, Error> {
@@ -93,7 +93,7 @@ fn parse_ngrins(amount: &str) -> Result<u64, Error> {
 /// Common method for converting an amount to a human-readable string
 
 pub fn amount_to_hr_string(amount: u64, truncate: bool) -> String {
-	let amount = (amount as f64 / GRIN_BASE as f64) as f64;
+	let amount = (amount as f64 / MWC_BASE as f64) as f64;
 	let hr = format!("{:.*}", WIDTH, amount);
 	if truncate {
 		let nzeros = hr.chars().rev().take_while(|x| x == &'0').count();
