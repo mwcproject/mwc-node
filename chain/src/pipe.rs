@@ -26,6 +26,7 @@ use crate::error::Error;
 use crate::store;
 use crate::txhashset;
 use crate::types::{CommitPos, Options, Tip};
+use grin_core::core::Transaction;
 use grin_util::RwLock;
 use std::collections::HashSet;
 use std::iter::FromIterator;
@@ -524,7 +525,7 @@ fn validate_header(header: &BlockHeader, ctx: &mut BlockContext<'_>) -> Result<(
 	}
 
 	// Block header is invalid (and block is invalid) if this lower bound is too heavy for a full block.
-	let weight = TransactionBody::weight_by_iok(0, num_outputs, num_kernels);
+	let weight = Transaction::weight_for_size(0, num_outputs, num_kernels);
 	if weight > global::max_block_weight() {
 		return Err(Error::Block(block::Error::TooHeavy));
 	}

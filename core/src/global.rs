@@ -18,9 +18,9 @@
 
 use crate::consensus;
 use crate::consensus::{
-	graph_weight, HeaderDifficultyInfo, BASE_EDGE_BITS, BLOCK_TIME_SEC, COINBASE_MATURITY,
-	CUT_THROUGH_HORIZON, DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS, DIFFICULTY_ADJUST_WINDOW,
-	INITIAL_DIFFICULTY, KERNEL_WEIGHT, MAX_BLOCK_WEIGHT, OUTPUT_WEIGHT, PROOFSIZE,
+	graph_weight, HeaderDifficultyInfo, BASE_EDGE_BITS, BLOCK_KERNEL_WEIGHT, BLOCK_OUTPUT_WEIGHT,
+	BLOCK_TIME_SEC, COINBASE_MATURITY, CUT_THROUGH_HORIZON, DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS,
+	DIFFICULTY_ADJUST_WINDOW, INITIAL_DIFFICULTY, MAX_BLOCK_WEIGHT, PROOFSIZE,
 	SECOND_POW_EDGE_BITS, STATE_SYNC_THRESHOLD,
 };
 use crate::core::block::Block;
@@ -83,7 +83,7 @@ pub const TESTING_INITIAL_DIFFICULTY: u64 = 1;
 pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
 
 /// Default unit of fee per tx weight, making each output cost about a Grincent
-pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_GRIN; // Keeping default base is same, no changes for MWC     GRIN_BASE / 100 / 20; // 500_000
+pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC; // Keeping default base is same, no changes for MWC     GRIN_BASE / 100 / 20; // 500_000
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
 /// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
@@ -398,7 +398,7 @@ pub fn max_block_weight() -> u64 {
 
 /// Maximum allowed transaction weight (1 weight unit ~= 32 bytes)
 pub fn max_tx_weight() -> u64 {
-	let coinbase_weight = OUTPUT_WEIGHT + KERNEL_WEIGHT;
+	let coinbase_weight = BLOCK_OUTPUT_WEIGHT + BLOCK_KERNEL_WEIGHT;
 	max_block_weight().saturating_sub(coinbase_weight) as u64
 }
 

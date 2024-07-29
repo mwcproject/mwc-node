@@ -51,7 +51,7 @@ fn test_nrd_kernels_enabled() {
 
 	// Spend the initial coinbase.
 	let header_1 = chain.get_header_by_height(1).unwrap();
-	let mg = consensus::MILLI_GRIN;
+	let mg = consensus::MILLI_MWC;
 	let tx = test_transaction_spending_coinbase(
 		&keychain,
 		&header_1,

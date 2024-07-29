@@ -14,7 +14,7 @@
 
 mod common;
 use crate::common::{new_block, tx1i2o, tx2i1o, txspend1i1o};
-use crate::core::consensus::{self, OUTPUT_WEIGHT};
+use crate::core::consensus::{self, BLOCK_OUTPUT_WEIGHT};
 use crate::core::core::block::{Block, BlockHeader, Error, HeaderVersion, UntrustedBlockHeader};
 use crate::core::core::hash::Hashed;
 use crate::core::core::id::ShortIdentifiable;
@@ -42,7 +42,7 @@ fn too_large_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let max_out = global::max_block_weight() / OUTPUT_WEIGHT;
+	let max_out = global::max_block_weight() / BLOCK_OUTPUT_WEIGHT;
 
 	let mut pks = vec![];
 	for n in 0..(max_out + 1) {

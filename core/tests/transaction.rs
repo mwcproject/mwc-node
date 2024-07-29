@@ -214,7 +214,8 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 #[test]
 fn test_fee_fields() -> Result<(), Error> {
 	global::set_local_chain_type(global::ChainTypes::UserTesting);
-	global::set_local_accept_fee_base(500_000);
+	let local_base_fee = 500_000;
+	global::set_local_accept_fee_base(local_base_fee);
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
 
@@ -236,16 +237,12 @@ fn test_fee_fields() -> Result<(), Error> {
 	.expect("valid tx");
 
 	let hf2_height = 2 * consensus::TESTING_HARD_FORK_INTERVAL;
-	assert_eq!(
-		tx.accept_fee(hf2_height),
-		(1 * 1 + 1 * 21 + 1 * 3) * 500_000
-	);
-	assert_eq!(tx.fee(hf2_height), 42);
+	assert_eq!(tx.accept_fee(hf2_height), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
 	assert_eq!(tx.fee(hf2_height), 42);
 	assert_eq!(tx.shifted_fee(hf2_height), 21);
 	assert_eq!(
 		tx.accept_fee(hf2_height - 1),
-		(1 * 4 + 1 * 1 - 1 * 1) * 1_000_000
+		(1 * 4 + 1 * 1 - 1 * 1) * 500_000
 	);
 	assert_eq!(tx.fee(hf2_height - 1), 42 + (1u64 << 40));
 	assert_eq!(tx.shifted_fee(hf2_height - 1), 42 + (1u64 << 40));
@@ -260,7 +257,7 @@ fn test_fee_fields() -> Result<(), Error> {
 	assert_eq!(tx.fee(hf2_height), 147);
 	assert_eq!(tx.shifted_fee(hf2_height), 36);
 	assert_eq!(tx.aggregate_fee_fields(hf2_height), FeeFields::new(2, 147));
-	assert_eq!(tx_fee(1, 1, 3), 15_500_000);
+	assert_eq!(tx_fee(1, 1, 3), (1 * 4 + 3 - 1) * local_base_fee);
 
 	Ok(())
 }

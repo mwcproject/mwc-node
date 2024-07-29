@@ -17,6 +17,7 @@
 use crate::core::block::HeaderVersion;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::{committed, Committed};
+use crate::global::get_accept_fee_base;
 use crate::libtx::{aggsig, secp_ser};
 use crate::ser::{
 	self, read_multi, PMMRable, ProtocolVersion, Readable, Reader, VerifySortedAndUnique,
@@ -908,7 +909,7 @@ impl Readable for TransactionBody {
 
 		// Quick block weight check before proceeding.
 		// Note: We use weight_as_block here (inputs have weight).
-		let tx_block_weight = TransactionBody::weight_by_iok(num_inputs, num_outputs, num_kernels);
+		let tx_block_weight = Transaction::weight_for_size(num_inputs, num_outputs, num_kernels);
 
 		if num_inputs > ser::READ_VEC_SIZE_LIMIT
 			|| num_outputs > ser::READ_VEC_SIZE_LIMIT
@@ -1141,21 +1142,12 @@ impl TransactionBody {
 	}
 
 	/// Calculate weight of transaction using block weighing
-	pub fn weight(&self) -> u64 {
-		TransactionBody::weight_by_iok(
+	pub fn weight_size(&self) -> u64 {
+		Transaction::weight_for_size(
 			self.inputs.len() as u64,
 			self.outputs.len() as u64,
 			self.kernels.len() as u64,
 		)
-	}
-
-	/// Calculate transaction weight using block weighing from transaction
-	/// details. Consensus critical and uses consensus weight values.
-	pub fn weight_by_iok(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		num_inputs
-			.saturating_mul(consensus::INPUT_WEIGHT as u64)
-			.saturating_add(num_outputs.saturating_mul(consensus::OUTPUT_WEIGHT as u64))
-			.saturating_add(num_kernels.saturating_mul(consensus::KERNEL_WEIGHT as u64))
 	}
 
 	/// Lock height of a body is the max lock height of the kernels.
@@ -1175,7 +1167,7 @@ impl TransactionBody {
 	fn verify_weight(&self, weighting: Weighting) -> Result<(), Error> {
 		// A coinbase reward is a single output and a single kernel (for now).
 		// We need to account for this when verifying max tx weights.
-		let coinbase_weight = consensus::OUTPUT_WEIGHT + consensus::KERNEL_WEIGHT;
+		let coinbase_weight = consensus::BLOCK_OUTPUT_WEIGHT + consensus::BLOCK_KERNEL_WEIGHT;
 
 		// If "tx" body then remember to reduce the max_block_weight by the weight of a kernel.
 		// If "limited tx" then compare against the provided max_weight.
@@ -1197,7 +1189,7 @@ impl TransactionBody {
 			}
 		};
 
-		if self.weight() > max_weight {
+		if self.weight_size() > max_weight {
 			return Err(Error::TooHeavy);
 		}
 		Ok(())
@@ -1527,41 +1519,46 @@ impl Transaction {
 	/// Can be used to compare txs by their fee/weight ratio, aka feerate.
 	/// Don't use these values for anything else though due to precision multiplier.
 	pub fn fee_rate(&self, height: u64) -> u64 {
-		self.fee(height) / self.weight() as u64
+		self.fee(height) / self.weight_size() as u64
 	}
 
 	/// Calculate transaction weight
-	pub fn weight(&self) -> u64 {
-		self.body.weight()
+	pub fn weight_size(&self) -> u64 {
+		self.body.weight_size()
 	}
 
 	/// Transaction minimum acceptable fee
-	pub fn accept_fee(&self, height: u64) -> u64 {
-		// Note MWC. Header Version 3  is future versions for the mainnet,
-		// This feature is related to miners only, there is no consensus breaking.
-		if consensus::header_version(height) < HeaderVersion(3) {
-			Transaction::old_weight_by_iok(
-				self.body.inputs.len() as u64,
-				self.body.outputs.len() as u64,
-				self.body.kernels.len() as u64,
-			) * consensus::MILLI_GRIN
-		} else {
-			self.weight() * global::get_accept_fee_base()
-		}
+	/// _height is kept for possible fee formula change that will require hardfork
+	pub fn accept_fee(&self, _height: u64) -> u64 {
+		// Note, this code is different from grin. Grin is using the same formula to calculate the transaction/block size and the
+		// fees. Migration was done with hardfork.
+		// _height
+		Transaction::weight_for_fee(
+			self.body.inputs.len() as u64,
+			self.body.outputs.len() as u64,
+			self.body.kernels.len() as u64,
+		) * get_accept_fee_base()
 	}
 
-	/// Old weight definition for pool acceptance
-	pub fn old_weight_by_iok(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+	/// Transaction weight for fee
+	/// Consensus related, if transaction fee below expected values, it will be rejected by mining node
+	pub fn weight_for_fee(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		// Outputs*4 + kernels*1 - inputs*1
 		let body_weight = num_outputs
-			.saturating_mul(4)
-			.saturating_add(num_kernels)
-			.saturating_sub(num_inputs);
+			.saturating_mul(consensus::TXFEE_OUTPUT_WEIGHT as u64)
+			.saturating_add(num_kernels.saturating_mul(consensus::TXFEE_KERNEL_WEIGHT as u64))
+			.saturating_sub(num_inputs.saturating_mul(consensus::TXFEE_INPUT_WEIGHT as u64));
+
 		max(body_weight, 1)
 	}
 
-	/// Calculate transaction weight from transaction details
-	pub fn weight_by_iok(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
-		TransactionBody::weight_by_iok(num_inputs, num_outputs, num_kernels)
+	/// Calculate transaction weight by size, for block weight.
+	/// Consensus critical and uses consensus weight values.
+	pub fn weight_for_size(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {
+		num_inputs
+			.saturating_mul(consensus::BLOCK_INPUT_WEIGHT as u64)
+			.saturating_add(num_outputs.saturating_mul(consensus::BLOCK_OUTPUT_WEIGHT as u64))
+			.saturating_add(num_kernels.saturating_mul(consensus::BLOCK_KERNEL_WEIGHT as u64))
 	}
 }
 

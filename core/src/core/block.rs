@@ -504,7 +504,7 @@ impl Readable for UntrustedBlockHeader {
 
 		// Validate global output and kernel MMR sizes against upper bounds based on block height.
 		let global_weight =
-			TransactionBody::weight_by_iok(0, header.output_mmr_count(), header.kernel_mmr_count());
+			Transaction::weight_for_size(0, header.output_mmr_count(), header.kernel_mmr_count());
 		if global_weight > global::max_block_weight() * (header.height + 1) {
 			return Err(ser::Error::CorruptedData(
 				"Tx global weight is exceed the limit".to_string(),

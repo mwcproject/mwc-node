@@ -36,7 +36,7 @@ pub use crate::libtx::error::Error;
 
 /// Transaction fee calculation given numbers of inputs, outputs, and kernels
 pub fn tx_fee(input_len: usize, output_len: usize, kernel_len: usize) -> u64 {
-	Transaction::weight_by_iok(input_len as u64, output_len as u64, kernel_len as u64)
+	Transaction::weight_for_fee(input_len as u64, output_len as u64, kernel_len as u64)
 		* get_accept_fee_base()
 }
 
