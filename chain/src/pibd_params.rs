@@ -28,9 +28,6 @@ pub const RANGEPROOF_SEGMENT_HEIGHT: u8 = 11;
 /// Kernel segment height assumed for requests and segment calculation
 pub const KERNEL_SEGMENT_HEIGHT: u8 = 11;
 
-/// Maximum number of received segments to cache (across all trees) before we stop requesting others
-pub const MAX_CACHED_SEGMENTS: usize = 15;
-
 /// How long the state sync should wait after requesting a segment from a peer before
 /// deciding the segment isn't going to arrive. The syncer will then re-request the segment
 pub const SEGMENT_REQUEST_TIMEOUT_SECS: i64 = 60;
@@ -38,10 +35,10 @@ pub const SEGMENT_REQUEST_TIMEOUT_SECS: i64 = 60;
 /// Number of simultaneous requests for segments we should make per available peer. Note this is currently
 /// divisible by 3 to try and evenly spread requests amount the 3 main MMRs (Bitmap segments
 /// will always be requested first)
-pub const SEGMENT_REQUEST_PER_PEER: usize = 3;
+pub const SEGMENT_REQUEST_PER_PEER: usize = 6;
 /// Maximum number of simultaneous requests. Please note, the data will be processed in a single thread, so
 /// the throughput will not be high. 12 should load CPU pretty well at the end of sync process.
-pub const SEGMENT_REQUEST_LIMIT: usize = 12;
+pub const SEGMENT_REQUEST_LIMIT: usize = 24;
 
 /// Maximum stale requests per peer. If there are more requests, no new data will be requested
 pub const STALE_REQUESTS_PER_PEER: u32 = 5;

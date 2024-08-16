@@ -154,8 +154,8 @@ impl SyncRunner {
 			if self.stop_state.is_stopped() {
 				break;
 			}
-
-			thread::sleep(time::Duration::from_millis(10));
+			// Grin has 10 ms here. During PIBD sync it is waste of CPU, checking will take significant resources.
+			thread::sleep(time::Duration::from_millis(500));
 
 			let currently_syncing = self.sync_state.is_syncing();
 

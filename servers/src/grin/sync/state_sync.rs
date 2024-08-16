@@ -20,6 +20,7 @@ use grin_p2p::ReasonForBan;
 use grin_util::secp::rand::Rng;
 use rand::seq::SliceRandom;
 use std::sync::Arc;
+use std::{thread, time};
 
 use crate::chain::{self, pibd_params, SyncState, SyncStatus};
 use crate::core::core::{hash::Hashed, pmmr::segment::SegmentType};
@@ -246,6 +247,10 @@ impl StateSync {
 				}
 
 				if has_segmenter {
+					// Sleeping some extra time because checking request is CPU time consuming, not much optimization
+					// going through all the data. That is why at lease let's not over do with that.
+					thread::sleep(time::Duration::from_millis(500));
+
 					// Continue our PIBD process (which returns true if all segments are in)
 					match self.continue_pibd(&archive_header) {
 						Ok(true) => {

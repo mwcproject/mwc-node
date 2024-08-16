@@ -61,9 +61,6 @@ pub struct Desegmenter {
 	bitmap_mmr_leaf_count: u64,
 	bitmap_mmr_size: u64,
 
-	/// Maximum number of segments to cache before we stop requesting others
-	max_cached_segments: usize,
-
 	/// In-memory 'raw' bitmap corresponding to contents of bitmap accumulator
 	bitmap_cache: Option<Bitmap>,
 
@@ -106,8 +103,6 @@ impl Desegmenter {
 
 			bitmap_mmr_leaf_count: 0,
 			bitmap_mmr_size: 0,
-
-			max_cached_segments: pibd_params::MAX_CACHED_SEGMENTS,
 
 			bitmap_cache: None,
 
@@ -409,7 +404,7 @@ impl Desegmenter {
 					self.apply_output_segment(idx)?;
 				}
 			} else {
-				if self.output_segment_cache.len() >= self.max_cached_segments {
+				if !self.output_segment_cache.is_empty() {
 					self.output_segment_cache = vec![];
 				}
 			}
@@ -424,7 +419,7 @@ impl Desegmenter {
 					self.apply_rangeproof_segment(idx)?;
 				}
 			} else {
-				if self.rangeproof_segment_cache.len() >= self.max_cached_segments {
+				if !self.rangeproof_segment_cache.is_empty() {
 					self.rangeproof_segment_cache = vec![];
 				}
 			}
@@ -439,7 +434,7 @@ impl Desegmenter {
 					self.apply_kernel_segment(idx)?;
 				}
 			} else {
-				if self.kernel_segment_cache.len() >= self.max_cached_segments {
+				if !self.kernel_segment_cache.is_empty() {
 					self.kernel_segment_cache = vec![];
 				}
 			}
@@ -464,13 +459,21 @@ impl Desegmenter {
 				self.default_bitmap_segment_height,
 			);
 			// Advance iterator to next expected segment
+			let mut first_found = true;
+			let mut processed = 0;
 			while let Some(id) = identifier_iter.next() {
 				if id.segment_pos_range(self.bitmap_mmr_size).1 > local_pmmr_size {
+					if first_found {
+						self.bitmap_segment_cache
+							.retain(|segm| segm.id().idx >= id.idx);
+						first_found = false;
+					}
 					if !self.has_bitmap_segment_with_id(id) {
 						return_vec.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id));
-						if return_vec.len() >= max_elements {
-							return Ok(return_vec);
-						}
+					}
+					processed += 1;
+					if processed > max_elements {
+						return Ok(return_vec);
 					}
 				}
 			}
@@ -494,6 +497,8 @@ impl Desegmenter {
 			);
 
 			let mut elems_added = 0;
+			let mut first_found = true;
+			let mut processed = 0;
 			while let Some(output_id) = output_identifier_iter.next() {
 				// Advance output iterator to next needed position
 				let (_first, last) =
@@ -501,14 +506,19 @@ impl Desegmenter {
 				if last <= local_output_mmr_size {
 					continue;
 				}
-				if self.output_segment_cache.len() >= self.max_cached_segments {
-					break;
+
+				if first_found {
+					// Let's clean up old expired items
+					self.output_segment_cache
+						.retain(|segm| segm.id().idx >= output_id.idx);
+					first_found = false;
 				}
 				if !self.has_output_segment_with_id(output_id) {
 					return_vec.push(SegmentTypeIdentifier::new(SegmentType::Output, output_id));
 					elems_added += 1;
 				}
-				if elems_added == max_elements / 3 {
+				processed += 1;
+				if processed > max_elements || elems_added == max_elements / 3 {
 					break;
 				}
 			}
@@ -519,20 +529,26 @@ impl Desegmenter {
 			);
 
 			elems_added = 0;
+			let mut first_found = true;
+			let mut processed = 0;
 			while let Some(rp_id) = rangeproof_identifier_iter.next() {
 				let (_first, last) = rp_id.segment_pos_range(self.archive_header.output_mmr_size);
 				// Advance rangeproof iterator to next needed position
 				if last <= local_rangeproof_mmr_size {
 					continue;
 				}
-				if self.rangeproof_segment_cache.len() >= self.max_cached_segments {
-					break;
+				if first_found {
+					// Let's clean up old expired items
+					self.rangeproof_segment_cache
+						.retain(|segm| segm.id().idx >= rp_id.idx);
+					first_found = false;
 				}
 				if !self.has_rangeproof_segment_with_id(rp_id) {
 					return_vec.push(SegmentTypeIdentifier::new(SegmentType::RangeProof, rp_id));
 					elems_added += 1;
 				}
-				if elems_added == max_elements / 3 {
+				processed += 1;
+				if processed > max_elements || elems_added == max_elements / 3 {
 					break;
 				}
 			}
@@ -543,6 +559,8 @@ impl Desegmenter {
 			);
 
 			elems_added = 0;
+			let mut first_found = true;
+			let mut processed = 0;
 			while let Some(k_id) = kernel_identifier_iter.next() {
 				// Advance kernel iterator to next needed position
 				let (_first, last) = k_id.segment_pos_range(self.archive_header.kernel_mmr_size);
@@ -550,14 +568,19 @@ impl Desegmenter {
 				if last <= local_kernel_mmr_size {
 					continue;
 				}
-				if self.kernel_segment_cache.len() >= self.max_cached_segments {
-					break;
+				if first_found {
+					// Let's clean up old expired items
+					self.kernel_segment_cache
+						.retain(|segm| segm.id().idx >= k_id.idx);
+					first_found = false;
 				}
+
 				if !self.has_kernel_segment_with_id(k_id) {
 					return_vec.push(SegmentTypeIdentifier::new(SegmentType::Kernel, k_id));
 					elems_added += 1;
 				}
-				if elems_added == max_elements / 3 {
+				processed += 1;
+				if processed > max_elements || elems_added == max_elements / 3 {
 					break;
 				}
 			}
