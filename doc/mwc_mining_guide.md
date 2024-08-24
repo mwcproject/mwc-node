@@ -30,7 +30,7 @@ and restart the mwc-node.
 
 4.) Start your mwc-wallet listener:
 
-```# mwc-wallet listen```
+```# mwc-wallet listen --no_tor```
 
 5.) Modify your grin-miner.toml to point to your mwc-node:
 stratum_server_addr = "127.0.0.1:3416" (that is the default port of the stratum server in the mwc-node)
@@ -39,9 +39,16 @@ stratum_server_addr = "127.0.0.1:3416" (that is the default port of the stratum 
 
 ```# grin-miner```
 
-Note: you must be using either one of the C31 plugins or the C29d plugin. C29 will not work.
+Note: you must be using either one of the C31 plugins.
 
-You are done and the block rewards will go to the mwc-wallet instance that you setup.
+You are done and the block rewards will go to the mwc-wallet instance that you setup. 
+
+Please check mwc-node and grin-miner logs for errors. Wallet related errors you should see in mwc-node logs. 
+
+if node not able connect to the wallet, use can trouble shout but running this API manually  
+```
+curl -d '{"id":1,"jsonrpc":"2.0","method":"build_coinbase","params":{"block_fees":{"fees":"0","height":"1307101","key_id":"030000000000000000000c02fd00000000"}}}' http://localhost:3415/v2/foreign
+```
 
 # Reward Schedule #
 
