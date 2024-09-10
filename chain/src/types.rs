@@ -178,6 +178,7 @@ pub struct SyncState {
 	/// available where it will be needed (both in the adapter
 	/// and the sync loop)
 	requested_pibd_segments: RwLock<Vec<PIBDSegmentContainer>>,
+	last_pibd_log_progress: RwLock<u64>,
 }
 
 impl SyncState {
@@ -187,6 +188,7 @@ impl SyncState {
 			current: RwLock::new(SyncStatus::Initial),
 			sync_error: RwLock::new(None),
 			requested_pibd_segments: RwLock::new(vec![]),
+			last_pibd_log_progress: RwLock::new(0),
 		}
 	}
 
@@ -275,6 +277,15 @@ impl SyncState {
 			completed_to_height,
 			required_height: archive_header.height,
 		};
+
+		// Those logs are needed fro QR wallet sync progress tracking
+		if *self.last_pibd_log_progress.read() != completed_leaves {
+			info!(
+				"PIBD sync progress: {} from {}",
+				completed_leaves, leaves_required
+			);
+			*self.last_pibd_log_progress.write() = completed_leaves;
+		}
 	}
 
 	/// Update PIBD segment list

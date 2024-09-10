@@ -395,12 +395,6 @@ where
 		bhs: &[core::BlockHeader],
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
-		info!(
-			"Received {} block headers from {}",
-			bhs.len(),
-			peer_info.addr
-		);
-
 		if bhs.is_empty() {
 			return Ok(false);
 		}
@@ -409,6 +403,13 @@ where
 			debug!("headers_received: found known bad header, all data is rejected");
 			return Ok(false);
 		}
+
+		info!(
+			"Received {} block headers from {}, height {}",
+			bhs.len(),
+			peer_info.addr,
+			bhs[0].height,
+		);
 
 		// Read our sync_head if we are in header_sync.
 		// If not then we can ignore this batch of headers.
