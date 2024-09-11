@@ -1947,14 +1947,14 @@ impl<'a> Extension<'a> {
 						return Ok(());
 					}
 				}
-				debug!(
-					"txhashset: verify_kernel_signatures: verified {} signatures",
-					kern_count,
+				info!(
+					"txhashset: verify_kernel_signatures: verified {} signatures from {}",
+					kern_count, total_kernels
 				);
 			}
 		}
 
-		debug!(
+		info!(
 			"txhashset: verified {} kernel signatures, pmmr size {}, took {}s",
 			kern_count,
 			self.kernel_pmmr.unpruned_size(),
@@ -2025,8 +2025,8 @@ impl<'a> Extension<'a> {
 				commits.clear();
 				proofs.clear();
 				info!(
-					"txhashset: verify_rangeproofs: verified {} rangeproofs",
-					proof_count,
+					"txhashset: verify_rangeproofs: verified {} rangeproofs from {}",
+					proof_count, total_rproofs
 				);
 				if let Some(s) = status {
 					s.on_validation_rproofs(proof_count as u64, total_rproofs);
@@ -2048,8 +2048,8 @@ impl<'a> Extension<'a> {
 			commits.clear();
 			proofs.clear();
 			info!(
-				"txhashset: verify_rangeproofs: verified {} rangeproofs",
-				proof_count,
+				"txhashset: verify_rangeproofs: verified {} rangeproofs from {}",
+				proof_count, total_rproofs
 			);
 		}
 

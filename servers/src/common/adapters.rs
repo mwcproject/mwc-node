@@ -210,10 +210,16 @@ where
 			return Ok(true);
 		}
 
+		let total_blocks = match self.chain().header_head() {
+			Ok(tip) => tip.height,
+			Err(_) => 0,
+		};
+
 		info!(
-			"Received block {} at {} from {} [in/out/kern: {}/{}/{}] going to process.",
-			b.hash(),
+			"Received block {} of {} hash {} from {} [in/out/kern: {}/{}/{}] going to process.",
 			b.header.height,
+			total_blocks,
+			b.hash(),
 			peer_info.addr,
 			b.inputs().len(),
 			b.outputs().len(),
