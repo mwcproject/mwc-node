@@ -106,7 +106,7 @@ impl MessageHandler for Protocol {
 						self.adapter
 							.txhashset_write(meta.hash.clone(), zip, &self.peer_info)?;
 
-					debug!(
+					info!(
 						"handle_payload: txhashset archive for {} at {}, DONE. Data Ok: {}",
 						meta.hash, meta.height, !res
 					);

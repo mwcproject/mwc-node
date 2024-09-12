@@ -461,7 +461,16 @@ impl Chain {
 			);
 		};
 		log_head("head", self.head()?);
-		log_head("header_head", self.header_head()?);
+		let sync_head = self.header_head()?;
+		log_head("header_head", sync_head);
+
+		// Needed for Node State tracking...
+		info!(
+			"init: sync_head: {} @ {} [{}]",
+			sync_head.total_difficulty.to_num(),
+			sync_head.height,
+			sync_head.last_block_h,
+		);
 
 		Ok(())
 	}
