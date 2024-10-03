@@ -463,6 +463,8 @@ pub trait Keychain: Sync + Send + Clone {
 	/// The public root key
 	fn public_root_key(&self) -> PublicKey;
 
+	fn private_root_key(&self) -> SecretKey;
+
 	fn derive_key(
 		&self,
 		amount: u64,

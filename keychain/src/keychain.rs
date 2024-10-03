@@ -96,6 +96,10 @@ impl Keychain for ExtKeychain {
 		ExtendedPubKey::from_private(&self.secp, &self.master, &mut hasher).public_key
 	}
 
+	fn private_root_key(&self) -> SecretKey {
+		self.master.secret_key.clone()
+	}
+
 	fn derive_key(
 		&self,
 		amount: u64,
