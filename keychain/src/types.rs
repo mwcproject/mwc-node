@@ -1,4 +1,4 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -136,7 +136,7 @@ impl Identifier {
 	}
 
 	/// output the path itself, for insertion into bulletproof
-	/// recovery processes can grind through possiblities to find the
+	/// recovery processes can mwcd through possiblities to find the
 	/// correct length if required
 	pub fn serialize_path(&self) -> [u8; IDENTIFIER_SIZE - 1] {
 		let mut retval = [0u8; IDENTIFIER_SIZE - 1];

@@ -1,7 +1,7 @@
 This page is designed to answer some common questions regarding mwc-wallet and fixing issues around sending coins that are
 either locked or inaccessible.
 
-First thing to understand is that unlike Bitcoin wallets, MWC (which is a fork of grin) wallets can get out of sync with
+First thing to understand is that unlike Bitcoin wallets, MWC (which is a fork of mwc) wallets can get out of sync with
 their full node. This is a common occurance especially when mining. What happens is, if your miner wins a block that is
 orphaned, your wallet will not know about it until you resync with the check or restore command. When you try to send the coins without resyncing, and one of your
 outputs has been orphaned, you will get errors. It may be complicated to get out from these errors as we will discuss so, it's
@@ -47,5 +47,5 @@ directory, which is by default in ~/.mwc/main/chain_data and restart your node. 
 send the coins successfully.
 
 Finally if this guide seems too complicated, we'd highly suggest that you use one of our pools which can be found on our
-mining page: https://www.mwc.mw/miners. Both pools are operated by devs that are familiar with grin and grin forks. They
+mining page: https://www.mwc.mw/miners. Both pools are operated by devs that are familiar with mwc and mwc forks. They
 will already do all of this and you will not need to worry about dealing with these issues.

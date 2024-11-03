@@ -1,4 +1,4 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ use rand::{thread_rng, Rng};
 
 use crate::blake2::blake2b::blake2b;
 
-use crate::extkey_bip32::{BIP32GrinHasher, ExtendedPrivKey, ExtendedPubKey};
+use crate::extkey_bip32::{BIP32MwcHasher, ExtendedPrivKey, ExtendedPubKey};
 use crate::types::{
 	BlindSum, BlindingFactor, Error, ExtKeychainPath, Identifier, Keychain, SwitchCommitmentType,
 };
@@ -31,7 +31,7 @@ use crate::util::secp::{self, Message, Secp256k1, Signature};
 pub struct ExtKeychain {
 	secp: Secp256k1,
 	pub master: ExtendedPrivKey,
-	hasher: BIP32GrinHasher,
+	hasher: BIP32MwcHasher,
 }
 
 impl ExtKeychain {
@@ -39,14 +39,14 @@ impl ExtKeychain {
 		ExtendedPubKey::from_private(&self.secp, &self.master, &mut self.hasher)
 	}
 
-	pub fn hasher(&self) -> BIP32GrinHasher {
+	pub fn hasher(&self) -> BIP32MwcHasher {
 		self.hasher.clone()
 	}
 }
 
 impl Keychain for ExtKeychain {
 	fn from_seed(seed: &[u8], is_floo: bool) -> Result<ExtKeychain, Error> {
-		let mut h = BIP32GrinHasher::new(is_floo);
+		let mut h = BIP32MwcHasher::new(is_floo);
 		let secp = secp::Secp256k1::with_caps(secp::ContextFlag::Commit);
 		let master = ExtendedPrivKey::new_master(&secp, &mut h, seed)?;
 		let keychain = ExtKeychain {
@@ -59,7 +59,7 @@ impl Keychain for ExtKeychain {
 
 	fn from_mnemonic(word_list: &str, extension_word: &str, is_floo: bool) -> Result<Self, Error> {
 		let secp = secp::Secp256k1::with_caps(secp::ContextFlag::Commit);
-		let h = BIP32GrinHasher::new(is_floo);
+		let h = BIP32MwcHasher::new(is_floo);
 		let master = ExtendedPrivKey::from_mnemonic(&secp, word_list, extension_word, is_floo)?;
 		let keychain = ExtKeychain {
 			secp: secp,

@@ -4,7 +4,7 @@
 
 ## Node receives block from peer (normal operation)
 
-During normal operation the Grin node will receive blocks from connected peers via the gossip protocol.
+During normal operation the Mwc node will receive blocks from connected peers via the gossip protocol.
 If the block and the block header validate successfully then both are saved to the store. The header head is updated to point to the latest block header and the block head is updated to point to the latest block.
 
 ![Simple Block](images/simple_block.png)

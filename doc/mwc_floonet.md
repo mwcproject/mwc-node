@@ -1,4 +1,4 @@
-This page will be a guide for running MWC's floonet. We have launched a testnet, known as the floonet (similar to grin).
+This page will be a guide for running MWC's floonet. We have launched a testnet, known as the floonet (similar to mwc).
 We have two seed servers running at seed1.mwc.mw and seed2.mwc.mw. If you are interested in running a public seed server,
 please contact us. As of now, mwc will only run with the --floonet option. This will change as we come closer to launching
 mainnet. An important thing to note about the floonet is that the reward schedule decreases much faster than mainnet. On
@@ -149,12 +149,12 @@ You can then confirm balances with the info command.
 
 # Web wallet
 
-Grin web wallet is compatible with MWC. You can check how set it up [here](https://github.com/cgilliard/mwc/blob/master/doc/web-wallet.md).
+Mwc web wallet is compatible with MWC. You can check how set it up [here](https://github.com/cgilliard/mwc/blob/master/doc/web-wallet.md).
 
 # Mining
 
-To mine mwc, you will need to download and build the grin miner. It is 100% compatible with mwc. The repository is here:
-http://www.github.com/mimblewimble/grin-miner. Check out the project and build following the instructions in the repository.
+To mine mwc, you will need to download and build the mwc miner. It is 100% compatible with mwc. The repository is here:
+http://www.github.com/mimblewimble/mwc-miner. Check out the project and build following the instructions in the repository.
 
 To allow mining you must first enable mining on your full node by editing the following line in your mwc-server.toml file:
 
@@ -170,7 +170,7 @@ You must also start a wallet listener with the following command:
 mwc --floonet wallet listen
 ```
 
-Now you will be able to mine by starting your grin miner with the grin-miner binary that you have built. Note that by default grin miner will try to connect on port 3416. For the floonet, you will need to change that parameter to 13416. The line in grin-miner.toml will look like this:
+Now you will be able to mine by starting your mwc miner with the mwc-miner binary that you have built. Note that by default mwc miner will try to connect on port 3416. For the floonet, you will need to change that parameter to 13416. The line in mwc-miner.toml will look like this:
 
 stratum_server_addr = "127.0.0.1:13416"
 

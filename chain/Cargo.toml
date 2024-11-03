@@ -1,10 +1,10 @@
 [package]
-name = "grin_chain"
+name = "mwc_chain"
 version = "5.3.2"
-authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
-description = "Chain implementation for grin, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
+authors = ["Mwc Developers <mimblewimble@lists.launchpad.net>"]
+description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin"
+repository = "https://github.com/mimblewimble/mwc"
 keywords = [ "crypto", "mwc", "mimblewimble" ]
 workspace = ".."
 edition = "2018"
@@ -23,10 +23,10 @@ chrono = "0.4.11"
 lru-cache = "0.1"
 lazy_static = "1"
 
-grin_core = { path = "../core", version = "5.3.2" }
-grin_keychain = { path = "../keychain", version = "5.3.2" }
-grin_store = { path = "../store", version = "5.3.2" }
-grin_util = { path = "../util", version = "5.3.2" }
+mwc_core = { path = "../core", version = "5.3.2" }
+mwc_keychain = { path = "../keychain", version = "5.3.2" }
+mwc_store = { path = "../store", version = "5.3.2" }
+mwc_util = { path = "../util", version = "5.3.2" }
 
 [dev-dependencies]
 env_logger = "0.7"

@@ -1,4 +1,4 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
 
 mod chain_test_helper;
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_util as util;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Error, Options};
@@ -91,7 +91,7 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 
 	util::init_test_logger();
 
-	let chain_dir = ".grin.nrd_kernel";
+	let chain_dir = ".mwc.nrd_kernel";
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
@@ -207,7 +207,7 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 
 	util::init_test_logger();
 
-	let chain_dir = ".grin.nrd_kernel_relative_height_1";
+	let chain_dir = ".mwc.nrd_kernel_relative_height_1";
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
@@ -305,7 +305,7 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 
 	util::init_test_logger();
 
-	let chain_dir = ".grin.nrd_kernel_fork";
+	let chain_dir = ".mwc.nrd_kernel_fork";
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();

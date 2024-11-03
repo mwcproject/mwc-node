@@ -171,7 +171,7 @@ Let's explore first what mwc-wallet can do by running:
 ```
 kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet --help
 mwc-wallet 2.4.5
-The Grin Team
+The Mwc Team
 Reference MWC Wallet
 
 USAGE:
@@ -225,7 +225,7 @@ kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet init
 Please enter a password for your new wallet
 Password:
 Confirm Password:
-20191111 18:13:13.180 WARN grin_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
+20191111 18:13:13.180 WARN mwc_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
 Your recovery phrase is:
 
 cousin cargo avoid sk ....  fee surround valve prepare
@@ -244,7 +244,7 @@ phrase> cousin cargo avoid sku  .... en coffee surround valve prepare
 Please provide a new password for the recovered wallet
 Password:
 Confirm Password:
-20191111 18:17:49.394 WARN grin_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
+20191111 18:17:49.394 WARN mwc_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
 Your recovery phrase is:
 
 cousin cargo avoid sk .... fee surround valve prepare
@@ -254,13 +254,13 @@ Command 'init' completed successfully
 
 kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet check
 Password:
-20191111 18:22:25.359 WARN grin_wallet_controller::command - Starting wallet check...
-20191111 18:22:25.359 WARN grin_wallet_controller::command - Updating all wallet outputs, please wait ...
-20191111 18:22:25.394 WARN grin_wallet_libwallet::internal::restore - Starting wallet check.
-20191111 18:22:25.665 WARN grin_wallet_libwallet::internal::restore - Checking 895 outputs, up to index 895. (Highest index: 895)
-20191111 18:22:25.666 WARN grin_wallet_libwallet::internal::restore - Scanning 895 outputs in the current MWC utxo set
-20191111 18:22:25.739 WARN grin_wallet_libwallet::internal::restore - Identified 0 wallet_outputs as belonging to this wallet
-20191111 18:22:25.739 WARN grin_wallet_controller::command - Wallet check complete
+20191111 18:22:25.359 WARN mwc_wallet_controller::command - Starting wallet check...
+20191111 18:22:25.359 WARN mwc_wallet_controller::command - Updating all wallet outputs, please wait ...
+20191111 18:22:25.394 WARN mwc_wallet_libwallet::internal::restore - Starting wallet check.
+20191111 18:22:25.665 WARN mwc_wallet_libwallet::internal::restore - Checking 895 outputs, up to index 895. (Highest index: 895)
+20191111 18:22:25.666 WARN mwc_wallet_libwallet::internal::restore - Scanning 895 outputs in the current MWC utxo set
+20191111 18:22:25.739 WARN mwc_wallet_libwallet::internal::restore - Identified 0 wallet_outputs as belonging to this wallet
+20191111 18:22:25.739 WARN mwc_wallet_controller::command - Wallet check complete
 Command 'check' completed successfully
 ``` 
 
@@ -301,8 +301,8 @@ In order to mine, mwc-wallet needs to be run in listening mode. The wallet will 
 ```
 kbay$ ~/my_mwc_install/mwc-wallet/mwc-wallet listen
 Password:
-20191111 18:59:15.332 WARN grin_wallet_controller::controller - Starting HTTP Foreign listener API server at 127.0.0.1:3415.
-20191111 18:59:15.333 WARN grin_wallet_controller::controller - HTTP Foreign listener started.
+20191111 18:59:15.332 WARN mwc_wallet_controller::controller - Starting HTTP Foreign listener API server at 127.0.0.1:3415.
+20191111 18:59:15.333 WARN mwc_wallet_controller::controller - HTTP Foreign listener started.
 ```
 And your wallet will run until you interrupt it.
 
@@ -357,7 +357,7 @@ Check if there any errors are in the node logs
 Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
 ```
 > cat ~/.mwc/main/mwc-server.log | grep 'Stratum server started'
-20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
+20191111 19:32:36.088 WARN mwc_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
 ```
 
 Verify that stratum is configured correctly with telnet:
@@ -404,7 +404,7 @@ Check if there are any errors in the node logs
 Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
 ```
 > cat ~/.mwc/main/mwc-server.log | grep 'Stratum server started'
-20191111 19:32:36.088 WARN grin_servers::mining::stratumserver - Stratum server started on 0.0.0.0:3416
+20191111 19:32:36.088 WARN mwc_servers::mining::stratumserver - Stratum server started on 0.0.0.0:3416
 ```
 
 Verify that stratum is configured correctly with telnet:
@@ -478,11 +478,11 @@ You can finish miner setup.
 
 ## MINER
 
-There are many miner that you can run. MWC miner 100% compartible with grin miner. If you are mining for grin, just redirect to mwc node.
+There are many miner that you can run. MWC miner 100% compartible with mwc miner. If you are mining for mwc, just redirect to mwc node.
 
-#### Grin miner
+#### Mwc miner
 
-MWC clone of grin miner you can get here [https://github.com/mwcproject/grin-miner]
+MWC clone of mwc miner you can get here [https://github.com/mwcproject/mwc-miner]
 Please follow the instruction how to set it up.
 
 #### GMiner
@@ -495,7 +495,7 @@ Or you should use your mwc-node public IP if it is run on different host. Please
 
 To run in C31 mode:
 ```
-miner.exe --algo grin31 --server <NODE_IP>  --port 3416 --user WhatEverName
+miner.exe --algo mwc31 --server <NODE_IP>  --port 3416 --user WhatEverName
 ```
 OR for C29d:
 ```

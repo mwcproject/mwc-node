@@ -130,7 +130,7 @@ Note:
 
 - Add setting 'libp2p_port': libp2p gossipsub tor socks port for listeniong. It is licated in to the config file. Default values: 3417 for mainnett, 13417 for floonet.
 - Tor config provisioning get a new line `HiddenServicePort  81 127.0.0.1:<libp2p_port>`
-- Add new mode mwc-node/servers/src/grin/libp2p.rs.  Here located all caller to gossipsub logic:
+- Add new mode mwc-node/servers/src/mwc/libp2p.rs.  Here located all caller to gossipsub logic:
     * `add_new_peer( peer: &PeerAddr )`  - Method that mwc-node server calls when it discover the peers with onion address. Probably they are gossipsub nodes, so we should try them.
     * `pub async fn run_libp2p_node( tor_socks_port: u16, onion_address: String, libp2p_port: u16 ) -> Result<(), Error>`  - libp2p main method. There all logic happens:
         - Building network transport, initialize the swarm and start listening

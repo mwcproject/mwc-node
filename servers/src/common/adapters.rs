@@ -1,4 +1,4 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ use crate::util::secp::pedersen::RangeProof;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
-use grin_chain::txhashset::Segmenter;
+use mwc_chain::txhashset::Segmenter;
 use rand::prelude::*;
 use std::ops::Range;
 use std::sync::atomic::AtomicI64;

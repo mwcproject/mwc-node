@@ -19,7 +19,7 @@ use crate::rest::*;
 use crate::stratum::Stratum;
 
 /// Public definition used to generate Node jsonrpc api.
-/// * When running `grin` with defaults, the V2 api is available at
+/// * When running `mwc` with defaults, the V2 api is available at
 /// `localhost:3413/v2/stratum`
 /// * The endpoint only supports POST operations, with the json-rpc request as the body
 #[easy_jsonrpc_mw::rpc]
