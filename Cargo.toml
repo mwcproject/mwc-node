@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/mwcproject/mwc-node"
 keywords = [ "crypto", "mwc", "mimblewimble" ]
 readme = "README.md"
-exclude = ["**/*.mwc", "**/*.mwc", "**/*.mwc", "**/*.mwc"]
+exclude = ["**/*.mwc", "**/*.mwc"]
 build = "src/build/build.rs"
 edition = "2018"
 
