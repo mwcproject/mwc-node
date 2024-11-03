@@ -2724,7 +2724,6 @@ dependencies = [
  "mwc-libp2p-tokio-socks5",
  "mwc_chain",
  "mwc_core",
- "mwc_pool",
  "mwc_store",
  "mwc_util",
  "net2",
