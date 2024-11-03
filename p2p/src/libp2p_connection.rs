@@ -16,8 +16,9 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
-use libp2p::core::Multiaddr;
-use libp2p::{
+use libp2p_tokio_socks5::Socks5TokioTcpConfig;
+use mwc_libp2p::core::Multiaddr;
+use mwc_libp2p::{
 	core::{
 		muxing::StreamMuxerBox,
 		upgrade::{SelectUpgrade, Version},
@@ -31,12 +32,11 @@ use libp2p::{
 	yamux::YamuxConfig,
 	PeerId, Swarm, Transport,
 };
-use libp2p_tokio_socks5::Socks5TokioTcpConfig;
 
-use libp2p::gossipsub::{
+use mwc_libp2p::gossipsub::{
 	self, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity, MessageId, ValidationMode,
 };
-use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
+use mwc_libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
 use crate::mwc_core::global;
 use crate::types::Error;
@@ -45,10 +45,10 @@ use async_std::task;
 use chrono::Utc;
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use futures::{future, prelude::*};
-use libp2p::core::network::NetworkInfo;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::TxKernel;
 use mwc_core::libtx::aggsig;
+use mwc_libp2p::core::network::NetworkInfo;
 use mwc_util::secp::pedersen::Commitment;
 use mwc_util::secp::rand::Rng;
 use mwc_util::secp::{Message, Secp256k1, Signature};
@@ -67,7 +67,7 @@ use std::{
 };
 
 struct TokioExecutor;
-impl libp2p::core::Executor for TokioExecutor {
+impl mwc_libp2p::core::Executor for TokioExecutor {
 	fn exec(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) {
 		tokio::spawn(future);
 	}
@@ -472,7 +472,7 @@ pub async fn run_libp2p_node(
 
 	// Special topic for peer reporting. We don't need to listen on it and we
 	// don't want the node forward that message as well
-	let peer_topic = Topic::new(libp2p::gossipsub::PEER_TOPIC).hash();
+	let peer_topic = Topic::new(mwc_libp2p::gossipsub::PEER_TOPIC).hash();
 
 	// Subscribe to the topics that we are ready to listen
 	LIBP2P_MESSAGE_HANDLERS
@@ -702,8 +702,10 @@ pub async fn run_libp2p_node(
 										let p = match res {
 											Ok(onion_addr) => match onion_addr.to_ed25519() {
 												Ok(pk) => PeerId::from_public_key(
-													libp2p::identity::PublicKey::Ed25519(
-														libp2p::identity::ed25519::PublicKey(pk),
+													mwc_libp2p::identity::PublicKey::Ed25519(
+														mwc_libp2p::identity::ed25519::PublicKey(
+															pk,
+														),
 													),
 												),
 												Err(e) => {
