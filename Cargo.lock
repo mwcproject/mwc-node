@@ -2570,7 +2570,7 @@ dependencies = [
 [[package]]
 name = "mwc-libp2p-tokio-socks5"
 version = "0.7.1"
-source = "git+https://github.com/mwcproject/rust-libp2p-tokio-socks5?branch=master#a1f0efd7074b655ff88db310d55fb7be0ef2c164"
+source = "git+https://github.com/mwcproject/rust-libp2p-tokio-socks5?branch=master#c403df604c047675f9b5c8fd0ef5db076eb61682"
 dependencies = [
  "data-encoding",
  "futures 0.3.31",
@@ -2724,7 +2724,6 @@ dependencies = [
  "mwc-libp2p-tokio-socks5",
  "mwc_chain",
  "mwc_core",
- "mwc_pool",
  "mwc_store",
  "mwc_util",
  "net2",
