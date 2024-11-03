@@ -1,10 +1,10 @@
 [package]
 name = "mwc_pool"
 version = "5.3.2"
-authors = ["Mwc Developers <mimblewimble@lists.launchpad.net>"]
+authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/mwc"
+repository = "https://github.com/mwcproject/mwc-node"
 keywords = [ "crypto", "mwc", "mimblewimble" ]
 workspace = '..'
 edition = "2018"

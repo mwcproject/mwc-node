@@ -19,7 +19,7 @@
 - [merkle_proof graph](merkle_proof/merkle_proof.png) - Example merkle proof with pruning applied
 - [pruning](pruning.md) - Technical explanation of pruning
 - [stratum](stratum.md) - Technical explanation of Mwc Stratum RPC protocol
-- [transaction UML](https://github.com/mimblewimble/mwc-wallet/blob/master/doc/transaction/basic-transaction-wf.png) - UML of an interactive transaction (aggregating transaction without `lock_height`)
+- [transaction UML](https://github.com/mwcproject/mwc-node-wallet/blob/master/doc/transaction/basic-transaction-wf.png) - UML of an interactive transaction (aggregating transaction without `lock_height`)
 - [rangeproof output format](rangeproof_byte_format.md) - Explanation of the byte output of a range proof in a Mwc transaction
 
 ## Build and use

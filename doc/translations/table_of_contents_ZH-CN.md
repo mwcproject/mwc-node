@@ -19,7 +19,7 @@
 - [merkle_proof graph](merkle_proof/merkle_proof.png) - 应用修剪的默克尔树证明范例
 - [pruning](pruning_ZH-CN.md) - 修剪技术说明
 - [stratum](stratum.md) - Mwc Stratum RPC 协议技术说明
-- [transaction UML](https://github.com/mimblewimble/mwc-wallet/blob/master/doc/transaction/basic-transaction-wf.png) - 交互交易 UML （无需 `lock_height` 的聚合交易）
+- [transaction UML](https://github.com/mwcproject/mwc-node-wallet/blob/master/doc/transaction/basic-transaction-wf.png) - 交互交易 UML （无需 `lock_height` 的聚合交易）
 
 ## 构建和使用
 

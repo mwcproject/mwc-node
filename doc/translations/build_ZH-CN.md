@@ -41,7 +41,7 @@ brew install openssl
 ## 构建步骤
 
 ```sh
-git clone https://github.com/mimblewimble/mwc.git
+git clone https://github.com/mwcproject/mwc-node.git
 cd mwc
 cargo build --release
 ```
@@ -120,7 +120,7 @@ Wiki页面 [Wallet User Guide](https://github.com/mimblewimble/docs/wiki/Wallet-
 
 ## 在 Mwc 中挖矿
 
-请注意，针对 Mwc 的所有挖矿功能已移至一个名为 [mwc-miner](https://github.com/mimblewimble/mwc-miner) 的独立软件包中。
+请注意，针对 Mwc 的所有挖矿功能已移至一个名为 [mwc-miner](https://github.com/mwcproject/mwc-node-miner) 的独立软件包中。
 一旦您的 Mwc 代码节点启动并运行，就可以通过针对正在运行的 Mwc 节点构建并运行 mwc-miner 开始挖矿。
 
 为了使 mwc-miner 能够与您的 mwc 节点进行通信，请确保在您的 `mwc-server.toml` 配置文件中有 `enable_stratum_server = true`，并且您正在运行钱包监听器（`mwc wallet listen`）。

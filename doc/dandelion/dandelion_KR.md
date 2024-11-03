@@ -86,4 +86,4 @@ Dandelion은 또한 Mwc Transaction을 Stem phase에서 통합(Aggregated) 한 �
 * [1] (Sigmetrics 2017) [Dandelion: Redesigning the Bitcoin Network for Anonymity](https://arxiv.org/abs/1701.04439)
 * [2] [Dandelion BIP](https://github.com/dandelion-org/bips/blob/master/bip-dandelion.mediawiki)
 * [3] (Sigmetrics 2018) [Dandelion++: Lightweight Cryptocurrency Networking with Formal Anonymity Guarantees](https://arxiv.org/abs/1805.11060)
-* [4] [Dandelion Mwc Pull Request #1067](https://github.com/mimblewimble/mwc/pull/1067)
+* [4] [Dandelion Mwc Pull Request #1067](https://github.com/mwcproject/mwc-node/pull/1067)

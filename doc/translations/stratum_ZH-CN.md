@@ -531,4 +531,4 @@ Mwc Stratum 协议部署包含以下错误信息：
 
 ## 部署参考
 
-挖矿部署请参阅：[mimblewimble/mwc-miner](https://github.com/mimblewimble/mwc-miner/blob/master/src/bin/client.rs)
+挖矿部署请参阅：[mimblewimble/mwc-miner](https://github.com/mwcproject/mwc-node-miner/blob/master/src/bin/client.rs)

@@ -134,7 +134,7 @@ troubleshooting, etc.
 ## Mining in MWC
 
 Please note that all mining functions for MWC have moved into a separate, standalone package called
-[mwc-miner](https://github.com/mimblewimble/mwc-miner). Once your MWC code node is up and running,
+[mwc-miner](https://github.com/mwcproject/mwc-node-miner). Once your MWC code node is up and running,
 you can start mining by building and running mwc-miner against your running MWC node.
 
 For mwc-miner to be able to communicate with your MWC node, make sure that you have `enable_stratum_server = true`

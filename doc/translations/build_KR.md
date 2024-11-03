@@ -44,7 +44,7 @@ brew install openssl
 ## 빌드 순서
 
 ```sh
-git clone https://github.com/mimblewimble/mwc.git
+git clone https://github.com/mwcproject/mwc-node.git
 cd mwc
 cargo build --release
 ```
@@ -125,7 +125,7 @@ Rust(Cargo)는 여러 플랫폼에서 Mwc을 빌드 할 수 있습니다. 그래
 
 ## Mwc 채굴하기
 
-Mwc의 모든 마이닝 기능은 분리된 독랍형 패키지인 [mwc-miner](https://github.com/mimblewimble/mwc-miner)로 옮겨졌습니다.
+Mwc의 모든 마이닝 기능은 분리된 독랍형 패키지인 [mwc-miner](https://github.com/mwcproject/mwc-node-miner)로 옮겨졌습니다.
 일단 Mwc 노드가 실행되면 실행중인 노드에 대해 mwc-miner를 빌드하고 실행하여 마이닝을 시작할 수 있습니다.
 
 mwc-miner가 mwc 노드와 통신 할 수 있게 하려면, `mwc-server.toml` 설정 파일에서`enable_stratum_server = true`가 설정되어 있는지 확인하세요. 그 다음 Wallet listener인 `mwc-wallet listen` 명령어를 실행하세요 .

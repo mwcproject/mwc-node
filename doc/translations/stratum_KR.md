@@ -533,4 +533,4 @@ Mwc Stratum protocole 구현체는 다음과 같은 에러 메시지를 포함�
 
 ## Reference Implementation
 
-현재 구현체는 [mimblewimble/mwc-miner](https://github.com/mimblewimble/mwc-miner/blob/master/src/bin/client.rs) 에서 참고하세요.
+현재 구현체는 [mimblewimble/mwc-miner](https://github.com/mwcproject/mwc-node-miner/blob/master/src/bin/client.rs) 에서 참고하세요.

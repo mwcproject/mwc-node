@@ -195,5 +195,5 @@ Mwc implements a simplified version of the Dandelion++ protocol. It's been impro
 * [2] (Sigmetrics 2017) [Dandelion: Redesigning the Bitcoin Network for Anonymity](https://arxiv.org/abs/1701.04439)
 * [3] [Dandelion BIP](https://github.com/dandelion-org/bips/blob/master/bip-dandelion.mediawiki)
 * [4] [Mwc Privacy Primer](https://github.com/mimblewimble/docs/wiki/Mwc-Privacy-Primer)
-* [5] [#2628: Dandelion++ Rewrite](https://github.com/mimblewimble/mwc/pull/2628)
-* [6] [#2876: Always stem local txs if configured that way (unless explicitly fluffed)](https://github.com/mimblewimble/mwc/pull/2876)
+* [5] [#2628: Dandelion++ Rewrite](https://github.com/mwcproject/mwc-node/pull/2628)
+* [6] [#2876: Always stem local txs if configured that way (unless explicitly fluffed)](https://github.com/mwcproject/mwc-node/pull/2876)

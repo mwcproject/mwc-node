@@ -113,7 +113,7 @@ Pedersen Commitments 是**计算绑定**和**完美隐匿**。预设秘诺值为
 
     v*H + r*G ,  r*J
 
-如果我们储存额外的域 `r*J`，并且暂时忽略，我们可以将其视作 Pedersen Commitments 对待，未来随时可以激活完整 ElGamal commitment。主网上线前，[Mwc 早期版本](https://github.com/mimblewimble/mwc/blob/5a47a1710112153fb38e4406251c9874c366f1c0/core/src/core/transaction.rs#L812)就是这样部署。详情为：哈希值 `r*J`
+如果我们储存额外的域 `r*J`，并且暂时忽略，我们可以将其视作 Pedersen Commitments 对待，未来随时可以激活完整 ElGamal commitment。主网上线前，[Mwc 早期版本](https://github.com/mwcproject/mwc-node/blob/5a47a1710112153fb38e4406251c9874c366f1c0/core/src/core/transaction.rs#L812)就是这样部署。详情为：哈希值 `r*J`
 (_switch\_commit\_hash_) 添加到交易输出，但造成每个输出大小增加 32 字节。
 
 幸运的是，之后 Mimblewimble 邮件列表成员 Tim Ruffing 提出一个[绝妙的解决方案](https://lists.launchpad.net/mimblewimble/msg00479.html)（最初是 Pieter Wuille 所建议）。这一方案保持了相同优势，但不会对交易输出造成额外体积负担。
@@ -136,7 +136,7 @@ Pedersen Commitments 是**计算绑定**和**完美隐匿**。预设秘诺值为
 
 （使用椭圆曲线上的另外第三生成点 `J`），然后 `r` 因为仍旧随机分布，所以作为致盲因子仍完美有效，但我们现在看到的括号内哈希函数 (`v*H + r'*G  ,  r'*J`) 是 **ElGamal commitment**。
 
-这一绝妙的方案就从输出中移除了秘诺切换哈希（详情请参阅 [pull requests](https://github.com/mimblewimble/mwc/issues/998)），这样就可以轻松纳入 Pedersen Commitment。
+这一绝妙的方案就从输出中移除了秘诺切换哈希（详情请参阅 [pull requests](https://github.com/mwcproject/mwc-node/issues/998)），这样就可以轻松纳入 Pedersen Commitment。
 
 这就是 Mwc 目前的秘诺部署方案。Pedersen Commitment 用作机密交易 (Confidential Transaction)，但没有单纯随机选择致盲因子 `r`，而是在一个随机数 `r` 添加 ElGamal commitment 函数来计算（详情请参阅 [main_impl.h#L267](https://github.com/mimblewimble/secp256k1-zkp/blob/73617d0fcc4f51896cce4f9a1a6977a6958297f8/src/modules/commitment/main_impl.h#L267)）。
 

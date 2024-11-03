@@ -42,7 +42,7 @@ brew install openssl
 ## Pasos para la compilación
 
 ```sh
-git clone https://github.com/mimblewimble/mwc.git
+git clone https://github.com/mwcproject/mwc-node.git
 cd mwc
 cargo build --release
 ```
@@ -114,4 +114,4 @@ La página de la wiki [Cómo usar mwc](https://github.com/mimblewimble/docs/wiki
 
 ## Minando en Mwc
 
-Tenga en cuenta que todas las funciones de minería de Mwc se han trasladado a un paquete independiente llamado [mwc_minner](https://github.com/mimblewimble/mwc-miner). Una vez que el nodo de mwc esté listo y funcionando, puede empezar a minar compilando y ejecutando mwc-miner con su nodo Mwc en funcionamiento.
+Tenga en cuenta que todas las funciones de minería de Mwc se han trasladado a un paquete independiente llamado [mwc_minner](https://github.com/mwcproject/mwc-node-miner). Una vez que el nodo de mwc esté listo y funcionando, puede empezar a minar compilando y ejecutando mwc-miner con su nodo Mwc en funcionamiento.

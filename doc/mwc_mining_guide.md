@@ -1,6 +1,6 @@
 # Overview #
-This page is intended to be the mining guide for MWC. Since MWC is a fork of [Mwc](https://github.com/mimblewimble/mwc),
-[Mwc Miner](https://github.com/mimblewimble/mwc-miner) can be used to mine MWC. Mwc miner must be pointed at an
+This page is intended to be the mining guide for MWC. Since MWC is a fork of [Mwc](https://github.com/mwcproject/mwc-node),
+[Mwc Miner](https://github.com/mwcproject/mwc-node-miner) can be used to mine MWC. Mwc miner must be pointed at an
 [MWC full node](https://github.com/mwcproject/mwc-node). Mwc supports two mining algorithms: C29 (ASIC resistant) and C31+
 (ASIC friendly). MWC supports both of those algorithms as well, but on launch, we will support C29d (a variant of the C29
 algorithm). Mwc's mining algorithm allows for 90% of the block rewards to go to C29 miners initially and then gradually go
@@ -12,7 +12,7 @@ account for less than 25% of the network so we hope to avoid hard forks all toge
 
 # Procedure to mine #
 
-1.) Setup and install a mwc miner: [Mwc Miner](https://github.com/mimblewimble/mwc-miner). You will need a GPU that has
+1.) Setup and install a mwc miner: [Mwc Miner](https://github.com/mwcproject/mwc-node-miner). You will need a GPU that has
 at least 5.5 GB of VRAM to effectively mine on the network. There are many discussions about which miners are best for Mwc
 and they all apply equally to MWC since we use the same mining algorithm. Nvidia RTX 2070 Ti is a good GPU for mining C29d
 and Nvidia RTX 2080 Ti is a good GPU for mining C31+, but there are many other options and C31 ASICs are on the horizon.

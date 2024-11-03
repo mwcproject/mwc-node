@@ -41,7 +41,7 @@ brew install openssl
 ## ビルド手順
 
 ```sh
-git clone https://github.com/mimblewimble/mwc.git
+git clone https://github.com/mwcproject/mwc-node.git
 cd mwc
 cargo build --release
 ```
@@ -124,6 +124,6 @@ x86のLinux上で`mwc`をクロスコンパイルしARMバイナリを作成し�
 
 ## mwcのマイニング
 
-mwcのマイニングに関する全ての機能は[mwc-miner](https://github.com/mimblewimble/mwc-miner)と呼ばれるスタンドアローンなパッケージに分離されていることに注意。
+mwcのマイニングに関する全ての機能は[mwc-miner](https://github.com/mwcproject/mwc-node-miner)と呼ばれるスタンドアローンなパッケージに分離されていることに注意。
 
 mwc-minerをmwcノードと通信させるためには、`mwc-server.toml`の設定ファイルで`enable_stratum_server = true`と設定し、ウォレットリスナーを起動(`mwc-wallet listen`)しておく必要がある。

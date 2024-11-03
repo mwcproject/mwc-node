@@ -137,14 +137,14 @@ TODO: Provide example
 | Size | Name            | Data Type | Description/Comments                                                                                |
 |------|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
 | 8    | TotalDifficulty | uint64    | Total difficulty accumulated by the sender. Used to check whether sync may be needed.               |
-| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mimblewimble/mwc/issues/1779 |
+| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mwcproject/mwc-node/issues/1779 |
 
 ##### Pong
 
 | Size | Name            | Data Type | Description/Comments                                                                                |
 |------|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
 | 8    | TotalDifficulty | uint64    | Total difficulty accumulated by the sender. Used to check whether sync may be needed.               |
-| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mimblewimble/mwc/issues/1779 |
+| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mwcproject/mwc-node/issues/1779 |
 
 ##### GetPeerAddrs
 
