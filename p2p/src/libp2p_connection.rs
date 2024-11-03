@@ -16,7 +16,6 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
-use libp2p_tokio_socks5::Socks5TokioTcpConfig;
 use mwc_libp2p::core::Multiaddr;
 use mwc_libp2p::{
 	core::{
@@ -32,6 +31,7 @@ use mwc_libp2p::{
 	yamux::YamuxConfig,
 	PeerId, Swarm, Transport,
 };
+use mwc_libp2p_tokio_socks5::Socks5TokioTcpConfig;
 
 use mwc_libp2p::gossipsub::{
 	self, GossipsubEvent, IdentTopic as Topic, MessageAuthenticity, MessageId, ValidationMode,

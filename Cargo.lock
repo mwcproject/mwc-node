@@ -2190,23 +2190,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libp2p-tokio-socks5"
-version = "0.7.1"
-source = "git+https://github.com/mwcproject/rust-libp2p-tokio-socks5?branch=master#ca17cd3886755a4c2b261faab4da13bf0d262ba7"
-dependencies = [
- "data-encoding",
- "futures 0.3.31",
- "futures-timer",
- "if-addrs",
- "ipnet",
- "log",
- "mwc-libp2p",
- "socket2 0.3.19",
- "tokio 0.2.25",
- "tokio-socks",
-]
-
-[[package]]
 name = "libp2p-yamux"
 version = "0.30.1"
 source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#a2688bf0105ed9af82bd1045c98969f84e4c5de1"
@@ -2585,6 +2568,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mwc-libp2p-tokio-socks5"
+version = "0.7.1"
+source = "git+https://github.com/mwcproject/rust-libp2p-tokio-socks5?branch=master#a1f0efd7074b655ff88db310d55fb7be0ef2c164"
+dependencies = [
+ "data-encoding",
+ "futures 0.3.31",
+ "futures-timer",
+ "if-addrs",
+ "ipnet",
+ "log",
+ "mwc-libp2p",
+ "socket2 0.3.19",
+ "tokio 0.2.25",
+ "tokio-socks",
+]
+
+[[package]]
 name = "mwc_api"
 version = "5.3.3"
 dependencies = [
@@ -2718,10 +2718,10 @@ dependencies = [
  "enum_primitive",
  "futures 0.3.31",
  "lazy_static",
- "libp2p-tokio-socks5",
  "log",
  "lru-cache",
  "mwc-libp2p",
+ "mwc-libp2p-tokio-socks5",
  "mwc_chain",
  "mwc_core",
  "mwc_pool",
