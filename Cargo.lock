@@ -2048,8 +2048,8 @@ dependencies = [
 
 [[package]]
 name = "libp2p"
-version = "0.35.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+version = "0.35.2"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "atomic",
  "bytes 1.6.0",
@@ -2075,7 +2075,7 @@ dependencies = [
 [[package]]
 name = "libp2p-core"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "asn1_der",
  "bs58",
@@ -2110,7 +2110,7 @@ dependencies = [
 [[package]]
 name = "libp2p-dns"
 version = "0.27.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "futures 0.3.30",
  "libp2p-core",
@@ -2120,7 +2120,7 @@ dependencies = [
 [[package]]
 name = "libp2p-gossipsub"
 version = "0.28.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "asynchronous-codec",
  "base64 0.13.1",
@@ -2145,7 +2145,7 @@ dependencies = [
 [[package]]
 name = "libp2p-mplex"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "asynchronous-codec",
  "bytes 1.6.0",
@@ -2162,7 +2162,7 @@ dependencies = [
 [[package]]
 name = "libp2p-noise"
 version = "0.29.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "bytes 1.6.0",
  "curve25519-dalek 3.2.0",
@@ -2183,7 +2183,7 @@ dependencies = [
 [[package]]
 name = "libp2p-ping"
 version = "0.27.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "futures 0.3.30",
  "libp2p-core",
@@ -2197,7 +2197,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm"
 version = "0.27.2"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "either",
  "futures 0.3.30",
@@ -2212,7 +2212,7 @@ dependencies = [
 [[package]]
 name = "libp2p-swarm-derive"
 version = "0.22.0"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "quote 1.0.36",
  "syn 1.0.109",
@@ -2221,7 +2221,7 @@ dependencies = [
 [[package]]
 name = "libp2p-tcp"
 version = "0.27.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "async-io 1.13.0",
  "futures 0.3.30",
@@ -2256,7 +2256,7 @@ dependencies = [
 [[package]]
 name = "libp2p-yamux"
 version = "0.30.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "futures 0.3.30",
  "libp2p-core",
@@ -2543,7 +2543,7 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 [[package]]
 name = "multistream-select"
 version = "0.10.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "bytes 1.6.0",
  "futures 0.3.30",
@@ -3117,7 +3117,7 @@ dependencies = [
 [[package]]
 name = "parity-multiaddr"
 version = "0.11.1"
-source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#c379113484a616345cff7043733c227bb71d9e74"
+source = "git+https://github.com/mwcproject/rust-libp2p?branch=master#78a2cb6221624cefa868447321edcc91752248b8"
 dependencies = [
  "arrayref",
  "bs58",
