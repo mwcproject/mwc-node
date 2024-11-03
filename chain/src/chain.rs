@@ -1,4 +1,4 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,9 +39,9 @@ use crate::{
 	store::Batch,
 	txhashset::{ExtensionPair, HeaderExtension},
 };
-use grin_core::ser;
-use grin_store::Error::NotFoundErr;
-use grin_util::ToHex;
+use mwc_core::ser;
+use mwc_store::Error::NotFoundErr;
+use mwc_util::ToHex;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1271,8 +1271,8 @@ impl Chain {
 	}
 
 	/// Specific tmp dir.
-	/// Normally it's ~/.grin/main/tmp for mainnet
-	/// or ~/.grin/floo/tmp for floonet
+	/// Normally it's ~/.mwc/main/tmp for mainnet
+	/// or ~/.mwc/floo/tmp for floonet
 	pub fn get_tmp_dir(&self) -> PathBuf {
 		let mut tmp_dir = PathBuf::from(self.db_root.clone());
 		tmp_dir = tmp_dir
@@ -1329,7 +1329,7 @@ impl Chain {
 			}
 		};
 
-		// Write txhashset to sandbox (in the Grin specific tmp dir)
+		// Write txhashset to sandbox (in the Mwc specific tmp dir)
 		let sandbox_dir = self.get_tmp_dir();
 		txhashset::clean_txhashset_folder(&sandbox_dir);
 		txhashset::zip_write(sandbox_dir.clone(), txhashset_data.try_clone()?, &header)?;
@@ -1638,7 +1638,8 @@ impl Chain {
 			0
 		} else {
 			self.get_header_by_height(start_block_height - 1)?
-				.output_mmr_size + 1
+				.output_mmr_size
+				+ 1
 		};
 		let end_mmr_size = self.get_header_by_height(end_block_height)?.output_mmr_size;
 		Ok((start_mmr_size, end_mmr_size))

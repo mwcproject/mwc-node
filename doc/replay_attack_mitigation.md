@@ -4,11 +4,11 @@
 # Background.
 
 With the cut through feature, the chain is somewhat vulnerable to the replay attack.
-Some discussion threads can be found in grin forum:
+Some discussion threads can be found in mwc forum:
 
-https://forum.grin.mw/t/replay-attacks-and-possible-mitigations/7415
+https://forum.mwc.mw/t/replay-attacks-and-possible-mitigations/7415
 
-https://forum.grin.mw/t/enforcing-that-all-kernels-are-different-at-consensus-level/
+https://forum.mwc.mw/t/enforcing-that-all-kernels-are-different-at-consensus-level/
 
 # Experiment
 Some experiment is done to reproduce replay attack in dev's local environment.

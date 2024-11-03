@@ -51,7 +51,7 @@ While we intend to undergo more formal audits before release, continued code rev
 
 ## Forks and other modifications of MWC
 
-We will responsibly disclose any vulerabilities in MWC to any forks of MWC and Grin after they have been incorporated into a release of MWC. We will notify users that the release has fixes to a vulnerability so upgrades can be prioritized, but we will not release details of vulnerability until forks have had time to patch and release fixes to these vulnerabilities. We will disclose to all forks we are aware of. Maintainers may contact the security contacts to make us aware of your fork.
+We will responsibly disclose any vulerabilities in MWC to any forks of MWC and Mwc after they have been incorporated into a release of MWC. We will notify users that the release has fixes to a vulnerability so upgrades can be prioritized, but we will not release details of vulnerability until forks have had time to patch and release fixes to these vulnerabilities. We will disclose to all forks we are aware of. Maintainers may contact the security contacts to make us aware of your fork.
 
 ## Useful References
 

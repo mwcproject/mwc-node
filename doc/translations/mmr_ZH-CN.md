@@ -40,7 +40,7 @@ Merkle Mountain Ranges（MMR）是 append-only 的：
 ## Hashing 与 Bagging
 
 就像 Merkle trees 一样，MMR 中的父节点的值由其两个孩子节点 hash 得到。
-Grin 总是使用 Blake2b 哈希函数，在进行 hashing 之前会预先设置节点在 MMR 中的位置以此来避免冲突。
+Mwc 总是使用 Blake2b 哈希函数，在进行 hashing 之前会预先设置节点在 MMR 中的位置以此来避免冲突。
 所以对于索引 `n` 处的叶子 `l` 存储的数据 `D`（在输出的情况下，数据是其 Pedersen 承诺，例如），我们有：
 
 ```
@@ -101,7 +101,7 @@ P = Blake2b(N | Blake2b(N | Node(p3) | Node(p2)) | Node(p1))
 
 ## 修剪
 
-在 Grin 中，有很多经过哈希并存储在 MMR 中的数据最后是可以被删除掉的。
+在 Mwc 中，有很多经过哈希并存储在 MMR 中的数据最后是可以被删除掉的。
 发生这种情况时，相应的叶子节点的哈希也就变得不必要了，它们也是可以被删除掉的。
 当删除掉足够多的叶子后，它们的父节点也会变得不必要，因此，我们可以通过删除它的叶子来修剪掉 MMR 的一大部分。
 

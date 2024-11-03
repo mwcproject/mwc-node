@@ -1,16 +1,16 @@
-# Grin에서 사용하는 Dandelion : 프라이버시 보호 트랜잭션의 통합과 전파
+# Mwc에서 사용하는 Dandelion : 프라이버시 보호 트랜잭션의 통합과 전파
 
 *역자 주 : Dandelion 은 민들레라는 뜻으로 앞으로 설명될 각종 용어에서 민들레의 홑씨와 관련된 용어들이 있으니 참고바람.*
 
-이 문서에서는 Grin에서 구현된 Dandelion 구현체에 대해서 설명하고 그리고 Dandelion이 P2P 프로토콜내에서 트랜잭션 통합을 다루기 위해 어떻게 수정되었는지 설명합니다.
+이 문서에서는 Mwc에서 구현된 Dandelion 구현체에 대해서 설명하고 그리고 Dandelion이 P2P 프로토콜내에서 트랜잭션 통합을 다루기 위해 어떻게 수정되었는지 설명합니다.
 
 ## 소개
 
-Dandelion은 발신 IP에 도청 연결 트랜잭션(eavesdroppers linking transactions)의 위험을 줄이는 새로운 트랜잭션 전파 메커니즘입니다. 또한 전체 네트워크에 퍼지기 전에 추가적인 프라이버시 보호 기능을 제공합니다. 프라이버시 보호 기능은 Grin 트랜잭션을 입력-출력 쌍을 제거하는 방식으로 제공됩니다.
+Dandelion은 발신 IP에 도청 연결 트랜잭션(eavesdroppers linking transactions)의 위험을 줄이는 새로운 트랜잭션 전파 메커니즘입니다. 또한 전체 네트워크에 퍼지기 전에 추가적인 프라이버시 보호 기능을 제공합니다. 프라이버시 보호 기능은 Mwc 트랜잭션을 입력-출력 쌍을 제거하는 방식으로 제공됩니다.
 
-Dandelion은 G. Fanti 에 의해 소개되었습니다([1] 참고). 그리고 ACM Sigmetrics 2017에서 발표되었습니다. 2017 년 6 월 BIP [2]는 2018 년 후반에 발표될 Dandelion ++ [3]이라고 불리는 더 실용적이고 견고한 Dandelion의 다른 버전을 소개하려고 제안되었습니다. 이 문서는 Grin을 위한 BIP의 개정판이라고 생각하시면 됩니다.
+Dandelion은 G. Fanti 에 의해 소개되었습니다([1] 참고). 그리고 ACM Sigmetrics 2017에서 발표되었습니다. 2017 년 6 월 BIP [2]는 2018 년 후반에 발표될 Dandelion ++ [3]이라고 불리는 더 실용적이고 견고한 Dandelion의 다른 버전을 소개하려고 제안되었습니다. 이 문서는 Mwc을 위한 BIP의 개정판이라고 생각하시면 됩니다.
 
-우선은 오리지널 Dandelion 전파에 대해서 정의한 다음, 트랜잭션 에그레게이션 (transaction aggregation)과 함께 어떻게 Grin의 프로토콜에 적용되었는지 알아보겠습니다.
+우선은 오리지널 Dandelion 전파에 대해서 정의한 다음, 트랜잭션 에그레게이션 (transaction aggregation)과 함께 어떻게 Mwc의 프로토콜에 적용되었는지 알아보겠습니다.
 
 ## Original Dandelion
 
@@ -68,13 +68,13 @@ Stem 확률(stem probability)을 낮추면 프라이버시가 손상되지만 �
 * 노드가 하나나 또는 그 이상의 현재 엠바고 상태인 Dandelion transaction에 의존하는 하위 거래(child transaction)를 받으면 transaction도 stem mode로 중계(relay)되고 엠바고 타이머는 상위 트랜잭션 (parent)의 엠바고 기간의 최대치로 설정됩니다. 이렇게 하면 상위 트랜잭션이 하위 트랜잭션 전에 fluff 모드로 들어갈 수 있습니다. 나중에 이 두 transaction은 유니크한 하나의 transaction으로 통합되어 타이머가 필요하지 않게됩니다.
 * 트랜잭션 전파 latency는 프라이버시 기능을 넣어도 최소한으로 영향을 받아야 합니다. 특히 Dandelion 때문에 거래가 전혀 방해받지 않아야 합니다. 무작위 타이머는 엠바고 메커니즘이 일시적이며 일반 확산 메커니즘에 따라 모든 트랜잭션이 최대 (임의로) 30-60 초 정도의 딜레이 후에 중계(relay)되도록 보장합니다.
 
-## Grin 에서의 Dandelion
+## Mwc 에서의 Dandelion
 
-Dandelion은 또한 Grin Transaction을 Stem phase에서 통합(Aggregated) 한 다음 네트워크의 모든 노드에 전파 할 수 있습니다. 이로 인해 트랜잭션 통합(transaction aggregation)과 컷 스루(cut-through, 소비 된 출력값 삭제)가 가능해져 컷 스루(cut-through) 방식의 non-interactive coinjoin 과 유사한 매우 중요한 프라이버시 이득을 얻을 수 있습니다. 
+Dandelion은 또한 Mwc Transaction을 Stem phase에서 통합(Aggregated) 한 다음 네트워크의 모든 노드에 전파 할 수 있습니다. 이로 인해 트랜잭션 통합(transaction aggregation)과 컷 스루(cut-through, 소비 된 출력값 삭제)가 가능해져 컷 스루(cut-through) 방식의 non-interactive coinjoin 과 유사한 매우 중요한 프라이버시 이득을 얻을 수 있습니다. 
 
 ### 통합 매커니즘 (Aggregation Mechanism)
 
-트랜잭션을 통합(aggregate)하기 위해 Grin은 Dandelion 프로토콜의 수정 된 버전을 구현합니다 [4].
+트랜잭션을 통합(aggregate)하기 위해 Mwc은 Dandelion 프로토콜의 수정 된 버전을 구현합니다 [4].
 
 기본적으로 노드가 네트워크에서 transaction을 전송하면 Dandelion 프로토콜을 사용하여 Dandelion 중계기(relay)에 stem transaction으로 전파됩니다. Dandelion 중계기(relay)는 더 많은 stem transaction를 통합하기 위해 일정 기간 (patience 타이머) 대기합니다. 타이머가 끝날때 중계기(relay)는 새로운 stem transaction마다 코인 플립을 해서 stem을 하거나 (다음 Dandelion relay로 보내거나) fluff(정상적으로 전파하거나) 할지를 결정합니다. 그런 다음 relay는 모든 transaction을 stem으로 가져 와서 통합하여 다음 Dandelion 릴레이에 전파합니다. Transaction이 "정상적으로" 피어의 무작위 하위 집합으로 통합된 Transaction을 전파한다는 점을 제외하고는 fluff(단계)로 가는 transaction에 대해 동일한 작업을 수행합니다.
 이 매커니즘은 transaction 병합을 다룰수 있는 P2P protocol을 제공합니다.
@@ -86,4 +86,4 @@ Dandelion은 또한 Grin Transaction을 Stem phase에서 통합(Aggregated) 한 
 * [1] (Sigmetrics 2017) [Dandelion: Redesigning the Bitcoin Network for Anonymity](https://arxiv.org/abs/1701.04439)
 * [2] [Dandelion BIP](https://github.com/dandelion-org/bips/blob/master/bip-dandelion.mediawiki)
 * [3] (Sigmetrics 2018) [Dandelion++: Lightweight Cryptocurrency Networking with Formal Anonymity Guarantees](https://arxiv.org/abs/1805.11060)
-* [4] [Dandelion Grin Pull Request #1067](https://github.com/mimblewimble/grin/pull/1067)
+* [4] [Dandelion Mwc Pull Request #1067](https://github.com/mwcproject/mwc-node/pull/1067)

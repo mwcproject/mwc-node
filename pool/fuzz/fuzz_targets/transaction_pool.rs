@@ -4,7 +4,7 @@ use libfuzzer_sys::fuzz_target;
 use std::fs::{self, File};
 use std::io::BufWriter;
 
-use grin_core::{
+use mwc_core::{
 	core::{KernelFeatures, NRDRelativeHeight, Transaction},
 	global, ser,
 };
@@ -89,15 +89,15 @@ fuzz_target!(|data: &[u8]| {
 		return ();
 	}
 
-	grin_util::init_test_logger();
+	mwc_util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 
 	// check for corpus generation arguments
 	// only generate corpus once, skipping on every other run
-	if let Ok(gen_corpus) = std::env::var("GRIN_POOL_GEN_CORPUS") {
+	if let Ok(gen_corpus) = std::env::var("MWC_POOL_GEN_CORPUS") {
 		if gen_corpus == "0" {
 			gen_tx_corpus().unwrap();
-			std::env::set_var("GRIN_POOL_GEN_CORPUS", "1");
+			std::env::set_var("MWC_POOL_GEN_CORPUS", "1");
 		}
 	}
 

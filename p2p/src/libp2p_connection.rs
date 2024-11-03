@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Grin server implementation, glues the different parts of the system (mostly
+//! Mwc server implementation, glues the different parts of the system (mostly
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
@@ -38,22 +38,22 @@ use libp2p::gossipsub::{
 };
 use libp2p::gossipsub::{Gossipsub, MessageAcceptance, TopicHash};
 
-use crate::grin_core::global;
+use crate::mwc_core::global;
 use crate::types::Error;
 use crate::PeerAddr;
 use async_std::task;
 use chrono::Utc;
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use futures::{future, prelude::*};
-use grin_core::core::hash::Hash;
-use grin_core::core::TxKernel;
-use grin_core::libtx::aggsig;
-use grin_util::secp::pedersen::Commitment;
-use grin_util::secp::rand::Rng;
-use grin_util::secp::{Message, Secp256k1, Signature};
-use grin_util::{static_secp_instance, RwLock};
-use grin_util::{Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use libp2p::core::network::NetworkInfo;
+use mwc_core::core::hash::Hash;
+use mwc_core::core::TxKernel;
+use mwc_core::libtx::aggsig;
+use mwc_util::secp::pedersen::Commitment;
+use mwc_util::secp::rand::Rng;
+use mwc_util::secp::{Message, Secp256k1, Signature};
+use mwc_util::{static_secp_instance, RwLock};
+use mwc_util::{Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use rand::seq::SliceRandom;
 use std::collections::VecDeque;
 use std::convert::TryInto;
@@ -981,9 +981,9 @@ pub fn build_integrity_message(
 #[test]
 #[ignore]
 fn test_integrity() -> Result<(), Error> {
-	use grin_core::core::KernelFeatures;
-	use grin_util::from_hex;
-	use grin_util::secp::ContextFlag;
+	use mwc_core::core::KernelFeatures;
+	use mwc_util::from_hex;
+	use mwc_util::secp::ContextFlag;
 
 	// It is peer form wallet's test. We know commit and signature for it.
 	let peer_id = PeerId::from_bytes( &from_hex("000100220020720661bf2f0d7c81c2980db83bb973be2816cf5a0da2da9aacd0ad47d534215c001c2f6f6e696f6e332f776861745f657665725f616464726573733a3737").unwrap() ).unwrap();

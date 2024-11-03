@@ -1,12 +1,12 @@
 [package]
-name = "grin_gen_gen"
+name = "mwc_gen_gen"
 version = "0.0.1"
 edition = "2018"
-authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
-description = "Utility to automate the generation of Grin's genesis block"
+authors = ["Mwc Developers <info@mwc.mw>"]
+description = "Utility to automate the generation of Mwc's genesis block"
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin"
-keywords = [ "crypto", "grin", "mimblewimble" ]
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = [ "crypto", "mwc", "mimblewimble" ]
 readme = "README.md"
 
 [[bin]]
@@ -17,20 +17,20 @@ path = "src/bin/gen_gen.rs"
 chrono = "0.4.4"
 cuckoo_miner = "1.0.0"
 curl = "0.4.19"
-grin_core = { path = "../../core" }
-grin_chain = { path = "../../chain" }
-grin_keychain = { path = "../../keychain" }
-grin_miner_plugin = "1.0.0"
-grin_store = { path = "../../store" }
-grin_util = { path = "../../util" }
-grin_wallet = { path = "../../wallet" }
+mwc_core = { path = "../../core" }
+mwc_chain = { path = "../../chain" }
+mwc_keychain = { path = "../../keychain" }
+mwc_miner_plugin = "1.0.0"
+mwc_store = { path = "../../store" }
+mwc_util = { path = "../../util" }
+mwc_wallet = { path = "../../wallet" }
 rpassword = "2.0.0"
 serde_json = "1"
 
 [patch.crates-io]
-grin_api = { path = "../../api" }
-grin_core = { path = "../../core" }
-grin_chain = { path = "../../chain" }
-grin_keychain = { path = "../../keychain" }
-grin_util = { path = "../../util" }
-grin_wallet = { path = "../../wallet" }
+mwc_api = { path = "../../api" }
+mwc_core = { path = "../../core" }
+mwc_chain = { path = "../../chain" }
+mwc_keychain = { path = "../../keychain" }
+mwc_util = { path = "../../util" }
+mwc_wallet = { path = "../../wallet" }

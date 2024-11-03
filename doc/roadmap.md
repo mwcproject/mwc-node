@@ -10,7 +10,7 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 20/05/2021 Decentralized exchange.
 - 20/03/2021 Atomic swaps for more coins (LTC, ZCash, Dash, Doge).
 - 20/03/2021 Reply attack implementation (The feature will be activated with NIT).
-- 30/12/2020 Grin rebase.
+- 30/12/2020 Mwc rebase.
 - 12/16/2020 MWC/BTC & MWC/BCH atomic swaps.
 - 10/26/2020 - All funds completely distributed to the MWC hodlers.
 - MWCMQS support in mwc-wallet.
@@ -19,8 +19,8 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 07/04/2020 - TOR outbound connections (mwc-node 3.2.3).
 - 06/19/2020 - TOR transactions (QT wallet 1.0.22).
 - 04/07/2020 - HODL Program registration (QT 1.0.15).
-- 01/22/2020 - Grin 3.0 rebase (mwc-node 3.0.0).
-- 01/21/2020 - GRIN CVE patched.
+- 01/22/2020 - Mwc 3.0 rebase (mwc-node 3.0.0).
+- 01/21/2020 - MWC CVE patched.
 - 12/21/2019 - MWC QT wallet cold storage implementation (QT 1.0.11).
 - 11/11/2019 - Mainnet launch.
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.

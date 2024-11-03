@@ -1,13 +1,13 @@
 [package]
 name = "mwc"
 version = "5.3.2"
-authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
+authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
 repository = "https://github.com/mwcproject/mwc-node"
 keywords = [ "crypto", "mwc", "mimblewimble" ]
 readme = "README.md"
-exclude = ["**/*.mwc", "**/*.mwc", "**/*.grin", "**/*.grin"]
+exclude = ["**/*.mwc", "**/*.mwc"]
 build = "src/build/build.rs"
 edition = "2018"
 
@@ -17,7 +17,7 @@ exclude = ["etc/gen_gen"]
 
 [[bin]]
 name = "mwc"
-path = "src/bin/grin.rs"
+path = "src/bin/mwc.rs"
 
 [dependencies]
 blake2-rfc = "0.2"
@@ -33,14 +33,14 @@ log = "0.4"
 term = "0.6"
 thiserror = "1"
 
-grin_api = { path = "./api", version = "5.3.2" }
-grin_config = { path = "./config", version = "5.3.2" }
-grin_chain = { path = "./chain", version = "5.3.2" }
-grin_core = { path = "./core", version = "5.3.2" }
-grin_keychain = { path = "./keychain", version = "5.3.2" }
-grin_p2p = { path = "./p2p", version = "5.3.2" }
-grin_servers = { path = "./servers", version = "5.3.2" }
-grin_util = { path = "./util", version = "5.3.2" }
+mwc_api = { path = "./api", version = "5.3.2" }
+mwc_config = { path = "./config", version = "5.3.2" }
+mwc_chain = { path = "./chain", version = "5.3.2" }
+mwc_core = { path = "./core", version = "5.3.2" }
+mwc_keychain = { path = "./keychain", version = "5.3.2" }
+mwc_p2p = { path = "./p2p", version = "5.3.2" }
+mwc_servers = { path = "./servers", version = "5.3.2" }
+mwc_util = { path = "./util", version = "5.3.2" }
 
 [dependencies.cursive]
 version = "0.20"
@@ -51,8 +51,8 @@ features = ["pancurses-backend"]
 built = { version = "0.4", features = ["git2"]}
 
 [dev-dependencies]
-grin_chain = { path = "./chain", version = "5.3.2" }
-grin_store = { path = "./store", version = "5.3.2" }
+mwc_chain = { path = "./chain", version = "5.3.2" }
+mwc_store = { path = "./store", version = "5.3.2" }
 
 [profile.release-with-debug]
 inherits = "release"

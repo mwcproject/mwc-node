@@ -1,6 +1,6 @@
-# Grin Stratum RPC 프로토콜
+# Mwc Stratum RPC 프로토콜
 
-이 문서는 Grin에 구현되어 있는 현재 Stratum RPC protocol 을 설명한 것입니다.
+이 문서는 Mwc에 구현되어 있는 현재 Stratum RPC protocol 을 설명한 것입니다.
 
 ## 목차
 
@@ -55,7 +55,7 @@
 {  
    "id":"10",
    "jsonrpc":"2.0",
-   "method":"getgrins",
+   "method":"getmwcs",
    "error":{  
       "code":-32601,
       "message":"Method not found"
@@ -220,7 +220,7 @@ Stratum 서버는 연결된 채굴자에게 작업을 자동적으로 보냅니�
 
 ***
 채굴자에 의해 시작되는 메시지입니다.
-채굴자는 보통 채굴 프로그램으로 고정적으로 정해지는 login, password, agent 로 Grin Stratum 서버에 로그인 할 수 있습니다.
+채굴자는 보통 채굴 프로그램으로 고정적으로 정해지는 login, password, agent 로 Mwc Stratum 서버에 로그인 할 수 있습니다.
 
 #### Request
 
@@ -242,7 +242,7 @@ Stratum 서버는 연결된 채굴자에게 작업을 자동적으로 보냅니�
    "params":{  
       "login":"login",
       "pass":"password",
-      "agent":"grin-miner"
+      "agent":"mwc-miner"
    }
 }
 
@@ -506,7 +506,7 @@ Example:
 
 ## Error Messages
 
-Grin Stratum protocole 구현체는 다음과 같은 에러 메시지를 포함하고 있습니다.
+Mwc Stratum protocole 구현체는 다음과 같은 에러 메시지를 포함하고 있습니다.
 
 | Error code  | Error Message                          |
 | :---------- | :------------------------------------- |
@@ -533,4 +533,4 @@ Grin Stratum protocole 구현체는 다음과 같은 에러 메시지를 포함�
 
 ## Reference Implementation
 
-현재 구현체는 [mimblewimble/grin-miner](https://github.com/mimblewimble/grin-miner/blob/master/src/bin/client.rs) 에서 참고하세요.
+현재 구현체는 [mimblewimble/mwc-miner](https://github.com/mwcproject/mwc-node-miner/blob/master/src/bin/client.rs) 에서 참고하세요.

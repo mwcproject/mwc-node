@@ -16,6 +16,6 @@ to start two MWC instances.
 3, Again get another terminal, go to the directory for user1, update in file mwc-server.toml: 
 change enable_stratum_server from false to true
 
-4, Build grin-miner, and then run it (more updates later)
+4, Build mwc-miner, and then run it (more updates later)
 
-5, To verify if mining is going on, look for grin-miner.log.
+5, To verify if mining is going on, look for mwc-miner.log.

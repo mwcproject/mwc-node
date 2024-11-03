@@ -24,7 +24,7 @@ The main goal and characteristics of the MWC project are:
 * Design simplicity that makes it easy to audit and maintain over time.
 * Community driven, encouraging mining decentralization.
 
-A detailed post on the step-by-step of how MWC transactions work (with graphics) can be found [in this Medium post](https://medium.com/@brandonarvanaghi/grin-transactions-explained-step-by-step-fdceb905a853).
+A detailed post on the step-by-step of how MWC transactions work (with graphics) can be found [in this Medium post](https://medium.com/@brandonarvanaghi/mwc-transactions-explained-step-by-step-fdceb905a853).
 
 ## Tongue-Tying for Everyone
 

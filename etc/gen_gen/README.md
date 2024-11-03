@@ -2,9 +2,9 @@
 
 N.B: This crate's `Cargo.toml` file has been disabled by renaming it to `_Cargo.toml`. It no longer builds due to changes in the project structure.
 
-This crate isn't strictly part of grin but allows the generation and release of a new Grin Genesis in an automated fashion. The process is the following:
+This crate isn't strictly part of mwc but allows the generation and release of a new Mwc Genesis in an automated fashion. The process is the following:
 
-* Prepare a multisig output and kernel to use as coinbase. In the case of Grin mainnet, this is done and owned by the council treasurers. This can be down a few days prior.
+* Prepare a multisig output and kernel to use as coinbase. In the case of Mwc mainnet, this is done and owned by the council treasurers. This can be down a few days prior.
 * Grab the latest bitcoin block hash from publicly available APIs.
 * Build a genesis block with the prepared coinbase and the bitcoin block hash as `prev_root`. The timestamp of the block is set to 30 min ahead to leave enough time to run a build and start a node.
 * Mine the block so we have at least a valid Cuckatoo Cycle. We don't require a given difficulty for that solution.

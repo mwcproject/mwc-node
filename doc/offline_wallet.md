@@ -1,7 +1,7 @@
 # Overview #
 
 Given the nature of MWC, given it's limited supply, it will be important to be able to properly secure coins. Currently in
-grin, there is no way that we are aware of to send funds from an offline wallet. We are not aware of a way to do this in
+mwc, there is no way that we are aware of to send funds from an offline wallet. We are not aware of a way to do this in
 Beam either. We have implemented new function in the MWC wallet called "submit". It submits a transaction to the network
 that has been finalized on an offline node. This will enable both sending and receiving funds with an offline airgapped
 wallet. We felt this was a necessity for users to be able to securely store their funds in MWC.
@@ -41,7 +41,7 @@ transactions via file. See our floonet page on how to do that:
 https://github.com/cgilliard/mwc/blob/master/doc/mwc_floonet.md. You will need to transfer the transaction files via USB
 stick to and from the offline computer.
 
-Up until this point, all of this was possible in grin, but the problem arises when you submit the transaction to the network
+Up until this point, all of this was possible in mwc, but the problem arises when you submit the transaction to the network
 from an offline node. The last step is the "finalize" command and that both signs the transaction and submits to the network.
 The next section will describe a new function we created called the "submit" function which is checked the git repository.
 
