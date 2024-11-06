@@ -41,5 +41,5 @@ mwc_store = { path = "../store", version = "5.3.3" }
 mwc_util = { path = "../util", version = "5.3.3" }
 mwc_chain = { path = "../chain", version = "5.3.3" }
 
-#[dev-dependencies]
-#mwc_pool = { path = "../pool", version = "5.3.3" }
+[dev-dependencies]
+mwc_pool = { path = "../pool", version = "5.3.3" }
