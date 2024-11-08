@@ -38,6 +38,14 @@ impl TUIStatusView {
 			SyncStatus::Initial => Cow::Borrowed("Initializing"),
 			SyncStatus::NoSync => Cow::Borrowed("Running"),
 			SyncStatus::AwaitingPeers(_) => Cow::Borrowed("Waiting for peers"),
+			SyncStatus::HeaderHashSync {
+				completed_blocks,
+				// total number of leaves required by archive header
+				total_blocks,
+			} => Cow::Owned(format!(
+				"Downloading headers hashes - {}/{}",
+				completed_blocks, total_blocks
+			)),
 			SyncStatus::HeaderSync {
 				sync_head,
 				highest_height,
@@ -53,10 +61,8 @@ impl TUIStatusView {
 			SyncStatus::TxHashsetPibd {
 				aborted: _,
 				errored: _,
-				completed_leaves,
-				leaves_required,
-				completed_to_height: _,
-				required_height: _,
+				recieved_segments: completed_leaves,
+				total_segments: leaves_required,
 			} => {
 				let percent = if completed_leaves == 0 {
 					0

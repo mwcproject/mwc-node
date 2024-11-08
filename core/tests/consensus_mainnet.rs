@@ -17,6 +17,7 @@
 //! mining mode/chain type per test file to avoid non-deterministic behaviour.
 
 use grin_core as core;
+use std::collections::VecDeque;
 
 use self::core::consensus::*;
 use self::core::core::block::HeaderVersion;
@@ -93,8 +94,10 @@ fn repeat(
 	let times = (0..(len as usize)).map(|n| n * interval as usize).rev();
 	let pairs = times.zip(diffs.iter());
 	pairs
-		.map(|(t, d)| {
+		.enumerate()
+		.map(|(index, (t, d))| {
 			HeaderDifficultyInfo::new(
+				index as u64,
 				diff.hash,
 				cur_time + t as u64,
 				d.clone(),
@@ -106,7 +109,10 @@ fn repeat(
 }
 
 // Creates a new chain with a genesis at a simulated difficulty
-fn create_chain_sim(diff: u64) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
+fn create_chain_sim(
+	diff: u64,
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	println!(
 		"adding create: {}, {}",
 		Utc::now().timestamp(),
@@ -116,7 +122,7 @@ fn create_chain_sim(diff: u64) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 		Utc::now().timestamp() as u64,
 		Difficulty::from_num(diff),
 	)];
-	let diff_stats = get_diff_stats(&return_vec);
+	let diff_stats = get_diff_stats(&return_vec, cache_values);
 	vec![(
 		HeaderDifficultyInfo::from_ts_diff(
 			Utc::now().timestamp() as u64,
@@ -126,11 +132,14 @@ fn create_chain_sim(diff: u64) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	)]
 }
 
-fn get_diff_stats(chain_sim: &[HeaderDifficultyInfo]) -> DiffStats {
+fn get_diff_stats(
+	chain_sim: &[HeaderDifficultyInfo],
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+) -> DiffStats {
 	// Fill out some difficulty stats for convenience
 	let diff_iter = chain_sim.to_vec();
 	let last_blocks: Vec<HeaderDifficultyInfo> =
-		global::difficulty_data_to_vector(diff_iter.iter().cloned());
+		global::difficulty_data_to_vector(diff_iter.iter().cloned(), cache_values);
 
 	let mut last_time = last_blocks[0].timestamp;
 	let tip_height = chain_sim.len();
@@ -142,7 +151,7 @@ fn get_diff_stats(chain_sim: &[HeaderDifficultyInfo]) -> DiffStats {
 	let mut i = 1;
 
 	let sum_blocks: Vec<HeaderDifficultyInfo> =
-		global::difficulty_data_to_vector(diff_iter.iter().cloned())
+		global::difficulty_data_to_vector(diff_iter.iter().cloned(), cache_values)
 			.into_iter()
 			.take(DIFFICULTY_ADJUST_WINDOW as usize)
 			.collect();
@@ -206,16 +215,17 @@ fn get_diff_stats(chain_sim: &[HeaderDifficultyInfo]) -> DiffStats {
 fn add_block(
 	interval: u64,
 	chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>,
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
 ) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	let mut ret_chain_sim = chain_sim.clone();
 	let mut return_chain: Vec<HeaderDifficultyInfo> =
 		chain_sim.clone().iter().map(|e| e.0.clone()).collect();
 	// get last interval
-	let diff = next_difficulty(1, return_chain.clone());
+	let diff = next_difficulty(1, return_chain.clone(), cache_values);
 	let last_elem = chain_sim.first().unwrap().clone().0;
 	let time = last_elem.timestamp + interval;
 	return_chain.insert(0, HeaderDifficultyInfo::from_ts_diff(time, diff.difficulty));
-	let diff_stats = get_diff_stats(&return_chain);
+	let diff_stats = get_diff_stats(&return_chain, cache_values);
 	ret_chain_sim.insert(
 		0,
 		(
@@ -231,10 +241,11 @@ fn add_block_repeated(
 	interval: u64,
 	chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>,
 	iterations: usize,
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
 ) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	let mut return_chain = chain_sim;
 	for _ in 0..iterations {
-		return_chain = add_block(interval, return_chain.clone());
+		return_chain = add_block(interval, return_chain.clone(), cache_values);
 	}
 	return_chain
 }
@@ -295,15 +306,17 @@ fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderDiffi
 fn adjustment_scenarios() {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
 
+	let mut cache_values = VecDeque::new();
+
 	// Genesis block with initial diff
-	let chain_sim = create_chain_sim(global::initial_block_difficulty());
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
 	// Scenario 1) Hash power is massively over estimated, first block takes an hour
-	let chain_sim = add_block_repeated(3600, chain_sim, 2);
-	let chain_sim = add_block_repeated(1800, chain_sim, 2);
-	let chain_sim = add_block_repeated(900, chain_sim, 10);
-	let chain_sim = add_block_repeated(450, chain_sim, 30);
-	let chain_sim = add_block_repeated(400, chain_sim, 30);
-	let chain_sim = add_block_repeated(300, chain_sim, 30);
+	let chain_sim = add_block_repeated(3600, chain_sim, 2, &mut cache_values);
+	let chain_sim = add_block_repeated(1800, chain_sim, 2, &mut cache_values);
+	let chain_sim = add_block_repeated(900, chain_sim, 10, &mut cache_values);
+	let chain_sim = add_block_repeated(450, chain_sim, 30, &mut cache_values);
+	let chain_sim = add_block_repeated(400, chain_sim, 30, &mut cache_values);
+	let chain_sim = add_block_repeated(300, chain_sim, 30, &mut cache_values);
 
 	println!("*********************************************************");
 	println!("Scenario 1) Grossly over-estimated genesis difficulty ");
@@ -312,10 +325,10 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 
 	// Under-estimated difficulty
-	let chain_sim = create_chain_sim(global::initial_block_difficulty());
-	let chain_sim = add_block_repeated(1, chain_sim, 5);
-	let chain_sim = add_block_repeated(20, chain_sim, 5);
-	let chain_sim = add_block_repeated(30, chain_sim, 20);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = add_block_repeated(1, chain_sim, 5, &mut cache_values);
+	let chain_sim = add_block_repeated(20, chain_sim, 5, &mut cache_values);
+	let chain_sim = add_block_repeated(30, chain_sim, 20, &mut cache_values);
 
 	println!("*********************************************************");
 	println!("Scenario 2) Grossly under-estimated genesis difficulty ");
@@ -325,9 +338,9 @@ fn adjustment_scenarios() {
 	let just_enough = (DIFFICULTY_ADJUST_WINDOW) as usize;
 
 	// Steady difficulty for a good while, then a sudden drop
-	let chain_sim = create_chain_sim(global::initial_block_difficulty());
-	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize);
-	let chain_sim = add_block_repeated(600, chain_sim, 60);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize, &mut cache_values);
+	let chain_sim = add_block_repeated(600, chain_sim, 60, &mut cache_values);
 
 	println!("");
 	println!("*********************************************************");
@@ -337,9 +350,9 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 
 	// Sudden increase
-	let chain_sim = create_chain_sim(global::initial_block_difficulty());
-	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize);
-	let chain_sim = add_block_repeated(10, chain_sim, 10);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize, &mut cache_values);
+	let chain_sim = add_block_repeated(10, chain_sim, 10, &mut cache_values);
 
 	println!("");
 	println!("*********************************************************");
@@ -349,11 +362,11 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 
 	// Oscillations
-	let chain_sim = create_chain_sim(global::initial_block_difficulty());
-	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize);
-	let chain_sim = add_block_repeated(10, chain_sim, 10);
-	let chain_sim = add_block_repeated(60, chain_sim, 20);
-	let chain_sim = add_block_repeated(10, chain_sim, 10);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize, &mut cache_values);
+	let chain_sim = add_block_repeated(10, chain_sim, 10, &mut cache_values);
+	let chain_sim = add_block_repeated(60, chain_sim, 20, &mut cache_values);
+	let chain_sim = add_block_repeated(10, chain_sim, 10, &mut cache_values);
 
 	println!("");
 	println!("*********************************************************");
@@ -370,6 +383,7 @@ fn next_target_adjustment() {
 	let cur_time = Utc::now().timestamp() as u64;
 	let diff_min = Difficulty::min();
 
+	let mut cache_values = VecDeque::new();
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
 	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
@@ -381,6 +395,7 @@ fn next_target_adjustment() {
 			DIFFICULTY_ADJUST_WINDOW,
 			None,
 		),
+		&mut cache_values,
 	);
 
 	assert_ne!(hinext.difficulty, diff_min);
@@ -392,7 +407,12 @@ fn next_target_adjustment() {
 	let just_enough = DIFFICULTY_ADJUST_WINDOW + 1;
 	hi.difficulty = Difficulty::from_num(10000);
 	assert_eq!(
-		next_difficulty(1, repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(10000)
 	);
 
@@ -400,7 +420,8 @@ fn next_target_adjustment() {
 	assert_eq!(
 		next_difficulty(
 			1,
-			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)]
+			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)],
+			&mut cache_values
 		)
 		.difficulty,
 		Difficulty::from_num(14913)
@@ -418,55 +439,100 @@ fn next_target_adjustment() {
 	);
 	s2.append(&mut s1);
 	assert_eq!(
-		next_difficulty(1, s2).difficulty,
-		Difficulty::from_num(1000)
+		next_difficulty(1, s2, &mut cache_values).difficulty,
+		Difficulty::from_num(1000),
 	);
 
 	// too slow, diff goes down
 	hi.difficulty = Difficulty::from_num(1000);
 	assert_eq!(
-		next_difficulty(1, repeat(90, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(90, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(857)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(120, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(120, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(750)
 	);
 
 	// too fast, diff goes up
 	assert_eq!(
-		next_difficulty(1, repeat(55, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(55, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1028)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(45, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(45, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1090)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(30, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(30, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1200)
 	);
 
 	// hitting lower time bound, should always get the same result below
 	assert_eq!(
-		next_difficulty(1, repeat(0, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(0, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1500)
 	);
 
 	// hitting higher time bound, should always get the same result above
 	assert_eq!(
-		next_difficulty(1, repeat(300, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(300, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(500)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(400, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(400, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(500)
 	);
 
 	// We should never drop below minimum
 	hi.difficulty = Difficulty::zero();
 	assert_eq!(
-		next_difficulty(1, repeat(90, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(90, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::min()
 	);
 }

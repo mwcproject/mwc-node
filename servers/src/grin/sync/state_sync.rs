@@ -85,15 +85,10 @@ impl StateSync {
 		self.pibd_aborted = true;
 	}
 
-	fn reset_chain(&mut self) {
-		if let Err(e) = self.chain.reset_pibd_head() {
-			error!("pibd_sync restart: reset pibd_head error = {}", e);
-		}
-		if let Err(e) = self.chain.reset_chain_head_to_genesis() {
-			error!("pibd_sync restart: chain reset to genesis error = {}", e);
-		}
-		if let Err(e) = self.chain.reset_prune_lists() {
-			error!("pibd_sync restart: reset prune lists error = {}", e);
+	// Seset chain to be ready to download data with PIBD
+	fn reset_pibd_chain(&mut self) {
+		if let Err(e) = self.chain.reset_pibd_chain() {
+			error!("pibd_sync restart: reset reset_pibd_chain error, {}", e);
 		}
 	}
 
@@ -153,13 +148,11 @@ impl StateSync {
 					self.output_bitmap_root_header_hash = None;
 				}
 
-				let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
 				error!("PIBD Reported Failure - Restarting Sync");
 				// reset desegmenter state
 				self.chain.reset_desegmenter();
-				self.reset_chain();
-				self.sync_state
-					.update_pibd_progress(false, false, 0, 1, &archive_header);
+				self.reset_pibd_chain();
+				self.sync_state.update_pibd_progress(false, false, 0, 1);
 				sync_need_restart = true;
 			}
 		}
@@ -208,10 +201,8 @@ impl StateSync {
 					return true;
 				}
 				let (launch, _download_timeout) = self.state_sync_due();
-				let archive_header = { self.chain.txhashset_archive_header_header_only().unwrap() };
 				if launch {
-					self.sync_state
-						.update_pibd_progress(false, false, 0, 1, &archive_header);
+					self.sync_state.update_pibd_progress(false, false, 0, 1);
 				}
 
 				let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
@@ -220,7 +211,7 @@ impl StateSync {
 				self.make_pibd_hand_shake(&archive_header);
 
 				let mut has_segmenter = true;
-				if self.chain.get_desegmenter(&archive_header).read().is_none() {
+				if self.chain.get_desegmenter().read().is_none() {
 					has_segmenter = false;
 					if let Some(bitmap_output_root) =
 						self.select_pibd_bitmap_output_root(&archive_header)
@@ -231,10 +222,10 @@ impl StateSync {
 						// Sinse we dont handle that (it is posible to handle by merging bitmaps), we
 						// better to reset the chain.
 						// Note, every 12 hours the root will be changed, so PIBD process must finish before
-						self.reset_chain();
+						self.reset_pibd_chain();
 						if let Err(e) = self
 							.chain
-							.create_desegmenter(&archive_header, bitmap_output_root)
+							.create_desegmenter(archive_header.height, bitmap_output_root)
 						{
 							error!(
 								"Unable to create desegmenter for header at {}, Error: {}",
@@ -254,33 +245,22 @@ impl StateSync {
 					// Continue our PIBD process (which returns true if all segments are in)
 					match self.continue_pibd(&archive_header) {
 						Ok(true) => {
-							let desegmenter = self.chain.get_desegmenter(&archive_header);
+							let desegmenter = self.chain.get_desegmenter();
 							// All segments in, validate
 							if let Some(d) = desegmenter.write().as_mut() {
 								if let Ok(true) = d.check_progress(self.sync_state.clone()) {
 									if let Err(e) = d.check_update_leaf_set_state() {
 										error!("error updating PIBD leaf set: {}", e);
-										self.sync_state.update_pibd_progress(
-											false,
-											true,
-											0,
-											1,
-											&archive_header,
-										);
+										self.sync_state.update_pibd_progress(false, true, 0, 1);
 										return false;
 									}
 									if let Err(e) = d.validate_complete_state(
 										self.sync_state.clone(),
 										stop_state.clone(),
+										self.chain.secp(),
 									) {
 										error!("error validating PIBD state: {}", e);
-										self.sync_state.update_pibd_progress(
-											false,
-											true,
-											0,
-											1,
-											&archive_header,
-										);
+										self.sync_state.update_pibd_progress(false, true, 0, 1);
 										return false;
 									}
 									return true;
@@ -293,13 +273,7 @@ impl StateSync {
 							error!("Need to restart the PIBD resync because of the error {}", e);
 							// resetting to none, so no peers will be banned
 							self.output_bitmap_root_header_hash = None;
-							self.sync_state.update_pibd_progress(
-								false,
-								true,
-								0,
-								1,
-								&archive_header,
-							);
+							self.sync_state.update_pibd_progress(false, true, 0, 1);
 							return false;
 						}
 					}
@@ -489,7 +463,7 @@ impl StateSync {
 	/// that the process is done
 	fn continue_pibd(&mut self, archive_header: &BlockHeader) -> Result<bool, grin_chain::Error> {
 		// Check the state of our chain to figure out what we should be requesting next
-		let desegmenter = self.chain.get_desegmenter(&archive_header);
+		let desegmenter = self.chain.get_desegmenter();
 
 		// Remove stale requests, if we haven't recieved the segment within a minute re-request
 		// TODO: verify timing
@@ -498,17 +472,19 @@ impl StateSync {
 
 		// Apply segments... TODO: figure out how this should be called, might
 		// need to be a separate thread.
-		if let Some(mut de) = desegmenter.try_write() {
+		// FIX ME.  Desgmenter works differently now
+		assert!(false);
+		/*		if let Some(mut de) = desegmenter.try_write() {
 			if let Some(d) = de.as_mut() {
 				let res = d.apply_next_segments();
 				if let Err(e) = res {
 					error!("error applying segment: {}", e);
 					self.sync_state
-						.update_pibd_progress(false, true, 0, 1, &archive_header);
+						.update_pibd_progress(false, true, 0, 1);
 					return Ok(false);
 				}
 			}
-		}
+		}*/
 
 		let pibd_peers = self.get_pibd_ready_peers();
 
@@ -544,7 +520,8 @@ impl StateSync {
 			// Figure out the next segments we need
 			// (12 is divisible by 3, to try and evenly spread the requests among the 3
 			// main pmmrs. Bitmaps segments will always be requested first)
-			next_segment_ids = d.next_desired_segments(std::cmp::max(1, desired_segments_num))?;
+			next_segment_ids =
+				d.next_desired_segments(std::cmp::max(1, desired_segments_num as i32))?;
 		}
 
 		// For each segment, pick a desirable peer and send message
@@ -578,8 +555,7 @@ impl StateSync {
 					{
 						// random abort test
 						info!("No PIBD-enabled max-difficulty peers for the past {} seconds - Aborting PIBD and falling back to TxHashset.zip download", pibd_params::TXHASHSET_ZIP_FALLBACK_TIME_SECS);
-						self.sync_state
-							.update_pibd_progress(true, true, 0, 1, &archive_header);
+						self.sync_state.update_pibd_progress(true, true, 0, 1);
 						self.sync_state
 							.set_sync_error(chain::Error::AbortingPIBDError);
 						self.set_pibd_aborted();

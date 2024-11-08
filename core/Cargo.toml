@@ -27,6 +27,8 @@ log = "0.4"
 chrono = { version = "0.4.11", features = ["serde"] }
 zeroize = { version = "1.1", features =["zeroize_derive"] }
 bytes = "0.5"
+num_cpus = "1"
+crossbeam = "0.8"
 
 keychain = { package = "grin_keychain", path = "../keychain", version = "5.3.3" }
 util = { package = "grin_util", path = "../util", version = "5.3.3" }

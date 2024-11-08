@@ -14,8 +14,6 @@
 
 //! Generation of the various necessary segments requested during PIBD.
 
-use std::{sync::Arc, time::Instant};
-
 use crate::core::core::hash::Hash;
 use crate::core::core::pmmr::ReadablePMMR;
 use crate::core::core::{BlockHeader, OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
@@ -23,23 +21,29 @@ use crate::error::Error;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
+use grin_core::core::pmmr::{ReadonlyPMMR, VecBackend};
+use std::{sync::Arc, time::Instant};
 
 /// Segmenter for generating PIBD segments.
 #[derive(Clone)]
 pub struct Segmenter {
+	// every 512th header (HEADERS_PER_BATCH) must be here, we don't need all header hashes
+	header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
 	txhashset: Arc<RwLock<TxHashSet>>,
-	bitmap_snapshot: Arc<BitmapAccumulator>,
+	bitmap_snapshot: Arc<RwLock<BitmapAccumulator>>,
 	header: BlockHeader,
 }
 
 impl Segmenter {
 	/// Create a new segmenter based on the provided txhashset.
 	pub fn new(
+		header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
 		txhashset: Arc<RwLock<TxHashSet>>,
-		bitmap_snapshot: Arc<BitmapAccumulator>,
+		bitmap_snapshot: Arc<RwLock<BitmapAccumulator>>,
 		header: BlockHeader,
 	) -> Segmenter {
 		Segmenter {
+			header_pmmr,
 			txhashset,
 			bitmap_snapshot,
 			header,
@@ -52,14 +56,31 @@ impl Segmenter {
 		&self.header
 	}
 
-	/// Create a kernel segment.
-	pub fn kernel_segment(&self, id: SegmentIdentifier) -> Result<Segment<TxKernel>, Error> {
+	/// Root hash for headers Hashes MMR
+	pub fn headers_root(&self) -> Result<Hash, Error> {
+		let header_pmmr = self.header_pmmr.read();
+		let pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
+		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
+		Ok(root)
+	}
+
+	/// The root of the bitmap snapshot PMMR.
+	pub fn bitmap_root(&self) -> Result<Hash, Error> {
+		let bitmap_snapshot = self.bitmap_snapshot.read();
+		let pmmr = bitmap_snapshot.readonly_pmmr();
+		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
+		Ok(root)
+	}
+
+	/// Create a utxo bitmap segment based on our bitmap "snapshot" and return it with
+	/// the corresponding output root.
+	pub fn bitmap_segment(&self, id: SegmentIdentifier) -> Result<Segment<BitmapChunk>, Error> {
 		let now = Instant::now();
-		let txhashset = self.txhashset.read();
-		let kernel_pmmr = txhashset.kernel_pmmr_at(&self.header);
-		let segment = Segment::from_pmmr(id, &kernel_pmmr, false)?;
+		let bitmap_snapshot = self.bitmap_snapshot.read();
+		let bitmap_pmmr = bitmap_snapshot.readonly_pmmr();
+		let segment = Segment::from_pmmr(id, &bitmap_pmmr, false)?;
 		debug!(
-			"kernel_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			"bitmap_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
 			segment.id().height,
 			segment.id().idx,
 			segment.leaf_iter().count(),
@@ -70,21 +91,14 @@ impl Segmenter {
 		Ok(segment)
 	}
 
-	/// The root of the bitmap snapshot PMMR.
-	pub fn bitmap_root(&self) -> Result<Hash, Error> {
-		let pmmr = self.bitmap_snapshot.readonly_pmmr();
-		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
-		Ok(root)
-	}
-
-	/// Create a utxo bitmap segment based on our bitmap "snapshot" and return it with
-	/// the corresponding output root.
-	pub fn bitmap_segment(&self, id: SegmentIdentifier) -> Result<Segment<BitmapChunk>, Error> {
+	/// Create headers segment.
+	pub fn headers_segment(&self, id: SegmentIdentifier) -> Result<Segment<Hash>, Error> {
 		let now = Instant::now();
-		let bitmap_pmmr = self.bitmap_snapshot.readonly_pmmr();
-		let segment = Segment::from_pmmr(id, &bitmap_pmmr, false)?;
+		let header_pmmr = self.header_pmmr.read();
+		let header_pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
+		let segment = Segment::from_pmmr(id, &header_pmmr, false)?;
 		debug!(
-			"bitmap_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			"headers_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
 			segment.id().height,
 			segment.id().idx,
 			segment.leaf_iter().count(),
@@ -106,6 +120,24 @@ impl Segmenter {
 		let segment = Segment::from_pmmr(id, &output_pmmr, true)?;
 		debug!(
 			"output_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			segment.id().height,
+			segment.id().idx,
+			segment.leaf_iter().count(),
+			segment.hash_iter().count(),
+			segment.proof().size(),
+			now.elapsed().as_millis()
+		);
+		Ok(segment)
+	}
+
+	/// Create a kernel segment.
+	pub fn kernel_segment(&self, id: SegmentIdentifier) -> Result<Segment<TxKernel>, Error> {
+		let now = Instant::now();
+		let txhashset = self.txhashset.read();
+		let kernel_pmmr = txhashset.kernel_pmmr_at(&self.header);
+		let segment = Segment::from_pmmr(id, &kernel_pmmr, false)?;
+		debug!(
+			"kernel_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
 			segment.id().height,
 			segment.id().idx,
 			segment.leaf_iter().count(),

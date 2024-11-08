@@ -50,8 +50,8 @@ use grin_core::core::TxKernel;
 use grin_core::libtx::aggsig;
 use grin_util::secp::pedersen::Commitment;
 use grin_util::secp::rand::Rng;
-use grin_util::secp::{Message, Secp256k1, Signature};
-use grin_util::{static_secp_instance, RwLock};
+use grin_util::secp::{ContextFlag, Message, Secp256k1, Signature};
+use grin_util::RwLock;
 use grin_util::{Mutex, OnionV3Address, OnionV3AddressError, ToHex};
 use libp2p::core::network::NetworkInfo;
 use rand::seq::SliceRandom;
@@ -375,6 +375,8 @@ pub async fn run_libp2p_node(
 	kernel_validation_fn: Arc<impl Fn(&Commitment) -> Result<Option<TxKernel>, Error>>,
 	stop_mutex: std::sync::Arc<std::sync::Mutex<u32>>,
 ) -> Result<(), Error> {
+	let secp = Arc::new(Secp256k1::with_caps(ContextFlag::Commit));
+
 	// Generate Onion address.
 	let onion_address = OnionV3Address::from_private(tor_secret)
 		.map_err(|e| Error::Libp2pError(format!("Unable to build onion address, {}", e)))?;
@@ -489,6 +491,7 @@ pub async fn run_libp2p_node(
 	let mut requests_cash: HashMap<Commitment, VecDeque<i64>> = HashMap::new();
 	let mut last_cash_clean = Instant::now();
 	let mut last_reconnect = Instant::now();
+	let secp = secp.clone();
 	// Kick it off
 	// Event processing future...
 	task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
@@ -591,9 +594,6 @@ pub async fn run_libp2p_node(
 									// We get the regular message and we need to validate it now.
 
 									let gossip = swarm.get_behaviour();
-
-									let secp = static_secp_instance();
-									let secp = secp.lock();
 
 									let acceptance = match validate_integrity_message(
 										&peer_id,

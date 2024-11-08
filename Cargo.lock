@@ -756,6 +756,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-epoch",
+ "crossbeam-queue",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -779,6 +792,15 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0346b5d5e76ac2fe4e327c5fd1118d6be7c51dfb18f9b7922923f287471e35"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1566,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "grin_api"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "bytes 0.5.6",
  "chrono",
@@ -1599,13 +1621,14 @@ dependencies = [
 
 [[package]]
 name = "grin_chain"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "bit-vec",
  "bitflags 1.3.2",
  "byteorder",
  "chrono",
  "croaring",
+ "crossbeam",
  "enum_primitive",
  "env_logger",
  "grin_core",
@@ -1615,15 +1638,17 @@ dependencies = [
  "lazy_static",
  "log",
  "lru-cache",
+ "num_cpus",
  "rand 0.6.5",
  "serde",
  "serde_derive",
  "thiserror",
+ "tokio 0.2.25",
 ]
 
 [[package]]
 name = "grin_config"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "dirs 2.0.2",
  "grin_core",
@@ -1640,13 +1665,14 @@ dependencies = [
 
 [[package]]
 name = "grin_core"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "blake2-rfc",
  "byteorder",
  "bytes 0.5.6",
  "chrono",
  "croaring",
+ "crossbeam",
  "enum_primitive",
  "grin_keychain",
  "grin_util",
@@ -1655,6 +1681,7 @@ dependencies = [
  "lru-cache",
  "num 0.2.1",
  "num-bigint",
+ "num_cpus",
  "rand 0.6.5",
  "serde",
  "serde_derive",
@@ -1666,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "grin_keychain"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -1688,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "grin_p2p"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "async-std",
  "bitflags 1.3.2",
@@ -1722,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "grin_pool"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "blake2-rfc",
  "chrono",
@@ -1754,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "grin_servers"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "atomic_float",
  "chrono",
@@ -1791,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "grin_store"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "byteorder",
  "chrono",
@@ -1813,7 +1840,7 @@ dependencies = [
 
 [[package]]
 name = "grin_util"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "backtrace",
  "base64 0.12.3",
@@ -2504,7 +2531,7 @@ dependencies = [
  "libp2p-core",
  "log",
  "socket2 0.3.19",
- "tokio 1.38.0",
+ "tokio 1.41.0",
 ]
 
 [[package]]
@@ -2725,13 +2752,14 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "0.8.11"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
+checksum = "80e04d1dcff3aae0704555fe5fee3bcfaf3d1fdf8a7e521d5b9d2b42acb52cec"
 dependencies = [
+ "hermit-abi 0.3.9",
  "libc",
  "wasi 0.11.0+wasi-snapshot-preview1",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2826,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "mwc"
-version = "5.3.2"
+version = "5.3.3"
 dependencies = [
  "blake2-rfc",
  "built",
@@ -4516,16 +4544,16 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.38.0"
+version = "1.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba4f4a02a7a80d6f274636f0aa95c7e383b912d41fe721a31f29e29698585a4a"
+checksum = "145f3413504347a2be84393cc8a7d2fb4d863b375909ea59f2158261aa258bbb"
 dependencies = [
  "backtrace",
  "libc",
- "mio 0.8.11",
+ "mio 1.0.2",
  "pin-project-lite 0.2.14",
  "socket2 0.5.7",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

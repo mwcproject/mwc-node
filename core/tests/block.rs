@@ -29,6 +29,7 @@ use crate::core::{global, pow, ser};
 use chrono::Duration;
 use grin_core as core;
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
+use util::secp::{ContextFlag, Secp256k1};
 use util::{secp, ToHex};
 
 // Setup test with AutomatedTesting chain_type;
@@ -66,7 +67,9 @@ fn too_large_block() {
 	let prev = BlockHeader::default();
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx], &keychain, &builder, &prev, &key_id);
-	assert!(b.validate(&BlindingFactor::zero()).is_err());
+	assert!(b
+		.validate(&BlindingFactor::zero(), keychain.secp())
+		.is_err());
 }
 
 #[test]
@@ -75,9 +78,9 @@ fn too_large_block() {
 fn very_empty_block() {
 	test_setup();
 	let b = Block::with_header(BlockHeader::default());
-
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	assert_eq!(
-		b.verify_coinbase(),
+		b.verify_coinbase(&secp),
 		Err(Error::Secp(secp::Error::IncorrectCommitSum))
 	);
 }
@@ -122,7 +125,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Block is invalid at header version 3 if it contains an NRD kernel.
 	assert_eq!(b.header.version, HeaderVersion(3));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero()),
+		b.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelPreHF3)
 	);
 
@@ -143,7 +146,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Block is valid at header version 4 (at HF height) if it contains an NRD kernel.
 	assert_eq!(b.header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(b.header.version, HeaderVersion(4));
-	assert!(b.validate(&BlindingFactor::zero()).is_ok());
+	assert!(b.validate(&BlindingFactor::zero(), keychain.secp()).is_ok());
 
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK;
 	let prev = BlockHeader {
@@ -161,7 +164,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 
 	// Block is valid at header version 4 if it contains an NRD kernel.
 	assert_eq!(b.header.version, HeaderVersion(4));
-	assert!(b.validate(&BlindingFactor::zero()).is_ok());
+	assert!(b.validate(&BlindingFactor::zero(), keychain.secp()).is_ok());
 }
 
 #[test]
@@ -204,7 +207,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	// Block is invalid as NRD not enabled.
 	assert_eq!(b.header.version, HeaderVersion(3));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero()),
+		b.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 
@@ -226,7 +229,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	assert_eq!(b.header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(b.header.version, HeaderVersion(4));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero()),
+		b.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 
@@ -247,7 +250,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	// Block is invalid as NRD not enabled.
 	assert_eq!(b.header.version, HeaderVersion(4));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero()),
+		b.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 }
@@ -280,7 +283,8 @@ fn block_with_cut_through() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	b.validate(&BlindingFactor::zero()).unwrap();
+	b.validate(&BlindingFactor::zero(), keychain.secp())
+		.unwrap();
 	assert_eq!(b.inputs().len(), 3);
 	assert_eq!(b.outputs().len(), 3);
 }
@@ -316,7 +320,7 @@ fn empty_block_with_coinbase_is_valid() {
 
 	// the block should be valid here (single coinbase output with corresponding
 	// txn kernel)
-	assert!(b.validate(&BlindingFactor::zero()).is_ok());
+	assert!(b.validate(&BlindingFactor::zero(), keychain.secp()).is_ok());
 }
 
 #[test]
@@ -337,12 +341,19 @@ fn remove_coinbase_output_flag() {
 		..b
 	};
 
-	assert_eq!(b.verify_coinbase(), Err(Error::CoinbaseSumMismatch));
+	assert_eq!(
+		b.verify_coinbase(keychain.secp()),
+		Err(Error::CoinbaseSumMismatch)
+	);
 	assert!(b
-		.verify_kernel_sums(b.header.overage(), b.header.total_kernel_offset())
+		.verify_kernel_sums(
+			b.header.overage(),
+			b.header.total_kernel_offset(),
+			keychain.secp()
+		)
 		.is_ok());
 	assert_eq!(
-		b.validate(&BlindingFactor::zero()),
+		b.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::CoinbaseSumMismatch)
 	);
 }
@@ -366,14 +377,14 @@ fn remove_coinbase_kernel_flag() {
 
 	// Flipping the coinbase flag results in kernels not summing correctly.
 	assert_eq!(
-		b.verify_coinbase(),
+		b.verify_coinbase(keychain.secp()),
 		Err(Error::Secp(secp::Error::IncorrectCommitSum))
 	);
 
 	// Also results in the block no longer validating correctly
 	// because the message being signed on each tx kernel includes the kernel features.
 	assert_eq!(
-		b.validate(&BlindingFactor::zero()),
+		b.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::Transaction(transaction::Error::IncorrectSignature))
 	);
 }
@@ -773,7 +784,7 @@ fn same_amount_outputs_copy_range_proof() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	match b.validate(&BlindingFactor::zero()) {
+	match b.validate(&BlindingFactor::zero(), keychain.secp()) {
 		Err(Error::Transaction(transaction::Error::Secp(secp::Error::InvalidRangeProof))) => {}
 		_ => panic!("Bad range proof should be invalid"),
 	}
@@ -825,7 +836,7 @@ fn wrong_amount_range_proof() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	match b.validate(&BlindingFactor::zero()) {
+	match b.validate(&BlindingFactor::zero(), keychain.secp()) {
 		Err(Error::Transaction(transaction::Error::Secp(secp::Error::InvalidRangeProof))) => {}
 		_ => panic!("Bad range proof should be invalid"),
 	}
@@ -902,7 +913,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 
 	// The block should fail validation due to cut-through.
 	assert_eq!(
-		block.validate(&BlindingFactor::zero()),
+		block.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -923,7 +934,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Block validates successfully after applying cut-through.
-	block.validate(&BlindingFactor::zero())?;
+	block.validate(&BlindingFactor::zero(), keychain.secp())?;
 
 	// Block validates via lightweight "read" validation.
 	block.validate_read()?;
@@ -971,7 +982,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 
 	// The block should fail validation due to cut-through.
 	assert_eq!(
-		block.validate(&BlindingFactor::zero()),
+		block.validate(&BlindingFactor::zero(), keychain.secp()),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -992,7 +1003,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Block validates successfully after applying cut-through.
-	block.validate(&BlindingFactor::zero())?;
+	block.validate(&BlindingFactor::zero(), keychain.secp())?;
 
 	// Block validates via lightweight "read" validation.
 	block.validate_read()?;

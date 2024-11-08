@@ -22,6 +22,9 @@ thiserror = "1"
 chrono = "0.4.11"
 lru-cache = "0.1"
 lazy_static = "1"
+tokio = {version = "0.2", features = ["full"] }
+num_cpus = "1"
+crossbeam = "0.8"
 
 grin_core = { path = "../core", version = "5.3.3" }
 grin_keychain = { path = "../keychain", version = "5.3.3" }

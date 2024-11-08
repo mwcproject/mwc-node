@@ -169,10 +169,17 @@ impl ChainStore {
 		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit), None)
 	}
 
-	/// Builds a new batch to be used with this store.
-	pub fn batch(&self) -> Result<Batch<'_>, Error> {
+	/// Builds a new batch for read only access with this store.
+	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
 		Ok(Batch {
-			db: self.db.batch()?,
+			db: self.db.batch_read()?,
+		})
+	}
+
+	/// Builds a new batch for write access to be used with this store.
+	pub fn batch_write(&self) -> Result<Batch<'_>, Error> {
+		Ok(Batch {
+			db: self.db.batch_write()?,
 		})
 	}
 }
@@ -591,7 +598,7 @@ impl<'a> Batch<'a> {
 pub struct DifficultyIter<'a> {
 	start: Hash,
 	store: Option<Arc<ChainStore>>,
-	batch: Option<Batch<'a>>,
+	batch: Option<&'a Batch<'a>>,
 
 	// maintain state for both the "next" header in this iteration
 	// and its previous header in the chain ("next next" in the iteration)
@@ -618,7 +625,7 @@ impl<'a> DifficultyIter<'a> {
 
 	/// Build a new iterator using the provided chain store batch and starting from
 	/// the provided block hash.
-	pub fn from_batch(start: Hash, batch: Batch<'_>) -> DifficultyIter<'_> {
+	pub fn from_batch(start: Hash, batch: &'a Batch<'a>) -> DifficultyIter<'a> {
 		DifficultyIter {
 			start,
 			store: None,
@@ -681,6 +688,7 @@ impl<'a> Iterator for DifficultyIter<'a> {
 			let scaling = header.pow.secondary_scaling;
 
 			Some(HeaderDifficultyInfo::new(
+				header.height,
 				cur_header_hash,
 				header.timestamp.timestamp() as u64,
 				difficulty,

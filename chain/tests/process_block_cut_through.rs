@@ -18,6 +18,7 @@ use grin_chain as chain;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;
+use std::collections::VecDeque;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{pipe, Chain, Options};
@@ -39,7 +40,9 @@ where
 {
 	let prev = chain.head_header().unwrap();
 	let next_height = prev.height + 1;
-	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter()?);
+	let mut cache_values = VecDeque::new();
+	let next_header_info =
+		consensus::next_difficulty(1, chain.difficulty_iter()?, &mut cache_values);
 	let fee = txs.iter().map(|x| x.fee(next_height)).sum();
 	let key_id = ExtKeychainPath::new(1, next_height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
@@ -49,11 +52,18 @@ where
 		fee,
 		false,
 		next_height,
+		chain.secp(),
 	)
 	.unwrap();
 
-	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward)
-		.map_err(|e| chain::Error::Block(e))?;
+	let mut block = Block::new(
+		&prev,
+		txs,
+		next_header_info.clone().difficulty,
+		reward,
+		chain.secp(),
+	)
+	.map_err(|e| chain::Error::Block(e))?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -143,7 +153,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	// Transaction is invalid due to cut-through.
 	let height = 7;
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, height),
+		tx.validate(Weighting::AsTransaction, height, chain.secp()),
 		Err(transaction::Error::CutThrough),
 	);
 
@@ -159,7 +169,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	// The block is invalid due to cut-through.
 	let prev = chain.head_header()?;
 	assert_eq!(
-		block.validate(&prev.total_kernel_offset()),
+		block.validate(&prev.total_kernel_offset(), chain.secp()),
 		Err(block::Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -176,10 +186,11 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 
 		let mut header_pmmr = header_pmmr.write();
 		let mut txhashset = txhashset.write();
-		let batch = store.batch()?;
+		let batch = store.batch_write()?;
 
 		let mut ctx = chain.new_ctx(Options::NONE, batch, &mut header_pmmr, &mut txhashset)?;
-		let res = pipe::process_block(&block, &mut ctx);
+		let mut cache_values = VecDeque::new();
+		let res = pipe::process_block(&block, &mut ctx, &mut cache_values, chain.secp());
 		assert_eq!(
 			res,
 			Err(chain::Error::Block(block::Error::Transaction(

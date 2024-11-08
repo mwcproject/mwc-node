@@ -30,6 +30,7 @@ use crate::txhashset;
 use crate::txhashset::{Desegmenter, PMMRHandle, Segmenter, TxHashSet};
 use crate::types::{
 	BlockStatus, ChainAdapter, CommitPos, NoStatus, Options, Tip, TxHashsetWriteStatus,
+	HEADERS_PER_BATCH,
 };
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::RwLock;
@@ -39,9 +40,13 @@ use crate::{
 	store::Batch,
 	txhashset::{ExtensionPair, HeaderExtension},
 };
+use grin_core::consensus::HeaderDifficultyInfo;
+use grin_core::core::pmmr::{VecBackend, PMMR};
 use grin_core::ser;
 use grin_store::Error::NotFoundErr;
-use grin_util::ToHex;
+use grin_util::secp::Secp256k1;
+use grin_util::{secp, ToHex};
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,10 +55,11 @@ use std::time::{Duration, Instant};
 use std::{collections::HashMap, io::Cursor};
 
 /// Orphan pool size is limited by MAX_ORPHAN_SIZE
-pub const MAX_ORPHAN_SIZE: usize = 200;
+/// Note, this number should be relatevely large in order to handle chain sync, blocks throughput can be pretty large
+pub const MAX_ORPHAN_SIZE: usize = 2000;
 
 /// When evicting, very old orphans are evicted first
-const MAX_ORPHAN_AGE_SECS: u64 = 300;
+const MAX_ORPHAN_AGE_SECS: u64 = 3000;
 
 /// Banned block. We don't accept any blockchain with this has
 pub const BLOCK_TO_BAN: &str = "00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725";
@@ -142,9 +148,31 @@ impl OrphanBlockPool {
 			.map(|hs| hs.iter().filter_map(|h| orphans.remove(h)).collect())
 	}
 
-	pub fn contains(&self, hash: &Hash) -> bool {
+	fn remove_by_height_header_hash(&self, height: u64, header_hash: &Hash) -> Option<Orphan> {
+		let mut orphans = self.orphans.write();
+		let mut height_idx = self.height_idx.write();
+
+		if !orphans.contains_key(header_hash) {
+			return None;
+		}
+
+		if let Some(mut hash_by_height) = height_idx.remove(&height) {
+			hash_by_height.retain(|&hash| hash != *header_hash);
+			if !hash_by_height.is_empty() {
+				height_idx.insert(height.clone(), hash_by_height);
+			}
+		}
+
+		return orphans.remove(&header_hash);
+	}
+
+	fn contains(&self, hash: &Hash) -> bool {
 		let orphans = self.orphans.read();
 		orphans.contains_key(hash)
+	}
+
+	fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
+		self.orphans.read().get(hash).map(|o| o.clone())
 	}
 }
 
@@ -165,6 +193,8 @@ pub struct Chain {
 	denylist: Arc<RwLock<Vec<Hash>>>,
 	archive_mode: bool,
 	genesis: Block,
+	cache_header_difficulty: Arc<RwLock<VecDeque<HeaderDifficultyInfo>>>,
+	secp: Secp256k1,
 }
 
 impl Chain {
@@ -184,8 +214,11 @@ impl Chain {
 		// Migrate full blocks to protocol version v3.
 		Chain::migrate_db_v2_v3(&store)?;
 
+		let secp = Secp256k1::with_caps(secp::ContextFlag::Commit);
+
 		// open the txhashset, creating a new one if necessary
-		let mut txhashset = txhashset::TxHashSet::open(db_root.clone(), store.clone(), None)?;
+		let mut txhashset =
+			txhashset::TxHashSet::open(db_root.clone(), store.clone(), None, &secp)?;
 
 		let mut header_pmmr = PMMRHandle::new(
 			Path::new(&db_root).join("header").join("header_head"),
@@ -194,12 +227,19 @@ impl Chain {
 			None,
 		)?;
 
-		setup_head(&genesis, &store, &mut header_pmmr, &mut txhashset, false)?;
+		setup_head(
+			&genesis,
+			&store,
+			&mut header_pmmr,
+			&mut txhashset,
+			false,
+			&secp,
+		)?;
 
 		// Initialize the output_pos index based on UTXO set
 		// and NRD kernel_pos index based recent kernel history.
 		{
-			let batch = store.batch()?;
+			let batch = store.batch_write()?;
 			txhashset.init_output_pos_index(&header_pmmr, &batch)?;
 			txhashset.init_recent_kernel_pos_index(&header_pmmr, &batch)?;
 			batch.commit()?;
@@ -218,6 +258,8 @@ impl Chain {
 			denylist: Arc::new(RwLock::new(vec![])),
 			archive_mode,
 			genesis: genesis,
+			cache_header_difficulty: Arc::new(RwLock::new(VecDeque::new())),
+			secp,
 		};
 
 		// If known bad block exists on "current chain" then rewind prior to this.
@@ -229,11 +271,24 @@ impl Chain {
 		Ok(chain)
 	}
 
+	/// Secp instance
+	pub fn secp(&self) -> &Secp256k1 {
+		&self.secp
+	}
+
 	/// Add provided header hash to our "denylist".
 	/// The header corresponding to any "denied" hash will be rejected
 	/// and the peer subsequently banned.
 	pub fn invalidate_header(&self, hash: Hash) -> Result<(), Error> {
 		self.denylist.write().push(hash);
+		Ok(())
+	}
+
+	/// Reset chain to be ready to download data with PIBD
+	pub fn reset_pibd_chain(&self) -> Result<(), Error> {
+		self.reset_pibd_head()?;
+		self.reset_chain_head_to_genesis()?;
+		self.reset_prune_lists()?;
 		Ok(())
 	}
 
@@ -252,7 +307,7 @@ impl Chain {
 
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch()?;
+		let mut batch = self.store.batch_write()?;
 
 		let header = batch.get_block_header(&head.hash())?;
 
@@ -289,7 +344,7 @@ impl Chain {
 	pub fn reset_chain_head_to_genesis(&self) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let batch = self.store.batch()?;
+		let batch = self.store.batch_write()?;
 
 		// Change head back to genesis
 		{
@@ -305,6 +360,7 @@ impl Chain {
 			&mut header_pmmr,
 			&mut txhashset,
 			true,
+			&self.secp,
 		)?;
 
 		Ok(())
@@ -316,7 +372,7 @@ impl Chain {
 	pub fn reset_prune_lists(&self) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch()?;
+		let mut batch = self.store.batch_write()?;
 
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut batch, |ext, _| {
 			let extension = &mut ext.extension;
@@ -328,7 +384,7 @@ impl Chain {
 
 	/// Reset PIBD head
 	pub fn reset_pibd_head(&self) -> Result<(), Error> {
-		let batch = self.store.batch()?;
+		let batch = self.store.batch_write()?;
 		batch.save_pibd_head(&self.genesis().into())?;
 		Ok(())
 	}
@@ -389,7 +445,7 @@ impl Chain {
 
 					let mut header_pmmr = self.header_pmmr.write();
 					let mut txhashset = self.txhashset.write();
-					let mut batch = self.store.batch()?;
+					let mut batch = self.store.batch_write()?;
 
 					let old_head = batch.head()?;
 
@@ -421,7 +477,7 @@ impl Chain {
 
 				{
 					let mut header_pmmr = self.header_pmmr.write();
-					let mut batch = self.store.batch()?;
+					let mut batch = self.store.batch_write()?;
 
 					let old_header_head = batch.header_head()?;
 
@@ -478,6 +534,51 @@ impl Chain {
 	/// Processes a single block, then checks for orphans, processing
 	/// those as well if they're found
 	pub fn process_block(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
+		// Check if block can be processed now. Overwise add it to orphans and returns error
+		self.check_block(&b, opts)?;
+
+		// block is not orphnan and it is great
+		// Let's try to add several blocks from the current active branch. Adding many in a single
+		// transaction is good for performance.
+		let mut blocks: Vec<Block> = vec![];
+
+		// if it is a block on the chain, let's try to add many of them
+		if let Ok(header) = self.get_header_by_height(b.header.height) {
+			// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
+			if header.hash() == b.hash() {
+				blocks.push(b.clone());
+				loop {
+					let last_block = blocks.last().unwrap();
+					let next_hegiht = last_block.header.height + 1;
+					if let Ok(header) = self.get_header_by_height(next_hegiht) {
+						if let Some(orphan) = self.orphans.get_orphan(&header.hash()) {
+							blocks.push(orphan.block);
+							continue; // can process the next block
+						}
+					}
+					break;
+				}
+				if blocks.len() > 1 {
+					// good, we can process multiple blocks, it should be faster than one by one
+					let block_hashes: Vec<(u64, Hash)> =
+						blocks.iter().map(|b| (b.header.height, b.hash())).collect();
+					match self.process_block_multiple(blocks, opts) {
+						Ok(tip) => {
+							// We are good, let's clean up the orphans
+							for (height, hash) in block_hashes {
+								let _ = self.orphans.remove_by_height_header_hash(height, &hash);
+							}
+							return Ok(tip); // Done with success
+						}
+						Err(e) => {
+							debug!("Failed process_block_multiple with error {}", e);
+						} // Continue processing one by one
+					}
+				}
+			}
+		}
+
+		// Processing blocks one by one. It is slower, by eny possible error will be caught on block level.
 		let height = b.header.height;
 		let res = self.process_block_single(b, opts);
 		if res.is_ok() {
@@ -599,10 +700,9 @@ impl Chain {
 		Err(Error::Orphan(String::new()))
 	}
 
-	/// Attempt to add a new block to the chain.
-	/// Returns true if it has been added to the longest chain
-	/// or false if it has added to a fork (or orphan?).
-	fn process_block_single(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
+	// Check block is starting routine from process_block_single.
+	// It is separated because we are using it to deted if block is orphan
+	fn check_block(&self, b: &Block, opts: Options) -> Result<(), Error> {
 		// Process the header first.
 		// If invalid then fail early.
 		// If valid then continue with block processing with header_head committed to db etc.
@@ -613,8 +713,15 @@ impl Chain {
 
 		// Check if this block is an orphan.
 		// Only do this once we know the header PoW is valid.
-		self.check_orphan(&b, opts)?;
+		self.check_orphan(b, opts)?;
 
+		Ok(())
+	}
+
+	/// Attempt to add a new block to the chain.
+	/// Returns true if it has been added to the longest chain
+	/// or false if it has added to a fork (or orphan?).
+	fn process_block_single(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
 		// We can only reliably convert to "v2" if not an orphan (may spend output from previous block).
 		// We convert from "v3" to "v2" by looking up outputs to be spent.
 		// This conversion also ensures a block received in "v2" has valid input features (prevents malleability).
@@ -623,11 +730,16 @@ impl Chain {
 		let (head, fork_point, prev_head) = {
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
-			let batch = self.store.batch()?;
+			let batch = self.store.batch_write()?;
 			let prev_head = batch.head()?;
 			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
 
-			let (head, fork_point) = pipe::process_block(&b, &mut ctx)?;
+			let (head, fork_point) = pipe::process_block(
+				&b,
+				&mut ctx,
+				&mut *self.cache_header_difficulty.write(),
+				self.secp(),
+			)?;
 
 			ctx.batch.commit()?;
 
@@ -649,15 +761,65 @@ impl Chain {
 		Ok(head)
 	}
 
+	// attempt to add multiple blocks that came in the sequence from 0 first to last
+	// Note, it is expected that check_block was called for all blocks at 'blocks'.
+	// Since they are orphans - check_block was called to them when they were added to orphan pool.
+	fn process_block_multiple(
+		&self,
+		blocks: Vec<Block>,
+		opts: Options,
+	) -> Result<Option<Tip>, Error> {
+		// We can only reliably convert to "v2" if not an orphan (may spend output from previous block).
+		// We convert from "v3" to "v2" by looking up outputs to be spent.
+		// This conversion also ensures a block received in "v2" has valid input features (prevents malleability).
+		let mut blocks_v2 = Vec::new();
+		for b in blocks {
+			blocks_v2.push(self.convert_block_v2(b)?);
+		}
+		assert!(blocks_v2.len() > 1);
+
+		let (head, fork_point, prev_head) = {
+			let mut header_pmmr = self.header_pmmr.write();
+			let mut txhashset = self.txhashset.write();
+			let batch = self.store.batch_write()?;
+			let prev_head = batch.head()?;
+			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
+
+			let (head, fork_point) =
+				pipe::process_blocks_series(&blocks_v2, &mut ctx, self.secp())?;
+
+			ctx.batch.commit()?;
+
+			// release the lock and let the batch go before post-processing
+			(head, fork_point, prev_head)
+		};
+
+		let last_block = blocks_v2.last().unwrap();
+		let prev = self.get_previous_header(&last_block.header)?;
+		let status = self.determine_status(
+			head,
+			Tip::from_header(&prev),
+			prev_head,
+			Tip::from_header(&fork_point),
+		);
+
+		// notifying other parts of the system of the update
+		for b in &blocks_v2 {
+			self.adapter.block_accepted(b, status, opts);
+		}
+
+		Ok(head)
+	}
+
 	/// Process a block header received during "header first" propagation.
 	/// Note: This will update header MMR and corresponding header_head
 	/// if total work increases (on the header chain).
 	pub fn process_block_header(&self, bh: &BlockHeader, opts: Options) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let batch = self.store.batch()?;
+		let batch = self.store.batch_write()?;
 		let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
-		pipe::process_block_header(bh, &mut ctx)?;
+		pipe::process_block_header(bh, &mut ctx, &mut *self.cache_header_difficulty.write())?;
 		ctx.batch.commit()?;
 		Ok(())
 	}
@@ -674,11 +836,16 @@ impl Chain {
 	) -> Result<Option<Tip>, Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let batch = self.store.batch()?;
+		let batch = self.store.batch_write()?;
 
 		// Sync the chunk of block headers, updating header_head if total work increases.
 		let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
-		let sync_head = pipe::process_block_headers(headers, sync_head, &mut ctx)?;
+		let sync_head = pipe::process_block_headers(
+			headers,
+			sync_head,
+			&mut ctx,
+			&mut *self.cache_header_difficulty.write(),
+		)?;
 		ctx.batch.commit()?;
 
 		Ok(sync_head)
@@ -744,8 +911,9 @@ impl Chain {
 						},
 					);
 					let height = orphan.block.header.height;
-					let res = self.process_block_single(orphan.block, orphan.opts);
-					if res.is_ok() {
+					if self.check_block(&orphan.block, orphan.opts.clone()).is_ok()
+						&& self.process_block_single(orphan.block, orphan.opts).is_ok()
+					{
 						orphan_accepted = true;
 						height_accepted = height;
 					}
@@ -907,6 +1075,7 @@ impl Chain {
 				None,
 				&header,
 				None,
+				self.secp(),
 			)?;
 			Ok(())
 		})
@@ -1005,9 +1174,13 @@ impl Chain {
 		batch: &Batch,
 	) -> Result<BlockHeader, Error> {
 		let denylist = self.denylist.read().clone();
-		let (header, _) = pipe::rewind_and_apply_fork(header, ext, batch, &|header| {
-			pipe::validate_header_denylist(header, &denylist)
-		})?;
+		let (header, _) = pipe::rewind_and_apply_fork(
+			header,
+			ext,
+			batch,
+			&|header| pipe::validate_header_denylist(header, &denylist),
+			self.secp(),
+		)?;
 		Ok(header)
 	}
 
@@ -1089,32 +1262,52 @@ impl Chain {
 			header.height
 		);
 
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let bitmap_snapshot = {
+			let mut header_pmmr = self.header_pmmr.write();
+			let mut txhashset = self.txhashset.write();
 
-		let local_output_mmr_size = txhashset.output_mmr_size();
-		let local_kernel_mmr_size = txhashset.kernel_mmr_size();
-		let local_rangeproof_mmr_size = txhashset.rangeproof_mmr_size();
+			let local_output_mmr_size = txhashset.output_mmr_size();
+			let local_kernel_mmr_size = txhashset.kernel_mmr_size();
+			let local_rangeproof_mmr_size = txhashset.rangeproof_mmr_size();
 
-		if header.output_mmr_size > local_output_mmr_size
-			|| header.kernel_mmr_size > local_kernel_mmr_size
-			|| header.output_mmr_size > local_rangeproof_mmr_size
-		{
-			return Err(Error::ChainInSyncing(format!("Header expected mmr size: output:{} kernel:{}.  Chains mmr size: output:{} kernel:{} rangeproof:{}",
-													 header.output_mmr_size, header.kernel_mmr_size, local_output_mmr_size, local_kernel_mmr_size, local_rangeproof_mmr_size)));
-		}
+			if header.output_mmr_size > local_output_mmr_size
+				|| header.kernel_mmr_size > local_kernel_mmr_size
+				|| header.output_mmr_size > local_rangeproof_mmr_size
+			{
+				return Err(Error::ChainInSyncing(format!("Header expected mmr size: output:{} kernel:{}.  Chains mmr size: output:{} kernel:{} rangeproof:{}",
+														 header.output_mmr_size, header.kernel_mmr_size, local_output_mmr_size, local_kernel_mmr_size, local_rangeproof_mmr_size)));
+			}
 
-		let bitmap_snapshot =
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				ext.extension.rewind(header, batch)?;
 				Ok(ext.extension.bitmap_accumulator())
-			})?;
+			})?
+		};
 
 		debug!("init_segmenter: done, took {}ms", now.elapsed().as_millis());
 
+		// Creating headers hashes PIBD  data. With that we can download headers in parallel
+		let mut segm_header_pmmr_backend: VecBackend<Hash> = VecBackend::new();
+		let mut segm_header_pmmr = PMMR::new(&mut segm_header_pmmr_backend);
+
+		for i in (0..header.height).step_by(HEADERS_PER_BATCH as usize) {
+			let data = self
+				.get_header_hash_by_height(i)
+				.expect("Header data is expected below horizon");
+			segm_header_pmmr.push(&data).map_err(|s| {
+				Error::SyncError(format!("Unable to create Headers hash MMR, {}", s))
+			})?;
+		}
+
+		debug!(
+			"init_segmenter: with headers pmmr, took {}ms",
+			now.elapsed().as_millis()
+		);
+
 		Ok(Segmenter::new(
+			Arc::new(RwLock::new(segm_header_pmmr_backend)),
 			self.txhashset(),
-			Arc::new(bitmap_snapshot),
+			bitmap_snapshot,
 			header.clone(),
 		))
 	}
@@ -1122,27 +1315,24 @@ impl Chain {
 	/// instantiate desegmenter for this header. Expected that handshake is done and as a result, header with bitmap_root_hash is known
 	pub fn create_desegmenter(
 		&self,
-		archive_header: &BlockHeader,
+		archive_header_height: u64,
 		bitmap_root_hash: Hash,
 	) -> Result<(), Error> {
-		let desegmenter = self.init_desegmenter(archive_header, bitmap_root_hash)?;
+		let uploaded_height = self.head()?.height;
+		if uploaded_height >= archive_header_height {
+			return Err(Error::DesegmenterCreationError(format!("No need to create desegmenter, data is uploaded until height {}, archive height is {}", uploaded_height, archive_header_height)));
+		}
+		self.reset_pibd_chain()?;
+		let desegmenter = self.init_desegmenter(archive_header_height, bitmap_root_hash)?;
 		*self.pibd_desegmenter.write() = Some(desegmenter);
 		Ok(())
 	}
 
 	/// instantiate desegmenter (in same lazy fashion as segmenter, though this should not be as
 	/// expensive an operation)
-	pub fn get_desegmenter(
-		&self,
-		archive_header: &BlockHeader,
-	) -> Arc<RwLock<Option<Desegmenter>>> {
+	pub fn get_desegmenter(&self) -> Arc<RwLock<Option<Desegmenter>>> {
 		// Use our cached desegmenter if we have one and the associated header matches.
-		if let Some(d) = self.pibd_desegmenter.write().as_ref() {
-			if d.header() == archive_header {
-				return self.pibd_desegmenter.clone();
-			}
-		}
-		return Arc::new(RwLock::new(None));
+		return self.pibd_desegmenter.clone();
 	}
 
 	/// Reset desegmenter associated with this seesion
@@ -1155,19 +1345,21 @@ impl Chain {
 	/// header should be the same header as selected for the txhashset.zip archive
 	fn init_desegmenter(
 		&self,
-		header: &BlockHeader,
+		archive_header_hegiht: u64,
 		bitmap_root_hash: Hash,
 	) -> Result<Desegmenter, Error> {
+		// Even not all headers are uploaded, Headers until archive must be uploaded, so we can request it
+		let archive_header = self.get_header_by_height(archive_header_hegiht)?;
 		debug!(
 			"init_desegmenter: initializing new desegmenter for {} at {}",
-			header.hash(),
-			header.height
+			archive_header.hash(),
+			archive_header.height
 		);
 
 		Ok(Desegmenter::new(
 			self.txhashset(),
 			self.header_pmmr.clone(),
-			header.clone(),
+			archive_header.clone(),
 			bitmap_root_hash,
 			self.genesis.header.clone(),
 			self.store.clone(),
@@ -1341,6 +1533,7 @@ impl Chain {
 				.to_owned(),
 			self.store.clone(),
 			Some(&header),
+			&self.secp,
 		)?;
 
 		// Validate the full kernel history.
@@ -1350,7 +1543,7 @@ impl Chain {
 			self.validate_kernel_history(&header, &txhashset)?;
 
 			let header_pmmr = self.header_pmmr.read();
-			let batch = self.store.batch()?;
+			let batch = self.store.batch_write()?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis.header,
 				&header_pmmr,
@@ -1364,7 +1557,7 @@ impl Chain {
 		debug!("txhashset_write: rewinding a 2nd time (writeable)");
 
 		let mut header_pmmr = self.header_pmmr.write();
-		let mut batch = self.store.batch()?;
+		let mut batch = self.store.batch_write()?;
 		txhashset::extending(
 			&mut header_pmmr,
 			&mut txhashset,
@@ -1383,6 +1576,7 @@ impl Chain {
 					None,
 					&header,
 					None,
+					self.secp(),
 				)?;
 
 				// Save the block_sums (utxo_sum, kernel_sum) to the db for use later.
@@ -1438,6 +1632,7 @@ impl Chain {
 				self.db_root.clone(),
 				self.store.clone(),
 				Some(&header),
+				&self.secp,
 			)?;
 
 			// Replace the chain txhashset with the newly built one.
@@ -1544,7 +1739,7 @@ impl Chain {
 		// Take a write lock on the txhashet and start a new writeable db batch.
 		let header_pmmr = self.header_pmmr.read();
 		let mut txhashset = self.txhashset.write();
-		let batch = self.store.batch()?;
+		let batch = self.store.batch_write()?;
 
 		// Compact the txhashset itself (rewriting the pruned backend files).
 		{
@@ -1728,14 +1923,14 @@ impl Chain {
 	/// Migrate our local db from v2 to v3.
 	/// "commit only" inputs.
 	fn migrate_db_v2_v3(store: &ChainStore) -> Result<(), Error> {
-		if store.batch()?.is_blocks_v3_migrated()? {
+		if store.batch_read()?.is_blocks_v3_migrated()? {
 			// Previously migrated so skipping.
 			debug!("migrate_db_v2_v3: previously migrated, skipping");
 			return Ok(());
 		}
 		let mut total = 0;
 		let mut keys_to_migrate = vec![];
-		for (k, v) in store.batch()?.blocks_raw_iter()? {
+		for (k, v) in store.batch_read()?.blocks_raw_iter()? {
 			total += 1;
 
 			// We want to migrate all blocks that cannot be read via v3 protocol version.
@@ -1764,7 +1959,7 @@ impl Chain {
 		keys_to_migrate
 			.chunks(100)
 			.try_for_each(|keys| {
-				let batch = store.batch()?;
+				let batch = store.batch_write()?;
 				for key in keys {
 					batch.migrate_block(&key, ProtocolVersion(2), ProtocolVersion(3))?;
 					count += 1;
@@ -1776,7 +1971,7 @@ impl Chain {
 			.and_then(|_| {
 				// Set flag to indicate we have migrated all blocks in the db.
 				// We will skip migration in the future.
-				let batch = store.batch()?;
+				let batch = store.batch_write()?;
 				batch.set_blocks_v3_migrated(true)?;
 				batch.commit()?;
 				Ok(())
@@ -1947,8 +2142,9 @@ fn setup_head(
 	header_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	txhashset: &mut txhashset::TxHashSet,
 	resetting_pibd: bool,
+	secp: &Secp256k1,
 ) -> Result<(), Error> {
-	let mut batch = store.batch()?;
+	let mut batch = store.batch_write()?;
 
 	// Apply the genesis header to header and sync MMRs.
 	{
@@ -2013,7 +2209,7 @@ fn setup_head(
 						return Ok(());
 					}
 
-					pipe::rewind_and_apply_fork(&header, ext, batch, &|_| Ok(()))?;
+					pipe::rewind_and_apply_fork(&header, ext, batch, &|_| Ok(()), secp)?;
 
 					let extension = &mut ext.extension;
 
@@ -2032,7 +2228,7 @@ fn setup_head(
 						// Do a full (and slow) validation of the txhashset extension
 						// to calculate the utxo_sum and kernel_sum at this block height.
 						let (utxo_sum, kernel_sum) =
-							extension.validate_kernel_sums(&genesis.header, &header)?;
+							extension.validate_kernel_sums(&genesis.header, &header, secp)?;
 
 						// Save the block_sums to the db for use later.
 						batch.save_block_sums(
@@ -2061,7 +2257,7 @@ fn setup_head(
 					let prev_header = batch.get_block_header(&head.prev_block_h)?;
 
 					txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-						pipe::rewind_and_apply_fork(&prev_header, ext, batch, &|_| Ok(()))
+						pipe::rewind_and_apply_fork(&prev_header, ext, batch, &|_| Ok(()), secp)
 					})?;
 
 					// Now "undo" the latest block and forget it ever existed.
@@ -2087,6 +2283,7 @@ fn setup_head(
 				let (utxo_sum, kernel_sum) = (sums, genesis as &dyn Committed).verify_kernel_sums(
 					genesis.header.overage(),
 					genesis.header.total_kernel_offset(),
+					secp,
 				)?;
 				sums = BlockSums {
 					utxo_sum,

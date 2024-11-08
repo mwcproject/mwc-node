@@ -31,6 +31,7 @@ use grin_core as core;
 use grin_core::ser;
 use grin_keychain::base58;
 use grin_util as util;
+use grin_util::secp::Secp256k1;
 use lru_cache::LruCache;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -71,7 +72,7 @@ where
 			reorg_cache: Arc::new(RwLock::new(VecDeque::new())),
 			blockchain: chain,
 			adapter,
-			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(100))),
+			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(1000))),
 		}
 	}
 
@@ -85,8 +86,10 @@ where
 		entry: &PoolEntry,
 		header: &BlockHeader,
 		extra_tx: Option<Transaction>,
+		secp: &Secp256k1,
 	) -> Result<(), PoolError> {
-		self.stempool.add_to_pool(entry.clone(), extra_tx, header)
+		self.stempool
+			.add_to_pool(entry.clone(), extra_tx, header, secp)
 	}
 
 	fn add_to_reorg_cache(&mut self, entry: &PoolEntry) {
@@ -103,24 +106,29 @@ where
 
 	// Deaggregate this tx against the txpool.
 	// Returns the new deaggregated tx or the original tx if no deaggregation.
-	fn deaggregate_tx(&self, entry: PoolEntry) -> Result<PoolEntry, PoolError> {
+	fn deaggregate_tx(&self, entry: PoolEntry, secp: &Secp256k1) -> Result<PoolEntry, PoolError> {
 		if entry.tx.kernels().len() > 1 {
 			let txs = self.txpool.find_matching_transactions(entry.tx.kernels());
 			if !txs.is_empty() {
-				let tx = transaction::deaggregate(entry.tx, &txs)?;
+				let tx = transaction::deaggregate(entry.tx, &txs, secp)?;
 				return Ok(PoolEntry::new(tx, TxSource::Deaggregate));
 			}
 		}
 		Ok(entry)
 	}
 
-	fn add_to_txpool(&mut self, entry: &PoolEntry, header: &BlockHeader) -> Result<(), PoolError> {
-		self.txpool.add_to_pool(entry.clone(), None, header)?;
+	fn add_to_txpool(
+		&mut self,
+		entry: &PoolEntry,
+		header: &BlockHeader,
+		secp: &Secp256k1,
+	) -> Result<(), PoolError> {
+		self.txpool.add_to_pool(entry.clone(), None, header, secp)?;
 
 		// We now need to reconcile the stempool based on the new state of the txpool.
 		// Some stempool txs may no longer be valid and we need to evict them.
-		let txpool_agg = self.txpool.all_transactions_aggregate(None)?;
-		self.stempool.reconcile(txpool_agg, header)?;
+		let txpool_agg = self.txpool.all_transactions_aggregate(None, secp)?;
+		self.stempool.reconcile(txpool_agg, header, secp)?;
 
 		Ok(())
 	}
@@ -151,13 +159,14 @@ where
 		tx: Transaction,
 		stem: bool,
 		header: &BlockHeader,
+		secp: &Secp256k1,
 	) -> Result<(), PoolError> {
 		// Quick check for duplicate txs.
 		// Our stempool is private and we do not want to reveal anything about the txs contained.
 		// If this is a stem tx and is already present in stempool then fluff by adding to txpool.
 		// Otherwise if already present in txpool return a "duplicate tx" error.
 		if stem && self.stempool.contains_tx(&tx) {
-			return self.add_to_pool(src, tx, false, header);
+			return self.add_to_pool(src, tx, false, header, secp);
 		} else if self.txpool.contains_tx(&tx) {
 			return Err(PoolError::DuplicateTx);
 		}
@@ -166,7 +175,7 @@ where
 		let entry = if stem {
 			PoolEntry::new(tx, src)
 		} else {
-			self.deaggregate_tx(PoolEntry::new(tx, src))?
+			self.deaggregate_tx(PoolEntry::new(tx, src), secp)?
 		};
 		let ref tx = entry.tx;
 
@@ -185,7 +194,7 @@ where
 
 		// Make sure the transaction is valid before anything else.
 		// Validate tx accounting for max tx weight.
-		tx.validate(Weighting::AsTransaction, header.height)
+		tx.validate(Weighting::AsTransaction, header.height, secp)
 			.map_err(PoolError::InvalidTx)?;
 
 		// Check the tx lock_time is valid based on current chain state.
@@ -212,16 +221,16 @@ where
 
 		// If stem we want to account for the txpool.
 		let extra_tx = if stem {
-			self.txpool.all_transactions_aggregate(None)?
+			self.txpool.all_transactions_aggregate(None, secp)?
 		} else {
 			None
 		};
 
 		// Locate outputs being spent from pool and current utxo.
 		let (spent_pool, spent_utxo) = if stem {
-			self.stempool.locate_spends(tx, extra_tx.clone())
+			self.stempool.locate_spends(tx, extra_tx.clone(), secp)
 		} else {
-			self.txpool.locate_spends(tx, None)
+			self.txpool.locate_spends(tx, None, secp)
 		}?;
 
 		// Check coinbase maturity before we go any further.
@@ -234,25 +243,25 @@ where
 			.verify_coinbase_maturity(&coinbase_inputs.as_slice().into())?;
 
 		// Convert the tx to "v2" compatibility with "features and commit" inputs.
-		let ref entry = self.convert_tx_v2(entry, &spent_pool, &spent_utxo)?;
+		let ref entry = self.convert_tx_v2(entry, &spent_pool, &spent_utxo, secp)?;
 
 		// If this is a stem tx then attempt to add it to stempool.
 		// If the adapter fails to accept the new stem tx then fallback to fluff via txpool.
 		if stem {
-			self.add_to_stempool(entry, header, extra_tx)?;
+			self.add_to_stempool(entry, header, extra_tx, secp)?;
 			if self.adapter.stem_tx_accepted(entry).is_ok() {
 				return Ok(());
 			}
 		}
 
 		// Add tx to txpool.
-		self.add_to_txpool(entry, header)?;
+		self.add_to_txpool(entry, header, secp)?;
 		self.add_to_reorg_cache(entry);
 		self.adapter.tx_accepted(entry);
 
 		// Transaction passed all the checks but we have to make space for it
 		if evict {
-			self.evict_from_txpool();
+			self.evict_from_txpool(secp);
 		}
 
 		Ok(())
@@ -267,6 +276,7 @@ where
 		entry: PoolEntry,
 		spent_pool: &[OutputIdentifier],
 		spent_utxo: &[OutputIdentifier],
+		secp: &Secp256k1,
 	) -> Result<PoolEntry, PoolError> {
 		let tx = entry.tx;
 		debug!(
@@ -286,7 +296,7 @@ where
 
 		// Validate the tx to ensure our converted inputs are correct.
 		let header = self.chain_head()?;
-		tx.validate(Weighting::AsTransaction, header.height)?;
+		tx.validate(Weighting::AsTransaction, header.height, secp)?;
 
 		Ok(PoolEntry::new(tx, entry.src))
 	}
@@ -294,8 +304,8 @@ where
 	// Evict a transaction from the txpool.
 	// Uses bucket logic to identify the "last" transaction.
 	// No other tx depends on it and it has low fee_rate
-	pub fn evict_from_txpool(&mut self) {
-		self.txpool.evict_transaction()
+	pub fn evict_from_txpool(&mut self, secp: &Secp256k1) {
+		self.txpool.evict_transaction(secp)
 	}
 
 	// Old txs will "age out" after 30 mins.
@@ -312,7 +322,11 @@ where
 		}
 	}
 
-	pub fn reconcile_reorg_cache(&mut self, header: &BlockHeader) -> Result<(), PoolError> {
+	pub fn reconcile_reorg_cache(
+		&mut self,
+		header: &BlockHeader,
+		secp: &Secp256k1,
+	) -> Result<(), PoolError> {
 		let entries = self.reorg_cache.read().iter().cloned().collect::<Vec<_>>();
 		debug!(
 			"reconcile_reorg_cache: size: {}, block: {:?} ...",
@@ -320,7 +334,7 @@ where
 			header.hash(),
 		);
 		for entry in entries {
-			let _ = self.add_to_txpool(&entry, header);
+			let _ = self.add_to_txpool(&entry, header, secp);
 		}
 		debug!(
 			"reconcile_reorg_cache: block: {:?} ... done.",
@@ -331,7 +345,7 @@ where
 
 	/// Reconcile the transaction pool (both txpool and stempool) against the
 	/// provided block.
-	pub fn reconcile_block(&mut self, block: &Block) -> Result<(), PoolError> {
+	pub fn reconcile_block(&mut self, block: &Block, secp: &Secp256k1) -> Result<(), PoolError> {
 		if log_enabled!(log::Level::Debug) {
 			debug!("reconcile_block Started for block {:?}", block);
 
@@ -352,13 +366,13 @@ where
 
 		// First reconcile the txpool.
 		self.txpool.reconcile_block(block);
-		self.txpool.reconcile(None, &block.header)?;
+		self.txpool.reconcile(None, &block.header, secp)?;
 
 		// Now reconcile our stempool, accounting for the updated txpool txs.
 		self.stempool.reconcile_block(block);
 		{
-			let txpool_tx = self.txpool.all_transactions_aggregate(None)?;
-			self.stempool.reconcile(txpool_tx, &block.header)?;
+			let txpool_tx = self.txpool.all_transactions_aggregate(None, secp)?;
+			self.stempool.reconcile(txpool_tx, &block.header, secp)?;
 		}
 
 		if log_enabled!(log::Level::Debug) {
@@ -428,8 +442,11 @@ where
 
 	/// Returns a vector of transactions from the txpool so we can build a
 	/// block from them.
-	pub fn prepare_mineable_transactions(&self) -> Result<Vec<Transaction>, PoolError> {
+	pub fn prepare_mineable_transactions(
+		&self,
+		secp: &Secp256k1,
+	) -> Result<Vec<Transaction>, PoolError> {
 		self.txpool
-			.prepare_mineable_transactions(self.config.mineable_max_weight)
+			.prepare_mineable_transactions(self.config.mineable_max_weight, secp)
 	}
 }

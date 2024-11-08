@@ -23,6 +23,7 @@ use crate::types::*;
 use crate::util;
 use crate::util::RwLock;
 use crate::web::*;
+use grin_util::secp::{ContextFlag, Secp256k1};
 use hyper::{Body, Request, StatusCode};
 use std::sync::Weak;
 
@@ -80,7 +81,12 @@ where
 		let txpool = pool_arc.read();
 		Ok(txpool.txpool.entries.clone())
 	}
-	pub fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
+	pub fn push_transaction(
+		&self,
+		tx: Transaction,
+		fluff: Option<bool>,
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
 		let pool_arc = w(&self.tx_pool)?;
 		let source = pool::TxSource::PushApi;
 		info!(
@@ -100,7 +106,7 @@ where
 			.chain_head()
 			.map_err(|e| Error::Internal(format!("Failed to get chain head, {}", e)))?;
 		tx_pool
-			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header)
+			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header, secp)
 			.map_err(|e| Error::Internal(format!("Failed to update pool, {}", e)))?;
 
 		info!("transaction {} was added to the pool", tx_hash);
@@ -127,6 +133,7 @@ where
 async fn update_pool<B, P>(
 	pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	req: Request<Body>,
+	secp: &Secp256k1,
 ) -> Result<(), Error>
 where
 	B: BlockChain,
@@ -172,7 +179,7 @@ where
 		.chain_head()
 		.map_err(|e| Error::Internal(format!("Failed to get chain head: {}", e)))?;
 	tx_pool
-		.add_to_pool(source, tx, !fluff, &header)
+		.add_to_pool(source, tx, !fluff, &header, secp)
 		.map_err(|e| Error::Internal(format!("Failed to update pool: {}", e)))?;
 	Ok(())
 }
@@ -185,7 +192,8 @@ where
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
 		let pool = self.tx_pool.clone();
 		Box::pin(async move {
-			let res = match update_pool(pool, req).await {
+			let secp = Secp256k1::with_caps(ContextFlag::Commit);
+			let res = match update_pool(pool, req, &secp).await {
 				Ok(_) => just_response(StatusCode::OK, ""),
 				Err(e) => {
 					just_response(StatusCode::INTERNAL_SERVER_ERROR, format!("failed: {}", e))

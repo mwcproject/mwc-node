@@ -17,7 +17,6 @@
 //! as a facade.
 
 use crate::tor::config as tor_config;
-use crate::util::secp;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -33,7 +32,7 @@ use std::{
 };
 
 use fs2::FileExt;
-use grin_util::{static_secp_instance, to_hex, OnionV3Address};
+use grin_util::{to_hex, OnionV3Address};
 use walkdir::WalkDir;
 
 use crate::api;
@@ -62,12 +61,13 @@ use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use futures::channel::oneshot;
 use grin_util::logger::LogEntry;
-use grin_util::secp::SecretKey;
-use std::collections::HashSet;
+use grin_util::secp::{Secp256k1, SecretKey};
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 
 use crate::p2p::libp2p_connection;
 use chrono::Utc;
+use grin_core::consensus::HeaderDifficultyInfo;
 use grin_core::core::TxKernel;
 use grin_p2p::Capabilities;
 use grin_util::from_hex;
@@ -296,6 +296,7 @@ impl Server {
 
 				println!("Starting TOR, please wait...");
 
+				let tor_secp = shared_chain.secp().clone();
 				thread::Builder::new()
 					.name("tor_listener".to_string())
 					.spawn(move || {
@@ -308,6 +309,7 @@ impl Server {
 							cloned_config.libp2p_port.unwrap_or(3417),
 							Some(&cloned_config.db_root),
 							cloned_config.tor_config.socks_port,
+							&tor_secp,
 						);
 
 						let _ = match res {
@@ -649,6 +651,7 @@ impl Server {
 		libp2p_port: u16,
 		tor_base: Option<&str>,
 		socks_port: u16,
+		secp: &Secp256k1,
 	) -> Result<(tor_process::TorProcess, String, SecretKey), Error> {
 		let mut process = tor_process::TorProcess::new();
 		let tor_dir = if tor_base.is_some() {
@@ -698,10 +701,7 @@ impl Server {
 		let scoped_vec;
 		let mut existing_onion = None;
 		let secret = if !found {
-			let secp = static_secp_instance();
-			let secp = secp.lock();
-
-			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+			let sec_key = SecretKey::new(&secp, &mut rand::thread_rng());
 			scoped_vec = vec![sec_key.clone()];
 			sec_key_vec = Some((scoped_vec).as_slice());
 
@@ -713,9 +713,6 @@ impl Server {
 				.to_string();
 			sec_key
 		} else {
-			let secp = static_secp_instance();
-			let secp = secp.lock();
-
 			existing_onion = Some(onion_address.clone());
 			// Read Secret from the file.
 			let sec = tor_config::read_sec_key_file(
@@ -898,8 +895,9 @@ impl Server {
 		// code clean. This may be handy for testing but not really needed
 		// for release
 		let diff_stats = {
+			let mut cache_values: VecDeque<HeaderDifficultyInfo> = VecDeque::new();
 			let last_blocks: Vec<consensus::HeaderDifficultyInfo> =
-				global::difficulty_data_to_vector(self.chain.difficulty_iter()?)
+				global::difficulty_data_to_vector(self.chain.difficulty_iter()?, &mut cache_values)
 					.into_iter()
 					.collect();
 

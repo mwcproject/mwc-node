@@ -16,9 +16,10 @@
 
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use std::collections::HashMap;
 
 use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
-use crate::core::core::{pmmr, Block, BlockHeader, SegmentTypeIdentifier};
+use crate::core::core::{Block, BlockHeader, SegmentTypeIdentifier};
 use crate::core::pow::Difficulty;
 use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::error::Error;
@@ -38,6 +39,9 @@ bitflags! {
 	}
 }
 
+/// We receive 512 headers from a peer in a batch. Let's use it for planning.
+pub const HEADERS_PER_BATCH: u32 = 512;
+
 /// Various status sync can be in, whether it's fast sync or archival.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum SyncStatus {
@@ -48,6 +52,13 @@ pub enum SyncStatus {
 	/// Not enough peers to do anything yet, boolean indicates whether
 	/// we should wait at all or ignore and start ASAP
 	AwaitingPeers(bool),
+	/// Downloading block header hashes
+	HeaderHashSync {
+		/// total number of blocks
+		completed_blocks: i32,
+		/// total number of leaves required by archive header
+		total_blocks: i32,
+	},
 	/// Downloading block headers
 	HeaderSync {
 		/// current sync head
@@ -66,15 +77,10 @@ pub enum SyncStatus {
 		aborted: bool,
 		/// whether we got an error anywhere (in which case restart the process)
 		errored: bool,
-		/// total number of leaves applied
-		completed_leaves: u64,
-		/// total number of leaves required by archive header
-		leaves_required: u64,
-		/// 'height', i.e. last 'block' for which there is complete
-		/// pmmr data
-		completed_to_height: u64,
-		/// Total 'height' needed
-		required_height: u64,
+		/// total number of recieved segments
+		recieved_segments: i32,
+		/// total number of segments required
+		total_segments: i32,
 	},
 	/// Downloading the various txhashsets
 	TxHashsetDownload(TxHashsetDownloadStats),
@@ -148,25 +154,6 @@ impl Default for TxHashsetDownloadStats {
 	}
 }
 
-/// Container for entry in requested PIBD segments
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PIBDSegmentContainer {
-	/// Segment+Type Identifier
-	pub identifier: SegmentTypeIdentifier,
-	/// Time at which this request was made
-	pub request_time: DateTime<Utc>,
-}
-
-impl PIBDSegmentContainer {
-	/// Return container with timestamp
-	pub fn new(identifier: SegmentTypeIdentifier) -> Self {
-		Self {
-			identifier,
-			request_time: Utc::now(),
-		}
-	}
-}
-
 /// Current sync state. Encapsulates the current SyncStatus.
 pub struct SyncState {
 	current: RwLock<SyncStatus>,
@@ -177,8 +164,8 @@ pub struct SyncState {
 	/// but it's currently the only place that makes the info
 	/// available where it will be needed (both in the adapter
 	/// and the sync loop)
-	requested_pibd_segments: RwLock<Vec<PIBDSegmentContainer>>,
-	last_pibd_log_progress: RwLock<u64>,
+	requested_pibd_segments: RwLock<HashMap<SegmentTypeIdentifier, DateTime<Utc>>>,
+	last_pibd_recieved_segments: RwLock<i32>,
 }
 
 impl SyncState {
@@ -187,8 +174,8 @@ impl SyncState {
 		SyncState {
 			current: RwLock::new(SyncStatus::Initial),
 			sync_error: RwLock::new(None),
-			requested_pibd_segments: RwLock::new(vec![]),
-			last_pibd_log_progress: RwLock::new(0),
+			requested_pibd_segments: RwLock::new(HashMap::new()),
+			last_pibd_recieved_segments: RwLock::new(0),
 		}
 	}
 
@@ -243,6 +230,14 @@ impl SyncState {
 	}
 
 	/// Update sync_head if state is currently HeaderSync.
+	pub fn update_header_hash_sync(&self, completed_blocks: i32, total_blocks: i32) {
+		*self.current.write() = SyncStatus::HeaderHashSync {
+			completed_blocks,
+			total_blocks,
+		};
+	}
+
+	/// Update sync_head if state is currently HeaderSync.
 	pub fn update_header_sync(&self, new_sync_head: Tip) {
 		let status: &mut SyncStatus = &mut self.current.write();
 		match status {
@@ -263,28 +258,23 @@ impl SyncState {
 		&self,
 		aborted: bool,
 		errored: bool,
-		completed_leaves: u64,
-		completed_to_height: u64,
-		archive_header: &BlockHeader,
+		recieved_segments: i32,
+		total_segments: i32,
 	) {
-		let leaves_required = pmmr::n_leaves(archive_header.output_mmr_size) * 2
-			+ pmmr::n_leaves(archive_header.kernel_mmr_size);
 		*self.current.write() = SyncStatus::TxHashsetPibd {
 			aborted,
 			errored,
-			completed_leaves,
-			leaves_required,
-			completed_to_height,
-			required_height: archive_header.height,
+			recieved_segments,
+			total_segments,
 		};
 
 		// Those logs are needed fro QR wallet sync progress tracking
-		if *self.last_pibd_log_progress.read() != completed_leaves {
+		if *self.last_pibd_recieved_segments.read() != recieved_segments {
 			info!(
 				"PIBD sync progress: {} from {}",
-				completed_leaves, leaves_required
+				recieved_segments, total_segments
 			);
-			*self.last_pibd_log_progress.write() = completed_leaves;
+			*self.last_pibd_recieved_segments.write() = recieved_segments;
 		}
 	}
 
@@ -292,33 +282,30 @@ impl SyncState {
 	pub fn add_pibd_segment(&self, id: &SegmentTypeIdentifier) {
 		self.requested_pibd_segments
 			.write()
-			.push(PIBDSegmentContainer::new(id.clone()));
+			.insert(id.clone(), Utc::now());
 	}
 
 	/// Remove segment from list
 	pub fn remove_pibd_segment(&self, id: &SegmentTypeIdentifier) {
-		self.requested_pibd_segments
-			.write()
-			.retain(|i| &i.identifier != id);
+		self.requested_pibd_segments.write().remove(id);
 	}
 
 	/// Remove segments with request timestamps less than cutoff time
 	pub fn remove_stale_pibd_requests(&self, timeout_seconds: i64) {
 		let cutoff_time = Utc::now() - Duration::seconds(timeout_seconds);
-		self.requested_pibd_segments.write().retain(|i| {
-			if i.request_time <= cutoff_time {
-				debug!("Removing + retrying PIBD request after timeout: {:?}", i)
-			};
-			i.request_time > cutoff_time
+		self.requested_pibd_segments.write().retain(|id, time| {
+			if *time <= cutoff_time {
+				debug!("Removing + retrying PIBD request after timeout: {:?}", id);
+				false
+			} else {
+				true
+			}
 		});
 	}
 
 	/// Check whether segment is in request list
 	pub fn contains_pibd_segment(&self, id: &SegmentTypeIdentifier) -> bool {
-		self.requested_pibd_segments
-			.read()
-			.iter()
-			.any(|i| &i.identifier == id)
+		self.requested_pibd_segments.read().contains_key(id)
 	}
 
 	/// Communicate sync error
@@ -415,46 +402,6 @@ impl TxHashSetRoots {
 		}
 	}
 }
-
-// Note, In MWC there is no merged root. The only purpose for the merge root is to simplify syncronization.
-// In MWC sync process is not related to the blockchain. MWC using PIBD start handshake to receive
-// the output bitmap root from the peers. In case if bitmap is forged, the whole process will fail at the end,
-// node will detect that ban forger peers.
-/*
-/// A helper for the various output roots.
-#[derive(Debug)]
-pub struct OutputRoots {
-	/// The output PMMR root
-	pub pmmr_root: Hash,
-	/// The bitmap accumulator root
-	pub bitmap_root: Hash,
-}
-
-impl OutputRoots {
-	/// The root of our output PMMR. The rules here are block height specific.
-	/// We use the merged root here for header version 3 and later.
-	/// We assume the header version is consistent with the block height, validated
-	/// as part of pipe::validate_header().
-	pub fn root(&self, header: &BlockHeader) -> Hash {
-		if header.version < HeaderVersion(3) {
-			self.output_root()
-		} else {
-			self.merged_root(header)
-		}
-	}
-
-	/// The root of the underlying output PMMR.
-	fn output_root(&self) -> Hash {
-		self.pmmr_root
-	}
-
-	/// Hash the root of the output PMMR and the root of the bitmap accumulator
-	/// together with the size of the output PMMR (for consistency with existing PMMR impl).
-	/// H(pmmr_size | pmmr_root | bitmap_root)
-	fn merged_root(&self, header: &BlockHeader) -> Hash {
-		(self.pmmr_root, self.bitmap_root).hash_with_index(header.output_mmr_size)
-	}
-}*/
 
 /// Minimal struct representing a known MMR position and associated block height.
 #[derive(Clone, Copy, Debug, PartialEq)]

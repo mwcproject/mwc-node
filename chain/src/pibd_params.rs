@@ -19,6 +19,9 @@
 /// Bitmap segment height assumed for requests and segment calculation
 pub const BITMAP_SEGMENT_HEIGHT: u8 = 9;
 
+/// Headers Hash height assumed for requests and segment calculation
+pub const HEADERS_SEGMENT_HEIGHT: u8 = 10;
+
 /// Output segment height assumed for requests and segment calculation
 pub const OUTPUT_SEGMENT_HEIGHT: u8 = 11;
 

@@ -46,6 +46,7 @@ use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
 use grin_chain::txhashset::Segmenter;
+use grin_util::secp::{ContextFlag, Secp256k1};
 use rand::prelude::*;
 use std::ops::Range;
 use std::sync::atomic::AtomicI64;
@@ -172,15 +173,15 @@ where
 		}
 
 		let source = pool::TxSource::Broadcast;
-
-		let header = self.chain().head_header()?;
+		let chain = self.chain();
+		let header = chain.head_header()?;
 
 		for hook in &self.hooks {
 			hook.on_transaction_received(&tx);
 		}
 
 		let mut tx_pool = self.tx_pool.write();
-		match tx_pool.add_to_pool(source, tx, stem, &header) {
+		match tx_pool.add_to_pool(source, tx, stem, &header, chain.secp()) {
 			Ok(_) => {
 				self.processed_transactions.contains(&tx_hash, true);
 				Ok(true)
@@ -234,7 +235,8 @@ where
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		// No need to process this compact block if we have previously accepted the _full block_.
-		if self.chain().is_known(&cb.header).is_err() {
+		let chain = self.chain();
+		if chain.is_known(&cb.header).is_err() {
 			return Ok(true);
 		}
 
@@ -274,10 +276,7 @@ where
 			}
 		} else {
 			// check at least the header is valid before hydrating
-			if let Err(e) = self
-				.chain()
-				.process_block_header(&cb.header, chain::Options::NONE)
-			{
+			if let Err(e) = chain.process_block_header(&cb.header, chain::Options::NONE) {
 				debug!("Invalid compact block header {}: {:?}", cb_hash, e);
 				return Ok(!e.is_bad_data());
 			}
@@ -315,8 +314,11 @@ where
 				}
 			};
 
-			if let Ok(prev) = self.chain().get_previous_header(&cb.header) {
-				if block.validate(&prev.total_kernel_offset).is_ok() {
+			if let Ok(prev) = chain.get_previous_header(&cb.header) {
+				if block
+					.validate(&prev.total_kernel_offset, chain.secp())
+					.is_ok()
+				{
 					debug!(
 						"successfully hydrated block: {} at {} ({})",
 						block.header.hash(),
@@ -690,20 +692,10 @@ where
 			block_hash,
 			bitmap_root_hash
 		);
-		// TODO: Entire process needs to be restarted if the horizon block
-		// has changed (perhaps not here, NB this has to go somewhere)
-		let archive_header = self.chain().txhashset_archive_header_header_only()?;
-		if archive_header.hash() != block_hash {
-			return Ok(false);
-		}
+
 		let identifier = segment.identifier().clone();
 		let mut retval = Ok(true);
-		if let Some(d) = self
-			.chain()
-			.get_desegmenter(&archive_header)
-			.write()
-			.as_mut()
-		{
+		if let Some(d) = self.chain().get_desegmenter().write().as_mut() {
 			let res = d.add_bitmap_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
@@ -735,18 +727,9 @@ where
 			block_hash,
 			bitmap_root_hash
 		);
-		let archive_header = self.chain().txhashset_archive_header_header_only()?;
-		if archive_header.hash() != block_hash {
-			return Ok(false);
-		}
 		let identifier = segment.identifier().clone();
 		let mut retval = Ok(true);
-		if let Some(d) = self
-			.chain()
-			.get_desegmenter(&archive_header)
-			.write()
-			.as_mut()
-		{
+		if let Some(d) = self.chain().get_desegmenter().write().as_mut() {
 			let res = d.add_output_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
@@ -778,18 +761,9 @@ where
 			block_hash,
 			bitmap_root_hash
 		);
-		let archive_header = self.chain().txhashset_archive_header_header_only()?;
-		if archive_header.hash() != block_hash {
-			return Ok(false);
-		}
 		let identifier = segment.identifier().clone();
 		let mut retval = Ok(true);
-		if let Some(d) = self
-			.chain()
-			.get_desegmenter(&archive_header)
-			.write()
-			.as_mut()
-		{
+		if let Some(d) = self.chain().get_desegmenter().write().as_mut() {
 			let res = d.add_rangeproof_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
@@ -821,18 +795,9 @@ where
 			block_hash,
 			bitmap_root_hash
 		);
-		let archive_header = self.chain().txhashset_archive_header_header_only()?;
-		if archive_header.hash() != block_hash {
-			return Ok(false);
-		}
 		let identifier = segment.identifier().clone();
 		let mut retval = Ok(true);
-		if let Some(d) = self
-			.chain()
-			.get_desegmenter(&archive_header)
-			.write()
-			.as_mut()
-		{
+		if let Some(d) = self.chain().get_desegmenter().write().as_mut() {
 			let res = d.add_kernel_segment(segment, bitmap_root_hash);
 			if let Err(e) = res {
 				error!(
@@ -1092,6 +1057,7 @@ where
 	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<p2p::Peers>>,
 	hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
+	secp: Secp256k1,
 }
 
 impl<B, P> ChainAdapter for ChainToPoolAndNetAdapter<B, P>
@@ -1127,7 +1093,7 @@ where
 		if status.is_next() || status.is_reorg() {
 			let mut tx_pool = self.tx_pool.write();
 
-			let _ = tx_pool.reconcile_block(b);
+			let _ = tx_pool.reconcile_block(b, &self.secp);
 
 			// First "age out" any old txs in the reorg_cache.
 			let cutoff = Utc::now() - Duration::minutes(tx_pool.config.reorg_cache_timeout);
@@ -1135,7 +1101,10 @@ where
 		}
 
 		if status.is_reorg() {
-			let _ = self.tx_pool.write().reconcile_reorg_cache(&b.header);
+			let _ = self
+				.tx_pool
+				.write()
+				.reconcile_reorg_cache(&b.header, &self.secp);
 		}
 	}
 }
@@ -1154,6 +1123,7 @@ where
 			tx_pool,
 			peers: OneTime::new(),
 			hooks: hooks,
+			secp: Secp256k1::with_caps(ContextFlag::Commit),
 		}
 	}
 

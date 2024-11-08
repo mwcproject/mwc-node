@@ -41,10 +41,11 @@ use crate::msg::PeerAddrs;
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
 use grin_chain::txhashset::Segmenter;
+use grin_chain::types::HEADERS_PER_BATCH;
 use std::time::Instant;
 
 /// Maximum number of block headers a peer should ever send
-pub const MAX_BLOCK_HEADERS: u32 = 512;
+pub const MAX_BLOCK_HEADERS: u32 = HEADERS_PER_BATCH;
 
 /// Maximum number of block bodies a peer should ever ask for and send
 #[allow(dead_code)]

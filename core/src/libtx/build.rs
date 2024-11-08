@@ -213,12 +213,13 @@ where
 	let msg = kernel.msg_to_sign()?;
 
 	// Generate kernel public excess and associated signature.
-	let excess = BlindingFactor::rand(keychain.secp());
-	let skey = excess.secret_key(keychain.secp())?;
-	kernel.excess = keychain.secp().commit(0, skey)?;
-	let pubkey = &kernel.excess.to_pubkey(keychain.secp())?;
-	kernel.excess_sig = aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey))?;
-	kernel.verify()?;
+	let secp = keychain.secp();
+	let excess = BlindingFactor::rand(secp);
+	let skey = excess.secret_key(secp)?;
+	kernel.excess = secp.commit(0, skey)?;
+	let pubkey = &kernel.excess.to_pubkey(secp)?;
+	kernel.excess_sig = aggsig::sign_with_blinding(secp, &msg, &excess, Some(&pubkey))?;
+	kernel.verify(secp)?;
 	transaction_with_kernel(elems, kernel, excess, keychain, builder)
 }
 
@@ -277,7 +278,8 @@ mod test {
 		.unwrap();
 
 		let height = 42; // arbitrary
-		tx.validate(Weighting::AsTransaction, height).unwrap();
+		tx.validate(Weighting::AsTransaction, height, keychain.secp())
+			.unwrap();
 	}
 
 	#[test]
@@ -298,7 +300,8 @@ mod test {
 		.unwrap();
 
 		let height = 42; // arbitrary
-		tx.validate(Weighting::AsTransaction, height).unwrap();
+		tx.validate(Weighting::AsTransaction, height, keychain.secp())
+			.unwrap();
 	}
 
 	#[test]
@@ -318,6 +321,7 @@ mod test {
 		.unwrap();
 
 		let height = 42; // arbitrary
-		tx.validate(Weighting::AsTransaction, height).unwrap();
+		tx.validate(Weighting::AsTransaction, height, keychain.secp())
+			.unwrap();
 	}
 }

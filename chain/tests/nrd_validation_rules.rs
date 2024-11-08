@@ -18,6 +18,7 @@ use grin_chain as chain;
 use grin_core as core;
 use grin_keychain as keychain;
 use grin_util as util;
+use std::collections::VecDeque;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Error, Options};
@@ -52,8 +53,12 @@ fn build_block_from_prev<K>(
 where
 	K: Keychain,
 {
-	let next_header_info =
-		consensus::next_difficulty(prev.height, chain.difficulty_iter().unwrap());
+	let mut cache_values = VecDeque::new();
+	let next_header_info = consensus::next_difficulty(
+		prev.height,
+		chain.difficulty_iter().unwrap(),
+		&mut cache_values,
+	);
 	let fee = txs.iter().map(|x| x.fee(prev.height + 1)).sum();
 	let reward = reward::output(
 		keychain,
@@ -62,11 +67,18 @@ where
 		fee,
 		false,
 		prev.height + 1,
+		chain.secp(),
 	)
 	.unwrap();
 
-	let mut block = Block::new(prev, &txs, next_header_info.clone().difficulty, reward)
-		.map_err(|e| Error::Block(e))?;
+	let mut block = Block::new(
+		prev,
+		&txs,
+		next_header_info.clone().difficulty,
+		reward,
+		chain.secp(),
+	)
+	.map_err(|e| Error::Block(e))?;
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -122,7 +134,7 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
-	kernel.verify().unwrap();
+	kernel.verify(chain.secp()).unwrap();
 
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
@@ -238,7 +250,7 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
-	kernel.verify().unwrap();
+	kernel.verify(chain.secp()).unwrap();
 
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
@@ -337,7 +349,7 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
-	kernel.verify().unwrap();
+	kernel.verify(chain.secp()).unwrap();
 
 	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();

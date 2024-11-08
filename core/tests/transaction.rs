@@ -121,7 +121,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	// Transaction should fail validation due to cut-through.
 	let height = 42; // arbitrary
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, height),
+		tx.validate(Weighting::AsTransaction, height, keychain.secp()),
 		Err(Error::CutThrough),
 	);
 
@@ -139,7 +139,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, height)?;
+	tx.validate(Weighting::AsTransaction, height, keychain.secp())?;
 
 	// Transaction validates via lightweight "read" validation as well.
 	tx.validate_read()?;
@@ -184,7 +184,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	// Transaction should fail validation due to cut-through.
 	let height = 42; // arbitrary
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, height),
+		tx.validate(Weighting::AsTransaction, height, keychain.secp()),
 		Err(Error::CutThrough),
 	);
 
@@ -202,7 +202,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, height)?;
+	tx.validate(Weighting::AsTransaction, height, keychain.secp())?;
 
 	// Transaction validates via lightweight "read" validation as well.
 	tx.validate_read()?;
