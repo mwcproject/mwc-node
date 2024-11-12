@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "mwc"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "blake2-rfc",
  "built",
@@ -2584,7 +2584,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_api"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "bytes 0.5.6",
  "chrono",
@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_chain"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "bit-vec",
  "bitflags 1.3.2",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_config"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "dirs 2.0.2",
  "mwc_core",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_core"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_keychain"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -2706,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_p2p"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "async-std",
  "bitflags 1.3.2",
@@ -2740,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_pool"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "blake2-rfc",
  "chrono",
@@ -2758,8 +2758,8 @@ dependencies = [
 
 [[package]]
 name = "mwc_secp256k1zkp"
-version = "0.7.15"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.7.15#729b97ab3f6eba72366e02c98fe71b36d22f8c9d"
+version = "0.7.16"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.7.16#d922c6fd88ac9af865b216ca7e7f2a97fe8d421d"
 dependencies = [
  "arrayvec 0.7.4",
  "cc",
@@ -2772,7 +2772,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_servers"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "atomic_float",
  "chrono",
@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_store"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "byteorder",
  "chrono",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_util"
-version = "5.3.4"
+version = "5.3.5"
 dependencies = [
  "backtrace",
  "base64 0.12.3",
