@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -282,7 +283,7 @@ impl NRDRelativeHeight {
 /// Various tx kernel variants.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum KernelFeatures {
-	/// Plain kernel (the default for Grin txs).
+	/// Plain kernel (the default for Mwc txs).
 	Plain {
 		/// Plain kernels have fees.
 		#[serde(serialize_with = "fee_fields_as_int")]
@@ -1530,7 +1531,7 @@ impl Transaction {
 	/// Transaction minimum acceptable fee
 	/// _height is kept for possible fee formula change that will require hardfork
 	pub fn accept_fee(&self, _height: u64) -> u64 {
-		// Note, this code is different from grin. Grin is using the same formula to calculate the transaction/block size and the
+		// Note, this code is different from mwc. Mwc is using the same formula to calculate the transaction/block size and the
 		// fees. Migration was done with hardfork.
 		// _height
 		Transaction::weight_for_fee(
@@ -2064,7 +2065,7 @@ enum_from_primitive! {
 	#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 	#[repr(u8)]
 	pub enum OutputFeatures {
-		/// Plain output (the default for Grin txs).
+		/// Plain output (the default for Mwc txs).
 		Plain = 0,
 		/// A coinbase output.
 		Coinbase = 1,

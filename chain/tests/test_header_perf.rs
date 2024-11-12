@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_util as util;
 
 #[macro_use]
 extern crate log;
@@ -111,8 +112,8 @@ fn test_header_perf() {
 	util::init_test_logger();
 	// if testing against a real chain, insert location here
 	// NOTE: Modify to point at your own paths
-	let src_root_dir = format!("/Users/yeastplume/Projects/grin_project/server/chain_data");
-	let dest_root_dir = format!("/Users/yeastplume/Projects/grin_project/server/.chain_data_copy");
+	let src_root_dir = format!("/Users/yeastplume/Projects/mwc_project/server/chain_data");
+	let dest_root_dir = format!("/Users/yeastplume/Projects/mwc_project/server/.chain_data_copy");
 	clean_output_dir(&dest_root_dir);
 	test_header_perf_impl(false, &src_root_dir, &dest_root_dir);
 	clean_output_dir(&dest_root_dir);

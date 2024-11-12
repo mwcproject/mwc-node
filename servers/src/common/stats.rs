@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +30,7 @@ use chrono::prelude::*;
 use crate::chain::SyncStatus;
 use crate::p2p;
 use crate::p2p::Capabilities;
-use grin_core::pow::Difficulty;
+use mwc_core::pow::Difficulty;
 
 /// Server state info collection struct, to be passed around into internals
 /// and populated when required

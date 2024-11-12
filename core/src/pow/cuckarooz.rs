@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +18,7 @@
 //!
 //! Cuckarooz is a variation of Cuckaroo that's tweaked at the third HardFork
 //! to maintain ASIC-Resistance, as introduced in
-//! https://forum.grin.mw/t/introducing-the-final-tweak-cuckarooz
+//! https://forum.mwc.mw/t/introducing-the-final-tweak-cuckarooz
 //! It completes the choices of undirected vs directed edges and bipartite vs
 //! monopartite graphs, and is named after the last letter of the alphabet
 //! accordingly.
@@ -64,7 +65,7 @@ impl PoWContext for CuckaroozContext {
 		let mut uvs = vec![0u64; 2 * size];
 		let mut xoruv: u64 = 0;
 		let mask = u64::MAX >> (size as u64).leading_zeros(); // round size up to 2-power - 1
-													  // the next two arrays form a linked list of nodes with matching bits 6..1
+														// the next two arrays form a linked list of nodes with matching bits 6..1
 		let mut head = vec![2 * size; 1 + mask as usize];
 		let mut prev = vec![0usize; 2 * size];
 

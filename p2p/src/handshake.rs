@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +14,10 @@
 // limitations under the License.
 
 use crate::conn::Tracker;
-use crate::grin_core::core::hash::Hash;
-use crate::grin_core::pow::Difficulty;
-use crate::grin_core::ser::ProtocolVersion;
 use crate::msg::{read_message, write_message, Hand, Msg, Shake, TorAddress, Type, USER_AGENT};
+use crate::mwc_core::core::hash::Hash;
+use crate::mwc_core::pow::Difficulty;
+use crate::mwc_core::ser::ProtocolVersion;
 use crate::peer::Peer;
 use crate::types::{
 	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,

@@ -1,4 +1,5 @@
-// Copyright 2020 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use grin_core as core;
-use grin_p2p as p2p;
+use mwc_core as core;
+use mwc_p2p as p2p;
 
-use grin_util as util;
-use grin_util::StopState;
+use mwc_util as util;
+use mwc_util::StopState;
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;

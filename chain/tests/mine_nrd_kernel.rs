@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +15,10 @@
 
 mod chain_test_helper;
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_util as util;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Options};
@@ -71,7 +72,7 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 
 	util::init_test_logger();
 
-	let chain_dir = ".grin.nrd_kernel";
+	let chain_dir = ".mwc.nrd_kernel";
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
@@ -118,7 +119,7 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 
 	util::init_test_logger();
 
-	let chain_dir = ".grin.invalid_nrd_kernel";
+	let chain_dir = ".mwc.invalid_nrd_kernel";
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();

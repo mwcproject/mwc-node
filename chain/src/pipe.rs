@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,8 +27,8 @@ use crate::error::Error;
 use crate::store;
 use crate::txhashset;
 use crate::types::{CommitPos, Options, Tip};
-use grin_core::core::Transaction;
-use grin_util::RwLock;
+use mwc_core::core::Transaction;
+use mwc_util::RwLock;
 use std::collections::HashSet;
 use std::iter::FromIterator;
 

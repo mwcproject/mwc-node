@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -24,13 +25,13 @@ use crate::global;
 use crate::pow::Difficulty;
 use std::cmp::{max, min};
 
-/// A grin is divisible to 10^9, following the SI prefixes
+/// A mwc is divisible to 10^9, following the SI prefixes
 pub const MWC_BASE: u64 = 1_000_000_000;
-/// Milligrin, a thousand of a grin
+/// Millimwc, a thousand of a mwc
 pub const MILLI_MWC: u64 = MWC_BASE / 1_000;
-/// Microgrin, a thousand of a milligrin
+/// Micromwc, a thousand of a millimwc
 pub const MICRO_MWC: u64 = MILLI_MWC / 1_000;
-/// Nanogrin, smallest unit, takes a billion to make a grin
+/// Nanomwc, smallest unit, takes a billion to make a mwc
 pub const NANO_MWC: u64 = 1;
 
 /// Block interval, in seconds, the network will tune its next_target for. Note
@@ -40,8 +41,8 @@ pub const NANO_MWC: u64 = 1;
 pub const BLOCK_TIME_SEC: u64 = 60;
 
 /// MWC - Here is a block reward.
-/// The block subsidy amount, one grin per second on average
-//pub const REWARD: u64 = BLOCK_TIME_SEC * GRIN_BASE;
+/// The block subsidy amount, one mwc per second on average
+//pub const REWARD: u64 = BLOCK_TIME_SEC * MWC_BASE;
 
 /// Actual block reward for a given total fee amount
 pub fn reward(fee: u64, height: u64) -> u64 {
@@ -69,8 +70,8 @@ pub const COINBASE_MATURITY: u64 = DAY_HEIGHT;
 /// as a function of block height (time). Starts at 90% losing a percent
 /// approximately every week. Represented as an integer between 0 and 100.
 /// MWC: note we are changing this to an initial 45% (since we launch
-/// approximately 1 year after grin) and we also make it go to 0
-/// over the course of 1 year. This will roughly keep us inline with grin.
+/// approximately 1 year after mwc) and we also make it go to 0
+/// over the course of 1 year. This will roughly keep us inline with mwc.
 pub fn secondary_pow_ratio(height: u64) -> u64 {
 	45u64.saturating_sub(height / (YEAR_HEIGHT / 45))
 }
@@ -144,7 +145,7 @@ pub const TXFEE_KERNEL_WEIGHT: u64 = 1;
 ///
 pub const MAX_BLOCK_WEIGHT: u64 = 40_000;
 
-// We want to keep the grin test cases for NRD kernels.
+// We want to keep the mwc test cases for NRD kernels.
 // note!!! Currently NRD is disabled in MWC network. We need hardfork to activate it
 
 /// AutomatedTesting and UserTesting HF1 height.
@@ -158,7 +159,7 @@ pub const TESTING_THIRD_HARD_FORK: u64 = 9;
 pub const TESTING_HARD_FORK_INTERVAL: u64 = 3;
 
 /// Check whether the block version is valid at a given height
-/// MWC doesn't want like grin change the algorithms for mining. So version is constant
+/// MWC doesn't want like mwc change the algorithms for mining. So version is constant
 pub fn header_version(height: u64) -> HeaderVersion {
 	let chain_type = global::get_chain_type();
 	match chain_type {

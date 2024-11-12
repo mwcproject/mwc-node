@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +17,7 @@
 //! Setting global::mining_mode() changes global shared state so automated tests should only use one
 //! mining mode/chain type per test file to avoid non-deterministic behaviour.
 
-use grin_core as core;
+use mwc_core as core;
 
 use self::core::consensus::*;
 use self::core::core::block::HeaderVersion;

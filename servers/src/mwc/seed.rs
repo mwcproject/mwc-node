@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,8 +21,8 @@
 use crate::core::pow::Difficulty;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use grin_p2p::PeerAddr::Onion;
-use grin_p2p::{msg::PeerAddrs, P2PConfig};
+use mwc_p2p::PeerAddr::Onion;
+use mwc_p2p::{msg::PeerAddrs, P2PConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;

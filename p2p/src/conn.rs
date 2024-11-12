@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +22,8 @@
 //! stream and make sure we get the right number of bytes out.
 
 use crate::codec::{Codec, BODY_IO_TIMEOUT};
-use crate::grin_core::ser::ProtocolVersion;
 use crate::msg::{write_message, Consumed, Message, Msg};
+use crate::mwc_core::ser::ProtocolVersion;
 use crate::types::Error;
 use crate::util::{RateCounter, RwLock};
 use std::fs::File;
@@ -44,7 +45,7 @@ pub trait MessageHandler: Send + 'static {
 	fn consume(&self, message: Message) -> Result<Consumed, Error>;
 }
 
-// Macro to simplify the boilerplate around I/O and Grin error handling
+// Macro to simplify the boilerplate around I/O and Mwc error handling
 macro_rules! try_break {
 	($inner:expr) => {
 		match $inner {

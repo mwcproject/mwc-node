@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +18,7 @@
 //!
 //! Cuckaroo is an ASIC-Resistant variation of Cuckoo (CuckARoo) that's
 //! aimed at making the lean mining mode of Cuckoo extremely ineffective.
-//! It is one of the 2 proof of works used in Grin (the other one being the
+//! It is one of the 2 proof of works used in Mwc (the other one being the
 //! more ASIC friendly Cuckatoo).
 //!
 //! In Cuckaroo, edges are calculated by repeatedly hashing the seeds to
@@ -66,7 +67,7 @@ impl PoWContext for CuckarooContext {
 		let mut xor0: u64 = 0;
 		let mut xor1: u64 = 0;
 		let mask = u64::MAX >> (size as u64).leading_zeros(); // round size up to 2-power - 1
-													  // the next three arrays form a linked list of nodes with matching bits 6..1
+														// the next three arrays form a linked list of nodes with matching bits 6..1
 		let mut headu = vec![2 * size; 1 + mask as usize];
 		let mut headv = vec![2 * size; 1 + mask as usize];
 		let mut prev = vec![0usize; 2 * size];

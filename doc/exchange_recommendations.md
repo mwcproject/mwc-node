@@ -28,18 +28,18 @@ mwc-wallet: https://github.com/mwcproject/mwc-wallet
 
 and mwc713: mwc713: https://github.com/mwcproject/mwc713
 
-The main difference between these wallets is that mwc713 supports receive by http(s), file, and mwcmqs, and keybase, while mwc-wallet supports http(s), file, and keybase. mwc-wallet is a fork of the grin-wallet so it is much closer to grin-wallet.
+The main difference between these wallets is that mwc713 supports receive by http(s), file, and mwcmqs, and keybase, while mwc-wallet supports http(s), file, and keybase. mwc-wallet is a fork of the mwc-wallet so it is much closer to mwc-wallet.
 
-Exchanges that already support grin-wallet may have an easier time supporting mwc-wallet than mwc713. The latest version of the wallet may have bug fixes so please keep up to date on changes.
+Exchanges that already support mwc-wallet may have an easier time supporting mwc-wallet than mwc713. The latest version of the wallet may have bug fixes so please keep up to date on changes.
 
 
 # Double Spend Attacks #
 
-One of the differences between the GRIN network and the MWC network is that GRIN has a much higher hashrate. This means that the MWC network is more susceptible to double spend and block witholding attacks than GRIN. The GRIN code that was forked does not handle these attacks at all and seems to rely on a high hashrate. Part of this is related to one of the differences between Mimblewimble and Bitcoin-like blockchains. In Mimblewimble, the network does not keep any transactions or spent outputs.
+One of the differences between the MWC network and the MWC network is that MWC has a much higher hashrate. This means that the MWC network is more susceptible to double spend and block witholding attacks than MWC. The MWC code that was forked does not handle these attacks at all and seems to rely on a high hashrate. Part of this is related to one of the differences between Mimblewimble and Bitcoin-like blockchains. In Mimblewimble, the network does not keep any transactions or spent outputs.
   
 That is part of how it scales so much more easily than Bitcoin, but it means that wallet software and systems around that wallet software need to handle reorgs differently. The wallet has a separate state from the network. In the latest version of mwc-wallet and mwc713 most commands call scan and we attempt to keep the state of the wallet in exactly the same state as full node it is connected to.
 
-<p>However, this is difficult to do. GRIN also tried to do that but we found a number of cases where the state is not maintained accurately. We fixed all those that we could find, but ultimately the only way to ensure the exact state of the network is to recover the wallet from seed. Both wallets maintain a data file called the transaction log. In the transaction log, we attempt to update state of all transactions apporpriately in the latest wallet (3.1.x) for any new transactions processed by this version of the wallet.
+<p>However, this is difficult to do. MWC also tried to do that but we found a number of cases where the state is not maintained accurately. We fixed all those that we could find, but ultimately the only way to ensure the exact state of the network is to recover the wallet from seed. Both wallets maintain a data file called the transaction log. In the transaction log, we attempt to update state of all transactions apporpriately in the latest wallet (3.1.x) for any new transactions processed by this version of the wallet.
   
   Even though the state of the transactions is updated in the transaction log, for an exchange it is not acceptable to rely on the transaction log data to determine if a deposit was a success or failure. Instead, exchanges should make a separate request to a full node before crediting the deposit to the user account. This can be done with the following HTTP request to a full node:
 

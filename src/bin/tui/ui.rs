@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,8 +39,8 @@ use crate::servers::Server;
 use crate::tui::constants::{ROOT_STACK, VIEW_BASIC_STATUS, VIEW_MINING, VIEW_PEER_SYNC};
 use crate::tui::types::{TUIStatusListener, UIMessage};
 use crate::tui::{logs, menu, mining, peers, status, version};
-use grin_core::global;
-use grin_util::logger::LogEntry;
+use mwc_core::global;
+use mwc_util::logger::LogEntry;
 
 pub struct UI {
 	cursive: CursiveRunner<CursiveRunnable>,
@@ -69,7 +70,7 @@ impl UI {
 	) -> UI {
 		let (ui_tx, ui_rx) = mpsc::channel::<UIMessage>();
 
-		let mut grin_ui = UI {
+		let mut mwc_ui = UI {
 			cursive: cursive::default().into_runner(),
 			ui_tx,
 			ui_rx,
@@ -114,22 +115,22 @@ impl UI {
 			);
 
 		//set theme
-		let mut theme = grin_ui.cursive.current_theme().clone();
+		let mut theme = mwc_ui.cursive.current_theme().clone();
 		modify_theme(&mut theme);
-		grin_ui.cursive.set_theme(theme);
-		grin_ui.cursive.add_fullscreen_layer(main_layer);
+		mwc_ui.cursive.set_theme(theme);
+		mwc_ui.cursive.add_fullscreen_layer(main_layer);
 
 		// Configure a callback (shutdown, for the first test)
-		let controller_tx_clone = grin_ui.controller_tx.clone();
-		grin_ui.cursive.add_global_callback('q', move |c| {
+		let controller_tx_clone = mwc_ui.controller_tx.clone();
+		mwc_ui.cursive.add_global_callback('q', move |c| {
 			let content = StyledString::styled("Shutting down...", Color::Light(BaseColor::Yellow));
 			c.add_layer(CircularFocus::new(Dialog::around(TextView::new(content))).wrap_tab());
 			controller_tx_clone
 				.send(ControllerMessage::Shutdown)
 				.unwrap();
 		});
-		grin_ui.cursive.set_fps(3);
-		grin_ui
+		mwc_ui.cursive.set_fps(3);
+		mwc_ui
 	}
 
 	/// Step the UI by calling into Cursive's step function, then

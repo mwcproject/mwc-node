@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use grin_util as util;
+use mwc_util as util;
 
 mod chain_test_helper;
 
@@ -21,7 +22,7 @@ use util::secp::pedersen::Commitment;
 
 #[test]
 fn test_get_kernel_height() {
-	let chain_dir = ".grin.get_kernel_height";
+	let chain_dir = ".mwc.get_kernel_height";
 	clean_output_dir(chain_dir);
 	let chain = mine_chain(chain_dir, 5);
 	assert_eq!(chain.head().unwrap().height, 4);

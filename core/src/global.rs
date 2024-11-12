@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,7 +44,7 @@ use util::OneTime;
 /// We negotiate compatible versions with each peer via Hand/Shake.
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
-/// NOTE, grin bump the protocol version to 1000, but in any case so far 1,2,3 are supported.
+/// NOTE, mwc bump the protocol version to 1000, but in any case so far 1,2,3 are supported.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
 
 /// Automated testing edge_bits
@@ -82,8 +83,8 @@ pub const TESTING_INITIAL_DIFFICULTY: u64 = 1;
 /// Testing max_block_weight (artifically low, just enough to support a few txs).
 pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
 
-/// Default unit of fee per tx weight, making each output cost about a Grincent
-pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC; // Keeping default base is same, no changes for MWC     GRIN_BASE / 100 / 20; // 500_000
+/// Default unit of fee per tx weight, making each output cost about a Mwccent
+pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC; // Keeping default base is same, no changes for MWC     MWC_BASE / 100 / 20; // 500_000
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
 /// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
@@ -289,7 +290,7 @@ pub fn set_local_accept_fee_base(new_base: u64) {
 
 /// Accept Fee Base
 /// Look at thread local config first. If not set fallback to global config.
-/// Default to grin-cent/20 if global config unset.
+/// Default to mwc-cent/20 if global config unset.
 pub fn get_accept_fee_base() -> u64 {
 	ACCEPT_FEE_BASE.with(|base| match base.get() {
 		None => {

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,7 +15,7 @@
 //! Common storage-related types
 use tempfile::tempfile;
 
-use crate::grin_core::ser::{
+use crate::mwc_core::ser::{
 	self, BinWriter, DeserializationMode, ProtocolVersion, Readable, Reader, StreamingReader,
 	Writeable, Writer,
 };

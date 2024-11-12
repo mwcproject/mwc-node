@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,26 +34,26 @@ use crate::util::logger::LoggingConfig;
 /// the node config file location
 pub const SERVER_CONFIG_FILE_NAME: &str = "mwc-server.toml";
 const SERVER_LOG_FILE_NAME: &str = "mwc-server.log";
-const GRIN_HOME: &str = ".mwc";
-const GRIN_CHAIN_DIR: &str = "chain_data";
+const MWC_HOME: &str = ".mwc";
+const MWC_CHAIN_DIR: &str = "chain_data";
 /// Node Rest API and V2 Owner API secret
 pub const API_SECRET_FILE_NAME: &str = ".api_secret";
 /// Foreign API secret
 pub const FOREIGN_API_SECRET_FILE_NAME: &str = ".foreign_api_secret";
 
-fn get_grin_path(chain_type: &global::ChainTypes) -> Result<PathBuf, ConfigError> {
-	// Check if grin dir exists
-	let mut grin_path = match dirs::home_dir() {
+fn get_mwc_path(chain_type: &global::ChainTypes) -> Result<PathBuf, ConfigError> {
+	// Check if mwc dir exists
+	let mut mwc_path = match dirs::home_dir() {
 		Some(p) => p,
 		None => PathBuf::new(),
 	};
-	grin_path.push(GRIN_HOME);
-	grin_path.push(chain_type.shortname());
+	mwc_path.push(MWC_HOME);
+	mwc_path.push(chain_type.shortname());
 	// Create if the default path doesn't exist
-	if !grin_path.exists() {
-		fs::create_dir_all(grin_path.clone())?;
+	if !mwc_path.exists() {
+		fs::create_dir_all(mwc_path.clone())?;
 	}
-	Ok(grin_path)
+	Ok(mwc_path)
 }
 
 fn check_config_current_dir(path: &str) -> Option<PathBuf> {
@@ -99,8 +100,8 @@ fn check_api_secret_files(
 	chain_type: &global::ChainTypes,
 	secret_file_name: &str,
 ) -> Result<(), ConfigError> {
-	let grin_path = get_grin_path(chain_type)?;
-	let mut api_secret_path = grin_path;
+	let mwc_path = get_mwc_path(chain_type)?;
+	let mut api_secret_path = mwc_path;
 	api_secret_path.push(secret_file_name);
 	if !api_secret_path.exists() {
 		init_api_secret(&api_secret_path)
@@ -113,22 +114,22 @@ fn check_api_secret_files(
 pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalConfig, ConfigError> {
 	check_api_secret_files(chain_type, API_SECRET_FILE_NAME)?;
 	check_api_secret_files(chain_type, FOREIGN_API_SECRET_FILE_NAME)?;
-	// Use config file if current directory if it exists, .grin home otherwise
+	// Use config file if current directory if it exists, .mwc home otherwise
 	if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME) {
 		GlobalConfig::new(p.to_str().unwrap())
 	} else {
-		// Check if grin dir exists
-		let grin_path = get_grin_path(chain_type)?;
+		// Check if mwc dir exists
+		let mwc_path = get_mwc_path(chain_type)?;
 
 		// Get path to default config file
-		let mut config_path = grin_path.clone();
+		let mut config_path = mwc_path.clone();
 		config_path.push(SERVER_CONFIG_FILE_NAME);
 
 		// Spit it out if it doesn't exist
 		if !config_path.exists() {
 			let mut default_config = GlobalConfig::for_chain(chain_type);
 			// update paths relative to current dir
-			default_config.update_paths(&grin_path);
+			default_config.update_paths(&mwc_path);
 			default_config.write_to_file(config_path.to_str().unwrap())?;
 		}
 
@@ -248,23 +249,23 @@ impl GlobalConfig {
 	}
 
 	/// Update paths
-	pub fn update_paths(&mut self, grin_home: &PathBuf) {
+	pub fn update_paths(&mut self, mwc_home: &PathBuf) {
 		// need to update server chain path
-		let mut chain_path = grin_home.clone();
-		chain_path.push(GRIN_CHAIN_DIR);
+		let mut chain_path = mwc_home.clone();
+		chain_path.push(MWC_CHAIN_DIR);
 		self.members.as_mut().unwrap().server.db_root = chain_path.to_str().unwrap().to_owned();
-		let mut api_secret_path = grin_home.clone();
+		let mut api_secret_path = mwc_home.clone();
 		api_secret_path.push(API_SECRET_FILE_NAME);
 		self.members.as_mut().unwrap().server.api_secret_path =
 			Some(api_secret_path.to_str().unwrap().to_owned());
-		let mut foreign_api_secret_path = grin_home.clone();
+		let mut foreign_api_secret_path = mwc_home.clone();
 		foreign_api_secret_path.push(FOREIGN_API_SECRET_FILE_NAME);
 		self.members
 			.as_mut()
 			.unwrap()
 			.server
 			.foreign_api_secret_path = Some(foreign_api_secret_path.to_str().unwrap().to_owned());
-		let mut log_path = grin_home.clone();
+		let mut log_path = mwc_home.clone();
 		log_path.push(SERVER_LOG_FILE_NAME);
 		self.members
 			.as_mut()
@@ -311,7 +312,7 @@ impl GlobalConfig {
 		Ok(())
 	}
 
-	/// It is placeholder for the future migration. Please check how it is done at grin
+	/// It is placeholder for the future migration. Please check how it is done at mwc
 	///  MWC doesn't have anything to migrate yet
 	fn migrate_config_file_version_none_to_1(config_str: String) -> String {
 		// Parse existing config and return unchanged if not eligible for migration

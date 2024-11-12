@@ -1,8 +1,8 @@
-extern crate grin_core;
-extern crate grin_keychain;
+extern crate mwc_core;
+extern crate mwc_keychain;
 
-use grin_core::core::{Block, CompactBlock, Transaction};
-use grin_core::ser;
+use mwc_core::core::{Block, CompactBlock, Transaction};
+use mwc_core::ser;
 use std::fs::{self, File};
 use std::path::Path;
 

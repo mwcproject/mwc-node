@@ -1,12 +1,12 @@
-# Dandelion++ in Grin: Privacy-Preserving Transaction Aggregation and Propagation
+# Dandelion++ in Mwc: Privacy-Preserving Transaction Aggregation and Propagation
 
 *Read this document in other languages: [Korean](dandelion_KR.md). [out of date]*
 
 ## Introduction
 
-The Dandelion++ protocol for broadcasting transactions, proposed by Fanti et al. (Sigmetrics 2018)[1], intends to defend against deanonymization attacks during transaction propagation. In Grin, it also provides an opportunity to aggregate transactions before they are broadcasted to the entire network. This document describes the protocol and the simplified version of it that is implemented in Grin.
+The Dandelion++ protocol for broadcasting transactions, proposed by Fanti et al. (Sigmetrics 2018)[1], intends to defend against deanonymization attacks during transaction propagation. In Mwc, it also provides an opportunity to aggregate transactions before they are broadcasted to the entire network. This document describes the protocol and the simplified version of it that is implemented in Mwc.
 
-In the following section, past research on the protocol is summarized. This is then followed by describing details of the Grin implementation; the objectives behind its inclusion, how the current implementation differs from the original paper, what some of the known limitations are, and outlining some areas of improvement for future work.
+In the following section, past research on the protocol is summarized. This is then followed by describing details of the Mwc implementation; the objectives behind its inclusion, how the current implementation differs from the original paper, what some of the known limitations are, and outlining some areas of improvement for future work.
 
 ## Previous research
 
@@ -120,14 +120,14 @@ The paper also proceeds to specify the size of the initiating time out parameter
 the time between each hop (e.g., network and/or internal node latency), transactions travel for `k` hops without any peer initiating diffusion with a probability of at least `1 − ε`.
 
 
-## Dandelion in Grin
+## Dandelion in Mwc
 
 ### Objectives
 
-There are two main motives behind why Dandelion is included in Grin:
+There are two main motives behind why Dandelion is included in Mwc:
 
-1. **Act as a countermeasure against mass de-anonymization attacks.** Similar to Bitcoin, the Grin P2P network would be vulnerable to attackers deploying malicious "super-nodes" connecting to most peers on the network and monitoring transactions as they become diffused by their honest peers. This would allow a motivated actor to infer with a high degree of probability from which peer (IP address) transactions originate from, having negative privacy consequences.
-2. **Aggregate transactions before they are being broadcasted to the entire network.** This is a benefit to blockchains that enable non-interactive CoinJoins on the protocol level, such as Mimblewimble. Despite its good privacy features, some input and output linking is still possible in Mimblewimble and Grin.[4] If you know which input spends to which output, it is possible to construct a (very limited) transaction graph and follow a chain of transaction outputs (TXOs) as they are being spent. Aggregating transactions make this more difficult to carry out, as it becomes less clear which input spends to which output (Figure 3). In order for this to be effective, there needs to be a large anonymity set, i.e. many transactions to aggregate a transaction with. Dandelion enables this aggregation to occur before transactions are fluffed and diffused to the entire network. This adds obfuscation to the transaction graph, as a malicious observer who is not participating in the stemming or fluffing would not only need to figure out from where a transaction originated, but also which TXOs out of a larger group should be attributed to the originating transaction.
+1. **Act as a countermeasure against mass de-anonymization attacks.** Similar to Bitcoin, the Mwc P2P network would be vulnerable to attackers deploying malicious "super-nodes" connecting to most peers on the network and monitoring transactions as they become diffused by their honest peers. This would allow a motivated actor to infer with a high degree of probability from which peer (IP address) transactions originate from, having negative privacy consequences.
+2. **Aggregate transactions before they are being broadcasted to the entire network.** This is a benefit to blockchains that enable non-interactive CoinJoins on the protocol level, such as Mimblewimble. Despite its good privacy features, some input and output linking is still possible in Mimblewimble and Mwc.[4] If you know which input spends to which output, it is possible to construct a (very limited) transaction graph and follow a chain of transaction outputs (TXOs) as they are being spent. Aggregating transactions make this more difficult to carry out, as it becomes less clear which input spends to which output (Figure 3). In order for this to be effective, there needs to be a large anonymity set, i.e. many transactions to aggregate a transaction with. Dandelion enables this aggregation to occur before transactions are fluffed and diffused to the entire network. This adds obfuscation to the transaction graph, as a malicious observer who is not participating in the stemming or fluffing would not only need to figure out from where a transaction originated, but also which TXOs out of a larger group should be attributed to the originating transaction.
 
 **Figure 3.** Aggregating transactions
 ```
@@ -157,7 +157,7 @@ TX1+2   INPUT_A ______________ OUTPUT_X
 
 ### Current implementation
 
-Grin implements a simplified version of the Dandelion++ protocol. It's been improved several times, most recently in version 1.1.0 [5].
+Mwc implements a simplified version of the Dandelion++ protocol. It's been improved several times, most recently in version 1.1.0 [5].
 
 1. `DandelionEpoch` tracks a node's current epoch. This is configurable via `epoch_secs` with default epoch set to last for 10 minutes. Epochs are set and tracked by nodes individually.
 2. At the beginning of an epoch, the node chooses a single connected peer at random to use as their outbound relay.
@@ -194,6 +194,6 @@ Grin implements a simplified version of the Dandelion++ protocol. It's been impr
 * [1] (Sigmetrics 2018) [Dandelion++: Lightweight Cryptocurrency Networking with Formal Anonymity Guarantees](https://arxiv.org/abs/1805.11060)
 * [2] (Sigmetrics 2017) [Dandelion: Redesigning the Bitcoin Network for Anonymity](https://arxiv.org/abs/1701.04439)
 * [3] [Dandelion BIP](https://github.com/dandelion-org/bips/blob/master/bip-dandelion.mediawiki)
-* [4] [Grin Privacy Primer](https://github.com/mimblewimble/docs/wiki/Grin-Privacy-Primer)
-* [5] [#2628: Dandelion++ Rewrite](https://github.com/mimblewimble/grin/pull/2628)
-* [6] [#2876: Always stem local txs if configured that way (unless explicitly fluffed)](https://github.com/mimblewimble/grin/pull/2876)
+* [4] [Mwc Privacy Primer](https://github.com/mimblewimble/docs/wiki/Mwc-Privacy-Primer)
+* [5] [#2628: Dandelion++ Rewrite](https://github.com/mwcproject/mwc-node/pull/2628)
+* [6] [#2876: Always stem local txs if configured that way (unless explicitly fluffed)](https://github.com/mwcproject/mwc-node/pull/2876)

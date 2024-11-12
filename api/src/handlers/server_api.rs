@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,8 +20,8 @@ use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::web::*;
-use grin_core::global;
 use hyper::{Body, Request, StatusCode};
+use mwc_core::global;
 use serde_json::json;
 use std::convert::TryInto;
 use std::sync::atomic::Ordering;

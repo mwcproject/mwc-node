@@ -1,11 +1,11 @@
 **Draft**
 
 This is a first attempt at a table of content for a more exhaustive technical
-documentation of Grin (we'd call it a white paper if we had to do an ICO).
+documentation of Mwc (we'd call it a white paper if we had to do an ICO).
 This should get progressively filled up, until we're ready to advertize it
 more widely.
 
-* What is Grin?
+* What is Mwc?
 * [Introduction to Mimblewimble](intro.md)
 * Cryptographic Primitives
   * Pedersen Commitments

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,9 +20,9 @@ use num::FromPrimitive;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-use crate::grin_core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
+use crate::mwc_core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
-use grin_store::{self, option_to_not_found, to_key, Error};
+use mwc_store::{self, option_to_not_found, to_key, Error};
 
 const DB_NAME: &str = "peerV2";
 const STORE_SUBPATH: &str = "peers";
@@ -121,13 +122,13 @@ impl Readable for PeerData {
 
 /// Storage facility for peer data.
 pub struct PeerStore {
-	db: grin_store::Store,
+	db: mwc_store::Store,
 }
 
 impl PeerStore {
 	/// Instantiates a new peer store under the provided root path.
 	pub fn new(db_root: &str) -> Result<PeerStore, Error> {
-		let db = grin_store::Store::new(db_root, Some(DB_NAME), Some(STORE_SUBPATH), None)?;
+		let db = mwc_store::Store::new(db_root, Some(DB_NAME), Some(STORE_SUBPATH), None)?;
 		Ok(PeerStore { db: db })
 	}
 

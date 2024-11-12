@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Grin P2P / API server
+//! Syncing of the chain with the rest of the network
 
-pub mod dandelion_monitor;
-pub mod seed;
-pub mod server;
-pub mod sync;
+mod body_sync;
+mod header_sync;
+mod state_sync;
+mod syncer;
+
+pub use self::syncer::run_sync;

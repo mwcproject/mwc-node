@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Main for building the binary of a Grin peer-to-peer node.
+//! Main for building the binary of a Mwc peer-to-peer node.
 
 #[macro_use]
 extern crate clap;
@@ -23,14 +24,14 @@ use crate::config::config::SERVER_CONFIG_FILE_NAME;
 use crate::core::global;
 use crate::util::init_logger;
 
-use grin_api as api;
-use grin_chain as chain;
-use grin_config as config;
-use grin_core as core;
-use grin_p2p as p2p;
-use grin_servers as servers;
-use grin_util as util;
-use grin_util::logger::LogEntry;
+use mwc_api as api;
+use mwc_chain as chain;
+use mwc_config as config;
+use mwc_core as core;
+use mwc_p2p as p2p;
+use mwc_servers as servers;
+use mwc_util as util;
+use mwc_util::logger::LogEntry;
 
 use clap::App;
 use futures::channel::oneshot;

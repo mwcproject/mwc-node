@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,7 +38,7 @@ use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip, StopState};
 use crate::SyncState;
 use croaring::Bitmap;
-use grin_store::pmmr::{clean_files_by_prefix, PMMRBackend};
+use mwc_store::pmmr::{clean_files_by_prefix, PMMRBackend};
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};

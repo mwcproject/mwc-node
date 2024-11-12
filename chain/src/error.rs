@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,8 +21,8 @@ use crate::core::ser;
 use crate::keychain;
 use crate::util::secp;
 use crate::util::secp::pedersen::Commitment;
-use grin_core::core::hash::Hash;
-use grin_store as store;
+use mwc_core::core::hash::Hash;
+use mwc_store as store;
 use std::io;
 
 /// Chain error definitions
@@ -159,7 +160,7 @@ pub enum Error {
 		/// Conversion
 		source: committed::Error,
 	},
-	/// We cannot process data once the Grin server has been stopped.
+	/// We cannot process data once the Mwc server has been stopped.
 	#[error("Stopped (MWC Shutting Down)")]
 	Stopped,
 	/// Internal Roaring Bitmap error

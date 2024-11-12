@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,10 +30,10 @@ use self::keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain};
 use self::pool::types::*;
 use self::pool::TransactionPool;
 use chrono::Duration;
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_pool as pool;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_pool as pool;
 use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;

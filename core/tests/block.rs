@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,8 +28,8 @@ use crate::core::libtx::build::{self, input, output};
 use crate::core::libtx::ProofBuilder;
 use crate::core::{global, pow, ser};
 use chrono::Duration;
-use grin_core as core;
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
+use mwc_core as core;
 use util::{secp, ToHex};
 
 // Setup test with AutomatedTesting chain_type;

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,13 +18,13 @@ use crate::chain::store::{self, ChainStore};
 use crate::chain::types::CommitPos;
 use crate::core::global;
 use crate::util::secp::pedersen::Commitment;
-use grin_chain as chain;
-use grin_core as core;
-use grin_store;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_store;
+use mwc_util as util;
 mod chain_test_helper;
 use self::chain_test_helper::clean_output_dir;
-use crate::grin_store::Error;
+use crate::mwc_store::Error;
 
 fn setup_test() {
 	util::init_test_logger();
@@ -33,7 +34,7 @@ fn setup_test() {
 #[test]
 fn test_store_kernel_idx() {
 	setup_test();
-	let chain_dir = ".grin_idx_1";
+	let chain_dir = ".mwc_idx_1";
 	clean_output_dir(chain_dir);
 
 	let commit = Commitment::from_vec(vec![]);
@@ -180,7 +181,7 @@ fn test_store_kernel_idx() {
 #[test]
 fn test_store_kernel_idx_pop_back() {
 	setup_test();
-	let chain_dir = ".grin_idx_2";
+	let chain_dir = ".mwc_idx_2";
 	clean_output_dir(chain_dir);
 
 	let commit = Commitment::from_vec(vec![]);
@@ -288,7 +289,7 @@ fn test_store_kernel_idx_pop_back() {
 #[test]
 fn test_store_kernel_idx_rewind() {
 	setup_test();
-	let chain_dir = ".grin_idx_3";
+	let chain_dir = ".mwc_idx_3";
 	clean_output_dir(chain_dir);
 
 	let commit = Commitment::from_vec(vec![]);
@@ -389,7 +390,7 @@ fn test_store_kernel_idx_rewind() {
 #[test]
 fn test_store_kernel_idx_multiple_commits() {
 	setup_test();
-	let chain_dir = ".grin_idx_4";
+	let chain_dir = ".mwc_idx_4";
 	clean_output_dir(chain_dir);
 
 	let commit = Commitment::from_vec(vec![]);
@@ -477,7 +478,7 @@ fn test_store_kernel_idx_multiple_commits() {
 #[test]
 fn test_store_kernel_idx_clear() -> Result<(), Error> {
 	setup_test();
-	let chain_dir = ".grin_idx_clear";
+	let chain_dir = ".mwc_idx_clear";
 	clean_output_dir(chain_dir);
 
 	let commit = Commitment::from_vec(vec![]);

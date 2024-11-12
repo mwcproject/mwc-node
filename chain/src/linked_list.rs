@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +20,7 @@ use crate::store::Batch;
 use crate::types::CommitPos;
 use crate::util::secp::pedersen::Commitment;
 use enum_primitive::FromPrimitive;
-use grin_store as store;
+use mwc_store as store;
 use std::marker::PhantomData;
 use store::{to_key, to_key_u64, Error};
 

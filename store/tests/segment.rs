@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +24,8 @@ use crate::core::ser::{
 use crate::store::pmmr::PMMRBackend;
 use chrono::Utc;
 use croaring::Bitmap;
-use grin_core as core;
-use grin_store as store;
+use mwc_core as core;
+use mwc_store as store;
 use std::fs;
 use std::io::Cursor;
 

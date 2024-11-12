@@ -1,11 +1,11 @@
 [package]
-name = "grin_keychain"
-version = "5.3.2"
-authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
-description = "Chain implementation for grin, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
+name = "mwc_keychain"
+version = "5.3.4"
+authors = ["Mwc Developers <info@mwc.mw>"]
+description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin"
-keywords = [ "crypto", "grin", "mimblewimble" ]
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = [ "crypto", "mwc", "mimblewimble" ]
 workspace = '..'
 edition = "2018"
 
@@ -27,4 +27,4 @@ ripemd160 = "0.9"
 sha2 = "0.9"
 pbkdf2 = "0.8"
 
-grin_util = { path = "../util", version = "5.3.2" }
+mwc_util = { path = "../util", version = "5.3.4" }

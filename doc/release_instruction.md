@@ -1,10 +1,10 @@
-# Grin - Instruction of Release
+# Mwc - Instruction of Release
 
 **Note**: *[totally draft doc! to be reviewed and discussed]*
 
 ## Version Number Rule
 
-In Grin, we're using [Semantic Versioning 2.0.0](https://semver.org). For a short description of the rule:
+In Mwc, we're using [Semantic Versioning 2.0.0](https://semver.org). For a short description of the rule:
 
 A version number include MAJOR.MINOR.PATCH, and increment the:
 
@@ -14,7 +14,7 @@ A version number include MAJOR.MINOR.PATCH, and increment the:
 
 And **additional labels for pre-release** and **build metadata** are available as extensions to the MAJOR.MINOR.PATCH format.
 
-The examples of the release version of Grin:
+The examples of the release version of Mwc:
 
 - 0.3.0
 - 0.3.1
@@ -26,9 +26,9 @@ The examples of **label of pre-release**:
 - 1.0.0-beta.2
 - 1.0.0-test.5
 
-In Grin, **build metadata** is used as the build number which comes from the Travis-CI job ID of building jobs, it's an unique ID for each building. **Note**: for the moment, this metadata is only used in the name of the released binary, and it's auto generated, no need to set it manually.
+In Mwc, **build metadata** is used as the build number which comes from the Travis-CI job ID of building jobs, it's an unique ID for each building. **Note**: for the moment, this metadata is only used in the name of the released binary, and it's auto generated, no need to set it manually.
 
-Here is an example of the build metadata of Grin release version:
+Here is an example of the build metadata of Mwc release version:
 
 - 0.3.1-430839304
 
@@ -38,18 +38,18 @@ And as the end of this section, here's an example of the whole encoded version s
 
 ## Release Files (Binaries)
 
-So far, Grin support both Mac and Linux, and 64bits only. There're 2 binaries in one version release, plus md5 checksum for each binary.
+So far, Mwc support both Mac and Linux, and 64bits only. There're 2 binaries in one version release, plus md5 checksum for each binary.
 
 For example:
 
-- grin-0.3.1-pre.1-430839316-oxs.tgz
-- grin-0.3.1-pre.1-430839316-oxs.tgz-md5sum.txt
-- grin-0.3.1-pre.1-430839318-linux-amd64.tgz
-- grin-0.3.1-pre.1-430839318-linux-amd64.tgz-md5sum.txt
+- mwc-0.3.1-pre.1-430839316-oxs.tgz
+- mwc-0.3.1-pre.1-430839316-oxs.tgz-md5sum.txt
+- mwc-0.3.1-pre.1-430839318-linux-amd64.tgz
+- mwc-0.3.1-pre.1-430839318-linux-amd64.tgz-md5sum.txt
 
 ## Change Log of Release
 
-Currently, Grin release is using automatic change log generating, thanks to [github-changelog-generator](https://github.com/github-changelog-generator/github-changelog-generator). These change logs are fully automated generated, and normally there's no human editing on these change logs, but in case of any exception display on release page, we could do a little manual fixing on that.
+Currently, Mwc release is using automatic change log generating, thanks to [github-changelog-generator](https://github.com/github-changelog-generator/github-changelog-generator). These change logs are fully automated generated, and normally there's no human editing on these change logs, but in case of any exception display on release page, we could do a little manual fixing on that.
 
 The github changelog generator heavily rely on the Github project **issues*, **pull requests**, so for achieving a good change log on each release, we have to follow some rules on the daily management of github **issues** and **pull request**.
 
@@ -98,7 +98,7 @@ There's no need to fully follow Angular.js commit message conventions. We just n
 
 ## Release Branches
 
-Each time when Grin release a new version, there's definitely a tag there with same version number. But it's not mandatory to have a **branch** with this version release.
+Each time when Mwc release a new version, there's definitely a tag there with same version number. But it's not mandatory to have a **branch** with this version release.
 
 We define the following rules for the **release branch**:
 

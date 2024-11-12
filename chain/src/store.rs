@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,9 +25,9 @@ use crate::linked_list::MultiIndex;
 use crate::types::{CommitPos, HashHeight, Tip};
 use crate::util::secp::pedersen::Commitment;
 use croaring::Bitmap;
-use grin_core::ser;
-use grin_store as store;
-use grin_store::{option_to_not_found, to_key, Error};
+use mwc_core::ser;
+use mwc_store as store;
+use mwc_store::{option_to_not_found, to_key, Error};
 use std::convert::TryInto;
 use std::sync::Arc;
 

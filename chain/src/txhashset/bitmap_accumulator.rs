@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -524,7 +525,7 @@ mod tests {
 		BinReader, BinWriter, DeserializationMode, ProtocolVersion, Readable, Writeable,
 	};
 	use byteorder::ReadBytesExt;
-	use grin_util::secp::rand::Rng;
+	use mwc_util::secp::rand::Rng;
 	use rand::thread_rng;
 	use std::io::Cursor;
 

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,18 +15,18 @@
 
 //! Common test functions
 
-use grin_core::core::hash::DefaultHashable;
-use grin_core::core::{
+use keychain::{Identifier, Keychain};
+use mwc_core::core::hash::DefaultHashable;
+use mwc_core::core::{
 	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
 };
-use grin_core::libtx::{
+use mwc_core::libtx::{
 	build::{self, input, output},
 	proof::{ProofBuild, ProofBuilder},
 	reward,
 };
-use grin_core::pow::Difficulty;
-use grin_core::ser::{self, PMMRable, Readable, Reader, Writeable, Writer};
-use keychain::{Identifier, Keychain};
+use mwc_core::pow::Difficulty;
+use mwc_core::ser::{self, PMMRable, Readable, Reader, Writeable, Writer};
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]

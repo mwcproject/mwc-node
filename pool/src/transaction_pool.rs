@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,11 +28,11 @@ use self::util::RwLock;
 use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use chrono::prelude::*;
-use grin_core as core;
-use grin_core::ser;
-use grin_keychain::base58;
-use grin_util as util;
 use lru_cache::LruCache;
+use mwc_core as core;
+use mwc_core::ser;
+use mwc_keychain::base58;
+use mwc_util as util;
 use std::collections::VecDeque;
 use std::sync::Arc;
 

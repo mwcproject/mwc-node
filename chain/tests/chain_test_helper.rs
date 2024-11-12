@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,9 +24,9 @@ use self::core::libtx::{self, reward};
 use self::core::{consensus, global, pow};
 use self::keychain::{ExtKeychainPath, Keychain};
 use chrono::Duration;
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
 use std::fs;
 use std::sync::Arc;
 
@@ -57,7 +58,7 @@ where
 		&key_id,
 		0,
 		false,
-		0, // at MWC genesys block has to has height 0, grin it tolerant to that.
+		0, // at MWC genesys block has to has height 0, mwc it tolerant to that.
 	)
 	.unwrap();
 

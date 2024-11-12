@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +28,7 @@ use crate::types::{
 use crate::{util, Libp2pMessages, Libp2pPeers};
 
 /// Public definition used to generate Node jsonrpc api.
-/// * When running `grin` with defaults, the V2 api is available at
+/// * When running `mwc` with defaults, the V2 api is available at
 /// `localhost:3413/v2/foreign`
 /// * The endpoint only supports POST operations, with the json-rpc request as the body
 #[easy_jsonrpc_mw::rpc]
@@ -38,7 +39,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -134,7 +135,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -252,7 +253,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -373,7 +374,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -618,7 +619,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -651,7 +652,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -686,7 +687,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -729,7 +730,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -816,7 +817,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -877,7 +878,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -914,7 +915,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -944,7 +945,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -974,7 +975,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -1047,7 +1048,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -1112,7 +1113,7 @@ pub trait ForeignRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -1289,12 +1290,12 @@ where
 #[macro_export]
 macro_rules! doctest_helper_json_rpc_foreign_assert_response {
 	($request:expr, $expected_response:expr) => {
-		// create temporary grin server, run jsonrpc request on node api, delete server, return
+		// create temporary mwc server, run jsonrpc request on node api, delete server, return
 		// json response.
 
 		{
-			/*use grin_servers::test_framework::framework::run_doctest;
-			use grin_util as util;
+			/*use mwc_servers::test_framework::framework::run_doctest;
+			use mwc_util as util;
 			use serde_json;
 			use serde_json::Value;
 			use tempfile::tempdir;

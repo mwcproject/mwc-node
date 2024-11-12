@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,11 +30,11 @@ use self::keychain::{
 };
 use self::util::RwLock;
 use chrono::Duration;
-use grin_chain as chain;
-use grin_chain::{BlockStatus, ChainAdapter, Options};
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_chain::{BlockStatus, ChainAdapter, Options};
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_util as util;
 use std::sync::Arc;
 
 mod chain_test_helper;
@@ -765,7 +766,7 @@ fn spend_in_fork_and_compact() {
 /// Test ability to retrieve block headers for a given output
 #[test]
 fn output_header_mappings() {
-	clean_output_dir(".grin_header_for_output");
+	clean_output_dir(".mwc_header_for_output");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
 	util::init_test_logger();
 	{
@@ -880,12 +881,12 @@ where
 /// Test the duplicate rangeproof bug
 #[test]
 fn test_overflow_cached_rangeproof() {
-	clean_output_dir(".grin_overflow");
+	clean_output_dir(".mwc_overflow");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
 
 	util::init_test_logger();
 	{
-		let chain = init_chain(".grin_overflow", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".mwc_overflow", pow::mine_genesis_block().unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 		let pb = ProofBuilder::new(&kc);
@@ -942,7 +943,7 @@ fn test_overflow_cached_rangeproof() {
 		chain.validate(false).unwrap();
 
 		// create a second tx that contains a negative output
-		// and a positive output for 1m grin
+		// and a positive output for 1m mwc
 		let mut tx2 = build::transaction(
 			KernelFeatures::Plain { fee: 0.into() },
 			&[
@@ -983,7 +984,7 @@ fn test_overflow_cached_rangeproof() {
 			)))
 		);
 	}
-	clean_output_dir(".grin_overflow");
+	clean_output_dir(".mwc_overflow");
 }
 
 // Use diff as both diff *and* key_idx for convenience (deterministic private key for test blocks)

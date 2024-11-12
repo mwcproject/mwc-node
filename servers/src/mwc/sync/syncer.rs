@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,9 +20,9 @@ use std::time;
 use crate::chain::{self, SyncState, SyncStatus};
 use crate::core::global;
 use crate::core::pow::Difficulty;
-use crate::grin::sync::body_sync::BodySync;
-use crate::grin::sync::header_sync::HeaderSync;
-use crate::grin::sync::state_sync::StateSync;
+use crate::mwc::sync::body_sync::BodySync;
+use crate::mwc::sync::header_sync::HeaderSync;
+use crate::mwc::sync::state_sync::StateSync;
 use crate::p2p;
 use crate::util::StopState;
 
@@ -90,7 +91,7 @@ impl SyncRunner {
 
 			// exit loop when:
 			// * we have more than MIN_PEERS more_or_same_work peers
-			// * we are synced already, e.g. grin was quickly restarted
+			// * we are synced already, e.g. mwc was quickly restarted
 			// * timeout
 			if wp > MIN_PEERS
 				|| (wp == 0
@@ -154,7 +155,7 @@ impl SyncRunner {
 			if self.stop_state.is_stopped() {
 				break;
 			}
-			// Grin has 10 ms here. During PIBD sync it is waste of CPU, checking will take significant resources.
+			// Mwc has 10 ms here. During PIBD sync it is waste of CPU, checking will take significant resources.
 			thread::sleep(time::Duration::from_millis(500));
 
 			let currently_syncing = self.sync_state.is_syncing();

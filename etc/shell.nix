@@ -1,9 +1,9 @@
 # Run `nix-shell` to be able
-# to build Grin on NixOS.
+# to build Mwc on NixOS.
 { pkgs ? import <nixpkgs> {} }:
 
 pkgs.stdenv.mkDerivation {
-  name = "grin";
+  name = "mwc";
 
   buildInputs = with pkgs; [
     ncurses cmake clang

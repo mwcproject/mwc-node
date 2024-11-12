@@ -45,7 +45,7 @@ parent, its siblings, etc.
 ## Hashing and Bagging
 
 Just like with Merkle trees, parent nodes in a MMR have for value the hash of
-their 2 children. Grin uses the Blake2b hash function throughout, and always
+their 2 children. Mwc uses the Blake2b hash function throughout, and always
 prepends the node's position in the MMR before hashing to avoid collisions. So
 for a leaf `l` at index `n` storing data `D` (in the case of an output, the
 data is its Pedersen commitment, for example), we have:
@@ -117,7 +117,7 @@ P = Blake2b(N | Blake2b(N | Node(p3) | Node(p2)) | Node(p1))
 
 ## Pruning
 
-In Grin, a lot of the data that gets hashed and stored in MMRs can eventually
+In Mwc, a lot of the data that gets hashed and stored in MMRs can eventually
 be removed. As this happens, the presence of some leaf hashes in the
 corresponding MMRs become unnecessary and their hash can be removed. When
 enough leaves are removed, the presence of their parents may become unnecessary

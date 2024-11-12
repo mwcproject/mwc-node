@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,12 +13,12 @@
 // limitations under the License.
 
 use chrono::Utc;
-use grin_core::consensus::{
+use mwc_core::consensus::{
 	next_difficulty, HeaderDifficultyInfo, AR_SCALE_DAMP_FACTOR, BLOCK_TIME_SEC,
 	DIFFICULTY_ADJUST_WINDOW, MIN_DIFFICULTY,
 };
-use grin_core::global;
-use grin_core::pow::Difficulty;
+use mwc_core::global;
+use mwc_core::pow::Difficulty;
 
 /// Checks different next_target adjustments and difficulty boundaries
 #[test]

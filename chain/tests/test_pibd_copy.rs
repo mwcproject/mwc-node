@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_util as util;
 
 #[macro_use]
 extern crate log;
@@ -303,7 +304,7 @@ fn test_pibd_copy_impl(
 #[ignore]
 fn test_pibd_copy_sample() {
 	util::init_test_logger();
-	// Note there is now a 'test' in grin_wallet_controller/build_chain
+	// Note there is now a 'test' in mwc_wallet_controller/build_chain
 	// that can be manually tweaked to create a
 	// small test chain with actual transaction data
 

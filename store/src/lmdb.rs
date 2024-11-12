@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +22,8 @@ use lmdb_zero as lmdb;
 use lmdb_zero::traits::CreateCursor;
 use lmdb_zero::LmdbResultExt;
 
-use crate::grin_core::global;
-use crate::grin_core::ser::{self, DeserializationMode, ProtocolVersion};
+use crate::mwc_core::global;
+use crate::mwc_core::ser::{self, DeserializationMode, ProtocolVersion};
 use crate::util::RwLock;
 
 /// number of bytes to grow the database by when needed

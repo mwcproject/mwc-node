@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,8 +25,8 @@ use crate::core::global;
 use crate::core::libtx::proof::{self, ProofBuilder};
 use crate::core::libtx::{build, tx_fee};
 use crate::core::{consensus, ser};
-use grin_core as core;
 use keychain::{ExtKeychain, Keychain};
+use mwc_core as core;
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.

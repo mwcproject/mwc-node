@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,16 +21,16 @@
 //! forces us to go through some additional gymnastic to loop over the async
 //! stream and make sure we get the right number of bytes out.
 
-use crate::grin_core::global::header_size_bytes;
-use crate::grin_core::ser::{BufReader, ProtocolVersion, Readable};
 use crate::msg::{Message, MsgHeader, MsgHeaderWrapper, Type};
+use crate::mwc_core::global::header_size_bytes;
+use crate::mwc_core::ser::{BufReader, ProtocolVersion, Readable};
 use crate::types::{AttachmentMeta, AttachmentUpdate, Error};
 use crate::{
-	grin_core::core::block::{BlockHeader, UntrustedBlockHeader},
 	msg::HeadersData,
+	mwc_core::core::block::{BlockHeader, UntrustedBlockHeader},
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use grin_core::ser::Reader;
+use mwc_core::ser::Reader;
 use std::cmp::min;
 use std::io::Read;
 use std::mem;

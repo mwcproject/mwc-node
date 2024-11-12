@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -424,7 +425,7 @@ impl BlockHeader {
 	pub fn total_overage(&self, genesis_had_reward: bool) -> i64 {
 		let reward_count = self.height;
 
-		// Grin strategy:
+		// Mwc strategy:
 		/*
 			if genesis_had_reward {
 			((reward_count * REWARD) as i64).checked_neg().unwrap_or(0)

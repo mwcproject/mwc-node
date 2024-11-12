@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Grin server implementation, glues the different parts of the system (mostly
+//! Mwc server implementation, glues the different parts of the system (mostly
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
@@ -33,7 +34,7 @@ use std::{
 };
 
 use fs2::FileExt;
-use grin_util::{static_secp_instance, to_hex, OnionV3Address};
+use mwc_util::{static_secp_instance, to_hex, OnionV3Address};
 use walkdir::WalkDir;
 
 use crate::api;
@@ -51,9 +52,9 @@ use crate::core::core::hash::{Hashed, ZERO_HASH};
 use crate::core::ser::ProtocolVersion;
 use crate::core::stratum::connections;
 use crate::core::{consensus, genesis, global, pow};
-use crate::grin::{dandelion_monitor, seed, sync};
 use crate::mining::stratumserver;
 use crate::mining::test_miner::Miner;
+use crate::mwc::{dandelion_monitor, seed, sync};
 use crate::p2p;
 use crate::p2p::types::PeerAddr;
 use crate::pool;
@@ -61,24 +62,24 @@ use crate::tor::process as tor_process;
 use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use futures::channel::oneshot;
-use grin_util::logger::LogEntry;
-use grin_util::secp::SecretKey;
+use mwc_util::logger::LogEntry;
+use mwc_util::secp::SecretKey;
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
 use crate::p2p::libp2p_connection;
 use chrono::Utc;
-use grin_core::core::TxKernel;
-use grin_p2p::Capabilities;
-use grin_util::from_hex;
-use grin_util::secp::constants::SECRET_KEY_SIZE;
-use grin_util::secp::pedersen::Commitment;
+use mwc_core::core::TxKernel;
+use mwc_p2p::Capabilities;
+use mwc_util::from_hex;
+use mwc_util::secp::constants::SECRET_KEY_SIZE;
+use mwc_util::secp::pedersen::Commitment;
 use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
 pub type ServerTxPool = Arc<RwLock<pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
 
-/// Grin server holding internal structures.
+/// Mwc server holding internal structures.
 pub struct Server {
 	/// server config
 	pub config: ServerConfig,
@@ -94,7 +95,7 @@ pub struct Server {
 	state_info: ServerStateInfo,
 	/// Stop flag
 	pub stop_state: Arc<StopState>,
-	/// Maintain a lock_file so we do not run multiple Grin nodes from same dir.
+	/// Maintain a lock_file so we do not run multiple Mwc nodes from same dir.
 	lock_file: Arc<File>,
 	connect_thread: Option<JoinHandle<()>>,
 	sync_thread: JoinHandle<()>,
@@ -122,7 +123,7 @@ impl Server {
 			}
 		}
 
-		grin_chain::pipe::init_invalid_lock_hashes(&config.invalid_block_hashes)?;
+		mwc_chain::pipe::init_invalid_lock_hashes(&config.invalid_block_hashes)?;
 
 		let mining_config = config.stratum_mining_config.clone();
 		let enable_test_miner = config.run_test_miner;
@@ -175,9 +176,9 @@ impl Server {
 	}
 
 	// Exclusive (advisory) lock_file to ensure we do not run multiple
-	// instance of grin server from the same dir.
+	// instance of mwc server from the same dir.
 	// This uses fs2 and should be safe cross-platform unless somebody abuses the file itself.
-	fn one_grin_at_a_time(config: &ServerConfig) -> Result<Arc<File>, Error> {
+	fn one_mwc_at_a_time(config: &ServerConfig) -> Result<Arc<File>, Error> {
 		let path = Path::new(&config.db_root);
 		fs::create_dir_all(&path)?;
 		let path = path.join("mwc.lock");
@@ -214,7 +215,7 @@ impl Server {
 		//let duration_sync_short = config.duration_sync_short.unwrap_or(100);
 
 		// Obtain our lock_file or fail immediately with an error.
-		let lock_file = Server::one_grin_at_a_time(&config).map_err(|e| {
+		let lock_file = Server::one_mwc_at_a_time(&config).map_err(|e| {
 			error!(
 				"Unable to lock db. Likely your DB path is wrong. Error: {}",
 				e
@@ -411,7 +412,7 @@ impl Server {
 					let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
 
 					let output_validation_fn =
-						move |excess: &Commitment| -> Result<Option<TxKernel>, grin_p2p::Error> {
+						move |excess: &Commitment| -> Result<Option<TxKernel>, mwc_p2p::Error> {
 							// Tip is needed in order to request from last 24 hours (1440 blocks)
 							let tip_height = clone_shared_chain.head()?.height;
 

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,9 +19,9 @@ use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::web::*;
-use grin_p2p::types::Direction;
-use grin_p2p::types::PeerInfoDisplayLegacy;
 use hyper::{Body, Request, StatusCode};
+use mwc_p2p::types::Direction;
+use mwc_p2p::types::PeerInfoDisplayLegacy;
 use std::net::SocketAddr;
 use std::sync::Weak;
 

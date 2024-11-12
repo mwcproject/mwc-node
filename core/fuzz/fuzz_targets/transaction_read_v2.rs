@@ -1,10 +1,10 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-extern crate grin_core;
+extern crate mwc_core;
 
-use grin_core::core::Transaction;
-use grin_core::ser::{self, DeserializationMode};
+use mwc_core::core::Transaction;
+use mwc_core::ser::{self, DeserializationMode};
 
 fuzz_target!(|data: &[u8]| {
 	let mut d = data.clone();

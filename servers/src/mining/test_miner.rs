@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,7 +29,7 @@ use crate::core::global;
 use crate::mining::mine_block;
 use crate::util::StopState;
 use crate::ServerTxPool;
-use grin_chain::SyncState;
+use mwc_chain::SyncState;
 use std::thread;
 use std::time::Duration;
 

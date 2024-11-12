@@ -1,6 +1,6 @@
 
 [package]
-name = "grin_p2p-fuzz"
+name = "mwc_p2p-fuzz"
 version = "0.0.1"
 authors = ["Automatically generated"]
 publish = false
@@ -8,9 +8,9 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
-[dependencies.grin_p2p]
+[dependencies.mwc_p2p]
 path = ".."
-[dependencies.grin_core]
+[dependencies.mwc_core]
 path = "../../core"
 [dependencies.libfuzzer-sys]
 git = "https://github.com/rust-fuzz/libfuzzer-sys.git"

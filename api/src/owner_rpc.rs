@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,11 +19,11 @@ use crate::owner::Owner;
 use crate::p2p::PeerData;
 use crate::rest::Error;
 use crate::types::Status;
-use grin_p2p::types::PeerInfoDisplayLegacy;
+use mwc_p2p::types::PeerInfoDisplayLegacy;
 use std::net::SocketAddr;
 
 /// Public definition used to generate Node jsonrpc api.
-/// * When running `grin` with defaults, the V2 api is available at
+/// * When running `mwc` with defaults, the V2 api is available at
 /// `localhost:3413/v2/owner`
 /// * The endpoint only supports POST operations, with the json-rpc request as the body
 #[easy_jsonrpc_mw::rpc]
@@ -33,7 +34,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -50,7 +51,7 @@ pub trait OwnerRpc: Sync + Send {
 		"result": {
 			"Ok": {
 			"protocol_version": "2",
-			"user_agent": "MW/Grin 2.x.x",
+			"user_agent": "MW/Mwc 2.x.x",
 			"connections": "8",
 			"tip": {
 				"height": 371553,
@@ -78,7 +79,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -108,7 +109,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -142,7 +143,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -167,7 +168,7 @@ pub trait OwnerRpc: Sync + Send {
 				"flags": "Defunct",
 				"last_banned": 0,
 				"last_connected": 1570129317,
-				"user_agent": "MW/Grin 2.0.0"
+				"user_agent": "MW/Mwc 2.0.0"
 			}
 			]
 		}
@@ -184,7 +185,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -208,7 +209,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -219,7 +220,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -230,7 +231,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -241,7 +242,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -252,7 +253,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 0,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -263,7 +264,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -274,7 +275,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			},
 			{
@@ -285,7 +286,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Grin 2.0.0",
+				"user_agent": "MW/Mwc 2.0.0",
 				"version": 1
 			}
 			]
@@ -303,7 +304,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -333,7 +334,7 @@ pub trait OwnerRpc: Sync + Send {
 	# Json rpc example
 
 	```
-	# grin_api::doctest_helper_json_rpc_owner_assert_response!(
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
 	# r#"
 	{
 		"jsonrpc": "2.0",
@@ -400,12 +401,12 @@ impl OwnerRpc for Owner {
 #[macro_export]
 macro_rules! doctest_helper_json_rpc_owner_assert_response {
 	($request:expr, $expected_response:expr) => {
-		// create temporary grin server, run jsonrpc request on node api, delete server, return
+		// create temporary mwc server, run jsonrpc request on node api, delete server, return
 		// json response.
 
 		{
-			/*use grin_servers::test_framework::framework::run_doctest;
-			use grin_util as util;
+			/*use mwc_servers::test_framework::framework::run_doctest;
+			use mwc_util as util;
 			use serde_json;
 			use serde_json::Value;
 			use tempfile::tempdir;

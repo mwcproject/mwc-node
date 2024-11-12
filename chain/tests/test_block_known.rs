@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +17,13 @@ mod chain_test_helper;
 use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
 use chain::Error;
 use chain::Tip;
-use grin_chain as chain;
-use grin_core::core::hash::Hashed;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core::core::hash::Hashed;
+use mwc_util as util;
 
 #[test]
 fn check_known() {
-	let chain_dir = ".grin.check_known";
+	let chain_dir = ".mwc.check_known";
 	util::init_test_logger();
 	clean_output_dir(chain_dir);
 

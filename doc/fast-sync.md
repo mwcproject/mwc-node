@@ -2,13 +2,13 @@
 
 *Read this in other languages: [Español](translations/fast-sync_ES.md), [Korean](translations/fast-sync_KR.md), [简体中文](translations/fast-sync_ZH-CN.md).*
 
-In Grin, we call "sync" the process of synchronizing a new node or a node that
+In Mwc, we call "sync" the process of synchronizing a new node or a node that
 hasn't been keeping up with the chain for a while, and bringing it up to the
 latest known most-worked block. Initial Block Download (or IBD) is often used
-by other blockchains, but this is problematic for Grin as it typically does not
+by other blockchains, but this is problematic for Mwc as it typically does not
 download full blocks.
 
-In short, a fast-sync in Grin does the following:
+In short, a fast-sync in Mwc does the following:
 
 1. Download all block headers, by chunks, on the most worked chain, as
    advertized by other nodes.

@@ -1,11 +1,11 @@
 #![no_main]
 #[macro_use]
 extern crate libfuzzer_sys;
-extern crate grin_core;
-extern crate grin_p2p;
+extern crate mwc_core;
+extern crate mwc_p2p;
 
-use grin_core::ser;
-use grin_p2p::msg::GetPeerAddrs;
+use mwc_core::ser;
+use mwc_p2p::msg::GetPeerAddrs;
 
 fuzz_target!(|data: &[u8]| {
 	let mut d = data.clone();

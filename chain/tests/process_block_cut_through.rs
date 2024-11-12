@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +15,10 @@
 
 mod chain_test_helper;
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_util as util;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{pipe, Chain, Options};
@@ -88,7 +89,7 @@ where
 
 #[test]
 fn process_block_cut_through() -> Result<(), chain::Error> {
-	let chain_dir = ".grin.cut_through";
+	let chain_dir = ".mwc.cut_through";
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	util::init_test_logger();
 	clean_output_dir(chain_dir);

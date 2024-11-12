@@ -2,7 +2,7 @@
 
 ## P2P Messages
 
-#### WARNING: This document is still in progress and has not yet been reviewed by any of the core Grin developers.
+#### WARNING: This document is still in progress and has not yet been reviewed by any of the core Mwc developers.
 
 * All fields are serialized in Big-Endian byte order unless otherwise specified.
 * Variable-length strings (VAR_STR) are encoded in UTF8, and are preceded with a uint64 indicating their lengths.
@@ -39,7 +39,7 @@ All P2P messages follow a generic message structure as follows.
 
 | Size | Name    | Data Type       | Description/Comments                                                              |
 |------|---------|-----------------|-----------------------------------------------------------------------------------|
-| 2    | Magic   | uint8[2]        | Magic number used to identify Grin packets. Always hard-coded as {0x1E, 0xC5}.    |
+| 2    | Magic   | uint8[2]        | Magic number used to identify Mwc packets. Always hard-coded as {0x1E, 0xC5}.    |
 | 1    | Type    | MessageTypeEnum | Identifier of the packet content.                                                 |
 | 8    | Length  | uint64          | The total length of the message. This will not include the header size (11 bytes).|
 | ?    | Payload | uint8[]         | The actual data.                                                                  |
@@ -118,7 +118,7 @@ TODO: Provide example
 | 8    | TotalDifficulty | uint64           | Total difficulty accumulated by the sender. Used to check whether sync may be needed.      |
 | 7/19 | SenderAddress   | SocketAddress    | Network address of the sender. 7 bytes for IPv4 or 19 bytes for IPv6.                      |
 | 7/19 | ReceiverAddress | SocketAddress    | Network address of the receiver. 7 bytes for IPv4 or 19 bytes for IPv6.                    |
-| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/Grin 0.1.2"                                 |
+| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/Mwc 0.1.2"                                 |
 | 32   | Hash            | uint8[32]        | Genesis block of the current chain. Testnet1/2/3 and mainnet all have a different genesis. |
 
 ##### Shake
@@ -129,7 +129,7 @@ TODO: Provide example
 | 1    | Capabilities    | CapabilitiesMask | Bitmask representing the capabilities of the sender.                                       |
 | 8    | Nonce           | uint64           | Randomly generated for each handshake to help detect connections to yourself.              |
 | 8    | TotalDifficulty | uint64           | Total difficulty accumulated by the sender. Used to check whether sync may be needed.      |
-| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/Grin 0.1.2"                                 |
+| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/Mwc 0.1.2"                                 |
 | 32   | Hash            | uint8[32]        | Genesis block of the current chain. Testnet1/2/3 and mainnet all have a different genesis. |
 
 ##### Ping
@@ -137,14 +137,14 @@ TODO: Provide example
 | Size | Name            | Data Type | Description/Comments                                                                                |
 |------|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
 | 8    | TotalDifficulty | uint64    | Total difficulty accumulated by the sender. Used to check whether sync may be needed.               |
-| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mimblewimble/grin/issues/1779 |
+| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mwcproject/mwc-node/issues/1779 |
 
 ##### Pong
 
 | Size | Name            | Data Type | Description/Comments                                                                                |
 |------|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
 | 8    | TotalDifficulty | uint64    | Total difficulty accumulated by the sender. Used to check whether sync may be needed.               |
-| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mimblewimble/grin/issues/1779 |
+| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mwcproject/mwc-node/issues/1779 |
 
 ##### GetPeerAddrs
 

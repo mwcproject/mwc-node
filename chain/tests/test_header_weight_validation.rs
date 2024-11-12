@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
 
 mod chain_test_helper;
 
@@ -67,7 +68,7 @@ fn build_block(chain: &Chain) -> Block {
 
 #[test]
 fn test_header_weight_validation() {
-	let chain_dir = ".grin.header_weight";
+	let chain_dir = ".mwc.header_weight";
 	clean_output_dir(chain_dir);
 	let chain = mine_chain(chain_dir, 5);
 	assert_eq!(chain.head().unwrap().height, 4);
