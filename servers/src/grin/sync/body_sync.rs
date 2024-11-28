@@ -12,217 +12,289 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::prelude::{DateTime, Utc};
-use chrono::Duration;
+use crate::chain::{self, SyncState, SyncStatus};
+use crate::core::core::hash::{Hash, Hashed};
+use crate::grin::sync::sync_peers::SyncPeers;
+use crate::grin::sync::sync_utils;
+use crate::grin::sync::sync_utils::{RequestTracker, SyncRequestResponses};
+use crate::p2p;
+use grin_chain::{pibd_params, Chain};
+use grin_p2p::{Peer, PeerAddr};
 use p2p::Capabilities;
 use rand::prelude::*;
 use std::cmp;
 use std::sync::Arc;
 
-use crate::chain::{self, SyncState, SyncStatus, Tip};
-use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::BlockHeader;
-use crate::p2p;
-
 pub struct BodySync {
-	chain: Arc<chain::Chain>,
-	peers: Arc<p2p::Peers>,
-	sync_state: Arc<SyncState>,
-
-	blocks_requested: u64,
-
-	receive_timeout: DateTime<Utc>,
-	prev_blocks_received: u64,
+	chain: Arc<Chain>,
+	required_capabilities: Capabilities,
+	request_tracker: RequestTracker<Hash>,
+	request_series: Vec<(Hash, u64)>, // Hash, height
 }
 
 impl BodySync {
-	pub fn new(
-		sync_state: Arc<SyncState>,
-		peers: Arc<p2p::Peers>,
-		chain: Arc<chain::Chain>,
-	) -> BodySync {
+	pub fn new(chain: Arc<Chain>) -> BodySync {
 		BodySync {
-			sync_state,
-			peers,
 			chain,
-			blocks_requested: 0,
-			receive_timeout: Utc::now(),
-			prev_blocks_received: 0,
+			required_capabilities: Capabilities::UNKNOWN,
+			request_tracker: RequestTracker::new(),
+			request_series: Vec::new(),
 		}
 	}
 
-	/// Check whether a body sync is needed and run it if so.
-	/// Return true if txhashset download is needed (when requested block is under the horizon).
-	pub fn check_run(
+	pub fn get_peer_capabilities(&self) -> Capabilities {
+		self.required_capabilities
+	}
+
+	// Expected that it is called ONLY when state_sync is done
+	pub fn request(
 		&mut self,
-		head: &chain::Tip,
-		highest_height: u64,
-	) -> Result<bool, chain::Error> {
-		// run the body_sync every 5s
-		if self.body_sync_due()? {
-			if self.body_sync()? {
-				return Ok(true);
-			}
+		peers: &Arc<p2p::Peers>,
+		sync_state: &SyncState,
+		sync_peers: &mut SyncPeers,
+		best_height: u64,
+	) -> Result<SyncRequestResponses, chain::Error> {
+		// check if we need something
+		let head = self.chain.head()?;
+		let header_head = self.chain.header_head()?;
 
-			self.sync_state.update(SyncStatus::BodySync {
-				current_height: head.height,
-				highest_height: highest_height,
-			});
+		if head.last_block_h == header_head.last_block_h {
+			// sync is done, we are ready.
+			return Ok(SyncRequestResponses::BodyReady);
 		}
-		Ok(false)
-	}
 
-	/// Is our local node running in archive_mode?
-	fn archive_mode(&self) -> bool {
-		self.chain.archive_mode()
-	}
+		let archive_height = Chain::height_2_archive_height(best_height);
 
-	/// Return true if txhashset download is needed (when requested block is under the horizon).
-	/// Otherwise go request some missing blocks and return false.
-	fn body_sync(&mut self) -> Result<bool, chain::Error> {
 		let head = self.chain.head()?;
 		let header_head = self.chain.header_head()?;
 		let fork_point = self.chain.fork_point()?;
-		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
 
-		if self.chain.check_txhashset_needed(&fork_point)? {
-			trace!(
-				"body_sync: cannot sync full blocks earlier than horizon. will request txhashset",
-			);
-			return Ok(true);
+		if !self.chain.archive_mode() {
+			if fork_point.height < archive_height {
+				warn!("body_sync: cannot sync full blocks earlier than horizon. will request txhashset");
+				return Ok(SyncRequestResponses::BadState);
+			}
 		}
 
-		let peers = {
-			// Find connected peers with strictly greater difficulty than us.
-			let peers_iter = || {
-				// If we are running with archive mode enabled we only want to sync
-				// from other archive nodes.
-				let cap = if self.archive_mode() && head.height <= archive_header.height {
-					Capabilities::BLOCK_HIST
-				} else {
-					Capabilities::UNKNOWN
-				};
-
-				self.peers
-					.iter()
-					.with_capabilities(cap)
-					.with_difficulty(|x| x > head.total_difficulty)
-					.connected()
+		let (peer_capabilities, required_capabilities) =
+			if self.chain.archive_mode() && head.height <= archive_height {
+				(
+					Capabilities::BLOCK_HIST,
+					Capabilities::BLOCK_HIST | Capabilities::HEADER_HIST,
+				)
+			} else {
+				(Capabilities::UNKNOWN, Capabilities::HEADER_HIST) // needed for headers sync, that can go in parallel
 			};
+		self.required_capabilities = required_capabilities;
 
-			// We prefer outbound peers with greater difficulty.
-			let mut peers: Vec<_> = peers_iter().outbound().into_iter().collect();
-			if peers.is_empty() {
-				debug!("no outbound peers with more work, considering inbound");
-				peers = peers_iter().inbound().into_iter().collect();
+		let (peers, excluded_requests) = sync_utils::get_sync_peers(
+			peers,
+			pibd_params::BLOCKS_REQUEST_PER_PEER,
+			peer_capabilities,
+			head.height,
+			self.request_tracker.get_requests_num(),
+			&self.request_tracker.get_peers_queue_size(),
+		);
+		if peers.is_empty() {
+			if excluded_requests == 0 {
+				return Ok(SyncRequestResponses::WaitingForPeers);
+			} else {
+				return Ok(SyncRequestResponses::Syncing);
 			}
+		}
 
-			// If we have no peers (outbound or inbound) then we are done for now.
-			if peers.is_empty() {
-				debug!("no peers (inbound or outbound) with more work");
-				return Ok(false);
-			}
+		// requested_blocks, check for expiration
+		self.request_tracker
+			.retain_expired(pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS, sync_peers);
 
-			peers
-		};
+		sync_state.update(SyncStatus::BodySync {
+			archive_height: if self.chain.archive_mode() {
+				0
+			} else {
+				archive_height
+			},
+			current_height: fork_point.height,
+			highest_height: best_height,
+		});
 
 		// if we have 5 peers to sync from then ask for 50 blocks total (peer_count *
 		// 10) max will be 80 if all 8 peers are advertising more work
 		// also if the chain is already saturated with orphans, throttle
-		let block_count = cmp::min(
-			cmp::min(100, peers.len() * 10),
-			chain::MAX_ORPHAN_SIZE.saturating_sub(self.chain.orphans_len()) + 1,
+
+		let mut need_request = self.request_tracker.calculate_needed_requests(
+			peers.len(),
+			excluded_requests as usize,
+			pibd_params::BLOCKS_REQUEST_PER_PEER,
+			pibd_params::BLOCKS_REQUEST_LIMIT,
 		);
 
-		let hashes = self.block_hashes_to_sync(&fork_point, &header_head, block_count as u64)?;
-
-		if !hashes.is_empty() {
-			debug!(
-				"block_sync: {}/{} requesting blocks {:?} from {} peers",
-				head.height,
-				header_head.height,
-				hashes,
-				peers.len(),
-			);
-
-			// reinitialize download tracking state
-			self.blocks_requested = 0;
-			self.receive_timeout = Utc::now() + Duration::seconds(6);
-
+		if need_request > 0 {
 			let mut rng = rand::thread_rng();
-			for hash in hashes {
-				if let Some(peer) = peers.choose(&mut rng) {
-					if let Err(e) = peer.send_block_request(hash, chain::Options::SYNC) {
-						debug!("Skipped request to {}: {:?}", peer.info.addr, e);
-						peer.stop();
-					} else {
-						self.blocks_requested += 1;
+
+			self.send_requests(&mut need_request, &peers, &mut rng, sync_peers)?;
+
+			// We can send more requests, let's check if we need to update request_series
+			if need_request > 0 {
+				let mut need_refresh_request_series = false;
+
+				// If request_series first if processed, need to update
+				if let Some((hash, height)) = self.request_series.last() {
+					debug!("Updating body request series for {} / {}", hash, height);
+					if !self.is_need_request_block(hash)? {
+						// The tail is updated, so we can request more
+						need_refresh_request_series = true;
+					}
+				} else {
+					need_refresh_request_series = true;
+				}
+
+				// Check for stuck orphan
+				if let Ok(next_block) = self.chain.get_header_by_height(fork_point.height + 1) {
+					let next_block_hash = next_block.hash();
+					if self.chain.block_exists(&next_block_hash)? {
+						let fork_point2 = self.chain.fork_point()?;
+						error!(
+							"FORK POINT changed? Was {} / {}, now {} / {}.  Next block: {:?}",
+							fork_point.height,
+							fork_point.hash(),
+							fork_point2.height,
+							fork_point2.hash(),
+							next_block
+						);
+					}
+					// Kick the stuck orphan
+					match self.chain.get_orphan(&next_block_hash) {
+						Some(orph) => {
+							info!("There is stuck orphan is found, let's kick it...");
+							if self.chain.process_block(orph.block, orph.opts).is_ok() {
+								info!("push stuck orphan was successful. Should be able continue to go forward now");
+								need_refresh_request_series = true;
+							}
+						}
+						None => {}
+					}
+				}
+
+				if need_refresh_request_series {
+					self.request_series.clear();
+					// Don't collect more than 500 blocks in the cache. The block size limit is 1.5MB, so total cache mem can be up to 750 Mb which is ok
+					let max_height = cmp::min(fork_point.height + 500 as u64, header_head.height);
+					let mut current = self.chain.get_header_by_height(max_height)?;
+
+					while current.height > fork_point.height {
+						let hash = current.hash();
+						if !self.chain.is_orphan(&hash) {
+							self.request_series.push((hash, current.height));
+						}
+						current = self.chain.get_previous_header(&current)?;
+					}
+
+					if let Some((hash, height)) = self.request_series.last() {
+						debug!("New body request series tail is {} / {}", hash, height);
+					}
+				}
+
+				// Now we can try to submit more requests...
+				self.send_requests(&mut need_request, &peers, &mut rng, sync_peers)?;
+			}
+		}
+
+		return Ok(SyncRequestResponses::Syncing);
+	}
+
+	pub fn recieve_block_reporting(
+		&mut self,
+		accepted: bool, // block accepted/rejected flag
+		block_hash: &Hash,
+		peer: &PeerAddr,
+		peers: &Arc<p2p::Peers>,
+		sync_peers: &mut SyncPeers,
+	) {
+		if let Some(peer_adr) = self.request_tracker.remove_request(block_hash) {
+			if accepted {
+				if peer_adr == *peer {
+					sync_peers.report_ok_response(peer);
+				}
+			}
+		}
+
+		if !accepted {
+			sync_peers.report_error_response(
+				peer,
+				format!("Get bad block {} for peer {}", block_hash, peer),
+			);
+		}
+
+		// let's request next package since we get this one...
+		if self.request_tracker.get_update_requests_to_next_ask() == 0 {
+			if let Ok(head) = self.chain.head() {
+				let (peers, excluded_requests) = sync_utils::get_sync_peers(
+					peers,
+					pibd_params::BLOCKS_REQUEST_PER_PEER,
+					self.required_capabilities,
+					head.height,
+					self.request_tracker.get_requests_num(),
+					&self.request_tracker.get_peers_queue_size(),
+				);
+				if !peers.is_empty() {
+					// requested_blocks, check for expiration
+					let mut need_request = self.request_tracker.calculate_needed_requests(
+						peers.len(),
+						excluded_requests as usize,
+						pibd_params::BLOCKS_REQUEST_PER_PEER,
+						pibd_params::BLOCKS_REQUEST_LIMIT,
+					);
+					if need_request > 0 {
+						let mut rng = rand::thread_rng();
+						if let Err(e) =
+							self.send_requests(&mut need_request, &peers, &mut rng, sync_peers)
+						{
+							error!("Unable to call send_requests, error: {}", e);
+						}
 					}
 				}
 			}
 		}
-		return Ok(false);
 	}
 
-	fn block_hashes_to_sync(
-		&self,
-		fork_point: &BlockHeader,
-		header_head: &Tip,
-		count: u64,
-	) -> Result<Vec<Hash>, chain::Error> {
-		let mut hashes = vec![];
-		let max_height = cmp::min(fork_point.height + count, header_head.height);
-		let mut current = self.chain.get_header_by_height(max_height)?;
-		while current.height > fork_point.height {
-			if !self.chain.is_orphan(&current.hash()) {
-				hashes.push(current.hash());
+	fn is_need_request_block(&self, hash: &Hash) -> Result<bool, chain::Error> {
+		Ok(!(self.request_tracker.has_request(&hash)
+			|| self.chain.is_orphan(&hash)
+			|| self.chain.block_exists(&hash)?))
+	}
+
+	fn send_requests(
+		&mut self,
+		need_request: &mut usize,
+		peers: &Vec<Arc<Peer>>,
+		rng: &mut ThreadRng,
+		sync_peers: &mut SyncPeers,
+	) -> Result<(), chain::Error> {
+		// request_series naturally from head to tail, but requesting better to send from tail to the head....
+		for (hash, height) in self.request_series.iter().rev() {
+			if self.is_need_request_block(&hash)? {
+				// can request a block...
+				let peer = peers.choose(rng).expect("Peers can't be empty");
+				if let Err(e) = peer.send_block_request(hash.clone(), chain::Options::SYNC) {
+					let msg = format!(
+						"Failed to send block request to peer {}, {}",
+						peer.info.addr, e
+					);
+					warn!("{}", msg);
+					sync_peers.report_error_response(&peer.info.addr, msg);
+				} else {
+					self.request_tracker.register_request(
+						hash.clone(),
+						peer.info.addr.clone(),
+						format!("Block {}, {}", hash, height),
+					);
+					*need_request -= 1;
+					if *need_request == 0 {
+						break;
+					}
+				}
 			}
-			current = self.chain.get_previous_header(&current)?;
 		}
-		hashes.reverse();
-		Ok(hashes)
-	}
-
-	// Should we run block body sync and ask for more full blocks?
-	fn body_sync_due(&mut self) -> Result<bool, chain::Error> {
-		let blocks_received = self.blocks_received()?;
-
-		// some blocks have been requested
-		if self.blocks_requested > 0 {
-			// but none received since timeout, ask again
-			let timeout = Utc::now() > self.receive_timeout;
-			if timeout && blocks_received <= self.prev_blocks_received {
-				debug!(
-					"body_sync: expecting {} more blocks and none received for a while",
-					self.blocks_requested,
-				);
-				return Ok(true);
-			}
-		}
-
-		if blocks_received > self.prev_blocks_received {
-			// some received, update for next check
-			self.receive_timeout = Utc::now() + Duration::seconds(1);
-			self.blocks_requested = self
-				.blocks_requested
-				.saturating_sub(blocks_received - self.prev_blocks_received);
-			self.prev_blocks_received = blocks_received;
-		}
-
-		// off by one to account for broadcast adding a couple orphans
-		if self.blocks_requested < 2 {
-			// no pending block requests, ask more
-			trace!("body_sync: no pending block request, asking more");
-			return Ok(true);
-		}
-
-		Ok(false)
-	}
-
-	// Total numbers received on this chain, including the head and orphans
-	fn blocks_received(&self) -> Result<u64, chain::Error> {
-		Ok((self.chain.head()?).height
-			+ self.chain.orphans_len() as u64
-			+ self.chain.orphans_evicted_len() as u64)
+		Ok(())
 	}
 }

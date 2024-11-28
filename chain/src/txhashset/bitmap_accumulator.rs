@@ -283,7 +283,8 @@ impl Readable for BitmapChunk {
 ///
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BitmapSegment {
-	identifier: SegmentIdentifier,
+	/// This segment Identifier
+	pub identifier: SegmentIdentifier,
 	blocks: Vec<BitmapBlock>,
 	proof: SegmentProof,
 }

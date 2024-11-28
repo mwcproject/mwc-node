@@ -30,10 +30,10 @@ use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
 use crate::txhashset::bitmap_accumulator::BitmapAccumulator;
 use crate::txhashset::{RewindableKernelView, UTXOView};
-use crate::types::{CommitPos, HashHeight, Tip, TxHashSetRoots, TxHashsetWriteStatus};
+use crate::types::{CommitPos, HashHeight, Tip, TxHashSetRoots};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip, StopState};
-use crate::SyncState;
+use crate::{SyncState, SyncStatus};
 use croaring::Bitmap;
 use crossbeam::thread::ScopedJoinHandle;
 use grin_store::pmmr::{clean_files_by_prefix, PMMRBackend};
@@ -587,7 +587,10 @@ impl TxHashSet {
 				applied += 1;
 				if let Some(ref s) = status {
 					if total % applied == 10000 {
-						s.on_setup(None, None, Some(applied), Some(total));
+						s.update(SyncStatus::TxHashsetKernelsPosValidation {
+							kernel_pos: applied,
+							kernel_pos_total: total,
+						});
 					}
 				}
 			}
@@ -1793,9 +1796,7 @@ impl<'a> Extension<'a> {
 		&self,
 		genesis: &BlockHeader,
 		fast_validation: bool,
-		status: &dyn TxHashsetWriteStatus,
-		output_start_pos: Option<u64>,
-		_kernel_start_pos: Option<u64>,
+		status: Option<Arc<SyncState>>,
 		header: &BlockHeader,
 		stop_state: Option<Arc<StopState>>,
 		secp: &Secp256k1,
@@ -1816,13 +1817,7 @@ impl<'a> Extension<'a> {
 		// These are expensive verification step (skipped for "fast validation").
 		if !fast_validation {
 			// Verify the rangeproof associated with each unspent output.
-			self.verify_rangeproofs(
-				Some(status),
-				output_start_pos,
-				None,
-				stop_state.clone(),
-				secp,
-			)?;
+			self.verify_rangeproofs(status.clone(), None, stop_state.clone(), secp)?;
 			if let Some(ref s) = stop_state {
 				if s.is_stopped() {
 					return Err(Error::Stopped.into());
@@ -1880,7 +1875,7 @@ impl<'a> Extension<'a> {
 
 	fn verify_kernel_signatures(
 		&self,
-		status: &dyn TxHashsetWriteStatus,
+		status: Option<Arc<SyncState>>,
 		stop_state: Option<Arc<StopState>>,
 		secp: &Secp256k1,
 	) -> Result<(), Error> {
@@ -1911,7 +1906,7 @@ impl<'a> Extension<'a> {
 					Self::wait_for_kernel_tasks(
 						num_cores,
 						&mut running_threads,
-						status,
+						&status,
 						&mut kern_count,
 						total_kernels,
 					)?;
@@ -1948,7 +1943,7 @@ impl<'a> Extension<'a> {
 				Self::wait_for_kernel_tasks(
 					len,
 					&mut running_threads,
-					status,
+					&status,
 					&mut kern_count,
 					total_kernels,
 				)?;
@@ -1972,7 +1967,7 @@ impl<'a> Extension<'a> {
 	fn wait_for_kernel_tasks(
 		num_cores: usize,
 		running_tasks: &mut VecDeque<ScopedJoinHandle<Result<usize, Error>>>,
-		status: &dyn TxHashsetWriteStatus,
+		status: &Option<Arc<SyncState>>,
 		kern_count: &mut u64,
 		total_kernels: u64,
 	) -> Result<(), Error> {
@@ -1987,7 +1982,12 @@ impl<'a> Extension<'a> {
 		match result {
 			Ok(size) => {
 				*kern_count += size as u64;
-				status.on_validation_kernels(*kern_count, total_kernels);
+				if let Some(status) = status {
+					status.update(SyncStatus::TxHashsetKernelsValidation {
+						kernels: *kern_count,
+						kernels_total: total_kernels,
+					});
+				}
 				info!(
 					"txhashset: verify_kernel_signatures: verified {} signatures from {}",
 					kern_count, total_kernels
@@ -2000,39 +2000,27 @@ impl<'a> Extension<'a> {
 
 	fn verify_rangeproofs(
 		&self,
-		status: Option<&dyn TxHashsetWriteStatus>,
-		start_pos: Option<u64>,
+		status: Option<Arc<SyncState>>,
 		batch_size: Option<usize>,
 		stop_state: Option<Arc<StopState>>,
 		secp: &Secp256k1,
-	) -> Result<u64, Error> {
+	) -> Result<(), Error> {
 		let now = Instant::now();
 
 		let batch_size = batch_size.unwrap_or(1_000);
 
 		let verify_result = crossbeam::thread::scope(|s| {
-			let mut proof_count = 0;
-			if let Some(s) = start_pos {
-				if let Some(i) = pmmr::pmmr_leaf_to_insertion_index(s) {
-					proof_count = self.output_pmmr.n_unpruned_leaves_to_index(i) as usize;
-				}
-			}
+			let mut proof_count: u64 = 0;
 
 			let total_rproofs = self.output_pmmr.n_unpruned_leaves();
 
 			let num_cores = num_cpus::get();
 			let mut commits: Vec<Commitment> = Vec::with_capacity(batch_size);
 			let mut proofs: Vec<RangeProof> = Vec::with_capacity(batch_size);
-			let mut running_threads: VecDeque<
-				ScopedJoinHandle<Result<(Option<u64>, usize), Error>>,
-			> = VecDeque::with_capacity(num_cores * 2);
+			let mut running_threads: VecDeque<ScopedJoinHandle<Result<u64, Error>>> =
+				VecDeque::with_capacity(num_cores * 2);
 
 			for pos0 in self.output_pmmr.leaf_pos_iter() {
-				if let Some(p) = start_pos {
-					if pos0 < p {
-						continue;
-					}
-				}
 				let output = self.output_pmmr.get_data(pos0);
 				let proof = self.rproof_pmmr.get_data(pos0);
 
@@ -2060,18 +2048,20 @@ impl<'a> Extension<'a> {
 				proof_count += 1;
 
 				if proofs.len() >= batch_size {
-					if let Some(pos0) = Self::wait_for_rangeproofs_tasks(
+					Self::wait_for_rangeproofs_tasks(
 						num_cores,
 						&mut running_threads,
 						total_rproofs,
 						&status,
-						&stop_state,
-					)? {
-						return Ok(pos0);
+					)?;
+
+					if let Some(stop_state) = &stop_state {
+						if stop_state.is_stopped() {
+							break;
+						}
 					}
 
 					// Macing copies for the spawn processing
-					let pos0 = Some(pos0.clone());
 					let proof_count = proof_count.clone();
 
 					let mut commits2process = Vec::with_capacity(commits.len());
@@ -2084,7 +2074,7 @@ impl<'a> Extension<'a> {
 
 					let handle = s.spawn(move |_| {
 						Output::batch_verify_proofs(&commits2process, &proofs2process, secp)?;
-						Ok((pos0, proof_count))
+						Ok(proof_count)
 					});
 					running_threads.push_back(handle);
 				}
@@ -2094,7 +2084,7 @@ impl<'a> Extension<'a> {
 			if !proofs.is_empty() {
 				let handle = s.spawn(move |_| {
 					Output::batch_verify_proofs(&commits, &proofs, secp)?;
-					Ok((None, proof_count))
+					Ok(proof_count)
 				});
 				running_threads.push_back(handle);
 			}
@@ -2102,15 +2092,12 @@ impl<'a> Extension<'a> {
 			// Waiting to the rest of tasks to finish
 			while running_threads.len() > 0 {
 				let len = running_threads.len();
-				if let Some(pos0) = Self::wait_for_rangeproofs_tasks(
+				Self::wait_for_rangeproofs_tasks(
 					len,
 					&mut running_threads,
 					total_rproofs,
 					&status,
-					&stop_state,
-				)? {
-					return Ok(pos0);
-				}
+				)?;
 			}
 
 			debug!(
@@ -2119,7 +2106,7 @@ impl<'a> Extension<'a> {
 				self.rproof_pmmr.unpruned_size(),
 				now.elapsed().as_secs(),
 			);
-			Ok(0)
+			Ok(())
 		});
 
 		let verify_result =
@@ -2130,13 +2117,12 @@ impl<'a> Extension<'a> {
 	// return pos0 value from the thread if want to exit with that
 	fn wait_for_rangeproofs_tasks(
 		num_cores: usize,
-		running_tasks: &mut VecDeque<ScopedJoinHandle<Result<(Option<u64>, usize), Error>>>,
+		running_tasks: &mut VecDeque<ScopedJoinHandle<Result<u64, Error>>>,
 		total_rproofs: u64,
-		status: &Option<&dyn TxHashsetWriteStatus>,
-		stop_state: &Option<Arc<StopState>>,
-	) -> Result<Option<u64>, Error> {
+		status: &Option<Arc<SyncState>>,
+	) -> Result<(), Error> {
 		if running_tasks.len() < num_cores {
-			return Ok(None);
+			return Ok(());
 		}
 
 		let handler = running_tasks.pop_front().expect("num_cores is zero?");
@@ -2144,21 +2130,19 @@ impl<'a> Extension<'a> {
 			.join()
 			.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
 		match result {
-			Ok((pos0, proof_count)) => {
+			Ok(proof_count) => {
 				info!(
 					"txhashset: verify_rangeproofs: verified {} rangeproofs from {}",
 					proof_count, total_rproofs
 				);
 
 				if let Some(s) = status {
-					s.on_validation_rproofs(proof_count as u64, total_rproofs);
+					s.update(SyncStatus::TxHashsetRangeProofsValidation {
+						rproofs: proof_count,
+						rproofs_total: total_rproofs,
+					});
 				}
-				if let Some(ref s) = stop_state {
-					if s.is_stopped() {
-						return Ok(pos0);
-					}
-				}
-				Ok(None)
+				Ok(())
 			}
 			Err(e) => Err(e),
 		}

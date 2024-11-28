@@ -15,11 +15,9 @@
 //! Base types that the block chain pipeline requires.
 
 use chrono::prelude::{DateTime, Utc};
-use chrono::Duration;
-use std::collections::HashMap;
 
 use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
-use crate::core::core::{Block, BlockHeader, SegmentTypeIdentifier};
+use crate::core::core::{Block, BlockHeader};
 use crate::core::pow::Difficulty;
 use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::error::Error;
@@ -51,56 +49,43 @@ pub enum SyncStatus {
 	NoSync,
 	/// Not enough peers to do anything yet, boolean indicates whether
 	/// we should wait at all or ignore and start ASAP
-	AwaitingPeers(bool),
+	AwaitingPeers,
 	/// Downloading block header hashes
 	HeaderHashSync {
 		/// total number of blocks
-		completed_blocks: i32,
+		completed_blocks: u64,
 		/// total number of leaves required by archive header
-		total_blocks: i32,
+		total_blocks: u64,
 	},
-	/// Downloading block headers
+	/// Downloading block headers below archive height
 	HeaderSync {
 		/// current sync head
-		sync_head: Tip,
+		current_height: u64,
 		/// height of the most advanced peer
-		highest_height: u64,
-		/// diff of the most advanced peer
-		highest_diff: Difficulty,
+		archive_height: u64,
 	},
 	/// Performing PIBD reconstruction of txhashset
 	/// If PIBD syncer determines there's not enough
 	/// PIBD peers to continue, then move on to TxHashsetDownload state
 	TxHashsetPibd {
-		/// Whether the syncer has determined there's not enough
-		/// data to continue via PIBD
-		aborted: bool,
-		/// whether we got an error anywhere (in which case restart the process)
-		errored: bool,
 		/// total number of recieved segments
-		recieved_segments: i32,
+		recieved_segments: u64,
 		/// total number of segments required
-		total_segments: i32,
+		total_segments: u64,
 	},
-	/// Downloading the various txhashsets
-	TxHashsetDownload(TxHashsetDownloadStats),
 	/// Setting up before validation
-	TxHashsetSetup {
+	TxHashsetHeadersValidation {
 		/// number of 'headers' for which kernels have been checked
-		headers: Option<u64>,
+		headers: u64,
 		/// headers total
-		headers_total: Option<u64>,
-		/// kernel position portion
-		kernel_pos: Option<u64>,
-		/// total kernel position
-		kernel_pos_total: Option<u64>,
+		headers_total: u64,
 	},
-	/// Validating the kernels
-	TxHashsetKernelsValidation {
-		/// kernels validated
-		kernels: u64,
-		/// kernels in total
-		kernels_total: u64,
+	/// Kernels position validation phase
+	TxHashsetKernelsPosValidation {
+		/// kernel position portion
+		kernel_pos: u64,
+		/// total kernel position
+		kernel_pos_total: u64,
 	},
 	/// Validating the range proofs
 	TxHashsetRangeProofsValidation {
@@ -109,12 +94,17 @@ pub enum SyncStatus {
 		/// range proofs in total
 		rproofs_total: u64,
 	},
-	/// Finalizing the new state
-	TxHashsetSave,
-	/// State sync finalized
-	TxHashsetDone,
-	/// Downloading blocks
+	/// Validating the kernels
+	TxHashsetKernelsValidation {
+		/// kernels validated
+		kernels: u64,
+		/// kernels in total
+		kernels_total: u64,
+	},
+	/// Downloading blocks above the archive (horizon) height
 	BodySync {
+		/// Archive header height. Starting height to download the blocks (if running in archive_mode, must be 0)
+		archive_height: u64,
 		/// current node height
 		current_height: u64,
 		/// height of the most advanced peer
@@ -157,15 +147,6 @@ impl Default for TxHashsetDownloadStats {
 /// Current sync state. Encapsulates the current SyncStatus.
 pub struct SyncState {
 	current: RwLock<SyncStatus>,
-	sync_error: RwLock<Option<Error>>,
-	/// Something has to keep track of segments that have been
-	/// requested from other peers. TODO consider: This may not
-	/// be the best place to put code that's concerned with peers
-	/// but it's currently the only place that makes the info
-	/// available where it will be needed (both in the adapter
-	/// and the sync loop)
-	requested_pibd_segments: RwLock<HashMap<SegmentTypeIdentifier, DateTime<Utc>>>,
-	last_pibd_recieved_segments: RwLock<i32>,
 }
 
 impl SyncState {
@@ -173,15 +154,11 @@ impl SyncState {
 	pub fn new() -> SyncState {
 		SyncState {
 			current: RwLock::new(SyncStatus::Initial),
-			sync_error: RwLock::new(None),
-			requested_pibd_segments: RwLock::new(HashMap::new()),
-			last_pibd_recieved_segments: RwLock::new(0),
 		}
 	}
 
 	/// Reset sync status to NoSync.
 	pub fn reset(&self) {
-		self.clear_sync_error();
 		self.update(SyncStatus::NoSync);
 	}
 
@@ -227,139 +204,6 @@ impl SyncState {
 		} else {
 			false
 		}
-	}
-
-	/// Update sync_head if state is currently HeaderSync.
-	pub fn update_header_hash_sync(&self, completed_blocks: i32, total_blocks: i32) {
-		*self.current.write() = SyncStatus::HeaderHashSync {
-			completed_blocks,
-			total_blocks,
-		};
-	}
-
-	/// Update sync_head if state is currently HeaderSync.
-	pub fn update_header_sync(&self, new_sync_head: Tip) {
-		let status: &mut SyncStatus = &mut self.current.write();
-		match status {
-			SyncStatus::HeaderSync { sync_head, .. } => {
-				*sync_head = new_sync_head;
-			}
-			_ => (),
-		}
-	}
-
-	/// Update txhashset downloading progress
-	pub fn update_txhashset_download(&self, stats: TxHashsetDownloadStats) {
-		*self.current.write() = SyncStatus::TxHashsetDownload(stats);
-	}
-
-	/// Update PIBD progress
-	pub fn update_pibd_progress(
-		&self,
-		aborted: bool,
-		errored: bool,
-		recieved_segments: i32,
-		total_segments: i32,
-	) {
-		*self.current.write() = SyncStatus::TxHashsetPibd {
-			aborted,
-			errored,
-			recieved_segments,
-			total_segments,
-		};
-
-		// Those logs are needed fro QR wallet sync progress tracking
-		if *self.last_pibd_recieved_segments.read() != recieved_segments {
-			info!(
-				"PIBD sync progress: {} from {}",
-				recieved_segments, total_segments
-			);
-			*self.last_pibd_recieved_segments.write() = recieved_segments;
-		}
-	}
-
-	/// Update PIBD segment list
-	pub fn add_pibd_segment(&self, id: &SegmentTypeIdentifier) {
-		self.requested_pibd_segments
-			.write()
-			.insert(id.clone(), Utc::now());
-	}
-
-	/// Remove segment from list
-	pub fn remove_pibd_segment(&self, id: &SegmentTypeIdentifier) {
-		self.requested_pibd_segments.write().remove(id);
-	}
-
-	/// Remove segments with request timestamps less than cutoff time
-	pub fn remove_stale_pibd_requests(&self, timeout_seconds: i64) {
-		let cutoff_time = Utc::now() - Duration::seconds(timeout_seconds);
-		self.requested_pibd_segments.write().retain(|id, time| {
-			if *time <= cutoff_time {
-				debug!("Removing + retrying PIBD request after timeout: {:?}", id);
-				false
-			} else {
-				true
-			}
-		});
-	}
-
-	/// Check whether segment is in request list
-	pub fn contains_pibd_segment(&self, id: &SegmentTypeIdentifier) -> bool {
-		self.requested_pibd_segments.read().contains_key(id)
-	}
-
-	/// Communicate sync error
-	pub fn set_sync_error(&self, error: Error) {
-		*self.sync_error.write() = Some(error);
-	}
-
-	/// Get sync error
-	pub fn sync_error(&self) -> Option<String> {
-		self.sync_error.read().as_ref().map(|e| e.to_string())
-	}
-
-	/// Clear sync error
-	pub fn clear_sync_error(&self) {
-		*self.sync_error.write() = None;
-	}
-}
-
-impl TxHashsetWriteStatus for SyncState {
-	fn on_setup(
-		&self,
-		headers: Option<u64>,
-		headers_total: Option<u64>,
-		kernel_pos: Option<u64>,
-		kernel_pos_total: Option<u64>,
-	) {
-		self.update(SyncStatus::TxHashsetSetup {
-			headers,
-			headers_total,
-			kernel_pos,
-			kernel_pos_total,
-		});
-	}
-
-	fn on_validation_kernels(&self, kernels: u64, kernels_total: u64) {
-		self.update(SyncStatus::TxHashsetKernelsValidation {
-			kernels,
-			kernels_total,
-		});
-	}
-
-	fn on_validation_rproofs(&self, rproofs: u64, rproofs_total: u64) {
-		self.update(SyncStatus::TxHashsetRangeProofsValidation {
-			rproofs,
-			rproofs_total,
-		});
-	}
-
-	fn on_save(&self) {
-		self.update(SyncStatus::TxHashsetSave);
-	}
-
-	fn on_done(&self) {
-		self.update(SyncStatus::TxHashsetDone);
 	}
 }
 
@@ -544,41 +388,6 @@ pub trait ChainAdapter {
 	/// The blockchain pipeline has accepted this block as valid and added
 	/// it to our chain.
 	fn block_accepted(&self, block: &Block, status: BlockStatus, opts: Options);
-}
-
-/// Inform the caller of the current status of a txhashset write operation,
-/// as it can take quite a while to process. Each function is called in the
-/// order defined below and can be used to provide some feedback to the
-/// caller. Functions taking arguments can be called repeatedly to update
-/// those values as the processing progresses.
-pub trait TxHashsetWriteStatus {
-	/// First setup of the txhashset
-	fn on_setup(
-		&self,
-		headers: Option<u64>,
-		header_total: Option<u64>,
-		kernel_pos: Option<u64>,
-		kernel_pos_total: Option<u64>,
-	);
-	/// Starting kernel validation
-	fn on_validation_kernels(&self, kernels: u64, kernel_total: u64);
-	/// Starting rproof validation
-	fn on_validation_rproofs(&self, rproofs: u64, rproof_total: u64);
-	/// Starting to save the txhashset and related data
-	fn on_save(&self);
-	/// Done writing a new txhashset
-	fn on_done(&self);
-}
-
-/// Do-nothing implementation of TxHashsetWriteStatus
-pub struct NoStatus;
-
-impl TxHashsetWriteStatus for NoStatus {
-	fn on_setup(&self, _hs: Option<u64>, _ht: Option<u64>, _kp: Option<u64>, _kpt: Option<u64>) {}
-	fn on_validation_kernels(&self, _ks: u64, _kts: u64) {}
-	fn on_validation_rproofs(&self, _rs: u64, _rt: u64) {}
-	fn on_save(&self) {}
-	fn on_done(&self) {}
 }
 
 /// Dummy adapter used as a placeholder for real implementations

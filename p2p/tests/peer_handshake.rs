@@ -18,15 +18,15 @@ use grin_p2p as p2p;
 use grin_util as util;
 use grin_util::StopState;
 
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
-use std::{thread, time};
-
 use crate::core::core::hash::Hash;
 use crate::core::global;
 use crate::core::pow::Difficulty;
 use crate::p2p::types::PeerAddr;
 use crate::p2p::Peer;
+use grin_chain::SyncState;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
+use std::{thread, time};
 
 fn open_port() -> u16 {
 	// use port 0 to allow the OS to assign an open port
@@ -63,6 +63,7 @@ fn peer_handshake() {
 		p2p_config.clone(),
 		net_adapter.clone(),
 		Hash::from_vec(&vec![]),
+		Arc::new(SyncState::new()),
 		Arc::new(StopState::new()),
 		0,
 		None,
@@ -87,6 +88,7 @@ fn peer_handshake() {
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
 		net_adapter,
 		None,
+		Arc::new(SyncState::new()),
 		server_inner,
 	)
 	.unwrap();
@@ -98,7 +100,7 @@ fn peer_handshake() {
 	peer.send_ping(Difficulty::min(), 0).unwrap();
 	thread::sleep(time::Duration::from_secs(1));
 
-	let server_peer = server.peers.get_connected_peer(my_addr).unwrap();
+	let server_peer = server.peers.get_connected_peer(&my_addr).unwrap();
 	assert_eq!(server_peer.info.total_difficulty(), Difficulty::min());
 	assert!(server.peers.iter().connected().count() > 0);
 }

@@ -15,7 +15,7 @@ rand = "0.6"
 serde = "1"
 serde_derive = "1"
 thiserror = "1"
-lru-cache = "0.1"
+lru = "0.12"
 log = "0.4"
 chrono = "0.4.11"
 

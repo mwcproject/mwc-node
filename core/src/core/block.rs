@@ -881,6 +881,7 @@ impl From<UntrustedBlock> for Block {
 
 /// Block which does lightweight validation as part of deserialization,
 /// it supposed to be used when we can't trust the channel (eg network)
+#[derive(Debug)]
 pub struct UntrustedBlock(Block);
 
 /// Deserialization of an untrusted block header

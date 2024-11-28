@@ -216,6 +216,9 @@ pub enum Error {
 	/// Invalid series of blocks.
 	#[error("Invalid series of blocks, {0}")]
 	InvalidBlocksSeries(String),
+	/// Chain is in sync mode
+	#[error("Chain is in sync mode")]
+	ChainInSync,
 }
 
 impl Error {

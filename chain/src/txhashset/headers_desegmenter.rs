@@ -19,18 +19,21 @@ use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::pmmr;
 use crate::core::core::{BlockHeader, Segment};
 use crate::error::Error;
+use crate::txhashset::segments_cache::SegmentsCache;
 use crate::txhashset::{sort_pmmr_hashes_and_leaves, OrderedHashLeafNode};
 use crate::types::HEADERS_PER_BATCH;
-use crate::{pibd_params, Options, SyncState};
+use crate::{pibd_params, Options};
 use grin_core::core::pmmr::{VecBackend, PMMR};
-use grin_core::core::SegmentIdentifier;
-use std::collections::BTreeMap;
+use grin_core::core::{SegmentIdentifier, SegmentType};
+use std::cmp;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::txhashset::segments_cache::SegmentsCache;
+/// There is no reasons to introduce a special type, for that. For place maker any type will work
+pub const HEADER_HASHES_STUB_TYPE: SegmentType = SegmentType::Bitmap;
 
 /// Desegmenter for rebuilding a header_pmmr from PIBD segments
-pub struct HeaderDesegmenter {
+pub struct HeaderHashesDesegmenter {
 	genesis_hash: Hash,
 	header_pmmr: VecBackend<Hash>,
 	target_height: u64,
@@ -40,7 +43,7 @@ pub struct HeaderDesegmenter {
 	header_segment_cache: SegmentsCache<Hash>,
 }
 
-impl HeaderDesegmenter {
+impl HeaderHashesDesegmenter {
 	/// Create a new segmenter based on the provided txhashset and the specified block header
 	pub fn new(
 		genesis_hash: Hash,
@@ -53,15 +56,25 @@ impl HeaderDesegmenter {
 
 		let header_pmmr_size = pmmr::insertion_to_pmmr_index(n_leaves);
 
-		let res = HeaderDesegmenter {
+		let res = HeaderHashesDesegmenter {
 			genesis_hash,
 			header_pmmr: VecBackend::new(),
 			target_height,
 			headers_root_hash,
 			header_pmmr_size,
-			header_segment_cache: SegmentsCache::new(need_segments as i32),
+			header_segment_cache: SegmentsCache::new(HEADER_HASHES_STUB_TYPE, need_segments),
 		};
 		res
+	}
+
+	/// Get number of completed segments
+	pub fn get_segments_completed(&self) -> u64 {
+		self.header_segment_cache.get_received_segments()
+	}
+
+	/// Get number of total segments
+	pub fn get_segments_total(&self) -> u64 {
+		self.header_segment_cache.get_required_segments()
 	}
 
 	/// Reset all state
@@ -74,30 +87,28 @@ impl HeaderDesegmenter {
 		self.header_segment_cache.is_complete()
 	}
 
-	/// Check progress, update status if needed, returns true if all required
-	/// segments are in place
-	pub fn check_progress(&mut self, status: Arc<SyncState>) -> Result<bool, Error> {
-		if self.header_segment_cache.is_complete() {
-			return Ok(true);
-		}
+	/// get Root hash for all headers
+	pub fn get_headers_root_hash(&self) -> &Hash {
+		return &self.headers_root_hash;
+	}
 
-		status.update_header_hash_sync(
-			self.header_segment_cache.get_received_segments(),
-			self.header_segment_cache.get_required_segments(),
-		);
-
-		Ok(false)
+	/// Get PIBD height to retrieve data for. Normally it is archive header height.
+	pub fn get_target_height(&self) -> u64 {
+		self.target_height
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_segments(
+	pub fn next_desired_segments<T>(
 		&mut self,
-		max_elements: i32,
-	) -> Result<Vec<SegmentIdentifier>, Error> {
-		return self
-			.header_segment_cache
-			.next_desired_segments(pibd_params::HEADERS_SEGMENT_HEIGHT, max_elements);
+		max_elements: usize,
+		requested_segments: &HashMap<(SegmentType, u64), T>,
+	) -> Vec<SegmentIdentifier> {
+		self.header_segment_cache.next_desired_segments(
+			pibd_params::HEADERS_SEGMENT_HEIGHT,
+			max_elements,
+			requested_segments,
+		)
 	}
 
 	/// Adds a output segment
@@ -114,7 +125,7 @@ impl HeaderDesegmenter {
 			return Err(Error::InvalidSegmentHeght);
 		}
 
-		let segm_idx = segment.identifier().idx as i32;
+		let segm_idx = segment.identifier().idx;
 
 		// Checking if first hash matching genesis
 		if segm_idx == 0 {
@@ -178,7 +189,9 @@ impl HeaderDesegmenter {
 /// Cache data for received haders.
 /// T id peer ID type. Headers we will be able to validate with some delay. In case of error, we better to
 /// be able to reject them and panish the peer.
-pub struct HeadersRecieveCache<T = u64> {
+pub struct HeadersRecieveCache<T = String> {
+	// Archive header height used for the sync process
+	archive_header_height: u64,
 	// cahce with recievd headers
 	main_headers_cache: BTreeMap<u64, (Vec<BlockHeader>, T)>,
 	// target chain to feed the data
@@ -189,21 +202,34 @@ impl<T> HeadersRecieveCache<T> {
 	/// Create a new segmenter based on the provided txhashset and the specified block header
 	pub fn new(
 		chain: Arc<crate::Chain>, // target height and headers_root_hash must be get as a result of handshake process.
+		header_desegmenter: &HeaderHashesDesegmenter,
 	) -> Self {
-		HeadersRecieveCache {
+		let mut res = HeadersRecieveCache {
+			archive_header_height: 0,
 			main_headers_cache: BTreeMap::new(),
 			chain: chain.clone(),
-		}
+		};
+		res.prepare_download_headers(header_desegmenter)
+			.expect("Chain is corrupted, please clean up the data manually and restart the node");
+		res
+	}
+
+	/// Archive (horizon) height
+	pub fn get_archive_header_height(&self) -> u64 {
+		self.archive_header_height
 	}
 
 	/// Check downloaded headers against the hashes. That will allow to continue download headers instead of starting from the beginning.
-	pub fn prepare_download_headers(
-		&self,
-		header_desegmenter: &HeaderDesegmenter,
+	fn prepare_download_headers(
+		&mut self,
+		header_desegmenter: &HeaderHashesDesegmenter,
 	) -> Result<(), Error> {
 		// Let's validate that available headers are matching the hashes.
 		let tip = self.chain.header_head()?;
 		let base_hash_idx = tip.height / HEADERS_PER_BATCH as u64;
+
+		self.archive_header_height = header_desegmenter.target_height;
+		assert!(self.archive_header_height > 0);
 
 		for hash_idx in (0..=base_hash_idx).rev() {
 			let height = hash_idx * HEADERS_PER_BATCH as u64;
@@ -216,7 +242,7 @@ impl<T> HeadersRecieveCache<T> {
 					.get(hash_idx as usize)
 				{
 					if header.hash() != *hash {
-						// need to check the first hash, if it doesn't match, let's reset all blockchain. Hashes are about horizon,
+						// need to check the first hash, if it doesn't match, let's reset all blockchain. Hashes are below horizon,
 						// if something not matching better to reset all the data, including block data and restart with headers download
 						self.chain.reset_chain_head(self.chain.genesis(), true)?;
 					} else {
@@ -231,28 +257,34 @@ impl<T> HeadersRecieveCache<T> {
 	/// Reset all state
 	pub fn reset(&mut self) {
 		self.main_headers_cache.clear();
+		self.archive_header_height = 0;
 	}
 
 	/// Whether we have all the segments we need
-	pub fn is_complete(&self, headers: &HeaderDesegmenter) -> Result<bool, Error> {
-		assert!(headers.is_complete());
+	pub fn is_complete(&self) -> Result<bool, Error> {
+		assert!(self.archive_header_height > 0);
 		let collected_headers = self.chain.header_head()?.height;
-		Ok(headers.target_height <= collected_headers)
+		Ok(self.archive_header_height <= collected_headers)
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_headers(
+	pub fn next_desired_headers<K>(
 		&mut self,
-		headers: &HeaderDesegmenter,
-		max_elements: usize,
-	) -> Result<Vec<Hash>, Error> {
+		headers: &HeaderHashesDesegmenter,
+		elements: usize,
+		requested_hashes: &HashMap<Hash, K>,
+	) -> Result<Vec<(Hash, u64)>, Error> {
 		let mut return_vec = vec![];
 		let tip = self.chain.header_head()?;
 		let base_hash_idx = tip.height / HEADERS_PER_BATCH as u64;
+		// Still limiting by 1000 because of memory. Cache is limited, we better wait if theer are so many behind...
+		let max_idx = cmp::min(
+			base_hash_idx + 1000,
+			self.archive_header_height / HEADERS_PER_BATCH as u64,
+		);
 
-		for i in 0..max_elements {
-			let hash_idx = base_hash_idx + i as u64;
+		for hash_idx in base_hash_idx..=max_idx {
 			// let's check if cache already have it
 			if self
 				.main_headers_cache
@@ -268,7 +300,15 @@ impl<T> HeadersRecieveCache<T> {
 				.unwrap()
 				.get(hash_idx as usize);
 			match hinfo {
-				Some(h) => return_vec.push(h.clone()),
+				Some(h) => {
+					// check if already requested first
+					if !requested_hashes.contains_key(h) {
+						return_vec.push((h.clone(), hash_idx * HEADERS_PER_BATCH as u64));
+						if return_vec.len() >= elements {
+							break;
+						}
+					}
+				}
 				None => break,
 			}
 		}
@@ -278,7 +318,7 @@ impl<T> HeadersRecieveCache<T> {
 	/// Adds a output segment
 	pub fn add_headers(
 		&mut self,
-		headers: &HeaderDesegmenter,
+		headers: &HeaderHashesDesegmenter,
 		bhs: Vec<BlockHeader>,
 		peer_info: T,
 	) -> Result<(), (T, Error)> {

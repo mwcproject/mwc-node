@@ -20,6 +20,7 @@ use crate::router::{Handler, ResponseFuture};
 use crate::web::*;
 use grin_p2p::types::Direction;
 use grin_p2p::types::PeerInfoDisplayLegacy;
+use grin_p2p::Capabilities;
 use hyper::{Body, Request, StatusCode};
 use std::net::SocketAddr;
 use std::sync::Weak;
@@ -30,7 +31,7 @@ pub struct PeersAllHandler {
 
 impl Handler for PeersAllHandler {
 	fn get(&self, _req: Request<Body>) -> ResponseFuture {
-		let peers = &w_fut!(&self.peers).all_peer_data();
+		let peers = &w_fut!(&self.peers).all_peer_data(Capabilities::UNKNOWN);
 		json_response_pretty(&peers)
 	}
 }
@@ -134,7 +135,7 @@ impl PeerHandler {
 	pub fn get_peers(&self, addr: Option<SocketAddr>) -> Result<Vec<PeerData>, Error> {
 		if let Some(addr) = addr {
 			let peer_addr = PeerAddr::Ip(addr);
-			let peer_data: PeerData = w(&self.peers)?.get_peer(peer_addr.clone()).map_err(|e| {
+			let peer_data: PeerData = w(&self.peers)?.get_peer(&peer_addr).map_err(|e| {
 				Error::Internal(format!(
 					"Unable to get peer for address {}, {}",
 					peer_addr, e
@@ -142,14 +143,14 @@ impl PeerHandler {
 			})?;
 			return Ok(vec![peer_data]);
 		}
-		let peers = w(&self.peers)?.all_peer_data();
+		let peers = w(&self.peers)?.all_peer_data(Capabilities::UNKNOWN);
 		Ok(peers)
 	}
 
 	pub fn ban_peer(&self, addr: SocketAddr) -> Result<(), Error> {
 		let peer_addr = PeerAddr::Ip(addr);
 		w(&self.peers)?
-			.ban_peer(peer_addr.clone(), ReasonForBan::ManualBan)
+			.ban_peer(&peer_addr, ReasonForBan::ManualBan, "banned from api")
 			.map_err(|e| {
 				Error::Internal(format!(
 					"Unable to ban peer for address {}, {}",
@@ -160,7 +161,7 @@ impl PeerHandler {
 
 	pub fn unban_peer(&self, addr: SocketAddr) -> Result<(), Error> {
 		let peer_addr = PeerAddr::Ip(addr);
-		w(&self.peers)?.unban_peer(peer_addr.clone()).map_err(|e| {
+		w(&self.peers)?.unban_peer(&peer_addr).map_err(|e| {
 			Error::Internal(format!(
 				"Unable to unban peer for address {}, {}",
 				peer_addr, e
@@ -190,7 +191,7 @@ impl Handler for PeerHandler {
 			);
 		}
 
-		match w_fut!(&self.peers).get_peer(peer_addr.clone()) {
+		match w_fut!(&self.peers).get_peer(&peer_addr) {
 			Ok(peer) => json_response(&peer),
 			Err(_) => response(
 				StatusCode::NOT_FOUND,
@@ -223,14 +224,18 @@ impl Handler for PeerHandler {
 		};
 
 		match command {
-			"ban" => match w_fut!(&self.peers).ban_peer(addr.clone(), ReasonForBan::ManualBan) {
+			"ban" => match w_fut!(&self.peers).ban_peer(
+				&addr,
+				ReasonForBan::ManualBan,
+				"banned from CLI",
+			) {
 				Ok(_) => response(StatusCode::OK, "{}"),
 				Err(e) => response(
 					StatusCode::INTERNAL_SERVER_ERROR,
 					format!("ban for peer {} failed, {:?}", addr, e),
 				),
 			},
-			"unban" => match w_fut!(&self.peers).unban_peer(addr.clone()) {
+			"unban" => match w_fut!(&self.peers).unban_peer(&addr) {
 				Ok(_) => response(StatusCode::OK, "{}"),
 				Err(e) => response(
 					StatusCode::INTERNAL_SERVER_ERROR,

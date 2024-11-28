@@ -40,12 +40,11 @@ pub const SEGMENT_REQUEST_TIMEOUT_SECS: i64 = 60;
 /// will always be requested first)
 pub const SEGMENT_REQUEST_PER_PEER: usize = 6;
 /// Maximum number of simultaneous requests. Please note, the data will be processed in a single thread, so
-/// the throughput will not be high. 12 should load CPU pretty well at the end of sync process.
-pub const SEGMENT_REQUEST_LIMIT: usize = 24;
+/// don't overload much
+pub const SEGMENT_REQUEST_LIMIT: usize = 120;
 
-/// Maximum stale requests per peer. If there are more requests, no new data will be requested
-pub const STALE_REQUESTS_PER_PEER: u32 = 5;
+/// Number of simultaneous requests for blocks we should make per available peer.
+pub const BLOCKS_REQUEST_PER_PEER: usize = 30;
 
-/// If the syncer hasn't seen a max work peer that supports PIBD in this number of seconds
-/// give up and revert back to the txhashset.zip download method
-pub const TXHASHSET_ZIP_FALLBACK_TIME_SECS: i64 = 60 + SEGMENT_REQUEST_TIMEOUT_SECS * 2;
+/// Maxumum number of blocks that can await into the DB as orphans
+pub const BLOCKS_REQUEST_LIMIT: usize = 500;

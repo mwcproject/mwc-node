@@ -28,10 +28,7 @@ use crate::pipe;
 use crate::store;
 use crate::txhashset;
 use crate::txhashset::{Desegmenter, PMMRHandle, Segmenter, TxHashSet};
-use crate::types::{
-	BlockStatus, ChainAdapter, CommitPos, NoStatus, Options, Tip, TxHashsetWriteStatus,
-	HEADERS_PER_BATCH,
-};
+use crate::types::{BlockStatus, ChainAdapter, CommitPos, Options, Tip, HEADERS_PER_BATCH};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::RwLock;
 use crate::ChainStore;
@@ -65,9 +62,9 @@ const MAX_ORPHAN_AGE_SECS: u64 = 3000;
 pub const BLOCK_TO_BAN: &str = "00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725";
 
 #[derive(Debug, Clone)]
-struct Orphan {
-	block: Block,
-	opts: Options,
+pub struct Orphan {
+	pub block: Block,
+	pub opts: Options,
 	added: Instant,
 }
 
@@ -167,8 +164,7 @@ impl OrphanBlockPool {
 	}
 
 	fn contains(&self, hash: &Hash) -> bool {
-		let orphans = self.orphans.read();
-		orphans.contains_key(hash)
+		self.orphans.read().contains_key(hash)
 	}
 
 	fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
@@ -227,14 +223,7 @@ impl Chain {
 			None,
 		)?;
 
-		setup_head(
-			&genesis,
-			&store,
-			&mut header_pmmr,
-			&mut txhashset,
-			false,
-			&secp,
-		)?;
+		setup_head(&genesis, &store, &mut header_pmmr, &mut txhashset, &secp)?;
 
 		// Initialize the output_pos index based on UTXO set
 		// and NRD kernel_pos index based recent kernel history.
@@ -286,7 +275,6 @@ impl Chain {
 
 	/// Reset chain to be ready to download data with PIBD
 	pub fn reset_pibd_chain(&self) -> Result<(), Error> {
-		self.reset_pibd_head()?;
 		self.reset_chain_head_to_genesis()?;
 		self.reset_prune_lists()?;
 		Ok(())
@@ -359,7 +347,6 @@ impl Chain {
 			&self.store,
 			&mut header_pmmr,
 			&mut txhashset,
-			true,
 			&self.secp,
 		)?;
 
@@ -379,13 +366,6 @@ impl Chain {
 			extension.reset_prune_lists();
 			Ok(())
 		})?;
-		Ok(())
-	}
-
-	/// Reset PIBD head
-	pub fn reset_pibd_head(&self) -> Result<(), Error> {
-		let batch = self.store.batch_write()?;
-		batch.save_pibd_head(&self.genesis().into())?;
 		Ok(())
 	}
 
@@ -660,7 +640,7 @@ impl Chain {
 			return Err(Error::Unfit("duplicate block".into()));
 		}
 		if header.total_difficulty() <= head.total_difficulty {
-			if self.block_exists(header.hash())? {
+			if self.block_exists(&header.hash())? {
 				return Err(Error::Unfit("duplicate block".into()));
 			}
 		}
@@ -674,7 +654,7 @@ impl Chain {
 	fn check_orphan(&self, block: &Block, opts: Options) -> Result<(), Error> {
 		let head = self.head()?;
 		let is_next = block.header.prev_hash == head.last_block_h;
-		if is_next || self.block_exists(block.header.prev_hash)? {
+		if is_next || self.block_exists(&block.header.prev_hash)? {
 			return Ok(());
 		}
 
@@ -877,6 +857,11 @@ impl Chain {
 		self.orphans.contains(hash)
 	}
 
+	/// Get orphan data.
+	pub fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
+		self.orphans.get_orphan(hash)
+	}
+
 	/// Get the OrphanBlockPool accumulated evicted number of blocks
 	pub fn orphans_evicted_len(&self) -> usize {
 		self.orphans.len_evicted()
@@ -1070,8 +1055,6 @@ impl Chain {
 			ext.extension.validate(
 				&self.genesis.header,
 				fast_validation,
-				&NoStatus,
-				None,
 				None,
 				&header,
 				None,
@@ -1366,6 +1349,15 @@ impl Chain {
 		))
 	}
 
+	/// Static method to convert height to archive height. Used in chain and also in Sync process
+	pub fn height_2_archive_height(height: u64) -> u64 {
+		let sync_threshold = global::state_sync_threshold() as u64;
+		let archive_interval = global::txhashset_archive_interval();
+		let mut archive_height = height.saturating_sub(sync_threshold);
+		archive_height = archive_height.saturating_sub(archive_height % archive_interval);
+		archive_height
+	}
+
 	/// To support the ability to download the txhashset from multiple peers in parallel,
 	/// the peers must all agree on the exact binary representation of the txhashset.
 	/// This means compacting and rewinding to the exact same header.
@@ -1373,11 +1365,8 @@ impl Chain {
 	/// and no longer support requesting arbitrary txhashsets.
 	/// Here we return the header of the txhashset we are currently offering to peers.
 	pub fn txhashset_archive_header(&self) -> Result<BlockHeader, Error> {
-		let sync_threshold = global::state_sync_threshold() as u64;
 		let body_head = self.head()?;
-		let archive_interval = global::txhashset_archive_interval();
-		let mut txhashset_height = body_head.height.saturating_sub(sync_threshold);
-		txhashset_height = txhashset_height.saturating_sub(txhashset_height % archive_interval);
+		let txhashset_height = Self::height_2_archive_height(body_head.height);
 
 		debug!(
 			"txhashset_archive_header: body_head - {}, {}, txhashset height - {}",
@@ -1391,20 +1380,16 @@ impl Chain {
 	/// contents of the header PMMR
 	pub fn txhashset_archive_header_header_only(&self) -> Result<BlockHeader, Error> {
 		let header_head = self.header_head()?;
-		let threshold = global::state_sync_threshold() as u64;
-		let archive_interval = global::txhashset_archive_interval();
-		let mut txhashset_height = header_head.height.saturating_sub(threshold);
-		txhashset_height = txhashset_height.saturating_sub(txhashset_height % archive_interval);
+		let txhashset_height = Self::height_2_archive_height(header_head.height);
 		self.get_header_by_height(txhashset_height)
 	}
 
-	// Special handling to make sure the whole kernel set matches each of its
-	// roots in each block header, without truncation. We go back header by
-	// header, rewind and check each root. This fixes a potential weakness in
-	// fast sync where a reorg past the horizon could allow a whole rewrite of
-	// the kernel set.
-	fn validate_kernel_history(
-		&self,
+	/// Special handling to make sure the whole kernel set matches each of its
+	/// roots in each block header, without truncation. We go back header by
+	/// header, rewind and check each root. This fixes a potential weakness in
+	/// fast sync where a reorg past the horizon could allow a whole rewrite of
+	/// the kernel set.
+	pub fn validate_kernel_history(
 		header: &BlockHeader,
 		txhashset: &txhashset::TxHashSet,
 	) -> Result<(), Error> {
@@ -1441,20 +1426,6 @@ impl Chain {
 			current = self.get_previous_header(&current)?;
 		}
 		Ok(current)
-	}
-
-	/// Compare fork point to our horizon.
-	/// If beyond the horizon then we cannot sync via recent full blocks
-	/// and we need a state (txhashset) sync.
-	pub fn check_txhashset_needed(&self, fork_point: &BlockHeader) -> Result<bool, Error> {
-		if self.archive_mode() {
-			debug!("check_txhashset_needed: we are running with archive_mode=true, not needed");
-			return Ok(false);
-		}
-
-		let header_head = self.header_head()?;
-		let horizon = global::cut_through_horizon() as u64;
-		Ok(fork_point.height < header_head.height.saturating_sub(horizon))
 	}
 
 	/// Clean the temporary sandbox folder
@@ -1497,7 +1468,8 @@ impl Chain {
 	/// If we're willing to accept that new state, the data stream will be
 	/// read as a zip file, unzipped and the resulting state files should be
 	/// rewound to the provided indexes.
-	pub fn txhashset_write(
+	//  Note, if there are updates in this code, please check Sync code, probably it needs to be updates as well
+	/*	pub fn txhashset_write(
 		&self,
 		h: Hash,
 		txhashset_data: File,
@@ -1644,7 +1616,7 @@ impl Chain {
 		status.on_done();
 
 		Ok(false)
-	}
+	}*/
 
 	/// Cleanup old blocks from the db.
 	/// Determine the cutoff height from the horizon and the current block height.
@@ -2129,9 +2101,9 @@ impl Chain {
 	}
 
 	/// Check whether we have a block without reading it
-	pub fn block_exists(&self, h: Hash) -> Result<bool, Error> {
+	pub fn block_exists(&self, h: &Hash) -> Result<bool, Error> {
 		self.store
-			.block_exists(&h)
+			.block_exists(h)
 			.map_err(|e| Error::StoreErr(e, "chain block exists".to_owned()))
 	}
 }
@@ -2141,7 +2113,6 @@ fn setup_head(
 	store: &store::ChainStore,
 	header_pmmr: &mut txhashset::PMMRHandle<BlockHeader>,
 	txhashset: &mut txhashset::TxHashSet,
-	resetting_pibd: bool,
 	secp: &Secp256k1,
 ) -> Result<(), Error> {
 	let mut batch = store.batch_write()?;
@@ -2184,30 +2155,11 @@ fn setup_head(
 				// Note: We are rewinding and validating against a writeable extension.
 				// If validation is successful we will truncate the backend files
 				// to match the provided block header.
-				let mut pibd_in_progress = false;
-				let header = {
-					let head = batch.get_block_header(&head.last_block_h)?;
-					let pibd_tip = store.pibd_head()?;
-					let pibd_head = batch.get_block_header(&pibd_tip.last_block_h)?;
-					if pibd_head.height > head.height && !resetting_pibd {
-						pibd_in_progress = true;
-						pibd_head
-					} else {
-						head
-					}
-				};
+				let header = batch.get_block_header(&head.last_block_h)?;
 
 				let res = txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
 					// If we're still downloading via PIBD, don't worry about sums and validations just yet
 					// We still want to rewind to the last completed block to ensure a consistent state
-					if pibd_in_progress {
-						debug!(
-							"init: PIBD appears to be in progress at height {}, hash {}, not validating, will attempt to continue",
-							header.height,
-							header.hash()
-						);
-						return Ok(());
-					}
 
 					pipe::rewind_and_apply_fork(&header, ext, batch, &|_| Ok(()), secp)?;
 

@@ -30,7 +30,6 @@ use crate::common::{new_block, tx1i1o, tx1i2o, tx2i1o};
 use grin_core as core;
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use util::secp::{ContextFlag, Secp256k1};
-use util::static_secp_instance;
 
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {

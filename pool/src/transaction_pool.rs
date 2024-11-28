@@ -32,8 +32,9 @@ use grin_core::ser;
 use grin_keychain::base58;
 use grin_util as util;
 use grin_util::secp::Secp256k1;
-use lru_cache::LruCache;
+use lru::LruCache;
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// Transaction pool implementation.
@@ -72,7 +73,9 @@ where
 			reorg_cache: Arc::new(RwLock::new(VecDeque::new())),
 			blockchain: chain,
 			adapter,
-			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(1000))),
+			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(
+				NonZeroUsize::new(1000).unwrap(),
+			))),
 		}
 	}
 
@@ -210,12 +213,12 @@ where
 			// let tx_hash = sha2.result();
 			let tx_hash = base58::sha256d_hash(&vec);
 			let mut tx_need_to_verify = false;
-			if !replay_cache.contains_key(&tx_hash) {
+			if !replay_cache.contains(&tx_hash) {
 				tx_need_to_verify = true;
 			}
 			if tx_need_to_verify {
 				self.blockchain.replay_attack_check(tx)?;
-				replay_cache.insert(tx_hash, ());
+				replay_cache.put(tx_hash, ());
 			}
 		}
 

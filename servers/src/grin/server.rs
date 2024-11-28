@@ -65,6 +65,7 @@ use grin_util::secp::{Secp256k1, SecretKey};
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 
+use crate::grin::sync::sync_manager::SyncManager;
 use crate::p2p::libp2p_connection;
 use chrono::Utc;
 use grin_core::consensus::HeaderDifficultyInfo;
@@ -269,9 +270,16 @@ impl Server {
 
 		pool_adapter.set_chain(shared_chain.clone());
 
+		let sync_manager: Arc<RwLock<SyncManager>> = Arc::new(RwLock::new(SyncManager::new(
+			shared_chain.clone(),
+			sync_state.clone(),
+			stop_state.clone(),
+		)));
+
 		let net_adapter = Arc::new(NetToChainAdapter::new(
 			sync_state.clone(),
 			shared_chain.clone(),
+			sync_manager.clone(),
 			tx_pool.clone(),
 			config.clone(),
 			init_net_hooks(&config),
@@ -510,6 +518,7 @@ impl Server {
 			config.p2p_config.clone(),
 			net_adapter.clone(),
 			genesis.hash(),
+			sync_state.clone(),
 			stop_state.clone(),
 			socks_port,
 			onion_address,
@@ -550,14 +559,14 @@ impl Server {
 
 		// Defaults to None (optional) in config file.
 		// This translates to false here so we do not skip by default.
-		let skip_sync_wait = config.skip_sync_wait.unwrap_or(false);
-		sync_state.update(SyncStatus::AwaitingPeers(!skip_sync_wait));
+		sync_state.update(SyncStatus::AwaitingPeers);
 
 		let sync_thread = sync::run_sync(
 			sync_state.clone(),
 			p2p_server.peers.clone(),
 			shared_chain.clone(),
 			stop_state.clone(),
+			sync_manager.clone(),
 		)?;
 
 		let p2p_inner = p2p_server.clone();
@@ -775,7 +784,7 @@ impl Server {
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
-	pub fn connect_peer(&self, addr: PeerAddr) -> Result<(), Error> {
+	pub fn connect_peer(&self, addr: &PeerAddr) -> Result<(), Error> {
 		self.p2p.connect(addr)?;
 		Ok(())
 	}

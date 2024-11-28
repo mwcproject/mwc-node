@@ -12,7 +12,7 @@ edition = "2018"
 [dependencies]
 bitflags = "1"
 enum_primitive = "0.1"
-lru-cache = "0.1"
+lru = "0.12"
 tor-stream = "0.2"
 net2 = "0.2"
 socks = "0.3.2"
@@ -25,10 +25,10 @@ tempfile = "3.1"
 log = "0.4"
 chrono = { version = "0.4.11", features = ["serde"] }
 futures = "0.3"
-#libp2p-tokio-socks5 = { path = "../../rust-libp2p-tokio-socks5" }
-#libp2p = { path = "../../rust-libp2p", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"] }
-libp2p-tokio-socks5 = { git = "https://github.com/mwcproject/rust-libp2p-tokio-socks5", branch = "master"}
-libp2p = { git = "https://github.com/mwcproject/rust-libp2p", branch = "master", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"]}
+libp2p-tokio-socks5 = { path = "../../rust-libp2p-tokio-socks5" }
+libp2p = { path = "../../rust-libp2p", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"] }
+#libp2p-tokio-socks5 = { git = "https://github.com/mwcproject/rust-libp2p-tokio-socks5", branch = "master"}
+#libp2p = { git = "https://github.com/mwcproject/rust-libp2p", branch = "master", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"]}
 lazy_static = "1"
 async-std = "1.9"
 tokio = {version = "0.2", features = ["full"] }

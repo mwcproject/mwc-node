@@ -28,13 +28,14 @@ use crate::core::core::{
 };
 use crate::core::{genesis, global, pow};
 use crate::util::secp::pedersen::RangeProof;
-use grin_chain::txhashset::{HeaderDesegmenter, HeadersRecieveCache};
+use grin_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
 use grin_chain::types::HEADERS_PER_BATCH;
 use grin_chain::{Error, Options, SyncState};
 use grin_util::secp::rand::Rng;
 use grin_util::StopState;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -168,10 +169,10 @@ impl DesegmenterRequestor {
 	// return whether is complete
 	pub fn continue_headers_pibd(
 		&mut self,
-		header_desegmenter: &mut HeaderDesegmenter,
+		header_desegmenter: &mut HeaderHashesDesegmenter,
 		header_root_hash: &Hash,
 	) -> bool {
-		let asks = header_desegmenter.next_desired_segments(10).unwrap();
+		let asks = header_desegmenter.next_desired_segments::<u8>(10, &HashMap::new());
 
 		debug!("Next segment IDS: {:?}", asks);
 
@@ -197,15 +198,15 @@ impl DesegmenterRequestor {
 	// return whether is complete
 	pub fn continue_copy_headers(
 		&mut self,
-		header_desegmenter: &HeaderDesegmenter,
+		header_desegmenter: &HeaderHashesDesegmenter,
 		headers_cache: &mut HeadersRecieveCache,
 	) -> bool {
-		if headers_cache.is_complete(header_desegmenter).unwrap() {
+		if headers_cache.is_complete().unwrap() {
 			return true;
 		}
 
 		let hashes = headers_cache
-			.next_desired_headers(header_desegmenter, 15)
+			.next_desired_headers::<u8>(header_desegmenter, 15, &HashMap::new())
 			.unwrap();
 		if hashes.is_empty() {
 			assert!(false);
@@ -215,7 +216,7 @@ impl DesegmenterRequestor {
 		debug!("Next hashes requested: {:?}", hashes);
 
 		let mut rng = thread_rng();
-		let target_hash = hashes.choose(&mut rng).unwrap();
+		let target_hash = hashes.choose(&mut rng).unwrap().0;
 
 		debug!("Selected Hash: {:?}", target_hash);
 
@@ -228,7 +229,7 @@ impl DesegmenterRequestor {
 			let header_pmmr = src_chain.header_pmmr();
 			let header_pmmr = header_pmmr.read();
 
-			let header = src_chain.get_block_header(target_hash).unwrap();
+			let header = src_chain.get_block_header(&target_hash).unwrap();
 
 			// looks like we know one, getting as many following headers as allowed
 			let hh = header.height;
@@ -248,7 +249,9 @@ impl DesegmenterRequestor {
 			}
 
 			assert_eq!(headers.len(), HEADERS_PER_BATCH as usize);
-			if let Err((peer, err)) = headers_cache.add_headers(header_desegmenter, headers, 0) {
+			if let Err((peer, err)) =
+				headers_cache.add_headers(header_desegmenter, headers, "0".to_string())
+			{
 				panic!("Error {}, for peer id {}", err, peer);
 			}
 		}
@@ -269,7 +272,7 @@ impl DesegmenterRequestor {
 			// (12 is divisible by 3, to try and evenly spread the requests among the 3
 			// main pmmrs. Bitmaps segments will always be requested first)
 			let now = Instant::now();
-			next_segment_ids = d.next_desired_segments(60).unwrap();
+			next_segment_ids = d.next_desired_segments::<u8>(60, &HashMap::new()).unwrap();
 			debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
 			is_complete = d.is_complete()
 		}
@@ -286,7 +289,7 @@ impl DesegmenterRequestor {
 					let seg = self.responder.get_bitmap_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
 						let now = Instant::now();
-						d.add_bitmap_segment(seg, bitmap_root_hash).unwrap();
+						d.add_bitmap_segment(seg, &bitmap_root_hash).unwrap();
 						debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
 					}
 				}
@@ -295,7 +298,7 @@ impl DesegmenterRequestor {
 					if let Some(d) = desegmenter.write().as_mut() {
 						let now = Instant::now();
 						let id = seg.id().clone();
-						d.add_output_segment(seg, bitmap_root_hash).unwrap();
+						d.add_output_segment(seg, &bitmap_root_hash).unwrap();
 						debug!(
 							"Added output segment {}, took {}ms",
 							id,
@@ -310,7 +313,7 @@ impl DesegmenterRequestor {
 					if let Some(d) = desegmenter.write().as_mut() {
 						let now = Instant::now();
 						let id = seg.id().clone();
-						d.add_rangeproof_segment(seg, bitmap_root_hash).unwrap();
+						d.add_rangeproof_segment(seg, &bitmap_root_hash).unwrap();
 						debug!(
 							"Added rangeproof segment {}, took {}ms",
 							id,
@@ -323,7 +326,7 @@ impl DesegmenterRequestor {
 					if let Some(d) = desegmenter.write().as_mut() {
 						let now = Instant::now();
 						let id = seg.id().clone();
-						d.add_kernel_segment(seg, bitmap_root_hash).unwrap();
+						d.add_kernel_segment(seg, &bitmap_root_hash).unwrap();
 						debug!(
 							"Added kernels segment {}, took {}ms",
 							id,
@@ -354,13 +357,22 @@ impl DesegmenterRequestor {
 		let status = Arc::new(SyncState::new());
 		let stop_state = Arc::new(StopState::new());
 		let secp = self.chain.secp();
+
+		self.chain
+			.get_desegmenter()
+			.read()
+			.as_ref()
+			.unwrap()
+			.check_update_leaf_set_state()
+			.unwrap();
+
 		self.chain
 			.get_desegmenter()
 			.read()
 			.as_ref()
 			.unwrap()
 			.validate_complete_state(status, stop_state, secp)
-			.unwrap()
+			.unwrap();
 	}
 }
 fn test_pibd_copy_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &str) {
@@ -388,16 +400,13 @@ fn test_pibd_copy_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &
 		DesegmenterRequestor::new(dest_root_dir, genesis.clone(), src_responder);
 
 	let mut header_desegmenter =
-		HeaderDesegmenter::new(genesis_hash, archive_header_height, headers_root_hash);
+		HeaderHashesDesegmenter::new(genesis_hash, archive_header_height, headers_root_hash);
 
 	while !dest_requestor.continue_headers_pibd(&mut header_desegmenter, &headers_root_hash) {}
 
 	// Heads must be done. Now we should be able to request series of headers as we can do now
-	let mut headers_cache = HeadersRecieveCache::new(dest_requestor.chain.clone());
-
-	headers_cache
-		.prepare_download_headers(&header_desegmenter)
-		.unwrap();
+	let mut headers_cache =
+		HeadersRecieveCache::new(dest_requestor.chain.clone(), &header_desegmenter);
 
 	while !dest_requestor.continue_copy_headers(&header_desegmenter, &mut headers_cache) {}
 
@@ -518,12 +527,6 @@ fn test_chain_validation() {
 				"header_head at {}, fork_point at {}",
 				header_head.height, fork_point.height
 			);
-
-			if dst_chain.check_txhashset_needed(&fork_point).unwrap() {
-				debug!("No new blocks are NOT needed!");
-				blocks_are_done = true;
-				continue;
-			}
 
 			// here is what we have at block_hashes_to_sync
 			let count = 256;

@@ -15,7 +15,7 @@
 //! Manages the segments caching
 
 use crate::error::Error;
-use grin_core::core::{Segment, SegmentIdentifier};
+use grin_core::core::{Segment, SegmentIdentifier, SegmentType};
 use std::cmp;
 use std::collections::HashMap;
 
@@ -23,30 +23,24 @@ use std::collections::HashMap;
 //#[derive(Clone)]
 pub struct SegmentsCache<T> {
 	// Cached segments, waiting to apply
-	segment_cache: HashMap<i32, Segment<T>>,
+	seg_type: SegmentType,
+	segment_cache: HashMap<u64, Segment<T>>,
 
 	// Height to track progress.
-	required_segments: i32,
-	received_segments: i32,
+	required_segments: u64,
+	received_segments: u64,
 }
 
 impl<T> SegmentsCache<T> {
 	/// Create a new instance
-	pub fn new(required_segments: i32) -> Self {
+	pub fn new(seg_type: SegmentType, required_segments: u64) -> Self {
 		SegmentsCache {
+			seg_type,
 			segment_cache: HashMap::new(),
 			required_segments,
 			received_segments: 0,
 		}
 	}
-
-	/*    pub fn open(required_segments : i32) -> Self {
-		SegmentsCache {
-			segment_cache: HashMap::new(),
-			required_segments,
-			received_segments: required_segments
-		}
-	}*/
 
 	/// Clear the data
 	pub fn reset(&mut self) {
@@ -60,40 +54,44 @@ impl<T> SegmentsCache<T> {
 	}
 
 	/// Requered segments
-	pub fn get_required_segments(&self) -> i32 {
+	pub fn get_required_segments(&self) -> u64 {
 		self.required_segments
 	}
 
 	/// Recieved segments (without cached)
-	pub fn get_received_segments(&self) -> i32 {
+	pub fn get_received_segments(&self) -> u64 {
 		self.received_segments
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_segments(
+	pub fn next_desired_segments<V>(
 		&self,
 		height: u8,
-		max_elements: i32,
-	) -> Result<Vec<SegmentIdentifier>, Error> {
-		let mut return_vec = vec![];
-
-		let segm_lim = cmp::min(
-			self.received_segments + max_elements,
-			self.required_segments,
-		);
-		for idx in self.received_segments..segm_lim {
+		max_elements: usize,
+		requested: &HashMap<(SegmentType, u64), V>,
+	) -> Vec<SegmentIdentifier> {
+		let mut result = vec![];
+		assert!(max_elements > 0);
+		// We don't want keep too many segments into the cache. 100 seems like a very reasonable number. Segments are relatevly large.
+		let max_segm_idx = cmp::min(self.received_segments + 100, self.required_segments);
+		for idx in self.received_segments..max_segm_idx {
 			if !self.segment_cache.contains_key(&idx) {
-				return_vec.push(SegmentIdentifier {
-					height: height,
-					idx: idx as u64,
-				});
+				if !requested.contains_key(&(self.seg_type.clone(), idx)) {
+					result.push(SegmentIdentifier {
+						height: height,
+						idx: idx,
+					});
+					if result.len() >= max_elements {
+						break;
+					}
+				}
 			}
 		}
-		Ok(return_vec)
+		result
 	}
 
-	pub fn is_duplicate_segment(&self, segment_idx: i32) -> bool {
+	pub fn is_duplicate_segment(&self, segment_idx: u64) -> bool {
 		segment_idx < self.received_segments || self.segment_cache.contains_key(&segment_idx)
 	}
 
@@ -105,7 +103,7 @@ impl<T> SegmentsCache<T> {
 	where
 		F: FnMut(Vec<Segment<T>>) -> Result<(), Error>,
 	{
-		self.segment_cache.insert(segment.id().idx as i32, segment);
+		self.segment_cache.insert(segment.id().idx, segment);
 
 		// apply found data from the cache
 		let mut segments: Vec<Segment<T>> = Vec::new();
