@@ -151,23 +151,12 @@ impl BodySync {
 				// Check for stuck orphan
 				if let Ok(next_block) = self.chain.get_header_by_height(fork_point.height + 1) {
 					let next_block_hash = next_block.hash();
-					if self.chain.block_exists(&next_block_hash)? {
-						let fork_point2 = self.chain.fork_point()?;
-						error!(
-							"FORK POINT changed? Was {} / {}, now {} / {}.  Next block: {:?}",
-							fork_point.height,
-							fork_point.hash(),
-							fork_point2.height,
-							fork_point2.hash(),
-							next_block
-						);
-					}
 					// Kick the stuck orphan
 					match self.chain.get_orphan(&next_block_hash) {
 						Some(orph) => {
-							info!("There is stuck orphan is found, let's kick it...");
+							debug!("There is stuck orphan is found, let's kick it...");
 							if self.chain.process_block(orph.block, orph.opts).is_ok() {
-								info!("push stuck orphan was successful. Should be able continue to go forward now");
+								debug!("push stuck orphan was successful. Should be able continue to go forward now");
 								need_refresh_request_series = true;
 							}
 						}
