@@ -173,6 +173,7 @@ impl PeerHandler {
 
 impl Handler for PeerHandler {
 	fn get(&self, req: Request<Body>) -> ResponseFuture {
+		#![allow(irrefutable_let_patterns)]
 		let command = right_path_element!(req);
 
 		// We support both "ip" and "ip:port" here for peer_addr.
@@ -200,7 +201,9 @@ impl Handler for PeerHandler {
 			),
 		}
 	}
+
 	fn post(&self, req: Request<Body>) -> ResponseFuture {
+		#![allow(irrefutable_let_patterns)]
 		let mut path_elems = req.uri().path().trim_end_matches('/').rsplit('/');
 		let command = match path_elems.next() {
 			None => return response(StatusCode::BAD_REQUEST, "invalid url"),

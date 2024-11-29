@@ -42,7 +42,7 @@ where
 	B: 'a + Backend<T>,
 {
 	/// Build a new readonly PMMR.
-	pub fn new(backend: &'a B) -> ReadonlyPMMR<'_, T, B> {
+	pub fn new(backend: &'a B) -> ReadonlyPMMR<'a, T, B> {
 		ReadonlyPMMR {
 			backend,
 			size: 0,
@@ -52,7 +52,7 @@ where
 
 	/// Build a new readonly PMMR pre-initialized to
 	/// size with the provided backend.
-	pub fn at(backend: &'a B, size: u64) -> ReadonlyPMMR<'_, T, B> {
+	pub fn at(backend: &'a B, size: u64) -> ReadonlyPMMR<'a, T, B> {
 		ReadonlyPMMR {
 			backend,
 			size,
