@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Grin client commands processing
+/// Mwc client commands processing
 use std::net::SocketAddr;
 
 use clap::ArgMatches;
@@ -33,7 +33,7 @@ pub struct HTTPNodeClient {
 	node_api_secret: Option<String>,
 }
 impl HTTPNodeClient {
-	/// Create a new client that will communicate with the given grin node
+	/// Create a new client that will communicate with the given mwc node
 	pub fn new(node_url: &str, node_api_secret: Option<String>) -> HTTPNodeClient {
 		HTTPNodeClient {
 			node_url: node_url.to_owned(),
@@ -79,7 +79,7 @@ impl HTTPNodeClient {
 
 	pub fn show_status(&self) {
 		println!();
-		let title = "Grin Server Status".to_string();
+		let title = "Mwc Server Status".to_string();
 		if term::stdout().is_none() {
 			println!("Could not open terminal");
 			return;
@@ -106,7 +106,7 @@ impl HTTPNodeClient {
 			}
 			Err(_) => writeln!(
 				e,
-				"WARNING: Client failed to get data. Is your `grin server` offline or broken?"
+				"WARNING: Client failed to get data. Is your `mwc server` offline or broken?"
 			)
 			.unwrap(),
 		};
@@ -243,7 +243,7 @@ pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig)
 				panic!("Invalid peer address format");
 			}
 		}
-		_ => panic!("Unknown client command, use 'grin help client' for details"),
+		_ => panic!("Unknown client command, use 'mwc help client' for details"),
 	}
 	0
 }

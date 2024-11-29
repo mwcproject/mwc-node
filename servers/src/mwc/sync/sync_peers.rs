@@ -15,8 +15,8 @@
 // sync_utils contain banch of shared between mutiple sync modules routines
 // Normally we would put that into the base class, but rust doesn't support that.
 
-use grin_p2p::{PeerAddr, Peers, ReasonForBan};
-use grin_util::RwLock;
+use mwc_p2p::{PeerAddr, Peers, ReasonForBan};
+use mwc_util::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 

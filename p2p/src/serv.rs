@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,12 +23,12 @@ use std::time::Duration;
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
-use crate::grin_core::core;
-use crate::grin_core::core::hash::Hash;
-use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::grin_core::global;
-use crate::grin_core::pow::Difficulty;
 use crate::handshake::Handshake;
+use crate::mwc_core::core;
+use crate::mwc_core::core::hash::Hash;
+use crate::mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::mwc_core::global;
+use crate::mwc_core::pow::Difficulty;
 use crate::peer::Peer;
 use crate::peers::Peers;
 use crate::store::PeerStore;
@@ -37,8 +38,8 @@ use crate::types::{
 };
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
-use grin_chain::txhashset::Segmenter;
-use grin_chain::SyncState;
+use mwc_chain::txhashset::Segmenter;
+use mwc_chain::SyncState;
 
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,12 +38,12 @@ use crate::{
 	store::Batch,
 	txhashset::{ExtensionPair, HeaderExtension},
 };
-use grin_core::consensus::HeaderDifficultyInfo;
-use grin_core::core::pmmr::{VecBackend, PMMR};
-use grin_core::ser;
-use grin_store::Error::NotFoundErr;
-use grin_util::secp::Secp256k1;
-use grin_util::{secp, ToHex};
+use mwc_core::consensus::HeaderDifficultyInfo;
+use mwc_core::core::pmmr::{VecBackend, PMMR};
+use mwc_core::ser;
+use mwc_store::Error::NotFoundErr;
+use mwc_util::secp::Secp256k1;
+use mwc_util::{secp, ToHex};
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -1434,8 +1435,8 @@ impl Chain {
 	}
 
 	/// Specific tmp dir.
-	/// Normally it's ~/.grin/main/tmp for mainnet
-	/// or ~/.grin/floo/tmp for floonet
+	/// Normally it's ~/.mwc/main/tmp for mainnet
+	/// or ~/.mwc/floo/tmp for floonet
 	pub fn get_tmp_dir(&self) -> PathBuf {
 		let mut tmp_dir = PathBuf::from(self.db_root.clone());
 		tmp_dir = tmp_dir
@@ -1493,7 +1494,7 @@ impl Chain {
 			}
 		};
 
-		// Write txhashset to sandbox (in the Grin specific tmp dir)
+		// Write txhashset to sandbox (in the Mwc specific tmp dir)
 		let sandbox_dir = self.get_tmp_dir();
 		txhashset::clean_txhashset_folder(&sandbox_dir);
 		txhashset::zip_write(sandbox_dir.clone(), txhashset_data.try_clone()?, &header)?;

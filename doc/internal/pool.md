@@ -1,6 +1,6 @@
 # Transaction Pool
 
-This document describes some of the basic functionality and requirements of grin's transaction pool.
+This document describes some of the basic functionality and requirements of mwc's transaction pool.
 
 ## Overview of Required Capabilities
 
@@ -8,7 +8,7 @@ The primary purpose of the memory pool is to maintain a list of mineable transac
 
 For standard (non-mining) nodes, the primary purpose of the memory pool is to serve as a moderator for transaction broadcasts by requiring connectivity to the blockchain. Secondary uses include monitoring incoming transactions, for example for giving early notice of an unconfirmed transaction to the user's wallet.
 
-Given the focus of grin (and mimblewimble) on reduced resource consumption, the memory pool should be an optional but recommended component for non-mining nodes.
+Given the focus of mwc (and mimblewimble) on reduced resource consumption, the memory pool should be an optional but recommended component for non-mining nodes.
 
 ## Design Overview
 
@@ -20,7 +20,7 @@ A->B->C->A
 
 Because each input in Bitcoin specifically references the hash and output index of the output in a preceding transaction, for a loop to exist, a transaction must reference (and know the hash of) a transaction that does not yet exist (C, in the trivial example.) Furthermore, the hash and output index pair (called an "outpoint" in Bitcoin) is covered by the transaction hash of A, such that any change to either causes the hash of A to change. Therefore, attempting to build such a loop by amending A with the proper outpoint in C after C has been built causes A's hash to change, invalidating B, and so forth.
 
-In grin, an input references an output by the output's own hash. Thus, the backreference does not include the situation the output was generated in, which allows (from a purely mechanical point of view) the creation of a loop without the ability to generate a specific hash from a tightly constrained preimage.
+In mwc, an input references an output by the output's own hash. Thus, the backreference does not include the situation the output was generated in, which allows (from a purely mechanical point of view) the creation of a loop without the ability to generate a specific hash from a tightly constrained preimage.
 
 The pair of graphs represents the connected graph and the orphans graph. (While it is possible to represent both groups of transactions in a single graph, it makes determination of orphan status of a given transaction non-trivial, requiring either the maintenance of a flag or traversal upwards of potentially many inputs.)
 

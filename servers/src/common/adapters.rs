@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,7 +36,7 @@ use crate::core::core::{
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::core::{core, global};
-use crate::grin::sync::sync_manager::SyncManager;
+use crate::mwc::sync::sync_manager::SyncManager;
 use crate::p2p;
 use crate::p2p::types::PeerInfo;
 use crate::pool::{self, BlockChain, PoolAdapter};
@@ -43,9 +44,9 @@ use crate::util::secp::pedersen::RangeProof;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
-use grin_chain::txhashset::Segmenter;
-use grin_p2p::PeerAddr;
-use grin_util::secp::{ContextFlag, Secp256k1};
+use mwc_chain::txhashset::Segmenter;
+use mwc_p2p::PeerAddr;
+use mwc_util::secp::{ContextFlag, Secp256k1};
 use rand::prelude::*;
 use std::ops::Range;
 use std::sync::atomic::AtomicI64;

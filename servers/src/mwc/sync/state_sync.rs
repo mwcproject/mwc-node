@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,18 +15,18 @@
 
 use crate::chain::{self, pibd_params, SyncState};
 use crate::core::core::{hash::Hashed, pmmr::segment::SegmentType};
-use crate::grin::sync::sync_peers::SyncPeers;
-use crate::grin::sync::sync_utils;
-use crate::grin::sync::sync_utils::{RequestTracker, SyncRequestResponses};
+use crate::mwc::sync::sync_peers::SyncPeers;
+use crate::mwc::sync::sync_utils;
+use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses};
 use crate::p2p::{self, Capabilities, Peer};
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
-use grin_chain::txhashset::{BitmapChunk, Desegmenter};
-use grin_chain::Chain;
-use grin_core::core::hash::Hash;
-use grin_core::core::{OutputIdentifier, Segment, TxKernel};
-use grin_p2p::PeerAddr;
-use grin_util::secp::pedersen::RangeProof;
+use mwc_chain::txhashset::{BitmapChunk, Desegmenter};
+use mwc_chain::Chain;
+use mwc_core::core::hash::Hash;
+use mwc_core::core::{OutputIdentifier, Segment, TxKernel};
+use mwc_p2p::PeerAddr;
+use mwc_util::secp::pedersen::RangeProof;
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

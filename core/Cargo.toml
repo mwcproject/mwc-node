@@ -1,11 +1,11 @@
 [package]
-name = "grin_core"
-version = "5.3.3"
-authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
-description = "Chain implementation for grin, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
+name = "mwc_core"
+version = "5.3.5"
+authors = ["Mwc Developers <info@mwc.mw>"]
+description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin"
-keywords = [ "crypto", "grin", "mimblewimble" ]
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = [ "crypto", "mwc", "mimblewimble" ]
 workspace = ".."
 edition = "2018"
 
@@ -30,8 +30,8 @@ bytes = "0.5"
 num_cpus = "1"
 crossbeam = "0.8"
 
-keychain = { package = "grin_keychain", path = "../keychain", version = "5.3.3" }
-util = { package = "grin_util", path = "../util", version = "5.3.3" }
+keychain = { package = "mwc_keychain", path = "../keychain", version = "5.3.5" }
+util = { package = "mwc_util", path = "../util", version = "5.3.5" }
 
 [dev-dependencies]
 serde_json = "1"

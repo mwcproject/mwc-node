@@ -15,20 +15,20 @@
 // sync_utils contain banch of shared between mutiple sync modules routines
 // Normally we would put that into the base class, but rust doesn't support that.
 
-use crate::grin::sync::body_sync::BodySync;
-use crate::grin::sync::header_hashes_sync::HeadersHashSync;
-use crate::grin::sync::header_sync::HeaderSync;
-use crate::grin::sync::state_sync::StateSync;
-use crate::grin::sync::sync_peers::SyncPeers;
-use crate::grin::sync::sync_utils::{CachedResponse, SyncRequestResponses};
+use crate::mwc::sync::body_sync::BodySync;
+use crate::mwc::sync::header_hashes_sync::HeadersHashSync;
+use crate::mwc::sync::header_sync::HeaderSync;
+use crate::mwc::sync::state_sync::StateSync;
+use crate::mwc::sync::sync_peers::SyncPeers;
+use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses};
 use chrono::Duration;
-use grin_chain::txhashset::BitmapChunk;
-use grin_chain::{Chain, SyncState};
-use grin_core::core::hash::Hash;
-use grin_core::core::{OutputIdentifier, Segment, TxKernel};
-use grin_p2p::{Capabilities, PeerAddr, Peers};
-use grin_util::secp::pedersen::RangeProof;
-use grin_util::StopState;
+use mwc_chain::txhashset::BitmapChunk;
+use mwc_chain::{Chain, SyncState};
+use mwc_core::core::hash::Hash;
+use mwc_core::core::{OutputIdentifier, Segment, TxKernel};
+use mwc_p2p::{Capabilities, PeerAddr, Peers};
+use mwc_util::secp::pedersen::RangeProof;
+use mwc_util::StopState;
 use std::sync::Arc;
 
 /// Sync Manager is reponsible for coordination of all syncing process
@@ -289,7 +289,7 @@ impl SyncManager {
 	pub fn receive_headers(
 		&mut self,
 		peer: &PeerAddr,
-		bhs: &[grin_core::core::BlockHeader],
+		bhs: &[mwc_core::core::BlockHeader],
 		remaining: u64,
 		peers: Arc<Peers>,
 	) {

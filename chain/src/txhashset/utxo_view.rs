@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +23,7 @@ use crate::error::Error;
 use crate::store::Batch;
 use crate::types::CommitPos;
 use crate::util::secp::pedersen::{Commitment, RangeProof};
-use grin_store::pmmr::PMMRBackend;
+use mwc_store::pmmr::PMMRBackend;
 
 /// Readonly view of the UTXO set (based on output MMR).
 pub struct UTXOView<'a> {

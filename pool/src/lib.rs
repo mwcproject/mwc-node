@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +22,9 @@
 #![deny(unused_mut)]
 
 //extern crate blake2_rfc as blake2;
-//extern crate grin_core as core;
-//extern crate grin_keychain as keychain;
-//extern crate grin_util as util;
+//extern crate mwc_core as core;
+//extern crate mwc_keychain as keychain;
+//extern crate mwc_util as util;
 #[allow(unused_imports)]
 #[macro_use] // Needed for Serialize/Deserialize. The compiler complaining here is a bug.
 extern crate serde_derive;

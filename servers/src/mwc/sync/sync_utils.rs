@@ -15,10 +15,10 @@
 // sync_utils contain banch of shared between mutiple sync modules routines
 // Normally we would put that into the base class, but rust doesn't support that.
 
-use crate::grin::sync::sync_peers::SyncPeers;
+use crate::mwc::sync::sync_peers::SyncPeers;
 use chrono::{DateTime, Duration, Utc};
-use grin_chain::Chain;
-use grin_p2p::{Capabilities, Peer, PeerAddr, Peers};
+use mwc_chain::Chain;
+use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
 use std::cmp;
 use std::collections::HashMap;
 use std::sync::Arc;

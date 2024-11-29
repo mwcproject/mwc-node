@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,18 +17,18 @@ use crate::chain::{self, SyncState, SyncStatus};
 use crate::common::types::Error;
 use crate::core::core::hash::Hash;
 use crate::core::pow::Difficulty;
-use crate::grin::sync::header_hashes_sync::HeadersHashSync;
-use crate::grin::sync::sync_peers::SyncPeers;
-use crate::grin::sync::sync_utils;
-use crate::grin::sync::sync_utils::{CachedResponse, RequestTracker, SyncRequestResponses};
+use crate::mwc::sync::header_hashes_sync::HeadersHashSync;
+use crate::mwc::sync::sync_peers::SyncPeers;
+use crate::mwc::sync::sync_utils;
+use crate::mwc::sync::sync_utils::{CachedResponse, RequestTracker, SyncRequestResponses};
 use crate::p2p::{self, Capabilities, Peer};
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use grin_chain::pibd_params;
-use grin_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
-use grin_core::core::hash::Hashed;
-use grin_core::core::BlockHeader;
-use grin_p2p::PeerAddr;
+use mwc_chain::pibd_params;
+use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
+use mwc_core::core::hash::Hashed;
+use mwc_core::core::BlockHeader;
+use mwc_p2p::PeerAddr;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -238,7 +239,7 @@ impl HeaderSync {
 		sync_peers: &mut SyncPeers,
 		header_hashes: Option<&HeaderHashesDesegmenter>,
 		peers: &Arc<p2p::Peers>,
-	) -> Result<(), grin_chain::Error> {
+	) -> Result<(), mwc_chain::Error> {
 		assert!(!bhs.is_empty());
 
 		let series_key = (

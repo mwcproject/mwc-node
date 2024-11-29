@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,17 +54,17 @@ pub fn amount_from_hr_string(amount: &str) -> Result<u64, Error> {
 			"Found separator ',', expected '.'".to_string(),
 		));
 	}
-	let (grins, ngrins) = match amount.find('.') {
-		None => (parse_grins(amount)?, 0),
+	let (mwcs, nmwcs) = match amount.find('.') {
+		None => (parse_mwcs(amount)?, 0),
 		Some(pos) => {
 			let (gs, tail) = amount.split_at(pos);
-			(parse_grins(gs)?, parse_ngrins(&tail[1..])?)
+			(parse_mwcs(gs)?, parse_nmwcs(&tail[1..])?)
 		}
 	};
-	Ok(grins * MWC_BASE + ngrins)
+	Ok(mwcs * MWC_BASE + nmwcs)
 }
 
-fn parse_grins(amount: &str) -> Result<u64, Error> {
+fn parse_mwcs(amount: &str) -> Result<u64, Error> {
 	if amount == "" {
 		Ok(0)
 	} else {
@@ -77,7 +78,7 @@ lazy_static! {
 	static ref WIDTH: usize = (MWC_BASE as f64).log(10.0) as usize + 1;
 }
 
-fn parse_ngrins(amount: &str) -> Result<u64, Error> {
+fn parse_nmwcs(amount: &str) -> Result<u64, Error> {
 	let amount = if amount.len() > *WIDTH {
 		&amount[..*WIDTH]
 	} else {

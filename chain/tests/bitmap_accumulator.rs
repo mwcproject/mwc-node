@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +17,9 @@ use self::chain::txhashset::BitmapAccumulator;
 use self::core::core::hash::Hash;
 use self::core::ser::PMMRIndexHashable;
 use bit_vec::BitVec;
-use grin_chain as chain;
-use grin_core as core;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_util as util;
 
 #[test]
 fn test_bitmap_accumulator() {

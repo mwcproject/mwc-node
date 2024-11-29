@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +18,8 @@ mod common;
 use self::core::core::pmmr;
 use self::core::core::{Segment, SegmentIdentifier};
 use common::TestElem;
-use grin_core as core;
-use grin_core::core::pmmr::ReadablePMMR;
+use mwc_core as core;
+use mwc_core::core::pmmr::ReadablePMMR;
 
 fn test_unprunable_size(height: u8, n_leaves: u32) {
 	let size = 1u64 << height;

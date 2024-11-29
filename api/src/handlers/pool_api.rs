@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +24,8 @@ use crate::types::*;
 use crate::util;
 use crate::util::RwLock;
 use crate::web::*;
-use grin_util::secp::{ContextFlag, Secp256k1};
 use hyper::{Body, Request, StatusCode};
+use mwc_util::secp::{ContextFlag, Secp256k1};
 use std::sync::Weak;
 
 /// Get basic information about the transaction pool.

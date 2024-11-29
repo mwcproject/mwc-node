@@ -13,7 +13,7 @@ We don't recomment using web wallet.
 
 ## Install Web Wallet
 
-Grin project has a web wallet which is compartible with MWC wallet. It is using Angilar to run it.
+Mwc project has a web wallet which is compartible with MWC wallet. It is using Angilar to run it.
 
 ### Install Angular CLI
 
@@ -48,9 +48,9 @@ owner_api_listen_port = 13420
 
 ### Start Web Wallet
 
-Get the grin web wallet sources
+Get the mwc web wallet sources
 ```bash
-> git clone git@github.com:mimblewimble/grin-web-wallet.git
+> git clone git@github.com:mimblewimble/mwc-web-wallet.git
 ```
 Make sure that MWC node is running. Start MWC wallet in listening mode.
 ```bash
@@ -59,7 +59,7 @@ Make sure that MWC node is running. Start MWC wallet in listening mode.
 ```
 Start web wallet
 ```bash
-> cd grin-web-wallet
+> cd mwc-web-wallet
 > ng build
 > ng serve
 ```

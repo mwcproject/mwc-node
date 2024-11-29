@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +22,8 @@ use cursive::{Cursive, Printer};
 use crate::tui::constants::VIEW_LOGS;
 use cursive::utils::lines::spans::{LinesIterator, Row};
 use cursive::utils::markup::StyledString;
-use grin_util::logger::LogEntry;
 use log::Level;
+use mwc_util::logger::LogEntry;
 use std::collections::VecDeque;
 
 pub struct TUILogsView;

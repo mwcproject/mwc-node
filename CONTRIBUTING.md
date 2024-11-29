@@ -2,7 +2,7 @@
 
 Find an area you can help with and do it. Open source is about collaboration and open participation. Try to make your code look like what already exists and submit a pull request.
 
-The [list of issues](https://github.com/mimblewimble/grin/issues) is a good place to start, especially the ones tagged as "help wanted" (but don't let that stop you from looking at others). If you're looking for additional ideas, the code includes `TODO` comments for minor to major improvements. Use _Search in files_ in your code editor, or `grep "TODO" -r --exclude-dir=target --exclude-dir=.git .`.
+The [list of issues](https://github.com/mwcproject/mwc-node/issues) is a good place to start, especially the ones tagged as "help wanted" (but don't let that stop you from looking at others). If you're looking for additional ideas, the code includes `TODO` comments for minor to major improvements. Use _Search in files_ in your code editor, or `grep "TODO" -r --exclude-dir=target --exclude-dir=.git .`.
 
 Additional tests are rewarded with an immense amount of positive karma.
 
@@ -26,15 +26,15 @@ The development team will be happy to help and guide you with any of these point
 
 # Find Us
 
-When you are starting to contribute to grin, we really would appreciate if you come by the gitter chat channels.
+When you are starting to contribute to mwc, we really would appreciate if you come by the gitter chat channels.
 
-In case of problems with trying out grin, before starting to contribute, there's the [grincoin#support](https://keybase.io/team/grincoin) on Keybase. Write there about what you've done, what you want to do, and maybe paste logs through a text paste webservice.
+In case of problems with trying out mwc, before starting to contribute, there's the [mwccoin#support](https://keybase.io/team/mwccoin) on Keybase. Write there about what you've done, what you want to do, and maybe paste logs through a text paste webservice.
 
-* Please [join the grincoin#general  on Keybase](https://keybase.io/team/grincoin) to get a feeling for the community.
-* And see the developers chat channel [grincoin#dev  on Keybase](https://keybase.io/team/grincoin) if you have questions about source code files.
+* Please [join the mwccoin#general  on Keybase](https://keybase.io/team/mwccoin) to get a feeling for the community.
+* And see the developers chat channel [mwccoin#dev  on Keybase](https://keybase.io/team/mwccoin) if you have questions about source code files.
   If you explain what you're looking at and what you want to do, we'll try to help you along the way.
-* See `docs/*.md` and the folder structure explanations, [the wiki](https://github.com/mimblewimble/docs/wiki) and the official [Grin documentation](https://docs.grin.mw/).
-* Further information and discussions are in the [Forum](https://forum.grin.mw), the [website](https://grin.mw), the [mailing list](https://lists.launchpad.net/mimblewimble/) and news channels like the [Reddit/grincoin](https://www.reddit.com/r/grincoin/) and a (mostly unfiltered!) Twitter bot that collects headlines, mailing list posts, and reddit posts related to Mimblewimble/Grin: [@grinmw](https://twitter.com/grinmw)
+* See `docs/*.md` and the folder structure explanations, [the wiki](https://github.com/mimblewimble/docs/wiki) and the official [Mwc documentation](https://docs.mwc.mw/).
+* Further information and discussions are in the [Forum](https://forum.mwc.mw), the [website](https://mwc.mw), the [mailing list](https://lists.launchpad.net/mimblewimble/) and news channels like the [Reddit/mwccoin](https://www.reddit.com/r/mwccoin/) and a (mostly unfiltered!) Twitter bot that collects headlines, mailing list posts, and reddit posts related to Mimblewimble/Mwc: [@mwcmw](https://twitter.com/mwcmw)
 
 ## Testing
 
@@ -46,7 +46,7 @@ After creating a PR on github, the code will be tested automatically by Travis C
 
 ### Building quality
 
-The most important thing you can do alongside - or even before - changing code, is adding tests for how grin should and should not work. See the various `tests` folders and derive test that are already there in grin.
+The most important thing you can do alongside - or even before - changing code, is adding tests for how mwc should and should not work. See the various `tests` folders and derive test that are already there in mwc.
 
 After that, if you want to raise code quality another level, you can use `cargo check`, `cargo cov test` and `cargo tarpaulin`. Install them with `cargo install cargo-check cargo-cov; RUSTFLAGS="--cfg procmacro2_semver_exempt" cargo install cargo-tarpaulin`. Run with `cargo cov test` and `cargo tarpaulin`. The quality check tools are often integrated with `rustc` and as a side-effect only activated when some code is compiled. Because of this, if you want a complete check you'll need to `cargo clean` first.
 
@@ -66,15 +66,15 @@ Please consider putting one of the following prefixes in the title of your pull-
 - **test**:     Adding missing tests
 - **chore**:    Maintain. Changes to the build process or auxiliary tools/libraries/documentation
 
-For example: `fix: a panick on xxx when grin exiting`. Please don't worry if you can't find a suitable prefix, this's just optional, not mandatory.
+For example: `fix: a panick on xxx when mwc exiting`. Please don't worry if you can't find a suitable prefix, this's just optional, not mandatory.
 
-# Grin Style Guide
+# Mwc Style Guide
 
 This project uses `rustfmt` to maintain consistent formatting. We've made sure that rustfmt runs **automatically**, but you must install rustfmt manually first.
 
 ## Install rustfmt
 
-**Note**: To work with grin you must use `rustup`. Linux package managers typically carry a too old rust version.
+**Note**: To work with mwc you must use `rustup`. Linux package managers typically carry a too old rust version.
 See [build docs](doc/build.md) for more info.
 
 First ensure you have a new enough rustfmt:
@@ -113,8 +113,8 @@ Not recommended, but you can run rustfmt on a file like this: `rustfmt client.rs
 
 2. *If unsure about code formatting, it's just fine if you ignore and discard any rustfmt changes. It's only a nice-to-have. Your contribution and code changes is the priority here. Hope you're happy to contribute on this open source project!*
 
-3. Please don't ~~`cargo +nightly fmt`~~ because all grin developers are using stable rustfmt. Also please don't rustfmt files that your code changes does not touch to avoid causing merge conflicts.
+3. Please don't ~~`cargo +nightly fmt`~~ because all mwc developers are using stable rustfmt. Also please don't rustfmt files that your code changes does not touch to avoid causing merge conflicts.
 
 ## Thanks for any contribution
 
-Even one word correction are welcome! Our objective is to encourage you to get interested in Grin and contribute in any way possible. Thanks for any help!
+Even one word correction are welcome! Our objective is to encourage you to get interested in Mwc and contribute in any way possible. Thanks for any help!

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +22,7 @@ use crate::error::Error;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
-use grin_core::core::pmmr::{ReadonlyPMMR, VecBackend};
+use mwc_core::core::pmmr::{ReadonlyPMMR, VecBackend};
 use std::{sync::Arc, time::Instant};
 
 /// Segmenter for generating PIBD segments.

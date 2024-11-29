@@ -1,5 +1,5 @@
 [package]
-name = "grin_pool_fuzz"
+name = "mwc_pool_fuzz"
 version = "0.0.0"
 authors = ["Automatically generated"]
 publish = false
@@ -8,11 +8,11 @@ edition = "2018"
 [dependencies]
 chrono = "0.4.11"
 libfuzzer-sys = "0.4.0"
-grin_chain = { path = "../../chain" }
-grin_core = { path = "../../core" }
-grin_keychain = { path = "../../keychain" }
-grin_pool = { path = ".." }
-grin_util = { path = "../../util" }
+mwc_chain = { path = "../../chain" }
+mwc_core = { path = "../../core" }
+mwc_keychain = { path = "../../keychain" }
+mwc_pool = { path = ".." }
+mwc_util = { path = "../../util" }
 
 # Prevent this from interfering with workspaces
 [workspace]

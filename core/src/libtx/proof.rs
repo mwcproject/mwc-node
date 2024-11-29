@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +17,7 @@
 
 use crate::libtx::error::Error;
 use blake2::blake2b::blake2b;
-use keychain::extkey_bip32::BIP32GrinHasher;
+use keychain::extkey_bip32::BIP32MwcHasher;
 use keychain::{Identifier, Keychain, SwitchCommitmentType, ViewKey};
 use std::convert::TryFrom;
 use util::secp::key::SecretKey;
@@ -426,7 +427,7 @@ impl ProofBuild for ViewKey {
 		}
 
 		let mut key = self.clone();
-		let mut hasher = BIP32GrinHasher::new(self.is_floo);
+		let mut hasher = BIP32MwcHasher::new(self.is_floo);
 		for i in self.depth..path.depth {
 			let child_number = path.path[i as usize];
 			if child_number.is_hardened() {

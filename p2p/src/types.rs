@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,17 +30,17 @@ use serde::{Deserialize, Deserializer};
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
-use crate::grin_core::core;
-use crate::grin_core::core::hash::Hash;
-use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::grin_core::global;
-use crate::grin_core::pow::Difficulty;
-use crate::grin_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::msg::PeerAddrs;
+use crate::mwc_core::core;
+use crate::mwc_core::core::hash::Hash;
+use crate::mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::mwc_core::global;
+use crate::mwc_core::pow::Difficulty;
+use crate::mwc_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
-use grin_chain::txhashset::Segmenter;
-use grin_chain::types::HEADERS_PER_BATCH;
+use mwc_chain::txhashset::Segmenter;
+use mwc_chain::types::HEADERS_PER_BATCH;
 
 /// Maximum number of block headers a peer should ever send
 pub const MAX_BLOCK_HEADERS: u32 = HEADERS_PER_BATCH;
@@ -93,7 +94,7 @@ pub enum Error {
 	#[error("p2p timeout")]
 	Timeout,
 	#[error("p2p store error, {0}")]
-	Store(grin_store::Error),
+	Store(mwc_store::Error),
 	#[error("p2p chain error, {0}")]
 	Chain(chain::Error),
 	#[error("peer with self")]
@@ -121,8 +122,8 @@ impl From<ser::Error> for Error {
 		Error::Serialization(e)
 	}
 }
-impl From<grin_store::Error> for Error {
-	fn from(e: grin_store::Error) -> Error {
+impl From<mwc_store::Error> for Error {
+	fn from(e: mwc_store::Error) -> Error {
 		Error::Store(e)
 	}
 }
@@ -407,7 +408,7 @@ impl Default for P2PConfig {
 }
 
 /// Note certain fields are options just so they don't have to be
-/// included in grin-server.toml, but we don't want them to ever return none
+/// included in mwc-server.toml, but we don't want them to ever return none
 impl P2PConfig {
 	/// return ban window
 	pub fn ban_window(&self) -> i64 {

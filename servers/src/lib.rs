@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Main crate putting together all the other crates that compose Grin into a
+//! Main crate putting together all the other crates that compose Mwc into a
 //! binary.
 
 #![deny(non_upper_case_globals)]
@@ -26,24 +27,24 @@ extern crate serde_derive;
 #[macro_use]
 extern crate log;
 
-use grin_api as api;
-use grin_chain as chain;
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_p2p as p2p;
-use grin_pool as pool;
-use grin_store as store;
-use grin_util as util;
+use mwc_api as api;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_p2p as p2p;
+use mwc_pool as pool;
+use mwc_store as store;
+use mwc_util as util;
 
 mod error;
 pub use crate::error::Error;
 
 pub mod common;
-mod grin;
 mod mining;
+mod mwc;
 mod tor;
 
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};
 pub use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
-pub use crate::grin::server::{Server, ServerTxPool};
+pub use crate::mwc::server::{Server, ServerTxPool};

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +20,7 @@ use self::core::core::pmmr::{self, ReadablePMMR, VecBackend, PMMR};
 use self::core::ser::PMMRIndexHashable;
 use crate::common::TestElem;
 use chrono::prelude::Utc;
-use grin_core as core;
+use mwc_core as core;
 
 #[test]
 fn some_peak_map() {

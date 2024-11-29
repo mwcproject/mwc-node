@@ -4,9 +4,9 @@ use self::core::ser::{
 	BinReader, BinWriter, DeserializationMode, ProtocolVersion, Readable, Writeable,
 };
 use croaring::Bitmap;
-use grin_chain as chain;
-use grin_core as core;
-use grin_util::secp::rand::Rng;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_util::secp::rand::Rng;
 use rand::thread_rng;
 use std::io::Cursor;
 

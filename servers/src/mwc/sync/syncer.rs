@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +14,12 @@
 // limitations under the License.
 
 use crate::chain::{self, SyncState, SyncStatus};
-use crate::grin::sync::sync_manager::SyncManager;
-use crate::grin::sync::sync_utils::SyncRequestResponses;
+use crate::mwc::sync::sync_manager::SyncManager;
+use crate::mwc::sync::sync_utils::SyncRequestResponses;
 use crate::p2p;
 use crate::util::StopState;
-use grin_p2p::Capabilities;
-use grin_util::RwLock;
+use mwc_p2p::Capabilities;
+use mwc_util::RwLock;
 use std::sync::Arc;
 use std::thread;
 use std::time;
@@ -94,7 +95,7 @@ impl SyncRunner {
 
 			// exit loop when:
 			// * we have more than MIN_PEERS more_or_same_work peers
-			// * we are synced already, e.g. grin was quickly restarted
+			// * we are synced already, e.g. mwc was quickly restarted
 			// * timeout
 			if wp >= MIN_PEERS || n > wait_secs {
 				break;

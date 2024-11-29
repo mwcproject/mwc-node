@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +24,8 @@ use self::core::core::transaction::{self, Transaction};
 use self::core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
 use self::core::global::DEFAULT_ACCEPT_FEE_BASE;
 use chrono::prelude::*;
-use grin_core as core;
-use grin_keychain as keychain;
+use mwc_core as core;
+use mwc_keychain as keychain;
 
 /// Dandelion "epoch" length.
 const DANDELION_EPOCH_SECS: u16 = 600;
@@ -138,7 +139,7 @@ impl Default for PoolConfig {
 	}
 }
 
-/// make output (of weight 21) cost about 1 Grin-cent by default, keeping a round number
+/// make output (of weight 21) cost about 1 Mwc-cent by default, keeping a round number
 pub fn default_accept_fee_base() -> u64 {
 	DEFAULT_ACCEPT_FEE_BASE
 }

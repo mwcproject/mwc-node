@@ -1,8 +1,8 @@
-# Grin Stratum RPC 协议
+# Mwc Stratum RPC 协议
 
 *阅读其它语言版本: [Korean](../stratum_KR.md)，[English](stratum.md).*
 
-本文说明在 Grin 部署目前的 Stratum RPC 协议。
+本文说明在 Mwc 部署目前的 Stratum RPC 协议。
 
 ## 目录
 
@@ -59,7 +59,7 @@
 {
    "id":"10",
    "jsonrpc":"2.0",
-   "method":"getgrins",
+   "method":"getmwcs",
    "error":{
       "code":-32601,
       "message":"Method not found"
@@ -222,7 +222,7 @@ Stratum 服务器发起新消息。Stratum 服务器会自动发送工作给连�
 
 ***
 
-矿工发起消息。矿工用用户名、密码和代理（通常由矿工程序设置）登录 Grin Stratum 服务器。
+矿工发起消息。矿工用用户名、密码和代理（通常由矿工程序设置）登录 Mwc Stratum 服务器。
 
 #### 请求
 
@@ -244,7 +244,7 @@ Stratum 服务器发起新消息。Stratum 服务器会自动发送工作给连�
    "params":{
       "login":"login",
       "pass":"password",
-      "agent":"grin-miner"
+      "agent":"mwc-miner"
    }
 }
 
@@ -505,7 +505,7 @@ Stratum 接受份额，但不是目前网络目标难度的有效 cuck(at)oo 解
 
 ## 错误信息
 
-Grin Stratum 协议部署包含以下错误信息：
+Mwc Stratum 协议部署包含以下错误信息：
 
 | Error code  | Error Message                          |
 | :---------- | :------------------------------------- |
@@ -531,4 +531,4 @@ Grin Stratum 协议部署包含以下错误信息：
 
 ## 部署参考
 
-挖矿部署请参阅：[mimblewimble/grin-miner](https://github.com/mimblewimble/grin-miner/blob/master/src/bin/client.rs)
+挖矿部署请参阅：[mimblewimble/mwc-miner](https://github.com/mwcproject/mwc-node-miner/blob/master/src/bin/client.rs)

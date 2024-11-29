@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,10 +21,10 @@ use self::core::global;
 use self::keychain::{ExtKeychain, Keychain};
 use self::pool::types::PoolError;
 use crate::common::*;
-use grin_core as core;
-use grin_keychain as keychain;
-use grin_pool as pool;
-use grin_util as util;
+use mwc_core as core;
+use mwc_keychain as keychain;
+use mwc_pool as pool;
+use mwc_util as util;
 use std::sync::Arc;
 
 #[test]

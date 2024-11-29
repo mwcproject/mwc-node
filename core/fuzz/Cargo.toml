@@ -1,14 +1,14 @@
 [package]
-name = "grin_core-fuzz"
+name = "mwc_core-fuzz"
 version = "0.0.3"
-authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
+authors = ["Mwc Developers <info@mwc.mw>"]
 publish = false
 edition = "2018"
 
 [dependencies]
 libfuzzer-sys = "0.4.0"
-grin_core = { path = ".."}
-grin_keychain = { path = "../../keychain"}
+mwc_core = { path = ".."}
+mwc_keychain = { path = "../../keychain"}
 
 # Prevent this from interfering with workspaces
 [workspace]

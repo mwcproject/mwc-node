@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +18,7 @@
 //!
 //! Cuckarooz is a variation of Cuckaroo that's tweaked at the third HardFork
 //! to maintain ASIC-Resistance, as introduced in
-//! https://forum.grin.mw/t/introducing-the-final-tweak-cuckarooz
+//! https://forum.mwc.mw/t/introducing-the-final-tweak-cuckarooz
 //! It completes the choices of undirected vs directed edges and bipartite vs
 //! monopartite graphs, and is named after the last letter of the alphabet
 //! accordingly.

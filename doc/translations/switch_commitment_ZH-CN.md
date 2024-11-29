@@ -31,7 +31,7 @@
 
 这个“盒子”的比喻在现实世界中看似不合理，但对椭圆曲线原理无可挑剔。
 
-如需了解关于 Pedersen Commitment 的详情，请参阅[《Mimblewimble 和 Grin 简介》](intro_ZH-CN.md)
+如需了解关于 Pedersen Commitment 的详情，请参阅[《Mimblewimble 和 Mwc 简介》](intro_ZH-CN.md)
 
 
 ## 秘诺方案特性：
@@ -73,7 +73,7 @@
 在设计加密货币时，这些特性扮演了哪些作用？
 
 **隐匿性**：
-对于 Grin 这类注重隐私的加密货币，秘诺方案用以保护交易数据。发送者执行发送一定数量的币，但对于他人具体金额保密（秘诺方案中的_隐匿性_特性）。
+对于 Mwc 这类注重隐私的加密货币，秘诺方案用以保护交易数据。发送者执行发送一定数量的币，但对于他人具体金额保密（秘诺方案中的_隐匿性_特性）。
 
 **绑定性**：
 同时，交易发起者之后也无法更改秘诺为不同的交易金额。如果更改秘诺成功，攻击者就可以花费比之前在一个 UTXO 生成的币多的金额，这样就凭空造出“假币”。更糟的是，由于金额隐藏，这种情况有可能无法被发现。
@@ -113,7 +113,7 @@ Pedersen Commitments 是**计算绑定**和**完美隐匿**。预设秘诺值为
 
     v*H + r*G ,  r*J
 
-如果我们储存额外的域 `r*J`，并且暂时忽略，我们可以将其视作 Pedersen Commitments 对待，未来随时可以激活完整 ElGamal commitment。主网上线前，[Grin 早期版本](https://github.com/mimblewimble/grin/blob/5a47a1710112153fb38e4406251c9874c366f1c0/core/src/core/transaction.rs#L812)就是这样部署。详情为：哈希值 `r*J`
+如果我们储存额外的域 `r*J`，并且暂时忽略，我们可以将其视作 Pedersen Commitments 对待，未来随时可以激活完整 ElGamal commitment。主网上线前，[Mwc 早期版本](https://github.com/mwcproject/mwc-node/blob/5a47a1710112153fb38e4406251c9874c366f1c0/core/src/core/transaction.rs#L812)就是这样部署。详情为：哈希值 `r*J`
 (_switch\_commit\_hash_) 添加到交易输出，但造成每个输出大小增加 32 字节。
 
 幸运的是，之后 Mimblewimble 邮件列表成员 Tim Ruffing 提出一个[绝妙的解决方案](https://lists.launchpad.net/mimblewimble/msg00479.html)（最初是 Pieter Wuille 所建议）。这一方案保持了相同优势，但不会对交易输出造成额外体积负担。
@@ -136,9 +136,9 @@ Pedersen Commitments 是**计算绑定**和**完美隐匿**。预设秘诺值为
 
 （使用椭圆曲线上的另外第三生成点 `J`），然后 `r` 因为仍旧随机分布，所以作为致盲因子仍完美有效，但我们现在看到的括号内哈希函数 (`v*H + r'*G  ,  r'*J`) 是 **ElGamal commitment**。
 
-这一绝妙的方案就从输出中移除了秘诺切换哈希（详情请参阅 [pull requests](https://github.com/mimblewimble/grin/issues/998)），这样就可以轻松纳入 Pedersen Commitment。
+这一绝妙的方案就从输出中移除了秘诺切换哈希（详情请参阅 [pull requests](https://github.com/mwcproject/mwc-node/issues/998)），这样就可以轻松纳入 Pedersen Commitment。
 
-这就是 Grin 目前的秘诺部署方案。Pedersen Commitment 用作机密交易 (Confidential Transaction)，但没有单纯随机选择致盲因子 `r`，而是在一个随机数 `r` 添加 ElGamal commitment 函数来计算（详情请参阅 [main_impl.h#L267](https://github.com/mimblewimble/secp256k1-zkp/blob/73617d0fcc4f51896cce4f9a1a6977a6958297f8/src/modules/commitment/main_impl.h#L267)）。
+这就是 Mwc 目前的秘诺部署方案。Pedersen Commitment 用作机密交易 (Confidential Transaction)，但没有单纯随机选择致盲因子 `r`，而是在一个随机数 `r` 添加 ElGamal commitment 函数来计算（详情请参阅 [main_impl.h#L267](https://github.com/mimblewimble/secp256k1-zkp/blob/73617d0fcc4f51896cce4f9a1a6977a6958297f8/src/modules/commitment/main_impl.h#L267)）。
 
 总之，秘诺切换是在论文[《秘诺切换：安全切换机密交易》](https://eprint.iacr.org/2017/237.pdf)中首次提出。“切换”一词来源于未来可以随意“扳动开关”这一想法。仅仅变更验证程序就可以更改秘诺绑定性和隐匿性特性强弱，未来的更改甚至可与创建的历史秘诺兼容。
 
@@ -146,7 +146,7 @@ Pedersen Commitments 是**计算绑定**和**完美隐匿**。预设秘诺值为
 
 ## 结语
 
-Grin 和其他加密货币一样，都使用 Pedersen Commitments。唯一的区别就是随机致盲因子 `r` 是利用 ElGamal
+Mwc 和其他加密货币一样，都使用 Pedersen Commitments。唯一的区别就是随机致盲因子 `r` 是利用 ElGamal
 commitment 方案生成。
 
 这种方案看上去没有差别，但有重要的安全措施：

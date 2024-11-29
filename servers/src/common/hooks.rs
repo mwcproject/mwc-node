@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,12 +26,12 @@ use crate::core::core;
 use crate::core::core::hash::Hashed;
 use crate::p2p::types::PeerAddr;
 use futures::TryFutureExt;
-use grin_util::ToHex;
 use hyper::client::HttpConnector;
 use hyper::header::HeaderValue;
 use hyper::Client;
 use hyper::{Body, Method, Request};
 use hyper_rustls::HttpsConnector;
+use mwc_util::ToHex;
 use serde::Serialize;
 use serde_json::{json, to_string};
 use std::time::Duration;

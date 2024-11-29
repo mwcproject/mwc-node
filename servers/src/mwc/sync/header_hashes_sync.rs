@@ -14,17 +14,17 @@
 
 use crate::chain::{self, pibd_params, SyncState, SyncStatus};
 use crate::core::core::hash::Hashed;
-use crate::grin::sync::sync_peers::SyncPeers;
-use crate::grin::sync::sync_utils;
-use crate::grin::sync::sync_utils::{CachedResponse, SyncRequestResponses};
+use crate::mwc::sync::sync_peers::SyncPeers;
+use crate::mwc::sync::sync_utils;
+use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses};
 use crate::p2p::{self, Capabilities, Peer};
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use grin_chain::txhashset::{HeaderHashesDesegmenter, HEADER_HASHES_STUB_TYPE};
-use grin_chain::Chain;
-use grin_core::core::hash::Hash;
-use grin_core::core::{Segment, SegmentType};
-use grin_p2p::{PeerAddr, ReasonForBan};
+use mwc_chain::txhashset::{HeaderHashesDesegmenter, HEADER_HASHES_STUB_TYPE};
+use mwc_chain::Chain;
+use mwc_core::core::hash::Hash;
+use mwc_core::core::{Segment, SegmentType};
+use mwc_p2p::{PeerAddr, ReasonForBan};
 use rand::seq::SliceRandom;
 use std::cmp;
 use std::collections::{HashMap, HashSet};

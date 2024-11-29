@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,18 +17,18 @@
 
 use crate::chain::txhashset::BitmapSegment;
 use crate::conn::Tracker;
-use crate::grin_core::core::hash::Hash;
-use crate::grin_core::core::transaction::{OutputIdentifier, TxKernel};
-use crate::grin_core::core::{
+use crate::mwc_core::core::hash::Hash;
+use crate::mwc_core::core::transaction::{OutputIdentifier, TxKernel};
+use crate::mwc_core::core::{
 	BlockHeader, Segment, SegmentIdentifier, Transaction, UntrustedBlock, UntrustedBlockHeader,
 	UntrustedCompactBlock,
 };
-use crate::grin_core::pow::Difficulty;
-use crate::grin_core::ser::{
+use crate::mwc_core::pow::Difficulty;
+use crate::mwc_core::ser::{
 	self, DeserializationMode, ProtocolVersion, Readable, Reader, StreamingReader, Writeable,
 	Writer,
 };
-use crate::grin_core::{consensus, global};
+use crate::mwc_core::{consensus, global};
 use crate::types::{
 	AttachmentMeta, AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan,
 	MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
@@ -40,10 +41,10 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::{fmt, thread, time::Duration};
 
-/// Grin's user agent with current version
+/// Mwc's user agent with current version
 pub const USER_AGENT: &str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
 
-// MWC - Magic number are updated to be different from grin.
+// MWC - Magic number are updated to be different from mwc.
 /// Magic numbers expected in the header of every message
 const OTHER_MAGIC: [u8; 2] = [21, 19];
 const FLOONET_MAGIC: [u8; 2] = [17, 36];

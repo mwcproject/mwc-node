@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -303,7 +304,7 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StratumServerConfig {
 	/// Run a stratum mining server (the only way to communicate to mine this
-	/// node via grin-miner
+	/// node via mwc-miner
 	pub enable_stratum_server: Option<bool>,
 
 	/// If enabled, the address and port to listen on

@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,16 +26,16 @@ use lru::LruCache;
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
 use crate::conn;
-use crate::grin_core::core::hash::{Hash, Hashed};
-use crate::grin_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::grin_core::pow::Difficulty;
-use crate::grin_core::ser::Writeable;
-use crate::grin_core::{core, global};
 use crate::handshake::Handshake;
 use crate::msg::{
 	self, ArchiveHeaderData, BanReason, GetPeerAddrs, HashHeadersData, Locator, Msg, Ping,
 	SegmentRequest, Type,
 };
+use crate::mwc_core::core::hash::{Hash, Hashed};
+use crate::mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use crate::mwc_core::pow::Difficulty;
+use crate::mwc_core::ser::Writeable;
+use crate::mwc_core::{core, global};
 use crate::protocol::Protocol;
 use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
@@ -42,8 +43,8 @@ use crate::types::{
 };
 use crate::util::secp::pedersen::RangeProof;
 use chrono::prelude::Utc;
-use grin_chain::txhashset::Segmenter;
-use grin_chain::SyncState;
+use mwc_chain::txhashset::Segmenter;
+use mwc_chain::SyncState;
 
 const MAX_TRACK_SIZE: usize = 200;
 const MAX_PEER_MSG_PER_MIN: u64 = 500;

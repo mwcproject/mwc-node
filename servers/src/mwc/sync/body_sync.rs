@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,12 +15,12 @@
 
 use crate::chain::{self, SyncState, SyncStatus};
 use crate::core::core::hash::{Hash, Hashed};
-use crate::grin::sync::sync_peers::SyncPeers;
-use crate::grin::sync::sync_utils;
-use crate::grin::sync::sync_utils::{RequestTracker, SyncRequestResponses};
+use crate::mwc::sync::sync_peers::SyncPeers;
+use crate::mwc::sync::sync_utils;
+use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses};
 use crate::p2p;
-use grin_chain::{pibd_params, Chain};
-use grin_p2p::{Peer, PeerAddr};
+use mwc_chain::{pibd_params, Chain};
+use mwc_p2p::{Peer, PeerAddr};
 use p2p::Capabilities;
 use rand::prelude::*;
 use std::cmp;

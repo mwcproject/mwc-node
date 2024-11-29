@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,15 +26,15 @@ use rpassword;
 use serde_json;
 
 use cuckoo_miner as cuckoo;
-use grin_chain as chain;
-use grin_core as core;
-use grin_miner_plugin as plugin;
-use grin_store as store;
-use grin_util::{self as util, ToHex};
-use grin_wallet as wallet;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_miner_plugin as plugin;
+use mwc_store as store;
+use mwc_util::{self as util, ToHex};
+use mwc_wallet as wallet;
 
-use grin_core::core::hash::Hashed;
-use grin_keychain::{BlindingFactor, ExtKeychain, Keychain};
+use mwc_core::core::hash::Hashed;
+use mwc_keychain::{BlindingFactor, ExtKeychain, Keychain};
 
 static BCHAIN_INFO_URL: &str = "https://blockchain.info/latestblock";
 static BCYPHER_URL: &str = "https://api.blockcypher.com/v1/btc/main";
@@ -92,7 +93,7 @@ fn main() {
 	{
 		// setup a tmp chain to set block header roots
 		core::global::set_local_chain_type(core::global::ChainTypes::UserTesting);
-		let tmp_chain = setup_chain(".grin.tmp", core::pow::mine_genesis_block().unwrap());
+		let tmp_chain = setup_chain(".mwc.tmp", core::pow::mine_genesis_block().unwrap());
 		tmp_chain.set_txhashset_roots(&mut gen).unwrap();
 	}
 

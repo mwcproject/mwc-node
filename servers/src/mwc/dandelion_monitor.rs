@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +20,7 @@ use crate::pool::{BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TxSou
 use crate::util::StopState;
 use crate::ServerTxPool;
 use chrono::prelude::Utc;
-use grin_util::secp::{ContextFlag, Secp256k1};
+use mwc_util::secp::{ContextFlag, Secp256k1};
 use rand::{thread_rng, Rng};
 use std::sync::Arc;
 use std::thread;

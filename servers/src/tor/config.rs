@@ -1,4 +1,5 @@
 // Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +16,7 @@
 //! Tor Configuration + Onion (Hidden) Service operations
 use crate::util::secp::key::SecretKey;
 use crate::Error;
-use grin_util::OnionV3Address;
+use mwc_util::OnionV3Address;
 
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
@@ -26,8 +27,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, MAIN_SEPARATOR};
 
-use grin_core::global;
-use grin_util::secp::Secp256k1;
+use mwc_core::global;
+use mwc_util::secp::Secp256k1;
 
 pub const SEC_KEY_FILE_COPY: &str = "secret_key";
 const SEC_KEY_FILE: &str = "hs_ed25519_secret_key";
@@ -345,7 +346,7 @@ pub fn _complete_tor_address(input: &str) -> Result<String, Error> {
 mod tests {
 	use super::*;
 
-	use grin_util::secp::ContextFlag;
+	use mwc_util::secp::ContextFlag;
 	use rand::rngs::mock::StepRng;
 
 	use crate::util::{self, secp};

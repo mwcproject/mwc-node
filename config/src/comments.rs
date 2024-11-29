@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -189,7 +190,7 @@ fn comments() -> HashMap<String, String> {
 		"
 #Whether to run a test miner. This is only for developer testing (chaintype
 #usertesting) at cuckoo 16, and will only mine into the default wallet port.
-#real mining should use the standalone grin-miner
+#real mining should use the standalone mwc-miner
 "
 		.to_string(),
 	);

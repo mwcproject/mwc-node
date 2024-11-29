@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use grin_chain as chain;
-use grin_core as core;
-use grin_util as util;
+use mwc_chain as chain;
+use mwc_core as core;
+use mwc_util as util;
 
 #[macro_use]
 extern crate log;
@@ -28,11 +29,11 @@ use crate::core::core::{
 };
 use crate::core::{genesis, global, pow};
 use crate::util::secp::pedersen::RangeProof;
-use grin_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
-use grin_chain::types::HEADERS_PER_BATCH;
-use grin_chain::{Error, Options, SyncState};
-use grin_util::secp::rand::Rng;
-use grin_util::StopState;
+use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
+use mwc_chain::types::HEADERS_PER_BATCH;
+use mwc_chain::{Error, Options, SyncState};
+use mwc_util::secp::rand::Rng;
+use mwc_util::StopState;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::collections::HashMap;

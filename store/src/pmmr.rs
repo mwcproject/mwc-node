@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,11 +17,11 @@
 use std::fs;
 use std::{io, time};
 
-use crate::grin_core::core::hash::{Hash, Hashed};
-use crate::grin_core::core::pmmr::{self, family, Backend};
-use crate::grin_core::core::BlockHeader;
-use crate::grin_core::ser::{PMMRable, ProtocolVersion};
 use crate::leaf_set::LeafSet;
+use crate::mwc_core::core::hash::{Hash, Hashed};
+use crate::mwc_core::core::pmmr::{self, family, Backend};
+use crate::mwc_core::core::BlockHeader;
+use crate::mwc_core::ser::{PMMRable, ProtocolVersion};
 use crate::prune_list::PruneList;
 use crate::types::{AppendOnlyFile, DataFile, SizeEntry, SizeInfo};
 use croaring::Bitmap;

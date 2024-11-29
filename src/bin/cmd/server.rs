@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Grin server commands processing
+/// Mwc server commands processing
 use std::process::exit;
 use std::thread;
 use std::time::Duration;
@@ -25,9 +26,9 @@ use crate::core::global;
 use crate::p2p::Seeding;
 use crate::servers;
 use crate::tui::ui;
-use grin_p2p::msg::PeerAddrs;
-use grin_p2p::PeerAddr;
-use grin_util::logger::LogEntry;
+use mwc_p2p::msg::PeerAddrs;
+use mwc_p2p::PeerAddr;
+use mwc_util::logger::LogEntry;
 use std::sync::mpsc;
 
 /// wrap below to allow UI to clean up on stop
@@ -92,8 +93,8 @@ fn start_server_tui(
 }
 
 /// Handles the server part of the command line, mostly running, starting and
-/// stopping the Grin blockchain server. Processes all the command line
-/// arguments to build a proper configuration and runs Grin with that
+/// stopping the Mwc blockchain server. Processes all the command line
+/// arguments to build a proper configuration and runs Mwc with that
 /// configuration.
 pub fn server_command(
 	server_args: Option<&ArgMatches<'_>>,

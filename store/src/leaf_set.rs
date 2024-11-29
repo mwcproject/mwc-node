@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -11,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The Grin leaf_set implementation.
+//! The Mwc leaf_set implementation.
 //! Compact (roaring) bitmap representing the set of leaf positions
 //! that exist and are not currently pruned in the MMR.
 
@@ -19,9 +20,9 @@ use std::path::{Path, PathBuf};
 
 use croaring::{Bitmap, Portable};
 
-use crate::grin_core::core::hash::Hashed;
-use crate::grin_core::core::pmmr;
-use crate::grin_core::core::BlockHeader;
+use crate::mwc_core::core::hash::Hashed;
+use crate::mwc_core::core::pmmr;
+use crate::mwc_core::core::BlockHeader;
 use crate::prune_list::PruneList;
 use crate::{read_bitmap, save_via_temp_file};
 

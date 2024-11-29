@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +26,7 @@ use crate::core::{consensus, core, global};
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
 use crate::ServerTxPool;
 use chrono::prelude::{DateTime, Utc};
-use grin_util::secp::Secp256k1;
+use mwc_util::secp::Secp256k1;
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -34,7 +35,7 @@ use std::thread;
 use std::time::Duration;
 
 /// Fees in block to use for coinbase amount calculation
-/// (Duplicated from Grin wallet project)
+/// (Duplicated from Mwc wallet project)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BlockFees {
 	/// fees

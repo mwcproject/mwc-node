@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -244,7 +245,7 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	pub peers: Weak<grin_p2p::Peers>,
+	pub peers: Weak<mwc_p2p::Peers>,
 	pub chain: Weak<Chain>,
 	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
@@ -257,7 +258,7 @@ where
 {
 	/// Create a new foreign API handler for GET methods
 	pub fn new(
-		peers: Weak<grin_p2p::Peers>,
+		peers: Weak<mwc_p2p::Peers>,
 		chain: Weak<Chain>,
 		tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 		sync_state: Weak<SyncState>,
@@ -418,7 +419,7 @@ fn response<T: Into<Body>>(status: StatusCode, text: T) -> Response<Body> {
 // Legacy V1 router
 /*#[deprecated(
 	since = "4.0.0",
-	note = "The V1 Node API will be removed in grin 5.0.0. Please migrate to the V2 API as soon as possible."
+	note = "The V1 Node API will be removed in mwc 5.0.0. Please migrate to the V2 API as soon as possible."
 )]*/
 pub fn build_router<B, P>(
 	chain: Arc<chain::Chain>,

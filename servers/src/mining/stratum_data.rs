@@ -156,7 +156,7 @@ impl WorkersList {
 	}
 
 	pub fn add_worker(&self, ip: String, tx: Tx, kill_switch: oneshot::Sender<()>) -> usize {
-		// Original grin code allways add a new item into the records. It is not good if we have unstable worker.
+		// Original mwc code allways add a new item into the records. It is not good if we have unstable worker.
 		// Or just somebody want to attack the mining pool.
 		// let worker_id = stratum_stats.worker_stats.len();
 

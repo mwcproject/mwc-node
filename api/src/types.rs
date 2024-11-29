@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +21,7 @@ use crate::core::{core, ser};
 use crate::p2p;
 use crate::util::secp::pedersen;
 use crate::util::{self, ToHex};
-use grin_p2p::libp2p_connection;
+use mwc_p2p::libp2p_connection;
 use serde;
 use serde::de::MapAccess;
 use serde::ser::SerializeStruct;

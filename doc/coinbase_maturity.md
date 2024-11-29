@@ -4,9 +4,9 @@
 
 Coinbase outputs (block rewards & fees) are "locked" and require 1,440 confirmations (i.e 24 hours worth of blocks added to the chain) before they mature sufficiently to be spendable. This is to reduce the risk of later txs being reversed if a chain reorganization occurs.
 
-Bitcoin does something very similar, requiring 100 confirmations (Bitcoin blocks are every 10 minutes, Grin blocks are every 60 seconds) before mining rewards can be spent.
+Bitcoin does something very similar, requiring 100 confirmations (Bitcoin blocks are every 10 minutes, Mwc blocks are every 60 seconds) before mining rewards can be spent.
 
-Grin enforces coinbase maturity in both the transaction pool and the block validation pipeline. A transaction containing an input spending a coinbase output cannot be added to the transaction pool until it has sufficiently matured (based on current chain height and the height of the block producing the coinbase output).
+Mwc enforces coinbase maturity in both the transaction pool and the block validation pipeline. A transaction containing an input spending a coinbase output cannot be added to the transaction pool until it has sufficiently matured (based on current chain height and the height of the block producing the coinbase output).
 Similarly a block is invalid if it contains an input spending a coinbase output before it has sufficiently matured, based on the height of the block containing the input and the height of the block that originally produced the coinbase output.
 
 The maturity rule *only* applies to coinbase outputs, regular transaction outputs have an effective lock height of zero.
@@ -19,7 +19,7 @@ An output consists of -
 
 To spend a regular transaction output two conditions must be met. We need to show the output has not been previously spent and we need to prove ownership of the output.
 
-A Grin transaction consists of the following -
+A Mwc transaction consists of the following -
 
 * A set of inputs, each referencing a previous output being spent.
 * A set of new outputs that include -
@@ -34,9 +34,9 @@ To prove ownership we can verify the transaction signature. We can *only* have s
 
 Knowing `v` and `r` we can uniquely identify the output (via its commitment) *and* we can prove ownership of the output by validating the signature on the original coinbase transaction.
 
-Grin does not permit duplicate commitments to exist in the Output set at the same time.
+Mwc does not permit duplicate commitments to exist in the Output set at the same time.
 But once an output is spent it is removed from the Output set and a duplicate commitment can be added back into the Output set.
-This is not necessarily recommended but Grin must handle this situation in a way that does not break consensus across the network.
+This is not necessarily recommended but Mwc must handle this situation in a way that does not break consensus across the network.
 
 Several things complicate this situation -
 
@@ -44,7 +44,7 @@ Several things complicate this situation -
 1. It is possible for a non-coinbase output to have the same value as a coinbase output.
 1. It is possible (but not recommended) for a miner to reuse private keys.
 
-Grin does not allow duplicate commitments to exist in the Output set simultaneously.
+Mwc does not allow duplicate commitments to exist in the Output set simultaneously.
 But the Output set is specific to the state of a particular chain fork. It *is* possible for duplicate *identical* commitments to exist simultaneously on different concurrent forks.
 And these duplicate commitments may have different "lock heights" at which they mature and become spendable on the different forks.
 

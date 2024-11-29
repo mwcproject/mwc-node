@@ -1,4 +1,5 @@
-// Copyright 2021 The Grin Developers
+// Copyright 2019 The Grin Developers
+// Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,8 +38,8 @@ use std::sync::Arc;
 
 use crate::txhashset::segments_cache::SegmentsCache;
 use croaring::Bitmap;
-use grin_util::secp::Secp256k1;
 use log::Level;
+use mwc_util::secp::Secp256k1;
 use tokio::runtime::Builder;
 use tokio::task;
 

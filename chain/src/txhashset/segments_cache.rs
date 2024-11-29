@@ -15,7 +15,7 @@
 //! Manages the segments caching
 
 use crate::error::Error;
-use grin_core::core::{Segment, SegmentIdentifier, SegmentType};
+use mwc_core::core::{Segment, SegmentIdentifier, SegmentType};
 use std::cmp;
 use std::collections::HashMap;
 
