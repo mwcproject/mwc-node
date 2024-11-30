@@ -185,6 +185,7 @@ pub struct Chain {
 	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
 	pibd_segmenter: Arc<RwLock<Option<Segmenter>>>,
 	pibd_desegmenter: Arc<RwLock<Option<Desegmenter>>>,
+	reset_pibd_desegmenter: Arc<RwLock<bool>>,
 	// POW verification function
 	pow_verifier: fn(&BlockHeader) -> Result<(), pow::Error>,
 	denylist: Arc<RwLock<Vec<Hash>>>,
@@ -244,6 +245,7 @@ impl Chain {
 			header_pmmr: Arc::new(RwLock::new(header_pmmr)),
 			pibd_segmenter: Arc::new(RwLock::new(None)),
 			pibd_desegmenter: Arc::new(RwLock::new(None)),
+			reset_pibd_desegmenter: Arc::new(RwLock::new(false)),
 			pow_verifier,
 			denylist: Arc::new(RwLock::new(vec![])),
 			archive_mode,
@@ -1309,6 +1311,7 @@ impl Chain {
 		self.reset_pibd_chain()?;
 		let desegmenter = self.init_desegmenter(archive_header_height, bitmap_root_hash)?;
 		*self.pibd_desegmenter.write() = Some(desegmenter);
+		*self.reset_pibd_desegmenter.write() = false;
 		Ok(())
 	}
 
@@ -1316,12 +1319,19 @@ impl Chain {
 	/// expensive an operation)
 	pub fn get_desegmenter(&self) -> Arc<RwLock<Option<Desegmenter>>> {
 		// Use our cached desegmenter if we have one and the associated header matches.
+		let mut reset_pibd_desegmenter = self.reset_pibd_desegmenter.write();
+		if *reset_pibd_desegmenter {
+			*self.pibd_desegmenter.write() = None;
+			*reset_pibd_desegmenter = false;
+		}
 		return self.pibd_desegmenter.clone();
 	}
 
 	/// Reset desegmenter associated with this seesion
 	pub fn reset_desegmenter(&self) {
-		*self.pibd_desegmenter.write() = None
+		// We can't modify desegmenter here, it is already locked.
+		//*self.pibd_desegmenter.write() = None
+		*self.reset_pibd_desegmenter.write() = true;
 	}
 
 	/// initialize a desegmenter, which is capable of extending the hashset by appending

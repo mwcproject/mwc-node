@@ -514,6 +514,9 @@ where
 		if !KERNEL_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
+		if self.sync_state.is_syncing() {
+			return Err(chain::Error::ChainInSync);
+		}
 		let segmenter = self.chain().segmenter()?;
 		let head_hash = segmenter.header().hash();
 		if head_hash != hash {
@@ -532,6 +535,9 @@ where
 	) -> Result<Segment<BitmapChunk>, chain::Error> {
 		if !BITMAP_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		if self.sync_state.is_syncing() {
+			return Err(chain::Error::ChainInSync);
 		}
 		let segmenter = self.chain().segmenter()?;
 		let head_hash = segmenter.header().hash();
@@ -552,6 +558,9 @@ where
 		if !OUTPUT_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
+		if self.sync_state.is_syncing() {
+			return Err(chain::Error::ChainInSync);
+		}
 		let segmenter = self.chain().segmenter()?;
 		let head_hash = segmenter.header().hash();
 		if head_hash != hash {
@@ -570,6 +579,9 @@ where
 	) -> Result<Segment<RangeProof>, chain::Error> {
 		if !RANGEPROOF_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		if self.sync_state.is_syncing() {
+			return Err(chain::Error::ChainInSync);
 		}
 		let segmenter = self.chain().segmenter()?;
 		let head_hash = segmenter.header().hash();
@@ -643,6 +655,9 @@ where
 	) -> Result<Segment<Hash>, chain::Error> {
 		if !HEADERS_HASHES_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
+		}
+		if self.sync_state.is_syncing() {
+			return Err(chain::Error::ChainInSync);
 		}
 		let segmenter = self.chain().segmenter()?;
 
