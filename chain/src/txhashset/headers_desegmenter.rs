@@ -382,8 +382,12 @@ impl<T> HeadersRecieveCache<T> {
 
 		let mut tip_height = tip.height;
 
-		while let Some((height, _)) = self.main_headers_cache.first_key_value() {
-			if *height < tip_height {
+		while let Some((height, (headers, _))) = self.main_headers_cache.first_key_value() {
+			debug_assert!(!headers.is_empty());
+			debug_assert!(headers.len() == HEADERS_PER_BATCH as usize);
+			debug_assert!(headers.first().unwrap().height == *height);
+			let ending_height = headers.last().expect("headers can't empty").height;
+			if ending_height <= tip_height {
 				// duplicated data, skipping it...
 				let _ = self.main_headers_cache.pop_first();
 				continue;
