@@ -513,15 +513,15 @@ where
 				&& item.height <= cache_head.height
 			{
 				let item_idx = (item.height - cache_tail.height) as usize;
-				assert!(cache_values[item_idx].height == item.height);
+				debug_assert!(cache_values[item_idx].height == item.height);
 				if cache_values[item_idx].hash == item.hash {
 					let base_idx = item_idx + last_n.len();
 					// cash hit, can finish the query
 					while let Some(h) = last_n.pop() {
-						assert!(cache_values.back().unwrap().height + 1 == h.height);
+						debug_assert!(cache_values.back().unwrap().height + 1 == h.height);
 						cache_values.push_back(h);
 					}
-					assert!(last_n.is_empty());
+					debug_assert!(last_n.is_empty());
 					for i in 0..needed_block_count {
 						last_n.push(cache_values[base_idx - i].clone());
 					}
@@ -543,7 +543,8 @@ where
 				let h1 = &last_n[i - 1];
 				let h2 = &last_n[i];
 				if h1.height <= h2.height
-					|| h1.hash.is_none() || h1.difficulty <= h2.difficulty
+					|| h1.hash.is_none()
+					|| h1.difficulty <= h2.difficulty
 					|| h1.timestamp <= h2.timestamp
 				{
 					last_n_valid = false;

@@ -240,7 +240,7 @@ impl HeaderSync {
 		header_hashes: Option<&HeaderHashesDesegmenter>,
 		peers: &Arc<p2p::Peers>,
 	) -> Result<(), mwc_chain::Error> {
-		assert!(!bhs.is_empty());
+		debug_assert!(!bhs.is_empty());
 
 		let series_key = (
 			peer.clone(),
@@ -249,7 +249,7 @@ impl HeaderSync {
 
 		let bhs = match self.headers_series_cache.remove(&series_key) {
 			Some((mut peer_bhs, _)) => {
-				assert!(!peer_bhs.is_empty());
+				debug_assert!(!peer_bhs.is_empty());
 				peer_bhs.extend_from_slice(bhs);
 				if remaining > 0 {
 					self.headers_series_cache.insert(

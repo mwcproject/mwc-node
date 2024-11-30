@@ -1920,7 +1920,7 @@ impl<'a> Extension<'a> {
 
 					let mut tx_kernels2process = Vec::with_capacity(tx_kernels.len());
 					tx_kernels2process.append(&mut tx_kernels);
-					assert!(tx_kernels.is_empty());
+					debug_assert!(tx_kernels.is_empty());
 					let handle = s.spawn(move |_| {
 						TxKernel::batch_sig_verify(&tx_kernels2process, secp)?;
 						Ok(tx_kernels2process.len())
@@ -2067,11 +2067,11 @@ impl<'a> Extension<'a> {
 
 					let mut commits2process = Vec::with_capacity(commits.len());
 					commits2process.append(&mut commits);
-					assert!(commits.is_empty());
+					debug_assert!(commits.is_empty());
 
 					let mut proofs2process = Vec::with_capacity(proofs.len());
 					proofs2process.append(&mut proofs);
-					assert!(proofs.is_empty());
+					debug_assert!(proofs.is_empty());
 
 					let handle = s.spawn(move |_| {
 						Output::batch_verify_proofs(&commits2process, &proofs2process, secp)?;

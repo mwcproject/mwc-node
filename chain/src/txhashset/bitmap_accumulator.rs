@@ -232,7 +232,7 @@ impl BitmapChunk {
 	/// Panics if idx is outside the valid range of bits in a chunk.
 	pub fn set(&mut self, idx: u64, value: bool) {
 		let idx = usize::try_from(idx).expect("usize from u64");
-		assert!(idx < Self::LEN_BITS);
+		debug_assert!(idx < Self::LEN_BITS);
 		self.0.set(idx, value)
 	}
 
@@ -376,7 +376,7 @@ impl From<BitmapSegment> for Segment<BitmapChunk> {
 		}
 
 		for (block_idx, block) in blocks.into_iter().enumerate() {
-			assert!(block.inner.len() <= BitmapBlock::NBITS as usize);
+			debug_assert!(block.inner.len() <= BitmapBlock::NBITS as usize);
 			let offset = block_idx * BitmapBlock::NCHUNKS;
 			for (i, _) in block.inner.iter().enumerate().filter(|&(_, v)| v) {
 				chunks
@@ -405,7 +405,7 @@ impl BitmapBlock {
 	const NCHUNKS: usize = Self::NBITS as usize / BitmapChunk::LEN_BITS;
 
 	fn new(n_chunks: usize) -> Self {
-		assert!(n_chunks <= BitmapBlock::NCHUNKS);
+		debug_assert!(n_chunks <= BitmapBlock::NCHUNKS);
 		Self {
 			inner: BitVec::from_elem(n_chunks * BitmapChunk::LEN_BITS, false),
 		}
@@ -413,9 +413,9 @@ impl BitmapBlock {
 
 	fn n_chunks(&self) -> usize {
 		let length = self.inner.len();
-		assert_eq!(length % BitmapChunk::LEN_BITS, 0);
+		debug_assert_eq!(length % BitmapChunk::LEN_BITS, 0);
 		let n_chunks = length / BitmapChunk::LEN_BITS;
-		assert!(n_chunks <= BitmapBlock::NCHUNKS);
+		debug_assert!(n_chunks <= BitmapBlock::NCHUNKS);
 		n_chunks
 	}
 }
@@ -423,8 +423,8 @@ impl BitmapBlock {
 impl Writeable for BitmapBlock {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		let length = self.inner.len();
-		assert!(length <= Self::NBITS as usize);
-		assert_eq!(length % BitmapChunk::LEN_BITS, 0);
+		debug_assert!(length <= Self::NBITS as usize);
+		debug_assert_eq!(length % BitmapChunk::LEN_BITS, 0);
 		writer.write_u8((length / BitmapChunk::LEN_BITS) as u8)?;
 
 		let count_pos = self.inner.iter().filter(|&v| v).count() as u32;
@@ -452,7 +452,7 @@ impl Writeable for BitmapBlock {
 			// Write raw bytes
 			Writeable::write(&BitmapBlockSerialization::Raw, writer)?;
 			let bytes = self.inner.to_bytes();
-			assert!(bytes.len() <= Self::NBITS as usize / 8);
+			debug_assert!(bytes.len() <= Self::NBITS as usize / 8);
 			writer.write_fixed_bytes(&bytes)?;
 		}
 

@@ -72,7 +72,7 @@ impl<T> SegmentsCache<T> {
 		requested: &HashMap<(SegmentType, u64), V>,
 	) -> Vec<SegmentIdentifier> {
 		let mut result = vec![];
-		assert!(max_elements > 0);
+		debug_assert!(max_elements > 0);
 		// We don't want keep too many segments into the cache. 100 seems like a very reasonable number. Segments are relatevly large.
 		let max_segm_idx = cmp::min(self.received_segments + 100, self.required_segments);
 		for idx in self.received_segments..max_segm_idx {

@@ -59,7 +59,7 @@ impl Worker {
 	}
 
 	pub fn update(&mut self, worker: &Worker) {
-		assert!(self.id == worker.id);
+		debug_assert!(self.id == worker.id);
 
 		// updating only 'data' releated data
 		self.agent = worker.agent.clone();
@@ -260,8 +260,8 @@ impl WorkersList {
 	}
 
 	pub fn update_network_hashrate(&self) {
-		let network_hashrate = 42.0
-			* (self
+		let network_hashrate =
+			42.0 * (self
 				.stratum_stats
 				.network_difficulty
 				.load(Ordering::Relaxed) as f64

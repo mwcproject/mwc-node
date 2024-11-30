@@ -214,7 +214,7 @@ struct Handler {
 
 impl Handler {
 	pub fn from_stratum(stratum: &StratumServer) -> Self {
-		assert!(
+		debug_assert!(
 			stratum.config.ip_pool_ban_history_s > 10,
 			"Stratum ip_pool_ban_history_s value must has reasonable value"
 		);

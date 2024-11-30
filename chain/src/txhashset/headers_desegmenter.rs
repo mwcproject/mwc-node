@@ -229,7 +229,7 @@ impl<T> HeadersRecieveCache<T> {
 		let base_hash_idx = tip.height / HEADERS_PER_BATCH as u64;
 
 		self.archive_header_height = header_desegmenter.target_height;
-		assert!(self.archive_header_height > 0);
+		debug_assert!(self.archive_header_height > 0);
 
 		for hash_idx in (0..=base_hash_idx).rev() {
 			let height = hash_idx * HEADERS_PER_BATCH as u64;
@@ -262,7 +262,7 @@ impl<T> HeadersRecieveCache<T> {
 
 	/// Whether we have all the segments we need
 	pub fn is_complete(&self) -> Result<bool, Error> {
-		assert!(self.archive_header_height > 0);
+		debug_assert!(self.archive_header_height > 0);
 		let collected_headers = self.chain.header_head()?.height;
 		Ok(self.archive_header_height <= collected_headers)
 	}

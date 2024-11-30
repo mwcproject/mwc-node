@@ -183,7 +183,7 @@ impl StateSync {
 					hash_counts.insert(hash.clone(), hash_counts.get(hash).unwrap_or(&0) + 1);
 				}
 				// selecting hash with max value
-				assert!(!hash_counts.is_empty());
+				debug_assert!(!hash_counts.is_empty());
 				let (best_root_hash, _) = hash_counts
 					.iter()
 					.max_by_key(|&(_, count)| count)
@@ -215,7 +215,7 @@ impl StateSync {
 
 		let desegmenter = self.chain.get_desegmenter();
 		let mut desegmenter = desegmenter.write();
-		assert!(desegmenter.is_some());
+		debug_assert!(desegmenter.is_some());
 		let desegmenter = desegmenter
 			.as_mut()
 			.expect("Desegmenter must be created at this point");
@@ -250,7 +250,7 @@ impl StateSync {
 			}
 		}
 
-		assert!(!desegmenter.is_complete());
+		debug_assert!(!desegmenter.is_complete());
 
 		self.request_tracker
 			.retain_expired(pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS, sync_peers);
@@ -302,8 +302,8 @@ impl StateSync {
 				Ok(segments) => {
 					for seg in segments {
 						let key = (seg.segment_type.clone(), seg.identifier.idx.clone());
-						assert!(!self.request_tracker.has_request(&key));
-						assert!(!root_hash_peers.is_empty());
+						debug_assert!(!self.request_tracker.has_request(&key));
+						debug_assert!(!root_hash_peers.is_empty());
 						let peer = root_hash_peers
 							.choose(&mut rng)
 							.expect("peers is not empty");
@@ -499,8 +499,8 @@ impl StateSync {
 												seg.segment_type.clone(),
 												seg.identifier.idx.clone(),
 											);
-											assert!(!self.request_tracker.has_request(&key));
-											assert!(!root_hash_peers.is_empty());
+											debug_assert!(!self.request_tracker.has_request(&key));
+											debug_assert!(!root_hash_peers.is_empty());
 											let peer = root_hash_peers
 												.choose(&mut rng)
 												.expect("peers is not empty");

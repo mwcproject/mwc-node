@@ -263,16 +263,16 @@ impl<T> Segment<T> {
 		leaf_data: Vec<T>,
 		proof: SegmentProof,
 	) -> Self {
-		assert_eq!(hash_pos.len(), hashes.len());
+		debug_assert_eq!(hash_pos.len(), hashes.len());
 		let mut last = 0;
 		for &pos in &hash_pos {
-			assert!(last == 0 || pos > last);
+			debug_assert!(last == 0 || pos > last);
 			last = pos;
 		}
-		assert_eq!(leaf_pos.len(), leaf_data.len());
+		debug_assert_eq!(leaf_pos.len(), leaf_data.len());
 		last = 0;
 		for &pos in &leaf_pos {
-			assert!(last == 0 || pos > last);
+			debug_assert!(last == 0 || pos > last);
 			last = pos;
 		}
 

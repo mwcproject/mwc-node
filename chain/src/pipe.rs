@@ -170,7 +170,7 @@ pub fn process_blocks_series(
 	ctx: &mut BlockContext<'_>,
 	secp: &Secp256k1,
 ) -> Result<(Option<Tip>, BlockHeader), Error> {
-	assert!(!blocks.is_empty());
+	debug_assert!(!blocks.is_empty());
 	let first_block = blocks.first().unwrap();
 	debug!(
 		"pipe: process_blocks_series {} at {}, blocks in series: {}",

@@ -139,7 +139,7 @@ impl SyncRunner {
 					self.peers.set_boost_peers_capabilities(peers_capabilities);
 				}
 				SyncRequestResponses::Syncing => {
-					assert!(self.sync_state.is_syncing());
+					debug_assert!(self.sync_state.is_syncing());
 					self.peers.set_boost_peers_capabilities(peers_capabilities);
 				}
 				SyncRequestResponses::SyncDone => {
@@ -158,7 +158,7 @@ impl SyncRunner {
 						}
 					}
 				}
-				_ => assert!(false),
+				_ => debug_assert!(false),
 			}
 
 			let new_state = self.sync_state.status();

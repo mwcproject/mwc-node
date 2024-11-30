@@ -113,7 +113,7 @@ impl HeadersHashSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &mut SyncPeers,
 	) {
-		assert!(self.headers_hash_desegmenter.is_some());
+		debug_assert!(self.headers_hash_desegmenter.is_some());
 
 		if let Some(headers_hash_desegmenter) = self.headers_hash_desegmenter.as_ref() {
 			let root_hash = headers_hash_desegmenter.get_headers_root_hash();
@@ -207,7 +207,7 @@ impl HeadersHashSync {
 					hash_counts.insert(hash.clone(), hash_counts.get(hash).unwrap_or(&0) + 1);
 				}
 				// selecting hash with max value
-				assert!(!hash_counts.is_empty());
+				debug_assert!(!hash_counts.is_empty());
 				let (best_root_hash, _) = hash_counts
 					.iter()
 					.max_by_key(|&(_, count)| count)
@@ -269,8 +269,8 @@ impl HeadersHashSync {
 			return SyncRequestResponses::Syncing;
 		}
 
-		assert!(self.headers_hash_desegmenter.is_some());
-		assert!(self.target_archive_height > 0);
+		debug_assert!(self.headers_hash_desegmenter.is_some());
+		debug_assert!(self.target_archive_height > 0);
 
 		// Headers hashes are here, we can go forward and request some headers.
 		let headers_hash_desegmenter = self
@@ -372,7 +372,7 @@ impl HeadersHashSync {
 			let mut rng = rand::thread_rng();
 
 			for seg in segments {
-				assert!(!self
+				debug_assert!(!self
 					.requested_segments
 					.contains_key(&(HEADER_HASHES_STUB_TYPE, seg.idx)));
 
@@ -393,7 +393,7 @@ impl HeadersHashSync {
 						);
 						error!("{}", msg);
 						sync_peers.report_no_response(&peer.info.addr, msg); // it is expired
-						                             // no retry on error. Will retty on the next cycle.
+						                                   // no retry on error. Will retty on the next cycle.
 					}
 				}
 			}

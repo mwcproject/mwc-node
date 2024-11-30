@@ -373,7 +373,7 @@ fn listen_for_addrs(
 	let addrs: Vec<PeerAddr> = rx.try_iter().collect();
 
 	// If we have a healthy number of outbound peers then we are done here.
-	assert!(!peers.enough_outbound_peers());
+	debug_assert!(!peers.enough_outbound_peers());
 
 	let now = Utc::now();
 	for addr in addrs.into_iter().as_ref() {

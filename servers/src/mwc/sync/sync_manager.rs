@@ -134,7 +134,7 @@ impl SyncManager {
 			}
 			SyncRequestResponses::HeadersPibdReady | SyncRequestResponses::HeadersHashReady => {}
 			_ => {
-				assert!(false);
+				debug_assert!(false);
 			}
 		}
 
@@ -163,7 +163,7 @@ impl SyncManager {
 				)
 			}
 			SyncRequestResponses::WaitingForHeadersHash => {
-				assert!(false); // should never happen, headers_hashes above must be in sync or wait for peers
+				debug_assert!(false); // should never happen, headers_hashes above must be in sync or wait for peers
 				return (
 					SyncRequestResponses::WaitingForHeadersHash,
 					HeadersHashSync::get_peer_capabilities(),
@@ -174,7 +174,7 @@ impl SyncManager {
 			}
 			SyncRequestResponses::HeadersReady => headers_ready = true,
 			_ => {
-				assert!(false);
+				debug_assert!(false);
 			}
 		}
 
@@ -205,7 +205,7 @@ impl SyncManager {
 			}
 			SyncRequestResponses::StatePibdReady => {}
 			_ => {
-				assert!(false);
+				debug_assert!(false);
 			}
 		}
 
@@ -249,12 +249,12 @@ impl SyncManager {
 						StateSync::get_peer_capabilities(),
 					);
 				}
-				_ => assert!(false),
+				_ => debug_assert!(false),
 			},
 			Err(e) => error!("Body request is failed, {}", e),
 		}
 
-		assert!(false);
+		debug_assert!(false);
 		(SyncRequestResponses::Syncing, Capabilities::UNKNOWN)
 	}
 

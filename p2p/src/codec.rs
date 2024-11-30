@@ -91,7 +91,7 @@ impl Codec {
 	/// Inform codec next `len` bytes are an attachment
 	/// Panics if already reading a body
 	pub fn expect_attachment(&mut self, meta: Arc<AttachmentMeta>) {
-		assert!(self.state.is_none());
+		debug_assert!(self.state.is_none());
 		self.state = Attachment(meta.size, meta, Instant::now());
 	}
 

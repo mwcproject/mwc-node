@@ -388,7 +388,7 @@ impl Desegmenter {
 	) -> Result<Vec<SegmentTypeIdentifier>, Error> {
 		// First check for required bitmap elements
 		if self.bitmap_cache.is_none() {
-			assert!(!self.bitmap_segment_cache.is_complete());
+			debug_assert!(!self.bitmap_segment_cache.is_complete());
 			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
 			for id in self.bitmap_segment_cache.next_desired_segments(
 				pibd_params::BITMAP_SEGMENT_HEIGHT,
@@ -421,7 +421,7 @@ impl Desegmenter {
 
 			let max_elements = need_requests / non_complete_num;
 			let mut extra_for_first = need_requests % non_complete_num;
-			assert!(max_elements + extra_for_first > 0);
+			debug_assert!(max_elements + extra_for_first > 0);
 
 			if !self.output_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
 				for id in self.output_segment_cache.next_desired_segments(
@@ -446,7 +446,7 @@ impl Desegmenter {
 			}
 
 			if !self.kernel_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
-				assert!(extra_for_first <= 1);
+				debug_assert!(extra_for_first <= 1);
 				for id in self.kernel_segment_cache.next_desired_segments(
 					pibd_params::KERNEL_SEGMENT_HEIGHT,
 					max_elements + extra_for_first,
@@ -457,7 +457,7 @@ impl Desegmenter {
 				//extra_for_first = 0;
 			}
 
-			assert!(result.len() <= need_requests);
+			debug_assert!(result.len() <= need_requests);
 
 			return Ok(result);
 		}
