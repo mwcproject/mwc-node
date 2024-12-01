@@ -59,7 +59,8 @@ impl BodySync {
 		let head = self.chain.head()?;
 		let header_head = self.chain.header_head()?;
 
-		if head.last_block_h == header_head.last_block_h {
+		// Last few blocks no need to sync, new mined blocks will be synced regular way
+		if head.height > header_head.height.saturating_sub(3) {
 			// sync is done, we are ready.
 			return Ok(SyncRequestResponses::BodyReady);
 		}

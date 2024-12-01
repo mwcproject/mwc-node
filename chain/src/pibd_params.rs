@@ -49,3 +49,31 @@ pub const BLOCKS_REQUEST_PER_PEER: usize = 30;
 
 /// Maxumum number of blocks that can await into the DB as orphans
 pub const BLOCKS_REQUEST_LIMIT: usize = 500;
+
+#[cfg(test)]
+mod tests {
+	use sysinfo::{
+		Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System,
+	};
+
+	#[test]
+	fn check_sys_info() {
+		// Please note that we use "new_all" to ensure that all lists of
+		// CPUs and processes are filled!
+		let sys = System::new_with_specifics(
+			RefreshKind::new().with_memory(MemoryRefreshKind::everything()),
+		);
+
+		println!("=> system:");
+		// RAM and swap information:
+		println!("total memory: {} bytes", sys.total_memory());
+		println!("used memory : {} bytes", sys.used_memory());
+		println!("available memory : {} bytes", sys.available_memory());
+		println!("total swap  : {} bytes", sys.total_swap());
+		println!("used swap   : {} bytes", sys.used_swap());
+		println!("free swap   : {} bytes", sys.free_swap());
+
+		let num_cores = num_cpus::get();
+		println!("CPU Cores   : {} cores", num_cores);
+	}
+}
