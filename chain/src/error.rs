@@ -202,6 +202,9 @@ pub enum Error {
 	/// Invalid bitmap root hash. Probably old traffic or somebody attacking as
 	#[error("Invalid bitmap root hash")]
 	InvalidBitmapRoot,
+	/// Outputs bitmaps is not ready
+	#[error("Outputs bitmap is not build yet")]
+	BitmapNotReady,
 	/// Invalid headers root hash. Probably old traffic or somebody attacking as
 	#[error("Invalid headers root hash")]
 	InvalidHeadersRoot,

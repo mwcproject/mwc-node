@@ -48,7 +48,6 @@ use enum_primitive::FromPrimitive;
 #[derive(Clone)]
 pub struct BitmapAccumulator {
 	backend: VecBackend<BitmapChunk>,
-	bitmap: Option<Bitmap>,
 }
 
 impl BitmapAccumulator {
@@ -58,7 +57,6 @@ impl BitmapAccumulator {
 	pub fn new() -> BitmapAccumulator {
 		BitmapAccumulator {
 			backend: VecBackend::new(),
-			bitmap: None,
 		}
 	}
 
@@ -160,7 +158,6 @@ impl BitmapAccumulator {
 		let rewind_pos = pmmr::insertion_to_pmmr_index(chunk_idx);
 		pmmr.rewind(rewind_pos, &Bitmap::new())
 			.map_err(|e| Error::Other(format!("pmmr rewind error, {}", e)))?;
-		self.bitmap = None;
 		Ok(())
 	}
 
@@ -173,14 +170,12 @@ impl BitmapAccumulator {
 		for _ in current_chunk_idx..chunk_idx {
 			self.append_chunk(BitmapChunk::new())?;
 		}
-		self.bitmap = None;
 		Ok(())
 	}
 
 	/// Append a new chunk to the BitmapAccumulator.
 	/// Append parent hashes (if any) as necessary to build associated peak.
 	pub fn append_chunk(&mut self, chunk: BitmapChunk) -> Result<u64, Error> {
-		self.bitmap = None;
 		let last_pos = self.backend.size();
 		PMMR::at(&mut self.backend, last_pos)
 			.push(&chunk)
@@ -198,18 +193,14 @@ impl BitmapAccumulator {
 	}
 
 	/// Return a raw in-memory bitmap of this accumulator.
-	pub fn get_bitmap(&mut self) -> &Bitmap {
-		if self.bitmap.is_none() {
-			let mut bitmap = Bitmap::new();
-			for (chunk_index, chunk_pos) in self.backend.leaf_pos_iter().enumerate() {
-				//TODO: Unwrap
-				let chunk = self.backend.get_data(chunk_pos as u64).unwrap();
-				let additive = chunk.set_iter(chunk_index * 1024).collect::<Vec<u32>>();
-				bitmap.add_many(&additive);
-			}
-			self.bitmap = Some(bitmap);
+	pub fn build_bitmap(&self) -> Bitmap {
+		let mut bitmap = Bitmap::new();
+		for (chunk_index, chunk_pos) in self.backend.leaf_pos_iter().enumerate() {
+			let chunk = self.backend.get_data(chunk_pos as u64).unwrap();
+			let additive = chunk.set_iter(chunk_index * 1024).collect::<Vec<u32>>();
+			bitmap.add_many(&additive);
 		}
-		self.bitmap.as_ref().expect("Call prepare_bitmap first!")
+		bitmap
 	}
 }
 
@@ -249,6 +240,20 @@ impl BitmapChunk {
 			.enumerate()
 			.filter(|(_, val)| *val)
 			.map(move |(idx, _)| (idx as u32 + idx_offset as u32))
+	}
+
+	/// Convert the BitVec to a hexadecimal string
+	pub fn to_hex(&self) -> String {
+		// Convert the BitVec to a vector of bytes
+		let bytes = self.0.to_bytes();
+
+		// Format the bytes as a hexadecimal string
+		let hex_str = bytes
+			.iter()
+			.map(|byte| format!("{:02X}", byte))
+			.collect::<Vec<_>>()
+			.join("");
+		return format!("BitmapChunk(Len:{}  Data:{})", self.0.len(), hex_str);
 	}
 }
 

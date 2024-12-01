@@ -1266,7 +1266,7 @@ impl Chain {
 
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
 				ext.extension.rewind(header, batch)?;
-				Ok(ext.extension.bitmap_accumulator())
+				Ok(ext.extension.build_bitmap_accumulator()?)
 			})?
 		};
 

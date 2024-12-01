@@ -53,16 +53,15 @@ pub struct Desegmenter {
 
 	genesis: BlockHeader,
 
-	bitmap_accumulator: Arc<RwLock<BitmapAccumulator>>,
-	bitmap_mmr_size: u64,
+	outputs_bitmap_accumulator: Arc<RwLock<BitmapAccumulator>>,
+	outputs_bitmap_mmr_size: u64,
+	/// In-memory 'raw' bitmap corresponding to contents of bitmap accumulator
+	outputs_bitmap: Option<Bitmap>,
 
 	bitmap_segment_cache: SegmentsCache<BitmapChunk>,
 	output_segment_cache: SegmentsCache<OutputIdentifier>,
 	rangeproof_segment_cache: SegmentsCache<RangeProof>,
 	kernel_segment_cache: SegmentsCache<TxKernel>,
-
-	/// In-memory 'raw' bitmap corresponding to contents of bitmap accumulator
-	bitmap_cache: Option<Bitmap>,
 }
 
 impl Desegmenter {
@@ -109,8 +108,8 @@ impl Desegmenter {
 			bitmap_root_hash,
 			store,
 			genesis,
-			bitmap_accumulator: Arc::new(RwLock::new(BitmapAccumulator::new())),
-			bitmap_mmr_size,
+			outputs_bitmap_accumulator: Arc::new(RwLock::new(BitmapAccumulator::new())),
+			outputs_bitmap_mmr_size: bitmap_mmr_size,
 			bitmap_segment_cache: SegmentsCache::new(
 				SegmentType::Bitmap,
 				total_bitmap_segment_count,
@@ -128,7 +127,7 @@ impl Desegmenter {
 				total_kernel_segment_count,
 			),
 
-			bitmap_cache: None,
+			outputs_bitmap: None,
 		}
 	}
 
@@ -143,8 +142,8 @@ impl Desegmenter {
 		self.output_segment_cache.reset();
 		self.rangeproof_segment_cache.reset();
 		self.kernel_segment_cache.reset();
-		self.bitmap_cache = None;
-		self.bitmap_accumulator = Arc::new(RwLock::new(BitmapAccumulator::new()));
+		self.outputs_bitmap = None;
+		self.outputs_bitmap_accumulator = Arc::new(RwLock::new(BitmapAccumulator::new()));
 	}
 
 	/// Return reference to the header used for validation
@@ -186,7 +185,7 @@ impl Desegmenter {
 		let mut _batch = self.store.batch_write()?;
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut _batch, |ext, _| {
 			let extension = &mut ext.extension;
-			if let Some(b) = &self.bitmap_cache {
+			if let Some(b) = &self.outputs_bitmap {
 				extension.update_leaf_sets(&b)?;
 			}
 			Ok(())
@@ -387,7 +386,7 @@ impl Desegmenter {
 		requested: &HashMap<(SegmentType, u64), V>,
 	) -> Result<Vec<SegmentTypeIdentifier>, Error> {
 		// First check for required bitmap elements
-		if self.bitmap_cache.is_none() {
+		if self.outputs_bitmap.is_none() {
 			debug_assert!(!self.bitmap_segment_cache.is_complete());
 			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
 			for id in self.bitmap_segment_cache.next_desired_segments(
@@ -468,24 +467,9 @@ impl Desegmenter {
 	fn finalize_bitmap(&mut self) -> Result<(), Error> {
 		trace!(
 			"pibd_desegmenter: finalizing and caching bitmap - accumulator root: {}",
-			self.bitmap_accumulator.read().root()
+			self.outputs_bitmap_accumulator.read().root()
 		);
-		self.bitmap_cache = Some(self.bitmap_accumulator.write().get_bitmap().clone());
-
-		// Set the txhashset's bitmap accumulator
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch_write()?;
-		txhashset::extending(
-			&mut header_pmmr,
-			&mut txhashset,
-			&mut batch,
-			|ext, _batch| {
-				let extension = &mut ext.extension;
-				extension.set_bitmap_accumulator(self.bitmap_accumulator.clone());
-				Ok(())
-			},
-		)?;
+		self.outputs_bitmap = Some(self.outputs_bitmap_accumulator.read().build_bitmap());
 		Ok(())
 	}
 
@@ -531,7 +515,7 @@ impl Desegmenter {
 
 		trace!("pibd_desegmenter: add bitmap segment");
 		segment.validate(
-			self.bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
+			self.outputs_bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
 			None,
 			&self.bitmap_root_hash,
 		)?;
@@ -540,7 +524,7 @@ impl Desegmenter {
 
 		{
 			let bitmap_segment_cache = &mut self.bitmap_segment_cache;
-			let mut bitmap_accumulator = self.bitmap_accumulator.write();
+			let mut bitmap_accumulator = self.outputs_bitmap_accumulator.write();
 
 			bitmap_segment_cache.apply_new_segment(segment, |segm_v| {
 				for segm in segm_v {
@@ -578,40 +562,45 @@ impl Desegmenter {
 			return Err(Error::InvalidSegmentHeght);
 		}
 
-		trace!("pibd_desegmenter: add output segment");
-		segment.validate(
-			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
-			self.bitmap_cache.as_ref(),
-			&self.archive_header.output_root, // Output root we're checking for
-		)?;
+		match self.outputs_bitmap.as_ref() {
+			Some(outputs_bitmap) => {
+				trace!("pibd_desegmenter: add output segment");
+				segment.validate(
+					self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
+					Some(outputs_bitmap),
+					&self.archive_header.output_root, // Output root we're checking for
+				)?;
 
-		let output_segment_cache = &mut self.output_segment_cache;
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch_write()?;
+				let output_segment_cache = &mut self.output_segment_cache;
+				let mut header_pmmr = self.header_pmmr.write();
+				let mut txhashset = self.txhashset.write();
+				let mut batch = self.store.batch_write()?;
 
-		output_segment_cache.apply_new_segment(segment, |segm| {
-			if log_enabled!(Level::Trace) {
-				trace!(
-					"pibd_desegmenter: applying output segment at segment idx {}-{}",
-					segm.first().unwrap().identifier().idx,
-					segm.last().unwrap().identifier().idx
-				);
-			}
-			txhashset::extending(
-				&mut header_pmmr,
-				&mut txhashset,
-				&mut batch,
-				|ext, _batch| {
-					let extension = &mut ext.extension;
-					extension.apply_output_segments(segm)?;
+				output_segment_cache.apply_new_segment(segment, |segm| {
+					if log_enabled!(Level::Trace) {
+						trace!(
+							"pibd_desegmenter: applying output segment at segment idx {}-{}",
+							segm.first().unwrap().identifier().idx,
+							segm.last().unwrap().identifier().idx
+						);
+					}
+					txhashset::extending(
+						&mut header_pmmr,
+						&mut txhashset,
+						&mut batch,
+						|ext, _batch| {
+							let extension = &mut ext.extension;
+							extension.apply_output_segments(segm, outputs_bitmap)?;
+							Ok(())
+						},
+					)?;
 					Ok(())
-				},
-			)?;
-			Ok(())
-		})?;
+				})?;
 
-		Ok(())
+				return Ok(());
+			}
+			None => return Err(Error::BitmapNotReady),
+		}
 	}
 
 	/// Adds a Rangeproof segment
@@ -628,37 +617,42 @@ impl Desegmenter {
 			return Err(Error::InvalidSegmentHeght);
 		}
 
-		trace!("pibd_desegmenter: add rangeproof segment");
-		segment.validate(
-			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
-			self.bitmap_cache.as_ref(),
-			&self.archive_header.range_proof_root, // Range proof root we're checking for
-		)?;
+		match self.outputs_bitmap.as_ref() {
+			Some(outputs_bitmap) => {
+				trace!("pibd_desegmenter: add rangeproof segment");
+				segment.validate(
+					self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
+					self.outputs_bitmap.as_ref(),
+					&self.archive_header.range_proof_root, // Range proof root we're checking for
+				)?;
 
-		let rangeproof_segment_cache = &mut self.rangeproof_segment_cache;
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch_write()?;
+				let rangeproof_segment_cache = &mut self.rangeproof_segment_cache;
+				let mut header_pmmr = self.header_pmmr.write();
+				let mut txhashset = self.txhashset.write();
+				let mut batch = self.store.batch_write()?;
 
-		rangeproof_segment_cache.apply_new_segment(segment, |seg| {
-			trace!(
-				"pibd_desegmenter: applying rangeproof segment at segment idx {}-{}",
-				seg.first().unwrap().identifier().idx,
-				seg.last().unwrap().identifier().idx
-			);
-			txhashset::extending(
-				&mut header_pmmr,
-				&mut txhashset,
-				&mut batch,
-				|ext, _batch| {
-					let extension = &mut ext.extension;
-					extension.apply_rangeproof_segments(seg)?;
+				rangeproof_segment_cache.apply_new_segment(segment, |seg| {
+					trace!(
+						"pibd_desegmenter: applying rangeproof segment at segment idx {}-{}",
+						seg.first().unwrap().identifier().idx,
+						seg.last().unwrap().identifier().idx
+					);
+					txhashset::extending(
+						&mut header_pmmr,
+						&mut txhashset,
+						&mut batch,
+						|ext, _batch| {
+							let extension = &mut ext.extension;
+							extension.apply_rangeproof_segments(seg, outputs_bitmap)?;
+							Ok(())
+						},
+					)?;
 					Ok(())
-				},
-			)?;
-			Ok(())
-		})?;
-		Ok(())
+				})?;
+				Ok(())
+			}
+			None => return Err(Error::BitmapNotReady),
+		}
 	}
 
 	/// Adds a Kernel segment

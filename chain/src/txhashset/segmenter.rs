@@ -31,7 +31,7 @@ pub struct Segmenter {
 	// every 512th header (HEADERS_PER_BATCH) must be here, we don't need all header hashes
 	header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
 	txhashset: Arc<RwLock<TxHashSet>>,
-	bitmap_snapshot: Arc<RwLock<BitmapAccumulator>>,
+	bitmap_snapshot: Arc<BitmapAccumulator>,
 	header: BlockHeader,
 }
 
@@ -40,13 +40,13 @@ impl Segmenter {
 	pub fn new(
 		header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
 		txhashset: Arc<RwLock<TxHashSet>>,
-		bitmap_snapshot: Arc<RwLock<BitmapAccumulator>>,
+		bitmap_snapshot: BitmapAccumulator,
 		header: BlockHeader,
 	) -> Segmenter {
 		Segmenter {
 			header_pmmr,
 			txhashset,
-			bitmap_snapshot,
+			bitmap_snapshot: Arc::new(bitmap_snapshot),
 			header,
 		}
 	}
@@ -67,8 +67,7 @@ impl Segmenter {
 
 	/// The root of the bitmap snapshot PMMR.
 	pub fn bitmap_root(&self) -> Result<Hash, Error> {
-		let bitmap_snapshot = self.bitmap_snapshot.read();
-		let pmmr = bitmap_snapshot.readonly_pmmr();
+		let pmmr = self.bitmap_snapshot.readonly_pmmr();
 		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
 		Ok(root)
 	}
@@ -77,8 +76,7 @@ impl Segmenter {
 	/// the corresponding output root.
 	pub fn bitmap_segment(&self, id: SegmentIdentifier) -> Result<Segment<BitmapChunk>, Error> {
 		let now = Instant::now();
-		let bitmap_snapshot = self.bitmap_snapshot.read();
-		let bitmap_pmmr = bitmap_snapshot.readonly_pmmr();
+		let bitmap_pmmr = self.bitmap_snapshot.readonly_pmmr();
 		let segment = Segment::from_pmmr(id, &bitmap_pmmr, false)?;
 		debug!(
 			"bitmap_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
