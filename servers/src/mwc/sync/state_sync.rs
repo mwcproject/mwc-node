@@ -17,7 +17,7 @@ use crate::chain::{self, pibd_params, SyncState};
 use crate::core::core::{hash::Hashed, pmmr::segment::SegmentType};
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
-use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses};
+use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses, SyncResponse};
 use crate::p2p::{self, Capabilities, Peer};
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
@@ -68,7 +68,7 @@ impl StateSync {
 		}
 	}
 
-	pub fn get_peer_capabilities() -> Capabilities {
+	fn get_peer_capabilities() -> Capabilities {
 		return Capabilities::PIBD_HIST;
 	}
 
@@ -79,10 +79,18 @@ impl StateSync {
 		sync_peers: &mut SyncPeers,
 		stop_state: Arc<StopState>,
 		best_height: u64,
-	) -> SyncRequestResponses {
+	) -> SyncResponse {
 		// In case of archive mode, this step is must be skipped. Body sync will catch up.
 		if self.is_complete || self.chain.archive_mode() {
-			return SyncRequestResponses::StatePibdReady;
+			return SyncResponse::new(
+				SyncRequestResponses::StatePibdReady,
+				Capabilities::UNKNOWN,
+				format!(
+					"is_complete={}  archive_mode={}",
+					self.is_complete,
+					self.chain.archive_mode()
+				),
+			);
 		}
 
 		// Let's check if we need to calculate/update archive height.
@@ -96,7 +104,14 @@ impl StateSync {
 		}
 
 		if self.target_archive_height == 0 {
-			return SyncRequestResponses::WaitingForPeers;
+			return SyncResponse::new(
+				SyncRequestResponses::WaitingForPeers,
+				Self::get_peer_capabilities(),
+				format!(
+					"best_height={}  target_archive_height={}",
+					best_height, target_archive_height
+				),
+			);
 		}
 
 		// check if data is ready
@@ -105,7 +120,14 @@ impl StateSync {
 				// We are good, no needs to PIBD sync
 				info!("No needs to sync, data until archive is ready");
 				self.is_complete = true;
-				return SyncRequestResponses::StatePibdReady;
+				return SyncResponse::new(
+					SyncRequestResponses::StatePibdReady,
+					Capabilities::UNKNOWN,
+					format!(
+						"head.height={}  target_archive_height={}",
+						head.height, target_archive_height
+					),
+				);
 			}
 		}
 
@@ -113,7 +135,14 @@ impl StateSync {
 		let archive_header = match self.chain.get_header_by_height(self.target_archive_height) {
 			Ok(archive_header) => archive_header,
 			Err(_) => {
-				return SyncRequestResponses::WaitingForHeaders;
+				return SyncResponse::new(
+					SyncRequestResponses::WaitingForHeaders,
+					Self::get_peer_capabilities(),
+					format!(
+						"Header at height {} doesn't exist",
+						self.target_archive_height
+					),
+				);
 			}
 		};
 
@@ -127,11 +156,14 @@ impl StateSync {
 			&self.request_tracker.get_peers_queue_size(),
 		);
 		if peers.is_empty() {
-			if excluded_requests == 0 {
-				return SyncRequestResponses::WaitingForPeers;
-			} else {
-				return SyncRequestResponses::Syncing;
-			}
+			return SyncResponse::new(
+				SyncRequestResponses::WaitingForPeers,
+				Self::get_peer_capabilities(),
+				format!(
+					"No peers to make requests. Waiting Q size: {}",
+					self.request_tracker.get_requests_num()
+				),
+			);
 		}
 
 		let now = Utc::now();
@@ -205,14 +237,26 @@ impl StateSync {
 						if let Err(e) = self.chain.reset_pibd_chain() {
 							error!("reset_pibd_chain failed with error: {}", e);
 						}
-						return SyncRequestResponses::Syncing;
+						return SyncResponse::new(
+							SyncRequestResponses::Syncing,
+							Self::get_peer_capabilities(),
+							format!("Failed to create PIBD desgmenter, {}", e),
+						);
 					}
 				}
 
 				self.request_tracker.clear();
 			// continue with requests...
 			} else {
-				return SyncRequestResponses::Syncing;
+				return SyncResponse::new(
+					SyncRequestResponses::Syncing,
+					Self::get_peer_capabilities(),
+					format!(
+						"Waiting for PIBD root. Get respoinses {} from {}",
+						self.responded_root_hash.len(),
+						self.requested_root_hash.len()
+					),
+				);
 			}
 		}
 
@@ -231,7 +275,14 @@ impl StateSync {
 					e
 				);
 				self.ban_this_session(desegmenter, sync_peers);
-				return SyncRequestResponses::Syncing;
+				return SyncResponse::new(
+					SyncRequestResponses::Syncing,
+					Self::get_peer_capabilities(),
+					format!(
+						"Restarting because check_update_leaf_set_state failed with error {}",
+						e
+					),
+				);
 			}
 
 			// we are pretty good, we can do validation now...
@@ -240,7 +291,11 @@ impl StateSync {
 				Ok(_) => {
 					info!("PIBD download and valiadion is done with success!");
 					self.is_complete = true;
-					return SyncRequestResponses::StatePibdReady;
+					return SyncResponse::new(
+						SyncRequestResponses::StatePibdReady,
+						Capabilities::UNKNOWN,
+						"PIBD download and valiadion is done with success!".into(),
+					);
 				}
 				Err(e) => {
 					error!(
@@ -248,7 +303,14 @@ impl StateSync {
 						e
 					);
 					self.ban_this_session(desegmenter, sync_peers);
-					return SyncRequestResponses::Syncing;
+					return SyncResponse::new(
+						SyncRequestResponses::Syncing,
+						Self::get_peer_capabilities(),
+						format!(
+							"Restarting because validate_complete_state failed with error {}",
+							e
+						),
+					);
 				}
 			}
 		}
@@ -285,10 +347,18 @@ impl StateSync {
 			if other_hashes > 0 {
 				// Sinse there are other groups, treating that as attack. Banning all supporters
 				self.ban_this_session(desegmenter, sync_peers);
-				return SyncRequestResponses::Syncing;
+				return SyncResponse::new(
+					SyncRequestResponses::Syncing,
+					Self::get_peer_capabilities(),
+					"Banning this PIBD session. Seems like that was a fraud".into(),
+				);
 			} else {
 				// Since there are no alternatives, keep waiting...
-				return SyncRequestResponses::Syncing;
+				return SyncResponse::new(
+					SyncRequestResponses::Syncing,
+					Self::get_peer_capabilities(),
+					"No peers that support PIBD.".into(),
+				);
 			}
 		}
 
@@ -348,18 +418,36 @@ impl StateSync {
 							}
 						}
 					}
-					return SyncRequestResponses::Syncing;
+					return SyncResponse::new(
+						SyncRequestResponses::Syncing,
+						Self::get_peer_capabilities(),
+						format!(
+							"Requests in waiting Q: {}",
+							self.request_tracker.get_requests_num()
+						),
+					);
 				}
 				Err(err) => {
 					error!("Failed to request more segments. Error: {}", err);
 					// let's reset everything and restart
 					self.ban_this_session(desegmenter, sync_peers);
-					return SyncRequestResponses::Syncing;
+					return SyncResponse::new(
+						SyncRequestResponses::Syncing,
+						Self::get_peer_capabilities(),
+						format!("Failed to request more segments. Error: {}", err),
+					);
 				}
 			}
 		}
 		// waiting for responses...
-		return SyncRequestResponses::Syncing;
+		return SyncResponse::new(
+			SyncRequestResponses::Syncing,
+			Self::get_peer_capabilities(),
+			format!(
+				"Requests in waiting Q: {}",
+				self.request_tracker.get_requests_num()
+			),
+		);
 	}
 
 	fn ban_this_session(&mut self, desegmenter: &Desegmenter, sync_peers: &mut SyncPeers) {

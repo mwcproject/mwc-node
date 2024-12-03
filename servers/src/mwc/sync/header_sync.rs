@@ -20,7 +20,9 @@ use crate::core::pow::Difficulty;
 use crate::mwc::sync::header_hashes_sync::HeadersHashSync;
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
-use crate::mwc::sync::sync_utils::{CachedResponse, RequestTracker, SyncRequestResponses};
+use crate::mwc::sync::sync_utils::{
+	CachedResponse, RequestTracker, SyncRequestResponses, SyncResponse,
+};
 use crate::p2p::{self, Capabilities, Peer};
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
@@ -39,7 +41,7 @@ pub struct HeaderSync {
 	received_cache: Option<HeadersRecieveCache>,
 	// requested_heights is expected to be at response height, the next tothe requested
 	request_tracker: RequestTracker<Hash>,
-	cached_response: Option<CachedResponse<SyncRequestResponses>>,
+	cached_response: Option<CachedResponse<SyncResponse>>,
 	headers_series_cache: HashMap<(PeerAddr, Hash), (Vec<BlockHeader>, DateTime<Utc>)>,
 	pibd_params: Arc<PibdParams>,
 }
@@ -56,7 +58,7 @@ impl HeaderSync {
 		}
 	}
 
-	pub fn get_peer_capabilities() -> Capabilities {
+	fn get_peer_capabilities() -> Capabilities {
 		return Capabilities::HEADER_HIST;
 	}
 
@@ -67,7 +69,7 @@ impl HeaderSync {
 		sync_peers: &mut SyncPeers,
 		header_hashes: &HeadersHashSync,
 		best_height: u64,
-	) -> SyncRequestResponses {
+	) -> SyncResponse {
 		if let Some(cached_response) = &self.cached_response {
 			if !cached_response.is_expired() {
 				return cached_response.get_response().clone();
@@ -79,13 +81,15 @@ impl HeaderSync {
 		let header_head = self.chain.header_head().expect("header_head is broken");
 
 		// Quick check - nothing to sync if we are caught up with the peer.
-		if header_head.height >= best_height.saturating_sub(1) {
+		if header_head.height >= best_height.saturating_sub(2) {
 			// we can relax for a pretty long time, headers are ready
-			self.cached_response = Some(CachedResponse::new(
+			let resp = SyncResponse::new(
 				SyncRequestResponses::HeadersReady,
-				Duration::seconds(60),
-			));
-			return SyncRequestResponses::HeadersReady;
+				Self::get_peer_capabilities(),
+				format!("Header head {} vs {}", header_head.height, best_height),
+			);
+			self.cached_response = Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
+			return resp;
 		}
 
 		self.request_tracker
@@ -96,7 +100,11 @@ impl HeaderSync {
 			if !header_hashes.is_complete() {
 				// Even we can request headers from the bottom, the old style method, but we better to wait
 				// for all hashes be ready, it is just 3 segments
-				return SyncRequestResponses::WaitingForHeadersHash;
+				return SyncResponse::new(
+					SyncRequestResponses::WaitingForHeadersHash,
+					Self::get_peer_capabilities(),
+					"Header hashes are expected but not ready yet".into(),
+				);
 			} else {
 				// finally we have a hashes, on the first attempt we need to validate if what is already uploaded is good
 				if self.received_cache.is_none() {
@@ -131,11 +139,14 @@ impl HeaderSync {
 						&self.request_tracker.get_peers_queue_size(),
 					);
 					if peers.is_empty() {
-						if excluded_requests == 0 {
-							return SyncRequestResponses::WaitingForPeers;
-						} else {
-							return SyncRequestResponses::Syncing;
-						}
+						return SyncResponse::new(
+							SyncRequestResponses::WaitingForPeers,
+							Self::get_peer_capabilities(),
+							format!(
+								"No peers are available, requests waiting: {}",
+								self.request_tracker.get_requests_num()
+							),
+						);
 					}
 
 					sync_state.update(SyncStatus::HeaderSync {
@@ -176,7 +187,14 @@ impl HeaderSync {
 							}
 						}
 					}
-					return SyncRequestResponses::Syncing;
+					return SyncResponse::new(
+						SyncRequestResponses::Syncing,
+						Self::get_peer_capabilities(),
+						format!(
+							"Loading headers below horizon, requests in waiting Q: {}",
+							self.request_tracker.get_requests_num()
+						),
+					);
 				}
 			}
 		}
@@ -186,7 +204,14 @@ impl HeaderSync {
 		let sync_peer = Self::choose_sync_peer(peers);
 
 		if sync_peer.is_none() {
-			return SyncRequestResponses::WaitingForPeers;
+			return SyncResponse::new(
+				SyncRequestResponses::WaitingForPeers,
+				Self::get_peer_capabilities(),
+				format!(
+					"Loading headers above horizon, no peers are available, requests waiting: {}",
+					self.request_tracker.get_requests_num()
+				),
+			);
 		}
 
 		let sync_peer = sync_peer.unwrap();
@@ -194,7 +219,14 @@ impl HeaderSync {
 		let header_head_hash = header_head.hash();
 
 		if self.request_tracker.has_request(&header_head_hash) {
-			return SyncRequestResponses::Syncing;
+			return SyncResponse::new(
+				SyncRequestResponses::HeadersPibdReady,
+				Self::get_peer_capabilities(),
+				format!(
+					"Loading headers above horizon, requests waiting: {}",
+					self.request_tracker.get_requests_num()
+				),
+			);
 		}
 
 		let (_, peer_diff) = {
@@ -205,11 +237,13 @@ impl HeaderSync {
 		// Quick check - nothing to sync if we are caught up with the peer.
 		if peer_diff <= header_head.total_difficulty {
 			// we can relax for a pretty long time
-			self.cached_response = Some(CachedResponse::new(
+			let resp = SyncResponse::new(
 				SyncRequestResponses::HeadersReady,
-				Duration::seconds(60),
-			));
-			return SyncRequestResponses::HeadersReady;
+				Self::get_peer_capabilities(),
+				format!("At height {} now", header_head.height),
+			);
+			self.cached_response = Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
+			return resp;
 		}
 
 		match self.request_headers(header_head, sync_peer.clone()) {
@@ -230,7 +264,11 @@ impl HeaderSync {
 			}
 		}
 
-		return SyncRequestResponses::HeadersPibdReady;
+		return SyncResponse::new(
+			SyncRequestResponses::HeadersPibdReady,
+			Self::get_peer_capabilities(),
+			"Loading headers above horizon, just requested one.".into(),
+		);
 	}
 
 	/// Recieved headers handler

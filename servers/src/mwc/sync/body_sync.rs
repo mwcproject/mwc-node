@@ -17,7 +17,7 @@ use crate::chain::{self, SyncState, SyncStatus};
 use crate::core::core::hash::{Hash, Hashed};
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
-use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses};
+use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses, SyncResponse};
 use crate::p2p;
 use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::{pibd_params, Chain};
@@ -57,7 +57,7 @@ impl BodySync {
 		sync_state: &SyncState,
 		sync_peers: &mut SyncPeers,
 		best_height: u64,
-	) -> Result<SyncRequestResponses, chain::Error> {
+	) -> Result<SyncResponse, chain::Error> {
 		// check if we need something
 		let head = self.chain.head()?;
 		let header_head = self.chain.header_head()?;
@@ -65,7 +65,14 @@ impl BodySync {
 		// Last few blocks no need to sync, new mined blocks will be synced regular way
 		if head.height > header_head.height.saturating_sub(3) {
 			// sync is done, we are ready.
-			return Ok(SyncRequestResponses::BodyReady);
+			return Ok(SyncResponse::new(
+				SyncRequestResponses::BodyReady,
+				Capabilities::UNKNOWN,
+				format!(
+					"head.height={} vs header_head.height={}",
+					head.height, header_head.height
+				),
+			));
 		}
 
 		let archive_height = Chain::height_2_archive_height(best_height);
@@ -77,7 +84,14 @@ impl BodySync {
 		if !self.chain.archive_mode() {
 			if fork_point.height < archive_height {
 				warn!("body_sync: cannot sync full blocks earlier than horizon. will request txhashset");
-				return Ok(SyncRequestResponses::BadState);
+				return Ok(SyncResponse::new(
+					SyncRequestResponses::BadState,
+					self.get_peer_capabilities(),
+					format!(
+						"fork_point.height={} < archive_height={}",
+						fork_point.height, archive_height
+					),
+				));
 			}
 		}
 
@@ -101,11 +115,14 @@ impl BodySync {
 			&self.request_tracker.get_peers_queue_size(),
 		);
 		if peers.is_empty() {
-			if excluded_requests == 0 {
-				return Ok(SyncRequestResponses::WaitingForPeers);
-			} else {
-				return Ok(SyncRequestResponses::Syncing);
-			}
+			return Ok(SyncResponse::new(
+				SyncRequestResponses::WaitingForPeers,
+				self.get_peer_capabilities(),
+				format!(
+					"No available peers, waiting Q size: {}",
+					self.request_tracker.get_requests_num()
+				),
+			));
 		}
 
 		// requested_blocks, check for expiration
@@ -196,7 +213,14 @@ impl BodySync {
 			}
 		}
 
-		return Ok(SyncRequestResponses::Syncing);
+		return Ok(SyncResponse::new(
+			SyncRequestResponses::Syncing,
+			self.get_peer_capabilities(),
+			format!(
+				"Waiting Q size: {}",
+				self.request_tracker.get_requests_num()
+			),
+		));
 	}
 
 	pub fn recieve_block_reporting(

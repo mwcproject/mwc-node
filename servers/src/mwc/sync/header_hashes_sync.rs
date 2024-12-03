@@ -16,7 +16,7 @@ use crate::chain::{self, pibd_params, SyncState, SyncStatus};
 use crate::core::core::hash::Hashed;
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
-use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses};
+use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses, SyncResponse};
 use crate::p2p::{self, Capabilities, Peer};
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
@@ -47,7 +47,7 @@ pub struct HeadersHashSync {
 	// pibd ready flag for quick response during waiting time intervals
 	pibd_headers_are_loaded: bool,
 
-	cached_response: Option<CachedResponse<SyncRequestResponses>>,
+	cached_response: Option<CachedResponse<SyncResponse>>,
 	pibd_params: Arc<PibdParams>,
 }
 
@@ -71,7 +71,7 @@ impl HeadersHashSync {
 		self.pibd_headers_are_loaded
 	}
 
-	pub fn get_peer_capabilities() -> Capabilities {
+	fn get_peer_capabilities() -> Capabilities {
 		return Capabilities::HEADERS_HASH;
 	}
 
@@ -149,7 +149,7 @@ impl HeadersHashSync {
 		sync_state: &SyncState,
 		sync_peers: &mut SyncPeers,
 		best_height: u64,
-	) -> SyncRequestResponses {
+	) -> SyncResponse {
 		// Sending headers hash request to all peers that has the same archive height...
 		if let Some(cached_response) = &self.cached_response {
 			if !cached_response.is_expired() {
@@ -164,11 +164,17 @@ impl HeadersHashSync {
 		if let Ok(tip) = self.chain.header_head() {
 			if tip.height > target_archive_height {
 				self.pibd_headers_are_loaded = true;
-				self.cached_response = Some(CachedResponse::new(
+				let resp = SyncResponse::new(
 					SyncRequestResponses::HeadersPibdReady,
-					Duration::seconds(60),
-				));
-				return SyncRequestResponses::HeadersPibdReady;
+					Self::get_peer_capabilities(),
+					format!(
+						"tip.height: {} > target_archive_height: {}",
+						tip.height, target_archive_height
+					),
+				);
+				self.cached_response =
+					Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
+				return resp;
 			}
 		}
 
@@ -238,7 +244,11 @@ impl HeadersHashSync {
 				Capabilities::HEADERS_HASH,
 			);
 			if headers_hash_peers.is_empty() {
-				return SyncRequestResponses::WaitingForPeers;
+				return SyncResponse::new(
+					SyncRequestResponses::WaitingForPeers,
+					Self::get_peer_capabilities(),
+					"No outbound peers with HEADERS_HASH capability".into(),
+				);
 			}
 
 			if self.responded_headers_hash_from.is_empty() {
@@ -270,7 +280,15 @@ impl HeadersHashSync {
 					}
 				}
 			}
-			return SyncRequestResponses::Syncing;
+			return SyncResponse::new(
+				SyncRequestResponses::Syncing,
+				Self::get_peer_capabilities(),
+				format!(
+					"Has peers: {}, Waiting root hash responses: {}",
+					headers_hash_peers.len(),
+					self.requested_headers_hash_from.len()
+				),
+			);
 		}
 
 		debug_assert!(self.headers_hash_desegmenter.is_some());
@@ -283,11 +301,13 @@ impl HeadersHashSync {
 			.expect("internal error, headers_hash_desegmenter is empty ");
 
 		if headers_hash_desegmenter.is_complete() {
-			self.cached_response = Some(CachedResponse::new(
+			let resp = SyncResponse::new(
 				SyncRequestResponses::HeadersHashReady,
-				Duration::seconds(180),
-			));
-			return SyncRequestResponses::HeadersHashReady;
+				Self::get_peer_capabilities(),
+				format!("headers_hash_desegmenter is complete"),
+			);
+			self.cached_response = Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
+			return resp;
 		}
 
 		sync_state.update(SyncStatus::HeaderHashSync {
@@ -303,7 +323,8 @@ impl HeadersHashSync {
 			Capabilities::HEADERS_HASH,
 		);
 		if headers_hash_peers.is_empty() {
-			return SyncRequestResponses::WaitingForPeers;
+			return SyncResponse::new(SyncRequestResponses::WaitingForPeers, Self::get_peer_capabilities(), format!("No outbound peers with HEADERS_HASH capability. Waiting for Hash responses: {}. Segment responses: {}",
+																														  self.requested_headers_hash_from.len(), self.requested_segments.len()) );
 		}
 
 		// Need to request headers under the archive header. We can do that in parallel
@@ -371,7 +392,8 @@ impl HeadersHashSync {
 			}
 
 			if peers2send.is_empty() {
-				return SyncRequestResponses::WaitingForPeers;
+				return SyncResponse::new(SyncRequestResponses::WaitingForPeers, Self::get_peer_capabilities(),
+												format!("No peers to request segment. Headers_hash_peers:{}  Waiting segments responses: {}", headers_hash_peers.len(), self.requested_segments.len()) );
 			}
 
 			let mut rng = rand::thread_rng();
@@ -403,7 +425,12 @@ impl HeadersHashSync {
 				}
 			}
 		}
-		return SyncRequestResponses::Syncing;
+
+		return SyncResponse::new(
+			SyncRequestResponses::Syncing,
+			Self::get_peer_capabilities(),
+			format!("Waiting responses: {}", self.requested_segments.len()),
+		);
 	}
 
 	pub fn receive_headers_hash_response(

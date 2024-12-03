@@ -20,7 +20,7 @@ use crate::mwc::sync::header_hashes_sync::HeadersHashSync;
 use crate::mwc::sync::header_sync::HeaderSync;
 use crate::mwc::sync::state_sync::StateSync;
 use crate::mwc::sync::sync_peers::SyncPeers;
-use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses};
+use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses, SyncResponse};
 use chrono::Duration;
 use mwc_chain::txhashset::BitmapChunk;
 use mwc_chain::{Chain, SyncState};
@@ -46,7 +46,7 @@ pub struct SyncManager {
 	sync_state: Arc<SyncState>,
 	stop_state: Arc<StopState>,
 
-	cached_response: Option<CachedResponse<(SyncRequestResponses, Capabilities)>>,
+	cached_response: Option<CachedResponse<SyncResponse>>,
 }
 
 impl SyncManager {
@@ -65,7 +65,7 @@ impl SyncManager {
 		}
 	}
 
-	pub fn request(&mut self, peers: &Arc<Peers>) -> (SyncRequestResponses, Capabilities) {
+	pub fn request(&mut self, peers: &Arc<Peers>) -> SyncResponse {
 		if let Some(cached_response) = &self.cached_response {
 			if !cached_response.is_expired() {
 				return cached_response.get_response().clone();
@@ -111,27 +111,23 @@ impl SyncManager {
 		};
 
 		if best_height == 0 {
-			return (SyncRequestResponses::WaitingForPeers, Capabilities::UNKNOWN);
+			return SyncResponse::new(
+				SyncRequestResponses::WaitingForPeers,
+				Capabilities::UNKNOWN,
+				"Peers height is 0".into(),
+			);
 		}
 
-		match self.headers_hashes.request(
+		let headers_hash_resp = self.headers_hashes.request(
 			peers,
 			&self.sync_state,
 			&mut self.headers_sync_peers,
 			best_height,
-		) {
-			SyncRequestResponses::WaitingForPeers => {
-				return (
-					SyncRequestResponses::WaitingForPeers,
-					HeadersHashSync::get_peer_capabilities(),
-				)
-			}
-			SyncRequestResponses::Syncing => {
-				return (
-					SyncRequestResponses::Syncing,
-					HeadersHashSync::get_peer_capabilities(),
-				)
-			}
+		);
+		debug!("headers_hash_resp: {:?}", headers_hash_resp);
+		match headers_hash_resp.response {
+			SyncRequestResponses::WaitingForPeers => return headers_hash_resp,
+			SyncRequestResponses::Syncing => return headers_hash_resp,
 			SyncRequestResponses::HeadersPibdReady | SyncRequestResponses::HeadersHashReady => {}
 			_ => {
 				debug_assert!(false);
@@ -140,69 +136,45 @@ impl SyncManager {
 
 		let mut headers_ready = false;
 
-		match self.headers.request(
+		let headers_resp = self.headers.request(
 			peers,
 			&self.sync_state,
 			&mut self.headers_sync_peers,
 			&self.headers_hashes,
 			best_height,
-		) {
+		);
+		debug!("headers_resp: {:?}", headers_resp);
+		match headers_resp.response {
 			SyncRequestResponses::WaitingForPeers => {
 				self.headers_hashes
 					.reset_ban_commited_to_hash(peers, &mut self.headers_sync_peers);
 				self.headers_sync_peers.reset();
-				return (
-					SyncRequestResponses::WaitingForPeers,
-					HeaderSync::get_peer_capabilities(),
-				);
+				return headers_resp;
 			}
-			SyncRequestResponses::Syncing => {
-				return (
-					SyncRequestResponses::Syncing,
-					HeaderSync::get_peer_capabilities(),
-				)
-			}
+			SyncRequestResponses::Syncing => return headers_resp,
 			SyncRequestResponses::WaitingForHeadersHash => {
 				debug_assert!(false); // should never happen, headers_hashes above must be in sync or wait for peers
-				return (
-					SyncRequestResponses::WaitingForHeadersHash,
-					HeadersHashSync::get_peer_capabilities(),
-				);
+				return headers_resp;
 			}
-			SyncRequestResponses::HeadersPibdReady => {
-				self.headers_hashes.reset_hash_data();
-			}
+			SyncRequestResponses::HeadersPibdReady => self.headers_hashes.reset_hash_data(),
 			SyncRequestResponses::HeadersReady => headers_ready = true,
 			_ => {
 				debug_assert!(false);
 			}
 		}
 
-		match self.state.request(
+		let state_resp = self.state.request(
 			peers,
 			self.sync_state.clone(),
 			&mut self.state_sync_peers,
 			self.stop_state.clone(),
 			best_height,
-		) {
-			SyncRequestResponses::Syncing => {
-				return (
-					SyncRequestResponses::Syncing,
-					StateSync::get_peer_capabilities(),
-				)
-			}
-			SyncRequestResponses::WaitingForPeers => {
-				return (
-					SyncRequestResponses::WaitingForPeers,
-					StateSync::get_peer_capabilities(),
-				)
-			}
-			SyncRequestResponses::WaitingForHeaders => {
-				return (
-					SyncRequestResponses::WaitingForHeaders,
-					StateSync::get_peer_capabilities(),
-				)
-			}
+		);
+		debug!("state_resp: {:?}", state_resp);
+		match state_resp.response {
+			SyncRequestResponses::Syncing => return state_resp,
+			SyncRequestResponses::WaitingForPeers => return state_resp,
+			SyncRequestResponses::WaitingForHeaders => return state_resp,
 			SyncRequestResponses::StatePibdReady => {}
 			_ => {
 				debug_assert!(false);
@@ -215,47 +187,45 @@ impl SyncManager {
 			&mut self.state_sync_peers,
 			best_height,
 		) {
-			Ok(resp) => match resp {
-				SyncRequestResponses::Syncing => {
-					return (
-						SyncRequestResponses::Syncing,
-						self.body.get_peer_capabilities(),
-					)
-				}
-				SyncRequestResponses::BodyReady => {
-					if headers_ready {
-						self.cached_response = Some(CachedResponse::new(
-							(SyncRequestResponses::SyncDone, Capabilities::UNKNOWN),
-							Duration::seconds(180),
-						));
-						return (SyncRequestResponses::SyncDone, Capabilities::UNKNOWN);
-					} else {
-						return (
-							SyncRequestResponses::Syncing,
-							self.body.get_peer_capabilities(),
-						);
+			Ok(body_resp) => {
+				debug!("body_resp: {:?}", body_resp);
+				match body_resp.response {
+					SyncRequestResponses::Syncing => return body_resp,
+					SyncRequestResponses::BodyReady => {
+						if headers_ready {
+							let resp = SyncResponse::new(
+								SyncRequestResponses::SyncDone,
+								Capabilities::UNKNOWN,
+								"DONE!".into(),
+							);
+							self.cached_response =
+								Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
+							return resp;
+						} else {
+							SyncResponse::new(
+								SyncRequestResponses::Syncing,
+								self.body.get_peer_capabilities(),
+								"Waiting for headers, even body is done, more is expected".into(),
+							);
+						}
 					}
+					SyncRequestResponses::WaitingForPeers => return body_resp,
+					SyncRequestResponses::BadState => {
+						self.state.reset_desegmenter_data();
+						return body_resp;
+					}
+					_ => debug_assert!(false),
 				}
-				SyncRequestResponses::WaitingForPeers => {
-					return (
-						SyncRequestResponses::WaitingForPeers,
-						self.body.get_peer_capabilities(),
-					)
-				}
-				SyncRequestResponses::BadState => {
-					self.state.reset_desegmenter_data();
-					return (
-						SyncRequestResponses::Syncing,
-						StateSync::get_peer_capabilities(),
-					);
-				}
-				_ => debug_assert!(false),
-			},
+			}
 			Err(e) => error!("Body request is failed, {}", e),
 		}
 
 		debug_assert!(false);
-		(SyncRequestResponses::Syncing, Capabilities::UNKNOWN)
+		SyncResponse::new(
+			SyncRequestResponses::Syncing,
+			Capabilities::UNKNOWN,
+			"Invalid state, internal error".into(),
+		)
 	}
 
 	pub fn receive_headers_hash_response(

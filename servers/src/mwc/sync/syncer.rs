@@ -125,22 +125,21 @@ impl SyncRunner {
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
-			let (sync_reponse, peers_capabilities) = self.sync_manager.write().request(&self.peers);
-			debug!(
-				"sync_manager responsed with {:?}, {:?}",
-				sync_reponse, peers_capabilities
-			);
+			let sync_reponse = self.sync_manager.write().request(&self.peers);
+			debug!("sync_manager responsed with {:?}", sync_reponse);
 
 			let prev_state = self.sync_state.status();
 
-			match sync_reponse {
+			match sync_reponse.response {
 				SyncRequestResponses::WaitingForPeers => {
 					self.sync_state.update(SyncStatus::AwaitingPeers);
-					self.peers.set_boost_peers_capabilities(peers_capabilities);
+					self.peers
+						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
 				}
 				SyncRequestResponses::Syncing => {
 					debug_assert!(self.sync_state.is_syncing());
-					self.peers.set_boost_peers_capabilities(peers_capabilities);
+					self.peers
+						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
 				}
 				SyncRequestResponses::SyncDone => {
 					self.sync_state.update(SyncStatus::NoSync);

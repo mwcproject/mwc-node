@@ -38,6 +38,27 @@ pub enum SyncRequestResponses {
 	SyncDone,
 }
 
+#[derive(Clone, Debug)]
+pub struct SyncResponse {
+	pub response: SyncRequestResponses,
+	pub peers_capabilities: Capabilities,
+	pub message: String,
+}
+
+impl SyncResponse {
+	pub fn new(
+		response: SyncRequestResponses,
+		peers_capabilities: Capabilities,
+		message: String,
+	) -> Self {
+		SyncResponse {
+			response,
+			peers_capabilities,
+			message,
+		}
+	}
+}
+
 pub struct CachedResponse<T> {
 	time: DateTime<Utc>,
 	response: T,

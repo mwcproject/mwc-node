@@ -223,11 +223,19 @@ impl TxHashSetRoots {
 	/// Validate roots against the provided block header.
 	pub fn validate(&self, header: &BlockHeader) -> Result<(), Error> {
 		debug!(
-			"validate roots: {} at {}, {} vs. {}",
+			"Validating at height {}. Output MMR size: {}  Kernel MMR size: {}",
+			header.height, header.output_mmr_size, header.kernel_mmr_size
+		);
+		debug!(
+			"validate roots: {} at {}, Outputs roots {} vs. {}, Range Proof roots {} vs {}, Kernel Roots {} vs {}",
 			header.hash(),
 			header.height,
 			header.output_root,
 			self.output_root,
+			header.range_proof_root,
+			self.rproof_root,
+			header.kernel_root,
+			self.kernel_root,
 		);
 
 		if header.output_root != self.output_root {

@@ -444,6 +444,10 @@ impl TxHashSet {
 
 	/// Get MMR roots.
 	pub fn roots(&self) -> Result<TxHashSetRoots, Error> {
+		debug!(
+			"Generating MMR roots at sizes: Outputs: {}  Rangeproofs: {}  Kernels: {}",
+			self.output_pmmr_h.size, self.rproof_pmmr_h.size, self.kernel_pmmr_h.size
+		);
 		let output_pmmr = ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.size);
 		let rproof_pmmr = ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, self.rproof_pmmr_h.size);
 		let kernel_pmmr = ReadonlyPMMR::at(&self.kernel_pmmr_h.backend, self.kernel_pmmr_h.size);
