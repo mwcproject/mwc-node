@@ -21,6 +21,7 @@ use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses};
 use crate::p2p::{self, Capabilities, Peer};
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{BitmapChunk, Desegmenter};
 use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
@@ -49,11 +50,13 @@ pub struct StateSync {
 	// sync for segments
 	request_tracker: RequestTracker<(SegmentType, u64)>,
 	is_complete: bool,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl StateSync {
 	pub fn new(chain: Arc<chain::Chain>) -> StateSync {
 		StateSync {
+			pibd_params: chain.get_pibd_params().clone(),
 			chain,
 			target_archive_height: 0,
 			target_archive_hash: Hash::default(),
@@ -117,7 +120,7 @@ impl StateSync {
 		// Requesting root_hash...
 		let (peers, excluded_requests) = sync_utils::get_sync_peers(
 			peers,
-			pibd_params::SEGMENT_REQUEST_PER_PEER,
+			self.pibd_params.get_segments_request_per_peer(),
 			Capabilities::PIBD_HIST,
 			self.target_archive_height,
 			self.request_tracker.get_requests_num(),
@@ -292,8 +295,8 @@ impl StateSync {
 		let need_request = self.request_tracker.calculate_needed_requests(
 			root_hash_peers.len(),
 			excluded_requests as usize,
-			pibd_params::SEGMENT_REQUEST_PER_PEER,
-			pibd_params::SEGMENT_REQUEST_LIMIT,
+			self.pibd_params.get_segments_request_per_peer(),
+			self.pibd_params.get_segments_requests_limit(),
 		);
 		if need_request > 0 {
 			match desegmenter
@@ -447,7 +450,7 @@ impl StateSync {
 				if self.request_tracker.get_update_requests_to_next_ask() == 0 {
 					let (peers, excluded_requests) = sync_utils::get_sync_peers(
 						peers,
-						pibd_params::SEGMENT_REQUEST_PER_PEER,
+						self.pibd_params.get_segments_request_per_peer(),
 						Capabilities::PIBD_HIST,
 						self.target_archive_height,
 						self.request_tracker.get_requests_num(),
@@ -485,8 +488,8 @@ impl StateSync {
 							let need_request = self.request_tracker.calculate_needed_requests(
 								root_hash_peers.len(),
 								excluded_requests as usize,
-								pibd_params::SEGMENT_REQUEST_PER_PEER,
-								pibd_params::SEGMENT_REQUEST_LIMIT,
+								self.pibd_params.get_segments_request_per_peer(),
+								self.pibd_params.get_segments_requests_limit(),
 							);
 							if need_request > 0 {
 								match desegmenter.next_desired_segments(

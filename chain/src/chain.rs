@@ -25,6 +25,7 @@ use crate::core::global;
 use crate::core::pow;
 use crate::core::ser::ProtocolVersion;
 use crate::error::Error;
+use crate::pibd_params::PibdParams;
 use crate::pipe;
 use crate::store;
 use crate::txhashset;
@@ -52,10 +53,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, io::Cursor};
 
-/// Orphan pool size is limited by MAX_ORPHAN_SIZE
-/// Note, this number should be relatevely large in order to handle chain sync, blocks throughput can be pretty large
-pub const MAX_ORPHAN_SIZE: usize = 2000;
-
 /// When evicting, very old orphans are evicted first
 const MAX_ORPHAN_AGE_SECS: u64 = 3000;
 
@@ -77,14 +74,16 @@ pub struct OrphanBlockPool {
 	height_idx: RwLock<HashMap<u64, Vec<Hash>>>,
 	// accumulated number of evicted block because of MAX_ORPHAN_SIZE limitation
 	evicted: AtomicUsize,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl OrphanBlockPool {
-	fn new() -> OrphanBlockPool {
+	fn new(pibd_params: Arc<PibdParams>) -> OrphanBlockPool {
 		OrphanBlockPool {
 			orphans: RwLock::new(HashMap::new()),
 			height_idx: RwLock::new(HashMap::new()),
 			evicted: AtomicUsize::new(0),
+			pibd_params,
 		}
 	}
 
@@ -108,7 +107,8 @@ impl OrphanBlockPool {
 			orphans.insert(orphan.block.hash(), orphan);
 		}
 
-		if orphans.len() > MAX_ORPHAN_SIZE {
+		let orphans_num_limit = self.pibd_params.get_orphans_num_limit();
+		if orphans.len() > orphans_num_limit {
 			let old_len = orphans.len();
 
 			// evict too old
@@ -124,7 +124,7 @@ impl OrphanBlockPool {
 						let _ = orphans.remove(&h);
 					}
 				}
-				if orphans.len() < MAX_ORPHAN_SIZE {
+				if orphans.len() < orphans_num_limit {
 					break;
 				}
 			}
@@ -193,6 +193,7 @@ pub struct Chain {
 	genesis: Block,
 	cache_header_difficulty: Arc<RwLock<VecDeque<HeaderDifficultyInfo>>>,
 	secp: Secp256k1,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl Chain {
@@ -207,6 +208,8 @@ impl Chain {
 		archive_mode: bool,
 	) -> Result<Chain, Error> {
 		let store = Arc::new(store::ChainStore::new(&db_root)?);
+
+		let pibd_params = Arc::new(PibdParams::new());
 
 		// DB migrations to be run prior to the chain being used.
 		// Migrate full blocks to protocol version v3.
@@ -240,7 +243,7 @@ impl Chain {
 			db_root,
 			store,
 			adapter,
-			orphans: Arc::new(OrphanBlockPool::new()),
+			orphans: Arc::new(OrphanBlockPool::new(pibd_params.clone())),
 			txhashset: Arc::new(RwLock::new(txhashset)),
 			header_pmmr: Arc::new(RwLock::new(header_pmmr)),
 			pibd_segmenter: Arc::new(RwLock::new(None)),
@@ -252,6 +255,7 @@ impl Chain {
 			genesis: genesis,
 			cache_header_difficulty: Arc::new(RwLock::new(VecDeque::new())),
 			secp,
+			pibd_params,
 		};
 
 		// If known bad block exists on "current chain" then rewind prior to this.
@@ -266,6 +270,11 @@ impl Chain {
 	/// Secp instance
 	pub fn secp(&self) -> &Secp256k1 {
 		&self.secp
+	}
+
+	/// Pibd params with envoronment monitoring
+	pub fn get_pibd_params(&self) -> &Arc<PibdParams> {
+		&self.pibd_params
 	}
 
 	/// Add provided header hash to our "denylist".
@@ -1357,6 +1366,7 @@ impl Chain {
 			bitmap_root_hash,
 			self.genesis.header.clone(),
 			self.store.clone(),
+			self.pibd_params.clone(),
 		))
 	}
 

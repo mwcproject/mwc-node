@@ -20,6 +20,7 @@ use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses};
 use crate::p2p::{self, Capabilities, Peer};
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{HeaderHashesDesegmenter, HEADER_HASHES_STUB_TYPE};
 use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
@@ -47,11 +48,13 @@ pub struct HeadersHashSync {
 	pibd_headers_are_loaded: bool,
 
 	cached_response: Option<CachedResponse<SyncRequestResponses>>,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl HeadersHashSync {
 	pub fn new(chain: Arc<chain::Chain>) -> HeadersHashSync {
 		HeadersHashSync {
+			pibd_params: chain.get_pibd_params().clone(),
 			chain: chain.clone(),
 			headers_hash_desegmenter: None,
 			target_archive_height: 0,
@@ -217,6 +220,7 @@ impl HeadersHashSync {
 					self.chain.genesis().hash(),
 					target_archive_height,
 					best_root_hash.clone(),
+					self.pibd_params.clone(),
 				);
 				let segment_num = desegmenter.get_segments_total();
 				self.headers_hash_desegmenter = Some(desegmenter);
@@ -333,10 +337,11 @@ impl HeadersHashSync {
 				.expect("internal error, headers_hash_desegmenter is empty ");
 			headers_hash_desegmenter.next_desired_segments(
 				cmp::min(
-					headers_hash_peers.len() * pibd_params::SEGMENT_REQUEST_PER_PEER,
-					pibd_params::SEGMENT_REQUEST_LIMIT,
+					headers_hash_peers.len() * self.pibd_params.get_segments_request_per_peer(),
+					self.pibd_params.get_segments_requests_limit(),
 				),
 				&self.requested_segments,
+				&*self.pibd_params,
 			)
 		};
 

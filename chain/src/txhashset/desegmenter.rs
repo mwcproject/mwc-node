@@ -23,7 +23,6 @@ use crate::core::core::{
 	SegmentTypeIdentifier, TxKernel,
 };
 use crate::error::Error;
-use crate::pibd_params;
 use crate::store;
 use crate::txhashset;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
@@ -36,6 +35,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::pibd_params::PibdParams;
 use crate::txhashset::segments_cache::SegmentsCache;
 use croaring::Bitmap;
 use log::Level;
@@ -62,6 +62,8 @@ pub struct Desegmenter {
 	output_segment_cache: SegmentsCache<OutputIdentifier>,
 	rangeproof_segment_cache: SegmentsCache<RangeProof>,
 	kernel_segment_cache: SegmentsCache<TxKernel>,
+
+	pibd_params: Arc<PibdParams>,
 }
 
 impl Desegmenter {
@@ -73,6 +75,7 @@ impl Desegmenter {
 		bitmap_root_hash: Hash,
 		genesis: BlockHeader,
 		store: Arc<store::ChainStore>,
+		pibd_params: Arc<PibdParams>,
 	) -> Desegmenter {
 		info!(
 			"Creating new desegmenter for bitmap_root_hash {}, height {}",
@@ -83,22 +86,22 @@ impl Desegmenter {
 
 		let total_bitmap_segment_count = SegmentIdentifier::count_segments_required(
 			bitmap_mmr_size,
-			pibd_params::BITMAP_SEGMENT_HEIGHT,
+			pibd_params.get_bitmap_segment_height(),
 		);
 
 		let total_outputs_segment_count = SegmentIdentifier::count_segments_required(
 			archive_header.output_mmr_size,
-			pibd_params::OUTPUT_SEGMENT_HEIGHT,
+			pibd_params.get_output_segment_height(),
 		);
 
 		let total_rangeproof_segment_count = SegmentIdentifier::count_segments_required(
 			archive_header.output_mmr_size,
-			pibd_params::RANGEPROOF_SEGMENT_HEIGHT,
+			pibd_params.get_rangeproof_segment_height(),
 		);
 
 		let total_kernel_segment_count = SegmentIdentifier::count_segments_required(
 			archive_header.kernel_mmr_size,
-			pibd_params::KERNEL_SEGMENT_HEIGHT,
+			pibd_params.get_kernel_segment_height(),
 		);
 
 		Desegmenter {
@@ -128,6 +131,7 @@ impl Desegmenter {
 			),
 
 			outputs_bitmap: None,
+			pibd_params,
 		}
 	}
 
@@ -390,9 +394,10 @@ impl Desegmenter {
 			debug_assert!(!self.bitmap_segment_cache.is_complete());
 			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
 			for id in self.bitmap_segment_cache.next_desired_segments(
-				pibd_params::BITMAP_SEGMENT_HEIGHT,
+				self.pibd_params.get_bitmap_segment_height(),
 				need_requests,
 				requested,
+				self.pibd_params.get_bitmaps_buffer_len(),
 			) {
 				bitmap_result.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id))
 			}
@@ -422,22 +427,15 @@ impl Desegmenter {
 			let mut extra_for_first = need_requests % non_complete_num;
 			debug_assert!(max_elements + extra_for_first > 0);
 
-			if !self.output_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
-				for id in self.output_segment_cache.next_desired_segments(
-					pibd_params::OUTPUT_SEGMENT_HEIGHT,
-					max_elements + cmp::min(1, extra_for_first),
-					requested,
-				) {
-					result.push(SegmentTypeIdentifier::new(SegmentType::Output, id))
-				}
-				extra_for_first = extra_for_first.saturating_sub(1);
-			}
-
+			// Note, first requesting segments largest data items. Since item is large, the number of items per segment is low,
+			// so the number of segments is high.
 			if !self.rangeproof_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
 				for id in self.rangeproof_segment_cache.next_desired_segments(
-					pibd_params::RANGEPROOF_SEGMENT_HEIGHT,
+					self.pibd_params.get_rangeproof_segment_height(),
 					max_elements + cmp::min(1, extra_for_first),
 					requested,
+					self.pibd_params
+						.get_rangeproofs_buffer_len(non_complete_num),
 				) {
 					result.push(SegmentTypeIdentifier::new(SegmentType::RangeProof, id))
 				}
@@ -447,13 +445,25 @@ impl Desegmenter {
 			if !self.kernel_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
 				debug_assert!(extra_for_first <= 1);
 				for id in self.kernel_segment_cache.next_desired_segments(
-					pibd_params::KERNEL_SEGMENT_HEIGHT,
+					self.pibd_params.get_kernel_segment_height(),
 					max_elements + extra_for_first,
 					requested,
+					self.pibd_params.get_kernels_buffer_len(non_complete_num),
 				) {
 					result.push(SegmentTypeIdentifier::new(SegmentType::Kernel, id))
 				}
-				//extra_for_first = 0;
+				extra_for_first = extra_for_first.saturating_sub(1);
+			}
+
+			if !self.output_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
+				for id in self.output_segment_cache.next_desired_segments(
+					self.pibd_params.get_output_segment_height(),
+					max_elements + cmp::min(1, extra_for_first),
+					requested,
+					self.pibd_params.get_outputs_buffer_len(non_complete_num),
+				) {
+					result.push(SegmentTypeIdentifier::new(SegmentType::Output, id))
+				}
 			}
 
 			debug_assert!(result.len() <= need_requests);
@@ -509,7 +519,7 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if segment.id().height != pibd_params::BITMAP_SEGMENT_HEIGHT {
+		if segment.id().height != self.pibd_params.get_bitmap_segment_height() {
 			return Err(Error::InvalidSegmentHeght);
 		}
 
@@ -558,7 +568,7 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if segment.id().height != pibd_params::OUTPUT_SEGMENT_HEIGHT {
+		if segment.id().height != self.pibd_params.get_output_segment_height() {
 			return Err(Error::InvalidSegmentHeght);
 		}
 
@@ -613,7 +623,7 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if segment.id().height != pibd_params::RANGEPROOF_SEGMENT_HEIGHT {
+		if segment.id().height != self.pibd_params.get_rangeproof_segment_height() {
 			return Err(Error::InvalidSegmentHeght);
 		}
 
@@ -665,7 +675,7 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if segment.id().height != pibd_params::KERNEL_SEGMENT_HEIGHT {
+		if segment.id().height != self.pibd_params.get_kernel_segment_height() {
 			return Err(Error::InvalidSegmentHeght);
 		}
 		trace!("pibd_desegmenter: add kernel segment");

@@ -44,19 +44,13 @@ use crate::util::secp::pedersen::RangeProof;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
+use mwc_chain::pibd_params;
 use mwc_chain::txhashset::Segmenter;
 use mwc_p2p::PeerAddr;
 use mwc_util::secp::{ContextFlag, Secp256k1};
 use rand::prelude::*;
-use std::ops::Range;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
-
-const HEADERS_HASHES_SEGMENT_HEIGHT_RANGE: Range<u8> = 8..13;
-const KERNEL_SEGMENT_HEIGHT_RANGE: Range<u8> = 9..14;
-const BITMAP_SEGMENT_HEIGHT_RANGE: Range<u8> = 9..14;
-const OUTPUT_SEGMENT_HEIGHT_RANGE: Range<u8> = 11..16;
-const RANGEPROOF_SEGMENT_HEIGHT_RANGE: Range<u8> = 7..12;
 
 // NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
 // This cache will drop sequence of the events during the second
@@ -511,7 +505,7 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<TxKernel>, chain::Error> {
-		if !KERNEL_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+		if !pibd_params::KERNEL_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
 		if self.sync_state.is_syncing() {
@@ -533,7 +527,7 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<BitmapChunk>, chain::Error> {
-		if !BITMAP_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+		if !pibd_params::BITMAP_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
 		if self.sync_state.is_syncing() {
@@ -555,7 +549,7 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<OutputIdentifier>, chain::Error> {
-		if !OUTPUT_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+		if !pibd_params::OUTPUT_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
 		if self.sync_state.is_syncing() {
@@ -577,7 +571,7 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<RangeProof>, chain::Error> {
-		if !RANGEPROOF_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+		if !pibd_params::RANGEPROOF_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
 		if self.sync_state.is_syncing() {
@@ -653,7 +647,7 @@ where
 		header_hashes_root: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<Hash>, chain::Error> {
-		if !HEADERS_HASHES_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
+		if !pibd_params::HEADERS_HASHES_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
 			return Err(chain::Error::InvalidSegmentHeight);
 		}
 		if self.sync_state.is_syncing() {

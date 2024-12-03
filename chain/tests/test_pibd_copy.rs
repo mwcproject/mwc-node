@@ -29,6 +29,7 @@ use crate::core::core::{
 };
 use crate::core::{genesis, global, pow};
 use crate::util::secp::pedersen::RangeProof;
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
 use mwc_chain::types::HEADERS_PER_BATCH;
 use mwc_chain::{Error, Options, SyncState};
@@ -172,8 +173,9 @@ impl DesegmenterRequestor {
 		&mut self,
 		header_desegmenter: &mut HeaderHashesDesegmenter,
 		header_root_hash: &Hash,
+		pibd_params: &PibdParams,
 	) -> bool {
-		let asks = header_desegmenter.next_desired_segments::<u8>(10, &HashMap::new());
+		let asks = header_desegmenter.next_desired_segments::<u8>(10, &HashMap::new(), pibd_params);
 
 		debug!("Next segment IDS: {:?}", asks);
 
@@ -397,13 +399,23 @@ fn test_pibd_copy_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &
 	let bitmap_root_hash = src_responder.get_bitmap_root_hash();
 	let genesis_hash = src_responder.chain.genesis().hash();
 
+	let pibd_params = Arc::new(PibdParams::new());
+
 	let mut dest_requestor =
 		DesegmenterRequestor::new(dest_root_dir, genesis.clone(), src_responder);
 
-	let mut header_desegmenter =
-		HeaderHashesDesegmenter::new(genesis_hash, archive_header_height, headers_root_hash);
+	let mut header_desegmenter = HeaderHashesDesegmenter::new(
+		genesis_hash,
+		archive_header_height,
+		headers_root_hash,
+		pibd_params.clone(),
+	);
 
-	while !dest_requestor.continue_headers_pibd(&mut header_desegmenter, &headers_root_hash) {}
+	while !dest_requestor.continue_headers_pibd(
+		&mut header_desegmenter,
+		&headers_root_hash,
+		&pibd_params,
+	) {}
 
 	// Heads must be done. Now we should be able to request series of headers as we can do now
 	let mut headers_cache =

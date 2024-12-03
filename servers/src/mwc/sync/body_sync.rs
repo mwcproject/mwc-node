@@ -19,6 +19,7 @@ use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
 use crate::mwc::sync::sync_utils::{RequestTracker, SyncRequestResponses};
 use crate::p2p;
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::{pibd_params, Chain};
 use mwc_p2p::{Peer, PeerAddr};
 use p2p::Capabilities;
@@ -31,11 +32,13 @@ pub struct BodySync {
 	required_capabilities: Capabilities,
 	request_tracker: RequestTracker<Hash>,
 	request_series: Vec<(Hash, u64)>, // Hash, height
+	pibd_params: Arc<PibdParams>,
 }
 
 impl BodySync {
 	pub fn new(chain: Arc<Chain>) -> BodySync {
 		BodySync {
+			pibd_params: chain.get_pibd_params().clone(),
 			chain,
 			required_capabilities: Capabilities::UNKNOWN,
 			request_tracker: RequestTracker::new(),
@@ -91,7 +94,7 @@ impl BodySync {
 
 		let (peers, excluded_requests) = sync_utils::get_sync_peers(
 			peers,
-			pibd_params::BLOCKS_REQUEST_PER_PEER,
+			self.pibd_params.get_blocks_request_per_peer(),
 			peer_capabilities,
 			head.height,
 			self.request_tracker.get_requests_num(),
@@ -126,8 +129,8 @@ impl BodySync {
 		let mut need_request = self.request_tracker.calculate_needed_requests(
 			peers.len(),
 			excluded_requests as usize,
-			pibd_params::BLOCKS_REQUEST_PER_PEER,
-			pibd_params::BLOCKS_REQUEST_LIMIT,
+			self.pibd_params.get_blocks_request_per_peer(),
+			self.pibd_params.get_blocks_request_limit(),
 		);
 
 		if need_request > 0 {
@@ -169,7 +172,10 @@ impl BodySync {
 				if need_refresh_request_series {
 					self.request_series.clear();
 					// Don't collect more than 500 blocks in the cache. The block size limit is 1.5MB, so total cache mem can be up to 750 Mb which is ok
-					let max_height = cmp::min(fork_point.height + 500 as u64, header_head.height);
+					let max_height = cmp::min(
+						fork_point.height + (self.pibd_params.get_orphans_num_limit() / 2) as u64,
+						header_head.height,
+					);
 					let mut current = self.chain.get_header_by_height(max_height)?;
 
 					while current.height > fork_point.height {
@@ -221,7 +227,7 @@ impl BodySync {
 			if let Ok(head) = self.chain.head() {
 				let (peers, excluded_requests) = sync_utils::get_sync_peers(
 					peers,
-					pibd_params::BLOCKS_REQUEST_PER_PEER,
+					self.pibd_params.get_blocks_request_per_peer(),
 					self.required_capabilities,
 					head.height,
 					self.request_tracker.get_requests_num(),
@@ -232,8 +238,8 @@ impl BodySync {
 					let mut need_request = self.request_tracker.calculate_needed_requests(
 						peers.len(),
 						excluded_requests as usize,
-						pibd_params::BLOCKS_REQUEST_PER_PEER,
-						pibd_params::BLOCKS_REQUEST_LIMIT,
+						self.pibd_params.get_blocks_request_per_peer(),
+						self.pibd_params.get_blocks_request_limit(),
 					);
 					if need_request > 0 {
 						let mut rng = rand::thread_rng();

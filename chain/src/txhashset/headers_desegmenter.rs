@@ -19,10 +19,11 @@ use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::pmmr;
 use crate::core::core::{BlockHeader, Segment};
 use crate::error::Error;
+use crate::pibd_params::PibdParams;
 use crate::txhashset::segments_cache::SegmentsCache;
 use crate::txhashset::{sort_pmmr_hashes_and_leaves, OrderedHashLeafNode};
 use crate::types::HEADERS_PER_BATCH;
-use crate::{pibd_params, Options};
+use crate::Options;
 use mwc_core::core::pmmr::{VecBackend, PMMR};
 use mwc_core::core::{SegmentIdentifier, SegmentType};
 use std::cmp;
@@ -41,6 +42,7 @@ pub struct HeaderHashesDesegmenter {
 	header_pmmr_size: u64,
 
 	header_segment_cache: SegmentsCache<Hash>,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl HeaderHashesDesegmenter {
@@ -49,22 +51,23 @@ impl HeaderHashesDesegmenter {
 		genesis_hash: Hash,
 		target_height: u64,
 		headers_root_hash: Hash, // target height and headers_root_hash must be get as a result of handshake process.
+		pibd_params: Arc<PibdParams>,
 	) -> Self {
-		let size = 1u64 << pibd_params::HEADERS_SEGMENT_HEIGHT;
+		let size = 1u64 << pibd_params.get_headers_segment_height();
 		let n_leaves = target_height / HEADERS_PER_BATCH as u64 + 1;
 		let need_segments = (n_leaves + size - 1) / size;
 
 		let header_pmmr_size = pmmr::insertion_to_pmmr_index(n_leaves);
 
-		let res = HeaderHashesDesegmenter {
+		HeaderHashesDesegmenter {
 			genesis_hash,
 			header_pmmr: VecBackend::new(),
 			target_height,
 			headers_root_hash,
 			header_pmmr_size,
 			header_segment_cache: SegmentsCache::new(HEADER_HASHES_STUB_TYPE, need_segments),
-		};
-		res
+			pibd_params,
+		}
 	}
 
 	/// Get number of completed segments
@@ -103,11 +106,13 @@ impl HeaderHashesDesegmenter {
 		&mut self,
 		max_elements: usize,
 		requested_segments: &HashMap<(SegmentType, u64), T>,
+		pibd_params: &PibdParams,
 	) -> Vec<SegmentIdentifier> {
 		self.header_segment_cache.next_desired_segments(
-			pibd_params::HEADERS_SEGMENT_HEIGHT,
+			pibd_params.get_headers_segment_height(),
 			max_elements,
 			requested_segments,
+			self.pibd_params.get_headers_hash_buffer_len(),
 		)
 	}
 
@@ -121,7 +126,7 @@ impl HeaderHashesDesegmenter {
 			return Err(Error::InvalidHeadersRoot);
 		}
 
-		if segment.identifier().height != pibd_params::HEADERS_SEGMENT_HEIGHT {
+		if segment.identifier().height != self.pibd_params.get_headers_segment_height() {
 			return Err(Error::InvalidSegmentHeght);
 		}
 

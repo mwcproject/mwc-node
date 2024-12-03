@@ -25,6 +25,7 @@ use crate::p2p::{self, Capabilities, Peer};
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use mwc_chain::pibd_params;
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
 use mwc_core::core::hash::Hashed;
 use mwc_core::core::BlockHeader;
@@ -40,11 +41,13 @@ pub struct HeaderSync {
 	request_tracker: RequestTracker<Hash>,
 	cached_response: Option<CachedResponse<SyncRequestResponses>>,
 	headers_series_cache: HashMap<(PeerAddr, Hash), (Vec<BlockHeader>, DateTime<Utc>)>,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl HeaderSync {
 	pub fn new(chain: Arc<chain::Chain>) -> HeaderSync {
 		HeaderSync {
+			pibd_params: chain.get_pibd_params().clone(),
 			chain: chain.clone(),
 			received_cache: None,
 			request_tracker: RequestTracker::new(),
@@ -121,7 +124,7 @@ impl HeaderSync {
 					// Requesting multiple headers
 					let (peers, excluded_requests) = sync_utils::get_sync_peers(
 						peers,
-						pibd_params::SEGMENT_REQUEST_PER_PEER,
+						self.pibd_params.get_segments_request_per_peer(),
 						Capabilities::HEADER_HIST,
 						header_hashes.get_target_archive_height(),
 						self.request_tracker.get_requests_num(),
@@ -143,8 +146,8 @@ impl HeaderSync {
 					let need_request = self.request_tracker.calculate_needed_requests(
 						peers.len(),
 						excluded_requests as usize,
-						pibd_params::SEGMENT_REQUEST_PER_PEER,
-						pibd_params::SEGMENT_REQUEST_LIMIT,
+						self.pibd_params.get_segments_request_per_peer(),
+						self.pibd_params.get_segments_requests_limit(),
 					);
 					if need_request > 0 {
 						let hashes = received_cache.next_desired_headers(headers_hash_desegmenter,
@@ -305,7 +308,7 @@ impl HeaderSync {
 
 							let (peers, excluded_requests) = sync_utils::get_sync_peers(
 								peers,
-								pibd_params::SEGMENT_REQUEST_PER_PEER,
+								self.pibd_params.get_segments_request_per_peer(),
 								Capabilities::HEADER_HIST,
 								headers_hash_desegmenter.get_target_height(),
 								self.request_tracker.get_requests_num(),
@@ -316,8 +319,8 @@ impl HeaderSync {
 								let need_request = self.request_tracker.calculate_needed_requests(
 									peers.len(),
 									excluded_requests as usize,
-									pibd_params::SEGMENT_REQUEST_PER_PEER,
-									pibd_params::SEGMENT_REQUEST_LIMIT,
+									self.pibd_params.get_segments_request_per_peer(),
+									self.pibd_params.get_segments_requests_limit(),
 								);
 								if need_request > 0 {
 									let hashes = received_cache.next_desired_headers(headers_hash_desegmenter, need_request, self.request_tracker.get_requested())
