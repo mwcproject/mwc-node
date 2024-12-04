@@ -36,17 +36,17 @@ pub const OUTPUT_SEGMENT_HEIGHT_RANGE: Range<u8> = 10..13; // ~ 33 b
 pub const RANGEPROOF_SEGMENT_HEIGHT_RANGE: Range<u8> = 6..9; // ~ 675 b
 
 // Here are series for different available resources. Mem and CPU thresholds are allways the same.
-const HEADERS_HASH_BUFFER_LEN: [usize; 4] = [5, 10, 30, 60];
-const BITMAPS_BUFFER_LEN: [usize; 4] = [3, 6, 20, 40];
+const HEADERS_HASH_BUFFER_LEN: [usize; 4] = [10, 20, 30, 60];
+const BITMAPS_BUFFER_LEN: [usize; 4] = [10, 20, 30, 40];
 
-const OUTPUTS_BUFFER_LEN: [usize; 4] = [2, 5, 20, 40];
-const KERNELS_BUFFER_LEN: [usize; 4] = [2, 5, 20, 40];
-const RANGEPROOFS_BUFFER_LEN: [usize; 4] = [2, 5, 20, 40];
+const OUTPUTS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
+const KERNELS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
+const RANGEPROOFS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
 
 // One block can be up to 1.5Mb in size. We still need some to run the node
-const ORPHANS_BUFFER_LEN: [usize; 4] = [10, 100, 250, 500];
+const ORPHANS_BUFFER_LEN: [usize; 4] = [20, 100, 250, 500];
 
-const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [5, 10, 50, 100];
+const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [20, 40, 80, 120];
 
 /// How long the state sync should wait after requesting a segment from a peer before
 /// deciding the segment isn't going to arrive. The syncer will then re-request the segment
@@ -219,9 +219,9 @@ impl PibdParams {
 	/// will always be requested first)
 	pub fn get_segments_request_per_peer(&self) -> usize {
 		match self.cpu_num {
-			1 => 1,
-			2 => 2,
-			_ => 6,
+			1 => 2,
+			2 => 4,
+			_ => 8,
 		}
 	}
 
