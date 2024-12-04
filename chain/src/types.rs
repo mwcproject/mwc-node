@@ -166,7 +166,15 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		*self.current.read() != SyncStatus::NoSync
+		match *self.current.read() {
+			SyncStatus::NoSync => false,
+			SyncStatus::BodySync {
+				archive_height: _,
+				current_height,
+				highest_height,
+			} => current_height + 10 < highest_height,
+			_ => false,
+		}
 	}
 
 	/// Current syncing status

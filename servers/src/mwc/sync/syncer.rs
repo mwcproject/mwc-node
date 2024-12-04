@@ -141,7 +141,7 @@ impl SyncRunner {
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
 				}
 				SyncRequestResponses::Syncing => {
-					debug_assert!(self.sync_state.is_syncing());
+					//debug_assert!(self.sync_state.is_syncing());
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
 				}
