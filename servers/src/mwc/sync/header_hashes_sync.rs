@@ -429,7 +429,11 @@ impl HeadersHashSync {
 		return SyncResponse::new(
 			SyncRequestResponses::Syncing,
 			Self::get_peer_capabilities(),
-			format!("Waiting responses: {}", self.requested_segments.len()),
+			format!(
+				"Has peers: {}  Waiting responses: {}",
+				headers_hash_peers.len(),
+				self.requested_segments.len()
+			),
 		);
 	}
 

@@ -126,7 +126,11 @@ impl SyncRunner {
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
 			let sync_reponse = self.sync_manager.write().request(&self.peers);
-			debug!("sync_manager responsed with {:?}", sync_reponse);
+			if sync_reponse.response == SyncRequestResponses::SyncDone {
+				debug!("sync_manager responsed with {:?}", sync_reponse);
+			} else {
+				info!("sync_manager responsed with {:?}", sync_reponse);
+			}
 
 			let prev_state = self.sync_state.status();
 

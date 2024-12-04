@@ -252,7 +252,8 @@ impl StateSync {
 					SyncRequestResponses::Syncing,
 					Self::get_peer_capabilities(),
 					format!(
-						"Waiting for PIBD root. Get respoinses {} from {}",
+						"Waiting for PIBD root. Hash peers: {} Get respoinses {} from {}",
+						peers.len(),
 						self.responded_root_hash.len(),
 						self.requested_root_hash.len()
 					),
@@ -355,7 +356,7 @@ impl StateSync {
 			} else {
 				// Since there are no alternatives, keep waiting...
 				return SyncResponse::new(
-					SyncRequestResponses::Syncing,
+					SyncRequestResponses::WaitingForPeers,
 					Self::get_peer_capabilities(),
 					"No peers that support PIBD.".into(),
 				);
@@ -422,7 +423,8 @@ impl StateSync {
 						SyncRequestResponses::Syncing,
 						Self::get_peer_capabilities(),
 						format!(
-							"Requests in waiting Q: {}",
+							"Has peers: {} Requests in waiting Q: {}",
+							root_hash_peers.len(),
 							self.request_tracker.get_requests_num()
 						),
 					);
@@ -444,7 +446,8 @@ impl StateSync {
 			SyncRequestResponses::Syncing,
 			Self::get_peer_capabilities(),
 			format!(
-				"Requests in waiting Q: {}",
+				"Has peers {}, Requests in waiting Q: {}",
+				root_hash_peers.len(),
 				self.request_tracker.get_requests_num()
 			),
 		);

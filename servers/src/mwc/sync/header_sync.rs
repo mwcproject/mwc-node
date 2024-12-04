@@ -191,7 +191,8 @@ impl HeaderSync {
 						SyncRequestResponses::Syncing,
 						Self::get_peer_capabilities(),
 						format!(
-							"Loading headers below horizon, requests in waiting Q: {}",
+							"Loading headers below horizon. Has peers: {} Requests in waiting Q: {}",
+							peers.len(),
 							self.request_tracker.get_requests_num()
 						),
 					);

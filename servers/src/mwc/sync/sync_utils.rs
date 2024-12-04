@@ -23,7 +23,7 @@ use std::cmp;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SyncRequestResponses {
 	Syncing,
 	WaitingForPeers,

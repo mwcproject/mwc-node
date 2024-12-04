@@ -217,7 +217,8 @@ impl BodySync {
 			SyncRequestResponses::Syncing,
 			self.get_peer_capabilities(),
 			format!(
-				"Waiting Q size: {}",
+				"Peers: {}  Waiting Q size: {}",
+				peers.len(),
 				self.request_tracker.get_requests_num()
 			),
 		));
