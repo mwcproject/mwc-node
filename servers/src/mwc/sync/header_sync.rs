@@ -171,7 +171,8 @@ impl HeaderSync {
 							let peer = peers
 								.choose(&mut rng)
 								.expect("Internal error. peers are empty");
-							match self.request_headers_for_hash(hash.clone(), peer.clone()) {
+							match self.request_headers_for_hash(hash.clone(), height, peer.clone())
+							{
 								Ok(_) => {
 									self.request_tracker.register_request(
 										hash,
@@ -372,9 +373,11 @@ impl HeaderSync {
 										let peer = peers
 											.choose(&mut rng)
 											.expect("Internal error. peers are empty");
-										match self
-											.request_headers_for_hash(hash.clone(), peer.clone())
-										{
+										match self.request_headers_for_hash(
+											hash.clone(),
+											height,
+											peer.clone(),
+										) {
 											Ok(_) => {
 												self.request_tracker.register_request(
 													hash,
@@ -526,11 +529,12 @@ impl HeaderSync {
 	fn request_headers_for_hash(
 		&self,
 		header_hash: Hash,
+		height: u64,
 		peer: Arc<Peer>,
 	) -> Result<(), chain::Error> {
 		debug!(
-			"sync: request_headers: asking {} for headers at hash {}",
-			peer.info.addr, header_hash
+			"sync: request_headers: asking {} for headers at hash {}, height {}",
+			peer.info.addr, header_hash, height
 		);
 		peer.send_header_request(vec![header_hash])
 			.map_err(|e| chain::Error::Other(format!("{}", e)))?;

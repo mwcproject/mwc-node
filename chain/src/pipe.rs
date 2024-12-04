@@ -820,7 +820,7 @@ fn update_header_head(head: &Tip, batch: &store::Batch<'_>) -> Result<(), Error>
 		.map_err(|e| Error::StoreErr(e, "pipe save header head".to_owned()))?;
 
 	debug!(
-		"header head updated to {} at {}",
+		"header head updated to {} at {}",
 		head.last_block_h, head.height
 	);
 
@@ -832,7 +832,7 @@ fn update_head(head: &Tip, batch: &store::Batch<'_>) -> Result<(), Error> {
 		.save_body_head(&head)
 		.map_err(|e| Error::StoreErr(e, "pipe save body".to_owned()))?;
 
-	debug!("head updated to {} at {}", head.last_block_h, head.height);
+	debug!("head updated to {} at {}", head.last_block_h, head.height);
 
 	Ok(())
 }
