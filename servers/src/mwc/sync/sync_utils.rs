@@ -230,6 +230,7 @@ pub fn get_sync_peers(
 	let mut res: Vec<Arc<Peer>> = Vec::new();
 	// for excluded we nned to cover offline prrs as well. That is why we are counting back
 	let mut excluded_requests: usize = total_queue_requests;
+	let mut found_outbound = false;
 	for peer in peers
 		.iter()
 		.with_capabilities(capabilities)
@@ -237,6 +238,7 @@ pub fn get_sync_peers(
 		.outbound()
 		.with_min_height(min_height)
 	{
+		found_outbound = true;
 		if let Some(sz) = peers_queue_size.get(&peer.info.addr) {
 			if *sz < peer_requests_limit {
 				excluded_requests = excluded_requests.saturating_sub(*sz as usize);
@@ -245,6 +247,25 @@ pub fn get_sync_peers(
 			}
 		}
 		res.push(peer);
+	}
+	if !found_outbound {
+		// adding inbounds since no outbound is found...
+		for peer in peers
+			.iter()
+			.with_capabilities(capabilities)
+			.connected()
+			.inbound()
+			.with_min_height(min_height)
+		{
+			if let Some(sz) = peers_queue_size.get(&peer.info.addr) {
+				if *sz < peer_requests_limit {
+					excluded_requests = excluded_requests.saturating_sub(*sz as usize);
+				} else {
+					continue;
+				}
+			}
+			res.push(peer);
+		}
 	}
 	(res, excluded_requests as u32)
 }
