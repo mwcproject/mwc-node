@@ -62,15 +62,17 @@ impl BodySync {
 		let head = self.chain.head()?;
 		let header_head = self.chain.header_head()?;
 
+		let max_avail_height = cmp::min(best_height, header_head.height);
+
 		// Last few blocks no need to sync, new mined blocks will be synced regular way
-		if head.height > header_head.height.saturating_sub(3) {
+		if head.height > max_avail_height.saturating_sub(3) {
 			// sync is done, we are ready.
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::BodyReady,
 				Capabilities::UNKNOWN,
 				format!(
-					"head.height={} vs header_head.height={}",
-					head.height, header_head.height
+					"head.height={} vs max_avail_height={}",
+					head.height, max_avail_height
 				),
 			));
 		}
@@ -78,7 +80,6 @@ impl BodySync {
 		let archive_height = Chain::height_2_archive_height(best_height);
 
 		let head = self.chain.head()?;
-		let header_head = self.chain.header_head()?;
 		let fork_point = self.chain.fork_point()?;
 
 		if !self.chain.archive_mode() {
@@ -191,7 +192,7 @@ impl BodySync {
 					// Don't collect more than 500 blocks in the cache. The block size limit is 1.5MB, so total cache mem can be up to 750 Mb which is ok
 					let max_height = cmp::min(
 						fork_point.height + (self.pibd_params.get_orphans_num_limit() / 2) as u64,
-						header_head.height,
+						max_avail_height,
 					);
 					let mut current = self.chain.get_header_by_height(max_height)?;
 
@@ -293,8 +294,15 @@ impl BodySync {
 		sync_peers: &mut SyncPeers,
 	) -> Result<(), chain::Error> {
 		// request_series naturally from head to tail, but requesting better to send from tail to the head....
+		let mut peers = peers.clone();
 		for (hash, height) in self.request_series.iter().rev() {
 			if self.is_need_request_block(&hash)? {
+				// For tip we don't want request data from the peers that don't have anuthing.
+				peers.retain(|p| p.info.live_info.read().height >= *height);
+				if peers.is_empty() {
+					*need_request = 0;
+					return Ok(());
+				}
 				// can request a block...
 				let peer = peers.choose(rng).expect("Peers can't be empty");
 				if let Err(e) = peer.send_block_request(hash.clone(), chain::Options::SYNC) {
