@@ -173,7 +173,7 @@ impl SyncState {
 				current_height,
 				highest_height,
 			} => current_height + 10 < highest_height,
-			_ => false,
+			_ => true,
 		}
 	}
 
