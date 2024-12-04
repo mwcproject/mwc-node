@@ -250,7 +250,7 @@ impl PibdParams {
 			cmp::min(range.start.saturating_add(1), range.end.saturating_sub(1))
 		} else {
 			debug_assert!(range.end - range.start <= 3); // it is not true, add more ifs for memory checking
-			cmp::min(range.start.saturating_add(2), range.end.saturating_sub(2))
+			cmp::min(range.start.saturating_add(2), range.end.saturating_sub(1))
 		}
 	}
 
