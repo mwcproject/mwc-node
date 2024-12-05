@@ -28,7 +28,7 @@ enum PeerStatusEvent {
 	Ban(String),
 }
 
-const MIN_RESPONSE_NUM: usize = 10;
+const MIN_RESPONSE_NUM: usize = 13; // 6*2+1  8 requests per peer is expected, see get_segments_request_per_peer()
 
 pub struct PeerPibdStatus {
 	responses: VecDeque<PeerStatusEvent>,

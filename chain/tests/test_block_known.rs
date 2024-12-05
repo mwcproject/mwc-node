@@ -61,7 +61,7 @@ fn check_known() {
 	// reset chain head to earlier state
 	{
 		let chain = init_chain(chain_dir, genesis.clone());
-		let store = chain.store();
+		let store = chain.get_store_for_tests();
 		let batch = store.batch_write().unwrap();
 		let head_header = chain.head_header().unwrap();
 		let prev = batch.get_previous_header(&head_header).unwrap();

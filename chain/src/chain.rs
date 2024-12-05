@@ -178,11 +178,11 @@ impl OrphanBlockPool {
 /// maintains locking for the pipeline to avoid conflicting processing.
 pub struct Chain {
 	db_root: String,
-	store: Arc<store::ChainStore>,
+	store: Arc<store::ChainStore>, // Lock order (with childrer):   3
 	adapter: Arc<dyn ChainAdapter + Send + Sync>,
 	orphans: Arc<OrphanBlockPool>,
-	txhashset: Arc<RwLock<txhashset::TxHashSet>>,
-	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
+	txhashset: Arc<RwLock<txhashset::TxHashSet>>, // Lock order (with childrer):   2
+	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>, // Lock order  (with childrer):  1
 	pibd_segmenter: Arc<RwLock<Option<Segmenter>>>,
 	pibd_desegmenter: Arc<RwLock<Option<Desegmenter>>>,
 	reset_pibd_desegmenter: Arc<RwLock<bool>>,
@@ -387,12 +387,14 @@ impl Chain {
 	}
 
 	/// Return our shared header MMR handle.
-	pub fn header_pmmr(&self) -> Arc<RwLock<PMMRHandle<BlockHeader>>> {
+	/// Note, caller is responsible for locking in correct order. See the comment at declaration
+	pub fn get_header_pmmr_for_test(&self) -> Arc<RwLock<PMMRHandle<BlockHeader>>> {
 		self.header_pmmr.clone()
 	}
 
 	/// Return our shared txhashset instance.
-	pub fn txhashset(&self) -> Arc<RwLock<TxHashSet>> {
+	/// Note, caller is responsible for locking in correct order. See the comment at declaration
+	pub fn get_txhashset_for_test(&self) -> Arc<RwLock<TxHashSet>> {
 		self.txhashset.clone()
 	}
 
@@ -402,7 +404,8 @@ impl Chain {
 	}
 
 	/// Shared store instance.
-	pub fn store(&self) -> Arc<store::ChainStore> {
+	/// Note, caller is responsible for locking in correct order. See the comment at declaration
+	pub fn get_store_for_tests(&self) -> Arc<store::ChainStore> {
 		self.store.clone()
 	}
 
@@ -1041,7 +1044,8 @@ impl Chain {
 	/// Do we need to do the check here? we are doing check for every tx regardless of the kernel version.
 	pub fn replay_attack_check(&self, tx: &Transaction) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
-		txhashset::header_extending_readonly(&mut header_pmmr, &self.store(), |ext, batch| {
+		let batch_read = self.store.batch_read()?;
+		txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 			pipe::check_against_spent_output(&tx.body, None, None, ext, batch)?;
 			Ok(())
 		})
@@ -1079,8 +1083,9 @@ impl Chain {
 	/// Sets prev_root on a brand new block header by applying the previous header to the header MMR.
 	pub fn set_prev_root_only(&self, header: &mut BlockHeader) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
+		let batch_read = self.store.batch_read()?;
 		let prev_root =
-			txhashset::header_extending_readonly(&mut header_pmmr, &self.store(), |ext, batch| {
+			txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 				let prev_header = batch.get_previous_header(header)?;
 				self.rewind_and_apply_header_fork(&prev_header, ext, batch)?;
 				ext.root()
@@ -1301,7 +1306,7 @@ impl Chain {
 
 		Ok(Segmenter::new(
 			Arc::new(RwLock::new(segm_header_pmmr_backend)),
-			self.txhashset(),
+			self.txhashset.clone(),
 			bitmap_snapshot,
 			header.clone(),
 		))
@@ -1360,7 +1365,7 @@ impl Chain {
 		);
 
 		Ok(Desegmenter::new(
-			self.txhashset(),
+			self.txhashset.clone(),
 			self.header_pmmr.clone(),
 			archive_header.clone(),
 			bitmap_root_hash,
@@ -2100,7 +2105,8 @@ impl Chain {
 	/// Note: This is based on the provided sync_head to support syncing against a fork.
 	pub fn get_locator_hashes(&self, sync_head: Tip, heights: &[u64]) -> Result<Vec<Hash>, Error> {
 		let mut header_pmmr = self.header_pmmr.write();
-		txhashset::header_extending_readonly(&mut header_pmmr, &self.store(), |ext, batch| {
+		let batch_read = self.store.batch_read()?;
+		txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 			let header = batch.get_block_header(&sync_head.hash())?;
 			self.rewind_and_apply_header_fork(&header, ext, batch)?;
 
@@ -2127,6 +2133,61 @@ impl Chain {
 		self.store
 			.block_exists(h)
 			.map_err(|e| Error::StoreErr(e, "chain block exists".to_owned()))
+	}
+
+	/// Locate headers from the main chain.
+	pub fn locate_headers(
+		&self,
+		locator: &[Hash],
+		block_header_num: u32,
+	) -> Result<Vec<mwc_core::core::BlockHeader>, crate::Error> {
+		debug!("locator: {:?}", locator);
+
+		let header = match self.find_common_header(locator) {
+			Some(header) => header,
+			None => return Ok(vec![]),
+		};
+
+		let max_height = self.header_head()?.height;
+
+		let header_pmmr = self.header_pmmr.read();
+
+		// looks like we know one, getting as many following headers as allowed
+		let hh = header.height;
+		let mut headers = vec![];
+		for h in (hh + 1)..=(hh + (block_header_num as u64)) {
+			if h > max_height {
+				break;
+			}
+
+			if let Ok(hash) = header_pmmr.get_header_hash_by_height(h) {
+				let header = self.get_block_header(&hash)?;
+				headers.push(header);
+			} else {
+				error!("Failed to locate headers successfully.");
+				break;
+			}
+		}
+		debug!("returning headers: {}", headers.len());
+		Ok(headers)
+	}
+
+	// Find the first locator hash that refers to a known header on our main chain.
+	fn find_common_header(&self, locator: &[Hash]) -> Option<BlockHeader> {
+		let header_pmmr = self.header_pmmr.read();
+
+		for hash in locator {
+			if let Ok(header) = self.get_block_header(&hash) {
+				if let Ok(hash_at_height) = header_pmmr.get_header_hash_by_height(header.height) {
+					if let Ok(header_at_height) = self.get_block_header(&hash_at_height) {
+						if header.hash() == header_at_height.hash() {
+							return Some(header);
+						}
+					}
+				}
+			}
+		}
+		None
 	}
 }
 

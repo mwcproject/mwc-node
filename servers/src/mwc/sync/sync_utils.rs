@@ -195,6 +195,14 @@ where
 			None
 		}
 	}
+
+	pub fn get_expected_peer(&self, key: &K) -> Option<PeerAddr> {
+		if let Some((peer, _time, _message)) = self.requested_hashes.get(key) {
+			Some(peer.clone())
+		} else {
+			None
+		}
+	}
 }
 
 /// Get a list of qualify peers. Peers that has needed height and capability

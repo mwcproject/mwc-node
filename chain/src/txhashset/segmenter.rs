@@ -26,6 +26,7 @@ use mwc_core::core::pmmr::{ReadonlyPMMR, VecBackend};
 use std::{sync::Arc, time::Instant};
 
 /// Segmenter for generating PIBD segments.
+/// Note!!! header_pmmr, txhashset & store are from the Chain. Same locking rules are applicable
 #[derive(Clone)]
 pub struct Segmenter {
 	// every 512th header (HEADERS_PER_BATCH) must be here, we don't need all header hashes

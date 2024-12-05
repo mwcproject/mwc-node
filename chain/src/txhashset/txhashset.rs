@@ -866,17 +866,15 @@ where
 /// to allow headers to be validated before we receive the full block data.
 pub fn header_extending_readonly<'a, F, T>(
 	handle: &'a mut PMMRHandle<BlockHeader>,
-	store: &ChainStore,
+	batch_read: Batch<'_>,
 	inner: F,
 ) -> Result<T, Error>
 where
 	F: FnOnce(&mut HeaderExtension<'_>, &Batch<'_>) -> Result<T, Error>,
 {
-	let batch = store.batch_read()?;
-
 	let head = match handle.head_hash() {
 		Ok(hash) => {
-			let header = batch.get_block_header(&hash)?;
+			let header = batch_read.get_block_header(&hash)?;
 			Tip::from_header(&header)
 		}
 		Err(_) => Tip::default(),
@@ -884,7 +882,7 @@ where
 
 	let pmmr = PMMR::at(&mut handle.backend, handle.size);
 	let mut extension = HeaderExtension::new(pmmr, head);
-	let res = inner(&mut extension, &batch);
+	let res = inner(&mut extension, &batch_read);
 
 	handle.backend.discard();
 

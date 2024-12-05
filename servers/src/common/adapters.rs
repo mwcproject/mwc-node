@@ -418,38 +418,7 @@ where
 	}
 
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
-		debug!("locator: {:?}", locator);
-
-		let header = match self.find_common_header(locator) {
-			Some(header) => header,
-			None => return Ok(vec![]),
-		};
-
-		let max_height = self.chain().header_head()?.height;
-
-		let header_pmmr = self.chain().header_pmmr();
-		let header_pmmr = header_pmmr.read();
-
-		// looks like we know one, getting as many following headers as allowed
-		let hh = header.height;
-		let mut headers = vec![];
-		for h in (hh + 1)..=(hh + (p2p::MAX_BLOCK_HEADERS as u64)) {
-			if h > max_height {
-				break;
-			}
-
-			if let Ok(hash) = header_pmmr.get_header_hash_by_height(h) {
-				let header = self.chain().get_block_header(&hash)?;
-				headers.push(header);
-			} else {
-				error!("Failed to locate headers successfully.");
-				break;
-			}
-		}
-
-		debug!("returning headers: {}", headers.len());
-
-		Ok(headers)
+		self.chain().locate_headers(locator, p2p::MAX_BLOCK_HEADERS)
 	}
 
 	/// Gets a full block by its hash.
@@ -813,25 +782,6 @@ where
 		self.chain
 			.upgrade()
 			.expect("Failed to upgrade weak ref to our chain.")
-	}
-
-	// Find the first locator hash that refers to a known header on our main chain.
-	fn find_common_header(&self, locator: &[Hash]) -> Option<BlockHeader> {
-		let header_pmmr = self.chain().header_pmmr();
-		let header_pmmr = header_pmmr.read();
-
-		for hash in locator {
-			if let Ok(header) = self.chain().get_block_header(&hash) {
-				if let Ok(hash_at_height) = header_pmmr.get_header_hash_by_height(header.height) {
-					if let Ok(header_at_height) = self.chain().get_block_header(&hash_at_height) {
-						if header.hash() == header_at_height.hash() {
-							return Some(header);
-						}
-					}
-				}
-			}
-		}
-		None
 	}
 
 	// pushing the new block through the chain pipeline

@@ -229,7 +229,7 @@ impl DesegmenterRequestor {
 		{
 			let max_height = src_chain.header_head().unwrap().height;
 
-			let header_pmmr = src_chain.header_pmmr();
+			let header_pmmr = src_chain.get_header_pmmr_for_test();
 			let header_pmmr = header_pmmr.read();
 
 			let header = src_chain.get_block_header(&target_hash).unwrap();
@@ -343,7 +343,7 @@ impl DesegmenterRequestor {
 	}
 
 	pub fn check_roots(&self, archive_header_height: u64) {
-		let roots = self.chain.txhashset().read().roots().unwrap();
+		let roots = self.chain.get_txhashset_for_test().read().roots().unwrap();
 		let archive_header = self
 			.chain
 			.get_header_by_height(archive_header_height)

@@ -526,6 +526,14 @@ impl StateSync {
 		None
 	}
 
+	fn is_expected_peer(&self, key: &(SegmentType, u64), peer: &PeerAddr) -> bool {
+		if let Some(p) = self.request_tracker.get_expected_peer(key) {
+			*peer == p
+		} else {
+			false
+		}
+	}
+
 	// return true if peer matched registered, so we get response from whom it was requested
 	fn track_and_request_more_segments(
 		&mut self,
@@ -533,11 +541,9 @@ impl StateSync {
 		peer: &PeerAddr,
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &mut SyncPeers,
-	) -> bool {
-		let mut expected_peer = false;
+	) {
 		if let Some(peer_addr) = self.request_tracker.remove_request(key) {
 			if peer_addr == *peer {
-				expected_peer = true;
 				if self.request_tracker.get_update_requests_to_next_ask() == 0 {
 					let (peers, excluded_requests) = sync_utils::get_sync_peers(
 						peers,
@@ -548,7 +554,7 @@ impl StateSync {
 						&self.request_tracker.get_peers_queue_size(),
 					);
 					if peers.is_empty() {
-						return expected_peer;
+						return;
 					}
 
 					let desegmenter = self.chain.get_desegmenter();
@@ -573,7 +579,7 @@ impl StateSync {
 							}
 
 							if root_hash_peers.is_empty() {
-								return expected_peer;
+								return;
 							}
 
 							let need_request = self.request_tracker.calculate_needed_requests(
@@ -651,7 +657,6 @@ impl StateSync {
 				}
 			}
 		}
-		expected_peer
 	}
 
 	pub fn receive_bitmap_segment(
@@ -662,12 +667,8 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &mut SyncPeers,
 	) {
-		let expected_peer = self.track_and_request_more_segments(
-			&(SegmentType::Bitmap, segment.id().idx),
-			peer,
-			peers,
-			sync_peers,
-		);
+		let key = (SegmentType::Bitmap, segment.id().idx);
+		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
 			let desegmenter = self.chain.get_desegmenter();
@@ -694,6 +695,8 @@ impl StateSync {
 			sync_peers
 				.report_error_response(peer, "bitmap_segment, validate_root_hash failure".into());
 		}
+
+		self.track_and_request_more_segments(&key, peer, peers, sync_peers);
 	}
 
 	pub fn receive_output_segment(
@@ -704,12 +707,8 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &mut SyncPeers,
 	) {
-		let expected_peer = self.track_and_request_more_segments(
-			&(SegmentType::Output, segment.id().idx),
-			peer,
-			peers,
-			sync_peers,
-		);
+		let key = (SegmentType::Output, segment.id().idx);
+		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
 			let desegmenter = self.chain.get_desegmenter();
@@ -735,6 +734,8 @@ impl StateSync {
 		} else {
 			sync_peers.report_error_response(peer, "validate_root_hash failed".into());
 		}
+
+		self.track_and_request_more_segments(&key, peer, peers, sync_peers);
 	}
 
 	pub fn receive_rangeproof_segment(
@@ -745,16 +746,10 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &mut SyncPeers,
 	) {
-		let expected_peer = self.track_and_request_more_segments(
-			&(SegmentType::RangeProof, segment.id().idx),
-			peer,
-			peers,
-			sync_peers,
-		);
+		let key = (SegmentType::RangeProof, segment.id().idx);
+		let expected_peer = self.is_expected_peer(&key, peer);
 
-		self.request_tracker
-			.remove_request(&(SegmentType::RangeProof, segment.id().idx));
-
+		// Process first, unregister after. During unregister we might issue more requests.
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
 			let desegmenter = self.chain.get_desegmenter();
 			let mut desegmenter = desegmenter.write();
@@ -779,6 +774,8 @@ impl StateSync {
 		} else {
 			sync_peers.report_error_response(peer, "validate_root_hash error".into());
 		}
+
+		self.track_and_request_more_segments(&key, peer, peers, sync_peers);
 	}
 
 	pub fn receive_kernel_segment(
@@ -789,12 +786,8 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &mut SyncPeers,
 	) {
-		let expected_peer = self.track_and_request_more_segments(
-			&(SegmentType::Kernel, segment.id().idx),
-			peer,
-			peers,
-			sync_peers,
-		);
+		let key = (SegmentType::Kernel, segment.id().idx);
+		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
 			let desegmenter = self.chain.get_desegmenter();
@@ -820,5 +813,7 @@ impl StateSync {
 		} else {
 			sync_peers.report_error_response(peer, "validate_root_hash failed".into());
 		}
+
+		self.track_and_request_more_segments(&key, peer, peers, sync_peers);
 	}
 }

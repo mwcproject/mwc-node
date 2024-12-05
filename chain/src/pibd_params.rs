@@ -221,7 +221,7 @@ impl PibdParams {
 		match self.cpu_num {
 			1 => 2,
 			2 => 4,
-			_ => 8,
+			_ => 6,
 		}
 	}
 

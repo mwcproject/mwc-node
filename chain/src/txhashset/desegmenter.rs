@@ -44,6 +44,7 @@ use tokio::runtime::Builder;
 use tokio::task;
 
 /// Desegmenter for rebuilding a txhashset from PIBD segments
+/// Note!!! header_pmmr, txhashset & store are from the Chain. Same locking rules are applicable
 pub struct Desegmenter {
 	txhashset: Arc<RwLock<TxHashSet>>,
 	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
@@ -293,10 +294,14 @@ impl Desegmenter {
 		// Check NRD relative height rules for full kernel history.
 		{
 			info!("desegmenter validation: validating kernel history");
-			let txhashset = self.txhashset.read();
-			Chain::validate_kernel_history(&self.archive_header, &txhashset)?;
-
+			// Note, locking order is: header_pmmr->txhashset->batch !!!
+			{
+				// validate_kernel_history is long operation, that is why let's lock txhashset twice.
+				let txhashset = self.txhashset.read();
+				Chain::validate_kernel_history(&self.archive_header, &txhashset)?;
+			}
 			let header_pmmr = self.header_pmmr.read();
+			let txhashset = self.txhashset.read();
 			let batch = self.store.batch_read()?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis,

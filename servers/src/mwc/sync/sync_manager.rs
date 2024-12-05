@@ -202,7 +202,7 @@ impl SyncManager {
 								Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
 							return resp;
 						} else {
-							SyncResponse::new(
+							return SyncResponse::new(
 								SyncRequestResponses::Syncing,
 								self.body.get_peer_capabilities(),
 								"Waiting for headers, even body is done, more is expected".into(),

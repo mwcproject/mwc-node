@@ -181,9 +181,9 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	// Now exercise the internal call to pipe::process_block() directly so we can introspect the error
 	// without it being wrapped as above.
 	{
-		let store = chain.store();
-		let header_pmmr = chain.header_pmmr();
-		let txhashset = chain.txhashset();
+		let store = chain.get_store_for_tests();
+		let header_pmmr = chain.get_header_pmmr_for_test();
+		let txhashset = chain.get_txhashset_for_test();
 
 		let mut header_pmmr = header_pmmr.write();
 		let mut txhashset = txhashset.write();
