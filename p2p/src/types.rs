@@ -505,15 +505,23 @@ bitflags! {
 }
 
 /// Default capabilities.
-impl Default for Capabilities {
-	fn default() -> Self {
-		Capabilities::HEADER_HIST
+impl Capabilities {
+	/// Capability instance to match node features
+	pub fn new(tor: bool, archive_mode: bool) -> Self {
+		let mut res = Capabilities::HEADER_HIST
 			| Capabilities::TXHASHSET_HIST
 			| Capabilities::PEER_LIST
 			| Capabilities::TX_KERNEL_HASH
 			| Capabilities::TOR_ADDRESS
 			| Capabilities::PIBD_HIST
-			| Capabilities::HEADERS_HASH
+			| Capabilities::HEADERS_HASH;
+		if tor {
+			res |= Capabilities::TOR_ADDRESS;
+		}
+		if archive_mode {
+			res |= Capabilities::BLOCK_HIST;
+		}
+		res
 	}
 }
 

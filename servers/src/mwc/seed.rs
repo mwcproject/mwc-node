@@ -53,6 +53,7 @@ pub fn connect_and_monitor(
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
 	config: P2PConfig,
 	stop_state: Arc<StopState>,
+	use_tor_connection: bool,
 ) -> std::io::Result<thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("seed".to_string())
@@ -124,6 +125,7 @@ pub fn connect_and_monitor(
 					monitor_peers(
 						peers.clone(),
 						p2p_server.config.clone(),
+						use_tor_connection,
 						tx.clone(),
 						peers.is_boosting_mode(),
 					);
@@ -143,6 +145,7 @@ pub fn connect_and_monitor(
 							p2p_server.clone(),
 							&rx,
 							&mut connecting_history,
+							use_tor_connection,
 						);
 						let duration = if is_boost {
 							PEERS_CHECK_TIME_BOOST
@@ -173,6 +176,7 @@ pub fn connect_and_monitor(
 fn monitor_peers(
 	peers: Arc<p2p::Peers>,
 	config: p2p::P2PConfig,
+	use_tor_connection: bool,
 	tx: mpsc::Sender<PeerAddr>,
 	is_boost: bool,
 ) {
@@ -253,7 +257,10 @@ fn monitor_peers(
 			config.port,
 			p.info.addr,
 		);
-		let _ = p.send_peer_request(p2p::Capabilities::PEER_LIST | boost_peers_capabilities);
+		let _ = p.send_peer_request(
+			p2p::Capabilities::PEER_LIST | boost_peers_capabilities,
+			use_tor_connection,
+		);
 		connected_peers.push(p.info.addr.clone())
 	}
 
@@ -364,6 +371,7 @@ fn listen_for_addrs(
 	p2p: Arc<p2p::Server>,
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
+	use_tor_connection: bool,
 ) {
 	// Pull everything currently on the queue off the queue.
 	// Does not block so addrs may be empty.
@@ -427,6 +435,7 @@ fn listen_for_addrs(
 								match p.send_peer_request(
 									Capabilities::PEER_LIST
 										| peers_c.get_boost_peers_capabilities(),
+									use_tor_connection,
 								) {
 									Ok(_) => {
 										match addr_c {

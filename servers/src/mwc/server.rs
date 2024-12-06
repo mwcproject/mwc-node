@@ -506,12 +506,12 @@ impl Server {
 
 		// Initialize our capabilities.
 		// Currently either "default" or with optional "archive_mode" (block history) support enabled.
-		let capabilities = if let Some(true) = config.archive_mode {
-			Capabilities::default() | Capabilities::BLOCK_HIST
-		} else {
-			Capabilities::default()
-		};
+		let capabilities = Capabilities::new(
+			onion_address.is_some(),
+			config.archive_mode.unwrap_or(false),
+		);
 		debug!("Capabilities: {:?}", capabilities);
+		let use_tor = onion_address.is_some();
 
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
@@ -555,6 +555,7 @@ impl Server {
 				seed_list,
 				config.p2p_config.clone(),
 				stop_state.clone(),
+				use_tor,
 			)?);
 		}
 

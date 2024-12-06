@@ -378,7 +378,16 @@ impl Peer {
 		self.send(&h, msg::Type::GetCompactBlock)
 	}
 
-	pub fn send_peer_request(&self, capab: Capabilities) -> Result<(), Error> {
+	pub fn send_peer_request(
+		&self,
+		capab: Capabilities,
+		use_tor_connection: bool,
+	) -> Result<(), Error> {
+		let capab = if use_tor_connection {
+			capab | Capabilities::TOR_ADDRESS
+		} else {
+			capab
+		};
 		trace!("Asking {} for more peers {:?}", self.info.addr, capab);
 		self.send(
 			&GetPeerAddrs {
