@@ -32,7 +32,7 @@ fn capabilities_contains() {
 
 #[test]
 fn default_capabilities() {
-	let x = Capabilities::default();
+	let x = Capabilities::new(true, false);
 
 	// Check that default capabilities is covered by UNKNOWN.
 	assert!(x.contains(Capabilities::UNKNOWN));
