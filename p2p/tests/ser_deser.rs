@@ -43,7 +43,7 @@ fn test_type_enum() {
 
 #[test]
 fn test_capabilities() {
-	let expected = p2p::types::Capabilities::default();
+	let expected = p2p::types::Capabilities::new(true, false);
 
 	assert_eq!(
 		p2p::types::Capabilities::from_bits_truncate(0b_0000_0000 as u32),
