@@ -66,6 +66,14 @@ impl BodySync {
 
 		// Last few blocks no need to sync, new mined blocks will be synced regular way
 		if head.height > max_avail_height.saturating_sub(3) {
+			// Expected by QT wallet
+			info!(
+				"synchronized at {} @ {} [{}]",
+				head.total_difficulty.to_num(),
+				head.height,
+				head.last_block_h
+			);
+
 			// sync is done, we are ready.
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::BodyReady,

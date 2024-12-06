@@ -1927,6 +1927,7 @@ impl<'a> Extension<'a> {
 						kernels_total: total_kernels,
 					});
 				}
+				// Expected by QT wallet
 				info!(
 					"txhashset: verify_kernel_signatures: verified {} signatures from {}",
 					kern_count, total_kernels
@@ -2070,6 +2071,7 @@ impl<'a> Extension<'a> {
 			.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
 		match result {
 			Ok(proof_count) => {
+				// Expected by QT wallet
 				info!(
 					"txhashset: verify_rangeproofs: verified {} rangeproofs from {}",
 					proof_count, total_rproofs

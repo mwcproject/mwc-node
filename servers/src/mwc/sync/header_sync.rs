@@ -414,11 +414,10 @@ impl HeaderSync {
 
 		// That is needed for sync tracking
 		info!(
-			"Received {} block headers from {}, height {}, remaining {}",
+			"Received {} block headers from {}, height {}",
 			bhs.len(),
 			peer,
 			bhs[0].height,
-			0
 		);
 
 		// try to add headers to our header chain

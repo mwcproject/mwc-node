@@ -136,6 +136,7 @@ impl SyncRunner {
 
 			match sync_reponse.response {
 				SyncRequestResponses::WaitingForPeers => {
+					info!("Waiting for the peers");
 					self.sync_state.update(SyncStatus::AwaitingPeers);
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);

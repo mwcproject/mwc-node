@@ -176,6 +176,9 @@ impl Desegmenter {
 			+ self.rangeproof_segment_cache.get_received_segments()
 			+ self.kernel_segment_cache.get_received_segments();
 
+		// Expected by QT wallet
+		info!("PIBD sync progress: {} from {}", received, required);
+
 		SyncStatus::TxHashsetPibd {
 			recieved_segments: received,
 			total_segments: required,

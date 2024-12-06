@@ -343,9 +343,10 @@ impl StateSync {
 		}
 
 		if root_hash_peers.is_empty() {
-			// no peers commited to hash, resetting download process
-			self.chain.reset_desegmenter();
 			if other_hashes > 0 {
+				// no peers commited to hash, resetting download process if we have alternatives.
+				self.chain.reset_desegmenter();
+
 				// Sinse there are other groups, treating that as attack. Banning all supporters
 				self.ban_this_session(desegmenter, sync_peers);
 				return SyncResponse::new(

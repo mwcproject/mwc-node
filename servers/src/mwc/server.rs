@@ -575,6 +575,7 @@ impl Server {
 			.name("p2p-server".to_string())
 			.spawn(move || {
 				if let Err(e) = p2p_inner.listen() {
+					// QW wallet using for tracking
 					error!("P2P server failed with erorr: {:?}", e);
 				}
 			})?;
