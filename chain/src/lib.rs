@@ -49,10 +49,9 @@ pub mod types;
 
 // Re-export the base interface
 
-pub use crate::chain::{Chain, BLOCK_TO_BAN, MAX_ORPHAN_SIZE};
+pub use crate::chain::{Chain, BLOCK_TO_BAN};
 pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{
 	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetDownloadStats,
-	TxHashsetWriteStatus,
 };

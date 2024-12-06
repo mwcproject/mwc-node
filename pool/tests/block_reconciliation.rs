@@ -111,7 +111,7 @@ fn test_transaction_pool_block_reconciliation() {
 	assert_eq!(pool.total_size(), 0);
 
 	for tx in &txs_to_add {
-		pool.add_to_pool(test_source(), tx.clone(), false, &header)
+		pool.add_to_pool(test_source(), tx.clone(), false, &header, chain.secp())
 			.unwrap();
 	}
 
@@ -136,7 +136,7 @@ fn test_transaction_pool_block_reconciliation() {
 	assert_eq!(pool.total_size(), txs_to_add.len());
 
 	// And reconcile the pool with this latest block.
-	pool.reconcile_block(&block).unwrap();
+	pool.reconcile_block(&block, chain.secp()).unwrap();
 
 	assert_eq!(pool.total_size(), 4);
 	// Compare the various txs by their kernels as entries in the pool are "v2" compatibility.

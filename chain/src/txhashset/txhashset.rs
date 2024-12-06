@@ -20,9 +20,7 @@ use crate::core::consensus::WEEK_HEIGHT;
 use crate::core::core::committed::Committed;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::merkle_proof::MerkleProof;
-use crate::core::core::pmmr::{
-	self, Backend, ReadablePMMR, ReadonlyPMMR, RewindablePMMR, VecBackend, PMMR,
-};
+use crate::core::core::pmmr::{self, Backend, ReadablePMMR, ReadonlyPMMR, RewindablePMMR, PMMR};
 use crate::core::core::{
 	Block, BlockHeader, KernelFeatures, Output, OutputIdentifier, Segment, TxKernel,
 };
@@ -31,15 +29,17 @@ use crate::core::ser::{PMMRable, ProtocolVersion};
 use crate::error::Error;
 use crate::linked_list::{ListIndex, PruneableListIndex, RewindableListIndex};
 use crate::store::{self, Batch, ChainStore};
-use crate::txhashset::bitmap_accumulator::{BitmapAccumulator, BitmapChunk};
-use crate::txhashset::{RewindableKernelView, UTXOView};
-use crate::types::{CommitPos, HashHeight, Tip, TxHashSetRoots, TxHashsetWriteStatus};
+use crate::txhashset::{BitmapAccumulator, RewindableKernelView, UTXOView};
+use crate::types::{CommitPos, HashHeight, Tip, TxHashSetRoots};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
 use crate::util::{file, secp_static, zip, StopState};
-use crate::SyncState;
+use crate::{SyncState, SyncStatus};
 use croaring::Bitmap;
+use crossbeam::thread::ScopedJoinHandle;
 use mwc_store::pmmr::{clean_files_by_prefix, PMMRBackend};
+use mwc_util::secp::Secp256k1;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,7 +56,7 @@ const TXHASHSET_ZIP: &str = "txhashset_snapshot";
 /// Convenience enum to keep track of hash and leaf insertions when rebuilding an mmr
 /// from segments
 #[derive(Eq)]
-enum OrderedHashLeafNode {
+pub enum OrderedHashLeafNode {
 	/// index of data in hashes array, pmmr position
 	Hash(usize, u64),
 	/// index of data in leaf_data array, pmmr position
@@ -194,30 +194,6 @@ impl PMMRHandle<BlockHeader> {
 			Err(Error::Other("failed to find head hash".to_string()))
 		}
 	}
-
-	/// Get the first header with all output and kernel mmrs > provided
-	pub fn get_first_header_with(
-		&self,
-		output_pos: u64,
-		kernel_pos: u64,
-		from_height: u64,
-		store: Arc<store::ChainStore>,
-	) -> Option<BlockHeader> {
-		let mut cur_height = pmmr::round_up_to_leaf_pos(from_height);
-		let header_pmmr = ReadonlyPMMR::at(&self.backend, self.size);
-		let mut candidate: Option<BlockHeader> = None;
-		while let Some(header_entry) = header_pmmr.get_data(cur_height) {
-			if let Ok(bh) = store.get_block_header(&header_entry.hash()) {
-				if bh.output_mmr_size <= output_pos && bh.kernel_mmr_size <= kernel_pos {
-					candidate = Some(bh)
-				} else {
-					return candidate;
-				}
-			}
-			cur_height = pmmr::round_up_to_leaf_pos(cur_height + 1);
-		}
-		None
-	}
 }
 
 /// An easy to manipulate structure holding the 3 MMRs necessary to
@@ -234,8 +210,6 @@ pub struct TxHashSet {
 	rproof_pmmr_h: PMMRHandle<RangeProof>,
 	kernel_pmmr_h: PMMRHandle<TxKernel>,
 
-	bitmap_accumulator: BitmapAccumulator,
-
 	// chain store used as index of commitments to MMR positions
 	commit_index: Arc<ChainStore>,
 }
@@ -246,6 +220,7 @@ impl TxHashSet {
 		root_dir: String,
 		commit_index: Arc<ChainStore>,
 		header: Option<&BlockHeader>,
+		secp: &Secp256k1,
 	) -> Result<TxHashSet, Error> {
 		let output_pmmr_h = PMMRHandle::new(
 			Path::new(&root_dir)
@@ -264,9 +239,6 @@ impl TxHashSet {
 			ProtocolVersion(1),
 			header,
 		)?;
-
-		// Initialize the bitmap accumulator from the current output PMMR.
-		let bitmap_accumulator = TxHashSet::bitmap_accumulator(&output_pmmr_h)?;
 
 		let mut maybe_kernel_handle: Option<PMMRHandle<TxKernel>> = None;
 		let versions = vec![ProtocolVersion(2), ProtocolVersion(1)];
@@ -289,7 +261,7 @@ impl TxHashSet {
 			}
 			let kernel: Option<TxKernel> = ReadonlyPMMR::at(&handle.backend, 1).get_data(0);
 			if let Some(kernel) = kernel {
-				if kernel.verify().is_ok() {
+				if kernel.verify(secp).is_ok() {
 					debug!(
 						"attempting to open kernel PMMR using {:?} - SUCCESS",
 						version
@@ -314,7 +286,6 @@ impl TxHashSet {
 				output_pmmr_h,
 				rproof_pmmr_h,
 				kernel_pmmr_h,
-				bitmap_accumulator,
 				commit_index,
 			})
 		} else {
@@ -322,17 +293,6 @@ impl TxHashSet {
 				"failed to open kernel PMMR".to_string(),
 			))
 		}
-	}
-
-	// Build a new bitmap accumulator for the provided output PMMR.
-	fn bitmap_accumulator(
-		pmmr_h: &PMMRHandle<OutputIdentifier>,
-	) -> Result<BitmapAccumulator, Error> {
-		let pmmr = ReadonlyPMMR::at(&pmmr_h.backend, pmmr_h.size);
-		let nbits = pmmr::n_leaves(pmmr_h.size);
-		let mut bitmap_accumulator = BitmapAccumulator::new();
-		bitmap_accumulator.init(&mut pmmr.leaf_idx_iter(0), nbits)?;
-		Ok(bitmap_accumulator)
 	}
 
 	/// Close all backend file handles
@@ -484,6 +444,10 @@ impl TxHashSet {
 
 	/// Get MMR roots.
 	pub fn roots(&self) -> Result<TxHashSetRoots, Error> {
+		debug!(
+			"Generating MMR roots at sizes: Outputs: {}  Rangeproofs: {}  Kernels: {}",
+			self.output_pmmr_h.size, self.rproof_pmmr_h.size, self.kernel_pmmr_h.size
+		);
 		let output_pmmr = ReadonlyPMMR::at(&self.output_pmmr_h.backend, self.output_pmmr_h.size);
 		let rproof_pmmr = ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, self.rproof_pmmr_h.size);
 		let kernel_pmmr = ReadonlyPMMR::at(&self.kernel_pmmr_h.backend, self.kernel_pmmr_h.size);
@@ -609,7 +573,10 @@ impl TxHashSet {
 				applied += 1;
 				if let Some(ref s) = status {
 					if total % applied == 10000 {
-						s.on_setup(None, None, Some(applied), Some(total));
+						s.update(SyncStatus::TxHashsetKernelsPosValidation {
+							kernel_pos: applied,
+							kernel_pos_total: total,
+						});
 					}
 				}
 			}
@@ -737,7 +704,7 @@ where
 	F: FnOnce(&mut ExtensionPair<'_>, &Batch<'_>) -> Result<T, Error>,
 {
 	let commit_index = trees.commit_index.clone();
-	let batch = commit_index.batch()?;
+	let batch = commit_index.batch_write()?;
 
 	trace!("Starting new txhashset (readonly) extension.");
 
@@ -786,7 +753,7 @@ where
 
 		// Create a new batch here to pass into the utxo_view.
 		// Discard it (rollback) after we finish with the utxo_view.
-		let batch = trees.commit_index.batch()?;
+		let batch = trees.commit_index.batch_read()?;
 		let utxo = UTXOView::new(header_pmmr, output_pmmr, rproof_pmmr);
 		res = inner(&utxo, &batch);
 	}
@@ -809,7 +776,7 @@ where
 
 		// Create a new batch here to pass into the kernel_view.
 		// Discard it (rollback) after we finish with the kernel_view.
-		let batch = trees.commit_index.batch()?;
+		let batch = trees.commit_index.batch_read()?;
 		let header = batch.head_header()?;
 		let mut view = RewindableKernelView::new(kernel_pmmr, header);
 		res = inner(&mut view, &batch);
@@ -836,7 +803,6 @@ where
 	let sizes: (u64, u64, u64);
 	let res: Result<T, Error>;
 	let rollback: bool;
-	let bitmap_accumulator: BitmapAccumulator;
 
 	let head = batch.head()?;
 	let header_head = batch.header_head()?;
@@ -858,7 +824,6 @@ where
 
 		rollback = extension_pair.extension.rollback;
 		sizes = extension_pair.extension.sizes();
-		bitmap_accumulator = extension_pair.extension.bitmap_accumulator.clone();
 	}
 
 	// During an extension we do not want to modify the header_extension (and only read from it).
@@ -888,9 +853,6 @@ where
 				trees.output_pmmr_h.size = sizes.0;
 				trees.rproof_pmmr_h.size = sizes.1;
 				trees.kernel_pmmr_h.size = sizes.2;
-
-				// Update our bitmap_accumulator based on our extension
-				trees.bitmap_accumulator = bitmap_accumulator;
 			}
 
 			trace!("TxHashSet extension done.");
@@ -904,17 +866,15 @@ where
 /// to allow headers to be validated before we receive the full block data.
 pub fn header_extending_readonly<'a, F, T>(
 	handle: &'a mut PMMRHandle<BlockHeader>,
-	store: &ChainStore,
+	batch_read: Batch<'_>,
 	inner: F,
 ) -> Result<T, Error>
 where
 	F: FnOnce(&mut HeaderExtension<'_>, &Batch<'_>) -> Result<T, Error>,
 {
-	let batch = store.batch()?;
-
 	let head = match handle.head_hash() {
 		Ok(hash) => {
-			let header = batch.get_block_header(&hash)?;
+			let header = batch_read.get_block_header(&hash)?;
 			Tip::from_header(&header)
 		}
 		Err(_) => Tip::default(),
@@ -922,7 +882,7 @@ where
 
 	let pmmr = PMMR::at(&mut handle.backend, handle.size);
 	let mut extension = HeaderExtension::new(pmmr, head);
-	let res = inner(&mut extension, &batch);
+	let res = inner(&mut extension, &batch_read);
 
 	handle.backend.discard();
 
@@ -1147,10 +1107,6 @@ pub struct Extension<'a> {
 	output_pmmr: PMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
 	rproof_pmmr: PMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
 	kernel_pmmr: PMMR<'a, TxKernel, PMMRBackend<TxKernel>>,
-
-	bitmap_accumulator: BitmapAccumulator,
-	bitmap_cache: Bitmap,
-
 	/// Rollback flag.
 	rollback: bool,
 }
@@ -1190,11 +1146,6 @@ impl<'a> Extension<'a> {
 			output_pmmr: PMMR::at(&mut trees.output_pmmr_h.backend, trees.output_pmmr_h.size),
 			rproof_pmmr: PMMR::at(&mut trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.size),
 			kernel_pmmr: PMMR::at(&mut trees.kernel_pmmr_h.backend, trees.kernel_pmmr_h.size),
-			bitmap_accumulator: trees.bitmap_accumulator.clone(),
-			bitmap_cache: trees
-				.bitmap_accumulator
-				.as_bitmap()
-				.unwrap_or(Bitmap::new()),
 			rollback: false,
 		}
 	}
@@ -1219,16 +1170,6 @@ impl<'a> Extension<'a> {
 		&self,
 	) -> ReadonlyPMMR<OutputIdentifier, PMMRBackend<OutputIdentifier>> {
 		self.output_pmmr.readonly_pmmr()
-	}
-
-	/// Take a snapshot of our bitmap accumulator
-	pub fn bitmap_accumulator(&self) -> BitmapAccumulator {
-		self.bitmap_accumulator.clone()
-	}
-
-	/// Readonly view of our bitmap accumulator data.
-	pub fn bitmap_readonly_pmmr(&self) -> ReadonlyPMMR<BitmapChunk, VecBackend<BitmapChunk>> {
-		self.bitmap_accumulator.readonly_pmmr()
 	}
 
 	/// Readonly view of our rangeproof data.
@@ -1296,36 +1237,10 @@ impl<'a> Extension<'a> {
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
 		self.apply_kernels(b.kernels(), b.header.height, batch)?;
 
-		// Update our BitmapAccumulator based on affected outputs (both spent and created).
-		self.apply_to_bitmap_accumulator(&affected_pos)?;
-
 		// Update the head of the extension to reflect the block we just applied.
 		self.head = Tip::from_header(&b.header);
 
 		Ok(())
-	}
-
-	fn apply_to_bitmap_accumulator(&mut self, output_pos: &[u64]) -> Result<(), Error> {
-		// NOTE: 1-based output_pos shouldn't have 0 in it (but does)
-		let mut output_idx: Vec<_> = output_pos
-			.iter()
-			.map(|x| pmmr::n_leaves(*x).saturating_sub(1))
-			.collect();
-		output_idx.sort_unstable();
-		let min_idx = output_idx.first().cloned().unwrap_or(0);
-		let size = pmmr::n_leaves(self.output_pmmr.size);
-		self.bitmap_accumulator.apply(
-			output_idx,
-			self.output_pmmr
-				.leaf_idx_iter(BitmapAccumulator::chunk_start_idx(min_idx)),
-			size,
-		)
-	}
-
-	/// Sets the bitmap accumulator (as received during PIBD sync)
-	pub fn set_bitmap_accumulator(&mut self, accumulator: BitmapAccumulator) {
-		self.bitmap_accumulator = accumulator;
-		self.bitmap_cache = self.bitmap_accumulator.as_bitmap().unwrap_or(Bitmap::new());
 	}
 
 	// Prune output and rangeproof PMMRs based on provided pos.
@@ -1395,74 +1310,53 @@ impl<'a> Extension<'a> {
 		Ok(())
 	}
 
-	/// Order and sort output segments and hashes, returning an array
-	/// of elements that can be applied in order to a pmmr
-	fn sort_pmmr_hashes_and_leaves(
-		&mut self,
-		hash_pos: Vec<u64>,
-		leaf_pos: Vec<u64>,
-		skip_leaf_position: Option<u64>,
-	) -> Vec<OrderedHashLeafNode> {
-		// Merge and into single array and sort into insertion order
-		let mut ordered_inserts = vec![];
-		for (data_index, pos0) in leaf_pos.iter().enumerate() {
-			// Don't re-push genesis output, basically
-			if skip_leaf_position == Some(*pos0) {
-				continue;
-			}
-			ordered_inserts.push(OrderedHashLeafNode::Leaf(data_index, *pos0));
-		}
-		for (data_index, pos0) in hash_pos.iter().enumerate() {
-			ordered_inserts.push(OrderedHashLeafNode::Hash(data_index, *pos0));
-		}
-		ordered_inserts.sort();
-		ordered_inserts
-	}
-
 	/// Apply an output segment to the output PMMR. must be called in order
 	/// Sort and apply hashes and leaves within a segment to output pmmr, skipping over
 	/// genesis position.
 	/// NB: Would like to make this more generic but the hard casting of pmmrs
 	/// held by this struct makes it awkward to do so
 
-	pub fn apply_output_segment(
+	pub fn apply_output_segments(
 		&mut self,
-		segment: Segment<OutputIdentifier>,
+		segments: Vec<Segment<OutputIdentifier>>,
+		bitmap: &Bitmap,
 	) -> Result<(), Error> {
-		let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segment.parts();
+		for segm in segments {
+			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
 
-		// insert either leaves or pruned subtrees as we go
-		for insert in self.sort_pmmr_hashes_and_leaves(hash_pos, leaf_pos, Some(0)) {
-			match insert {
-				OrderedHashLeafNode::Hash(idx, pos0) => {
-					if pos0 >= self.output_pmmr.size {
-						if self.output_pmmr.size == 1 {
-							// All initial outputs are spent up to this hash,
-							// Roll back the genesis output
+			// insert either leaves or pruned subtrees as we go
+			for insert in sort_pmmr_hashes_and_leaves(hash_pos, leaf_pos, Some(0)) {
+				match insert {
+					OrderedHashLeafNode::Hash(idx, pos0) => {
+						if pos0 >= self.output_pmmr.size {
+							if self.output_pmmr.size == 1 {
+								// All initial outputs are spent up to this hash,
+								// Roll back the genesis output
+								self.output_pmmr
+									.rewind(0, &Bitmap::new())
+									.map_err(&Error::TxHashSetErr)?;
+							}
 							self.output_pmmr
-								.rewind(0, &Bitmap::new())
+								.push_pruned_subtree(hashes[idx], pos0)
 								.map_err(&Error::TxHashSetErr)?;
 						}
-						self.output_pmmr
-							.push_pruned_subtree(hashes[idx], pos0)
-							.map_err(&Error::TxHashSetErr)?;
 					}
-				}
-				OrderedHashLeafNode::Leaf(idx, pos0) => {
-					if pos0 == self.output_pmmr.size {
-						self.output_pmmr
-							.push(&leaf_data[idx])
-							.map_err(&Error::TxHashSetErr)?;
-					}
-					let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
-					match pmmr_index {
-						Some(i) => {
-							if !self.bitmap_cache.contains(i as u32) {
-								self.output_pmmr.remove_from_leaf_set(pos0);
-							}
+					OrderedHashLeafNode::Leaf(idx, pos0) => {
+						if pos0 == self.output_pmmr.size {
+							self.output_pmmr
+								.push(&leaf_data[idx])
+								.map_err(&Error::TxHashSetErr)?;
 						}
-						None => {}
-					};
+						let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
+						match pmmr_index {
+							Some(i) => {
+								if !bitmap.contains(i as u32) {
+									self.output_pmmr.remove_from_leaf_set(pos0);
+								}
+							}
+							None => {}
+						};
+					}
 				}
 			}
 		}
@@ -1472,41 +1366,47 @@ impl<'a> Extension<'a> {
 	/// Apply a rangeproof segment to the rangeproof PMMR. must be called in order
 	/// Sort and apply hashes and leaves within a segment to rangeproof pmmr, skipping over
 	/// genesis position.
-	pub fn apply_rangeproof_segment(&mut self, segment: Segment<RangeProof>) -> Result<(), Error> {
-		let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segment.parts();
+	pub fn apply_rangeproof_segments(
+		&mut self,
+		segments: Vec<Segment<RangeProof>>,
+		bitmap: &Bitmap,
+	) -> Result<(), Error> {
+		for segm in segments {
+			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
 
-		// insert either leaves or pruned subtrees as we go
-		for insert in self.sort_pmmr_hashes_and_leaves(hash_pos, leaf_pos, Some(0)) {
-			match insert {
-				OrderedHashLeafNode::Hash(idx, pos0) => {
-					if pos0 >= self.rproof_pmmr.size {
-						if self.rproof_pmmr.size == 1 {
-							// All initial outputs are spent up to this hash,
-							// Roll back the genesis output
+			// insert either leaves or pruned subtrees as we go
+			for insert in sort_pmmr_hashes_and_leaves(hash_pos, leaf_pos, Some(0)) {
+				match insert {
+					OrderedHashLeafNode::Hash(idx, pos0) => {
+						if pos0 >= self.rproof_pmmr.size {
+							if self.rproof_pmmr.size == 1 {
+								// All initial outputs are spent up to this hash,
+								// Roll back the genesis output
+								self.rproof_pmmr
+									.rewind(0, &Bitmap::new())
+									.map_err(&Error::TxHashSetErr)?;
+							}
 							self.rproof_pmmr
-								.rewind(0, &Bitmap::new())
+								.push_pruned_subtree(hashes[idx], pos0)
 								.map_err(&Error::TxHashSetErr)?;
 						}
-						self.rproof_pmmr
-							.push_pruned_subtree(hashes[idx], pos0)
-							.map_err(&Error::TxHashSetErr)?;
 					}
-				}
-				OrderedHashLeafNode::Leaf(idx, pos0) => {
-					if pos0 == self.rproof_pmmr.size {
-						self.rproof_pmmr
-							.push(&leaf_data[idx])
-							.map_err(&Error::TxHashSetErr)?;
-					}
-					let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
-					match pmmr_index {
-						Some(i) => {
-							if !self.bitmap_cache.contains(i as u32) {
-								self.rproof_pmmr.remove_from_leaf_set(pos0);
-							}
+					OrderedHashLeafNode::Leaf(idx, pos0) => {
+						if pos0 == self.rproof_pmmr.size {
+							self.rproof_pmmr
+								.push(&leaf_data[idx])
+								.map_err(&Error::TxHashSetErr)?;
 						}
-						None => {}
-					};
+						let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
+						match pmmr_index {
+							Some(i) => {
+								if !bitmap.contains(i as u32) {
+									self.rproof_pmmr.remove_from_leaf_set(pos0);
+								}
+							}
+							None => {}
+						};
+					}
 				}
 			}
 		}
@@ -1533,22 +1433,23 @@ impl<'a> Extension<'a> {
 	}
 
 	/// Apply a kernel segment to the output PMMR. must be called in order
-	pub fn apply_kernel_segment(&mut self, segment: Segment<TxKernel>) -> Result<(), Error> {
-		let (_sid, _hash_pos, _hashes, leaf_pos, leaf_data, _proof) = segment.parts();
-		// Non prunable - insert only leaves (with genesis kernel removedj)
-		for insert in self.sort_pmmr_hashes_and_leaves(vec![], leaf_pos, Some(0)) {
-			match insert {
-				OrderedHashLeafNode::Hash(_, _) => {
-					return Err(Error::InvalidSegment(
-						"Kernel PMMR is non-prunable, should not have hash data".to_string(),
-					)
-					.into());
-				}
-				OrderedHashLeafNode::Leaf(idx, pos0) => {
-					if pos0 == self.kernel_pmmr.size {
-						self.kernel_pmmr
-							.push(&leaf_data[idx])
-							.map_err(&Error::TxHashSetErr)?;
+	pub fn apply_kernel_segments(&mut self, segments: Vec<Segment<TxKernel>>) -> Result<(), Error> {
+		for segm in segments {
+			let (_sid, _hash_pos, _hashes, leaf_pos, leaf_data, _proof) = segm.parts();
+			// Non prunable - insert only leaves (with genesis kernel removedj)
+			for insert in sort_pmmr_hashes_and_leaves(vec![], leaf_pos, Some(0)) {
+				match insert {
+					OrderedHashLeafNode::Hash(_, _) => {
+						return Err(Error::InvalidSegment(
+							"Kernel PMMR is non-prunable, should not have hash data".to_string(),
+						));
+					}
+					OrderedHashLeafNode::Leaf(idx, pos0) => {
+						if pos0 == self.kernel_pmmr.size {
+							self.kernel_pmmr
+								.push(&leaf_data[idx])
+								.map_err(&Error::TxHashSetErr)?;
+						}
 					}
 				}
 			}
@@ -1602,6 +1503,15 @@ impl<'a> Extension<'a> {
 		Ok(())
 	}
 
+	/// Build a new bitmap accumulator for the provided output PMMR. Expected call for Segmenter only.
+	pub fn build_bitmap_accumulator(&self) -> Result<BitmapAccumulator, Error> {
+		let pmmr = self.output_pmmr.readonly_pmmr();
+		let nbits = pmmr::n_leaves(pmmr.unpruned_size());
+		let mut bitmap_accumulator = BitmapAccumulator::new();
+		bitmap_accumulator.init(&mut pmmr.leaf_idx_iter(0), nbits)?;
+		Ok(bitmap_accumulator)
+	}
+
 	/// Rewinds the MMRs to the provided block, rewinding to the last output pos
 	/// and last kernel pos of that block. If `updated_bitmap` is supplied, the
 	/// bitmap accumulator will be replaced with its contents
@@ -1625,18 +1535,13 @@ impl<'a> Extension<'a> {
 		if head_header.height <= header.height {
 			// Nothing to rewind but we do want to truncate the MMRs at header for consistency.
 			self.rewind_mmrs_to_pos(header.output_mmr_size, header.kernel_mmr_size, &[])?;
-			self.apply_to_bitmap_accumulator(&[header.output_mmr_size])?;
 		} else {
-			let mut affected_pos = vec![];
 			let mut current = head_header;
 			while header.height < current.height {
 				let block = batch.get_block(&current.hash())?;
-				let mut affected_pos_single_block = self.rewind_single_block(&block, batch)?;
-				affected_pos.append(&mut affected_pos_single_block);
+				self.rewind_single_block(&block, batch)?;
 				current = batch.get_previous_header(&current)?;
 			}
-			// Now apply a single aggregate "affected_pos" to our bitmap accumulator.
-			self.apply_to_bitmap_accumulator(&affected_pos)?;
 		}
 
 		// Update our head to reflect the header we rewound to.
@@ -1648,7 +1553,7 @@ impl<'a> Extension<'a> {
 	// Rewind the MMRs and the output_pos index.
 	// Returns a vec of "affected_pos" so we can apply the necessary updates to the bitmap
 	// accumulator in a single pass for all rewound blocks.
-	fn rewind_single_block(&mut self, block: &Block, batch: &Batch<'_>) -> Result<Vec<u64>, Error> {
+	fn rewind_single_block(&mut self, block: &Block, batch: &Batch<'_>) -> Result<(), Error> {
 		let header = &block.header;
 		let prev_header = batch.get_previous_header(&header)?;
 
@@ -1673,12 +1578,6 @@ impl<'a> Extension<'a> {
 			let prev = batch.get_previous_header(header)?;
 			self.rewind_mmrs_to_pos(prev.output_mmr_size, prev.kernel_mmr_size, &spent_pos)?;
 		}
-
-		// Update our BitmapAccumulator based on affected outputs.
-		// We want to "unspend" every rewound spent output.
-		// Treat size as an affected output to ensure we rebuild far enough back.
-		let mut affected_pos = spent_pos;
-		affected_pos.push(self.output_pmmr.size);
 
 		// Remove any entries from the output_pos created by the block being rewound.
 		let mut missing_count = 0;
@@ -1719,7 +1618,7 @@ impl<'a> Extension<'a> {
 			}
 		}
 
-		Ok(affected_pos)
+		Ok(())
 	}
 
 	/// Rewinds the MMRs to the provided positions, given the output and
@@ -1812,12 +1711,14 @@ impl<'a> Extension<'a> {
 		&self,
 		genesis: &BlockHeader,
 		header: &BlockHeader,
+		secp: &Secp256k1,
 	) -> Result<(Commitment, Commitment), Error> {
 		let now = Instant::now();
 
 		let (utxo_sum, kernel_sum) = self.verify_kernel_sums(
 			header.total_overage(genesis.kernel_mmr_size > 0),
 			header.total_kernel_offset(),
+			secp,
 		)?;
 
 		debug!(
@@ -1834,11 +1735,10 @@ impl<'a> Extension<'a> {
 		&self,
 		genesis: &BlockHeader,
 		fast_validation: bool,
-		status: &dyn TxHashsetWriteStatus,
-		output_start_pos: Option<u64>,
-		_kernel_start_pos: Option<u64>,
+		status: Option<Arc<SyncState>>,
 		header: &BlockHeader,
 		stop_state: Option<Arc<StopState>>,
+		secp: &Secp256k1,
 	) -> Result<(Commitment, Commitment), Error> {
 		self.validate_mmrs()?;
 		self.validate_roots(header)?;
@@ -1851,18 +1751,12 @@ impl<'a> Extension<'a> {
 
 		// The real magicking happens here. Sum of kernel excesses should equal
 		// sum of unspent outputs minus total supply.
-		let (output_sum, kernel_sum) = self.validate_kernel_sums(genesis, header)?;
+		let (output_sum, kernel_sum) = self.validate_kernel_sums(genesis, header, secp)?;
 
 		// These are expensive verification step (skipped for "fast validation").
 		if !fast_validation {
 			// Verify the rangeproof associated with each unspent output.
-			self.verify_rangeproofs(
-				Some(status),
-				output_start_pos,
-				None,
-				false,
-				stop_state.clone(),
-			)?;
+			self.verify_rangeproofs(status.clone(), None, stop_state.clone(), secp)?;
 			if let Some(ref s) = stop_state {
 				if s.is_stopped() {
 					return Err(Error::Stopped.into());
@@ -1870,7 +1764,7 @@ impl<'a> Extension<'a> {
 			}
 
 			// Verify all the kernel signatures.
-			self.verify_kernel_signatures(status, stop_state.clone())?;
+			self.verify_kernel_signatures(status, stop_state.clone(), secp)?;
 			if let Some(ref s) = stop_state {
 				if s.is_stopped() {
 					return Err(Error::Stopped.into());
@@ -1920,147 +1814,279 @@ impl<'a> Extension<'a> {
 
 	fn verify_kernel_signatures(
 		&self,
-		status: &dyn TxHashsetWriteStatus,
+		status: Option<Arc<SyncState>>,
 		stop_state: Option<Arc<StopState>>,
+		secp: &Secp256k1,
 	) -> Result<(), Error> {
 		let now = Instant::now();
 		const KERNEL_BATCH_SIZE: usize = 5_000;
 
-		let mut kern_count = 0;
-		let total_kernels = pmmr::n_leaves(self.kernel_pmmr.unpruned_size());
-		let mut tx_kernels: Vec<TxKernel> = Vec::with_capacity(KERNEL_BATCH_SIZE);
-		for n in 0..self.kernel_pmmr.unpruned_size() {
-			if pmmr::is_leaf(n) {
-				let kernel = self
-					.kernel_pmmr
-					.get_data(n)
-					.ok_or_else(|| Error::TxKernelNotFound)?;
-				tx_kernels.push(kernel);
+		let verify_result = crossbeam::thread::scope(|s| {
+			let mut kern_count = 0;
+			let total_kernels = pmmr::n_leaves(self.kernel_pmmr.unpruned_size());
+
+			let mut tx_kernels: Vec<TxKernel> = Vec::with_capacity(KERNEL_BATCH_SIZE);
+			let num_cores = num_cpus::get();
+			let mut running_threads: VecDeque<ScopedJoinHandle<Result<usize, Error>>> =
+				VecDeque::with_capacity(num_cores * 2);
+
+			for n in 0..self.kernel_pmmr.unpruned_size() {
+				if pmmr::is_leaf(n) {
+					let kernel = self
+						.kernel_pmmr
+						.get_data(n)
+						.ok_or_else(|| Error::TxKernelNotFound)?;
+					tx_kernels.push(kernel);
+				}
+
+				if tx_kernels.len() >= KERNEL_BATCH_SIZE
+					|| n + 1 >= self.kernel_pmmr.unpruned_size()
+				{
+					Self::wait_for_kernel_tasks(
+						num_cores,
+						&mut running_threads,
+						&status,
+						&mut kern_count,
+						total_kernels,
+					)?;
+
+					if let Some(ref s) = stop_state {
+						if s.is_stopped() {
+							return Ok(());
+						}
+					}
+
+					let mut tx_kernels2process = Vec::with_capacity(tx_kernels.len());
+					tx_kernels2process.append(&mut tx_kernels);
+					debug_assert!(tx_kernels.is_empty());
+					let handle = s.spawn(move |_| {
+						TxKernel::batch_sig_verify(&tx_kernels2process, secp)?;
+						Ok(tx_kernels2process.len())
+					});
+					running_threads.push_back(handle);
+				}
 			}
 
-			if tx_kernels.len() >= KERNEL_BATCH_SIZE || n + 1 >= self.kernel_pmmr.unpruned_size() {
-				TxKernel::batch_sig_verify(&tx_kernels)?;
-				kern_count += tx_kernels.len() as u64;
-				tx_kernels.clear();
-				status.on_validation_kernels(kern_count, total_kernels);
-				if let Some(ref s) = stop_state {
-					if s.is_stopped() {
-						return Ok(());
-					}
+			// remaining part which not full of batch_size range proofs
+			if !tx_kernels.is_empty() {
+				let handle = s.spawn(move |_| {
+					TxKernel::batch_sig_verify(&tx_kernels, secp)?;
+					Ok(tx_kernels.len())
+				});
+				running_threads.push_back(handle);
+			}
+
+			// Waiting to the rest of tasks to finish
+			while running_threads.len() > 0 {
+				let len = running_threads.len();
+				Self::wait_for_kernel_tasks(
+					len,
+					&mut running_threads,
+					&status,
+					&mut kern_count,
+					total_kernels,
+				)?;
+			}
+
+			info!(
+				"txhashset: verified {} kernel signatures, pmmr size {}, took {}s",
+				kern_count,
+				self.kernel_pmmr.unpruned_size(),
+				now.elapsed().as_secs()
+			);
+
+			Ok(())
+		});
+
+		let verify_result =
+			verify_result.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
+		verify_result
+	}
+
+	fn wait_for_kernel_tasks(
+		num_cores: usize,
+		running_tasks: &mut VecDeque<ScopedJoinHandle<Result<usize, Error>>>,
+		status: &Option<Arc<SyncState>>,
+		kern_count: &mut u64,
+		total_kernels: u64,
+	) -> Result<(), Error> {
+		if running_tasks.len() < num_cores {
+			return Ok(());
+		}
+
+		let handler = running_tasks.pop_front().expect("num_cores is zero?");
+		let result = handler
+			.join()
+			.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
+		match result {
+			Ok(size) => {
+				*kern_count += size as u64;
+				if let Some(status) = status {
+					status.update(SyncStatus::TxHashsetKernelsValidation {
+						kernels: *kern_count,
+						kernels_total: total_kernels,
+					});
 				}
+				// Expected by QT wallet
 				info!(
 					"txhashset: verify_kernel_signatures: verified {} signatures from {}",
 					kern_count, total_kernels
 				);
+				Ok(())
 			}
+			Err(e) => Err(e),
 		}
-
-		info!(
-			"txhashset: verified {} kernel signatures, pmmr size {}, took {}s",
-			kern_count,
-			self.kernel_pmmr.unpruned_size(),
-			now.elapsed().as_secs(),
-		);
-
-		Ok(())
 	}
 
 	fn verify_rangeproofs(
 		&self,
-		status: Option<&dyn TxHashsetWriteStatus>,
-		start_pos: Option<u64>,
+		status: Option<Arc<SyncState>>,
 		batch_size: Option<usize>,
-		single_iter: bool,
 		stop_state: Option<Arc<StopState>>,
-	) -> Result<u64, Error> {
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
 		let now = Instant::now();
 
 		let batch_size = batch_size.unwrap_or(1_000);
 
-		let mut commits: Vec<Commitment> = Vec::with_capacity(batch_size);
-		let mut proofs: Vec<RangeProof> = Vec::with_capacity(batch_size);
+		let verify_result = crossbeam::thread::scope(|s| {
+			let mut proof_count: u64 = 0;
 
-		let mut proof_count = 0;
-		if let Some(s) = start_pos {
-			if let Some(i) = pmmr::pmmr_leaf_to_insertion_index(s) {
-				proof_count = self.output_pmmr.n_unpruned_leaves_to_index(i) as usize;
+			let total_rproofs = self.output_pmmr.n_unpruned_leaves();
+
+			let num_cores = num_cpus::get();
+			let mut commits: Vec<Commitment> = Vec::with_capacity(batch_size);
+			let mut proofs: Vec<RangeProof> = Vec::with_capacity(batch_size);
+			let mut running_threads: VecDeque<ScopedJoinHandle<Result<u64, Error>>> =
+				VecDeque::with_capacity(num_cores * 2);
+
+			for pos0 in self.output_pmmr.leaf_pos_iter() {
+				let output = self.output_pmmr.get_data(pos0);
+				let proof = self.rproof_pmmr.get_data(pos0);
+
+				// Output and corresponding rangeproof *must* exist.
+				// It is invalid for either to be missing and we fail immediately in this case.
+				match (output, proof) {
+					(None, _) => {
+						return Err(Error::OutputNotFound(format!(
+							"at verify_rangeproofs for pos {}",
+							pos0
+						)))
+					}
+					(_, None) => {
+						return Err(Error::RangeproofNotFound(format!(
+							"at verify_rangeproofs for pos {}",
+							pos0
+						)))
+					}
+					(Some(output), Some(proof)) => {
+						commits.push(output.commit);
+						proofs.push(proof);
+					}
+				}
+
+				proof_count += 1;
+
+				if proofs.len() >= batch_size {
+					Self::wait_for_rangeproofs_tasks(
+						num_cores,
+						&mut running_threads,
+						total_rproofs,
+						&status,
+					)?;
+
+					if let Some(stop_state) = &stop_state {
+						if stop_state.is_stopped() {
+							break;
+						}
+					}
+
+					// Macing copies for the spawn processing
+					let proof_count = proof_count.clone();
+
+					let mut commits2process = Vec::with_capacity(commits.len());
+					commits2process.append(&mut commits);
+					debug_assert!(commits.is_empty());
+
+					let mut proofs2process = Vec::with_capacity(proofs.len());
+					proofs2process.append(&mut proofs);
+					debug_assert!(proofs.is_empty());
+
+					let handle = s.spawn(move |_| {
+						Output::batch_verify_proofs(&commits2process, &proofs2process, secp)?;
+						Ok(proof_count)
+					});
+					running_threads.push_back(handle);
+				}
 			}
+
+			// remaining part which not full of batch_size range proofs
+			if !proofs.is_empty() {
+				let handle = s.spawn(move |_| {
+					Output::batch_verify_proofs(&commits, &proofs, secp)?;
+					Ok(proof_count)
+				});
+				running_threads.push_back(handle);
+			}
+
+			// Waiting to the rest of tasks to finish
+			while running_threads.len() > 0 {
+				let len = running_threads.len();
+				Self::wait_for_rangeproofs_tasks(
+					len,
+					&mut running_threads,
+					total_rproofs,
+					&status,
+				)?;
+			}
+
+			debug!(
+				"txhashset: verified {} rangeproofs, pmmr size {}, took {}s",
+				proof_count,
+				self.rproof_pmmr.unpruned_size(),
+				now.elapsed().as_secs(),
+			);
+			Ok(())
+		});
+
+		let verify_result =
+			verify_result.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
+		verify_result
+	}
+
+	// return pos0 value from the thread if want to exit with that
+	fn wait_for_rangeproofs_tasks(
+		num_cores: usize,
+		running_tasks: &mut VecDeque<ScopedJoinHandle<Result<u64, Error>>>,
+		total_rproofs: u64,
+		status: &Option<Arc<SyncState>>,
+	) -> Result<(), Error> {
+		if running_tasks.len() < num_cores {
+			return Ok(());
 		}
 
-		let total_rproofs = self.output_pmmr.n_unpruned_leaves();
-
-		for pos0 in self.output_pmmr.leaf_pos_iter() {
-			if let Some(p) = start_pos {
-				if pos0 < p {
-					continue;
-				}
-			}
-			let output = self.output_pmmr.get_data(pos0);
-			let proof = self.rproof_pmmr.get_data(pos0);
-
-			// Output and corresponding rangeproof *must* exist.
-			// It is invalid for either to be missing and we fail immediately in this case.
-			match (output, proof) {
-				(None, _) => {
-					return Err(Error::OutputNotFound(format!(
-						"at verify_rangeproofs for pos {}",
-						pos0
-					)))
-				}
-				(_, None) => {
-					return Err(Error::RangeproofNotFound(format!(
-						"at verify_rangeproofs for pos {}",
-						pos0
-					)))
-				}
-				(Some(output), Some(proof)) => {
-					commits.push(output.commit);
-					proofs.push(proof);
-				}
-			}
-
-			proof_count += 1;
-
-			if proofs.len() >= batch_size {
-				Output::batch_verify_proofs(&commits, &proofs)?;
-				commits.clear();
-				proofs.clear();
+		let handler = running_tasks.pop_front().expect("num_cores is zero?");
+		let result = handler
+			.join()
+			.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
+		match result {
+			Ok(proof_count) => {
+				// Expected by QT wallet
 				info!(
 					"txhashset: verify_rangeproofs: verified {} rangeproofs from {}",
 					proof_count, total_rproofs
 				);
+
 				if let Some(s) = status {
-					s.on_validation_rproofs(proof_count as u64, total_rproofs);
+					s.update(SyncStatus::TxHashsetRangeProofsValidation {
+						rproofs: proof_count,
+						rproofs_total: total_rproofs,
+					});
 				}
-				if let Some(ref s) = stop_state {
-					if s.is_stopped() {
-						return Ok(pos0);
-					}
-				}
-				if single_iter {
-					return Ok(pos0);
-				}
+				Ok(())
 			}
+			Err(e) => Err(e),
 		}
-
-		// remaining part which not full of batch_size range proofs
-		if !proofs.is_empty() {
-			Output::batch_verify_proofs(&commits, &proofs)?;
-			commits.clear();
-			proofs.clear();
-			info!(
-				"txhashset: verify_rangeproofs: verified {} rangeproofs from {}",
-				proof_count, total_rproofs
-			);
-		}
-
-		debug!(
-			"txhashset: verified {} rangeproofs, pmmr size {}, took {}s",
-			proof_count,
-			self.rproof_pmmr.unpruned_size(),
-			now.elapsed().as_secs(),
-		);
-		Ok(0)
 	}
 }
 
@@ -2269,4 +2295,27 @@ fn apply_kernel_rules(kernel: &TxKernel, pos: CommitPos, batch: &Batch<'_>) -> R
 		_ => {}
 	}
 	Ok(())
+}
+
+/// Order and sort output segments and hashes, returning an array
+/// of elements that can be applied in order to a pmmr
+pub fn sort_pmmr_hashes_and_leaves(
+	hash_pos: Vec<u64>,
+	leaf_pos: Vec<u64>,
+	skip_leaf_position: Option<u64>,
+) -> Vec<OrderedHashLeafNode> {
+	// Merge and into single array and sort into insertion order
+	let mut ordered_inserts = vec![];
+	for (data_index, pos0) in leaf_pos.iter().enumerate() {
+		// Don't re-push genesis output, basically
+		if skip_leaf_position == Some(*pos0) {
+			continue;
+		}
+		ordered_inserts.push(OrderedHashLeafNode::Leaf(data_index, *pos0));
+	}
+	for (data_index, pos0) in hash_pos.iter().enumerate() {
+		ordered_inserts.push(OrderedHashLeafNode::Hash(data_index, *pos0));
+	}
+	ordered_inserts.sort();
+	ordered_inserts
 }

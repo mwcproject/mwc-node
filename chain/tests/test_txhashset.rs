@@ -18,16 +18,16 @@ use mwc_core as core;
 
 use mwc_util as util;
 
-use std::fs::{self, File};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use crate::chain::store::ChainStore;
 use crate::chain::txhashset;
 use crate::core::core::hash::Hashed;
 use crate::core::core::BlockHeader;
 use crate::core::global;
 use crate::util::file;
+use mwc_util::secp::{ContextFlag, Secp256k1};
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 fn clean_output_dir(dir_name: &str) {
 	let _ = fs::remove_dir_all(dir_name);
@@ -37,11 +37,12 @@ fn clean_output_dir(dir_name: &str) {
 fn test_unexpected_zip() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	let db_root = format!(".mwc_txhashset_zip");
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	clean_output_dir(&db_root);
 	{
 		let chain_store = ChainStore::new(&db_root).unwrap();
 		let store = Arc::new(chain_store);
-		txhashset::TxHashSet::open(db_root.clone(), store.clone(), None).unwrap();
+		txhashset::TxHashSet::open(db_root.clone(), store.clone(), None, &secp).unwrap();
 		let head = BlockHeader::default();
 		// First check if everything works out of the box
 		assert!(txhashset::zip_read(db_root.clone(), &head).is_ok());

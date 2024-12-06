@@ -192,16 +192,15 @@ impl BitmapAccumulator {
 		ReadonlyPMMR::at(&self.backend, self.backend.size())
 	}
 
-	/// Return a raw in-memory bitmap of this accumulator
-	pub fn as_bitmap(&self) -> Result<Bitmap, Error> {
+	/// Return a raw in-memory bitmap of this accumulator.
+	pub fn build_bitmap(&self) -> Bitmap {
 		let mut bitmap = Bitmap::new();
 		for (chunk_index, chunk_pos) in self.backend.leaf_pos_iter().enumerate() {
-			//TODO: Unwrap
 			let chunk = self.backend.get_data(chunk_pos as u64).unwrap();
 			let additive = chunk.set_iter(chunk_index * 1024).collect::<Vec<u32>>();
 			bitmap.add_many(&additive);
 		}
-		Ok(bitmap)
+		bitmap
 	}
 }
 
@@ -224,7 +223,7 @@ impl BitmapChunk {
 	/// Panics if idx is outside the valid range of bits in a chunk.
 	pub fn set(&mut self, idx: u64, value: bool) {
 		let idx = usize::try_from(idx).expect("usize from u64");
-		assert!(idx < Self::LEN_BITS);
+		debug_assert!(idx < Self::LEN_BITS);
 		self.0.set(idx, value)
 	}
 
@@ -241,6 +240,20 @@ impl BitmapChunk {
 			.enumerate()
 			.filter(|(_, val)| *val)
 			.map(move |(idx, _)| (idx as u32 + idx_offset as u32))
+	}
+
+	/// Convert the BitVec to a hexadecimal string
+	pub fn to_hex(&self) -> String {
+		// Convert the BitVec to a vector of bytes
+		let bytes = self.0.to_bytes();
+
+		// Format the bytes as a hexadecimal string
+		let hex_str = bytes
+			.iter()
+			.map(|byte| format!("{:02X}", byte))
+			.collect::<Vec<_>>()
+			.join("");
+		return format!("BitmapChunk(Len:{}  Data:{})", self.0.len(), hex_str);
 	}
 }
 
@@ -276,7 +289,8 @@ impl Readable for BitmapChunk {
 ///
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BitmapSegment {
-	identifier: SegmentIdentifier,
+	/// This segment Identifier
+	pub identifier: SegmentIdentifier,
 	blocks: Vec<BitmapBlock>,
 	proof: SegmentProof,
 }
@@ -367,7 +381,7 @@ impl From<BitmapSegment> for Segment<BitmapChunk> {
 		}
 
 		for (block_idx, block) in blocks.into_iter().enumerate() {
-			assert!(block.inner.len() <= BitmapBlock::NBITS as usize);
+			debug_assert!(block.inner.len() <= BitmapBlock::NBITS as usize);
 			let offset = block_idx * BitmapBlock::NCHUNKS;
 			for (i, _) in block.inner.iter().enumerate().filter(|&(_, v)| v) {
 				chunks
@@ -396,7 +410,7 @@ impl BitmapBlock {
 	const NCHUNKS: usize = Self::NBITS as usize / BitmapChunk::LEN_BITS;
 
 	fn new(n_chunks: usize) -> Self {
-		assert!(n_chunks <= BitmapBlock::NCHUNKS);
+		debug_assert!(n_chunks <= BitmapBlock::NCHUNKS);
 		Self {
 			inner: BitVec::from_elem(n_chunks * BitmapChunk::LEN_BITS, false),
 		}
@@ -404,9 +418,9 @@ impl BitmapBlock {
 
 	fn n_chunks(&self) -> usize {
 		let length = self.inner.len();
-		assert_eq!(length % BitmapChunk::LEN_BITS, 0);
+		debug_assert_eq!(length % BitmapChunk::LEN_BITS, 0);
 		let n_chunks = length / BitmapChunk::LEN_BITS;
-		assert!(n_chunks <= BitmapBlock::NCHUNKS);
+		debug_assert!(n_chunks <= BitmapBlock::NCHUNKS);
 		n_chunks
 	}
 }
@@ -414,8 +428,8 @@ impl BitmapBlock {
 impl Writeable for BitmapBlock {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		let length = self.inner.len();
-		assert!(length <= Self::NBITS as usize);
-		assert_eq!(length % BitmapChunk::LEN_BITS, 0);
+		debug_assert!(length <= Self::NBITS as usize);
+		debug_assert_eq!(length % BitmapChunk::LEN_BITS, 0);
 		writer.write_u8((length / BitmapChunk::LEN_BITS) as u8)?;
 
 		let count_pos = self.inner.iter().filter(|&v| v).count() as u32;
@@ -443,7 +457,7 @@ impl Writeable for BitmapBlock {
 			// Write raw bytes
 			Writeable::write(&BitmapBlockSerialization::Raw, writer)?;
 			let bytes = self.inner.to_bytes();
-			assert!(bytes.len() <= Self::NBITS as usize / 8);
+			debug_assert!(bytes.len() <= Self::NBITS as usize / 8);
 			writer.write_fixed_bytes(&bytes)?;
 		}
 

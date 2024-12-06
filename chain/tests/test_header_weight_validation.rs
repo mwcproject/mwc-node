@@ -16,6 +16,7 @@
 use mwc_chain as chain;
 use mwc_core as core;
 use mwc_keychain as keychain;
+use std::collections::VecDeque;
 
 mod chain_test_helper;
 
@@ -35,8 +36,10 @@ fn build_block(chain: &Chain) -> Block {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 
+	let mut cache_values = VecDeque::new();
 	let prev = chain.head_header().unwrap();
-	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
+	let next_header_info =
+		consensus::next_difficulty(1, chain.difficulty_iter().unwrap(), &mut cache_values);
 	let reward = reward::output(
 		&keychain,
 		&ProofBuilder::new(&keychain),
@@ -44,9 +47,17 @@ fn build_block(chain: &Chain) -> Block {
 		0,
 		false,
 		prev.height + 1,
+		keychain.secp(),
 	)
 	.unwrap();
-	let mut block = Block::new(&prev, &[], next_header_info.clone().difficulty, reward).unwrap();
+	let mut block = Block::new(
+		&prev,
+		&[],
+		next_header_info.clone().difficulty,
+		reward,
+		keychain.secp(),
+	)
+	.unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;

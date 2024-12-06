@@ -89,6 +89,10 @@ enum_from_primitive! {
 		KernelSegment = 32,
 		HasAnotherArchiveHeader = 33,
 		PibdSyncState = 34,
+		StartHeadersHashRequest = 35,
+		StartHeadersHashResponse = 36,
+		GetHeadersHashesSegment = 37,
+		OutputHeadersHashesSegment = 38,
 	}
 }
 
@@ -127,6 +131,10 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::GetTransaction => 32,
 		Type::TransactionKernel => 32,
 		Type::TorAddress => 128,
+		Type::StartHeadersHashRequest => 8,
+		Type::StartHeadersHashResponse => 40, // 8+32=40
+		Type::GetHeadersHashesSegment => 41,
+		Type::OutputHeadersHashesSegment => 2 * max_block_size(),
 		Type::GetOutputBitmapSegment => 41,
 		Type::OutputBitmapSegment => 2 * max_block_size(),
 		Type::GetOutputSegment => 41,
@@ -505,6 +513,7 @@ impl Readable for Shake {
 }
 
 /// Ask for other peers addresses, required for network discovery.
+#[derive(Debug)]
 pub struct GetPeerAddrs {
 	/// Filters on the capabilities we'd like the peers to have
 	pub capabilities: Capabilities,
@@ -687,6 +696,7 @@ impl Writeable for Headers {
 	}
 }
 
+#[derive(Debug)]
 pub struct Ping {
 	/// total difficulty accumulated by the sender, used to check whether sync
 	/// may be needed
@@ -714,6 +724,7 @@ impl Readable for Ping {
 	}
 }
 
+#[derive(Debug)]
 pub struct Pong {
 	/// total difficulty accumulated by the sender, used to check whether sync
 	/// may be needed
@@ -770,7 +781,77 @@ impl Readable for BanReason {
 	}
 }
 
+#[derive(Debug)]
+pub struct HashHeadersData {
+	/// Height of the archive block to what we are expecting to get headers hashes
+	pub archive_height: u64,
+}
+
+impl Writeable for HashHeadersData {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_u64(self.archive_height)?;
+		Ok(())
+	}
+}
+
+impl Readable for HashHeadersData {
+	fn read<R: Reader>(reader: &mut R) -> Result<HashHeadersData, ser::Error> {
+		Ok(HashHeadersData {
+			archive_height: reader.read_u64()?,
+		})
+	}
+}
+
+#[derive(Debug)]
+pub struct StartHeadersHashResponse {
+	pub archive_height: u64,
+	pub headers_root_hash: Hash,
+}
+
+impl Writeable for StartHeadersHashResponse {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_u64(self.archive_height)?;
+		self.headers_root_hash.write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for StartHeadersHashResponse {
+	fn read<R: Reader>(reader: &mut R) -> Result<StartHeadersHashResponse, ser::Error> {
+		Ok(StartHeadersHashResponse {
+			archive_height: reader.read_u64()?,
+			headers_root_hash: Hash::read(reader)?,
+		})
+	}
+}
+
+pub struct HeadersHashSegmentResponse {
+	/// The hash of the block the MMR is associated with
+	pub headers_root_hash: Hash,
+	/// The segment response
+	pub response: SegmentResponse<Hash>,
+}
+
+impl Readable for HeadersHashSegmentResponse {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		let headers_root_hash = Readable::read(reader)?;
+		let response = Readable::read(reader)?;
+		Ok(Self {
+			headers_root_hash,
+			response,
+		})
+	}
+}
+
+impl Writeable for HeadersHashSegmentResponse {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		Writeable::write(&self.headers_root_hash, writer)?;
+		Writeable::write(&self.response, writer)
+	}
+}
+
 /// Request to get PIBD sync request
+#[derive(Debug)]
 pub struct ArchiveHeaderData {
 	/// Hash of the block for which the txhashset should be provided
 	pub hash: Hash,
@@ -795,6 +876,7 @@ impl Readable for ArchiveHeaderData {
 	}
 }
 
+#[derive(Debug)]
 pub struct PibdSyncState {
 	/// Hash of the block for which the txhashset should be provided
 	pub header_hash: Hash,
@@ -824,6 +906,7 @@ impl Readable for PibdSyncState {
 }
 
 /// Request to get a segment of a (P)MMR at a particular block.
+#[derive(Debug)]
 pub struct SegmentRequest {
 	/// The hash of the block the MMR is associated with
 	pub block_hash: Hash,
@@ -851,7 +934,7 @@ impl Writeable for SegmentRequest {
 
 /// Response to a (P)MMR segment request.
 pub struct SegmentResponse<T> {
-	/// The hash of the block the MMR is associated with
+	/// The hash of the archive header - block the MMR is associated with
 	pub block_hash: Hash,
 	/// The MMR segment
 	pub segment: Segment<T>,
@@ -942,6 +1025,10 @@ pub enum Message {
 	TxHashSetArchive(TxHashSetArchive),
 	Attachment(AttachmentUpdate, Option<Bytes>),
 	TorAddress(TorAddress),
+	StartHeadersHashRequest(HashHeadersData),
+	StartHeadersHashResponse(StartHeadersHashResponse),
+	GetHeadersHashesSegment(SegmentRequest),
+	OutputHeadersHashesSegment(HeadersHashSegmentResponse),
 	StartPibdSyncRequest(ArchiveHeaderData),
 	PibdSyncState(PibdSyncState),
 	GetOutputBitmapSegment(SegmentRequest),
@@ -969,40 +1056,83 @@ pub struct HeadersData {
 impl fmt::Display for Message {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Message::Unknown(_) => write!(f, "unknown"),
-			Message::Ping(_) => write!(f, "ping"),
-			Message::Pong(_) => write!(f, "pong"),
-			Message::BanReason(_) => write!(f, "ban reason"),
-			Message::TransactionKernel(_) => write!(f, "tx kernel"),
-			Message::GetTransaction(_) => write!(f, "get tx"),
-			Message::Transaction(_) => write!(f, "tx"),
-			Message::StemTransaction(_) => write!(f, "stem tx"),
-			Message::GetBlock(_) => write!(f, "get block"),
-			Message::Block(_) => write!(f, "block"),
-			Message::GetCompactBlock(_) => write!(f, "get compact block"),
-			Message::CompactBlock(_) => write!(f, "compact block"),
-			Message::GetHeaders(_) => write!(f, "get headers"),
-			Message::Header(_) => write!(f, "header"),
-			Message::Headers(_) => write!(f, "headers"),
-			Message::GetPeerAddrs(_) => write!(f, "get peer addrs"),
-			Message::PeerAddrs(_) => write!(f, "peer addrs"),
-			Message::TxHashSetRequest(_) => write!(f, "tx hash set request"),
-			Message::TxHashSetArchive(_) => write!(f, "tx hash set"),
-			Message::Attachment(_, _) => write!(f, "attachment"),
-			Message::TorAddress(_) => write!(f, "tor address"),
-			Message::GetOutputBitmapSegment(_) => write!(f, "get output bitmap segment"),
-			Message::OutputBitmapSegment(_) => write!(f, "output bitmap segment"),
-			Message::GetOutputSegment(_) => write!(f, "get output segment"),
-			Message::OutputSegment(_) => write!(f, "output segment"),
-			Message::GetRangeProofSegment(_) => write!(f, "get range proof segment"),
-			Message::RangeProofSegment(_) => write!(f, "range proof segment"),
-			Message::GetKernelSegment(_) => write!(f, "get kernel segment"),
-			Message::KernelSegment(_) => write!(f, "kernel segment"),
-			Message::PibdSyncState(_) => write!(f, "PIBD sync state"),
-			Message::StartPibdSyncRequest(_) => write!(f, "start PIBD sync"),
-			Message::HasAnotherArchiveHeader(_) => {
-				write!(f, "PIBD error, has another archive header")
+			Message::Unknown(i) => write!(f, "Unknown({})", i),
+			Message::Ping(ping) => write!(f, "{:?}", ping),
+			Message::Pong(pong) => write!(f, "{:?}", pong),
+			Message::BanReason(ban_reason) => write!(f, "{:?}", ban_reason),
+			Message::TransactionKernel(hash) => write!(f, "TransactionKernel({})", hash),
+			Message::GetTransaction(hash) => write!(f, "GetTransaction({})", hash),
+			Message::Transaction(tx) => write!(f, "{:?}", tx),
+			Message::StemTransaction(tx) => write!(f, "STEM[{:?}]", tx),
+			Message::GetBlock(hash) => write!(f, "GetBlock({})", hash),
+			Message::Block(block) => write!(f, "{:?}", block),
+			Message::GetCompactBlock(hash) => write!(f, "GetCompactBlock({})", hash),
+			Message::CompactBlock(com_block) => write!(f, "{:?}", com_block),
+			Message::GetHeaders(loc) => write!(f, "GetHeaders({:?})", loc),
+			Message::Header(header) => write!(f, "Header({:?})", header),
+			Message::Headers(headers) => match headers.headers.first() {
+				Some(header) => write!(
+					f,
+					"Headers(H:{} Num:{}, Rem:{})",
+					header.height,
+					headers.headers.len(),
+					headers.remaining
+				),
+				None => write!(f, "Headers(EMPTY)"),
+			},
+			Message::GetPeerAddrs(peer_addr) => write!(f, "{:?}", peer_addr),
+			Message::PeerAddrs(peer_addrs) => write!(f, "{:?}", peer_addrs),
+			Message::TxHashSetRequest(arch) => write!(f, "TxHashSetRequest({:?})", arch),
+			Message::TxHashSetArchive(hash_set) => write!(f, "{:?}", hash_set),
+			Message::Attachment(meta, _) => write!(f, "Attachment({:?})", meta),
+			Message::TorAddress(addr) => write!(f, "{:?}", addr),
+			Message::StartHeadersHashRequest(req) => {
+				write!(f, "StartHeadersHashRequest({:?})", req)
 			}
+			Message::StartHeadersHashResponse(resp) => {
+				write!(f, "StartHeadersHashResponse({:?})", resp)
+			}
+			Message::GetHeadersHashesSegment(seg_req) => {
+				write!(f, "GetHeadersHashesSegment({:?})", seg_req)
+			}
+			Message::OutputHeadersHashesSegment(segm) => write!(
+				f,
+				"OutputHeadersHashesSegment({:?}, root:{})",
+				segm.response.segment.id(),
+				segm.headers_root_hash
+			),
+			Message::GetOutputBitmapSegment(segm) => {
+				write!(f, "GetOutputBitmapSegment({:?})", segm)
+			}
+			Message::OutputBitmapSegment(segm) => write!(
+				f,
+				"OutputBitmapSegment({:?}, root:{})",
+				segm.segment.identifier, segm.block_hash
+			),
+			Message::GetOutputSegment(segm) => write!(f, "GetOutputSegment({:?})", segm),
+			Message::OutputSegment(segm) => write!(
+				f,
+				"OutputSegment({:?}, root:{})",
+				segm.response.segment.id(),
+				segm.response.block_hash
+			),
+			Message::GetRangeProofSegment(segm) => write!(f, "GetRangeProofSegment({:?})", segm),
+			Message::RangeProofSegment(segm) => write!(
+				f,
+				"RangeProofSegment({:?}, root:{})",
+				segm.segment.id(),
+				segm.block_hash
+			),
+			Message::GetKernelSegment(segm) => write!(f, "GetKernelSegment({:?})", segm),
+			Message::KernelSegment(segm) => write!(
+				f,
+				"KernelSegment({:?}, root:{})",
+				segm.segment.id(),
+				segm.block_hash
+			),
+			Message::PibdSyncState(state) => write!(f, "{:?}", state),
+			Message::StartPibdSyncRequest(dt) => write!(f, "StartPibdSyncRequest({:?})", dt),
+			Message::HasAnotherArchiveHeader(dt) => write!(f, "HasAnotherArchiveHeader({:?})", dt),
 		}
 	}
 }
@@ -1033,6 +1163,7 @@ impl fmt::Debug for Consumed {
 
 /// Response to a txhashset archive request, must include a zip stream of the
 /// archive after the message body.
+#[derive(Debug)]
 pub struct TxHashSetArchive {
 	/// Hash of the block for which the txhashset are provided
 	pub hash: Hash,

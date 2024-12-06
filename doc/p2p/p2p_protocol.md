@@ -118,7 +118,7 @@ TODO: Provide example
 | 8    | TotalDifficulty | uint64           | Total difficulty accumulated by the sender. Used to check whether sync may be needed.      |
 | 7/19 | SenderAddress   | SocketAddress    | Network address of the sender. 7 bytes for IPv4 or 19 bytes for IPv6.                      |
 | 7/19 | ReceiverAddress | SocketAddress    | Network address of the receiver. 7 bytes for IPv4 or 19 bytes for IPv6.                    |
-| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/Mwc 0.1.2"                                 |
+| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/MWC 0.1.2"                                 |
 | 32   | Hash            | uint8[32]        | Genesis block of the current chain. Testnet1/2/3 and mainnet all have a different genesis. |
 
 ##### Shake
@@ -129,7 +129,7 @@ TODO: Provide example
 | 1    | Capabilities    | CapabilitiesMask | Bitmask representing the capabilities of the sender.                                       |
 | 8    | Nonce           | uint64           | Randomly generated for each handshake to help detect connections to yourself.              |
 | 8    | TotalDifficulty | uint64           | Total difficulty accumulated by the sender. Used to check whether sync may be needed.      |
-| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/Mwc 0.1.2"                                 |
+| ?    | UserAgent       | VAR_STR          | Name and version of the software. Example: "MW/MWC 0.1.2"                                 |
 | 32   | Hash            | uint8[32]        | Genesis block of the current chain. Testnet1/2/3 and mainnet all have a different genesis. |
 
 ##### Ping
@@ -137,14 +137,14 @@ TODO: Provide example
 | Size | Name            | Data Type | Description/Comments                                                                                |
 |------|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
 | 8    | TotalDifficulty | uint64    | Total difficulty accumulated by the sender. Used to check whether sync may be needed.               |
-| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mwcproject/mwc-node/issues/1779 |
+| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mimblewimble/grin/issues/1779 |
 
 ##### Pong
 
 | Size | Name            | Data Type | Description/Comments                                                                                |
 |------|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
 | 8    | TotalDifficulty | uint64    | Total difficulty accumulated by the sender. Used to check whether sync may be needed.               |
-| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mwcproject/mwc-node/issues/1779 |
+| 8    | Height          | uint64    | Total block height accumulated by the sender. See: https://github.com/mimblewimble/grin/issues/1779 |
 
 ##### GetPeerAddrs
 

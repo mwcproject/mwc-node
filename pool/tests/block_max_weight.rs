@@ -95,7 +95,8 @@ fn test_block_building_max_weight() {
 
 	// Populate our txpool with the txs.
 	for tx in txs {
-		pool.add_to_pool(test_source(), tx, false, &header).unwrap();
+		pool.add_to_pool(test_source(), tx, false, &header, chain.secp())
+			.unwrap();
 	}
 
 	// Check we added them all to the txpool successfully.
@@ -103,7 +104,7 @@ fn test_block_building_max_weight() {
 
 	// // Prepare some "mineable" txs from the txpool.
 	// // Note: We cannot fit all the txs from the txpool into a block.
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let txs = pool.prepare_mineable_transactions(chain.secp()).unwrap();
 
 	// Fees and weights of the "mineable" txs.
 	assert_eq!(
@@ -131,7 +132,7 @@ fn test_block_building_max_weight() {
 
 	// Now reconcile the transaction pool with the new block
 	// and check the resulting contents of the pool are what we expect.
-	pool.reconcile_block(&block).unwrap();
+	pool.reconcile_block(&block, chain.secp()).unwrap();
 
 	// We should still have 2 tx in the pool after accepting the new block.
 	// This one exceeded the max block weight when building the block so

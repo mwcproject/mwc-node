@@ -49,7 +49,7 @@ fn test_unprunable_size(height: u8, n_leaves: u32) {
 			assert_eq!(subtree_root, mmr.get_hash(last).unwrap());
 			println!(" ROOT OK");
 		}
-		segment.validate(last_pos, None, root).unwrap();
+		segment.validate(last_pos, None, &root).unwrap();
 		println!(" PROOF OK");
 	}
 }
@@ -59,4 +59,9 @@ fn unprunable_mmr() {
 	for i in 1..=64 {
 		test_unprunable_size(3, i);
 	}
+}
+
+#[test]
+fn unprunable_mmr_2618() {
+	test_unprunable_size(10, 2618);
 }

@@ -20,12 +20,8 @@ use mwc_util as util;
 #[macro_use]
 extern crate log;
 
-use std::path::Path;
-use std::sync::Arc;
-use std::{fs, io};
-
 use crate::chain::txhashset::BitmapChunk;
-use crate::chain::types::{NoopAdapter, Options};
+use crate::chain::types::NoopAdapter;
 use crate::core::core::{
 	hash::{Hash, Hashed},
 	pmmr::segment::{Segment, SegmentIdentifier, SegmentType},
@@ -33,18 +29,29 @@ use crate::core::core::{
 };
 use crate::core::{genesis, global, pow};
 use crate::util::secp::pedersen::RangeProof;
-
-use self::chain_test_helper::clean_output_dir;
+use mwc_chain::pibd_params::PibdParams;
+use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
+use mwc_chain::types::HEADERS_PER_BATCH;
+use mwc_chain::{Error, Options, SyncState};
+use mwc_util::secp::rand::Rng;
+use mwc_util::StopState;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+use std::{cmp, fs, io};
 
 mod chain_test_helper;
 
-fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+fn _copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
 	fs::create_dir_all(&dst)?;
 	for entry in fs::read_dir(src)? {
 		let entry = entry?;
 		let ty = entry.file_type()?;
 		if ty.is_dir() {
-			copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+			_copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
 		} else {
 			fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
 		}
@@ -86,6 +93,15 @@ impl SegmenterResponder {
 
 	pub fn chain(&self) -> Arc<chain::Chain> {
 		self.chain.clone()
+	}
+
+	pub fn get_headers_root_hash(&self) -> Hash {
+		self.chain.segmenter().unwrap().headers_root().unwrap()
+	}
+
+	pub fn get_headers_segment(&self, seg_id: SegmentIdentifier) -> Segment<Hash> {
+		let segmenter = self.chain.segmenter().unwrap();
+		segmenter.headers_segment(seg_id).unwrap()
 	}
 
 	pub fn get_bitmap_root_hash(&self) -> Hash {
@@ -146,56 +162,111 @@ impl DesegmenterRequestor {
 		res
 	}
 
-	/// Copy headers, hopefully bringing the requestor to a state where PIBD is the next step
-	pub fn copy_headers_from_responder(&mut self) {
-		let src_chain = self.responder.chain();
-		let tip = src_chain.header_head().unwrap();
-		let dest_sync_head = self.chain.header_head().unwrap();
-		let copy_chunk_size = 1000;
-		let mut copied_header_index = 1;
-		let mut src_headers = vec![];
-		while copied_header_index <= tip.height {
-			let h = src_chain.get_header_by_height(copied_header_index).unwrap();
-			src_headers.push(h);
-			copied_header_index += 1;
-			if copied_header_index % copy_chunk_size == 0 {
-				debug!(
-					"Copying headers to {} of {}",
-					copied_header_index, tip.height
-				);
-				self.chain
-					.sync_block_headers(&src_headers, dest_sync_head, Options::SKIP_POW)
-					.unwrap();
-				src_headers = vec![];
-			}
-		}
-		if !src_headers.is_empty() {
-			self.chain
-				.sync_block_headers(&src_headers, dest_sync_head, Options::NONE)
-				.unwrap();
-		}
+	pub fn init_desegmenter(&mut self, archive_header_height: u64, bitmap_root_hash: Hash) {
+		self.chain
+			.create_desegmenter(archive_header_height, bitmap_root_hash)
+			.unwrap();
 	}
 
-	pub fn init_desegmenter(&mut self, bitmap_root_hash: Hash) {
-		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
-		self.chain
-			.create_desegmenter(&archive_header, bitmap_root_hash)
+	// return whether is complete
+	pub fn continue_headers_pibd(
+		&mut self,
+		header_desegmenter: &mut HeaderHashesDesegmenter,
+		header_root_hash: &Hash,
+		pibd_params: &PibdParams,
+	) -> bool {
+		let asks = header_desegmenter.next_desired_segments::<u8>(10, &HashMap::new(), pibd_params);
+
+		debug!("Next segment IDS: {:?}", asks);
+
+		// let's satisfy one item...
+		if asks.is_empty() {
+			assert!(header_desegmenter.is_complete());
+			return true;
+		}
+
+		let mut rng = thread_rng();
+		let target_segment = asks.choose(&mut rng).unwrap();
+
+		debug!("Applying segment: {:?}", target_segment);
+
+		let segment = self.responder.get_headers_segment(target_segment.clone());
+		header_desegmenter
+			.add_headers_hash_segment(segment, header_root_hash)
 			.unwrap();
+
+		false
+	}
+
+	// return whether is complete
+	pub fn continue_copy_headers(
+		&mut self,
+		header_desegmenter: &HeaderHashesDesegmenter,
+		headers_cache: &mut HeadersRecieveCache,
+	) -> bool {
+		if headers_cache.is_complete().unwrap() {
+			return true;
+		}
+
+		let hashes = headers_cache
+			.next_desired_headers::<u8>(header_desegmenter, 15, &HashMap::new())
+			.unwrap();
+		if hashes.is_empty() {
+			assert!(false);
+			return false;
+		}
+
+		debug!("Next hashes requested: {:?}", hashes);
+
+		let mut rng = thread_rng();
+		let target_hash = hashes.choose(&mut rng).unwrap().0;
+
+		debug!("Selected Hash: {:?}", target_hash);
+
+		let src_chain = self.responder.chain();
+
+		// Code similar to what we have at locate_headers
+		{
+			let max_height = src_chain.header_head().unwrap().height;
+
+			let header_pmmr = src_chain.get_header_pmmr_for_test();
+			let header_pmmr = header_pmmr.read();
+
+			let header = src_chain.get_block_header(&target_hash).unwrap();
+
+			// looks like we know one, getting as many following headers as allowed
+			let hh = header.height;
+
+			let mut headers = vec![];
+			for h in (hh + 1)..=(hh + (HEADERS_PER_BATCH as u64)) {
+				if h > max_height {
+					break;
+				}
+
+				if let Ok(hash) = header_pmmr.get_header_hash_by_height(h) {
+					let header = src_chain.get_block_header(&hash).unwrap();
+					headers.push(header);
+				} else {
+					panic!("Failed to locate headers successfully.");
+				}
+			}
+
+			assert_eq!(headers.len(), HEADERS_PER_BATCH as usize);
+			if let Err((peer, err)) =
+				headers_cache.add_headers(header_desegmenter, headers, "0".to_string())
+			{
+				panic!("Error {}, for peer id {}", err, peer);
+			}
+		}
+
+		false
 	}
 
 	// Emulate `continue_pibd` function, which would be called from state sync
 	// return whether is complete
 	pub fn continue_pibd(&mut self, bitmap_root_hash: Hash) -> bool {
-		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
-		let desegmenter = self.chain.get_desegmenter(&archive_header);
-
-		// Apply segments... TODO: figure out how this should be called, might
-		// need to be a separate thread.
-		if let Some(mut de) = desegmenter.try_write() {
-			if let Some(d) = de.as_mut() {
-				d.apply_next_segments().unwrap();
-			}
-		}
+		//let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
+		let desegmenter = self.chain.get_desegmenter();
 
 		let mut next_segment_ids = vec![];
 		let mut is_complete = false;
@@ -203,11 +274,15 @@ impl DesegmenterRequestor {
 			// Figure out the next segments we need
 			// (12 is divisible by 3, to try and evenly spread the requests among the 3
 			// main pmmrs. Bitmaps segments will always be requested first)
-			next_segment_ids = d.next_desired_segments(12).unwrap();
+			let now = Instant::now();
+			next_segment_ids = d.next_desired_segments::<u8>(60, &HashMap::new()).unwrap();
+			debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
 			is_complete = d.is_complete()
 		}
 
 		debug!("Next segment IDS: {:?}", next_segment_ids);
+		let mut rng = rand::thread_rng();
+		next_segment_ids.shuffle(&mut rng);
 
 		// For each segment, pick a desirable peer and send message
 		for seg_id in next_segment_ids.iter() {
@@ -216,13 +291,22 @@ impl DesegmenterRequestor {
 				SegmentType::Bitmap => {
 					let seg = self.responder.get_bitmap_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_bitmap_segment(seg, bitmap_root_hash).unwrap();
+						let now = Instant::now();
+						d.add_bitmap_segment(seg, &bitmap_root_hash).unwrap();
+						debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
 					}
 				}
 				SegmentType::Output => {
 					let seg = self.responder.get_output_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_output_segment(seg, bitmap_root_hash).unwrap();
+						let now = Instant::now();
+						let id = seg.id().clone();
+						d.add_output_segment(seg, &bitmap_root_hash).unwrap();
+						debug!(
+							"Added output segment {}, took {}ms",
+							id,
+							now.elapsed().as_millis()
+						);
 					}
 				}
 				SegmentType::RangeProof => {
@@ -230,13 +314,27 @@ impl DesegmenterRequestor {
 						.responder
 						.get_rangeproof_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_rangeproof_segment(seg, bitmap_root_hash).unwrap();
+						let now = Instant::now();
+						let id = seg.id().clone();
+						d.add_rangeproof_segment(seg, &bitmap_root_hash).unwrap();
+						debug!(
+							"Added rangeproof segment {}, took {}ms",
+							id,
+							now.elapsed().as_millis()
+						);
 					}
 				}
 				SegmentType::Kernel => {
 					let seg = self.responder.get_kernel_segment(seg_id.identifier.clone());
 					if let Some(d) = desegmenter.write().as_mut() {
-						d.add_kernel_segment(seg, bitmap_root_hash).unwrap();
+						let now = Instant::now();
+						let id = seg.id().clone();
+						d.add_kernel_segment(seg, &bitmap_root_hash).unwrap();
+						debug!(
+							"Added kernels segment {}, took {}ms",
+							id,
+							now.elapsed().as_millis()
+						);
 					}
 				}
 			};
@@ -244,9 +342,12 @@ impl DesegmenterRequestor {
 		is_complete
 	}
 
-	pub fn check_roots(&self) {
-		let roots = self.chain.txhashset().read().roots().unwrap();
-		let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
+	pub fn check_roots(&self, archive_header_height: u64) {
+		let roots = self.chain.get_txhashset_for_test().read().roots().unwrap();
+		let archive_header = self
+			.chain
+			.get_header_by_height(archive_header_height)
+			.unwrap();
 		debug!("Archive Header is {:?}", archive_header);
 		debug!("TXHashset output root is {:?}", roots);
 		debug!("TXHashset merged output root is {:?}", roots.output_root);
@@ -254,69 +355,82 @@ impl DesegmenterRequestor {
 		assert_eq!(archive_header.kernel_root, roots.kernel_root);
 		assert_eq!(archive_header.output_root, roots.output_root);
 	}
+
+	pub fn validate_complete_state(&self) {
+		let status = Arc::new(SyncState::new());
+		let stop_state = Arc::new(StopState::new());
+		let secp = self.chain.secp();
+
+		self.chain
+			.get_desegmenter()
+			.read()
+			.as_ref()
+			.unwrap()
+			.check_update_leaf_set_state()
+			.unwrap();
+
+		self.chain
+			.get_desegmenter()
+			.read()
+			.as_ref()
+			.unwrap()
+			.validate_complete_state(status, stop_state, secp)
+			.unwrap();
+	}
 }
-fn test_pibd_copy_impl(
-	is_test_chain: bool,
-	src_root_dir: &str,
-	dest_root_dir: &str,
-	dest_template_dir: Option<&str>,
-) {
-	global::set_local_chain_type(global::ChainTypes::Floonet);
+fn test_pibd_copy_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &str) {
+	global::set_global_chain_type(global::ChainTypes::Floonet);
 	let mut genesis = genesis::genesis_floo();
 
 	if is_test_chain {
-		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_global_chain_type(global::ChainTypes::AutomatedTesting);
 		genesis = pow::mine_genesis_block().unwrap();
 	}
 
-	// Copy a starting point over for the destination, e.g. a copy of chain
-	// with all headers pre-applied
-	if let Some(td) = dest_template_dir {
-		debug!(
-			"Copying template dir for destination from {} to {}",
-			td, dest_root_dir
-		);
-		copy_dir_all(td, dest_root_dir).unwrap();
-	}
-
 	let src_responder = Arc::new(SegmenterResponder::new(src_root_dir, genesis.clone()));
+
+	let archive_header_height = src_responder
+		.chain
+		.txhashset_archive_header_header_only()
+		.unwrap()
+		.height;
+
+	let headers_root_hash = src_responder.get_headers_root_hash();
 	let bitmap_root_hash = src_responder.get_bitmap_root_hash();
+	let genesis_hash = src_responder.chain.genesis().hash();
+
+	let pibd_params = Arc::new(PibdParams::new());
+
 	let mut dest_requestor =
 		DesegmenterRequestor::new(dest_root_dir, genesis.clone(), src_responder);
 
-	// No template provided so copy headers from source
-	if dest_template_dir.is_none() {
-		dest_requestor.copy_headers_from_responder();
-		if !is_test_chain {
-			return;
-		}
-	}
+	let mut header_desegmenter = HeaderHashesDesegmenter::new(
+		genesis_hash,
+		archive_header_height,
+		headers_root_hash,
+		pibd_params.clone(),
+	);
 
-	dest_requestor.init_desegmenter(bitmap_root_hash);
+	while !dest_requestor.continue_headers_pibd(
+		&mut header_desegmenter,
+		&headers_root_hash,
+		&pibd_params,
+	) {}
+
+	// Heads must be done. Now we should be able to request series of headers as we can do now
+	let mut headers_cache =
+		HeadersRecieveCache::new(dest_requestor.chain.clone(), &header_desegmenter);
+
+	while !dest_requestor.continue_copy_headers(&header_desegmenter, &mut headers_cache) {}
+
+	dest_requestor.init_desegmenter(archive_header_height, bitmap_root_hash);
 
 	// Perform until desegmenter reports it's done
 	while !dest_requestor.continue_pibd(bitmap_root_hash) {}
 
-	dest_requestor.check_roots();
-}
+	dest_requestor.check_roots(archive_header_height);
 
-#[test]
-#[ignore]
-fn test_pibd_copy_sample() {
-	util::init_test_logger();
-	// Note there is now a 'test' in mwc_wallet_controller/build_chain
-	// that can be manually tweaked to create a
-	// small test chain with actual transaction data
-
-	// Test on uncompacted and non-compacted chains
-	let src_root_dir = format!("./tests/test_data/chain_raw");
-	let dest_root_dir = format!("./tests/test_output/.segment_copy");
-	clean_output_dir(&dest_root_dir);
-	test_pibd_copy_impl(true, &src_root_dir, &dest_root_dir, None);
-	let src_root_dir = format!("./tests/test_data/chain_compacted");
-	clean_output_dir(&dest_root_dir);
-	test_pibd_copy_impl(true, &src_root_dir, &dest_root_dir, None);
-	clean_output_dir(&dest_root_dir);
+	dest_requestor.validate_complete_state();
 }
 
 #[test]
@@ -326,26 +440,160 @@ fn test_pibd_copy_sample() {
 // As above, but run on a real instance of a chain pointed where you like
 fn test_pibd_copy_real() {
 	util::init_test_logger();
-	// If set, just copy headers from source to target template dir and exit
-	// Used to set up a chain state simulating the start of PIBD to continue manual testing
-	let copy_headers_to_template = false;
 
 	// if testing against a real chain, insert location here
 	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
-	let dest_template_dir = format!("/Users/bay/.mwc/_floo2/chain_data");
-	let dest_root_dir = format!("/Users/bay/.mwc/_floo2/chain_data");
-	if copy_headers_to_template {
-		clean_output_dir(&dest_template_dir);
-		test_pibd_copy_impl(false, &src_root_dir, &dest_template_dir, None);
-	} else {
-		clean_output_dir(&dest_root_dir);
-		test_pibd_copy_impl(
-			false,
-			&src_root_dir,
-			&dest_root_dir,
-			Some(&dest_template_dir),
-		);
+	let dest_root_dir = format!("/Users/bay/.mwc/_floo3/chain_data");
+
+	//self::chain_test_helper::clean_output_dir(&dest_root_dir);
+	test_pibd_copy_impl(false, &src_root_dir, &dest_root_dir);
+
+	//self::chain_test_helper::clean_output_dir(&dest_root_dir);
+}
+
+#[test]
+#[ignore]
+// After test_pibd_copy_real() call we need to validate the blockchain. This test is designed for profiling
+// and optimization test. That is why it is done separately, we want to be able workd with small steps.
+fn test_chain_validation() {
+	util::init_test_logger();
+
+	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
+	let dest_root_dir = format!("/Users/bay/.mwc/_floo3/chain_data");
+
+	global::set_global_chain_type(global::ChainTypes::Floonet);
+	let genesis = genesis::genesis_floo();
+
+	let dummy_adapter = Arc::new(NoopAdapter {});
+
+	// The original chain we're reading from
+	let src_chain = chain::Chain::init(
+		src_root_dir.into(),
+		dummy_adapter.clone(),
+		genesis.clone(),
+		pow::verify_size,
+		false,
+	)
+	.unwrap();
+
+	let dst_chain = chain::Chain::init(
+		dest_root_dir.into(),
+		dummy_adapter.clone(),
+		genesis,
+		pow::verify_size,
+		false,
+	)
+	.unwrap();
+
+	let dst_head = dst_chain.head().unwrap();
+	let src_head = src_chain.head().unwrap();
+
+	debug!(
+		"Starting sync process. src_head {}  dst_head {}",
+		src_head.height, dst_head.height
+	);
+
+	// see BodySync::body_sync  for details. We are trying to mimic this logic
+
+	let mut headers_are_done = false;
+	let mut blocks_are_done = false;
+
+	let mut rng = rand::thread_rng();
+
+	while !headers_are_done || !blocks_are_done {
+		if rng.gen_range(0, 100) == 5 {
+			// requesting more headers
+			let header_head = dst_chain.header_head().unwrap();
+
+			// looks like we know one, getting as many following headers as allowed
+			let hh = header_head.height;
+
+			let mut headers = vec![];
+			for h in (hh + 1)..=(hh + (HEADERS_PER_BATCH as u64)) {
+				if let Ok(header) = src_chain.get_header_by_height(h) {
+					headers.push(header);
+				} else {
+					break;
+				}
+			}
+
+			debug!(
+				"Synching headers. Requested from height {}. Got {} items",
+				header_head.height,
+				headers.len()
+			);
+
+			if !headers.is_empty() {
+				dst_chain
+					.sync_block_headers(&headers, header_head, Options::NONE)
+					.unwrap();
+				headers_are_done = false;
+			} else {
+				headers_are_done = true;
+			}
+		} else {
+			// let's sync with one block
+			let header_head = dst_chain.header_head().unwrap();
+			let fork_point = dst_chain.fork_point().unwrap();
+
+			debug!(
+				"header_head at {}, fork_point at {}",
+				header_head.height, fork_point.height
+			);
+
+			// here is what we have at block_hashes_to_sync
+			let count = 256;
+			let mut hashes = vec![];
+			let max_height = cmp::min(fork_point.height + count, header_head.height);
+			let mut current = dst_chain.get_header_by_height(max_height).unwrap();
+			while current.height > fork_point.height {
+				if !dst_chain.is_orphan(&current.hash()) {
+					hashes.push(current.hash());
+				}
+				current = dst_chain.get_previous_header(&current).unwrap();
+			}
+			hashes.reverse();
+
+			// Now select random hash so we get a block for it....
+			if hashes.is_empty() {
+				debug!("No new blocks are NOT needed (2)!");
+				blocks_are_done = true;
+				continue;
+			}
+
+			blocks_are_done = false;
+
+			let block_hash = hashes.choose(&mut rng).unwrap();
+			let block = src_chain.get_block(block_hash).unwrap();
+
+			debug!(
+				"Request size: {},  requested block {} at height {}",
+				hashes.len(),
+				block_hash,
+				block.header.height
+			);
+
+			// Code similar to what we have in Adapters
+			if dst_chain.is_known(&block.header).is_err() {
+				panic!("block expected to be know");
+			}
+
+			match dst_chain.process_block(block, Options::NONE) {
+				Ok(tip) => debug!("Accepted SOME!!! New tip now at {}", tip.unwrap().height),
+				Err(Error::Orphan(_)) => {}
+				Err(e) => panic!("Unexpected error is occured, {}", e),
+			}
+		}
 	}
 
-	//clean_output_dir(&dest_root_dir);
+	let dst_head = dst_chain.head().unwrap();
+	let src_head = src_chain.head().unwrap();
+
+	debug!(
+		"Full sync is done. src_head {}  dst_head {}",
+		src_head.height, dst_head.height
+	);
+
+	//dst_chain.validate(true).unwrap();
+	debug!("DST chain validation is done");
 }

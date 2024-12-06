@@ -27,11 +27,8 @@ use crate::util::RwLock;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
 use std::net::{SocketAddr, TcpStream};
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
-use std::time::Instant;
 
 /// Local generated nonce for peer connecting.
 /// Used for self-connecting detection (on receiver side),
@@ -178,14 +175,11 @@ impl Handshake {
 			} else {
 				Direction::Outbound
 			},
-			header_sync_requested: Arc::new(AtomicUsize::new(0)),
-			last_header: Arc::new(Mutex::new(Instant::now())),
-			last_header_reset: Arc::new(Mutex::new(Instant::now())),
 		};
 
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
-		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
+		if Peer::is_denied(&self.config, &peer_info.addr) {
 			return Err(Error::ConnectionClose(format!(
 				"{:?} is denied",
 				peer_info.addr
@@ -253,16 +247,13 @@ impl Handshake {
 			} else {
 				Direction::Inbound
 			},
-			header_sync_requested: Arc::new(AtomicUsize::new(0)),
-			last_header: Arc::new(Mutex::new(Instant::now())),
-			last_header_reset: Arc::new(Mutex::new(Instant::now())),
 		};
 
 		// At this point we know the published ip and port of the peer
 		// so check if we are configured to explicitly allow or deny it.
 		// If denied then we want to close the connection
 		// (without providing our peer with any details why).
-		if Peer::is_denied(&self.config, peer_info.addr.clone()) {
+		if Peer::is_denied(&self.config, &peer_info.addr) {
 			return Err(Error::ConnectionClose(String::from(
 				"Peer denied because it is in config black list",
 			)));

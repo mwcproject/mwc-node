@@ -108,10 +108,8 @@ struct MwcFilter;
 impl Filter for MwcFilter {
 	fn filter(&self, record: &Record<'_>) -> Response {
 		if let Some(module_path) = record.module_path() {
-			if module_path.starts_with("mwc")
-				|| module_path.starts_with("mwc")
-				|| module_path.contains("libp2p")
-			{
+			// We don't want libp2p logs for now
+			if module_path.starts_with("mwc") && !module_path.contains("libp2p") {
 				return Response::Neutral;
 			}
 		}
@@ -292,7 +290,7 @@ pub fn init_test_logger() {
 		appenders.push(
 			Appender::builder()
 				.filter(filter)
-				.filter(Box::new(MwcFilter))
+				//.filter(Box::new(MwcFilter))
 				.build("stdout", Box::new(stdout)),
 		);
 

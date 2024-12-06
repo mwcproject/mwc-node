@@ -24,11 +24,10 @@ use self::core::core::{
 };
 use crate::types::{BlockChain, PoolEntry, PoolError};
 use mwc_core as core;
-use mwc_util as util;
+use mwc_util::secp::Secp256k1;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use util::static_secp_instance;
 
 pub struct Pool<B>
 where
@@ -116,6 +115,7 @@ where
 	pub fn prepare_mineable_transactions(
 		&self,
 		max_weight: u64,
+		secp: &Secp256k1,
 	) -> Result<Vec<Transaction>, PoolError> {
 		let weighting = Weighting::AsLimitedTransaction(max_weight);
 
@@ -123,14 +123,14 @@ where
 		//   * maintain dependency ordering
 		//   * maximize cut-through
 		//   * maximize overall fees
-		let txs = self.bucket_transactions(weighting);
+		let txs = self.bucket_transactions(weighting, secp);
 
 		// Iteratively apply the txs to the current chain state,
 		// rejecting any that do not result in a valid state.
 		// Verify these txs produce an aggregated tx below max_weight.
 		// Return a vec of all the valid txs.
 		let header = self.blockchain.chain_head()?;
-		let valid_txs = self.validate_raw_txs(&txs, None, &header, weighting)?;
+		let valid_txs = self.validate_raw_txs(&txs, None, &header, weighting, secp)?;
 		Ok(valid_txs)
 	}
 
@@ -145,6 +145,7 @@ where
 	pub fn all_transactions_aggregate(
 		&self,
 		extra_tx: Option<Transaction>,
+		secp: &Secp256k1,
 	) -> Result<Option<Transaction>, PoolError> {
 		let mut txs = self.all_transactions();
 		if txs.is_empty() {
@@ -153,11 +154,11 @@ where
 
 		txs.extend(extra_tx);
 
-		let tx = transaction::aggregate(&txs)?;
+		let tx = transaction::aggregate(&txs, secp)?;
 
 		// Validate the single aggregate transaction "as pool", not subject to tx weight limits.
 		let header = self.blockchain.chain_head()?;
-		tx.validate(Weighting::NoLimit, header.height)?;
+		tx.validate(Weighting::NoLimit, header.height, secp)?;
 
 		Ok(Some(tx))
 	}
@@ -170,6 +171,7 @@ where
 		entry: PoolEntry,
 		extra_tx: Option<Transaction>,
 		header: &BlockHeader,
+		secp: &Secp256k1,
 	) -> Result<(), PoolError> {
 		// Combine all the txs from the pool with any extra txs provided.
 		let mut txs = self.all_transactions();
@@ -190,12 +192,12 @@ where
 			// Create a single aggregated tx from the existing pool txs and the
 			// new entry
 			txs.push(entry.tx.clone());
-			transaction::aggregate(&txs)?
+			transaction::aggregate(&txs, secp)?
 		};
 
 		// Validate aggregated tx (existing pool + new tx), ignoring tx weight limits.
 		// Validate against known chain state at the provided header.
-		self.validate_raw_tx(&agg_tx, header, Weighting::NoLimit)?;
+		self.validate_raw_tx(&agg_tx, header, Weighting::NoLimit, secp)?;
 		// If we get here successfully then we can safely add the entry to the pool.
 		self.log_pool_add(&entry, header);
 		self.entries.push(entry);
@@ -222,17 +224,18 @@ where
 		tx: &Transaction,
 		header: &BlockHeader,
 		weighting: Weighting,
+		secp: &Secp256k1,
 	) -> Result<BlockSums, PoolError> {
 		// Validate the tx, conditionally checking against weight limits,
 		// based on weight verification type.
-		tx.validate(weighting, header.height)?;
+		tx.validate(weighting, header.height, secp)?;
 
 		// Validate the tx against current chain state.
 		// Check all inputs are in the current UTXO set.
 		// Check all outputs are unique in current UTXO set.
 		self.blockchain.validate_tx(tx)?;
 
-		let new_sums = self.apply_tx_to_block_sums(tx, header)?;
+		let new_sums = self.apply_tx_to_block_sums(tx, header, secp)?;
 		Ok(new_sums)
 	}
 
@@ -242,6 +245,7 @@ where
 		extra_tx: Option<Transaction>,
 		header: &BlockHeader,
 		weighting: Weighting,
+		secp: &Secp256k1,
 	) -> Result<Vec<Transaction>, PoolError> {
 		let mut valid_txs = vec![];
 
@@ -254,10 +258,13 @@ where
 			candidate_txs.push(tx.clone());
 
 			// Build a single aggregate tx from candidate txs.
-			let agg_tx = transaction::aggregate(&candidate_txs)?;
+			let agg_tx = transaction::aggregate(&candidate_txs, secp)?;
 
 			// We know the tx is valid if the entire aggregate tx is valid.
-			if self.validate_raw_tx(&agg_tx, header, weighting).is_ok() {
+			if self
+				.validate_raw_tx(&agg_tx, header, weighting, secp)
+				.is_ok()
+			{
 				valid_txs.push(tx.clone());
 			}
 		}
@@ -271,11 +278,12 @@ where
 		&self,
 		tx: &Transaction,
 		extra_tx: Option<Transaction>,
+		secp: &Secp256k1,
 	) -> Result<(Vec<OutputIdentifier>, Vec<OutputIdentifier>), PoolError> {
 		let mut inputs: Vec<_> = tx.inputs().into();
 
 		let agg_tx = self
-			.all_transactions_aggregate(extra_tx)?
+			.all_transactions_aggregate(extra_tx, secp)?
 			.unwrap_or(Transaction::empty());
 		let mut outputs: Vec<OutputIdentifier> = agg_tx
 			.outputs()
@@ -299,21 +307,18 @@ where
 		&self,
 		tx: &Transaction,
 		header: &BlockHeader,
+		secp: &Secp256k1,
 	) -> Result<BlockSums, PoolError> {
 		let overage = tx.overage(header.height);
 
-		let offset = {
-			let secp = static_secp_instance();
-			let secp = secp.lock();
-			header.total_kernel_offset().add(&tx.offset, &secp)
-		}?;
+		let offset = { header.total_kernel_offset().add(&tx.offset, &secp) }?;
 
 		let block_sums = self.blockchain.get_block_sums(&header.hash())?;
 
 		// Verify the kernel sums for the block_sums with the new tx applied,
 		// accounting for overage and offset.
 		let (utxo_sum, kernel_sum) =
-			(block_sums, tx as &dyn Committed).verify_kernel_sums(overage, offset)?;
+			(block_sums, tx as &dyn Committed).verify_kernel_sums(overage, offset, secp)?;
 
 		Ok(BlockSums {
 			utxo_sum,
@@ -325,11 +330,12 @@ where
 		&mut self,
 		extra_tx: Option<Transaction>,
 		header: &BlockHeader,
+		secp: &Secp256k1,
 	) -> Result<(), PoolError> {
 		let existing_entries = self.entries.clone();
 		self.entries.clear();
 		for x in existing_entries {
-			let _ = self.add_to_pool(x, extra_tx.clone(), header);
+			let _ = self.add_to_pool(x, extra_tx.clone(), header, secp);
 		}
 		Ok(())
 	}
@@ -337,8 +343,10 @@ where
 	// Use our bucket logic to identify the best transaction for eviction and evict it.
 	// We want to avoid evicting a transaction where another transaction depends on it.
 	// We want to evict a transaction with low fee_rate.
-	pub fn evict_transaction(&mut self) {
-		if let Some(evictable_transaction) = self.bucket_transactions(Weighting::NoLimit).last() {
+	pub fn evict_transaction(&mut self, secp: &Secp256k1) {
+		if let Some(evictable_transaction) =
+			self.bucket_transactions(Weighting::NoLimit, secp).last()
+		{
 			self.entries.retain(|x| x.tx != *evictable_transaction);
 		};
 	}
@@ -350,7 +358,7 @@ where
 	/// containing the tx it depends on.
 	/// Sorting the buckets by fee_rate will therefore preserve dependency ordering,
 	/// maximizing both cut-through and overall fees.
-	fn bucket_transactions(&self, weighting: Weighting) -> Vec<Transaction> {
+	fn bucket_transactions(&self, weighting: Weighting, secp: &Secp256k1) -> Vec<Transaction> {
 		let mut tx_buckets: Vec<Bucket> = Vec::new();
 		let mut output_commits = HashMap::new();
 		let mut rejected = HashSet::new();
@@ -406,7 +414,7 @@ where
 					let bucket = &tx_buckets[pos];
 
 					if let Ok(new_bucket) =
-						bucket.aggregate_with_tx(entry.tx.clone(), weighting, height)
+						bucket.aggregate_with_tx(entry.tx.clone(), weighting, height, secp)
 					{
 						if new_bucket.fee_rate >= bucket.fee_rate {
 							// Only aggregate if it would not reduce the fee_rate ratio.
@@ -525,11 +533,12 @@ impl Bucket {
 		new_tx: Transaction,
 		weighting: Weighting,
 		height: u64,
+		secp: &Secp256k1,
 	) -> Result<Bucket, PoolError> {
 		let mut raw_txs = self.raw_txs.clone();
 		raw_txs.push(new_tx);
-		let agg_tx = transaction::aggregate(&raw_txs)?;
-		agg_tx.validate(weighting, height)?;
+		let agg_tx = transaction::aggregate(&raw_txs, secp)?;
+		agg_tx.validate(weighting, height, secp)?;
 		Ok(Bucket {
 			fee_rate: agg_tx.fee_rate(height),
 			raw_txs: raw_txs,

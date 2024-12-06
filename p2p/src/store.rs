@@ -133,37 +133,36 @@ impl PeerStore {
 	}
 
 	pub fn save_peer(&self, p: &PeerData) -> Result<(), Error> {
-		debug!("save_peer: {:?} marked {:?}", p.addr.clone(), p.flags);
+		debug!("save_peer: {:?} marked {:?}", p.addr, p.flags);
 
-		let batch = self.db.batch()?;
-		batch.put_ser(&peer_key(p.addr.clone())[..], p)?;
+		let batch = self.db.batch_write()?;
+		batch.put_ser(&peer_key(&p.addr)[..], p)?;
 		batch.commit()
 	}
 
 	pub fn save_peers(&self, p: Vec<PeerData>) -> Result<(), Error> {
-		let batch = self.db.batch()?;
+		let batch = self.db.batch_write()?;
 		for pd in p {
 			debug!("save_peers: {:?} marked {:?}", pd.addr, pd.flags);
-			batch.put_ser(&peer_key(pd.addr.clone())[..], &pd)?;
+			batch.put_ser(&peer_key(&pd.addr)[..], &pd)?;
 		}
 		batch.commit()
 	}
 
-	pub fn get_peer(&self, peer_addr: PeerAddr) -> Result<PeerData, Error> {
-		option_to_not_found(
-			self.db.get_ser(&peer_key(peer_addr.clone())[..], None),
-			|| format!("Peer at address: {}", peer_addr),
-		)
+	pub fn get_peer(&self, peer_addr: &PeerAddr) -> Result<PeerData, Error> {
+		option_to_not_found(self.db.get_ser(&peer_key(peer_addr)[..], None), || {
+			format!("Peer at address: {}", peer_addr)
+		})
 	}
 
-	pub fn exists_peer(&self, peer_addr: PeerAddr) -> Result<bool, Error> {
+	pub fn exists_peer(&self, peer_addr: &PeerAddr) -> Result<bool, Error> {
 		self.db.exists(&peer_key(peer_addr)[..])
 	}
 
 	/// TODO - allow below added to avoid github issue reports
 	#[allow(dead_code)]
-	pub fn delete_peer(&self, peer_addr: PeerAddr) -> Result<(), Error> {
-		let batch = self.db.batch()?;
+	pub fn delete_peer(&self, peer_addr: &PeerAddr) -> Result<(), Error> {
+		let batch = self.db.batch_write()?;
 		batch.delete(&peer_key(peer_addr)[..])?;
 		batch.commit()
 	}
@@ -202,11 +201,11 @@ impl PeerStore {
 
 	/// Convenience method to load a peer data, update its status and save it
 	/// back. If new state is Banned its last banned time will be updated too.
-	pub fn update_state(&self, peer_addr: PeerAddr, new_state: State) -> Result<(), Error> {
-		let batch = self.db.batch()?;
+	pub fn update_state(&self, peer_addr: &PeerAddr, new_state: State) -> Result<(), Error> {
+		let batch = self.db.batch_write()?;
 
 		let mut peer = option_to_not_found(
-			batch.get_ser::<PeerData>(&peer_key(peer_addr.clone())[..], None),
+			batch.get_ser::<PeerData>(&peer_key(peer_addr)[..], None),
 			|| format!("Peer at address: {}", peer_addr),
 		)?;
 		peer.flags = new_state;
@@ -233,10 +232,10 @@ impl PeerStore {
 
 		// Delete peers in single batch
 		if !to_remove.is_empty() {
-			let batch = self.db.batch()?;
+			let batch = self.db.batch_write()?;
 
 			for peer in to_remove {
-				batch.delete(&peer_key(peer.addr)[..])?;
+				batch.delete(&peer_key(&peer.addr)[..])?;
 			}
 
 			batch.commit()?;
@@ -247,6 +246,6 @@ impl PeerStore {
 }
 
 // Ignore the port unless ip is loopback address.
-fn peer_key(peer_addr: PeerAddr) -> Vec<u8> {
-	to_key(PEER_PREFIX, &peer_addr.as_key())
+fn peer_key(peer_addr: &PeerAddr) -> Vec<u8> {
+	to_key(PEER_PREFIX, peer_addr.as_key())
 }

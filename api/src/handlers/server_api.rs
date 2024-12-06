@@ -119,20 +119,14 @@ impl Handler for StatusHandler {
 fn sync_status_to_api(sync_status: SyncStatus) -> (String, Option<serde_json::Value>) {
 	match sync_status {
 		SyncStatus::NoSync => ("no_sync".to_string(), None),
-		SyncStatus::AwaitingPeers(_) => ("awaiting_peers".to_string(), None),
+		SyncStatus::AwaitingPeers => ("awaiting_peers".to_string(), None),
 		SyncStatus::HeaderSync {
-			sync_head,
-			highest_height,
+			current_height,
+			archive_height,
 			..
 		} => (
 			"header_sync".to_string(),
-			Some(json!({ "current_height": sync_head.height, "highest_height": highest_height })),
-		),
-		SyncStatus::TxHashsetDownload(stats) => (
-			"txhashset_download".to_string(),
-			Some(
-				json!({ "downloaded_size": stats.downloaded_size, "total_size": stats.total_size }),
-			),
+			Some(json!({ "current_height": current_height, "highest_height": archive_height })),
 		),
 		SyncStatus::TxHashsetRangeProofsValidation {
 			rproofs,
@@ -149,11 +143,14 @@ fn sync_status_to_api(sync_status: SyncStatus) -> (String, Option<serde_json::Va
 			Some(json!({ "kernels": kernels, "kernels_total": kernels_total })),
 		),
 		SyncStatus::BodySync {
+			archive_height,
 			current_height,
 			highest_height,
 		} => (
 			"body_sync".to_string(),
-			Some(json!({ "current_height": current_height, "highest_height": highest_height })),
+			Some(
+				json!({ "archive_height":archive_height, "current_height": current_height, "highest_height": highest_height }),
+			),
 		),
 		SyncStatus::Shutdown => ("shutdown".to_string(), None),
 		// any other status is considered syncing (should be unreachable)

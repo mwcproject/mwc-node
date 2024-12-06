@@ -74,7 +74,7 @@ fn test_nrd_kernels_enabled() {
 	assert!(header.version < HeaderVersion(3)); // in MWC activating NRD from V3
 
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),
+		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, chain.secp()),
 		Err(PoolError::NRDKernelPreHF3)
 	);
 
@@ -86,12 +86,12 @@ fn test_nrd_kernels_enabled() {
 
 	// NRD kernel support enabled via feature flag, so valid.
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),
+		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, chain.secp()),
 		Ok(())
 	);
 
 	assert_eq!(pool.total_size(), 1);
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let txs = pool.prepare_mineable_transactions(chain.secp()).unwrap();
 	assert_eq!(txs.len(), 1);
 
 	// Cleanup db directory

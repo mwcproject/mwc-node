@@ -59,7 +59,7 @@ impl Worker {
 	}
 
 	pub fn update(&mut self, worker: &Worker) {
-		assert!(self.id == worker.id);
+		debug_assert!(self.id == worker.id);
 
 		// updating only 'data' releated data
 		self.agent = worker.agent.clone();

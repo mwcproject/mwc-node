@@ -37,7 +37,7 @@ use std::fmt::Display;
 use util;
 use util::secp;
 use util::secp::pedersen::{Commitment, RangeProof};
-use util::static_secp_instance;
+use util::secp::Secp256k1;
 use util::ToHex;
 
 /// Fee fields as in fix-fees RFC: { future_use: 20, fee_shift: 4, fee: 40 }
@@ -780,9 +780,7 @@ impl TxKernel {
 	/// Verify the transaction proof validity. Entails handling the commitment
 	/// as a public key and checking the signature verifies with the fee_fields as
 	/// message.
-	pub fn verify(&self) -> Result<(), Error> {
-		let secp = static_secp_instance();
-		let secp = secp.lock();
+	pub fn verify(&self, secp: &Secp256k1) -> Result<(), Error> {
 		let sig = &self.excess_sig;
 		// Verify aggsig directly in libsecp
 		let pubkey = &self.excess.to_pubkey(&secp)?;
@@ -801,14 +799,11 @@ impl TxKernel {
 	}
 
 	/// Batch signature verification.
-	pub fn batch_sig_verify(tx_kernels: &[TxKernel]) -> Result<(), Error> {
+	pub fn batch_sig_verify(tx_kernels: &[TxKernel], secp: &Secp256k1) -> Result<(), Error> {
 		let len = tx_kernels.len();
 		let mut sigs = Vec::with_capacity(len);
 		let mut pubkeys = Vec::with_capacity(len);
 		let mut msgs = Vec::with_capacity(len);
-
-		let secp = static_secp_instance();
-		let secp = secp.lock();
 
 		for tx_kernel in tx_kernels {
 			sigs.push(tx_kernel.excess_sig);
@@ -1298,7 +1293,7 @@ impl TransactionBody {
 	/// Validates all relevant parts of a transaction body. Checks the
 	/// excess value against the signature as well as range proofs for each
 	/// output.
-	pub fn validate(&self, weighting: Weighting) -> Result<(), Error> {
+	pub fn validate(&self, weighting: Weighting, secp: &Secp256k1) -> Result<(), Error> {
 		self.validate_read(weighting)?;
 
 		// Now batch verify all those unverified rangeproofs
@@ -1309,11 +1304,11 @@ impl TransactionBody {
 				commits.push(x.commitment());
 				proofs.push(x.proof);
 			}
-			Output::batch_verify_proofs(&commits, &proofs)?;
+			Output::batch_verify_proofs(&commits, &proofs, secp)?;
 		}
 
 		// Verify the unverified tx kernels.
-		TxKernel::batch_sig_verify(&self.kernels)?;
+		TxKernel::batch_sig_verify(&self.kernels, secp)?;
 		Ok(())
 	}
 }
@@ -1510,10 +1505,15 @@ impl Transaction {
 	/// Validates all relevant parts of a fully built transaction. Checks the
 	/// excess value against the signature as well as range proofs for each
 	/// output.
-	pub fn validate(&self, weighting: Weighting, height: u64) -> Result<(), Error> {
+	pub fn validate(
+		&self,
+		weighting: Weighting,
+		height: u64,
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
 		self.body.verify_features()?;
-		self.body.validate(weighting)?;
-		self.verify_kernel_sums(self.overage(height), self.offset.clone())?;
+		self.body.validate(weighting, secp)?;
+		self.verify_kernel_sums(self.overage(height), self.offset.clone(), secp)?;
 		Ok(())
 	}
 
@@ -1647,7 +1647,7 @@ where
 }
 
 /// Aggregate a vec of txs into a multi-kernel tx with cut_through.
-pub fn aggregate(txs: &[Transaction]) -> Result<Transaction, Error> {
+pub fn aggregate(txs: &[Transaction], secp: &Secp256k1) -> Result<Transaction, Error> {
 	// convenience short-circuiting
 	if txs.is_empty() {
 		return Ok(Transaction::empty());
@@ -1685,7 +1685,7 @@ pub fn aggregate(txs: &[Transaction]) -> Result<Transaction, Error> {
 
 	// now sum the kernel_offsets up to give us an aggregate offset for the
 	// transaction
-	let total_kernel_offset = committed::sum_kernel_offsets(kernel_offsets, vec![])?;
+	let total_kernel_offset = committed::sum_kernel_offsets(kernel_offsets, vec![], secp)?;
 
 	// build a new aggregate tx from the following -
 	//   * cut-through inputs
@@ -1701,7 +1701,11 @@ pub fn aggregate(txs: &[Transaction]) -> Result<Transaction, Error> {
 
 /// Attempt to deaggregate a multi-kernel transaction based on multiple
 /// transactions
-pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transaction, Error> {
+pub fn deaggregate(
+	mk_tx: Transaction,
+	txs: &[Transaction],
+	secp: &Secp256k1,
+) -> Result<Transaction, Error> {
 	let mut inputs: Vec<CommitWrapper> = vec![];
 	let mut outputs: Vec<Output> = vec![];
 	let mut kernels: Vec<TxKernel> = vec![];
@@ -1710,7 +1714,7 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 	// transaction
 	let mut kernel_offsets = vec![];
 
-	let tx = aggregate(txs)?;
+	let tx = aggregate(txs, secp)?;
 
 	let mk_inputs: Vec<_> = mk_tx.inputs().into();
 	for mk_input in mk_inputs {
@@ -1734,8 +1738,6 @@ pub fn deaggregate(mk_tx: Transaction, txs: &[Transaction]) -> Result<Transactio
 
 	// now compute the total kernel offset
 	let total_kernel_offset = {
-		let secp = static_secp_instance();
-		let secp = secp.lock();
 		let positive_key = vec![mk_tx.offset]
 			.into_iter()
 			.filter(|x| *x != BlindingFactor::zero())
@@ -2209,18 +2211,18 @@ impl Output {
 	}
 
 	/// Validates the range proof using the commitment
-	pub fn verify_proof(&self) -> Result<(), Error> {
-		let secp = static_secp_instance();
-		secp.lock()
-			.verify_bullet_proof(self.commitment(), self.proof, None)?;
+	pub fn verify_proof(&self, secp: &Secp256k1) -> Result<(), Error> {
+		secp.verify_bullet_proof(self.commitment(), self.proof, None)?;
 		Ok(())
 	}
 
 	/// Batch validates the range proofs using the commitments
-	pub fn batch_verify_proofs(commits: &[Commitment], proofs: &[RangeProof]) -> Result<(), Error> {
-		let secp = static_secp_instance();
-		secp.lock()
-			.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
+	pub fn batch_verify_proofs(
+		commits: &[Commitment],
+		proofs: &[RangeProof],
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
+		secp.verify_bullet_proof_multi(commits.to_vec(), proofs.to_vec(), None)?;
 		Ok(())
 	}
 }
@@ -2503,32 +2505,41 @@ mod test {
 		kernel.excess_sig = excess_sig;
 
 		// Check the signature verifies.
-		assert_eq!(kernel.verify(), Ok(()));
+		assert_eq!(kernel.verify(keychain.secp()), Ok(()));
 
 		// Modify the fee and check signature no longer verifies.
 		kernel.features = KernelFeatures::NoRecentDuplicate {
 			fee: 9.into(),
 			relative_height: NRDRelativeHeight(100),
 		};
-		assert_eq!(kernel.verify(), Err(Error::IncorrectSignature));
+		assert_eq!(
+			kernel.verify(keychain.secp()),
+			Err(Error::IncorrectSignature)
+		);
 
 		// Modify the relative_height and check signature no longer verifies.
 		kernel.features = KernelFeatures::NoRecentDuplicate {
 			fee: 10.into(),
 			relative_height: NRDRelativeHeight(101),
 		};
-		assert_eq!(kernel.verify(), Err(Error::IncorrectSignature));
+		assert_eq!(
+			kernel.verify(keychain.secp()),
+			Err(Error::IncorrectSignature)
+		);
 
 		// Swap the features out for something different and check signature no longer verifies.
 		kernel.features = KernelFeatures::Plain { fee: 10.into() };
-		assert_eq!(kernel.verify(), Err(Error::IncorrectSignature));
+		assert_eq!(
+			kernel.verify(keychain.secp()),
+			Err(Error::IncorrectSignature)
+		);
 
 		// Check signature verifies if we use the original features.
 		kernel.features = KernelFeatures::NoRecentDuplicate {
 			fee: 10.into(),
 			relative_height: NRDRelativeHeight(100),
 		};
-		assert_eq!(kernel.verify(), Ok(()));
+		assert_eq!(kernel.verify(keychain.secp()), Ok(()));
 	}
 
 	#[test]

@@ -40,7 +40,7 @@ fn test_store_kernel_idx() {
 	let commit = Commitment::from_vec(vec![]);
 
 	let store = ChainStore::new(chain_dir).unwrap();
-	let batch = store.batch().unwrap();
+	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
 	assert_eq!(index.peek_pos(&batch, commit), Ok(None));
@@ -187,7 +187,7 @@ fn test_store_kernel_idx_pop_back() {
 	let commit = Commitment::from_vec(vec![]);
 
 	let store = ChainStore::new(chain_dir).unwrap();
-	let batch = store.batch().unwrap();
+	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
 	assert_eq!(index.peek_pos(&batch, commit), Ok(None));
@@ -295,7 +295,7 @@ fn test_store_kernel_idx_rewind() {
 	let commit = Commitment::from_vec(vec![]);
 
 	let store = ChainStore::new(chain_dir).unwrap();
-	let batch = store.batch().unwrap();
+	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
 	assert_eq!(
@@ -397,7 +397,7 @@ fn test_store_kernel_idx_multiple_commits() {
 	let commit2 = Commitment::from_vec(vec![1]);
 
 	let store = ChainStore::new(chain_dir).unwrap();
-	let batch = store.batch().unwrap();
+	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
 	assert_eq!(index.get_list(&batch, commit), Ok(None));
@@ -489,7 +489,7 @@ fn test_store_kernel_idx_clear() -> Result<(), Error> {
 
 	// Add a couple of single entries to the index and commit the batch.
 	{
-		let batch = store.batch()?;
+		let batch = store.batch_write()?;
 		assert_eq!(index.peek_pos(&batch, commit), Ok(None));
 		assert_eq!(index.get_list(&batch, commit), Ok(None));
 
@@ -545,7 +545,7 @@ fn test_store_kernel_idx_clear() -> Result<(), Error> {
 
 	// Clear the index and confirm everything was deleted as expected.
 	{
-		let batch = store.batch()?;
+		let batch = store.batch_write()?;
 		assert_eq!(index.clear(&batch), Ok(()));
 		assert_eq!(index.peek_pos(&batch, commit), Ok(None));
 		assert_eq!(index.get_list(&batch, commit), Ok(None));
@@ -556,7 +556,7 @@ fn test_store_kernel_idx_clear() -> Result<(), Error> {
 
 	// Add multiple entries to the index, commit the batch.
 	{
-		let batch = store.batch()?;
+		let batch = store.batch_write()?;
 		assert_eq!(
 			index.push_pos(&batch, commit, CommitPos { pos: 1, height: 1 }),
 			Ok(()),
@@ -578,7 +578,7 @@ fn test_store_kernel_idx_clear() -> Result<(), Error> {
 
 	// Clear the index and confirm everything was deleted as expected.
 	{
-		let batch = store.batch()?;
+		let batch = store.batch_write()?;
 		assert_eq!(index.clear(&batch), Ok(()));
 		assert_eq!(index.peek_pos(&batch, commit), Ok(None));
 		assert_eq!(index.get_list(&batch, commit), Ok(None));

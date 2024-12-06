@@ -19,6 +19,7 @@ use mwc_core::consensus::{
 };
 use mwc_core::global;
 use mwc_core::pow::Difficulty;
+use std::collections::VecDeque;
 
 /// Checks different next_target adjustments and difficulty boundaries
 #[test]
@@ -30,6 +31,7 @@ fn next_target_adjustment() {
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
 	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
+	let mut cache_values = VecDeque::new();
 	let hinext = next_difficulty(
 		1,
 		repeat(
@@ -38,6 +40,7 @@ fn next_target_adjustment() {
 			DIFFICULTY_ADJUST_WINDOW,
 			None,
 		),
+		&mut cache_values,
 	);
 
 	assert_ne!(hinext.difficulty, diff_min);
@@ -49,7 +52,12 @@ fn next_target_adjustment() {
 	let just_enough = DIFFICULTY_ADJUST_WINDOW + 1;
 	hi.difficulty = Difficulty::from_num(10000);
 	assert_eq!(
-		next_difficulty(1, repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(10000)
 	);
 
@@ -57,7 +65,8 @@ fn next_target_adjustment() {
 	assert_eq!(
 		next_difficulty(
 			1,
-			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)]
+			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)],
+			&mut cache_values
 		)
 		.difficulty,
 		Difficulty::from_num(14913)
@@ -75,55 +84,95 @@ fn next_target_adjustment() {
 	);
 	s2.append(&mut s1);
 	assert_eq!(
-		next_difficulty(1, s2).difficulty,
+		next_difficulty(1, s2, &mut cache_values).difficulty,
 		Difficulty::from_num(1000)
 	);
 
 	// too slow, diff goes down
 	hi.difficulty = Difficulty::from_num(1000);
 	assert_eq!(
-		next_difficulty(1, repeat(90, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(90, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(857)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(120, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(120, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(750)
 	);
 
 	// too fast, diff goes up
 	assert_eq!(
-		next_difficulty(1, repeat(55, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(55, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1028)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(45, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(45, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1090)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(30, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(30, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1200)
 	);
 
 	// hitting lower time bound, should always get the same result below
 	assert_eq!(
-		next_difficulty(1, repeat(0, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(0, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(1500)
 	);
 
 	// hitting higher time bound, should always get the same result above
 	assert_eq!(
-		next_difficulty(1, repeat(300, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(300, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(500)
 	);
 	assert_eq!(
-		next_difficulty(1, repeat(400, hi.clone(), just_enough, None)).difficulty,
+		next_difficulty(
+			1,
+			repeat(400, hi.clone(), just_enough, None),
+			&mut cache_values
+		)
+		.difficulty,
 		Difficulty::from_num(500)
 	);
 
 	// We should never drop below minimum
 	hi.difficulty = Difficulty::zero();
 	assert_eq!(
-		next_difficulty(1, repeat(90, hi, just_enough, None)).difficulty,
+		next_difficulty(1, repeat(90, hi, just_enough, None), &mut cache_values).difficulty,
 		Difficulty::min()
 	);
 }
@@ -146,8 +195,10 @@ fn repeat(
 	let times = (0..(len as usize)).map(|n| n * interval as usize).rev();
 	let pairs = times.zip(diffs.iter());
 	pairs
-		.map(|(t, d)| {
+		.enumerate()
+		.map(|(index, (t, d))| {
 			HeaderDifficultyInfo::new(
+				index as u64,
 				None,
 				cur_time + t as u64,
 				*d,

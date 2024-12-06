@@ -132,9 +132,17 @@ where
 		fees,
 		false,
 		previous_header.height + 1,
+		keychain.secp(),
 	)
 	.unwrap();
-	Block::new(&previous_header, txs, Difficulty::min(), reward_output).unwrap()
+	Block::new(
+		&previous_header,
+		txs,
+		Difficulty::min(),
+		reward_output,
+		keychain.secp(),
+	)
+	.unwrap()
 }
 
 // utility producing a transaction that spends an output with the provided

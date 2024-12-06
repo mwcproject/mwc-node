@@ -30,7 +30,7 @@ use self::core::{global, ser};
 use crate::common::{new_block, tx1i1o, tx1i2o, tx2i1o};
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core as core;
-use util::static_secp_instance;
+use util::secp::{ContextFlag, Secp256k1};
 
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {
@@ -159,12 +159,13 @@ fn build_tx_kernel() {
 
 	// check the tx is valid
 	let height = 42; // arbitrary
-	tx.validate(Weighting::AsTransaction, height).unwrap();
+	tx.validate(Weighting::AsTransaction, height, keychain.secp())
+		.unwrap();
 
 	// check the kernel is also itself valid
 	assert_eq!(tx.kernels().len(), 1);
 	let kern = &tx.kernels()[0];
-	kern.verify().unwrap();
+	kern.verify(keychain.secp()).unwrap();
 
 	assert_eq!(kern.features, KernelFeatures::Plain { fee: 2.into() });
 	assert_eq!(2, tx.fee(height));
@@ -201,7 +202,7 @@ fn build_two_half_kernels() {
 	let pubkey = &kernel.excess.to_pubkey(keychain.secp()).unwrap();
 	kernel.excess_sig =
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
-	kernel.verify().unwrap();
+	kernel.verify(keychain.secp()).unwrap();
 
 	let tx1 = build::transaction_with_kernel(
 		&[input(10, key_id1), output(8, key_id2.clone())],
@@ -222,9 +223,15 @@ fn build_two_half_kernels() {
 	.unwrap();
 
 	let height = 42; // arbitrary
-	assert_eq!(tx1.validate(Weighting::AsTransaction, height), Ok(()),);
+	assert_eq!(
+		tx1.validate(Weighting::AsTransaction, height, keychain.secp()),
+		Ok(()),
+	);
 
-	assert_eq!(tx2.validate(Weighting::AsTransaction, height), Ok(()),);
+	assert_eq!(
+		tx2.validate(Weighting::AsTransaction, height, keychain.secp()),
+		Ok(()),
+	);
 
 	// The transactions share an identical kernel.
 	assert_eq!(tx1.kernels()[0], tx2.kernels()[0]);
@@ -248,14 +255,21 @@ fn transaction_cut_through() {
 	let tx1 = tx1i2o();
 	let tx2 = tx2i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
 	// now build a "cut_through" tx from tx1 and tx2
-	let tx3 = aggregate(&[tx1, tx2]).unwrap();
+	let tx3 = aggregate(&[tx1, tx2], &secp).unwrap();
 
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 }
 
 // Attempt to deaggregate a multi-kernel transaction in a different way
@@ -267,30 +281,45 @@ fn multi_kernel_transaction_deaggregation() {
 	let tx3 = tx1i1o();
 	let tx4 = tx1i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx4.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx4
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let tx1234 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone(), tx4.clone()]).unwrap();
-	let tx12 = aggregate(&[tx1, tx2]).unwrap();
-	let tx34 = aggregate(&[tx3, tx4]).unwrap();
+	let tx1234 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone(), tx4.clone()], &secp).unwrap();
+	let tx12 = aggregate(&[tx1, tx2], &secp).unwrap();
+	let tx34 = aggregate(&[tx3, tx4], &secp).unwrap();
 
-	assert!(tx1234.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx12.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx34.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1234
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx12
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx34
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let deaggregated_tx34 = deaggregate(tx1234.clone(), &[tx12.clone()]).unwrap();
+	let deaggregated_tx34 = deaggregate(tx1234.clone(), &[tx12.clone()], &secp).unwrap();
 	assert!(deaggregated_tx34
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx34, deaggregated_tx34);
 
-	let deaggregated_tx12 = deaggregate(tx1234, &[tx34]).unwrap();
+	let deaggregated_tx12 = deaggregate(tx1234, &[tx34], &secp).unwrap();
 
 	assert!(deaggregated_tx12
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx12, deaggregated_tx12);
 }
@@ -302,20 +331,31 @@ fn multi_kernel_transaction_deaggregation_2() {
 	let tx2 = tx1i1o();
 	let tx3 = tx1i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let tx123 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone()]).unwrap();
-	let tx12 = aggregate(&[tx1, tx2]).unwrap();
+	let tx123 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone()], &secp).unwrap();
+	let tx12 = aggregate(&[tx1, tx2], &secp).unwrap();
 
-	assert!(tx123.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx12.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx123
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx12
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let deaggregated_tx3 = deaggregate(tx123, &[tx12]).unwrap();
+	let deaggregated_tx3 = deaggregate(tx123, &[tx12], &secp).unwrap();
 	assert!(deaggregated_tx3
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx3, deaggregated_tx3);
 }
@@ -327,21 +367,32 @@ fn multi_kernel_transaction_deaggregation_3() {
 	let tx2 = tx1i1o();
 	let tx3 = tx1i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let tx123 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone()]).unwrap();
-	let tx13 = aggregate(&[tx1, tx3]).unwrap();
-	let tx2 = aggregate(&[tx2]).unwrap();
+	let tx123 = aggregate(&[tx1.clone(), tx2.clone(), tx3.clone()], &secp).unwrap();
+	let tx13 = aggregate(&[tx1, tx3], &secp).unwrap();
+	let tx2 = aggregate(&[tx2], &secp).unwrap();
 
-	assert!(tx123.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx123
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let deaggregated_tx13 = deaggregate(tx123, &[tx2]).unwrap();
+	let deaggregated_tx13 = deaggregate(tx123, &[tx2], &secp).unwrap();
 	assert!(deaggregated_tx13
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx13, deaggregated_tx13);
 }
@@ -355,26 +406,42 @@ fn multi_kernel_transaction_deaggregation_4() {
 	let tx4 = tx1i1o();
 	let tx5 = tx1i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx4.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx5.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx4
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx5
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let tx12345 = aggregate(&[
-		tx1.clone(),
-		tx2.clone(),
-		tx3.clone(),
-		tx4.clone(),
-		tx5.clone(),
-	])
+	let tx12345 = aggregate(
+		&[
+			tx1.clone(),
+			tx2.clone(),
+			tx3.clone(),
+			tx4.clone(),
+			tx5.clone(),
+		],
+		&secp,
+	)
 	.unwrap();
-	assert!(tx12345.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx12345
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let deaggregated_tx5 = deaggregate(tx12345, &[tx1, tx2, tx3, tx4]).unwrap();
+	let deaggregated_tx5 = deaggregate(tx12345, &[tx1, tx2, tx3, tx4], &secp).unwrap();
 	assert!(deaggregated_tx5
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx5, deaggregated_tx5);
 }
@@ -388,29 +455,45 @@ fn multi_kernel_transaction_deaggregation_5() {
 	let tx4 = tx1i1o();
 	let tx5 = tx1i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx4.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx5.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx4
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx5
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let tx12345 = aggregate(&[
-		tx1.clone(),
-		tx2.clone(),
-		tx3.clone(),
-		tx4.clone(),
-		tx5.clone(),
-	])
+	let tx12345 = aggregate(
+		&[
+			tx1.clone(),
+			tx2.clone(),
+			tx3.clone(),
+			tx4.clone(),
+			tx5.clone(),
+		],
+		&secp,
+	)
 	.unwrap();
-	let tx12 = aggregate(&[tx1, tx2]).unwrap();
-	let tx34 = aggregate(&[tx3, tx4]).unwrap();
+	let tx12 = aggregate(&[tx1, tx2], &secp).unwrap();
+	let tx34 = aggregate(&[tx3, tx4], &secp).unwrap();
 
-	assert!(tx12345.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx12345
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let deaggregated_tx5 = deaggregate(tx12345, &[tx12, tx34]).unwrap();
+	let deaggregated_tx5 = deaggregate(tx12345, &[tx12, tx34], &secp).unwrap();
 	assert!(deaggregated_tx5
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx5, deaggregated_tx5);
 }
@@ -422,26 +505,33 @@ fn basic_transaction_deaggregation() {
 	let tx1 = tx1i2o();
 	let tx2 = tx2i1o();
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	assert!(tx1.validate(Weighting::AsTransaction, height).is_ok());
-	assert!(tx2.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx1
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
+	assert!(tx2
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
 	// now build a "cut_through" tx from tx1 and tx2
-	let tx3 = aggregate(&[tx1.clone(), tx2.clone()]).unwrap();
+	let tx3 = aggregate(&[tx1.clone(), tx2.clone()], &secp).unwrap();
 
-	assert!(tx3.validate(Weighting::AsTransaction, height).is_ok());
+	assert!(tx3
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
-	let deaggregated_tx1 = deaggregate(tx3.clone(), &[tx2.clone()]).unwrap();
+	let deaggregated_tx1 = deaggregate(tx3.clone(), &[tx2.clone()], &secp).unwrap();
 
 	assert!(deaggregated_tx1
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx1, deaggregated_tx1);
 
-	let deaggregated_tx2 = deaggregate(tx3, &[tx1]).unwrap();
+	let deaggregated_tx2 = deaggregate(tx3, &[tx1], &secp).unwrap();
 
 	assert!(deaggregated_tx2
-		.validate(Weighting::AsTransaction, height)
+		.validate(Weighting::AsTransaction, height, &secp)
 		.is_ok());
 	assert_eq!(tx2, deaggregated_tx2);
 }
@@ -472,7 +562,11 @@ fn hash_output() {
 fn blind_tx() {
 	let btx = tx2i1o();
 	let height = 42; // arbitrary
-	assert!(btx.validate(Weighting::AsTransaction, height).is_ok());
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
+
+	assert!(btx
+		.validate(Weighting::AsTransaction, height, &secp)
+		.is_ok());
 
 	// Ignored for bullet proofs, because calling range_proof_info
 	// with a bullet proof causes painful errors
@@ -480,8 +574,6 @@ fn blind_tx() {
 	// checks that the range proof on our blind output is sufficiently hiding
 	let Output { proof, .. } = btx.outputs()[0];
 
-	let secp = static_secp_instance();
-	let secp = secp.lock();
 	let info = secp.range_proof_info(proof);
 
 	assert!(info.min == 0);
@@ -543,7 +635,9 @@ fn tx_build_exchange() {
 	.unwrap();
 
 	let height = 42; // arbitrary
-	tx_final.validate(Weighting::AsTransaction, height).unwrap();
+	tx_final
+		.validate(Weighting::AsTransaction, height, keychain.secp())
+		.unwrap();
 }
 
 #[test]
@@ -557,7 +651,8 @@ fn reward_empty_block() {
 
 	let b = new_block(&[], &keychain, &builder, &previous_header, &key_id);
 
-	b.validate(&BlindingFactor::zero()).unwrap();
+	b.validate(&BlindingFactor::zero(), keychain.secp())
+		.unwrap();
 }
 
 #[test]
@@ -569,11 +664,17 @@ fn reward_with_tx_block() {
 
 	let tx1 = tx2i1o();
 	let previous_header = BlockHeader::default();
-	tx1.validate(Weighting::AsTransaction, previous_header.height + 1)
-		.unwrap();
+	tx1.validate(
+		Weighting::AsTransaction,
+		previous_header.height + 1,
+		keychain.secp(),
+	)
+	.unwrap();
 
 	let block = new_block(&[tx1], &keychain, &builder, &previous_header, &key_id);
-	block.validate(&BlindingFactor::zero()).unwrap();
+	block
+		.validate(&BlindingFactor::zero(), keychain.secp())
+		.unwrap();
 }
 
 #[test]
@@ -589,7 +690,8 @@ fn simple_block() {
 	let previous_header = BlockHeader::default();
 	let b = new_block(&[tx1, tx2], &keychain, &builder, &previous_header, &key_id);
 
-	b.validate(&BlindingFactor::zero()).unwrap();
+	b.validate(&BlindingFactor::zero(), keychain.secp())
+		.unwrap();
 }
 
 #[test]
@@ -623,7 +725,8 @@ fn test_block_with_timelocked_tx() {
 		&previous_header,
 		&key_id3.clone(),
 	);
-	b.validate(&BlindingFactor::zero()).unwrap();
+	b.validate(&BlindingFactor::zero(), keychain.secp())
+		.unwrap();
 
 	// now try adding a timelocked tx where lock height is greater than current
 	// block height
@@ -641,7 +744,7 @@ fn test_block_with_timelocked_tx() {
 	let previous_header = BlockHeader::default();
 	let b = new_block(&[tx1], &keychain, &builder, &previous_header, &key_id3);
 
-	match b.validate(&BlindingFactor::zero()) {
+	match b.validate(&BlindingFactor::zero(), keychain.secp()) {
 		Err(KernelLockHeight(height, _)) => {
 			assert_eq!(height, 2);
 		}
@@ -653,14 +756,18 @@ fn test_block_with_timelocked_tx() {
 pub fn test_verify_1i1o_sig() {
 	test_setup();
 	let tx = tx1i1o();
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	tx.validate(Weighting::AsTransaction, height).unwrap();
+	tx.validate(Weighting::AsTransaction, height, &secp)
+		.unwrap();
 }
 
 #[test]
 pub fn test_verify_2i1o_sig() {
 	test_setup();
 	let tx = tx2i1o();
+	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	let height = 42; // arbitrary
-	tx.validate(Weighting::AsTransaction, height).unwrap();
+	tx.validate(Weighting::AsTransaction, height, &secp)
+		.unwrap();
 }

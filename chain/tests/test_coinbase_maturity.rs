@@ -25,6 +25,7 @@ use mwc_chain as chain;
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_util as util;
+use std::collections::VecDeque;
 use std::fs;
 use std::sync::Arc;
 
@@ -60,11 +61,24 @@ fn test_coinbase_maturity() {
 		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
 		let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier();
 
-		let next_header_info =
-			consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
-		let reward = libtx::reward::output(&keychain, &builder, &key_id1, 0, false, 1).unwrap();
-		let mut block =
-			core::core::Block::new(&prev, &[], next_header_info.difficulty, reward).unwrap();
+		let mut cache_values = VecDeque::new();
+
+		let next_header_info = consensus::next_difficulty(
+			prev.height + 1,
+			chain.difficulty_iter().unwrap(),
+			&mut cache_values,
+		);
+		let reward =
+			libtx::reward::output(&keychain, &builder, &key_id1, 0, false, 1, chain.secp())
+				.unwrap();
+		let mut block = core::core::Block::new(
+			&prev,
+			&[],
+			next_header_info.difficulty,
+			reward,
+			chain.secp(),
+		)
+		.unwrap();
 		block.header.timestamp = prev.timestamp + Duration::seconds(60);
 		block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -108,13 +122,29 @@ fn test_coinbase_maturity() {
 
 		let txs = &[coinbase_txn.clone()];
 		let fees = txs.iter().map(|tx| tx.fee(prev.height + 1)).sum();
-		let reward =
-			libtx::reward::output(&keychain, &builder, &key_id3, fees, false, prev.height + 1)
-				.unwrap();
-		let next_header_info =
-			consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
-		let mut block =
-			core::core::Block::new(&prev, txs, next_header_info.difficulty, reward).unwrap();
+		let reward = libtx::reward::output(
+			&keychain,
+			&builder,
+			&key_id3,
+			fees,
+			false,
+			prev.height + 1,
+			chain.secp(),
+		)
+		.unwrap();
+		let next_header_info = consensus::next_difficulty(
+			prev.height + 1,
+			chain.difficulty_iter().unwrap(),
+			&mut cache_values,
+		);
+		let mut block = core::core::Block::new(
+			&prev,
+			txs,
+			next_header_info.difficulty,
+			reward,
+			chain.secp(),
+		)
+		.unwrap();
 		block.header.timestamp = prev.timestamp + Duration::seconds(60);
 		block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -147,13 +177,29 @@ fn test_coinbase_maturity() {
 			let builder = ProofBuilder::new(&keychain);
 			let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 
-			let next_header_info =
-				consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
-			let reward =
-				libtx::reward::output(&keychain, &builder, &key_id1, 0, false, prev.height + 1)
-					.unwrap();
-			let mut block =
-				core::core::Block::new(&prev, &[], next_header_info.difficulty, reward).unwrap();
+			let next_header_info = consensus::next_difficulty(
+				prev.height + 1,
+				chain.difficulty_iter().unwrap(),
+				&mut cache_values,
+			);
+			let reward = libtx::reward::output(
+				&keychain,
+				&builder,
+				&key_id1,
+				0,
+				false,
+				prev.height + 1,
+				chain.secp(),
+			)
+			.unwrap();
+			let mut block = core::core::Block::new(
+				&prev,
+				&[],
+				next_header_info.difficulty,
+				reward,
+				chain.secp(),
+			)
+			.unwrap();
 
 			block.header.timestamp = prev.timestamp + Duration::seconds(60);
 			block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -198,13 +244,29 @@ fn test_coinbase_maturity() {
 
 			let txs = &[coinbase_txn.clone()];
 			let fees = txs.iter().map(|tx| tx.fee(prev.height + 1)).sum();
-			let reward =
-				libtx::reward::output(&keychain, &builder, &key_id3, fees, false, prev.height + 1)
-					.unwrap();
-			let next_header_info =
-				consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
-			let mut block =
-				core::core::Block::new(&prev, txs, next_header_info.difficulty, reward).unwrap();
+			let reward = libtx::reward::output(
+				&keychain,
+				&builder,
+				&key_id3,
+				fees,
+				false,
+				prev.height + 1,
+				chain.secp(),
+			)
+			.unwrap();
+			let next_header_info = consensus::next_difficulty(
+				prev.height + 1,
+				chain.difficulty_iter().unwrap(),
+				&mut cache_values,
+			);
+			let mut block = core::core::Block::new(
+				&prev,
+				txs,
+				next_header_info.difficulty,
+				reward,
+				chain.secp(),
+			)
+			.unwrap();
 			block.header.timestamp = prev.timestamp + Duration::seconds(60);
 			block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -237,14 +299,29 @@ fn test_coinbase_maturity() {
 				let builder = ProofBuilder::new(&keychain);
 				let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 
-				let reward =
-					libtx::reward::output(&keychain, &builder, &pk, 0, false, prev.height + 1)
-						.unwrap();
-				let next_header_info =
-					consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
-				let mut block =
-					core::core::Block::new(&prev, &[], next_header_info.difficulty, reward)
-						.unwrap();
+				let reward = libtx::reward::output(
+					&keychain,
+					&builder,
+					&pk,
+					0,
+					false,
+					prev.height + 1,
+					chain.secp(),
+				)
+				.unwrap();
+				let next_header_info = consensus::next_difficulty(
+					prev.height + 1,
+					chain.difficulty_iter().unwrap(),
+					&mut cache_values,
+				);
+				let mut block = core::core::Block::new(
+					&prev,
+					&[],
+					next_header_info.difficulty,
+					reward,
+					chain.secp(),
+				)
+				.unwrap();
 				block.header.timestamp = prev.timestamp + Duration::seconds(60);
 				block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -271,13 +348,29 @@ fn test_coinbase_maturity() {
 
 			let txs = &[coinbase_txn];
 			let fees = txs.iter().map(|tx| tx.fee(prev.height + 1)).sum();
-			let next_header_info =
-				consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
-			let reward =
-				libtx::reward::output(&keychain, &builder, &key_id4, fees, false, prev.height + 1)
-					.unwrap();
-			let mut block =
-				core::core::Block::new(&prev, txs, next_header_info.difficulty, reward).unwrap();
+			let next_header_info = consensus::next_difficulty(
+				prev.height + 1,
+				chain.difficulty_iter().unwrap(),
+				&mut cache_values,
+			);
+			let reward = libtx::reward::output(
+				&keychain,
+				&builder,
+				&key_id4,
+				fees,
+				false,
+				prev.height + 1,
+				chain.secp(),
+			)
+			.unwrap();
+			let mut block = core::core::Block::new(
+				&prev,
+				txs,
+				next_header_info.difficulty,
+				reward,
+				chain.secp(),
+			)
+			.unwrap();
 
 			block.header.timestamp = prev.timestamp + Duration::seconds(60);
 			block.header.pow.secondary_scaling = next_header_info.secondary_scaling;

@@ -16,20 +16,20 @@
 use crate::serv::Server;
 use crate::util::{Mutex, RwLock};
 use std::fmt;
-use std::fs::File;
 use std::net::{Shutdown, TcpStream};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use lru_cache::LruCache;
+use lru::LruCache;
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
 use crate::conn;
 use crate::handshake::Handshake;
 use crate::msg::{
-	self, ArchiveHeaderData, BanReason, GetPeerAddrs, Locator, Msg, Ping, SegmentRequest, Type,
+	self, ArchiveHeaderData, BanReason, GetPeerAddrs, HashHeadersData, Locator, Msg, Ping,
+	SegmentRequest, Type,
 };
 use crate::mwc_core::core::hash::{Hash, Hashed};
 use crate::mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
@@ -42,11 +42,11 @@ use crate::types::{
 	TxHashSetRead,
 };
 use crate::util::secp::pedersen::RangeProof;
-use chrono::prelude::{DateTime, Utc};
+use chrono::prelude::Utc;
 use mwc_chain::txhashset::Segmenter;
-use std::time::Instant;
+use mwc_chain::SyncState;
 
-const MAX_TRACK_SIZE: usize = 30;
+const MAX_TRACK_SIZE: usize = 200;
 const MAX_PEER_MSG_PER_MIN: u64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,60 +56,6 @@ const MAX_PEER_MSG_PER_MIN: u64 = 500;
 enum State {
 	Connected,
 	Banned,
-}
-
-pub struct PeerPibdStatus {
-	/// Hash of the block for which the txhashset should be provided
-	pub header_hash: Hash,
-	/// Height of the corresponding block
-	pub header_height: u64,
-	/// output bitmap root hash
-	pub output_bitmap_root: Option<Hash>,
-	// History of commited output_bitmaps + header hashes. Needed to ban the peer in case of misbehaviour
-	pub output_bitmap_root_header_history: Vec<Hash>,
-	/// Time when request for pibd start was sent last time (timestamp in seconds)
-	pub initiate_pibd_request_time: i64,
-	/// Number of requests that was sent after success response recieved
-	pub no_response_requests: u32,
-	/// Time when first no responsive request was sent
-	pub no_response_time: Option<i64>,
-}
-
-impl PeerPibdStatus {
-	pub fn default() -> PeerPibdStatus {
-		PeerPibdStatus {
-			header_hash: Hash::default(),
-			header_height: 0,
-			output_bitmap_root: None,
-			output_bitmap_root_header_history: Vec::new(),
-			initiate_pibd_request_time: 0,
-			no_response_requests: 0,
-			no_response_time: None,
-		}
-	}
-
-	pub fn update_pibd_status(
-		&mut self,
-		header_hash: Hash,
-		header_height: u64,
-		output_bitmap_root: Option<Hash>,
-	) {
-		self.header_hash = header_hash;
-		self.header_height = header_height;
-
-		match output_bitmap_root {
-			Some(hash) => {
-				let hist_hash = (hash, header_hash).hash();
-				if !self.output_bitmap_root_header_history.contains(&hist_hash) {
-					self.output_bitmap_root_header_history.push(hist_hash);
-				}
-				self.output_bitmap_root = Some(hash);
-			}
-			None => {
-				self.output_bitmap_root = None;
-			}
-		}
-	}
 }
 
 pub struct Peer {
@@ -123,10 +69,6 @@ pub struct Peer {
 	// because it may be locked by different reasons, so we should wait for that, close
 	// mutex can be taken only during shutdown, it happens once
 	stop_handle: Mutex<conn::StopHandle>,
-	// Whether or not we requested a txhashset from this peer
-	state_sync_requested: Arc<AtomicBool>,
-	// PIBD available data status
-	pub pibd_status: Arc<Mutex<PeerPibdStatus>>,
 }
 
 impl fmt::Debug for Peer {
@@ -141,21 +83,15 @@ impl Peer {
 		info: PeerInfo,
 		conn: TcpStream,
 		adapter: Arc<dyn NetAdapter>,
+		sync_state: Arc<SyncState>,
 		server: Server,
 	) -> std::io::Result<Peer> {
 		let state = Arc::new(RwLock::new(State::Connected));
-		let state_sync_requested = Arc::new(AtomicBool::new(false));
 		let tracking_adapter = TrackingAdapter::new(adapter);
-		let pibd_status = Arc::new(Mutex::new(PeerPibdStatus::default()));
-		let handler = Protocol::new(
-			Arc::new(tracking_adapter.clone()),
-			info.clone(),
-			state_sync_requested.clone(),
-			server,
-			pibd_status.clone(),
-		);
+		let handler = Protocol::new(Arc::new(tracking_adapter.clone()), info.clone(), server);
 		let tracker = Arc::new(conn::Tracker::new());
-		let (sendh, stoph) = conn::listen(conn, info.version, tracker.clone(), handler)?;
+		let (sendh, stoph) =
+			conn::listen(conn, info.version, tracker.clone(), sync_state, handler)?;
 		let send_handle = Mutex::new(sendh);
 		let stop_handle = Mutex::new(stoph);
 		Ok(Peer {
@@ -165,8 +101,6 @@ impl Peer {
 			tracker,
 			send_handle,
 			stop_handle,
-			state_sync_requested,
-			pibd_status,
 		})
 	}
 
@@ -176,12 +110,13 @@ impl Peer {
 		total_difficulty: Difficulty,
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
+		sync_state: Arc<SyncState>,
 		server: Server,
 	) -> Result<Peer, Error> {
 		debug!("accept: handshaking from {:?}", conn.peer_addr());
 		let info = hs.accept(capab, total_difficulty, &mut conn);
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter, server)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, sync_state, server)?),
 			Err(e) => {
 				debug!(
 					"accept: handshaking from {:?} failed with error: {:?}",
@@ -204,6 +139,7 @@ impl Peer {
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
 		peer_addr: Option<PeerAddr>,
+		sync_state: Arc<SyncState>,
 		server: Server,
 	) -> Result<Peer, Error> {
 		debug!("connect: handshaking with {:?}", self_addr);
@@ -220,7 +156,7 @@ impl Peer {
 			hs.initiate(capab, total_difficulty, self_addr, &mut conn, None)
 		};
 		match info {
-			Ok(info) => Ok(Peer::new(info, conn, adapter, server)?),
+			Ok(info) => Ok(Peer::new(info, conn, adapter, sync_state, server)?),
 			Err(e) => {
 				if peer_addr.is_some() {
 					debug!(
@@ -243,9 +179,9 @@ impl Peer {
 		}
 	}
 
-	pub fn is_denied(config: &P2PConfig, peer_addr: PeerAddr) -> bool {
+	pub fn is_denied(config: &P2PConfig, peer_addr: &PeerAddr) -> bool {
 		if let Some(ref denied) = config.peers_deny {
-			if denied.peers.contains(&peer_addr) {
+			if denied.peers.contains(peer_addr) {
 				debug!(
 					"checking peer allowed/denied: {:?} explicitly denied",
 					peer_addr
@@ -254,7 +190,7 @@ impl Peer {
 			}
 		}
 		if let Some(ref allowed) = config.peers_allow {
-			if allowed.peers.contains(&peer_addr) {
+			if allowed.peers.contains(peer_addr) {
 				debug!(
 					"checking peer allowed/denied: {:?} explicitly allowed",
 					peer_addr
@@ -442,7 +378,16 @@ impl Peer {
 		self.send(&h, msg::Type::GetCompactBlock)
 	}
 
-	pub fn send_peer_request(&self, capab: Capabilities) -> Result<(), Error> {
+	pub fn send_peer_request(
+		&self,
+		capab: Capabilities,
+		use_tor_connection: bool,
+	) -> Result<(), Error> {
+		let capab = if use_tor_connection {
+			capab | Capabilities::TOR_ADDRESS
+		} else {
+			capab
+		};
 		trace!("Asking {} for more peers {:?}", self.info.addr, capab);
 		self.send(
 			&GetPeerAddrs {
@@ -452,36 +397,45 @@ impl Peer {
 		)
 	}
 
-	pub fn send_txhashset_request(&self, height: u64, hash: Hash) -> Result<(), Error> {
-		info!(
-			"Asking {} for txhashset archive at {} {}.",
-			self.info.addr, height, hash
-		);
-		self.state_sync_requested.store(true, Ordering::Relaxed);
-		self.send(
-			&ArchiveHeaderData { hash, height },
-			msg::Type::TxHashSetRequest,
-		)
-	}
-
 	pub fn send_start_pibd_sync_request(&self, height: u64, hash: Hash) -> Result<(), Error> {
 		info!(
 			"Asking peer {} for pibd sync at {} {}.",
 			self.info.addr, height, hash
 		);
-		self.report_pibd_request();
 		self.send(
 			&ArchiveHeaderData { hash, height },
 			msg::Type::StartPibdSyncRequest,
 		)
 	}
 
-	fn report_pibd_request(&self) {
-		let mut pibd_status = self.pibd_status.lock();
-		pibd_status.no_response_requests += 1;
-		if pibd_status.no_response_time.is_none() {
-			pibd_status.no_response_time = Some(Utc::now().timestamp());
-		}
+	pub fn send_start_headers_hash_sync_request(&self, archive_height: u64) -> Result<(), Error> {
+		info!(
+			"Asking peer {} for headers hash sync for archive_height {}.",
+			self.info.addr, archive_height
+		);
+		self.send(
+			&HashHeadersData { archive_height },
+			msg::Type::StartHeadersHashRequest,
+		)
+	}
+
+	pub fn send_headers_hash_segment_request(
+		&self,
+		headers_hash_root: Hash,
+		identifier: SegmentIdentifier,
+	) -> Result<(), Error> {
+		debug!(
+			"Requesting peer {} for headers hashs, root hash {}, id {}",
+			self.info.addr, headers_hash_root, identifier
+		);
+
+		self.send(
+			&SegmentRequest {
+				block_hash: headers_hash_root,
+				identifier,
+			},
+			msg::Type::GetHeadersHashesSegment,
+		)
 	}
 
 	pub fn send_bitmap_segment_request(
@@ -489,14 +443,10 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		if log::log_enabled!(log::Level::Debug) {
-			let pibd_status = self.pibd_status.lock();
-			debug!(
-				"Requesting peer {} for outputs bitmap, hash {}, id {}, output_bitmap_root: {:?}, height {}",
-				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
-			);
-		}
-		self.report_pibd_request();
+		debug!(
+			"Requesting peer {} for outputs bitmap, hash {}, id {}",
+			self.info.addr, h, identifier
+		);
 		self.send(
 			&SegmentRequest {
 				block_hash: h,
@@ -511,14 +461,10 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		if log::log_enabled!(log::Level::Debug) {
-			let pibd_status = self.pibd_status.lock();
-			debug!(
-				"Requesting peer {} for outputs, hash {}, id {}, output_bitmap_root: {:?}, height {}",
-				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
-			);
-		}
-		self.report_pibd_request();
+		debug!(
+			"Requesting peer {} for outputs, hash {}, id {}",
+			self.info.addr, h, identifier
+		);
 		self.send(
 			&SegmentRequest {
 				block_hash: h,
@@ -533,14 +479,10 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		if log::log_enabled!(log::Level::Debug) {
-			let pibd_status = self.pibd_status.lock();
-			debug!(
-				"Requesting peer {} for rangeproofs, hash {}, id {}, output_bitmap_root: {:?}, height {}",
-				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
-			);
-		}
-		self.report_pibd_request();
+		debug!(
+			"Requesting peer {} for rangeproofs, hash {}, id {}",
+			self.info.addr, h, identifier
+		);
 		self.send(
 			&SegmentRequest {
 				block_hash: h,
@@ -555,14 +497,10 @@ impl Peer {
 		h: Hash,
 		identifier: SegmentIdentifier,
 	) -> Result<(), Error> {
-		if log::log_enabled!(log::Level::Debug) {
-			let pibd_status = self.pibd_status.lock();
-			debug!(
-				"Requesting peer {} for kernels, hash {}, id {}, output_bitmap_root: {:?}, height {}",
-				self.info.addr, h, identifier, pibd_status.output_bitmap_root, pibd_status.header_height
-			);
-		}
-		self.report_pibd_request();
+		debug!(
+			"Requesting peer {} for kernels, hash {}, id {}",
+			self.info.addr, h, identifier
+		);
 		self.send(
 			&SegmentRequest {
 				block_hash: h,
@@ -589,26 +527,6 @@ impl Peer {
 			None => error!("can't get stop lock for peer"),
 		}
 	}
-
-	/// check if this peer ever commited for specific pibd hash
-	pub fn commited_to_pibd_bitmap_output_root(
-		&self,
-		output_bitmap_root_header_hash: &Hash,
-	) -> bool {
-		let status = self.pibd_status.lock();
-		status
-			.output_bitmap_root_header_history
-			.contains(&output_bitmap_root_header_hash)
-	}
-
-	///
-	pub fn get_pibd_no_response_state(&self) -> Option<(u32, i64)> {
-		let status = self.pibd_status.lock();
-		match status.no_response_time {
-			None => None,
-			Some(time) => Some((status.no_response_requests, time)),
-		}
-	}
 }
 
 /// Adapter implementation that forwards everything to an underlying adapter
@@ -625,27 +543,31 @@ impl TrackingAdapter {
 	fn new(adapter: Arc<dyn NetAdapter>) -> TrackingAdapter {
 		TrackingAdapter {
 			adapter: adapter,
-			received: Arc::new(RwLock::new(LruCache::new(MAX_TRACK_SIZE))),
-			requested: Arc::new(RwLock::new(LruCache::new(MAX_TRACK_SIZE))),
+			received: Arc::new(RwLock::new(LruCache::new(
+				NonZeroUsize::new(MAX_TRACK_SIZE).unwrap(),
+			))),
+			requested: Arc::new(RwLock::new(LruCache::new(
+				NonZeroUsize::new(MAX_TRACK_SIZE).unwrap(),
+			))),
 		}
 	}
 
 	fn has_recv(&self, hash: Hash) -> bool {
-		self.received.write().contains_key(&hash)
+		self.received.read().contains(&hash)
 	}
 
 	fn push_recv(&self, hash: Hash) {
-		self.received.write().insert(hash, ());
+		self.received.write().put(hash, ());
 	}
 
 	/// Track a block or transaction hash requested by us.
 	/// Track the opts alongside the hash so we know if this was due to us syncing or not.
 	fn push_req(&self, hash: Hash, opts: chain::Options) {
-		self.requested.write().insert(hash, opts);
+		self.requested.write().put(hash, opts);
 	}
 
 	fn req_opts(&self, hash: Hash) -> Option<chain::Options> {
-		self.requested.write().get_mut(&hash).cloned()
+		self.requested.write().get(&hash).cloned()
 	}
 }
 
@@ -717,22 +639,6 @@ impl ChainAdapter for TrackingAdapter {
 		bh: core::BlockHeader,
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
-		trace!("peer = {:?}, set header sync = false", peer_info.addr);
-
-		let mut last_header = peer_info.last_header.lock().unwrap();
-		*last_header = Instant::now();
-		let mut last_header_reset = peer_info.last_header_reset.lock().unwrap();
-		*last_header_reset = Instant::now();
-
-		let val = peer_info
-			.header_sync_requested
-			.fetch_sub(1, Ordering::Relaxed);
-		// check for wrap
-		if val > 16 {
-			debug!("setting a sync to 0 for peer = {}", peer_info.addr);
-			peer_info.header_sync_requested.store(0, Ordering::Relaxed);
-		}
-		trace!("header sync for {} is {}", peer_info.addr, val);
 		self.push_recv(bh.hash());
 		self.adapter.header_received(bh, peer_info)
 	}
@@ -740,28 +646,10 @@ impl ChainAdapter for TrackingAdapter {
 	fn headers_received(
 		&self,
 		bh: &[core::BlockHeader],
+		remaining: u64,
 		peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error> {
-		trace!(
-			"peer = {:?}, set header sync = false (in headers)",
-			peer_info.addr
-		);
-
-		let mut last_header = peer_info.last_header.lock().unwrap();
-		*last_header = Instant::now();
-
-		let mut last_header_reset = peer_info.last_header_reset.lock().unwrap();
-		*last_header_reset = Instant::now();
-
-		let val = peer_info
-			.header_sync_requested
-			.fetch_sub(1, Ordering::Relaxed);
-		// check for wrap
-		if val > 16 {
-			peer_info.header_sync_requested.store(0, Ordering::Relaxed);
-		}
-		trace!("header sync for {} is {}", peer_info.addr, val);
-		self.adapter.headers_received(bh, peer_info)
+	) -> Result<(), chain::Error> {
+		self.adapter.headers_received(bh, remaining, peer_info)
 	}
 
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
@@ -780,35 +668,62 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.txhashset_archive_header()
 	}
 
-	fn txhashset_receive_ready(&self) -> bool {
-		self.adapter.txhashset_receive_ready()
-	}
-
-	fn txhashset_write(
-		&self,
-		h: Hash,
-		txhashset_data: File,
-		peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error> {
-		self.adapter.txhashset_write(h, txhashset_data, peer_info)
-	}
-
-	fn txhashset_download_update(
-		&self,
-		start_time: DateTime<Utc>,
-		downloaded_size: u64,
-		total_size: u64,
-	) -> bool {
-		self.adapter
-			.txhashset_download_update(start_time, downloaded_size, total_size)
-	}
-
 	fn get_tmp_dir(&self) -> PathBuf {
 		self.adapter.get_tmp_dir()
 	}
 
 	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
 		self.adapter.get_tmpfile_pathname(tmpfile_name)
+	}
+
+	fn recieve_pibd_status(
+		&self,
+		peer: &PeerAddr,
+		header_hash: Hash,
+		header_height: u64,
+		output_bitmap_root: Hash,
+	) -> Result<(), chain::Error> {
+		self.adapter
+			.recieve_pibd_status(peer, header_hash, header_height, output_bitmap_root)
+	}
+
+	fn recieve_another_archive_header(
+		&self,
+		peer: &PeerAddr,
+		header_hash: Hash,
+		header_height: u64,
+	) -> Result<(), chain::Error> {
+		self.adapter
+			.recieve_another_archive_header(peer, header_hash, header_height)
+	}
+
+	fn receive_headers_hash_response(
+		&self,
+		peer: &PeerAddr,
+		archive_height: u64,
+		headers_hash_root: Hash,
+	) -> Result<(), chain::Error> {
+		self.adapter
+			.receive_headers_hash_response(peer, archive_height, headers_hash_root)
+	}
+
+	fn get_header_hashes_segment(
+		&self,
+		header_hashes_root: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<Hash>, chain::Error> {
+		self.adapter
+			.get_header_hashes_segment(header_hashes_root, id)
+	}
+
+	fn receive_header_hashes_segment(
+		&self,
+		peer: &PeerAddr,
+		header_hashes_root: Hash,
+		segment: Segment<Hash>,
+	) -> Result<(), chain::Error> {
+		self.adapter
+			.receive_header_hashes_segment(peer, header_hashes_root, segment)
 	}
 
 	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
@@ -850,42 +765,42 @@ impl ChainAdapter for TrackingAdapter {
 
 	fn receive_bitmap_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<BitmapChunk>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		self.adapter
-			.receive_bitmap_segment(block_hash, bitmap_root_hash, segment)
+			.receive_bitmap_segment(peer, archive_header_hash, segment)
 	}
 
 	fn receive_output_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<OutputIdentifier>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		self.adapter
-			.receive_output_segment(block_hash, bitmap_root_hash, segment)
+			.receive_output_segment(peer, archive_header_hash, segment)
 	}
 
 	fn receive_rangeproof_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<RangeProof>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		self.adapter
-			.receive_rangeproof_segment(block_hash, bitmap_root_hash, segment)
+			.receive_rangeproof_segment(peer, archive_header_hash, segment)
 	}
 
 	fn receive_kernel_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<TxKernel>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		self.adapter
-			.receive_kernel_segment(block_hash, bitmap_root_hash, segment)
+			.receive_kernel_segment(peer, archive_header_hash, segment)
 	}
 }
 
@@ -898,11 +813,16 @@ impl NetAdapter for TrackingAdapter {
 		self.adapter.peer_addrs_received(addrs)
 	}
 
-	fn peer_difficulty(&self, addr: PeerAddr, diff: Difficulty, height: u64) {
+	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
 		self.adapter.peer_difficulty(addr, diff, height)
 	}
 
-	fn is_banned(&self, addr: PeerAddr) -> bool {
+	fn is_banned(&self, addr: &PeerAddr) -> bool {
 		self.adapter.is_banned(addr)
+	}
+
+	/// Ban peer
+	fn ban_peer(&self, addr: &PeerAddr, ban_reason: ReasonForBan, message: &str) {
+		self.adapter.ban_peer(addr, ban_reason, message)
 	}
 }

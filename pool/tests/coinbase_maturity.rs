@@ -53,7 +53,7 @@ fn test_coinbase_maturity() {
 	// Coinbase is not yet matured and cannot be spent.
 	let header = chain.head_header().unwrap();
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx.clone(), true, &header)
+		pool.add_to_pool(test_source(), tx.clone(), true, &header, chain.secp())
 			.err(),
 		Some(PoolError::ImmatureCoinbase)
 	);
@@ -62,7 +62,7 @@ fn test_coinbase_maturity() {
 	add_some_blocks(&chain, 2, &keychain);
 	let header = chain.head_header().unwrap();
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx.clone(), true, &header),
+		pool.add_to_pool(test_source(), tx.clone(), true, &header, chain.secp()),
 		Ok(())
 	);
 

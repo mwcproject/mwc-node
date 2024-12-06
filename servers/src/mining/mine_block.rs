@@ -16,13 +16,6 @@
 //! Build a block to mine: gathers transactions from the pool, assembles
 //! them into a block and returns it.
 
-use chrono::prelude::{DateTime, Utc};
-use rand::{thread_rng, Rng};
-use serde_json::{json, Value};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-
 use crate::api;
 use crate::chain;
 use crate::common::types::Error;
@@ -32,6 +25,14 @@ use crate::core::libtx::ProofBuilder;
 use crate::core::{consensus, core, global};
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
 use crate::ServerTxPool;
+use chrono::prelude::{DateTime, Utc};
+use mwc_util::secp::Secp256k1;
+use rand::{thread_rng, Rng};
+use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 /// Fees in block to use for coinbase amount calculation
 /// (Duplicated from Mwc wallet project)
@@ -134,13 +135,15 @@ fn build_block(
 
 	// Determine the difficulty our block should be at.
 	// Note: do not keep the difficulty_iter in scope (it has an active batch).
-	let difficulty = consensus::next_difficulty(head.height + 1, chain.difficulty_iter()?);
+	let mut cache_values = VecDeque::new();
+	let difficulty =
+		consensus::next_difficulty(head.height + 1, chain.difficulty_iter()?, &mut cache_values);
 
 	// Extract current "mineable" transactions from the pool.
 	// If this fails for *any* reason then fallback to an empty vec of txs.
 	// This will allow us to mine an "empty" block if the txpool is in an
 	// invalid (and unexpected) state.
-	let txs = match tx_pool.read().prepare_mineable_transactions() {
+	let txs = match tx_pool.read().prepare_mineable_transactions(chain.secp()) {
 		Ok(txs) => txs,
 		Err(e) => {
 			error!(
@@ -161,11 +164,18 @@ fn build_block(
 		height,
 	};
 
-	let (output, kernel, block_fees) = get_coinbase(wallet_listener_url, block_fees)?;
-	let mut b = core::Block::from_reward(&head, &txs, output, kernel, difficulty.difficulty)?;
+	let (output, kernel, block_fees) = get_coinbase(wallet_listener_url, block_fees, chain.secp())?;
+	let mut b = core::Block::from_reward(
+		&head,
+		&txs,
+		output,
+		kernel,
+		difficulty.difficulty,
+		chain.secp(),
+	)?;
 
 	// making sure we're not spending time mining a useless block
-	b.validate(&head.total_kernel_offset)?;
+	b.validate(&head.total_kernel_offset, chain.secp())?;
 
 	b.header.pow.nonce = thread_rng().gen();
 	b.header.pow.secondary_scaling = difficulty.secondary_scaling;
@@ -211,7 +221,10 @@ fn build_block(
 ///
 /// Probably only want to do this when testing.
 ///
-fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, BlockFees), Error> {
+fn burn_reward(
+	block_fees: BlockFees,
+	secp: &Secp256k1,
+) -> Result<(core::Output, core::TxKernel, BlockFees), Error> {
 	warn!("Burning block fees: {:?}", block_fees);
 	let keychain = ExtKeychain::from_random_seed(global::is_floonet())?;
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
@@ -222,6 +235,7 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 		block_fees.fees,
 		false,
 		block_fees.height,
+		secp,
 	)?;
 	Ok((out, kernel, block_fees))
 }
@@ -231,11 +245,12 @@ fn burn_reward(block_fees: BlockFees) -> Result<(core::Output, core::TxKernel, B
 fn get_coinbase(
 	wallet_listener_url: Option<String>,
 	block_fees: BlockFees,
+	secp: &Secp256k1,
 ) -> Result<(core::Output, core::TxKernel, BlockFees), Error> {
 	match wallet_listener_url {
 		None => {
 			// Burn it
-			return burn_reward(block_fees);
+			return burn_reward(block_fees, secp);
 		}
 		Some(wallet_listener_url) => {
 			let res = create_coinbase(&wallet_listener_url, &block_fees)?;

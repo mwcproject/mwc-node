@@ -35,6 +35,7 @@ use mwc_chain::{BlockStatus, ChainAdapter, Options};
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_util as util;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 mod chain_test_helper;
@@ -775,10 +776,15 @@ fn output_header_mappings() {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let mut reward_outputs = vec![];
 
+		let mut cache_values = VecDeque::new();
+
 		for n in 1..15 {
 			let prev = chain.head_header().unwrap();
-			let next_header_info =
-				consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
+			let next_header_info = consensus::next_difficulty(
+				prev.height + 1,
+				chain.difficulty_iter().unwrap(),
+				&mut cache_values,
+			);
 			let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
 			let reward = libtx::reward::output(
 				&keychain,
@@ -787,12 +793,18 @@ fn output_header_mappings() {
 				0,
 				false,
 				prev.height + 1,
+				chain.secp(),
 			)
 			.unwrap();
 			reward_outputs.push(reward.0.clone());
-			let mut b =
-				core::core::Block::new(&prev, &[], next_header_info.clone().difficulty, reward)
-					.unwrap();
+			let mut b = core::core::Block::new(
+				&prev,
+				&[],
+				next_header_info.clone().difficulty,
+				reward,
+				chain.secp(),
+			)
+			.unwrap();
 			b.header.timestamp = prev.timestamp + Duration::seconds(60);
 			b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -1064,12 +1076,14 @@ where
 		fees,
 		false,
 		prev.height + 1,
+		kc.secp(),
 	)
 	.unwrap();
-	let mut b = match core::core::Block::new(prev, txs, Difficulty::from_num(diff), reward) {
-		Err(e) => panic!("{:?}", e),
-		Ok(b) => b,
-	};
+	let mut b =
+		match core::core::Block::new(prev, txs, Difficulty::from_num(diff), reward, kc.secp()) {
+			Err(e) => panic!("{:?}", e),
+			Ok(b) => b,
+		};
 	b.header.timestamp = prev.timestamp + Duration::seconds(60);
 	b.header.pow.total_difficulty = prev.total_difficulty() + Difficulty::from_num(diff);
 	b.header.pow.proof = pow::Proof::random(proof_size);

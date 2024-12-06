@@ -15,60 +15,30 @@
 
 use crate::conn::MessageHandler;
 use crate::mwc_core::core::{hash::Hashed, CompactBlock};
-use crate::{chain, Capabilities};
+use crate::{chain, Capabilities, ReasonForBan};
 
 use crate::msg::{
-	ArchiveHeaderData, Consumed, Headers, Message, Msg, OutputBitmapSegmentResponse,
-	OutputSegmentResponse, PeerAddrs, PibdSyncState, Pong, SegmentRequest, SegmentResponse,
-	TxHashSetArchive, Type,
+	ArchiveHeaderData, Consumed, Headers, HeadersHashSegmentResponse, Message, Msg,
+	OutputBitmapSegmentResponse, OutputSegmentResponse, PeerAddrs, PibdSyncState, Pong,
+	SegmentRequest, SegmentResponse, StartHeadersHashResponse, TxHashSetArchive, Type,
 };
-use crate::peer::PeerPibdStatus;
 use crate::serv::Server;
-use crate::types::{AttachmentMeta, Error, NetAdapter, PeerAddr, PeerAddr::Onion, PeerInfo};
-use chrono::prelude::Utc;
-use mwc_core::core::hash::Hash;
-use mwc_util::Mutex;
-use rand::{thread_rng, Rng};
-use std::fs::{self, File};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::types::{Error, NetAdapter, PeerAddr, PeerAddr::Onion, PeerInfo};
 use std::sync::Arc;
 
 pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
-	state_sync_requested: Arc<AtomicBool>,
 	server: Server,
-	pibd_status: Arc<Mutex<PeerPibdStatus>>,
 }
 
 impl Protocol {
-	pub fn new(
-		adapter: Arc<dyn NetAdapter>,
-		peer_info: PeerInfo,
-		state_sync_requested: Arc<AtomicBool>,
-		server: Server,
-		pibd_status: Arc<Mutex<PeerPibdStatus>>,
-	) -> Protocol {
+	pub fn new(adapter: Arc<dyn NetAdapter>, peer_info: PeerInfo, server: Server) -> Protocol {
 		Protocol {
 			adapter,
 			peer_info,
-			state_sync_requested,
 			server,
-			pibd_status,
 		}
-	}
-
-	fn report_pibd_response(&self, success: bool) {
-		if success {
-			let mut pibd_status = self.pibd_status.lock();
-			pibd_status.no_response_requests = 0;
-			pibd_status.no_response_time = None;
-		}
-	}
-
-	fn get_peer_output_bitmap_root(&self) -> Option<Hash> {
-		let pibd_status = self.pibd_status.lock();
-		pibd_status.output_bitmap_root.clone()
 	}
 }
 
@@ -79,7 +49,7 @@ impl MessageHandler for Protocol {
 		// If we received a msg from a banned peer then log and drop it.
 		// If we are getting a lot of these then maybe we are not cleaning
 		// banned peers up correctly?
-		if adapter.is_banned(self.peer_info.addr.clone()) {
+		if adapter.is_banned(&self.peer_info.addr) {
 			debug!(
 				"handler: consume: peer {:?} banned, received: {}, dropping.",
 				self.peer_info.addr, message,
@@ -88,44 +58,18 @@ impl MessageHandler for Protocol {
 		}
 
 		let consumed = match message {
-			Message::Attachment(update, _) => {
-				self.adapter.txhashset_download_update(
-					update.meta.start_time,
-					(update.meta.size - update.left) as u64,
-					update.meta.size as u64,
+			Message::Attachment(_update, _) => {
+				error!("handle_payload: Message::Attachment received but we never requested it. It is disabled in this version of node");
+				adapter.ban_peer(
+					&self.peer_info.addr,
+					ReasonForBan::BadRequest,
+					"Message::Attachment received but we never requested it",
 				);
-
-				if update.left == 0 {
-					let meta = update.meta;
-					trace!(
-						"handle_payload: txhashset archive save to file {:?} success",
-						meta.path,
-					);
-
-					let zip = File::open(meta.path.clone())?;
-					let res =
-						self.adapter
-							.txhashset_write(meta.hash.clone(), zip, &self.peer_info)?;
-
-					info!(
-						"handle_payload: txhashset archive for {} at {}, DONE. Data Ok: {}",
-						meta.hash, meta.height, !res
-					);
-
-					if let Err(e) = fs::remove_file(meta.path.clone()) {
-						warn!("fail to remove tmp file: {:?}. err: {}", meta.path, e);
-					}
-				}
-
-				Consumed::None
+				return Err(Error::BadMessage);
 			}
 
 			Message::Ping(ping) => {
-				adapter.peer_difficulty(
-					self.peer_info.addr.clone(),
-					ping.total_difficulty,
-					ping.height,
-				);
+				adapter.peer_difficulty(&self.peer_info.addr, ping.total_difficulty, ping.height);
 				Consumed::Response(Msg::new(
 					Type::Pong,
 					Pong {
@@ -137,11 +81,7 @@ impl MessageHandler for Protocol {
 			}
 
 			Message::Pong(pong) => {
-				adapter.peer_difficulty(
-					self.peer_info.addr.clone(),
-					pong.total_difficulty,
-					pong.height,
-				);
+				adapter.peer_difficulty(&self.peer_info.addr, pong.total_difficulty, pong.height);
 				Consumed::None
 			}
 
@@ -220,11 +160,11 @@ impl MessageHandler for Protocol {
 
 				let new_peer_addr = PeerAddr::Onion(tor_address.address.clone());
 				error!("new peer = {:?}", new_peer_addr);
-				if self.server.peers.is_banned(new_peer_addr.clone()) {
-					let peer = self.server.peers.get_peer(self.peer_info.addr.clone())?;
+				if self.server.peers.is_banned(&new_peer_addr) {
+					let peer = self.server.peers.get_peer(&self.peer_info.addr)?;
 					warn!("banned peer tried to connect! {:?}", peer);
 				} else {
-					let peer = self.server.peers.get_peer(self.peer_info.addr.clone());
+					let peer = self.server.peers.get_peer(&self.peer_info.addr);
 					if peer.is_ok() {
 						let mut peer = peer.unwrap();
 						peer.addr = new_peer_addr;
@@ -254,7 +194,7 @@ impl MessageHandler for Protocol {
 			}
 
 			Message::Headers(data) => {
-				adapter.headers_received(&data.headers, &self.peer_info)?;
+				adapter.headers_received(&data.headers, data.remaining, &self.peer_info)?;
 				Consumed::None
 			}
 
@@ -339,49 +279,122 @@ impl MessageHandler for Protocol {
 				}
 			}
 
-			Message::TxHashSetArchive(sm_arch) => {
-				info!(
-					"handle_payload: txhashset archive for {} at {}. size={}",
-					sm_arch.hash, sm_arch.height, sm_arch.bytes,
+			Message::TxHashSetArchive(_sm_arch) => {
+				error!("handle_payload: txhashset archive received but we never requested it. It is disabled in this version of node");
+				adapter.ban_peer(
+					&self.peer_info.addr,
+					ReasonForBan::BadRequest,
+					"txhashset archive received but we never requested it",
 				);
-				if !self.adapter.txhashset_receive_ready() {
-					error!(
-						"handle_payload: txhashset archive received but SyncStatus not on TxHashsetDownload",
-					);
-					return Err(Error::BadMessage);
+				return Err(Error::BadMessage);
+			}
+			Message::StartHeadersHashRequest(sm_req) => {
+				debug!(
+					"handle_payload: start Headers Hash request for archive hegiht {}",
+					sm_req.archive_height
+				);
+				match self.adapter.prepare_segmenter() {
+					Ok(segmenter) => {
+						let header = segmenter.header();
+						if header.height == sm_req.archive_height {
+							Consumed::Response(Msg::new(
+								Type::StartHeadersHashResponse,
+								&StartHeadersHashResponse {
+									archive_height: header.height,
+									headers_root_hash: segmenter.headers_root()?,
+								},
+								self.peer_info.version,
+							)?)
+						} else {
+							Consumed::Response(Msg::new(
+								Type::HasAnotherArchiveHeader,
+								&ArchiveHeaderData {
+									height: header.height,
+									hash: header.hash(),
+								},
+								self.peer_info.version,
+							)?)
+						}
+					}
+					Err(e) => {
+						warn!(
+							"Unable to prepare segmented Headers Hash request {}. Error: {}",
+							sm_req.archive_height, e
+						);
+						Consumed::None
+					}
 				}
-				if !self.state_sync_requested.load(Ordering::Relaxed) {
-					error!("handle_payload: txhashset archive received but from the wrong peer",);
-					return Err(Error::BadMessage);
+			}
+			Message::StartHeadersHashResponse(sm_req) => {
+				let StartHeadersHashResponse {
+					archive_height,
+					headers_root_hash,
+				} = sm_req;
+				debug!(
+					"Received Headers Hash Response for {}, {}",
+					archive_height, headers_root_hash
+				);
+
+				adapter.receive_headers_hash_response(
+					&self.peer_info.addr,
+					archive_height,
+					headers_root_hash,
+				)?;
+				Consumed::None
+			}
+			Message::GetHeadersHashesSegment(req) => {
+				let SegmentRequest {
+					block_hash: header_hashes_root,
+					identifier,
+				} = req;
+
+				match self
+					.adapter
+					.get_header_hashes_segment(header_hashes_root, identifier)
+				{
+					Ok(segment) => Consumed::Response(Msg::new(
+						Type::OutputHeadersHashesSegment,
+						HeadersHashSegmentResponse {
+							headers_root_hash: header_hashes_root,
+							response: SegmentResponse {
+								block_hash: header_hashes_root,
+								segment,
+							},
+						},
+						self.peer_info.version,
+					)?),
+					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+						Consumed::Response(Msg::new(
+							Type::HasAnotherArchiveHeader,
+							&ArchiveHeaderData {
+								height: height,
+								hash: hash,
+							},
+							self.peer_info.version,
+						)?)
+					}
+					Err(e) => {
+						warn!("Failed to process GetHeadersHashesSegment for header_hashes_root={} and identifier={:?}. Error: {}", header_hashes_root, identifier, e);
+						Consumed::None
+					}
 				}
-				// Update the sync state requested status
-				self.state_sync_requested.store(false, Ordering::Relaxed);
-
-				let start_time = Utc::now();
-				self.adapter
-					.txhashset_download_update(start_time, 0, sm_arch.bytes);
-
-				let nonce: u32 = thread_rng().gen_range(0, 1_000_000);
-				let path = self.adapter.get_tmpfile_pathname(format!(
-					"txhashset-{}-{}.zip",
-					start_time.timestamp(),
-					nonce
-				));
-
-				let file = fs::OpenOptions::new()
-					.write(true)
-					.create_new(true)
-					.open(path.clone())?;
-
-				let meta = AttachmentMeta {
-					size: sm_arch.bytes as usize,
-					hash: sm_arch.hash,
-					height: sm_arch.height,
-					start_time,
-					path,
-				};
-
-				Consumed::Attachment(Arc::new(meta), file)
+			}
+			Message::OutputHeadersHashesSegment(req) => {
+				let HeadersHashSegmentResponse {
+					headers_root_hash,
+					response,
+				} = req;
+				debug!(
+					"Received Headers Hash Segment: {}, {}",
+					headers_root_hash,
+					response.segment.id()
+				);
+				self.adapter.receive_header_hashes_segment(
+					&self.peer_info.addr,
+					headers_root_hash,
+					response.segment.into(),
+				)?;
+				Consumed::None
 			}
 			Message::StartPibdSyncRequest(sm_req) => {
 				debug!(
@@ -553,16 +566,13 @@ impl MessageHandler for Protocol {
 				}
 			}
 			Message::PibdSyncState(req) => {
-				self.report_pibd_response(true);
 				debug!("Received PibdSyncState from peer {:?}. Header height={}, output_bitmap_root={}", self.peer_info.addr, req.header_height, req.output_bitmap_root);
-				{
-					let mut status = self.pibd_status.lock();
-					status.update_pibd_status(
-						req.header_hash,
-						req.header_height,
-						Some(req.output_bitmap_root),
-					);
-				}
+				self.adapter.recieve_pibd_status(
+					&self.peer_info.addr,
+					req.header_hash,
+					req.header_height,
+					req.output_bitmap_root,
+				)?;
 				Consumed::None
 			}
 			Message::HasAnotherArchiveHeader(req) => {
@@ -570,8 +580,11 @@ impl MessageHandler for Protocol {
 					"Received HasAnotherArchiveHeader from peer {:?}. Has header at height {}",
 					self.peer_info.addr, req.height
 				);
-				let mut status = self.pibd_status.lock();
-				status.update_pibd_status(req.hash, req.height, None);
+				self.adapter.recieve_another_archive_header(
+					&self.peer_info.addr,
+					req.hash,
+					req.height,
+				)?;
 				Consumed::None
 			}
 			Message::OutputBitmapSegment(req) => {
@@ -579,33 +592,26 @@ impl MessageHandler for Protocol {
 					block_hash,
 					segment,
 				} = req;
-				debug!("Received Output Bitmap Segment: bh: {}", block_hash);
+				debug!(
+					"Received Output Bitmap Segment: bh: {}, segment {}",
+					block_hash, segment.identifier
+				);
 
-				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
-					adapter
-						.receive_bitmap_segment(block_hash, output_bitmap_root, segment.into())
-						.and_then(|ok| {
-							self.report_pibd_response(ok);
-							Ok(ok)
-						})?;
-				}
+				adapter.receive_bitmap_segment(&self.peer_info.addr, block_hash, segment.into())?;
 				Consumed::None
 			}
 			Message::OutputSegment(req) => {
 				let OutputSegmentResponse { response } = req;
-				debug!("Received Output Segment: bh, {}", response.block_hash,);
-				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
-					adapter
-						.receive_output_segment(
-							response.block_hash,
-							output_bitmap_root,
-							response.segment.into(),
-						)
-						.and_then(|ok| {
-							self.report_pibd_response(ok);
-							Ok(ok)
-						})?;
-				}
+				debug!(
+					"Received Output Segment: bh {}, {}",
+					response.block_hash,
+					response.segment.id()
+				);
+				adapter.receive_output_segment(
+					&self.peer_info.addr,
+					response.block_hash,
+					response.segment,
+				)?;
 				Consumed::None
 			}
 			Message::RangeProofSegment(req) => {
@@ -613,15 +619,12 @@ impl MessageHandler for Protocol {
 					block_hash,
 					segment,
 				} = req;
-				debug!("Received Rangeproof Segment: bh: {}", block_hash);
-				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
-					adapter
-						.receive_rangeproof_segment(block_hash, output_bitmap_root, segment.into())
-						.and_then(|ok| {
-							self.report_pibd_response(ok);
-							Ok(ok)
-						})?;
-				}
+				debug!(
+					"Received Rangeproof Segment: bh {}, {}",
+					block_hash,
+					segment.id()
+				);
+				adapter.receive_rangeproof_segment(&self.peer_info.addr, block_hash, segment)?;
 				Consumed::None
 			}
 			Message::KernelSegment(req) => {
@@ -629,15 +632,12 @@ impl MessageHandler for Protocol {
 					block_hash,
 					segment,
 				} = req;
-				debug!("Received Kernel Segment: bh: {}", block_hash);
-				if let Some(output_bitmap_root) = self.get_peer_output_bitmap_root() {
-					adapter
-						.receive_kernel_segment(block_hash, output_bitmap_root, segment.into())
-						.and_then(|ok| {
-							self.report_pibd_response(ok);
-							Ok(ok)
-						})?;
-				}
+				debug!(
+					"Received Kernel Segment: bh {}, {}",
+					block_hash,
+					segment.id()
+				);
+				adapter.receive_kernel_segment(&self.peer_info.addr, block_hash, segment)?;
 				Consumed::None
 			}
 			Message::Unknown(_) => Consumed::None,

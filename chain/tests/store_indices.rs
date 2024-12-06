@@ -50,8 +50,8 @@ fn test_store_indices() {
 
 		{
 			// Start a new batch and delete the block.
-			let store = chain.store();
-			let batch = store.batch().unwrap();
+			let store = chain.get_store_for_tests();
+			let batch = store.batch_write().unwrap();
 			assert!(batch.delete_block(&block_hash).is_ok());
 
 			// Block is deleted within this batch.

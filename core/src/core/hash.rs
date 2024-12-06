@@ -18,7 +18,7 @@
 //! Primary hash function used in the protocol
 //!
 
-use crate::ser::{self, Error, ProtocolVersion, Readable, Reader, Writeable, Writer};
+use crate::ser::{self, Error, PMMRable, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use blake2::blake2b::Blake2b;
 use byteorder::{BigEndian, ByteOrder};
 use std::{cmp::min, convert::AsRef, fmt, ops};
@@ -46,6 +46,18 @@ impl fmt::Debug for Hash {
 impl fmt::Display for Hash {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		fmt::Debug::fmt(self, f)
+	}
+}
+
+impl PMMRable for Hash {
+	type E = Self;
+
+	fn as_elmt(&self) -> Self::E {
+		self.clone()
+	}
+
+	fn elmt_size() -> Option<u16> {
+		Some(Hash::LEN as u16)
 	}
 }
 

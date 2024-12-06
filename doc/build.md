@@ -115,7 +115,7 @@ You can bind-mount your mwc cache to run inside the container.
 ```sh
 docker run -it -d -v $HOME/.mwc:/root/.mwc mwc
 ```
-If you prefer to use a docker named volume, you can pass `-v dotmwc:/root/.mwc` instead.
+If you prefer to use a docker named volume, you can pass `-v .mwc:/root/.mwc` instead.
 Using a named volume copies default configurations upon volume creation.
 
 ## Cross-platform builds
@@ -134,7 +134,7 @@ troubleshooting, etc.
 ## Mining in MWC
 
 Please note that all mining functions for MWC have moved into a separate, standalone package called
-[mwc-miner](https://github.com/mwcproject/mwc-node-miner). Once your MWC code node is up and running,
+[mwc-miner](https://github.com/mwcproject/mwc-miner). Once your MWC code node is up and running,
 you can start mining by building and running mwc-miner against your running MWC node.
 
 For mwc-miner to be able to communicate with your MWC node, make sure that you have `enable_stratum_server = true`

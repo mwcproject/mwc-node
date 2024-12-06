@@ -24,6 +24,7 @@ use crate::core::hash::Hash;
 use crate::global;
 use crate::pow::Difficulty;
 use std::cmp::{max, min};
+use std::collections::VecDeque;
 
 /// A mwc is divisible to 10^9, following the SI prefixes
 pub const MWC_BASE: u64 = 1_000_000_000;
@@ -264,6 +265,8 @@ pub const INITIAL_DIFFICULTY: u64 = 1_000_000 * UNIT_DIFFICULTY;
 /// the header's PoW proof nonces from being deserialized on read
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeaderDifficultyInfo {
+	/// Height if this block
+	pub height: u64,
 	/// Hash of this block
 	pub hash: Option<Hash>,
 	/// Timestamp of the header, 1 when not used (returned info)
@@ -279,6 +282,7 @@ pub struct HeaderDifficultyInfo {
 impl HeaderDifficultyInfo {
 	/// Default constructor
 	pub fn new(
+		height: u64,
 		hash: Option<Hash>,
 		timestamp: u64,
 		difficulty: Difficulty,
@@ -286,6 +290,7 @@ impl HeaderDifficultyInfo {
 		is_secondary: bool,
 	) -> HeaderDifficultyInfo {
 		HeaderDifficultyInfo {
+			height,
 			hash,
 			timestamp,
 			difficulty,
@@ -298,6 +303,7 @@ impl HeaderDifficultyInfo {
 	/// PoW factor
 	pub fn from_ts_diff(timestamp: u64, difficulty: Difficulty) -> HeaderDifficultyInfo {
 		HeaderDifficultyInfo {
+			height: 0,
 			hash: None,
 			timestamp,
 			difficulty,
@@ -314,6 +320,7 @@ impl HeaderDifficultyInfo {
 		secondary_scaling: u32,
 	) -> HeaderDifficultyInfo {
 		HeaderDifficultyInfo {
+			height: 0,
 			hash: None,
 			timestamp: 1,
 			difficulty,
@@ -346,7 +353,11 @@ pub fn clamp(actual: u64, goal: u64, clamp_factor: u64) -> u64 {
 ///
 /// The secondary proof-of-work factor is calculated along the same lines, as
 /// an adjustment on the deviation against the ideal value.
-pub fn next_difficulty<T>(height: u64, cursor: T) -> HeaderDifficultyInfo
+pub fn next_difficulty<T>(
+	height: u64,
+	cursor: T,
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+) -> HeaderDifficultyInfo
 where
 	T: IntoIterator<Item = HeaderDifficultyInfo>,
 {
@@ -354,7 +365,7 @@ where
 	// to latest, and pad with simulated pre-genesis data to allow earlier
 	// adjustment if there isn't enough window data length will be
 	// DIFFICULTY_ADJUST_WINDOW + 1 (for initial block time bound)
-	let diff_data = global::difficulty_data_to_vector(cursor);
+	let diff_data = global::difficulty_data_to_vector(cursor, cache_values);
 
 	// First, get the ratio of secondary PoW vs primary, skipping initial header
 	let sec_pow_scaling = secondary_pow_scaling(height, &diff_data[1..]);

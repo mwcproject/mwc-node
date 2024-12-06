@@ -34,6 +34,7 @@ use crate::{rest::*, BlockListing};
 use crate::{Libp2pMessages, Libp2pPeers};
 use chrono::Utc;
 use mwc_p2p::libp2p_connection;
+use mwc_util::secp::Secp256k1;
 use std::sync::Weak;
 
 /// Main interface into all node API functions.
@@ -380,12 +381,17 @@ where
 	/// * `Ok(())` if the transaction was pushed successfully
 	/// * or [`Error`](struct.Error.html) if an error is encountered.
 	///
-	pub fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
+	pub fn push_transaction(
+		&self,
+		tx: Transaction,
+		fluff: Option<bool>,
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
 		let tx_hash = tx.hash();
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
-		pool_handler.push_transaction(tx, fluff).map_err(|e| {
+		pool_handler.push_transaction(tx, fluff, secp).map_err(|e| {
 			warn!(
 				"Unable to push transaction {} into the pool, {}",
 				tx_hash, e

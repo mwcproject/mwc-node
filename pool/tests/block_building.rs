@@ -68,18 +68,48 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 
 	{
 		// Add the three root txs to the pool.
-		pool.add_to_pool(test_source(), root_tx_1.clone(), false, &header)?;
-		pool.add_to_pool(test_source(), root_tx_2.clone(), false, &header)?;
-		pool.add_to_pool(test_source(), root_tx_3.clone(), false, &header)?;
+		pool.add_to_pool(
+			test_source(),
+			root_tx_1.clone(),
+			false,
+			&header,
+			chain.secp(),
+		)?;
+		pool.add_to_pool(
+			test_source(),
+			root_tx_2.clone(),
+			false,
+			&header,
+			chain.secp(),
+		)?;
+		pool.add_to_pool(
+			test_source(),
+			root_tx_3.clone(),
+			false,
+			&header,
+			chain.secp(),
+		)?;
 
 		// Now add the two child txs to the pool.
-		pool.add_to_pool(test_source(), child_tx_1.clone(), false, &header)?;
-		pool.add_to_pool(test_source(), child_tx_2.clone(), false, &header)?;
+		pool.add_to_pool(
+			test_source(),
+			child_tx_1.clone(),
+			false,
+			&header,
+			chain.secp(),
+		)?;
+		pool.add_to_pool(
+			test_source(),
+			child_tx_2.clone(),
+			false,
+			&header,
+			chain.secp(),
+		)?;
 
 		assert_eq!(pool.total_size(), 5);
 	}
 
-	let txs = pool.prepare_mineable_transactions()?;
+	let txs = pool.prepare_mineable_transactions(chain.secp())?;
 
 	add_block(&chain, &txs, &keychain);
 
@@ -100,7 +130,7 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 	// Now reconcile the transaction pool with the new block
 	// and check the resulting contents of the pool are what we expect.
 	{
-		pool.reconcile_block(&block)?;
+		pool.reconcile_block(&block, chain.secp())?;
 		assert_eq!(pool.total_size(), 0);
 	}
 

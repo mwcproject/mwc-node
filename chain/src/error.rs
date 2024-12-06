@@ -202,6 +202,27 @@ pub enum Error {
 	/// Invalid bitmap root hash. Probably old traffic or somebody attacking as
 	#[error("Invalid bitmap root hash")]
 	InvalidBitmapRoot,
+	/// Outputs bitmaps is not ready
+	#[error("Outputs bitmap is not build yet")]
+	BitmapNotReady,
+	/// Invalid headers root hash. Probably old traffic or somebody attacking as
+	#[error("Invalid headers root hash")]
+	InvalidHeadersRoot,
+	/// Invalid segment height.
+	#[error("Invalid segment height")]
+	InvalidSegmentHeght,
+	/// Invalid genesis hash.
+	#[error("Invalid genesis hash")]
+	InvalidGenesisHash,
+	/// Desegmenter creation error
+	#[error("Unable to create desegmenter, {0}")]
+	DesegmenterCreationError(String),
+	/// Invalid series of blocks.
+	#[error("Invalid series of blocks, {0}")]
+	InvalidBlocksSeries(String),
+	/// Chain is in sync mode
+	#[error("Chain is in sync mode")]
+	ChainInSync,
 }
 
 impl Error {

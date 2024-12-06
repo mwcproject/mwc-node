@@ -16,29 +16,35 @@
 //! Manages the reconsitution of a txhashset from segments produced by the
 //! segmenter
 
-use std::sync::Arc;
-
 use crate::core::core::hash::{Hash, Hashed};
-use crate::core::core::{pmmr, pmmr::ReadablePMMR};
+use crate::core::core::pmmr;
 use crate::core::core::{
 	BlockHeader, BlockSums, OutputIdentifier, Segment, SegmentIdentifier, SegmentType,
 	SegmentTypeIdentifier, TxKernel,
 };
 use crate::error::Error;
-use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
-use crate::types::{Tip, TxHashsetWriteStatus};
-use crate::util::secp::pedersen::RangeProof;
-use crate::util::{RwLock, StopState};
-use crate::SyncState;
-
-use crate::pibd_params;
 use crate::store;
 use crate::txhashset;
+use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
+use crate::types::Tip;
+use crate::util::secp::pedersen::RangeProof;
+use crate::util::{RwLock, StopState};
+use crate::{Chain, SyncState, SyncStatus};
+use std::cmp;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
+use crate::pibd_params::PibdParams;
+use crate::txhashset::segments_cache::SegmentsCache;
 use croaring::Bitmap;
+use log::Level;
+use mwc_util::secp::Secp256k1;
+use tokio::runtime::Builder;
+use tokio::task;
 
 /// Desegmenter for rebuilding a txhashset from PIBD segments
-#[derive(Clone)]
+/// Note!!! header_pmmr, txhashset & store are from the Chain. Same locking rules are applicable
 pub struct Desegmenter {
 	txhashset: Arc<RwLock<TxHashSet>>,
 	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
@@ -48,27 +54,17 @@ pub struct Desegmenter {
 
 	genesis: BlockHeader,
 
-	default_bitmap_segment_height: u8,
-	default_output_segment_height: u8,
-	default_rangeproof_segment_height: u8,
-	default_kernel_segment_height: u8,
-
-	bitmap_accumulator: BitmapAccumulator,
-	bitmap_segment_cache: Vec<Segment<BitmapChunk>>,
-	output_segment_cache: Vec<Segment<OutputIdentifier>>,
-	rangeproof_segment_cache: Vec<Segment<RangeProof>>,
-	kernel_segment_cache: Vec<Segment<TxKernel>>,
-
-	bitmap_mmr_leaf_count: u64,
-	bitmap_mmr_size: u64,
-
+	outputs_bitmap_accumulator: Arc<RwLock<BitmapAccumulator>>,
+	outputs_bitmap_mmr_size: u64,
 	/// In-memory 'raw' bitmap corresponding to contents of bitmap accumulator
-	bitmap_cache: Option<Bitmap>,
+	outputs_bitmap: Option<Bitmap>,
 
-	/// Flag indicating there are no more segments to request
-	all_segments_complete: bool,
+	bitmap_segment_cache: SegmentsCache<BitmapChunk>,
+	output_segment_cache: SegmentsCache<OutputIdentifier>,
+	rangeproof_segment_cache: SegmentsCache<RangeProof>,
+	kernel_segment_cache: SegmentsCache<TxKernel>,
 
-	latest_block_height: u64,
+	pibd_params: Arc<PibdParams>,
 }
 
 impl Desegmenter {
@@ -80,54 +76,79 @@ impl Desegmenter {
 		bitmap_root_hash: Hash,
 		genesis: BlockHeader,
 		store: Arc<store::ChainStore>,
+		pibd_params: Arc<PibdParams>,
 	) -> Desegmenter {
 		info!(
 			"Creating new desegmenter for bitmap_root_hash {}, height {}",
 			bitmap_root_hash, archive_header.height
 		);
-		let mut retval = Desegmenter {
+
+		let bitmap_mmr_size = Self::calc_bitmap_mmr_size(&archive_header);
+
+		let total_bitmap_segment_count = SegmentIdentifier::count_segments_required(
+			bitmap_mmr_size,
+			pibd_params.get_bitmap_segment_height(),
+		);
+
+		let total_outputs_segment_count = SegmentIdentifier::count_segments_required(
+			archive_header.output_mmr_size,
+			pibd_params.get_output_segment_height(),
+		);
+
+		let total_rangeproof_segment_count = SegmentIdentifier::count_segments_required(
+			archive_header.output_mmr_size,
+			pibd_params.get_rangeproof_segment_height(),
+		);
+
+		let total_kernel_segment_count = SegmentIdentifier::count_segments_required(
+			archive_header.kernel_mmr_size,
+			pibd_params.get_kernel_segment_height(),
+		);
+
+		Desegmenter {
 			txhashset,
 			header_pmmr,
 			archive_header,
 			bitmap_root_hash,
 			store,
 			genesis,
-			bitmap_accumulator: BitmapAccumulator::new(),
-			default_bitmap_segment_height: pibd_params::BITMAP_SEGMENT_HEIGHT,
-			default_output_segment_height: pibd_params::OUTPUT_SEGMENT_HEIGHT,
-			default_rangeproof_segment_height: pibd_params::RANGEPROOF_SEGMENT_HEIGHT,
-			default_kernel_segment_height: pibd_params::KERNEL_SEGMENT_HEIGHT,
-			bitmap_segment_cache: vec![],
-			output_segment_cache: vec![],
-			rangeproof_segment_cache: vec![],
-			kernel_segment_cache: vec![],
+			outputs_bitmap_accumulator: Arc::new(RwLock::new(BitmapAccumulator::new())),
+			outputs_bitmap_mmr_size: bitmap_mmr_size,
+			bitmap_segment_cache: SegmentsCache::new(
+				SegmentType::Bitmap,
+				total_bitmap_segment_count,
+			),
+			output_segment_cache: SegmentsCache::new(
+				SegmentType::Output,
+				total_outputs_segment_count,
+			),
+			rangeproof_segment_cache: SegmentsCache::new(
+				SegmentType::RangeProof,
+				total_rangeproof_segment_count,
+			),
+			kernel_segment_cache: SegmentsCache::new(
+				SegmentType::Kernel,
+				total_kernel_segment_count,
+			),
 
-			bitmap_mmr_leaf_count: 0,
-			bitmap_mmr_size: 0,
+			outputs_bitmap: None,
+			pibd_params,
+		}
+	}
 
-			bitmap_cache: None,
-
-			all_segments_complete: false,
-
-			latest_block_height: 0,
-		};
-		retval.calc_bitmap_mmr_sizes();
-		retval
+	/// Access to root hash
+	pub fn get_bitmap_root_hash(&self) -> &Hash {
+		&self.bitmap_root_hash
 	}
 
 	/// Reset all state
 	pub fn reset(&mut self) {
-		self.all_segments_complete = false;
-		self.bitmap_segment_cache = vec![];
-		self.output_segment_cache = vec![];
-		self.rangeproof_segment_cache = vec![];
-		self.kernel_segment_cache = vec![];
-		self.bitmap_mmr_leaf_count = 0;
-		self.bitmap_mmr_size = 0;
-		self.bitmap_cache = None;
-		self.bitmap_accumulator = BitmapAccumulator::new();
-		self.latest_block_height = 0;
-		self.calc_bitmap_mmr_sizes();
+		self.bitmap_segment_cache.reset();
+		self.output_segment_cache.reset();
+		self.rangeproof_segment_cache.reset();
+		self.kernel_segment_cache.reset();
+		self.outputs_bitmap = None;
+		self.outputs_bitmap_accumulator = Arc::new(RwLock::new(BitmapAccumulator::new()));
 	}
 
 	/// Return reference to the header used for validation
@@ -135,82 +156,33 @@ impl Desegmenter {
 		&self.archive_header
 	}
 
-	/// Return size of bitmap mmr
-	pub fn expected_bitmap_mmr_size(&self) -> u64 {
-		self.bitmap_mmr_size
-	}
-
 	/// Whether we have all the segments we need
 	pub fn is_complete(&self) -> bool {
-		self.all_segments_complete
+		self.output_segment_cache.is_complete()
+			&& self.rangeproof_segment_cache.is_complete()
+			&& self.kernel_segment_cache.is_complete()
 	}
 
 	/// Check progress, update status if needed, returns true if all required
 	/// segments are in place
-	pub fn check_progress(&mut self, status: Arc<SyncState>) -> Result<bool, Error> {
-		let local_output_mmr_size;
-		let local_kernel_mmr_size;
-		let local_rangeproof_mmr_size;
-		{
-			let txhashset = self.txhashset.read();
-			local_output_mmr_size = txhashset.output_mmr_size();
-			local_kernel_mmr_size = txhashset.kernel_mmr_size();
-			local_rangeproof_mmr_size = txhashset.rangeproof_mmr_size();
+	pub fn get_pibd_progress(&self) -> SyncStatus {
+		let required = self.bitmap_segment_cache.get_required_segments()
+			+ self.output_segment_cache.get_required_segments()
+			+ self.rangeproof_segment_cache.get_required_segments()
+			+ self.kernel_segment_cache.get_required_segments();
+
+		let received = self.bitmap_segment_cache.get_received_segments()
+			+ self.output_segment_cache.get_received_segments()
+			+ self.rangeproof_segment_cache.get_received_segments()
+			+ self.kernel_segment_cache.get_received_segments();
+
+		// Expected by QT wallet
+		info!("PIBD sync progress: {} from {}", received, required);
+
+		SyncStatus::TxHashsetPibd {
+			recieved_segments: received,
+			total_segments: required,
 		}
-
-		// going to try presenting PIBD progress as total leaves downloaded
-		// total segments probably doesn't make much sense since the segment
-		// sizes will be able to change over time, and representative block height
-		// can be too lopsided if one pmmr completes faster, so perhaps just
-		// use total leaves downloaded and display as a percentage
-		let completed_leaves = pmmr::n_leaves(local_output_mmr_size)
-			+ pmmr::n_leaves(local_rangeproof_mmr_size)
-			+ pmmr::n_leaves(local_kernel_mmr_size);
-
-		// Find latest 'complete' header.
-		// First take lesser of rangeproof and output mmr sizes
-		let latest_output_size = std::cmp::min(local_output_mmr_size, local_rangeproof_mmr_size);
-
-		// Find first header in which 'output_mmr_size' and 'kernel_mmr_size' are greater than
-		// given sizes
-
-		let res = {
-			let header_pmmr = self.header_pmmr.read();
-			header_pmmr.get_first_header_with(
-				latest_output_size,
-				local_kernel_mmr_size,
-				self.latest_block_height,
-				self.store.clone(),
-			)
-		};
-
-		if let Some(h) = res {
-			self.latest_block_height = h.height;
-
-			// TODO: Unwraps
-			let tip = Tip::from_header(&h);
-			let batch = self.store.batch()?;
-			batch.save_pibd_head(&tip)?;
-			batch.commit()?;
-
-			status.update_pibd_progress(
-				false,
-				false,
-				completed_leaves,
-				self.latest_block_height,
-				&self.archive_header,
-			);
-			if local_kernel_mmr_size == self.archive_header.kernel_mmr_size
-				&& local_output_mmr_size == self.archive_header.output_mmr_size
-				&& local_rangeproof_mmr_size == self.archive_header.output_mmr_size
-				&& self.bitmap_cache.is_some()
-			{
-				// All is complete
-				return Ok(true);
-			}
-		}
-
-		Ok(false)
 	}
 
 	/// Once the PIBD set is downloaded, we need to ensure that the respective leaf sets
@@ -218,10 +190,10 @@ impl Desegmenter {
 	pub fn check_update_leaf_set_state(&self) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let mut _batch = self.store.batch()?;
+		let mut _batch = self.store.batch_write()?;
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut _batch, |ext, _| {
 			let extension = &mut ext.extension;
-			if let Some(b) = &self.bitmap_cache {
+			if let Some(b) = &self.outputs_bitmap {
 				extension.update_leaf_sets(&b)?;
 			}
 			Ok(())
@@ -235,6 +207,7 @@ impl Desegmenter {
 		&self,
 		status: Arc<SyncState>,
 		stop_state: Arc<StopState>,
+		secp: &Secp256k1,
 	) -> Result<(), Error> {
 		// Quick root check first:
 		{
@@ -242,48 +215,97 @@ impl Desegmenter {
 			txhashset.roots()?.validate(&self.archive_header)?;
 		}
 
-		// TODO: Possibly Keep track of this in the DB so we can pick up where we left off if needed
-		let last_rangeproof_validation_pos = 0;
-
 		// Validate kernel history
 		{
-			debug!("desegmenter validation: rewinding and validating kernel history (readonly)");
-			let txhashset = self.txhashset.read();
-			let mut count = 0;
-			let mut current = self.archive_header.clone();
+			info!("desegmenter validation: rewinding and validating kernel history (readonly)");
+			let txhashset = self.txhashset.clone();
+			let current = self.archive_header.clone();
 			let total = current.height;
-			txhashset::rewindable_kernel_view(&txhashset, |view, batch| {
-				while current.height > 0 {
-					view.rewind(&current)?;
-					view.validate_root()?;
-					current = batch.get_previous_header(&current)?;
-					count += 1;
-					if current.height % 100000 == 0 || current.height == total {
-						status.on_setup(Some(total - current.height), Some(total), None, None);
-					}
-					if stop_state.is_stopped() {
-						return Ok(());
+
+			// Let's validate everything in multiple threads
+			let num_cores = num_cpus::get();
+			let mut runtime = Builder::new()
+				.threaded_scheduler()
+				.enable_all()
+				.core_threads(num_cores)
+				.build()
+				.unwrap();
+
+			runtime.block_on(async {
+				let mut handles = Vec::with_capacity(num_cores);
+				let processed = Arc::new(AtomicU64::new(0));
+				for thr_idx in 0..num_cores {
+					let start_height = current.height * (thr_idx + 1) as u64 / num_cores as u64;
+					let end_height = current.height * thr_idx as u64 / num_cores as u64;
+					let start_block_hash = self
+						.header_pmmr
+						.read()
+						.get_header_hash_by_height(start_height)?;
+					let start_block = self.txhashset.read().get_block_header(&start_block_hash)?;
+					let processed = processed.clone();
+					assert_eq!(start_block.height, start_height);
+					let txhashset = txhashset.clone();
+					let status = status.clone();
+					let stop_state = stop_state.clone();
+
+					let handle: tokio::task::JoinHandle<Result<(), Error>> =
+						task::spawn(async move {
+							// Process the chunk
+							txhashset::rewindable_kernel_view(&*txhashset.read(), |view, batch| {
+								let mut start_block = start_block.clone();
+								while start_block.height > end_height {
+									view.rewind(&start_block)?;
+									view.validate_root()?;
+									start_block = batch.get_previous_header(&start_block)?;
+									let processed = processed.fetch_add(1, Ordering::Relaxed);
+									if processed % 100000 == 0 || processed == total {
+										status.update(SyncStatus::TxHashsetHeadersValidation {
+											headers: processed,
+											headers_total: total,
+										});
+									}
+									if stop_state.is_stopped() {
+										return Ok(());
+									}
+								}
+								Ok(())
+							})
+						});
+					handles.push(handle);
+				}
+				for handle in handles {
+					match handle.await.expect("Tokio runtime failure") {
+						Ok(_) => {}
+						Err(e) => return Err(e),
 					}
 				}
+				debug!(
+					"desegmenter validation: validated kernel root on {} headers",
+					processed.load(Ordering::Relaxed)
+				);
+
 				Ok(())
 			})?;
-			debug!(
-				"desegmenter validation: validated kernel root on {} headers",
-				count,
-			);
 		}
 
 		if stop_state.is_stopped() {
 			return Ok(());
 		}
 
+		// Validate full kernel history.
 		// Check kernel MMR root for every block header.
 		// Check NRD relative height rules for full kernel history.
-
 		{
+			info!("desegmenter validation: validating kernel history");
+			// Note, locking order is: header_pmmr->txhashset->batch !!!
+			{
+				// validate_kernel_history is long operation, that is why let's lock txhashset twice.
+				let txhashset = self.txhashset.read();
+				Chain::validate_kernel_history(&self.archive_header, &txhashset)?;
+			}
 			let header_pmmr = self.header_pmmr.read();
 			let txhashset = self.txhashset.read();
-			let batch = self.store.batch()?;
+			let batch = self.store.batch_read()?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis,
 				&header_pmmr,
@@ -297,13 +319,12 @@ impl Desegmenter {
 			return Ok(());
 		}
 
-		status.on_setup(None, None, None, None);
 		// Prepare a new batch and update all the required records
 		{
-			debug!("desegmenter validation: rewinding a 2nd time (writeable)");
+			info!("desegmenter validation: rewinding a 2nd time (writeable)");
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
-			let mut batch = self.store.batch()?;
+			let mut batch = self.store.batch_write()?;
 			txhashset::extending(
 				&mut header_pmmr,
 				&mut txhashset,
@@ -317,11 +338,10 @@ impl Desegmenter {
 					let (utxo_sum, kernel_sum) = extension.validate(
 						&self.genesis,
 						false,
-						&*status,
-						Some(last_rangeproof_validation_pos),
-						None,
+						Some(status.clone()),
 						&self.archive_header,
 						Some(stop_state.clone()),
+						secp,
 					)?;
 
 					if stop_state.is_stopped() {
@@ -345,9 +365,7 @@ impl Desegmenter {
 				return Ok(());
 			}
 
-			debug!("desegmenter_validation: finished validating and rebuilding");
-			status.on_save();
-
+			info!("desegmenter_validation: finished validating and rebuilding");
 			{
 				// Save the new head to the db and rebuild the header by height index.
 				let tip = Tip::from_header(&self.archive_header);
@@ -367,554 +385,239 @@ impl Desegmenter {
 			// Commit all the changes to the db.
 			batch.commit()?;
 
-			debug!("desegmenter_validation: finished committing the batch (head etc.)");
-
-			status.on_done();
-		}
-		Ok(())
-	}
-
-	/// Apply next set of segments that are ready to be appended to their respective trees,
-	/// and kick off any validations that can happen.
-	pub fn apply_next_segments(&mut self) -> Result<(), Error> {
-		let next_bmp_idx = self.next_required_bitmap_segment_index();
-		if let Some(bmp_idx) = next_bmp_idx {
-			if let Some((idx, _seg)) = self
-				.bitmap_segment_cache
-				.iter()
-				.enumerate()
-				.find(|s| s.1.identifier().idx == bmp_idx)
-			{
-				self.apply_bitmap_segment(idx)?;
-			}
-		} else {
-			// Check if we need to finalize bitmap
-			if self.bitmap_cache == None {
-				// Should have all the pieces now, finalize the bitmap cache
-				self.finalize_bitmap()?;
-			}
-
-			// Check if we can apply the next output segment(s)
-			if let Some(next_output_idx) = self.next_required_output_segment_index() {
-				if let Some((idx, _seg)) = self
-					.output_segment_cache
-					.iter()
-					.enumerate()
-					.find(|s| s.1.identifier().idx == next_output_idx)
-				{
-					self.apply_output_segment(idx)?;
-				}
-			} else {
-				if !self.output_segment_cache.is_empty() {
-					self.output_segment_cache = vec![];
-				}
-			}
-			// Check if we can apply the next rangeproof segment
-			if let Some(next_rp_idx) = self.next_required_rangeproof_segment_index() {
-				if let Some((idx, _seg)) = self
-					.rangeproof_segment_cache
-					.iter()
-					.enumerate()
-					.find(|s| s.1.identifier().idx == next_rp_idx)
-				{
-					self.apply_rangeproof_segment(idx)?;
-				}
-			} else {
-				if !self.rangeproof_segment_cache.is_empty() {
-					self.rangeproof_segment_cache = vec![];
-				}
-			}
-			// Check if we can apply the next kernel segment
-			if let Some(next_kernel_idx) = self.next_required_kernel_segment_index() {
-				if let Some((idx, _seg)) = self
-					.kernel_segment_cache
-					.iter()
-					.enumerate()
-					.find(|s| s.1.identifier().idx == next_kernel_idx)
-				{
-					self.apply_kernel_segment(idx)?;
-				}
-			} else {
-				if !self.kernel_segment_cache.is_empty() {
-					self.kernel_segment_cache = vec![];
-				}
-			}
+			info!("desegmenter_validation: finished committing the batch (head etc.)");
 		}
 		Ok(())
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_segments(
+	pub fn next_desired_segments<V>(
 		&mut self,
-		max_elements: usize,
+		need_requests: usize,
+		requested: &HashMap<(SegmentType, u64), V>,
 	) -> Result<Vec<SegmentTypeIdentifier>, Error> {
-		let mut return_vec = vec![];
 		// First check for required bitmap elements
-		if self.bitmap_cache.is_none() {
-			// Get current size of bitmap MMR
-			let local_pmmr_size = self.bitmap_accumulator.readonly_pmmr().unpruned_size();
-			// Get iterator over expected bitmap elements
-			let mut identifier_iter = SegmentIdentifier::traversal_iter(
-				self.bitmap_mmr_size,
-				self.default_bitmap_segment_height,
-			);
-			// Advance iterator to next expected segment
-			let mut first_found = true;
-			let mut processed = 0;
-			while let Some(id) = identifier_iter.next() {
-				if id.segment_pos_range(self.bitmap_mmr_size).1 > local_pmmr_size {
-					if first_found {
-						self.bitmap_segment_cache
-							.retain(|segm| segm.id().idx >= id.idx);
-						first_found = false;
-					}
-					if !self.has_bitmap_segment_with_id(id) {
-						return_vec.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id));
-					}
-					processed += 1;
-					if processed > max_elements {
-						return Ok(return_vec);
-					}
-				}
+		if self.outputs_bitmap.is_none() {
+			debug_assert!(!self.bitmap_segment_cache.is_complete());
+			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
+			for id in self.bitmap_segment_cache.next_desired_segments(
+				self.pibd_params.get_bitmap_segment_height(),
+				need_requests,
+				requested,
+				self.pibd_params.get_bitmaps_buffer_len(),
+			) {
+				bitmap_result.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id))
 			}
+			return Ok(bitmap_result);
 		} else {
 			// We have all required bitmap segments and have recreated our local
 			// bitmap, now continue with other segments, evenly spreading requests
 			// among MMRs
-			let local_output_mmr_size;
-			let local_kernel_mmr_size;
-			let local_rangeproof_mmr_size;
-			{
-				let txhashset = self.txhashset.read();
-				local_output_mmr_size = txhashset.output_mmr_size();
-				local_kernel_mmr_size = txhashset.kernel_mmr_size();
-				local_rangeproof_mmr_size = txhashset.rangeproof_mmr_size();
+
+			let mut result: Vec<SegmentTypeIdentifier> = Vec::new();
+
+			let mut non_complete_num = 0;
+			if !self.output_segment_cache.is_complete() {
+				non_complete_num += 1;
 			}
-			// TODO: Fix, alternative approach, this is very inefficient
-			let mut output_identifier_iter = SegmentIdentifier::traversal_iter(
-				self.archive_header.output_mmr_size,
-				self.default_output_segment_height,
-			);
-
-			let mut elems_added = 0;
-			let mut first_found = true;
-			let mut processed = 0;
-			while let Some(output_id) = output_identifier_iter.next() {
-				// Advance output iterator to next needed position
-				let (_first, last) =
-					output_id.segment_pos_range(self.archive_header.output_mmr_size);
-				if last <= local_output_mmr_size {
-					continue;
-				}
-
-				if first_found {
-					// Let's clean up old expired items
-					self.output_segment_cache
-						.retain(|segm| segm.id().idx >= output_id.idx);
-					first_found = false;
-				}
-				if !self.has_output_segment_with_id(output_id) {
-					return_vec.push(SegmentTypeIdentifier::new(SegmentType::Output, output_id));
-					elems_added += 1;
-				}
-				processed += 1;
-				if processed > max_elements || elems_added == max_elements / 3 {
-					break;
-				}
+			if !self.rangeproof_segment_cache.is_complete() {
+				non_complete_num += 1;
+			}
+			if !self.kernel_segment_cache.is_complete() {
+				non_complete_num += 1;
+			}
+			if non_complete_num == 0 {
+				return Ok(result); // All done, nothing is needed
 			}
 
-			let mut rangeproof_identifier_iter = SegmentIdentifier::traversal_iter(
-				self.archive_header.output_mmr_size,
-				self.default_rangeproof_segment_height,
-			);
+			let max_elements = need_requests / non_complete_num;
+			let mut extra_for_first = need_requests % non_complete_num;
+			debug_assert!(max_elements + extra_for_first > 0);
 
-			elems_added = 0;
-			let mut first_found = true;
-			let mut processed = 0;
-			while let Some(rp_id) = rangeproof_identifier_iter.next() {
-				let (_first, last) = rp_id.segment_pos_range(self.archive_header.output_mmr_size);
-				// Advance rangeproof iterator to next needed position
-				if last <= local_rangeproof_mmr_size {
-					continue;
+			// Note, first requesting segments largest data items. Since item is large, the number of items per segment is low,
+			// so the number of segments is high.
+			if !self.rangeproof_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
+				for id in self.rangeproof_segment_cache.next_desired_segments(
+					self.pibd_params.get_rangeproof_segment_height(),
+					max_elements + cmp::min(1, extra_for_first),
+					requested,
+					self.pibd_params
+						.get_rangeproofs_buffer_len(non_complete_num),
+				) {
+					result.push(SegmentTypeIdentifier::new(SegmentType::RangeProof, id))
 				}
-				if first_found {
-					// Let's clean up old expired items
-					self.rangeproof_segment_cache
-						.retain(|segm| segm.id().idx >= rp_id.idx);
-					first_found = false;
+				extra_for_first = extra_for_first.saturating_sub(1);
+			}
+
+			if !self.kernel_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
+				debug_assert!(extra_for_first <= 1);
+				for id in self.kernel_segment_cache.next_desired_segments(
+					self.pibd_params.get_kernel_segment_height(),
+					max_elements + extra_for_first,
+					requested,
+					self.pibd_params.get_kernels_buffer_len(non_complete_num),
+				) {
+					result.push(SegmentTypeIdentifier::new(SegmentType::Kernel, id))
 				}
-				if !self.has_rangeproof_segment_with_id(rp_id) {
-					return_vec.push(SegmentTypeIdentifier::new(SegmentType::RangeProof, rp_id));
-					elems_added += 1;
-				}
-				processed += 1;
-				if processed > max_elements || elems_added == max_elements / 3 {
-					break;
+				extra_for_first = extra_for_first.saturating_sub(1);
+			}
+
+			if !self.output_segment_cache.is_complete() && max_elements + extra_for_first > 0 {
+				for id in self.output_segment_cache.next_desired_segments(
+					self.pibd_params.get_output_segment_height(),
+					max_elements + cmp::min(1, extra_for_first),
+					requested,
+					self.pibd_params.get_outputs_buffer_len(non_complete_num),
+				) {
+					result.push(SegmentTypeIdentifier::new(SegmentType::Output, id))
 				}
 			}
 
-			let mut kernel_identifier_iter = SegmentIdentifier::traversal_iter(
-				self.archive_header.kernel_mmr_size,
-				self.default_kernel_segment_height,
-			);
+			debug_assert!(result.len() <= need_requests);
 
-			elems_added = 0;
-			let mut first_found = true;
-			let mut processed = 0;
-			while let Some(k_id) = kernel_identifier_iter.next() {
-				// Advance kernel iterator to next needed position
-				let (_first, last) = k_id.segment_pos_range(self.archive_header.kernel_mmr_size);
-				// Advance rangeproof iterator to next needed position
-				if last <= local_kernel_mmr_size {
-					continue;
-				}
-				if first_found {
-					// Let's clean up old expired items
-					self.kernel_segment_cache
-						.retain(|segm| segm.id().idx >= k_id.idx);
-					first_found = false;
-				}
-
-				if !self.has_kernel_segment_with_id(k_id) {
-					return_vec.push(SegmentTypeIdentifier::new(SegmentType::Kernel, k_id));
-					elems_added += 1;
-				}
-				processed += 1;
-				if processed > max_elements || elems_added == max_elements / 3 {
-					break;
-				}
-			}
+			return Ok(result);
 		}
-		if return_vec.is_empty() && self.bitmap_cache.is_some() {
-			self.all_segments_complete = true;
-		}
-		Ok(return_vec)
 	}
 
 	/// 'Finalize' the bitmap accumulator, storing an in-memory copy of the bitmap for
 	/// use in further validation and setting the accumulator on the underlying txhashset
-	pub fn finalize_bitmap(&mut self) -> Result<(), Error> {
+	fn finalize_bitmap(&mut self) -> Result<(), Error> {
 		trace!(
 			"pibd_desegmenter: finalizing and caching bitmap - accumulator root: {}",
-			self.bitmap_accumulator.root()
+			self.outputs_bitmap_accumulator.read().root()
 		);
-		self.bitmap_cache = Some(self.bitmap_accumulator.as_bitmap()?);
-
-		// Set the txhashset's bitmap accumulator
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch()?;
-		txhashset::extending(
-			&mut header_pmmr,
-			&mut txhashset,
-			&mut batch,
-			|ext, _batch| {
-				let extension = &mut ext.extension;
-				extension.set_bitmap_accumulator(self.bitmap_accumulator.clone());
-				Ok(())
-			},
-		)?;
+		self.outputs_bitmap = Some(self.outputs_bitmap_accumulator.read().build_bitmap());
 		Ok(())
 	}
 
 	// Calculate and store number of leaves and positions in the bitmap mmr given the number of
 	// outputs specified in the header. Should be called whenever the header changes
-	fn calc_bitmap_mmr_sizes(&mut self) {
+	fn calc_bitmap_mmr_size(archive_header: &BlockHeader) -> u64 {
 		// Number of leaves (BitmapChunks)
-		self.bitmap_mmr_leaf_count =
-			(pmmr::n_leaves(self.archive_header.output_mmr_size) + 1023) / 1024;
+		let bitmap_mmr_leaf_count = (pmmr::n_leaves(archive_header.output_mmr_size) + 1023) / 1024;
 		trace!(
 			"pibd_desegmenter - expected number of leaves in bitmap MMR: {}",
-			self.bitmap_mmr_leaf_count
+			bitmap_mmr_leaf_count
 		);
 		// Total size of Bitmap PMMR
-		self.bitmap_mmr_size =
-			1 + pmmr::peaks(pmmr::insertion_to_pmmr_index(self.bitmap_mmr_leaf_count))
-				.last()
-				.unwrap_or(
-					&(pmmr::peaks(pmmr::insertion_to_pmmr_index(
-						self.bitmap_mmr_leaf_count - 1,
-					))
+		let bitmap_mmr_size = 1 + pmmr::peaks(pmmr::insertion_to_pmmr_index(bitmap_mmr_leaf_count))
+			.last()
+			.unwrap_or(
+				&(pmmr::peaks(pmmr::insertion_to_pmmr_index(bitmap_mmr_leaf_count - 1))
 					.last()
 					.unwrap()),
-				)
-				.clone();
+			)
+			.clone();
 
 		trace!(
 			"pibd_desegmenter - expected size of bitmap MMR: {}",
-			self.bitmap_mmr_size
+			bitmap_mmr_size
 		);
-	}
-
-	/// Cache a bitmap segment if we don't already have it
-	fn cache_bitmap_segment(&mut self, in_seg: Segment<BitmapChunk>) {
-		if self
-			.bitmap_segment_cache
-			.iter()
-			.find(|i| i.identifier() == in_seg.identifier())
-			.is_none()
-		{
-			self.bitmap_segment_cache.push(in_seg);
-		}
-	}
-
-	/// Whether our list already contains this bitmap segment
-	fn has_bitmap_segment_with_id(&self, seg_id: SegmentIdentifier) -> bool {
-		self.bitmap_segment_cache
-			.iter()
-			.find(|i| i.identifier() == seg_id)
-			.is_some()
-	}
-
-	/// Return an identifier for the next segment we need for the bitmap pmmr
-	fn next_required_bitmap_segment_index(&self) -> Option<u64> {
-		let local_bitmap_pmmr_size = self.bitmap_accumulator.readonly_pmmr().unpruned_size();
-		let cur_segment_count = SegmentIdentifier::count_segments_required(
-			local_bitmap_pmmr_size,
-			self.default_bitmap_segment_height,
-		);
-		let total_segment_count = SegmentIdentifier::count_segments_required(
-			self.bitmap_mmr_size,
-			self.default_bitmap_segment_height,
-		);
-		if cur_segment_count == total_segment_count {
-			None
-		} else {
-			Some(cur_segment_count as u64)
-		}
+		bitmap_mmr_size
 	}
 
 	/// Adds and validates a bitmap chunk
 	pub fn add_bitmap_segment(
 		&mut self,
 		segment: Segment<BitmapChunk>,
-		bitmap_root_hash: Hash,
+		bitmap_root_hash: &Hash,
 	) -> Result<(), Error> {
-		if bitmap_root_hash != self.bitmap_root_hash {
+		if *bitmap_root_hash != self.bitmap_root_hash {
 			return Err(Error::InvalidBitmapRoot);
+		}
+
+		if segment.id().height != self.pibd_params.get_bitmap_segment_height() {
+			return Err(Error::InvalidSegmentHeght);
 		}
 
 		trace!("pibd_desegmenter: add bitmap segment");
 		segment.validate(
-			self.bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
+			self.outputs_bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
 			None,
-			self.bitmap_root_hash,
+			&self.bitmap_root_hash,
 		)?;
 		trace!("pibd_desegmenter: adding segment to cache");
 		// All okay, add to our cached list of bitmap segments
-		self.cache_bitmap_segment(segment);
-		Ok(())
-	}
 
-	/// Apply a bitmap segment at the index cache
-	pub fn apply_bitmap_segment(&mut self, idx: usize) -> Result<(), Error> {
-		let segment = self.bitmap_segment_cache.remove(idx);
-		trace!(
-			"pibd_desegmenter: apply bitmap segment at segment idx {}",
-			segment.identifier().idx
-		);
-		// Add leaves to bitmap accumulator
-		let (_sid, _hash_pos, _hashes, _leaf_pos, leaf_data, _proof) = segment.parts();
-		for chunk in leaf_data.into_iter() {
-			self.bitmap_accumulator.append_chunk(chunk)?;
-		}
-		Ok(())
-	}
-
-	/// Whether our list already contains this bitmap segment
-	fn has_output_segment_with_id(&self, seg_id: SegmentIdentifier) -> bool {
-		self.output_segment_cache
-			.iter()
-			.find(|i| i.identifier() == seg_id)
-			.is_some()
-	}
-
-	/// Cache an output segment if we don't already have it
-	fn cache_output_segment(&mut self, in_seg: Segment<OutputIdentifier>) {
-		if self
-			.output_segment_cache
-			.iter()
-			.find(|i| i.identifier() == in_seg.identifier())
-			.is_none()
 		{
-			self.output_segment_cache.push(in_seg);
-		}
-	}
+			let bitmap_segment_cache = &mut self.bitmap_segment_cache;
+			let mut bitmap_accumulator = self.outputs_bitmap_accumulator.write();
 
-	/// Apply an output segment at the index cache
-	pub fn apply_output_segment(&mut self, idx: usize) -> Result<(), Error> {
-		let segment = self.output_segment_cache.remove(idx);
-		trace!(
-			"pibd_desegmenter: applying output segment at segment idx {}",
-			segment.identifier().idx
-		);
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch()?;
-		txhashset::extending(
-			&mut header_pmmr,
-			&mut txhashset,
-			&mut batch,
-			|ext, _batch| {
-				let extension = &mut ext.extension;
-				extension.apply_output_segment(segment)?;
+			bitmap_segment_cache.apply_new_segment(segment, |segm_v| {
+				for segm in segm_v {
+					trace!(
+						"pibd_desegmenter: apply bitmap segment at segment idx {}",
+						segm.identifier().idx
+					);
+					let (_sid, _hash_pos, _hashes, _leaf_pos, leaf_data, _proof) = segm.parts();
+					for chunk in leaf_data.into_iter() {
+						bitmap_accumulator.append_chunk(chunk)?;
+					}
+				}
 				Ok(())
-			},
-		)?;
+			})?;
+		}
+
+		if self.bitmap_segment_cache.is_complete() {
+			self.finalize_bitmap()?;
+		}
+
 		Ok(())
-	}
-
-	/// Return an identifier for the next segment we need for the output pmmr
-	fn next_required_output_segment_index(&self) -> Option<u64> {
-		let local_output_mmr_size;
-		{
-			let txhashset = self.txhashset.read();
-			local_output_mmr_size = txhashset.output_mmr_size();
-		}
-
-		// Special case here. If the mmr size is 1, this is a fresh chain
-		// with naught but a humble genesis block. We need segment 0, (and
-		// also need to skip the genesis block when applying the segment)
-		// note this is implementation-specific, the code for creating
-		// a new chain creates the genesis block pmmr entries by default
-
-		let mut cur_segment_count = if local_output_mmr_size == 1 {
-			0
-		} else {
-			SegmentIdentifier::count_segments_required(
-				local_output_mmr_size,
-				self.default_output_segment_height,
-			)
-		};
-
-		// When resuming, we need to ensure we're getting the previous segment if needed
-		let theoretical_pmmr_size =
-			SegmentIdentifier::pmmr_size(cur_segment_count, self.default_output_segment_height);
-		if local_output_mmr_size < theoretical_pmmr_size {
-			cur_segment_count -= 1;
-		}
-
-		let total_segment_count = SegmentIdentifier::count_segments_required(
-			self.archive_header.output_mmr_size,
-			self.default_output_segment_height,
-		);
-		trace!(
-			"Next required output segment is {} of {}",
-			cur_segment_count,
-			total_segment_count
-		);
-		if cur_segment_count == total_segment_count {
-			None
-		} else {
-			Some(cur_segment_count as u64)
-		}
 	}
 
 	/// Adds a output segment
 	pub fn add_output_segment(
 		&mut self,
 		segment: Segment<OutputIdentifier>,
-		bitmap_root_hash: Hash,
+		bitmap_root_hash: &Hash,
 	) -> Result<(), Error> {
-		if bitmap_root_hash != self.bitmap_root_hash {
+		if *bitmap_root_hash != self.bitmap_root_hash {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		trace!("pibd_desegmenter: add output segment");
-		segment.validate(
-			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
-			self.bitmap_cache.as_ref(),
-			self.archive_header.output_root, // Output root we're checking for
-		)?;
-		self.cache_output_segment(segment);
-		Ok(())
-	}
-
-	/// Whether our list already contains this rangeproof segment
-	fn has_rangeproof_segment_with_id(&self, seg_id: SegmentIdentifier) -> bool {
-		self.rangeproof_segment_cache
-			.iter()
-			.find(|i| i.identifier() == seg_id)
-			.is_some()
-	}
-
-	/// Cache a RangeProof segment if we don't already have it
-	fn cache_rangeproof_segment(&mut self, in_seg: Segment<RangeProof>) {
-		if self
-			.rangeproof_segment_cache
-			.iter()
-			.find(|i| i.identifier() == in_seg.identifier())
-			.is_none()
-		{
-			self.rangeproof_segment_cache.push(in_seg);
-		}
-	}
-
-	/// Apply a rangeproof segment at the index cache
-	pub fn apply_rangeproof_segment(&mut self, idx: usize) -> Result<(), Error> {
-		let segment = self.rangeproof_segment_cache.remove(idx);
-		trace!(
-			"pibd_desegmenter: applying rangeproof segment at segment idx {}",
-			segment.identifier().idx
-		);
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch()?;
-		txhashset::extending(
-			&mut header_pmmr,
-			&mut txhashset,
-			&mut batch,
-			|ext, _batch| {
-				let extension = &mut ext.extension;
-				extension.apply_rangeproof_segment(segment)?;
-				Ok(())
-			},
-		)?;
-		Ok(())
-	}
-
-	/// Return an identifier for the next segment we need for the rangeproof pmmr
-	fn next_required_rangeproof_segment_index(&self) -> Option<u64> {
-		let local_rangeproof_mmr_size;
-		{
-			let txhashset = self.txhashset.read();
-			local_rangeproof_mmr_size = txhashset.rangeproof_mmr_size();
+		if segment.id().height != self.pibd_params.get_output_segment_height() {
+			return Err(Error::InvalidSegmentHeght);
 		}
 
-		// Special case here. If the mmr size is 1, this is a fresh chain
-		// with naught but a humble genesis block. We need segment 0, (and
-		// also need to skip the genesis block when applying the segment)
+		match self.outputs_bitmap.as_ref() {
+			Some(outputs_bitmap) => {
+				trace!("pibd_desegmenter: add output segment");
+				segment.validate(
+					self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
+					Some(outputs_bitmap),
+					&self.archive_header.output_root, // Output root we're checking for
+				)?;
 
-		let mut cur_segment_count = if local_rangeproof_mmr_size == 1 {
-			0
-		} else {
-			SegmentIdentifier::count_segments_required(
-				local_rangeproof_mmr_size,
-				self.default_rangeproof_segment_height,
-			)
-		};
+				let output_segment_cache = &mut self.output_segment_cache;
+				let mut header_pmmr = self.header_pmmr.write();
+				let mut txhashset = self.txhashset.write();
+				let mut batch = self.store.batch_write()?;
 
-		// When resuming, we need to ensure we're getting the previous segment if needed
-		let theoretical_pmmr_size =
-			SegmentIdentifier::pmmr_size(cur_segment_count, self.default_rangeproof_segment_height);
-		if local_rangeproof_mmr_size < theoretical_pmmr_size {
-			cur_segment_count -= 1;
-		}
+				output_segment_cache.apply_new_segment(segment, |segm| {
+					if log_enabled!(Level::Trace) {
+						trace!(
+							"pibd_desegmenter: applying output segment at segment idx {}-{}",
+							segm.first().unwrap().identifier().idx,
+							segm.last().unwrap().identifier().idx
+						);
+					}
+					txhashset::extending(
+						&mut header_pmmr,
+						&mut txhashset,
+						&mut batch,
+						|ext, _batch| {
+							let extension = &mut ext.extension;
+							extension.apply_output_segments(segm, outputs_bitmap)?;
+							Ok(())
+						},
+					)?;
+					Ok(())
+				})?;
 
-		let total_segment_count = SegmentIdentifier::count_segments_required(
-			self.archive_header.output_mmr_size,
-			self.default_rangeproof_segment_height,
-		);
-		trace!(
-			"Next required rangeproof segment is {} of {}",
-			cur_segment_count,
-			total_segment_count
-		);
-		if cur_segment_count == total_segment_count {
-			None
-		} else {
-			Some(cur_segment_count as u64)
+				return Ok(());
+			}
+			None => return Err(Error::BitmapNotReady),
 		}
 	}
 
@@ -922,102 +625,51 @@ impl Desegmenter {
 	pub fn add_rangeproof_segment(
 		&mut self,
 		segment: Segment<RangeProof>,
-		bitmap_root_hash: Hash,
+		bitmap_root_hash: &Hash,
 	) -> Result<(), Error> {
-		if bitmap_root_hash != self.bitmap_root_hash {
+		if *bitmap_root_hash != self.bitmap_root_hash {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		trace!("pibd_desegmenter: add rangeproof segment");
-		segment.validate(
-			self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
-			self.bitmap_cache.as_ref(),
-			self.archive_header.range_proof_root, // Range proof root we're checking for
-		)?;
-		self.cache_rangeproof_segment(segment);
-		Ok(())
-	}
-
-	/// Whether our list already contains this kernel segment
-	fn has_kernel_segment_with_id(&self, seg_id: SegmentIdentifier) -> bool {
-		self.kernel_segment_cache
-			.iter()
-			.find(|i| i.identifier() == seg_id)
-			.is_some()
-	}
-
-	/// Cache a Kernel segment if we don't already have it
-	fn cache_kernel_segment(&mut self, in_seg: Segment<TxKernel>) {
-		if self
-			.kernel_segment_cache
-			.iter()
-			.find(|i| i.identifier() == in_seg.identifier())
-			.is_none()
-		{
-			self.kernel_segment_cache.push(in_seg);
+		if segment.id().height != self.pibd_params.get_rangeproof_segment_height() {
+			return Err(Error::InvalidSegmentHeght);
 		}
-	}
 
-	/// Apply a kernel segment at the index cache
-	pub fn apply_kernel_segment(&mut self, idx: usize) -> Result<(), Error> {
-		let segment = self.kernel_segment_cache.remove(idx);
-		trace!(
-			"pibd_desegmenter: applying kernel segment at segment idx {}",
-			segment.identifier().idx
-		);
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let mut batch = self.store.batch()?;
-		txhashset::extending(
-			&mut header_pmmr,
-			&mut txhashset,
-			&mut batch,
-			|ext, _batch| {
-				let extension = &mut ext.extension;
-				extension.apply_kernel_segment(segment)?;
+		match self.outputs_bitmap.as_ref() {
+			Some(outputs_bitmap) => {
+				trace!("pibd_desegmenter: add rangeproof segment");
+				segment.validate(
+					self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
+					self.outputs_bitmap.as_ref(),
+					&self.archive_header.range_proof_root, // Range proof root we're checking for
+				)?;
+
+				let rangeproof_segment_cache = &mut self.rangeproof_segment_cache;
+				let mut header_pmmr = self.header_pmmr.write();
+				let mut txhashset = self.txhashset.write();
+				let mut batch = self.store.batch_write()?;
+
+				rangeproof_segment_cache.apply_new_segment(segment, |seg| {
+					trace!(
+						"pibd_desegmenter: applying rangeproof segment at segment idx {}-{}",
+						seg.first().unwrap().identifier().idx,
+						seg.last().unwrap().identifier().idx
+					);
+					txhashset::extending(
+						&mut header_pmmr,
+						&mut txhashset,
+						&mut batch,
+						|ext, _batch| {
+							let extension = &mut ext.extension;
+							extension.apply_rangeproof_segments(seg, outputs_bitmap)?;
+							Ok(())
+						},
+					)?;
+					Ok(())
+				})?;
 				Ok(())
-			},
-		)?;
-		Ok(())
-	}
-
-	/// Return an identifier for the next segment we need for the kernel pmmr
-	fn next_required_kernel_segment_index(&self) -> Option<u64> {
-		let local_kernel_mmr_size;
-		{
-			let txhashset = self.txhashset.read();
-			local_kernel_mmr_size = txhashset.kernel_mmr_size();
-		}
-
-		let mut cur_segment_count = if local_kernel_mmr_size == 1 {
-			0
-		} else {
-			SegmentIdentifier::count_segments_required(
-				local_kernel_mmr_size,
-				self.default_kernel_segment_height,
-			)
-		};
-
-		// When resuming, we need to ensure we're getting the previous segment if needed
-		let theoretical_pmmr_size =
-			SegmentIdentifier::pmmr_size(cur_segment_count, self.default_kernel_segment_height);
-		if local_kernel_mmr_size < theoretical_pmmr_size {
-			cur_segment_count -= 1;
-		}
-
-		let total_segment_count = SegmentIdentifier::count_segments_required(
-			self.archive_header.kernel_mmr_size,
-			self.default_kernel_segment_height,
-		);
-		trace!(
-			"Next required kernel segment is {} of {}",
-			cur_segment_count,
-			total_segment_count
-		);
-		if cur_segment_count == total_segment_count {
-			None
-		} else {
-			Some(cur_segment_count as u64)
+			}
+			None => return Err(Error::BitmapNotReady),
 		}
 	}
 
@@ -1025,18 +677,46 @@ impl Desegmenter {
 	pub fn add_kernel_segment(
 		&mut self,
 		segment: Segment<TxKernel>,
-		bitmap_root_hash: Hash,
+		bitmap_root_hash: &Hash,
 	) -> Result<(), Error> {
-		if bitmap_root_hash != self.bitmap_root_hash {
+		if *bitmap_root_hash != self.bitmap_root_hash {
 			return Err(Error::InvalidBitmapRoot);
+		}
+
+		if segment.id().height != self.pibd_params.get_kernel_segment_height() {
+			return Err(Error::InvalidSegmentHeght);
 		}
 		trace!("pibd_desegmenter: add kernel segment");
 		segment.validate(
 			self.archive_header.kernel_mmr_size, // Last MMR pos at the height being validated
 			None,
-			self.archive_header.kernel_root, // Kernel root we're checking for
+			&self.archive_header.kernel_root, // Kernel root we're checking for
 		)?;
-		self.cache_kernel_segment(segment);
+
+		let kernel_segment_cache = &mut self.kernel_segment_cache;
+		let mut header_pmmr = self.header_pmmr.write();
+		let mut txhashset = self.txhashset.write();
+		let mut batch = self.store.batch_write()?;
+
+		kernel_segment_cache.apply_new_segment(segment, |segm| {
+			trace!(
+				"pibd_desegmenter: applying kernel segment at segment idx  {}-{}",
+				segm.first().unwrap().identifier().idx,
+				segm.last().unwrap().identifier().idx
+			);
+			txhashset::extending(
+				&mut header_pmmr,
+				&mut txhashset,
+				&mut batch,
+				|ext, _batch| {
+					let extension = &mut ext.extension;
+					extension.apply_kernel_segments(segm)?;
+					Ok(())
+				},
+			)?;
+			Ok(())
+		})?;
+
 		Ok(())
 	}
 }

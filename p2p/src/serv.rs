@@ -14,7 +14,6 @@
 // limitations under the License.
 
 use crate::types::PeerAddr::Onion;
-use std::fs::File;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -39,8 +38,8 @@ use crate::types::{
 };
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
-use chrono::prelude::{DateTime, Utc};
 use mwc_chain::txhashset::Segmenter;
+use mwc_chain::SyncState;
 
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.
@@ -51,6 +50,7 @@ pub struct Server {
 	capabilities: Capabilities,
 	handshake: Arc<Handshake>,
 	pub peers: Arc<Peers>,
+	sync_state: Arc<SyncState>,
 	stop_state: Arc<StopState>,
 	pub self_onion_address: Option<String>,
 }
@@ -64,6 +64,7 @@ impl Server {
 		config: P2PConfig,
 		adapter: Arc<dyn ChainAdapter>,
 		genesis: Hash,
+		sync_state: Arc<SyncState>,
 		stop_state: Arc<StopState>,
 		socks_port: u16,
 		onion_address: Option<String>,
@@ -82,6 +83,7 @@ impl Server {
 				config,
 				stop_state.clone(),
 			)),
+			sync_state,
 			stop_state,
 			socks_port,
 			self_onion_address: onion_address,
@@ -169,12 +171,12 @@ impl Server {
 
 	/// Asks the server to connect to a new peer. Directly returns the peer if
 	/// we're already connected to the provided address.
-	pub fn connect(&self, addr: PeerAddr) -> Result<Arc<Peer>, Error> {
+	pub fn connect(&self, addr: &PeerAddr) -> Result<Arc<Peer>, Error> {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose(String::from("node is stopping")));
 		}
 
-		if Peer::is_denied(&self.config, addr.clone()) {
+		if Peer::is_denied(&self.config, addr) {
 			debug!("connect_peer: peer {:?} denied, not connecting.", addr);
 			return Err(Error::ConnectionClose(String::from(
 				"Peer is denied because it is in config black list",
@@ -184,7 +186,7 @@ impl Server {
 		if global::is_production_mode() {
 			let hs = self.handshake.clone();
 			let addrs = hs.addrs.read();
-			if addrs.contains(&addr) {
+			if addrs.contains(addr) {
 				debug!("connect: ignore connecting to PeerWithSelf, addr: {}", addr);
 				return Err(Error::PeerWithSelf);
 			}
@@ -192,7 +194,7 @@ impl Server {
 
 		// check if the onion address is self
 		if global::is_production_mode() && self.self_onion_address.is_some() {
-			match &addr {
+			match addr {
 				Onion(address) => {
 					if self.self_onion_address.as_ref().unwrap() == address {
 						debug!("error trying to connect with self: {}", address);
@@ -204,7 +206,7 @@ impl Server {
 			}
 		}
 
-		if let Some(p) = self.peers.get_connected_peer(addr.clone()) {
+		if let Some(p) = self.peers.get_connected_peer(addr) {
 			// if we're already connected to the addr, just return the peer
 			trace!("connect_peer: already connected {}", addr);
 			return Ok(p);
@@ -284,6 +286,7 @@ impl Server {
 					&self.handshake,
 					self.peers.clone(),
 					peer_addr,
+					self.sync_state.clone(),
 					(*self).clone(),
 				)?;
 				let peer = Arc::new(peer);
@@ -316,6 +319,7 @@ impl Server {
 			total_diff,
 			&self.handshake,
 			self.peers.clone(),
+			self.sync_state.clone(),
 			self.clone(),
 		)?;
 		self.peers.add_connected(Arc::new(peer))?;
@@ -344,13 +348,13 @@ impl Server {
 		}
 		if let Ok(peer_addr) = stream.peer_addr() {
 			let peer_addr = PeerAddr::Ip(peer_addr.clone());
-			if self.peers.is_banned(peer_addr.clone()) {
+			if self.peers.is_banned(&peer_addr) {
 				debug!("Peer {} banned, refusing connection.", peer_addr);
 				return true;
 			}
 			// The call to is_known() can fail due to contention on the peers map.
 			// If it fails we want to default to refusing the connection.
-			match self.peers.is_known(peer_addr.clone()) {
+			match self.peers.is_known(&peer_addr) {
 				Ok(true) => {
 					debug!("Peer {} already known, refusing connection.", peer_addr);
 					return true;
@@ -431,9 +435,10 @@ impl ChainAdapter for DummyAdapter {
 	fn headers_received(
 		&self,
 		_: &[core::BlockHeader],
+		_remaining: u64,
 		_: &PeerInfo,
-	) -> Result<bool, chain::Error> {
-		Ok(true)
+	) -> Result<(), chain::Error> {
+		Ok(())
 	}
 	fn locate_headers(&self, _: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
 		Ok(vec![])
@@ -447,28 +452,6 @@ impl ChainAdapter for DummyAdapter {
 
 	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error> {
 		unimplemented!()
-	}
-
-	fn txhashset_receive_ready(&self) -> bool {
-		false
-	}
-
-	fn txhashset_write(
-		&self,
-		_h: Hash,
-		_txhashset_data: File,
-		_peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error> {
-		Ok(false)
-	}
-
-	fn txhashset_download_update(
-		&self,
-		_start_time: DateTime<Utc>,
-		_downloaded_size: u64,
-		_total_size: u64,
-	) -> bool {
-		false
 	}
 
 	fn get_tmp_dir(&self) -> PathBuf {
@@ -517,38 +500,83 @@ impl ChainAdapter for DummyAdapter {
 
 	fn receive_bitmap_segment(
 		&self,
-		_block_hash: Hash,
-		_bitmap_root_hash: Hash,
+		_peer: &PeerAddr,
+		_archive_header_hash: Hash,
 		_segment: Segment<BitmapChunk>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		unimplemented!()
 	}
 
 	fn receive_output_segment(
 		&self,
-		_block_hash: Hash,
-		_bitmap_root_hash: Hash,
+		_peer: &PeerAddr,
+		_archive_header_hash: Hash,
 		_segment: Segment<OutputIdentifier>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		unimplemented!()
 	}
 
 	fn receive_rangeproof_segment(
 		&self,
-		_block_hash: Hash,
-		_bitmap_root_hash: Hash,
+		_peer: &PeerAddr,
+		_archive_header_hash: Hash,
 		_segment: Segment<RangeProof>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		unimplemented!()
 	}
 
 	fn receive_kernel_segment(
 		&self,
-		_block_hash: Hash,
-		_bitmap_root_hash: Hash,
+		_peer: &PeerAddr,
+		_archive_header_hash: Hash,
 		_segment: Segment<TxKernel>,
-	) -> Result<bool, chain::Error> {
+	) -> Result<(), chain::Error> {
 		unimplemented!()
+	}
+
+	fn recieve_pibd_status(
+		&self,
+		_peer: &PeerAddr,
+		_header_hash: Hash,
+		_header_height: u64,
+		_output_bitmap_root: Hash,
+	) -> Result<(), chain::Error> {
+		Ok(())
+	}
+
+	fn recieve_another_archive_header(
+		&self,
+		_peer: &PeerAddr,
+		_header_hash: Hash,
+		_header_height: u64,
+	) -> Result<(), chain::Error> {
+		Ok(())
+	}
+
+	fn receive_headers_hash_response(
+		&self,
+		_peer: &PeerAddr,
+		_archive_height: u64,
+		_headers_hash_root: Hash,
+	) -> Result<(), chain::Error> {
+		Ok(())
+	}
+
+	fn get_header_hashes_segment(
+		&self,
+		_header_hashes_root: Hash,
+		_id: SegmentIdentifier,
+	) -> Result<Segment<Hash>, chain::Error> {
+		unimplemented!()
+	}
+
+	fn receive_header_hashes_segment(
+		&self,
+		_peer: &PeerAddr,
+		_header_hashes_root: Hash,
+		_segment: Segment<Hash>,
+	) -> Result<(), chain::Error> {
+		Ok(())
 	}
 }
 
@@ -557,8 +585,10 @@ impl NetAdapter for DummyAdapter {
 		vec![]
 	}
 	fn peer_addrs_received(&self, _: Vec<PeerAddr>) {}
-	fn peer_difficulty(&self, _: PeerAddr, _: Difficulty, _: u64) {}
-	fn is_banned(&self, _: PeerAddr) -> bool {
+	fn peer_difficulty(&self, _: &PeerAddr, _: Difficulty, _: u64) {}
+	fn is_banned(&self, _: &PeerAddr) -> bool {
 		false
 	}
+
+	fn ban_peer(&self, _addr: &PeerAddr, _ban_reason: ReasonForBan, _message: &str) {}
 }

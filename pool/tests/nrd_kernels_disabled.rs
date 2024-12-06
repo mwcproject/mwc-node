@@ -69,7 +69,7 @@ fn test_nrd_kernels_disabled() {
 	assert!(header.version < HeaderVersion(4));
 
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),
+		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, chain.secp()),
 		Err(PoolError::NRDKernelNotEnabled)
 	);
 
@@ -81,12 +81,12 @@ fn test_nrd_kernels_disabled() {
 
 	// NRD kernel support not enabled via feature flag, so not valid.
 	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header),
+		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, chain.secp()),
 		Err(PoolError::NRDKernelNotEnabled)
 	);
 
 	assert_eq!(pool.total_size(), 0);
-	let txs = pool.prepare_mineable_transactions().unwrap();
+	let txs = pool.prepare_mineable_transactions(chain.secp()).unwrap();
 	assert_eq!(txs.len(), 0);
 
 	// Cleanup db directory

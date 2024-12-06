@@ -91,7 +91,7 @@ impl Codec {
 	/// Inform codec next `len` bytes are an attachment
 	/// Panics if already reading a body
 	pub fn expect_attachment(&mut self, meta: Arc<AttachmentMeta>) {
-		assert!(self.state.is_none());
+		debug_assert!(self.state.is_none());
 		self.state = Attachment(meta.size, meta, Instant::now());
 	}
 
@@ -266,9 +266,13 @@ fn decode_message(
 		Type::PeerAddrs => Message::PeerAddrs(msg.body()?),
 		Type::TxHashSetRequest => Message::TxHashSetRequest(msg.body()?),
 		Type::TxHashSetArchive => Message::TxHashSetArchive(msg.body()?),
+		Type::GetHeadersHashesSegment => Message::GetHeadersHashesSegment(msg.body()?),
+		Type::OutputHeadersHashesSegment => Message::OutputHeadersHashesSegment(msg.body()?),
 		Type::GetOutputBitmapSegment => Message::GetOutputBitmapSegment(msg.body()?),
 		Type::OutputBitmapSegment => Message::OutputBitmapSegment(msg.body()?),
 		Type::StartPibdSyncRequest => Message::StartPibdSyncRequest(msg.body()?),
+		Type::StartHeadersHashRequest => Message::StartHeadersHashRequest(msg.body()?),
+		Type::StartHeadersHashResponse => Message::StartHeadersHashResponse(msg.body()?),
 		Type::PibdSyncState => Message::PibdSyncState(msg.body()?),
 		Type::GetOutputSegment => Message::GetOutputSegment(msg.body()?),
 		Type::OutputSegment => Message::OutputSegment(msg.body()?),

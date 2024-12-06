@@ -173,8 +173,8 @@ pub trait ReadablePMMR {
 /// we are in the sequence of nodes making up the MMR.
 pub struct PMMR<'a, T, B>
 where
-	T: PMMRable,
-	B: Backend<T>,
+	T: PMMRable + Sync,
+	B: 'a + Backend<T> + Sync,
 {
 	/// Number of nodes in the PMMR
 	pub size: u64,
@@ -185,11 +185,11 @@ where
 
 impl<'a, T, B> PMMR<'a, T, B>
 where
-	T: PMMRable,
-	B: 'a + Backend<T>,
+	T: PMMRable + Sync,
+	B: 'a + Backend<T> + Sync,
 {
 	/// Build a new prunable Merkle Mountain Range using the provided backend.
-	pub fn new(backend: &'a mut B) -> PMMR<'_, T, B> {
+	pub fn new(backend: &'a mut B) -> PMMR<'a, T, B> {
 		PMMR {
 			backend,
 			size: 0,
@@ -199,7 +199,7 @@ where
 
 	/// Build a new prunable Merkle Mountain Range pre-initialized until
 	/// size with the provided backend.
-	pub fn at(backend: &'a mut B, size: u64) -> PMMR<'_, T, B> {
+	pub fn at(backend: &'a mut B, size: u64) -> PMMR<'a, T, B> {
 		PMMR {
 			backend,
 			size,
@@ -330,30 +330,49 @@ where
 
 	/// Walks all unpruned nodes in the MMR and revalidate all parent hashes
 	pub fn validate(&self) -> Result<(), String> {
-		// iterate on all parent nodes
-		for n in 0..self.size {
-			let height = bintree_postorder_height(n);
-			if height > 0 {
-				if let Some(hash) = self.get_hash(n) {
-					let left_pos = n - (1 << height);
-					let right_pos = n - 1;
-					// using get_from_file here for the children (they may have been "removed")
-					if let Some(left_child_hs) = self.get_from_file(left_pos) {
-						if let Some(right_child_hs) = self.get_from_file(right_pos) {
-							// hash the two child nodes together with parent_pos and compare
-							if (left_child_hs, right_child_hs).hash_with_index(n) != hash {
-								return Err(format!(
-									"Invalid MMR, hash of parent at {} does \
-									 not match children.",
-									n + 1
-								));
+		// Let's validate everything in multiple threads
+		let num_cores = num_cpus::get();
+		let validation_result = crossbeam::thread::scope(|s| {
+			let mut handles = Vec::with_capacity(num_cores);
+			for thr_idx in 0..num_cores {
+				let idx1 = self.size * thr_idx as u64 / num_cores as u64;
+				let idx2 = self.size * (thr_idx + 1) as u64 / num_cores as u64;
+
+				let handle = s.spawn(move |_| {
+					for n in idx1..idx2 {
+						let height = bintree_postorder_height(n);
+						if height > 0 {
+							if let Some(hash) = self.get_hash(n) {
+								let left_pos = n - (1 << height);
+								let right_pos = n - 1;
+								// using get_from_file here for the children (they may have been "removed")
+								if let Some(left_child_hs) = self.get_from_file(left_pos) {
+									if let Some(right_child_hs) = self.get_from_file(right_pos) {
+										// hash the two child nodes together with parent_pos and compare
+										if (left_child_hs, right_child_hs).hash_with_index(n)
+											!= hash
+										{
+											return Err(format!("Invalid MMR, hash of parent at {} does not match children.", n + 1));
+										}
+									}
+								}
 							}
 						}
 					}
+					Ok(())
+				});
+				handles.push(handle);
+			}
+			for handle in handles {
+				match handle.join().expect("Crossbeam runtime failure") {
+					Ok(_) => {}
+					Err(e) => return Err(e),
 				}
 			}
-		}
-		Ok(())
+			Ok(())
+		})
+		.expect("Crossbeam runtime failure");
+		validation_result
 	}
 
 	/// Debugging utility to print information about the MMRs. Short version
@@ -420,8 +439,8 @@ where
 
 impl<'a, T, B> ReadablePMMR for PMMR<'a, T, B>
 where
-	T: PMMRable,
-	B: 'a + Backend<T>,
+	T: PMMRable + Sync,
+	B: 'a + Backend<T> + Sync,
 {
 	type Item = T::E;
 

@@ -23,12 +23,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use chrono::prelude::*;
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::sync::atomic::AtomicUsize;
 
 use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
@@ -42,10 +40,10 @@ use crate::mwc_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, W
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
 use mwc_chain::txhashset::Segmenter;
-use std::time::Instant;
+use mwc_chain::types::HEADERS_PER_BATCH;
 
 /// Maximum number of block headers a peer should ever send
-pub const MAX_BLOCK_HEADERS: u32 = 512;
+pub const MAX_BLOCK_HEADERS: u32 = HEADERS_PER_BATCH;
 
 /// Maximum number of block bodies a peer should ever ask for and send
 #[allow(dead_code)]
@@ -64,10 +62,13 @@ const BAN_WINDOW: i64 = 10800;
 const PEER_MAX_INBOUND_COUNT: u32 = 128;
 
 /// The max outbound peer count
-const PEER_MAX_OUTBOUND_COUNT: u32 = 8;
+const PEER_MAX_OUTBOUND_COUNT: u32 = 10;
 
 /// The min preferred outbound peer count
 const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
+
+/// During sync process we want to boost peers discovery.
+const PEER_BOOST_OUTBOUND_COUNT: u32 = 25;
 
 /// The peer listener buffer count. Allows temporarily accepting more connections
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
@@ -426,18 +427,26 @@ impl P2PConfig {
 	}
 
 	/// return maximum outbound peer connections count
-	pub fn peer_max_outbound_count(&self) -> u32 {
-		match self.peer_max_outbound_count {
-			Some(n) => n,
-			None => PEER_MAX_OUTBOUND_COUNT,
+	pub fn peer_max_outbound_count(&self, peers_sync_mode: bool) -> u32 {
+		if peers_sync_mode {
+			PEER_BOOST_OUTBOUND_COUNT
+		} else {
+			match self.peer_max_outbound_count {
+				Some(n) => n,
+				None => PEER_MAX_OUTBOUND_COUNT,
+			}
 		}
 	}
 
 	/// return minimum preferred outbound peer count
-	pub fn peer_min_preferred_outbound_count(&self) -> u32 {
-		match self.peer_min_preferred_outbound_count {
-			Some(n) => n,
-			None => PEER_MIN_PREFERRED_OUTBOUND_COUNT,
+	pub fn peer_min_preferred_outbound_count(&self, peers_sync_mode: bool) -> u32 {
+		if peers_sync_mode {
+			PEER_BOOST_OUTBOUND_COUNT
+		} else {
+			match self.peer_min_preferred_outbound_count {
+				Some(n) => n,
+				None => PEER_MIN_PREFERRED_OUTBOUND_COUNT,
+			}
 		}
 	}
 
@@ -490,18 +499,29 @@ bitflags! {
 		const PIBD_HIST = 0b0010_0000;
 		/// Can provide historical blocks for archival sync.
 		const BLOCK_HIST = 0b0100_0000;
+		/// Can provide PIBD Headers Hashes
+		const HEADERS_HASH = 0b1000_0000;
 	}
 }
 
 /// Default capabilities.
-impl Default for Capabilities {
-	fn default() -> Self {
-		Capabilities::HEADER_HIST
+impl Capabilities {
+	/// Capability instance to match node features
+	pub fn new(tor: bool, archive_mode: bool) -> Self {
+		let mut res = Capabilities::HEADER_HIST
 			| Capabilities::TXHASHSET_HIST
 			| Capabilities::PEER_LIST
 			| Capabilities::TX_KERNEL_HASH
 			| Capabilities::TOR_ADDRESS
 			| Capabilities::PIBD_HIST
+			| Capabilities::HEADERS_HASH;
+		if tor {
+			res |= Capabilities::TOR_ADDRESS;
+		}
+		if archive_mode {
+			res |= Capabilities::BLOCK_HIST;
+		}
+		res
 	}
 }
 
@@ -528,8 +548,9 @@ enum_from_primitive! {
 		ManualBan = 5,
 		FraudHeight = 6,
 		BadHandshake = 7,
-		PibdFailure = 8,
-		PibdInactive = 9,
+		HeadersHashFailure = 8,
+		PibdFailure = 9,
+		BadRequest = 10,
 	}
 }
 
@@ -551,9 +572,6 @@ pub struct PeerInfo {
 	pub addr: PeerAddr,
 	pub direction: Direction,
 	pub live_info: Arc<RwLock<PeerLiveInfo>>,
-	pub header_sync_requested: Arc<AtomicUsize>,
-	pub last_header: Arc<Mutex<Instant>>,
-	pub last_header_reset: Arc<Mutex<Instant>>,
 }
 
 impl PeerLiveInfo {
@@ -711,8 +729,9 @@ pub trait ChainAdapter: Sync + Send {
 	fn headers_received(
 		&self,
 		bh: &[core::BlockHeader],
+		remaining: u64,
 		peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error>;
+	) -> Result<(), chain::Error>;
 
 	/// Finds a list of block headers based on the provided locator. Tries to
 	/// identify the common chain and gets the headers that follow it
@@ -731,32 +750,7 @@ pub trait ChainAdapter: Sync + Send {
 	/// Header of the txhashset archive currently being served to peers.
 	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error>;
 
-	/// Whether the node is ready to accept a new txhashset. If this isn't the
-	/// case, the archive is provided without being requested and likely an
-	/// attack attempt. This should be checked *before* downloading the whole
-	/// state data.
-	fn txhashset_receive_ready(&self) -> bool;
-
-	/// Update txhashset downloading progress
-	fn txhashset_download_update(
-		&self,
-		start_time: DateTime<Utc>,
-		downloaded_size: u64,
-		total_size: u64,
-	) -> bool;
-
-	/// Writes a reading view on a txhashset state that's been provided to us.
-	/// If we're willing to accept that new state, the data stream will be
-	/// read as a zip file, unzipped and the resulting state files should be
-	/// rewound to the provided indexes.
-	fn txhashset_write(
-		&self,
-		h: Hash,
-		txhashset_data: File,
-		peer_peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error>;
-
-	/// Get the Mwc specific tmp dir
+	/// Get the Grin specific tmp dir
 	fn get_tmp_dir(&self) -> PathBuf;
 
 	/// Get a tmp file path in above specific tmp dir (create tmp dir if not exist)
@@ -790,33 +784,68 @@ pub trait ChainAdapter: Sync + Send {
 		id: SegmentIdentifier,
 	) -> Result<Segment<RangeProof>, chain::Error>;
 
+	fn recieve_pibd_status(
+		&self,
+		peer: &PeerAddr,
+		header_hash: Hash,
+		header_height: u64,
+		output_bitmap_root: Hash,
+	) -> Result<(), chain::Error>;
+
+	fn recieve_another_archive_header(
+		&self,
+		peer: &PeerAddr,
+		header_hash: Hash,
+		header_height: u64,
+	) -> Result<(), chain::Error>;
+
+	fn receive_headers_hash_response(
+		&self,
+		peer: &PeerAddr,
+		archive_height: u64,
+		headers_hash_root: Hash,
+	) -> Result<(), chain::Error>;
+
+	fn get_header_hashes_segment(
+		&self,
+		header_hashes_root: Hash,
+		id: SegmentIdentifier,
+	) -> Result<Segment<Hash>, chain::Error>;
+
+	fn receive_header_hashes_segment(
+		&self,
+		peer: &PeerAddr,
+		header_hashes_root: Hash,
+		segment: Segment<Hash>,
+	) -> Result<(), chain::Error>;
+
 	fn receive_bitmap_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<BitmapChunk>,
-	) -> Result<bool, chain::Error>;
+	) -> Result<(), chain::Error>;
 
 	fn receive_output_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<OutputIdentifier>,
-	) -> Result<bool, chain::Error>;
+	) -> Result<(), chain::Error>;
 
 	fn receive_rangeproof_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<RangeProof>,
-	) -> Result<bool, chain::Error>;
+	) -> Result<(), chain::Error>;
 
 	fn receive_kernel_segment(
 		&self,
-		block_hash: Hash,
-		bitmap_root_hash: Hash,
+		peer: &PeerAddr,
+		archive_header_hash: Hash,
 		segment: Segment<TxKernel>,
-	) -> Result<bool, chain::Error>;
+	) -> Result<(), chain::Error>;
 }
 
 /// Additional methods required by the protocol that don't need to be
@@ -830,10 +859,13 @@ pub trait NetAdapter: ChainAdapter {
 	fn peer_addrs_received(&self, _: Vec<PeerAddr>);
 
 	/// Heard total_difficulty from a connected peer (via ping/pong).
-	fn peer_difficulty(&self, _: PeerAddr, _: Difficulty, _: u64);
+	fn peer_difficulty(&self, _: &PeerAddr, _: Difficulty, _: u64);
 
 	/// Is this peer currently banned?
-	fn is_banned(&self, addr: PeerAddr) -> bool;
+	fn is_banned(&self, addr: &PeerAddr) -> bool;
+
+	/// Ban peer
+	fn ban_peer(&self, addr: &PeerAddr, ban_reason: ReasonForBan, message: &str);
 }
 
 #[derive(Clone, Debug)]

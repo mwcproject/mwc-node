@@ -26,6 +26,7 @@ use crate::msg::{write_message, Consumed, Message, Msg};
 use crate::mwc_core::ser::ProtocolVersion;
 use crate::types::Error;
 use crate::util::{RateCounter, RwLock};
+use mwc_chain::SyncState;
 use std::fs::File;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpStream};
@@ -176,6 +177,7 @@ pub fn listen<H>(
 	stream: TcpStream,
 	version: ProtocolVersion,
 	tracker: Arc<Tracker>,
+	sync_state: Arc<SyncState>,
 	handler: H,
 ) -> io::Result<(ConnHandle, StopHandle)>
 where
@@ -197,6 +199,7 @@ where
 		send_rx,
 		stopped.clone(),
 		tracker,
+		sync_state,
 	)?;
 
 	Ok((
@@ -217,6 +220,7 @@ fn poll<H>(
 	send_rx: mpsc::Receiver<Msg>,
 	stopped: Arc<AtomicBool>,
 	tracker: Arc<Tracker>,
+	sync_state: Arc<SyncState>,
 ) -> io::Result<(JoinHandle<()>, JoinHandle<()>)>
 where
 	H: MessageHandler,
@@ -247,19 +251,24 @@ where
 				// check the read end
 				let (next, bytes_read) = codec.read();
 
-				// increase the appropriate counter
-				match &next {
-					Ok(Message::Attachment(_, _)) => reader_tracker.inc_quiet_received(bytes_read),
-					Ok(Message::Headers(data)) => {
-						// We process a full 512 headers locally in smaller 32 header batches.
-						// We only want to increment the msg count once for the full 512 headers.
-						if data.remaining == 0 {
-							reader_tracker.inc_received(bytes_read);
-						} else {
-							reader_tracker.inc_quiet_received(bytes_read);
+				// During sync process we don't want to ban peers becasue of abuse. It is expected to maintain high traffic for fast sync
+				if !sync_state.is_syncing() {
+					// increase the appropriate counter
+					match &next {
+						Ok(Message::Attachment(_, _)) => {
+							reader_tracker.inc_quiet_received(bytes_read)
 						}
+						Ok(Message::Headers(data)) => {
+							// We process a full 512 headers locally in smaller 32 header batches.
+							// We only want to increment the msg count once for the full 512 headers.
+							if data.remaining == 0 {
+								reader_tracker.inc_received(bytes_read);
+							} else {
+								reader_tracker.inc_quiet_received(bytes_read);
+							}
+						}
+						_ => reader_tracker.inc_received(bytes_read),
 					}
-					_ => reader_tracker.inc_received(bytes_read),
 				}
 
 				let message = match try_break!(next) {
@@ -301,7 +310,9 @@ where
 					None => continue,
 				};
 
+				//debug!("IN_{} {}: {:?}", counter, peer_addr, message);
 				let consumed = try_break!(handler.consume(message)).unwrap_or(Consumed::None);
+				//debug!("OUT_{} {}: {:?}", counter, peer_addr, consumed);
 				match consumed {
 					Consumed::Response(resp_msg) => {
 						try_break!(conn_handle.send(resp_msg));

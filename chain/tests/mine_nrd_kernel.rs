@@ -19,6 +19,7 @@ use mwc_chain as chain;
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_util as util;
+use std::collections::VecDeque;
 
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use crate::chain::{Chain, Options};
@@ -33,7 +34,9 @@ where
 	K: Keychain,
 {
 	let prev = chain.head_header().unwrap();
-	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
+	let mut cache_values = VecDeque::new();
+	let next_header_info =
+		consensus::next_difficulty(1, chain.difficulty_iter().unwrap(), &mut cache_values);
 	let fee = txs.iter().map(|x| x.fee(prev.height + 1)).sum();
 	let reward = reward::output(
 		keychain,
@@ -42,10 +45,18 @@ where
 		fee,
 		false,
 		prev.height + 1,
+		chain.secp(),
 	)
 	.unwrap();
 
-	let mut block = Block::new(&prev, &txs, next_header_info.clone().difficulty, reward).unwrap();
+	let mut block = Block::new(
+		&prev,
+		&txs,
+		next_header_info.clone().difficulty,
+		reward,
+		chain.secp(),
+	)
+	.unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;

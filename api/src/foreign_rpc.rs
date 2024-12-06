@@ -18,6 +18,7 @@
 use crate::core::core::hash::Hash;
 use crate::core::core::transaction::Transaction;
 use crate::foreign::Foreign;
+use crate::handlers::utils::w;
 use crate::pool::PoolEntry;
 use crate::pool::{BlockChain, PoolAdapter};
 use crate::rest::Error;
@@ -1276,7 +1277,7 @@ where
 		Foreign::get_unconfirmed_transactions(self)
 	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
-		Foreign::push_transaction(self, tx, fluff)
+		Foreign::push_transaction(self, tx, fluff, w(&self.chain)?.secp())
 	}
 	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
 		Foreign::get_libp2p_peers(self)

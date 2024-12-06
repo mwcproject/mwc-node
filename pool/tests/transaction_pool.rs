@@ -58,7 +58,7 @@ fn test_the_transaction_pool() {
 
 	// Add this tx to the pool (stem=false, direct to txpool).
 	{
-		pool.add_to_pool(test_source(), initial_tx, false, &header)
+		pool.add_to_pool(test_source(), initial_tx, false, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 1);
 	}
@@ -67,7 +67,9 @@ fn test_the_transaction_pool() {
 	// already in the txpool. In this case we attempt to spend the original coinbase twice.
 	{
 		let tx = test_transaction_spending_coinbase(&keychain, &header, vec![501]);
-		assert!(pool.add_to_pool(test_source(), tx, false, &header).is_err());
+		assert!(pool
+			.add_to_pool(test_source(), tx, false, &header, chain.secp())
+			.is_err());
 	}
 
 	// tx1 spends some outputs from the initial test tx.
@@ -80,12 +82,12 @@ fn test_the_transaction_pool() {
 		assert_eq!(pool.total_size(), 1);
 
 		// First, add a simple tx directly to the txpool (stem = false).
-		pool.add_to_pool(test_source(), tx1.clone(), false, &header)
+		pool.add_to_pool(test_source(), tx1.clone(), false, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 2);
 
 		// Add another tx spending outputs from the previous tx.
-		pool.add_to_pool(test_source(), tx2.clone(), false, &header)
+		pool.add_to_pool(test_source(), tx2.clone(), false, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 3);
 	}
@@ -95,7 +97,7 @@ fn test_the_transaction_pool() {
 	// outputs and duplicate kernels.
 	{
 		assert!(pool
-			.add_to_pool(test_source(), tx1.clone(), false, &header)
+			.add_to_pool(test_source(), tx1.clone(), false, &header, chain.secp())
 			.is_err());
 	}
 
@@ -104,7 +106,7 @@ fn test_the_transaction_pool() {
 	{
 		let tx1a = test_transaction(&keychain, vec![500, 600], vec![469, 569]);
 		assert!(pool
-			.add_to_pool(test_source(), tx1a, false, &header)
+			.add_to_pool(test_source(), tx1a, false, &header, chain.secp())
 			.is_err());
 	}
 
@@ -112,7 +114,7 @@ fn test_the_transaction_pool() {
 	{
 		let bad_tx = test_transaction(&keychain, vec![10_001], vec![9_900]);
 		assert!(pool
-			.add_to_pool(test_source(), bad_tx, false, &header)
+			.add_to_pool(test_source(), bad_tx, false, &header, chain.secp())
 			.is_err());
 	}
 
@@ -122,14 +124,16 @@ fn test_the_transaction_pool() {
 	// to be immediately stolen via a "replay" tx.
 	{
 		let tx = test_transaction(&keychain, vec![900], vec![498]);
-		assert!(pool.add_to_pool(test_source(), tx, false, &header).is_err());
+		assert!(pool
+			.add_to_pool(test_source(), tx, false, &header, chain.secp())
+			.is_err());
 	}
 
 	// Confirm the tx pool correctly identifies an invalid tx (already spent).
 	{
 		let tx3 = test_transaction(&keychain, vec![500], vec![467]);
 		assert!(pool
-			.add_to_pool(test_source(), tx3, false, &header)
+			.add_to_pool(test_source(), tx3, false, &header, chain.secp())
 			.is_err());
 		assert_eq!(pool.total_size(), 3);
 	}
@@ -137,9 +141,11 @@ fn test_the_transaction_pool() {
 	// Now add a couple of txs to the stempool (stem = true).
 	{
 		let tx = test_transaction(&keychain, vec![569], vec![538]);
-		pool.add_to_pool(test_source(), tx, true, &header).unwrap();
+		pool.add_to_pool(test_source(), tx, true, &header, chain.secp())
+			.unwrap();
 		let tx2 = test_transaction(&keychain, vec![538], vec![507]);
-		pool.add_to_pool(test_source(), tx2, true, &header).unwrap();
+		pool.add_to_pool(test_source(), tx2, true, &header, chain.secp())
+			.unwrap();
 		assert_eq!(pool.total_size(), 3);
 		assert_eq!(pool.stempool.size(), 2);
 	}
@@ -149,11 +155,11 @@ fn test_the_transaction_pool() {
 	{
 		let agg_tx = pool
 			.stempool
-			.all_transactions_aggregate(None)
+			.all_transactions_aggregate(None, chain.secp())
 			.unwrap()
 			.unwrap();
 		assert_eq!(agg_tx.kernels().len(), 2);
-		pool.add_to_pool(test_source(), agg_tx, false, &header)
+		pool.add_to_pool(test_source(), agg_tx, false, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 4);
 		assert!(pool.stempool.is_empty());
@@ -163,14 +169,14 @@ fn test_the_transaction_pool() {
 	// This handles the case of the stem path having a cycle in it.
 	{
 		let tx = test_transaction(&keychain, vec![507], vec![476]);
-		pool.add_to_pool(test_source(), tx.clone(), true, &header)
+		pool.add_to_pool(test_source(), tx.clone(), true, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 4);
 		assert_eq!(pool.txpool.size(), 4);
 		assert_eq!(pool.stempool.size(), 1);
 
 		// Duplicate stem tx so fluff, adding it to txpool and removing it from stempool.
-		pool.add_to_pool(test_source(), tx.clone(), true, &header)
+		pool.add_to_pool(test_source(), tx.clone(), true, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 5);
 		assert_eq!(pool.txpool.size(), 5);
@@ -186,12 +192,15 @@ fn test_the_transaction_pool() {
 
 		// tx1 and tx2 are already in the txpool (in aggregated form)
 		// tx4 is the "new" part of this aggregated tx that we care about
-		let agg_tx = transaction::aggregate(&[tx1.clone(), tx2.clone(), tx4]).unwrap();
+		let agg_tx =
+			transaction::aggregate(&[tx1.clone(), tx2.clone(), tx4], chain.secp()).unwrap();
 
 		let height = 12 + 1;
-		agg_tx.validate(Weighting::AsTransaction, height).unwrap();
+		agg_tx
+			.validate(Weighting::AsTransaction, height, chain.secp())
+			.unwrap();
 
-		pool.add_to_pool(test_source(), agg_tx, false, &header)
+		pool.add_to_pool(test_source(), agg_tx, false, &header, chain.secp())
 			.unwrap();
 		assert_eq!(pool.total_size(), 6);
 		let entry = pool.txpool.entries.last().unwrap();
@@ -206,12 +215,24 @@ fn test_the_transaction_pool() {
 
 		// check we cannot add a double spend to the stempool
 		assert!(pool
-			.add_to_pool(test_source(), double_spend_tx.clone(), true, &header)
+			.add_to_pool(
+				test_source(),
+				double_spend_tx.clone(),
+				true,
+				&header,
+				chain.secp()
+			)
 			.is_err());
 
 		// check we cannot add a double spend to the txpool
 		assert!(pool
-			.add_to_pool(test_source(), double_spend_tx.clone(), false, &header)
+			.add_to_pool(
+				test_source(),
+				double_spend_tx.clone(),
+				false,
+				&header,
+				chain.secp()
+			)
 			.is_err());
 	}
 

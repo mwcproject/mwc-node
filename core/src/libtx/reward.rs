@@ -23,7 +23,8 @@ use crate::libtx::{
 	proof::{self, ProofBuild},
 };
 use keychain::{Identifier, Keychain, SwitchCommitmentType};
-use util::{secp, static_secp_instance};
+use util::secp;
+use util::secp::Secp256k1;
 
 /// output a reward output
 pub fn output<K, B>(
@@ -33,6 +34,7 @@ pub fn output<K, B>(
 	fees: u64,
 	test_mode: bool,
 	height: u64,
+	secp: &Secp256k1,
 ) -> Result<(Output, TxKernel), Error>
 where
 	K: Keychain,
@@ -49,8 +51,6 @@ where
 
 	let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 
-	let secp = static_secp_instance();
-	let secp = secp.lock();
 	let over_commit = secp.commit_value(reward(fees, height))?;
 	let out_commit = output.commitment();
 	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;

@@ -18,7 +18,6 @@
 use crate::core::consensus::HeaderDifficultyInfo;
 use crate::core::core::hash::{Hash, Hashed};
 use crate::core::core::{Block, BlockHeader, BlockSums, Inputs};
-use crate::core::global;
 use crate::core::pow::Difficulty;
 use crate::core::ser::{DeserializationMode, ProtocolVersion, Readable, Writeable};
 use crate::linked_list::MultiIndex;
@@ -37,7 +36,6 @@ const BLOCK_HEADER_PREFIX: u8 = b'h';
 const BLOCK_PREFIX: u8 = b'b';
 const HEAD_PREFIX: u8 = b'H';
 const TAIL_PREFIX: u8 = b'T';
-const PIBD_HEAD_PREFIX: u8 = b'I';
 const HEADER_HEAD_PREFIX: u8 = b'G';
 const OUTPUT_POS_PREFIX: u8 = b'p';
 
@@ -83,18 +81,6 @@ impl ChainStore {
 	/// The current chain "tail" (earliest block in the store).
 	pub fn tail(&self) -> Result<Tip, Error> {
 		option_to_not_found(self.db.get_ser(&[TAIL_PREFIX], None), || "TAIL".to_owned())
-	}
-
-	/// The current PIBD head (will differ from the other heads. Return genesis block if PIBD head doesn't exist).
-	pub fn pibd_head(&self) -> Result<Tip, Error> {
-		let res = option_to_not_found(self.db.get_ser(&[PIBD_HEAD_PREFIX], None), || {
-			"PIBD_HEAD".to_owned()
-		});
-
-		match res {
-			Ok(r) => Ok(r),
-			Err(_) => Ok(Tip::from_header(&global::get_genesis_block().header)),
-		}
 	}
 
 	/// Header of the block at the head of the block chain (not the same thing as header_head).
@@ -170,10 +156,17 @@ impl ChainStore {
 		self.db.get_ser(&to_key(OUTPUT_POS_PREFIX, commit), None)
 	}
 
-	/// Builds a new batch to be used with this store.
-	pub fn batch(&self) -> Result<Batch<'_>, Error> {
+	/// Builds a new batch for read only access with this store.
+	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
 		Ok(Batch {
-			db: self.db.batch()?,
+			db: self.db.batch_read()?,
+		})
+	}
+
+	/// Builds a new batch for write access to be used with this store.
+	pub fn batch_write(&self) -> Result<Batch<'_>, Error> {
+		Ok(Batch {
+			db: self.db.batch_write()?,
 		})
 	}
 }
@@ -221,11 +214,6 @@ impl<'a> Batch<'a> {
 	/// Save header head to db.
 	pub fn save_header_head(&self, t: &Tip) -> Result<(), Error> {
 		self.db.put_ser(&[HEADER_HEAD_PREFIX], t)
-	}
-
-	/// Save PIBD head to db.
-	pub fn save_pibd_head(&self, t: &Tip) -> Result<(), Error> {
-		self.db.put_ser(&[PIBD_HEAD_PREFIX], t)
 	}
 
 	/// get block
@@ -592,7 +580,7 @@ impl<'a> Batch<'a> {
 pub struct DifficultyIter<'a> {
 	start: Hash,
 	store: Option<Arc<ChainStore>>,
-	batch: Option<Batch<'a>>,
+	batch: Option<&'a Batch<'a>>,
 
 	// maintain state for both the "next" header in this iteration
 	// and its previous header in the chain ("next next" in the iteration)
@@ -619,7 +607,7 @@ impl<'a> DifficultyIter<'a> {
 
 	/// Build a new iterator using the provided chain store batch and starting from
 	/// the provided block hash.
-	pub fn from_batch(start: Hash, batch: Batch<'_>) -> DifficultyIter<'_> {
+	pub fn from_batch(start: Hash, batch: &'a Batch<'a>) -> DifficultyIter<'a> {
 		DifficultyIter {
 			start,
 			store: None,
@@ -682,6 +670,7 @@ impl<'a> Iterator for DifficultyIter<'a> {
 			let scaling = header.pow.secondary_scaling;
 
 			Some(HeaderDifficultyInfo::new(
+				header.height,
 				cur_header_hash,
 				header.timestamp.timestamp() as u64,
 				difficulty,

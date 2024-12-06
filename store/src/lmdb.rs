@@ -53,6 +53,9 @@ pub enum Error {
 	/// Other error
 	#[error("Other Error: {0}")]
 	OtherErr(String),
+	/// Batch type error
+	#[error("Incorrect batch type: {0}")]
+	BatchTypeError(String),
 }
 
 impl From<lmdb::error::Error> for Error {
@@ -319,21 +322,40 @@ impl Store {
 		Ok(PrefixIterator::new(tx, cursor, prefix, deserialize))
 	}
 
-	/// Builds a new batch to be used with this store.
-	pub fn batch(&self) -> Result<Batch<'_>, Error> {
+	/// Builds a new read only batch to be used with this store.
+	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
+		// check if the db needs resizing before returning the batch
+		if self.needs_resize()? {
+			self.do_resize()?;
+		}
+		let tx = lmdb::ReadTransaction::new(self.env.clone())?;
+		Ok(Batch {
+			store: self,
+			tx_w: None,
+			tx_r: Some(tx),
+		})
+	}
+
+	/// Builds a new batch with write access to be used with this store.
+	pub fn batch_write(&self) -> Result<Batch<'_>, Error> {
 		// check if the db needs resizing before returning the batch
 		if self.needs_resize()? {
 			self.do_resize()?;
 		}
 		let tx = lmdb::WriteTransaction::new(self.env.clone())?;
-		Ok(Batch { store: self, tx })
+		Ok(Batch {
+			store: self,
+			tx_w: Some(tx),
+			tx_r: None,
+		})
 	}
 }
 
 /// Batch to write multiple Writeables to db in an atomic manner.
 pub struct Batch<'a> {
 	store: &'a Store,
-	tx: lmdb::WriteTransaction<'a>,
+	tx_w: Option<lmdb::WriteTransaction<'a>>,
+	tx_r: Option<lmdb::ReadTransaction<'a>>,
 }
 
 impl<'a> Batch<'a> {
@@ -343,10 +365,14 @@ impl<'a> Batch<'a> {
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
-		self.tx
-			.access()
-			.put(db, key, value, lmdb::put::Flags::empty())?;
-		Ok(())
+		if let Some(tx) = &self.tx_w {
+			tx.access().put(db, key, value, lmdb::put::Flags::empty())?;
+			Ok(())
+		} else {
+			return Err(Error::BatchTypeError(
+				"expected write batch, got read".to_string(),
+			));
+		}
 	}
 
 	/// Writes a single key and its `Writeable` value to the db.
@@ -381,25 +407,39 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let access = self.tx.access();
 		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
 
-		self.store.get_with(key, &access, &db, deserialize)
+		if let Some(tx) = &self.tx_r {
+			self.store.get_with(key, &tx.access(), &db, deserialize)
+		} else if let Some(tx) = &self.tx_w {
+			self.store.get_with(key, &tx.access(), &db, deserialize)
+		} else {
+			Err(Error::BatchTypeError(
+				"No Read/Write transaction is found".to_string(),
+			))
+		}
 	}
 
 	/// Whether the provided key exists.
 	/// This is in the context of the current write transaction.
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let access = self.tx.access();
 		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
-		let res: Option<&lmdb::Ignore> = access.get(db, key).to_opt()?;
-		Ok(res.is_some())
+
+		if let Some(tx) = &self.tx_r {
+			Ok(tx.access().get::<[u8], [u8]>(db, key).to_opt()?.is_some())
+		} else if let Some(tx) = &self.tx_w {
+			Ok(tx.access().get::<[u8], [u8]>(db, key).to_opt()?.is_some())
+		} else {
+			Err(Error::BatchTypeError(
+				"No Read/Write transaction is found".to_string(),
+			))
+		}
 	}
 
 	/// Produces an iterator from the provided key prefix.
@@ -434,22 +474,44 @@ impl<'a> Batch<'a> {
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
-		self.tx.access().del_key(db, key)?;
-		Ok(())
+		if let Some(tx) = &self.tx_w {
+			tx.access().del_key(db, key)?;
+			Ok(())
+		} else {
+			Err(Error::BatchTypeError(
+				"expected write batch, got read".to_string(),
+			))
+		}
 	}
 
 	/// Writes the batch to db
 	pub fn commit(self) -> Result<(), Error> {
-		self.tx.commit()?;
-		Ok(())
+		if let Some(tx) = self.tx_w {
+			tx.commit()?;
+			Ok(())
+		} else {
+			Err(Error::BatchTypeError(
+				"expected write batch, got read".to_string(),
+			))
+		}
 	}
 
 	/// Creates a child of this batch. It will be merged with its parent on
 	/// commit, abandoned otherwise.
 	pub fn child(&mut self) -> Result<Batch<'_>, Error> {
+		if self.tx_r.is_some() {
+			return Err(Error::BatchTypeError(
+				"Method 'child' called for read batch".to_string(),
+			));
+		}
+
 		Ok(Batch {
 			store: self.store,
-			tx: self.tx.child_tx()?,
+			tx_r: None,
+			tx_w: match self.tx_w.as_mut() {
+				Some(tx) => Some(tx.child_tx()?),
+				None => None,
+			},
 		})
 	}
 }

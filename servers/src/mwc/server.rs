@@ -18,7 +18,6 @@
 //! as a facade.
 
 use crate::tor::config as tor_config;
-use crate::util::secp;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -34,7 +33,7 @@ use std::{
 };
 
 use fs2::FileExt;
-use mwc_util::{static_secp_instance, to_hex, OnionV3Address};
+use mwc_util::{to_hex, OnionV3Address};
 use walkdir::WalkDir;
 
 use crate::api;
@@ -63,12 +62,14 @@ use crate::util::file::get_first_line;
 use crate::util::{RwLock, StopState};
 use futures::channel::oneshot;
 use mwc_util::logger::LogEntry;
-use mwc_util::secp::SecretKey;
-use std::collections::HashSet;
+use mwc_util::secp::{Secp256k1, SecretKey};
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 
+use crate::mwc::sync::sync_manager::SyncManager;
 use crate::p2p::libp2p_connection;
 use chrono::Utc;
+use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_core::core::TxKernel;
 use mwc_p2p::Capabilities;
 use mwc_util::from_hex;
@@ -270,9 +271,16 @@ impl Server {
 
 		pool_adapter.set_chain(shared_chain.clone());
 
+		let sync_manager: Arc<RwLock<SyncManager>> = Arc::new(RwLock::new(SyncManager::new(
+			shared_chain.clone(),
+			sync_state.clone(),
+			stop_state.clone(),
+		)));
+
 		let net_adapter = Arc::new(NetToChainAdapter::new(
 			sync_state.clone(),
 			shared_chain.clone(),
+			sync_manager.clone(),
 			tx_pool.clone(),
 			config.clone(),
 			init_net_hooks(&config),
@@ -297,6 +305,7 @@ impl Server {
 
 				println!("Starting TOR, please wait...");
 
+				let tor_secp = shared_chain.secp().clone();
 				thread::Builder::new()
 					.name("tor_listener".to_string())
 					.spawn(move || {
@@ -309,6 +318,7 @@ impl Server {
 							cloned_config.libp2p_port.unwrap_or(3417),
 							Some(&cloned_config.db_root),
 							cloned_config.tor_config.socks_port,
+							&tor_secp,
 						);
 
 						let _ = match res {
@@ -496,12 +506,12 @@ impl Server {
 
 		// Initialize our capabilities.
 		// Currently either "default" or with optional "archive_mode" (block history) support enabled.
-		let capabilities = if let Some(true) = config.archive_mode {
-			Capabilities::default() | Capabilities::BLOCK_HIST
-		} else {
-			Capabilities::default()
-		};
+		let capabilities = Capabilities::new(
+			onion_address.is_some(),
+			config.archive_mode.unwrap_or(false),
+		);
 		debug!("Capabilities: {:?}", capabilities);
+		let use_tor = onion_address.is_some();
 
 		let p2p_server = Arc::new(p2p::Server::new(
 			&config.db_root,
@@ -509,6 +519,7 @@ impl Server {
 			config.p2p_config.clone(),
 			net_adapter.clone(),
 			genesis.hash(),
+			sync_state.clone(),
 			stop_state.clone(),
 			socks_port,
 			onion_address,
@@ -544,19 +555,20 @@ impl Server {
 				seed_list,
 				config.p2p_config.clone(),
 				stop_state.clone(),
+				use_tor,
 			)?);
 		}
 
 		// Defaults to None (optional) in config file.
 		// This translates to false here so we do not skip by default.
-		let skip_sync_wait = config.skip_sync_wait.unwrap_or(false);
-		sync_state.update(SyncStatus::AwaitingPeers(!skip_sync_wait));
+		sync_state.update(SyncStatus::AwaitingPeers);
 
 		let sync_thread = sync::run_sync(
 			sync_state.clone(),
 			p2p_server.peers.clone(),
 			shared_chain.clone(),
 			stop_state.clone(),
+			sync_manager.clone(),
 		)?;
 
 		let p2p_inner = p2p_server.clone();
@@ -564,6 +576,7 @@ impl Server {
 			.name("p2p-server".to_string())
 			.spawn(move || {
 				if let Err(e) = p2p_inner.listen() {
+					// QW wallet using for tracking
 					error!("P2P server failed with erorr: {:?}", e);
 				}
 			})?;
@@ -650,6 +663,7 @@ impl Server {
 		libp2p_port: u16,
 		tor_base: Option<&str>,
 		socks_port: u16,
+		secp: &Secp256k1,
 	) -> Result<(tor_process::TorProcess, String, SecretKey), Error> {
 		let mut process = tor_process::TorProcess::new();
 		let tor_dir = if tor_base.is_some() {
@@ -699,10 +713,7 @@ impl Server {
 		let scoped_vec;
 		let mut existing_onion = None;
 		let secret = if !found {
-			let secp = static_secp_instance();
-			let secp = secp.lock();
-
-			let sec_key = secp::key::SecretKey::new(&secp, &mut rand::thread_rng());
+			let sec_key = SecretKey::new(&secp, &mut rand::thread_rng());
 			scoped_vec = vec![sec_key.clone()];
 			sec_key_vec = Some((scoped_vec).as_slice());
 
@@ -714,9 +725,6 @@ impl Server {
 				.to_string();
 			sec_key
 		} else {
-			let secp = static_secp_instance();
-			let secp = secp.lock();
-
 			existing_onion = Some(onion_address.clone());
 			// Read Secret from the file.
 			let sec = tor_config::read_sec_key_file(
@@ -779,7 +787,7 @@ impl Server {
 	}
 
 	/// Asks the server to connect to a peer at the provided network address.
-	pub fn connect_peer(&self, addr: PeerAddr) -> Result<(), Error> {
+	pub fn connect_peer(&self, addr: &PeerAddr) -> Result<(), Error> {
 		self.p2p.connect(addr)?;
 		Ok(())
 	}
@@ -899,8 +907,9 @@ impl Server {
 		// code clean. This may be handy for testing but not really needed
 		// for release
 		let diff_stats = {
+			let mut cache_values: VecDeque<HeaderDifficultyInfo> = VecDeque::new();
 			let last_blocks: Vec<consensus::HeaderDifficultyInfo> =
-				global::difficulty_data_to_vector(self.chain.difficulty_iter()?)
+				global::difficulty_data_to_vector(self.chain.difficulty_iter()?, &mut cache_values)
 					.into_iter()
 					.collect();
 

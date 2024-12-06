@@ -45,7 +45,7 @@ brew install openssl
 
 ```sh
 git clone https://github.com/mwcproject/mwc-node.git
-cd mwc
+cd mwc-node
 cargo build --release
 ```
 

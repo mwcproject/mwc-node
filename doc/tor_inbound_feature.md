@@ -68,9 +68,6 @@ tor_external = false
 onion_address = ""
 ```
 
-Also, you will need to update the 'bits' parameter to tell your instance that tor messages are enabled:
-```bits = 31```
-
 # TUI details
 
 When running with TOR enabled you should see details like this in your TUI:

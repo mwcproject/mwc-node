@@ -120,7 +120,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			if let Err(e) = bitmap_segment.validate(
 				bitmap_pmmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
 				None,
-				bitmap_root,
+				&bitmap_root,
 			) {
 				panic!("Unable to validate bitmap_root: {}", e);
 			}
@@ -154,7 +154,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			if let Err(e) = output_segment.validate(
 				horizon_header.output_mmr_size, // Last MMR pos at the height being validated
 				Some(&bitmap),
-				horizon_header.output_root, // Output root we're checking for
+				&horizon_header.output_root, // Output root we're checking for
 			) {
 				panic!("Unable to validate output segment root: {}", e);
 			}
@@ -176,7 +176,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			if let Err(e) = rangeproof_segment.validate(
 				horizon_header.output_mmr_size, // Last MMR pos at the height being validated
 				Some(&bitmap),
-				horizon_header.range_proof_root, // Output root we're checking for
+				&horizon_header.range_proof_root, // Output root we're checking for
 			) {
 				panic!("Unable to validate rangeproof segment root: {}", e);
 			}
@@ -195,7 +195,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			if let Err(e) = kernel_segment.validate(
 				horizon_header.kernel_mmr_size,
 				None,
-				horizon_header.kernel_root,
+				&horizon_header.kernel_root,
 			) {
 				panic!("Unable to validate kernel_segment root: {}", e);
 			}
@@ -204,7 +204,6 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 }
 
 #[test]
-// TODO: Fix before merge into master
 #[ignore]
 fn test_pibd_chain_validation_sample() {
 	util::init_test_logger();

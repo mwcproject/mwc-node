@@ -16,8 +16,12 @@
 //! Syncing of the chain with the rest of the network
 
 mod body_sync;
+mod header_hashes_sync;
 mod header_sync;
 mod state_sync;
+pub mod sync_manager;
+mod sync_peers;
+mod sync_utils;
 mod syncer;
 
 pub use self::syncer::run_sync;

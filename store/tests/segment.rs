@@ -60,7 +60,7 @@ fn prunable_mmr() {
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
 	);
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune a few leaves
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -76,7 +76,7 @@ fn prunable_mmr() {
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
 	);
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune more
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -92,7 +92,7 @@ fn prunable_mmr() {
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
 	);
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune all but 1
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -108,7 +108,7 @@ fn prunable_mmr() {
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
 	);
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune all
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -125,7 +125,7 @@ fn prunable_mmr() {
 
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune second and third to last leaves (a full peak in the MMR)
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -137,7 +137,7 @@ fn prunable_mmr() {
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune final element
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -149,7 +149,7 @@ fn prunable_mmr() {
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	std::mem::drop(ba);
 	fs::remove_dir_all(&data_dir).unwrap();
@@ -196,7 +196,7 @@ fn pruned_segment() {
 		(ba.get_hash(13).unwrap(), 14)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune all leaves of segment 0
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -218,7 +218,7 @@ fn pruned_segment() {
 		(ba.get_hash(14).unwrap(), 15)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune all leaves of segment 2 & 3
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -240,7 +240,7 @@ fn pruned_segment() {
 		(root, 31)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	let n_leaves = n_leaves + 4 + 2 + 1;
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -271,7 +271,7 @@ fn pruned_segment() {
 		(ba.get_hash(37).unwrap(), 38)
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_none());
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Segment 5 has 2 peaks
 	let id = SegmentIdentifier { height: 2, idx: 5 };
@@ -286,7 +286,7 @@ fn pruned_segment() {
 		1 + segment.segment_pos_range(last_pos).1
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_some());
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 	let prev_segment = segment;
 
 	// Prune final leaf (a peak)
@@ -300,7 +300,7 @@ fn pruned_segment() {
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
 	let segment = Segment::from_pmmr(id, &mmr, true).unwrap();
 	assert_eq!(segment, prev_segment);
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune other peak of segment 5
 	let mut mmr = PMMR::at(&mut ba, last_pos);
@@ -322,7 +322,7 @@ fn pruned_segment() {
 		1 + segment.segment_pos_range(last_pos).1
 	);
 	assert!(segment.root(last_pos, Some(&bitmap)).unwrap().is_some());
-	segment.validate(last_pos, Some(&bitmap), root).unwrap();
+	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	std::mem::drop(ba);
 	fs::remove_dir_all(&data_dir).unwrap();
@@ -380,8 +380,8 @@ fn ser_round_trip() {
 
 fn prune<T, B>(mmr: &mut PMMR<T, B>, bitmap: &mut Bitmap, leaf_idxs: &[u64])
 where
-	T: PMMRable,
-	B: Backend<T>,
+	T: PMMRable + Sync,
+	B: Backend<T> + Sync,
 {
 	for &leaf_idx in leaf_idxs {
 		mmr.prune(pmmr::insertion_to_pmmr_index(leaf_idx)).unwrap();

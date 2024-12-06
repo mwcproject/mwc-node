@@ -29,6 +29,7 @@ use crate::genesis;
 use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use util::OneTime;
@@ -482,15 +483,91 @@ pub fn get_network_name() -> String {
 /// Converts an iterator of block difficulty data to more a more manageable
 /// vector and pads if needed (which will) only be needed for the first few
 /// blocks after genesis
-
-pub fn difficulty_data_to_vector<T>(cursor: T) -> Vec<HeaderDifficultyInfo>
+/// cache_values is needed becuase during headers sync process, this step taking almost 50% of time (cpmparable to header POW verification time)
+pub fn difficulty_data_to_vector<T>(
+	cursor: T,
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+) -> Vec<HeaderDifficultyInfo>
 where
 	T: IntoIterator<Item = HeaderDifficultyInfo>,
 {
 	// Convert iterator to vector, so we can append to it if necessary
 	let needed_block_count = DIFFICULTY_ADJUST_WINDOW as usize + 1;
-	let mut last_n: Vec<HeaderDifficultyInfo> =
-		cursor.into_iter().take(needed_block_count).collect();
+
+	// In debug mode we want to validate the cache. It is expected that last_n are exactly the same with and without a cache
+	#[cfg(debug_assertions)]
+	let test_last_n: Vec<HeaderDifficultyInfo> = cursor.into_iter().take(needed_block_count).collect();
+	#[cfg(debug_assertions)]
+	let cursor = test_last_n.clone().into_iter();
+
+	let mut last_n: Vec<HeaderDifficultyInfo> = Vec::with_capacity(needed_block_count);
+
+	let mut iter = cursor.into_iter();
+	while let Some(item) = iter.next() {
+		if !cache_values.is_empty() {
+			let cache_tail = cache_values.front().unwrap();
+			let cache_head = cache_values.back().unwrap();
+
+			if item.height
+				>= cache_tail.height + (needed_block_count - 1) as u64 - last_n.len() as u64
+				&& item.height <= cache_head.height
+			{
+				let item_idx = (item.height - cache_tail.height) as usize;
+				debug_assert!(cache_values[item_idx].height == item.height);
+				if cache_values[item_idx].hash == item.hash {
+					let base_idx = item_idx + last_n.len();
+					// cash hit, can finish the query
+					while let Some(h) = last_n.pop() {
+						debug_assert!(cache_values.back().unwrap().height + 1 == h.height);
+						cache_values.push_back(h);
+					}
+					debug_assert!(last_n.is_empty());
+					for i in 0..needed_block_count {
+						last_n.push(cache_values[base_idx - i].clone());
+					}
+					// done with cursor, last_n is full
+					break;
+				} else {
+					// cache is invalid, probably there are branches
+					cache_values.clear();
+				}
+			}
+		}
+		last_n.push(item);
+		if last_n.len() == needed_block_count && needed_block_count > 2 {
+			// cache is absolete, lets init it, but hirst we want to invalidate the data
+			// In test cases there are cases that we can't cache well
+			let mut last_n_valid = true;
+
+			for i in 1..last_n.len() {
+				let h1 = &last_n[i - 1];
+				let h2 = &last_n[i];
+				if h1.height <= h2.height
+					|| h1.hash.is_none()
+					|| h1.difficulty <= h2.difficulty
+					|| h1.timestamp <= h2.timestamp
+				{
+					last_n_valid = false;
+					break;
+				}
+			}
+
+			cache_values.clear();
+			if last_n_valid {
+				cache_values.extend(last_n.iter().rev().cloned());
+			}
+			break;
+		}
+	}
+
+	if cache_values.len() > needed_block_count * 10 {
+		cache_values.drain(0..(cache_values.len() - needed_block_count * 7));
+	}
+
+	#[cfg(debug_assertions)]
+	{
+		assert!(test_last_n == last_n);
+	}
 
 	// Only needed just after blockchain launch... basically ensures there's
 	// always enough data by simulating perfectly timed pre-genesis

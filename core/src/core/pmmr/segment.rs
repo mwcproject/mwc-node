@@ -23,7 +23,7 @@ use std::cmp::min;
 use std::fmt;
 use std::fmt::{Debug, Display};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 /// Possible segment types, according to this desegmenter
 pub enum SegmentType {
 	/// Output Bitmap
@@ -38,7 +38,7 @@ pub enum SegmentType {
 
 /// Lumps possible types with segment ids to enable a unique identifier
 /// for a segment with respect to a particular archive header
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct SegmentTypeIdentifier {
 	/// The type of this segment
 	pub segment_type: SegmentType,
@@ -74,7 +74,7 @@ pub enum SegmentError {
 }
 
 /// Tuple that defines a segment of a given PMMR
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct SegmentIdentifier {
 	/// Height of a segment
 	pub height: u8,
@@ -120,9 +120,9 @@ impl SegmentIdentifier {
 
 	/// Returns number of segments required that would needed in order to read a
 	/// pmmr of size `target_mmr_size` in segments of height `segment_height`
-	pub fn count_segments_required(target_mmr_size: u64, segment_height: u8) -> usize {
+	pub fn count_segments_required(target_mmr_size: u64, segment_height: u8) -> u64 {
 		let d = 1 << segment_height;
-		((pmmr::n_leaves(target_mmr_size) + d - 1) / d) as usize
+		(pmmr::n_leaves(target_mmr_size) + d - 1) / d
 	}
 
 	/// Return pmmr size of number of segments of the given height
@@ -263,16 +263,16 @@ impl<T> Segment<T> {
 		leaf_data: Vec<T>,
 		proof: SegmentProof,
 	) -> Self {
-		assert_eq!(hash_pos.len(), hashes.len());
+		debug_assert_eq!(hash_pos.len(), hashes.len());
 		let mut last = 0;
 		for &pos in &hash_pos {
-			assert!(last == 0 || pos > last);
+			debug_assert!(last == 0 || pos > last);
 			last = pos;
 		}
-		assert_eq!(leaf_pos.len(), leaf_data.len());
+		debug_assert_eq!(leaf_pos.len(), leaf_data.len());
 		last = 0;
 		for &pos in &leaf_pos {
-			assert!(last == 0 || pos > last);
+			debug_assert!(last == 0 || pos > last);
 			last = pos;
 		}
 
@@ -305,8 +305,8 @@ impl<T> Segment<T> {
 	}
 
 	/// Segment identifier
-	pub fn id(&self) -> SegmentIdentifier {
-		self.identifier
+	pub fn id(&self) -> &SegmentIdentifier {
+		&self.identifier
 	}
 }
 
@@ -464,7 +464,8 @@ where
 			Ok(hashes.pop().unwrap())
 		} else {
 			// Not full (only final segment): peaks in segment, bag them together
-			let peaks = pmmr::peaks(mmr_size)
+			let peaks = pmmr::peaks(mmr_size);
+			let peaks = peaks
 				.into_iter()
 				.filter(|&pos0| pos0 >= segment_first_pos && pos0 <= segment_last_pos)
 				.rev();
@@ -531,7 +532,7 @@ where
 		&self,
 		mmr_size: u64,
 		bitmap: Option<&Bitmap>,
-		mmr_root: Hash,
+		mmr_root: &Hash,
 	) -> Result<(), SegmentError> {
 		let (first, last) = self.segment_pos_range(mmr_size);
 		let (segment_root, segment_unpruned_pos) = self.first_unpruned_parent(mmr_size, bitmap)?;
@@ -749,7 +750,7 @@ impl SegmentProof {
 	pub fn validate(
 		&self,
 		last_pos: u64,
-		mmr_root: Hash,
+		mmr_root: &Hash,
 		segment_first_pos: u64,
 		segment_last_pos: u64,
 		segment_root: Hash,
@@ -762,7 +763,7 @@ impl SegmentProof {
 			segment_root,
 			segment_unpruned_pos,
 		)?;
-		if root == mmr_root {
+		if root == *mmr_root {
 			Ok(())
 		} else {
 			Err(SegmentError::Mismatch)

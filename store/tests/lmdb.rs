@@ -77,7 +77,7 @@ fn test_exists() -> Result<(), store::Error> {
 	let value = [1, 1, 1, 1];
 
 	// Start new batch and insert a new key/value entry.
-	let batch = store.batch()?;
+	let batch = store.batch_write()?;
 	batch.put(&key, &value)?;
 
 	// Check we can see the new entry in uncommitted batch.
@@ -106,7 +106,7 @@ fn test_iter() -> Result<(), store::Error> {
 	let value = [1, 1, 1, 1];
 
 	// Start new batch and insert a new key/value entry.
-	let batch = store.batch()?;
+	let batch = store.batch_write()?;
 	batch.put(&key, &value)?;
 
 	// TODO - This is not currently possible (and we need to be aware of this).
@@ -145,7 +145,7 @@ fn lmdb_allocate() -> Result<(), store::Error> {
 			println!("Allocating chunk: {}", i);
 			let chunk = PhatChunkStruct::new();
 			let key_val = format!("phat_chunk_set_1_{}", i);
-			let batch = store.batch()?;
+			let batch = store.batch_write()?;
 			let key = store::to_key(b'P', &key_val);
 			batch.put_ser(&key, &chunk)?;
 			batch.commit()?;
@@ -161,7 +161,7 @@ fn lmdb_allocate() -> Result<(), store::Error> {
 			println!("Allocating chunk: {}", i);
 			let chunk = PhatChunkStruct::new();
 			let key_val = format!("phat_chunk_set_2_{}", i);
-			let batch = store.batch()?;
+			let batch = store.batch_write()?;
 			let key = store::to_key(b'P', &key_val);
 			batch.put_ser(&key, &chunk)?;
 			batch.commit()?;

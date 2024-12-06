@@ -26,7 +26,9 @@ use self::keychain::{ExtKeychainPath, Keychain};
 use chrono::Duration;
 use mwc_chain as chain;
 use mwc_core as core;
+use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_keychain as keychain;
+use std::collections::VecDeque;
 use std::fs;
 use std::sync::Arc;
 
@@ -59,6 +61,7 @@ where
 		0,
 		false,
 		0, // at MWC genesys block has to has height 0, mwc it tolerant to that.
+		keychain.secp(),
 	)
 	.unwrap();
 
@@ -82,10 +85,14 @@ fn mine_some_on_top<K>(chain: &mut Chain, chain_length: u64, keychain: &K)
 where
 	K: Keychain,
 {
+	let mut cache_values: VecDeque<HeaderDifficultyInfo> = VecDeque::new();
 	for n in 1..chain_length {
 		let prev = chain.head_header().unwrap();
-		let next_header_info =
-			consensus::next_difficulty(prev.height + 1, chain.difficulty_iter().unwrap());
+		let next_header_info = consensus::next_difficulty(
+			prev.height + 1,
+			chain.difficulty_iter().unwrap(),
+			&mut cache_values,
+		);
 		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
 		let reward = libtx::reward::output(
 			keychain,
@@ -94,10 +101,17 @@ where
 			0,
 			false,
 			n,
+			keychain.secp(),
 		)
 		.unwrap();
-		let mut b =
-			core::core::Block::new(&prev, &[], next_header_info.difficulty, reward).unwrap();
+		let mut b = core::core::Block::new(
+			&prev,
+			&[],
+			next_header_info.difficulty,
+			reward,
+			keychain.secp(),
+		)
+		.unwrap();
 		b.header.timestamp = prev.timestamp + Duration::seconds(60);
 		b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 

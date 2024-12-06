@@ -1,6 +1,6 @@
 [package]
 name = "mwc"
-version = "5.3.5"
+version = "5.3.6"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -33,14 +33,14 @@ log = "0.4"
 term = "0.6"
 thiserror = "1"
 
-mwc_api = { path = "./api", version = "5.3.5" }
-mwc_config = { path = "./config", version = "5.3.5" }
-mwc_chain = { path = "./chain", version = "5.3.5" }
-mwc_core = { path = "./core", version = "5.3.5" }
-mwc_keychain = { path = "./keychain", version = "5.3.5" }
-mwc_p2p = { path = "./p2p", version = "5.3.5" }
-mwc_servers = { path = "./servers", version = "5.3.5" }
-mwc_util = { path = "./util", version = "5.3.5" }
+mwc_api = { path = "./api", version = "5.3.6" }
+mwc_config = { path = "./config", version = "5.3.6" }
+mwc_chain = { path = "./chain", version = "5.3.6" }
+mwc_core = { path = "./core", version = "5.3.6" }
+mwc_keychain = { path = "./keychain", version = "5.3.6" }
+mwc_p2p = { path = "./p2p", version = "5.3.6" }
+mwc_servers = { path = "./servers", version = "5.3.6" }
+mwc_util = { path = "./util", version = "5.3.6" }
 
 [dependencies.cursive]
 version = "0.20"
@@ -51,9 +51,16 @@ features = ["pancurses-backend"]
 built = { version = "0.4", features = ["git2"]}
 
 [dev-dependencies]
-mwc_chain = { path = "./chain", version = "5.3.5" }
-mwc_store = { path = "./store", version = "5.3.5" }
+mwc_chain = { path = "./chain", version = "5.3.6" }
+mwc_store = { path = "./store", version = "5.3.6" }
 
 [profile.release-with-debug]
 inherits = "release"
 debug = true
+
+#[profile.test]
+#opt-level = 3  # Same as the release profile
+#debug = false  # Disable debug symbols (if not needed)
+#lto = true     # Enable Link-Time Optimization
+#codegen-units = 1  # Optimize for size/speed
+#overflow-checks = false

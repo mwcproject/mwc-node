@@ -34,6 +34,7 @@ use mwc_chain as chain;
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_pool as pool;
+use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
@@ -44,8 +45,16 @@ where
 	K: Keychain,
 {
 	let key_id = keychain::ExtKeychain::derive_key_id(1, 0, 0, 0, 0);
-	let reward =
-		reward::output(keychain, &ProofBuilder::new(keychain), &key_id, 0, false, 0).unwrap();
+	let reward = reward::output(
+		keychain,
+		&ProofBuilder::new(keychain),
+		&key_id,
+		0,
+		false,
+		0,
+		keychain.secp(),
+	)
+	.unwrap();
 
 	genesis::genesis_dev().with_reward(reward.0, reward.1)
 }
@@ -76,7 +85,9 @@ where
 {
 	let prev = chain.head_header().unwrap();
 	let height = prev.height + 1;
-	let next_header_info = consensus::next_difficulty(height, chain.difficulty_iter().unwrap());
+	let mut cache_values = VecDeque::new();
+	let next_header_info =
+		consensus::next_difficulty(height, chain.difficulty_iter().unwrap(), &mut cache_values);
 	let fee = txs.iter().map(|x| x.fee(height)).sum();
 	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
@@ -86,10 +97,18 @@ where
 		fee,
 		false,
 		height,
+		chain.secp(),
 	)
 	.unwrap();
 
-	let mut block = Block::new(&prev, txs, next_header_info.clone().difficulty, reward).unwrap();
+	let mut block = Block::new(
+		&prev,
+		txs,
+		next_header_info.clone().difficulty,
+		reward,
+		chain.secp(),
+	)
+	.unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;

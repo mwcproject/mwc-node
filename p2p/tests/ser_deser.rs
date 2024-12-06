@@ -46,25 +46,20 @@ fn test_capabilities() {
 	let expected = p2p::types::Capabilities::default();
 
 	assert_eq!(
-		p2p::types::Capabilities::from_bits_truncate(0b00000000 as u32),
+		p2p::types::Capabilities::from_bits_truncate(0b_0000_0000 as u32),
 		p2p::types::Capabilities::UNKNOWN
 	);
 	assert_eq!(
-		p2p::types::Capabilities::from_bits_truncate(0b10000000 as u32),
+		p2p::types::Capabilities::from_bits_truncate(0b1_0000_0000 as u32),
 		p2p::types::Capabilities::UNKNOWN
 	);
 
 	assert_eq!(
 		expected,
-		p2p::types::Capabilities::from_bits_truncate(0b111111 as u32),
+		p2p::types::Capabilities::from_bits_truncate(0b_1011_1111 as u32),
 	);
 
-	assert_eq!(
-		expected,
-		p2p::types::Capabilities::from_bits_truncate(0b0111111 as u32),
-	);
-
-	assert!(p2p::types::Capabilities::from_bits_truncate(0b0111111 as u32).contains(expected));
+	assert!(p2p::types::Capabilities::from_bits_truncate(0b_1111_1111 as u32).contains(expected));
 
 	assert!(
 		p2p::types::Capabilities::from_bits_truncate(0b00101111 as u32)

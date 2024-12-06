@@ -260,6 +260,7 @@ impl From<UntrustedCompactBlock> for CompactBlock {
 
 /// Compackt block which does lightweight validation as part of deserialization,
 /// it supposed to be used when we can't trust the channel (eg network)
+#[derive(Debug)]
 pub struct UntrustedCompactBlock(CompactBlock);
 
 /// Implementation of Readable for an untrusted compact block, defines how to read a

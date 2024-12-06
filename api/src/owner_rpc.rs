@@ -51,7 +51,7 @@ pub trait OwnerRpc: Sync + Send {
 		"result": {
 			"Ok": {
 			"protocol_version": "2",
-			"user_agent": "MW/Mwc 2.x.x",
+			"user_agent": "MW/MWC 2.x.x",
 			"connections": "8",
 			"tip": {
 				"height": 371553,
@@ -168,7 +168,7 @@ pub trait OwnerRpc: Sync + Send {
 				"flags": "Defunct",
 				"last_banned": 0,
 				"last_connected": 1570129317,
-				"user_agent": "MW/Mwc 2.0.0"
+				"user_agent": "MW/MWC 2.0.0"
 			}
 			]
 		}
@@ -209,7 +209,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -220,7 +220,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -231,7 +231,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -242,7 +242,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -253,7 +253,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 0,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -264,7 +264,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -275,7 +275,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			},
 			{
@@ -286,7 +286,7 @@ pub trait OwnerRpc: Sync + Send {
 				"direction": "Outbound",
 				"height": 374510,
 				"total_difficulty": 1133954621205750,
-				"user_agent": "MW/Mwc 2.0.0",
+				"user_agent": "MW/MWC 2.0.0",
 				"version": 1
 			}
 			]
