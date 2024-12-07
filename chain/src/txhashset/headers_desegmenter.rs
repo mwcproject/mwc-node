@@ -379,6 +379,8 @@ impl<T> HeadersRecieveCache<T> {
 			.insert(first_header.height, (bhs, peer_info));
 
 		// Apply data from cache if possible
+		let mut headers_all: Vec<BlockHeader> = Vec::new();
+		let mut headers_by_peer: Vec<(Vec<BlockHeader>, T)> = Vec::new();
 		let tip = self
 			.chain
 			.header_head()
@@ -399,13 +401,66 @@ impl<T> HeadersRecieveCache<T> {
 			if *height > tip_height + 1 {
 				break;
 			}
-			let (_, (bhs, peer)) = self.main_headers_cache.pop_first().unwrap();
+			let (_, (mut bhs, peer)) = self.main_headers_cache.pop_first().unwrap();
 			tip_height = bhs.last().expect("bhs can't be empty").height;
 
-			// Adding headers into the blockchian. Adding by 512 is optimal, DB not design to add large number of headers
-			match self.chain.sync_block_headers(&bhs, tip, Options::NONE) {
+			headers_by_peer.push((bhs.clone(), peer));
+			headers_all.append(&mut bhs);
+
+			if headers_all.len() > 5000 {
+				match self
+					.chain
+					.sync_block_headers(&headers_all, tip, Options::NONE)
+				{
+					Ok(_) => {}
+					Err(e) => {
+						warn!(
+							"add_headers in bulk is failed, will add one by one. Error: {}",
+							e
+						);
+						// apply one by one
+						for (hdr, peer) in headers_by_peer {
+							let tip = self
+								.chain
+								.header_head()
+								.expect("Header head must be always defined");
+
+							match self.chain.sync_block_headers(&hdr, tip, Options::NONE) {
+								Ok(_) => {}
+								Err(e) => return Err((peer, e)),
+							}
+						}
+					}
+				}
+				headers_all = Vec::new();
+				headers_by_peer = Vec::new();
+			}
+		}
+
+		if !headers_all.is_empty() {
+			match self
+				.chain
+				.sync_block_headers(&headers_all, tip, Options::NONE)
+			{
 				Ok(_) => {}
-				Err(e) => return Err((peer, e)),
+				Err(e) => {
+					warn!(
+						"add_headers in bulk is failed, will add one by one. Error: {}",
+						e
+					);
+					// apply one by one
+					for (hdr, peer) in headers_by_peer {
+						let tip = self
+							.chain
+							.header_head()
+							.expect("Header head must be always defined");
+
+						match self.chain.sync_block_headers(&hdr, tip, Options::NONE) {
+							Ok(_) => {}
+							Err(e) => return Err((peer, e)),
+						}
+					}
+				}
 			}
 		}
 

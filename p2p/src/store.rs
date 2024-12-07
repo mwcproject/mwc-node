@@ -174,9 +174,14 @@ impl PeerStore {
 		cap: Capabilities,
 		count: usize,
 	) -> Result<Vec<PeerData>, Error> {
+		// All new peers has flags Capabilities::UNKNOWN, that is why we better to return themn as well.
+		// Node will try to connect to them and find the capability.
 		let mut peers = self
 			.peers_iter()?
-			.filter(|p| p.flags == state && p.capabilities.contains(cap))
+			.filter(|p| {
+				p.flags == state
+					&& (p.capabilities == Capabilities::UNKNOWN || p.capabilities.contains(cap))
+			})
 			.collect::<Vec<_>>();
 		peers[..].shuffle(&mut thread_rng());
 		Ok(peers.iter().take(count).cloned().collect())
