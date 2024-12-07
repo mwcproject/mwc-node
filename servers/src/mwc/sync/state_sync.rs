@@ -25,8 +25,8 @@ use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{BitmapChunk, Desegmenter};
 use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
-use mwc_core::core::{OutputIdentifier, Segment, TxKernel};
-use mwc_p2p::PeerAddr;
+use mwc_core::core::{OutputIdentifier, Segment, SegmentTypeIdentifier, TxKernel};
+use mwc_p2p::{Error, PeerAddr};
 use mwc_util::secp::pedersen::RangeProof;
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
@@ -48,7 +48,7 @@ pub struct StateSync {
 	responded_root_hash: HashMap<PeerAddr, (Hash, DateTime<Utc>)>,
 	responded_with_another_height: HashSet<PeerAddr>,
 	// sync for segments
-	request_tracker: RequestTracker<(SegmentType, u64)>,
+	request_tracker: RequestTracker<(SegmentType, u64), (SegmentTypeIdentifier, Hash)>,
 	is_complete: bool,
 	pibd_params: Arc<PibdParams>,
 }
@@ -74,7 +74,7 @@ impl StateSync {
 
 	pub fn request(
 		&mut self,
-		peers: &Arc<p2p::Peers>,
+		in_peers: &Arc<p2p::Peers>,
 		sync_state: Arc<SyncState>,
 		sync_peers: &mut SyncPeers,
 		stop_state: Arc<StopState>,
@@ -147,23 +147,35 @@ impl StateSync {
 		};
 
 		// Requesting root_hash...
-		let (peers, excluded_requests) = sync_utils::get_sync_peers(
-			peers,
+		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
+			in_peers,
 			self.pibd_params.get_segments_request_per_peer(),
 			Capabilities::PIBD_HIST,
 			self.target_archive_height,
 			self.request_tracker.get_requests_num(),
-			&self.request_tracker.get_peers_queue_size(),
+			&self.request_tracker.get_peers_track_data(),
 		);
 		if peers.is_empty() {
-			return SyncResponse::new(
-				SyncRequestResponses::WaitingForPeers,
-				Self::get_peer_capabilities(),
-				format!(
-					"No peers to make requests. Waiting Q size: {}",
-					self.request_tracker.get_requests_num()
-				),
-			);
+			if excluded_peers == 0 {
+				return SyncResponse::new(
+					SyncRequestResponses::WaitingForPeers,
+					Self::get_peer_capabilities(),
+					format!(
+						"No peers to make requests. Waiting Q size: {}",
+						self.request_tracker.get_requests_num()
+					),
+				);
+			} else {
+				return SyncResponse::new(
+					SyncRequestResponses::Syncing,
+					Self::get_peer_capabilities(),
+					format!(
+						"Has peers: {} Requests in waiting Q: {}",
+						excluded_peers,
+						self.request_tracker.get_requests_num()
+					),
+				);
+			}
 		}
 
 		let now = Utc::now();
@@ -253,7 +265,7 @@ impl StateSync {
 					Self::get_peer_capabilities(),
 					format!(
 						"Waiting for PIBD root. Hash peers: {} Get respoinses {} from {}",
-						peers.len(),
+						peers.len() + excluded_peers as usize,
 						self.responded_root_hash.len(),
 						self.requested_root_hash.len()
 					),
@@ -295,7 +307,7 @@ impl StateSync {
 					return SyncResponse::new(
 						SyncRequestResponses::StatePibdReady,
 						Capabilities::UNKNOWN,
-						"PIBD download and valiadion is done with success!".into(),
+						"PIBD download and validaion is done with success!".into(),
 					);
 				}
 				Err(e) => {
@@ -318,8 +330,27 @@ impl StateSync {
 
 		debug_assert!(!desegmenter.is_complete());
 
-		self.request_tracker
-			.retain_expired(pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS, sync_peers);
+		self.request_tracker.retain_expired(
+			pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS,
+			sync_peers,
+			|peer, (segment, target_archive_hash)| {
+				debug!(
+					"Making request retry for segment {:?}, peer {:?}",
+					segment, peer
+				);
+				if let Some(peer) = in_peers.get_connected_peer(peer) {
+					match Self::send_request(&peer, &segment, &target_archive_hash) {
+						Ok(_) => return true,
+						Err(e) => error!(
+							"Unable to retry request for segment {:?}, peer {:?}. Error: {}",
+							segment, peer, e
+						),
+					}
+				}
+				false
+			},
+		);
+
 		sync_state.update(desegmenter.get_pibd_progress());
 
 		let mut rng = rand::thread_rng();
@@ -367,6 +398,7 @@ impl StateSync {
 		let need_request = self.request_tracker.calculate_needed_requests(
 			root_hash_peers.len(),
 			excluded_requests as usize,
+			excluded_peers as usize,
 			self.pibd_params.get_segments_request_per_peer(),
 			self.pibd_params.get_segments_requests_limit(),
 		);
@@ -383,24 +415,7 @@ impl StateSync {
 							.choose(&mut rng)
 							.expect("peers is not empty");
 
-						let send_res = match seg.segment_type {
-							SegmentType::Bitmap => peer.send_bitmap_segment_request(
-								self.target_archive_hash.clone(),
-								seg.identifier,
-							),
-							SegmentType::Output => peer.send_output_segment_request(
-								self.target_archive_hash.clone(),
-								seg.identifier,
-							),
-							SegmentType::RangeProof => peer.send_rangeproof_segment_request(
-								self.target_archive_hash.clone(),
-								seg.identifier,
-							),
-							SegmentType::Kernel => peer.send_kernel_segment_request(
-								self.target_archive_hash.clone(),
-								seg.identifier,
-							),
-						};
+						let send_res = Self::send_request(peer, &seg, &self.target_archive_hash);
 						match send_res {
 							Ok(_) => {
 								let msg = format!("{:?}", key);
@@ -408,6 +423,7 @@ impl StateSync {
 									key,
 									peer.info.addr.clone(),
 									msg,
+									(seg.clone(), self.target_archive_hash.clone()),
 								);
 							}
 							Err(e) => {
@@ -425,7 +441,7 @@ impl StateSync {
 						Self::get_peer_capabilities(),
 						format!(
 							"Has peers: {} Requests in waiting Q: {}",
-							root_hash_peers.len(),
+							root_hash_peers.len() + excluded_peers as usize,
 							self.request_tracker.get_requests_num()
 						),
 					);
@@ -448,7 +464,7 @@ impl StateSync {
 			Self::get_peer_capabilities(),
 			format!(
 				"Has peers {}, Requests in waiting Q: {}",
-				root_hash_peers.len(),
+				root_hash_peers.len() + excluded_peers as usize,
 				self.request_tracker.get_requests_num()
 			),
 		);
@@ -546,13 +562,13 @@ impl StateSync {
 		if let Some(peer_addr) = self.request_tracker.remove_request(key) {
 			if peer_addr == *peer {
 				if self.request_tracker.get_update_requests_to_next_ask() == 0 {
-					let (peers, excluded_requests) = sync_utils::get_sync_peers(
+					let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 						peers,
 						self.pibd_params.get_segments_request_per_peer(),
 						Capabilities::PIBD_HIST,
 						self.target_archive_height,
 						self.request_tracker.get_requests_num(),
-						&self.request_tracker.get_peers_queue_size(),
+						&self.request_tracker.get_peers_track_data(),
 					);
 					if peers.is_empty() {
 						return;
@@ -586,6 +602,7 @@ impl StateSync {
 							let need_request = self.request_tracker.calculate_needed_requests(
 								root_hash_peers.len(),
 								excluded_requests as usize,
+								excluded_peers as usize,
 								self.pibd_params.get_segments_request_per_peer(),
 								self.pibd_params.get_segments_requests_limit(),
 							);
@@ -606,28 +623,11 @@ impl StateSync {
 												.choose(&mut rng)
 												.expect("peers is not empty");
 
-											let send_res = match seg.segment_type {
-												SegmentType::Bitmap => peer
-													.send_bitmap_segment_request(
-														self.target_archive_hash.clone(),
-														seg.identifier,
-													),
-												SegmentType::Output => peer
-													.send_output_segment_request(
-														self.target_archive_hash.clone(),
-														seg.identifier,
-													),
-												SegmentType::RangeProof => peer
-													.send_rangeproof_segment_request(
-														self.target_archive_hash.clone(),
-														seg.identifier,
-													),
-												SegmentType::Kernel => peer
-													.send_kernel_segment_request(
-														self.target_archive_hash.clone(),
-														seg.identifier,
-													),
-											};
+											let send_res = Self::send_request(
+												peer,
+												&seg,
+												&self.target_archive_hash,
+											);
 											match send_res {
 												Ok(_) => {
 													let msg = format!("{:?}", key);
@@ -635,6 +635,10 @@ impl StateSync {
 														key,
 														peer.info.addr.clone(),
 														msg,
+														(
+															seg.clone(),
+															self.target_archive_hash.clone(),
+														),
 													);
 												}
 												Err(e) => {
@@ -816,5 +820,26 @@ impl StateSync {
 		}
 
 		self.track_and_request_more_segments(&key, peer, peers, sync_peers);
+	}
+
+	fn send_request(
+		peer: &Arc<Peer>,
+		segment: &SegmentTypeIdentifier,
+		target_archive_hash: &Hash,
+	) -> Result<(), Error> {
+		let send_res = match segment.segment_type {
+			SegmentType::Bitmap => {
+				peer.send_bitmap_segment_request(target_archive_hash.clone(), segment.identifier)
+			}
+			SegmentType::Output => {
+				peer.send_output_segment_request(target_archive_hash.clone(), segment.identifier)
+			}
+			SegmentType::RangeProof => peer
+				.send_rangeproof_segment_request(target_archive_hash.clone(), segment.identifier),
+			SegmentType::Kernel => {
+				peer.send_kernel_segment_request(target_archive_hash.clone(), segment.identifier)
+			}
+		};
+		send_res
 	}
 }

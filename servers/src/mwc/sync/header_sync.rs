@@ -40,7 +40,7 @@ pub struct HeaderSync {
 	chain: Arc<chain::Chain>,
 	received_cache: Option<HeadersRecieveCache>,
 	// requested_heights is expected to be at response height, the next tothe requested
-	request_tracker: RequestTracker<Hash>,
+	request_tracker: RequestTracker<Hash, Vec<Hash>>, // Vec<Hash> - locator data for headers request
 	cached_response: Option<CachedResponse<SyncResponse>>,
 	headers_series_cache: HashMap<(PeerAddr, Hash), (Vec<BlockHeader>, DateTime<Utc>)>,
 	pibd_params: Arc<PibdParams>,
@@ -92,8 +92,26 @@ impl HeaderSync {
 			return resp;
 		}
 
-		self.request_tracker
-			.retain_expired(pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS, sync_peers);
+		self.request_tracker.retain_expired(
+			pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS,
+			sync_peers,
+			|peer, request| {
+				debug!(
+					"Making retry send_header_request({:?}) call for peer {:?}",
+					request, peer
+				);
+				if let Some(peer) = peers.get_connected_peer(peer) {
+					match peer.send_header_request(request.clone()) {
+						Ok(_) => return true,
+						Err(e) => error!(
+							"Unable to retry send_header_request({:?}) for peer {:?}. Error: {}",
+							request, peer, e
+						),
+					}
+				}
+				false
+			},
+		);
 
 		// it is initial statis flag
 		if !header_hashes.is_pibd_headers_are_loaded() {
@@ -130,23 +148,35 @@ impl HeaderSync {
 					"Chain is corrupted, please clean up the data manually and restart the node",
 				) {
 					// Requesting multiple headers
-					let (peers, excluded_requests) = sync_utils::get_sync_peers(
+					let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 						peers,
 						self.pibd_params.get_segments_request_per_peer(),
 						Capabilities::HEADER_HIST,
 						header_hashes.get_target_archive_height(),
 						self.request_tracker.get_requests_num(),
-						&self.request_tracker.get_peers_queue_size(),
+						&self.request_tracker.get_peers_track_data(),
 					);
 					if peers.is_empty() {
-						return SyncResponse::new(
-							SyncRequestResponses::WaitingForPeers,
-							Self::get_peer_capabilities(),
-							format!(
-								"No peers are available, requests waiting: {}",
-								self.request_tracker.get_requests_num()
-							),
-						);
+						if excluded_peers == 0 {
+							return SyncResponse::new(
+								SyncRequestResponses::WaitingForPeers,
+								Self::get_peer_capabilities(),
+								format!(
+									"No peers are available, requests waiting: {}",
+									self.request_tracker.get_requests_num()
+								),
+							);
+						} else {
+							return SyncResponse::new(
+								SyncRequestResponses::Syncing,
+								Self::get_peer_capabilities(),
+								format!(
+									"Has peers {}, requests waiting: {}",
+									excluded_peers,
+									self.request_tracker.get_requests_num()
+								),
+							);
+						}
 					}
 
 					sync_state.update(SyncStatus::HeaderSync {
@@ -157,12 +187,14 @@ impl HeaderSync {
 					let need_request = self.request_tracker.calculate_needed_requests(
 						peers.len(),
 						excluded_requests as usize,
+						excluded_peers as usize,
 						self.pibd_params.get_segments_request_per_peer(),
 						self.pibd_params.get_segments_requests_limit(),
 					);
 					if need_request > 0 {
 						let hashes = received_cache.next_desired_headers(headers_hash_desegmenter,
-																		 need_request, self.request_tracker.get_requested())
+																		 need_request, self.request_tracker.get_requested(),
+																		 self.pibd_params.get_headers_buffer_len())
 							.expect("Chain is corrupted, please clean up the data manually and restart the node");
 
 						let mut rng = rand::thread_rng();
@@ -173,11 +205,12 @@ impl HeaderSync {
 								.expect("Internal error. peers are empty");
 							match self.request_headers_for_hash(hash.clone(), height, peer.clone())
 							{
-								Ok(_) => {
+								Ok(locator) => {
 									self.request_tracker.register_request(
 										hash,
 										peer.info.addr.clone(),
 										format!("Header {}, {}", hash, height),
+										locator,
 									);
 								}
 								Err(e) => {
@@ -193,7 +226,7 @@ impl HeaderSync {
 						Self::get_peer_capabilities(),
 						format!(
 							"Loading headers below horizon. Has peers: {} Requests in waiting Q: {}",
-							peers.len(),
+							peers.len() + excluded_peers as usize,
 							self.request_tracker.get_requests_num()
 						),
 					);
@@ -249,11 +282,12 @@ impl HeaderSync {
 		}
 
 		match self.request_headers(header_head, sync_peer.clone()) {
-			Ok(_) => {
+			Ok(locator) => {
 				self.request_tracker.register_request(
 					header_head_hash,
 					sync_peer.info.addr.clone(),
 					format!("Tail header for {}", header_head.height),
+					locator,
 				);
 			}
 			Err(e) => {
@@ -346,24 +380,26 @@ impl HeaderSync {
 						if headers_hash_desegmenter.is_complete() {
 							// Requesting multiple headers
 
-							let (peers, excluded_requests) = sync_utils::get_sync_peers(
-								peers,
-								self.pibd_params.get_segments_request_per_peer(),
-								Capabilities::HEADER_HIST,
-								headers_hash_desegmenter.get_target_height(),
-								self.request_tracker.get_requests_num(),
-								&self.request_tracker.get_peers_queue_size(),
-							);
+							let (peers, excluded_requests, excluded_peers) =
+								sync_utils::get_sync_peers(
+									peers,
+									self.pibd_params.get_segments_request_per_peer(),
+									Capabilities::HEADER_HIST,
+									headers_hash_desegmenter.get_target_height(),
+									self.request_tracker.get_requests_num(),
+									&self.request_tracker.get_peers_track_data(),
+								);
 
 							if !peers.is_empty() {
 								let need_request = self.request_tracker.calculate_needed_requests(
 									peers.len(),
 									excluded_requests as usize,
+									excluded_peers as usize,
 									self.pibd_params.get_segments_request_per_peer(),
 									self.pibd_params.get_segments_requests_limit(),
 								);
 								if need_request > 0 {
-									let hashes = received_cache.next_desired_headers(headers_hash_desegmenter, need_request, self.request_tracker.get_requested())
+									let hashes = received_cache.next_desired_headers(headers_hash_desegmenter, need_request, self.request_tracker.get_requested(), self.pibd_params.get_headers_buffer_len())
 										.expect("Chain is corrupted, please clean up the data manually and restart the node");
 
 									let mut rng = rand::thread_rng();
@@ -378,11 +414,12 @@ impl HeaderSync {
 											height,
 											peer.clone(),
 										) {
-											Ok(_) => {
+											Ok(locator) => {
 												self.request_tracker.register_request(
 													hash,
 													peer.info.addr.clone(),
 													format!("Header {}, {}", hash, height),
+													locator,
 												);
 											}
 											Err(e) => {
@@ -463,11 +500,12 @@ impl HeaderSync {
 					if !self.request_tracker.has_request(&sync_head.last_block_h) {
 						if let Some(sync_peer) = Self::choose_sync_peer(peers) {
 							match self.request_headers(sync_head, sync_peer.clone()) {
-								Ok(_) => {
+								Ok(locator) => {
 									self.request_tracker.register_request(
 										sync_head.last_block_h,
 										sync_peer.info.addr.clone(),
 										format!("Tail headers for {}", sync_head.height),
+										locator,
 									);
 									sync_peers.report_ok_response(peer);
 								}
@@ -512,7 +550,11 @@ impl HeaderSync {
 	}
 
 	/// Request some block headers from a peer to advance us.
-	fn request_headers(&self, sync_head: chain::Tip, peer: Arc<Peer>) -> Result<(), chain::Error> {
+	fn request_headers(
+		&self,
+		sync_head: chain::Tip,
+		peer: Arc<Peer>,
+	) -> Result<Vec<Hash>, chain::Error> {
 		let locator = self
 			.get_locator(sync_head)
 			.map_err(|e| chain::Error::Other(format!("{}", e)))?;
@@ -520,9 +562,9 @@ impl HeaderSync {
 			"sync: request_headers: asking {} for headers at {}",
 			peer.info.addr, sync_head.height
 		);
-		peer.send_header_request(locator)
+		peer.send_header_request(locator.clone())
 			.map_err(|e| chain::Error::Other(format!("{}", e)))?;
-		Ok(())
+		Ok(locator)
 	}
 
 	fn request_headers_for_hash(
@@ -530,14 +572,15 @@ impl HeaderSync {
 		header_hash: Hash,
 		height: u64,
 		peer: Arc<Peer>,
-	) -> Result<(), chain::Error> {
+	) -> Result<Vec<Hash>, chain::Error> {
 		debug!(
 			"sync: request_headers: asking {} for headers at hash {}, height {}",
 			peer.info.addr, header_hash, height
 		);
-		peer.send_header_request(vec![header_hash])
+		let locator: Vec<Hash> = vec![header_hash];
+		peer.send_header_request(locator.clone())
 			.map_err(|e| chain::Error::Other(format!("{}", e)))?;
-		Ok(())
+		Ok(locator)
 	}
 
 	/// We build a locator based on sync_head.

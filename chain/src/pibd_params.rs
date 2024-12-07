@@ -37,6 +37,8 @@ pub const RANGEPROOF_SEGMENT_HEIGHT_RANGE: Range<u8> = 6..9; // ~ 675 b
 
 // Here are series for different available resources. Mem and CPU thresholds are allways the same.
 const HEADERS_HASH_BUFFER_LEN: [usize; 4] = [10, 20, 30, 60];
+
+const HEADERS_BUFFER_LEN: [usize; 4] = [50, 100, 250, 400];
 const BITMAPS_BUFFER_LEN: [usize; 4] = [10, 20, 30, 40];
 
 const OUTPUTS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
@@ -51,6 +53,9 @@ const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [20, 40, 80, 120];
 /// How long the state sync should wait after requesting a segment from a peer before
 /// deciding the segment isn't going to arrive. The syncer will then re-request the segment
 pub const SEGMENT_REQUEST_TIMEOUT_SECS: i64 = 60;
+
+/// Default expected response time for a new peer. Units: ms
+pub const SEGMENT_DEFAULT_RETRY_MS: i64 = 10000; // retry request after 10 seconds by default
 
 struct SysMemoryInfo {
 	available_memory_mb: u64,
@@ -152,6 +157,15 @@ impl PibdParams {
 		)
 	}
 
+	/// Buffer size for headers
+	pub fn get_headers_buffer_len(&self) -> usize {
+		Self::calc_mem_adequate_val2(
+			&HEADERS_BUFFER_LEN,
+			self.get_available_memory_mb(),
+			self.cpu_num,
+		)
+	}
+
 	/// Buffer size for output bitmaps
 	pub fn get_bitmaps_buffer_len(&self) -> usize {
 		Self::calc_mem_adequate_val2(
@@ -220,8 +234,8 @@ impl PibdParams {
 	pub fn get_segments_request_per_peer(&self) -> usize {
 		match self.cpu_num {
 			1 => 2,
-			2 => 4,
-			_ => 6,
+			2 => 3,
+			_ => 4,
 		}
 	}
 

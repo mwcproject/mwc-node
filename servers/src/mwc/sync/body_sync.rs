@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub struct BodySync {
 	chain: Arc<Chain>,
 	required_capabilities: Capabilities,
-	request_tracker: RequestTracker<Hash>,
+	request_tracker: RequestTracker<Hash, Hash>,
 	request_series: Vec<(Hash, u64)>, // Hash, height
 	pibd_params: Arc<PibdParams>,
 }
@@ -53,7 +53,7 @@ impl BodySync {
 	// Expected that it is called ONLY when state_sync is done
 	pub fn request(
 		&mut self,
-		peers: &Arc<p2p::Peers>,
+		in_peers: &Arc<p2p::Peers>,
 		sync_state: &SyncState,
 		sync_peers: &mut SyncPeers,
 		best_height: u64,
@@ -115,28 +115,58 @@ impl BodySync {
 			};
 		self.required_capabilities = required_capabilities;
 
-		let (peers, excluded_requests) = sync_utils::get_sync_peers(
-			peers,
+		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
+			in_peers,
 			self.pibd_params.get_blocks_request_per_peer(),
 			peer_capabilities,
 			head.height,
 			self.request_tracker.get_requests_num(),
-			&self.request_tracker.get_peers_queue_size(),
+			&self.request_tracker.get_peers_track_data(),
 		);
 		if peers.is_empty() {
-			return Ok(SyncResponse::new(
-				SyncRequestResponses::WaitingForPeers,
-				self.get_peer_capabilities(),
-				format!(
-					"No available peers, waiting Q size: {}",
-					self.request_tracker.get_requests_num()
-				),
-			));
+			if excluded_peers == 0 {
+				return Ok(SyncResponse::new(
+					SyncRequestResponses::WaitingForPeers,
+					self.get_peer_capabilities(),
+					format!(
+						"No available peers, waiting Q size: {}",
+						self.request_tracker.get_requests_num()
+					),
+				));
+			} else {
+				return Ok(SyncResponse::new(
+					SyncRequestResponses::Syncing,
+					self.get_peer_capabilities(),
+					format!(
+						"Peers: {}  Waiting Q size: {}",
+						peers.len() + excluded_peers as usize,
+						self.request_tracker.get_requests_num()
+					),
+				));
+			}
 		}
 
 		// requested_blocks, check for expiration
-		self.request_tracker
-			.retain_expired(pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS, sync_peers);
+		self.request_tracker.retain_expired(
+			pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS,
+			sync_peers,
+			|peer, request| {
+				debug!(
+					"Making retry send_block_request({}) call for peer {:?}",
+					request, peer
+				);
+				if let Some(peer) = in_peers.get_connected_peer(peer) {
+					match peer.send_block_request(request.clone(), chain::Options::SYNC) {
+						Ok(_) => return true,
+						Err(e) => error!(
+							"Unable to retry send_block_request({}) for peer {:?}. Error: {}",
+							request, peer, e
+						),
+					}
+				}
+				false
+			},
+		);
 
 		sync_state.update(SyncStatus::BodySync {
 			archive_height: if self.chain.archive_mode() {
@@ -155,6 +185,7 @@ impl BodySync {
 		let mut need_request = self.request_tracker.calculate_needed_requests(
 			peers.len(),
 			excluded_requests as usize,
+			excluded_peers as usize,
 			self.pibd_params.get_blocks_request_per_peer(),
 			self.pibd_params.get_blocks_request_limit(),
 		);
@@ -227,7 +258,7 @@ impl BodySync {
 			self.get_peer_capabilities(),
 			format!(
 				"Peers: {}  Waiting Q size: {}",
-				peers.len(),
+				peers.len() + excluded_peers as usize,
 				self.request_tracker.get_requests_num()
 			),
 		));
@@ -259,19 +290,20 @@ impl BodySync {
 		// let's request next package since we get this one...
 		if self.request_tracker.get_update_requests_to_next_ask() == 0 {
 			if let Ok(head) = self.chain.head() {
-				let (peers, excluded_requests) = sync_utils::get_sync_peers(
+				let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 					peers,
 					self.pibd_params.get_blocks_request_per_peer(),
 					self.required_capabilities,
 					head.height,
 					self.request_tracker.get_requests_num(),
-					&self.request_tracker.get_peers_queue_size(),
+					&self.request_tracker.get_peers_track_data(),
 				);
 				if !peers.is_empty() {
 					// requested_blocks, check for expiration
 					let mut need_request = self.request_tracker.calculate_needed_requests(
 						peers.len(),
 						excluded_requests as usize,
+						excluded_peers as usize,
 						self.pibd_params.get_blocks_request_per_peer(),
 						self.pibd_params.get_blocks_request_limit(),
 					);
@@ -325,6 +357,7 @@ impl BodySync {
 						hash.clone(),
 						peer.info.addr.clone(),
 						format!("Block {}, {}", hash, height),
+						hash.clone(),
 					);
 					*need_request -= 1;
 					if *need_request == 0 {

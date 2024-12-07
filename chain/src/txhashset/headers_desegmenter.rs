@@ -279,13 +279,14 @@ impl<T> HeadersRecieveCache<T> {
 		headers: &HeaderHashesDesegmenter,
 		elements: usize,
 		requested_hashes: &HashMap<Hash, K>,
+		headers_cache_size_limit: usize,
 	) -> Result<Vec<(Hash, u64)>, Error> {
 		let mut return_vec = vec![];
 		let tip = self.chain.header_head()?;
 		let base_hash_idx = tip.height / HEADERS_PER_BATCH as u64;
 		// Still limiting by 1000 because of memory. Cache is limited, we better wait if theer are so many behind...
 		let max_idx = cmp::min(
-			base_hash_idx + 1000,
+			base_hash_idx + headers_cache_size_limit as u64,
 			self.archive_header_height / HEADERS_PER_BATCH as u64,
 		);
 
