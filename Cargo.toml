@@ -64,3 +64,6 @@ debug = true
 #lto = true     # Enable Link-Time Optimization
 #codegen-units = 1  # Optimize for size/speed
 #overflow-checks = false
+
+#[profile.release]
+#debug = true

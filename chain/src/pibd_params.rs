@@ -35,27 +35,32 @@ pub const OUTPUT_SEGMENT_HEIGHT_RANGE: Range<u8> = 10..13; // ~ 33 b
 /// Segment heights for rangeproofs
 pub const RANGEPROOF_SEGMENT_HEIGHT_RANGE: Range<u8> = 6..9; // ~ 675 b
 
+/// Retry request to the header if next 10 are already returned.
+pub const HEADERS_RETRY_DELTA: u64 = 10;
+
+/// Retry request to the segments if next 5 are already returned.
+pub const SEGMENTS_RETRY_DELTA: u64 = 5;
+
+/// Retry request to the blocks if next 10 are already returned.
+pub const BLOCKS_RETRY_DELTA: u64 = 10;
+
 // Here are series for different available resources. Mem and CPU thresholds are allways the same.
 const HEADERS_HASH_BUFFER_LEN: [usize; 4] = [10, 20, 30, 60];
 
 const HEADERS_BUFFER_LEN: [usize; 4] = [50, 100, 250, 400];
 const BITMAPS_BUFFER_LEN: [usize; 4] = [10, 20, 30, 40];
 
-const OUTPUTS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
-const KERNELS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
-const RANGEPROOFS_BUFFER_LEN: [usize; 4] = [7, 15, 30, 40];
+// segment size are from around 30-40 kB. Then double for every level
+const SEGMENTS_BUFFER_LEN: [usize; 4] = [30, 40, 50, 60];
 
 // One block can be up to 1.5Mb in size. We still need some to run the node
 const ORPHANS_BUFFER_LEN: [usize; 4] = [20, 100, 250, 500];
 
-const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [20, 40, 80, 120];
+const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [20, 30, 40, 40];
 
 /// How long the state sync should wait after requesting a segment from a peer before
 /// deciding the segment isn't going to arrive. The syncer will then re-request the segment
-pub const SEGMENT_REQUEST_TIMEOUT_SECS: i64 = 60;
-
-/// Default expected response time for a new peer. Units: ms
-pub const SEGMENT_DEFAULT_RETRY_MS: i64 = 10000; // retry request after 10 seconds by default
+pub const PIBD_REQUESTS_TIMEOUT_SECS: i64 = 30;
 
 struct SysMemoryInfo {
 	available_memory_mb: u64,
@@ -176,33 +181,12 @@ impl PibdParams {
 	}
 
 	/// Buffer size for outputs
-	pub fn get_outputs_buffer_len(&self, non_complete_num: usize) -> usize {
-		let k = if non_complete_num <= 1 { 2 } else { 1 };
+	pub fn get_segments_buffer_len(&self) -> usize {
 		Self::calc_mem_adequate_val2(
-			&OUTPUTS_BUFFER_LEN,
+			&SEGMENTS_BUFFER_LEN,
 			self.get_available_memory_mb(),
 			self.cpu_num,
-		) * k
-	}
-
-	/// Buffer size for kernels
-	pub fn get_kernels_buffer_len(&self, non_complete_num: usize) -> usize {
-		let k = if non_complete_num <= 1 { 2 } else { 1 };
-		Self::calc_mem_adequate_val2(
-			&KERNELS_BUFFER_LEN,
-			self.get_available_memory_mb(),
-			self.cpu_num,
-		) * k
-	}
-
-	/// Buffer size for rangeproofs
-	pub fn get_rangeproofs_buffer_len(&self, non_complete_num: usize) -> usize {
-		let k = if non_complete_num <= 1 { 2 } else { 1 };
-		Self::calc_mem_adequate_val2(
-			&RANGEPROOFS_BUFFER_LEN,
-			self.get_available_memory_mb(),
-			self.cpu_num,
-		) * k
+		)
 	}
 
 	/// Man number of orphans to keep
@@ -217,9 +201,9 @@ impl PibdParams {
 	/// Number of simultaneous requests for blocks we should make per available peer.
 	pub fn get_blocks_request_per_peer(&self) -> usize {
 		match self.cpu_num {
-			1 => 3,
-			2 => 6,
-			_ => 15,
+			1 => 2,
+			2 => 3,
+			_ => 5,
 		}
 	}
 
@@ -235,7 +219,7 @@ impl PibdParams {
 		match self.cpu_num {
 			1 => 2,
 			2 => 3,
-			_ => 4,
+			_ => 5,
 		}
 	}
 

@@ -170,4 +170,13 @@ impl<T: PMMRable> VecBackend<T> {
 	pub fn size(&self) -> u64 {
 		self.hashes.len() as u64
 	}
+
+	/// Reset backend data
+	pub fn reset(&mut self) {
+		if let Some(data) = self.data.as_mut() {
+			data.clear();
+		}
+		self.hashes.clear();
+		self.removed.clear();
+	}
 }

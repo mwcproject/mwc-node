@@ -15,6 +15,8 @@
 //! Manages the segments caching
 
 use crate::error::Error;
+use crate::pibd_params;
+use crate::txhashset::request_lookup::RequestLookup;
 use mwc_core::core::{Segment, SegmentIdentifier, SegmentType};
 use std::cmp;
 use std::collections::HashMap;
@@ -65,13 +67,13 @@ impl<T> SegmentsCache<T> {
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_segments<V>(
+	pub fn next_desired_segments(
 		&self,
 		height: u8,
 		max_elements: usize,
-		requested: &HashMap<(SegmentType, u64), V>,
+		requested: &dyn RequestLookup<(SegmentType, u64)>,
 		cache_size_limit: usize,
-	) -> Vec<SegmentIdentifier> {
+	) -> (Vec<SegmentIdentifier>, Vec<SegmentIdentifier>) {
 		let mut result = vec![];
 		debug_assert!(max_elements > 0);
 		debug_assert!(cache_size_limit > 0);
@@ -80,20 +82,58 @@ impl<T> SegmentsCache<T> {
 			self.received_segments + cache_size_limit as u64,
 			self.required_segments,
 		);
+
+		let mut waiting_indexes: Vec<(u64, SegmentIdentifier)> = Vec::new();
+		let mut first_in_cache = 0;
+		let mut last_in_cache = 0;
+		let mut has_5_idx = 0;
+
 		for idx in self.received_segments..max_segm_idx {
-			if !self.segment_cache.contains_key(&idx) {
-				if !requested.contains_key(&(self.seg_type.clone(), idx)) {
-					result.push(SegmentIdentifier {
-						height: height,
-						idx: idx,
-					});
-					if result.len() >= max_elements {
-						break;
-					}
+			if self.segment_cache.contains_key(&idx) {
+				if idx == last_in_cache + 1 {
+					last_in_cache = idx;
+				} else {
+					first_in_cache = idx;
+					last_in_cache = idx;
 				}
+				continue;
+			}
+
+			if last_in_cache > 0 {
+				if last_in_cache - first_in_cache > pibd_params::SEGMENTS_RETRY_DELTA {
+					has_5_idx = first_in_cache;
+				}
+				first_in_cache = 0;
+				last_in_cache = 0;
+			}
+
+			let request = SegmentIdentifier {
+				height: height,
+				idx: idx,
+			};
+
+			if !requested.contains_request(&(self.seg_type.clone(), idx)) {
+				result.push(request);
+				if result.len() >= max_elements {
+					break;
+				}
+			} else {
+				waiting_indexes.push((idx, request));
 			}
 		}
-		result
+
+		// Let's check if we want to retry something...
+		let mut retry_vec = vec![];
+		if has_5_idx > 0 {
+			for (idx, req) in waiting_indexes {
+				if idx >= has_5_idx {
+					break;
+				}
+				retry_vec.push(req);
+			}
+		}
+
+		(result, retry_vec)
 	}
 
 	pub fn is_duplicate_segment(&self, segment_idx: u64) -> bool {
@@ -108,6 +148,10 @@ impl<T> SegmentsCache<T> {
 	where
 		F: FnMut(Vec<Segment<T>>) -> Result<(), Error>,
 	{
+		if segment.id().idx < self.received_segments {
+			return Ok(());
+		}
+
 		self.segment_cache.insert(segment.id().idx, segment);
 
 		// apply found data from the cache

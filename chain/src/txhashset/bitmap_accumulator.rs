@@ -60,6 +60,11 @@ impl BitmapAccumulator {
 		}
 	}
 
+	/// Reset bitmap data
+	pub fn reset(&mut self) {
+		self.backend.reset();
+	}
+
 	/// Initialize a bitmap accumulator given the provided idx iterator.
 	pub fn init<T: IntoIterator<Item = u64>>(&mut self, idx: T, size: u64) -> Result<(), Error> {
 		self.apply_from(idx, 0, size)

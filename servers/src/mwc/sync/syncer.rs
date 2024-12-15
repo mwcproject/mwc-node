@@ -19,7 +19,6 @@ use crate::mwc::sync::sync_utils::SyncRequestResponses;
 use crate::p2p;
 use crate::util::StopState;
 use mwc_p2p::Capabilities;
-use mwc_util::RwLock;
 use std::sync::Arc;
 use std::thread;
 use std::time;
@@ -29,7 +28,7 @@ pub fn run_sync(
 	peers: Arc<p2p::Peers>,
 	chain: Arc<chain::Chain>,
 	stop_state: Arc<StopState>,
-	sync_manager: Arc<RwLock<SyncManager>>,
+	sync_manager: Arc<SyncManager>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
 	thread::Builder::new()
 		.name("sync".to_string())
@@ -44,7 +43,7 @@ pub struct SyncRunner {
 	peers: Arc<p2p::Peers>,
 	chain: Arc<chain::Chain>,
 	stop_state: Arc<StopState>,
-	sync_manager: Arc<RwLock<SyncManager>>,
+	sync_manager: Arc<SyncManager>,
 }
 
 impl SyncRunner {
@@ -53,7 +52,7 @@ impl SyncRunner {
 		peers: Arc<p2p::Peers>,
 		chain: Arc<chain::Chain>,
 		stop_state: Arc<StopState>,
-		sync_manager: Arc<RwLock<SyncManager>>,
+		sync_manager: Arc<SyncManager>,
 	) -> SyncRunner {
 		SyncRunner {
 			sync_state,
@@ -115,17 +114,18 @@ impl SyncRunner {
 		}
 
 		// Main syncing loop
+		let mut sleep_time = 1000;
 		loop {
 			if self.stop_state.is_stopped() {
 				break;
 			}
 			// Sync manager request might be relatevely heavy, it is expected that latency is higer then 1 second, so
 			// waiting time for 1000ms is reasonable.
-			thread::sleep(time::Duration::from_millis(1000));
+			thread::sleep(time::Duration::from_millis(sleep_time));
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
-			let sync_reponse = self.sync_manager.write().request(&self.peers);
+			let sync_reponse = self.sync_manager.request(&self.peers);
 			if sync_reponse.response == SyncRequestResponses::SyncDone {
 				debug!("sync_manager responsed with {:?}", sync_reponse);
 			} else {
@@ -133,7 +133,7 @@ impl SyncRunner {
 			}
 
 			let prev_state = self.sync_state.status();
-
+			sleep_time = 1000;
 			match sync_reponse.response {
 				SyncRequestResponses::WaitingForPeers => {
 					info!("Waiting for the peers");
@@ -145,6 +145,10 @@ impl SyncRunner {
 					//debug_assert!(self.sync_state.is_syncing());
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
+				}
+				SyncRequestResponses::HashMoreHeadersToApply => {
+					debug!("Has more headers to apply, will continue soon");
+					sleep_time = 100;
 				}
 				SyncRequestResponses::SyncDone => {
 					self.sync_state.update(SyncStatus::NoSync);

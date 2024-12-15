@@ -18,7 +18,14 @@
 //! configurable with either no peers, a user-defined list or a preset
 //! list of DNS records (the default).
 
+use crate::core::global;
+use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
 use crate::core::pow::Difficulty;
+use crate::p2p;
+use crate::p2p::libp2p_connection;
+use crate::p2p::types::PeerAddr;
+use crate::p2p::ChainAdapter;
+use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use mwc_p2p::PeerAddr::Onion;
@@ -26,16 +33,9 @@ use mwc_p2p::{msg::PeerAddrs, Capabilities, P2PConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::{thread, time};
-
-use crate::core::global;
-use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
-use crate::p2p;
-use crate::p2p::libp2p_connection;
-use crate::p2p::types::PeerAddr;
-use crate::p2p::ChainAdapter;
-use crate::util::StopState;
 
 const CONNECT_TO_SEED_INTERVAL: i64 = 15;
 const EXPIRE_INTERVAL: i64 = 3600;
@@ -43,8 +43,8 @@ const PEERS_CHECK_TIME_FULL: i64 = 30;
 const PEERS_CHECK_TIME_BOOST: i64 = 3;
 const PEERS_MONITOR_INTERVAL: i64 = 60;
 
-const PEER_RECONNECT_INTERVAL: i64 = 60;
-const PEER_MAX_INITIATE_CONNECTIONS: usize = 2000;
+const PEER_RECONNECT_INTERVAL: i64 = 600;
+const PEER_MAX_INITIATE_CONNECTIONS: usize = 200;
 
 const PEER_PING_INTERVAL: i64 = 10;
 
@@ -85,6 +85,9 @@ pub fn connect_and_monitor(
 			libp2p_connection::set_seed_list(&seed_list, true);
 
 			let mut prev_ping = Utc::now();
+			let connections_in_action = Arc::new(AtomicI32::new(0));
+
+			let mut listen_q_addrs: Vec<PeerAddr> = Vec::new();
 
 			loop {
 				if stop_state.is_stopped() {
@@ -129,7 +132,12 @@ pub fn connect_and_monitor(
 						tx.clone(),
 						peers.is_boosting_mode(),
 					);
-					peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL);
+
+					if peers.is_sync_mode() {
+						peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL / 5); // every 12 seconds let's do the check
+					} else {
+						peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL); // once a minute checking
+					}
 				}
 
 				// make several attempts to get peers as quick as possible
@@ -146,8 +154,10 @@ pub fn connect_and_monitor(
 							&rx,
 							&mut connecting_history,
 							use_tor_connection,
+							&connections_in_action,
+							&mut listen_q_addrs,
 						);
-						let duration = if is_boost {
+						let duration = if is_boost || !listen_q_addrs.is_empty() {
 							PEERS_CHECK_TIME_BOOST
 						} else {
 							PEERS_CHECK_TIME_FULL
@@ -372,21 +382,35 @@ fn listen_for_addrs(
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
 	use_tor_connection: bool,
+	connections_in_action: &Arc<AtomicI32>,
+	listen_q_addrs: &mut Vec<PeerAddr>,
 ) {
 	// Pull everything currently on the queue off the queue.
 	// Does not block so addrs may be empty.
 	// We will take(max_peers) from this later but we want to drain the rx queue
 	// here to prevent it backing up.
 	// It is expected that peers are come with expected capabilites
-	let addrs: Vec<PeerAddr> = rx.try_iter().collect();
+	{
+		let mut addrs: Vec<PeerAddr> = rx.try_iter().collect();
+		listen_q_addrs.append(&mut addrs);
+	}
 
 	// If we have a healthy number of outbound peers then we are done here.
 	debug_assert!(!peers.enough_outbound_peers());
 
 	let now = Utc::now();
-	for addr in addrs.into_iter().as_ref() {
-		// ignore the duplicate connecting to same peer within 30 seconds
-		if let Some(last_connect_time) = connecting_history.get(addr) {
+	while !listen_q_addrs.is_empty() {
+		debug_assert!(connections_in_action.load(Ordering::Relaxed) >= 0);
+		if connecting_history.len() as i32 + connections_in_action.load(Ordering::Relaxed)
+			> PEER_MAX_INITIATE_CONNECTIONS as i32
+		{
+			break;
+		}
+
+		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
+
+		// listen_q_addrs can have duplicated requests or already processed, so still need to dedup
+		if let Some(last_connect_time) = connecting_history.get(&addr) {
 			if *last_connect_time + Duration::seconds(PEER_RECONNECT_INTERVAL) > now {
 				debug!(
 					"peer_connect: ignore a duplicate request to {}. previous connecting time: {}",
@@ -397,15 +421,12 @@ fn listen_for_addrs(
 			}
 		}
 
-		if connecting_history.len() > PEER_MAX_INITIATE_CONNECTIONS {
-			break;
-		}
-
 		connecting_history.insert(addr.clone(), now);
 
 		let addr_c = addr.clone();
 		let peers_c = peers.clone();
 		let p2p_c = p2p.clone();
+		let connections_in_action = connections_in_action.clone();
 		thread::Builder::new()
 			.name("peer_connect".to_string())
 			.spawn(move || {
@@ -421,6 +442,7 @@ fn listen_for_addrs(
 				};
 
 				if update_possible {
+					let _ = connections_in_action.fetch_add(1, Ordering::Relaxed);
 					match p2p_c.connect(&addr_c) {
 						Ok(p) => {
 							debug!(
@@ -472,6 +494,7 @@ fn listen_for_addrs(
 							let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
 						}
 					}
+					let _ = connections_in_action.fetch_sub(1, Ordering::Relaxed);
 				}
 			})
 			.expect("failed to launch peer_connect thread");
@@ -479,7 +502,7 @@ fn listen_for_addrs(
 
 	// shrink the connecting history.
 	// put a threshold here to avoid frequent shrinking in every call
-	if connecting_history.len() > PEER_MAX_INITIATE_CONNECTIONS {
+	if connecting_history.len() > PEER_MAX_INITIATE_CONNECTIONS * 10 {
 		let now = Utc::now();
 		connecting_history
 			.retain(|_, time| *time + Duration::seconds(PEER_RECONNECT_INTERVAL) > now);

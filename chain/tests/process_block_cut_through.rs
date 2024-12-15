@@ -191,7 +191,8 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 
 		let mut ctx = chain.new_ctx(Options::NONE, batch, &mut header_pmmr, &mut txhashset)?;
 		let mut cache_values = VecDeque::new();
-		let res = pipe::process_block(&block, &mut ctx, &mut cache_values, chain.secp());
+		let res =
+			pipe::process_blocks_series(&vec![block], &mut ctx, &mut cache_values, chain.secp());
 		assert_eq!(
 			res,
 			Err(chain::Error::Block(block::Error::Transaction(

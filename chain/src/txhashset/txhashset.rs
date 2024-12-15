@@ -454,8 +454,11 @@ impl TxHashSet {
 
 		Ok(TxHashSetRoots {
 			output_root: output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			output_mmr_size: self.output_pmmr_h.size,
 			rproof_root: rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			rproof_mmr_size: self.rproof_pmmr_h.size,
 			kernel_root: kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			kernel_mmr_size: self.kernel_pmmr_h.size,
 		})
 	}
 
@@ -1647,8 +1650,11 @@ impl<'a> Extension<'a> {
 	pub fn roots(&self) -> Result<TxHashSetRoots, Error> {
 		Ok(TxHashSetRoots {
 			output_root: self.output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			output_mmr_size: self.output_pmmr.size,
 			rproof_root: self.rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			rproof_mmr_size: self.rproof_pmmr.size,
 			kernel_root: self.kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			kernel_mmr_size: self.kernel_pmmr.size,
 		})
 	}
 

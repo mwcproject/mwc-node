@@ -74,6 +74,8 @@ pub enum SyncStatus {
 		/// total number of segments required
 		total_segments: u64,
 	},
+	/// Validating kernels history
+	ValidatingKernelsHistory,
 	/// Setting up before validation
 	TxHashsetHeadersValidation {
 		/// number of 'headers' for which kernels have been checked
@@ -221,10 +223,16 @@ impl SyncState {
 pub struct TxHashSetRoots {
 	/// Output roots
 	pub output_root: Hash,
+	/// Output mmr size
+	pub output_mmr_size: u64,
 	/// Range Proof root
 	pub rproof_root: Hash,
+	/// Range Proof mmr size
+	pub rproof_mmr_size: u64,
 	/// Kernel root
 	pub kernel_root: Hash,
+	/// Kernel mmr size
+	pub kernel_mmr_size: u64,
 }
 
 impl TxHashSetRoots {
@@ -235,15 +243,21 @@ impl TxHashSetRoots {
 			header.height, header.output_mmr_size, header.kernel_mmr_size
 		);
 		debug!(
-			"validate roots: {} at {}, Outputs roots {} vs. {}, Range Proof roots {} vs {}, Kernel Roots {} vs {}",
+			"validate roots: {} at {}, Outputs roots {} vs. {}, sz {} vs {}, Range Proof roots {} vs {}, sz {} vs {}, Kernel Roots {} vs {}, sz {} vs {}",
 			header.hash(),
 			header.height,
 			header.output_root,
 			self.output_root,
+			header.output_mmr_size,
+			self.output_mmr_size,
 			header.range_proof_root,
 			self.rproof_root,
+			header.output_mmr_size,
+			self.rproof_mmr_size,
 			header.kernel_root,
 			self.kernel_root,
+			header.kernel_mmr_size,
+			self.kernel_mmr_size,
 		);
 
 		if header.output_root != self.output_root {

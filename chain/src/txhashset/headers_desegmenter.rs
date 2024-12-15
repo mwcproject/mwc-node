@@ -20,14 +20,16 @@ use crate::core::core::pmmr;
 use crate::core::core::{BlockHeader, Segment};
 use crate::error::Error;
 use crate::pibd_params::PibdParams;
+use crate::txhashset::request_lookup::RequestLookup;
 use crate::txhashset::segments_cache::SegmentsCache;
 use crate::txhashset::{sort_pmmr_hashes_and_leaves, OrderedHashLeafNode};
 use crate::types::HEADERS_PER_BATCH;
-use crate::Options;
+use crate::{pibd_params, Options};
 use mwc_core::core::pmmr::{VecBackend, PMMR};
 use mwc_core::core::{SegmentIdentifier, SegmentType};
+use mwc_util::RwLock;
 use std::cmp;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// There is no reasons to introduce a special type, for that. For place maker any type will work
@@ -102,18 +104,21 @@ impl HeaderHashesDesegmenter {
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements
-	pub fn next_desired_segments<T>(
+	pub fn next_desired_segments(
 		&mut self,
 		max_elements: usize,
-		requested_segments: &HashMap<(SegmentType, u64), T>,
+		requested_segments: &dyn RequestLookup<(SegmentType, u64)>,
 		pibd_params: &PibdParams,
 	) -> Vec<SegmentIdentifier> {
-		self.header_segment_cache.next_desired_segments(
-			pibd_params.get_headers_segment_height(),
-			max_elements,
-			requested_segments,
-			self.pibd_params.get_headers_hash_buffer_len(),
-		)
+		// For headers hashes there is no duplicate requests. There are not much data...
+		self.header_segment_cache
+			.next_desired_segments(
+				pibd_params.get_headers_segment_height(),
+				max_elements,
+				requested_segments,
+				self.pibd_params.get_headers_hash_buffer_len(),
+			)
+			.0
 	}
 
 	/// Adds a output segment
@@ -198,7 +203,7 @@ pub struct HeadersRecieveCache<T = String> {
 	// Archive header height used for the sync process
 	archive_header_height: u64,
 	// cahce with recievd headers
-	main_headers_cache: BTreeMap<u64, (Vec<BlockHeader>, T)>,
+	main_headers_cache: RwLock<BTreeMap<u64, (Vec<BlockHeader>, T)>>,
 	// target chain to feed the data
 	chain: Arc<crate::Chain>,
 }
@@ -211,7 +216,7 @@ impl<T> HeadersRecieveCache<T> {
 	) -> Self {
 		let mut res = HeadersRecieveCache {
 			archive_header_height: 0,
-			main_headers_cache: BTreeMap::new(),
+			main_headers_cache: RwLock::new(BTreeMap::new()),
 			chain: chain.clone(),
 		};
 		res.prepare_download_headers(header_desegmenter)
@@ -261,7 +266,7 @@ impl<T> HeadersRecieveCache<T> {
 
 	/// Reset all state
 	pub fn reset(&mut self) {
-		self.main_headers_cache.clear();
+		self.main_headers_cache.write().clear();
 		self.archive_header_height = 0;
 	}
 
@@ -273,14 +278,14 @@ impl<T> HeadersRecieveCache<T> {
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
-	/// the current real state of the underlying elements
-	pub fn next_desired_headers<K>(
-		&mut self,
+	/// the current real state of the underlying elements. Second array - list of delayed requests. We better to retry them
+	pub fn next_desired_headers(
+		&self,
 		headers: &HeaderHashesDesegmenter,
 		elements: usize,
-		requested_hashes: &HashMap<Hash, K>,
+		request_tracker: &dyn RequestLookup<Hash>,
 		headers_cache_size_limit: usize,
-	) -> Result<Vec<(Hash, u64)>, Error> {
+	) -> Result<(Vec<(Hash, u64)>, Vec<(Hash, u64)>), Error> {
 		let mut return_vec = vec![];
 		let tip = self.chain.header_head()?;
 		let base_hash_idx = tip.height / HEADERS_PER_BATCH as u64;
@@ -290,13 +295,34 @@ impl<T> HeadersRecieveCache<T> {
 			self.archive_header_height / HEADERS_PER_BATCH as u64,
 		);
 
+		let mut waiting_indexes: Vec<(u64, (Hash, u64))> = Vec::new();
+
+		let mut first_in_cache = 0;
+		let mut last_in_cache = 0;
+		let mut has10_idx = 0;
+
 		for hash_idx in base_hash_idx..=max_idx {
 			// let's check if cache already have it
 			if self
 				.main_headers_cache
+				.read()
 				.contains_key(&(hash_idx * HEADERS_PER_BATCH as u64 + 1))
 			{
+				if hash_idx == last_in_cache + 1 {
+					last_in_cache = hash_idx;
+				} else {
+					first_in_cache = hash_idx;
+					last_in_cache = hash_idx;
+				}
 				continue;
+			}
+
+			if last_in_cache > 0 {
+				if last_in_cache - first_in_cache > pibd_params::HEADERS_RETRY_DELTA {
+					has10_idx = first_in_cache;
+				}
+				first_in_cache = 0;
+				last_in_cache = 0;
 			}
 
 			let hinfo: Option<&Hash> = headers
@@ -307,23 +333,38 @@ impl<T> HeadersRecieveCache<T> {
 				.get(hash_idx as usize);
 			match hinfo {
 				Some(h) => {
+					let request = (h.clone(), hash_idx * HEADERS_PER_BATCH as u64);
 					// check if already requested first
-					if !requested_hashes.contains_key(h) {
-						return_vec.push((h.clone(), hash_idx * HEADERS_PER_BATCH as u64));
+					if !request_tracker.contains_request(h) {
+						return_vec.push(request);
 						if return_vec.len() >= elements {
 							break;
 						}
+					} else {
+						waiting_indexes.push((hash_idx, request));
 					}
 				}
 				None => break,
 			}
 		}
-		Ok(return_vec)
+
+		// Let's check if we want to retry something...
+		let mut retry_vec = vec![];
+		if has10_idx > 0 {
+			for (idx, req) in waiting_indexes {
+				if idx >= has10_idx {
+					break;
+				}
+				retry_vec.push(req);
+			}
+		}
+
+		Ok((return_vec, retry_vec))
 	}
 
 	/// Adds a output segment
-	pub fn add_headers(
-		&mut self,
+	pub fn add_headers_to_cache(
+		&self,
 		headers: &HeaderHashesDesegmenter,
 		bhs: Vec<BlockHeader>,
 		peer_info: T,
@@ -370,14 +411,19 @@ impl<T> HeadersRecieveCache<T> {
 			));
 		}
 
+		let mut main_headers_cache = self.main_headers_cache.write();
 		// duplicated data, skipping it
-		if self.main_headers_cache.contains_key(&first_header.height) {
+		if main_headers_cache.contains_key(&first_header.height) {
 			return Ok(());
 		}
 
-		self.main_headers_cache
-			.insert(first_header.height, (bhs, peer_info));
+		main_headers_cache.insert(first_header.height, (bhs, peer_info));
 
+		Ok(())
+	}
+
+	/// Apply cache to the chain. Return true if more data is available
+	pub fn apply_cache(&self) -> Result<bool, (T, Error)> {
 		// Apply data from cache if possible
 		let mut headers_all: Vec<BlockHeader> = Vec::new();
 		let mut headers_by_peer: Vec<(Vec<BlockHeader>, T)> = Vec::new();
@@ -388,52 +434,30 @@ impl<T> HeadersRecieveCache<T> {
 
 		let mut tip_height = tip.height;
 
-		while let Some((height, (headers, _))) = self.main_headers_cache.first_key_value() {
-			debug_assert!(!headers.is_empty());
-			debug_assert!(headers.len() == HEADERS_PER_BATCH as usize);
-			debug_assert!(headers.first().unwrap().height == *height);
-			let ending_height = headers.last().expect("headers can't empty").height;
-			if ending_height <= tip_height {
-				// duplicated data, skipping it...
-				let _ = self.main_headers_cache.pop_first();
-				continue;
-			}
-			if *height > tip_height + 1 {
-				break;
-			}
-			let (_, (mut bhs, peer)) = self.main_headers_cache.pop_first().unwrap();
-			tip_height = bhs.last().expect("bhs can't be empty").height;
-
-			headers_by_peer.push((bhs.clone(), peer));
-			headers_all.append(&mut bhs);
-
-			if headers_all.len() > 5000 {
-				match self
-					.chain
-					.sync_block_headers(&headers_all, tip, Options::NONE)
-				{
-					Ok(_) => {}
-					Err(e) => {
-						warn!(
-							"add_headers in bulk is failed, will add one by one. Error: {}",
-							e
-						);
-						// apply one by one
-						for (hdr, peer) in headers_by_peer {
-							let tip = self
-								.chain
-								.header_head()
-								.expect("Header head must be always defined");
-
-							match self.chain.sync_block_headers(&hdr, tip, Options::NONE) {
-								Ok(_) => {}
-								Err(e) => return Err((peer, e)),
-							}
-						}
-					}
+		{
+			let mut main_headers_cache = self.main_headers_cache.write();
+			while let Some((height, (headers, _))) = main_headers_cache.first_key_value() {
+				debug_assert!(!headers.is_empty());
+				debug_assert!(headers.len() == HEADERS_PER_BATCH as usize);
+				debug_assert!(headers.first().unwrap().height == *height);
+				let ending_height = headers.last().expect("headers can't empty").height;
+				if ending_height <= tip_height {
+					// duplicated data, skipping it...
+					let _ = main_headers_cache.pop_first();
+					continue;
 				}
-				headers_all = Vec::new();
-				headers_by_peer = Vec::new();
+				if *height > tip_height + 1 {
+					break;
+				}
+				let (_, (mut bhs, peer)) = main_headers_cache.pop_first().unwrap();
+				tip_height = bhs.last().expect("bhs can't be empty").height;
+
+				headers_by_peer.push((bhs.clone(), peer));
+				headers_all.append(&mut bhs);
+
+				if headers_all.len() > 2000 {
+					break; //  we don't want add too much at a single session.
+				}
 			}
 		}
 
@@ -462,8 +486,18 @@ impl<T> HeadersRecieveCache<T> {
 					}
 				}
 			}
-		}
 
-		Ok(())
+			let tip = self
+				.chain
+				.header_head()
+				.expect("Header head must be always defined");
+
+			match self.main_headers_cache.read().first_key_value() {
+				Some((height, _)) => Ok(*height <= tip.height + 1),
+				None => Ok(false),
+			}
+		} else {
+			Ok(false)
+		}
 	}
 }

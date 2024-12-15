@@ -68,7 +68,7 @@ const PEER_MAX_OUTBOUND_COUNT: u32 = 10;
 const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
 
 /// During sync process we want to boost peers discovery.
-const PEER_BOOST_OUTBOUND_COUNT: u32 = 25;
+const PEER_BOOST_OUTBOUND_COUNT: u32 = 20;
 
 /// The peer listener buffer count. Allows temporarily accepting more connections
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.

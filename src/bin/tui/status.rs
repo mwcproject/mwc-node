@@ -59,15 +59,24 @@ impl TUIStatusView {
 				recieved_segments,
 				total_segments,
 			} => {
-				let percent = if total_segments == 0 {
-					0
+				if recieved_segments == 0 && total_segments == 100 {
+					Cow::Owned(
+						"Sync step 2/7: Selecting peers, waiting for PIBD root hash".to_string(),
+					)
 				} else {
-					recieved_segments * 100 / total_segments
-				};
-				Cow::Owned(format!(
-					"Sync step 2/7: Downloading Tx state (PIBD) - {} / {} segments - {}%",
-					recieved_segments, total_segments, percent
-				))
+					let percent = if total_segments == 0 {
+						0
+					} else {
+						recieved_segments * 100 / total_segments
+					};
+					Cow::Owned(format!(
+						"Sync step 2/7: Downloading Tx state (PIBD) - {} / {} segments - {}%",
+						recieved_segments, total_segments, percent
+					))
+				}
+			}
+			SyncStatus::ValidatingKernelsHistory => {
+				Cow::Owned("Sync step 3/7: Validating kernels history".to_string())
 			}
 			SyncStatus::TxHashsetHeadersValidation {
 				headers,

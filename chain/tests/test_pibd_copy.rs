@@ -30,7 +30,7 @@ use crate::core::core::{
 use crate::core::{genesis, global, pow};
 use crate::util::secp::pedersen::RangeProof;
 use mwc_chain::pibd_params::PibdParams;
-use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
+use mwc_chain::txhashset::{Desegmenter, HeaderHashesDesegmenter, HeadersRecieveCache};
 use mwc_chain::types::HEADERS_PER_BATCH;
 use mwc_chain::{Error, Options, SyncState};
 use mwc_util::secp::rand::Rng;
@@ -59,7 +59,7 @@ fn _copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()>
 	Ok(())
 }
 
-// Canned segmenter responder, which will simulate feeding back segments as requested
+// segmenter responder, which will simulate feeding back segments as requested
 // by the desegmenter
 struct SegmenterResponder {
 	chain: Arc<chain::Chain>,
@@ -162,10 +162,14 @@ impl DesegmenterRequestor {
 		res
 	}
 
-	pub fn init_desegmenter(&mut self, archive_header_height: u64, bitmap_root_hash: Hash) {
+	pub fn init_desegmenter(
+		&mut self,
+		archive_header_height: u64,
+		bitmap_root_hash: Hash,
+	) -> Desegmenter {
 		self.chain
-			.create_desegmenter(archive_header_height, bitmap_root_hash)
-			.unwrap();
+			.init_desegmenter(archive_header_height, bitmap_root_hash)
+			.unwrap()
 	}
 
 	// return whether is complete
@@ -175,7 +179,9 @@ impl DesegmenterRequestor {
 		header_root_hash: &Hash,
 		pibd_params: &PibdParams,
 	) -> bool {
-		let asks = header_desegmenter.next_desired_segments::<u8>(10, &HashMap::new(), pibd_params);
+		let empty_map: HashMap<(SegmentType, u64), u8> = HashMap::new();
+		let empty_map = &empty_map;
+		let asks = header_desegmenter.next_desired_segments(10, &empty_map, pibd_params);
 
 		debug!("Next segment IDS: {:?}", asks);
 
@@ -207,9 +213,10 @@ impl DesegmenterRequestor {
 		if headers_cache.is_complete().unwrap() {
 			return true;
 		}
-
-		let hashes = headers_cache
-			.next_desired_headers::<u8>(header_desegmenter, 15, &HashMap::new())
+		let empty_map: HashMap<Hash, u8> = HashMap::new();
+		let empty_map = &empty_map;
+		let (hashes, _reply_hashes) = headers_cache
+			.next_desired_headers(header_desegmenter, 15, &empty_map, 100)
 			.unwrap();
 		if hashes.is_empty() {
 			assert!(false);
@@ -253,9 +260,12 @@ impl DesegmenterRequestor {
 
 			assert_eq!(headers.len(), HEADERS_PER_BATCH as usize);
 			if let Err((peer, err)) =
-				headers_cache.add_headers(header_desegmenter, headers, "0".to_string())
+				headers_cache.add_headers_to_cache(header_desegmenter, headers, "0".to_string())
 			{
 				panic!("Error {}, for peer id {}", err, peer);
+			}
+			while headers_cache.apply_cache().unwrap() {
+				debug!("Applying headers cache once more...");
 			}
 		}
 
@@ -264,21 +274,19 @@ impl DesegmenterRequestor {
 
 	// Emulate `continue_pibd` function, which would be called from state sync
 	// return whether is complete
-	pub fn continue_pibd(&mut self, bitmap_root_hash: Hash) -> bool {
+	pub fn continue_pibd(&mut self, bitmap_root_hash: Hash, desegmenter: &Desegmenter) -> bool {
 		//let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
-		let desegmenter = self.chain.get_desegmenter();
 
-		let mut next_segment_ids = vec![];
-		let mut is_complete = false;
-		if let Some(d) = desegmenter.write().as_mut() {
-			// Figure out the next segments we need
-			// (12 is divisible by 3, to try and evenly spread the requests among the 3
-			// main pmmrs. Bitmaps segments will always be requested first)
-			let now = Instant::now();
-			next_segment_ids = d.next_desired_segments::<u8>(60, &HashMap::new()).unwrap();
-			debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
-			is_complete = d.is_complete()
-		}
+		// Figure out the next segments we need
+		// (12 is divisible by 3, to try and evenly spread the requests among the 3
+		// main pmmrs. Bitmaps segments will always be requested first)
+		let now = Instant::now();
+		let empty_map: HashMap<(SegmentType, u64), u8> = HashMap::new();
+		let empty_map = &empty_map;
+		let (mut next_segment_ids, _retry_ids) =
+			desegmenter.next_desired_segments(60, &empty_map).unwrap();
+		debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
+		let is_complete = desegmenter.is_complete();
 
 		debug!("Next segment IDS: {:?}", next_segment_ids);
 		let mut rng = rand::thread_rng();
@@ -290,52 +298,52 @@ impl DesegmenterRequestor {
 			match seg_id.segment_type {
 				SegmentType::Bitmap => {
 					let seg = self.responder.get_bitmap_segment(seg_id.identifier.clone());
-					if let Some(d) = desegmenter.write().as_mut() {
-						let now = Instant::now();
-						d.add_bitmap_segment(seg, &bitmap_root_hash).unwrap();
-						debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
-					}
+					let now = Instant::now();
+					desegmenter
+						.add_bitmap_segment(seg, &bitmap_root_hash)
+						.unwrap();
+					debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
 				}
 				SegmentType::Output => {
 					let seg = self.responder.get_output_segment(seg_id.identifier.clone());
-					if let Some(d) = desegmenter.write().as_mut() {
-						let now = Instant::now();
-						let id = seg.id().clone();
-						d.add_output_segment(seg, &bitmap_root_hash).unwrap();
-						debug!(
-							"Added output segment {}, took {}ms",
-							id,
-							now.elapsed().as_millis()
-						);
-					}
+					let now = Instant::now();
+					let id = seg.id().clone();
+					desegmenter
+						.add_output_segment(seg, &bitmap_root_hash)
+						.unwrap();
+					debug!(
+						"Added output segment {}, took {}ms",
+						id,
+						now.elapsed().as_millis()
+					);
 				}
 				SegmentType::RangeProof => {
 					let seg = self
 						.responder
 						.get_rangeproof_segment(seg_id.identifier.clone());
-					if let Some(d) = desegmenter.write().as_mut() {
-						let now = Instant::now();
-						let id = seg.id().clone();
-						d.add_rangeproof_segment(seg, &bitmap_root_hash).unwrap();
-						debug!(
-							"Added rangeproof segment {}, took {}ms",
-							id,
-							now.elapsed().as_millis()
-						);
-					}
+					let now = Instant::now();
+					let id = seg.id().clone();
+					desegmenter
+						.add_rangeproof_segment(seg, &bitmap_root_hash)
+						.unwrap();
+					debug!(
+						"Added rangeproof segment {}, took {}ms",
+						id,
+						now.elapsed().as_millis()
+					);
 				}
 				SegmentType::Kernel => {
 					let seg = self.responder.get_kernel_segment(seg_id.identifier.clone());
-					if let Some(d) = desegmenter.write().as_mut() {
-						let now = Instant::now();
-						let id = seg.id().clone();
-						d.add_kernel_segment(seg, &bitmap_root_hash).unwrap();
-						debug!(
-							"Added kernels segment {}, took {}ms",
-							id,
-							now.elapsed().as_millis()
-						);
-					}
+					let now = Instant::now();
+					let id = seg.id().clone();
+					desegmenter
+						.add_kernel_segment(seg, &bitmap_root_hash)
+						.unwrap();
+					debug!(
+						"Added kernels segment {}, took {}ms",
+						id,
+						now.elapsed().as_millis()
+					);
 				}
 			};
 		}
@@ -356,36 +364,21 @@ impl DesegmenterRequestor {
 		assert_eq!(archive_header.output_root, roots.output_root);
 	}
 
-	pub fn validate_complete_state(&self) {
+	pub fn validate_complete_state(&self, desegmenter: &Desegmenter) {
 		let status = Arc::new(SyncState::new());
 		let stop_state = Arc::new(StopState::new());
 		let secp = self.chain.secp();
 
-		self.chain
-			.get_desegmenter()
-			.read()
-			.as_ref()
-			.unwrap()
-			.check_update_leaf_set_state()
-			.unwrap();
+		desegmenter.check_update_leaf_set_state().unwrap();
 
-		self.chain
-			.get_desegmenter()
-			.read()
-			.as_ref()
-			.unwrap()
+		desegmenter
 			.validate_complete_state(status, stop_state, secp)
 			.unwrap();
 	}
 }
-fn test_pibd_copy_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &str) {
-	global::set_global_chain_type(global::ChainTypes::Floonet);
-	let mut genesis = genesis::genesis_floo();
-
-	if is_test_chain {
-		global::set_global_chain_type(global::ChainTypes::AutomatedTesting);
-		genesis = pow::mine_genesis_block().unwrap();
-	}
+fn test_pibd_copy_impl(src_root_dir: &str, dest_root_dir: &str) {
+	global::set_global_chain_type(global::ChainTypes::Mainnet);
+	let genesis = genesis::genesis_main();
 
 	let src_responder = Arc::new(SegmenterResponder::new(src_root_dir, genesis.clone()));
 
@@ -423,14 +416,14 @@ fn test_pibd_copy_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &
 
 	while !dest_requestor.continue_copy_headers(&header_desegmenter, &mut headers_cache) {}
 
-	dest_requestor.init_desegmenter(archive_header_height, bitmap_root_hash);
+	let desegmenter = dest_requestor.init_desegmenter(archive_header_height, bitmap_root_hash);
 
 	// Perform until desegmenter reports it's done
-	while !dest_requestor.continue_pibd(bitmap_root_hash) {}
+	while !dest_requestor.continue_pibd(bitmap_root_hash, &desegmenter) {}
 
 	dest_requestor.check_roots(archive_header_height);
 
-	dest_requestor.validate_complete_state();
+	dest_requestor.validate_complete_state(&desegmenter);
 }
 
 #[test]
@@ -442,11 +435,11 @@ fn test_pibd_copy_real() {
 	util::init_test_logger();
 
 	// if testing against a real chain, insert location here
-	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
-	let dest_root_dir = format!("/Users/bay/.mwc/_floo3/chain_data");
+	let src_root_dir = format!("/Users/bay/.mwc/main_orig/chain_data");
+	let dest_root_dir = format!("/Users/bay/.mwc/main_copy/chain_data");
 
 	//self::chain_test_helper::clean_output_dir(&dest_root_dir);
-	test_pibd_copy_impl(false, &src_root_dir, &dest_root_dir);
+	test_pibd_copy_impl(&src_root_dir, &dest_root_dir);
 
 	//self::chain_test_helper::clean_output_dir(&dest_root_dir);
 }
@@ -458,11 +451,11 @@ fn test_pibd_copy_real() {
 fn test_chain_validation() {
 	util::init_test_logger();
 
-	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
-	let dest_root_dir = format!("/Users/bay/.mwc/_floo3/chain_data");
+	let src_root_dir = format!("/Users/bay/.mwc/main_orig/chain_data");
+	let dest_root_dir = format!("/Users/bay/.mwc/main_copy/chain_data");
 
-	global::set_global_chain_type(global::ChainTypes::Floonet);
-	let genesis = genesis::genesis_floo();
+	global::set_global_chain_type(global::ChainTypes::Mainnet);
+	let genesis = genesis::genesis_main();
 
 	let dummy_adapter = Arc::new(NoopAdapter {});
 

@@ -100,7 +100,7 @@ where
 	P: PoolAdapter,
 {
 	sync_state: Arc<SyncState>,
-	sync_manager: Arc<RwLock<SyncManager>>,
+	sync_manager: Arc<SyncManager>,
 	chain: Weak<chain::Chain>,
 	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<p2p::Peers>>,
@@ -412,7 +412,6 @@ where
 		}
 
 		self.sync_manager
-			.write()
 			.receive_headers(&peer_info.addr, bhs, remaining, self.peers());
 		Ok(())
 	}
@@ -568,12 +567,8 @@ where
 			"Received PIBD handshake response from {}. Header {} at {}, root_hash {}",
 			peer, header_hash, header_height, output_bitmap_root
 		);
-		self.sync_manager.write().recieve_pibd_status(
-			peer,
-			header_hash,
-			header_height,
-			output_bitmap_root,
-		);
+		self.sync_manager
+			.recieve_pibd_status(peer, header_hash, header_height, output_bitmap_root);
 		Ok(())
 	}
 
@@ -588,7 +583,6 @@ where
 			peer, header_hash, header_height
 		);
 		self.sync_manager
-			.write()
 			.recieve_another_archive_header(peer, header_hash, header_height);
 		Ok(())
 	}
@@ -603,11 +597,8 @@ where
 			"Received headers hash response {}, {} from {}",
 			archive_height, headers_hash_root, peer
 		);
-		self.sync_manager.write().receive_headers_hash_response(
-			peer,
-			archive_height,
-			headers_hash_root,
-		);
+		self.sync_manager
+			.receive_headers_hash_response(peer, archive_height, headers_hash_root);
 		Ok(())
 	}
 
@@ -647,7 +638,6 @@ where
 			peer
 		);
 		self.sync_manager
-			.write()
 			.receive_header_hashes_segment(peer, header_hashes_root, segment);
 		Ok(())
 	}
@@ -659,12 +649,13 @@ where
 		segment: Segment<BitmapChunk>,
 	) -> Result<(), chain::Error> {
 		info!(
-			"Received bitmap segment {} for block_hash: {}",
+			"Received bitmap segment {} for block_hash: {} from {}",
 			segment.identifier().idx,
-			archive_header_hash
+			archive_header_hash,
+			peer
 		);
 
-		self.sync_manager.write().receive_bitmap_segment(
+		self.sync_manager.receive_bitmap_segment(
 			peer,
 			&archive_header_hash,
 			segment,
@@ -680,12 +671,13 @@ where
 		segment: Segment<OutputIdentifier>,
 	) -> Result<(), chain::Error> {
 		info!(
-			"Received output segment {} for block_hash: {}",
+			"Received output segment {} for block_hash: {} from {}",
 			segment.identifier().idx,
 			archive_header_hash,
+			peer,
 		);
 
-		self.sync_manager.write().receive_output_segment(
+		self.sync_manager.receive_output_segment(
 			peer,
 			&archive_header_hash,
 			segment,
@@ -701,12 +693,13 @@ where
 		segment: Segment<RangeProof>,
 	) -> Result<(), chain::Error> {
 		info!(
-			"Received proof segment {} for block_hash: {}",
+			"Received proof segment {} for block_hash: {}  from {}",
 			segment.identifier().idx,
-			archive_header_hash
+			archive_header_hash,
+			peer
 		);
 
-		self.sync_manager.write().receive_rangeproof_segment(
+		self.sync_manager.receive_rangeproof_segment(
 			peer,
 			&archive_header_hash,
 			segment,
@@ -722,12 +715,13 @@ where
 		segment: Segment<TxKernel>,
 	) -> Result<(), chain::Error> {
 		info!(
-			"Received kernel segment {} for block_hash: {}",
+			"Received kernel segment {} for block_hash: {} from {}",
 			segment.identifier().idx,
-			archive_header_hash
+			archive_header_hash,
+			peer
 		);
 
-		self.sync_manager.write().receive_kernel_segment(
+		self.sync_manager.receive_kernel_segment(
 			peer,
 			&archive_header_hash,
 			segment,
@@ -746,7 +740,7 @@ where
 	pub fn new(
 		sync_state: Arc<SyncState>,
 		chain: Arc<chain::Chain>,
-		sync_manager: Arc<RwLock<SyncManager>>,
+		sync_manager: Arc<SyncManager>,
 		tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 		config: ServerConfig,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
@@ -810,7 +804,7 @@ where
 			Ok(_) => {
 				self.validate_chain(&bhash);
 				self.check_compact();
-				self.sync_manager.write().recieve_block_reporting(
+				self.sync_manager.recieve_block_reporting(
 					true,
 					&peer_info.addr,
 					&bhash,
@@ -820,7 +814,7 @@ where
 			}
 			Err(ref e) if e.is_bad_data() => {
 				self.validate_chain(&bhash);
-				self.sync_manager.write().recieve_block_reporting(
+				self.sync_manager.recieve_block_reporting(
 					false,
 					&peer_info.addr,
 					&bhash,
@@ -831,7 +825,7 @@ where
 			Err(e) => {
 				match e {
 					chain::Error::Orphan(orph_msg) => {
-						self.sync_manager.write().recieve_block_reporting(
+						self.sync_manager.recieve_block_reporting(
 							true,
 							&peer_info.addr,
 							&bhash,
@@ -850,7 +844,7 @@ where
 					}
 					_ => {
 						debug!("process_block: block {} refused by chain: {}", bhash, e);
-						self.sync_manager.write().recieve_block_reporting(
+						self.sync_manager.recieve_block_reporting(
 							false,
 							&peer_info.addr,
 							&bhash,
