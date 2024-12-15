@@ -782,7 +782,7 @@ impl StateSync {
 			need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if need_request > 0 {
 				match desegmenter.next_desired_segments(need_request, &self.request_tracker) {
-					Ok((req_segments, retry_segments)) => {
+					Ok((req_segments, retry_segments, waiting_segments)) => {
 						let mut rng = rand::thread_rng();
 						let now = Utc::now();
 						let target_archive_hash = self.target_archive_hash.read().clone();
@@ -892,6 +892,48 @@ impl StateSync {
 								}
 							}
 						}
+
+						if need_request > 0 {
+							// If nothing to do, there are some requests are available. We can use them for more duplicates
+							let duplicate_reqs: Vec<SegmentTypeIdentifier> = waiting_segments
+								.choose_multiple(&mut rng, need_request)
+								.cloned()
+								.collect();
+
+							for segm in &duplicate_reqs {
+								// We don't want to send retry to the peer whom we already send the data
+								if let Some(requested_peer) =
+									self.request_tracker.get_expected_peer(&(
+										segm.segment_type.clone(),
+										segm.identifier.idx,
+									)) {
+									let dup_peer = peers
+										.iter()
+										.filter(|p| p.info.addr != requested_peer)
+										.choose(&mut rng);
+
+									if dup_peer.is_none() {
+										break;
+									}
+									let dup_peer = dup_peer.unwrap();
+
+									debug!("Processing duplicated request for the segment {:?} at {}, peer {:?}", segm.segment_type, segm.identifier.idx, dup_peer.info.addr);
+									match Self::send_request(&dup_peer, &segm, &target_archive_hash)
+									{
+										Ok(_) => self.retry_expiration_times.write().push_back(
+											now + self.request_tracker.get_average_latency(),
+										),
+										Err(e) => {
+											let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm.segment_type, segm.identifier.idx, dup_peer.info.addr, e);
+											error!("{}", msg);
+											sync_peers.report_no_response(&dup_peer.info.addr, msg);
+											break;
+										}
+									}
+								}
+							}
+						}
+
 						return SyncResponse::new(
 							SyncRequestResponses::Syncing,
 							Self::get_peer_capabilities(),

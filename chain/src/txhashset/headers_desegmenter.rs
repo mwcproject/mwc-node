@@ -279,13 +279,14 @@ impl<T> HeadersRecieveCache<T> {
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements. Second array - list of delayed requests. We better to retry them
+	/// 3rd array - all requesrs that are expected.
 	pub fn next_desired_headers(
 		&self,
 		headers: &HeaderHashesDesegmenter,
 		elements: usize,
 		request_tracker: &dyn RequestLookup<Hash>,
 		headers_cache_size_limit: usize,
-	) -> Result<(Vec<(Hash, u64)>, Vec<(Hash, u64)>), Error> {
+	) -> Result<(Vec<(Hash, u64)>, Vec<(Hash, u64)>, Vec<(Hash, u64)>), Error> {
 		let mut return_vec = vec![];
 		let tip = self.chain.header_head()?;
 		let base_hash_idx = tip.height / HEADERS_PER_BATCH as u64;
@@ -351,15 +352,19 @@ impl<T> HeadersRecieveCache<T> {
 		// Let's check if we want to retry something...
 		let mut retry_vec = vec![];
 		if has10_idx > 0 {
-			for (idx, req) in waiting_indexes {
-				if idx >= has10_idx {
+			for (idx, req) in &waiting_indexes {
+				if *idx >= has10_idx {
 					break;
 				}
-				retry_vec.push(req);
+				retry_vec.push(req.clone());
 			}
 		}
 
-		Ok((return_vec, retry_vec))
+		Ok((
+			return_vec,
+			retry_vec,
+			waiting_indexes.into_iter().map(|(_, v)| v).collect(),
+		))
 	}
 
 	/// Adds a output segment

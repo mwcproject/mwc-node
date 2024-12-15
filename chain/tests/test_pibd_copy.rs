@@ -215,7 +215,7 @@ impl DesegmenterRequestor {
 		}
 		let empty_map: HashMap<Hash, u8> = HashMap::new();
 		let empty_map = &empty_map;
-		let (hashes, _reply_hashes) = headers_cache
+		let (hashes, _reply_hashes, _) = headers_cache
 			.next_desired_headers(header_desegmenter, 15, &empty_map, 100)
 			.unwrap();
 		if hashes.is_empty() {
@@ -283,7 +283,7 @@ impl DesegmenterRequestor {
 		let now = Instant::now();
 		let empty_map: HashMap<(SegmentType, u64), u8> = HashMap::new();
 		let empty_map = &empty_map;
-		let (mut next_segment_ids, _retry_ids) =
+		let (mut next_segment_ids, _retry_ids, _) =
 			desegmenter.next_desired_segments(60, &empty_map).unwrap();
 		debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
 		let is_complete = desegmenter.is_complete();

@@ -409,11 +409,19 @@ impl Desegmenter {
 
 	/// Return list of the next preferred segments the desegmenter needs based on
 	/// the current real state of the underlying elements. Second array - list of delayed requests. We better to retry them
+	/// 3-rd array - the list of waiting requests
 	pub fn next_desired_segments(
 		&self,
 		need_requests: usize,
 		requested: &dyn RequestLookup<(SegmentType, u64)>,
-	) -> Result<(Vec<SegmentTypeIdentifier>, Vec<SegmentTypeIdentifier>), Error> {
+	) -> Result<
+		(
+			Vec<SegmentTypeIdentifier>,
+			Vec<SegmentTypeIdentifier>,
+			Vec<SegmentTypeIdentifier>,
+		),
+		Error,
+	> {
 		// First check for required bitmap elements
 		if self.outputs_bitmap.read().is_none() {
 			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
@@ -431,7 +439,7 @@ impl Desegmenter {
 			{
 				bitmap_result.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id))
 			}
-			return Ok((bitmap_result, Vec::new()));
+			return Ok((bitmap_result, Vec::new(), Vec::new()));
 		} else {
 			// We have all required bitmap segments and have recreated our local
 			// bitmap, now continue with other segments, evenly spreading requests
@@ -444,8 +452,9 @@ impl Desegmenter {
 			// so the number of segments is high.
 			let mut res_req: Vec<SegmentTypeIdentifier> = Vec::new();
 			let mut res_dup_req: Vec<SegmentTypeIdentifier> = Vec::new();
+			let mut waiting_req: Vec<SegmentTypeIdentifier> = Vec::new();
 			if need_requests > 0 && !self.rangeproof_segment_cache.read().is_complete() {
-				let (requests, retry_requests) =
+				let (requests, retry_requests, waiting_requests) =
 					self.rangeproof_segment_cache.read().next_desired_segments(
 						self.pibd_params.get_rangeproof_segment_height(),
 						need_requests,
@@ -464,10 +473,15 @@ impl Desegmenter {
 						.into_iter()
 						.map(|id| SegmentTypeIdentifier::new(SegmentType::RangeProof, id)),
 				);
+				waiting_req.extend(
+					waiting_requests
+						.into_iter()
+						.map(|id| SegmentTypeIdentifier::new(SegmentType::RangeProof, id)),
+				);
 			};
 
 			if need_requests > 0 && !self.kernel_segment_cache.read().is_complete() {
-				let (requests, retry_requests) =
+				let (requests, retry_requests, waiting_requests) =
 					self.kernel_segment_cache.read().next_desired_segments(
 						self.pibd_params.get_kernel_segment_height(),
 						need_requests,
@@ -486,10 +500,15 @@ impl Desegmenter {
 						.into_iter()
 						.map(|id| SegmentTypeIdentifier::new(SegmentType::Kernel, id)),
 				);
+				waiting_req.extend(
+					waiting_requests
+						.into_iter()
+						.map(|id| SegmentTypeIdentifier::new(SegmentType::Kernel, id)),
+				);
 			};
 
 			if need_requests > 0 && !self.output_segment_cache.read().is_complete() {
-				let (requests, retry_requests) =
+				let (requests, retry_requests, waiting_requests) =
 					self.output_segment_cache.read().next_desired_segments(
 						self.pibd_params.get_output_segment_height(),
 						need_requests,
@@ -508,10 +527,15 @@ impl Desegmenter {
 						.into_iter()
 						.map(|id| SegmentTypeIdentifier::new(SegmentType::Output, id)),
 				);
+				waiting_req.extend(
+					waiting_requests
+						.into_iter()
+						.map(|id| SegmentTypeIdentifier::new(SegmentType::Output, id)),
+				);
 			}
 			let _ = need_requests;
 
-			return Ok((res_req, res_dup_req));
+			return Ok((res_req, res_dup_req, waiting_req));
 		}
 	}
 

@@ -66,14 +66,18 @@ impl<T> SegmentsCache<T> {
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
-	/// the current real state of the underlying elements
+	/// the current real state of the underlying elements, retry requests, all waiting requests
 	pub fn next_desired_segments(
 		&self,
 		height: u8,
 		max_elements: usize,
 		requested: &dyn RequestLookup<(SegmentType, u64)>,
 		cache_size_limit: usize,
-	) -> (Vec<SegmentIdentifier>, Vec<SegmentIdentifier>) {
+	) -> (
+		Vec<SegmentIdentifier>,
+		Vec<SegmentIdentifier>,
+		Vec<SegmentIdentifier>,
+	) {
 		let mut result = vec![];
 		debug_assert!(max_elements > 0);
 		debug_assert!(cache_size_limit > 0);
@@ -125,15 +129,19 @@ impl<T> SegmentsCache<T> {
 		// Let's check if we want to retry something...
 		let mut retry_vec = vec![];
 		if has_5_idx > 0 {
-			for (idx, req) in waiting_indexes {
-				if idx >= has_5_idx {
+			for (idx, req) in &waiting_indexes {
+				if *idx >= has_5_idx {
 					break;
 				}
-				retry_vec.push(req);
+				retry_vec.push(req.clone());
 			}
 		}
 
-		(result, retry_vec)
+		(
+			result,
+			retry_vec,
+			waiting_indexes.into_iter().map(|w| w.1).collect(),
+		)
 	}
 
 	pub fn is_duplicate_segment(&self, segment_idx: u64) -> bool {

@@ -571,7 +571,7 @@ impl HeaderSync {
 					.as_ref()
 					.expect("Internal error. Received_cache is not initialized.");
 
-				let (hashes, retry_reqs) = received_cache.next_desired_headers(headers_hash_desegmenter,
+				let (hashes, retry_reqs, waiting_reqs) = received_cache.next_desired_headers(headers_hash_desegmenter,
 																			   need_request, &self.request_tracker,
 																			   self.pibd_params.get_headers_buffer_len())
 					.expect("Chain is corrupted, please clean up the data manually and restart the node");
@@ -657,6 +657,50 @@ impl HeaderSync {
 							);
 							error!("{}", msg);
 							sync_peers.report_no_response(&peer.info.addr, msg);
+						}
+					}
+				}
+
+				if need_request > 0 {
+					// Free requests, lets duplicated some random from the expected buffer
+					let duplicate_reqs: Vec<(Hash, u64)> = waiting_reqs
+						.choose_multiple(&mut rng, need_request)
+						.cloned()
+						.collect();
+					for (hash, height) in duplicate_reqs {
+						// We don't want to send retry to the peer whom we already send the data
+						if let Some(requested_peer) = self.request_tracker.get_expected_peer(&hash)
+						{
+							let dup_peer = peers
+								.iter()
+								.filter(|p| p.info.addr != requested_peer)
+								.choose(&mut rng);
+
+							if dup_peer.is_none() {
+								break;
+							}
+							let dup_peer = dup_peer.unwrap();
+
+							debug!(
+								"Processing duplicated request for the headers {} at {}, peer {:?}",
+								hash, height, dup_peer.info.addr
+							);
+							match self.request_headers_for_hash(
+								hash.clone(),
+								height,
+								dup_peer.clone(),
+							) {
+								Ok(_) => self
+									.retry_expiration_times
+									.write()
+									.push_back(now + self.request_tracker.get_average_latency()),
+								Err(e) => {
+									let msg = format!("Failed to send duplicate headers request to {} for hash {}, Error: {}", dup_peer.info.addr, hash, e);
+									error!("{}", msg);
+									sync_peers.report_no_response(&dup_peer.info.addr, msg);
+									break;
+								}
+							}
 						}
 					}
 				}

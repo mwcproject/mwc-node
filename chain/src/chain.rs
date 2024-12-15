@@ -561,10 +561,11 @@ impl Chain {
 						return Ok(tip); // Done with success
 					}
 					Err(e) => {
-						info!(
-							"Failed to process multiple blocks, will try process one by one. {}",
-							e
-						);
+						if e.is_bad_data() {
+							info!("Failed to process multiple blocks, will try process one by one. {}",e);
+						} else {
+							debug!("Failed to process multiple blocks, will try process one by one. {}",e);
+						}
 					}
 				}
 			}
@@ -578,7 +579,11 @@ impl Chain {
 				return Ok(tip);
 			}
 			Err(e) => {
-				error!("process_block_single failed with error: {}", e);
+				if e.is_bad_data() {
+					error!("process_block_single failed with error: {}", e);
+				} else {
+					debug!("process_block_single failed with error: {}", e);
+				}
 				return Err(e);
 			}
 		}

@@ -381,11 +381,11 @@ impl BodySync {
 
 			let mut retry_requests: Vec<(u64, Hash)> = Vec::new();
 			if has10_idx > 0 {
-				for (height, req) in waiting_heights {
-					if height >= has10_idx {
+				for (height, req) in &waiting_heights {
+					if *height >= has10_idx {
 						break;
 					}
-					retry_requests.push((height, req));
+					retry_requests.push((height.clone(), req.clone()));
 				}
 			}
 
@@ -484,6 +484,50 @@ impl BodySync {
 						peer.info.addr.clone(),
 						format!("Block {}, {}", hash, height),
 					);
+				}
+			}
+
+			if *need_request > 0 {
+				// Free requests, lets duplicated some random from the expected buffer
+				let duplicate_reqs: Vec<(u64, Hash)> = waiting_heights
+					.choose_multiple(&mut rng, *need_request)
+					.cloned()
+					.collect();
+				*need_request = 0;
+
+				for (height, hash) in duplicate_reqs {
+					// We don't want to send retry to the peer whom we already send the data
+					if let Some(requested_peer) = self.request_tracker.get_expected_peer(&hash) {
+						let dup_peer = peers
+							.iter()
+							.filter(|p| p.info.addr != requested_peer)
+							.choose(&mut rng);
+
+						if dup_peer.is_none() {
+							break;
+						}
+						let dup_peer = dup_peer.unwrap();
+
+						debug!(
+							"Processing duplicated request for the block {} at {}, peer {:?}",
+							hash, height, dup_peer.info.addr
+						);
+						match dup_peer.send_block_request(hash, chain::Options::SYNC) {
+							Ok(_) => self
+								.retry_expiration_times
+								.write()
+								.push_back(now + self.request_tracker.get_average_latency()),
+							Err(e) => {
+								let msg = format!(
+									"Failed to send duplicate block request to peer {}, {}",
+									dup_peer.info.addr, e
+								);
+								warn!("{}", msg);
+								sync_peers.report_no_response(&dup_peer.info.addr, msg);
+								break;
+							}
+						}
+					}
 				}
 			}
 		}

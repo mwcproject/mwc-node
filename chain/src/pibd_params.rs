@@ -203,7 +203,7 @@ impl PibdParams {
 		match self.cpu_num {
 			1 => 2,
 			2 => 3,
-			_ => 5,
+			_ => 4,
 		}
 	}
 
@@ -219,7 +219,7 @@ impl PibdParams {
 		match self.cpu_num {
 			1 => 2,
 			2 => 3,
-			_ => 5,
+			_ => 4,
 		}
 	}
 
