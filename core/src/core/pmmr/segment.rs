@@ -384,7 +384,7 @@ where
 	T: PMMRIndexHashable,
 {
 	/// Calculate root hash of this segment
-	/// Returns `None` iff the segment is full and completely pruned
+	/// Returns `None` if the segment is full and completely pruned
 	pub fn root(
 		&self,
 		mmr_size: u64,

@@ -120,9 +120,9 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 		Ok(())
 	}
 
-	fn remove_from_leaf_set(&mut self, _pos0: u64) {
-		unimplemented!()
-	}
+	//fn remove_from_leaf_set(&mut self, _pos0: u64) {
+	//	unimplemented!()
+	//}
 
 	fn reset_prune_list(&mut self) {
 		unimplemented!()

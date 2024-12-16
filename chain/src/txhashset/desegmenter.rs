@@ -228,6 +228,16 @@ impl Desegmenter {
 		{
 			let txhashset = self.txhashset.read();
 			txhashset.roots()?.validate(&self.archive_header)?;
+			/*match txhashset.roots()?.validate(&self.archive_header) {
+				Ok(_) => {}
+				Err(e) => {
+					error!("validate error: {}", e);
+					txhashset.dump_rproof_mmrs();
+					error!("Dump is done. There was Validate error: {}", e);
+					panic!("Exiting...");
+					return Err(e);
+				}
+			}*/
 		}
 
 		status.update(SyncStatus::ValidatingKernelsHistory);
@@ -667,7 +677,7 @@ impl Desegmenter {
 						&mut batch,
 						|ext, _batch| {
 							let extension = &mut ext.extension;
-							extension.apply_output_segments(segm, outputs_bitmap)?;
+							extension.apply_output_segments(segm)?;
 							Ok(())
 						},
 					)?;
@@ -720,7 +730,7 @@ impl Desegmenter {
 						&mut batch,
 						|ext, _batch| {
 							let extension = &mut ext.extension;
-							extension.apply_rangeproof_segments(seg, outputs_bitmap)?;
+							extension.apply_rangeproof_segments(seg)?;
 							Ok(())
 						},
 					)?;

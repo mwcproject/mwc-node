@@ -284,10 +284,11 @@ where
 		self.backend.reset_prune_list();
 	}
 
-	/// Remove the specified position from the leaf set
-	pub fn remove_from_leaf_set(&mut self, pos0: u64) {
+	// Remove the specified position from the leaf set
+	// DON'T USE IS, use prune instead
+	/*pub fn remove_from_leaf_set(&mut self, pos0: u64) {
 		self.backend.remove_from_leaf_set(pos0);
-	}
+	}*/
 
 	/// Saves a snapshot of the MMR tagged with the block hash.
 	/// Specifically - snapshots the utxo file as we need this rewound before

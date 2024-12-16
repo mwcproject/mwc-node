@@ -195,7 +195,7 @@ impl BodySync {
 		);
 
 		if need_request > 0 {
-			self.send_requests(&mut need_request, &peers, sync_peers)?;
+			let mut waiting_requests = self.send_requests(&mut need_request, &peers, sync_peers)?;
 
 			// We can send more requests, let's check if we need to update request_series
 			if need_request > 0 {
@@ -241,7 +241,11 @@ impl BodySync {
 				}
 
 				// Now we can try to submit more requests...
-				self.send_requests(&mut need_request, &peers, sync_peers)?;
+				waiting_requests = self.send_requests(&mut need_request, &peers, sync_peers)?;
+			}
+
+			if need_request > 0 && !waiting_requests.is_empty() {
+				self.send_waiting_requests(waiting_requests, need_request, &peers, sync_peers)?;
 			}
 		}
 
@@ -325,26 +329,27 @@ impl BodySync {
 		retry_expiration_times.len()
 	}
 
+	// return waiting requests
 	fn send_requests(
 		&self,
 		need_request: &mut usize,
 		peers: &Vec<Arc<Peer>>,
 		sync_peers: &SyncPeers,
-	) -> Result<(), chain::Error> {
+	) -> Result<Vec<(u64, Hash)>, chain::Error> {
 		// request_series naturally from head to tail, but requesting better to send from tail to the head....
 		let mut peers = peers.clone();
+		let mut waiting_heights: Vec<(u64, Hash)> = Vec::new();
 		// Requests wuth try write because otherwise somebody else is sending, it is mean we are good...
 		if let Some(request_series) = self.request_series.try_write() {
 			*need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if *need_request == 0 {
-				return Ok(());
+				return Ok(waiting_heights);
 			}
 
 			let mut rng = rand::thread_rng();
 			let now = Utc::now();
 
 			let mut new_requests: Vec<(u64, Hash)> = Vec::new();
-			let mut waiting_heights: Vec<(u64, Hash)> = Vec::new();
 
 			let mut first_in_cache = 0;
 			let mut last_in_cache = 0;
@@ -459,7 +464,7 @@ impl BodySync {
 				peers.retain(|p| p.info.live_info.read().height >= height);
 				if peers.is_empty() {
 					*need_request = 0;
-					return Ok(());
+					return Ok(waiting_heights);
 				}
 
 				// sending request
@@ -486,47 +491,57 @@ impl BodySync {
 					);
 				}
 			}
+		}
+		Ok(waiting_heights)
+	}
 
-			if *need_request > 0 {
-				// Free requests, lets duplicated some random from the expected buffer
-				let duplicate_reqs: Vec<(u64, Hash)> = waiting_heights
-					.choose_multiple(&mut rng, *need_request)
-					.cloned()
-					.collect();
-				*need_request = 0;
+	fn send_waiting_requests(
+		&self,
+		waiting_heights: Vec<(u64, Hash)>,
+		need_request: usize,
+		peers: &Vec<Arc<Peer>>,
+		sync_peers: &SyncPeers,
+	) -> Result<(), chain::Error> {
+		debug_assert!(need_request > 0);
 
-				for (height, hash) in duplicate_reqs {
-					// We don't want to send retry to the peer whom we already send the data
-					if let Some(requested_peer) = self.request_tracker.get_expected_peer(&hash) {
-						let dup_peer = peers
-							.iter()
-							.filter(|p| p.info.addr != requested_peer)
-							.choose(&mut rng);
+		let mut rng = rand::thread_rng();
+		let now = Utc::now();
 
-						if dup_peer.is_none() {
-							break;
-						}
-						let dup_peer = dup_peer.unwrap();
+		// Free requests, lets duplicated some random from the expected buffer
+		let duplicate_reqs: Vec<(u64, Hash)> = waiting_heights
+			.into_iter()
+			.choose_multiple(&mut rng, need_request);
 
-						debug!(
-							"Processing duplicated request for the block {} at {}, peer {:?}",
-							hash, height, dup_peer.info.addr
+		for (height, hash) in duplicate_reqs {
+			// We don't want to send retry to the peer whom we already send the data
+			if let Some(requested_peer) = self.request_tracker.get_expected_peer(&hash) {
+				let dup_peer = peers
+					.iter()
+					.filter(|p| p.info.addr != requested_peer)
+					.choose(&mut rng);
+
+				if dup_peer.is_none() {
+					break;
+				}
+				let dup_peer = dup_peer.unwrap();
+				debug!(
+					"Processing duplicated request for the block {} at {}, peer {:?}",
+					hash, height, dup_peer.info.addr
+				);
+
+				match dup_peer.send_block_request(hash, chain::Options::SYNC) {
+					Ok(_) => self
+						.retry_expiration_times
+						.write()
+						.push_back(now + self.request_tracker.get_average_latency()),
+					Err(e) => {
+						let msg = format!(
+							"Failed to send duplicate block request to peer {}, {}",
+							dup_peer.info.addr, e
 						);
-						match dup_peer.send_block_request(hash, chain::Options::SYNC) {
-							Ok(_) => self
-								.retry_expiration_times
-								.write()
-								.push_back(now + self.request_tracker.get_average_latency()),
-							Err(e) => {
-								let msg = format!(
-									"Failed to send duplicate block request to peer {}, {}",
-									dup_peer.info.addr, e
-								);
-								warn!("{}", msg);
-								sync_peers.report_no_response(&dup_peer.info.addr, msg);
-								break;
-							}
-						}
+						warn!("{}", msg);
+						sync_peers.report_no_response(&dup_peer.info.addr, msg);
+						break;
 					}
 				}
 			}
