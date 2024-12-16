@@ -50,7 +50,7 @@ const BLOCK_SPENT_PREFIX: u8 = b'S';
 const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C';
 
 /// Prefix for various boolean flags stored in the db.
-const BOOL_FLAG_PREFIX: u8 = b'B';
+const BOOL_FLAG_PREFIX: u8 = b'F';
 /// Boolean flag for v3 migration.
 const BLOCKS_V3_MIGRATED: &str = "blocks_v3_migrated";
 
