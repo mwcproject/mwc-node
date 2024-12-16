@@ -183,6 +183,14 @@ impl Server {
 			)));
 		}
 
+		let max_allowed_connections =
+			self.config.peer_max_inbound_count() + self.config.peer_max_outbound_count(true) + 10;
+		if self.peers.get_number_connected_peers() > max_allowed_connections as usize {
+			return Err(Error::ConnectionClose(String::from(
+				"Too many established connections...",
+			)));
+		}
+
 		if global::is_production_mode() {
 			let hs = self.handshake.clone();
 			let addrs = hs.addrs.read();
@@ -310,6 +318,15 @@ impl Server {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose(String::from("Server is stopping")));
 		}
+
+		let max_allowed_connections =
+			self.config.peer_max_inbound_count() + self.config.peer_max_outbound_count(true) + 10;
+		if self.peers.get_number_connected_peers() > max_allowed_connections as usize {
+			return Err(Error::ConnectionClose(String::from(
+				"Too many established connections...",
+			)));
+		}
+
 		let total_diff = self.peers.total_difficulty()?;
 
 		// accept the peer and add it to the server map

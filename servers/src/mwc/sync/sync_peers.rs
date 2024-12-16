@@ -48,7 +48,8 @@ impl PeerPibdStatus {
 	/// Checking events log to decide if peer wasn't active enough
 	/// Note, this method is expecting to truncate responses, so data will be managable
 	/// during long run
-	fn check_for_ban(&mut self, peer: &String) -> (bool, String) {
+	/// Return: (ban, offline, comment)
+	fn check_for_ban(&mut self, peer: &String) -> (bool, bool, String) {
 		let mut bans = 0;
 		let mut errors = 0;
 		let mut no_response = 0;
@@ -84,20 +85,21 @@ impl PeerPibdStatus {
 			}
 		}
 
-		let res = bans > 0
-			|| errors > 1
-			|| (self.responses.len() >= MIN_RESPONSE_NUM && success <= self.responses.len() / 2);
+		let res_ban = bans > 0 || errors > 1;
+
+		let res_network_issue =
+			self.responses.len() >= MIN_RESPONSE_NUM && success <= self.responses.len() / 2;
 
 		debug!(
-			"Checking for Ban. Peer: {}, bans={} errors={} no_resp={} ok={}  RES={}",
-			peer, bans, errors, no_response, success, res
+			"Checking for Ban. Peer: {}, bans={} errors={} no_resp={} ok={}  RES={},{}",
+			peer, bans, errors, no_response, success, res_ban, res_network_issue
 		);
 
 		while self.responses.len() > MIN_RESPONSE_NUM {
 			self.responses.pop_front();
 		}
 
-		(res, comment)
+		(res_ban, res_network_issue, comment)
 	}
 }
 
@@ -116,7 +118,7 @@ impl SyncPeers {
 		}
 	}
 
-	pub fn reset(&mut self) {
+	pub fn reset(&self) {
 		self.peers_status.write().clear();
 		self.banned_peers.write().clear();
 		self.new_events_peers.write().clear();
@@ -150,23 +152,28 @@ impl SyncPeers {
 		self.add_event(peer.as_key(), PeerStatusEvent::Ban(message));
 	}
 
-	pub fn apply_peers_status(&self, peers: &Arc<Peers>) {
+	pub fn apply_peers_status(&self, peers: &Arc<Peers>) -> Vec<PeerAddr> {
 		let mut peers_status = self.peers_status.write();
 		let mut check_peers = self.new_events_peers.write();
+		let mut offline_peers: Vec<PeerAddr> = Vec::new();
 		for cp in check_peers.iter() {
 			if let Some(status) = peers_status.get_mut(cp) {
-				let (ban, comment) = status.check_for_ban(cp);
+				let (ban, offline, comment) = status.check_for_ban(cp);
+				let peer_addr = PeerAddr::from_str(cp);
 				if ban {
-					let peer_addr = PeerAddr::from_str(cp);
 					if let Err(e) = peers.ban_peer(&peer_addr, ReasonForBan::PibdFailure, &comment)
 					{
 						warn!("ban_peer is failed with error: {}", e);
 					}
-					self.banned_peers.write().insert(peer_addr);
+					self.banned_peers.write().insert(peer_addr.clone());
+				}
+				if ban || offline {
+					offline_peers.push(peer_addr);
 				}
 			}
 		}
 		check_peers.clear();
+		offline_peers
 	}
 
 	fn add_event(&self, peer: String, event: PeerStatusEvent) {

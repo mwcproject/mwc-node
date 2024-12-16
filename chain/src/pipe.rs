@@ -168,6 +168,7 @@ fn validate_pow_only(header: &BlockHeader, ctx: &BlockContext<'_>) -> Result<(),
 pub fn process_blocks_series(
 	blocks: &Vec<Block>,
 	ctx: &mut BlockContext<'_>,
+	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
 	secp: &Secp256k1,
 ) -> Result<(Option<Tip>, BlockHeader), Error> {
 	debug_assert!(!blocks.is_empty());
@@ -206,11 +207,17 @@ pub fn process_blocks_series(
 	// Check if we have already processed the first block previously.
 	check_known(&first_block.header, &head, ctx)?;
 
-	// Quick pow validation. No point proceeding if this is invalid.
-	// We want to do this before we add the block to the orphan pool so we
-	// want to do this now and not later during header validation.
 	for b in blocks {
+		// Quick pow validation. No point proceeding if this is invalid.
+		// We want to do this before we add the block to the orphan pool so we
+		// want to do this now and not later during header validation.
 		validate_pow_only(&b.header, ctx)?;
+
+		// Process the header for the block.
+		// Note: We still want to process the full block if we have seen this header before
+		// as we may have processed it "header first" and not yet processed the full block.
+		process_block_header(&b.header, ctx, cache_values)?;
+
 		// Validate the block itself, make sure it is internally consistent.
 		// Use the verifier_cache for verifying rangeproofs and kernel signatures.
 		validate_block(b, ctx, secp)?;
@@ -292,115 +299,6 @@ pub fn process_blocks_series(
 		Ok((None, fork_point))
 	};
 	res
-}
-
-/// Runs the block processing pipeline, including validation and finding a
-/// place for the new block in the chain.
-/// Returns new head if chain head updated and the "fork point" rewound to when processing the new block.
-pub fn process_block(
-	b: &Block,
-	ctx: &mut BlockContext<'_>,
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
-	secp: &Secp256k1,
-) -> Result<(Option<Tip>, BlockHeader), Error> {
-	debug!(
-		"pipe: process_block {} at {} [in/out/kern: {}/{}/{}] ({})",
-		b.hash(),
-		b.header.height,
-		b.inputs().len(),
-		b.outputs().len(),
-		b.kernels().len(),
-		b.inputs().version_str(),
-	);
-
-	// Read current chain head from db via the batch.
-	// We use this for various operations later.
-	let head = ctx.batch.head()?;
-
-	// Check if we have already processed this block previously.
-	check_known(&b.header, &head, ctx)?;
-
-	// Quick pow validation. No point proceeding if this is invalid.
-	// We want to do this before we add the block to the orphan pool so we
-	// want to do this now and not later during header validation.
-	validate_pow_only(&b.header, ctx)?;
-
-	// Get previous header from the db.
-	let prev = prev_header_store(&b.header, &mut ctx.batch)?;
-
-	// Process the header for the block.
-	// Note: We still want to process the full block if we have seen this header before
-	// as we may have processed it "header first" and not yet processed the full block.
-	process_block_header(&b.header, ctx, cache_values)?;
-
-	// Validate the block itself, make sure it is internally consistent.
-	// Use the verifier_cache for verifying rangeproofs and kernel signatures.
-	validate_block(b, ctx, secp)?;
-
-	// Start a chain extension unit of work dependent on the success of the
-	// internal validation and saving operations
-	let header_pmmr = &mut ctx.header_pmmr;
-	let txhashset = &mut ctx.txhashset;
-	let batch = &mut ctx.batch;
-	let ctx_specific_validation = &ctx.header_allowed;
-	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		let fork_point_local_blocks =
-			rewind_and_apply_fork(&prev, ext, batch, ctx_specific_validation, secp)?;
-		let fork_point = fork_point_local_blocks.0;
-		let local_branch_blocks = fork_point_local_blocks.1;
-
-		replay_attack_check(b, fork_point.height, &local_branch_blocks, ext, batch)?;
-
-		// Check any coinbase being spent have matured sufficiently.
-		// This needs to be done within the context of a potentially
-		// rewound txhashset extension to reflect chain state prior
-		// to applying the new block.
-		verify_coinbase_maturity(b, ext, batch)?;
-
-		// Validate the block against the UTXO set.
-		validate_utxo(b, ext, batch)?;
-
-		// Using block_sums (utxo_sum, kernel_sum) for the previous block from the db
-		// we can verify_kernel_sums across the full UTXO sum and full kernel sum
-		// accounting for inputs/outputs/kernels in this new block.
-		// We know there are no double-spends etc. if this verifies successfully.
-		verify_block_sums(b, batch, secp)?;
-
-		// Apply the block to the txhashset state.
-		// Validate the txhashset roots and sizes against the block header.
-		// Block is invalid if there are any discrepencies.
-		apply_block_to_txhashset(b, ext, batch)?;
-
-		// If applying this block does not increase the work on the chain then
-		// we know we have not yet updated the chain to produce a new chain head.
-		// We discard the "child" batch used in this extension (original ctx batch still active).
-		// We discard any MMR modifications applied in this extension.
-		let head = batch.head()?;
-		if !has_more_work(&b.header, &head) {
-			ext.extension.force_rollback();
-		}
-
-		Ok(fork_point)
-	})?;
-
-	// Add the validated block to the db.
-	// Note we do this in the outer batch, not the child batch from the extension
-	// as we only commit the child batch if the extension increases total work.
-	// We want to save the block to the db regardless.
-	add_block(b, &ctx.batch)?;
-
-	// If we have no "tail" then set it now.
-	if ctx.batch.tail().is_err() {
-		update_body_tail(&b.header, &ctx.batch)?;
-	}
-
-	if has_more_work(&b.header, &head) {
-		let head = Tip::from_header(&b.header);
-		update_head(&head, &mut ctx.batch)?;
-		Ok((Some(head), fork_point))
-	} else {
-		Ok((None, fork_point))
-	}
 }
 
 ///
@@ -916,9 +814,13 @@ pub fn rewind_and_apply_fork(
 	fork_hashes.reverse();
 
 	for h in &fork_hashes {
-		let fb = batch
+		let fb = match batch
 			.get_block(&h)
-			.map_err(|e| Error::StoreErr(e, "getting forked blocks".to_string()))?;
+			.map_err(|e| Error::StoreErr(e, "getting forked blocks".to_string()))
+		{
+			Ok(fb) => fb,
+			Err(e) => return Err(e),
+		};
 
 		// Re-verify coinbase maturity along this fork.
 		verify_coinbase_maturity(&fb, ext, batch)?;

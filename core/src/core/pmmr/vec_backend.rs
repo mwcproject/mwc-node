@@ -120,9 +120,9 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 		Ok(())
 	}
 
-	fn remove_from_leaf_set(&mut self, _pos0: u64) {
-		unimplemented!()
-	}
+	//fn remove_from_leaf_set(&mut self, _pos0: u64) {
+	//	unimplemented!()
+	//}
 
 	fn reset_prune_list(&mut self) {
 		unimplemented!()
@@ -169,5 +169,14 @@ impl<T: PMMRable> VecBackend<T> {
 	/// Size of this vec backend in hashes.
 	pub fn size(&self) -> u64 {
 		self.hashes.len() as u64
+	}
+
+	/// Reset backend data
+	pub fn reset(&mut self) {
+		if let Some(data) = self.data.as_mut() {
+			data.clear();
+		}
+		self.hashes.clear();
+		self.removed.clear();
 	}
 }

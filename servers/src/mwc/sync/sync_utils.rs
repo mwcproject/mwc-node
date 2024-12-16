@@ -17,10 +17,13 @@
 
 use crate::mwc::sync::sync_peers::SyncPeers;
 use chrono::{DateTime, Duration, Utc};
-use mwc_chain::Chain;
+use mwc_chain::txhashset::request_lookup::RequestLookup;
+use mwc_chain::{pibd_params, Chain};
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
+use mwc_util::RwLock;
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +34,7 @@ pub enum SyncRequestResponses {
 	WaitingForHeadersHash,
 	HeadersPibdReady,
 	HeadersReady,
+	HashMoreHeadersToApply,
 	WaitingForHeaders,
 	StatePibdReady,
 	BadState, // need update state, probably horizon was changed, need to retry
@@ -59,6 +63,7 @@ impl SyncResponse {
 	}
 }
 
+#[derive(Clone)]
 pub struct CachedResponse<T> {
 	time: DateTime<Utc>,
 	response: T,
@@ -76,8 +81,73 @@ impl<T> CachedResponse<T> {
 		Utc::now() > self.time
 	}
 
-	pub fn get_response(&self) -> &T {
-		&self.response
+	pub fn to_response(self) -> T {
+		self.response
+	}
+}
+
+#[derive(Clone)]
+pub struct PeerTrackData {
+	requests: u32,
+}
+
+impl PeerTrackData {
+	fn new(requests: u32) -> Self {
+		PeerTrackData { requests }
+	}
+}
+
+pub struct RequestData {
+	peer: PeerAddr,
+	request_time: DateTime<Utc>,
+	request_message: String, // for logging and debugging
+}
+
+impl RequestData {
+	fn new(peer: PeerAddr, request_message: String) -> Self {
+		let now = Utc::now();
+		RequestData {
+			peer,
+			request_time: now.clone(),
+			request_message,
+		}
+	}
+}
+
+struct LatencyTracker {
+	latency_history: VecDeque<i64>,
+	latency_sum: i64,
+}
+
+impl LatencyTracker {
+	fn new() -> Self {
+		LatencyTracker {
+			latency_history: VecDeque::new(),
+			latency_sum: 0,
+		}
+	}
+
+	fn clear(&mut self) {
+		self.latency_history.clear();
+		self.latency_sum = 0;
+	}
+
+	fn add_latency(&mut self, latency_ms: i64) {
+		self.latency_history.push_back(latency_ms);
+		self.latency_sum += latency_ms;
+		while self.latency_history.len() > 15 {
+			let lt = self.latency_history.pop_front().expect("non empty data");
+			self.latency_sum -= lt;
+		}
+	}
+
+	fn get_average_latency(&self) -> Duration {
+		let dur_ms = if self.latency_history.is_empty() {
+			pibd_params::PIBD_REQUESTS_TIMEOUT_SECS * 1000
+		} else {
+			self.latency_sum / self.latency_history.len() as i64
+		};
+		Duration::microseconds(dur_ms)
 	}
 }
 
@@ -89,9 +159,22 @@ pub struct RequestTracker<K>
 where
 	K: std::cmp::Eq + std::hash::Hash,
 {
-	requested_hashes: HashMap<K, (PeerAddr, DateTime<Utc>, String)>, // Values: peer, time, message
-	peers_queue_size: HashMap<PeerAddr, u32>, // there are so many peers and many requests, so we better to hande 'slow' peer cases
-	requests_to_next_ask: usize,
+	// Values: peer, time, message.
+	requested: RwLock<HashMap<K, RequestData>>, //  Lock 1
+	// there are so many peers and many requests, so we better to hande 'slow' peer cases
+	peers_stats: RwLock<HashMap<PeerAddr, PeerTrackData>>, // Lock 2
+	requests_to_next_ask: AtomicI32,
+	// latency in MS
+	latency_tracker: RwLock<LatencyTracker>,
+}
+
+impl<K> RequestLookup<K> for RequestTracker<K>
+where
+	K: std::cmp::Eq + std::hash::Hash,
+{
+	fn contains_request(&self, key: &K) -> bool {
+		self.requested.read().contains_key(key)
+	}
 }
 
 impl<K> RequestTracker<K>
@@ -100,27 +183,26 @@ where
 {
 	pub fn new() -> Self {
 		RequestTracker {
-			requested_hashes: HashMap::new(),
-			peers_queue_size: HashMap::new(),
-			requests_to_next_ask: 0,
+			requested: RwLock::new(HashMap::new()),
+			peers_stats: RwLock::new(HashMap::new()),
+			requests_to_next_ask: AtomicI32::new(0),
+			latency_tracker: RwLock::new(LatencyTracker::new()),
 		}
 	}
 
-	pub fn retain_expired(
-		&mut self,
-		expiration_time_interval_sec: i64,
-		sync_peers: &mut SyncPeers,
-	) {
-		let requested_hashes = &mut self.requested_hashes;
-		let peers_queue_size = &mut self.peers_queue_size;
+	pub fn retain_expired(&self, expiration_time_interval_sec: i64, sync_peers: &SyncPeers) {
+		let mut requested = self.requested.write();
+		let peers_stats = &mut self.peers_stats.write();
 		let now = Utc::now();
 
 		// first let's clean up stale requests...
-		requested_hashes.retain(|_, (peer, req_time, message)| {
-			if (now - *req_time).num_seconds() > expiration_time_interval_sec {
-				sync_peers.report_no_response(peer, message.clone());
-				if let Some(n) = peers_queue_size.get_mut(peer) {
-					*n = n.saturating_sub(1);
+		requested.retain(|_, request_data| {
+			let peer_stat = peers_stats.get_mut(&request_data.peer);
+			if (now - request_data.request_time).num_seconds() > expiration_time_interval_sec {
+				sync_peers
+					.report_no_response(&request_data.peer, request_data.request_message.clone());
+				if let Some(n) = peer_stat {
+					n.requests = n.requests.saturating_sub(1);
 				}
 				return false;
 			}
@@ -128,77 +210,99 @@ where
 		});
 	}
 
-	pub fn clear(&mut self) {
-		self.requested_hashes.clear();
-		self.peers_queue_size.clear();
-		self.requests_to_next_ask = 0;
-	}
-
-	pub fn get_requested(&self) -> &HashMap<K, (PeerAddr, DateTime<Utc>, String)> {
-		&self.requested_hashes
+	pub fn clear(&self) {
+		self.requested.write().clear();
+		self.peers_stats.write().clear();
+		self.requests_to_next_ask.store(0, Ordering::Relaxed);
+		self.latency_tracker.write().clear();
 	}
 
 	/// Calculate how many new requests we can make to the peers. This call updates requests_to_next_ask
 	pub fn calculate_needed_requests(
-		&mut self,
+		&self,
 		peer_num: usize,
 		excluded_requests: usize,
+		_excluded_peers: usize,
 		request_per_peer: usize,
 		requests_limit: usize,
 	) -> usize {
 		let requests_in_queue = self
-			.requested_hashes
+			.requested
+			.read()
 			.len()
 			.saturating_sub(excluded_requests);
 		let expected_total_request = cmp::min(peer_num * request_per_peer, requests_limit);
-		self.requests_to_next_ask = expected_total_request / 5;
+		self.requests_to_next_ask.store(
+			(expected_total_request + excluded_requests) as i32 / 5,
+			Ordering::Relaxed,
+		);
 		expected_total_request.saturating_sub(requests_in_queue)
 	}
 
 	pub fn get_requests_num(&self) -> usize {
-		self.requested_hashes.len()
+		self.requested.read().len()
 	}
 
 	pub fn has_request(&self, req: &K) -> bool {
-		self.requested_hashes.contains_key(req)
+		self.requested.read().contains_key(req)
 	}
 
-	pub fn get_update_requests_to_next_ask(&mut self) -> usize {
-		self.requests_to_next_ask = self.requests_to_next_ask.saturating_sub(1);
-		self.requests_to_next_ask
+	pub fn get_update_requests_to_next_ask(&self) -> usize {
+		let res = self.requests_to_next_ask.fetch_sub(1, Ordering::Relaxed);
+		if res >= 0 {
+			res as usize
+		} else {
+			0
+		}
 	}
 
-	pub fn get_peers_queue_size(&self) -> &HashMap<PeerAddr, u32> {
-		&self.peers_queue_size
+	pub fn get_peer_track_data(&self, peer: &PeerAddr) -> Option<PeerTrackData> {
+		self.peers_stats.read().get(peer).cloned()
 	}
 
-	pub fn register_request(&mut self, key: K, peer: PeerAddr, message: String) {
-		match self.peers_queue_size.get_mut(&peer) {
+	pub fn register_request(&self, key: K, peer: PeerAddr, message: String) {
+		let mut requested = self.requested.write();
+		let peers_stats = &mut self.peers_stats.write();
+
+		match peers_stats.get_mut(&peer) {
 			Some(n) => {
-				*n = n.saturating_add(1);
+				n.requests += 1;
 			}
 			None => {
-				self.peers_queue_size.insert(peer.clone(), 1);
+				peers_stats.insert(peer.clone(), PeerTrackData::new(1));
 			}
 		}
-		self.requested_hashes
-			.insert(key, (peer, Utc::now(), message));
+		requested.insert(key, RequestData::new(peer, message));
 	}
 
-	pub fn remove_request(&mut self, key: &K) -> Option<PeerAddr> {
-		if let Some((peer, _time, _message)) = self.requested_hashes.remove(key) {
-			if let Some(n) = self.peers_queue_size.get_mut(&peer) {
-				*n = n.saturating_sub(1);
+	pub fn remove_request(&self, key: &K, peer: &PeerAddr) -> Option<PeerAddr> {
+		let mut requested = self.requested.write();
+		let peers_stats = &mut self.peers_stats.write();
+
+		if let Some(request_data) = requested.get(key) {
+			let res_peer = request_data.peer.clone();
+			if request_data.peer == *peer {
+				if let Some(n) = peers_stats.get_mut(&request_data.peer) {
+					n.requests = n.requests.saturating_sub(1);
+				}
+				let latency_ms = (Utc::now() - request_data.request_time).num_milliseconds();
+				debug_assert!(latency_ms >= 0);
+				self.latency_tracker.write().add_latency(latency_ms);
+				requested.remove(key);
 			}
-			Some(peer)
+			Some(res_peer)
 		} else {
 			None
 		}
 	}
 
+	pub fn get_average_latency(&self) -> Duration {
+		self.latency_tracker.read().get_average_latency()
+	}
+
 	pub fn get_expected_peer(&self, key: &K) -> Option<PeerAddr> {
-		if let Some((peer, _time, _message)) = self.requested_hashes.get(key) {
-			Some(peer.clone())
+		if let Some(req_data) = self.requested.read().get(key) {
+			Some(req_data.peer.clone())
 		} else {
 			None
 		}
@@ -225,19 +329,19 @@ pub fn get_qualify_peers(
 }
 
 // return: (peers, number of excluded requests)
-pub fn get_sync_peers(
+pub fn get_sync_peers<T: std::cmp::Eq + std::hash::Hash>(
 	peers: &Arc<Peers>,
 	expected_requests_per_peer: usize,
 	capabilities: Capabilities,
 	min_height: u64,
-	total_queue_requests: usize,
-	peers_queue_size: &HashMap<PeerAddr, u32>,
-) -> (Vec<Arc<Peer>>, u32) {
+	request_tracker: &RequestTracker<T>,
+) -> (Vec<Arc<Peer>>, u32, u32) {
 	// Excluding peers with totally full Q
-	let peer_requests_limit = (expected_requests_per_peer * 2) as u32;
+	let peer_requests_limit = expected_requests_per_peer as u32;
 	let mut res: Vec<Arc<Peer>> = Vec::new();
 	// for excluded we nned to cover offline prrs as well. That is why we are counting back
-	let mut excluded_requests: usize = total_queue_requests;
+	let mut excluded_requests: usize = request_tracker.get_requests_num();
+	let mut excluded_peers = 0;
 	let mut found_outbound = false;
 	for peer in peers
 		.iter()
@@ -247,10 +351,11 @@ pub fn get_sync_peers(
 		.with_min_height(min_height)
 	{
 		found_outbound = true;
-		if let Some(sz) = peers_queue_size.get(&peer.info.addr) {
-			if *sz < peer_requests_limit {
-				excluded_requests = excluded_requests.saturating_sub(*sz as usize);
+		if let Some(track_data) = request_tracker.get_peer_track_data(&peer.info.addr) {
+			if track_data.requests < peer_requests_limit {
+				excluded_requests = excluded_requests.saturating_sub(track_data.requests as usize);
 			} else {
+				excluded_peers += 1;
 				continue;
 			}
 		}
@@ -265,15 +370,17 @@ pub fn get_sync_peers(
 			.inbound()
 			.with_min_height(min_height)
 		{
-			if let Some(sz) = peers_queue_size.get(&peer.info.addr) {
-				if *sz < peer_requests_limit {
-					excluded_requests = excluded_requests.saturating_sub(*sz as usize);
+			if let Some(track_data) = request_tracker.get_peer_track_data(&peer.info.addr) {
+				if track_data.requests < peer_requests_limit {
+					excluded_requests =
+						excluded_requests.saturating_sub(track_data.requests as usize);
 				} else {
+					excluded_peers += 1;
 					continue;
 				}
 			}
 			res.push(peer);
 		}
 	}
-	(res, excluded_requests as u32)
+	(res, excluded_requests as u32, excluded_peers)
 }

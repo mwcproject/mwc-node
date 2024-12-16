@@ -15,7 +15,7 @@
 
 use crate::util::RwLock;
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -55,6 +55,7 @@ pub struct Peers {
 	config: P2PConfig,
 	stop_state: Arc<StopState>,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
+	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
 }
 
 impl Peers {
@@ -74,6 +75,16 @@ impl Peers {
 				capabilities: Capabilities::UNKNOWN,
 				time: DateTime::default(),
 			}),
+			excluded_peers: Arc::new(RwLock::new(HashSet::new())),
+		}
+	}
+
+	/// Mark those peers as excluded, so the will never be in 'connected' list
+	pub fn set_excluded_peers(&self, peers: &Vec<PeerAddr>) {
+		let mut excluded_peers = self.excluded_peers.write();
+		excluded_peers.clear();
+		for p in peers {
+			excluded_peers.insert(p.clone());
 		}
 	}
 
@@ -103,6 +114,14 @@ impl Peers {
 
 	pub fn get_boost_peers_capabilities(&self) -> Capabilities {
 		self.boost_peers_capabilities.read().capabilities.clone()
+	}
+
+	/// Number of peers that already has connection. The total number of connections needs tobe be limited
+	pub fn get_number_connected_peers(&self) -> usize {
+		match self.peers.try_read_for(LOCK_TIMEOUT) {
+			Some(peers) => peers.len(),
+			None => 0,
+		}
 	}
 
 	/// Adds the peer to our internal peer mapping. Note that the peer is still
@@ -165,8 +184,13 @@ impl Peers {
 	/// This allows us to hide try_read_for() behind a cleaner interface.
 	/// PeersIter lets us chain various adaptors for convenience.
 	pub fn iter(&self) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
+		let excluded_peers = self.excluded_peers.read();
 		let peers = match self.peers.try_read_for(LOCK_TIMEOUT) {
-			Some(peers) => peers.values().cloned().collect(),
+			Some(peers) => peers
+				.values()
+				.cloned()
+				.filter(|p| !excluded_peers.contains(&p.info.addr))
+				.collect(),
 			None => {
 				if !self.stop_state.is_stopped() {
 					// When stopped, peers access is locked by stopped thread

@@ -26,6 +26,7 @@ use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::{Segment, SegmentType};
 use mwc_p2p::{PeerAddr, ReasonForBan};
+use mwc_util::RwLock;
 use rand::seq::SliceRandom;
 use std::cmp;
 use std::collections::{HashMap, HashSet};
@@ -45,9 +46,9 @@ pub struct HeadersHashSync {
 	// sync for segments
 	requested_segments: HashMap<(SegmentType, u64), (PeerAddr, DateTime<Utc>)>,
 	// pibd ready flag for quick response during waiting time intervals
-	pibd_headers_are_loaded: bool,
+	pibd_headers_are_loaded: RwLock<bool>,
 
-	cached_response: Option<CachedResponse<SyncResponse>>,
+	cached_response: RwLock<Option<CachedResponse<SyncResponse>>>,
 	pibd_params: Arc<PibdParams>,
 }
 
@@ -62,13 +63,13 @@ impl HeadersHashSync {
 			responded_headers_hash_from: HashMap::new(),
 			responded_with_another_height: HashSet::new(),
 			requested_segments: HashMap::new(),
-			pibd_headers_are_loaded: false,
-			cached_response: None,
+			pibd_headers_are_loaded: RwLock::new(false),
+			cached_response: RwLock::new(None),
 		}
 	}
 
 	pub fn is_pibd_headers_are_loaded(&self) -> bool {
-		self.pibd_headers_are_loaded
+		*self.pibd_headers_are_loaded.read()
 	}
 
 	fn get_peer_capabilities() -> Capabilities {
@@ -82,8 +83,8 @@ impl HeadersHashSync {
 		self.responded_headers_hash_from.clear();
 		self.responded_with_another_height.clear();
 		self.requested_segments.clear();
-		self.pibd_headers_are_loaded = false;
-		self.cached_response = None;
+		*self.pibd_headers_are_loaded.write() = false;
+		*self.cached_response.write() = None;
 	}
 
 	pub fn is_complete(&self) -> bool {
@@ -111,11 +112,7 @@ impl HeadersHashSync {
 
 	// At this point we found that all hash download process is failed. Now we need to ban peers that
 	// was commited to headers hash roots. Other banned peers needs to be unbanned
-	pub fn reset_ban_commited_to_hash(
-		&mut self,
-		peers: &Arc<p2p::Peers>,
-		sync_peers: &mut SyncPeers,
-	) {
+	pub fn reset_ban_commited_to_hash(&mut self, peers: &Arc<p2p::Peers>, sync_peers: &SyncPeers) {
 		debug_assert!(self.headers_hash_desegmenter.is_some());
 
 		if let Some(headers_hash_desegmenter) = self.headers_hash_desegmenter.as_ref() {
@@ -143,19 +140,15 @@ impl HeadersHashSync {
 		self.reset();
 	}
 
-	pub fn request(
-		&mut self,
-		peers: &Arc<p2p::Peers>,
-		sync_state: &SyncState,
-		sync_peers: &mut SyncPeers,
-		best_height: u64,
-	) -> SyncResponse {
+	// Lightweight request processing for non active case. Immutable method
+	pub fn request_pre(&self, best_height: u64) -> Option<SyncResponse> {
 		// Sending headers hash request to all peers that has the same archive height...
-		if let Some(cached_response) = &self.cached_response {
+		let cached_response = self.cached_response.read().clone();
+		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
-				return cached_response.get_response().clone();
+				return Some(cached_response.to_response());
 			} else {
-				self.cached_response = None;
+				*self.cached_response.write() = None;
 			}
 		}
 
@@ -163,7 +156,7 @@ impl HeadersHashSync {
 
 		if let Ok(tip) = self.chain.header_head() {
 			if tip.height > target_archive_height {
-				self.pibd_headers_are_loaded = true;
+				*self.pibd_headers_are_loaded.write() = true;
 				let resp = SyncResponse::new(
 					SyncRequestResponses::HeadersPibdReady,
 					Self::get_peer_capabilities(),
@@ -172,11 +165,23 @@ impl HeadersHashSync {
 						tip.height, target_archive_height
 					),
 				);
-				self.cached_response =
+				*self.cached_response.write() =
 					Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
-				return resp;
+				return Some(resp);
 			}
 		}
+		None
+	}
+
+	// Full processing, Mutable method
+	pub fn request_impl(
+		&mut self,
+		peers: &Arc<p2p::Peers>,
+		sync_state: &SyncState,
+		sync_peers: &SyncPeers,
+		best_height: u64,
+	) -> SyncResponse {
+		let target_archive_height = Chain::height_2_archive_height(best_height);
 
 		if self.headers_hash_desegmenter.is_none() {
 			let now = Utc::now();
@@ -189,7 +194,7 @@ impl HeadersHashSync {
 			}
 
 			self.requested_headers_hash_from.retain(|peer, req_time| {
-				if (now - *req_time).num_seconds() > pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS {
+				if (now - *req_time).num_seconds() > pibd_params::PIBD_REQUESTS_TIMEOUT_SECS {
 					sync_peers.report_no_response(peer, "header hashes".into());
 					return false;
 				}
@@ -205,10 +210,11 @@ impl HeadersHashSync {
 			}
 
 			if !self.responded_headers_hash_from.is_empty()
-				&& (self.responded_headers_hash_from.len()
+				&& ((self.responded_headers_hash_from.len()
 					>= self.requested_headers_hash_from.len()
+					&& self.responded_headers_hash_from.len() > 1)
 					|| (now - first_request).num_seconds()
-						> pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS * 3)
+						> pibd_params::PIBD_REQUESTS_TIMEOUT_SECS / 2)
 			{
 				// We can elect the group with a most representative hash
 				let mut hash_counts: HashMap<Hash, i32> = HashMap::new();
@@ -235,7 +241,7 @@ impl HeadersHashSync {
 					total_blocks: segment_num,
 				});
 				// Headers desegmenter is ready - let's retry and request some headers
-				return self.request(peers, sync_state, sync_peers, best_height);
+				return self.request_impl(peers, sync_state, sync_peers, best_height);
 			}
 
 			let headers_hash_peers = sync_utils::get_qualify_peers(
@@ -306,7 +312,8 @@ impl HeadersHashSync {
 				Self::get_peer_capabilities(),
 				format!("headers_hash_desegmenter is complete"),
 			);
-			self.cached_response = Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
+			*self.cached_response.write() =
+				Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
 			return resp;
 		}
 
@@ -361,7 +368,7 @@ impl HeadersHashSync {
 					headers_hash_peers.len() * self.pibd_params.get_segments_request_per_peer(),
 					self.pibd_params.get_segments_requests_limit(),
 				),
-				&self.requested_segments,
+				&&self.requested_segments,
 				&*self.pibd_params,
 			)
 		};
@@ -370,7 +377,7 @@ impl HeadersHashSync {
 			// clean up expired
 			let now = Utc::now();
 			self.requested_segments.retain(|_idx, (peer, time)| {
-				if (now - *time).num_seconds() > pibd_params::SEGMENT_REQUEST_TIMEOUT_SECS {
+				if (now - *time).num_seconds() > pibd_params::PIBD_REQUESTS_TIMEOUT_SECS {
 					sync_peers.report_no_response(peer, "header hashes".into()); // it is expired
 					return false;
 				}
@@ -442,7 +449,7 @@ impl HeadersHashSync {
 		peer: &PeerAddr,
 		archive_height: u64,
 		headers_hash_root: Hash,
-		sync_peers: &mut SyncPeers,
+		sync_peers: &SyncPeers,
 	) {
 		// Adding only once, so attacker will not be able to escape the ban
 		if archive_height == self.target_archive_height
@@ -472,7 +479,7 @@ impl HeadersHashSync {
 		peer: &PeerAddr,
 		header_hashes_root: Hash,
 		segment: Segment<Hash>,
-		sync_peers: &mut SyncPeers,
+		sync_peers: &SyncPeers,
 	) {
 		if let Some(headers_hash_desegmenter) = self.headers_hash_desegmenter.as_mut() {
 			if *headers_hash_desegmenter.get_headers_root_hash() != header_hashes_root {

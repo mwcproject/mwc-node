@@ -454,9 +454,38 @@ impl TxHashSet {
 
 		Ok(TxHashSetRoots {
 			output_root: output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			output_mmr_size: self.output_pmmr_h.size,
 			rproof_root: rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			rproof_mmr_size: self.rproof_pmmr_h.size,
 			kernel_root: kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			kernel_mmr_size: self.kernel_pmmr_h.size,
 		})
+	}
+
+	/// For debug only, dump for range proof data
+	pub fn dump_rproof_mmrs(&self) {
+		info!(
+			"Generating dump with MMR roots at sizes: Outputs: {}  Rangeproofs: {}  Kernels: {}",
+			self.output_pmmr_h.size, self.rproof_pmmr_h.size, self.kernel_pmmr_h.size
+		);
+
+		for i in 0..self.rproof_pmmr_h.size {
+			let mut s = format!("{} ", i);
+			if let Some(hash) = self.rproof_pmmr_h.backend.get_hash(i) {
+				s.push_str(&format!("Hash: {}", hash));
+			}
+
+			if let Some(rp) = self.rproof_pmmr_h.backend.get_data(i) {
+				s.push_str(&format!("   RP: {:?}", rp));
+			}
+
+			let root = ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, i + 1);
+			if let Ok(root) = root.root() {
+				s.push_str(&format!("   ROOT: {}", root));
+			}
+
+			info!("{}", s);
+		}
 	}
 
 	/// Return Commit's MMR position
@@ -1304,8 +1333,10 @@ impl<'a> Extension<'a> {
 		let flipped = bitmap.flip(0u32..bitmap.maximum().unwrap() + 1);
 		for spent_pmmr_index in flipped.iter() {
 			let pos0 = pmmr::insertion_to_pmmr_index(spent_pmmr_index.into());
-			self.output_pmmr.remove_from_leaf_set(pos0);
-			self.rproof_pmmr.remove_from_leaf_set(pos0);
+			// Note, remove_from_leaf_set can;t be used, because the root will be affected
+			// Some segments might not be pruned, it is very expected.
+			let _ = self.output_pmmr.prune(pos0);
+			let _ = self.rproof_pmmr.prune(pos0);
 		}
 		Ok(())
 	}
@@ -1319,7 +1350,6 @@ impl<'a> Extension<'a> {
 	pub fn apply_output_segments(
 		&mut self,
 		segments: Vec<Segment<OutputIdentifier>>,
-		bitmap: &Bitmap,
 	) -> Result<(), Error> {
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
@@ -1347,15 +1377,8 @@ impl<'a> Extension<'a> {
 								.push(&leaf_data[idx])
 								.map_err(&Error::TxHashSetErr)?;
 						}
-						let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
-						match pmmr_index {
-							Some(i) => {
-								if !bitmap.contains(i as u32) {
-									self.output_pmmr.remove_from_leaf_set(pos0);
-								}
-							}
-							None => {}
-						};
+						// Note, extra unproned segments will be upadted later
+						// Prone will be due
 					}
 				}
 			}
@@ -1369,10 +1392,11 @@ impl<'a> Extension<'a> {
 	pub fn apply_rangeproof_segments(
 		&mut self,
 		segments: Vec<Segment<RangeProof>>,
-		bitmap: &Bitmap,
 	) -> Result<(), Error> {
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
+
+			//info!("Adding proof segment {}, from mmr pos: {}  hashes sz: {}  leaf_data sz: {}  hash_pos: {:?}  hashes: {:?}   leaf_pos: {:?}  leaf_data: {:?}", sid.idx, self.rproof_pmmr.size, hashes.len(), leaf_data.len(), hash_pos, hashes, leaf_pos, leaf_data );
 
 			// insert either leaves or pruned subtrees as we go
 			for insert in sort_pmmr_hashes_and_leaves(hash_pos, leaf_pos, Some(0)) {
@@ -1397,15 +1421,8 @@ impl<'a> Extension<'a> {
 								.push(&leaf_data[idx])
 								.map_err(&Error::TxHashSetErr)?;
 						}
-						let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
-						match pmmr_index {
-							Some(i) => {
-								if !bitmap.contains(i as u32) {
-									self.rproof_pmmr.remove_from_leaf_set(pos0);
-								}
-							}
-							None => {}
-						};
+						// Note, extra unproned segments will be upadted later
+						// Prone will be due
 					}
 				}
 			}
@@ -1647,8 +1664,11 @@ impl<'a> Extension<'a> {
 	pub fn roots(&self) -> Result<TxHashSetRoots, Error> {
 		Ok(TxHashSetRoots {
 			output_root: self.output_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			output_mmr_size: self.output_pmmr.size,
 			rproof_root: self.rproof_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			rproof_mmr_size: self.rproof_pmmr.size,
 			kernel_root: self.kernel_pmmr.root().map_err(|e| Error::InvalidRoot(e))?,
+			kernel_mmr_size: self.kernel_pmmr.size,
 		})
 	}
 

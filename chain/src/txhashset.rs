@@ -19,6 +19,8 @@
 mod bitmap_accumulator;
 mod desegmenter;
 mod headers_desegmenter;
+/// Requests lookup interface.
+pub mod request_lookup;
 mod rewindable_kernel_view;
 mod segmenter;
 mod segments_cache;

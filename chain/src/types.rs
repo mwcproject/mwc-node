@@ -74,6 +74,8 @@ pub enum SyncStatus {
 		/// total number of segments required
 		total_segments: u64,
 	},
+	/// Validating kernels history
+	ValidatingKernelsHistory,
 	/// Setting up before validation
 	TxHashsetHeadersValidation {
 		/// number of 'headers' for which kernels have been checked
@@ -221,46 +223,61 @@ impl SyncState {
 pub struct TxHashSetRoots {
 	/// Output roots
 	pub output_root: Hash,
+	/// Output mmr size
+	pub output_mmr_size: u64,
 	/// Range Proof root
 	pub rproof_root: Hash,
+	/// Range Proof mmr size
+	pub rproof_mmr_size: u64,
 	/// Kernel root
 	pub kernel_root: Hash,
+	/// Kernel mmr size
+	pub kernel_mmr_size: u64,
 }
 
 impl TxHashSetRoots {
 	/// Validate roots against the provided block header.
 	pub fn validate(&self, header: &BlockHeader) -> Result<(), Error> {
-		debug!(
-			"Validating at height {}. Output MMR size: {}  Kernel MMR size: {}",
-			header.height, header.output_mmr_size, header.kernel_mmr_size
-		);
-		debug!(
-			"validate roots: {} at {}, Outputs roots {} vs. {}, Range Proof roots {} vs {}, Kernel Roots {} vs {}",
-			header.hash(),
-			header.height,
-			header.output_root,
-			self.output_root,
-			header.range_proof_root,
-			self.rproof_root,
-			header.kernel_root,
-			self.kernel_root,
-		);
+		debug!("{}", self.get_validate_info_str(header));
 
 		if header.output_root != self.output_root {
-			Err(Error::InvalidRoot(
-				"Failed Output root validation".to_string(),
-			))
+			Err(Error::InvalidRoot(format!(
+				"Failed Output root validation. {}",
+				self.get_validate_info_str(header)
+			)))
 		} else if header.range_proof_root != self.rproof_root {
-			Err(Error::InvalidRoot(
-				"Failed Range Proof root validation".to_string(),
-			))
+			Err(Error::InvalidRoot(format!(
+				"Failed Range Proof root validation. {}",
+				self.get_validate_info_str(header)
+			)))
 		} else if header.kernel_root != self.kernel_root {
-			Err(Error::InvalidRoot(
-				"Failed Kernel root validation".to_string(),
-			))
+			Err(Error::InvalidRoot(format!(
+				"Failed Kernel root validation. {}",
+				self.get_validate_info_str(header)
+			)))
 		} else {
 			Ok(())
 		}
+	}
+
+	fn get_validate_info_str(&self, header: &BlockHeader) -> String {
+		format!("Validating at height {}. Output MMR size: {}  Kernel MMR size: {}  .validate roots: {} at {}, Outputs roots {} vs. {}, sz {} vs {}, Range Proof roots {} vs {}, sz {} vs {}, Kernel Roots {} vs {}, sz {} vs {}",
+				header.height, header.output_mmr_size, header.kernel_mmr_size,
+				header.hash(),
+				header.height,
+				header.output_root,
+				self.output_root,
+				header.output_mmr_size,
+				self.output_mmr_size,
+				header.range_proof_root,
+				self.rproof_root,
+				header.output_mmr_size,
+				self.rproof_mmr_size,
+				header.kernel_root,
+				self.kernel_root,
+				header.kernel_mmr_size,
+				self.kernel_mmr_size,
+		)
 	}
 }
 

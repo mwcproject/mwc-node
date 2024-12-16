@@ -271,11 +271,11 @@ impl Server {
 
 		pool_adapter.set_chain(shared_chain.clone());
 
-		let sync_manager: Arc<RwLock<SyncManager>> = Arc::new(RwLock::new(SyncManager::new(
+		let sync_manager: Arc<SyncManager> = Arc::new(SyncManager::new(
 			shared_chain.clone(),
 			sync_state.clone(),
 			stop_state.clone(),
-		)));
+		));
 
 		let net_adapter = Arc::new(NetToChainAdapter::new(
 			sync_state.clone(),
