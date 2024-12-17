@@ -262,21 +262,21 @@ impl BodySync {
 
 	pub fn recieve_block_reporting(
 		&self,
-		accepted: bool, // block accepted/rejected flag
+		valid_block: bool, // block accepted/rejected flag
 		block_hash: &Hash,
 		peer: &PeerAddr,
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) {
 		if let Some(peer_adr) = self.request_tracker.remove_request(block_hash, peer) {
-			if accepted {
+			if valid_block {
 				if peer_adr == *peer {
 					sync_peers.report_ok_response(peer);
 				}
 			}
 		}
 
-		if !accepted {
+		if !valid_block {
 			sync_peers.report_error_response(
 				peer,
 				format!("Get bad block {} for peer {}", block_hash, peer),

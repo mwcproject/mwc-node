@@ -383,13 +383,13 @@ impl SyncManager {
 
 	pub fn recieve_block_reporting(
 		&self,
-		accepted: bool, // block accepted/rejected flag
+		valid_block: bool, // block accepted/rejected flag
 		peer: &PeerAddr,
 		block_hash: &Hash,
 		peers: &Arc<Peers>,
 	) {
 		self.body.recieve_block_reporting(
-			accepted,
+			valid_block,
 			block_hash,
 			peer,
 			peers,

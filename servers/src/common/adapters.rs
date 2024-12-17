@@ -793,6 +793,7 @@ where
 				.height
 				.saturating_sub(global::cut_through_horizon() as u64);
 			if b.header.height < horizon {
+				debug!("Got block is below horizon from peer {}", peer_info.addr);
 				return Ok(true);
 			}
 		}
@@ -813,6 +814,7 @@ where
 				Ok(true)
 			}
 			Err(ref e) if e.is_bad_data() => {
+				warn!("process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}", bhash, peer_info.addr, e);
 				self.validate_chain(&bhash);
 				self.sync_manager.recieve_block_reporting(
 					false,
@@ -823,14 +825,14 @@ where
 				Ok(false)
 			}
 			Err(e) => {
+				self.sync_manager.recieve_block_reporting(
+					!e.is_bad_data(),
+					&peer_info.addr,
+					&bhash,
+					&self.peers(),
+				);
 				match e {
 					chain::Error::Orphan(orph_msg) => {
-						self.sync_manager.recieve_block_reporting(
-							true,
-							&peer_info.addr,
-							&bhash,
-							&self.peers(),
-						);
 						if let Ok(previous) = previous {
 							// make sure we did not miss the parent block
 							if !self.chain().is_orphan(&previous.hash())
@@ -843,12 +845,9 @@ where
 						Ok(true)
 					}
 					_ => {
-						debug!("process_block: block {} refused by chain: {}", bhash, e);
-						self.sync_manager.recieve_block_reporting(
-							false,
-							&peer_info.addr,
-							&bhash,
-							&self.peers(),
+						info!(
+							"process_block: block {} from peer {} refused by chain: {}",
+							bhash, peer_info.addr, e
 						);
 						Ok(true)
 					}

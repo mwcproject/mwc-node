@@ -112,25 +112,34 @@ pub const TXHASHSET_ARCHIVE_INTERVAL: u64 = 12 * 60;
 
 /// MWC - all DNS hosts are updated with seed1.mwc.mw/seed2.mwc.mw and others
 pub const MAINNET_DNS_SEEDS: &'static [&'static str] = &[
-	"mainnet.seed1.mwc.mw",                                           // cpg
-	"mainnet.seed2.mwc.mw",                                           // cpg
-	"greg1.mainnet.seed.mwc.mw",                                      // Greg
-	"greg2.mainnet.seed.mwc.mw",                                      // Greg
-	"mwcseed.ddns.net",                                               // cpg
-	"uukwrgtxogz6kkpcejssb7aenb7ey7pr3h5i4llhse445dfpbp63osyd.onion", // 2o_main_410_tor
-	"xsjhexie5v7gxmdkvzkzb4qifywnolb6v22wzvppscs2gog6ljribuad.onion", // 2m_main_floo_master_tor
-	"ltjbwsexjixh5p2qxjohxd342fxhag7ljuvkjnnmkuu6wer6cg4skoad.onion", // 2mb_main_410_tor
-	"wmksifwk6gh22qydmbbnv7iyphnr7jfmwsazgxbo244mkwa2k2fol2yd.onion", // 2p_main_410_arch_tor
-	"z5ys2rogjas46tpyu343m4tamkiog6pkpznfwpu3iff55b7xypd3wcad.onion", // 2p_main_410_tor
-	"n4ac7b65tgtachkh5ii5zytmjkbqc3bq64rhllhz4npyrbxvz7ic5byd.onion", // 2sy_main_master_tor
+	"mainnet.seed2.mwc.mw", // cpg
+	"mwcseed.ddns.net",     // cpg
+	"t5p26dycaa7w6vzc424mahhykncv2w2tt24isaluraszhpoc6viwcqyd.onion",
+	"6y2r3zcscduyaqvak4nr5muo72n46fqacz2bnfqnxmf3oksapjepkcyd.onion",
+	"3.132.79.177",
+	"18.217.245.152",
+	"xsjhexie5v7gxmdkvzkzb4qifywnolb6v22wzvppscs2gog6ljribuad.onion",
+	// mb
+	"p5qo2pgkv5qpjnrlxzesf4ikcxyvvtwg6aolpamp24es5lic3btshrqd.onion",
+	"ltjbwsexjixh5p2qxjohxd342fxhag7ljuvkjnnmkuu6wer6cg4skoad.onion",
+	"3.6.231.127",
+	"52.78.112.116",
+	"plnrnhuuwjcowtjejqx6ou4m2bxkvkqq2rj4ot6cwgf53chgw2keu7yd.onion",
+	"q3l5s4idfo7ukmbvz6mgowe3w65bt4w4skeskzs4g2ixpmw2euvxxvyd.onion",
+	"z5ys2rogjas46tpyu343m4tamkiog6pkpznfwpu3iff55b7xypd3wcad.onion",
+	"q3l5s4idfo7ukmbvz6mgowe3w65bt4w4skeskzs4g2ixpmw2euvxxvyd.onion",
+	"n4ac7b65tgtachkh5ii5zytmjkbqc3bq64rhllhz4npyrbxvz7ic5byd.onion",
 ];
 /// DNS Seed for floonet
 pub const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
 	"seed1.mwc.mw",
 	"seed2.mwc.mw",
-	"wt635fgwmhokk25lv7y2jvrg63mokg7nfni5owrtzalz3nx22dgjytid.onion", // 2sy-floo-master-tor
-	"kin4i3wohlsqlzrdwdlowh2kaa7wtkxsvp6asn7vttspnrwowgquglyd.onion", // 2mb_floo_410_tor
-	"vstdjxrzh67udhm3fedanul2sy7fwudasjmwxy54pady6dxclty2zmqd.onion", // 2p_floo_410_arch_tor
+	"zwecav6dgftsoscybpzufbo77d452mk3mox2fqzjqocu7265bxgq6oad.onion",
+	"3.97.39.110",
+	"5xwjlg6fykkj2hhvlnernj4s2jmuv5en5i3i32qld3k5jznuzpbiblid.onion",
+	"13.209.51.140",
+	"oqtl7wlzukgp7r6kdp3uvyelzmc72ngknwd23lo7uw63rwornvcmg3yd.onion",
+	"wt635fgwmhokk25lv7y2jvrg63mokg7nfni5owrtzalz3nx22dgjytid.onion",
 ];
 
 /// Types of chain a server can run with, dictates the genesis block and
