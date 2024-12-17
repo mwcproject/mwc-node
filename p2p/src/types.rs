@@ -350,6 +350,15 @@ impl PeerAddr {
 			}
 		}
 	}
+
+	pub fn is_loopback(&self) -> bool {
+		match self {
+			Ip(ip) => ip.ip().is_loopback(),
+			Onion(_) => {
+				false // we can't detect self onion address here in any case
+			}
+		}
+	}
 }
 
 /// Configuration for the peer-to-peer server.

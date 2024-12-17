@@ -38,6 +38,7 @@ use crate::types::{
 };
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
+use crate::PeerAddr::Ip;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
 
@@ -210,7 +211,12 @@ impl Server {
 					}
 					debug!("not self, connecting to {}", address);
 				}
-				_ => {}
+				Ip(_) => {
+					if addr.is_loopback() {
+						debug!("error trying to connect with self: {:?}", addr);
+						return Err(Error::PeerWithSelf);
+					}
+				}
 			}
 		}
 
@@ -339,7 +345,11 @@ impl Server {
 			self.sync_state.clone(),
 			self.clone(),
 		)?;
-		self.peers.add_connected(Arc::new(peer))?;
+		// if we are using TOR, we must reject the local addressed because it comes from the proxy
+		// Will add peer after it share the TOR address
+		if self.self_onion_address.is_none() {
+			self.peers.add_connected(Arc::new(peer))?;
+		}
 		Ok(())
 	}
 

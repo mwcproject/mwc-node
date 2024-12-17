@@ -16,7 +16,6 @@
 // Normally we would put that into the base class, but rust doesn't support that.
 
 use mwc_p2p::{PeerAddr, Peers, ReasonForBan};
-use mwc_util::secp::rand::Rng;
 use mwc_util::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -163,25 +162,18 @@ impl SyncPeers {
 		let mut offline_peers: Vec<PeerAddr> = Vec::new();
 		for cp in check_peers.iter() {
 			if let Some(status) = peers_status.get_mut(cp) {
-				let (mut ban, offline, comment) = status.check_for_ban(cp);
+				let (ban, offline, comment) = status.check_for_ban(cp);
 				let peer_addr = PeerAddr::from_str(cp);
-				if offline {
-					// let's ban some offlines with a chances...
-					let mut rng = rand::thread_rng();
-					if rng.gen_range(0, 7) == 3 {
-						ban = true;
-					}
-				}
 				if ban {
 					if let Err(e) = peers.ban_peer(&peer_addr, ReasonForBan::PibdFailure, &comment)
 					{
 						warn!("ban_peer is failed with error: {}", e);
 					}
+					status.reset();
 					self.banned_peers.write().insert(peer_addr.clone());
 				}
-				if ban || offline {
+				if offline {
 					offline_peers.push(peer_addr);
-					status.reset();
 				}
 			}
 		}
