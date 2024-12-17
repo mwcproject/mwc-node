@@ -44,7 +44,7 @@ const PEERS_CHECK_TIME_BOOST: i64 = 3;
 const PEERS_MONITOR_INTERVAL: i64 = 60;
 
 const PEER_RECONNECT_INTERVAL: i64 = 600;
-const PEER_MAX_INITIATE_CONNECTIONS: usize = 200;
+const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
 
 const PEER_PING_INTERVAL: i64 = 10;
 
@@ -130,7 +130,6 @@ pub fn connect_and_monitor(
 						p2p_server.config.clone(),
 						use_tor_connection,
 						tx.clone(),
-						peers.is_boosting_mode(),
 					);
 
 					if peers.is_sync_mode() {
@@ -188,7 +187,6 @@ fn monitor_peers(
 	config: p2p::P2PConfig,
 	use_tor_connection: bool,
 	tx: mpsc::Sender<PeerAddr>,
-	is_boost: bool,
 ) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
@@ -296,20 +294,20 @@ fn monitor_peers(
 	// and queue them up for a connection attempt
 	// intentionally make too many attempts (2x) as some (most?) will fail
 	// as many nodes in our db are not publicly accessible
-	let max_peer_attempts = if is_boost { 500 } else { 128 };
-	let new_peers = peers.find_peers(
-		p2p::State::Healthy,
-		boost_peers_capabilities,
-		max_peer_attempts as usize,
-	);
+	let new_peers = peers.find_peers(p2p::State::Healthy, boost_peers_capabilities);
 
 	// Only queue up connection attempts for candidate peers where we
 	// are confident we do not yet know about this peer.
 	// The call to is_known() may fail due to contention on the peers map.
 	// Do not attempt any connection where is_known() fails for any reason.
+	let mut max_addresses = 0;
 	for p in new_peers {
 		if let Ok(false) = peers.is_known(&p.addr) {
 			tx.send(p.addr.clone()).unwrap();
+			max_addresses += 1;
+			if max_addresses > 200 {
+				break;
+			}
 		}
 	}
 }
@@ -345,10 +343,9 @@ fn connect_to_seeds_and_peers(
 	let mut found_peers = peers.find_peers(
 		p2p::State::Healthy,
 		p2p::Capabilities::PEER_LIST | peers.get_boost_peers_capabilities(),
-		100,
 	);
 	if found_peers.is_empty() {
-		found_peers = peers.find_peers(p2p::State::Healthy, p2p::Capabilities::PEER_LIST, 100);
+		found_peers = peers.find_peers(p2p::State::Healthy, p2p::Capabilities::PEER_LIST);
 	}
 
 	// if so, get their addresses, otherwise use our seeds
@@ -366,9 +363,14 @@ fn connect_to_seeds_and_peers(
 	}
 
 	// connect to this initial set of peer addresses (either seeds or from our local db).
+	let mut max_addresses = 0;
 	for addr in peer_addrs {
 		if !peers_deny.as_slice().contains(&addr) {
 			let _ = tx.send(addr);
+			max_addresses += 1;
+			if max_addresses > 200 {
+				break;
+			}
 		}
 	}
 }
@@ -392,33 +394,33 @@ fn listen_for_addrs(
 	// It is expected that peers are come with expected capabilites
 	{
 		let mut addrs: Vec<PeerAddr> = rx.try_iter().collect();
+		if listen_q_addrs.len() > PEER_MAX_INITIATE_CONNECTIONS * 5 {
+			listen_q_addrs.drain(0..listen_q_addrs.len() - PEER_MAX_INITIATE_CONNECTIONS * 5);
+		}
 		listen_q_addrs.append(&mut addrs);
 	}
+
+	let now = Utc::now();
+	let connection_time_limit = now - Duration::seconds(PEER_RECONNECT_INTERVAL);
+	connecting_history.retain(|_, time| *time > connection_time_limit);
+
+	listen_q_addrs
+		.retain(|p| !(peers.is_known(p).unwrap_or(false) || connecting_history.contains_key(p)));
 
 	// If we have a healthy number of outbound peers then we are done here.
 	debug_assert!(!peers.enough_outbound_peers());
 
-	let now = Utc::now();
 	while !listen_q_addrs.is_empty() {
 		debug_assert!(connections_in_action.load(Ordering::Relaxed) >= 0);
-		if connecting_history.len() as i32 + connections_in_action.load(Ordering::Relaxed)
-			> PEER_MAX_INITIATE_CONNECTIONS as i32
-		{
+		if connections_in_action.load(Ordering::Relaxed) > PEER_MAX_INITIATE_CONNECTIONS as i32 {
 			break;
 		}
 
 		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
 
 		// listen_q_addrs can have duplicated requests or already processed, so still need to dedup
-		if let Some(last_connect_time) = connecting_history.get(&addr) {
-			if *last_connect_time + Duration::seconds(PEER_RECONNECT_INTERVAL) > now {
-				debug!(
-					"peer_connect: ignore a duplicate request to {}. previous connecting time: {}",
-					addr,
-					last_connect_time.format("%H:%M:%S%.3f").to_string(),
-				);
-				continue;
-			}
+		if peers.is_known(&addr).unwrap_or(false) || connecting_history.contains_key(&addr) {
+			continue;
 		}
 
 		connecting_history.insert(addr.clone(), now);
@@ -490,7 +492,7 @@ fn listen_for_addrs(
 							let _ = peers_c.update_state(&addr_c, p2p::State::Healthy);
 						}
 						Err(e) => {
-							debug!("Connection to the peer {} was rejected, {}", addr_c, e);
+							info!("Connection to the peer {} was rejected, {}", addr_c, e);
 							let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
 						}
 					}
@@ -498,14 +500,6 @@ fn listen_for_addrs(
 				}
 			})
 			.expect("failed to launch peer_connect thread");
-	}
-
-	// shrink the connecting history.
-	// put a threshold here to avoid frequent shrinking in every call
-	if connecting_history.len() > PEER_MAX_INITIATE_CONNECTIONS * 10 {
-		let now = Utc::now();
-		connecting_history
-			.retain(|_, time| *time + Duration::seconds(PEER_RECONNECT_INTERVAL) > now);
 	}
 }
 

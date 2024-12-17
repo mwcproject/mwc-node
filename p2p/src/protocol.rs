@@ -23,7 +23,7 @@ use crate::msg::{
 	SegmentRequest, SegmentResponse, StartHeadersHashResponse, TxHashSetArchive, Type,
 };
 use crate::serv::Server;
-use crate::types::{Error, NetAdapter, PeerAddr, PeerAddr::Onion, PeerInfo};
+use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
 use std::sync::Arc;
 
 pub struct Protocol {
@@ -199,8 +199,11 @@ impl MessageHandler for Protocol {
 			}
 
 			Message::GetPeerAddrs(get_peers) => {
-				let peers =
+				let mut peers =
 					adapter.find_peer_addrs(get_peers.capabilities & !Capabilities::TOR_ADDRESS);
+
+				// Loopbacks really not interesting for other peers. Loopbacks are possible because of the local setup
+				peers.retain(|p| !p.is_loopback());
 
 				// if this peer does not support TOR, do not send them the tor peers.
 				// doing so will cause them to ban us because it's not part of the old protocol.
@@ -230,7 +233,7 @@ impl MessageHandler for Protocol {
 				let mut peers: Vec<PeerAddr> = Vec::new();
 				for peer in peer_addrs.peers {
 					match peer.clone() {
-						Onion(address) => {
+						PeerAddr::Onion(address) => {
 							let self_address = self.server.self_onion_address.as_ref();
 							if self_address.is_none() {
 								peers.push(peer);
@@ -242,8 +245,12 @@ impl MessageHandler for Protocol {
 								}
 							}
 						}
-						_ => {
-							peers.push(peer);
+						PeerAddr::Ip(_) => {
+							if peer.is_loopback() {
+								debug!("Not pushing loopback addresse = {:?}", peer);
+							} else {
+								peers.push(peer);
+							}
 						}
 					}
 				}

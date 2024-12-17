@@ -17,12 +17,12 @@
 
 use chrono::Utc;
 use num::FromPrimitive;
-use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 use crate::mwc_core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
 use mwc_store::{self, option_to_not_found, to_key, Error};
+use mwc_util::secp::rand::Rng;
 
 const DB_NAME: &str = "peerV2";
 const STORE_SUBPATH: &str = "peers";
@@ -168,12 +168,7 @@ impl PeerStore {
 	}
 
 	/// Find some peers in our local db.
-	pub fn find_peers(
-		&self,
-		state: State,
-		cap: Capabilities,
-		count: usize,
-	) -> Result<Vec<PeerData>, Error> {
+	pub fn find_peers(&self, state: State, cap: Capabilities) -> Result<Vec<PeerData>, Error> {
 		// All new peers has flags Capabilities::UNKNOWN, that is why we better to return themn as well.
 		// Node will try to connect to them and find the capability.
 		let mut peers = self
@@ -183,8 +178,20 @@ impl PeerStore {
 					&& (p.capabilities == Capabilities::UNKNOWN || p.capabilities.contains(cap))
 			})
 			.collect::<Vec<_>>();
-		peers[..].shuffle(&mut thread_rng());
-		Ok(peers.iter().take(count).cloned().collect())
+		// We want last used to go first.
+		let peers_num = peers.len();
+		if peers_num > 1 {
+			peers.sort_by_key(|p| -p.last_connected);
+			// Then shuffle most of them
+			let shuffle_steps = peers_num / 4;
+			let mut rng = thread_rng();
+			for _ in 0..shuffle_steps {
+				let i1 = rng.gen_range(0, peers_num);
+				let i2 = rng.gen_range(0, peers_num);
+				peers.swap(i1, i2);
+			}
+		}
+		Ok(peers)
 	}
 
 	/// Iterator over all known peers.
@@ -213,6 +220,14 @@ impl PeerStore {
 			batch.get_ser::<PeerData>(&peer_key(peer_addr)[..], None),
 			|| format!("Peer at address: {}", peer_addr),
 		)?;
+
+		if peer.flags != new_state {
+			info!(
+				"Changing peer {:?} state form {:?} to {:?}",
+				peer_addr, peer.flags, new_state
+			);
+		}
+
 		peer.flags = new_state;
 		if new_state == State::Banned {
 			peer.last_banned = Utc::now().timestamp();

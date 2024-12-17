@@ -18,7 +18,8 @@ use crate::mwc::sync::sync_manager::SyncManager;
 use crate::mwc::sync::sync_utils::SyncRequestResponses;
 use crate::p2p;
 use crate::util::StopState;
-use mwc_p2p::Capabilities;
+use chrono::Utc;
+use mwc_p2p::{Capabilities, Peer};
 use std::sync::Arc;
 use std::thread;
 use std::time;
@@ -114,6 +115,7 @@ impl SyncRunner {
 		}
 
 		// Main syncing loop
+		let mut last_peer_dump = Utc::now();
 		let mut sleep_time = 1000;
 		loop {
 			if self.stop_state.is_stopped() {
@@ -122,6 +124,24 @@ impl SyncRunner {
 			// Sync manager request might be relatevely heavy, it is expected that latency is higer then 1 second, so
 			// waiting time for 1000ms is reasonable.
 			thread::sleep(time::Duration::from_millis(sleep_time));
+
+			// Onle in a while let's dump the peers. Needed to understand how network is doing
+			let now = Utc::now();
+			if (now - last_peer_dump).num_seconds() > 60 {
+				last_peer_dump = now;
+				let peers: Vec<Arc<Peer>> = self.peers.iter().connected().into_iter().collect();
+				info!("Has connected peers: {}", peers.len());
+				for p in peers {
+					info!(
+						"Peer: {:?} {:?} H:{}  Diff:{} Cap: {}",
+						p.info.addr,
+						p.info.direction,
+						p.info.height(),
+						p.info.total_difficulty().to_num(),
+						p.info.capabilities.bits()
+					);
+				}
+			}
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)

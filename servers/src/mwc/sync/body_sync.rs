@@ -268,43 +268,44 @@ impl BodySync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) {
+		// Applying valid only to initiated requests. Others and duplicated shouldn't affect this workflow
 		if let Some(peer_adr) = self.request_tracker.remove_request(block_hash, peer) {
-			if valid_block {
-				if peer_adr == *peer {
+			if peer_adr == *peer {
+				if valid_block {
 					sync_peers.report_ok_response(peer);
-				}
-			}
-		}
-
-		if !valid_block {
-			sync_peers.report_error_response(
-				peer,
-				format!("Get bad block {} for peer {}", block_hash, peer),
-			);
-		}
-
-		// let's request next package since we get this one...
-		if self.request_tracker.get_update_requests_to_next_ask() == 0 {
-			if let Ok(head) = self.chain.head() {
-				let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
-					peers,
-					self.pibd_params.get_blocks_request_per_peer(),
-					*self.required_capabilities.read(),
-					head.height,
-					&self.request_tracker,
-				);
-				if !peers.is_empty() {
-					// requested_blocks, check for expiration
-					let mut need_request = self.request_tracker.calculate_needed_requests(
-						peers.len(),
-						excluded_requests as usize,
-						excluded_peers as usize,
-						self.pibd_params.get_blocks_request_per_peer(),
-						self.pibd_params.get_blocks_request_limit(),
+				} else {
+					sync_peers.report_error_response(
+						peer,
+						format!("Get bad block {} for peer {}", block_hash, peer),
 					);
-					if need_request > 0 {
-						if let Err(e) = self.send_requests(&mut need_request, &peers, sync_peers) {
-							error!("Unable to call send_requests, error: {}", e);
+				}
+
+				// let's request next package since we get this one...
+				if self.request_tracker.get_update_requests_to_next_ask() == 0 {
+					if let Ok(head) = self.chain.head() {
+						let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
+							peers,
+							self.pibd_params.get_blocks_request_per_peer(),
+							*self.required_capabilities.read(),
+							head.height,
+							&self.request_tracker,
+						);
+						if !peers.is_empty() {
+							// requested_blocks, check for expiration
+							let mut need_request = self.request_tracker.calculate_needed_requests(
+								peers.len(),
+								excluded_requests as usize,
+								excluded_peers as usize,
+								self.pibd_params.get_blocks_request_per_peer(),
+								self.pibd_params.get_blocks_request_limit(),
+							);
+							if need_request > 0 {
+								if let Err(e) =
+									self.send_requests(&mut need_request, &peers, sync_peers)
+								{
+									error!("Unable to call send_requests, error: {}", e);
+								}
+							}
 						}
 					}
 				}
