@@ -1289,8 +1289,10 @@ impl Chain {
 			}
 
 			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-				ext.extension.rewind(header, batch)?;
-				Ok(ext.extension.build_bitmap_accumulator()?)
+				let extension = &mut ext.extension;
+				let header_extension = &mut ext.header_extension;
+				extension.rewind(header, batch, header_extension)?;
+				Ok(extension.build_bitmap_accumulator()?)
 			})?
 		};
 
@@ -2294,6 +2296,11 @@ fn setup_head(
 					// node. If this happens we rewind to the previous header,
 					// delete the "bad" block and try again.
 					let prev_header = batch.get_block_header(&head.prev_block_h)?;
+
+					warn!(
+						"Corrupted MMR. Tryin to recover it by rewinding blocks to height {}",
+						prev_header.height
+					);
 
 					txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
 						pipe::rewind_and_apply_fork(&prev_header, ext, batch, &|_| Ok(()), secp)

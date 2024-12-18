@@ -33,7 +33,6 @@ use mwc_p2p::{msg::PeerAddrs, Capabilities, P2PConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::{thread, time};
 
@@ -85,9 +84,9 @@ pub fn connect_and_monitor(
 			libp2p_connection::set_seed_list(&seed_list, true);
 
 			let mut prev_ping = Utc::now();
-			let connections_in_action = Arc::new(AtomicI32::new(0));
 
 			let mut listen_q_addrs: Vec<PeerAddr> = Vec::new();
+			let mut connection_threads: Vec<thread::JoinHandle<()>> = Vec::new();
 
 			loop {
 				if stop_state.is_stopped() {
@@ -153,7 +152,7 @@ pub fn connect_and_monitor(
 							&rx,
 							&mut connecting_history,
 							use_tor_connection,
-							&connections_in_action,
+							&mut connection_threads,
 							&mut listen_q_addrs,
 						);
 						let duration = if is_boost || !listen_q_addrs.is_empty() {
@@ -384,7 +383,7 @@ fn listen_for_addrs(
 	rx: &mpsc::Receiver<PeerAddr>,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
 	use_tor_connection: bool,
-	connections_in_action: &Arc<AtomicI32>,
+	connection_threads: &mut Vec<thread::JoinHandle<()>>,
 	listen_q_addrs: &mut Vec<PeerAddr>,
 ) {
 	// Pull everything currently on the queue off the queue.
@@ -410,9 +409,10 @@ fn listen_for_addrs(
 	// If we have a healthy number of outbound peers then we are done here.
 	debug_assert!(!peers.enough_outbound_peers());
 
+	connection_threads.retain(|h| !h.is_finished());
+
 	while !listen_q_addrs.is_empty() {
-		debug_assert!(connections_in_action.load(Ordering::Relaxed) >= 0);
-		if connections_in_action.load(Ordering::Relaxed) > PEER_MAX_INITIATE_CONNECTIONS as i32 {
+		if connection_threads.len() > PEER_MAX_INITIATE_CONNECTIONS {
 			break;
 		}
 
@@ -425,81 +425,74 @@ fn listen_for_addrs(
 
 		connecting_history.insert(addr.clone(), now);
 
+		if p2p.socks_port == 0 {
+			match &addr {
+				Onion(_) => {
+					continue;
+				}
+				_ => {}
+			}
+		}
+
 		let addr_c = addr.clone();
 		let peers_c = peers.clone();
 		let p2p_c = p2p.clone();
-		let connections_in_action = connections_in_action.clone();
-		thread::Builder::new()
+		let thr = thread::Builder::new()
 			.name("peer_connect".to_string())
 			.spawn(move || {
 				// if we don't have a socks port, and it's onion, don't set as defunct because
 				// we don't know.
-				let update_possible = if p2p_c.socks_port == 0 {
-					match addr_c.clone() {
-						Onion(_) => false,
-						_ => true,
-					}
-				} else {
-					true
-				};
-
-				if update_possible {
-					let _ = connections_in_action.fetch_add(1, Ordering::Relaxed);
-					match p2p_c.connect(&addr_c) {
-						Ok(p) => {
-							debug!(
-								"New peer {} is connected as outbound! Capability: {:b}",
-								p.info.addr, p.info.capabilities
-							);
-							// If peer advertizes PEER_LIST then ask it for more peers that support PEER_LIST.
-							// We want to build a local db of possible peers to connect to.
-							// We do not necessarily care (at this point in time) what other capabilities these peers support.
-							if p.info.capabilities.contains(Capabilities::PEER_LIST) {
-								debug!("Sending peer request to {}", addr_c);
-								match p.send_peer_request(
-									Capabilities::PEER_LIST
-										| peers_c.get_boost_peers_capabilities(),
-									use_tor_connection,
-								) {
-									Ok(_) => {
-										match addr_c {
-											PeerAddr::Onion(_) => {
-												if let Err(_) =
-													libp2p_connection::add_new_peer(&addr_c)
-												{
-													error!("Unable to add libp2p peer {}", addr_c);
-												}
+				match p2p_c.connect(&addr_c) {
+					Ok(p) => {
+						debug!(
+							"New peer {} is connected as outbound! Capability: {:b}",
+							p.info.addr, p.info.capabilities
+						);
+						// If peer advertizes PEER_LIST then ask it for more peers that support PEER_LIST.
+						// We want to build a local db of possible peers to connect to.
+						// We do not necessarily care (at this point in time) what other capabilities these peers support.
+						if p.info.capabilities.contains(Capabilities::PEER_LIST) {
+							debug!("Sending peer request to {}", addr_c);
+							match p.send_peer_request(
+								Capabilities::PEER_LIST | peers_c.get_boost_peers_capabilities(),
+								use_tor_connection,
+							) {
+								Ok(_) => {
+									match addr_c {
+										PeerAddr::Onion(_) => {
+											if let Err(_) = libp2p_connection::add_new_peer(&addr_c)
+											{
+												error!("Unable to add libp2p peer {}", addr_c);
 											}
-											_ => (),
-										};
-									}
-									Err(e) => {
-										error!(
-											"Failed send_peer_request to {}, Error: {}",
-											p.info.addr, e
-										);
-									}
+										}
+										_ => (),
+									};
+								}
+								Err(e) => {
+									error!(
+										"Failed send_peer_request to {}, Error: {}",
+										p.info.addr, e
+									);
 								}
 							}
-							// Requesting ping as well, need to know the height asap
-							let total_diff =
-								peers_c.total_difficulty().unwrap_or(Difficulty::zero());
-							let total_height = peers_c.total_height().unwrap_or(0);
-							if let Err(e) = p.send_ping(total_diff, total_height) {
-								error!("Failed send_ping to {}, Error: {}", p.info.addr, e);
-							}
+						}
+						// Requesting ping as well, need to know the height asap
+						let total_diff = peers_c.total_difficulty().unwrap_or(Difficulty::zero());
+						let total_height = peers_c.total_height().unwrap_or(0);
+						if let Err(e) = p.send_ping(total_diff, total_height) {
+							error!("Failed send_ping to {}, Error: {}", p.info.addr, e);
+						}
 
-							let _ = peers_c.update_state(&addr_c, p2p::State::Healthy);
-						}
-						Err(e) => {
-							info!("Connection to the peer {} was rejected, {}", addr_c, e);
-							let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
-						}
+						let _ = peers_c.update_state(&addr_c, p2p::State::Healthy);
 					}
-					let _ = connections_in_action.fetch_sub(1, Ordering::Relaxed);
+					Err(e) => {
+						debug!("Connection to the peer {} was rejected, {}", addr_c, e);
+						let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
+					}
 				}
 			})
 			.expect("failed to launch peer_connect thread");
+		connection_threads.push(thr);
 	}
 }
 

@@ -358,7 +358,8 @@ impl Desegmenter {
 				&mut batch,
 				|ext, batch| {
 					let extension = &mut ext.extension;
-					extension.rewind(&self.archive_header, batch)?;
+					let header_extension = &mut ext.header_extension;
+					extension.rewind(&self.archive_header, batch, header_extension)?;
 
 					// Validate the extension, generating the utxo_sum and kernel_sum.
 					// Full validation, including rangeproofs and kernel signature verification.
