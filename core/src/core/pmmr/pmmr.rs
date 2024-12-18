@@ -307,6 +307,10 @@ where
 		// position is a leaf. We traverse the MMR to include any parent(s) that
 		// need to be included for the MMR to be valid.
 		let leaf_pos = round_up_to_leaf_pos(position);
+		if leaf_pos > self.size {
+			warn!("Invalid attempt tp rewind PMMR!!! Data might be corrupted!!!");
+			return Ok(());
+		}
 		self.backend.rewind(leaf_pos, rewind_rm_pos)?;
 		self.size = leaf_pos;
 		Ok(())

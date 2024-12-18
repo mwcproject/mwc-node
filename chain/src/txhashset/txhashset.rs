@@ -1532,7 +1532,12 @@ impl<'a> Extension<'a> {
 	/// Rewinds the MMRs to the provided block, rewinding to the last output pos
 	/// and last kernel pos of that block. If `updated_bitmap` is supplied, the
 	/// bitmap accumulator will be replaced with its contents
-	pub fn rewind(&mut self, header: &BlockHeader, batch: &Batch<'_>) -> Result<(), Error> {
+	pub fn rewind(
+		&mut self,
+		header: &BlockHeader,
+		batch: &Batch<'_>,
+		header_ext: &HeaderExtension<'_>,
+	) -> Result<(), Error> {
 		debug!(
 			"Rewind extension to {} at {} from {} at {}",
 			header.hash(),
@@ -1556,7 +1561,7 @@ impl<'a> Extension<'a> {
 			let mut current = head_header;
 			while header.height < current.height {
 				let block = batch.get_block(&current.hash())?;
-				self.rewind_single_block(&block, batch)?;
+				self.rewind_single_block(&block, batch, header_ext)?;
 				current = batch.get_previous_header(&current)?;
 			}
 		}
@@ -1570,7 +1575,12 @@ impl<'a> Extension<'a> {
 	// Rewind the MMRs and the output_pos index.
 	// Returns a vec of "affected_pos" so we can apply the necessary updates to the bitmap
 	// accumulator in a single pass for all rewound blocks.
-	fn rewind_single_block(&mut self, block: &Block, batch: &Batch<'_>) -> Result<(), Error> {
+	fn rewind_single_block(
+		&mut self,
+		block: &Block,
+		batch: &Batch<'_>,
+		header_ext: &HeaderExtension<'_>,
+	) -> Result<(), Error> {
 		let header = &block.header;
 		let prev_header = batch.get_previous_header(&header)?;
 
@@ -1585,8 +1595,19 @@ impl<'a> Extension<'a> {
 				header.hash(),
 				header.height
 			);
-			let bitmap = batch.get_block_input_bitmap(&header.hash())?;
-			bitmap.iter().map(|x| x.into()).collect()
+			if let Ok(bitmap) = batch.get_block_input_bitmap(&header.hash()) {
+				bitmap.iter().map(|x| x.into()).collect()
+			} else {
+				warn!(
+					"rewind_single_block: fallback to calculating spent inputs for block {} at {}",
+					header.hash(),
+					header.height
+				);
+				let spent = self
+					.utxo_view(header_ext)
+					.validate_inputs(&block.inputs(), batch)?;
+				spent.into_iter().map(|(_, pos)| pos.pos).collect()
+			}
 		};
 
 		if header.height == 0 {

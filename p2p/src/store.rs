@@ -222,7 +222,7 @@ impl PeerStore {
 		)?;
 
 		if peer.flags != new_state {
-			info!(
+			debug!(
 				"Changing peer {:?} state form {:?} to {:?}",
 				peer_addr, peer.flags, new_state
 			);
