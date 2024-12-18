@@ -127,7 +127,7 @@ impl SyncRunner {
 
 			// Onle in a while let's dump the peers. Needed to understand how network is doing
 			let now = Utc::now();
-			if (now - last_peer_dump).num_seconds() > 60 {
+			if (now - last_peer_dump).num_seconds() > 60 * 20 {
 				last_peer_dump = now;
 				let peers: Vec<Arc<Peer>> = self.peers.iter().connected().into_iter().collect();
 				info!("Has connected peers: {}", peers.len());
