@@ -35,7 +35,7 @@ use mwc_p2p::PeerAddr;
 use mwc_util::RwLock;
 use rand::seq::IteratorRandom;
 use rand::seq::SliceRandom;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 pub struct HeaderSync {
@@ -49,6 +49,7 @@ pub struct HeaderSync {
 	last_retry_height: RwLock<u64>,
 	retry_expiration_times: RwLock<VecDeque<DateTime<Utc>>>,
 	send_requests_lock: RwLock<u8>,
+	excluded_peers: RwLock<HashSet<PeerAddr>>,
 }
 
 impl HeaderSync {
@@ -63,6 +64,7 @@ impl HeaderSync {
 			last_retry_height: RwLock::new(0),
 			retry_expiration_times: RwLock::new(VecDeque::new()),
 			send_requests_lock: RwLock::new(0),
+			excluded_peers: RwLock::new(HashSet::new()),
 		}
 	}
 
@@ -102,8 +104,10 @@ impl HeaderSync {
 			return resp;
 		}
 
-		self.request_tracker
+		let excluded_peers = self
+			.request_tracker
 			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
+		*self.excluded_peers.write() = excluded_peers;
 
 		// it is initial statis flag
 		if !header_hashes.is_pibd_headers_are_loaded() {
@@ -165,6 +169,7 @@ impl HeaderSync {
 						Capabilities::HEADER_HIST,
 						header_hashes.get_target_archive_height(),
 						&self.request_tracker,
+						&*self.excluded_peers.read(),
 					);
 					if peers.is_empty() {
 						if excluded_peers == 0 {
@@ -363,6 +368,7 @@ impl HeaderSync {
 							Capabilities::HEADER_HIST,
 							headers_hash_desegmenter.get_target_height(),
 							&self.request_tracker,
+							&*self.excluded_peers.read(),
 						);
 
 						if !peers.is_empty() {
@@ -557,12 +563,17 @@ impl HeaderSync {
 		excluded_peers: u32,
 	) {
 		if let Some(_) = self.send_requests_lock.try_write() {
+			let latency_ms = self
+				.request_tracker
+				.get_average_latency()
+				.num_milliseconds();
 			let mut need_request = self.request_tracker.calculate_needed_requests(
 				peers.len(),
 				excluded_requests as usize,
 				excluded_peers as usize,
 				self.pibd_params.get_segments_request_per_peer(),
-				self.pibd_params.get_segments_requests_limit(),
+				self.pibd_params
+					.get_segments_requests_limit(latency_ms as u32),
 			);
 			need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if need_request > 0 {

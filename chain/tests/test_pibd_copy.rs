@@ -167,6 +167,8 @@ impl DesegmenterRequestor {
 		archive_header_height: u64,
 		bitmap_root_hash: Hash,
 	) -> Desegmenter {
+		self.chain.reset_pibd_chain().unwrap();
+
 		self.chain
 			.init_desegmenter(archive_header_height, bitmap_root_hash)
 			.unwrap()
@@ -177,11 +179,10 @@ impl DesegmenterRequestor {
 		&mut self,
 		header_desegmenter: &mut HeaderHashesDesegmenter,
 		header_root_hash: &Hash,
-		pibd_params: &PibdParams,
 	) -> bool {
 		let empty_map: HashMap<(SegmentType, u64), u8> = HashMap::new();
 		let empty_map = &empty_map;
-		let asks = header_desegmenter.next_desired_segments(10, &empty_map, pibd_params);
+		let asks = header_desegmenter.next_desired_segments(10, &empty_map);
 
 		debug!("Next segment IDS: {:?}", asks);
 
@@ -404,11 +405,7 @@ fn test_pibd_copy_impl(src_root_dir: &str, dest_root_dir: &str) {
 		pibd_params.clone(),
 	);
 
-	while !dest_requestor.continue_headers_pibd(
-		&mut header_desegmenter,
-		&headers_root_hash,
-		&pibd_params,
-	) {}
+	while !dest_requestor.continue_headers_pibd(&mut header_desegmenter, &headers_root_hash) {}
 
 	// Heads must be done. Now we should be able to request series of headers as we can do now
 	let mut headers_cache =

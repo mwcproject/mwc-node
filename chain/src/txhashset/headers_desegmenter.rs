@@ -22,7 +22,7 @@ use crate::error::Error;
 use crate::pibd_params::PibdParams;
 use crate::txhashset::request_lookup::RequestLookup;
 use crate::txhashset::segments_cache::SegmentsCache;
-use crate::txhashset::{sort_pmmr_hashes_and_leaves, OrderedHashLeafNode};
+use crate::txhashset::{sort_pmmr_hashes_and_leaves, Desegmenter, OrderedHashLeafNode};
 use crate::types::HEADERS_PER_BATCH;
 use crate::{pibd_params, Options};
 use mwc_core::core::pmmr::{VecBackend, PMMR};
@@ -55,11 +55,14 @@ impl HeaderHashesDesegmenter {
 		headers_root_hash: Hash, // target height and headers_root_hash must be get as a result of handshake process.
 		pibd_params: Arc<PibdParams>,
 	) -> Self {
-		let size = 1u64 << pibd_params.get_headers_segment_height();
 		let n_leaves = target_height / HEADERS_PER_BATCH as u64 + 1;
-		let need_segments = (n_leaves + size - 1) / size;
-
 		let header_pmmr_size = pmmr::insertion_to_pmmr_index(n_leaves);
+		let header_segments = Desegmenter::generate_segments(
+			Hash::LEN,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
+			header_pmmr_size,
+			None,
+		);
 
 		HeaderHashesDesegmenter {
 			genesis_hash,
@@ -67,19 +70,19 @@ impl HeaderHashesDesegmenter {
 			target_height,
 			headers_root_hash,
 			header_pmmr_size,
-			header_segment_cache: SegmentsCache::new(HEADER_HASHES_STUB_TYPE, need_segments),
+			header_segment_cache: SegmentsCache::new(HEADER_HASHES_STUB_TYPE, header_segments),
 			pibd_params,
 		}
 	}
 
 	/// Get number of completed segments
-	pub fn get_segments_completed(&self) -> u64 {
+	pub fn get_segments_completed(&self) -> usize {
 		self.header_segment_cache.get_received_segments()
 	}
 
 	/// Get number of total segments
-	pub fn get_segments_total(&self) -> u64 {
-		self.header_segment_cache.get_required_segments()
+	pub fn get_segments_total(&self) -> usize {
+		self.header_segment_cache.get_required_segments_num()
 	}
 
 	/// Reset all state
@@ -108,12 +111,10 @@ impl HeaderHashesDesegmenter {
 		&mut self,
 		max_elements: usize,
 		requested_segments: &dyn RequestLookup<(SegmentType, u64)>,
-		pibd_params: &PibdParams,
 	) -> Vec<SegmentIdentifier> {
 		// For headers hashes there is no duplicate requests. There are not much data...
 		self.header_segment_cache
 			.next_desired_segments(
-				pibd_params.get_headers_segment_height(),
 				max_elements,
 				requested_segments,
 				self.pibd_params.get_headers_hash_buffer_len(),
@@ -131,14 +132,14 @@ impl HeaderHashesDesegmenter {
 			return Err(Error::InvalidHeadersRoot);
 		}
 
-		if segment.identifier().height != self.pibd_params.get_headers_segment_height() {
-			return Err(Error::InvalidSegmentHeght);
+		if !self.header_segment_cache.has_segment(segment.identifier()) {
+			return Err(Error::InvalidSegmentId);
 		}
 
-		let segm_idx = segment.identifier().idx;
+		let leaf_offset = segment.identifier().leaf_offset();
 
 		// Checking if first hash matching genesis
-		if segm_idx == 0 {
+		if leaf_offset == 0 {
 			if let Some((_, first_hash)) = segment.leaf_iter().next() {
 				if *first_hash != self.genesis_hash {
 					return Err(Error::InvalidGenesisHash);
@@ -146,17 +147,20 @@ impl HeaderHashesDesegmenter {
 			}
 		}
 
-		if self.header_segment_cache.is_duplicate_segment(segm_idx) {
+		if self
+			.header_segment_cache
+			.is_duplicate_segment(segment.identifier())
+		{
 			info!(
-				"headers_desegmenter: skipping duplicated header segment with id {}",
-				segment.identifier().idx
+				"headers_desegmenter: skipping duplicated header segment {}",
+				leaf_offset,
 			);
 			return Ok(());
 		}
 
 		info!(
-			"headers_desegmenter: adding headers segment with id {}",
-			segment.identifier().idx
+			"headers_desegmenter: adding headers segment {}",
+			leaf_offset,
 		);
 		segment.validate(self.header_pmmr_size, None, &self.headers_root_hash)?;
 
@@ -164,7 +168,7 @@ impl HeaderHashesDesegmenter {
 		let header_pmmr = &mut self.header_pmmr;
 
 		// Let's apply the data
-		header_segment_cache.apply_new_segment(segment, |segments| {
+		header_segment_cache.apply_new_segment(segment, false, |segments| {
 			let size = header_pmmr.size();
 			let mut header_pmmr = PMMR::at(header_pmmr, size);
 
@@ -301,6 +305,7 @@ impl<T> HeadersRecieveCache<T> {
 		let mut first_in_cache = 0;
 		let mut last_in_cache = 0;
 		let mut has10_idx = 0;
+		let headers_to_retry = headers_cache_size_limit as u64 / 5;
 
 		for hash_idx in base_hash_idx..=max_idx {
 			// let's check if cache already have it
@@ -319,7 +324,7 @@ impl<T> HeadersRecieveCache<T> {
 			}
 
 			if last_in_cache > 0 {
-				if last_in_cache - first_in_cache > pibd_params::HEADERS_RETRY_DELTA {
+				if last_in_cache - first_in_cache > headers_to_retry {
 					has10_idx = first_in_cache;
 				}
 				first_in_cache = 0;

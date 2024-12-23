@@ -208,9 +208,12 @@ pub enum Error {
 	/// Invalid headers root hash. Probably old traffic or somebody attacking as
 	#[error("Invalid headers root hash")]
 	InvalidHeadersRoot,
-	/// Invalid segment height.
-	#[error("Invalid segment height")]
-	InvalidSegmentHeght,
+	/// Invalid prune segment state. Expected that segment is not pruned, but it does
+	#[error("Not expected segment pruned state")]
+	InvalidPruneState,
+	/// Invalid segment id (such segment was never requested).
+	#[error("Invalid segment id")]
+	InvalidSegmentId,
 	/// Invalid genesis hash.
 	#[error("Invalid genesis hash")]
 	InvalidGenesisHash,

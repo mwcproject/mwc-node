@@ -216,7 +216,8 @@ pub struct BitmapChunk(BitVec);
 
 impl BitmapChunk {
 	const LEN_BITS: usize = 1024;
-	const LEN_BYTES: usize = Self::LEN_BITS / 8;
+	/// Size of the bitmap chain in bytes
+	pub const LEN_BYTES: usize = Self::LEN_BITS / 8;
 
 	/// Create a new bitmap chunk, defaulting all bits in the chunk to false.
 	pub fn new() -> BitmapChunk {

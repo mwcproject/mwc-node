@@ -37,7 +37,7 @@ use std::fmt::Display;
 use util;
 use util::secp;
 use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::Secp256k1;
+use util::secp::{constants, Secp256k1};
 use util::ToHex;
 
 /// Fee fields as in fix-fees RFC: { future_use: 20, fee_shift: 4, fee: 40 }
@@ -745,6 +745,10 @@ impl KernelFeatures {
 }
 
 impl TxKernel {
+	/// Estimated data size for TxKernel
+	pub const DATA_SIZE: usize =
+		(1 + 8 + 8) + constants::PEDERSEN_COMMITMENT_SIZE + constants::COMPACT_SIGNATURE_SIZE;
+
 	/// Is this a coinbase kernel?
 	pub fn is_coinbase(&self) -> bool {
 		self.features.is_coinbase()

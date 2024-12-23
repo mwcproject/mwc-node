@@ -366,10 +366,9 @@ impl HeadersHashSync {
 			headers_hash_desegmenter.next_desired_segments(
 				cmp::min(
 					headers_hash_peers.len() * self.pibd_params.get_segments_request_per_peer(),
-					self.pibd_params.get_segments_requests_limit(),
+					self.pibd_params.get_segments_requests_limit(0),
 				),
 				&&self.requested_segments,
-				&*self.pibd_params,
 			)
 		};
 
@@ -408,7 +407,7 @@ impl HeadersHashSync {
 			for seg in segments {
 				debug_assert!(!self
 					.requested_segments
-					.contains_key(&(HEADER_HASHES_STUB_TYPE, seg.idx)));
+					.contains_key(&(HEADER_HASHES_STUB_TYPE, seg.leaf_offset())));
 
 				let peer = peers2send
 					.choose(&mut rng)
@@ -416,7 +415,7 @@ impl HeadersHashSync {
 				match peer.send_headers_hash_segment_request(headers_root_hash.clone(), seg) {
 					Ok(_) => {
 						self.requested_segments.insert(
-							(HEADER_HASHES_STUB_TYPE, seg.idx),
+							(HEADER_HASHES_STUB_TYPE, seg.leaf_offset()),
 							(peer.info.addr.clone(), Utc::now()),
 						);
 					}
@@ -487,7 +486,7 @@ impl HeadersHashSync {
 			}
 			let segm_id = segment.id().clone();
 			self.requested_segments
-				.remove(&(HEADER_HASHES_STUB_TYPE, segm_id.idx));
+				.remove(&(HEADER_HASHES_STUB_TYPE, segm_id.leaf_offset()));
 			match headers_hash_desegmenter.add_headers_hash_segment(segment, &header_hashes_root) {
 				Ok(_) => {
 					sync_peers.report_ok_response(peer);

@@ -19,10 +19,12 @@ use crate::core::core::hash::Hash;
 use crate::core::core::pmmr::ReadablePMMR;
 use crate::core::core::{BlockHeader, OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
 use crate::error::Error;
+use crate::pibd_params;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
 use mwc_core::core::pmmr::{ReadonlyPMMR, VecBackend};
+use mwc_util::secp::constants;
 use std::{sync::Arc, time::Instant};
 
 /// Segmenter for generating PIBD segments.
@@ -78,11 +80,16 @@ impl Segmenter {
 	pub fn bitmap_segment(&self, id: SegmentIdentifier) -> Result<Segment<BitmapChunk>, Error> {
 		let now = Instant::now();
 		let bitmap_pmmr = self.bitmap_snapshot.readonly_pmmr();
-		let segment = Segment::from_pmmr(id, &bitmap_pmmr, false)?;
+		let segment = Segment::from_pmmr(
+			id,
+			&bitmap_pmmr,
+			false,
+			BitmapChunk::LEN_BYTES,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
+		)?;
 		debug!(
-			"bitmap_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
-			segment.id().height,
-			segment.id().idx,
+			"bitmap_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			segment.id(),
 			segment.leaf_iter().count(),
 			segment.hash_iter().count(),
 			segment.proof().size(),
@@ -96,11 +103,16 @@ impl Segmenter {
 		let now = Instant::now();
 		let header_pmmr = self.header_pmmr.read();
 		let header_pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
-		let segment = Segment::from_pmmr(id, &header_pmmr, false)?;
+		let segment = Segment::from_pmmr(
+			id,
+			&header_pmmr,
+			false,
+			Hash::LEN,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
+		)?;
 		debug!(
-			"headers_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
-			segment.id().height,
-			segment.id().idx,
+			"headers_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			segment.id(),
 			segment.leaf_iter().count(),
 			segment.hash_iter().count(),
 			segment.proof().size(),
@@ -117,11 +129,16 @@ impl Segmenter {
 		let now = Instant::now();
 		let txhashset = self.txhashset.read();
 		let output_pmmr = txhashset.output_pmmr_at(&self.header);
-		let segment = Segment::from_pmmr(id, &output_pmmr, true)?;
+		let segment = Segment::from_pmmr(
+			id,
+			&output_pmmr,
+			true,
+			constants::PEDERSEN_COMMITMENT_SIZE,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 4,
+		)?;
 		debug!(
-			"output_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
-			segment.id().height,
-			segment.id().idx,
+			"output_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			segment.id(),
 			segment.leaf_iter().count(),
 			segment.hash_iter().count(),
 			segment.proof().size(),
@@ -135,11 +152,16 @@ impl Segmenter {
 		let now = Instant::now();
 		let txhashset = self.txhashset.read();
 		let kernel_pmmr = txhashset.kernel_pmmr_at(&self.header);
-		let segment = Segment::from_pmmr(id, &kernel_pmmr, false)?;
+		let segment = Segment::from_pmmr(
+			id,
+			&kernel_pmmr,
+			false,
+			TxKernel::DATA_SIZE,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
+		)?;
 		debug!(
-			"kernel_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
-			segment.id().height,
-			segment.id().idx,
+			"kernel_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			segment.id(),
 			segment.leaf_iter().count(),
 			segment.hash_iter().count(),
 			segment.proof().size(),
@@ -153,11 +175,17 @@ impl Segmenter {
 		let now = Instant::now();
 		let txhashset = self.txhashset.read();
 		let pmmr = txhashset.rangeproof_pmmr_at(&self.header);
-		let segment = Segment::from_pmmr(id, &pmmr, true)?;
+		// Some overhead is fine, there are chances that we can't make optimal segments
+		let segment = Segment::from_pmmr(
+			id,
+			&pmmr,
+			true,
+			constants::SINGLE_BULLET_PROOF_SIZE,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 4,
+		)?;
 		debug!(
-			"rangeproof_segment: id: ({}, {}), leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
-			segment.id().height,
-			segment.id().idx,
+			"rangeproof_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
+			segment.id(),
 			segment.leaf_iter().count(),
 			segment.hash_iter().count(),
 			segment.proof().size(),

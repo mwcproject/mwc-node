@@ -54,9 +54,9 @@ pub enum SyncStatus {
 	/// Downloading block header hashes
 	HeaderHashSync {
 		/// total number of blocks
-		completed_blocks: u64,
+		completed_blocks: usize,
 		/// total number of leaves required by archive header
-		total_blocks: u64,
+		total_blocks: usize,
 	},
 	/// Downloading block headers below archive height
 	HeaderSync {
@@ -70,9 +70,9 @@ pub enum SyncStatus {
 	/// PIBD peers to continue, then move on to TxHashsetDownload state
 	TxHashsetPibd {
 		/// total number of recieved segments
-		recieved_segments: u64,
+		recieved_segments: usize,
 		/// total number of segments required
-		total_segments: u64,
+		total_segments: usize,
 	},
 	/// Validating kernels history
 	ValidatingKernelsHistory,

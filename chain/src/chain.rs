@@ -1336,16 +1336,6 @@ impl Chain {
 			assert!(header.kernel_root == kernel_pmmr_root);
 		}
 
-		/*{
-			use mwc_core::core::pmmr::ReadablePMMR;
-
-			let txhashset = self.txhashset.read();
-			let rangeproof_pmmr = txhashset.rangeproof_pmmr_at(&header);
-			let rangeproof_pmmr_root = rangeproof_pmmr.root().unwrap();
-			error!("rangeproof_pmmr_root: {} at height: {}, mmr size: {}", rangeproof_pmmr_root, header.height, header.output_mmr_size);
-			txhashset.dump_rproof_mmrs()
-		}*/
-
 		Ok(Segmenter::new(
 			Arc::new(RwLock::new(segm_header_pmmr_backend)),
 			self.txhashset.clone(),

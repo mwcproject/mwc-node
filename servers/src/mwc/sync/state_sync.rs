@@ -60,6 +60,7 @@ pub struct StateSync {
 	last_retry_idx: RwLock<HashMap<SegmentType, u64>>,
 	retry_expiration_times: RwLock<VecDeque<DateTime<Utc>>>,
 
+	excluded_peers: RwLock<HashSet<PeerAddr>>,
 	send_requests_lock: RwLock<u8>,
 }
 
@@ -79,6 +80,7 @@ impl StateSync {
 			is_complete: AtomicBool::new(false),
 			last_retry_idx: RwLock::new(HashMap::new()),
 			retry_expiration_times: RwLock::new(VecDeque::new()),
+			excluded_peers: RwLock::new(HashSet::new()),
 			send_requests_lock: RwLock::new(0),
 		}
 	}
@@ -156,6 +158,11 @@ impl StateSync {
 			}
 		};
 
+		let excluded_peers = self
+			.request_tracker
+			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
+		*self.excluded_peers.write() = excluded_peers;
+
 		// Requesting root_hash...
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 			in_peers,
@@ -163,6 +170,7 @@ impl StateSync {
 			Capabilities::PIBD_HIST,
 			target_archive_height,
 			&self.request_tracker,
+			&*self.excluded_peers.read(),
 		);
 		if peers.is_empty() {
 			if excluded_peers == 0 {
@@ -370,9 +378,6 @@ impl StateSync {
 
 		debug_assert!(!desegmenter.is_complete());
 
-		self.request_tracker
-			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
-
 		sync_state.update(desegmenter.get_pibd_progress());
 
 		// let's check what peers with root hash are exist
@@ -534,6 +539,7 @@ impl StateSync {
 				Capabilities::PIBD_HIST,
 				self.target_archive_height.load(Ordering::Relaxed),
 				&self.request_tracker,
+				&*self.excluded_peers.read(),
 			);
 			if peers.is_empty() {
 				return;
@@ -582,7 +588,7 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) {
-		let key = (SegmentType::Bitmap, segment.id().idx);
+		let key = (SegmentType::Bitmap, segment.leaf_offset());
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
@@ -621,7 +627,7 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) {
-		let key = (SegmentType::Output, segment.id().idx);
+		let key = (SegmentType::Output, segment.leaf_offset());
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
@@ -659,7 +665,7 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) {
-		let key = (SegmentType::RangeProof, segment.id().idx);
+		let key = (SegmentType::RangeProof, segment.leaf_offset());
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		// Process first, unregister after. During unregister we might issue more requests.
@@ -698,7 +704,7 @@ impl StateSync {
 		peers: &Arc<p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) {
-		let key = (SegmentType::Kernel, segment.id().idx);
+		let key = (SegmentType::Kernel, segment.leaf_offset());
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
@@ -772,12 +778,17 @@ impl StateSync {
 		sync_peers: &SyncPeers,
 	) -> SyncResponse {
 		if let Some(_) = self.send_requests_lock.try_write() {
+			let latency_ms = self
+				.request_tracker
+				.get_average_latency()
+				.num_milliseconds();
 			let mut need_request = self.request_tracker.calculate_needed_requests(
 				root_hash_peers.len(),
 				excluded_requests as usize,
 				excluded_peers as usize,
 				self.pibd_params.get_segments_request_per_peer(),
-				self.pibd_params.get_segments_requests_limit(),
+				self.pibd_params
+					.get_segments_requests_limit(latency_ms as u32),
 			);
 			need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if need_request > 0 {
@@ -788,16 +799,15 @@ impl StateSync {
 						let target_archive_hash = self.target_archive_hash.read().clone();
 
 						if !retry_segments.is_empty() {
-							let segm_type = &retry_segments[0].segment_type;
-
 							let last_retry_idx = self.last_retry_idx.try_write();
 							if let Some(mut last_retry_idx) = last_retry_idx {
-								let retry_idx =
-									last_retry_idx.get(&segm_type).cloned().unwrap_or(0);
-
 								for segm in &retry_segments {
-									debug_assert!(*segm_type == segm.segment_type);
-									if segm.identifier.idx < retry_idx {
+									let retry_idx = last_retry_idx
+										.get(&segm.segment_type)
+										.cloned()
+										.unwrap_or(0);
+
+									if segm.identifier.leaf_offset() <= retry_idx {
 										continue;
 									}
 
@@ -808,8 +818,8 @@ impl StateSync {
 									// We don't want to send retry to the peer whom we already send the data
 									if let Some(requested_peer) =
 										self.request_tracker.get_expected_peer(&(
-											segm_type.clone(),
-											segm.identifier.idx,
+											segm.segment_type.clone(),
+											segm.identifier.leaf_offset(),
 										)) {
 										let dup_peers: Vec<Arc<Peer>> = peers
 											.iter()
@@ -829,7 +839,7 @@ impl StateSync {
 
 										// we can do retry now
 										for p in dup_peers {
-											debug!("Processing duplicated request for the segment {:?} at {}, peer {:?}", segm_type, segm.identifier.idx, p.info.addr);
+											debug!("Processing duplicated request for the segment {:?} at {}, peer {:?}", segm.segment_type, segm.identifier.leaf_offset(), p.info.addr);
 											match Self::send_request(
 												&p,
 												&segm,
@@ -843,7 +853,7 @@ impl StateSync {
 													)
 												}
 												Err(e) => {
-													let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm_type, segm.identifier.idx, p.info.addr, e);
+													let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm.segment_type, segm.identifier.leaf_offset(), p.info.addr, e);
 													error!("{}", msg);
 													sync_peers
 														.report_no_response(&p.info.addr, msg);
@@ -853,8 +863,10 @@ impl StateSync {
 										}
 									}
 
-									(*last_retry_idx)
-										.insert(segm_type.clone(), segm.identifier.idx);
+									(*last_retry_idx).insert(
+										segm.segment_type.clone(),
+										segm.identifier.leaf_offset(),
+									);
 								}
 							}
 						}
@@ -865,7 +877,7 @@ impl StateSync {
 							}
 							need_request = need_request.saturating_sub(1);
 
-							let key = (seg.segment_type.clone(), seg.identifier.idx.clone());
+							let key = (seg.segment_type.clone(), seg.identifier.leaf_offset());
 							debug_assert!(!self.request_tracker.has_request(&key));
 							debug_assert!(!root_hash_peers.is_empty());
 							let peer = root_hash_peers
@@ -905,7 +917,7 @@ impl StateSync {
 								if let Some(requested_peer) =
 									self.request_tracker.get_expected_peer(&(
 										segm.segment_type.clone(),
-										segm.identifier.idx,
+										segm.identifier.leaf_offset(),
 									)) {
 									let dup_peer = peers
 										.iter()
@@ -917,14 +929,14 @@ impl StateSync {
 									}
 									let dup_peer = dup_peer.unwrap();
 
-									debug!("Processing duplicated request for the segment {:?} at {}, peer {:?}", segm.segment_type, segm.identifier.idx, dup_peer.info.addr);
+									debug!("Processing duplicated request for the segment {:?} at {}, peer {:?}", segm.segment_type, segm.identifier.leaf_offset(), dup_peer.info.addr);
 									match Self::send_request(&dup_peer, &segm, &target_archive_hash)
 									{
 										Ok(_) => self.retry_expiration_times.write().push_back(
 											now + self.request_tracker.get_average_latency(),
 										),
 										Err(e) => {
-											let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm.segment_type, segm.identifier.idx, dup_peer.info.addr, e);
+											let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm.segment_type, segm.identifier.leaf_offset(), dup_peer.info.addr, e);
 											error!("{}", msg);
 											sync_peers.report_no_response(&dup_peer.info.addr, msg);
 											break;
