@@ -305,6 +305,7 @@ impl<T> HeadersRecieveCache<T> {
 		let mut first_in_cache = 0;
 		let mut last_in_cache = 0;
 		let mut has10_idx = 0;
+		let headers_to_retry = headers_cache_size_limit as u64 / 5;
 
 		for hash_idx in base_hash_idx..=max_idx {
 			// let's check if cache already have it
@@ -323,7 +324,7 @@ impl<T> HeadersRecieveCache<T> {
 			}
 
 			if last_in_cache > 0 {
-				if last_in_cache - first_in_cache > pibd_params::HEADERS_RETRY_DELTA {
+				if last_in_cache - first_in_cache > headers_to_retry {
 					has10_idx = first_in_cache;
 				}
 				first_in_cache = 0;

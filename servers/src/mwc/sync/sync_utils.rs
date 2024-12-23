@@ -22,7 +22,7 @@ use mwc_chain::{pibd_params, Chain};
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
 use mwc_util::RwLock;
 use std::cmp;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
@@ -147,7 +147,7 @@ impl LatencyTracker {
 		} else {
 			self.latency_sum / self.latency_history.len() as i64
 		};
-		Duration::microseconds(dur_ms)
+		Duration::milliseconds(dur_ms)
 	}
 }
 
@@ -190,10 +190,16 @@ where
 		}
 	}
 
-	pub fn retain_expired(&self, expiration_time_interval_sec: i64, sync_peers: &SyncPeers) {
+	pub fn retain_expired(
+		&self,
+		expiration_time_interval_sec: i64,
+		sync_peers: &SyncPeers,
+	) -> HashSet<PeerAddr> {
 		let mut requested = self.requested.write();
 		let peers_stats = &mut self.peers_stats.write();
 		let now = Utc::now();
+
+		let mut res: HashSet<PeerAddr> = HashSet::new();
 
 		// first let's clean up stale requests...
 		requested.retain(|_, request_data| {
@@ -201,6 +207,7 @@ where
 			if (now - request_data.request_time).num_seconds() > expiration_time_interval_sec {
 				sync_peers
 					.report_no_response(&request_data.peer, request_data.request_message.clone());
+				res.insert(request_data.peer.clone());
 				if let Some(n) = peer_stat {
 					n.requests = n.requests.saturating_sub(1);
 				}
@@ -208,6 +215,7 @@ where
 			}
 			true
 		});
+		res
 	}
 
 	pub fn clear(&self) {
@@ -335,6 +343,7 @@ pub fn get_sync_peers<T: std::cmp::Eq + std::hash::Hash>(
 	capabilities: Capabilities,
 	min_height: u64,
 	request_tracker: &RequestTracker<T>,
+	excluded_peer_addr: &HashSet<PeerAddr>,
 ) -> (Vec<Arc<Peer>>, u32, u32) {
 	// Excluding peers with totally full Q
 	let peer_requests_limit = expected_requests_per_peer as u32;
@@ -350,16 +359,20 @@ pub fn get_sync_peers<T: std::cmp::Eq + std::hash::Hash>(
 		.outbound()
 		.with_min_height(min_height)
 	{
+		let mut excluded = excluded_peer_addr.contains(&peer.info.addr);
 		found_outbound = true;
 		if let Some(track_data) = request_tracker.get_peer_track_data(&peer.info.addr) {
-			if track_data.requests < peer_requests_limit {
+			if !excluded && track_data.requests < peer_requests_limit {
 				excluded_requests = excluded_requests.saturating_sub(track_data.requests as usize);
 			} else {
-				excluded_peers += 1;
-				continue;
+				excluded = true;
 			}
 		}
-		res.push(peer);
+		if !excluded {
+			res.push(peer);
+		} else {
+			excluded_peers += 1;
+		}
 	}
 	if !found_outbound {
 		// adding inbounds since no outbound is found...
@@ -370,16 +383,20 @@ pub fn get_sync_peers<T: std::cmp::Eq + std::hash::Hash>(
 			.inbound()
 			.with_min_height(min_height)
 		{
+			let mut excluded = excluded_peer_addr.contains(&peer.info.addr);
 			if let Some(track_data) = request_tracker.get_peer_track_data(&peer.info.addr) {
-				if track_data.requests < peer_requests_limit {
+				if !excluded && track_data.requests < peer_requests_limit {
 					excluded_requests =
 						excluded_requests.saturating_sub(track_data.requests as usize);
 				} else {
-					excluded_peers += 1;
-					continue;
+					excluded = true;
 				}
 			}
-			res.push(peer);
+			if !excluded {
+				res.push(peer);
+			} else {
+				excluded_peers += 1;
+			}
 		}
 	}
 	(res, excluded_requests as u32, excluded_peers)

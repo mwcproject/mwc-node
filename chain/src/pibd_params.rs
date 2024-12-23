@@ -26,15 +26,6 @@ use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 /// Segment heights for Header Hashes. Note, this number is needs to be the same for all network
 pub const PIBD_MESSAGE_SIZE_LIMIT: usize = 256 * 1034; // Let's use 256k messages max. I think we should be good to handle that
 
-/// Retry request to the header if next 10 are already returned.
-pub const HEADERS_RETRY_DELTA: u64 = 10;
-
-/// Retry request to the segments if next 5 are already returned.
-pub const SEGMENTS_RETRY_DELTA: usize = 5;
-
-/// Retry request to the blocks if next 10 are already returned.
-pub const BLOCKS_RETRY_DELTA: u64 = 10;
-
 // Here are series for different available resources. Mem and CPU thresholds are allways the same.
 const HEADERS_HASH_BUFFER_LEN: [usize; 4] = [10, 20, 30, 60];
 
@@ -196,7 +187,7 @@ impl PibdParams {
 	}
 
 	fn get_network_speed_multiplier(&self, average_latency_ms: u32) -> f64 {
-		if average_latency_ms == 0 {
+		if average_latency_ms == 0 || average_latency_ms == 30000 {
 			return 1.0;
 		}
 		if (Utc::now() - self.network_speed.read().last_network_speed_update).num_seconds() > 5 {
@@ -217,6 +208,10 @@ impl PibdParams {
 				network_speed.network_speed_multiplier = 0.05f64
 					.max((network_speed.network_speed_multiplier) / (1.0 + 0.15 * update_mul));
 			}
+			debug!(
+				"for current latency {} ms the new network speed multiplier is {}",
+				average_latency_ms, network_speed.network_speed_multiplier
+			);
 			network_speed.network_speed_multiplier
 		} else {
 			self.network_speed.read().network_speed_multiplier

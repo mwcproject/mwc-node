@@ -15,7 +15,6 @@
 //! Manages the segments caching
 
 use crate::error::Error;
-use crate::pibd_params;
 use crate::txhashset::request_lookup::RequestLookup;
 use mwc_core::core::{Segment, SegmentIdentifier, SegmentType};
 use std::cmp;
@@ -106,6 +105,7 @@ impl<T> SegmentsCache<T> {
 		let mut first_in_cache = 0;
 		let mut last_in_cache = 0;
 		let mut has_5_idx = 0;
+		let retry_delta = cache_size_limit / 5;
 
 		for idx in self.received_segments..max_segm_idx {
 			let segm = &self.required_segments[idx];
@@ -120,7 +120,7 @@ impl<T> SegmentsCache<T> {
 			}
 
 			if last_in_cache > 0 {
-				if last_in_cache - first_in_cache > pibd_params::SEGMENTS_RETRY_DELTA {
+				if last_in_cache - first_in_cache > retry_delta {
 					has_5_idx = first_in_cache;
 				}
 				first_in_cache = 0;

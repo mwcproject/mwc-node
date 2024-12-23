@@ -27,7 +27,7 @@ use mwc_util::RwLock;
 use p2p::Capabilities;
 use rand::prelude::*;
 use std::cmp;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 pub struct BodySync {
@@ -38,6 +38,7 @@ pub struct BodySync {
 	pibd_params: Arc<PibdParams>,
 	last_retry_height: RwLock<u64>,
 	retry_expiration_times: RwLock<VecDeque<DateTime<Utc>>>,
+	excluded_peers: RwLock<HashSet<PeerAddr>>,
 }
 
 impl BodySync {
@@ -50,6 +51,7 @@ impl BodySync {
 			request_series: RwLock::new(Vec::new()),
 			last_retry_height: RwLock::new(0),
 			retry_expiration_times: RwLock::new(VecDeque::new()),
+			excluded_peers: RwLock::new(HashSet::new()),
 		}
 	}
 
@@ -122,12 +124,19 @@ impl BodySync {
 			};
 		*self.required_capabilities.write() = required_capabilities;
 
+		// requested_blocks, check for expiration
+		let excluded_peers = self
+			.request_tracker
+			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
+		*self.excluded_peers.write() = excluded_peers;
+
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 			in_peers,
 			self.pibd_params.get_blocks_request_per_peer(),
 			peer_capabilities,
 			head.height,
 			&self.request_tracker,
+			&*self.excluded_peers.read(),
 		);
 		if peers.is_empty() {
 			if excluded_peers == 0 {
@@ -151,10 +160,6 @@ impl BodySync {
 				));
 			}
 		}
-
-		// requested_blocks, check for expiration
-		self.request_tracker
-			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
 
 		sync_state.update(SyncStatus::BodySync {
 			archive_height: if self.chain.archive_mode() {
@@ -293,6 +298,7 @@ impl BodySync {
 							*self.required_capabilities.read(),
 							head.height,
 							&self.request_tracker,
+							&*self.excluded_peers.read(),
 						);
 						if !peers.is_empty() {
 							// requested_blocks, check for expiration
@@ -363,6 +369,7 @@ impl BodySync {
 			let mut first_in_cache = 0;
 			let mut last_in_cache = 0;
 			let mut has10_idx = 0;
+			let retry_delta = cmp::max(7, request_series.len() as u64 / 5);
 
 			for (hash, height) in request_series.iter().rev() {
 				if self.is_block_recieved(&hash)? {
@@ -376,7 +383,7 @@ impl BodySync {
 				}
 
 				if last_in_cache > 0 {
-					if last_in_cache - first_in_cache > pibd_params::BLOCKS_RETRY_DELTA {
+					if last_in_cache - first_in_cache > retry_delta {
 						has10_idx = first_in_cache;
 					}
 					first_in_cache = 0;

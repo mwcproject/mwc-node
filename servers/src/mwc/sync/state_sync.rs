@@ -60,6 +60,7 @@ pub struct StateSync {
 	last_retry_idx: RwLock<HashMap<SegmentType, u64>>,
 	retry_expiration_times: RwLock<VecDeque<DateTime<Utc>>>,
 
+	excluded_peers: RwLock<HashSet<PeerAddr>>,
 	send_requests_lock: RwLock<u8>,
 }
 
@@ -79,6 +80,7 @@ impl StateSync {
 			is_complete: AtomicBool::new(false),
 			last_retry_idx: RwLock::new(HashMap::new()),
 			retry_expiration_times: RwLock::new(VecDeque::new()),
+			excluded_peers: RwLock::new(HashSet::new()),
 			send_requests_lock: RwLock::new(0),
 		}
 	}
@@ -156,6 +158,11 @@ impl StateSync {
 			}
 		};
 
+		let excluded_peers = self
+			.request_tracker
+			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
+		*self.excluded_peers.write() = excluded_peers;
+
 		// Requesting root_hash...
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 			in_peers,
@@ -163,6 +170,7 @@ impl StateSync {
 			Capabilities::PIBD_HIST,
 			target_archive_height,
 			&self.request_tracker,
+			&*self.excluded_peers.read(),
 		);
 		if peers.is_empty() {
 			if excluded_peers == 0 {
@@ -370,9 +378,6 @@ impl StateSync {
 
 		debug_assert!(!desegmenter.is_complete());
 
-		self.request_tracker
-			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
-
 		sync_state.update(desegmenter.get_pibd_progress());
 
 		// let's check what peers with root hash are exist
@@ -534,6 +539,7 @@ impl StateSync {
 				Capabilities::PIBD_HIST,
 				self.target_archive_height.load(Ordering::Relaxed),
 				&self.request_tracker,
+				&*self.excluded_peers.read(),
 			);
 			if peers.is_empty() {
 				return;
@@ -801,7 +807,7 @@ impl StateSync {
 										.cloned()
 										.unwrap_or(0);
 
-									if segm.identifier.leaf_offset() < retry_idx {
+									if segm.identifier.leaf_offset() <= retry_idx {
 										continue;
 									}
 
