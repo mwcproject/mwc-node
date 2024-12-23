@@ -1316,6 +1316,10 @@ impl<'a> Extension<'a> {
 				assert!(self.rproof_pmmr.get_data(pos0).is_none());
 			}
 		}
+		#[cfg(not(debug_assertions))]
+		{
+			let _ = bitmap;
+		}
 		Ok(())
 	}
 
