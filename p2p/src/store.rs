@@ -182,13 +182,13 @@ impl PeerStore {
 		let peers_num = peers.len();
 		if peers_num > 1 {
 			peers.sort_by_key(|p| -p.last_connected);
-			// Then shuffle most of them
-			let shuffle_steps = peers_num / 4;
+			// Then shuffle every second of them
 			let mut rng = thread_rng();
-			for _ in 0..shuffle_steps {
-				let i1 = rng.gen_range(0, peers_num);
-				let i2 = rng.gen_range(0, peers_num);
-				peers.swap(i1, i2);
+			for i1 in (1..peers_num).step_by(2) {
+				if i1 + 2 < peers_num {
+					let i2 = rng.gen_range(i1 + 1, peers_num);
+					peers.swap(i1, i2);
+				}
 			}
 		}
 		Ok(peers)
