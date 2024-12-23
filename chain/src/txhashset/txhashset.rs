@@ -462,32 +462,6 @@ impl TxHashSet {
 		})
 	}
 
-	/// For debug only, dump for range proof data
-	pub fn dump_rproof_mmrs(&self) {
-		info!(
-			"Generating dump with MMR roots at sizes: Outputs: {}  Rangeproofs: {}  Kernels: {}",
-			self.output_pmmr_h.size, self.rproof_pmmr_h.size, self.kernel_pmmr_h.size
-		);
-
-		for i in 0..self.rproof_pmmr_h.size {
-			let mut s = format!("{} ", i);
-			if let Some(hash) = self.rproof_pmmr_h.backend.get_hash(i) {
-				s.push_str(&format!("Hash: {}", hash));
-			}
-
-			if let Some(rp) = self.rproof_pmmr_h.backend.get_data(i) {
-				s.push_str(&format!("   RP: {:?}", rp));
-			}
-
-			let root = ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, i + 1);
-			if let Ok(root) = root.root() {
-				s.push_str(&format!("   ROOT: {}", root));
-			}
-
-			info!("{}", s);
-		}
-	}
-
 	/// Return Commit's MMR position
 	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
 		Ok(self.commit_index.get_output_pos(&commit)?)
@@ -1330,13 +1304,17 @@ impl<'a> Extension<'a> {
 	/// Once the PIBD set is downloaded, we need to ensure that the respective leaf sets
 	/// match the bitmap (particularly in the case of outputs being spent after a PIBD catch-up)
 	pub fn update_leaf_sets(&mut self, bitmap: &Bitmap) -> Result<(), Error> {
-		let flipped = bitmap.flip(0u32..bitmap.maximum().unwrap() + 1);
-		for spent_pmmr_index in flipped.iter() {
-			let pos0 = pmmr::insertion_to_pmmr_index(spent_pmmr_index.into());
-			// Note, remove_from_leaf_set can;t be used, because the root will be affected
-			// Some segments might not be pruned, it is very expected.
-			let _ = self.output_pmmr.prune(pos0);
-			let _ = self.rproof_pmmr.prune(pos0);
+		#[cfg(debug_assertions)]
+		{
+			// segmenst are expected to be pruned during download process. Let's validat is it s prue.
+			let flipped = bitmap.flip(0u32..bitmap.maximum().unwrap() + 1);
+			for spent_pmmr_index in flipped.iter() {
+				let pos0 = pmmr::insertion_to_pmmr_index(spent_pmmr_index.into());
+				// Note, remove_from_leaf_set can;t be used, because the root will be affected
+				// Some segments might not be pruned, it is very expected.
+				assert!(self.output_pmmr.get_data(pos0).is_none());
+				assert!(self.rproof_pmmr.get_data(pos0).is_none());
+			}
 		}
 		Ok(())
 	}
@@ -1350,9 +1328,11 @@ impl<'a> Extension<'a> {
 	pub fn apply_output_segments(
 		&mut self,
 		segments: Vec<Segment<OutputIdentifier>>,
+		bitmap: &Bitmap,
 	) -> Result<(), Error> {
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
+			let leaf_pos_copy = leaf_pos.clone();
 
 			// insert either leaves or pruned subtrees as we go
 			for insert in sort_pmmr_hashes_and_leaves(hash_pos, leaf_pos, Some(0)) {
@@ -1382,6 +1362,20 @@ impl<'a> Extension<'a> {
 					}
 				}
 			}
+			// Pruning elements that wasn't in the bitmap. It is expected that some data might not be pruned
+			// Note: we need to insert all data first and prune after. Also, there is no rpone at the end of PIBD download
+			for pos0 in leaf_pos_copy {
+				let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
+				match pmmr_index {
+					Some(i) => {
+						if !bitmap.contains(i as u32) {
+							let res = self.output_pmmr.prune(pos0);
+							debug_assert!(res.is_ok());
+						}
+					}
+					None => {}
+				};
+			}
 		}
 		Ok(())
 	}
@@ -1392,9 +1386,11 @@ impl<'a> Extension<'a> {
 	pub fn apply_rangeproof_segments(
 		&mut self,
 		segments: Vec<Segment<RangeProof>>,
+		bitmap: &Bitmap,
 	) -> Result<(), Error> {
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
+			let leaf_pos_copy = leaf_pos.clone();
 
 			//info!("Adding proof segment {}, from mmr pos: {}  hashes sz: {}  leaf_data sz: {}  hash_pos: {:?}  hashes: {:?}   leaf_pos: {:?}  leaf_data: {:?}", sid.idx, self.rproof_pmmr.size, hashes.len(), leaf_data.len(), hash_pos, hashes, leaf_pos, leaf_data );
 
@@ -1425,6 +1421,21 @@ impl<'a> Extension<'a> {
 						// Prone will be due
 					}
 				}
+			}
+
+			// Pruning elements that wasn't in the bitmap. It is expecte dthat some data might not be pruned
+			// Note: we need to insert all data first and prune after. Also, there is no rpone at the end of PIBD download
+			for pos0 in leaf_pos_copy {
+				let pmmr_index = pmmr::pmmr_leaf_to_insertion_index(pos0);
+				match pmmr_index {
+					Some(i) => {
+						if !bitmap.contains(i as u32) {
+							let res = self.rproof_pmmr.prune(pos0);
+							debug_assert!(res.is_ok());
+						}
+					}
+					None => {}
+				};
 			}
 		}
 		Ok(())

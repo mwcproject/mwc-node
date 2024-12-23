@@ -29,18 +29,34 @@ pub struct SegmentsCache<T> {
 	segment_cache: HashMap<u64, Segment<T>>,
 
 	// Height to track progress.
-	required_segments: u64,
-	received_segments: u64,
+	required_segments: Vec<SegmentIdentifier>,
+	received_segments: usize,
 }
 
 impl<T> SegmentsCache<T> {
 	/// Create a new instance
-	pub fn new(seg_type: SegmentType, required_segments: u64) -> Self {
+	pub fn new(seg_type: SegmentType, required_segments: Vec<SegmentIdentifier>) -> Self {
 		SegmentsCache {
 			seg_type,
 			segment_cache: HashMap::new(),
 			required_segments,
 			received_segments: 0,
+		}
+	}
+
+	/// This cache Segment type
+	pub fn get_segment_type(&self) -> &SegmentType {
+		&self.seg_type
+	}
+
+	pub fn has_segment(&self, seg_id: &SegmentIdentifier) -> bool {
+		let leaf_offset = seg_id.leaf_offset();
+		match self
+			.required_segments
+			.binary_search_by(|seg| seg.leaf_offset().cmp(&leaf_offset))
+		{
+			Ok(idx) => return self.required_segments[idx] == *seg_id,
+			Err(_) => return false,
 		}
 	}
 
@@ -52,16 +68,16 @@ impl<T> SegmentsCache<T> {
 
 	/// Check if the requests are completed
 	pub fn is_complete(&self) -> bool {
-		self.received_segments == self.required_segments
+		self.received_segments >= self.required_segments.len()
 	}
 
 	/// Requered segments
-	pub fn get_required_segments(&self) -> u64 {
-		self.required_segments
+	pub fn get_required_segments_num(&self) -> usize {
+		self.required_segments.len()
 	}
 
 	/// Recieved segments (without cached)
-	pub fn get_received_segments(&self) -> u64 {
+	pub fn get_received_segments(&self) -> usize {
 		self.received_segments
 	}
 
@@ -69,7 +85,6 @@ impl<T> SegmentsCache<T> {
 	/// the current real state of the underlying elements, retry requests, all waiting requests
 	pub fn next_desired_segments(
 		&self,
-		height: u8,
 		max_elements: usize,
 		requested: &dyn RequestLookup<(SegmentType, u64)>,
 		cache_size_limit: usize,
@@ -81,19 +96,20 @@ impl<T> SegmentsCache<T> {
 		let mut result = vec![];
 		debug_assert!(max_elements > 0);
 		debug_assert!(cache_size_limit > 0);
-		// We don't want keep too many segments into the cache. 100 seems like a very reasonable number. Segments are relatevly large.
+		// We don't want keep too many segments into the cache. 100 seems like a very reasonable number. Segments are relatively large.
 		let max_segm_idx = cmp::min(
-			self.received_segments + cache_size_limit as u64,
-			self.required_segments,
+			self.received_segments + cache_size_limit,
+			self.required_segments.len(),
 		);
 
-		let mut waiting_indexes: Vec<(u64, SegmentIdentifier)> = Vec::new();
+		let mut waiting_indexes: Vec<(usize, SegmentIdentifier)> = Vec::new();
 		let mut first_in_cache = 0;
 		let mut last_in_cache = 0;
 		let mut has_5_idx = 0;
 
 		for idx in self.received_segments..max_segm_idx {
-			if self.segment_cache.contains_key(&idx) {
+			let segm = &self.required_segments[idx];
+			if self.segment_cache.contains_key(&segm.leaf_offset()) {
 				if idx == last_in_cache + 1 {
 					last_in_cache = idx;
 				} else {
@@ -111,18 +127,13 @@ impl<T> SegmentsCache<T> {
 				last_in_cache = 0;
 			}
 
-			let request = SegmentIdentifier {
-				height: height,
-				idx: idx,
-			};
-
-			if !requested.contains_request(&(self.seg_type.clone(), idx)) {
-				result.push(request);
+			if !requested.contains_request(&(self.seg_type.clone(), segm.leaf_offset().clone())) {
+				result.push(segm.clone());
 				if result.len() >= max_elements {
 					break;
 				}
 			} else {
-				waiting_indexes.push((idx, request));
+				waiting_indexes.push((idx, segm.clone()));
 			}
 		}
 
@@ -144,32 +155,48 @@ impl<T> SegmentsCache<T> {
 		)
 	}
 
-	pub fn is_duplicate_segment(&self, segment_idx: u64) -> bool {
-		segment_idx < self.received_segments || self.segment_cache.contains_key(&segment_idx)
+	pub fn is_duplicate_segment(&self, seg_id: &SegmentIdentifier) -> bool {
+		let leaf_offset = seg_id.leaf_offset();
+		if self.received_segments >= self.required_segments.len()
+			|| leaf_offset < self.required_segments[self.received_segments].leaf_offset()
+		{
+			return true;
+		}
+		self.segment_cache.contains_key(&leaf_offset)
 	}
 
 	pub fn apply_new_segment<F>(
 		&mut self,
 		segment: Segment<T>,
+		pruned: bool,
 		mut callback: F,
 	) -> Result<(), Error>
 	where
 		F: FnMut(Vec<Segment<T>>) -> Result<(), Error>,
 	{
-		if segment.id().idx < self.received_segments {
+		if self.received_segments >= self.required_segments.len()
+			|| segment.id().leaf_offset()
+				< self.required_segments[self.received_segments].leaf_offset()
+		{
 			return Ok(());
 		}
 
-		self.segment_cache.insert(segment.id().idx, segment);
+		if !pruned {
+			if !segment.is_no_prune() {
+				return Err(Error::InvalidPruneState);
+			}
+		}
+
+		self.segment_cache
+			.insert(segment.id().leaf_offset(), segment);
 
 		// apply found data from the cache
 		let mut segments: Vec<Segment<T>> = Vec::new();
 		let mut received_segments = 0;
-		while self.received_segments + received_segments < self.required_segments {
-			match self
-				.segment_cache
-				.remove(&(self.received_segments + received_segments))
-			{
+		while self.received_segments + received_segments < self.required_segments.len() {
+			match self.segment_cache.remove(
+				&self.required_segments[self.received_segments + received_segments].leaf_offset(),
+			) {
 				Some(v) => {
 					segments.push(v);
 					received_segments += 1;
@@ -181,8 +208,15 @@ impl<T> SegmentsCache<T> {
 		if !segments.is_empty() {
 			callback(segments)?;
 			self.received_segments += received_segments;
-			let received_segments = self.received_segments;
-			self.segment_cache.retain(|idx, _| *idx > received_segments);
+			match self.required_segments.get(self.received_segments) {
+				Some(i) => {
+					let leaf_offset = i.leaf_offset();
+					self.segment_cache.retain(|idx, _| *idx > leaf_offset);
+				}
+				None => {
+					self.segment_cache.clear();
+				}
+			}
 		}
 
 		Ok(())

@@ -557,12 +557,17 @@ impl HeaderSync {
 		excluded_peers: u32,
 	) {
 		if let Some(_) = self.send_requests_lock.try_write() {
+			let latency_ms = self
+				.request_tracker
+				.get_average_latency()
+				.num_milliseconds();
 			let mut need_request = self.request_tracker.calculate_needed_requests(
 				peers.len(),
 				excluded_requests as usize,
 				excluded_peers as usize,
 				self.pibd_params.get_segments_request_per_peer(),
-				self.pibd_params.get_segments_requests_limit(),
+				self.pibd_params
+					.get_segments_requests_limit(latency_ms as u32),
 			);
 			need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if need_request > 0 {

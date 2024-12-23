@@ -42,7 +42,7 @@ fn test_roundtrip(entries: usize) {
 		.unwrap();
 
 	let mmr = accumulator.readonly_pmmr();
-	let segment = Segment::from_pmmr(identifier, &mmr, false).unwrap();
+	let segment = Segment::from_pmmr(identifier, &mmr, false, 1, usize::MAX).unwrap();
 
 	// Convert to `BitmapSegment`
 	let bms = BitmapSegment::from(segment.clone());

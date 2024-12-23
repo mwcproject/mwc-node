@@ -44,7 +44,6 @@ use crate::util::secp::pedersen::RangeProof;
 use crate::util::OneTime;
 use chrono::prelude::*;
 use chrono::Duration;
-use mwc_chain::pibd_params;
 use mwc_chain::txhashset::Segmenter;
 use mwc_p2p::PeerAddr;
 use mwc_util::secp::{ContextFlag, Secp256k1};
@@ -473,9 +472,6 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<TxKernel>, chain::Error> {
-		if !pibd_params::KERNEL_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
-			return Err(chain::Error::InvalidSegmentHeight);
-		}
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
@@ -495,9 +491,6 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<BitmapChunk>, chain::Error> {
-		if !pibd_params::BITMAP_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
-			return Err(chain::Error::InvalidSegmentHeight);
-		}
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
@@ -517,9 +510,6 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<OutputIdentifier>, chain::Error> {
-		if !pibd_params::OUTPUT_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
-			return Err(chain::Error::InvalidSegmentHeight);
-		}
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
@@ -539,9 +529,6 @@ where
 		hash: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<RangeProof>, chain::Error> {
-		if !pibd_params::RANGEPROOF_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
-			return Err(chain::Error::InvalidSegmentHeight);
-		}
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
@@ -607,9 +594,6 @@ where
 		header_hashes_root: Hash,
 		id: SegmentIdentifier,
 	) -> Result<Segment<Hash>, chain::Error> {
-		if !pibd_params::HEADERS_HASHES_SEGMENT_HEIGHT_RANGE.contains(&id.height) {
-			return Err(chain::Error::InvalidSegmentHeight);
-		}
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
@@ -650,7 +634,7 @@ where
 	) -> Result<(), chain::Error> {
 		info!(
 			"Received bitmap segment {} for block_hash: {} from {}",
-			segment.identifier().idx,
+			segment.identifier(),
 			archive_header_hash,
 			peer
 		);
@@ -672,7 +656,7 @@ where
 	) -> Result<(), chain::Error> {
 		info!(
 			"Received output segment {} for block_hash: {} from {}",
-			segment.identifier().idx,
+			segment.identifier(),
 			archive_header_hash,
 			peer,
 		);
@@ -694,7 +678,7 @@ where
 	) -> Result<(), chain::Error> {
 		info!(
 			"Received proof segment {} for block_hash: {}  from {}",
-			segment.identifier().idx,
+			segment.identifier(),
 			archive_header_hash,
 			peer
 		);
@@ -716,7 +700,7 @@ where
 	) -> Result<(), chain::Error> {
 		info!(
 			"Received kernel segment {} for block_hash: {} from {}",
-			segment.identifier().idx,
+			segment.identifier(),
 			archive_header_hash,
 			peer
 		);

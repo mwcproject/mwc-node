@@ -71,6 +71,9 @@ pub enum SegmentError {
 	/// Mismatch between expected and actual root hash
 	#[error("Root hash mismatch")]
 	Mismatch,
+	/// Too large segment size
+	#[error("Segment is too large")]
+	SegmentSizeAboveLimit,
 }
 
 /// Tuple that defines a segment of a given PMMR
@@ -84,7 +87,14 @@ pub struct SegmentIdentifier {
 
 impl Display for SegmentIdentifier {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "(h:{}, idx:{})", self.height, self.idx)
+		write!(
+			f,
+			"(h:{}, idx:{} offset:{} size:{})",
+			self.height,
+			self.idx,
+			self.leaf_offset(),
+			self.segment_capacity()
+		)
 	}
 }
 
@@ -104,39 +114,23 @@ impl Writeable for SegmentIdentifier {
 }
 
 impl SegmentIdentifier {
-	/// Test helper to get an iterator of SegmentIdentifiers required to read a
-	/// pmmr of size `target_mmr_size` in segments of height `segment_height`
-	pub fn traversal_iter(
-		target_mmr_size: u64,
-		segment_height: u8,
-	) -> impl Iterator<Item = SegmentIdentifier> {
-		(0..SegmentIdentifier::count_segments_required(target_mmr_size, segment_height)).map(
-			move |idx| SegmentIdentifier {
-				height: segment_height,
-				idx: idx as u64,
-			},
-		)
+	/// Create a new segment
+	pub fn new(height: u8, idx: u64) -> Self {
+		SegmentIdentifier { height, idx }
 	}
 
-	/// Returns number of segments required that would needed in order to read a
-	/// pmmr of size `target_mmr_size` in segments of height `segment_height`
-	pub fn count_segments_required(target_mmr_size: u64, segment_height: u8) -> u64 {
-		let d = 1 << segment_height;
-		(pmmr::n_leaves(target_mmr_size) + d - 1) / d
-	}
-
-	/// Return pmmr size of number of segments of the given height
-	pub fn pmmr_size(num_segments: usize, height: u8) -> u64 {
-		pmmr::insertion_to_pmmr_index(num_segments as u64 * (1 << height))
+	/// Maximum number of leaves in a segment, given by `2**height`
+	pub fn segment_capacity_ex(height: u8) -> u64 {
+		1 << height
 	}
 
 	/// Maximum number of leaves in a segment, given by `2**height`
 	pub fn segment_capacity(&self) -> u64 {
-		1 << self.height
+		Self::segment_capacity_ex(self.height)
 	}
 
 	/// Offset (in leaf idx) of first leaf in the segment
-	fn leaf_offset(&self) -> u64 {
+	pub fn leaf_offset(&self) -> u64 {
 		self.idx * self.segment_capacity()
 	}
 
@@ -199,8 +193,13 @@ impl<T> Segment<T> {
 	}
 
 	/// Offset (in leaf idx) of first leaf in the segment
-	fn _leaf_offset(&self) -> u64 {
+	pub fn leaf_offset(&self) -> u64 {
 		self.identifier.leaf_offset()
+	}
+
+	/// Check if it is not pruned segment (segment with leaves only, no hashes)
+	pub fn is_no_prune(&self) -> bool {
+		self.hashes.is_empty()
 	}
 
 	// Number of leaves in this segment. Equal to capacity except for the final segment, which can be smaller
@@ -229,8 +228,8 @@ impl<T> Segment<T> {
 	}
 
 	/// Get the identifier associated with this segment
-	pub fn identifier(&self) -> SegmentIdentifier {
-		self.identifier
+	pub fn identifier(&self) -> &SegmentIdentifier {
+		&self.identifier
 	}
 
 	/// Consume the segment and return its parts
@@ -319,6 +318,8 @@ where
 		segment_id: SegmentIdentifier,
 		pmmr: &ReadonlyPMMR<'_, U, B>,
 		prunable: bool,
+		leaf_size: usize,
+		segment_size_limit: usize,
 	) -> Result<Self, SegmentError>
 	where
 		U: PMMRable<E = T>,
@@ -333,11 +334,18 @@ where
 
 		// Fill leaf data and hashes
 		let (segment_first_pos, segment_last_pos) = segment.segment_pos_range(mmr_size);
+		let mut segment_size = 0;
+
 		for pos0 in segment_first_pos..=segment_last_pos {
+			if segment_size > segment_size_limit {
+				return Err(SegmentError::SegmentSizeAboveLimit);
+			}
+
 			if pmmr::is_leaf(pos0) {
 				if let Some(data) = pmmr.get_data_from_file(pos0) {
 					segment.leaf_data.push(data);
 					segment.leaf_pos.push(pos0);
+					segment_size += 8 + leaf_size;
 					continue;
 				} else if !prunable {
 					return Err(SegmentError::MissingLeaf(pos0));
@@ -348,6 +356,7 @@ where
 				if let Some(hash) = pmmr.get_from_file(pos0) {
 					segment.hashes.push(hash);
 					segment.hash_pos.push(pos0);
+					segment_size += 8 + 32;
 				}
 			}
 		}

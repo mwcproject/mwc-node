@@ -186,12 +186,16 @@ impl BodySync {
 		// 10) max will be 80 if all 8 peers are advertising more work
 		// also if the chain is already saturated with orphans, throttle
 
+		let latency_ms = self
+			.request_tracker
+			.get_average_latency()
+			.num_milliseconds();
 		let mut need_request = self.request_tracker.calculate_needed_requests(
 			peers.len(),
 			excluded_requests as usize,
 			excluded_peers as usize,
 			self.pibd_params.get_blocks_request_per_peer(),
-			self.pibd_params.get_blocks_request_limit(),
+			self.pibd_params.get_blocks_request_limit(latency_ms as u32),
 		);
 
 		if need_request > 0 {
@@ -292,12 +296,16 @@ impl BodySync {
 						);
 						if !peers.is_empty() {
 							// requested_blocks, check for expiration
+							let latency_ms = self
+								.request_tracker
+								.get_average_latency()
+								.num_milliseconds();
 							let mut need_request = self.request_tracker.calculate_needed_requests(
 								peers.len(),
 								excluded_requests as usize,
 								excluded_peers as usize,
 								self.pibd_params.get_blocks_request_per_peer(),
-								self.pibd_params.get_blocks_request_limit(),
+								self.pibd_params.get_blocks_request_limit(latency_ms as u32),
 							);
 							if need_request > 0 {
 								if let Err(e) =

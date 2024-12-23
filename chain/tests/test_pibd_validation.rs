@@ -21,11 +21,15 @@ use std::sync::Arc;
 
 use crate::chain::txhashset::BitmapAccumulator;
 use crate::chain::types::NoopAdapter;
+use crate::core::core::hash::Hashed;
 use crate::core::core::pmmr;
-use crate::core::core::{hash::Hashed, pmmr::segment::SegmentIdentifier};
 use crate::core::{genesis, global, pow};
 
 use croaring::Bitmap;
+use mwc_chain::pibd_params;
+use mwc_chain::txhashset::{BitmapChunk, Desegmenter};
+use mwc_core::core::TxKernel;
+use mwc_util::secp::constants;
 
 mod chain_test_helper;
 
@@ -33,12 +37,10 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
 	let mut genesis = genesis::genesis_main();
 	// Height at which to read kernel segments (lower than thresholds defined in spec - for testing)
-	let mut target_segment_height = 11;
 
 	if is_test_chain {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		genesis = pow::mine_genesis_block().unwrap();
-		target_segment_height = 3;
 	}
 
 	{
@@ -99,21 +101,20 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			.unwrap_or(&pmmr::insertion_to_pmmr_index(bitmap_mmr_num_leaves))
 			.clone();
 		println!("BITMAP PMMR SIZE: {}", bitmap_pmmr_size);
-		println!(
-			"Bitmap Segments required: {}",
-			SegmentIdentifier::count_segments_required(bitmap_pmmr_size, target_segment_height)
+		let bitmap_segments = Desegmenter::generate_segments(
+			BitmapChunk::LEN_BYTES,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
+			bitmap_pmmr_size,
+			None,
 		);
-		// TODO: This can probably be derived from the PMMR we'll eventually be building
-		// (check if total size is equal to total size at horizon header)
-		let identifier_iter =
-			SegmentIdentifier::traversal_iter(bitmap_pmmr_size, target_segment_height);
+		println!("Bitmap Segments required: {}", bitmap_segments.len());
 
 		let mut bitmap_accumulator = BitmapAccumulator::new();
 		// Raw bitmap for validation
 		let mut bitmap = Bitmap::new();
 		let mut chunk_count = 0;
 
-		for sid in identifier_iter {
+		for sid in bitmap_segments {
 			println!("Getting bitmap segment with Segment Identifier {:?}", sid);
 			let bitmap_segment = segmenter.bitmap_segment(sid).unwrap();
 			// Validate bitmap segment with provided output hash
@@ -141,13 +142,13 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 
 		println!("Accumulator Root: {}", bitmap_accumulator.root());
 
-		// OUTPUTS  - Read + Validate
-		let identifier_iter = SegmentIdentifier::traversal_iter(
+		let output_segments = Desegmenter::generate_segments(
+			constants::PEDERSEN_COMMITMENT_SIZE,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 			horizon_header.output_mmr_size,
-			target_segment_height,
+			Some(&bitmap),
 		);
-
-		for sid in identifier_iter {
+		for sid in output_segments {
 			println!("Getting output segment with Segment Identifier {:?}", sid);
 			let output_segment = segmenter.output_segment(sid).unwrap();
 			// Validate Output
@@ -160,13 +161,13 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			}
 		}
 
-		// PROOFS  - Read + Validate
-		let identifier_iter = SegmentIdentifier::traversal_iter(
+		let rangeproof_segments = Desegmenter::generate_segments(
+			constants::SINGLE_BULLET_PROOF_SIZE,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 			horizon_header.output_mmr_size,
-			target_segment_height,
+			Some(&bitmap),
 		);
-
-		for sid in identifier_iter {
+		for sid in rangeproof_segments {
 			println!(
 				"Getting rangeproof segment with Segment Identifier {:?}",
 				sid
@@ -183,12 +184,13 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 		}
 
 		// KERNELS - Read + Validate
-		let identifier_iter = SegmentIdentifier::traversal_iter(
+		let kernel_segments = Desegmenter::generate_segments(
+			TxKernel::DATA_SIZE,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 			horizon_header.kernel_mmr_size,
-			target_segment_height,
+			None,
 		);
-
-		for sid in identifier_iter {
+		for sid in kernel_segments {
 			println!("Getting kernel segment with Segment Identifier {:?}", sid);
 			let kernel_segment = segmenter.kernel_segment(sid).unwrap();
 			// Validate Kernel segment (which does not require a bitmap)
@@ -224,6 +226,6 @@ fn test_pibd_chain_validation_sample() {
 fn test_pibd_chain_validation_real() {
 	util::init_test_logger();
 	// if testing against a real chain, insert location here
-	let src_root_dir = format!("/Users/bay/.mwc/_floo/chain_data");
+	let src_root_dir = format!("/Users/bay/.mwc/main_orig/chain_data");
 	test_pibd_chain_validation_impl(false, &src_root_dir);
 }
