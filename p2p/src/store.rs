@@ -160,7 +160,6 @@ impl PeerStore {
 	}
 
 	/// TODO - allow below added to avoid github issue reports
-	#[allow(dead_code)]
 	pub fn delete_peer(&self, peer_addr: &PeerAddr) -> Result<(), Error> {
 		let batch = self.db.batch_write()?;
 		batch.delete(&peer_key(peer_addr)[..])?;
