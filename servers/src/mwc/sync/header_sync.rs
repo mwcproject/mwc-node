@@ -1,4 +1,3 @@
-// Copyright 2019 The Grin Developers
 // Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -92,7 +91,7 @@ impl HeaderSync {
 		let header_head = self.chain.header_head().expect("header_head is broken");
 
 		// Quick check - nothing to sync if we are caught up with the peer.
-		if header_head.height >= best_height.saturating_sub(2) {
+		if header_head.height >= best_height.saturating_sub(7) {
 			// we can relax for a pretty long time, headers are ready
 			let resp = SyncResponse::new(
 				SyncRequestResponses::HeadersReady,
@@ -721,7 +720,7 @@ impl HeaderSync {
 }
 
 // current height back to 0 decreasing in powers of 2
-fn get_locator_heights(height: u64) -> Vec<u64> {
+pub fn get_locator_heights(height: u64) -> Vec<u64> {
 	let mut current = height;
 	let mut heights = vec![];
 	while current > 0 {

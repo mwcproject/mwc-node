@@ -45,7 +45,7 @@ use mwc_core::ser;
 use mwc_store::Error::NotFoundErr;
 use mwc_util::secp::Secp256k1;
 use mwc_util::{secp, ToHex};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -164,12 +164,31 @@ impl OrphanBlockPool {
 		return orphans.remove(&header_hash);
 	}
 
-	fn contains(&self, hash: &Hash) -> bool {
+	/// Get list of ophan's hashes
+	pub fn get_orphan_list(&self) -> HashSet<Hash> {
+		self.orphans
+			.read()
+			.iter()
+			.map(|(k, _v)| k.clone())
+			.collect()
+	}
+
+	/// Check if orphans is in the list
+	pub fn contains(&self, hash: &Hash) -> bool {
 		self.orphans.read().contains_key(hash)
 	}
 
-	fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
+	/// Request orphan by hash
+	pub fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
 		self.orphans.read().get(hash).map(|o| o.clone())
+	}
+
+	/// Request orphan height and prev block hash. Alternative to get_orphan without much data copy
+	pub fn get_orphan_height_prev_hash(&self, hash: &Hash) -> Option<(Hash, u64)> {
+		self.orphans
+			.read()
+			.get(hash)
+			.map(|o| (o.block.header.prev_hash.clone(), o.block.header.height))
 	}
 }
 
@@ -875,6 +894,11 @@ impl Chain {
 			txhashset,
 			batch,
 		})
+	}
+
+	/// Access to orphan pool
+	pub fn get_orphans_pool(&self) -> &Arc<OrphanBlockPool> {
+		&self.orphans
 	}
 
 	/// Check if hash is for a known orphan.

@@ -177,7 +177,7 @@ impl SyncRunner {
 						.set_boost_peers_capabilities(Capabilities::UNKNOWN);
 
 					if let Err(e) = self.chain.compact() {
-						error!("Comapact chain is failed. Error: {}", e);
+						error!("Compact chain is failed. Error: {}", e);
 					}
 
 					for _ in 0..20 {

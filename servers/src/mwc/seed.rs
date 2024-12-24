@@ -73,12 +73,7 @@ pub fn connect_and_monitor(
 
 			let mut connecting_history: HashMap<PeerAddr, DateTime<Utc>> = HashMap::new();
 
-			connect_to_seeds_and_peers(
-				peers.clone(),
-				tx.clone(),
-				seed_list.clone(),
-				config.clone(),
-			);
+			connect_to_seeds_and_peers(peers.clone(), tx.clone(), &seed_list, config.clone());
 			seed_connect_time = Utc::now() + Duration::seconds(CONNECT_TO_SEED_INTERVAL);
 
 			libp2p_connection::set_seed_list(&seed_list, true);
@@ -108,7 +103,7 @@ pub fn connect_and_monitor(
 						connect_to_seeds_and_peers(
 							peers.clone(),
 							tx.clone(),
-							seed_list.clone(),
+							&seed_list,
 							config.clone(),
 						);
 						seed_connect_time = now + Duration::seconds(CONNECT_TO_SEED_INTERVAL);
@@ -129,6 +124,7 @@ pub fn connect_and_monitor(
 						p2p_server.config.clone(),
 						use_tor_connection,
 						tx.clone(),
+						listen_q_addrs.is_empty(),
 					);
 
 					if peers.is_sync_mode() {
@@ -154,6 +150,7 @@ pub fn connect_and_monitor(
 							use_tor_connection,
 							&mut connection_threads,
 							&mut listen_q_addrs,
+							&seed_list,
 						);
 						let duration = if is_boost || !listen_q_addrs.is_empty() {
 							PEERS_CHECK_TIME_BOOST
@@ -186,6 +183,7 @@ fn monitor_peers(
 	config: p2p::P2PConfig,
 	use_tor_connection: bool,
 	tx: mpsc::Sender<PeerAddr>,
+	load_peers_from_db: bool,
 ) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
@@ -289,23 +287,25 @@ fn monitor_peers(
 		let _ = peers.update_state(&peer.addr, p2p::State::Healthy);
 	}
 
-	// find some peers from our db
-	// and queue them up for a connection attempt
-	// intentionally make too many attempts (2x) as some (most?) will fail
-	// as many nodes in our db are not publicly accessible
-	let new_peers = peers.find_peers(p2p::State::Healthy, boost_peers_capabilities);
+	if load_peers_from_db {
+		// find some peers from our db
+		// and queue them up for a connection attempt
+		// intentionally make too many attempts (2x) as some (most?) will fail
+		// as many nodes in our db are not publicly accessible
+		let new_peers = peers.find_peers(p2p::State::Healthy, boost_peers_capabilities);
 
-	// Only queue up connection attempts for candidate peers where we
-	// are confident we do not yet know about this peer.
-	// The call to is_known() may fail due to contention on the peers map.
-	// Do not attempt any connection where is_known() fails for any reason.
-	let mut max_addresses = 0;
-	for p in new_peers {
-		if let Ok(false) = peers.is_known(&p.addr) {
-			tx.send(p.addr.clone()).unwrap();
-			max_addresses += 1;
-			if max_addresses > 200 {
-				break;
+		// Only queue up connection attempts for candidate peers where we
+		// are confident we do not yet know about this peer.
+		// The call to is_known() may fail due to contention on the peers map.
+		// Do not attempt any connection where is_known() fails for any reason.
+		let mut max_addresses = 0;
+		for p in new_peers {
+			if let Ok(false) = peers.is_known(&p.addr) {
+				tx.send(p.addr.clone()).unwrap();
+				max_addresses += 1;
+				if max_addresses > 20 {
+					break;
+				}
 			}
 		}
 	}
@@ -316,7 +316,7 @@ fn monitor_peers(
 fn connect_to_seeds_and_peers(
 	peers: Arc<p2p::Peers>,
 	tx: mpsc::Sender<PeerAddr>,
-	seed_list: Vec<PeerAddr>,
+	seed_list: &Vec<PeerAddr>,
 	config: P2PConfig,
 ) {
 	let peers_deny = config.peers_deny.unwrap_or(PeerAddrs::default());
@@ -349,12 +349,17 @@ fn connect_to_seeds_and_peers(
 
 	// if so, get their addresses, otherwise use our seeds
 	let peer_addrs = if found_peers.len() > 3 {
-		found_peers
+		let mut peer_addrs = found_peers
 			.iter()
 			.map(|p| p.addr.clone())
-			.collect::<Vec<_>>()
+			.collect::<Vec<_>>();
+
+		if let Some(seed_addr) = seed_list.choose(&mut thread_rng()) {
+			peer_addrs.push(seed_addr.clone());
+		}
+		peer_addrs
 	} else {
-		seed_list
+		seed_list.clone()
 	};
 
 	if peer_addrs.is_empty() {
@@ -367,7 +372,7 @@ fn connect_to_seeds_and_peers(
 		if !peers_deny.as_slice().contains(&addr) {
 			let _ = tx.send(addr);
 			max_addresses += 1;
-			if max_addresses > 200 {
+			if max_addresses > 20 {
 				break;
 			}
 		}
@@ -385,6 +390,7 @@ fn listen_for_addrs(
 	use_tor_connection: bool,
 	connection_threads: &mut Vec<thread::JoinHandle<()>>,
 	listen_q_addrs: &mut Vec<PeerAddr>,
+	seed_list: &Vec<PeerAddr>,
 ) {
 	// Pull everything currently on the queue off the queue.
 	// Does not block so addrs may be empty.
@@ -397,6 +403,9 @@ fn listen_for_addrs(
 			listen_q_addrs.drain(0..listen_q_addrs.len() - PEER_MAX_INITIATE_CONNECTIONS * 5);
 		}
 		listen_q_addrs.append(&mut addrs);
+		if let Some(seed_adr) = seed_list.choose(&mut thread_rng()) {
+			listen_q_addrs.push(seed_adr.clone());
+		}
 	}
 
 	let now = Utc::now();
