@@ -36,6 +36,7 @@ use crate::core::core::{
 use crate::core::pow::Difficulty;
 use crate::core::ser::ProtocolVersion;
 use crate::core::{core, global};
+use crate::mwc::sync::get_locator_heights;
 use crate::mwc::sync::sync_manager::SyncManager;
 use crate::p2p;
 use crate::p2p::types::PeerInfo;
@@ -362,7 +363,8 @@ where
 			debug!("header_received, cache for {} OK", bh_hash);
 		}
 
-		if self.chain().block_exists(&bh.hash())? {
+		let chain = self.chain();
+		if chain.block_exists(&bh.hash())? {
 			return Ok(true);
 		}
 		if !self.sync_state.is_syncing() {
@@ -373,7 +375,7 @@ where
 
 		// pushing the new block header through the header chain pipeline
 		// we will go ask for the block if this is a new header
-		let res = self.chain().process_block_header(&bh, chain::Options::NONE);
+		let res = chain.process_block_header(&bh, chain::Options::NONE);
 
 		if let Err(e) = res {
 			debug!("Block header {} refused by chain: {:?}", bh.hash(), e);
@@ -382,6 +384,18 @@ where
 			} else {
 				// we got an error when trying to process the block header
 				// but nothing serious enough to need to ban the peer upstream
+				// Probably child block doesn't exist, let's request them
+				if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
+					let head = chain.head()?;
+					debug!(
+						"Got unknown header, requesting headers from the peer {} at height {}",
+						peer_info.addr, head.height
+					);
+					let heights = get_locator_heights(head.height);
+					let locator = chain.get_locator_hashes(head, &heights)?;
+					let _ = peer.send_header_request(locator);
+					let _ = peer.send_block_request(bh.hash(), chain::Options::NONE);
+				}
 				return Err(e);
 			}
 		}
@@ -771,8 +785,9 @@ where
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
 		// We cannot process blocks earlier than the horizon so check for this here.
-		{
-			let head = self.chain().head()?;
+		let chain = self.chain();
+		let head = {
+			let head = chain.head()?;
 			let horizon = head
 				.height
 				.saturating_sub(global::cut_through_horizon() as u64);
@@ -780,19 +795,19 @@ where
 				debug!("Got block is below horizon from peer {}", peer_info.addr);
 				return Ok(true);
 			}
-		}
+			head
+		};
 
 		let bhash = b.hash();
-		let previous = self.chain().get_previous_header(&b.header);
-
-		match self.chain().process_block(b, opts) {
+		match chain.process_block(b.clone(), opts) {
 			Ok(_) => {
 				self.validate_chain(&bhash);
 				self.check_compact();
 				self.sync_manager.recieve_block_reporting(
 					true,
 					&peer_info.addr,
-					&bhash,
+					b,
+					opts,
 					&self.peers(),
 				);
 				Ok(true)
@@ -803,27 +818,40 @@ where
 				self.sync_manager.recieve_block_reporting(
 					false,
 					&peer_info.addr,
-					&bhash,
+					b,
+					opts,
 					&self.peers(),
 				);
 				Ok(false)
 			}
 			Err(e) => {
-				self.sync_manager.recieve_block_reporting(
+				let prev_block_hash = b.header.prev_hash.clone();
+				let previous = chain.get_previous_header(&b.header);
+				let need_request_prev_block = self.sync_manager.recieve_block_reporting(
 					!e.is_bad_data(),
 					&peer_info.addr,
-					&bhash,
+					b,
+					opts,
 					&self.peers(),
 				);
 				match e {
-					chain::Error::Orphan(orph_msg) => {
-						if let Ok(previous) = previous {
-							// make sure we did not miss the parent block
-							if !self.chain().is_orphan(&previous.hash())
-								&& !self.sync_state.is_syncing()
-							{
-								debug!("process_block: received an orphan block: {}, checking the parent: {:}", orph_msg, previous.hash());
-								self.request_block(&previous, peer_info, chain::Options::NONE)
+					chain::Error::StoreErr(_, _) | chain::Error::Orphan(_) => {
+						if previous.is_err() {
+							// requesting headers from that peer
+							if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
+								debug!("Got block with unknow headers, requesting headers from the peer {} at height {}", peer_info.addr, head.height);
+								let heights = get_locator_heights(head.height);
+								let locator = chain.get_locator_hashes(head, &heights)?;
+								let _ = peer.send_header_request(locator);
+							}
+						}
+						if need_request_prev_block {
+							// requesting headers from that peer
+							if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
+								// requesting prev block from that peer
+								debug!("Got block with unknow child, requesting prev block {} from the peer {}", prev_block_hash, peer_info.addr);
+								let _ =
+									peer.send_block_request(prev_block_hash, chain::Options::NONE);
 							}
 						}
 						Ok(true)

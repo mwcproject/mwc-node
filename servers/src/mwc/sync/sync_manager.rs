@@ -18,14 +18,15 @@
 use crate::mwc::sync::body_sync::BodySync;
 use crate::mwc::sync::header_hashes_sync::HeadersHashSync;
 use crate::mwc::sync::header_sync::HeaderSync;
+use crate::mwc::sync::orphans_sync::OrphansSync;
 use crate::mwc::sync::state_sync::StateSync;
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses, SyncResponse};
 use chrono::Duration;
 use mwc_chain::txhashset::BitmapChunk;
 use mwc_chain::{Chain, SyncState};
-use mwc_core::core::hash::Hash;
-use mwc_core::core::{OutputIdentifier, Segment, TxKernel};
+use mwc_core::core::hash::{Hash, Hashed};
+use mwc_core::core::{Block, OutputIdentifier, Segment, TxKernel};
 use mwc_p2p::{Capabilities, PeerAddr, Peers};
 use mwc_util::secp::pedersen::RangeProof;
 use mwc_util::secp::rand::Rng;
@@ -38,6 +39,7 @@ pub struct SyncManager {
 	headers: HeaderSync,
 	state: StateSync,
 	body: BodySync,
+	orphans: OrphansSync,
 
 	// Headers has complications with banning. In case of bad hashes, we will found that much later
 	// when we ban many peers. That is why we need to track that separately and unban it in such case.
@@ -56,7 +58,8 @@ impl SyncManager {
 			headers_hashes: RwLock::new(HeadersHashSync::new(chain.clone())),
 			headers: HeaderSync::new(chain.clone()),
 			state: StateSync::new(chain.clone()),
-			body: BodySync::new(chain),
+			body: BodySync::new(chain.clone()),
+			orphans: OrphansSync::new(chain),
 
 			headers_sync_peers: SyncPeers::new(),
 			state_sync_peers: SyncPeers::new(),
@@ -212,7 +215,12 @@ impl SyncManager {
 							);
 							peers.set_excluded_peers(&vec![]);
 							*self.cached_response.write() =
-								Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
+								Some(CachedResponse::new(resp.clone(), Duration::seconds(35)));
+
+							if let Err(e) = self.orphans.sync_orphans(peers) {
+								error!("Failed to sync_orphans. Error: {}", e);
+							}
+
 							return resp;
 						} else {
 							return SyncResponse::new(
@@ -381,19 +389,27 @@ impl SyncManager {
 		);
 	}
 
+	// return true if need to request prev block
 	pub fn recieve_block_reporting(
 		&self,
 		valid_block: bool, // block accepted/rejected flag
 		peer: &PeerAddr,
-		block_hash: &Hash,
+		b: Block,
+		opts: mwc_chain::Options,
 		peers: &Arc<Peers>,
-	) {
+	) -> bool {
 		self.body.recieve_block_reporting(
 			valid_block,
-			block_hash,
+			&b.hash(),
 			peer,
 			peers,
 			&self.state_sync_peers,
 		);
+
+		if valid_block && opts == mwc_chain::Options::NONE {
+			self.orphans.recieve_block_reporting(b)
+		} else {
+			false
+		}
 	}
 }

@@ -1,4 +1,3 @@
-// Copyright 2019 The Grin Developers
 // Copyright 2024 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -74,7 +73,7 @@ impl BodySync {
 		let max_avail_height = cmp::min(best_height, header_head.height);
 
 		// Last few blocks no need to sync, new mined blocks will be synced regular way
-		if head.height > max_avail_height.saturating_sub(3) {
+		if head.height > max_avail_height.saturating_sub(7) {
 			// Expected by QT wallet
 			info!(
 				"synchronized at {} @ {} [{}]",
