@@ -153,22 +153,46 @@ impl MessageHandler for Protocol {
 				Consumed::None
 			}
 			Message::TorAddress(tor_address) => {
-				info!(
+				debug!(
 					"TorAddress received from {:?}, address = {:?}",
 					self.peer_info, tor_address
 				);
 
 				let new_peer_addr = PeerAddr::Onion(tor_address.address.clone());
-				error!("new peer = {:?}", new_peer_addr);
+				info!("Adding newly connected Healthy peer {:?}", new_peer_addr);
+
+				let peer = self.server.peers.get_peer(&self.peer_info.addr);
+				if let Err(e) = self.server.peers.delete_peer(&self.peer_info.addr) {
+					warn!(
+						"Unable to delete expected TOR temp peer: {}, Error: {}",
+						self.peer_info.addr, e
+					);
+				}
+				match peer {
+					Ok(mut peer) => {
+						peer.addr = new_peer_addr.clone();
+						self.server.peers.save_peer(&peer)?;
+					}
+					Err(e) => {
+						warn!(
+							"Unable to delete expected TOR temp peer: {}, Error: {}",
+							self.peer_info.addr, e
+						);
+					}
+				}
+
 				if self.server.peers.is_banned(&new_peer_addr) {
 					let peer = self.server.peers.get_peer(&self.peer_info.addr)?;
 					warn!("banned peer tried to connect! {:?}", peer);
-				} else {
-					let peer = self.server.peers.get_peer(&self.peer_info.addr);
-					if peer.is_ok() {
-						let mut peer = peer.unwrap();
-						peer.addr = new_peer_addr;
-						self.server.peers.save_peer(&peer)?;
+					if let Err(e) = self.server.peers.ban_peer(
+						&peer.addr,
+						ReasonForBan::BadHandshake,
+						"banned peer tried to connect",
+					) {
+						warn!(
+							"Unable to ban tried to connect peer {}, Error: {}",
+							peer.addr, e
+						);
 					}
 				}
 				Consumed::None

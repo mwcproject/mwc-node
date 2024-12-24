@@ -345,11 +345,9 @@ impl Server {
 			self.sync_state.clone(),
 			self.clone(),
 		)?;
-		// if we are using TOR, we must reject the local addressed because it comes from the proxy
-		// Will add peer after it share the TOR address
-		if self.self_onion_address.is_none() {
-			self.peers.add_connected(Arc::new(peer))?;
-		}
+		// if we are using TOR, it will be the local addressed because it comes from the proxy
+		// Will still need to save all the peers and renameit after peer will share the TOR address
+		self.peers.add_connected(Arc::new(peer))?;
 		Ok(())
 	}
 

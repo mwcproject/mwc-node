@@ -390,6 +390,11 @@ impl Peers {
 		self.store.get_peer(peer_addr).map_err(From::from)
 	}
 
+	/// Get and delete peer from the store by address. It is needed for peer renaming
+	pub fn delete_peer(&self, peer_addr: &PeerAddr) -> Result<(), Error> {
+		self.store.delete_peer(peer_addr).map_err(From::from)
+	}
+
 	/// Whether we've already seen a peer with the provided address
 	pub fn exists_peer(&self, peer_addr: &PeerAddr) -> Result<bool, Error> {
 		self.store.exists_peer(peer_addr).map_err(From::from)
