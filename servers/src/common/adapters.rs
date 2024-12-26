@@ -388,18 +388,22 @@ where
 					// Probably child block doesn't exist, let's request them
 					if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
 						let head = chain.head()?;
-						debug!("Got unknown header, requesting headers from the peer {} at height {}",peer_info.addr, head.height);
+						debug!(
+							"Got unknown header, requesting headers from the peer {} at height {}",
+							peer_info.addr, head.height
+						);
 						let heights = get_locator_heights(head.height);
 						let locator = chain.get_locator_hashes(head, &heights)?;
 						let _ = peer.send_header_request(locator);
 
 						if let Ok(tip) = chain.head() {
 							// Requesting of orphans buffer is large enough to finish the job with request
-							if bh.height.saturating_sub(tip.height) < chain.get_pibd_params().get_orphans_num_limit() as u64 {
+							if bh.height.saturating_sub(tip.height)
+								< chain.get_pibd_params().get_orphans_num_limit() as u64
+							{
 								let _ = peer.send_block_request(bh.hash(), chain::Options::NONE);
-							}`
+							}
 						}
-
 					}
 				}
 				return Err(e);
