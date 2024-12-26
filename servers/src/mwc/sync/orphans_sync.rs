@@ -48,7 +48,7 @@ impl OrphansSync {
 	/// Process and keep a new block if it was rejected by the chain. Return true if prev block is needed
 	pub fn recieve_block_reporting(&self, block: Block) -> bool {
 		let bhash = block.hash();
-		let need_prev_block = self.need_prev_block(&block.header.prev_hash);
+		let need_prev_block = self.need_prev_block(&block.header.prev_hash, block.header.height);
 		if self.unknown_blocks.read().contains_key(&bhash) {
 			return need_prev_block;
 		}
@@ -143,7 +143,7 @@ impl OrphansSync {
 			};
 
 			if let Some((prev_block_hash, bl_height)) = block_hash_height {
-				if self.need_prev_block(&prev_block_hash) {
+				if self.need_prev_block(&prev_block_hash, bl_height) {
 					// We need to request the child for that block
 					let mut orphans_requests = self.orphans_requests.write();
 					if self.send_hash_requests(
@@ -214,7 +214,18 @@ impl OrphansSync {
 		resuqest_was_sent
 	}
 
-	fn need_prev_block(&self, prev_block_hash: &Hash) -> bool {
+	fn need_prev_block(&self, prev_block_hash: &Hash, height: u64) -> bool {
+		match self.chain.head() {
+			Ok(tip) => {
+				if height.saturating_sub(tip.height)
+					>= self.pibd_params.get_orphans_num_limit() as u64
+				{
+					return false;
+				}
+			}
+			Err(_) => return false,
+		}
+
 		if self.unknown_blocks.read().contains_key(prev_block_hash) {
 			return false;
 		}
