@@ -179,6 +179,22 @@ impl SyncState {
 		}
 	}
 
+	/// Check if headers download process is done. In this case it make sense to request more top headers
+	pub fn are_headers_done(&self) -> bool {
+		match *self.current.read() {
+			SyncStatus::Initial => false,
+			SyncStatus::HeaderHashSync {
+				completed_blocks: _,
+				total_blocks: _,
+			} => false,
+			SyncStatus::HeaderSync {
+				current_height: _,
+				archive_height: _,
+			} => false,
+			_ => true,
+		}
+	}
+
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
 		*self.current.read()
@@ -198,8 +214,8 @@ impl SyncState {
 		if *status == new_status {
 			return false;
 		}
-
-		debug!("sync_state: sync_status: {:?} -> {:?}", *status, new_status,);
+		// Sync status is needed for QT wallet sync tracking. Please keep this message as info
+		info!("mwc-node sync status: {:?}", new_status);
 		*status = new_status;
 		true
 	}
