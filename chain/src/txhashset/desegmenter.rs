@@ -938,9 +938,9 @@ impl Desegmenter {
 				// prunable PMMR, we can use variable length
 				// Note, every segment have to have some data
 				let leaves_num = pmmr::n_leaves(target_mmr_size);
-				// last leave expected to be in the bitmap because it is outputs that can be spandable
+				// last leave expected to be in the bitmap because it is outputs that can be spendable
 				debug_assert!(bitmap.contains((leaves_num - 1) as u32));
-				debug_assert!(!bitmap.contains((leaves_num - 1 + 1) as u32));
+				debug_assert!(leaves_num % 2 == 1 || !bitmap.contains((leaves_num - 1 + 1) as u32));
 				debug_assert!(!bitmap.contains((leaves_num - 1 + 2) as u32));
 
 				let mut current_leave = 0;
