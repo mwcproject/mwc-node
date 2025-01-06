@@ -559,18 +559,29 @@ impl Desegmenter {
 			self.outputs_bitmap_accumulator.read().root()
 		);
 		let bitmap = self.outputs_bitmap_accumulator.read().build_bitmap();
+		let mut bitmap_pairs: Bitmap = Bitmap::new();
+
+		for bit in bitmap.iter() {
+			bitmap_pairs.add(bit);
+			// also adding sibling
+			if bit % 2 == 0 {
+				bitmap_pairs.add(bit + 1);
+			} else {
+				bitmap_pairs.add(bit - 1);
+			}
+		}
 
 		let rangeproof_segments = Self::generate_segments(
 			constants::SINGLE_BULLET_PROOF_SIZE,
 			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 			self.archive_header.output_mmr_size,
-			Some(&bitmap),
+			Some(&bitmap_pairs),
 		);
 		let output_segments = Self::generate_segments(
 			constants::PEDERSEN_COMMITMENT_SIZE,
 			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 			self.archive_header.output_mmr_size,
-			Some(&bitmap),
+			Some(&bitmap_pairs),
 		);
 		let kernel_segments = Self::generate_segments(
 			TxKernel::DATA_SIZE,
@@ -825,16 +836,24 @@ impl Desegmenter {
 		return Err(Error::BitmapNotReady);
 	}
 
-	// Rough estimation of the segment size. The error comes from the hashes. Since it is not much data, we can ignore it.
+	// Rough estimation of the segment size. This method is overestimated on hashes, so we should be below real data size limit
 	fn estimate_segment_size(leaves_num: u64, capacity: u64, leaf_size: usize) -> u64 {
 		debug_assert!(leaves_num <= capacity);
 		debug_assert!(capacity > 0);
-		let fill_ratio = leaves_num as f64 / capacity as f64;
+
+		let mut hash_num = 0;
+		let mut cur_cap = capacity / 2;
+		debug_assert!(leaves_num % 2 == 0); // Ciblings are expected to be here
+		let hash_per_line = leaves_num / 2;
+		while cur_cap > 0 {
+			hash_num += std::cmp::min(cur_cap, hash_per_line);
+			cur_cap /= 2;
+		}
+
 		// Node hash is 32 bytes. Positions for all are 8 bytes. Assuming that empty is proportional to the fill ratio
-		let full_leaves_size = capacity * (leaf_size as u64 + 8);
-		let full_hashes_size = (capacity - 1) * (32 + 8);
-		(full_leaves_size as f64 * fill_ratio + full_hashes_size as f64 * fill_ratio.sqrt()).round()
-			as u64
+		let full_leaves_size = leaves_num * (leaf_size as u64 + 8);
+		let full_hashes_size = hash_num * (32 + 8);
+		full_leaves_size + full_hashes_size
 	}
 
 	// Return the segments and position of the next leaf

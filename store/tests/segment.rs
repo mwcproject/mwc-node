@@ -55,7 +55,7 @@ fn prunable_mmr() {
 
 	// Validate a segment before any pruning
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
@@ -71,7 +71,7 @@ fn prunable_mmr() {
 
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
@@ -87,7 +87,7 @@ fn prunable_mmr() {
 
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
@@ -103,7 +103,7 @@ fn prunable_mmr() {
 
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(
 		segment.root(last_pos, Some(&bitmap)).unwrap().unwrap(),
 		mmr.get_hash(29).unwrap()
@@ -118,13 +118,13 @@ fn prunable_mmr() {
 	ba.sync().unwrap();
 
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	assert!(Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).is_ok());
+	assert!(Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).is_ok());
 
 	// Final segment is not full, test it before pruning
 	let id = SegmentIdentifier { height: 3, idx: 9 };
 
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune second and third to last leaves (a full peak in the MMR)
@@ -136,7 +136,7 @@ fn prunable_mmr() {
 
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	// Prune final element
@@ -148,7 +148,7 @@ fn prunable_mmr() {
 
 	// Validate
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
 	std::mem::drop(ba);
@@ -186,7 +186,7 @@ fn pruned_segment() {
 	// Validate the empty segment 1
 	let id = SegmentIdentifier { height: 2, idx: 1 };
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment.leaf_iter().count(), 0);
 	assert_eq!(segment.hash_iter().count(), 1);
 	assert_eq!(
@@ -207,7 +207,7 @@ fn pruned_segment() {
 
 	// Validate the empty segment 1 again
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment.leaf_iter().count(), 0);
 	assert_eq!(segment.hash_iter().count(), 1);
 	// Since both 7 and 14 are now pruned, the first unpruned hash will be at 15
@@ -229,7 +229,7 @@ fn pruned_segment() {
 
 	// Validate the empty segment 1 again
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment.leaf_iter().count(), 0);
 	assert_eq!(segment.hash_iter().count(), 1);
 	// Since both 15 and 30 are now pruned, the first unpruned hash will be at 31: the mmr root
@@ -261,7 +261,7 @@ fn pruned_segment() {
 	// Validate segment 4
 	let id = SegmentIdentifier { height: 2, idx: 4 };
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment.leaf_iter().count(), 0);
 	assert_eq!(segment.hash_iter().count(), 1);
 	assert_eq!(
@@ -276,7 +276,7 @@ fn pruned_segment() {
 	// Segment 5 has 2 peaks
 	let id = SegmentIdentifier { height: 2, idx: 5 };
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment.leaf_iter().count(), 3);
 	assert_eq!(
 		segment
@@ -298,7 +298,7 @@ fn pruned_segment() {
 
 	// Segment 5 should be unchanged
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment, prev_segment);
 	segment.validate(last_pos, Some(&bitmap), &root).unwrap();
 
@@ -311,7 +311,7 @@ fn pruned_segment() {
 
 	// Validate segment 5 again
 	let mmr = ReadonlyPMMR::at(&mut ba, last_pos);
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 	assert_eq!(segment.leaf_iter().count(), 1);
 	assert_eq!(segment.hash_iter().count(), 1);
 	assert_eq!(
@@ -355,14 +355,14 @@ fn ser_round_trip() {
 
 	let mmr = ReadonlyPMMR::at(&ba, last_pos);
 	let id = SegmentIdentifier { height: 3, idx: 0 };
-	let segment = Segment::from_pmmr(id, &mmr, true, 1, usize::MAX).unwrap();
+	let segment = Segment::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 
 	let mut cursor = Cursor::new(Vec::<u8>::new());
 	let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1));
 	Writeable::write(&segment, &mut writer).unwrap();
 	assert_eq!(
 		cursor.position(),
-		(9) + (8 + 7 * (8 + 32)) + (8 + 6 * (8 + 16)) + (8 + 2 * 32)
+		(9) + (8 + 3 * (8 + 32)) + (8 + 6 * (8 + 16)) + (8 + 2 * 32)
 	);
 	cursor.set_position(0);
 

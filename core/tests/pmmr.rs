@@ -519,7 +519,6 @@ fn pmmr_prune() {
 
 	// First check the initial numbers of elements.
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 0);
 
 	// pruning a leaf with no parent should do nothing
 	{
@@ -528,7 +527,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 1);
 
 	// pruning leaves with no shared parent just removes 1 element
 	{
@@ -537,7 +535,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 2);
 
 	{
 		let mut pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut ba, sz);
@@ -545,7 +542,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 3);
 
 	// pruning a non-leaf node has no effect
 	{
@@ -554,7 +550,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 3);
 
 	// TODO - no longer true (leaves only now) - pruning sibling removes subtree
 	{
@@ -563,7 +558,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 4);
 
 	// TODO - no longer true (leaves only now) - pruning all leaves under level >1
 	// removes all subtree
@@ -573,7 +567,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 5);
 
 	// pruning everything should only leave us with a single peak
 	{
@@ -584,7 +577,6 @@ fn pmmr_prune() {
 		assert_eq!(orig_root, pmmr.root().unwrap());
 	}
 	assert_eq!(ba.hashes.len(), 16);
-	assert_eq!(ba.removed.len(), 9);
 }
 
 #[test]

@@ -19,7 +19,6 @@
 use crate::util::RwLock;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
-use std::thread;
 use std::time::Instant;
 
 use crate::chain::txhashset::BitmapChunk;
@@ -48,7 +47,6 @@ use chrono::Duration;
 use mwc_chain::txhashset::Segmenter;
 use mwc_p2p::PeerAddr;
 use mwc_util::secp::{ContextFlag, Secp256k1};
-use rand::prelude::*;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
@@ -812,7 +810,7 @@ where
 		match chain.process_block(b.clone(), opts) {
 			Ok(_) => {
 				self.validate_chain(&bhash);
-				self.check_compact();
+				//self.check_compact();  Currently Sync process does that. No needs, also we don't want collosion to happens
 				self.sync_manager.recieve_block_reporting(
 					true,
 					&peer_info.addr,
@@ -906,6 +904,7 @@ where
 		}
 	}
 
+	/*	Compact is dome form the sync thread now. Also another thread will not help much because of batch blocking
 	fn check_compact(&self) {
 		// Roll the dice to trigger compaction at 1/COMPACTION_CHECK chance per block,
 		// uses a different thread to avoid blocking the caller thread (likely a peer)
@@ -920,7 +919,7 @@ where
 					}
 				});
 		}
-	}
+	}*/
 
 	fn request_transaction(&self, h: Hash, peer_info: &PeerInfo) {
 		self.send_tx_request_to_peer(h, peer_info, |peer, h| peer.send_tx_request(h))
@@ -1260,6 +1259,7 @@ impl pool::BlockChain for PoolToChainAdapter {
 #[cfg(test)]
 mod test {
 	use super::*;
+	use std::thread;
 	use std::time::Duration;
 
 	#[test]
