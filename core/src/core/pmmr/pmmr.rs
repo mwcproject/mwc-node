@@ -178,6 +178,7 @@ where
 {
 	/// Number of nodes in the PMMR
 	pub size: u64,
+	index_offset: u64, // Needed to be able to operate with segment of bigger PMMR
 	backend: &'a mut B,
 	// only needed to parameterise Backend
 	_marker: marker::PhantomData<T>,
@@ -193,6 +194,7 @@ where
 		PMMR {
 			backend,
 			size: 0,
+			index_offset: 0,
 			_marker: marker::PhantomData,
 		}
 	}
@@ -203,6 +205,7 @@ where
 		PMMR {
 			backend,
 			size,
+			index_offset: 0,
 			_marker: marker::PhantomData,
 		}
 	}
@@ -212,11 +215,16 @@ where
 		ReadonlyPMMR::at(&self.backend, self.size)
 	}
 
+	/// Setting up the index offset if we want to use this PMMR as a segment from the bigger one
+	pub fn update_index_offset(&mut self, offset: u64) {
+		self.index_offset = offset;
+	}
+
 	/// Push a new element into the MMR. Computes new related peaks at
 	/// the same time if applicable.
 	pub fn push(&mut self, leaf: &T) -> Result<u64, String> {
 		let leaf_pos = self.size;
-		let mut current_hash = leaf.hash_with_index(leaf_pos);
+		let mut current_hash = leaf.hash_with_index(leaf_pos + self.index_offset);
 
 		let mut hashes = vec![current_hash];
 		let mut pos = leaf_pos;
@@ -229,14 +237,18 @@ where
 		let mut peak = 1;
 		while (peak_map & peak) != 0 {
 			let left_sibling = pos + 1 - 2 * peak;
-			let left_hash = self
-				.backend
-				.get_peak_from_file(left_sibling)
-				.ok_or("missing left sibling in tree, should not have been pruned")?;
-			peak *= 2;
-			pos += 1;
-			current_hash = (left_hash, current_hash).hash_with_index(pos);
-			hashes.push(current_hash);
+			match self.backend.get_peak_from_file(left_sibling) {
+				Some(left_hash) => {
+					peak *= 2;
+					pos += 1;
+					current_hash =
+						(left_hash, current_hash).hash_with_index(pos + self.index_offset);
+					hashes.push(current_hash);
+				}
+				None => {
+					return Err("missing left sibling in tree, should not have been pruned".into());
+				}
+			}
 		}
 
 		// append all the new nodes and update the MMR index
@@ -265,13 +277,17 @@ where
 				// is right sibling, we should be done
 				continue;
 			}
-			let left_hash = self
-				.backend
-				.get_hash(sibling)
-				.ok_or("missing left sibling in tree, should not have been pruned")?;
-			pos = parent;
-			current_hash = (left_hash, current_hash).hash_with_index(parent);
-			self.backend.append_hash(current_hash)?;
+			match self.backend.get_hash(sibling) {
+				Some(left_hash) => {
+					pos = parent;
+					current_hash =
+						(left_hash, current_hash).hash_with_index(parent + self.index_offset);
+					self.backend.append_hash(current_hash)?;
+				}
+				None => {
+					return Err("missing left sibling in tree, should not have been pruned".into());
+				}
+			}
 		}
 
 		// Round size up to next leaf, ready for insertion
@@ -354,7 +370,8 @@ where
 								if let Some(left_child_hs) = self.get_from_file(left_pos) {
 									if let Some(right_child_hs) = self.get_from_file(right_pos) {
 										// hash the two child nodes together with parent_pos and compare
-										if (left_child_hs, right_child_hs).hash_with_index(n)
+										if (left_child_hs, right_child_hs)
+											.hash_with_index(n + self.index_offset)
 											!= hash
 										{
 											return Err(format!("Invalid MMR, hash of parent at {} does not match children.", n + 1));
@@ -654,6 +671,17 @@ pub fn family(pos0: u64) -> (u64, u64) {
 	} else {
 		(pos0 + 2 * peak, pos0 + 2 * peak - 1)
 	}
+}
+
+/// positions of Left and right children. For leaf return None
+pub fn children(pos0: u64) -> Option<(u64, u64)> {
+	let height = bintree_postorder_height(pos0);
+	if height == 0 {
+		return None; // It is a leaf, no children
+	}
+	let left_pos = pos0 - (1 << height);
+	let right_pos = pos0 - 1;
+	Some((left_pos, right_pos))
 }
 
 /// Is the node at this pos the "left" sibling of its parent?

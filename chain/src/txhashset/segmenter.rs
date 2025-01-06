@@ -23,6 +23,7 @@ use crate::pibd_params;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::RwLock;
+use croaring::Bitmap;
 use mwc_core::core::pmmr::{ReadonlyPMMR, VecBackend};
 use mwc_util::secp::constants;
 use std::{sync::Arc, time::Instant};
@@ -35,6 +36,7 @@ pub struct Segmenter {
 	header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
 	txhashset: Arc<RwLock<TxHashSet>>,
 	bitmap_snapshot: Arc<BitmapAccumulator>,
+	bitmap: Bitmap,
 	header: BlockHeader,
 }
 
@@ -49,6 +51,7 @@ impl Segmenter {
 		Segmenter {
 			header_pmmr,
 			txhashset,
+			bitmap: bitmap_snapshot.build_bitmap(),
 			bitmap_snapshot: Arc::new(bitmap_snapshot),
 			header,
 		}
@@ -83,7 +86,7 @@ impl Segmenter {
 		let segment = Segment::from_pmmr(
 			id,
 			&bitmap_pmmr,
-			false,
+			None,
 			BitmapChunk::LEN_BYTES,
 			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 		)?;
@@ -106,7 +109,7 @@ impl Segmenter {
 		let segment = Segment::from_pmmr(
 			id,
 			&header_pmmr,
-			false,
+			None,
 			Hash::LEN,
 			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 		)?;
@@ -132,9 +135,9 @@ impl Segmenter {
 		let segment = Segment::from_pmmr(
 			id,
 			&output_pmmr,
-			true,
+			Some(&self.bitmap),
 			constants::PEDERSEN_COMMITMENT_SIZE,
-			pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 4,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 2, // In reality 1x should be enough, using 2x to cover some edge cases
 		)?;
 		debug!(
 			"output_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",
@@ -155,7 +158,7 @@ impl Segmenter {
 		let segment = Segment::from_pmmr(
 			id,
 			&kernel_pmmr,
-			false,
+			None,
 			TxKernel::DATA_SIZE,
 			pibd_params::PIBD_MESSAGE_SIZE_LIMIT,
 		)?;
@@ -179,9 +182,9 @@ impl Segmenter {
 		let segment = Segment::from_pmmr(
 			id,
 			&pmmr,
-			true,
+			Some(&self.bitmap),
 			constants::SINGLE_BULLET_PROOF_SIZE,
-			pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 4,
+			pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 2, // In reality 1x should be enough, using 2x to cover some edge cases
 		)?;
 		debug!(
 			"rangeproof_segment: id: {}, leaves: {}, hashes: {}, proof hashes: {}, took {}ms",

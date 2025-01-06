@@ -255,12 +255,14 @@ impl<T> HeadersRecieveCache<T> {
 					.unwrap()
 					.get(hash_idx as usize)
 				{
-					if header.hash() != *hash {
-						// need to check the first hash, if it doesn't match, let's reset all blockchain. Hashes are below horizon,
-						// if something not matching better to reset all the data, including block data and restart with headers download
-						self.chain.reset_chain_head(self.chain.genesis(), true)?;
-					} else {
-						break;
+					if let Some(hash) = hash {
+						if header.hash() != *hash {
+							// need to check the first hash, if it doesn't match, let's reset all blockchain. Hashes are below horizon,
+							// if something not matching better to reset all the data, including block data and restart with headers download
+							self.chain.reset_chain_head(self.chain.genesis(), true)?;
+						} else {
+							break;
+						}
 					}
 				}
 			}
@@ -331,23 +333,27 @@ impl<T> HeadersRecieveCache<T> {
 				last_in_cache = 0;
 			}
 
-			let hinfo: Option<&Hash> = headers
+			let hinfo: Option<&Option<Hash>> = headers
 				.header_pmmr
 				.data
 				.as_ref()
 				.unwrap()
 				.get(hash_idx as usize);
 			match hinfo {
-				Some(h) => {
-					let request = (h.clone(), hash_idx * HEADERS_PER_BATCH as u64);
-					// check if already requested first
-					if !request_tracker.contains_request(h) {
-						return_vec.push(request);
-						if return_vec.len() >= elements {
-							break;
+				Some(hash) => {
+					if let Some(h) = hash {
+						let request = (h.clone(), hash_idx * HEADERS_PER_BATCH as u64);
+						// check if already requested first
+						if !request_tracker.contains_request(h) {
+							return_vec.push(request);
+							if return_vec.len() >= elements {
+								break;
+							}
+						} else {
+							waiting_indexes.push((hash_idx, request));
 						}
 					} else {
-						waiting_indexes.push((hash_idx, request));
+						break;
 					}
 				}
 				None => break,
@@ -399,14 +405,16 @@ impl<T> HeadersRecieveCache<T> {
 			.expect("header_pmmr data must exist")
 			.get(hash_idx as usize + 1)
 		{
-			let last_header = bhs.last().unwrap();
-			if last_header.hash() != *next_hash {
-				return Err((
-					peer_info,
-					Error::InvalidSegment(
-						"Last header in the series doesn't match expected hash".to_string(),
-					),
-				));
+			if let Some(next_hash) = next_hash {
+				let last_header = bhs.last().unwrap();
+				if last_header.hash() != *next_hash {
+					return Err((
+						peer_info,
+						Error::InvalidSegment(
+							"Last header in the series doesn't match expected hash".to_string(),
+						),
+					));
+				}
 			}
 		}
 

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::convert::TryFrom;
 
 use croaring::Bitmap;
@@ -28,49 +28,61 @@ use crate::ser::PMMRable;
 #[derive(Clone, Debug)]
 pub struct VecBackend<T: PMMRable> {
 	/// Backend elements (optional, possible to just store hashes).
-	pub data: Option<Vec<T>>,
+	pub data: Option<Vec<Option<T>>>,
 	/// Vec of hashes for the PMMR (both leaves and parents).
-	pub hashes: Vec<Hash>,
-	/// Positions of removed elements (is this applicable if we do not store data?)
-	pub removed: HashSet<u64>,
+	pub hashes: Vec<Option<Hash>>,
 }
 
 impl<T: PMMRable> Backend<T> for VecBackend<T> {
 	fn append(&mut self, elmt: &T, hashes: &[Hash]) -> Result<(), String> {
 		if let Some(data) = &mut self.data {
-			data.push(elmt.clone());
+			data.push(Some(elmt.clone()));
 		}
-		self.hashes.extend_from_slice(hashes);
+		for h in hashes {
+			self.hashes.push(Some(h.clone()));
+		}
 		Ok(())
 	}
 
-	fn append_pruned_subtree(&mut self, _hash: Hash, _pos0: u64) -> Result<(), String> {
-		unimplemented!()
+	fn append_pruned_subtree(&mut self, hash: Hash, pos0: u64) -> Result<(), String> {
+		let idx = usize::try_from(pos0).expect("usize from u64");
+
+		if self.hashes.len() < idx {
+			self.hashes.resize(idx + 1, None);
+		}
+		self.hashes[idx] = Some(hash);
+
+		let leaves = pmmr::n_leaves(1 + pos0);
+		if let Some(data) = &mut self.data {
+			debug_assert!(data.len() < leaves as usize);
+			if data.len() < leaves as usize {
+				data.resize(leaves as usize, None);
+			}
+		}
+
+		Ok(())
 	}
 
-	fn append_hash(&mut self, _hash: Hash) -> Result<(), String> {
-		unimplemented!()
+	fn append_hash(&mut self, hash: Hash) -> Result<(), String> {
+		self.hashes.push(Some(hash));
+
+		Ok(())
 	}
 
 	fn get_hash(&self, pos0: u64) -> Option<Hash> {
-		if self.removed.contains(&pos0) {
-			None
-		} else {
-			self.get_from_file(pos0)
-		}
+		self.get_from_file(pos0)
 	}
 
 	fn get_data(&self, pos0: u64) -> Option<T::E> {
-		if self.removed.contains(&pos0) {
-			None
-		} else {
-			self.get_data_from_file(pos0)
-		}
+		self.get_data_from_file(pos0)
 	}
 
 	fn get_from_file(&self, pos0: u64) -> Option<Hash> {
 		let idx = usize::try_from(pos0).expect("usize from u64");
-		self.hashes.get(idx).cloned()
+		match self.hashes.get(idx) {
+			Some(h) => h.clone(),
+			None => None,
+		}
 	}
 
 	fn get_peak_from_file(&self, pos0: u64) -> Option<Hash> {
@@ -80,7 +92,10 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 	fn get_data_from_file(&self, pos0: u64) -> Option<T::E> {
 		if let Some(data) = &self.data {
 			let idx = usize::try_from(pmmr::n_leaves(1 + pos0) - 1).expect("usize from u64");
-			data.get(idx).map(|x| x.as_elmt())
+			match data.get(idx) {
+				Some(d) => d.clone().map(|x| x.as_elmt()),
+				None => None,
+			}
 		} else {
 			None
 		}
@@ -101,7 +116,7 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 				.iter()
 				.enumerate()
 				.map(|(x, _)| x as u64)
-				.filter(move |x| pmmr::is_leaf(*x) && !self.removed.contains(x)),
+				.filter(move |x| pmmr::is_leaf(*x)),
 		)
 	}
 
@@ -116,7 +131,10 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 	}
 
 	fn remove(&mut self, pos0: u64) -> Result<(), String> {
-		self.removed.insert(pos0);
+		if let Some(data) = &mut self.data {
+			let idx = usize::try_from(pmmr::n_leaves(1 + pos0) - 1).expect("usize from u64");
+			data[idx] = None;
+		}
 		Ok(())
 	}
 
@@ -153,7 +171,6 @@ impl<T: PMMRable> VecBackend<T> {
 		VecBackend {
 			data: Some(vec![]),
 			hashes: vec![],
-			removed: HashSet::new(),
 		}
 	}
 
@@ -162,7 +179,6 @@ impl<T: PMMRable> VecBackend<T> {
 		VecBackend {
 			data: None,
 			hashes: vec![],
-			removed: HashSet::new(),
 		}
 	}
 
@@ -177,6 +193,78 @@ impl<T: PMMRable> VecBackend<T> {
 			data.clear();
 		}
 		self.hashes.clear();
-		self.removed.clear();
+	}
+
+	///  It is expected that all needed leaves are pruned, now we need to update the hashes. Data is still expected to be in pairs because
+	/// of overall node limitations.
+	pub fn compact(&mut self, delete_buildable_hashes: bool) {
+		if let Some(data) = self.data.as_mut() {
+			if self.hashes.is_empty() {
+				return;
+			}
+
+			let top_hash = self.hashes.last().expect("Segment can't be empty").clone();
+
+			let mut leaves: BTreeSet<u64> = BTreeSet::new();
+			for (pos, dt) in data.iter().enumerate() {
+				if dt.is_some() {
+					leaves.insert(pmmr::insertion_to_pmmr_index(pos as u64));
+				}
+			}
+
+			let mut pos_with_data: BTreeSet<u64> = BTreeSet::new();
+			for pos0 in 0..self.hashes.len() as u64 {
+				let left_leaf = pmmr::bintree_leftmost(pos0);
+				if leaves.range(left_leaf..=pos0).next().is_some() {
+					pos_with_data.insert(pos0);
+				}
+			}
+
+			// Now we need to keep all with parent that has a data
+			for pos0 in 0..self.hashes.len() as u64 {
+				if pos_with_data.contains(&pos0) {
+					continue;
+				}
+
+				let (parent, _) = pmmr::family(pos0);
+				// Top Hashes we want to keep in any case
+				if pos_with_data.contains(&parent) || parent > self.hashes.len() as u64 {
+					pos_with_data.insert(pos0);
+				}
+			}
+
+			// Now we can delete all hashes that are not in the pos_with_data list
+			for (pos, h) in &mut self.hashes.iter_mut().enumerate() {
+				let pos = pos as u64;
+				if !pos_with_data.contains(&pos) {
+					*h = None;
+				}
+			}
+
+			if pos_with_data.is_empty() {
+				*self.hashes.last_mut().expect("Segment can't be empty") = top_hash;
+			}
+
+			if delete_buildable_hashes {
+				for pos in 0..self.hashes.len() as u64 {
+					if let Some((left_child, right_child)) = pmmr::children(pos) {
+						let has_left_child = self
+							.hashes
+							.get(left_child as usize)
+							.unwrap_or(&None)
+							.is_some() || leaves.contains(&left_child);
+						let has_right_child = self
+							.hashes
+							.get(right_child as usize)
+							.unwrap_or(&None)
+							.is_some() || leaves.contains(&right_child);
+
+						if has_left_child && has_right_child {
+							self.hashes[pos as usize] = None;
+						}
+					}
+				}
+			}
+		}
 	}
 }

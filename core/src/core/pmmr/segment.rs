@@ -16,7 +16,7 @@
 //! Segment of a PMMR.
 
 use crate::core::hash::Hash;
-use crate::core::pmmr::{self, Backend, ReadablePMMR, ReadonlyPMMR};
+use crate::core::pmmr::{self, Backend, ReadablePMMR, ReadonlyPMMR, VecBackend, PMMR};
 use crate::ser::{Error, PMMRIndexHashable, PMMRable, Readable, Reader, Writeable, Writer};
 use croaring::Bitmap;
 use std::cmp::min;
@@ -311,18 +311,18 @@ impl<T> Segment<T> {
 
 impl<T> Segment<T>
 where
-	T: Readable + Writeable + Debug,
+	T: Readable + Writeable + Debug + PMMRable<E = T> + Sync,
 {
 	/// Generate a segment from a PMMR
 	pub fn from_pmmr<U, B>(
 		segment_id: SegmentIdentifier,
 		pmmr: &ReadonlyPMMR<'_, U, B>,
-		prunable: bool,
+		bitmap: Option<&Bitmap>,
 		leaf_size: usize,
 		segment_size_limit: usize,
 	) -> Result<Self, SegmentError>
 	where
-		U: PMMRable<E = T>,
+		U: PMMRable<E = T> + Sync,
 		B: Backend<U>,
 	{
 		let mut segment = Segment::empty(segment_id);
@@ -332,31 +332,97 @@ where
 			return Err(SegmentError::NonExistent);
 		}
 
-		// Fill leaf data and hashes
 		let (segment_first_pos, segment_last_pos) = segment.segment_pos_range(mmr_size);
-		let mut segment_size = 0;
 
-		for pos0 in segment_first_pos..=segment_last_pos {
-			if segment_size > segment_size_limit {
-				return Err(SegmentError::SegmentSizeAboveLimit);
-			}
+		if let Some(bitmap) = bitmap {
+			// let's try to build the segment and prune it...
+			let mut segm_copy_data: VecBackend<T> = VecBackend::new();
+			let mut segm_copy = PMMR::new(&mut segm_copy_data);
+			segm_copy.update_index_offset(segment_first_pos);
 
-			if pmmr::is_leaf(pos0) {
-				if let Some(data) = pmmr.get_data_from_file(pos0) {
-					segment.leaf_data.push(data);
-					segment.leaf_pos.push(pos0);
-					segment_size += 8 + leaf_size;
-					continue;
-				} else if !prunable {
-					return Err(SegmentError::MissingLeaf(pos0));
+			// constructin the segment in the memory.
+			let mut prune_pos = Vec::new();
+			for pos0 in segment_first_pos..=segment_last_pos {
+				if pmmr::is_leaf(pos0) {
+					if let Some(data) = pmmr.get_data_from_file(pos0) {
+						segm_copy.push(&data).expect("Push into local MMR");
+
+						let idx_1 = pmmr::n_leaves(pos0 + 1) - 1;
+						let idx_2 = if pmmr::is_left_sibling(pos0) {
+							idx_1 + 1
+						} else {
+							idx_1 - 1
+						};
+
+						let keeping = bitmap.contains(idx_1 as u32)
+							|| bitmap.contains(idx_2 as u32)
+							|| pos0 == mmr_size - 1;
+						if !keeping {
+							prune_pos.push(pos0);
+						}
+						continue;
+					}
+				}
+				if let Some(hash) = pmmr.get_from_file(pos0) {
+					let pos0_copy = pos0 - segment_first_pos;
+					if pos0_copy >= segm_copy.size {
+						segm_copy.push_pruned_subtree(hash, pos0_copy).unwrap();
+					}
 				}
 			}
-			// TODO: optimize, no need to send every intermediary hash
-			if prunable {
-				if let Some(hash) = pmmr.get_from_file(pos0) {
+
+			// Pruning elements that wasn't in the bitmap. It is expected that some data might not be pruned
+			// Note: we need to insert all data first and prune after. Also, there is no prpone at the end of PIBD download
+			for ps in prune_pos {
+				let res = segm_copy
+					.prune(ps - segment_first_pos)
+					.expect("PMMR must have it");
+				debug_assert!(res);
+			}
+
+			let copy_size = segm_copy.unpruned_size();
+
+			segm_copy_data.compact(true);
+
+			let mut segm_copy = PMMR::at(&mut segm_copy_data, copy_size);
+			segm_copy.update_index_offset(segment_first_pos);
+
+			// Now we can retry to build the segment from this local copy of PMMR
+			let mut segment_size = 0;
+			for pos0 in 0..=segm_copy.unpruned_size() {
+				if segment_size > segment_size_limit {
+					return Err(SegmentError::SegmentSizeAboveLimit);
+				}
+				if pmmr::is_leaf(pos0) {
+					if let Some(data) = segm_copy.get_data(pos0) {
+						segment.leaf_data.push(data);
+						segment.leaf_pos.push(pos0 + segment_first_pos);
+						segment_size += 8 + leaf_size;
+						continue;
+					}
+				}
+				if let Some(hash) = segm_copy.get_from_file(pos0) {
 					segment.hashes.push(hash);
-					segment.hash_pos.push(pos0);
+					segment.hash_pos.push(pos0 + segment_first_pos);
 					segment_size += 8 + 32;
+				}
+			}
+		} else {
+			// Not prunable scenario
+			let mut segment_size = 0;
+			for pos0 in segment_first_pos..=segment_last_pos {
+				if segment_size > segment_size_limit {
+					return Err(SegmentError::SegmentSizeAboveLimit);
+				}
+				if pmmr::is_leaf(pos0) {
+					if let Some(data) = pmmr.get_data_from_file(pos0) {
+						segment.leaf_data.push(data);
+						segment.leaf_pos.push(pos0);
+						segment_size += 8 + leaf_size;
+						continue;
+					} else {
+						return Err(SegmentError::MissingLeaf(pos0));
+					}
 				}
 			}
 		}
