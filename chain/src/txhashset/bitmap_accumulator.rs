@@ -161,8 +161,12 @@ impl BitmapAccumulator {
 		let last_pos = self.backend.size();
 		let mut pmmr = PMMR::at(&mut self.backend, last_pos);
 		let rewind_pos = pmmr::insertion_to_pmmr_index(chunk_idx);
-		pmmr.rewind(rewind_pos, &Bitmap::new())
-			.map_err(|e| Error::Other(format!("pmmr rewind error, {}", e)))?;
+		pmmr.rewind(
+			rewind_pos,
+			&Bitmap::new(),
+			"bitmap accumulator, rewind_prior",
+		)
+		.map_err(|e| Error::Other(format!("pmmr rewind error, {}", e)))?;
 		Ok(())
 	}
 
@@ -183,7 +187,7 @@ impl BitmapAccumulator {
 	pub fn append_chunk(&mut self, chunk: BitmapChunk) -> Result<u64, Error> {
 		let last_pos = self.backend.size();
 		PMMR::at(&mut self.backend, last_pos)
-			.push(&chunk)
+			.push(&chunk, "bitmap accumulator, append_chunk ")
 			.map_err(|e| Error::Other(format!("PMMR at for pos {} error, {}", last_pos, e)))
 	}
 

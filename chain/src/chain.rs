@@ -1330,9 +1330,11 @@ impl Chain {
 			let data = self
 				.get_header_hash_by_height(i)
 				.expect("Header data is expected below horizon");
-			segm_header_pmmr.push(&data).map_err(|s| {
-				Error::SyncError(format!("Unable to create Headers hash MMR, {}", s))
-			})?;
+			segm_header_pmmr
+				.push(&data, "init_segmenter, segm_header_pmmr")
+				.map_err(|s| {
+					Error::SyncError(format!("Unable to create Headers hash MMR, {}", s))
+				})?;
 		}
 
 		debug!(

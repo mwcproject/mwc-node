@@ -187,7 +187,10 @@ impl HeaderHashesDesegmenter {
 						OrderedHashLeafNode::Leaf(idx, pos0) => {
 							if pos0 == header_pmmr.size {
 								header_pmmr
-									.push(&leaf_data[idx])
+									.push(
+										&leaf_data[idx],
+										"headers_desegmentr, add_headers_hash_segment",
+									)
 									.map_err(&Error::TxHashSetErr)?;
 							}
 						}

@@ -1031,12 +1031,14 @@ impl<'a> HeaderExtension<'a> {
 	/// This may be either the header MMR or the sync MMR depending on the
 	/// extension.
 	pub fn apply_header(&mut self, header: &BlockHeader) -> Result<(), Error> {
-		self.pmmr.push(header).map_err(|e| {
-			Error::TxHashSetErr(format!(
-				"Unable to apply header with height {}, {}",
-				header.height, e
-			))
-		})?;
+		self.pmmr
+			.push(header, "HeaderExtension, apply_header")
+			.map_err(|e| {
+				Error::TxHashSetErr(format!(
+					"Unable to apply header with height {}, {}",
+					header.height, e
+				))
+			})?;
 		self.head = Tip::from_header(header);
 		Ok(())
 	}
@@ -1053,9 +1055,11 @@ impl<'a> HeaderExtension<'a> {
 		);
 
 		let header_pos = 1 + pmmr::insertion_to_pmmr_index(header.height);
-		self.pmmr.rewind(header_pos, &Bitmap::new()).map_err(|e| {
-			Error::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
-		})?;
+		self.pmmr
+			.rewind(header_pos, &Bitmap::new(), "HeaderExtension, rewind")
+			.map_err(|e| {
+				Error::TxHashSetErr(format!("pmmr rewind for pos {}, {}", header_pos, e))
+			})?;
 
 		// Update our head to reflect the header we rewound to.
 		self.head = Tip::from_header(header);
@@ -1249,10 +1253,13 @@ impl<'a> Extension<'a> {
 	// Prune output and rangeproof PMMRs based on provided pos.
 	// Input is not valid if we cannot prune successfully.
 	fn apply_input(&mut self, commit: Commitment, pos: CommitPos) -> Result<(), Error> {
-		match self.output_pmmr.prune(pos.pos - 1) {
+		match self
+			.output_pmmr
+			.prune(pos.pos - 1, "Extension, output_pmmr apply_input")
+		{
 			Ok(true) => {
 				self.rproof_pmmr
-					.prune(pos.pos - 1)
+					.prune(pos.pos - 1, "Extension, rproof_pmmr apply_input")
 					.map_err(|e| Error::TxHashSetErr(format!("pmmr prune error, {}", e)))?;
 				Ok(())
 			}
@@ -1274,14 +1281,20 @@ impl<'a> Extension<'a> {
 		// push the new output to the MMR.
 		let output_pos = self
 			.output_pmmr
-			.push(&out.identifier())
-			.map_err(|e| Error::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
+			.push(&out.identifier(), "Extension, output_pmmr apply_output")
+			.map_err(|e| {
+				info!("Extension, output_pmmr.push failed {}", e);
+				Error::TxHashSetErr(format!("pmmr output push error, {}", e))
+			})?;
 
 		// push the rangeproof to the MMR.
 		let rproof_pos = self
 			.rproof_pmmr
-			.push(&out.proof())
-			.map_err(|e| Error::TxHashSetErr(format!("pmmr proof push error, {}", e)))?;
+			.push(&out.proof(), "Extension, rproof_pmmr apply_output")
+			.map_err(|e| {
+				info!("Extension, rproof_pmmr.push failed {}", e);
+				Error::TxHashSetErr(format!("pmmr proof push error, {}", e))
+			})?;
 
 		// The output and rproof MMRs should be exactly the same size
 		// and we should have inserted to both in exactly the same pos.
@@ -1347,7 +1360,7 @@ impl<'a> Extension<'a> {
 								// All initial outputs are spent up to this hash,
 								// Roll back the genesis output
 								self.output_pmmr
-									.rewind(0, &Bitmap::new())
+									.rewind(0, &Bitmap::new(), "Extension, apply_output_segments")
 									.map_err(&Error::TxHashSetErr)?;
 							}
 							self.output_pmmr
@@ -1358,7 +1371,7 @@ impl<'a> Extension<'a> {
 					OrderedHashLeafNode::Leaf(idx, pos0) => {
 						if pos0 == self.output_pmmr.size {
 							self.output_pmmr
-								.push(&leaf_data[idx])
+								.push(&leaf_data[idx], "Extension, apply_output_segments")
 								.map_err(&Error::TxHashSetErr)?;
 						}
 						// Note, extra unproned segments will be upadted later
@@ -1373,7 +1386,9 @@ impl<'a> Extension<'a> {
 				match pmmr_index {
 					Some(i) => {
 						if !bitmap.contains(i as u32) {
-							let res = self.output_pmmr.prune(pos0);
+							let res = self
+								.output_pmmr
+								.prune(pos0, "Extension, apply_output_segments");
 							debug_assert!(res.is_ok());
 						}
 					}
@@ -1407,7 +1422,11 @@ impl<'a> Extension<'a> {
 								// All initial outputs are spent up to this hash,
 								// Roll back the genesis output
 								self.rproof_pmmr
-									.rewind(0, &Bitmap::new())
+									.rewind(
+										0,
+										&Bitmap::new(),
+										"Extension, apply_rangeproof_segments",
+									)
 									.map_err(&Error::TxHashSetErr)?;
 							}
 							self.rproof_pmmr
@@ -1418,7 +1437,7 @@ impl<'a> Extension<'a> {
 					OrderedHashLeafNode::Leaf(idx, pos0) => {
 						if pos0 == self.rproof_pmmr.size {
 							self.rproof_pmmr
-								.push(&leaf_data[idx])
+								.push(&leaf_data[idx], "Extension, apply_rangeproof_segments")
 								.map_err(&Error::TxHashSetErr)?;
 						}
 						// Note, extra unproned segments will be upadted later
@@ -1434,7 +1453,9 @@ impl<'a> Extension<'a> {
 				match pmmr_index {
 					Some(i) => {
 						if !bitmap.contains(i as u32) {
-							let res = self.rproof_pmmr.prune(pos0);
+							let res = self
+								.rproof_pmmr
+								.prune(pos0, "Extension, apply_rangeproof_segments");
 							debug_assert!(res.is_ok());
 						}
 					}
@@ -1479,7 +1500,7 @@ impl<'a> Extension<'a> {
 					OrderedHashLeafNode::Leaf(idx, pos0) => {
 						if pos0 == self.kernel_pmmr.size {
 							self.kernel_pmmr
-								.push(&leaf_data[idx])
+								.push(&leaf_data[idx], "Extension, apply_kernel_segments")
 								.map_err(&Error::TxHashSetErr)?;
 						}
 					}
@@ -1493,8 +1514,11 @@ impl<'a> Extension<'a> {
 	fn apply_kernel(&mut self, kernel: &TxKernel) -> Result<u64, Error> {
 		let pos = self
 			.kernel_pmmr
-			.push(kernel)
-			.map_err(|e| Error::TxHashSetErr(format!("pmmr push kernel error, {}", e)))?;
+			.push(kernel, "Extension, apply_kernel_segments")
+			.map_err(|e| {
+				info!("apply_kernel kernel_pmmr.push failed with error: {}", e);
+				Error::TxHashSetErr(format!("pmmr push kernel error, {}", e))
+			})?;
 		Ok(1 + pos)
 	}
 
@@ -1684,14 +1708,35 @@ impl<'a> Extension<'a> {
 	) -> Result<(), Error> {
 		let bitmap: Bitmap = spent_pos.iter().map(|x| *x as u32).collect();
 		self.output_pmmr
-			.rewind(output_pos, &bitmap)
-			.map_err(|e| Error::TxHashSetErr(format!("output_pmmr rewind error, {}", e)))?;
+			.rewind(
+				output_pos,
+				&bitmap,
+				"Extension, rewind_mmrs_to_pos output_pmmr",
+			)
+			.map_err(|e| {
+				info!("Extension, rewind_mmrs_to_pos output_pmmr failed: {}", e);
+				Error::TxHashSetErr(format!("output_pmmr rewind error, {}", e))
+			})?;
 		self.rproof_pmmr
-			.rewind(output_pos, &bitmap)
-			.map_err(|e| Error::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e)))?;
+			.rewind(
+				output_pos,
+				&bitmap,
+				"Extension, rewind_mmrs_to_pos rproof_pmmr",
+			)
+			.map_err(|e| {
+				info!("Extension, rewind_mmrs_to_pos rproof_pmmr failed: {}", e);
+				Error::TxHashSetErr(format!("rproof_pmmr rewind error, {}", e))
+			})?;
 		self.kernel_pmmr
-			.rewind(kernel_pos, &Bitmap::new())
-			.map_err(|e| Error::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e)))?;
+			.rewind(
+				kernel_pos,
+				&Bitmap::new(),
+				"Extension, rewind_mmrs_to_pos kernel_pmmr",
+			)
+			.map_err(|e| {
+				info!("Extension, rewind_mmrs_to_pos kernel_pmmr failed: {}", e);
+				Error::TxHashSetErr(format!("kernel_pmmr rewind error, {}", e))
+			})?;
 		Ok(())
 	}
 

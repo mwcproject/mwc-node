@@ -345,7 +345,9 @@ where
 			for pos0 in segment_first_pos..=segment_last_pos {
 				if pmmr::is_leaf(pos0) {
 					if let Some(data) = pmmr.get_data_from_file(pos0) {
-						segm_copy.push(&data).expect("Push into local MMR");
+						segm_copy
+							.push(&data, "segm_copy, Segment from pmmr")
+							.expect("Push into local MMR");
 
 						let idx_1 = pmmr::n_leaves(pos0 + 1) - 1;
 						let idx_2 = if pmmr::is_left_sibling(pos0) {
@@ -375,7 +377,7 @@ where
 			// Note: we need to insert all data first and prune after. Also, there is no prpone at the end of PIBD download
 			for ps in prune_pos {
 				let res = segm_copy
-					.prune(ps - segment_first_pos)
+					.prune(ps - segment_first_pos, "segm_copy, Segment from pmmr")
 					.expect("PMMR must have it");
 				debug_assert!(res);
 			}

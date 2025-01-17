@@ -222,7 +222,8 @@ where
 
 	/// Push a new element into the MMR. Computes new related peaks at
 	/// the same time if applicable.
-	pub fn push(&mut self, leaf: &T) -> Result<u64, String> {
+	pub fn push(&mut self, leaf: &T, comment: &str) -> Result<u64, String> {
+		info!("Pushing leaf start. Size={}  {}", self.size, comment);
 		let leaf_pos = self.size;
 		let mut current_hash = leaf.hash_with_index(leaf_pos + self.index_offset);
 
@@ -254,11 +255,17 @@ where
 		// append all the new nodes and update the MMR index
 		self.backend.append(leaf, &hashes)?;
 		self.size = pos + 1;
+		info!(
+			"Pushing leaf is done. hashes={:?} Size={}  {}",
+			hashes, self.size, comment
+		);
 		Ok(leaf_pos)
 	}
 
 	/// Push a pruned subtree into the PMMR
 	pub fn push_pruned_subtree(&mut self, hash: Hash, pos0: u64) -> Result<(), String> {
+		info!("push_pruned_subtree call.");
+
 		// First append the subtree
 		self.backend.append_pruned_subtree(hash, pos0)?;
 		self.size = pos0 + 1;
@@ -291,12 +298,13 @@ where
 		}
 
 		// Round size up to next leaf, ready for insertion
-		self.size = crate::core::pmmr::round_up_to_leaf_pos(pos);
+		self.size = round_up_to_leaf_pos(pos);
 		Ok(())
 	}
 
 	/// Reset prune list
 	pub fn reset_prune_list(&mut self) {
+		info!("reset_prune_list call.");
 		self.backend.reset_prune_list();
 	}
 
@@ -310,6 +318,7 @@ where
 	/// Specifically - snapshots the utxo file as we need this rewound before
 	/// sending the txhashset zip file to another node for fast-sync.
 	pub fn snapshot(&mut self, header: &BlockHeader) -> Result<(), String> {
+		info!("snapshot call with {:?}.", header);
 		self.backend.snapshot(header)?;
 		Ok(())
 	}
@@ -318,17 +327,27 @@ where
 	/// that had been canceled. Expects a position in the PMMR to rewind and
 	/// bitmaps representing the positions added and removed that we want to
 	/// "undo".
-	pub fn rewind(&mut self, position: u64, rewind_rm_pos: &Bitmap) -> Result<(), String> {
+	pub fn rewind(
+		&mut self,
+		position: u64,
+		rewind_rm_pos: &Bitmap,
+		comment: &str,
+	) -> Result<(), String> {
+		info!(
+			"rewind position={}  size={}  {}",
+			position, self.size, comment
+		);
 		// Identify which actual position we should rewind to as the provided
 		// position is a leaf. We traverse the MMR to include any parent(s) that
 		// need to be included for the MMR to be valid.
 		let leaf_pos = round_up_to_leaf_pos(position);
 		if leaf_pos > self.size {
-			warn!("Invalid attempt tp rewind PMMR!!! Data might be corrupted!!!");
+			warn!("Invalid attempt to rewind PMMR!!! Data might be corrupted!!!");
 			return Ok(());
 		}
 		self.backend.rewind(leaf_pos, rewind_rm_pos)?;
 		self.size = leaf_pos;
+		info!("rewind new size={} {}", leaf_pos, comment);
 		Ok(())
 	}
 
@@ -336,16 +355,27 @@ where
 	/// Returns an error if prune is called on a non-leaf position.
 	/// Returns false if the leaf node has already been pruned.
 	/// Returns true if pruning is successful.
-	pub fn prune(&mut self, pos0: u64) -> Result<bool, String> {
+	pub fn prune(&mut self, pos0: u64, comment: &str) -> Result<bool, String> {
+		info!("prune call with pos0={}  {}", pos0, comment);
+
 		if !is_leaf(pos0) {
+			info!("prune error: Node at {} is not a leaf, can't prune.", pos0);
 			return Err(format!("Node at {} is not a leaf, can't prune.", pos0));
 		}
 
 		if self.backend.get_hash(pos0).is_none() {
+			info!("prune error: backend.get_hash(pos0) is none");
 			return Ok(false);
 		}
 
-		self.backend.remove(pos0)?;
+		match self.backend.remove(pos0) {
+			Ok(()) => {}
+			Err(err) => {
+				info!("prune error: backend.remove return error: {}", err);
+				return Err(err);
+			}
+		}
+		info!("prune finishind with OK");
 		Ok(true)
 	}
 
