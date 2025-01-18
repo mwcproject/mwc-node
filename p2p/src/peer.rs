@@ -47,7 +47,7 @@ use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
 
 const MAX_TRACK_SIZE: usize = 200;
-const MAX_PEER_MSG_PER_MIN: u64 = 500;
+const MAX_PEER_MSG_PER_MIN: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Remind: don't mix up this 'State' with that 'State' in p2p/src/store.rs,
