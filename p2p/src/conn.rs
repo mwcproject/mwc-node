@@ -38,7 +38,7 @@ use std::time::Duration;
 
 // Potentially there can be large messages, like 1.5mb blocks. The Cap is for single peer, we really don't want overflow the network
 // That is don't put too large number here. 10 looks reasonable for this case
-pub const SEND_CHANNEL_CAP: usize = 10;
+pub const SEND_CHANNEL_CAP: usize = 32; // Every request for 512 heareds takes 16 chanks. Let's have space for 2 such requests.
 
 const CHANNEL_TIMEOUT: Duration = Duration::from_millis(15000);
 
