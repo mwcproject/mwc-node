@@ -701,13 +701,14 @@ impl TxHashSet {
 pub fn extending_readonly<F, T>(
 	handle: &mut PMMRHandle<BlockHeader>,
 	trees: &mut TxHashSet,
+	comment: &str,
 	inner: F,
 ) -> Result<T, Error>
 where
 	F: FnOnce(&mut ExtensionPair<'_>, &Batch<'_>) -> Result<T, Error>,
 {
 	let commit_index = trees.commit_index.clone();
-	let batch = commit_index.batch_write()?;
+	let batch = commit_index.batch_write(comment)?;
 
 	trace!("Starting new txhashset (readonly) extension.");
 
@@ -743,6 +744,7 @@ where
 pub fn utxo_view<F, T>(
 	handle: &PMMRHandle<BlockHeader>,
 	trees: &TxHashSet,
+	comment: &str,
 	inner: F,
 ) -> Result<T, Error>
 where
@@ -756,7 +758,7 @@ where
 
 		// Create a new batch here to pass into the utxo_view.
 		// Discard it (rollback) after we finish with the utxo_view.
-		let batch = trees.commit_index.batch_read()?;
+		let batch = trees.commit_index.batch_read(comment)?;
 		let utxo = UTXOView::new(header_pmmr, output_pmmr, rproof_pmmr);
 		res = inner(&utxo, &batch);
 	}
@@ -768,7 +770,7 @@ where
 /// via size.
 /// We create a new db batch for this view and discard it (rollback)
 /// when we are done with the view.
-pub fn rewindable_kernel_view<F, T>(trees: &TxHashSet, inner: F) -> Result<T, Error>
+pub fn rewindable_kernel_view<F, T>(trees: &TxHashSet, comment: &str, inner: F) -> Result<T, Error>
 where
 	F: FnOnce(&mut RewindableKernelView<'_>, &Batch<'_>) -> Result<T, Error>,
 {
@@ -779,7 +781,7 @@ where
 
 		// Create a new batch here to pass into the kernel_view.
 		// Discard it (rollback) after we finish with the kernel_view.
-		let batch = trees.commit_index.batch_read()?;
+		let batch = trees.commit_index.batch_read(comment)?;
 		let header = batch.head_header()?;
 		let mut view = RewindableKernelView::new(kernel_pmmr, header);
 		res = inner(&mut view, &batch);
@@ -1205,7 +1207,11 @@ impl<'a> Extension<'a> {
 		// Add pos to affected_pos to update the accumulator later on.
 		// Add the new output to the output_pos index.
 		for out in b.outputs() {
-			let pos = self.apply_output(out, batch)?;
+			let pos = self.apply_output(
+				out,
+				batch,
+				&format!("apply_block-1 {} {}", b.header.height, b.hash()),
+			)?;
 			affected_pos.push(pos);
 			batch.save_output_pos_height(
 				&out.commitment(),
@@ -1242,7 +1248,12 @@ impl<'a> Extension<'a> {
 
 		// Apply the kernels to the kernel MMR.
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
-		self.apply_kernels(b.kernels(), b.header.height, batch)?;
+		self.apply_kernels(
+			b.kernels(),
+			b.header.height,
+			batch,
+			&format!("apply_block-2 {} {}", b.header.height, b.hash()),
+		)?;
 
 		// Update the head of the extension to reflect the block we just applied.
 		self.head = Tip::from_header(&b.header);
@@ -1268,8 +1279,15 @@ impl<'a> Extension<'a> {
 		}
 	}
 
-	fn apply_output(&mut self, out: &Output, batch: &Batch<'_>) -> Result<u64, Error> {
+	fn apply_output(
+		&mut self,
+		out: &Output,
+		batch: &Batch<'_>,
+		comment: &str,
+	) -> Result<u64, Error> {
 		let commit = out.commitment();
+
+		info!("Calling apply_output, {}", comment);
 
 		if let Ok(pos0) = batch.get_output_pos(&commit) {
 			if let Some(out_mmr) = self.output_pmmr.get_data(pos0) {
@@ -1311,6 +1329,9 @@ impl<'a> Extension<'a> {
 				));
 			}
 		}
+
+		info!("Finished apply_output, {}, {}", comment, 1 + output_pos);
+
 		Ok(1 + output_pos)
 	}
 
@@ -1476,9 +1497,10 @@ impl<'a> Extension<'a> {
 		kernels: &[TxKernel],
 		height: u64,
 		batch: &Batch<'_>,
+		comment: &str,
 	) -> Result<(), Error> {
 		for kernel in kernels {
-			let pos = self.apply_kernel(kernel)?;
+			let pos = self.apply_kernel(kernel, comment)?;
 			let commit_pos = CommitPos { pos, height };
 			apply_kernel_rules(kernel, commit_pos, batch)?;
 		}
@@ -1486,7 +1508,12 @@ impl<'a> Extension<'a> {
 	}
 
 	/// Apply a kernel segment to the output PMMR. must be called in order
-	pub fn apply_kernel_segments(&mut self, segments: Vec<Segment<TxKernel>>) -> Result<(), Error> {
+	pub fn apply_kernel_segments(
+		&mut self,
+		segments: Vec<Segment<TxKernel>>,
+		comment: &str,
+	) -> Result<(), Error> {
+		info!("Starting apply_kernel_segments, {}", comment);
 		for segm in segments {
 			let (_sid, _hash_pos, _hashes, leaf_pos, leaf_data, _proof) = segm.parts();
 			// Non prunable - insert only leaves (with genesis kernel removedj)
@@ -1507,11 +1534,13 @@ impl<'a> Extension<'a> {
 				}
 			}
 		}
+		info!("Done apply_kernel_segments, {}", comment);
 		Ok(())
 	}
 
 	/// Push kernel onto MMR (hash and data files).
-	fn apply_kernel(&mut self, kernel: &TxKernel) -> Result<u64, Error> {
+	fn apply_kernel(&mut self, kernel: &TxKernel, comment: &str) -> Result<u64, Error> {
+		info!("Starting apply_kernel, {}", comment);
 		let pos = self
 			.kernel_pmmr
 			.push(kernel, "Extension, apply_kernel_segments")
@@ -1519,6 +1548,7 @@ impl<'a> Extension<'a> {
 				info!("apply_kernel kernel_pmmr.push failed with error: {}", e);
 				Error::TxHashSetErr(format!("pmmr push kernel error, {}", e))
 			})?;
+		info!("Done apply_kernel, {}, {}", comment, 1 + pos);
 		Ok(1 + pos)
 	}
 

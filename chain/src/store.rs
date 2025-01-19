@@ -157,16 +157,16 @@ impl ChainStore {
 	}
 
 	/// Builds a new batch for read only access with this store.
-	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
+	pub fn batch_read(&self, comment: &str) -> Result<Batch<'_>, Error> {
 		Ok(Batch {
-			db: self.db.batch_read()?,
+			db: self.db.batch_read(comment)?,
 		})
 	}
 
 	/// Builds a new batch for write access to be used with this store.
-	pub fn batch_write(&self) -> Result<Batch<'_>, Error> {
+	pub fn batch_write(&self, comment: &str) -> Result<Batch<'_>, Error> {
 		Ok(Batch {
-			db: self.db.batch_write()?,
+			db: self.db.batch_write(comment)?,
 		})
 	}
 }

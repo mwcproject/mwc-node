@@ -225,7 +225,9 @@ impl Desegmenter {
 	pub fn check_update_leaf_set_state(&self) -> Result<(), Error> {
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let mut _batch = self.store.batch_write()?;
+		let mut _batch = self
+			.store
+			.batch_write("desegmenter check_update_leaf_set_state")?;
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut _batch, |ext, _| {
 			let extension = &mut ext.extension;
 			let outputs_bitmap = self.outputs_bitmap.read();
@@ -289,25 +291,29 @@ impl Desegmenter {
 					let handle: tokio::task::JoinHandle<Result<(), Error>> =
 						task::spawn(async move {
 							// Process the chunk
-							txhashset::rewindable_kernel_view(&*txhashset.read(), |view, batch| {
-								let mut start_block = start_block.clone();
-								while start_block.height > end_height {
-									view.rewind(&start_block)?;
-									view.validate_root()?;
-									start_block = batch.get_previous_header(&start_block)?;
-									let processed = processed.fetch_add(1, Ordering::Relaxed);
-									if processed % 100000 == 0 || processed == total {
-										status.update(SyncStatus::TxHashsetHeadersValidation {
-											headers: processed,
-											headers_total: total,
-										});
+							txhashset::rewindable_kernel_view(
+								&*txhashset.read(),
+								"validate_complete_state",
+								|view, batch| {
+									let mut start_block = start_block.clone();
+									while start_block.height > end_height {
+										view.rewind(&start_block)?;
+										view.validate_root()?;
+										start_block = batch.get_previous_header(&start_block)?;
+										let processed = processed.fetch_add(1, Ordering::Relaxed);
+										if processed % 100000 == 0 || processed == total {
+											status.update(SyncStatus::TxHashsetHeadersValidation {
+												headers: processed,
+												headers_total: total,
+											});
+										}
+										if stop_state.is_stopped() {
+											return Ok(());
+										}
 									}
-									if stop_state.is_stopped() {
-										return Ok(());
-									}
-								}
-								Ok(())
-							})
+									Ok(())
+								},
+							)
 						});
 					handles.push(handle);
 				}
@@ -343,7 +349,9 @@ impl Desegmenter {
 			}
 			let header_pmmr = self.header_pmmr.read();
 			let txhashset = self.txhashset.read();
-			let batch = self.store.batch_read()?;
+			let batch = self
+				.store
+				.batch_read("desegmenter validate_complete_state1")?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis,
 				&header_pmmr,
@@ -362,7 +370,9 @@ impl Desegmenter {
 			info!("desegmenter validation: rewinding a 2nd time (writeable)");
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
-			let mut batch = self.store.batch_write()?;
+			let mut batch = self
+				.store
+				.batch_write("desegmenter validate_complete_state2")?;
 			txhashset::extending(
 				&mut header_pmmr,
 				&mut txhashset,
@@ -704,7 +714,7 @@ impl Desegmenter {
 
 				let mut header_pmmr = self.header_pmmr.write();
 				let mut txhashset = self.txhashset.write();
-				let mut batch = self.store.batch_write()?;
+				let mut batch = self.store.batch_write("desegmenter add_output_segment")?;
 
 				output_segment_cache.apply_new_segment(segment, true, |segm| {
 					if log_enabled!(Level::Trace) {
@@ -757,7 +767,9 @@ impl Desegmenter {
 
 				let mut header_pmmr = self.header_pmmr.write();
 				let mut txhashset = self.txhashset.write();
-				let mut batch = self.store.batch_write()?;
+				let mut batch = self
+					.store
+					.batch_write("desegmenter add_rangeproof_segment")?;
 
 				rangeproof_segment_cache.apply_new_segment(segment, true, |seg| {
 					trace!(
@@ -809,7 +821,7 @@ impl Desegmenter {
 
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
-			let mut batch = self.store.batch_write()?;
+			let mut batch = self.store.batch_write("desegmenter add_kernel_segment")?;
 
 			kernel_segment_cache.apply_new_segment(segment, false, |segm| {
 				trace!(
@@ -823,7 +835,7 @@ impl Desegmenter {
 					&mut batch,
 					|ext, _batch| {
 						let extension = &mut ext.extension;
-						extension.apply_kernel_segments(segm)?;
+						extension.apply_kernel_segments(segm, "desegmenter call")?;
 						Ok(())
 					},
 				)?;

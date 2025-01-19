@@ -323,31 +323,51 @@ impl Store {
 	}
 
 	/// Builds a new read only batch to be used with this store.
-	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
+	pub fn batch_read(&self, comment: &str) -> Result<Batch<'_>, Error> {
 		// check if the db needs resizing before returning the batch
 		if self.needs_resize()? {
 			self.do_resize()?;
 		}
 		let tx = lmdb::ReadTransaction::new(self.env.clone())?;
+		info!("Creating batch read, {}", comment);
 		Ok(Batch {
 			store: self,
 			tx_w: None,
 			tx_r: Some(tx),
+			comment: format!("batch read, {}", comment).into(),
 		})
 	}
 
 	/// Builds a new batch with write access to be used with this store.
-	pub fn batch_write(&self) -> Result<Batch<'_>, Error> {
+	pub fn batch_write(&self, comment: &str) -> Result<Batch<'_>, Error> {
 		// check if the db needs resizing before returning the batch
 		if self.needs_resize()? {
 			self.do_resize()?;
 		}
 		let tx = lmdb::WriteTransaction::new(self.env.clone())?;
+		info!("Creating batch write, {}", comment);
 		Ok(Batch {
 			store: self,
 			tx_w: Some(tx),
 			tx_r: None,
+			comment: format!("batch write, {}", comment).into(),
 		})
+	}
+}
+
+struct BatchComment {
+	comment: String,
+}
+
+impl From<String> for BatchComment {
+	fn from(comment: String) -> Self {
+		BatchComment { comment }
+	}
+}
+
+impl Drop for BatchComment {
+	fn drop(&mut self) {
+		info!("Dropping batch: {}", self.comment);
 	}
 }
 
@@ -356,6 +376,7 @@ pub struct Batch<'a> {
 	store: &'a Store,
 	tx_w: Option<lmdb::WriteTransaction<'a>>,
 	tx_r: Option<lmdb::ReadTransaction<'a>>,
+	comment: BatchComment,
 }
 
 impl<'a> Batch<'a> {
@@ -486,8 +507,18 @@ impl<'a> Batch<'a> {
 
 	/// Writes the batch to db
 	pub fn commit(self) -> Result<(), Error> {
+		info!("Commiting batch {}", self.comment.comment);
 		if let Some(tx) = self.tx_w {
-			tx.commit()?;
+			match tx.commit() {
+				Ok(_) => {}
+				Err(e) => {
+					error!(
+						"FAILED to commit batch {}, Error: {}",
+						self.comment.comment, e
+					);
+					return Err(e.into());
+				}
+			}
 			Ok(())
 		} else {
 			Err(Error::BatchTypeError(
@@ -505,6 +536,7 @@ impl<'a> Batch<'a> {
 			));
 		}
 
+		info!("Creating child batch from, {}", self.comment.comment);
 		Ok(Batch {
 			store: self.store,
 			tx_r: None,
@@ -512,6 +544,7 @@ impl<'a> Batch<'a> {
 				Some(tx) => Some(tx.child_tx()?),
 				None => None,
 			},
+			comment: format!("Child from {}", self.comment.comment).into(),
 		})
 	}
 }
