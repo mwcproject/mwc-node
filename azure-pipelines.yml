@@ -82,8 +82,6 @@ jobs:
         TARGET: aarch64-apple-darwin
   steps:
     - template: '.ci/test.yml'
-      parameters:
-        target: ${{ matrix.TARGET }}
     - template: '.ci/release.yml'
 - job: windows
   pool:
