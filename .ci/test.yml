@@ -6,6 +6,18 @@ steps:
       ROARING_ARCH: x86-64-v2
     displayName: Windows Cargo Test
     condition: and(eq( variables['Agent.OS'], 'Windows_NT' ), eq( variables['CI_JOB'], 'test-all' ))
+  # macOS for x86
+  - script: |
+      rustup target add x86_64-apple-darwin
+      ROARING_ARCH=x86-64-v2 cargo test --all --target x86_64-apple-darwin
+    displayName: macOS Cargo Test (x86_64)
+    condition: and(eq(variables['Agent.OS'], 'Darwin'), eq(variables['Agent.OSArchitecture'], 'X64'), eq(variables['CI_JOB'], 'test-all'))
+  # macOS for arm64
+  - script: |
+      rustup target add aarch64-apple-darwin
+      ROARING_ARCH=aarch64 cargo test --all --target aarch64-apple-darwin
+    displayName: macOS Cargo Test (ARM64)
+    condition: and(eq(variables['Agent.OS'], 'Darwin'), eq(variables['Agent.OSArchitecture'], 'ARM64'), eq(variables['CI_JOB'], 'test-all'))
   - script: 'ROARING_ARCH=x86-64-v2 cargo test --all'
     displayName: macOS Cargo Test
     condition: and(eq( variables['Agent.OS'], 'Darwin' ), eq( variables['CI_JOB'], 'test-all' ))
