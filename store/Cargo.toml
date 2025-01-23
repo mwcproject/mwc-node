@@ -1,6 +1,6 @@
 [package]
 name = "mwc_store"
-version = "5.3.6"
+version = "5.3.7"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -21,8 +21,8 @@ serde_derive = "1"
 thiserror = "1"
 log = "0.4"
 
-mwc_core = { path = "../core", version = "5.3.6" }
-mwc_util = { path = "../util", version = "5.3.6" }
+mwc_core = { path = "../core", version = "5.3.7" }
+mwc_util = { path = "../util", version = "5.3.7" }
 
 [dev-dependencies]
 chrono = "0.4.11"
