@@ -8,13 +8,14 @@ steps:
     condition: and(eq( variables['Agent.OS'], 'Windows_NT' ), eq( variables['CI_JOB'], 'test-all' ))
   # macOS for x86
   - script: |
-      rustup target add $(build.target)
-      ROARING_ARCH=x86-64-v2 cargo test --all --target $(build.target)
-    displayName: macOS Cargo Test for $(build.target)
+      echo "Running macOS Cargo Test for $(TARGET)"
+      rustup target add $(TARGET)
+      ROARING_ARCH=x86-64-v2 cargo test --all --target $(TARGET)
+    displayName: macOS Cargo Test for $(TARGET)
     condition: and(eq(variables['Agent.OS'], 'Darwin'), eq(variables['CI_JOB'], 'test-all'))
   - script: 'ROARING_ARCH=x86-64-v2 cargo test --all'
     displayName: macOS Cargo Test
-    condition: and(eq( variables['Agent.OS'], 'Darwin' ), eq( variables['CI_JOB'], 'test-all' ))
+    condition: and(eq( variables['Agent.OS'], 'Darwin'), eq( variables['CI_JOB'], 'test-all' ))
   - script: 'ROARING_ARCH=x86-64-v2 .ci/general-jobs'
     displayName: Linux Cargo Test
     condition: eq( variables['Agent.OS'], 'Linux' )
