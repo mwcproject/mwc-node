@@ -1,6 +1,6 @@
 [package]
 name = "mwc_api"
-version = "5.3.6"
+version = "5.3.7"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "APIs for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -30,12 +30,12 @@ url = "2.1"
 bytes = "0.5"
 chrono = { version = "0.4.11", features = ["serde"] }
 
-mwc_core = { path = "../core", version = "5.3.6" }
-mwc_chain = { path = "../chain", version = "5.3.6" }
-mwc_p2p = { path = "../p2p", version = "5.3.6" }
-mwc_pool = { path = "../pool", version = "5.3.6" }
-mwc_store = { path = "../store", version = "5.3.6" }
-mwc_util = { path = "../util", version = "5.3.6" }
+mwc_core = { path = "../core", version = "5.3.7" }
+mwc_chain = { path = "../chain", version = "5.3.7" }
+mwc_p2p = { path = "../p2p", version = "5.3.7" }
+mwc_pool = { path = "../pool", version = "5.3.7" }
+mwc_store = { path = "../store", version = "5.3.7" }
+mwc_util = { path = "../util", version = "5.3.7" }
 
 # NOTE. We can't have hyper-rustls the same version for Android and non android. because if how rust builds dependency.
 # Android must have v0.20+

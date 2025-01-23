@@ -137,7 +137,7 @@ impl Handshake {
 
 		// write and read the handshake response
 		let msg = Msg::new(Type::Hand, hand, self.protocol_version)?;
-		write_message(conn, &msg, self.tracker.clone())?;
+		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		let shake: Shake = read_message(conn, self.protocol_version, Type::Shake)?;
 		if shake.genesis != self.genesis {
@@ -157,7 +157,7 @@ impl Handshake {
 			// send tor address
 			let tor_address = TorAddress::new(onion_address);
 			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
-			write_message(conn, &msg, self.tracker.clone())?;
+			write_message(conn, &vec![msg], self.tracker.clone())?;
 		} else {
 			debug!("non-Tor peer {:?}", self_addr);
 		}
@@ -269,7 +269,7 @@ impl Handshake {
 		};
 
 		let msg = Msg::new(Type::Shake, shake, negotiated_version)?;
-		write_message(conn, &msg, self.tracker.clone())?;
+		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		trace!("Success handshake with {}.", peer_info.addr);
 

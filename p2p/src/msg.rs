@@ -255,7 +255,7 @@ pub fn read_message<T: Readable, R: Read>(
 
 pub fn write_message<W: Write>(
 	stream: &mut W,
-	msg: &Msg,
+	msgs: &Vec<Msg>,
 	tracker: Arc<Tracker>,
 ) -> Result<(), Error> {
 	// Introduce a delay so messages are spaced at least 150ms apart.
@@ -269,26 +269,42 @@ pub fn write_message<W: Write>(
 		}
 	}
 
-	let mut buf = ser::ser_vec(&msg.header, msg.version)?;
-	buf.extend(&msg.body[..]);
-	stream.write_all(&buf[..])?;
-	tracker.inc_sent(buf.len() as u64);
-	if let Some(file) = &msg.attachment {
-		let mut file = file.try_clone()?;
-		let mut buf = [0u8; 8000];
-		loop {
-			match file.read(&mut buf[..]) {
-				Ok(0) => break,
-				Ok(n) => {
-					stream.write_all(&buf[..n])?;
-					// Increase sent bytes "quietly" without incrementing the counter.
-					// (In a loop here for the single attachment).
-					tracker.inc_quiet_sent(n as u64);
+	// sending tmp buffer.
+	let mut tmp_buf: Vec<u8> = vec![];
+
+	for msg in msgs {
+		tmp_buf.extend(ser::ser_vec(&msg.header, msg.version)?);
+		tmp_buf.extend(&msg.body[..]);
+		if let Some(file) = &msg.attachment {
+			// finalize what we have before attachments...
+			if !tmp_buf.is_empty() {
+				stream.write_all(&tmp_buf[..])?;
+				tracker.inc_sent(tmp_buf.len() as u64);
+				tmp_buf.clear();
+			}
+			let mut file = file.try_clone()?;
+			let mut buf = [0u8; 8000];
+			loop {
+				match file.read(&mut buf[..]) {
+					Ok(0) => break,
+					Ok(n) => {
+						stream.write_all(&buf[..n])?;
+						// Increase sent bytes "quietly" without incrementing the counter.
+						// (In a loop here for the single attachment).
+						tracker.inc_quiet_sent(n as u64);
+					}
+					Err(e) => return Err(From::from(e)),
 				}
-				Err(e) => return Err(From::from(e)),
 			}
 		}
 	}
+
+	if !tmp_buf.is_empty() {
+		stream.write_all(&tmp_buf[..])?;
+		tracker.inc_sent(tmp_buf.len() as u64);
+		tmp_buf.clear();
+	}
+
 	Ok(())
 }
 

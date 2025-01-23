@@ -143,11 +143,7 @@ impl PibdParams {
 
 	/// Number of simultaneous requests for blocks we should make per available peer.
 	pub fn get_blocks_request_per_peer(&self) -> usize {
-		match self.cpu_num {
-			1 => 2,
-			2 => 3,
-			_ => 4,
-		}
+		cmp::min(8, self.cpu_num * 2)
 	}
 
 	/// Maxumum number of blocks that can await into the DB as orphans
@@ -164,11 +160,7 @@ impl PibdParams {
 	/// divisible by 3 to try and evenly spread requests amount the 3 main MMRs (Bitmap segments
 	/// will always be requested first)
 	pub fn get_segments_request_per_peer(&self) -> usize {
-		match self.cpu_num {
-			1 => 2,
-			2 => 3,
-			_ => 4,
-		}
+		cmp::min(8, self.cpu_num * 2)
 	}
 
 	/// Maximum number of simultaneous requests. Please note, the data will be processed in a single thread, so

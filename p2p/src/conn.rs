@@ -26,17 +26,19 @@ use crate::msg::{write_message, Consumed, Message, Msg};
 use crate::mwc_core::ser::ProtocolVersion;
 use crate::types::Error;
 use crate::util::{RateCounter, RwLock};
+use crossbeam::channel::{RecvTimeoutError, TryRecvError};
 use mwc_chain::SyncState;
 use std::fs::File;
 use std::io::{self, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-pub const SEND_CHANNEL_CAP: usize = 100;
+// Potentially there can be large messages, like 1.5mb blocks. The Cap is for single peer, we really don't want overflow the network
+// That is don't put too large number here. 10 looks reasonable for this case
+pub const SEND_CHANNEL_CAP: usize = 32; // Every request for 512 heareds takes 16 chanks. Let's have space for 2 such requests.
 
 const CHANNEL_TIMEOUT: Duration = Duration::from_millis(15000);
 
@@ -111,7 +113,7 @@ impl StopHandle {
 #[derive(Clone)]
 pub struct ConnHandle {
 	/// Channel to allow sending data through the connection
-	pub send_channel: mpsc::SyncSender<Msg>,
+	pub send_channel: crossbeam::channel::Sender<Msg>,
 }
 
 impl ConnHandle {
@@ -125,13 +127,13 @@ impl ConnHandle {
 	pub fn send(&self, msg: Msg) -> Result<(), Error> {
 		match self.send_channel.try_send(msg) {
 			Ok(()) => Ok(()),
-			Err(mpsc::TrySendError::Disconnected(_)) => {
+			Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
 				Err(Error::Send("try_send disconnected".to_owned()))
 			}
-			Err(mpsc::TrySendError::Full(_)) => {
-				debug!("conn_handle: try_send but buffer is full, dropping msg");
-				Ok(())
-			}
+			Err(crossbeam::channel::TrySendError::Full(msg)) => self
+				.send_channel
+				.send(msg)
+				.map_err(|_| Error::Send("try_send disconnected".to_owned())),
 		}
 	}
 }
@@ -183,7 +185,7 @@ pub fn listen<H>(
 where
 	H: MessageHandler,
 {
-	let (send_tx, send_rx) = mpsc::sync_channel(SEND_CHANNEL_CAP);
+	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
 
 	let stopped = Arc::new(AtomicBool::new(false));
 
@@ -217,7 +219,7 @@ fn poll<H>(
 	conn_handle: ConnHandle,
 	version: ProtocolVersion,
 	handler: H,
-	send_rx: mpsc::Receiver<Msg>,
+	send_rx: crossbeam::channel::Receiver<Msg>,
 	stopped: Arc<AtomicBool>,
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
@@ -247,6 +249,9 @@ where
 				if reader_stopped.load(Ordering::Relaxed) {
 					break;
 				}
+
+				// Note, we are processing messages from a single peer one by one intentionally. Even we can process them in parallel,
+				// we don't want to do that because DDOS attacks. One peer can't get more than a single thread of this node.
 
 				// check the read end
 				let (next, bytes_read) = codec.read();
@@ -337,7 +342,25 @@ where
 			let mut retry_send = Err(());
 			let _ = writer.set_write_timeout(Some(BODY_IO_TIMEOUT));
 			loop {
-				let maybe_data = retry_send.or_else(|_| send_rx.recv_timeout(CHANNEL_TIMEOUT));
+				let maybe_data = retry_send.or_else(|_| {
+					let mut data = match send_rx.recv_timeout(CHANNEL_TIMEOUT) {
+						Ok(msg) => vec![msg],
+						Err(e) => return Err(e),
+					};
+					// send_rx expected to have capacuty. Capacity will limit the number of message that we can read form the stream
+					loop {
+						match send_rx.try_recv() {
+							Ok(msg) => {
+								data.push(msg);
+							}
+							Err(TryRecvError::Empty) => break,
+							Err(TryRecvError::Disconnected) => {
+								return Err(RecvTimeoutError::Disconnected)
+							} // All other error are fatal, report as disconnected
+						}
+					}
+					Ok(data)
+				});
 				retry_send = Err(());
 				match maybe_data {
 					Ok(data) => {

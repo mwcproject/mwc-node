@@ -1,6 +1,6 @@
 [package]
 name = "mwc_keychain"
-version = "5.3.6"
+version = "5.3.7"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -27,4 +27,8 @@ ripemd160 = "0.9"
 sha2 = "0.9"
 pbkdf2 = "0.8"
 
-mwc_util = { path = "../util", version = "5.3.6" }
+mwc_util = { path = "../util", version = "5.3.7" }
+
+[features]
+clippy = []
+serde = []
