@@ -7,6 +7,4 @@ export OPENSSL_STATIC=yes
 
 ROARING_ARCH=x86-64-v2
 
-rustup target add x86_64-apple-darwin
-
-cargo build --release --target x86_64-apple-darwin
+cargo build --release
