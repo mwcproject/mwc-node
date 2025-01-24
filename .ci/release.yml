@@ -5,14 +5,9 @@ steps:
   - script: './build_static_linux.sh'
     displayName: Build Linux Release
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
-  # macOS Intel Release Build
   - script: './build_static.sh'
-    displayName: Build MacOS Release (Intel)
-    condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin'), eq(variables['PLATFORM'], 'macos-x86_64'))
-  # macOS ARM Release Build
-  - script: './build_static_arm.sh'
-    displayName: Build MacOS Release (ARM)
-    condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin'), eq(variables['PLATFORM'], 'macos-arm64'))
+    displayName: Build MacOS Release
+    condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
   - script: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}

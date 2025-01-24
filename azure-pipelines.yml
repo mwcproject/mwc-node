@@ -66,20 +66,11 @@ jobs:
     vmImage: macos-latest
   strategy:
     matrix:
-      x86_64:
+      test:
         CI_JOB: test-all
-        TARGET: x86_64-apple-darwin
-      arm64:
-        CI_JOB: test-all
-        TARGET: aarch64-apple-darwin
-      release_x86_64:
+      release:
         CI_JOB: release
-        PLATFORM: macos-x86_64
-        TARGET: x86_64-apple-darwin
-      release_arm64:
-        CI_JOB: release
-        PLATFORM: macos-arm64
-        TARGET: aarch64-apple-darwin
+        PLATFORM: macos
   steps:
     - template: '.ci/test.yml'
     - template: '.ci/release.yml'
