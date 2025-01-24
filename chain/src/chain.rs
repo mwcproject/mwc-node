@@ -552,52 +552,38 @@ impl Chain {
 		// transaction is good for performance.
 		let mut blocks: Vec<Block> = vec![];
 
-		// We can't process as miltiple during sync because it is slow.
-		// But also we better to process blocks one by one when node running because of possible reorg.
-		// Reord requires to roll back single block, not a whole package.
-		let multiple_processing_height_limit = self.header_head()?.height.saturating_sub(100);
-		if b.header.height < multiple_processing_height_limit {
-			// if it is a block on the chain, let's try to add many of them
-			if let Ok(header) = self.get_header_by_height(b.header.height) {
-				// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
-				if header.hash() == b.hash() {
-					blocks.push(b.clone());
-					loop {
-						let last_block = blocks.last().unwrap();
-						let next_hegiht = last_block.header.height + 1;
-						if let Ok(header) = self.get_header_by_height(next_hegiht) {
-							if let Some(orphan) = self.orphans.get_orphan(&header.hash()) {
-								blocks.push(orphan.block);
-								continue; // can process the next block
-							}
+		// if it is a block on the chain, let's try to add many of them
+		if let Ok(header) = self.get_header_by_height(b.header.height) {
+			// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
+			if header.hash() == b.hash() {
+				blocks.push(b.clone());
+				loop {
+					let last_block = blocks.last().unwrap();
+					let next_hegiht = last_block.header.height + 1;
+					if let Ok(header) = self.get_header_by_height(next_hegiht) {
+						if let Some(orphan) = self.orphans.get_orphan(&header.hash()) {
+							blocks.push(orphan.block);
+							continue; // can process the next block
 						}
-						break;
 					}
-					if blocks
-						.last()
-						.expect("At least one element in collection")
-						.header
-						.height < multiple_processing_height_limit
-					{
-						// good, we can process multiple blocks, it should be faster than one by one
-						let block_hashes: Vec<(u64, Hash)> =
-							blocks.iter().map(|b| (b.header.height, b.hash())).collect();
-						match self.process_block_multiple(&blocks, opts) {
-							Ok(tip) => {
-								// We are good, let's clean up the orphans
-								for (height, hash) in block_hashes {
-									let _ =
-										self.orphans.remove_by_height_header_hash(height, &hash);
-								}
-								return Ok(tip); // Done with success
-							}
-							Err(e) => {
-								if e.is_bad_data() {
-									info!("Failed to process multiple blocks, will try process one by one. {}",e);
-								} else {
-									debug!("Failed to process multiple blocks, will try process one by one. {}",e);
-								}
-							}
+					break;
+				}
+				// good, we can process multiple blocks, it should be faster than one by one
+				let block_hashes: Vec<(u64, Hash)> =
+					blocks.iter().map(|b| (b.header.height, b.hash())).collect();
+				match self.process_block_multiple(&blocks, opts) {
+					Ok(tip) => {
+						// We are good, let's clean up the orphans
+						for (height, hash) in block_hashes {
+							let _ = self.orphans.remove_by_height_header_hash(height, &hash);
+						}
+						return Ok(tip); // Done with success
+					}
+					Err(e) => {
+						if e.is_bad_data() {
+							info!("Failed to process multiple blocks, will try process one by one. {}",e);
+						} else {
+							debug!("Failed to process multiple blocks, will try process one by one. {}",e);
 						}
 					}
 				}
