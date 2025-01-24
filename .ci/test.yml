@@ -8,9 +8,9 @@ steps:
     condition: and(eq( variables['Agent.OS'], 'Windows_NT' ), eq( variables['CI_JOB'], 'test-all' ))
   # macOS for x86
   - script: |
-      rustup target add ${{build.target}}
-      ROARING_ARCH=x86-64-v2 cargo test --all --target ${{build.target}}
-    displayName: macOS Cargo Test for ${{build.target}}
+      rustup target add ${{ parameters.target }}
+      ROARING_ARCH=x86-64-v2 cargo test --all --target ${{ parameters.target }}
+    displayName: macOS Cargo Test for ${{ parameters.target }}
     condition: and(eq(variables['Agent.OS'], 'Darwin'), eq(variables['CI_JOB'], 'test-all'))
   - script: 'ROARING_ARCH=x86-64-v2 cargo test --all'
     displayName: macOS Cargo Test
