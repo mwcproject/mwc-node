@@ -14,14 +14,23 @@ jobs:
         working-directory: ${{ matrix.job_args }}
         run: cargo test --release
 
-  macos-tests:
+  macos-intel-tests:
     name: macOS Tests
     runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-      - name: Tests
+      - name: Tests (Intel)
         run: cargo test --release --all
+
+  macos-arm-tests:
+    name: macOS Tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Tests (ARM64)
+        run: cargo test --release --all --target aarch64-apple-darwin
 
   windows-tests:
     name: Windows Tests
