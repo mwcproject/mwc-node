@@ -12,7 +12,7 @@ steps:
   # macOS ARM Release Build
   - script: './build_static_arm.sh'
     displayName: Build MacOS Release (ARM)
-    condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin'), eq(variables['Agent.OSArchitecture'], 'ARM64'), 'arm64'))
   - script: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}
