@@ -378,8 +378,8 @@ impl DesegmenterRequestor {
 	}
 }
 fn test_pibd_copy_impl(src_root_dir: &str, dest_root_dir: &str) {
-	global::set_global_chain_type(global::ChainTypes::Mainnet);
-	let genesis = genesis::genesis_main();
+	global::set_global_chain_type(global::ChainTypes::Floonet);
+	let genesis = genesis::genesis_floo();
 
 	let src_responder = Arc::new(SegmenterResponder::new(src_root_dir, genesis.clone()));
 
@@ -432,8 +432,8 @@ fn test_pibd_copy_real() {
 	util::init_test_logger();
 
 	// if testing against a real chain, insert location here
-	let src_root_dir = format!("/Users/bay/.mwc/main_orig/chain_data");
-	let dest_root_dir = format!("/Users/bay/.mwc/main_copy/chain_data");
+	let src_root_dir = format!("/Users/bay/.mwc/floo_orig");
+	let dest_root_dir = format!("/Users/bay/.mwc/floo_copy");
 
 	//self::chain_test_helper::clean_output_dir(&dest_root_dir);
 	test_pibd_copy_impl(&src_root_dir, &dest_root_dir);

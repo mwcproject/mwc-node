@@ -47,6 +47,12 @@ pub struct HeaderHashesDesegmenter {
 	pibd_params: Arc<PibdParams>,
 }
 
+/// This formula must be the same for segmenter and desegmenter
+/// Both party needs to be onthe same page regarding the size of the data
+pub fn calc_header_hashes_from_target_height(target_height: u64) -> u64 {
+	target_height / HEADERS_PER_BATCH as u64 + 1
+}
+
 impl HeaderHashesDesegmenter {
 	/// Create a new segmenter based on the provided txhashset and the specified block header
 	pub fn new(
@@ -55,7 +61,7 @@ impl HeaderHashesDesegmenter {
 		headers_root_hash: Hash, // target height and headers_root_hash must be get as a result of handshake process.
 		pibd_params: Arc<PibdParams>,
 	) -> Self {
-		let n_leaves = target_height / HEADERS_PER_BATCH as u64 + 1;
+		let n_leaves = calc_header_hashes_from_target_height(target_height);
 		let header_pmmr_size = pmmr::insertion_to_pmmr_index(n_leaves);
 		let header_segments = Desegmenter::generate_segments(
 			Hash::LEN,
