@@ -1340,9 +1340,10 @@ impl Chain {
 		let mut segm_header_pmmr_backend: VecBackend<Hash> = VecBackend::new();
 		let mut segm_header_pmmr = PMMR::new(&mut segm_header_pmmr_backend);
 
-		for i in (0..header.height).step_by(HEADERS_PER_BATCH as usize) {
+		let hash_num = txhashset::calc_header_hashes_from_target_height(header.height);
+		for i in 0..hash_num {
 			let data = self
-				.get_header_hash_by_height(i)
+				.get_header_hash_by_height(i * HEADERS_PER_BATCH as u64)
 				.expect("Header data is expected below horizon");
 			segm_header_pmmr.push(&data).map_err(|s| {
 				Error::SyncError(format!("Unable to create Headers hash MMR, {}", s))
