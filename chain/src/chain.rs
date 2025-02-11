@@ -1724,7 +1724,7 @@ impl Chain {
 		// allowing an additional 60 blocks in height before allowing a further compaction.
 		if let (Ok(tail), Ok(head)) = (self.tail(), self.head()) {
 			let horizon = global::cut_through_horizon() as u64;
-			let threshold = horizon.saturating_add(60);
+			let threshold = horizon.saturating_add(global::cut_through_horizon() as u64 / 10);
 			let next_compact = tail.height.saturating_add(threshold);
 			if next_compact > head.height {
 				debug!(
