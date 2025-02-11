@@ -118,8 +118,12 @@ pub fn connect_and_monitor(
 					expire_check_time = now + Duration::seconds(EXPIRE_INTERVAL);
 				}
 
+				let request_more_connections = now > listen_time;
+
 				// monitor peers first, then process sent requests with 'listen_for_addrs'
-				if now > peer_monitor_time {
+				if now > peer_monitor_time
+					|| (request_more_connections && listen_q_addrs.is_empty())
+				{
 					// monitor additional peers if we need to add more
 					monitor_peers(
 						peers.clone(),
@@ -127,6 +131,7 @@ pub fn connect_and_monitor(
 						use_tor_connection,
 						tx.clone(),
 						listen_q_addrs.is_empty(),
+						request_more_connections,
 					);
 
 					if peers.is_sync_mode() {
@@ -138,9 +143,9 @@ pub fn connect_and_monitor(
 
 				// make several attempts to get peers as quick as possible
 				// with exponential backoff
-				if now > peers_connect_time {
+				if now > peers_connect_time || request_more_connections {
 					let is_boost = peers.is_boosting_mode();
-					if peers.enough_outbound_peers() && now < listen_time {
+					if peers.enough_outbound_peers() && !request_more_connections {
 						peers_connect_time = now + Duration::seconds(PEERS_CHECK_TIME_FULL);
 					} else {
 						// try to connect to any address sent to the channel
@@ -187,6 +192,7 @@ fn monitor_peers(
 	use_tor_connection: bool,
 	tx: mpsc::Sender<PeerAddr>,
 	load_peers_from_db: bool,
+	request_more_connections: bool,
 ) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
@@ -247,7 +253,7 @@ fn monitor_peers(
 		config.clone(),
 	);
 
-	if peers.enough_outbound_peers() {
+	if !request_more_connections && peers.enough_outbound_peers() {
 		return;
 	}
 
