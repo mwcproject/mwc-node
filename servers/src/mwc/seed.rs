@@ -418,9 +418,6 @@ fn listen_for_addrs(
 	listen_q_addrs
 		.retain(|p| !(peers.is_known(p).unwrap_or(false) || connecting_history.contains_key(p)));
 
-	// If we have a healthy number of outbound peers then we are done here.
-	debug_assert!(!peers.enough_outbound_peers());
-
 	connection_threads.retain(|h| !h.is_finished());
 
 	while !listen_q_addrs.is_empty() {
