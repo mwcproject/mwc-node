@@ -41,6 +41,7 @@ const EXPIRE_INTERVAL: i64 = 3600;
 const PEERS_CHECK_TIME_FULL: i64 = 30;
 const PEERS_CHECK_TIME_BOOST: i64 = 3;
 const PEERS_MONITOR_INTERVAL: i64 = 60;
+const PEERS_LISTEN_MIN_INTERVAL: i64 = 600; // Interval to add some new peers even if everything is fine
 
 const PEER_RECONNECT_INTERVAL: i64 = 600;
 const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
@@ -70,6 +71,7 @@ pub fn connect_and_monitor(
 			let mut peers_connect_time = now + Duration::seconds(PEERS_CHECK_TIME_BOOST);
 			let mut expire_check_time = now + Duration::seconds(EXPIRE_INTERVAL);
 			let mut peer_monitor_time = now.clone();
+			let mut listen_time = now.clone();
 
 			let mut connecting_history: HashMap<PeerAddr, DateTime<Utc>> = HashMap::new();
 
@@ -138,7 +140,7 @@ pub fn connect_and_monitor(
 				// with exponential backoff
 				if now > peers_connect_time {
 					let is_boost = peers.is_boosting_mode();
-					if peers.enough_outbound_peers() {
+					if peers.enough_outbound_peers() && now < listen_time {
 						peers_connect_time = now + Duration::seconds(PEERS_CHECK_TIME_FULL);
 					} else {
 						// try to connect to any address sent to the channel
@@ -158,6 +160,7 @@ pub fn connect_and_monitor(
 							PEERS_CHECK_TIME_FULL
 						};
 						peers_connect_time = now + Duration::seconds(duration);
+						listen_time = now + Duration::seconds(PEERS_LISTEN_MIN_INTERVAL);
 					}
 				}
 
