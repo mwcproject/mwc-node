@@ -107,7 +107,6 @@ impl OrphansSync {
 			}
 		}
 
-		let unknown_blocks = self.unknown_blocks.read();
 		{
 			let mut orphans_requests = self.orphans_requests.write();
 			orphans_requests.retain(|hash, _| block_to_validate.contains(hash));
@@ -136,7 +135,7 @@ impl OrphansSync {
 					}
 					Some((prev_block_hash.clone(), bl_height))
 				}
-				None => match unknown_blocks.get(orph_hash) {
+				None => match self.unknown_blocks.read().get(orph_hash) {
 					Some((b, _time)) => Some((b.header.prev_hash.clone(), b.header.height.clone())),
 					None => None,
 				},

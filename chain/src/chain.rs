@@ -1684,61 +1684,31 @@ impl Chain {
 	/// *Only* runs if we are not in archive mode.
 	fn remove_historical_blocks(
 		&self,
-		header_pmmr: &txhashset::PMMRHandle<BlockHeader>,
-		archive_header: BlockHeader,
+		new_tail: &BlockHeader,
 		batch: &store::Batch<'_>,
 	) -> Result<(), Error> {
 		if self.archive_mode() {
 			return Ok(());
 		}
 
-		let mut horizon = global::cut_through_horizon() as u64;
-
-		let head = batch.head()?;
-
-		let tail = match batch.tail() {
-			Ok(tail) => tail,
-			Err(_) => Tip::from_header(&self.genesis.header),
-		};
-
-		let mut cutoff = head.height.saturating_sub(horizon);
-
-		// TODO: Check this, compaction selects a different horizon
-		// block from txhashset horizon/PIBD segmenter when using
-		// Automated testing chain
-		if archive_header.height < cutoff {
-			cutoff = archive_header.height;
-			horizon = head.height - archive_header.height;
-		}
-
 		debug!(
-			"remove_historical_blocks: head height: {}, tail height: {}, horizon: {}, cutoff: {}",
-			head.height, tail.height, horizon, cutoff,
+			"remove_historical_blocks: new_tail height: {}",
+			new_tail.height
 		);
 
-		if cutoff == 0 {
-			return Ok(());
-		}
-
 		let mut count = 0;
-		let tail_hash = header_pmmr.get_header_hash_by_height(head.height - horizon)?;
-		let tail = batch.get_block_header(&tail_hash)?;
 
 		// Remove old blocks (including short lived fork blocks) which height < tail.height
 		for block in batch.blocks_iter()? {
-			if block.header.height < tail.height {
+			if block.header.height < new_tail.height {
 				let _ = batch.delete_block(&block.hash());
 				count += 1;
 			}
 		}
-
-		batch.save_body_tail(&Tip::from_header(&tail))?;
-
 		debug!(
 			"remove_historical_blocks: removed {} blocks. tail height: {}",
-			count, tail.height
+			count, new_tail.height
 		);
-
 		Ok(())
 	}
 
@@ -1754,7 +1724,7 @@ impl Chain {
 		// allowing an additional 60 blocks in height before allowing a further compaction.
 		if let (Ok(tail), Ok(head)) = (self.tail(), self.head()) {
 			let horizon = global::cut_through_horizon() as u64;
-			let threshold = horizon.saturating_add(60);
+			let threshold = horizon.saturating_add(global::cut_through_horizon() as u64 / 10);
 			let next_compact = tail.height.saturating_add(threshold);
 			if next_compact > head.height {
 				debug!(
@@ -1775,21 +1745,29 @@ impl Chain {
 		let batch = self.store.batch_write()?;
 
 		// Compact the txhashset itself (rewriting the pruned backend files).
-		{
-			let head_header = batch.head_header()?;
-			let current_height = head_header.height;
-			let horizon_height =
-				current_height.saturating_sub(global::cut_through_horizon().into());
-			let horizon_hash = header_pmmr.get_header_hash_by_height(horizon_height)?;
-			let horizon_header = batch.get_block_header(&horizon_hash)?;
 
-			txhashset.compact(&horizon_header, &batch)?;
-		}
+		let head = batch.head()?;
+		let current_height = head.height;
+		let horizon_height = current_height.saturating_sub(global::cut_through_horizon().into());
+		let horizon_hash = header_pmmr.get_header_hash_by_height(horizon_height)?;
+		let horizon_header = batch.get_block_header(&horizon_hash)?;
+
+		txhashset.compact(&horizon_header, &batch)?;
+
+		// NOTE:  Compaction selects a different horizon
+		// block from txhashset horizon/PIBD segmenter. That block is allways above or equal
+		// It is expected, we don't want all nodes go into compaction at the same time becase
+		// it might take a while on slow hardware.
+
+		// Archive is 2 days + 12 hours.  horizon is a week. Guaranteed that archive_header.height is larger than horizon height
+		debug_assert!(archive_header.height > horizon_header.height);
 
 		// If we are not in archival mode remove historical blocks from the db.
 		if !self.archive_mode() {
-			self.remove_historical_blocks(&header_pmmr, archive_header, &batch)?;
+			self.remove_historical_blocks(&horizon_header, &batch)?;
 		}
+
+		batch.save_body_tail(&Tip::from_header(&horizon_header))?;
 
 		// Make sure our output_pos index is consistent with the UTXO set.
 		txhashset.init_output_pos_index(&header_pmmr, &batch)?;

@@ -1,6 +1,6 @@
 [package]
 name = "mwc_config"
-version = "5.3.7"
+version = "5.3.8"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Configuration for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -17,10 +17,10 @@ toml = "0.5"
 dirs = "2.0"
 thiserror = "1"
 
-mwc_core = { path = "../core", version = "5.3.7" }
-mwc_servers = { path = "../servers", version = "5.3.7" }
-mwc_p2p = { path = "../p2p", version = "5.3.7" }
-mwc_util = { path = "../util", version = "5.3.7" }
+mwc_core = { path = "../core", version = "5.3.8" }
+mwc_servers = { path = "../servers", version = "5.3.8" }
+mwc_p2p = { path = "../p2p", version = "5.3.8" }
+mwc_util = { path = "../util", version = "5.3.8" }
 
 [dev-dependencies]
 pretty_assertions = "0.6.1"

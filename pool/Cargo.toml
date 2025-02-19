@@ -1,6 +1,6 @@
 [package]
 name = "mwc_pool"
-version = "5.3.7"
+version = "5.3.8"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -19,9 +19,9 @@ lru = "0.12"
 log = "0.4"
 chrono = "0.4.11"
 
-mwc_core = { path = "../core", version = "5.3.7" }
-mwc_keychain = { path = "../keychain", version = "5.3.7" }
-mwc_util = { path = "../util", version = "5.3.7" }
+mwc_core = { path = "../core", version = "5.3.8" }
+mwc_keychain = { path = "../keychain", version = "5.3.8" }
+mwc_util = { path = "../util", version = "5.3.8" }
 
 [dev-dependencies]
-mwc_chain = { path = "../chain", version = "5.3.7" }
+mwc_chain = { path = "../chain", version = "5.3.8" }
