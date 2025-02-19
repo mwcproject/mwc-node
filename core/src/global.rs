@@ -67,7 +67,7 @@ pub const AUTOMATED_TESTING_COINBASE_MATURITY: u64 = 3;
 pub const USER_TESTING_COINBASE_MATURITY: u64 = 3;
 
 /// Testing cut through horizon in blocks
-pub const AUTOMATED_TESTING_CUT_THROUGH_HORIZON: u32 = 20;
+pub const AUTOMATED_TESTING_CUT_THROUGH_HORIZON: u32 = 70;
 
 /// Testing cut through horizon in blocks
 pub const USER_TESTING_CUT_THROUGH_HORIZON: u32 = 70;
