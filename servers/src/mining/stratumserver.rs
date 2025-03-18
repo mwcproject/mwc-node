@@ -596,9 +596,7 @@ impl Handler {
 			// Build a new block if there is at least one worker and
 			// There is a new block on the chain or its time to rebuild
 			// the current one to include new transactions
-			if (current_hash != latest_hash || Utc::now().timestamp() >= deadline)
-				&& self.workers.count() > 0
-			{
+			if current_hash != latest_hash || Utc::now().timestamp() >= deadline {
 				{
 					debug!("resend updated block");
 					let wallet_listener_url = if !config.burn_reward {
