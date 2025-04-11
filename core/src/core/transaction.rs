@@ -1557,6 +1557,30 @@ impl Transaction {
 		max(body_weight, 1)
 	}
 
+	/// Caclulate number of inputs to maintain possible minimal fee
+	pub fn inputs_for_minimal_fee(num_outputs: u64, num_kernels: u64) -> usize {
+		let body_weight_no_inputs = num_outputs
+			.saturating_mul(consensus::TXFEE_OUTPUT_WEIGHT as u64)
+			.saturating_add(num_kernels.saturating_mul(consensus::TXFEE_KERNEL_WEIGHT as u64))
+			.saturating_sub(1);
+
+		let need_inputs = (body_weight_no_inputs + (consensus::TXFEE_INPUT_WEIGHT - 1))
+			/ consensus::TXFEE_INPUT_WEIGHT;
+		need_inputs as usize
+	}
+
+	/// Calculate number of inputs to made that fee possible
+	pub fn inputs_for_fee_points(fee_points: u64, num_outputs: u64, num_kernels: u64) -> usize {
+		let body_weight_no_inputs = num_outputs
+			.saturating_mul(consensus::TXFEE_OUTPUT_WEIGHT as u64)
+			.saturating_add(num_kernels.saturating_mul(consensus::TXFEE_KERNEL_WEIGHT as u64))
+			.saturating_sub(fee_points);
+
+		let need_inputs = (body_weight_no_inputs + (consensus::TXFEE_INPUT_WEIGHT - 1))
+			/ consensus::TXFEE_INPUT_WEIGHT;
+		need_inputs as usize
+	}
+
 	/// Calculate transaction weight by size, for block weight.
 	/// Consensus critical and uses consensus weight values.
 	pub fn weight_for_size(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {

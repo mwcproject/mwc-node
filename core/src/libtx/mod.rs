@@ -41,6 +41,20 @@ pub fn tx_fee(input_len: usize, output_len: usize, kernel_len: usize) -> u64 {
 		* get_accept_fee_base()
 }
 
+/// How many min number of inputs needed to maintain minimum possible fee
+pub fn inputs_for_minimal_fee(output_len: usize, kernel_len: usize) -> usize {
+	Transaction::inputs_for_minimal_fee(output_len as u64, kernel_len as u64)
+}
+
+/// How many min number of inputs needed to maintain the fee
+pub fn inputs_for_fee_points(fee: u64, output_len: usize, kernel_len: usize) -> usize {
+	Transaction::inputs_for_fee_points(
+		fee / get_accept_fee_base(),
+		output_len as u64,
+		kernel_len as u64,
+	)
+}
+
 /// Transaction fee calculation given transaction
 pub fn accept_fee(tx: Transaction, height: u64) -> u64 {
 	tx.accept_fee(height)
