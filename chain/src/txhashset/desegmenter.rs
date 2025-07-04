@@ -900,7 +900,9 @@ impl Desegmenter {
 				let s1_size = Self::estimate_segment_size(leaves_num1, cur_capacity, leaf_size);
 				let s2_size = Self::estimate_segment_size(leaves_num2, cur_capacity, leaf_size);
 				debug_assert!(s1_size <= data_size_limit as u64); // Might happen, but very not likely. In this case investigate if it is really true and if other nodes will be able to deal with that.
-				debug_assert!(s2_size > 0 || !can_increase_capacity); // otherwise  s1_size + s2_size <= data_size_limit is true. Note, there is can_increase_capacity but it passing on the real data for now
+				if leaves_num2 > 0 {
+					debug_assert!(s2_size > 0 || !can_increase_capacity); // otherwise  s1_size + s2_size <= data_size_limit is true. Note, there is can_increase_capacity but it passing on the real data for now
+				}
 			}
 
 			debug_assert!(cur_capacity == SegmentIdentifier::segment_capacity_ex(cur_height));

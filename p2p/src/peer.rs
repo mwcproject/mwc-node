@@ -643,6 +643,10 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.header_received(bh, peer_info)
 	}
 
+	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error> {
+		self.adapter.header_locator()
+	}
+
 	fn headers_received(
 		&self,
 		bh: &[core::BlockHeader],

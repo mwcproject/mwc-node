@@ -416,6 +416,14 @@ where
 		Ok(true)
 	}
 
+	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error> {
+		let chain = self.chain();
+		let head = chain.head()?;
+		let heights = get_locator_heights(head.height);
+		let locator = chain.get_locator_hashes(head, &heights)?;
+		Ok(locator)
+	}
+
 	fn headers_received(
 		&self,
 		bhs: &[core::BlockHeader],
@@ -434,6 +442,25 @@ where
 
 		self.sync_manager
 			.receive_headers(&peer_info.addr, bhs, remaining, self.peers());
+
+		if let Some(last) = bhs.last() {
+			if !self.sync_state.is_syncing() && last.total_difficulty() > self.total_difficulty()? {
+				if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
+					// check if any header
+					for bh in bhs.iter().rev() {
+						let hash = bh.hash();
+						// Header is already processed, checking here if it was accepted
+						if self.chain().get_block_header(&hash).is_ok() {
+							if !self.chain().block_exists(&bh.hash())? {
+								let _ = peer.send_block_request(bh.hash(), chain::Options::NONE);
+							}
+						} else {
+							break;
+						}
+					}
+				}
+			}
+		}
 		Ok(())
 	}
 

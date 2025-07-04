@@ -397,6 +397,11 @@ impl Server {
 		false
 	}
 
+	/// Check if server in syning state
+	pub fn is_syncing(&self) -> bool {
+		self.sync_state.is_syncing()
+	}
+
 	pub fn stop(&self) {
 		self.stop_state.stop();
 		self.peers.stop();
@@ -465,6 +470,11 @@ impl ChainAdapter for DummyAdapter {
 	) -> Result<(), chain::Error> {
 		Ok(())
 	}
+
+	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error> {
+		Ok(Vec::new())
+	}
+
 	fn locate_headers(&self, _: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
 		Ok(vec![])
 	}
