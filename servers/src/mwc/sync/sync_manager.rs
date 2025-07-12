@@ -284,7 +284,7 @@ impl SyncManager {
 		remaining: u64,
 		peers: Arc<Peers>,
 	) {
-		// Note, becauce of hight throughput, it must be unblocking read, blocking write is not OK
+		// Note, because of high throughput, it must be unblocking read, blocking write is not OK
 		let headers_hashes = self.headers_hashes.read();
 		let headers_hash_desegmenter = headers_hashes.get_headers_hash_desegmenter();
 		if let Err(e) = self.headers.receive_headers(

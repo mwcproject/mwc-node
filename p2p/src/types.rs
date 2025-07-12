@@ -742,6 +742,9 @@ pub trait ChainAdapter: Sync + Send {
 		peer_info: &PeerInfo,
 	) -> Result<(), chain::Error>;
 
+	/// Get header locator
+	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error>;
+
 	/// Finds a list of block headers based on the provided locator. Tries to
 	/// identify the common chain and gets the headers that follow it
 	/// immediately.

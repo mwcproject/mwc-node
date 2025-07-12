@@ -56,6 +56,7 @@ pub struct Peers {
 	stop_state: Arc<StopState>,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
 	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
+	out_peers_failures: Arc<RwLock<HashMap<PeerAddr, u32>>>,
 }
 
 impl Peers {
@@ -76,6 +77,7 @@ impl Peers {
 				time: DateTime::default(),
 			}),
 			excluded_peers: Arc::new(RwLock::new(HashSet::new())),
+			out_peers_failures: Arc::new(RwLock::new(HashMap::new())),
 		}
 	}
 
@@ -489,15 +491,47 @@ impl Peers {
 		// Preferred peers are treated preferentially here.
 		// Also choose outbound peers with lowest total difficulty to drop.
 		// Reducing outbound connection gradually
-		let excess_outgoing_count = cmp::min(
+		let mut excess_outgoing_count = cmp::min(
 			2,
 			outbound_peers().count().saturating_sub(max_outbound_count),
 		);
+
+		// Filtering out excess and underperforming outbound peers
+		let my_difficulty = self
+			.adapter
+			.total_difficulty()
+			.unwrap_or(Difficulty::zero());
+		let my_height = self.adapter.total_height().unwrap_or(0);
+		let mut out_peers_failures = self.out_peers_failures.write();
+		let mut next_failures = HashMap::new();
+
+		let mut peer_infos: Vec<PeerInfo> = outbound_peers()
+			.map(|x| x.info.clone())
+			.filter(|x| !preferred_peers.contains(&x.addr))
+			.collect();
+
+		let rm_sz0 = rm.len();
+		for peer in &peer_infos {
+			// If peer 2 blocks behind for 3 check cycyles, we want to exclude it.
+			// Reason for that: we want outbound peers be high quality.
+			if peer.height() < my_height.saturating_sub(2)
+				&& peer.total_difficulty() < my_difficulty
+			{
+				let fail_counter = out_peers_failures.get(&peer.addr).cloned().unwrap_or(0) + 1;
+				if fail_counter >= 3 {
+					info!(
+						"Requesting disconnect for outband peer {:?} because of low performance",
+						peer.addr
+					);
+					rm.push(peer.addr.clone());
+				}
+				next_failures.insert(peer.addr.clone(), fail_counter);
+			}
+		}
+		*out_peers_failures = next_failures;
+
+		excess_outgoing_count = excess_outgoing_count.saturating_sub(rm.len() - rm_sz0);
 		if excess_outgoing_count > 0 {
-			let mut peer_infos: Vec<_> = outbound_peers()
-				.map(|x| x.info.clone())
-				.filter(|x| !preferred_peers.contains(&x.addr))
-				.collect();
 			peer_infos.sort_unstable_by_key(|x| x.total_difficulty());
 			let mut addrs = peer_infos
 				.into_iter()
@@ -667,6 +701,10 @@ impl ChainAdapter for Peers {
 		} else {
 			Ok(true)
 		}
+	}
+
+	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error> {
+		self.adapter.header_locator()
 	}
 
 	fn headers_received(
