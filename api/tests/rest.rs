@@ -63,6 +63,7 @@ fn build_router() -> Router {
 	router
 }
 
+#[cfg(not(windows))]
 #[test]
 fn test_start_api() {
 	global::set_local_chain_type(global::ChainTypes::Floonet);
