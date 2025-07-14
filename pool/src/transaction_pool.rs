@@ -261,7 +261,7 @@ where
 		// Add tx to txpool.
 		self.add_to_txpool(entry, header, secp)?;
 		self.add_to_reorg_cache(entry);
-		self.adapter.tx_accepted(entry);
+		self.adapter.tx_accepted(entry, header.height);
 
 		// Transaction passed all the checks but we have to make space for it
 		if evict {

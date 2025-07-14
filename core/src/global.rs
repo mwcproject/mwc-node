@@ -46,7 +46,8 @@ use util::OneTime;
 /// Note: We also use a specific (possible different) protocol version
 /// for both the backend database and MMR data files.
 /// NOTE, mwc bump the protocol version to 1000, but in any case so far 1,2,3 are supported.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(3);
+/// 3 -> 4 Added extra param (base_fee) for handshake, bumping protocol version for that
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(4);
 
 /// Automated testing edge_bits
 pub const AUTOMATED_TESTING_MIN_EDGE_BITS: u8 = 10;
@@ -84,8 +85,9 @@ pub const TESTING_INITIAL_DIFFICULTY: u64 = 1;
 /// Testing max_block_weight (artifically low, just enough to support a few txs).
 pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
 
-/// Default unit of fee per tx weight, making each output cost about a Mwccent
-pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC; // Keeping default base is same, no changes for MWC     MWC_BASE / 100 / 20; // 500_000
+///Note, the default fees was reduced on Jul 13 2025. There is no hardfork because of that
+/// Default unit of fee per tx weight, making each output cost about a Mwccent/100
+pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC / 100; // Keeping default base is same, no changes for MWC     MWC_BASE / 100 / 20; // 500_000
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
 /// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.

@@ -581,6 +581,7 @@ pub struct PeerInfo {
 	pub addr: PeerAddr,
 	pub direction: Direction,
 	pub live_info: Arc<RwLock<PeerLiveInfo>>,
+	pub tx_base_fee: u64,
 }
 
 impl PeerLiveInfo {
