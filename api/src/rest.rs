@@ -22,12 +22,11 @@
 use crate::router::{Handler, HandlerObj, ResponseFuture, Router, RouterError};
 use crate::web::response;
 use futures::channel::oneshot;
-use futures::TryStreamExt;
 use hyper::server::accept;
 use hyper::service::make_service_fn;
 use hyper::{Body, Request, Server, StatusCode};
-use rustls::internal::pemfile;
-use rustls::{NoClientAuth, ServerConfig};
+use rustls::ServerConfig;
+use rustls_pemfile as pemfile;
 use std::convert::Infallible;
 use std::fs::File;
 use std::net::SocketAddr;
@@ -35,7 +34,7 @@ use std::sync::Arc;
 use std::{io, thread};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
-use tokio::stream::StreamExt;
+use tokio_rustls::rustls::{Certificate, PrivateKey};
 use tokio_rustls::TlsAcceptor;
 
 /// Errors that can be returned by an ApiEndpoint implementation.
@@ -81,7 +80,7 @@ impl TLSConfig {
 		}
 	}
 
-	fn load_certs(&self) -> Result<Vec<rustls::Certificate>, Error> {
+	fn load_certs(&self) -> Result<Vec<Certificate>, Error> {
 		let certfile = File::open(&self.certificate).map_err(|e| {
 			Error::Internal(format!(
 				"load_certs failed to open file {}, {}",
@@ -90,11 +89,13 @@ impl TLSConfig {
 		})?;
 		let mut reader = io::BufReader::new(certfile);
 
-		pemfile::certs(&mut reader)
-			.map_err(|_| Error::Internal("failed to load certificate".to_string()))
+		let certs = pemfile::certs(&mut reader)
+			.map_err(|_| Error::Internal("failed to load certificate".to_string()))?;
+
+		Ok(certs.into_iter().map(Certificate).collect())
 	}
 
-	fn load_private_key(&self) -> Result<rustls::PrivateKey, Error> {
+	fn load_private_key(&self) -> Result<PrivateKey, Error> {
 		let keyfile = File::open(&self.private_key).map_err(|e| {
 			Error::Internal(format!(
 				"load_private_key failed to open file {}, {}",
@@ -111,14 +112,17 @@ impl TLSConfig {
 				keys.len()
 			)));
 		}
-		Ok(keys[0].clone())
+		Ok(PrivateKey(keys[0].clone()))
 	}
 
 	pub fn build_server_config(&self) -> Result<Arc<rustls::ServerConfig>, Error> {
 		let certs = self.load_certs()?;
 		let key = self.load_private_key()?;
-		let mut cfg = rustls::ServerConfig::new(rustls::NoClientAuth::new());
-		cfg.set_single_cert(certs, key)
+
+		let cfg = rustls::ServerConfig::builder()
+			.with_safe_defaults()
+			.with_no_client_auth()
+			.with_single_cert(certs, key)
 			.map_err(|e| Error::Internal(format!("set single certificate failed, {}", e)))?;
 		Ok(Arc::new(cfg))
 	}
@@ -189,7 +193,7 @@ impl ApiServer {
 					server.await
 				};
 
-				let mut rt = Runtime::new()
+				let rt = Runtime::new()
 					.map_err(|e| error!("HTTP API server error: {}", e))
 					.unwrap();
 				if let Err(e) = rt.block_on(server) {
@@ -227,9 +231,10 @@ impl ApiServer {
 		let certs = conf.load_certs()?;
 		let keys = conf.load_private_key()?;
 
-		let mut config = ServerConfig::new(NoClientAuth::new());
-		config
-			.set_single_cert(certs, keys)
+		let config = ServerConfig::builder()
+			.with_safe_defaults() // <- cipher suites
+			.with_no_client_auth()
+			.with_single_cert(certs, keys)
 			.expect("invalid key or certificate");
 
 		let acceptor = TlsAcceptor::from(Arc::new(config));
@@ -238,13 +243,26 @@ impl ApiServer {
 			.name("apis".to_string())
 			.spawn(move || {
 				let server = async move {
-					let mut listener = TcpListener::bind(&addr).await.expect("failed to bind");
-					let listener = listener
-						.incoming()
-						.and_then(move |s| acceptor.accept(s))
-						.filter(|r| r.is_ok());
+					let listener = TcpListener::bind(&addr).await.expect("failed to bind");
 
-					let server = Server::builder(accept::from_stream(listener))
+					let tls_stream = async_stream::stream! {
+						loop {
+							let (socket, _addr) = match listener.accept().await {
+								Ok(conn) => conn,
+								Err(e) => {
+									eprintln!("Error accepting connection: {}", e);
+									continue;
+								}
+							};
+
+							match acceptor.accept(socket).await {
+								Ok(stream) => yield Ok::<_, std::io::Error>(stream),
+								Err(_) => continue,
+							}
+						}
+					};
+
+					let server = Server::builder(accept::from_stream(tls_stream))
 						.serve(make_service_fn(move |_| {
 							let router = router.clone();
 							async move { Ok::<_, Infallible>(router) }
@@ -256,7 +274,7 @@ impl ApiServer {
 					server.await
 				};
 
-				let mut rt = Runtime::new()
+				let rt = Runtime::new()
 					.map_err(|e| error!("HTTP API server error: {}", e))
 					.unwrap();
 				if let Err(e) = rt.block_on(server) {

@@ -486,7 +486,7 @@ impl Server {
 						);
 
 						info!("Starting gossipsub libp2p server");
-						let mut rt = tokio::runtime::Runtime::new().unwrap();
+						let rt = tokio::runtime::Runtime::new().unwrap();
 
 						match rt.block_on(libp2p_node_runner) {
 							Ok(_) => info!("libp2p node is exited"),

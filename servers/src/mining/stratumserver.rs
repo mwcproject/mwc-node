@@ -761,7 +761,7 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 	}
 
 	let task = async move {
-		let mut listener = match TcpListener::bind(&listen_addr).await {
+		let listener = match TcpListener::bind(&listen_addr).await {
 			Ok(listener) => listener,
 			Err(e) => {
 				error!(
@@ -772,111 +772,119 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 			}
 		};
 
-		let server = listener
-			.incoming()
-			.filter_map(|s| async { s.map_err(|e| error!("accept error = {:?}", e)).ok() })
-			.for_each(move |socket| {
-				let peer_addr = socket
-					.peer_addr()
-					.unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 1234));
-				let ip = peer_addr.ip().to_string();
+		let server = async_stream::stream! {
+            loop {
+                match listener.accept().await {
+                    Ok((socket, _)) => yield socket,
+                    Err(e) => {
+                        error!("accept error = {:?}", e);
+                        continue;
+                    }
+                }
+            }
+        }
+            .for_each(move |socket| {
+                let peer_addr = socket
+                    .peer_addr()
+                    .unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 1234));
+                let ip = peer_addr.ip().to_string();
 
-				let handler = handler.clone();
+                let handler = handler.clone();
 
-				async move {
-					let config = &handler.config;
+                async move {
+                    let config = &handler.config;
 
-					let accepting_connection = if config.ip_white_list.contains(&ip) {
-						info!(
-							"Stratum accepting new connection for {}, it is in white list",
-							ip
-						);
-						true
-					} else if config.ip_black_list.contains(&ip) {
-						warn!(
-							"Stratum rejecting new connection for {}, it is in black list",
-							ip
-						);
-						false
-					} else if config.ip_tracking && handler.ip_pool.is_banned(&ip, true) {
-						warn!("Rejecting connection from ip {} because ip_tracking is active and that ip is banned.", ip);
-						false
-					} else {
-						info!("Stratum accepting new connection for {}", ip);
-						true
-					};
+                    let accepting_connection = if config.ip_white_list.contains(&ip) {
+                        info!(
+                            "Stratum accepting new connection for {}, it is in white list",
+                            ip
+                        );
+                        true
+                    } else if config.ip_black_list.contains(&ip) {
+                        warn!(
+                            "Stratum rejecting new connection for {}, it is in black list",
+                            ip
+                        );
+                        false
+                    } else if config.ip_tracking && handler.ip_pool.is_banned(&ip, true) {
+                        warn!("Rejecting connection from ip {} because ip_tracking is active and that ip is banned.", ip);
+                        false
+                    } else {
+                        info!("Stratum accepting new connection for {}", ip);
+                        true
+                    };
 
-					handler.worker_connections.fetch_add(1, Ordering::Relaxed);
-					let ip_pool = handler.ip_pool.clone();
+                    handler.worker_connections.fetch_add(1, Ordering::Relaxed);
+                    let ip_pool = handler.ip_pool.clone();
 
-					// Worker IO channels
-					let (tx, mut rx) = mpsc::unbounded();
+                    // Worker IO channels
+                    let (tx, mut rx) = mpsc::unbounded();
 
-					// Worker killer switch
-					let (kill_switch, kill_switch_receiver) = oneshot::channel::<()>();
+                    // Worker killer switch
+                    let (kill_switch, kill_switch_receiver) = oneshot::channel::<()>();
 
-					let worker_id = handler.workers.add_worker(ip.clone(), tx, kill_switch);
-					info!("Worker {} connected", worker_id);
-					ip_pool.add_worker(&ip);
+                    let worker_id = handler.workers.add_worker(ip.clone(), tx, kill_switch);
+                    info!("Worker {} connected", worker_id);
+                    ip_pool.add_worker(&ip);
 
-					let framed = Framed::new(socket, LinesCodec::new());
-					let (mut writer, mut reader) = framed.split();
+                    let framed = Framed::new(socket, LinesCodec::new());
+                    let (mut writer, mut reader) = framed.split();
 
-					let h = handler.clone();
-					let workers = h.workers.clone();
-					let ip_clone = ip.clone();
-					let ip_clone2 = ip.clone();
-					let ip_pool_clone2 = ip_pool.clone();
-					let ip_pool_clone3 = ip_pool.clone();
+                    let h = handler.clone();
+                    let workers = h.workers.clone();
+                    let ip_clone = ip.clone();
+                    let ip_clone2 = ip.clone();
+                    let ip_pool_clone2 = ip_pool.clone();
+                    let ip_pool_clone3 = ip_pool.clone();
 
-					let read = async move {
-						if accepting_connection {
-							while let Some(line) = reader.try_next().await.map_err(|e| {
-								ip_pool_clone2.report_fail_noise(&ip_clone2);
-								error!("error processing request to stratum, {}", e)
-							})? {
-								if !line.is_empty() {
-									debug!("get request: {}", line);
-									let request = serde_json::from_str(&line).map_err(|e| {
-										ip_pool_clone3.report_fail_noise(&ip_clone2);
-										error!("error serializing line: {}", e)
-									})?;
-									let resp = h.handle_rpc_requests(request, worker_id, &ip_clone);
-									workers.send_to(&worker_id, resp);
-								}
-							}
-						}
+                    let read = async move {
+                        if accepting_connection {
+                            while let Some(line) = reader.try_next().await.map_err(|e| {
+                                ip_pool_clone2.report_fail_noise(&ip_clone2);
+                                error!("error processing request to stratum, {}", e)
+                            })? {
+                                if !line.is_empty() {
+                                    debug!("get request: {}", line);
+                                    let request = serde_json::from_str(&line).map_err(|e| {
+                                        ip_pool_clone3.report_fail_noise(&ip_clone2);
+                                        error!("error serializing line: {}", e)
+                                    })?;
+                                    let resp = h.handle_rpc_requests(request, worker_id, &ip_clone);
+                                    workers.send_to(&worker_id, resp);
+                                }
+                            }
+                        }
 
-						Result::<_, ()>::Ok(())
-					};
+                        Result::<_, ()>::Ok(())
+                    };
 
-					let write = async move {
-						if accepting_connection {
-							while let Some(line) = rx.next().await {
-								// No need to add line separator for the client, because
-								// Frames with LinesCodec does that.
-								writer.send(line).await.map_err(|e| {
-									error!("stratum cannot send data to worker, {}", e)
-								})?;
-							}
-						}
-						Result::<_, ()>::Ok(())
-					};
+                    let write = async move {
+                        if accepting_connection {
+                            while let Some(line) = rx.next().await {
+                                // No need to add line separator for the client, because
+                                // Frames with LinesCodec does that.
+                                writer.send(line).await.map_err(|e| {
+                                    error!("stratum cannot send data to worker, {}", e)
+                                })?;
+                            }
+                        }
+                        Result::<_, ()>::Ok(())
+                    };
 
-					let task = async move {
-						pin_mut!(read, write);
-						let rw = futures::future::select(read, write);
-						futures::future::select(rw, kill_switch_receiver).await;
-						handler.workers.remove_worker(worker_id);
-						info!("Worker {} disconnected", worker_id);
-					};
-					tokio::spawn(task);
-				}
-			});
+                    let task = async move {
+                        pin_mut!(read, write);
+                        let rw = futures::future::select(read, write);
+                        futures::future::select(rw, kill_switch_receiver).await;
+                        handler.workers.remove_worker(worker_id);
+                        info!("Worker {} disconnected", worker_id);
+                    };
+                    tokio::spawn(task);
+                }
+            });
 		server.await
 	};
 
-	let mut rt = Runtime::new().unwrap();
+	let rt = Runtime::new().unwrap();
 	rt.block_on(task);
 }
 
