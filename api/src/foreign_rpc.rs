@@ -1280,10 +1280,18 @@ where
 		Foreign::push_transaction(self, tx, fluff, w(&self.chain)?.secp())
 	}
 	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
-		Foreign::get_libp2p_peers(self)
+		#[cfg(feature = "libp2p")]
+		return Foreign::get_libp2p_peers(self);
+
+		#[cfg(not(feature = "libp2p"))]
+		Err(Error::Internal("libp2p feature is disabled".into()))
 	}
 	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
-		Foreign::get_libp2p_messages(self)
+		#[cfg(feature = "libp2p")]
+		return Foreign::get_libp2p_messages(self);
+
+		#[cfg(not(feature = "libp2p"))]
+		Err(Error::Internal("libp2p feature is disabled".into()))
 	}
 }
 

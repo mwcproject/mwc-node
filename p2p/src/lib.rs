@@ -37,12 +37,14 @@ extern crate serde_derive;
 #[macro_use]
 extern crate log;
 
+#[cfg(feature = "libp2p")]
 #[macro_use]
 extern crate lazy_static;
 
 mod codec;
 mod conn;
 pub mod handshake;
+#[cfg(feature = "libp2p")]
 pub mod libp2p_connection;
 pub mod msg;
 mod peer;
@@ -62,6 +64,7 @@ pub use crate::types::{
 	Seeding, TxHashSetRead, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
 };
 
+#[cfg(feature = "libp2p")]
 pub use crate::libp2p_connection::{
 	add_new_peer, build_integrity_message, get_libp2p_connections, read_message_data,
 	run_libp2p_node, set_seed_list,

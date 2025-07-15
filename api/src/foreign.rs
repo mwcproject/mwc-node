@@ -31,8 +31,11 @@ use crate::types::{
 };
 use crate::util::RwLock;
 use crate::{rest::*, BlockListing};
+#[cfg(feature = "libp2p")]
 use crate::{Libp2pMessages, Libp2pPeers};
+#[cfg(feature = "libp2p")]
 use chrono::Utc;
+#[cfg(feature = "libp2p")]
 use mwc_p2p::libp2p_connection;
 use mwc_util::secp::Secp256k1;
 use std::sync::Weak;
@@ -400,6 +403,7 @@ where
 		})
 	}
 
+	#[cfg(feature = "libp2p")]
 	pub fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
 		let libp2p_peers: Vec<String> = libp2p_connection::get_libp2p_connections()
 			.iter()
@@ -425,6 +429,7 @@ where
 		})
 	}
 
+	#[cfg(feature = "libp2p")]
 	pub fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
 		Ok(Libp2pMessages {
 			current_time: Utc::now().timestamp(),
