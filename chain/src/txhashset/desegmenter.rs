@@ -262,10 +262,9 @@ impl Desegmenter {
 
 			// Let's validate everything in multiple threads
 			let num_cores = num_cpus::get();
-			let mut runtime = Builder::new()
-				.threaded_scheduler()
+			let runtime = Builder::new_multi_thread()
 				.enable_all()
-				.core_threads(num_cores)
+				.worker_threads(num_cores)
 				.build()
 				.unwrap();
 
