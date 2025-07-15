@@ -49,7 +49,7 @@ mwc_util = { path = "../util", version = "5.3.9" }
 hyper-rustls = "0.23"
 
 [target.'cfg(target_os = "android")'.dependencies]
-hyper-rustls = { version = "0.21", default-features = false, features = ["webpki-tokio"] }
+hyper-rustls = { version = "0.23", default-features = false, features = ["webpki-tokio"] }
 
 [features]
 libp2p = ["mwc_p2p/libp2p", "mwc_api/libp2p"]
