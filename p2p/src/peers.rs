@@ -337,7 +337,7 @@ impl Peers {
 			}
 		});
 		if count == 0 {
-			warn!("Unbale to broadcast transaction. Tx base fee {} might be too low, or might be enough connected peers", base_fee);
+			warn!("Unable to broadcast transaction. Not found any connected peers that accepts Tx with base fee {}", base_fee);
 		}
 		debug!(
 			"broadcast_transaction: {} to {} peers, done.",
