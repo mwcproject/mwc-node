@@ -364,17 +364,13 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"accept_fee_base".to_string(),
-		"
-#base fee that's accepted into the pool
-"
-		.to_string(),
-	);
-
-	retval.insert(
 		"reorg_cache_timeout".to_string(),
 		"
-#timeout in minutes for reorg cache, default 30
+# base fee that's accepted into the pool, legacy 'accept_fee_base' setting
+# Normally there is no needs to adjust this value, just use default value that is same for all network
+# tx_fee_base = 1000
+
+# timeout in minutes for reorg cache, default 30
 "
 		.to_string(),
 	);

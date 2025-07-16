@@ -414,7 +414,7 @@ impl Server {
 
 			let libp2p_port = config.libp2p_port;
 			let tor_socks_port = config.tor_config.socks_port;
-			let fee_base = config.pool_config.accept_fee_base;
+			let fee_base = config.pool_config.tx_fee_base;
 			api::set_server_onion_address(&onion_address);
 
 			let clone_shared_chain = shared_chain.clone();
