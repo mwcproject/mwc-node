@@ -133,12 +133,13 @@ impl SyncRunner {
 				info!("Has connected peers: {}", peers.len());
 				for p in peers {
 					info!(
-						"Peer: {:?} {:?} H:{}  Diff:{} Cap: {}",
+						"Peer: {:?} {:?} H:{}  Diff:{} Cap: {} BFee: {}",
 						p.info.addr,
 						p.info.direction,
 						p.info.height(),
 						p.info.total_difficulty().to_num(),
-						p.info.capabilities.bits()
+						p.info.capabilities.bits(),
+						p.info.tx_base_fee
 					);
 				}
 			}

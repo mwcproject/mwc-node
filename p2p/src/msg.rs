@@ -110,8 +110,8 @@ fn default_max_msg_size() -> u64 {
 fn max_msg_size(msg_type: Type) -> u64 {
 	match msg_type {
 		Type::Error => 0,
-		Type::Hand => 128,
-		Type::Shake => 88,
+		Type::Hand => 128 + 8,
+		Type::Shake => 88 + 8,
 		Type::Ping => 16,
 		Type::Pong => 16,
 		Type::GetPeerAddrs => 4,
@@ -425,6 +425,8 @@ pub struct Hand {
 	pub receiver_addr: PeerAddr,
 	/// name of version of the software
 	pub user_agent: String,
+	/// base fee (For protocol version 4)
+	pub tx_fee_base: u64,
 }
 
 impl Writeable for Hand {
@@ -446,6 +448,9 @@ impl Writeable for Hand {
 		}
 		writer.write_bytes(&self.user_agent)?;
 		self.genesis.write(writer)?;
+		if self.version.value() > 3 {
+			writer.write_u64(self.tx_fee_base)?;
+		}
 		Ok(())
 	}
 }
@@ -462,6 +467,12 @@ impl Readable for Hand {
 		let user_agent = String::from_utf8(ua)
 			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read User Agent, {}", e)))?;
 		let genesis = Hash::read(reader)?;
+		let tx_fee_base = if version.value() > 3 {
+			reader.read_u64()?
+		} else {
+			// Default base fee before we start lowering it.
+			consensus::MILLI_MWC
+		};
 		Ok(Hand {
 			version,
 			capabilities,
@@ -471,6 +482,7 @@ impl Readable for Hand {
 			sender_addr,
 			receiver_addr,
 			user_agent,
+			tx_fee_base,
 		})
 	}
 }
@@ -489,11 +501,13 @@ pub struct Shake {
 	pub total_difficulty: Difficulty,
 	/// name of version of the software
 	pub user_agent: String,
+	/// base fee (For protocol version 4)
+	pub tx_fee_base: u64,
 }
 
 impl Writeable for Shake {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		self.version.write(writer)?;
+		writer.protocol_version().write(writer)?;
 		writer.write_u32(self.capabilities.bits())?;
 		self.total_difficulty.write(writer)?;
 		if self.user_agent.len() > 10_000 {
@@ -504,6 +518,9 @@ impl Writeable for Shake {
 		}
 		writer.write_bytes(&self.user_agent)?;
 		self.genesis.write(writer)?;
+		if writer.protocol_version().value() > 3 {
+			writer.write_u64(self.tx_fee_base)?;
+		}
 		Ok(())
 	}
 }
@@ -518,12 +535,19 @@ impl Readable for Shake {
 		let user_agent = String::from_utf8(ua)
 			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read User Agent, {}", e)))?;
 		let genesis = Hash::read(reader)?;
+		let tx_fee_base = if version.value() > 3 {
+			reader.read_u64()?
+		} else {
+			// Default base fee before we start lowering it.
+			consensus::MILLI_MWC
+		};
 		Ok(Shake {
 			version,
 			capabilities,
 			genesis,
 			total_difficulty,
 			user_agent,
+			tx_fee_base,
 		})
 	}
 }

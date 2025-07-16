@@ -67,14 +67,21 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 
 use crate::mwc::sync::sync_manager::SyncManager;
+#[cfg(feature = "libp2p")]
 use crate::p2p::libp2p_connection;
+#[cfg(feature = "libp2p")]
 use chrono::Utc;
 use mwc_core::consensus::HeaderDifficultyInfo;
+#[cfg(feature = "libp2p")]
 use mwc_core::core::TxKernel;
 use mwc_p2p::Capabilities;
+#[cfg(feature = "libp2p")]
 use mwc_util::from_hex;
+#[cfg(feature = "libp2p")]
 use mwc_util::secp::constants::SECRET_KEY_SIZE;
+#[cfg(feature = "libp2p")]
 use mwc_util::secp::pedersen::Commitment;
+#[cfg(feature = "libp2p")]
 use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
@@ -288,6 +295,7 @@ impl Server {
 
 		api::reset_server_onion_address();
 
+		#[allow(unused_variables)]
 		let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
 			if !config.p2p_config.host.is_loopback() {
 				error!("If Tor is enabled, host must be '127.0.0.1'.");
@@ -395,6 +403,7 @@ impl Server {
 		);
 
 		// Initialize libp2p server
+		#[cfg(feature = "libp2p")]
 		if config.libp2p_enabled.unwrap_or(true) && onion_address.is_some() && tor_secret.is_some()
 		{
 			let onion_address = onion_address.clone().unwrap();
@@ -405,7 +414,7 @@ impl Server {
 
 			let libp2p_port = config.libp2p_port;
 			let tor_socks_port = config.tor_config.socks_port;
-			let fee_base = config.pool_config.accept_fee_base;
+			let fee_base = config.pool_config.tx_fee_base;
 			api::set_server_onion_address(&onion_address);
 
 			let clone_shared_chain = shared_chain.clone();
@@ -486,7 +495,7 @@ impl Server {
 						);
 
 						info!("Starting gossipsub libp2p server");
-						let mut rt = tokio::runtime::Runtime::new().unwrap();
+						let rt = tokio::runtime::Runtime::new().unwrap();
 
 						match rt.block_on(libp2p_node_runner) {
 							Ok(_) => info!("libp2p node is exited"),

@@ -21,6 +21,7 @@ use crate::core::{core, ser};
 use crate::p2p;
 use crate::util::secp::pedersen;
 use crate::util::{self, ToHex};
+#[cfg(feature = "libp2p")]
 use mwc_p2p::libp2p_connection;
 use serde;
 use serde::de::MapAccess;
@@ -795,6 +796,7 @@ pub struct Libp2pMessages {
 	/// Libp2p peers
 	pub current_time: i64,
 	/// Other nodes. There is a high chance that they are running libp2p network
+	#[cfg(feature = "libp2p")]
 	pub libp2p_messages: Vec<libp2p_connection::ReceivedMessage>,
 }
 

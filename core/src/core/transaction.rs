@@ -1545,6 +1545,17 @@ impl Transaction {
 		) * get_accept_fee_base()
 	}
 
+	/// Calculation transaction base fee, rounded to the higher value
+	pub fn get_base_fee(&self, height: u64) -> u64 {
+		let tx_weight = Transaction::weight_for_fee(
+			self.body.inputs.len() as u64,
+			self.body.outputs.len() as u64,
+			self.body.kernels.len() as u64,
+		);
+		let fee = self.shifted_fee(height);
+		(fee + tx_weight - 1) / tx_weight
+	}
+
 	/// Transaction weight for fee
 	/// Consensus related, if transaction fee below expected values, it will be rejected by mining node
 	pub fn weight_for_fee(num_inputs: u64, num_outputs: u64, num_kernels: u64) -> u64 {

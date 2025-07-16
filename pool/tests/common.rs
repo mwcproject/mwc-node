@@ -191,7 +191,7 @@ where
 {
 	TransactionPool::new(
 		PoolConfig {
-			accept_fee_base: default_accept_fee_base(),
+			tx_fee_base: default_tx_fee_base(),
 			reorg_cache_timeout: 1_440,
 			max_pool_size: 50,
 			max_stempool_size: 50,

@@ -326,8 +326,19 @@ impl Peers {
 	/// Broadcasts the provided transaction to all our connected peers.
 	/// A peer implementation may drop the broadcast request
 	/// if it knows the remote peer already has the transaction.
-	pub fn broadcast_transaction(&self, tx: &core::Transaction) {
-		let count = self.broadcast("transaction", |p| p.send_transaction(tx));
+	pub fn broadcast_transaction(&self, tx: &core::Transaction, height: u64) {
+		let base_fee = tx.get_base_fee(height);
+		let count = self.broadcast("transaction", |p| {
+			// Sending transaction only to peers that can accept it.
+			if base_fee >= p.info.tx_base_fee {
+				p.send_transaction(tx)
+			} else {
+				Ok(false)
+			}
+		});
+		if count == 0 {
+			warn!("Unable to broadcast transaction. Not found any connected peers that accepts Tx with base fee {}", base_fee);
+		}
 		debug!(
 			"broadcast_transaction: {} to {} peers, done.",
 			tx.hash(),
@@ -532,7 +543,14 @@ impl Peers {
 
 		excess_outgoing_count = excess_outgoing_count.saturating_sub(rm.len() - rm_sz0);
 		if excess_outgoing_count > 0 {
-			peer_infos.sort_unstable_by_key(|x| x.total_difficulty());
+			let my_base_fee = global::get_accept_fee_base();
+			peer_infos.sort_unstable_by_key(|x| {
+				if x.tx_base_fee < my_base_fee {
+					x.total_difficulty().to_num() / 2 // we don't want to see peers with lower than we are base fee
+				} else {
+					x.total_difficulty().to_num()
+				}
+			});
 			let mut addrs = peer_infos
 				.into_iter()
 				.map(|x| x.addr)
@@ -583,10 +601,25 @@ impl Peers {
 
 	/// We have enough outbound connected peers
 	pub fn enough_outbound_peers(&self) -> bool {
-		self.iter().outbound().connected().count()
-			>= self
-				.config
-				.peer_min_preferred_outbound_count(self.is_sync_mode()) as usize
+		let mut count = 0;
+		let mut matched_fee_base = 0;
+		let my_fee_base = global::get_accept_fee_base();
+		for peer in self.iter().outbound().connected() {
+			count += 1;
+			if peer.info.tx_base_fee <= my_fee_base {
+				matched_fee_base += 1;
+			}
+		}
+
+		let need_count = self
+			.config
+			.peer_min_preferred_outbound_count(self.is_sync_mode());
+		if self.is_sync_mode() {
+			count >= need_count
+		} else {
+			// Expected that at least half of outbound peers will support us with a base fees
+			count >= need_count && matched_fee_base >= need_count / 2
+		}
 	}
 
 	/// Removes those peers that seem to have expired
@@ -945,6 +978,16 @@ impl<I: Iterator> IntoIterator for PeersIter<I> {
 }
 
 impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
+	/// Filter by any feature
+	pub fn filter<F>(self, f: F) -> PeersIter<impl Iterator<Item = Arc<Peer>>>
+	where
+		F: Fn(&Arc<Peer>) -> bool + 'static,
+	{
+		PeersIter {
+			iter: self.iter.filter(move |p| f(p)),
+		}
+	}
+
 	/// Filter peers that are currently connected.
 	/// Note: This adaptor takes a read lock internally.
 	/// So if we are chaining adaptors then defer this toward the end of the chain.

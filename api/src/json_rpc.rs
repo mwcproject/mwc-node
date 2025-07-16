@@ -98,7 +98,7 @@ pub enum Error {
 	/// Json error
 	Json(serde_json::Error),
 	/// Client error
-	Hyper(hyper::error::Error),
+	Hyper(hyper::Error),
 	/// Error response
 	Rpc(RpcError),
 	/// Response to a request did not have the expected nonce
@@ -121,8 +121,8 @@ impl From<serde_json::Error> for Error {
 	}
 }
 
-impl From<hyper::error::Error> for Error {
-	fn from(e: hyper::error::Error) -> Error {
+impl From<hyper::Error> for Error {
+	fn from(e: hyper::Error) -> Error {
 		Error::Hyper(e)
 	}
 }

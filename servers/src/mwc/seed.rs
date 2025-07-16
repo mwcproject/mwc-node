@@ -22,6 +22,7 @@ use crate::core::global;
 use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
 use crate::core::pow::Difficulty;
 use crate::p2p;
+#[cfg(feature = "libp2p")]
 use crate::p2p::libp2p_connection;
 use crate::p2p::types::PeerAddr;
 use crate::p2p::ChainAdapter;
@@ -78,6 +79,7 @@ pub fn connect_and_monitor(
 			connect_to_seeds_and_peers(peers.clone(), tx.clone(), &seed_list, config.clone());
 			seed_connect_time = Utc::now() + Duration::seconds(CONNECT_TO_SEED_INTERVAL);
 
+			#[cfg(feature = "libp2p")]
 			libp2p_connection::set_seed_list(&seed_list, true);
 
 			let mut prev_ping = Utc::now();
@@ -475,6 +477,7 @@ fn listen_for_addrs(
 								Ok(_) => {
 									match addr_c {
 										PeerAddr::Onion(_) => {
+											#[cfg(feature = "libp2p")]
 											if let Err(_) = libp2p_connection::add_new_peer(&addr_c)
 											{
 												error!("Unable to add libp2p peer {}", addr_c);

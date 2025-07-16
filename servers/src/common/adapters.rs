@@ -1142,8 +1142,8 @@ impl DandelionAdapter for PoolToNetAdapter {
 }
 
 impl pool::PoolAdapter for PoolToNetAdapter {
-	fn tx_accepted(&self, entry: &pool::PoolEntry) {
-		self.peers().broadcast_transaction(&entry.tx);
+	fn tx_accepted(&self, entry: &pool::PoolEntry, height: u64) {
+		self.peers().broadcast_transaction(&entry.tx, height);
 	}
 
 	fn stem_tx_accepted(&self, entry: &pool::PoolEntry) -> Result<(), pool::PoolError> {

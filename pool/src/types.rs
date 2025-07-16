@@ -22,7 +22,6 @@ use self::core::core::committed;
 use self::core::core::hash::Hash;
 use self::core::core::transaction::{self, Transaction};
 use self::core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
-use self::core::global::DEFAULT_ACCEPT_FEE_BASE;
 use chrono::prelude::*;
 use mwc_core as core;
 use mwc_keychain as keychain;
@@ -105,8 +104,8 @@ pub struct PoolConfig {
 	/// Base fee for a transaction to be accepted by the pool. The transaction
 	/// weight is computed from its number of inputs, outputs and kernels and
 	/// multiplied by the base fee to compare to the actual transaction fee.
-	#[serde(default = "default_accept_fee_base")]
-	pub accept_fee_base: u64,
+	#[serde(default = "default_tx_fee_base")]
+	pub tx_fee_base: Option<u64>,
 
 	/// Reorg cache timeout in minutes
 	#[serde(default = "default_reorg_cache_timeout")]
@@ -130,7 +129,7 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
 	fn default() -> PoolConfig {
 		PoolConfig {
-			accept_fee_base: default_accept_fee_base(),
+			tx_fee_base: default_tx_fee_base(),
 			max_pool_size: default_max_pool_size(),
 			reorg_cache_timeout: default_reorg_cache_timeout(),
 			max_stempool_size: default_max_stempool_size(),
@@ -140,8 +139,8 @@ impl Default for PoolConfig {
 }
 
 /// make output (of weight 21) cost about 1 Mwc-cent by default, keeping a round number
-pub fn default_accept_fee_base() -> u64 {
-	DEFAULT_ACCEPT_FEE_BASE
+pub fn default_tx_fee_base() -> Option<u64> {
+	None
 }
 fn default_max_pool_size() -> usize {
 	150_000
@@ -314,7 +313,7 @@ pub trait BlockChain: Sync + Send {
 /// importantly the broadcasting of transactions to our peers.
 pub trait PoolAdapter: Send + Sync {
 	/// The transaction pool has accepted this transaction as valid.
-	fn tx_accepted(&self, entry: &PoolEntry);
+	fn tx_accepted(&self, entry: &PoolEntry, height: u64);
 
 	/// The stem transaction pool has accepted this transactions as valid.
 	fn stem_tx_accepted(&self, entry: &PoolEntry) -> Result<(), PoolError>;
@@ -325,7 +324,7 @@ pub trait PoolAdapter: Send + Sync {
 pub struct NoopPoolAdapter {}
 
 impl PoolAdapter for NoopPoolAdapter {
-	fn tx_accepted(&self, _entry: &PoolEntry) {}
+	fn tx_accepted(&self, _entry: &PoolEntry, _height: u64) {}
 	fn stem_tx_accepted(&self, _entry: &PoolEntry) -> Result<(), PoolError> {
 		Ok(())
 	}

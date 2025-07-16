@@ -25,13 +25,14 @@ tempfile = "3.1"
 log = "0.4"
 chrono = { version = "0.4.11", features = ["serde"] }
 futures = "0.3"
+# Commented becaise libp2p is disabled
 #libp2p-tokio-socks5 = { path = "../../rust-libp2p-tokio-socks5" }
 #libp2p = { path = "../../rust-libp2p", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"] }
-mwc-libp2p-tokio-socks5 = { git = "https://github.com/mwcproject/rust-libp2p-tokio-socks5", version = "0.7.2", branch = "master"}
-mwc-libp2p = { git = "https://github.com/mwcproject/rust-libp2p", branch = "master", version="0.35.3", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"]}
+#mwc-libp2p-tokio-socks5 = { git = "https://github.com/mwcproject/rust-libp2p-tokio-socks5", version = "0.7.2", branch = "master", optional = true }
+#mwc-libp2p = { git = "https://github.com/mwcproject/rust-libp2p", branch = "master", version="0.35.3", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"], optional = true}
 lazy_static = "1"
 async-std = "1.9"
-tokio = {version = "0.2", features = ["full"] }
+tokio = {version = "1", features = ["full"] }
 ed25519-dalek = "1"
 serde_json = "1"
 bytes = "0.5"
@@ -44,3 +45,8 @@ mwc_chain = { path = "../chain", version = "5.3.9" }
 
 [dev-dependencies]
 mwc_pool = { path = "../pool", version = "5.3.9" }
+
+[features]
+# libp2p disabled by default
+# real dependency: libp2p = ["dep:mwc-libp2p-tokio-socks5", "dep:mwc-libp2p"]
+libp2p = []

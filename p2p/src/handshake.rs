@@ -24,6 +24,7 @@ use crate::types::{
 	PeerLiveInfo,
 };
 use crate::util::RwLock;
+use mwc_core::global;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
 use std::net::{SocketAddr, TcpStream};
@@ -133,6 +134,7 @@ impl Handshake {
 			sender_addr: self_addr.clone(),
 			receiver_addr: peer_addr.clone(),
 			user_agent: USER_AGENT.to_string(),
+			tx_fee_base: global::get_accept_fee_base(),
 		};
 
 		// write and read the handshake response
@@ -175,6 +177,7 @@ impl Handshake {
 			} else {
 				Direction::Outbound
 			},
+			tx_base_fee: shake.tx_fee_base,
 		};
 
 		// If denied then we want to close the connection
@@ -247,6 +250,7 @@ impl Handshake {
 			} else {
 				Direction::Inbound
 			},
+			tx_base_fee: hand.tx_fee_base,
 		};
 
 		// At this point we know the published ip and port of the peer
@@ -266,6 +270,7 @@ impl Handshake {
 			genesis: self.genesis,
 			total_difficulty: total_difficulty,
 			user_agent: USER_AGENT.to_string(),
+			tx_fee_base: global::get_accept_fee_base(),
 		};
 
 		let msg = Msg::new(Type::Shake, shake, negotiated_version)?;

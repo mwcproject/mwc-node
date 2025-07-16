@@ -227,7 +227,7 @@ impl GlobalConfig {
 	fn read_config(mut self) -> Result<GlobalConfig, ConfigError> {
 		let config_file_path = self.config_file_path.as_ref().unwrap();
 		let contents = fs::read_to_string(config_file_path)?;
-		let migrated = GlobalConfig::migrate_config_file_version_none_to_1(contents.clone());
+		let migrated = GlobalConfig::migrate_config_file_version_to_2(contents.clone());
 		if contents != migrated {
 			fs::write(config_file_path, &migrated)?;
 		}
@@ -314,32 +314,31 @@ impl GlobalConfig {
 
 	/// It is placeholder for the future migration. Please check how it is done at mwc
 	///  MWC doesn't have anything to migrate yet
-	fn migrate_config_file_version_none_to_1(config_str: String) -> String {
+	fn migrate_config_file_version_to_2(config_str: String) -> String {
 		// Parse existing config and return unchanged if not eligible for migration
 
 		// Nothing to migrate in MWC. Keeping commented code as example
-		/*let mut config: ConfigMembers =
-			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone())).unwrap();
-		if config.config_file_version != None {
+		let mut config: ConfigMembers =
+			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone()))
+				.expect(format!("Unable to parse the configuration {}", config_str).as_str());
+		if config.config_file_version == Some(2) {
 			return config_str;
 		}
 
 		// Apply changes both textually and structurally
 
-		let config_str = config_str.replace("\n#########################################\n### SERVER CONFIGURATION              ###", "\nconfig_file_version = 2\n\n#########################################\n### SERVER CONFIGURATION              ###");
+		let mut config_str = config_str;
+		if config.config_file_version == None {
+			config_str = config_str.replace("\n#########################################\n### SERVER CONFIGURATION              ###", "\nconfig_file_version = 2\n\n#########################################\n### SERVER CONFIGURATION              ###");
+		} else if config.config_file_version == Some(1) {
+			config_str =
+				config_str.replace("\nconfig_file_version = 1\n", "\nconfig_file_version = 2\n");
+		}
 		config.config_file_version = Some(2);
 
 		let config_str = config_str.replace(
-			"\naccept_fee_base = 1000000\n",
-			"\naccept_fee_base = 500000\n",
-		);
-		if config.server.pool_config.accept_fee_base == 1000000 {
-			config.server.pool_config.accept_fee_base = 500000;
-		}
-
-		let config_str = config_str.replace(
-			"\n#a setting to 1000000 will be overridden to 500000 to respect the fixfees RFC\n",
-			"\n",
+			"\naccept_fee_base",
+			"\n# 'accept_fee_base' is renamed to 'tx_fee_base'. Normally you are not expected to set it, use default value.\n#accept_fee_base",
 		);
 
 		// Verify equivalence
@@ -347,7 +346,7 @@ impl GlobalConfig {
 		assert_eq!(
 			config,
 			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone())).unwrap()
-		);*/
+		);
 
 		config_str
 	}

@@ -29,6 +29,7 @@ use crate::p2p;
 use crate::pool;
 use crate::pool::types::DandelionConfig;
 use crate::store;
+use mwc_core::global;
 use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
@@ -488,7 +489,13 @@ impl DandelionEpoch {
 	/// Choose a new outbound stem relay peer.
 	pub fn next_epoch(&mut self, peers: &Arc<p2p::Peers>) {
 		self.start_time = Some(Utc::now().timestamp());
-		self.relay_peer = peers.iter().outbound().connected().choose_random();
+		let my_fee_base = global::get_accept_fee_base();
+		self.relay_peer = peers
+			.iter()
+			.filter(move |p| {
+				p.is_connected() && p.info.is_outbound() && p.info.tx_base_fee <= my_fee_base
+			})
+			.choose_random();
 
 		// If stem_probability == 90 then we stem 90% of the time.
 		let stem_probability = self.config.stem_probability;
@@ -529,7 +536,13 @@ impl DandelionEpoch {
 		}
 
 		if update_relay {
-			self.relay_peer = peers.iter().outbound().connected().choose_random();
+			let my_fee_base = global::get_accept_fee_base();
+			self.relay_peer = peers
+				.iter()
+				.filter(move |p| {
+					p.is_connected() && p.info.is_outbound() && p.info.tx_base_fee <= my_fee_base
+				})
+				.choose_random();
 			info!(
 				"DandelionEpoch: relay_peer: new peer chosen: {:?}",
 				self.relay_peer.clone().map(|p| p.info.addr.clone())

@@ -22,7 +22,7 @@ thiserror = "1"
 chrono = "0.4.11"
 lru = "0.12"
 lazy_static = "1"
-tokio = {version = "0.2", features = ["full"] }
+tokio = {version = "1", features = ["full"] }
 num_cpus = "1"
 crossbeam = "0.8"
 sysinfo = "0.32"
