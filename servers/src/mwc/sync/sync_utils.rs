@@ -34,7 +34,7 @@ pub enum SyncRequestResponses {
 	WaitingForHeadersHash,
 	HeadersPibdReady,
 	HeadersReady,
-	HashMoreHeadersToApply,
+	HasMoreHeadersToApply,
 	WaitingForHeaders,
 	StatePibdReady,
 	BadState, // need update state, probably horizon was changed, need to retry

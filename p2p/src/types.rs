@@ -859,6 +859,9 @@ pub trait ChainAdapter: Sync + Send {
 		archive_header_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<(), chain::Error>;
+
+	/// Heard total_difficulty from a connected peer (via ping/pong).
+	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64);
 }
 
 /// Additional methods required by the protocol that don't need to be
@@ -870,9 +873,6 @@ pub trait NetAdapter: ChainAdapter {
 
 	/// A list of peers has been received from one of our peers.
 	fn peer_addrs_received(&self, _: Vec<PeerAddr>);
-
-	/// Heard total_difficulty from a connected peer (via ping/pong).
-	fn peer_difficulty(&self, _: &PeerAddr, _: Difficulty, _: u64);
 
 	/// Is this peer currently banned?
 	fn is_banned(&self, addr: &PeerAddr) -> bool;

@@ -100,11 +100,12 @@ impl OrphanBlockPool {
 		let mut orphans = self.orphans.write();
 		let mut height_idx = self.height_idx.write();
 		{
-			let height_hashes = height_idx
-				.entry(orphan.block.header.height)
-				.or_insert_with(|| vec![]);
-			height_hashes.push(orphan.block.hash());
-			orphans.insert(orphan.block.hash(), orphan);
+			let height = orphan.block.header.height;
+			let hash = orphan.block.hash();
+			if orphans.insert(hash.clone(), orphan).is_none() {
+				let height_hashes = height_idx.entry(height).or_insert_with(|| vec![]);
+				height_hashes.push(hash);
+			}
 		}
 
 		let orphans_num_limit = self.pibd_params.get_orphans_num_limit();
@@ -552,7 +553,7 @@ impl Chain {
 		// transaction is good for performance.
 		let mut blocks: Vec<Block> = vec![];
 
-		// We can't process as miltiple during sync because it is slow.
+		// We can't process as multiple during sync because it is slow.
 		// But also we better to process blocks one by one when node running because of possible reorg.
 		// Reord requires to roll back single block, not a whole package.
 		let multiple_processing_height_limit = self.header_head()?.height.saturating_sub(100);
@@ -584,6 +585,11 @@ impl Chain {
 							blocks.iter().map(|b| (b.header.height, b.hash())).collect();
 						match self.process_block_multiple(&blocks, opts) {
 							Ok(tip) => {
+								info!(
+									"Accepted multiple blocks from {} to {}",
+									blocks.first().map(|b| b.header.height).unwrap_or(0),
+									blocks.last().map(|b| b.header.height).unwrap_or(0)
+								);
 								// We are good, let's clean up the orphans
 								for (height, hash) in block_hashes {
 									let _ =

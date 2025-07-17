@@ -899,6 +899,13 @@ impl ChainAdapter for Peers {
 		self.adapter
 			.receive_kernel_segment(peer, archive_header_hash, segment)
 	}
+
+	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
+		if let Some(peer) = self.get_connected_peer(addr) {
+			peer.info.update(height, diff);
+		}
+		self.adapter.peer_difficulty(addr, diff, height)
+	}
 }
 
 impl NetAdapter for Peers {
@@ -937,12 +944,6 @@ impl NetAdapter for Peers {
 		}
 		if let Err(e) = self.save_peers(to_save) {
 			error!("Could not save received peer addresses: {:?}", e);
-		}
-	}
-
-	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
-		if let Some(peer) = self.get_connected_peer(addr) {
-			peer.info.update(height, diff);
 		}
 	}
 

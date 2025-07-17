@@ -140,7 +140,7 @@ impl HeaderSync {
 					Ok(has_more_data) => {
 						if has_more_data {
 							return SyncResponse::new(
-								SyncRequestResponses::HashMoreHeadersToApply,
+								SyncRequestResponses::HasMoreHeadersToApply,
 								Self::get_peer_capabilities(),
 								"Has more headers data to apply".into(),
 							);
