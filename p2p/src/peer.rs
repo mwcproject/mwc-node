@@ -806,6 +806,10 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter
 			.receive_kernel_segment(peer, archive_header_hash, segment)
 	}
+
+	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
+		self.adapter.peer_difficulty(addr, diff, height)
+	}
 }
 
 impl NetAdapter for TrackingAdapter {
@@ -815,10 +819,6 @@ impl NetAdapter for TrackingAdapter {
 
 	fn peer_addrs_received(&self, addrs: Vec<PeerAddr>) {
 		self.adapter.peer_addrs_received(addrs)
-	}
-
-	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
-		self.adapter.peer_difficulty(addr, diff, height)
 	}
 
 	fn is_banned(&self, addr: &PeerAddr) -> bool {

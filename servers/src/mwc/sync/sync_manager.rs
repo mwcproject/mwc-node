@@ -15,6 +15,7 @@
 // sync_utils contain banch of shared between mutiple sync modules routines
 // Normally we would put that into the base class, but rust doesn't support that.
 
+use crate::mwc::sync::block_headers_request_cache::HeadersBlocksRequests;
 use crate::mwc::sync::body_sync::BodySync;
 use crate::mwc::sync::header_hashes_sync::HeadersHashSync;
 use crate::mwc::sync::header_sync::HeaderSync;
@@ -40,6 +41,7 @@ pub struct SyncManager {
 	state: StateSync,
 	body: BodySync,
 	orphans: OrphansSync,
+	headers_block_requests: HeadersBlocksRequests,
 
 	// Headers has complications with banning. In case of bad hashes, we will found that much later
 	// when we ban many peers. That is why we need to track that separately and unban it in such case.
@@ -59,7 +61,8 @@ impl SyncManager {
 			headers: HeaderSync::new(chain.clone()),
 			state: StateSync::new(chain.clone()),
 			body: BodySync::new(chain.clone()),
-			orphans: OrphansSync::new(chain),
+			orphans: OrphansSync::new(chain.clone()),
+			headers_block_requests: HeadersBlocksRequests::new(chain),
 
 			headers_sync_peers: SyncPeers::new(),
 			state_sync_peers: SyncPeers::new(),
@@ -69,7 +72,37 @@ impl SyncManager {
 		}
 	}
 
-	pub fn request(&self, peers: &Arc<Peers>) -> SyncResponse {
+	// Routine method to process headesr and blocks
+	pub fn headers_blocks_request(&self, peers: &Arc<Peers>) {
+		match self.headers_block_requests.process_request(peers) {
+			Ok(_) => {}
+			Err(e) => error!("Failed to process headers blocks request, {}", e),
+		}
+	}
+
+	pub fn add_header_request(
+		&self,
+		addr: &PeerAddr,
+		head_header_hash: Option<Hash>,
+		height: u64,
+		locator: Vec<Hash>,
+	) {
+		self.headers_block_requests
+			.add_header_request(addr, head_header_hash, height, locator);
+	}
+
+	pub fn add_block_request(
+		&self,
+		addr: &PeerAddr,
+		height: u64,
+		block_hash: Hash,
+		opts: mwc_chain::Options,
+	) {
+		self.headers_block_requests
+			.add_block_request(addr, height, block_hash, opts);
+	}
+
+	pub fn sync_request(&self, peers: &Arc<Peers>) -> SyncResponse {
 		let cached_response = self.cached_response.read().clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
@@ -168,7 +201,7 @@ impl SyncManager {
 				return headers_resp;
 			}
 			SyncRequestResponses::Syncing => return headers_resp,
-			SyncRequestResponses::HashMoreHeadersToApply => return headers_resp,
+			SyncRequestResponses::HasMoreHeadersToApply => return headers_resp,
 			SyncRequestResponses::WaitingForHeadersHash => {
 				debug_assert!(false); // should never happen, headers_hashes above must be in sync or wait for peers
 				return headers_resp;

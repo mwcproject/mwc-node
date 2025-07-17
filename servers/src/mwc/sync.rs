@@ -15,6 +15,7 @@
 
 //! Syncing of the chain with the rest of the network
 
+mod block_headers_request_cache;
 mod body_sync;
 mod header_hashes_sync;
 mod header_sync;
@@ -24,6 +25,7 @@ pub mod sync_manager;
 mod sync_peers;
 mod sync_utils;
 mod syncer;
+
 pub use header_sync::get_locator_heights;
 
 pub use self::syncer::run_sync;

@@ -193,12 +193,13 @@ where
 		peer_info: &PeerInfo,
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
+		let height = b.header.height;
 		let b_hash = b.hash();
 		if self.processed_blocks.contains(&b_hash, true) {
-			debug!("block_received, cache for {} Rejected", b_hash);
+			debug!("block_received, cache for {}, {} Rejected", height, b_hash);
 			return Ok(true);
 		} else {
-			debug!("block_received, cache for {} OK", b_hash);
+			debug!("block_received, cache for {}, {} OK", height, b_hash);
 		}
 
 		if self.chain().is_known(&b.header).is_err() {
@@ -290,7 +291,12 @@ where
 
 			// If we have missing kernels then we know we cannot hydrate this compact block.
 			if !missing_short_ids.is_empty() {
-				self.request_block(&cb.header, peer_info, chain::Options::NONE);
+				self.sync_manager.add_block_request(
+					&peer_info.addr,
+					cb.header.height,
+					cb.header.hash(),
+					chain::Options::NONE,
+				);
 				return Ok(true);
 			}
 
@@ -323,7 +329,12 @@ where
 					self.process_block(block, peer_info, chain::Options::NONE)
 				} else if self.sync_state.status() == SyncStatus::NoSync {
 					debug!("adapter: block invalid after hydration, requesting full block");
-					self.request_block(&cb.header, peer_info, chain::Options::NONE);
+					self.sync_manager.add_block_request(
+						&peer_info.addr,
+						cb.header.height,
+						cb.header.hash(),
+						chain::Options::NONE,
+					);
 					Ok(true)
 				} else {
 					debug!("block invalid after hydration, ignoring it, cause still syncing");
@@ -355,10 +366,13 @@ where
 		}
 
 		if self.processed_headers.contains(&bh_hash, true) {
-			debug!("header_received, cache for {} Rejected", bh_hash);
+			debug!(
+				"header_received, cache for {}, {} Rejected",
+				bh.height, bh_hash
+			);
 			return Ok(true);
 		} else {
-			debug!("header_received, cache for {} OK", bh_hash);
+			debug!("header_received, cache for {}, {} OK", bh.height, bh_hash);
 		}
 
 		let chain = self.chain();
@@ -384,23 +398,31 @@ where
 					// we got an error when trying to process the block header
 					// but nothing serious enough to need to ban the peer upstream
 					// Probably child block doesn't exist, let's request them
-					if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
-						let head = chain.head()?;
-						debug!(
-							"Got unknown header, requesting headers from the peer {} at height {}",
-							peer_info.addr, head.height
-						);
-						let heights = get_locator_heights(head.height);
-						let locator = chain.get_locator_hashes(head, &heights)?;
-						let _ = peer.send_header_request(locator);
+					let head = chain.head()?;
+					debug!(
+						"Got unknown header, requesting headers from the peer {} at height {}",
+						peer_info.addr, head.height
+					);
+					let heights = get_locator_heights(head.height);
+					let locator = chain.get_locator_hashes(head, &heights)?;
+					self.sync_manager.add_header_request(
+						&peer_info.addr,
+						Some(bh.hash()),
+						bh.height,
+						locator,
+					);
 
-						if let Ok(tip) = chain.head() {
-							// Requesting of orphans buffer is large enough to finish the job with request
-							if bh.height.saturating_sub(tip.height)
-								< chain.get_pibd_params().get_orphans_num_limit() as u64
-							{
-								let _ = peer.send_block_request(bh.hash(), chain::Options::NONE);
-							}
+					if let Ok(tip) = chain.head() {
+						// Requesting of orphans buffer is large enough to finish the job with request
+						if bh.height.saturating_sub(tip.height)
+							< chain.get_pibd_params().get_orphans_num_limit() as u64
+						{
+							self.sync_manager.add_block_request(
+								&peer_info.addr,
+								bh.height,
+								bh.hash(),
+								chain::Options::NONE,
+							);
 						}
 					}
 				}
@@ -445,18 +467,21 @@ where
 
 		if let Some(last) = bhs.last() {
 			if !self.sync_state.is_syncing() && last.total_difficulty() > self.total_difficulty()? {
-				if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
-					// check if any header
-					for bh in bhs.iter().rev() {
-						let hash = bh.hash();
-						// Header is already processed, checking here if it was accepted
-						if self.chain().get_block_header(&hash).is_ok() {
-							if !self.chain().block_exists(&bh.hash())? {
-								let _ = peer.send_block_request(bh.hash(), chain::Options::NONE);
-							}
-						} else {
-							break;
+				// check if any header
+				for bh in bhs.iter() {
+					let hash = bh.hash();
+					// Header is already processed, checking here if it was accepted
+					if self.chain().get_block_header(&hash).is_ok() {
+						if !self.chain().block_exists(&bh.hash())? {
+							self.sync_manager.add_block_request(
+								&peer_info.addr,
+								bh.height,
+								bh.hash(),
+								chain::Options::NONE,
+							);
 						}
+					} else {
+						break;
 					}
 				}
 			}
@@ -762,6 +787,24 @@ where
 		);
 		Ok(())
 	}
+
+	/// Heard total_difficulty from a connected peer (via ping/pong).
+	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64) {
+		if self.sync_state.is_syncing() {
+			return;
+		}
+
+		if let Ok(tip) = self.chain().head() {
+			if difficulty > tip.total_difficulty && height > tip.height {
+				if let Ok(locator) = self.header_locator() {
+					if !self.sync_state.is_syncing() {
+						self.sync_manager
+							.add_header_request(&peer, None, tip.height + 1, locator);
+					}
+				}
+			}
+		}
+	}
 }
 
 impl<B, P> NetToChainAdapter<B, P>
@@ -861,6 +904,7 @@ where
 			}
 			Err(e) => {
 				let prev_block_hash = b.header.prev_hash.clone();
+				let block_height = b.header.height;
 				let previous = chain.get_previous_header(&b.header);
 				let need_request_prev_block = self.sync_manager.recieve_block_reporting(
 					!e.is_bad_data(),
@@ -872,7 +916,7 @@ where
 				match e {
 					chain::Error::StoreErr(_, _) | chain::Error::Orphan(_) => {
 						if previous.is_err() {
-							// requesting headers from that peer
+							// requesting headers from that peer, intentionally without  self.sync_manager.add_header_request
 							if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
 								debug!("Got block with unknow headers, requesting headers from the peer {} at height {}", peer_info.addr, head.height);
 								let heights = get_locator_heights(head.height);
@@ -882,12 +926,14 @@ where
 						}
 						if need_request_prev_block {
 							// requesting headers from that peer
-							if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
-								// requesting prev block from that peer
-								debug!("Got block with unknow child, requesting prev block {} from the peer {}", prev_block_hash, peer_info.addr);
-								let _ =
-									peer.send_block_request(prev_block_hash, chain::Options::NONE);
-							}
+							// requesting prev block from that peer
+							debug!("Got block with unknown child, requesting prev block {} from the peer {}", prev_block_hash, peer_info.addr);
+							self.sync_manager.add_block_request(
+								&peer_info.addr,
+								block_height.saturating_sub(1),
+								prev_block_hash,
+								chain::Options::NONE,
+							);
 						}
 						Ok(true)
 					}
@@ -950,16 +996,6 @@ where
 
 	fn request_transaction(&self, h: Hash, peer_info: &PeerInfo) {
 		self.send_tx_request_to_peer(h, peer_info, |peer, h| peer.send_tx_request(h))
-	}
-
-	// After receiving a compact block if we cannot successfully hydrate
-	// it into a full block then fallback to requesting the full block
-	// from the same peer that gave us the compact block
-	// consider additional peers for redundancy?
-	fn request_block(&self, bh: &BlockHeader, peer_info: &PeerInfo, opts: Options) {
-		self.send_block_request_to_peer(bh.hash(), peer_info, |peer, h| {
-			peer.send_block_request(h, opts)
-		})
 	}
 
 	// After we have received a block header in "header first" propagation

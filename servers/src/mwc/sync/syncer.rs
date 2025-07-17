@@ -125,6 +125,8 @@ impl SyncRunner {
 			// waiting time for 1000ms is reasonable.
 			thread::sleep(time::Duration::from_millis(sleep_time));
 
+			self.sync_manager.headers_blocks_request(&self.peers);
+
 			// Onle in a while let's dump the peers. Needed to understand how network is doing
 			let now = Utc::now();
 			if (now - last_peer_dump).num_seconds() > 60 * 20 {
@@ -146,7 +148,7 @@ impl SyncRunner {
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
-			let sync_reponse = self.sync_manager.request(&self.peers);
+			let sync_reponse = self.sync_manager.sync_request(&self.peers);
 			debug!("sync_manager responsed with {:?}", sync_reponse);
 
 			let prev_state = self.sync_state.status();
@@ -163,7 +165,7 @@ impl SyncRunner {
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
 				}
-				SyncRequestResponses::HashMoreHeadersToApply => {
+				SyncRequestResponses::HasMoreHeadersToApply => {
 					debug!("Has more headers to apply, will continue soon");
 					sleep_time = 100;
 				}
@@ -180,6 +182,10 @@ impl SyncRunner {
 					for _ in 0..20 {
 						if !self.stop_state.is_stopped() {
 							thread::sleep(time::Duration::from_secs(1));
+							// Processing regular headers/blocks requests.
+							// Every second we will fire the requests to headers/blocks from the queue
+							// Purpose of that to prevent data requests flooding.
+							self.sync_manager.headers_blocks_request(&self.peers);
 						}
 					}
 				}

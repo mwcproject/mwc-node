@@ -24,15 +24,12 @@ use crate::msg::{
 };
 use crate::serv::Server;
 use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
-use mwc_util::Mutex;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
 	server: Server,
-	headers_request_time: Mutex<Instant>,
 }
 
 impl Protocol {
@@ -41,7 +38,6 @@ impl Protocol {
 			adapter,
 			peer_info,
 			server,
-			headers_request_time: Mutex::new(Instant::now()),
 		}
 	}
 }
@@ -74,29 +70,11 @@ impl MessageHandler for Protocol {
 
 			Message::Ping(ping) => {
 				adapter.peer_difficulty(&self.peer_info.addr, ping.total_difficulty, ping.height);
-				let my_difficulty = adapter.total_difficulty()?;
-				let my_height = adapter.total_height()?;
-				if ping.total_difficulty > my_difficulty && ping.height > my_height {
-					if !self.server.is_syncing() {
-						let mut headers_request_time = self.headers_request_time.lock();
-						// let's not bother same peer more than once in a 45 minutes. Ping interval is 10 seconds, so we are tracking the last request time here
-						if headers_request_time.elapsed() > Duration::from_secs(45) {
-							*headers_request_time = Instant::now();
-							if let Some(peer) =
-								self.server.peers.get_connected_peer(&self.peer_info.addr)
-							{
-								let locator = adapter.header_locator()?;
-								peer.send_header_request(locator)?;
-							}
-						}
-					}
-				}
-
 				Consumed::Response(Msg::new(
 					Type::Pong,
 					Pong {
-						total_difficulty: my_difficulty,
-						height: my_height,
+						total_difficulty: adapter.total_difficulty()?,
+						height: adapter.total_height()?,
 					},
 					self.peer_info.version,
 				)?)
@@ -151,12 +129,17 @@ impl MessageHandler for Protocol {
 			}
 
 			Message::Block(b) => {
-				debug!("handle_payload: received block");
+				let b: mwc_core::core::Block = b.into();
+				debug!(
+					"handle_payload: received block {}, {}",
+					b.header.height,
+					b.hash()
+				);
 				// We default to NONE opts here as we do not know know yet why this block was
 				// received.
 				// If we requested this block from a peer due to our node syncing then
 				// the peer adapter will override opts to reflect this.
-				adapter.block_received(b.into(), &self.peer_info, chain::Options::NONE)?;
+				adapter.block_received(b, &self.peer_info, chain::Options::NONE)?;
 				Consumed::None
 			}
 
