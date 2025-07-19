@@ -42,6 +42,9 @@ use crate::PeerAddr::Ip;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
 
+const INITIAL_SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(5000);
+const INITIAL_SOCKET_WRITE_TIMEOUT: Duration = Duration::from_millis(5000);
+
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.
 #[derive(Clone)]
@@ -116,6 +119,9 @@ impl Server {
 					// A nonblocking TCP listener will accept nonblocking TCP streams which
 					// we do not want.
 					stream.set_nonblocking(false)?;
+					// Note, those timeouts will be overwritten during handshake.
+					let _ = stream.set_read_timeout(Some(INITIAL_SOCKET_READ_TIMEOUT));
+					let _ = stream.set_write_timeout(Some(INITIAL_SOCKET_WRITE_TIMEOUT));
 
 					let mut peer_addr = PeerAddr::Ip(peer_addr);
 
