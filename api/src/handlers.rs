@@ -61,7 +61,7 @@ use crate::util::to_base64;
 use crate::util::RwLock;
 use crate::util::StopState;
 use crate::web::*;
-use easy_jsonrpc_mw::{Handler, MaybeReply};
+use easy_jsonrpc_mwc::{Handler, MaybeReply};
 use futures::channel::oneshot;
 use hyper::{Body, Request, Response, StatusCode};
 use serde::Serialize;

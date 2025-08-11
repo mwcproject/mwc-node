@@ -19,6 +19,7 @@ use crate::owner::Owner;
 use crate::p2p::PeerData;
 use crate::rest::Error;
 use crate::types::Status;
+use easy_jsonrpc_mwc;
 use mwc_p2p::types::PeerInfoDisplayLegacy;
 use std::net::SocketAddr;
 
@@ -26,7 +27,7 @@ use std::net::SocketAddr;
 /// * When running `mwc` with defaults, the V2 api is available at
 /// `localhost:3413/v2/owner`
 /// * The endpoint only supports POST operations, with the json-rpc request as the body
-#[easy_jsonrpc_mw::rpc]
+#[easy_jsonrpc_mwc::rpc]
 pub trait OwnerRpc: Sync + Send {
 	/**
 	Networked version of [Owner::get_status](struct.Owner.html#method.get_status).

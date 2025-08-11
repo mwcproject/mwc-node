@@ -917,12 +917,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
 
 [[package]]
-name = "easy-jsonrpc-mw"
-version = "0.5.4"
+name = "easy-jsonrpc-mwc"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3b1a91569d50e3bba3c9febb22ef54d78c6e8a8d8dd91ae859896c8ba05f4e3"
+checksum = "aefafc1d1c7074788491cd40943b23a2eea03bff6e4a4389b20172420c88dda2"
 dependencies = [
- "easy-jsonrpc-proc-macro-mw",
+ "easy-jsonrpc-proc-macro-mwc",
  "jsonrpc-core",
  "rand 0.6.5",
  "serde",
@@ -930,10 +930,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "easy-jsonrpc-proc-macro-mw"
-version = "0.5.1"
+name = "easy-jsonrpc-proc-macro-mwc"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6368dbd2c6685fb84fc6e6a4749917ddc98905793fd06341c7e11a2504f2724"
+checksum = "bca1ffd9229d0579aa3a99e665bc26fcdef88799258c55e39c63087091870b8e"
 dependencies = [
  "heck",
  "proc-macro2 0.4.30",
@@ -1948,7 +1948,7 @@ dependencies = [
  "async-stream",
  "bytes 1.10.1",
  "chrono",
- "easy-jsonrpc-mw",
+ "easy-jsonrpc-mwc",
  "futures 0.3.31",
  "http",
  "hyper",

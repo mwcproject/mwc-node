@@ -351,25 +351,25 @@ impl TxHashSet {
 
 	/// Efficient view into the kernel PMMR based on size in header.
 	pub fn kernel_pmmr_at(
-		&self,
+		&'_ self,
 		header: &BlockHeader,
-	) -> ReadonlyPMMR<TxKernel, PMMRBackend<TxKernel>> {
+	) -> ReadonlyPMMR<'_, TxKernel, PMMRBackend<TxKernel>> {
 		ReadonlyPMMR::at(&self.kernel_pmmr_h.backend, header.kernel_mmr_size)
 	}
 
 	/// Efficient view into the output PMMR based on size in header.
 	pub fn output_pmmr_at(
-		&self,
+		&'_ self,
 		header: &BlockHeader,
-	) -> ReadonlyPMMR<OutputIdentifier, PMMRBackend<OutputIdentifier>> {
+	) -> ReadonlyPMMR<'_, OutputIdentifier, PMMRBackend<OutputIdentifier>> {
 		ReadonlyPMMR::at(&self.output_pmmr_h.backend, header.output_mmr_size)
 	}
 
 	/// Efficient view into the rangeproof PMMR based on size in header.
 	pub fn rangeproof_pmmr_at(
-		&self,
+		&'_ self,
 		header: &BlockHeader,
-	) -> ReadonlyPMMR<RangeProof, PMMRBackend<RangeProof>> {
+	) -> ReadonlyPMMR<'_, RangeProof, PMMRBackend<RangeProof>> {
 		ReadonlyPMMR::at(&self.rproof_pmmr_h.backend, header.output_mmr_size)
 	}
 
@@ -1170,13 +1170,13 @@ impl<'a> Extension<'a> {
 
 	/// Readonly view of our output data.
 	pub fn output_readonly_pmmr(
-		&self,
-	) -> ReadonlyPMMR<OutputIdentifier, PMMRBackend<OutputIdentifier>> {
+		&'_ self,
+	) -> ReadonlyPMMR<'_, OutputIdentifier, PMMRBackend<OutputIdentifier>> {
 		self.output_pmmr.readonly_pmmr()
 	}
 
 	/// Readonly view of our rangeproof data.
-	pub fn rproof_readonly_pmmr(&self) -> ReadonlyPMMR<RangeProof, PMMRBackend<RangeProof>> {
+	pub fn rproof_readonly_pmmr(&'_ self) -> ReadonlyPMMR<'_, RangeProof, PMMRBackend<RangeProof>> {
 		self.rproof_pmmr.readonly_pmmr()
 	}
 
