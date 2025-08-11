@@ -34,14 +34,14 @@ dirs = "1.0.3"
 timer = "0.2"
 atomic_float = "1.0"
 
-mwc_api = { path = "../api", version = "5.3.9" }
-mwc_chain = { path = "../chain", version = "5.3.9" }
-mwc_core = { path = "../core", version = "5.3.9" }
-mwc_keychain = { path = "../keychain", version = "5.3.9" }
-mwc_p2p = { path = "../p2p", version = "5.3.9" }
-mwc_pool = { path = "../pool", version = "5.3.9" }
-mwc_store = { path = "../store", version = "5.3.9" }
-mwc_util = { path = "../util", version = "5.3.9" }
+mwc_api = { workspace = true }
+mwc_chain = { workspace = true }
+mwc_core = { workspace = true }
+mwc_keychain = { workspace = true }
+mwc_p2p = { workspace = true }
+mwc_pool = { workspace = true }
+mwc_store = { workspace = true }
+mwc_util = { workspace = true }
 
 # NOTE. We can't have hyper-rustls the same version for Android and non android. because if how rust builds dependency.
 # Android must have v0.20+

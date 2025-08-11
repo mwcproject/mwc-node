@@ -15,9 +15,9 @@
 //! Some tools to easy stratum server attacks
 
 use chrono::Utc;
+use mwc_util::RwLock;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
-use util::RwLock;
 
 const CONNECT_HISTORY_LIMIT: usize = 10; // History length that we are keeping
 const CONNECT_HISTORY_MIN: usize = 3; // History length to start check for connections

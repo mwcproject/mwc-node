@@ -19,10 +19,13 @@
 
 use crate::libtx::error::Error;
 use blake2::blake2b::Blake2b;
-use keychain::{BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
-use util::secp::key::{PublicKey, SecretKey};
-use util::secp::pedersen::Commitment;
-use util::secp::{self, aggsig, Message, Secp256k1, Signature};
+use mwc_keychain::{BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
+use mwc_util::secp::{
+	self, aggsig,
+	key::{PublicKey, SecretKey},
+	pedersen::Commitment,
+	Message, Secp256k1, Signature,
+};
 
 /// Creates a new secure nonce (as a SecretKey), guaranteed to be usable during
 /// aggsig creation.

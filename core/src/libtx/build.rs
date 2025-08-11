@@ -35,7 +35,7 @@
 use crate::core::{Input, KernelFeatures, Output, OutputFeatures, Transaction, TxKernel};
 use crate::libtx::proof::{self, ProofBuild};
 use crate::libtx::{aggsig, Error};
-use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
+use mwc_keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
 
 /// Context information available to transaction combinators.
 pub struct Context<'a, K, B>
@@ -259,7 +259,7 @@ mod test {
 	use crate::core::transaction::Weighting;
 	use crate::global;
 	use crate::libtx::ProofBuilder;
-	use keychain::{ExtKeychain, ExtKeychainPath};
+	use mwc_keychain::{ExtKeychain, ExtKeychainPath};
 
 	#[test]
 	fn blind_simple_tx() {

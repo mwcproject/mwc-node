@@ -18,8 +18,8 @@ use crate::pow::error::Error;
 use crate::pow::{PoWContext, Proof};
 use byteorder::{BigEndian, WriteBytesExt};
 use croaring::Bitmap;
+use mwc_util::ToHex;
 use std::mem;
-use util::ToHex;
 
 struct Graph {
 	/// Maximum number of edges

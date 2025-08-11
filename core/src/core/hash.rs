@@ -21,8 +21,8 @@
 use crate::ser::{self, Error, PMMRable, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use blake2::blake2b::Blake2b;
 use byteorder::{BigEndian, ByteOrder};
+use mwc_util::{self as util, ToHex};
 use std::{cmp::min, convert::AsRef, fmt, ops};
-use util::ToHex;
 
 /// A hash consisting of all zeroes, used as a sentinel. No known preimage.
 pub const ZERO_HASH: Hash = Hash([0; 32]);

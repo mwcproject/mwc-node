@@ -25,8 +25,8 @@ use crate::core::global;
 use crate::core::libtx::proof::{self, ProofBuilder};
 use crate::core::libtx::{build, tx_fee};
 use crate::core::{consensus, ser};
-use keychain::{ExtKeychain, Keychain};
 use mwc_core as core;
+use mwc_keychain::{self as keychain, ExtKeychain, Keychain};
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.

@@ -15,13 +15,10 @@
 
 //! The Committed trait and associated errors.
 
-use keychain::BlindingFactor;
-use std::cmp;
-use std::sync::Arc;
-use util::secp::key::SecretKey;
-use util::secp::pedersen::Commitment;
-use util::secp::Secp256k1;
-use util::{secp, secp_static};
+use mwc_keychain::{self as keychain, BlindingFactor};
+use mwc_util::secp::{self, key::SecretKey, pedersen::Commitment, Secp256k1};
+use mwc_util::secp_static;
+use std::{cmp, sync::Arc};
 
 /// Errors from summing and verifying kernel excesses via committed trait.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]

@@ -15,7 +15,8 @@
 
 //! libtx specific errors
 use crate::core::transaction;
-use util::secp;
+use mwc_keychain as keychain;
+use mwc_util::secp;
 
 /// Lib tx error definition
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq, Serialize, Deserialize)]

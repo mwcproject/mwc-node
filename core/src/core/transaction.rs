@@ -26,7 +26,11 @@ use crate::ser::{
 };
 use crate::{consensus, global};
 use enum_primitive::FromPrimitive;
-use keychain::{self, BlindingFactor};
+use mwc_keychain::{self as keychain, BlindingFactor};
+use mwc_util::secp;
+use mwc_util::secp::pedersen::{Commitment, RangeProof};
+use mwc_util::secp::{constants, Secp256k1};
+use mwc_util::ToHex;
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -34,11 +38,6 @@ use std::cmp::{max, min};
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::fmt::Display;
-use util;
-use util::secp;
-use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::{constants, Secp256k1};
-use util::ToHex;
 
 /// Fee fields as in fix-fees RFC: { future_use: 20, fee_shift: 4, fee: 40 }
 #[derive(Debug, Clone, Copy, PartialEq)]

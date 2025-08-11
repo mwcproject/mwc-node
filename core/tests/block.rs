@@ -28,10 +28,10 @@ use crate::core::libtx::build::{self, input, output};
 use crate::core::libtx::ProofBuilder;
 use crate::core::{global, pow, ser};
 use chrono::Duration;
-use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core as core;
-use util::secp::{ContextFlag, Secp256k1};
-use util::{secp, ToHex};
+use mwc_keychain::{self as keychain, BlindingFactor, ExtKeychain, Keychain};
+use mwc_util::secp::{ContextFlag, Secp256k1};
+use mwc_util::{self as util, secp, ToHex};
 
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {

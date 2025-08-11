@@ -18,9 +18,9 @@
 use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::ser::{self, Readable, Reader, Writeable, Writer};
 use byteorder::{ByteOrder, LittleEndian};
+use mwc_util::{self as util, ToHex};
 use siphasher::sip::SipHasher24;
 use std::cmp::{min, Ordering};
-use util::ToHex;
 
 /// The size of a short id used to identify inputs|outputs|kernels (6 bytes)
 pub const SHORT_ID_SIZE: usize = 6;

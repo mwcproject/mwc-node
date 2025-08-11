@@ -15,7 +15,6 @@
 
 //! Common test functions
 
-use keychain::{Identifier, Keychain};
 use mwc_core::core::hash::DefaultHashable;
 use mwc_core::core::{
 	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
@@ -27,6 +26,7 @@ use mwc_core::libtx::{
 };
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, PMMRable, Readable, Reader, Writeable, Writer};
+use mwc_keychain::{self as keychain, Identifier, Keychain};
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]

@@ -22,9 +22,9 @@ use crate::libtx::{
 	aggsig,
 	proof::{self, ProofBuild},
 };
-use keychain::{Identifier, Keychain, SwitchCommitmentType};
-use util::secp;
-use util::secp::Secp256k1;
+use mwc_keychain::{Identifier, Keychain, SwitchCommitmentType};
+use mwc_util::secp;
+use mwc_util::secp::Secp256k1;
 
 /// output a reward output
 pub fn output<K, B>(

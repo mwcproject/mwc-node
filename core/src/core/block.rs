@@ -30,11 +30,12 @@ use crate::ser::{
 };
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use keychain::{self, BlindingFactor};
+use mwc_keychain::{self as keychain, BlindingFactor};
+use mwc_util::{
+	from_hex,
+	secp::{self, Secp256k1},
+};
 use std::convert::TryInto;
-use util::from_hex;
-use util::secp;
-use util::secp::Secp256k1;
 
 /// Errors thrown by Block validation
 #[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]

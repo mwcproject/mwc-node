@@ -19,7 +19,7 @@ use crate::core::hash::Hash;
 use crate::core::pmmr;
 use crate::ser;
 use crate::ser::{PMMRIndexHashable, Readable, Reader, Writeable, Writer};
-use util::ToHex;
+use mwc_util::{self as util, ToHex};
 
 /// Merkle proof errors.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
