@@ -17,12 +17,13 @@
 use crate::core::stratum;
 use crate::rest::*;
 use crate::stratum::Stratum;
+use easy_jsonrpc_mwc;
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at
 /// `localhost:3413/v2/stratum`
 /// * The endpoint only supports POST operations, with the json-rpc request as the body
-#[easy_jsonrpc_mw::rpc]
+#[easy_jsonrpc_mwc::rpc]
 pub trait StratumRpc: Sync + Send {
 	/**
 	Get all IP addresses from stratum IP pool

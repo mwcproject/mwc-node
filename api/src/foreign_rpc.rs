@@ -32,7 +32,7 @@ use crate::{util, Libp2pMessages, Libp2pPeers};
 /// * When running `mwc` with defaults, the V2 api is available at
 /// `localhost:3413/v2/foreign`
 /// * The endpoint only supports POST operations, with the json-rpc request as the body
-#[easy_jsonrpc_mw::rpc]
+#[easy_jsonrpc_mwc::rpc]
 pub trait ForeignRpc: Sync + Send {
 	/**
 	Networked version of [Foreign::get_header](struct.Foreign.html#method.get_header).

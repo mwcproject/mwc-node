@@ -10,7 +10,7 @@ workspace = ".."
 edition = "2018"
 
 [dependencies]
-easy-jsonrpc-mw = "0.5.4"
+easy-jsonrpc-mwc = "0.5.6"
 hyper = { version = "0.14", features = ["full"] }
 lazy_static = "1"
 regex = "1"
