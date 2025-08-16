@@ -27,7 +27,7 @@ ripemd160 = "0.9"
 sha2 = "0.9"
 pbkdf2 = "0.8"
 
-mwc_util = { path = "../util", version = "5.3.9" }
+mwc_util = { workspace = true }
 
 [features]
 clippy = []
