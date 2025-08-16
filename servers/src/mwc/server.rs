@@ -106,8 +106,8 @@ pub struct Server {
 	/// Maintain a lock_file so we do not run multiple Mwc nodes from same dir.
 	lock_file: Arc<File>,
 	connect_thread: Option<JoinHandle<()>>,
-	sync_thread: JoinHandle<()>,
-	dandelion_thread: JoinHandle<()>,
+	sync_thread: Option<JoinHandle<()>>,
+	dandelion_thread: Option<JoinHandle<()>>,
 }
 
 impl Server {
@@ -120,6 +120,7 @@ impl Server {
 		mut info_callback: F,
 		allow_to_stop: bool,
 		stop_state: Option<Arc<StopState>>,
+		offline: bool,
 		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<(), Error>
 	where
@@ -155,27 +156,30 @@ impl Server {
 			allow_to_stop,
 			stratum_ip_pool.clone(),
 			stop_state,
+			offline,
 			api_chan,
 		)?;
 
-		if let Some(c) = mining_config {
-			let enable_stratum_server = c.enable_stratum_server;
-			if let Some(s) = enable_stratum_server {
-				if s {
-					{
-						serv.state_info
-							.stratum_stats
-							.is_enabled
-							.store(true, Ordering::Relaxed);
+		if !offline {
+			if let Some(c) = mining_config {
+				let enable_stratum_server = c.enable_stratum_server;
+				if let Some(s) = enable_stratum_server {
+					if s {
+						{
+							serv.state_info
+								.stratum_stats
+								.is_enabled
+								.store(true, Ordering::Relaxed);
+						}
+						serv.start_stratum_server(c, stratum_ip_pool);
 					}
-					serv.start_stratum_server(c, stratum_ip_pool);
 				}
 			}
-		}
 
-		if let Some(s) = enable_test_miner {
-			if s {
-				serv.start_test_miner(test_miner_wallet_url, serv.stop_state.clone());
+			if let Some(s) = enable_test_miner {
+				if s {
+					serv.start_test_miner(test_miner_wallet_url, serv.stop_state.clone());
+				}
 			}
 		}
 
@@ -217,6 +221,7 @@ impl Server {
 		allow_to_stop: bool,
 		stratum_ip_pool: Arc<connections::StratumIpPool>,
 		stop_state: Option<Arc<StopState>>,
+		offline: bool,
 		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<Server, Error> {
 		//let duration_sync_long = config.duration_sync_long.unwrap_or(150);
@@ -295,143 +300,148 @@ impl Server {
 
 		api::reset_server_onion_address();
 
-		#[allow(unused_variables)]
-		let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
-			if !config.p2p_config.host.is_loopback() {
-				error!("If Tor is enabled, host must be '127.0.0.1'.");
-				return Err(Error::Configuration(
-					"If Tor is enabled, host must be '127.0.0.1'.".to_owned(),
-				));
-			}
+		let (onion_address, socks_port) = if !offline {
+			#[allow(unused_variables)]
+			let (onion_address, tor_secret) = if config.tor_config.tor_enabled {
+				if !config.p2p_config.host.is_loopback() {
+					error!("If Tor is enabled, host must be '127.0.0.1'.");
+					return Err(Error::Configuration(
+						"If Tor is enabled, host must be '127.0.0.1'.".to_owned(),
+					));
+				}
 
-			if !config.tor_config.tor_external {
-				let stop_state_clone = stop_state.clone();
-				let cloned_config = config.clone();
+				if !config.tor_config.tor_external {
+					let stop_state_clone = stop_state.clone();
+					let cloned_config = config.clone();
 
-				let (input, output): (Sender<Option<String>>, Receiver<Option<String>>) =
-					mpsc::channel();
+					let (input, output): (Sender<Option<String>>, Receiver<Option<String>>) =
+						mpsc::channel();
 
-				println!("Starting TOR, please wait...");
+					println!("Starting TOR, please wait...");
 
-				let tor_secp = shared_chain.secp().clone();
-				thread::Builder::new()
-					.name("tor_listener".to_string())
-					.spawn(move || {
-						let res = Server::init_tor_listener(
-							&format!(
-								"{}:{}",
-								cloned_config.p2p_config.host, cloned_config.p2p_config.port
-							),
-							&cloned_config.api_http_addr,
-							cloned_config.libp2p_port.unwrap_or(3417),
-							Some(&cloned_config.db_root),
-							cloned_config.tor_config.socks_port,
-							&tor_secp,
-						);
+					let tor_secp = shared_chain.secp().clone();
+					thread::Builder::new()
+						.name("tor_listener".to_string())
+						.spawn(move || {
+							let res = Server::init_tor_listener(
+								&format!(
+									"{}:{}",
+									cloned_config.p2p_config.host, cloned_config.p2p_config.port
+								),
+								&cloned_config.api_http_addr,
+								cloned_config.libp2p_port.unwrap_or(3417),
+								Some(&cloned_config.db_root),
+								cloned_config.tor_config.socks_port,
+								&tor_secp,
+							);
 
-						let _ = match res {
-							Ok(res) => {
-								let (listener, onion_address, secret) = res;
-								input
-									.send(Some(format!("{}.onion", onion_address.clone())))
-									.unwrap();
-								input.send(Some(to_hex(&secret.0))).unwrap();
+							let _ = match res {
+								Ok(res) => {
+									let (listener, onion_address, secret) = res;
+									input
+										.send(Some(format!("{}.onion", onion_address.clone())))
+										.unwrap();
+									input.send(Some(to_hex(&secret.0))).unwrap();
 
-								loop {
-									std::thread::sleep(std::time::Duration::from_millis(10));
-									if stop_state_clone.is_stopped() {
-										break;
+									loop {
+										std::thread::sleep(std::time::Duration::from_millis(10));
+										if stop_state_clone.is_stopped() {
+											break;
+										}
 									}
+									Ok(listener)
 								}
-								Ok(listener)
-							}
-							Err(e) => {
-								input.send(None).unwrap();
-								error!("failed to start Tor due to {}", e);
-								Err(crate::Error::TorConfig(format!(
-									"Failed to init tor, {}",
-									e
-								)))
-							}
-						};
+								Err(e) => {
+									input.send(None).unwrap();
+									error!("failed to start Tor due to {}", e);
+									Err(crate::Error::TorConfig(format!(
+										"Failed to init tor, {}",
+										e
+									)))
+								}
+							};
+						})?;
+
+					let resp = output.recv();
+					info!("Finished with TOR");
+					let onion_address = resp.unwrap_or(None);
+					if onion_address.is_some() {
+						info!("Tor successfully started: resp = {:?}", onion_address);
+					} else {
+						error!("Tor failed to start!");
+						std::process::exit(-1);
+					}
+					let secret = output.recv().map_err(|e| {
+						Error::General(format!("Unable to read the data from pipe, {}", e))
 					})?;
-
-				let resp = output.recv();
-				info!("Finished with TOR");
-				let onion_address = resp.unwrap_or(None);
-				if onion_address.is_some() {
-					info!("Tor successfully started: resp = {:?}", onion_address);
+					debug_assert!(secret.is_some());
+					(onion_address, secret)
 				} else {
-					error!("Tor failed to start!");
-					std::process::exit(-1);
+					let onion_address = config.tor_config.onion_address.clone();
+
+					if onion_address.is_none() {
+						error!("onion_address must be specified with external tor. Halting!");
+						std::process::exit(-1);
+					}
+					let otemp = onion_address.clone().unwrap();
+					if otemp == "" {
+						error!("onion_address must be specified with external tor. Halting!");
+						std::process::exit(-1);
+					}
+					info!(
+						"Tor configured to run externally! Onion address = {:?}.",
+						otemp.clone()
+					);
+					(onion_address, None)
 				}
-				let secret = output.recv().map_err(|e| {
-					Error::General(format!("Unable to read the data from pipe, {}", e))
-				})?;
-				debug_assert!(secret.is_some());
-				(onion_address, secret)
 			} else {
-				let onion_address = config.tor_config.onion_address.clone();
+				(None, None)
+			};
 
-				if onion_address.is_none() {
-					error!("onion_address must be specified with external tor. Halting!");
-					std::process::exit(-1);
-				}
-				let otemp = onion_address.clone().unwrap();
-				if otemp == "" {
-					error!("onion_address must be specified with external tor. Halting!");
-					std::process::exit(-1);
-				}
-				info!(
-					"Tor configured to run externally! Onion address = {:?}.",
-					otemp.clone()
-				);
-				(onion_address, None)
-			}
-		} else {
-			(None, None)
-		};
+			let socks_port = if config.tor_config.tor_enabled {
+				config.tor_config.socks_port
+			} else {
+				0
+			};
+			info!(
+				"socks = {}, tor_enabled = {}",
+				socks_port, config.tor_config.tor_enabled
+			);
 
-		let socks_port = if config.tor_config.tor_enabled {
-			config.tor_config.socks_port
-		} else {
-			0
-		};
-		info!(
-			"socks = {}, tor_enabled = {}",
-			socks_port, config.tor_config.tor_enabled
-		);
+			// Initialize libp2p server
+			#[cfg(feature = "libp2p")]
+			if config.libp2p_enabled.unwrap_or(true)
+				&& onion_address.is_some()
+				&& tor_secret.is_some()
+			{
+				let onion_address = onion_address.clone().unwrap();
+				let tor_secret = tor_secret.unwrap();
+				let tor_secret = from_hex(&tor_secret).map_err(|e| {
+					Error::General(format!("Unable to parse secret hex {}, {}", tor_secret, e))
+				})?;
 
-		// Initialize libp2p server
-		#[cfg(feature = "libp2p")]
-		if config.libp2p_enabled.unwrap_or(true) && onion_address.is_some() && tor_secret.is_some()
-		{
-			let onion_address = onion_address.clone().unwrap();
-			let tor_secret = tor_secret.unwrap();
-			let tor_secret = from_hex(&tor_secret).map_err(|e| {
-				Error::General(format!("Unable to parse secret hex {}, {}", tor_secret, e))
-			})?;
+				let libp2p_port = config.libp2p_port;
+				let tor_socks_port = config.tor_config.socks_port;
+				let fee_base = config.pool_config.tx_fee_base;
+				api::set_server_onion_address(&onion_address);
 
-			let libp2p_port = config.libp2p_port;
-			let tor_socks_port = config.tor_config.socks_port;
-			let fee_base = config.pool_config.tx_fee_base;
-			api::set_server_onion_address(&onion_address);
+				let clone_shared_chain = shared_chain.clone();
+				let libp2p_topics = config
+					.libp2p_topics
+					.clone()
+					.unwrap_or(vec!["SwapMarketplace".to_string()]);
 
-			let clone_shared_chain = shared_chain.clone();
-			let libp2p_topics = config
-				.libp2p_topics
-				.clone()
-				.unwrap_or(vec!["SwapMarketplace".to_string()]);
+				thread::Builder::new()
+					.name("libp2p_node".to_string())
+					.spawn(move || {
+						let requested_kernel_cache: RwLock<HashMap<Commitment, (TxKernel, u64)>> =
+							RwLock::new(HashMap::new());
+						let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
 
-			thread::Builder::new()
-				.name("libp2p_node".to_string())
-				.spawn(move || {
-					let requested_kernel_cache: RwLock<HashMap<Commitment, (TxKernel, u64)>> =
-						RwLock::new(HashMap::new());
-					let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
-
-					let output_validation_fn =
-						move |excess: &Commitment| -> Result<Option<TxKernel>, mwc_p2p::Error> {
+						let output_validation_fn = move |excess: &Commitment| -> Result<
+							Option<TxKernel>,
+							mwc_p2p::Error,
+						> {
 							// Tip is needed in order to request from last 24 hours (1440 blocks)
 							let tip_height = clone_shared_chain.head()?.height;
 
@@ -473,45 +483,49 @@ impl Server {
 							}
 						};
 
-					let mut secret: [u8; SECRET_KEY_SIZE] = [0; SECRET_KEY_SIZE];
-					secret.copy_from_slice(&tor_secret);
+						let mut secret: [u8; SECRET_KEY_SIZE] = [0; SECRET_KEY_SIZE];
+						secret.copy_from_slice(&tor_secret);
 
-					let validation_fn = Arc::new(output_validation_fn);
+						let validation_fn = Arc::new(output_validation_fn);
 
-					let libp2p_stopper = Arc::new(std::sync::Mutex::new(1));
+						let libp2p_stopper = Arc::new(std::sync::Mutex::new(1));
 
-					loop {
-						for t in &libp2p_topics {
-							libp2p_connection::add_topic(t, 1);
+						loop {
+							for t in &libp2p_topics {
+								libp2p_connection::add_topic(t, 1);
+							}
+
+							let libp2p_node_runner = libp2p_connection::run_libp2p_node(
+								tor_socks_port,
+								&secret,
+								libp2p_port.unwrap_or(3417),
+								fee_base,
+								validation_fn.clone(),
+								libp2p_stopper.clone(), // passing new obj, because we never will stop the libp2p process
+							);
+
+							info!("Starting gossipsub libp2p server");
+							let rt = tokio::runtime::Runtime::new().unwrap();
+
+							match rt.block_on(libp2p_node_runner) {
+								Ok(_) => info!("libp2p node is exited"),
+								Err(e) => error!("Unable to start libp2p node, {}", e),
+							}
+							// Swarm is not valid any more, let's update our global instance.
+							libp2p_connection::reset_libp2p_swarm();
+
+							if *libp2p_stopper.lock().unwrap() == 0 {
+								// Should never happen for the node
+								debug_assert!(false);
+								break;
+							}
 						}
-
-						let libp2p_node_runner = libp2p_connection::run_libp2p_node(
-							tor_socks_port,
-							&secret,
-							libp2p_port.unwrap_or(3417),
-							fee_base,
-							validation_fn.clone(),
-							libp2p_stopper.clone(), // passing new obj, because we never will stop the libp2p process
-						);
-
-						info!("Starting gossipsub libp2p server");
-						let rt = tokio::runtime::Runtime::new().unwrap();
-
-						match rt.block_on(libp2p_node_runner) {
-							Ok(_) => info!("libp2p node is exited"),
-							Err(e) => error!("Unable to start libp2p node, {}", e),
-						}
-						// Swarm is not valid any more, let's update our global instance.
-						libp2p_connection::reset_libp2p_swarm();
-
-						if *libp2p_stopper.lock().unwrap() == 0 {
-							// Should never happen for the node
-							debug_assert!(false);
-							break;
-						}
-					}
-				})?;
-		}
+					})?;
+			}
+			(onion_address, socks_port)
+		} else {
+			(None, 0)
+		};
 
 		// Initialize our capabilities.
 		// Currently either "default" or with optional "archive_mode" (block history) support enabled.
@@ -541,54 +555,60 @@ impl Server {
 
 		let mut connect_thread = None;
 
-		if config.p2p_config.seeding_type != p2p::Seeding::Programmatic {
-			let seed_list = match config.p2p_config.seeding_type {
-				p2p::Seeding::None => {
-					warn!("No seed configured, will stay solo until connected to");
-					seed::predefined_seeds(vec![])
-				}
-				p2p::Seeding::List => match &config.p2p_config.seeds {
-					Some(seeds) => seed::predefined_seeds(seeds.peers.clone()),
-					None => {
-						return Err(Error::Configuration(
-							"Seeds must be configured for seeding type List".to_owned(),
-						));
+		let sync_thread = if !offline {
+			if config.p2p_config.seeding_type != p2p::Seeding::Programmatic {
+				let seed_list = match config.p2p_config.seeding_type {
+					p2p::Seeding::None => {
+						warn!("No seed configured, will stay solo until connected to");
+						seed::predefined_seeds(vec![])
 					}
-				},
-				p2p::Seeding::DNSSeed => seed::default_dns_seeds(),
-				_ => unreachable!(),
-			};
+					p2p::Seeding::List => match &config.p2p_config.seeds {
+						Some(seeds) => seed::predefined_seeds(seeds.peers.clone()),
+						None => {
+							return Err(Error::Configuration(
+								"Seeds must be configured for seeding type List".to_owned(),
+							));
+						}
+					},
+					p2p::Seeding::DNSSeed => seed::default_dns_seeds(),
+					_ => unreachable!(),
+				};
 
-			connect_thread = Some(seed::connect_and_monitor(
-				p2p_server.clone(),
-				seed_list,
-				config.p2p_config.clone(),
+				connect_thread = Some(seed::connect_and_monitor(
+					p2p_server.clone(),
+					seed_list,
+					config.p2p_config.clone(),
+					stop_state.clone(),
+					use_tor,
+				)?);
+			}
+
+			// Defaults to None (optional) in config file.
+			// This translates to false here so we do not skip by default.
+			sync_state.update(SyncStatus::AwaitingPeers);
+
+			let sync_thread = sync::run_sync(
+				sync_state.clone(),
+				p2p_server.peers.clone(),
+				shared_chain.clone(),
 				stop_state.clone(),
-				use_tor,
-			)?);
-		}
+				sync_manager.clone(),
+			)?;
 
-		// Defaults to None (optional) in config file.
-		// This translates to false here so we do not skip by default.
-		sync_state.update(SyncStatus::AwaitingPeers);
-
-		let sync_thread = sync::run_sync(
-			sync_state.clone(),
-			p2p_server.peers.clone(),
-			shared_chain.clone(),
-			stop_state.clone(),
-			sync_manager.clone(),
-		)?;
-
-		let p2p_inner = p2p_server.clone();
-		let _ = thread::Builder::new()
-			.name("p2p-server".to_string())
-			.spawn(move || {
-				if let Err(e) = p2p_inner.listen() {
-					// QW wallet using for tracking
-					error!("P2P server failed with erorr: {:?}", e);
-				}
-			})?;
+			let p2p_inner = p2p_server.clone();
+			let _ = thread::Builder::new()
+				.name("p2p-server".to_string())
+				.spawn(move || {
+					if let Err(e) = p2p_inner.listen() {
+						// QW wallet using for tracking
+						error!("P2P server failed with erorr: {:?}", e);
+					}
+				})?;
+			Some(sync_thread)
+		} else {
+			sync_state.update(SyncStatus::NoSync);
+			None
+		};
 
 		info!("Starting rest apis at: {}", &config.api_http_addr);
 		let api_secret = get_first_line(config.api_secret_path.clone());
@@ -623,13 +643,18 @@ impl Server {
 			stop_state.clone(),
 		)?;
 
-		info!("Starting dandelion monitor: {}", &config.api_http_addr);
-		let dandelion_thread = dandelion_monitor::monitor_transactions(
-			config.dandelion_config.clone(),
-			tx_pool.clone(),
-			pool_net_adapter,
-			stop_state.clone(),
-		)?;
+		let dandelion_thread = if !offline {
+			info!("Starting dandelion monitor: {}", &config.api_http_addr);
+			let dandelion_thread = dandelion_monitor::monitor_transactions(
+				config.dandelion_config.clone(),
+				tx_pool.clone(),
+				pool_net_adapter,
+				stop_state.clone(),
+			)?;
+			Some(dandelion_thread)
+		} else {
+			None
+		};
 
 		warn!("MWC server started.");
 		Ok(Server {
@@ -1034,14 +1059,18 @@ impl Server {
 				info!("No active connect_and_monitor thread")
 			}
 
-			match self.sync_thread.join() {
-				Err(e) => error!("failed to join to sync thread: {:?}", e),
-				Ok(_) => info!("sync thread stopped"),
+			if let Some(sync_thread) = self.sync_thread {
+				match sync_thread.join() {
+					Err(e) => error!("failed to join to sync thread: {:?}", e),
+					Ok(_) => info!("sync thread stopped"),
+				}
 			}
 
-			match self.dandelion_thread.join() {
-				Err(e) => error!("failed to join to dandelion_monitor thread: {:?}", e),
-				Ok(_) => info!("dandelion_monitor thread stopped"),
+			if let Some(dandelion_thread) = self.dandelion_thread {
+				match dandelion_thread.join() {
+					Err(e) => error!("failed to join to dandelion_monitor thread: {:?}", e),
+					Ok(_) => info!("dandelion_monitor thread stopped"),
+				}
 			}
 		}
 		// this call is blocking and makes sure all peers stop, however

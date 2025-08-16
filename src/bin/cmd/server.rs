@@ -36,9 +36,10 @@ pub fn start_server(
 	config: servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	allow_to_stop: bool,
+	offline: bool,
 	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
-	start_server_tui(config, logs_rx, allow_to_stop, api_chan);
+	start_server_tui(config, logs_rx, allow_to_stop, offline, api_chan);
 	exit(0);
 }
 
@@ -46,6 +47,7 @@ fn start_server_tui(
 	config: servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	allow_to_stop: bool,
+	offline: bool,
 	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
 	// Run the UI controller.. here for now for simplicity to access
@@ -63,6 +65,7 @@ fn start_server_tui(
 			},
 			allow_to_stop,
 			None,
+			offline,
 			api_chan,
 		)
 		.map_err(|e| error!("Unable to start MWC in UI mode, {}", e))
@@ -85,6 +88,7 @@ fn start_server_tui(
 			},
 			allow_to_stop,
 			None,
+			offline,
 			api_chan,
 		)
 		.map_err(|e| error!("Unable to start MWC w/o UI mode, {}", e))
@@ -105,6 +109,7 @@ pub fn server_command(
 	// just get defaults from the global config
 	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
 	let mut allow_to_stop = false;
+	let mut offline = false;
 
 	if let Some(a) = server_args {
 		if let Some(port) = a.value_of("port") {
@@ -134,16 +139,20 @@ pub fn server_command(
 		}
 
 		allow_to_stop = a.is_present("allow_to_stop");
+		offline = a.is_present("offline");
 	}
 
 	if allow_to_stop {
 		warn!("Starting server with activated stop_node API");
 	}
+	if offline {
+		warn!("Running in offline mode! Not connecting to any peers.");
+	}
 
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(server_config, logs_rx, allow_to_stop, api_chan);
+				start_server(server_config, logs_rx, allow_to_stop, offline, api_chan);
 			}
 			("", _) => {
 				println!("Subcommand required, use 'mwc help server' for details");
@@ -157,7 +166,7 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(server_config, logs_rx, allow_to_stop, api_chan);
+		start_server(server_config, logs_rx, allow_to_stop, offline, api_chan);
 	}
 	0
 }
