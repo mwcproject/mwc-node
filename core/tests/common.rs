@@ -15,7 +15,6 @@
 
 //! Common test functions
 
-use keychain::{Identifier, Keychain};
 use mwc_core::core::hash::DefaultHashable;
 use mwc_core::core::{
 	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
@@ -27,15 +26,16 @@ use mwc_core::libtx::{
 };
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, PMMRable, Readable, Reader, Writeable, Writer};
+use mwc_keychain::{Identifier, Keychain};
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]
 pub fn tx2i1o() -> Transaction {
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id2 = mwc_keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let key_id3 = mwc_keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2.into() },
@@ -51,10 +51,10 @@ pub fn tx2i1o() -> Transaction {
 // utility producing a transaction with a single input and output
 #[allow(dead_code)]
 pub fn tx1i1o() -> Transaction {
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let key_id1 = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id2 = mwc_keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2.into() },
@@ -90,11 +90,11 @@ pub fn tx1i10_v2_compatible() -> Transaction {
 // Note: this tx has an "offset" kernel
 #[allow(dead_code)]
 pub fn tx1i2o() -> Transaction {
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id2 = mwc_keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let key_id3 = mwc_keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2.into() },

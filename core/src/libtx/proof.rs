@@ -17,12 +17,16 @@
 
 use crate::libtx::error::Error;
 use blake2::blake2b::blake2b;
-use keychain::extkey_bip32::BIP32MwcHasher;
-use keychain::{Identifier, Keychain, SwitchCommitmentType, ViewKey};
+use mwc_keychain::{
+	extkey_bip32::BIP32MwcHasher, Identifier, Keychain, SwitchCommitmentType, ViewKey,
+};
+use mwc_util::secp::{
+	self,
+	key::SecretKey,
+	pedersen::{Commitment, ProofMessage, RangeProof},
+	Secp256k1,
+};
 use std::convert::TryFrom;
-use util::secp::key::SecretKey;
-use util::secp::pedersen::{Commitment, ProofMessage, RangeProof};
-use util::secp::{self, Secp256k1};
 use zeroize::Zeroize;
 
 /// Create a bulletproof
@@ -447,8 +451,8 @@ impl ProofBuild for ViewKey {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use keychain::ChildNumber;
-	use keychain::ExtKeychain;
+	use mwc_keychain::ChildNumber;
+	use mwc_keychain::ExtKeychain;
 	use rand::{thread_rng, Rng};
 
 	#[test]

@@ -21,8 +21,8 @@
 use crate::ser::{self, Error, PMMRable, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use blake2::blake2b::Blake2b;
 use byteorder::{BigEndian, ByteOrder};
+use mwc_util::ToHex;
 use std::{cmp::min, convert::AsRef, fmt, ops};
-use util::ToHex;
 
 /// A hash consisting of all zeroes, used as a sentinel. No known preimage.
 pub const ZERO_HASH: Hash = Hash([0; 32]);
@@ -86,7 +86,7 @@ impl Hash {
 
 	/// Convert hex string back to hash.
 	pub fn from_hex(hex: &str) -> Result<Hash, Error> {
-		let bytes = util::from_hex(hex)
+		let bytes = mwc_util::from_hex(hex)
 			.map_err(|e| Error::HexError(format!("failed to decode {}, {}", hex, e)))?;
 		Ok(Hash::from_vec(&bytes))
 	}
@@ -233,7 +233,7 @@ impl<D: DefaultHashable, E: DefaultHashable> DefaultHashable for (D, E) {}
 impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable> DefaultHashable for (D, E, F) {}
 
 /// Implement Hashed trait for external types here
-impl DefaultHashable for util::secp::pedersen::RangeProof {}
+impl DefaultHashable for mwc_util::secp::pedersen::RangeProof {}
 impl DefaultHashable for Vec<u8> {}
 impl DefaultHashable for u8 {}
 impl DefaultHashable for u64 {}

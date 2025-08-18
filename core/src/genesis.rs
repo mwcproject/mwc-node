@@ -22,10 +22,15 @@ use crate::core;
 use crate::core::hash::Hash;
 use crate::pow::{Difficulty, Proof, ProofOfWork};
 use chrono::prelude::{TimeZone, Utc};
-use keychain::BlindingFactor;
-use util::secp::constants::SINGLE_BULLET_PROOF_SIZE;
-use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::Signature;
+use mwc_keychain::BlindingFactor;
+use mwc_util::{
+	self as util,
+	secp::{
+		constants::SINGLE_BULLET_PROOF_SIZE,
+		pedersen::{Commitment, RangeProof},
+		Signature,
+	},
+};
 
 /// Genesis block definition for development networks. The proof of work size
 /// is small enough to mine it on the fly, so it does not contain its own

@@ -26,7 +26,7 @@ pub mod pmmr;
 pub mod transaction;
 
 use crate::consensus::MWC_BASE;
-use util::secp::pedersen::Commitment;
+use mwc_util::secp::pedersen::Commitment;
 
 pub use self::block::*;
 pub use self::block_sums::*;

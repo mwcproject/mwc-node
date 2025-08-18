@@ -28,14 +28,16 @@ use crate::core::libtx::build::{self, input, output};
 use crate::core::libtx::ProofBuilder;
 use crate::core::{global, pow, ser};
 use chrono::Duration;
-use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core as core;
-use util::secp::{ContextFlag, Secp256k1};
-use util::{secp, ToHex};
+use mwc_keychain::{BlindingFactor, ExtKeychain, Keychain};
+use mwc_util::{
+	secp::{self, ContextFlag, Secp256k1},
+	ToHex,
+};
 
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {
-	util::init_test_logger();
+	mwc_util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 }
 
@@ -754,11 +756,11 @@ fn serialize_deserialize_compact_block() {
 #[test]
 fn same_amount_outputs_copy_range_proof() {
 	test_setup();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id2 = mwc_keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let key_id3 = mwc_keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 1.into() },
@@ -773,7 +775,7 @@ fn same_amount_outputs_copy_range_proof() {
 	let mut outs = tx.outputs().to_vec();
 	outs[0].proof = outs[1].proof;
 
-	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
+	let key_id = mwc_keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
 	let prev = BlockHeader::default();
 	let b = new_block(
 		&[Transaction::new(tx.inputs(), &outs, tx.kernels())],
@@ -795,11 +797,11 @@ fn same_amount_outputs_copy_range_proof() {
 #[test]
 fn wrong_amount_range_proof() {
 	test_setup();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id2 = mwc_keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let key_id3 = mwc_keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
 
 	let tx1 = build::transaction(
 		KernelFeatures::Plain { fee: 1.into() },
@@ -825,7 +827,7 @@ fn wrong_amount_range_proof() {
 	outs[0].proof = tx2.outputs()[0].proof;
 	outs[1].proof = tx2.outputs()[1].proof;
 
-	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
+	let key_id = mwc_keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
 	let prev = BlockHeader::default();
 	let b = new_block(
 		&[Transaction::new(tx1.inputs(), &outs, tx1.kernels())],

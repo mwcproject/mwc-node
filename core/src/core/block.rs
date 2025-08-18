@@ -30,11 +30,12 @@ use crate::ser::{
 };
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use keychain::{self, BlindingFactor};
+use mwc_keychain::BlindingFactor;
+use mwc_util::{
+	from_hex,
+	secp::{self, Secp256k1},
+};
 use std::convert::TryInto;
-use util::from_hex;
-use util::secp;
-use util::secp::Secp256k1;
 
 /// Errors thrown by Block validation
 #[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
@@ -79,7 +80,7 @@ pub enum Error {
 	Secp(secp::Error),
 	/// Underlying keychain related error
 	#[error("keychain error, {0}")]
-	Keychain(keychain::Error),
+	Keychain(mwc_keychain::Error),
 	/// Error when verifying kernel sums via committed trait.
 	#[error("Block Commits error, {0}")]
 	Committed(committed::Error),
@@ -119,8 +120,8 @@ impl From<secp::Error> for Error {
 	}
 }
 
-impl From<keychain::Error> for Error {
-	fn from(e: keychain::Error) -> Error {
+impl From<mwc_keychain::Error> for Error {
+	fn from(e: mwc_keychain::Error) -> Error {
 		Error::Keychain(e)
 	}
 }

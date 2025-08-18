@@ -25,8 +25,8 @@ use crate::core::global;
 use crate::core::libtx::proof::{self, ProofBuilder};
 use crate::core::libtx::{build, tx_fee};
 use crate::core::{consensus, ser};
-use keychain::{ExtKeychain, Keychain};
 use mwc_core as core;
+use mwc_keychain::{ExtKeychain, Keychain};
 
 // We use json serialization between wallet->node when pushing transactions to the network.
 // This test ensures we exercise this serialization/deserialization code.
@@ -72,7 +72,7 @@ fn test_transaction_equal() {
 fn test_output_ser_deser() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let switch = keychain::SwitchCommitmentType::Regular;
+	let switch = mwc_keychain::SwitchCommitmentType::Regular;
 	let commit = keychain.commit(5, &key_id, switch).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let proof = proof::create(&keychain, &builder, 5, &key_id, switch, commit, None).unwrap();

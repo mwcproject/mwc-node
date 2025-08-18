@@ -28,11 +28,11 @@ use crate::core::block::Block;
 use crate::genesis;
 use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
+use mwc_util::OneTime;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use util::OneTime;
 
 /// An enum collecting sets of parameters used throughout the
 /// code wherever mining is needed. This should allow for

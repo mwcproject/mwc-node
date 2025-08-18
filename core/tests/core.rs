@@ -28,9 +28,9 @@ use self::core::libtx::build::{self, initial_tx, input, output, with_excess};
 use self::core::libtx::{aggsig, ProofBuilder};
 use self::core::{global, ser};
 use crate::common::{new_block, tx1i1o, tx1i2o, tx2i1o};
-use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core as core;
-use util::secp::{ContextFlag, Secp256k1};
+use mwc_keychain::{BlindingFactor, ExtKeychain, Keychain};
+use mwc_util::secp::{ContextFlag, Secp256k1};
 
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {
@@ -643,7 +643,7 @@ fn tx_build_exchange() {
 #[test]
 fn reward_empty_block() {
 	test_setup();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 
@@ -658,7 +658,7 @@ fn reward_empty_block() {
 #[test]
 fn reward_with_tx_block() {
 	test_setup();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 
@@ -680,7 +680,7 @@ fn reward_with_tx_block() {
 #[test]
 fn simple_block() {
 	test_setup();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 
@@ -697,7 +697,7 @@ fn simple_block() {
 #[test]
 fn test_block_with_timelocked_tx() {
 	test_setup();
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
+	let keychain = mwc_keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);

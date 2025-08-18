@@ -26,7 +26,15 @@ use crate::ser::{
 };
 use crate::{consensus, global};
 use enum_primitive::FromPrimitive;
-use keychain::{self, BlindingFactor};
+use mwc_keychain::BlindingFactor;
+use mwc_util::{
+	secp::{
+		self, constants,
+		pedersen::{Commitment, RangeProof},
+		Secp256k1,
+	},
+	ToHex,
+};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -34,11 +42,6 @@ use std::cmp::{max, min};
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::fmt::Display;
-use util;
-use util::secp;
-use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::{constants, Secp256k1};
-use util::ToHex;
 
 /// Fee fields as in fix-fees RFC: { future_use: 20, fee_shift: 4, fee: 40 }
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -567,7 +570,7 @@ pub enum Error {
 	Secp(secp::Error),
 	/// Underlying keychain related error
 	#[error("Keychain error, {0}")]
-	Keychain(keychain::Error),
+	Keychain(mwc_keychain::Error),
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
 	#[error("Tx Kernel Sum Mismatch")]
@@ -629,8 +632,8 @@ impl From<secp::Error> for Error {
 	}
 }
 
-impl From<keychain::Error> for Error {
-	fn from(e: keychain::Error) -> Error {
+impl From<mwc_keychain::Error> for Error {
+	fn from(e: mwc_keychain::Error) -> Error {
 		Error::Keychain(e)
 	}
 }
@@ -2390,7 +2393,7 @@ mod test {
 	use super::*;
 	use crate::core::hash::Hash;
 	use crate::core::id::{ShortId, ShortIdentifiable};
-	use keychain::{ExtKeychain, Keychain, SwitchCommitmentType};
+	use mwc_keychain::{ExtKeychain, Keychain, SwitchCommitmentType};
 
 	#[test]
 	fn test_plain_kernel_ser_deser() {

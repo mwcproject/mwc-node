@@ -15,20 +15,19 @@
 
 //! The Committed trait and associated errors.
 
-use keychain::BlindingFactor;
-use std::cmp;
-use std::sync::Arc;
-use util::secp::key::SecretKey;
-use util::secp::pedersen::Commitment;
-use util::secp::Secp256k1;
-use util::{secp, secp_static};
+use mwc_keychain::BlindingFactor;
+use mwc_util::{
+	secp::{self, key::SecretKey, pedersen::Commitment, Secp256k1},
+	secp_static,
+};
+use std::{cmp, sync::Arc};
 
 /// Errors from summing and verifying kernel excesses via committed trait.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 pub enum Error {
 	/// Keychain related error.
 	#[error("Keychain error {0}")]
-	Keychain(keychain::Error),
+	Keychain(mwc_keychain::Error),
 	/// Secp related error.
 	#[error("Secp error {0}")]
 	Secp(secp::Error),
@@ -46,8 +45,8 @@ impl From<secp::Error> for Error {
 	}
 }
 
-impl From<keychain::Error> for Error {
-	fn from(e: keychain::Error) -> Error {
+impl From<mwc_keychain::Error> for Error {
+	fn from(e: mwc_keychain::Error) -> Error {
 		Error::Keychain(e)
 	}
 }
