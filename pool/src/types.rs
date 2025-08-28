@@ -313,7 +313,7 @@ pub trait BlockChain: Sync + Send {
 /// importantly the broadcasting of transactions to our peers.
 pub trait PoolAdapter: Send + Sync {
 	/// The transaction pool has accepted this transaction as valid.
-	fn tx_accepted(&self, entry: &PoolEntry, height: u64);
+	fn tx_accepted(&self, entry: &PoolEntry);
 
 	/// The stem transaction pool has accepted this transactions as valid.
 	fn stem_tx_accepted(&self, entry: &PoolEntry) -> Result<(), PoolError>;
@@ -324,7 +324,7 @@ pub trait PoolAdapter: Send + Sync {
 pub struct NoopPoolAdapter {}
 
 impl PoolAdapter for NoopPoolAdapter {
-	fn tx_accepted(&self, _entry: &PoolEntry, _height: u64) {}
+	fn tx_accepted(&self, _entry: &PoolEntry) {}
 	fn stem_tx_accepted(&self, _entry: &PoolEntry) -> Result<(), PoolError> {
 		Ok(())
 	}

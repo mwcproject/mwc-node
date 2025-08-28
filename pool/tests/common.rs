@@ -88,7 +88,7 @@ where
 	let mut cache_values = VecDeque::new();
 	let next_header_info =
 		consensus::next_difficulty(height, chain.difficulty_iter().unwrap(), &mut cache_values);
-	let fee = txs.iter().map(|x| x.fee(height)).sum();
+	let fee = txs.iter().map(|x| x.fee()).sum();
 	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
 		keychain,

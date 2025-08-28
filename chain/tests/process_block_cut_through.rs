@@ -44,7 +44,7 @@ where
 	let mut cache_values = VecDeque::new();
 	let next_header_info =
 		consensus::next_difficulty(1, chain.difficulty_iter()?, &mut cache_values);
-	let fee = txs.iter().map(|x| x.fee(next_height)).sum();
+	let fee = txs.iter().map(|x| x.fee()).sum();
 	let key_id = ExtKeychainPath::new(1, next_height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
 		keychain,
@@ -152,9 +152,8 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 		.any(|output| output.commitment() == commit));
 
 	// Transaction is invalid due to cut-through.
-	let height = 7;
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, height, chain.secp()),
+		tx.validate(Weighting::AsTransaction, chain.secp()),
 		Err(transaction::Error::CutThrough),
 	);
 

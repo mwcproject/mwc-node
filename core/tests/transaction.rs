@@ -120,9 +120,8 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	.expect("valid tx");
 
 	// Transaction should fail validation due to cut-through.
-	let height = 42; // arbitrary
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, height, keychain.secp()),
+		tx.validate(Weighting::AsTransaction, keychain.secp()),
 		Err(Error::CutThrough),
 	);
 
@@ -140,7 +139,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, height, keychain.secp())?;
+	tx.validate(Weighting::AsTransaction, keychain.secp())?;
 
 	// Transaction validates via lightweight "read" validation as well.
 	tx.validate_read()?;
@@ -183,9 +182,8 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	.expect("valid tx");
 
 	// Transaction should fail validation due to cut-through.
-	let height = 42; // arbitrary
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, height, keychain.secp()),
+		tx.validate(Weighting::AsTransaction, keychain.secp()),
 		Err(Error::CutThrough),
 	);
 
@@ -203,7 +201,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, height, keychain.secp())?;
+	tx.validate(Weighting::AsTransaction, keychain.secp())?;
 
 	// Transaction validates via lightweight "read" validation as well.
 	tx.validate_read()?;
@@ -226,7 +224,7 @@ fn test_fee_fields() -> Result<(), Error> {
 
 	let mut tx = build::transaction(
 		KernelFeatures::Plain {
-			fee: FeeFields::new(1, 42).unwrap(),
+			fee: FeeFields::new(42).unwrap(),
 		},
 		&[
 			build::coinbase_input(consensus::calc_mwc_block_reward(1), key_id1.clone()),
@@ -237,27 +235,19 @@ fn test_fee_fields() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	let hf2_height = 2 * consensus::TESTING_HARD_FORK_INTERVAL;
-	assert_eq!(tx.accept_fee(hf2_height), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
-	assert_eq!(tx.fee(hf2_height), 42);
-	assert_eq!(tx.shifted_fee(hf2_height), 21);
-	assert_eq!(
-		tx.accept_fee(hf2_height - 1),
-		(1 * 4 + 1 * 1 - 1 * 1) * 500_000
-	);
-	assert_eq!(tx.fee(hf2_height - 1), 42 + (1u64 << 40));
-	assert_eq!(tx.shifted_fee(hf2_height - 1), 42 + (1u64 << 40));
+	assert_eq!(tx.accept_fee(), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
+	assert_eq!(tx.fee(), 42);
+	assert_eq!(tx.accept_fee(), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
+	assert_eq!(tx.fee(), 42);
 
 	tx.body.kernels.append(&mut vec![
 		TxKernel::with_features(KernelFeatures::Plain {
-			fee: FeeFields::new(2, 84).unwrap(),
+			fee: FeeFields::new(84).unwrap(),
 		}),
 		TxKernel::with_features(KernelFeatures::Plain { fee: 21.into() }),
 	]);
 
-	assert_eq!(tx.fee(hf2_height), 147);
-	assert_eq!(tx.shifted_fee(hf2_height), 36);
-	assert_eq!(tx.aggregate_fee_fields(hf2_height), FeeFields::new(2, 147));
+	assert_eq!(tx.fee(), 42 + 84 + 21); // 42+84+21 = 147
 	assert_eq!(tx_fee(1, 1, 3), (1 * 4 + 3 - 1) * local_base_fee);
 
 	Ok(())

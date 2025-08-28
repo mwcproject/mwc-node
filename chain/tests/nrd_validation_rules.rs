@@ -60,7 +60,7 @@ where
 		chain.difficulty_iter().unwrap(),
 		&mut cache_values,
 	);
-	let fee = txs.iter().map(|x| x.fee(prev.height + 1)).sum();
+	let fee = txs.iter().map(|x| x.fee()).sum();
 	let reward = reward::output(
 		keychain,
 		&ProofBuilder::new(keychain),

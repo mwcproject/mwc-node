@@ -278,8 +278,7 @@ mod test {
 		)
 		.unwrap();
 
-		let height = 42; // arbitrary
-		tx.validate(Weighting::AsTransaction, height, keychain.secp())
+		tx.validate(Weighting::AsTransaction, keychain.secp())
 			.unwrap();
 	}
 
@@ -300,8 +299,7 @@ mod test {
 		)
 		.unwrap();
 
-		let height = 42; // arbitrary
-		tx.validate(Weighting::AsTransaction, height, keychain.secp())
+		tx.validate(Weighting::AsTransaction, keychain.secp())
 			.unwrap();
 	}
 
@@ -321,8 +319,7 @@ mod test {
 		)
 		.unwrap();
 
-		let height = 42; // arbitrary
-		tx.validate(Weighting::AsTransaction, height, keychain.secp())
+		tx.validate(Weighting::AsTransaction, keychain.secp())
 			.unwrap();
 	}
 }

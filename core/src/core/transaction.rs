@@ -15,7 +15,6 @@
 
 //! Transactions
 
-use crate::core::block::HeaderVersion;
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::{committed, Committed};
 use crate::global::get_accept_fee_base;
@@ -145,11 +144,6 @@ impl FeeFields {
 	/// Used to extract fee field
 	const FEE_MASK: u64 = (1u64 << FeeFields::FEE_BITS) - 1;
 
-	/// Fee shifts are limited to 4 bits
-	pub const FEE_SHIFT_BITS: u32 = 4;
-	/// Used to extract fee_shift field
-	pub const FEE_SHIFT_MASK: u64 = (1u64 << FeeFields::FEE_SHIFT_BITS) - 1;
-
 	/// Create a zero FeeFields with 0 fee and 0 fee_shift
 	pub fn zero() -> Self {
 		Self(0)
@@ -157,54 +151,19 @@ impl FeeFields {
 
 	/// Create a new FeeFields from the provided shift and fee
 	/// Checks both are valid (in range)
-	pub fn new(fee_shift: u64, fee: u64) -> Result<Self, Error> {
+	pub fn new(fee: u64) -> Result<Self, Error> {
 		if fee == 0 {
 			Err(Error::InvalidFeeFields(format!("fee is zero")))
 		} else if fee > FeeFields::FEE_MASK {
 			Err(Error::InvalidFeeFields(format!("fee {} is too high", fee)))
-		} else if fee_shift > FeeFields::FEE_SHIFT_MASK {
-			Err(Error::InvalidFeeFields(format!(
-				"fee_shift {} is too high",
-				fee_shift
-			)))
 		} else {
-			Ok(Self((fee_shift << FeeFields::FEE_BITS) | fee))
-		}
-	}
-
-	/// Extract fee_shift field
-	pub fn fee_shift(&self, height: u64) -> u8 {
-		// MWC NOTE, header version 3 is a next future hardfork, we don't know when it happens.
-		if consensus::header_version(height) < HeaderVersion(3) {
-			0
-		} else {
-			((self.0 >> FeeFields::FEE_BITS) & FeeFields::FEE_SHIFT_MASK) as u8
+			Ok(Self(fee))
 		}
 	}
 
 	/// Extract fee field
-	pub fn fee(&self, height: u64) -> u64 {
-		// MWC NOTE, header version 3 is a next future hardfork, we don't know when it happens.
-		if consensus::header_version(height) < HeaderVersion(3) {
-			self.0
-		} else {
-			self.0 & FeeFields::FEE_MASK
-		}
-	}
-
-	/// Turn a zero `FeeField` into a `None`, any other value into a `Some`.
-	/// We need this because a zero `FeeField` cannot be deserialized.
-	pub fn as_opt(&self) -> Option<Self> {
-		if self.is_zero() {
-			None
-		} else {
-			Some(*self)
-		}
-	}
-
-	/// Check if the `FeeFields` is set to zero
-	pub fn is_zero(&self) -> bool {
-		self.0 == 0
+	pub fn fee(&self) -> u64 {
+		self.0 & FeeFields::FEE_MASK
 	}
 }
 
@@ -1097,7 +1056,7 @@ impl TransactionBody {
 	}
 
 	/// Total fee for a TransactionBody is the sum of fees of all fee carrying kernels.
-	pub fn fee(&self, height: u64) -> u64 {
+	pub fn fee(&self) -> u64 {
 		self.kernels
 			.iter()
 			.filter_map(|k| match k.features {
@@ -1106,39 +1065,16 @@ impl TransactionBody {
 				KernelFeatures::HeightLocked { fee, .. } => Some(fee),
 				KernelFeatures::NoRecentDuplicate { fee, .. } => Some(fee),
 			})
-			.fold(0, |acc, fee_fields| {
-				acc.saturating_add(fee_fields.fee(height))
-			})
+			.fold(0, |acc, fee_fields| acc.saturating_add(fee_fields.fee()))
 	}
 
-	/// fee_shift for a TransactionBody is the maximum of fee_shifts of all fee carrying kernels.
-	pub fn fee_shift(&self, height: u64) -> u8 {
-		self.kernels
-			.iter()
-			.filter_map(|k| match k.features {
-				KernelFeatures::Coinbase => None,
-				KernelFeatures::Plain { fee } => Some(fee),
-				KernelFeatures::HeightLocked { fee, .. } => Some(fee),
-				KernelFeatures::NoRecentDuplicate { fee, .. } => Some(fee),
-			})
-			.fold(0, |acc, fee_fields| max(acc, fee_fields.fee_shift(height)))
-	}
-
-	/// Shifted fee for a TransactionBody is the sum of fees shifted right by the maximum fee_shift
-	/// this is used to determine whether a tx can be relayed or accepted in a mempool
-	/// where transactions can specify a higher block-inclusion priority as a positive shift up to 15
-	/// but are required to overpay the minimum required fees by a factor of 2^priority
-	pub fn shifted_fee(&self, height: u64) -> u64 {
-		self.fee(height) >> self.fee_shift(height)
-	}
-
-	/// aggregate fee_fields from all appropriate kernels in TransactionBody into one, if possible
-	pub fn aggregate_fee_fields(&self, height: u64) -> Result<FeeFields, Error> {
-		FeeFields::new(self.fee_shift(height) as u64, self.fee(height))
-	}
-
-	fn overage(&self, height: u64) -> i64 {
-		self.fee(height) as i64
+	fn overage(&self) -> i64 {
+		let fee = self.fee() as i64;
+		if fee < 0 {
+			error!("Got Unacceptable fee value, panicing...");
+			panic!("Unacceptable fee value");
+		}
+		fee
 	}
 
 	/// Calculate weight of transaction using block weighing
@@ -1471,23 +1407,13 @@ impl Transaction {
 	}
 
 	/// Total fee for a transaction is the sum of fees of all kernels.
-	pub fn fee(&self, height: u64) -> u64 {
-		self.body.fee(height)
-	}
-
-	/// Shifted fee for a transaction is the sum of fees of all kernels shifted right by the maximum fee shift
-	pub fn shifted_fee(&self, height: u64) -> u64 {
-		self.body.shifted_fee(height)
-	}
-
-	/// aggregate fee_fields from all appropriate kernels in transaction into one
-	pub fn aggregate_fee_fields(&self, height: u64) -> Result<FeeFields, Error> {
-		self.body.aggregate_fee_fields(height)
+	pub fn fee(&self) -> u64 {
+		self.body.fee()
 	}
 
 	/// Total overage across all kernels.
-	pub fn overage(&self, height: u64) -> i64 {
-		self.body.overage(height)
+	pub fn overage(&self) -> i64 {
+		self.body.overage()
 	}
 
 	/// Lock height of a transaction is the max lock height of the kernels.
@@ -1509,22 +1435,17 @@ impl Transaction {
 	/// Validates all relevant parts of a fully built transaction. Checks the
 	/// excess value against the signature as well as range proofs for each
 	/// output.
-	pub fn validate(
-		&self,
-		weighting: Weighting,
-		height: u64,
-		secp: &Secp256k1,
-	) -> Result<(), Error> {
+	pub fn validate(&self, weighting: Weighting, secp: &Secp256k1) -> Result<(), Error> {
 		self.body.verify_features()?;
 		self.body.validate(weighting, secp)?;
-		self.verify_kernel_sums(self.overage(height), self.offset.clone(), secp)?;
+		self.verify_kernel_sums(self.overage(), self.offset.clone(), secp)?;
 		Ok(())
 	}
 
 	/// Can be used to compare txs by their fee/weight ratio, aka feerate.
 	/// Don't use these values for anything else though due to precision multiplier.
-	pub fn fee_rate(&self, height: u64) -> u64 {
-		self.fee(height) / self.weight_size() as u64
+	pub fn fee_rate(&self) -> u64 {
+		self.fee() / self.weight_size() as u64
 	}
 
 	/// Calculate transaction weight
@@ -1534,7 +1455,7 @@ impl Transaction {
 
 	/// Transaction minimum acceptable fee
 	/// _height is kept for possible fee formula change that will require hardfork
-	pub fn accept_fee(&self, _height: u64) -> u64 {
+	pub fn accept_fee(&self) -> u64 {
 		// Note, this code is different from mwc. Mwc is using the same formula to calculate the transaction/block size and the
 		// fees. Migration was done with hardfork.
 		// _height
@@ -1546,13 +1467,13 @@ impl Transaction {
 	}
 
 	/// Calculation transaction base fee, rounded to the higher value
-	pub fn get_base_fee(&self, height: u64) -> u64 {
+	pub fn get_base_fee(&self) -> u64 {
 		let tx_weight = Transaction::weight_for_fee(
 			self.body.inputs.len() as u64,
 			self.body.outputs.len() as u64,
 			self.body.kernels.len() as u64,
 		);
-		let fee = self.shifted_fee(height);
+		let fee = self.fee();
 		(fee + tx_weight - 1) / tx_weight
 	}
 
