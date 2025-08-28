@@ -48,7 +48,7 @@ subcommands:
             long: allow_to_stop
             takes_value: false
         - offline:
-            help: Run in offline mode. Will not wait for peers, just load the dat and switch to the 'ready' state
+            help: Run in offline mode. Will not wait for peers, just load the data and switch to the 'ready' state
             long: offline
             takes_value: false
       subcommands:
