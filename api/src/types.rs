@@ -530,6 +530,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TxKernelPrintable {
 	pub features: String,
+	pub fee_shift: u8, // Keeping fee_shift for backward compability. Wallets of older are expecting that. Value must be 0
 	pub fee: u64,
 	pub lock_height: u64,
 	pub excess: String,
@@ -552,6 +553,7 @@ impl TxKernelPrintable {
 		let fee = fee_fields.fee();
 		TxKernelPrintable {
 			features,
+			fee_shift: 0,
 			fee,
 			lock_height,
 			excess: k.excess.to_hex(),
