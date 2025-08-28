@@ -530,7 +530,6 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TxKernelPrintable {
 	pub features: String,
-	pub fee_shift: u8,
 	pub fee: u64,
 	pub lock_height: u64,
 	pub excess: String,
@@ -550,11 +549,9 @@ impl TxKernelPrintable {
 			} => (fee, relative_height.into()),
 		};
 		// Printing for the most advanced version that we have. In prev versions the shift is 0, we should be good
-		let fee = fee_fields.fee(u64::MAX);
-		let fee_shift: u8 = fee_fields.fee_shift(u64::MAX);
+		let fee = fee_fields.fee();
 		TxKernelPrintable {
 			features,
-			fee_shift,
 			fee,
 			lock_height,
 			excess: k.excess.to_hex(),

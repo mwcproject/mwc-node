@@ -195,9 +195,8 @@ fn test_the_transaction_pool() {
 		let agg_tx =
 			transaction::aggregate(&[tx1.clone(), tx2.clone(), tx4], chain.secp()).unwrap();
 
-		let height = 12 + 1;
 		agg_tx
-			.validate(Weighting::AsTransaction, height, chain.secp())
+			.validate(Weighting::AsTransaction, chain.secp())
 			.unwrap();
 
 		pool.add_to_pool(test_source(), agg_tx, false, &header, chain.secp())

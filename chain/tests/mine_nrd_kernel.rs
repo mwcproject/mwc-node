@@ -37,7 +37,7 @@ where
 	let mut cache_values = VecDeque::new();
 	let next_header_info =
 		consensus::next_difficulty(1, chain.difficulty_iter().unwrap(), &mut cache_values);
-	let fee = txs.iter().map(|x| x.fee(prev.height + 1)).sum();
+	let fee = txs.iter().map(|x| x.fee()).sum();
 	let reward = reward::output(
 		keychain,
 		&ProofBuilder::new(keychain),

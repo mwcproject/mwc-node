@@ -326,8 +326,8 @@ impl Peers {
 	/// Broadcasts the provided transaction to all our connected peers.
 	/// A peer implementation may drop the broadcast request
 	/// if it knows the remote peer already has the transaction.
-	pub fn broadcast_transaction(&self, tx: &core::Transaction, height: u64) {
-		let base_fee = tx.get_base_fee(height);
+	pub fn broadcast_transaction(&self, tx: &core::Transaction) {
+		let base_fee = tx.get_base_fee();
 		let count = self.broadcast("transaction", |p| {
 			// Sending transaction only to peers that can accept it.
 			if base_fee >= p.info.tx_base_fee {

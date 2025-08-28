@@ -143,7 +143,7 @@ fn process_fluff_phase(
 	);
 
 	let agg_tx = transaction::aggregate(&fluffable_txs, secp)?;
-	agg_tx.validate(transaction::Weighting::AsTransaction, header.height, secp)?;
+	agg_tx.validate(transaction::Weighting::AsTransaction, secp)?;
 
 	tx_pool.add_to_pool(TxSource::Fluff, agg_tx, false, &header, secp)?;
 	Ok(())

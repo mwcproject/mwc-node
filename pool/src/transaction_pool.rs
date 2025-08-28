@@ -198,7 +198,7 @@ where
 
 		// Make sure the transaction is valid before anything else.
 		// Validate tx accounting for max tx weight.
-		tx.validate(Weighting::AsTransaction, header.height, secp)
+		tx.validate(Weighting::AsTransaction, secp)
 			.map_err(PoolError::InvalidTx)?;
 
 		// Check the tx lock_time is valid based on current chain state.
@@ -261,7 +261,7 @@ where
 		// Add tx to txpool.
 		self.add_to_txpool(entry, header, secp)?;
 		self.add_to_reorg_cache(entry);
-		self.adapter.tx_accepted(entry, header.height);
+		self.adapter.tx_accepted(entry);
 
 		// Transaction passed all the checks but we have to make space for it
 		if evict {
@@ -299,8 +299,7 @@ where
 		};
 
 		// Validate the tx to ensure our converted inputs are correct.
-		let header = self.chain_head()?;
-		tx.validate(Weighting::AsTransaction, header.height, secp)?;
+		tx.validate(Weighting::AsTransaction, secp)?;
 
 		Ok(PoolEntry::new(tx, entry.src))
 	}
@@ -431,9 +430,8 @@ where
 		// weight for a basic transaction (2 inputs, 2 outputs, 1 kernel) -
 		// (2 * 1) + (2 * 21) + (1 * 3) = 47
 		// minfees = 47 * 500_000 = 23_500_000
-		let header = self.chain_head()?;
-		if tx.shifted_fee(header.height) < tx.accept_fee(header.height) {
-			return Err(PoolError::LowFeeTransaction(tx.shifted_fee(header.height)));
+		if tx.fee() < tx.accept_fee() {
+			return Err(PoolError::LowFeeTransaction(tx.fee()));
 		}
 		Ok(())
 	}

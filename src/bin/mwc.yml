@@ -47,6 +47,10 @@ subcommands:
             help: Activates api to stop the node (non TUI only)
             long: allow_to_stop
             takes_value: false
+        - offline:
+            help: Run in offline mode. Will not wait for peers, just load the data and switch to the 'ready' state
+            long: offline
+            takes_value: false
       subcommands:
         - config:
             about: Generate a configuration mwc-server.toml file in the current directory
