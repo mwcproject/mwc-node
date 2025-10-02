@@ -30,10 +30,11 @@ use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use mwc_p2p::PeerAddr::Onion;
-use mwc_p2p::{msg::PeerAddrs, Capabilities, P2PConfig};
+use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::{thread, time};
 
@@ -48,6 +49,9 @@ const PEER_RECONNECT_INTERVAL: i64 = 600;
 const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
 
 const PEER_PING_INTERVAL: i64 = 10;
+
+// Last Outage time when peers defunct flag was reset
+static LAST_NETWORK_OUTAGE_TIME: AtomicI64 = AtomicI64::new(0);
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -92,7 +96,7 @@ pub fn connect_and_monitor(
 					break;
 				}
 				// Pause egress peer connection request. Only for tests.
-				if stop_state.is_paused() {
+				if stop_state.is_paused() || !p2p_server.is_ready() {
 					thread::sleep(time::Duration::from_secs(1));
 					continue;
 				}
@@ -232,10 +236,8 @@ fn monitor_peers(
 	let most_work_count = peers_iter().with_difficulty(|x| x >= max_diff).count();
 
 	debug!(
-		"monitor_peers: on {}:{}, {} connected ({} most_work). \
+		"monitor_peers: {} connected ({} most_work). \
 		 all {} = {} healthy + {} banned + {} defunct",
-		config.host,
-		config.port,
 		peers_count,
 		most_work_count,
 		total_count,
@@ -267,12 +269,7 @@ fn monitor_peers(
 		.with_capabilities(Capabilities::PEER_LIST)
 		.connected()
 	{
-		trace!(
-			"monitor_peers: {}:{} ask {} for more peers",
-			config.host,
-			config.port,
-			p.info.addr,
-		);
+		trace!("monitor_peers: ask {} for more peers", p.info.addr,);
 		let _ = p.send_peer_request(
 			p2p::Capabilities::PEER_LIST | boost_peers_capabilities,
 			use_tor_connection,
@@ -289,6 +286,16 @@ fn monitor_peers(
 			}
 		} else {
 			let _ = tx.send(p);
+		}
+	}
+
+	if LAST_NETWORK_OUTAGE_TIME.load(Ordering::Relaxed) != network_status::get_network_outage_time()
+	{
+		LAST_NETWORK_OUTAGE_TIME
+			.store(network_status::get_network_outage_time(), Ordering::Relaxed);
+		// Outage was recently detected, reverting Defuncts peers back to healthy
+		for peer in &defuncts {
+			let _ = peers.update_state(&peer.addr, p2p::State::Healthy);
 		}
 	}
 
@@ -442,7 +449,7 @@ fn listen_for_addrs(
 
 		connecting_history.insert(addr.clone(), now);
 
-		if p2p.socks_port == 0 {
+		if !use_tor_connection {
 			match &addr {
 				Onion(_) => {
 					continue;

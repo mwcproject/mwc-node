@@ -30,8 +30,8 @@ use crate::mwc_core::ser::{
 };
 use crate::mwc_core::{consensus, global};
 use crate::types::{
-	AttachmentMeta, AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan,
-	MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan, MAX_BLOCK_HEADERS, MAX_LOCATORS,
+	MAX_PEER_ADDRS,
 };
 use crate::util::secp::pedersen::RangeProof;
 use bytes::Bytes;
@@ -304,6 +304,9 @@ pub fn write_message<W: Write>(
 		tracker.inc_sent(tmp_buf.len() as u64);
 		tmp_buf.clear();
 	}
+
+	// Flush is needed for Arti. Arti buffer the data and never send.
+	stream.flush()?;
 
 	Ok(())
 }
@@ -1185,7 +1188,6 @@ impl fmt::Debug for Message {
 
 pub enum Consumed {
 	Response(Msg),
-	Attachment(Arc<AttachmentMeta>, File),
 	None,
 	Disconnect,
 }
@@ -1194,7 +1196,6 @@ impl fmt::Debug for Consumed {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Consumed::Response(msg) => write!(f, "Consumed::Response({:?})", msg.header.msg_type),
-			Consumed::Attachment(meta, _) => write!(f, "Consumed::Attachment({:?})", meta.size),
 			Consumed::None => write!(f, "Consumed::None"),
 			Consumed::Disconnect => write!(f, "Consumed::Disconnect"),
 		}

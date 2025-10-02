@@ -245,7 +245,7 @@ impl BitmapChunk {
 			.iter()
 			.enumerate()
 			.filter(|(_, val)| *val)
-			.map(move |(idx, _)| (idx as u32 + idx_offset as u32))
+			.map(move |(idx, _)| idx as u32 + idx_offset as u32)
 	}
 
 	/// Convert the BitVec to a hexadecimal string

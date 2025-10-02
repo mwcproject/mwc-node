@@ -35,13 +35,15 @@ use log4rs::encode::Encode;
 use log4rs::filter::{threshold::ThresholdFilter, Filter, Response};
 use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
+use tracing::field::{Field, Visit};
+use tracing::Event;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
 
 lazy_static! {
 	/// Flag to observe whether logging was explicitly initialised (don't output otherwise)
 	static ref WAS_INIT: Mutex<bool> = Mutex::new(false);
-	/// Flag to observe whether tui is running, and we therefore don't want to attempt to write
-	/// panics to stdout
-	static ref TUI_RUNNING: Mutex<bool> = Mutex::new(false);
 	/// Static Logging configuration, should only be set once, before first logging call
 	static ref LOGGING_CONFIG: Mutex<LoggingConfig> = Mutex::new(LoggingConfig::default());
 }
@@ -117,6 +119,45 @@ impl Filter for MwcFilter {
 	}
 }
 
+struct MessageVisitor {
+	message: Option<String>,
+}
+
+impl Visit for MessageVisitor {
+	fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+		if field.name() == "message" {
+			self.message = Some(format!("{:?}", value));
+		}
+	}
+}
+
+struct Log4rsLayer;
+
+impl<S> Layer<S> for Log4rsLayer
+where
+	S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+	fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+		let mut visitor = MessageVisitor { message: None };
+		event.record(&mut visitor);
+
+		if let Some(message) = visitor.message {
+			let target = event.metadata().target();
+			//let file = event.metadata().file();
+			//let line = event.metadata().line();
+
+			// Using very somple event redirection. Otherwise it doesn't work for us
+			match *event.metadata().level() {
+				tracing::Level::ERROR => error!("{} {}", target, message),
+				tracing::Level::WARN => warn!("{} {}", target, message),
+				tracing::Level::INFO => info!("{} {}", target, message),
+				tracing::Level::DEBUG => debug!("{} {}", target, message),
+				tracing::Level::TRACE => trace!("{} {}", target, message),
+			}
+		}
+	}
+}
+
 #[derive(Debug)]
 struct ChannelAppender {
 	output: Mutex<SyncSender<LogEntry>>,
@@ -145,11 +186,6 @@ impl Append for ChannelAppender {
 pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSender<LogEntry>>) {
 	if let Some(c) = config {
 		let tui_running = c.tui_running.unwrap_or(false);
-		if tui_running {
-			let mut tui_running_ref = TUI_RUNNING.lock();
-			*tui_running_ref = true;
-		}
-
 		let mut was_init_ref = WAS_INIT.lock();
 
 		// Save current logging configuration
@@ -246,10 +282,18 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 
 		let _ = log4rs::init_config(config).unwrap();
 
+		// forward tracing events into the `log` crate (i.e. into log4rs)
+		// Then set up tracing with your custom layer
+		let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
+		tracing::subscriber::set_global_default(subscriber).unwrap();
+
 		info!(
 			"log4rs is initialized, file level: {:?}, stdout level: {:?}, min. level: {:?}",
 			level_file, level_stdout, level_minimum
 		);
+
+		// Now, tracing macros will go through your layer and into log4rs
+		tracing::info!("Tracing logs are redirected!");
 
 		// Mark logger as initialized
 		*was_init_ref = true;

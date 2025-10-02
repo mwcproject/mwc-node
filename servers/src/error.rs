@@ -21,6 +21,10 @@ use crate::util::OnionV3AddressError;
 /// Wallet errors, mostly wrappers around underlying crypto or I/O errors.
 #[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
 pub enum Error {
+	/// Configuration Error
+	#[error("Config Error: {0}")]
+	Config(String),
+
 	/// Tor Configuration Error
 	#[error("Tor Config Error: {0}")]
 	TorConfig(String),
@@ -28,6 +32,10 @@ pub enum Error {
 	/// Tor Process error
 	#[error("Tor Process Error: {0}")]
 	TorProcess(String),
+
+	/// Tor Process error
+	#[error("Onion Service Error: {0}")]
+	TorOnionService(String),
 
 	/// Onion V3 Address Error
 	#[error("Onion V3 Address Error")]
@@ -52,6 +60,10 @@ pub enum Error {
 	/// Generic Error
 	#[error("libp2p Error, {0}")]
 	LibP2P(String),
+
+	/// Generic Error
+	#[error("Node server error, {0}")]
+	ServerError(String),
 }
 
 impl From<secp::Error> for Error {

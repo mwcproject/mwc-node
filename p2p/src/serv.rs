@@ -1,5 +1,5 @@
 // Copyright 2019 The Grin Developers
-// Copyright 2024 The MWC Developers
+// Copyright 2025 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,15 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::types::PeerAddr::Onion;
-use std::io;
-use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-
-use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
 use crate::handshake::Handshake;
 use crate::mwc_core::core;
@@ -32,31 +23,57 @@ use crate::mwc_core::pow::Difficulty;
 use crate::peer::Peer;
 use crate::peers::Peers;
 use crate::store::PeerStore;
+use crate::tcp_data_stream::TcpDataStream;
+use crate::tor::arti;
+use crate::tor::arti::{arti_async_block, restart_arti, ArtiCore};
+use crate::types::PeerAddr::Onion;
 use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
-	TxHashSetRead,
+	TorConfig, TxHashSetRead,
 };
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
 use crate::PeerAddr::Ip;
+use crate::{chain, network_status};
+use ed25519_dalek::ExpandedSecretKey;
+use ed25519_dalek::SecretKey as DalekSecretKey;
+use futures::StreamExt;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
-
-const INITIAL_SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(5000);
-const INITIAL_SOCKET_WRITE_TIMEOUT: Duration = Duration::from_millis(5000);
+use mwc_util::secp::{ContextFlag, Secp256k1, SecretKey};
+use mwc_util::tokio::io::AsyncWriteExt;
+use mwc_util::tokio::net::{TcpListener, TcpStream};
+use mwc_util::tokio::time::Duration;
+use mwc_util::tokio_socks::tcp::Socks5Stream;
+use mwc_util::{run_global_async_block, RwLock};
+use std::convert::TryInto;
+use std::fs::File;
+use std::io;
+use std::io::prelude::*;
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::thread;
+use std::time::Instant;
+use tor_cell::relaycell::msg::Connected;
+use tor_hsservice::status::State;
+use tor_proto::client::stream::{DataStream, IncomingStreamRequest};
 
 /// P2P server implementation, handling bootstrapping to find and connect to
 /// peers, receiving connections from other peers and keep track of all of them.
 #[derive(Clone)]
 pub struct Server {
 	pub config: P2PConfig,
-	pub socks_port: u16,
+	tor_config: TorConfig,
 	capabilities: Capabilities,
-	handshake: Arc<Handshake>,
 	pub peers: Arc<Peers>,
 	sync_state: Arc<SyncState>,
 	stop_state: Arc<StopState>,
-	pub self_onion_address: Option<String>,
+	genesis: Hash,
+	db_root: String,
+	handshake: Arc<RwLock<Option<Handshake>>>,
 }
 
 // TODO TLS
@@ -65,22 +82,17 @@ impl Server {
 	pub fn new(
 		db_root: &str,
 		capabilities: Capabilities,
-		config: P2PConfig,
+		config: &P2PConfig,
+		tor_config: &TorConfig,
 		adapter: Arc<dyn ChainAdapter>,
 		genesis: Hash,
 		sync_state: Arc<SyncState>,
 		stop_state: Arc<StopState>,
-		socks_port: u16,
-		onion_address: Option<String>,
 	) -> Result<Server, Error> {
 		Ok(Server {
 			config: config.clone(),
+			tor_config: tor_config.clone(),
 			capabilities,
-			handshake: Arc::new(Handshake::new(
-				genesis,
-				config.clone(),
-				onion_address.clone(),
-			)),
 			peers: Arc::new(Peers::new(
 				PeerStore::new(db_root)?,
 				adapter,
@@ -89,18 +101,338 @@ impl Server {
 			)),
 			sync_state,
 			stop_state,
-			socks_port,
-			self_onion_address: onion_address,
+			genesis,
+			db_root: String::from(db_root),
+			handshake: Arc::new(RwLock::new(None)),
 		})
+	}
+
+	/// Return true if server is ready to connect to the others peers.
+	/// Server is ready when handshake record is built.
+	pub fn is_ready(&self) -> bool {
+		self.handshake.read().is_some()
+	}
+
+	pub fn listen(
+		&self,
+		ready_tx: std::sync::mpsc::SyncSender<Result<(), Error>>,
+	) -> Result<(), Error> {
+		// Empty handshake means that we still can't listen. We need to know own onion address. In case of
+		// listen_onion_service that will happens after the service will be started. That takes time...
+		if self.tor_config.tor_enabled {
+			if !self.tor_config.tor_external {
+				// running own tor service
+				self.listen_onion_service(Some(ready_tx))
+			} else {
+				// Listening on extended Tor, listening on sockets
+				if self.tor_config.onion_address.is_none() {
+					return Err(Error::ConfigError(
+						"For tor external config, internal onion address is not specified.".into(),
+					));
+				}
+				*self.handshake.write() = Some(Handshake::new(
+					self.genesis.clone(),
+					self.config.clone(),
+					self.tor_config.onion_address.clone(),
+				)); // Tor will overwrite it
+				self.listen_socket(
+					IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+					self.config.port,
+					ready_tx,
+				)
+			}
+		} else {
+			// Http listener. Accept any from internet
+			*self.handshake.write() = Some(Handshake::new(
+				self.genesis.clone(),
+				self.config.clone(),
+				None,
+			)); // Tor will overwrite it
+			self.listen_socket(
+				IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+				self.config.port,
+				ready_tx,
+			)
+		}
+	}
+
+	fn listen_onion_service(
+		&self,
+		mut ready_tx: Option<std::sync::mpsc::SyncSender<Result<(), Error>>>,
+	) -> Result<(), Error> {
+		debug_assert!(self.tor_config.tor_enabled);
+		debug_assert!(!self.tor_config.tor_external);
+
+		info!("Starting TOR, please wait...");
+
+		//
+		loop {
+			match self.start_arti() {
+				Ok((onion_service, mut incoming_requests)) => {
+					ready_tx.take().map(|tx| {
+						let _ = tx.send(Ok(()));
+					});
+
+					let monitoring = thread::Builder::new()
+						.name("onion_service_checker".to_string())
+						.spawn(move || {
+							let mut last_running_time = Instant::now();
+							loop {
+								let need_arti_restart = {
+									let connected = arti::access_arti(|arti| {
+										let connected = arti_async_block(async {
+											let connected = match arti.connect(( network_status::get_random_http_probe_host().as_str(), 80)).await {
+												Ok(mut stream) => {
+													let _ = stream.shutdown().await;
+													true
+												}
+												Err(e) => {
+													info!("Tor monitoring connection is failed with error: {}", e);
+													false
+												},
+											};
+											connected
+										})?;
+										Ok(connected)
+									}).unwrap_or(false);
+
+									let onion_service_status = onion_service.status().state();
+									let ready_for_traffic = arti::access_arti(|arti| {
+										let ready_for_traffic = arti.bootstrap_status().ready_for_traffic();
+										Ok(ready_for_traffic)
+									}).unwrap_or(false);
+
+									info!("Current mwc node onion service status: {:?},  ready for traffic: {}  connected: {}", onion_service_status, ready_for_traffic, connected );
+
+									let need_arti_restart = if ready_for_traffic && connected {
+										match onion_service_status {
+											State::Bootstrapping |
+											State::DegradedReachable |
+											State::DegradedUnreachable |
+											State::Running => {
+												last_running_time = Instant::now();
+												false
+											},
+											State::Broken => {
+												true
+											}
+											_ => {
+												let elapsed = Instant::now().duration_since(last_running_time);
+												// Giving 3 minutes to arti to restore
+												elapsed > Duration::from_secs(180)
+											}
+										}
+									} else {
+										let elapsed = Instant::now().duration_since(last_running_time);
+										// Giving 3 minutes to arti to restore
+										elapsed > Duration::from_secs(180)
+									};
+									need_arti_restart
+								};
+
+								if need_arti_restart {
+									drop(onion_service);
+									restart_arti();
+									break;
+								}
+								thread::sleep(Duration::from_secs(30));
+							}
+						}).expect("Unable to start onion_service_checher thread");
+
+					arti_async_block(async move {
+						while let Some(stream_request) = incoming_requests.next().await {
+							// Incoming connection.
+							let request: &IncomingStreamRequest = stream_request.request();
+							match request {
+								IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
+									match stream_request.accept(Connected::new_empty()).await {
+										Ok(onion_service_stream) => {
+											match self.handle_new_peer(TcpDataStream::from_data(
+												onion_service_stream,
+											)) {
+												Err(Error::ConnectionClose(err)) => {
+													debug!(
+														"shutting down, ignoring a new peer, {}",
+														err
+													)
+												}
+												Err(e) => {
+													debug!("Error accepting onion peer. {}", e);
+												}
+												Ok(_) => {}
+											}
+										}
+										Err(err) => error!("Client error: {}", err),
+									}
+								}
+								_ => {
+									let _ = stream_request.shutdown_circuit();
+								}
+							}
+						}
+					})?;
+
+					warn!("Onion listening service is stopped");
+					if monitoring.join().is_err() {
+						break;
+					}
+					warn!("Restarting onion listening service...");
+				}
+				Err(e) => {
+					match ready_tx.take() {
+						Some(tx) => {
+							let _ = tx.send(Err(Error::TorProcess(format!(
+								"Unable to start arti, {}",
+								e
+							))));
+							return Err(e);
+						}
+						None => {
+							// we are in the restart cycle.
+							error!("Unable to restart onion service. Will retry soon");
+							// Sleeping for a minute, likely something with a network, no reasons to try now
+							thread::sleep(Duration::from_secs(60));
+							// restarting arti
+							restart_arti();
+						}
+					}
+				}
+			}
+		}
+
+		Ok(())
+	}
+
+	fn start_arti(
+		&self,
+	) -> Result<
+		(
+			Arc<tor_hsservice::RunningOnionService>,
+			Pin<Box<dyn futures::Stream<Item = tor_hsservice::StreamRequest> + Send>>,
+		),
+		Error,
+	> {
+		// Types : (Arc<tor_hsservice::RunningOnionService>,String, Pin<Box<dyn futures::Stream<Item = tor_hsservice::RendRequest> + Send>>)
+		let (onion_service, onion_address, incoming_requests): (
+			Arc<tor_hsservice::RunningOnionService>,
+			String,
+			Pin<Box<dyn futures::Stream<Item = tor_hsservice::StreamRequest> + Send>>,
+		) = arti::access_arti(|tor_client| {
+			let expanded_key = match &self.tor_config.onion_expanded_key {
+				Some(key_hex) => {
+					let bytes = mwc_util::from_hex(key_hex).map_err(|e| {
+						Error::TorConfig(format!(
+							"Invalid onion_expanded_key configulation {}, {}",
+							key_hex, e
+						))
+					})?;
+					let key: [u8; 64] = bytes.try_into().map_err(|_| {
+						Error::TorConfig(
+							"Invalid onion_expanded_key length. Expected 64 byte key".into(),
+						)
+					})?;
+					key
+				}
+				None => {
+					let torkey_path = format!("{}/node_tor_id", self.db_root);
+
+					if Path::new(&torkey_path).exists() {
+						let mut file = File::open(&torkey_path).map_err(|e| {
+							Error::TorOnionService(format!(
+								"Unable to open existing tor id file {}, {}",
+								torkey_path, e
+							))
+						})?;
+						let mut buf = [0u8; 64];
+						file.read_exact(&mut buf).map_err(|e| {
+							Error::TorOnionService(format!(
+								"Unable to read tor id data form the file {}, {}",
+								torkey_path, e
+							))
+						})?;
+						buf
+					} else {
+						// generate a new key, save it in the file for the reuse
+						let secp = Secp256k1::with_caps(ContextFlag::None);
+						let sec_key = SecretKey::new(&secp, &mut rand::thread_rng());
+						let sec_key = DalekSecretKey::from_bytes(&sec_key.0).map_err(|e| {
+							Error::TorOnionService(format!(
+								"Unable to build a DalekSecretKey, {}",
+								e
+							))
+						})?;
+						let exp_key = ExpandedSecretKey::from(&sec_key);
+						let exp_key = exp_key.to_bytes();
+						let mut file = File::create(&torkey_path).map_err(|e| {
+							Error::TorOnionService(format!(
+								"Unable to create tor id file {}, {}",
+								torkey_path, e
+							))
+						})?;
+						file.write_all(&exp_key).map_err(|e| {
+							Error::TorOnionService(format!(
+								"Unable to write tor id into file {}, {}",
+								torkey_path, e
+							))
+						})?;
+						exp_key
+					}
+				}
+			};
+
+			let (onion_service, onion_address, incoming_requests) = ArtiCore::start_onion_service(
+				&tor_client,
+				format!("mwc-node_{}", global::get_chain_type().shortname()),
+				expanded_key,
+			)?;
+			Ok((
+				onion_service,
+				onion_address,
+				Box::pin(tor_hsservice::handle_rend_requests(incoming_requests))
+					as Pin<Box<dyn futures::Stream<Item = _> + Send>>,
+			))
+		})?;
+
+		// Not necessary wait for a long time. We can continue with listening even without any waiting
+		arti::ArtiCore::wait_until_started(&onion_service, 20)?;
+
+		info!("Onion listener started at {}", onion_address);
+
+		*self.handshake.write() = Some(Handshake::new(
+			self.genesis.clone(),
+			self.config.clone(),
+			Some(onion_address),
+		));
+
+		Ok((onion_service, incoming_requests))
 	}
 
 	/// Starts a new TCP server and listen to incoming connections. This is a
 	/// blocking call until the TCP server stops.
-	pub fn listen(&self) -> Result<(), Error> {
+	fn listen_socket(
+		&self,
+		host: IpAddr,
+		port: u16,
+		ready_tx: std::sync::mpsc::SyncSender<Result<(), Error>>,
+	) -> Result<(), Error> {
 		// start TCP listener and handle incoming connections
-		let addr = SocketAddr::new(self.config.host, self.config.port);
-		let listener = TcpListener::bind(addr)?;
-		listener.set_nonblocking(true)?;
+		let addr = SocketAddr::new(host, port);
+		let listener = match run_global_async_block(async { TcpListener::bind(addr).await }) {
+			Ok(listener) => {
+				let _ = ready_tx.send(Ok(()));
+				listener
+			}
+			Err(e) => {
+				let _ = ready_tx.send(Err(Error::TorProcess(format!(
+					"Unable to start listening on {}:{}, {}",
+					host, port, e
+				))));
+				return Err(Error::TorProcess(format!(
+					"Unable to start listening on {}:{}, {}",
+					host, port, e
+				)));
+			}
+		};
 
 		let sleep_time = Duration::from_millis(5);
 		loop {
@@ -110,18 +442,14 @@ impl Server {
 				continue;
 			}
 
-			match listener.accept() {
-				Ok((stream, peer_addr)) => {
+			match run_global_async_block(async { listener.accept().await }) {
+				Ok((mut stream, peer_addr)) => {
 					// We want out TCP stream to be in blocking mode.
 					// The TCP listener is in nonblocking mode so we *must* explicitly
 					// move the accepted TCP stream into blocking mode (or all kinds of
 					// bad things can and will happen).
 					// A nonblocking TCP listener will accept nonblocking TCP streams which
 					// we do not want.
-					stream.set_nonblocking(false)?;
-					// Note, those timeouts will be overwritten during handshake.
-					let _ = stream.set_read_timeout(Some(INITIAL_SOCKET_READ_TIMEOUT));
-					let _ = stream.set_write_timeout(Some(INITIAL_SOCKET_WRITE_TIMEOUT));
 
 					let mut peer_addr = PeerAddr::Ip(peer_addr);
 
@@ -145,12 +473,14 @@ impl Server {
 
 					if self.check_undesirable(&stream) {
 						// Shutdown the incoming TCP connection if it is not desired
-						if let Err(e) = stream.shutdown(Shutdown::Both) {
-							debug!("Error shutting down conn: {:?}", e);
-						}
+						run_global_async_block(async {
+							if let Err(e) = stream.shutdown().await {
+								debug!("Error shutting down conn: {:?}", e);
+							}
+						});
 						continue;
 					}
-					match self.handle_new_peer(stream) {
+					match self.handle_new_peer(TcpDataStream::from_tcp(stream)) {
 						Err(Error::ConnectionClose(err)) => {
 							debug!("shutting down, ignoring a new peer, {}", err)
 						}
@@ -176,6 +506,14 @@ impl Server {
 		Ok(())
 	}
 
+	fn format_onion_address(address: &String) -> String {
+		if address.to_lowercase().ends_with(".onion") {
+			address.clone()
+		} else {
+			address.clone() + ".onion"
+		}
+	}
+
 	/// Asks the server to connect to a new peer. Directly returns the peer if
 	/// we're already connected to the provided address.
 	pub fn connect(&self, addr: &PeerAddr) -> Result<Arc<Peer>, Error> {
@@ -198,20 +536,26 @@ impl Server {
 			)));
 		}
 
-		if global::is_production_mode() {
-			let hs = self.handshake.clone();
+		let self_onion_address = if global::is_production_mode() {
+			let hs = self.handshake.read();
+			let hs = hs
+				.as_ref()
+				.ok_or(Error::TorConnect("handshake is empty".into()))?;
 			let addrs = hs.addrs.read();
 			if addrs.contains(addr) {
 				debug!("connect: ignore connecting to PeerWithSelf, addr: {}", addr);
 				return Err(Error::PeerWithSelf);
 			}
-		}
+			hs.onion_address.clone()
+		} else {
+			None
+		};
 
 		// check if the onion address is self
-		if global::is_production_mode() && self.self_onion_address.is_some() {
+		if global::is_production_mode() && self_onion_address.is_some() {
 			match addr {
 				Onion(address) => {
-					if self.self_onion_address.as_ref().unwrap() == address {
+					if self_onion_address.as_ref().unwrap() == address {
 						debug!("error trying to connect with self: {}", address);
 						return Err(Error::PeerWithSelf);
 					}
@@ -232,60 +576,97 @@ impl Server {
 			return Ok(p);
 		}
 
-		trace!(
-			"connect_peer: on {}:{}. connecting to {}",
-			self.config.host,
-			self.config.port,
-			addr
-		);
-
-		let peer_addr;
-		let self_addr;
-
-		let stream = match addr.clone() {
-			PeerAddr::Ip(address) => {
-				// we do this, not a good solution, but for now, we'll use it. Other side usually detects with ip.
-				self_addr = PeerAddr::Ip(SocketAddr::new(self.config.host, self.config.port));
-				if self.socks_port != 0 {
-					peer_addr = Some(PeerAddr::Ip(address));
-					let proxy_addr =
-						SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
-					let socks5_stream_ref =
-						tor_stream::TorStream::connect_with_address(proxy_addr, address);
-					match socks5_stream_ref {
-						Ok(socks5_stream) => socks5_stream.unwrap(),
-						Err(e) => {
-							return Err(Error::Connection(e));
+		let stream: TcpDataStream = if self.tor_config.tor_enabled {
+			if !self.tor_config.tor_external {
+				// Using arti to connect
+				let stream: DataStream = arti::access_arti(|arti| {
+					arti_async_block(async {
+						let stream = match addr {
+							Ip(socket) => arti
+								.connect((socket.ip().to_string(), socket.port()))
+								.await
+								.map_err(|e| {
+									Error::TorConnect(format!(
+										"Unable connect to {}:{}, {}",
+										socket.ip(),
+										socket.port(),
+										e
+									))
+								})?,
+							Onion(onion_address) => {
+								let onion_address = Self::format_onion_address(onion_address);
+								// For Tor using port 80 for p2p connections. No configs for that
+								arti.connect((onion_address.as_str(), 80))
+									.await
+									.map_err(|e| {
+										Error::TorConnect(format!(
+											"Unable connect to {}:{}, {}",
+											onion_address, 80, e
+										))
+									})?
+							}
+						};
+						Ok::<DataStream, Error>(stream)
+					})
+				})??;
+				TcpDataStream::from_data(stream)
+			} else {
+				// External Tor
+				run_global_async_block(async {
+					match addr {
+						PeerAddr::Ip(address) => {
+							// we do this, not a good solution, but for now, we'll use it. Other side usually detects with ip.
+							let stream = Socks5Stream::connect(
+								("127.0.0.1", self.tor_config.socks_port),
+								address.to_string(),
+							)
+							.await
+							.map_err(|e| {
+								Error::TorConnect(format!(
+									"Unable connect to External Tor as 127.0.0.1:{}, {}",
+									self.config.port, e
+								))
+							})?;
+							Ok::<TcpDataStream, Error>(TcpDataStream::from_tcp(stream.into_inner()))
+						}
+						PeerAddr::Onion(onion_address) => {
+							let onion_address = Self::format_onion_address(onion_address);
+							// Target port for onion is 80
+							let proxy_address = format!("127.0.0.1:{}", self.tor_config.socks_port);
+							let stream =
+								Socks5Stream::connect(proxy_address.as_str(), (onion_address, 80))
+									.await
+									.map_err(|e| {
+										Error::TorConnect(format!(
+											"Unable connect to External Tor as 127.0.0.1:{}, {}",
+											self.tor_config.socks_port, e
+										))
+									});
+							let stream = stream?;
+							Ok(TcpDataStream::from_tcp(stream.into_inner()))
 						}
 					}
-				} else {
-					peer_addr = Some(PeerAddr::Ip(address));
-					TcpStream::connect_timeout(&address, Duration::from_secs(10))?
-				}
+				})?
 			}
-			PeerAddr::Onion(onion_address) => {
-				if self.socks_port != 0 {
-					self_addr = PeerAddr::Onion(
-						self.self_onion_address
-							.as_ref()
-							.unwrap_or(&"unknown".to_string())
-							.to_string(),
-					);
-					peer_addr = Some(PeerAddr::Onion(onion_address.clone()));
-					let proxy_addr =
-						SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.socks_port);
-					let onion_target: socks::TargetAddr =
-						socks::TargetAddr::Domain(onion_address, 80);
-					let socks5_stream_ref =
-						tor_stream::TorStream::connect_with_address(proxy_addr, onion_target);
-					match socks5_stream_ref {
-						Ok(socks5_stream) => socks5_stream.unwrap(),
-						Err(e) => {
-							return Err(Error::Connection(e));
-						}
-					}
-				} else {
-					// can't connect to this because we don't have a socks proxy.
+		} else {
+			// No Tor,  just a regilar socket
+			match addr {
+				PeerAddr::Ip(address) => run_global_async_block(async {
+					let stream = mwc_util::tokio::time::timeout(
+						Duration::from_secs(10),
+						TcpStream::connect(address),
+					)
+					.await
+					.map_err(|_| {
+						Error::Connection(std::io::Error::new(
+							std::io::ErrorKind::TimedOut,
+							format!("connect timeout for {}", address),
+						))
+					})?
+					.map_err(|e| Error::TorConnect(e.to_string()))?;
+					Ok::<TcpDataStream, Error>(TcpDataStream::from_tcp(stream))
+				})?,
+				PeerAddr::Onion(onion_address) => {
 					return Err(Error::ConnectionClose(format!(
 						"Failed connect to Tor address {} because Tor socks is not configured",
 						onion_address
@@ -294,39 +675,46 @@ impl Server {
 			}
 		};
 
-		match Ok(stream) {
-			Ok(stream) => {
-				let total_diff = self.peers.total_difficulty()?;
+		let total_diff = self.peers.total_difficulty()?;
+		let hs = self.handshake.read();
+		let hs = hs
+			.as_ref()
+			.ok_or(Error::TorConnect("handshake is empty".into()))?;
 
-				let peer = Peer::connect(
-					stream,
-					self.capabilities,
-					total_diff,
-					self_addr,
-					&self.handshake,
-					self.peers.clone(),
-					peer_addr,
-					self.sync_state.clone(),
-					(*self).clone(),
-				)?;
-				let peer = Arc::new(peer);
-				self.peers.add_connected(peer.clone())?;
-				Ok(peer)
+		let self_addr = match self_onion_address {
+			Some(onion_addr) => PeerAddr::Onion(onion_addr),
+			None => {
+				if self.tor_config.tor_enabled {
+					PeerAddr::Ip(SocketAddr::new(
+						IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+						self.config.port,
+					))
+				} else {
+					PeerAddr::Ip(SocketAddr::new(
+						IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+						self.config.port,
+					))
+				}
 			}
-			Err(e) => {
-				trace!(
-					"connect_peer: on {}:{}. Could not connect to {}: {:?}",
-					self.config.host,
-					self.config.port,
-					addr,
-					e
-				);
-				Err(Error::Connection(e))
-			}
-		}
+		};
+
+		let peer = Peer::connect(
+			stream,
+			self.capabilities,
+			total_diff,
+			self_addr,
+			hs,
+			self.peers.clone(),
+			addr, // peer address
+			self.sync_state.clone(),
+			(*self).clone(),
+		)?;
+		let peer = Arc::new(peer);
+		self.peers.add_connected(peer.clone())?;
+		Ok(peer)
 	}
 
-	fn handle_new_peer(&self, stream: TcpStream) -> Result<(), Error> {
+	fn handle_new_peer(&self, stream: TcpDataStream) -> Result<(), Error> {
 		if self.stop_state.is_stopped() {
 			return Err(Error::ConnectionClose(String::from("Server is stopping")));
 		}
@@ -341,12 +729,17 @@ impl Server {
 
 		let total_diff = self.peers.total_difficulty()?;
 
+		let hs = self.handshake.read();
+		let hs = hs
+			.as_ref()
+			.ok_or(Error::TorConnect("handshake is empty".into()))?;
+
 		// accept the peer and add it to the server map
 		let peer = Peer::accept(
 			stream,
 			self.capabilities,
 			total_diff,
-			&self.handshake,
+			hs,
 			self.peers.clone(),
 			self.sync_state.clone(),
 			self.clone(),
@@ -419,6 +812,18 @@ impl Server {
 	/// 2. must pause the 'p2p-server' thread also, to avoid the new ingress peer connection.
 	pub fn pause(&self) {
 		self.peers.stop();
+	}
+
+	/// Get Onion address
+	pub fn get_self_onion_address(&self) -> Result<Option<String>, Error> {
+		let addr = self
+			.handshake
+			.read()
+			.as_ref()
+			.ok_or(Error::TorConnect("handshake is not defined".into()))?
+			.onion_address
+			.clone();
+		Ok(addr)
 	}
 }
 

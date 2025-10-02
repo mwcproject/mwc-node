@@ -25,6 +25,10 @@ use futures::channel::oneshot;
 use hyper::server::accept;
 use hyper::service::make_service_fn;
 use hyper::{Body, Request, Server, StatusCode};
+use mwc_util::run_global_async_block;
+use mwc_util::tokio::net::TcpListener;
+use mwc_util::tokio_rustls::rustls::{Certificate, PrivateKey};
+use mwc_util::tokio_rustls::TlsAcceptor;
 use rustls::ServerConfig;
 use rustls_pemfile as pemfile;
 use std::convert::Infallible;
@@ -32,10 +36,6 @@ use std::fs::File;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{io, thread};
-use tokio::net::TcpListener;
-use tokio::runtime::Runtime;
-use tokio_rustls::rustls::{Certificate, PrivateKey};
-use tokio_rustls::TlsAcceptor;
 
 /// Errors that can be returned by an ApiEndpoint implementation.
 #[derive(Clone, Eq, PartialEq, Debug, thiserror::Error, Serialize, Deserialize)]
@@ -193,10 +193,7 @@ impl ApiServer {
 					server.await
 				};
 
-				let rt = Runtime::new()
-					.map_err(|e| error!("HTTP API server error: {}", e))
-					.unwrap();
-				if let Err(e) = rt.block_on(server) {
+				if let Err(e) = run_global_async_block(server) {
 					error!("HTTP API server error: {}", e)
 				}
 			})
@@ -274,10 +271,7 @@ impl ApiServer {
 					server.await
 				};
 
-				let rt = Runtime::new()
-					.map_err(|e| error!("HTTP API server error: {}", e))
-					.unwrap();
-				if let Err(e) = rt.block_on(server) {
+				if let Err(e) = run_global_async_block(server) {
 					error!("HTTP API server error: {}", e)
 				}
 			})

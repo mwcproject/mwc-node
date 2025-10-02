@@ -1,5 +1,5 @@
 // Copyright 2019 The Grin Developers
-// Copyright 2024 The MWC Developers
+// Copyright 2025 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,13 +48,18 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"api_http_addr".to_string(),
-		"
-#path of TLS certificate file, self-signed certificates are not supported
+		"[server]_END".to_string(),
+		"#path of TLS certificate file, self-signed certificates are not supported
 #tls_certificate_file = \"\"
 #private key for the TLS certificate
 #tls_certificate_key = \"\"
+"
+		.to_string(),
+	);
 
+	retval.insert(
+		"api_http_addr".to_string(),
+		"
 #the address on which services will listen, e.g. Transaction Pool
 "
 		.to_string(),
@@ -206,9 +211,8 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"nthreads".to_string(),
-		"
-#The url where a POST request will be sent when a new block is accepted by our node.
+		"[server.webhook_config]_END".to_string(),
+		"#The url where a POST request will be sent when a new block is accepted by our node.
 #block_accepted_url = \"http://127.0.0.1:8080/acceptedblock\"
 
 #The url where a POST request will be sent when a new transaction is received by a peer.
@@ -219,7 +223,13 @@ fn comments() -> HashMap<String, String> {
 
 #The url where a POST request will be sent when a new block is received by a peer.
 #block_received_url = \"http://127.0.0.1:8080/block\"
+"
+		.to_string(),
+	);
 
+	retval.insert(
+		"nthreads".to_string(),
+		"
 #The number of worker threads that will be assigned to making the http requests.
 "
 		.to_string(),
@@ -285,9 +295,7 @@ fn comments() -> HashMap<String, String> {
 
 	retval.insert(
 		"[server.p2p_config]".to_string(),
-		"#test miner wallet URL (burns if this doesn't exist)
-#test_miner_wallet_url = \"http://127.0.0.1:3415\"
-
+		"
 #########################################
 ### SERVER P2P CONFIGURATION          ###
 #########################################
@@ -297,44 +305,19 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"host".to_string(),
-		"
-#The interface on which to listen.
-#0.0.0.0 will listen on all interfaces, allowing others to interact
-#127.0.0.1 will listen on the local machine only
-"
-		.to_string(),
-	);
-
-	retval.insert(
-		"port".to_string(),
-		"
-#The port on which to listen.
-"
-		.to_string(),
-	);
-
-	retval.insert(
-		"seeding_type".to_string(),
-		"
-#All seeds/peers can be either IP address or DNS names. Port number must always be specified
-#how to seed this server, can be None, List or DNSSeed
-"
-		.to_string(),
-	);
-
-	retval.insert(
-		"[server.pool_config]".to_string(),
+		"[server.p2p_config]_END".to_string(),
 		"#If the seeding type is List, the list of peers to connect to can
 #be specified as follows:
 #seeds = [\"192.168.0.1:3414\",\"192.168.0.2:3414\"]
 
 #hardcoded peer lists for allow/deny
-#will *only* connect to peers in allow list
+#will *only* connect to peers in allow list, onion addresses are accepted as well
 #peers_allow = [\"192.168.0.1:3414\", \"192.168.0.2:3414\"]
-#will *never* connect to peers in deny list
+
+#will *never* connect to peers in deny list, onion addresses are accepted as well
 #peers_deny = [\"192.168.0.3:3414\", \"192.168.0.4:3414\"]
-#a list of preferred peers to connect to
+
+#a list of preferred peers to connect to, onion addresses are accepted as well
 #peers_preferred = [\"192.168.0.1:3414\",\"192.168.0.2:3414\"]
 
 #how long a banned peer should stay banned
@@ -355,7 +338,31 @@ fn comments() -> HashMap<String, String> {
 
 # A preferred dandelion_peer, mainly used for testing dandelion
 # dandelion_peer = \"10.0.0.1:13144\"
+"
+		.to_string(),
+	);
 
+	retval.insert(
+		"port".to_string(),
+		"
+# The port on which to listen. Will be used in case of not Arti conneciton. Host will be 0.0.0.0 if
+# tor is disabled. 127.0.0.1 if external Tor is enabled.
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"seeding_type".to_string(),
+		"
+#All seeds/peers can be either IP address or DNS names. Port number must always be specified
+#how to seed this server, can be None, List or DNSSeed
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"[server.pool_config]".to_string(),
+		"
 #########################################
 ### MEMPOOL CONFIGURATION             ###
 #########################################
@@ -364,12 +371,17 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
+		"[server.pool_config]_END".to_string(),
+		"# base fee that's accepted into the pool, legacy 'accept_fee_base' setting
+# Normally there is no needs to adjust this value, use default value that is same for all network
+# tx_fee_base = 1000
+"
+		.to_string(),
+	);
+
+	retval.insert(
 		"reorg_cache_timeout".to_string(),
 		"
-# base fee that's accepted into the pool, legacy 'accept_fee_base' setting
-# Normally there is no needs to adjust this value, just use default value that is same for all network
-# tx_fee_base = 1000
-
 # timeout in minutes for reorg cache, default 30
 "
 		.to_string(),
@@ -605,16 +617,73 @@ fn comments() -> HashMap<String, String> {
 		.to_string(),
 	);
 
+	retval.insert(
+		"[server.tor_config]".to_string(),
+		"
+#########################################
+### TOR/ARTI connection               ###
+#########################################
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"tor_enabled".to_string(),
+		"
+# Enable tor connection for the mwc nodes p2p connection. MWC node using internal tor client.
+# Recommended if you are running your node behind the firewall or NAT.
+# Try it even Tor is banned in your region.
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"tor_external".to_string(),
+		"
+# Use external tor daemon for p2p connections.
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"socks_port".to_string(),
+		"
+# External tor daemon socks port for connection. Tor should work as a proxy.
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"[server.tor_config]_END".to_string(),
+		"# External tor onion service address. This onion service is expected to serve to income connections.
+# torrc setting expected to be: HiddenServicePort 80 127.0.0.1:<port>
+# onion_address = \"<address>.onion\"
+
+# Optional webtunnel bridge connection line for internal tor client. In case if Tor is blocked in
+# your region. Use this option if tor is blocked in yout region and your own webtunnel bridge.
+# Note, mwc-node supports only webtunnel bridge because of there efficiency and ease of installation
+# and maintaining.
+# webtunnel_bridge = \"webtunnel 10.0.0.2:443 <webtunnel_hash> https://webtunnel_url\"
+
+# Use optional internal tor client onion service 64 bytes expanded key. Use this key if you want to
+# have specific onion address that you own. The primary usage for seed nodes.
+# By default mwc-node will generate random onion address on the first run and then keep it.
+# onion_expanded_key = \"<64 byte key in hex format>\"
+"
+
+			.to_string(),
+	);
+
 	retval
 }
 
 fn get_key(line: &str) -> String {
-	if line.contains('[') && line.contains(']') {
-		return line.to_owned();
-	} else if line.contains('=') {
-		return line.split('=').collect::<Vec<&str>>()[0].trim().to_owned();
+	if line.contains('=') {
+		line.split('=').collect::<Vec<&str>>()[0].trim().to_owned()
+	} else if line.contains('[') && line.contains(']') {
+		line.to_owned()
 	} else {
-		return "NOT_FOUND".to_owned();
+		"NOT_FOUND".to_owned()
 	}
 }
 
@@ -622,14 +691,33 @@ pub fn insert_comments(orig: String) -> String {
 	let comments = comments();
 	let lines: Vec<&str> = orig.split('\n').collect();
 	let mut out_lines = vec![];
+	let mut section_ended_comments = None;
+
 	for l in lines {
 		let key = get_key(l);
+
+		if key.starts_with('[') {
+			if let Some(ln) = section_ended_comments {
+				out_lines.push(ln);
+				out_lines.push("\n".to_owned());
+			}
+
+			let end_key = key.clone() + "_END";
+			section_ended_comments = comments.get(&end_key).map(|s| s.clone());
+		}
+
 		if let Some(v) = comments.get(&key) {
 			out_lines.push(v.to_owned());
 		}
 		out_lines.push(l.to_owned());
 		out_lines.push("\n".to_owned());
 	}
+
+	if let Some(ln) = section_ended_comments {
+		out_lines.push(ln);
+		out_lines.push("\n".to_owned());
+	}
+
 	let mut ret_val = String::from("");
 	for l in out_lines {
 		ret_val.push_str(&l);

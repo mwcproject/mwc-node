@@ -25,8 +25,9 @@ use crate::core::pow::Difficulty;
 use crate::p2p::types::PeerAddr;
 use crate::p2p::Peer;
 use mwc_chain::SyncState;
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use mwc_util::tokio::net::TcpStream;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::sync::{mpsc, Arc};
 use std::{thread, time};
 
 fn open_port() -> u16 {
@@ -51,44 +52,55 @@ fn peer_handshake() {
 	test_setup();
 
 	let p2p_config = p2p::P2PConfig {
-		host: "127.0.0.1".parse().unwrap(),
 		port: open_port(),
 		peers_allow: None,
 		peers_deny: None,
 		..p2p::P2PConfig::default()
 	};
+	let mut tor_config = p2p::TorConfig::default();
+	tor_config.tor_enabled = true;
+	tor_config.tor_external = true;
+	tor_config.onion_address =
+		Some("qwjqqd4l74ecgcy3ebkzk7nvmxu2swb7u3nyu4u3s6sa7iw3bsmzbnyd.onion".into());
+
 	let net_adapter = Arc::new(p2p::DummyAdapter {});
 	let server_inner = p2p::Server::new(
 		".mwc",
 		p2p::Capabilities::UNKNOWN,
-		p2p_config.clone(),
+		&p2p_config,
+		&tor_config,
 		net_adapter.clone(),
 		Hash::from_vec(&vec![]),
 		Arc::new(SyncState::new()),
 		Arc::new(StopState::new()),
-		0,
-		None,
 	)
 	.unwrap();
 	let server = Arc::new(server_inner.clone());
 
 	let p2p_inner = server.clone();
-	let _ = thread::spawn(move || p2p_inner.listen());
+	let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
+	let _ = thread::spawn(move || p2p_inner.listen(p2p_tx));
 
-	thread::sleep(time::Duration::from_secs(1));
+	p2p_rx.recv().unwrap().unwrap();
 
-	let addr = SocketAddr::new(p2p_config.host, p2p_config.port);
-	let socket = TcpStream::connect_timeout(&addr, time::Duration::from_secs(10)).unwrap();
+	let async_rt = mwc_util::global_runtime();
 
+	let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), p2p_config.port);
+	let socket = async_rt.block_on(async {
+		let socket = TcpStream::connect(&addr).await;
+		socket.unwrap()
+	});
+
+	let stream = p2p::tcp_data_stream::TcpDataStream::from_tcp(socket);
 	let my_addr = PeerAddr::Ip("127.0.0.1:5000".parse().unwrap());
 	let peer = Peer::connect(
-		socket,
+		stream,
 		p2p::Capabilities::UNKNOWN,
 		Difficulty::min(),
 		my_addr.clone(),
 		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
 		net_adapter,
-		None,
+		&PeerAddr::Ip(format!("127.0.0.1:{}", p2p_config.port).parse().unwrap()),
 		Arc::new(SyncState::new()),
 		server_inner,
 	)

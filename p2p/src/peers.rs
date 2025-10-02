@@ -63,13 +63,13 @@ impl Peers {
 	pub fn new(
 		store: PeerStore,
 		adapter: Arc<dyn ChainAdapter>,
-		config: P2PConfig,
+		config: &P2PConfig,
 		stop_state: Arc<StopState>,
 	) -> Peers {
 		Peers {
 			adapter,
 			store,
-			config,
+			config: config.clone(),
 			peers: RwLock::new(HashMap::new()),
 			stop_state,
 			boost_peers_capabilities: RwLock::new(PeersCapabilities {

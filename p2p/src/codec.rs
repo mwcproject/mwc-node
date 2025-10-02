@@ -24,7 +24,8 @@
 use crate::msg::{Message, MsgHeader, MsgHeaderWrapper, Type};
 use crate::mwc_core::global::header_size_bytes;
 use crate::mwc_core::ser::{BufReader, ProtocolVersion, Readable};
-use crate::types::{AttachmentMeta, AttachmentUpdate, Error};
+use crate::tcp_data_stream::TcpDataReadHalfStream;
+use crate::types::Error;
 use crate::{
 	msg::HeadersData,
 	mwc_core::core::block::{BlockHeader, UntrustedBlockHeader},
@@ -34,9 +35,7 @@ use mwc_core::ser::Reader;
 use std::cmp::min;
 use std::io::Read;
 use std::mem;
-use std::net::TcpStream;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use MsgHeaderWrapper::*;
 use State::*;
 
@@ -52,11 +51,10 @@ enum State {
 		items_left: usize,
 		headers: Vec<BlockHeader>,
 	},
-	Attachment(usize, Arc<AttachmentMeta>, Instant),
 }
 
 impl State {
-	fn is_none(&self) -> bool {
+	fn _is_none(&self) -> bool {
 		match self {
 			State::None => true,
 			_ => false,
@@ -66,14 +64,14 @@ impl State {
 
 pub struct Codec {
 	pub version: ProtocolVersion,
-	stream: TcpStream,
+	stream: TcpDataReadHalfStream,
 	buffer: BytesMut,
 	state: State,
 	bytes_read: usize,
 }
 
 impl Codec {
-	pub fn new(version: ProtocolVersion, stream: TcpStream) -> Self {
+	pub fn new(version: ProtocolVersion, stream: TcpDataReadHalfStream) -> Self {
 		Self {
 			version,
 			stream,
@@ -84,15 +82,8 @@ impl Codec {
 	}
 
 	/// Destroy the codec and return the reader
-	pub fn stream(self) -> TcpStream {
+	pub fn _stream(self) -> TcpDataReadHalfStream {
 		self.stream
-	}
-
-	/// Inform codec next `len` bytes are an attachment
-	/// Panics if already reading a body
-	pub fn expect_attachment(&mut self, meta: Arc<AttachmentMeta>) {
-		debug_assert!(self.state.is_none());
-		self.state = Attachment(meta.size, meta, Instant::now());
 	}
 
 	/// Length of the next item we are expecting, could be msg header, body, block header or attachment chunk
@@ -110,17 +101,16 @@ impl Codec {
 				// its size and only actually read the bytes we need
 				min(*bytes_left, header_size_bytes(63))
 			}
-			Attachment(left, _, _) => min(*left, 48_000),
 		}
 	}
 
 	/// Set stream timeout depending on the next expected item
-	fn set_stream_timeout(&self) -> Result<(), Error> {
+	fn set_stream_timeout(&mut self) -> Result<(), Error> {
 		let timeout = match &self.state {
 			None => HEADER_IO_TIMEOUT,
 			_ => BODY_IO_TIMEOUT,
 		};
-		self.stream.set_read_timeout(Some(timeout))?;
+		self.stream.set_read_timeout(timeout);
 		Ok(())
 	}
 
@@ -211,24 +201,6 @@ impl Codec {
 							remaining,
 						}));
 					}
-				}
-				Attachment(left, meta, now) => {
-					let raw = self.buffer.split_to(next_len).freeze();
-					*left -= next_len;
-					if now.elapsed().as_secs() > 10 {
-						*now = Instant::now();
-						debug!("attachment: {}/{}", meta.size - *left, meta.size);
-					}
-					let update = AttachmentUpdate {
-						read: next_len,
-						left: *left,
-						meta: Arc::clone(meta),
-					};
-					if *left == 0 {
-						self.state = None;
-						debug!("attachment: DONE");
-					}
-					return Ok(Message::Attachment(update, Some(raw)));
 				}
 			}
 		}

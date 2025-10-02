@@ -65,8 +65,18 @@ pub mod file;
 /// Compress and decompress zip bz2 archives
 pub mod zip;
 
+mod async_runtime;
 mod rate_counter;
+
 pub use crate::rate_counter::RateCounter;
+
+pub use crate::async_runtime::global_runtime;
+pub use crate::async_runtime::run_global_async_block;
+
+pub extern crate tokio;
+pub extern crate tokio_rustls;
+pub extern crate tokio_socks;
+pub extern crate tokio_util;
 
 /// Encapsulation of a RwLock<Option<T>> for one-time initialization.
 /// This implementation will purposefully fail hard if not used

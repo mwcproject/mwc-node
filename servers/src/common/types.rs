@@ -30,6 +30,7 @@ use crate::pool;
 use crate::pool::types::DandelionConfig;
 use crate::store;
 use mwc_core::global;
+use mwc_p2p::types::TorConfig;
 use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
@@ -152,30 +153,6 @@ impl Default for ChainValidationMode {
 	}
 }
 
-/// Type for Tor Configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TorConfig {
-	/// Whether to start tor listener on listener startup (default true)
-	pub tor_enabled: bool,
-	/// The port for the tor socks proxy to bind to
-	pub socks_port: u16,
-	/// Tor running externally (default false)
-	pub tor_external: bool,
-	/// Onion address to use, only applicable with external tor
-	pub onion_address: Option<String>,
-}
-
-impl Default for TorConfig {
-	fn default() -> TorConfig {
-		TorConfig {
-			tor_enabled: false,
-			socks_port: 51234,
-			tor_external: false,
-			onion_address: Some("".to_string()),
-		}
-	}
-}
-
 /// Full server configuration, aggregating configurations required for the
 /// different components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -292,8 +269,8 @@ impl Default for ServerConfig {
 			run_tui: Some(true),
 			run_test_miner: Some(false),
 			test_miner_wallet_url: None,
-			libp2p_enabled: Some(true),
-			libp2p_port: Some(3417),
+			libp2p_enabled: None,
+			libp2p_port: None,
 			libp2p_topics: None,
 			webhook_config: WebHooksConfig::default(),
 			tor_config: TorConfig::default(),

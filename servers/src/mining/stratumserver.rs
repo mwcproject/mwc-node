@@ -18,9 +18,8 @@
 use futures::channel::{mpsc, oneshot};
 use futures::pin_mut;
 use futures::{SinkExt, StreamExt, TryStreamExt};
-use tokio::net::TcpListener;
-use tokio::runtime::Runtime;
-use tokio_util::codec::{Framed, LinesCodec};
+use mwc_util::tokio::net::TcpListener;
+use mwc_util::tokio_util::codec::{Framed, LinesCodec};
 
 use crate::util::RwLock;
 use chrono::prelude::Utc;
@@ -45,8 +44,8 @@ use crate::mining::mine_block;
 use crate::util;
 use crate::util::ToHex;
 use crate::ServerTxPool;
+use mwc_util::run_global_async_block;
 use std::cmp::min;
-
 // ----------------------------------------
 // http://www.jsonrpc.org/specification
 // RPC Methods
@@ -878,14 +877,13 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
                         handler.workers.remove_worker(worker_id);
                         info!("Worker {} disconnected", worker_id);
                     };
-                    tokio::spawn(task);
+                    mwc_util::tokio::spawn(task);
                 }
             });
 		server.await
 	};
 
-	let rt = Runtime::new().unwrap();
-	rt.block_on(task);
+	run_global_async_block(task);
 }
 
 // ----------------------------------------

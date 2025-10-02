@@ -24,26 +24,8 @@ use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::types::Status;
 use mwc_p2p::types::PeerInfoDisplayLegacy;
-use mwc_util::Mutex;
 use std::net::SocketAddr;
 use std::sync::Weak;
-
-lazy_static! {
-	static ref SERVER_ONION_ADDRESS: Mutex<Option<String>> = Mutex::new(None);
-}
-
-pub fn get_server_onion_address() -> Option<String> {
-	SERVER_ONION_ADDRESS.lock().clone()
-}
-
-pub fn set_server_onion_address(onion_address: &String) {
-	SERVER_ONION_ADDRESS.lock().replace(onion_address.clone());
-}
-
-// we never stop TOR.
-pub fn reset_server_onion_address() {
-	SERVER_ONION_ADDRESS.lock().take();
-}
 
 /// Main interface into all node API functions.
 /// Node APIs are split into two seperate blocks of functionality

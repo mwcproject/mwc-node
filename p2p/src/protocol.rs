@@ -263,11 +263,11 @@ impl MessageHandler for Protocol {
 				for peer in peer_addrs.peers {
 					match peer.clone() {
 						PeerAddr::Onion(address) => {
-							let self_address = self.server.self_onion_address.as_ref();
+							let self_address = self.server.get_self_onion_address()?;
 							if self_address.is_none() {
 								peers.push(peer);
 							} else {
-								if &address != self_address.unwrap() {
+								if address != self_address.unwrap() {
 									peers.push(peer);
 								} else {
 									debug!("Not pushing self onion address = {}", address);

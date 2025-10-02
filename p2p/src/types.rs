@@ -115,6 +115,23 @@ pub enum Error {
 	Internal(String),
 	#[error("libp2p error: {0}")]
 	Libp2pError(String),
+	#[error("configuration error: {0}")]
+	ConfigError(String),
+	/// Tor Configuration Error
+	#[error("Tor Config Error: {0}")]
+	TorConfig(String),
+	/// Tor Process error
+	#[error("Tor Process Error: {0}")]
+	TorProcess(String),
+	/// Tor is not initialized
+	#[error("Tor is not initialized")]
+	TorNotInitialized,
+	/// Tor Process error
+	#[error("Onion Service Error: {0}")]
+	TorOnionService(String),
+	/// Tor Connect error
+	#[error("Tor outbound connection error: {0}")]
+	TorConnect(String),
 }
 
 impl From<ser::Error> for Error {
@@ -361,10 +378,39 @@ impl PeerAddr {
 	}
 }
 
+/// Type for Tor Configuration
+#[derive(Debug, Clone, Serialize, serde_derive::Deserialize, PartialEq)]
+pub struct TorConfig {
+	/// Whether to start tor listener on listener startup (default true)
+	pub tor_enabled: bool,
+	/// The port for the tor socks proxy to bind to
+	pub socks_port: u16,
+	/// Tor running externally (default false)
+	pub tor_external: bool,
+	/// Onion address to use, only applicable with external tor
+	pub onion_address: Option<String>,
+	/// alternative webtunnel bridge. In not specified, the community bridges might be used
+	pub webtunnel_bridge: Option<String>,
+	/// Expanded key (for seed nodes). The key to generate the onion service
+	pub onion_expanded_key: Option<String>,
+}
+
+impl Default for TorConfig {
+	fn default() -> TorConfig {
+		TorConfig {
+			tor_enabled: true,
+			tor_external: false,
+			socks_port: 51234,
+			onion_address: None,
+			webtunnel_bridge: None,
+			onion_expanded_key: None,
+		}
+	}
+}
+
 /// Configuration for the peer-to-peer server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct P2PConfig {
-	pub host: IpAddr,
 	pub port: u16,
 
 	/// Method used to get the list of seed nodes for initial bootstrap.
@@ -397,9 +443,7 @@ pub struct P2PConfig {
 /// Default address for peer-to-peer connections.
 impl Default for P2PConfig {
 	fn default() -> P2PConfig {
-		let ipaddr = "0.0.0.0".parse().unwrap();
 		P2PConfig {
-			host: ipaddr,
 			port: 3414,
 			seeding_type: Seeding::default(),
 			seeds: None,

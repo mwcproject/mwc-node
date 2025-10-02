@@ -16,7 +16,6 @@
 use crate::serv::Server;
 use crate::util::{Mutex, RwLock};
 use std::fmt;
-use std::net::{Shutdown, TcpStream};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +36,7 @@ use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::Writeable;
 use crate::mwc_core::{core, global};
 use crate::protocol::Protocol;
+use crate::tcp_data_stream::TcpDataStream;
 use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
 	TxHashSetRead,
@@ -81,7 +81,7 @@ impl Peer {
 	// Only accept and connect can be externally used to build a peer
 	fn new(
 		info: PeerInfo,
-		conn: TcpStream,
+		conn: TcpDataStream,
 		adapter: Arc<dyn NetAdapter>,
 		sync_state: Arc<SyncState>,
 		server: Server,
@@ -90,8 +90,14 @@ impl Peer {
 		let tracking_adapter = TrackingAdapter::new(adapter);
 		let handler = Protocol::new(Arc::new(tracking_adapter.clone()), info.clone(), server);
 		let tracker = Arc::new(conn::Tracker::new());
-		let (sendh, stoph) =
-			conn::listen(conn, info.version, tracker.clone(), sync_state, handler)?;
+		let (sendh, stoph) = conn::listen(
+			conn,
+			info.version,
+			tracker.clone(),
+			sync_state,
+			info.addr.to_string(),
+			handler,
+		)?;
 		let send_handle = Mutex::new(sendh);
 		let stop_handle = Mutex::new(stoph);
 		Ok(Peer {
@@ -105,7 +111,7 @@ impl Peer {
 	}
 
 	pub fn accept(
-		mut conn: TcpStream,
+		mut conn: TcpDataStream,
 		capab: Capabilities,
 		total_difficulty: Difficulty,
 		hs: &Handshake,
@@ -113,17 +119,13 @@ impl Peer {
 		sync_state: Arc<SyncState>,
 		server: Server,
 	) -> Result<Peer, Error> {
-		debug!("accept: handshaking from {:?}", conn.peer_addr());
+		debug!("accept: handshaking from peer");
 		let info = hs.accept(capab, total_difficulty, &mut conn);
 		match info {
 			Ok(info) => Ok(Peer::new(info, conn, adapter, sync_state, server)?),
 			Err(e) => {
-				debug!(
-					"accept: handshaking from {:?} failed with error: {:?}",
-					conn.peer_addr(),
-					e
-				);
-				if let Err(e) = conn.shutdown(Shutdown::Both) {
+				debug!("accept: handshaking failed with error: {:?}", e);
+				if let Err(e) = conn.shutdown() {
 					debug!("Error shutting down conn: {:?}", e);
 				}
 				Err(e)
@@ -132,46 +134,35 @@ impl Peer {
 	}
 
 	pub fn connect(
-		mut conn: TcpStream,
+		mut conn: TcpDataStream,
 		capab: Capabilities,
 		total_difficulty: Difficulty,
 		self_addr: PeerAddr,
 		hs: &Handshake,
 		adapter: Arc<dyn NetAdapter>,
-		peer_addr: Option<PeerAddr>,
+		peer_addr: &PeerAddr,
 		sync_state: Arc<SyncState>,
 		server: Server,
 	) -> Result<Peer, Error> {
-		debug!("connect: handshaking with {:?}", self_addr);
+		debug!("connect: handshaking with {:?}", peer_addr);
 
-		let info = if peer_addr.is_some() {
-			hs.initiate(
-				capab,
-				total_difficulty,
-				self_addr,
-				&mut conn,
-				Some(peer_addr.clone().unwrap()),
-			)
-		} else {
-			hs.initiate(capab, total_difficulty, self_addr, &mut conn, None)
-		};
+		let info = hs.initiate(
+			capab,
+			total_difficulty,
+			self_addr,
+			&mut conn,
+			peer_addr.clone(),
+		);
+
 		match info {
 			Ok(info) => Ok(Peer::new(info, conn, adapter, sync_state, server)?),
 			Err(e) => {
-				if peer_addr.is_some() {
-					debug!(
-						"connect: handshaking with {:?} failed with error: {:?}",
-						peer_addr.unwrap(),
-						e
-					);
-				} else {
-					debug!(
-						"connect: handshaking with {:?} failed with error: {:?}",
-						conn.peer_addr(),
-						e
-					);
-				}
-				if let Err(e) = conn.shutdown(Shutdown::Both) {
+				debug!(
+					"connect: handshaking with {:?} failed with error: {:?}",
+					peer_addr, e
+				);
+
+				if let Err(e) = conn.shutdown() {
 					debug!("Error shutting down conn: {:?}", e);
 				}
 				Err(e)

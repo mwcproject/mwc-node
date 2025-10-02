@@ -23,9 +23,9 @@ use hyper::body;
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use hyper::{Body, Client, Request};
 use hyper_timeout::TimeoutConnector;
+use mwc_util::run_global_async_block;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::runtime::Builder;
 
 // Client Request Timeout
 pub struct TimeOut {
@@ -311,9 +311,5 @@ async fn send_request_async(req: Request<Body>, timeout: TimeOut) -> Result<Stri
 }
 
 pub fn send_request(req: Request<Body>, timeout: TimeOut) -> Result<String, Error> {
-	let rt = Builder::new_current_thread()
-		.enable_all()
-		.build()
-		.map_err(|e| Error::RequestError(format!("can't create Tokio runtime, {}", e)))?;
-	rt.block_on(send_request_async(req, timeout))
+	run_global_async_block(send_request_async(req, timeout))
 }

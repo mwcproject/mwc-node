@@ -24,13 +24,12 @@
 use crate::codec::{Codec, BODY_IO_TIMEOUT};
 use crate::msg::{write_message, Consumed, Message, Msg};
 use crate::mwc_core::ser::ProtocolVersion;
+use crate::tcp_data_stream::TcpDataStream;
 use crate::types::Error;
 use crate::util::{RateCounter, RwLock};
 use crossbeam::channel::{RecvTimeoutError, TryRecvError};
 use mwc_chain::SyncState;
-use std::fs::File;
-use std::io::{self, Write};
-use std::net::{Shutdown, TcpStream};
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -50,7 +49,7 @@ pub trait MessageHandler: Send + 'static {
 
 // Macro to simplify the boilerplate around I/O and Mwc error handling
 macro_rules! try_break {
-	($inner:expr) => {
+	($inner:expr, $stage:expr, $peer:expr) => {
 		match $inner {
 			Ok(v) => Some(v),
 			Err(Error::Connection(ref e)) if e.kind() == io::ErrorKind::TimedOut => None,
@@ -64,7 +63,10 @@ macro_rules! try_break {
 			| Err(Error::Internal(_))
 			| Err(Error::NoDandelionRelay) => None,
 			Err(ref e) => {
-				debug!("try_break: exit the loop: {:?}", e);
+				debug!(
+					"try_break: exit the loop at {} for {}: {:?}",
+					$stage, $peer, e
+				);
 				break;
 			}
 		}
@@ -176,10 +178,11 @@ impl Tracker {
 /// the current thread, instead just returns a future and the Connection
 /// itself.
 pub fn listen<H>(
-	stream: TcpStream,
+	stream: TcpDataStream,
 	version: ProtocolVersion,
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
+	peer_name: String,
 	handler: H,
 ) -> io::Result<(ConnHandle, StopHandle)>
 where
@@ -202,6 +205,7 @@ where
 		stopped.clone(),
 		tracker,
 		sync_state,
+		peer_name,
 	)?;
 
 	Ok((
@@ -215,7 +219,7 @@ where
 }
 
 fn poll<H>(
-	conn: TcpStream,
+	conn: TcpDataStream,
 	conn_handle: ConnHandle,
 	version: ProtocolVersion,
 	handler: H,
@@ -223,30 +227,29 @@ fn poll<H>(
 	stopped: Arc<AtomicBool>,
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
+	peer_name: String,
 ) -> io::Result<(JoinHandle<()>, JoinHandle<()>)>
 where
 	H: MessageHandler,
 {
 	// Split out tcp stream out into separate reader/writer halves.
-	let reader = conn.try_clone().expect("clone conn for reader failed");
-	let mut writer = conn.try_clone().expect("clone conn for writer failed");
 	let reader_stopped = stopped.clone();
 
 	let reader_tracker = tracker.clone();
 	let writer_tracker = tracker;
 
+	let (reader, mut writer) = conn.split();
+	let peer_name1 = peer_name.clone();
+
 	let reader_thread = thread::Builder::new()
-		.name("peer_read".to_string())
+		.name(format!("peer_read_{}", peer_name1))
 		.spawn(move || {
-			let peer_addr = reader
-				.peer_addr()
-				.map(|a| a.to_string())
-				.unwrap_or_else(|_| "?".to_owned());
+			debug!("Started peer_read thread for {}", peer_name1);
 			let mut codec = Codec::new(version, reader);
-			let mut attachment: Option<File> = None;
 			loop {
 				// check the close channel
 				if reader_stopped.load(Ordering::Relaxed) {
+					debug!("Exited {} because stop was requested", peer_name1);
 					break;
 				}
 
@@ -276,7 +279,7 @@ where
 					}
 				}
 
-				let message = match try_break!(next) {
+				let message = match try_break!(next, "read income message", peer_name1) {
 					Some(Message::Unknown(type_byte)) => {
 						debug!(
 							"Received unknown message, type {:?}, len {}.",
@@ -284,30 +287,7 @@ where
 						);
 						continue;
 					}
-					Some(Message::Attachment(update, bytes)) => {
-						let a = match &mut attachment {
-							Some(a) => a,
-							None => {
-								error!("Received unexpected attachment chunk");
-								break;
-							}
-						};
 
-						let bytes = bytes.unwrap();
-						if let Err(e) = a.write_all(&bytes) {
-							error!("Unable to write attachment file: {}", e);
-							break;
-						}
-						if update.left == 0 {
-							if let Err(e) = a.sync_all() {
-								error!("Unable to sync attachment file: {}", e);
-								break;
-							}
-							attachment.take();
-						}
-
-						Message::Attachment(update, None)
-					}
 					Some(message) => {
 						trace!("Received message, type {}, len {}.", message, bytes_read);
 						message
@@ -316,31 +296,30 @@ where
 				};
 
 				//debug!("IN_{} {}: {:?}", counter, peer_addr, message);
-				let consumed = try_break!(handler.consume(message)).unwrap_or(Consumed::None);
+				let consumed = try_break!(handler.consume(message), "handler.consume", peer_name1)
+					.unwrap_or(Consumed::None);
 				//debug!("OUT_{} {}: {:?}", counter, peer_addr, consumed);
 				match consumed {
 					Consumed::Response(resp_msg) => {
-						try_break!(conn_handle.send(resp_msg));
+						try_break!(conn_handle.send(resp_msg), "conn_handle.send", peer_name1);
 					}
-					Consumed::Attachment(meta, file) => {
-						// Start attachment
-						codec.expect_attachment(meta);
-						attachment = Some(file);
+					Consumed::Disconnect => {
+						debug!("Exited {} because got Consumed::Disconnect", peer_name1);
+						break;
 					}
-					Consumed::Disconnect => break,
 					Consumed::None => {}
 				}
 			}
 
-			debug!("Shutting down reader connection with {}", peer_addr);
-			let _ = codec.stream().shutdown(Shutdown::Both);
+			debug!("Exiting reader for {}", peer_name1);
 		})?;
 
 	let writer_thread = thread::Builder::new()
-		.name("peer_write".to_string())
+		.name(format!("peer_write_{}", peer_name))
 		.spawn(move || {
+			debug!("Started peer_write thread for {}", peer_name);
 			let mut retry_send = Err(());
-			let _ = writer.set_write_timeout(Some(BODY_IO_TIMEOUT));
+			writer.set_write_timeout(BODY_IO_TIMEOUT);
 			loop {
 				let maybe_data = retry_send.or_else(|_| {
 					let mut data = match send_rx.recv_timeout(CHANNEL_TIMEOUT) {
@@ -364,14 +343,20 @@ where
 				retry_send = Err(());
 				match maybe_data {
 					Ok(data) => {
-						let written =
-							try_break!(write_message(&mut writer, &data, writer_tracker.clone()));
+						let written = try_break!(
+							write_message(&mut writer, &data, writer_tracker.clone()),
+							"write_message",
+							peer_name
+						);
 						if written.is_none() {
 							retry_send = Ok(data);
 						}
 					}
 					Err(RecvTimeoutError::Disconnected) => {
-						debug!("peer_write: mpsc channel disconnected during recv_timeout");
+						debug!(
+							"peer_write: mpsc channel disconnected during recv_timeout for {}",
+							peer_name
+						);
 						break;
 					}
 					Err(RecvTimeoutError::Timeout) => {}
@@ -379,18 +364,13 @@ where
 
 				// check the close channel
 				if stopped.load(Ordering::Relaxed) {
+					debug!("Exiting peer_write thread for {}", peer_name);
 					break;
 				}
 			}
 
-			debug!(
-				"Shutting down writer connection with {}",
-				writer
-					.peer_addr()
-					.map(|a| a.to_string())
-					.unwrap_or_else(|_| "?".to_owned())
-			);
-			let _ = writer.shutdown(Shutdown::Both);
+			debug!("Shutting down writer connection for {}", peer_name);
+			let _ = writer.shutdown();
 		})?;
 	Ok((reader_thread, writer_thread))
 }

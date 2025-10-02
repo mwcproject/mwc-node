@@ -39,8 +39,6 @@ use crate::txhashset::segments_cache::SegmentsCache;
 use croaring::Bitmap;
 use log::Level;
 use mwc_util::secp::{constants, Secp256k1};
-use tokio::runtime::Builder;
-use tokio::task;
 
 /// Desegmenter for rebuilding a txhashset from PIBD segments
 /// Note!!! header_pmmr, txhashset & store are from the Chain. Same locking rules are applicable
@@ -262,31 +260,27 @@ impl Desegmenter {
 
 			// Let's validate everything in multiple threads
 			let num_cores = num_cpus::get();
-			let runtime = Builder::new_multi_thread()
-				.enable_all()
-				.worker_threads(num_cores)
-				.build()
-				.unwrap();
 
-			runtime.block_on(async {
-				let mut handles = Vec::with_capacity(num_cores);
-				let processed = Arc::new(AtomicU64::new(0));
-				for thr_idx in 0..num_cores {
-					let start_height = current.height * (thr_idx + 1) as u64 / num_cores as u64;
-					let end_height = current.height * thr_idx as u64 / num_cores as u64;
-					let start_block_hash = self
-						.header_pmmr
-						.read()
-						.get_header_hash_by_height(start_height)?;
-					let start_block = self.txhashset.read().get_block_header(&start_block_hash)?;
-					let processed = processed.clone();
-					assert_eq!(start_block.height, start_height);
-					let txhashset = txhashset.clone();
-					let status = status.clone();
-					let stop_state = stop_state.clone();
+			let mut handles = Vec::with_capacity(num_cores);
+			let processed = Arc::new(AtomicU64::new(0));
+			for thr_idx in 0..num_cores {
+				let start_height = current.height * (thr_idx + 1) as u64 / num_cores as u64;
+				let end_height = current.height * thr_idx as u64 / num_cores as u64;
+				let start_block_hash = self
+					.header_pmmr
+					.read()
+					.get_header_hash_by_height(start_height)?;
+				let start_block = self.txhashset.read().get_block_header(&start_block_hash)?;
+				let processed = processed.clone();
+				assert_eq!(start_block.height, start_height);
+				let txhashset = txhashset.clone();
+				let status = status.clone();
+				let stop_state = stop_state.clone();
 
-					let handle: tokio::task::JoinHandle<Result<(), Error>> =
-						task::spawn(async move {
+				let handle: std::thread::JoinHandle<Result<(), Error>> =
+					std::thread::Builder::new()
+						.name(format!("validating_blocks_{}", thr_idx))
+						.spawn(move || {
 							// Process the chunk
 							txhashset::rewindable_kernel_view(&*txhashset.read(), |view, batch| {
 								let mut start_block = start_block.clone();
@@ -307,22 +301,20 @@ impl Desegmenter {
 								}
 								Ok(())
 							})
-						});
-					handles.push(handle);
+						})
+						.expect("Unable to start a new thread");
+				handles.push(handle);
+			}
+			for handle in handles {
+				match handle.join().expect("std thread join failure") {
+					Ok(_) => {}
+					Err(e) => return Err(e),
 				}
-				for handle in handles {
-					match handle.await.expect("Tokio runtime failure") {
-						Ok(_) => {}
-						Err(e) => return Err(e),
-					}
-				}
-				debug!(
-					"desegmenter validation: validated kernel root on {} headers",
-					processed.load(Ordering::Relaxed)
-				);
-
-				Ok(())
-			})?;
+			}
+			debug!(
+				"desegmenter validation: validated kernel root on {} headers",
+				processed.load(Ordering::Relaxed)
+			);
 		}
 
 		if stop_state.is_stopped() {
