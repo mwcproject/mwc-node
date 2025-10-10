@@ -14,11 +14,11 @@
 // limitations under the License.
 
 use crate::serv::Server;
-use crate::util::{Mutex, RwLock};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::{Mutex, RwLock};
 
 use lru::LruCache;
 
@@ -69,6 +69,7 @@ pub struct Peer {
 	// because it may be locked by different reasons, so we should wait for that, close
 	// mutex can be taken only during shutdown, it happens once
 	stop_handle: Mutex<conn::StopHandle>,
+	context_id: u32,
 }
 
 impl fmt::Debug for Peer {
@@ -88,11 +89,13 @@ impl Peer {
 	) -> std::io::Result<Peer> {
 		let state = Arc::new(RwLock::new(State::Connected));
 		let tracking_adapter = TrackingAdapter::new(adapter);
+		let context_id = server.get_context_id();
 		let handler = Protocol::new(Arc::new(tracking_adapter.clone()), info.clone(), server);
 		let tracker = Arc::new(conn::Tracker::new());
 		let (sendh, stoph) = conn::listen(
 			conn,
 			info.version,
+			context_id,
 			tracker.clone(),
 			sync_state,
 			info.addr.to_string(),
@@ -107,6 +110,7 @@ impl Peer {
 			tracker,
 			send_handle,
 			stop_handle,
+			context_id,
 		})
 	}
 
@@ -203,17 +207,17 @@ impl Peer {
 
 	/// Whether this peer is currently connected.
 	pub fn is_connected(&self) -> bool {
-		State::Connected == *self.state.read()
+		State::Connected == *self.state.read().expect("RwLock failure")
 	}
 
 	/// Whether this peer has been banned.
 	pub fn is_banned(&self) -> bool {
-		State::Banned == *self.state.read()
+		State::Banned == *self.state.read().expect("RwLock failure")
 	}
 
 	/// Whether this peer is stuck on sync.
 	pub fn is_stuck(&self) -> (bool, Difficulty) {
-		let peer_live_info = self.info.live_info.read();
+		let peer_live_info = self.info.live_info.read().expect("RwLock failure");
 		let now = Utc::now().timestamp_millis();
 		// if last updated difficulty is 2 hours ago, we're sure this peer is a stuck node.
 		if now > peer_live_info.stuck_detector.timestamp_millis() + global::STUCK_PEER_KICK_TIME {
@@ -225,7 +229,11 @@ impl Peer {
 
 	/// Whether the peer is considered abusive, mostly for spammy nodes
 	pub fn is_abusive(&self) -> bool {
-		let rec = self.tracker().received_bytes.read();
+		let rec = self
+			.tracker()
+			.received_bytes
+			.read()
+			.expect("RwLock failure");
 		rec.count_per_min() > MAX_PEER_MSG_PER_MIN
 	}
 
@@ -236,13 +244,13 @@ impl Peer {
 
 	/// Set this peer status to banned
 	pub fn set_banned(&self) {
-		*self.state.write() = State::Banned;
+		*self.state.write().expect("RwLock failure") = State::Banned;
 	}
 
 	/// Send a msg with given msg_type to our peer via the connection.
 	fn send<T: Writeable>(&self, msg: T, msg_type: Type) -> Result<(), Error> {
-		let msg = Msg::new(msg_type, msg, self.info.version)?;
-		self.send_handle.lock().send(msg)
+		let msg = Msg::new(msg_type, msg, self.info.version, self.context_id)?;
+		self.send_handle.lock().expect("Mutax failure").send(msg)
 	}
 
 	/// Send a ping to the remote peer, providing our local difficulty and
@@ -504,19 +512,13 @@ impl Peer {
 	/// Stops the peer
 	pub fn stop(&self) {
 		debug!("Stopping peer {:?}", self.info.addr);
-		match self.stop_handle.try_lock() {
-			Some(handle) => handle.stop(),
-			None => error!("can't get stop lock for peer"),
-		}
+		self.stop_handle.try_lock().expect("Mutex failure").stop();
 	}
 
 	/// Waits until the peer's thread exit
 	pub fn wait(&self) {
 		debug!("Waiting for peer {:?} to stop", self.info.addr);
-		match self.stop_handle.try_lock() {
-			Some(mut handle) => handle.wait(),
-			None => error!("can't get stop lock for peer"),
-		}
+		self.stop_handle.try_lock().expect("Mutex failure").wait();
 	}
 }
 
@@ -544,21 +546,31 @@ impl TrackingAdapter {
 	}
 
 	fn has_recv(&self, hash: Hash) -> bool {
-		self.received.read().contains(&hash)
+		self.received
+			.read()
+			.expect("RwLock failure")
+			.contains(&hash)
 	}
 
 	fn push_recv(&self, hash: Hash) {
-		self.received.write().put(hash, ());
+		self.received.write().expect("RwLock failure").put(hash, ());
 	}
 
 	/// Track a block or transaction hash requested by us.
 	/// Track the opts alongside the hash so we know if this was due to us syncing or not.
 	fn push_req(&self, hash: Hash, opts: chain::Options) {
-		self.requested.write().put(hash, opts);
+		self.requested
+			.write()
+			.expect("RwLock failure")
+			.put(hash, opts);
 	}
 
 	fn req_opts(&self, hash: Hash) -> Option<chain::Options> {
-		self.requested.write().get(&hash).cloned()
+		self.requested
+			.write()
+			.expect("RwLock failure")
+			.get(&hash)
+			.cloned()
 	}
 }
 

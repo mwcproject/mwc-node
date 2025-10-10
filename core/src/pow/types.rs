@@ -65,9 +65,9 @@ impl Difficulty {
 	}
 
 	/// Difficulty unit, which is the graph weight of minimal graph
-	pub fn unit() -> Difficulty {
+	pub fn unit(context_id: u32) -> Difficulty {
 		Difficulty {
-			num: global::initial_graph_weight() as u64,
+			num: global::initial_graph_weight(context_id) as u64,
 		}
 	}
 
@@ -80,9 +80,13 @@ impl Difficulty {
 	/// Computes the difficulty from a hash. Divides the maximum target by the
 	/// provided hash and applies the Cuck(at)oo size adjustment factor (see
 	/// https://lists.launchpad.net/mimblewimble/msg00494.html).
-	fn from_proof_adjusted(height: u64, proof: &Proof) -> Difficulty {
+	fn from_proof_adjusted(context_id: u32, height: u64, proof: &Proof) -> Difficulty {
 		// scale with natural scaling factor
-		Difficulty::from_num(proof.scaled_difficulty(graph_weight(height, proof.edge_bits)))
+		Difficulty::from_num(proof.scaled_difficulty(graph_weight(
+			context_id,
+			height,
+			proof.edge_bits,
+		)))
 	}
 
 	/// Same as `from_proof_adjusted` but instead of an adjustment based on
@@ -217,18 +221,6 @@ pub struct ProofOfWork {
 	pub proof: Proof,
 }
 
-impl Default for ProofOfWork {
-	fn default() -> ProofOfWork {
-		let proof_size = global::proofsize();
-		ProofOfWork {
-			total_difficulty: Difficulty::min(),
-			secondary_scaling: 1,
-			nonce: 0,
-			proof: Proof::zero(proof_size),
-		}
-	}
-}
-
 impl Writeable for ProofOfWork {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		if writer.serialization_mode() != ser::SerializationMode::Hash {
@@ -256,6 +248,17 @@ impl Readable for ProofOfWork {
 }
 
 impl ProofOfWork {
+	/// Constructor for default
+	pub fn default(context_id: u32) -> ProofOfWork {
+		let proof_size = global::proofsize(context_id);
+		ProofOfWork {
+			total_difficulty: Difficulty::min(),
+			secondary_scaling: 1,
+			nonce: 0,
+			proof: Proof::zero(context_id, proof_size),
+		}
+	}
+
 	/// Write the pre-hash portion of the header
 	pub fn write_pre_pow<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		ser_multiwrite!(
@@ -267,13 +270,13 @@ impl ProofOfWork {
 	}
 
 	/// Maximum difficulty this proof of work can achieve
-	pub fn to_difficulty(&self, height: u64) -> Difficulty {
+	pub fn to_difficulty(&self, context_id: u32, height: u64) -> Difficulty {
 		// 2 proof of works, Cuckoo29 (for now) and Cuckoo30+, which are scaled
 		// differently (scaling not controlled for now)
 		if self.proof.edge_bits == SECOND_POW_EDGE_BITS {
 			Difficulty::from_proof_scaled(&self.proof, self.secondary_scaling)
 		} else {
-			Difficulty::from_proof_adjusted(height, &self.proof)
+			Difficulty::from_proof_adjusted(context_id, height, &self.proof)
 		}
 	}
 
@@ -290,11 +293,11 @@ impl ProofOfWork {
 
 	/// Whether this proof of work is for the primary algorithm (as opposed
 	/// to secondary). Only depends on the edge_bits at this time.
-	pub fn is_primary(&self) -> bool {
+	pub fn is_primary(&self, context_id: u32) -> bool {
 		// 2 conditions are redundant right now but not necessarily in
 		// the future
 		self.proof.edge_bits != SECOND_POW_EDGE_BITS
-			&& self.proof.edge_bits >= global::min_edge_bits()
+			&& self.proof.edge_bits >= global::min_edge_bits(context_id)
 	}
 
 	/// Whether this proof of work is for the secondary algorithm (as opposed
@@ -322,6 +325,8 @@ pub struct Proof {
 	pub edge_bits: u8,
 	/// The nonces
 	pub nonces: Vec<u64>,
+	/// Need for I/O
+	pub context_id: u32,
 }
 
 impl DefaultHashable for Proof {}
@@ -343,32 +348,34 @@ impl Eq for Proof {}
 
 impl Proof {
 	/// Builds a proof with provided nonces at default edge_bits
-	pub fn new(mut in_nonces: Vec<u64>) -> Proof {
+	pub fn new(context_id: u32, mut in_nonces: Vec<u64>) -> Proof {
 		in_nonces.sort_unstable();
 		Proof {
-			edge_bits: global::min_edge_bits(),
+			edge_bits: global::min_edge_bits(context_id),
 			nonces: in_nonces,
+			context_id,
 		}
 	}
 
 	/// Builds a proof with all bytes zeroed out
-	pub fn zero(proof_size: usize) -> Proof {
+	pub fn zero(context_id: u32, proof_size: usize) -> Proof {
 		Proof {
-			edge_bits: global::min_edge_bits(),
+			edge_bits: global::min_edge_bits(context_id),
 			nonces: vec![0; proof_size],
+			context_id,
 		}
 	}
 
 	/// Number of bytes required store a proof of given edge bits
-	pub fn pack_len(bit_width: u8) -> usize {
-		(bit_width as usize * global::proofsize() + 7) / 8
+	pub fn pack_len(context_id: u32, bit_width: u8) -> usize {
+		(bit_width as usize * global::proofsize(context_id) + 7) / 8
 	}
 
 	/// Builds a proof with random POW data,
 	/// needed so that tests that ignore POW
 	/// don't fail due to duplicate hashes
-	pub fn random(proof_size: usize) -> Proof {
-		let edge_bits = global::min_edge_bits();
+	pub fn random(context_id: u32, proof_size: usize) -> Proof {
+		let edge_bits = global::min_edge_bits(context_id);
 		let nonce_mask = (1 << edge_bits) - 1;
 		let mut rng = thread_rng();
 		// force the random num to be within edge_bits bits
@@ -378,8 +385,9 @@ impl Proof {
 			.collect();
 		v.sort_unstable();
 		Proof {
-			edge_bits: global::min_edge_bits(),
+			edge_bits: global::min_edge_bits(context_id),
 			nonces: v,
+			context_id,
 		}
 	}
 
@@ -390,7 +398,7 @@ impl Proof {
 
 	/// Pack the nonces of the proof to their exact bit size as described above
 	pub fn pack_nonces(&self) -> Vec<u8> {
-		let mut compressed = vec![0u8; Proof::pack_len(self.edge_bits)];
+		let mut compressed = vec![0u8; Proof::pack_len(self.context_id, self.edge_bits)];
 		pack_bits(
 			self.edge_bits,
 			&self.nonces[0..self.nonces.len()],
@@ -479,12 +487,14 @@ impl Readable for Proof {
 			)));
 		}
 
+		let context_id = reader.get_context_id();
+
 		// prepare nonces and read the right number of bytes
 		// If skipping pow proof, we can stop after reading edge bits
 		if reader.deserialization_mode() != DeserializationMode::SkipPow {
-			let mut nonces = Vec::with_capacity(global::proofsize());
+			let mut nonces = Vec::with_capacity(global::proofsize(context_id));
 			let nonce_bits = edge_bits as usize;
-			let bytes_len = Proof::pack_len(edge_bits);
+			let bytes_len = Proof::pack_len(context_id, edge_bits);
 			if bytes_len < 8 {
 				return Err(ser::Error::CorruptedData(format!(
 					"Nonce length {} is too small",
@@ -492,23 +502,28 @@ impl Readable for Proof {
 				)));
 			}
 			let bits = reader.read_fixed_bytes(bytes_len)?;
-			for n in 0..global::proofsize() {
+			for n in 0..global::proofsize(context_id) {
 				nonces.push(read_number(&bits, n * nonce_bits, nonce_bits));
 			}
 
 			//// check the last bits of the last byte are zeroed, we don't use them but
 			//// still better to enforce to avoid any malleability
-			let end_of_data = global::proofsize() * nonce_bits;
+			let end_of_data = global::proofsize(context_id) * nonce_bits;
 			if read_number(&bits, end_of_data, bytes_len * 8 - end_of_data) != 0 {
 				return Err(ser::Error::CorruptedData(
 					"Fail to read nonce as a number".to_string(),
 				));
 			}
-			Ok(Proof { edge_bits, nonces })
+			Ok(Proof {
+				edge_bits,
+				nonces,
+				context_id,
+			})
 		} else {
 			Ok(Proof {
 				edge_bits,
 				nonces: vec![],
+				context_id,
 			})
 		}
 	}
@@ -533,8 +548,9 @@ mod tests {
 	#[test]
 	fn test_proof_rw() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
 		for edge_bits in 10..63 {
-			let mut proof = Proof::new(gen_proof(edge_bits as u32));
+			let mut proof = Proof::new(0, gen_proof(edge_bits as u32));
 			proof.edge_bits = edge_bits;
 			let mut buf = Cursor::new(Vec::new());
 			let mut w = BinWriter::new(&mut buf, ProtocolVersion::local());
@@ -545,6 +561,7 @@ mod tests {
 			let mut r = BinReader::new(
 				&mut buf,
 				ProtocolVersion::local(),
+				0,
 				DeserializationMode::default(),
 			);
 			match Proof::read(&mut r) {

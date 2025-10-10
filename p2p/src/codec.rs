@@ -64,6 +64,7 @@ impl State {
 
 pub struct Codec {
 	pub version: ProtocolVersion,
+	context_id: u32,
 	stream: TcpDataReadHalfStream,
 	buffer: BytesMut,
 	state: State,
@@ -71,9 +72,10 @@ pub struct Codec {
 }
 
 impl Codec {
-	pub fn new(version: ProtocolVersion, stream: TcpDataReadHalfStream) -> Self {
+	pub fn new(version: ProtocolVersion, context_id: u32, stream: TcpDataReadHalfStream) -> Self {
 		Self {
 			version,
+			context_id,
 			stream,
 			buffer: BytesMut::with_capacity(8 * 1024),
 			state: None,
@@ -99,7 +101,7 @@ impl Codec {
 			BlockHeaders { bytes_left, .. } => {
 				// The header length varies with the number of edge bits. Therefore we overestimate
 				// its size and only actually read the bytes we need
-				min(*bytes_left, header_size_bytes(63))
+				min(*bytes_left, header_size_bytes(self.context_id, 63))
 			}
 		}
 	}
@@ -138,7 +140,7 @@ impl Codec {
 				None => {
 					// Parse header and keep reading
 					let mut raw = self.buffer.split_to(next_len).freeze();
-					let mut reader = BufReader::new(&mut raw, self.version);
+					let mut reader = BufReader::new(&mut raw, self.version, self.context_id);
 					let header = MsgHeaderWrapper::read(&mut reader)?;
 					self.state = Header(header);
 				}
@@ -147,7 +149,7 @@ impl Codec {
 					if header.msg_type == Type::Headers {
 						// Special consideration for a list of headers, as we want to verify and process
 						// them as they come in instead of only after the full list has been received
-						let mut reader = BufReader::new(&mut raw, self.version);
+						let mut reader = BufReader::new(&mut raw, self.version, self.context_id);
 						let items_left = reader.read_u16()? as usize;
 						self.state = BlockHeaders {
 							bytes_left: header.msg_len as usize - 2,
@@ -156,7 +158,7 @@ impl Codec {
 						};
 					} else {
 						// Return full message
-						let msg = decode_message(header, &mut raw, self.version);
+						let msg = decode_message(header, &mut raw, self.version, self.context_id);
 						self.state = None;
 						return msg;
 					}
@@ -179,7 +181,8 @@ impl Codec {
 						return Err(Error::BadMessage);
 					}
 
-					let mut reader = BufReader::new(&mut self.buffer, self.version);
+					let mut reader =
+						BufReader::new(&mut self.buffer, self.version, self.context_id);
 					let header: UntrustedBlockHeader = reader.body()?;
 					let bytes_read = reader.bytes_read() as usize;
 					headers.push(header.into());
@@ -218,8 +221,9 @@ fn decode_message(
 	header: &MsgHeader,
 	body: &mut Bytes,
 	version: ProtocolVersion,
+	context_id: u32,
 ) -> Result<Message, Error> {
-	let mut msg = BufReader::new(body, version);
+	let mut msg = BufReader::new(body, version, context_id);
 	let c = match header.msg_type {
 		Type::Ping => Message::Ping(msg.body()?),
 		Type::Pong => Message::Pong(msg.body()?),

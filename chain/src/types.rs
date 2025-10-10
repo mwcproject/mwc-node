@@ -22,7 +22,7 @@ use crate::core::core::{Block, BlockHeader};
 use crate::core::pow::Difficulty;
 use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::error::Error;
-use crate::util::{RwLock, RwLockWriteGuard};
+use std::sync::{RwLock, RwLockWriteGuard};
 
 bitflags! {
 /// Options for block validation
@@ -168,7 +168,7 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		match *self.current.read() {
+		match *self.current.read().expect("RwLock failure") {
 			SyncStatus::NoSync => false,
 			SyncStatus::BodySync {
 				archive_height: _,
@@ -181,7 +181,7 @@ impl SyncState {
 
 	/// Check if headers download process is done. In this case it make sense to request more top headers
 	pub fn are_headers_done(&self) -> bool {
-		match *self.current.read() {
+		match *self.current.read().expect("RwLock failure") {
 			SyncStatus::Initial => false,
 			SyncStatus::HeaderHashSync {
 				completed_blocks: _,
@@ -197,12 +197,12 @@ impl SyncState {
 
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
-		*self.current.read()
+		*self.current.read().expect("RwLock failure")
 	}
 
 	/// Update the syncing status
 	pub fn update(&self, new_status: SyncStatus) -> bool {
-		let status = self.current.write();
+		let status = self.current.write().expect("RwLock failure");
 		self.update_with_guard(new_status, status)
 	}
 
@@ -225,7 +225,7 @@ impl SyncState {
 	where
 		F: Fn(SyncStatus) -> bool,
 	{
-		let status = self.current.write();
+		let status = self.current.write().expect("RwLock failure");
 		if f(*status) {
 			self.update_with_guard(new_status, status)
 		} else {

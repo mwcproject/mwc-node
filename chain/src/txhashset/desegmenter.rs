@@ -27,11 +27,12 @@ use crate::txhashset;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::types::Tip;
 use crate::util::secp::pedersen::RangeProof;
-use crate::util::{RwLock, StopState};
+use crate::util::StopState;
 use crate::{pibd_params, store};
 use crate::{Chain, SyncState, SyncStatus};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use crate::pibd_params::PibdParams;
 use crate::txhashset::request_lookup::RequestLookup;
@@ -116,12 +117,21 @@ impl Desegmenter {
 
 	/// Reset all state
 	pub fn reset(&self) {
-		self.bitmap_segment_cache.write().reset();
-		*self.output_segment_cache.write() = None;
-		*self.rangeproof_segment_cache.write() = None;
-		*self.kernel_segment_cache.write() = None;
-		*self.outputs_bitmap.write() = None;
-		self.outputs_bitmap_accumulator.write().reset();
+		self.bitmap_segment_cache
+			.write()
+			.expect("RwLock failure")
+			.reset();
+		*self.output_segment_cache.write().expect("RwLock failure") = None;
+		*self
+			.rangeproof_segment_cache
+			.write()
+			.expect("RwLock failure") = None;
+		*self.kernel_segment_cache.write().expect("RwLock failure") = None;
+		*self.outputs_bitmap.write().expect("RwLock failure") = None;
+		self.outputs_bitmap_accumulator
+			.write()
+			.expect("RwLock failure")
+			.reset();
 	}
 
 	/// Return reference to the header used for validation
@@ -134,6 +144,7 @@ impl Desegmenter {
 		if !self
 			.output_segment_cache
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.map(|c| c.is_complete())
 			.unwrap_or(false)
@@ -143,6 +154,7 @@ impl Desegmenter {
 		if !self
 			.rangeproof_segment_cache
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.map(|c| c.is_complete())
 			.unwrap_or(false)
@@ -152,6 +164,7 @@ impl Desegmenter {
 		if !self
 			.kernel_segment_cache
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.map(|c| c.is_complete())
 			.unwrap_or(false)
@@ -165,7 +178,7 @@ impl Desegmenter {
 	/// segments are in place
 	pub fn get_pibd_progress(&self) -> SyncStatus {
 		let (req1, rec1) = {
-			let cache = self.bitmap_segment_cache.read();
+			let cache = self.bitmap_segment_cache.read().expect("RwLock failure");
 			(
 				cache.get_required_segments_num(),
 				cache.get_received_segments(),
@@ -175,6 +188,7 @@ impl Desegmenter {
 		let (req2, rec2) = self
 			.output_segment_cache
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.map(|cache| {
 				(
@@ -186,6 +200,7 @@ impl Desegmenter {
 		let (req3, rec3) = self
 			.rangeproof_segment_cache
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.map(|cache| {
 				(
@@ -197,6 +212,7 @@ impl Desegmenter {
 		let (req4, rec4) = self
 			.kernel_segment_cache
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.map(|cache| {
 				(
@@ -221,12 +237,12 @@ impl Desegmenter {
 	/// Once the PIBD set is downloaded, we need to ensure that the respective leaf sets
 	/// match the bitmap (particularly in the case of outputs being spent after a PIBD catch-up)
 	pub fn check_update_leaf_set_state(&self) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let mut _batch = self.store.batch_write()?;
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut _batch, |ext, _| {
 			let extension = &mut ext.extension;
-			let outputs_bitmap = self.outputs_bitmap.read();
+			let outputs_bitmap = self.outputs_bitmap.read().expect("RwLock failure");
 			if let Some(b) = outputs_bitmap.as_ref() {
 				extension.update_leaf_sets(b)?;
 			}
@@ -245,7 +261,7 @@ impl Desegmenter {
 	) -> Result<(), Error> {
 		// Quick root check first:
 		{
-			let txhashset = self.txhashset.read();
+			let txhashset = self.txhashset.read().expect("RwLock failure");
 			txhashset.roots()?.validate(&self.archive_header)?;
 		}
 
@@ -269,8 +285,13 @@ impl Desegmenter {
 				let start_block_hash = self
 					.header_pmmr
 					.read()
+					.expect("RwLock failure")
 					.get_header_hash_by_height(start_height)?;
-				let start_block = self.txhashset.read().get_block_header(&start_block_hash)?;
+				let start_block = self
+					.txhashset
+					.read()
+					.expect("RwLock failure")
+					.get_block_header(&start_block_hash)?;
 				let processed = processed.clone();
 				assert_eq!(start_block.height, start_height);
 				let txhashset = txhashset.clone();
@@ -282,25 +303,28 @@ impl Desegmenter {
 						.name(format!("validating_blocks_{}", thr_idx))
 						.spawn(move || {
 							// Process the chunk
-							txhashset::rewindable_kernel_view(&*txhashset.read(), |view, batch| {
-								let mut start_block = start_block.clone();
-								while start_block.height > end_height {
-									view.rewind(&start_block)?;
-									view.validate_root()?;
-									start_block = batch.get_previous_header(&start_block)?;
-									let processed = processed.fetch_add(1, Ordering::Relaxed);
-									if processed % 100000 == 0 || processed == total {
-										status.update(SyncStatus::TxHashsetHeadersValidation {
-											headers: processed,
-											headers_total: total,
-										});
+							txhashset::rewindable_kernel_view(
+								&*txhashset.read().expect("RwLock failure"),
+								|view, batch| {
+									let mut start_block = start_block.clone();
+									while start_block.height > end_height {
+										view.rewind(&start_block)?;
+										view.validate_root()?;
+										start_block = batch.get_previous_header(&start_block)?;
+										let processed = processed.fetch_add(1, Ordering::Relaxed);
+										if processed % 100000 == 0 || processed == total {
+											status.update(SyncStatus::TxHashsetHeadersValidation {
+												headers: processed,
+												headers_total: total,
+											});
+										}
+										if stop_state.is_stopped() {
+											return Ok(());
+										}
 									}
-									if stop_state.is_stopped() {
-										return Ok(());
-									}
-								}
-								Ok(())
-							})
+									Ok(())
+								},
+							)
 						})
 						.expect("Unable to start a new thread");
 				handles.push(handle);
@@ -329,11 +353,11 @@ impl Desegmenter {
 			// Note, locking order is: header_pmmr->txhashset->batch !!!
 			{
 				// validate_kernel_history is long operation, that is why let's lock txhashset twice.
-				let txhashset = self.txhashset.read();
+				let txhashset = self.txhashset.read().expect("RwLock failure");
 				Chain::validate_kernel_history(&self.archive_header, &txhashset)?;
 			}
-			let header_pmmr = self.header_pmmr.read();
-			let txhashset = self.txhashset.read();
+			let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+			let txhashset = self.txhashset.read().expect("RwLock failure");
 			let batch = self.store.batch_read()?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis,
@@ -351,8 +375,8 @@ impl Desegmenter {
 		// Prepare a new batch and update all the required records
 		{
 			info!("desegmenter validation: rewinding a 2nd time (writeable)");
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
+			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+			let mut txhashset = self.txhashset.write().expect("RwLock failure");
 			let mut batch = self.store.batch_write()?;
 			txhashset::extending(
 				&mut header_pmmr,
@@ -436,12 +460,18 @@ impl Desegmenter {
 		Error,
 	> {
 		// First check for required bitmap elements
-		if self.outputs_bitmap.read().is_none() {
+		if self
+			.outputs_bitmap
+			.read()
+			.expect("RwLock failure")
+			.is_none()
+		{
 			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
 			// For bitmaps there is no duplicated requests, there is not much data.
 			for id in self
 				.bitmap_segment_cache
 				.read()
+				.expect("RwLock failure")
 				.next_desired_segments(
 					need_requests,
 					requested,
@@ -456,10 +486,26 @@ impl Desegmenter {
 			// We have all required bitmap segments and have recreated our local
 			// bitmap, now continue with other segments, evenly spreading requests
 			// among MMRs
-			debug_assert!(self.outputs_bitmap.read().is_some());
-			debug_assert!(self.rangeproof_segment_cache.read().is_some());
-			debug_assert!(self.kernel_segment_cache.read().is_some());
-			debug_assert!(self.output_segment_cache.read().is_some());
+			debug_assert!(self
+				.outputs_bitmap
+				.read()
+				.expect("RwLock failure")
+				.is_some());
+			debug_assert!(self
+				.rangeproof_segment_cache
+				.read()
+				.expect("RwLock failure")
+				.is_some());
+			debug_assert!(self
+				.kernel_segment_cache
+				.read()
+				.expect("RwLock failure")
+				.is_some());
+			debug_assert!(self
+				.output_segment_cache
+				.read()
+				.expect("RwLock failure")
+				.is_some());
 
 			debug_assert!(need_requests > 0);
 			let mut need_requests = need_requests;
@@ -511,7 +557,7 @@ impl Desegmenter {
 		waiting_req: &mut Vec<SegmentTypeIdentifier>,
 	) {
 		if *need_requests > 0 {
-			let cache = cache.read();
+			let cache = cache.read().expect("RwLock failure");
 			if let Some(cache) = &*cache {
 				if !cache.is_complete() {
 					let (requests, retry_requests, waiting_requests) = cache.next_desired_segments(
@@ -547,9 +593,16 @@ impl Desegmenter {
 	fn finalize_bitmap_init_segment_caches(&self) -> Result<(), Error> {
 		trace!(
 			"pibd_desegmenter: finalizing and caching bitmap - accumulator root: {}",
-			self.outputs_bitmap_accumulator.read().root()
+			self.outputs_bitmap_accumulator
+				.read()
+				.expect("RwLock failure")
+				.root()
 		);
-		let bitmap = self.outputs_bitmap_accumulator.read().build_bitmap();
+		let bitmap = self
+			.outputs_bitmap_accumulator
+			.read()
+			.expect("RwLock failure")
+			.build_bitmap();
 		let mut bitmap_pairs: Bitmap = Bitmap::new();
 
 		for bit in bitmap.iter() {
@@ -583,14 +636,17 @@ impl Desegmenter {
 
 		info!("Bitmap data is arrived. Generating other segments - rangeproof_segments: {}, output_segments: {}, kernel_segments: {}", rangeproof_segments.len(), output_segments.len(), kernel_segments.len());
 
-		*self.outputs_bitmap.write() = Some(bitmap);
-		*self.output_segment_cache.write() =
+		*self.outputs_bitmap.write().expect("RwLock failure") = Some(bitmap);
+		*self.output_segment_cache.write().expect("RwLock failure") =
 			Some(SegmentsCache::new(SegmentType::Output, output_segments));
-		*self.rangeproof_segment_cache.write() = Some(SegmentsCache::new(
+		*self
+			.rangeproof_segment_cache
+			.write()
+			.expect("RwLock failure") = Some(SegmentsCache::new(
 			SegmentType::RangeProof,
 			rangeproof_segments,
 		));
-		*self.kernel_segment_cache.write() =
+		*self.kernel_segment_cache.write().expect("RwLock failure") =
 			Some(SegmentsCache::new(SegmentType::Kernel, kernel_segments));
 		Ok(())
 	}
@@ -631,7 +687,12 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if !self.bitmap_segment_cache.read().has_segment(&segment.id()) {
+		if !self
+			.bitmap_segment_cache
+			.read()
+			.expect("RwLock failure")
+			.has_segment(&segment.id())
+		{
 			return Err(Error::InvalidSegmentId);
 		}
 
@@ -645,8 +706,12 @@ impl Desegmenter {
 		// All okay, add to our cached list of bitmap segments
 
 		{
-			let mut bitmap_segment_cache = self.bitmap_segment_cache.write();
-			let mut bitmap_accumulator = self.outputs_bitmap_accumulator.write();
+			let mut bitmap_segment_cache =
+				self.bitmap_segment_cache.write().expect("RwLock failure");
+			let mut bitmap_accumulator = self
+				.outputs_bitmap_accumulator
+				.write()
+				.expect("RwLock failure");
 
 			bitmap_segment_cache.apply_new_segment(segment, false, |segm_v| {
 				for segm in segm_v {
@@ -663,7 +728,12 @@ impl Desegmenter {
 			})?;
 		}
 
-		if self.bitmap_segment_cache.read().is_complete() {
+		if self
+			.bitmap_segment_cache
+			.read()
+			.expect("RwLock failure")
+			.is_complete()
+		{
 			self.finalize_bitmap_init_segment_caches()?;
 		}
 
@@ -680,8 +750,13 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if let Some(outputs_bitmap) = self.outputs_bitmap.read().as_ref() {
-			if let Some(output_segment_cache) = self.output_segment_cache.write().as_mut() {
+		if let Some(outputs_bitmap) = self.outputs_bitmap.read().expect("RwLock failure").as_ref() {
+			if let Some(output_segment_cache) = self
+				.output_segment_cache
+				.write()
+				.expect("RwLock failure")
+				.as_mut()
+			{
 				if !output_segment_cache.has_segment(segment.id()) {
 					return Err(Error::InvalidSegmentId);
 				}
@@ -693,8 +768,8 @@ impl Desegmenter {
 					&self.archive_header.output_root, // Output root we're checking for
 				)?;
 
-				let mut header_pmmr = self.header_pmmr.write();
-				let mut txhashset = self.txhashset.write();
+				let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+				let mut txhashset = self.txhashset.write().expect("RwLock failure");
 				let mut batch = self.store.batch_write()?;
 
 				output_segment_cache.apply_new_segment(segment, true, |segm| {
@@ -733,8 +808,13 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if let Some(outputs_bitmap) = self.outputs_bitmap.read().as_ref() {
-			if let Some(rangeproof_segment_cache) = self.rangeproof_segment_cache.write().as_mut() {
+		if let Some(outputs_bitmap) = self.outputs_bitmap.read().expect("RwLock failure").as_ref() {
+			if let Some(rangeproof_segment_cache) = self
+				.rangeproof_segment_cache
+				.write()
+				.expect("RwLock failure")
+				.as_mut()
+			{
 				if !rangeproof_segment_cache.has_segment(segment.id()) {
 					return Err(Error::InvalidSegmentId);
 				}
@@ -746,8 +826,8 @@ impl Desegmenter {
 					&self.archive_header.range_proof_root, // Range proof root we're checking for
 				)?;
 
-				let mut header_pmmr = self.header_pmmr.write();
-				let mut txhashset = self.txhashset.write();
+				let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+				let mut txhashset = self.txhashset.write().expect("RwLock failure");
 				let mut batch = self.store.batch_write()?;
 
 				rangeproof_segment_cache.apply_new_segment(segment, true, |seg| {
@@ -786,7 +866,12 @@ impl Desegmenter {
 			return Err(Error::InvalidBitmapRoot);
 		}
 
-		if let Some(kernel_segment_cache) = self.kernel_segment_cache.write().as_mut() {
+		if let Some(kernel_segment_cache) = self
+			.kernel_segment_cache
+			.write()
+			.expect("RwLock failure")
+			.as_mut()
+		{
 			if !kernel_segment_cache.has_segment(segment.id()) {
 				return Err(Error::InvalidSegmentId);
 			}
@@ -798,8 +883,8 @@ impl Desegmenter {
 				&self.archive_header.kernel_root, // Kernel root we're checking for
 			)?;
 
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
+			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+			let mut txhashset = self.txhashset.write().expect("RwLock failure");
 			let mut batch = self.store.batch_write()?;
 
 			kernel_segment_cache.apply_new_segment(segment, false, |segm| {

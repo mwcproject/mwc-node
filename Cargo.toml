@@ -12,7 +12,7 @@ build = "src/build/build.rs"
 edition = "2018"
 
 [workspace]
-members = ["api", "chain", "config", "core", "keychain", "p2p", "servers", "store", "util", "pool"]
+members = ["api", "chain", "config", "core", "keychain", "p2p", "servers", "store", "util", "pool", "node_workflow"]
 exclude = ["etc/gen_gen"]
 
 [[bin]]
@@ -41,6 +41,7 @@ mwc_keychain = { path = "./keychain", version = "6.0.0" }
 mwc_p2p = { path = "./p2p", version = "6.0.0" }
 mwc_servers = { path = "./servers", version = "6.0.0" }
 mwc_util = { path = "./util", version = "6.0.0" }
+mwc_node_workflow = { path = "./node_workflow", version = "6.0.0" }
 
 [dependencies.cursive]
 version = "0.21"

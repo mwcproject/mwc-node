@@ -38,10 +38,17 @@ fn open_port() -> u16 {
 	listener.local_addr().unwrap().port()
 }
 
+const HANDSHAKE_TEST_CONTEXT_ID: u32 = 100;
+
 // Setup test with AutomatedTesting chain_type;
 fn test_setup() {
 	// Set "global" chain type here as we spawn peer threads for read/write.
-	global::init_global_chain_type(global::ChainTypes::AutomatedTesting);
+	global::init_global_chain_type(
+		HANDSHAKE_TEST_CONTEXT_ID,
+		global::ChainTypes::AutomatedTesting,
+	);
+	global::init_global_nrd_enabled(HANDSHAKE_TEST_CONTEXT_ID, false);
+	global::init_global_accept_fee_base(HANDSHAKE_TEST_CONTEXT_ID, 1000);
 	util::init_test_logger();
 }
 
@@ -65,6 +72,7 @@ fn peer_handshake() {
 
 	let net_adapter = Arc::new(p2p::DummyAdapter {});
 	let server_inner = p2p::Server::new(
+		HANDSHAKE_TEST_CONTEXT_ID,
 		".mwc",
 		p2p::Capabilities::UNKNOWN,
 		&p2p_config,
@@ -98,7 +106,12 @@ fn peer_handshake() {
 		p2p::Capabilities::UNKNOWN,
 		Difficulty::min(),
 		my_addr.clone(),
-		&p2p::handshake::Handshake::new(Hash::from_vec(&vec![]), p2p_config.clone(), None),
+		&p2p::handshake::Handshake::new(
+			HANDSHAKE_TEST_CONTEXT_ID,
+			Hash::from_vec(&vec![]),
+			p2p_config.clone(),
+			None,
+		),
 		net_adapter,
 		&PeerAddr::Ip(format!("127.0.0.1:{}", p2p_config.port).parse().unwrap()),
 		Arc::new(SyncState::new()),

@@ -18,11 +18,11 @@ use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::Chain;
 use mwc_core::core::Block;
 use mwc_p2p::{Peer, Peers};
-use mwc_util::RwLock;
 use rand::prelude::*;
 use rand::thread_rng;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 // We might have orphans that we can't process because there are no prev headers exist. That is why we are putting them aside
 // Until header data will arrive
@@ -49,7 +49,12 @@ impl OrphansSync {
 	pub fn recieve_block_reporting(&self, block: Block) -> bool {
 		let bhash = block.hash();
 		let need_prev_block = self.need_prev_block(&block.header.prev_hash, block.header.height);
-		if self.unknown_blocks.read().contains_key(&bhash) {
+		if self
+			.unknown_blocks
+			.read()
+			.expect("RwLock failure")
+			.contains_key(&bhash)
+		{
 			return need_prev_block;
 		}
 
@@ -63,6 +68,7 @@ impl OrphansSync {
 
 		self.unknown_blocks
 			.write()
+			.expect("RwLock failure")
 			.insert(bhash, (block, Utc::now()));
 		need_prev_block
 	}
@@ -76,7 +82,7 @@ impl OrphansSync {
 		// let's clean up the unknown_blocks first
 		{
 			let now = Utc::now();
-			let mut unknown_blocks = self.unknown_blocks.write();
+			let mut unknown_blocks = self.unknown_blocks.write().expect("RwLock failure");
 
 			// let's try apply blocks int the chain, we migth already has some data for that, let's apply from low height to the higher
 			let mut blocks: Vec<&Block> = Vec::new();
@@ -108,7 +114,7 @@ impl OrphansSync {
 		}
 
 		{
-			let mut orphans_requests = self.orphans_requests.write();
+			let mut orphans_requests = self.orphans_requests.write().expect("RwLock failure");
 			orphans_requests.retain(|hash, _| block_to_validate.contains(hash));
 		}
 
@@ -135,7 +141,12 @@ impl OrphansSync {
 					}
 					Some((prev_block_hash.clone(), bl_height))
 				}
-				None => match self.unknown_blocks.read().get(orph_hash) {
+				None => match self
+					.unknown_blocks
+					.read()
+					.expect("RwLock failure")
+					.get(orph_hash)
+				{
 					Some((b, _time)) => Some((b.header.prev_hash.clone(), b.header.height.clone())),
 					None => None,
 				},
@@ -144,7 +155,8 @@ impl OrphansSync {
 			if let Some((prev_block_hash, bl_height)) = block_hash_height {
 				if self.need_prev_block(&prev_block_hash, bl_height) {
 					// We need to request the child for that block
-					let mut orphans_requests = self.orphans_requests.write();
+					let mut orphans_requests =
+						self.orphans_requests.write().expect("RwLock failure");
 					if self.send_hash_requests(
 						peers,
 						&prev_block_hash,
@@ -225,7 +237,12 @@ impl OrphansSync {
 			Err(_) => return false,
 		}
 
-		if self.unknown_blocks.read().contains_key(prev_block_hash) {
+		if self
+			.unknown_blocks
+			.read()
+			.expect("RwLock failure")
+			.contains_key(prev_block_hash)
+		{
 			return false;
 		}
 

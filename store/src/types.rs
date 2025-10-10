@@ -83,12 +83,13 @@ where
 		path: P,
 		size_info: SizeInfo,
 		version: ProtocolVersion,
+		context_id: u32,
 	) -> io::Result<DataFile<T>>
 	where
 		P: AsRef<Path> + Debug,
 	{
 		Ok(DataFile {
-			file: AppendOnlyFile::open(path, size_info, version)?,
+			file: AppendOnlyFile::open(path, size_info, version, context_id)?,
 		})
 	}
 
@@ -181,6 +182,7 @@ pub struct AppendOnlyFile<T> {
 	file: Option<File>,
 	size_info: SizeInfo,
 	version: ProtocolVersion,
+	context_id: u32,
 	mmap: Option<memmap::Mmap>,
 
 	// Buffer of unsync'd bytes. These bytes will be appended to the file when flushed.
@@ -210,6 +212,7 @@ where
 		path: P,
 		size_info: SizeInfo,
 		version: ProtocolVersion,
+		context_id: u32,
 	) -> io::Result<AppendOnlyFile<T>>
 	where
 		P: AsRef<Path> + Debug,
@@ -219,6 +222,7 @@ where
 			path: path.as_ref().to_path_buf(),
 			size_info,
 			version,
+			context_id,
 			mmap: None,
 			buffer: vec![],
 			buffer_start_pos: 0,
@@ -445,14 +449,18 @@ where
 
 	fn read_as_elmt(&self, pos: u64) -> io::Result<T> {
 		let data = self.read(pos)?;
-		ser::deserialize(&mut &data[..], self.version, DeserializationMode::default()).map_err(
-			|e| {
-				io::Error::new(
-					io::ErrorKind::Other,
-					format!("Fail to deserialize data, {}", e),
-				)
-			},
+		ser::deserialize(
+			&mut &data[..],
+			self.version,
+			self.context_id,
+			DeserializationMode::default(),
 		)
+		.map_err(|e| {
+			io::Error::new(
+				io::ErrorKind::Other,
+				format!("Fail to deserialize data, {}", e),
+			)
+		})
 	}
 
 	// Read length bytes starting at offset from the buffer.
@@ -507,7 +515,8 @@ where
 	pub fn write_tmp_pruned(&self, prune_pos: &[u64]) -> io::Result<()> {
 		let reader = File::open(&self.path)?;
 		let mut buf_reader = BufReader::new(reader);
-		let mut streaming_reader = StreamingReader::new(&mut buf_reader, self.version);
+		let mut streaming_reader =
+			StreamingReader::new(&mut buf_reader, self.version, self.context_id);
 
 		let mut buf_writer = BufWriter::new(File::create(&self.tmp_path())?);
 		let mut bin_writer = BinWriter::new(&mut buf_writer, self.version);
@@ -562,7 +571,8 @@ where
 			{
 				let reader = File::open(&self.path)?;
 				let mut buf_reader = BufReader::new(reader);
-				let mut streaming_reader = StreamingReader::new(&mut buf_reader, self.version);
+				let mut streaming_reader =
+					StreamingReader::new(&mut buf_reader, self.version, self.context_id);
 
 				let mut buf_writer = BufWriter::new(File::create(&tmp_path)?);
 				let mut bin_writer = BinWriter::new(&mut buf_writer, self.version);

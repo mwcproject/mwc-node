@@ -29,6 +29,7 @@ use crate::mwc_store::Error;
 fn setup_test() {
 	util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 }
 
 #[test]
@@ -39,7 +40,7 @@ fn test_store_kernel_idx() {
 
 	let commit = Commitment::from_vec(vec![]);
 
-	let store = ChainStore::new(chain_dir).unwrap();
+	let store = ChainStore::new(0, chain_dir).unwrap();
 	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
@@ -186,7 +187,7 @@ fn test_store_kernel_idx_pop_back() {
 
 	let commit = Commitment::from_vec(vec![]);
 
-	let store = ChainStore::new(chain_dir).unwrap();
+	let store = ChainStore::new(0, chain_dir).unwrap();
 	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
@@ -294,7 +295,7 @@ fn test_store_kernel_idx_rewind() {
 
 	let commit = Commitment::from_vec(vec![]);
 
-	let store = ChainStore::new(chain_dir).unwrap();
+	let store = ChainStore::new(0, chain_dir).unwrap();
 	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
@@ -396,7 +397,7 @@ fn test_store_kernel_idx_multiple_commits() {
 	let commit = Commitment::from_vec(vec![]);
 	let commit2 = Commitment::from_vec(vec![1]);
 
-	let store = ChainStore::new(chain_dir).unwrap();
+	let store = ChainStore::new(0, chain_dir).unwrap();
 	let batch = store.batch_write().unwrap();
 	let index = store::nrd_recent_kernel_index();
 
@@ -484,7 +485,7 @@ fn test_store_kernel_idx_clear() -> Result<(), Error> {
 	let commit = Commitment::from_vec(vec![]);
 	let commit2 = Commitment::from_vec(vec![1]);
 
-	let store = ChainStore::new(chain_dir)?;
+	let store = ChainStore::new(0, chain_dir)?;
 	let index = store::nrd_recent_kernel_index();
 
 	// Add a couple of single entries to the index and commit the batch.

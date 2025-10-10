@@ -30,9 +30,9 @@ use crate::types::{CommitPos, Options, Tip};
 use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_core::core::Transaction;
 use mwc_util::secp::Secp256k1;
-use mwc_util::RwLock;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::iter::FromIterator;
+use std::sync::RwLock;
 
 /// Contextual information required to process a new block and either reject or
 /// accept it.
@@ -40,7 +40,7 @@ pub struct BlockContext<'a> {
 	/// The options
 	pub opts: Options,
 	/// The pow verifier to use when processing a block.
-	pub pow_verifier: fn(&BlockHeader) -> Result<(), pow::Error>,
+	pub pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	/// Custom fn allowing arbitrary header validation rules (denylist) to be applied.
 	pub header_allowed: Box<dyn Fn(&BlockHeader) -> Result<(), Error>>,
 	/// The active txhashset (rewindable MMRs) to use for block processing.
@@ -52,18 +52,41 @@ pub struct BlockContext<'a> {
 }
 
 lazy_static! {
-	static ref INVALID_BLOCK_HASHES: RwLock<HashSet<Hash>> = RwLock::new(HashSet::new());
+	static ref INVALID_BLOCK_HASHES: RwLock<HashMap<u32, HashSet<Hash>>> =
+		RwLock::new(HashMap::new());
+}
+
+/// Release Context related data
+pub fn release_context_data(context_id: u32) {
+	INVALID_BLOCK_HASHES
+		.write()
+		.expect("RwLock failure")
+		.remove(&context_id);
 }
 
 /// Setup the banned header hashes defined at the config.
-pub fn init_invalid_lock_hashes(hashed: &Option<Vec<String>>) -> Result<(), Error> {
-	if let Some(hs) = hashed.as_ref() {
-		let mut hashes = INVALID_BLOCK_HASHES.write();
+pub fn init_invalid_block_hashes(
+	context_id: u32,
+	hashes: &Option<Vec<String>>,
+) -> Result<(), Error> {
+	if let Some(hs) = hashes.as_ref() {
+		info!("config.invalid_block_hashes = {:?}", hs);
+
+		let mut block_hashes: HashSet<Hash> = HashSet::new();
 		for h in hs {
-			hashes.insert(Hash::from_hex(h).map_err(|e| {
+			block_hashes.insert(Hash::from_hex(h).map_err(|e| {
 				Error::Other(format!("Unable to parse hash hex string {}, {}", h, e))
 			})?);
 		}
+		INVALID_BLOCK_HASHES
+			.write()
+			.expect("RwLock failure")
+			.insert(context_id, block_hashes);
+	} else {
+		INVALID_BLOCK_HASHES
+			.write()
+			.expect("RwLock failure")
+			.remove(&context_id);
 	}
 	Ok(())
 }
@@ -138,21 +161,30 @@ pub fn check_against_spent_output(
 
 // Validate only the proof of work in a block header.
 // Used to cheaply validate pow before checking if orphan or continuing block validation.
-fn validate_pow_only(header: &BlockHeader, ctx: &BlockContext<'_>) -> Result<(), Error> {
+fn validate_pow_only(
+	context_id: u32,
+	header: &BlockHeader,
+	ctx: &BlockContext<'_>,
+) -> Result<(), Error> {
 	let hash = header.hash();
-	if INVALID_BLOCK_HASHES.read().contains(&hash) {
-		error!("Invalid header found: {}. Rejecting it!", hash);
-		return Err(Error::InvalidHash.into());
+	{
+		let hashes = INVALID_BLOCK_HASHES.read().expect("RwLock failure");
+		if let Some(blocked_hashes) = hashes.get(&context_id) {
+			if blocked_hashes.contains(&hash) {
+				error!("Invalid header found: {}. Rejecting it!", hash);
+				return Err(Error::InvalidHash.into());
+			}
+		}
 	}
 
 	if ctx.opts.contains(Options::SKIP_POW) {
 		// Some of our tests require this check to be skipped (we should revisit this).
 		return Ok(());
 	}
-	if !header.pow.is_primary() && !header.pow.is_secondary() {
+	if !header.pow.is_primary(context_id) && !header.pow.is_secondary() {
 		return Err(Error::LowEdgebits);
 	}
-	if (ctx.pow_verifier)(header).is_err() {
+	if (ctx.pow_verifier)(context_id, header).is_err() {
 		error!(
 			"pipe: error validating header with cuckoo edge_bits {}",
 			header.pow.edge_bits(),
@@ -166,6 +198,7 @@ fn validate_pow_only(header: &BlockHeader, ctx: &BlockContext<'_>) -> Result<(),
 /// place for the new block in the chain.
 /// Returns new head if chain head updated and the "fork point" rewound to when processing the new block.
 pub fn process_blocks_series(
+	context_id: u32,
 	blocks: &Vec<Block>,
 	ctx: &mut BlockContext<'_>,
 	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
@@ -211,16 +244,16 @@ pub fn process_blocks_series(
 		// Quick pow validation. No point proceeding if this is invalid.
 		// We want to do this before we add the block to the orphan pool so we
 		// want to do this now and not later during header validation.
-		validate_pow_only(&b.header, ctx)?;
+		validate_pow_only(context_id, &b.header, ctx)?;
 
 		// Process the header for the block.
 		// Note: We still want to process the full block if we have seen this header before
 		// as we may have processed it "header first" and not yet processed the full block.
-		process_block_header(&b.header, ctx, cache_values)?;
+		process_block_header(context_id, &b.header, ctx, cache_values)?;
 
 		// Validate the block itself, make sure it is internally consistent.
 		// Use the verifier_cache for verifying rangeproofs and kernel signatures.
-		validate_block(b, ctx, secp)?;
+		validate_block(context_id, b, ctx, secp)?;
 	}
 
 	// Get previous header from the db.
@@ -234,7 +267,7 @@ pub fn process_blocks_series(
 	let ctx_specific_validation = &ctx.header_allowed;
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
 		let fork_point_local_blocks =
-			rewind_and_apply_fork(&prev, ext, batch, ctx_specific_validation, secp)?;
+			rewind_and_apply_fork(context_id, &prev, ext, batch, ctx_specific_validation, secp)?;
 
 		let fork_point = fork_point_local_blocks.0;
 		let mut local_branch_blocks = fork_point_local_blocks.1;
@@ -246,7 +279,7 @@ pub fn process_blocks_series(
 			// This needs to be done within the context of a potentially
 			// rewound txhashset extension to reflect chain state prior
 			// to applying the new block.
-			verify_coinbase_maturity(b, ext, batch)?;
+			verify_coinbase_maturity(context_id, b, ext, batch)?;
 
 			// Validate the block against the UTXO set.
 			validate_utxo(b, ext, batch)?;
@@ -255,7 +288,7 @@ pub fn process_blocks_series(
 			// we can verify_kernel_sums across the full UTXO sum and full kernel sum
 			// accounting for inputs/outputs/kernels in this new block.
 			// We know there are no double-spends etc. if this verifies successfully.
-			verify_block_sums(b, batch, secp)?;
+			verify_block_sums(context_id, b, batch, secp)?;
 
 			// Apply the block to the txhashset state.
 			// Validate the txhashset roots and sizes against the block header.
@@ -326,6 +359,7 @@ pub fn replay_attack_check(
 /// Will update header_head locally if this batch of headers increases total work.
 /// Returns the updated sync_head, which may be on a fork.
 pub fn process_block_headers(
+	context_id: u32,
 	headers: &[BlockHeader],
 	sync_head: Tip,
 	ctx: &mut BlockContext<'_>,
@@ -342,7 +376,7 @@ pub fn process_block_headers(
 	// Note: This batch may be rolled back later if the MMR does not validate successfully.
 	// Note: This batch may later be committed even if the MMR itself is rollbacked.
 	for header in headers {
-		validate_header(header, ctx, cache_values)?;
+		validate_header(context_id, header, ctx, cache_values)?;
 		add_block_header(header, &ctx.batch)?;
 	}
 
@@ -379,6 +413,7 @@ pub fn process_block_headers(
 /// Note: In contrast to processing a full block we treat "already known" as success
 /// to allow processing to continue (for header itself).
 pub fn process_block_header(
+	context_id: u32,
 	header: &BlockHeader,
 	ctx: &mut BlockContext<'_>,
 	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
@@ -407,7 +442,7 @@ pub fn process_block_header(
 	}
 
 	// We want to validate this individual header before applying it to our header PMMR.
-	validate_header(header, ctx, cache_values)?;
+	validate_header(context_id, header, ctx, cache_values)?;
 
 	let ctx_specific_validation = &ctx.header_allowed;
 
@@ -523,6 +558,7 @@ pub fn validate_header_denylist(header: &BlockHeader, denylist: &[Hash]) -> Resu
 /// to make it as cheap as possible. The different validations are also
 /// arranged by order of cost to have as little DoS surface as possible.
 fn validate_header(
+	context_id: u32,
 	header: &BlockHeader,
 	ctx: &BlockContext<'_>,
 	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
@@ -539,7 +575,7 @@ fn validate_header(
 	}
 
 	// This header must have a valid header version for its height.
-	if !consensus::valid_header_version(header.height, header.version) {
+	if !consensus::valid_header_version(context_id, header.height, header.version) {
 		return Err(Error::InvalidBlockVersion(header.version));
 	}
 
@@ -568,7 +604,7 @@ fn validate_header(
 
 	// Block header is invalid (and block is invalid) if this lower bound is too heavy for a full block.
 	let weight = Transaction::weight_for_size(0, num_outputs, num_kernels);
-	if weight > global::max_block_weight() {
+	if weight > global::max_block_weight(context_id) {
 		return Err(Error::Block(block::Error::TooHeavy));
 	}
 
@@ -581,7 +617,7 @@ fn validate_header(
 	if !ctx.opts.contains(Options::SKIP_POW) {
 		// Quick check of this header in isolation. No point proceeding if this fails.
 		// We can do this without needing to iterate over previous headers.
-		validate_pow_only(header, ctx)?;
+		validate_pow_only(context_id, header, ctx)?;
 
 		if header.total_difficulty() <= prev.total_difficulty() {
 			return Err(Error::DifficultyTooLow);
@@ -589,7 +625,7 @@ fn validate_header(
 
 		let target_difficulty = header.total_difficulty() - prev.total_difficulty();
 
-		if header.pow.to_difficulty(header.height) < target_difficulty {
+		if header.pow.to_difficulty(context_id, header.height) < target_difficulty {
 			return Err(Error::DifficultyTooLow);
 		}
 
@@ -597,7 +633,8 @@ fn validate_header(
 		// the _network_ difficulty of the previous block
 		// (during testnet1 we use _block_ difficulty here)
 		let diff_iter = store::DifficultyIter::from_batch(prev.hash(), &ctx.batch);
-		let next_header_info = consensus::next_difficulty(header.height, diff_iter, cache_values);
+		let next_header_info =
+			consensus::next_difficulty(context_id, header.height, diff_iter, cache_values);
 		if target_difficulty != next_header_info.difficulty {
 			info!(
 				"validate_header: header target difficulty {} != {}",
@@ -620,19 +657,21 @@ fn validate_header(
 }
 
 fn validate_block(
+	context_id: u32,
 	block: &Block,
 	ctx: &mut BlockContext<'_>,
 	secp: &Secp256k1,
 ) -> Result<(), Error> {
 	let prev = ctx.batch.get_previous_header(&block.header)?;
 	block
-		.validate(&prev.total_kernel_offset, secp)
+		.validate(context_id, &prev.total_kernel_offset, secp)
 		.map_err(|e| Error::Block(e))?;
 	Ok(())
 }
 
 /// Verify the block is not spending coinbase outputs before they have sufficiently matured.
 fn verify_coinbase_maturity(
+	context_id: u32,
 	block: &Block,
 	ext: &txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
@@ -641,19 +680,24 @@ fn verify_coinbase_maturity(
 	let header_extension = &ext.header_extension;
 	extension
 		.utxo_view(header_extension)
-		.verify_coinbase_maturity(&block.inputs(), block.header.height, batch)
+		.verify_coinbase_maturity(context_id, &block.inputs(), block.header.height, batch)
 }
 
 /// Verify kernel sums across the full utxo and kernel sets based on block_sums
 /// of previous block accounting for the inputs|outputs|kernels of the new block.
 /// Saves the new block_sums to the db via the current batch if successful.
-fn verify_block_sums(b: &Block, batch: &store::Batch<'_>, secp: &Secp256k1) -> Result<(), Error> {
+fn verify_block_sums(
+	context_id: u32,
+	b: &Block,
+	batch: &store::Batch<'_>,
+	secp: &Secp256k1,
+) -> Result<(), Error> {
 	// Retrieve the block_sums for the previous block.
 	let block_sums = batch.get_block_sums(&b.header.prev_hash)?;
 
 	// Overage is based purely on the new block.
 	// Previous block_sums have taken all previous overage into account.
-	let overage = b.header.overage();
+	let overage = b.header.overage(context_id);
 
 	// Offset on the other hand is the total kernel offset from the new block.
 	let offset = b.header.total_kernel_offset();
@@ -783,6 +827,7 @@ pub fn rewind_and_apply_header_fork(
 /// the expected state.
 /// Returns the "fork point" that we rewound to.
 pub fn rewind_and_apply_fork(
+	context_id: u32,
 	header: &BlockHeader,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
@@ -823,11 +868,11 @@ pub fn rewind_and_apply_fork(
 		};
 
 		// Re-verify coinbase maturity along this fork.
-		verify_coinbase_maturity(&fb, ext, batch)?;
+		verify_coinbase_maturity(context_id, &fb, ext, batch)?;
 		// Validate the block against the UTXO set.
 		validate_utxo(&fb, ext, batch)?;
 		// Re-verify block_sums to set the block_sums up on this fork correctly.
-		verify_block_sums(&fb, batch, secp)?;
+		verify_block_sums(context_id, &fb, batch, secp)?;
 		// Re-apply the blocks.
 		apply_block_to_txhashset(&fb, ext, batch)?;
 	}

@@ -123,6 +123,7 @@ where
 {
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
 	let reward_output = reward::output(
+		0,
 		keychain,
 		builder,
 		&key_id,
@@ -133,6 +134,7 @@ where
 	)
 	.unwrap();
 	Block::new(
+		0,
 		&previous_header,
 		txs,
 		Difficulty::min(),

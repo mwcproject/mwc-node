@@ -120,12 +120,14 @@ fn create_chain_sim(
 		Difficulty::from_num(diff)
 	);
 	let return_vec = vec![HeaderDifficultyInfo::from_ts_diff(
+		0,
 		Utc::now().timestamp() as u64,
 		Difficulty::from_num(diff),
 	)];
 	let diff_stats = get_diff_stats(&return_vec, cache_values);
 	vec![(
 		HeaderDifficultyInfo::from_ts_diff(
+			0,
 			Utc::now().timestamp() as u64,
 			Difficulty::from_num(diff),
 		),
@@ -140,7 +142,7 @@ fn get_diff_stats(
 	// Fill out some difficulty stats for convenience
 	let diff_iter = chain_sim.to_vec();
 	let last_blocks: Vec<HeaderDifficultyInfo> =
-		global::difficulty_data_to_vector(diff_iter.iter().cloned(), cache_values);
+		global::difficulty_data_to_vector(0, diff_iter.iter().cloned(), cache_values);
 
 	let mut last_time = last_blocks[0].timestamp;
 	let tip_height = chain_sim.len();
@@ -152,7 +154,7 @@ fn get_diff_stats(
 	let mut i = 1;
 
 	let sum_blocks: Vec<HeaderDifficultyInfo> =
-		global::difficulty_data_to_vector(diff_iter.iter().cloned(), cache_values)
+		global::difficulty_data_to_vector(0, diff_iter.iter().cloned(), cache_values)
 			.into_iter()
 			.take(DIFFICULTY_ADJUST_WINDOW as usize)
 			.collect();
@@ -222,15 +224,18 @@ fn add_block(
 	let mut return_chain: Vec<HeaderDifficultyInfo> =
 		chain_sim.clone().iter().map(|e| e.0.clone()).collect();
 	// get last interval
-	let diff = next_difficulty(1, return_chain.clone(), cache_values);
+	let diff = next_difficulty(0, 1, return_chain.clone(), cache_values);
 	let last_elem = chain_sim.first().unwrap().clone().0;
 	let time = last_elem.timestamp + interval;
-	return_chain.insert(0, HeaderDifficultyInfo::from_ts_diff(time, diff.difficulty));
+	return_chain.insert(
+		0,
+		HeaderDifficultyInfo::from_ts_diff(0, time, diff.difficulty),
+	);
 	let diff_stats = get_diff_stats(&return_chain, cache_values);
 	ret_chain_sim.insert(
 		0,
 		(
-			HeaderDifficultyInfo::from_ts_diff(time, diff.difficulty),
+			HeaderDifficultyInfo::from_ts_diff(0, time, diff.difficulty),
 			diff_stats,
 		),
 	);
@@ -296,7 +301,7 @@ fn print_chain_sim(chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>) {
 fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderDifficultyInfo> {
 	repeat(
 		interval,
-		HeaderDifficultyInfo::from_ts_diff(1, Difficulty::from_num(diff)),
+		HeaderDifficultyInfo::from_ts_diff(0, 1, Difficulty::from_num(diff)),
 		len,
 		Some(from),
 	)
@@ -306,11 +311,12 @@ fn repeat_offs(from: u64, interval: u64, diff: u64, len: u64) -> Vec<HeaderDiffi
 #[test]
 fn adjustment_scenarios() {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
+	global::set_local_nrd_enabled(false);
 
 	let mut cache_values = VecDeque::new();
 
 	// Genesis block with initial diff
-	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(0), &mut cache_values);
 	// Scenario 1) Hash power is massively over estimated, first block takes an hour
 	let chain_sim = add_block_repeated(3600, chain_sim, 2, &mut cache_values);
 	let chain_sim = add_block_repeated(1800, chain_sim, 2, &mut cache_values);
@@ -326,7 +332,7 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 
 	// Under-estimated difficulty
-	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(0), &mut cache_values);
 	let chain_sim = add_block_repeated(1, chain_sim, 5, &mut cache_values);
 	let chain_sim = add_block_repeated(20, chain_sim, 5, &mut cache_values);
 	let chain_sim = add_block_repeated(30, chain_sim, 20, &mut cache_values);
@@ -339,7 +345,7 @@ fn adjustment_scenarios() {
 	let just_enough = (DIFFICULTY_ADJUST_WINDOW) as usize;
 
 	// Steady difficulty for a good while, then a sudden drop
-	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(0), &mut cache_values);
 	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize, &mut cache_values);
 	let chain_sim = add_block_repeated(600, chain_sim, 60, &mut cache_values);
 
@@ -351,7 +357,7 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 
 	// Sudden increase
-	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(0), &mut cache_values);
 	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize, &mut cache_values);
 	let chain_sim = add_block_repeated(10, chain_sim, 10, &mut cache_values);
 
@@ -363,7 +369,7 @@ fn adjustment_scenarios() {
 	println!("*********************************************************");
 
 	// Oscillations
-	let chain_sim = create_chain_sim(global::initial_block_difficulty(), &mut cache_values);
+	let chain_sim = create_chain_sim(global::initial_block_difficulty(0), &mut cache_values);
 	let chain_sim = add_block_repeated(60, chain_sim, just_enough as usize, &mut cache_values);
 	let chain_sim = add_block_repeated(10, chain_sim, 10, &mut cache_values);
 	let chain_sim = add_block_repeated(60, chain_sim, 20, &mut cache_values);
@@ -381,6 +387,8 @@ fn adjustment_scenarios() {
 #[test]
 fn next_target_adjustment() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+
 	let cur_time = Utc::now().timestamp() as u64;
 	let diff_min = Difficulty::min();
 
@@ -389,6 +397,7 @@ fn next_target_adjustment() {
 	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
 	let hinext = next_difficulty(
+		0,
 		1,
 		repeat(
 			BLOCK_TIME_SEC / 4,
@@ -409,6 +418,7 @@ fn next_target_adjustment() {
 	hi.difficulty = Difficulty::from_num(10000);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -420,8 +430,9 @@ fn next_target_adjustment() {
 	// check pre difficulty_data_to_vector effect on retargetting
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
-			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)],
+			vec![HeaderDifficultyInfo::from_ts_diff(0, 42, hi.difficulty)],
 			&mut cache_values
 		)
 		.difficulty,
@@ -440,7 +451,7 @@ fn next_target_adjustment() {
 	);
 	s2.append(&mut s1);
 	assert_eq!(
-		next_difficulty(1, s2, &mut cache_values).difficulty,
+		next_difficulty(0, 1, s2, &mut cache_values).difficulty,
 		Difficulty::from_num(1000),
 	);
 
@@ -448,6 +459,7 @@ fn next_target_adjustment() {
 	hi.difficulty = Difficulty::from_num(1000);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(90, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -457,6 +469,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(120, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -468,6 +481,7 @@ fn next_target_adjustment() {
 	// too fast, diff goes up
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(55, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -477,6 +491,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(45, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -486,6 +501,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(30, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -497,6 +513,7 @@ fn next_target_adjustment() {
 	// hitting lower time bound, should always get the same result below
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(0, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -508,6 +525,7 @@ fn next_target_adjustment() {
 	// hitting higher time bound, should always get the same result above
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(300, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -517,6 +535,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(400, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -529,6 +548,7 @@ fn next_target_adjustment() {
 	hi.difficulty = Difficulty::zero();
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(90, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -541,6 +561,7 @@ fn next_target_adjustment() {
 #[test]
 fn test_secondary_pow_ratio() {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
+	global::set_local_nrd_enabled(false);
 	{
 		assert_eq!(secondary_pow_ratio(1), 45);
 		assert_eq!(secondary_pow_ratio(89), 45);
@@ -580,7 +601,8 @@ fn test_secondary_pow_ratio() {
 	// Tests for testnet4 chain type (covers pre and post hardfork).
 	{
 		global::set_local_chain_type(global::ChainTypes::Floonet);
-		assert_eq!(global::is_floonet(), true);
+		global::set_local_nrd_enabled(false);
+		assert_eq!(global::is_floonet(0), true);
 
 		assert_eq!(secondary_pow_ratio(1), 45);
 		assert_eq!(secondary_pow_ratio(89), 45);
@@ -623,6 +645,7 @@ fn test_secondary_pow_ratio() {
 #[test]
 fn test_secondary_pow_scale() {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
+	global::set_local_nrd_enabled(false);
 
 	let window = DIFFICULTY_ADJUST_WINDOW;
 	let mut hi = HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(10), 100);
@@ -701,19 +724,20 @@ fn hard_forks() {
 	// Tests for mainnet chain type.
 	{
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
-		assert_eq!(global::is_floonet(), false);
-		assert!(valid_header_version(0, HeaderVersion(1)));
-		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(2)));
+		global::set_local_nrd_enabled(false);
+		assert_eq!(global::is_floonet(0), false);
+		assert!(valid_header_version(0, 0, HeaderVersion(1)));
+		assert!(valid_header_version(0, YEAR_HEIGHT, HeaderVersion(2)));
+		assert!(valid_header_version(0, YEAR_HEIGHT * 10, HeaderVersion(2)));
+		assert!(valid_header_version(0, YEAR_HEIGHT * 100, HeaderVersion(2)));
 	}
 	// Tests for floonet chain type.
 	{
 		global::set_local_chain_type(global::ChainTypes::Floonet);
-		assert_eq!(global::is_floonet(), true);
-		assert!(valid_header_version(0, HeaderVersion(1)));
-		assert!(valid_header_version(YEAR_HEIGHT, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 10, HeaderVersion(2)));
-		assert!(valid_header_version(YEAR_HEIGHT * 100, HeaderVersion(2)));
+		assert_eq!(global::is_floonet(0), true);
+		assert!(valid_header_version(0, 0, HeaderVersion(1)));
+		assert!(valid_header_version(0, YEAR_HEIGHT, HeaderVersion(2)));
+		assert!(valid_header_version(0, YEAR_HEIGHT * 10, HeaderVersion(2)));
+		assert!(valid_header_version(0, YEAR_HEIGHT * 100, HeaderVersion(2)));
 	}
 }

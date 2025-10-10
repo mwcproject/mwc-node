@@ -28,11 +28,9 @@ use crate::core::block::Block;
 use crate::genesis;
 use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
-use std::cell::Cell;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use util::OneTime;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::sync::RwLock;
 
 /// An enum collecting sets of parameters used throughout the
 /// code wherever mining is needed. This should allow for
@@ -176,145 +174,183 @@ impl Default for ChainTypes {
 	}
 }
 
-lazy_static! {
+struct ChainGlobalParams {
+	/// Global chain status flags. It is expected that init call will set them first for every needed context
+	chain_type: Option<ChainTypes>,
 	/// Global chain_type that must be initialized once on node startup.
 	/// This is accessed via get_chain_type() which allows the global value
 	/// to be overridden on a per-thread basis (for testing).
-	pub static ref GLOBAL_CHAIN_TYPE: OneTime<ChainTypes> = OneTime::new();
-
-	/// Global acccept fee base that must be initialized once on node startup.
-	/// This is accessed via get_acccept_fee_base() which allows the global value
-	/// to be overridden on a per-thread basis (for testing).
-	pub static ref GLOBAL_ACCEPT_FEE_BASE: OneTime<u64> = OneTime::new();
-
-
+	accept_fee_base: Option<u64>,
 	/// Global feature flag for NRD kernel support.
 	/// If enabled NRD kernels are treated as valid after HF3 (based on header version).
 	/// If disabled NRD kernels are invalid regardless of header version or block height.
-	pub static ref GLOBAL_NRD_FEATURE_ENABLED: OneTime<bool> = OneTime::new();
+	nrd_feature_enabled: Option<bool>,
+}
 
-	/// Running flag for MWC node.
-	pub static ref SERVER_RUNNING: Arc<AtomicBool> =
-			Arc::new(AtomicBool::new(true));
+impl ChainGlobalParams {
+	// Creates new empty instance. It is expected that values are still need to be set
+	fn new() -> Self {
+		ChainGlobalParams {
+			chain_type: None,
+			accept_fee_base: None,
+			nrd_feature_enabled: None,
+		}
+	}
+}
+
+lazy_static! {
+	/// Global chain status flags. It is expected that init call will set them first for every needed context
+	/// Note, both node and wallet will need to set it up. Any param can be set once
+	static ref GLOBAL_CHAIN_PARAMS: RwLock<HashMap<u32, ChainGlobalParams>> = RwLock::new(HashMap::new());
 }
 
 thread_local! {
-	/// Mainnet|Floonet|UserTesting|AutomatedTesting
-	pub static CHAIN_TYPE: Cell<Option<ChainTypes>> = Cell::new(None);
-
-	/// minimum transaction fee per unit of transaction weight for mempool acceptance
-	pub static ACCEPT_FEE_BASE: Cell<Option<u64>> = Cell::new(None);
-
-	/// Local feature flag for NRD kernel support.
-	pub static NRD_FEATURE_ENABLED: Cell<Option<bool>> = Cell::new(None);
+	/// Local chain status flags. Normally used by tests. Any param can be set multiple times.
+	static LOCAL_CHAIN_PARAMS: RefCell<ChainGlobalParams> = RefCell::new(ChainGlobalParams::new());
 }
 
-/// Set the global chain_type using an override
-pub fn set_global_chain_type(new_type: ChainTypes) {
-	GLOBAL_CHAIN_TYPE.set(new_type, true);
+/// Release
+pub fn release_context_data(context_id: u32) {
+	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let params = &mut *params;
+	let _ = params.remove(&context_id);
 }
 
 /// Set the chain type on a per-thread basis via thread_local storage.
 pub fn set_local_chain_type(new_type: ChainTypes) {
-	CHAIN_TYPE.with(|chain_type| chain_type.set(Some(new_type)))
+	LOCAL_CHAIN_PARAMS.with(|chain_params| chain_params.borrow_mut().chain_type = Some(new_type));
 }
 
 /// Get the chain type via thread_local, fallback to global chain_type.
-pub fn get_chain_type() -> ChainTypes {
-	CHAIN_TYPE.with(|chain_type| match chain_type.get() {
+pub fn get_chain_type(context_id: u32) -> ChainTypes {
+	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().chain_type {
 		None => {
-			if !GLOBAL_CHAIN_TYPE.is_init() {
-				panic!("GLOBAL_CHAIN_TYPE and CHAIN_TYPE unset. Consider set_local_chain_type() in tests.");
+			let params = GLOBAL_CHAIN_PARAMS.read().expect("RwLock failure");
+			match params.get(&context_id) {
+				Some(params) => {
+					match &params.chain_type {
+						Some (chain_type) => return chain_type.clone(),
+						None => {
+							panic!("chain_type is not set for context {}. Consider set_local_chain_type() in tests.", context_id);
+						}
+					}
+				}
+				None => {
+					panic!("chain_type is not set, context {} is empty. Consider set_local_chain_type() in tests.", context_id);
+				}
 			}
-			let chain_type = GLOBAL_CHAIN_TYPE.borrow();
-			set_local_chain_type(chain_type);
-			chain_type
 		}
-		Some(chain_type) => chain_type,
+		Some(chain_type) => return chain_type,
 	})
 }
 
 /// Return genesis block for the active chain type
-pub fn get_genesis_block() -> Block {
-	match get_chain_type() {
-		ChainTypes::Mainnet => genesis::genesis_main(),
-		ChainTypes::Floonet => genesis::genesis_floo(),
-		_ => genesis::genesis_dev(),
+pub fn get_genesis_block(context_id: u32) -> Block {
+	match get_chain_type(context_id) {
+		ChainTypes::Mainnet => genesis::genesis_main(context_id),
+		ChainTypes::Floonet => genesis::genesis_floo(context_id),
+		_ => genesis::genesis_dev(context_id),
 	}
 }
 
 /// One time initialization of the global chain_type.
 /// Will panic if we attempt to re-initialize this (via OneTime).
-pub fn init_global_chain_type(new_type: ChainTypes) {
-	GLOBAL_CHAIN_TYPE.init(new_type)
+pub fn init_global_chain_type(context_id: u32, new_type: ChainTypes) {
+	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let params = &mut *params;
+	let params = params
+		.entry(context_id)
+		.or_insert_with(|| ChainGlobalParams::new());
+	// It is not allowed to change the chain type on the fly. For a single instance it must be a contant
+	assert!(params.chain_type.is_none());
+	params.chain_type = Some(new_type);
 }
 
 /// One time initialization of the global chain_type.
 /// Will panic if we attempt to re-initialize this (via OneTime).
-pub fn init_global_nrd_enabled(enabled: bool) {
-	GLOBAL_NRD_FEATURE_ENABLED.init(enabled)
-}
-
-/// Set the global NRD feature flag using override.
-pub fn set_global_nrd_enabled(enabled: bool) {
-	GLOBAL_NRD_FEATURE_ENABLED.set(enabled, true)
+pub fn init_global_nrd_enabled(context_id: u32, enabled: bool) {
+	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let params = &mut *params;
+	let params = params
+		.entry(context_id)
+		.or_insert_with(|| ChainGlobalParams::new());
+	// It is not allowed to change the chain type on the fly. For a single instance it must be a contant
+	assert!(params.nrd_feature_enabled.is_none());
+	params.nrd_feature_enabled = Some(enabled);
 }
 
 /// Explicitly enable the NRD global feature flag.
 pub fn set_local_nrd_enabled(enabled: bool) {
-	NRD_FEATURE_ENABLED.with(|flag| flag.set(Some(enabled)))
+	LOCAL_CHAIN_PARAMS
+		.with(|chain_params| chain_params.borrow_mut().nrd_feature_enabled = Some(enabled));
 }
 
 /// Is the NRD feature flag enabled?
 /// Look at thread local config first. If not set fallback to global config.
 /// Default to false if global config unset.
-pub fn is_nrd_enabled() -> bool {
-	NRD_FEATURE_ENABLED.with(|flag| match flag.get() {
+pub fn is_nrd_enabled(context_id: u32) -> bool {
+	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().nrd_feature_enabled {
 		None => {
-			if GLOBAL_NRD_FEATURE_ENABLED.is_init() {
-				let global_flag = GLOBAL_NRD_FEATURE_ENABLED.borrow();
-				flag.set(Some(global_flag));
-				global_flag
-			} else {
-				// Global config unset, default to false.
-				false
+			let params = GLOBAL_CHAIN_PARAMS.read().expect("RwLock failure");
+			match params.get(&context_id) {
+				Some(params) => {
+					match &params.nrd_feature_enabled {
+						Some (nrd_feature_enabled) => return nrd_feature_enabled.clone(),
+						None => {
+							panic!("nrd_feature_enabled is not set for context {}. Consider set_local_nrd_enabled() in tests.", context_id);
+						}
+					}
+				}
+				None => {
+					panic!("nrd_feature_enabled is not set, context {} is empty. Consider set_local_nrd_enabled() in tests.", context_id);
+				}
 			}
 		}
-		Some(flag) => flag,
+		Some(nrd_feature_enabled) => return nrd_feature_enabled,
 	})
 }
 
 /// One time initialization of the global accept fee base
 /// Will panic if we attempt to re-initialize this (via OneTime).
-pub fn init_global_accept_fee_base(new_base: u64) {
-	GLOBAL_ACCEPT_FEE_BASE.init(new_base)
-}
-
-/// The global accept fee base may be reset using override.
-pub fn set_global_accept_fee_base(new_base: u64) {
-	GLOBAL_ACCEPT_FEE_BASE.set(new_base, true)
+pub fn init_global_accept_fee_base(context_id: u32, new_base: u64) {
+	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let params = &mut *params;
+	let params = params
+		.entry(context_id)
+		.or_insert_with(|| ChainGlobalParams::new());
+	// It is not allowed to change the chain type on the fly. For a single instance it must be a contant
+	assert!(params.accept_fee_base.is_none());
+	params.accept_fee_base = Some(new_base);
 }
 
 /// Set the accept fee base on a per-thread basis via thread_local storage.
 pub fn set_local_accept_fee_base(new_base: u64) {
-	ACCEPT_FEE_BASE.with(|base| base.set(Some(new_base)))
+	LOCAL_CHAIN_PARAMS
+		.with(|chain_params| chain_params.borrow_mut().accept_fee_base = Some(new_base));
 }
 
 /// Accept Fee Base
 /// Look at thread local config first. If not set fallback to global config.
 /// Default to mwc-cent/20 if global config unset.
-pub fn get_accept_fee_base() -> u64 {
-	ACCEPT_FEE_BASE.with(|base| match base.get() {
+pub fn get_accept_fee_base(context_id: u32) -> u64 {
+	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().accept_fee_base {
 		None => {
-			let base = if GLOBAL_ACCEPT_FEE_BASE.is_init() {
-				GLOBAL_ACCEPT_FEE_BASE.borrow()
-			} else {
-				DEFAULT_ACCEPT_FEE_BASE
-			};
-			set_local_accept_fee_base(base);
-			base
+			let params = GLOBAL_CHAIN_PARAMS.read().expect("RwLock failure");
+			match params.get(&context_id) {
+				Some(params) => {
+					match &params.accept_fee_base {
+						Some (accept_fee_base) => return accept_fee_base.clone(),
+						None => {
+							panic!("accept_fee_base is not set for context {}. Consider set_local_accept_fee_base() in tests.", context_id);
+						}
+					}
+				}
+				None => {
+					panic!("accept_fee_base is not set, context {} is empty. Consider set_local_accept_fee_base() in tests.", context_id);
+				}
+			}
 		}
-		Some(base) => base,
+		Some(accept_fee_base) => return accept_fee_base,
 	})
 }
 
@@ -322,29 +358,34 @@ pub fn get_accept_fee_base() -> u64 {
 /// Single change point
 /// MWC: We modify this to launch with cuckarood only on both floonet and mainnet
 pub fn create_pow_context<T>(
+	context_id: u32,
 	_height: u64,
 	edge_bits: u8,
 	proof_size: usize,
 	max_sols: u32,
 ) -> Result<Box<dyn PoWContext>, pow::Error> {
-	let chain_type = get_chain_type();
+	let chain_type = get_chain_type(context_id);
 	match chain_type {
 		// Mainnet has Cuckaroo(d)29 for AR and Cuckatoo31+ for AF
-		ChainTypes::Mainnet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
-		ChainTypes::Mainnet => new_cuckarood_ctx(edge_bits, proof_size),
+		ChainTypes::Mainnet if edge_bits > 29 => {
+			new_cuckatoo_ctx(context_id, edge_bits, proof_size, max_sols)
+		}
+		ChainTypes::Mainnet => new_cuckarood_ctx(context_id, edge_bits, proof_size),
 
 		// Same for Floonet
-		ChainTypes::Floonet if edge_bits > 29 => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
-		ChainTypes::Floonet => new_cuckarood_ctx(edge_bits, proof_size),
+		ChainTypes::Floonet if edge_bits > 29 => {
+			new_cuckatoo_ctx(context_id, edge_bits, proof_size, max_sols)
+		}
+		ChainTypes::Floonet => new_cuckarood_ctx(context_id, edge_bits, proof_size),
 
 		// Everything else is Cuckatoo only
-		_ => new_cuckatoo_ctx(edge_bits, proof_size, max_sols),
+		_ => new_cuckatoo_ctx(context_id, edge_bits, proof_size, max_sols),
 	}
 }
 
 /// The minimum acceptable edge_bits
-pub fn min_edge_bits() -> u8 {
-	match get_chain_type() {
+pub fn min_edge_bits(context_id: u32) -> u8 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => AUTOMATED_TESTING_MIN_EDGE_BITS,
 		ChainTypes::UserTesting => USER_TESTING_MIN_EDGE_BITS,
 		_ => DEFAULT_MIN_EDGE_BITS,
@@ -354,8 +395,8 @@ pub fn min_edge_bits() -> u8 {
 /// Reference edge_bits used to compute factor on higher Cuck(at)oo graph sizes,
 /// while the min_edge_bits can be changed on a soft fork, changing
 /// base_edge_bits is a hard fork.
-pub fn base_edge_bits() -> u8 {
-	match get_chain_type() {
+pub fn base_edge_bits(context_id: u32) -> u8 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => AUTOMATED_TESTING_MIN_EDGE_BITS,
 		ChainTypes::UserTesting => USER_TESTING_MIN_EDGE_BITS,
 		_ => BASE_EDGE_BITS,
@@ -363,8 +404,8 @@ pub fn base_edge_bits() -> u8 {
 }
 
 /// The proofsize
-pub fn proofsize() -> usize {
-	match get_chain_type() {
+pub fn proofsize(context_id: u32) -> usize {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => AUTOMATED_TESTING_PROOF_SIZE,
 		ChainTypes::UserTesting => USER_TESTING_PROOF_SIZE,
 		_ => PROOFSIZE,
@@ -372,8 +413,8 @@ pub fn proofsize() -> usize {
 }
 
 /// Coinbase maturity for coinbases to be spent
-pub fn coinbase_maturity() -> u64 {
-	match get_chain_type() {
+pub fn coinbase_maturity(context_id: u32) -> u64 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => AUTOMATED_TESTING_COINBASE_MATURITY,
 		ChainTypes::UserTesting => USER_TESTING_COINBASE_MATURITY,
 		_ => COINBASE_MATURITY,
@@ -381,8 +422,8 @@ pub fn coinbase_maturity() -> u64 {
 }
 
 /// Initial mining difficulty
-pub fn initial_block_difficulty() -> u64 {
-	match get_chain_type() {
+pub fn initial_block_difficulty(context_id: u32) -> u64 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_INITIAL_DIFFICULTY,
 		ChainTypes::UserTesting => TESTING_INITIAL_DIFFICULTY,
 		ChainTypes::Floonet => INITIAL_DIFFICULTY,
@@ -390,18 +431,18 @@ pub fn initial_block_difficulty() -> u64 {
 	}
 }
 /// Initial mining secondary scale
-pub fn initial_graph_weight() -> u32 {
-	match get_chain_type() {
+pub fn initial_graph_weight(context_id: u32) -> u32 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_INITIAL_GRAPH_WEIGHT,
 		ChainTypes::UserTesting => TESTING_INITIAL_GRAPH_WEIGHT,
-		ChainTypes::Floonet => graph_weight(0, SECOND_POW_EDGE_BITS) as u32,
-		ChainTypes::Mainnet => graph_weight(0, SECOND_POW_EDGE_BITS) as u32,
+		ChainTypes::Floonet => graph_weight(context_id, 0, SECOND_POW_EDGE_BITS) as u32,
+		ChainTypes::Mainnet => graph_weight(context_id, 0, SECOND_POW_EDGE_BITS) as u32,
 	}
 }
 
 /// Maximum allowed block weight.
-pub fn max_block_weight() -> u64 {
-	match get_chain_type() {
+pub fn max_block_weight(context_id: u32) -> u64 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_MAX_BLOCK_WEIGHT,
 		ChainTypes::UserTesting => TESTING_MAX_BLOCK_WEIGHT,
 		ChainTypes::Floonet => MAX_BLOCK_WEIGHT,
@@ -410,14 +451,14 @@ pub fn max_block_weight() -> u64 {
 }
 
 /// Maximum allowed transaction weight (1 weight unit ~= 32 bytes)
-pub fn max_tx_weight() -> u64 {
+pub fn max_tx_weight(context_id: u32) -> u64 {
 	let coinbase_weight = BLOCK_OUTPUT_WEIGHT + BLOCK_KERNEL_WEIGHT;
-	max_block_weight().saturating_sub(coinbase_weight) as u64
+	max_block_weight(context_id).saturating_sub(coinbase_weight) as u64
 }
 
 /// Horizon at which we can cut-through and do full local pruning
-pub fn cut_through_horizon() -> u32 {
-	match get_chain_type() {
+pub fn cut_through_horizon(context_id: u32) -> u32 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => AUTOMATED_TESTING_CUT_THROUGH_HORIZON,
 		ChainTypes::UserTesting => USER_TESTING_CUT_THROUGH_HORIZON,
 		_ => CUT_THROUGH_HORIZON,
@@ -425,8 +466,8 @@ pub fn cut_through_horizon() -> u32 {
 }
 
 /// Threshold at which we can request a txhashset (and full blocks from)
-pub fn state_sync_threshold() -> u32 {
-	match get_chain_type() {
+pub fn state_sync_threshold(context_id: u32) -> u32 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_STATE_SYNC_THRESHOLD,
 		ChainTypes::UserTesting => TESTING_STATE_SYNC_THRESHOLD,
 		_ => STATE_SYNC_THRESHOLD,
@@ -434,8 +475,8 @@ pub fn state_sync_threshold() -> u32 {
 }
 
 /// Number of blocks to reuse a txhashset zip for.
-pub fn txhashset_archive_interval() -> u64 {
-	match get_chain_type() {
+pub fn txhashset_archive_interval(context_id: u32) -> u64 {
+	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_TXHASHSET_ARCHIVE_INTERVAL,
 		ChainTypes::UserTesting => TESTING_TXHASHSET_ARCHIVE_INTERVAL,
 		_ => TXHASHSET_ARCHIVE_INTERVAL,
@@ -444,8 +485,8 @@ pub fn txhashset_archive_interval() -> u64 {
 
 /// Are we in production mode?
 /// Production defined as a live public network, testnet[n] or mainnet.
-pub fn is_production_mode() -> bool {
-	match get_chain_type() {
+pub fn is_production_mode(context_id: u32) -> bool {
+	match get_chain_type(context_id) {
 		ChainTypes::Floonet => true,
 		ChainTypes::Mainnet => true,
 		_ => false,
@@ -456,24 +497,24 @@ pub fn is_production_mode() -> bool {
 /// Note: We do not have a corresponding is_mainnet() as we want any tests to be as close
 /// as possible to "mainnet" configuration as possible.
 /// We want to avoid missing any mainnet only code paths.
-pub fn is_floonet() -> bool {
-	match get_chain_type() {
+pub fn is_floonet(context_id: u32) -> bool {
+	match get_chain_type(context_id) {
 		ChainTypes::Floonet => true,
 		_ => false,
 	}
 }
 
 /// Are we for real?
-pub fn is_mainnet() -> bool {
-	match get_chain_type() {
+pub fn is_mainnet(context_id: u32) -> bool {
+	match get_chain_type(context_id) {
 		ChainTypes::Mainnet => true,
 		_ => false,
 	}
 }
 
 /// Tor port for libp2p network
-pub fn get_tor_libp2p_port() -> u16 {
-	if is_mainnet() {
+pub fn get_tor_libp2p_port(context_id: u32) -> u16 {
+	if is_mainnet(context_id) {
 		81
 	} else {
 		82
@@ -481,8 +522,8 @@ pub fn get_tor_libp2p_port() -> u16 {
 }
 
 /// Get a network name
-pub fn get_network_name() -> String {
-	let name = match get_chain_type() {
+pub fn get_network_name(context_id: u32) -> String {
+	let name = match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => "automatedtests",
 		ChainTypes::UserTesting => "usertestnet",
 		ChainTypes::Floonet => "floonet",
@@ -496,6 +537,7 @@ pub fn get_network_name() -> String {
 /// blocks after genesis
 /// cache_values is needed becuase during headers sync process, this step taking almost 50% of time (cpmparable to header POW verification time)
 pub fn difficulty_data_to_vector<T>(
+	context_id: u32,
 	cursor: T,
 	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
 ) -> Vec<HeaderDifficultyInfo>
@@ -596,7 +638,9 @@ where
 		let mut last_ts = last_n.last().unwrap().timestamp;
 		for _ in n..needed_block_count {
 			last_ts = last_ts.saturating_sub(last_ts_delta);
-			last_n.push(HeaderDifficultyInfo::from_ts_diff(last_ts, last_diff));
+			last_n.push(HeaderDifficultyInfo::from_ts_diff(
+				context_id, last_ts, last_diff,
+			));
 		}
 	}
 	last_n.reverse();
@@ -605,9 +649,9 @@ where
 
 /// Calculates the size of a header (in bytes) given a number of edge bits in the PoW
 #[inline]
-pub fn header_size_bytes(edge_bits: u8) -> usize {
+pub fn header_size_bytes(context_id: u32, edge_bits: u8) -> usize {
 	let size = 2 + 2 * 8 + 5 * 32 + 32 + 2 * 8;
-	let proof_size = 8 + 4 + 8 + 1 + Proof::pack_len(edge_bits);
+	let proof_size = 8 + 4 + 8 + 1 + Proof::pack_len(context_id, edge_bits);
 	size + proof_size
 }
 
@@ -623,45 +667,33 @@ mod test {
 		let mut raw = Vec::<u8>::with_capacity(1_024);
 		let mut writer = BinWriter::new(&mut raw, ProtocolVersion::local());
 		genesis.header.write(&mut writer).unwrap();
-		assert_eq!(raw.len(), header_size_bytes(genesis.header.pow.edge_bits()));
+		assert_eq!(
+			raw.len(),
+			header_size_bytes(0, genesis.header.pow.edge_bits())
+		);
 	}
 
 	#[test]
 	fn automated_testing_header_len() {
 		set_local_chain_type(ChainTypes::AutomatedTesting);
-		test_header_len(mine_genesis_block().unwrap());
+		test_header_len(mine_genesis_block(0).unwrap());
 	}
 
 	#[test]
 	fn user_testing_header_len() {
 		set_local_chain_type(ChainTypes::UserTesting);
-		test_header_len(mine_genesis_block().unwrap());
+		test_header_len(mine_genesis_block(0).unwrap());
 	}
 
 	#[test]
 	fn floonet_header_len() {
 		set_local_chain_type(ChainTypes::Floonet);
-		test_header_len(genesis_floo());
+		test_header_len(genesis_floo(0));
 	}
 
 	#[test]
 	fn mainnet_header_len() {
 		set_local_chain_type(ChainTypes::Mainnet);
-		test_header_len(genesis_main());
+		test_header_len(genesis_main(0));
 	}
-}
-
-/// Checking running status if the server
-pub fn is_server_running() -> bool {
-	SERVER_RUNNING.load(Ordering::SeqCst)
-}
-
-/// Request for server stopping
-pub fn request_server_stop() {
-	SERVER_RUNNING.store(false, Ordering::SeqCst)
-}
-
-/// Get an access to the the flag responsible for stopping the server
-pub fn get_server_running_controller() -> Arc<AtomicBool> {
-	SERVER_RUNNING.clone()
 }

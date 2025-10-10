@@ -81,7 +81,7 @@ fn test_output_ser_deser() {
 
 	let mut vec = vec![];
 	ser::serialize_default(&mut vec, &out).expect("serialized failed");
-	let dout: Output = ser::deserialize_default(&mut &vec[..]).unwrap();
+	let dout: Output = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
 	assert_eq!(dout.features(), OutputFeatures::Plain);
 	assert_eq!(dout.commitment(), out.commitment());
@@ -94,6 +94,7 @@ fn test_output_ser_deser() {
 #[test]
 fn test_verify_cut_through_plain() -> Result<(), Error> {
 	global::set_local_chain_type(global::ChainTypes::UserTesting);
+	global::set_local_nrd_enabled(false);
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
 
@@ -121,12 +122,12 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 
 	// Transaction should fail validation due to cut-through.
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, keychain.secp()),
+		tx.validate(0, Weighting::AsTransaction, keychain.secp()),
 		Err(Error::CutThrough),
 	);
 
 	// Transaction should fail lightweight "read" validation due to cut-through.
-	assert_eq!(tx.validate_read(), Err(Error::CutThrough));
+	assert_eq!(tx.validate_read(0), Err(Error::CutThrough));
 
 	// Apply cut-through to eliminate the offending input and output.
 	let mut inputs: Vec<_> = tx.inputs().into();
@@ -139,10 +140,10 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, keychain.secp())?;
+	tx.validate(0, Weighting::AsTransaction, keychain.secp())?;
 
 	// Transaction validates via lightweight "read" validation as well.
-	tx.validate_read()?;
+	tx.validate_read(0)?;
 
 	Ok(())
 }
@@ -153,6 +154,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 #[test]
 fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	global::set_local_chain_type(global::ChainTypes::UserTesting);
+	global::set_local_nrd_enabled(false);
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
 
@@ -183,12 +185,12 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 
 	// Transaction should fail validation due to cut-through.
 	assert_eq!(
-		tx.validate(Weighting::AsTransaction, keychain.secp()),
+		tx.validate(0, Weighting::AsTransaction, keychain.secp()),
 		Err(Error::CutThrough),
 	);
 
 	// Transaction should fail lightweight "read" validation due to cut-through.
-	assert_eq!(tx.validate_read(), Err(Error::CutThrough));
+	assert_eq!(tx.validate_read(0), Err(Error::CutThrough));
 
 	// Apply cut-through to eliminate the offending input and output.
 	let mut inputs: Vec<_> = tx.inputs().into();
@@ -201,10 +203,10 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Transaction validates successfully after applying cut-through.
-	tx.validate(Weighting::AsTransaction, keychain.secp())?;
+	tx.validate(0, Weighting::AsTransaction, keychain.secp())?;
 
 	// Transaction validates via lightweight "read" validation as well.
-	tx.validate_read()?;
+	tx.validate_read(0)?;
 
 	Ok(())
 }
@@ -213,6 +215,8 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 #[test]
 fn test_fee_fields() -> Result<(), Error> {
 	global::set_local_chain_type(global::ChainTypes::UserTesting);
+	global::set_local_nrd_enabled(false);
+
 	let local_base_fee = 500_000;
 	global::set_local_accept_fee_base(local_base_fee);
 
@@ -227,7 +231,7 @@ fn test_fee_fields() -> Result<(), Error> {
 			fee: FeeFields::new(42).unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::calc_mwc_block_reward(1), key_id1.clone()),
+			build::coinbase_input(consensus::calc_mwc_block_reward(0, 1), key_id1.clone()),
 			build::output(60_000_000_000 - 84 - 42 - 21, key_id1.clone()),
 		],
 		&keychain,
@@ -235,9 +239,9 @@ fn test_fee_fields() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	assert_eq!(tx.accept_fee(), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
+	assert_eq!(tx.accept_fee(0), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
 	assert_eq!(tx.fee(), 42);
-	assert_eq!(tx.accept_fee(), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
+	assert_eq!(tx.accept_fee(0), (1 * 4 + 1 * 1 - 1 * 1) * 500_000);
 	assert_eq!(tx.fee(), 42);
 
 	tx.body.kernels.append(&mut vec![
@@ -248,7 +252,7 @@ fn test_fee_fields() -> Result<(), Error> {
 	]);
 
 	assert_eq!(tx.fee(), 42 + 84 + 21); // 42+84+21 = 147
-	assert_eq!(tx_fee(1, 1, 3), (1 * 4 + 3 - 1) * local_base_fee);
+	assert_eq!(tx_fee(0, 1, 1, 3), (1 * 4 + 3 - 1) * local_base_fee);
 
 	Ok(())
 }

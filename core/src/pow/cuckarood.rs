@@ -32,14 +32,19 @@ use crate::pow::{PoWContext, Proof};
 /// Instantiate a new CuckaroodContext as a PowContext. Note that this can't
 /// be moved in the PoWContext trait as this particular trait needs to be
 /// convertible to an object trait.
-pub fn new_cuckarood_ctx(edge_bits: u8, proof_size: usize) -> Result<Box<dyn PoWContext>, Error> {
+pub fn new_cuckarood_ctx(
+	context_id: u32,
+	edge_bits: u8,
+	proof_size: usize,
+) -> Result<Box<dyn PoWContext>, Error> {
 	let params = CuckooParams::new(edge_bits, edge_bits - 1, proof_size)?;
-	Ok(Box::new(CuckaroodContext { params }))
+	Ok(Box::new(CuckaroodContext { params, context_id }))
 }
 
 /// Cuckarood cycle context. Only includes the verifier for now.
 pub struct CuckaroodContext {
 	params: CuckooParams,
+	context_id: u32,
 }
 
 impl PoWContext for CuckaroodContext {
@@ -58,7 +63,7 @@ impl PoWContext for CuckaroodContext {
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {
 		let size = proof.proof_size();
-		if size != global::proofsize() {
+		if size != global::proofsize(self.context_id) {
 			return Err(Error::Verification("wrong cycle length".to_owned()));
 		}
 		let nonces = &proof.nonces;
@@ -67,7 +72,7 @@ impl PoWContext for CuckaroodContext {
 		let mut xor0: u64 = 0;
 		let mut xor1: u64 = 0;
 		let mask = u64::MAX >> (size as u64).leading_zeros(); // round size up to 2-power - 1
-													  // the next two arrays form a linked list of nodes with matching bits 4..0|dir
+														// the next two arrays form a linked list of nodes with matching bits 4..0|dir
 		let mut headu = vec![2 * size; 1 + mask as usize];
 		let mut headv = vec![2 * size; 1 + mask as usize];
 		let mut prev = vec![0usize; 2 * size];
@@ -182,18 +187,22 @@ mod test {
 	#[test]
 	fn cuckarood19_29_vectors() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
 		let mut ctx19 = new_impl(19, 42);
 		ctx19.params.siphash_keys = V1_19_HASH;
-		assert!(ctx19.verify(&Proof::new(V1_19_SOL.to_vec())).is_ok());
-		assert!(ctx19.verify(&Proof::zero(42)).is_err());
+		assert!(ctx19.verify(&Proof::new(0, V1_19_SOL.to_vec())).is_ok());
+		assert!(ctx19.verify(&Proof::zero(0, 42)).is_err());
 		let mut ctx29 = new_impl(29, 42);
 		ctx29.params.siphash_keys = V2_29_HASH;
-		assert!(ctx29.verify(&Proof::new(V2_29_SOL.to_vec())).is_ok());
-		assert!(ctx29.verify(&Proof::zero(42)).is_err());
+		assert!(ctx29.verify(&Proof::new(0, V2_29_SOL.to_vec())).is_ok());
+		assert!(ctx29.verify(&Proof::zero(0, 42)).is_err());
 	}
 
 	fn new_impl(edge_bits: u8, proof_size: usize) -> CuckaroodContext {
 		let params = CuckooParams::new(edge_bits, edge_bits - 1, proof_size).unwrap();
-		CuckaroodContext { params }
+		CuckaroodContext {
+			params,
+			context_id: 0,
+		}
 	}
 }

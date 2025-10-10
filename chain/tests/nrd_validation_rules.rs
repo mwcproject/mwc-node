@@ -56,12 +56,14 @@ where
 {
 	let mut cache_values = VecDeque::new();
 	let next_header_info = consensus::next_difficulty(
+		0,
 		prev.height,
 		chain.difficulty_iter().unwrap(),
 		&mut cache_values,
 	);
 	let fee = txs.iter().map(|x| x.fee()).sum();
 	let reward = reward::output(
+		0,
 		keychain,
 		&ProofBuilder::new(keychain),
 		key_id,
@@ -73,6 +75,7 @@ where
 	.unwrap();
 
 	let mut block = Block::new(
+		0,
 		prev,
 		&txs,
 		next_header_info.clone().difficulty,
@@ -86,12 +89,13 @@ where
 
 	chain.set_txhashset_roots(&mut block)?;
 
-	block.header.pow.proof.edge_bits = global::min_edge_bits();
+	block.header.pow.proof.edge_bits = global::min_edge_bits(0);
 	pow::pow_size(
+		0,
 		&mut block.header,
 		next_header_info.difficulty,
-		global::proofsize(),
-		global::min_edge_bits(),
+		global::proofsize(0),
+		global::min_edge_bits(0),
 	)
 	.unwrap();
 	Ok(block)

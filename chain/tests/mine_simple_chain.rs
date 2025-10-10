@@ -28,7 +28,6 @@ use self::core::{consensus, global, pow};
 use self::keychain::{
 	BlindSum, ExtKeychain, ExtKeychainPath, Identifier, Keychain, SwitchCommitmentType,
 };
-use self::util::RwLock;
 use chrono::Duration;
 use mwc_chain as chain;
 use mwc_chain::{BlockStatus, ChainAdapter, Options};
@@ -37,6 +36,7 @@ use mwc_keychain as keychain;
 use mwc_util as util;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 mod chain_test_helper;
 
@@ -55,7 +55,7 @@ impl StatusAdapter {
 
 impl ChainAdapter for StatusAdapter {
 	fn block_accepted(&self, _b: &Block, status: BlockStatus, _opts: Options) {
-		*self.last_status.write() = Some(status);
+		*self.last_status.write().expect("RwLock failure") = Some(status);
 	}
 }
 
@@ -64,6 +64,7 @@ fn setup_with_status_adapter(dir_name: &str, genesis: Block, adapter: Arc<Status
 	util::init_test_logger();
 	clean_output_dir(dir_name);
 	let chain = chain::Chain::init(
+		0,
 		dir_name.to_string(),
 		adapter,
 		genesis,
@@ -124,8 +125,9 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 	let chain_dir = ".mwc.block_a_block_b_block_b_fork_header_c_fork_block_c";
 	clean_output_dir(chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
-	let genesis = pow::mine_genesis_block().unwrap();
+	let genesis = pow::mine_genesis_block(0).unwrap();
 	let last_status = RwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(chain_dir, genesis.clone(), adapter.clone());
@@ -176,8 +178,9 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
 	let chain_dir = ".mwc.block_a_block_b_block_b_fork_header_c_fork_block_c_fork";
 	clean_output_dir(chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
-	let genesis = pow::mine_genesis_block().unwrap();
+	let genesis = pow::mine_genesis_block(0).unwrap();
 	let last_status = RwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(chain_dir, genesis.clone(), adapter.clone());
@@ -232,8 +235,9 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c() {
 	let chain_dir = ".mwc.test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c";
 	clean_output_dir(chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
-	let genesis = pow::mine_genesis_block().unwrap();
+	let genesis = pow::mine_genesis_block(0).unwrap();
 	let last_status = RwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(chain_dir, genesis.clone(), adapter.clone());
@@ -288,8 +292,9 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork() {
 	let chain_dir = ".mwc.test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork";
 	clean_output_dir(chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
-	let genesis = pow::mine_genesis_block().unwrap();
+	let genesis = pow::mine_genesis_block(0).unwrap();
 	let last_status = RwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(chain_dir, genesis.clone(), adapter.clone());
@@ -353,9 +358,10 @@ fn mine_reorg() {
 	clean_output_dir(DIR_NAME);
 
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 
-	let genesis = pow::mine_genesis_block().unwrap();
+	let genesis = pow::mine_genesis_block(0).unwrap();
 	{
 		// Create chain that reports last block status
 		let last_status = RwLock::new(None);
@@ -388,7 +394,7 @@ fn mine_reorg() {
 		// Check that reorg is correctly reported in block status
 		let fork_point = chain.get_header_by_height(1).unwrap();
 		assert_eq!(
-			*adapter.last_status.read(),
+			*adapter.last_status.read().expect("RwLock failure"),
 			Some(BlockStatus::Reorg {
 				prev: Tip::from_header(&fork_head),
 				prev_head: head,
@@ -410,8 +416,9 @@ fn mine_reorg() {
 fn mine_forks() {
 	clean_output_dir(".mwc2");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	{
-		let chain = init_chain(".mwc2", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".mwc2", pow::mine_genesis_block(0).unwrap());
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 
 		// add a first block to not fork genesis
@@ -458,9 +465,10 @@ fn mine_forks() {
 fn mine_losing_fork() {
 	clean_output_dir(".mwc3");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 	{
-		let chain = init_chain(".mwc3", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".mwc3", pow::mine_genesis_block(0).unwrap());
 
 		// add a first block we'll be forking from
 		let prev = chain.head_header().unwrap();
@@ -495,11 +503,12 @@ fn mine_losing_fork() {
 fn longer_fork() {
 	clean_output_dir(".mwc4");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let kc = ExtKeychain::from_random_seed(false).unwrap();
 	// to make it easier to compute the txhashset roots in the test, we
 	// prepare 2 chains, the 2nd will be have the forked blocks we can
 	// then send back on the 1st
-	let genesis = pow::mine_genesis_block().unwrap();
+	let genesis = pow::mine_genesis_block(0).unwrap();
 	{
 		let chain = init_chain(".mwc4", genesis.clone());
 
@@ -539,12 +548,13 @@ fn longer_fork() {
 #[test]
 fn spend_rewind_spend() {
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	let chain_dir = ".mwc_spend_rewind_spend";
 	clean_output_dir(chain_dir);
 
 	{
-		let chain = init_chain(chain_dir, pow::mine_genesis_block().unwrap());
+		let chain = init_chain(chain_dir, pow::mine_genesis_block(0).unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 		let pb = ProofBuilder::new(&kc);
@@ -616,9 +626,10 @@ fn spend_rewind_spend() {
 fn spend_in_fork_and_compact() {
 	clean_output_dir(".mwc6");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	{
-		let chain = init_chain(".mwc6", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".mwc6", pow::mine_genesis_block(0).unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 		let pb = ProofBuilder::new(&kc);
@@ -769,10 +780,14 @@ fn spend_in_fork_and_compact() {
 fn output_header_mappings() {
 	clean_output_dir(".mwc_header_for_output");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	{
 		clean_output_dir(".mwc_header_for_output");
-		let chain = init_chain(".mwc_header_for_output", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(
+			".mwc_header_for_output",
+			pow::mine_genesis_block(0).unwrap(),
+		);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let mut reward_outputs = vec![];
 
@@ -781,12 +796,14 @@ fn output_header_mappings() {
 		for n in 1..15 {
 			let prev = chain.head_header().unwrap();
 			let next_header_info = consensus::next_difficulty(
+				0,
 				prev.height + 1,
 				chain.difficulty_iter().unwrap(),
 				&mut cache_values,
 			);
 			let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
 			let reward = libtx::reward::output(
+				0,
 				&keychain,
 				&libtx::ProofBuilder::new(&keychain),
 				&pk,
@@ -798,6 +815,7 @@ fn output_header_mappings() {
 			.unwrap();
 			reward_outputs.push(reward.0.clone());
 			let mut b = core::core::Block::new(
+				0,
 				&prev,
 				&[],
 				next_header_info.clone().difficulty,
@@ -811,15 +829,16 @@ fn output_header_mappings() {
 			chain.set_txhashset_roots(&mut b).unwrap();
 
 			let edge_bits = if n == 2 {
-				global::min_edge_bits() + 1
+				global::min_edge_bits(0) + 1
 			} else {
-				global::min_edge_bits()
+				global::min_edge_bits(0)
 			};
 			b.header.pow.proof.edge_bits = edge_bits;
 			pow::pow_size(
+				0,
 				&mut b.header,
 				next_header_info.difficulty,
-				global::proofsize(),
+				global::proofsize(0),
 				edge_bits,
 			)
 			.unwrap();
@@ -895,10 +914,10 @@ where
 fn test_overflow_cached_rangeproof() {
 	clean_output_dir(".mwc_overflow");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
-
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	{
-		let chain = init_chain(".mwc_overflow", pow::mine_genesis_block().unwrap());
+		let chain = init_chain(".mwc_overflow", pow::mine_genesis_block(0).unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
 		let pb = ProofBuilder::new(&kc);
@@ -933,11 +952,11 @@ fn test_overflow_cached_rangeproof() {
 			KernelFeatures::Plain { fee: 20000.into() },
 			&[
 				build::coinbase_input(
-					consensus::calc_mwc_block_reward(chain.head().unwrap().height),
+					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height),
 					key_id2.clone(),
 				),
 				build::output(
-					consensus::calc_mwc_block_reward(chain.head().unwrap().height) - 20000,
+					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000,
 					key_id30.clone(),
 				),
 			],
@@ -960,11 +979,11 @@ fn test_overflow_cached_rangeproof() {
 			KernelFeatures::Plain { fee: 0.into() },
 			&[
 				build::input(
-					consensus::calc_mwc_block_reward(chain.head().unwrap().height) - 20000,
+					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000,
 					key_id30.clone(),
 				),
 				build::output(
-					consensus::calc_mwc_block_reward(chain.head().unwrap().height) - 20000
+					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000
 						+ 1_000_000_000_000_000,
 					key_id31.clone(),
 				),
@@ -1064,11 +1083,12 @@ fn prepare_block_nosum<K>(
 where
 	K: Keychain,
 {
-	let proof_size = global::proofsize();
+	let proof_size = global::proofsize(0);
 	let key_id = ExtKeychainPath::new(1, key_idx, 0, 0, 0).to_identifier();
 
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
 	let reward = libtx::reward::output(
+		0,
 		kc,
 		&libtx::ProofBuilder::new(kc),
 		&key_id,
@@ -1079,13 +1099,13 @@ where
 	)
 	.unwrap();
 	let mut b =
-		match core::core::Block::new(prev, txs, Difficulty::from_num(diff), reward, kc.secp()) {
+		match core::core::Block::new(0, prev, txs, Difficulty::from_num(diff), reward, kc.secp()) {
 			Err(e) => panic!("{:?}", e),
 			Ok(b) => b,
 		};
 	b.header.timestamp = prev.timestamp + Duration::seconds(60);
 	b.header.pow.total_difficulty = prev.total_difficulty() + Difficulty::from_num(diff);
-	b.header.pow.proof = pow::Proof::random(proof_size);
+	b.header.pow.proof = pow::Proof::random(0, proof_size);
 	b
 }
 
@@ -1093,8 +1113,10 @@ where
 #[ignore]
 fn actual_diff_iter_output() {
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
-	let genesis_block = pow::mine_genesis_block().unwrap();
+	global::set_local_nrd_enabled(false);
+	let genesis_block = pow::mine_genesis_block(0).unwrap();
 	let chain = chain::Chain::init(
+		0,
 		"../.mwc".to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis_block,

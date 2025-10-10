@@ -427,7 +427,7 @@ impl KernelFeatures {
 			}
 			KernelFeatures::NO_RECENT_DUPLICATE_U8 => {
 				// NRD kernels are invalid if NRD feature flag is not enabled.
-				if !global::is_nrd_enabled() {
+				if !global::is_nrd_enabled(reader.get_context_id()) {
 					return Err(ser::Error::CorruptedData("NRD is disabled".to_string()));
 				}
 
@@ -469,7 +469,7 @@ impl KernelFeatures {
 			}
 			KernelFeatures::NO_RECENT_DUPLICATE_U8 => {
 				// NRD kernels are invalid if NRD feature flag is not enabled.
-				if !global::is_nrd_enabled() {
+				if !global::is_nrd_enabled(reader.get_context_id()) {
 					return Err(ser::Error::CorruptedData("NRD is disabled".to_string()));
 				}
 
@@ -880,11 +880,11 @@ impl Readable for TransactionBody {
 			)));
 		}
 
-		if tx_block_weight > global::max_block_weight() {
+		if tx_block_weight > global::max_block_weight(reader.get_context_id()) {
 			return Err(ser::Error::TooLargeReadErr(format!(
 				"Tx body weight {} is too heavy. Limit value {}",
 				tx_block_weight,
-				global::max_block_weight()
+				global::max_block_weight(reader.get_context_id())
 			)));
 		}
 
@@ -1100,7 +1100,7 @@ impl TransactionBody {
 
 	/// Verify the body is not too big in terms of number of inputs|outputs|kernels.
 	/// Weight rules vary depending on the "weight type" (block or tx or pool).
-	fn verify_weight(&self, weighting: Weighting) -> Result<(), Error> {
+	fn verify_weight(&self, context_id: u32, weighting: Weighting) -> Result<(), Error> {
 		// A coinbase reward is a single output and a single kernel (for now).
 		// We need to account for this when verifying max tx weights.
 		let coinbase_weight = consensus::BLOCK_OUTPUT_WEIGHT + consensus::BLOCK_KERNEL_WEIGHT;
@@ -1114,11 +1114,12 @@ impl TransactionBody {
 		// for the additional coinbase reward (1 output + 1 kernel).
 		//
 		let max_weight = match weighting {
-			Weighting::AsTransaction => global::max_tx_weight(),
+			Weighting::AsTransaction => global::max_tx_weight(context_id),
 			Weighting::AsLimitedTransaction(max_weight) => {
-				min(global::max_block_weight(), max_weight).saturating_sub(coinbase_weight)
+				min(global::max_block_weight(context_id), max_weight)
+					.saturating_sub(coinbase_weight)
 			}
-			Weighting::AsBlock => global::max_block_weight(),
+			Weighting::AsBlock => global::max_block_weight(context_id),
 			Weighting::NoLimit => {
 				// We do not verify "tx as pool" weight so we are done here.
 				return Ok(());
@@ -1134,8 +1135,8 @@ impl TransactionBody {
 	// It is never valid to have multiple duplicate NRD kernels (by public excess)
 	// in the same transaction or block. We check this here.
 	// We skip this check if NRD feature is not enabled.
-	fn verify_no_nrd_duplicates(&self) -> Result<(), Error> {
-		if !global::is_nrd_enabled() {
+	fn verify_no_nrd_duplicates(&self, context_id: u32) -> Result<(), Error> {
+		if !global::is_nrd_enabled(context_id) {
 			return Ok(());
 		}
 
@@ -1222,9 +1223,9 @@ impl TransactionBody {
 	/// Subset of full validation that skips expensive verification steps, specifically -
 	/// * rangeproof verification
 	/// * kernel signature verification
-	pub fn validate_read(&self, weighting: Weighting) -> Result<(), Error> {
-		self.verify_weight(weighting)?;
-		self.verify_no_nrd_duplicates()?;
+	pub fn validate_read(&self, context_id: u32, weighting: Weighting) -> Result<(), Error> {
+		self.verify_weight(context_id, weighting)?;
+		self.verify_no_nrd_duplicates(context_id)?;
 		self.verify_sorted()?;
 		self.verify_cut_through()?;
 		Ok(())
@@ -1233,8 +1234,13 @@ impl TransactionBody {
 	/// Validates all relevant parts of a transaction body. Checks the
 	/// excess value against the signature as well as range proofs for each
 	/// output.
-	pub fn validate(&self, weighting: Weighting, secp: &Secp256k1) -> Result<(), Error> {
-		self.validate_read(weighting)?;
+	pub fn validate(
+		&self,
+		context_id: u32,
+		weighting: Weighting,
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
+		self.validate_read(context_id, weighting)?;
 
 		// Now batch verify all those unverified rangeproofs
 		if !self.outputs.is_empty() {
@@ -1298,7 +1304,7 @@ impl Readable for Transaction {
 		// Treat any validation issues as data corruption.
 		// An example of this would be reading a tx
 		// that exceeded the allowed number of inputs.
-		tx.validate_read()
+		tx.validate_read(reader.get_context_id())
 			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read Tx, {}", e)))?;
 
 		Ok(tx)
@@ -1426,8 +1432,9 @@ impl Transaction {
 	/// * rangeproof verification (on the body)
 	/// * kernel signature verification (on the body)
 	/// * kernel sum verification
-	pub fn validate_read(&self) -> Result<(), Error> {
-		self.body.validate_read(Weighting::AsTransaction)?;
+	pub fn validate_read(&self, context_id: u32) -> Result<(), Error> {
+		self.body
+			.validate_read(context_id, Weighting::AsTransaction)?;
 		self.body.verify_features()?;
 		Ok(())
 	}
@@ -1435,9 +1442,14 @@ impl Transaction {
 	/// Validates all relevant parts of a fully built transaction. Checks the
 	/// excess value against the signature as well as range proofs for each
 	/// output.
-	pub fn validate(&self, weighting: Weighting, secp: &Secp256k1) -> Result<(), Error> {
+	pub fn validate(
+		&self,
+		context_id: u32,
+		weighting: Weighting,
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
 		self.body.verify_features()?;
-		self.body.validate(weighting, secp)?;
+		self.body.validate(context_id, weighting, secp)?;
 		self.verify_kernel_sums(self.overage(), self.offset.clone(), secp)?;
 		Ok(())
 	}
@@ -1455,7 +1467,7 @@ impl Transaction {
 
 	/// Transaction minimum acceptable fee
 	/// _height is kept for possible fee formula change that will require hardfork
-	pub fn accept_fee(&self) -> u64 {
+	pub fn accept_fee(&self, context_id: u32) -> u64 {
 		// Note, this code is different from mwc. Mwc is using the same formula to calculate the transaction/block size and the
 		// fees. Migration was done with hardfork.
 		// _height
@@ -1463,7 +1475,7 @@ impl Transaction {
 			self.body.inputs.len() as u64,
 			self.body.outputs.len() as u64,
 			self.body.kernels.len() as u64,
-		) * get_accept_fee_base()
+		) * get_accept_fee_base(context_id)
 	}
 
 	/// Calculation transaction base fee, rounded to the higher value
@@ -2334,9 +2346,13 @@ mod test {
 		for version in vec![ProtocolVersion(1), ProtocolVersion(2)] {
 			let mut vec = vec![];
 			ser::serialize(&mut vec, version, &kernel).expect("serialized failed");
-			let kernel2: TxKernel =
-				ser::deserialize(&mut &vec[..], version, ser::DeserializationMode::default())
-					.unwrap();
+			let kernel2: TxKernel = ser::deserialize(
+				&mut &vec[..],
+				version,
+				0,
+				ser::DeserializationMode::default(),
+			)
+			.unwrap();
 			assert_eq!(kernel2.features, KernelFeatures::Plain { fee: 10.into() });
 			assert_eq!(kernel2.excess, commit);
 			assert_eq!(kernel2.excess_sig, sig.clone());
@@ -2345,7 +2361,7 @@ mod test {
 		// Test with "default" protocol version.
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &kernel).expect("serialized failed");
-		let kernel2: TxKernel = ser::deserialize_default(&mut &vec[..]).unwrap();
+		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 		assert_eq!(kernel2.features, KernelFeatures::Plain { fee: 10.into() });
 		assert_eq!(kernel2.excess, commit);
 		assert_eq!(kernel2.excess_sig, sig.clone());
@@ -2376,9 +2392,13 @@ mod test {
 		for version in vec![ProtocolVersion(1), ProtocolVersion(2)] {
 			let mut vec = vec![];
 			ser::serialize(&mut vec, version, &kernel).expect("serialized failed");
-			let kernel2: TxKernel =
-				ser::deserialize(&mut &vec[..], version, ser::DeserializationMode::default())
-					.unwrap();
+			let kernel2: TxKernel = ser::deserialize(
+				&mut &vec[..],
+				version,
+				0,
+				ser::DeserializationMode::default(),
+			)
+			.unwrap();
 			assert_eq!(kernel.features, kernel2.features);
 			assert_eq!(kernel2.excess, commit);
 			assert_eq!(kernel2.excess_sig, sig.clone());
@@ -2387,7 +2407,7 @@ mod test {
 		// Test with "default" protocol version.
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &kernel).expect("serialized failed");
-		let kernel2: TxKernel = ser::deserialize_default(&mut &vec[..]).unwrap();
+		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 		assert_eq!(kernel.features, kernel2.features);
 		assert_eq!(kernel2.excess, commit);
 		assert_eq!(kernel2.excess_sig, sig.clone());
@@ -2420,9 +2440,13 @@ mod test {
 		for version in vec![ProtocolVersion(1), ProtocolVersion(2)] {
 			let mut vec = vec![];
 			ser::serialize(&mut vec, version, &kernel).expect("serialized failed");
-			let kernel2: TxKernel =
-				ser::deserialize(&mut &vec[..], version, ser::DeserializationMode::default())
-					.unwrap();
+			let kernel2: TxKernel = ser::deserialize(
+				&mut &vec[..],
+				version,
+				0,
+				ser::DeserializationMode::default(),
+			)
+			.unwrap();
 			assert_eq!(kernel.features, kernel2.features);
 			assert_eq!(kernel2.excess, commit);
 			assert_eq!(kernel2.excess_sig, sig.clone());
@@ -2431,7 +2455,7 @@ mod test {
 		// Test with "default" protocol version.
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &kernel).expect("serialized failed");
-		let kernel2: TxKernel = ser::deserialize_default(&mut &vec[..]).unwrap();
+		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 		assert_eq!(kernel.features, kernel2.features);
 		assert_eq!(kernel2.excess, commit);
 		assert_eq!(kernel2.excess_sig, sig.clone());
@@ -2554,19 +2578,20 @@ mod test {
 
 	#[test]
 	fn kernel_features_serialization() -> Result<(), Error> {
+		global::set_local_nrd_enabled(false);
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(0u8, 10u64, 0u64))?;
-		let features: KernelFeatures = ser::deserialize_default(&mut &vec[..])?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
 		assert_eq!(features, KernelFeatures::Plain { fee: 10.into() });
 
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(1u8, 0u64, 0u64))?;
-		let features: KernelFeatures = ser::deserialize_default(&mut &vec[..])?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
 		assert_eq!(features, KernelFeatures::Coinbase);
 
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(2u8, 10u64, 100u64))?;
-		let features: KernelFeatures = ser::deserialize_default(&mut &vec[..])?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
 		assert_eq!(
 			features,
 			KernelFeatures::HeightLocked {
@@ -2578,7 +2603,7 @@ mod test {
 		// NRD kernel support not enabled by default.
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(3u8, 10u64, 100u16)).expect("serialized failed");
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(&mut &vec[..]);
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
 		assert_eq!(
 			res.err(),
 			Some(ser::Error::CorruptedData("NRD is disabled".to_string()))
@@ -2587,7 +2612,7 @@ mod test {
 		// Additional kernel features unsupported.
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(4u8)).expect("serialized failed");
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(&mut &vec[..]);
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
 		assert_eq!(
 			res.err(),
 			Some(ser::Error::CorruptedData(
@@ -2601,12 +2626,11 @@ mod test {
 	#[test]
 	fn kernel_features_serialization_nrd_enabled() -> Result<(), Error> {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-
 		global::set_local_nrd_enabled(true);
 
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(3u8, 10u64, 100u16))?;
-		let features: KernelFeatures = ser::deserialize_default(&mut &vec[..])?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
 		assert_eq!(
 			features,
 			KernelFeatures::NoRecentDuplicate {
@@ -2618,7 +2642,7 @@ mod test {
 		// NRD with relative height 0 is invalid.
 		vec.clear();
 		ser::serialize_default(&mut vec, &(3u8, 10u64, 0u16))?;
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(&mut &vec[..]);
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
 		assert_eq!(
 			res.err(),
 			Some(ser::Error::CorruptedData(
@@ -2631,7 +2655,7 @@ mod test {
 		vec.clear();
 		let invalid_height = consensus::WEEK_HEIGHT + 1;
 		ser::serialize_default(&mut vec, &(3u8, 10u64, invalid_height as u16))?;
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(&mut &vec[..]);
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
 		assert_eq!(
 			res.err(),
 			Some(ser::Error::CorruptedData(
@@ -2643,7 +2667,7 @@ mod test {
 		// Kernel variant 4 (and above) is invalid.
 		let mut vec = vec![];
 		ser::serialize_default(&mut vec, &(4u8))?;
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(&mut &vec[..]);
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
 		assert_eq!(
 			res.err(),
 			Some(ser::Error::CorruptedData(

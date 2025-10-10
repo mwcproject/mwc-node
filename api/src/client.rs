@@ -60,12 +60,12 @@ impl Default for TimeOut {
 /// This function spawns a new Tokio runtime, which means it is pretty inefficient for multiple
 /// requests. In those situations you are probably better off creating a runtime once and spawning
 /// `get_async` tasks on it
-pub fn get<T>(url: &str, api_secret: Option<String>) -> Result<T, Error>
+pub fn get<T>(context_id: u32, url: &str, api_secret: Option<String>) -> Result<T, Error>
 where
 	for<'de> T: Deserialize<'de>,
 {
 	handle_request(
-		build_request(url, "GET", api_secret, None)?,
+		build_request(context_id, url, "GET", api_secret, None)?,
 		TimeOut::default(),
 	)
 }
@@ -73,19 +73,23 @@ where
 /// Helper function to easily issue an async HTTP GET request against a given
 /// URL that returns a future. Handles request building, JSON deserialization
 /// and response code checking.
-pub async fn get_async<T>(url: &str, api_secret: Option<String>) -> Result<T, Error>
+pub async fn get_async<T>(
+	context_id: u32,
+	url: &str,
+	api_secret: Option<String>,
+) -> Result<T, Error>
 where
 	for<'de> T: Deserialize<'de> + Send + 'static,
 {
-	handle_request_async(build_request(url, "GET", api_secret, None)?).await
+	handle_request_async(build_request(context_id, url, "GET", api_secret, None)?).await
 }
 
 /// Helper function to easily issue a HTTP GET request
 /// on a given URL that returns nothing. Handles request
 /// building and response code checking.
-pub fn get_no_ret(url: &str, api_secret: Option<String>) -> Result<(), Error> {
+pub fn get_no_ret(context_id: u32, url: &str, api_secret: Option<String>) -> Result<(), Error> {
 	send_request(
-		build_request(url, "GET", api_secret, None)?,
+		build_request(context_id, url, "GET", api_secret, None)?,
 		TimeOut::default(),
 	)?;
 	Ok(())
@@ -96,6 +100,7 @@ pub fn get_no_ret(url: &str, api_secret: Option<String>) -> Result<(), Error> {
 /// building, JSON serialization and deserialization, and response code
 /// checking.
 pub fn post<IN, OUT>(
+	context_id: u32,
 	url: &str,
 	api_secret: Option<String>,
 	input: &IN,
@@ -105,7 +110,7 @@ where
 	IN: Serialize,
 	for<'de> OUT: Deserialize<'de>,
 {
-	let req = create_post_request(url, api_secret, input)?;
+	let req = create_post_request(context_id, url, api_secret, input)?;
 	handle_request(req, timeout)
 }
 
@@ -114,6 +119,7 @@ where
 /// request building, JSON serialization and deserialization, and response code
 /// checking.
 pub async fn post_async<IN, OUT>(
+	context_id: u32,
 	url: &str,
 	input: &IN,
 	api_secret: Option<String>,
@@ -123,19 +129,24 @@ where
 	OUT: Send + 'static,
 	for<'de> OUT: Deserialize<'de>,
 {
-	handle_request_async(create_post_request(url, api_secret, input)?).await
+	handle_request_async(create_post_request(context_id, url, api_secret, input)?).await
 }
 
 /// Helper function to easily issue a HTTP POST request with the provided JSON
 /// object as body on a given URL that returns nothing. Handles request
 /// building, JSON serialization, and response code
 /// checking.
-pub fn post_no_ret<IN>(url: &str, api_secret: Option<String>, input: &IN) -> Result<(), Error>
+pub fn post_no_ret<IN>(
+	context_id: u32,
+	url: &str,
+	api_secret: Option<String>,
+	input: &IN,
+) -> Result<(), Error>
 where
 	IN: Serialize,
 {
 	send_request(
-		create_post_request(url, api_secret, input)?,
+		create_post_request(context_id, url, api_secret, input)?,
 		TimeOut::default(),
 	)?;
 	Ok(())
@@ -146,6 +157,7 @@ where
 /// request building, JSON serialization and deserialization, and response code
 /// checking.
 pub async fn post_no_ret_async<IN>(
+	context_id: u32,
 	url: &str,
 	api_secret: Option<String>,
 	input: &IN,
@@ -154,7 +166,7 @@ where
 	IN: Serialize,
 {
 	send_request_async(
-		create_post_request(url, api_secret, input)?,
+		create_post_request(context_id, url, api_secret, input)?,
 		TimeOut::default(),
 	)
 	.await?;
@@ -162,14 +174,15 @@ where
 }
 
 fn build_request(
+	context_id: u32,
 	url: &str,
 	method: &str,
 	api_secret: Option<String>,
 	body: Option<String>,
 ) -> Result<Request<Body>, Error> {
-	let basic_auth_key = if global::is_mainnet() {
+	let basic_auth_key = if global::is_mainnet(context_id) {
 		"mwcmain"
-	} else if global::is_floonet() {
+	} else if global::is_floonet(context_id) {
 		"mwcfloo"
 	} else {
 		"mwc"
@@ -223,6 +236,7 @@ fn build_request_ex(
 }
 
 pub fn create_post_request<IN>(
+	context_id: u32,
 	url: &str,
 	api_secret: Option<String>,
 	input: &IN,
@@ -233,7 +247,7 @@ where
 	let json = serde_json::to_string(input).map_err(|e| {
 		Error::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
 	})?;
-	build_request(url, "POST", api_secret, Some(json))
+	build_request(context_id, url, "POST", api_secret, Some(json))
 }
 
 pub fn create_post_request_ex<IN>(

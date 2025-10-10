@@ -39,8 +39,9 @@ fn build_block(chain: &Chain) -> Block {
 	let mut cache_values = VecDeque::new();
 	let prev = chain.head_header().unwrap();
 	let next_header_info =
-		consensus::next_difficulty(1, chain.difficulty_iter().unwrap(), &mut cache_values);
+		consensus::next_difficulty(0, 1, chain.difficulty_iter().unwrap(), &mut cache_values);
 	let reward = reward::output(
+		0,
 		&keychain,
 		&ProofBuilder::new(&keychain),
 		&pk,
@@ -51,6 +52,7 @@ fn build_block(chain: &Chain) -> Block {
 	)
 	.unwrap();
 	let mut block = Block::new(
+		0,
 		&prev,
 		&[],
 		next_header_info.clone().difficulty,
@@ -64,12 +66,13 @@ fn build_block(chain: &Chain) -> Block {
 
 	chain.set_txhashset_roots(&mut block).unwrap();
 
-	let edge_bits = global::min_edge_bits();
+	let edge_bits = global::min_edge_bits(0);
 	block.header.pow.proof.edge_bits = edge_bits;
 	pow::pow_size(
+		0,
 		&mut block.header,
 		next_header_info.difficulty,
-		global::proofsize(),
+		global::proofsize(0),
 		edge_bits,
 	)
 	.unwrap();

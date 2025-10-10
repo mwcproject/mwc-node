@@ -85,10 +85,10 @@ impl MerkleProof {
 	}
 
 	/// Convert hex string representation back to a Merkle proof instance
-	pub fn from_hex(hex: &str) -> Result<MerkleProof, String> {
+	pub fn from_hex(context_id: u32, hex: &str) -> Result<MerkleProof, String> {
 		let bytes =
 			util::from_hex(hex).map_err(|e| format!("Merkle Proof HEX conversion error, {}", e))?;
-		let res = ser::deserialize_default(&mut &bytes[..])
+		let res = ser::deserialize_default(context_id, &mut &bytes[..])
 			.map_err(|e| format!("failed to deserialize a Merkle Proof, {}", e))?;
 		Ok(res)
 	}

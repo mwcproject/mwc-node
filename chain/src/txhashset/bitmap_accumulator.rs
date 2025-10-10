@@ -585,6 +585,7 @@ mod tests {
 		let mut reader = BinReader::new(
 			&mut cursor,
 			ProtocolVersion(1),
+			0,
 			DeserializationMode::default(),
 		);
 		let block2: BitmapBlock = Readable::read(&mut reader).unwrap();

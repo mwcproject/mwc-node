@@ -32,6 +32,7 @@ fn test_the_transaction_pool() {
 	util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_accept_fee_base(1);
+	global::set_local_nrd_enabled(false);
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 
 	let db_root = "target/.transaction_pool";
@@ -196,7 +197,7 @@ fn test_the_transaction_pool() {
 			transaction::aggregate(&[tx1.clone(), tx2.clone(), tx4], chain.secp()).unwrap();
 
 		agg_tx
-			.validate(Weighting::AsTransaction, chain.secp())
+			.validate(0, Weighting::AsTransaction, chain.secp())
 			.unwrap();
 
 		pool.add_to_pool(test_source(), agg_tx, false, &header, chain.secp())

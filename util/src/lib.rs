@@ -34,9 +34,6 @@ pub use ov3::OnionV3Address;
 pub use ov3::OnionV3Error as OnionV3AddressError;
 
 // Re-export so only has to be included once
-pub use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-// Re-export so only has to be included once
 pub use secp256k1zkp as secp;
 
 // Logging related
@@ -56,7 +53,7 @@ pub mod macros;
 #[allow(unused_imports)]
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 mod hex;
 pub use crate::hex::*;
 
@@ -107,7 +104,7 @@ where
 
 	/// Allows the one time to be set again with an override.
 	pub fn set(&self, value: T, is_override: bool) {
-		let mut inner = self.inner.write();
+		let mut inner = self.inner.write().expect("RwLock failure");
 		if !is_override {
 			assert!(inner.is_none());
 		}
@@ -117,7 +114,7 @@ where
 	/// Borrows the OneTime, should only be called after initialization.
 	/// Will panic (via expect) if called before initialization.
 	pub fn borrow(&self) -> T {
-		let inner = self.inner.read();
+		let inner = self.inner.read().expect("RwLock failure");
 		inner
 			.clone()
 			.expect("Cannot borrow one_time before initialization.")
@@ -125,7 +122,7 @@ where
 
 	/// Has this OneTime been initialized?
 	pub fn is_init(&self) -> bool {
-		self.inner.read().is_some()
+		self.inner.read().expect("RwLock failure").is_some()
 	}
 }
 

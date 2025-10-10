@@ -16,8 +16,8 @@
 //! Adapters connecting new block, new transaction, and accepted transaction
 //! events to consumers of those events.
 
-use crate::util::RwLock;
 use std::path::PathBuf;
+use std::sync::RwLock;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
@@ -71,17 +71,17 @@ impl EventCache {
 		let time_limit = now - 1000; // lock for a 1 second, should be enough to reduce the load.
 		if self.time.load(Ordering::Relaxed) < time_limit {
 			if update {
-				*(self.event.write()) = *hash;
+				*(self.event.write().expect("RwLock failure")) = *hash;
 				self.time.store(now, Ordering::Relaxed);
 			}
 			return false;
 		}
 
-		if *self.event.read() == *hash {
+		if *self.event.read().expect("RwLock failure") == *hash {
 			true
 		} else {
 			if update {
-				*(self.event.write()) = *hash;
+				*(self.event.write().expect("RwLock failure")) = *hash;
 				self.time.store(now, Ordering::Relaxed);
 			}
 			false
@@ -104,6 +104,7 @@ where
 	peers: OneTime<Weak<p2p::Peers>>,
 	config: ServerConfig,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
+	context_id: u32,
 
 	// local in mem cache
 	processed_headers: EventCache,
@@ -125,7 +126,10 @@ where
 	}
 
 	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction> {
-		self.tx_pool.read().retrieve_tx_by_kernel_hash(kernel_hash)
+		self.tx_pool
+			.read()
+			.expect("RwLock failure")
+			.retrieve_tx_by_kernel_hash(kernel_hash)
 	}
 
 	fn tx_kernel_received(
@@ -138,7 +142,11 @@ where
 			return Ok(true);
 		}
 
-		let tx = self.tx_pool.read().retrieve_tx_by_kernel_hash(kernel_hash);
+		let tx = self
+			.tx_pool
+			.read()
+			.expect("RwLock failure")
+			.retrieve_tx_by_kernel_hash(kernel_hash);
 
 		if tx.is_none() {
 			self.request_transaction(kernel_hash, peer_info);
@@ -174,7 +182,7 @@ where
 			hook.on_transaction_received(&tx);
 		}
 
-		let mut tx_pool = self.tx_pool.write();
+		let mut tx_pool = self.tx_pool.write().expect("RwLock failure");
 		match tx_pool.add_to_pool(source, tx, stem, &header, chain.secp()) {
 			Ok(_) => {
 				self.processed_transactions.contains(&tx_hash, true);
@@ -280,6 +288,7 @@ where
 			let (txs, missing_short_ids) = {
 				self.tx_pool
 					.read()
+					.expect("RwLock failed")
 					.retrieve_transactions(cb.hash(), cb.nonce, cb.kern_ids())
 			};
 
@@ -317,7 +326,7 @@ where
 
 			if let Ok(prev) = chain.get_previous_header(&cb.header) {
 				if block
-					.validate(&prev.total_kernel_offset, chain.secp())
+					.validate(self.context_id, &prev.total_kernel_offset, chain.secp())
 					.is_ok()
 				{
 					debug!(
@@ -814,6 +823,7 @@ where
 {
 	/// Construct a new NetToChainAdapter instance
 	pub fn new(
+		context_id: u32,
 		sync_state: Arc<SyncState>,
 		chain: Arc<chain::Chain>,
 		sync_manager: Arc<SyncManager>,
@@ -829,6 +839,7 @@ where
 			peers: OneTime::new(),
 			config,
 			hooks,
+			context_id,
 			processed_headers: EventCache::new(),
 			processed_blocks: EventCache::new(),
 			processed_transactions: EventCache::new(),
@@ -868,7 +879,7 @@ where
 			let head = chain.head()?;
 			let horizon = head
 				.height
-				.saturating_sub(global::cut_through_horizon() as u64);
+				.saturating_sub(global::cut_through_horizon(self.context_id) as u64);
 			if b.header.height < horizon {
 				debug!("Got block is below horizon from peer {}", peer_info.addr);
 				return Ok(true);
@@ -1094,7 +1105,7 @@ where
 		// We only want to reconcile the txpool against the new block *if* total work has increased.
 
 		if status.is_next() || status.is_reorg() {
-			let mut tx_pool = self.tx_pool.write();
+			let mut tx_pool = self.tx_pool.write().expect("RwLock failure");
 
 			let _ = tx_pool.reconcile_block(b, &self.secp);
 
@@ -1107,6 +1118,7 @@ where
 			let _ = self
 				.tx_pool
 				.write()
+				.expect("RwLock failure")
 				.reconcile_reorg_cache(&b.header, &self.secp);
 		}
 	}
@@ -1165,15 +1177,24 @@ pub trait DandelionAdapter: Send + Sync {
 
 impl DandelionAdapter for PoolToNetAdapter {
 	fn is_stem(&self) -> bool {
-		self.dandelion_epoch.read().is_stem()
+		self.dandelion_epoch
+			.read()
+			.expect("RwLock failure")
+			.is_stem()
 	}
 
 	fn is_expired(&self) -> bool {
-		self.dandelion_epoch.read().is_expired()
+		self.dandelion_epoch
+			.read()
+			.expect("RwLock failure")
+			.is_expired()
 	}
 
 	fn next_epoch(&self) {
-		self.dandelion_epoch.write().next_epoch(&self.peers());
+		self.dandelion_epoch
+			.write()
+			.expect("RwLock failure")
+			.next_epoch(&self.peers());
 	}
 }
 
@@ -1185,7 +1206,7 @@ impl pool::PoolAdapter for PoolToNetAdapter {
 	fn stem_tx_accepted(&self, entry: &pool::PoolEntry) -> Result<(), pool::PoolError> {
 		// Take write lock on the current epoch.
 		// We need to be able to update the current relay peer if not currently connected.
-		let mut epoch = self.dandelion_epoch.write();
+		let mut epoch = self.dandelion_epoch.write().expect("RwLock failure");
 
 		// If "stem" epoch attempt to relay the tx to the next Dandelion relay.
 		// Fallback to immediately fluffing the tx if we cannot stem for any reason.
@@ -1216,10 +1237,10 @@ impl pool::PoolAdapter for PoolToNetAdapter {
 
 impl PoolToNetAdapter {
 	/// Create a new pool to net adapter
-	pub fn new(config: pool::DandelionConfig) -> PoolToNetAdapter {
+	pub fn new(context_id: u32, config: pool::DandelionConfig) -> PoolToNetAdapter {
 		PoolToNetAdapter {
 			peers: OneTime::new(),
-			dandelion_epoch: Arc::new(RwLock::new(DandelionEpoch::new(config))),
+			dandelion_epoch: Arc::new(RwLock::new(DandelionEpoch::new(context_id, config))),
 		}
 	}
 

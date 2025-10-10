@@ -67,6 +67,7 @@ fn build_router() -> Router {
 #[test]
 fn test_start_api() {
 	global::set_local_chain_type(global::ChainTypes::Floonet);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	let mut server = ApiServer::new();
 	let mut router = build_router();
@@ -79,7 +80,7 @@ fn test_start_api() {
 		Box::leak(Box::new(oneshot::channel::<()>()));
 	assert!(server.start(addr, router, None, api_chan).is_ok());
 	let url = format!("http://{}/v1/", server_addr);
-	let index = request_with_retry(url.as_str()).unwrap();
+	let index = request_with_retry(0, url.as_str()).unwrap();
 	assert_eq!(index.len(), 2);
 	assert_eq!(counter.value(), 1);
 	assert!(server.stop());
@@ -94,6 +95,7 @@ fn test_start_api() {
 #[test]
 fn test_start_api_tls() {
 	global::set_local_chain_type(global::ChainTypes::Floonet);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	let tls_conf = TLSConfig::new(
 		"tests/fullchain.pem".to_string(),
@@ -106,15 +108,15 @@ fn test_start_api_tls() {
 	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
 		Box::leak(Box::new(oneshot::channel::<()>()));
 	assert!(server.start(addr, router, Some(tls_conf), api_chan).is_ok());
-	let index = request_with_retry("https://yourdomain.com:14444/v1/").unwrap();
+	let index = request_with_retry(0, "https://yourdomain.com:14444/v1/").unwrap();
 	assert_eq!(index.len(), 2);
 	assert!(!server.stop());
 }
 
-fn request_with_retry(url: &str) -> Result<Vec<String>, api::Error> {
+fn request_with_retry(context_id: u32, url: &str) -> Result<Vec<String>, api::Error> {
 	let mut tries = 0;
 	loop {
-		let res = api::client::get::<Vec<String>>(url, None);
+		let res = api::client::get::<Vec<String>>(context_id, url, None);
 		if res.is_ok() {
 			return res;
 		}

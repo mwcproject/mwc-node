@@ -16,10 +16,10 @@
 //! Server stat collection types, to be used by tests, logging or GUI/TUI
 //! to collect information about server status
 
-use crate::util::RwLock;
 use atomic_float::AtomicF64;
 use std::sync::atomic::*;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::SystemTime;
 
 use crate::core::core::hash::Hash;
@@ -226,7 +226,7 @@ impl StratumStats {
 	/// Allocate a new slot for the worker. Assuming that caller will never fail.
 	/// returns worker Id for the Worker tist
 	pub fn allocate_new_worker(&self, pow_difficulty: u64) -> usize {
-		let mut worker_stats = self.worker_stats.write();
+		let mut worker_stats = self.worker_stats.write().expect("RwLock failure");
 
 		let worker_id = worker_stats
 			.iter()
@@ -249,19 +249,23 @@ impl StratumStats {
 
 	/// Get worker Stat info
 	pub fn get_stats(&self, worker_id: usize) -> Option<WorkerStats> {
-		self.worker_stats.read().get(worker_id).map(|ws| ws.clone())
+		self.worker_stats
+			.read()
+			.expect("RwLock failure")
+			.get(worker_id)
+			.map(|ws| ws.clone())
 	}
 
 	/// Update stats record for the worker
 	/// callback expected to be short and non locking
 	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats) -> ()) {
-		let mut worker_stats = self.worker_stats.write();
+		let mut worker_stats = self.worker_stats.write().expect("RwLock failure");
 		f(&mut worker_stats[worker_id]);
 	}
 
 	/// Copy stat data. Expected that caller is understand the impact of this call.
 	pub fn get_worker_stats(&self) -> Vec<WorkerStats> {
-		self.worker_stats.read().clone()
+		self.worker_stats.read().expect("RwLock failure").clone()
 	}
 }
 
@@ -292,8 +296,20 @@ impl PeerStats {
 			height: peer.info.height(),
 			direction: direction.to_string(),
 			last_seen: peer.info.last_seen(),
-			sent_bytes_per_sec: peer.tracker().sent_bytes.read().bytes_per_min() / 60,
-			received_bytes_per_sec: peer.tracker().received_bytes.read().bytes_per_min() / 60,
+			sent_bytes_per_sec: peer
+				.tracker()
+				.sent_bytes
+				.read()
+				.expect("RwLock failure")
+				.bytes_per_min()
+				/ 60,
+			received_bytes_per_sec: peer
+				.tracker()
+				.received_bytes
+				.read()
+				.expect("RwLock failure")
+				.bytes_per_min()
+				/ 60,
 			capabilities: peer.info.capabilities,
 		}
 	}

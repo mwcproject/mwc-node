@@ -179,9 +179,10 @@ impl Handler for PeerHandler {
 		// We support both "ip" and "ip:port" here for peer_addr.
 		// "ip:port" is only really useful for local usernet testing on loopback address.
 		// Normally we map peers to ip and only allow a single peer per ip address.
+		let peers = w_fut!(&self.peers);
 		let peer_addr;
 		if let Ok(ip_addr) = command.parse() {
-			peer_addr = PeerAddr::from_ip(ip_addr);
+			peer_addr = PeerAddr::from_ip(peers.get_context_id(), ip_addr);
 		} else if let Ok(addr) = command.parse() {
 			peer_addr = PeerAddr::Ip(addr);
 		} else if let Ok(onion) = command.parse() {
@@ -193,7 +194,7 @@ impl Handler for PeerHandler {
 			);
 		}
 
-		match w_fut!(&self.peers).get_peer(&peer_addr) {
+		match peers.get_peer(&peer_addr) {
 			Ok(peer) => json_response(&peer),
 			Err(_) => response(
 				StatusCode::NOT_FOUND,
@@ -209,11 +210,12 @@ impl Handler for PeerHandler {
 			None => return response(StatusCode::BAD_REQUEST, "invalid url"),
 			Some(c) => c,
 		};
+		let peers = w_fut!(&self.peers);
 		let addr = match path_elems.next() {
 			None => return response(StatusCode::BAD_REQUEST, "invalid url"),
 			Some(a) => {
 				if let Ok(ip_addr) = a.parse() {
-					PeerAddr::from_ip(ip_addr)
+					PeerAddr::from_ip(peers.get_context_id(), ip_addr)
 				} else if let Ok(addr) = a.parse() {
 					PeerAddr::Ip(addr)
 				} else if let Ok(addr) = a.parse() {
@@ -228,18 +230,14 @@ impl Handler for PeerHandler {
 		};
 
 		match command {
-			"ban" => match w_fut!(&self.peers).ban_peer(
-				&addr,
-				ReasonForBan::ManualBan,
-				"banned from CLI",
-			) {
+			"ban" => match peers.ban_peer(&addr, ReasonForBan::ManualBan, "banned from CLI") {
 				Ok(_) => response(StatusCode::OK, "{}"),
 				Err(e) => response(
 					StatusCode::INTERNAL_SERVER_ERROR,
 					format!("ban for peer {} failed, {:?}", addr, e),
 				),
 			},
-			"unban" => match w_fut!(&self.peers).unban_peer(&addr) {
+			"unban" => match peers.unban_peer(&addr) {
 				Ok(_) => response(StatusCode::OK, "{}"),
 				Err(e) => response(
 					StatusCode::INTERNAL_SERVER_ERROR,

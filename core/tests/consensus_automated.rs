@@ -25,6 +25,8 @@ use std::collections::VecDeque;
 #[test]
 fn next_target_adjustment() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+
 	let cur_time = Utc::now().timestamp() as u64;
 	let diff_min = Difficulty::min();
 
@@ -33,6 +35,7 @@ fn next_target_adjustment() {
 	hi.is_secondary = false;
 	let mut cache_values = VecDeque::new();
 	let hinext = next_difficulty(
+		0,
 		1,
 		repeat(
 			BLOCK_TIME_SEC / 4,
@@ -53,6 +56,7 @@ fn next_target_adjustment() {
 	hi.difficulty = Difficulty::from_num(10000);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -64,8 +68,9 @@ fn next_target_adjustment() {
 	// check pre difficulty_data_to_vector effect on retargetting
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
-			vec![HeaderDifficultyInfo::from_ts_diff(42, hi.difficulty)],
+			vec![HeaderDifficultyInfo::from_ts_diff(0, 42, hi.difficulty)],
 			&mut cache_values
 		)
 		.difficulty,
@@ -84,7 +89,7 @@ fn next_target_adjustment() {
 	);
 	s2.append(&mut s1);
 	assert_eq!(
-		next_difficulty(1, s2, &mut cache_values).difficulty,
+		next_difficulty(0, 1, s2, &mut cache_values).difficulty,
 		Difficulty::from_num(1000)
 	);
 
@@ -92,6 +97,7 @@ fn next_target_adjustment() {
 	hi.difficulty = Difficulty::from_num(1000);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(90, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -101,6 +107,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(120, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -112,6 +119,7 @@ fn next_target_adjustment() {
 	// too fast, diff goes up
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(55, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -121,6 +129,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(45, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -130,6 +139,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(30, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -141,6 +151,7 @@ fn next_target_adjustment() {
 	// hitting lower time bound, should always get the same result below
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(0, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -152,6 +163,7 @@ fn next_target_adjustment() {
 	// hitting higher time bound, should always get the same result above
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(300, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -161,6 +173,7 @@ fn next_target_adjustment() {
 	);
 	assert_eq!(
 		next_difficulty(
+			0,
 			1,
 			repeat(400, hi.clone(), just_enough, None),
 			&mut cache_values
@@ -172,7 +185,7 @@ fn next_target_adjustment() {
 	// We should never drop below minimum
 	hi.difficulty = Difficulty::zero();
 	assert_eq!(
-		next_difficulty(1, repeat(90, hi, just_enough, None), &mut cache_values).difficulty,
+		next_difficulty(0, 1, repeat(90, hi, just_enough, None), &mut cache_values).difficulty,
 		Difficulty::min()
 	);
 }
@@ -212,7 +225,7 @@ fn repeat(
 fn repeat_offs(interval: u64, diff: u64, len: u64, from: u64) -> Vec<HeaderDifficultyInfo> {
 	repeat(
 		interval,
-		HeaderDifficultyInfo::from_ts_diff(1, Difficulty::from_num(diff)),
+		HeaderDifficultyInfo::from_ts_diff(0, 1, Difficulty::from_num(diff)),
 		len,
 		Some(from),
 	)

@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::chain;
 use crate::chain::txhashset::BitmapChunk;
 use crate::handshake::Handshake;
 use crate::mwc_core::core;
@@ -25,7 +26,7 @@ use crate::peers::Peers;
 use crate::store::PeerStore;
 use crate::tcp_data_stream::TcpDataStream;
 use crate::tor::arti;
-use crate::tor::arti::{arti_async_block, restart_arti, ArtiCore};
+use crate::tor::arti::{arti_async_block, ArtiCore};
 use crate::types::PeerAddr::Onion;
 use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
@@ -34,18 +35,17 @@ use crate::types::{
 use crate::util::secp::pedersen::RangeProof;
 use crate::util::StopState;
 use crate::PeerAddr::Ip;
-use crate::{chain, network_status};
 use ed25519_dalek::ExpandedSecretKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
 use futures::StreamExt;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
+use mwc_util::run_global_async_block;
 use mwc_util::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_util::tokio::io::AsyncWriteExt;
 use mwc_util::tokio::net::{TcpListener, TcpStream};
 use mwc_util::tokio::time::Duration;
 use mwc_util::tokio_socks::tcp::Socks5Stream;
-use mwc_util::{run_global_async_block, RwLock};
 use std::convert::TryInto;
 use std::fs::File;
 use std::io;
@@ -54,7 +54,7 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Instant;
 use tor_cell::relaycell::msg::Connected;
@@ -74,12 +74,14 @@ pub struct Server {
 	genesis: Hash,
 	db_root: String,
 	handshake: Arc<RwLock<Option<Handshake>>>,
+	context_id: u32,
 }
 
 // TODO TLS
 impl Server {
 	/// Creates a new idle p2p server with no peers
 	pub fn new(
+		context_id: u32,
 		db_root: &str,
 		capabilities: Capabilities,
 		config: &P2PConfig,
@@ -94,23 +96,23 @@ impl Server {
 			tor_config: tor_config.clone(),
 			capabilities,
 			peers: Arc::new(Peers::new(
-				PeerStore::new(db_root)?,
+				PeerStore::new(context_id, db_root)?,
 				adapter,
 				config,
-				stop_state.clone(),
 			)),
 			sync_state,
 			stop_state,
 			genesis,
 			db_root: String::from(db_root),
 			handshake: Arc::new(RwLock::new(None)),
+			context_id,
 		})
 	}
 
 	/// Return true if server is ready to connect to the others peers.
 	/// Server is ready when handshake record is built.
 	pub fn is_ready(&self) -> bool {
-		self.handshake.read().is_some()
+		self.handshake.read().expect("RwLock failure").is_some()
 	}
 
 	pub fn listen(
@@ -130,7 +132,8 @@ impl Server {
 						"For tor external config, internal onion address is not specified.".into(),
 					));
 				}
-				*self.handshake.write() = Some(Handshake::new(
+				*self.handshake.write().expect("RwLock failure") = Some(Handshake::new(
+					self.context_id,
 					self.genesis.clone(),
 					self.config.clone(),
 					self.tor_config.onion_address.clone(),
@@ -143,7 +146,8 @@ impl Server {
 			}
 		} else {
 			// Http listener. Accept any from internet
-			*self.handshake.write() = Some(Handshake::new(
+			*self.handshake.write().expect("RwLock failure") = Some(Handshake::new(
+				self.context_id,
 				self.genesis.clone(),
 				self.config.clone(),
 				None,
@@ -167,44 +171,37 @@ impl Server {
 
 		//
 		loop {
+			if self.stop_state.is_stopped() {
+				break;
+			}
+
 			match self.start_arti() {
 				Ok((onion_service, mut incoming_requests)) => {
 					ready_tx.take().map(|tx| {
 						let _ = tx.send(Ok(()));
 					});
 
+					let restarted_rc = arti::register_arti_restart_event()?;
+
+					let stop_state = self.stop_state.clone();
 					let monitoring = thread::Builder::new()
-						.name("onion_service_checker".to_string())
+						.name("node_onion_service_checker".to_string())
 						.spawn(move || {
 							let mut last_running_time = Instant::now();
 							loop {
+								if stop_state.is_stopped() {
+									break;
+								}
 								let need_arti_restart = {
-									let connected = arti::access_arti(|arti| {
-										let connected = arti_async_block(async {
-											let connected = match arti.connect(( network_status::get_random_http_probe_host().as_str(), 80)).await {
-												Ok(mut stream) => {
-													let _ = stream.shutdown().await;
-													true
-												}
-												Err(e) => {
-													info!("Tor monitoring connection is failed with error: {}", e);
-													false
-												},
-											};
-											connected
-										})?;
-										Ok(connected)
-									}).unwrap_or(false);
-
 									let onion_service_status = onion_service.status().state();
 									let ready_for_traffic = arti::access_arti(|arti| {
 										let ready_for_traffic = arti.bootstrap_status().ready_for_traffic();
 										Ok(ready_for_traffic)
 									}).unwrap_or(false);
 
-									info!("Current mwc node onion service status: {:?},  ready for traffic: {}  connected: {}", onion_service_status, ready_for_traffic, connected );
+									info!("Current mwc node onion service status: {:?},  ready for traffic: {}", onion_service_status, ready_for_traffic );
 
-									let need_arti_restart = if ready_for_traffic && connected {
+									let need_arti_restart = if ready_for_traffic {
 										match onion_service_status {
 											State::Bootstrapping |
 											State::DegradedReachable |
@@ -232,53 +229,93 @@ impl Server {
 
 								if need_arti_restart {
 									drop(onion_service);
-									restart_arti();
+									arti::request_arti_restart();
 									break;
 								}
 								thread::sleep(Duration::from_secs(30));
 							}
-						}).expect("Unable to start onion_service_checher thread");
+						}).expect("Unable to start node_onion_service_checker thread");
 
-					arti_async_block(async move {
-						while let Some(stream_request) = incoming_requests.next().await {
-							// Incoming connection.
-							let request: &IncomingStreamRequest = stream_request.request();
-							match request {
-								IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-									match stream_request.accept(Connected::new_empty()).await {
-										Ok(onion_service_stream) => {
-											match self.handle_new_peer(TcpDataStream::from_data(
-												onion_service_stream,
-											)) {
-												Err(Error::ConnectionClose(err)) => {
-													debug!(
-														"shutting down, ignoring a new peer, {}",
-														err
-													)
+					let stop_state = self.stop_state.clone();
+					loop {
+						let request_res = arti_async_block(async {
+							mwc_util::tokio::time::timeout(
+								mwc_util::tokio::time::Duration::from_secs(1),
+								incoming_requests.next(),
+							)
+							.await
+						})?;
+
+						match request_res {
+							Ok(Some(stream_request)) => {
+								if stop_state.is_stopped() {
+									break;
+								}
+
+								// Incoming connection.
+								let request: &IncomingStreamRequest = stream_request.request();
+								match request {
+									IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
+										let accept_result = arti_async_block(async move {
+											stream_request.accept(Connected::new_empty()).await
+										})?;
+
+										match accept_result {
+											Ok(onion_service_stream) => {
+												match self.handle_new_peer(
+													TcpDataStream::from_data(onion_service_stream),
+												) {
+													Err(Error::ConnectionClose(err)) => {
+														debug!(
+													"shutting down, ignoring a new peer, {}",
+													err
+												)
+													}
+													Err(e) => {
+														debug!("Error accepting onion peer. {}", e);
+													}
+													Ok(_) => {}
 												}
-												Err(e) => {
-													debug!("Error accepting onion peer. {}", e);
-												}
-												Ok(_) => {}
 											}
+											Err(err) => error!("Client error: {}", err),
 										}
-										Err(err) => error!("Client error: {}", err),
+									}
+									_ => {
+										let _ = stream_request.shutdown_circuit();
 									}
 								}
-								_ => {
-									let _ = stream_request.shutdown_circuit();
+							}
+							Ok(None) => {
+								break; // channel is closed
+							}
+							Err(_) => {
+								// timeout
+								if stop_state.is_stopped() {
+									break;
 								}
 							}
 						}
-					})?;
+					}
 
 					warn!("Onion listening service is stopped");
+
+					if self.stop_state.is_stopped() {
+						break;
+					}
+
+					// Waiting while arti is started
+					let _ = restarted_rc.recv();
+
 					if monitoring.join().is_err() {
 						break;
 					}
 					warn!("Restarting onion listening service...");
 				}
 				Err(e) => {
+					if self.stop_state.is_stopped() {
+						break;
+					}
+
 					match ready_tx.take() {
 						Some(tx) => {
 							let _ = tx.send(Err(Error::TorProcess(format!(
@@ -290,10 +327,10 @@ impl Server {
 						None => {
 							// we are in the restart cycle.
 							error!("Unable to restart onion service. Will retry soon");
-							// Sleeping for a minute, likely something with a network, no reasons to try now
+							// restarting arti first
+							arti::request_arti_restart();
+							// Sleeping for a minute, likely something with a network, also restart was requested. Waiting...
 							thread::sleep(Duration::from_secs(60));
-							// restarting arti
-							restart_arti();
 						}
 					}
 				}
@@ -382,7 +419,10 @@ impl Server {
 
 			let (onion_service, onion_address, incoming_requests) = ArtiCore::start_onion_service(
 				&tor_client,
-				format!("mwc-node_{}", global::get_chain_type().shortname()),
+				format!(
+					"mwc-node_{}",
+					global::get_chain_type(self.context_id).shortname()
+				),
 				expanded_key,
 			)?;
 			Ok((
@@ -398,7 +438,8 @@ impl Server {
 
 		info!("Onion listener started at {}", onion_address);
 
-		*self.handshake.write() = Some(Handshake::new(
+		*self.handshake.write().expect("RwLock failure") = Some(Handshake::new(
+			self.context_id,
 			self.genesis.clone(),
 			self.config.clone(),
 			Some(onion_address),
@@ -442,7 +483,24 @@ impl Server {
 				continue;
 			}
 
-			match run_global_async_block(async { listener.accept().await }) {
+			if self.stop_state.is_stopped() {
+				break;
+			}
+
+			match run_global_async_block(async {
+				match mwc_util::tokio::time::timeout(
+					mwc_util::tokio::time::Duration::from_secs(1),
+					listener.accept(),
+				)
+				.await
+				{
+					Ok(r) => r,
+					Err(_) => Err(io::Error::new(
+						io::ErrorKind::WouldBlock,
+						"expected waiting timeout",
+					)),
+				}
+			}) {
 				Ok((mut stream, peer_addr)) => {
 					// We want out TCP stream to be in blocking mode.
 					// The TCP listener is in nonblocking mode so we *must* explicitly
@@ -498,9 +556,6 @@ impl Server {
 					debug!("Couldn't establish new client connection: {:?}", e);
 				}
 			}
-			if self.stop_state.is_stopped() {
-				break;
-			}
 			thread::sleep(sleep_time);
 		}
 		Ok(())
@@ -536,12 +591,12 @@ impl Server {
 			)));
 		}
 
-		let self_onion_address = if global::is_production_mode() {
-			let hs = self.handshake.read();
+		let self_onion_address = if global::is_production_mode(self.context_id) {
+			let hs = self.handshake.read().expect("RwLock failure");
 			let hs = hs
 				.as_ref()
 				.ok_or(Error::TorConnect("handshake is empty".into()))?;
-			let addrs = hs.addrs.read();
+			let addrs = hs.addrs.read().expect("RwLock failure");
 			if addrs.contains(addr) {
 				debug!("connect: ignore connecting to PeerWithSelf, addr: {}", addr);
 				return Err(Error::PeerWithSelf);
@@ -552,7 +607,7 @@ impl Server {
 		};
 
 		// check if the onion address is self
-		if global::is_production_mode() && self_onion_address.is_some() {
+		if global::is_production_mode(self.context_id) && self_onion_address.is_some() {
 			match addr {
 				Onion(address) => {
 					if self_onion_address.as_ref().unwrap() == address {
@@ -676,7 +731,7 @@ impl Server {
 		};
 
 		let total_diff = self.peers.total_difficulty()?;
-		let hs = self.handshake.read();
+		let hs = self.handshake.read().expect("RwLock failure");
 		let hs = hs
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is empty".into()))?;
@@ -729,7 +784,7 @@ impl Server {
 
 		let total_diff = self.peers.total_difficulty()?;
 
-		let hs = self.handshake.read();
+		let hs = self.handshake.read().expect("RwLock failure");
 		let hs = hs
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is empty".into()))?;
@@ -778,19 +833,9 @@ impl Server {
 			}
 			// The call to is_known() can fail due to contention on the peers map.
 			// If it fails we want to default to refusing the connection.
-			match self.peers.is_known(&peer_addr) {
-				Ok(true) => {
-					debug!("Peer {} already known, refusing connection.", peer_addr);
-					return true;
-				}
-				Err(_) => {
-					error!(
-						"Peer {} is_known check failed, refusing connection.",
-						peer_addr
-					);
-					return true;
-				}
-				_ => (),
+			if self.peers.is_known(&peer_addr) {
+				debug!("Peer {} already known, refusing connection.", peer_addr);
+				return true;
 			}
 		}
 		false
@@ -819,11 +864,17 @@ impl Server {
 		let addr = self
 			.handshake
 			.read()
+			.expect("RwLock failure")
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is not defined".into()))?
 			.onion_address
 			.clone();
 		Ok(addr)
+	}
+
+	/// Context ID (app session ID)
+	pub fn get_context_id(&self) -> u32 {
+		self.context_id
 	}
 }
 

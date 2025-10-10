@@ -15,9 +15,9 @@
 use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
 use mwc_p2p::{PeerAddr, Peers};
-use mwc_util::RwLock;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 #[derive(Clone, Debug)]
 pub struct HeadersRequest {
@@ -59,7 +59,7 @@ impl HeadersBlocksRequests {
 		height: u64,
 		locator: Vec<Hash>,
 	) {
-		let mut headers = self.headers.write();
+		let mut headers = self.headers.write().expect("RwLock failure");
 		for req in &*headers {
 			if req.addr == *addr {
 				debug!("Ignored header request to {}, already in the Q", addr);
@@ -82,7 +82,7 @@ impl HeadersBlocksRequests {
 		block_hash: Hash,
 		opts: mwc_chain::Options,
 	) {
-		let mut blocks = self.blocks.write();
+		let mut blocks = self.blocks.write().expect("RwLock failure");
 
 		match blocks.get_mut(&height) {
 			Some(requests) => {
@@ -132,7 +132,7 @@ impl HeadersBlocksRequests {
 		let head_header = self.chain.head_header()?.height;
 		{
 			// Requesting single heads chain
-			let mut headers = self.headers.write();
+			let mut headers = self.headers.write().expect("RwLock failure");
 			loop {
 				// Requesting single series of headers
 				match headers.pop_front() {
@@ -162,7 +162,7 @@ impl HeadersBlocksRequests {
 		// My point that if we prefer any block vs others, it will be possible to organizes attack
 		// to stale the node progress.
 		{
-			let mut blocks = self.blocks.write();
+			let mut blocks = self.blocks.write().expect("RwLock failure");
 			for (_height, requests) in &mut *blocks {
 				let mut skipped_requests = Vec::new();
 				while !requests.is_empty() {

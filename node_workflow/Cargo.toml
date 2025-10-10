@@ -1,0 +1,31 @@
+[package]
+name = "mwc_node_workflow"
+version = "6.0.0"
+authors = ["Mwc Developers <info@mwc.mw>"]
+description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
+license = "Apache-2.0"
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = [ "crypto", "mwc", "mimblewimble" ]
+workspace = ".."
+edition = "2018"
+
+[dependencies]
+serde_json = "1"
+log = "0.4"
+thiserror = "1"
+lazy_static = "1"
+futures = "0.3"
+
+mwc_api = { path = "../api", version = "6.0.0" }
+mwc_chain = { path = "../chain", version = "6.0.0" }
+mwc_core = { path = "../core", version = "6.0.0" }
+mwc_keychain = { path = "../keychain", version = "6.0.0" }
+mwc_p2p = { path = "../p2p", version = "6.0.0" }
+mwc_pool = { path = "../pool", version = "6.0.0" }
+mwc_store = { path = "../store", version = "6.0.0" }
+mwc_util = { path = "../util", version = "6.0.0" }
+mwc_servers = { path = "../servers", version = "6.0.0" }
+
+
+[features]
+libp2p = ["mwc_p2p/libp2p", "mwc_api/libp2p"]

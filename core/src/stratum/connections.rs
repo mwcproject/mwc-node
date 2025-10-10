@@ -17,7 +17,7 @@
 use chrono::Utc;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
-use util::RwLock;
+use std::sync::RwLock;
 
 const CONNECT_HISTORY_LIMIT: usize = 10; // History length that we are keeping
 const CONNECT_HISTORY_MIN: usize = 3; // History length to start check for connections
@@ -178,6 +178,7 @@ impl StratumIpPool {
 	pub fn get_banned_ips(&self) -> HashSet<String> {
 		self.connection_info
 			.read()
+			.expect("RwLock failure")
 			.values()
 			.filter(|conn| {
 				conn.is_banned(
@@ -197,6 +198,7 @@ impl StratumIpPool {
 	pub fn get_ip_profitability(&self) -> Vec<(String, i64, i32)> {
 		self.connection_info
 			.read()
+			.expect("RwLock failure")
 			.values()
 			.filter(|conn| {
 				!conn.is_banned(
@@ -218,7 +220,7 @@ impl StratumIpPool {
 
 	/// Does events rotations and retire expired events
 	pub fn retire_old_events(&self, event_time_low_limit: i64) {
-		let mut con_info = self.connection_info.write();
+		let mut con_info = self.connection_info.write().expect("RwLock failure");
 
 		// First Update events
 		con_info
@@ -231,6 +233,7 @@ impl StratumIpPool {
 	pub fn is_banned(&self, ip: &String, new_worker: bool) -> bool {
 		self.connection_info
 			.read()
+			.expect("RwLock failure")
 			.get(ip)
 			.map(|con| {
 				con.is_banned(
@@ -245,7 +248,7 @@ impl StratumIpPool {
 
 	/// Register new worker for this IP
 	pub fn add_worker(&self, ip: &String) {
-		let mut con_info = self.connection_info.write();
+		let mut con_info = self.connection_info.write().expect("RwLock failure");
 		match con_info.get_mut(ip) {
 			Some(conn) => conn.add_worker(),
 			None => {
@@ -258,35 +261,60 @@ impl StratumIpPool {
 
 	/// Delete worker from this IP
 	pub fn delete_worker(&self, ip: &String) {
-		if let Some(c) = self.connection_info.write().get_mut(ip) {
+		if let Some(c) = self
+			.connection_info
+			.write()
+			.expect("RwLock failure")
+			.get_mut(ip)
+		{
 			c.delete_worker();
 		}
 	}
 
 	/// Report workers good shares
 	pub fn report_ok_shares(&self, ip: &String) {
-		if let Some(c) = self.connection_info.write().get_mut(ip) {
+		if let Some(c) = self
+			.connection_info
+			.write()
+			.expect("RwLock failure")
+			.get_mut(ip)
+		{
 			c.report_ok_shares();
 		}
 	}
 
 	/// Report worker good login
 	pub fn report_ok_login(&self, ip: &String) {
-		if let Some(c) = self.connection_info.write().get_mut(ip) {
+		if let Some(c) = self
+			.connection_info
+			.write()
+			.expect("RwLock failure")
+			.get_mut(ip)
+		{
 			c.report_ok_login();
 		}
 	}
 
 	/// Report worker bad login
 	pub fn report_fail_login(&self, ip: &String) {
-		if let Some(c) = self.connection_info.write().get_mut(ip) {
+		if let Some(c) = self
+			.connection_info
+			.write()
+			.expect("RwLock failure")
+			.get_mut(ip)
+		{
 			c.report_fail_login();
 		}
 	}
 
 	/// Report worker bad data
 	pub fn report_fail_noise(&self, ip: &String) {
-		if let Some(c) = self.connection_info.write().get_mut(ip) {
+		if let Some(c) = self
+			.connection_info
+			.write()
+			.expect("RwLock failure")
+			.get_mut(ip)
+		{
 			c.report_fail_noise();
 		}
 	}
@@ -295,7 +323,12 @@ impl StratumIpPool {
 	pub fn get_ip_list(&self, get_banned: bool, get_active: bool) -> Vec<StratumIpPrintable> {
 		let mut res: Vec<StratumIpPrintable> = Vec::new();
 
-		for ip_info in self.connection_info.read().values() {
+		for ip_info in self
+			.connection_info
+			.read()
+			.expect("RwLock failure")
+			.values()
+		{
 			let banned = ip_info.is_banned(
 				self.ban_action_limit,
 				self.shares_weight,
@@ -318,7 +351,7 @@ impl StratumIpPool {
 
 	/// Get IP info info for API
 	pub fn get_ip_info(&self, ip: &String) -> StratumIpPrintable {
-		match self.connection_info.read().get(ip) {
+		match self.connection_info.read().expect("RwLock failure").get(ip) {
 			Some(con) => StratumIpPrintable::from_stratum_connection(
 				con,
 				con.is_banned(
@@ -334,7 +367,10 @@ impl StratumIpPool {
 
 	/// Clean IP from the pool.
 	pub fn clean_ip(&self, ip: &String) {
-		self.connection_info.write().remove(ip);
+		self.connection_info
+			.write()
+			.expect("RwLock failure")
+			.remove(ip);
 	}
 }
 

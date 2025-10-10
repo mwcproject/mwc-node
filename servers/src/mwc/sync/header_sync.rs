@@ -31,11 +31,11 @@ use mwc_chain::txhashset::{HeaderHashesDesegmenter, HeadersRecieveCache};
 use mwc_core::core::hash::Hashed;
 use mwc_core::core::BlockHeader;
 use mwc_p2p::PeerAddr;
-use mwc_util::RwLock;
 use rand::seq::IteratorRandom;
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 pub struct HeaderSync {
 	chain: Arc<chain::Chain>,
@@ -79,12 +79,12 @@ impl HeaderSync {
 		header_hashes: &HeadersHashSync,
 		best_height: u64,
 	) -> SyncResponse {
-		let cached_response = self.cached_response.read().clone();
+		let cached_response = self.cached_response.read().expect("RwLock failure").clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
 				return cached_response.to_response();
 			} else {
-				*self.cached_response.write() = None;
+				*self.cached_response.write().expect("RwLock failure") = None;
 			}
 		}
 
@@ -98,7 +98,7 @@ impl HeaderSync {
 				Self::get_peer_capabilities(),
 				format!("Header head {} vs {}", header_head.height, best_height),
 			);
-			*self.cached_response.write() =
+			*self.cached_response.write().expect("RwLock failure") =
 				Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
 			return resp;
 		}
@@ -106,7 +106,7 @@ impl HeaderSync {
 		let excluded_peers = self
 			.request_tracker
 			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
-		*self.excluded_peers.write() = excluded_peers;
+		*self.excluded_peers.write().expect("RwLock failure") = excluded_peers;
 
 		// it is initial statis flag
 		if !header_hashes.is_pibd_headers_are_loaded() {
@@ -120,17 +120,22 @@ impl HeaderSync {
 				);
 			} else {
 				// finally we have a hashes, on the first attempt we need to validate if what is already uploaded is good
-				if self.received_cache.read().is_none() {
+				if self
+					.received_cache
+					.read()
+					.expect("RwLock failure")
+					.is_none()
+				{
 					let header_hashes = header_hashes
 						.get_headers_hash_desegmenter()
 						.expect("header_hashes must be is_complete");
 					let received_cache =
 						HeadersRecieveCache::new(self.chain.clone(), header_hashes);
-					*self.received_cache.write() = Some(received_cache);
+					*self.received_cache.write().expect("RwLock failure") = Some(received_cache);
 					self.request_tracker.clear();
 				}
 
-				let received_cache = self.received_cache.read();
+				let received_cache = self.received_cache.read().expect("RwLock failure");
 				let received_cache = received_cache
 					.as_ref()
 					.expect("Internal error. Received_cache is not initialized.");
@@ -168,7 +173,7 @@ impl HeaderSync {
 						Capabilities::HEADER_HIST,
 						header_hashes.get_target_archive_height(),
 						&self.request_tracker,
-						&*self.excluded_peers.read(),
+						&*self.excluded_peers.read().expect("RwLock failure"),
 					);
 					if peers.is_empty() {
 						if excluded_peers == 0 {
@@ -247,7 +252,7 @@ impl HeaderSync {
 		}
 
 		let (_, peer_diff) = {
-			let info = sync_peer.info.live_info.read();
+			let info = sync_peer.info.live_info.read().expect("RwLock failure");
 			(info.height, info.total_difficulty)
 		};
 
@@ -259,7 +264,7 @@ impl HeaderSync {
 				Self::get_peer_capabilities(),
 				format!("At height {} now", header_head.height),
 			);
-			*self.cached_response.write() =
+			*self.cached_response.write().expect("RwLock failure") =
 				Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
 			return resp;
 		}
@@ -307,7 +312,8 @@ impl HeaderSync {
 		);
 
 		let bhs = {
-			let mut headers_series_cache = self.headers_series_cache.write();
+			let mut headers_series_cache =
+				self.headers_series_cache.write().expect("RwLock failure");
 			let bhs = match headers_series_cache.remove(&series_key) {
 				Some((mut peer_bhs, _)) => {
 					debug_assert!(!peer_bhs.is_empty());
@@ -367,7 +373,7 @@ impl HeaderSync {
 							Capabilities::HEADER_HIST,
 							headers_hash_desegmenter.get_target_height(),
 							&self.request_tracker,
-							&*self.excluded_peers.read(),
+							&*self.excluded_peers.read().expect("RwLock failure"),
 						);
 
 						if !peers.is_empty() {
@@ -406,7 +412,9 @@ impl HeaderSync {
 		// try to add headers to our header chain
 		if let Some(header_hashes) = header_hashes {
 			if bhs[0].height <= header_hashes.get_target_height() {
-				if let Some(received_cache) = self.received_cache.read().as_ref() {
+				if let Some(received_cache) =
+					self.received_cache.read().expect("RwLock failure").as_ref()
+				{
 					// Processing with a cache
 					match received_cache.add_headers_to_cache(header_hashes, bhs, peer.to_string())
 					{
@@ -542,7 +550,8 @@ impl HeaderSync {
 
 	fn calc_retry_running_requests(&self) -> usize {
 		let now = Utc::now();
-		let mut retry_expiration_times = self.retry_expiration_times.write();
+		let mut retry_expiration_times =
+			self.retry_expiration_times.write().expect("RwLock failure");
 		while !retry_expiration_times.is_empty() {
 			if retry_expiration_times[0] < now {
 				retry_expiration_times.pop_front();
@@ -561,7 +570,7 @@ impl HeaderSync {
 		excluded_requests: u32,
 		excluded_peers: u32,
 	) {
-		if let Some(_) = self.send_requests_lock.try_write() {
+		if let Ok(_) = self.send_requests_lock.try_write() {
 			let latency_ms = self
 				.request_tracker
 				.get_average_latency()
@@ -576,7 +585,7 @@ impl HeaderSync {
 			);
 			need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if need_request > 0 {
-				let received_cache = self.received_cache.read();
+				let received_cache = self.received_cache.read().expect("RwLock failure");
 				let received_cache = received_cache
 					.as_ref()
 					.expect("Internal error. Received_cache is not initialized.");
@@ -592,7 +601,7 @@ impl HeaderSync {
 
 				// Whoever lock, can send duplicate requests
 				let last_retry_height = self.last_retry_height.try_write();
-				if let Some(mut last_retry_height) = last_retry_height {
+				if let Ok(mut last_retry_height) = last_retry_height {
 					for (hash, height) in retry_reqs {
 						if height <= *last_retry_height {
 							continue;
@@ -626,9 +635,13 @@ impl HeaderSync {
 								debug!("Processing duplicated request for the headers {} at {}, peer {:?}", hash, height, p.info.addr);
 								match self.request_headers_for_hash(hash.clone(), height, p.clone())
 								{
-									Ok(_) => self.retry_expiration_times.write().push_back(
-										now + self.request_tracker.get_average_latency(),
-									),
+									Ok(_) => self
+										.retry_expiration_times
+										.write()
+										.expect("RwLock failure")
+										.push_back(
+											now + self.request_tracker.get_average_latency(),
+										),
 									Err(e) => {
 										let msg = format!("Failed to send duplicate headers request to {} for hash {}, Error: {}", p.info.addr, hash, e);
 										error!("{}", msg);
@@ -703,6 +716,7 @@ impl HeaderSync {
 								Ok(_) => self
 									.retry_expiration_times
 									.write()
+									.expect("RwLock failure")
 									.push_back(now + self.request_tracker.get_average_latency()),
 								Err(e) => {
 									let msg = format!("Failed to send duplicate headers request to {} for hash {}, Error: {}", dup_peer.info.addr, hash, e);

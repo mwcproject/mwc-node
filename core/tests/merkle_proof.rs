@@ -39,7 +39,7 @@ fn merkle_proof_ser_deser() {
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &proof).expect("serialization failed");
-	let proof_2: MerkleProof = ser::deserialize_default(&mut &vec[..]).unwrap();
+	let proof_2: MerkleProof = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
 	assert_eq!(proof, proof_2);
 }

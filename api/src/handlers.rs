@@ -58,7 +58,6 @@ use crate::router::{Router, RouterError};
 use crate::stratum::Stratum;
 use crate::stratum_rpc::StratumRpc;
 use crate::util::to_base64;
-use crate::util::RwLock;
 use crate::util::StopState;
 use crate::web::*;
 use easy_jsonrpc_mwc::{Handler, MaybeReply};
@@ -66,8 +65,10 @@ use futures::channel::oneshot;
 use hyper::{Body, Request, Response, StatusCode};
 use serde::Serialize;
 use std::net::SocketAddr;
+use std::sync::RwLock;
 use std::sync::{Arc, Weak};
 use std::thread;
+use std::thread::JoinHandle;
 
 /// Listener version, providing same API but listening for requests on a
 /// port and wrapping the calls
@@ -80,11 +81,10 @@ pub fn node_apis<B, P>(
 	api_secret: Option<String>,
 	foreign_api_secret: Option<String>,
 	tls_config: Option<TLSConfig>,
-	allow_to_stop: bool,
 	stratum_ip_pool: Arc<stratum::connections::StratumIpPool>,
 	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	stop_state: Arc<StopState>,
-) -> Result<(), Error>
+) -> Result<JoinHandle<()>, Error>
 where
 	B: BlockChain + 'static,
 	P: PoolAdapter + 'static,
@@ -95,13 +95,13 @@ where
 		tx_pool.clone(),
 		peers.clone(),
 		sync_state.clone(),
-		allow_to_stop,
 	)
 	.expect("unable to build API router");
 
-	let basic_auth_key = if global::is_mainnet() {
+	let context_id = chain.get_context_id();
+	let basic_auth_key = if global::is_mainnet(context_id) {
 		"mwcmain"
-	} else if global::is_floonet() {
+	} else if global::is_floonet(context_id) {
 		"mwcfloo"
 	} else {
 		"mwc"
@@ -172,10 +172,10 @@ where
 				}
 			}
 		})
-		.ok();
+		.map_err(|e| Error::Internal(format!("Unable to start the api_monitor thread, {}", e)))?;
 
 	match api_thread {
-		Ok(_) => Ok(()),
+		Ok(handle) => Ok(handle),
 		Err(e) => {
 			error!("HTTP API server failed to start. Err: {}", e);
 			Err(Error::Internal(format!(
@@ -426,7 +426,6 @@ pub fn build_router<B, P>(
 	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: Arc<p2p::Peers>,
 	sync_state: Arc<chain::SyncState>,
-	allow_to_stop: bool,
 ) -> Result<Router, RouterError>
 where
 	B: BlockChain + 'static,
@@ -484,7 +483,6 @@ where
 		chain: Arc::downgrade(&chain),
 		peers: Arc::downgrade(&peers),
 		sync_state: Arc::downgrade(&sync_state),
-		allow_to_stop,
 	};
 	let txhashset_handler = TxHashSetHandler {
 		chain: Arc::downgrade(&chain),

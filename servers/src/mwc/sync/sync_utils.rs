@@ -20,11 +20,11 @@ use chrono::{DateTime, Duration, Utc};
 use mwc_chain::txhashset::request_lookup::RequestLookup;
 use mwc_chain::{pibd_params, Chain};
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
-use mwc_util::RwLock;
 use std::cmp;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SyncRequestResponses {
@@ -173,7 +173,10 @@ where
 	K: std::cmp::Eq + std::hash::Hash,
 {
 	fn contains_request(&self, key: &K) -> bool {
-		self.requested.read().contains_key(key)
+		self.requested
+			.read()
+			.expect("RwLock failed")
+			.contains_key(key)
 	}
 }
 
@@ -195,8 +198,8 @@ where
 		expiration_time_interval_sec: i64,
 		sync_peers: &SyncPeers,
 	) -> HashSet<PeerAddr> {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
+		let mut requested = self.requested.write().expect("RwLock failed");
+		let peers_stats = &mut self.peers_stats.write().expect("RwLock failed");
 		let now = Utc::now();
 
 		let mut res: HashSet<PeerAddr> = HashSet::new();
@@ -219,10 +222,10 @@ where
 	}
 
 	pub fn clear(&self) {
-		self.requested.write().clear();
-		self.peers_stats.write().clear();
+		self.requested.write().expect("RwLock failed").clear();
+		self.peers_stats.write().expect("RwLock failed").clear();
 		self.requests_to_next_ask.store(0, Ordering::Relaxed);
-		self.latency_tracker.write().clear();
+		self.latency_tracker.write().expect("RwLock failed").clear();
 	}
 
 	/// Calculate how many new requests we can make to the peers. This call updates requests_to_next_ask
@@ -237,6 +240,7 @@ where
 		let requests_in_queue = self
 			.requested
 			.read()
+			.expect("RwLock failed")
 			.len()
 			.saturating_sub(excluded_requests);
 		let expected_total_request = cmp::min(peer_num * request_per_peer, requests_limit);
@@ -248,11 +252,14 @@ where
 	}
 
 	pub fn get_requests_num(&self) -> usize {
-		self.requested.read().len()
+		self.requested.read().expect("RwLock failed").len()
 	}
 
 	pub fn has_request(&self, req: &K) -> bool {
-		self.requested.read().contains_key(req)
+		self.requested
+			.read()
+			.expect("RwLock failed")
+			.contains_key(req)
 	}
 
 	pub fn get_update_requests_to_next_ask(&self) -> usize {
@@ -265,12 +272,16 @@ where
 	}
 
 	pub fn get_peer_track_data(&self, peer: &PeerAddr) -> Option<PeerTrackData> {
-		self.peers_stats.read().get(peer).cloned()
+		self.peers_stats
+			.read()
+			.expect("RwLock failed")
+			.get(peer)
+			.cloned()
 	}
 
 	pub fn register_request(&self, key: K, peer: PeerAddr, message: String) {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
+		let mut requested = self.requested.write().expect("RwLock failed");
+		let peers_stats = &mut self.peers_stats.write().expect("RwLock failed");
 
 		match peers_stats.get_mut(&peer) {
 			Some(n) => {
@@ -284,8 +295,8 @@ where
 	}
 
 	pub fn remove_request(&self, key: &K, peer: &PeerAddr) -> Option<PeerAddr> {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
+		let mut requested = self.requested.write().expect("RwLock failed");
+		let peers_stats = &mut self.peers_stats.write().expect("RwLock failed");
 
 		if let Some(request_data) = requested.get(key) {
 			let res_peer = request_data.peer.clone();
@@ -295,7 +306,10 @@ where
 				}
 				let latency_ms = (Utc::now() - request_data.request_time).num_milliseconds();
 				debug_assert!(latency_ms >= 0);
-				self.latency_tracker.write().add_latency(latency_ms);
+				self.latency_tracker
+					.write()
+					.expect("RwLock failed")
+					.add_latency(latency_ms);
 				requested.remove(key);
 			}
 			Some(res_peer)
@@ -305,11 +319,14 @@ where
 	}
 
 	pub fn get_average_latency(&self) -> Duration {
-		self.latency_tracker.read().get_average_latency()
+		self.latency_tracker
+			.read()
+			.expect("RwLock failed")
+			.get_average_latency()
 	}
 
 	pub fn get_expected_peer(&self, key: &K) -> Option<PeerAddr> {
-		if let Some(req_data) = self.requested.read().get(key) {
+		if let Some(req_data) = self.requested.read().expect("RwLock failed").get(key) {
 			Some(req_data.peer.clone())
 		} else {
 			None
@@ -330,7 +347,8 @@ pub fn get_qualify_peers(
 		.connected()
 		.into_iter()
 		.filter(|peer| {
-			Chain::height_2_archive_height(peer.info.height()) == archive_height
+			Chain::height_2_archive_height(peers.get_context_id(), peer.info.height())
+				== archive_height
 				&& peer.info.capabilities.contains(capability)
 		})
 		.collect()

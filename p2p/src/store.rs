@@ -127,8 +127,14 @@ pub struct PeerStore {
 
 impl PeerStore {
 	/// Instantiates a new peer store under the provided root path.
-	pub fn new(db_root: &str) -> Result<PeerStore, Error> {
-		let db = mwc_store::Store::new(db_root, Some(DB_NAME), Some(STORE_SUBPATH), None)?;
+	pub fn new(context_id: u32, db_root: &str) -> Result<PeerStore, Error> {
+		let db = mwc_store::Store::new(
+			context_id,
+			db_root,
+			Some(DB_NAME),
+			Some(STORE_SUBPATH),
+			None,
+		)?;
 		Ok(PeerStore { db: db })
 	}
 
@@ -197,9 +203,15 @@ impl PeerStore {
 	pub fn peers_iter(&self) -> Result<impl Iterator<Item = PeerData>, Error> {
 		let key = to_key(PEER_PREFIX, "");
 		let protocol_version = self.db.protocol_version();
+		let context_id = self.db.get_context_id();
 		self.db.iter(&key, move |_, mut v| {
-			ser::deserialize(&mut v, protocol_version, DeserializationMode::default())
-				.map_err(From::from)
+			ser::deserialize(
+				&mut v,
+				protocol_version,
+				context_id,
+				DeserializationMode::default(),
+			)
+			.map_err(From::from)
 		})
 	}
 
@@ -261,6 +273,11 @@ impl PeerStore {
 		}
 
 		Ok(())
+	}
+
+	/// Context Id that defines the network
+	pub fn get_context_id(&self) -> u32 {
+		self.db.get_context_id()
 	}
 }
 

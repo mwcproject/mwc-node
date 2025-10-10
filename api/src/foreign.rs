@@ -29,7 +29,6 @@ use crate::types::{
 	BlockHeaderPrintable, BlockPrintable, LocatedTxKernel, OutputListing, OutputPrintable, Tip,
 	Version,
 };
-use crate::util::RwLock;
 use crate::{rest::*, BlockListing};
 #[cfg(feature = "libp2p")]
 use crate::{Libp2pMessages, Libp2pPeers};
@@ -38,6 +37,7 @@ use chrono::Utc;
 #[cfg(feature = "libp2p")]
 use mwc_p2p::libp2p_connection;
 use mwc_util::secp::Secp256k1;
+use std::sync::RwLock;
 use std::sync::Weak;
 
 /// Main interface into all node API functions.

@@ -24,13 +24,13 @@ use crate::types::{
 	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
 	PeerLiveInfo,
 };
-use crate::util::RwLock;
 use mwc_core::global;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 /// Local generated nonce for peer connecting.
@@ -72,19 +72,26 @@ pub struct Handshake {
 	genesis: Hash,
 	config: P2PConfig,
 	protocol_version: ProtocolVersion,
+	context_id: u32,
 	tracker: Arc<Tracker>,
 	pub onion_address: Option<String>,
 }
 
 impl Handshake {
 	/// Creates a new handshake handler
-	pub fn new(genesis: Hash, config: P2PConfig, onion_address: Option<String>) -> Handshake {
+	pub fn new(
+		context_id: u32,
+		genesis: Hash,
+		config: P2PConfig,
+		onion_address: Option<String>,
+	) -> Handshake {
 		Handshake {
 			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
 			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
 			genesis,
 			config,
 			protocol_version: ProtocolVersion::local(),
+			context_id,
 			tracker: Arc::new(Tracker::new()),
 			onion_address: onion_address,
 		}
@@ -128,14 +135,14 @@ impl Handshake {
 			sender_addr: self_addr.clone(),
 			receiver_addr: peer_addr.clone(),
 			user_agent: USER_AGENT.to_string(),
-			tx_fee_base: global::get_accept_fee_base(),
+			tx_fee_base: global::get_accept_fee_base(self.context_id),
 		};
 
 		// write and read the handshake response
-		let msg = Msg::new(Type::Hand, hand, self.protocol_version)?;
+		let msg = Msg::new(Type::Hand, hand, self.protocol_version, self.context_id)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
-		let shake: Shake = read_message(conn, self.protocol_version, Type::Shake)?;
+		let shake: Shake = read_message(conn, self.protocol_version, self.context_id, Type::Shake)?;
 		if shake.genesis != self.genesis {
 			return Err(Error::GenesisMismatch {
 				us: self.genesis,
@@ -152,7 +159,12 @@ impl Handshake {
 
 			// send tor address
 			let tor_address = TorAddress::new(onion_address);
-			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
+			let msg = Msg::new(
+				Type::TorAddress,
+				tor_address,
+				self.protocol_version,
+				self.context_id,
+			)?;
 			write_message(conn, &vec![msg], self.tracker.clone())?;
 			// Flush needed for arti. Without flush data will not be sent
 			conn.flush()?;
@@ -209,7 +221,7 @@ impl Handshake {
 		let _ = conn.set_read_timeout(HAND_READ_TIMEOUT);
 		let _ = conn.set_write_timeout(SHAKE_WRITE_TIMEOUT);
 
-		let hand: Hand = read_message(conn, self.protocol_version, Type::Hand)?;
+		let hand: Hand = read_message(conn, self.protocol_version, self.context_id, Type::Hand)?;
 
 		// all the reasons we could refuse this connection for
 		if hand.genesis != self.genesis {
@@ -219,11 +231,11 @@ impl Handshake {
 			});
 		} else {
 			// check the nonce to see if we are trying to connect to ourselves
-			let nonces = self.nonces.read();
+			let nonces = self.nonces.read().expect("RwLock failure");
 			let addr = resolve_peer_addr(&hand.sender_addr, &conn);
 			if nonces.contains(&hand.nonce) {
 				// save ip addresses of ourselves
-				let mut addrs = self.addrs.write();
+				let mut addrs = self.addrs.write().expect("RwLock failure");
 				addrs.push_back(addr);
 				if addrs.len() >= ADDRS_CAP {
 					addrs.pop_front();
@@ -266,10 +278,10 @@ impl Handshake {
 			genesis: self.genesis,
 			total_difficulty: total_difficulty,
 			user_agent: USER_AGENT.to_string(),
-			tx_fee_base: global::get_accept_fee_base(),
+			tx_fee_base: global::get_accept_fee_base(self.context_id),
 		};
 
-		let msg = Msg::new(Type::Shake, shake, negotiated_version)?;
+		let msg = Msg::new(Type::Shake, shake, negotiated_version, self.context_id)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		trace!("Success handshake with {}.", peer_info.addr);
@@ -281,7 +293,7 @@ impl Handshake {
 	fn next_nonce(&self) -> u64 {
 		let nonce = thread_rng().gen();
 
-		let mut nonces = self.nonces.write();
+		let mut nonces = self.nonces.write().expect("RwLock failure");
 		nonces.push_back(nonce);
 		if nonces.len() >= NONCES_CAP {
 			nonces.pop_front();

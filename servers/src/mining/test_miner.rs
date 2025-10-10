@@ -83,10 +83,12 @@ impl Miner {
 		// transactions) and as long as the head hasn't changed
 		let deadline = Utc::now().timestamp() + attempt_time_per_block as i64;
 
+		let context_id = self.chain.get_context_id();
+
 		debug!(
 			"(Server ID: {}) Mining Cuckoo{} for max {}s on {} @ {} [{}].",
 			self.debug_output_id,
-			global::min_edge_bits(),
+			global::min_edge_bits(context_id),
 			attempt_time_per_block,
 			b.header.total_difficulty(),
 			b.header.height,
@@ -96,9 +98,10 @@ impl Miner {
 
 		while head.hash() == *latest_hash && Utc::now().timestamp() < deadline {
 			let mut ctx = global::create_pow_context::<u32>(
+				context_id,
 				head.height,
-				global::min_edge_bits(),
-				global::proofsize(),
+				global::min_edge_bits(context_id),
+				global::proofsize(context_id),
 				10,
 			)
 			.unwrap();
@@ -106,7 +109,7 @@ impl Miner {
 				.unwrap();
 			if let Ok(proofs) = ctx.find_cycles() {
 				b.header.pow.proof = proofs[0].clone();
-				let proof_diff = b.header.pow.to_difficulty(b.header.height);
+				let proof_diff = b.header.pow.to_difficulty(context_id, b.header.height);
 				if proof_diff >= (b.header.total_difficulty() - head.total_difficulty()) {
 					return true;
 				}

@@ -3177,6 +3177,7 @@ dependencies = [
  "mwc_config",
  "mwc_core",
  "mwc_keychain",
+ "mwc_node_workflow",
  "mwc_p2p",
  "mwc_servers",
  "mwc_store",
@@ -3308,6 +3309,26 @@ dependencies = [
  "sha2 0.9.9",
  "thiserror 1.0.69",
  "zeroize",
+]
+
+[[package]]
+name = "mwc_node_workflow"
+version = "6.0.0"
+dependencies = [
+ "futures 0.3.31",
+ "lazy_static",
+ "log",
+ "mwc_api",
+ "mwc_chain",
+ "mwc_core",
+ "mwc_keychain",
+ "mwc_p2p",
+ "mwc_pool",
+ "mwc_servers",
+ "mwc_store",
+ "mwc_util",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3446,7 +3467,6 @@ dependencies = [
  "log",
  "log4rs",
  "mwc_secp256k1zkp",
- "parking_lot",
  "rand 0.6.5",
  "serde",
  "serde_derive",

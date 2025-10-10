@@ -31,13 +31,15 @@ const ENDPOINT: &str = "/v2/owner";
 pub struct HTTPNodeClient {
 	node_url: String,
 	node_api_secret: Option<String>,
+	context_id: u32,
 }
 impl HTTPNodeClient {
 	/// Create a new client that will communicate with the given mwc node
-	pub fn new(node_url: &str, node_api_secret: Option<String>) -> HTTPNodeClient {
+	pub fn new(context_id: u32, node_url: &str, node_api_secret: Option<String>) -> HTTPNodeClient {
 		HTTPNodeClient {
 			node_url: node_url.to_owned(),
 			node_api_secret: node_api_secret,
+			context_id,
 		}
 	}
 	fn send_json_request<D: serde::de::DeserializeOwned>(
@@ -53,6 +55,7 @@ impl HTTPNodeClient {
 		let url = format!("http://{}{}", self.node_url, ENDPOINT);
 		let req = build_request(method, params);
 		let res = client::post::<Request, Response>(
+			self.context_id,
 			url.as_str(),
 			self.node_api_secret.clone(),
 			&req,
@@ -200,11 +203,15 @@ impl HTTPNodeClient {
 	}
 }
 
-pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig) -> i32 {
+pub fn client_command(
+	context_id: u32,
+	client_args: &ArgMatches<'_>,
+	global_config: GlobalConfig,
+) -> i32 {
 	// just get defaults from the global config
 	let server_config = global_config.members.unwrap().server;
 	let api_secret = get_first_line(server_config.api_secret_path.clone());
-	let node_client = HTTPNodeClient::new(&server_config.api_http_addr, api_secret);
+	let node_client = HTTPNodeClient::new(context_id, &server_config.api_http_addr, api_secret);
 
 	match client_args.subcommand() {
 		("status", Some(_)) => {

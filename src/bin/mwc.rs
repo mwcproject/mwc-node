@@ -22,7 +22,6 @@ extern crate clap;
 extern crate log;
 use crate::config::config::SERVER_CONFIG_FILE_NAME;
 use crate::core::global;
-use crate::util::init_logger;
 
 use mwc_api as api;
 use mwc_chain as chain;
@@ -31,11 +30,9 @@ use mwc_core as core;
 use mwc_p2p as p2p;
 use mwc_servers as servers;
 use mwc_util as util;
-use mwc_util::logger::LogEntry;
 
 use clap::App;
 use futures::channel::oneshot;
-use std::sync::mpsc;
 
 mod cmd;
 pub mod tui;
@@ -66,10 +63,6 @@ fn log_build_info() {
 	let (basic_info, detailed_info) = info_strings();
 	info!("{}", basic_info);
 	debug!("{}", detailed_info);
-}
-
-fn log_feature_flags() {
-	info!("Feature: NRD kernel enabled: {}", global::is_nrd_enabled());
 }
 
 fn main() {
@@ -134,13 +127,32 @@ fn real_main() -> i32 {
 	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
 		Box::leak(Box::new(oneshot::channel::<()>()));
 
-	let (logs_tx, logs_rx) = if logging_config.tui_running.unwrap() {
-		let (logs_tx, logs_rx) = mpsc::sync_channel::<LogEntry>(200);
-		(Some(logs_tx), Some(logs_rx))
-	} else {
-		(None, None)
+	let logs_rx = mwc_node_workflow::logging::init_bin_logs(&logging_config);
+
+	let server_config = config.members.as_ref().unwrap().server.clone();
+
+	let accept_fee_base = config
+		.members
+		.as_ref()
+		.unwrap()
+		.server
+		.pool_config
+		.tx_fee_base
+		.clone();
+
+	let context_id = match mwc_node_workflow::context::allocate_new_context(
+		server_config.chain_type,
+		accept_fee_base,
+		None,
+		&server_config.invalid_block_hashes,
+	) {
+		Ok(c_id) => c_id,
+		Err(e) => {
+			println!("Unable to allocate the context. {}", e);
+			error!("Unable to allocate the context. {}", e);
+			return -1;
+		}
 	};
-	init_logger(Some(logging_config), logs_tx);
 
 	if let Some(file_path) = &config.config_file_path {
 		info!(
@@ -153,42 +165,31 @@ fn real_main() -> i32 {
 
 	log_build_info();
 
-	// Initialize our global chain_type and feature flags (NRD kernel support currently), accept_fee_base.
-	// These are read via global and not read from config beyond this point.
-	global::init_global_chain_type(config.members.as_ref().unwrap().server.chain_type);
-	info!("Chain: {:?}", global::get_chain_type());
-	match global::get_chain_type() {
-		global::ChainTypes::Mainnet => {
-			// Set various mainnet specific feature flags.
-			global::init_global_nrd_enabled(false);
-		}
-		_ => {
-			// Set various non-mainnet feature flags.
-			global::init_global_nrd_enabled(true);
-		}
-	}
-	if let Some(tx_fee_base) = config
-		.members
-		.as_ref()
-		.unwrap()
-		.server
-		.pool_config
-		.tx_fee_base
-	{
-		global::init_global_accept_fee_base(tx_fee_base);
-	}
-	info!("Accept Fee Base: {:?}", global::get_accept_fee_base());
-	log_feature_flags();
+	info!("Network: {:?}", global::get_chain_type(context_id));
+	info!(
+		"Accept Fee Base: {:?}",
+		global::get_accept_fee_base(context_id)
+	);
+	info!(
+		"Feature: NRD kernel enabled: {}",
+		global::is_nrd_enabled(context_id)
+	);
 
 	// Execute subcommand
-	match args.subcommand() {
+	let res = match args.subcommand() {
 		// server commands and options
-		("server", Some(server_args)) => {
-			cmd::server_command(Some(server_args), node_config.unwrap(), logs_rx, api_chan)
-		}
+		("server", Some(server_args)) => cmd::server_command(
+			context_id,
+			Some(server_args),
+			node_config.unwrap(),
+			logs_rx,
+			api_chan,
+		),
 
 		// client commands and options
-		("client", Some(client_args)) => cmd::client_command(client_args, node_config.unwrap()),
+		("client", Some(client_args)) => {
+			cmd::client_command(context_id, client_args, node_config.unwrap())
+		}
 
 		// clean command
 		("clean", _) => {
@@ -203,6 +204,10 @@ fn real_main() -> i32 {
 		// If nothing is specified, try to just use the config file instead
 		// this could possibly become the way to configure most things
 		// with most command line options being phased out
-		_ => cmd::server_command(None, node_config.unwrap(), logs_rx, api_chan),
-	}
+		_ => cmd::server_command(context_id, None, node_config.unwrap(), logs_rx, api_chan),
+	};
+
+	let _ = mwc_node_workflow::context::release_context(context_id);
+
+	res
 }

@@ -30,6 +30,7 @@ use std::sync::Arc;
 fn test_coinbase_maturity() {
 	util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	global::set_local_accept_fee_base(50_000_000);
 	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
 

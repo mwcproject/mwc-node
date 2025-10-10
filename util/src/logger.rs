@@ -13,8 +13,8 @@
 // limitations under the License.
 
 //! Logging wrapper to be used throughout all crates in the workspace
-use crate::Mutex;
 use std::ops::Deref;
+use std::sync::Mutex;
 
 use backtrace::Backtrace;
 use std::{panic, thread};
@@ -43,9 +43,7 @@ use tracing_subscriber::Layer;
 
 lazy_static! {
 	/// Flag to observe whether logging was explicitly initialised (don't output otherwise)
-	static ref WAS_INIT: Mutex<bool> = Mutex::new(false);
-	/// Static Logging configuration, should only be set once, before first logging call
-	static ref LOGGING_CONFIG: Mutex<LoggingConfig> = Mutex::new(LoggingConfig::default());
+	static ref TEST_LOGGER_WAS_INIT: Mutex<bool> = Mutex::new(false);
 }
 
 const LOGGING_PATTERN: &str = "{d(%Y%m%d %H:%M:%S%.3f)} {h({l})} {M} - {m}{n}";
@@ -171,10 +169,14 @@ impl Append for ChannelAppender {
 
 		let log = String::from_utf8_lossy(writer.0.as_slice()).to_string();
 
-		let _ = self.output.lock().try_send(LogEntry {
-			log,
-			level: record.level(),
-		});
+		let _ = self
+			.output
+			.lock()
+			.expect("Mutex failure")
+			.try_send(LogEntry {
+				log,
+				level: record.level(),
+			});
 
 		Ok(())
 	}
@@ -183,14 +185,9 @@ impl Append for ChannelAppender {
 }
 
 /// Initialize the logger with the given configuration
-pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSender<LogEntry>>) {
+pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSender<LogEntry>>) {
 	if let Some(c) = config {
 		let tui_running = c.tui_running.unwrap_or(false);
-		let mut was_init_ref = WAS_INIT.lock();
-
-		// Save current logging configuration
-		let mut config_ref = LOGGING_CONFIG.lock();
-		*config_ref = c.clone();
 
 		let level_stdout = c.stdout_log_level.to_level_filter();
 		let level_file = c.file_log_level.to_level_filter();
@@ -252,7 +249,7 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 						RollingFileAppender::builder()
 							.append(c.log_file_append)
 							.encoder(Box::new(PatternEncoder::new(&LOGGING_PATTERN)))
-							.build(c.log_file_path, Box::new(policy))
+							.build(c.log_file_path.clone(), Box::new(policy))
 							.expect("Failed to create logfile"),
 					)
 				} else {
@@ -260,7 +257,7 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 						FileAppender::builder()
 							.append(c.log_file_append)
 							.encoder(Box::new(PatternEncoder::new(&LOGGING_PATTERN)))
-							.build(c.log_file_path)
+							.build(c.log_file_path.clone())
 							.expect("Failed to create logfile"),
 					)
 				}
@@ -294,9 +291,6 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 
 		// Now, tracing macros will go through your layer and into log4rs
 		tracing::info!("Tracing logs are redirected!");
-
-		// Mark logger as initialized
-		*was_init_ref = true;
 	}
 
 	send_panic_to_log();
@@ -304,7 +298,7 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 
 /// Initializes the logger for unit and integration tests
 pub fn init_test_logger() {
-	let mut was_init_ref = WAS_INIT.lock();
+	let mut was_init_ref = TEST_LOGGER_WAS_INIT.lock().expect("Mutex failure");
 	if *was_init_ref.deref() {
 		return;
 	}
@@ -312,11 +306,7 @@ pub fn init_test_logger() {
 	logger.log_to_file = false;
 	logger.stdout_log_level = Level::Debug;
 
-	// Save current logging configuration
-	let mut config_ref = LOGGING_CONFIG.lock();
-	*config_ref = logger;
-
-	let level_stdout = config_ref.stdout_log_level.to_level_filter();
+	let level_stdout = logger.stdout_log_level.to_level_filter();
 	let level_minimum = level_stdout; // minimum logging level for Root logger
 
 	// Start logger

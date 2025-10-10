@@ -436,16 +436,19 @@ pub struct DandelionEpoch {
 	is_stem: bool,
 	// Our current Dandelion relay peer (effective for this epoch).
 	relay_peer: Option<Arc<p2p::Peer>>,
+	// App session id
+	context_id: u32,
 }
 
 impl DandelionEpoch {
 	/// Create a new Dandelion epoch, defaulting to "stem" and no outbound relay peer.
-	pub fn new(config: DandelionConfig) -> DandelionEpoch {
+	pub fn new(context_id: u32, config: DandelionConfig) -> DandelionEpoch {
 		DandelionEpoch {
 			config,
 			start_time: None,
 			is_stem: true,
 			relay_peer: None,
+			context_id,
 		}
 	}
 
@@ -466,7 +469,7 @@ impl DandelionEpoch {
 	/// Choose a new outbound stem relay peer.
 	pub fn next_epoch(&mut self, peers: &Arc<p2p::Peers>) {
 		self.start_time = Some(Utc::now().timestamp());
-		let my_fee_base = global::get_accept_fee_base();
+		let my_fee_base = global::get_accept_fee_base(self.context_id);
 		self.relay_peer = peers
 			.iter()
 			.filter(move |p| {
@@ -513,7 +516,7 @@ impl DandelionEpoch {
 		}
 
 		if update_relay {
-			let my_fee_base = global::get_accept_fee_base();
+			let my_fee_base = global::get_accept_fee_base(self.context_id);
 			self.relay_peer = peers
 				.iter()
 				.filter(move |p| {

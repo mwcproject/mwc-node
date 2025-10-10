@@ -26,12 +26,13 @@ use crate::msg::{write_message, Consumed, Message, Msg};
 use crate::mwc_core::ser::ProtocolVersion;
 use crate::tcp_data_stream::TcpDataStream;
 use crate::types::Error;
-use crate::util::{RateCounter, RwLock};
+use crate::util::RateCounter;
 use crossbeam::channel::{RecvTimeoutError, TryRecvError};
 use mwc_chain::SyncState;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -158,19 +159,28 @@ impl Tracker {
 	}
 
 	pub fn inc_received(&self, size: u64) {
-		self.received_bytes.write().inc(size);
+		self.received_bytes
+			.write()
+			.expect("RwLock failure")
+			.inc(size);
 	}
 
 	pub fn inc_sent(&self, size: u64) {
-		self.sent_bytes.write().inc(size);
+		self.sent_bytes.write().expect("RwLock failure").inc(size);
 	}
 
 	pub fn inc_quiet_received(&self, size: u64) {
-		self.received_bytes.write().inc_quiet(size);
+		self.received_bytes
+			.write()
+			.expect("RwLock failure")
+			.inc_quiet(size);
 	}
 
 	pub fn inc_quiet_sent(&self, size: u64) {
-		self.sent_bytes.write().inc_quiet(size);
+		self.sent_bytes
+			.write()
+			.expect("RwLock failure")
+			.inc_quiet(size);
 	}
 }
 
@@ -180,6 +190,7 @@ impl Tracker {
 pub fn listen<H>(
 	stream: TcpDataStream,
 	version: ProtocolVersion,
+	context_id: u32,
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
 	peer_name: String,
@@ -200,6 +211,7 @@ where
 		stream,
 		conn_handle.clone(),
 		version,
+		context_id,
 		handler,
 		send_rx,
 		stopped.clone(),
@@ -222,6 +234,7 @@ fn poll<H>(
 	conn: TcpDataStream,
 	conn_handle: ConnHandle,
 	version: ProtocolVersion,
+	context_id: u32,
 	handler: H,
 	send_rx: crossbeam::channel::Receiver<Msg>,
 	stopped: Arc<AtomicBool>,
@@ -245,7 +258,7 @@ where
 		.name(format!("peer_read_{}", peer_name1))
 		.spawn(move || {
 			debug!("Started peer_read thread for {}", peer_name1);
-			let mut codec = Codec::new(version, reader);
+			let mut codec = Codec::new(version, context_id, reader);
 			loop {
 				// check the close channel
 				if reader_stopped.load(Ordering::Relaxed) {

@@ -28,6 +28,7 @@ use util::secp::Secp256k1;
 
 /// output a reward output
 pub fn output<K, B>(
+	context_id: u32,
 	keychain: &K,
 	builder: &B,
 	key_id: &Identifier,
@@ -40,7 +41,7 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let value = reward(fees, height);
+	let value = reward(context_id, fees, height);
 	// TODO: proper support for different switch commitment schemes
 	let switch = SwitchCommitmentType::Regular;
 	let commit = keychain.commit(value, key_id, switch)?;
@@ -51,7 +52,7 @@ where
 
 	let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 
-	let over_commit = secp.commit_value(reward(fees, height))?;
+	let over_commit = secp.commit_value(reward(context_id, fees, height))?;
 	let out_commit = output.commitment();
 	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
 	let pubkey = excess.to_pubkey(&secp)?;

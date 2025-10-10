@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use self::core::genesis;
-use mwc_core as core;
+use mwc_core::genesis;
+use mwc_core::global;
 use mwc_util as util;
 
 use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
@@ -24,6 +24,7 @@ mod chain_test_helper;
 #[test]
 fn data_files() {
 	util::init_test_logger();
+	global::set_local_nrd_enabled(false);
 
 	let chain_dir = ".mwc_df";
 	clean_output_dir(chain_dir);
@@ -37,7 +38,7 @@ fn data_files() {
 
 	// Now reload the chain from existing data files and check it is valid.
 	{
-		let chain = init_chain(chain_dir, genesis::genesis_dev());
+		let chain = init_chain(chain_dir, genesis::genesis_dev(0));
 		chain.validate(false).unwrap();
 		assert_eq!(chain.head().unwrap().height, 3);
 	}

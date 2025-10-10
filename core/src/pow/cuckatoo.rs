@@ -40,11 +40,18 @@ struct Graph {
 	proof_size: usize,
 	/// define NIL type
 	nil: u64,
+	/// ontext Id to select correct network
+	context_id: u32,
 }
 
 impl Graph {
 	/// Create a new graph with given parameters
-	pub fn new(max_edges: u64, max_sols: u32, proof_size: usize) -> Result<Graph, Error> {
+	pub fn new(
+		context_id: u32,
+		max_edges: u64,
+		max_sols: u32,
+		proof_size: usize,
+	) -> Result<Graph, Error> {
 		if max_edges >= u64::max_value() / 2 {
 			return Err(Error::Verification("graph is to big to build".to_string()));
 		}
@@ -59,6 +66,7 @@ impl Graph {
 			visited: Bitmap::new(),
 			solutions: vec![],
 			nil: u64::max_value(),
+			context_id,
 		})
 	}
 
@@ -66,7 +74,7 @@ impl Graph {
 		//TODO: Can be optimised
 		self.links = Vec::with_capacity(2 * self.max_nodes as usize);
 		self.adj_list = vec![u64::max_value(); 2 * self.max_nodes as usize];
-		self.solutions = vec![Proof::zero(self.proof_size); 1];
+		self.solutions = vec![Proof::zero(self.context_id, self.proof_size); 1];
 		self.visited = Bitmap::new();
 		Ok(())
 	}
@@ -119,7 +127,8 @@ impl Graph {
 			if len == self.proof_size as u32 {
 				if self.solutions.len() < self.max_sols as usize {
 					// create next solution
-					self.solutions.push(Proof::zero(self.proof_size));
+					self.solutions
+						.push(Proof::zero(self.context_id, self.proof_size));
 				}
 				return Ok(());
 			}
@@ -149,12 +158,13 @@ impl Graph {
 /// be moved in the PoWContext trait as this particular trait needs to be
 /// convertible to an object trait.
 pub fn new_cuckatoo_ctx(
+	context_id: u32,
 	edge_bits: u8,
 	proof_size: usize,
 	max_sols: u32,
 ) -> Result<Box<dyn PoWContext>, Error> {
 	Ok(Box::new(CuckatooContext::new_impl(
-		edge_bits, proof_size, max_sols,
+		edge_bits, proof_size, max_sols, context_id,
 	)?))
 }
 
@@ -162,6 +172,7 @@ pub fn new_cuckatoo_ctx(
 pub struct CuckatooContext {
 	params: CuckooParams,
 	graph: Graph,
+	context_id: u32,
 }
 
 impl PoWContext for CuckatooContext {
@@ -190,12 +201,14 @@ impl CuckatooContext {
 		edge_bits: u8,
 		proof_size: usize,
 		max_sols: u32,
+		context_id: u32,
 	) -> Result<CuckatooContext, Error> {
 		let params = CuckooParams::new(edge_bits, edge_bits, proof_size)?;
 		let num_edges = params.num_edges;
 		Ok(CuckatooContext {
 			params,
-			graph: Graph::new(num_edges, max_sols, proof_size)?,
+			graph: Graph::new(context_id, num_edges, max_sols, proof_size)?,
+			context_id,
 		})
 	}
 
@@ -256,7 +269,7 @@ impl CuckatooContext {
 	/// graph
 	pub fn verify_impl(&self, proof: &Proof) -> Result<(), Error> {
 		let size = proof.proof_size();
-		if size != global::proofsize() {
+		if size != global::proofsize(self.context_id) {
 			return Err(Error::Verification("wrong cycle length".to_owned()));
 		}
 		let nonces = &proof.nonces;
@@ -426,6 +439,7 @@ mod test {
 	#[test]
 	fn cuckatoo() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
 		let ret = basic_solve();
 		if let Err(r) = ret {
 			panic!("basic_solve: Error: {}", r);
@@ -453,45 +467,45 @@ mod test {
 	}
 
 	fn validate29_vectors() -> Result<(), Error> {
-		let mut ctx = CuckatooContext::new_impl(29, 42, 10).unwrap();
+		let mut ctx = CuckatooContext::new_impl(29, 42, 10, 0).unwrap();
 		ctx.set_header_nonce([0u8; 80].to_vec(), Some(20), false)?;
-		assert!(ctx.verify(&Proof::new(V1_29.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(0, V1_29.to_vec())).is_ok());
 		Ok(())
 	}
 
 	fn validate31_vectors() -> Result<(), Error> {
-		let mut ctx = CuckatooContext::new_impl(31, 42, 10).unwrap();
+		let mut ctx = CuckatooContext::new_impl(31, 42, 10, 0).unwrap();
 		ctx.set_header_nonce([0u8; 80].to_vec(), Some(99), false)?;
-		assert!(ctx.verify(&Proof::new(V1_31.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(0, V1_31.to_vec())).is_ok());
 		Ok(())
 	}
 
 	fn validate32_vectors() -> Result<(), Error> {
-		let mut ctx = CuckatooContext::new_impl(32, 42, 10).unwrap();
+		let mut ctx = CuckatooContext::new_impl(32, 42, 10, 0).unwrap();
 		ctx.set_header_nonce([0u8; 80].to_vec(), Some(17), false)?;
-		assert!(ctx.verify(&Proof::new(V1_32.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(0, V1_32.to_vec())).is_ok());
 		Ok(())
 	}
 
 	fn validate33_vectors() -> Result<(), Error> {
-		let mut ctx = CuckatooContext::new_impl(33, 42, 10).unwrap();
+		let mut ctx = CuckatooContext::new_impl(33, 42, 10, 0).unwrap();
 		ctx.set_header_nonce([0u8; 80].to_vec(), Some(79), false)?;
-		assert!(ctx.verify(&Proof::new(V1_33.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(0, V1_33.to_vec())).is_ok());
 		Ok(())
 	}
 
 	fn validate_fail() -> Result<(), Error> {
-		let mut ctx = CuckatooContext::new_impl(29, 42, 10).unwrap();
+		let mut ctx = CuckatooContext::new_impl(29, 42, 10, 0).unwrap();
 		let mut header = [0u8; 80];
 		header[0] = 1u8;
 		ctx.set_header_nonce(header.to_vec(), Some(20), false)?;
-		assert!(ctx.verify(&Proof::new(V1_29.to_vec())).is_err());
+		assert!(ctx.verify(&Proof::new(0, V1_29.to_vec())).is_err());
 		header[0] = 0u8;
 		ctx.set_header_nonce(header.to_vec(), Some(20), false)?;
-		assert!(ctx.verify(&Proof::new(V1_29.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(0, V1_29.to_vec())).is_ok());
 		let mut bad_proof = V1_29;
 		bad_proof[0] = 0x48a9e1;
-		assert!(ctx.verify(&Proof::new(bad_proof.to_vec())).is_err());
+		assert!(ctx.verify(&Proof::new(0, bad_proof.to_vec())).is_err());
 		Ok(())
 	}
 
@@ -510,7 +524,7 @@ mod test {
 			String::from_utf8(header.clone()).unwrap(),
 			nonce
 		);
-		let mut ctx_u32 = CuckatooContext::new_impl(edge_bits, proof_size, max_sols)?;
+		let mut ctx_u32 = CuckatooContext::new_impl(edge_bits, proof_size, max_sols, 0)?;
 		let mut bytes = ctx_u32.byte_count()?;
 		let mut unit = 0;
 		while bytes >= 10240 {

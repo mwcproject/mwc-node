@@ -61,8 +61,8 @@ pub struct ChainStore {
 
 impl ChainStore {
 	/// Create new chain store
-	pub fn new(db_root: &str) -> Result<ChainStore, Error> {
-		let db = store::Store::new(db_root, None, Some(STORE_SUBPATH), None)?;
+	pub fn new(context_id: u32, db_root: &str) -> Result<ChainStore, Error> {
+		let db = store::Store::new(context_id, db_root, None, Some(STORE_SUBPATH), None)?;
 		Ok(ChainStore { db })
 	}
 
@@ -168,6 +168,11 @@ impl ChainStore {
 		Ok(Batch {
 			db: self.db.batch_write()?,
 		})
+	}
+
+	/// Context id assigned to this store
+	pub fn get_context_id(&self) -> u32 {
+		self.db.get_context_id()
 	}
 }
 
@@ -314,9 +319,15 @@ impl<'a> Batch<'a> {
 		from_version: ProtocolVersion,
 		to_version: ProtocolVersion,
 	) -> Result<(), Error> {
+		let context_id = self.db.get_context_id();
 		let block: Option<Block> = self.db.get_with(key, move |_, mut v| {
-			ser::deserialize(&mut v, from_version, ser::DeserializationMode::default())
-				.map_err(From::from)
+			ser::deserialize(
+				&mut v,
+				from_version,
+				context_id,
+				ser::DeserializationMode::default(),
+			)
+			.map_err(From::from)
 		})?;
 		if let Some(block) = block {
 			self.db.put_ser_with_version(key, &block, to_version)?;
@@ -420,10 +431,16 @@ impl<'a> Batch<'a> {
 	pub fn output_pos_iter(&self) -> Result<impl Iterator<Item = (Vec<u8>, CommitPos)>, Error> {
 		let key = to_key(OUTPUT_POS_PREFIX, "");
 		let protocol_version = self.db.protocol_version();
+		let context_id = self.db.get_context_id();
 		self.db.iter(&key, move |k, mut v| {
-			ser::deserialize(&mut v, protocol_version, DeserializationMode::default())
-				.map(|pos| (k.to_vec(), pos))
-				.map_err(From::from)
+			ser::deserialize(
+				&mut v,
+				protocol_version,
+				context_id,
+				DeserializationMode::default(),
+			)
+			.map(|pos| (k.to_vec(), pos))
+			.map_err(From::from)
 		})
 	}
 
@@ -554,9 +571,15 @@ impl<'a> Batch<'a> {
 	pub fn blocks_iter(&self) -> Result<impl Iterator<Item = Block>, Error> {
 		let key = to_key(BLOCK_PREFIX, "");
 		let protocol_version = self.db.protocol_version();
+		let context_id = self.db.get_context_id();
 		self.db.iter(&key, move |_, mut v| {
-			ser::deserialize(&mut v, protocol_version, DeserializationMode::default())
-				.map_err(From::from)
+			ser::deserialize(
+				&mut v,
+				protocol_version,
+				context_id,
+				DeserializationMode::default(),
+			)
+			.map_err(From::from)
 		})
 	}
 

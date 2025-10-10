@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::network_status;
+use crate::tor::arti;
 use crate::types::TorConfig;
 use crate::Error;
 use arti_client::config::pt::TransportConfigBuilder;
@@ -22,6 +23,7 @@ use chrono::Utc;
 use futures::future::{select, Either};
 use futures::StreamExt;
 use lazy_static::lazy_static;
+use mwc_util::tokio::io::AsyncWriteExt;
 use mwc_util::tokio::runtime::{Handle, Runtime};
 use mwc_util::tokio::time::interval;
 use rand::seq::SliceRandom;
@@ -29,7 +31,8 @@ use safelog::DisplayRedacted;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 use tor_config::{BoolOrAuto, ExplicitOrAuto};
@@ -58,8 +61,16 @@ pub fn random_http_probe_url() -> &'static str {
 }
 
 lazy_static! {
-	// It is a tor server only running instance
+	// It is a tor server only running instance, in case of libraries can be shared by multiple nodes and wallets
 	static ref TOR_ARTI_INSTANCE: std::sync::RwLock<Option<ArtiCore>> = std::sync::RwLock::new(None);
+	// Tor service full restart request
+	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+	// Monitoring thread. Only one instance is allowed
+	static ref TOR_MONITORING_THREAD : std::sync::RwLock<Option<std::thread::JoinHandle<()>>> = std::sync::RwLock::new(None);
+}
+
+pub fn request_arti_restart() {
+	TOR_RESTART_REQUEST.store(true, Ordering::Relaxed);
 }
 
 pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
@@ -67,13 +78,81 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 		return Ok(());
 	}
 
+	let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap();
+
 	let mut create_arti_res = ArtiCore::new(config, base_dir, false);
 	if create_arti_res.is_err() {
 		// retry with data clean up
 		create_arti_res = ArtiCore::new(config, base_dir, true)
 	}
 	let a = create_arti_res?;
-	*TOR_ARTI_INSTANCE.write().unwrap() = Some(a);
+	TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+
+	*atri_writer = Some(a);
+
+	// Starting tor monitoring thread if it is not running
+	let mut monitoring_thread = TOR_MONITORING_THREAD.write().expect("RwLock failure");
+	if monitoring_thread.is_none() {
+		let mon_thread = thread::Builder::new()
+			.name("arti_checker".to_string())
+			.spawn(move || {
+				let mut last_running_time = Instant::now();
+				loop {
+					let need_arti_restart = {
+						let connected = match arti::access_arti(|arti| {
+							let connected = arti_async_block(async {
+								let connected =
+									match arti
+										.connect((
+											network_status::get_random_http_probe_host().as_str(),
+											80,
+										))
+										.await
+									{
+										Ok(mut stream) => {
+											let _ = stream.shutdown().await;
+											true
+										}
+										Err(e) => {
+											info!("Tor monitoring connection is failed with error: {}", e);
+											false
+										}
+									};
+								connected
+							})?;
+							Ok(connected)
+						}) {
+							Ok(connected) => connected,
+							Err(Error::TorNotInitialized) => {
+								thread::sleep(Duration::from_secs(30));
+								continue;
+							}
+							Err(_) => false,
+						};
+
+						let need_arti_restart = if connected {
+							last_running_time = Instant::now();
+							false
+						} else {
+							let elapsed = Instant::now().duration_since(last_running_time);
+							// Giving 3 minutes to arti to restore
+							elapsed > Duration::from_secs(60)
+						};
+						need_arti_restart || TOR_RESTART_REQUEST.load(Ordering::Relaxed)
+					};
+
+					if need_arti_restart {
+						restart_arti();
+						break;
+					}
+					thread::sleep(Duration::from_secs(30));
+				}
+			})
+			.expect("Unable to start arti_checker thread");
+
+		*monitoring_thread = Some(mon_thread);
+	}
+
 	Ok(())
 }
 
@@ -111,16 +190,21 @@ where
 	Ok(res)
 }
 
-pub fn restart_arti() {
+fn restart_arti() {
 	error!("Restarting ARTI...");
 
-	let (tor_runtime, config, base_dir) = {
+	let (tor_runtime, config, base_dir, restart_senders) = {
 		let mut guard = TOR_ARTI_INSTANCE.write().unwrap(); // ? converts PoisonError to E
 		match guard.take() {
 			Some(arti) => {
 				drop(arti.tor_client);
 				drop(guard);
-				(arti.tor_runtime, arti.config, arti.base_dir)
+				(
+					arti.tor_runtime,
+					arti.config,
+					arti.base_dir,
+					arti.restart_senders,
+				)
 			}
 			None => {
 				error!("restart_arti called for empty instance. Ignoring this call");
@@ -138,6 +222,9 @@ pub fn restart_arti() {
 				info!("New Arti instance is successfully created.");
 				*TOR_ARTI_INSTANCE.write().unwrap() = Some(arti_core);
 				network_status::update_network_outage_time(Utc::now().timestamp());
+				for sender in restart_senders {
+					let _ = sender.send(());
+				}
 				break;
 			}
 			Err(e) => {
@@ -149,6 +236,18 @@ pub fn restart_arti() {
 	}
 }
 
+pub fn register_arti_restart_event() -> Result<std::sync::mpsc::Receiver<()>, Error> {
+	let mut arti_core = TOR_ARTI_INSTANCE.write().unwrap();
+	match &mut *arti_core {
+		Some(arti_core) => {
+			let (tx, rx) = mpsc::channel::<()>();
+			arti_core.restart_senders.push(tx);
+			Ok(rx)
+		}
+		None => Err(Error::TorProcess("Arti is not running".into())),
+	}
+}
+
 /// Embedded tor server - Atri
 pub struct ArtiCore {
 	// Using special runtime because it is the only reliable way to kill the tor_client.
@@ -156,6 +255,7 @@ pub struct ArtiCore {
 	tor_client: TorClient<PreferredRuntime>,
 	config: TorConfig,
 	base_dir: PathBuf,
+	restart_senders: Vec<std::sync::mpsc::Sender<()>>,
 }
 
 impl ArtiCore {
@@ -167,6 +267,7 @@ impl ArtiCore {
 				config
 			)));
 		}
+
 		let mut tor_client_config =
 			Self::build_config(&config.webtunnel_bridge, base_dir, clean_up_arti_data)?;
 		// We now let the Arti client start and bootstrap a connection to the network.
@@ -213,6 +314,7 @@ impl ArtiCore {
 			tor_client,
 			config: config.clone(),
 			base_dir: base_dir.into(),
+			restart_senders: Vec::new(),
 		})
 	}
 

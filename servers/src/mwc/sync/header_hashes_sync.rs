@@ -26,11 +26,11 @@ use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::{Segment, SegmentType};
 use mwc_p2p::{PeerAddr, ReasonForBan};
-use mwc_util::RwLock;
 use rand::seq::SliceRandom;
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// Headers Hash Sync is needed for Fast Headers synchronization
 pub struct HeadersHashSync {
@@ -69,7 +69,7 @@ impl HeadersHashSync {
 	}
 
 	pub fn is_pibd_headers_are_loaded(&self) -> bool {
-		*self.pibd_headers_are_loaded.read()
+		*self.pibd_headers_are_loaded.read().expect("RwLock failure")
 	}
 
 	fn get_peer_capabilities() -> Capabilities {
@@ -83,8 +83,11 @@ impl HeadersHashSync {
 		self.responded_headers_hash_from.clear();
 		self.responded_with_another_height.clear();
 		self.requested_segments.clear();
-		*self.pibd_headers_are_loaded.write() = false;
-		*self.cached_response.write() = None;
+		*self
+			.pibd_headers_are_loaded
+			.write()
+			.expect("RwLock failure") = false;
+		*self.cached_response.write().expect("RwLock failure") = None;
 	}
 
 	pub fn is_complete(&self) -> bool {
@@ -143,20 +146,24 @@ impl HeadersHashSync {
 	// Lightweight request processing for non active case. Immutable method
 	pub fn request_pre(&self, best_height: u64) -> Option<SyncResponse> {
 		// Sending headers hash request to all peers that has the same archive height...
-		let cached_response = self.cached_response.read().clone();
+		let cached_response = self.cached_response.read().expect("RwLock failure").clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
 				return Some(cached_response.to_response());
 			} else {
-				*self.cached_response.write() = None;
+				*self.cached_response.write().expect("RwLock failure") = None;
 			}
 		}
 
-		let target_archive_height = Chain::height_2_archive_height(best_height);
+		let target_archive_height =
+			Chain::height_2_archive_height(self.chain.get_context_id(), best_height);
 
 		if let Ok(tip) = self.chain.header_head() {
 			if tip.height > target_archive_height {
-				*self.pibd_headers_are_loaded.write() = true;
+				*self
+					.pibd_headers_are_loaded
+					.write()
+					.expect("RwLock failure") = true;
 				let resp = SyncResponse::new(
 					SyncRequestResponses::HeadersPibdReady,
 					Self::get_peer_capabilities(),
@@ -165,7 +172,7 @@ impl HeadersHashSync {
 						tip.height, target_archive_height
 					),
 				);
-				*self.cached_response.write() =
+				*self.cached_response.write().expect("RwLock failure") =
 					Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
 				return Some(resp);
 			}
@@ -181,7 +188,8 @@ impl HeadersHashSync {
 		sync_peers: &SyncPeers,
 		best_height: u64,
 	) -> SyncResponse {
-		let target_archive_height = Chain::height_2_archive_height(best_height);
+		let target_archive_height =
+			Chain::height_2_archive_height(self.chain.get_context_id(), best_height);
 
 		if self.headers_hash_desegmenter.is_none() {
 			let now = Utc::now();
@@ -312,7 +320,7 @@ impl HeadersHashSync {
 				Self::get_peer_capabilities(),
 				format!("headers_hash_desegmenter is complete"),
 			);
-			*self.cached_response.write() =
+			*self.cached_response.write().expect("RwLock failure") =
 				Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
 			return resp;
 		}
