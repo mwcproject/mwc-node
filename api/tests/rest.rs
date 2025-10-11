@@ -4,10 +4,12 @@ use mwc_util as util;
 use crate::api::*;
 use futures::channel::oneshot;
 use hyper::{Body, Request, StatusCode};
+use mwc_api::client::HttpClient;
 use mwc_core::global;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{thread, time};
 
 struct IndexHandler {
@@ -115,13 +117,21 @@ fn test_start_api_tls() {
 
 fn request_with_retry(context_id: u32, url: &str) -> Result<Vec<String>, api::Error> {
 	let mut tries = 0;
+	let client = HttpClient::new(context_id, Duration::from_secs(20), None);
 	loop {
-		let res = api::client::get::<Vec<String>>(context_id, url, None);
-		if res.is_ok() {
-			return res;
-		}
-		if tries > 5 {
-			return res;
+		match client.get(url) {
+			Ok(res) => {
+				return Ok(serde_json::from_value(res)
+					.map_err(|e| Error::Internal(format!("Failed to parse response, {}", e)))?)
+			}
+			Err(e) => {
+				if tries > 5 {
+					return Err(Error::Internal(format!(
+						"Failed to make get request, {}",
+						e
+					)));
+				}
+			}
 		}
 		tries += 1;
 		thread::sleep(time::Duration::from_millis(500));

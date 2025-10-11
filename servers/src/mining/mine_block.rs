@@ -16,7 +16,6 @@
 //! Build a block to mine: gathers transactions from the pool, assembles
 //! them into a block and returns it.
 
-use crate::api;
 use crate::chain;
 use crate::common::types::Error;
 use crate::core::core::{Output, TxKernel};
@@ -26,9 +25,10 @@ use crate::core::{consensus, core, global};
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
 use crate::ServerTxPool;
 use chrono::prelude::{DateTime, Utc};
+use mwc_api::client::HttpClient;
 use mwc_util::secp::Secp256k1;
 use rand::{thread_rng, Rng};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
@@ -74,10 +74,17 @@ pub fn get_block(
 	tx_pool: &ServerTxPool,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
+	client: &HttpClient,
 ) -> (core::Block, BlockFees) {
 	let wallet_retry_interval = 5;
 	// get the latest chain state and build a block on top of it
-	let mut result = build_block(chain, tx_pool, key_id.clone(), wallet_listener_url.clone());
+	let mut result = build_block(
+		chain,
+		tx_pool,
+		key_id.clone(),
+		wallet_listener_url.clone(),
+		client,
+	);
 	while let Err(e) = result {
 		let mut new_key_id = key_id.to_owned();
 		match e {
@@ -111,7 +118,13 @@ pub fn get_block(
 			thread::sleep(Duration::from_millis(100));
 		}
 
-		result = build_block(chain, tx_pool, new_key_id, wallet_listener_url.clone());
+		result = build_block(
+			chain,
+			tx_pool,
+			new_key_id,
+			wallet_listener_url.clone(),
+			client,
+		);
 	}
 	return result.unwrap();
 }
@@ -123,6 +136,7 @@ fn build_block(
 	tx_pool: &ServerTxPool,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
+	client: &HttpClient,
 ) -> Result<(core::Block, BlockFees), Error> {
 	let head = chain.head_header()?;
 
@@ -174,6 +188,7 @@ fn build_block(
 
 	let (output, kernel, block_fees) = get_coinbase(
 		chain.get_context_id(),
+		client,
 		wallet_listener_url,
 		block_fees,
 		chain.secp(),
@@ -264,6 +279,7 @@ fn burn_reward(
 // Warning: If a wallet listener URL is not provided the reward will be "burnt"
 fn get_coinbase(
 	context_id: u32,
+	client: &HttpClient,
 	wallet_listener_url: Option<String>,
 	block_fees: BlockFees,
 	secp: &Secp256k1,
@@ -274,7 +290,7 @@ fn get_coinbase(
 			return burn_reward(context_id, block_fees, secp);
 		}
 		Some(wallet_listener_url) => {
-			let res = create_coinbase(context_id, &wallet_listener_url, &block_fees)?;
+			let res = create_coinbase(client, &wallet_listener_url, &block_fees)?;
 			let output = res.output;
 			let kernel = res.kernel;
 			let key_id = res.key_id;
@@ -291,7 +307,11 @@ fn get_coinbase(
 
 /// Call the wallet API to create a coinbase output for the given block_fees.
 /// Will retry based on default "retry forever with backoff" behavior.
-fn create_coinbase(context_id: u32, dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> {
+fn create_coinbase(
+	client: &HttpClient,
+	dest: &str,
+	block_fees: &BlockFees,
+) -> Result<CbData, Error> {
 	let url = format!("{}/v2/foreign", dest);
 	let req_body = json!({
 		"jsonrpc": "2.0",
@@ -303,9 +323,7 @@ fn create_coinbase(context_id: u32, dest: &str, block_fees: &BlockFees) -> Resul
 	});
 
 	trace!("Sending build_coinbase request: {}", req_body);
-	let req = api::client::create_post_request(context_id, url.as_str(), None, &req_body)?;
-	let timeout = api::client::TimeOut::default();
-	let res: String = api::client::send_request(req, timeout).map_err(|e| {
+	let res = client.post_request(&url, &req_body).map_err(|e| {
 		let report = format!(
 			"Failed to get coinbase from {}. Is the wallet listening? {}",
 			dest, e
@@ -314,8 +332,6 @@ fn create_coinbase(context_id: u32, dest: &str, block_fees: &BlockFees) -> Resul
 		Error::WalletComm(report)
 	})?;
 
-	let res: Value = serde_json::from_str(&res)
-		.map_err(|e| Error::General(format!("Unable convert result to Json, {}", e)))?;
 	trace!("Response: {}", res);
 	if res["error"] != json!(null) {
 		let report = format!(

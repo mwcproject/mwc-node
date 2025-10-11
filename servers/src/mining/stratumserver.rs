@@ -44,6 +44,7 @@ use crate::mining::mine_block;
 use crate::util;
 use crate::util::ToHex;
 use crate::ServerTxPool;
+use mwc_api::client::HttpClient;
 use mwc_util::{global_runtime, run_global_async_block, StopState};
 use std::cmp::min;
 // ----------------------------------------
@@ -597,6 +598,8 @@ impl Handler {
 		let mut next_worker_checking = Utc::now().timestamp_millis() + worker_checking_period;
 		let mut next_ip_pool_checking =
 			Utc::now().timestamp_millis() + self.config.ip_pool_ban_history_s * 1000 / 10;
+		let mining_wallet_client =
+			HttpClient::new(self.chain.get_context_id(), Duration::from_secs(5), None);
 
 		loop {
 			if self.stop_state.is_stopped() {
@@ -631,6 +634,7 @@ impl Handler {
 							.current_key_id
 							.clone(),
 						wallet_listener_url,
+						&mining_wallet_client,
 					);
 
 					{
@@ -975,9 +979,12 @@ impl StratumServer {
 		let h = handler.clone();
 
 		let stop_state = self.stop_state.clone();
-		let listener_th = thread::spawn(move || {
-			accept_connections(stop_state, listen_addr, h);
-		});
+		let listener_th = thread::Builder::new()
+			.name("stratum_listener".to_string())
+			.spawn(move || {
+				accept_connections(stop_state, listen_addr, h);
+			})
+			.expect("Failed to start stratum listener thread");
 
 		// We have started
 		self.stratum_stats.is_running.store(true, Ordering::Relaxed);

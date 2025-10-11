@@ -29,6 +29,7 @@ use crate::core::global;
 use crate::mining::mine_block;
 use crate::util::StopState;
 use crate::ServerTxPool;
+use mwc_api::client::HttpClient;
 use mwc_chain::SyncState;
 use std::thread;
 use std::time::Duration;
@@ -138,6 +139,7 @@ impl Miner {
 		// iteration, we keep the returned derivation to provide it back when
 		// nothing has changed. We only want to create a new key_id for each new block.
 		let mut key_id = None;
+		let mining_wallet_client = HttpClient::new(0, Duration::from_secs(5), None);
 
 		loop {
 			if self.stop_state.is_stopped() {
@@ -159,6 +161,7 @@ impl Miner {
 				&self.tx_pool,
 				key_id.clone(),
 				wallet_listener_url.clone(),
+				&mining_wallet_client,
 			);
 
 			let sol = self.inner_mining_loop(
