@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::tor::arti;
 use crate::tor::arti::arti_async_block;
+use crate::tor::arti_tracked::ArtiTrackedData;
 use crate::{Error, PeerAddr};
 use mwc_util::run_global_async_block;
 use mwc_util::tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -26,17 +28,17 @@ use tor_proto::client::stream::{DataReader, DataStream, DataWriter};
 
 pub enum TcpData {
 	Tcp(TcpStream),
-	Tor(DataStream),
+	Tor(ArtiTrackedData<DataStream>),
 }
 
 pub enum TcpDataReadHalf {
 	Tcp(OwnedReadHalf),
-	Tor(DataReader),
+	Tor(ArtiTrackedData<DataReader>),
 }
 
 pub enum TcpDataWriteHalf {
 	Tcp(OwnedWriteHalf),
-	Tor(DataWriter),
+	Tor(ArtiTrackedData<DataWriter>),
 }
 
 /// We need something to read/write form both TcpStream and DataStream
@@ -67,9 +69,9 @@ impl TcpDataStream {
 			write_timeout: Duration::from_secs(5),
 		}
 	}
-	pub fn from_data(tor_stream: DataStream) -> Self {
+	pub fn from_data(tor_stream: DataStream, name: String) -> Self {
 		TcpDataStream {
-			stream: TcpData::Tor(tor_stream),
+			stream: TcpData::Tor(ArtiTrackedData::new(tor_stream, name)),
 			read_timeout: Duration::from_secs(5),
 			write_timeout: Duration::from_secs(5),
 		}
@@ -105,14 +107,18 @@ impl TcpDataStream {
 				)
 			}
 			TcpData::Tor(s) => {
-				let (r, w) = s.split();
+				let base_name = s.get_name();
+				let (r, w) = s.stream.split();
 				(
 					TcpDataReadHalfStream {
-						stream: TcpDataReadHalf::Tor(r),
+						stream: TcpDataReadHalf::Tor(ArtiTrackedData::new(
+							r,
+							base_name.clone() + "_RH",
+						)),
 						read_timeout: self.read_timeout,
 					},
 					TcpDataWriteHalfStream {
-						stream: TcpDataWriteHalf::Tor(w),
+						stream: TcpDataWriteHalf::Tor(ArtiTrackedData::new(w, base_name + "_WH")),
 						write_timeout: self.write_timeout,
 					},
 				)
@@ -127,7 +133,7 @@ impl TcpDataStream {
 			})?),
 			TcpData::Tor(_) => {
 				return Err(Error::Internal(
-					"Requestiong peer address for tor connection".into(),
+					"Requesting peer address for tor connection".into(),
 				))
 			}
 		};
@@ -139,7 +145,7 @@ impl TcpData {
 	pub fn shutdown(self) -> Result<(), std::io::Error> {
 		match self {
 			TcpData::Tcp(mut s) => run_global_async_block(async { s.shutdown().await }),
-			TcpData::Tor(mut s) => arti_async_block(async { s.shutdown().await })
+			TcpData::Tor(mut s) => arti_async_block(async { s.stream.shutdown().await })
 				.map_err(|_| std::io::Error::new(ErrorKind::Other, "arti not running"))?,
 		}
 	}
@@ -153,7 +159,15 @@ impl AsyncRead for TcpData {
 	) -> Poll<std::io::Result<()>> {
 		match &mut *self {
 			TcpData::Tcp(s) => Pin::new(s).poll_read(cx, buf),
-			TcpData::Tor(s) => Pin::new(s).poll_read(cx, buf),
+			TcpData::Tor(s) => {
+				if arti::is_arti_restarting() {
+					return Poll::Ready(Err(std::io::Error::new(
+						std::io::ErrorKind::NetworkDown,
+						"Arti is restarting",
+					)));
+				}
+				unsafe { Pin::new_unchecked(&mut s.stream).poll_read(cx, buf) }
+			}
 		}
 	}
 }
@@ -166,21 +180,37 @@ impl AsyncWrite for TcpData {
 	) -> Poll<std::io::Result<usize>> {
 		match &mut *self {
 			TcpData::Tcp(s) => Pin::new(s).poll_write(cx, buf),
-			TcpData::Tor(s) => Pin::new(s).poll_write(cx, buf),
+			TcpData::Tor(s) => {
+				if arti::is_arti_restarting() {
+					return Poll::Ready(Err(std::io::Error::new(
+						std::io::ErrorKind::NetworkDown,
+						"Arti is restarting",
+					)));
+				}
+				unsafe { Pin::new_unchecked(&mut s.stream).poll_write(cx, buf) }
+			}
 		}
 	}
 
 	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
 		match &mut *self {
 			TcpData::Tcp(s) => Pin::new(s).poll_flush(cx),
-			TcpData::Tor(s) => Pin::new(s).poll_flush(cx),
+			TcpData::Tor(s) => {
+				if arti::is_arti_restarting() {
+					return Poll::Ready(Err(std::io::Error::new(
+						std::io::ErrorKind::NetworkDown,
+						"Arti is restarting",
+					)));
+				}
+				unsafe { Pin::new_unchecked(&mut s.stream).poll_flush(cx) }
+			}
 		}
 	}
 
 	fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
 		match &mut *self {
 			TcpData::Tcp(s) => Pin::new(s).poll_shutdown(cx),
-			TcpData::Tor(s) => Pin::new(s).poll_shutdown(cx),
+			TcpData::Tor(s) => unsafe { Pin::new_unchecked(&mut s.stream).poll_shutdown(cx) },
 		}
 	}
 }
@@ -194,7 +224,7 @@ impl Read for TcpDataStream {
 				mwc_util::tokio::time::timeout(*read_timeout, s.read(buf)).await
 			}),
 			TcpData::Tor(s) => arti_async_block(async {
-				mwc_util::tokio::time::timeout(*read_timeout, s.read(buf)).await
+				mwc_util::tokio::time::timeout(*read_timeout, s.stream.read(buf)).await
 			})
 			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "read timeout"))?,
 		};
@@ -211,7 +241,7 @@ impl Write for TcpDataStream {
 				mwc_util::tokio::time::timeout(*write_timeout, s.write(buf)).await
 			}),
 			TcpData::Tor(s) => arti_async_block(async {
-				mwc_util::tokio::time::timeout(*write_timeout, s.write(buf)).await
+				mwc_util::tokio::time::timeout(*write_timeout, s.stream.write(buf)).await
 			})
 			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write timeout"))?,
 		};
@@ -225,7 +255,7 @@ impl Write for TcpDataStream {
 				mwc_util::tokio::time::timeout(*write_timeout, s.flush()).await
 			}),
 			TcpData::Tor(s) => arti_async_block(async {
-				mwc_util::tokio::time::timeout(*write_timeout, s.flush()).await
+				mwc_util::tokio::time::timeout(*write_timeout, s.stream.flush()).await
 			})
 			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write timeout"))?,
 		};
@@ -258,7 +288,7 @@ impl TcpDataWriteHalf {
 	pub fn shutdown(mut self) -> Result<(), std::io::Error> {
 		let r = match &mut self {
 			TcpDataWriteHalf::Tcp(s) => run_global_async_block(async { s.shutdown().await }),
-			TcpDataWriteHalf::Tor(s) => arti_async_block(async { s.shutdown().await })
+			TcpDataWriteHalf::Tor(s) => arti_async_block(async { s.stream.shutdown().await })
 				.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "tor is not running"))?,
 		};
 		r
@@ -273,7 +303,9 @@ impl AsyncRead for TcpDataReadHalf {
 	) -> Poll<std::io::Result<()>> {
 		match &mut *self {
 			TcpDataReadHalf::Tcp(s) => Pin::new(s).poll_read(cx, buf),
-			TcpDataReadHalf::Tor(s) => Pin::new(s).poll_read(cx, buf),
+			TcpDataReadHalf::Tor(s) => unsafe {
+				Pin::new_unchecked(&mut s.stream).poll_read(cx, buf)
+			},
 		}
 	}
 }
@@ -286,21 +318,25 @@ impl AsyncWrite for TcpDataWriteHalf {
 	) -> Poll<std::io::Result<usize>> {
 		match &mut *self {
 			TcpDataWriteHalf::Tcp(s) => Pin::new(s).poll_write(cx, buf),
-			TcpDataWriteHalf::Tor(s) => Pin::new(s).poll_write(cx, buf),
+			TcpDataWriteHalf::Tor(s) => unsafe {
+				Pin::new_unchecked(&mut s.stream).poll_write(cx, buf)
+			},
 		}
 	}
 
 	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
 		match &mut *self {
 			TcpDataWriteHalf::Tcp(s) => Pin::new(s).poll_flush(cx),
-			TcpDataWriteHalf::Tor(s) => Pin::new(s).poll_flush(cx),
+			TcpDataWriteHalf::Tor(s) => unsafe { Pin::new_unchecked(&mut s.stream).poll_flush(cx) },
 		}
 	}
 
 	fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
 		match &mut *self {
 			TcpDataWriteHalf::Tcp(s) => Pin::new(s).poll_shutdown(cx),
-			TcpDataWriteHalf::Tor(s) => Pin::new(s).poll_shutdown(cx),
+			TcpDataWriteHalf::Tor(s) => unsafe {
+				Pin::new_unchecked(&mut s.stream).poll_shutdown(cx)
+			},
 		}
 	}
 }
@@ -314,9 +350,9 @@ impl Read for TcpDataReadHalfStream {
 				mwc_util::tokio::time::timeout(*read_timeout, s.read(buf)).await
 			}),
 			TcpDataReadHalf::Tor(s) => arti_async_block(async {
-				mwc_util::tokio::time::timeout(*read_timeout, s.read(buf)).await
+				mwc_util::tokio::time::timeout(*read_timeout, s.stream.read(buf)).await
 			})
-			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "read timeout"))?,
+			.map_err(|_| std::io::Error::new(ErrorKind::NotConnected, "read arti error"))?,
 		}
 		.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "read timeout"))?
 	}
@@ -331,9 +367,9 @@ impl Write for TcpDataWriteHalfStream {
 				mwc_util::tokio::time::timeout(*write_timeout, s.write(buf)).await
 			}),
 			TcpDataWriteHalf::Tor(s) => arti_async_block(async {
-				mwc_util::tokio::time::timeout(*write_timeout, s.write(buf)).await
+				mwc_util::tokio::time::timeout(*write_timeout, s.stream.write(buf)).await
 			})
-			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write timeout"))?,
+			.map_err(|_| std::io::Error::new(ErrorKind::NotConnected, "write arti error"))?,
 		};
 		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write timeout"))?
 	}
@@ -345,9 +381,9 @@ impl Write for TcpDataWriteHalfStream {
 				mwc_util::tokio::time::timeout(*write_timeout, s.flush()).await
 			}),
 			TcpDataWriteHalf::Tor(s) => arti_async_block(async {
-				mwc_util::tokio::time::timeout(*write_timeout, s.flush()).await
+				mwc_util::tokio::time::timeout(*write_timeout, s.stream.flush()).await
 			})
-			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "flush timeout"))?,
+			.map_err(|_| std::io::Error::new(ErrorKind::NotConnected, "write arti error"))?,
 		};
 		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "flush timeout"))?
 	}

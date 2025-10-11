@@ -39,7 +39,7 @@ use std::time::Duration;
 use MsgHeaderWrapper::*;
 use State::*;
 
-const HEADER_IO_TIMEOUT: Duration = Duration::from_millis(2000);
+const HEADER_IO_TIMEOUT: Duration = Duration::from_millis(10000);
 pub const BODY_IO_TIMEOUT: Duration = Duration::from_millis(60000);
 const HEADER_BATCH_SIZE: usize = 32;
 

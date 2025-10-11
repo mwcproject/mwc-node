@@ -28,6 +28,7 @@ use mwc_util::tokio::runtime::{Handle, Runtime};
 use mwc_util::tokio::time::interval;
 use rand::seq::SliceRandom;
 use safelog::DisplayRedacted;
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
@@ -67,10 +68,28 @@ lazy_static! {
 	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 	// Monitoring thread. Only one instance is allowed
 	static ref TOR_MONITORING_THREAD : std::sync::RwLock<Option<std::thread::JoinHandle<()>>> = std::sync::RwLock::new(None);
+	// Reistered active objects. We don't want to restart TOR until any onject does exist
+	static ref TOR_ACTIVE_OBJECTS:  std::sync::RwLock<HashSet<String>> = std::sync::RwLock::new(HashSet::new());
 }
 
 pub fn request_arti_restart() {
 	TOR_RESTART_REQUEST.store(true, Ordering::Relaxed);
+}
+
+pub fn is_arti_restarting() -> bool {
+	TOR_RESTART_REQUEST.load(Ordering::Relaxed)
+}
+
+pub fn register_arti_active_object(obj_name: String) {
+	let mut active_objects = TOR_ACTIVE_OBJECTS.write().expect("RwLockFailure");
+	debug_assert!(!active_objects.contains(&obj_name));
+	active_objects.insert(obj_name);
+}
+
+pub fn unregister_arti_active_object(obj_name: &String) {
+	let mut active_objects = TOR_ACTIVE_OBJECTS.write().expect("RwLockFailure");
+	debug_assert!(active_objects.contains(obj_name));
+	active_objects.remove(obj_name);
 }
 
 pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
@@ -142,6 +161,25 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 					};
 
 					if need_arti_restart {
+						request_arti_restart();
+
+						// Waiting for other service to stop
+						let mut wait_counter = 0;
+						while TOR_ACTIVE_OBJECTS.read().expect("RwLock failure").len() > 0 {
+							thread::sleep(Duration::from_secs(1));
+							wait_counter += 1;
+							if wait_counter % 20 == 0 {
+								let objects = TOR_ACTIVE_OBJECTS
+									.read()
+									.expect("RwLock failure")
+									.iter()
+									.cloned()
+									.collect::<Vec<_>>()
+									.join(", ");
+								info!("Waiting for Tor Active Objects: {}", objects);
+							}
+						}
+
 						restart_arti();
 						break;
 					}
@@ -160,6 +198,9 @@ pub fn access_arti<F, R>(f: F) -> Result<R, Error>
 where
 	F: FnOnce(&TorClient<PreferredRuntime>) -> Result<R, Error>,
 {
+	if is_arti_restarting() {
+		return Err(Error::TorNotInitialized);
+	}
 	let guard = TOR_ARTI_INSTANCE.read().unwrap(); // ? converts PoisonError to E
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	f(&arti.tor_client)
@@ -171,6 +212,10 @@ where
 	F: Future<Output = R> + Send,
 	R: Send,
 {
+	if is_arti_restarting() {
+		return Err(Error::TorNotInitialized);
+	}
+
 	let guard = TOR_ARTI_INSTANCE.read().unwrap(); // ? converts PoisonError to E
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	let atri_rt = &arti.tor_runtime;
@@ -213,6 +258,8 @@ fn restart_arti() {
 		}
 	};
 
+	thread::sleep(Duration::from_secs(15)); // Waiting in case any other services trying to do somehting.
+
 	tor_runtime.shutdown_timeout(Duration::from_secs(10));
 
 	loop {
@@ -221,6 +268,7 @@ fn restart_arti() {
 			Ok(arti_core) => {
 				info!("New Arti instance is successfully created.");
 				*TOR_ARTI_INSTANCE.write().unwrap() = Some(arti_core);
+				TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
 				network_status::update_network_outage_time(Utc::now().timestamp());
 				for sender in restart_senders {
 					let _ = sender.send(());
@@ -450,6 +498,10 @@ impl ArtiCore {
 				Error::TorOnionService(format!("Unable to build onion service config, {}", e))
 			})?;
 
+		if is_arti_restarting() {
+			return Err(Error::TorNotInitialized);
+		}
+
 		let (service, request_stream) = tor_client
 			.launch_onion_service_with_hsid(svc_cfg, id_keypair)
 			.map_err(|e| Error::TorOnionService(format!("Unable to start onion service, {}", e)))?;
@@ -475,12 +527,15 @@ impl ArtiCore {
 		onion_service: &Arc<tor_hsservice::RunningOnionService>,
 		timeout_seconds: u64,
 	) -> Result<(), Error> {
+		if is_arti_restarting() {
+			return Err(Error::TorNotInitialized);
+		}
+
 		let status_stream = onion_service.status_events();
 		let mut binding = status_stream.filter(|status| {
 			futures::future::ready({
 				//let status_dump = format!("{:?}", status.state());
-				status.state().is_fully_reachable() /*|| status_dump.contains("DegradedUnreachable")*/
-				// DegradedUnreachable in my case stais forever. Let's concider it is ok
+				status.state().is_fully_reachable() || is_arti_restarting()
 			})
 		});
 
@@ -492,6 +547,9 @@ impl ArtiCore {
 			.await
 			{
 				Ok(Some(_)) => {
+					if is_arti_restarting() {
+						return Err(Error::TorNotInitialized);
+					}
 					info!("Onion service is fully reachable.");
 					Ok(())
 				}
@@ -506,6 +564,10 @@ impl ArtiCore {
 				}
 			}
 		})?;
+
+		if is_arti_restarting() {
+			return Err(Error::TorNotInitialized);
+		}
 
 		res
 	}

@@ -14,3 +14,4 @@
 
 /// Arti tor embedded server implementaiton
 pub mod arti;
+pub mod arti_tracked;

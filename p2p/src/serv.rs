@@ -54,6 +54,7 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Instant;
@@ -75,6 +76,7 @@ pub struct Server {
 	db_root: String,
 	handshake: Arc<RwLock<Option<Handshake>>>,
 	context_id: u32,
+	arti_streams: Arc<AtomicI64>,
 }
 
 // TODO TLS
@@ -106,6 +108,7 @@ impl Server {
 			db_root: String::from(db_root),
 			handshake: Arc::new(RwLock::new(None)),
 			context_id,
+			arti_streams: Arc::new(AtomicI64::new(0)),
 		})
 	}
 
@@ -181,6 +184,14 @@ impl Server {
 						let _ = tx.send(Ok(()));
 					});
 
+					let onion_service_object =
+						format!("mwc_node_onion_service_context_{}", self.context_id);
+					let incoming_requests_object =
+						format!("mwc_node_incoming_requests_context_{}", self.context_id);
+
+					arti::register_arti_active_object(onion_service_object.clone());
+					arti::register_arti_active_object(incoming_requests_object.clone());
+
 					let restarted_rc = arti::register_arti_restart_event()?;
 
 					let stop_state = self.stop_state.clone();
@@ -227,12 +238,18 @@ impl Server {
 									need_arti_restart
 								};
 
-								if need_arti_restart {
+								if need_arti_restart || arti::is_arti_restarting() {
 									drop(onion_service);
 									arti::request_arti_restart();
+									arti::unregister_arti_active_object(&onion_service_object);
 									break;
 								}
-								thread::sleep(Duration::from_secs(30));
+								for _ in 0..30 {
+									if stop_state.is_stopped() || arti::is_arti_restarting() {
+										break;
+									}
+									thread::sleep(Duration::from_secs(1));
+								}
 							}
 						}).expect("Unable to start node_onion_service_checker thread");
 
@@ -248,7 +265,7 @@ impl Server {
 
 						match request_res {
 							Ok(Some(stream_request)) => {
-								if stop_state.is_stopped() {
+								if stop_state.is_stopped() || arti::is_arti_restarting() {
 									break;
 								}
 
@@ -262,8 +279,17 @@ impl Server {
 
 										match accept_result {
 											Ok(onion_service_stream) => {
+												let stream_id = self
+													.arti_streams
+													.fetch_add(1, Ordering::Relaxed);
 												match self.handle_new_peer(
-													TcpDataStream::from_data(onion_service_stream),
+													TcpDataStream::from_data(
+														onion_service_stream,
+														format!(
+															"mwc_nodeLdata_stream_{}",
+															stream_id
+														),
+													),
 												) {
 													Err(Error::ConnectionClose(err)) => {
 														debug!(
@@ -290,12 +316,16 @@ impl Server {
 							}
 							Err(_) => {
 								// timeout
-								if stop_state.is_stopped() {
+								if stop_state.is_stopped() || arti::is_arti_restarting() {
 									break;
 								}
 							}
 						}
 					}
+					if monitoring.join().is_err() {
+						break;
+					}
+					arti::unregister_arti_active_object(&incoming_requests_object);
 
 					warn!("Onion listening service is stopped");
 
@@ -306,10 +336,10 @@ impl Server {
 					// Waiting while arti is started
 					let _ = restarted_rc.recv();
 
-					if monitoring.join().is_err() {
-						break;
-					}
 					warn!("Restarting onion listening service...");
+				}
+				Err(Error::TorNotInitialized) => {
+					thread::sleep(Duration::from_secs(5));
 				}
 				Err(e) => {
 					if self.stop_state.is_stopped() {
@@ -326,11 +356,17 @@ impl Server {
 						}
 						None => {
 							// we are in the restart cycle.
-							error!("Unable to restart onion service. Will retry soon");
+							error!("Unable to restart onion service. Will retry soon. {}", e);
 							// restarting arti first
 							arti::request_arti_restart();
 							// Sleeping for a minute, likely something with a network, also restart was requested. Waiting...
-							thread::sleep(Duration::from_secs(60));
+
+							for _ in 0..60 {
+								if self.stop_state.is_stopped() {
+									break;
+								}
+								thread::sleep(Duration::from_secs(1));
+							}
 						}
 					}
 				}
@@ -475,7 +511,6 @@ impl Server {
 			}
 		};
 
-		let sleep_time = Duration::from_millis(5);
 		loop {
 			// Pause peer ingress connection request. Only for tests.
 			if self.stop_state.is_paused() {
@@ -556,7 +591,7 @@ impl Server {
 					debug!("Couldn't establish new client connection: {:?}", e);
 				}
 			}
-			thread::sleep(sleep_time);
+			thread::sleep(Duration::from_millis(5));
 		}
 		Ok(())
 	}
@@ -664,7 +699,8 @@ impl Server {
 						Ok::<DataStream, Error>(stream)
 					})
 				})??;
-				TcpDataStream::from_data(stream)
+				let stream_id = self.arti_streams.fetch_add(1, Ordering::Relaxed);
+				TcpDataStream::from_data(stream, format!("mwc_nodeCdata_stream_{}", stream_id))
 			} else {
 				// External Tor
 				run_global_async_block(async {

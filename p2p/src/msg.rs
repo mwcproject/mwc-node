@@ -298,8 +298,8 @@ pub fn write_message<W: Write>(
 		if let Some(file) = &msg.attachment {
 			// finalize what we have before attachments...
 			if !tmp_buf.is_empty() {
-				stream.write_all(&tmp_buf[..])?;
 				tracker.inc_sent(tmp_buf.len() as u64);
+				stream.write_all(&tmp_buf[..])?;
 				tmp_buf.clear();
 			}
 			let mut file = file.try_clone()?;
@@ -308,10 +308,10 @@ pub fn write_message<W: Write>(
 				match file.read(&mut buf[..]) {
 					Ok(0) => break,
 					Ok(n) => {
+						tracker.inc_quiet_sent(n as u64);
 						stream.write_all(&buf[..n])?;
 						// Increase sent bytes "quietly" without incrementing the counter.
 						// (In a loop here for the single attachment).
-						tracker.inc_quiet_sent(n as u64);
 					}
 					Err(e) => return Err(From::from(e)),
 				}
@@ -320,8 +320,8 @@ pub fn write_message<W: Write>(
 	}
 
 	if !tmp_buf.is_empty() {
-		stream.write_all(&tmp_buf[..])?;
 		tracker.inc_sent(tmp_buf.len() as u64);
+		stream.write_all(&tmp_buf[..])?;
 		tmp_buf.clear();
 	}
 

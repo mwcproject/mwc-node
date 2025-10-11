@@ -53,10 +53,17 @@ macro_rules! try_break {
 	($inner:expr, $stage:expr, $peer:expr) => {
 		match $inner {
 			Ok(v) => Some(v),
-			Err(Error::Connection(ref e)) if e.kind() == io::ErrorKind::TimedOut => None,
+			Err(Error::Connection(ref e)) if e.kind() == io::ErrorKind::TimedOut => {
+				// Timeut suposed to be critical error. Why we need to keep not responded for a long time peers?
+				info!(
+					"try_break: exit the loop at {} for {}: {:?}",
+					$stage, $peer, e
+				);
+				break;
+			},
 			Err(Error::Connection(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
 				// to avoid the heavy polling which will consume CPU 100%
-				thread::sleep(Duration::from_millis(10));
+				thread::sleep(Duration::from_millis(100));
 				None
 			}
 			Err(Error::Store(_))
@@ -339,7 +346,7 @@ where
 						Ok(msg) => vec![msg],
 						Err(e) => return Err(e),
 					};
-					// send_rx expected to have capacuty. Capacity will limit the number of message that we can read form the stream
+					// send_rx expected to have capacuty. Capacity will limit the number of messages that we can read form the stream
 					loop {
 						match send_rx.try_recv() {
 							Ok(msg) => {

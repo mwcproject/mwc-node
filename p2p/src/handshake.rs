@@ -51,11 +51,11 @@ const SHAKE_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 /// Fail fast when trying to write a Hand message to the tcp stream.
 /// If we cannot write it within a couple of seconds then something has likely gone wrong.
-const HAND_WRITE_TIMEOUT: Duration = Duration::from_millis(2_000);
+const HAND_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 /// Fail fast when trying to write a Shake message to the tcp stream.
 /// If we cannot write it within a couple of seconds then something has likely gone wrong.
-const SHAKE_WRITE_TIMEOUT: Duration = Duration::from_millis(2_000);
+const SHAKE_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 /// Handles the handshake negotiation when two peers connect and decides on
 /// protocol.
