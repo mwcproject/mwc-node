@@ -49,6 +49,11 @@ pub fn start_tor(config: &TorConfig, base_dir: &str) -> Result<(), Error> {
 	Ok(())
 }
 
+/// Get ro status: <started, healthy>
+pub fn tor_status() -> (bool, bool) {
+	(arti::is_arti_started(), arti::is_arti_healthy())
+}
+
 /// Create a new server instance. No jobs will be started
 pub fn create_server(context_id: u32, config: ServerConfig) -> Result<(), Error> {
 	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");

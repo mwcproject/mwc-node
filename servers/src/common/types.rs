@@ -386,7 +386,7 @@ impl Default for StratumServerConfig {
 }
 
 /// Web hooks configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebHooksConfig {
 	/// url to POST transaction data when a new transaction arrives from a peer
 	pub tx_received_url: Option<String>,
@@ -402,6 +402,9 @@ pub struct WebHooksConfig {
 	/// timeout in seconds for the http request
 	#[serde(default = "default_timeout")]
 	pub timeout: u16,
+	/// Callback for all events
+	#[serde(skip)]
+	pub callback: Arc<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
 }
 
 fn default_timeout() -> u16 {
@@ -421,7 +424,33 @@ impl Default for WebHooksConfig {
 			block_accepted_url: None,
 			nthreads: default_nthreads(),
 			timeout: default_timeout(),
+			callback: Arc::new(None),
 		}
+	}
+}
+
+impl std::fmt::Debug for WebHooksConfig {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("WebHooksConfig")
+			.field("tx_received_url", &self.tx_received_url)
+			.field("header_received_url", &self.header_received_url)
+			.field("block_received_url", &self.block_received_url)
+			.field("block_accepted_url", &self.block_accepted_url)
+			.field("nthreads", &self.nthreads)
+			.field("timeout", &self.timeout)
+			.finish()
+	}
+}
+
+impl PartialEq for WebHooksConfig {
+	fn eq(&self, other: &Self) -> bool {
+		self.tx_received_url == other.tx_received_url
+			&& self.header_received_url == other.header_received_url
+			&& self.block_received_url == other.block_received_url
+			&& self.block_accepted_url == other.block_accepted_url
+			&& self.nthreads == other.nthreads
+			&& self.timeout == other.timeout
+		// callback is ignored
 	}
 }
 

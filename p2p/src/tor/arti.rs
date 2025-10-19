@@ -76,6 +76,19 @@ pub fn request_arti_restart() {
 	TOR_RESTART_REQUEST.store(true, Ordering::Relaxed);
 }
 
+pub fn is_arti_started() -> bool {
+	TOR_MONITORING_THREAD
+		.read()
+		.expect("RwLock failure")
+		.is_some()
+}
+
+pub fn is_arti_healthy() -> bool {
+	let has_tor = TOR_ARTI_INSTANCE.read().expect("RwLock failure").is_some();
+	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::Relaxed);
+	has_tor && !restart_requested
+}
+
 pub fn is_arti_restarting() -> bool {
 	TOR_RESTART_REQUEST.load(Ordering::Relaxed)
 }
@@ -309,7 +322,7 @@ pub struct ArtiCore {
 impl ArtiCore {
 	/// Init tor service. Note, the service might be reset and recreated, so all dependent objects might be dropped
 	fn new(config: &TorConfig, base_dir: &Path, clean_up_arti_data: bool) -> Result<Self, Error> {
-		if !config.tor_enabled || config.tor_external {
+		if !config.is_tor_enabled() || config.is_tor_external() {
 			return Err(Error::TorConfig(format!(
 				"ArtiCore init with not applicabe config {:?}",
 				config

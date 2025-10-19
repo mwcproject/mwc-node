@@ -337,7 +337,12 @@ fn comments() -> HashMap<String, String> {
 #peer_listener_buffer_count = 8
 
 # A preferred dandelion_peer, mainly used for testing dandelion
-# dandelion_peer = \"10.0.0.1:13144\"
+# dandelion_peer = \"10.0.0.1:13144\"\
+
+# Use optional internal tor client onion service 64 bytes expanded key. Use this key if you want to
+# have specific onion address that you own. The primary usage for seed nodes.
+# By default mwc-node will generate random onion address on the first run and then keep it.
+# onion_expanded_key = \"<64 byte key in hex format>\"
 "
 		.to_string(),
 	);
@@ -628,34 +633,20 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"tor_enabled".to_string(),
-		"
-# Enable tor connection for the mwc nodes p2p connection. MWC node using internal tor client.
+		"[server.tor_config]_END".to_string(),
+		"# Enable tor connection for the mwc nodes p2p connection. MWC node using internal tor client.
 # Recommended if you are running your node behind the firewall or NAT.
 # Try it even Tor is banned in your region.
-"
-		.to_string(),
-	);
+# By default it is enabled
+# tor_enabled = true
 
-	retval.insert(
-		"tor_external".to_string(),
-		"
-# Use external tor daemon for p2p connections.
-"
-		.to_string(),
-	);
+# Use external tor daemon for p2p connections. Default is false.
+# tor_external = false
 
-	retval.insert(
-		"socks_port".to_string(),
-		"
 # External tor daemon socks port for connection. Tor should work as a proxy.
-"
-		.to_string(),
-	);
+# socks_port = 51234
 
-	retval.insert(
-		"[server.tor_config]_END".to_string(),
-		"# External tor onion service address. This onion service is expected to serve to income connections.
+# External tor onion service address. This onion service is expected to serve to income connections.
 # torrc setting expected to be: HiddenServicePort 80 127.0.0.1:<port>
 # onion_address = \"<address>.onion\"
 
@@ -664,11 +655,6 @@ fn comments() -> HashMap<String, String> {
 # Note, mwc-node supports only webtunnel bridge because of there efficiency and ease of installation
 # and maintaining.
 # webtunnel_bridge = \"webtunnel 10.0.0.2:443 <webtunnel_hash> https://webtunnel_url\"
-
-# Use optional internal tor client onion service 64 bytes expanded key. Use this key if you want to
-# have specific onion address that you own. The primary usage for seed nodes.
-# By default mwc-node will generate random onion address on the first run and then keep it.
-# onion_expanded_key = \"<64 byte key in hex format>\"
 "
 
 			.to_string(),

@@ -386,35 +386,42 @@ impl PeerAddr {
 #[derive(Debug, Clone, Serialize, serde_derive::Deserialize, PartialEq)]
 pub struct TorConfig {
 	/// Whether to start tor listener on listener startup (default true)
-	pub tor_enabled: bool,
+	tor_enabled: Option<bool>,
 	/// The port for the tor socks proxy to bind to
-	pub socks_port: u16,
+	pub socks_port: Option<u16>,
 	/// Tor running externally (default false)
-	pub tor_external: bool,
+	tor_external: Option<bool>,
 	/// Onion address to use, only applicable with external tor
 	pub onion_address: Option<String>,
 	/// alternative webtunnel bridge. In not specified, the community bridges might be used
 	pub webtunnel_bridge: Option<String>,
-	/// Expanded key (for seed nodes). The key to generate the onion service
-	pub onion_expanded_key: Option<String>,
 }
 
 impl Default for TorConfig {
 	fn default() -> TorConfig {
 		TorConfig {
-			tor_enabled: true,
-			tor_external: false,
-			socks_port: 51234,
+			tor_enabled: None,
+			tor_external: None,
+			socks_port: Some(51234),
 			onion_address: None,
 			webtunnel_bridge: None,
-			onion_expanded_key: None,
 		}
 	}
 }
 
 impl TorConfig {
+	/// If tor service is enabled. Default: true
+	pub fn is_tor_enabled(&self) -> bool {
+		self.tor_enabled.unwrap_or(true)
+	}
+
+	/// If tor running as external service
+	pub fn is_tor_external(&self) -> bool {
+		self.tor_external.unwrap_or(false)
+	}
+
 	pub fn need_start_arti(&self) -> bool {
-		self.tor_enabled && !self.tor_external
+		self.is_tor_enabled() && !self.is_tor_external()
 	}
 }
 
@@ -448,6 +455,9 @@ pub struct P2PConfig {
 	pub peer_listener_buffer_count: Option<u32>,
 
 	pub dandelion_peer: Option<PeerAddr>,
+
+	/// Expanded key (for seed nodes). The key to generate the onion service
+	pub onion_expanded_key: Option<String>,
 }
 
 /// Default address for peer-to-peer connections.
@@ -466,6 +476,7 @@ impl Default for P2PConfig {
 			peer_min_preferred_outbound_count: None,
 			peer_listener_buffer_count: None,
 			dandelion_peer: None,
+			onion_expanded_key: None,
 		}
 	}
 }

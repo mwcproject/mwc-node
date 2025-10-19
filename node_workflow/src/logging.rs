@@ -14,8 +14,7 @@
 
 // Loggers setup
 
-use mwc_util::init_logger;
-use mwc_util::logger::{LogEntry, LoggingConfig};
+use mwc_util::logger::{CallbackLoggingConfig, LogEntry, LoggingConfig};
 use std::sync::mpsc;
 
 /// Init logs for binaries
@@ -26,9 +25,23 @@ pub fn init_bin_logs(logging_config: &LoggingConfig) -> Option<mpsc::Receiver<Lo
 	} else {
 		(None, None)
 	};
-	init_logger(Some(logging_config), logs_tx);
+	mwc_util::logger::init_logger(Some(logging_config), logs_tx);
 
 	info!("Logging is initialized");
 
 	logs_rx
+}
+
+/// Init logs for libraries
+pub fn init_buffered_logs(logging_config: CallbackLoggingConfig) {
+	mwc_util::logger::init_callback_logger(logging_config);
+	info!("Buffered/Callback logging is initialized");
+}
+
+/// Get log entries from the buffer
+pub fn get_buffered_logs(
+	last_known_entry_id: Option<u64>,
+	result_size_limit: usize,
+) -> Result<Vec<mwc_util::logger::LogBufferedEntry>, String> {
+	mwc_util::logger::read_buffered_logs(last_known_entry_id, result_size_limit)
 }

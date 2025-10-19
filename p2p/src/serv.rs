@@ -124,10 +124,10 @@ impl Server {
 	) -> Result<(), Error> {
 		// Empty handshake means that we still can't listen. We need to know own onion address. In case of
 		// listen_onion_service that will happens after the service will be started. That takes time...
-		if self.tor_config.tor_enabled {
-			if !self.tor_config.tor_external {
+		if self.tor_config.is_tor_enabled() {
+			if !self.tor_config.is_tor_external() {
 				// running own tor service
-				self.listen_onion_service(Some(ready_tx))
+				self.listen_onion_service(self.config.onion_expanded_key.clone(), Some(ready_tx))
 			} else {
 				// Listening on extended Tor, listening on sockets
 				if self.tor_config.onion_address.is_none() {
@@ -165,10 +165,11 @@ impl Server {
 
 	fn listen_onion_service(
 		&self,
+		onion_expanded_key: Option<String>,
 		mut ready_tx: Option<std::sync::mpsc::SyncSender<Result<(), Error>>>,
 	) -> Result<(), Error> {
-		debug_assert!(self.tor_config.tor_enabled);
-		debug_assert!(!self.tor_config.tor_external);
+		debug_assert!(self.tor_config.is_tor_enabled());
+		debug_assert!(!self.tor_config.is_tor_external());
 
 		info!("Starting TOR, please wait...");
 
@@ -178,7 +179,7 @@ impl Server {
 				break;
 			}
 
-			match self.start_arti() {
+			match self.start_arti(&onion_expanded_key) {
 				Ok((onion_service, mut incoming_requests)) => {
 					ready_tx.take().map(|tx| {
 						let _ = tx.send(Ok(()));
@@ -329,12 +330,16 @@ impl Server {
 
 					warn!("Onion listening service is stopped");
 
+					// Waiting while arti is started
+					while !self.stop_state.is_stopped() {
+						if restarted_rc.recv_timeout(Duration::from_secs(1)).is_ok() {
+							break;
+						}
+					}
+
 					if self.stop_state.is_stopped() {
 						break;
 					}
-
-					// Waiting while arti is started
-					let _ = restarted_rc.recv();
 
 					warn!("Restarting onion listening service...");
 				}
@@ -378,6 +383,7 @@ impl Server {
 
 	fn start_arti(
 		&self,
+		onion_expanded_key: &Option<String>,
 	) -> Result<
 		(
 			Arc<tor_hsservice::RunningOnionService>,
@@ -391,7 +397,7 @@ impl Server {
 			String,
 			Pin<Box<dyn futures::Stream<Item = tor_hsservice::StreamRequest> + Send>>,
 		) = arti::access_arti(|tor_client| {
-			let expanded_key = match &self.tor_config.onion_expanded_key {
+			let expanded_key = match onion_expanded_key {
 				Some(key_hex) => {
 					let bytes = mwc_util::from_hex(key_hex).map_err(|e| {
 						Error::TorConfig(format!(
@@ -666,8 +672,8 @@ impl Server {
 			return Ok(p);
 		}
 
-		let stream: TcpDataStream = if self.tor_config.tor_enabled {
-			if !self.tor_config.tor_external {
+		let stream: TcpDataStream = if self.tor_config.is_tor_enabled() {
+			if !self.tor_config.is_tor_external() {
 				// Using arti to connect
 				let stream: DataStream = arti::access_arti(|arti| {
 					arti_async_block(async {
@@ -703,12 +709,15 @@ impl Server {
 				TcpDataStream::from_data(stream, format!("mwc_nodeCdata_stream_{}", stream_id))
 			} else {
 				// External Tor
+				let socks_port = self.tor_config.socks_port.ok_or(Error::TorConfig(
+					"socks_port is not defined at Tor config".into(),
+				))?;
 				run_global_async_block(async {
 					match addr {
 						PeerAddr::Ip(address) => {
 							// we do this, not a good solution, but for now, we'll use it. Other side usually detects with ip.
 							let stream = Socks5Stream::connect(
-								("127.0.0.1", self.tor_config.socks_port),
+								("127.0.0.1", socks_port),
 								address.to_string(),
 							)
 							.await
@@ -723,14 +732,14 @@ impl Server {
 						PeerAddr::Onion(onion_address) => {
 							let onion_address = Self::format_onion_address(onion_address);
 							// Target port for onion is 80
-							let proxy_address = format!("127.0.0.1:{}", self.tor_config.socks_port);
+							let proxy_address = format!("127.0.0.1:{}", socks_port);
 							let stream =
 								Socks5Stream::connect(proxy_address.as_str(), (onion_address, 80))
 									.await
 									.map_err(|e| {
 										Error::TorConnect(format!(
 											"Unable connect to External Tor as 127.0.0.1:{}, {}",
-											self.tor_config.socks_port, e
+											socks_port, e
 										))
 									});
 							let stream = stream?;
@@ -775,7 +784,7 @@ impl Server {
 		let self_addr = match self_onion_address {
 			Some(onion_addr) => PeerAddr::Onion(onion_addr),
 			None => {
-				if self.tor_config.tor_enabled {
+				if self.tor_config.is_tor_enabled() {
 					PeerAddr::Ip(SocketAddr::new(
 						IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
 						self.config.port,

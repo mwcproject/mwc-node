@@ -214,7 +214,7 @@ impl Server {
 
 		// Initialize our capabilities.
 		// Currently either "default" or with optional "archive_mode" (block history) support enabled.
-		let use_tor = config.tor_config.tor_enabled;
+		let use_tor = config.tor_config.is_tor_enabled();
 		let capabilities = Capabilities::new(use_tor, config.archive_mode.unwrap_or(false));
 		debug!("Capabilities: {:?}", capabilities);
 
@@ -315,7 +315,7 @@ impl Server {
 				seed_list,
 				self.config.p2p_config.clone(),
 				self.stop_state.clone(),
-				self.config.tor_config.tor_enabled,
+				self.config.tor_config.is_tor_enabled(),
 			)
 			.map_err(|e| Error::ServerError(format!("Unable to start monitoring, {}", e)))?;
 

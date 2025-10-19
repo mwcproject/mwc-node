@@ -14,11 +14,9 @@
 
 //! Logging wrapper to be used throughout all crates in the workspace
 use std::ops::Deref;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use backtrace::Backtrace;
-use std::{panic, thread};
-
 use log::{Level, Record};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
@@ -33,8 +31,12 @@ use log4rs::encode::pattern::PatternEncoder;
 use log4rs::encode::writer::simple::SimpleWriter;
 use log4rs::encode::Encode;
 use log4rs::filter::{threshold::ThresholdFilter, Filter, Response};
+use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
 use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{panic, thread};
 use tracing::field::{Field, Visit};
 use tracing::Event;
 use tracing_subscriber::layer::SubscriberExt;
@@ -44,6 +46,8 @@ use tracing_subscriber::Layer;
 lazy_static! {
 	/// Flag to observe whether logging was explicitly initialised (don't output otherwise)
 	static ref TEST_LOGGER_WAS_INIT: Mutex<bool> = Mutex::new(false);
+
+	static ref LOGGER_BUFFER: Mutex<Option<LogBuffer>> = Mutex::new(None);
 }
 
 const LOGGING_PATTERN: &str = "{d(%Y%m%d %H:%M:%S%.3f)} {h({l})} {M} - {m}{n}";
@@ -58,6 +62,26 @@ pub struct LogEntry {
 	pub log: String,
 	/// The log levelO
 	pub level: Level,
+}
+
+/// Log entry for the buffer based logging
+#[derive(Clone, Serialize, Debug)]
+pub struct LogBufferedEntry {
+	/// The log message
+	pub log_entry: LogEntry,
+	/// time in ms
+	pub time_stamp: u64,
+	/// id
+	pub id: u64,
+}
+
+/// Log buffer for buffered/callback logging
+pub struct LogBuffer {
+	// The log messages
+	buffer: VecDeque<LogBufferedEntry>,
+	log_buffer_size: usize,
+	// current id
+	last_id: u64,
 }
 
 /// Logging config
@@ -97,6 +121,17 @@ impl Default for LoggingConfig {
 			tui_running: None,
 		}
 	}
+}
+
+/// Logging config
+#[derive(Clone)]
+pub struct CallbackLoggingConfig {
+	/// logging level for stdout
+	pub log_level: Level,
+	/// Logging buffer Size
+	pub log_buffer_size: usize,
+	/// Callback for logs
+	pub callback: Arc<Option<Box<dyn Fn(LogEntry) + Send + Sync>>>,
 }
 
 /// This filter is rejecting messages that doesn't start with "mwc"
@@ -343,6 +378,144 @@ pub fn init_test_logger() {
 	);
 
 	*was_init_ref = true;
+}
+
+struct CallbackAppender {
+	// Logg message formatter
+	encoder: Box<dyn Encode>,
+	// Callback for logs
+	callback: Arc<Option<Box<dyn Fn(LogEntry) + Send + Sync>>>,
+}
+
+impl Debug for CallbackAppender {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("CallbackAppender").finish()
+	}
+}
+
+impl Append for CallbackAppender {
+	fn append(&self, record: &Record) -> Result<(), anyhow::Error> {
+		let mut writer = SimpleWriter(Vec::new());
+		self.encoder.encode(&mut writer, record)?;
+
+		let log = String::from_utf8_lossy(writer.0.as_slice()).to_string();
+		let entry = LogEntry {
+			log,
+			level: record.level(),
+		};
+
+		if let Some(cb) = &*self.callback {
+			(cb)(entry.clone());
+		}
+
+		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+		if let Some(logger_buffer) = &mut *logger_buffer {
+			while logger_buffer.buffer.len() >= logger_buffer.log_buffer_size {
+				let _ = logger_buffer.buffer.pop_front();
+			}
+			logger_buffer.buffer.push_back(LogBufferedEntry {
+				log_entry: entry,
+				time_stamp: SystemTime::now()
+					.duration_since(UNIX_EPOCH)
+					.unwrap()
+					.as_millis() as u64,
+				id: logger_buffer.last_id,
+			});
+			logger_buffer.last_id += 1;
+		}
+		Ok(())
+	}
+
+	fn flush(&self) {}
+}
+
+/// Init logs as a callback logs
+pub fn init_callback_logger(config: CallbackLoggingConfig) {
+	{
+		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+		*logger_buffer = Some(LogBuffer {
+			buffer: VecDeque::with_capacity(config.log_buffer_size),
+			log_buffer_size: config.log_buffer_size,
+			// current id
+			last_id: 0,
+		});
+	}
+
+	let callback_appender = CallbackAppender {
+		// Logg message formatter
+		encoder: Box::new(PatternEncoder::new(&LOGGING_PATTERN)),
+		callback: config.callback.clone(),
+	};
+
+	let mut root = Root::builder();
+	let appenders = vec![Appender::builder()
+		.filter(Box::new(ThresholdFilter::new(
+			config.log_level.to_level_filter(),
+		)))
+		.filter(Box::new(MwcFilter))
+		.build("callback", Box::new(callback_appender))];
+	root = root.appender("callback");
+
+	let log4rs_config = Config::builder()
+		.appenders(appenders)
+		.build(root.build(config.log_level.to_level_filter()))
+		.unwrap();
+
+	let _ = log4rs::init_config(log4rs_config).unwrap();
+
+	// forward tracing events into the `log` crate (i.e. into log4rs)
+	// Then set up tracing with your custom layer
+	let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
+	tracing::subscriber::set_global_default(subscriber).unwrap();
+
+	let cb_enabled = if config.callback.is_some() {
+		"ON"
+	} else {
+		"OFF"
+	};
+
+	info!(
+		"log4rs is initialized, level: {:?}, buffer size: {}, Callback is {}",
+		config.log_level, config.log_buffer_size, cb_enabled
+	);
+}
+
+/// Read log entries from the buffer
+pub fn read_buffered_logs(
+	last_known_entry_id: Option<u64>,
+	result_size_limit: usize,
+) -> Result<Vec<LogBufferedEntry>, String> {
+	let logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+	match &*logger_buffer {
+		Some(log_buffer) => {
+			let starting_id = last_known_entry_id.unwrap_or(0);
+			if log_buffer.buffer.back().map(|l| l.id).unwrap_or(0) <= starting_id {
+				return Ok(vec![]);
+			}
+
+			let mut start_idx = 0;
+			if log_buffer.buffer[0].id >= starting_id {
+				start_idx = log_buffer.buffer[0].id.saturating_sub(starting_id) as usize;
+			}
+
+			let mut result = Vec::new();
+			for i in start_idx..log_buffer.buffer.len() {
+				match log_buffer.buffer.get(i) {
+					Some(itm) => {
+						if itm.id > starting_id {
+							result.push(itm.clone());
+							if result.len() >= result_size_limit {
+								break;
+							}
+						}
+					}
+					None => break,
+				}
+			}
+			Ok(result)
+		}
+		None => Err("Buffered/Callback logs are not initialized".into()),
+	}
 }
 
 /// hook to send panics to logs as well as stderr

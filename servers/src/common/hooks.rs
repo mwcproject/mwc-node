@@ -30,6 +30,7 @@ use hyper_rustls::HttpsConnector;
 use mwc_util::{global_runtime, ToHex};
 use serde::Serialize;
 use serde_json::{json, to_string};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Returns the list of event hooks that will be initialized for network events
@@ -39,6 +40,7 @@ pub fn init_net_hooks(config: &ServerConfig) -> Vec<Box<dyn NetEvents + Send + S
 	if config.webhook_config.block_received_url.is_some()
 		|| config.webhook_config.tx_received_url.is_some()
 		|| config.webhook_config.header_received_url.is_some()
+		|| config.webhook_config.callback.is_some()
 	{
 		list.push(Box::new(WebHook::from_config(&config.webhook_config)));
 	}
@@ -195,6 +197,8 @@ struct WebHook {
 	block_accepted_url: Option<hyper::Uri>,
 	/// The hyper client to be used for all requests
 	client: Client<HttpsConnector<HttpConnector>>,
+	/// Callback for lib usage
+	callback: Arc<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
 }
 
 impl WebHook {
@@ -206,6 +210,7 @@ impl WebHook {
 		block_accepted_url: Option<hyper::Uri>,
 		nthreads: u16,
 		timeout: u16,
+		callback: Arc<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
 	) -> WebHook {
 		let keep_alive = Duration::from_secs(timeout as u64);
 
@@ -230,6 +235,7 @@ impl WebHook {
 			header_received_url,
 			block_accepted_url,
 			client,
+			callback,
 		}
 	}
 
@@ -242,6 +248,7 @@ impl WebHook {
 			parse_url(&config.block_accepted_url),
 			config.nthreads,
 			config.timeout,
+			config.callback.clone(),
 		)
 	}
 
@@ -304,6 +311,11 @@ impl ChainEvents for WebHook {
 			})
 		};
 
+		self.callback
+			.as_ref()
+			.as_ref()
+			.map(|f| f("block_accepted", &payload));
+
 		if !self.make_request(&payload, &self.block_accepted_url) {
 			error!(
 				"Failed to serialize block {} at height {}",
@@ -321,6 +333,11 @@ impl NetEvents for WebHook {
 			"hash": tx.hash().to_hex(),
 			"data": tx
 		});
+
+		self.callback
+			.as_ref()
+			.as_ref()
+			.map(|f| f("transaction_received", &payload));
 		if !self.make_request(&payload, &self.tx_received_url) {
 			error!("Failed to serialize transaction {}", tx.hash());
 		}
@@ -333,6 +350,12 @@ impl NetEvents for WebHook {
 			"peer": addr,
 			"data": block
 		});
+
+		self.callback
+			.as_ref()
+			.as_ref()
+			.map(|f| f("block_received", &payload));
+
 		if !self.make_request(&payload, &self.block_received_url) {
 			error!(
 				"Failed to serialize block {} at height {}",
@@ -349,6 +372,12 @@ impl NetEvents for WebHook {
 			"peer": addr,
 			"data": header
 		});
+
+		self.callback
+			.as_ref()
+			.as_ref()
+			.map(|f| f("header_received", &payload));
+
 		if !self.make_request(&payload, &self.header_received_url) {
 			error!(
 				"Failed to serialize header {} at height {}",

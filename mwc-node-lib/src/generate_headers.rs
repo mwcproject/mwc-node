@@ -12,26 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Error type wrapping underlying module errors.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	/// RPC Error
-	#[error("App context error: {0}")]
-	ContextError(String),
+//! src/bin/generate-headers.rs
 
-	/// Tor issue
-	#[error("{0}")]
-	TorError(String),
+mod ffi;
+mod mwc_node_calls;
 
-	/// Server issue
-	#[error("{0}")]
-	ServerError(String),
-
-	/// UI related issue
-	#[error("{0}")]
-	UIError(String),
-
-	/// UI related issue
-	#[error("{0}")]
-	LogError(String),
+fn main() -> ::std::io::Result<()> {
+	::safer_ffi::headers::builder()
+		.to_file("mwc-node-lib/c_header/mwc_node_interface.h")?
+		.generate()?;
+	Ok(())
 }

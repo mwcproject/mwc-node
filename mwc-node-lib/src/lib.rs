@@ -12,26 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Error type wrapping underlying module errors.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	/// RPC Error
-	#[error("App context error: {0}")]
-	ContextError(String),
+// This library is a bridge between mwc-node and any C++ library. It is expected that
+// caller should be able to maintain the lifecycle of the mwc-node. In theory several nodes can be run in parallel
 
-	/// Tor issue
-	#[error("{0}")]
-	TorError(String),
+/// FFI interface
+pub mod ffi;
 
-	/// Server issue
-	#[error("{0}")]
-	ServerError(String),
-
-	/// UI related issue
-	#[error("{0}")]
-	UIError(String),
-
-	/// UI related issue
-	#[error("{0}")]
-	LogError(String),
-}
+/// node workflow mwthods calls.
+pub mod mwc_node_calls;
