@@ -337,7 +337,7 @@ fn comments() -> HashMap<String, String> {
 #peer_listener_buffer_count = 8
 
 # A preferred dandelion_peer, mainly used for testing dandelion
-# dandelion_peer = \"10.0.0.1:13144\"\
+# dandelion_peer = \"10.0.0.1:13144\"
 
 # Use optional internal tor client onion service 64 bytes expanded key. Use this key if you want to
 # have specific onion address that you own. The primary usage for seed nodes.

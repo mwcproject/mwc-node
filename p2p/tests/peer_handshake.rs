@@ -65,8 +65,8 @@ fn peer_handshake() {
 		..p2p::P2PConfig::default()
 	};
 	let mut tor_config = p2p::TorConfig::default();
-	tor_config.tor_enabled = true;
-	tor_config.tor_external = true;
+	tor_config.tor_enabled = Some(true);
+	tor_config.tor_external = Some(true);
 	tor_config.onion_address =
 		Some("qwjqqd4l74ecgcy3ebkzk7nvmxu2swb7u3nyu4u3s6sa7iw3bsmzbnyd.onion".into());
 

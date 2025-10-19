@@ -386,11 +386,11 @@ impl PeerAddr {
 #[derive(Debug, Clone, Serialize, serde_derive::Deserialize, PartialEq)]
 pub struct TorConfig {
 	/// Whether to start tor listener on listener startup (default true)
-	tor_enabled: Option<bool>,
+	pub tor_enabled: Option<bool>,
 	/// The port for the tor socks proxy to bind to
 	pub socks_port: Option<u16>,
 	/// Tor running externally (default false)
-	tor_external: Option<bool>,
+	pub tor_external: Option<bool>,
 	/// Onion address to use, only applicable with external tor
 	pub onion_address: Option<String>,
 	/// alternative webtunnel bridge. In not specified, the community bridges might be used
