@@ -698,7 +698,7 @@ impl ArtiCore {
 			.cache_dir(CfgPath::new_literal(base_dir.join("arti").join("cache")));
 		builder
 			.storage()
-			.cache_dir(CfgPath::new_literal(base_dir.join("arti").join("state")));
+			.state_dir(CfgPath::new_literal(base_dir.join("arti").join("state")));
 
 		builder
 			.stream_timeouts()
