@@ -706,6 +706,10 @@ impl ArtiCore {
 			.resolve_ptr_timeout(Duration::from_secs(40))
 			.resolve_timeout(Duration::from_secs(40));
 
+		let net_params = builder.override_net_params();
+		net_params.insert("cbtinitialtimeout".into(), 120_000);
+		net_params.insert("guard-nonprimary-guard-connect-timeout".into(), 40);
+
 		builder
 			.build()
 			.map_err(|e| Error::TorConfig(format!("Unable to build arti config, {}", e)))
