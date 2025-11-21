@@ -15,3 +15,7 @@
 /// Arti tor embedded server implementaiton
 pub mod arti;
 pub mod arti_tracked;
+mod onion_service;
+pub mod tcp_data_stream;
+
+pub use onion_service::listen_onion_service;

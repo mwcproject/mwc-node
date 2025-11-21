@@ -410,14 +410,38 @@ impl Default for TorConfig {
 }
 
 impl TorConfig {
+	pub fn no_tor_config() -> Self {
+		TorConfig {
+			tor_enabled: Some(false),
+			socks_port: None,
+			tor_external: None,
+			onion_address: None,
+			webtunnel_bridge: None,
+		}
+	}
+
+	pub fn arti_tor_config() -> Self {
+		TorConfig {
+			tor_enabled: Some(true),
+			socks_port: None,
+			tor_external: Some(false),
+			onion_address: None,
+			webtunnel_bridge: None,
+		}
+	}
 	/// If tor service is enabled. Default: true
 	pub fn is_tor_enabled(&self) -> bool {
 		self.tor_enabled.unwrap_or(true)
 	}
 
 	/// If tor running as external service
+	pub fn is_tor_internal_arti(&self) -> bool {
+		self.is_tor_enabled() && !self.tor_external.unwrap_or(false)
+	}
+
+	/// If tor running as external service
 	pub fn is_tor_external(&self) -> bool {
-		self.tor_external.unwrap_or(false)
+		self.is_tor_enabled() && self.tor_external.unwrap_or(false)
 	}
 
 	pub fn need_start_arti(&self) -> bool {

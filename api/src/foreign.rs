@@ -21,6 +21,7 @@ use crate::core::core::hash::Hashed;
 use crate::core::core::transaction::Transaction;
 use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
+use crate::handlers::peers_api::PeersConnectedHandler;
 use crate::handlers::pool_api::PoolHandler;
 use crate::handlers::transactions_api::TxHashSetHandler;
 use crate::handlers::version_api::VersionHandler;
@@ -36,6 +37,7 @@ use crate::{Libp2pMessages, Libp2pPeers};
 use chrono::Utc;
 #[cfg(feature = "libp2p")]
 use mwc_p2p::libp2p_connection;
+use mwc_p2p::types::PeerInfoDisplayLegacy;
 use mwc_util::secp::Secp256k1;
 use std::sync::RwLock;
 use std::sync::Weak;
@@ -325,6 +327,15 @@ where
 			chain: self.chain.clone(),
 		};
 		txhashset_handler.block_height_range_to_pmmr_indices(start_block_height, end_block_height)
+	}
+
+	pub fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
+		let peers_connected_handler = PeersConnectedHandler {
+			peers: self.peers.clone(),
+		};
+		peers_connected_handler
+			.get_connected_peers()
+			.map_err(|e| Error::Internal(format!("Unable to request the connected peers, {}", e)))
 	}
 
 	/// Returns the number of transaction in the transaction pool.

@@ -15,6 +15,7 @@ log = "0.4"
 thiserror = "1"
 lazy_static = "1"
 futures = "0.3"
+hyper = "0.14"
 
 mwc_api = { path = "../api", version = "6.0.0" }
 mwc_chain = { path = "../chain", version = "6.0.0" }

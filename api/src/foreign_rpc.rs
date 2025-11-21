@@ -27,6 +27,7 @@ use crate::types::{
 	OutputPrintable, Tip, Version,
 };
 use crate::{util, Libp2pMessages, Libp2pPeers};
+use mwc_p2p::types::PeerInfoDisplayLegacy;
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at
@@ -920,6 +921,36 @@ pub trait ForeignRpc: Sync + Send {
 	# r#"
 	{
 		"jsonrpc": "2.0",
+		"method": "get_connected_peers",
+		"params": [],
+		"id": 1
+	}
+	# "#
+	# ,
+	# r#"
+	{
+		"id": 1,
+		"jsonrpc": "2.0",
+		"result": {
+			"Ok": []
+		}
+	}
+	# "#
+	# );
+	```
+	 */
+	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error>;
+
+	/**
+	Networked version of [Foreign::get_pool_size](struct.Foreign.html#method.get_pool_size).
+
+	# Json rpc example
+
+	```
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# r#"
+	{
+		"jsonrpc": "2.0",
 		"method": "get_pool_size",
 		"params": [],
 		"id": 1
@@ -1263,6 +1294,10 @@ where
 		end_block_height: Option<u64>,
 	) -> Result<OutputListing, Error> {
 		Foreign::get_pmmr_indices(self, start_block_height, end_block_height)
+	}
+
+	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
+		Foreign::get_connected_peers(self)
 	}
 
 	fn get_pool_size(&self) -> Result<usize, Error> {

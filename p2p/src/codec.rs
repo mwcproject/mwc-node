@@ -24,7 +24,7 @@
 use crate::msg::{Message, MsgHeader, MsgHeaderWrapper, Type};
 use crate::mwc_core::global::header_size_bytes;
 use crate::mwc_core::ser::{BufReader, ProtocolVersion, Readable};
-use crate::tcp_data_stream::TcpDataReadHalfStream;
+use crate::tor::tcp_data_stream::TcpDataReadHalfStream;
 use crate::types::Error;
 use crate::{
 	msg::HeadersData,

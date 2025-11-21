@@ -12,7 +12,7 @@ build = "src/build/build.rs"
 edition = "2018"
 
 [workspace]
-members = ["api", "chain", "config", "core", "keychain", "p2p", "servers", "store", "util", "pool", "node_workflow", "mwc-node-lib"]
+members = ["api", "chain", "config", "core", "keychain", "p2p", "servers", "store", "util", "pool", "node_workflow", "mwc_node_lib"]
 exclude = ["etc/gen_gen"]
 
 [[bin]]

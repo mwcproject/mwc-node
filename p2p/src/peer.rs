@@ -36,7 +36,7 @@ use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::Writeable;
 use crate::mwc_core::{core, global};
 use crate::protocol::Protocol;
-use crate::tcp_data_stream::TcpDataStream;
+use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::{
 	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
 	TxHashSetRead,

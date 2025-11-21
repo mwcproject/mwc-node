@@ -23,7 +23,7 @@ free_node_lib_string (
 /** \brief
  *  Process mwc-node related call.
  *  Input: json stirng param
- *  return: json string as a result
+ *  return: json string as a result. Call process_mwc_node_request to release the memory
  */
 char *
 process_mwc_node_request (
@@ -38,16 +38,16 @@ process_mwc_node_request (
  *  Note, Callback will get temprary string pointer, C code can't store it.
  */
 void
-register_callback (
+register_lib_callback (
     char const * callback_name,
-    void (*cb)(void *, int8_t const *),
+    int8_t const * (*cb)(void *, int8_t const *),
     void * ctx);
 
 /** \brief
  *  Unregister the callback
  */
 void
-unregister_callback (
+unregister_lib_callback (
     char const * callback_name);
 
 

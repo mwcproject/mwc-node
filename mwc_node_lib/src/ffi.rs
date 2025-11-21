@@ -18,37 +18,38 @@ use safer_ffi::prelude::*;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-pub type CallbackFn = extern "C" fn(ctx: *mut std::ffi::c_void, message: *const libc::c_char);
+pub type CallbackFn =
+	extern "C" fn(ctx: *mut std::ffi::c_void, message: *const libc::c_char) -> *const libc::c_char;
 
 lazy_static! {
-	pub(crate) static ref NODE_LIB_CALLBACKS: RwLock<HashMap<String, (CallbackFn, usize)>> =
+	pub static ref LIB_CALLBACKS: RwLock<HashMap<String, (CallbackFn, usize)>> =
 		RwLock::new(HashMap::new());
 }
 
 /// Register a callback and context pointer from C
 /// Note, Callback will get temprary string pointer, C code can't store it.
 #[ffi_export]
-pub fn register_callback(
+pub fn register_lib_callback(
 	callback_name: char_p::Ref<'static>,
 	cb: CallbackFn,
 	ctx: *mut std::ffi::c_void,
 ) {
-	let mut callbacks = NODE_LIB_CALLBACKS.write().expect("RwLock failure");
+	let mut callbacks = LIB_CALLBACKS.write().expect("RwLock failure");
 	let callback_name = callback_name.to_str();
 	callbacks.insert(callback_name.to_string(), (cb, ctx as usize));
 }
 
 /// Unregister the callback
 #[ffi_export]
-pub fn unregister_callback(callback_name: char_p::Ref<'static>) {
-	let mut callbacks = NODE_LIB_CALLBACKS.write().expect("RwLock failure");
+pub fn unregister_lib_callback(callback_name: char_p::Ref<'static>) {
+	let mut callbacks = LIB_CALLBACKS.write().expect("RwLock failure");
 	let callback_name = callback_name.to_str();
 	callbacks.remove(&callback_name.to_string());
 }
 
 /// Process mwc-node related call.
 /// Input: json stirng param
-/// return: json string as a result
+/// return: json string as a result. Call process_mwc_node_request to release the memory
 #[ffi_export]
 fn process_mwc_node_request(input: char_p::Ref<'_>) -> char_p::Box {
 	let input = input.to_str();
@@ -59,6 +60,6 @@ fn process_mwc_node_request(input: char_p::Ref<'_>) -> char_p::Box {
 
 /// Free process_mwc_node_request response string
 #[ffi_export]
-fn free_node_lib_string(s: char_p::Box) {
+fn free_lib_string(s: char_p::Box) {
 	drop(s)
 }

@@ -15,8 +15,10 @@
 // Server management routine
 
 use crate::Error;
-use futures::channel::oneshot;
+use hyper::http;
+use hyper::service::Service;
 use lazy_static::lazy_static;
+use mwc_api::Router;
 use mwc_p2p::tor::arti;
 use mwc_p2p::TorConfig;
 use mwc_servers::{Server, ServerConfig, ServerStats};
@@ -28,6 +30,8 @@ lazy_static! {
 		/// Global chain status flags. It is expected that init call will set them first for every needed context
 		/// Note, both node and wallet will need to set it up. Any param can be set once
 	static ref SERVER_CONTEXT: RwLock< HashMap<u32, mwc_servers::Server>> = RwLock::new(HashMap::new());
+
+	static ref CALL_ROUTER_CONTEXT: RwLock< HashMap<u32, Router>> = RwLock::new(HashMap::new());
 }
 
 /// Stot the server jobs and release the server
@@ -39,11 +43,20 @@ pub fn release_server(context_id: u32) {
 	{
 		server.stop();
 	}
+
+	CALL_ROUTER_CONTEXT
+		.write()
+		.expect("RwLock failure")
+		.remove(&context_id);
 }
 
 /// Tor client needs to be started once, no context_id is requred
 pub fn start_tor(config: &TorConfig, base_dir: &str) -> Result<(), Error> {
-	println!("Starting Arti client, please wait...");
+	if mwc_util::is_console_output_enabled() {
+		println!("Starting Arti client, please wait...");
+	} else {
+		info!("Starting Arti client, please wait...");
+	}
 	arti::start_arti(config, PathBuf::from(base_dir).as_path())
 		.map_err(|e| Error::TorError(format!("Arti start error, {}", e)))?;
 	Ok(())
@@ -140,14 +153,11 @@ pub fn start_listen_peers(context_id: u32) -> Result<(), Error> {
 }
 
 /// Starting node rest API, needed for communication with mwc-wallet
-pub fn start_rest_api(
-	context_id: u32,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
-) -> Result<(), Error> {
+pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
 	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
-			.start_rest_api(api_chan)
+			.start_rest_api()
 			.map_err(|e| Error::ServerError(format!("Unable to start node rest api, {}", e)))?,
 		None => {
 			return Err(Error::ServerError(format!(
@@ -157,6 +167,85 @@ pub fn start_rest_api(
 		}
 	}
 	Ok(())
+}
+
+/// Init router for lib based API
+pub fn init_call_api(context_id: u32) -> Result<(), Error> {
+	let router = {
+		let servers = SERVER_CONTEXT.read().expect("RwLock failure");
+		match servers.get(&context_id) {
+			Some(serv) => {
+				let router = serv.build_api_router_no_secrets().map_err(|e| {
+					Error::ServerError(format!("Unable to build node call api, {}", e))
+				})?;
+				router
+			}
+			None => {
+				return Err(Error::ServerError(format!(
+					"Server not exist for context {}",
+					context_id
+				)))
+			}
+		}
+	};
+	CALL_ROUTER_CONTEXT
+		.write()
+		.expect("RwLock failure")
+		.insert(context_id, router);
+	Ok(())
+}
+
+/// Process rest API related call
+pub fn process_call(
+	context_id: u32,
+	method: String,
+	uri: String,
+	body: String,
+) -> Result<http::Response<hyper::Body>, Error> {
+	match CALL_ROUTER_CONTEXT
+		.write()
+		.expect("RwLock failure")
+		.get_mut(&context_id)
+	{
+		Some(router) => {
+			let method = http::Method::from_bytes(method.as_bytes()).map_err(|e| {
+				Error::ServerError(format!("HTTP request get invalid method {}, {}", method, e))
+			})?;
+			let uri = uri.parse::<http::Uri>().map_err(|e| {
+				Error::ServerError(format!("HTTP request get invalid Uri {}, {}", uri, e))
+			})?;
+
+			let builder = http::Request::builder()
+				.method(method)
+				.uri(uri)
+				.version(http::Version::HTTP_10);
+
+			// All headers are skipped, router should handle that
+			let body = hyper::Body::from(body);
+
+			let request = builder
+				.body(body)
+				.map_err(|e| Error::ServerError(format!("Unable to build a request, {}", e)))?;
+
+			let res = router.call(request);
+			let response = futures::executor::block_on(res);
+			let response = match response {
+				Ok(response) => response,
+				Err(e) => {
+					error!("Unable to process API request, {}", e);
+					return Err(Error::ServerError(format!(
+						"Unable to process API request, {}",
+						e
+					)));
+				}
+			};
+			Ok(response)
+		}
+		None => Err(Error::ServerError(format!(
+			"Call API not exist for context {}",
+			context_id
+		))),
+	}
 }
 
 /// Start dandelion protocol. Needed for publishing transactions

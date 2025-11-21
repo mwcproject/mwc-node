@@ -54,7 +54,6 @@ use crate::pool;
 use crate::util::file::get_first_line;
 use crate::util::StopState;
 use crate::Error;
-use futures::channel::oneshot;
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 
@@ -63,6 +62,7 @@ use crate::mwc::sync::sync_manager::SyncManager;
 use crate::p2p::libp2p_connection;
 #[cfg(feature = "libp2p")]
 use chrono::Utc;
+use mwc_api::Router;
 use mwc_core::consensus::HeaderDifficultyInfo;
 #[cfg(feature = "libp2p")]
 use mwc_core::core::TxKernel;
@@ -369,10 +369,7 @@ impl Server {
 	}
 
 	/// Starting node rest API, needed for communication with mwc-wallet
-	pub fn start_rest_api(
-		&mut self,
-		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
-	) -> Result<(), Error> {
+	pub fn start_rest_api(&mut self) -> Result<(), Error> {
 		info!("Starting rest apis at: {}", &self.config.api_http_addr);
 		let api_secret = get_first_line(self.config.api_secret_path.clone());
 		let foreign_api_secret = get_first_line(self.config.foreign_api_secret_path.clone());
@@ -402,13 +399,28 @@ impl Server {
 			foreign_api_secret,
 			tls_conf,
 			self.stratum_ip_pool.clone(),
-			api_chan,
 			self.stop_state.clone(),
 		)
 		.map_err(|e| Error::ServerError(format!("Node API starting error, {}", e)))?;
 
 		self.api_thread = Some(api_thread);
 		Ok(())
+	}
+
+	/// Build router for Lib related API. Note, secrets for all APIs are None
+	pub fn build_api_router_no_secrets(&self) -> Result<Router, Error> {
+		let route = api::build_node_router(
+			self.chain.clone(),
+			self.tx_pool.clone(),
+			self.p2p.peers.clone(),
+			self.sync_state.clone(),
+			None,
+			None,
+			self.stratum_ip_pool.clone(),
+		)
+		.map_err(|e| Error::ServerError(format!("Failed to build node router, {}", e)))?;
+
+		Ok(route)
 	}
 
 	/// Start dandelion protocol. Needed for publishing transactions

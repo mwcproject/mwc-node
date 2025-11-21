@@ -61,7 +61,6 @@ use crate::util::to_base64;
 use crate::util::StopState;
 use crate::web::*;
 use easy_jsonrpc_mwc::{Handler, MaybeReply};
-use futures::channel::oneshot;
 use hyper::{Body, Request, Response, StatusCode};
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -72,19 +71,15 @@ use std::thread::JoinHandle;
 
 /// Listener version, providing same API but listening for requests on a
 /// port and wrapping the calls
-pub fn node_apis<B, P>(
-	addr: &str,
+pub fn build_node_router<B, P>(
 	chain: Arc<chain::Chain>,
 	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
 	peers: Arc<p2p::Peers>,
 	sync_state: Arc<chain::SyncState>,
 	api_secret: Option<String>,
 	foreign_api_secret: Option<String>,
-	tls_config: Option<TLSConfig>,
 	stratum_ip_pool: Arc<stratum::connections::StratumIpPool>,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
-	stop_state: Arc<StopState>,
-) -> Result<JoinHandle<()>, Error>
+) -> Result<Router, Error>
 where
 	B: BlockChain + 'static,
 	P: PoolAdapter + 'static,
@@ -153,10 +148,41 @@ where
 	);
 	router.add_route("/v2/foreign", Arc::new(api_handler))?;
 
+	Ok(router)
+}
+
+/// Listener version, providing same API but listening for requests on a
+/// port and wrapping the calls
+pub fn node_apis<B, P>(
+	addr: &str,
+	chain: Arc<chain::Chain>,
+	tx_pool: Arc<RwLock<pool::TransactionPool<B, P>>>,
+	peers: Arc<p2p::Peers>,
+	sync_state: Arc<chain::SyncState>,
+	api_secret: Option<String>,
+	foreign_api_secret: Option<String>,
+	tls_config: Option<TLSConfig>,
+	stratum_ip_pool: Arc<stratum::connections::StratumIpPool>,
+	stop_state: Arc<StopState>,
+) -> Result<JoinHandle<()>, Error>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+{
+	let router = build_node_router(
+		chain,
+		tx_pool,
+		peers,
+		sync_state,
+		api_secret,
+		foreign_api_secret,
+		stratum_ip_pool,
+	)?;
+
 	let mut apis = ApiServer::new();
 	warn!("Starting HTTP Node APIs server at {}.", addr);
 	let socket_addr: SocketAddr = addr.parse().expect("unable to parse socket address");
-	let api_thread = apis.start(socket_addr, router, tls_config, api_chan);
+	let api_thread = apis.start(socket_addr, router, tls_config);
 
 	warn!("HTTP Node listener started.");
 

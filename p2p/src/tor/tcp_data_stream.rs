@@ -85,6 +85,11 @@ impl TcpDataStream {
 		self.write_timeout = write_timeout;
 	}
 
+	pub fn is_alive(&mut self) -> bool {
+		let mut buf = [0u8; 0];
+		<Self as std::io::Read>::read_exact(self, &mut buf).is_ok()
+	}
+
 	pub fn shutdown(self) -> Result<(), Error> {
 		self.stream
 			.shutdown()

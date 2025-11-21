@@ -99,7 +99,7 @@ fn peer_handshake() {
 		socket.unwrap()
 	});
 
-	let stream = p2p::tcp_data_stream::TcpDataStream::from_tcp(socket);
+	let stream = p2p::tor::tcp_data_stream::TcpDataStream::from_tcp(socket);
 	let my_addr = PeerAddr::Ip("127.0.0.1:5000".parse().unwrap());
 	let peer = Peer::connect(
 		stream,

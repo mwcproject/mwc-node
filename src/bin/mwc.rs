@@ -32,7 +32,6 @@ use mwc_servers as servers;
 use mwc_util as util;
 
 use clap::App;
-use futures::channel::oneshot;
 
 mod cmd;
 pub mod tui;
@@ -124,9 +123,6 @@ fn real_main() -> i32 {
 	let mut logging_config = config.members.as_ref().unwrap().logging.clone().unwrap();
 	logging_config.tui_running = config.members.as_ref().unwrap().server.run_tui;
 
-	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
-		Box::leak(Box::new(oneshot::channel::<()>()));
-
 	let logs_rx = mwc_node_workflow::logging::init_bin_logs(&logging_config);
 
 	let server_config = config.members.as_ref().unwrap().server.clone();
@@ -178,13 +174,9 @@ fn real_main() -> i32 {
 	// Execute subcommand
 	let res = match args.subcommand() {
 		// server commands and options
-		("server", Some(server_args)) => cmd::server_command(
-			context_id,
-			Some(server_args),
-			node_config.unwrap(),
-			logs_rx,
-			api_chan,
-		),
+		("server", Some(server_args)) => {
+			cmd::server_command(context_id, Some(server_args), node_config.unwrap(), logs_rx)
+		}
 
 		// client commands and options
 		("client", Some(client_args)) => {
@@ -204,7 +196,7 @@ fn real_main() -> i32 {
 		// If nothing is specified, try to just use the config file instead
 		// this could possibly become the way to configure most things
 		// with most command line options being phased out
-		_ => cmd::server_command(context_id, None, node_config.unwrap(), logs_rx, api_chan),
+		_ => cmd::server_command(context_id, None, node_config.unwrap(), logs_rx),
 	};
 
 	let _ = mwc_node_workflow::context::release_context(context_id);

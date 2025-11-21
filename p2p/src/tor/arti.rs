@@ -130,6 +130,14 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 			.spawn(move || {
 				let mut last_running_time = Instant::now();
 				loop {
+					if TOR_MONITORING_THREAD
+						.read()
+						.expect("RwLock Failure")
+						.is_none()
+					{
+						break;
+					}
+
 					let need_arti_restart = {
 						let connected = match arti::access_arti(|arti| {
 							let connected = arti_async_block(async {
@@ -174,37 +182,72 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 					};
 
 					if need_arti_restart {
-						request_arti_restart();
-
-						// Waiting for other service to stop
-						let mut wait_counter = 0;
-						while TOR_ACTIVE_OBJECTS.read().expect("RwLock failure").len() > 0 {
-							thread::sleep(Duration::from_secs(1));
-							wait_counter += 1;
-							if wait_counter % 20 == 0 {
-								let objects = TOR_ACTIVE_OBJECTS
-									.read()
-									.expect("RwLock failure")
-									.iter()
-									.cloned()
-									.collect::<Vec<_>>()
-									.join(", ");
-								info!("Waiting for Tor Active Objects: {}", objects);
-							}
-						}
-
-						restart_arti();
+						stop_start_arti(true);
 						break;
 					}
-					thread::sleep(Duration::from_secs(30));
+					for _ in 0..30 {
+						if TOR_MONITORING_THREAD
+							.read()
+							.expect("RwLock Failure")
+							.is_none()
+						{
+							break;
+						}
+						thread::sleep(Duration::from_secs(1));
+					}
 				}
 			})
 			.expect("Unable to start arti_checker thread");
 
 		*monitoring_thread = Some(mon_thread);
 	}
-
 	Ok(())
+}
+
+fn stop_start_arti(start_new_client: bool) {
+	request_arti_restart();
+
+	// Waiting for other service to stop
+	let mut wait_counter = 0;
+	while TOR_ACTIVE_OBJECTS.read().expect("RwLock failure").len() > 0 {
+		thread::sleep(Duration::from_secs(1));
+		wait_counter += 1;
+		if wait_counter % 20 == 0 {
+			let objects = TOR_ACTIVE_OBJECTS
+				.read()
+				.expect("RwLock failure")
+				.iter()
+				.cloned()
+				.collect::<Vec<_>>()
+				.join(", ");
+			info!("Waiting for Tor Active Objects: {}", objects);
+		}
+	}
+
+	restart_arti(start_new_client);
+}
+
+pub fn stop_arti() {
+	let monitoring_thread = TOR_MONITORING_THREAD
+		.write()
+		.expect("RwLock Failure")
+		.take();
+	if monitoring_thread.is_none() {
+		return; // Nothing to stop
+	}
+	let monitoring_thread = monitoring_thread.unwrap();
+	let _ = monitoring_thread.join();
+
+	// Stopping the arti
+	stop_start_arti(false);
+	TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+	// Checking if nothing left alive
+	debug_assert!(TOR_ARTI_INSTANCE.read().expect("RwLock failure").is_none());
+	debug_assert!(TOR_MONITORING_THREAD
+		.read()
+		.expect("RwLock failure")
+		.is_none());
+	debug_assert!(TOR_ACTIVE_OBJECTS.read().expect("RwLock failure").len() == 0);
 }
 
 pub fn access_arti<F, R>(f: F) -> Result<R, Error>
@@ -248,7 +291,7 @@ where
 	Ok(res)
 }
 
-fn restart_arti() {
+fn restart_arti(start_new_client: bool) {
 	error!("Restarting ARTI...");
 
 	let (tor_runtime, config, base_dir, restart_senders) = {
@@ -270,10 +313,11 @@ fn restart_arti() {
 			}
 		}
 	};
-
-	thread::sleep(Duration::from_secs(15)); // Waiting in case any other services trying to do somehting.
-
 	tor_runtime.shutdown_timeout(Duration::from_secs(10));
+
+	if !start_new_client {
+		return;
+	}
 
 	loop {
 		info!("Starting a new Arti client");

@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::ffi::NODE_LIB_CALLBACKS;
+use crate::ffi::LIB_CALLBACKS;
+use hyper::body::to_bytes;
 use mwc_core::global;
-use mwc_servers::ServerConfig;
+use mwc_servers::{ServerConfig, ServerStats};
 use mwc_util::logger::CallbackLoggingConfig;
 use safer_ffi::prelude::*;
 use serde::de::DeserializeOwned;
@@ -64,7 +65,7 @@ fn process_request(input: String) -> Result<Value, String> {
 		"init_callback_logs" => {
 			let log_callback_name: String = get_param(&params, "log_callback_name")?;
 
-			let (cb, ctx) = NODE_LIB_CALLBACKS
+			let (cb, ctx) = LIB_CALLBACKS
 				.read()
 				.expect("RwLock failure")
 				.get(&log_callback_name)
@@ -139,7 +140,7 @@ fn process_request(input: String) -> Result<Value, String> {
 				get_option_param(&params, "hook_callback_name")?;
 			if let Some(hook_callback_name) = hook_callback_name {
 				// Adding the callback
-				let (cb, ctx) = NODE_LIB_CALLBACKS
+				let (cb, ctx) = LIB_CALLBACKS
 					.read()
 					.expect("RwLock failure")
 					.get(&hook_callback_name)
@@ -176,6 +177,33 @@ fn process_request(input: String) -> Result<Value, String> {
 			mwc_node_workflow::server::release_server(get_param(&params, "context_id")?);
 			json!({})
 		}
+		"init_call_api" => {
+			mwc_node_workflow::server::init_call_api(get_param(&params, "context_id")?)
+				.map_err(|e| format!("init_call_api is failed, {}", e))?;
+			json!({})
+		}
+		"process_api_call" => {
+			match mwc_node_workflow::server::process_call(
+				get_param(&params, "context_id")?,
+				get_param(&params, "method")?,
+				get_param(&params, "uri")?,
+				get_param(&params, "body")?,
+			) {
+				Ok(response) => {
+					let body = response.into_body();
+					let body = futures::executor::block_on(to_bytes(body))
+						.map(|b| b.to_vec())
+						.map_err(|e| format!("Broken body data, {}", e))?;
+					let body =
+						String::from_utf8(body).map_err(|e| format!("Broken body data, {}", e))?;
+
+					let json_value: serde_json::Value = serde_json::from_str(&body)
+						.map_err(|e| format!("Invalid response JSON: {}, {}", body, e))?;
+					json_value
+				}
+				Err(e) => return Err(format!("process_call error: {}", e)),
+			}
+		}
 		"start_stratum" => {
 			mwc_node_workflow::server::start_stratum(get_param(&params, "context_id")?)
 				.map_err(|e| format!("Unable to start the stratum server, {}", e))?;
@@ -202,7 +230,7 @@ fn process_request(input: String) -> Result<Value, String> {
 			json!({})
 		}
 		"get_server_stats" => {
-			let stats =
+			let stats: ServerStats =
 				mwc_node_workflow::server::get_server_stats(get_param(&params, "context_id")?)
 					.map_err(|e| format!("Unable to get mwc node stats data, {}", e))?;
 			serde_json::to_value(&stats).map_err(|e| format!("Json error: {}", e))?

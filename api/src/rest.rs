@@ -149,11 +149,10 @@ impl ApiServer {
 		addr: SocketAddr,
 		router: Router,
 		conf: Option<TLSConfig>,
-		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<thread::JoinHandle<()>, Error> {
 		match conf {
-			Some(conf) => self.start_tls(addr, router, conf, api_chan),
-			None => self.start_no_tls(addr, router, api_chan),
+			Some(conf) => self.start_tls(addr, router, conf),
+			None => self.start_no_tls(addr, router),
 		}
 	}
 
@@ -162,21 +161,16 @@ impl ApiServer {
 		&mut self,
 		addr: SocketAddr,
 		router: Router,
-		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<thread::JoinHandle<()>, Error> {
 		if self.shutdown_sender.is_some() {
 			return Err(Error::Internal(
 				"Can't start HTTP API server, it's running already".to_string(),
 			));
 		}
-		let rx = &mut api_chan.1;
-		let tx = &mut api_chan.0;
 
-		// Jones's trick to update memory
-		let m = oneshot::channel::<()>();
-		let tx = std::mem::replace(tx, m.0);
+		let (tx, rx): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
+
 		self.shutdown_sender = Some(tx);
-
 		thread::Builder::new()
 			.name("apis".to_string())
 			.spawn(move || {
@@ -207,7 +201,6 @@ impl ApiServer {
 		addr: SocketAddr,
 		router: Router,
 		conf: TLSConfig,
-		api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 	) -> Result<thread::JoinHandle<()>, Error> {
 		if self.shutdown_sender.is_some() {
 			return Err(Error::Internal(
@@ -215,12 +208,7 @@ impl ApiServer {
 			));
 		}
 
-		let rx = &mut api_chan.1;
-		let tx = &mut api_chan.0;
-
-		// Jones's trick to update memory
-		let m = oneshot::channel::<()>();
-		let tx = std::mem::replace(tx, m.0);
+		let (tx, rx): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
 		self.shutdown_sender = Some(tx);
 
 		// Building certificates here because we want to handle certificates failures with panic.
@@ -247,7 +235,7 @@ impl ApiServer {
 							let (socket, _addr) = match listener.accept().await {
 								Ok(conn) => conn,
 								Err(e) => {
-									eprintln!("Error accepting connection: {}", e);
+									warn!("Error accepting connection: {}", e);
 									continue;
 								}
 							};

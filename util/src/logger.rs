@@ -33,6 +33,7 @@ use log4rs::encode::Encode;
 use log4rs::filter::{threshold::ThresholdFilter, Filter, Response};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +49,14 @@ lazy_static! {
 	static ref TEST_LOGGER_WAS_INIT: Mutex<bool> = Mutex::new(false);
 
 	static ref LOGGER_BUFFER: Mutex<Option<LogBuffer>> = Mutex::new(None);
+
+	static ref CONSOLE_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
+}
+
+/// True if everything is running as a console app. Otherwice it is a library,
+/// so no console output is expected
+pub fn is_console_output_enabled() -> bool {
+	CONSOLE_OUTPUT_ENABLED.load(Ordering::Relaxed)
 }
 
 const LOGGING_PATTERN: &str = "{d(%Y%m%d %H:%M:%S%.3f)} {h({l})} {M} - {m}{n}";
@@ -431,6 +440,8 @@ impl Append for CallbackAppender {
 
 /// Init logs as a callback logs
 pub fn init_callback_logger(config: CallbackLoggingConfig) {
+	CONSOLE_OUTPUT_ENABLED.store(false, Ordering::Relaxed);
+
 	{
 		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
 		*logger_buffer = Some(LogBuffer {

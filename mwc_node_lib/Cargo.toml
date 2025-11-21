@@ -1,5 +1,5 @@
 [package]
-name = "mwc-node-lib"
+name = "mwc_node_lib"
 version = "6.0.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
@@ -11,7 +11,7 @@ edition = "2024"
 
 [lib]
 name = "mwc_node_lib"
-crate-type = ["staticlib"]
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [[bin]]
 name = "generate-headers"
@@ -25,6 +25,8 @@ once_cell = "1"
 lazy_static = "1"
 libc = "0.2"
 log = "0.4"
+hyper = "0.14"
+futures = "0.3"
 
 mwc_node_workflow = { path = "../node_workflow", version = "6.0.0" }
 mwc_api = { path = "../api", version = "6.0.0" }

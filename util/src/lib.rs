@@ -70,6 +70,8 @@ pub use crate::rate_counter::RateCounter;
 pub use crate::async_runtime::global_runtime;
 pub use crate::async_runtime::run_global_async_block;
 
+pub use crate::logger::is_console_output_enabled;
+
 pub extern crate tokio;
 pub extern crate tokio_rustls;
 pub extern crate tokio_socks;

@@ -19,7 +19,7 @@ use crate::mwc_core::core::hash::Hash;
 use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::ProtocolVersion;
 use crate::peer::Peer;
-use crate::tcp_data_stream::TcpDataStream;
+use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::{
 	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
 	PeerLiveInfo,

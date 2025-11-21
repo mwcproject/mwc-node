@@ -41,6 +41,7 @@ use crate::util::secp::key::{PublicKey, SecretKey};
 use crate::util::secp::{self, ContextFlag, Secp256k1};
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 
+#[allow(deprecated)]
 use digest::generic_array::GenericArray;
 use digest::Digest;
 use hmac::{Hmac, Mac, NewMac};
@@ -99,6 +100,7 @@ impl BIP32MwcHasher {
 	pub fn new(is_floo: bool) -> BIP32MwcHasher {
 		BIP32MwcHasher {
 			is_floo: is_floo,
+			#[allow(deprecated)]
 			hmac_sha512: HmacSha512::new(GenericArray::from_slice(&[0u8; 128])),
 		}
 	}
@@ -137,6 +139,7 @@ impl BIP32Hasher for BIP32MwcHasher {
 		let mut sha2_res = [0; 32];
 		let mut sha2 = Sha256::new();
 		sha2.update(input);
+		#[allow(deprecated)]
 		sha2_res.copy_from_slice(sha2.finalize().as_slice());
 		sha2_res
 	}
@@ -144,6 +147,7 @@ impl BIP32Hasher for BIP32MwcHasher {
 		let mut ripemd_res = [0; 20];
 		let mut ripemd = Ripemd160::new();
 		ripemd.update(input);
+		#[allow(deprecated)]
 		ripemd_res.copy_from_slice(ripemd.finalize().as_slice());
 		ripemd_res
 	}

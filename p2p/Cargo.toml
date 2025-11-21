@@ -36,7 +36,7 @@ crossbeam = "0.8"
 
 # Tor embedded client, Arti project.
 # Note, all tor related crates must be from the same versions
-arti-client = { version = "0.34", features = [
+arti-client = { version = "0.36", features = [
     "tokio",
     "native-tls",
     "onion-service-service",
@@ -47,16 +47,16 @@ arti-client = { version = "0.34", features = [
     "experimental-api"
 ] }
 tracing-subscriber = "0.3.20"
-tor-error = "0.34.0"
-tor-hsservice = "0.34.0"
-tor-proto = { version = "0.34.0", features = ["stream-ctrl"] }
-tor-cell = "0.34.0"
-tor-keymgr = "0.34.0"
-tor-config = "0.34.0"
-tor-hscrypto = "0.34.0"
-tor-llcrypto = "0.34.0"
-tor-rtcompat = "0.34.0"
-safelog = "0.5"
+tor-error = "0.36.0"
+tor-hsservice = "0.36.0"
+tor-proto = { version = "0.36.0", features = ["stream-ctrl"] }
+tor-cell = "0.36.0"
+tor-keymgr = "0.36.0"
+tor-config = "0.36.0"
+tor-hscrypto = "0.36.0"
+tor-llcrypto = "0.36.0"
+tor-rtcompat = "0.36.0"
+safelog = "0.7"
 
 mwc_core = { path = "../core", version = "6.0.0" }
 mwc_store = { path = "../store", version = "6.0.0" }

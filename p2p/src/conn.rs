@@ -24,7 +24,7 @@
 use crate::codec::{Codec, BODY_IO_TIMEOUT};
 use crate::msg::{write_message, Consumed, Message, Msg};
 use crate::mwc_core::ser::ProtocolVersion;
-use crate::tcp_data_stream::TcpDataStream;
+use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::Error;
 use crate::util::RateCounter;
 use crossbeam::channel::{RecvTimeoutError, TryRecvError};

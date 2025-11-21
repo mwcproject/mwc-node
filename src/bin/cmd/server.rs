@@ -20,7 +20,6 @@ use std::thread;
 use std::time::Duration;
 
 use clap::ArgMatches;
-use futures::channel::oneshot;
 
 use crate::config::GlobalConfig;
 use crate::p2p::Seeding;
@@ -36,9 +35,8 @@ pub fn start_server(
 	config: mwc_servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	offline: bool,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
-	if let Err(e) = start_server_tui(context_id, config, logs_rx, offline, api_chan) {
+	if let Err(e) = start_server_tui(context_id, config, logs_rx, offline) {
 		println!("Unable to start mwc-node, {}", e);
 	}
 	exit(0);
@@ -49,7 +47,6 @@ fn start_server_tui(
 	config: mwc_servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	offline: bool,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) -> Result<(), mwc_node_workflow::Error> {
 	// Starting the server...
 	if config.tor_config.need_start_arti() {
@@ -69,7 +66,7 @@ fn start_server_tui(
 		mwc_node_workflow::server::start_sync_monitoring(context_id)?;
 
 		info!("Starting node API...");
-		mwc_node_workflow::server::start_rest_api(context_id, api_chan)?;
+		mwc_node_workflow::server::start_rest_api(context_id)?;
 
 		info!("Starting dandellion...");
 		mwc_node_workflow::server::start_dandelion(context_id)?;
@@ -120,7 +117,6 @@ pub fn server_command(
 	server_args: Option<&ArgMatches<'_>>,
 	global_config: GlobalConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) -> i32 {
 	// just get defaults from the global config
 	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
@@ -163,7 +159,7 @@ pub fn server_command(
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(context_id, server_config, logs_rx, offline, api_chan);
+				start_server(context_id, server_config, logs_rx, offline);
 			}
 			("", _) => {
 				println!("Subcommand required, use 'mwc help server' for details");
@@ -177,7 +173,7 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(context_id, server_config, logs_rx, offline, api_chan);
+		start_server(context_id, server_config, logs_rx, offline);
 	}
 	0
 }
