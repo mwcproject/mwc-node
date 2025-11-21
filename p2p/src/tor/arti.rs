@@ -441,6 +441,7 @@ impl ArtiCore {
 			let tor_client = Arc::new(
 				TorClient::with_runtime(rt)
 					.config(tor_client_config)
+					.local_resource_timeout(Duration::from_secs(3))
 					.bootstrap_behavior(BootstrapBehavior::Manual)
 					.create_unbootstrapped()
 					.map_err(|e| {
@@ -698,6 +699,12 @@ impl ArtiCore {
 		builder
 			.storage()
 			.cache_dir(CfgPath::new_literal(base_dir.join("arti").join("state")));
+
+		builder
+			.stream_timeouts()
+			.connect_timeout(Duration::from_secs(40))
+			.resolve_ptr_timeout(Duration::from_secs(40))
+			.resolve_timeout(Duration::from_secs(40));
 
 		builder
 			.build()
