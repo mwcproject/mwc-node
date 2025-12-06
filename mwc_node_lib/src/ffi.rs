@@ -14,6 +14,7 @@
 
 use crate::mwc_node_calls::call_mwc_node_request;
 use lazy_static::lazy_static;
+use log::info;
 use safer_ffi::prelude::*;
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -37,6 +38,7 @@ pub fn register_lib_callback(
 	let mut callbacks = LIB_CALLBACKS.write().expect("RwLock failure");
 	let callback_name = callback_name.to_str();
 	callbacks.insert(callback_name.to_string(), (cb, ctx as usize));
+	info!("Register callback {}", callback_name);
 }
 
 /// Unregister the callback
@@ -45,6 +47,7 @@ pub fn unregister_lib_callback(callback_name: char_p::Ref<'static>) {
 	let mut callbacks = LIB_CALLBACKS.write().expect("RwLock failure");
 	let callback_name = callback_name.to_str();
 	callbacks.remove(&callback_name.to_string());
+	info!("Removed the callback {}", callback_name);
 }
 
 /// Process mwc-node related call.
