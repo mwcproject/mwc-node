@@ -560,24 +560,29 @@ impl ArtiCore {
 			return Err(Error::TorNotInitialized);
 		}
 
-		let (service, request_stream) = tor_client
+		if let Some((service, request_stream)) = tor_client
 			.launch_onion_service_with_hsid(svc_cfg, id_keypair)
-			.map_err(|e| Error::TorOnionService(format!("Unable to start onion service, {}", e)))?;
+			.map_err(|e| Error::TorOnionService(format!("Unable to start onion service, {}", e)))?
+		{
+			let onion_address = service
+				.onion_address()
+				.ok_or(Error::TorOnionService(
+					"Not found onion address for started service".into(),
+				))?
+				.display_unredacted()
+				.to_string();
 
-		let onion_address = service
-			.onion_address()
-			.ok_or(Error::TorOnionService(
-				"Not found onion address for started service".into(),
-			))?
-			.display_unredacted()
-			.to_string();
+			info!(
+				"Onion service {} is successfully started. Onion address: {}",
+				service_nickname, onion_address
+			);
 
-		info!(
-			"Onion service {} is successfully started. Onion address: {}",
-			service_nickname, onion_address
-		);
-
-		Ok((service, onion_address, request_stream))
+			Ok((service, onion_address, request_stream))
+		} else {
+			return Err(Error::TorOnionService(
+				"Unable to start onion service, it is disabled in config".into(),
+			));
+		}
 	}
 
 	/// Utility method to wait for onion service advertise itself
