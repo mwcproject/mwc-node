@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{io, thread};
 
-pub fn listen<F, G, H>(
+pub fn listen<F, G, H, K>(
 	context_id: u32,
 	stop_state: Arc<StopState>,
 	tor_config: Option<TorConfig>,
@@ -29,12 +29,14 @@ pub fn listen<F, G, H>(
 	onion_expanded_key: Option<[u8; 64]>,
 	started_service_callback: Option<F>,
 	failed_service_callback: Option<G>,
+	service_status_callback: Option<K>,
 	handle_new_peer_callback: H,
 ) -> Result<(), Error>
 where
 	F: Fn(Option<String>),
 	G: Fn(&Error) -> bool, // return true if want to exit on falure
 	H: Fn(TcpDataStream, Option<PeerAddr>),
+	K: Fn(bool) + Send + 'static + std::marker::Sync, // return true if want to exit on falure
 {
 	let tor_config = tor_config.unwrap_or(TorConfig::no_tor_config());
 
@@ -49,10 +51,11 @@ where
 				onion_expanded_key,
 				started_service_callback,
 				failed_service_callback,
+				service_status_callback,
 				handle_new_peer_callback,
 			)
 		} else {
-			// Listening on extended Tor, listening on sockets
+			// Listening on external Tor, listening on sockets
 			let onion_address = tor_config.onion_address.clone().ok_or(Error::ConfigError(
 				"For tor external config, internal onion address is not specified.".into(),
 			))?;
@@ -67,6 +70,7 @@ where
 				Some(onion_address),
 				started_service_callback,
 				failed_service_callback,
+				service_status_callback,
 				handle_new_peer_callback,
 			)
 		}
@@ -79,23 +83,26 @@ where
 			None,
 			started_service_callback,
 			failed_service_callback,
+			service_status_callback,
 			handle_new_peer_callback,
 		)
 	}
 }
 
-fn listen_onion_service<F, G, H>(
+fn listen_onion_service<F, G, H, K>(
 	context_id: u32,
 	stop_state: Arc<StopState>,
 	onion_expanded_key: Option<[u8; 64]>,
 	started_service_callback: Option<F>,
 	failed_service_callback: Option<G>,
+	service_status_callback: Option<K>,
 	handle_new_peer_callback: H,
 ) -> Result<(), Error>
 where
 	F: Fn(Option<String>),
 	G: Fn(&Error) -> bool, // return true if want to exit on falure
 	H: Fn(TcpDataStream, Option<PeerAddr>),
+	K: Fn(bool) + Send + 'static + std::marker::Sync, // return true if want to exit on falure
 {
 	info!("Starting TOR (Arti) service...");
 
@@ -110,36 +117,45 @@ where
 		"mwc-node",
 		started_service_callback,
 		failed_service_callback,
+		service_status_callback,
 		handle_new_peer_callback,
 	)
 }
 
 /// Starts a new TCP server and listen to incoming connections. This is a
 /// blocking call until the TCP server stops.
-fn listen_socket<F, G, H>(
+fn listen_socket<F, G, H, K>(
 	stop_state: Arc<StopState>,
 	host: IpAddr,
 	port: u16,
 	onion_service_address: Option<String>,
 	started_service_callback: Option<F>,
 	failed_service_callback: Option<G>,
+	service_status_callback: Option<K>,
 	handle_new_peer_callback: H,
 ) -> Result<(), Error>
 where
 	F: Fn(Option<String>),
 	G: Fn(&Error) -> bool, // return true if want to exit on falure
 	H: Fn(TcpDataStream, Option<PeerAddr>),
+	K: Fn(bool) + Send + 'static + std::marker::Sync, // return true if want to exit on falure
 {
 	// start TCP listener and handle incoming connections
 	let addr = SocketAddr::new(host, port);
 	let listener = match run_global_async_block(async { TcpListener::bind(addr).await }) {
 		Ok(listener) => {
+			if let Some(f) = service_status_callback.as_ref() {
+				f(true)
+			}
 			if let Some(started_service_callback) = started_service_callback {
 				started_service_callback(onion_service_address);
 			}
 			listener
 		}
 		Err(e) => {
+			if let Some(f) = service_status_callback.as_ref() {
+				f(false)
+			}
 			let err = Error::TorProcess(format!(
 				"Unable to start listening on {}:{}, {}",
 				host, port, e
@@ -215,5 +231,9 @@ where
 		}
 		thread::sleep(Duration::from_millis(5));
 	}
+	if let Some(f) = service_status_callback.as_ref() {
+		f(false)
+	}
+
 	Ok(())
 }

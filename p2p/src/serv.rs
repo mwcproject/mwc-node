@@ -193,6 +193,7 @@ impl Server {
 			onion_expanded_key,
 			Some(service_started_callback),
 			Some(service_failed_callback),
+			None::<Box<dyn Fn(bool) + Send + Sync + 'static>>,
 			handle_new_connection_callback,
 		)
 	}

@@ -19,13 +19,15 @@ use crate::{Error, PeerAddr};
 use async_std::stream::StreamExt;
 use mwc_util::StopState;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::status::State;
 use tor_proto::client::stream::IncomingStreamRequest;
+
+static SERVICE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 // started_service_callback accepting onion address
 fn start_arti<F>(
@@ -51,7 +53,12 @@ where
 	) = arti::access_arti(|tor_client| {
 		let (onion_service, onion_address, incoming_requests) = ArtiCore::start_onion_service(
 			&tor_client,
-			format!("onion-service-{}-{}", service_name, context_id),
+			format!(
+				"onion-service-{}-{}-{}",
+				service_name,
+				context_id,
+				SERVICE_COUNTER.fetch_add(1, Ordering::Relaxed)
+			),
 			onion_expanded_key.clone(),
 		)?;
 		Ok((
@@ -77,23 +84,30 @@ where
 /// Listening on Onion service.
 /// Here is we have a full workflow that monitors the onion service, restarting on network failre. It is
 /// Used at both mwc-node and mwc-wallet.
-pub fn listen_onion_service<F, G, H>(
+pub fn listen_onion_service<F, G, H, K>(
 	context_id: u32,
 	stop_state: Arc<StopState>,
 	onion_expanded_key: [u8; 64],
 	service_name: &str,
 	started_service_callback: Option<F>,
 	failed_service_callback: Option<G>,
+	service_status_callback: Option<K>,
 	handle_new_peer_callback: H,
 ) -> Result<(), Error>
 where
 	F: Fn(Option<String>),
 	G: Fn(&Error) -> bool, // return true if want to exit on falure
 	H: Fn(TcpDataStream, Option<PeerAddr>),
+	K: Fn(bool) + Send + 'static + std::marker::Sync, // return true if want to exit on falure
 {
 	//
 	//let handle_new_peer_callback = Arc::new(handle_new_peer_callback);
 	let arti_streams = AtomicI64::new(0);
+
+	let service_status_callback = Arc::new(service_status_callback);
+	if let Some(f) = &(*service_status_callback) {
+		f(false);
+	};
 
 	loop {
 		if stop_state.is_stopped() {
@@ -119,6 +133,7 @@ where
 				let stop_state2 = stop_state.clone();
 				let context_id2 = context_id;
 				let service_name2 = String::from(service_name);
+				let service_status_callback2 = service_status_callback.clone();
 
 				let monitoring = thread::Builder::new()
 					.name(format!(
@@ -127,8 +142,13 @@ where
 					))
 					.spawn(move || {
 						let mut last_running_time = Instant::now();
+						if let Some(f) = &(*service_status_callback2) {
+							f(false);
+						};
 						loop {
 							if stop_state2.is_stopped() {
+								arti::unregister_arti_active_object(&onion_service_object);
+								drop(onion_service);
 								break;
 							}
 							let need_arti_restart = {
@@ -152,10 +172,16 @@ where
 										| State::DegradedUnreachable
 										| State::Running => {
 											last_running_time = Instant::now();
+											if let Some(f) = &(*service_status_callback2) {
+												f(true);
+											};
 											false
 										}
 										State::Broken => true,
 										_ => {
+											if let Some(f) = &(*service_status_callback2) {
+												f(false);
+											};
 											let elapsed =
 												Instant::now().duration_since(last_running_time);
 											// Giving 3 minutes to arti to restore
@@ -172,8 +198,8 @@ where
 
 							if need_arti_restart || arti::is_arti_restarting() {
 								drop(onion_service);
-								arti::request_arti_restart();
 								arti::unregister_arti_active_object(&onion_service_object);
+								arti::request_arti_restart();
 								break;
 							}
 							for _ in 0..30 {
@@ -183,6 +209,9 @@ where
 								thread::sleep(Duration::from_secs(1));
 							}
 						}
+						if let Some(f) = &(*service_status_callback2) {
+							f(false);
+						};
 					})
 					.expect(&format!(
 						"Unable to start {} onion_service_checker thread",
