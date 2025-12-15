@@ -42,7 +42,6 @@ pub use crate::error::Error;
 pub mod common;
 mod mining;
 mod mwc;
-mod tor;
 
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};

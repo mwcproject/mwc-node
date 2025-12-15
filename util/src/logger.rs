@@ -13,12 +13,10 @@
 // limitations under the License.
 
 //! Logging wrapper to be used throughout all crates in the workspace
-use crate::Mutex;
 use std::ops::Deref;
+use std::sync::{Arc, Mutex};
 
 use backtrace::Backtrace;
-use std::{panic, thread};
-
 use log::{Level, Record};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
@@ -33,17 +31,32 @@ use log4rs::encode::pattern::PatternEncoder;
 use log4rs::encode::writer::simple::SimpleWriter;
 use log4rs::encode::Encode;
 use log4rs::filter::{threshold::ThresholdFilter, Filter, Response};
+use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::SyncSender;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{panic, thread};
+use tracing::field::{Field, Visit};
+use tracing::Event;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
 
 lazy_static! {
 	/// Flag to observe whether logging was explicitly initialised (don't output otherwise)
-	static ref WAS_INIT: Mutex<bool> = Mutex::new(false);
-	/// Flag to observe whether tui is running, and we therefore don't want to attempt to write
-	/// panics to stdout
-	static ref TUI_RUNNING: Mutex<bool> = Mutex::new(false);
-	/// Static Logging configuration, should only be set once, before first logging call
-	static ref LOGGING_CONFIG: Mutex<LoggingConfig> = Mutex::new(LoggingConfig::default());
+	static ref TEST_LOGGER_WAS_INIT: Mutex<bool> = Mutex::new(false);
+
+	static ref LOGGER_BUFFER: Mutex<Option<LogBuffer>> = Mutex::new(None);
+
+	static ref CONSOLE_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
+}
+
+/// True if everything is running as a console app. Otherwice it is a library,
+/// so no console output is expected
+pub fn is_console_output_enabled() -> bool {
+	CONSOLE_OUTPUT_ENABLED.load(Ordering::Relaxed)
 }
 
 const LOGGING_PATTERN: &str = "{d(%Y%m%d %H:%M:%S%.3f)} {h({l})} {M} - {m}{n}";
@@ -58,6 +71,26 @@ pub struct LogEntry {
 	pub log: String,
 	/// The log levelO
 	pub level: Level,
+}
+
+/// Log entry for the buffer based logging
+#[derive(Clone, Serialize, Debug)]
+pub struct LogBufferedEntry {
+	/// The log message
+	pub log_entry: LogEntry,
+	/// time in ms
+	pub time_stamp: u64,
+	/// id
+	pub id: u64,
+}
+
+/// Log buffer for buffered/callback logging
+pub struct LogBuffer {
+	// The log messages
+	buffer: VecDeque<LogBufferedEntry>,
+	log_buffer_size: usize,
+	// current id
+	last_id: u64,
 }
 
 /// Logging config
@@ -99,6 +132,17 @@ impl Default for LoggingConfig {
 	}
 }
 
+/// Logging config
+#[derive(Clone)]
+pub struct CallbackLoggingConfig {
+	/// logging level for stdout
+	pub log_level: Level,
+	/// Logging buffer Size
+	pub log_buffer_size: usize,
+	/// Callback for logs
+	pub callback: Arc<Option<Box<dyn Fn(LogEntry) + Send + Sync>>>,
+}
+
 /// This filter is rejecting messages that doesn't start with "mwc"
 /// in order to save log space for only Mwc-related records
 #[derive(Debug)]
@@ -117,6 +161,45 @@ impl Filter for MwcFilter {
 	}
 }
 
+struct MessageVisitor {
+	message: Option<String>,
+}
+
+impl Visit for MessageVisitor {
+	fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+		if field.name() == "message" {
+			self.message = Some(format!("{:?}", value));
+		}
+	}
+}
+
+struct Log4rsLayer;
+
+impl<S> Layer<S> for Log4rsLayer
+where
+	S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+	fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+		let mut visitor = MessageVisitor { message: None };
+		event.record(&mut visitor);
+
+		if let Some(message) = visitor.message {
+			let target = event.metadata().target();
+			//let file = event.metadata().file();
+			//let line = event.metadata().line();
+
+			// Using very somple event redirection. Otherwise it doesn't work for us
+			match *event.metadata().level() {
+				tracing::Level::ERROR => error!("{} {}", target, message),
+				tracing::Level::WARN => warn!("{} {}", target, message),
+				tracing::Level::INFO => info!("{} {}", target, message),
+				tracing::Level::DEBUG => debug!("{} {}", target, message),
+				tracing::Level::TRACE => trace!("{} {}", target, message),
+			}
+		}
+	}
+}
+
 #[derive(Debug)]
 struct ChannelAppender {
 	output: Mutex<SyncSender<LogEntry>>,
@@ -130,10 +213,14 @@ impl Append for ChannelAppender {
 
 		let log = String::from_utf8_lossy(writer.0.as_slice()).to_string();
 
-		let _ = self.output.lock().try_send(LogEntry {
-			log,
-			level: record.level(),
-		});
+		let _ = self
+			.output
+			.lock()
+			.expect("Mutex failure")
+			.try_send(LogEntry {
+				log,
+				level: record.level(),
+			});
 
 		Ok(())
 	}
@@ -142,19 +229,9 @@ impl Append for ChannelAppender {
 }
 
 /// Initialize the logger with the given configuration
-pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSender<LogEntry>>) {
+pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSender<LogEntry>>) {
 	if let Some(c) = config {
 		let tui_running = c.tui_running.unwrap_or(false);
-		if tui_running {
-			let mut tui_running_ref = TUI_RUNNING.lock();
-			*tui_running_ref = true;
-		}
-
-		let mut was_init_ref = WAS_INIT.lock();
-
-		// Save current logging configuration
-		let mut config_ref = LOGGING_CONFIG.lock();
-		*config_ref = c.clone();
 
 		let level_stdout = c.stdout_log_level.to_level_filter();
 		let level_file = c.file_log_level.to_level_filter();
@@ -216,7 +293,7 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 						RollingFileAppender::builder()
 							.append(c.log_file_append)
 							.encoder(Box::new(PatternEncoder::new(&LOGGING_PATTERN)))
-							.build(c.log_file_path, Box::new(policy))
+							.build(c.log_file_path.clone(), Box::new(policy))
 							.expect("Failed to create logfile"),
 					)
 				} else {
@@ -224,7 +301,7 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 						FileAppender::builder()
 							.append(c.log_file_append)
 							.encoder(Box::new(PatternEncoder::new(&LOGGING_PATTERN)))
-							.build(c.log_file_path)
+							.build(c.log_file_path.clone())
 							.expect("Failed to create logfile"),
 					)
 				}
@@ -246,13 +323,18 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 
 		let _ = log4rs::init_config(config).unwrap();
 
+		// forward tracing events into the `log` crate (i.e. into log4rs)
+		// Then set up tracing with your custom layer
+		let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
+		tracing::subscriber::set_global_default(subscriber).unwrap();
+
 		info!(
 			"log4rs is initialized, file level: {:?}, stdout level: {:?}, min. level: {:?}",
 			level_file, level_stdout, level_minimum
 		);
 
-		// Mark logger as initialized
-		*was_init_ref = true;
+		// Now, tracing macros will go through your layer and into log4rs
+		tracing::info!("Tracing logs are redirected!");
 	}
 
 	send_panic_to_log();
@@ -260,7 +342,7 @@ pub fn init_logger(config: Option<LoggingConfig>, logs_tx: Option<mpsc::SyncSend
 
 /// Initializes the logger for unit and integration tests
 pub fn init_test_logger() {
-	let mut was_init_ref = WAS_INIT.lock();
+	let mut was_init_ref = TEST_LOGGER_WAS_INIT.lock().expect("Mutex failure");
 	if *was_init_ref.deref() {
 		return;
 	}
@@ -268,11 +350,7 @@ pub fn init_test_logger() {
 	logger.log_to_file = false;
 	logger.stdout_log_level = Level::Debug;
 
-	// Save current logging configuration
-	let mut config_ref = LOGGING_CONFIG.lock();
-	*config_ref = logger;
-
-	let level_stdout = config_ref.stdout_log_level.to_level_filter();
+	let level_stdout = logger.stdout_log_level.to_level_filter();
 	let level_minimum = level_stdout; // minimum logging level for Root logger
 
 	// Start logger
@@ -309,6 +387,146 @@ pub fn init_test_logger() {
 	);
 
 	*was_init_ref = true;
+}
+
+struct CallbackAppender {
+	// Logg message formatter
+	encoder: Box<dyn Encode>,
+	// Callback for logs
+	callback: Arc<Option<Box<dyn Fn(LogEntry) + Send + Sync>>>,
+}
+
+impl Debug for CallbackAppender {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("CallbackAppender").finish()
+	}
+}
+
+impl Append for CallbackAppender {
+	fn append(&self, record: &Record) -> Result<(), anyhow::Error> {
+		let mut writer = SimpleWriter(Vec::new());
+		self.encoder.encode(&mut writer, record)?;
+
+		let log = String::from_utf8_lossy(writer.0.as_slice()).to_string();
+		let entry = LogEntry {
+			log,
+			level: record.level(),
+		};
+
+		if let Some(cb) = &*self.callback {
+			(cb)(entry.clone());
+		}
+
+		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+		if let Some(logger_buffer) = &mut *logger_buffer {
+			while logger_buffer.buffer.len() >= logger_buffer.log_buffer_size {
+				let _ = logger_buffer.buffer.pop_front();
+			}
+			logger_buffer.buffer.push_back(LogBufferedEntry {
+				log_entry: entry,
+				time_stamp: SystemTime::now()
+					.duration_since(UNIX_EPOCH)
+					.unwrap()
+					.as_millis() as u64,
+				id: logger_buffer.last_id,
+			});
+			logger_buffer.last_id += 1;
+		}
+		Ok(())
+	}
+
+	fn flush(&self) {}
+}
+
+/// Init logs as a callback logs
+pub fn init_callback_logger(config: CallbackLoggingConfig) {
+	CONSOLE_OUTPUT_ENABLED.store(false, Ordering::Relaxed);
+
+	{
+		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+		*logger_buffer = Some(LogBuffer {
+			buffer: VecDeque::with_capacity(config.log_buffer_size),
+			log_buffer_size: config.log_buffer_size,
+			// current id
+			last_id: 0,
+		});
+	}
+
+	let callback_appender = CallbackAppender {
+		// Logg message formatter
+		encoder: Box::new(PatternEncoder::new(&LOGGING_PATTERN)),
+		callback: config.callback.clone(),
+	};
+
+	let mut root = Root::builder();
+	let appenders = vec![Appender::builder()
+		.filter(Box::new(ThresholdFilter::new(
+			config.log_level.to_level_filter(),
+		)))
+		.filter(Box::new(MwcFilter))
+		.build("callback", Box::new(callback_appender))];
+	root = root.appender("callback");
+
+	let log4rs_config = Config::builder()
+		.appenders(appenders)
+		.build(root.build(config.log_level.to_level_filter()))
+		.unwrap();
+
+	let _ = log4rs::init_config(log4rs_config).unwrap();
+
+	// forward tracing events into the `log` crate (i.e. into log4rs)
+	// Then set up tracing with your custom layer
+	let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
+	tracing::subscriber::set_global_default(subscriber).unwrap();
+
+	let cb_enabled = if config.callback.is_some() {
+		"ON"
+	} else {
+		"OFF"
+	};
+
+	info!(
+		"log4rs is initialized, level: {:?}, buffer size: {}, Callback is {}",
+		config.log_level, config.log_buffer_size, cb_enabled
+	);
+}
+
+/// Read log entries from the buffer
+pub fn read_buffered_logs(
+	last_known_entry_id: Option<u64>,
+	result_size_limit: usize,
+) -> Result<Vec<LogBufferedEntry>, String> {
+	let logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+	match &*logger_buffer {
+		Some(log_buffer) => {
+			let starting_id = last_known_entry_id.unwrap_or(0);
+			if log_buffer.buffer.back().map(|l| l.id).unwrap_or(0) <= starting_id {
+				return Ok(vec![]);
+			}
+
+			let mut start_idx = 0;
+			if log_buffer.buffer[0].id >= starting_id {
+				start_idx = log_buffer.buffer[0].id.saturating_sub(starting_id) as usize;
+			}
+
+			let mut result = Vec::new();
+			for i in start_idx..log_buffer.buffer.len() {
+				match log_buffer.buffer.get(i) {
+					Some(itm) => {
+						if itm.id > starting_id {
+							result.push(itm.clone());
+							if result.len() >= result_size_limit {
+								break;
+							}
+						}
+					}
+					None => break,
+				}
+			}
+			Ok(result)
+		}
+		None => Err("Buffered/Callback logs are not initialized".into()),
+	}
 }
 
 /// hook to send panics to logs as well as stderr

@@ -36,9 +36,9 @@ pub use self::proof::ProofBuilder;
 pub use crate::libtx::error::Error;
 
 /// Transaction fee calculation given numbers of inputs, outputs, and kernels
-pub fn tx_fee(input_len: usize, output_len: usize, kernel_len: usize) -> u64 {
+pub fn tx_fee(context_id: u32, input_len: usize, output_len: usize, kernel_len: usize) -> u64 {
 	Transaction::weight_for_fee(input_len as u64, output_len as u64, kernel_len as u64)
-		* get_accept_fee_base()
+		* get_accept_fee_base(context_id)
 }
 
 /// How many min number of inputs needed to maintain minimum possible fee
@@ -47,9 +47,14 @@ pub fn inputs_for_minimal_fee(output_len: usize, kernel_len: usize) -> usize {
 }
 
 /// How many min number of inputs needed to maintain the fee
-pub fn inputs_for_fee_points(fee: u64, output_len: usize, kernel_len: usize) -> usize {
+pub fn inputs_for_fee_points(
+	context_id: u32,
+	fee: u64,
+	output_len: usize,
+	kernel_len: usize,
+) -> usize {
 	Transaction::inputs_for_fee_points(
-		fee / get_accept_fee_base(),
+		fee / get_accept_fee_base(context_id),
 		output_len as u64,
 		kernel_len as u64,
 	)

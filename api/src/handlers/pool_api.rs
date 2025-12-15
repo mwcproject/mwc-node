@@ -22,10 +22,10 @@ use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::util;
-use crate::util::RwLock;
 use crate::web::*;
 use hyper::{Body, Request, StatusCode};
 use mwc_util::secp::{ContextFlag, Secp256k1};
+use std::sync::RwLock;
 use std::sync::Weak;
 
 /// Get basic information about the transaction pool.
@@ -45,7 +45,7 @@ where
 {
 	fn get(&self, _req: Request<Body>) -> ResponseFuture {
 		let pool_arc = w_fut!(&self.tx_pool);
-		let pool = pool_arc.read();
+		let pool = pool_arc.read().expect("RwLock failure");
 
 		json_response(&PoolInfo {
 			pool_size: pool.total_size(),
@@ -68,18 +68,18 @@ where
 {
 	pub fn get_pool_size(&self) -> Result<usize, Error> {
 		let pool_arc = w(&self.tx_pool)?;
-		let pool = pool_arc.read();
+		let pool = pool_arc.read().expect("RwLock failure");
 		Ok(pool.total_size())
 	}
 	pub fn get_stempool_size(&self) -> Result<usize, Error> {
 		let pool_arc = w(&self.tx_pool)?;
-		let pool = pool_arc.read();
+		let pool = pool_arc.read().expect("RwLock failure");
 		Ok(pool.stempool.size())
 	}
 	pub fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error> {
 		// will only read from txpool
 		let pool_arc = w(&self.tx_pool)?;
-		let txpool = pool_arc.read();
+		let txpool = pool_arc.read().expect("RwLock failure");
 		Ok(txpool.txpool.entries.clone())
 	}
 	pub fn push_transaction(
@@ -101,7 +101,7 @@ where
 
 		let tx_hash = tx.hash().clone();
 		//  Push to tx pool.
-		let mut tx_pool = pool_arc.write();
+		let mut tx_pool = pool_arc.write().expect("RwLock failure");
 		let header = tx_pool
 			.blockchain
 			.chain_head()
@@ -154,15 +154,19 @@ where
 
 	// All wallet api interaction explicitly uses protocol version 1 for now.
 	let version = ProtocolVersion(1);
-	let tx: Transaction =
-		ser::deserialize(&mut &tx_bin[..], version, DeserializationMode::default()).map_err(
-			|e| {
-				Error::RequestError(format!(
-					"Unable to deserialize transaction from binary {:?}, {}",
-					tx_bin, e
-				))
-			},
-		)?;
+	let context_id = pool.read().expect("RwLock failure").get_context_id();
+	let tx: Transaction = ser::deserialize(
+		&mut &tx_bin[..],
+		version,
+		context_id,
+		DeserializationMode::default(),
+	)
+	.map_err(|e| {
+		Error::RequestError(format!(
+			"Unable to deserialize transaction from binary {:?}, {}",
+			tx_bin, e
+		))
+	})?;
 
 	let source = pool::TxSource::PushApi;
 	info!(
@@ -174,7 +178,7 @@ where
 	);
 
 	//  Push to tx pool.
-	let mut tx_pool = pool.write();
+	let mut tx_pool = pool.write().expect("RwLock failure");
 	let header = tx_pool
 		.blockchain
 		.chain_head()

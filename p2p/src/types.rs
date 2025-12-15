@@ -38,9 +38,9 @@ use crate::mwc_core::global;
 use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::util::secp::pedersen::RangeProof;
-use crate::util::RwLock;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::types::HEADERS_PER_BATCH;
+use std::sync::RwLock;
 
 /// Maximum number of block headers a peer should ever send
 pub const MAX_BLOCK_HEADERS: u32 = HEADERS_PER_BATCH;
@@ -115,6 +115,23 @@ pub enum Error {
 	Internal(String),
 	#[error("libp2p error: {0}")]
 	Libp2pError(String),
+	#[error("configuration error: {0}")]
+	ConfigError(String),
+	/// Tor Configuration Error
+	#[error("Tor Config Error: {0}")]
+	TorConfig(String),
+	/// Tor Process error
+	#[error("Tor Process Error: {0}")]
+	TorProcess(String),
+	/// Tor is not initialized
+	#[error("Tor is not initialized")]
+	TorNotInitialized,
+	/// Tor Process error
+	#[error("Onion Service Error: {0}")]
+	TorOnionService(String),
+	/// Tor Connect error
+	#[error("Tor outbound connection error: {0}")]
+	TorConnect(String),
 }
 
 impl From<ser::Error> for Error {
@@ -298,8 +315,12 @@ impl std::fmt::Display for PeerAddr {
 impl PeerAddr {
 	/// Convenient way of constructing a new peer_addr from an ip_addr
 	/// defaults to port 3414 on mainnet and 13414 on floonet.
-	pub fn from_ip(addr: IpAddr) -> PeerAddr {
-		let port = if global::is_floonet() { 13414 } else { 3414 };
+	pub fn from_ip(context_id: u32, addr: IpAddr) -> PeerAddr {
+		let port = if global::is_floonet(context_id) {
+			13414
+		} else {
+			3414
+		};
 		PeerAddr::Ip(SocketAddr::new(addr, port))
 	}
 
@@ -361,10 +382,76 @@ impl PeerAddr {
 	}
 }
 
+/// Type for Tor Configuration
+#[derive(Debug, Clone, Serialize, serde_derive::Deserialize, PartialEq)]
+pub struct TorConfig {
+	/// Whether to start tor listener on listener startup (default true)
+	pub tor_enabled: Option<bool>,
+	/// The port for the tor socks proxy to bind to
+	pub socks_port: Option<u16>,
+	/// Tor running externally (default false)
+	pub tor_external: Option<bool>,
+	/// Onion address to use, only applicable with external tor
+	pub onion_address: Option<String>,
+	/// alternative webtunnel bridge. In not specified, the community bridges might be used
+	pub webtunnel_bridge: Option<String>,
+}
+
+impl Default for TorConfig {
+	fn default() -> TorConfig {
+		TorConfig {
+			tor_enabled: None,
+			tor_external: None,
+			socks_port: Some(51234),
+			onion_address: None,
+			webtunnel_bridge: None,
+		}
+	}
+}
+
+impl TorConfig {
+	pub fn no_tor_config() -> Self {
+		TorConfig {
+			tor_enabled: Some(false),
+			socks_port: None,
+			tor_external: None,
+			onion_address: None,
+			webtunnel_bridge: None,
+		}
+	}
+
+	pub fn arti_tor_config() -> Self {
+		TorConfig {
+			tor_enabled: Some(true),
+			socks_port: None,
+			tor_external: Some(false),
+			onion_address: None,
+			webtunnel_bridge: None,
+		}
+	}
+	/// If tor service is enabled. Default: true
+	pub fn is_tor_enabled(&self) -> bool {
+		self.tor_enabled.unwrap_or(true)
+	}
+
+	/// If tor running as external service
+	pub fn is_tor_internal_arti(&self) -> bool {
+		self.is_tor_enabled() && !self.tor_external.unwrap_or(false)
+	}
+
+	/// If tor running as external service
+	pub fn is_tor_external(&self) -> bool {
+		self.is_tor_enabled() && self.tor_external.unwrap_or(false)
+	}
+
+	pub fn need_start_arti(&self) -> bool {
+		self.is_tor_enabled() && !self.is_tor_external()
+	}
+}
+
 /// Configuration for the peer-to-peer server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct P2PConfig {
-	pub host: IpAddr,
 	pub port: u16,
 
 	/// Method used to get the list of seed nodes for initial bootstrap.
@@ -392,14 +479,15 @@ pub struct P2PConfig {
 	pub peer_listener_buffer_count: Option<u32>,
 
 	pub dandelion_peer: Option<PeerAddr>,
+
+	/// Expanded key (for seed nodes). The key to generate the onion service
+	pub onion_expanded_key: Option<String>,
 }
 
 /// Default address for peer-to-peer connections.
 impl Default for P2PConfig {
 	fn default() -> P2PConfig {
-		let ipaddr = "0.0.0.0".parse().unwrap();
 		P2PConfig {
-			host: ipaddr,
 			port: 3414,
 			seeding_type: Seeding::default(),
 			seeds: None,
@@ -412,6 +500,7 @@ impl Default for P2PConfig {
 			peer_min_preferred_outbound_count: None,
 			peer_listener_buffer_count: None,
 			dandelion_peer: None,
+			onion_expanded_key: None,
 		}
 	}
 }
@@ -599,7 +688,10 @@ impl PeerLiveInfo {
 impl PeerInfo {
 	/// The current total_difficulty of the peer.
 	pub fn total_difficulty(&self) -> Difficulty {
-		self.live_info.read().total_difficulty
+		self.live_info
+			.read()
+			.expect("RwLock failure")
+			.total_difficulty
 	}
 
 	pub fn is_outbound(&self) -> bool {
@@ -612,23 +704,23 @@ impl PeerInfo {
 
 	/// The current height of the peer.
 	pub fn height(&self) -> u64 {
-		self.live_info.read().height
+		self.live_info.read().expect("RwLock failure").height
 	}
 
 	/// Time of last_seen for this peer (via ping/pong).
 	pub fn last_seen(&self) -> DateTime<Utc> {
-		self.live_info.read().last_seen
+		self.live_info.read().expect("RwLock failure").last_seen
 	}
 
 	/// Time of first_seen for this peer.
 	pub fn first_seen(&self) -> DateTime<Utc> {
-		self.live_info.read().first_seen
+		self.live_info.read().expect("RwLock failure").first_seen
 	}
 
 	/// Update the total_difficulty, height and last_seen of the peer.
 	/// Takes a write lock on the live_info.
 	pub fn update(&self, height: u64, total_difficulty: Difficulty) {
-		let mut live_info = self.live_info.write();
+		let mut live_info = self.live_info.write().expect("RwLock failure");
 		if total_difficulty != live_info.total_difficulty {
 			live_info.stuck_detector = Utc::now();
 		}

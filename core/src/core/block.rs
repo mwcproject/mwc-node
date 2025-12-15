@@ -237,25 +237,6 @@ pub struct BlockHeader {
 }
 impl DefaultHashable for BlockHeader {}
 
-impl Default for BlockHeader {
-	fn default() -> BlockHeader {
-		BlockHeader {
-			version: HeaderVersion(1),
-			height: 0,
-			timestamp: DateTime::from_timestamp(0, 0).unwrap().to_utc(),
-			prev_hash: ZERO_HASH,
-			prev_root: ZERO_HASH,
-			output_root: ZERO_HASH,
-			range_proof_root: ZERO_HASH,
-			kernel_root: ZERO_HASH,
-			total_kernel_offset: BlindingFactor::zero(),
-			output_mmr_size: 0,
-			kernel_mmr_size: 0,
-			pow: ProofOfWork::default(),
-		}
-	}
-}
-
 impl PMMRable for BlockHeader {
 	type E = HeaderEntry;
 
@@ -337,6 +318,24 @@ impl Readable for BlockHeader {
 }
 
 impl BlockHeader {
+	/// Create empty block
+	pub fn default(context_id: u32) -> BlockHeader {
+		BlockHeader {
+			version: HeaderVersion(1),
+			height: 0,
+			timestamp: DateTime::from_timestamp(0, 0).unwrap().to_utc(),
+			prev_hash: ZERO_HASH,
+			prev_root: ZERO_HASH,
+			output_root: ZERO_HASH,
+			range_proof_root: ZERO_HASH,
+			kernel_root: ZERO_HASH,
+			total_kernel_offset: BlindingFactor::zero(),
+			output_mmr_size: 0,
+			kernel_mmr_size: 0,
+			pow: ProofOfWork::default(context_id),
+		}
+	}
+
 	/// Write the pre-hash portion of the header
 	pub fn write_pre_pow<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.version.write(writer)?;
@@ -373,6 +372,7 @@ impl BlockHeader {
 
 	/// Constructs a header given pre_pow string, nonce, and proof
 	pub fn from_pre_pow_and_proof(
+		context_id: u32,
 		pre_pow: String,
 		nonce: u64,
 		proof: Proof,
@@ -389,7 +389,7 @@ impl BlockHeader {
 		serialize_default(&mut header_bytes, &proof)?;
 
 		// Deserialize header from constructed bytes
-		Ok(deserialize_default(&mut &header_bytes[..])?)
+		Ok(deserialize_default(context_id, &mut &header_bytes[..])?)
 	}
 
 	/// Total number of outputs (spent and unspent) based on output MMR size committed to in this block.
@@ -415,16 +415,16 @@ impl BlockHeader {
 
 	/// The "overage" to use when verifying the kernel sums.
 	/// For a block header the overage is 0 - reward.
-	pub fn overage(&self) -> i64 {
+	pub fn overage(&self, context_id: u32) -> i64 {
 		// MWC strategy
-		(calc_mwc_block_reward(self.height) as i64)
+		(calc_mwc_block_reward(context_id, self.height) as i64)
 			.checked_neg()
 			.unwrap_or(0)
 	}
 
 	/// The "total overage" to use when verifying the kernel sums for a full
 	/// chain state. For a full chain state this is 0 - (height * reward).
-	pub fn total_overage(&self, genesis_had_reward: bool) -> i64 {
+	pub fn total_overage(&self, context_id: u32, genesis_had_reward: bool) -> i64 {
 		let reward_count = self.height;
 
 		// Legacy Grin strategy:
@@ -437,7 +437,7 @@ impl BlockHeader {
 		//if !genesis_had_reward {panic!("total_overage call with genesis_had_reward false");}
 
 		// MWC strategy:
-		(calc_mwc_block_overage(reward_count, genesis_had_reward) as i64)
+		(calc_mwc_block_overage(context_id, reward_count, genesis_had_reward) as i64)
 			.checked_neg()
 			.unwrap_or(0)
 	}
@@ -480,14 +480,15 @@ impl Readable for UntrustedBlockHeader {
 		// We want to do this here because blocks can be pretty large
 		// and we want to halt processing as early as possible.
 		// If we receive an invalid block version then the peer is not on our hard-fork.
-		if !consensus::valid_header_version(header.height, header.version) {
+		if !consensus::valid_header_version(reader.get_context_id(), header.height, header.version)
+		{
 			return Err(ser::Error::InvalidBlockVersion(format!(
 				"Get header at height {} with version {}",
 				header.height, header.version.0
 			)));
 		}
 
-		if !header.pow.is_primary() && !header.pow.is_secondary() {
+		if !header.pow.is_primary(reader.get_context_id()) && !header.pow.is_secondary() {
 			let error_msg = format!(
 				"block header {} validation error: invalid edge bits",
 				header.hash()
@@ -495,7 +496,7 @@ impl Readable for UntrustedBlockHeader {
 			error!("{}", error_msg);
 			return Err(ser::Error::CorruptedData(error_msg));
 		}
-		if let Err(e) = verify_size(&header) {
+		if let Err(e) = verify_size(reader.get_context_id(), &header) {
 			let error_msg = format!(
 				"block header {} validation error: invalid POW: {}",
 				header.hash(),
@@ -508,7 +509,7 @@ impl Readable for UntrustedBlockHeader {
 		// Validate global output and kernel MMR sizes against upper bounds based on block height.
 		let global_weight =
 			Transaction::weight_for_size(0, header.output_mmr_count(), header.kernel_mmr_count());
-		if global_weight > global::max_block_weight() * (header.height + 1) {
+		if global_weight > global::max_block_weight(reader.get_context_id()) * (header.height + 1) {
 			return Err(ser::Error::CorruptedData(
 				"Tx global weight is exceed the limit".to_string(),
 			));
@@ -576,17 +577,15 @@ impl Committed for Block {
 	}
 }
 
-/// Default properties for a block, everything zeroed out and empty vectors.
-impl Default for Block {
-	fn default() -> Block {
+impl Block {
+	/// Default properties for a block, everything zeroed out and empty vectors.
+	pub fn default(context_id: u32) -> Block {
 		Block {
-			header: Default::default(),
+			header: BlockHeader::default(context_id),
 			body: Default::default(),
 		}
 	}
-}
 
-impl Block {
 	/// Builds a new block from the header of the previous block, a vector of
 	/// transactions and the private key that will receive the reward. Checks
 	/// that all transactions are valid and calculates the Merkle tree.
@@ -596,6 +595,7 @@ impl Block {
 	///
 	#[warn(clippy::new_ret_no_self)]
 	pub fn new(
+		context_id: u32,
 		prev: &BlockHeader,
 		txs: &[Transaction],
 		difficulty: Difficulty,
@@ -603,6 +603,7 @@ impl Block {
 		secp: &Secp256k1,
 	) -> Result<Block, Error> {
 		let mut block = Block::from_reward(
+			context_id,
 			prev,
 			txs,
 			reward_output.0,
@@ -613,8 +614,8 @@ impl Block {
 
 		// Now set the pow on the header so block hashing works as expected.
 		{
-			let proof_size = global::proofsize();
-			block.header.pow.proof = Proof::random(proof_size);
+			let proof_size = global::proofsize(context_id);
+			block.header.pow.proof = Proof::random(context_id, proof_size);
 		}
 
 		Ok(block)
@@ -660,10 +661,10 @@ impl Block {
 	}
 
 	/// Build a new empty block from a specified header
-	pub fn with_header(header: BlockHeader) -> Block {
+	pub fn with_header(context_id: u32, header: BlockHeader) -> Block {
 		Block {
 			header,
-			..Default::default()
+			..Block::default(context_id)
 		}
 	}
 
@@ -671,6 +672,7 @@ impl Block {
 	/// a vector of transactions and the reward information. Checks
 	/// that all transactions are valid and calculates the Merkle tree.
 	pub fn from_reward(
+		context_id: u32,
 		prev: &BlockHeader,
 		txs: &[Transaction],
 		reward_out: Output,
@@ -694,7 +696,7 @@ impl Block {
 
 		// Determine the height and associated version for the new header.
 		let height = prev.height + 1;
-		let version = consensus::header_version(height);
+		let version = consensus::header_version(context_id, height);
 
 		let now = Utc::now().timestamp();
 
@@ -716,9 +718,9 @@ impl Block {
 				total_kernel_offset,
 				pow: ProofOfWork {
 					total_difficulty: difficulty + prev.pow.total_difficulty,
-					..Default::default()
+					..ProofOfWork::default(context_id)
 				},
-				..Default::default()
+				..BlockHeader::default(context_id)
 			},
 			body: agg_tx.into(),
 		};
@@ -759,8 +761,8 @@ impl Block {
 	/// * kernel signature verification (on the body)
 	/// * coinbase sum verification
 	/// * kernel sum verification
-	pub fn validate_read(&self) -> Result<(), Error> {
-		self.body.validate_read(Weighting::AsBlock)?;
+	pub fn validate_read(&self, context_id: u32) -> Result<(), Error> {
+		self.body.validate_read(context_id, Weighting::AsBlock)?;
 		self.verify_kernel_lock_heights()?;
 		Ok(())
 	}
@@ -789,19 +791,20 @@ impl Block {
 	/// trees, reward, etc.
 	pub fn validate(
 		&self,
+		context_id: u32,
 		prev_kernel_offset: &BlindingFactor,
 		secp: &Secp256k1,
 	) -> Result<Commitment, Error> {
-		self.body.validate(Weighting::AsBlock, secp)?;
+		self.body.validate(context_id, Weighting::AsBlock, secp)?;
 
 		self.verify_kernel_lock_heights()?;
-		self.verify_nrd_kernels_for_header_version()?;
-		self.verify_coinbase(secp)?;
+		self.verify_nrd_kernels_for_header_version(context_id)?;
+		self.verify_coinbase(context_id, secp)?;
 
 		// take the kernel offset for this block (block offset minus previous) and
 		// verify.body.outputs and kernel sums
 		let (_utxo_sum, kernel_sum) = self.verify_kernel_sums(
-			self.header.overage(),
+			self.header.overage(context_id),
 			self.block_kernel_offset(prev_kernel_offset.clone(), secp)?,
 			secp,
 		)?;
@@ -812,7 +815,7 @@ impl Block {
 	/// Validate the coinbase.body.outputs generated by miners.
 	/// Check the sum of coinbase-marked outputs match
 	/// the sum of coinbase-marked kernels accounting for fees.
-	pub fn verify_coinbase(&self, secp: &Secp256k1) -> Result<(), Error> {
+	pub fn verify_coinbase(&self, context_id: u32, secp: &Secp256k1) -> Result<(), Error> {
 		let cb_outs = self
 			.body
 			.outputs
@@ -828,7 +831,8 @@ impl Block {
 			.collect::<Vec<&TxKernel>>();
 
 		{
-			let over_commit = secp.commit_value(reward(self.total_fees(), self.header.height))?;
+			let over_commit =
+				secp.commit_value(reward(context_id, self.total_fees(), self.header.height))?;
 
 			let out_adjust_sum =
 				secp.commit_sum(map_vec!(cb_outs, |x| x.commitment()), vec![over_commit])?;
@@ -861,9 +865,9 @@ impl Block {
 	// NRD kernels are not valid if the global feature flag is disabled.
 	// NRD kernels were introduced in HF3 and are not valid for block version < 4.
 	// Blocks prior to HF3 containing any NRD kernel(s) are invalid.
-	fn verify_nrd_kernels_for_header_version(&self) -> Result<(), Error> {
+	fn verify_nrd_kernels_for_header_version(&self, context_id: u32) -> Result<(), Error> {
 		if self.kernels().iter().any(|k| k.is_nrd()) {
-			if !global::is_nrd_enabled() {
+			if !global::is_nrd_enabled(context_id) {
 				return Err(Error::NRDKernelNotEnabled);
 			}
 			if self.header.version < HeaderVersion(4) {
@@ -896,10 +900,11 @@ impl Readable for UntrustedBlock {
 		// Treat any validation issues as data corruption.
 		// An example of this would be reading a block
 		// that exceeded the allowed number of inputs.
-		body.validate_read(Weighting::AsBlock).map_err(|e| {
-			error!("read validation error: {}", e);
-			ser::Error::CorruptedData(format!("Fail to validate Tx body, {}", e))
-		})?;
+		body.validate_read(reader.get_context_id(), Weighting::AsBlock)
+			.map_err(|e| {
+				error!("read validation error: {}", e);
+				ser::Error::CorruptedData(format!("Fail to validate Tx body, {}", e))
+			})?;
 		let block = Block {
 			header: header.into(),
 			body,

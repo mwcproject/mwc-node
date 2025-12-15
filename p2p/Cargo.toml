@@ -1,6 +1,6 @@
 [package]
 name = "mwc_p2p"
-version = "5.3.10"
+version = "6.0.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -13,9 +13,6 @@ edition = "2018"
 bitflags = "1"
 enum_primitive = "0.1"
 lru = "0.12"
-tor-stream = "0.2"
-net2 = "0.2"
-socks = "0.3.2"
 thiserror = "1"
 num = "0.2"
 rand = "0.6"
@@ -32,19 +29,44 @@ futures = "0.3"
 #mwc-libp2p = { git = "https://github.com/mwcproject/rust-libp2p", branch = "master", version="0.35.3", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"], optional = true}
 lazy_static = "1"
 async-std = "1.9"
-tokio = {version = "1", features = ["full"] }
 ed25519-dalek = "1"
 serde_json = "1"
 bytes = "0.5"
 crossbeam = "0.8"
 
-mwc_core = { path = "../core", version = "5.3.10" }
-mwc_store = { path = "../store", version = "5.3.10" }
-mwc_util = { path = "../util", version = "5.3.10" }
-mwc_chain = { path = "../chain", version = "5.3.10" }
+# Tor embedded client, Arti project.
+# Note, all tor related crates must be from the same versions
+arti-client = { version = "0.37", features = [
+    "tokio",
+    "native-tls",
+    "onion-service-service",
+    "onion-service-client",
+    "pt-client",
+    "keymgr",
+    "ephemeral-keystore",
+    "experimental-api"
+] }
+tracing-subscriber = "0.3"
+tor-error = "0.37.0"
+tor-hsservice = "0.37.0"
+tor-proto = { version = "0.37.0", features = ["stream-ctrl"] }
+tor-cell = "0.37.0"
+tor-keymgr = "0.37.0"
+tor-config = "0.37.0"
+tor-hscrypto = "0.37.0"
+tor-llcrypto = "0.37.0"
+tor-rtcompat = "0.37.0"
+# Adding it fix linking error under the windows
+rusqlite = { version = "0.37", features = ["bundled"] }
+safelog = "0.7"
+
+mwc_core = { path = "../core", version = "6.0.0" }
+mwc_store = { path = "../store", version = "6.0.0" }
+mwc_util = { path = "../util", version = "6.0.0" }
+mwc_chain = { path = "../chain", version = "6.0.0" }
 
 [dev-dependencies]
-mwc_pool = { path = "../pool", version = "5.3.10" }
+mwc_pool = { path = "../pool", version = "6.0.0" }
 
 [features]
 # libp2p disabled by default

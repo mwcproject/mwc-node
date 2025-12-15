@@ -15,84 +15,96 @@
 
 /// Mwc server commands processing
 use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use clap::ArgMatches;
-use futures::channel::oneshot;
 
 use crate::config::GlobalConfig;
-use crate::core::global;
 use crate::p2p::Seeding;
-use crate::servers;
 use crate::tui::ui;
 use mwc_p2p::msg::PeerAddrs;
 use mwc_p2p::PeerAddr;
 use mwc_util::logger::LogEntry;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 /// wrap below to allow UI to clean up on stop
 pub fn start_server(
-	config: servers::ServerConfig,
+	context_id: u32,
+	config: mwc_servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
-	allow_to_stop: bool,
 	offline: bool,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
-	start_server_tui(config, logs_rx, allow_to_stop, offline, api_chan);
+	if let Err(e) = start_server_tui(context_id, config, logs_rx, offline) {
+		println!("Unable to start mwc-node, {}", e);
+	}
 	exit(0);
 }
 
 fn start_server_tui(
-	config: servers::ServerConfig,
+	context_id: u32,
+	config: mwc_servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
-	allow_to_stop: bool,
 	offline: bool,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
-) {
+) -> Result<(), mwc_node_workflow::Error> {
+	// Starting the server...
+	if config.tor_config.need_start_arti() {
+		info!("Bootstrapping tor rich client Arti...");
+		mwc_node_workflow::server::start_tor(&config.tor_config, &config.db_root)?;
+	}
+
+	info!("Creating MWC node server...");
+	mwc_node_workflow::server::create_server(context_id, config.clone())?;
+
+	if !offline {
+		info!("Starting listening peers...");
+		mwc_node_workflow::server::start_listen_peers(context_id)?;
+		info!("Starting discovery peers...");
+		mwc_node_workflow::server::start_discover_peers(context_id)?;
+		info!("Starting syncyng...");
+		mwc_node_workflow::server::start_sync_monitoring(context_id)?;
+
+		info!("Starting node API...");
+		mwc_node_workflow::server::start_rest_api(context_id)?;
+
+		info!("Starting dandellion...");
+		mwc_node_workflow::server::start_dandelion(context_id)?;
+
+		if let Some(stratum_conf) = config.stratum_mining_config {
+			if stratum_conf.enable_stratum_server.unwrap_or(false) {
+				info!("Starting stratum server...");
+				mwc_node_workflow::server::start_stratum(context_id)?;
+			}
+		}
+	}
+	info!("MC node is started and running");
+
 	// Run the UI controller.. here for now for simplicity to access
 	// everything it might need
 	if config.run_tui.unwrap_or(false) {
-		warn!("Starting MWC in UI mode...");
-		servers::Server::start(
-			config,
-			logs_rx,
-			|serv: servers::Server, logs_rx: Option<mpsc::Receiver<LogEntry>>| {
-				let mut controller = ui::Controller::new(logs_rx.unwrap()).unwrap_or_else(|e| {
-					panic!("Error loading UI controller: {}", e);
-				});
-				controller.run(serv);
-			},
-			allow_to_stop,
-			None,
-			offline,
-			api_chan,
-		)
-		.map_err(|e| error!("Unable to start MWC in UI mode, {}", e))
-		.expect("Unable to start MWC in UI mode");
+		warn!("Starting MWC UI...");
+
+		let mut controller = ui::Controller::new(context_id, logs_rx.unwrap()).map_err(|e| {
+			mwc_node_workflow::Error::UIError(format!("Error loading UI controller: {}", e))
+		})?;
+		controller.run(context_id);
+		Ok(())
 	} else {
-		warn!("Starting MWC w/o UI...");
-		servers::Server::start(
-			config,
-			logs_rx,
-			|serv: servers::Server, _: Option<mpsc::Receiver<LogEntry>>| {
-				ctrlc::set_handler(move || {
-					global::request_server_stop();
-				})
-				.expect("Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill)");
-				while global::is_server_running() {
-					thread::sleep(Duration::from_millis(300));
-				}
-				warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
-				serv.stop();
-			},
-			allow_to_stop,
-			None,
-			offline,
-			api_chan,
-		)
-		.map_err(|e| error!("Unable to start MWC w/o UI mode, {}", e))
-		.expect("Unable to start MWC w/o UI mode");
+		warn!("Running MWC w/o UI...");
+
+		let running = Arc::new(AtomicBool::new(true));
+		let r = running.clone();
+		ctrlc::set_handler(move || {
+			r.store(false, Ordering::SeqCst);
+		})
+		.expect("Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill)");
+		while running.load(Ordering::SeqCst) {
+			thread::sleep(Duration::from_millis(300));
+		}
+		warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
+		mwc_node_workflow::server::release_server(context_id);
+		Ok(())
 	}
 }
 
@@ -101,14 +113,13 @@ fn start_server_tui(
 /// arguments to build a proper configuration and runs Mwc with that
 /// configuration.
 pub fn server_command(
+	context_id: u32,
 	server_args: Option<&ArgMatches<'_>>,
 	global_config: GlobalConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
-	api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) -> i32 {
 	// just get defaults from the global config
 	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
-	let mut allow_to_stop = false;
 	let mut offline = false;
 
 	if let Some(a) = server_args {
@@ -138,13 +149,9 @@ pub fn server_command(
 			server_config.p2p_config.seeds = Some(PeerAddrs { peers });
 		}
 
-		allow_to_stop = a.is_present("allow_to_stop");
 		offline = a.is_present("offline");
 	}
 
-	if allow_to_stop {
-		warn!("Starting server with activated stop_node API");
-	}
 	if offline {
 		warn!("Running in offline mode! Not connecting to any peers.");
 	}
@@ -152,7 +159,7 @@ pub fn server_command(
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(server_config, logs_rx, allow_to_stop, offline, api_chan);
+				start_server(context_id, server_config, logs_rx, offline);
 			}
 			("", _) => {
 				println!("Subcommand required, use 'mwc help server' for details");
@@ -166,7 +173,7 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(server_config, logs_rx, allow_to_stop, offline, api_chan);
+		start_server(context_id, server_config, logs_rx, offline);
 	}
 	0
 }

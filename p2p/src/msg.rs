@@ -30,8 +30,8 @@ use crate::mwc_core::ser::{
 };
 use crate::mwc_core::{consensus, global};
 use crate::types::{
-	AttachmentMeta, AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan,
-	MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan, MAX_BLOCK_HEADERS, MAX_LOCATORS,
+	MAX_PEER_ADDRS,
 };
 use crate::util::secp::pedersen::RangeProof;
 use bytes::Bytes;
@@ -97,17 +97,17 @@ enum_from_primitive! {
 }
 
 /// Max theoretical size of a block filled with outputs.
-fn max_block_size() -> u64 {
-	(global::max_block_weight() / consensus::BLOCK_OUTPUT_WEIGHT * 708) as u64
+fn max_block_size(context_id: u32) -> u64 {
+	(global::max_block_weight(context_id) / consensus::BLOCK_OUTPUT_WEIGHT * 708) as u64
 }
 
 // Max msg size when msg type is unknown.
-fn default_max_msg_size() -> u64 {
-	max_block_size()
+fn default_max_msg_size(context_id: u32) -> u64 {
+	max_block_size(context_id)
 }
 
 // Max msg size for each msg type.
-fn max_msg_size(msg_type: Type) -> u64 {
+fn max_msg_size(context_id: u32, msg_type: Type) -> u64 {
 	match msg_type {
 		Type::Error => 0,
 		Type::Hand => 128 + 8,
@@ -120,11 +120,11 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::Header => 365,
 		Type::Headers => 2 + 365 * MAX_BLOCK_HEADERS as u64,
 		Type::GetBlock => 32,
-		Type::Block => max_block_size(),
+		Type::Block => max_block_size(context_id),
 		Type::GetCompactBlock => 32,
-		Type::CompactBlock => max_block_size() / 10,
-		Type::StemTransaction => max_block_size(),
-		Type::Transaction => max_block_size(),
+		Type::CompactBlock => max_block_size(context_id) / 10,
+		Type::StemTransaction => max_block_size(context_id),
+		Type::Transaction => max_block_size(context_id),
 		Type::TxHashSetRequest => 40, // 32+8=40
 		Type::TxHashSetArchive => 64,
 		Type::BanReason => 64,
@@ -134,23 +134,23 @@ fn max_msg_size(msg_type: Type) -> u64 {
 		Type::StartHeadersHashRequest => 8,
 		Type::StartHeadersHashResponse => 40, // 8+32=40
 		Type::GetHeadersHashesSegment => 41,
-		Type::OutputHeadersHashesSegment => 2 * max_block_size(),
+		Type::OutputHeadersHashesSegment => 2 * max_block_size(context_id),
 		Type::GetOutputBitmapSegment => 41,
-		Type::OutputBitmapSegment => 2 * max_block_size(),
+		Type::OutputBitmapSegment => 2 * max_block_size(context_id),
 		Type::GetOutputSegment => 41,
-		Type::OutputSegment => 2 * max_block_size(),
+		Type::OutputSegment => 2 * max_block_size(context_id),
 		Type::GetRangeProofSegment => 41,
-		Type::RangeProofSegment => 2 * max_block_size(),
+		Type::RangeProofSegment => 2 * max_block_size(context_id),
 		Type::GetKernelSegment => 41,
-		Type::KernelSegment => 2 * max_block_size(),
+		Type::KernelSegment => 2 * max_block_size(context_id),
 		Type::StartPibdSyncRequest => 40, // 32+8=40
 		Type::HasAnotherArchiveHeader => 40,
 		Type::PibdSyncState => 72, // 32 + 8 + 32 = 72
 	}
 }
 
-fn magic() -> [u8; 2] {
-	match global::get_chain_type() {
+fn magic(context_id: u32) -> [u8; 2] {
+	match global::get_chain_type(context_id) {
 		global::ChainTypes::Floonet => FLOONET_MAGIC,
 		global::ChainTypes::Mainnet => MAINNET_MAGIC,
 		_ => OTHER_MAGIC,
@@ -169,10 +169,11 @@ impl Msg {
 		msg_type: Type,
 		msg: T,
 		version: ProtocolVersion,
+		context_id: u32,
 	) -> Result<Msg, Error> {
 		let body = ser::ser_vec(&msg, version)?;
 		Ok(Msg {
-			header: MsgHeader::new(msg_type, body.len() as u64),
+			header: MsgHeader::new(context_id, msg_type, body.len() as u64),
 			body,
 			attachment: None,
 			version,
@@ -193,11 +194,16 @@ impl Msg {
 pub fn read_header<R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
+	context_id: u32,
 ) -> Result<MsgHeaderWrapper, Error> {
 	let mut head = vec![0u8; MsgHeader::LEN];
 	stream.read_exact(&mut head)?;
-	let header: MsgHeaderWrapper =
-		ser::deserialize(&mut &head[..], version, DeserializationMode::default())?;
+	let header: MsgHeaderWrapper = ser::deserialize(
+		&mut &head[..],
+		version,
+		context_id,
+		DeserializationMode::default(),
+	)?;
 	Ok(header)
 }
 
@@ -207,8 +213,9 @@ pub fn read_header<R: Read>(
 pub fn read_item<T: Readable, R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
+	context_id: u32,
 ) -> Result<(T, u64), Error> {
-	let mut reader = StreamingReader::new(stream, version);
+	let mut reader = StreamingReader::new(stream, version, context_id);
 	let res = T::read(&mut reader)?;
 	Ok((res, reader.total_bytes_read()))
 }
@@ -219,10 +226,17 @@ pub fn read_body<T: Readable, R: Read>(
 	h: &MsgHeader,
 	stream: &mut R,
 	version: ProtocolVersion,
+	context_id: u32,
 ) -> Result<T, Error> {
 	let mut body = vec![0u8; h.msg_len as usize];
 	stream.read_exact(&mut body)?;
-	ser::deserialize(&mut &body[..], version, DeserializationMode::default()).map_err(From::from)
+	ser::deserialize(
+		&mut &body[..],
+		version,
+		context_id,
+		DeserializationMode::default(),
+	)
+	.map_err(From::from)
 }
 
 /// Read (an unknown) message from the provided stream and discard it.
@@ -236,12 +250,13 @@ pub fn read_discard<R: Read>(msg_len: u64, stream: &mut R) -> Result<(), Error> 
 pub fn read_message<T: Readable, R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
+	context_id: u32,
 	msg_type: Type,
 ) -> Result<T, Error> {
-	match read_header(stream, version)? {
+	match read_header(stream, version, context_id)? {
 		MsgHeaderWrapper::Known(header) => {
 			if header.msg_type == msg_type {
-				read_body(&header, stream, version)
+				read_body(&header, stream, version, context_id)
 			} else {
 				Err(Error::BadMessage)
 			}
@@ -261,7 +276,12 @@ pub fn write_message<W: Write>(
 	// Introduce a delay so messages are spaced at least 150ms apart.
 	// This gives a max msg rate of 60000/150 = 400 messages per minute.
 	// Exceeding 500 messages per minute will result in being banned as abusive.
-	if let Some(elapsed) = tracker.sent_bytes.read().elapsed_since_last_msg() {
+	if let Some(elapsed) = tracker
+		.sent_bytes
+		.read()
+		.expect("RwLock failure")
+		.elapsed_since_last_msg()
+	{
 		let min_interval: u64 = 150;
 		let sleep_ms = min_interval.saturating_sub(elapsed);
 		if sleep_ms > 0 {
@@ -278,8 +298,8 @@ pub fn write_message<W: Write>(
 		if let Some(file) = &msg.attachment {
 			// finalize what we have before attachments...
 			if !tmp_buf.is_empty() {
-				stream.write_all(&tmp_buf[..])?;
 				tracker.inc_sent(tmp_buf.len() as u64);
+				stream.write_all(&tmp_buf[..])?;
 				tmp_buf.clear();
 			}
 			let mut file = file.try_clone()?;
@@ -288,10 +308,10 @@ pub fn write_message<W: Write>(
 				match file.read(&mut buf[..]) {
 					Ok(0) => break,
 					Ok(n) => {
+						tracker.inc_quiet_sent(n as u64);
 						stream.write_all(&buf[..n])?;
 						// Increase sent bytes "quietly" without incrementing the counter.
 						// (In a loop here for the single attachment).
-						tracker.inc_quiet_sent(n as u64);
 					}
 					Err(e) => return Err(From::from(e)),
 				}
@@ -300,10 +320,13 @@ pub fn write_message<W: Write>(
 	}
 
 	if !tmp_buf.is_empty() {
-		stream.write_all(&tmp_buf[..])?;
 		tracker.inc_sent(tmp_buf.len() as u64);
+		stream.write_all(&tmp_buf[..])?;
 		tmp_buf.clear();
 	}
+
+	// Flush is needed for Arti. Arti buffer the data and never send.
+	stream.flush()?;
 
 	Ok(())
 }
@@ -334,9 +357,9 @@ impl MsgHeader {
 	pub const LEN: usize = 2 + 1 + 8;
 
 	/// Creates a new message header.
-	pub fn new(msg_type: Type, len: u64) -> MsgHeader {
+	pub fn new(context_id: u32, msg_type: Type, len: u64) -> MsgHeader {
 		MsgHeader {
-			magic: magic(),
+			magic: magic(context_id),
 			msg_type: msg_type,
 			msg_len: len,
 		}
@@ -358,7 +381,7 @@ impl Writeable for MsgHeader {
 
 impl Readable for MsgHeaderWrapper {
 	fn read<R: Reader>(reader: &mut R) -> Result<MsgHeaderWrapper, ser::Error> {
-		let m = magic();
+		let m = magic(reader.get_context_id());
 		reader.expect_u8(m[0])?;
 		reader.expect_u8(m[1])?;
 
@@ -371,7 +394,7 @@ impl Readable for MsgHeaderWrapper {
 		match Type::from_u8(t) {
 			Some(msg_type) => {
 				// TODO 4x the limits for now to leave ourselves space to change things.
-				let max_len = max_msg_size(msg_type) * 4;
+				let max_len = max_msg_size(reader.get_context_id(), msg_type) * 4;
 				if msg_len > max_len {
 					let err_msg = format!(
 						"Too large read {:?}, max_len: {}, msg_len: {}.",
@@ -389,7 +412,7 @@ impl Readable for MsgHeaderWrapper {
 			}
 			None => {
 				// Unknown msg type, but we still want to limit how big the msg is.
-				let max_len = default_max_msg_size() * 4;
+				let max_len = default_max_msg_size(reader.get_context_id()) * 4;
 				if msg_len > max_len {
 					let err_msg = format!(
 						"Too large read (unknown msg type) {:?}, max_len: {}, msg_len: {}.",
@@ -1185,7 +1208,6 @@ impl fmt::Debug for Message {
 
 pub enum Consumed {
 	Response(Msg),
-	Attachment(Arc<AttachmentMeta>, File),
 	None,
 	Disconnect,
 }
@@ -1194,7 +1216,6 @@ impl fmt::Debug for Consumed {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Consumed::Response(msg) => write!(f, "Consumed::Response({:?})", msg.header.msg_type),
-			Consumed::Attachment(meta, _) => write!(f, "Consumed::Attachment({:?})", meta.size),
 			Consumed::None => write!(f, "Consumed::None"),
 			Consumed::Disconnect => write!(f, "Consumed::Disconnect"),
 		}

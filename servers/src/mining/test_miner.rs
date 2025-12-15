@@ -29,6 +29,7 @@ use crate::core::global;
 use crate::mining::mine_block;
 use crate::util::StopState;
 use crate::ServerTxPool;
+use mwc_api::client::HttpClient;
 use mwc_chain::SyncState;
 use std::thread;
 use std::time::Duration;
@@ -83,10 +84,12 @@ impl Miner {
 		// transactions) and as long as the head hasn't changed
 		let deadline = Utc::now().timestamp() + attempt_time_per_block as i64;
 
+		let context_id = self.chain.get_context_id();
+
 		debug!(
 			"(Server ID: {}) Mining Cuckoo{} for max {}s on {} @ {} [{}].",
 			self.debug_output_id,
-			global::min_edge_bits(),
+			global::min_edge_bits(context_id),
 			attempt_time_per_block,
 			b.header.total_difficulty(),
 			b.header.height,
@@ -96,9 +99,10 @@ impl Miner {
 
 		while head.hash() == *latest_hash && Utc::now().timestamp() < deadline {
 			let mut ctx = global::create_pow_context::<u32>(
+				context_id,
 				head.height,
-				global::min_edge_bits(),
-				global::proofsize(),
+				global::min_edge_bits(context_id),
+				global::proofsize(context_id),
 				10,
 			)
 			.unwrap();
@@ -106,7 +110,7 @@ impl Miner {
 				.unwrap();
 			if let Ok(proofs) = ctx.find_cycles() {
 				b.header.pow.proof = proofs[0].clone();
-				let proof_diff = b.header.pow.to_difficulty(b.header.height);
+				let proof_diff = b.header.pow.to_difficulty(context_id, b.header.height);
 				if proof_diff >= (b.header.total_difficulty() - head.total_difficulty()) {
 					return true;
 				}
@@ -135,6 +139,7 @@ impl Miner {
 		// iteration, we keep the returned derivation to provide it back when
 		// nothing has changed. We only want to create a new key_id for each new block.
 		let mut key_id = None;
+		let mining_wallet_client = HttpClient::new(0, Duration::from_secs(5), None);
 
 		loop {
 			if self.stop_state.is_stopped() {
@@ -156,6 +161,7 @@ impl Miner {
 				&self.tx_pool,
 				key_id.clone(),
 				wallet_listener_url.clone(),
+				&mining_wallet_client,
 			);
 
 			let sol = self.inner_mining_loop(

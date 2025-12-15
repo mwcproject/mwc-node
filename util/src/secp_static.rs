@@ -17,9 +17,9 @@
 //! initialization overhead
 
 use crate::secp;
-use crate::Mutex;
 use rand::thread_rng;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 lazy_static! {
 	/// Static reference to secp instance
@@ -30,7 +30,7 @@ lazy_static! {
 /// Returns the static instance, but calls randomize on it as well
 /// (Recommended to avoid side channel attacks
 pub fn static_secp_instance() -> Arc<Mutex<secp::Secp256k1>> {
-	let mut secp_inst = SECP256K1.lock();
+	let mut secp_inst = SECP256K1.lock().expect("Mutex failure");
 	secp_inst.randomize(&mut thread_rng());
 	SECP256K1.clone()
 }

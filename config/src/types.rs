@@ -21,6 +21,8 @@ use std::path::PathBuf;
 use crate::servers::ServerConfig;
 use crate::util::logger::LoggingConfig;
 
+pub(crate) const CONFIG_FILE_VERSION: u32 = 3;
+
 /// Error type wrapping config errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

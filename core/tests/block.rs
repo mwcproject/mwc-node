@@ -37,6 +37,7 @@ use util::{secp, ToHex};
 fn test_setup() {
 	util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 }
 
 #[test]
@@ -44,7 +45,7 @@ fn too_large_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let max_out = global::max_block_weight() / BLOCK_OUTPUT_WEIGHT;
+	let max_out = global::max_block_weight(0) / BLOCK_OUTPUT_WEIGHT;
 
 	let mut pks = vec![];
 	for n in 0..(max_out + 1) {
@@ -65,11 +66,11 @@ fn too_large_block() {
 	)
 	.unwrap();
 
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx], &keychain, &builder, &prev, &key_id);
 	assert!(b
-		.validate(&BlindingFactor::zero(), keychain.secp())
+		.validate(0, &BlindingFactor::zero(), keychain.secp())
 		.is_err());
 }
 
@@ -78,10 +79,10 @@ fn too_large_block() {
 // no fees, no reward, no coinbase
 fn very_empty_block() {
 	test_setup();
-	let b = Block::with_header(BlockHeader::default());
+	let b = Block::with_header(0, BlockHeader::default(0));
 	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	assert_eq!(
-		b.verify_coinbase(&secp),
+		b.verify_coinbase(0, &secp),
 		Err(Error::Secp(secp::Error::IncorrectCommitSum))
 	);
 }
@@ -112,8 +113,8 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK - 2;
 	let prev = BlockHeader {
 		height: prev_height,
-		version: consensus::header_version(prev_height),
-		..BlockHeader::default()
+		version: consensus::header_version(0, prev_height),
+		..BlockHeader::default(0)
 	};
 	let b = new_block(
 		txs,
@@ -126,15 +127,15 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Block is invalid at header version 3 if it contains an NRD kernel.
 	assert_eq!(b.header.version, HeaderVersion(3));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), keychain.secp()),
+		b.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelPreHF3)
 	);
 
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK - 1;
 	let prev = BlockHeader {
 		height: prev_height,
-		version: consensus::header_version(prev_height),
-		..BlockHeader::default()
+		version: consensus::header_version(0, prev_height),
+		..BlockHeader::default(0)
 	};
 	let b = new_block(
 		txs,
@@ -147,13 +148,15 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	// Block is valid at header version 4 (at HF height) if it contains an NRD kernel.
 	assert_eq!(b.header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(b.header.version, HeaderVersion(4));
-	assert!(b.validate(&BlindingFactor::zero(), keychain.secp()).is_ok());
+	assert!(b
+		.validate(0, &BlindingFactor::zero(), keychain.secp())
+		.is_ok());
 
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK;
 	let prev = BlockHeader {
 		height: prev_height,
-		version: consensus::header_version(prev_height),
-		..BlockHeader::default()
+		version: consensus::header_version(0, prev_height),
+		..BlockHeader::default(0)
 	};
 	let b = new_block(
 		txs,
@@ -165,11 +168,14 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 
 	// Block is valid at header version 4 if it contains an NRD kernel.
 	assert_eq!(b.header.version, HeaderVersion(4));
-	assert!(b.validate(&BlindingFactor::zero(), keychain.secp()).is_ok());
+	assert!(b
+		.validate(0, &BlindingFactor::zero(), keychain.secp())
+		.is_ok());
 }
 
 #[test]
 fn block_with_nrd_kernel_nrd_not_enabled() {
+	global::set_local_nrd_enabled(false);
 	// automated testing - HF{1|2|3} at block heights {3, 6, 9}
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 
@@ -194,8 +200,8 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK - 2;
 	let prev = BlockHeader {
 		height: prev_height,
-		version: consensus::header_version(prev_height),
-		..BlockHeader::default()
+		version: consensus::header_version(0, prev_height),
+		..BlockHeader::default(0)
 	};
 	let b = new_block(
 		txs,
@@ -208,15 +214,15 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	// Block is invalid as NRD not enabled.
 	assert_eq!(b.header.version, HeaderVersion(3));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), keychain.secp()),
+		b.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK - 1;
 	let prev = BlockHeader {
 		height: prev_height,
-		version: consensus::header_version(prev_height),
-		..BlockHeader::default()
+		version: consensus::header_version(0, prev_height),
+		..BlockHeader::default(0)
 	};
 	let b = new_block(
 		txs,
@@ -230,15 +236,15 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	assert_eq!(b.header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(b.header.version, HeaderVersion(4));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), keychain.secp()),
+		b.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 
 	let prev_height = consensus::TESTING_THIRD_HARD_FORK;
 	let prev = BlockHeader {
 		height: prev_height,
-		version: consensus::header_version(prev_height),
-		..BlockHeader::default()
+		version: consensus::header_version(0, prev_height),
+		..BlockHeader::default(0)
 	};
 	let b = new_block(
 		txs,
@@ -251,7 +257,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	// Block is invalid as NRD not enabled.
 	assert_eq!(b.header.version, HeaderVersion(4));
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), keychain.secp()),
+		b.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::NRDKernelNotEnabled)
 	);
 }
@@ -259,6 +265,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 #[test]
 // builds a block with a tx spending another and check that cut_through occurred
 fn block_with_cut_through() {
+	global::set_local_nrd_enabled(false);
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
@@ -278,13 +285,13 @@ fn block_with_cut_through() {
 	// spending tx2 - reuse key_id2
 
 	let btx3 = txspend1i1o(5, &keychain, &builder, key_id2, key_id3);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[btx1, btx2, btx3], &keychain, &builder, &prev, &key_id);
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	b.validate(&BlindingFactor::zero(), keychain.secp())
+	b.validate(0, &BlindingFactor::zero(), keychain.secp())
 		.unwrap();
 	assert_eq!(b.inputs().len(), 3);
 	assert_eq!(b.outputs().len(), 3);
@@ -295,7 +302,7 @@ fn empty_block_with_coinbase_is_valid() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
@@ -321,7 +328,9 @@ fn empty_block_with_coinbase_is_valid() {
 
 	// the block should be valid here (single coinbase output with corresponding
 	// txn kernel)
-	assert!(b.validate(&BlindingFactor::zero(), keychain.secp()).is_ok());
+	assert!(b
+		.validate(0, &BlindingFactor::zero(), keychain.secp())
+		.is_ok());
 }
 
 #[test]
@@ -332,7 +341,7 @@ fn remove_coinbase_output_flag() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let output = b.outputs()[0];
@@ -343,18 +352,18 @@ fn remove_coinbase_output_flag() {
 	};
 
 	assert_eq!(
-		b.verify_coinbase(keychain.secp()),
+		b.verify_coinbase(0, keychain.secp()),
 		Err(Error::CoinbaseSumMismatch)
 	);
 	assert!(b
 		.verify_kernel_sums(
-			b.header.overage(),
+			b.header.overage(0),
 			b.header.total_kernel_offset(),
 			keychain.secp()
 		)
 		.is_ok());
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), keychain.secp()),
+		b.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::CoinbaseSumMismatch)
 	);
 }
@@ -366,7 +375,7 @@ fn remove_coinbase_kernel_flag() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let mut b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
@@ -378,14 +387,14 @@ fn remove_coinbase_kernel_flag() {
 
 	// Flipping the coinbase flag results in kernels not summing correctly.
 	assert_eq!(
-		b.verify_coinbase(keychain.secp()),
+		b.verify_coinbase(0, keychain.secp()),
 		Err(Error::Secp(secp::Error::IncorrectCommitSum))
 	);
 
 	// Also results in the block no longer validating correctly
 	// because the message being signed on each tx kernel includes the kernel features.
 	assert_eq!(
-		b.validate(&BlindingFactor::zero(), keychain.secp()),
+		b.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::Transaction(transaction::Error::IncorrectSignature))
 	);
 }
@@ -403,7 +412,7 @@ fn serialize_deserialize_header_version() {
 	assert_eq!(vec1, vec2);
 
 	// Check we can successfully deserialize a header_version.
-	let version: HeaderVersion = ser::deserialize_default(&mut &vec2[..]).unwrap();
+	let version: HeaderVersion = ser::deserialize_default(0, &mut &vec2[..]).unwrap();
 	assert_eq!(version.0, 1)
 }
 
@@ -412,14 +421,14 @@ fn serialize_deserialize_block_header() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let header1 = b.header;
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &header1).expect("serialization failed");
-	let header2: BlockHeader = ser::deserialize_default(&mut &vec[..]).unwrap();
+	let header2: BlockHeader = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
 	assert_eq!(header1.hash(), header2.hash());
 	assert_eq!(header1, header2);
@@ -427,12 +436,13 @@ fn serialize_deserialize_block_header() {
 
 fn set_pow(header: &mut BlockHeader) {
 	// Set valid pow on the block as we will test deserialization of this "untrusted" from the network.
-	let edge_bits = global::min_edge_bits();
+	let edge_bits = global::min_edge_bits(0);
 	header.pow.proof.edge_bits = edge_bits;
 	pow::pow_size(
+		0,
 		header,
 		pow::Difficulty::min(),
-		global::proofsize(),
+		global::proofsize(0),
 		edge_bits,
 	)
 	.unwrap();
@@ -443,7 +453,7 @@ fn deserialize_untrusted_header_weight() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let mut b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
@@ -454,7 +464,7 @@ fn deserialize_untrusted_header_weight() {
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b.header).expect("serialization failed");
-	let res: Result<UntrustedBlockHeader, _> = ser::deserialize_default(&mut &vec[..]);
+	let res: Result<UntrustedBlockHeader, _> = ser::deserialize_default(0, &mut &vec[..]);
 	assert_eq!(
 		res.err(),
 		Some(ser::Error::CorruptedData(
@@ -469,7 +479,7 @@ fn deserialize_untrusted_header_weight() {
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b.header).expect("serialization failed");
-	let res: Result<UntrustedBlockHeader, _> = ser::deserialize_default(&mut &vec[..]);
+	let res: Result<UntrustedBlockHeader, _> = ser::deserialize_default(0, &mut &vec[..]);
 	assert_eq!(
 		res.err(),
 		Some(ser::Error::CorruptedData(
@@ -484,7 +494,7 @@ fn deserialize_untrusted_header_weight() {
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b.header).expect("serialization failed");
-	let res: Result<UntrustedBlockHeader, _> = ser::deserialize_default(&mut &vec[..]);
+	let res: Result<UntrustedBlockHeader, _> = ser::deserialize_default(0, &mut &vec[..]);
 	assert!(res.is_ok());
 }
 
@@ -494,13 +504,13 @@ fn serialize_deserialize_block() {
 	let tx1 = tx1i2o();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b).expect("serialization failed");
-	let b2: Block = ser::deserialize_default(&mut &vec[..]).unwrap();
+	let b2: Block = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
 	assert_eq!(b.hash(), b2.hash());
 	assert_eq!(b.header, b2.header);
@@ -514,7 +524,7 @@ fn empty_block_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let mut vec = Vec::new();
@@ -528,7 +538,7 @@ fn block_single_tx_serialized_size() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let tx1 = tx1i2o();
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
@@ -585,7 +595,7 @@ fn empty_compact_block_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let cb: CompactBlock = b.into();
@@ -600,7 +610,7 @@ fn compact_block_single_tx_serialized_size() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let tx1 = tx1i2o();
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 	let cb: CompactBlock = b.into();
@@ -620,7 +630,7 @@ fn block_10_tx_serialized_size() {
 		let tx = tx1i2o();
 		txs.push(tx);
 	}
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&txs, &keychain, &builder, &prev, &key_id);
 
@@ -642,7 +652,7 @@ fn compact_block_10_tx_serialized_size() {
 		let tx = tx1i2o();
 		txs.push(tx);
 	}
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&txs, &keychain, &builder, &prev, &key_id);
 	let cb: CompactBlock = b.into();
@@ -657,7 +667,7 @@ fn compact_block_hash_with_nonce() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let tx = tx1i2o();
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx.clone()], &keychain, &builder, &prev, &key_id);
 	let cb1: CompactBlock = b.clone().into();
@@ -689,7 +699,7 @@ fn convert_block_to_compact_block() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let tx1 = tx1i2o();
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 	let cb: CompactBlock = b.clone().into();
@@ -713,7 +723,7 @@ fn hydrate_empty_compact_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let cb: CompactBlock = b.clone().into();
@@ -729,7 +739,7 @@ fn serialize_deserialize_compact_block() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
 	let tx1 = tx1i2o();
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
@@ -744,7 +754,7 @@ fn serialize_deserialize_compact_block() {
 	cb1.header.timestamp =
 		origin_ts - Duration::nanoseconds(origin_ts.timestamp_subsec_nanos() as i64);
 
-	let cb2: CompactBlock = ser::deserialize_default(&mut &vec[..]).unwrap();
+	let cb2: CompactBlock = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
 	assert_eq!(cb1.header, cb2.header);
 	assert_eq!(cb1.kern_ids(), cb2.kern_ids());
@@ -774,7 +784,7 @@ fn same_amount_outputs_copy_range_proof() {
 	outs[0].proof = outs[1].proof;
 
 	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let b = new_block(
 		&[Transaction::new(tx.inputs(), &outs, tx.kernels())],
 		&keychain,
@@ -785,7 +795,7 @@ fn same_amount_outputs_copy_range_proof() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	match b.validate(&BlindingFactor::zero(), keychain.secp()) {
+	match b.validate(0, &BlindingFactor::zero(), keychain.secp()) {
 		Err(Error::Transaction(transaction::Error::Secp(secp::Error::InvalidRangeProof))) => {}
 		_ => panic!("Bad range proof should be invalid"),
 	}
@@ -826,7 +836,7 @@ fn wrong_amount_range_proof() {
 	outs[1].proof = tx2.outputs()[1].proof;
 
 	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let b = new_block(
 		&[Transaction::new(tx1.inputs(), &outs, tx1.kernels())],
 		&keychain,
@@ -837,7 +847,7 @@ fn wrong_amount_range_proof() {
 
 	// block should have been automatically compacted (including reward
 	// output) and should still be valid
-	match b.validate(&BlindingFactor::zero(), keychain.secp()) {
+	match b.validate(0, &BlindingFactor::zero(), keychain.secp()) {
 		Err(Error::Transaction(transaction::Error::Secp(secp::Error::InvalidRangeProof))) => {}
 		_ => panic!("Bad range proof should be invalid"),
 	}
@@ -848,7 +858,7 @@ fn validate_header_proof() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 	let builder = ProofBuilder::new(&keychain);
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
@@ -861,6 +871,7 @@ fn validate_header_proof() {
 	let pre_pow = header_buf.to_hex();
 
 	let reconstructed = BlockHeader::from_pre_pow_and_proof(
+		0,
 		pre_pow,
 		b.header.pow.nonce,
 		b.header.pow.proof.clone(),
@@ -870,6 +881,7 @@ fn validate_header_proof() {
 
 	// assert invalid pre_pow returns error
 	assert!(BlockHeader::from_pre_pow_and_proof(
+		0,
 		"0xaf1678".to_string(),
 		b.header.pow.nonce,
 		b.header.pow.proof,
@@ -883,6 +895,7 @@ fn validate_header_proof() {
 #[test]
 fn test_verify_cut_through_plain() -> Result<(), Error> {
 	global::set_local_chain_type(global::ChainTypes::UserTesting);
+	global::set_local_nrd_enabled(false);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
@@ -908,19 +921,19 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(0, 0, 0, 0, 0);
 	let mut block = new_block(&[tx], &keychain, &builder, &prev, &key_id);
 
 	// The block should fail validation due to cut-through.
 	assert_eq!(
-		block.validate(&BlindingFactor::zero(), keychain.secp()),
+		block.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
 	// The block should fail lightweight "read" validation due to cut-through.
 	assert_eq!(
-		block.validate_read(),
+		block.validate_read(0),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -935,10 +948,10 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Block validates successfully after applying cut-through.
-	block.validate(&BlindingFactor::zero(), keychain.secp())?;
+	block.validate(0, &BlindingFactor::zero(), keychain.secp())?;
 
 	// Block validates via lightweight "read" validation.
-	block.validate_read()?;
+	block.validate_read(0)?;
 
 	Ok(())
 }
@@ -949,6 +962,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 #[test]
 fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	global::set_local_chain_type(global::ChainTypes::UserTesting);
+	global::set_local_nrd_enabled(false);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
@@ -977,19 +991,19 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	)
 	.expect("valid tx");
 
-	let prev = BlockHeader::default();
+	let prev = BlockHeader::default(0);
 	let key_id = ExtKeychain::derive_key_id(0, 0, 0, 0, 0);
 	let mut block = new_block(&[tx], &keychain, &builder, &prev, &key_id);
 
 	// The block should fail validation due to cut-through.
 	assert_eq!(
-		block.validate(&BlindingFactor::zero(), keychain.secp()),
+		block.validate(0, &BlindingFactor::zero(), keychain.secp()),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
 	// The block should fail lightweight "read" validation due to cut-through.
 	assert_eq!(
-		block.validate_read(),
+		block.validate_read(0),
 		Err(Error::Transaction(transaction::Error::CutThrough))
 	);
 
@@ -1004,10 +1018,10 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 		.replace_outputs(outputs);
 
 	// Block validates successfully after applying cut-through.
-	block.validate(&BlindingFactor::zero(), keychain.secp())?;
+	block.validate(0, &BlindingFactor::zero(), keychain.secp())?;
 
 	// Block validates via lightweight "read" validation.
-	block.validate_read()?;
+	block.validate_read(0)?;
 
 	Ok(())
 }

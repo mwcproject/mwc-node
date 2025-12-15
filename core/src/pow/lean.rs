@@ -94,6 +94,7 @@ mod test {
 	#[test]
 	fn lean_miner() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
 		let nonce = 15465723;
 		let header = [0u8; 84].to_vec(); // with nonce
 		let edge_bits = 19;
@@ -102,7 +103,7 @@ mod test {
 		lean.set_header_nonce(header.clone(), nonce);
 		lean.trim();
 
-		let mut ctx_u32 = CuckatooContext::new_impl(edge_bits, 42, 10).unwrap();
+		let mut ctx_u32 = CuckatooContext::new_impl(edge_bits, 42, 10, 0u32).unwrap();
 		ctx_u32.set_header_nonce(header, Some(nonce), true).unwrap();
 		lean.find_cycles(ctx_u32).unwrap();
 	}

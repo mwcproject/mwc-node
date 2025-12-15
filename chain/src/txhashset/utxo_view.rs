@@ -166,6 +166,7 @@ impl<'a> UTXOView<'a> {
 	/// that have not sufficiently matured.
 	pub fn verify_coinbase_maturity(
 		&self,
+		context_id: u32,
 		inputs: &Inputs,
 		height: u64,
 		batch: &Batch<'_>,
@@ -193,13 +194,13 @@ impl<'a> UTXOView<'a> {
 		if let Some(pos) = pos {
 			// If we have not yet reached 1440 blocks then
 			// we can fail immediately as coinbase cannot be mature.
-			if height < global::coinbase_maturity() {
+			if height < global::coinbase_maturity(context_id) {
 				return Err(Error::ImmatureCoinbase);
 			}
 
 			// Find the "cutoff" pos in the output MMR based on the
 			// header from 1,000 blocks ago.
-			let cutoff_height = height.saturating_sub(global::coinbase_maturity());
+			let cutoff_height = height.saturating_sub(global::coinbase_maturity(context_id));
 			let cutoff_header = self.get_header_by_height(cutoff_height, batch)?;
 			let cutoff_pos = cutoff_header.output_mmr_size;
 

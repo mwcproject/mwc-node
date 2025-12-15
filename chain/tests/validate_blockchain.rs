@@ -37,13 +37,15 @@ fn test_chain_validation() {
 	let src_root_dir = format!("/Users/mw/main_archive_aug27/chain_data");
 	info!("Read data from {}", src_root_dir);
 
-	global::set_global_chain_type(global::ChainTypes::Mainnet);
-	let genesis = genesis::genesis_main();
+	global::set_local_chain_type(global::ChainTypes::Mainnet);
+	global::set_local_nrd_enabled(false);
+	let genesis = genesis::genesis_main(0);
 
 	let dummy_adapter = Arc::new(NoopAdapter {});
 
 	// The original chain we're reading from
 	let src_chain = chain::Chain::init(
+		0,
 		src_root_dir.into(),
 		dummy_adapter.clone(),
 		genesis.clone(),

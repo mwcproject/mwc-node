@@ -35,7 +35,6 @@ use std::{thread, time};
 
 use super::constants::MAIN_MENU;
 use crate::built_info;
-use crate::servers::Server;
 use crate::tui::constants::{ROOT_STACK, VIEW_BASIC_STATUS, VIEW_MINING, VIEW_PEER_SYNC};
 use crate::tui::types::{TUIStatusListener, UIMessage};
 use crate::tui::{logs, menu, mining, peers, status, version};
@@ -65,6 +64,7 @@ fn modify_theme(theme: &mut Theme) {
 impl UI {
 	/// Create a new UI
 	pub fn new(
+		context_id: u32,
 		controller_tx: mpsc::Sender<ControllerMessage>,
 		logs_rx: mpsc::Receiver<LogEntry>,
 	) -> UI {
@@ -101,7 +101,7 @@ impl UI {
 			format!(
 				"MWC Version {} [{:?}]",
 				built_info::PKG_VERSION,
-				global::get_chain_type()
+				global::get_chain_type(context_id)
 			),
 			Color::Dark(BaseColor::Green),
 		));
@@ -183,16 +183,16 @@ pub enum ControllerMessage {
 
 impl Controller {
 	/// Create a new controller
-	pub fn new(logs_rx: mpsc::Receiver<LogEntry>) -> Result<Controller, String> {
+	pub fn new(context_id: u32, logs_rx: mpsc::Receiver<LogEntry>) -> Result<Controller, String> {
 		let (tx, rx) = mpsc::channel::<ControllerMessage>();
 		Ok(Controller {
 			rx,
-			ui: UI::new(tx, logs_rx),
+			ui: UI::new(context_id, tx, logs_rx),
 		})
 	}
 
 	/// Run the controller
-	pub fn run(&mut self, server: Server) {
+	pub fn run(&mut self, context_id: u32) {
 		let stat_update_interval = 1;
 		let mut next_stat_update = Utc::now().timestamp() + stat_update_interval;
 		let delay = time::Duration::from_millis(250);
@@ -202,7 +202,7 @@ impl Controller {
 					ControllerMessage::Shutdown => {
 						warn!("Shutdown in progress, please wait");
 						self.ui.stop();
-						server.stop();
+						mwc_node_workflow::server::release_server(context_id);
 						return;
 					}
 				}
@@ -210,12 +210,12 @@ impl Controller {
 
 			if Utc::now().timestamp() > next_stat_update {
 				next_stat_update = Utc::now().timestamp() + stat_update_interval;
-				if let Ok(stats) = server.get_server_stats() {
+				if let Ok(stats) = mwc_node_workflow::server::get_server_stats(context_id) {
 					self.ui.ui_tx.send(UIMessage::UpdateStatus(stats)).unwrap();
 				}
 			}
 			thread::sleep(delay);
 		}
-		server.stop();
+		mwc_node_workflow::server::release_server(context_id);
 	}
 }

@@ -1,0 +1,41 @@
+[package]
+name = "mwc_node_lib"
+version = "6.0.0"
+authors = ["Mwc Developers <info@mwc.mw>"]
+description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
+license = "Apache-2.0"
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = [ "crypto", "mwc", "mimblewimble" ]
+workspace = ".."
+edition = "2024"
+
+[lib]
+name = "mwc_node_lib"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "generate-headers"
+path = "src/generate_headers.rs"
+
+[dependencies]
+safer-ffi = { version = "0.1", features = ["std","headers"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+once_cell = "1"
+lazy_static = "1"
+libc = "0.2"
+log = "0.4"
+hyper = "0.14"
+futures = "0.3"
+
+mwc_node_workflow = { path = "../node_workflow", version = "6.0.0" }
+mwc_api = { path = "../api", version = "6.0.0" }
+mwc_chain = { path = "../chain", version = "6.0.0" }
+mwc_core = { path = "../core", version = "6.0.0" }
+mwc_keychain = { path = "../keychain", version = "6.0.0" }
+mwc_p2p = { path = "../p2p", version = "6.0.0" }
+mwc_pool = { path = "../pool", version = "6.0.0" }
+mwc_store = { path = "../store", version = "6.0.0" }
+mwc_util = { path = "../util", version = "6.0.0" }
+mwc_servers = { path = "../servers", version = "6.0.0" }
+

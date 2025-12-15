@@ -18,9 +18,9 @@
 //! configuration parameters anywhere
 
 use chrono::{DateTime, Utc};
-use mwc_util::RwLock;
 use std::cmp;
 use std::sync::Arc;
+use std::sync::RwLock;
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 /// Segment heights for Header Hashes. Note, this number is needs to be the same for all network
@@ -91,7 +91,10 @@ impl PibdParams {
 		debug!(
 			"PibdParams config: cpu_num={}, available_memory_mb={}",
 			res.cpu_num,
-			res.sys_memory_info.read().available_memory_mb
+			res.sys_memory_info
+				.read()
+				.expect("RwLock failure")
+				.available_memory_mb
 		);
 		res
 	}
@@ -182,8 +185,16 @@ impl PibdParams {
 		if average_latency_ms == 0 || average_latency_ms == 30000 {
 			return 1.0;
 		}
-		if (Utc::now() - self.network_speed.read().last_network_speed_update).num_seconds() > 5 {
-			let mut network_speed = self.network_speed.write();
+		if (Utc::now()
+			- self
+				.network_speed
+				.read()
+				.expect("RwLock failure")
+				.last_network_speed_update)
+			.num_seconds()
+			> 5
+		{
+			let mut network_speed = self.network_speed.write().expect("RwLock failure");
 			network_speed.last_network_speed_update = Utc::now();
 			let expected_latency_ms = PIBD_REQUESTS_TIMEOUT_SECS as u32 / 2 * 1000;
 			if average_latency_ms < expected_latency_ms {
@@ -206,12 +217,15 @@ impl PibdParams {
 			);
 			network_speed.network_speed_multiplier
 		} else {
-			self.network_speed.read().network_speed_multiplier
+			self.network_speed
+				.read()
+				.expect("RwLock failure")
+				.network_speed_multiplier
 		}
 	}
 
 	fn get_available_memory_mb(&self) -> u64 {
-		let mut sys_memory_info = self.sys_memory_info.write();
+		let mut sys_memory_info = self.sys_memory_info.write().expect("RwLock failure");
 		if (Utc::now() - sys_memory_info.update_time).num_seconds() > 2 {
 			*sys_memory_info = SysMemoryInfo::update();
 		}

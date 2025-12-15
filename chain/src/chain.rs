@@ -32,7 +32,6 @@ use crate::txhashset;
 use crate::txhashset::{Desegmenter, PMMRHandle, Segmenter, TxHashSet};
 use crate::types::{BlockStatus, ChainAdapter, CommitPos, Options, Tip, HEADERS_PER_BATCH};
 use crate::util::secp::pedersen::{Commitment, RangeProof};
-use crate::util::RwLock;
 use crate::ChainStore;
 use crate::{
 	core::core::hash::{Hash, Hashed},
@@ -50,6 +49,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, io::Cursor};
 
@@ -88,7 +88,7 @@ impl OrphanBlockPool {
 	}
 
 	fn len(&self) -> usize {
-		let orphans = self.orphans.read();
+		let orphans = self.orphans.read().expect("RwLock failure");
 		orphans.len()
 	}
 
@@ -97,8 +97,8 @@ impl OrphanBlockPool {
 	}
 
 	fn add(&self, orphan: Orphan) {
-		let mut orphans = self.orphans.write();
-		let mut height_idx = self.height_idx.write();
+		let mut orphans = self.orphans.write().expect("RwLock failure");
+		let mut height_idx = self.height_idx.write().expect("RwLock failure");
 		{
 			let height = orphan.block.header.height;
 			let hash = orphan.block.hash();
@@ -140,16 +140,16 @@ impl OrphanBlockPool {
 	/// Get an orphan from the pool indexed by the hash of its parent, removing
 	/// it at the same time, preventing clone
 	fn remove_by_height(&self, height: u64) -> Option<Vec<Orphan>> {
-		let mut orphans = self.orphans.write();
-		let mut height_idx = self.height_idx.write();
+		let mut orphans = self.orphans.write().expect("RwLock failure");
+		let mut height_idx = self.height_idx.write().expect("RwLock failure");
 		height_idx
 			.remove(&height)
 			.map(|hs| hs.iter().filter_map(|h| orphans.remove(h)).collect())
 	}
 
 	fn remove_by_height_header_hash(&self, height: u64, header_hash: &Hash) -> Option<Orphan> {
-		let mut orphans = self.orphans.write();
-		let mut height_idx = self.height_idx.write();
+		let mut orphans = self.orphans.write().expect("RwLock failure");
+		let mut height_idx = self.height_idx.write().expect("RwLock failure");
 
 		if !orphans.contains_key(header_hash) {
 			return None;
@@ -169,6 +169,7 @@ impl OrphanBlockPool {
 	pub fn get_orphan_list(&self) -> HashSet<Hash> {
 		self.orphans
 			.read()
+			.expect("RwLock failure")
 			.iter()
 			.map(|(k, _v)| k.clone())
 			.collect()
@@ -176,18 +177,26 @@ impl OrphanBlockPool {
 
 	/// Check if orphans is in the list
 	pub fn contains(&self, hash: &Hash) -> bool {
-		self.orphans.read().contains_key(hash)
+		self.orphans
+			.read()
+			.expect("RwLock failure")
+			.contains_key(hash)
 	}
 
 	/// Request orphan by hash
 	pub fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
-		self.orphans.read().get(hash).map(|o| o.clone())
+		self.orphans
+			.read()
+			.expect("RwLock failure")
+			.get(hash)
+			.map(|o| o.clone())
 	}
 
 	/// Request orphan height and prev block hash. Alternative to get_orphan without much data copy
 	pub fn get_orphan_height_prev_hash(&self, hash: &Hash) -> Option<(Hash, u64)> {
 		self.orphans
 			.read()
+			.expect("RwLock failure")
 			.get(hash)
 			.map(|o| (o.block.header.prev_hash.clone(), o.block.header.height))
 	}
@@ -205,7 +214,7 @@ pub struct Chain {
 	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>, // Lock order  (with childrer):  1
 	pibd_segmenter: Arc<RwLock<Option<Segmenter>>>,
 	// POW verification function
-	pow_verifier: fn(&BlockHeader) -> Result<(), pow::Error>,
+	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	denylist: Arc<RwLock<Vec<Hash>>>,
 	archive_mode: bool,
 	genesis: Block,
@@ -219,13 +228,14 @@ impl Chain {
 	/// check on the current chain head to make sure it exists and creates one
 	/// based on the genesis block if necessary.
 	pub fn init(
+		context_id: u32,
 		db_root: String,
 		adapter: Arc<dyn ChainAdapter + Send + Sync>,
 		genesis: Block,
-		pow_verifier: fn(&BlockHeader) -> Result<(), pow::Error>,
+		pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 		archive_mode: bool,
 	) -> Result<Chain, Error> {
-		let store = Arc::new(store::ChainStore::new(&db_root)?);
+		let store = Arc::new(store::ChainStore::new(context_id, &db_root)?);
 
 		let pibd_params = Arc::new(PibdParams::new());
 
@@ -243,6 +253,7 @@ impl Chain {
 			Path::new(&db_root).join("header").join("header_head"),
 			false,
 			ProtocolVersion(1),
+			context_id,
 			None,
 		)?;
 
@@ -297,7 +308,7 @@ impl Chain {
 	/// The header corresponding to any "denied" hash will be rejected
 	/// and the peer subsequently banned.
 	pub fn invalidate_header(&self, hash: Hash) -> Result<(), Error> {
-		self.denylist.write().push(hash);
+		self.denylist.write().expect("RwLock failure").push(hash);
 		Ok(())
 	}
 
@@ -321,8 +332,8 @@ impl Chain {
 	) -> Result<(), Error> {
 		let head = head.into();
 
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let mut batch = self.store.batch_write()?;
 
 		let header = batch.get_block_header(&head.hash())?;
@@ -358,8 +369,8 @@ impl Chain {
 	/// Used upon PIBD failure, where we want to keep the header chain but
 	/// restart the output PMMRs from scratch
 	pub fn reset_chain_head_to_genesis(&self) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let batch = self.store.batch_write()?;
 
 		// Change head back to genesis
@@ -385,8 +396,8 @@ impl Chain {
 	/// entire chain, the prune list needs to be manually wiped
 	/// as it's currently not included as part of rewind)
 	pub fn reset_prune_lists(&self) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let mut batch = self.store.batch_write()?;
 
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut batch, |ext, _| {
@@ -454,8 +465,8 @@ impl Chain {
 						prev_header.height
 					);
 
-					let mut header_pmmr = self.header_pmmr.write();
-					let mut txhashset = self.txhashset.write();
+					let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+					let mut txhashset = self.txhashset.write().expect("RwLock failure");
 					let mut batch = self.store.batch_write()?;
 
 					let old_head = batch.head()?;
@@ -487,7 +498,7 @@ impl Chain {
 				}
 
 				{
-					let mut header_pmmr = self.header_pmmr.write();
+					let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
 					let mut batch = self.store.batch_write()?;
 
 					let old_header_head = batch.header_head()?;
@@ -647,17 +658,21 @@ impl Chain {
 			});
 		}
 
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let inputs: Vec<_> =
-			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let inputs: Vec<_> = txhashset::extending_readonly(
+			self.store.get_context_id(),
+			&mut header_pmmr,
+			&mut txhashset,
+			|ext, batch| {
 				let previous_header = batch.get_previous_header(&block.header)?;
 				self.rewind_and_apply_fork(&previous_header, ext, batch)?;
 				ext.extension
 					.utxo_view(ext.header_extension)
 					.validate_inputs(&block.inputs(), batch)
 					.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect())
-			})?;
+			},
+		)?;
 		let inputs = inputs.as_slice().into();
 		Ok(Block {
 			header: block.header,
@@ -764,17 +779,21 @@ impl Chain {
 	/// or false if it has added to a fork (or orphan?).
 	fn process_block_single(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
 		let (head, fork_point, prev_head, b) = {
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
+			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+			let mut txhashset = self.txhashset.write().expect("RwLock failure");
 			let batch = self.store.batch_write()?;
 			let prev_head = batch.head()?;
 			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
 
 			let mut bv = vec![b.clone()];
 			let (head, fork_point) = pipe::process_blocks_series(
+				self.store.get_context_id(),
 				&bv,
 				&mut ctx,
-				&mut *self.cache_header_difficulty.write(),
+				&mut *self
+					.cache_header_difficulty
+					.write()
+					.expect("RwLock failure"),
 				self.secp(),
 			)?;
 
@@ -812,16 +831,20 @@ impl Chain {
 		opts: Options,
 	) -> Result<Option<Tip>, Error> {
 		let (head, fork_point, prev_head) = {
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
+			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+			let mut txhashset = self.txhashset.write().expect("RwLock failure");
 			let batch = self.store.batch_write()?;
 			let prev_head = batch.head()?;
 			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
 
 			let (head, fork_point) = pipe::process_blocks_series(
+				self.store.get_context_id(),
 				&blocks,
 				&mut ctx,
-				&mut *self.cache_header_difficulty.write(),
+				&mut *self
+					.cache_header_difficulty
+					.write()
+					.expect("RwLock failure"),
 				self.secp(),
 			)?;
 
@@ -859,11 +882,19 @@ impl Chain {
 	/// Note: This will update header MMR and corresponding header_head
 	/// if total work increases (on the header chain).
 	pub fn process_block_header(&self, bh: &BlockHeader, opts: Options) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let batch = self.store.batch_write()?;
 		let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
-		pipe::process_block_header(bh, &mut ctx, &mut *self.cache_header_difficulty.write())?;
+		pipe::process_block_header(
+			self.store.get_context_id(),
+			bh,
+			&mut ctx,
+			&mut *self
+				.cache_header_difficulty
+				.write()
+				.expect("RwLock failure"),
+		)?;
 		ctx.batch.commit()?;
 		Ok(())
 	}
@@ -878,17 +909,21 @@ impl Chain {
 		sync_head: Tip,
 		opts: Options,
 	) -> Result<Option<Tip>, Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let batch = self.store.batch_write()?;
 
 		// Sync the chunk of block headers, updating header_head if total work increases.
 		let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
 		let sync_head = pipe::process_block_headers(
+			self.store.get_context_id(),
 			headers,
 			sync_head,
 			&mut ctx,
-			&mut *self.cache_header_difficulty.write(),
+			&mut *self
+				.cache_header_difficulty
+				.write()
+				.expect("RwLock failure"),
 		)?;
 		ctx.batch.commit()?;
 
@@ -903,7 +938,7 @@ impl Chain {
 		header_pmmr: &'a mut txhashset::PMMRHandle<BlockHeader>,
 		txhashset: &'a mut txhashset::TxHashSet,
 	) -> Result<pipe::BlockContext<'a>, Error> {
-		let denylist = self.denylist.read().clone();
+		let denylist = self.denylist.read().expect("RwLock failure").clone();
 		Ok(pipe::BlockContext {
 			opts,
 			pow_verifier: self.pow_verifier,
@@ -999,13 +1034,16 @@ impl Chain {
 		&self,
 		commit: Commitment,
 	) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
-		self.txhashset.read().get_unspent(commit)
+		self.txhashset
+			.read()
+			.expect("RwLock failure")
+			.get_unspent(commit)
 	}
 
 	/// Retrieves an unspent output using its PMMR position
 	pub fn get_unspent_output_at(&self, pos0: u64) -> Result<Output, Error> {
-		let header_pmmr = self.header_pmmr.read();
-		let txhashset = self.txhashset.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().expect("RwLock failure");
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, _| {
 			utxo.get_unspent_output_at(pos0)
 		})
@@ -1030,20 +1068,25 @@ impl Chain {
 		if !has_nrd_kernel {
 			return Ok(());
 		}
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			let height = self.next_block_height()?;
-			ext.extension.apply_kernels(tx.kernels(), height, batch)
-		})
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		txhashset::extending_readonly(
+			self.store.get_context_id(),
+			&mut header_pmmr,
+			&mut txhashset,
+			|ext, batch| {
+				let height = self.next_block_height()?;
+				ext.extension.apply_kernels(tx.kernels(), height, batch)
+			},
+		)
 	}
 
 	fn validate_tx_against_utxo(
 		&self,
 		tx: &Transaction,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
-		let header_pmmr = self.header_pmmr.read();
-		let txhashset = self.txhashset.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().expect("RwLock failure");
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.validate_tx(tx, batch)
 		})
@@ -1057,8 +1100,8 @@ impl Chain {
 		&self,
 		inputs: &Inputs,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
-		let header_pmmr = self.header_pmmr.read();
-		let txhashset = self.txhashset.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().expect("RwLock failure");
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.validate_inputs(inputs, batch)
 		})
@@ -1073,10 +1116,10 @@ impl Chain {
 	/// that has not yet sufficiently matured.
 	pub fn verify_coinbase_maturity(&self, inputs: &Inputs) -> Result<(), Error> {
 		let height = self.next_block_height()?;
-		let header_pmmr = self.header_pmmr.read();
-		let txhashset = self.txhashset.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().expect("RwLock failure");
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
-			utxo.verify_coinbase_maturity(inputs, height, batch)?;
+			utxo.verify_coinbase_maturity(self.store.get_context_id(), inputs, height, batch)?;
 			Ok(())
 		})
 	}
@@ -1097,7 +1140,7 @@ impl Chain {
 	/// (need to be version 3 or bigger)
 	/// Do we need to do the check here? we are doing check for every tx regardless of the kernel version.
 	pub fn replay_attack_check(&self, tx: &Transaction) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
 		let batch_read = self.store.batch_read()?;
 		txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 			pipe::check_against_spent_output(&tx.body, None, None, ext, batch)?;
@@ -1114,29 +1157,34 @@ impl Chain {
 			return Ok(());
 		}
 
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 
 		// Now create an extension from the txhashset and validate against the
 		// latest block header. Rewind the extension to the specified header to
 		// ensure the view is consistent.
-		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			self.rewind_and_apply_fork(&header, ext, batch)?;
-			ext.extension.validate(
-				&self.genesis.header,
-				fast_validation,
-				None,
-				&header,
-				None,
-				self.secp(),
-			)?;
-			Ok(())
-		})
+		txhashset::extending_readonly(
+			self.store.get_context_id(),
+			&mut header_pmmr,
+			&mut txhashset,
+			|ext, batch| {
+				self.rewind_and_apply_fork(&header, ext, batch)?;
+				ext.extension.validate(
+					&self.genesis.header,
+					fast_validation,
+					None,
+					&header,
+					None,
+					self.secp(),
+				)?;
+				Ok(())
+			},
+		)
 	}
 
 	/// Sets prev_root on a brand new block header by applying the previous header to the header MMR.
 	pub fn set_prev_root_only(&self, header: &mut BlockHeader) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
 		let batch_read = self.store.batch_read()?;
 		let prev_root =
 			txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
@@ -1154,11 +1202,14 @@ impl Chain {
 	/// Sets the txhashset roots on a brand new block by applying the block on
 	/// the current txhashset state.
 	pub fn set_txhashset_roots(&self, b: &mut Block) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 
-		let (prev_root, roots, sizes) =
-			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
+		let (prev_root, roots, sizes) = txhashset::extending_readonly(
+			self.store.get_context_id(),
+			&mut header_pmmr,
+			&mut txhashset,
+			|ext, batch| {
 				let previous_header = batch.get_previous_header(&b.header)?;
 				self.rewind_and_apply_fork(&previous_header, ext, batch)?;
 
@@ -1172,7 +1223,8 @@ impl Chain {
 				extension.apply_block(b, header_extension, batch)?;
 
 				Ok((prev_root, extension.roots()?, extension.sizes()))
-			})?;
+			},
+		)?;
 
 		// Set the output and kernel MMR sizes.
 		// Note: We need to do this *before* calculating the roots as the output_root
@@ -1201,13 +1253,17 @@ impl Chain {
 		out_id: T,
 		header: &BlockHeader,
 	) -> Result<MerkleProof, Error> {
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
-		let merkle_proof =
-			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let merkle_proof = txhashset::extending_readonly(
+			self.store.get_context_id(),
+			&mut header_pmmr,
+			&mut txhashset,
+			|ext, batch| {
 				self.rewind_and_apply_fork(&header, ext, batch)?;
 				ext.extension.merkle_proof(out_id, batch)
-			})?;
+			},
+		)?;
 
 		Ok(merkle_proof)
 	}
@@ -1215,7 +1271,7 @@ impl Chain {
 	/// Return a merkle proof valid for the current output pmmr state at the
 	/// given pos
 	pub fn get_merkle_proof_for_pos(&self, commit: Commitment) -> Result<MerkleProof, Error> {
-		let mut txhashset = self.txhashset.write();
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		txhashset.merkle_proof(commit)
 	}
 
@@ -1227,8 +1283,9 @@ impl Chain {
 		ext: &mut ExtensionPair,
 		batch: &Batch,
 	) -> Result<BlockHeader, Error> {
-		let denylist = self.denylist.read().clone();
+		let denylist = self.denylist.read().expect("RwLock failure").clone();
 		let (header, _) = pipe::rewind_and_apply_fork(
+			self.store.get_context_id(),
 			header,
 			ext,
 			batch,
@@ -1246,7 +1303,7 @@ impl Chain {
 		ext: &mut HeaderExtension,
 		batch: &Batch,
 	) -> Result<(), Error> {
-		let denylist = self.denylist.read().clone();
+		let denylist = self.denylist.read().expect("RwLock failure").clone();
 		pipe::rewind_and_apply_header_fork(header, ext, batch, &|header| {
 			pipe::validate_header_denylist(header, &denylist)
 		})
@@ -1263,17 +1320,22 @@ impl Chain {
 		// to rewind after receiving the txhashset zip.
 		let header = self.get_block_header(&h)?;
 
-		let mut header_pmmr = self.header_pmmr.write();
-		let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 
-		txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-			self.rewind_and_apply_fork(&header, ext, batch)?;
-			ext.extension.snapshot(batch)?;
+		txhashset::extending_readonly(
+			self.store.get_context_id(),
+			&mut header_pmmr,
+			&mut txhashset,
+			|ext, batch| {
+				self.rewind_and_apply_fork(&header, ext, batch)?;
+				ext.extension.snapshot(batch)?;
 
-			// prepare the zip
-			txhashset::zip_read(self.db_root.clone(), &header)
-				.map(|file| (header.output_mmr_size, header.kernel_mmr_size, file))
-		})
+				// prepare the zip
+				txhashset::zip_read(self.db_root.clone(), &header)
+					.map(|file| (header.output_mmr_size, header.kernel_mmr_size, file))
+			},
+		)
 	}
 
 	/// The segmenter is responsible for generation PIBD segments.
@@ -1291,7 +1353,7 @@ impl Chain {
 		let ref archive_header = self.txhashset_archive_header()?;
 
 		// Use our cached segmenter if we have one and the associated header matches.
-		if let Some(x) = self.pibd_segmenter.read().as_ref() {
+		if let Some(x) = self.pibd_segmenter.read().expect("RwLock failure").as_ref() {
 			if x.header() == archive_header {
 				return Ok(x.clone());
 			}
@@ -1300,7 +1362,7 @@ impl Chain {
 		// We have no cached segmenter or the cached segmenter is no longer useful.
 		// Initialize a new segment, cache it and return it.
 		let segmenter = self.init_segmenter(archive_header)?;
-		let mut cache = self.pibd_segmenter.write();
+		let mut cache = self.pibd_segmenter.write().expect("RwLock failure");
 		*cache = Some(segmenter.clone());
 
 		return Ok(segmenter);
@@ -1317,8 +1379,8 @@ impl Chain {
 		);
 
 		let bitmap_snapshot = {
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
+			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+			let mut txhashset = self.txhashset.write().expect("RwLock failure");
 
 			let local_output_mmr_size = txhashset.output_mmr_size();
 			let local_kernel_mmr_size = txhashset.kernel_mmr_size();
@@ -1332,12 +1394,17 @@ impl Chain {
 														 header.output_mmr_size, header.kernel_mmr_size, local_output_mmr_size, local_kernel_mmr_size, local_rangeproof_mmr_size)));
 			}
 
-			txhashset::extending_readonly(&mut header_pmmr, &mut txhashset, |ext, batch| {
-				let extension = &mut ext.extension;
-				let header_extension = &mut ext.header_extension;
-				extension.rewind(header, batch, header_extension)?;
-				Ok(extension.build_bitmap_accumulator()?)
-			})?
+			txhashset::extending_readonly(
+				self.store.get_context_id(),
+				&mut header_pmmr,
+				&mut txhashset,
+				|ext, batch| {
+					let extension = &mut ext.extension;
+					let header_extension = &mut ext.header_extension;
+					extension.rewind(header, batch, header_extension)?;
+					Ok(extension.build_bitmap_accumulator()?)
+				},
+			)?
 		};
 
 		debug!("init_segmenter: done, took {}ms", now.elapsed().as_millis());
@@ -1366,7 +1433,7 @@ impl Chain {
 		{
 			use mwc_core::core::pmmr::ReadablePMMR;
 
-			let txhashset = self.txhashset.read();
+			let txhashset = self.txhashset.read().expect("RwLock failure");
 
 			let output_pmmr = txhashset.output_pmmr_at(&header);
 			let output_pmmr_root = output_pmmr.root().unwrap();
@@ -1417,9 +1484,9 @@ impl Chain {
 	}
 
 	/// Static method to convert height to archive height. Used in chain and also in Sync process
-	pub fn height_2_archive_height(height: u64) -> u64 {
-		let sync_threshold = global::state_sync_threshold() as u64;
-		let archive_interval = global::txhashset_archive_interval();
+	pub fn height_2_archive_height(context_id: u32, height: u64) -> u64 {
+		let sync_threshold = global::state_sync_threshold(context_id) as u64;
+		let archive_interval = global::txhashset_archive_interval(context_id);
 		let mut archive_height = height.saturating_sub(sync_threshold);
 		archive_height = archive_height.saturating_sub(archive_height % archive_interval);
 		archive_height
@@ -1433,7 +1500,8 @@ impl Chain {
 	/// Here we return the header of the txhashset we are currently offering to peers.
 	pub fn txhashset_archive_header(&self) -> Result<BlockHeader, Error> {
 		let body_head = self.head()?;
-		let txhashset_height = Self::height_2_archive_height(body_head.height);
+		let txhashset_height =
+			Self::height_2_archive_height(self.store.get_context_id(), body_head.height);
 
 		debug!(
 			"txhashset_archive_header: body_head - {}, {}, txhashset height - {}",
@@ -1447,7 +1515,8 @@ impl Chain {
 	/// contents of the header PMMR
 	pub fn txhashset_archive_header_header_only(&self) -> Result<BlockHeader, Error> {
 		let header_head = self.header_head()?;
-		let txhashset_height = Self::height_2_archive_height(header_head.height);
+		let txhashset_height =
+			Self::height_2_archive_height(self.store.get_context_id(), header_head.height);
 		self.get_header_by_height(txhashset_height)
 	}
 
@@ -1729,8 +1798,10 @@ impl Chain {
 		// current "head" and "tail" height to our cut-through horizon and
 		// allowing an additional 60 blocks in height before allowing a further compaction.
 		if let (Ok(tail), Ok(head)) = (self.tail(), self.head()) {
-			let horizon = global::cut_through_horizon() as u64;
-			let threshold = horizon.saturating_add(global::cut_through_horizon() as u64 / 10);
+			let context_id = self.store.get_context_id();
+			let horizon = global::cut_through_horizon(context_id) as u64;
+			let threshold =
+				horizon.saturating_add(global::cut_through_horizon(context_id) as u64 / 10);
 			let next_compact = tail.height.saturating_add(threshold);
 			if next_compact > head.height {
 				debug!(
@@ -1746,15 +1817,16 @@ impl Chain {
 		let archive_header = self.txhashset_archive_header()?;
 
 		// Take a write lock on the txhashet and start a new writeable db batch.
-		let header_pmmr = self.header_pmmr.read();
-		let mut txhashset = self.txhashset.write();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().expect("RwLock failure");
 		let batch = self.store.batch_write()?;
 
 		// Compact the txhashset itself (rewriting the pruned backend files).
 
 		let head = batch.head()?;
 		let current_height = head.height;
-		let horizon_height = current_height.saturating_sub(global::cut_through_horizon().into());
+		let horizon_height = current_height
+			.saturating_sub(global::cut_through_horizon(self.store.get_context_id()).into());
 		let horizon_hash = header_pmmr.get_header_hash_by_height(horizon_height)?;
 		let horizon_header = batch.get_block_header(&horizon_hash)?;
 
@@ -1790,22 +1862,35 @@ impl Chain {
 
 	/// returns the last n nodes inserted into the output sum tree
 	pub fn get_last_n_output(&self, distance: u64) -> Vec<(Hash, OutputIdentifier)> {
-		self.txhashset.read().last_n_output(distance)
+		self.txhashset
+			.read()
+			.expect("RwLock failure")
+			.last_n_output(distance)
 	}
 
 	/// as above, for rangeproofs
 	pub fn get_last_n_rangeproof(&self, distance: u64) -> Vec<(Hash, RangeProof)> {
-		self.txhashset.read().last_n_rangeproof(distance)
+		self.txhashset
+			.read()
+			.expect("RwLock failure")
+			.last_n_rangeproof(distance)
 	}
 
 	/// as above, for kernels
 	pub fn get_last_n_kernel(&self, distance: u64) -> Vec<(Hash, TxKernel)> {
-		self.txhashset.read().last_n_kernel(distance)
+		self.txhashset
+			.read()
+			.expect("RwLock failure")
+			.last_n_kernel(distance)
 	}
 
 	/// Return Commit's MMR position
 	pub fn get_output_pos(&self, commit: &Commitment) -> Result<u64, Error> {
-		Ok(self.txhashset.read().get_output_pos(commit)?)
+		Ok(self
+			.txhashset
+			.read()
+			.expect("RwLock failure")
+			.get_output_pos(commit)?)
 	}
 
 	/// outputs by insertion index
@@ -1815,7 +1900,7 @@ impl Chain {
 		max_count: u64,
 		max_pmmr_index: Option<u64>,
 	) -> Result<(u64, u64, Vec<Output>), Error> {
-		let txhashset = self.txhashset.read();
+		let txhashset = self.txhashset.read().expect("RwLock failure");
 		let last_index = match max_pmmr_index {
 			Some(i) => i,
 			None => txhashset.output_mmr_size(),
@@ -1935,7 +2020,10 @@ impl Chain {
 	/// Gets the header hash at the provided height.
 	/// Note: Takes a read lock on the header_pmmr.
 	fn get_header_hash_by_height(&self, height: u64) -> Result<Hash, Error> {
-		self.header_pmmr.read().get_header_hash_by_height(height)
+		self.header_pmmr
+			.read()
+			.expect("RwLock failure")
+			.get_header_hash_by_height(height)
 	}
 
 	/// Migrate our local db from v2 to v3.
@@ -1948,6 +2036,7 @@ impl Chain {
 		}
 		let mut total = 0;
 		let mut keys_to_migrate = vec![];
+		let context_id = store.get_context_id();
 		for (k, v) in store.batch_read()?.blocks_raw_iter()? {
 			total += 1;
 
@@ -1955,12 +2044,14 @@ impl Chain {
 			let block_v3: Result<Block, _> = ser::deserialize(
 				&mut Cursor::new(&v),
 				ProtocolVersion(3),
+				context_id,
 				ser::DeserializationMode::default(),
 			);
 			if block_v3.is_err() {
 				let block_v2: Result<Block, _> = ser::deserialize(
 					&mut Cursor::new(&v),
 					ProtocolVersion(2),
+					context_id,
 					ser::DeserializationMode::default(),
 				);
 				if block_v2.is_ok() {
@@ -1998,8 +2089,8 @@ impl Chain {
 
 	/// Gets the block header in which a given output appears in the txhashset.
 	pub fn get_header_for_output(&self, commit: Commitment) -> Result<BlockHeader, Error> {
-		let header_pmmr = self.header_pmmr.read();
-		let txhashset = self.txhashset.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().expect("RwLock failure");
 		let (_, pos) = match txhashset.get_unspent(commit)? {
 			Some(o) => o,
 			None => {
@@ -2056,6 +2147,7 @@ impl Chain {
 		let (kernel, mmr_index) = match self
 			.txhashset
 			.read()
+			.expect("RwLock failure")
 			.find_kernel(&excess, min_index, max_index)
 		{
 			Some(k) => k,
@@ -2073,7 +2165,7 @@ impl Chain {
 		min_height: Option<u64>,
 		max_height: Option<u64>,
 	) -> Result<BlockHeader, Error> {
-		let header_pmmr = self.header_pmmr.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
 
 		let mut min = min_height.unwrap_or(0).saturating_sub(1);
 		let mut max = match max_height {
@@ -2123,7 +2215,7 @@ impl Chain {
 	/// Note: Uses the sync pmmr, not the header pmmr.
 	/// Note: This is based on the provided sync_head to support syncing against a fork.
 	pub fn get_locator_hashes(&self, sync_head: Tip, heights: &[u64]) -> Result<Vec<Hash>, Error> {
-		let mut header_pmmr = self.header_pmmr.write();
+		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
 		let batch_read = self.store.batch_read()?;
 		txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 			let header = batch.get_block_header(&sync_head.hash())?;
@@ -2169,7 +2261,7 @@ impl Chain {
 
 		let max_height = self.header_head()?.height;
 
-		let header_pmmr = self.header_pmmr.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
 
 		// looks like we know one, getting as many following headers as allowed
 		let hh = header.height;
@@ -2193,7 +2285,7 @@ impl Chain {
 
 	// Find the first locator hash that refers to a known header on our main chain.
 	fn find_common_header(&self, locator: &[Hash]) -> Option<BlockHeader> {
-		let header_pmmr = self.header_pmmr.read();
+		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
 
 		for hash in locator {
 			if let Ok(header) = self.get_block_header(&hash) {
@@ -2207,6 +2299,11 @@ impl Chain {
 			}
 		}
 		None
+	}
+
+	/// App sesion id, defines network
+	pub fn get_context_id(&self) -> u32 {
+		self.store.get_context_id()
 	}
 }
 
@@ -2263,7 +2360,14 @@ fn setup_head(
 					// If we're still downloading via PIBD, don't worry about sums and validations just yet
 					// We still want to rewind to the last completed block to ensure a consistent state
 
-					pipe::rewind_and_apply_fork(&header, ext, batch, &|_| Ok(()), secp)?;
+					pipe::rewind_and_apply_fork(
+						store.get_context_id(),
+						&header,
+						ext,
+						batch,
+						&|_| Ok(()),
+						secp,
+					)?;
 
 					let extension = &mut ext.extension;
 
@@ -2316,7 +2420,14 @@ fn setup_head(
 					);
 
 					txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-						pipe::rewind_and_apply_fork(&prev_header, ext, batch, &|_| Ok(()), secp)
+						pipe::rewind_and_apply_fork(
+							store.get_context_id(),
+							&prev_header,
+							ext,
+							batch,
+							&|_| Ok(()),
+							secp,
+						)
 					})?;
 
 					// Now "undo" the latest block and forget it ever existed.
@@ -2340,7 +2451,7 @@ fn setup_head(
 
 			if !genesis.kernels().is_empty() {
 				let (utxo_sum, kernel_sum) = (sums, genesis as &dyn Committed).verify_kernel_sums(
-					genesis.header.overage(),
+					genesis.header.overage(store.get_context_id()),
 					genesis.header.total_kernel_offset(),
 					secp,
 				)?;

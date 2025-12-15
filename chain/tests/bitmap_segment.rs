@@ -57,6 +57,7 @@ fn test_roundtrip(entries: usize) {
 	let mut reader = BinReader::new(
 		&mut cursor,
 		ProtocolVersion(1),
+		0,
 		DeserializationMode::default(),
 	);
 	let bms2: BitmapSegment = Readable::read(&mut reader).unwrap();

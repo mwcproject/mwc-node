@@ -31,8 +31,8 @@ use mwc_core::core::{Block, OutputIdentifier, Segment, TxKernel};
 use mwc_p2p::{Capabilities, PeerAddr, Peers};
 use mwc_util::secp::pedersen::RangeProof;
 use mwc_util::secp::rand::Rng;
-use mwc_util::{RwLock, StopState};
-use std::sync::Arc;
+use mwc_util::StopState;
+use std::sync::{Arc, RwLock};
 
 /// Sync Manager is reponsible for coordination of all syncing process
 pub struct SyncManager {
@@ -103,12 +103,12 @@ impl SyncManager {
 	}
 
 	pub fn sync_request(&self, peers: &Arc<Peers>) -> SyncResponse {
-		let cached_response = self.cached_response.read().clone();
+		let cached_response = self.cached_response.read().expect("RwLock failed").clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
 				return cached_response.to_response();
 			} else {
-				*self.cached_response.write() = None;
+				*self.cached_response.write().expect("RwLock failed") = None;
 			}
 		}
 
@@ -128,7 +128,7 @@ impl SyncManager {
 			.into_iter()
 			.max_by_key(|p| {
 				// Height is updated later, we better to handle that
-				let live_info = p.info.live_info.read();
+				let live_info = p.info.live_info.read().expect("RwLock failed");
 				if live_info.height > 0 {
 					live_info.total_difficulty.to_num()
 				} else {
@@ -139,7 +139,7 @@ impl SyncManager {
 			// both inbound/outbound
 			best_height = peers.iter().connected().into_iter().max_by_key(|p| {
 				// Height is updated later, we better to handle that
-				let live_info = p.info.live_info.read();
+				let live_info = p.info.live_info.read().expect("RwLock failed");
 				if live_info.height > 0 {
 					live_info.total_difficulty.to_num()
 				} else {
@@ -149,7 +149,14 @@ impl SyncManager {
 		}
 
 		let best_height = match best_height {
-			Some(best_peer) => best_peer.info.live_info.read().height,
+			Some(best_peer) => {
+				best_peer
+					.info
+					.live_info
+					.read()
+					.expect("RwLock failed")
+					.height
+			}
 			None => 0,
 		};
 
@@ -161,15 +168,23 @@ impl SyncManager {
 			);
 		}
 
-		let r = self.headers_hashes.read().request_pre(best_height);
+		let r = self
+			.headers_hashes
+			.read()
+			.expect("RwLock failed")
+			.request_pre(best_height);
 		let headers_hash_resp = match r {
 			Some(resp) => resp,
-			None => self.headers_hashes.write().request_impl(
-				peers,
-				&self.sync_state,
-				&self.headers_sync_peers,
-				best_height,
-			),
+			None => self
+				.headers_hashes
+				.write()
+				.expect("RwLock failed")
+				.request_impl(
+					peers,
+					&self.sync_state,
+					&self.headers_sync_peers,
+					best_height,
+				),
 		};
 
 		debug!("headers_hash_resp: {:?}", headers_hash_resp);
@@ -188,7 +203,7 @@ impl SyncManager {
 			peers,
 			&self.sync_state,
 			&self.headers_sync_peers,
-			&self.headers_hashes.read(),
+			&self.headers_hashes.read().expect("RwLock failed"),
 			best_height,
 		);
 		debug!("headers_resp: {:?}", headers_resp);
@@ -196,6 +211,7 @@ impl SyncManager {
 			SyncRequestResponses::WaitingForPeers => {
 				self.headers_hashes
 					.write()
+					.expect("RwLock failed")
 					.reset_ban_commited_to_hash(peers, &self.headers_sync_peers);
 				self.headers_sync_peers.reset();
 				return headers_resp;
@@ -206,7 +222,11 @@ impl SyncManager {
 				debug_assert!(false); // should never happen, headers_hashes above must be in sync or wait for peers
 				return headers_resp;
 			}
-			SyncRequestResponses::HeadersPibdReady => self.headers_hashes.write().reset_hash_data(),
+			SyncRequestResponses::HeadersPibdReady => self
+				.headers_hashes
+				.write()
+				.expect("RwLock failed")
+				.reset_hash_data(),
 			SyncRequestResponses::HeadersReady => headers_ready = true,
 			_ => {
 				debug_assert!(false);
@@ -247,7 +267,7 @@ impl SyncManager {
 								"DONE!".into(),
 							);
 							peers.set_excluded_peers(&vec![]);
-							*self.cached_response.write() =
+							*self.cached_response.write().expect("RwLock failed") =
 								Some(CachedResponse::new(resp.clone(), Duration::seconds(35)));
 
 							if let Err(e) = self.orphans.sync_orphans(peers) {
@@ -288,12 +308,15 @@ impl SyncManager {
 		archive_height: u64,
 		headers_hash_root: Hash,
 	) {
-		self.headers_hashes.write().receive_headers_hash_response(
-			peer,
-			archive_height,
-			headers_hash_root,
-			&self.headers_sync_peers,
-		);
+		self.headers_hashes
+			.write()
+			.expect("RwLock failed")
+			.receive_headers_hash_response(
+				peer,
+				archive_height,
+				headers_hash_root,
+				&self.headers_sync_peers,
+			);
 	}
 
 	pub fn receive_header_hashes_segment(
@@ -302,12 +325,15 @@ impl SyncManager {
 		header_hashes_root: Hash,
 		segment: Segment<Hash>,
 	) {
-		self.headers_hashes.write().receive_header_hashes_segment(
-			peer,
-			header_hashes_root,
-			segment,
-			&self.headers_sync_peers,
-		);
+		self.headers_hashes
+			.write()
+			.expect("RwLock failed")
+			.receive_header_hashes_segment(
+				peer,
+				header_hashes_root,
+				segment,
+				&self.headers_sync_peers,
+			);
 	}
 
 	pub fn receive_headers(
@@ -318,7 +344,7 @@ impl SyncManager {
 		peers: Arc<Peers>,
 	) {
 		// Note, because of high throughput, it must be unblocking read, blocking write is not OK
-		let headers_hashes = self.headers_hashes.read();
+		let headers_hashes = self.headers_hashes.read().expect("RwLock failed");
 		let headers_hash_desegmenter = headers_hashes.get_headers_hash_desegmenter();
 		if let Err(e) = self.headers.receive_headers(
 			peer,
@@ -349,11 +375,10 @@ impl SyncManager {
 		header_hash: Hash,
 		header_height: u64,
 	) {
-		self.headers_hashes.write().recieve_another_archive_header(
-			peer,
-			&header_hash,
-			header_height,
-		);
+		self.headers_hashes
+			.write()
+			.expect("RwLock failed")
+			.recieve_another_archive_header(peer, &header_hash, header_height);
 		self.state
 			.recieve_another_archive_header(peer, &header_hash, header_height);
 	}

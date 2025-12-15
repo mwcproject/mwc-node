@@ -40,7 +40,7 @@ fn prunable_mmr() {
 	fs::create_dir_all(&data_dir).unwrap();
 
 	let n_leaves = 64 + 8 + 4 + 2 + 1;
-	let mut ba = PMMRBackend::new(&data_dir, true, ProtocolVersion(1), None).unwrap();
+	let mut ba = PMMRBackend::new(&data_dir, true, ProtocolVersion(1), 0, None).unwrap();
 	let mut mmr = PMMR::new(&mut ba);
 	for i in 0..n_leaves {
 		mmr.push(&TestElem([i / 7, i / 5, i / 3, i])).unwrap();
@@ -166,7 +166,7 @@ fn pruned_segment() {
 	fs::create_dir_all(&data_dir).unwrap();
 
 	let n_leaves = 16;
-	let mut ba = PMMRBackend::new(&data_dir, true, ProtocolVersion(1), None).unwrap();
+	let mut ba = PMMRBackend::new(&data_dir, true, ProtocolVersion(1), 0, None).unwrap();
 	let mut mmr = PMMR::new(&mut ba);
 	for i in 0..n_leaves {
 		mmr.push(&TestElem([i / 7, i / 5, i / 3, i])).unwrap();
@@ -339,7 +339,7 @@ fn ser_round_trip() {
 	fs::create_dir_all(&data_dir).unwrap();
 
 	let n_leaves = 32;
-	let mut ba = PMMRBackend::new(&data_dir, true, ProtocolVersion(1), None).unwrap();
+	let mut ba = PMMRBackend::new(&data_dir, true, ProtocolVersion(1), 0, None).unwrap();
 	let mut mmr = pmmr::PMMR::new(&mut ba);
 	for i in 0..n_leaves {
 		mmr.push(&TestElem([i / 7, i / 5, i / 3, i])).unwrap();
@@ -369,6 +369,7 @@ fn ser_round_trip() {
 	let mut reader = BinReader::new(
 		&mut cursor,
 		ProtocolVersion(1),
+		0,
 		DeserializationMode::default(),
 	);
 	let segment2: Segment<TestElem> = Readable::read(&mut reader).unwrap();

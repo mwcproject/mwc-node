@@ -13,11 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::util::RwLock;
-use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::{cmp, mem};
 
 use rand::prelude::*;
 
@@ -39,9 +39,6 @@ use crate::util::secp::pedersen::RangeProof;
 use chrono::prelude::*;
 use chrono::Duration;
 use mwc_chain::txhashset::Segmenter;
-use mwc_util::StopState;
-
-const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct PeersCapabilities {
 	capabilities: Capabilities,
@@ -53,25 +50,18 @@ pub struct Peers {
 	store: PeerStore,
 	peers: RwLock<HashMap<PeerAddr, Arc<Peer>>>,
 	config: P2PConfig,
-	stop_state: Arc<StopState>,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
 	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
 	out_peers_failures: Arc<RwLock<HashMap<PeerAddr, u32>>>,
 }
 
 impl Peers {
-	pub fn new(
-		store: PeerStore,
-		adapter: Arc<dyn ChainAdapter>,
-		config: P2PConfig,
-		stop_state: Arc<StopState>,
-	) -> Peers {
+	pub fn new(store: PeerStore, adapter: Arc<dyn ChainAdapter>, config: &P2PConfig) -> Peers {
 		Peers {
 			adapter,
 			store,
-			config,
+			config: config.clone(),
 			peers: RwLock::new(HashMap::new()),
-			stop_state,
 			boost_peers_capabilities: RwLock::new(PeersCapabilities {
 				capabilities: Capabilities::UNKNOWN,
 				time: DateTime::default(),
@@ -83,7 +73,7 @@ impl Peers {
 
 	/// Mark those peers as excluded, so the will never be in 'connected' list
 	pub fn set_excluded_peers(&self, peers: &Vec<PeerAddr>) {
-		let mut excluded_peers = self.excluded_peers.write();
+		let mut excluded_peers = self.excluded_peers.write().expect("RwLock failure");
 		excluded_peers.clear();
 		for p in peers {
 			excluded_peers.insert(p.clone());
@@ -91,7 +81,10 @@ impl Peers {
 	}
 
 	pub fn set_boost_peers_capabilities(&self, boost_peers_capabilities: Capabilities) {
-		let mut bpc = self.boost_peers_capabilities.write();
+		let mut bpc = self
+			.boost_peers_capabilities
+			.write()
+			.expect("RwLock failure");
 		if bpc.capabilities != boost_peers_capabilities {
 			*bpc = PeersCapabilities {
 				capabilities: boost_peers_capabilities,
@@ -102,7 +95,10 @@ impl Peers {
 
 	/// Boosting required fast peers num increasing, so it is limited by time
 	pub fn is_boosting_mode(&self) -> bool {
-		let boost_peers_capabilities = self.boost_peers_capabilities.read();
+		let boost_peers_capabilities = self
+			.boost_peers_capabilities
+			.read()
+			.expect("RwLock failure");
 		if boost_peers_capabilities.capabilities == Capabilities::UNKNOWN {
 			return false;
 		}
@@ -115,15 +111,16 @@ impl Peers {
 	}
 
 	pub fn get_boost_peers_capabilities(&self) -> Capabilities {
-		self.boost_peers_capabilities.read().capabilities.clone()
+		self.boost_peers_capabilities
+			.read()
+			.expect("RwLock failure")
+			.capabilities
+			.clone()
 	}
 
 	/// Number of peers that already has connection. The total number of connections needs tobe be limited
 	pub fn get_number_connected_peers(&self) -> usize {
-		match self.peers.try_read_for(LOCK_TIMEOUT) {
-			Some(peers) => peers.len(),
-			None => 0,
-		}
+		self.peers.read().expect("RwLock failure").len()
 	}
 
 	/// Adds the peer to our internal peer mapping. Note that the peer is still
@@ -131,11 +128,6 @@ impl Peers {
 	pub fn add_connected(&self, peer: Arc<Peer>) -> Result<(), Error> {
 		let peer_data: PeerData;
 		{
-			// Scope for peers vector lock - dont hold the peers lock while adding to lmdb
-			let mut peers = self.peers.try_write_for(LOCK_TIMEOUT).ok_or_else(|| {
-				error!("add_connected: failed to get peers lock");
-				Error::Timeout
-			})?;
 			peer_data = PeerData {
 				addr: peer.info.addr.clone(),
 				capabilities: peer.info.capabilities,
@@ -146,7 +138,11 @@ impl Peers {
 				last_connected: Utc::now().timestamp(),
 			};
 			info!("Adding newly connected Healthy peer {}.", peer_data.addr);
-			peers.insert(peer_data.addr.clone(), peer);
+			// Scope for peers vector lock - dont hold the peers lock while adding to lmdb
+			self.peers
+				.write()
+				.expect("RwLock failure")
+				.insert(peer_data.addr.clone(), peer);
 		}
 		if let Err(e) = self.save_peer(&peer_data) {
 			error!("Could not save connected peer address: {:?}", e);
@@ -174,33 +170,27 @@ impl Peers {
 	/// We try to get the read lock but if we experience contention
 	/// and this attempt fails then return an error allowing the caller
 	/// to decide how best to handle this.
-	pub fn is_known(&self, addr: &PeerAddr) -> Result<bool, Error> {
-		let peers = self.peers.try_read_for(LOCK_TIMEOUT).ok_or_else(|| {
-			error!("is_known: failed to get peers lock");
-			Error::Internal("is_known: failed to get peers lock".to_string())
-		})?;
-		Ok(peers.contains_key(addr))
+	pub fn is_known(&self, addr: &PeerAddr) -> bool {
+		self.peers
+			.read()
+			.expect("RwLock failure")
+			.contains_key(addr)
 	}
 
 	/// Iterator over our current peers.
 	/// This allows us to hide try_read_for() behind a cleaner interface.
 	/// PeersIter lets us chain various adaptors for convenience.
 	pub fn iter(&self) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
-		let excluded_peers = self.excluded_peers.read();
-		let peers = match self.peers.try_read_for(LOCK_TIMEOUT) {
-			Some(peers) => peers
-				.values()
-				.cloned()
-				.filter(|p| !excluded_peers.contains(&p.info.addr))
-				.collect(),
-			None => {
-				if !self.stop_state.is_stopped() {
-					// When stopped, peers access is locked by stopped thread
-					error!("connected_peers: failed to get peers lock");
-				}
-				vec![]
-			}
-		};
+		let excluded_peers = self.excluded_peers.read().expect("RwLock failure");
+		let peers: Vec<Arc<Peer>> = self
+			.peers
+			.read()
+			.expect("RwLock failure")
+			.values()
+			.filter(|p| !excluded_peers.contains(&p.info.addr))
+			.cloned()
+			.collect();
+
 		PeersIter {
 			iter: peers.into_iter(),
 		}
@@ -242,11 +232,10 @@ impl Peers {
 				peer.send_ban_reason(ban_reason)?;
 				peer.set_banned();
 				peer.stop();
-				let mut peers = self.peers.try_write_for(LOCK_TIMEOUT).ok_or_else(|| {
-					error!("ban_peer: failed to get peers lock");
-					Error::PeerException("ban_peer: failed to get peers lock".to_string())
-				})?;
-				peers.remove(&peer.info.addr);
+				self.peers
+					.write()
+					.expect("RwLock failure")
+					.remove(&peer.info.addr);
 				Ok(())
 			}
 			None => Err(Error::PeerNotFound),
@@ -280,16 +269,11 @@ impl Peers {
 						"Error sending {:?} to peer {:?}: {:?}",
 						obj_name, &p.info.addr, e
 					);
-
-					let mut peers = match self.peers.try_write_for(LOCK_TIMEOUT) {
-						Some(peers) => peers,
-						None => {
-							error!("broadcast: failed to get peers lock");
-							break;
-						}
-					};
+					self.peers
+						.write()
+						.expect("RwLock failure")
+						.remove(&p.info.addr);
 					p.stop();
-					peers.remove(&p.info.addr);
 				}
 			}
 		}
@@ -352,15 +336,11 @@ impl Peers {
 		for p in self.iter().connected() {
 			if let Err(e) = p.send_ping(total_difficulty, height) {
 				debug!("Error pinging peer {:?}: {:?}", &p.info.addr, e);
-				let mut peers = match self.peers.try_write_for(LOCK_TIMEOUT) {
-					Some(peers) => peers,
-					None => {
-						error!("check_all: failed to get peers lock");
-						break;
-					}
-				};
+				self.peers
+					.write()
+					.expect("RwLock failure")
+					.remove(&p.info.addr);
 				p.stop();
-				peers.remove(&p.info.addr);
 			}
 		}
 	}
@@ -455,8 +435,18 @@ impl Peers {
 					info!("clean_peers {:?}, not connected", peer.info.addr);
 					rm.push(peer.info.addr.clone());
 				} else if peer.is_abusive() {
-					let received = peer.tracker().received_bytes.read().count_per_min();
-					let sent = peer.tracker().sent_bytes.read().count_per_min();
+					let received = peer
+						.tracker()
+						.received_bytes
+						.read()
+						.expect("RwLock failure")
+						.count_per_min();
+					let sent = peer
+						.tracker()
+						.sent_bytes
+						.read()
+						.expect("RwLock failure")
+						.count_per_min();
 					info!(
 						"clean_peers {:?}, abusive ({} sent, {} recv)",
 						peer.info.addr, sent, received,
@@ -513,7 +503,7 @@ impl Peers {
 			.total_difficulty()
 			.unwrap_or(Difficulty::zero());
 		let my_height = self.adapter.total_height().unwrap_or(0);
-		let mut out_peers_failures = self.out_peers_failures.write();
+		let mut out_peers_failures = self.out_peers_failures.write().expect("RwLock failure");
 		let mut next_failures = HashMap::new();
 
 		let mut peer_infos: Vec<PeerInfo> = outbound_peers()
@@ -543,7 +533,7 @@ impl Peers {
 
 		excess_outgoing_count = excess_outgoing_count.saturating_sub(rm.len() - rm_sz0);
 		if excess_outgoing_count > 0 {
-			let my_base_fee = global::get_accept_fee_base();
+			let my_base_fee = global::get_accept_fee_base(self.store.get_context_id());
 			peer_infos.sort_unstable_by_key(|x| {
 				if x.tx_base_fee < my_base_fee {
 					x.total_difficulty().to_num() / 2 // we don't want to see peers with lower than we are base fee
@@ -575,13 +565,7 @@ impl Peers {
 
 		// now clean up peer map based on the list to remove
 		{
-			let mut peers = match self.peers.try_write_for(LOCK_TIMEOUT) {
-				Some(peers) => peers,
-				None => {
-					error!("clean_peers: failed to get peers lock");
-					return;
-				}
-			};
+			let mut peers = self.peers.write().expect("RwLock failure");
 			for addr in rm {
 				let _ = peers.get(&addr).map(|peer| peer.stop());
 				peers.remove(&addr);
@@ -590,7 +574,16 @@ impl Peers {
 	}
 
 	pub fn stop(&self) {
-		let mut peers = self.peers.write();
+		// Swap the peers with empty map. Than stop all the peers
+		let mut peers: HashMap<PeerAddr, Arc<Peer>> = HashMap::new();
+		{
+			mem::swap(
+				&mut peers,
+				&mut *self.peers.write().expect("RwLock failure"),
+			);
+		}
+
+		let mut peers = self.peers.write().expect("RwLock failure");
 		for peer in peers.values() {
 			peer.stop();
 		}
@@ -603,7 +596,7 @@ impl Peers {
 	pub fn enough_outbound_peers(&self) -> bool {
 		let mut count = 0;
 		let mut matched_fee_base = 0;
-		let my_fee_base = global::get_accept_fee_base();
+		let my_fee_base = global::get_accept_fee_base(self.store.get_context_id());
 		for peer in self.iter().outbound().connected() {
 			count += 1;
 			if peer.info.tx_base_fee <= my_fee_base {
@@ -645,6 +638,11 @@ impl Peers {
 
 			should_remove
 		});
+	}
+
+	// App session id, defines network
+	pub fn get_context_id(&self) -> u32 {
+		self.store.get_context_id()
 	}
 }
 
@@ -1054,7 +1052,7 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 		PeersIter {
 			iter: self
 				.iter
-				.filter(move |p| p.info.live_info.read().height >= height),
+				.filter(move |p| p.info.live_info.read().expect("RwLock failure").height >= height),
 		}
 	}
 

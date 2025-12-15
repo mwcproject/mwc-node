@@ -30,63 +30,71 @@ use util::secp::Signature;
 /// Genesis block definition for development networks. The proof of work size
 /// is small enough to mine it on the fly, so it does not contain its own
 /// proof of work solution. Can also be easily mutated for different tests.
-pub fn genesis_dev() -> core::Block {
-	core::Block::with_header(core::BlockHeader {
-		height: 0,
-		timestamp: Utc.with_ymd_and_hms(1997, 8, 4, 0, 0, 0).unwrap(),
-		pow: ProofOfWork {
-			nonce: 0,
-			..Default::default()
+pub fn genesis_dev(context_id: u32) -> core::Block {
+	core::Block::with_header(
+		context_id,
+		core::BlockHeader {
+			height: 0,
+			timestamp: Utc.with_ymd_and_hms(1997, 8, 4, 0, 0, 0).unwrap(),
+			pow: ProofOfWork {
+				nonce: 0,
+				..ProofOfWork::default(context_id)
+			},
+			..core::BlockHeader::default(context_id)
 		},
-		..Default::default()
-	})
+	)
 }
 
 /// Floonet genesis block
-pub fn genesis_floo() -> core::Block {
-	let gen = core::Block::with_header(core::BlockHeader {
-		height: 0,
-		timestamp: Utc.with_ymd_and_hms(2019, 5, 26, 16, 30, 1).unwrap(),
-		prev_root: Hash::from_hex(
-			"000000000000000000257647fb29ce964ddf2b27c639ae60c4c90fafe5c42e53",
-		)
-		.unwrap(),
-		output_root: Hash::from_hex(
-			"6985966efcd741c9ee42fe1a016476b74ffa1e818dfd4d3b441f8e0f876aa228",
-		)
-		.unwrap(),
-		range_proof_root: Hash::from_hex(
-			"43c1ac0025e17fb677b332c60e0d8b46ce871df876498c0dd5c95e4294ae8fe5",
-		)
-		.unwrap(),
-		kernel_root: Hash::from_hex(
-			"9bd2d376440e2b68ee1b066befed594b0a3d9fb56d20ae043059f5db4d25d6e0",
-		)
-		.unwrap(),
-		total_kernel_offset: BlindingFactor::from_hex(
-			"0000000000000000000000000000000000000000000000000000000000000000",
-		)
-		.unwrap(),
-		output_mmr_size: 1,
-		kernel_mmr_size: 1,
-		pow: ProofOfWork {
-			total_difficulty: Difficulty::from_num(1),
-			secondary_scaling: 1856,
-			nonce: 73,
-			proof: Proof {
-				nonces: vec![
-					3192500, 6825707, 24230992, 31245203, 53163694, 90654995, 106472612, 110444199,
-					139989294, 156335087, 156355985, 183386417, 189157284, 207907104, 213905482,
-					215326841, 220116398, 256066326, 259812081, 260939712, 272131888, 273570144,
-					282535412, 304151827, 322481271, 326494676, 355927801, 361940398, 369475836,
-					386602103, 399551873, 409685415, 416682585, 419304710, 435496048, 447341740,
-					462273908, 468790263, 491944474, 494233402, 511976431, 533915547,
-				],
-				edge_bits: 29,
+pub fn genesis_floo(context_id: u32) -> core::Block {
+	let gen = core::Block::with_header(
+		context_id,
+		core::BlockHeader {
+			height: 0,
+			timestamp: Utc.with_ymd_and_hms(2019, 5, 26, 16, 30, 1).unwrap(),
+			prev_root: Hash::from_hex(
+				"000000000000000000257647fb29ce964ddf2b27c639ae60c4c90fafe5c42e53",
+			)
+			.unwrap(),
+			output_root: Hash::from_hex(
+				"6985966efcd741c9ee42fe1a016476b74ffa1e818dfd4d3b441f8e0f876aa228",
+			)
+			.unwrap(),
+			range_proof_root: Hash::from_hex(
+				"43c1ac0025e17fb677b332c60e0d8b46ce871df876498c0dd5c95e4294ae8fe5",
+			)
+			.unwrap(),
+			kernel_root: Hash::from_hex(
+				"9bd2d376440e2b68ee1b066befed594b0a3d9fb56d20ae043059f5db4d25d6e0",
+			)
+			.unwrap(),
+			total_kernel_offset: BlindingFactor::from_hex(
+				"0000000000000000000000000000000000000000000000000000000000000000",
+			)
+			.unwrap(),
+			output_mmr_size: 1,
+			kernel_mmr_size: 1,
+			pow: ProofOfWork {
+				total_difficulty: Difficulty::from_num(1),
+				secondary_scaling: 1856,
+				nonce: 73,
+				proof: Proof {
+					nonces: vec![
+						3192500, 6825707, 24230992, 31245203, 53163694, 90654995, 106472612,
+						110444199, 139989294, 156335087, 156355985, 183386417, 189157284,
+						207907104, 213905482, 215326841, 220116398, 256066326, 259812081,
+						260939712, 272131888, 273570144, 282535412, 304151827, 322481271,
+						326494676, 355927801, 361940398, 369475836, 386602103, 399551873,
+						409685415, 416682585, 419304710, 435496048, 447341740, 462273908,
+						468790263, 491944474, 494233402, 511976431, 533915547,
+					],
+					edge_bits: 29,
+					context_id: context_id,
+				},
 			},
+			..core::BlockHeader::default(context_id)
 		},
-		..Default::default()
-	});
+	);
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
 		excess: Commitment::from_vec(
@@ -156,50 +164,55 @@ pub fn genesis_floo() -> core::Block {
 
 /// MWC GENESIS - here how genesis block is defined. gen_gen suppose to update the numbers in this file.
 /// Mainnet genesis block
-pub fn genesis_main() -> core::Block {
-	let gen = core::Block::with_header(core::BlockHeader {
-		height: 0,
-		timestamp: Utc.with_ymd_and_hms(2019, 11, 11, 9, 0, 0).unwrap(),
-		prev_root: Hash::from_hex(
-			"00000000000000000004f2fb2ee749923a8131028aeae637070b0b4145617d42",
-		)
-		.unwrap(),
-		output_root: Hash::from_hex(
-			"2d672c228f883646d75e73f1b936991fdfb11bb177eca451587f97dea1a4f994",
-		)
-		.unwrap(),
-		range_proof_root: Hash::from_hex(
-			"3460123e2e24c9df65cd7a8d0e1384724c23c88c71b0cb32d890854648c7637a",
-		)
-		.unwrap(),
-		kernel_root: Hash::from_hex(
-			"cd3e07cff2c0f8e434c30a47d6231270d12d42638c0a7fd2c5c3125d51920d00",
-		)
-		.unwrap(),
-		total_kernel_offset: BlindingFactor::from_hex(
-			"0000000000000000000000000000000000000000000000000000000000000000",
-		)
-		.unwrap(),
-		output_mmr_size: 1,
-		kernel_mmr_size: 1,
-		pow: ProofOfWork {
-			total_difficulty: Difficulty::from_num(10_u64.pow(6)),
-			secondary_scaling: 1856,
-			nonce: 57,
-			proof: Proof {
-				nonces: vec![
-					7791384, 18725569, 25781440, 34244982, 37735006, 50818018, 71198333, 101194282,
-					128077740, 130711994, 140235954, 169405337, 169483469, 205312464, 231543491,
-					268105396, 269131498, 289412425, 313057984, 318152989, 347763503, 353494235,
-					377703230, 393399875, 409267066, 410265896, 419833577, 424585144, 447415663,
-					449338161, 455123370, 474062893, 488026600, 491955742, 492120147, 492287857,
-					497798535, 515160542, 520873408, 521363243, 532149389, 533910346,
-				],
-				edge_bits: 29,
+pub fn genesis_main(context_id: u32) -> core::Block {
+	let gen = core::Block::with_header(
+		context_id,
+		core::BlockHeader {
+			height: 0,
+			timestamp: Utc.with_ymd_and_hms(2019, 11, 11, 9, 0, 0).unwrap(),
+			prev_root: Hash::from_hex(
+				"00000000000000000004f2fb2ee749923a8131028aeae637070b0b4145617d42",
+			)
+			.unwrap(),
+			output_root: Hash::from_hex(
+				"2d672c228f883646d75e73f1b936991fdfb11bb177eca451587f97dea1a4f994",
+			)
+			.unwrap(),
+			range_proof_root: Hash::from_hex(
+				"3460123e2e24c9df65cd7a8d0e1384724c23c88c71b0cb32d890854648c7637a",
+			)
+			.unwrap(),
+			kernel_root: Hash::from_hex(
+				"cd3e07cff2c0f8e434c30a47d6231270d12d42638c0a7fd2c5c3125d51920d00",
+			)
+			.unwrap(),
+			total_kernel_offset: BlindingFactor::from_hex(
+				"0000000000000000000000000000000000000000000000000000000000000000",
+			)
+			.unwrap(),
+			output_mmr_size: 1,
+			kernel_mmr_size: 1,
+			pow: ProofOfWork {
+				total_difficulty: Difficulty::from_num(10_u64.pow(6)),
+				secondary_scaling: 1856,
+				nonce: 57,
+				proof: Proof {
+					nonces: vec![
+						7791384, 18725569, 25781440, 34244982, 37735006, 50818018, 71198333,
+						101194282, 128077740, 130711994, 140235954, 169405337, 169483469,
+						205312464, 231543491, 268105396, 269131498, 289412425, 313057984,
+						318152989, 347763503, 353494235, 377703230, 393399875, 409267066,
+						410265896, 419833577, 424585144, 447415663, 449338161, 455123370,
+						474062893, 488026600, 491955742, 492120147, 492287857, 497798535,
+						515160542, 520873408, 521363243, 532149389, 533910346,
+					],
+					edge_bits: 29,
+					context_id: context_id,
+				},
 			},
+			..core::BlockHeader::default(context_id)
 		},
-		..Default::default()
-	});
+	);
 	let kernel = core::TxKernel {
 		features: core::KernelFeatures::Coinbase,
 		excess: Commitment::from_vec(
@@ -278,9 +291,10 @@ mod test {
 	#[test]
 	fn floonet_genesis_hash() {
 		global::set_local_chain_type(global::ChainTypes::Floonet);
-		let gen_hash = genesis_floo().hash();
+		global::set_local_nrd_enabled(false);
+		let gen_hash = genesis_floo(0).hash();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_floo(), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(&genesis_floo(0), ProtocolVersion(1)).unwrap();
 		println!("floonet genesis full hash: {}\n", gen_bin.hash().to_hex());
 		assert_eq!(
 			gen_hash.to_hex(),
@@ -295,9 +309,10 @@ mod test {
 	#[test]
 	fn mainnet_genesis_hash() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
-		let gen_hash = genesis_main().hash();
+		global::set_local_nrd_enabled(false);
+		let gen_hash = genesis_main(0).hash();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_main(), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(&genesis_main(0), ProtocolVersion(1)).unwrap();
 		println!("mainnet genesis full hash: {}\n", gen_bin.hash().to_hex());
 		assert_eq!(
 			gen_hash.to_hex(),

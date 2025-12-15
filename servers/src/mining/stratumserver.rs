@@ -18,16 +18,15 @@
 use futures::channel::{mpsc, oneshot};
 use futures::pin_mut;
 use futures::{SinkExt, StreamExt, TryStreamExt};
-use tokio::net::TcpListener;
-use tokio::runtime::Runtime;
-use tokio_util::codec::{Framed, LinesCodec};
+use mwc_util::tokio::net::TcpListener;
+use mwc_util::tokio_util::codec::{Framed, LinesCodec};
 
-use crate::util::RwLock;
 use chrono::prelude::Utc;
 use serde_json::Value;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use std::{cmp, thread};
 
@@ -45,8 +44,9 @@ use crate::mining::mine_block;
 use crate::util;
 use crate::util::ToHex;
 use crate::ServerTxPool;
+use mwc_api::client::HttpClient;
+use mwc_util::{global_runtime, run_global_async_block, StopState};
 use std::cmp::min;
-
 // ----------------------------------------
 // http://www.jsonrpc.org/specification
 // RPC Methods
@@ -190,8 +190,8 @@ struct State {
 }
 
 impl State {
-	pub fn new(minimum_share_difficulty: u64) -> Self {
-		let blocks = vec![Block::default()];
+	pub fn new(context_id: u32, minimum_share_difficulty: u64) -> Self {
+		let blocks = vec![Block::default(context_id)];
 		State {
 			current_block_versions: blocks,
 			current_key_id: None,
@@ -205,6 +205,7 @@ struct Handler {
 	id: String,
 	workers: Arc<WorkersList>,
 	sync_state: Arc<SyncState>,
+	stop_state: Arc<StopState>,
 	chain: Arc<chain::Chain>,
 	current_state: Arc<RwLock<State>>,
 	ip_pool: Arc<connections::StratumIpPool>,
@@ -223,8 +224,10 @@ impl Handler {
 			id: stratum.id.clone(),
 			workers: Arc::new(WorkersList::new(stratum.stratum_stats.clone())),
 			sync_state: stratum.sync_state.clone(),
+			stop_state: stratum.stop_state.clone(),
 			chain: stratum.chain.clone(),
 			current_state: Arc::new(RwLock::new(State::new(
+				stratum.get_context_id(),
 				stratum.config.minimum_share_difficulty,
 			))),
 			ip_pool: stratum.ip_pool.clone(),
@@ -264,7 +267,10 @@ impl Handler {
 					}
 				};
 				if let Ok((_, true)) = res {
-					self.current_state.write().current_key_id = None;
+					self.current_state
+						.write()
+						.expect("RwLock failure")
+						.current_key_id = None;
 				}
 				res.map(|(v, _)| v)
 			}
@@ -329,6 +335,7 @@ impl Handler {
 			height: self
 				.current_state
 				.read()
+				.expect("RwLock failed")
 				.current_block_versions
 				.last()
 				.unwrap()
@@ -357,7 +364,7 @@ impl Handler {
 	// Build and return a JobTemplate for mining the current block
 	fn build_block_template(&self) -> JobTemplate {
 		let (bh, job_id, difficulty) = {
-			let state = self.current_state.read();
+			let state = self.current_state.read().expect("RwLock failure");
 
 			(
 				state.current_block_versions.last().unwrap().header.clone(),
@@ -396,7 +403,7 @@ impl Handler {
 		let params: SubmitParams = parse_params(params)?;
 
 		let (b, header_height, minimum_share_difficulty, current_difficulty) = {
-			let state = self.current_state.read();
+			let state = self.current_state.read().expect("RwLock failure");
 
 			(
 				state
@@ -430,7 +437,7 @@ impl Handler {
 		b.header.pow.nonce = params.nonce;
 		b.header.pow.proof.nonces = params.pow;
 
-		if !b.header.pow.is_primary() && !b.header.pow.is_secondary() {
+		if !b.header.pow.is_primary(self.chain.get_context_id()) && !b.header.pow.is_secondary() {
 			// Return error status
 			error!(
 				"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}: cuckoo size too small",
@@ -442,7 +449,11 @@ impl Handler {
 		}
 
 		// Get share difficulty values
-		scaled_share_difficulty = b.header.pow.to_difficulty(b.header.height).to_num();
+		scaled_share_difficulty = b
+			.header
+			.pow
+			.to_difficulty(self.chain.get_context_id(), b.header.height)
+			.to_num();
 		unscaled_share_difficulty = b.header.pow.to_unscaled_difficulty().to_num();
 		// Note:  state.minimum_share_difficulty is unscaled
 		//        state.current_difficulty is scaled
@@ -497,7 +508,7 @@ impl Handler {
 			);
 		} else {
 			// Do some validation but dont submit
-			let res = pow::verify_size(&b.header);
+			let res = pow::verify_size(self.chain.get_context_id(), &b.header);
 			if res.is_err() {
 				// Return error status
 				error!(
@@ -587,8 +598,14 @@ impl Handler {
 		let mut next_worker_checking = Utc::now().timestamp_millis() + worker_checking_period;
 		let mut next_ip_pool_checking =
 			Utc::now().timestamp_millis() + self.config.ip_pool_ban_history_s * 1000 / 10;
+		let mining_wallet_client =
+			HttpClient::new(self.chain.get_context_id(), Duration::from_secs(5), None);
 
 		loop {
+			if self.stop_state.is_stopped() {
+				break;
+			}
+
 			// get the latest chain state
 			head = self.chain.head().unwrap();
 			let latest_hash = head.last_block_h;
@@ -611,12 +628,17 @@ impl Handler {
 					let (new_block, block_fees) = mine_block::get_block(
 						&self.chain,
 						tx_pool,
-						self.current_state.read().current_key_id.clone(),
+						self.current_state
+							.read()
+							.expect("RwLock failure")
+							.current_key_id
+							.clone(),
 						wallet_listener_url,
+						&mining_wallet_client,
 					);
 
 					{
-						let mut state = self.current_state.write();
+						let mut state = self.current_state.write().expect("RwLock failure");
 
 						// scaled difficulty
 						state.current_difficulty =
@@ -637,10 +659,11 @@ impl Handler {
 					self.workers.update_block_height(new_block.header.height);
 					let difficulty = new_block.header.total_difficulty() - head.total_difficulty;
 					self.workers.update_network_difficulty(difficulty.to_num());
-					self.workers.update_network_hashrate();
+					self.workers
+						.update_network_hashrate(self.chain.get_context_id());
 
 					{
-						let mut state = self.current_state.write();
+						let mut state = self.current_state.write().expect("RwLock failure");
 
 						// If this is a new block we will clear the current_block version history
 						if clear_blocks {
@@ -731,7 +754,7 @@ impl Handler {
 // ----------------------------------------
 // Worker Factory Thread Function
 // Returned runtime must be kept for a server lifetime
-fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
+fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handler: Arc<Handler>) {
 	info!("Start tokio stratum server");
 
 	if !handler.config.ip_white_list.is_empty() {
@@ -774,13 +797,20 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 
 		let server = async_stream::stream! {
             loop {
-                match listener.accept().await {
-                    Ok((socket, _)) => yield socket,
-                    Err(e) => {
+				if stop_state.is_stopped() {
+					break;
+				}
+
+				match mwc_util::tokio::time::timeout(Duration::from_secs(1), listener.accept()).await {
+					Ok(Ok((socket, _))) => yield socket,
+					Ok(Err(e)) => {
                         error!("accept error = {:?}", e);
                         continue;
                     }
-                }
+					Err(_) => { // timeout
+						continue;
+					}
+				}
             }
         }
             .for_each(move |socket| {
@@ -878,14 +908,13 @@ fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
                         handler.workers.remove_worker(worker_id);
                         info!("Worker {} disconnected", worker_id);
                     };
-                    tokio::spawn(task);
+					global_runtime().spawn(task);
                 }
             });
 		server.await
 	};
 
-	let rt = Runtime::new().unwrap();
-	rt.block_on(task);
+	run_global_async_block(task);
 }
 
 // ----------------------------------------
@@ -897,6 +926,7 @@ pub struct StratumServer {
 	chain: Arc<chain::Chain>,
 	pub tx_pool: ServerTxPool,
 	sync_state: Arc<SyncState>,
+	stop_state: Arc<StopState>,
 	stratum_stats: Arc<StratumStats>,
 	ip_pool: Arc<connections::StratumIpPool>,
 	worker_connections: Arc<AtomicI32>,
@@ -910,16 +940,19 @@ impl StratumServer {
 		tx_pool: ServerTxPool,
 		stratum_stats: Arc<StratumStats>,
 		ip_pool: Arc<connections::StratumIpPool>,
+		sync_state: Arc<SyncState>,
+		stop_state: Arc<StopState>,
 	) -> StratumServer {
 		StratumServer {
 			id: String::from("0"),
 			config,
 			chain,
 			tx_pool,
-			sync_state: Arc::new(SyncState::new()),
+			sync_state: sync_state,
 			stratum_stats: stratum_stats,
 			ip_pool,
 			worker_connections: Arc::new(AtomicI32::new(0)),
+			stop_state,
 		}
 	}
 
@@ -928,13 +961,11 @@ impl StratumServer {
 	/// existing chain anytime required and sending that to the connected
 	/// stratum miner, proxy, or pool, and accepts full solutions to
 	/// be submitted.
-	pub fn run_loop(&mut self, proof_size: usize, sync_state: Arc<SyncState>) {
+	pub fn run_loop(&mut self, proof_size: usize) {
 		info!(
 			"(Server ID: {}) Starting stratum server with proof_size = {}",
 			self.id, proof_size
 		);
-
-		self.sync_state = sync_state;
 
 		let listen_addr = self
 			.config
@@ -947,15 +978,20 @@ impl StratumServer {
 		let handler = Arc::new(Handler::from_stratum(&self));
 		let h = handler.clone();
 
-		let _listener_th = thread::spawn(move || {
-			accept_connections(listen_addr, h);
-		});
+		let stop_state = self.stop_state.clone();
+		let listener_th = thread::Builder::new()
+			.name("stratum_listener".to_string())
+			.spawn(move || {
+				accept_connections(stop_state, listen_addr, h);
+			})
+			.expect("Failed to start stratum listener thread");
 
 		// We have started
 		self.stratum_stats.is_running.store(true, Ordering::Relaxed);
-		self.stratum_stats
-			.edge_bits
-			.store(global::min_edge_bits() as u16 + 1, Ordering::Relaxed);
+		self.stratum_stats.edge_bits.store(
+			global::min_edge_bits(self.chain.get_context_id()) as u16 + 1,
+			Ordering::Relaxed,
+		);
 		self.stratum_stats
 			.minimum_share_difficulty
 			.store(self.config.minimum_share_difficulty, Ordering::Relaxed);
@@ -971,7 +1007,14 @@ impl StratumServer {
 		}
 
 		handler.run(&self.config, &self.tx_pool);
+
+		let _ = listener_th.join();
 	} // fn run_loop()
+
+	/// Return app context id
+	pub fn get_context_id(&self) -> u32 {
+		self.chain.get_context_id()
+	}
 } // StratumServer
 
 // Utility function to parse a JSON RPC parameter object, returning a proper

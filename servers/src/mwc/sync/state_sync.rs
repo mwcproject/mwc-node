@@ -28,12 +28,12 @@ use mwc_core::core::hash::Hash;
 use mwc_core::core::{OutputIdentifier, Segment, SegmentTypeIdentifier, TxKernel};
 use mwc_p2p::{Error, PeerAddr};
 use mwc_util::secp::pedersen::RangeProof;
-use mwc_util::RwLock;
 use rand::prelude::IteratorRandom;
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// Fast sync has 3 "states":
 /// * syncing headers
@@ -107,7 +107,8 @@ impl StateSync {
 		}
 
 		// Let's check if we need to calculate/update archive height.
-		let target_archive_height = Chain::height_2_archive_height(best_height);
+		let target_archive_height =
+			Chain::height_2_archive_height(self.chain.get_context_id(), best_height);
 
 		// Event it is not atomic operation, it is safe because request called from a single thread
 		if self.target_archive_height.load(Ordering::Relaxed) != target_archive_height {
@@ -161,7 +162,7 @@ impl StateSync {
 		let excluded_peers = self
 			.request_tracker
 			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
-		*self.excluded_peers.write() = excluded_peers;
+		*self.excluded_peers.write().expect("RwLock failed") = excluded_peers;
 
 		// Requesting root_hash...
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
@@ -170,7 +171,7 @@ impl StateSync {
 			Capabilities::PIBD_HIST,
 			target_archive_height,
 			&self.request_tracker,
-			&*self.excluded_peers.read(),
+			&*self.excluded_peers.read().expect("RwLock failed"),
 		);
 		if peers.is_empty() {
 			if excluded_peers == 0 {
@@ -198,9 +199,12 @@ impl StateSync {
 		let now = Utc::now();
 
 		{
-			let mut requested_root_hash = self.requested_root_hash.write();
-			let responded_root_hash = self.responded_root_hash.read();
-			let responded_with_another_height = self.responded_with_another_height.read();
+			let mut requested_root_hash = self.requested_root_hash.write().expect("RwLock failed");
+			let responded_root_hash = self.responded_root_hash.read().expect("RwLock failed");
+			let responded_with_another_height = self
+				.responded_with_another_height
+				.read()
+				.expect("RwLock failed");
 
 			// checking to timeouts for handshakes...
 			requested_root_hash.retain(|peer, req_time| {
@@ -237,14 +241,14 @@ impl StateSync {
 		}
 
 		// Checking if need to init desegmenter
-		if self.desegmenter.read().is_none() {
+		if self.desegmenter.read().expect("RwLock failed").is_none() {
 			sync_state.update(SyncStatus::TxHashsetPibd {
 				recieved_segments: 0,
 				total_segments: 100,
 			});
 			let mut first_request = now;
-			let requested_root_hash = self.requested_root_hash.read();
-			let responded_root_hash = self.responded_root_hash.read();
+			let requested_root_hash = self.requested_root_hash.read().expect("RwLock failed");
+			let responded_root_hash = self.responded_root_hash.read().expect("RwLock failed");
 
 			for (_, (_, time)) in &*responded_root_hash {
 				if *time < first_request {
@@ -289,8 +293,9 @@ impl StateSync {
 					.init_desegmenter(archive_header.height, best_root_hash.clone())
 				{
 					Ok(desegmenter) => {
-						*self.target_archive_hash.write() = archive_header.hash();
-						*self.desegmenter.write() = Some(desegmenter);
+						*self.target_archive_hash.write().expect("RwLock failed") =
+							archive_header.hash();
+						*self.desegmenter.write().expect("RwLock failed") = Some(desegmenter);
 					}
 					Err(e) => {
 						error!("Failed to create PIBD desgmenter, {}", e);
@@ -322,7 +327,7 @@ impl StateSync {
 			}
 		}
 
-		let desegmenter = self.desegmenter.read();
+		let desegmenter = self.desegmenter.read().expect("RwLock failed");
 		debug_assert!(desegmenter.is_some());
 		let desegmenter = desegmenter
 			.as_ref()
@@ -386,10 +391,20 @@ impl StateSync {
 		let mut other_hashes = 0;
 		for p in peers {
 			let addr = &p.info.addr;
-			if self.responded_with_another_height.read().contains(addr) {
+			if self
+				.responded_with_another_height
+				.read()
+				.expect("RwLock failed")
+				.contains(addr)
+			{
 				continue;
 			}
-			if let Some((hash, _)) = self.responded_root_hash.read().get(addr) {
+			if let Some((hash, _)) = self
+				.responded_root_hash
+				.read()
+				.expect("RwLock failed")
+				.get(addr)
+			{
 				if hash == root_hash {
 					root_hash_peers.push(p.clone());
 				} else {
@@ -443,7 +458,7 @@ impl StateSync {
 		error!("Banning all peers joind for root hash {}", root_hash);
 		// Banning all peers that was agree with that hash...
 		{
-			let responded_root_hash = self.responded_root_hash.read();
+			let responded_root_hash = self.responded_root_hash.read().expect("RwLock failed");
 			for (peer, (hash, _)) in &*responded_root_hash {
 				if *hash == *root_hash {
 					sync_peers.ban_peer(peer, "bad root hash".into());
@@ -454,10 +469,19 @@ impl StateSync {
 	}
 
 	pub fn reset_desegmenter_data(&self) {
-		*self.desegmenter.write() = None;
-		self.requested_root_hash.write().clear();
-		self.responded_root_hash.write().clear();
-		self.responded_with_another_height.write().clear();
+		*self.desegmenter.write().expect("RwLock failed") = None;
+		self.requested_root_hash
+			.write()
+			.expect("RwLock failed")
+			.clear();
+		self.responded_root_hash
+			.write()
+			.expect("RwLock failed")
+			.clear();
+		self.responded_with_another_height
+			.write()
+			.expect("RwLock failed")
+			.clear();
 		self.request_tracker.clear();
 		self.is_complete.store(false, Ordering::Relaxed);
 	}
@@ -470,7 +494,11 @@ impl StateSync {
 		output_bitmap_root: Hash,
 	) {
 		// Only one commitment allowed per peer.
-		if self.responded_root_hash.read().contains_key(peer)
+		if self
+			.responded_root_hash
+			.read()
+			.expect("RwLock failed")
+			.contains_key(peer)
 			|| header_height != self.target_archive_height.load(Ordering::Relaxed)
 		{
 			return;
@@ -478,6 +506,7 @@ impl StateSync {
 
 		self.responded_root_hash
 			.write()
+			.expect("RwLock failed")
 			.insert(peer.clone(), (output_bitmap_root, Utc::now()));
 	}
 
@@ -492,17 +521,25 @@ impl StateSync {
 		}
 		self.responded_with_another_height
 			.write()
+			.expect("RwLock failed")
 			.insert(peer.clone());
 	}
 
 	// return Some root hash if validation was successfull
 	fn validate_root_hash(&self, peer: &PeerAddr, archive_header_hash: &Hash) -> Option<Hash> {
-		let desegmenter = self.desegmenter.read();
-		if desegmenter.is_none() || *self.target_archive_hash.read() != *archive_header_hash {
+		let desegmenter = self.desegmenter.read().expect("RwLock failed");
+		if desegmenter.is_none()
+			|| *self.target_archive_hash.read().expect("RwLock failed") != *archive_header_hash
+		{
 			return None;
 		}
 
-		let hash_for_peer = self.responded_root_hash.read().get(peer).cloned();
+		let hash_for_peer = self
+			.responded_root_hash
+			.read()
+			.expect("RwLock failed")
+			.get(peer)
+			.cloned();
 		match hash_for_peer {
 			Some((hash, _)) => {
 				if *desegmenter.as_ref().unwrap().get_bitmap_root_hash() == hash {
@@ -539,13 +576,13 @@ impl StateSync {
 				Capabilities::PIBD_HIST,
 				self.target_archive_height.load(Ordering::Relaxed),
 				&self.request_tracker,
-				&*self.excluded_peers.read(),
+				&*self.excluded_peers.read().expect("RwLock failed"),
 			);
 			if peers.is_empty() {
 				return;
 			}
 
-			let desegmenter = self.desegmenter.read();
+			let desegmenter = self.desegmenter.read().expect("RwLock failed");
 			if let Some(desegmenter) = desegmenter.as_ref() {
 				if !desegmenter.is_complete() {
 					// let's check what peers with root hash are exist
@@ -553,10 +590,20 @@ impl StateSync {
 					let mut root_hash_peers: Vec<Arc<Peer>> = Vec::new();
 					for p in peers {
 						let addr = &p.info.addr;
-						if self.responded_with_another_height.read().contains(addr) {
+						if self
+							.responded_with_another_height
+							.read()
+							.expect("RwLock failed")
+							.contains(addr)
+						{
 							continue;
 						}
-						if let Some((hash, _)) = self.responded_root_hash.read().get(addr) {
+						if let Some((hash, _)) = self
+							.responded_root_hash
+							.read()
+							.expect("RwLock failed")
+							.get(addr)
+						{
 							if hash == root_hash {
 								root_hash_peers.push(p.clone());
 							}
@@ -592,7 +639,7 @@ impl StateSync {
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
-			let desegmenter = self.desegmenter.read();
+			let desegmenter = self.desegmenter.read().expect("RwLock failed");
 			let desegmenter = desegmenter
 				.as_ref()
 				.expect("Desegmenter must exist at this point");
@@ -631,7 +678,7 @@ impl StateSync {
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
-			let desegmenter = self.desegmenter.read();
+			let desegmenter = self.desegmenter.read().expect("RwLock failed");
 			let desegmenter = desegmenter
 				.as_ref()
 				.expect("Desegmenter must exist at this point");
@@ -670,7 +717,7 @@ impl StateSync {
 
 		// Process first, unregister after. During unregister we might issue more requests.
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
-			let desegmenter = self.desegmenter.read();
+			let desegmenter = self.desegmenter.read().expect("RwLock failed");
 			let desegmenter = desegmenter
 				.as_ref()
 				.expect("Desegmenter must exist at this point");
@@ -708,7 +755,7 @@ impl StateSync {
 		let expected_peer = self.is_expected_peer(&key, peer);
 
 		if let Some(root_hash) = self.validate_root_hash(peer, archive_header_hash) {
-			let desegmenter = self.desegmenter.read();
+			let desegmenter = self.desegmenter.read().expect("RwLock failed");
 			let desegmenter = desegmenter
 				.as_ref()
 				.expect("Desegmenter must exist at this point");
@@ -757,7 +804,8 @@ impl StateSync {
 
 	fn calc_retry_running_requests(&self) -> usize {
 		let now = Utc::now();
-		let mut retry_expiration_times = self.retry_expiration_times.write();
+		let mut retry_expiration_times =
+			self.retry_expiration_times.write().expect("RwLock failed");
 		while !retry_expiration_times.is_empty() {
 			if retry_expiration_times[0] < now {
 				retry_expiration_times.pop_front();
@@ -777,7 +825,7 @@ impl StateSync {
 		desegmenter: &Desegmenter,
 		sync_peers: &SyncPeers,
 	) -> SyncResponse {
-		if let Some(_) = self.send_requests_lock.try_write() {
+		if let Ok(_) = self.send_requests_lock.try_write() {
 			let latency_ms = self
 				.request_tracker
 				.get_average_latency()
@@ -796,11 +844,15 @@ impl StateSync {
 					Ok((req_segments, retry_segments, waiting_segments)) => {
 						let mut rng = rand::thread_rng();
 						let now = Utc::now();
-						let target_archive_hash = self.target_archive_hash.read().clone();
+						let target_archive_hash = self
+							.target_archive_hash
+							.read()
+							.expect("RwLock failed")
+							.clone();
 
 						if !retry_segments.is_empty() {
 							let last_retry_idx = self.last_retry_idx.try_write();
-							if let Some(mut last_retry_idx) = last_retry_idx {
+							if let Ok(mut last_retry_idx) = last_retry_idx {
 								for segm in &retry_segments {
 									let retry_idx = last_retry_idx
 										.get(&segm.segment_type)
@@ -845,13 +897,15 @@ impl StateSync {
 												&segm,
 												&target_archive_hash,
 											) {
-												Ok(_) => {
-													self.retry_expiration_times.write().push_back(
+												Ok(_) => self
+													.retry_expiration_times
+													.write()
+													.expect("RwLock failed")
+													.push_back(
 														now + self
 															.request_tracker
 															.get_average_latency(),
-													)
-												}
+													),
 												Err(e) => {
 													let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm.segment_type, segm.identifier.leaf_offset(), p.info.addr, e);
 													error!("{}", msg);
@@ -932,9 +986,13 @@ impl StateSync {
 									debug!("Processing duplicated request for the segment {:?} at {}, peer {:?}", segm.segment_type, segm.identifier.leaf_offset(), dup_peer.info.addr);
 									match Self::send_request(&dup_peer, &segm, &target_archive_hash)
 									{
-										Ok(_) => self.retry_expiration_times.write().push_back(
-											now + self.request_tracker.get_average_latency(),
-										),
+										Ok(_) => self
+											.retry_expiration_times
+											.write()
+											.expect("RwLock failed")
+											.push_back(
+												now + self.request_tracker.get_average_latency(),
+											),
 										Err(e) => {
 											let msg = format!("Failed to send duplicate segment {:?} at {}, peer {:?}, Error: {}", segm.segment_type, segm.identifier.leaf_offset(), dup_peer.info.addr, e);
 											error!("{}", msg);

@@ -106,7 +106,7 @@ fn process_fluff_phase(
 	secp: &Secp256k1,
 ) -> Result<(), PoolError> {
 	// Take a write lock on the txpool for the duration of this processing.
-	let mut tx_pool = tx_pool.write();
+	let mut tx_pool = tx_pool.write().expect("RwLock failed");
 
 	let all_entries = tx_pool.stempool.entries.clone();
 	if all_entries.is_empty() {
@@ -143,7 +143,11 @@ fn process_fluff_phase(
 	);
 
 	let agg_tx = transaction::aggregate(&fluffable_txs, secp)?;
-	agg_tx.validate(transaction::Weighting::AsTransaction, secp)?;
+	agg_tx.validate(
+		tx_pool.get_context_id(),
+		transaction::Weighting::AsTransaction,
+		secp,
+	)?;
 
 	tx_pool.add_to_pool(TxSource::Fluff, agg_tx, false, &header, secp)?;
 	Ok(())
@@ -155,7 +159,7 @@ fn process_expired_entries(
 	secp: &Secp256k1,
 ) -> Result<(), PoolError> {
 	// Take a write lock on the txpool for the duration of this processing.
-	let mut tx_pool = tx_pool.write();
+	let mut tx_pool = tx_pool.write().expect("RwLock failed");
 
 	let embargo_secs = dandelion_config.embargo_secs + thread_rng().gen_range(0, 31);
 	let expired_entries = select_txs_cutoff(&tx_pool.stempool, embargo_secs);

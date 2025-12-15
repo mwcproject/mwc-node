@@ -30,10 +30,11 @@ use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use mwc_p2p::PeerAddr::Onion;
-use mwc_p2p::{msg::PeerAddrs, Capabilities, P2PConfig};
+use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::{thread, time};
 
@@ -87,12 +88,14 @@ pub fn connect_and_monitor(
 			let mut listen_q_addrs: Vec<PeerAddr> = Vec::new();
 			let mut connection_threads: Vec<thread::JoinHandle<()>> = Vec::new();
 
+			let network_last_outage_time = AtomicI64::new(0);
+
 			loop {
 				if stop_state.is_stopped() {
 					break;
 				}
 				// Pause egress peer connection request. Only for tests.
-				if stop_state.is_paused() {
+				if stop_state.is_paused() || !p2p_server.is_ready() {
 					thread::sleep(time::Duration::from_secs(1));
 					continue;
 				}
@@ -134,6 +137,7 @@ pub fn connect_and_monitor(
 						tx.clone(),
 						listen_q_addrs.is_empty(),
 						request_more_connections,
+						&network_last_outage_time,
 					);
 
 					if peers.is_sync_mode() {
@@ -195,6 +199,7 @@ fn monitor_peers(
 	tx: mpsc::Sender<PeerAddr>,
 	load_peers_from_db: bool,
 	request_more_connections: bool,
+	network_last_outage_time: &AtomicI64,
 ) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
@@ -232,10 +237,8 @@ fn monitor_peers(
 	let most_work_count = peers_iter().with_difficulty(|x| x >= max_diff).count();
 
 	debug!(
-		"monitor_peers: on {}:{}, {} connected ({} most_work). \
+		"monitor_peers: {} connected ({} most_work). \
 		 all {} = {} healthy + {} banned + {} defunct",
-		config.host,
-		config.port,
 		peers_count,
 		most_work_count,
 		total_count,
@@ -267,12 +270,7 @@ fn monitor_peers(
 		.with_capabilities(Capabilities::PEER_LIST)
 		.connected()
 	{
-		trace!(
-			"monitor_peers: {}:{} ask {} for more peers",
-			config.host,
-			config.port,
-			p.info.addr,
-		);
+		trace!("monitor_peers: ask {} for more peers", p.info.addr,);
 		let _ = p.send_peer_request(
 			p2p::Capabilities::PEER_LIST | boost_peers_capabilities,
 			use_tor_connection,
@@ -289,6 +287,16 @@ fn monitor_peers(
 			}
 		} else {
 			let _ = tx.send(p);
+		}
+	}
+
+	if network_last_outage_time.load(Ordering::Relaxed) != network_status::get_network_outage_time()
+	{
+		network_last_outage_time
+			.store(network_status::get_network_outage_time(), Ordering::Relaxed);
+		// Outage was recently detected, reverting Defuncts peers back to healthy
+		for peer in &defuncts {
+			let _ = peers.update_state(&peer.addr, p2p::State::Healthy);
 		}
 	}
 
@@ -311,7 +319,7 @@ fn monitor_peers(
 		// Do not attempt any connection where is_known() fails for any reason.
 		let mut max_addresses = 0;
 		for p in new_peers {
-			if let Ok(false) = peers.is_known(&p.addr) {
+			if !peers.is_known(&p.addr) {
 				tx.send(p.addr.clone()).unwrap();
 				max_addresses += 1;
 				if max_addresses > 20 {
@@ -423,8 +431,7 @@ fn listen_for_addrs(
 	let connection_time_limit = now - Duration::seconds(PEER_RECONNECT_INTERVAL);
 	connecting_history.retain(|_, time| *time > connection_time_limit);
 
-	listen_q_addrs
-		.retain(|p| !(peers.is_known(p).unwrap_or(false) || connecting_history.contains_key(p)));
+	listen_q_addrs.retain(|p| !(peers.is_known(p) || connecting_history.contains_key(p)));
 
 	connection_threads.retain(|h| !h.is_finished());
 
@@ -436,13 +443,13 @@ fn listen_for_addrs(
 		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
 
 		// listen_q_addrs can have duplicated requests or already processed, so still need to dedup
-		if peers.is_known(&addr).unwrap_or(false) || connecting_history.contains_key(&addr) {
+		if peers.is_known(&addr) || connecting_history.contains_key(&addr) {
 			continue;
 		}
 
 		connecting_history.insert(addr.clone(), now);
 
-		if p2p.socks_port == 0 {
+		if !use_tor_connection {
 			match &addr {
 				Onion(_) => {
 					continue;
@@ -514,9 +521,9 @@ fn listen_for_addrs(
 	}
 }
 
-pub fn default_dns_seeds() -> Box<dyn Fn() -> Vec<PeerAddr> + Send> {
-	Box::new(|| {
-		let net_seeds = if global::is_floonet() {
+pub fn default_dns_seeds(context_id: u32) -> Box<dyn Fn() -> Vec<PeerAddr> + Send> {
+	Box::new(move || {
+		let net_seeds = if global::is_floonet(context_id) {
 			FLOONET_DNS_SEEDS
 		} else {
 			MAINNET_DNS_SEEDS
@@ -529,7 +536,7 @@ pub fn default_dns_seeds() -> Box<dyn Fn() -> Vec<PeerAddr> + Send> {
 						s.to_string()
 					} else {
 						s.to_string()
-							+ if global::is_floonet() {
+							+ if global::is_floonet(context_id) {
 								":13414"
 							} else {
 								":3414"

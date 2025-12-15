@@ -247,6 +247,9 @@ pub trait Reader {
 	/// version specific deserialization logic.
 	fn protocol_version(&self) -> ProtocolVersion;
 
+	/// Return context Id for this reading session
+	fn get_context_id(&self) -> u32;
+
 	/// Read a fixed number of "empty" bytes from the underlying reader.
 	/// It is an error if any non-empty bytes encountered.
 	fn read_empty_bytes(&mut self, length: usize) -> Result<(), Error> {
@@ -411,17 +414,22 @@ where
 pub fn deserialize<T: Readable, R: Read>(
 	source: &mut R,
 	version: ProtocolVersion,
+	context_id: u32,
 	mode: DeserializationMode,
 ) -> Result<T, Error> {
-	let mut reader = BinReader::new(source, version, mode);
+	let mut reader = BinReader::new(source, version, context_id, mode);
 	T::read(&mut reader)
 }
 
 /// Deserialize a Readable based on our default "local" protocol version.
-pub fn deserialize_default<T: Readable, R: Read>(source: &mut R) -> Result<T, Error> {
+pub fn deserialize_default<T: Readable, R: Read>(
+	context_id: u32,
+	source: &mut R,
+) -> Result<T, Error> {
 	deserialize(
 		source,
 		ProtocolVersion::local(),
+		context_id,
 		DeserializationMode::default(),
 	)
 }
@@ -453,15 +461,22 @@ pub fn ser_vec<W: Writeable>(thing: &W, version: ProtocolVersion) -> Result<Vec<
 pub struct BinReader<'a, R: Read> {
 	source: &'a mut R,
 	version: ProtocolVersion,
+	context_id: u32,
 	deser_mode: DeserializationMode,
 }
 
 impl<'a, R: Read> BinReader<'a, R> {
 	/// Constructor for a new BinReader for the provided source and protocol version.
-	pub fn new(source: &'a mut R, version: ProtocolVersion, mode: DeserializationMode) -> Self {
+	pub fn new(
+		source: &'a mut R,
+		version: ProtocolVersion,
+		context_id: u32,
+		mode: DeserializationMode,
+	) -> Self {
 		BinReader {
 			source,
 			version,
+			context_id,
 			deser_mode: mode,
 		}
 	}
@@ -532,6 +547,10 @@ impl<'a, R: Read> Reader for BinReader<'a, R> {
 	fn protocol_version(&self) -> ProtocolVersion {
 		self.version
 	}
+
+	fn get_context_id(&self) -> u32 {
+		self.context_id
+	}
 }
 
 /// A reader that reads straight off a stream.
@@ -539,6 +558,7 @@ impl<'a, R: Read> Reader for BinReader<'a, R> {
 pub struct StreamingReader<'a> {
 	total_bytes_read: u64,
 	version: ProtocolVersion,
+	context_id: u32,
 	stream: &'a mut dyn Read,
 	deser_mode: DeserializationMode,
 }
@@ -546,10 +566,15 @@ pub struct StreamingReader<'a> {
 impl<'a> StreamingReader<'a> {
 	/// Create a new streaming reader with the provided underlying stream.
 	/// Also takes a duration to be used for each individual read_exact call.
-	pub fn new(stream: &'a mut dyn Read, version: ProtocolVersion) -> StreamingReader<'a> {
+	pub fn new(
+		stream: &'a mut dyn Read,
+		version: ProtocolVersion,
+		context_id: u32,
+	) -> StreamingReader<'a> {
 		StreamingReader {
 			total_bytes_read: 0,
 			version,
+			context_id,
 			stream,
 			deser_mode: DeserializationMode::Full,
 		}
@@ -621,22 +646,28 @@ impl<'a> Reader for StreamingReader<'a> {
 	fn protocol_version(&self) -> ProtocolVersion {
 		self.version
 	}
+
+	fn get_context_id(&self) -> u32 {
+		self.context_id
+	}
 }
 
 /// Protocol version-aware wrapper around a `Buf` impl
 pub struct BufReader<'a, B: Buf> {
 	inner: &'a mut B,
 	version: ProtocolVersion,
+	context_id: u32,
 	bytes_read: usize,
 	deser_mode: DeserializationMode,
 }
 
 impl<'a, B: Buf> BufReader<'a, B> {
 	/// Construct a new BufReader
-	pub fn new(buf: &'a mut B, version: ProtocolVersion) -> Self {
+	pub fn new(buf: &'a mut B, version: ProtocolVersion, context_id: u32) -> Self {
 		Self {
 			inner: buf,
 			version,
+			context_id,
 			bytes_read: 0,
 			deser_mode: DeserializationMode::Full,
 		}
@@ -732,6 +763,10 @@ impl<'a, B: Buf> Reader for BufReader<'a, B> {
 
 	fn protocol_version(&self) -> ProtocolVersion {
 		self.version
+	}
+
+	fn get_context_id(&self) -> u32 {
+		self.context_id
 	}
 }
 

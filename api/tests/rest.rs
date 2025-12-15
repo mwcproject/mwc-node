@@ -2,12 +2,13 @@ use mwc_api as api;
 use mwc_util as util;
 
 use crate::api::*;
-use futures::channel::oneshot;
 use hyper::{Body, Request, StatusCode};
+use mwc_api::client::HttpClient;
 use mwc_core::global;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{thread, time};
 
 struct IndexHandler {
@@ -67,6 +68,7 @@ fn build_router() -> Router {
 #[test]
 fn test_start_api() {
 	global::set_local_chain_type(global::ChainTypes::Floonet);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	let mut server = ApiServer::new();
 	let mut router = build_router();
@@ -75,11 +77,9 @@ fn test_start_api() {
 	router.add_middleware(counter.clone());
 	let server_addr = "127.0.0.1:14434";
 	let addr: SocketAddr = server_addr.parse().expect("unable to parse server address");
-	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
-		Box::leak(Box::new(oneshot::channel::<()>()));
-	assert!(server.start(addr, router, None, api_chan).is_ok());
+	assert!(server.start(addr, router, None).is_ok());
 	let url = format!("http://{}/v1/", server_addr);
-	let index = request_with_retry(url.as_str()).unwrap();
+	let index = request_with_retry(0, url.as_str()).unwrap();
 	assert_eq!(index.len(), 2);
 	assert_eq!(counter.value(), 1);
 	assert!(server.stop());
@@ -94,6 +94,7 @@ fn test_start_api() {
 #[test]
 fn test_start_api_tls() {
 	global::set_local_chain_type(global::ChainTypes::Floonet);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	let tls_conf = TLSConfig::new(
 		"tests/fullchain.pem".to_string(),
@@ -103,23 +104,29 @@ fn test_start_api_tls() {
 	let router = build_router();
 	let server_addr = "0.0.0.0:14444";
 	let addr: SocketAddr = server_addr.parse().expect("unable to parse server address");
-	let api_chan: &'static mut (oneshot::Sender<()>, oneshot::Receiver<()>) =
-		Box::leak(Box::new(oneshot::channel::<()>()));
-	assert!(server.start(addr, router, Some(tls_conf), api_chan).is_ok());
-	let index = request_with_retry("https://yourdomain.com:14444/v1/").unwrap();
+	assert!(server.start(addr, router, Some(tls_conf)).is_ok());
+	let index = request_with_retry(0, "https://yourdomain.com:14444/v1/").unwrap();
 	assert_eq!(index.len(), 2);
 	assert!(!server.stop());
 }
 
-fn request_with_retry(url: &str) -> Result<Vec<String>, api::Error> {
+fn request_with_retry(context_id: u32, url: &str) -> Result<Vec<String>, api::Error> {
 	let mut tries = 0;
+	let client = HttpClient::new(context_id, Duration::from_secs(20), None);
 	loop {
-		let res = api::client::get::<Vec<String>>(url, None);
-		if res.is_ok() {
-			return res;
-		}
-		if tries > 5 {
-			return res;
+		match client.get(url) {
+			Ok(res) => {
+				return Ok(serde_json::from_value(res)
+					.map_err(|e| Error::Internal(format!("Failed to parse response, {}", e)))?)
+			}
+			Err(e) => {
+				if tries > 5 {
+					return Err(Error::Internal(format!(
+						"Failed to make get request, {}",
+						e
+					)));
+				}
+			}
 		}
 		tries += 1;
 		thread::sleep(time::Duration::from_millis(500));

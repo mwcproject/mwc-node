@@ -33,14 +33,19 @@ use crate::pow::{PoWContext, Proof};
 /// Instantiate a new CuckarooContext as a PowContext. Note that this can't
 /// be moved in the PoWContext trait as this particular trait needs to be
 /// convertible to an object trait.
-pub fn new_cuckaroo_ctx(edge_bits: u8, proof_size: usize) -> Result<Box<dyn PoWContext>, Error> {
+pub fn new_cuckaroo_ctx(
+	context_id: u32,
+	edge_bits: u8,
+	proof_size: usize,
+) -> Result<Box<dyn PoWContext>, Error> {
 	let params = CuckooParams::new(edge_bits, edge_bits, proof_size)?;
-	Ok(Box::new(CuckarooContext { params }))
+	Ok(Box::new(CuckarooContext { params, context_id }))
 }
 
 /// Cuckaroo cycle context. Only includes the verifier for now.
 pub struct CuckarooContext {
 	params: CuckooParams,
+	context_id: u32,
 }
 
 impl PoWContext for CuckarooContext {
@@ -59,7 +64,7 @@ impl PoWContext for CuckarooContext {
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {
 		let size = proof.proof_size();
-		if size != global::proofsize() {
+		if size != global::proofsize(self.context_id) {
 			return Err(Error::Verification("wrong cycle length".to_owned()));
 		}
 		let nonces = &proof.nonces;
@@ -67,7 +72,7 @@ impl PoWContext for CuckarooContext {
 		let mut xor0: u64 = 0;
 		let mut xor1: u64 = 0;
 		let mask = u64::MAX >> (size as u64).leading_zeros(); // round size up to 2-power - 1
-													  // the next three arrays form a linked list of nodes with matching bits 6..1
+														// the next three arrays form a linked list of nodes with matching bits 6..1
 		let mut headu = vec![2 * size; 1 + mask as usize];
 		let mut headv = vec![2 * size; 1 + mask as usize];
 		let mut prev = vec![0usize; 2 * size];
@@ -185,18 +190,22 @@ mod test {
 	#[test]
 	fn cuckaroo19_vectors() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
 		let mut ctx = new_impl(19, 42);
 		ctx.params.siphash_keys = V1_19_HASH;
-		assert!(ctx.verify(&Proof::new(V1_19_SOL.to_vec())).is_ok());
-		assert!(ctx.verify(&Proof::new(V2_19_SOL.to_vec())).is_err());
+		assert!(ctx.verify(&Proof::new(0, V1_19_SOL.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::new(0, V2_19_SOL.to_vec())).is_err());
 		ctx.params.siphash_keys = V2_19_HASH.clone();
-		assert!(ctx.verify(&Proof::new(V1_19_SOL.to_vec())).is_err());
-		assert!(ctx.verify(&Proof::new(V2_19_SOL.to_vec())).is_ok());
-		assert!(ctx.verify(&Proof::zero(42)).is_err());
+		assert!(ctx.verify(&Proof::new(0, V1_19_SOL.to_vec())).is_err());
+		assert!(ctx.verify(&Proof::new(0, V2_19_SOL.to_vec())).is_ok());
+		assert!(ctx.verify(&Proof::zero(0, 42)).is_err());
 	}
 
 	fn new_impl(edge_bits: u8, proof_size: usize) -> CuckarooContext {
 		let params = CuckooParams::new(edge_bits, edge_bits, proof_size).unwrap();
-		CuckarooContext { params }
+		CuckarooContext {
+			params,
+			context_id: 0,
+		}
 	}
 }

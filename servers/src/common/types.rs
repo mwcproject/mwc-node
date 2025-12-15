@@ -30,6 +30,7 @@ use crate::pool;
 use crate::pool::types::DandelionConfig;
 use crate::store;
 use mwc_core::global;
+use mwc_p2p::types::TorConfig;
 use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
@@ -152,30 +153,6 @@ impl Default for ChainValidationMode {
 	}
 }
 
-/// Type for Tor Configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TorConfig {
-	/// Whether to start tor listener on listener startup (default true)
-	pub tor_enabled: bool,
-	/// The port for the tor socks proxy to bind to
-	pub socks_port: u16,
-	/// Tor running externally (default false)
-	pub tor_external: bool,
-	/// Onion address to use, only applicable with external tor
-	pub onion_address: Option<String>,
-}
-
-impl Default for TorConfig {
-	fn default() -> TorConfig {
-		TorConfig {
-			tor_enabled: false,
-			socks_port: 51234,
-			tor_external: false,
-			onion_address: Some("".to_string()),
-		}
-	}
-}
-
 /// Full server configuration, aggregating configurations required for the
 /// different components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -292,8 +269,8 @@ impl Default for ServerConfig {
 			run_tui: Some(true),
 			run_test_miner: Some(false),
 			test_miner_wallet_url: None,
-			libp2p_enabled: Some(true),
-			libp2p_port: Some(3417),
+			libp2p_enabled: None,
+			libp2p_port: None,
 			libp2p_topics: None,
 			webhook_config: WebHooksConfig::default(),
 			tor_config: TorConfig::default(),
@@ -409,7 +386,7 @@ impl Default for StratumServerConfig {
 }
 
 /// Web hooks configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebHooksConfig {
 	/// url to POST transaction data when a new transaction arrives from a peer
 	pub tx_received_url: Option<String>,
@@ -425,6 +402,9 @@ pub struct WebHooksConfig {
 	/// timeout in seconds for the http request
 	#[serde(default = "default_timeout")]
 	pub timeout: u16,
+	/// Callback for all events
+	#[serde(skip)]
+	pub callback: Arc<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
 }
 
 fn default_timeout() -> u16 {
@@ -444,7 +424,33 @@ impl Default for WebHooksConfig {
 			block_accepted_url: None,
 			nthreads: default_nthreads(),
 			timeout: default_timeout(),
+			callback: Arc::new(None),
 		}
+	}
+}
+
+impl std::fmt::Debug for WebHooksConfig {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("WebHooksConfig")
+			.field("tx_received_url", &self.tx_received_url)
+			.field("header_received_url", &self.header_received_url)
+			.field("block_received_url", &self.block_received_url)
+			.field("block_accepted_url", &self.block_accepted_url)
+			.field("nthreads", &self.nthreads)
+			.field("timeout", &self.timeout)
+			.finish()
+	}
+}
+
+impl PartialEq for WebHooksConfig {
+	fn eq(&self, other: &Self) -> bool {
+		self.tx_received_url == other.tx_received_url
+			&& self.header_received_url == other.header_received_url
+			&& self.block_received_url == other.block_received_url
+			&& self.block_accepted_url == other.block_accepted_url
+			&& self.nthreads == other.nthreads
+			&& self.timeout == other.timeout
+		// callback is ignored
 	}
 }
 
@@ -459,16 +465,19 @@ pub struct DandelionEpoch {
 	is_stem: bool,
 	// Our current Dandelion relay peer (effective for this epoch).
 	relay_peer: Option<Arc<p2p::Peer>>,
+	// App session id
+	context_id: u32,
 }
 
 impl DandelionEpoch {
 	/// Create a new Dandelion epoch, defaulting to "stem" and no outbound relay peer.
-	pub fn new(config: DandelionConfig) -> DandelionEpoch {
+	pub fn new(context_id: u32, config: DandelionConfig) -> DandelionEpoch {
 		DandelionEpoch {
 			config,
 			start_time: None,
 			is_stem: true,
 			relay_peer: None,
+			context_id,
 		}
 	}
 
@@ -489,7 +498,7 @@ impl DandelionEpoch {
 	/// Choose a new outbound stem relay peer.
 	pub fn next_epoch(&mut self, peers: &Arc<p2p::Peers>) {
 		self.start_time = Some(Utc::now().timestamp());
-		let my_fee_base = global::get_accept_fee_base();
+		let my_fee_base = global::get_accept_fee_base(self.context_id);
 		self.relay_peer = peers
 			.iter()
 			.filter(move |p| {
@@ -536,7 +545,7 @@ impl DandelionEpoch {
 		}
 
 		if update_relay {
-			let my_fee_base = global::get_accept_fee_base();
+			let my_fee_base = global::get_accept_fee_base(self.context_id);
 			self.relay_peer = peers
 				.iter()
 				.filter(move |p| {

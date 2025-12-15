@@ -22,12 +22,12 @@ use chrono::{DateTime, Utc};
 use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::{pibd_params, Chain};
 use mwc_p2p::{Peer, PeerAddr};
-use mwc_util::RwLock;
 use p2p::Capabilities;
 use rand::prelude::*;
 use std::cmp;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 pub struct BodySync {
 	chain: Arc<Chain>,
@@ -55,7 +55,10 @@ impl BodySync {
 	}
 
 	pub fn get_peer_capabilities(&self) -> Capabilities {
-		self.required_capabilities.read().clone()
+		self.required_capabilities
+			.read()
+			.expect("RwLock failure")
+			.clone()
 	}
 
 	// Expected that it is called ONLY when state_sync is done
@@ -93,7 +96,8 @@ impl BodySync {
 			));
 		}
 
-		let archive_height = Chain::height_2_archive_height(best_height);
+		let archive_height =
+			Chain::height_2_archive_height(self.chain.get_context_id(), best_height);
 
 		let head = self.chain.head()?;
 		let mut fork_point = self.chain.fork_point()?;
@@ -121,13 +125,13 @@ impl BodySync {
 			} else {
 				(Capabilities::UNKNOWN, Capabilities::HEADER_HIST) // needed for headers sync, that can go in parallel
 			};
-		*self.required_capabilities.write() = required_capabilities;
+		*self.required_capabilities.write().expect("RwLock failure") = required_capabilities;
 
 		// requested_blocks, check for expiration
 		let excluded_peers = self
 			.request_tracker
 			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
-		*self.excluded_peers.write() = excluded_peers;
+		*self.excluded_peers.write().expect("RwLock failure") = excluded_peers;
 
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 			in_peers,
@@ -135,7 +139,7 @@ impl BodySync {
 			peer_capabilities,
 			head.height,
 			&self.request_tracker,
-			&*self.excluded_peers.read(),
+			&*self.excluded_peers.read().expect("RwLock failure"),
 		);
 		if peers.is_empty() {
 			if excluded_peers == 0 {
@@ -210,7 +214,12 @@ impl BodySync {
 				let mut need_refresh_request_series = false;
 
 				// If request_series first if processed, need to update
-				let last_request_series = self.request_series.read().last().cloned();
+				let last_request_series = self
+					.request_series
+					.read()
+					.expect("RwLock failure")
+					.last()
+					.cloned();
 				if let Some((hash, height)) = last_request_series {
 					debug!("Updating body request series for {} / {}", hash, height);
 					if self.chain.block_exists(&hash)? {
@@ -245,7 +254,7 @@ impl BodySync {
 							hash, height
 						);
 					}
-					*self.request_series.write() = new_request_series;
+					*self.request_series.write().expect("RwLock failure") = new_request_series;
 				}
 
 				// Now we can try to submit more requests...
@@ -294,10 +303,10 @@ impl BodySync {
 						let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 							peers,
 							self.pibd_params.get_blocks_request_per_peer(),
-							*self.required_capabilities.read(),
+							*self.required_capabilities.read().expect("RwLock failure"),
 							head.height,
 							&self.request_tracker,
-							&*self.excluded_peers.read(),
+							&*self.excluded_peers.read().expect("RwLock failure"),
 						);
 						if !peers.is_empty() {
 							// requested_blocks, check for expiration
@@ -332,7 +341,8 @@ impl BodySync {
 
 	fn calc_retry_running_requests(&self) -> usize {
 		let now = Utc::now();
-		let mut retry_expiration_times = self.retry_expiration_times.write();
+		let mut retry_expiration_times =
+			self.retry_expiration_times.write().expect("RwLock failure");
 		while !retry_expiration_times.is_empty() {
 			if retry_expiration_times[0] < now {
 				retry_expiration_times.pop_front();
@@ -354,7 +364,7 @@ impl BodySync {
 		let mut peers = peers.clone();
 		let mut waiting_heights: Vec<(u64, Hash)> = Vec::new();
 		// Requests wuth try write because otherwise somebody else is sending, it is mean we are good...
-		if let Some(request_series) = self.request_series.try_write() {
+		if let Ok(request_series) = self.request_series.try_write() {
 			*need_request = need_request.saturating_sub(self.calc_retry_running_requests());
 			if *need_request == 0 {
 				return Ok(waiting_heights);
@@ -410,7 +420,7 @@ impl BodySync {
 			}
 
 			// Now let's try to send retry requests first
-			if let Some(mut last_retry_height) = self.last_retry_height.try_write() {
+			if let Ok(mut last_retry_height) = self.last_retry_height.try_write() {
 				for (height, hash) in retry_requests {
 					if height <= *last_retry_height {
 						continue;
@@ -426,7 +436,8 @@ impl BodySync {
 							.iter()
 							.filter(|p| {
 								p.info.addr != requested_peer
-									&& p.info.live_info.read().height >= height
+									&& p.info.live_info.read().expect("RwLock failure").height
+										>= height
 							})
 							.cloned()
 							.choose_multiple(&mut rng, 2);
@@ -451,6 +462,7 @@ impl BodySync {
 								Ok(_) => self
 									.retry_expiration_times
 									.write()
+									.expect("RwLock failure")
 									.push_back(now + self.request_tracker.get_average_latency()),
 								Err(e) => {
 									let msg = format!(
@@ -476,7 +488,7 @@ impl BodySync {
 				}
 				*need_request = need_request.saturating_sub(1);
 
-				peers.retain(|p| p.info.live_info.read().height >= height);
+				peers.retain(|p| p.info.live_info.read().expect("RwLock failure").height >= height);
 				if peers.is_empty() {
 					*need_request = 0;
 					return Ok(waiting_heights);
@@ -548,6 +560,7 @@ impl BodySync {
 					Ok(_) => self
 						.retry_expiration_times
 						.write()
+						.expect("RwLock failure")
 						.push_back(now + self.request_tracker.get_average_latency()),
 					Err(e) => {
 						let msg = format!(

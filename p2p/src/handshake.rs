@@ -19,16 +19,18 @@ use crate::mwc_core::core::hash::Hash;
 use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::ProtocolVersion;
 use crate::peer::Peer;
+use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::{
 	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
 	PeerLiveInfo,
 };
-use crate::util::RwLock;
 use mwc_core::global;
 use rand::{thread_rng, Rng};
 use std::collections::VecDeque;
-use std::net::{SocketAddr, TcpStream};
+use std::io::Write;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 /// Local generated nonce for peer connecting.
@@ -49,14 +51,15 @@ const SHAKE_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 /// Fail fast when trying to write a Hand message to the tcp stream.
 /// If we cannot write it within a couple of seconds then something has likely gone wrong.
-const HAND_WRITE_TIMEOUT: Duration = Duration::from_millis(2_000);
+const HAND_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 /// Fail fast when trying to write a Shake message to the tcp stream.
 /// If we cannot write it within a couple of seconds then something has likely gone wrong.
-const SHAKE_WRITE_TIMEOUT: Duration = Duration::from_millis(2_000);
+const SHAKE_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 /// Handles the handshake negotiation when two peers connect and decides on
 /// protocol.
+#[derive(Clone)]
 pub struct Handshake {
 	/// Ring buffer of nonces sent to detect self connections without requiring
 	/// a node id.
@@ -69,19 +72,26 @@ pub struct Handshake {
 	genesis: Hash,
 	config: P2PConfig,
 	protocol_version: ProtocolVersion,
+	context_id: u32,
 	tracker: Arc<Tracker>,
-	onion_address: Option<String>,
+	pub onion_address: Option<String>,
 }
 
 impl Handshake {
 	/// Creates a new handshake handler
-	pub fn new(genesis: Hash, config: P2PConfig, onion_address: Option<String>) -> Handshake {
+	pub fn new(
+		context_id: u32,
+		genesis: Hash,
+		config: P2PConfig,
+		onion_address: Option<String>,
+	) -> Handshake {
 		Handshake {
 			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
 			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
 			genesis,
 			config,
 			protocol_version: ProtocolVersion::local(),
+			context_id,
 			tracker: Arc::new(Tracker::new()),
 			onion_address: onion_address,
 		}
@@ -104,26 +114,17 @@ impl Handshake {
 		capabilities: Capabilities,
 		total_difficulty: Difficulty,
 		self_addr: PeerAddr,
-		conn: &mut TcpStream,
-		peer_addr: Option<PeerAddr>,
+		conn: &mut TcpDataStream,
+		peer_addr: PeerAddr,
 	) -> Result<PeerInfo, Error> {
 		// Set explicit timeouts on the tcp stream for hand/shake messages.
 		// Once the peer is up and running we will set new values for these.
 		// We initiate this connection, writing a Hand message and read a Shake reply.
-		let _ = conn.set_write_timeout(Some(HAND_WRITE_TIMEOUT));
-		let _ = conn.set_read_timeout(Some(SHAKE_READ_TIMEOUT));
+		conn.set_write_timeout(HAND_WRITE_TIMEOUT);
+		conn.set_read_timeout(SHAKE_READ_TIMEOUT);
 
 		// prepare the first part of the handshake
 		let nonce = self.next_nonce();
-		let peer_addr = peer_addr.unwrap_or(match conn.peer_addr() {
-			Ok(addr) => PeerAddr::Ip(addr),
-			Err(e) => {
-				return Err(Error::ConnectionClose(format!(
-					"unable to get peer address, {}",
-					e
-				)))
-			}
-		});
 
 		let hand = Hand {
 			version: self.protocol_version,
@@ -134,14 +135,14 @@ impl Handshake {
 			sender_addr: self_addr.clone(),
 			receiver_addr: peer_addr.clone(),
 			user_agent: USER_AGENT.to_string(),
-			tx_fee_base: global::get_accept_fee_base(),
+			tx_fee_base: global::get_accept_fee_base(self.context_id),
 		};
 
 		// write and read the handshake response
-		let msg = Msg::new(Type::Hand, hand, self.protocol_version)?;
+		let msg = Msg::new(Type::Hand, hand, self.protocol_version, self.context_id)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
-		let shake: Shake = read_message(conn, self.protocol_version, Type::Shake)?;
+		let shake: Shake = read_message(conn, self.protocol_version, self.context_id, Type::Shake)?;
 		if shake.genesis != self.genesis {
 			return Err(Error::GenesisMismatch {
 				us: self.genesis,
@@ -158,8 +159,15 @@ impl Handshake {
 
 			// send tor address
 			let tor_address = TorAddress::new(onion_address);
-			let msg = Msg::new(Type::TorAddress, tor_address, self.protocol_version)?;
+			let msg = Msg::new(
+				Type::TorAddress,
+				tor_address,
+				self.protocol_version,
+				self.context_id,
+			)?;
 			write_message(conn, &vec![msg], self.tracker.clone())?;
+			// Flush needed for arti. Without flush data will not be sent
+			conn.flush()?;
 		} else {
 			debug!("non-Tor peer {:?}", self_addr);
 		}
@@ -205,15 +213,15 @@ impl Handshake {
 		&self,
 		capab: Capabilities,
 		total_difficulty: Difficulty,
-		conn: &mut TcpStream,
+		conn: &mut TcpDataStream,
 	) -> Result<PeerInfo, Error> {
 		// Set explicit timeouts on the tcp stream for hand/shake messages.
 		// Once the peer is up and running we will set new values for these.
 		// We accept an inbound connection, reading a Hand then writing a Shake reply.
-		let _ = conn.set_read_timeout(Some(HAND_READ_TIMEOUT));
-		let _ = conn.set_write_timeout(Some(SHAKE_WRITE_TIMEOUT));
+		let _ = conn.set_read_timeout(HAND_READ_TIMEOUT);
+		let _ = conn.set_write_timeout(SHAKE_WRITE_TIMEOUT);
 
-		let hand: Hand = read_message(conn, self.protocol_version, Type::Hand)?;
+		let hand: Hand = read_message(conn, self.protocol_version, self.context_id, Type::Hand)?;
 
 		// all the reasons we could refuse this connection for
 		if hand.genesis != self.genesis {
@@ -223,11 +231,11 @@ impl Handshake {
 			});
 		} else {
 			// check the nonce to see if we are trying to connect to ourselves
-			let nonces = self.nonces.read();
-			let addr = resolve_peer_addr(hand.sender_addr.clone(), &conn);
+			let nonces = self.nonces.read().expect("RwLock failure");
+			let addr = resolve_peer_addr(&hand.sender_addr, &conn);
 			if nonces.contains(&hand.nonce) {
 				// save ip addresses of ourselves
-				let mut addrs = self.addrs.write();
+				let mut addrs = self.addrs.write().expect("RwLock failure");
 				addrs.push_back(addr);
 				if addrs.len() >= ADDRS_CAP {
 					addrs.pop_front();
@@ -242,7 +250,7 @@ impl Handshake {
 		let peer_info = PeerInfo {
 			capabilities: hand.capabilities,
 			user_agent: hand.user_agent,
-			addr: resolve_peer_addr(hand.sender_addr.clone(), &conn),
+			addr: resolve_peer_addr(&hand.sender_addr, &conn),
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
 			direction: if self.onion_address.is_some() {
@@ -270,10 +278,10 @@ impl Handshake {
 			genesis: self.genesis,
 			total_difficulty: total_difficulty,
 			user_agent: USER_AGENT.to_string(),
-			tx_fee_base: global::get_accept_fee_base(),
+			tx_fee_base: global::get_accept_fee_base(self.context_id),
 		};
 
-		let msg = Msg::new(Type::Shake, shake, negotiated_version)?;
+		let msg = Msg::new(Type::Shake, shake, negotiated_version, self.context_id)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		trace!("Success handshake with {}.", peer_info.addr);
@@ -285,7 +293,7 @@ impl Handshake {
 	fn next_nonce(&self) -> u64 {
 		let nonce = thread_rng().gen();
 
-		let mut nonces = self.nonces.write();
+		let mut nonces = self.nonces.write().expect("RwLock failure");
 		nonces.push_back(nonce);
 		if nonces.len() >= NONCES_CAP {
 			nonces.pop_front();
@@ -295,16 +303,19 @@ impl Handshake {
 }
 
 /// Resolve the correct peer_addr based on the connection and the advertised port.
-fn resolve_peer_addr(advertised: PeerAddr, conn: &TcpStream) -> PeerAddr {
+fn resolve_peer_addr(advertised: &PeerAddr, conn: &TcpDataStream) -> PeerAddr {
 	match advertised {
 		Ip(socket_addr) => {
 			let port = socket_addr.port();
 			if let Ok(addr) = conn.peer_addr() {
-				PeerAddr::Ip(SocketAddr::new(addr.ip(), port))
+				match addr {
+					PeerAddr::Ip(ip_addr) => PeerAddr::Ip(SocketAddr::new(ip_addr.ip(), port)),
+					_ => advertised.clone(),
+				}
 			} else {
-				advertised
+				advertised.clone()
 			}
 		}
-		Onion(_) => advertised,
+		Onion(_) => advertised.clone(),
 	}
 }

@@ -120,10 +120,11 @@ impl<T: PMMRable> PMMRHandle<T> {
 		path: P,
 		prunable: bool,
 		version: ProtocolVersion,
+		context_id: u32,
 		header: Option<&BlockHeader>,
 	) -> Result<PMMRHandle<T>, Error> {
 		fs::create_dir_all(&path)?;
-		let backend = PMMRBackend::new(&path, prunable, version, header)?;
+		let backend = PMMRBackend::new(&path, prunable, version, context_id, header)?;
 		let size = backend.unpruned_size();
 		Ok(PMMRHandle { backend, size })
 	}
@@ -222,12 +223,14 @@ impl TxHashSet {
 		header: Option<&BlockHeader>,
 		secp: &Secp256k1,
 	) -> Result<TxHashSet, Error> {
+		let context_id = commit_index.get_context_id();
 		let output_pmmr_h = PMMRHandle::new(
 			Path::new(&root_dir)
 				.join(TXHASHSET_SUBDIR)
 				.join(OUTPUT_SUBDIR),
 			true,
 			ProtocolVersion(1),
+			context_id,
 			header,
 		)?;
 
@@ -237,6 +240,7 @@ impl TxHashSet {
 				.join(RANGE_PROOF_SUBDIR),
 			true,
 			ProtocolVersion(1),
+			context_id,
 			header,
 		)?;
 
@@ -249,6 +253,7 @@ impl TxHashSet {
 					.join(KERNEL_SUBDIR),
 				false, // not prunable
 				version,
+				context_id,
 				None,
 			)?;
 			if handle.size == 0 {
@@ -524,7 +529,7 @@ impl TxHashSet {
 		status: Option<Arc<SyncState>>,
 		stop_state: Option<Arc<StopState>>,
 	) -> Result<(), Error> {
-		if !global::is_nrd_enabled() {
+		if !global::is_nrd_enabled(batch.db.get_context_id()) {
 			return Ok(());
 		}
 
@@ -699,6 +704,7 @@ impl TxHashSet {
 ///
 /// The unit of work is always discarded (always rollback) as this is read-only.
 pub fn extending_readonly<F, T>(
+	context_id: u32,
 	handle: &mut PMMRHandle<BlockHeader>,
 	trees: &mut TxHashSet,
 	inner: F,
@@ -717,7 +723,7 @@ where
 	let res = {
 		let header_pmmr = PMMR::at(&mut handle.backend, handle.size);
 		let mut header_extension = HeaderExtension::new(header_pmmr, header_head);
-		let mut extension = Extension::new(trees, head);
+		let mut extension = Extension::new(context_id, trees, head);
 		let mut extension_pair = ExtensionPair {
 			header_extension: &mut header_extension,
 			extension: &mut extension,
@@ -806,6 +812,7 @@ where
 	let sizes: (u64, u64, u64);
 	let res: Result<T, Error>;
 	let rollback: bool;
+	let context_id = batch.db.get_context_id();
 
 	let head = batch.head()?;
 	let header_head = batch.header_head()?;
@@ -818,7 +825,7 @@ where
 
 		let header_pmmr = PMMR::at(&mut header_pmmr.backend, header_pmmr.size);
 		let mut header_extension = HeaderExtension::new(header_pmmr, header_head);
-		let mut extension = Extension::new(trees, head);
+		let mut extension = Extension::new(context_id, trees, head);
 		let mut extension_pair = ExtensionPair {
 			header_extension: &mut header_extension,
 			extension: &mut extension,
@@ -1112,6 +1119,7 @@ pub struct Extension<'a> {
 	kernel_pmmr: PMMR<'a, TxKernel, PMMRBackend<TxKernel>>,
 	/// Rollback flag.
 	rollback: bool,
+	context_id: u32,
 }
 
 impl<'a> Committed for Extension<'a> {
@@ -1143,13 +1151,14 @@ impl<'a> Committed for Extension<'a> {
 }
 
 impl<'a> Extension<'a> {
-	fn new(trees: &'a mut TxHashSet, head: Tip) -> Extension<'a> {
+	fn new(context_id: u32, trees: &'a mut TxHashSet, head: Tip) -> Extension<'a> {
 		Extension {
 			head,
 			output_pmmr: PMMR::at(&mut trees.output_pmmr_h.backend, trees.output_pmmr_h.size),
 			rproof_pmmr: PMMR::at(&mut trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.size),
 			kernel_pmmr: PMMR::at(&mut trees.kernel_pmmr_h.backend, trees.kernel_pmmr_h.size),
 			rollback: false,
+			context_id,
 		}
 	}
 
@@ -1650,7 +1659,7 @@ impl<'a> Extension<'a> {
 
 		// If NRD feature flag is enabled rewind the kernel_pos index
 		// for any NRD kernels in the block being rewound.
-		if global::is_nrd_enabled() {
+		if global::is_nrd_enabled(self.context_id) {
 			let kernel_index = store::nrd_recent_kernel_index();
 			for kernel in block.kernels() {
 				if let KernelFeatures::NoRecentDuplicate { .. } = kernel.features {
@@ -1772,7 +1781,7 @@ impl<'a> Extension<'a> {
 		let now = Instant::now();
 
 		let (utxo_sum, kernel_sum) = self.verify_kernel_sums(
-			header.total_overage(genesis.kernel_mmr_size > 0),
+			header.total_overage(self.context_id, genesis.kernel_mmr_size > 0),
 			header.total_kernel_offset(),
 			secp,
 		)?;
@@ -2322,7 +2331,7 @@ fn input_pos_to_rewind(
 
 /// If NRD enabled then enforce NRD relative height rules.
 fn apply_kernel_rules(kernel: &TxKernel, pos: CommitPos, batch: &Batch<'_>) -> Result<(), Error> {
-	if !global::is_nrd_enabled() {
+	if !global::is_nrd_enabled(batch.db.get_context_id()) {
 		return Ok(());
 	}
 	match kernel.features {

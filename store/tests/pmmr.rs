@@ -33,7 +33,7 @@ fn pmmr_leaf_idx_iter() {
 	let (data_dir, elems) = setup("leaf_idx_iter");
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 
 		// adding first set of 4 elements and sync
@@ -58,7 +58,7 @@ fn pmmr_append() {
 	let (data_dir, elems) = setup("append");
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.to_string(), false, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.to_string(), false, ProtocolVersion(1), 0, None)
 				.unwrap();
 
 		// adding first set of 4 elements and sync
@@ -145,7 +145,7 @@ fn pmmr_compact_leaf_sibling() {
 	// setup the mmr store with all elements
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 		let mmr_size = load(0, &elems[..], &mut backend);
 		backend.sync().unwrap();
@@ -222,7 +222,7 @@ fn pmmr_prune_compact() {
 	// setup the mmr store with all elements
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 		let mmr_size = load(0, &elems[..], &mut backend);
 		backend.sync().unwrap();
@@ -274,7 +274,7 @@ fn pmmr_reload() {
 	// set everything up with an initial backend
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 
 		let mmr_size = load(0, &elems[..], &mut backend);
@@ -334,9 +334,14 @@ fn pmmr_reload() {
 		// create a new backend referencing the data files
 		// and check everything still works as expected
 		{
-			let mut backend =
-				store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), None)
-					.unwrap();
+			let mut backend = store::pmmr::PMMRBackend::new(
+				data_dir.to_string(),
+				true,
+				ProtocolVersion(1),
+				0,
+				None,
+			)
+			.unwrap();
 			assert_eq!(backend.unpruned_size(), mmr_size);
 			{
 				let pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut backend, mmr_size);
@@ -377,7 +382,7 @@ fn pmmr_rewind() {
 	let (data_dir, elems) = setup("rewind");
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 
 		// adding elements and keeping the corresponding root
@@ -494,7 +499,7 @@ fn pmmr_compact_single_leaves() {
 	let (data_dir, elems) = setup("compact_single_leaves");
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 		let mmr_size = load(0, &elems[0..5], &mut backend);
 		backend.sync().unwrap();
@@ -530,7 +535,7 @@ fn pmmr_compact_entire_peak() {
 	let (data_dir, elems) = setup("compact_entire_peak");
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 		let mmr_size = load(0, &elems[0..5], &mut backend);
 		backend.sync().unwrap();
@@ -587,7 +592,7 @@ fn pmmr_compact_horizon() {
 		let mmr_size;
 		{
 			let mut backend =
-				store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), None)
+				store::pmmr::PMMRBackend::new(data_dir.clone(), true, ProtocolVersion(1), 0, None)
 					.unwrap();
 			mmr_size = load(0, &elems[..], &mut backend);
 			backend.sync().unwrap();
@@ -671,6 +676,7 @@ fn pmmr_compact_horizon() {
 				data_dir.to_string(),
 				true,
 				ProtocolVersion(1),
+				0,
 				None,
 			)
 			.unwrap();
@@ -691,6 +697,7 @@ fn pmmr_compact_horizon() {
 				data_dir.to_string(),
 				true,
 				ProtocolVersion(1),
+				0,
 				None,
 			)
 			.unwrap();
@@ -713,6 +720,7 @@ fn pmmr_compact_horizon() {
 				data_dir.to_string(),
 				true,
 				ProtocolVersion(1),
+				0,
 				None,
 			)
 			.unwrap();
@@ -745,7 +753,7 @@ fn compact_twice() {
 	// Scoped to allow Windows to teardown
 	{
 		let mut backend =
-			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), None)
+			store::pmmr::PMMRBackend::new(data_dir.to_string(), true, ProtocolVersion(1), 0, None)
 				.unwrap();
 		let mmr_size = load(0, &elems[..], &mut backend);
 		backend.sync().unwrap();

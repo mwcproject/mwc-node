@@ -77,6 +77,7 @@ impl SegmenterResponder {
 		let res = SegmenterResponder {
 			chain: Arc::new(
 				chain::Chain::init(
+					0,
 					chain_src_dir.into(),
 					dummy_adapter.clone(),
 					genesis,
@@ -147,6 +148,7 @@ impl DesegmenterRequestor {
 		let res = DesegmenterRequestor {
 			chain: Arc::new(
 				chain::Chain::init(
+					0,
 					chain_src_dir.into(),
 					dummy_adapter.clone(),
 					genesis,
@@ -238,7 +240,7 @@ impl DesegmenterRequestor {
 			let max_height = src_chain.header_head().unwrap().height;
 
 			let header_pmmr = src_chain.get_header_pmmr_for_test();
-			let header_pmmr = header_pmmr.read();
+			let header_pmmr = header_pmmr.read().expect("RwLock failure");
 
 			let header = src_chain.get_block_header(&target_hash).unwrap();
 
@@ -352,7 +354,13 @@ impl DesegmenterRequestor {
 	}
 
 	pub fn check_roots(&self, archive_header_height: u64) {
-		let roots = self.chain.get_txhashset_for_test().read().roots().unwrap();
+		let roots = self
+			.chain
+			.get_txhashset_for_test()
+			.read()
+			.expect("RwLock failure")
+			.roots()
+			.unwrap();
 		let archive_header = self
 			.chain
 			.get_header_by_height(archive_header_height)
@@ -378,8 +386,9 @@ impl DesegmenterRequestor {
 	}
 }
 fn test_pibd_copy_impl(src_root_dir: &str, dest_root_dir: &str) {
-	global::set_global_chain_type(global::ChainTypes::Floonet);
-	let genesis = genesis::genesis_floo();
+	global::set_local_chain_type(global::ChainTypes::Floonet);
+	global::set_local_nrd_enabled(false);
+	let genesis = genesis::genesis_floo(0);
 
 	let src_responder = Arc::new(SegmenterResponder::new(src_root_dir, genesis.clone()));
 
@@ -451,13 +460,15 @@ fn test_chain_validation() {
 	let src_root_dir = format!("/Users/bay/.mwc/main_orig/chain_data");
 	let dest_root_dir = format!("/Users/bay/.mwc/main_copy/chain_data");
 
-	global::set_global_chain_type(global::ChainTypes::Mainnet);
-	let genesis = genesis::genesis_main();
+	global::set_local_chain_type(global::ChainTypes::Mainnet);
+	global::set_local_nrd_enabled(true);
+	let genesis = genesis::genesis_main(0);
 
 	let dummy_adapter = Arc::new(NoopAdapter {});
 
 	// The original chain we're reading from
 	let src_chain = chain::Chain::init(
+		0,
 		src_root_dir.into(),
 		dummy_adapter.clone(),
 		genesis.clone(),
@@ -467,6 +478,7 @@ fn test_chain_validation() {
 	.unwrap();
 
 	let dst_chain = chain::Chain::init(
+		0,
 		dest_root_dir.into(),
 		dummy_adapter.clone(),
 		genesis,

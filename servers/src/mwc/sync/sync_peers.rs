@@ -16,9 +16,9 @@
 // Normally we would put that into the base class, but rust doesn't support that.
 
 use mwc_p2p::{PeerAddr, Peers, ReasonForBan};
-use mwc_util::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::RwLock;
 
 #[derive(Debug)]
 enum PeerStatusEvent {
@@ -123,13 +123,16 @@ impl SyncPeers {
 	}
 
 	pub fn reset(&self) {
-		self.peers_status.write().clear();
-		self.banned_peers.write().clear();
-		self.new_events_peers.write().clear();
+		self.peers_status.write().expect("RwLock failed").clear();
+		self.banned_peers.write().expect("RwLock failed").clear();
+		self.new_events_peers
+			.write()
+			.expect("RwLock failed")
+			.clear();
 	}
 
 	pub fn get_banned_peers(&self) -> HashSet<PeerAddr> {
-		self.banned_peers.read().clone()
+		self.banned_peers.read().expect("RwLock failed").clone()
 	}
 
 	pub fn report_no_response(&self, peer: &PeerAddr, message: String) {
@@ -157,8 +160,8 @@ impl SyncPeers {
 	}
 
 	pub fn apply_peers_status(&self, peers: &Arc<Peers>) -> Vec<PeerAddr> {
-		let mut peers_status = self.peers_status.write();
-		let mut check_peers = self.new_events_peers.write();
+		let mut peers_status = self.peers_status.write().expect("RwLock failed");
+		let mut check_peers = self.new_events_peers.write().expect("RwLock failed");
 		let mut offline_peers: Vec<PeerAddr> = Vec::new();
 		for cp in check_peers.iter() {
 			if let Some(status) = peers_status.get_mut(cp) {
@@ -170,7 +173,10 @@ impl SyncPeers {
 						warn!("ban_peer is failed with error: {}", e);
 					}
 					status.reset();
-					self.banned_peers.write().insert(peer_addr.clone());
+					self.banned_peers
+						.write()
+						.expect("RwLock failed")
+						.insert(peer_addr.clone());
 				}
 				if offline {
 					offline_peers.push(peer_addr);
@@ -191,8 +197,11 @@ impl SyncPeers {
 			}
 		}
 
-		let mut peers_status = self.peers_status.write();
-		self.new_events_peers.write().insert(peer.clone());
+		let mut peers_status = self.peers_status.write().expect("RwLock failed");
+		self.new_events_peers
+			.write()
+			.expect("RwLock failed")
+			.insert(peer.clone());
 		match peers_status.get_mut(&peer) {
 			Some(status) => status.add_event(event),
 			None => {

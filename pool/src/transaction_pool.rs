@@ -24,7 +24,6 @@ use self::core::core::{
 	transaction, Block, BlockHeader, HeaderVersion, OutputIdentifier, Transaction, Weighting,
 };
 use self::core::global;
-use self::util::RwLock;
 use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use chrono::prelude::*;
@@ -32,11 +31,11 @@ use lru::LruCache;
 use mwc_core as core;
 use mwc_core::ser;
 use mwc_keychain::base58;
-use mwc_util as util;
 use mwc_util::secp::Secp256k1;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// Transaction pool implementation.
 pub struct TransactionPool<B, P>
@@ -58,6 +57,7 @@ where
 	pub adapter: Arc<P>,
 	///the replay attack cache
 	pub replay_verifier_cache: Arc<RwLock<LruCache<[u8; 32], ()>>>,
+	context_id: u32,
 }
 
 impl<B, P> TransactionPool<B, P>
@@ -66,17 +66,18 @@ where
 	P: PoolAdapter,
 {
 	/// Create a new transaction pool
-	pub fn new(config: PoolConfig, chain: Arc<B>, adapter: Arc<P>) -> Self {
+	pub fn new(context_id: u32, config: PoolConfig, chain: Arc<B>, adapter: Arc<P>) -> Self {
 		TransactionPool {
 			config,
-			txpool: Pool::new(chain.clone(), "txpool".to_string()),
-			stempool: Pool::new(chain.clone(), "stempool".to_string()),
+			txpool: Pool::new(context_id, chain.clone(), "txpool".to_string()),
+			stempool: Pool::new(context_id, chain.clone(), "stempool".to_string()),
 			reorg_cache: Arc::new(RwLock::new(VecDeque::new())),
 			blockchain: chain,
 			adapter,
 			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(
 				NonZeroUsize::new(1000).unwrap(),
 			))),
+			context_id,
 		}
 	}
 
@@ -97,7 +98,7 @@ where
 	}
 
 	fn add_to_reorg_cache(&mut self, entry: &PoolEntry) {
-		let mut cache = self.reorg_cache.write();
+		let mut cache = self.reorg_cache.write().expect("RwLock failure");
 		cache.push_back(entry.clone());
 
 		// We cache 30 mins of txs but we have a hard limit to avoid catastrophic failure.
@@ -145,7 +146,7 @@ where
 		header: &BlockHeader,
 	) -> Result<(), PoolError> {
 		if tx.kernels().iter().any(|k| k.is_nrd()) {
-			if !global::is_nrd_enabled() {
+			if !global::is_nrd_enabled(self.context_id) {
 				return Err(PoolError::NRDKernelNotEnabled);
 			}
 			if header.version < HeaderVersion(4) {
@@ -198,14 +199,14 @@ where
 
 		// Make sure the transaction is valid before anything else.
 		// Validate tx accounting for max tx weight.
-		tx.validate(Weighting::AsTransaction, secp)
+		tx.validate(self.context_id, Weighting::AsTransaction, secp)
 			.map_err(PoolError::InvalidTx)?;
 
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
 
 		{
-			let mut replay_cache = self.replay_verifier_cache.write();
+			let mut replay_cache = self.replay_verifier_cache.write().expect("RwLock failure");
 			let mut vec = Vec::new();
 			ser::serialize_default(&mut vec, &tx)
 				.map_err(|e| PoolError::Other(format!("Unable to serialize tx, {}", e)))?;
@@ -299,7 +300,7 @@ where
 		};
 
 		// Validate the tx to ensure our converted inputs are correct.
-		tx.validate(Weighting::AsTransaction, secp)?;
+		tx.validate(self.context_id, Weighting::AsTransaction, secp)?;
 
 		Ok(PoolEntry::new(tx, entry.src))
 	}
@@ -313,7 +314,7 @@ where
 
 	// Old txs will "age out" after 30 mins.
 	pub fn truncate_reorg_cache(&mut self, cutoff: DateTime<Utc>) {
-		let mut cache = self.reorg_cache.write();
+		let mut cache = self.reorg_cache.write().expect("RwLock failure");
 
 		while cache.front().map(|x| x.tx_at < cutoff).unwrap_or(false) {
 			let _tx = cache.pop_front();
@@ -330,7 +331,13 @@ where
 		header: &BlockHeader,
 		secp: &Secp256k1,
 	) -> Result<(), PoolError> {
-		let entries = self.reorg_cache.read().iter().cloned().collect::<Vec<_>>();
+		let entries = self
+			.reorg_cache
+			.read()
+			.expect("RwLock failure")
+			.iter()
+			.cloned()
+			.collect::<Vec<_>>();
 		debug!(
 			"reconcile_reorg_cache: size: {}, block: {:?} ...",
 			entries.len(),
@@ -353,7 +360,7 @@ where
 			debug!("reconcile_block Started for block {:?}", block);
 
 			debug!("---------------- BEFORE START --------------");
-			let reorg_cache = self.reorg_cache.read();
+			let reorg_cache = self.reorg_cache.read().expect("RwLock failure");
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -380,7 +387,7 @@ where
 
 		if log_enabled!(log::Level::Debug) {
 			debug!("---------------- AFTER START --------------");
-			let reorg_cache = self.reorg_cache.read();
+			let reorg_cache = self.reorg_cache.read().expect("RwLock failure");
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -430,7 +437,7 @@ where
 		// weight for a basic transaction (2 inputs, 2 outputs, 1 kernel) -
 		// (2 * 1) + (2 * 21) + (1 * 3) = 47
 		// minfees = 47 * 500_000 = 23_500_000
-		if tx.fee() < tx.accept_fee() {
+		if tx.fee() < tx.accept_fee(self.context_id) {
 			return Err(PoolError::LowFeeTransaction(tx.fee()));
 		}
 		Ok(())
@@ -450,5 +457,10 @@ where
 	) -> Result<Vec<Transaction>, PoolError> {
 		self.txpool
 			.prepare_mineable_transactions(self.config.mineable_max_weight, secp)
+	}
+
+	// App sessions id
+	pub fn get_context_id(&self) -> u32 {
+		self.context_id
 	}
 }

@@ -24,7 +24,7 @@ use lmdb_zero::LmdbResultExt;
 
 use crate::mwc_core::global;
 use crate::mwc_core::ser::{self, DeserializationMode, ProtocolVersion};
-use crate::util::RwLock;
+use std::sync::RwLock;
 
 /// number of bytes to grow the database by when needed
 pub const ALLOC_CHUNK_SIZE_DEFAULT: usize = 134_217_728; //128 MB
@@ -92,6 +92,7 @@ pub struct Store {
 	name: String,
 	version: ProtocolVersion,
 	alloc_chunk_size: usize,
+	context_id: u32,
 }
 
 impl Store {
@@ -100,6 +101,7 @@ impl Store {
 	/// Be aware of transactional semantics in lmdb
 	/// (transactions are per environment, not per database).
 	pub fn new(
+		context_id: u32,
 		root_path: &str,
 		env_name: Option<&str>,
 		db_name: Option<&str>,
@@ -128,7 +130,7 @@ impl Store {
 			env_builder.set_maxreaders(max_readers)?;
 		}
 
-		let alloc_chunk_size = match global::is_production_mode() {
+		let alloc_chunk_size = match global::is_production_mode(context_id) {
 			true => ALLOC_CHUNK_SIZE_DEFAULT,
 			false => ALLOC_CHUNK_SIZE_DEFAULT_TEST,
 		};
@@ -142,10 +144,11 @@ impl Store {
 			name: db_name,
 			version: DEFAULT_DB_VERSION,
 			alloc_chunk_size,
+			context_id,
 		};
 
 		{
-			let mut w = res.db.write();
+			let mut w = res.db.write().expect("WrLock failure");
 			*w = Some(Arc::new(lmdb::Database::open(
 				res.env.clone(),
 				Some(&res.name),
@@ -157,8 +160,8 @@ impl Store {
 
 	/// Construct a new store using a specific protocol version.
 	/// Permits access to the db with legacy protocol versions for db migrations.
-	pub fn with_version(&self, version: ProtocolVersion) -> Store {
-		let alloc_chunk_size = match global::is_production_mode() {
+	pub fn with_version(&self, context_id: u32, version: ProtocolVersion) -> Store {
+		let alloc_chunk_size = match global::is_production_mode(context_id) {
 			true => ALLOC_CHUNK_SIZE_DEFAULT,
 			false => ALLOC_CHUNK_SIZE_DEFAULT_TEST,
 		};
@@ -168,6 +171,7 @@ impl Store {
 			name: self.name.clone(),
 			version,
 			alloc_chunk_size,
+			context_id,
 		}
 	}
 
@@ -176,9 +180,14 @@ impl Store {
 		self.version
 	}
 
+	/// Context Id for this store
+	pub fn get_context_id(&self) -> u32 {
+		self.context_id
+	}
+
 	/// Opens the database environment
 	pub fn open(&self) -> Result<(), Error> {
-		let mut w = self.db.write();
+		let mut w = self.db.write().expect("WrLock failure");
 		*w = Some(Arc::new(lmdb::Database::open(
 			self.env.clone(),
 			Some(&self.name),
@@ -234,7 +243,7 @@ impl Store {
 		};
 
 		// close
-		let mut w = self.db.write();
+		let mut w = self.db.write().expect("WrLock failure");
 		*w = None;
 
 		unsafe {
@@ -280,7 +289,7 @@ impl Store {
 		key: &[u8],
 		deser_mode: Option<DeserializationMode>,
 	) -> Result<Option<T>, Error> {
-		let lock = self.db.read();
+		let lock = self.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -291,13 +300,14 @@ impl Store {
 			_ => DeserializationMode::default(),
 		};
 		self.get_with(key, &access, &db, |_, mut data| {
-			ser::deserialize(&mut data, self.protocol_version(), d).map_err(From::from)
+			ser::deserialize(&mut data, self.protocol_version(), self.context_id, d)
+				.map_err(From::from)
 		})
 	}
 
 	/// Whether the provided key exists
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.db.read();
+		let lock = self.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -313,7 +323,7 @@ impl Store {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.db.read();
+		let lock = self.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -361,7 +371,7 @@ pub struct Batch<'a> {
 impl<'a> Batch<'a> {
 	/// Writes a single key/value pair to the db
 	pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read();
+		let lock = self.store.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -386,6 +396,11 @@ impl<'a> Batch<'a> {
 		self.store.protocol_version()
 	}
 
+	/// Context id
+	pub fn get_context_id(&self) -> u32 {
+		self.store.get_context_id()
+	}
+
 	/// Writes a single key and its `Writeable` value to the db.
 	/// Encapsulates serialization using the specified protocol version.
 	pub fn put_ser_with_version<W: ser::Writeable>(
@@ -407,7 +422,7 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.store.db.read();
+		let lock = self.store.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -426,7 +441,7 @@ impl<'a> Batch<'a> {
 	/// Whether the provided key exists.
 	/// This is in the context of the current write transaction.
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.store.db.read();
+		let lock = self.store.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -461,7 +476,12 @@ impl<'a> Batch<'a> {
 			_ => DeserializationMode::default(),
 		};
 		self.get_with(key, |_, mut data| {
-			match ser::deserialize(&mut data, self.protocol_version(), d) {
+			match ser::deserialize(
+				&mut data,
+				self.protocol_version(),
+				self.store.get_context_id(),
+				d,
+			) {
 				Ok(res) => Ok(res),
 				Err(e) => Err(From::from(e)),
 			}
@@ -470,7 +490,7 @@ impl<'a> Batch<'a> {
 
 	/// Deletes a key/value pair from the db
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read();
+		let lock = self.store.db.read().expect("WrLock failure");
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;

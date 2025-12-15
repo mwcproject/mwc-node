@@ -36,14 +36,15 @@ fn clean_output_dir(dir_name: &str) {
 #[test]
 fn test_unexpected_zip() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let db_root = format!(".mwc_txhashset_zip");
 	let secp = Secp256k1::with_caps(ContextFlag::Commit);
 	clean_output_dir(&db_root);
 	{
-		let chain_store = ChainStore::new(&db_root).unwrap();
+		let chain_store = ChainStore::new(0, &db_root).unwrap();
 		let store = Arc::new(chain_store);
 		txhashset::TxHashSet::open(db_root.clone(), store.clone(), None, &secp).unwrap();
-		let head = BlockHeader::default();
+		let head = BlockHeader::default(0);
 		// First check if everything works out of the box
 		assert!(txhashset::zip_read(db_root.clone(), &head).is_ok());
 		let zip_path = Path::new(&db_root).join(format!(

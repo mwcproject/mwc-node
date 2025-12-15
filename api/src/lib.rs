@@ -50,11 +50,8 @@ pub use crate::auth::{
 };
 pub use crate::foreign::Foreign;
 pub use crate::foreign_rpc::ForeignRpc;
-pub use crate::handlers::node_apis;
+pub use crate::handlers::{build_node_router, node_apis};
 pub use crate::owner::Owner;
-pub use crate::owner::{
-	get_server_onion_address, reset_server_onion_address, set_server_onion_address,
-};
 pub use crate::owner_rpc::OwnerRpc;
 pub use crate::rest::*;
 pub use crate::router::*;

@@ -291,6 +291,7 @@ impl<T: PMMRable> PMMRBackend<T> {
 		data_dir: P,
 		prunable: bool,
 		version: ProtocolVersion,
+		context_id: u32,
 		header: Option<&BlockHeader>,
 	) -> io::Result<PMMRBackend<T>> {
 		let data_dir = data_dir.as_ref();
@@ -304,14 +305,25 @@ impl<T: PMMRable> PMMRBackend<T> {
 				data_dir.join(PMMR_SIZE_FILE),
 				SizeInfo::FixedSize(SizeEntry::LEN as u16),
 				version,
+				context_id,
 			)?))
 		};
 
 		// Hash file is always "fixed size" and we use 32 bytes per hash.
 		let hash_size_info = SizeInfo::FixedSize(Hash::LEN.try_into().unwrap());
 
-		let hash_file = DataFile::open(&data_dir.join(PMMR_HASH_FILE), hash_size_info, version)?;
-		let data_file = DataFile::open(&data_dir.join(PMMR_DATA_FILE), size_info, version)?;
+		let hash_file = DataFile::open(
+			&data_dir.join(PMMR_HASH_FILE),
+			hash_size_info,
+			version,
+			context_id,
+		)?;
+		let data_file = DataFile::open(
+			&data_dir.join(PMMR_DATA_FILE),
+			size_info,
+			version,
+			context_id,
+		)?;
 
 		let leaf_set_path = data_dir.join(PMMR_LEAF_FILE);
 

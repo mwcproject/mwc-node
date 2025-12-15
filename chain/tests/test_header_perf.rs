@@ -32,12 +32,13 @@ mod chain_test_helper;
 
 fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &str) {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
-	let mut genesis = genesis::genesis_main();
+	let mut genesis = genesis::genesis_main(0);
 
 	if is_test_chain {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-		genesis = pow::mine_genesis_block().unwrap();
+		genesis = pow::mine_genesis_block(0).unwrap();
 	}
+	global::set_local_nrd_enabled(false);
 
 	{
 		debug!("Reading Chain, genesis block: {}", genesis.hash());
@@ -46,6 +47,7 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 		// The original chain we're reading from
 		let src_chain = Arc::new(
 			chain::Chain::init(
+				0,
 				src_root_dir.into(),
 				dummy_adapter.clone(),
 				genesis.clone(),
@@ -58,6 +60,7 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 		// And the output chain we're writing to
 		let dest_chain = Arc::new(
 			chain::Chain::init(
+				0,
 				dest_root_dir.into(),
 				dummy_adapter,
 				genesis.clone(),

@@ -39,11 +39,13 @@ fn test_coinbase_maturity() {
 	let chain_dir = ".mwc_coinbase";
 	clean_output_dir(chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 
-	let genesis_block = pow::mine_genesis_block().unwrap();
+	let genesis_block = pow::mine_genesis_block(0).unwrap();
 
 	{
 		let chain = chain::Chain::init(
+			0,
 			chain_dir.to_string(),
 			Arc::new(NoopAdapter {}),
 			genesis_block,
@@ -64,14 +66,16 @@ fn test_coinbase_maturity() {
 		let mut cache_values = VecDeque::new();
 
 		let next_header_info = consensus::next_difficulty(
+			0,
 			prev.height + 1,
 			chain.difficulty_iter().unwrap(),
 			&mut cache_values,
 		);
 		let reward =
-			libtx::reward::output(&keychain, &builder, &key_id1, 0, false, 1, chain.secp())
+			libtx::reward::output(0, &keychain, &builder, &key_id1, 0, false, 1, chain.secp())
 				.unwrap();
 		let mut block = core::core::Block::new(
+			0,
 			&prev,
 			&[],
 			next_header_info.difficulty,
@@ -85,10 +89,11 @@ fn test_coinbase_maturity() {
 		chain.set_txhashset_roots(&mut block).unwrap();
 
 		pow::pow_size(
+			0,
 			&mut block.header,
 			next_header_info.difficulty,
-			global::proofsize(),
-			global::min_edge_bits(),
+			global::proofsize(0),
+			global::min_edge_bits(0),
 		)
 		.unwrap();
 
@@ -104,7 +109,7 @@ fn test_coinbase_maturity() {
 
 		let amount = consensus::MWC_FIRST_GROUP_REWARD;
 
-		let lock_height = 1 + global::coinbase_maturity();
+		let lock_height = 1 + global::coinbase_maturity(0);
 		assert_eq!(lock_height, 4);
 
 		// here we build a tx that attempts to spend the earlier coinbase output
@@ -123,6 +128,7 @@ fn test_coinbase_maturity() {
 		let txs = &[coinbase_txn.clone()];
 		let fees = txs.iter().map(|tx| tx.fee()).sum();
 		let reward = libtx::reward::output(
+			0,
 			&keychain,
 			&builder,
 			&key_id3,
@@ -133,11 +139,13 @@ fn test_coinbase_maturity() {
 		)
 		.unwrap();
 		let next_header_info = consensus::next_difficulty(
+			0,
 			prev.height + 1,
 			chain.difficulty_iter().unwrap(),
 			&mut cache_values,
 		);
 		let mut block = core::core::Block::new(
+			0,
 			&prev,
 			txs,
 			next_header_info.difficulty,
@@ -161,10 +169,11 @@ fn test_coinbase_maturity() {
 		}
 
 		pow::pow_size(
+			0,
 			&mut block.header,
 			next_header_info.difficulty,
-			global::proofsize(),
-			global::min_edge_bits(),
+			global::proofsize(0),
+			global::min_edge_bits(0),
 		)
 		.unwrap();
 
@@ -178,11 +187,13 @@ fn test_coinbase_maturity() {
 			let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 
 			let next_header_info = consensus::next_difficulty(
+				0,
 				prev.height + 1,
 				chain.difficulty_iter().unwrap(),
 				&mut cache_values,
 			);
 			let reward = libtx::reward::output(
+				0,
 				&keychain,
 				&builder,
 				&key_id1,
@@ -193,6 +204,7 @@ fn test_coinbase_maturity() {
 			)
 			.unwrap();
 			let mut block = core::core::Block::new(
+				0,
 				&prev,
 				&[],
 				next_header_info.difficulty,
@@ -207,10 +219,11 @@ fn test_coinbase_maturity() {
 			chain.set_txhashset_roots(&mut block).unwrap();
 
 			pow::pow_size(
+				0,
 				&mut block.header,
 				next_header_info.difficulty,
-				global::proofsize(),
-				global::min_edge_bits(),
+				global::proofsize(0),
+				global::min_edge_bits(0),
 			)
 			.unwrap();
 
@@ -226,7 +239,7 @@ fn test_coinbase_maturity() {
 
 			let amount = consensus::MWC_FIRST_GROUP_REWARD;
 
-			let lock_height = 1 + global::coinbase_maturity();
+			let lock_height = 1 + global::coinbase_maturity(0);
 			assert_eq!(lock_height, 4);
 
 			// here we build a tx that attempts to spend the earlier coinbase output
@@ -245,6 +258,7 @@ fn test_coinbase_maturity() {
 			let txs = &[coinbase_txn.clone()];
 			let fees = txs.iter().map(|tx| tx.fee()).sum();
 			let reward = libtx::reward::output(
+				0,
 				&keychain,
 				&builder,
 				&key_id3,
@@ -255,11 +269,13 @@ fn test_coinbase_maturity() {
 			)
 			.unwrap();
 			let next_header_info = consensus::next_difficulty(
+				0,
 				prev.height + 1,
 				chain.difficulty_iter().unwrap(),
 				&mut cache_values,
 			);
 			let mut block = core::core::Block::new(
+				0,
 				&prev,
 				txs,
 				next_header_info.difficulty,
@@ -283,10 +299,11 @@ fn test_coinbase_maturity() {
 			}
 
 			pow::pow_size(
+				0,
 				&mut block.header,
 				next_header_info.difficulty,
-				global::proofsize(),
-				global::min_edge_bits(),
+				global::proofsize(0),
+				global::min_edge_bits(0),
 			)
 			.unwrap();
 
@@ -300,6 +317,7 @@ fn test_coinbase_maturity() {
 				let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
 
 				let reward = libtx::reward::output(
+					0,
 					&keychain,
 					&builder,
 					&pk,
@@ -310,11 +328,13 @@ fn test_coinbase_maturity() {
 				)
 				.unwrap();
 				let next_header_info = consensus::next_difficulty(
+					0,
 					prev.height + 1,
 					chain.difficulty_iter().unwrap(),
 					&mut cache_values,
 				);
 				let mut block = core::core::Block::new(
+					0,
 					&prev,
 					&[],
 					next_header_info.difficulty,
@@ -328,10 +348,11 @@ fn test_coinbase_maturity() {
 				chain.set_txhashset_roots(&mut block).unwrap();
 
 				pow::pow_size(
+					0,
 					&mut block.header,
 					next_header_info.difficulty,
-					global::proofsize(),
-					global::min_edge_bits(),
+					global::proofsize(0),
+					global::min_edge_bits(0),
 				)
 				.unwrap();
 
@@ -349,11 +370,13 @@ fn test_coinbase_maturity() {
 			let txs = &[coinbase_txn];
 			let fees = txs.iter().map(|tx| tx.fee()).sum();
 			let next_header_info = consensus::next_difficulty(
+				0,
 				prev.height + 1,
 				chain.difficulty_iter().unwrap(),
 				&mut cache_values,
 			);
 			let reward = libtx::reward::output(
+				0,
 				&keychain,
 				&builder,
 				&key_id4,
@@ -364,6 +387,7 @@ fn test_coinbase_maturity() {
 			)
 			.unwrap();
 			let mut block = core::core::Block::new(
+				0,
 				&prev,
 				txs,
 				next_header_info.difficulty,
@@ -378,10 +402,11 @@ fn test_coinbase_maturity() {
 			chain.set_txhashset_roots(&mut block).unwrap();
 
 			pow::pow_size(
+				0,
 				&mut block.header,
 				next_header_info.difficulty,
-				global::proofsize(),
-				global::min_edge_bits(),
+				global::proofsize(0),
+				global::min_edge_bits(0),
 			)
 			.unwrap();
 

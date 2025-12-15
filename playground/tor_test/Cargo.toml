@@ -1,0 +1,38 @@
+[package]
+name = "tor-arti-onion-test"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+arti-client = { version = "0.34", features = [
+    "tokio",
+    "native-tls",
+    "onion-service-service",
+    "onion-service-client",
+    "pt-client",
+    "keymgr",
+    "ephemeral-keystore",
+    "experimental-api",
+] }
+tracing-subscriber = "0.3.20"
+tor-error = "0.34.0"
+tor-hsservice = "0.34.0"
+tor-proto = "0.34.0"
+tor-cell = "0.34.0"
+tor-keymgr = "0.34.0"
+tor-config = "0.34.0"
+tor-hscrypto = "0.34.0"
+tor-llcrypto = "0.34.0"
+tor-rtcompat = "0.34.0"
+
+thiserror = "2"
+safelog = "0.5"
+futures = "0.3.14"
+tokio         = { version = "1", features = ["full"] }
+anyhow        = "1"
+hex = "0.4.3"
+log4rs = { version = "1.3", features = ["rolling_file_appender", "compound_policy", "size_trigger", "fixed_window_roller", "gzip"] }
+log = "0.4"
+

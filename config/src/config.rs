@@ -141,7 +141,7 @@ pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalCon
 impl Default for ConfigMembers {
 	fn default() -> ConfigMembers {
 		ConfigMembers {
-			config_file_version: Some(1),
+			config_file_version: Some(crate::types::CONFIG_FILE_VERSION),
 			server: ServerConfig::default(),
 			logging: Some(LoggingConfig::default()),
 		}
@@ -321,24 +321,39 @@ impl GlobalConfig {
 		let mut config: ConfigMembers =
 			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone()))
 				.expect(format!("Unable to parse the configuration {}", config_str).as_str());
-		if config.config_file_version == Some(2) {
+		if config.config_file_version == Some(crate::types::CONFIG_FILE_VERSION) {
 			return config_str;
 		}
 
 		// Apply changes both textually and structurally
 
 		let mut config_str = config_str;
-		if config.config_file_version == None {
-			config_str = config_str.replace("\n#########################################\n### SERVER CONFIGURATION              ###", "\nconfig_file_version = 2\n\n#########################################\n### SERVER CONFIGURATION              ###");
-		} else if config.config_file_version == Some(1) {
-			config_str =
-				config_str.replace("\nconfig_file_version = 1\n", "\nconfig_file_version = 2\n");
+		match config.config_file_version {
+			Some(config_file_version) => {
+				config_str = config_str.replace(
+					format!("\nconfig_file_version = {}\n", config_file_version).as_str(),
+					format!(
+						"\nconfig_file_version = {}\n",
+						crate::types::CONFIG_FILE_VERSION
+					)
+					.as_str(),
+				);
+			}
+			None => {
+				config_str = config_str.replace("\n#########################################\n### SERVER CONFIGURATION              ###",
+												format!("\nconfig_file_version = {}\n\n#########################################\n### SERVER CONFIGURATION              ###", crate::types::CONFIG_FILE_VERSION).as_str());
+			}
 		}
-		config.config_file_version = Some(2);
+		config.config_file_version = Some(crate::types::CONFIG_FILE_VERSION);
 
 		let config_str = config_str.replace(
 			"\naccept_fee_base",
 			"\n# 'accept_fee_base' is renamed to 'tx_fee_base'. Normally you are not expected to set it, use default value.\n#accept_fee_base",
+		);
+
+		let config_str = config_str.replace(
+			"\nhost",
+			"\n# 'host' is obsolete now because it value defined by tor usage.\n#host",
 		);
 
 		// Verify equivalence

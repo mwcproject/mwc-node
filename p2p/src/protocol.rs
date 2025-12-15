@@ -77,6 +77,7 @@ impl MessageHandler for Protocol {
 						height: adapter.total_height()?,
 					},
 					self.peer_info.version,
+					self.server.get_context_id(),
 				)?)
 			}
 
@@ -100,7 +101,12 @@ impl MessageHandler for Protocol {
 				debug!("handle_payload: GetTransaction: {}", h);
 				let tx = adapter.get_transaction(h);
 				if let Some(tx) = tx {
-					Consumed::Response(Msg::new(Type::Transaction, tx, self.peer_info.version)?)
+					Consumed::Response(Msg::new(
+						Type::Transaction,
+						tx,
+						self.peer_info.version,
+						self.server.get_context_id(),
+					)?)
 				} else {
 					Consumed::None
 				}
@@ -122,7 +128,12 @@ impl MessageHandler for Protocol {
 				trace!("handle_payload: GetBlock: {}", h);
 				let bo = adapter.get_block(h, &self.peer_info);
 				if let Some(b) = bo {
-					Consumed::Response(Msg::new(Type::Block, b, self.peer_info.version)?)
+					Consumed::Response(Msg::new(
+						Type::Block,
+						b,
+						self.peer_info.version,
+						self.server.get_context_id(),
+					)?)
 				} else {
 					Consumed::None
 				}
@@ -146,7 +157,12 @@ impl MessageHandler for Protocol {
 			Message::GetCompactBlock(h) => {
 				if let Some(b) = adapter.get_block(h, &self.peer_info) {
 					let cb: CompactBlock = b.into();
-					Consumed::Response(Msg::new(Type::CompactBlock, cb, self.peer_info.version)?)
+					Consumed::Response(Msg::new(
+						Type::CompactBlock,
+						cb,
+						self.peer_info.version,
+						self.server.get_context_id(),
+					)?)
 				} else {
 					Consumed::None
 				}
@@ -212,6 +228,7 @@ impl MessageHandler for Protocol {
 					Type::Headers,
 					Headers { headers },
 					self.peer_info.version,
+					self.server.get_context_id(),
 				)?)
 			}
 
@@ -255,6 +272,7 @@ impl MessageHandler for Protocol {
 					Type::PeerAddrs,
 					PeerAddrs { peers },
 					self.peer_info.version,
+					self.server.get_context_id(),
 				)?)
 			}
 
@@ -263,11 +281,11 @@ impl MessageHandler for Protocol {
 				for peer in peer_addrs.peers {
 					match peer.clone() {
 						PeerAddr::Onion(address) => {
-							let self_address = self.server.self_onion_address.as_ref();
+							let self_address = self.server.get_self_onion_address()?;
 							if self_address.is_none() {
 								peers.push(peer);
 							} else {
-								if &address != self_address.unwrap() {
+								if address != self_address.unwrap() {
 									peers.push(peer);
 								} else {
 									debug!("Not pushing self onion address = {}", address);
@@ -307,6 +325,7 @@ impl MessageHandler for Protocol {
 							bytes: file_sz,
 						},
 						self.peer_info.version,
+						self.server.get_context_id(),
 					)?;
 					resp.add_attachment(txhashset.reader);
 					Consumed::Response(resp)
@@ -340,6 +359,7 @@ impl MessageHandler for Protocol {
 									headers_root_hash: segmenter.headers_root()?,
 								},
 								self.peer_info.version,
+								self.server.get_context_id(),
 							)?)
 						} else {
 							Consumed::Response(Msg::new(
@@ -349,6 +369,7 @@ impl MessageHandler for Protocol {
 									hash: header.hash(),
 								},
 								self.peer_info.version,
+								self.server.get_context_id(),
 							)?)
 						}
 					}
@@ -398,6 +419,7 @@ impl MessageHandler for Protocol {
 							},
 						},
 						self.peer_info.version,
+						self.server.get_context_id(),
 					)?),
 					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -407,6 +429,7 @@ impl MessageHandler for Protocol {
 								hash: hash,
 							},
 							self.peer_info.version,
+							self.server.get_context_id(),
 						)?)
 					}
 					Err(e) => {
@@ -452,6 +475,7 @@ impl MessageHandler for Protocol {
 										output_bitmap_root: bitmap_root_hash,
 									},
 									self.peer_info.version,
+									self.server.get_context_id(),
 								)?)
 							} else {
 								Consumed::None
@@ -464,6 +488,7 @@ impl MessageHandler for Protocol {
 									hash: header_hash,
 								},
 								self.peer_info.version,
+								self.server.get_context_id(),
 							)?)
 						}
 					}
@@ -490,6 +515,7 @@ impl MessageHandler for Protocol {
 							segment: segment.into(),
 						},
 						self.peer_info.version,
+						self.server.get_context_id(),
 					)?),
 					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -499,6 +525,7 @@ impl MessageHandler for Protocol {
 								hash: hash,
 							},
 							self.peer_info.version,
+							self.server.get_context_id(),
 						)?)
 					}
 					Err(e) => {
@@ -523,6 +550,7 @@ impl MessageHandler for Protocol {
 							},
 						},
 						self.peer_info.version,
+						self.server.get_context_id(),
 					)?),
 					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -532,6 +560,7 @@ impl MessageHandler for Protocol {
 								hash: hash,
 							},
 							self.peer_info.version,
+							self.server.get_context_id(),
 						)?)
 					}
 					Err(e) => {
@@ -553,6 +582,7 @@ impl MessageHandler for Protocol {
 							segment,
 						},
 						self.peer_info.version,
+						self.server.get_context_id(),
 					)?),
 					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -562,6 +592,7 @@ impl MessageHandler for Protocol {
 								hash: hash,
 							},
 							self.peer_info.version,
+							self.server.get_context_id(),
 						)?)
 					}
 					Err(e) => {
@@ -584,6 +615,7 @@ impl MessageHandler for Protocol {
 							segment,
 						},
 						self.peer_info.version,
+						self.server.get_context_id(),
 					)?),
 					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -593,6 +625,7 @@ impl MessageHandler for Protocol {
 								hash: hash,
 							},
 							self.peer_info.version,
+							self.server.get_context_id(),
 						)?)
 					}
 					Err(e) => {

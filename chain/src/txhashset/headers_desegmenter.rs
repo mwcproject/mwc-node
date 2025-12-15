@@ -27,10 +27,10 @@ use crate::types::HEADERS_PER_BATCH;
 use crate::{pibd_params, Options};
 use mwc_core::core::pmmr::{VecBackend, PMMR};
 use mwc_core::core::{SegmentIdentifier, SegmentType};
-use mwc_util::RwLock;
 use std::cmp;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// There is no reasons to introduce a special type, for that. For place maker any type will work
 pub const HEADER_HASHES_STUB_TYPE: SegmentType = SegmentType::Bitmap;
@@ -278,7 +278,10 @@ impl<T> HeadersRecieveCache<T> {
 
 	/// Reset all state
 	pub fn reset(&mut self) {
-		self.main_headers_cache.write().clear();
+		self.main_headers_cache
+			.write()
+			.expect("RwLock failure")
+			.clear();
 		self.archive_header_height = 0;
 	}
 
@@ -320,6 +323,7 @@ impl<T> HeadersRecieveCache<T> {
 			if self
 				.main_headers_cache
 				.read()
+				.expect("RwLock failure")
 				.contains_key(&(hash_idx * HEADERS_PER_BATCH as u64 + 1))
 			{
 				if hash_idx == last_in_cache + 1 {
@@ -435,7 +439,7 @@ impl<T> HeadersRecieveCache<T> {
 			));
 		}
 
-		let mut main_headers_cache = self.main_headers_cache.write();
+		let mut main_headers_cache = self.main_headers_cache.write().expect("RwLock failure");
 		// duplicated data, skipping it
 		if main_headers_cache.contains_key(&first_header.height) {
 			return Ok(());
@@ -459,7 +463,7 @@ impl<T> HeadersRecieveCache<T> {
 		let mut tip_height = tip.height;
 
 		{
-			let mut main_headers_cache = self.main_headers_cache.write();
+			let mut main_headers_cache = self.main_headers_cache.write().expect("RwLock failure");
 			while let Some((height, (headers, _))) = main_headers_cache.first_key_value() {
 				debug_assert!(!headers.is_empty());
 				debug_assert!(headers.len() == HEADERS_PER_BATCH as usize);
@@ -516,7 +520,12 @@ impl<T> HeadersRecieveCache<T> {
 				.header_head()
 				.expect("Header head must be always defined");
 
-			match self.main_headers_cache.read().first_key_value() {
+			match self
+				.main_headers_cache
+				.read()
+				.expect("RwLock failure")
+				.first_key_value()
+			{
 				Some((height, _)) => Ok(*height <= tip.height + 1),
 				None => Ok(false),
 			}

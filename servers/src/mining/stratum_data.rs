@@ -19,13 +19,13 @@
 
 use crate::common::stats::{StratumStats, WorkerStats};
 use crate::core::consensus::graph_weight;
-use crate::util::RwLock;
 use chrono::prelude::Utc;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::SystemTime;
 
 type Tx = mpsc::UnboundedSender<String>;
@@ -69,7 +69,7 @@ impl Worker {
 
 	// triggering will kick out worker from the stratum server.
 	pub fn trigger_kill_switch(&self) {
-		if let Some(s) = self.kill_switch.write().take() {
+		if let Some(s) = self.kill_switch.write().expect("RwLock failure").take() {
 			let _ = s.send(());
 		}
 	}
@@ -89,20 +89,20 @@ impl WorkersMap {
 
 	#[allow(dead_code)]
 	fn size(&self) -> usize {
-		self.workers.read().len()
+		self.workers.read().expect("RwLock failed").len()
 	}
 
 	/// Add a new worker, return total number of registered workers
 	/// Return : number of registered workers
 	fn add(&self, worker_id: &usize, worker: Worker) -> usize {
-		let mut workers = self.workers.write();
+		let mut workers = self.workers.write().expect("RwLock failed");
 		workers.insert(worker_id.clone(), worker);
 		workers.len()
 	}
 
 	/// Get worker data
 	fn get(&self, worker_id: &usize) -> Option<Worker> {
-		match self.workers.read().get(worker_id) {
+		match self.workers.read().expect("RwLock failed").get(worker_id) {
 			Some(worker) => Some(worker.clone()),
 			_ => None,
 		}
@@ -110,7 +110,7 @@ impl WorkersMap {
 
 	/// Get worker tx channel, for message sending
 	fn get_tx(&self, worker_id: &usize) -> Option<Arc<Tx>> {
-		match self.workers.read().get(worker_id) {
+		match self.workers.read().expect("RwLock failed").get(worker_id) {
 			Some(worker) => Some(worker.tx.clone()),
 			_ => None,
 		}
@@ -118,7 +118,12 @@ impl WorkersMap {
 
 	/// Update worker data
 	fn update(&self, worker: &Worker) {
-		if let Some(w) = self.workers.write().get_mut(&worker.id) {
+		if let Some(w) = self
+			.workers
+			.write()
+			.expect("RwLock failed")
+			.get_mut(&worker.id)
+		{
 			w.update(worker);
 		}
 	}
@@ -126,7 +131,7 @@ impl WorkersMap {
 	/// Add a new worker, return total number of registered workers
 	/// Return : number of registered workers
 	fn remove(&self, worker_id: &usize) -> usize {
-		let mut workers = self.workers.write();
+		let mut workers = self.workers.write().expect("RwLock failed");
 		if workers.remove(&worker_id).is_none() {
 			error!("Stratum: no such addr in map for worker {}", worker_id);
 		}
@@ -134,11 +139,21 @@ impl WorkersMap {
 	}
 
 	fn get_workers_list(&self) -> Vec<Worker> {
-		self.workers.read().values().map(|w| w.clone()).collect()
+		self.workers
+			.read()
+			.expect("RwLock failed")
+			.values()
+			.map(|w| w.clone())
+			.collect()
 	}
 
 	fn get_woker_id_list(&self) -> Vec<usize> {
-		self.workers.read().keys().map(|k| k.clone()).collect()
+		self.workers
+			.read()
+			.expect("RwLock failed")
+			.keys()
+			.map(|k| k.clone())
+			.collect()
 	}
 }
 
@@ -261,13 +276,14 @@ impl WorkersList {
 			.store(difficulty, Ordering::Relaxed);
 	}
 
-	pub fn update_network_hashrate(&self) {
+	pub fn update_network_hashrate(&self, context_id: u32) {
 		let network_hashrate =
 			42.0 * (self
 				.stratum_stats
 				.network_difficulty
 				.load(Ordering::Relaxed) as f64
 				/ graph_weight(
+					context_id,
 					self.stratum_stats.block_height.load(Ordering::Relaxed),
 					self.stratum_stats.edge_bits.load(Ordering::Relaxed) as u8,
 				) as f64) / 60.0;

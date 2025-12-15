@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use clap::ArgMatches;
 /// Mwc client commands processing
 use std::net::SocketAddr;
+use std::time::Duration;
 
-use clap::ArgMatches;
-
-use crate::api::client;
-use crate::api::json_rpc::*;
 use crate::api::types::Status;
 use crate::config::GlobalConfig;
 use crate::p2p::types::PeerInfoDisplay;
 use crate::util::file::get_first_line;
+use mwc_api::client::HttpClient;
 use serde_json::json;
 
 const ENDPOINT: &str = "/v2/owner";
@@ -30,34 +29,40 @@ const ENDPOINT: &str = "/v2/owner";
 #[derive(Clone)]
 pub struct HTTPNodeClient {
 	node_url: String,
-	node_api_secret: Option<String>,
+	client_validation: HttpClient,
+	client_normal: HttpClient,
 }
+
 impl HTTPNodeClient {
 	/// Create a new client that will communicate with the given mwc node
-	pub fn new(node_url: &str, node_api_secret: Option<String>) -> HTTPNodeClient {
+	pub fn new(context_id: u32, node_url: &str, node_api_secret: Option<String>) -> HTTPNodeClient {
 		HTTPNodeClient {
 			node_url: node_url.to_owned(),
-			node_api_secret: node_api_secret,
+			client_validation: HttpClient::new(
+				context_id,
+				Duration::from_secs(21600),
+				node_api_secret.clone(),
+			),
+			client_normal: HttpClient::new(
+				context_id,
+				Duration::from_secs(20),
+				node_api_secret.clone(),
+			),
 		}
 	}
+
 	fn send_json_request<D: serde::de::DeserializeOwned>(
 		&self,
 		method: &str,
 		params: &serde_json::Value,
 	) -> Result<D, Error> {
-		let timeout = match method {
+		let client = match method {
 			// 6 hours read timeout
-			"validate_chain" => client::TimeOut::new(20, 21600, 20),
-			_ => client::TimeOut::default(),
+			"validate_chain" => &self.client_validation,
+			_ => &self.client_normal,
 		};
 		let url = format!("http://{}{}", self.node_url, ENDPOINT);
-		let req = build_request(method, params);
-		let res = client::post::<Request, Response>(
-			url.as_str(),
-			self.node_api_secret.clone(),
-			&req,
-			timeout,
-		);
+		let res = client.post_request(&url, params);
 
 		match res {
 			Err(e) => {
@@ -65,10 +70,9 @@ impl HTTPNodeClient {
 				error!("{}", report);
 				Err(Error::RPCError(report))
 			}
-			Ok(inner) => match inner.clone().into_result() {
+			Ok(inner) => match serde_json::from_value(inner) {
 				Ok(r) => Ok(r),
 				Err(e) => {
-					error!("{:?}", inner);
 					let report = format!("Unable to parse response for {}: {}", method, e);
 					error!("{}", report);
 					Err(Error::RPCError(report))
@@ -200,11 +204,15 @@ impl HTTPNodeClient {
 	}
 }
 
-pub fn client_command(client_args: &ArgMatches<'_>, global_config: GlobalConfig) -> i32 {
+pub fn client_command(
+	context_id: u32,
+	client_args: &ArgMatches<'_>,
+	global_config: GlobalConfig,
+) -> i32 {
 	// just get defaults from the global config
 	let server_config = global_config.members.unwrap().server;
 	let api_secret = get_first_line(server_config.api_secret_path.clone());
-	let node_client = HTTPNodeClient::new(&server_config.api_http_addr, api_secret);
+	let node_client = HTTPNodeClient::new(context_id, &server_config.api_http_addr, api_secret);
 
 	match client_args.subcommand() {
 		("status", Some(_)) => {

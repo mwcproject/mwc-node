@@ -62,6 +62,7 @@ fn clean_output_dir(test_dir: &str) {
 
 fn setup(test_dir: &str) {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
+	global::set_local_nrd_enabled(false);
 	util::init_test_logger();
 	clean_output_dir(test_dir);
 }
@@ -71,7 +72,7 @@ fn test_exists() -> Result<(), store::Error> {
 	let test_dir = "target/test_exists";
 	setup(test_dir);
 
-	let store = store::Store::new(test_dir, Some("test1"), None, None)?;
+	let store = store::Store::new(0, test_dir, Some("test1"), None, None)?;
 
 	let key = [0, 0, 0, 1];
 	let value = [1, 1, 1, 1];
@@ -100,7 +101,7 @@ fn test_iter() -> Result<(), store::Error> {
 	let test_dir = "target/test_iter";
 	setup(test_dir);
 
-	let store = store::Store::new(test_dir, Some("test1"), None, None)?;
+	let store = store::Store::new(0, test_dir, Some("test1"), None, None)?;
 
 	let key = [0, 0, 0, 1];
 	let value = [1, 1, 1, 1];
@@ -139,7 +140,7 @@ fn lmdb_allocate() -> Result<(), store::Error> {
 	// Allocate more than the initial chunk, ensuring
 	// the DB resizes underneath
 	{
-		let store = store::Store::new(test_dir, Some("test1"), None, None)?;
+		let store = store::Store::new(0, test_dir, Some("test1"), None, None)?;
 
 		for i in 0..WRITE_CHUNK_SIZE * 2 {
 			println!("Allocating chunk: {}", i);
@@ -156,7 +157,7 @@ fn lmdb_allocate() -> Result<(), store::Error> {
 	println!("***********************************");
 	// Open env again and keep adding
 	{
-		let store = store::Store::new(test_dir, Some("test1"), None, None)?;
+		let store = store::Store::new(0, test_dir, Some("test1"), None, None)?;
 		for i in 0..WRITE_CHUNK_SIZE * 2 {
 			println!("Allocating chunk: {}", i);
 			let chunk = PhatChunkStruct::new();

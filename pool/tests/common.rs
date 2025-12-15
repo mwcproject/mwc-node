@@ -46,6 +46,7 @@ where
 {
 	let key_id = keychain::ExtKeychain::derive_key_id(1, 0, 0, 0, 0);
 	let reward = reward::output(
+		0,
 		keychain,
 		&ProofBuilder::new(keychain),
 		&key_id,
@@ -56,11 +57,12 @@ where
 	)
 	.unwrap();
 
-	genesis::genesis_dev().with_reward(reward.0, reward.1)
+	genesis::genesis_dev(0).with_reward(reward.0, reward.1)
 }
 
 pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
 	Chain::init(
+		0,
 		dir_name.to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis,
@@ -86,11 +88,16 @@ where
 	let prev = chain.head_header().unwrap();
 	let height = prev.height + 1;
 	let mut cache_values = VecDeque::new();
-	let next_header_info =
-		consensus::next_difficulty(height, chain.difficulty_iter().unwrap(), &mut cache_values);
+	let next_header_info = consensus::next_difficulty(
+		0,
+		height,
+		chain.difficulty_iter().unwrap(),
+		&mut cache_values,
+	);
 	let fee = txs.iter().map(|x| x.fee()).sum();
 	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0).to_identifier();
 	let reward = reward::output(
+		0,
 		keychain,
 		&ProofBuilder::new(keychain),
 		&key_id,
@@ -102,6 +109,7 @@ where
 	.unwrap();
 
 	let mut block = Block::new(
+		0,
 		&prev,
 		txs,
 		next_header_info.clone().difficulty,
@@ -115,12 +123,13 @@ where
 
 	chain.set_txhashset_roots(&mut block).unwrap();
 
-	let edge_bits = global::min_edge_bits();
+	let edge_bits = global::min_edge_bits(0);
 	block.header.pow.proof.edge_bits = edge_bits;
 	pow::pow_size(
+		0,
 		&mut block.header,
 		next_header_info.difficulty,
-		global::proofsize(),
+		global::proofsize(0),
 		edge_bits,
 	)
 	.unwrap();
@@ -190,6 +199,7 @@ where
 	B: BlockChain,
 {
 	TransactionPool::new(
+		0,
 		PoolConfig {
 			tx_fee_base: default_tx_fee_base(),
 			reorg_cache_timeout: 1_440,

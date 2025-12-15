@@ -460,7 +460,7 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 						Field::MerkleProof => {
 							no_dup!(merkle_proof);
 							if let Some(hex) = map.next_value::<Option<String>>()? {
-								if let Ok(res) = MerkleProof::from_hex(&hex) {
+								if let Ok(res) = MerkleProof::from_hex(0, &hex) {
 									merkle_proof = Some(res);
 								} else {
 									merkle_proof = Some(MerkleProof::empty());

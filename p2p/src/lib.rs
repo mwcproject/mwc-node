@@ -46,12 +46,15 @@ mod conn;
 pub mod handshake;
 #[cfg(feature = "libp2p")]
 pub mod libp2p_connection;
+mod listen;
 pub mod msg;
+pub mod network_status;
 mod peer;
 mod peers;
 mod protocol;
 mod serv;
 pub mod store;
+pub mod tor;
 pub mod types;
 
 pub use crate::conn::SEND_CHANNEL_CAP;
@@ -61,8 +64,12 @@ pub use crate::serv::{DummyAdapter, Server};
 pub use crate::store::{PeerData, State};
 pub use crate::types::{
 	Capabilities, ChainAdapter, Direction, Error, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
-	Seeding, TxHashSetRead, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	Seeding, TorConfig, TxHashSetRead, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
 };
+
+pub use listen::listen;
+pub use tor_hsservice;
+pub use tor_proto::client::stream::{DataStream, IncomingStreamRequest};
 
 #[cfg(feature = "libp2p")]
 pub use crate::libp2p_connection::{

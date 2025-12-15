@@ -1,6 +1,6 @@
 [package]
 name = "mwc_util"
-version = "5.3.10"
+version = "6.0.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -16,7 +16,6 @@ data-encoding = "2"
 ed25519-dalek = "1"
 sha3 = "0.8"
 base64 = "0.12"
-byteorder = "1"
 lazy_static = "1"
 rand = "0.6"
 serde = "1"
@@ -25,8 +24,14 @@ log4rs = { version = "1.3", features = ["rolling_file_appender", "compound_polic
 log = "0.4"
 walkdir = "2"
 zip = { version = "0.5.11", default-features = false }
-parking_lot = "0.12"
 zeroize = { version = "1.1", features =["zeroize_derive"] }
 thiserror = "1"
+tokio = {version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tokio-socks = "0.5"
+tokio-rustls = "0.23"
 
 mwc_secp256k1zkp = { git = "https://github.com/mwcproject/rust-secp256k1-zkp", version= "0.7.16", tag = "0.7.16", features = ["bullet-proof-sizing"] }
+tracing-log = "0.2.0"
+tracing-subscriber = { version = "0.3", features = ["registry","std"],  default-features = false }
+tracing = "0.1.41"

@@ -40,6 +40,7 @@ pub fn clean_output_dir(dir_name: &str) {
 
 pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
 	Chain::init(
+		0,
 		dir_name.to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis,
@@ -56,6 +57,7 @@ where
 {
 	let key_id = keychain::ExtKeychain::derive_key_id(0, 1, 0, 0, 0);
 	let reward = reward::output(
+		0,
 		keychain,
 		&libtx::ProofBuilder::new(keychain),
 		&key_id,
@@ -66,7 +68,7 @@ where
 	)
 	.unwrap();
 
-	genesis::genesis_dev().with_reward(reward.0, reward.1)
+	genesis::genesis_dev(0).with_reward(reward.0, reward.1)
 }
 
 /// Mine a chain of specified length to assist with automated tests.
@@ -74,6 +76,7 @@ where
 #[allow(dead_code)]
 pub fn mine_chain(dir_name: &str, chain_length: u64) -> Chain {
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
 	let genesis = genesis_block(&keychain);
 	let mut chain = init_chain(dir_name, genesis.clone());
@@ -90,12 +93,14 @@ where
 	for n in 1..chain_length {
 		let prev = chain.head_header().unwrap();
 		let next_header_info = consensus::next_difficulty(
+			0,
 			prev.height + 1,
 			chain.difficulty_iter().unwrap(),
 			&mut cache_values,
 		);
 		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
 		let reward = libtx::reward::output(
+			0,
 			keychain,
 			&libtx::ProofBuilder::new(keychain),
 			&pk,
@@ -106,6 +111,7 @@ where
 		)
 		.unwrap();
 		let mut b = core::core::Block::new(
+			0,
 			&prev,
 			&[],
 			next_header_info.difficulty,
@@ -118,12 +124,13 @@ where
 
 		chain.set_txhashset_roots(&mut b).unwrap();
 
-		let edge_bits = global::min_edge_bits();
+		let edge_bits = global::min_edge_bits(0);
 		b.header.pow.proof.edge_bits = edge_bits;
 		pow::pow_size(
+			0,
 			&mut b.header,
 			next_header_info.difficulty,
-			global::proofsize(),
+			global::proofsize(0),
 			edge_bits,
 		)
 		.unwrap();

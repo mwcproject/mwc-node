@@ -16,7 +16,6 @@
 //! Build a block to mine: gathers transactions from the pool, assembles
 //! them into a block and returns it.
 
-use crate::api;
 use crate::chain;
 use crate::common::types::Error;
 use crate::core::core::{Output, TxKernel};
@@ -26,9 +25,10 @@ use crate::core::{consensus, core, global};
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
 use crate::ServerTxPool;
 use chrono::prelude::{DateTime, Utc};
+use mwc_api::client::HttpClient;
 use mwc_util::secp::Secp256k1;
 use rand::{thread_rng, Rng};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
@@ -74,10 +74,17 @@ pub fn get_block(
 	tx_pool: &ServerTxPool,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
+	client: &HttpClient,
 ) -> (core::Block, BlockFees) {
 	let wallet_retry_interval = 5;
 	// get the latest chain state and build a block on top of it
-	let mut result = build_block(chain, tx_pool, key_id.clone(), wallet_listener_url.clone());
+	let mut result = build_block(
+		chain,
+		tx_pool,
+		key_id.clone(),
+		wallet_listener_url.clone(),
+		client,
+	);
 	while let Err(e) = result {
 		let mut new_key_id = key_id.to_owned();
 		match e {
@@ -111,7 +118,13 @@ pub fn get_block(
 			thread::sleep(Duration::from_millis(100));
 		}
 
-		result = build_block(chain, tx_pool, new_key_id, wallet_listener_url.clone());
+		result = build_block(
+			chain,
+			tx_pool,
+			new_key_id,
+			wallet_listener_url.clone(),
+			client,
+		);
 	}
 	return result.unwrap();
 }
@@ -123,6 +136,7 @@ fn build_block(
 	tx_pool: &ServerTxPool,
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
+	client: &HttpClient,
 ) -> Result<(core::Block, BlockFees), Error> {
 	let head = chain.head_header()?;
 
@@ -136,14 +150,22 @@ fn build_block(
 	// Determine the difficulty our block should be at.
 	// Note: do not keep the difficulty_iter in scope (it has an active batch).
 	let mut cache_values = VecDeque::new();
-	let difficulty =
-		consensus::next_difficulty(head.height + 1, chain.difficulty_iter()?, &mut cache_values);
+	let difficulty = consensus::next_difficulty(
+		chain.get_context_id(),
+		head.height + 1,
+		chain.difficulty_iter()?,
+		&mut cache_values,
+	);
 
 	// Extract current "mineable" transactions from the pool.
 	// If this fails for *any* reason then fallback to an empty vec of txs.
 	// This will allow us to mine an "empty" block if the txpool is in an
 	// invalid (and unexpected) state.
-	let txs = match tx_pool.read().prepare_mineable_transactions(chain.secp()) {
+	let txs = match tx_pool
+		.read()
+		.expect("RwLock failed")
+		.prepare_mineable_transactions(chain.secp())
+	{
 		Ok(txs) => txs,
 		Err(e) => {
 			error!(
@@ -164,8 +186,15 @@ fn build_block(
 		height,
 	};
 
-	let (output, kernel, block_fees) = get_coinbase(wallet_listener_url, block_fees, chain.secp())?;
+	let (output, kernel, block_fees) = get_coinbase(
+		chain.get_context_id(),
+		client,
+		wallet_listener_url,
+		block_fees,
+		chain.secp(),
+	)?;
 	let mut b = core::Block::from_reward(
+		chain.get_context_id(),
 		&head,
 		&txs,
 		output,
@@ -175,7 +204,11 @@ fn build_block(
 	)?;
 
 	// making sure we're not spending time mining a useless block
-	b.validate(&head.total_kernel_offset, chain.secp())?;
+	b.validate(
+		chain.get_context_id(),
+		&head.total_kernel_offset,
+		chain.secp(),
+	)?;
 
 	b.header.pow.nonce = thread_rng().gen();
 	b.header.pow.secondary_scaling = difficulty.secondary_scaling;
@@ -222,13 +255,15 @@ fn build_block(
 /// Probably only want to do this when testing.
 ///
 fn burn_reward(
+	context_id: u32,
 	block_fees: BlockFees,
 	secp: &Secp256k1,
 ) -> Result<(core::Output, core::TxKernel, BlockFees), Error> {
 	warn!("Burning block fees: {:?}", block_fees);
-	let keychain = ExtKeychain::from_random_seed(global::is_floonet())?;
+	let keychain = ExtKeychain::from_random_seed(global::is_floonet(context_id))?;
 	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
 	let (out, kernel) = crate::core::libtx::reward::output(
+		context_id,
 		&keychain,
 		&ProofBuilder::new(&keychain),
 		&key_id,
@@ -243,6 +278,8 @@ fn burn_reward(
 // Connect to the wallet listener and get coinbase.
 // Warning: If a wallet listener URL is not provided the reward will be "burnt"
 fn get_coinbase(
+	context_id: u32,
+	client: &HttpClient,
 	wallet_listener_url: Option<String>,
 	block_fees: BlockFees,
 	secp: &Secp256k1,
@@ -250,10 +287,10 @@ fn get_coinbase(
 	match wallet_listener_url {
 		None => {
 			// Burn it
-			return burn_reward(block_fees, secp);
+			return burn_reward(context_id, block_fees, secp);
 		}
 		Some(wallet_listener_url) => {
-			let res = create_coinbase(&wallet_listener_url, &block_fees)?;
+			let res = create_coinbase(client, &wallet_listener_url, &block_fees)?;
 			let output = res.output;
 			let kernel = res.kernel;
 			let key_id = res.key_id;
@@ -270,7 +307,11 @@ fn get_coinbase(
 
 /// Call the wallet API to create a coinbase output for the given block_fees.
 /// Will retry based on default "retry forever with backoff" behavior.
-fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> {
+fn create_coinbase(
+	client: &HttpClient,
+	dest: &str,
+	block_fees: &BlockFees,
+) -> Result<CbData, Error> {
 	let url = format!("{}/v2/foreign", dest);
 	let req_body = json!({
 		"jsonrpc": "2.0",
@@ -282,9 +323,7 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 	});
 
 	trace!("Sending build_coinbase request: {}", req_body);
-	let req = api::client::create_post_request(url.as_str(), None, &req_body)?;
-	let timeout = api::client::TimeOut::default();
-	let res: String = api::client::send_request(req, timeout).map_err(|e| {
+	let res = client.post_request(&url, &req_body).map_err(|e| {
 		let report = format!(
 			"Failed to get coinbase from {}. Is the wallet listening? {}",
 			dest, e
@@ -293,8 +332,6 @@ fn create_coinbase(dest: &str, block_fees: &BlockFees) -> Result<CbData, Error> 
 		Error::WalletComm(report)
 	})?;
 
-	let res: Value = serde_json::from_str(&res)
-		.map_err(|e| Error::General(format!("Unable convert result to Json, {}", e)))?;
 	trace!("Response: {}", res);
 	if res["error"] != json!(null) {
 		let report = format!(

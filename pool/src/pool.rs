@@ -38,17 +38,19 @@ where
 	/// The blockchain
 	pub blockchain: Arc<B>,
 	pub name: String,
+	context_id: u32,
 }
 
 impl<B> Pool<B>
 where
 	B: BlockChain,
 {
-	pub fn new(chain: Arc<B>, name: String) -> Self {
+	pub fn new(context_id: u32, chain: Arc<B>, name: String) -> Self {
 		Pool {
 			entries: vec![],
 			blockchain: chain,
 			name,
+			context_id,
 		}
 	}
 
@@ -157,7 +159,7 @@ where
 		let tx = transaction::aggregate(&txs, secp)?;
 
 		// Validate the single aggregate transaction "as pool", not subject to tx weight limits.
-		tx.validate(Weighting::NoLimit, secp)?;
+		tx.validate(self.context_id, Weighting::NoLimit, secp)?;
 
 		Ok(Some(tx))
 	}
@@ -227,7 +229,7 @@ where
 	) -> Result<BlockSums, PoolError> {
 		// Validate the tx, conditionally checking against weight limits,
 		// based on weight verification type.
-		tx.validate(weighting, secp)?;
+		tx.validate(self.context_id, weighting, secp)?;
 
 		// Validate the tx against current chain state.
 		// Check all inputs are in the current UTXO set.
@@ -412,7 +414,7 @@ where
 					let bucket = &tx_buckets[pos];
 
 					if let Ok(new_bucket) =
-						bucket.aggregate_with_tx(entry.tx.clone(), weighting, secp)
+						bucket.aggregate_with_tx(self.context_id, entry.tx.clone(), weighting, secp)
 					{
 						if new_bucket.fee_rate >= bucket.fee_rate {
 							// Only aggregate if it would not reduce the fee_rate ratio.
@@ -524,6 +526,7 @@ impl Bucket {
 
 	fn aggregate_with_tx(
 		&self,
+		context_id: u32,
 		new_tx: Transaction,
 		weighting: Weighting,
 		secp: &Secp256k1,
@@ -531,7 +534,7 @@ impl Bucket {
 		let mut raw_txs = self.raw_txs.clone();
 		raw_txs.push(new_tx);
 		let agg_tx = transaction::aggregate(&raw_txs, secp)?;
-		agg_tx.validate(weighting, secp)?;
+		agg_tx.validate(context_id, weighting, secp)?;
 		Ok(Bucket {
 			fee_rate: agg_tx.fee_rate(),
 			raw_txs: raw_txs,

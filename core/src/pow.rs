@@ -60,8 +60,9 @@ const MAX_SOLS: u32 = 10;
 
 /// Validates the proof of work of a given header, and that the proof of work
 /// satisfies the requirements of the header.
-pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
+pub fn verify_size(context_id: u32, bh: &BlockHeader) -> Result<(), Error> {
 	let mut ctx = global::create_pow_context::<u64>(
+		context_id,
 		bh.height,
 		bh.pow.edge_bits(),
 		bh.pow.proof.nonces.len(),
@@ -77,16 +78,22 @@ pub fn verify_size(bh: &BlockHeader) -> Result<(), Error> {
 }
 
 /// Mines a genesis block using the internal miner
-pub fn mine_genesis_block() -> Result<Block, Error> {
-	let mut gen = genesis::genesis_dev();
+pub fn mine_genesis_block(context_id: u32) -> Result<Block, Error> {
+	let mut gen = genesis::genesis_dev(context_id);
 
 	// total_difficulty on the genesis header *is* the difficulty of that block
 	let genesis_difficulty = gen.header.pow.total_difficulty;
 
-	let sz = global::min_edge_bits();
-	let proof_size = global::proofsize();
+	let sz = global::min_edge_bits(context_id);
+	let proof_size = global::proofsize(context_id);
 
-	pow_size(&mut gen.header, genesis_difficulty, proof_size, sz)?;
+	pow_size(
+		context_id,
+		&mut gen.header,
+		genesis_difficulty,
+		proof_size,
+		sz,
+	)?;
 	Ok(gen)
 }
 
@@ -94,6 +101,7 @@ pub fn mine_genesis_block() -> Result<Block, Error> {
 /// Mining Worker, until the required difficulty target is reached. May take a
 /// while for a low target...
 pub fn pow_size(
+	context_id: u32,
 	bh: &mut BlockHeader,
 	diff: Difficulty,
 	proof_size: usize,
@@ -105,7 +113,8 @@ pub fn pow_size(
 	loop {
 		// if we found a cycle (not guaranteed) and the proof hash is higher that the
 		// diff, we're all good
-		let mut ctx = global::create_pow_context::<u32>(bh.height, sz, proof_size, MAX_SOLS)?;
+		let mut ctx =
+			global::create_pow_context::<u32>(context_id, bh.height, sz, proof_size, MAX_SOLS)?;
 		ctx.set_header_nonce(
 			bh.pre_pow()
 				.map_err(|e| Error::PrePowError(format!("{}", e)))?,
@@ -114,7 +123,7 @@ pub fn pow_size(
 		)?;
 		if let Ok(proofs) = ctx.find_cycles() {
 			bh.pow.proof = proofs[0].clone();
-			if bh.pow.to_difficulty(bh.height) >= diff {
+			if bh.pow.to_difficulty(context_id, bh.height) >= diff {
 				return Ok(());
 			}
 		}
@@ -142,21 +151,23 @@ mod test {
 	#[test]
 	fn genesis_pow() {
 		global::set_local_chain_type(ChainTypes::UserTesting);
+		global::set_local_nrd_enabled(false);
 
-		let mut b = genesis::genesis_dev();
+		let mut b = genesis::genesis_dev(0);
 		b.header.pow.nonce = 28106;
-		b.header.pow.proof.edge_bits = global::min_edge_bits();
-		println!("proof {}", global::proofsize());
+		b.header.pow.proof.edge_bits = global::min_edge_bits(0);
+		println!("proof {}", global::proofsize(0));
 		pow_size(
+			0,
 			&mut b.header,
 			Difficulty::min(),
-			global::proofsize(),
-			global::min_edge_bits(),
+			global::proofsize(0),
+			global::min_edge_bits(0),
 		)
 		.unwrap();
 		println!("nonce {}", b.header.pow.nonce);
 		assert_ne!(b.header.pow.nonce, 310);
-		assert!(b.header.pow.to_difficulty(0) >= Difficulty::min());
-		assert!(verify_size(&b.header).is_ok());
+		assert!(b.header.pow.to_difficulty(0, 0) >= Difficulty::min());
+		assert!(verify_size(0, &b.header).is_ok());
 	}
 }

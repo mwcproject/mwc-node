@@ -123,6 +123,7 @@ where
 {
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
 	let reward_output = reward::output(
+		0,
 		keychain,
 		builder,
 		&key_id,
@@ -133,6 +134,7 @@ where
 	)
 	.unwrap();
 	Block::new(
+		0,
 		&previous_header,
 		txs,
 		Difficulty::min(),
@@ -165,6 +167,7 @@ where
 	.unwrap()
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TestElem(pub [u32; 4]);
 

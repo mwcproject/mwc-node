@@ -91,6 +91,7 @@ fuzz_target!(|data: &[u8]| {
 
 	mwc_util::init_test_logger();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
 
 	// check for corpus generation arguments
 	// only generate corpus once, skipping on every other run

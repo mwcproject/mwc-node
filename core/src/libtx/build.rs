@@ -264,6 +264,7 @@ mod test {
 	#[test]
 	fn blind_simple_tx() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let builder = ProofBuilder::new(&keychain);
 		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
@@ -278,13 +279,14 @@ mod test {
 		)
 		.unwrap();
 
-		tx.validate(Weighting::AsTransaction, keychain.secp())
+		tx.validate(0, Weighting::AsTransaction, keychain.secp())
 			.unwrap();
 	}
 
 	#[test]
 	fn blind_simple_tx_with_offset() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let builder = ProofBuilder::new(&keychain);
 		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
@@ -299,13 +301,14 @@ mod test {
 		)
 		.unwrap();
 
-		tx.validate(Weighting::AsTransaction, keychain.secp())
+		tx.validate(0, Weighting::AsTransaction, keychain.secp())
 			.unwrap();
 	}
 
 	#[test]
 	fn blind_simpler_tx() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 		let builder = ProofBuilder::new(&keychain);
 		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
@@ -319,7 +322,7 @@ mod test {
 		)
 		.unwrap();
 
-		tx.validate(Weighting::AsTransaction, keychain.secp())
+		tx.validate(0, Weighting::AsTransaction, keychain.secp())
 			.unwrap();
 	}
 }

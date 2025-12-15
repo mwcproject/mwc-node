@@ -35,13 +35,15 @@ mod chain_test_helper;
 
 fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
-	let mut genesis = genesis::genesis_main();
+	global::set_local_nrd_enabled(true);
+	let mut genesis = genesis::genesis_main(0);
 	// Height at which to read kernel segments (lower than thresholds defined in spec - for testing)
 
 	if is_test_chain {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-		genesis = pow::mine_genesis_block().unwrap();
+		genesis = pow::mine_genesis_block(0).unwrap();
 	}
+	global::set_local_nrd_enabled(true);
 
 	{
 		println!("Reading Chain, genesis block: {}", genesis.hash());
@@ -50,6 +52,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 		// The original chain we're reading from
 		let src_chain = Arc::new(
 			chain::Chain::init(
+				0,
 				src_root_dir.into(),
 				dummy_adapter.clone(),
 				genesis.clone(),
