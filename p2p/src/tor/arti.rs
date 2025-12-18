@@ -23,6 +23,7 @@ use chrono::Utc;
 use futures::future::{select, Either};
 use futures::StreamExt;
 use lazy_static::lazy_static;
+use mwc_util::secp::rand::Rng;
 use mwc_util::tokio::io::AsyncWriteExt;
 use mwc_util::tokio::runtime::{Handle, Runtime};
 use mwc_util::tokio::time::interval;
@@ -30,6 +31,7 @@ use rand::seq::SliceRandom;
 use safelog::DisplayRedacted;
 use std::collections::HashSet;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::atomic::Ordering;
@@ -45,7 +47,20 @@ use tor_llcrypto::pk::ed25519;
 use tor_proto::client::stream::ClientStreamCtrl;
 use tor_rtcompat::PreferredRuntime;
 
-static COMMUNITY_BRIDGES: &[&str] = &["webtunnel 10.0.0.2:443 010D2A4DD97D7E58698FBE84788986387016AA74 url=https://explorer.floonet.mwc.mw/webtunnel"];
+static COMMUNITY_TUNNELS: &[&str] = &[
+	"010D2A4DD97D7E58698FBE84788986387016AA74",
+	"explorer.floonet.mwc.mw",
+	"",
+	"8E67E5AFA67083259FA67A7AD4150D39BA4F2691",
+	"mwc7132.mwc.mw",
+	"mwc7132",
+	"E930242BA63962484760BDAEBA30903054A42672",
+	"host1.mwc.mw",
+	"host1",
+	"FE913D629480F54C92F9C70CC5E64C1604C0898B",
+	"host2.mwc.mw",
+	"host2",
+];
 
 const PROBE_URLS_HTTP: &[&str] = &[
 	"www.google.com",
@@ -363,6 +378,9 @@ pub struct ArtiCore {
 	restart_senders: Vec<std::sync::mpsc::Sender<()>>,
 }
 
+const WEB: &str = "web";
+const TNL: &str = "tunnel";
+
 impl ArtiCore {
 	/// Init tor service. Note, the service might be reset and recreated, so all dependent objects might be dropped
 	fn new(config: &TorConfig, base_dir: &Path, clean_up_arti_data: bool) -> Result<Self, Error> {
@@ -385,12 +403,26 @@ impl ArtiCore {
 
 		if tor_rt.is_none() && config.webtunnel_bridge.is_none() {
 			// connecting to the bridges
-			let mut bridges = COMMUNITY_BRIDGES.to_vec();
-			bridges.shuffle(&mut rand::thread_rng());
 
 			// Let's try to connect to some of community bridges
 			let mut bridge_num = 0;
-			for bridge in bridges {
+			let mut rng = rand::thread_rng();
+			for _ in 0..3 {
+				debug_assert!(COMMUNITY_TUNNELS.len() % 3 == 0);
+				let br_idx = rng.gen_range(0, COMMUNITY_TUNNELS.len() / 3);
+
+				let bridge = format!(
+					"{}{} {} {} url=https://{}/{}{}{}",
+					WEB,
+					TNL,
+					"10.0.0.2:443",
+					COMMUNITY_TUNNELS[br_idx * 3],
+					COMMUNITY_TUNNELS[br_idx * 3 + 1],
+					WEB,
+					TNL,
+					COMMUNITY_TUNNELS[br_idx * 3 + 2]
+				);
+
 				tor_client_config =
 					Self::build_config(&Some(bridge.to_string()), base_dir, clean_up_arti_data)?;
 
@@ -643,9 +675,14 @@ impl ArtiCore {
 		let mut builder = TorClientConfig::builder();
 
 		// Usually we are using tunnel if without tunnel tor didn't start
+		let mut connection_path = "direct".to_string();
 		if webtunnel_bridge.is_some() {
 			// tunnel conneciton string
 			let bridge_line = webtunnel_bridge.as_ref().unwrap();
+
+			let bridge_hash = Self::hash_str(&connection_path);
+			connection_path = format!("bridge_{:X}", bridge_hash);
+
 			info!("Starting Arti with a bridge {}", bridge_line);
 			// webtunnelclient location. Should be located in the same dir where our executable is located
 			let exe = std::env::current_exe().map_err(|e| {
@@ -694,16 +731,18 @@ impl ArtiCore {
 			.primary()
 			.kind(ExplicitOrAuto::Explicit(ArtiKeystoreKind::Ephemeral));
 
+		let base_data_dir = base_dir.join("arti").join(connection_path);
+
 		if clean_up_arti_data {
-			let _ = std::fs::remove_dir_all(base_dir.join("arti"));
+			let _ = std::fs::remove_dir_all(base_data_dir.clone());
 		}
 
 		builder
 			.storage()
-			.cache_dir(CfgPath::new_literal(base_dir.join("arti").join("cache")));
+			.cache_dir(CfgPath::new_literal(base_data_dir.join("cache")));
 		builder
 			.storage()
-			.state_dir(CfgPath::new_literal(base_dir.join("arti").join("state")));
+			.state_dir(CfgPath::new_literal(base_data_dir.join("state")));
 
 		builder
 			.stream_timeouts()
@@ -747,5 +786,11 @@ impl ArtiCore {
 				probe_host, e
 			))),
 		}
+	}
+
+	fn hash_str(s: &str) -> u64 {
+		let mut hasher = std::collections::hash_map::DefaultHasher::new();
+		s.hash(&mut hasher); // &str implements Hash
+		hasher.finish()
 	}
 }
