@@ -680,7 +680,7 @@ impl ArtiCore {
 			// tunnel conneciton string
 			let bridge_line = webtunnel_bridge.as_ref().unwrap();
 
-			let bridge_hash = Self::hash_str(&connection_path);
+			let bridge_hash = Self::hash_str(&bridge_line);
 			connection_path = format!("bridge_{:X}", bridge_hash);
 
 			info!("Starting Arti with a bridge {}", bridge_line);
