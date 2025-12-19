@@ -47,7 +47,7 @@ use tor_llcrypto::pk::ed25519;
 use tor_proto::client::stream::ClientStreamCtrl;
 use tor_rtcompat::PreferredRuntime;
 
-static COMMUNITY_TUNNELS: &[&str] = &[
+static COMMUNITY_TNLS: &[&str] = &[
 	"010D2A4DD97D7E58698FBE84788986387016AA74",
 	"explorer.floonet.mwc.mw",
 	"",
@@ -60,6 +60,72 @@ static COMMUNITY_TUNNELS: &[&str] = &[
 	"FE913D629480F54C92F9C70CC5E64C1604C0898B",
 	"host2.mwc.mw",
 	"host2",
+	"9DADEB404DFA3896737326676A7FB9F8440B6FC8",
+	"mwc713.mwc.mw",
+	"713",
+	"392170959815E0227C185A1EC8807BAFF31C2074",
+	"host4.mwc.mw",
+	"host4",
+	"CA1D23F317B14992EF74DF60BA8ABCD1A3AC8E5C",
+	"host5.mwc.mw",
+	"hst5",
+	"A61D94F88CE58CA0F92F54E733052A5051AE84DD",
+	"seed1.mwc.mw",
+	"sd1",
+	"19C9B10CAC330B8CC4ED8563104C1050E2C59320",
+	"host6.mwc.mw",
+	"h6",
+	"799B148FDAF71E5AED9550B8FB6B4D597FCBE4EA",
+	"mwc7135.mwc.mw",
+	"c7135",
+	"4731F1D06F75E78FD18F5D64A64C4E2CA5DD0FB9",
+	"mainnet.seed2.mwc.mw",
+	"mseed2",
+	"16AE81F9464924F8BEA110B6089017E14461E9D5",
+	"host8.mwc.mw",
+	"ht8",
+	"795455F7DFBD4B6FB6A6D18E06658F91666D1AAE",
+	"host9.mwc.mw",
+	"hot9",
+	"1FC6FA74E7AC1B804A15D90241DFD2DF4F670054",
+	"mwc7134.mwc.mw",
+	"7134",
+	"51F94DC699C4433947FB7F72B74A55FD8F596D1A",
+	"host10.mwc.mw",
+	"ht10",
+	"9DF6CCC1C2D3941CD885EA23B126C94A04C8B9BE",
+	"host7.mwc.mw",
+	"host7",
+	"730D9CB09F0E61B158CBD53AB8B99F29B285BA79",
+	"seed2.mwc.mw",
+	"sd2",
+	"5C0F860654F2746B13302D259828B85FB3EE83C5",
+	"mwcseed.ddns.net",
+	"mwseed",
+	"F346EE08880288F4D9DD56B27E366CC18EB79B7C",
+	"explorer.mwc.mw",
+	"expmn",
+	"C144204E91CE41B28E040EB99CE8F8CF3DE83FF6",
+	"host11.mwc.mw",
+	"h11",
+	"6AA6EE7EF3D9A0318AEAEC17612F6B18FA681B08",
+	"mqs.mwc.mw",
+	"mqs",
+	"FB1502CA83CC6AD00831B15C4362D7F0327615CE",
+	"ftp.mwc.mw",
+	"ftp",
+	"76DFFC7657F839FB123241CB92A050F686B33FC4",
+	"host13.mwc.mw",
+	"hs13",
+	"9DF6CCC1C2D3941CD885EA23B126C94A04C8B9BE",
+	"host7.mwc.mw",
+	"host7",
+	"F2508B6EE2004317142CF950EDCD8BA57C37C1D9",
+	"host14.mwc.mw",
+	"host14",
+	"CA4F7DE40C06D2DB092E1CA54C4E0244803BB488",
+	"host12.mwc.mw",
+	"st12",
 ];
 
 const PROBE_URLS_HTTP: &[&str] = &[
@@ -408,19 +474,19 @@ impl ArtiCore {
 			let mut bridge_num = 0;
 			let mut rng = rand::thread_rng();
 			for _ in 0..3 {
-				debug_assert!(COMMUNITY_TUNNELS.len() % 3 == 0);
-				let br_idx = rng.gen_range(0, COMMUNITY_TUNNELS.len() / 3);
+				debug_assert!(COMMUNITY_TNLS.len() % 3 == 0);
+				let br_idx = rng.gen_range(0, COMMUNITY_TNLS.len() / 3);
 
 				let bridge = format!(
 					"{}{} {} {} url=https://{}/{}{}{}",
 					WEB,
 					TNL,
 					"10.0.0.2:443",
-					COMMUNITY_TUNNELS[br_idx * 3],
-					COMMUNITY_TUNNELS[br_idx * 3 + 1],
+					COMMUNITY_TNLS[br_idx * 3],
+					COMMUNITY_TNLS[br_idx * 3 + 1],
 					WEB,
 					TNL,
-					COMMUNITY_TUNNELS[br_idx * 3 + 2]
+					COMMUNITY_TNLS[br_idx * 3 + 2]
 				);
 
 				tor_client_config =
