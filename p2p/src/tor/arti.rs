@@ -191,7 +191,7 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 		return Ok(());
 	}
 
-	let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap();
+	let mut atri_writer = TOR_ARTI_INSTANCE.write().expect("RwLock failure");
 
 	let mut create_arti_res = ArtiCore::new(config, base_dir, false);
 	if create_arti_res.is_err() {
@@ -376,7 +376,7 @@ fn restart_arti(start_new_client: bool) {
 	error!("Restarting ARTI...");
 
 	let (tor_runtime, config, base_dir, restart_senders) = {
-		let mut guard = TOR_ARTI_INSTANCE.write().unwrap(); // ? converts PoisonError to E
+		let mut guard = TOR_ARTI_INSTANCE.write().expect("RwLock failure"); // ? converts PoisonError to E
 		match guard.take() {
 			Some(arti) => {
 				drop(arti.tor_client);
@@ -405,7 +405,7 @@ fn restart_arti(start_new_client: bool) {
 		match ArtiCore::new(&config, base_dir.as_path(), true) {
 			Ok(arti_core) => {
 				info!("New Arti instance is successfully created.");
-				*TOR_ARTI_INSTANCE.write().unwrap() = Some(arti_core);
+				*TOR_ARTI_INSTANCE.write().expect("RwLock failure") = Some(arti_core);
 				TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
 				network_status::update_network_outage_time(Utc::now().timestamp());
 				for sender in restart_senders {
@@ -423,7 +423,7 @@ fn restart_arti(start_new_client: bool) {
 }
 
 pub fn register_arti_restart_event() -> Result<std::sync::mpsc::Receiver<()>, Error> {
-	let mut arti_core = TOR_ARTI_INSTANCE.write().unwrap();
+	let mut arti_core = TOR_ARTI_INSTANCE.write().expect("RwLock failure");
 	match &mut *arti_core {
 		Some(arti_core) => {
 			let (tx, rx) = mpsc::channel::<()>();
