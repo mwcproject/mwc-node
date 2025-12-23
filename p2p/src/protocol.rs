@@ -23,6 +23,7 @@ use crate::msg::{
 	SegmentRequest, SegmentResponse, StartHeadersHashResponse, TxHashSetArchive, Type,
 };
 use crate::serv::Server;
+use crate::tor::arti::is_valid_onion_v3;
 use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
 use std::sync::Arc;
 
@@ -278,24 +279,31 @@ impl MessageHandler for Protocol {
 
 			Message::PeerAddrs(peer_addrs) => {
 				let mut peers: Vec<PeerAddr> = Vec::new();
+				let self_address = self.server.get_self_onion_address()?;
 				for peer in peer_addrs.peers {
 					match peer.clone() {
 						PeerAddr::Onion(address) => {
-							let self_address = self.server.get_self_onion_address()?;
-							if self_address.is_none() {
-								peers.push(peer);
-							} else {
-								if address != self_address.unwrap() {
+							if is_valid_onion_v3(&address) {
+								if self_address.is_none() {
+									debug!("Pushing peer address {:?}", peer);
 									peers.push(peer);
 								} else {
-									debug!("Not pushing self onion address = {}", address);
+									if address != *self_address.as_ref().unwrap() {
+										debug!("Pushing peer address {:?}", peer);
+										peers.push(peer);
+									} else {
+										debug!("Not pushing self onion address = {}", address);
+									}
 								}
+							} else {
+								debug!("Skipping peer with invalid onion address {:?}", peer);
 							}
 						}
 						PeerAddr::Ip(_) => {
 							if peer.is_loopback() {
 								debug!("Not pushing loopback addresse = {:?}", peer);
 							} else {
+								debug!("Pushing peer address {:?}", peer);
 								peers.push(peer);
 							}
 						}

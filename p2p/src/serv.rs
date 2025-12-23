@@ -792,3 +792,41 @@ impl NetAdapter for DummyAdapter {
 
 	fn ban_peer(&self, _addr: &PeerAddr, _ban_reason: ReasonForBan, _message: &str) {}
 }
+
+#[test]
+fn test_tor_address_parsing() {
+	use arti_client::IntoTorAddr;
+
+	let address1 = "4vrh6vagyrw7du3vdcjk4u4g42qsb6dga6vevpds23fkgh6tw363hhyd";
+	let address2 = "v4rw3evkwyg2y7nk2rwuhcsuums75vfr2u2ssrlo6rjxueza7gbppsuz";
+	let address3 = "xhgwudthrz6hl7pcauz7jw6xyjc4anibplgnzmaszvdnxr7ibtg3q4f7";
+
+	let r1 = (address1, 80).into_tor_addr();
+	assert!(r1.is_ok());
+	let r2 = (address2, 80).into_tor_addr();
+	assert!(r2.is_ok());
+	let r3 = (address3, 80).into_tor_addr();
+	assert!(r3.is_ok());
+
+	let address1 = "4vrh6vagyrw7du3vdcjk4u4g42qsb6dga6vevpds23fkgh6tw363hhyd.onion";
+	let address2 = "v4rw3evkwyg2y7nk2rwuhcsuums75vfr2u2ssrlo6rjxueza7gbppsuz.onion";
+	let address3 = "xhgwudthrz6hl7pcauz7jw6xyjc4anibplgnzmaszvdnxr7ibtg3q4f7.onion";
+
+	let r1 = (address1, 80).into_tor_addr();
+	assert!(r1.is_ok());
+	let r2 = (address2, 80).into_tor_addr();
+	assert!(r2.is_ok());
+	let r3 = (address3, 80).into_tor_addr();
+	assert!(r3.is_ok());
+
+	let address1 = "tor://4vrh6vagyrw7du3vdcjk4u4g42qsb6dga6vevpds23fkgh6tw363hhyd.onion";
+	let address2 = "tor://v4rw3evkwyg2y7nk2rwuhcsuums75vfr2u2ssrlo6rjxueza7gbppsuz.onion";
+	let address3 = "tor://xhgwudthrz6hl7pcauz7jw6xyjc4anibplgnzmaszvdnxr7ibtg3q4f7.onion";
+
+	let r1 = (address1, 80).into_tor_addr();
+	assert!(r1.is_err());
+	let r2 = (address2, 80).into_tor_addr();
+	assert!(r2.is_err());
+	let r3 = (address3, 80).into_tor_addr();
+	assert!(r3.is_err());
+}

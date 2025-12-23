@@ -29,6 +29,7 @@ use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use mwc_p2p::tor::arti::is_arti_restarting;
 use mwc_p2p::PeerAddr::Onion;
 use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
 use rand::prelude::*;
@@ -447,6 +448,13 @@ fn listen_for_addrs(
 			continue;
 		}
 
+		if use_tor_connection && is_arti_restarting() {
+			// waiting for arti to restore it connection
+			info!("Waiting for Arti to restore connection before continue with peers discovery...");
+			listen_q_addrs.push(addr);
+			break;
+		}
+
 		connecting_history.insert(addr.clone(), now);
 
 		if !use_tor_connection {
@@ -510,9 +518,18 @@ fn listen_for_addrs(
 
 						let _ = peers_c.update_state(&addr_c, p2p::State::Healthy);
 					}
+					Err(mwc_p2p::Error::TorNotInitialized) => {
+						debug!("Trying connect when Tor is offline, skipping the attempt");
+					}
 					Err(e) => {
-						debug!("Connection to the peer {} was rejected, {}", addr_c, e);
-						let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
+						let error_str = e.to_string();
+						if error_str.contains("Invalid onion address") {
+							debug!("Cleaning up the invalid peer address, {}", addr_c);
+							let _ = peers_c.delete_peer(&addr_c);
+						} else {
+							debug!("Connection to the peer {} was rejected, {}", addr_c, e);
+							let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
+						}
 					}
 				}
 			})

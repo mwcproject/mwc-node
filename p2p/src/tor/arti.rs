@@ -34,6 +34,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
+use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -859,4 +860,51 @@ impl ArtiCore {
 		s.hash(&mut hasher); // &str implements Hash
 		hasher.finish()
 	}
+}
+
+/// Validate a v3 onion address (with or without ".onion").
+pub fn is_valid_onion_v3(onion: &str) -> bool {
+	tor_hscrypto::pk::HsId::from_str(onion).is_ok()
+}
+
+#[test]
+#[ignore]
+fn test_arti_connection() {
+	let res = start_arti(&TorConfig::default(), Path::new("/tmp/arti/"));
+	assert!(res.is_ok());
+
+	let connected = arti::access_arti(|arti| {
+		let connected = arti_async_block(async {
+			let connected = match arti
+				.connect((
+					//"zwecav6dgftsoscybpzufbo77d452mk3mox2fqzjqocu7265bxgq6oad.onion",
+					"7uz3yofsjta2ffvnt7ygdhxachspwo5hnqnctnlwqgtrgp3wjedtkmtm.onion",
+					80,
+				))
+				.await
+			{
+				Ok(mut stream) => {
+					let _ = stream.shutdown().await;
+					true
+				}
+				Err(e) => {
+					info!("Connection is failed with error: {}", e);
+					false
+				}
+			};
+			connected
+		})?;
+		Ok(connected)
+	});
+	assert!(connected.is_ok())
+}
+
+#[test]
+fn test_is_valid_onion_v3() {
+	assert!(is_valid_onion_v3(
+		"zwecav6dgftsoscybpzufbo77d452mk3mox2fqzjqocu7265bxgq6oad.onion"
+	));
+	assert!(!is_valid_onion_v3(
+		"7uz3yofsjta2ffvnt7ygdhxachspwo5hnqnctnlwqgtrgp3wjedtkmtm.onion"
+	));
 }

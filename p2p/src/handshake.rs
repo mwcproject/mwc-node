@@ -19,6 +19,7 @@ use crate::mwc_core::core::hash::Hash;
 use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::ProtocolVersion;
 use crate::peer::Peer;
+use crate::tor::arti::is_valid_onion_v3;
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::{
 	Capabilities, Direction, Error, P2PConfig, PeerAddr, PeerAddr::Ip, PeerAddr::Onion, PeerInfo,
@@ -246,11 +247,25 @@ impl Handshake {
 
 		let negotiated_version = self.negotiate_protocol_version(hand.version)?;
 
+		let addr = resolve_peer_addr(&hand.sender_addr, &conn);
+		if let Onion(onion_addr) = &addr {
+			if !is_valid_onion_v3(&onion_addr) {
+				info!(
+					"Peer advertize invalid onion address {}, not accepting it",
+					onion_addr
+				);
+				return Err(Error::TorConnect(format!(
+					"Peer advertize invalid onion address {}",
+					onion_addr
+				)));
+			}
+		}
+
 		// all good, keep peer info
 		let peer_info = PeerInfo {
 			capabilities: hand.capabilities,
 			user_agent: hand.user_agent,
-			addr: resolve_peer_addr(&hand.sender_addr, &conn),
+			addr,
 			version: negotiated_version,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
 			direction: if self.onion_address.is_some() {
