@@ -519,7 +519,7 @@ impl Peers {
 				&& peer.total_difficulty() < my_difficulty
 			{
 				let fail_counter = out_peers_failures.get(&peer.addr).cloned().unwrap_or(0) + 1;
-				if fail_counter >= 3 {
+				if fail_counter >= 5 {
 					info!(
 						"Requesting disconnect for outband peer {:?} because of low performance",
 						peer.addr

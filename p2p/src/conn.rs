@@ -40,7 +40,7 @@ use std::time::Duration;
 // That is don't put too large number here. 10 looks reasonable for this case
 pub const SEND_CHANNEL_CAP: usize = 32 + 8; // Every request for 512 headers takes 16 chanks. Let's have space for 2 such requests plus for a few extras.
 
-const CHANNEL_TIMEOUT: Duration = Duration::from_millis(15000);
+const CHANNEL_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// A trait to be implemented in order to receive messages from the
 /// connection. Allows providing an optional response.
@@ -93,6 +93,10 @@ impl StopHandle {
 	/// Schedule this connection to safely close via the async close_channel.
 	pub fn stop(&self) {
 		self.stopped.store(true, Ordering::Relaxed);
+	}
+
+	pub fn is_stopped(&self) -> bool {
+		self.stopped.load(Ordering::Relaxed)
 	}
 
 	pub fn wait(&mut self) {
@@ -279,6 +283,20 @@ where
 				// check the read end
 				let (next, bytes_read) = codec.read();
 
+				// retry on TimedOut & WouldBlock
+				if codec.is_none_state() {
+					match &next {
+						Err(Error::Connection(io_err)) => {
+							if io_err.kind() == io::ErrorKind::TimedOut
+								|| io_err.kind() == io::ErrorKind::WouldBlock
+							{
+								continue;
+							}
+						}
+						_ => {}
+					}
+				}
+
 				// During sync process we don't want to ban peers becasue of abuse. It is expected to maintain high traffic for fast sync
 				if !sync_state.is_syncing() {
 					// increase the appropriate counter
@@ -331,6 +349,7 @@ where
 				}
 			}
 
+			reader_stopped.store(true, Ordering::Relaxed);
 			debug!("Exiting reader for {}", peer_name1);
 		})?;
 
@@ -346,7 +365,7 @@ where
 						Ok(msg) => vec![msg],
 						Err(e) => return Err(e),
 					};
-					// send_rx expected to have capacuty. Capacity will limit the number of messages that we can read form the stream
+					// send_rx expected to have capacity. Capacity will limit the number of messages that we can read form the stream
 					loop {
 						match send_rx.try_recv() {
 							Ok(msg) => {
@@ -389,6 +408,7 @@ where
 				}
 			}
 
+			stopped.store(true, Ordering::Relaxed);
 			debug!("Shutting down writer connection for {}", peer_name);
 			let _ = writer.shutdown();
 		})?;

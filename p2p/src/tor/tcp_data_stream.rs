@@ -253,6 +253,21 @@ impl Write for TcpDataStream {
 		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write timeout"))?
 	}
 
+	#[allow(unused_mut)]
+	fn write_all(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
+		let write_timeout = &self.write_timeout;
+		let r = match &mut self.stream {
+			TcpData::Tcp(s) => run_global_async_block(async {
+				mwc_util::tokio::time::timeout(*write_timeout, s.write_all(buf)).await
+			}),
+			TcpData::Tor(s) => arti_async_block(async {
+				mwc_util::tokio::time::timeout(*write_timeout, s.stream.write_all(buf)).await
+			})
+			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write_all timeout"))?,
+		};
+		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write_all timeout"))?
+	}
+
 	fn flush(&mut self) -> Result<(), std::io::Error> {
 		let write_timeout = &self.write_timeout;
 		let r = match &mut self.stream {
@@ -377,6 +392,21 @@ impl Write for TcpDataWriteHalfStream {
 			.map_err(|_| std::io::Error::new(ErrorKind::NotConnected, "write arti error"))?,
 		};
 		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write timeout"))?
+	}
+
+	#[allow(unused_mut)]
+	fn write_all(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
+		let write_timeout = &self.write_timeout;
+		let r = match &mut self.stream {
+			TcpDataWriteHalf::Tcp(s) => run_global_async_block(async {
+				mwc_util::tokio::time::timeout(*write_timeout, s.write_all(buf)).await
+			}),
+			TcpDataWriteHalf::Tor(s) => arti_async_block(async {
+				mwc_util::tokio::time::timeout(*write_timeout, s.stream.write_all(buf)).await
+			})
+			.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write_all timeout"))?,
+		};
+		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "write_all timeout"))?
 	}
 
 	fn flush(&mut self) -> Result<(), std::io::Error> {

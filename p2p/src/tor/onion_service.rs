@@ -70,7 +70,7 @@ where
 	})?;
 
 	// Not necessary wait for a long time. We can continue with listening even without any waiting
-	arti::ArtiCore::wait_until_started(&onion_service, 20)?;
+	arti::ArtiCore::wait_until_started(&onion_service, 120)?;
 
 	info!("Onion listener started at {}", onion_address);
 

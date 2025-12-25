@@ -29,10 +29,11 @@ use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use mwc_p2p::tor::arti::is_arti_restarting;
 use mwc_p2p::PeerAddr::Onion;
 use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
 use rand::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{mpsc, Arc};
@@ -46,6 +47,7 @@ const PEERS_MONITOR_INTERVAL: i64 = 60;
 const PEERS_LISTEN_MIN_INTERVAL: i64 = 600; // Interval to add some new peers even if everything is fine
 
 const PEER_RECONNECT_INTERVAL: i64 = 600;
+const SEED_RECONNECT_INTERVAL: i64 = 60;
 const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
 
 const PEER_PING_INTERVAL: i64 = 10;
@@ -431,7 +433,26 @@ fn listen_for_addrs(
 	let connection_time_limit = now - Duration::seconds(PEER_RECONNECT_INTERVAL);
 	connecting_history.retain(|_, time| *time > connection_time_limit);
 
-	listen_q_addrs.retain(|p| !(peers.is_known(p) || connecting_history.contains_key(p)));
+	let mut seen = HashSet::new();
+	listen_q_addrs.retain(|p| {
+		seen.insert(p.clone()) && (!(peers.is_known(p) || connecting_history.contains_key(p)))
+	});
+
+	if listen_q_addrs.is_empty() {
+		if let Some(seed_adr) = seed_list.choose(&mut thread_rng()) {
+			match connecting_history.get(seed_adr) {
+				Some(time) => {
+					let seed_time_limit = now - Duration::seconds(SEED_RECONNECT_INTERVAL);
+					if *time < seed_time_limit {
+						listen_q_addrs.push(seed_adr.clone());
+					}
+				}
+				None => {
+					listen_q_addrs.push(seed_adr.clone());
+				}
+			}
+		}
+	}
 
 	connection_threads.retain(|h| !h.is_finished());
 
@@ -442,9 +463,11 @@ fn listen_for_addrs(
 
 		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
 
-		// listen_q_addrs can have duplicated requests or already processed, so still need to dedup
-		if peers.is_known(&addr) || connecting_history.contains_key(&addr) {
-			continue;
+		if use_tor_connection && is_arti_restarting() {
+			// waiting for arti to restore it connection
+			info!("Waiting for Arti to restore connection before continue with peers discovery...");
+			listen_q_addrs.push(addr);
+			break;
 		}
 
 		connecting_history.insert(addr.clone(), now);
@@ -510,9 +533,18 @@ fn listen_for_addrs(
 
 						let _ = peers_c.update_state(&addr_c, p2p::State::Healthy);
 					}
+					Err(mwc_p2p::Error::TorNotInitialized) => {
+						debug!("Trying connect when Tor is offline, skipping the attempt");
+					}
 					Err(e) => {
-						debug!("Connection to the peer {} was rejected, {}", addr_c, e);
-						let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
+						let error_str = e.to_string();
+						if error_str.contains("Invalid onion address") {
+							debug!("Cleaning up the invalid peer address, {}", addr_c);
+							let _ = peers_c.delete_peer(&addr_c);
+						} else {
+							debug!("Connection to the peer {} was rejected, {}", addr_c, e);
+							let _ = peers_c.update_state(&addr_c, p2p::State::Defunct);
+						}
 					}
 				}
 			})
