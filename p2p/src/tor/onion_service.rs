@@ -70,6 +70,7 @@ where
 	})?;
 
 	// Not necessary wait for a long time. We can continue with listening even without any waiting
+	info!("Waiting for onion service to be reachable");
 	arti::ArtiCore::wait_until_started(&onion_service, 120)?;
 
 	info!("Onion listener started at {}", onion_address);
@@ -114,6 +115,7 @@ where
 			break;
 		}
 
+		info!("Starting Arti service {}...", service_name);
 		match start_arti(
 			context_id,
 			&onion_expanded_key,
@@ -199,9 +201,12 @@ where
 							if need_arti_restart || arti::is_arti_restarting() {
 								drop(onion_service);
 								arti::unregister_arti_active_object(&onion_service_object);
-								arti::request_arti_restart();
+								if !arti::is_arti_restarting() {
+									arti::request_arti_restart("Onion service is dead, restarting");
+								}
 								break;
 							}
+
 							for _ in 0..30 {
 								if stop_state2.is_stopped() || arti::is_arti_restarting() {
 									break;
@@ -316,15 +321,7 @@ where
 
 				error!("Unable to restart onion service. Will retry soon. {}", e);
 				// restarting arti first
-				arti::request_arti_restart();
-				// Sleeping for a minute, likely something with a network, also restart was requested. Waiting...
-
-				for _ in 0..60 {
-					if stop_state.is_stopped() {
-						break;
-					}
-					thread::sleep(Duration::from_secs(1));
-				}
+				arti::request_arti_restart(&format!("Unable to restart onion service, {}", e));
 			}
 		}
 	}

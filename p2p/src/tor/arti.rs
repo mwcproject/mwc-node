@@ -24,7 +24,6 @@ use futures::future::{select, Either};
 use futures::StreamExt;
 use lazy_static::lazy_static;
 use mwc_util::secp::rand::Rng;
-use mwc_util::tokio::io::AsyncWriteExt;
 use mwc_util::tokio::runtime::{Handle, Runtime};
 use mwc_util::tokio::time::interval;
 use rand::seq::SliceRandom;
@@ -154,7 +153,8 @@ lazy_static! {
 	static ref TOR_ACTIVE_OBJECTS:  std::sync::RwLock<HashSet<String>> = std::sync::RwLock::new(HashSet::new());
 }
 
-pub fn request_arti_restart() {
+pub fn request_arti_restart(reason: &str) {
+	info!("Requestion Arti restart. Reason: {}", reason);
 	TOR_RESTART_REQUEST.store(true, Ordering::Relaxed);
 }
 
@@ -222,26 +222,16 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 
 					let need_arti_restart = {
 						let connected = match arti::access_arti(|arti| {
-							let connected = arti_async_block(async {
-								let connected =
-									match arti
-										.connect((
-											network_status::get_random_http_probe_host().as_str(),
-											80,
-										))
-										.await
-									{
-										Ok(mut stream) => {
-											let _ = stream.shutdown().await;
-											true
-										}
+							let connected =
+								arti_async_block(async {
+									match ArtiCore::test_circuit(arti).await {
+										Ok(_) => true,
 										Err(e) => {
 											info!("Tor monitoring connection is failed with error: {}", e);
 											false
 										}
-									};
-								connected
-							})?;
+									}
+								})?;
 							Ok(connected)
 						}) {
 							Ok(connected) => connected,
@@ -287,7 +277,12 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 }
 
 fn stop_start_arti(start_new_client: bool) {
-	request_arti_restart();
+	let reason = if start_new_client {
+		"starting new Arti client"
+	} else {
+		"stopping Arti client"
+	};
+	request_arti_restart(reason);
 
 	// Waiting for other service to stop
 	let mut wait_counter = 0;
@@ -374,8 +369,7 @@ where
 }
 
 fn restart_arti(start_new_client: bool) {
-	error!("Restarting ARTI...");
-
+	error!("Stopping ARTI...");
 	let (tor_runtime, config, base_dir, restart_senders) = {
 		let mut guard = TOR_ARTI_INSTANCE.write().expect("RwLock failure"); // ? converts PoisonError to E
 		match guard.take() {
@@ -837,7 +831,7 @@ impl ArtiCore {
 			.map_err(|e| Error::TorConfig(format!("Unable to build arti config, {}", e)))
 	}
 
-	async fn test_circuit(tor_client: &TorClient<PreferredRuntime>) -> Result<(), Error> {
+	pub async fn test_circuit(tor_client: &TorClient<PreferredRuntime>) -> Result<(), Error> {
 		info!("Attempting to build circuit...");
 		let probe_host = network_status::get_random_http_probe_host();
 		match tor_client.connect((probe_host.as_str(), 80)).await {

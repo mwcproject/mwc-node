@@ -29,7 +29,7 @@ use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
-use mwc_p2p::tor::arti::is_arti_restarting;
+use mwc_p2p::tor::arti::is_arti_healthy;
 use mwc_p2p::PeerAddr::Onion;
 use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
 use rand::prelude::*;
@@ -463,9 +463,10 @@ fn listen_for_addrs(
 
 		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
 
-		if use_tor_connection && is_arti_restarting() {
+		// Note, is_arti_healthy might wait for a long time it Arti is restarting. Foir this case it is totally fine
+		if use_tor_connection && !is_arti_healthy() {
 			// waiting for arti to restore it connection
-			info!("Waiting for Arti to restore connection before continue with peers discovery...");
+			info!("Waiting for Arti become online before continue with peers discovery...");
 			listen_q_addrs.push(addr);
 			break;
 		}
@@ -485,7 +486,7 @@ fn listen_for_addrs(
 		let peers_c = peers.clone();
 		let p2p_c = p2p.clone();
 		let thr = thread::Builder::new()
-			.name("peer_connect".to_string())
+			.name(format!("peer_connect_{}", addr))
 			.spawn(move || {
 				// if we don't have a socks port, and it's onion, don't set as defunct because
 				// we don't know.
