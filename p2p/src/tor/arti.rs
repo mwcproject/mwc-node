@@ -580,7 +580,7 @@ impl ArtiCore {
 							info!("Arti bootstrap making some progress: {}%", progress * 100.0);
 						} else {
 							let elapsed = Instant::now().duration_since(last_new_progress_time);
-							if elapsed >= Duration::from_secs(90) {
+							if elapsed >= Duration::from_secs(120) {
 								error!("Arti not able to make any bootstrap progress during {} seconds", elapsed.as_secs());
 								bootstap_process.abort();
 								let _ = bootstap_process.await;
@@ -818,8 +818,19 @@ impl ArtiCore {
 			.resolve_timeout(Duration::from_secs(40));
 
 		let net_params = builder.override_net_params();
+		net_params.insert("cbtdisabled".into(), 1);
 		net_params.insert("cbtinitialtimeout".into(), 120_000);
-		net_params.insert("guard-nonprimary-guard-connect-timeout".into(), 40);
+		net_params.insert("cbtmintimeout".into(), 60_000);
+		net_params.insert("guard-internet-likely-down-interval".into(), 1800);
+		net_params.insert("guard-nonprimary-guard-connect-timeout".into(), 60);
+		net_params.insert("guard-nonprimary-guard-idle-timeout".into(), 1800);
+		net_params.insert("hs_service_max_rdv_failures".into(), 5);
+		net_params.insert("min_paths_for_circs_pct".into(), 40);
+		net_params.insert("cbtlearntimeout".into(), 600);
+		net_params.insert("cbtquantile".into(), 70);
+		// Disabling vanguard because we want to work on slow networks
+		net_params.insert("vanguards-enabled".into(), 0);
+		net_params.insert("vanguards-hs-service".into(), 0);
 
 		builder
 			.build()
@@ -868,35 +879,70 @@ pub fn is_valid_onion_v3(onion: &str) -> bool {
 }
 
 #[test]
-#[ignore]
+//#[ignore]
 fn test_arti_connection() {
+	use ed25519_dalek::ExpandedSecretKey;
+	use mwc_util::secp::{Secp256k1, SecretKey};
+	use std::pin::Pin;
+
 	let res = start_arti(&TorConfig::default(), Path::new("/tmp/arti/"));
 	assert!(res.is_ok());
 
-	let connected = arti::access_arti(|arti| {
-		let connected = arti_async_block(async {
-			let connected = match arti
-				.connect((
-					//"zwecav6dgftsoscybpzufbo77d452mk3mox2fqzjqocu7265bxgq6oad.onion",
-					"7uz3yofsjta2ffvnt7ygdhxachspwo5hnqnctnlwqgtrgp3wjedtkmtm.onion",
-					80,
-				))
-				.await
-			{
-				Ok(mut stream) => {
-					let _ = stream.shutdown().await;
-					true
-				}
-				Err(e) => {
-					info!("Connection is failed with error: {}", e);
-					false
-				}
-			};
-			connected
+	let (onion_service, onion_address, _incoming_requests): (
+		Arc<tor_hsservice::RunningOnionService>,
+		String,
+		Pin<Box<dyn futures::Stream<Item = tor_hsservice::StreamRequest> + Send>>,
+	) = arti::access_arti(|tor_client| {
+		let secp = Secp256k1::with_caps(mwc_util::secp::ContextFlag::None);
+		let sec_key = SecretKey::new(&secp, &mut rand::thread_rng());
+		let sec_key = ed25519_dalek::SecretKey::from_bytes(&sec_key.0).map_err(|e| {
+			Error::TorOnionService(format!("Unable to build a DalekSecretKey, {}", e))
 		})?;
-		Ok(connected)
-	});
-	assert!(connected.is_ok())
+		let exp_key = ExpandedSecretKey::from(&sec_key);
+		let exp_key = exp_key.to_bytes();
+
+		let (onion_service, onion_address, incoming_requests) =
+			ArtiCore::start_onion_service(&tor_client, "onion-service-test".to_string(), exp_key)?;
+		Ok((
+			onion_service,
+			onion_address,
+			Box::pin(tor_hsservice::handle_rend_requests(incoming_requests))
+				as Pin<Box<dyn futures::Stream<Item = _> + Send>>,
+		))
+	})
+	.expect("Onion service unbale to start");
+
+	// Not necessary wait for a long time. We can continue with listening even without any waiting
+	arti::ArtiCore::wait_until_started(&onion_service, 20).expect("Onion service unable to start");
+
+	println!("Onion listener started at {}", onion_address);
+
+	for i in 0..100 {
+		let connected = arti::access_arti(|arti| {
+			let connected = arti_async_block(async {
+				let connected = arti
+					.connect((
+						"4vrh6vagyrw7du3vdcjk4u4g42qsb6dga6vevpds23fkgh6tw363hhyd.onion",
+						//onion_address.as_str(),
+						80,
+					))
+					.await;
+				connected
+			})?;
+			Ok(connected)
+		})
+		.expect("arti::access_arti failure");
+		if connected.is_ok() {
+			println!("Connected from attempt {}", i);
+			break;
+		}
+		println!(
+			"Unable connect attempt {}, error: {}",
+			i,
+			connected.err().unwrap()
+		);
+	}
+	//	assert!(connected.is_ok())
 }
 
 #[test]

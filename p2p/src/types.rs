@@ -81,8 +81,8 @@ pub enum Error {
 	#[error("p2p Connection error, {0}")]
 	Connection(io::Error),
 	/// Header type does not match the expected message type
-	#[error("p2p bad message")]
-	BadMessage,
+	#[error("p2p bad message: {0}")]
+	BadMessage(String),
 	#[error("p2p unexpected message {0}")]
 	UnexpectedMessage(String),
 	#[error("p2p message Length error")]

@@ -66,7 +66,7 @@ impl MessageHandler for Protocol {
 					ReasonForBan::BadRequest,
 					"Message::Attachment received but we never requested it",
 				);
-				return Err(Error::BadMessage);
+				return Err(Error::BadMessage("Unexpected Message::Attachment".into()));
 			}
 
 			Message::Ping(ping) => {
@@ -349,7 +349,7 @@ impl MessageHandler for Protocol {
 					ReasonForBan::BadRequest,
 					"txhashset archive received but we never requested it",
 				);
-				return Err(Error::BadMessage);
+				return Err(Error::BadMessage("Unexpected TxHashSetArchive".into()));
 			}
 			Message::StartHeadersHashRequest(sm_req) => {
 				debug!(

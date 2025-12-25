@@ -1002,7 +1002,7 @@ impl StratumServer {
 		);
 
 		// Initial Loop. Waiting node complete syncing
-		while self.sync_state.is_syncing() {
+		while self.sync_state.is_syncing() && !self.stop_state.is_stopped() {
 			thread::sleep(Duration::from_millis(50));
 		}
 

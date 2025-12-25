@@ -45,18 +45,18 @@ const ADDRS_CAP: usize = 10;
 
 /// The initial Hand message should come in immediately after the connection is initiated.
 /// But for consistency use the same timeout for reading both Hand and Shake messages.
-const HAND_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
+const HAND_READ_TIMEOUT: Duration = Duration::from_millis(15_000);
 
 /// We need to allow time for the peer to receive our Hand message and send back a Shake reply.
-const SHAKE_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
+const SHAKE_READ_TIMEOUT: Duration = Duration::from_millis(15_000);
 
 /// Fail fast when trying to write a Hand message to the tcp stream.
 /// If we cannot write it within a couple of seconds then something has likely gone wrong.
-const HAND_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
+const HAND_WRITE_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 /// Fail fast when trying to write a Shake message to the tcp stream.
 /// If we cannot write it within a couple of seconds then something has likely gone wrong.
-const SHAKE_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
+const SHAKE_WRITE_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 /// Handles the handshake negotiation when two peers connect and decides on
 /// protocol.

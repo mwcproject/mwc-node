@@ -39,7 +39,7 @@ use std::time::Duration;
 use MsgHeaderWrapper::*;
 use State::*;
 
-const HEADER_IO_TIMEOUT: Duration = Duration::from_millis(10000);
+const HEADER_IO_TIMEOUT: Duration = Duration::from_millis(1000);
 pub const BODY_IO_TIMEOUT: Duration = Duration::from_millis(60000);
 const HEADER_BATCH_SIZE: usize = 32;
 
@@ -86,6 +86,13 @@ impl Codec {
 	/// Destroy the codec and return the reader
 	pub fn _stream(self) -> TcpDataReadHalfStream {
 		self.stream
+	}
+
+	pub fn is_none_state(&self) -> bool {
+		match self.state {
+			None => true,
+			_ => false,
+		}
 	}
 
 	/// Length of the next item we are expecting, could be msg header, body, block header or attachment chunk
@@ -176,9 +183,11 @@ impl Codec {
 					headers,
 				} => {
 					if *bytes_left == 0 {
-						// Incorrect item count
 						self.state = None;
-						return Err(Error::BadMessage);
+						return Ok(Message::Headers(HeadersData {
+							headers: vec![],
+							remaining: 0,
+						}));
 					}
 
 					let mut reader =
@@ -196,7 +205,7 @@ impl Codec {
 							let bytes_left = *bytes_left;
 							self.state = None;
 							if bytes_left > 0 {
-								return Err(Error::BadMessage);
+								return Err(Error::BadMessage("Headers read error".into()));
 							}
 						}
 						return Ok(Message::Headers(HeadersData {

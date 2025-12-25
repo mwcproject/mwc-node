@@ -208,6 +208,7 @@ impl Peer {
 	/// Whether this peer is currently connected.
 	pub fn is_connected(&self) -> bool {
 		State::Connected == *self.state.read().expect("RwLock failure")
+			&& !self.stop_handle.lock().expect("Mutex failure").is_stopped()
 	}
 
 	/// Whether this peer has been banned.
@@ -249,8 +250,14 @@ impl Peer {
 
 	/// Send a msg with given msg_type to our peer via the connection.
 	fn send<T: Writeable>(&self, msg: T, msg_type: Type) -> Result<(), Error> {
+		if self.stop_handle.lock().expect("Mutex falure").is_stopped() {
+			return Err(crate::types::Error::ConnectionClose(format!(
+				"peer: {}",
+				self.info.addr
+			)));
+		}
 		let msg = Msg::new(msg_type, msg, self.info.version, self.context_id)?;
-		self.send_handle.lock().expect("Mutax failure").send(msg)
+		self.send_handle.lock().expect("Mutex failure").send(msg)
 	}
 
 	/// Send a ping to the remote peer, providing our local difficulty and

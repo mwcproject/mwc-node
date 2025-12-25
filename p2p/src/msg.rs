@@ -258,12 +258,18 @@ pub fn read_message<T: Readable, R: Read>(
 			if header.msg_type == msg_type {
 				read_body(&header, stream, version, context_id)
 			} else {
-				Err(Error::BadMessage)
+				Err(Error::BadMessage(format!(
+					"header.msg_type={:?} but expected {:?}",
+					header.msg_type, msg_type
+				)))
 			}
 		}
-		MsgHeaderWrapper::Unknown(msg_len, _) => {
+		MsgHeaderWrapper::Unknown(msg_len, tp) => {
 			read_discard(msg_len, stream)?;
-			Err(Error::BadMessage)
+			Err(Error::BadMessage(format!(
+				"Unknown massage of length {} and type {}",
+				msg_len, tp
+			)))
 		}
 	}
 }
@@ -293,12 +299,20 @@ pub fn write_message<W: Write>(
 	let mut tmp_buf: Vec<u8> = vec![];
 
 	for msg in msgs {
+		trace!(
+			"Sending message to the peer stream: {:?}",
+			msg.header.msg_type
+		);
 		tmp_buf.extend(ser::ser_vec(&msg.header, msg.version)?);
 		tmp_buf.extend(&msg.body[..]);
 		if let Some(file) = &msg.attachment {
 			// finalize what we have before attachments...
 			if !tmp_buf.is_empty() {
 				tracker.inc_sent(tmp_buf.len() as u64);
+				trace!(
+					"Sending {} bytes of data to the peer stream to finalize",
+					tmp_buf.len()
+				);
 				stream.write_all(&tmp_buf[..])?;
 				tmp_buf.clear();
 			}
@@ -309,6 +323,10 @@ pub fn write_message<W: Write>(
 					Ok(0) => break,
 					Ok(n) => {
 						tracker.inc_quiet_sent(n as u64);
+						trace!(
+							"Sending {} bytes of data to the peer stream as attachment",
+							n
+						);
 						stream.write_all(&buf[..n])?;
 						// Increase sent bytes "quietly" without incrementing the counter.
 						// (In a loop here for the single attachment).
@@ -321,6 +339,7 @@ pub fn write_message<W: Write>(
 
 	if !tmp_buf.is_empty() {
 		tracker.inc_sent(tmp_buf.len() as u64);
+		trace!("Sending {} bytes of data to the peer stream", tmp_buf.len());
 		stream.write_all(&tmp_buf[..])?;
 		tmp_buf.clear();
 	}
@@ -393,6 +412,11 @@ impl Readable for MsgHeaderWrapper {
 		// Check the msg_len while we are at it.
 		match Type::from_u8(t) {
 			Some(msg_type) => {
+				trace!(
+					"Reading from peer message {:?} with length {}",
+					msg_type,
+					msg_len
+				);
 				// TODO 4x the limits for now to leave ourselves space to change things.
 				let max_len = max_msg_size(reader.get_context_id(), msg_type) * 4;
 				if msg_len > max_len {
@@ -411,6 +435,11 @@ impl Readable for MsgHeaderWrapper {
 				}))
 			}
 			None => {
+				trace!(
+					"Reading from peer - got unknown message type {} with length {}",
+					t,
+					msg_len
+				);
 				// Unknown msg type, but we still want to limit how big the msg is.
 				let max_len = default_max_msg_size(reader.get_context_id()) * 4;
 				if msg_len > max_len {
