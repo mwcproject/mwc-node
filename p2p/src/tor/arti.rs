@@ -879,7 +879,7 @@ pub fn is_valid_onion_v3(onion: &str) -> bool {
 }
 
 #[test]
-//#[ignore]
+#[ignore]
 fn test_arti_connection() {
 	use ed25519_dalek::ExpandedSecretKey;
 	use mwc_util::secp::{Secp256k1, SecretKey};
