@@ -87,7 +87,7 @@ fn peer_handshake() {
 
 	let p2p_inner = server.clone();
 	let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
-	let _ = thread::spawn(move || p2p_inner.listen(p2p_tx));
+	let _ = thread::spawn(move || p2p_inner.listen(Some(p2p_tx)));
 
 	p2p_rx.recv().unwrap().unwrap();
 

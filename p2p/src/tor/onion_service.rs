@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::tor::arti;
-use crate::tor::arti::{arti_async_block, ArtiCore};
+use crate::tor::arti::{arti_async_block, is_shoutdown_arti, ArtiCore};
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr};
 use async_std::stream::StreamExt;
@@ -68,6 +68,10 @@ where
 				as Pin<Box<dyn futures::Stream<Item = _> + Send>>,
 		))
 	})?;
+
+	if is_shoutdown_arti() {
+		return Err(Error::Interrupted);
+	}
 
 	// Not necessary wait for a long time. We can continue with listening even without any waiting
 	info!("Waiting for onion service to be reachable");
@@ -306,7 +310,10 @@ where
 				);
 			}
 			Err(Error::TorNotInitialized) => {
-				thread::sleep(Duration::from_secs(5));
+				if stop_state.is_stopped() {
+					break;
+				}
+				thread::sleep(Duration::from_secs(1));
 			}
 			Err(e) => {
 				if stop_state.is_stopped() {

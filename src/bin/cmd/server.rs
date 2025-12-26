@@ -59,7 +59,7 @@ fn start_server_tui(
 
 	if !offline {
 		info!("Starting listening peers...");
-		mwc_node_workflow::server::start_listen_peers(context_id)?;
+		mwc_node_workflow::server::start_listen_peers(context_id, true)?;
 		info!("Starting discovery peers...");
 		mwc_node_workflow::server::start_discover_peers(context_id)?;
 		info!("Starting syncyng...");

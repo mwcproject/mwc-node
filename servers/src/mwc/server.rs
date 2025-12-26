@@ -344,9 +344,16 @@ impl Server {
 	}
 
 	/// Start p2p listening job. Needed for inbound peers connection
-	pub fn start_listen_peers(&mut self) -> Result<(), Error> {
+	/// wait_for_starting is intended to fix
+	pub fn start_listen_peers(&mut self, wait_for_starting: bool) -> Result<(), Error> {
 		let p2p_inner = self.p2p.clone();
-		let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
+		let (p2p_tx, p2p_rx) = if wait_for_starting {
+			let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
+			(Some(p2p_tx), Some(p2p_rx))
+		} else {
+			(None, None)
+		};
+
 		let listen_peers_thread = thread::Builder::new()
 			.name("p2p-server".to_string())
 			.spawn(move || {
@@ -357,11 +364,13 @@ impl Server {
 			})
 			.map_err(|e| Error::ServerError(format!("Listen job is failed, {}", e)))?;
 		// waiting until p2p server was able to init
-		let p2p_start_result = p2p_rx
-			.recv()
-			.map_err(|e| Error::ServerError(format!("Brocken  mpsc::sync_channel, {}", e)))?;
-		p2p_start_result
-			.map_err(|e| Error::ServerError(format!("Failed to start p2p server, {}", e)))?;
+		if let Some(p2p_rx) = p2p_rx {
+			let p2p_start_result = p2p_rx
+				.recv()
+				.map_err(|e| Error::ServerError(format!("Broken  mpsc::sync_channel, {}", e)))?;
+			p2p_start_result
+				.map_err(|e| Error::ServerError(format!("Failed to start p2p server, {}", e)))?;
+		}
 
 		self.listen_peers_thread = Some(listen_peers_thread);
 

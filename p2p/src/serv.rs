@@ -112,7 +112,7 @@ impl Server {
 
 	pub fn listen(
 		&self,
-		ready_tx: std::sync::mpsc::SyncSender<Result<(), Error>>,
+		ready_tx: Option<std::sync::mpsc::SyncSender<Result<(), Error>>>,
 	) -> Result<(), Error> {
 		let onion_expanded_key = if self.tor_config.is_tor_internal_arti() {
 			Some(self.read_expanded_key(self.config.onion_expanded_key.clone())?)
@@ -120,7 +120,7 @@ impl Server {
 			None
 		};
 
-		let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+		let ready_tx = Arc::new(Mutex::new(ready_tx));
 
 		let service_started_callback = |onion_address: Option<String>| {
 			*self.handshake.write().expect("RwLock failure") = Some(Handshake::new(

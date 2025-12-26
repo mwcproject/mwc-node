@@ -132,6 +132,8 @@ pub enum Error {
 	/// Tor Connect error
 	#[error("Tor outbound connection error: {0}")]
 	TorConnect(String),
+	#[error("process is interrupted by request")]
+	Interrupted,
 }
 
 impl From<ser::Error> for Error {
