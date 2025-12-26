@@ -34,7 +34,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::str::FromStr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -166,7 +166,10 @@ pub fn is_arti_started() -> bool {
 }
 
 pub fn is_arti_healthy() -> bool {
-	let has_tor = TOR_ARTI_INSTANCE.read().expect("RwLock failure").is_some();
+	let has_tor = match TOR_ARTI_INSTANCE.try_read() {
+		Ok(guard) => guard.is_some(),
+		Err(_) => false,
+	};
 	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::Relaxed);
 	has_tor && !restart_requested
 }
