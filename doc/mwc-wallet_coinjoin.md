@@ -1,16 +1,17 @@
-# MWC-wallet coinjoin pool
+# MWC-wallet CoinJoin Pool
 
-In a context of a low number of on chain transactions, Dandelion is not really effective. To improve privary, MWC-wallet will do a coinjoin at wallet level.  MWC-wallet will talk with other participating mwc-wallets and built a 'multikernel' transaction.
+In a context of a low number of on-chain transactions, Dandelion is not really effective on the Mimblewimble transaction merging/CoinJoin. To improve privacy, MWC-wallet will do a CoinJoin at wallet level, with this design. MWC-wallet will cooperate with other participating MWC-wallets and build a 'multikernel' transaction.
 
-The mwc-wallet coinjoin will take some time to process in order to capture enough transactions from honest wallet participants.
+The MWC-wallet CoinJoin need take more time than Dandelion to process, in order to capture enough transactions from honest wallet participants for this CoinJoin. The time taking of the MWC-wallet CoinJoin will be addressed later.
 
-This method can allow to obfuscate regular transactions, but it's not the primary use case for multiple reasons. In case of Non interactive transactions (NIT) it will be used more easily for regular transactions.
+This method will obfuscate transaction graph, <ins>but it's not the primary use case for multiple reasons</ins> (why? what reason?).
+
+In case of Non-Interactive Transaction (NIT), this method is more easily, because ... (?)
 
 
-## Checking traceability of the outputs.
+## Checking Traceability of The Outputs.
 
-The mwc-wallet will inspect the blocks and indentify the outputs that are potentially traceable.
-It will assume outputs are untraceable if the block contain multiple transactions (more then T kernels and T outputs) 
+The MWC-wallet will inspect the blocks and identify the outputs that are potentially traceable, simply by checking the transaction numbers in the block. It will assume outputs are untraceable if the block contain enough transactions (more than T kernels and T outputs) 
 Value of T need to be defined by user, more is better. Value of 5 should give good privacy assuming no observer was tracking transactions from mempool in the past.
 
 Over a certain time period, because of the cut-though, the number of kernels and outputs will decline. Because of that
