@@ -13,6 +13,15 @@ steps:
       ROARING_ARCH: x86-64-v2
     displayName: Build Release
   - script: |
+      set WEBTUNNEL_DIR=$(Build.BinariesDirectory)\webtunnel
+      if exist "%WEBTUNNEL_DIR%" rmdir /s /q "%WEBTUNNEL_DIR%"
+      git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "%WEBTUNNEL_DIR%"
+      cd /d "%WEBTUNNEL_DIR%\main\client"
+      go build
+      rename client.exe webtunnelclient.exe
+      copy /y webtunnelclient.exe "$(Build.SourcesDirectory)\target\release\"
+    displayName: Build WebTunnel Client
+  - script: |
       SET MY_TAG=$(Build.SourceBranch)
       SET MY_TAG=%MY_TAG:~10%
       echo %MY_TAG%
@@ -26,7 +35,7 @@ steps:
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
       sourceFolder: '$(Build.SourcesDirectory)\target\release'
-      contents: 'mwc.exe'
+      contents: 'mwc.exe;webtunnelclient.exe'
       targetFolder: '$(Build.BinariesDirectory)\mwc'
   - task: ArchiveFiles@2
     displayName: Gather assets
@@ -48,6 +57,8 @@ steps:
       action: 'edit'
       tagSource: "Git tag"
       tag: '$(build.my_tag)'
+      releaseNotesSource: 'inline'
+      releaseNotes: ''
       assets: |
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
