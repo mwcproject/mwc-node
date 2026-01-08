@@ -5,8 +5,30 @@ steps:
   - script: './build_static_linux.sh'
     displayName: Build Linux Release
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
+  - script: |
+      set -e
+      WEBTUNNEL_DIR="$(Build.BinariesDirectory)/webtunnel"
+      rm -rf "$WEBTUNNEL_DIR"
+      git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"
+      cd "$WEBTUNNEL_DIR/main/client"
+      go build
+      mv client webtunnelclient
+      cp webtunnelclient "$(Build.SourcesDirectory)/target/release/"
+    displayName: Build WebTunnel Client (Linux)
+    condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
   - script: './build_static.sh'
     displayName: Build MacOS Release
+    condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
+  - script: |
+      set -e
+      WEBTUNNEL_DIR="$(Build.BinariesDirectory)/webtunnel"
+      rm -rf "$WEBTUNNEL_DIR"
+      git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"
+      cd "$WEBTUNNEL_DIR/main/client"
+      go build
+      mv client webtunnelclient
+      cp webtunnelclient "$(Build.SourcesDirectory)/target/release/"
+    displayName: Build WebTunnel Client (MacOS)
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
   - script: |
       MY_TAG="$(Build.SourceBranch)"
@@ -21,7 +43,7 @@ steps:
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
       sourceFolder: '$(Build.SourcesDirectory)/target/release'
-      contents: 'mwc'
+      contents: 'mwc;webtunnelclient'
       targetFolder: '$(Build.BinariesDirectory)/mwc'
   - task: ArchiveFiles@2
     displayName: Gather assets
