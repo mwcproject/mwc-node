@@ -90,7 +90,7 @@ steps:
       action: 'edit'
       tagSource: "Git tag"
       tag: '$(build.my_tag)'
-      releaseNotesSource: 'inline'
+      releaseNotesSource: 'input'
       releaseNotes: ''
       assets: |
         $(Build.ArtifactStagingDirectory)/mwc-node-$(build.my_tag)-$(build.platform).tar.gz
