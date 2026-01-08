@@ -9,7 +9,18 @@ steps:
       set -e
       WEBTUNNEL_DIR="$(Build.BinariesDirectory)/webtunnel"
       rm -rf "$WEBTUNNEL_DIR"
-      git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"
+      for attempt in 1 2 3 4 5; do
+        if git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"; then
+          break
+        fi
+        echo "webtunnel clone failed (attempt $attempt), retrying in 10s..."
+        rm -rf "$WEBTUNNEL_DIR"
+        sleep 10
+      done
+      if [ ! -d "$WEBTUNNEL_DIR/.git" ]; then
+        echo "webtunnel clone failed after retries"
+        exit 1
+      fi
       cd "$WEBTUNNEL_DIR/main/client"
       go build
       mv client webtunnelclient
@@ -23,7 +34,18 @@ steps:
       set -e
       WEBTUNNEL_DIR="$(Build.BinariesDirectory)/webtunnel"
       rm -rf "$WEBTUNNEL_DIR"
-      git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"
+      for attempt in 1 2 3 4 5; do
+        if git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"; then
+          break
+        fi
+        echo "webtunnel clone failed (attempt $attempt), retrying in 10s..."
+        rm -rf "$WEBTUNNEL_DIR"
+        sleep 10
+      done
+      if [ ! -d "$WEBTUNNEL_DIR/.git" ]; then
+        echo "webtunnel clone failed after retries"
+        exit 1
+      fi
       cd "$WEBTUNNEL_DIR/main/client"
       go build
       mv client webtunnelclient
@@ -43,7 +65,9 @@ steps:
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
     inputs:
       sourceFolder: '$(Build.SourcesDirectory)/target/release'
-      contents: 'mwc;webtunnelclient'
+      contents: |
+        mwc
+        webtunnelclient
       targetFolder: '$(Build.BinariesDirectory)/mwc'
   - task: ArchiveFiles@2
     displayName: Gather assets
