@@ -24,8 +24,10 @@ use futures::future::{select, Either};
 use futures::StreamExt;
 use lazy_static::lazy_static;
 use mwc_util::secp::rand::Rng;
+use mwc_util::tokio;
 use mwc_util::tokio::runtime::{Handle, Runtime};
 use mwc_util::tokio::time::interval;
+use mwc_util::tokio_util::sync::CancellationToken;
 use rand::seq::SliceRandom;
 use safelog::DisplayRedacted;
 use std::collections::HashSet;
@@ -151,6 +153,21 @@ lazy_static! {
 	static ref TOR_MONITORING_THREAD : std::sync::RwLock<Option<std::thread::JoinHandle<()>>> = std::sync::RwLock::new(None);
 	// Reistered active objects. We don't want to restart TOR until any onject does exist
 	static ref TOR_ACTIVE_OBJECTS:  std::sync::RwLock<HashSet<String>> = std::sync::RwLock::new(HashSet::new());
+	// Since arti os global, using the global flag for Atri beetstrap interruption.
+	// Needed for clear exit while tor is still starting
+	static ref SHUTDOWN_ARTI: CancellationToken = CancellationToken::new();
+}
+
+pub fn shutdown_arti() {
+	SHUTDOWN_ARTI.cancel();
+}
+
+pub(crate) fn is_shutdown_arti() -> bool {
+	SHUTDOWN_ARTI.is_cancelled()
+}
+
+pub(crate) fn get_shutdown_arti_token() -> CancellationToken {
+	SHUTDOWN_ARTI.clone()
 }
 
 pub fn request_arti_restart(reason: &str) {
@@ -166,7 +183,10 @@ pub fn is_arti_started() -> bool {
 }
 
 pub fn is_arti_healthy() -> bool {
-	let has_tor = TOR_ARTI_INSTANCE.read().expect("RwLock failure").is_some();
+	let has_tor = match TOR_ARTI_INSTANCE.try_read() {
+		Ok(guard) => guard.is_some(),
+		Err(_) => false,
+	};
 	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::Relaxed);
 	has_tor && !restart_requested
 }
@@ -215,7 +235,7 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 					if TOR_MONITORING_THREAD
 						.read()
 						.expect("RwLock Failure")
-						.is_none()
+						.is_none() || is_shutdown_arti()
 					{
 						break;
 					}
@@ -261,7 +281,7 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 						if TOR_MONITORING_THREAD
 							.read()
 							.expect("RwLock Failure")
-							.is_none()
+							.is_none() || is_shutdown_arti()
 						{
 							break;
 						}
@@ -452,6 +472,10 @@ impl ArtiCore {
 			)));
 		}
 
+		if is_shutdown_arti() {
+			return Err(Error::Interrupted);
+		}
+
 		let mut tor_client_config =
 			Self::build_config(&config.webtunnel_bridge, base_dir, clean_up_arti_data)?;
 		// We now let the Arti client start and bootstrap a connection to the network.
@@ -461,6 +485,10 @@ impl ArtiCore {
 			Ok(tor_rt) => (Some(tor_rt), None),
 			Err(e) => (None, Some(e)),
 		};
+
+		if is_shutdown_arti() {
+			return Err(Error::Interrupted);
+		}
 
 		if tor_rt.is_none() && config.webtunnel_bridge.is_none() {
 			// connecting to the bridges
@@ -492,6 +520,10 @@ impl ArtiCore {
 					Err(e) => (None, Some(e)),
 				};
 
+				if is_shutdown_arti() {
+					return Err(Error::Interrupted);
+				}
+
 				bridge_num += 1;
 				if tor_rt.is_some() || bridge_num >= 3 {
 					break;
@@ -519,7 +551,7 @@ impl ArtiCore {
 	fn bootstrap_tor_client(
 		tor_client_config: TorClientConfig,
 	) -> Result<(TorClient<PreferredRuntime>, Runtime), Error> {
-		// Special tunitime for the atri client. Needed because we will need to shoutdown RT in order to stop the client.
+		// Special runtime for the atri client. Needed because we will need to shutdown RT in order to stop the client.
 		let arti_rt = mwc_util::tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
 			.build()
@@ -550,7 +582,7 @@ impl ArtiCore {
 				mwc_util::tokio::spawn(async move { tor_client2.bootstrap().await });
 
 			// Waiting for bootstrap to finish, monitoring the progress
-			let mut ticker = interval(Duration::from_secs(10));
+			let mut ticker = interval(Duration::from_secs(1));
 			let mut last_new_progress_time = Instant::now();
 			let mut last_progress = 0.0;
 			loop {
@@ -567,6 +599,15 @@ impl ArtiCore {
 						break;
 					}
 					Either::Right((_, _)) => {
+						if is_shutdown_arti() {
+							info!("Arti bootstrap interrupted, stopping client");
+							bootstap_process.abort();
+							let _ = bootstap_process.await;
+							let stop_f = tor_client.wait_for_stop();
+							drop(tor_client);
+							stop_f.await;
+							return Err(Error::Interrupted);
+						}
 						let progress = tor_client.bootstrap_status().as_frac();
 						if progress > last_progress {
 							last_progress = progress;
@@ -578,7 +619,9 @@ impl ArtiCore {
 								error!("Arti not able to make any bootstrap progress during {} seconds", elapsed.as_secs());
 								bootstap_process.abort();
 								let _ = bootstap_process.await;
+								let stop_f = tor_client.wait_for_stop();
 								drop(tor_client);
+								stop_f.await;
 								return Err(Error::TorProcess(
 									"Arti not able to make bootstrap progress during long time"
 										.into(),
@@ -587,6 +630,14 @@ impl ArtiCore {
 						}
 					}
 				}
+			}
+
+			if is_shutdown_arti() {
+				info!("Arti bootstrap interrupted, stopping client");
+				let stop_f = tor_client.wait_for_stop();
+				drop(tor_client);
+				stop_f.await;
+				return Err(Error::Interrupted);
 			}
 
 			if let Err(e) = Self::test_circuit(&tor_client).await {
@@ -678,6 +729,30 @@ impl ArtiCore {
 		}
 	}
 
+	// We can't add that condition to
+	async fn wait_shutdown_poll(timeout_seconds: u64) -> Result<(), Error> {
+		let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+
+		loop {
+			if is_arti_restarting() {
+				return Err(Error::TorNotInitialized);
+			}
+			if is_shutdown_arti() {
+				return Err(Error::Interrupted);
+			}
+
+			let now = Instant::now();
+			if now >= deadline {
+				return Ok(()); // timed out
+			}
+
+			// Sleep in small chunks, but don't oversleep past the deadline
+			let remaining = deadline - now;
+			let step = remaining.min(Duration::from_millis(100));
+			tokio::time::sleep(step).await;
+		}
+	}
+
 	/// Utility method to wait for onion service advertise itself
 	pub fn wait_until_started(
 		onion_service: &Arc<tor_hsservice::RunningOnionService>,
@@ -686,44 +761,45 @@ impl ArtiCore {
 		if is_arti_restarting() {
 			return Err(Error::TorNotInitialized);
 		}
+		if is_shutdown_arti() {
+			return Err(Error::Interrupted);
+		}
 
 		let status_stream = onion_service.status_events();
 		let mut binding = status_stream.filter(|status| {
 			futures::future::ready({
 				//let status_dump = format!("{:?}", status.state());
-				status.state().is_fully_reachable() || is_arti_restarting()
+				status.state().is_fully_reachable()
 			})
 		});
 
+		let next_status = binding.next();
+
 		let res = arti_async_block(async {
-			match mwc_util::tokio::time::timeout(
-				Duration::from_secs(timeout_seconds),
-				binding.next(),
-			)
-			.await
-			{
-				Ok(Some(_)) => {
-					if is_arti_restarting() {
-						return Err(Error::TorNotInitialized);
+			tokio::select! {
+				// If a status event arrives first:
+				maybe = next_status => {
+					match maybe {
+						Some(_) => {
+							info!("Onion service is fully reachable.");
+							Ok(())
+						}
+						None => Err(Error::TorOnionService("Status stream ended unexpectedly.".into())),
 					}
-					info!("Onion service is fully reachable.");
-					Ok(())
 				}
-				Ok(None) => {
-					return Err(Error::TorOnionService(
-						"Status stream ended unexpectedly.".into(),
-					))
-				}
-				Err(_) => {
-					info!("Timeout waiting for service to become reachable. You can still attempt to visit the service.");
-					Ok(())
+
+				// If shutdown/restart/timeout happens first:
+				shutdown_or_timeout = Self::wait_shutdown_poll(timeout_seconds) => {
+					match shutdown_or_timeout {
+						Err(e) => Err(e), // Interrupted or TorNotInitialized
+						Ok(()) => {
+							info!("Timeout waiting for service to become reachable. You can still attempt to visit the service.");
+							Ok(())
+						}
+					}
 				}
 			}
 		})?;
-
-		if is_arti_restarting() {
-			return Err(Error::TorNotInitialized);
-		}
 
 		res
 	}
@@ -834,7 +910,14 @@ impl ArtiCore {
 	pub async fn test_circuit(tor_client: &TorClient<PreferredRuntime>) -> Result<(), Error> {
 		info!("Attempting to build circuit...");
 		let probe_host = network_status::get_random_http_probe_host();
-		match tor_client.connect((probe_host.as_str(), 80)).await {
+		let arti_shutdown = get_shutdown_arti_token();
+		let connect_res = tokio::select! {
+			res = tor_client.connect((probe_host.as_str(), 80)) => res,
+			_ = arti_shutdown.cancelled() => {
+				return Err(Error::Interrupted);
+			},
+		};
+		match connect_res {
 			Ok(stream) => {
 				let tunnel = stream
 					.client_stream_ctrl()

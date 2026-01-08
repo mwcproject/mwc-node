@@ -117,6 +117,10 @@ fn process_request(input: String) -> Result<Value, String> {
 				.map_err(|e| format!("Unable connect to Tor, {}", e))?;
 			json!({})
 		}
+		"shoutdown_tor" => {
+			mwc_p2p::tor::arti::shutdown_arti();
+			json!({})
+		}
 		"tor_status" => {
 			let (started, healthy) = mwc_node_workflow::server::tor_status();
 			json!({
@@ -197,9 +201,9 @@ fn process_request(input: String) -> Result<Value, String> {
 					let body =
 						String::from_utf8(body).map_err(|e| format!("Broken body data, {}", e))?;
 
-					let json_value: serde_json::Value = serde_json::from_str(&body)
-						.map_err(|e| format!("Invalid response JSON: {}, {}", body, e))?;
-					json_value
+					json!({
+						"response" : body,
+					})
 				}
 				Err(e) => return Err(format!("process_call error: {}", e)),
 			}
@@ -220,7 +224,9 @@ fn process_request(input: String) -> Result<Value, String> {
 			json!({})
 		}
 		"start_listen_peers" => {
-			mwc_node_workflow::server::start_listen_peers(get_param(&params, "context_id")?)
+			// No waiting, it is Lib call, we want it start in the background.
+			// With waiting 'true' be aware that listen will wait for Tor to start first, so tor can't be shut down.
+			mwc_node_workflow::server::start_listen_peers(get_param(&params, "context_id")?, false)
 				.map_err(|e| format!("Unable to start the peers listening, {}", e))?;
 			json!({})
 		}

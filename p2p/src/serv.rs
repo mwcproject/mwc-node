@@ -25,7 +25,7 @@ use crate::peer::Peer;
 use crate::peers::Peers;
 use crate::store::PeerStore;
 use crate::tor::arti;
-use crate::tor::arti::arti_async_block;
+use crate::tor::arti::{arti_async_block, get_shutdown_arti_token};
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::PeerAddr::Onion;
 use crate::types::{
@@ -39,11 +39,11 @@ use ed25519_dalek::ExpandedSecretKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
-use mwc_util::run_global_async_block;
 use mwc_util::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_util::tokio::net::TcpStream;
 use mwc_util::tokio::time::Duration;
 use mwc_util::tokio_socks::tcp::Socks5Stream;
+use mwc_util::{run_global_async_block, tokio};
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::prelude::*;
@@ -112,7 +112,7 @@ impl Server {
 
 	pub fn listen(
 		&self,
-		ready_tx: std::sync::mpsc::SyncSender<Result<(), Error>>,
+		ready_tx: Option<std::sync::mpsc::SyncSender<Result<(), Error>>>,
 	) -> Result<(), Error> {
 		let onion_expanded_key = if self.tor_config.is_tor_internal_arti() {
 			Some(self.read_expanded_key(self.config.onion_expanded_key.clone())?)
@@ -120,7 +120,7 @@ impl Server {
 			None
 		};
 
-		let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+		let ready_tx = Arc::new(Mutex::new(ready_tx));
 
 		let service_started_callback = |onion_address: Option<String>| {
 			*self.handshake.write().expect("RwLock failure") = Some(Handshake::new(
@@ -335,29 +335,40 @@ impl Server {
 				// Using arti to connect
 				let stream: DataStream = arti::access_arti(|arti| {
 					arti_async_block(async {
+						let arti_shutdown = get_shutdown_arti_token();
 						let stream = match addr {
-							Ip(socket) => arti
-								.connect((socket.ip().to_string(), socket.port()))
-								.await
-								.map_err(|e| {
+							Ip(socket) => {
+								let connect_res = tokio::select! {
+									res = arti.connect((socket.ip().to_string(), socket.port())) => res,
+									_ = arti_shutdown.cancelled() => {
+										return Err(Error::Interrupted);
+									},
+								};
+								connect_res.map_err(|e| {
 									Error::TorConnect(format!(
 										"Unable connect to {}:{}, {}",
 										socket.ip(),
 										socket.port(),
 										e
 									))
-								})?,
+								})?
+							}
 							Onion(onion_address) => {
 								let onion_address = Self::format_onion_address(onion_address);
+								let connect_res = tokio::select! {
+									res = arti.connect((onion_address.as_str(), 80)) => res,
+									_ = arti_shutdown.cancelled() => {
+										return Err(Error::Interrupted);
+									},
+								};
+
 								// For Tor using port 80 for p2p connections. No configs for that
-								arti.connect((onion_address.as_str(), 80))
-									.await
-									.map_err(|e| {
-										Error::TorConnect(format!(
-											"Unable connect to {}:{}, {}",
-											onion_address, 80, e
-										))
-									})?
+								connect_res.map_err(|e| {
+									Error::TorConnect(format!(
+										"Unable connect to {}:{}, {}",
+										onion_address, 80, e
+									))
+								})?
 							}
 						};
 						Ok::<DataStream, Error>(stream)
@@ -407,7 +418,7 @@ impl Server {
 				})?
 			}
 		} else {
-			// No Tor,  just a regilar socket
+			// No Tor,  just a regular socket
 			match addr {
 				PeerAddr::Ip(address) => run_global_async_block(async {
 					let stream = mwc_util::tokio::time::timeout(

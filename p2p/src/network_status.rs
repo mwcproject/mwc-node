@@ -45,14 +45,17 @@ fn probe_urls_http() -> &'static Vec<String> {
         ];
 
         let mut live = Vec::with_capacity(candidates.len());
-        for url in candidates {
+        for url in &candidates {
             if check_http_probe(url) {
                 live.push(url.to_string());
             }
         }
 
         if live.is_empty() {
-            panic!("Unable to build list of probe domains, all reported as offline. Do you have internet conneciton issues?");
+            error!("Unable to build list of probe domains, all reported as offline. Do you have internet conneciton issues?");
+			for url in &candidates {
+				live.push(url.to_string());
+			}
         }
 
         live
@@ -61,7 +64,13 @@ fn probe_urls_http() -> &'static Vec<String> {
 
 /// Blocking TCP probe: open, send HEAD, expect HTTP/1.1 2xx.
 fn check_http_probe(host: &str) -> bool {
-	let addr = (host, 80).to_socket_addrs().unwrap().next().unwrap();
+	let addr = match (host, 80).to_socket_addrs() {
+		Ok(mut addr) => match addr.next() {
+			Some(addr) => addr,
+			None => return false,
+		},
+		Err(_) => return false,
+	};
 	let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
 		Ok(s) => s,
 		Err(_) => return false,

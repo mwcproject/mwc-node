@@ -136,10 +136,10 @@ pub fn start_sync_monitoring(context_id: u32) -> Result<(), Error> {
 }
 
 /// Start p2p listening job. Needed for inbound peers connection
-pub fn start_listen_peers(context_id: u32) -> Result<(), Error> {
+pub fn start_listen_peers(context_id: u32, wait_for_starting: bool) -> Result<(), Error> {
 	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
 	match servers.get_mut(&context_id) {
-		Some(serv) => serv.start_listen_peers().map_err(|e| {
+		Some(serv) => serv.start_listen_peers(wait_for_starting).map_err(|e| {
 			Error::ServerError(format!("Unable to start listening for peers, {}", e))
 		})?,
 		None => {
