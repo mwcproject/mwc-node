@@ -27,6 +27,7 @@ use mwc_util::secp::rand::Rng;
 use mwc_util::tokio;
 use mwc_util::tokio::runtime::{Handle, Runtime};
 use mwc_util::tokio::time::interval;
+use mwc_util::tokio_util::sync::CancellationToken;
 use rand::seq::SliceRandom;
 use safelog::DisplayRedacted;
 use std::collections::HashSet;
@@ -35,7 +36,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -154,15 +155,19 @@ lazy_static! {
 	static ref TOR_ACTIVE_OBJECTS:  std::sync::RwLock<HashSet<String>> = std::sync::RwLock::new(HashSet::new());
 	// Since arti os global, using the global flag for Atri beetstrap interruption.
 	// Needed for clear exit while tor is still starting
-	static ref SHOUTDOWN_ARTI: AtomicBool = AtomicBool::new(false);
+	static ref SHUTDOWN_ARTI: CancellationToken = CancellationToken::new();
 }
 
-pub fn shoutdown_arti() {
-	SHOUTDOWN_ARTI.store(true, Ordering::Relaxed);
+pub fn shutdown_arti() {
+	SHUTDOWN_ARTI.cancel();
 }
 
-pub(crate) fn is_shoutdown_arti() -> bool {
-	SHOUTDOWN_ARTI.load(Ordering::Relaxed)
+pub(crate) fn is_shutdown_arti() -> bool {
+	SHUTDOWN_ARTI.is_cancelled()
+}
+
+pub(crate) fn get_shutdown_arti_token() -> CancellationToken {
+	SHUTDOWN_ARTI.clone()
 }
 
 pub fn request_arti_restart(reason: &str) {
@@ -230,7 +235,7 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 					if TOR_MONITORING_THREAD
 						.read()
 						.expect("RwLock Failure")
-						.is_none() || is_shoutdown_arti()
+						.is_none() || is_shutdown_arti()
 					{
 						break;
 					}
@@ -276,7 +281,7 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 						if TOR_MONITORING_THREAD
 							.read()
 							.expect("RwLock Failure")
-							.is_none() || is_shoutdown_arti()
+							.is_none() || is_shutdown_arti()
 						{
 							break;
 						}
@@ -467,7 +472,7 @@ impl ArtiCore {
 			)));
 		}
 
-		if is_shoutdown_arti() {
+		if is_shutdown_arti() {
 			return Err(Error::Interrupted);
 		}
 
@@ -481,7 +486,7 @@ impl ArtiCore {
 			Err(e) => (None, Some(e)),
 		};
 
-		if is_shoutdown_arti() {
+		if is_shutdown_arti() {
 			return Err(Error::Interrupted);
 		}
 
@@ -515,7 +520,7 @@ impl ArtiCore {
 					Err(e) => (None, Some(e)),
 				};
 
-				if is_shoutdown_arti() {
+				if is_shutdown_arti() {
 					return Err(Error::Interrupted);
 				}
 
@@ -546,7 +551,7 @@ impl ArtiCore {
 	fn bootstrap_tor_client(
 		tor_client_config: TorClientConfig,
 	) -> Result<(TorClient<PreferredRuntime>, Runtime), Error> {
-		// Special tunitime for the atri client. Needed because we will need to shoutdown RT in order to stop the client.
+		// Special runtime for the atri client. Needed because we will need to shutdown RT in order to stop the client.
 		let arti_rt = mwc_util::tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
 			.build()
@@ -594,7 +599,7 @@ impl ArtiCore {
 						break;
 					}
 					Either::Right((_, _)) => {
-						if is_shoutdown_arti() {
+						if is_shutdown_arti() {
 							info!("Arti bootstrap interrupted, stopping client");
 							bootstap_process.abort();
 							let _ = bootstap_process.await;
@@ -627,7 +632,7 @@ impl ArtiCore {
 				}
 			}
 
-			if is_shoutdown_arti() {
+			if is_shutdown_arti() {
 				info!("Arti bootstrap interrupted, stopping client");
 				let stop_f = tor_client.wait_for_stop();
 				drop(tor_client);
@@ -635,16 +640,7 @@ impl ArtiCore {
 				return Err(Error::Interrupted);
 			}
 
-			let test_circuit = tokio::select! {
-				res = Self::test_circuit(&tor_client) => {
-					res
-			   }
-			   _ = Self::wait_until_stopped() => {
-					Err(Error::Interrupted)
-			   }
-			};
-
-			if let Err(e) = test_circuit {
+			if let Err(e) = Self::test_circuit(&tor_client).await {
 				error!("Unable to build a test Tor circle, {}", e);
 				info!("Stopping failed Arti client");
 				let stop_f = tor_client.wait_for_stop();
@@ -669,12 +665,6 @@ impl ArtiCore {
 				arti_rt.shutdown_timeout(Duration::from_secs(5));
 				Err(e)
 			}
-		}
-	}
-
-	async fn wait_until_stopped() {
-		while !is_shoutdown_arti() {
-			tokio::time::sleep(Duration::from_millis(100)).await;
 		}
 	}
 
@@ -747,7 +737,7 @@ impl ArtiCore {
 			if is_arti_restarting() {
 				return Err(Error::TorNotInitialized);
 			}
-			if is_shoutdown_arti() {
+			if is_shutdown_arti() {
 				return Err(Error::Interrupted);
 			}
 
@@ -771,7 +761,7 @@ impl ArtiCore {
 		if is_arti_restarting() {
 			return Err(Error::TorNotInitialized);
 		}
-		if is_shoutdown_arti() {
+		if is_shutdown_arti() {
 			return Err(Error::Interrupted);
 		}
 
@@ -920,7 +910,14 @@ impl ArtiCore {
 	pub async fn test_circuit(tor_client: &TorClient<PreferredRuntime>) -> Result<(), Error> {
 		info!("Attempting to build circuit...");
 		let probe_host = network_status::get_random_http_probe_host();
-		match tor_client.connect((probe_host.as_str(), 80)).await {
+		let arti_shutdown = get_shutdown_arti_token();
+		let connect_res = tokio::select! {
+			res = tor_client.connect((probe_host.as_str(), 80)) => res,
+			_ = arti_shutdown.cancelled() => {
+				return Err(Error::Interrupted);
+			},
+		};
+		match connect_res {
 			Ok(stream) => {
 				let tunnel = stream
 					.client_stream_ctrl()

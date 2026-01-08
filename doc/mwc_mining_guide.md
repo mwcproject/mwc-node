@@ -45,7 +45,7 @@ You are done and the block rewards will go to the mwc-wallet instance that you s
 
 Please check mwc-node and mwc-miner logs for errors. Wallet related errors you should see in mwc-node logs. 
 
-if node not able connect to the wallet, use can trouble shout but running this API manually  
+if node not able connect to the wallet, use can trouble shoot but running this API manually  
 ```
 curl -d '{"id":1,"jsonrpc":"2.0","method":"build_coinbase","params":{"block_fees":{"fees":"0","height":"1307101","key_id":"030000000000000000000c02fd00000000"}}}' http://localhost:3415/v2/foreign
 ```

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::tor::arti;
-use crate::tor::arti::{arti_async_block, is_shoutdown_arti, ArtiCore};
+use crate::tor::arti::{arti_async_block, is_shutdown_arti, ArtiCore};
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr};
 use async_std::stream::StreamExt;
@@ -69,7 +69,7 @@ where
 		))
 	})?;
 
-	if is_shoutdown_arti() {
+	if is_shutdown_arti() {
 		return Err(Error::Interrupted);
 	}
 
