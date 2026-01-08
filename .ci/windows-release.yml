@@ -57,6 +57,8 @@ steps:
       action: 'edit'
       tagSource: "Git tag"
       tag: '$(build.my_tag)'
+      releaseNotesSource: 'inline'
+      releaseNotes: ''
       assets: |
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform).zip
         $(Build.ArtifactStagingDirectory)\mwc-node-$(build.my_tag)-$(build.platform)-sha256sum.txt
