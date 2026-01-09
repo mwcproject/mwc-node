@@ -5,28 +5,6 @@ steps:
   - script: './build_static_linux.sh'
     displayName: Build Linux Release
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
-  - script: |
-      set -e
-      WEBTUNNEL_DIR="$(Build.BinariesDirectory)/webtunnel"
-      rm -rf "$WEBTUNNEL_DIR"
-      for attempt in 1 2 3 4 5; do
-        if git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"; then
-          break
-        fi
-        echo "webtunnel clone failed (attempt $attempt), retrying in 10s..."
-        rm -rf "$WEBTUNNEL_DIR"
-        sleep 10
-      done
-      if [ ! -d "$WEBTUNNEL_DIR/.git" ]; then
-        echo "webtunnel clone failed after retries"
-        exit 1
-      fi
-      cd "$WEBTUNNEL_DIR/main/client"
-      go build
-      mv client webtunnelclient
-      cp webtunnelclient "$(Build.SourcesDirectory)/target/release/"
-    displayName: Build WebTunnel Client (Linux)
-    condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
   - script: './build_static.sh'
     displayName: Build MacOS Release
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
@@ -51,7 +29,7 @@ steps:
       mv client webtunnelclient
       cp webtunnelclient "$(Build.SourcesDirectory)/target/release/"
     displayName: Build WebTunnel Client (MacOS)
-    condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - script: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}
