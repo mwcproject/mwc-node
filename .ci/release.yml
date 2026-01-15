@@ -2,10 +2,14 @@ steps:
   - script: 'cargo test --all'
     displayName: Cargo Test All
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
-  - script: './build_static_linux.sh'
+  - script: 'cargo build --release'
+    env:
+      ROARING_ARCH: x86-64-v2
     displayName: Build Linux Release
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
-  - script: './build_static.sh'
+  - script: 'cargo build --release'
+    env:
+      ROARING_ARCH: x86-64-v2
     displayName: Build MacOS Release
     condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
   - script: |

@@ -8,7 +8,7 @@ edition = "2024"
 [dependencies]
 arti-client = { version = "0.34", features = [
     "tokio",
-    "native-tls",
+    "rustls",
     "onion-service-service",
     "onion-service-client",
     "pt-client",
