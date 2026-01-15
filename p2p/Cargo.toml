@@ -36,9 +36,9 @@ crossbeam = "0.8"
 
 # Tor embedded client, Arti project.
 # Note, all tor related crates must be from the same versions
-arti-client = { version = "0.37", features = [
+arti-client = { version = "0.38", default-features = false, features = [
     "tokio",
-    "native-tls",
+    "rustls",
     "onion-service-service",
     "onion-service-client",
     "pt-client",
@@ -47,17 +47,16 @@ arti-client = { version = "0.37", features = [
     "experimental-api"
 ] }
 tracing-subscriber = "0.3"
-tor-error = "0.37.0"
-tor-hsservice = "0.37.0"
-tor-proto = { version = "0.37.0", features = ["stream-ctrl"] }
-tor-cell = "0.37.0"
-tor-keymgr = "0.37.0"
-tor-config = "0.37.0"
-tor-hscrypto = "0.37.0"
-tor-llcrypto = "0.37.0"
-tor-rtcompat = "0.37.0"
+tor-error = "0.38.0"
+tor-hsservice = "0.38.0"
+tor-proto = { version = "0.38.0", features = ["stream-ctrl"] }
+tor-cell = "0.38.0"
+tor-keymgr = "0.38.0"
+tor-config = "0.38.0"
+tor-hscrypto = "0.38.0"
+tor-llcrypto = "0.38.0"
+tor-rtcompat = { version = "0.38.0", default-features = false, features = ["tokio", "rustls"] }
 # Adding it fix linking error under the windows
-rusqlite = { version = "0.37", features = ["bundled"] }
 safelog = "0.7"
 
 mwc_core = { path = "../core", version = "6.0.0" }
