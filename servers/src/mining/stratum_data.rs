@@ -87,7 +87,6 @@ impl WorkersMap {
 		}
 	}
 
-	#[allow(dead_code)]
 	fn size(&self) -> usize {
 		self.workers.read().expect("RwLock failed").len()
 	}
@@ -259,7 +258,6 @@ impl WorkersList {
 		}
 	}
 
-	#[allow(dead_code)]
 	pub fn count(&self) -> usize {
 		self.workers_map.size()
 	}
