@@ -21,6 +21,7 @@ use crate::core::{core, ser};
 use crate::p2p;
 use crate::util::secp::pedersen;
 use crate::util::{self, ToHex};
+use mwc_core::core::hash::Hash;
 #[cfg(feature = "libp2p")]
 use mwc_p2p::libp2p_connection;
 use serde;
@@ -333,7 +334,11 @@ impl OutputPrintable {
 			commit: output.commitment(),
 			spent,
 			proof,
-			proof_hash: output.proof.hash().to_hex(),
+			proof_hash: output
+				.proof
+				.hash()
+				.map_err(|e| chain::Error::Other(format!("RangeProof hash build error, {}", e)))?
+				.to_hex(),
 			block_height,
 			merkle_proof,
 			mmr_index: output_pos,
@@ -576,7 +581,7 @@ pub struct BlockHeaderDifficultyInfo {
 impl BlockHeaderDifficultyInfo {
 	pub fn from_header(header: &core::BlockHeader) -> BlockHeaderDifficultyInfo {
 		BlockHeaderDifficultyInfo {
-			hash: header.hash().to_hex(),
+			hash: header.hash().unwrap_or(Hash::default()).to_hex(),
 			height: header.height,
 			previous: header.prev_hash.to_hex(),
 		}
@@ -624,7 +629,7 @@ pub struct BlockHeaderPrintable {
 impl BlockHeaderPrintable {
 	pub fn from_header(header: &core::BlockHeader) -> BlockHeaderPrintable {
 		BlockHeaderPrintable {
-			hash: header.hash().to_hex(),
+			hash: header.hash().unwrap_or(Hash::default()).to_hex(),
 			version: header.version.into(),
 			height: header.height,
 			previous: header.prev_hash.to_hex(),
@@ -714,7 +719,10 @@ impl CompactBlockPrintable {
 		cb: &core::CompactBlock,
 		chain: &chain::Chain,
 	) -> Result<CompactBlockPrintable, chain::Error> {
-		let block = chain.get_block(&cb.hash())?;
+		let block =
+			chain.get_block(&cb.hash().map_err(|e| {
+				chain::Error::Other(format!("CompactBlock hash build error, {}", e))
+			})?)?;
 		let out_full = cb
 			.out_full()
 			.iter()

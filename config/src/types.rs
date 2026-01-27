@@ -41,6 +41,10 @@ pub enum ConfigError {
 	/// Error serializing config values
 	#[error("Error serializing node configuration: {0}")]
 	SerializationError(String),
+
+	/// Config error
+	#[error("Configuraiton error, {0}")]
+	ConfigError(String),
 }
 
 impl From<io::Error> for ConfigError {
@@ -64,7 +68,7 @@ pub struct GlobalConfig {
 	/// Keep track of the file we've read
 	pub config_file_path: Option<PathBuf>,
 	/// Global member config
-	pub members: Option<ConfigMembers>,
+	pub members: ConfigMembers,
 }
 
 /// Keeping an 'inner' structure here, as the top
@@ -79,5 +83,5 @@ pub struct ConfigMembers {
 	#[serde(default)]
 	pub server: ServerConfig,
 	/// Logging config
-	pub logging: Option<LoggingConfig>,
+	pub logging: LoggingConfig,
 }

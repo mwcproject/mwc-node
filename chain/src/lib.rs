@@ -49,7 +49,7 @@ pub mod types;
 
 // Re-export the base interface
 
-pub use crate::chain::{Chain, BLOCK_TO_BAN};
+pub use crate::chain::Chain;
 pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{

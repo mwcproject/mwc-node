@@ -401,7 +401,9 @@ where
 		fluff: Option<bool>,
 		secp: &Secp256k1,
 	) -> Result<(), Error> {
-		let tx_hash = tx.hash();
+		let tx_hash = tx
+			.hash()
+			.map_err(|e| Error::Internal(format!("Transaction build hash error, {}", e)))?;
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};

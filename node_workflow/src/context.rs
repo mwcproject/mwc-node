@@ -31,9 +31,8 @@ pub fn allocate_new_context(
 	chain_type: ChainTypes,
 	accept_fee_base: Option<u64>,
 	nrd_feature_enabled: Option<bool>,
-	invalid_block_hashes: &Option<Vec<String>>,
 ) -> Result<u32, Error> {
-	let mut contexts = USED_CONTEXTS.write().expect("RwLock failure");
+	let mut contexts = USED_CONTEXTS.write().unwrap_or_else(|e| e.into_inner());
 
 	for c_id in 1..64 {
 		let mask = 1u64 << c_id;
@@ -64,10 +63,6 @@ pub fn allocate_new_context(
 			};
 			global::init_global_nrd_enabled(c_id, nrd_feature_enabled);
 
-			mwc_chain::pipe::init_invalid_block_hashes(c_id, invalid_block_hashes).map_err(
-				|e| Error::ContextError(format!("invalid argument invalid_block_hashes, {}", e)),
-			)?;
-
 			info!("Context id {} is created", c_id);
 			return Ok(c_id);
 		}
@@ -80,7 +75,7 @@ pub fn allocate_new_context(
 /// Release app context
 pub fn release_context(context_id: u32) -> Result<(), Error> {
 	info!("Releasing context id {}", context_id);
-	let mut contexts = USED_CONTEXTS.write().expect("RwLock failure");
+	let mut contexts = USED_CONTEXTS.write().unwrap_or_else(|e| e.into_inner());
 	let mask = 1u64 << context_id;
 	if *contexts & mask == 0 {
 		return Err(Error::ContextError(format!(

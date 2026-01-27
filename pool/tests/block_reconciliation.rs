@@ -131,7 +131,9 @@ fn test_transaction_pool_block_reconciliation() {
 
 	let block_txs = &[block_tx_1, block_tx_2, block_tx_3, block_tx_4];
 	add_block(&chain, block_txs, &keychain);
-	let block = chain.get_block(&chain.head().unwrap().hash()).unwrap();
+	let block = chain
+		.get_block(&chain.head().unwrap().hash().unwrap())
+		.unwrap();
 
 	// Check the pool still contains everything we expect at this point.
 	assert_eq!(pool.total_size(), txs_to_add.len());

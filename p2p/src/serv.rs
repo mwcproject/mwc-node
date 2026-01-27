@@ -107,7 +107,10 @@ impl Server {
 	/// Return true if server is ready to connect to the others peers.
 	/// Server is ready when handshake record is built.
 	pub fn is_ready(&self) -> bool {
-		self.handshake.read().expect("RwLock failure").is_some()
+		self.handshake
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.is_some()
 	}
 
 	pub fn listen(
@@ -123,20 +126,24 @@ impl Server {
 		let ready_tx = Arc::new(Mutex::new(ready_tx));
 
 		let service_started_callback = |onion_address: Option<String>| {
-			*self.handshake.write().expect("RwLock failure") = Some(Handshake::new(
+			*self.handshake.write().unwrap_or_else(|e| e.into_inner()) = Some(Handshake::new(
 				self.context_id,
 				self.genesis.clone(),
 				self.config.clone(),
 				onion_address,
 			));
 
-			ready_tx.lock().expect("Mutex failure").take().map(|tx| {
-				let _ = tx.send(Ok(()));
-			});
+			ready_tx
+				.lock()
+				.unwrap_or_else(|e| e.into_inner())
+				.take()
+				.map(|tx| {
+					let _ = tx.send(Ok(()));
+				});
 		};
 
 		let service_failed_callback =
-			|e: &Error| match ready_tx.lock().expect("Mutex failure").take() {
+			|e: &Error| match ready_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
 				Some(tx) => {
 					let _ = tx.send(Err(Error::TorProcess(format!(
 						"Unable to start arti, {}",
@@ -291,11 +298,11 @@ impl Server {
 		}
 
 		let self_onion_address = if global::is_production_mode(self.context_id) {
-			let hs = self.handshake.read().expect("RwLock failure");
+			let hs = self.handshake.read().unwrap_or_else(|e| e.into_inner());
 			let hs = hs
 				.as_ref()
 				.ok_or(Error::TorConnect("handshake is empty".into()))?;
-			let addrs = hs.addrs.read().expect("RwLock failure");
+			let addrs = hs.addrs.read().unwrap_or_else(|e| e.into_inner());
 			if addrs.contains(addr) {
 				debug!("connect: ignore connecting to PeerWithSelf, addr: {}", addr);
 				return Err(Error::PeerWithSelf);
@@ -445,7 +452,7 @@ impl Server {
 		};
 
 		let total_diff = self.peers.total_difficulty()?;
-		let hs = self.handshake.read().expect("RwLock failure");
+		let hs = self.handshake.read().unwrap_or_else(|e| e.into_inner());
 		let hs = hs
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is empty".into()))?;
@@ -498,7 +505,7 @@ impl Server {
 
 		let total_diff = self.peers.total_difficulty()?;
 
-		let hs = self.handshake.read().expect("RwLock failure");
+		let hs = self.handshake.read().unwrap_or_else(|e| e.into_inner());
 		let hs = hs
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is empty".into()))?;
@@ -577,7 +584,7 @@ impl Server {
 		let addr = self
 			.handshake
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is not defined".into()))?
 			.onion_address
@@ -664,11 +671,11 @@ impl ChainAdapter for DummyAdapter {
 		unimplemented!()
 	}
 
-	fn get_tmp_dir(&self) -> PathBuf {
+	fn get_tmp_dir(&self) -> Result<PathBuf, chain::Error> {
 		unimplemented!()
 	}
 
-	fn get_tmpfile_pathname(&self, _tmpfile_name: String) -> PathBuf {
+	fn get_tmpfile_pathname(&self, _tmpfile_name: String) -> Result<PathBuf, chain::Error> {
 		unimplemented!()
 	}
 

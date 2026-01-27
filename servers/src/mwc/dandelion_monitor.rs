@@ -20,6 +20,7 @@ use crate::pool::{BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TxSou
 use crate::util::StopState;
 use crate::ServerTxPool;
 use chrono::prelude::Utc;
+use mwc_core::core::hash::Hash;
 use mwc_util::secp::{ContextFlag, Secp256k1};
 use rand::{thread_rng, Rng};
 use std::sync::Arc;
@@ -106,7 +107,7 @@ fn process_fluff_phase(
 	secp: &Secp256k1,
 ) -> Result<(), PoolError> {
 	// Take a write lock on the txpool for the duration of this processing.
-	let mut tx_pool = tx_pool.write().expect("RwLock failed");
+	let mut tx_pool = tx_pool.write().unwrap_or_else(|e| e.into_inner());
 
 	let all_entries = tx_pool.stempool.entries.clone();
 	if all_entries.is_empty() {
@@ -159,7 +160,7 @@ fn process_expired_entries(
 	secp: &Secp256k1,
 ) -> Result<(), PoolError> {
 	// Take a write lock on the txpool for the duration of this processing.
-	let mut tx_pool = tx_pool.write().expect("RwLock failed");
+	let mut tx_pool = tx_pool.write().unwrap_or_else(|e| e.into_inner());
 
 	let embargo_secs = dandelion_config.embargo_secs + thread_rng().gen_range(0, 31);
 	let expired_entries = select_txs_cutoff(&tx_pool.stempool, embargo_secs);
@@ -177,9 +178,13 @@ fn process_expired_entries(
 		match tx_pool.add_to_pool(TxSource::EmbargoExpired, entry.tx, false, &header, secp) {
 			Ok(_) => info!(
 				"dand_mon: embargo expired for {}, fluffed successfully.",
-				txhash
+				txhash.unwrap_or(Hash::default())
 			),
-			Err(e) => warn!("dand_mon: failed to fluff expired tx {}, {:?}", txhash, e),
+			Err(e) => warn!(
+				"dand_mon: failed to fluff expired tx {}, {:?}",
+				txhash.unwrap_or(Hash::default()),
+				e
+			),
 		};
 	}
 	Ok(())

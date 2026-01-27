@@ -256,21 +256,20 @@ where
 			size_file.init()?;
 		}
 
-		self.file = Some(
-			OpenOptions::new()
-				.read(true)
-				.append(true)
-				.create(true)
-				.open(self.path.clone())?,
-		);
+		let file: File = OpenOptions::new()
+			.read(true)
+			.append(true)
+			.create(true)
+			.open(self.path.clone())?;
 
 		// If we have a non-empty file then mmap it.
 		if self.size()? == 0 {
 			self.buffer_start_pos = 0;
 		} else {
-			self.mmap = Some(unsafe { memmap::Mmap::map(&self.file.as_ref().unwrap())? });
+			self.mmap = Some(unsafe { memmap::Mmap::map(&file)? });
 			self.buffer_start_pos = self.size_in_elmts()?;
 		}
+		self.file = Some(file);
 
 		Ok(())
 	}
@@ -387,28 +386,27 @@ where
 			}
 		}
 
-		{
-			let file = OpenOptions::new()
-				.read(true)
-				.create(true)
-				.append(true)
-				.open(&self.path)?;
-			self.file = Some(file);
-			self.buffer_start_pos_bak = 0;
-		}
+		let mut file = OpenOptions::new()
+			.read(true)
+			.create(true)
+			.append(true)
+			.open(&self.path)?;
+		self.buffer_start_pos_bak = 0;
 
-		self.file.as_mut().unwrap().write_all(&self.buffer[..])?;
-		self.file.as_mut().unwrap().sync_all()?;
+		file.write_all(&self.buffer[..])?;
+		file.sync_all()?;
 
 		self.buffer.clear();
 		self.buffer_start_pos = self.size_in_elmts()?;
 
 		// Note: file must be non-empty to memory map it
-		if self.file.as_ref().unwrap().metadata()?.len() == 0 {
+		if file.metadata()?.len() == 0 {
 			self.mmap = None;
 		} else {
-			self.mmap = Some(unsafe { memmap::Mmap::map(&self.file.as_ref().unwrap())? });
+			self.mmap = Some(unsafe { memmap::Mmap::map(&file)? });
 		}
+
+		self.file = Some(file);
 
 		Ok(())
 	}

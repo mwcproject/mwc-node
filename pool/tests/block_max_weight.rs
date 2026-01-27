@@ -120,7 +120,9 @@ fn test_block_building_max_weight() {
 	);
 
 	add_block(&chain, &txs, &keychain);
-	let block = chain.get_block(&chain.head().unwrap().hash()).unwrap();
+	let block = chain
+		.get_block(&chain.head().unwrap().hash().unwrap())
+		.unwrap();
 
 	// Check contents of the block itself (including coinbase reward).
 	assert_eq!(block.inputs().len(), 3);

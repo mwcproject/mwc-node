@@ -232,11 +232,11 @@ impl Handshake {
 			});
 		} else {
 			// check the nonce to see if we are trying to connect to ourselves
-			let nonces = self.nonces.read().expect("RwLock failure");
+			let nonces = self.nonces.read().unwrap_or_else(|e| e.into_inner());
 			let addr = resolve_peer_addr(&hand.sender_addr, &conn);
 			if nonces.contains(&hand.nonce) {
 				// save ip addresses of ourselves
-				let mut addrs = self.addrs.write().expect("RwLock failure");
+				let mut addrs = self.addrs.write().unwrap_or_else(|e| e.into_inner());
 				addrs.push_back(addr);
 				if addrs.len() >= ADDRS_CAP {
 					addrs.pop_front();
@@ -308,7 +308,7 @@ impl Handshake {
 	fn next_nonce(&self) -> u64 {
 		let nonce = thread_rng().gen();
 
-		let mut nonces = self.nonces.write().expect("RwLock failure");
+		let mut nonces = self.nonces.write().unwrap_or_else(|e| e.into_inner());
 		nonces.push_back(nonce);
 		if nonces.len() >= NONCES_CAP {
 			nonces.pop_front();

@@ -46,7 +46,6 @@ fn process_request(input: String) -> Result<Value, String> {
 				get_param(&params, "chain_type")?,
 				get_option_param(&params, "accept_fee_base")?,
 				get_option_param(&params, "nrd_feature_enabled")?,
-				&get_option_param(&params, "invalid_block_hashes")?,
 			)
 			.map_err(|e| format!("New context allocation error, {}", e))?;
 			json!({
@@ -59,7 +58,7 @@ fn process_request(input: String) -> Result<Value, String> {
 			json!({})
 		}
 		"init_file_logs" => {
-			let _ = mwc_node_workflow::logging::init_bin_logs(&get_param(&params, "config")?);
+			let _ = mwc_node_workflow::logging::init_bin_logs(&get_param(&params, "config")?)?;
 			json!({})
 		}
 		"init_callback_logs" => {
@@ -67,7 +66,7 @@ fn process_request(input: String) -> Result<Value, String> {
 
 			let (cb, ctx) = LIB_CALLBACKS
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.get(&log_callback_name)
 				.cloned()
 				.ok_or(format!(
@@ -89,7 +88,7 @@ fn process_request(input: String) -> Result<Value, String> {
 				log_buffer_size: get_option_param(&params, "log_buffer_size")?.unwrap_or(1000),
 				callback: Arc::new(Some(Box::new(callback))),
 			};
-			mwc_node_workflow::logging::init_buffered_logs(config);
+			mwc_node_workflow::logging::init_buffered_logs(config)?;
 			json!({})
 		}
 		"release_callback_logs" => {
@@ -98,7 +97,7 @@ fn process_request(input: String) -> Result<Value, String> {
 				log_buffer_size: 1,
 				callback: Arc::new(None),
 			};
-			mwc_node_workflow::logging::init_buffered_logs(config);
+			mwc_node_workflow::logging::init_buffered_logs(config)?;
 			json!({})
 		}
 		"get_buffered_logs" => {
@@ -146,7 +145,7 @@ fn process_request(input: String) -> Result<Value, String> {
 				// Adding the callback
 				let (cb, ctx) = LIB_CALLBACKS
 					.read()
-					.expect("RwLock failure")
+					.unwrap_or_else(|e| e.into_inner())
 					.get(&hook_callback_name)
 					.cloned()
 					.ok_or(format!(

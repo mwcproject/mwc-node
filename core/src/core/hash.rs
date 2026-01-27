@@ -21,6 +21,7 @@
 use crate::ser::{self, Error, PMMRable, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use blake2::blake2b::Blake2b;
 use byteorder::{BigEndian, ByteOrder};
+use std::io::ErrorKind;
 use std::{cmp::min, convert::AsRef, fmt, ops};
 use util::ToHex;
 
@@ -52,8 +53,8 @@ impl fmt::Display for Hash {
 impl PMMRable for Hash {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		self.clone()
+	fn as_elmt(&self) -> Result<Hash, Error> {
+		Ok(self.clone())
 	}
 
 	fn elmt_size() -> Option<u16> {
@@ -211,7 +212,7 @@ impl ser::Writer for HashWriter {
 /// A trait for types that have a canonical hash
 pub trait Hashed {
 	/// Obtain the hash of the object
-	fn hash(&self) -> Hash;
+	fn hash(&self) -> Result<Hash, std::io::Error>;
 }
 
 /// Implementing this trait enables the default
@@ -219,12 +220,14 @@ pub trait Hashed {
 pub trait DefaultHashable: Writeable {}
 
 impl<D: DefaultHashable> Hashed for D {
-	fn hash(&self) -> Hash {
+	fn hash(&self) -> Result<Hash, std::io::Error> {
 		let mut hasher = HashWriter::default();
-		Writeable::write(self, &mut hasher).unwrap();
+		Writeable::write(self, &mut hasher).map_err(|e| {
+			std::io::Error::new(ErrorKind::Other, format!("Unable to build hash, {}", e))
+		})?;
 		let mut ret = [0; 32];
 		hasher.finalize(&mut ret);
-		Hash(ret)
+		Ok(Hash(ret))
 	}
 }
 

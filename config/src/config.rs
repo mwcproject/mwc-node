@@ -116,7 +116,9 @@ pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalCon
 	check_api_secret_files(chain_type, FOREIGN_API_SECRET_FILE_NAME)?;
 	// Use config file if current directory if it exists, .mwc home otherwise
 	if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME) {
-		GlobalConfig::new(p.to_str().unwrap())
+		GlobalConfig::new(p.to_str().ok_or(ConfigError::ConfigError(
+			"Internal error at server config file init".into(),
+		))?)
 	} else {
 		// Check if mwc dir exists
 		let mwc_path = get_mwc_path(chain_type)?;
@@ -129,11 +131,15 @@ pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalCon
 		if !config_path.exists() {
 			let mut default_config = GlobalConfig::for_chain(chain_type);
 			// update paths relative to current dir
-			default_config.update_paths(&mwc_path);
-			default_config.write_to_file(config_path.to_str().unwrap())?;
+			default_config.update_paths(&mwc_path)?;
+			default_config.write_to_file(config_path.to_str().ok_or(
+				ConfigError::ConfigError("Internal error at server config file init".into()),
+			)?)?;
 		}
 
-		GlobalConfig::new(config_path.to_str().unwrap())
+		GlobalConfig::new(config_path.to_str().ok_or(ConfigError::ConfigError(
+			"Internal error at server config file init".into(),
+		))?)
 	}
 }
 
@@ -143,7 +149,7 @@ impl Default for ConfigMembers {
 		ConfigMembers {
 			config_file_version: Some(crate::types::CONFIG_FILE_VERSION),
 			server: ServerConfig::default(),
-			logging: Some(LoggingConfig::default()),
+			logging: LoggingConfig::default(),
 		}
 	}
 }
@@ -152,7 +158,7 @@ impl Default for GlobalConfig {
 	fn default() -> GlobalConfig {
 		GlobalConfig {
 			config_file_path: None,
-			members: Some(ConfigMembers::default()),
+			members: ConfigMembers::default(),
 		}
 	}
 }
@@ -162,7 +168,7 @@ impl GlobalConfig {
 	/// apply defaults for each chain type
 	pub fn for_chain(chain_type: &global::ChainTypes) -> GlobalConfig {
 		let mut defaults_conf = GlobalConfig::default();
-		let defaults = &mut defaults_conf.members.as_mut().unwrap().server;
+		let defaults = &mut defaults_conf.members.server;
 		defaults.chain_type = chain_type.clone();
 
 		match *chain_type {
@@ -171,32 +177,20 @@ impl GlobalConfig {
 				defaults.api_http_addr = "127.0.0.1:13413".to_owned();
 				defaults.p2p_config.port = 13414;
 				defaults.libp2p_port = Some(13417);
-				defaults
-					.stratum_mining_config
-					.as_mut()
-					.unwrap()
-					.stratum_server_addr = Some("127.0.0.1:13416".to_owned());
-				defaults
-					.stratum_mining_config
-					.as_mut()
-					.unwrap()
-					.wallet_listener_url = "http://127.0.0.1:13415".to_owned();
+				defaults.stratum_mining_config.stratum_server_addr =
+					Some("127.0.0.1:13416".to_owned());
+				defaults.stratum_mining_config.wallet_listener_url =
+					"http://127.0.0.1:13415".to_owned();
 			}
 			global::ChainTypes::UserTesting => {
 				defaults.api_http_addr = "127.0.0.1:23413".to_owned();
 				defaults.libp2p_port = Some(23417);
 				defaults.p2p_config.port = 23414;
 				defaults.p2p_config.seeding_type = p2p::Seeding::None;
-				defaults
-					.stratum_mining_config
-					.as_mut()
-					.unwrap()
-					.stratum_server_addr = Some("127.0.0.1:23416".to_owned());
-				defaults
-					.stratum_mining_config
-					.as_mut()
-					.unwrap()
-					.wallet_listener_url = "http://127.0.0.1:23415".to_owned();
+				defaults.stratum_mining_config.stratum_server_addr =
+					Some("127.0.0.1:23416".to_owned());
+				defaults.stratum_mining_config.wallet_listener_url =
+					"http://127.0.0.1:23415".to_owned();
 			}
 			global::ChainTypes::AutomatedTesting => {
 				panic!("Can't run automated testing directly");
@@ -207,16 +201,15 @@ impl GlobalConfig {
 
 	/// Requires the path to a config file
 	pub fn new(file_path: &str) -> Result<GlobalConfig, ConfigError> {
-		let mut return_value = GlobalConfig::default();
-		return_value.config_file_path = Some(PathBuf::from(&file_path));
+		let config_file = PathBuf::from(&file_path);
 
 		// Config file path is given but not valid
-		let config_file = return_value.config_file_path.clone().unwrap();
 		if !config_file.exists() {
-			return Err(ConfigError::FileNotFoundError(String::from(
-				config_file.to_str().unwrap(),
-			)));
+			return Err(ConfigError::FileNotFoundError(file_path.into()));
 		}
+
+		let mut return_value = GlobalConfig::default();
+		return_value.config_file_path = Some(config_file);
 
 		// Try to parse the config file if it exists, explode if it does exist but
 		// something's wrong with it
@@ -225,9 +218,14 @@ impl GlobalConfig {
 
 	/// Read config
 	fn read_config(mut self) -> Result<GlobalConfig, ConfigError> {
-		let config_file_path = self.config_file_path.as_ref().unwrap();
+		let config_file_path =
+			self.config_file_path
+				.as_ref()
+				.ok_or(crate::types::ConfigError::ConfigError(
+					"config_file_path is not defined".into(),
+				))?;
 		let contents = fs::read_to_string(config_file_path)?;
-		let migrated = GlobalConfig::migrate_config_file_version_to_2(contents.clone());
+		let migrated = GlobalConfig::migrate_config_file_version_to_2(contents.clone())?;
 		if contents != migrated {
 			fs::write(config_file_path, &migrated)?;
 		}
@@ -236,12 +234,12 @@ impl GlobalConfig {
 		let decoded: Result<ConfigMembers, toml::de::Error> = toml::from_str(&fixed);
 		match decoded {
 			Ok(gc) => {
-				self.members = Some(gc);
+				self.members = gc;
 				return Ok(self);
 			}
 			Err(e) => {
 				return Err(ConfigError::ParseError(
-					self.config_file_path.unwrap().to_str().unwrap().to_string(),
+					config_file_path.to_string_lossy().into_owned(),
 					format!("{}", e),
 				));
 			}
@@ -249,51 +247,60 @@ impl GlobalConfig {
 	}
 
 	/// Update paths
-	pub fn update_paths(&mut self, mwc_home: &PathBuf) {
+	pub fn update_paths(&mut self, mwc_home: &PathBuf) -> Result<(), ConfigError> {
 		// need to update server chain path
 		let mut chain_path = mwc_home.clone();
 		chain_path.push(MWC_CHAIN_DIR);
-		self.members.as_mut().unwrap().server.db_root = chain_path.to_str().unwrap().to_owned();
+		self.members.server.db_root = chain_path
+			.to_str()
+			.ok_or(ConfigError::ConfigError(
+				"Internal error, chain_path is invalid".into(),
+			))?
+			.to_owned();
 		let mut api_secret_path = mwc_home.clone();
 		api_secret_path.push(API_SECRET_FILE_NAME);
-		self.members.as_mut().unwrap().server.api_secret_path =
-			Some(api_secret_path.to_str().unwrap().to_owned());
+		self.members.server.api_secret_path = Some(
+			api_secret_path
+				.to_str()
+				.ok_or(ConfigError::ConfigError(
+					"Internal error, api_secret_path is invalid".into(),
+				))?
+				.to_owned(),
+		);
 		let mut foreign_api_secret_path = mwc_home.clone();
 		foreign_api_secret_path.push(FOREIGN_API_SECRET_FILE_NAME);
-		self.members
-			.as_mut()
-			.unwrap()
-			.server
-			.foreign_api_secret_path = Some(foreign_api_secret_path.to_str().unwrap().to_owned());
+		self.members.server.foreign_api_secret_path = Some(
+			foreign_api_secret_path
+				.to_str()
+				.ok_or(ConfigError::ConfigError(
+					"Internal error, foreign_api_secret_path is invalid".into(),
+				))?
+				.to_owned(),
+		);
 		let mut log_path = mwc_home.clone();
 		log_path.push(SERVER_LOG_FILE_NAME);
-		self.members
-			.as_mut()
-			.unwrap()
-			.logging
-			.as_mut()
-			.unwrap()
-			.log_file_path = log_path.to_str().unwrap().to_owned();
+		self.members.logging.log_file_path = log_path
+			.to_str()
+			.ok_or(ConfigError::ConfigError(
+				"Internal error, log_path is invalid".into(),
+			))?
+			.to_owned();
+		Ok(())
 	}
 
 	/// Enable mining
 	pub fn stratum_enabled(&mut self) -> bool {
 		return self
 			.members
-			.as_mut()
-			.unwrap()
 			.server
 			.stratum_mining_config
-			.as_mut()
-			.unwrap()
 			.enable_stratum_server
-			.unwrap();
+			.unwrap_or(false);
 	}
 
 	/// Serialize config
 	pub fn ser_config(&mut self) -> Result<String, ConfigError> {
-		let encoded: Result<String, toml::ser::Error> =
-			toml::to_string(self.members.as_mut().unwrap());
+		let encoded: Result<String, toml::ser::Error> = toml::to_string(&self.members);
 		match encoded {
 			Ok(enc) => return Ok(enc),
 			Err(e) => {
@@ -312,9 +319,9 @@ impl GlobalConfig {
 		Ok(())
 	}
 
-	/// It is placeholder for the future migration. Please check how it is done at mwc
-	///  MWC doesn't have anything to migrate yet
-	fn migrate_config_file_version_to_2(config_str: String) -> String {
+	/// It is placeholder for the future migration.
+	/// MWC doesn't have anything to migrate yet
+	fn migrate_config_file_version_to_2(config_str: String) -> Result<String, ConfigError> {
 		// Parse existing config and return unchanged if not eligible for migration
 
 		// Nothing to migrate in MWC. Keeping commented code as example
@@ -322,7 +329,7 @@ impl GlobalConfig {
 			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone()))
 				.expect(format!("Unable to parse the configuration {}", config_str).as_str());
 		if config.config_file_version == Some(crate::types::CONFIG_FILE_VERSION) {
-			return config_str;
+			return Ok(config_str);
 		}
 
 		// Apply changes both textually and structurally
@@ -358,12 +365,21 @@ impl GlobalConfig {
 
 		// Verify equivalence
 
-		assert_eq!(
-			config,
-			toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone())).unwrap()
-		);
+		let restored_conf = toml::from_str(&GlobalConfig::fix_warning_level(config_str.clone()))
+			.map_err(|e| {
+				ConfigError::ConfigError(format!(
+					"Internal error, unable to restore config from string, {}",
+					e
+				))
+			})?;
 
-		config_str
+		if config != restored_conf {
+			return Err(ConfigError::ConfigError(
+				"Internal error, failed to migrate config".into(),
+			));
+		}
+
+		Ok(config_str)
 	}
 
 	// For forwards compatibility old config needs `Warning` log level changed to standard log::Level `WARN`

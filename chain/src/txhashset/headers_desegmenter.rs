@@ -218,20 +218,19 @@ pub struct HeadersRecieveCache<T = String> {
 	chain: Arc<crate::Chain>,
 }
 
-impl<T> HeadersRecieveCache<T> {
+impl<T: Clone> HeadersRecieveCache<T> {
 	/// Create a new segmenter based on the provided txhashset and the specified block header
 	pub fn new(
 		chain: Arc<crate::Chain>, // target height and headers_root_hash must be get as a result of handshake process.
 		header_desegmenter: &HeaderHashesDesegmenter,
-	) -> Self {
+	) -> Result<Self, Error> {
 		let mut res = HeadersRecieveCache {
 			archive_header_height: 0,
 			main_headers_cache: RwLock::new(BTreeMap::new()),
 			chain: chain.clone(),
 		};
-		res.prepare_download_headers(header_desegmenter)
-			.expect("Chain is corrupted, please clean up the data manually and restart the node");
-		res
+		res.prepare_download_headers(header_desegmenter)?;
+		Ok(res)
 	}
 
 	/// Archive (horizon) height
@@ -258,11 +257,11 @@ impl<T> HeadersRecieveCache<T> {
 					.header_pmmr
 					.data
 					.as_ref()
-					.unwrap()
+					.ok_or(Error::Other("Internal error at prepare_download_headers, header_desegmenter pmmr data not initialized".into()))?
 					.get(hash_idx as usize)
 				{
 					if let Some(hash) = hash {
-						if header.hash() != *hash {
+						if header.hash().map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))? != *hash {
 							// need to check the first hash, if it doesn't match, let's reset all blockchain. Hashes are below horizon,
 							// if something not matching better to reset all the data, including block data and restart with headers download
 							self.chain.reset_chain_head(self.chain.genesis(), true)?;
@@ -280,7 +279,7 @@ impl<T> HeadersRecieveCache<T> {
 	pub fn reset(&mut self) {
 		self.main_headers_cache
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.clear();
 		self.archive_header_height = 0;
 	}
@@ -323,7 +322,7 @@ impl<T> HeadersRecieveCache<T> {
 			if self
 				.main_headers_cache
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.contains_key(&(hash_idx * HEADERS_PER_BATCH as u64 + 1))
 			{
 				if hash_idx == last_in_cache + 1 {
@@ -347,7 +346,7 @@ impl<T> HeadersRecieveCache<T> {
 				.header_pmmr
 				.data
 				.as_ref()
-				.unwrap()
+				.ok_or(Error::Other("Internal error at next_desired_headers, header_desegmenter pmmr data not initialized".into()))?
 				.get(hash_idx as usize);
 			match hinfo {
 				Some(hash) => {
@@ -405,19 +404,34 @@ impl<T> HeadersRecieveCache<T> {
 				)),
 			));
 		}
-		let first_header = &bhs.first().unwrap();
+		let first_header = &bhs.first().ok_or((
+			peer_info.clone(),
+			Error::Other("add_headers_to_cache param bhs is empty".into()),
+		))?;
 		let hash_idx = first_header.height / HEADERS_PER_BATCH as u64;
 
 		if let Some(next_hash) = headers
 			.header_pmmr
 			.data
 			.as_ref()
-			.expect("header_pmmr data must exist")
+			.ok_or((
+				peer_info.clone(),
+				Error::Other("header_pmmr data must exist".into()),
+			))?
 			.get(hash_idx as usize + 1)
 		{
 			if let Some(next_hash) = next_hash {
-				let last_header = bhs.last().unwrap();
-				if last_header.hash() != *next_hash {
+				let last_header = bhs.last().ok_or((
+					peer_info.clone(),
+					Error::Other("add_headers_to_cache param bhs is empty".into()),
+				))?;
+				if last_header.hash().map_err(|e| {
+					(
+						peer_info.clone(),
+						Error::Other(format!("Header hash calculation error, {}", e)),
+					)
+				})? != *next_hash
+				{
 					return Err((
 						peer_info,
 						Error::InvalidSegment(
@@ -439,7 +453,10 @@ impl<T> HeadersRecieveCache<T> {
 			));
 		}
 
-		let mut main_headers_cache = self.main_headers_cache.write().expect("RwLock failure");
+		let mut main_headers_cache = self
+			.main_headers_cache
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		// duplicated data, skipping it
 		if main_headers_cache.contains_key(&first_header.height) {
 			return Ok(());
@@ -451,24 +468,38 @@ impl<T> HeadersRecieveCache<T> {
 	}
 
 	/// Apply cache to the chain. Return true if more data is available
-	pub fn apply_cache(&self) -> Result<bool, (T, Error)> {
+	pub fn apply_cache(&self) -> Result<bool, (Option<T>, Error)> {
 		// Apply data from cache if possible
 		let mut headers_all: Vec<BlockHeader> = Vec::new();
 		let mut headers_by_peer: Vec<(Vec<BlockHeader>, T)> = Vec::new();
-		let tip = self
-			.chain
-			.header_head()
-			.expect("Header head must be always defined");
+		let tip = self.chain.header_head().map_err(|e| {
+			(
+				None,
+				Error::Other(format!(
+					"Internal error, header expected to be defined, {}",
+					e
+				)),
+			)
+		})?;
 
 		let mut tip_height = tip.height;
 
 		{
-			let mut main_headers_cache = self.main_headers_cache.write().expect("RwLock failure");
+			let mut main_headers_cache = self
+				.main_headers_cache
+				.write()
+				.unwrap_or_else(|e| e.into_inner());
 			while let Some((height, (headers, _))) = main_headers_cache.first_key_value() {
 				debug_assert!(!headers.is_empty());
 				debug_assert!(headers.len() == HEADERS_PER_BATCH as usize);
 				debug_assert!(headers.first().unwrap().height == *height);
-				let ending_height = headers.last().expect("headers can't empty").height;
+				let ending_height = headers
+					.last()
+					.ok_or((
+						None,
+						Error::Other("Internal error, header expected to be defined".into()),
+					))?
+					.height;
 				if ending_height <= tip_height {
 					// duplicated data, skipping it...
 					let _ = main_headers_cache.pop_first();
@@ -477,8 +508,17 @@ impl<T> HeadersRecieveCache<T> {
 				if *height > tip_height + 1 {
 					break;
 				}
-				let (_, (mut bhs, peer)) = main_headers_cache.pop_first().unwrap();
-				tip_height = bhs.last().expect("bhs can't be empty").height;
+				let (_, (mut bhs, peer)) = main_headers_cache.pop_first().ok_or((
+					None,
+					Error::Other("Internal error, main_headers_cache is empty".into()),
+				))?;
+				tip_height = bhs
+					.last()
+					.ok_or((
+						Some(peer.clone()),
+						Error::Other("Internal error, bhs expected to be defined".into()),
+					))?
+					.height;
 
 				headers_by_peer.push((bhs.clone(), peer));
 				headers_all.append(&mut bhs);
@@ -502,28 +542,38 @@ impl<T> HeadersRecieveCache<T> {
 					);
 					// apply one by one
 					for (hdr, peer) in headers_by_peer {
-						let tip = self
-							.chain
-							.header_head()
-							.expect("Header head must be always defined");
+						let tip = self.chain.header_head().map_err(|e| {
+							(
+								Some(peer.clone()),
+								Error::Other(format!(
+									"Internal error, header expected to be defined, {}",
+									e
+								)),
+							)
+						})?;
 
 						match self.chain.sync_block_headers(&hdr, tip, Options::NONE) {
 							Ok(_) => {}
-							Err(e) => return Err((peer, e)),
+							Err(e) => return Err((Some(peer), e)),
 						}
 					}
 				}
 			}
 
-			let tip = self
-				.chain
-				.header_head()
-				.expect("Header head must be always defined");
+			let tip = self.chain.header_head().map_err(|e| {
+				(
+					None,
+					Error::Other(format!(
+						"Internal error, header expected to be defined, {}",
+						e
+					)),
+				)
+			})?;
 
 			match self
 				.main_headers_cache
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.first_key_value()
 			{
 				Some((height, _)) => Ok(*height <= tip.height + 1),

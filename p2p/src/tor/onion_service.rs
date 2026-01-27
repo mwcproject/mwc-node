@@ -222,10 +222,12 @@ where
 							f(false);
 						};
 					})
-					.expect(&format!(
-						"Unable to start {} onion_service_checker thread",
-						service_name
-					));
+					.map_err(|e| {
+						Error::Internal(format!(
+							"Unable to start {} onion_service_checker thread, {}",
+							service_name, e
+						))
+					})?;
 
 				let stop_state = stop_state.clone();
 				loop {

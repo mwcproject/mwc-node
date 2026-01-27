@@ -238,12 +238,19 @@ impl<'a> Batch<'a> {
 	pub fn save_block(&self, b: &Block) -> Result<(), Error> {
 		debug!(
 			"save_block: {} at {} ({} -> v{})",
-			b.header.hash(),
+			b.header.hash().unwrap_or(Hash::default()),
 			b.header.height,
 			b.inputs().version_str(),
 			self.db.protocol_version(),
 		);
-		self.db.put_ser(&to_key(BLOCK_PREFIX, b.hash())[..], b)?;
+		self.db.put_ser(
+			&to_key(
+				BLOCK_PREFIX,
+				b.hash()
+					.map_err(|e| Error::IOError(format!("Header hash calculation error, {}", e)))?,
+			)[..],
+			b,
+		)?;
 		Ok(())
 	}
 
@@ -377,7 +384,9 @@ impl<'a> Batch<'a> {
 
 	/// Save block header to db.
 	pub fn save_block_header(&self, header: &BlockHeader) -> Result<(), Error> {
-		let hash = header.hash();
+		let hash = header
+			.hash()
+			.map_err(|e| Error::IOError(format!("Header hash calculation error, {}", e)))?;
 
 		// Store the header itself indexed by hash.
 		self.db
@@ -523,10 +532,16 @@ impl<'a> Batch<'a> {
 	/// Fallback to legacy block input bitmap from the db.
 	pub fn get_block_input_bitmap(&self, bh: &Hash) -> Result<Bitmap, Error> {
 		if let Ok(spent) = self.get_spent_index(bh) {
-			let bitmap = spent
-				.into_iter()
-				.map(|x| x.pos.try_into().unwrap())
-				.collect();
+			let mut bitmap = Bitmap::new();
+			for x in spent {
+				let pos = x.pos.try_into().map_err(|e| {
+					Error::OtherErr(format!(
+						"Invalid commit pos, spent index valie {:?}, {}",
+						x, e
+					))
+				})?;
+				bitmap.add(pos);
+			}
 			Ok(bitmap)
 		} else {
 			self.get_legacy_input_bitmap(bh)

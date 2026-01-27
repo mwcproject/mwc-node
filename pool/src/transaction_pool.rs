@@ -98,7 +98,7 @@ where
 	}
 
 	fn add_to_reorg_cache(&mut self, entry: &PoolEntry) {
-		let mut cache = self.reorg_cache.write().expect("RwLock failure");
+		let mut cache = self.reorg_cache.write().unwrap_or_else(|e| e.into_inner());
 		cache.push_back(entry.clone());
 
 		// We cache 30 mins of txs but we have a hard limit to avoid catastrophic failure.
@@ -206,7 +206,10 @@ where
 		self.blockchain.verify_tx_lock_height(tx)?;
 
 		{
-			let mut replay_cache = self.replay_verifier_cache.write().expect("RwLock failure");
+			let mut replay_cache = self
+				.replay_verifier_cache
+				.write()
+				.unwrap_or_else(|e| e.into_inner());
 			let mut vec = Vec::new();
 			ser::serialize_default(&mut vec, &tx)
 				.map_err(|e| PoolError::Other(format!("Unable to serialize tx, {}", e)))?;
@@ -286,7 +289,7 @@ where
 		let tx = entry.tx;
 		debug!(
 			"convert_tx_v2: {} ({} -> v2)",
-			tx.hash(),
+			tx.hash().unwrap_or(Hash::default()),
 			tx.inputs().version_str(),
 		);
 
@@ -314,7 +317,7 @@ where
 
 	// Old txs will "age out" after 30 mins.
 	pub fn truncate_reorg_cache(&mut self, cutoff: DateTime<Utc>) {
-		let mut cache = self.reorg_cache.write().expect("RwLock failure");
+		let mut cache = self.reorg_cache.write().unwrap_or_else(|e| e.into_inner());
 
 		while cache.front().map(|x| x.tx_at < cutoff).unwrap_or(false) {
 			let _tx = cache.pop_front();
@@ -334,7 +337,7 @@ where
 		let entries = self
 			.reorg_cache
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.iter()
 			.cloned()
 			.collect::<Vec<_>>();
@@ -360,7 +363,7 @@ where
 			debug!("reconcile_block Started for block {:?}", block);
 
 			debug!("---------------- BEFORE START --------------");
-			let reorg_cache = self.reorg_cache.read().expect("RwLock failure");
+			let reorg_cache = self.reorg_cache.read().unwrap_or_else(|e| e.into_inner());
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -387,7 +390,7 @@ where
 
 		if log_enabled!(log::Level::Debug) {
 			debug!("---------------- AFTER START --------------");
-			let reorg_cache = self.reorg_cache.read().expect("RwLock failure");
+			let reorg_cache = self.reorg_cache.read().unwrap_or_else(|e| e.into_inner());
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {

@@ -27,6 +27,9 @@ pub enum MerkleProofError {
 	/// Merkle proof root hash does not match when attempting to verify.
 	#[error("Merkle Proof root mismatch")]
 	RootMismatch,
+	/// Geeneric error
+	#[error("{0}")]
+	Generic(String),
 }
 
 /// A Merkle proof that proves a particular element exists in the MMR.
@@ -80,8 +83,10 @@ impl MerkleProof {
 	/// Serialize the Merkle proof as a hex string (for api json endpoints)
 	pub fn to_hex(&self) -> String {
 		let mut vec = Vec::new();
-		ser::serialize_default(&mut vec, &self).expect("serialization failed");
-		vec.to_hex()
+		match ser::serialize_default(&mut vec, &self) {
+			Ok(_) => vec.to_hex(),
+			Err(_) => format!("<INVALID PROOF>"),
+		}
 	}
 
 	/// Convert hex string representation back to a Merkle proof instance
@@ -123,6 +128,9 @@ impl MerkleProof {
 		} else {
 			element.hash_with_index(node_pos0)
 		};
+
+		let node_hash = node_hash
+			.map_err(|e| MerkleProofError::Generic(format!("Unable to build a hash, {}", e)))?;
 
 		// handle special case of only a single entry in the MMR
 		// (no siblings to hash together)

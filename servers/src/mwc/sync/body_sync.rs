@@ -57,7 +57,7 @@ impl BodySync {
 	pub fn get_peer_capabilities(&self) -> Capabilities {
 		self.required_capabilities
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.clone()
 	}
 
@@ -125,13 +125,19 @@ impl BodySync {
 			} else {
 				(Capabilities::UNKNOWN, Capabilities::HEADER_HIST) // needed for headers sync, that can go in parallel
 			};
-		*self.required_capabilities.write().expect("RwLock failure") = required_capabilities;
+		*self
+			.required_capabilities
+			.write()
+			.unwrap_or_else(|e| e.into_inner()) = required_capabilities;
 
 		// requested_blocks, check for expiration
 		let excluded_peers = self
 			.request_tracker
 			.retain_expired(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS, sync_peers);
-		*self.excluded_peers.write().expect("RwLock failure") = excluded_peers;
+		*self
+			.excluded_peers
+			.write()
+			.unwrap_or_else(|e| e.into_inner()) = excluded_peers;
 
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 			in_peers,
@@ -139,7 +145,10 @@ impl BodySync {
 			peer_capabilities,
 			head.height,
 			&self.request_tracker,
-			&*self.excluded_peers.read().expect("RwLock failure"),
+			&*self
+				.excluded_peers
+				.read()
+				.unwrap_or_else(|e| e.into_inner()),
 		);
 		if peers.is_empty() {
 			if excluded_peers == 0 {
@@ -176,7 +185,7 @@ impl BodySync {
 
 		// Check for stuck orphan
 		if let Ok(next_block) = self.chain.get_header_by_height(fork_point.height + 1) {
-			let next_block_hash = next_block.hash();
+			let next_block_hash = next_block.hash()?;
 			// Kick the stuck orphan
 			match self.chain.get_orphan(&next_block_hash) {
 				Some(orph) => {
@@ -217,7 +226,7 @@ impl BodySync {
 				let last_request_series = self
 					.request_series
 					.read()
-					.expect("RwLock failure")
+					.unwrap_or_else(|e| e.into_inner())
 					.last()
 					.cloned();
 				if let Some((hash, height)) = last_request_series {
@@ -241,7 +250,7 @@ impl BodySync {
 					let mut current = self.chain.get_header_by_height(max_height)?;
 
 					while current.height > fork_point.height {
-						let hash = current.hash();
+						let hash = current.hash()?;
 						if !self.chain.is_orphan(&hash) {
 							new_request_series.push((hash, current.height));
 						}
@@ -254,7 +263,10 @@ impl BodySync {
 							hash, height
 						);
 					}
-					*self.request_series.write().expect("RwLock failure") = new_request_series;
+					*self
+						.request_series
+						.write()
+						.unwrap_or_else(|e| e.into_inner()) = new_request_series;
 				}
 
 				// Now we can try to submit more requests...
@@ -303,10 +315,16 @@ impl BodySync {
 						let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 							peers,
 							self.pibd_params.get_blocks_request_per_peer(),
-							*self.required_capabilities.read().expect("RwLock failure"),
+							*self
+								.required_capabilities
+								.read()
+								.unwrap_or_else(|e| e.into_inner()),
 							head.height,
 							&self.request_tracker,
-							&*self.excluded_peers.read().expect("RwLock failure"),
+							&*self
+								.excluded_peers
+								.read()
+								.unwrap_or_else(|e| e.into_inner()),
 						);
 						if !peers.is_empty() {
 							// requested_blocks, check for expiration
@@ -341,8 +359,10 @@ impl BodySync {
 
 	fn calc_retry_running_requests(&self) -> usize {
 		let now = Utc::now();
-		let mut retry_expiration_times =
-			self.retry_expiration_times.write().expect("RwLock failure");
+		let mut retry_expiration_times = self
+			.retry_expiration_times
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		while !retry_expiration_times.is_empty() {
 			if retry_expiration_times[0] < now {
 				retry_expiration_times.pop_front();
@@ -436,8 +456,11 @@ impl BodySync {
 							.iter()
 							.filter(|p| {
 								p.info.addr != requested_peer
-									&& p.info.live_info.read().expect("RwLock failure").height
-										>= height
+									&& p.info
+										.live_info
+										.read()
+										.unwrap_or_else(|e| e.into_inner())
+										.height >= height
 							})
 							.cloned()
 							.choose_multiple(&mut rng, 2);
@@ -462,7 +485,7 @@ impl BodySync {
 								Ok(_) => self
 									.retry_expiration_times
 									.write()
-									.expect("RwLock failure")
+									.unwrap_or_else(|e| e.into_inner())
 									.push_back(now + self.request_tracker.get_average_latency()),
 								Err(e) => {
 									let msg = format!(
@@ -488,16 +511,21 @@ impl BodySync {
 				}
 				*need_request = need_request.saturating_sub(1);
 
-				peers.retain(|p| p.info.live_info.read().expect("RwLock failure").height >= height);
-				if peers.is_empty() {
-					*need_request = 0;
-					return Ok(waiting_heights);
-				}
+				peers.retain(|p| {
+					p.info
+						.live_info
+						.read()
+						.unwrap_or_else(|e| e.into_inner())
+						.height >= height
+				});
 
-				// sending request
-				let peer = peers
-					.choose(&mut rng)
-					.expect("Internal error. peers are empty");
+				let peer = match peers.choose(&mut rng) {
+					Some(p) => p,
+					None => {
+						*need_request = 0;
+						return Ok(waiting_heights);
+					}
+				};
 
 				debug!(
 					"Processing request for the block {} at {}, peer {:?}",
@@ -547,30 +575,30 @@ impl BodySync {
 					.filter(|p| p.info.addr != requested_peer)
 					.choose(&mut rng);
 
-				if dup_peer.is_none() {
-					break;
-				}
-				let dup_peer = dup_peer.unwrap();
-				debug!(
-					"Processing duplicated request for the block {} at {}, peer {:?}",
-					hash, height, dup_peer.info.addr
-				);
-
-				match dup_peer.send_block_request(hash, chain::Options::SYNC) {
-					Ok(_) => self
-						.retry_expiration_times
-						.write()
-						.expect("RwLock failure")
-						.push_back(now + self.request_tracker.get_average_latency()),
-					Err(e) => {
-						let msg = format!(
-							"Failed to send duplicate block request to peer {}, {}",
-							dup_peer.info.addr, e
+				match dup_peer {
+					Some(dup_peer) => {
+						debug!(
+							"Processing duplicated request for the block {} at {}, peer {:?}",
+							hash, height, dup_peer.info.addr
 						);
-						warn!("{}", msg);
-						sync_peers.report_no_response(&dup_peer.info.addr, msg);
-						break;
+						match dup_peer.send_block_request(hash, chain::Options::SYNC) {
+							Ok(_) => self
+								.retry_expiration_times
+								.write()
+								.unwrap_or_else(|e| e.into_inner())
+								.push_back(now + self.request_tracker.get_average_latency()),
+							Err(e) => {
+								let msg = format!(
+									"Failed to send duplicate block request to peer {}, {}",
+									dup_peer.info.addr, e
+								);
+								warn!("{}", msg);
+								sync_peers.report_no_response(&dup_peer.info.addr, msg);
+								break;
+							}
+						}
 					}
+					None => break,
 				}
 			}
 		}

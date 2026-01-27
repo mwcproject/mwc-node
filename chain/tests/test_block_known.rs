@@ -31,7 +31,7 @@ fn check_known() {
 	let (latest, genesis) = {
 		let chain = mine_chain(chain_dir, 3);
 		let genesis = chain
-			.get_block(&chain.get_header_by_height(0).unwrap().hash())
+			.get_block(&chain.get_header_by_height(0).unwrap().hash().unwrap())
 			.unwrap();
 		let head = chain.head().unwrap();
 		let latest = chain.get_block(&head.last_block_h).unwrap();

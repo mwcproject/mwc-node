@@ -175,7 +175,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	// Mine block containing tx1 from the txpool.
 	add_block(&chain, &txs, &keychain);
 	let header = chain.head_header().unwrap();
-	let block = chain.get_block(&header.hash()).unwrap();
+	let block = chain.get_block(&header.hash().unwrap()).unwrap();
 
 	// Confirm the stempool/txpool is empty after reconciling the new block.
 	pool.reconcile_block(&block, chain.secp())?;
@@ -236,7 +236,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	// Mine block containing tx2 from the txpool.
 	add_block(&chain, &txs, &keychain);
 	let header = chain.head_header().unwrap();
-	let block = chain.get_block(&header.hash()).unwrap();
+	let block = chain.get_block(&header.hash().unwrap()).unwrap();
 	pool.reconcile_block(&block, chain.secp())?;
 
 	assert_eq!(pool.total_size(), 0);

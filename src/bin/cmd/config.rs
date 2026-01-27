@@ -32,7 +32,9 @@ pub fn config_command_server(chain_type: &global::ChainTypes, file_name: &str) {
 			file_name
 		);
 	}
-	default_config.update_paths(&current_dir);
+	if let Err(e) = default_config.update_paths(&current_dir) {
+		panic!("Unable to provition paths: {}", e);
+	}
 	default_config
 		.write_to_file(config_file_name.to_str().unwrap())
 		.unwrap_or_else(|e| {

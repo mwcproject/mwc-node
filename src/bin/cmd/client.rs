@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::api::types::Status;
+use crate::cmd::error::Error;
 use crate::config::GlobalConfig;
 use crate::p2p::types::PeerInfoDisplay;
 use crate::util::file::get_first_line;
@@ -81,126 +82,127 @@ impl HTTPNodeClient {
 		}
 	}
 
-	pub fn show_status(&self) {
+	pub fn show_status(&self) -> Result<(), Error> {
+		let mut t = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		println!();
 		let title = "Mwc Server Status".to_string();
-		if term::stdout().is_none() {
-			println!("Could not open terminal");
-			return;
-		}
-		let mut t = term::stdout().unwrap();
-		let mut e = term::stdout().unwrap();
-		t.fg(term::color::MAGENTA).unwrap();
-		writeln!(t, "{}", title).unwrap();
-		writeln!(t, "--------------------------").unwrap();
-		t.reset().unwrap();
+		t.fg(term::color::MAGENTA)?;
+		writeln!(t, "{}", title)?;
+		writeln!(t, "--------------------------")?;
+		t.reset()?;
 		match self.send_json_request::<Status>("get_status", &serde_json::Value::Null) {
 			Ok(status) => {
-				writeln!(e, "Protocol version: {:?}", status.protocol_version).unwrap();
-				writeln!(e, "User agent: {}", status.user_agent).unwrap();
-				writeln!(e, "Connections: {}", status.connections).unwrap();
-				writeln!(e, "Chain height: {}", status.tip.height).unwrap();
-				writeln!(e, "Last block hash: {}", status.tip.last_block_pushed).unwrap();
-				writeln!(e, "Previous block hash: {}", status.tip.prev_block_to_last).unwrap();
-				writeln!(e, "Total difficulty: {}", status.tip.total_difficulty).unwrap();
-				writeln!(e, "Sync status: {}", status.sync_status).unwrap();
+				writeln!(e, "Protocol version: {:?}", status.protocol_version)?;
+				writeln!(e, "User agent: {}", status.user_agent)?;
+				writeln!(e, "Connections: {}", status.connections)?;
+				writeln!(e, "Chain height: {}", status.tip.height)?;
+				writeln!(e, "Last block hash: {}", status.tip.last_block_pushed)?;
+				writeln!(e, "Previous block hash: {}", status.tip.prev_block_to_last)?;
+				writeln!(e, "Total difficulty: {}", status.tip.total_difficulty)?;
+				writeln!(e, "Sync status: {}", status.sync_status)?;
 				if let Some(sync_info) = status.sync_info {
-					writeln!(e, "Sync info: {}", sync_info).unwrap();
+					writeln!(e, "Sync info: {}", sync_info)?;
 				}
 			}
 			Err(_) => writeln!(
 				e,
 				"WARNING: Client failed to get data. Is your `mwc server` offline or broken?"
-			)
-			.unwrap(),
+			)?,
 		};
-		e.reset().unwrap();
-		println!()
+		e.reset()?;
+		println!();
+		Ok(())
 	}
 
-	pub fn list_connected_peers(&self) {
-		let mut e = term::stdout().unwrap();
+	pub fn list_connected_peers(&self) -> Result<(), Error> {
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		match self.send_json_request::<Vec<PeerInfoDisplay>>(
 			"get_connected_peers",
 			&serde_json::Value::Null,
 		) {
 			Ok(connected_peers) => {
 				for (index, connected_peer) in connected_peers.into_iter().enumerate() {
-					writeln!(e, "Peer {}:", index).unwrap();
-					writeln!(e, "Capabilities: {:?}", connected_peer.capabilities).unwrap();
-					writeln!(e, "User agent: {}", connected_peer.user_agent).unwrap();
-					writeln!(e, "Version: {:?}", connected_peer.version).unwrap();
-					writeln!(e, "Peer address: {}", connected_peer.addr).unwrap();
-					writeln!(e, "Height: {}", connected_peer.height).unwrap();
-					writeln!(e, "Total difficulty: {}", connected_peer.total_difficulty).unwrap();
-					writeln!(e, "Direction: {:?}", connected_peer.direction).unwrap();
+					writeln!(e, "Peer {}:", index)?;
+					writeln!(e, "Capabilities: {:?}", connected_peer.capabilities)?;
+					writeln!(e, "User agent: {}", connected_peer.user_agent)?;
+					writeln!(e, "Version: {:?}", connected_peer.version)?;
+					writeln!(e, "Peer address: {}", connected_peer.addr)?;
+					writeln!(e, "Height: {}", connected_peer.height)?;
+					writeln!(e, "Total difficulty: {}", connected_peer.total_difficulty)?;
+					writeln!(e, "Direction: {:?}", connected_peer.direction)?;
 					println!();
 				}
 			}
-			Err(_) => writeln!(e, "Failed to get connected peers").unwrap(),
+			Err(_) => writeln!(e, "Failed to get connected peers")?,
 		};
-		e.reset().unwrap();
+		e.reset()?;
+		Ok(())
 	}
 
-	pub fn reset_chain_head(&self, hash: String) {
-		let mut e = term::stdout().unwrap();
+	pub fn reset_chain_head(&self, hash: String) -> Result<(), Error> {
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		let params = json!([hash]);
 		match self.send_json_request::<()>("reset_chain_head", &params) {
-			Ok(_) => writeln!(e, "Successfully reset chain head {}", hash).unwrap(),
-			Err(_) => writeln!(e, "Failed to reset chain head {}", hash).unwrap(),
+			Ok(_) => writeln!(e, "Successfully reset chain head {}", hash)?,
+			Err(_) => writeln!(e, "Failed to reset chain head {}", hash)?,
 		}
-		e.reset().unwrap();
+		e.reset()?;
+		Ok(())
 	}
 
-	pub fn invalidate_header(&self, hash: String) {
-		let mut e = term::stdout().unwrap();
+	pub fn invalidate_header(&self, hash: String) -> Result<(), Error> {
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		let params = json!([hash]);
 		match self.send_json_request::<()>("invalidate_header", &params) {
-			Ok(_) => writeln!(e, "Successfully invalidated header: {}", hash).unwrap(),
-			Err(_) => writeln!(e, "Failed to invalidate header: {}", hash).unwrap(),
+			Ok(_) => writeln!(e, "Successfully invalidated header: {}", hash)?,
+			Err(_) => writeln!(e, "Failed to invalidate header: {}", hash)?,
 		}
-		e.reset().unwrap();
+		e.reset()?;
+		Ok(())
 	}
 
-	pub fn verify_chain(&self, assume_valid_rangeproofs_kernels: bool) {
-		let mut e = term::stdout().unwrap();
+	pub fn verify_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), Error> {
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		let params = json!([assume_valid_rangeproofs_kernels]);
 		writeln!(
 			e,
 			"Checking the state of the chain. This might take time..."
-		)
-		.unwrap();
+		)?;
 		match self.send_json_request::<()>("validate_chain", &params) {
 			Ok(_) => {
 				if assume_valid_rangeproofs_kernels {
-					writeln!(e, "Successfully validated the sum of kernel excesses! [fast_verification enabled]").unwrap()
+					writeln!(e, "Successfully validated the sum of kernel excesses! [fast_verification enabled]")?
 				} else {
-					writeln!(e, "Successfully validated the sum of kernel excesses, kernel signature and rangeproofs!").unwrap()
+					writeln!(e, "Successfully validated the sum of kernel excesses, kernel signature and rangeproofs!")?
 				}
 			}
-			Err(err) => writeln!(e, "Failed to validate chain: {:?}", err).unwrap(),
+			Err(err) => writeln!(e, "Failed to validate chain: {:?}", err)?,
 		}
-		e.reset().unwrap();
+		e.reset()?;
+		Ok(())
 	}
 
-	pub fn ban_peer(&self, peer_addr: &SocketAddr) {
-		let mut e = term::stdout().unwrap();
+	pub fn ban_peer(&self, peer_addr: &SocketAddr) -> Result<(), Error> {
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		let params = json!([peer_addr]);
 		match self.send_json_request::<()>("ban_peer", &params) {
-			Ok(_) => writeln!(e, "Successfully banned peer {}", peer_addr).unwrap(),
-			Err(_) => writeln!(e, "Failed to ban peer {}", peer_addr).unwrap(),
+			Ok(_) => writeln!(e, "Successfully banned peer {}", peer_addr)?,
+			Err(_) => writeln!(e, "Failed to ban peer {}", peer_addr)?,
 		};
-		e.reset().unwrap();
+		e.reset()?;
+		Ok(())
 	}
 
-	pub fn unban_peer(&self, peer_addr: &SocketAddr) {
-		let mut e = term::stdout().unwrap();
+	pub fn unban_peer(&self, peer_addr: &SocketAddr) -> Result<(), Error> {
+		let mut e = term::stdout().ok_or(Error::Internal("Unable open terminal".into()))?;
 		let params = json!([peer_addr]);
 		match self.send_json_request::<()>("unban_peer", &params) {
-			Ok(_) => writeln!(e, "Successfully unbanned peer {}", peer_addr).unwrap(),
-			Err(_) => writeln!(e, "Failed to unban peer {}", peer_addr).unwrap(),
+			Ok(_) => writeln!(e, "Successfully unbanned peer {}", peer_addr)?,
+			Err(_) => writeln!(e, "Failed to unban peer {}", peer_addr)?,
 		};
-		e.reset().unwrap();
+		e.reset()?;
+		Ok(())
 	}
 }
 
@@ -208,57 +210,62 @@ pub fn client_command(
 	context_id: u32,
 	client_args: &ArgMatches<'_>,
 	global_config: GlobalConfig,
-) -> i32 {
+) -> Result<(), Error> {
 	// just get defaults from the global config
-	let server_config = global_config.members.unwrap().server;
+	let server_config = global_config.members.server;
 	let api_secret = get_first_line(server_config.api_secret_path.clone());
 	let node_client = HTTPNodeClient::new(context_id, &server_config.api_http_addr, api_secret);
 
 	match client_args.subcommand() {
 		("status", Some(_)) => {
-			node_client.show_status();
+			node_client.show_status()?;
 		}
 		("listconnectedpeers", Some(_)) => {
-			node_client.list_connected_peers();
+			node_client.list_connected_peers()?;
 		}
 		("resetchainhead", Some(args)) => {
-			let hash = args.value_of("hash").unwrap();
-			node_client.reset_chain_head(hash.to_string());
+			let hash = args.value_of("hash").ok_or(Error::ArgumentError(
+				"Not found expected argument 'hash'".into(),
+			))?;
+			node_client.reset_chain_head(hash.to_string())?;
 		}
 		("invalidateheader", Some(args)) => {
-			let hash = args.value_of("hash").unwrap();
-			node_client.invalidate_header(hash.to_string());
+			let hash = args.value_of("hash").ok_or(Error::ArgumentError(
+				"Not found expected argument 'hash'".into(),
+			))?;
+			node_client.invalidate_header(hash.to_string())?;
 		}
 		("verify-chain", Some(args)) => {
 			let assume_valid_rangeproofs_kernels = args.is_present("fast");
-			node_client.verify_chain(assume_valid_rangeproofs_kernels);
+			node_client.verify_chain(assume_valid_rangeproofs_kernels)?;
 		}
 		("ban", Some(peer_args)) => {
-			let peer = peer_args.value_of("peer").unwrap();
+			let peer = peer_args.value_of("peer").ok_or(Error::ArgumentError(
+				"Not found expected argument 'peer'".into(),
+			))?;
 
 			if let Ok(addr) = peer.parse() {
-				node_client.ban_peer(&addr);
+				node_client.ban_peer(&addr)?;
 			} else {
-				panic!("Invalid peer address format");
+				return Err(Error::ArgumentError("Invalid peer address format".into()));
 			}
 		}
 		("unban", Some(peer_args)) => {
-			let peer = peer_args.value_of("peer").unwrap();
+			let peer = peer_args.value_of("peer").ok_or(Error::ArgumentError(
+				"Not found expected argument 'peer'".into(),
+			))?;
 
 			if let Ok(addr) = peer.parse() {
-				node_client.unban_peer(&addr);
+				node_client.unban_peer(&addr)?;
 			} else {
-				panic!("Invalid peer address format");
+				return Err(Error::ArgumentError("Invalid peer address format".into()));
 			}
 		}
-		_ => panic!("Unknown client command, use 'mwc help client' for details"),
+		_ => {
+			return Err(Error::ArgumentError(
+				"Unknown client command, use 'mwc help client' for details".into(),
+			))
+		}
 	}
-	0
-}
-/// Error type wrapping underlying module errors.
-#[derive(Debug, thiserror::Error)]
-enum Error {
-	/// RPC Error
-	#[error("RPC error: {0}")]
-	RPCError(String),
+	Ok(())
 }

@@ -236,10 +236,10 @@ pub fn verify_partial_sig(
 /// let keychain = ExtKeychain::from_random_seed(false).unwrap();
 /// let fees = 10_000;
 /// let value = reward(0, fees, 1);
-/// let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+/// let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 /// let switch = SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
-/// let builder = proof::ProofBuilder::new(&keychain);
+/// let builder = proof::ProofBuilder::new(&keychain).unwrap();
 /// let proof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
 /// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
@@ -303,10 +303,10 @@ where
 /// let keychain = ExtKeychain::from_random_seed(false).unwrap();
 /// let fees = 10_000;
 /// let value = reward(0, fees, 1);
-/// let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+/// let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 /// let switch = SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(value, &key_id, switch).unwrap();
-/// let builder = proof::ProofBuilder::new(&keychain);
+/// let builder = proof::ProofBuilder::new(&keychain).unwrap();
 /// let proof = proof::create(&keychain, &builder, value, &key_id, switch, commit, None).unwrap();
 /// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;

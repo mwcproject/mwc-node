@@ -45,11 +45,13 @@ where
 	let next_header_info =
 		consensus::next_difficulty(0, 1, chain.difficulty_iter()?, &mut cache_values);
 	let fee = txs.iter().map(|x| x.fee()).sum();
-	let key_id = ExtKeychainPath::new(1, next_height as u32, 0, 0, 0).to_identifier();
+	let key_id = ExtKeychainPath::new(1, next_height as u32, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 		&key_id,
 		fee,
 		false,
@@ -109,7 +111,7 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
-	let pb = ProofBuilder::new(&keychain);
+	let pb = ProofBuilder::new(&keychain).unwrap();
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
 
@@ -119,9 +121,9 @@ fn process_block_cut_through() -> Result<(), chain::Error> {
 		chain.process_block(block, Options::MINE)?;
 	}
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
 
 	// Build a tx that spends a couple of early coinbase outputs and produces some new outputs.
 	// Note: We reuse key_ids resulting in an input and an output sharing the same commitment.

@@ -311,6 +311,7 @@ impl KernelFeatures {
 			} => (x, fee, relative_height).hash(),
 		};
 
+		let hash = hash.map_err(|e| Error::Generic(format!("Unable to build hash, {}", e)))?;
 		let msg = secp::Message::from_slice(&hash.as_bytes())?;
 		Ok(msg)
 	}
@@ -574,6 +575,9 @@ pub enum Error {
 	/// Underlying serialization error.
 	#[error("Tx Serialization error, {0}")]
 	Serialization(ser::Error),
+	/// Generic error
+	#[error("{0}")]
+	Generic(String),
 }
 
 impl From<ser::Error> for Error {
@@ -631,8 +635,9 @@ hashable_ord!(TxKernel);
 impl ::std::hash::Hash for TxKernel {
 	fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
 		let mut vec = Vec::new();
-		ser::serialize_default(&mut vec, &self).expect("serialization failed");
-		::std::hash::Hash::hash(&vec, state);
+		if ser::serialize_default(&mut vec, &self).is_ok() {
+			::std::hash::Hash::hash(&vec, state);
+		}
 	}
 }
 
@@ -660,8 +665,8 @@ impl Readable for TxKernel {
 impl PMMRable for TxKernel {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		self.clone()
+	fn as_elmt(&self) -> Result<TxKernel, crate::ser::Error> {
+		Ok(self.clone())
 	}
 
 	fn elmt_size() -> Option<u16> {
@@ -1342,15 +1347,18 @@ impl Transaction {
 
 	/// Creates a new transaction initialized with
 	/// the provided inputs, outputs, kernels
-	pub fn new(inputs: Inputs, outputs: &[Output], kernels: &[TxKernel]) -> Transaction {
+	pub fn new(
+		inputs: Inputs,
+		outputs: &[Output],
+		kernels: &[TxKernel],
+	) -> Result<Transaction, Error> {
 		// Initialize a new tx body and sort everything.
-		let body =
-			TransactionBody::init(inputs, outputs, kernels, false).expect("sorting, not verifying");
+		let body = TransactionBody::init(inputs, outputs, kernels, false)?;
 
-		Transaction {
+		Ok(Transaction {
 			offset: BlindingFactor::zero(),
 			body,
-		}
+		})
 	}
 
 	/// Creates a new transaction using this transaction as a template
@@ -1666,7 +1674,7 @@ pub fn aggregate(txs: &[Transaction], secp: &Secp256k1) -> Result<Transaction, E
 	//   * sum of all kernel offsets
 	// Note: We sort input/outputs/kernels when building the transaction body internally.
 	let tx =
-		Transaction::new(Inputs::from(inputs), outputs, &kernels).with_offset(total_kernel_offset);
+		Transaction::new(Inputs::from(inputs), outputs, &kernels)?.with_offset(total_kernel_offset);
 
 	Ok(tx)
 }
@@ -1736,7 +1744,7 @@ pub fn deaggregate(
 
 	// Build a new tx from the above data.
 	Ok(
-		Transaction::new(Inputs::from(inputs.as_slice()), &outputs, &kernels)
+		Transaction::new(Inputs::from(inputs.as_slice()), &outputs, &kernels)?
 			.with_offset(total_kernel_offset),
 	)
 }
@@ -2290,16 +2298,12 @@ impl Readable for OutputIdentifier {
 impl PMMRable for OutputIdentifier {
 	type E = Self;
 
-	fn as_elmt(&self) -> OutputIdentifier {
-		*self
+	fn as_elmt(&self) -> Result<OutputIdentifier, crate::ser::Error> {
+		Ok(*self)
 	}
 
 	fn elmt_size() -> Option<u16> {
-		Some(
-			(1 + secp::constants::PEDERSEN_COMMITMENT_SIZE)
-				.try_into()
-				.unwrap(),
-		)
+		Some(1 + secp::constants::PEDERSEN_COMMITMENT_SIZE as u16)
 	}
 }
 
@@ -2328,7 +2332,7 @@ mod test {
 	#[test]
 	fn test_plain_kernel_ser_deser() {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 		let commit = keychain
 			.commit(5, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
@@ -2370,7 +2374,7 @@ mod test {
 	#[test]
 	fn test_height_locked_kernel_ser_deser() {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 		let commit = keychain
 			.commit(5, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
@@ -2418,7 +2422,7 @@ mod test {
 		global::set_local_nrd_enabled(true);
 
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 		let commit = keychain
 			.commit(5, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
@@ -2464,7 +2468,7 @@ mod test {
 	#[test]
 	fn nrd_kernel_verify_sig() {
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 		let mut kernel = TxKernel::with_features(KernelFeatures::NoRecentDuplicate {
 			fee: 10.into(),
@@ -2529,12 +2533,12 @@ mod test {
 	#[test]
 	fn commit_consistency() {
 		let keychain = ExtKeychain::from_seed(&[0; 32], false).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 		let commit = keychain
 			.commit(1003, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 		let commit_2 = keychain
 			.commit(1003, &key_id, SwitchCommitmentType::Regular)
@@ -2546,7 +2550,7 @@ mod test {
 	#[test]
 	fn input_short_id() {
 		let keychain = ExtKeychain::from_seed(&[0; 32], false).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 		let commit = keychain
 			.commit(5, &key_id, SwitchCommitmentType::Regular)
 			.unwrap();
@@ -2562,7 +2566,7 @@ mod test {
 
 		let nonce = 0;
 
-		let short_id = input.short_id(&block_hash, nonce);
+		let short_id = input.short_id(&block_hash, nonce).unwrap();
 		assert_eq!(short_id, ShortId::from_hex("c4b05f2ba649").unwrap());
 
 		// now generate the short_id for a *very* similar output (single feature flag
@@ -2572,7 +2576,7 @@ mod test {
 			commit,
 		};
 
-		let short_id = input.short_id(&block_hash, nonce);
+		let short_id = input.short_id(&block_hash, nonce).unwrap();
 		assert_eq!(short_id, ShortId::from_hex("3f0377c624e9").unwrap());
 	}
 

@@ -73,7 +73,10 @@ impl Peers {
 
 	/// Mark those peers as excluded, so the will never be in 'connected' list
 	pub fn set_excluded_peers(&self, peers: &Vec<PeerAddr>) {
-		let mut excluded_peers = self.excluded_peers.write().expect("RwLock failure");
+		let mut excluded_peers = self
+			.excluded_peers
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		excluded_peers.clear();
 		for p in peers {
 			excluded_peers.insert(p.clone());
@@ -84,7 +87,7 @@ impl Peers {
 		let mut bpc = self
 			.boost_peers_capabilities
 			.write()
-			.expect("RwLock failure");
+			.unwrap_or_else(|e| e.into_inner());
 		if bpc.capabilities != boost_peers_capabilities {
 			*bpc = PeersCapabilities {
 				capabilities: boost_peers_capabilities,
@@ -98,7 +101,7 @@ impl Peers {
 		let boost_peers_capabilities = self
 			.boost_peers_capabilities
 			.read()
-			.expect("RwLock failure");
+			.unwrap_or_else(|e| e.into_inner());
 		if boost_peers_capabilities.capabilities == Capabilities::UNKNOWN {
 			return false;
 		}
@@ -113,14 +116,14 @@ impl Peers {
 	pub fn get_boost_peers_capabilities(&self) -> Capabilities {
 		self.boost_peers_capabilities
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.capabilities
 			.clone()
 	}
 
 	/// Number of peers that already has connection. The total number of connections needs tobe be limited
 	pub fn get_number_connected_peers(&self) -> usize {
-		self.peers.read().expect("RwLock failure").len()
+		self.peers.read().unwrap_or_else(|e| e.into_inner()).len()
 	}
 
 	/// Adds the peer to our internal peer mapping. Note that the peer is still
@@ -141,7 +144,7 @@ impl Peers {
 			// Scope for peers vector lock - dont hold the peers lock while adding to lmdb
 			self.peers
 				.write()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.insert(peer_data.addr.clone(), peer);
 		}
 		if let Err(e) = self.save_peer(&peer_data) {
@@ -173,7 +176,7 @@ impl Peers {
 	pub fn is_known(&self, addr: &PeerAddr) -> bool {
 		self.peers
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains_key(addr)
 	}
 
@@ -181,11 +184,14 @@ impl Peers {
 	/// This allows us to hide try_read_for() behind a cleaner interface.
 	/// PeersIter lets us chain various adaptors for convenience.
 	pub fn iter(&self) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
-		let excluded_peers = self.excluded_peers.read().expect("RwLock failure");
+		let excluded_peers = self
+			.excluded_peers
+			.read()
+			.unwrap_or_else(|e| e.into_inner());
 		let peers: Vec<Arc<Peer>> = self
 			.peers
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.values()
 			.filter(|p| !excluded_peers.contains(&p.info.addr))
 			.cloned()
@@ -234,7 +240,7 @@ impl Peers {
 				peer.stop();
 				self.peers
 					.write()
-					.expect("RwLock failure")
+					.unwrap_or_else(|e| e.into_inner())
 					.remove(&peer.info.addr);
 				Ok(())
 			}
@@ -271,7 +277,7 @@ impl Peers {
 					);
 					self.peers
 						.write()
-						.expect("RwLock failure")
+						.unwrap_or_else(|e| e.into_inner())
 						.remove(&p.info.addr);
 					p.stop();
 				}
@@ -286,7 +292,7 @@ impl Peers {
 		let count = self.broadcast("compact block", |p| p.send_compact_block(b));
 		debug!(
 			"broadcast_compact_block: {}, {} at {}, to {} peers, done.",
-			b.hash(),
+			b.hash().unwrap_or(Hash::default()),
 			b.header.pow.total_difficulty,
 			b.header.height,
 			count,
@@ -300,7 +306,7 @@ impl Peers {
 		let count = self.broadcast("header", |p| p.send_header(bh));
 		debug!(
 			"broadcast_header: {}, {} at {}, to {} peers, done.",
-			bh.hash(),
+			bh.hash().unwrap_or(Hash::default()),
 			bh.pow.total_difficulty,
 			bh.height,
 			count,
@@ -325,7 +331,7 @@ impl Peers {
 		}
 		debug!(
 			"broadcast_transaction: {} to {} peers, done.",
-			tx.hash(),
+			tx.hash().unwrap_or(Hash::default()),
 			count,
 		);
 	}
@@ -338,7 +344,7 @@ impl Peers {
 				debug!("Error pinging peer {:?}: {:?}", &p.info.addr, e);
 				self.peers
 					.write()
-					.expect("RwLock failure")
+					.unwrap_or_else(|e| e.into_inner())
 					.remove(&p.info.addr);
 				p.stop();
 			}
@@ -439,13 +445,13 @@ impl Peers {
 						.tracker()
 						.received_bytes
 						.read()
-						.expect("RwLock failure")
+						.unwrap_or_else(|e| e.into_inner())
 						.count_per_min();
 					let sent = peer
 						.tracker()
 						.sent_bytes
 						.read()
-						.expect("RwLock failure")
+						.unwrap_or_else(|e| e.into_inner())
 						.count_per_min();
 					info!(
 						"clean_peers {:?}, abusive ({} sent, {} recv)",
@@ -503,7 +509,10 @@ impl Peers {
 			.total_difficulty()
 			.unwrap_or(Difficulty::zero());
 		let my_height = self.adapter.total_height().unwrap_or(0);
-		let mut out_peers_failures = self.out_peers_failures.write().expect("RwLock failure");
+		let mut out_peers_failures = self
+			.out_peers_failures
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		let mut next_failures = HashMap::new();
 
 		let mut peer_infos: Vec<PeerInfo> = outbound_peers()
@@ -565,7 +574,7 @@ impl Peers {
 
 		// now clean up peer map based on the list to remove
 		{
-			let mut peers = self.peers.write().expect("RwLock failure");
+			let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
 			for addr in rm {
 				let _ = peers.get(&addr).map(|peer| peer.stop());
 				peers.remove(&addr);
@@ -579,11 +588,11 @@ impl Peers {
 		{
 			mem::swap(
 				&mut peers,
-				&mut *self.peers.write().expect("RwLock failure"),
+				&mut *self.peers.write().unwrap_or_else(|e| e.into_inner()),
 			);
 		}
 
-		let mut peers = self.peers.write().expect("RwLock failure");
+		let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
 		for peer in peers.values() {
 			peer.stop();
 		}
@@ -621,18 +630,20 @@ impl Peers {
 
 		// Delete defunct peers from storage
 		let _ = self.store.delete_peers(|peer| {
-			let diff = now - Utc.timestamp_opt(peer.last_connected, 0).unwrap();
-
-			let should_remove = peer.flags == State::Defunct
-				&& diff > Duration::seconds(global::PEER_EXPIRATION_REMOVE_TIME);
+			let should_remove = match Utc.timestamp_opt(peer.last_connected, 0) {
+				chrono::LocalResult::Single(last_connected) => {
+					let diff = now - last_connected;
+					let should_remove = peer.flags == State::Defunct
+						&& diff > Duration::seconds(global::PEER_EXPIRATION_REMOVE_TIME);
+					should_remove
+				}
+				_ => true,
+			};
 
 			if should_remove {
 				debug!(
-					"removing peer {:?}: last connected {} days {} hours {} minutes ago.",
-					peer.addr,
-					diff.num_days(),
-					diff.num_hours(),
-					diff.num_minutes()
+					"removing peer {:?}: last connected at {}",
+					peer.addr, peer.last_connected,
 				);
 			}
 
@@ -681,7 +692,9 @@ impl ChainAdapter for Peers {
 		peer_info: &PeerInfo,
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
-		let hash = b.hash();
+		let hash = b
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Block hash error, {}", e)))?;
 		if !self.adapter.block_received(b, peer_info, opts)? {
 			// if the peer sent us a block that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
@@ -702,7 +715,9 @@ impl ChainAdapter for Peers {
 		cb: core::CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
-		let hash = cb.hash();
+		let hash = cb
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("CompactBlock hash error, {}", e)))?;
 		if !self.adapter.compact_block_received(cb, peer_info)? {
 			// if the peer sent us a block that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
@@ -763,11 +778,11 @@ impl ChainAdapter for Peers {
 		self.adapter.txhashset_archive_header()
 	}
 
-	fn get_tmp_dir(&self) -> PathBuf {
+	fn get_tmp_dir(&self) -> Result<PathBuf, chain::Error> {
 		self.adapter.get_tmp_dir()
 	}
 
-	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
+	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, chain::Error> {
 		self.adapter.get_tmpfile_pathname(tmpfile_name)
 	}
 
@@ -1050,9 +1065,13 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 	/// Filter peers that support the provided capabilities.
 	pub fn with_min_height(self, height: u64) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
 		PeersIter {
-			iter: self
-				.iter
-				.filter(move |p| p.info.live_info.read().expect("RwLock failure").height >= height),
+			iter: self.iter.filter(move |p| {
+				p.info
+					.live_info
+					.read()
+					.unwrap_or_else(|e| e.into_inner())
+					.height >= height
+			}),
 		}
 	}
 

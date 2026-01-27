@@ -26,16 +26,16 @@ use mwc_core::libtx::{
 	reward,
 };
 use mwc_core::pow::Difficulty;
-use mwc_core::ser::{self, PMMRable, Readable, Reader, Writeable, Writer};
+use mwc_core::ser::{self, Error, PMMRable, Readable, Reader, Writeable, Writer};
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]
 pub fn tx2i1o() -> Transaction {
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2.into() },
@@ -52,9 +52,9 @@ pub fn tx2i1o() -> Transaction {
 #[allow(dead_code)]
 pub fn tx1i1o() -> Transaction {
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2.into() },
@@ -91,10 +91,10 @@ pub fn tx1i10_v2_compatible() -> Transaction {
 #[allow(dead_code)]
 pub fn tx1i2o() -> Transaction {
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 2.into() },
@@ -176,8 +176,8 @@ impl DefaultHashable for TestElem {}
 impl PMMRable for TestElem {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		*self
+	fn as_elmt(&self) -> Result<Self::E, Error> {
+		Ok(*self)
 	}
 
 	fn elmt_size() -> Option<u16> {

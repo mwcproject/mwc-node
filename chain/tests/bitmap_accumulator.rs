@@ -26,16 +26,16 @@ fn test_bitmap_accumulator() {
 	util::init_test_logger();
 
 	let mut accumulator = BitmapAccumulator::new();
-	assert_eq!(accumulator.root(), Hash::default());
+	assert_eq!(accumulator.root().unwrap(), Hash::default());
 
 	// 1000... (rebuild from 0, setting [0] true)
 	accumulator.apply(vec![0], vec![0], 1).unwrap();
 	let expected_hash = {
 		let mut bit_vec = BitVec::from_elem(1024, false);
 		bit_vec.set(0, true);
-		bit_vec.to_bytes().hash_with_index(0)
+		bit_vec.to_bytes().hash_with_index(0).unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// 1100... (rebuild from 0, setting [0, 1] true)
 	accumulator.apply(vec![0], vec![0, 1], 2).unwrap();
@@ -43,9 +43,9 @@ fn test_bitmap_accumulator() {
 		let mut bit_vec = BitVec::from_elem(1024, false);
 		bit_vec.set(0, true);
 		bit_vec.set(1, true);
-		bit_vec.to_bytes().hash_with_index(0)
+		bit_vec.to_bytes().hash_with_index(0).unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// 0100... (rebuild from 0, setting [1] true, which will reset [0] false)
 	accumulator.apply(vec![0], vec![1], 2).unwrap();
@@ -53,9 +53,9 @@ fn test_bitmap_accumulator() {
 		let mut bit_vec = BitVec::from_elem(1024, false);
 		bit_vec.set(1, true);
 		let expected_bytes = bit_vec.to_bytes();
-		expected_bytes.hash_with_index(0)
+		expected_bytes.hash_with_index(0).unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// 0100... (rebuild from 1, setting [1] true)
 	accumulator.apply(vec![1], vec![1], 2).unwrap();
@@ -63,9 +63,9 @@ fn test_bitmap_accumulator() {
 		let mut bit_vec = BitVec::from_elem(1024, false);
 		bit_vec.set(1, true);
 		let expected_bytes = bit_vec.to_bytes();
-		expected_bytes.hash_with_index(0)
+		expected_bytes.hash_with_index(0).unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// 0100...0001 (rebuild from 0, setting [1, 1023] true)
 	accumulator.apply(vec![0], vec![1, 1023], 1024).unwrap();
@@ -74,9 +74,9 @@ fn test_bitmap_accumulator() {
 		bit_vec.set(1, true);
 		bit_vec.set(1023, true);
 		let expected_bytes = bit_vec.to_bytes();
-		expected_bytes.hash_with_index(0)
+		expected_bytes.hash_with_index(0).unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// Now set bits such that we extend the bitmap accumulator across multiple 1024 bit chunks.
 	// We need a second bit_vec here to reflect the additional chunk.
@@ -92,11 +92,13 @@ fn test_bitmap_accumulator() {
 		bit_vec2.set(0, true);
 		let expected_bytes_0 = bit_vec.to_bytes();
 		let expected_bytes_1 = bit_vec2.to_bytes();
-		let expected_hash_0 = expected_bytes_0.hash_with_index(0);
-		let expected_hash_1 = expected_bytes_1.hash_with_index(1);
-		(expected_hash_0, expected_hash_1).hash_with_index(2)
+		let expected_hash_0 = expected_bytes_0.hash_with_index(0).unwrap();
+		let expected_hash_1 = expected_bytes_1.hash_with_index(1).unwrap();
+		(expected_hash_0, expected_hash_1)
+			.hash_with_index(2)
+			.unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// Just rebuild the second bitmap chunk.
 	// 0100...0001, 0100...0000 (rebuild from 1025, setting [1025] true)
@@ -109,11 +111,13 @@ fn test_bitmap_accumulator() {
 		bit_vec2.set(1, true);
 		let expected_bytes_0 = bit_vec.to_bytes();
 		let expected_bytes_1 = bit_vec2.to_bytes();
-		let expected_hash_0 = expected_bytes_0.hash_with_index(0);
-		let expected_hash_1 = expected_bytes_1.hash_with_index(1);
-		(expected_hash_0, expected_hash_1).hash_with_index(2)
+		let expected_hash_0 = expected_bytes_0.hash_with_index(0).unwrap();
+		let expected_hash_1 = expected_bytes_1.hash_with_index(1).unwrap();
+		(expected_hash_0, expected_hash_1)
+			.hash_with_index(2)
+			.unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// Rebuild the first bitmap chunk and all chunks after it.
 	// 0100...0000, 0100...0000 (rebuild from 1, setting [1, 1025] true)
@@ -125,11 +129,13 @@ fn test_bitmap_accumulator() {
 		bit_vec2.set(1, true);
 		let expected_bytes_0 = bit_vec.to_bytes();
 		let expected_bytes_1 = bit_vec2.to_bytes();
-		let expected_hash_0 = expected_bytes_0.hash_with_index(0);
-		let expected_hash_1 = expected_bytes_1.hash_with_index(1);
-		(expected_hash_0, expected_hash_1).hash_with_index(2)
+		let expected_hash_0 = expected_bytes_0.hash_with_index(0).unwrap();
+		let expected_hash_1 = expected_bytes_1.hash_with_index(1).unwrap();
+		(expected_hash_0, expected_hash_1)
+			.hash_with_index(2)
+			.unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// Make sure we handle the case where the first chunk is all 0s
 	// 0000...0000, 0100...0000 (rebuild from 1, setting [1025] true)
@@ -140,11 +146,13 @@ fn test_bitmap_accumulator() {
 		bit_vec2.set(1, true);
 		let expected_bytes_0 = bit_vec.to_bytes();
 		let expected_bytes_1 = bit_vec2.to_bytes();
-		let expected_hash_0 = expected_bytes_0.hash_with_index(0);
-		let expected_hash_1 = expected_bytes_1.hash_with_index(1);
-		(expected_hash_0, expected_hash_1).hash_with_index(2)
+		let expected_hash_0 = expected_bytes_0.hash_with_index(0).unwrap();
+		let expected_hash_1 = expected_bytes_1.hash_with_index(1).unwrap();
+		(expected_hash_0, expected_hash_1)
+			.hash_with_index(2)
+			.unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// Check that removing the last bit in a chunk removes the now empty chunk
 	// if it is the rightmost chunk.
@@ -154,9 +162,9 @@ fn test_bitmap_accumulator() {
 		let mut bit_vec = BitVec::from_elem(1024, false);
 		bit_vec.set(1023, true);
 		let expected_bytes = bit_vec.to_bytes();
-		expected_bytes.hash_with_index(0)
+		expected_bytes.hash_with_index(0).unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 
 	// Make sure we pad appropriately with 0s if we set a distant bit to 1.
 	// Start with an empty accumulator.
@@ -175,15 +183,21 @@ fn test_bitmap_accumulator() {
 		let expected_bytes_2 = bit_vec2.to_bytes();
 		let expected_bytes_3 = bit_vec3.to_bytes();
 
-		let expected_hash_0 = expected_bytes_0.hash_with_index(0);
-		let expected_hash_1 = expected_bytes_1.hash_with_index(1);
-		let expected_hash_2 = (expected_hash_0, expected_hash_1).hash_with_index(2);
+		let expected_hash_0 = expected_bytes_0.hash_with_index(0).unwrap();
+		let expected_hash_1 = expected_bytes_1.hash_with_index(1).unwrap();
+		let expected_hash_2 = (expected_hash_0, expected_hash_1)
+			.hash_with_index(2)
+			.unwrap();
 
-		let expected_hash_3 = expected_bytes_2.hash_with_index(3);
-		let expected_hash_4 = expected_bytes_3.hash_with_index(4);
-		let expected_hash_5 = (expected_hash_3, expected_hash_4).hash_with_index(5);
+		let expected_hash_3 = expected_bytes_2.hash_with_index(3).unwrap();
+		let expected_hash_4 = expected_bytes_3.hash_with_index(4).unwrap();
+		let expected_hash_5 = (expected_hash_3, expected_hash_4)
+			.hash_with_index(5)
+			.unwrap();
 
-		(expected_hash_2, expected_hash_5).hash_with_index(6)
+		(expected_hash_2, expected_hash_5)
+			.hash_with_index(6)
+			.unwrap()
 	};
-	assert_eq!(accumulator.root(), expected_hash);
+	assert_eq!(accumulator.root().unwrap(), expected_hash);
 }

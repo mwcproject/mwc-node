@@ -216,7 +216,19 @@ impl<'a> UTXOView<'a> {
 
 	/// Get the header hash for the specified pos from the underlying MMR backend.
 	fn get_header_hash(&self, pos1: u64) -> Option<Hash> {
-		self.header_pmmr.get_data(pos1 - 1).map(|x| x.hash())
+		match self.header_pmmr.get_data(pos1 - 1) {
+			Some(header) => match header.hash() {
+				Ok(hash) => Some(hash),
+				Err(e) => {
+					error!(
+						"UTXOView::get_header_hash failed calculate header hash, {}",
+						e
+					);
+					None
+				}
+			},
+			None => None,
+		}
 	}
 
 	/// Get the header at the specified height based on the current state of the extension.

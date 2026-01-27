@@ -16,6 +16,7 @@
 use mwc_chain as chain;
 use mwc_core as core;
 use mwc_util as util;
+use std::collections::HashSet;
 
 use std::sync::Arc;
 
@@ -46,7 +47,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 	global::set_local_nrd_enabled(true);
 
 	{
-		println!("Reading Chain, genesis block: {}", genesis.hash());
+		println!("Reading Chain, genesis block: {}", genesis.hash().unwrap());
 		let dummy_adapter = Arc::new(NoopAdapter {});
 
 		// The original chain we're reading from
@@ -58,6 +59,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 				genesis.clone(),
 				pow::verify_size,
 				false,
+				HashSet::new(),
 			)
 			.unwrap(),
 		);
@@ -69,7 +71,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 		.expect("Source chain validation failed, stop");*/
 
 		let sh = src_chain.get_header_by_height(0).unwrap();
-		println!("Source Genesis - {}", sh.hash());
+		println!("Source Genesis - {}", sh.hash().unwrap());
 
 		let horizon_header = src_chain.txhashset_archive_header().unwrap();
 
@@ -143,7 +145,7 @@ fn test_pibd_chain_validation_impl(is_test_chain: bool, src_root_dir: &str) {
 			}
 		}
 
-		println!("Accumulator Root: {}", bitmap_accumulator.root());
+		println!("Accumulator Root: {}", bitmap_accumulator.root().unwrap());
 
 		let output_segments = Desegmenter::generate_segments(
 			constants::PEDERSEN_COMMITMENT_SIZE,

@@ -44,12 +44,12 @@ fn test_setup() {
 fn too_large_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let max_out = global::max_block_weight(0) / BLOCK_OUTPUT_WEIGHT;
 
 	let mut pks = vec![];
 	for n in 0..(max_out + 1) {
-		pks.push(ExtKeychain::derive_key_id(1, n as u32, 0, 0, 0));
+		pks.push(ExtKeychain::derive_key_id(1, n as u32, 0, 0, 0).unwrap());
 	}
 
 	let mut parts = vec![];
@@ -67,7 +67,7 @@ fn too_large_block() {
 	.unwrap();
 
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx], &keychain, &builder, &prev, &key_id);
 	assert!(b
 		.validate(0, &BlindingFactor::zero(), keychain.secp())
@@ -94,9 +94,9 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(true);
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
@@ -121,7 +121,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 		&keychain,
 		&builder,
 		&prev,
-		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0),
+		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap(),
 	);
 
 	// Block is invalid at header version 3 if it contains an NRD kernel.
@@ -142,7 +142,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 		&keychain,
 		&builder,
 		&prev,
-		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0),
+		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap(),
 	);
 
 	// Block is valid at header version 4 (at HF height) if it contains an NRD kernel.
@@ -163,7 +163,7 @@ fn block_with_nrd_kernel_pre_post_hf3() {
 		&keychain,
 		&builder,
 		&prev,
-		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0),
+		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap(),
 	);
 
 	// Block is valid at header version 4 if it contains an NRD kernel.
@@ -180,9 +180,9 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
@@ -208,7 +208,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 		&keychain,
 		&builder,
 		&prev,
-		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0),
+		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap(),
 	);
 
 	// Block is invalid as NRD not enabled.
@@ -229,7 +229,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 		&keychain,
 		&builder,
 		&prev,
-		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0),
+		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap(),
 	);
 
 	// Block is invalid as NRD not enabled.
@@ -251,7 +251,7 @@ fn block_with_nrd_kernel_nrd_not_enabled() {
 		&keychain,
 		&builder,
 		&prev,
-		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0),
+		&ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap(),
 	);
 
 	// Block is invalid as NRD not enabled.
@@ -268,10 +268,10 @@ fn block_with_cut_through() {
 	global::set_local_nrd_enabled(false);
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let btx1 = tx2i1o();
 	let btx2 = build::transaction(
@@ -286,7 +286,7 @@ fn block_with_cut_through() {
 
 	let btx3 = txspend1i1o(5, &keychain, &builder, key_id2, key_id3);
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[btx1, btx2, btx3], &keychain, &builder, &prev, &key_id);
 
 	// block should have been automatically compacted (including reward
@@ -301,9 +301,9 @@ fn block_with_cut_through() {
 fn empty_block_with_coinbase_is_valid() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
 	assert_eq!(b.inputs().len(), 0);
@@ -340,9 +340,9 @@ fn empty_block_with_coinbase_is_valid() {
 fn remove_coinbase_output_flag() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let output = b.outputs()[0];
 	let output = Output::new(OutputFeatures::Plain, output.commitment(), output.proof());
@@ -374,9 +374,9 @@ fn remove_coinbase_output_flag() {
 fn remove_coinbase_kernel_flag() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let mut b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
 	let mut kernel = b.kernels()[0].clone();
@@ -420,9 +420,9 @@ fn serialize_deserialize_header_version() {
 fn serialize_deserialize_block_header() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let header1 = b.header;
 
@@ -430,7 +430,7 @@ fn serialize_deserialize_block_header() {
 	ser::serialize_default(&mut vec, &header1).expect("serialization failed");
 	let header2: BlockHeader = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
-	assert_eq!(header1.hash(), header2.hash());
+	assert_eq!(header1.hash().unwrap(), header2.hash().unwrap());
 	assert_eq!(header1, header2);
 }
 
@@ -452,9 +452,9 @@ fn set_pow(header: &mut BlockHeader) {
 fn deserialize_untrusted_header_weight() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let mut b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
 	// Set excessively large output mmr size on the header.
@@ -503,16 +503,16 @@ fn serialize_deserialize_block() {
 	test_setup();
 	let tx1 = tx1i2o();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b).expect("serialization failed");
 	let b2: Block = ser::deserialize_default(0, &mut &vec[..]).unwrap();
 
-	assert_eq!(b.hash(), b2.hash());
+	assert_eq!(b.hash().unwrap(), b2.hash().unwrap());
 	assert_eq!(b.header, b2.header);
 	assert_eq!(b.inputs(), b2.inputs());
 	assert_eq!(b.outputs(), b2.outputs());
@@ -523,9 +523,9 @@ fn serialize_deserialize_block() {
 fn empty_block_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &b).expect("serialization failed");
@@ -536,10 +536,10 @@ fn empty_block_serialized_size() {
 fn block_single_tx_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let tx1 = tx1i2o();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
 	// Default protocol version (3)
@@ -594,11 +594,11 @@ fn block_single_tx_serialized_size() {
 fn empty_compact_block_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
-	let cb: CompactBlock = b.into();
+	let cb: CompactBlock = CompactBlock::from(b).unwrap();
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &cb).expect("serialization failed");
 	assert_eq!(vec.len(), 1_104);
@@ -608,12 +608,12 @@ fn empty_compact_block_serialized_size() {
 fn compact_block_single_tx_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let tx1 = tx1i2o();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
-	let cb: CompactBlock = b.into();
+	let cb: CompactBlock = CompactBlock::from(b).unwrap();
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &cb).expect("serialization failed");
 	assert_eq!(vec.len(), 1_110);
@@ -623,7 +623,7 @@ fn compact_block_single_tx_serialized_size() {
 fn block_10_tx_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 
 	let mut txs = vec![];
 	for _ in 0..10 {
@@ -631,7 +631,7 @@ fn block_10_tx_serialized_size() {
 		txs.push(tx);
 	}
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&txs, &keychain, &builder, &prev, &key_id);
 
 	{
@@ -645,7 +645,7 @@ fn block_10_tx_serialized_size() {
 fn compact_block_10_tx_serialized_size() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 
 	let mut txs = vec![];
 	for _ in 0..10 {
@@ -653,9 +653,9 @@ fn compact_block_10_tx_serialized_size() {
 		txs.push(tx);
 	}
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&txs, &keychain, &builder, &prev, &key_id);
-	let cb: CompactBlock = b.into();
+	let cb: CompactBlock = CompactBlock::from(b).unwrap();
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &cb).expect("serialization failed");
 	assert_eq!(vec.len(), 1_164);
@@ -665,19 +665,19 @@ fn compact_block_10_tx_serialized_size() {
 fn compact_block_hash_with_nonce() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let tx = tx1i2o();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx.clone()], &keychain, &builder, &prev, &key_id);
-	let cb1: CompactBlock = b.clone().into();
-	let cb2: CompactBlock = b.clone().into();
+	let cb1: CompactBlock = CompactBlock::from(b.clone()).unwrap();
+	let cb2: CompactBlock = CompactBlock::from(b.clone()).unwrap();
 
 	// random nonce will not affect the hash of the compact block itself
 	// hash is based on header POW only
 	assert!(cb1.nonce != cb2.nonce);
-	assert_eq!(b.hash(), cb1.hash());
-	assert_eq!(cb1.hash(), cb2.hash());
+	assert_eq!(b.hash().unwrap(), cb1.hash().unwrap());
+	assert_eq!(cb1.hash().unwrap(), cb2.hash().unwrap());
 
 	assert!(cb1.kern_ids()[0] != cb2.kern_ids()[0]);
 
@@ -685,11 +685,15 @@ fn compact_block_hash_with_nonce() {
 	// correctly in both of the compact_blocks
 	assert_eq!(
 		cb1.kern_ids()[0],
-		tx.kernels()[0].short_id(&cb1.hash(), cb1.nonce)
+		tx.kernels()[0]
+			.short_id(&cb1.hash().unwrap(), cb1.nonce)
+			.unwrap()
 	);
 	assert_eq!(
 		cb2.kern_ids()[0],
-		tx.kernels()[0].short_id(&cb2.hash(), cb2.nonce)
+		tx.kernels()[0]
+			.short_id(&cb2.hash().unwrap(), cb2.nonce)
+			.unwrap()
 	);
 }
 
@@ -697,12 +701,12 @@ fn compact_block_hash_with_nonce() {
 fn convert_block_to_compact_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let tx1 = tx1i2o();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
-	let cb: CompactBlock = b.clone().into();
+	let cb: CompactBlock = CompactBlock::from(b.clone()).unwrap();
 
 	assert_eq!(cb.out_full().len(), 1);
 	assert_eq!(cb.kern_full().len(), 1);
@@ -714,7 +718,8 @@ fn convert_block_to_compact_block() {
 			.iter()
 			.find(|x| !x.is_coinbase())
 			.unwrap()
-			.short_id(&cb.hash(), cb.nonce)
+			.short_id(&cb.hash().unwrap(), cb.nonce)
+			.unwrap()
 	);
 }
 
@@ -722,11 +727,11 @@ fn convert_block_to_compact_block() {
 fn hydrate_empty_compact_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
-	let cb: CompactBlock = b.clone().into();
+	let cb: CompactBlock = CompactBlock::from(b.clone()).unwrap();
 	let hb = Block::hydrate_from(cb, &[]).unwrap();
 	assert_eq!(hb.header, b.header);
 	assert_eq!(hb.outputs(), b.outputs());
@@ -737,13 +742,13 @@ fn hydrate_empty_compact_block() {
 fn serialize_deserialize_compact_block() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let tx1 = tx1i2o();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[tx1], &keychain, &builder, &prev, &key_id);
 
-	let mut cb1: CompactBlock = b.into();
+	let mut cb1: CompactBlock = CompactBlock::from(b.into()).unwrap();
 
 	let mut vec = Vec::new();
 	ser::serialize_default(&mut vec, &cb1).expect("serialization failed");
@@ -765,10 +770,10 @@ fn serialize_deserialize_compact_block() {
 fn same_amount_outputs_copy_range_proof() {
 	test_setup();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 1.into() },
@@ -783,10 +788,10 @@ fn same_amount_outputs_copy_range_proof() {
 	let mut outs = tx.outputs().to_vec();
 	outs[0].proof = outs[1].proof;
 
-	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
+	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0).unwrap();
 	let prev = BlockHeader::default(0);
 	let b = new_block(
-		&[Transaction::new(tx.inputs(), &outs, tx.kernels())],
+		&[Transaction::new(tx.inputs(), &outs, tx.kernels()).unwrap()],
 		&keychain,
 		&builder,
 		&prev,
@@ -806,10 +811,10 @@ fn same_amount_outputs_copy_range_proof() {
 fn wrong_amount_range_proof() {
 	test_setup();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx1 = build::transaction(
 		KernelFeatures::Plain { fee: 1.into() },
@@ -835,10 +840,10 @@ fn wrong_amount_range_proof() {
 	outs[0].proof = tx2.outputs()[0].proof;
 	outs[1].proof = tx2.outputs()[1].proof;
 
-	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
+	let key_id = keychain::ExtKeychain::derive_key_id(1, 4, 0, 0, 0).unwrap();
 	let prev = BlockHeader::default(0);
 	let b = new_block(
-		&[Transaction::new(tx1.inputs(), &outs, tx1.kernels())],
+		&[Transaction::new(tx1.inputs(), &outs, tx1.kernels()).unwrap()],
 		&keychain,
 		&builder,
 		&prev,
@@ -857,9 +862,9 @@ fn wrong_amount_range_proof() {
 fn validate_header_proof() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let b = new_block(&[], &keychain, &builder, &prev, &key_id);
 
 	let mut header_buf = vec![];
@@ -899,11 +904,11 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain {
@@ -922,7 +927,7 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	.expect("valid tx");
 
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(0, 0, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(0, 0, 0, 0, 0).unwrap();
 	let mut block = new_block(&[tx], &keychain, &builder, &prev, &key_id);
 
 	// The block should fail validation due to cut-through.
@@ -966,11 +971,11 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain {
@@ -992,7 +997,7 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	.expect("valid tx");
 
 	let prev = BlockHeader::default(0);
-	let key_id = ExtKeychain::derive_key_id(0, 0, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(0, 0, 0, 0, 0).unwrap();
 	let mut block = new_block(&[tx], &keychain, &builder, &prev, &key_id);
 
 	// The block should fail validation due to cut-through.

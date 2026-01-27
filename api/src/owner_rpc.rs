@@ -136,7 +136,37 @@ pub trait OwnerRpc: Sync + Send {
 
 	fn reset_chain_head(&self, hash: String) -> Result<(), Error>;
 
-	fn invalidate_header(&self, hash: String) -> Result<(), Error>;
+	/**
+	Specify a ban list for headers. Expected that a full list is set. Prev settings will be removed.
+	It is the same data that can be set with 'invalid_block_hashes' from config file.
+	If you need to make those settings permanent, consider to update mwc-server.toml
+
+	```
+	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"method": "invalidate_header",
+		"params": {
+			"hash" : ["000297d0bd21d692f271d348d6ed096632b5502e4aaed58a1b301c6bd1780d37","ed3f5d67dbb5cb25574b8bc7db60ad28fa6a1b246ee3d09b9305d00ab37942ca"]
+		},
+		"id": 1
+	}
+	# "#
+	# ,
+	# r#"
+	{
+		"id": 1,
+		"jsonrpc": "2.0",
+		"result": {
+			"Ok": null
+		}
+	}
+	# "#
+	# );
+	```
+	 */
+	fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error>;
 
 	/**
 	Networked version of [Owner::get_peers](struct.Owner.html#method.get_peers).
@@ -373,7 +403,7 @@ impl OwnerRpc for Owner {
 		Owner::reset_chain_head(self, hash)
 	}
 
-	fn invalidate_header(&self, hash: String) -> Result<(), Error> {
+	fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error> {
 		Owner::invalidate_header(self, hash)
 	}
 

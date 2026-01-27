@@ -123,16 +123,25 @@ impl SyncPeers {
 	}
 
 	pub fn reset(&self) {
-		self.peers_status.write().expect("RwLock failed").clear();
-		self.banned_peers.write().expect("RwLock failed").clear();
+		self.peers_status
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.clear();
+		self.banned_peers
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.clear();
 		self.new_events_peers
 			.write()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.clear();
 	}
 
 	pub fn get_banned_peers(&self) -> HashSet<PeerAddr> {
-		self.banned_peers.read().expect("RwLock failed").clone()
+		self.banned_peers
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
 	}
 
 	pub fn report_no_response(&self, peer: &PeerAddr, message: String) {
@@ -160,8 +169,11 @@ impl SyncPeers {
 	}
 
 	pub fn apply_peers_status(&self, peers: &Arc<Peers>) -> Vec<PeerAddr> {
-		let mut peers_status = self.peers_status.write().expect("RwLock failed");
-		let mut check_peers = self.new_events_peers.write().expect("RwLock failed");
+		let mut peers_status = self.peers_status.write().unwrap_or_else(|e| e.into_inner());
+		let mut check_peers = self
+			.new_events_peers
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		let mut offline_peers: Vec<PeerAddr> = Vec::new();
 		for cp in check_peers.iter() {
 			if let Some(status) = peers_status.get_mut(cp) {
@@ -175,7 +187,7 @@ impl SyncPeers {
 					status.reset();
 					self.banned_peers
 						.write()
-						.expect("RwLock failed")
+						.unwrap_or_else(|e| e.into_inner())
 						.insert(peer_addr.clone());
 				}
 				if offline {
@@ -197,10 +209,10 @@ impl SyncPeers {
 			}
 		}
 
-		let mut peers_status = self.peers_status.write().expect("RwLock failed");
+		let mut peers_status = self.peers_status.write().unwrap_or_else(|e| e.into_inner());
 		self.new_events_peers
 			.write()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.insert(peer.clone());
 		match peers_status.get_mut(&peer) {
 			Some(status) => status.add_event(event),

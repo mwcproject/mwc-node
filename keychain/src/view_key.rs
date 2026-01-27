@@ -75,13 +75,13 @@ impl ViewKey {
 			child_number,
 			public_key,
 			chain_code,
-		} = ExtendedPubKey::from_private(secp, &ext_key, hasher);
+		} = ExtendedPubKey::from_private(secp, &ext_key, hasher)?;
 
 		let mut switch_public_key = PublicKey(ffi::PublicKey(GENERATOR_PUB_J_RAW));
 		switch_public_key.mul_assign(secp, &ext_key.secret_key)?;
 		let switch_public_key = Some(switch_public_key);
 
-		let rewind_hash = Self::rewind_hash(secp, keychain.public_root_key());
+		let rewind_hash = Self::rewind_hash(secp, keychain.public_root_key()?);
 
 		Ok(Self {
 			is_floo,
@@ -112,7 +112,7 @@ impl ViewKey {
 		match i {
 			ChildNumber::Hardened { .. } => Err(BIP32Error::CannotDeriveFromHardenedKey.into()),
 			ChildNumber::Normal { index: n } => {
-				hasher.init_sha512(&self.chain_code[..]);
+				hasher.init_sha512(&self.chain_code[..])?;
 				hasher.append_sha512(&self.public_key.serialize_vec(secp, true)[..]);
 				let mut be_n = [0; 4];
 				BigEndian::write_u32(&mut be_n, n);

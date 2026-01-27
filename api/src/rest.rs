@@ -66,7 +66,7 @@ impl From<crate::chain::Error> for Error {
 }
 
 /// TLS config
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TLSConfig {
 	pub certificate: String,
 	pub private_key: String,
@@ -220,7 +220,9 @@ impl ApiServer {
 			.with_safe_defaults() // <- cipher suites
 			.with_no_client_auth()
 			.with_single_cert(certs, keys)
-			.expect("invalid key or certificate");
+			.map_err(|e| {
+				Error::Argument(format!("invalid key or certificate {:?}, {}", conf, e))
+			})?;
 
 		let acceptor = TlsAcceptor::from(Arc::new(config));
 
@@ -228,7 +230,9 @@ impl ApiServer {
 			.name("apis".to_string())
 			.spawn(move || {
 				let server = async move {
-					let listener = TcpListener::bind(&addr).await.expect("failed to bind");
+					let listener = TcpListener::bind(&addr).await.map_err(|e| {
+						Error::Internal(format!("Unable to to bind to {:?}, {}", addr, e))
+					})?;
 
 					let tls_stream = async_stream::stream! {
 						loop {
@@ -256,7 +260,9 @@ impl ApiServer {
 							rx.await.ok();
 						});
 
-					server.await
+					server
+						.await
+						.map_err(|e| Error::Internal(format!("Server running errpr, {}", e)))
 				};
 
 				if let Err(e) = run_global_async_block(server) {
@@ -268,16 +274,21 @@ impl ApiServer {
 
 	/// Stops the API server, it panics in case of error
 	pub fn stop(&mut self) -> bool {
-		if self.shutdown_sender.is_some() {
-			let tx = self.shutdown_sender.as_mut().unwrap();
-			let m = oneshot::channel::<()>();
-			let tx = std::mem::replace(tx, m.0);
-			tx.send(()).expect("Failed to stop API server");
-			info!("API server has been stopped");
-			true
-		} else {
-			error!("Can't stop API server, it's not running or doesn't spport stop operation");
-			false
+		match self.shutdown_sender.as_mut() {
+			Some(tx) => {
+				let m = oneshot::channel::<()>();
+				let tx = std::mem::replace(tx, m.0);
+				if tx.send(()).is_err() {
+					error!("Failed to stop API server");
+					return false;
+				}
+				info!("API server has been stopped");
+				true
+			}
+			None => {
+				error!("Can't stop API server, it's not running or doesn't support stop operation");
+				false
+			}
 		}
 	}
 }

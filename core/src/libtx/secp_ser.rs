@@ -32,7 +32,7 @@ pub mod pubkey_serde {
 		S: Serializer,
 	{
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		serializer.serialize_str(&key.serialize_vec(&static_secp, true).to_hex())
 	}
 
@@ -43,7 +43,7 @@ pub mod pubkey_serde {
 	{
 		use serde::de::Error;
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -70,7 +70,7 @@ pub mod option_sig_serde {
 		S: Serializer,
 	{
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		match sig {
 			Some(sig) => {
 				serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
@@ -85,7 +85,7 @@ pub mod option_sig_serde {
 		D: Deserializer<'de>,
 	{
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
@@ -132,7 +132,7 @@ pub mod option_seckey_serde {
 		D: Deserializer<'de>,
 	{
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
@@ -165,7 +165,7 @@ pub mod sig_serde {
 		S: Serializer,
 	{
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
 	}
 
@@ -175,7 +175,7 @@ pub mod sig_serde {
 		D: Deserializer<'de>,
 	{
 		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().expect("Mutex failure");
+		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -417,7 +417,7 @@ mod test {
 	impl SerTest {
 		pub fn random() -> SerTest {
 			let static_secp = static_secp_instance();
-			let secp = static_secp.lock().expect("Mutex failure");
+			let secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 			let sk = SecretKey::new(&secp, &mut thread_rng());
 			let mut msg = [0u8; 32];
 			thread_rng().fill(&mut msg);

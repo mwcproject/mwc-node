@@ -322,7 +322,10 @@ fn monitor_peers(
 		let mut max_addresses = 0;
 		for p in new_peers {
 			if !peers.is_known(&p.addr) {
-				tx.send(p.addr.clone()).unwrap();
+				if tx.send(p.addr.clone()).is_err() {
+					error!("Failed to send a new peer connection request");
+					continue;
+				}
 				max_addresses += 1;
 				if max_addresses > 20 {
 					break;
@@ -461,7 +464,10 @@ fn listen_for_addrs(
 			break;
 		}
 
-		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
+		let addr = match listen_q_addrs.pop() {
+			Some(a) => a,
+			None => continue,
+		};
 
 		// Note, is_arti_healthy might wait for a long time it Arti is restarting. Foir this case it is totally fine
 		if use_tor_connection && !is_arti_healthy() {
@@ -548,9 +554,12 @@ fn listen_for_addrs(
 						}
 					}
 				}
-			})
-			.expect("failed to launch peer_connect thread");
-		connection_threads.push(thr);
+			});
+
+		match thr {
+			Ok(thr) => connection_threads.push(thr),
+			Err(e) => error!("failed to launch peer_connect thread, {}", e),
+		}
 	}
 }
 

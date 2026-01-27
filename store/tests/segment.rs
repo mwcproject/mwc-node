@@ -398,8 +398,8 @@ impl DefaultHashable for TestElem {}
 impl PMMRable for TestElem {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		*self
+	fn as_elmt(&self) -> Result<TestElem, Error> {
+		Ok(*self)
 	}
 
 	fn elmt_size() -> Option<u16> {

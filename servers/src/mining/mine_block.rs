@@ -78,55 +78,53 @@ pub fn get_block(
 ) -> (core::Block, BlockFees) {
 	let wallet_retry_interval = 5;
 	// get the latest chain state and build a block on top of it
-	let mut result = build_block(
-		chain,
-		tx_pool,
-		key_id.clone(),
-		wallet_listener_url.clone(),
-		client,
-	);
-	while let Err(e) = result {
-		let mut new_key_id = key_id.to_owned();
-		match e {
-			self::Error::Chain(c) => match c {
-				chain::Error::DuplicateCommitment(_) => {
-					debug!(
+	loop {
+		match build_block(
+			chain,
+			tx_pool,
+			key_id.clone(),
+			wallet_listener_url.clone(),
+			client,
+		) {
+			Ok((block, fees)) => {
+				return (block, fees);
+			}
+			Err(e) => {
+				// On error report the problem and keep trying forever
+				let mut new_key_id = key_id.to_owned();
+				match e {
+					self::Error::Chain(c) => match c {
+						chain::Error::DuplicateCommitment(_) => {
+							debug!(
 						"Duplicate commit for potential coinbase detected. Trying next derivation."
 					);
-					// use the next available key to generate a different coinbase commitment
-					new_key_id = None;
-				}
-				_ => {
-					error!("Chain Error: {}", c);
-				}
-			},
-			self::Error::WalletComm(msg) => {
-				error!(
+							// use the next available key to generate a different coinbase commitment
+							new_key_id = None;
+						}
+						_ => {
+							error!("Chain Error: {}", c);
+						}
+					},
+					self::Error::WalletComm(msg) => {
+						error!(
 					"Error building new block: Can't connect to wallet listener at {:?}; {}, will retry",
 					wallet_listener_url.as_ref().unwrap_or(&"BROKEN_URL".to_string()), msg
 				);
-				thread::sleep(Duration::from_secs(wallet_retry_interval));
-			}
-			ae => {
-				warn!("Error building new block: {:?}. Retrying.", ae);
+						thread::sleep(Duration::from_secs(wallet_retry_interval));
+					}
+					ae => {
+						warn!("Error building new block: {:?}. Retrying.", ae);
+					}
+				}
+
+				// only wait if we are still using the same key: a different coinbase commitment is unlikely
+				// to have duplication
+				if new_key_id.is_some() {
+					thread::sleep(Duration::from_millis(100));
+				}
 			}
 		}
-
-		// only wait if we are still using the same key: a different coinbase commitment is unlikely
-		// to have duplication
-		if new_key_id.is_some() {
-			thread::sleep(Duration::from_millis(100));
-		}
-
-		result = build_block(
-			chain,
-			tx_pool,
-			new_key_id,
-			wallet_listener_url.clone(),
-			client,
-		);
 	}
-	return result.unwrap();
 }
 
 /// Builds a new block with the chain head as previous and eligible
@@ -163,7 +161,7 @@ fn build_block(
 	// invalid (and unexpected) state.
 	let txs = match tx_pool
 		.read()
-		.expect("RwLock failed")
+		.unwrap_or_else(|e| e.into_inner())
 		.prepare_mineable_transactions(chain.secp())
 	{
 		Ok(txs) => txs,
@@ -212,11 +210,9 @@ fn build_block(
 
 	b.header.pow.nonce = thread_rng().gen();
 	b.header.pow.secondary_scaling = difficulty.secondary_scaling;
-	let ts = DateTime::from_timestamp(now_sec, 0);
-	if ts.is_none() {
-		return Err(Error::General("Utc::now into timestamp".into()));
-	}
-	b.header.timestamp = ts.unwrap().to_utc();
+	let ts = DateTime::from_timestamp(now_sec, 0)
+		.ok_or(Error::General("Utc::now into timestamp".into()))?;
+	b.header.timestamp = ts.to_utc();
 
 	debug!(
 		"Built new block with {} inputs and {} outputs, block difficulty: {}, cumulative difficulty {}",
@@ -261,11 +257,11 @@ fn burn_reward(
 ) -> Result<(core::Output, core::TxKernel, BlockFees), Error> {
 	warn!("Burning block fees: {:?}", block_fees);
 	let keychain = ExtKeychain::from_random_seed(global::is_floonet(context_id))?;
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0)?;
 	let (out, kernel) = crate::core::libtx::reward::output(
 		context_id,
 		&keychain,
-		&ProofBuilder::new(&keychain),
+		&ProofBuilder::new(&keychain)?,
 		&key_id,
 		block_fees.fees,
 		false,

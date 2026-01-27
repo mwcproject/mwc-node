@@ -216,7 +216,7 @@ impl Append for ChannelAppender {
 		let _ = self
 			.output
 			.lock()
-			.expect("Mutex failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.try_send(LogEntry {
 				log,
 				level: record.level(),
@@ -229,7 +229,10 @@ impl Append for ChannelAppender {
 }
 
 /// Initialize the logger with the given configuration
-pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSender<LogEntry>>) {
+pub fn init_logger(
+	config: Option<&LoggingConfig>,
+	logs_tx: Option<mpsc::SyncSender<LogEntry>>,
+) -> Result<(), String> {
 	if let Some(c) = config {
 		let tui_running = c.tui_running.unwrap_or(false);
 
@@ -253,9 +256,10 @@ pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSen
 		let mut appenders = vec![];
 
 		if tui_running {
+			let logs_tx = logs_tx.ok_or(String::from("init_logger param logs_tx is empty"))?;
 			let channel_appender = ChannelAppender {
 				encoder: Box::new(PatternEncoder::new(&LOGGING_PATTERN)),
-				output: Mutex::new(logs_tx.unwrap()),
+				output: Mutex::new(logs_tx),
 			};
 
 			appenders.push(
@@ -284,7 +288,7 @@ pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSen
 					let count = c.log_max_files.unwrap_or_else(|| DEFAULT_ROTATE_LOG_FILES);
 					let roller = FixedWindowRoller::builder()
 						.build(&format!("{}.{{}}.gz", c.log_file_path), count)
-						.unwrap();
+						.map_err(|e| format!("Unable to build FixedWindowRoller, {}", e))?;
 					let trigger = SizeTrigger::new(size);
 
 					let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
@@ -294,7 +298,9 @@ pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSen
 							.append(c.log_file_append)
 							.encoder(Box::new(PatternEncoder::new(&LOGGING_PATTERN)))
 							.build(c.log_file_path.clone(), Box::new(policy))
-							.expect("Failed to create logfile"),
+							.map_err(|e| {
+								format!("Failed to create logfile at {}, {}", c.log_file_path, e)
+							})?,
 					)
 				} else {
 					Box::new(
@@ -302,7 +308,9 @@ pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSen
 							.append(c.log_file_append)
 							.encoder(Box::new(PatternEncoder::new(&LOGGING_PATTERN)))
 							.build(c.log_file_path.clone())
-							.expect("Failed to create logfile"),
+							.map_err(|e| {
+								format!("Failed to create logfile at {}, {}", c.log_file_path, e)
+							})?,
 					)
 				}
 			};
@@ -319,14 +327,15 @@ pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSen
 		let config = Config::builder()
 			.appenders(appenders)
 			.build(root.build(level_minimum))
-			.unwrap();
+			.map_err(|e| format!("Failed to build Config object, {}", e))?;
 
-		let _ = log4rs::init_config(config).unwrap();
+		let _ = log4rs::init_config(config).map_err(|e| format!("Failed to init log4rs, {}", e))?;
 
 		// forward tracing events into the `log` crate (i.e. into log4rs)
 		// Then set up tracing with your custom layer
 		let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
-		tracing::subscriber::set_global_default(subscriber).unwrap();
+		tracing::subscriber::set_global_default(subscriber)
+			.map_err(|e| format!("Failed to redirect logs with tracing, {}", e))?;
 
 		info!(
 			"log4rs is initialized, file level: {:?}, stdout level: {:?}, min. level: {:?}",
@@ -338,11 +347,15 @@ pub fn init_logger(config: Option<&LoggingConfig>, logs_tx: Option<mpsc::SyncSen
 	}
 
 	send_panic_to_log();
+
+	Ok(())
 }
 
 /// Initializes the logger for unit and integration tests
 pub fn init_test_logger() {
-	let mut was_init_ref = TEST_LOGGER_WAS_INIT.lock().expect("Mutex failure");
+	let mut was_init_ref = TEST_LOGGER_WAS_INIT
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
 	if *was_init_ref.deref() {
 		return;
 	}
@@ -417,7 +430,7 @@ impl Append for CallbackAppender {
 			(cb)(entry.clone());
 		}
 
-		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+		let mut logger_buffer = LOGGER_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
 		if let Some(logger_buffer) = &mut *logger_buffer {
 			while logger_buffer.buffer.len() >= logger_buffer.log_buffer_size {
 				let _ = logger_buffer.buffer.pop_front();
@@ -439,11 +452,11 @@ impl Append for CallbackAppender {
 }
 
 /// Init logs as a callback logs
-pub fn init_callback_logger(config: CallbackLoggingConfig) {
+pub fn init_callback_logger(config: CallbackLoggingConfig) -> Result<(), String> {
 	CONSOLE_OUTPUT_ENABLED.store(false, Ordering::Relaxed);
 
 	{
-		let mut logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+		let mut logger_buffer = LOGGER_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
 		*logger_buffer = Some(LogBuffer {
 			buffer: VecDeque::with_capacity(config.log_buffer_size),
 			log_buffer_size: config.log_buffer_size,
@@ -470,14 +483,16 @@ pub fn init_callback_logger(config: CallbackLoggingConfig) {
 	let log4rs_config = Config::builder()
 		.appenders(appenders)
 		.build(root.build(config.log_level.to_level_filter()))
-		.unwrap();
+		.map_err(|e| format!("Unable to build log4rs config, {}", e))?;
 
-	let _ = log4rs::init_config(log4rs_config).unwrap();
+	let _ =
+		log4rs::init_config(log4rs_config).map_err(|e| format!("Unable to init log4rs, {}", e))?;
 
 	// forward tracing events into the `log` crate (i.e. into log4rs)
 	// Then set up tracing with your custom layer
 	let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
-	tracing::subscriber::set_global_default(subscriber).unwrap();
+	tracing::subscriber::set_global_default(subscriber)
+		.map_err(|e| format!("Unable to init tracing with set_global_default, {}", e))?;
 
 	let cb_enabled = if config.callback.is_some() {
 		"ON"
@@ -489,6 +504,8 @@ pub fn init_callback_logger(config: CallbackLoggingConfig) {
 		"log4rs is initialized, level: {:?}, buffer size: {}, Callback is {}",
 		config.log_level, config.log_buffer_size, cb_enabled
 	);
+
+	Ok(())
 }
 
 /// Read log entries from the buffer
@@ -496,7 +513,7 @@ pub fn read_buffered_logs(
 	last_known_entry_id: Option<u64>,
 	result_size_limit: usize,
 ) -> Result<Vec<LogBufferedEntry>, String> {
-	let logger_buffer = LOGGER_BUFFER.lock().expect("Mutex failure");
+	let logger_buffer = LOGGER_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
 	match &*logger_buffer {
 		Some(log_buffer) => {
 			let starting_id = last_known_entry_id.unwrap_or(0);

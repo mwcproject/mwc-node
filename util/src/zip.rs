@@ -38,9 +38,15 @@ pub fn create_zip(dst_file: &File, src_dir: &Path, files: Vec<PathBuf>) -> io::R
 		let file_path = src_dir.join(x);
 		if let Ok(file) = File::open(file_path.clone()) {
 			info!("compress: {:?} -> {:?}", file_path, x);
-			writer
-				.get_mut()
-				.start_file(x.clone().into_os_string().into_string().unwrap(), options)?;
+			writer.get_mut().start_file(
+				x.clone().into_os_string().into_string().map_err(|_| {
+					io::Error::new(
+						io::ErrorKind::Other,
+						String::from("create_zip invalid files value"),
+					)
+				})?,
+				options,
+			)?;
 			io::copy(&mut BufReader::new(file), &mut writer)?;
 			// Flush the BufWriter after each file so we start then next one correctly.
 			writer.flush()?;
@@ -57,15 +63,27 @@ pub fn extract_files(from_archive: File, dest: &Path, files: Vec<PathBuf>) -> io
 	let dest: PathBuf = PathBuf::from(dest);
 	let files: Vec<_> = files.to_vec();
 	let res = thread::spawn(move || {
-		let mut archive = zip_rs::ZipArchive::new(from_archive).expect("archive file exists");
+		let mut archive = zip_rs::ZipArchive::new(from_archive).map_err(|e| {
+			io::Error::new(
+				io::ErrorKind::Other,
+				format!("Open Archive file error, {}", e),
+			)
+		})?;
+
 		for x in files {
-			if let Ok(file) = archive.by_name(x.to_str().expect("valid path")) {
+			let name = x.to_str().ok_or(io::Error::new(
+				io::ErrorKind::Other,
+				String::from("Archive invalid path"),
+			))?;
+			if let Ok(file) = archive.by_name(name) {
 				let path = dest.join(file.mangled_name());
-				let parent_dir = path.parent().expect("valid parent dir");
-				fs::create_dir_all(&parent_dir).expect("create parent dir");
-				let outfile = fs::File::create(&path).expect("file created");
-				io::copy(&mut BufReader::new(file), &mut BufWriter::new(outfile))
-					.expect("write to file");
+				let parent_dir = path.parent().ok_or(io::Error::new(
+					io::ErrorKind::Other,
+					String::from("Archive invalid parent dir"),
+				))?;
+				fs::create_dir_all(&parent_dir)?;
+				let outfile = fs::File::create(&path)?;
+				io::copy(&mut BufReader::new(file), &mut BufWriter::new(outfile))?;
 
 				info!("extract_files: {:?} -> {:?}", x, path);
 
@@ -74,10 +92,11 @@ pub fn extract_files(from_archive: File, dest: &Path, files: Vec<PathBuf>) -> io
 				{
 					use std::os::unix::fs::PermissionsExt;
 					let mode = PermissionsExt::from_mode(0o644);
-					fs::set_permissions(&path, mode).expect("set file permissions");
+					fs::set_permissions(&path, mode)?;
 				}
 			}
 		}
+		Ok(())
 	})
 	.join();
 
@@ -87,5 +106,5 @@ pub fn extract_files(from_archive: File, dest: &Path, files: Vec<PathBuf>) -> io
 		let err_msg = format!("failed to extract files from zip: {:?}", e);
 		error!("{}", err_msg);
 		io::Error::new(io::ErrorKind::Other, err_msg)
-	})
+	})?
 }

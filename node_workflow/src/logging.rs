@@ -18,24 +18,27 @@ use mwc_util::logger::{CallbackLoggingConfig, LogEntry, LoggingConfig};
 use std::sync::mpsc;
 
 /// Init logs for binaries
-pub fn init_bin_logs(logging_config: &LoggingConfig) -> Option<mpsc::Receiver<LogEntry>> {
+pub fn init_bin_logs(
+	logging_config: &LoggingConfig,
+) -> Result<Option<mpsc::Receiver<LogEntry>>, String> {
 	let (logs_tx, logs_rx) = if logging_config.tui_running.unwrap_or(false) {
 		let (logs_tx, logs_rx) = mpsc::sync_channel::<LogEntry>(200);
 		(Some(logs_tx), Some(logs_rx))
 	} else {
 		(None, None)
 	};
-	mwc_util::logger::init_logger(Some(logging_config), logs_tx);
+	mwc_util::logger::init_logger(Some(logging_config), logs_tx)?;
 
 	info!("Logging is initialized");
 
-	logs_rx
+	Ok(logs_rx)
 }
 
 /// Init logs for libraries
-pub fn init_buffered_logs(logging_config: CallbackLoggingConfig) {
-	mwc_util::logger::init_callback_logger(logging_config);
+pub fn init_buffered_logs(logging_config: CallbackLoggingConfig) -> Result<(), String> {
+	mwc_util::logger::init_callback_logger(logging_config)?;
 	info!("Buffered/Callback logging is initialized");
+	Ok(())
 }
 
 /// Get log entries from the buffer

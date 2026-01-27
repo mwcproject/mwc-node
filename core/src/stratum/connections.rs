@@ -68,11 +68,12 @@ impl StratumConnections {
 			&& new_worker
 			&& self.last_connect_time_ms.len() >= CONNECT_HISTORY_MIN
 		{
-			let current_pace_ms = (Utc::now().timestamp_millis()
-				- self.last_connect_time_ms.front().unwrap())
-				/ self.last_connect_time_ms.len() as i64;
-			if connection_pace_ms > current_pace_ms {
-				return true;
+			if let Some(last_connect_time) = self.last_connect_time_ms.front() {
+				let current_pace_ms = (Utc::now().timestamp_millis() - last_connect_time)
+					/ self.last_connect_time_ms.len() as i64;
+				if connection_pace_ms > current_pace_ms {
+					return true;
+				}
 			}
 		}
 
@@ -178,7 +179,7 @@ impl StratumIpPool {
 	pub fn get_banned_ips(&self) -> HashSet<String> {
 		self.connection_info
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.values()
 			.filter(|conn| {
 				conn.is_banned(
@@ -198,7 +199,7 @@ impl StratumIpPool {
 	pub fn get_ip_profitability(&self) -> Vec<(String, i64, i32)> {
 		self.connection_info
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.values()
 			.filter(|conn| {
 				!conn.is_banned(
@@ -220,7 +221,10 @@ impl StratumIpPool {
 
 	/// Does events rotations and retire expired events
 	pub fn retire_old_events(&self, event_time_low_limit: i64) {
-		let mut con_info = self.connection_info.write().expect("RwLock failure");
+		let mut con_info = self
+			.connection_info
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 
 		// First Update events
 		con_info
@@ -233,7 +237,7 @@ impl StratumIpPool {
 	pub fn is_banned(&self, ip: &String, new_worker: bool) -> bool {
 		self.connection_info
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get(ip)
 			.map(|con| {
 				con.is_banned(
@@ -248,7 +252,10 @@ impl StratumIpPool {
 
 	/// Register new worker for this IP
 	pub fn add_worker(&self, ip: &String) {
-		let mut con_info = self.connection_info.write().expect("RwLock failure");
+		let mut con_info = self
+			.connection_info
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		match con_info.get_mut(ip) {
 			Some(conn) => conn.add_worker(),
 			None => {
@@ -264,7 +271,7 @@ impl StratumIpPool {
 		if let Some(c) = self
 			.connection_info
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_mut(ip)
 		{
 			c.delete_worker();
@@ -276,7 +283,7 @@ impl StratumIpPool {
 		if let Some(c) = self
 			.connection_info
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_mut(ip)
 		{
 			c.report_ok_shares();
@@ -288,7 +295,7 @@ impl StratumIpPool {
 		if let Some(c) = self
 			.connection_info
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_mut(ip)
 		{
 			c.report_ok_login();
@@ -300,7 +307,7 @@ impl StratumIpPool {
 		if let Some(c) = self
 			.connection_info
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_mut(ip)
 		{
 			c.report_fail_login();
@@ -312,7 +319,7 @@ impl StratumIpPool {
 		if let Some(c) = self
 			.connection_info
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_mut(ip)
 		{
 			c.report_fail_noise();
@@ -326,7 +333,7 @@ impl StratumIpPool {
 		for ip_info in self
 			.connection_info
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.values()
 		{
 			let banned = ip_info.is_banned(
@@ -351,7 +358,12 @@ impl StratumIpPool {
 
 	/// Get IP info info for API
 	pub fn get_ip_info(&self, ip: &String) -> StratumIpPrintable {
-		match self.connection_info.read().expect("RwLock failure").get(ip) {
+		match self
+			.connection_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.get(ip)
+		{
 			Some(con) => StratumIpPrintable::from_stratum_connection(
 				con,
 				con.is_banned(
@@ -369,7 +381,7 @@ impl StratumIpPool {
 	pub fn clean_ip(&self, ip: &String) {
 		self.connection_info
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.remove(ip);
 	}
 }

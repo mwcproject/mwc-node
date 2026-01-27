@@ -38,7 +38,7 @@ lazy_static! {
 pub fn release_server(context_id: u32) {
 	if let Some(server) = SERVER_CONTEXT
 		.write()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.remove(&context_id)
 	{
 		server.stop();
@@ -46,19 +46,18 @@ pub fn release_server(context_id: u32) {
 
 	CALL_ROUTER_CONTEXT
 		.write()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.remove(&context_id);
 }
 
 /// Tor client needs to be started once, no context_id is requred
 pub fn start_tor(config: &TorConfig, base_dir: &str) -> Result<(), Error> {
-	if mwc_util::is_console_output_enabled() {
-		println!("Starting Arti client, please wait...");
-	} else {
-		info!("Starting Arti client, please wait...");
-	}
-	arti::start_arti(config, PathBuf::from(base_dir).as_path())
-		.map_err(|e| Error::TorError(format!("Arti start error, {}", e)))?;
+	arti::start_arti(
+		config,
+		PathBuf::from(base_dir).as_path(),
+		mwc_util::is_console_output_enabled(),
+	)
+	.map_err(|e| Error::TorError(format!("Arti start error, {}", e)))?;
 	Ok(())
 }
 
@@ -69,7 +68,7 @@ pub fn tor_status() -> (bool, bool) {
 
 /// Create a new server instance. No jobs will be started
 pub fn create_server(context_id: u32, config: ServerConfig) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	if servers.contains_key(&context_id) {
 		return Err(Error::ContextError(
 			"Node server already created for this context".into(),
@@ -85,7 +84,7 @@ pub fn create_server(context_id: u32, config: ServerConfig) -> Result<(), Error>
 
 /// Start Stratum protocol, needed for the mining
 pub fn start_stratum(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_stratum()
@@ -103,7 +102,7 @@ pub fn start_stratum(context_id: u32) -> Result<(), Error> {
 
 /// Start pees discovery p2p peers job
 pub fn start_discover_peers(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_discover_peers()
@@ -120,7 +119,7 @@ pub fn start_discover_peers(context_id: u32) -> Result<(), Error> {
 
 /// Start node syncing job
 pub fn start_sync_monitoring(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_sync_monitoring()
@@ -137,7 +136,7 @@ pub fn start_sync_monitoring(context_id: u32) -> Result<(), Error> {
 
 /// Start p2p listening job. Needed for inbound peers connection
 pub fn start_listen_peers(context_id: u32, wait_for_starting: bool) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv.start_listen_peers(wait_for_starting).map_err(|e| {
 			Error::ServerError(format!("Unable to start listening for peers, {}", e))
@@ -154,7 +153,7 @@ pub fn start_listen_peers(context_id: u32, wait_for_starting: bool) -> Result<()
 
 /// Starting node rest API, needed for communication with mwc-wallet
 pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_rest_api()
@@ -172,7 +171,7 @@ pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
 /// Init router for lib based API
 pub fn init_call_api(context_id: u32) -> Result<(), Error> {
 	let router = {
-		let servers = SERVER_CONTEXT.read().expect("RwLock failure");
+		let servers = SERVER_CONTEXT.read().unwrap_or_else(|e| e.into_inner());
 		match servers.get(&context_id) {
 			Some(serv) => {
 				let router = serv.build_api_router_no_secrets().map_err(|e| {
@@ -190,7 +189,7 @@ pub fn init_call_api(context_id: u32) -> Result<(), Error> {
 	};
 	CALL_ROUTER_CONTEXT
 		.write()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.insert(context_id, router);
 	Ok(())
 }
@@ -204,7 +203,7 @@ pub fn process_call(
 ) -> Result<http::Response<hyper::Body>, Error> {
 	match CALL_ROUTER_CONTEXT
 		.write()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.get_mut(&context_id)
 	{
 		Some(router) => {
@@ -250,7 +249,7 @@ pub fn process_call(
 
 /// Start dandelion protocol. Needed for publishing transactions
 pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().expect("RwLock failure");
+	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_dandelion()
@@ -267,7 +266,7 @@ pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
 
 /// Get server stats data, used by node UI.
 pub fn get_server_stats(context_id: u32) -> Result<ServerStats, Error> {
-	let servers = SERVER_CONTEXT.read().expect("RwLock failure");
+	let servers = SERVER_CONTEXT.read().unwrap_or_else(|e| e.into_inner());
 	match servers.get(&context_id) {
 		Some(serv) => Ok(serv
 			.get_server_stats()

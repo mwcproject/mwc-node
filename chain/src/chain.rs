@@ -56,9 +56,6 @@ use std::{collections::HashMap, io::Cursor};
 /// When evicting, very old orphans are evicted first
 const MAX_ORPHAN_AGE_SECS: u64 = 3000;
 
-/// Banned block. We don't accept any blockchain with this has
-pub const BLOCK_TO_BAN: &str = "00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725";
-
 #[derive(Debug, Clone)]
 pub struct Orphan {
 	pub block: Block,
@@ -88,7 +85,7 @@ impl OrphanBlockPool {
 	}
 
 	fn len(&self) -> usize {
-		let orphans = self.orphans.read().expect("RwLock failure");
+		let orphans = self.orphans.read().unwrap_or_else(|e| e.into_inner());
 		orphans.len()
 	}
 
@@ -97,14 +94,15 @@ impl OrphanBlockPool {
 	}
 
 	fn add(&self, orphan: Orphan) {
-		let mut orphans = self.orphans.write().expect("RwLock failure");
-		let mut height_idx = self.height_idx.write().expect("RwLock failure");
+		let mut orphans = self.orphans.write().unwrap_or_else(|e| e.into_inner());
+		let mut height_idx = self.height_idx.write().unwrap_or_else(|e| e.into_inner());
 		{
 			let height = orphan.block.header.height;
-			let hash = orphan.block.hash();
-			if orphans.insert(hash.clone(), orphan).is_none() {
-				let height_hashes = height_idx.entry(height).or_insert_with(|| vec![]);
-				height_hashes.push(hash);
+			if let Ok(hash) = orphan.block.hash() {
+				if orphans.insert(hash.clone(), orphan).is_none() {
+					let height_hashes = height_idx.entry(height).or_insert_with(|| vec![]);
+					height_hashes.push(hash);
+				}
 			}
 		}
 
@@ -140,16 +138,16 @@ impl OrphanBlockPool {
 	/// Get an orphan from the pool indexed by the hash of its parent, removing
 	/// it at the same time, preventing clone
 	fn remove_by_height(&self, height: u64) -> Option<Vec<Orphan>> {
-		let mut orphans = self.orphans.write().expect("RwLock failure");
-		let mut height_idx = self.height_idx.write().expect("RwLock failure");
+		let mut orphans = self.orphans.write().unwrap_or_else(|e| e.into_inner());
+		let mut height_idx = self.height_idx.write().unwrap_or_else(|e| e.into_inner());
 		height_idx
 			.remove(&height)
 			.map(|hs| hs.iter().filter_map(|h| orphans.remove(h)).collect())
 	}
 
 	fn remove_by_height_header_hash(&self, height: u64, header_hash: &Hash) -> Option<Orphan> {
-		let mut orphans = self.orphans.write().expect("RwLock failure");
-		let mut height_idx = self.height_idx.write().expect("RwLock failure");
+		let mut orphans = self.orphans.write().unwrap_or_else(|e| e.into_inner());
+		let mut height_idx = self.height_idx.write().unwrap_or_else(|e| e.into_inner());
 
 		if !orphans.contains_key(header_hash) {
 			return None;
@@ -169,7 +167,7 @@ impl OrphanBlockPool {
 	pub fn get_orphan_list(&self) -> HashSet<Hash> {
 		self.orphans
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.iter()
 			.map(|(k, _v)| k.clone())
 			.collect()
@@ -179,7 +177,7 @@ impl OrphanBlockPool {
 	pub fn contains(&self, hash: &Hash) -> bool {
 		self.orphans
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains_key(hash)
 	}
 
@@ -187,7 +185,7 @@ impl OrphanBlockPool {
 	pub fn get_orphan(&self, hash: &Hash) -> Option<Orphan> {
 		self.orphans
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get(hash)
 			.map(|o| o.clone())
 	}
@@ -196,7 +194,7 @@ impl OrphanBlockPool {
 	pub fn get_orphan_height_prev_hash(&self, hash: &Hash) -> Option<(Hash, u64)> {
 		self.orphans
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get(hash)
 			.map(|o| (o.block.header.prev_hash.clone(), o.block.header.height))
 	}
@@ -215,7 +213,6 @@ pub struct Chain {
 	pibd_segmenter: Arc<RwLock<Option<Segmenter>>>,
 	// POW verification function
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
-	denylist: Arc<RwLock<Vec<Hash>>>,
 	archive_mode: bool,
 	genesis: Block,
 	cache_header_difficulty: Arc<RwLock<VecDeque<HeaderDifficultyInfo>>>,
@@ -234,6 +231,7 @@ impl Chain {
 		genesis: Block,
 		pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 		archive_mode: bool,
+		invalid_blocks: HashSet<Hash>,
 	) -> Result<Chain, Error> {
 		let store = Arc::new(store::ChainStore::new(context_id, &db_root)?);
 
@@ -277,7 +275,6 @@ impl Chain {
 			header_pmmr: Arc::new(RwLock::new(header_pmmr)),
 			pibd_segmenter: Arc::new(RwLock::new(None)),
 			pow_verifier,
-			denylist: Arc::new(RwLock::new(vec![])),
 			archive_mode,
 			genesis: genesis,
 			cache_header_difficulty: Arc::new(RwLock::new(VecDeque::new())),
@@ -285,13 +282,19 @@ impl Chain {
 			pibd_params,
 		};
 
-		// If known bad block exists on "current chain" then rewind prior to this.
-		// Suppress any errors here in case we cannot find
-		chain.rewind_bad_block()?;
-
-		chain.log_heads()?;
+		chain.apply_invalid_blocks(invalid_blocks)?;
 
 		Ok(chain)
+	}
+
+	/// Apply and set invalid blocks data.
+	pub fn apply_invalid_blocks(&self, invalid_blocks: HashSet<Hash>) -> Result<(), Error> {
+		// If known bad block exists on "current chain" then rewind prior to this.
+		// Suppress any errors here in case we cannot find
+		self.rewind_bad_block(&invalid_blocks)?;
+		self.log_heads()?;
+		pipe::init_invalid_block_hashes(self.get_context_id(), invalid_blocks);
+		Ok(())
 	}
 
 	/// Secp instance
@@ -302,14 +305,6 @@ impl Chain {
 	/// Pibd params with envoronment monitoring
 	pub fn get_pibd_params(&self) -> &Arc<PibdParams> {
 		&self.pibd_params
-	}
-
-	/// Add provided header hash to our "denylist".
-	/// The header corresponding to any "denied" hash will be rejected
-	/// and the peer subsequently banned.
-	pub fn invalidate_header(&self, hash: Hash) -> Result<(), Error> {
-		self.denylist.write().expect("RwLock failure").push(hash);
-		Ok(())
 	}
 
 	/// Reset chain to be ready to download data with PIBD
@@ -332,11 +327,11 @@ impl Chain {
 	) -> Result<(), Error> {
 		let head = head.into();
 
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let mut batch = self.store.batch_write()?;
 
-		let header = batch.get_block_header(&head.hash())?;
+		let header = batch.get_block_header(&head.hash().unwrap_or(Hash::default()))?;
 
 		// Rewind and reapply blocks to reset the output/rangeproof/kernel MMR.
 		txhashset::extending(
@@ -369,8 +364,8 @@ impl Chain {
 	/// Used upon PIBD failure, where we want to keep the header chain but
 	/// restart the output PMMRs from scratch
 	pub fn reset_chain_head_to_genesis(&self) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let batch = self.store.batch_write()?;
 
 		// Change head back to genesis
@@ -396,8 +391,8 @@ impl Chain {
 	/// entire chain, the prune list needs to be manually wiped
 	/// as it's currently not included as part of rewind)
 	pub fn reset_prune_lists(&self) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let mut batch = self.store.batch_write()?;
 
 		txhashset::extending(&mut header_pmmr, &mut txhashset, &mut batch, |ext, _| {
@@ -437,90 +432,96 @@ impl Chain {
 	}
 
 	/// Known bad block that we must rewind prior to if seen on "current chain".
-	fn rewind_bad_block(&self) -> Result<(), Error> {
-		let hash = Hash::from_hex(BLOCK_TO_BAN)?;
-
-		if let Ok(header) = self.get_block_header(&hash) {
-			if self.is_on_current_chain(&header, self.head()?).is_ok() {
-				debug!(
-					"rewind_bad_block: found header: {} at {}",
-					header.hash(),
-					header.height
-				);
-
-				let prev_header = self.get_previous_header(&header)?;
-				let new_head = Tip::from_header(&prev_header);
-
-				// Fix the (full) block chain.
-				if let Ok(block) = self.get_block(&hash) {
+	pub fn rewind_bad_block(&self, invalid_blocks: &HashSet<Hash>) -> Result<(), Error> {
+		for hash in invalid_blocks {
+			if let Ok(header) = self.get_block_header(&hash) {
+				if self.is_on_current_chain(&header, self.head()?).is_ok() {
 					debug!(
-						"rewind_bad_block: found block: {} at {}",
-						block.header.hash(),
-						block.header.height
+						"rewind_bad_block: found header: {} at {}",
+						header.hash().unwrap_or(Hash::default()),
+						header.height
 					);
 
-					debug!(
-						"rewind_bad_block: rewinding to prev: {} at {}",
-						prev_header.hash(),
-						prev_header.height
-					);
+					let prev_header = self.get_previous_header(&header)?;
+					let new_head = Tip::from_header(&prev_header);
 
-					let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-					let mut txhashset = self.txhashset.write().expect("RwLock failure");
-					let mut batch = self.store.batch_write()?;
+					// Fix the (full) block chain.
+					if let Ok(block) = self.get_block(&hash) {
+						debug!(
+							"rewind_bad_block: found block: {} at {}",
+							block.header.hash().unwrap_or(Hash::default()),
+							block.header.height
+						);
 
-					let old_head = batch.head()?;
+						debug!(
+							"rewind_bad_block: rewinding to prev: {} at {}",
+							prev_header.hash().unwrap_or(Hash::default()),
+							prev_header.height
+						);
 
-					txhashset::extending(
-						&mut header_pmmr,
-						&mut txhashset,
-						&mut batch,
-						|ext, batch| {
-							self.rewind_and_apply_fork(&prev_header, ext, batch)?;
+						let mut header_pmmr =
+							self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+						let mut txhashset =
+							self.txhashset.write().unwrap_or_else(|e| e.into_inner());
+						let mut batch = self.store.batch_write()?;
+
+						let old_head = batch.head()?;
+
+						txhashset::extending(
+							&mut header_pmmr,
+							&mut txhashset,
+							&mut batch,
+							|ext, batch| {
+								self.rewind_and_apply_fork(&prev_header, ext, batch)?;
+
+								// Reset chain head.
+								batch.save_body_head(&new_head)?;
+								batch.save_header_head(&new_head)?;
+
+								Ok(())
+							},
+						)?;
+
+						// Cleanup all subsequent bad blocks (back from old head).
+						let mut current =
+							batch.get_block_header(&old_head.hash().unwrap_or(Hash::default()))?;
+						while current.height > new_head.height {
+							let prev_block = batch.get_previous_header(&current)?;
+							let _ = batch.delete_block(&current.hash().unwrap_or(Hash::default()));
+							current = prev_block;
+						}
+
+						batch.commit()?;
+					}
+
+					{
+						let mut header_pmmr =
+							self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+						let mut batch = self.store.batch_write()?;
+
+						let old_header_head = batch.header_head()?;
+
+						txhashset::header_extending(&mut header_pmmr, &mut batch, |ext, batch| {
+							self.rewind_and_apply_header_fork(&prev_header, ext, batch)?;
 
 							// Reset chain head.
-							batch.save_body_head(&new_head)?;
 							batch.save_header_head(&new_head)?;
 
 							Ok(())
-						},
-					)?;
+						})?;
 
-					// Cleanup all subsequent bad blocks (back from old head).
-					let mut current = batch.get_block_header(&old_head.hash())?;
-					while current.height > new_head.height {
-						let prev_block = batch.get_previous_header(&current)?;
-						let _ = batch.delete_block(&current.hash());
-						current = prev_block;
+						// cleanup all subsequent bad headers (back from old header_head).
+						let mut current = batch
+							.get_block_header(&old_header_head.hash().unwrap_or(Hash::default()))?;
+						while current.height > new_head.height {
+							let prev_hdr = batch.get_previous_header(&current)?;
+							let _ = batch
+								.delete_block_header(&current.hash().unwrap_or(Hash::default()));
+							current = prev_hdr;
+						}
+
+						batch.commit()?;
 					}
-
-					batch.commit()?;
-				}
-
-				{
-					let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-					let mut batch = self.store.batch_write()?;
-
-					let old_header_head = batch.header_head()?;
-
-					txhashset::header_extending(&mut header_pmmr, &mut batch, |ext, batch| {
-						self.rewind_and_apply_header_fork(&prev_header, ext, batch)?;
-
-						// Reset chain head.
-						batch.save_header_head(&new_head)?;
-
-						Ok(())
-					})?;
-
-					// cleanup all subsequent bad headers (back from old header_head).
-					let mut current = batch.get_block_header(&old_header_head.hash())?;
-					while current.height > new_head.height {
-						let prev_hdr = batch.get_previous_header(&current)?;
-						let _ = batch.delete_block_header(&current.hash());
-						current = prev_hdr;
-					}
-
-					batch.commit()?;
 				}
 			}
 		}
@@ -535,7 +536,7 @@ impl Chain {
 				name,
 				head.total_difficulty.to_num(),
 				head.height,
-				head.hash(),
+				head.hash().unwrap_or(Hash::default()),
 			);
 		};
 		log_head("head", self.head()?);
@@ -572,13 +573,23 @@ impl Chain {
 			// if it is a block on the chain, let's try to add many of them
 			if let Ok(header) = self.get_header_by_height(b.header.height) {
 				// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
-				if header.hash() == b.hash() {
+				if header
+					.hash()
+					.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?
+					== b.hash()
+						.map_err(|e| Error::Other(format!("Block hash calculation error, {}", e)))?
+				{
 					blocks.push(b.clone());
 					loop {
-						let last_block = blocks.last().unwrap();
+						let last_block = blocks.last().ok_or(Error::Other(
+							"Internal error, no blocks at process_block".into(),
+						))?;
 						let next_hegiht = last_block.header.height + 1;
 						if let Ok(header) = self.get_header_by_height(next_hegiht) {
-							if let Some(orphan) = self.orphans.get_orphan(&header.hash()) {
+							if let Some(orphan) =
+								self.orphans.get_orphan(&header.hash().map_err(|e| {
+									Error::Other(format!("Header hash calculation error, {}", e))
+								})?) {
 								blocks.push(orphan.block);
 								continue; // can process the next block
 							}
@@ -587,13 +598,17 @@ impl Chain {
 					}
 					if blocks
 						.last()
-						.expect("At least one element in collection")
+						.ok_or(Error::Other(
+							"Process block internal error, collection was empty".into(),
+						))?
 						.header
 						.height < multiple_processing_height_limit
 					{
 						// good, we can process multiple blocks, it should be faster than one by one
-						let block_hashes: Vec<(u64, Hash)> =
-							blocks.iter().map(|b| (b.header.height, b.hash())).collect();
+						let block_hashes: Vec<(u64, Hash)> = blocks
+							.iter()
+							.map(|b| (b.header.height, b.hash().unwrap_or(Hash::default())))
+							.collect();
 						match self.process_block_multiple(&blocks, opts) {
 							Ok(tip) => {
 								info!(
@@ -646,7 +661,7 @@ impl Chain {
 	pub fn convert_block_v2(&self, block: Block) -> Result<Block, Error> {
 		debug!(
 			"convert_block_v2: {} at {} ({} -> v2)",
-			block.header.hash(),
+			block.header.hash().unwrap_or(Hash::default()),
 			block.header.height,
 			block.inputs().version_str(),
 		);
@@ -658,8 +673,8 @@ impl Chain {
 			});
 		}
 
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let inputs: Vec<_> = txhashset::extending_readonly(
 			self.store.get_context_id(),
 			&mut header_pmmr,
@@ -712,11 +727,21 @@ impl Chain {
 	/// Returns an error if this block is "known".
 	pub fn is_known(&self, header: &BlockHeader) -> Result<(), Error> {
 		let head = self.head()?;
-		if head.hash() == header.hash() {
+		if head
+			.hash()
+			.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?
+			== header
+				.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?
+		{
 			return Err(Error::Unfit("duplicate block".into()));
 		}
 		if header.total_difficulty() <= head.total_difficulty {
-			if self.block_exists(&header.hash())? {
+			if self.block_exists(
+				&header
+					.hash()
+					.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+			)? {
 				return Err(Error::Unfit("duplicate block".into()));
 			}
 		}
@@ -779,8 +804,8 @@ impl Chain {
 	/// or false if it has added to a fork (or orphan?).
 	fn process_block_single(&self, b: Block, opts: Options) -> Result<Option<Tip>, Error> {
 		let (head, fork_point, prev_head, b) = {
-			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-			let mut txhashset = self.txhashset.write().expect("RwLock failure");
+			let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+			let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 			let batch = self.store.batch_write()?;
 			let prev_head = batch.head()?;
 			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
@@ -793,7 +818,7 @@ impl Chain {
 				&mut *self
 					.cache_header_difficulty
 					.write()
-					.expect("RwLock failure"),
+					.unwrap_or_else(|e| e.into_inner()),
 				self.secp(),
 			)?;
 
@@ -813,7 +838,7 @@ impl Chain {
 
 		info!(
 			"Accepted single block {} for height {}",
-			b.hash(),
+			b.hash().unwrap_or(Hash::default()),
 			b.header.height
 		);
 		// notifying other parts of the system of the update
@@ -831,8 +856,8 @@ impl Chain {
 		opts: Options,
 	) -> Result<Option<Tip>, Error> {
 		let (head, fork_point, prev_head) = {
-			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-			let mut txhashset = self.txhashset.write().expect("RwLock failure");
+			let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+			let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 			let batch = self.store.batch_write()?;
 			let prev_head = batch.head()?;
 			let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
@@ -844,7 +869,7 @@ impl Chain {
 				&mut *self
 					.cache_header_difficulty
 					.write()
-					.expect("RwLock failure"),
+					.unwrap_or_else(|e| e.into_inner()),
 				self.secp(),
 			)?;
 
@@ -854,7 +879,9 @@ impl Chain {
 			(head, fork_point, prev_head)
 		};
 
-		let last_block = blocks.last().unwrap();
+		let last_block = blocks.last().ok_or(Error::Other(
+			"Internal error, empty blocks at process_block_multiple".into(),
+		))?;
 		let prev = self.get_previous_header(&last_block.header)?;
 		let status = self.determine_status(
 			head,
@@ -866,8 +893,20 @@ impl Chain {
 		debug!(
 			"Accepted multiple {} block from height {} to {}",
 			blocks.len(),
-			blocks.first().unwrap().header.height,
-			blocks.last().unwrap().header.height
+			blocks
+				.first()
+				.ok_or(Error::Other(
+					"Internal error, empty blocks at process_block_multiple".into()
+				))?
+				.header
+				.height,
+			blocks
+				.last()
+				.ok_or(Error::Other(
+					"Internal error, empty blocks at process_block_multiple".into()
+				))?
+				.header
+				.height
 		);
 
 		// notifying other parts of the system of the update
@@ -882,8 +921,8 @@ impl Chain {
 	/// Note: This will update header MMR and corresponding header_head
 	/// if total work increases (on the header chain).
 	pub fn process_block_header(&self, bh: &BlockHeader, opts: Options) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let batch = self.store.batch_write()?;
 		let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
 		pipe::process_block_header(
@@ -893,7 +932,7 @@ impl Chain {
 			&mut *self
 				.cache_header_difficulty
 				.write()
-				.expect("RwLock failure"),
+				.unwrap_or_else(|e| e.into_inner()),
 		)?;
 		ctx.batch.commit()?;
 		Ok(())
@@ -909,8 +948,8 @@ impl Chain {
 		sync_head: Tip,
 		opts: Options,
 	) -> Result<Option<Tip>, Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let batch = self.store.batch_write()?;
 
 		// Sync the chunk of block headers, updating header_head if total work increases.
@@ -923,7 +962,7 @@ impl Chain {
 			&mut *self
 				.cache_header_difficulty
 				.write()
-				.expect("RwLock failure"),
+				.unwrap_or_else(|e| e.into_inner()),
 		)?;
 		ctx.batch.commit()?;
 
@@ -938,13 +977,9 @@ impl Chain {
 		header_pmmr: &'a mut txhashset::PMMRHandle<BlockHeader>,
 		txhashset: &'a mut txhashset::TxHashSet,
 	) -> Result<pipe::BlockContext<'a>, Error> {
-		let denylist = self.denylist.read().expect("RwLock failure").clone();
 		Ok(pipe::BlockContext {
 			opts,
 			pow_verifier: self.pow_verifier,
-			header_allowed: Box::new(move |header| {
-				pipe::validate_header_denylist(header, &denylist)
-			}),
 			header_pmmr,
 			txhashset,
 			batch,
@@ -991,7 +1026,7 @@ impl Chain {
 				for (i, orphan) in orphans.into_iter().enumerate() {
 					debug!(
 						"check_orphans: get block {} at {}{}",
-						orphan.block.hash(),
+						orphan.block.hash().unwrap_or(Hash::default()),
 						height,
 						if orphans_len > 1 {
 							format!(", no.{} of {} orphans", i, orphans_len)
@@ -1036,14 +1071,14 @@ impl Chain {
 	) -> Result<Option<(OutputIdentifier, CommitPos)>, Error> {
 		self.txhashset
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_unspent(commit)
 	}
 
 	/// Retrieves an unspent output using its PMMR position
 	pub fn get_unspent_output_at(&self, pos0: u64) -> Result<Output, Error> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, _| {
 			utxo.get_unspent_output_at(pos0)
 		})
@@ -1068,8 +1103,8 @@ impl Chain {
 		if !has_nrd_kernel {
 			return Ok(());
 		}
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		txhashset::extending_readonly(
 			self.store.get_context_id(),
 			&mut header_pmmr,
@@ -1085,8 +1120,8 @@ impl Chain {
 		&self,
 		tx: &Transaction,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.validate_tx(tx, batch)
 		})
@@ -1100,8 +1135,8 @@ impl Chain {
 		&self,
 		inputs: &Inputs,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.validate_inputs(inputs, batch)
 		})
@@ -1116,8 +1151,8 @@ impl Chain {
 	/// that has not yet sufficiently matured.
 	pub fn verify_coinbase_maturity(&self, inputs: &Inputs) -> Result<(), Error> {
 		let height = self.next_block_height()?;
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		txhashset::utxo_view(&header_pmmr, &txhashset, |utxo, batch| {
 			utxo.verify_coinbase_maturity(self.store.get_context_id(), inputs, height, batch)?;
 			Ok(())
@@ -1140,7 +1175,7 @@ impl Chain {
 	/// (need to be version 3 or bigger)
 	/// Do we need to do the check here? we are doing check for every tx regardless of the kernel version.
 	pub fn replay_attack_check(&self, tx: &Transaction) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
 		let batch_read = self.store.batch_read()?;
 		txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 			pipe::check_against_spent_output(&tx.body, None, None, ext, batch)?;
@@ -1157,8 +1192,8 @@ impl Chain {
 			return Ok(());
 		}
 
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 
 		// Now create an extension from the txhashset and validate against the
 		// latest block header. Rewind the extension to the specified header to
@@ -1184,7 +1219,7 @@ impl Chain {
 
 	/// Sets prev_root on a brand new block header by applying the previous header to the header MMR.
 	pub fn set_prev_root_only(&self, header: &mut BlockHeader) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
 		let batch_read = self.store.batch_read()?;
 		let prev_root =
 			txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
@@ -1202,8 +1237,8 @@ impl Chain {
 	/// Sets the txhashset roots on a brand new block by applying the block on
 	/// the current txhashset state.
 	pub fn set_txhashset_roots(&self, b: &mut Block) -> Result<(), Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 
 		let (prev_root, roots, sizes) = txhashset::extending_readonly(
 			self.store.get_context_id(),
@@ -1253,8 +1288,8 @@ impl Chain {
 		out_id: T,
 		header: &BlockHeader,
 	) -> Result<MerkleProof, Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let merkle_proof = txhashset::extending_readonly(
 			self.store.get_context_id(),
 			&mut header_pmmr,
@@ -1271,7 +1306,7 @@ impl Chain {
 	/// Return a merkle proof valid for the current output pmmr state at the
 	/// given pos
 	pub fn get_merkle_proof_for_pos(&self, commit: Commitment) -> Result<MerkleProof, Error> {
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		txhashset.merkle_proof(commit)
 	}
 
@@ -1283,13 +1318,11 @@ impl Chain {
 		ext: &mut ExtensionPair,
 		batch: &Batch,
 	) -> Result<BlockHeader, Error> {
-		let denylist = self.denylist.read().expect("RwLock failure").clone();
 		let (header, _) = pipe::rewind_and_apply_fork(
 			self.store.get_context_id(),
 			header,
 			ext,
 			batch,
-			&|header| pipe::validate_header_denylist(header, &denylist),
 			self.secp(),
 		)?;
 		Ok(header)
@@ -1303,10 +1336,7 @@ impl Chain {
 		ext: &mut HeaderExtension,
 		batch: &Batch,
 	) -> Result<(), Error> {
-		let denylist = self.denylist.read().expect("RwLock failure").clone();
-		pipe::rewind_and_apply_header_fork(header, ext, batch, &|header| {
-			pipe::validate_header_denylist(header, &denylist)
-		})
+		pipe::rewind_and_apply_header_fork(self.store.get_context_id(), header, ext, batch)
 	}
 
 	/// Provides a reading view into the current txhashset state as well as
@@ -1320,8 +1350,8 @@ impl Chain {
 		// to rewind after receiving the txhashset zip.
 		let header = self.get_block_header(&h)?;
 
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 
 		txhashset::extending_readonly(
 			self.store.get_context_id(),
@@ -1353,7 +1383,12 @@ impl Chain {
 		let ref archive_header = self.txhashset_archive_header()?;
 
 		// Use our cached segmenter if we have one and the associated header matches.
-		if let Some(x) = self.pibd_segmenter.read().expect("RwLock failure").as_ref() {
+		if let Some(x) = self
+			.pibd_segmenter
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.as_ref()
+		{
 			if x.header() == archive_header {
 				return Ok(x.clone());
 			}
@@ -1362,7 +1397,10 @@ impl Chain {
 		// We have no cached segmenter or the cached segmenter is no longer useful.
 		// Initialize a new segment, cache it and return it.
 		let segmenter = self.init_segmenter(archive_header)?;
-		let mut cache = self.pibd_segmenter.write().expect("RwLock failure");
+		let mut cache = self
+			.pibd_segmenter
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		*cache = Some(segmenter.clone());
 
 		return Ok(segmenter);
@@ -1374,13 +1412,13 @@ impl Chain {
 		let now = Instant::now();
 		debug!(
 			"init_segmenter: initializing new segmenter for {} at {}",
-			header.hash(),
+			header.hash().unwrap_or(Hash::default()),
 			header.height
 		);
 
 		let bitmap_snapshot = {
-			let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
-			let mut txhashset = self.txhashset.write().expect("RwLock failure");
+			let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
+			let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 
 			let local_output_mmr_size = txhashset.output_mmr_size();
 			let local_kernel_mmr_size = txhashset.kernel_mmr_size();
@@ -1417,7 +1455,12 @@ impl Chain {
 		for i in 0..hash_num {
 			let data = self
 				.get_header_hash_by_height(i * HEADERS_PER_BATCH as u64)
-				.expect("Header data is expected below horizon");
+				.map_err(|e| {
+					Error::Other(format!(
+						"init_segmenter internal error, header data is expected below horizon, {}",
+						e
+					))
+				})?;
 			segm_header_pmmr.push(&data).map_err(|s| {
 				Error::SyncError(format!("Unable to create Headers hash MMR, {}", s))
 			})?;
@@ -1433,18 +1476,24 @@ impl Chain {
 		{
 			use mwc_core::core::pmmr::ReadablePMMR;
 
-			let txhashset = self.txhashset.read().expect("RwLock failure");
+			let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 
 			let output_pmmr = txhashset.output_pmmr_at(&header);
-			let output_pmmr_root = output_pmmr.root().unwrap();
+			let output_pmmr_root = output_pmmr
+				.root()
+				.map_err(|e| Error::Other(format!("Invalid output_pmmr, {}", e)))?;
 			assert!(header.output_root == output_pmmr_root);
 
 			let rangeproof_pmmr = txhashset.rangeproof_pmmr_at(&header);
-			let rangeproof_pmmr_root = rangeproof_pmmr.root().unwrap();
+			let rangeproof_pmmr_root = rangeproof_pmmr
+				.root()
+				.map_err(|e| Error::Other(format!("Invalid rangeproof_pmmr, {}", e)))?;
 			assert!(header.range_proof_root == rangeproof_pmmr_root);
 
 			let kernel_pmmr = txhashset.kernel_pmmr_at(&header);
-			let kernel_pmmr_root = kernel_pmmr.root().unwrap();
+			let kernel_pmmr_root = kernel_pmmr
+				.root()
+				.map_err(|e| Error::Other(format!("Invalid kernel_pmmr, {}", e)))?;
 			assert!(header.kernel_root == kernel_pmmr_root);
 		}
 
@@ -1468,7 +1517,7 @@ impl Chain {
 		let archive_header = self.get_header_by_height(archive_header_hegiht)?;
 		debug!(
 			"init_desegmenter: initializing new desegmenter for {} at {}",
-			archive_header.hash(),
+			archive_header.hash().unwrap_or(Hash::default()),
 			archive_header.height
 		);
 
@@ -1557,7 +1606,11 @@ impl Chain {
 	/// i.e. This is the last known full block and all subsequent blocks are missing.
 	pub fn fork_point(&self) -> Result<BlockHeader, Error> {
 		let body_head = self.head()?;
-		let mut current = self.get_block_header(&body_head.hash())?;
+		let mut current = self.get_block_header(
+			&body_head
+				.hash()
+				.map_err(|e| Error::Other(format!("Tip hash calculation error, {}", e)))?,
+		)?;
 		while !self.is_on_current_chain(&current, body_head).is_ok() {
 			current = self.get_previous_header(&current)?;
 		}
@@ -1574,10 +1627,10 @@ impl Chain {
 	/// or ~/.mwc/floo/tmp for floonet
 	pub fn get_tmp_dir(&self) -> PathBuf {
 		let mut tmp_dir = PathBuf::from(self.db_root.clone());
-		tmp_dir = tmp_dir
-			.parent()
-			.expect("fail to get parent of db_root dir")
-			.to_path_buf();
+		tmp_dir = match tmp_dir.parent() {
+			Some(parent) => parent.to_path_buf(),
+			None => tmp_dir,
+		};
 		tmp_dir.push("tmp");
 		tmp_dir
 	}
@@ -1776,7 +1829,10 @@ impl Chain {
 		// Remove old blocks (including short lived fork blocks) which height < tail.height
 		for block in batch.blocks_iter()? {
 			if block.header.height < new_tail.height {
-				let _ = batch.delete_block(&block.hash());
+				let _ =
+					batch.delete_block(&block.hash().map_err(|e| {
+						Error::Other(format!("Block hash calculation error, {}", e))
+					})?);
 				count += 1;
 			}
 		}
@@ -1817,8 +1873,8 @@ impl Chain {
 		let archive_header = self.txhashset_archive_header()?;
 
 		// Take a write lock on the txhashet and start a new writeable db batch.
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
-		let mut txhashset = self.txhashset.write().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
+		let mut txhashset = self.txhashset.write().unwrap_or_else(|e| e.into_inner());
 		let batch = self.store.batch_write()?;
 
 		// Compact the txhashset itself (rewriting the pruned backend files).
@@ -1864,7 +1920,7 @@ impl Chain {
 	pub fn get_last_n_output(&self, distance: u64) -> Vec<(Hash, OutputIdentifier)> {
 		self.txhashset
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.last_n_output(distance)
 	}
 
@@ -1872,7 +1928,7 @@ impl Chain {
 	pub fn get_last_n_rangeproof(&self, distance: u64) -> Vec<(Hash, RangeProof)> {
 		self.txhashset
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.last_n_rangeproof(distance)
 	}
 
@@ -1880,7 +1936,7 @@ impl Chain {
 	pub fn get_last_n_kernel(&self, distance: u64) -> Vec<(Hash, TxKernel)> {
 		self.txhashset
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.last_n_kernel(distance)
 	}
 
@@ -1889,7 +1945,7 @@ impl Chain {
 		Ok(self
 			.txhashset
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_output_pos(commit)?)
 	}
 
@@ -1900,7 +1956,7 @@ impl Chain {
 		max_count: u64,
 		max_pmmr_index: Option<u64>,
 	) -> Result<(u64, u64, Vec<Output>), Error> {
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		let last_index = match max_pmmr_index {
 			Some(i) => i,
 			None => txhashset.output_mmr_size(),
@@ -2022,7 +2078,7 @@ impl Chain {
 	fn get_header_hash_by_height(&self, height: u64) -> Result<Hash, Error> {
 		self.header_pmmr
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_header_hash_by_height(height)
 	}
 
@@ -2089,8 +2145,8 @@ impl Chain {
 
 	/// Gets the block header in which a given output appears in the txhashset.
 	pub fn get_header_for_output(&self, commit: Commitment) -> Result<BlockHeader, Error> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		let (_, pos) = match txhashset.get_unspent(commit)? {
 			Some(o) => o,
 			None => {
@@ -2147,7 +2203,7 @@ impl Chain {
 		let (kernel, mmr_index) = match self
 			.txhashset
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.find_kernel(&excess, min_index, max_index)
 		{
 			Some(k) => k,
@@ -2165,7 +2221,7 @@ impl Chain {
 		min_height: Option<u64>,
 		max_height: Option<u64>,
 	) -> Result<BlockHeader, Error> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
 
 		let mut min = min_height.unwrap_or(0).saturating_sub(1);
 		let mut max = match max_height {
@@ -2204,7 +2260,10 @@ impl Chain {
 			return Err(Error::Other("not on current chain".to_string()));
 		}
 
-		if x.hash() == self.get_header_hash_by_height(x.height)? {
+		if x.hash()
+			.map_err(|e| Error::Other(format!("Tip hash calculation error, {}", e)))?
+			== self.get_header_hash_by_height(x.height)?
+		{
 			Ok(())
 		} else {
 			Err(Error::Other(format!("header is not on current chain")))
@@ -2215,10 +2274,14 @@ impl Chain {
 	/// Note: Uses the sync pmmr, not the header pmmr.
 	/// Note: This is based on the provided sync_head to support syncing against a fork.
 	pub fn get_locator_hashes(&self, sync_head: Tip, heights: &[u64]) -> Result<Vec<Hash>, Error> {
-		let mut header_pmmr = self.header_pmmr.write().expect("RwLock failure");
+		let mut header_pmmr = self.header_pmmr.write().unwrap_or_else(|e| e.into_inner());
 		let batch_read = self.store.batch_read()?;
 		txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
-			let header = batch.get_block_header(&sync_head.hash())?;
+			let header = batch.get_block_header(
+				&sync_head
+					.hash()
+					.map_err(|e| Error::Other(format!("Tip hash calculation error, {}", e)))?,
+			)?;
 			self.rewind_and_apply_header_fork(&header, ext, batch)?;
 
 			let hashes = heights
@@ -2261,7 +2324,7 @@ impl Chain {
 
 		let max_height = self.header_head()?.height;
 
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
 
 		// looks like we know one, getting as many following headers as allowed
 		let hh = header.height;
@@ -2285,13 +2348,15 @@ impl Chain {
 
 	// Find the first locator hash that refers to a known header on our main chain.
 	fn find_common_header(&self, locator: &[Hash]) -> Option<BlockHeader> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
 
 		for hash in locator {
 			if let Ok(header) = self.get_block_header(&hash) {
 				if let Ok(hash_at_height) = header_pmmr.get_header_hash_by_height(header.height) {
 					if let Ok(header_at_height) = self.get_block_header(&hash_at_height) {
-						if header.hash() == header_at_height.hash() {
+						if header.hash().unwrap_or(Hash::default())
+							== header_at_height.hash().unwrap_or(Hash::default())
+						{
 							return Some(header);
 						}
 					}
@@ -2318,7 +2383,14 @@ fn setup_head(
 
 	// Apply the genesis header to header and sync MMRs.
 	{
-		if batch.get_block_header(&genesis.hash()).is_err() {
+		if batch
+			.get_block_header(
+				&genesis
+					.hash()
+					.map_err(|e| Error::Other(format!("Genesis hash calculation error, {}", e)))?,
+			)
+			.is_err()
+		{
 			batch.save_block_header(&genesis.header)?;
 		}
 
@@ -2334,7 +2406,10 @@ fn setup_head(
 	if let Ok(head) = batch.header_head() {
 		header_pmmr.init_head(&head)?;
 		txhashset::header_extending(header_pmmr, &mut batch, |ext, batch| {
-			let header = batch.get_block_header(&head.hash())?;
+			let header =
+				batch.get_block_header(&head.hash().map_err(|e| {
+					Error::Other(format!("Header hash calculation error, {}", e))
+				})?)?;
 			ext.rewind(&header)
 		})?;
 	} else {
@@ -2360,14 +2435,7 @@ fn setup_head(
 					// If we're still downloading via PIBD, don't worry about sums and validations just yet
 					// We still want to rewind to the last completed block to ensure a consistent state
 
-					pipe::rewind_and_apply_fork(
-						store.get_context_id(),
-						&header,
-						ext,
-						batch,
-						&|_| Ok(()),
-						secp,
-					)?;
+					pipe::rewind_and_apply_fork(store.get_context_id(), &header, ext, batch, secp)?;
 
 					let extension = &mut ext.extension;
 
@@ -2376,11 +2444,17 @@ fn setup_head(
 					// now check we have the "block sums" for the block in question
 					// if we have no sums (migrating an existing node) we need to go
 					// back to the txhashset and sum the outputs and kernels
-					if header.height > 0 && batch.get_block_sums(&header.hash()).is_err() {
+					if header.height > 0
+						&& batch
+							.get_block_sums(&header.hash().map_err(|e| {
+								Error::Other(format!("Header hash calculation error, {}", e))
+							})?)
+							.is_err()
+					{
 						debug!(
 							"init: building (missing) block sums for {} @ {}",
 							header.height,
-							header.hash()
+							header.hash().unwrap_or(Hash::default())
 						);
 
 						// Do a full (and slow) validation of the txhashset extension
@@ -2390,7 +2464,9 @@ fn setup_head(
 
 						// Save the block_sums to the db for use later.
 						batch.save_block_sums(
-							&header.hash(),
+							&header.hash().map_err(|e| {
+								Error::Other(format!("Header hash calculation error, {}", e))
+							})?,
 							BlockSums {
 								utxo_sum,
 								kernel_sum,
@@ -2400,7 +2476,7 @@ fn setup_head(
 
 					debug!(
 						"init: rewinding and validating before we start... {} at {}",
-						header.hash(),
+						header.hash().unwrap_or(Hash::default()),
 						header.height,
 					);
 					Ok(())
@@ -2425,7 +2501,6 @@ fn setup_head(
 							&prev_header,
 							ext,
 							batch,
-							&|_| Ok(()),
 							secp,
 						)
 					})?;
@@ -2433,7 +2508,9 @@ fn setup_head(
 					// Now "undo" the latest block and forget it ever existed.
 					// We will request it from a peer during sync as necessary.
 					{
-						let _ = batch.delete_block(&header.hash());
+						let _ = batch.delete_block(&header.hash().map_err(|e| {
+							Error::Other(format!("Header hash calculation error, {}", e))
+						})?);
 						head = Tip::from_header(&prev_header);
 						batch.save_body_head(&head)?;
 					}
@@ -2446,7 +2523,12 @@ fn setup_head(
 			// Save the genesis header with a "zero" header_root.
 			// We will update this later once we have the correct header_root.
 			batch.save_block(&genesis)?;
-			batch.save_spent_index(&genesis.hash(), &vec![])?;
+			batch.save_spent_index(
+				&genesis
+					.hash()
+					.map_err(|e| Error::Other(format!("Genesis hash calculation error, {}", e)))?,
+				&vec![],
+			)?;
 			batch.save_body_head(&Tip::from_header(&genesis.header))?;
 
 			if !genesis.kernels().is_empty() {
@@ -2466,7 +2548,12 @@ fn setup_head(
 			})?;
 
 			// Save the block_sums to the db for use later.
-			batch.save_block_sums(&genesis.hash(), sums)?;
+			batch.save_block_sums(
+				&genesis
+					.hash()
+					.map_err(|e| Error::Other(format!("Genesis hash calculation error, {}", e)))?,
+				sums,
+			)?;
 
 			info!("init: saved genesis: {:?}", genesis.hash());
 		}

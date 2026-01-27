@@ -285,7 +285,7 @@ pub fn write_message<W: Write>(
 	if let Some(elapsed) = tracker
 		.sent_bytes
 		.read()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.elapsed_since_last_msg()
 	{
 		let min_interval: u64 = 150;

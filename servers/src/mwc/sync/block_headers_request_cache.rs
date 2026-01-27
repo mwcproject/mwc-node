@@ -59,7 +59,7 @@ impl HeadersBlocksRequests {
 		height: u64,
 		locator: Vec<Hash>,
 	) {
-		let mut headers = self.headers.write().expect("RwLock failure");
+		let mut headers = self.headers.write().unwrap_or_else(|e| e.into_inner());
 		for req in &*headers {
 			if req.addr == *addr {
 				debug!("Ignored header request to {}, already in the Q", addr);
@@ -82,7 +82,7 @@ impl HeadersBlocksRequests {
 		block_hash: Hash,
 		opts: mwc_chain::Options,
 	) {
-		let mut blocks = self.blocks.write().expect("RwLock failure");
+		let mut blocks = self.blocks.write().unwrap_or_else(|e| e.into_inner());
 
 		match blocks.get_mut(&height) {
 			Some(requests) => {
@@ -132,7 +132,7 @@ impl HeadersBlocksRequests {
 		let head_header = self.chain.head_header()?.height;
 		{
 			// Requesting single heads chain
-			let mut headers = self.headers.write().expect("RwLock failure");
+			let mut headers = self.headers.write().unwrap_or_else(|e| e.into_inner());
 			loop {
 				// Requesting single series of headers
 				match headers.pop_front() {
@@ -162,11 +162,13 @@ impl HeadersBlocksRequests {
 		// My point that if we prefer any block vs others, it will be possible to organizes attack
 		// to stale the node progress.
 		{
-			let mut blocks = self.blocks.write().expect("RwLock failure");
+			let mut blocks = self.blocks.write().unwrap_or_else(|e| e.into_inner());
 			for (_height, requests) in &mut *blocks {
 				let mut skipped_requests = Vec::new();
 				while !requests.is_empty() {
-					let block_req = requests.pop_front().unwrap();
+					let block_req = requests.pop_front().ok_or(mwc_chain::Error::Other(
+						"Internal error, blocks are empty".into(),
+					))?;
 					if !self.chain.block_exists(&block_req.block_hash)? {
 						if let Some(peer) = peers.get_connected_peer(&block_req.addr) {
 							debug!("process_request, requesting block from {}, target height: {} , hash: {}",

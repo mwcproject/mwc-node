@@ -80,21 +80,25 @@ impl Difficulty {
 	/// Computes the difficulty from a hash. Divides the maximum target by the
 	/// provided hash and applies the Cuck(at)oo size adjustment factor (see
 	/// https://lists.launchpad.net/mimblewimble/msg00494.html).
-	fn from_proof_adjusted(context_id: u32, height: u64, proof: &Proof) -> Difficulty {
+	fn from_proof_adjusted(
+		context_id: u32,
+		height: u64,
+		proof: &Proof,
+	) -> Result<Difficulty, std::io::Error> {
 		// scale with natural scaling factor
-		Difficulty::from_num(proof.scaled_difficulty(graph_weight(
-			context_id,
-			height,
-			proof.edge_bits,
-		)))
+		Ok(Difficulty::from_num(proof.scaled_difficulty(
+			graph_weight(context_id, height, proof.edge_bits),
+		)?))
 	}
 
 	/// Same as `from_proof_adjusted` but instead of an adjustment based on
 	/// cycle size, scales based on a provided factor. Used by dual PoW system
 	/// to scale one PoW against the other.
-	fn from_proof_scaled(proof: &Proof, scaling: u32) -> Difficulty {
+	fn from_proof_scaled(proof: &Proof, scaling: u32) -> Result<Difficulty, std::io::Error> {
 		// Scaling between 2 proof of work algos
-		Difficulty::from_num(proof.scaled_difficulty(scaling as u64))
+		Ok(Difficulty::from_num(
+			proof.scaled_difficulty(scaling as u64)?,
+		))
 	}
 
 	/// Converts the difficulty into a u64
@@ -270,7 +274,11 @@ impl ProofOfWork {
 	}
 
 	/// Maximum difficulty this proof of work can achieve
-	pub fn to_difficulty(&self, context_id: u32, height: u64) -> Difficulty {
+	pub fn to_difficulty(
+		&self,
+		context_id: u32,
+		height: u64,
+	) -> Result<Difficulty, std::io::Error> {
 		// 2 proof of works, Cuckoo29 (for now) and Cuckoo30+, which are scaled
 		// differently (scaling not controlled for now)
 		if self.proof.edge_bits == SECOND_POW_EDGE_BITS {
@@ -281,9 +289,9 @@ impl ProofOfWork {
 	}
 
 	/// Maximum unscaled difficulty this proof of work can achieve
-	pub fn to_unscaled_difficulty(&self) -> Difficulty {
+	pub fn to_unscaled_difficulty(&self) -> Result<Difficulty, std::io::Error> {
 		// using scale = 1 gives "unscaled" value
-		Difficulty::from_num(self.proof.scaled_difficulty(1u64))
+		Ok(Difficulty::from_num(self.proof.scaled_difficulty(1u64)?))
 	}
 
 	/// The edge_bits used for the cuckoo cycle size on this proof
@@ -408,9 +416,9 @@ impl Proof {
 	}
 
 	/// Difficulty achieved by this proof with given scaling factor
-	fn scaled_difficulty(&self, scale: u64) -> u64 {
-		let diff = ((scale as u128) << 64) / (max(1, self.hash().to_u64()) as u128);
-		min(diff, <u64>::max_value() as u128) as u64
+	fn scaled_difficulty(&self, scale: u64) -> Result<u64, std::io::Error> {
+		let diff = ((scale as u128) << 64) / (max(1, self.hash()?.to_u64()) as u128);
+		Ok(min(diff, <u64>::max_value() as u128) as u64)
 	}
 }
 

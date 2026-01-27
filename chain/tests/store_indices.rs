@@ -38,12 +38,15 @@ fn test_store_indices() {
 
 	// Check header_by_height index.
 	let block_header = chain.get_header_by_height(3).unwrap();
-	let block_hash = block_header.hash();
+	let block_hash = block_header.hash().unwrap();
 	assert_eq!(block_hash, chain.head().unwrap().last_block_h);
 
 	{
 		// Block exists in the db.
-		assert_eq!(chain.get_block(&block_hash).unwrap().hash(), block_hash);
+		assert_eq!(
+			chain.get_block(&block_hash).unwrap().hash().unwrap(),
+			block_hash
+		);
 
 		// Check we have block_sums in the db.
 		assert!(chain.get_block_sums(&block_hash).is_ok());

@@ -25,7 +25,6 @@ use crate::mwc_core::ser::{PMMRable, ProtocolVersion};
 use crate::prune_list::PruneList;
 use crate::types::{AppendOnlyFile, DataFile, SizeEntry, SizeInfo};
 use croaring::Bitmap;
-use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 
 const PMMR_HASH_FILE: &str = "pmmr_hash.bin";
@@ -69,7 +68,11 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 	fn append(&mut self, data: &T, hashes: &[Hash]) -> Result<(), String> {
 		let size = self
 			.data_file
-			.append(&data.as_elmt())
+			.append(
+				&data
+					.as_elmt()
+					.map_err(|e| format!("Failed to conver data to element, {}", e))?,
+			)
 			.map_err(|e| format!("Failed to append data to file. {}", e))?;
 
 		self.hash_file
@@ -264,7 +267,7 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 		self.leaf_set.snapshot(header).map_err(|e| {
 			format!(
 				"Failed to save copy of leaf_set for {}, {}",
-				header.hash(),
+				header.hash().unwrap_or(Hash::default()),
 				e
 			)
 		})?;
@@ -310,7 +313,7 @@ impl<T: PMMRable> PMMRBackend<T> {
 		};
 
 		// Hash file is always "fixed size" and we use 32 bytes per hash.
-		let hash_size_info = SizeInfo::FixedSize(Hash::LEN.try_into().unwrap());
+		let hash_size_info = SizeInfo::FixedSize(Hash::LEN as u16);
 
 		let hash_file = DataFile::open(
 			&data_dir.join(PMMR_HASH_FILE),
@@ -332,8 +335,14 @@ impl<T: PMMRable> PMMRBackend<T> {
 		if let Some(header) = header {
 			let leaf_snapshot_path = format!(
 				"{}.{}",
-				data_dir.join(PMMR_LEAF_FILE).to_str().unwrap(),
-				header.hash()
+				data_dir
+					.join(PMMR_LEAF_FILE)
+					.to_str()
+					.ok_or(io::Error::new(
+						io::ErrorKind::Other,
+						format!("Unable to build path to file {}", PMMR_LEAF_FILE)
+					))?,
+				header.hash()?
 			);
 			LeafSet::copy_snapshot(&leaf_set_path, &PathBuf::from(leaf_snapshot_path))?;
 		}

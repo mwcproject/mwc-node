@@ -56,6 +56,9 @@ pub enum Error {
 	/// Batch type error
 	#[error("Incorrect batch type: {0}")]
 	BatchTypeError(String),
+	/// IOError
+	#[error("IO Error: {0}")]
+	IOError(String),
 }
 
 impl From<lmdb::error::Error> for Error {
@@ -148,7 +151,7 @@ impl Store {
 		};
 
 		{
-			let mut w = res.db.write().expect("WrLock failure");
+			let mut w = res.db.write().unwrap_or_else(|e| e.into_inner());
 			*w = Some(Arc::new(lmdb::Database::open(
 				res.env.clone(),
 				Some(&res.name),
@@ -187,7 +190,7 @@ impl Store {
 
 	/// Opens the database environment
 	pub fn open(&self) -> Result<(), Error> {
-		let mut w = self.db.write().expect("WrLock failure");
+		let mut w = self.db.write().unwrap_or_else(|e| e.into_inner());
 		*w = Some(Arc::new(lmdb::Database::open(
 			self.env.clone(),
 			Some(&self.name),
@@ -243,7 +246,7 @@ impl Store {
 		};
 
 		// close
-		let mut w = self.db.write().expect("WrLock failure");
+		let mut w = self.db.write().unwrap_or_else(|e| e.into_inner());
 		*w = None;
 
 		unsafe {
@@ -289,7 +292,7 @@ impl Store {
 		key: &[u8],
 		deser_mode: Option<DeserializationMode>,
 	) -> Result<Option<T>, Error> {
-		let lock = self.db.read().expect("WrLock failure");
+		let lock = self.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -307,7 +310,7 @@ impl Store {
 
 	/// Whether the provided key exists
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.db.read().expect("WrLock failure");
+		let lock = self.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -323,7 +326,7 @@ impl Store {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.db.read().expect("WrLock failure");
+		let lock = self.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -371,7 +374,7 @@ pub struct Batch<'a> {
 impl<'a> Batch<'a> {
 	/// Writes a single key/value pair to the db
 	pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read().expect("WrLock failure");
+		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -422,7 +425,7 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.store.db.read().expect("WrLock failure");
+		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -441,7 +444,7 @@ impl<'a> Batch<'a> {
 	/// Whether the provided key exists.
 	/// This is in the context of the current write transaction.
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.store.db.read().expect("WrLock failure");
+		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -490,7 +493,7 @@ impl<'a> Batch<'a> {
 
 	/// Deletes a key/value pair from the db
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read().expect("WrLock failure");
+		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
@@ -557,7 +560,15 @@ where
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let access = self.tx.access();
-		let cursor = Arc::get_mut(&mut self.cursor).expect("failed to get cursor");
+		let cursor = match Arc::get_mut(&mut self.cursor) {
+			Some(c) => c,
+			None => {
+				debug_assert!(false);
+				error!("Imdb, failed to get cursor");
+				return None;
+			}
+		};
+
 		let kv: Result<(&[u8], &[u8]), _> = if self.seek {
 			cursor.next(&access)
 		} else {

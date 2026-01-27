@@ -211,7 +211,9 @@ thread_local! {
 
 /// Release
 pub fn release_context_data(context_id: u32) {
-	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let mut params = GLOBAL_CHAIN_PARAMS
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	let params = &mut *params;
 	let _ = params.remove(&context_id);
 }
@@ -225,7 +227,7 @@ pub fn set_local_chain_type(new_type: ChainTypes) {
 pub fn get_chain_type(context_id: u32) -> ChainTypes {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().chain_type {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read().expect("RwLock failure");
+			let params = GLOBAL_CHAIN_PARAMS.read().unwrap_or_else(|e| e.into_inner());
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.chain_type {
@@ -256,7 +258,9 @@ pub fn get_genesis_block(context_id: u32) -> Block {
 /// One time initialization of the global chain_type.
 /// Will panic if we attempt to re-initialize this (via OneTime).
 pub fn init_global_chain_type(context_id: u32, new_type: ChainTypes) {
-	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let mut params = GLOBAL_CHAIN_PARAMS
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	let params = &mut *params;
 	let params = params
 		.entry(context_id)
@@ -269,7 +273,9 @@ pub fn init_global_chain_type(context_id: u32, new_type: ChainTypes) {
 /// One time initialization of the global chain_type.
 /// Will panic if we attempt to re-initialize this (via OneTime).
 pub fn init_global_nrd_enabled(context_id: u32, enabled: bool) {
-	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let mut params = GLOBAL_CHAIN_PARAMS
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	let params = &mut *params;
 	let params = params
 		.entry(context_id)
@@ -291,7 +297,7 @@ pub fn set_local_nrd_enabled(enabled: bool) {
 pub fn is_nrd_enabled(context_id: u32) -> bool {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().nrd_feature_enabled {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read().expect("RwLock failure");
+			let params = GLOBAL_CHAIN_PARAMS.read().unwrap_or_else(|e| e.into_inner());
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.nrd_feature_enabled {
@@ -313,7 +319,9 @@ pub fn is_nrd_enabled(context_id: u32) -> bool {
 /// One time initialization of the global accept fee base
 /// Will panic if we attempt to re-initialize this (via OneTime).
 pub fn init_global_accept_fee_base(context_id: u32, new_base: u64) {
-	let mut params = GLOBAL_CHAIN_PARAMS.write().expect("RwLock failure");
+	let mut params = GLOBAL_CHAIN_PARAMS
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	let params = &mut *params;
 	let params = params
 		.entry(context_id)
@@ -335,7 +343,7 @@ pub fn set_local_accept_fee_base(new_base: u64) {
 pub fn get_accept_fee_base(context_id: u32) -> u64 {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().accept_fee_base {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read().expect("RwLock failure");
+			let params = GLOBAL_CHAIN_PARAMS.read().unwrap_or_else(|e| e.into_inner());
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.accept_fee_base {

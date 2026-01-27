@@ -29,7 +29,7 @@ pub const SHORT_ID_SIZE: usize = 6;
 pub trait ShortIdentifiable {
 	/// The short_id of a kernel uses a hash built from the block_header *and* a
 	/// connection specific nonce to minimize the effect of collisions.
-	fn short_id(&self, hash: &Hash, nonce: u64) -> ShortId;
+	fn short_id(&self, hash: &Hash, nonce: u64) -> Result<ShortId, std::io::Error>;
 }
 
 impl<H: Hashed> ShortIdentifiable for H {
@@ -40,9 +40,9 @@ impl<H: Hashed> ShortIdentifiable for H {
 	///   * self.hash() passing in the siphasher24 instance
 	///   * drop the 2 most significant bytes (to return a 6 byte short_id)
 	///
-	fn short_id(&self, hash: &Hash, nonce: u64) -> ShortId {
+	fn short_id(&self, hash: &Hash, nonce: u64) -> Result<ShortId, std::io::Error> {
 		// take the block hash and the nonce and hash them together
-		let hash_with_nonce = (hash, nonce).hash();
+		let hash_with_nonce = (hash, nonce).hash()?;
 
 		// we "use" core::hash::Hash in the outer namespace
 		// so doing this here in the fn to minimize collateral damage/confusion
@@ -56,14 +56,14 @@ impl<H: Hashed> ShortIdentifiable for H {
 		let mut sip_hasher = SipHasher24::new_with_keys(k0, k1);
 
 		// hash our id (self.hash()) using the siphasher24 instance
-		sip_hasher.write(&self.hash().to_vec()[..]);
+		sip_hasher.write(&self.hash()?.to_vec()[..]);
 		let res = sip_hasher.finish();
 
 		// construct a short_id from the resulting bytes (dropping the 2 most
 		// significant bytes)
 		let mut buf = [0; 8];
 		LittleEndian::write_u64(&mut buf, res);
-		ShortId::from_bytes(&buf[0..6])
+		Ok(ShortId::from_bytes(&buf[0..6]))
 	}
 }
 
@@ -142,13 +142,20 @@ mod test {
 		let mut ids = vec![id_1.clone(), id_2.clone(), id_3.clone()];
 		println!("{:?}", ids);
 
-		let mut hashes = ids.iter().map(|x| x.hash()).collect::<Vec<_>>();
+		let mut hashes = ids.iter().map(|x| x.hash().unwrap()).collect::<Vec<_>>();
 		println!("{:?}", hashes);
 
 		// NOTE: after sorting hash(3) comes before hash(2)
 		hashes.sort();
 		println!("{:?}", hashes);
-		assert_eq!(hashes, [id_1.hash(), id_3.hash(), id_2.hash()]);
+		assert_eq!(
+			hashes,
+			[
+				id_1.hash().unwrap(),
+				id_3.hash().unwrap(),
+				id_2.hash().unwrap()
+			]
+		);
 
 		// NOTE: this also applies to sorting the ids (we sort based on hashes)
 		ids.sort();
@@ -175,11 +182,11 @@ mod test {
 		let expected_hash =
 			Hash::from_hex("81e47a19e6b29b0a65b9591762ce5143ed30d0261e5d24a3201752506b20f15c")
 				.unwrap();
-		assert_eq!(foo.hash(), expected_hash);
+		assert_eq!(foo.hash().unwrap(), expected_hash);
 
 		let other_hash = Hash::default();
 		assert_eq!(
-			foo.short_id(&other_hash, foo.0),
+			foo.short_id(&other_hash, foo.0).unwrap(),
 			ShortId::from_hex("4cc808b62476").unwrap()
 		);
 
@@ -187,11 +194,11 @@ mod test {
 		let expected_hash =
 			Hash::from_hex("3a42e66e46dd7633b57d1f921780a1ac715e6b93c19ee52ab714178eb3a9f673")
 				.unwrap();
-		assert_eq!(foo.hash(), expected_hash);
+		assert_eq!(foo.hash().unwrap(), expected_hash);
 
 		let other_hash = Hash::default();
 		assert_eq!(
-			foo.short_id(&other_hash, foo.0),
+			foo.short_id(&other_hash, foo.0).unwrap(),
 			ShortId::from_hex("02955a094534").unwrap()
 		);
 
@@ -199,13 +206,13 @@ mod test {
 		let expected_hash =
 			Hash::from_hex("3a42e66e46dd7633b57d1f921780a1ac715e6b93c19ee52ab714178eb3a9f673")
 				.unwrap();
-		assert_eq!(foo.hash(), expected_hash);
+		assert_eq!(foo.hash().unwrap(), expected_hash);
 
 		let other_hash =
 			Hash::from_hex("81e47a19e6b29b0a65b9591762ce5143ed30d0261e5d24a3201752506b20f15c")
 				.unwrap();
 		assert_eq!(
-			foo.short_id(&other_hash, foo.0),
+			foo.short_id(&other_hash, foo.0).unwrap(),
 			ShortId::from_hex("3e9cde72a687").unwrap()
 		);
 	}

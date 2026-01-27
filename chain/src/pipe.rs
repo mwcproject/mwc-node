@@ -41,8 +41,6 @@ pub struct BlockContext<'a> {
 	pub opts: Options,
 	/// The pow verifier to use when processing a block.
 	pub pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
-	/// Custom fn allowing arbitrary header validation rules (denylist) to be applied.
-	pub header_allowed: Box<dyn Fn(&BlockHeader) -> Result<(), Error>>,
 	/// The active txhashset (rewindable MMRs) to use for block processing.
 	pub txhashset: &'a mut txhashset::TxHashSet,
 	/// The active header MMR handle.
@@ -60,33 +58,28 @@ lazy_static! {
 pub fn release_context_data(context_id: u32) {
 	INVALID_BLOCK_HASHES
 		.write()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.remove(&context_id);
 }
 
 /// Setup the banned header hashes defined at the config.
-pub fn init_invalid_block_hashes(
-	context_id: u32,
-	hashes: &Option<Vec<String>>,
-) -> Result<(), Error> {
-	if let Some(hs) = hashes.as_ref() {
-		info!("config.invalid_block_hashes = {:?}", hs);
+pub fn init_invalid_block_hashes(context_id: u32, hashes: HashSet<Hash>) {
+	INVALID_BLOCK_HASHES
+		.write()
+		.unwrap_or_else(|e| e.into_inner())
+		.insert(context_id, hashes);
+}
 
-		let mut block_hashes: HashSet<Hash> = HashSet::new();
-		for h in hs {
-			block_hashes.insert(Hash::from_hex(h).map_err(|e| {
-				Error::Other(format!("Unable to parse hash hex string {}, {}", h, e))
-			})?);
+/// Validate the block hash, check if it is banned
+pub fn validate_header_hash(context_id: u32, hash: &Hash) -> Result<(), Error> {
+	let hashes = INVALID_BLOCK_HASHES
+		.read()
+		.unwrap_or_else(|e| e.into_inner());
+	if let Some(blocked_hashes) = hashes.get(&context_id) {
+		if blocked_hashes.contains(&hash) {
+			error!("Invalid header found: {}. Rejecting it!", hash);
+			return Err(Error::InvalidHash.into());
 		}
-		INVALID_BLOCK_HASHES
-			.write()
-			.expect("RwLock failure")
-			.insert(context_id, block_hashes);
-	} else {
-		INVALID_BLOCK_HASHES
-			.write()
-			.expect("RwLock failure")
-			.remove(&context_id);
 	}
 	Ok(())
 }
@@ -112,7 +105,9 @@ pub fn check_against_spent_output(
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
 	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
-	let tip = batch.head().unwrap();
+	let tip = batch
+		.head()
+		.map_err(|e| Error::Other(format!("Unable to get a head from batch, {}", e)))?;
 	let fork_height = fork_point_height.unwrap_or(tip.height);
 	//convert the list of local branch bocks header hashes to a hash set for quick search
 	let empty_vec = Vec::new();
@@ -166,17 +161,6 @@ fn validate_pow_only(
 	header: &BlockHeader,
 	ctx: &BlockContext<'_>,
 ) -> Result<(), Error> {
-	let hash = header.hash();
-	{
-		let hashes = INVALID_BLOCK_HASHES.read().expect("RwLock failure");
-		if let Some(blocked_hashes) = hashes.get(&context_id) {
-			if blocked_hashes.contains(&hash) {
-				error!("Invalid header found: {}. Rejecting it!", hash);
-				return Err(Error::InvalidHash.into());
-			}
-		}
-	}
-
 	if ctx.opts.contains(Options::SKIP_POW) {
 		// Some of our tests require this check to be skipped (we should revisit this).
 		return Ok(());
@@ -205,10 +189,12 @@ pub fn process_blocks_series(
 	secp: &Secp256k1,
 ) -> Result<(Option<Tip>, BlockHeader), Error> {
 	debug_assert!(!blocks.is_empty());
-	let first_block = blocks.first().unwrap();
+	let first_block = blocks.first().ok_or(Error::Other(
+		"Invalid process_blocks_series param blocks - it is empty".into(),
+	))?;
 	debug!(
 		"pipe: process_blocks_series {} at {}, blocks in series: {}",
-		first_block.hash(),
+		first_block.hash().unwrap_or(Hash::default()),
 		first_block.header.height,
 		blocks.len()
 	);
@@ -218,14 +204,17 @@ pub fn process_blocks_series(
 		let b1 = &blocks[i - 1];
 		let b2 = &blocks[i];
 		if b1.header.height + 1 != b2.header.height
-			|| b1.hash() != b2.header.prev_hash
+			|| b1
+				.hash()
+				.map_err(|e| Error::Other(format!("Block hash calculation error, {}", e)))?
+				!= b2.header.prev_hash
 			|| b1.header.pow.total_difficulty >= b2.header.pow.total_difficulty
 		{
 			return Err(Error::InvalidBlocksSeries(format!(
 				"Headers: {} vs {}, hashes: {} vs {},  Difficulties: {} vs {}",
 				b1.header.height,
 				b2.header.height,
-				b1.hash(),
+				b1.hash().unwrap_or(Hash::default()),
 				b2.header.prev_hash,
 				b1.header.pow.total_difficulty,
 				b2.header.pow.total_difficulty
@@ -241,6 +230,14 @@ pub fn process_blocks_series(
 	check_known(&first_block.header, &head, ctx)?;
 
 	for b in blocks {
+		// Validate block for deny list, just in case
+		validate_header_hash(
+			context_id,
+			&b.header
+				.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+		)?;
+
 		// Quick pow validation. No point proceeding if this is invalid.
 		// We want to do this before we add the block to the orphan pool so we
 		// want to do this now and not later during header validation.
@@ -264,10 +261,8 @@ pub fn process_blocks_series(
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
-	let ctx_specific_validation = &ctx.header_allowed;
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		let fork_point_local_blocks =
-			rewind_and_apply_fork(context_id, &prev, ext, batch, ctx_specific_validation, secp)?;
+		let fork_point_local_blocks = rewind_and_apply_fork(context_id, &prev, ext, batch, secp)?;
 
 		let fork_point = fork_point_local_blocks.0;
 		let mut local_branch_blocks = fork_point_local_blocks.1;
@@ -304,7 +299,10 @@ pub fn process_blocks_series(
 				ext.extension.force_rollback();
 			}
 
-			local_branch_blocks.push(b.hash()); // appending processed block to the local branch
+			local_branch_blocks.push(
+				b.hash()
+					.map_err(|e| Error::Other(format!("Block hash calculation error, {}", e)))?,
+			); // appending processed block to the local branch
 		}
 
 		Ok(fork_point)
@@ -323,7 +321,9 @@ pub fn process_blocks_series(
 		update_body_tail(&first_block.header, &ctx.batch)?;
 	}
 
-	let last_block = blocks.last().unwrap();
+	let last_block = blocks.last().ok_or(Error::Other(
+		"process_blocks_series blocks are empty".into(),
+	))?;
 	let res = if has_more_work(&last_block.header, &head) {
 		let head = Tip::from_header(&last_block.header);
 		update_head(&head, &mut ctx.batch)?;
@@ -368,7 +368,9 @@ pub fn process_block_headers(
 	if headers.is_empty() {
 		return Ok(None);
 	}
-	let last_header = headers.last().expect("last header");
+	let last_header = headers.last().ok_or(Error::Other(
+		"process_block_headers internal error, headers param is empty".into(),
+	))?;
 
 	let head = ctx.batch.header_head()?;
 
@@ -380,11 +382,9 @@ pub fn process_block_headers(
 		add_block_header(header, &ctx.batch)?;
 	}
 
-	let ctx_specific_validation = &ctx.header_allowed;
-
 	// Now apply this entire chunk of headers to the header MMR.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		rewind_and_apply_header_fork(&last_header, ext, batch, ctx_specific_validation)?;
+		rewind_and_apply_header_fork(context_id, &last_header, ext, batch)?;
 
 		// If previous sync_head is not on the "current" chain then
 		// these headers are on an alternative fork to sync_head.
@@ -435,7 +435,11 @@ pub fn process_block_header(
 	// then we can (re)accept this header and process the full block (or request it).
 	// This header is on a fork and we should still accept it as the fork may eventually win.
 	let header_head = ctx.batch.header_head()?;
-	if let Ok(existing) = ctx.batch.get_block_header(&header.hash()) {
+	if let Ok(existing) = ctx.batch.get_block_header(
+		&header
+			.hash()
+			.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+	) {
 		if !has_more_work(&existing, &header_head) {
 			return Ok(());
 		}
@@ -444,12 +448,10 @@ pub fn process_block_header(
 	// We want to validate this individual header before applying it to our header PMMR.
 	validate_header(context_id, header, ctx, cache_values)?;
 
-	let ctx_specific_validation = &ctx.header_allowed;
-
 	// Apply the header to the header PMMR, making sure we put the extension in the correct state
 	// based on previous header first.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		rewind_and_apply_header_fork(&prev_header, ext, batch, ctx_specific_validation)?;
+		rewind_and_apply_header_fork(context_id, &prev_header, ext, batch)?;
 		ext.validate_root(header)?;
 		ext.apply_header(header)?;
 		if !has_more_work(&header, &header_head) {
@@ -471,7 +473,9 @@ pub fn process_block_header(
 /// Quick check to reject recently handled blocks.
 /// Checks against last_block_h and prev_block_h of the chain head.
 fn check_known_head(header: &BlockHeader, head: &Tip) -> Result<(), Error> {
-	let bh = header.hash();
+	let bh = header
+		.hash()
+		.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?;
 	if bh == head.last_block_h || bh == head.prev_block_h {
 		return Err(Error::Unfit("already known in head".to_string()));
 	}
@@ -484,7 +488,11 @@ fn check_known_store(
 	head: &Tip,
 	ctx: &BlockContext<'_>,
 ) -> Result<(), Error> {
-	match ctx.batch.block_exists(&header.hash()) {
+	match ctx.batch.block_exists(
+		&header
+			.hash()
+			.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+	) {
 		Ok(true) => {
 			if header.height < head.height.saturating_sub(50) {
 				// TODO - we flag this as an "abusive peer" but only in the case
@@ -510,50 +518,6 @@ fn prev_header_store(header: &BlockHeader, batch: &store::Batch<'_>) -> Result<B
 	Ok(prev)
 }
 
-fn check_bad_header(header: &BlockHeader) -> Result<(), Error> {
-	let bad_hashes = [Hash::from_hex(
-		"00020440a401086e57e1b7a92ebb0277c7f7fd47a38269ecc6789c2a80333725",
-	)?];
-	if bad_hashes.contains(&header.hash()) {
-		Err(Error::Block(block::Error::Other(
-			"explicit bad header".into(),
-		)))
-	} else {
-		Ok(())
-	}
-}
-
-/// Apply any "header_invalidated" (aka denylist) rules provided as part of the context.
-fn validate_header_ctx(header: &BlockHeader, ctx: &BlockContext<'_>) -> Result<(), Error> {
-	// Apply any custom header validation rules via the context.
-	(ctx.header_allowed)(header)
-}
-
-/// Validate header against an explicit "denylist" of header hashes.
-/// Returns a "Block" error which is "bad_data" and will result in peer being banned.
-pub fn validate_header_denylist(header: &BlockHeader, denylist: &[Hash]) -> Result<(), Error> {
-	if denylist.is_empty() {
-		return Ok(());
-	}
-
-	// Assume our denylist is a manageable size for now.
-	// Log it here to occasionally remind us.
-	debug!(
-		"validate_header_denylist: {} at {}, denylist: {:?}",
-		header.hash(),
-		header.height,
-		denylist
-	);
-
-	if denylist.contains(&header.hash()) {
-		return Err(Error::Block(block::Error::Other(
-			"header hash denied".into(),
-		)));
-	} else {
-		return Ok(());
-	}
-}
-
 /// First level of block validation that only needs to act on the block header
 /// to make it as cheap as possible. The different validations are also
 /// arranged by order of cost to have as little DoS surface as possible.
@@ -564,7 +528,12 @@ fn validate_header(
 	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
 ) -> Result<(), Error> {
 	// Apply any ctx specific header validation (denylist) rules.
-	validate_header_ctx(header, ctx)?;
+	validate_header_hash(
+		context_id,
+		&header
+			.hash()
+			.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+	)?;
 
 	// First I/O cost, delayed as late as possible.
 	let prev = prev_header_store(header, &ctx.batch)?;
@@ -584,9 +553,6 @@ fn validate_header(
 		// time progression
 		return Err(Error::InvalidBlockTime);
 	}
-
-	// Check the header hash against a list of known bad headers.
-	check_bad_header(header)?;
 
 	// We can determine output and kernel counts for this block based on mmr sizes from previous header.
 	// Assume 0 inputs and estimate a lower bound on the full block weight.
@@ -625,14 +591,18 @@ fn validate_header(
 
 		let target_difficulty = header.total_difficulty() - prev.total_difficulty();
 
-		if header.pow.to_difficulty(context_id, header.height) < target_difficulty {
+		if header.pow.to_difficulty(context_id, header.height)? < target_difficulty {
 			return Err(Error::DifficultyTooLow);
 		}
 
 		// explicit check to ensure total_difficulty has increased by exactly
 		// the _network_ difficulty of the previous block
 		// (during testnet1 we use _block_ difficulty here)
-		let diff_iter = store::DifficultyIter::from_batch(prev.hash(), &ctx.batch);
+		let diff_iter = store::DifficultyIter::from_batch(
+			prev.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+			&ctx.batch,
+		);
 		let next_header_info =
 			consensus::next_difficulty(context_id, header.height, diff_iter, cache_values);
 		if target_difficulty != next_header_info.difficulty {
@@ -707,7 +677,8 @@ fn verify_block_sums(
 		(block_sums, b as &dyn Committed).verify_kernel_sums(overage, offset, secp)?;
 
 	batch.save_block_sums(
-		&b.hash(),
+		&b.hash()
+			.map_err(|e| Error::Other(format!("Block hash calculation error, {}", e)))?,
 		BlockSums {
 			utxo_sum,
 			kernel_sum,
@@ -744,7 +715,11 @@ fn update_body_tail(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Er
 	batch
 		.save_body_tail(&tip)
 		.map_err(|e| Error::StoreErr(e, "pipe save body tail".to_owned()))?;
-	debug!("body tail {} @ {}", bh.hash(), bh.height);
+	debug!(
+		"body tail {} @ {}",
+		bh.hash().unwrap_or(Hash::default()),
+		bh.height
+	);
 	Ok(())
 }
 
@@ -786,15 +761,19 @@ fn has_more_work(header: &BlockHeader, head: &Tip) -> bool {
 
 /// Rewind the header chain and reapply headers on a fork.
 pub fn rewind_and_apply_header_fork(
+	context_id: u32,
 	header: &BlockHeader,
 	ext: &mut txhashset::HeaderExtension<'_>,
 	batch: &store::Batch<'_>,
-	ctx_specific_validation: &dyn Fn(&BlockHeader) -> Result<(), Error>,
 ) -> Result<(), Error> {
 	let mut fork_hashes = vec![];
 	let mut current = header.clone();
 	while current.height > 0 && !ext.is_on_current_chain(&current, batch)? {
-		fork_hashes.push(current.hash());
+		fork_hashes.push(
+			current
+				.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+		);
 		current = batch.get_previous_header(&current)?;
 	}
 	fork_hashes.reverse();
@@ -804,6 +783,17 @@ pub fn rewind_and_apply_header_fork(
 	// Rewind the txhashset state back to the block where we forked from the most work chain.
 	ext.rewind(&forked_header)?;
 
+	let invalid_block_hashes = {
+		let invalid_hashes = INVALID_BLOCK_HASHES
+			.read()
+			.unwrap_or_else(|e| e.into_inner());
+		if let Some(blocked_hashes) = invalid_hashes.get(&context_id) {
+			blocked_hashes.clone()
+		} else {
+			HashSet::new()
+		}
+	};
+
 	// Re-apply all headers on this fork.
 	for h in fork_hashes {
 		let header = batch
@@ -812,7 +802,14 @@ pub fn rewind_and_apply_header_fork(
 
 		// Re-validate every header being re-applied.
 		// This makes it possible to check all header hashes against the ctx specific "denylist".
-		(ctx_specific_validation)(&header)?;
+		let header_hash = header
+			.hash()
+			.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?;
+		if invalid_block_hashes.contains(&header_hash) {
+			return Err(Error::Block(block::Error::Other(
+				"header hash denied".into(),
+			)));
+		}
 
 		ext.validate_root(&header)?;
 		ext.apply_header(&header)?;
@@ -831,14 +828,13 @@ pub fn rewind_and_apply_fork(
 	header: &BlockHeader,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
-	ctx_specific_validation: &dyn Fn(&BlockHeader) -> Result<(), Error>,
 	secp: &Secp256k1,
 ) -> Result<(BlockHeader, Vec<Hash>), Error> {
 	let extension = &mut ext.extension;
 	let header_extension = &mut ext.header_extension;
 
 	// Prepare the header MMR.
-	rewind_and_apply_header_fork(header, header_extension, batch, ctx_specific_validation)?;
+	rewind_and_apply_header_fork(context_id, header, header_extension, batch)?;
 
 	// Rewind the txhashset extension back to common ancestor based on header MMR.
 	let mut current = batch.head_header()?;
@@ -853,7 +849,11 @@ pub fn rewind_and_apply_fork(
 	let mut fork_hashes = vec![];
 	let mut current = header.clone();
 	while current.height > fork_point.height {
-		fork_hashes.push(current.hash());
+		fork_hashes.push(
+			current
+				.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?,
+		);
 		current = batch.get_previous_header(&current)?;
 	}
 	fork_hashes.reverse();

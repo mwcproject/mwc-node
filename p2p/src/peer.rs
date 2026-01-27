@@ -46,7 +46,7 @@ use chrono::prelude::Utc;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
 
-const MAX_TRACK_SIZE: usize = 200;
+const MAX_TRACK_SIZE: usize = 2500; // Currently mac income peers limit is 256, the tracking must be much larger
 const MAX_PEER_MSG_PER_MIN: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,18 +207,26 @@ impl Peer {
 
 	/// Whether this peer is currently connected.
 	pub fn is_connected(&self) -> bool {
-		State::Connected == *self.state.read().expect("RwLock failure")
-			&& !self.stop_handle.lock().expect("Mutex failure").is_stopped()
+		State::Connected == *self.state.read().unwrap_or_else(|e| e.into_inner())
+			&& !self
+				.stop_handle
+				.lock()
+				.unwrap_or_else(|e| e.into_inner())
+				.is_stopped()
 	}
 
 	/// Whether this peer has been banned.
 	pub fn is_banned(&self) -> bool {
-		State::Banned == *self.state.read().expect("RwLock failure")
+		State::Banned == *self.state.read().unwrap_or_else(|e| e.into_inner())
 	}
 
 	/// Whether this peer is stuck on sync.
 	pub fn is_stuck(&self) -> (bool, Difficulty) {
-		let peer_live_info = self.info.live_info.read().expect("RwLock failure");
+		let peer_live_info = self
+			.info
+			.live_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner());
 		let now = Utc::now().timestamp_millis();
 		// if last updated difficulty is 2 hours ago, we're sure this peer is a stuck node.
 		if now > peer_live_info.stuck_detector.timestamp_millis() + global::STUCK_PEER_KICK_TIME {
@@ -234,7 +242,7 @@ impl Peer {
 			.tracker()
 			.received_bytes
 			.read()
-			.expect("RwLock failure");
+			.unwrap_or_else(|e| e.into_inner());
 		rec.count_per_min() > MAX_PEER_MSG_PER_MIN
 	}
 
@@ -245,19 +253,27 @@ impl Peer {
 
 	/// Set this peer status to banned
 	pub fn set_banned(&self) {
-		*self.state.write().expect("RwLock failure") = State::Banned;
+		*self.state.write().unwrap_or_else(|e| e.into_inner()) = State::Banned;
 	}
 
 	/// Send a msg with given msg_type to our peer via the connection.
 	fn send<T: Writeable>(&self, msg: T, msg_type: Type) -> Result<(), Error> {
-		if self.stop_handle.lock().expect("Mutex falure").is_stopped() {
+		if self
+			.stop_handle
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.is_stopped()
+		{
 			return Err(crate::types::Error::ConnectionClose(format!(
 				"peer: {}",
 				self.info.addr
 			)));
 		}
 		let msg = Msg::new(msg_type, msg, self.info.version, self.context_id)?;
-		self.send_handle.lock().expect("Mutex failure").send(msg)
+		self.send_handle
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.send(msg)
 	}
 
 	/// Send a ping to the remote peer, providing our local difficulty and
@@ -277,14 +293,21 @@ impl Peer {
 	}
 
 	pub fn send_compact_block(&self, b: &core::CompactBlock) -> Result<bool, Error> {
-		if !self.tracking_adapter.has_recv(b.hash()) {
-			trace!("Send compact block {} to {}", b.hash(), self.info.addr);
+		if !self.tracking_adapter.has_recv(
+			b.hash()
+				.map_err(|e| Error::Internal(format!("Block hash error, {}", e)))?,
+		) {
+			trace!(
+				"Send compact block {} to {}",
+				b.hash().unwrap_or(Hash::default()),
+				self.info.addr
+			);
 			self.send(b, msg::Type::CompactBlock)?;
 			Ok(true)
 		} else {
 			debug!(
 				"Suppress compact block send {} to {} (already seen)",
-				b.hash(),
+				b.hash().unwrap_or(Hash::default()),
 				self.info.addr,
 			);
 			Ok(false)
@@ -292,14 +315,21 @@ impl Peer {
 	}
 
 	pub fn send_header(&self, bh: &core::BlockHeader) -> Result<bool, Error> {
-		if !self.tracking_adapter.has_recv(bh.hash()) {
-			debug!("Send header {} to {}", bh.hash(), self.info.addr);
+		if !self.tracking_adapter.has_recv(
+			bh.hash()
+				.map_err(|e| Error::Internal(format!("Block hash error, {}", e)))?,
+		) {
+			debug!(
+				"Send header {} to {}",
+				bh.hash().unwrap_or(Hash::default()),
+				self.info.addr
+			);
 			self.send(bh, msg::Type::Header)?;
 			Ok(true)
 		} else {
 			debug!(
 				"Suppress header send {} to {} (already seen)",
-				bh.hash(),
+				bh.hash().unwrap_or(Hash::default()),
 				self.info.addr,
 			);
 			Ok(false)
@@ -332,17 +362,29 @@ impl Peer {
 			.capabilities
 			.contains(Capabilities::TX_KERNEL_HASH)
 		{
-			return self.send_tx_kernel_hash(kernel.hash());
+			return self.send_tx_kernel_hash(
+				kernel
+					.hash()
+					.map_err(|e| Error::Internal(format!("Block hash error, {}", e)))?,
+			);
 		}
 
-		if !self.tracking_adapter.has_recv(kernel.hash()) {
-			debug!("Send full tx {} to {}", tx.hash(), self.info.addr);
+		if !self.tracking_adapter.has_recv(
+			kernel
+				.hash()
+				.map_err(|e| Error::Internal(format!("Block hash error, {}", e)))?,
+		) {
+			debug!(
+				"Send full tx {} to {}",
+				tx.hash().unwrap_or(Hash::default()),
+				self.info.addr
+			);
 			self.send(tx, msg::Type::Transaction)?;
 			Ok(true)
 		} else {
 			debug!(
 				"Not sending tx {} to {} (already seen)",
-				tx.hash(),
+				tx.hash().unwrap_or(Hash::default()),
 				self.info.addr
 			);
 			Ok(false)
@@ -353,7 +395,11 @@ impl Peer {
 	/// Note: tracking adapter is ignored for stem transactions (while under
 	/// embargo).
 	pub fn send_stem_transaction(&self, tx: &core::Transaction) -> Result<(), Error> {
-		debug!("Send (stem) tx {} to {}", tx.hash(), self.info.addr);
+		debug!(
+			"Send (stem) tx {} to {}",
+			tx.hash().unwrap_or(Hash::default()),
+			self.info.addr
+		);
 		self.send(tx, msg::Type::StemTransaction)
 	}
 
@@ -519,13 +565,19 @@ impl Peer {
 	/// Stops the peer
 	pub fn stop(&self) {
 		debug!("Stopping peer {:?}", self.info.addr);
-		self.stop_handle.try_lock().expect("Mutex failure").stop();
+		self.stop_handle
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.stop();
 	}
 
 	/// Waits until the peer's thread exit
 	pub fn wait(&self) {
 		debug!("Waiting for peer {:?} to stop", self.info.addr);
-		self.stop_handle.try_lock().expect("Mutex failure").wait();
+		self.stop_handle
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.wait();
 	}
 }
 
@@ -555,12 +607,15 @@ impl TrackingAdapter {
 	fn has_recv(&self, hash: Hash) -> bool {
 		self.received
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains(&hash)
 	}
 
 	fn push_recv(&self, hash: Hash) {
-		self.received.write().expect("RwLock failure").put(hash, ());
+		self.received
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.put(hash, ());
 	}
 
 	/// Track a block or transaction hash requested by us.
@@ -568,14 +623,14 @@ impl TrackingAdapter {
 	fn push_req(&self, hash: Hash, opts: chain::Options) {
 		self.requested
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.put(hash, opts);
 	}
 
 	fn req_opts(&self, hash: Hash) -> Option<chain::Options> {
 		self.requested
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get(&hash)
 			.cloned()
 	}
@@ -613,7 +668,11 @@ impl ChainAdapter for TrackingAdapter {
 		// correctly.
 		if !stem {
 			let kernel = &tx.kernels()[0];
-			self.push_recv(kernel.hash());
+			self.push_recv(
+				kernel
+					.hash()
+					.map_err(|e| chain::Error::Other(format!("Kernel hash error, {}", e)))?,
+			);
 		}
 		self.adapter.transaction_received(tx, stem)
 	}
@@ -624,7 +683,9 @@ impl ChainAdapter for TrackingAdapter {
 		peer_info: &PeerInfo,
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
-		let bh = b.hash();
+		let bh = b
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Kernel hash error, {}", e)))?;
 		self.push_recv(bh);
 
 		// If we are currently tracking a request for this block then
@@ -640,7 +701,10 @@ impl ChainAdapter for TrackingAdapter {
 		cb: core::CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
-		self.push_recv(cb.hash());
+		self.push_recv(
+			cb.hash()
+				.map_err(|e| chain::Error::Other(format!("Kernel hash error, {}", e)))?,
+		);
 		self.adapter.compact_block_received(cb, peer_info)
 	}
 
@@ -649,7 +713,10 @@ impl ChainAdapter for TrackingAdapter {
 		bh: core::BlockHeader,
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
-		self.push_recv(bh.hash());
+		self.push_recv(
+			bh.hash()
+				.map_err(|e| chain::Error::Other(format!("Kernel hash error, {}", e)))?,
+		);
 		self.adapter.header_received(bh, peer_info)
 	}
 
@@ -682,11 +749,11 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.txhashset_archive_header()
 	}
 
-	fn get_tmp_dir(&self) -> PathBuf {
+	fn get_tmp_dir(&self) -> Result<PathBuf, chain::Error> {
 		self.adapter.get_tmp_dir()
 	}
 
-	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
+	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, chain::Error> {
 		self.adapter.get_tmpfile_pathname(tmpfile_name)
 	}
 

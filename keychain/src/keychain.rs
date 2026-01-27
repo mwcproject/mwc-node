@@ -36,8 +36,12 @@ pub struct ExtKeychain {
 }
 
 impl ExtKeychain {
-	pub fn pub_root_key(&mut self) -> ExtendedPubKey {
-		ExtendedPubKey::from_private(&self.secp, &self.master, &mut self.hasher)
+	pub fn pub_root_key(&mut self) -> Result<ExtendedPubKey, Error> {
+		Ok(
+			ExtendedPubKey::from_private(&self.secp, &self.master, &mut self.hasher).map_err(
+				|e| Error::GenericError(format!("Unable to build ExtendedPubKey, {}", e)),
+			)?,
+		)
 	}
 
 	pub fn hasher(&self) -> BIP32MwcHasher {
@@ -84,17 +88,21 @@ impl Keychain for ExtKeychain {
 		ExtKeychain::from_seed(seed.as_bytes(), is_floo)
 	}
 
-	fn root_key_id() -> Identifier {
+	fn root_key_id() -> Result<Identifier, Error> {
 		ExtKeychainPath::new(0, 0, 0, 0, 0).to_identifier()
 	}
 
-	fn derive_key_id(depth: u8, d1: u32, d2: u32, d3: u32, d4: u32) -> Identifier {
+	fn derive_key_id(depth: u8, d1: u32, d2: u32, d3: u32, d4: u32) -> Result<Identifier, Error> {
 		ExtKeychainPath::new(depth, d1, d2, d3, d4).to_identifier()
 	}
 
-	fn public_root_key(&self) -> PublicKey {
+	fn public_root_key(&self) -> Result<PublicKey, Error> {
 		let mut hasher = self.hasher.clone();
-		ExtendedPubKey::from_private(&self.secp, &self.master, &mut hasher).public_key
+		Ok(
+			ExtendedPubKey::from_private(&self.secp, &self.master, &mut hasher)
+				.map_err(|e| Error::GenericError(format!("Unable to build public key, {}", e)))?
+				.public_key,
+		)
 	}
 
 	fn private_root_key(&self) -> SecretKey {
@@ -108,7 +116,7 @@ impl Keychain for ExtKeychain {
 		switch: SwitchCommitmentType,
 	) -> Result<SecretKey, Error> {
 		let mut h = self.hasher.clone();
-		let p = id.to_path();
+		let p = id.to_path()?;
 		let mut ext_key = self.master.clone();
 		for i in 0..p.depth {
 			ext_key = ext_key.ckd_priv(&self.secp, &mut h, p.path[i as usize])?;
@@ -138,11 +146,11 @@ impl Keychain for ExtKeychain {
 			.positive_key_ids
 			.iter()
 			.filter_map(|k| {
-				let res = self.derive_key(
-					k.value,
-					&Identifier::from_path(&k.ext_keychain_path),
-					k.switch,
-				);
+				let id = match Identifier::from_path(&k.ext_keychain_path) {
+					Ok(id) => id,
+					Err(_) => return None,
+				};
+				let res = self.derive_key(k.value, &id, k.switch);
 				if let Ok(s) = res {
 					Some(s)
 				} else {
@@ -155,11 +163,11 @@ impl Keychain for ExtKeychain {
 			.negative_key_ids
 			.iter()
 			.filter_map(|k| {
-				let res = self.derive_key(
-					k.value,
-					&Identifier::from_path(&k.ext_keychain_path),
-					k.switch,
-				);
+				let id = match Identifier::from_path(&k.ext_keychain_path) {
+					Ok(id) => id,
+					Err(_) => return None,
+				};
+				let res = self.derive_key(k.value, &id, k.switch);
 				if let Ok(s) = res {
 					Some(s)
 				} else {
@@ -228,7 +236,7 @@ mod test {
 		let switch = SwitchCommitmentType::None;
 
 		let path = ExtKeychainPath::new(1, 1, 0, 0, 0);
-		let key_id = path.to_identifier();
+		let key_id = path.to_identifier().unwrap();
 
 		let msg_bytes = [0; 32];
 		let msg = secp::Message::from_slice(&msg_bytes[..]).unwrap();

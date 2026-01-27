@@ -28,7 +28,7 @@ use mwc_chain as chain;
 use mwc_core as core;
 use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_keychain as keychain;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::sync::Arc;
 
@@ -46,6 +46,7 @@ pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
 		genesis,
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap()
 }
@@ -55,11 +56,11 @@ pub fn genesis_block<K>(keychain: &K) -> Block
 where
 	K: Keychain,
 {
-	let key_id = keychain::ExtKeychain::derive_key_id(0, 1, 0, 0, 0);
+	let key_id = keychain::ExtKeychain::derive_key_id(0, 1, 0, 0, 0).unwrap();
 	let reward = reward::output(
 		0,
 		keychain,
-		&libtx::ProofBuilder::new(keychain),
+		&libtx::ProofBuilder::new(keychain).unwrap(),
 		&key_id,
 		0,
 		false,
@@ -98,11 +99,13 @@ where
 			chain.difficulty_iter().unwrap(),
 			&mut cache_values,
 		);
-		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
+		let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
 		let reward = libtx::reward::output(
 			0,
 			keychain,
-			&libtx::ProofBuilder::new(keychain),
+			&libtx::ProofBuilder::new(keychain).unwrap(),
 			&pk,
 			0,
 			false,
@@ -135,7 +138,7 @@ where
 		)
 		.unwrap();
 
-		let bhash = b.hash();
+		let bhash = b.hash().unwrap();
 		chain.process_block(b, Options::MINE).unwrap();
 
 		// checking our new head
@@ -146,17 +149,17 @@ where
 		// now check the block_header of the head
 		let header = chain.head_header().unwrap();
 		assert_eq!(header.height, n);
-		assert_eq!(header.hash(), bhash);
+		assert_eq!(header.hash().unwrap(), bhash);
 
 		// now check the block itself
-		let block = chain.get_block(&header.hash()).unwrap();
+		let block = chain.get_block(&header.hash().unwrap()).unwrap();
 		assert_eq!(block.header.height, n);
-		assert_eq!(block.hash(), bhash);
+		assert_eq!(block.hash().unwrap(), bhash);
 		assert_eq!(block.outputs().len(), 1);
 
 		// now check the block height index
 		let header_by_height = chain.get_header_by_height(n).unwrap();
-		assert_eq!(header_by_height.hash(), bhash);
+		assert_eq!(header_by_height.hash().unwrap(), bhash);
 
 		chain.validate(false).unwrap();
 	}

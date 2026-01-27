@@ -292,16 +292,19 @@ mod test {
 	fn floonet_genesis_hash() {
 		global::set_local_chain_type(global::ChainTypes::Floonet);
 		global::set_local_nrd_enabled(false);
-		let gen_hash = genesis_floo(0).hash();
+		let gen_hash = genesis_floo(0).hash().unwrap();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
 		let gen_bin = ser::ser_vec(&genesis_floo(0), ProtocolVersion(1)).unwrap();
-		println!("floonet genesis full hash: {}\n", gen_bin.hash().to_hex());
+		println!(
+			"floonet genesis full hash: {}\n",
+			gen_bin.hash().unwrap().to_hex()
+		);
 		assert_eq!(
 			gen_hash.to_hex(),
 			"a10f32177e0b8de4495637c5735577512963cb3dca42ee893fc9c5fade29dfa7"
 		);
 		assert_eq!(
-			gen_bin.hash().to_hex(),
+			gen_bin.hash().unwrap().to_hex(),
 			"1ed0cd8d166353ce22f14a47fd383e78888315b58a670aac95f77a3d49ce973c"
 		);
 	}
@@ -310,16 +313,19 @@ mod test {
 	fn mainnet_genesis_hash() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
 		global::set_local_nrd_enabled(false);
-		let gen_hash = genesis_main(0).hash();
+		let gen_hash = genesis_main(0).hash().unwrap();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
 		let gen_bin = ser::ser_vec(&genesis_main(0), ProtocolVersion(1)).unwrap();
-		println!("mainnet genesis full hash: {}\n", gen_bin.hash().to_hex());
+		println!(
+			"mainnet genesis full hash: {}\n",
+			gen_bin.hash().unwrap().to_hex()
+		);
 		assert_eq!(
 			gen_hash.to_hex(),
 			"e29e3a72496d85c5ada8186323016f4c7951880f77f3c8867d3b8cd3bf306c3d"
 		);
 		assert_eq!(
-			gen_bin.hash().to_hex(),
+			gen_bin.hash().unwrap().to_hex(),
 			"4fb646ea25485a6dffd3e01e6655e2637d3d7c5758be168f869ac13115d1730e"
 		);
 	}

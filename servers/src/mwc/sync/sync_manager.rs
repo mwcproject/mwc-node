@@ -25,7 +25,7 @@ use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses, SyncResponse};
 use chrono::Duration;
 use mwc_chain::txhashset::BitmapChunk;
-use mwc_chain::{Chain, SyncState};
+use mwc_chain::{Chain, Error, SyncState};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, OutputIdentifier, Segment, TxKernel};
 use mwc_p2p::{Capabilities, PeerAddr, Peers};
@@ -102,13 +102,20 @@ impl SyncManager {
 			.add_block_request(addr, height, block_hash, opts);
 	}
 
-	pub fn sync_request(&self, peers: &Arc<Peers>) -> SyncResponse {
-		let cached_response = self.cached_response.read().expect("RwLock failed").clone();
+	pub fn sync_request(&self, peers: &Arc<Peers>) -> Result<SyncResponse, Error> {
+		let cached_response = self
+			.cached_response
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
-				return cached_response.to_response();
+				return Ok(cached_response.to_response());
 			} else {
-				*self.cached_response.write().expect("RwLock failed") = None;
+				*self
+					.cached_response
+					.write()
+					.unwrap_or_else(|e| e.into_inner()) = None;
 			}
 		}
 
@@ -128,7 +135,7 @@ impl SyncManager {
 			.into_iter()
 			.max_by_key(|p| {
 				// Height is updated later, we better to handle that
-				let live_info = p.info.live_info.read().expect("RwLock failed");
+				let live_info = p.info.live_info.read().unwrap_or_else(|e| e.into_inner());
 				if live_info.height > 0 {
 					live_info.total_difficulty.to_num()
 				} else {
@@ -139,7 +146,7 @@ impl SyncManager {
 			// both inbound/outbound
 			best_height = peers.iter().connected().into_iter().max_by_key(|p| {
 				// Height is updated later, we better to handle that
-				let live_info = p.info.live_info.read().expect("RwLock failed");
+				let live_info = p.info.live_info.read().unwrap_or_else(|e| e.into_inner());
 				if live_info.height > 0 {
 					live_info.total_difficulty.to_num()
 				} else {
@@ -154,43 +161,43 @@ impl SyncManager {
 					.info
 					.live_info
 					.read()
-					.expect("RwLock failed")
+					.unwrap_or_else(|e| e.into_inner())
 					.height
 			}
 			None => 0,
 		};
 
 		if best_height == 0 {
-			return SyncResponse::new(
+			return Ok(SyncResponse::new(
 				SyncRequestResponses::WaitingForPeers,
 				Capabilities::UNKNOWN,
 				"Peers height is 0".into(),
-			);
+			));
 		}
 
 		let r = self
 			.headers_hashes
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.request_pre(best_height);
 		let headers_hash_resp = match r {
 			Some(resp) => resp,
 			None => self
 				.headers_hashes
 				.write()
-				.expect("RwLock failed")
+				.unwrap_or_else(|e| e.into_inner())
 				.request_impl(
 					peers,
 					&self.sync_state,
 					&self.headers_sync_peers,
 					best_height,
-				),
+				)?,
 		};
 
 		debug!("headers_hash_resp: {:?}", headers_hash_resp);
 		match headers_hash_resp.response {
-			SyncRequestResponses::WaitingForPeers => return headers_hash_resp,
-			SyncRequestResponses::Syncing => return headers_hash_resp,
+			SyncRequestResponses::WaitingForPeers => return Ok(headers_hash_resp),
+			SyncRequestResponses::Syncing => return Ok(headers_hash_resp),
 			SyncRequestResponses::HeadersPibdReady | SyncRequestResponses::HeadersHashReady => {}
 			_ => {
 				debug_assert!(false);
@@ -203,29 +210,32 @@ impl SyncManager {
 			peers,
 			&self.sync_state,
 			&self.headers_sync_peers,
-			&self.headers_hashes.read().expect("RwLock failed"),
+			&self
+				.headers_hashes
+				.read()
+				.unwrap_or_else(|e| e.into_inner()),
 			best_height,
-		);
+		)?;
 		debug!("headers_resp: {:?}", headers_resp);
 		match headers_resp.response {
 			SyncRequestResponses::WaitingForPeers => {
 				self.headers_hashes
 					.write()
-					.expect("RwLock failed")
+					.unwrap_or_else(|e| e.into_inner())
 					.reset_ban_commited_to_hash(peers, &self.headers_sync_peers);
 				self.headers_sync_peers.reset();
-				return headers_resp;
+				return Ok(headers_resp);
 			}
-			SyncRequestResponses::Syncing => return headers_resp,
-			SyncRequestResponses::HasMoreHeadersToApply => return headers_resp,
+			SyncRequestResponses::Syncing => return Ok(headers_resp),
+			SyncRequestResponses::HasMoreHeadersToApply => return Ok(headers_resp),
 			SyncRequestResponses::WaitingForHeadersHash => {
 				debug_assert!(false); // should never happen, headers_hashes above must be in sync or wait for peers
-				return headers_resp;
+				return Ok(headers_resp);
 			}
 			SyncRequestResponses::HeadersPibdReady => self
 				.headers_hashes
 				.write()
-				.expect("RwLock failed")
+				.unwrap_or_else(|e| e.into_inner())
 				.reset_hash_data(),
 			SyncRequestResponses::HeadersReady => headers_ready = true,
 			_ => {
@@ -239,12 +249,12 @@ impl SyncManager {
 			&self.state_sync_peers,
 			self.stop_state.clone(),
 			best_height,
-		);
+		)?;
 		debug!("state_resp: {:?}", state_resp);
 		match state_resp.response {
-			SyncRequestResponses::Syncing => return state_resp,
-			SyncRequestResponses::WaitingForPeers => return state_resp,
-			SyncRequestResponses::WaitingForHeaders => return state_resp,
+			SyncRequestResponses::Syncing => return Ok(state_resp),
+			SyncRequestResponses::WaitingForPeers => return Ok(state_resp),
+			SyncRequestResponses::WaitingForHeaders => return Ok(state_resp),
 			SyncRequestResponses::StatePibdReady => {}
 			_ => {
 				debug_assert!(false);
@@ -258,7 +268,7 @@ impl SyncManager {
 			Ok(body_resp) => {
 				debug!("body_resp: {:?}", body_resp);
 				match body_resp.response {
-					SyncRequestResponses::Syncing => return body_resp,
+					SyncRequestResponses::Syncing => return Ok(body_resp),
 					SyncRequestResponses::BodyReady => {
 						if headers_ready {
 							let resp = SyncResponse::new(
@@ -267,26 +277,29 @@ impl SyncManager {
 								"DONE!".into(),
 							);
 							peers.set_excluded_peers(&vec![]);
-							*self.cached_response.write().expect("RwLock failed") =
+							*self
+								.cached_response
+								.write()
+								.unwrap_or_else(|e| e.into_inner()) =
 								Some(CachedResponse::new(resp.clone(), Duration::seconds(35)));
 
 							if let Err(e) = self.orphans.sync_orphans(peers) {
 								error!("Failed to sync_orphans. Error: {}", e);
 							}
 
-							return resp;
+							return Ok(resp);
 						} else {
-							return SyncResponse::new(
+							return Ok(SyncResponse::new(
 								SyncRequestResponses::Syncing,
 								self.body.get_peer_capabilities(),
 								"Waiting for headers, even body is done, more is expected".into(),
-							);
+							));
 						}
 					}
-					SyncRequestResponses::WaitingForPeers => return body_resp,
+					SyncRequestResponses::WaitingForPeers => return Ok(body_resp),
 					SyncRequestResponses::BadState => {
 						self.state.reset_desegmenter_data();
-						return body_resp;
+						return Ok(body_resp);
 					}
 					_ => debug_assert!(false),
 				}
@@ -295,11 +308,11 @@ impl SyncManager {
 		}
 
 		debug_assert!(false);
-		SyncResponse::new(
+		Ok(SyncResponse::new(
 			SyncRequestResponses::Syncing,
 			Capabilities::UNKNOWN,
 			"Invalid state, internal error".into(),
-		)
+		))
 	}
 
 	pub fn receive_headers_hash_response(
@@ -310,7 +323,7 @@ impl SyncManager {
 	) {
 		self.headers_hashes
 			.write()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.receive_headers_hash_response(
 				peer,
 				archive_height,
@@ -327,7 +340,7 @@ impl SyncManager {
 	) {
 		self.headers_hashes
 			.write()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.receive_header_hashes_segment(
 				peer,
 				header_hashes_root,
@@ -344,7 +357,10 @@ impl SyncManager {
 		peers: Arc<Peers>,
 	) {
 		// Note, because of high throughput, it must be unblocking read, blocking write is not OK
-		let headers_hashes = self.headers_hashes.read().expect("RwLock failed");
+		let headers_hashes = self
+			.headers_hashes
+			.read()
+			.unwrap_or_else(|e| e.into_inner());
 		let headers_hash_desegmenter = headers_hashes.get_headers_hash_desegmenter();
 		if let Err(e) = self.headers.receive_headers(
 			peer,
@@ -377,7 +393,7 @@ impl SyncManager {
 	) {
 		self.headers_hashes
 			.write()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.recieve_another_archive_header(peer, &header_hash, header_height);
 		self.state
 			.recieve_another_archive_header(peer, &header_hash, header_height);
@@ -390,13 +406,15 @@ impl SyncManager {
 		segment: Segment<BitmapChunk>,
 		peers: &Arc<Peers>,
 	) {
-		self.state.receive_bitmap_segment(
+		if let Err(e) = self.state.receive_bitmap_segment(
 			peer,
 			archive_header_hash,
 			segment,
 			peers,
 			&self.state_sync_peers,
-		);
+		) {
+			error!("receive_bitmap_segment failed with error: {}", e);
+		}
 	}
 
 	pub fn receive_output_segment(
@@ -406,13 +424,15 @@ impl SyncManager {
 		segment: Segment<OutputIdentifier>,
 		peers: &Arc<Peers>,
 	) {
-		self.state.receive_output_segment(
+		if let Err(e) = self.state.receive_output_segment(
 			peer,
 			bitmap_root_hash,
 			segment,
 			peers,
 			&self.state_sync_peers,
-		);
+		) {
+			error!("receive_output_segment failed with error: {}", e);
+		}
 	}
 
 	pub fn receive_rangeproof_segment(
@@ -422,13 +442,15 @@ impl SyncManager {
 		segment: Segment<RangeProof>,
 		peers: &Arc<Peers>,
 	) {
-		self.state.receive_rangeproof_segment(
+		if let Err(e) = self.state.receive_rangeproof_segment(
 			peer,
 			bitmap_root_hash,
 			segment,
 			peers,
 			&self.state_sync_peers,
-		);
+		) {
+			error!("receive_rangeproof_segment failed with error: {}", e);
+		}
 	}
 
 	pub fn receive_kernel_segment(
@@ -438,13 +460,15 @@ impl SyncManager {
 		segment: Segment<TxKernel>,
 		peers: &Arc<Peers>,
 	) {
-		self.state.receive_kernel_segment(
+		if let Err(e) = self.state.receive_kernel_segment(
 			peer,
 			bitmap_root_hash,
 			segment,
 			peers,
 			&self.state_sync_peers,
-		);
+		) {
+			error!("receive_kernel_segment failed with error: {}", e);
+		}
 	}
 
 	// return true if need to request prev block
@@ -456,13 +480,16 @@ impl SyncManager {
 		opts: mwc_chain::Options,
 		peers: &Arc<Peers>,
 	) -> bool {
-		self.body.recieve_block_reporting(
-			valid_block,
-			&b.hash(),
-			peer,
-			peers,
-			&self.state_sync_peers,
-		);
+		let bhash = match b.hash() {
+			Ok(h) => h,
+			Err(e) => {
+				error!("Block hash build error, {}", e);
+				return false;
+			}
+		};
+
+		self.body
+			.recieve_block_reporting(valid_block, &bhash, peer, peers, &self.state_sync_peers);
 
 		if valid_block && opts == mwc_chain::Options::NONE {
 			self.orphans.recieve_block_reporting(b)

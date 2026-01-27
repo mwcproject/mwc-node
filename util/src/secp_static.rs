@@ -30,7 +30,7 @@ lazy_static! {
 /// Returns the static instance, but calls randomize on it as well
 /// (Recommended to avoid side channel attacks
 pub fn static_secp_instance() -> Arc<Mutex<secp::Secp256k1>> {
-	let mut secp_inst = SECP256K1.lock().expect("Mutex failure");
+	let mut secp_inst = SECP256K1.lock().unwrap_or_else(|e| e.into_inner());
 	secp_inst.randomize(&mut thread_rng());
 	SECP256K1.clone()
 }

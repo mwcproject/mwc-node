@@ -64,6 +64,7 @@ use crate::p2p::libp2p_connection;
 use chrono::Utc;
 use mwc_api::Router;
 use mwc_core::consensus::HeaderDifficultyInfo;
+use mwc_core::core::hash::Hash;
 #[cfg(feature = "libp2p")]
 use mwc_core::core::TxKernel;
 use mwc_p2p::Capabilities;
@@ -117,20 +118,10 @@ pub struct Server {
 impl Server {
 	/// Create a new server instance. No jobs will be started
 	pub fn create_server(context_id: u32, config: ServerConfig) -> Result<Self, Error> {
-		let mining_config = config.stratum_mining_config.clone();
-
-		let (ban_action_limit, shares_weight, connection_pace_ms) = match mining_config.clone() {
-			Some(c) => (c.ban_action_limit, c.shares_weight, c.connection_pace_ms),
-			None => {
-				let c = StratumServerConfig::default();
-				(c.ban_action_limit, c.shares_weight, c.connection_pace_ms)
-			}
-		};
-
 		let stratum_ip_pool = Arc::new(connections::StratumIpPool::new(
-			ban_action_limit,
-			shares_weight,
-			connection_pace_ms,
+			config.stratum_mining_config.ban_action_limit,
+			config.stratum_mining_config.shares_weight,
+			config.stratum_mining_config.connection_pace_ms,
 		));
 
 		// Obtain our lock_file or fail immediately with an error.
@@ -174,13 +165,32 @@ impl Server {
 		));
 
 		let genesis = match config.chain_type {
-			global::ChainTypes::AutomatedTesting => pow::mine_genesis_block(context_id).unwrap(),
-			global::ChainTypes::UserTesting => pow::mine_genesis_block(context_id).unwrap(),
+			global::ChainTypes::AutomatedTesting => pow::mine_genesis_block(context_id)
+				.map_err(|e| Error::ServerError(format!("Unable to build genesis, {}", e)))?,
+			global::ChainTypes::UserTesting => pow::mine_genesis_block(context_id)
+				.map_err(|e| Error::ServerError(format!("Unable to build genesis, {}", e)))?,
 			global::ChainTypes::Floonet => genesis::genesis_floo(context_id),
 			global::ChainTypes::Mainnet => genesis::genesis_main(context_id),
 		};
 
-		info!("Starting server, genesis block: {}", genesis.hash());
+		info!(
+			"Starting server, genesis block: {}",
+			genesis.hash().unwrap_or(Hash::default())
+		);
+
+		let invalid_blocks: HashSet<Hash> = match &config.invalid_block_hashes {
+			Some(hashes_str) => {
+				let mut banned_headers: HashSet<Hash> = HashSet::new();
+				for hstr in hashes_str {
+					let h = Hash::from_hex(&hstr).map_err(|_| {
+						Error::Config(format!("invalid_block_hashes hash value: {}", hstr))
+					})?;
+					banned_headers.insert(h);
+				}
+				banned_headers
+			}
+			None => HashSet::new(),
+		};
 
 		let shared_chain = Arc::new(
 			chain::Chain::init(
@@ -190,6 +200,7 @@ impl Server {
 				genesis.clone(),
 				pow::verify_size,
 				archive_mode,
+				invalid_blocks,
 			)
 			.map_err(|e| Error::ServerError(format!("Unable to read blockchain data, {}", e)))?,
 		);
@@ -226,7 +237,9 @@ impl Server {
 				&config.p2p_config,
 				&config.tor_config,
 				net_adapter.clone(),
-				genesis.hash(),
+				genesis
+					.hash()
+					.map_err(|e| Error::IO(format!("genesis hash error, {}", e)))?,
 				sync_state.clone(),
 				stop_state.clone(),
 			)
@@ -265,18 +278,17 @@ impl Server {
 
 	/// Start Stratum protocol, needed for the mining
 	pub fn start_stratum(&mut self) -> Result<(), Error> {
-		let mining_config = self.config.stratum_mining_config.clone();
-		if let Some(c) = mining_config {
-			let enable_stratum_server = c.enable_stratum_server;
-			if let Some(s) = enable_stratum_server {
-				if s {
-					self.state_info
-						.stratum_stats
-						.is_enabled
-						.store(true, Ordering::Relaxed);
-					self.start_stratum_server(c)?;
-				}
-			}
+		if self
+			.config
+			.stratum_mining_config
+			.enable_stratum_server
+			.unwrap_or(false)
+		{
+			self.state_info
+				.stratum_stats
+				.is_enabled
+				.store(true, Ordering::Relaxed);
+			self.start_stratum_server(self.config.stratum_mining_config.clone())?;
 		}
 
 		let enable_test_miner = self.config.run_test_miner;
@@ -589,12 +601,11 @@ impl Server {
 			.try_lock_exclusive()
 			.map_err(|e| {
 				let mut stderr = std::io::stderr();
-				writeln!(
+				_ = writeln!(
 					&mut stderr,
 					"Failed to lock {:?} (mwc server already running?)",
 					path
-				)
-				.expect("Could not write to stderr");
+				);
 				e
 			})
 			.map_err(|e| {
@@ -626,7 +637,7 @@ impl Server {
 			.connected()
 			.count()
 			.try_into()
-			.unwrap()
+			.unwrap_or(0)
 	}
 
 	/// Start a minimal "stratum" mining service on a separate thread
@@ -799,7 +810,7 @@ impl Server {
 		// acquire various read locks with a timeout.
 
 		let tx_stats = {
-			let pool = self.tx_pool.read().expect("RwLock failure");
+			let pool = self.tx_pool.read().unwrap_or_else(|e| e.into_inner());
 			TxStats {
 				tx_pool_size: pool.txpool.size(),
 				tx_pool_kernels: pool.txpool.kernel_count(),
@@ -815,7 +826,9 @@ impl Server {
 		let head_stats = ChainStats {
 			latest_timestamp: head.timestamp,
 			height: head.height,
-			last_block_h: head.hash(),
+			last_block_h: head
+				.hash()
+				.map_err(|e| Error::IO(format!("Header hash build error, {}", e)))?,
 			total_difficulty: head.total_difficulty(),
 		};
 
@@ -825,12 +838,18 @@ impl Server {
 			.map_err(|e| Error::ServerError(format!("Chain header head access error, {}", e)))?;
 		let header = self
 			.chain
-			.get_block_header(&header_head.hash())
+			.get_block_header(
+				&header_head
+					.hash()
+					.map_err(|e| Error::IO(format!("Tip hash build error, {}", e)))?,
+			)
 			.map_err(|e| Error::ServerError(format!("Chain block header access error, {}", e)))?;
 		let header_stats = ChainStats {
 			latest_timestamp: header.timestamp,
 			height: header.height,
-			last_block_h: header.hash(),
+			last_block_h: header
+				.hash()
+				.map_err(|e| Error::IO(format!("Header hash build error, {}", e)))?,
 			total_difficulty: header.total_difficulty(),
 		};
 
