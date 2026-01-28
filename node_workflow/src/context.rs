@@ -18,6 +18,7 @@ use crate::Error;
 use lazy_static::lazy_static;
 use mwc_core::global;
 use mwc_core::global::ChainTypes;
+use mwc_p2p::tor::arti;
 use std::sync::RwLock;
 
 lazy_static! {
@@ -45,6 +46,8 @@ pub fn allocate_new_context(
 				c_id,
 				accept_fee_base.unwrap_or(mwc_core::global::DEFAULT_ACCEPT_FEE_BASE),
 			);
+
+			arti::init_arti_cancelling(c_id);
 
 			let nrd_feature_enabled = match nrd_feature_enabled {
 				Some(enabled) => enabled,
@@ -75,6 +78,7 @@ pub fn allocate_new_context(
 /// Release app context
 pub fn release_context(context_id: u32) -> Result<(), Error> {
 	info!("Releasing context id {}", context_id);
+	arti::release_arti_cancelling(context_id);
 	let mut contexts = USED_CONTEXTS.write().unwrap_or_else(|e| e.into_inner());
 	let mask = 1u64 << context_id;
 	if *contexts & mask == 0 {

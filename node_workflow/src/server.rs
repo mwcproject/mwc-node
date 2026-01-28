@@ -266,14 +266,16 @@ pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
 
 /// Get server stats data, used by node UI.
 pub fn get_server_stats(context_id: u32) -> Result<ServerStats, Error> {
-	let servers = SERVER_CONTEXT.read().unwrap_or_else(|e| e.into_inner());
-	match servers.get(&context_id) {
-		Some(serv) => Ok(serv
-			.get_server_stats()
-			.map_err(|e| Error::ServerError(format!("Unable to get server stat data, {}", e)))?),
-		None => Err(Error::ServerError(format!(
-			"Server not exist for context {}",
-			context_id
-		))),
+	match SERVER_CONTEXT.try_read() {
+		Ok(servers) => match servers.get(&context_id) {
+			Some(serv) => Ok(serv.get_server_stats().map_err(|e| {
+				Error::ServerError(format!("Unable to get server stat data, {}", e))
+			})?),
+			None => Err(Error::ServerError(format!(
+				"Server not exist for context {}",
+				context_id
+			))),
+		},
+		Err(_) => Err(Error::ServerError("Server is busy".into())),
 	}
 }

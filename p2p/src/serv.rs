@@ -25,7 +25,6 @@ use crate::peer::Peer;
 use crate::peers::Peers;
 use crate::store::PeerStore;
 use crate::tor::arti;
-use crate::tor::arti::{arti_async_block, get_shutdown_arti_token};
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::PeerAddr::Onion;
 use crate::types::{
@@ -341,13 +340,14 @@ impl Server {
 			if !self.tor_config.is_tor_external() {
 				// Using arti to connect
 				let stream: DataStream = arti::access_arti(|arti| {
-					arti_async_block(async {
-						let arti_shutdown = get_shutdown_arti_token();
+					arti::arti_async_block(async {
+						let arti_cancelled = arti::get_arti_cancell_token(self.context_id)
+							.ok_or(Error::Interrupted)?;
 						let stream = match addr {
 							Ip(socket) => {
 								let connect_res = tokio::select! {
 									res = arti.connect((socket.ip().to_string(), socket.port())) => res,
-									_ = arti_shutdown.cancelled() => {
+									_ = arti_cancelled.cancelled() => {
 										return Err(Error::Interrupted);
 									},
 								};
@@ -364,7 +364,7 @@ impl Server {
 								let onion_address = Self::format_onion_address(onion_address);
 								let connect_res = tokio::select! {
 									res = arti.connect((onion_address.as_str(), 80)) => res,
-									_ = arti_shutdown.cancelled() => {
+									_ = arti_cancelled.cancelled() => {
 										return Err(Error::Interrupted);
 									},
 								};

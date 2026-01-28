@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::tor::arti;
-use crate::tor::arti::{arti_async_block, is_shutdown_arti, ArtiCore};
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr};
 use async_std::stream::StreamExt;
@@ -51,16 +50,18 @@ where
 		String,
 		Pin<Box<dyn futures::Stream<Item = tor_hsservice::StreamRequest> + Send>>,
 	) = arti::access_arti(|tor_client| {
-		let (onion_service, onion_address, incoming_requests) = ArtiCore::start_onion_service(
-			&tor_client,
-			format!(
-				"onion-service-{}-{}-{}",
-				service_name,
+		let (onion_service, onion_address, incoming_requests) =
+			arti::ArtiCore::start_onion_service(
 				context_id,
-				SERVICE_COUNTER.fetch_add(1, Ordering::Relaxed)
-			),
-			onion_expanded_key.clone(),
-		)?;
+				&tor_client,
+				format!(
+					"onion-service-{}-{}-{}",
+					service_name,
+					context_id,
+					SERVICE_COUNTER.fetch_add(1, Ordering::Relaxed)
+				),
+				onion_expanded_key.clone(),
+			)?;
 		Ok((
 			onion_service,
 			onion_address,
@@ -69,13 +70,13 @@ where
 		))
 	})?;
 
-	if is_shutdown_arti() {
+	if arti::is_shutdown_arti() || arti::is_arti_cancelled(context_id) {
 		return Err(Error::Interrupted);
 	}
 
 	// Not necessary wait for a long time. We can continue with listening even without any waiting
 	info!("Waiting for onion service to be reachable");
-	arti::ArtiCore::wait_until_started(&onion_service, 120)?;
+	arti::ArtiCore::wait_until_started(context_id, &onion_service, 120)?;
 
 	info!("Onion listener started at {}", onion_address);
 
@@ -231,7 +232,7 @@ where
 
 				let stop_state = stop_state.clone();
 				loop {
-					let request_res = arti_async_block(async {
+					let request_res = arti::arti_async_block(async {
 						mwc_util::tokio::time::timeout(
 							mwc_util::tokio::time::Duration::from_secs(1),
 							incoming_requests.next(),
@@ -249,7 +250,7 @@ where
 							let request: &IncomingStreamRequest = stream_request.request();
 							match request {
 								IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-									let accept_result = arti_async_block(async move {
+									let accept_result = arti::arti_async_block(async move {
 										stream_request.accept(Connected::new_empty()).await
 									})?;
 

@@ -30,7 +30,7 @@ use mwc_util::tokio::time::interval;
 use mwc_util::tokio_util::sync::CancellationToken;
 use rand::seq::SliceRandom;
 use safelog::DisplayRedacted;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -162,6 +162,41 @@ lazy_static! {
 	// Since arti os global, using the global flag for Atri beetstrap interruption.
 	// Needed for clear exit while tor is still starting
 	static ref SHUTDOWN_ARTI: CancellationToken = CancellationToken::new();
+	/// It is ARTI session long token. For example when we want stop the wallet/node, but not the whole app.
+	static ref CANCELLING_ARTI: std::sync::RwLock<HashMap<u32,CancellationToken>> = std::sync::RwLock::new(HashMap::new());
+}
+
+pub fn init_arti_cancelling(context_id: u32) {
+	CANCELLING_ARTI
+		.write()
+		.unwrap_or_else(|e| e.into_inner())
+		.insert(context_id, CancellationToken::new());
+}
+
+pub fn release_arti_cancelling(context_id: u32) {
+	if let Some(token) = CANCELLING_ARTI
+		.write()
+		.unwrap_or_else(|e| e.into_inner())
+		.remove(&context_id)
+	{
+		// cancelling it so cloned instance will stop waiting as well
+		token.cancel();
+	}
+}
+
+pub fn is_arti_cancelled(context_id: u32) -> bool {
+	!CANCELLING_ARTI
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.contains_key(&context_id)
+}
+
+pub fn get_arti_cancell_token(context_id: u32) -> Option<CancellationToken> {
+	CANCELLING_ARTI
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.get(&context_id)
+		.cloned()
 }
 
 pub fn shutdown_arti() {
@@ -648,9 +683,7 @@ impl ArtiCore {
 							info!("Arti bootstrap interrupted, stopping client");
 							bootstap_process.abort();
 							let _ = bootstap_process.await;
-							let stop_f = tor_client.wait_for_stop();
 							drop(tor_client);
-							stop_f.await;
 							return Err(Error::Interrupted);
 						}
 						let progress = tor_client.bootstrap_status().as_frac();
@@ -664,9 +697,7 @@ impl ArtiCore {
 								error!("Arti not able to make any bootstrap progress during {} seconds", elapsed.as_secs());
 								bootstap_process.abort();
 								let _ = bootstap_process.await;
-								let stop_f = tor_client.wait_for_stop();
 								drop(tor_client);
-								stop_f.await;
 								return Err(Error::TorProcess(
 									"Arti not able to make bootstrap progress during long time"
 										.into(),
@@ -679,18 +710,14 @@ impl ArtiCore {
 
 			if is_shutdown_arti() {
 				info!("Arti bootstrap interrupted, stopping client");
-				let stop_f = tor_client.wait_for_stop();
 				drop(tor_client);
-				stop_f.await;
 				return Err(Error::Interrupted);
 			}
 
 			if let Err(e) = Self::test_circuit(&tor_client).await {
 				error!("Unable to build a test Tor circle, {}", e);
 				info!("Stopping failed Arti client");
-				let stop_f = tor_client.wait_for_stop();
 				drop(tor_client);
-				stop_f.await;
 				info!("Failed arti is stopped");
 				return Err(Error::TorProcess(
 					"Bootstrap was finished, but test circuit was failed".into(),
@@ -718,6 +745,7 @@ impl ArtiCore {
 	/// expanded_key - Build with:  ExpandedSecretKey::from(sec_key)
 	/// Return: (onion service, onion address, stream for incoming request)
 	pub fn start_onion_service(
+		context_id: u32,
 		tor_client: &TorClient<PreferredRuntime>,
 		service_nickname: String,
 		expanded_key: [u8; 64],
@@ -751,6 +779,10 @@ impl ArtiCore {
 			return Err(Error::TorNotInitialized);
 		}
 
+		if is_arti_cancelled(context_id) {
+			return Err(Error::Interrupted);
+		}
+
 		if let Some((service, request_stream)) = tor_client
 			.launch_onion_service_with_hsid(svc_cfg, id_keypair)
 			.map_err(|e| Error::TorOnionService(format!("Unable to start onion service, {}", e)))?
@@ -777,14 +809,14 @@ impl ArtiCore {
 	}
 
 	// We can't add that condition to
-	async fn wait_shutdown_poll(timeout_seconds: u64) -> Result<(), Error> {
+	async fn wait_shutdown_poll(context_id: u32, timeout_seconds: u64) -> Result<(), Error> {
 		let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
 
 		loop {
 			if is_arti_restarting() {
 				return Err(Error::TorNotInitialized);
 			}
-			if is_shutdown_arti() {
+			if is_shutdown_arti() || is_arti_cancelled(context_id) {
 				return Err(Error::Interrupted);
 			}
 
@@ -802,13 +834,14 @@ impl ArtiCore {
 
 	/// Utility method to wait for onion service advertise itself
 	pub fn wait_until_started(
+		context_id: u32,
 		onion_service: &Arc<tor_hsservice::RunningOnionService>,
 		timeout_seconds: u64,
 	) -> Result<(), Error> {
 		if is_arti_restarting() {
 			return Err(Error::TorNotInitialized);
 		}
-		if is_shutdown_arti() {
+		if is_shutdown_arti() || is_arti_cancelled(context_id) {
 			return Err(Error::Interrupted);
 		}
 
@@ -836,7 +869,7 @@ impl ArtiCore {
 				}
 
 				// If shutdown/restart/timeout happens first:
-				shutdown_or_timeout = Self::wait_shutdown_poll(timeout_seconds) => {
+				shutdown_or_timeout = Self::wait_shutdown_poll(context_id, timeout_seconds) => {
 					match shutdown_or_timeout {
 						Err(e) => Err(e), // Interrupted or TorNotInitialized
 						Ok(()) => {
@@ -1054,8 +1087,12 @@ fn test_arti_connection() {
 		let exp_key = ExpandedSecretKey::from(&sec_key);
 		let exp_key = exp_key.to_bytes();
 
-		let (onion_service, onion_address, incoming_requests) =
-			ArtiCore::start_onion_service(&tor_client, "onion-service-test".to_string(), exp_key)?;
+		let (onion_service, onion_address, incoming_requests) = ArtiCore::start_onion_service(
+			0,
+			&tor_client,
+			"onion-service-test".to_string(),
+			exp_key,
+		)?;
 		Ok((
 			onion_service,
 			onion_address,
@@ -1066,7 +1103,8 @@ fn test_arti_connection() {
 	.expect("Onion service unable to start");
 
 	// Not necessary wait for a long time. We can continue with listening even without any waiting
-	arti::ArtiCore::wait_until_started(&onion_service, 20).expect("Onion service unable to start");
+	arti::ArtiCore::wait_until_started(0, &onion_service, 20)
+		.expect("Onion service unable to start");
 
 	println!("Onion listener started at {}", onion_address);
 

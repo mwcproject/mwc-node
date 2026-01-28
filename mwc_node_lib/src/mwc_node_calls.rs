@@ -116,7 +116,7 @@ fn process_request(input: String) -> Result<Value, String> {
 				.map_err(|e| format!("Unable connect to Tor, {}", e))?;
 			json!({})
 		}
-		"shoutdown_tor" => {
+		"shutdown_tor" => {
 			mwc_p2p::tor::arti::shutdown_arti();
 			json!({})
 		}
