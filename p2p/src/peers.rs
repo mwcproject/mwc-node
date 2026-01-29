@@ -460,16 +460,21 @@ impl Peers {
 					let _ = self.update_state(&peer.info.addr, State::Banned);
 					rm.push(peer.info.addr.clone());
 				} else {
-					let (stuck, diff) = peer.is_stuck();
-					match self.adapter.total_difficulty() {
-						Ok(total_difficulty) => {
-							if stuck && diff < total_difficulty {
-								info!("clean_peers {:?}, stuck peer", peer.info.addr);
-								let _ = self.update_state(&peer.info.addr, State::Defunct);
-								rm.push(peer.info.addr.clone());
-							}
+					let (stuck, diff, dead_ping) = peer.is_stuck();
+					let stuck_peer = match self.adapter.total_difficulty() {
+						Ok(total_difficulty) => stuck && diff < total_difficulty,
+						Err(e) => {
+							error!("failed to get total difficulty: {:?}", e);
+							false
 						}
-						Err(e) => error!("failed to get total difficulty: {:?}", e),
+					};
+					if dead_ping || stuck_peer {
+						info!(
+							"clean_peers {:?}, dead ping: {} stuck peer: {}",
+							peer.info.addr, dead_ping, stuck_peer
+						);
+						let _ = self.update_state(&peer.info.addr, State::Defunct);
+						rm.push(peer.info.addr.clone());
 					}
 				}
 			}

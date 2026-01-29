@@ -89,7 +89,11 @@ pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC / 1000; // Keeping
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
 /// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
-pub const STUCK_PEER_KICK_TIME: i64 = 2 * 3600 * 1000;
+pub const STUCK_PEER_KICK_TIME_SECONDS: i64 = 2 * 3600;
+
+/// Peers ping interval. It is expected that peers should respond for the ping. Otherwise peer
+/// will be kicked out
+pub const PEER_PING_INTERVAL_SECONDS: i64 = 10;
 
 /// If a peer's last seen time is 2 weeks ago we will forget such kind of defunct peers.
 const PEER_EXPIRATION_DAYS: i64 = 7 * 2;

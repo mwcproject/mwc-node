@@ -754,6 +754,7 @@ pub struct PeerInfoDisplayLegacy {
 	pub direction: Direction,
 	pub total_difficulty: Difficulty,
 	pub height: u64,
+	pub last_seen: u32, // last seen seconds ago
 }
 
 /// Flatten out a PeerInfo and nested PeerLiveInfo (taking a read lock on it)
@@ -767,10 +768,17 @@ pub struct PeerInfoDisplay {
 	pub direction: Direction,
 	pub total_difficulty: Difficulty,
 	pub height: u64,
+	pub last_seen: u32, // last seen seconds ago
 }
 
 impl From<PeerInfo> for PeerInfoDisplay {
 	fn from(info: PeerInfo) -> PeerInfoDisplay {
+		let peer_last_seen = info
+			.live_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.last_seen;
+		let last_seen = (Utc::now() - peer_last_seen).num_seconds() as u32;
 		PeerInfoDisplay {
 			capabilities: info.capabilities,
 			user_agent: info.user_agent.clone(),
@@ -779,8 +787,23 @@ impl From<PeerInfo> for PeerInfoDisplay {
 			direction: info.direction,
 			total_difficulty: info.total_difficulty(),
 			height: info.height(),
+			last_seen,
 		}
 	}
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessStatus {
+	/// How long this process is running
+	pub process_running_time: u64,
+	/// How long arti is running
+	pub tor_online_time: u64,
+	/// This host CPU usage, percentage
+	pub host_cpu_usage: f64,
+	/// This host memory usage, percentage
+	pub host_ram_usage: f64,
+	/// This host swap usage, percantage
+	pub host_swap_usage: f64,
 }
 
 /// The full txhashset data along with indexes required for a consumer to

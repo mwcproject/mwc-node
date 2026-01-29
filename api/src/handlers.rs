@@ -68,6 +68,7 @@ use std::sync::RwLock;
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// Listener version, providing same API but listening for requests on a
 /// port and wrapping the calls
@@ -277,6 +278,7 @@ where
 	pub chain: Weak<Chain>,
 	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
+	start_time: Instant,
 }
 
 impl<B, P> ForeignAPIHandlerV2<B, P>
@@ -296,6 +298,7 @@ where
 			chain,
 			tx_pool,
 			sync_state,
+			start_time: Instant::now(),
 		}
 	}
 }
@@ -311,6 +314,7 @@ where
 			self.chain.clone(),
 			self.tx_pool.clone(),
 			self.sync_state.clone(),
+			self.start_time.clone(),
 		);
 
 		Box::pin(async move {

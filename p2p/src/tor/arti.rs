@@ -155,6 +155,8 @@ lazy_static! {
 	static ref TOR_ARTI_INSTANCE: std::sync::RwLock<Option<ArtiCore>> = std::sync::RwLock::new(None);
 	// Tor service full restart request
 	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+	// Last restarting time (need to understand how long the tor was online without any issue)
+	static ref TOR_RESTART_TIME: std::sync::RwLock<Option<Instant>> = std::sync::RwLock::new(None);
 	// Monitoring thread. Only one instance is allowed
 	static ref TOR_MONITORING_THREAD : std::sync::RwLock<Option<std::thread::JoinHandle<()>>> = std::sync::RwLock::new(None);
 	// Reistered active objects. We don't want to restart TOR until any onject does exist
@@ -223,6 +225,17 @@ pub fn is_arti_started() -> bool {
 		.is_some()
 }
 
+pub fn get_arti_restart_time() -> Option<Instant> {
+	if is_arti_healthy() {
+		TOR_RESTART_TIME
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
+	} else {
+		None
+	}
+}
+
 pub fn is_arti_healthy() -> bool {
 	let has_tor = match TOR_ARTI_INSTANCE.try_read() {
 		Ok(guard) => guard.is_some(),
@@ -270,8 +283,8 @@ pub fn start_arti(
 	let create_arti_res = ArtiCore::new(config, base_dir, print_start_message);
 	let (a, expiration_time) = create_arti_res?;
 	TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
-
 	*atri_writer = Some(a);
+	*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 
 	// Starting tor monitoring thread if it is not running
 	let mut monitoring_thread = TOR_MONITORING_THREAD
@@ -490,6 +503,7 @@ fn restart_arti(start_new_client: bool) -> i64 {
 				info!("New Arti instance is successfully created.");
 				*TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()) = Some(arti_core);
 				TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+				*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 				network_status::update_network_outage_time(Utc::now().timestamp());
 				for sender in restart_senders {
 					let _ = sender.send(());

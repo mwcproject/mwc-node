@@ -76,6 +76,7 @@ impl PeersConnectedHandler {
 				direction: peer_direction,
 				total_difficulty: peer.total_difficulty,
 				height: peer.height,
+				last_seen: peer.last_seen,
 			};
 			peers_ret.push(peer_display);
 		}
@@ -117,6 +118,7 @@ impl Handler for PeersConnectedHandler {
 				direction: peer_direction,
 				total_difficulty: peer.total_difficulty,
 				height: peer.height,
+				last_seen: peer.last_seen,
 			};
 			peers_ret.push(peer_display);
 		}

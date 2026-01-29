@@ -221,18 +221,21 @@ impl Peer {
 	}
 
 	/// Whether this peer is stuck on sync.
-	pub fn is_stuck(&self) -> (bool, Difficulty) {
+	/// Return: (<difficulty_stuck_timeout>, <Difficulty>, <ping stuck_timeout>)
+	pub fn is_stuck(&self) -> (bool, Difficulty, bool) {
 		let peer_live_info = self
 			.info
 			.live_info
 			.read()
 			.unwrap_or_else(|e| e.into_inner());
-		let now = Utc::now().timestamp_millis();
-		// if last updated difficulty is 2 hours ago, we're sure this peer is a stuck node.
-		if now > peer_live_info.stuck_detector.timestamp_millis() + global::STUCK_PEER_KICK_TIME {
-			(true, peer_live_info.total_difficulty)
+		let now = Utc::now().timestamp();
+		let dead_ping =
+			(now - peer_live_info.last_seen.timestamp()) > global::PEER_PING_INTERVAL_SECONDS * 10; // 10 ping intervals considering as a reason to kick out
+																						   // if last updated difficulty is 2 hours ago, we're sure this peer is a stuck node.
+		if now > peer_live_info.stuck_detector.timestamp() + global::STUCK_PEER_KICK_TIME_SECONDS {
+			(true, peer_live_info.total_difficulty, dead_ping)
 		} else {
-			(false, peer_live_info.total_difficulty)
+			(false, peer_live_info.total_difficulty, dead_ping)
 		}
 	}
 
