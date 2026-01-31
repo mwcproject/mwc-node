@@ -25,7 +25,6 @@ use crate::global::PROTOCOL_VERSION;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use bytes::Buf;
 use keychain::{BlindingFactor, Identifier, IDENTIFIER_SIZE};
-use std::convert::TryInto;
 use std::fmt::{self, Debug};
 use std::io::{self, Read, Write};
 use std::{cmp, marker, string};
@@ -834,13 +833,13 @@ impl Readable for RangeProof {
 impl PMMRable for RangeProof {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		*self
+	fn as_elmt(&self) -> Result<RangeProof, Error> {
+		Ok(*self)
 	}
 
 	// Size is length prefix (8 bytes for u64) + MAX_PROOF_SIZE.
 	fn elmt_size() -> Option<u16> {
-		Some((8 + MAX_PROOF_SIZE).try_into().unwrap())
+		Some(8 + MAX_PROOF_SIZE as u16)
 	}
 }
 
@@ -1051,7 +1050,7 @@ pub trait PMMRable: Writeable + Clone + Debug + DefaultHashable {
 	type E: Readable + Writeable + Debug;
 
 	/// Convert the pmmrable into the element to be stored in the MMR data file.
-	fn as_elmt(&self) -> Self::E;
+	fn as_elmt(&self) -> Result<Self::E, Error>;
 
 	/// Size of each element if "fixed" size. Elements are "variable" size if None.
 	fn elmt_size() -> Option<u16>;
@@ -1060,11 +1059,11 @@ pub trait PMMRable: Writeable + Clone + Debug + DefaultHashable {
 /// Generic trait to ensure PMMR elements can be hashed with an index
 pub trait PMMRIndexHashable {
 	/// Hash with a given index
-	fn hash_with_index(&self, index: u64) -> Hash;
+	fn hash_with_index(&self, index: u64) -> Result<Hash, std::io::Error>;
 }
 
 impl<T: DefaultHashable> PMMRIndexHashable for T {
-	fn hash_with_index(&self, index: u64) -> Hash {
+	fn hash_with_index(&self, index: u64) -> Result<Hash, std::io::Error> {
 		(index, self).hash()
 	}
 }

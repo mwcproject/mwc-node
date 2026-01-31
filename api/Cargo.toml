@@ -29,6 +29,7 @@ rustls-pemfile = "1.0"
 async-stream = "0.3"
 url = "2.1"
 chrono = { version = "0.4.11", features = ["serde"] }
+sysinfo = "0.38"
 
 mwc_core = { path = "../core", version = "6.0.0" }
 mwc_chain = { path = "../chain", version = "6.0.0" }

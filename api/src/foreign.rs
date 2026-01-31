@@ -41,6 +41,7 @@ use mwc_p2p::types::PeerInfoDisplayLegacy;
 use mwc_util::secp::Secp256k1;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::time::Instant;
 
 /// Main interface into all node API functions.
 /// Node APIs are split into two separate blocks of functionality
@@ -58,6 +59,7 @@ where
 	pub chain: Weak<Chain>,
 	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
+	start_time: Instant,
 }
 
 impl<B, P> Foreign<B, P>
@@ -83,12 +85,14 @@ where
 		chain: Weak<Chain>,
 		tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 		sync_state: Weak<SyncState>,
+		start_time: Instant,
 	) -> Self {
 		Foreign {
 			peers,
 			chain,
 			tx_pool,
 			sync_state,
+			start_time,
 		}
 	}
 
@@ -401,7 +405,9 @@ where
 		fluff: Option<bool>,
 		secp: &Secp256k1,
 	) -> Result<(), Error> {
-		let tx_hash = tx.hash();
+		let tx_hash = tx
+			.hash()
+			.map_err(|e| Error::Internal(format!("Transaction build hash error, {}", e)))?;
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
@@ -449,5 +455,10 @@ where
 				.cloned()
 				.collect(),
 		})
+	}
+
+	pub fn get_running_time(&self) -> u64 {
+		let now = Instant::now();
+		now.duration_since(self.start_time).as_secs()
 	}
 }

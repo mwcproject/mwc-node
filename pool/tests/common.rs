@@ -34,7 +34,7 @@ use mwc_chain as chain;
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_pool as pool;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
@@ -44,11 +44,11 @@ pub fn genesis_block<K>(keychain: &K) -> Block
 where
 	K: Keychain,
 {
-	let key_id = keychain::ExtKeychain::derive_key_id(1, 0, 0, 0, 0);
+	let key_id = keychain::ExtKeychain::derive_key_id(1, 0, 0, 0, 0).unwrap();
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 		&key_id,
 		0,
 		false,
@@ -68,6 +68,7 @@ pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
 		genesis,
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap()
 }
@@ -95,11 +96,13 @@ where
 		&mut cache_values,
 	);
 	let fee = txs.iter().map(|x| x.fee()).sum();
-	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0).to_identifier();
+	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 		&key_id,
 		fee,
 		false,
@@ -231,12 +234,12 @@ where
 
 	// single input spending a single coinbase (deterministic key_id aka height)
 	{
-		let key_id = ExtKeychain::derive_key_id(1, header.height as u32, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, header.height as u32, 0, 0, 0).unwrap();
 		tx_elements.push(build::coinbase_input(coinbase_reward, key_id));
 	}
 
 	for output_value in output_values {
-		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
 		tx_elements.push(build::output(output_value, key_id));
 	}
 
@@ -246,7 +249,7 @@ where
 		},
 		&tx_elements,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 	)
 	.unwrap()
 }
@@ -286,12 +289,12 @@ where
 	let mut tx_elements = Vec::new();
 
 	for input_value in input_values {
-		let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0).unwrap();
 		tx_elements.push(build::input(input_value, key_id));
 	}
 
 	for output_value in output_values {
-		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
 		tx_elements.push(build::output(output_value, key_id));
 	}
 
@@ -299,7 +302,7 @@ where
 		kernel_features,
 		&tx_elements,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 	)
 	.unwrap()
 }
@@ -317,12 +320,12 @@ where
 	let mut tx_elements = Vec::new();
 
 	for input_value in input_values {
-		let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0).unwrap();
 		tx_elements.push(build::input(input_value, key_id));
 	}
 
 	for output_value in output_values {
-		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0);
+		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
 		tx_elements.push(build::output(output_value, key_id));
 	}
 
@@ -331,7 +334,7 @@ where
 		kernel,
 		excess,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 	)
 	.unwrap()
 }

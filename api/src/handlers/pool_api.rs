@@ -24,6 +24,7 @@ use crate::types::*;
 use crate::util;
 use crate::web::*;
 use hyper::{Body, Request, StatusCode};
+use mwc_core::core::hash::Hash;
 use mwc_util::secp::{ContextFlag, Secp256k1};
 use std::sync::RwLock;
 use std::sync::Weak;
@@ -45,7 +46,7 @@ where
 {
 	fn get(&self, _req: Request<Body>) -> ResponseFuture {
 		let pool_arc = w_fut!(&self.tx_pool);
-		let pool = pool_arc.read().expect("RwLock failure");
+		let pool = pool_arc.read().unwrap_or_else(|e| e.into_inner());
 
 		json_response(&PoolInfo {
 			pool_size: pool.total_size(),
@@ -68,18 +69,18 @@ where
 {
 	pub fn get_pool_size(&self) -> Result<usize, Error> {
 		let pool_arc = w(&self.tx_pool)?;
-		let pool = pool_arc.read().expect("RwLock failure");
+		let pool = pool_arc.read().unwrap_or_else(|e| e.into_inner());
 		Ok(pool.total_size())
 	}
 	pub fn get_stempool_size(&self) -> Result<usize, Error> {
 		let pool_arc = w(&self.tx_pool)?;
-		let pool = pool_arc.read().expect("RwLock failure");
+		let pool = pool_arc.read().unwrap_or_else(|e| e.into_inner());
 		Ok(pool.stempool.size())
 	}
 	pub fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error> {
 		// will only read from txpool
 		let pool_arc = w(&self.tx_pool)?;
-		let txpool = pool_arc.read().expect("RwLock failure");
+		let txpool = pool_arc.read().unwrap_or_else(|e| e.into_inner());
 		Ok(txpool.txpool.entries.clone())
 	}
 	pub fn push_transaction(
@@ -92,16 +93,18 @@ where
 		let source = pool::TxSource::PushApi;
 		info!(
 			"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {}, fluff: {:?})",
-			tx.hash(),
+			tx.hash().unwrap_or(Hash::default()),
 			tx.inputs().len(),
 			tx.outputs().len(),
 			tx.kernels().len(),
 			fluff,
 		);
 
-		let tx_hash = tx.hash().clone();
+		let tx_hash = tx
+			.hash()
+			.map_err(|e| Error::Internal(format!("Transaction build hash error, {}", e)))?;
 		//  Push to tx pool.
-		let mut tx_pool = pool_arc.write().expect("RwLock failure");
+		let mut tx_pool = pool_arc.write().unwrap_or_else(|e| e.into_inner());
 		let header = tx_pool
 			.blockchain
 			.chain_head()
@@ -154,7 +157,10 @@ where
 
 	// All wallet api interaction explicitly uses protocol version 1 for now.
 	let version = ProtocolVersion(1);
-	let context_id = pool.read().expect("RwLock failure").get_context_id();
+	let context_id = pool
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.get_context_id();
 	let tx: Transaction = ser::deserialize(
 		&mut &tx_bin[..],
 		version,
@@ -171,14 +177,14 @@ where
 	let source = pool::TxSource::PushApi;
 	info!(
 		"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
-		tx.hash(),
+		tx.hash().unwrap_or(Hash::default()),
 		tx.inputs().len(),
 		tx.outputs().len(),
 		tx.kernels().len(),
 	);
 
 	//  Push to tx pool.
-	let mut tx_pool = pool.write().expect("RwLock failure");
+	let mut tx_pool = pool.write().unwrap_or_else(|e| e.into_inner());
 	let header = tx_pool
 		.blockchain
 		.chain_head()

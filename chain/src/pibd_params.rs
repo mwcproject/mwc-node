@@ -93,7 +93,7 @@ impl PibdParams {
 			res.cpu_num,
 			res.sys_memory_info
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.available_memory_mb
 		);
 		res
@@ -189,12 +189,15 @@ impl PibdParams {
 			- self
 				.network_speed
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.last_network_speed_update)
 			.num_seconds()
 			> 5
 		{
-			let mut network_speed = self.network_speed.write().expect("RwLock failure");
+			let mut network_speed = self
+				.network_speed
+				.write()
+				.unwrap_or_else(|e| e.into_inner());
 			network_speed.last_network_speed_update = Utc::now();
 			let expected_latency_ms = PIBD_REQUESTS_TIMEOUT_SECS as u32 / 2 * 1000;
 			if average_latency_ms < expected_latency_ms {
@@ -219,13 +222,16 @@ impl PibdParams {
 		} else {
 			self.network_speed
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.network_speed_multiplier
 		}
 	}
 
 	fn get_available_memory_mb(&self) -> u64 {
-		let mut sys_memory_info = self.sys_memory_info.write().expect("RwLock failure");
+		let mut sys_memory_info = self
+			.sys_memory_info
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 		if (Utc::now() - sys_memory_info.update_time).num_seconds() > 2 {
 			*sys_memory_info = SysMemoryInfo::update();
 		}

@@ -175,7 +175,7 @@ where
 	fn contains_request(&self, key: &K) -> bool {
 		self.requested
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains_key(key)
 	}
 }
@@ -198,8 +198,8 @@ where
 		expiration_time_interval_sec: i64,
 		sync_peers: &SyncPeers,
 	) -> HashSet<PeerAddr> {
-		let mut requested = self.requested.write().expect("RwLock failed");
-		let peers_stats = &mut self.peers_stats.write().expect("RwLock failed");
+		let mut requested = self.requested.write().unwrap_or_else(|e| e.into_inner());
+		let peers_stats = &mut self.peers_stats.write().unwrap_or_else(|e| e.into_inner());
 		let now = Utc::now();
 
 		let mut res: HashSet<PeerAddr> = HashSet::new();
@@ -222,10 +222,19 @@ where
 	}
 
 	pub fn clear(&self) {
-		self.requested.write().expect("RwLock failed").clear();
-		self.peers_stats.write().expect("RwLock failed").clear();
+		self.requested
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.clear();
+		self.peers_stats
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.clear();
 		self.requests_to_next_ask.store(0, Ordering::Relaxed);
-		self.latency_tracker.write().expect("RwLock failed").clear();
+		self.latency_tracker
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.clear();
 	}
 
 	/// Calculate how many new requests we can make to the peers. This call updates requests_to_next_ask
@@ -240,7 +249,7 @@ where
 		let requests_in_queue = self
 			.requested
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.len()
 			.saturating_sub(excluded_requests);
 		let expected_total_request = cmp::min(peer_num * request_per_peer, requests_limit);
@@ -252,13 +261,16 @@ where
 	}
 
 	pub fn get_requests_num(&self) -> usize {
-		self.requested.read().expect("RwLock failed").len()
+		self.requested
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.len()
 	}
 
 	pub fn has_request(&self, req: &K) -> bool {
 		self.requested
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains_key(req)
 	}
 
@@ -274,14 +286,14 @@ where
 	pub fn get_peer_track_data(&self, peer: &PeerAddr) -> Option<PeerTrackData> {
 		self.peers_stats
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.get(peer)
 			.cloned()
 	}
 
 	pub fn register_request(&self, key: K, peer: PeerAddr, message: String) {
-		let mut requested = self.requested.write().expect("RwLock failed");
-		let peers_stats = &mut self.peers_stats.write().expect("RwLock failed");
+		let mut requested = self.requested.write().unwrap_or_else(|e| e.into_inner());
+		let peers_stats = &mut self.peers_stats.write().unwrap_or_else(|e| e.into_inner());
 
 		match peers_stats.get_mut(&peer) {
 			Some(n) => {
@@ -295,8 +307,8 @@ where
 	}
 
 	pub fn remove_request(&self, key: &K, peer: &PeerAddr) -> Option<PeerAddr> {
-		let mut requested = self.requested.write().expect("RwLock failed");
-		let peers_stats = &mut self.peers_stats.write().expect("RwLock failed");
+		let mut requested = self.requested.write().unwrap_or_else(|e| e.into_inner());
+		let peers_stats = &mut self.peers_stats.write().unwrap_or_else(|e| e.into_inner());
 
 		if let Some(request_data) = requested.get(key) {
 			let res_peer = request_data.peer.clone();
@@ -308,7 +320,7 @@ where
 				debug_assert!(latency_ms >= 0);
 				self.latency_tracker
 					.write()
-					.expect("RwLock failed")
+					.unwrap_or_else(|e| e.into_inner())
 					.add_latency(latency_ms);
 				requested.remove(key);
 			}
@@ -321,12 +333,17 @@ where
 	pub fn get_average_latency(&self) -> Duration {
 		self.latency_tracker
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_average_latency()
 	}
 
 	pub fn get_expected_peer(&self, key: &K) -> Option<PeerAddr> {
-		if let Some(req_data) = self.requested.read().expect("RwLock failed").get(key) {
+		if let Some(req_data) = self
+			.requested
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.get(key)
+		{
 			Some(req_data.peer.clone())
 		} else {
 			None

@@ -168,7 +168,7 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		match *self.current.read().expect("RwLock failure") {
+		match *self.current.read().unwrap_or_else(|e| e.into_inner()) {
 			SyncStatus::NoSync => false,
 			SyncStatus::BodySync {
 				archive_height: _,
@@ -181,7 +181,7 @@ impl SyncState {
 
 	/// Check if headers download process is done. In this case it make sense to request more top headers
 	pub fn are_headers_done(&self) -> bool {
-		match *self.current.read().expect("RwLock failure") {
+		match *self.current.read().unwrap_or_else(|e| e.into_inner()) {
 			SyncStatus::Initial => false,
 			SyncStatus::HeaderHashSync {
 				completed_blocks: _,
@@ -197,12 +197,12 @@ impl SyncState {
 
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
-		*self.current.read().expect("RwLock failure")
+		*self.current.read().unwrap_or_else(|e| e.into_inner())
 	}
 
 	/// Update the syncing status
 	pub fn update(&self, new_status: SyncStatus) -> bool {
-		let status = self.current.write().expect("RwLock failure");
+		let status = self.current.write().unwrap_or_else(|e| e.into_inner());
 		self.update_with_guard(new_status, status)
 	}
 
@@ -225,7 +225,7 @@ impl SyncState {
 	where
 		F: Fn(SyncStatus) -> bool,
 	{
-		let status = self.current.write().expect("RwLock failure");
+		let status = self.current.write().unwrap_or_else(|e| e.into_inner());
 		if f(*status) {
 			self.update_with_guard(new_status, status)
 		} else {
@@ -279,7 +279,7 @@ impl TxHashSetRoots {
 	fn get_validate_info_str(&self, header: &BlockHeader) -> String {
 		format!("Validating at height {}. Output MMR size: {}  Kernel MMR size: {}  .validate roots: {} at {}, Outputs roots {} vs. {}, sz {} vs {}, Range Proof roots {} vs {}, sz {} vs {}, Kernel Roots {} vs {}, sz {} vs {}",
 				header.height, header.output_mmr_size, header.kernel_mmr_size,
-				header.hash(),
+				header.hash().unwrap_or(Hash::default()),
 				header.height,
 				header.output_root,
 				self.output_root,
@@ -381,7 +381,7 @@ impl From<&BlockHeader> for Tip {
 	fn from(header: &BlockHeader) -> Self {
 		Tip {
 			height: header.height,
-			last_block_h: header.hash(),
+			last_block_h: header.hash().unwrap_or(Hash::default()),
 			prev_block_h: header.prev_hash,
 			total_difficulty: header.total_difficulty(),
 		}
@@ -390,8 +390,8 @@ impl From<&BlockHeader> for Tip {
 
 impl Hashed for Tip {
 	/// The hash of the underlying block.
-	fn hash(&self) -> Hash {
-		self.last_block_h
+	fn hash(&self) -> Result<Hash, std::io::Error> {
+		Ok(self.last_block_h)
 	}
 }
 

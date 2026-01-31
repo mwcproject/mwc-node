@@ -65,9 +65,9 @@ fn pmmr_append() {
 		let mut mmr_size = load(0, &elems[0..4], &mut backend);
 		backend.sync().unwrap();
 
-		let pos_0 = elems[0].hash_with_index(0);
-		let pos_1 = elems[1].hash_with_index(1);
-		let pos_2 = (pos_0, pos_1).hash_with_index(2);
+		let pos_0 = elems[0].hash_with_index(0).unwrap();
+		let pos_1 = elems[1].hash_with_index(1).unwrap();
+		let pos_2 = (pos_0, pos_1).hash_with_index(2).unwrap();
 
 		{
 			// Note: 1-indexed PMMR API
@@ -88,22 +88,22 @@ fn pmmr_append() {
 
 		// 0010012001001230
 
-		let pos_3 = elems[2].hash_with_index(3);
-		let pos_4 = elems[3].hash_with_index(4);
-		let pos_5 = (pos_3, pos_4).hash_with_index(5);
-		let pos_6 = (pos_2, pos_5).hash_with_index(6);
+		let pos_3 = elems[2].hash_with_index(3).unwrap();
+		let pos_4 = elems[3].hash_with_index(4).unwrap();
+		let pos_5 = (pos_3, pos_4).hash_with_index(5).unwrap();
+		let pos_6 = (pos_2, pos_5).hash_with_index(6).unwrap();
 
-		let pos_7 = elems[4].hash_with_index(7);
-		let pos_8 = elems[5].hash_with_index(8);
-		let pos_9 = (pos_7, pos_8).hash_with_index(9);
+		let pos_7 = elems[4].hash_with_index(7).unwrap();
+		let pos_8 = elems[5].hash_with_index(8).unwrap();
+		let pos_9 = (pos_7, pos_8).hash_with_index(9).unwrap();
 
-		let pos_10 = elems[6].hash_with_index(10);
-		let pos_11 = elems[7].hash_with_index(11);
-		let pos_12 = (pos_10, pos_11).hash_with_index(12);
-		let pos_13 = (pos_9, pos_12).hash_with_index(13);
-		let pos_14 = (pos_6, pos_13).hash_with_index(14);
+		let pos_10 = elems[6].hash_with_index(10).unwrap();
+		let pos_11 = elems[7].hash_with_index(11).unwrap();
+		let pos_12 = (pos_10, pos_11).hash_with_index(12).unwrap();
+		let pos_13 = (pos_9, pos_12).hash_with_index(13).unwrap();
+		let pos_14 = (pos_6, pos_13).hash_with_index(14).unwrap();
 
-		let pos_15 = elems[8].hash_with_index(15);
+		let pos_15 = elems[8].hash_with_index(15).unwrap();
 
 		{
 			// Note: 1-indexed PMMR API
@@ -126,12 +126,15 @@ fn pmmr_append() {
 		}
 
 		// check the resulting backend store and the computation of the root
-		let node_hash = elems[0].hash_with_index(0);
+		let node_hash = elems[0].hash_with_index(0).unwrap();
 		assert_eq!(backend.get_hash(0).unwrap(), node_hash);
 
 		{
 			let pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut backend, mmr_size);
-			assert_eq!(pmmr.root().unwrap(), (pos_14, pos_15).hash_with_index(16));
+			assert_eq!(
+				pmmr.root().unwrap(),
+				(pos_14, pos_15).hash_with_index(16).unwrap()
+			);
 		}
 	}
 
@@ -454,10 +457,16 @@ fn pmmr_rewind() {
 		// pos 7 and 8 are both leaves and should be unaffected by prior pruning
 
 		assert_eq!(backend.get_data(7), Some(elems[4]));
-		assert_eq!(backend.get_hash(7), Some(elems[4].hash_with_index(7)));
+		assert_eq!(
+			backend.get_hash(7),
+			Some(elems[4].hash_with_index(7).unwrap())
+		);
 
 		assert_eq!(backend.get_data(8), Some(elems[5]));
-		assert_eq!(backend.get_hash(8), Some(elems[5].hash_with_index(8)));
+		assert_eq!(
+			backend.get_hash(8),
+			Some(elems[5].hash_with_index(8).unwrap())
+		);
 
 		// TODO - Why is this 2 here?
 		println!("***** backend size here: {}", backend.data_size());
@@ -976,8 +985,8 @@ impl DefaultHashable for TestElem {}
 impl PMMRable for TestElem {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		self.clone()
+	fn as_elmt(&self) -> Result<TestElem, Error> {
+		Ok(self.clone())
 	}
 
 	fn elmt_size() -> Option<u16> {

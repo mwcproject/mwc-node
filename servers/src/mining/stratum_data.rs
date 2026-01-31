@@ -69,7 +69,12 @@ impl Worker {
 
 	// triggering will kick out worker from the stratum server.
 	pub fn trigger_kill_switch(&self) {
-		if let Some(s) = self.kill_switch.write().expect("RwLock failure").take() {
+		if let Some(s) = self
+			.kill_switch
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.take()
+		{
 			let _ = s.send(());
 		}
 	}
@@ -89,20 +94,25 @@ impl WorkersMap {
 
 	#[allow(dead_code)]
 	fn size(&self) -> usize {
-		self.workers.read().expect("RwLock failed").len()
+		self.workers.read().unwrap_or_else(|e| e.into_inner()).len()
 	}
 
 	/// Add a new worker, return total number of registered workers
 	/// Return : number of registered workers
 	fn add(&self, worker_id: &usize, worker: Worker) -> usize {
-		let mut workers = self.workers.write().expect("RwLock failed");
+		let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
 		workers.insert(worker_id.clone(), worker);
 		workers.len()
 	}
 
 	/// Get worker data
 	fn get(&self, worker_id: &usize) -> Option<Worker> {
-		match self.workers.read().expect("RwLock failed").get(worker_id) {
+		match self
+			.workers
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.get(worker_id)
+		{
 			Some(worker) => Some(worker.clone()),
 			_ => None,
 		}
@@ -110,7 +120,12 @@ impl WorkersMap {
 
 	/// Get worker tx channel, for message sending
 	fn get_tx(&self, worker_id: &usize) -> Option<Arc<Tx>> {
-		match self.workers.read().expect("RwLock failed").get(worker_id) {
+		match self
+			.workers
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.get(worker_id)
+		{
 			Some(worker) => Some(worker.tx.clone()),
 			_ => None,
 		}
@@ -121,7 +136,7 @@ impl WorkersMap {
 		if let Some(w) = self
 			.workers
 			.write()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.get_mut(&worker.id)
 		{
 			w.update(worker);
@@ -131,7 +146,7 @@ impl WorkersMap {
 	/// Add a new worker, return total number of registered workers
 	/// Return : number of registered workers
 	fn remove(&self, worker_id: &usize) -> usize {
-		let mut workers = self.workers.write().expect("RwLock failed");
+		let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
 		if workers.remove(&worker_id).is_none() {
 			error!("Stratum: no such addr in map for worker {}", worker_id);
 		}
@@ -141,7 +156,7 @@ impl WorkersMap {
 	fn get_workers_list(&self) -> Vec<Worker> {
 		self.workers
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.values()
 			.map(|w| w.clone())
 			.collect()
@@ -150,7 +165,7 @@ impl WorkersMap {
 	fn get_woker_id_list(&self) -> Vec<usize> {
 		self.workers
 			.read()
-			.expect("RwLock failed")
+			.unwrap_or_else(|e| e.into_inner())
 			.keys()
 			.map(|k| k.clone())
 			.collect()

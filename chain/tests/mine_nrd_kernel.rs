@@ -41,7 +41,7 @@ where
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 		key_id,
 		fee,
 		false,
@@ -90,20 +90,20 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let pb = ProofBuilder::new(&keychain);
+	let pb = ProofBuilder::new(&keychain).unwrap();
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
 
 	for n in 1..9 {
-		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
+		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier().unwrap();
 		let block = build_block(&chain, &keychain, &key_id, vec![]);
 		chain.process_block(block, Options::MINE).unwrap();
 	}
 
 	assert_eq!(chain.head().unwrap().height, 8);
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
+	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
 			fee: 20000.into(),
@@ -118,7 +118,7 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 	)
 	.unwrap();
 
-	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
+	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier().unwrap();
 	let block = build_block(&chain, &keychain, &key_id9, vec![tx]);
 	chain.process_block(block, Options::MINE).unwrap();
 	chain.validate(false).unwrap();
@@ -137,20 +137,20 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let pb = ProofBuilder::new(&keychain);
+	let pb = ProofBuilder::new(&keychain).unwrap();
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
 
 	for n in 1..8 {
-		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
+		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier().unwrap();
 		let block = build_block(&chain, &keychain, &key_id, vec![]);
 		chain.process_block(block, Options::MINE).unwrap();
 	}
 
 	assert_eq!(chain.head().unwrap().height, 7);
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
+	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
 	let tx = build::transaction(
 		KernelFeatures::NoRecentDuplicate {
 			fee: 20000.into(),
@@ -165,7 +165,7 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 	)
 	.unwrap();
 
-	let key_id8 = ExtKeychainPath::new(1, 8, 0, 0, 0).to_identifier();
+	let key_id8 = ExtKeychainPath::new(1, 8, 0, 0, 0).to_identifier().unwrap();
 	let block = build_block(&chain, &keychain, &key_id8, vec![tx]);
 	let res = chain.process_block(block, Options::MINE);
 	assert!(res.is_err());

@@ -74,6 +74,9 @@ pub enum SegmentError {
 	/// Too large segment size
 	#[error("Segment is too large")]
 	SegmentSizeAboveLimit,
+	/// Generic internal error
+	#[error("{0}")]
+	GenericError(String),
 }
 
 /// Tuple that defines a segment of a given PMMR
@@ -345,7 +348,9 @@ where
 			for pos0 in segment_first_pos..=segment_last_pos {
 				if pmmr::is_leaf(pos0) {
 					if let Some(data) = pmmr.get_data_from_file(pos0) {
-						segm_copy.push(&data).expect("Push into local MMR");
+						segm_copy.push(&data).map_err(|e| {
+							SegmentError::GenericError(format!("Unable to build a segment, {}", e))
+						})?;
 
 						let idx_1 = pmmr::n_leaves(pos0 + 1) - 1;
 						let idx_2 = if pmmr::is_left_sibling(pos0) {
@@ -366,7 +371,14 @@ where
 				if let Some(hash) = pmmr.get_from_file(pos0) {
 					let pos0_copy = pos0 - segment_first_pos;
 					if pos0_copy >= segm_copy.size {
-						segm_copy.push_pruned_subtree(hash, pos0_copy).unwrap();
+						segm_copy
+							.push_pruned_subtree(hash, pos0_copy)
+							.map_err(|e| {
+								SegmentError::GenericError(format!(
+									"push_pruned_subtree error, {}",
+									e
+								))
+							})?;
 					}
 				}
 			}
@@ -374,9 +386,9 @@ where
 			// Pruning elements that wasn't in the bitmap. It is expected that some data might not be pruned
 			// Note: we need to insert all data first and prune after. Also, there is no prpone at the end of PIBD download
 			for ps in prune_pos {
-				let res = segm_copy
-					.prune(ps - segment_first_pos)
-					.expect("PMMR must have it");
+				let res = segm_copy.prune(ps - segment_first_pos).map_err(|e| {
+					SegmentError::GenericError(format!("Unable to build a segment, {}", e))
+				})?;
 				debug_assert!(res);
 			}
 
@@ -502,8 +514,12 @@ where
 				let left_child_pos = 1 + pos0 - (1 << height);
 				let right_child_pos = pos0;
 
-				let right_child = hashes.pop().unwrap();
-				let left_child = hashes.pop().unwrap();
+				let right_child = hashes.pop().ok_or(SegmentError::GenericError(
+					"Internal error, hashes are empty (right)".into(),
+				))?;
+				let left_child = hashes.pop().ok_or(SegmentError::GenericError(
+					"Internal error, hashes are empty (left)".into(),
+				))?;
 
 				if bitmap.is_some() {
 					// Prunable MMR
@@ -531,12 +547,21 @@ where
 					)
 				}
 			};
+
+			let hash = match hash {
+				Some(hash_res) => Some(hash_res.map_err(|e| {
+					SegmentError::GenericError(format!("Unable to calculate hash, {}", e))
+				})?),
+				None => None,
+			};
 			hashes.push(hash);
 		}
 
 		if self.full_segment(mmr_size) {
 			// Full segment: last position of segment is subtree root
-			Ok(hashes.pop().unwrap())
+			Ok(hashes.pop().ok_or(SegmentError::GenericError(
+				"Internal error, hashes are empty (full_segment)".into(),
+			))?)
 		} else {
 			// Not full (only final segment): peaks in segment, bag them together
 			let peaks = pmmr::peaks(mmr_size);
@@ -557,10 +582,14 @@ where
 
 				hash = match hash {
 					None => Some(lhash),
-					Some(rhash) => Some((lhash, rhash).hash_with_index(mmr_size)),
+					Some(rhash) => Some((lhash, rhash).hash_with_index(mmr_size).map_err(|e| {
+						SegmentError::GenericError(format!("Unable to calculate hash, {}", e))
+					})?),
 				};
 			}
-			Ok(Some(hash.unwrap()))
+			Ok(Some(hash.ok_or(SegmentError::GenericError(
+				"Internal error, not found expected hash for a segment".into(),
+			))?))
 		}
 	}
 
@@ -575,7 +604,9 @@ where
 		if let Some(root) = root {
 			return Ok((root, 1 + last));
 		}
-		let bitmap = bitmap.unwrap();
+		let bitmap = bitmap.ok_or(SegmentError::GenericError(
+			"Internal error, first_unpruned_parent param bitmap is empty".into(),
+		))?;
 		let n_leaves = pmmr::n_leaves(mmr_size);
 
 		let mut cardinality = 0;
@@ -778,9 +809,13 @@ impl SegmentProof {
 				.next()
 				.ok_or_else(|| SegmentError::MissingHash(1 + s0))?;
 			root = if pmmr::is_left_sibling(s0) {
-				(sibling_hash, root).hash_with_index(p0)
+				(sibling_hash, root).hash_with_index(p0).map_err(|e| {
+					SegmentError::GenericError(format!("Unable to calculate hash, {}", e))
+				})?
 			} else {
-				(root, sibling_hash).hash_with_index(p0)
+				(root, sibling_hash).hash_with_index(p0).map_err(|e| {
+					SegmentError::GenericError(format!("Unable to calculate hash, {}", e))
+				})?
 			};
 		}
 
@@ -802,6 +837,9 @@ impl SegmentProof {
 					.ok_or_else(|| SegmentError::MissingHash(1 + pos0))?,
 			)
 				.hash_with_index(last_pos)
+				.map_err(|e| {
+					SegmentError::GenericError(format!("Unable to calculate hash, {}", e))
+				})?
 		}
 
 		// 3. peaks to the left
@@ -815,7 +853,10 @@ impl SegmentProof {
 					.ok_or_else(|| SegmentError::MissingHash(1 + pos0))?,
 				root,
 			)
-				.hash_with_index(last_pos);
+				.hash_with_index(last_pos)
+				.map_err(|e| {
+					SegmentError::GenericError(format!("Unable to calculate hash, {}", e))
+				})?;
 		}
 
 		Ok(root)

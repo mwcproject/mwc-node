@@ -15,7 +15,8 @@
 
 use crate::router::{Handler, HandlerObj, ResponseFuture};
 use crate::web::response;
-use futures::future::ok;
+use crate::RouterError;
+use futures::future::{err, ok};
 use hyper::header::{HeaderValue, AUTHORIZATION, WWW_AUTHENTICATE};
 use hyper::{Body, Request, Response, StatusCode};
 use ring::constant_time::verify_slices_are_equal;
@@ -135,10 +136,15 @@ impl Handler for BasicAuthURIMiddleware {
 }
 
 fn unauthorized_response(basic_realm: &HeaderValue) -> ResponseFuture {
-	let response = Response::builder()
+	match Response::builder()
 		.status(StatusCode::UNAUTHORIZED)
 		.header(WWW_AUTHENTICATE, basic_realm)
 		.body(Body::empty())
-		.unwrap();
-	Box::pin(ok(response))
+	{
+		Ok(resp) => Box::pin(ok(resp)),
+		Err(e) => Box::pin(err(RouterError::Internal(format!(
+			"Respose build error, {}",
+			e
+		)))),
+	}
 }

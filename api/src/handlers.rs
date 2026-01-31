@@ -68,6 +68,7 @@ use std::sync::RwLock;
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// Listener version, providing same API but listening for requests on a
 /// port and wrapping the calls
@@ -91,7 +92,7 @@ where
 		peers.clone(),
 		sync_state.clone(),
 	)
-	.expect("unable to build API router");
+	.map_err(|e| Error::Internal(format!("unable to build API router, {}", e)))?;
 
 	let context_id = chain.get_context_id();
 	let basic_auth_key = if global::is_mainnet(context_id) {
@@ -181,7 +182,9 @@ where
 
 	let mut apis = ApiServer::new();
 	warn!("Starting HTTP Node APIs server at {}.", addr);
-	let socket_addr: SocketAddr = addr.parse().expect("unable to parse socket address");
+	let socket_addr: SocketAddr = addr
+		.parse()
+		.map_err(|e| Error::Argument(format!("unable to parse socket address {}, {}", addr, e)))?;
 	let api_thread = apis.start(socket_addr, router, tls_config);
 
 	warn!("HTTP Node listener started.");
@@ -275,6 +278,7 @@ where
 	pub chain: Weak<Chain>,
 	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
+	start_time: Instant,
 }
 
 impl<B, P> ForeignAPIHandlerV2<B, P>
@@ -294,6 +298,7 @@ where
 			chain,
 			tx_pool,
 			sync_state,
+			start_time: Instant::now(),
 		}
 	}
 }
@@ -309,6 +314,7 @@ where
 			self.chain.clone(),
 			self.tx_pool.clone(),
 			self.sync_state.clone(),
+			self.start_time.clone(),
 		);
 
 		Box::pin(async move {
@@ -396,7 +402,7 @@ where
 }
 
 fn create_error_response(e: Error) -> Response<Body> {
-	Response::builder()
+	match Response::builder()
 		.status(StatusCode::INTERNAL_SERVER_ERROR)
 		.header("access-control-allow-origin", "*")
 		.header(
@@ -404,11 +410,14 @@ fn create_error_response(e: Error) -> Response<Body> {
 			"Content-Type, Authorization",
 		)
 		.body(format!("{}", e).into())
-		.unwrap()
+	{
+		Ok(r) => r,
+		Err(e) => json_response_pretty(&format!("{}", e)),
+	}
 }
 
 fn create_ok_response(json: &str) -> Response<Body> {
-	Response::builder()
+	match Response::builder()
 		.status(StatusCode::OK)
 		.header("access-control-allow-origin", "*")
 		.header(
@@ -417,7 +426,10 @@ fn create_ok_response(json: &str) -> Response<Body> {
 		)
 		.header(hyper::header::CONTENT_TYPE, "application/json")
 		.body(json.to_string().into())
-		.unwrap()
+	{
+		Ok(r) => r,
+		Err(e) => json_response_pretty(&format!("{}", e)),
+	}
 }
 
 /// Build a new hyper Response with the status code and body provided.
@@ -439,7 +451,10 @@ fn response<T: Into<Body>>(status: StatusCode, text: T) -> Response<Body> {
 		builder = builder.header(hyper::header::CONTENT_TYPE, "application/json");
 	}
 
-	builder.body(text.into()).unwrap()
+	match builder.body(text.into()) {
+		Ok(r) => r,
+		Err(e) => json_response_pretty(&format!("{}", e)),
+	}
 }
 
 // Legacy V1 router

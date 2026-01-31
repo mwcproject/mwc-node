@@ -134,25 +134,34 @@ impl SyncRunner {
 				let peers: Vec<Arc<Peer>> = self.peers.iter().connected().into_iter().collect();
 				info!("Has connected peers: {}", peers.len());
 				for p in peers {
+					let last_seen_seconds_ago = (Utc::now() - p.info.last_seen()).num_seconds();
 					info!(
-						"Peer: {:?} {:?} H:{}  Diff:{} Cap: {} BFee: {}",
+						"Peer: {:?} {:?} H:{}  Diff:{} Cap: {} BFee: {}  Last seen (sec): {}",
 						p.info.addr,
 						p.info.direction,
 						p.info.height(),
 						p.info.total_difficulty().to_num(),
 						p.info.capabilities.bits(),
-						p.info.tx_base_fee
+						p.info.tx_base_fee,
+						last_seen_seconds_ago,
 					);
 				}
 			}
 
+			sleep_time = 1000;
+
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
-			let sync_reponse = self.sync_manager.sync_request(&self.peers);
+			let sync_reponse = match self.sync_manager.sync_request(&self.peers) {
+				Ok(resp) => resp,
+				Err(e) => {
+					error!("Sync request error: {}", e);
+					continue;
+				}
+			};
 			debug!("sync_manager responsed with {:?}", sync_reponse);
 
 			let prev_state = self.sync_state.status();
-			sleep_time = 1000;
 			match sync_reponse.response {
 				SyncRequestResponses::WaitingForPeers => {
 					info!("Waiting for the peers");

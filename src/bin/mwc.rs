@@ -74,7 +74,6 @@ fn real_main() -> i32 {
 	let args = App::from_yaml(yml)
 		.version(built_info::PKG_VERSION)
 		.get_matches();
-	let node_config;
 
 	let chain_type = if args.is_present("floonet") {
 		global::ChainTypes::Floonet
@@ -94,53 +93,44 @@ fn real_main() -> i32 {
 	}
 
 	// Load relevant config
-	match args.subcommand() {
+	let config = match args.subcommand() {
 		// When the subscommand is 'server' take into account the 'config_file' flag
 		("server", Some(server_args)) => {
 			if let Some(_path) = server_args.value_of("config_file") {
-				node_config = Some(config::GlobalConfig::new(_path).unwrap_or_else(|e| {
+				config::GlobalConfig::new(_path).unwrap_or_else(|e| {
 					panic!("Error loading server configuration: {}", e);
-				}));
+				})
 			} else {
-				node_config = Some(
-					config::initial_setup_server(&chain_type).unwrap_or_else(|e| {
-						panic!("Error loading server configuration: {}", e);
-					}),
-				);
+				config::initial_setup_server(&chain_type).unwrap_or_else(|e| {
+					panic!("Error loading server configuration: {}", e);
+				})
 			}
 		}
 		// Otherwise load up the node config as usual
-		_ => {
-			node_config = Some(
-				config::initial_setup_server(&chain_type).unwrap_or_else(|e| {
-					panic!("Error loading server configuration: {}", e);
-				}),
-			);
+		_ => config::initial_setup_server(&chain_type).unwrap_or_else(|e| {
+			panic!("Error loading server configuration: {}", e);
+		}),
+	};
+
+	let mut logging_config = config.members.logging.clone();
+	logging_config.tui_running = config.members.server.run_tui;
+
+	let logs_rx = match mwc_node_workflow::logging::init_bin_logs(&logging_config) {
+		Ok(rx) => rx,
+		Err(e) => {
+			println!("Unable to initilize the logs. {}", e);
+			return -1;
 		}
-	}
+	};
 
-	let config = node_config.clone().unwrap();
-	let mut logging_config = config.members.as_ref().unwrap().logging.clone().unwrap();
-	logging_config.tui_running = config.members.as_ref().unwrap().server.run_tui;
+	let server_config = config.members.server.clone();
 
-	let logs_rx = mwc_node_workflow::logging::init_bin_logs(&logging_config);
-
-	let server_config = config.members.as_ref().unwrap().server.clone();
-
-	let accept_fee_base = config
-		.members
-		.as_ref()
-		.unwrap()
-		.server
-		.pool_config
-		.tx_fee_base
-		.clone();
+	let accept_fee_base = config.members.server.pool_config.tx_fee_base.clone();
 
 	let context_id = match mwc_node_workflow::context::allocate_new_context(
 		server_config.chain_type,
 		accept_fee_base,
 		None,
-		&server_config.invalid_block_hashes,
 	) {
 		Ok(c_id) => c_id,
 		Err(e) => {
@@ -174,32 +164,46 @@ fn real_main() -> i32 {
 	// Execute subcommand
 	let res = match args.subcommand() {
 		// server commands and options
-		("server", Some(server_args)) => {
-			cmd::server_command(context_id, Some(server_args), node_config.unwrap(), logs_rx)
-		}
-
+		("server", Some(server_args)) => res_to_ret_val(cmd::server_command(
+			context_id,
+			Some(server_args),
+			config,
+			logs_rx,
+		)),
 		// client commands and options
 		("client", Some(client_args)) => {
-			cmd::client_command(context_id, client_args, node_config.unwrap())
+			res_to_ret_val(cmd::client_command(context_id, client_args, config))
 		}
-
 		// clean command
 		("clean", _) => {
-			let db_root_path = node_config.unwrap().members.unwrap().server.db_root;
+			let db_root_path = config.members.server.db_root;
 			warn!("Cleaning chain data directory: {}", db_root_path);
 			match std::fs::remove_dir_all(db_root_path) {
 				Ok(_) => 0,
-				Err(_) => 1,
+				Err(e) => {
+					println!("{}", e);
+					1
+				}
 			}
 		}
 
 		// If nothing is specified, try to just use the config file instead
 		// this could possibly become the way to configure most things
 		// with most command line options being phased out
-		_ => cmd::server_command(context_id, None, node_config.unwrap(), logs_rx),
+		_ => res_to_ret_val(cmd::server_command(context_id, None, config, logs_rx)),
 	};
 
 	let _ = mwc_node_workflow::context::release_context(context_id);
 
 	res
+}
+
+fn res_to_ret_val(res: Result<(), crate::cmd::Error>) -> i32 {
+	match res {
+		Ok(_) => 0,
+		Err(e) => {
+			println!("{}", e);
+			1
+		}
+	}
 }

@@ -65,7 +65,7 @@ impl Segmenter {
 
 	/// Root hash for headers Hashes MMR
 	pub fn headers_root(&self) -> Result<Hash, Error> {
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
 		let pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
 		let root = pmmr.root().map_err(&Error::TxHashSetErr)?;
 		Ok(root)
@@ -104,7 +104,7 @@ impl Segmenter {
 	/// Create headers segment.
 	pub fn headers_segment(&self, id: SegmentIdentifier) -> Result<Segment<Hash>, Error> {
 		let now = Instant::now();
-		let header_pmmr = self.header_pmmr.read().expect("RwLock failure");
+		let header_pmmr = self.header_pmmr.read().unwrap_or_else(|e| e.into_inner());
 		let header_pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
 		let segment = Segment::from_pmmr(
 			id,
@@ -130,7 +130,7 @@ impl Segmenter {
 		id: SegmentIdentifier,
 	) -> Result<Segment<OutputIdentifier>, Error> {
 		let now = Instant::now();
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		let output_pmmr = txhashset.output_pmmr_at(&self.header);
 		let segment = Segment::from_pmmr(
 			id,
@@ -153,7 +153,7 @@ impl Segmenter {
 	/// Create a kernel segment.
 	pub fn kernel_segment(&self, id: SegmentIdentifier) -> Result<Segment<TxKernel>, Error> {
 		let now = Instant::now();
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		let kernel_pmmr = txhashset.kernel_pmmr_at(&self.header);
 		let segment = Segment::from_pmmr(
 			id,
@@ -176,7 +176,7 @@ impl Segmenter {
 	/// Create a rangeproof segment.
 	pub fn rangeproof_segment(&self, id: SegmentIdentifier) -> Result<Segment<RangeProof>, Error> {
 		let now = Instant::now();
-		let txhashset = self.txhashset.read().expect("RwLock failure");
+		let txhashset = self.txhashset.read().unwrap_or_else(|e| e.into_inner());
 		let pmmr = txhashset.rangeproof_pmmr_at(&self.header);
 		// Some overhead is fine, there are chances that we can't make optimal segments
 		let segment = Segment::from_pmmr(

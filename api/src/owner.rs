@@ -17,13 +17,15 @@
 
 use crate::chain::{Chain, SyncState};
 use crate::core::core::hash::Hash;
-use crate::handlers::chain_api::{ChainCompactHandler, ChainResetHandler, ChainValidationHandler};
+use crate::handlers::chain_api::{ChainCompactHandler, ChainValidationHandler};
 use crate::handlers::peers_api::{PeerHandler, PeersConnectedHandler};
 use crate::handlers::server_api::StatusHandler;
+use crate::handlers::utils::w;
 use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::types::Status;
 use mwc_p2p::types::PeerInfoDisplayLegacy;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Weak;
 
@@ -115,21 +117,27 @@ impl Owner {
 	pub fn reset_chain_head(&self, hash: String) -> Result<(), Error> {
 		let hash =
 			Hash::from_hex(&hash).map_err(|_| Error::RequestError("invalid header hash".into()))?;
-		let handler = ChainResetHandler {
-			chain: self.chain.clone(),
-			sync_state: self.sync_state.clone(),
-		};
-		handler.reset_chain_head(hash)
+
+		let chain = w(&self.chain)?;
+		let header = chain.get_block_header(&hash)?;
+		chain.reset_chain_head(&header, true)?;
+
+		// Reset the sync status and clear out any sync error.
+		w(&self.sync_state)?.reset();
+		Ok(())
 	}
 
-	pub fn invalidate_header(&self, hash: String) -> Result<(), Error> {
-		let hash =
-			Hash::from_hex(&hash).map_err(|_| Error::RequestError("invalid header hash".into()))?;
-		let handler = ChainResetHandler {
-			chain: self.chain.clone(),
-			sync_state: self.sync_state.clone(),
-		};
-		handler.invalidate_header(hash)
+	pub fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error> {
+		let mut banned_headers: HashSet<Hash> = HashSet::new();
+		for hstr in &hash {
+			let h = Hash::from_hex(&hstr)
+				.map_err(|_| Error::RequestError(format!("invalid header hash value: {}", hstr)))?;
+			banned_headers.insert(h);
+		}
+
+		let chain = w(&self.chain)?;
+		chain.apply_invalid_blocks(banned_headers)?;
+		Ok(())
 	}
 
 	/// Retrieves information about stored peers.

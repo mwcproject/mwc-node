@@ -31,7 +31,6 @@ use crate::ser::{
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use keychain::{self, BlindingFactor};
-use std::convert::TryInto;
 use util::from_hex;
 use util::secp;
 use util::secp::Secp256k1;
@@ -177,8 +176,8 @@ impl Writeable for HeaderEntry {
 
 impl Hashed for HeaderEntry {
 	/// The hash of the underlying block.
-	fn hash(&self) -> Hash {
-		self.hash
+	fn hash(&self) -> Result<Hash, std::io::Error> {
+		Ok(self.hash)
 	}
 }
 
@@ -240,20 +239,20 @@ impl DefaultHashable for BlockHeader {}
 impl PMMRable for BlockHeader {
 	type E = HeaderEntry;
 
-	fn as_elmt(&self) -> Self::E {
-		HeaderEntry {
-			hash: self.hash(),
+	fn as_elmt(&self) -> Result<Self::E, ser::Error> {
+		Ok(HeaderEntry {
+			hash: self.hash()?,
 			timestamp: self.timestamp.timestamp() as u64,
 			total_difficulty: self.total_difficulty(),
 			secondary_scaling: self.pow.secondary_scaling,
 			is_secondary: self.pow.is_secondary(),
-		}
+		})
 	}
 
 	// Size is hash + u64 + difficulty + u32 + u8.
 	fn elmt_size() -> Option<u16> {
 		const LEN: usize = Hash::LEN + 8 + Difficulty::LEN + 4 + 1;
-		Some(LEN.try_into().unwrap())
+		Some(LEN as u16)
 	}
 }
 
@@ -289,15 +288,13 @@ fn read_block_header<R: Reader>(reader: &mut R) -> Result<BlockHeader, ser::Erro
 		)));
 	}
 
-	let ts = DateTime::from_timestamp(timestamp, 0);
-	if ts.is_none() {
-		return Err(ser::Error::CorruptedData("Timestamp is None".into()));
-	}
+	let ts = DateTime::from_timestamp(timestamp, 0)
+		.ok_or(ser::Error::CorruptedData("Timestamp is None".into()))?;
 
 	Ok(BlockHeader {
 		version,
 		height,
-		timestamp: ts.unwrap(),
+		timestamp: ts,
 		prev_hash,
 		prev_root,
 		output_root,
@@ -470,7 +467,7 @@ impl Readable for UntrustedBlockHeader {
 			// TODO add warning in p2p code if local time is too different from peers
 			let error_msg = format!(
 				"block header {} validation error: block time is more than 12 blocks in future",
-				header.hash()
+				header.hash()?
 			);
 			error!("{}", error_msg);
 			return Err(ser::Error::CorruptedData(error_msg));
@@ -491,7 +488,7 @@ impl Readable for UntrustedBlockHeader {
 		if !header.pow.is_primary(reader.get_context_id()) && !header.pow.is_secondary() {
 			let error_msg = format!(
 				"block header {} validation error: invalid edge bits",
-				header.hash()
+				header.hash()?
 			);
 			error!("{}", error_msg);
 			return Err(ser::Error::CorruptedData(error_msg));
@@ -499,7 +496,7 @@ impl Readable for UntrustedBlockHeader {
 		if let Err(e) = verify_size(reader.get_context_id(), &header) {
 			let error_msg = format!(
 				"block header {} validation error: invalid POW: {}",
-				header.hash(),
+				header.hash()?,
 				e
 			);
 			error!("{}", error_msg);
@@ -533,7 +530,7 @@ pub struct Block {
 
 impl Hashed for Block {
 	/// The hash of the underlying block.
-	fn hash(&self) -> Hash {
+	fn hash(&self) -> Result<Hash, std::io::Error> {
 		self.header.hash()
 	}
 }
@@ -625,7 +622,12 @@ impl Block {
 	/// Note: caller must validate the block themselves, we do not validate it
 	/// here.
 	pub fn hydrate_from(cb: CompactBlock, txs: &[Transaction]) -> Result<Block, Error> {
-		trace!("block: hydrate_from: {}, {} txs", cb.hash(), txs.len(),);
+		trace!(
+			"block: hydrate_from: {}, {} txs",
+			cb.hash()
+				.map_err(|e| Error::Other(format!("Build hash error, {}", e)))?,
+			txs.len()
+		);
 
 		let header = cb.header.clone();
 
@@ -700,12 +702,9 @@ impl Block {
 
 		let now = Utc::now().timestamp();
 
-		let ts = DateTime::from_timestamp(now, 0);
-		if ts.is_none() {
-			return Err(Error::Other("Converting Utc::now() into timestamp".into()));
-		}
+		let timestamp = DateTime::from_timestamp(now, 0)
+			.ok_or(Error::Other("Converting Utc::now() into timestamp".into()))?;
 
-		let timestamp = ts.unwrap();
 		// Now build the block with all the above information.
 		// Note: We have not validated the block here.
 		// Caller must validate the block as necessary.
@@ -714,7 +713,9 @@ impl Block {
 				version,
 				height,
 				timestamp,
-				prev_hash: prev.hash(),
+				prev_hash: prev
+					.hash()
+					.map_err(|e| Error::Other(format!("Build hash error, {}", e)))?,
 				total_kernel_offset,
 				pow: ProofOfWork {
 					total_difficulty: difficulty + prev.pow.total_difficulty,

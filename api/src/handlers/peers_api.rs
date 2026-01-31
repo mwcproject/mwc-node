@@ -56,7 +56,7 @@ impl PeersConnectedHandler {
 			let peer_addr_str = match peer.addr {
 				// for tor we just return this because older wallets
 				// can't process this.
-				PeerAddr::Onion(_) => format!("127.0.0.1:{}", 3414),
+				PeerAddr::Onion(onion) => onion,
 				PeerAddr::Ip(ip) => format!("{}:{}", ip.ip(), ip.port()),
 			};
 
@@ -76,6 +76,7 @@ impl PeersConnectedHandler {
 				direction: peer_direction,
 				total_difficulty: peer.total_difficulty,
 				height: peer.height,
+				last_seen: peer.last_seen,
 			};
 			peers_ret.push(peer_display);
 		}
@@ -117,6 +118,7 @@ impl Handler for PeersConnectedHandler {
 				direction: peer_direction,
 				total_difficulty: peer.total_difficulty,
 				height: peer.height,
+				last_seen: peer.last_seen,
 			};
 			peers_ret.push(peer_display);
 		}

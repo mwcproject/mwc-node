@@ -235,7 +235,7 @@ pub struct ServerConfig {
 
 	/// Configuration for the mining daemon
 	#[serde(default)]
-	pub stratum_mining_config: Option<StratumServerConfig>,
+	pub stratum_mining_config: StratumServerConfig,
 
 	/// Configuration for the webhooks that trigger on certain events
 	#[serde(default)]
@@ -257,7 +257,7 @@ impl Default for ServerConfig {
 			tls_certificate_key: None,
 			p2p_config: p2p::P2PConfig::default(),
 			dandelion_config: pool::DandelionConfig::default(),
-			stratum_mining_config: Some(StratumServerConfig::default()),
+			stratum_mining_config: StratumServerConfig::default(),
 			chain_type: ChainTypes::default(),
 			archive_mode: Some(false),
 			chain_validation_mode: ChainValidationMode::default(),

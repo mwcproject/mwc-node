@@ -65,7 +65,7 @@ where
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain),
+		&ProofBuilder::new(keychain).unwrap(),
 		key_id,
 		fee,
 		false,
@@ -112,12 +112,12 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
 
 	for n in 1..9 {
-		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
+		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier().unwrap();
 		let block = build_block(&chain, &keychain, &key_id, vec![])?;
 		chain.process_block(block, Options::NONE)?;
 	}
@@ -141,9 +141,9 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify(chain.secp()).unwrap();
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
 
 	let tx1 = build::transaction_with_kernel(
 		&[
@@ -169,9 +169,13 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 	)
 	.unwrap();
 
-	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
-	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0).to_identifier();
-	let key_id11 = ExtKeychainPath::new(1, 11, 0, 0, 0).to_identifier();
+	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier().unwrap();
+	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
+	let key_id11 = ExtKeychainPath::new(1, 11, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
 
 	// Block containing both tx1 and tx2 is invalid.
 	// Not valid for two duplicate NRD kernels to co-exist in same block.
@@ -228,12 +232,12 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
 
 	for n in 1..9 {
-		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
+		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier().unwrap();
 		let block = build_block(&chain, &keychain, &key_id, vec![])?;
 		chain.process_block(block, Options::NONE)?;
 	}
@@ -257,9 +261,9 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify(chain.secp()).unwrap();
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
 
 	let tx1 = build::transaction_with_kernel(
 		&[
@@ -285,8 +289,10 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 	)
 	.unwrap();
 
-	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
-	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0).to_identifier();
+	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier().unwrap();
+	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
 
 	// Block containing both tx1 and tx2 is invalid.
 	// Not valid for two duplicate NRD kernels to co-exist in same block.
@@ -326,12 +332,12 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	clean_output_dir(chain_dir);
 
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let genesis = genesis_block(&keychain);
 	let chain = init_chain(chain_dir, genesis.clone());
 
 	for n in 1..9 {
-		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier();
+		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0).to_identifier().unwrap();
 		let block = build_block(&chain, &keychain, &key_id, vec![])?;
 		chain.process_block(block, Options::NONE)?;
 	}
@@ -356,9 +362,9 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 		aggsig::sign_with_blinding(&keychain.secp(), &msg, &excess, Some(&pubkey)).unwrap();
 	kernel.verify(chain.secp()).unwrap();
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
 
 	let tx1 = build::transaction_with_kernel(
 		&[
@@ -384,9 +390,13 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	)
 	.unwrap();
 
-	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier();
-	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0).to_identifier();
-	let key_id11 = ExtKeychainPath::new(1, 11, 0, 0, 0).to_identifier();
+	let key_id9 = ExtKeychainPath::new(1, 9, 0, 0, 0).to_identifier().unwrap();
+	let key_id10 = ExtKeychainPath::new(1, 10, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
+	let key_id11 = ExtKeychainPath::new(1, 11, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
 
 	// Block containing tx1 is valid.
 	let block_valid_9 =

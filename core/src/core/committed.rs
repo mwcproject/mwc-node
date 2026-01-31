@@ -38,6 +38,9 @@ pub enum Error {
 	/// Committed overage (fee or reward) is invalid
 	#[error("Invalid value")]
 	InvalidValue,
+	/// Some other/internal generic error
+	#[error("{0}")]
+	Other(String),
 }
 
 impl From<secp::Error> for Error {
@@ -202,23 +205,29 @@ pub fn sum_commits(
 			// now let's collect the data from the worker threads
 			let mut pos_sum: Vec<Commitment> = Vec::new();
 			for handle in pos_handles {
-				match handle.join().expect("Crossbeam runtime failure") {
+				match handle
+					.join()
+					.map_err(|_| Error::Other("Crossbeam runtime failure".into()))?
+				{
 					Ok(com) => pos_sum.push(com),
-					Err(e) => return Err(e),
+					Err(e) => return Err(Error::Other(format!("Sum commits error, {}", e))),
 				}
 			}
 
 			let mut neg_sum: Vec<Commitment> = Vec::new();
 			for handle in neg_handles {
-				match handle.join().expect("Crossbeam runtime failure") {
+				match handle
+					.join()
+					.map_err(|_| Error::Other("Crossbeam runtime failure".into()))?
+				{
 					Ok(com) => neg_sum.push(com),
-					Err(e) => return Err(e),
+					Err(e) => return Err(Error::Other(format!("Sum commits error, {}", e))),
 				}
 			}
 			// here eevry sum goes with intended sign
 			Ok(secp.commit_sum(pos_sum, neg_sum)?)
 		})
-		.expect("Crossbeam runtime failure");
+		.map_err(|_| Error::Other("Crossbeam runtime failure".into()))?;
 		Ok(sum_result?)
 	}
 }

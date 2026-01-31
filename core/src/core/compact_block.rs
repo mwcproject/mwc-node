@@ -183,10 +183,9 @@ impl CompactBlock {
 	pub fn out_full(&self) -> &[Output] {
 		&self.body.out_full
 	}
-}
 
-impl From<Block> for CompactBlock {
-	fn from(block: Block) -> Self {
+	/// Convert Block into Compact block. Can't use From trait because conversion can return error
+	pub fn from(block: Block) -> Result<Self, Error> {
 		let header = block.header.clone();
 		let nonce = thread_rng().gen();
 
@@ -204,19 +203,24 @@ impl From<Block> for CompactBlock {
 			if k.is_coinbase() {
 				kern_full.push(k.clone());
 			} else {
-				kern_ids.push(k.short_id(&header.hash(), nonce));
+				let hash = header
+					.hash()
+					.map_err(|e| Error::Other(format!("Unable to build a hash, {}", e)))?;
+				kern_ids.push(
+					k.short_id(&hash, nonce)
+						.map_err(|e| Error::Other(format!("Hash calculation error, {}", e)))?,
+				);
 			}
 		}
 
 		// Initialize a compact block body and sort everything.
-		let body = CompactBlockBody::init(out_full, kern_full, kern_ids, false)
-			.expect("sorting, not verifying");
+		let body = CompactBlockBody::init(out_full, kern_full, kern_ids, false)?;
 
-		CompactBlock {
+		Ok(CompactBlock {
 			header,
 			nonce,
 			body,
-		}
+		})
 	}
 }
 

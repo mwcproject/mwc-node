@@ -22,7 +22,7 @@ use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{HeaderHashesDesegmenter, HEADER_HASHES_STUB_TYPE};
-use mwc_chain::Chain;
+use mwc_chain::{Chain, Error};
 use mwc_core::core::hash::Hash;
 use mwc_core::core::{Segment, SegmentType};
 use mwc_p2p::{PeerAddr, ReasonForBan};
@@ -69,7 +69,10 @@ impl HeadersHashSync {
 	}
 
 	pub fn is_pibd_headers_are_loaded(&self) -> bool {
-		*self.pibd_headers_are_loaded.read().expect("RwLock failure")
+		*self
+			.pibd_headers_are_loaded
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
 	}
 
 	fn get_peer_capabilities() -> Capabilities {
@@ -86,8 +89,11 @@ impl HeadersHashSync {
 		*self
 			.pibd_headers_are_loaded
 			.write()
-			.expect("RwLock failure") = false;
-		*self.cached_response.write().expect("RwLock failure") = None;
+			.unwrap_or_else(|e| e.into_inner()) = false;
+		*self
+			.cached_response
+			.write()
+			.unwrap_or_else(|e| e.into_inner()) = None;
 	}
 
 	pub fn is_complete(&self) -> bool {
@@ -146,12 +152,19 @@ impl HeadersHashSync {
 	// Lightweight request processing for non active case. Immutable method
 	pub fn request_pre(&self, best_height: u64) -> Option<SyncResponse> {
 		// Sending headers hash request to all peers that has the same archive height...
-		let cached_response = self.cached_response.read().expect("RwLock failure").clone();
+		let cached_response = self
+			.cached_response
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
 				return Some(cached_response.to_response());
 			} else {
-				*self.cached_response.write().expect("RwLock failure") = None;
+				*self
+					.cached_response
+					.write()
+					.unwrap_or_else(|e| e.into_inner()) = None;
 			}
 		}
 
@@ -163,7 +176,7 @@ impl HeadersHashSync {
 				*self
 					.pibd_headers_are_loaded
 					.write()
-					.expect("RwLock failure") = true;
+					.unwrap_or_else(|e| e.into_inner()) = true;
 				let resp = SyncResponse::new(
 					SyncRequestResponses::HeadersPibdReady,
 					Self::get_peer_capabilities(),
@@ -172,7 +185,10 @@ impl HeadersHashSync {
 						tip.height, target_archive_height
 					),
 				);
-				*self.cached_response.write().expect("RwLock failure") =
+				*self
+					.cached_response
+					.write()
+					.unwrap_or_else(|e| e.into_inner()) =
 					Some(CachedResponse::new(resp.clone(), Duration::seconds(60)));
 				return Some(resp);
 			}
@@ -187,7 +203,7 @@ impl HeadersHashSync {
 		sync_state: &SyncState,
 		sync_peers: &SyncPeers,
 		best_height: u64,
-	) -> SyncResponse {
+	) -> Result<SyncResponse, Error> {
 		let target_archive_height =
 			Chain::height_2_archive_height(self.chain.get_context_id(), best_height);
 
@@ -234,10 +250,12 @@ impl HeadersHashSync {
 				let (best_root_hash, _) = hash_counts
 					.iter()
 					.max_by_key(|&(_, count)| count)
-					.expect("hash_counts is empty?");
+					.ok_or(Error::Other(
+						"Header Hash sync internal error, hash_counts is empty".to_string(),
+					))?;
 
 				let desegmenter = HeaderHashesDesegmenter::new(
-					self.chain.genesis().hash(),
+					self.chain.genesis().hash()?,
 					target_archive_height,
 					best_root_hash.clone(),
 					self.pibd_params.clone(),
@@ -258,11 +276,11 @@ impl HeadersHashSync {
 				Capabilities::HEADERS_HASH,
 			);
 			if headers_hash_peers.is_empty() {
-				return SyncResponse::new(
+				return Ok(SyncResponse::new(
 					SyncRequestResponses::WaitingForPeers,
 					Self::get_peer_capabilities(),
 					"No outbound peers with HEADERS_HASH capability".into(),
-				);
+				));
 			}
 
 			if self.responded_headers_hash_from.is_empty() {
@@ -294,7 +312,7 @@ impl HeadersHashSync {
 					}
 				}
 			}
-			return SyncResponse::new(
+			return Ok(SyncResponse::new(
 				SyncRequestResponses::Syncing,
 				Self::get_peer_capabilities(),
 				format!(
@@ -302,17 +320,16 @@ impl HeadersHashSync {
 					headers_hash_peers.len(),
 					self.requested_headers_hash_from.len()
 				),
-			);
+			));
 		}
 
 		debug_assert!(self.headers_hash_desegmenter.is_some());
 		debug_assert!(self.target_archive_height > 0);
 
 		// Headers hashes are here, we can go forward and request some headers.
-		let headers_hash_desegmenter = self
-			.headers_hash_desegmenter
-			.as_ref()
-			.expect("internal error, headers_hash_desegmenter is empty ");
+		let headers_hash_desegmenter = self.headers_hash_desegmenter.as_ref().ok_or(
+			Error::Other("internal error, headers_hash_desegmenter is empty".to_string()),
+		)?;
 
 		if headers_hash_desegmenter.is_complete() {
 			let resp = SyncResponse::new(
@@ -320,9 +337,12 @@ impl HeadersHashSync {
 				Self::get_peer_capabilities(),
 				format!("headers_hash_desegmenter is complete"),
 			);
-			*self.cached_response.write().expect("RwLock failure") =
+			*self
+				.cached_response
+				.write()
+				.unwrap_or_else(|e| e.into_inner()) =
 				Some(CachedResponse::new(resp.clone(), Duration::seconds(180)));
-			return resp;
+			return Ok(resp);
 		}
 
 		sync_state.update(SyncStatus::HeaderHashSync {
@@ -338,8 +358,8 @@ impl HeadersHashSync {
 			Capabilities::HEADERS_HASH,
 		);
 		if headers_hash_peers.is_empty() {
-			return SyncResponse::new(SyncRequestResponses::WaitingForPeers, Self::get_peer_capabilities(), format!("No outbound peers with HEADERS_HASH capability. Waiting for Hash responses: {}. Segment responses: {}",
-																														  self.requested_headers_hash_from.len(), self.requested_segments.len()) );
+			return Ok(SyncResponse::new(SyncRequestResponses::WaitingForPeers, Self::get_peer_capabilities(), format!("No outbound peers with HEADERS_HASH capability. Waiting for Hash responses: {}. Segment responses: {}",
+																														  self.requested_headers_hash_from.len(), self.requested_segments.len()) ));
 		}
 
 		// Need to request headers under the archive header. We can do that in parallel
@@ -367,10 +387,9 @@ impl HeadersHashSync {
 		}
 
 		let segments = {
-			let headers_hash_desegmenter = self
-				.headers_hash_desegmenter
-				.as_mut()
-				.expect("internal error, headers_hash_desegmenter is empty ");
+			let headers_hash_desegmenter = self.headers_hash_desegmenter.as_mut().ok_or(
+				Error::Other("internal error, headers_hash_desegmenter is empty".to_string()),
+			)?;
 			headers_hash_desegmenter.next_desired_segments(
 				cmp::min(
 					headers_hash_peers.len() * self.pibd_params.get_segments_request_per_peer(),
@@ -406,8 +425,8 @@ impl HeadersHashSync {
 			}
 
 			if peers2send.is_empty() {
-				return SyncResponse::new(SyncRequestResponses::WaitingForPeers, Self::get_peer_capabilities(),
-												format!("No peers to request segment. Headers_hash_peers:{}  Waiting segments responses: {}", headers_hash_peers.len(), self.requested_segments.len()) );
+				return Ok(SyncResponse::new(SyncRequestResponses::WaitingForPeers, Self::get_peer_capabilities(),
+												format!("No peers to request segment. Headers_hash_peers:{}  Waiting segments responses: {}", headers_hash_peers.len(), self.requested_segments.len()) ));
 			}
 
 			let mut rng = rand::thread_rng();
@@ -417,9 +436,9 @@ impl HeadersHashSync {
 					.requested_segments
 					.contains_key(&(HEADER_HASHES_STUB_TYPE, seg.leaf_offset())));
 
-				let peer = peers2send
-					.choose(&mut rng)
-					.expect("Internal error, unable to select peer");
+				let peer = peers2send.choose(&mut rng).ok_or(Error::Other(
+					"Internal error, unable to select peer".to_string(),
+				))?;
 				match peer.send_headers_hash_segment_request(headers_root_hash.clone(), seg) {
 					Ok(_) => {
 						self.requested_segments.insert(
@@ -440,7 +459,7 @@ impl HeadersHashSync {
 			}
 		}
 
-		return SyncResponse::new(
+		return Ok(SyncResponse::new(
 			SyncRequestResponses::Syncing,
 			Self::get_peer_capabilities(),
 			format!(
@@ -448,7 +467,7 @@ impl HeadersHashSync {
 				headers_hash_peers.len(),
 				self.requested_segments.len()
 			),
-		);
+		));
 	}
 
 	pub fn receive_headers_hash_response(

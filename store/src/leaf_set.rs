@@ -159,7 +159,14 @@ impl LeafSet {
 		let mut cp_bitmap = self.bitmap.clone();
 		cp_bitmap.run_optimize();
 
-		let cp_path = format!("{}.{}", self.path.to_str().unwrap(), header.hash());
+		let cp_path = format!(
+			"{}.{}",
+			self.path.to_str().ok_or(io::Error::new(
+				io::ErrorKind::Other,
+				String::from("invalid path value at LeafSet::snapshot")
+			))?,
+			header.hash()?
+		);
 		let mut file = BufWriter::new(File::create(cp_path)?);
 		file.write_all(&cp_bitmap.serialize::<Portable>())?;
 		file.flush()?;

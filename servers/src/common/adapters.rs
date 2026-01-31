@@ -71,17 +71,17 @@ impl EventCache {
 		let time_limit = now - 1000; // lock for a 1 second, should be enough to reduce the load.
 		if self.time.load(Ordering::Relaxed) < time_limit {
 			if update {
-				*(self.event.write().expect("RwLock failure")) = *hash;
+				*(self.event.write().unwrap_or_else(|e| e.into_inner())) = *hash;
 				self.time.store(now, Ordering::Relaxed);
 			}
 			return false;
 		}
 
-		if *self.event.read().expect("RwLock failure") == *hash {
+		if *self.event.read().unwrap_or_else(|e| e.into_inner()) == *hash {
 			true
 		} else {
 			if update {
-				*(self.event.write().expect("RwLock failure")) = *hash;
+				*(self.event.write().unwrap_or_else(|e| e.into_inner())) = *hash;
 				self.time.store(now, Ordering::Relaxed);
 			}
 			false
@@ -118,17 +118,17 @@ where
 	P: PoolAdapter,
 {
 	fn total_difficulty(&self) -> Result<Difficulty, chain::Error> {
-		Ok(self.chain().head()?.total_difficulty)
+		Ok(self.chain()?.head()?.total_difficulty)
 	}
 
 	fn total_height(&self) -> Result<u64, chain::Error> {
-		Ok(self.chain().head()?.height)
+		Ok(self.chain()?.head()?.height)
 	}
 
 	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction> {
 		self.tx_pool
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.retrieve_tx_by_kernel_hash(kernel_hash)
 	}
 
@@ -145,7 +145,7 @@ where
 		let tx = self
 			.tx_pool
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.retrieve_tx_by_kernel_hash(kernel_hash);
 
 		if tx.is_none() {
@@ -164,7 +164,9 @@ where
 			return Ok(true);
 		}
 
-		let tx_hash = tx.hash();
+		let tx_hash = tx
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		// For transaction we allow double processing, we want to be sure that TX will be stored in the pool
 		// because there is no recovery plan for transactions. So we want to use natural retry to help us handle failures
 		if self.processed_transactions.contains(&tx_hash, false) {
@@ -175,14 +177,14 @@ where
 		}
 
 		let source = pool::TxSource::Broadcast;
-		let chain = self.chain();
+		let chain = self.chain()?;
 		let header = chain.head_header()?;
 
 		for hook in &self.hooks {
 			hook.on_transaction_received(&tx);
 		}
 
-		let mut tx_pool = self.tx_pool.write().expect("RwLock failure");
+		let mut tx_pool = self.tx_pool.write().unwrap_or_else(|e| e.into_inner());
 		match tx_pool.add_to_pool(source, tx, stem, &header, chain.secp()) {
 			Ok(_) => {
 				self.processed_transactions.contains(&tx_hash, true);
@@ -202,7 +204,9 @@ where
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
 		let height = b.header.height;
-		let b_hash = b.hash();
+		let b_hash = b
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		if self.processed_blocks.contains(&b_hash, true) {
 			debug!("block_received, cache for {}, {} Rejected", height, b_hash);
 			return Ok(true);
@@ -210,11 +214,11 @@ where
 			debug!("block_received, cache for {}, {} OK", height, b_hash);
 		}
 
-		if self.chain().is_known(&b.header).is_err() {
+		if self.chain()?.is_known(&b.header).is_err() {
 			return Ok(true);
 		}
 
-		let total_blocks = match self.chain().header_head() {
+		let total_blocks = match self.chain()?.header_head() {
 			Ok(tip) => tip.height,
 			Err(_) => 0,
 		};
@@ -223,7 +227,7 @@ where
 			"Received block {} of {} hash {} from {} [in/out/kern: {}/{}/{}] going to process. Prev block Hash: {}",
 			b.header.height,
 			total_blocks,
-			b.hash(),
+			b.hash().unwrap_or(Hash::default()),
 			peer_info.addr,
 			b.inputs().len(),
 			b.outputs().len(),
@@ -235,16 +239,18 @@ where
 
 	fn compact_block_received(
 		&self,
-		cb: core::CompactBlock,
+		cb: CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		// No need to process this compact block if we have previously accepted the _full block_.
-		let chain = self.chain();
+		let chain = self.chain()?;
 		if chain.is_known(&cb.header).is_err() {
 			return Ok(true);
 		}
 
-		let bhash = cb.hash();
+		let bhash = cb
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		debug!(
 			"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
 			bhash,
@@ -255,14 +261,16 @@ where
 			cb.kern_ids().len(),
 		);
 
-		let cb_hash = cb.hash();
+		let cb_hash = cb
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		if cb.kern_ids().is_empty() {
 			// push the freshly hydrated block through the chain pipeline
 			match core::Block::hydrate_from(cb, &[]) {
 				Ok(block) => {
 					debug!(
 						"successfully hydrated (empty) block: {} at {} ({})",
-						block.header.hash(),
+						block.header.hash().unwrap_or(Hash::default()),
 						block.header.height,
 						block.inputs().version_str(),
 					);
@@ -288,8 +296,8 @@ where
 			let (txs, missing_short_ids) = {
 				self.tx_pool
 					.read()
-					.expect("RwLock failed")
-					.retrieve_transactions(cb.hash(), cb.nonce, cb.kern_ids())
+					.unwrap_or_else(|e| e.into_inner())
+					.retrieve_transactions(cb_hash, cb.nonce, cb.kern_ids())
 			};
 
 			debug!(
@@ -303,7 +311,9 @@ where
 				self.sync_manager.add_block_request(
 					&peer_info.addr,
 					cb.header.height,
-					cb.header.hash(),
+					cb.header.hash().map_err(|e| {
+						chain::Error::Other(format!("Header hash build error, {}", e))
+					})?,
 					chain::Options::NONE,
 				);
 				return Ok(true);
@@ -319,7 +329,7 @@ where
 					block
 				}
 				Err(e) => {
-					debug!("Invalid hydrated block {}: {:?}", cb.hash(), e);
+					debug!("Invalid hydrated block {}: {:?}", cb_hash, e);
 					return Ok(false);
 				}
 			};
@@ -331,7 +341,7 @@ where
 				{
 					debug!(
 						"successfully hydrated block: {} at {} ({})",
-						block.header.hash(),
+						block.header.hash().unwrap_or(Hash::default()),
 						block.header.height,
 						block.inputs().version_str(),
 					);
@@ -341,7 +351,7 @@ where
 					self.sync_manager.add_block_request(
 						&peer_info.addr,
 						cb.header.height,
-						cb.header.hash(),
+						cb.header.hash().unwrap_or(Hash::default()),
 						chain::Options::NONE,
 					);
 					Ok(true)
@@ -362,17 +372,9 @@ where
 		peer_info: &PeerInfo,
 	) -> Result<bool, chain::Error> {
 		// No need to process this header if we have previously accepted the _full block_.
-		let bh_hash = bh.hash();
-
-		// A shortcut to refuse the known bad block header.
-		if bh_hash == Hash::from_hex(crate::chain::BLOCK_TO_BAN)? {
-			debug!(
-				"header_received: known bad header {} at {} refused by chain",
-				bh_hash, bh.height,
-			);
-			// serious enough to need to ban the peer
-			return Ok(false);
-		}
+		let bh_hash = bh
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 
 		if self.processed_headers.contains(&bh_hash, true) {
 			debug!(
@@ -384,8 +386,11 @@ where
 			debug!("header_received, cache for {}, {} OK", bh.height, bh_hash);
 		}
 
-		let chain = self.chain();
-		if chain.block_exists(&bh.hash())? {
+		let chain = self.chain()?;
+		let bh_hash = bh
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
+		if chain.block_exists(&bh_hash)? {
 			return Ok(true);
 		}
 		if !self.sync_state.is_syncing() {
@@ -399,7 +404,11 @@ where
 		let res = chain.process_block_header(&bh, chain::Options::NONE);
 
 		if let Err(e) = res {
-			debug!("Block header {} refused by chain: {:?}", bh.hash(), e);
+			debug!(
+				"Block header {} refused by chain: {:?}",
+				bh.hash().unwrap_or(Hash::default()),
+				e
+			);
 			if e.is_bad_data() {
 				return Ok(false);
 			} else {
@@ -416,7 +425,7 @@ where
 					let locator = chain.get_locator_hashes(head, &heights)?;
 					self.sync_manager.add_header_request(
 						&peer_info.addr,
-						Some(bh.hash()),
+						Some(bh_hash),
 						bh.height,
 						locator,
 					);
@@ -429,7 +438,7 @@ where
 							self.sync_manager.add_block_request(
 								&peer_info.addr,
 								bh.height,
-								bh.hash(),
+								bh_hash,
 								chain::Options::NONE,
 							);
 						}
@@ -448,7 +457,7 @@ where
 	}
 
 	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error> {
-		let chain = self.chain();
+		let chain = self.chain()?;
 		let head = chain.head()?;
 		let heights = get_locator_heights(head.height);
 		let locator = chain.get_locator_hashes(head, &heights)?;
@@ -465,27 +474,23 @@ where
 			return Ok(());
 		}
 
-		let bad_block = Hash::from_hex(chain::BLOCK_TO_BAN)?;
-		if bhs.iter().find(|h| h.hash() == bad_block).is_some() {
-			debug!("headers_received: found known bad header, all data is rejected");
-			return Ok(());
-		}
-
 		self.sync_manager
-			.receive_headers(&peer_info.addr, bhs, remaining, self.peers());
+			.receive_headers(&peer_info.addr, bhs, remaining, self.peers()?);
 
 		if let Some(last) = bhs.last() {
 			if !self.sync_state.is_syncing() && last.total_difficulty() > self.total_difficulty()? {
 				// check if any header
 				for bh in bhs.iter() {
-					let hash = bh.hash();
+					let hash = bh.hash().map_err(|e| {
+						chain::Error::Other(format!("Header hash build error, {}", e))
+					})?;
 					// Header is already processed, checking here if it was accepted
-					if self.chain().get_block_header(&hash).is_ok() {
-						if !self.chain().block_exists(&bh.hash())? {
+					if self.chain()?.get_block_header(&hash).is_ok() {
+						if !self.chain()?.block_exists(&hash)? {
 							self.sync_manager.add_block_request(
 								&peer_info.addr,
 								bh.height,
-								bh.hash(),
+								hash,
 								chain::Options::NONE,
 							);
 						}
@@ -499,55 +504,63 @@ where
 	}
 
 	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error> {
-		self.chain().locate_headers(locator, p2p::MAX_BLOCK_HEADERS)
+		self.chain()?
+			.locate_headers(locator, p2p::MAX_BLOCK_HEADERS)
 	}
 
 	/// Gets a full block by its hash.
 	/// Will convert to v2 compatibility based on peer protocol version.
 	fn get_block(&self, h: Hash, peer_info: &PeerInfo) -> Option<core::Block> {
-		self.chain()
-			.get_block(&h)
-			.map(|b| match peer_info.version.value() {
-				0..=2 => self.chain().convert_block_v2(b).ok(),
-				3..=ProtocolVersion::MAX => Some(b),
-			})
-			.unwrap_or(None)
+		if let Ok(chain) = self.chain() {
+			return chain
+				.get_block(&h)
+				.map(|b| match peer_info.version.value() {
+					0..=2 => chain.convert_block_v2(b).ok(),
+					3..=ProtocolVersion::MAX => Some(b),
+				})
+				.unwrap_or(None);
+		}
+		None
 	}
 
 	/// Provides a reading view into the current txhashset state as well as
 	/// the required indexes for a consumer to rewind to a consistent state
 	/// at the provided block hash.
 	fn txhashset_read(&self, h: Hash) -> Option<p2p::TxHashSetRead> {
-		match self.chain().txhashset_read(h.clone()) {
-			Ok((out_index, kernel_index, read)) => Some(p2p::TxHashSetRead {
-				output_index: out_index,
-				kernel_index: kernel_index,
-				reader: read,
-			}),
-			Err(e) => {
-				warn!("Couldn't produce txhashset data for block {}: {:?}", h, e);
-				None
+		if let Ok(chain) = self.chain() {
+			match chain.txhashset_read(h.clone()) {
+				Ok((out_index, kernel_index, read)) => {
+					return Some(p2p::TxHashSetRead {
+						output_index: out_index,
+						kernel_index: kernel_index,
+						reader: read,
+					})
+				}
+				Err(e) => {
+					warn!("Couldn't produce txhashset data for block {}: {:?}", h, e);
+				}
 			}
-		}
+		};
+		None
 	}
 
 	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error> {
-		self.chain().txhashset_archive_header()
+		self.chain()?.txhashset_archive_header()
 	}
 
-	fn get_tmp_dir(&self) -> PathBuf {
-		self.chain().get_tmp_dir()
+	fn get_tmp_dir(&self) -> Result<PathBuf, chain::Error> {
+		Ok(self.chain()?.get_tmp_dir())
 	}
 
-	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf {
-		self.chain().get_tmpfile_pathname(tmpfile_name)
+	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, chain::Error> {
+		Ok(self.chain()?.get_tmpfile_pathname(tmpfile_name))
 	}
 
 	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error> {
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
-		self.chain().segmenter()
+		self.chain()?.segmenter()
 	}
 
 	fn get_kernel_segment(
@@ -558,8 +571,11 @@ where
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
-		let segmenter = self.chain().segmenter()?;
-		let head_hash = segmenter.header().hash();
+		let segmenter = self.chain()?.segmenter()?;
+		let head_hash = segmenter
+			.header()
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		if head_hash != hash {
 			return Err(chain::Error::SegmenterHeaderMismatch(
 				head_hash,
@@ -577,8 +593,11 @@ where
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
-		let segmenter = self.chain().segmenter()?;
-		let head_hash = segmenter.header().hash();
+		let segmenter = self.chain()?.segmenter()?;
+		let head_hash = segmenter
+			.header()
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		if head_hash != hash {
 			return Err(chain::Error::SegmenterHeaderMismatch(
 				head_hash,
@@ -596,8 +615,11 @@ where
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
-		let segmenter = self.chain().segmenter()?;
-		let head_hash = segmenter.header().hash();
+		let segmenter = self.chain()?.segmenter()?;
+		let head_hash = segmenter
+			.header()
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		if head_hash != hash {
 			return Err(chain::Error::SegmenterHeaderMismatch(
 				head_hash,
@@ -615,8 +637,11 @@ where
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
-		let segmenter = self.chain().segmenter()?;
-		let head_hash = segmenter.header().hash();
+		let segmenter = self.chain()?.segmenter()?;
+		let head_hash = segmenter
+			.header()
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		if head_hash != hash {
 			return Err(chain::Error::SegmenterHeaderMismatch(
 				head_hash,
@@ -680,7 +705,7 @@ where
 		if self.sync_state.is_syncing() {
 			return Err(chain::Error::ChainInSync);
 		}
-		let segmenter = self.chain().segmenter()?;
+		let segmenter = self.chain()?.segmenter()?;
 
 		let chain_header_hashes_root = segmenter.headers_root()?;
 		if header_hashes_root != chain_header_hashes_root {
@@ -726,7 +751,7 @@ where
 			peer,
 			&archive_header_hash,
 			segment,
-			&self.peers(),
+			&self.peers()?,
 		);
 		Ok(())
 	}
@@ -748,7 +773,7 @@ where
 			peer,
 			&archive_header_hash,
 			segment,
-			&self.peers(),
+			&self.peers()?,
 		);
 		Ok(())
 	}
@@ -770,7 +795,7 @@ where
 			peer,
 			&archive_header_hash,
 			segment,
-			&self.peers(),
+			&self.peers()?,
 		);
 		Ok(())
 	}
@@ -792,7 +817,7 @@ where
 			peer,
 			&archive_header_hash,
 			segment,
-			&self.peers(),
+			&self.peers()?,
 		);
 		Ok(())
 	}
@@ -803,12 +828,18 @@ where
 			return;
 		}
 
-		if let Ok(tip) = self.chain().head() {
-			if difficulty > tip.total_difficulty && height > tip.height {
-				if let Ok(locator) = self.header_locator() {
-					if !self.sync_state.is_syncing() {
-						self.sync_manager
-							.add_header_request(&peer, None, tip.height + 1, locator);
+		if let Ok(chain) = self.chain() {
+			if let Ok(tip) = chain.head() {
+				if difficulty > tip.total_difficulty && height > tip.height {
+					if let Ok(locator) = self.header_locator() {
+						if !self.sync_state.is_syncing() {
+							self.sync_manager.add_header_request(
+								&peer,
+								None,
+								tip.height + 1,
+								locator,
+							);
+						}
 					}
 				}
 			}
@@ -852,17 +883,19 @@ where
 		self.peers.init(Arc::downgrade(&peers));
 	}
 
-	fn peers(&self) -> Arc<p2p::Peers> {
-		self.peers
+	fn peers(&self) -> Result<Arc<p2p::Peers>, chain::Error> {
+		Ok(self
+			.peers
 			.borrow()
 			.upgrade()
-			.expect("Failed to upgrade weak ref to our peers.")
+			.ok_or(chain::Error::Other("Peers ate not set".into()))?)
 	}
 
-	fn chain(&self) -> Arc<chain::Chain> {
-		self.chain
+	fn chain(&self) -> Result<Arc<chain::Chain>, chain::Error> {
+		Ok(self
+			.chain
 			.upgrade()
-			.expect("Failed to upgrade weak ref to our chain.")
+			.ok_or(chain::Error::Other("Chain is not set".into()))?)
 	}
 
 	// pushing the new block through the chain pipeline
@@ -874,7 +907,9 @@ where
 		opts: chain::Options,
 	) -> Result<bool, chain::Error> {
 		// We cannot process blocks earlier than the horizon so check for this here.
-		let chain = self.chain();
+		let chain = self.chain()?;
+		let peers = self.peers()?;
+
 		let head = {
 			let head = chain.head()?;
 			let horizon = head
@@ -887,30 +922,22 @@ where
 			head
 		};
 
-		let bhash = b.hash();
+		let bhash = b
+			.hash()
+			.map_err(|e| chain::Error::Other(format!("Header hash build error, {}", e)))?;
 		match chain.process_block(b.clone(), opts) {
 			Ok(_) => {
 				self.validate_chain(&bhash);
 				//self.check_compact();  Currently Sync process does that. No needs, also we don't want collosion to happens
-				self.sync_manager.recieve_block_reporting(
-					true,
-					&peer_info.addr,
-					b,
-					opts,
-					&self.peers(),
-				);
+				self.sync_manager
+					.recieve_block_reporting(true, &peer_info.addr, b, opts, &peers);
 				Ok(true)
 			}
 			Err(ref e) if e.is_bad_data() => {
 				warn!("process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}", bhash, peer_info.addr, e);
 				self.validate_chain(&bhash);
-				self.sync_manager.recieve_block_reporting(
-					false,
-					&peer_info.addr,
-					b,
-					opts,
-					&self.peers(),
-				);
+				self.sync_manager
+					.recieve_block_reporting(false, &peer_info.addr, b, opts, &peers);
 				Ok(false)
 			}
 			Err(e) => {
@@ -922,13 +949,13 @@ where
 					&peer_info.addr,
 					b,
 					opts,
-					&self.peers(),
+					&peers,
 				);
 				match e {
 					chain::Error::StoreErr(_, _) | chain::Error::Orphan(_) => {
 						if previous.is_err() {
 							// requesting headers from that peer, intentionally without  self.sync_manager.add_header_request
-							if let Some(peer) = self.peers().get_connected_peer(&peer_info.addr) {
+							if let Some(peer) = peers.get_connected_peer(&peer_info.addr) {
 								debug!("Got block with unknow headers, requesting headers from the peer {} at height {}", peer_info.addr, head.height);
 								let heights = get_locator_heights(head.height);
 								let locator = chain.get_locator_hashes(head, &heights)?;
@@ -966,8 +993,14 @@ where
 		// We are out of consensus at this point and want to track the problem
 		// down as soon as possible.
 		// Skip this if we are currently syncing (too slow).
+
+		let chain = match self.chain() {
+			Ok(ch) => ch,
+			Err(_) => return, // nothing to validate
+		};
+
 		if self.config.chain_validation_mode == ChainValidationMode::EveryBlock
-			&& self.chain().head().unwrap().height > 0
+			&& chain.head().map(|tip| tip.height).unwrap_or(0) > 0
 			&& !self.sync_state.is_syncing()
 		{
 			let now = Instant::now();
@@ -977,7 +1010,7 @@ where
 				bhash,
 			);
 
-			self.chain()
+			chain
 				.validate(true)
 				.expect("chain validation failed, hard stop");
 
@@ -1013,23 +1046,27 @@ where
 	// we need to go request the block (compact representation) from the
 	// same peer that gave us the header (unless we have already accepted the block)
 	fn request_compact_block(&self, bh: &BlockHeader, peer_info: &PeerInfo) {
-		self.send_block_request_to_peer(bh.hash(), peer_info, |peer, h| {
-			peer.send_compact_block_request(h)
-		})
+		if let Ok(bh_hash) = bh.hash() {
+			self.send_block_request_to_peer(bh_hash, peer_info, |peer, h| {
+				peer.send_compact_block_request(h)
+			})
+		}
 	}
 
 	fn send_tx_request_to_peer<F>(&self, h: Hash, peer_info: &PeerInfo, f: F)
 	where
 		F: Fn(&p2p::Peer, Hash) -> Result<(), p2p::Error>,
 	{
-		match self.peers().get_connected_peer(&peer_info.addr) {
-			None => debug!(
-				"send_tx_request_to_peer: can't send request to peer {:?}, not connected",
-				peer_info.addr
-			),
-			Some(peer) => {
-				if let Err(e) = f(&peer, h) {
-					error!("send_tx_request_to_peer: failed: {:?}", e)
+		if let Ok(peers) = self.peers() {
+			match peers.get_connected_peer(&peer_info.addr) {
+				None => debug!(
+					"send_tx_request_to_peer: can't send request to peer {:?}, not connected",
+					peer_info.addr
+				),
+				Some(peer) => {
+					if let Err(e) = f(&peer, h) {
+						error!("send_tx_request_to_peer: failed: {:?}", e)
+					}
 				}
 			}
 		}
@@ -1039,23 +1076,27 @@ where
 	where
 		F: Fn(&p2p::Peer, Hash) -> Result<(), p2p::Error>,
 	{
-		match self.chain().block_exists(&h) {
-			Ok(false) => match self.peers().get_connected_peer(&peer_info.addr) {
-				None => debug!(
-					"send_block_request_to_peer: can't send request to peer {:?}, not connected",
-					peer_info.addr
-				),
-				Some(peer) => {
-					if let Err(e) = f(&peer, h) {
-						error!("send_block_request_to_peer: failed: {:?}", e)
-					}
+		if let Ok(peers) = self.peers() {
+			if let Ok(chain) = self.chain() {
+				match chain.block_exists(&h) {
+					Ok(false) => match peers.get_connected_peer(&peer_info.addr) {
+						None => debug!(
+							"send_block_request_to_peer: can't send request to peer {:?}, not connected",
+							peer_info.addr
+						),
+						Some(peer) => {
+							if let Err(e) = f(&peer, h) {
+								error!("send_block_request_to_peer: failed: {:?}", e)
+							}
+						}
+					},
+					Ok(true) => debug!("send_block_request_to_peer: block {} already known", h),
+					Err(e) => error!(
+						"send_block_request_to_peer: failed to check block exists: {:?}",
+						e
+					),
 				}
-			},
-			Ok(true) => debug!("send_block_request_to_peer: block {} already known", h),
-			Err(e) => error!(
-				"send_block_request_to_peer: failed to check block exists: {:?}",
-				e
-			),
+			}
 		}
 	}
 }
@@ -1090,13 +1131,21 @@ where
 			// If we mined the block then we want to broadcast the compact block.
 			// If we received the block from another node then broadcast "header first"
 			// to minimize network traffic.
-			if opts.contains(Options::MINE) {
-				// propagate compact block out if we mined the block
-				let cb: CompactBlock = b.clone().into();
-				self.peers().broadcast_compact_block(&cb);
-			} else {
-				// "header first" propagation if we are not the originator of this block
-				self.peers().broadcast_header(&b.header);
+			if let Some(peers) = self.peers() {
+				if opts.contains(Options::MINE) {
+					// propagate compact block out if we mined the block
+					match CompactBlock::from(b.clone()) {
+						Ok(cb) => {
+							peers.broadcast_compact_block(&cb);
+						}
+						Err(e) => {
+							error!("Failed convert Block into CompactBlock, {}", e);
+						}
+					}
+				} else {
+					// "header first" propagation if we are not the originator of this block
+					peers.broadcast_header(&b.header);
+				}
 			}
 		}
 
@@ -1105,7 +1154,7 @@ where
 		// We only want to reconcile the txpool against the new block *if* total work has increased.
 
 		if status.is_next() || status.is_reorg() {
-			let mut tx_pool = self.tx_pool.write().expect("RwLock failure");
+			let mut tx_pool = self.tx_pool.write().unwrap_or_else(|e| e.into_inner());
 
 			let _ = tx_pool.reconcile_block(b, &self.secp);
 
@@ -1118,7 +1167,7 @@ where
 			let _ = self
 				.tx_pool
 				.write()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.reconcile_reorg_cache(&b.header, &self.secp);
 		}
 	}
@@ -1148,11 +1197,8 @@ where
 		self.peers.init(Arc::downgrade(&peers));
 	}
 
-	fn peers(&self) -> Arc<p2p::Peers> {
-		self.peers
-			.borrow()
-			.upgrade()
-			.expect("Failed to upgrade weak ref to our peers.")
+	fn peers(&self) -> Option<Arc<p2p::Peers>> {
+		self.peers.borrow().upgrade()
 	}
 }
 
@@ -1179,54 +1225,65 @@ impl DandelionAdapter for PoolToNetAdapter {
 	fn is_stem(&self) -> bool {
 		self.dandelion_epoch
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.is_stem()
 	}
 
 	fn is_expired(&self) -> bool {
 		self.dandelion_epoch
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.is_expired()
 	}
 
 	fn next_epoch(&self) {
-		self.dandelion_epoch
-			.write()
-			.expect("RwLock failure")
-			.next_epoch(&self.peers());
+		if let Some(peers) = self.peers() {
+			self.dandelion_epoch
+				.write()
+				.unwrap_or_else(|e| e.into_inner())
+				.next_epoch(&peers);
+		}
 	}
 }
 
 impl pool::PoolAdapter for PoolToNetAdapter {
 	fn tx_accepted(&self, entry: &pool::PoolEntry) {
-		self.peers().broadcast_transaction(&entry.tx);
+		if let Some(peers) = self.peers() {
+			peers.broadcast_transaction(&entry.tx);
+		}
 	}
 
 	fn stem_tx_accepted(&self, entry: &pool::PoolEntry) -> Result<(), pool::PoolError> {
 		// Take write lock on the current epoch.
 		// We need to be able to update the current relay peer if not currently connected.
-		let mut epoch = self.dandelion_epoch.write().expect("RwLock failure");
+		let mut epoch = self
+			.dandelion_epoch
+			.write()
+			.unwrap_or_else(|e| e.into_inner());
 
 		// If "stem" epoch attempt to relay the tx to the next Dandelion relay.
 		// Fallback to immediately fluffing the tx if we cannot stem for any reason.
 		// If "fluff" epoch then nothing to do right now (fluff via Dandelion monitor).
 		// If node is configured to always stem our (pushed via api) txs then do so.
 		if epoch.is_stem() || (entry.src.is_pushed() && epoch.always_stem_our_txs()) {
-			if let Some(peer) = epoch.relay_peer(&self.peers()) {
-				match peer.send_stem_transaction(&entry.tx) {
-					Ok(_) => {
-						info!("Stemming this epoch, relaying to next peer.");
-						Ok(())
+			if let Some(peers) = self.peers() {
+				if let Some(peer) = epoch.relay_peer(&peers) {
+					match peer.send_stem_transaction(&entry.tx) {
+						Ok(_) => {
+							info!("Stemming this epoch, relaying to next peer.");
+							Ok(())
+						}
+						Err(e) => {
+							error!("Stemming tx failed. Fluffing. {:?}", e);
+							Err(pool::PoolError::DandelionError)
+						}
 					}
-					Err(e) => {
-						error!("Stemming tx failed. Fluffing. {:?}", e);
-						Err(pool::PoolError::DandelionError)
-					}
+				} else {
+					error!("No relay peer. Fluffing.");
+					Err(pool::PoolError::DandelionError)
 				}
 			} else {
-				error!("No relay peer. Fluffing.");
-				Err(pool::PoolError::DandelionError)
+				Ok(())
 			}
 		} else {
 			info!("Fluff epoch. Aggregating stem tx(s). Will fluff via Dandelion monitor.");
@@ -1249,11 +1306,8 @@ impl PoolToNetAdapter {
 		self.peers.init(Arc::downgrade(&peers));
 	}
 
-	fn peers(&self) -> Arc<p2p::Peers> {
-		self.peers
-			.borrow()
-			.upgrade()
-			.expect("Failed to upgrade weak ref to our peers.")
+	fn peers(&self) -> Option<Arc<p2p::Peers>> {
+		self.peers.borrow().upgrade()
 	}
 }
 
@@ -1278,60 +1332,81 @@ impl PoolToChainAdapter {
 		self.chain.init(Arc::downgrade(&chain_ref));
 	}
 
-	fn chain(&self) -> Arc<chain::Chain> {
-		self.chain
-			.borrow()
-			.upgrade()
-			.expect("Failed to upgrade the weak ref to our chain.")
+	fn chain(&self) -> Option<Arc<chain::Chain>> {
+		self.chain.borrow().upgrade()
 	}
 }
 
 impl pool::BlockChain for PoolToChainAdapter {
 	fn chain_head(&self) -> Result<BlockHeader, pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.head_header()
 			.map_err(|e| pool::PoolError::Other(format!("failed to get head_header, {}", e)))
 	}
 
 	fn get_block_header(&self, hash: &Hash) -> Result<BlockHeader, pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.get_block_header(hash)
 			.map_err(|e| pool::PoolError::Other(format!("failed to get block_header, {}", e)))
 	}
 
 	fn get_block_sums(&self, hash: &Hash) -> Result<BlockSums, pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.get_block_sums(hash)
 			.map_err(|e| pool::PoolError::Other(format!("failed to get block_sums, {}", e)))
 	}
 
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.validate_tx(tx)
 			.map_err(|e| pool::PoolError::Other(format!("failed to validate tx, {}", e)))
 	}
 
 	fn validate_inputs(&self, inputs: &Inputs) -> Result<Vec<OutputIdentifier>, pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.validate_inputs(inputs)
 			.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect::<Vec<_>>())
 			.map_err(|_| pool::PoolError::Other("failed to validate tx".to_string()))
 	}
 
 	fn verify_coinbase_maturity(&self, inputs: &Inputs) -> Result<(), pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.verify_coinbase_maturity(inputs)
 			.map_err(|_| pool::PoolError::ImmatureCoinbase)
 	}
 
 	fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
-		self.chain()
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain
 			.verify_tx_lock_height(tx)
 			.map_err(|_| pool::PoolError::ImmatureTransaction)
 	}
 
 	fn replay_attack_check(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
-		self.chain().replay_attack_check(tx).map_err(|e| {
+		let chain = self.chain().ok_or(pool::PoolError::Other(
+			"Chain instance is not available".to_string(),
+		))?;
+		chain.replay_attack_check(tx).map_err(|e| {
 			pool::PoolError::DuplicateKernelOrDuplicateSpent(format!(
 				"Replay attack detected, {}",
 				e

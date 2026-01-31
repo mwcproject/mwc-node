@@ -64,8 +64,15 @@ where
 	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Option<Transaction> {
 		for x in &self.entries {
 			for k in x.tx.kernels() {
-				if k.hash() == hash {
-					return Some(x.tx.clone());
+				match k.hash() {
+					Ok(k_hash) => {
+						if k_hash == hash {
+							return Some(x.tx.clone());
+						}
+					}
+					Err(e) => {
+						error!("Failed to build hash for Kernel, {}", e);
+					}
 				}
 			}
 		}
@@ -89,13 +96,14 @@ where
 		'outer: for x in &self.entries {
 			for k in x.tx.kernels() {
 				// rehash each kernel to calculate the block specific short_id
-				let short_id = k.short_id(&hash, nonce);
-				if kern_ids.contains(&short_id) {
-					txs.push(x.tx.clone());
-					found_ids.push(short_id);
-				}
-				if found_ids.len() == kern_ids.len() {
-					break 'outer;
+				if let Ok(short_id) = k.short_id(&hash, nonce) {
+					if kern_ids.contains(&short_id) {
+						txs.push(x.tx.clone());
+						found_ids.push(short_id);
+					}
+					if found_ids.len() == kern_ids.len() {
+						break 'outer;
+					}
 				}
 			}
 		}
@@ -210,13 +218,13 @@ where
 		debug!(
 			"add_to_pool [{}]: {} ({:?}) [in/out/kern: {}/{}/{}] pool: {} (at block {})",
 			self.name,
-			entry.tx.hash(),
+			entry.tx.hash().unwrap_or(Hash::default()),
 			entry.src,
 			entry.tx.inputs().len(),
 			entry.tx.outputs().len(),
 			entry.tx.kernels().len(),
 			self.size(),
-			header.hash(),
+			header.hash().unwrap_or(Hash::default()),
 		);
 	}
 
@@ -314,7 +322,10 @@ where
 
 		let offset = { header.total_kernel_offset().add(&tx.offset, &secp) }?;
 
-		let block_sums = self.blockchain.get_block_sums(&header.hash())?;
+		let block_sums =
+			self.blockchain.get_block_sums(&header.hash().map_err(|e| {
+				PoolError::Other(format!("header hash calculation error, {}", e))
+			})?)?;
 
 		// Verify the kernel sums for the block_sums with the new tx applied,
 		// accounting for overage and offset.

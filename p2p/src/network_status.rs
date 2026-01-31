@@ -94,9 +94,10 @@ fn check_http_probe(host: &str) -> bool {
 /// Pick a random **live** URL (after first-call filtering).
 pub fn get_random_http_probe_host() -> String {
 	let urls = probe_urls_http();
-	urls.choose(&mut rand::thread_rng())
-		.expect("non-empty")
-		.clone()
+	match urls.choose(&mut rand::thread_rng()) {
+		Some(u) => u.clone(),
+		None => String::from("www.google.com"),
+	}
 }
 
 #[test]

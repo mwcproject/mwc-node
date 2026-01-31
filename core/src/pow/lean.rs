@@ -31,29 +31,31 @@ pub struct Lean {
 
 impl Lean {
 	/// Instantiates a new lean miner based on some Cuckatoo parameters
-	pub fn new(edge_bits: u8) -> Lean {
+	pub fn new(edge_bits: u8) -> Result<Lean, Error> {
 		// note that proof size doesn't matter to a lean miner
-		let params = CuckooParams::new(edge_bits, edge_bits, 42).unwrap();
+		let params = CuckooParams::new(edge_bits, edge_bits, 42)?;
 
 		// edge bitmap, before trimming all of them are on
 		let mut edges = Bitmap::with_container_capacity(params.num_edges as u32);
 		edges.flip_inplace(0u32..params.num_edges as u32);
 
-		Lean { params, edges }
+		Ok(Lean { params, edges })
 	}
 
 	/// Sets the header and nonce to seed the graph
-	pub fn set_header_nonce(&mut self, header: Vec<u8>, nonce: u32) {
-		self.params.reset_header_nonce(header, Some(nonce)).unwrap();
+	pub fn set_header_nonce(&mut self, header: Vec<u8>, nonce: u32) -> Result<(), Error> {
+		self.params.reset_header_nonce(header, Some(nonce))?;
+		Ok(())
 	}
 
 	/// Trim edges in the Cuckatoo graph. This applies multiple trimming rounds
 	/// and works well for Cuckatoo size above 18.
-	pub fn trim(&mut self) {
+	pub fn trim(&mut self) -> Result<(), Error> {
 		// trimming successively
 		while self.edges.cardinality() > (7 * (self.params.num_edges >> 8) / 8) as u64 {
-			self.count_and_kill();
+			self.count_and_kill()?;
 		}
+		Ok(())
 	}
 
 	/// Finds the Cuckatoo Cycles on the remaining edges. Delegates the finding
@@ -62,26 +64,27 @@ impl Lean {
 		ctx.find_cycles_iter(self.edges.iter().map(|e| e as u64))
 	}
 
-	fn count_and_kill(&mut self) {
+	fn count_and_kill(&mut self) -> Result<(), Error> {
 		// on each side u or v of the bipartite graph
 		for uorv in 0..2 {
 			let mut nodes = Bitmap::new();
 			// increment count for each node
 			for e in self.edges.iter() {
-				let node = self.params.sipnode(e.into(), uorv).unwrap();
+				let node = self.params.sipnode(e.into(), uorv)?;
 				nodes.add(node as u32);
 			}
 
 			// then kill edges with lone nodes (no neighbour at ^1)
 			let mut to_kill = Bitmap::new();
 			for e in self.edges.iter() {
-				let node = self.params.sipnode(e.into(), uorv).unwrap();
+				let node = self.params.sipnode(e.into(), uorv)?;
 				if !nodes.contains((node ^ 1) as u32) {
 					to_kill.add(e);
 				}
 			}
 			self.edges.andnot_inplace(&to_kill);
 		}
+		Ok(())
 	}
 }
 
@@ -99,9 +102,9 @@ mod test {
 		let header = [0u8; 84].to_vec(); // with nonce
 		let edge_bits = 19;
 
-		let mut lean = Lean::new(edge_bits);
-		lean.set_header_nonce(header.clone(), nonce);
-		lean.trim();
+		let mut lean = Lean::new(edge_bits).unwrap();
+		lean.set_header_nonce(header.clone(), nonce).unwrap();
+		lean.trim().unwrap();
 
 		let mut ctx_u32 = CuckatooContext::new_impl(edge_bits, 42, 10, 0u32).unwrap();
 		ctx_u32.set_header_nonce(header, Some(nonce), true).unwrap();

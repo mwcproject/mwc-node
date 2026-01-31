@@ -29,6 +29,7 @@ use crate::p2p::ChainAdapter;
 use crate::util::StopState;
 use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
+use mwc_core::global::PEER_PING_INTERVAL_SECONDS;
 use mwc_p2p::tor::arti::is_arti_healthy;
 use mwc_p2p::PeerAddr::Onion;
 use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
@@ -49,8 +50,6 @@ const PEERS_LISTEN_MIN_INTERVAL: i64 = 600; // Interval to add some new peers ev
 const PEER_RECONNECT_INTERVAL: i64 = 600;
 const SEED_RECONNECT_INTERVAL: i64 = 60;
 const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
-
-const PEER_PING_INTERVAL: i64 = 10;
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -92,6 +91,8 @@ pub fn connect_and_monitor(
 
 			let network_last_outage_time = AtomicI64::new(0);
 
+			let mut recover_peers_num: usize = 1;
+
 			loop {
 				if stop_state.is_stopped() {
 					break;
@@ -126,6 +127,7 @@ pub fn connect_and_monitor(
 				}
 
 				let request_more_connections = now > listen_time;
+				let has_enough_peers = peers.enough_outbound_peers();
 
 				// monitor peers first, then process sent requests with 'listen_for_addrs'
 				if now > peer_monitor_time
@@ -140,9 +142,10 @@ pub fn connect_and_monitor(
 						listen_q_addrs.is_empty(),
 						request_more_connections,
 						&network_last_outage_time,
+						recover_peers_num,
 					);
 
-					if peers.is_sync_mode() {
+					if peers.is_sync_mode() || !has_enough_peers {
 						peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL / 5); // every 12 seconds let's do the check
 					} else {
 						peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL); // once a minute checking
@@ -153,8 +156,12 @@ pub fn connect_and_monitor(
 				// with exponential backoff
 				if now > peers_connect_time || request_more_connections {
 					let is_boost = peers.is_boosting_mode();
-					if peers.enough_outbound_peers() && !request_more_connections {
+					if has_enough_peers && !request_more_connections {
 						peers_connect_time = now + Duration::seconds(PEERS_CHECK_TIME_FULL);
+						if recover_peers_num != 1 {
+							info!("Reset recovery peers to 1");
+							recover_peers_num = 1;
+						}
 					} else {
 						// try to connect to any address sent to the channel
 						listen_for_addrs(
@@ -172,13 +179,22 @@ pub fn connect_and_monitor(
 						} else {
 							PEERS_CHECK_TIME_FULL
 						};
+
+						if !has_enough_peers {
+							recover_peers_num = std::cmp::min(
+								PEER_MAX_INITIATE_CONNECTIONS,
+								recover_peers_num + std::cmp::max(1, recover_peers_num / 4),
+							);
+							info!("Increased recovery peers number to {}", recover_peers_num);
+						}
+
 						peers_connect_time = now + Duration::seconds(duration);
 						listen_time = now + Duration::seconds(PEERS_LISTEN_MIN_INTERVAL);
 					}
 				}
 
 				// Ping connected peers on every 10s to monitor peers.
-				if Utc::now() - prev_ping > Duration::seconds(PEER_PING_INTERVAL) {
+				if Utc::now() - prev_ping > Duration::seconds(PEER_PING_INTERVAL_SECONDS) {
 					let total_diff = peers.total_difficulty();
 					let total_height = peers.total_height();
 					if let (Ok(total_diff), Ok(total_height)) = (total_diff, total_height) {
@@ -202,6 +218,7 @@ fn monitor_peers(
 	load_peers_from_db: bool,
 	request_more_connections: bool,
 	network_last_outage_time: &AtomicI64,
+	recover_peers: usize,
 ) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
@@ -304,7 +321,10 @@ fn monitor_peers(
 
 	// take a random defunct peer and mark it healthy: over a long enough period any
 	// peer will see another as defunct eventually, gives us a chance to retry
-	if let Some(peer) = defuncts.into_iter().choose(&mut thread_rng()) {
+	for peer in defuncts
+		.into_iter()
+		.choose_multiple(&mut thread_rng(), recover_peers)
+	{
 		let _ = peers.update_state(&peer.addr, p2p::State::Healthy);
 	}
 
@@ -322,7 +342,10 @@ fn monitor_peers(
 		let mut max_addresses = 0;
 		for p in new_peers {
 			if !peers.is_known(&p.addr) {
-				tx.send(p.addr.clone()).unwrap();
+				if tx.send(p.addr.clone()).is_err() {
+					error!("Failed to send a new peer connection request");
+					continue;
+				}
 				max_addresses += 1;
 				if max_addresses > 20 {
 					break;
@@ -461,7 +484,10 @@ fn listen_for_addrs(
 			break;
 		}
 
-		let addr = listen_q_addrs.pop().expect("listen_q_addrs is not empty");
+		let addr = match listen_q_addrs.pop() {
+			Some(a) => a,
+			None => continue,
+		};
 
 		// Note, is_arti_healthy might wait for a long time it Arti is restarting. Foir this case it is totally fine
 		if use_tor_connection && !is_arti_healthy() {
@@ -548,9 +574,12 @@ fn listen_for_addrs(
 						}
 					}
 				}
-			})
-			.expect("failed to launch peer_connect thread");
-		connection_threads.push(thr);
+			});
+
+		match thr {
+			Ok(thr) => connection_threads.push(thr),
+			Err(e) => error!("failed to launch peer_connect thread, {}", e),
+		}
 	}
 }
 

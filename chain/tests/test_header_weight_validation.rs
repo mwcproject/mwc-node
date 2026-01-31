@@ -34,7 +34,7 @@ use chrono::Duration;
 
 fn build_block(chain: &Chain) -> Block {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
+	let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
 
 	let mut cache_values = VecDeque::new();
 	let prev = chain.head_header().unwrap();
@@ -43,7 +43,7 @@ fn build_block(chain: &Chain) -> Block {
 	let reward = reward::output(
 		0,
 		&keychain,
-		&ProofBuilder::new(&keychain),
+		&ProofBuilder::new(&keychain).unwrap(),
 		&pk,
 		0,
 		false,

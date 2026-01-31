@@ -34,7 +34,7 @@ use mwc_chain::{BlockStatus, ChainAdapter, Options};
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_util as util;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -70,6 +70,7 @@ fn setup_with_status_adapter(dir_name: &str, genesis: Block, adapter: Arc<Status
 		genesis,
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap();
 
@@ -378,7 +379,7 @@ fn mine_reorg() {
 
 		let head = chain.head().unwrap();
 		assert_eq!(head.height, NUM_BLOCKS_MAIN);
-		assert_eq!(head.hash(), prev.hash());
+		assert_eq!(head.hash().unwrap(), prev.hash().unwrap());
 
 		// Reorg chain should exceed main chain's total difficulty to be considered
 		let reorg_difficulty = head.total_difficulty.to_num();
@@ -405,7 +406,7 @@ fn mine_reorg() {
 		// Chain should be switched to the reorganized chain
 		let head = chain.head().unwrap();
 		assert_eq!(head.height, NUM_BLOCKS_MAIN - REORG_DEPTH + 1);
-		assert_eq!(head.hash(), reorg_head.hash());
+		assert_eq!(head.hash().unwrap(), reorg_head.hash().unwrap());
 	}
 
 	// Cleanup chain directory
@@ -434,27 +435,27 @@ fn mine_forks() {
 			let b1 = prepare_block(&kc, &prev, &chain, 3 * n);
 
 			// process the first block to extend the chain
-			let bhash = b1.hash();
+			let bhash = b1.hash().unwrap();
 			chain.process_block(b1, chain::Options::SKIP_POW).unwrap();
 
 			// checking our new head
 			let head = chain.head().unwrap();
 			assert_eq!(head.height, (n + 1) as u64);
 			assert_eq!(head.last_block_h, bhash);
-			assert_eq!(head.prev_block_h, prev.hash());
+			assert_eq!(head.prev_block_h, prev.hash().unwrap());
 
 			// 2nd block with higher difficulty for other branch
 			let b2 = prepare_block(&kc, &prev, &chain, 3 * n + 1);
 
 			// process the 2nd block to build a fork with more work
-			let bhash = b2.hash();
+			let bhash = b2.hash().unwrap();
 			chain.process_block(b2, chain::Options::SKIP_POW).unwrap();
 
 			// checking head switch
 			let head = chain.head().unwrap();
 			assert_eq!(head.height, (n + 1) as u64);
 			assert_eq!(head.last_block_h, bhash);
-			assert_eq!(head.prev_block_h, prev.hash());
+			assert_eq!(head.prev_block_h, prev.hash().unwrap());
 		}
 	}
 	// Cleanup chain directory
@@ -484,7 +485,10 @@ fn mine_losing_fork() {
 		// add higher difficulty first, prepare its successor, then fork
 		// with lower diff
 		chain.process_block(b2, chain::Options::SKIP_POW).unwrap();
-		assert_eq!(chain.head_header().unwrap().hash(), b2head.hash());
+		assert_eq!(
+			chain.head_header().unwrap().hash().unwrap(),
+			b2head.hash().unwrap()
+		);
 		let b3 = prepare_block(&kc, &b2head, &chain, 5);
 		chain
 			.process_block(bfork, chain::Options::SKIP_POW)
@@ -493,7 +497,10 @@ fn mine_losing_fork() {
 		// adding the successor
 		let b3head = b3.header.clone();
 		chain.process_block(b3, chain::Options::SKIP_POW).unwrap();
-		assert_eq!(chain.head_header().unwrap().hash(), b3head.hash());
+		assert_eq!(
+			chain.head_header().unwrap().hash().unwrap(),
+			b3head.hash().unwrap()
+		);
 	}
 	// Cleanup chain directory
 	clean_output_dir(".mwc3");
@@ -525,7 +532,7 @@ fn longer_fork() {
 
 		let head = chain.head_header().unwrap();
 		assert_eq!(head.height, 10);
-		assert_eq!(head.hash(), prev.hash());
+		assert_eq!(head.hash().unwrap(), prev.hash().unwrap());
 
 		let mut prev = forked_block;
 		for n in 0..7 {
@@ -539,7 +546,7 @@ fn longer_fork() {
 		// After all this the chain should have switched to the fork.
 		let head = chain.head_header().unwrap();
 		assert_eq!(head.height, 12);
-		assert_eq!(head.hash(), new_head.hash());
+		assert_eq!(head.hash().unwrap(), new_head.hash().unwrap());
 	}
 	// Cleanup chain directory
 	clean_output_dir(".mwc4");
@@ -557,7 +564,7 @@ fn spend_rewind_spend() {
 		let chain = init_chain(chain_dir, pow::mine_genesis_block(0).unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
-		let pb = ProofBuilder::new(&kc);
+		let pb = ProofBuilder::new(&kc).unwrap();
 
 		let mut head = prev;
 
@@ -580,8 +587,10 @@ fn spend_rewind_spend() {
 		// Make a note of this header as we will rewind back to here later.
 		let rewind_to = head.clone();
 
-		let key_id_coinbase = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0).to_identifier();
+		let key_id_coinbase = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
 
 		let tx1 = build::transaction(
 			KernelFeatures::Plain { fee: 20000.into() },
@@ -632,7 +641,7 @@ fn spend_in_fork_and_compact() {
 		let chain = init_chain(".mwc6", pow::mine_genesis_block(0).unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
-		let pb = ProofBuilder::new(&kc);
+		let pb = ProofBuilder::new(&kc).unwrap();
 
 		let mut fork_head = prev;
 
@@ -656,9 +665,13 @@ fn spend_in_fork_and_compact() {
 
 		// Check the height of the "fork block".
 		assert_eq!(fork_head.height, 3);
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0).to_identifier();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0).to_identifier();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
+		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
 
 		let tx1 = build::transaction(
 			KernelFeatures::Plain { fee: 20000.into() },
@@ -698,7 +711,7 @@ fn spend_in_fork_and_compact() {
 		// check state
 		let head = chain.head_header().unwrap();
 		assert_eq!(head.height, 5);
-		assert_eq!(head.hash(), prev_main.hash());
+		assert_eq!(head.hash().unwrap(), prev_main.hash().unwrap());
 		assert!(chain
 			.get_unspent(tx2.outputs()[0].commitment())
 			.unwrap()
@@ -724,7 +737,7 @@ fn spend_in_fork_and_compact() {
 		// check state
 		let head = chain.head_header().unwrap();
 		assert_eq!(head.height, 5);
-		assert_eq!(head.hash(), prev_main.hash());
+		assert_eq!(head.hash().unwrap(), prev_main.hash().unwrap());
 		assert!(chain
 			.get_unspent(tx2.outputs()[0].commitment())
 			.unwrap()
@@ -745,7 +758,7 @@ fn spend_in_fork_and_compact() {
 		// check state
 		let head = chain.head_header().unwrap();
 		assert_eq!(head.height, 6);
-		assert_eq!(head.hash(), prev_fork.hash());
+		assert_eq!(head.hash().unwrap(), prev_fork.hash().unwrap());
 		assert!(chain
 			.get_unspent(tx2.outputs()[0].commitment())
 			.unwrap()
@@ -801,11 +814,13 @@ fn output_header_mappings() {
 				chain.difficulty_iter().unwrap(),
 				&mut cache_values,
 			);
-			let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0).to_identifier();
+			let pk = ExtKeychainPath::new(1, n as u32, 0, 0, 0)
+				.to_identifier()
+				.unwrap();
 			let reward = libtx::reward::output(
 				0,
 				&keychain,
-				&libtx::ProofBuilder::new(&keychain),
+				&libtx::ProofBuilder::new(&keychain).unwrap(),
 				&pk,
 				0,
 				false,
@@ -903,7 +918,7 @@ where
 			// we return the output and the value is subtracted instead of added
 			Ok((
 				tx.with_output(Output::new(OutputFeatures::Plain, commit, proof)),
-				sum.sub_key_id(key_id.to_value_path(value)),
+				sum.sub_key_id(key_id.to_value_path(value).unwrap()),
 			))
 		},
 	)
@@ -920,7 +935,7 @@ fn test_overflow_cached_rangeproof() {
 		let chain = init_chain(".mwc_overflow", pow::mine_genesis_block(0).unwrap());
 		let prev = chain.head_header().unwrap();
 		let kc = ExtKeychain::from_random_seed(false).unwrap();
-		let pb = ProofBuilder::new(&kc);
+		let pb = ProofBuilder::new(&kc).unwrap();
 
 		let mut head = prev;
 
@@ -942,10 +957,16 @@ fn test_overflow_cached_rangeproof() {
 		}
 
 		// create a few keys for use in txns
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0).to_identifier();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0).to_identifier();
-		let key_id32 = ExtKeychainPath::new(1, 32, 0, 0, 0).to_identifier();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
+		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
+		let key_id32 = ExtKeychainPath::new(1, 32, 0, 0, 0)
+			.to_identifier()
+			.unwrap();
 
 		// build a regular transaction so we have a rangeproof to copy
 		let tx1 = build::transaction(
@@ -1084,13 +1105,15 @@ where
 	K: Keychain,
 {
 	let proof_size = global::proofsize(0);
-	let key_id = ExtKeychainPath::new(1, key_idx, 0, 0, 0).to_identifier();
+	let key_id = ExtKeychainPath::new(1, key_idx, 0, 0, 0)
+		.to_identifier()
+		.unwrap();
 
 	let fees = txs.iter().map(|tx| tx.fee()).sum();
 	let reward = libtx::reward::output(
 		0,
 		kc,
-		&libtx::ProofBuilder::new(kc),
+		&libtx::ProofBuilder::new(kc).unwrap(),
 		&key_id,
 		fees,
 		false,
@@ -1122,6 +1145,7 @@ fn actual_diff_iter_output() {
 		genesis_block,
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap();
 	let iter = chain.difficulty_iter().unwrap();

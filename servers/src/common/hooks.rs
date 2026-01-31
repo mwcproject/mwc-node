@@ -27,6 +27,7 @@ use hyper::header::HeaderValue;
 use hyper::Client;
 use hyper::{Body, Method, Request};
 use hyper_rustls::HttpsConnector;
+use mwc_core::core::hash::Hash;
 use mwc_util::{global_runtime, ToHex};
 use serde::Serialize;
 use serde_json::{json, to_string};
@@ -84,7 +85,7 @@ impl NetEvents for EventLogger {
 	fn on_transaction_received(&self, tx: &core::Transaction) {
 		info!(
 			"Received tx {}, [in/out/kern: {}/{}/{}] going to process.",
-			tx.hash(),
+			tx.hash().unwrap_or(Hash::default()),
 			tx.inputs().len(),
 			tx.outputs().len(),
 			tx.kernels().len(),
@@ -94,7 +95,7 @@ impl NetEvents for EventLogger {
 	fn on_block_received(&self, block: &core::Block, addr: &PeerAddr) {
 		info!(
 			"Received block {} at {} from {} [in/out/kern: {}/{}/{}] going to process.",
-			block.hash(),
+			block.hash().unwrap_or(Hash::default()),
 			block.header.height,
 			addr,
 			block.inputs().len(),
@@ -106,7 +107,7 @@ impl NetEvents for EventLogger {
 	fn on_header_received(&self, header: &core::BlockHeader, addr: &PeerAddr) {
 		info!(
 			"Received block header {} at {} from {}, going to process.",
-			header.hash(),
+			header.hash().unwrap_or(Hash::default()),
 			header.height,
 			addr
 		);
@@ -123,13 +124,13 @@ impl ChainEvents for EventLogger {
 			} => {
 				warn!(
 					"block_accepted (REORG!): {} at {}, (prev: {} at {}, prev_head: {} at {}, fork_point: {} at {}, depth: {})",
-					block.hash(),
+					block.hash().unwrap_or(Hash::default()),
 					block.header.height,
-					prev.hash(),
+					prev.hash().unwrap_or(Hash::default()),
 					prev.height,
-					prev_head.hash(),
+					prev_head.hash().unwrap_or(Hash::default()),
 					prev_head.height,
-					fork_point.hash(),
+					fork_point.hash().unwrap_or(Hash::default()),
 					fork_point.height,
 					prev_head.height.saturating_sub(fork_point.height),
 				);
@@ -141,13 +142,13 @@ impl ChainEvents for EventLogger {
 			} => {
 				debug!(
 					"block_accepted (fork?): {} at {}, (prev: {} at {}, head: {} at {}, fork_point: {} at {}, depth: {})",
-					block.hash(),
+					block.hash().unwrap_or(Hash::default()),
 					block.header.height,
-					prev.hash(),
+					prev.hash().unwrap_or(Hash::default()),
 					prev.height,
-					head.hash(),
+					head.hash().unwrap_or(Hash::default()),
 					head.height,
-					fork_point.hash(),
+					fork_point.hash().unwrap_or(Hash::default()),
 					fork_point.height,
 					head.height.saturating_sub(fork_point.height),
 				);
@@ -155,9 +156,9 @@ impl ChainEvents for EventLogger {
 			BlockStatus::Next { prev } => {
 				debug!(
 					"block_accepted (head+): {} at {} (prev: {} at {})",
-					block.hash(),
+					block.hash().unwrap_or(Hash::default()),
 					block.header.height,
-					prev.hash(),
+					prev.hash().unwrap_or(Hash::default()),
 					prev.height,
 				);
 			}
@@ -298,14 +299,14 @@ impl ChainEvents for WebHook {
 		{
 			let depth = prev_head.height.saturating_sub(fork_point.height);
 			json!({
-				"hash": block.header.hash().to_hex(),
+				"hash": block.header.hash().unwrap_or(Hash::default()).to_hex(),
 				"status": status_str,
 				"data": block,
 				"depth": depth
 			})
 		} else {
 			json!({
-				"hash": block.header.hash().to_hex(),
+				"hash": block.header.hash().unwrap_or(Hash::default()).to_hex(),
 				"status": status_str,
 				"data": block
 			})
@@ -319,7 +320,7 @@ impl ChainEvents for WebHook {
 		if !self.make_request(&payload, &self.block_accepted_url) {
 			error!(
 				"Failed to serialize block {} at height {}",
-				block.hash(),
+				block.hash().unwrap_or(Hash::default()),
 				block.header.height
 			);
 		}
@@ -330,7 +331,7 @@ impl NetEvents for WebHook {
 	/// Triggers when a new transaction arrives
 	fn on_transaction_received(&self, tx: &core::Transaction) {
 		let payload = json!({
-			"hash": tx.hash().to_hex(),
+			"hash": tx.hash().unwrap_or(Hash::default()).to_hex(),
 			"data": tx
 		});
 
@@ -339,14 +340,17 @@ impl NetEvents for WebHook {
 			.as_ref()
 			.map(|f| f("transaction_received", &payload));
 		if !self.make_request(&payload, &self.tx_received_url) {
-			error!("Failed to serialize transaction {}", tx.hash());
+			error!(
+				"Failed to serialize transaction {}",
+				tx.hash().unwrap_or(Hash::default())
+			);
 		}
 	}
 
 	/// Triggers when a new block arrives
 	fn on_block_received(&self, block: &core::Block, addr: &PeerAddr) {
 		let payload = json!({
-			"hash": block.header.hash().to_hex(),
+			"hash": block.header.hash().unwrap_or(Hash::default()).to_hex(),
 			"peer": addr,
 			"data": block
 		});
@@ -359,7 +363,7 @@ impl NetEvents for WebHook {
 		if !self.make_request(&payload, &self.block_received_url) {
 			error!(
 				"Failed to serialize block {} at height {}",
-				block.hash().to_hex(),
+				block.hash().unwrap_or(Hash::default()).to_hex(),
 				block.header.height
 			);
 		}
@@ -368,7 +372,7 @@ impl NetEvents for WebHook {
 	/// Triggers when a new block header arrives
 	fn on_header_received(&self, header: &core::BlockHeader, addr: &PeerAddr) {
 		let payload = json!({
-			"hash": header.hash().to_hex(),
+			"hash": header.hash().unwrap_or(Hash::default()).to_hex(),
 			"peer": addr,
 			"data": header
 		});
@@ -381,7 +385,7 @@ impl NetEvents for WebHook {
 		if !self.make_request(&payload, &self.header_received_url) {
 			error!(
 				"Failed to serialize header {} at height {}",
-				header.hash(),
+				header.hash().unwrap_or(Hash::default()),
 				header.height
 			);
 		}

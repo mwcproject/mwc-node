@@ -45,7 +45,7 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 	}
 
 	fn append_pruned_subtree(&mut self, hash: Hash, pos0: u64) -> Result<(), String> {
-		let idx = usize::try_from(pos0).expect("usize from u64");
+		let idx = usize::try_from(pos0).map_err(|_| format!("Invalid PMMR position {}", pos0))?;
 
 		if self.hashes.len() < idx {
 			self.hashes.resize(idx + 1, None);
@@ -78,7 +78,10 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 	}
 
 	fn get_from_file(&self, pos0: u64) -> Option<Hash> {
-		let idx = usize::try_from(pos0).expect("usize from u64");
+		let idx = match usize::try_from(pos0) {
+			Ok(i) => i,
+			Err(_) => return None,
+		};
 		match self.hashes.get(idx) {
 			Some(h) => h.clone(),
 			None => None,
@@ -91,9 +94,21 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 
 	fn get_data_from_file(&self, pos0: u64) -> Option<T::E> {
 		if let Some(data) = &self.data {
-			let idx = usize::try_from(pmmr::n_leaves(1 + pos0) - 1).expect("usize from u64");
+			let idx = match usize::try_from(pmmr::n_leaves(1 + pos0) - 1) {
+				Ok(i) => i,
+				Err(_) => return None,
+			};
 			match data.get(idx) {
-				Some(d) => d.clone().map(|x| x.as_elmt()),
+				Some(d) => match d {
+					Some(d) => match d.as_elmt() {
+						Ok(d) => Some(d),
+						Err(e) => {
+							error!("Data as_elmt conversion error: {}", e);
+							None
+						}
+					},
+					None => None,
+				},
 				None => None,
 			}
 		} else {
@@ -132,7 +147,8 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 
 	fn remove(&mut self, pos0: u64) -> Result<(), String> {
 		if let Some(data) = &mut self.data {
-			let idx = usize::try_from(pmmr::n_leaves(1 + pos0) - 1).expect("usize from u64");
+			let idx = usize::try_from(pmmr::n_leaves(1 + pos0) - 1)
+				.map_err(|_| format!("remove invalid pos0 value: {}", pos0))?;
 			data[idx] = None;
 		}
 		Ok(())
@@ -149,10 +165,14 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 	fn rewind(&mut self, position: u64, _rewind_rm_pos: &Bitmap) -> Result<(), String> {
 		if let Some(data) = &mut self.data {
 			let idx = pmmr::n_leaves(position);
-			data.truncate(usize::try_from(idx).expect("usize from u64"));
+			data.truncate(
+				usize::try_from(idx).map_err(|_| format!("rewind invalid idx value: {}", idx))?,
+			);
 		}
-		self.hashes
-			.truncate(usize::try_from(position).expect("usize from u64"));
+		self.hashes.truncate(
+			usize::try_from(position)
+				.map_err(|_| format!("rewind invalid position value: {}", position))?,
+		);
 		Ok(())
 	}
 
@@ -203,7 +223,10 @@ impl<T: PMMRable> VecBackend<T> {
 				return;
 			}
 
-			let top_hash = self.hashes.last().expect("Segment can't be empty").clone();
+			let top_hash = match self.hashes.last() {
+				Some(h) => h.clone(),
+				None => return,
+			};
 
 			let mut leaves: BTreeSet<u64> = BTreeSet::new();
 			for (pos, dt) in data.iter().enumerate() {
@@ -242,7 +265,9 @@ impl<T: PMMRable> VecBackend<T> {
 			}
 
 			if pos_with_data.is_empty() {
-				*self.hashes.last_mut().expect("Segment can't be empty") = top_hash;
+				if let Some(h) = self.hashes.last_mut() {
+					*h = top_hash;
+				}
 			}
 
 			if delete_buildable_hashes {

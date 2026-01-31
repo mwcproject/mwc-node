@@ -37,7 +37,7 @@ use mwc_util::secp::rand::Rng;
 use mwc_util::StopState;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -70,7 +70,7 @@ impl SegmenterResponder {
 		let dummy_adapter = Arc::new(NoopAdapter {});
 		debug!(
 			"Reading SegmenterResponder chain, genesis block: {}",
-			genesis.hash()
+			genesis.hash().unwrap()
 		);
 
 		// The original chain we're reading from
@@ -83,12 +83,13 @@ impl SegmenterResponder {
 					genesis,
 					pow::verify_size,
 					false,
+					HashSet::new(),
 				)
 				.unwrap(),
 			),
 		};
 		let sh = res.chain.get_header_by_height(0).unwrap();
-		debug!("Source Genesis - {}", sh.hash());
+		debug!("Source Genesis - {}", sh.hash().unwrap());
 		res
 	}
 
@@ -141,7 +142,7 @@ impl DesegmenterRequestor {
 		let dummy_adapter = Arc::new(NoopAdapter {});
 		debug!(
 			"Reading DesegmenterRequestor chain, genesis block: {}",
-			genesis.hash()
+			genesis.hash().unwrap()
 		);
 
 		// The original chain we're reading from
@@ -154,13 +155,14 @@ impl DesegmenterRequestor {
 					genesis,
 					pow::verify_size,
 					false,
+					HashSet::new(),
 				)
 				.unwrap(),
 			),
 			responder,
 		};
 		let sh = res.chain.get_header_by_height(0).unwrap();
-		debug!("Dest Genesis - {}", sh.hash());
+		debug!("Dest Genesis - {}", sh.hash().unwrap());
 		res
 	}
 
@@ -400,7 +402,7 @@ fn test_pibd_copy_impl(src_root_dir: &str, dest_root_dir: &str) {
 
 	let headers_root_hash = src_responder.get_headers_root_hash();
 	let bitmap_root_hash = src_responder.get_bitmap_root_hash();
-	let genesis_hash = src_responder.chain.genesis().hash();
+	let genesis_hash = src_responder.chain.genesis().hash().unwrap();
 
 	let pibd_params = Arc::new(PibdParams::new());
 
@@ -418,7 +420,7 @@ fn test_pibd_copy_impl(src_root_dir: &str, dest_root_dir: &str) {
 
 	// Heads must be done. Now we should be able to request series of headers as we can do now
 	let mut headers_cache =
-		HeadersRecieveCache::new(dest_requestor.chain.clone(), &header_desegmenter);
+		HeadersRecieveCache::new(dest_requestor.chain.clone(), &header_desegmenter).unwrap();
 
 	while !dest_requestor.continue_copy_headers(&header_desegmenter, &mut headers_cache) {}
 
@@ -474,6 +476,7 @@ fn test_chain_validation() {
 		genesis.clone(),
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap();
 
@@ -484,6 +487,7 @@ fn test_chain_validation() {
 		genesis,
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap();
 
@@ -549,8 +553,8 @@ fn test_chain_validation() {
 			let max_height = cmp::min(fork_point.height + count, header_head.height);
 			let mut current = dst_chain.get_header_by_height(max_height).unwrap();
 			while current.height > fork_point.height {
-				if !dst_chain.is_orphan(&current.hash()) {
-					hashes.push(current.hash());
+				if !dst_chain.is_orphan(&current.hash().unwrap()) {
+					hashes.push(current.hash().unwrap());
 				}
 				current = dst_chain.get_previous_header(&current).unwrap();
 			}

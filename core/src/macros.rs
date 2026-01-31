@@ -100,7 +100,21 @@ macro_rules! hashable_ord {
 	($hashable:ident) => {
 		impl Ord for $hashable {
 			fn cmp(&self, other: &$hashable) -> Ordering {
-				self.hash().cmp(&other.hash())
+				let h1 = match self.hash() {
+					Ok(h) => h,
+					Err(e) => {
+						error!("Calculation hash error: {}", e);
+						return Ordering::Less;
+					}
+				};
+				let h2 = match other.hash() {
+					Ok(h) => h,
+					Err(e) => {
+						error!("Calculation hash error: {}", e);
+						return Ordering::Greater;
+					}
+				};
+				h1.cmp(&h2)
 			}
 		}
 		impl PartialOrd for $hashable {
@@ -110,7 +124,21 @@ macro_rules! hashable_ord {
 		}
 		impl PartialEq for $hashable {
 			fn eq(&self, other: &$hashable) -> bool {
-				self.hash() == other.hash()
+				let h1 = match self.hash() {
+					Ok(h) => h,
+					Err(e) => {
+						error!("Calculation hash error: {}", e);
+						return false;
+					}
+				};
+				let h2 = match other.hash() {
+					Ok(h) => h,
+					Err(e) => {
+						error!("Calculation hash error: {}", e);
+						return false;
+					}
+				};
+				h1 == h2
 			}
 		}
 		impl Eq for $hashable {}

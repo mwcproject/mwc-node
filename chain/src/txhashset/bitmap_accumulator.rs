@@ -104,8 +104,10 @@ impl BitmapAccumulator {
 				// skip until we reach our first chunk
 				idx_iter.next();
 			} else if *x < (chunk_idx + 1) * Self::NBITS {
-				let idx = idx_iter.next().expect("next after peek");
-				chunk.set(idx % Self::NBITS, true);
+				let idx = idx_iter.next().ok_or(Error::Other(
+					"Bitmap accumulator internal error, no data next after peek is found".into(),
+				))?;
+				chunk.set(idx % Self::NBITS, true)?;
 			} else {
 				self.append_chunk(chunk)?;
 				chunk_idx += 1;
@@ -188,8 +190,13 @@ impl BitmapAccumulator {
 	}
 
 	/// The root hash of the bitmap accumulator MMR.
-	pub fn root(&self) -> Hash {
-		self.readonly_pmmr().root().expect("no root, invalid tree")
+	pub fn root(&self) -> Result<Hash, Error> {
+		self.readonly_pmmr().root().map_err(|e| {
+			Error::Other(format!(
+				"Internal bitmap accumulator error, unable to get PMMR root, {}",
+				e
+			))
+		})
 	}
 
 	/// Readonly access to our internal data.
@@ -201,9 +208,11 @@ impl BitmapAccumulator {
 	pub fn build_bitmap(&self) -> Bitmap {
 		let mut bitmap = Bitmap::new();
 		for (chunk_index, chunk_pos) in self.backend.leaf_pos_iter().enumerate() {
-			let chunk = self.backend.get_data(chunk_pos as u64).unwrap();
-			let additive = chunk.set_iter(chunk_index * 1024).collect::<Vec<u32>>();
-			bitmap.add_many(&additive);
+			let chunk = self.backend.get_data(chunk_pos as u64);
+			if let Some(chunk) = chunk {
+				let additive = chunk.set_iter(chunk_index * 1024).collect::<Vec<u32>>();
+				bitmap.add_many(&additive);
+			}
 		}
 		bitmap
 	}
@@ -227,10 +236,17 @@ impl BitmapChunk {
 	/// Set a single bit in this chunk.
 	/// 0-indexed from start of chunk.
 	/// Panics if idx is outside the valid range of bits in a chunk.
-	pub fn set(&mut self, idx: u64, value: bool) {
-		let idx = usize::try_from(idx).expect("usize from u64");
+	pub fn set(&mut self, idx: u64, value: bool) -> Result<(), Error> {
+		let idx = usize::try_from(idx)
+			.map_err(|_| Error::Other(format!("Invalid chunk index value: {}", idx)))?;
+
+		if idx >= Self::LEN_BITS {
+			return Err(Error::Other(format!("Invalid chunk index value: {}", idx)));
+		}
+
 		debug_assert!(idx < Self::LEN_BITS);
-		self.0.set(idx, value)
+		self.0.set(idx, value);
+		Ok(())
 	}
 
 	/// Does this bitmap chunk have any bits set to 1?
@@ -266,8 +282,8 @@ impl BitmapChunk {
 impl PMMRable for BitmapChunk {
 	type E = Self;
 
-	fn as_elmt(&self) -> Self::E {
-		self.clone()
+	fn as_elmt(&self) -> Result<BitmapChunk, ser::Error> {
+		Ok(self.clone())
 	}
 
 	fn elmt_size() -> Option<u16> {
@@ -348,13 +364,13 @@ impl From<Segment<BitmapChunk>> for BitmapSegment {
 
 		for (chunk_idx, chunk) in leaf_data.into_iter().enumerate() {
 			assert_eq!(chunk.0.len(), BitmapChunk::LEN_BITS);
-			let block = &mut blocks
-				.get_mut(chunk_idx / BitmapBlock::NCHUNKS)
-				.unwrap()
-				.inner;
-			let offset = (chunk_idx % BitmapBlock::NCHUNKS) * BitmapChunk::LEN_BITS;
-			for (i, _) in chunk.0.iter().enumerate().filter(|&(_, v)| v) {
-				block.set(offset + i, true);
+			let block = &mut blocks.get_mut(chunk_idx / BitmapBlock::NCHUNKS);
+
+			if let Some(block) = block {
+				let offset = (chunk_idx % BitmapBlock::NCHUNKS) * BitmapChunk::LEN_BITS;
+				for (i, _) in chunk.0.iter().enumerate().filter(|&(_, v)| v) {
+					block.inner.set(offset + i, true);
+				}
 			}
 		}
 
@@ -390,11 +406,9 @@ impl From<BitmapSegment> for Segment<BitmapChunk> {
 			debug_assert!(block.inner.len() <= BitmapBlock::NBITS as usize);
 			let offset = block_idx * BitmapBlock::NCHUNKS;
 			for (i, _) in block.inner.iter().enumerate().filter(|&(_, v)| v) {
-				chunks
-					.get_mut(offset + i / BitmapChunk::LEN_BITS)
-					.unwrap()
-					.0
-					.set(i % BitmapChunk::LEN_BITS, true);
+				if let Some(chunk) = chunks.get_mut(offset + i / BitmapChunk::LEN_BITS) {
+					chunk.0.set(i % BitmapChunk::LEN_BITS, true);
+				}
 			}
 		}
 

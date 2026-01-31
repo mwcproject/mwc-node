@@ -30,16 +30,18 @@ use mwc_util::tokio::time::interval;
 use mwc_util::tokio_util::sync::CancellationToken;
 use rand::seq::SliceRandom;
 use safelog::DisplayRedacted;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, thread};
 use tor_config::{BoolOrAuto, ExplicitOrAuto};
 use tor_error::ErrorReport;
 use tor_hscrypto::pk::HsIdKeypair;
@@ -137,11 +139,15 @@ const PROBE_URLS_HTTP: &[&str] = &[
 	"www.apple.com",
 ];
 
+/// Expiraiton time for Arti data. We are expectign the the data can degradate, so we better do clean up once a day
+pub const ARTI_DATA_EXPIRATION_TIME_SEC: i64 = 3600 * 24;
+
 /// Return a random probe URL.
 pub fn random_http_probe_url() -> &'static str {
-	PROBE_URLS_HTTP
-		.choose(&mut rand::thread_rng())
-		.expect("non-empty slice")
+	match PROBE_URLS_HTTP.choose(&mut rand::thread_rng()) {
+		Some(s) => s,
+		None => "www.google.com",
+	}
 }
 
 lazy_static! {
@@ -149,6 +155,8 @@ lazy_static! {
 	static ref TOR_ARTI_INSTANCE: std::sync::RwLock<Option<ArtiCore>> = std::sync::RwLock::new(None);
 	// Tor service full restart request
 	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+	// Last restarting time (need to understand how long the tor was online without any issue)
+	static ref TOR_RESTART_TIME: std::sync::RwLock<Option<Instant>> = std::sync::RwLock::new(None);
 	// Monitoring thread. Only one instance is allowed
 	static ref TOR_MONITORING_THREAD : std::sync::RwLock<Option<std::thread::JoinHandle<()>>> = std::sync::RwLock::new(None);
 	// Reistered active objects. We don't want to restart TOR until any onject does exist
@@ -156,6 +164,41 @@ lazy_static! {
 	// Since arti os global, using the global flag for Atri beetstrap interruption.
 	// Needed for clear exit while tor is still starting
 	static ref SHUTDOWN_ARTI: CancellationToken = CancellationToken::new();
+	/// It is ARTI session long token. For example when we want stop the wallet/node, but not the whole app.
+	static ref CANCELLING_ARTI: std::sync::RwLock<HashMap<u32,CancellationToken>> = std::sync::RwLock::new(HashMap::new());
+}
+
+pub fn init_arti_cancelling(context_id: u32) {
+	CANCELLING_ARTI
+		.write()
+		.unwrap_or_else(|e| e.into_inner())
+		.insert(context_id, CancellationToken::new());
+}
+
+pub fn release_arti_cancelling(context_id: u32) {
+	if let Some(token) = CANCELLING_ARTI
+		.write()
+		.unwrap_or_else(|e| e.into_inner())
+		.remove(&context_id)
+	{
+		// cancelling it so cloned instance will stop waiting as well
+		token.cancel();
+	}
+}
+
+pub fn is_arti_cancelled(context_id: u32) -> bool {
+	!CANCELLING_ARTI
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.contains_key(&context_id)
+}
+
+pub fn get_arti_cancell_token(context_id: u32) -> Option<CancellationToken> {
+	CANCELLING_ARTI
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.get(&context_id)
+		.cloned()
 }
 
 pub fn shutdown_arti() {
@@ -178,8 +221,19 @@ pub fn request_arti_restart(reason: &str) {
 pub fn is_arti_started() -> bool {
 	TOR_MONITORING_THREAD
 		.read()
-		.expect("RwLock failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.is_some()
+}
+
+pub fn get_arti_restart_time() -> Option<Instant> {
+	if is_arti_healthy() {
+		TOR_RESTART_TIME
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
+	} else {
+		None
+	}
 }
 
 pub fn is_arti_healthy() -> bool {
@@ -196,45 +250,56 @@ pub fn is_arti_restarting() -> bool {
 }
 
 pub fn register_arti_active_object(obj_name: String) {
-	let mut active_objects = TOR_ACTIVE_OBJECTS.write().expect("RwLockFailure");
+	let mut active_objects = TOR_ACTIVE_OBJECTS
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	debug_assert!(!active_objects.contains(&obj_name));
 	active_objects.insert(obj_name);
 }
 
 pub fn unregister_arti_active_object(obj_name: &String) {
-	let mut active_objects = TOR_ACTIVE_OBJECTS.write().expect("RwLockFailure");
+	let mut active_objects = TOR_ACTIVE_OBJECTS
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	debug_assert!(active_objects.contains(obj_name));
 	active_objects.remove(obj_name);
 }
 
-pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
-	if TOR_ARTI_INSTANCE.read().unwrap().is_some() {
+pub fn start_arti(
+	config: &TorConfig,
+	base_dir: &Path,
+	print_start_message: bool,
+) -> Result<(), Error> {
+	if TOR_ARTI_INSTANCE
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.is_some()
+	{
 		return Ok(());
 	}
 
-	let mut atri_writer = TOR_ARTI_INSTANCE.write().expect("RwLock failure");
+	let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
 
-	let mut create_arti_res = ArtiCore::new(config, base_dir, false);
-	if create_arti_res.is_err() {
-		// retry with data clean up
-		create_arti_res = ArtiCore::new(config, base_dir, true)
-	}
-	let a = create_arti_res?;
+	let create_arti_res = ArtiCore::new(config, base_dir, print_start_message);
+	let (a, expiration_time) = create_arti_res?;
 	TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
-
 	*atri_writer = Some(a);
+	*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 
 	// Starting tor monitoring thread if it is not running
-	let mut monitoring_thread = TOR_MONITORING_THREAD.write().expect("RwLock failure");
+	let mut monitoring_thread = TOR_MONITORING_THREAD
+		.write()
+		.unwrap_or_else(|e| e.into_inner());
 	if monitoring_thread.is_none() {
 		let mon_thread = thread::Builder::new()
 			.name("arti_checker".to_string())
 			.spawn(move || {
 				let mut last_running_time = Instant::now();
+				let mut expiration_time = expiration_time;
 				loop {
 					if TOR_MONITORING_THREAD
 						.read()
-						.expect("RwLock Failure")
+						.unwrap_or_else(|e| e.into_inner())
 						.is_none() || is_shutdown_arti()
 					{
 						break;
@@ -270,17 +335,19 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 							// Giving 3 minutes to arti to restore
 							elapsed > Duration::from_secs(60)
 						};
-						need_arti_restart || TOR_RESTART_REQUEST.load(Ordering::Relaxed)
+						need_arti_restart
+							|| TOR_RESTART_REQUEST.load(Ordering::Relaxed)
+							|| Utc::now().timestamp() > expiration_time
 					};
 
 					if need_arti_restart {
-						stop_start_arti(true);
-						break;
+						expiration_time = stop_start_arti(true);
+						continue;
 					}
 					for _ in 0..30 {
 						if TOR_MONITORING_THREAD
 							.read()
-							.expect("RwLock Failure")
+							.unwrap_or_else(|e| e.into_inner())
 							.is_none() || is_shutdown_arti()
 						{
 							break;
@@ -289,14 +356,15 @@ pub fn start_arti(config: &TorConfig, base_dir: &Path) -> Result<(), Error> {
 					}
 				}
 			})
-			.expect("Unable to start arti_checker thread");
+			.map_err(|e| Error::Internal(format!("Unable to start arti_checker thread, {}", e)))?;
 
 		*monitoring_thread = Some(mon_thread);
 	}
 	Ok(())
 }
 
-fn stop_start_arti(start_new_client: bool) {
+// respond with a next expiration time
+fn stop_start_arti(start_new_client: bool) -> i64 {
 	let reason = if start_new_client {
 		"starting new Arti client"
 	} else {
@@ -306,13 +374,17 @@ fn stop_start_arti(start_new_client: bool) {
 
 	// Waiting for other service to stop
 	let mut wait_counter = 0;
-	while TOR_ACTIVE_OBJECTS.read().expect("RwLock failure").len() > 0 {
+	while TOR_ACTIVE_OBJECTS
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.len() > 0
+	{
 		thread::sleep(Duration::from_secs(1));
 		wait_counter += 1;
 		if wait_counter % 20 == 0 {
 			let objects = TOR_ACTIVE_OBJECTS
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.iter()
 				.cloned()
 				.collect::<Vec<_>>()
@@ -321,30 +393,36 @@ fn stop_start_arti(start_new_client: bool) {
 		}
 	}
 
-	restart_arti(start_new_client);
+	restart_arti(start_new_client)
 }
 
 pub fn stop_arti() {
 	let monitoring_thread = TOR_MONITORING_THREAD
 		.write()
-		.expect("RwLock Failure")
+		.unwrap_or_else(|e| e.into_inner())
 		.take();
-	if monitoring_thread.is_none() {
-		return; // Nothing to stop
-	}
-	let monitoring_thread = monitoring_thread.unwrap();
-	let _ = monitoring_thread.join();
+	if let Some(monitoring_thread) = monitoring_thread {
+		let _ = monitoring_thread.join();
 
-	// Stopping the arti
-	stop_start_arti(false);
-	TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
-	// Checking if nothing left alive
-	debug_assert!(TOR_ARTI_INSTANCE.read().expect("RwLock failure").is_none());
-	debug_assert!(TOR_MONITORING_THREAD
-		.read()
-		.expect("RwLock failure")
-		.is_none());
-	debug_assert!(TOR_ACTIVE_OBJECTS.read().expect("RwLock failure").len() == 0);
+		// Stopping the arti
+		stop_start_arti(false);
+		TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+		// Checking if nothing left alive
+		debug_assert!(TOR_ARTI_INSTANCE
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.is_none());
+		debug_assert!(TOR_MONITORING_THREAD
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.is_none());
+		debug_assert!(
+			TOR_ACTIVE_OBJECTS
+				.read()
+				.unwrap_or_else(|e| e.into_inner())
+				.len() == 0
+		);
+	}
 }
 
 pub fn access_arti<F, R>(f: F) -> Result<R, Error>
@@ -354,7 +432,7 @@ where
 	if is_arti_restarting() {
 		return Err(Error::TorNotInitialized);
 	}
-	let guard = TOR_ARTI_INSTANCE.read().unwrap(); // ? converts PoisonError to E
+	let guard = TOR_ARTI_INSTANCE.read().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	f(&arti.tor_client)
 }
@@ -369,7 +447,7 @@ where
 		return Err(Error::TorNotInitialized);
 	}
 
-	let guard = TOR_ARTI_INSTANCE.read().unwrap(); // ? converts PoisonError to E
+	let guard = TOR_ARTI_INSTANCE.read().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	let atri_rt = &arti.tor_runtime;
 
@@ -379,19 +457,22 @@ where
 
 	// slow path: already inside the global runtime → spawn + join
 	let res = thread::scope(|s| {
-		s.spawn(|| {
-			atri_rt.block_on(fut) // runs on different thread
-		})
-		.join()
-		.expect("panic at run_async_block join")
-	});
+		let r = s
+			.spawn(|| {
+				atri_rt.block_on(fut) // runs on different thread
+			})
+			.join()
+			.map_err(|_| Error::Internal("run_async_block join error".into()))?;
+		Ok::<R, Error>(r)
+	})?;
 	Ok(res)
 }
 
-fn restart_arti(start_new_client: bool) {
+// return expiration time
+fn restart_arti(start_new_client: bool) -> i64 {
 	error!("Stopping ARTI...");
 	let (tor_runtime, config, base_dir, restart_senders) = {
-		let mut guard = TOR_ARTI_INSTANCE.write().expect("RwLock failure"); // ? converts PoisonError to E
+		let mut guard = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
 		match guard.take() {
 			Some(arti) => {
 				drop(arti.tor_client);
@@ -405,28 +486,29 @@ fn restart_arti(start_new_client: bool) {
 			}
 			None => {
 				error!("restart_arti called for empty instance. Ignoring this call");
-				return;
+				return 0;
 			}
 		}
 	};
 	tor_runtime.shutdown_timeout(Duration::from_secs(10));
 
 	if !start_new_client {
-		return;
+		return 0;
 	}
 
 	loop {
 		info!("Starting a new Arti client");
-		match ArtiCore::new(&config, base_dir.as_path(), true) {
-			Ok(arti_core) => {
+		match ArtiCore::new(&config, base_dir.as_path(), false) {
+			Ok((arti_core, expiration_time)) => {
 				info!("New Arti instance is successfully created.");
-				*TOR_ARTI_INSTANCE.write().expect("RwLock failure") = Some(arti_core);
+				*TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()) = Some(arti_core);
 				TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+				*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 				network_status::update_network_outage_time(Utc::now().timestamp());
 				for sender in restart_senders {
 					let _ = sender.send(());
 				}
-				break;
+				return expiration_time;
 			}
 			Err(e) => {
 				error!("Unable to create Arti instance, {}", e);
@@ -438,7 +520,7 @@ fn restart_arti(start_new_client: bool) {
 }
 
 pub fn register_arti_restart_event() -> Result<std::sync::mpsc::Receiver<()>, Error> {
-	let mut arti_core = TOR_ARTI_INSTANCE.write().expect("RwLock failure");
+	let mut arti_core = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
 	match &mut *arti_core {
 		Some(arti_core) => {
 			let (tx, rx) = mpsc::channel::<()>();
@@ -464,7 +546,12 @@ const TNL: &str = "tunnel";
 
 impl ArtiCore {
 	/// Init tor service. Note, the service might be reset and recreated, so all dependent objects might be dropped
-	fn new(config: &TorConfig, base_dir: &Path, clean_up_arti_data: bool) -> Result<Self, Error> {
+	/// Return: <ArtiCore, expiration time>
+	fn new(
+		config: &TorConfig,
+		base_dir: &Path,
+		print_start_message: bool,
+	) -> Result<(Self, i64), Error> {
 		if !config.is_tor_enabled() || config.is_tor_external() {
 			return Err(Error::TorConfig(format!(
 				"ArtiCore init with not applicabe config {:?}",
@@ -476,14 +563,19 @@ impl ArtiCore {
 			return Err(Error::Interrupted);
 		}
 
-		let mut tor_client_config =
-			Self::build_config(&config.webtunnel_bridge, base_dir, clean_up_arti_data)?;
+		let (mut tor_client_config, mut expiration_time) =
+			Self::build_config(&config.webtunnel_bridge, base_dir, print_start_message)?;
 		// We now let the Arti client start and bootstrap a connection to the network.
 		// (This takes a while to gather the necessary consensus state, etc.)
 
 		let (mut tor_rt, mut error) = match Self::bootstrap_tor_client(tor_client_config) {
 			Ok(tor_rt) => (Some(tor_rt), None),
-			Err(e) => (None, Some(e)),
+			Err(e) => {
+				if print_start_message {
+					println!("Unable to start Tor with direct connection to Tor network...");
+				}
+				(None, Some(e))
+			}
 		};
 
 		if is_shutdown_arti() {
@@ -512,8 +604,8 @@ impl ArtiCore {
 					COMMUNITY_TNLS[br_idx * 3 + 2]
 				);
 
-				tor_client_config =
-					Self::build_config(&Some(bridge.to_string()), base_dir, clean_up_arti_data)?;
+				(tor_client_config, expiration_time) =
+					Self::build_config(&Some(bridge.to_string()), base_dir, print_start_message)?;
 
 				(tor_rt, error) = match Self::bootstrap_tor_client(tor_client_config) {
 					Ok(cl) => (Some(cl), None),
@@ -531,21 +623,23 @@ impl ArtiCore {
 			}
 		}
 
-		if tor_rt.is_none() {
-			let error = error.unwrap();
-			info!("Arti bootstrap error report: {}", error.report());
-			return Err(error);
+		match tor_rt {
+			Some((tor_client, rt)) => Ok((
+				ArtiCore {
+					tor_runtime: rt,
+					tor_client,
+					config: config.clone(),
+					base_dir: base_dir.into(),
+					restart_senders: Vec::new(),
+				},
+				expiration_time,
+			)),
+			None => {
+				let error = error.unwrap_or(Error::Internal("Unknown tor bootstrap error".into()));
+				info!("Arti bootstrap error report: {}", error.report());
+				return Err(error);
+			}
 		}
-
-		let (tor_client, rt) = tor_rt.unwrap();
-
-		Ok(ArtiCore {
-			tor_runtime: rt,
-			tor_client,
-			config: config.clone(),
-			base_dir: base_dir.into(),
-			restart_senders: Vec::new(),
-		})
 	}
 
 	fn bootstrap_tor_client(
@@ -555,7 +649,7 @@ impl ArtiCore {
 		let arti_rt = mwc_util::tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
 			.build()
-			.expect("failed to start Tokio runtime");
+			.map_err(|e| Error::Internal(format!("failed to start Tokio runtime, {}", e)))?;
 
 		let tor_client = arti_rt.block_on(async move {
 			// rt will be created base on the current runtime, which is arti_rt
@@ -603,9 +697,7 @@ impl ArtiCore {
 							info!("Arti bootstrap interrupted, stopping client");
 							bootstap_process.abort();
 							let _ = bootstap_process.await;
-							let stop_f = tor_client.wait_for_stop();
 							drop(tor_client);
-							stop_f.await;
 							return Err(Error::Interrupted);
 						}
 						let progress = tor_client.bootstrap_status().as_frac();
@@ -619,9 +711,7 @@ impl ArtiCore {
 								error!("Arti not able to make any bootstrap progress during {} seconds", elapsed.as_secs());
 								bootstap_process.abort();
 								let _ = bootstap_process.await;
-								let stop_f = tor_client.wait_for_stop();
 								drop(tor_client);
-								stop_f.await;
 								return Err(Error::TorProcess(
 									"Arti not able to make bootstrap progress during long time"
 										.into(),
@@ -634,18 +724,14 @@ impl ArtiCore {
 
 			if is_shutdown_arti() {
 				info!("Arti bootstrap interrupted, stopping client");
-				let stop_f = tor_client.wait_for_stop();
 				drop(tor_client);
-				stop_f.await;
 				return Err(Error::Interrupted);
 			}
 
 			if let Err(e) = Self::test_circuit(&tor_client).await {
 				error!("Unable to build a test Tor circle, {}", e);
 				info!("Stopping failed Arti client");
-				let stop_f = tor_client.wait_for_stop();
 				drop(tor_client);
-				stop_f.await;
 				info!("Failed arti is stopped");
 				return Err(Error::TorProcess(
 					"Bootstrap was finished, but test circuit was failed".into(),
@@ -673,6 +759,7 @@ impl ArtiCore {
 	/// expanded_key - Build with:  ExpandedSecretKey::from(sec_key)
 	/// Return: (onion service, onion address, stream for incoming request)
 	pub fn start_onion_service(
+		context_id: u32,
 		tor_client: &TorClient<PreferredRuntime>,
 		service_nickname: String,
 		expanded_key: [u8; 64],
@@ -688,7 +775,9 @@ impl ArtiCore {
 
 		// launch_onion_service_with_hsid expecting expanding 64 byte keys.
 		let id_keypair = HsIdKeypair::from(
-			ed25519::ExpandedKeypair::from_secret_key_bytes(expanded_key).unwrap(),
+			ed25519::ExpandedKeypair::from_secret_key_bytes(expanded_key).ok_or(
+				crate::types::Error::Internal("Unable to build tor keys".into()),
+			)?,
 		);
 
 		let svc_cfg = OnionServiceConfigBuilder::default()
@@ -702,6 +791,10 @@ impl ArtiCore {
 
 		if is_arti_restarting() {
 			return Err(Error::TorNotInitialized);
+		}
+
+		if is_arti_cancelled(context_id) {
+			return Err(Error::Interrupted);
 		}
 
 		if let Some((service, request_stream)) = tor_client
@@ -730,14 +823,14 @@ impl ArtiCore {
 	}
 
 	// We can't add that condition to
-	async fn wait_shutdown_poll(timeout_seconds: u64) -> Result<(), Error> {
+	async fn wait_shutdown_poll(context_id: u32, timeout_seconds: u64) -> Result<(), Error> {
 		let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
 
 		loop {
 			if is_arti_restarting() {
 				return Err(Error::TorNotInitialized);
 			}
-			if is_shutdown_arti() {
+			if is_shutdown_arti() || is_arti_cancelled(context_id) {
 				return Err(Error::Interrupted);
 			}
 
@@ -755,13 +848,14 @@ impl ArtiCore {
 
 	/// Utility method to wait for onion service advertise itself
 	pub fn wait_until_started(
+		context_id: u32,
 		onion_service: &Arc<tor_hsservice::RunningOnionService>,
 		timeout_seconds: u64,
 	) -> Result<(), Error> {
 		if is_arti_restarting() {
 			return Err(Error::TorNotInitialized);
 		}
-		if is_shutdown_arti() {
+		if is_shutdown_arti() || is_arti_cancelled(context_id) {
 			return Err(Error::Interrupted);
 		}
 
@@ -789,7 +883,7 @@ impl ArtiCore {
 				}
 
 				// If shutdown/restart/timeout happens first:
-				shutdown_or_timeout = Self::wait_shutdown_poll(timeout_seconds) => {
+				shutdown_or_timeout = Self::wait_shutdown_poll(context_id, timeout_seconds) => {
 					match shutdown_or_timeout {
 						Err(e) => Err(e), // Interrupted or TorNotInitialized
 						Ok(()) => {
@@ -804,21 +898,24 @@ impl ArtiCore {
 		res
 	}
 
+	// return config and expiration time
 	fn build_config(
 		webtunnel_bridge: &Option<String>,
 		base_dir: &Path,
-		clean_up_arti_data: bool,
-	) -> Result<TorClientConfig, Error> {
+		print_start_message: bool,
+	) -> Result<(TorClientConfig, i64), Error> {
 		let mut builder = TorClientConfig::builder();
 
 		// Usually we are using tunnel if without tunnel tor didn't start
 		let mut connection_path = "direct".to_string();
-		if webtunnel_bridge.is_some() {
-			// tunnel conneciton string
-			let bridge_line = webtunnel_bridge.as_ref().unwrap();
-
+		if let Some(bridge_line) = webtunnel_bridge {
+			// bridge_line - tunnel connection string
 			let bridge_hash = Self::hash_str(&bridge_line);
 			connection_path = format!("bridge_{:X}", bridge_hash);
+
+			if print_start_message {
+				println!("Starting Tor with a bridge connection to Tor network, please wait...");
+			}
 
 			info!("Starting Arti with a bridge {}", bridge_line);
 			// webtunnelclient location. Should be located in the same dir where our executable is located
@@ -857,6 +954,9 @@ impl ArtiCore {
 				.run_on_startup(true);
 			builder.bridges().transports().push(transport);
 		} else {
+			if print_start_message {
+				println!("Starting Tor with a direct connection to Tor network, please wait...");
+			}
 			info!("Starting Arti without a bridge");
 		}
 
@@ -870,9 +970,29 @@ impl ArtiCore {
 
 		let base_data_dir = base_dir.join("arti").join(connection_path);
 
-		if clean_up_arti_data {
-			let _ = std::fs::remove_dir_all(base_data_dir.clone());
+		let creation_timestamp_fn = base_data_dir.join("create_time.txt");
+		let mut creation_timestamp: i64 = 0;
+		if let Ok(s) = fs::read_to_string(creation_timestamp_fn.clone()) {
+			creation_timestamp = s.trim().parse::<i64>().unwrap_or(0);
 		}
+
+		let now = Utc::now().timestamp();
+		let arti_data_expiraiton_time = if now - creation_timestamp > ARTI_DATA_EXPIRATION_TIME_SEC
+		{
+			info!(
+				"Cleaning up Arti data because it is expired - {} hours",
+				(now - creation_timestamp) as f64 / 3600.0
+			);
+			// Clean up the data in the directory
+			let _ = std::fs::remove_dir_all(base_data_dir.clone());
+
+			fs::create_dir_all(base_data_dir.clone())?;
+			let mut f = File::create(creation_timestamp_fn)?;
+			writeln!(f, "{now}")?;
+			now + ARTI_DATA_EXPIRATION_TIME_SEC + 3600
+		} else {
+			creation_timestamp + ARTI_DATA_EXPIRATION_TIME_SEC + 3600
+		};
 
 		builder
 			.storage()
@@ -902,9 +1022,12 @@ impl ArtiCore {
 		net_params.insert("vanguards-enabled".into(), 0);
 		net_params.insert("vanguards-hs-service".into(), 0);
 
-		builder
-			.build()
-			.map_err(|e| Error::TorConfig(format!("Unable to build arti config, {}", e)))
+		Ok((
+			builder
+				.build()
+				.map_err(|e| Error::TorConfig(format!("Unable to build arti config, {}", e)))?,
+			arti_data_expiraiton_time,
+		))
 	}
 
 	pub async fn test_circuit(tor_client: &TorClient<PreferredRuntime>) -> Result<(), Error> {
@@ -962,7 +1085,7 @@ fn test_arti_connection() {
 	use mwc_util::secp::{Secp256k1, SecretKey};
 	use std::pin::Pin;
 
-	let res = start_arti(&TorConfig::default(), Path::new("/tmp/arti/"));
+	let res = start_arti(&TorConfig::default(), Path::new("/tmp/arti/"), true);
 	assert!(res.is_ok());
 
 	let (onion_service, onion_address, _incoming_requests): (
@@ -978,8 +1101,12 @@ fn test_arti_connection() {
 		let exp_key = ExpandedSecretKey::from(&sec_key);
 		let exp_key = exp_key.to_bytes();
 
-		let (onion_service, onion_address, incoming_requests) =
-			ArtiCore::start_onion_service(&tor_client, "onion-service-test".to_string(), exp_key)?;
+		let (onion_service, onion_address, incoming_requests) = ArtiCore::start_onion_service(
+			0,
+			&tor_client,
+			"onion-service-test".to_string(),
+			exp_key,
+		)?;
 		Ok((
 			onion_service,
 			onion_address,
@@ -987,10 +1114,11 @@ fn test_arti_connection() {
 				as Pin<Box<dyn futures::Stream<Item = _> + Send>>,
 		))
 	})
-	.expect("Onion service unbale to start");
+	.expect("Onion service unable to start");
 
 	// Not necessary wait for a long time. We can continue with listening even without any waiting
-	arti::ArtiCore::wait_until_started(&onion_service, 20).expect("Onion service unable to start");
+	arti::ArtiCore::wait_until_started(0, &onion_service, 20)
+		.expect("Onion service unable to start");
 
 	println!("Onion listener started at {}", onion_address);
 

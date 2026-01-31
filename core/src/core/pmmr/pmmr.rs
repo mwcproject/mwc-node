@@ -82,7 +82,13 @@ pub trait ReadablePMMR {
 		for peak in rhs.rev() {
 			res = match res {
 				None => Some(peak),
-				Some(rhash) => Some((peak, rhash).hash_with_index(size)),
+				Some(rhash) => match (peak, rhash).hash_with_index(size) {
+					Ok(h) => Some(h),
+					Err(e) => {
+						error!("PMMR failed to calculate hash at bag_the_rhs, {}", e);
+						None
+					}
+				},
 			}
 		}
 		res
@@ -124,7 +130,11 @@ pub trait ReadablePMMR {
 		for peak in peaks.into_iter().rev() {
 			res = match res {
 				None => Some(peak),
-				Some(rhash) => Some((peak, rhash).hash_with_index(mmr_size)),
+				Some(rhash) => Some(
+					(peak, rhash)
+						.hash_with_index(mmr_size)
+						.map_err(|e| format!("Unable to calculate hash, {}", e))?,
+				),
 			}
 		}
 		res.ok_or_else(|| "no root, invalid tree".to_owned())
@@ -224,7 +234,9 @@ where
 	/// the same time if applicable.
 	pub fn push(&mut self, leaf: &T) -> Result<u64, String> {
 		let leaf_pos = self.size;
-		let mut current_hash = leaf.hash_with_index(leaf_pos + self.index_offset);
+		let mut current_hash = leaf
+			.hash_with_index(leaf_pos + self.index_offset)
+			.map_err(|e| format!("Unable to calculate hash, {}", e))?;
 
 		let mut hashes = vec![current_hash];
 		let mut pos = leaf_pos;
@@ -241,8 +253,9 @@ where
 				Some(left_hash) => {
 					peak *= 2;
 					pos += 1;
-					current_hash =
-						(left_hash, current_hash).hash_with_index(pos + self.index_offset);
+					current_hash = (left_hash, current_hash)
+						.hash_with_index(pos + self.index_offset)
+						.map_err(|e| format!("Unable to calculate hash, {}", e))?;
 					hashes.push(current_hash);
 				}
 				None => {
@@ -280,8 +293,9 @@ where
 			match self.backend.get_hash(sibling) {
 				Some(left_hash) => {
 					pos = parent;
-					current_hash =
-						(left_hash, current_hash).hash_with_index(parent + self.index_offset);
+					current_hash = (left_hash, current_hash)
+						.hash_with_index(parent + self.index_offset)
+						.map_err(|e| format!("Unable to calculate hash, {}", e))?;
 					self.backend.append_hash(current_hash)?;
 				}
 				None => {
@@ -372,7 +386,9 @@ where
 										// hash the two child nodes together with parent_pos and compare
 										if (left_child_hs, right_child_hs)
 											.hash_with_index(n + self.index_offset)
-											!= hash
+											.map_err(|e| {
+												format!("Unable to calculate hash, {}", e)
+											})? != hash
 										{
 											return Err(format!("Invalid MMR, hash of parent at {} does not match children.", n + 1));
 										}
@@ -386,14 +402,18 @@ where
 				handles.push(handle);
 			}
 			for handle in handles {
-				match handle.join().expect("Crossbeam runtime failure") {
+				match handle
+					.join()
+					.map_err(|_| "PMMR validate crossbeam runtime failure".to_string())?
+				{
 					Ok(_) => {}
 					Err(e) => return Err(e),
 				}
 			}
 			Ok(())
 		})
-		.expect("Crossbeam runtime failure");
+		.map_err(|_| "PMMR validate crossbeam runtime failure".to_string())?;
+
 		validation_result
 	}
 

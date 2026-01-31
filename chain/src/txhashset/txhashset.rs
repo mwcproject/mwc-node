@@ -135,11 +135,15 @@ impl PMMRHandle<BlockHeader> {
 	pub fn init_head(&mut self, head: &Tip) -> Result<(), Error> {
 		let head_hash = self.head_hash()?;
 		let expected_hash = self.get_header_hash_by_height(head.height)?;
-		if head.hash() != expected_hash {
+		if head
+			.hash()
+			.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?
+			!= expected_hash
+		{
 			error!(
 				"header PMMR inconsistent: {} vs {} at {}",
 				expected_hash,
-				head.hash(),
+				head.hash().unwrap_or(Hash::default()),
 				head.height
 			);
 			return Err(Error::Other("header PMMR inconsistent".to_string()));
@@ -155,7 +159,7 @@ impl PMMRHandle<BlockHeader> {
 		);
 		debug!(
 			"init_head: header PMMR: resetting to {} at pos {} (height {})",
-			head.hash(),
+			head.hash().unwrap_or(Hash::default()),
 			size,
 			head.height
 		);
@@ -172,7 +176,9 @@ impl PMMRHandle<BlockHeader> {
 		let pos = pmmr::insertion_to_pmmr_index(height);
 		let header_pmmr = ReadonlyPMMR::at(&self.backend, self.size);
 		if let Some(entry) = header_pmmr.get_data(pos) {
-			Ok(entry.hash())
+			Ok(entry
+				.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?)
 		} else {
 			Err(Error::Other(format!(
 				"not found header hash for height {}",
@@ -190,7 +196,9 @@ impl PMMRHandle<BlockHeader> {
 		let header_pmmr = ReadonlyPMMR::at(&self.backend, self.size);
 		let leaf_pos = pmmr::bintree_rightmost(self.size - 1);
 		if let Some(entry) = header_pmmr.get_data(leaf_pos) {
-			Ok(entry.hash())
+			Ok(entry
+				.hash()
+				.map_err(|e| Error::Other(format!("Header hash calculation error, {}", e)))?)
 		} else {
 			Err(Error::Other("failed to find head hash".to_string()))
 		}
@@ -546,7 +554,7 @@ impl TxHashSet {
 
 		debug!(
 			"verify_kernel_pos_index: header: {} at {}, prev kernel_mmr_size: {}",
-			from_header.hash(),
+			from_header.hash().unwrap_or(Hash::default()),
 			from_header.height,
 			prev_size,
 		);
@@ -981,7 +989,16 @@ impl<'a> HeaderExtension<'a> {
 
 	/// Get the header hash for the specified pos from the underlying MMR backend.
 	fn get_header_hash(&self, pos0: u64) -> Option<Hash> {
-		self.pmmr.get_data(pos0).map(|x| x.hash())
+		match self.pmmr.get_data(pos0) {
+			None => None,
+			Some(header) => match header.hash() {
+				Ok(hash) => Some(hash),
+				Err(e) => {
+					error!("Unable calculate hash for a header, {}", e);
+					None
+				}
+			},
+		}
 	}
 
 	/// The head representing the furthest extent of the current extension.
@@ -1026,7 +1043,11 @@ impl<'a> HeaderExtension<'a> {
 			return Ok(false);
 		}
 		let chain_header = self.get_header_by_height(t.height, batch)?;
-		Ok(chain_header.hash() == t.hash())
+		Ok(chain_header
+			.hash()
+			.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?
+			== t.hash()
+				.map_err(|e| Error::Other(format!("Build Tip hash error, {}", e)))?)
 	}
 
 	/// Force the rollback of this extension, no matter the result.
@@ -1053,9 +1074,9 @@ impl<'a> HeaderExtension<'a> {
 	pub fn rewind(&mut self, header: &BlockHeader) -> Result<(), Error> {
 		debug!(
 			"Rewind header extension to {} at {} from {} at {}",
-			header.hash(),
+			header.hash().unwrap_or(Hash::default()),
 			header.height,
-			self.head.hash(),
+			self.head.hash().unwrap_or(Hash::default()),
 			self.head.height,
 		);
 
@@ -1235,7 +1256,9 @@ impl<'a> Extension<'a> {
 			batch.delete_output_pos_height(&out.commitment())?;
 			//save the spent commitments.
 			let hh = HashHeight {
-				hash: b.hash().clone(),
+				hash: b
+					.hash()
+					.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?,
 				height: b.header.height.clone(),
 			};
 			batch.save_spent_commitments(&out.commitment().clone(), hh)?;
@@ -1243,7 +1266,11 @@ impl<'a> Extension<'a> {
 
 		// Update the spent index with spent pos.
 		let spent_pos: Vec<_> = spent.into_iter().map(|(_, pos)| pos).collect();
-		batch.save_spent_index(&b.hash(), &spent_pos)?;
+		batch.save_spent_index(
+			&b.hash()
+				.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?,
+			&spent_pos,
+		)?;
 
 		// Apply the kernels to the kernel MMR.
 		// Note: This validates and NRD relative height locks via the "recent" kernel index.
@@ -1564,9 +1591,9 @@ impl<'a> Extension<'a> {
 	) -> Result<(), Error> {
 		debug!(
 			"Rewind extension to {} at {} from {} at {}",
-			header.hash(),
+			header.hash().unwrap_or(Hash::default()),
 			header.height,
-			self.head.hash(),
+			self.head.hash().unwrap_or(Hash::default()),
 			self.head.height
 		);
 
@@ -1576,7 +1603,12 @@ impl<'a> Extension<'a> {
 		// undone during rewind).
 		// Rewound output pos will be removed from the MMR.
 		// Rewound input (spent) pos will be added back to the MMR.
-		let head_header = batch.get_block_header(&self.head.hash())?;
+		let head_header = batch.get_block_header(
+			&self
+				.head
+				.hash()
+				.map_err(|e| Error::Other(format!("Build tip hash error, {}", e)))?,
+		)?;
 
 		if head_header.height <= header.height {
 			// Nothing to rewind but we do want to truncate the MMRs at header for consistency.
@@ -1584,7 +1616,11 @@ impl<'a> Extension<'a> {
 		} else {
 			let mut current = head_header;
 			while header.height < current.height {
-				let block = batch.get_block(&current.hash())?;
+				let block = batch.get_block(
+					&current
+						.hash()
+						.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?,
+				)?;
 				self.rewind_single_block(&block, batch, header_ext)?;
 				current = batch.get_previous_header(&current)?;
 			}
@@ -1609,22 +1645,30 @@ impl<'a> Extension<'a> {
 		let prev_header = batch.get_previous_header(&header)?;
 
 		// The spent index allows us to conveniently "unspend" everything in a block.
-		let spent = batch.get_spent_index(&header.hash());
+		let spent = batch.get_spent_index(
+			&header
+				.hash()
+				.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?,
+		);
 
 		let spent_pos: Vec<_> = if let Ok(ref spent) = spent {
 			spent.iter().map(|x| x.pos).collect()
 		} else {
 			warn!(
 				"rewind_single_block: fallback to legacy input bitmap for block {} at {}",
-				header.hash(),
+				header.hash().unwrap_or(Hash::default()),
 				header.height
 			);
-			if let Ok(bitmap) = batch.get_block_input_bitmap(&header.hash()) {
+			if let Ok(bitmap) = batch.get_block_input_bitmap(
+				&header
+					.hash()
+					.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?,
+			) {
 				bitmap.iter().map(|x| x.into()).collect()
 			} else {
 				warn!(
 					"rewind_single_block: fallback to calculating spent inputs for block {} at {}",
-					header.hash(),
+					header.hash().unwrap_or(Hash::default()),
 					header.height
 				);
 				let spent = self
@@ -1652,7 +1696,7 @@ impl<'a> Extension<'a> {
 			warn!(
 				"rewind_single_block: {} output_pos entries missing for: {} at {}",
 				missing_count,
-				header.hash(),
+				header.hash().unwrap_or(Hash::default()),
 				header.height,
 			);
 		}
@@ -1979,7 +2023,9 @@ impl<'a> Extension<'a> {
 			return Ok(());
 		}
 
-		let handler = running_tasks.pop_front().expect("num_cores is zero?");
+		let handler = running_tasks.pop_front().ok_or(Error::Other(
+			"wait_for_kernel_tasks internal error, no running task is available".into(),
+		))?;
 		let result = handler
 			.join()
 			.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
@@ -2130,7 +2176,9 @@ impl<'a> Extension<'a> {
 			return Ok(());
 		}
 
-		let handler = running_tasks.pop_front().expect("num_cores is zero?");
+		let handler = running_tasks.pop_front().ok_or(Error::Other(
+			"wait_for_rangeproofs_tasks internal error, no running task is available".into(),
+		))?;
 		let result = handler
 			.join()
 			.map_err(|_| Error::Other("crossbeam runtime error".to_string()))?;
@@ -2158,7 +2206,14 @@ impl<'a> Extension<'a> {
 /// Packages the txhashset data files into a zip and returns a Read to the
 /// resulting file
 pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
-	let txhashset_zip = format!("{}_{}.zip", TXHASHSET_ZIP, header.hash().to_string());
+	let txhashset_zip = format!(
+		"{}_{}.zip",
+		TXHASHSET_ZIP,
+		header
+			.hash()
+			.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?
+			.to_string()
+	);
 
 	let txhashset_path = Path::new(&root_dir).join(TXHASHSET_SUBDIR);
 	let zip_path = Path::new(&root_dir).join(txhashset_zip);
@@ -2168,7 +2223,7 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 	if let Ok(zip) = zip_file {
 		debug!(
 			"zip_read: {} at {}: reusing existing zip file: {:?}",
-			header.hash(),
+			header.hash().unwrap_or(Hash::default()),
 			header.height,
 			zip_path
 		);
@@ -2193,7 +2248,10 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 		let temp_txhashset_path = Path::new(&root_dir).join(format!(
 			"{}_zip_{}",
 			TXHASHSET_SUBDIR,
-			header.hash().to_string()
+			header
+				.hash()
+				.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?
+				.to_string()
 		));
 		// Remove temp dir if it exist
 		if temp_txhashset_path.exists() {
@@ -2214,7 +2272,7 @@ pub fn zip_read(root_dir: String, header: &BlockHeader) -> Result<File, Error> {
 
 	debug!(
 		"zip_read: {} at {}: created zip file: {:?}",
-		header.hash(),
+		header.hash().unwrap_or(Hash::default()),
 		header.height,
 		zip_path
 	);
@@ -2252,8 +2310,14 @@ fn file_list(header: &BlockHeader) -> Vec<PathBuf> {
 		PathBuf::from("rangeproof/pmmr_hash.bin"),
 		PathBuf::from("rangeproof/pmmr_prun.bin"),
 		// Header specific "rewound" leaf files for output and rangeproof MMR.
-		PathBuf::from(format!("output/pmmr_leaf.bin.{}", header.hash())),
-		PathBuf::from(format!("rangeproof/pmmr_leaf.bin.{}", header.hash())),
+		PathBuf::from(format!(
+			"output/pmmr_leaf.bin.{}",
+			header.hash().unwrap_or(Hash::default())
+		)),
+		PathBuf::from(format!(
+			"rangeproof/pmmr_leaf.bin.{}",
+			header.hash().unwrap_or(Hash::default())
+		)),
 	]
 }
 
@@ -2321,7 +2385,11 @@ fn input_pos_to_rewind(
 	let mut bitmap = Bitmap::new();
 	let mut current = head_header.clone();
 	while current.height > block_header.height {
-		if let Ok(block_bitmap) = batch.get_block_input_bitmap(&current.hash()) {
+		if let Ok(block_bitmap) = batch.get_block_input_bitmap(
+			&current
+				.hash()
+				.map_err(|e| Error::Other(format!("Build header hash error, {}", e)))?,
+		) {
 			bitmap.or_inplace(&block_bitmap);
 		}
 		current = batch.get_previous_header(&current)?;

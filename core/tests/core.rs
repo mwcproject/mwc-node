@@ -99,7 +99,7 @@ fn simple_tx_ser_deser() {
 	assert_eq!(dtx.fee(), 2);
 	assert_eq!(dtx.inputs().len(), 2);
 	assert_eq!(dtx.outputs().len(), 1);
-	assert_eq!(tx.hash(), dtx.hash());
+	assert_eq!(tx.hash().unwrap(), dtx.hash().unwrap());
 }
 
 #[test]
@@ -116,16 +116,16 @@ fn tx_double_ser_deser() {
 	assert!(ser::serialize_default(&mut vec2, &btx).is_ok());
 	let dtx2: Transaction = ser::deserialize_default(0, &mut &vec2[..]).unwrap();
 
-	assert_eq!(btx.hash(), dtx.hash());
-	assert_eq!(dtx.hash(), dtx2.hash());
+	assert_eq!(btx.hash().unwrap(), dtx.hash().unwrap());
+	assert_eq!(dtx.hash().unwrap(), dtx2.hash().unwrap());
 }
 
 #[test]
 fn test_zero_commit_fails() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 	// blinding should fail as signing with a zero r*G shouldn't work
 	let res = build::transaction(
@@ -143,10 +143,10 @@ fn test_zero_commit_fails() {
 fn build_tx_kernel() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	// first build a valid tx with corresponding blinding factor
 	let tx = build::transaction(
@@ -183,10 +183,10 @@ fn build_tx_kernel() {
 fn build_two_half_kernels() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	// build kernel with associated private excess
 	let mut kernel = TxKernel::with_features(KernelFeatures::Plain { fee: 2.into() });
@@ -242,7 +242,7 @@ fn build_two_half_kernels() {
 	assert!(tx1.offset != tx2.offset);
 
 	// For completeness, these are different transactions.
-	assert!(tx1.hash() != tx2.hash());
+	assert!(tx1.hash().unwrap() != tx2.hash().unwrap());
 }
 
 // Combine two transactions into one big transaction (with multiple kernels)
@@ -460,10 +460,10 @@ fn basic_transaction_deaggregation() {
 #[test]
 fn hash_output() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
 		KernelFeatures::Plain { fee: 1.into() },
@@ -472,9 +472,9 @@ fn hash_output() {
 		&builder,
 	)
 	.unwrap();
-	let h = tx.outputs()[0].identifier.hash();
+	let h = tx.outputs()[0].identifier.hash().unwrap();
 	assert!(h != ZERO_HASH);
-	let h2 = tx.outputs()[1].identifier.hash();
+	let h2 = tx.outputs()[1].identifier.hash().unwrap();
 	assert!(h != h2);
 }
 
@@ -503,7 +503,7 @@ fn tx_hash_diff() {
 	let btx1 = tx2i1o();
 	let btx2 = tx1i1o();
 
-	if btx1.hash() == btx2.hash() {
+	if btx1.hash().unwrap() == btx2.hash().unwrap() {
 		panic!("diff txs have same hash")
 	}
 }
@@ -514,11 +514,11 @@ fn tx_hash_diff() {
 fn tx_build_exchange() {
 	test_setup();
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
-	let key_id4 = ExtKeychain::derive_key_id(1, 4, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id4 = ExtKeychain::derive_key_id(1, 4, 0, 0, 0).unwrap();
 
 	let (tx_alice, blind_sum) = {
 		// Alice gets 2 of her pre-existing outputs to send 5 coins to Bob, they
@@ -561,8 +561,8 @@ fn tx_build_exchange() {
 fn reward_empty_block() {
 	test_setup();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 	let previous_header = BlockHeader::default(0);
 
@@ -576,8 +576,8 @@ fn reward_empty_block() {
 fn reward_with_tx_block() {
 	test_setup();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 	let tx1 = tx2i1o();
 	let previous_header = BlockHeader::default(0);
@@ -594,8 +594,8 @@ fn reward_with_tx_block() {
 fn simple_block() {
 	test_setup();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
 	let tx1 = tx2i1o();
 	let tx2 = tx1i1o();
@@ -611,10 +611,10 @@ fn simple_block() {
 fn test_block_with_timelocked_tx() {
 	test_setup();
 	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain);
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let builder = ProofBuilder::new(&keychain).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	// first check we can add a timelocked tx where lock height matches current
 	// block height and that the resulting block is valid

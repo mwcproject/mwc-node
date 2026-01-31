@@ -27,8 +27,7 @@ lazy_static! {
 	static ref WILDCARD_STOP_HASH: u64 = calculate_hash(&"**");
 }
 
-pub type ResponseFuture =
-	Pin<Box<dyn Future<Output = Result<Response<Body>, hyper::Error>> + Send>>;
+pub type ResponseFuture = Pin<Box<dyn Future<Output = Result<Response<Body>, RouterError>> + Send>>;
 
 pub trait Handler {
 	fn get(&self, _req: Request<Body>) -> ResponseFuture {
@@ -95,6 +94,8 @@ pub enum RouterError {
 	RouteNotFound(String),
 	#[error("Route value not found for {0}")]
 	NoValue(String),
+	#[error("{0}")]
+	Internal(String),
 }
 
 #[derive(Clone)]
@@ -209,7 +210,7 @@ impl Router {
 
 impl Service<Request<Body>> for Router {
 	type Response = Response<Body>;
-	type Error = hyper::Error;
+	type Error = RouterError;
 	type Future = ResponseFuture;
 
 	fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

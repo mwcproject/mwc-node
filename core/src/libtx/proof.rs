@@ -84,11 +84,10 @@ where
 		.rewind_nonce(secp, &commit)
 		.map_err(|e| Error::RangeProof(format!("Unable rewind for commit {:?}, {}", commit, e)))?;
 	let info = secp.rewind_bullet_proof(commit, nonce, extra_data, proof);
-	if info.is_err() {
-		return Ok(None);
-	}
-	let info = info.unwrap();
-
+	let info = match info {
+		Ok(i) => i,
+		Err(_) => return Ok(None),
+	};
 	let amount = info.value;
 	let check = b
 		.check_output(secp, &commit, amount, info.message)
@@ -140,23 +139,26 @@ where
 	K: Keychain,
 {
 	/// Creates a new instance of this proof builder
-	pub fn new(keychain: &'a K) -> Self {
-		let private_root_key = keychain
-			.derive_key(0, &K::root_key_id(), SwitchCommitmentType::None)
-			.unwrap();
+	pub fn new(keychain: &'a K) -> Result<Self, Error> {
+		let private_root_key = keychain.derive_key(
+			0,
+			&K::root_key_id().map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?,
+			SwitchCommitmentType::None,
+		)?;
 
 		let private_hash = blake2b(32, &[], &private_root_key.0).as_bytes().to_vec();
 
 		let public_root_key = keychain
 			.public_root_key()
+			.map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?
 			.serialize_vec(keychain.secp(), true);
 		let rewind_hash = blake2b(32, &[], &public_root_key[..]).as_bytes().to_vec();
 
-		Self {
+		Ok(Self {
 			keychain,
 			rewind_hash,
 			private_hash,
-		}
+		})
 	}
 
 	fn nonce(&self, commit: &Commitment, private: bool) -> Result<SecretKey, Error> {
@@ -270,15 +272,19 @@ where
 	K: Keychain,
 {
 	/// Creates a new instance of this proof builder
-	pub fn new(keychain: &'a K) -> Self {
-		Self {
+	pub fn new(keychain: &'a K) -> Result<Self, Error> {
+		Ok(Self {
 			keychain,
 			root_hash: keychain
-				.derive_key(0, &K::root_key_id(), SwitchCommitmentType::Regular)
-				.unwrap()
+				.derive_key(
+					0,
+					&K::root_key_id()
+						.map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?,
+					SwitchCommitmentType::Regular,
+				)?
 				.0
 				.to_vec(),
-		}
+		})
 	}
 
 	fn nonce(&self, commit: &Commitment) -> Result<SecretKey, Error> {
@@ -413,7 +419,9 @@ impl ProofBuild for ViewKey {
 		let depth = u8::min(msg[3], 4);
 		let id = Identifier::from_serialized_path(depth, &msg[4..]);
 
-		let path = id.to_path();
+		let path = id
+			.to_path()
+			.map_err(|e| Error::Other(format!("Unable to build a path, {}", e)))?;
 		if self.depth > path.depth {
 			return Ok(None);
 		}
@@ -455,9 +463,9 @@ mod tests {
 	fn legacy_builder() {
 		let rng = &mut thread_rng();
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = LegacyProofBuilder::new(&keychain);
+		let builder = LegacyProofBuilder::new(&keychain).unwrap();
 		let amount = rng.gen();
-		let id = ExtKeychain::derive_key_id(3, rng.gen(), rng.gen(), rng.gen(), 0);
+		let id = ExtKeychain::derive_key_id(3, rng.gen(), rng.gen(), rng.gen(), 0).unwrap();
 		let switch = SwitchCommitmentType::Regular;
 		let commit = keychain.commit(amount, &id, switch).unwrap();
 		let proof = create(&keychain, &builder, amount, &id, switch, commit, None).unwrap();
@@ -474,9 +482,9 @@ mod tests {
 	fn builder() {
 		let rng = &mut thread_rng();
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain);
+		let builder = ProofBuilder::new(&keychain).unwrap();
 		let amount = rng.gen();
-		let id = ExtKeychain::derive_key_id(3, rng.gen(), rng.gen(), rng.gen(), 0);
+		let id = ExtKeychain::derive_key_id(3, rng.gen(), rng.gen(), rng.gen(), 0).unwrap();
 		// With switch commitment
 		let commit_a = {
 			let switch = SwitchCommitmentType::Regular;
@@ -546,7 +554,7 @@ mod tests {
 		let rng = &mut thread_rng();
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-		let builder = ProofBuilder::new(&keychain);
+		let builder = ProofBuilder::new(&keychain).unwrap();
 		let mut hasher = keychain.hasher();
 		let view_key =
 			ViewKey::create(&keychain, keychain.master.clone(), &mut hasher, false).unwrap();
@@ -559,7 +567,8 @@ mod tests {
 			rng.gen::<u16>() as u32,
 			rng.gen::<u16>() as u32,
 			0,
-		);
+		)
+		.unwrap();
 		let switch = SwitchCommitmentType::None;
 		let commit = keychain.commit(amount, &id, switch).unwrap();
 
@@ -582,7 +591,7 @@ mod tests {
 		let rng = &mut thread_rng();
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-		let builder = ProofBuilder::new(&keychain);
+		let builder = ProofBuilder::new(&keychain).unwrap();
 		let mut hasher = keychain.hasher();
 		let view_key =
 			ViewKey::create(&keychain, keychain.master.clone(), &mut hasher, false).unwrap();
@@ -595,7 +604,8 @@ mod tests {
 			u32::max_value() - 2,
 			rng.gen::<u16>() as u32,
 			0,
-		);
+		)
+		.unwrap();
 		let switch = SwitchCommitmentType::None;
 		let commit = keychain.commit(amount, &id, switch).unwrap();
 
@@ -614,7 +624,7 @@ mod tests {
 		let rng = &mut thread_rng();
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
 
-		let builder = ProofBuilder::new(&keychain);
+		let builder = ProofBuilder::new(&keychain).unwrap();
 		let mut hasher = keychain.hasher();
 		let view_key =
 			ViewKey::create(&keychain, keychain.master.clone(), &mut hasher, false).unwrap();
@@ -638,7 +648,8 @@ mod tests {
 				rng.gen::<u16>() as u32,
 				rng.gen::<u16>() as u32,
 				0,
-			);
+			)
+			.unwrap();
 			let switch = SwitchCommitmentType::None;
 			let commit = keychain.commit(amount, &id, switch).unwrap();
 
@@ -674,7 +685,8 @@ mod tests {
 				rng.gen::<u16>() as u32,
 				rng.gen::<u16>() as u32,
 				0,
-			);
+			)
+			.unwrap();
 			let switch = SwitchCommitmentType::None;
 			let commit = keychain.commit(amount, &id, switch).unwrap();
 

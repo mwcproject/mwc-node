@@ -75,29 +75,6 @@ impl Handler for ChainValidationHandler {
 	}
 }
 
-pub struct ChainResetHandler {
-	pub chain: Weak<chain::Chain>,
-	pub sync_state: Weak<chain::SyncState>,
-}
-
-impl ChainResetHandler {
-	pub fn reset_chain_head(&self, hash: Hash) -> Result<(), Error> {
-		let chain = w(&self.chain)?;
-		let header = chain.get_block_header(&hash)?;
-		chain.reset_chain_head(&header, true)?;
-
-		// Reset the sync status and clear out any sync error.
-		w(&self.sync_state)?.reset();
-		Ok(())
-	}
-
-	pub fn invalidate_header(&self, hash: Hash) -> Result<(), Error> {
-		let chain = w(&self.chain)?;
-		chain.invalidate_header(hash)?;
-		Ok(())
-	}
-}
-
 /// Chain compaction handler. Trigger a compaction of the chain state to regain
 /// storage space.
 /// POST /v1/chain/compact
@@ -270,14 +247,20 @@ impl OutputHandler {
 		// TODO - possible to compact away blocks we care about
 		// in the period between accepting the block and refreshing the wallet
 		let chain = w(&self.chain)?;
-		let block = chain.get_block(&header.hash()).map_err(|e| {
-			Error::NotFound(format!(
-				"Block at height {} for hash {}, {}",
-				block_height,
-				header.hash(),
-				e
-			))
-		})?;
+		let block = chain
+			.get_block(
+				&header
+					.hash()
+					.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?,
+			)
+			.map_err(|e| {
+				Error::NotFound(format!(
+					"Block at height {} for hash {}, {}",
+					block_height,
+					header.hash().unwrap_or(Hash::default()),
+					e
+				))
+			})?;
 		let outputs = block
 			.outputs()
 			.iter()
@@ -308,14 +291,20 @@ impl OutputHandler {
 		// TODO - possible to compact away blocks we care about
 		// in the period between accepting the block and refreshing the wallet
 		let chain = w(&self.chain)?;
-		let block = chain.get_block(&header.hash()).map_err(|e| {
-			Error::NotFound(format!(
-				"Block at height {} for hash {}, {}",
-				block_height,
-				header.hash(),
-				e
-			))
-		})?;
+		let block = chain
+			.get_block(
+				&header
+					.hash()
+					.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?,
+			)
+			.map_err(|e| {
+				Error::NotFound(format!(
+					"Block at height {} for hash {}, {}",
+					block_height,
+					header.hash().unwrap_or(Hash::default()),
+					e
+				))
+			})?;
 		let outputs = block
 			.outputs()
 			.iter()

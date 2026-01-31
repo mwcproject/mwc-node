@@ -67,7 +67,7 @@ pub fn to_entropy(mnemonic: &str) -> Result<Vec<u8>, Error> {
 		.collect::<Result<Vec<_>, _>>()?;
 	let checksum_bits = words.len() / 3;
 	let mask = ((1 << checksum_bits) - 1) as u8;
-	let last = indexes.pop().unwrap();
+	let last = indexes.pop().ok_or(Error::InvalidLength(0))?;
 	let checksum = (last as u8) & mask;
 
 	let datalen = ((11 * words.len()) - checksum_bits) / 8 - 1;

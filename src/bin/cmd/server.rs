@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 
+use crate::cmd::error::Error;
 use crate::config::GlobalConfig;
 use crate::p2p::Seeding;
 use crate::tui::ui;
@@ -71,11 +72,13 @@ fn start_server_tui(
 		info!("Starting dandellion...");
 		mwc_node_workflow::server::start_dandelion(context_id)?;
 
-		if let Some(stratum_conf) = config.stratum_mining_config {
-			if stratum_conf.enable_stratum_server.unwrap_or(false) {
-				info!("Starting stratum server...");
-				mwc_node_workflow::server::start_stratum(context_id)?;
-			}
+		if config
+			.stratum_mining_config
+			.enable_stratum_server
+			.unwrap_or(false)
+		{
+			info!("Starting stratum server...");
+			mwc_node_workflow::server::start_stratum(context_id)?;
 		}
 	}
 	info!("MC node is started and running");
@@ -85,10 +88,17 @@ fn start_server_tui(
 	if config.run_tui.unwrap_or(false) {
 		warn!("Starting MWC UI...");
 
-		let mut controller = ui::Controller::new(context_id, logs_rx.unwrap()).map_err(|e| {
-			mwc_node_workflow::Error::UIError(format!("Error loading UI controller: {}", e))
-		})?;
-		controller.run(context_id);
+		match logs_rx {
+			Some(logs_rx) => {
+				let mut controller = ui::Controller::new(context_id, logs_rx).map_err(|e| {
+					mwc_node_workflow::Error::UIError(format!("Error loading UI controller: {}", e))
+				})?;
+				controller.run(context_id);
+			}
+			None => {
+				error!("Internal error, logs_rx is  not set properly");
+			}
+		}
 		Ok(())
 	} else {
 		warn!("Running MWC w/o UI...");
@@ -99,6 +109,7 @@ fn start_server_tui(
 			r.store(false, Ordering::SeqCst);
 		})
 		.expect("Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill)");
+
 		while running.load(Ordering::SeqCst) {
 			thread::sleep(Duration::from_millis(300));
 		}
@@ -117,14 +128,16 @@ pub fn server_command(
 	server_args: Option<&ArgMatches<'_>>,
 	global_config: GlobalConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
-) -> i32 {
+) -> Result<(), Error> {
 	// just get defaults from the global config
-	let mut server_config = global_config.members.as_ref().unwrap().server.clone();
+	let mut server_config = global_config.members.server.clone();
 	let mut offline = false;
 
 	if let Some(a) = server_args {
 		if let Some(port) = a.value_of("port") {
-			server_config.p2p_config.port = port.parse().unwrap();
+			server_config.p2p_config.port = port.parse().map_err(|e| {
+				Error::ArgumentError(format!("Invalid value at 'port' value {}, {}", port, e))
+			})?;
 		}
 
 		if let Some(api_port) = a.value_of("api_port") {
@@ -133,11 +146,7 @@ pub fn server_command(
 		}
 
 		if let Some(wallet_url) = a.value_of("wallet_url") {
-			server_config
-				.stratum_mining_config
-				.as_mut()
-				.unwrap()
-				.wallet_listener_url = wallet_url.to_string();
+			server_config.stratum_mining_config.wallet_listener_url = wallet_url.to_string();
 		}
 
 		if let Some(seeds) = a.values_of("seed") {
@@ -175,5 +184,5 @@ pub fn server_command(
 	} else {
 		start_server(context_id, server_config, logs_rx, offline);
 	}
-	0
+	Ok(())
 }

@@ -47,12 +47,19 @@ impl OrphansSync {
 
 	/// Process and keep a new block if it was rejected by the chain. Return true if prev block is needed
 	pub fn recieve_block_reporting(&self, block: Block) -> bool {
-		let bhash = block.hash();
+		let bhash = match block.hash() {
+			Ok(hash) => hash,
+			Err(e) => {
+				error!("Block hash build error, {}", e);
+				return false;
+			}
+		};
+
 		let need_prev_block = self.need_prev_block(&block.header.prev_hash, block.header.height);
 		if self
 			.unknown_blocks
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains_key(&bhash)
 		{
 			return need_prev_block;
@@ -68,7 +75,7 @@ impl OrphansSync {
 
 		self.unknown_blocks
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.insert(bhash, (block, Utc::now()));
 		need_prev_block
 	}
@@ -82,7 +89,10 @@ impl OrphansSync {
 		// let's clean up the unknown_blocks first
 		{
 			let now = Utc::now();
-			let mut unknown_blocks = self.unknown_blocks.write().expect("RwLock failure");
+			let mut unknown_blocks = self
+				.unknown_blocks
+				.write()
+				.unwrap_or_else(|e| e.into_inner());
 
 			// let's try apply blocks int the chain, we migth already has some data for that, let's apply from low height to the higher
 			let mut blocks: Vec<&Block> = Vec::new();
@@ -109,12 +119,15 @@ impl OrphansSync {
 			}
 
 			for (b, _) in unknown_blocks.values() {
-				block_to_validate.insert(b.hash());
+				block_to_validate.insert(b.hash()?);
 			}
 		}
 
 		{
-			let mut orphans_requests = self.orphans_requests.write().expect("RwLock failure");
+			let mut orphans_requests = self
+				.orphans_requests
+				.write()
+				.unwrap_or_else(|e| e.into_inner());
 			orphans_requests.retain(|hash, _| block_to_validate.contains(hash));
 		}
 
@@ -129,7 +142,7 @@ impl OrphansSync {
 					let bl_height = orphan.block.header.height;
 					if self.chain.block_exists(&prev_block_hash)? {
 						// it is a stale oprphan, we can process it...
-						let bl_hash = orphan.block.hash();
+						let bl_hash = orphan.block.hash()?;
 						let bl_height = orphan.block.header.height;
 						match self.chain.process_block(orphan.block, orphan.opts) {
 							Ok(_) => info!("Processed stuck block {} at {}", bl_hash, bl_height),
@@ -144,7 +157,7 @@ impl OrphansSync {
 				None => match self
 					.unknown_blocks
 					.read()
-					.expect("RwLock failure")
+					.unwrap_or_else(|e| e.into_inner())
 					.get(orph_hash)
 				{
 					Some((b, _time)) => Some((b.header.prev_hash.clone(), b.header.height.clone())),
@@ -155,8 +168,10 @@ impl OrphansSync {
 			if let Some((prev_block_hash, bl_height)) = block_hash_height {
 				if self.need_prev_block(&prev_block_hash, bl_height) {
 					// We need to request the child for that block
-					let mut orphans_requests =
-						self.orphans_requests.write().expect("RwLock failure");
+					let mut orphans_requests = self
+						.orphans_requests
+						.write()
+						.unwrap_or_else(|e| e.into_inner());
 					if self.send_hash_requests(
 						peers,
 						&prev_block_hash,
@@ -240,7 +255,7 @@ impl OrphansSync {
 		if self
 			.unknown_blocks
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.contains_key(prev_block_hash)
 		{
 			return false;

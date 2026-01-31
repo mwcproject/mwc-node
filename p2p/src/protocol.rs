@@ -25,6 +25,7 @@ use crate::msg::{
 use crate::serv::Server;
 use crate::tor::arti::is_valid_onion_v3;
 use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
+use mwc_core::core::hash::Hash;
 use std::sync::Arc;
 
 pub struct Protocol {
@@ -145,7 +146,7 @@ impl MessageHandler for Protocol {
 				debug!(
 					"handle_payload: received block {}, {}",
 					b.header.height,
-					b.hash()
+					b.hash().unwrap_or(Hash::default())
 				);
 				// We default to NONE opts here as we do not know know yet why this block was
 				// received.
@@ -157,7 +158,9 @@ impl MessageHandler for Protocol {
 
 			Message::GetCompactBlock(h) => {
 				if let Some(b) = adapter.get_block(h, &self.peer_info) {
-					let cb: CompactBlock = b.into();
+					let cb: CompactBlock = CompactBlock::from(b).map_err(|e| {
+						Error::Internal(format!("Unable to build COmpact block, {}", e))
+					})?;
 					Consumed::Response(Msg::new(
 						Type::CompactBlock,
 						cb,
@@ -284,15 +287,18 @@ impl MessageHandler for Protocol {
 					match peer.clone() {
 						PeerAddr::Onion(address) => {
 							if is_valid_onion_v3(&address) {
-								if self_address.is_none() {
-									debug!("Pushing peer address {:?}", peer);
-									peers.push(peer);
-								} else {
-									if address != *self_address.as_ref().unwrap() {
+								match &self_address {
+									Some(self_address) => {
+										if address != *self_address {
+											debug!("Pushing peer address {:?}", peer);
+											peers.push(peer);
+										} else {
+											debug!("Not pushing self onion address = {}", address);
+										}
+									}
+									None => {
 										debug!("Pushing peer address {:?}", peer);
 										peers.push(peer);
-									} else {
-										debug!("Not pushing self onion address = {}", address);
 									}
 								}
 							} else {
@@ -320,7 +326,9 @@ impl MessageHandler for Protocol {
 				);
 
 				let txhashset_header = self.adapter.txhashset_archive_header()?;
-				let txhashset_header_hash = txhashset_header.hash();
+				let txhashset_header_hash = txhashset_header
+					.hash()
+					.map_err(|e| Error::Internal(format!("Header hash error, {}", e)))?;
 				let txhashset = self.adapter.txhashset_read(txhashset_header_hash);
 
 				if let Some(txhashset) = txhashset {
@@ -374,7 +382,9 @@ impl MessageHandler for Protocol {
 								Type::HasAnotherArchiveHeader,
 								&ArchiveHeaderData {
 									height: header.height,
-									hash: header.hash(),
+									hash: header.hash().map_err(|e| {
+										Error::Internal(format!("Header hash error, {}", e))
+									})?,
 								},
 								self.peer_info.version,
 								self.server.get_context_id(),
@@ -471,7 +481,9 @@ impl MessageHandler for Protocol {
 				match self.adapter.prepare_segmenter() {
 					Ok(segmenter) => {
 						let header = segmenter.header();
-						let header_hash = header.hash();
+						let header_hash = header
+							.hash()
+							.map_err(|e| Error::Internal(format!("Header hash error, {}", e)))?;
 						if header_hash == sm_req.hash && header.height == sm_req.height {
 							if let Ok(bitmap_root_hash) = segmenter.bitmap_root() {
 								// we can start the sync process, let's prepare the segmenter

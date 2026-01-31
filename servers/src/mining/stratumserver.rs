@@ -45,6 +45,7 @@ use crate::util;
 use crate::util::ToHex;
 use crate::ServerTxPool;
 use mwc_api::client::HttpClient;
+use mwc_core::core::hash::Hash;
 use mwc_util::{global_runtime, run_global_async_block, StopState};
 use std::cmp::min;
 // ----------------------------------------
@@ -84,10 +85,10 @@ struct RpcError {
 }
 
 impl RpcError {
-	pub fn internal_error() -> Self {
+	pub fn internal_error(err: &str) -> Self {
 		RpcError {
 			code: 32603,
-			message: "Internal error".to_owned(),
+			message: format!("Internal error: {}", err),
 		}
 	}
 	pub fn node_is_syncing() -> Self {
@@ -140,7 +141,7 @@ where
 {
 	fn from(e: T) -> Self {
 		error!("Received unhandled error: {}", e);
-		RpcError::internal_error()
+		RpcError::internal_error(&format!("Received unhandled error: {}", e))
 	}
 }
 
@@ -269,7 +270,7 @@ impl Handler {
 				if let Ok((_, true)) = res {
 					self.current_state
 						.write()
-						.expect("RwLock failure")
+						.unwrap_or_else(|e| e.into_inner())
 						.current_key_id = None;
 				}
 				res.map(|(v, _)| v)
@@ -329,18 +330,21 @@ impl Handler {
 		let stats = self
 			.workers
 			.get_stats(worker_id)
-			.ok_or(RpcError::internal_error())?;
+			.ok_or(RpcError::internal_error("Unknown worker"))?;
+
+		let height = self
+			.current_state
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.current_block_versions
+			.last()
+			.ok_or(RpcError::internal_error("No blocks in task buffer"))?
+			.header
+			.height;
+
 		let status = WorkerStatus {
 			id: stats.id.clone(),
-			height: self
-				.current_state
-				.read()
-				.expect("RwLock failed")
-				.current_block_versions
-				.last()
-				.unwrap()
-				.header
-				.height,
+			height,
 			difficulty: stats.pow_difficulty,
 			accepted: stats.num_accepted,
 			rejected: stats.num_rejected,
@@ -352,7 +356,7 @@ impl Handler {
 	// Handle GETJOBTEMPLATE message
 	fn handle_getjobtemplate(&self) -> Result<Value, RpcError> {
 		// Build a JobTemplate from a BlockHeader and return JSON
-		let job_template = self.build_block_template();
+		let job_template = self.build_block_template()?;
 		let response = serde_json::to_value(&job_template).unwrap_or(Value::Null);
 		debug!(
 			"(Server ID: {}) sending block {} with id {} to single worker",
@@ -362,12 +366,17 @@ impl Handler {
 	}
 
 	// Build and return a JobTemplate for mining the current block
-	fn build_block_template(&self) -> JobTemplate {
+	fn build_block_template(&self) -> Result<JobTemplate, RpcError> {
 		let (bh, job_id, difficulty) = {
-			let state = self.current_state.read().expect("RwLock failure");
+			let state = self.current_state.read().unwrap_or_else(|e| e.into_inner());
 
 			(
-				state.current_block_versions.last().unwrap().header.clone(),
+				state
+					.current_block_versions
+					.last()
+					.ok_or(RpcError::internal_error("Empty block task buffer"))?
+					.header
+					.clone(),
 				state.current_block_versions.len() - 1,
 				state.minimum_share_difficulty,
 			)
@@ -377,8 +386,12 @@ impl Handler {
 		let mut header_buf = vec![];
 		{
 			let mut writer = ser::BinWriter::default(&mut header_buf);
-			bh.write_pre_pow(&mut writer).unwrap();
-			bh.pow.write_pre_pow(&mut writer).unwrap();
+			bh.write_pre_pow(&mut writer).map_err(|e| {
+				RpcError::internal_error(&format!("Unable write into buffer, {}", e))
+			})?;
+			bh.pow.write_pre_pow(&mut writer).map_err(|e| {
+				RpcError::internal_error(&format!("Unable write into buffer, {}", e))
+			})?;
 		}
 		let pre_pow = util::to_hex(&header_buf);
 		let job_template = JobTemplate {
@@ -387,7 +400,7 @@ impl Handler {
 			difficulty,
 			pre_pow,
 		};
-		return job_template;
+		return Ok(job_template);
 	}
 	// Handle SUBMIT message
 	// params contains a solved block header
@@ -403,14 +416,19 @@ impl Handler {
 		let params: SubmitParams = parse_params(params)?;
 
 		let (b, header_height, minimum_share_difficulty, current_difficulty) = {
-			let state = self.current_state.read().expect("RwLock failure");
+			let state = self.current_state.read().unwrap_or_else(|e| e.into_inner());
 
 			(
 				state
 					.current_block_versions
 					.get(params.job_id as usize)
 					.map(|b| b.clone()),
-				state.current_block_versions.last().unwrap().header.height,
+				state
+					.current_block_versions
+					.last()
+					.ok_or(RpcError::internal_error("Empty block task buffer"))?
+					.header
+					.height,
 				state.minimum_share_difficulty,
 				state.current_difficulty,
 			)
@@ -431,7 +449,9 @@ impl Handler {
 		let unscaled_share_difficulty: u64;
 		let mut share_is_block = false;
 
-		let mut b: Block = b.unwrap().clone();
+		let mut b: Block = b
+			.ok_or(RpcError::internal_error("Unable to build a block"))?
+			.clone();
 		// Reconstruct the blocks header with this nonce and pow added
 		b.header.pow.proof.edge_bits = params.edge_bits as u8;
 		b.header.pow.nonce = params.nonce;
@@ -441,7 +461,7 @@ impl Handler {
 			// Return error status
 			error!(
 				"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}: cuckoo size too small",
-				self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id,
+				self.id, params.height, b.hash().unwrap_or(Hash::default()), params.edge_bits, params.nonce, params.job_id,
 			);
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
@@ -452,9 +472,9 @@ impl Handler {
 		scaled_share_difficulty = b
 			.header
 			.pow
-			.to_difficulty(self.chain.get_context_id(), b.header.height)
+			.to_difficulty(self.chain.get_context_id(), b.header.height)?
 			.to_num();
-		unscaled_share_difficulty = b.header.pow.to_unscaled_difficulty().to_num();
+		unscaled_share_difficulty = b.header.pow.to_unscaled_difficulty()?.to_num();
 		// Note:  state.minimum_share_difficulty is unscaled
 		//        state.current_difficulty is scaled
 		// If the difficulty is too low its an error
@@ -462,7 +482,7 @@ impl Handler {
 			// Return error status
 			error!(
 				"(Server ID: {}) Share at height {}, hash {}, edge_bits {}, nonce {}, job_id {} rejected due to low difficulty: {}/{}",
-				self.id, params.height, b.hash(), params.edge_bits, params.nonce, params.job_id, unscaled_share_difficulty, minimum_share_difficulty,
+				self.id, params.height, b.hash().unwrap_or(Hash::default()), params.edge_bits, params.nonce, params.job_id, unscaled_share_difficulty, minimum_share_difficulty,
 			);
 			self.workers
 				.update_stats(worker_id, |worker_stats| worker_stats.num_rejected += 1);
@@ -479,7 +499,7 @@ impl Handler {
 					"(Server ID: {}) Failed to validate solution at height {}, hash {}, edge_bits {}, nonce {}, job_id {}, {}",
 					self.id,
 					params.height,
-					b.hash(),
+					b.hash().unwrap_or(Hash::default()),
 					params.edge_bits,
 					params.nonce,
 					params.job_id,
@@ -497,11 +517,14 @@ impl Handler {
 			let stats = self
 				.workers
 				.get_stats(worker_id)
-				.ok_or(RpcError::internal_error())?;
+				.ok_or(RpcError::internal_error(&format!(
+					"Unknown worker with id {}",
+					worker_id
+				)))?;
 			warn!(
 				"(Server ID: {}) Solution Found for block {}, hash {} - Yay!!! Worker ID: {}, blocks found: {}, shares: {}",
 				self.id, params.height,
-				b.hash(),
+				b.hash().unwrap_or(Hash::default()),
 				stats.id,
 				stats.num_blocks_found,
 				stats.num_accepted,
@@ -515,7 +538,7 @@ impl Handler {
 					"(Server ID: {}) Failed to validate share at height {}, hash {}, edge_bits {}, nonce {}, job_id {}. {:?}",
 					self.id,
 					params.height,
-					b.hash(),
+					b.hash().unwrap_or(Hash::default()),
 					params.edge_bits,
 					b.header.pow.nonce,
 					params.job_id,
@@ -538,7 +561,7 @@ impl Handler {
 				"(Server ID: {}) Got share at height {}, hash {}, edge_bits {}, nonce {}, job_id {}, difficulty {}/{}, submitted by {}",
 				self.id,
 				b.header.height,
-				b.hash(),
+				b.hash().unwrap_or(Hash::default()),
 				b.header.pow.proof.edge_bits,
 				b.header.pow.nonce,
 				params.job_id,
@@ -551,7 +574,7 @@ impl Handler {
 		self.workers
 			.update_stats(worker_id, |worker_stats| worker_stats.num_accepted += 1);
 		let submit_response = if share_is_block {
-			format!("blockfound - {}", b.hash().to_hex())
+			format!("blockfound - {}", b.hash()?.to_hex())
 		} else {
 			"ok".to_string()
 		};
@@ -561,10 +584,10 @@ impl Handler {
 		));
 	} // handle submit a solution
 
-	fn broadcast_job(&self) {
+	fn broadcast_job(&self) -> Result<(), RpcError> {
 		debug!("broadcast job");
 		// Package new block into RpcRequest
-		let job_template = self.build_block_template();
+		let job_template = self.build_block_template()?;
 		let job_template_json = serde_json::to_string(&job_template).unwrap_or("{}".to_string());
 		// Issue #1159 - use a serde_json Value type to avoid extra quoting
 		let job_template_value: Value =
@@ -581,12 +604,16 @@ impl Handler {
 			self.id, job_template.height, job_template.job_id,
 		);
 		self.workers.broadcast(job_request_json);
+		Ok(())
 	}
 
-	pub fn run(&self, config: &StratumServerConfig, tx_pool: &ServerTxPool) {
+	pub fn run(&self, config: &StratumServerConfig, tx_pool: &ServerTxPool) -> Result<(), String> {
 		debug!("Run main loop");
 		let mut deadline: i64 = 0;
-		let mut head = self.chain.head().unwrap();
+		let mut head = self
+			.chain
+			.head()
+			.map_err(|e| format!("Unable to get a head, {}", e))?;
 		let mut current_hash = head.prev_block_h;
 
 		let worker_checking_period = if self.config.worker_login_timeout_ms <= 0 {
@@ -607,7 +634,10 @@ impl Handler {
 			}
 
 			// get the latest chain state
-			head = self.chain.head().unwrap();
+			head = self
+				.chain
+				.head()
+				.map_err(|e| format!("Unable to get a head, {}", e))?;
 			let latest_hash = head.last_block_h;
 
 			// Build a new block if there is at least one worker and
@@ -630,7 +660,7 @@ impl Handler {
 						tx_pool,
 						self.current_state
 							.read()
-							.expect("RwLock failure")
+							.unwrap_or_else(|e| e.into_inner())
 							.current_key_id
 							.clone(),
 						wallet_listener_url,
@@ -638,7 +668,10 @@ impl Handler {
 					);
 
 					{
-						let mut state = self.current_state.write().expect("RwLock failure");
+						let mut state = self
+							.current_state
+							.write()
+							.unwrap_or_else(|e| e.into_inner());
 
 						// scaled difficulty
 						state.current_difficulty =
@@ -663,7 +696,10 @@ impl Handler {
 						.update_network_hashrate(self.chain.get_context_id());
 
 					{
-						let mut state = self.current_state.write().expect("RwLock failure");
+						let mut state = self
+							.current_state
+							.write()
+							.unwrap_or_else(|e| e.into_inner());
 
 						// If this is a new block we will clear the current_block version history
 						if clear_blocks {
@@ -674,7 +710,9 @@ impl Handler {
 					}
 				}
 				// Send this job to all connected workers
-				self.broadcast_job();
+				if let Err(e) = self.broadcast_job() {
+					error!("Stratum failed to broadcast job, {:?}", e);
+				}
 			}
 
 			// Check workers login statuses and do IP pool maintaince
@@ -697,7 +735,7 @@ impl Handler {
 						ip_prof.sort_by(|a, b| b.1.cmp(&a.1));
 
 						while extra_con > 0 && !ip_prof.is_empty() {
-							let prof = ip_prof.pop().unwrap();
+							let prof = ip_prof.pop().ok_or(String::from("Ip pool is empty"))?;
 							warn!("Stratum need to clean {} connections. Will retire {} workers from IP {}", extra_con, prof.2, prof.0);
 							extra_con -= prof.2;
 							banned_ips.insert(prof.0);
@@ -748,6 +786,8 @@ impl Handler {
 			// sleep before restarting loop
 			thread::sleep(Duration::from_millis(5));
 		} // Main Loop
+		info!("Stratum server exited");
+		Ok(())
 	}
 }
 
@@ -967,13 +1007,24 @@ impl StratumServer {
 			self.id, proof_size
 		);
 
-		let listen_addr = self
-			.config
-			.stratum_server_addr
-			.clone()
-			.unwrap()
-			.parse()
-			.expect("Stratum: Incorrect address ");
+		let stratum_server_addr = match &self.config.stratum_server_addr {
+			Some(adr) => adr.clone(),
+			None => {
+				error!("Invalid config. 'stratum_server_addr' is not defined.");
+				return;
+			}
+		};
+
+		let listen_addr = match stratum_server_addr.parse() {
+			Ok(addr) => addr,
+			Err(e) => {
+				error!(
+					"Stratum: Incorrect address {}, exiting...  Error: {}",
+					stratum_server_addr, e
+				);
+				return;
+			}
+		};
 
 		let handler = Arc::new(Handler::from_stratum(&self));
 		let h = handler.clone();
@@ -983,8 +1034,15 @@ impl StratumServer {
 			.name("stratum_listener".to_string())
 			.spawn(move || {
 				accept_connections(stop_state, listen_addr, h);
-			})
-			.expect("Failed to start stratum listener thread");
+			});
+
+		let listener_th = match listener_th {
+			Ok(thr) => thr,
+			Err(e) => {
+				error!("Failed to start stratum listener thread, {}", e);
+				return;
+			}
+		};
 
 		// We have started
 		self.stratum_stats.is_running.store(true, Ordering::Relaxed);
@@ -996,17 +1054,17 @@ impl StratumServer {
 			.minimum_share_difficulty
 			.store(self.config.minimum_share_difficulty, Ordering::Relaxed);
 
-		warn!(
-			"Stratum server started on {}",
-			self.config.stratum_server_addr.clone().unwrap()
-		);
+		warn!("Stratum server started on {}", stratum_server_addr);
 
 		// Initial Loop. Waiting node complete syncing
 		while self.sync_state.is_syncing() && !self.stop_state.is_stopped() {
 			thread::sleep(Duration::from_millis(50));
 		}
 
-		handler.run(&self.config, &self.tx_pool);
+		if let Err(e) = handler.run(&self.config, &self.tx_pool) {
+			error!("Stratum exiting becasue of handler run error, {}", e);
+			self.stop_state.stop();
+		}
 
 		let _ = listener_th.join();
 	} // fn run_loop()

@@ -443,7 +443,7 @@ pub async fn run_libp2p_node(
 		.validate_messages() // !!!!! Now we are responsible for validation of all incoming traffic!!!!
 		.accept_dalek_pk_peers_only()
 		.build()
-		.expect("Valid gossip config");
+		.map_err(|e| Error::Libp2pError(format!("Invalid gossip config, {}", e)))?;
 
 	// Here are how many connection we will try to keep...
 	let connections_number_low = gossipsub_config.mesh_n_high();
@@ -451,7 +451,7 @@ pub async fn run_libp2p_node(
 	// build a gossipsub network behaviour
 	let gossipsub: gossipsub::Gossipsub =
 		gossipsub::Gossipsub::new(MessageAuthenticity::Signed(id_keys), gossipsub_config)
-			.expect("Correct configuration");
+			.map_err(|e| Error::Libp2pError(format!("Invalid configuration, {}", e)))?;
 
 	// subscribes to our topic
 
@@ -784,7 +784,7 @@ pub async fn run_libp2p_node(
 			None => (),
 		};
 
-		if *stop_mutex.lock().unwrap() == 0 {
+		if *stop_mutex.lock().unwrap_or_else(|e| e.into_inner()) == 0 {
 			info!("Exiting libp2p polling task");
 			Poll::Ready(()) // Exiting
 		} else {
@@ -921,9 +921,16 @@ pub fn validate_integrity_message(
 		}
 	}
 	// Checking if ths peer sent too many messages
-	let call_history = requests_cash.get(&integrity_kernel_excess).unwrap();
+	let call_history = requests_cash
+		.get(&integrity_kernel_excess)
+		.ok_or(Error::Internal("Empty requests_cash value".into()))?;
 	if call_history.len() >= INTEGRITY_CALL_HISTORY_LEN_LIMIT {
-		let call_period = (call_history.back().unwrap() - call_history.front().unwrap())
+		let call_period = (call_history
+			.back()
+			.ok_or(Error::Internal("Empty call_history value".into()))?
+			- call_history
+				.front()
+				.ok_or(Error::Internal("Empty call_history value".into()))?)
 			/ (call_history.len() - 1) as i64;
 		if call_period < INTEGRITY_CALL_MAX_PERIOD {
 			debug!(

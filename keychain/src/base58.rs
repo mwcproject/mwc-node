@@ -312,7 +312,7 @@ where
 	I: Iterator<Item = u8> + Clone,
 {
 	let ret = encode_iter_utf8(data);
-	String::from_utf8(ret).unwrap()
+	String::from_utf8(ret).unwrap_or("<INVALID_BASE58>".to_string())
 }
 
 /// Directly encode a slice as base58 into a `Formatter`.
@@ -321,7 +321,7 @@ where
 	I: Iterator<Item = u8> + Clone,
 {
 	let ret = encode_iter_utf8(data);
-	fmt.write_str(str::from_utf8(&ret).unwrap())
+	fmt.write_str(str::from_utf8(&ret).map_err(|_| std::fmt::Error)?)
 }
 
 /// Directly encode a slice as base58

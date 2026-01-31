@@ -27,7 +27,9 @@ use crate::types::{
 	OutputPrintable, Tip, Version,
 };
 use crate::{util, Libp2pMessages, Libp2pPeers};
-use mwc_p2p::types::PeerInfoDisplayLegacy;
+use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
+use std::time::Instant;
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at
@@ -942,6 +944,11 @@ pub trait ForeignRpc: Sync + Send {
 	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error>;
 
 	/**
+	Networked version of [Foreign::get_process_status](struct.Foreign.html#method.get_process_status).
+	 */
+	fn get_process_status(&self) -> Result<ProcessStatus, Error>;
+
+	/**
 	Networked version of [Foreign::get_pool_size](struct.Foreign.html#method.get_pool_size).
 
 	# Json rpc example
@@ -1298,6 +1305,42 @@ where
 
 	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
 		Foreign::get_connected_peers(self)
+	}
+
+	fn get_process_status(&self) -> Result<ProcessStatus, Error> {
+		let now = Instant::now();
+		let tor_online_time = match mwc_p2p::tor::arti::get_arti_restart_time() {
+			Some(start) => now.duration_since(start).as_secs(),
+			None => 0,
+		};
+
+		let mut system = System::new_with_specifics(
+			RefreshKind::nothing()
+				.with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+				.with_memory(MemoryRefreshKind::everything()),
+		);
+		let total_ram = system.total_memory();
+		let used_ram = system.used_memory();
+		let total_swap = system.total_swap();
+		let used_swap = system.used_swap();
+
+		std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+
+		system.refresh_cpu_usage();
+
+		let cpus = system.cpus();
+		let mut cpu_usage_sum = 0.0;
+		for cpu in cpus {
+			cpu_usage_sum += cpu.cpu_usage();
+		}
+
+		Ok(ProcessStatus {
+			process_running_time: self.get_running_time(),
+			tor_online_time,
+			host_cpu_usage: (cpu_usage_sum / cpus.len() as f32) as f64,
+			host_ram_usage: used_ram as f64 / total_ram as f64,
+			host_swap_usage: used_swap as f64 / total_swap as f64,
+		})
 	}
 
 	fn get_pool_size(&self) -> Result<usize, Error> {

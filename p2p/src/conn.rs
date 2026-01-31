@@ -172,25 +172,28 @@ impl Tracker {
 	pub fn inc_received(&self, size: u64) {
 		self.received_bytes
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.inc(size);
 	}
 
 	pub fn inc_sent(&self, size: u64) {
-		self.sent_bytes.write().expect("RwLock failure").inc(size);
+		self.sent_bytes
+			.write()
+			.unwrap_or_else(|e| e.into_inner())
+			.inc(size);
 	}
 
 	pub fn inc_quiet_received(&self, size: u64) {
 		self.received_bytes
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.inc_quiet(size);
 	}
 
 	pub fn inc_quiet_sent(&self, size: u64) {
 		self.sent_bytes
 			.write()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.inc_quiet(size);
 	}
 }

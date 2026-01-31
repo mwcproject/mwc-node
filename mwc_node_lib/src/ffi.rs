@@ -35,7 +35,7 @@ pub fn register_lib_callback(
 	cb: CallbackFn,
 	ctx: *mut std::ffi::c_void,
 ) {
-	let mut callbacks = LIB_CALLBACKS.write().expect("RwLock failure");
+	let mut callbacks = LIB_CALLBACKS.write().unwrap_or_else(|e| e.into_inner());
 	let callback_name = callback_name.to_str();
 	callbacks.insert(callback_name.to_string(), (cb, ctx as usize));
 	info!("Register callback {}", callback_name);
@@ -44,7 +44,7 @@ pub fn register_lib_callback(
 /// Unregister the callback
 #[ffi_export]
 pub fn unregister_lib_callback(callback_name: char_p::Ref<'static>) {
-	let mut callbacks = LIB_CALLBACKS.write().expect("RwLock failure");
+	let mut callbacks = LIB_CALLBACKS.write().unwrap_or_else(|e| e.into_inner());
 	let callback_name = callback_name.to_str();
 	callbacks.remove(&callback_name.to_string());
 	info!("Removed the callback {}", callback_name);

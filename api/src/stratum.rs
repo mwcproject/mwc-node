@@ -38,8 +38,8 @@ impl Stratum {
 		let mut get_banned = true;
 		let mut get_active = true;
 
-		if banned.is_some() {
-			get_banned = banned.unwrap();
+		if let Some(banned) = banned {
+			get_banned = banned;
 			get_active = !get_banned;
 		}
 

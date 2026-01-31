@@ -190,7 +190,7 @@ impl serde::Serialize for StratumStats {
 		)?;
 
 		// snapshot the worker list while we hold the lock
-		let workers = self.worker_stats.read().unwrap();
+		let workers = self.worker_stats.read().unwrap_or_else(|e| e.into_inner());
 		state.serialize_field("worker_stats", &*workers)?;
 
 		state.end()
@@ -280,7 +280,7 @@ impl StratumStats {
 	/// Allocate a new slot for the worker. Assuming that caller will never fail.
 	/// returns worker Id for the Worker tist
 	pub fn allocate_new_worker(&self, pow_difficulty: u64) -> usize {
-		let mut worker_stats = self.worker_stats.write().expect("RwLock failure");
+		let mut worker_stats = self.worker_stats.write().unwrap_or_else(|e| e.into_inner());
 
 		let worker_id = worker_stats
 			.iter()
@@ -305,7 +305,7 @@ impl StratumStats {
 	pub fn get_stats(&self, worker_id: usize) -> Option<WorkerStats> {
 		self.worker_stats
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.get(worker_id)
 			.map(|ws| ws.clone())
 	}
@@ -313,13 +313,16 @@ impl StratumStats {
 	/// Update stats record for the worker
 	/// callback expected to be short and non locking
 	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats) -> ()) {
-		let mut worker_stats = self.worker_stats.write().expect("RwLock failure");
+		let mut worker_stats = self.worker_stats.write().unwrap_or_else(|e| e.into_inner());
 		f(&mut worker_stats[worker_id]);
 	}
 
 	/// Copy stat data. Expected that caller is understand the impact of this call.
 	pub fn get_worker_stats(&self) -> Vec<WorkerStats> {
-		self.worker_stats.read().expect("RwLock failure").clone()
+		self.worker_stats
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
 	}
 }
 
@@ -354,14 +357,14 @@ impl PeerStats {
 				.tracker()
 				.sent_bytes
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.bytes_per_min()
 				/ 60,
 			received_bytes_per_sec: peer
 				.tracker()
 				.received_bytes
 				.read()
-				.expect("RwLock failure")
+				.unwrap_or_else(|e| e.into_inner())
 				.bytes_per_min()
 				/ 60,
 			capabilities: peer.info.capabilities,

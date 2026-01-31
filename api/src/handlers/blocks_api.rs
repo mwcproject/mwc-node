@@ -99,7 +99,11 @@ impl HeaderHandler {
 	) -> Result<Hash, Error> {
 		if let Some(height) = height {
 			match w(&self.chain)?.get_header_by_height(height) {
-				Ok(header) => return Ok(header.hash()),
+				Ok(header) => {
+					return Ok(header
+						.hash()
+						.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?)
+				}
 				Err(e) => {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
@@ -117,7 +121,11 @@ impl HeaderHandler {
 				None => return Err(Error::NotFound(format!("Output {} not found", commit))),
 			};
 			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
-				Ok(header) => return Ok(header.hash()),
+				Ok(header) => {
+					return Ok(header
+						.hash()
+						.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?)
+				}
 				Err(e) => {
 					return Err(Error::NotFound(format!(
 						"Header for output {:?}, {}",
@@ -248,7 +256,12 @@ impl BlockHandler {
 		let block = chain
 			.get_block(h)
 			.map_err(|e| Error::NotFound(format!("Block for hash {}, {}", h, e)))?;
-		CompactBlockPrintable::from_compact_block(&block.into(), &chain).map_err(|e| {
+		CompactBlockPrintable::from_compact_block(
+			&mwc_core::core::CompactBlock::from(block)
+				.map_err(|e| Error::Internal(format!("Unable to build a CompactBlock, {}", e)))?,
+			&chain,
+		)
+		.map_err(|e| {
 			Error::Internal(format!(
 				"chain error, broken compact block for hash {}, {}",
 				h, e
@@ -260,7 +273,11 @@ impl BlockHandler {
 	fn parse_input(&self, input: String) -> Result<Hash, Error> {
 		if let Ok(height) = input.parse() {
 			match w(&self.chain)?.get_header_by_height(height) {
-				Ok(header) => return Ok(header.hash()),
+				Ok(header) => {
+					return Ok(header
+						.hash()
+						.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?)
+				}
 				Err(e) => {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
@@ -284,7 +301,11 @@ impl BlockHandler {
 	) -> Result<Hash, Error> {
 		if let Some(height) = height {
 			match w(&self.chain)?.get_header_by_height(height) {
-				Ok(header) => return Ok(header.hash()),
+				Ok(header) => {
+					return Ok(header
+						.hash()
+						.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?)
+				}
 				Err(e) => {
 					return Err(Error::NotFound(format!(
 						"Header for height {}, {}",
@@ -302,7 +323,11 @@ impl BlockHandler {
 				None => return Err(Error::NotFound(format!("Output {}", commit)).into()),
 			};
 			match w(&self.chain)?.get_header_for_output(oid.commitment()) {
-				Ok(header) => return Ok(header.hash()),
+				Ok(header) => {
+					return Ok(header
+						.hash()
+						.map_err(|e| Error::Internal(format!("Header build hash error, {}", e)))?)
+				}
 				Err(e) => {
 					return Err(Error::NotFound(format!(
 						"Header for output {:?}, {}",

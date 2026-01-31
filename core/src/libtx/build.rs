@@ -75,7 +75,11 @@ where
 				let input = Input::new(features, commit);
 				Ok((
 					tx.with_input(input),
-					sum.sub_key_id(key_id.to_value_path(value)),
+					sum.sub_key_id(
+						key_id
+							.to_value_path(value)
+							.map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?,
+					),
 				))
 			} else {
 				acc
@@ -138,7 +142,11 @@ where
 
 			Ok((
 				tx.with_output(Output::new(OutputFeatures::Plain, commit, proof)),
-				sum.add_key_id(key_id.to_value_path(value)),
+				sum.add_key_id(
+					key_id
+						.to_value_path(value)
+						.map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?,
+				),
 			))
 		},
 	)
@@ -266,10 +274,10 @@ mod test {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain);
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+		let builder = ProofBuilder::new(&keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
 
 		let tx = transaction(
 			KernelFeatures::Plain { fee: 2.into() },
@@ -288,10 +296,10 @@ mod test {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain);
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
+		let builder = ProofBuilder::new(&keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
 
 		let tx = transaction(
 			KernelFeatures::Plain { fee: 2.into() },
@@ -310,9 +318,9 @@ mod test {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain);
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
+		let builder = ProofBuilder::new(&keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
 
 		let tx = transaction(
 			KernelFeatures::Plain { fee: 4.into() },

@@ -15,6 +15,7 @@
 use mwc_chain as chain;
 use mwc_core as core;
 use mwc_util as util;
+use std::collections::HashSet;
 
 #[macro_use]
 extern crate log;
@@ -51,6 +52,7 @@ fn test_chain_validation() {
 		genesis.clone(),
 		pow::verify_size,
 		false,
+		HashSet::new(),
 	)
 	.unwrap();
 
@@ -62,7 +64,7 @@ fn test_chain_validation() {
 			info!("Processing block {}", height);
 		}
 		let hdr = src_chain.get_header_by_height(height).unwrap();
-		let block = src_chain.get_block(&hdr.hash()).unwrap();
+		let block = src_chain.get_block(&hdr.hash().unwrap()).unwrap();
 		for kernel in &block.body.kernels {
 			let fee = match kernel.features {
 				KernelFeatures::Plain { fee } => fee.fee(),

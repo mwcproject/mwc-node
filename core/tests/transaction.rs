@@ -71,10 +71,10 @@ fn test_transaction_equal() {
 #[test]
 fn test_output_ser_deser() {
 	let keychain = ExtKeychain::from_random_seed(false).unwrap();
-	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let switch = keychain::SwitchCommitmentType::Regular;
 	let commit = keychain.commit(5, &key_id, switch).unwrap();
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 	let proof = proof::create(&keychain, &builder, 5, &key_id, switch, commit, None).unwrap();
 
 	let out = Output::new(OutputFeatures::Plain, commit, proof);
@@ -98,11 +98,11 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
-	let builder = proof::ProofBuilder::new(&keychain);
+	let builder = proof::ProofBuilder::new(&keychain).unwrap();
 
 	let mut tx = build::transaction(
 		KernelFeatures::Plain {
@@ -158,11 +158,11 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0);
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 
 	let mut tx = build::transaction(
 		KernelFeatures::Plain {
@@ -222,9 +222,9 @@ fn test_fee_fields() -> Result<(), Error> {
 
 	let keychain = ExtKeychain::from_random_seed(false)?;
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 
-	let builder = ProofBuilder::new(&keychain);
+	let builder = ProofBuilder::new(&keychain).unwrap();
 
 	let mut tx = build::transaction(
 		KernelFeatures::Plain {

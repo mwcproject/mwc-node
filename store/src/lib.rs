@@ -52,22 +52,24 @@ pub fn to_key<K: AsRef<[u8]>>(prefix: u8, k: K) -> Vec<u8> {
 }
 
 /// Build a db key from a prefix and a byte vector identifier and numeric identifier
-pub fn to_key_u64<K: AsRef<[u8]>>(prefix: u8, k: K, val: u64) -> Vec<u8> {
+pub fn to_key_u64<K: AsRef<[u8]>>(prefix: u8, k: K, val: u64) -> Result<Vec<u8>, Error> {
 	let k = k.as_ref();
 	let mut res = Vec::with_capacity(k.len() + 10);
 	res.push(prefix);
 	res.push(SEP);
 	res.extend_from_slice(k);
-	res.write_u64::<BigEndian>(val).unwrap();
-	res
+	res.write_u64::<BigEndian>(val)
+		.map_err(|e| Error::IOError(format!("to_key_u64 is failed, {}", e)))?;
+	Ok(res)
 }
 /// Build a db key from a prefix and a numeric identifier.
-pub fn u64_to_key(prefix: u8, val: u64) -> Vec<u8> {
+pub fn u64_to_key(prefix: u8, val: u64) -> Result<Vec<u8>, Error> {
 	let mut res = Vec::with_capacity(10);
 	res.push(prefix);
 	res.push(SEP);
-	res.write_u64::<BigEndian>(val).unwrap();
-	res
+	res.write_u64::<BigEndian>(val)
+		.map_err(|e| Error::IOError(format!("u64_to_key is failed, {}", e)))?;
+	Ok(res)
 }
 
 use std::ffi::OsStr;

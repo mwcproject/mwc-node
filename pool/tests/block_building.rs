@@ -115,7 +115,9 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 	add_block(&chain, &txs, &keychain);
 
 	// Get full block from head of the chain (block we just processed).
-	let block = chain.get_block(&chain.head().unwrap().hash()).unwrap();
+	let block = chain
+		.get_block(&chain.head().unwrap().hash().unwrap())
+		.unwrap();
 
 	// Check the block contains what we expect.
 	assert_eq!(block.inputs().len(), 4);

@@ -16,6 +16,7 @@
 use mwc_chain as chain;
 use mwc_core as core;
 use mwc_util as util;
+use std::collections::HashSet;
 
 #[macro_use]
 extern crate log;
@@ -41,7 +42,7 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 	global::set_local_nrd_enabled(false);
 
 	{
-		debug!("Reading Chain, genesis block: {}", genesis.hash());
+		debug!("Reading Chain, genesis block: {}", genesis.hash().unwrap());
 		let dummy_adapter = Arc::new(NoopAdapter {});
 
 		// The original chain we're reading from
@@ -53,6 +54,7 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 				genesis.clone(),
 				pow::verify_size,
 				false,
+				HashSet::new(),
 			)
 			.unwrap(),
 		);
@@ -66,15 +68,16 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 				genesis.clone(),
 				pow::verify_size,
 				false,
+				HashSet::new(),
 			)
 			.unwrap(),
 		);
 
 		let sh = src_chain.get_header_by_height(0).unwrap();
-		debug!("Source Genesis - {}", sh.hash());
+		debug!("Source Genesis - {}", sh.hash().unwrap());
 
 		let dh = dest_chain.get_header_by_height(0).unwrap();
-		debug!("Destination Genesis - {}", dh.hash());
+		debug!("Destination Genesis - {}", dh.hash().unwrap());
 
 		let horizon_header = src_chain.txhashset_archive_header().unwrap();
 

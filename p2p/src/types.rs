@@ -328,16 +328,19 @@ impl PeerAddr {
 
 	pub fn from_str(addr: &str) -> PeerAddr {
 		let socket_addr = SocketAddr::from_str(addr);
-		if socket_addr.is_err() {
-			let socket_addrs = addr.to_socket_addrs();
-			if socket_addrs.is_ok() {
-				let vec: Vec<SocketAddr> = socket_addrs.unwrap().collect();
-				PeerAddr::Ip(vec[0])
-			} else {
-				PeerAddr::Onion(addr.to_string())
+		match socket_addr {
+			Ok(socket_addr) => PeerAddr::Ip(socket_addr),
+			Err(_) => {
+				let socket_addrs = addr.to_socket_addrs();
+
+				match socket_addrs {
+					Ok(socket_addrs) => {
+						let vec: Vec<SocketAddr> = socket_addrs.collect();
+						PeerAddr::Ip(vec[0])
+					}
+					Err(_) => PeerAddr::Onion(addr.to_string()),
+				}
 			}
-		} else {
-			PeerAddr::Ip(socket_addr.unwrap())
 		}
 	}
 
@@ -692,7 +695,7 @@ impl PeerInfo {
 	pub fn total_difficulty(&self) -> Difficulty {
 		self.live_info
 			.read()
-			.expect("RwLock failure")
+			.unwrap_or_else(|e| e.into_inner())
 			.total_difficulty
 	}
 
@@ -706,23 +709,32 @@ impl PeerInfo {
 
 	/// The current height of the peer.
 	pub fn height(&self) -> u64 {
-		self.live_info.read().expect("RwLock failure").height
+		self.live_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.height
 	}
 
 	/// Time of last_seen for this peer (via ping/pong).
 	pub fn last_seen(&self) -> DateTime<Utc> {
-		self.live_info.read().expect("RwLock failure").last_seen
+		self.live_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.last_seen
 	}
 
 	/// Time of first_seen for this peer.
 	pub fn first_seen(&self) -> DateTime<Utc> {
-		self.live_info.read().expect("RwLock failure").first_seen
+		self.live_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.first_seen
 	}
 
 	/// Update the total_difficulty, height and last_seen of the peer.
 	/// Takes a write lock on the live_info.
 	pub fn update(&self, height: u64, total_difficulty: Difficulty) {
-		let mut live_info = self.live_info.write().expect("RwLock failure");
+		let mut live_info = self.live_info.write().unwrap_or_else(|e| e.into_inner());
 		if total_difficulty != live_info.total_difficulty {
 			live_info.stuck_detector = Utc::now();
 		}
@@ -742,6 +754,7 @@ pub struct PeerInfoDisplayLegacy {
 	pub direction: Direction,
 	pub total_difficulty: Difficulty,
 	pub height: u64,
+	pub last_seen: u32, // last seen seconds ago
 }
 
 /// Flatten out a PeerInfo and nested PeerLiveInfo (taking a read lock on it)
@@ -755,10 +768,17 @@ pub struct PeerInfoDisplay {
 	pub direction: Direction,
 	pub total_difficulty: Difficulty,
 	pub height: u64,
+	pub last_seen: u32, // last seen seconds ago
 }
 
 impl From<PeerInfo> for PeerInfoDisplay {
 	fn from(info: PeerInfo) -> PeerInfoDisplay {
+		let peer_last_seen = info
+			.live_info
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
+			.last_seen;
+		let last_seen = (Utc::now() - peer_last_seen).num_seconds() as u32;
 		PeerInfoDisplay {
 			capabilities: info.capabilities,
 			user_agent: info.user_agent.clone(),
@@ -767,8 +787,23 @@ impl From<PeerInfo> for PeerInfoDisplay {
 			direction: info.direction,
 			total_difficulty: info.total_difficulty(),
 			height: info.height(),
+			last_seen,
 		}
 	}
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessStatus {
+	/// How long this process is running
+	pub process_running_time: u64,
+	/// How long arti is running
+	pub tor_online_time: u64,
+	/// This host CPU usage, percentage
+	pub host_cpu_usage: f64,
+	/// This host memory usage, percentage
+	pub host_ram_usage: f64,
+	/// This host swap usage, percantage
+	pub host_swap_usage: f64,
 }
 
 /// The full txhashset data along with indexes required for a consumer to
@@ -858,11 +893,11 @@ pub trait ChainAdapter: Sync + Send {
 	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error>;
 
 	/// Get the Grin specific tmp dir
-	fn get_tmp_dir(&self) -> PathBuf;
+	fn get_tmp_dir(&self) -> Result<PathBuf, chain::Error>;
 
 	/// Get a tmp file path in above specific tmp dir (create tmp dir if not exist)
 	/// Delete file if tmp file already exists
-	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> PathBuf;
+	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, chain::Error>;
 
 	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
 	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error>;

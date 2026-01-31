@@ -1,5 +1,4 @@
-// Copyright 2019 The Grin Developers
-// Copyright 2024 The MWC Developers
+// Copyright 2026 The MWC Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod client;
-mod config;
-mod error;
-mod server;
-
-pub use self::client::client_command;
-pub use self::config::config_command_server;
-pub use self::error::Error;
-pub use self::server::server_command;
+/// Error type wrapping underlying module errors.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	/// RPC Error
+	#[error("RPC error: {0}")]
+	RPCError(String),
+	/// Internal error
+	#[error("Internal error: {0}")]
+	Internal(String),
+	/// Terminal IO error
+	#[error("Terminal IO error: {0}")]
+	TerminalIO(#[from] term::Error),
+	/// Write IO error
+	#[error("Write IO error: {0}")]
+	WriteIO(#[from] std::io::Error),
+	/// Argumnet error
+	#[error("{0}")]
+	ArgumentError(String),
+}

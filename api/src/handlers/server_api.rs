@@ -61,7 +61,7 @@ impl StatusHandler {
 				.connected()
 				.count()
 				.try_into()
-				.unwrap(),
+				.map_err(|e| Error::Internal(format!("Failed to get peer cound value, {}", e)))?,
 			api_sync_status,
 			api_sync_info,
 		))

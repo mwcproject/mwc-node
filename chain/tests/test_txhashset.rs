@@ -49,14 +49,15 @@ fn test_unexpected_zip() {
 		assert!(txhashset::zip_read(db_root.clone(), &head).is_ok());
 		let zip_path = Path::new(&db_root).join(format!(
 			"txhashset_snapshot_{}.zip",
-			head.hash().to_string()
+			head.hash().unwrap().to_string()
 		));
 		let zip_file = File::open(&zip_path).unwrap();
 		assert!(txhashset::zip_write(PathBuf::from(db_root.clone()), zip_file, &head).is_ok());
 		// Remove temp txhashset dir
-		let _ = fs::remove_dir_all(
-			Path::new(&db_root).join(format!("txhashset_zip_{}", head.hash().to_string())),
-		);
+		let _ = fs::remove_dir_all(Path::new(&db_root).join(format!(
+			"txhashset_zip_{}",
+			head.hash().unwrap().to_string()
+		)));
 		// Then add strange files in the original txhashset folder
 		File::create(&Path::new(&db_root).join("txhashset").join("badfile"))
 			.expect("problem creating a file");
@@ -89,9 +90,10 @@ fn test_unexpected_zip() {
 		);
 
 		assert!(txhashset::zip_read(db_root.clone(), &head).is_ok());
-		let _ = fs::remove_dir_all(
-			Path::new(&db_root).join(format!("txhashset_zip_{}", head.hash().to_string())),
-		);
+		let _ = fs::remove_dir_all(Path::new(&db_root).join(format!(
+			"txhashset_zip_{}",
+			head.hash().unwrap().to_string()
+		)));
 		let zip_file = File::open(zip_path).unwrap();
 		let _ = fs::remove_dir_all(Path::new(&db_root).join("txhashset"));
 		assert!(txhashset::zip_write(PathBuf::from(db_root.clone()), zip_file, &head).is_ok());

@@ -118,22 +118,22 @@ impl Identifier {
 		Identifier::from_bytes(&[0; IDENTIFIER_SIZE])
 	}
 
-	pub fn from_path(path: &ExtKeychainPath) -> Identifier {
+	pub fn from_path(path: &ExtKeychainPath) -> Result<Identifier, Error> {
 		path.to_identifier()
 	}
 
-	pub fn to_path(&self) -> ExtKeychainPath {
+	pub fn to_path(&self) -> Result<ExtKeychainPath, Error> {
 		ExtKeychainPath::from_identifier(&self)
 	}
 
-	pub fn to_value_path(&self, value: u64) -> ValueExtKeychainPath {
+	pub fn to_value_path(&self, value: u64) -> Result<ValueExtKeychainPath, Error> {
 		// TODO: proper support for different switch commitment schemes
 		// For now it is assumed all outputs are using the regular switch commitment scheme
-		ValueExtKeychainPath {
+		Ok(ValueExtKeychainPath {
 			value,
-			ext_keychain_path: self.to_path(),
+			ext_keychain_path: self.to_path()?,
 			switch: SwitchCommitmentType::Regular,
-		}
+		})
 	}
 
 	/// output the path itself, for insertion into bulletproof
@@ -154,8 +154,8 @@ impl Identifier {
 	}
 
 	/// Return the parent path
-	pub fn parent_path(&self) -> Identifier {
-		let mut p = ExtKeychainPath::from_identifier(&self);
+	pub fn parent_path(&self) -> Result<Identifier, Error> {
+		let mut p = ExtKeychainPath::from_identifier(&self)?;
 		if p.depth > 0 {
 			p.path[p.depth as usize - 1] = ChildNumber::from(0);
 			p.depth -= 1;
@@ -197,13 +197,13 @@ impl Identifier {
 		Ok(Identifier::from_bytes(&bytes))
 	}
 
-	pub fn to_bip_32_string(&self) -> String {
-		let p = ExtKeychainPath::from_identifier(&self);
+	pub fn to_bip_32_string(&self) -> Result<String, Error> {
+		let p = ExtKeychainPath::from_identifier(&self)?;
 		let mut retval = String::from("m");
 		for i in 0..p.depth {
 			retval.push_str(&format!("/{}", <u32>::from(p.path[i as usize])));
 		}
-		retval
+		Ok(retval)
 	}
 }
 
@@ -269,7 +269,12 @@ impl BlindingFactor {
 	}
 
 	pub fn from_hex(hex: &str) -> Result<BlindingFactor, Error> {
-		let bytes = util::from_hex(hex).unwrap();
+		let bytes = util::from_hex(hex).map_err(|e| {
+			Error::GenericError(format!(
+				"BlindingFactor::from_hex invalid hex param: {}, {}",
+				hex, e
+			))
+		})?;
 		Ok(BlindingFactor::from_slice(&bytes))
 	}
 
@@ -392,34 +397,72 @@ impl ExtKeychainPath {
 	}
 
 	/// from an Indentifier [manual deserialization]
-	pub fn from_identifier(id: &Identifier) -> ExtKeychainPath {
+	pub fn from_identifier(id: &Identifier) -> Result<ExtKeychainPath, Error> {
 		let mut rdr = Cursor::new(id.0.to_vec());
-		ExtKeychainPath {
-			depth: rdr.read_u8().unwrap(),
+
+		let depth: u8 = rdr.read_u8().map_err(|e| {
+			Error::GenericError(format!(
+				"ExtKeychainPath::from_identifier invalid data, {}",
+				e
+			))
+		})?;
+
+		Ok(ExtKeychainPath {
+			depth,
 			path: [
-				ChildNumber::from(rdr.read_u32::<BigEndian>().unwrap()),
-				ChildNumber::from(rdr.read_u32::<BigEndian>().unwrap()),
-				ChildNumber::from(rdr.read_u32::<BigEndian>().unwrap()),
-				ChildNumber::from(rdr.read_u32::<BigEndian>().unwrap()),
+				ChildNumber::from(rdr.read_u32::<BigEndian>().map_err(|e| {
+					Error::GenericError(format!(
+						"ExtKeychainPath::from_identifier invalid data, {}",
+						e
+					))
+				})?),
+				ChildNumber::from(rdr.read_u32::<BigEndian>().map_err(|e| {
+					Error::GenericError(format!(
+						"ExtKeychainPath::from_identifier invalid data, {}",
+						e
+					))
+				})?),
+				ChildNumber::from(rdr.read_u32::<BigEndian>().map_err(|e| {
+					Error::GenericError(format!(
+						"ExtKeychainPath::from_identifier invalid data, {}",
+						e
+					))
+				})?),
+				ChildNumber::from(rdr.read_u32::<BigEndian>().map_err(|e| {
+					Error::GenericError(format!(
+						"ExtKeychainPath::from_identifier invalid data, {}",
+						e
+					))
+				})?),
 			],
-		}
+		})
 	}
 
 	/// to an Identifier [manual serialization]
-	pub fn to_identifier(&self) -> Identifier {
+	pub fn to_identifier(&self) -> Result<Identifier, Error> {
 		let mut wtr = vec![];
-		wtr.write_u8(self.depth).unwrap();
+		wtr.write_u8(self.depth).map_err(|e| {
+			Error::GenericError(format!("ExtKeychainPath::to_identifier write error, {}", e))
+		})?;
 		wtr.write_u32::<BigEndian>(<u32>::from(self.path[0]))
-			.unwrap();
+			.map_err(|e| {
+				Error::GenericError(format!("ExtKeychainPath::to_identifier write error, {}", e))
+			})?;
 		wtr.write_u32::<BigEndian>(<u32>::from(self.path[1]))
-			.unwrap();
+			.map_err(|e| {
+				Error::GenericError(format!("ExtKeychainPath::to_identifier write error, {}", e))
+			})?;
 		wtr.write_u32::<BigEndian>(<u32>::from(self.path[2]))
-			.unwrap();
+			.map_err(|e| {
+				Error::GenericError(format!("ExtKeychainPath::to_identifier write error, {}", e))
+			})?;
 		wtr.write_u32::<BigEndian>(<u32>::from(self.path[3]))
-			.unwrap();
+			.map_err(|e| {
+				Error::GenericError(format!("ExtKeychainPath::to_identifier write error, {}", e))
+			})?;
 		let mut retval = [0u8; IDENTIFIER_SIZE];
 		retval.copy_from_slice(&wtr[0..IDENTIFIER_SIZE]);
-		Identifier(retval)
+		Ok(Identifier(retval))
 	}
 
 	/// Last part of the path (for last n_child)
@@ -455,14 +498,14 @@ pub trait Keychain: Sync + Send + Clone {
 	fn mask_master_key(&mut self, mask: &SecretKey) -> Result<(), Error>;
 
 	/// Root identifier for that keychain
-	fn root_key_id() -> Identifier;
+	fn root_key_id() -> Result<Identifier, Error>;
 
 	/// Derives a key id from the depth of the keychain and the values at each
 	/// depth level. See `KeychainPath` for more information.
-	fn derive_key_id(depth: u8, d1: u32, d2: u32, d3: u32, d4: u32) -> Identifier;
+	fn derive_key_id(depth: u8, d1: u32, d2: u32, d3: u32, d4: u32) -> Result<Identifier, Error>;
 
 	/// The public root key
-	fn public_root_key(&self) -> PublicKey;
+	fn public_root_key(&self) -> Result<PublicKey, Error>;
 
 	fn private_root_key(&self) -> SecretKey;
 
@@ -588,8 +631,8 @@ mod test {
 	#[test]
 	fn path_identifier() {
 		let path = ExtKeychainPath::new(4, 1, 2, 3, 4);
-		let id = Identifier::from_path(&path);
-		let ret_path = id.to_path();
+		let id = Identifier::from_path(&path).unwrap();
+		let ret_path = id.to_path().unwrap();
 		assert_eq!(path, ret_path);
 
 		let path = ExtKeychainPath::new(
@@ -599,18 +642,18 @@ mod test {
 			3,
 			<u32>::max_value(),
 		);
-		let id = Identifier::from_path(&path);
-		let ret_path = id.to_path();
+		let id = Identifier::from_path(&path).unwrap();
+		let ret_path = id.to_path().unwrap();
 		assert_eq!(path, ret_path);
 
 		println!("id: {:?}", id);
 		println!("ret_path {:?}", ret_path);
 
 		let path = ExtKeychainPath::new(3, 0, 0, 10, 0);
-		let id = Identifier::from_path(&path);
-		let parent_id = id.parent_path();
+		let id = Identifier::from_path(&path).unwrap();
+		let parent_id = id.parent_path().unwrap();
 		let expected_path = ExtKeychainPath::new(2, 0, 0, 0, 0);
-		let expected_id = Identifier::from_path(&expected_path);
+		let expected_id = Identifier::from_path(&expected_path).unwrap();
 		assert_eq!(expected_id, parent_id);
 	}
 }

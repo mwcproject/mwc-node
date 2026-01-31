@@ -25,7 +25,7 @@ use mwc_chain as chain;
 use mwc_core as core;
 use mwc_keychain as keychain;
 use mwc_util as util;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::sync::Arc;
 
@@ -51,17 +51,18 @@ fn test_coinbase_maturity() {
 			genesis_block,
 			pow::verify_size,
 			false,
+			HashSet::new(),
 		)
 		.unwrap();
 
 		let prev = chain.head_header().unwrap();
 
 		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain);
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier();
-		let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier();
+		let builder = ProofBuilder::new(&keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
+		let key_id4 = ExtKeychainPath::new(1, 4, 0, 0, 0).to_identifier().unwrap();
 
 		let mut cache_values = VecDeque::new();
 
@@ -183,8 +184,8 @@ fn test_coinbase_maturity() {
 			let prev = chain.head_header().unwrap();
 
 			let keychain = ExtKeychain::from_random_seed(false).unwrap();
-			let builder = ProofBuilder::new(&keychain);
-			let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
+			let builder = ProofBuilder::new(&keychain).unwrap();
+			let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
 
 			let next_header_info = consensus::next_difficulty(
 				0,
@@ -313,8 +314,8 @@ fn test_coinbase_maturity() {
 				let prev = chain.head_header().unwrap();
 
 				let keychain = ExtKeychain::from_random_seed(false).unwrap();
-				let builder = ProofBuilder::new(&keychain);
-				let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier();
+				let builder = ProofBuilder::new(&keychain).unwrap();
+				let pk = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
 
 				let reward = libtx::reward::output(
 					0,
