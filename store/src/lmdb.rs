@@ -15,6 +15,7 @@
 
 //! Storage of core types using LMDB.
 
+use std::any::type_name;
 use std::fs;
 use std::sync::Arc;
 
@@ -569,19 +570,34 @@ where
 			}
 		};
 
-		let kv: Result<(&[u8], &[u8]), _> = if self.seek {
-			cursor.next(&access)
-		} else {
-			self.seek = true;
-			cursor.seek_range_k(&access, &self.prefix[..])
-		};
-		kv.ok()
-			.filter(|(k, _)| k.starts_with(self.prefix.as_slice()))
-			.map(|(k, v)| match (self.deserialize)(k, v) {
-				Ok(v) => Some(v),
-				Err(_) => None,
-			})
-			.flatten()
+		loop {
+			let kv: Result<(&[u8], &[u8]), _> = if self.seek {
+				cursor.next(&access)
+			} else {
+				self.seek = true;
+				cursor.seek_range_k(&access, &self.prefix[..])
+			};
+			// In case of error, we want to skip this record
+			match kv.ok() {
+				Some((k, v)) => {
+					if !k.starts_with(self.prefix.as_slice()) {
+						return None;
+					}
+					match (self.deserialize)(k, v) {
+						Ok(v) => return Some(v),
+						Err(e) => {
+							error!(
+								"IMDB reading for {}. This item is deleted from DB!!! {}",
+								type_name::<T>(),
+								e
+							);
+							continue;
+						}
+					}
+				}
+				None => return None,
+			}
+		}
 	}
 }
 
