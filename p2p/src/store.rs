@@ -18,6 +18,7 @@
 use chrono::Utc;
 use num::FromPrimitive;
 use rand::thread_rng;
+use std::ffi::CString;
 
 use crate::mwc_core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
@@ -98,6 +99,13 @@ impl Readable for PeerData {
 
 		let user_agent = String::from_utf8(ua)
 			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read user agent, {}", e)))?;
+
+		if CString::new(user_agent.as_str()).is_err() {
+			return Err(ser::Error::CorruptedData(
+				"PeerData.user_agent contains NUL".into(),
+			));
+		}
+
 		let capabilities = Capabilities::from_bits_truncate(capab);
 		let ban_reason = ReasonForBan::from_i32(br).ok_or(ser::Error::CorruptedData(
 			"Unable to read PeerData ban reason".to_string(),
@@ -200,18 +208,26 @@ impl PeerStore {
 	}
 
 	/// Iterator over all known peers.
-	pub fn peers_iter(&self) -> Result<impl Iterator<Item = PeerData>, Error> {
+	pub fn peers_iter(&self) -> Result<impl Iterator<Item = PeerData> + '_, Error> {
 		let key = to_key(PEER_PREFIX, "");
 		let protocol_version = self.db.protocol_version();
 		let context_id = self.db.get_context_id();
-		self.db.iter(&key, move |_, mut v| {
-			ser::deserialize(
+		let db = &self.db;
+		self.db.iter(&key, move |k, mut v| {
+			let res = ser::deserialize(
 				&mut v,
 				protocol_version,
 				context_id,
 				DeserializationMode::default(),
-			)
-			.map_err(From::from)
+			);
+			if res.is_err() {
+				if let Ok(batch) = db.batch_write() {
+					if batch.delete(k).is_ok() {
+						let _ = batch.commit();
+					}
+				}
+			}
+			res.map_err(From::from)
 		})
 	}
 

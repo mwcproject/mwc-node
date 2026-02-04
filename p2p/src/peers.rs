@@ -352,7 +352,7 @@ impl Peers {
 	}
 
 	/// Iterator over all peers we know about (stored in our db).
-	pub fn peer_data_iter(&self) -> Result<impl Iterator<Item = PeerData>, Error> {
+	pub fn peer_data_iter(&self) -> Result<impl Iterator<Item = PeerData> + use<'_>, Error> {
 		self.store.peers_iter().map_err(From::from)
 	}
 

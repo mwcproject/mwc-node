@@ -16,6 +16,7 @@
 use crate::types::PeerAddr::Ip;
 use crate::types::PeerAddr::Onion;
 use std::convert::From;
+use std::ffi::CString;
 use std::fmt;
 use std::fs::File;
 use std::io;
@@ -37,6 +38,7 @@ use crate::mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKern
 use crate::mwc_core::global;
 use crate::mwc_core::pow::Difficulty;
 use crate::mwc_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
+use crate::tor::arti;
 use crate::util::secp::pedersen::RangeProof;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::types::HEADERS_PER_BATCH;
@@ -223,6 +225,17 @@ impl Readable for PeerAddr {
 			// '2' is used for onion addresses now
 			let oa = reader.read_bytes_len_prefix()?;
 			let onion_address = String::from_utf8(oa).unwrap_or("".to_string());
+			if !arti::is_valid_onion_v3(onion_address.as_str()) {
+				return Err(ser::Error::CorruptedData(format!(
+					"Invalid onion address string {}",
+					onion_address
+				)));
+			}
+			if CString::new(onion_address.as_str()).is_err() {
+				return Err(ser::Error::CorruptedData(
+					"onion_address contains NUL".into(),
+				));
+			}
 			Ok(PeerAddr::Onion(onion_address))
 		}
 	}
