@@ -175,6 +175,14 @@ pub fn init_arti_cancelling(context_id: u32) {
 		.insert(context_id, CancellationToken::new());
 }
 
+pub fn init_arti_cancelling_all(context_ids: Vec<u32>) {
+	let mut guard = CANCELLING_ARTI.write().unwrap_or_else(|e| e.into_inner());
+
+	for id in context_ids {
+		guard.insert(id, CancellationToken::new());
+	}
+}
+
 pub fn release_arti_cancelling(context_id: u32) {
 	if let Some(token) = CANCELLING_ARTI
 		.write()
@@ -184,6 +192,27 @@ pub fn release_arti_cancelling(context_id: u32) {
 		// cancelling it so cloned instance will stop waiting as well
 		token.cancel();
 	}
+}
+
+// Trigger all cancelling events. Used in cases like arti restart, so all arti users will be dropped.
+// Return all context Ids so we could recreate it
+pub fn release_arti_cancelling_all() -> Vec<u32> {
+	let mut res: Vec<u32> = Vec::new();
+	CANCELLING_ARTI
+		.write()
+		.unwrap_or_else(|e| e.into_inner())
+		.retain(|id, token| {
+			res.push(id.clone());
+			token.cancel();
+			false
+		});
+
+	debug_assert!(CANCELLING_ARTI
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.is_empty());
+
+	res
 }
 
 pub fn is_arti_cancelled(context_id: u32) -> bool {
@@ -269,6 +298,7 @@ pub fn start_arti(
 	config: &TorConfig,
 	base_dir: &Path,
 	print_start_message: bool,
+	cleanup_arti_data: bool,
 ) -> Result<(), Error> {
 	if TOR_ARTI_INSTANCE
 		.read()
@@ -278,13 +308,17 @@ pub fn start_arti(
 		return Ok(());
 	}
 
-	let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
+	let expiration_time = {
+		let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
 
-	let create_arti_res = ArtiCore::new(config, base_dir, print_start_message);
-	let (a, expiration_time) = create_arti_res?;
-	TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
-	*atri_writer = Some(a);
-	*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+		let create_arti_res =
+			ArtiCore::new(config, base_dir, print_start_message, cleanup_arti_data);
+		let (a, expiration_time) = create_arti_res?;
+		TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+		*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+		*atri_writer = Some(a);
+		expiration_time
+	};
 
 	// Starting tor monitoring thread if it is not running
 	let mut monitoring_thread = TOR_MONITORING_THREAD
@@ -472,7 +506,10 @@ where
 fn restart_arti(start_new_client: bool) -> i64 {
 	error!("Stopping ARTI...");
 	let (tor_runtime, config, base_dir, restart_senders) = {
+		let context_ids = release_arti_cancelling_all();
 		let mut guard = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
+		init_arti_cancelling_all(context_ids);
+
 		match guard.take() {
 			Some(arti) => {
 				drop(arti.tor_client);
@@ -498,7 +535,7 @@ fn restart_arti(start_new_client: bool) -> i64 {
 
 	loop {
 		info!("Starting a new Arti client");
-		match ArtiCore::new(&config, base_dir.as_path(), false) {
+		match ArtiCore::new(&config, base_dir.as_path(), false, true) {
 			Ok((arti_core, expiration_time)) => {
 				info!("New Arti instance is successfully created.");
 				*TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()) = Some(arti_core);
@@ -551,6 +588,7 @@ impl ArtiCore {
 		config: &TorConfig,
 		base_dir: &Path,
 		print_start_message: bool,
+		cleanup_arti_data: bool,
 	) -> Result<(Self, i64), Error> {
 		if !config.is_tor_enabled() || config.is_tor_external() {
 			return Err(Error::TorConfig(format!(
@@ -563,8 +601,12 @@ impl ArtiCore {
 			return Err(Error::Interrupted);
 		}
 
-		let (mut tor_client_config, mut expiration_time) =
-			Self::build_config(&config.webtunnel_bridge, base_dir, print_start_message)?;
+		let (mut tor_client_config, mut expiration_time) = Self::build_config(
+			&config.webtunnel_bridge,
+			base_dir,
+			print_start_message,
+			cleanup_arti_data,
+		)?;
 		// We now let the Arti client start and bootstrap a connection to the network.
 		// (This takes a while to gather the necessary consensus state, etc.)
 
@@ -604,8 +646,12 @@ impl ArtiCore {
 					COMMUNITY_TNLS[br_idx * 3 + 2]
 				);
 
-				(tor_client_config, expiration_time) =
-					Self::build_config(&Some(bridge.to_string()), base_dir, print_start_message)?;
+				(tor_client_config, expiration_time) = Self::build_config(
+					&Some(bridge.to_string()),
+					base_dir,
+					print_start_message,
+					cleanup_arti_data,
+				)?;
 
 				(tor_rt, error) = match Self::bootstrap_tor_client(tor_client_config) {
 					Ok(cl) => (Some(cl), None),
@@ -903,6 +949,7 @@ impl ArtiCore {
 		webtunnel_bridge: &Option<String>,
 		base_dir: &Path,
 		print_start_message: bool,
+		cleanup_arti_data: bool,
 	) -> Result<(TorClientConfig, i64), Error> {
 		let mut builder = TorClientConfig::builder();
 
@@ -977,22 +1024,23 @@ impl ArtiCore {
 		}
 
 		let now = Utc::now().timestamp();
-		let arti_data_expiraiton_time = if now - creation_timestamp > ARTI_DATA_EXPIRATION_TIME_SEC
-		{
-			info!(
-				"Cleaning up Arti data because it is expired - {} hours",
-				(now - creation_timestamp) as f64 / 3600.0
-			);
-			// Clean up the data in the directory
-			let _ = std::fs::remove_dir_all(base_data_dir.clone());
+		let arti_data_expiraiton_time =
+			if cleanup_arti_data || (now - creation_timestamp > ARTI_DATA_EXPIRATION_TIME_SEC) {
+				info!(
+					"Cleaning up Arti data because it is requested {} or expired - {} hours",
+					cleanup_arti_data,
+					(now - creation_timestamp) as f64 / 3600.0
+				);
+				// Clean up the data in the directory
+				let _ = std::fs::remove_dir_all(base_data_dir.clone());
 
-			fs::create_dir_all(base_data_dir.clone())?;
-			let mut f = File::create(creation_timestamp_fn)?;
-			writeln!(f, "{now}")?;
-			now + ARTI_DATA_EXPIRATION_TIME_SEC + 3600
-		} else {
-			creation_timestamp + ARTI_DATA_EXPIRATION_TIME_SEC + 3600
-		};
+				fs::create_dir_all(base_data_dir.clone())?;
+				let mut f = File::create(creation_timestamp_fn)?;
+				writeln!(f, "{now}")?;
+				now + ARTI_DATA_EXPIRATION_TIME_SEC + 3600
+			} else {
+				creation_timestamp + ARTI_DATA_EXPIRATION_TIME_SEC + 3600
+			};
 
 		builder
 			.storage()
@@ -1085,7 +1133,7 @@ fn test_arti_connection() {
 	use mwc_util::secp::{Secp256k1, SecretKey};
 	use std::pin::Pin;
 
-	let res = start_arti(&TorConfig::default(), Path::new("/tmp/arti/"), true);
+	let res = start_arti(&TorConfig::default(), Path::new("/tmp/arti/"), true, false);
 	assert!(res.is_ok());
 
 	let (onion_service, onion_address, _incoming_requests): (

@@ -302,7 +302,7 @@ fn monitor_peers(
 	{
 		network_last_outage_time
 			.store(network_status::get_network_outage_time(), Ordering::Relaxed);
-		let connection_time_limit = Utc::now().timestamp() - 3600 * 4;
+		let connection_time_limit = Utc::now().timestamp() - 3600;
 		// Outage was recently detected, reverting Defuncts peers back to healthy
 		for peer in &defuncts {
 			if peer.last_connected > connection_time_limit {

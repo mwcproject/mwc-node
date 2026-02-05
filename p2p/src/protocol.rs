@@ -200,7 +200,7 @@ impl MessageHandler for Protocol {
 					}
 					Err(e) => {
 						warn!(
-							"Unable to delete expected TOR temp peer: {}, Error: {}",
+							"Unable to get expected TOR temp peer: {}, Error: {}",
 							self.peer_info.addr, e
 						);
 					}
