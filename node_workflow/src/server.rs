@@ -56,6 +56,7 @@ pub fn start_tor(config: &TorConfig, base_dir: &str) -> Result<(), Error> {
 		config,
 		PathBuf::from(base_dir).as_path(),
 		mwc_util::is_console_output_enabled(),
+		false,
 	)
 	.map_err(|e| Error::TorError(format!("Arti start error, {}", e)))?;
 	Ok(())

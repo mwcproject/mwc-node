@@ -156,14 +156,25 @@ impl Peers {
 	/// Add a peer as banned to block future connections, usually due to failed
 	/// handshake
 	pub fn add_banned(&self, addr: PeerAddr, ban_reason: ReasonForBan) -> Result<(), Error> {
-		let peer_data = PeerData {
-			addr: addr.clone(),
-			capabilities: Capabilities::UNKNOWN,
-			user_agent: "".to_string(),
-			flags: State::Banned,
-			last_banned: Utc::now().timestamp(),
-			ban_reason,
-			last_connected: Utc::now().timestamp(),
+		let peer_data = match self.get_peer(&addr) {
+			Ok(peer) => PeerData {
+				addr: addr.clone(),
+				capabilities: peer.capabilities,
+				user_agent: peer.user_agent,
+				flags: State::Banned,
+				last_banned: Utc::now().timestamp(),
+				ban_reason,
+				last_connected: peer.last_connected,
+			},
+			Err(_) => PeerData {
+				addr: addr.clone(),
+				capabilities: Capabilities::UNKNOWN,
+				user_agent: "".to_string(),
+				flags: State::Banned,
+				last_banned: Utc::now().timestamp(),
+				ban_reason,
+				last_connected: Utc::now().timestamp(),
+			},
 		};
 		info!("Banning peer {}, ban_reason={:?}", addr, ban_reason);
 		self.save_peer(&peer_data)
@@ -279,6 +290,7 @@ impl Peers {
 						.write()
 						.unwrap_or_else(|e| e.into_inner())
 						.remove(&p.info.addr);
+					self.update_stop_healthy_state(&p.info.addr);
 					p.stop();
 				}
 			}
@@ -346,6 +358,7 @@ impl Peers {
 					.write()
 					.unwrap_or_else(|e| e.into_inner())
 					.remove(&p.info.addr);
+				self.update_stop_healthy_state(&p.info.addr);
 				p.stop();
 			}
 		}
@@ -414,6 +427,17 @@ impl Peers {
 		self.store
 			.update_state(peer_addr, new_state)
 			.map_err(From::from)
+	}
+
+	/// Updates the state of a peer in store
+	pub fn update_stop_healthy_state(&self, peer_addr: &PeerAddr) {
+		match self.store.update_stopping_healty_state(peer_addr) {
+			Ok(()) => {}
+			Err(e) => error!(
+				"Failed to update Healty state for peer {}, {}",
+				peer_addr, e
+			),
+		}
 	}
 
 	/// Iterate over the peer list and prune all peers we have
@@ -581,7 +605,10 @@ impl Peers {
 		{
 			let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
 			for addr in rm {
-				let _ = peers.get(&addr).map(|peer| peer.stop());
+				let _ = peers.get(&addr).map(|peer| {
+					self.update_stop_healthy_state(&addr);
+					peer.stop()
+				});
 				peers.remove(&addr);
 			}
 		}
@@ -599,6 +626,7 @@ impl Peers {
 
 		let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
 		for peer in peers.values() {
+			self.update_stop_healthy_state(&peer.info.addr);
 			peer.stop();
 		}
 		for (_, peer) in peers.drain() {
@@ -949,14 +977,25 @@ impl NetAdapter for Peers {
 					continue;
 				}
 			}
-			let peer = PeerData {
-				addr: pa,
-				capabilities: Capabilities::UNKNOWN,
-				user_agent: "".to_string(),
-				flags: State::Healthy,
-				last_banned: 0,
-				ban_reason: ReasonForBan::None,
-				last_connected: 0,
+			let peer = match self.get_peer(&pa) {
+				Ok(peer) => PeerData {
+					addr: pa,
+					capabilities: peer.capabilities,
+					user_agent: peer.user_agent,
+					flags: State::Healthy,
+					last_banned: peer.last_banned,
+					ban_reason: peer.ban_reason,
+					last_connected: peer.last_connected,
+				},
+				Err(_) => PeerData {
+					addr: pa,
+					capabilities: Capabilities::UNKNOWN,
+					user_agent: "".to_string(),
+					flags: State::Healthy,
+					last_banned: 0,
+					ban_reason: ReasonForBan::None,
+					last_connected: 0,
+				},
 			};
 			to_save.push(peer);
 		}

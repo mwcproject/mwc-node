@@ -264,6 +264,21 @@ impl PeerStore {
 		batch.commit()
 	}
 
+	pub fn update_stopping_healty_state(&self, peer_addr: &PeerAddr) -> Result<(), Error> {
+		let batch = self.db.batch_write()?;
+
+		let mut peer = option_to_not_found(
+			batch.get_ser::<PeerData>(&peer_key(peer_addr)[..], None),
+			|| format!("Peer at address: {}", peer_addr),
+		)?;
+
+		peer.flags = State::Healthy;
+		peer.last_connected = Utc::now().timestamp();
+
+		batch.put_ser(&peer_key(peer_addr)[..], &peer)?;
+		batch.commit()
+	}
+
 	/// Deletes peers from the storage that satisfy some condition `predicate`
 	pub fn delete_peers<F>(&self, predicate: F) -> Result<(), Error>
 	where
