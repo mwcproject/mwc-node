@@ -998,9 +998,11 @@ impl NetAdapter for Peers {
 			};
 			to_save.push(peer);
 		}
-		info!("Received new healthy peers: {}", to_save.len());
-		if let Err(e) = self.save_peers(to_save) {
-			error!("Could not save received peer addresses: {:?}", e);
+		if !to_save.is_empty() {
+			info!("Received new healthy peers: {}", to_save.len());
+			if let Err(e) = self.save_peers(to_save) {
+				error!("Could not save received peer addresses: {:?}", e);
+			}
 		}
 	}
 
