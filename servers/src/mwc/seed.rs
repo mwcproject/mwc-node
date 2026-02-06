@@ -391,33 +391,33 @@ fn connect_to_seeds_and_peers(
 		if found_peers.is_empty() {
 			found_peers = peers.find_peers(p2p::State::Healthy, p2p::Capabilities::PEER_LIST);
 		}
-	}
 
-	// if so, get their addresses, otherwise use our seeds
-	let peer_addrs = if found_peers.len() > 3 {
-		let mut peer_addrs = found_peers
-			.iter()
-			.map(|p| p.addr.clone())
-			.collect::<Vec<_>>();
+		// if so, get their addresses, otherwise use our seeds
+		let peer_addrs = if found_peers.len() > 3 {
+			let mut peer_addrs = found_peers
+				.iter()
+				.map(|p| p.addr.clone())
+				.collect::<Vec<_>>();
 
-		if let Some(seed_addr) = seed_list.choose(&mut thread_rng()) {
-			peer_addrs.push(seed_addr.clone());
+			if let Some(seed_addr) = seed_list.choose(&mut thread_rng()) {
+				peer_addrs.push(seed_addr.clone());
+			}
+			peer_addrs
+		} else {
+			seed_list.clone()
+		};
+
+		if peer_addrs.is_empty() {
+			warn!("No seeds were retrieved.");
 		}
-		peer_addrs
-	} else {
-		seed_list.clone()
-	};
 
-	if peer_addrs.is_empty() {
-		warn!("No seeds were retrieved.");
-	}
-
-	// connect to this initial set of peer addresses (either seeds or from our local db).
-	// Reverce order because we want first add the last seed peer
-	for addr in peer_addrs.iter().rev() {
-		if !peers_deny.as_slice().contains(&addr) {
-			if !peers.is_known(&addr) {
-				listen_q_addrs.push_back(addr.clone());
+		// connect to this initial set of peer addresses (either seeds or from our local db).
+		// Reverce order because we want first add the last seed peer
+		for addr in peer_addrs.iter().rev() {
+			if !peers_deny.as_slice().contains(&addr) {
+				if !peers.is_known(&addr) {
+					listen_q_addrs.push_back(addr.clone());
+				}
 			}
 		}
 	}
