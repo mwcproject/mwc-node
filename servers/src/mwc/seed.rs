@@ -379,12 +379,10 @@ fn connect_to_seeds_and_peers(
 		}
 	}
 
-	// check if we have some peers in db
-	// look for peers that are able to give us other peers (via PEER_LIST capability)
-	let mut found_peers = Vec::new();
-
 	if is_q_empty {
-		found_peers = peers.find_peers(
+		// check if we have some peers in db
+		// look for peers that are able to give us other peers (via PEER_LIST capability)
+		let mut found_peers = peers.find_peers(
 			p2p::State::Healthy,
 			p2p::Capabilities::PEER_LIST | peers.get_boost_peers_capabilities(),
 		);
