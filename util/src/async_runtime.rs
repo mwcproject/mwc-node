@@ -31,7 +31,7 @@ pub fn global_runtime() -> &'static Arc<Runtime> {
 	})
 }
 
-/// Run async block inside sync environment. Allwais save Tokio runtime is used
+/// Run async block inside sync environment. Always save Tokio runtime is used
 pub fn run_global_async_block<F, R>(fut: F) -> R
 where
 	F: Future<Output = R> + Send,
