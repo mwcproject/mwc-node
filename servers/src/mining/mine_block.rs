@@ -27,6 +27,7 @@ use crate::ServerTxPool;
 use chrono::prelude::{DateTime, Utc};
 use mwc_api::client::HttpClient;
 use mwc_util::secp::Secp256k1;
+use mwc_util::StopState;
 use rand::{thread_rng, Rng};
 use serde_json::json;
 use std::collections::VecDeque;
@@ -75,10 +76,15 @@ pub fn get_block(
 	key_id: Option<Identifier>,
 	wallet_listener_url: Option<String>,
 	client: &HttpClient,
-) -> (core::Block, BlockFees) {
+	stop_state: &Arc<StopState>,
+) -> Result<(core::Block, BlockFees), Error> {
 	let wallet_retry_interval = 5;
 	// get the latest chain state and build a block on top of it
 	loop {
+		if stop_state.is_stopped() {
+			return Err(Error::General("Interrupted".into()));
+		}
+
 		match build_block(
 			chain,
 			tx_pool,
@@ -87,7 +93,7 @@ pub fn get_block(
 			client,
 		) {
 			Ok((block, fees)) => {
-				return (block, fees);
+				return Ok((block, fees));
 			}
 			Err(e) => {
 				// On error report the problem and keep trying forever
@@ -107,9 +113,9 @@ pub fn get_block(
 					},
 					self::Error::WalletComm(msg) => {
 						error!(
-					"Error building new block: Can't connect to wallet listener at {:?}; {}, will retry",
-					wallet_listener_url.as_ref().unwrap_or(&"BROKEN_URL".to_string()), msg
-				);
+							"Error building new block: Can't connect to wallet listener at {:?}; {}, will retry",
+							wallet_listener_url.as_ref().unwrap_or(&"BROKEN_URL".to_string()), msg
+						);
 						thread::sleep(Duration::from_secs(wallet_retry_interval));
 					}
 					ae => {

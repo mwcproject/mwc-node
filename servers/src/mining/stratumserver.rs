@@ -655,7 +655,7 @@ impl Handler {
 					let clear_blocks = current_hash != latest_hash;
 
 					// Build the new block (version)
-					let (new_block, block_fees) = mine_block::get_block(
+					let (new_block, block_fees) = match mine_block::get_block(
 						&self.chain,
 						tx_pool,
 						self.current_state
@@ -665,7 +665,14 @@ impl Handler {
 							.clone(),
 						wallet_listener_url,
 						&mining_wallet_client,
-					);
+						&self.stop_state,
+					) {
+						Ok((b, f)) => (b, f),
+						Err(e) => {
+							error!("Build block error {}", e);
+							continue;
+						}
+					};
 
 					{
 						let mut state = self

@@ -160,13 +160,17 @@ impl Miner {
 			let head = self.chain.head_header().unwrap();
 			let mut latest_hash = self.chain.head().unwrap().last_block_h;
 
-			let (mut b, block_fees) = mine_block::get_block(
+			let (mut b, block_fees) = match mine_block::get_block(
 				&self.chain,
 				&self.tx_pool,
 				key_id.clone(),
 				wallet_listener_url.clone(),
 				&mining_wallet_client,
-			);
+				&self.stop_state,
+			) {
+				Ok((b, f)) => (b, f),
+				Err(_) => continue,
+			};
 
 			let sol = self.inner_mining_loop(
 				&mut b,
