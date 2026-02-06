@@ -925,18 +925,43 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
 
                     let read = async move {
                         if accepting_connection {
-                            while let Some(line) = reader.try_next().await.map_err(|e| {
-                                ip_pool_clone2.report_fail_noise(&ip_clone2);
-                                error!("error processing request to stratum, {}", e)
-                            })? {
-                                if !line.is_empty() {
-                                    debug!("get request: {}", line);
-                                    let request = serde_json::from_str(&line).map_err(|e| {
-                                        ip_pool_clone3.report_fail_noise(&ip_clone2);
-                                        error!("error serializing line: {}", e)
-                                    })?;
-                                    let resp = h.handle_rpc_requests(request, worker_id, &ip_clone);
-                                    workers.send_to(&worker_id, resp);
+                            loop {
+                                let next = mwc_util::tokio::time::timeout(
+                                    Duration::from_secs(300), // waiting any response from worker for 5 minutes. Should be enough
+                                    reader.try_next(),
+                                )
+                                .await;
+
+                                match next {
+                                    Ok(Ok(Some(line))) => {
+                                        if !line.is_empty() {
+                                            debug!("get request: {}", line);
+                                            let request = serde_json::from_str(&line).map_err(|e| {
+                                                ip_pool_clone3.report_fail_noise(&ip_clone2);
+                                                error!("error serializing line: {}", e)
+                                            })?;
+                                            let resp =
+                                                h.handle_rpc_requests(request, worker_id, &ip_clone);
+                                            workers.send_to(&worker_id, resp);
+                                        }
+                                    }
+                                    Ok(Ok(None)) => {
+                                        // Peer closed
+                                        break;
+                                    }
+                                    Ok(Err(e)) => {
+                                        ip_pool_clone2.report_fail_noise(&ip_clone2);
+                                        error!("error processing request to stratum, {}", e);
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        // Idle timeout, drop connection to avoid CLOSE_WAIT leaks
+                                        warn!(
+                                            "Stratum read idle timeout for worker {}, ip {}",
+                                            worker_id, ip_clone2
+                                        );
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -974,6 +999,7 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
                         futures::future::select(rw, kill_switch_receiver).await;
                         let _ = writer.lock().await.close().await;
                         handler.workers.remove_worker(worker_id);
+                        handler.worker_connections.fetch_sub(1, Ordering::Relaxed);
                         info!("Worker {} disconnected", worker_id);
                     };
 					global_runtime().spawn(task);

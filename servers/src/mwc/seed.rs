@@ -51,6 +51,9 @@ const PEER_RECONNECT_INTERVAL: i64 = 600;
 const SEED_RECONNECT_INTERVAL: i64 = 60;
 const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
 
+// Clean up peers chances 1/100. Cleaning interval is 1 hour. I think we should be good with preventing much of the noise.
+const DELETE_ABSOLETE_PEER_CHANCES: u32 = 100;
+
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
 	seed_list: Box<dyn Fn() -> Vec<PeerAddr> + Send>,
@@ -126,7 +129,7 @@ pub fn connect_and_monitor(
 
 				// Check for and remove expired peers from the storage
 				if now > expire_check_time {
-					peers.remove_expired();
+					peers.remove_expired(DELETE_ABSOLETE_PEER_CHANCES);
 					expire_check_time = now + Duration::seconds(EXPIRE_INTERVAL);
 				}
 
@@ -389,6 +392,10 @@ fn connect_to_seeds_and_peers(
 		if found_peers.is_empty() {
 			found_peers = peers.find_peers(p2p::State::Healthy, p2p::Capabilities::PEER_LIST);
 		}
+		info!(
+			"Found known healthy peers to reconnect: {}",
+			found_peers.len()
+		);
 
 		// if so, get their addresses, otherwise use our seeds
 		let peer_addrs = if found_peers.len() > 3 {
