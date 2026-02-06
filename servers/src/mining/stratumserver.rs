@@ -18,6 +18,7 @@
 use futures::channel::{mpsc, oneshot};
 use futures::pin_mut;
 use futures::{SinkExt, StreamExt, TryStreamExt};
+use mwc_util::tokio::io::AsyncWriteExt;
 use mwc_util::tokio::net::TcpListener;
 use mwc_util::tokio_util::codec::{Framed, LinesCodec};
 
@@ -46,6 +47,7 @@ use crate::util::ToHex;
 use crate::ServerTxPool;
 use mwc_api::client::HttpClient;
 use mwc_core::core::hash::Hash;
+use mwc_util::tokio::sync::Mutex;
 use mwc_util::{global_runtime, run_global_async_block, StopState};
 use std::cmp::min;
 // ----------------------------------------
@@ -891,6 +893,12 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
                         true
                     };
 
+                    if !accepting_connection {
+                        let mut socket = socket;
+                        let _ = socket.shutdown().await;
+                        return;
+                    }
+
                     handler.worker_connections.fetch_add(1, Ordering::Relaxed);
                     let ip_pool = handler.ip_pool.clone();
 
@@ -905,7 +913,8 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
                     ip_pool.add_worker(&ip);
 
                     let framed = Framed::new(socket, LinesCodec::new());
-                    let (mut writer, mut reader) = framed.split();
+                    let (writer, mut reader) = framed.split();
+					let writer = Arc::new(Mutex::new(writer));
 
                     let h = handler.clone();
                     let workers = h.workers.clone();
@@ -935,15 +944,26 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
                         Result::<_, ()>::Ok(())
                     };
 
+					let writer2 = writer.clone();
                     let write = async move {
                         if accepting_connection {
-                            while let Some(line) = rx.next().await {
-                                // No need to add line separator for the client, because
-                                // Frames with LinesCodec does that.
-                                writer.send(line).await.map_err(|e| {
-                                    error!("stratum cannot send data to worker, {}", e)
-                                })?;
-                            }
+                             while let Some(line) = rx.next().await {
+                                    // No need to add line separator for the client, because
+                                    // Frames with LinesCodec does that.
+                                    mwc_util::tokio::time::timeout(
+                                        Duration::from_secs(10),
+                                        writer2.lock().await.send(line),
+                                    )
+                                    .await
+                                    .map_err(|_| {
+                                        error!(
+                                            "stratum cannot send data to worker, send timed out"
+                                        )
+                                    })?
+                                    .map_err(|e| {
+                                        error!("stratum cannot send data to worker, {}", e)
+                                    })?;
+                             }
                         }
                         Result::<_, ()>::Ok(())
                     };
@@ -952,6 +972,7 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
                         pin_mut!(read, write);
                         let rw = futures::future::select(read, write);
                         futures::future::select(rw, kill_switch_receiver).await;
+                        let _ = writer.lock().await.close().await;
                         handler.workers.remove_worker(worker_id);
                         info!("Worker {} disconnected", worker_id);
                     };
