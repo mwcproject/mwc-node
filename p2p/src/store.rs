@@ -17,13 +17,12 @@
 
 use chrono::Utc;
 use num::FromPrimitive;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 use std::ffi::CString;
 
 use crate::mwc_core::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
 use crate::types::{Capabilities, PeerAddr, ReasonForBan};
 use mwc_store::{self, option_to_not_found, to_key, Error};
-use mwc_util::secp::rand::Rng;
 
 const DB_NAME: &str = "peerV2";
 const STORE_SUBPATH: &str = "peers";
@@ -280,17 +279,27 @@ impl PeerStore {
 	}
 
 	/// Deletes peers from the storage that satisfy some condition `predicate`
-	pub fn delete_peers<F>(&self, predicate: F) -> Result<(), Error>
+	/// Delete peer chances is needed because we really don't want to
+	pub fn delete_peers<F>(&self, delete_peer_chances: u32, predicate: F) -> Result<(), Error>
 	where
 		F: Fn(&PeerData) -> bool,
 	{
 		let mut to_remove = vec![];
-
+		let mut candidates = 0;
 		for x in self.peers_iter()? {
 			if predicate(&x) {
-				to_remove.push(x)
+				candidates += 1;
+				if rand::thread_rng().gen_range(0, delete_peer_chances) == 0 {
+					to_remove.push(x)
+				}
 			}
 		}
+
+		info!(
+			"Removed peers from the cache storage: {} from {}",
+			to_remove.len(),
+			candidates
+		);
 
 		// Delete peers in single batch
 		if !to_remove.is_empty() {

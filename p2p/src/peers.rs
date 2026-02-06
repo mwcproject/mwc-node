@@ -658,11 +658,11 @@ impl Peers {
 	}
 
 	/// Removes those peers that seem to have expired
-	pub fn remove_expired(&self) {
+	pub fn remove_expired(&self, delete_peer_chances: u32) {
 		let now = Utc::now();
 
 		// Delete defunct peers from storage
-		let _ = self.store.delete_peers(|peer| {
+		let _ = self.store.delete_peers(delete_peer_chances, |peer| {
 			let should_remove = match Utc.timestamp_opt(peer.last_connected, 0) {
 				chrono::LocalResult::Single(last_connected) => {
 					let diff = now - last_connected;
@@ -961,6 +961,7 @@ impl NetAdapter for Peers {
 		let peers: Vec<PeerData> = self
 			.find_peers(State::Healthy, capab)
 			.into_iter()
+			.filter(|p| p.last_connected > 0) // we want to return peers that this node was used at least once. We don't want spread falsed Healthy peers
 			.take(MAX_PEER_ADDRS as usize)
 			.collect();
 		trace!("find_peer_addrs: {} healthy peers picked", peers.len());
@@ -972,10 +973,8 @@ impl NetAdapter for Peers {
 		trace!("Received {} peer addrs, saving.", peer_addrs.len());
 		let mut to_save: Vec<PeerData> = Vec::new();
 		for pa in peer_addrs {
-			if let Ok(e) = self.exists_peer(&pa) {
-				if e {
-					continue;
-				}
+			if self.exists_peer(&pa).unwrap_or(false) {
+				continue;
 			}
 			let peer = match self.get_peer(&pa) {
 				Ok(peer) => PeerData {
@@ -999,6 +998,7 @@ impl NetAdapter for Peers {
 			};
 			to_save.push(peer);
 		}
+		info!("Received new healthy peers: {}", to_save.len());
 		if let Err(e) = self.save_peers(to_save) {
 			error!("Could not save received peer addresses: {:?}", e);
 		}
