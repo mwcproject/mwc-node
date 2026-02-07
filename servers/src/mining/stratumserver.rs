@@ -924,78 +924,74 @@ fn accept_connections(stop_state: Arc<StopState>, listen_addr: SocketAddr, handl
                     let ip_pool_clone3 = ip_pool.clone();
 
                     let read = async move {
-                        if accepting_connection {
-                            loop {
-                                let next = mwc_util::tokio::time::timeout(
-                                    Duration::from_secs(300), // waiting any response from worker for 5 minutes. Should be enough
-                                    reader.try_next(),
-                                )
-                                .await;
+						loop {
+							let next = mwc_util::tokio::time::timeout(
+								Duration::from_secs(300), // waiting any response from worker for 5 minutes. Should be enough
+								reader.try_next(),
+							)
+								.await;
 
-                                match next {
-                                    Ok(Ok(Some(line))) => {
-                                        if !line.is_empty() {
-                                            debug!("get request: {}", line);
-                                            let request = serde_json::from_str(&line).map_err(|e| {
-                                                ip_pool_clone3.report_fail_noise(&ip_clone2);
-                                                error!("error serializing line: {}", e)
-                                            })?;
-                                            let resp =
-                                                h.handle_rpc_requests(request, worker_id, &ip_clone);
-                                            workers.send_to(&worker_id, resp);
-                                        }
-                                    }
-                                    Ok(Ok(None)) => {
-                                        // Peer closed
-                                        break;
-                                    }
-                                    Ok(Err(e)) => {
-                                        ip_pool_clone2.report_fail_noise(&ip_clone2);
-                                        error!("error processing request to stratum, {}", e);
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        // Idle timeout, drop connection to avoid CLOSE_WAIT leaks
-                                        warn!(
-                                            "Stratum read idle timeout for worker {}, ip {}",
-                                            worker_id, ip_clone2
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+							match next {
+								Ok(Ok(Some(line))) => {
+									if !line.is_empty() {
+										debug!("get request: {}", line);
+										let request = serde_json::from_str(&line).map_err(|e| {
+											ip_pool_clone3.report_fail_noise(&ip_clone2);
+											error!("error serializing line: {}", e)
+										})?;
+										let resp =
+											h.handle_rpc_requests(request, worker_id, &ip_clone);
+										workers.send_to(&worker_id, resp);
+									}
+								}
+								Ok(Ok(None)) => {
+									// Peer closed
+									break;
+								}
+								Ok(Err(e)) => {
+									ip_pool_clone2.report_fail_noise(&ip_clone2);
+									error!("error processing request to stratum, {}", e);
+									break;
+								}
+								Err(_) => {
+									// Idle timeout, drop connection to avoid CLOSE_WAIT leaks
+									warn!(
+										"Stratum read idle timeout for worker {}, ip {}",
+										worker_id, ip_clone2
+									);
+									break;
+								}
+							}
+						}
 
-                        Result::<_, ()>::Ok(())
-                    };
+						Result::<_, ()>::Ok(())
+					};
 
 					let writer2 = writer.clone();
-                    let write = async move {
-                        if accepting_connection {
-                             while let Some(line) = rx.next().await {
-                                    // No need to add line separator for the client, because
-                                    // Frames with LinesCodec does that.
-                                    mwc_util::tokio::time::timeout(
-                                        Duration::from_secs(10),
-                                        writer2.lock().await.send(line),
-                                    )
-                                    .await
-                                    .map_err(|_| {
-                                        error!(
-                                            "stratum cannot send data to worker, send timed out"
-                                        )
-                                    })?
-                                    .map_err(|e| {
-                                        error!("stratum cannot send data to worker, {}", e)
-                                    })?;
-                             }
-                        }
-                        Result::<_, ()>::Ok(())
-                    };
+					let write = async move {
+						while let Some(line) = rx.next().await {
+							// No need to add line separator for the client, because
+							// Frames with LinesCodec does that.
+							mwc_util::tokio::time::timeout(
+								Duration::from_secs(10),
+								writer2.lock().await.send(line),
+							)
+								.await
+								.map_err(|_| {
+									error!(
+										"stratum cannot send data to worker, send timed out"
+									)
+								})?
+								.map_err(|e| {
+									error!("stratum cannot send data to worker, {}", e)
+								})?;
+						}
+						Result::<_, ()>::Ok(())
+					};
 
-                    let task = async move {
-                        pin_mut!(read, write);
-                        let rw = futures::future::select(read, write);
+					let task = async move {
+						pin_mut!(read, write);
+						let rw = futures::future::select(read, write);
                         futures::future::select(rw, kill_switch_receiver).await;
                         let _ = writer.lock().await.close().await;
                         handler.workers.remove_worker(worker_id);

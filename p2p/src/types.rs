@@ -671,6 +671,50 @@ enum_from_primitive! {
 }
 
 #[derive(Clone, Debug)]
+pub struct PeerAdvertised {
+	pub addr: PeerAddr,
+	last_advertised_ts: i64,
+	last_checked_ts: i64,
+	chunk_size: usize,
+}
+
+impl PeerAdvertised {
+	pub fn new(addr: PeerAddr, chunk_size: usize, now: i64) -> Self {
+		PeerAdvertised {
+			addr,
+			last_advertised_ts: now,
+			last_checked_ts: -1,
+			chunk_size,
+		}
+	}
+
+	/// Rank of that peer. Bigger is better
+	pub fn calc_rank(&self) -> i64 {
+		if self.last_checked_ts <= 0 {
+			return self.last_advertised_ts / self.chunk_size as i64;
+		}
+		-self.last_checked_ts
+	}
+
+	pub fn get_last_advertised_ts(&self) -> i64 {
+		self.last_advertised_ts
+	}
+
+	pub fn set_checked(&mut self, now: i64) {
+		self.last_checked_ts = now;
+	}
+
+	pub fn reset_checked(&mut self) {
+		self.last_checked_ts = -1;
+	}
+
+	pub fn set_advertised(&mut self, chunk_size: usize, now: i64) {
+		self.last_advertised_ts = now;
+		self.chunk_size = std::cmp::min(chunk_size, self.chunk_size);
+	}
+}
+
+#[derive(Clone, Debug)]
 pub struct PeerLiveInfo {
 	pub total_difficulty: Difficulty,
 	pub height: u64,

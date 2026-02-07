@@ -32,8 +32,8 @@ use crate::mwc_core::pow::Difficulty;
 use crate::peer::Peer;
 use crate::store::{PeerData, PeerStore, State};
 use crate::types::{
-	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
-	TxHashSetRead, MAX_PEER_ADDRS,
+	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerAdvertised, PeerInfo,
+	ReasonForBan, TxHashSetRead, MAX_PEER_ADDRS,
 };
 use crate::util::secp::pedersen::RangeProof;
 use chrono::prelude::*;
@@ -45,6 +45,9 @@ struct PeersCapabilities {
 	time: DateTime<Utc>,
 }
 
+// 10 minutes is should be enough for historical data
+const ADVERTISED_PEERS_HISTORY: i64 = 600;
+
 pub struct Peers {
 	pub adapter: Arc<dyn ChainAdapter>,
 	store: PeerStore,
@@ -53,6 +56,7 @@ pub struct Peers {
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
 	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
 	out_peers_failures: Arc<RwLock<HashMap<PeerAddr, u32>>>,
+	advertised_peers: Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>>,
 }
 
 impl Peers {
@@ -68,6 +72,7 @@ impl Peers {
 			}),
 			excluded_peers: Arc::new(RwLock::new(HashSet::new())),
 			out_peers_failures: Arc::new(RwLock::new(HashMap::new())),
+			advertised_peers: Arc::new(RwLock::new(HashMap::new())),
 		}
 	}
 
@@ -688,6 +693,11 @@ impl Peers {
 	pub fn get_context_id(&self) -> u32 {
 		self.store.get_context_id()
 	}
+
+	/// Get the list of recently advertised peer.
+	pub fn get_advertised_peers(&self) -> Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>> {
+		self.advertised_peers.clone()
+	}
 }
 
 impl ChainAdapter for Peers {
@@ -972,6 +982,29 @@ impl NetAdapter for Peers {
 	fn peer_addrs_received(&self, peer_addrs: Vec<PeerAddr>) {
 		trace!("Received {} peer addrs, saving.", peer_addrs.len());
 		let mut to_save: Vec<PeerData> = Vec::new();
+
+		if !peer_addrs.is_empty() {
+			// Updating history data
+			let mut advertised_peers = self
+				.advertised_peers
+				.write()
+				.unwrap_or_else(|e| e.into_inner());
+			let advertised_peers = &mut *advertised_peers;
+			let now = Utc::now().timestamp();
+			let expiration_time = now - ADVERTISED_PEERS_HISTORY;
+			advertised_peers.retain(|_addr, peer| peer.get_last_advertised_ts() >= expiration_time);
+			let chunk_size = peer_addrs.len();
+			for pa in &peer_addrs {
+				match advertised_peers.get_mut(&pa) {
+					Some(peer) => peer.set_advertised(chunk_size, now),
+					None => {
+						let _ = advertised_peers
+							.insert(pa.clone(), PeerAdvertised::new(pa.clone(), chunk_size, now));
+					}
+				}
+			}
+		}
+
 		for pa in peer_addrs {
 			if self.exists_peer(&pa).unwrap_or(false) {
 				continue;
