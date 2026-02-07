@@ -31,13 +31,14 @@ use chrono::prelude::{DateTime, Utc};
 use chrono::Duration;
 use mwc_core::global::PEER_PING_INTERVAL_SECONDS;
 use mwc_p2p::tor::arti::is_arti_healthy;
+use mwc_p2p::types::PeerAdvertised;
 use mwc_p2p::PeerAddr::Onion;
 use mwc_p2p::{msg::PeerAddrs, network_status, Capabilities, P2PConfig};
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::{thread, time};
 
 const CONNECT_TO_SEED_INTERVAL: i64 = 30;
@@ -53,6 +54,8 @@ const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
 
 // Clean up peers chances 1/100. Cleaning interval is 1 hour. I think we should be good with preventing much of the noise.
 const DELETE_ABSOLETE_PEER_CHANCES: u32 = 100;
+
+const PEER_Q_EXPECTED_SIZE: usize = 40;
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -86,6 +89,7 @@ pub fn connect_and_monitor(
 				&mut listen_q_addrs,
 				&seed_list,
 				config.clone(),
+				PEER_Q_EXPECTED_SIZE,
 			);
 			seed_connect_time = Utc::now() + Duration::seconds(CONNECT_TO_SEED_INTERVAL);
 
@@ -97,8 +101,6 @@ pub fn connect_and_monitor(
 			let mut connection_threads: Vec<thread::JoinHandle<()>> = Vec::new();
 
 			let network_last_outage_time = AtomicI64::new(0);
-
-			let mut recover_peers_num: usize = 1;
 
 			loop {
 				if stop_state.is_stopped() {
@@ -122,6 +124,7 @@ pub fn connect_and_monitor(
 							&mut listen_q_addrs,
 							&seed_list,
 							config.clone(),
+							PEER_Q_EXPECTED_SIZE,
 						);
 						seed_connect_time = now + Duration::seconds(CONNECT_TO_SEED_INTERVAL);
 					}
@@ -149,7 +152,8 @@ pub fn connect_and_monitor(
 						request_more_connections,
 						&network_last_outage_time,
 						&mut connecting_history,
-						recover_peers_num,
+						peers.get_advertised_peers(),
+						PEER_Q_EXPECTED_SIZE,
 					);
 
 					if peers.is_sync_mode() || !has_enough_peers {
@@ -165,10 +169,6 @@ pub fn connect_and_monitor(
 					let is_boost = peers.is_boosting_mode();
 					if has_enough_peers && !request_more_connections {
 						peers_connect_time = now + Duration::seconds(PEERS_CHECK_TIME_FULL);
-						if recover_peers_num != 1 {
-							info!("Reset recovery peers to 1");
-							recover_peers_num = 1;
-						}
 					} else {
 						// try to connect to any address sent to the channel
 						listen_for_addrs(
@@ -185,14 +185,6 @@ pub fn connect_and_monitor(
 						} else {
 							PEERS_CHECK_TIME_FULL
 						};
-
-						if !has_enough_peers && listen_q_is_empty {
-							recover_peers_num = std::cmp::min(
-								PEER_MAX_INITIATE_CONNECTIONS,
-								recover_peers_num + std::cmp::max(1, recover_peers_num / 4),
-							);
-							info!("Increased recovery peers number to {}", recover_peers_num);
-						}
 
 						peers_connect_time = now + Duration::seconds(duration);
 						listen_time = now + Duration::seconds(PEERS_LISTEN_MIN_INTERVAL);
@@ -224,7 +216,8 @@ fn monitor_peers(
 	request_more_connections: bool,
 	network_last_outage_time: &AtomicI64,
 	connecting_history: &mut HashMap<PeerAddr, DateTime<Utc>>,
-	recover_peers_num: usize,
+	advertised_peers: Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>>,
+	q_expected_size: usize,
 ) {
 	// regularly check if we need to acquire more peers and if so, gets
 	// them from db
@@ -306,16 +299,25 @@ fn monitor_peers(
 		network_last_outage_time
 			.store(network_status::get_network_outage_time(), Ordering::Relaxed);
 		let connection_time_limit = Utc::now().timestamp() - 3600;
-		// Outage was recently detected, reverting Defuncts peers back to healthy
+		// Outage was recently detected, reverting recent Defuncts peers back to healthy
 		for peer in &defuncts {
 			if peer.last_connected > connection_time_limit {
 				let _ = peers.update_state(&peer.addr, p2p::State::Healthy);
 			}
 		}
+		// reset connection history
 		connecting_history.clear();
+		// Reset advertised_peers checking
+		{
+			let mut advertised_peers = advertised_peers.write().unwrap_or_else(|e| e.into_inner());
+			let advertised_peers = &mut *advertised_peers;
+			advertised_peers
+				.values_mut()
+				.for_each(|p| p.reset_checked());
+		}
 	}
 
-	if listen_q_addrs.is_empty() {
+	if listen_q_addrs.len() < q_expected_size {
 		// Attempt to connect to any preferred peers.
 		let peers_preferred = config.peers_preferred.unwrap_or(PeerAddrs::default());
 		for p in peers_preferred {
@@ -324,13 +326,27 @@ fn monitor_peers(
 			}
 		}
 
-		// take a random defunct peer and mark it healthy: over a long enough period any
-		// peer will see another as defunct eventually, gives us a chance to retry
-		for peer in defuncts
-			.into_iter()
-			.choose_multiple(&mut thread_rng(), recover_peers_num)
+		let advertised_stage_sz = (q_expected_size + listen_q_addrs.len()) / 2;
+
+		// Taking some from advertized peers. Event if we check them before, still want to try them once more
 		{
-			let _ = peers.update_state(&peer.addr, p2p::State::Healthy);
+			let mut advertised_peers = advertised_peers.write().unwrap_or_else(|e| e.into_inner());
+			let advertised_peers = &mut *advertised_peers;
+			let mut advertized: Vec<PeerAdvertised> = advertised_peers.values().cloned().collect();
+			advertized.sort_by_key(|a| -a.calc_rank());
+			let now = Utc::now().timestamp();
+			for p in advertized.iter_mut() {
+				advertised_peers
+					.get_mut(&p.addr)
+					.map(|p| p.set_checked(now));
+				if !peers.is_known(&p.addr) && !connecting_history.contains_key(&p.addr) {
+					listen_q_addrs.push_back(p.addr.clone());
+
+					if listen_q_addrs.len() > advertised_stage_sz {
+						break;
+					}
+				}
+			}
 		}
 
 		// find some peers from our db
@@ -338,14 +354,22 @@ fn monitor_peers(
 		// intentionally make too many attempts (2x) as some (most?) will fail
 		// as many nodes in our db are not publicly accessible
 		let new_peers = peers.find_peers(p2p::State::Healthy, boost_peers_capabilities);
+		for p in new_peers.iter() {
+			if !peers.is_known(&p.addr) && !connecting_history.contains_key(&p.addr) {
+				listen_q_addrs.push_back(p.addr.clone());
+				if listen_q_addrs.len() >= q_expected_size {
+					break;
+				}
+			}
+		}
 
-		// Only queue up connection attempts for candidate peers where we
-		// are confident we do not yet know about this peer.
-		// The call to is_known() may fail due to contention on the peers map.
-		// Do not attempt any connection where is_known() fails for any reason.
-		for p in new_peers {
-			if !peers.is_known(&p.addr) {
-				listen_q_addrs.push_back(p.addr);
+		if listen_q_addrs.len() < q_expected_size {
+			for peer in defuncts
+				.into_iter()
+				.filter(|p| p.last_connected > 0)
+				.choose_multiple(&mut thread_rng(), q_expected_size - listen_q_addrs.len())
+			{
+				listen_q_addrs.push_back(peer.addr.clone());
 			}
 		}
 	}
@@ -358,9 +382,9 @@ fn connect_to_seeds_and_peers(
 	listen_q_addrs: &mut VecDeque<PeerAddr>,
 	seed_list: &Vec<PeerAddr>,
 	config: P2PConfig,
+	q_expected_size: usize,
 ) {
 	let peers_deny = config.peers_deny.unwrap_or(PeerAddrs::default());
-	let is_q_empty = listen_q_addrs.is_empty();
 
 	// If "peers_allow" is explicitly configured then just use this list
 	// remembering to filter out "peers_deny".
@@ -382,7 +406,7 @@ fn connect_to_seeds_and_peers(
 		}
 	}
 
-	if is_q_empty {
+	if listen_q_addrs.len() < q_expected_size {
 		// check if we have some peers in db
 		// look for peers that are able to give us other peers (via PEER_LIST capability)
 		let mut found_peers = peers.find_peers(
@@ -422,6 +446,9 @@ fn connect_to_seeds_and_peers(
 			if !peers_deny.as_slice().contains(&addr) {
 				if !peers.is_known(&addr) {
 					listen_q_addrs.push_back(addr.clone());
+					if listen_q_addrs.len() >= q_expected_size {
+						break;
+					}
 				}
 			}
 		}
