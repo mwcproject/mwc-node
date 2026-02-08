@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::tor::arti;
+use crate::tor::arti::is_arti_restarting;
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr};
 use async_std::stream::StreamExt;
@@ -29,7 +30,7 @@ use tor_proto::client::stream::IncomingStreamRequest;
 static SERVICE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 // started_service_callback accepting onion address
-fn start_arti<F>(
+fn start_onion_service<F>(
 	context_id: u32,
 	onion_expanded_key: &[u8; 64],
 	service_name: &str,
@@ -116,12 +117,15 @@ where
 	};
 
 	loop {
+		while is_arti_restarting() && !stop_state.is_stopped() {
+			thread::sleep(Duration::from_millis(500));
+		}
 		if stop_state.is_stopped() {
 			break;
 		}
 
 		info!("Starting Arti service {}...", service_name);
-		match start_arti(
+		match start_onion_service(
 			context_id,
 			&onion_expanded_key,
 			service_name,
@@ -134,8 +138,6 @@ where
 
 				arti::register_arti_active_object(onion_service_object.clone());
 				arti::register_arti_active_object(incoming_requests_object.clone());
-
-				let restarted_rc = arti::register_arti_restart_event()?;
 
 				let stop_state2 = stop_state.clone();
 				let context_id2 = context_id;
@@ -206,9 +208,7 @@ where
 							if need_arti_restart || arti::is_arti_restarting() {
 								drop(onion_service);
 								arti::unregister_arti_active_object(&onion_service_object);
-								if !arti::is_arti_restarting() {
-									arti::request_arti_restart("Onion service is dead, restarting");
-								}
+								arti::request_arti_restart("Onion service is dead, restarting");
 								break;
 							}
 
@@ -289,6 +289,7 @@ where
 				if monitoring.join().is_err() {
 					break;
 				}
+				let expected_tor_instance_id = arti::get_next_arti_instance_id();
 				arti::unregister_arti_active_object(&incoming_requests_object);
 
 				warn!(
@@ -298,9 +299,10 @@ where
 
 				// Waiting while arti is started
 				while !stop_state.is_stopped() {
-					if restarted_rc.recv_timeout(Duration::from_secs(1)).is_ok() {
+					if arti::get_current_arti_instance_id() == expected_tor_instance_id {
 						break;
 					}
+					thread::sleep(Duration::from_millis(300));
 				}
 
 				if stop_state.is_stopped() {
@@ -316,7 +318,6 @@ where
 				if stop_state.is_stopped() {
 					break;
 				}
-				thread::sleep(Duration::from_secs(1));
 			}
 			Err(e) => {
 				if stop_state.is_stopped() {
@@ -329,9 +330,16 @@ where
 					}
 				}
 
-				error!("Unable to restart onion service. Will retry soon. {}", e);
+				error!("Unable to restart onion service. Will restart Arti. {}", e);
 				// restarting arti first
-				arti::request_arti_restart(&format!("Unable to restart onion service, {}", e));
+				arti::request_arti_restart(&format!("Unable to start onion service, {}", e));
+				let expected_tor_instance_id = arti::get_next_arti_instance_id();
+				while !stop_state.is_stopped() {
+					if arti::get_current_arti_instance_id() == expected_tor_instance_id {
+						break;
+					}
+					thread::sleep(Duration::from_millis(300));
+				}
 			}
 		}
 	}
