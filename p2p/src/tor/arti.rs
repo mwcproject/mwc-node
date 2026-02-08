@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 use tor_config::{BoolOrAuto, ExplicitOrAuto};
@@ -153,8 +153,10 @@ pub fn random_http_probe_url() -> &'static str {
 lazy_static! {
 	// It is a tor server only running instance, in case of libraries can be shared by multiple nodes and wallets
 	static ref TOR_ARTI_INSTANCE: std::sync::RwLock<Option<ArtiCore>> = std::sync::RwLock::new(None);
-	// Tor service full restart request
-	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+	// Tor instance ID. We can't store it with ArtiCore because of the access
+	static ref TOR_ARTI_INSTANCE_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+	// Tor service full restart request. Value 0 - not requsted. Otherwise next ArtiCore instance_id
+	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 	// Last restarting time (need to understand how long the tor was online without any issue)
 	static ref TOR_RESTART_TIME: std::sync::RwLock<Option<Instant>> = std::sync::RwLock::new(None);
 	// Monitoring thread. Only one instance is allowed
@@ -244,7 +246,16 @@ pub(crate) fn get_shutdown_arti_token() -> CancellationToken {
 
 pub fn request_arti_restart(reason: &str) {
 	info!("Requestion Arti restart. Reason: {}", reason);
-	TOR_RESTART_REQUEST.store(true, Ordering::Relaxed);
+	let next_id = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst) + 1;
+	TOR_RESTART_REQUEST.store(next_id, Ordering::SeqCst);
+}
+
+pub fn get_next_arti_instance_id() -> u32 {
+	TOR_RESTART_REQUEST.load(Ordering::SeqCst)
+}
+
+pub fn get_current_arti_instance_id() -> u32 {
+	TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst)
 }
 
 pub fn is_arti_started() -> bool {
@@ -270,12 +281,15 @@ pub fn is_arti_healthy() -> bool {
 		Ok(guard) => guard.is_some(),
 		Err(_) => false,
 	};
-	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::Relaxed);
-	has_tor && !restart_requested
+	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::SeqCst);
+	let tor_version = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst);
+	has_tor && (restart_requested == tor_version)
 }
 
 pub fn is_arti_restarting() -> bool {
-	TOR_RESTART_REQUEST.load(Ordering::Relaxed)
+	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::SeqCst);
+	let tor_version = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst);
+	tor_version < restart_requested
 }
 
 pub fn register_arti_active_object(obj_name: String) {
@@ -311,12 +325,15 @@ pub fn start_arti(
 	let expiration_time = {
 		let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
 
+		debug_assert!(atri_writer.is_none());
+
 		let create_arti_res =
 			ArtiCore::new(config, base_dir, print_start_message, cleanup_arti_data);
 		let (a, expiration_time) = create_arti_res?;
-		TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
-		*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 		*atri_writer = Some(a);
+		TOR_RESTART_REQUEST.store(1, Ordering::SeqCst);
+		TOR_ARTI_INSTANCE_ID.store(1, Ordering::SeqCst);
+		*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 		expiration_time
 	};
 
@@ -371,6 +388,7 @@ pub fn start_arti(
 						};
 						need_arti_restart
 							|| TOR_RESTART_REQUEST.load(Ordering::Relaxed)
+								> TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst)
 							|| Utc::now().timestamp() > expiration_time
 					};
 
@@ -440,7 +458,10 @@ pub fn stop_arti() {
 
 		// Stopping the arti
 		stop_start_arti(false);
-		TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+		TOR_RESTART_REQUEST.store(
+			TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst),
+			Ordering::SeqCst,
+		);
 		// Checking if nothing left alive
 		debug_assert!(TOR_ARTI_INSTANCE
 			.read()
@@ -505,7 +526,7 @@ where
 // return expiration time
 fn restart_arti(start_new_client: bool) -> i64 {
 	error!("Stopping ARTI...");
-	let (tor_runtime, config, base_dir, restart_senders) = {
+	let (tor_runtime, config, base_dir) = {
 		let context_ids = release_arti_cancelling_all();
 		let mut guard = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
 		init_arti_cancelling_all(context_ids);
@@ -514,12 +535,7 @@ fn restart_arti(start_new_client: bool) -> i64 {
 			Some(arti) => {
 				drop(arti.tor_client);
 				drop(guard);
-				(
-					arti.tor_runtime,
-					arti.config,
-					arti.base_dir,
-					arti.restart_senders,
-				)
+				(arti.tor_runtime, arti.config, arti.base_dir)
 			}
 			None => {
 				error!("restart_arti called for empty instance. Ignoring this call");
@@ -539,32 +555,24 @@ fn restart_arti(start_new_client: bool) -> i64 {
 			Ok((arti_core, expiration_time)) => {
 				info!("New Arti instance is successfully created.");
 				*TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()) = Some(arti_core);
-				TOR_RESTART_REQUEST.store(false, Ordering::Relaxed);
+				let tor_id = TOR_ARTI_INSTANCE_ID.fetch_add(1, Ordering::SeqCst) + 1;
+				debug_assert!(TOR_RESTART_REQUEST.load(Ordering::SeqCst) == tor_id);
+				TOR_RESTART_REQUEST.store(tor_id, Ordering::SeqCst);
 				*TOR_RESTART_TIME.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 				network_status::update_network_outage_time(Utc::now().timestamp());
-				for sender in restart_senders {
-					let _ = sender.send(());
-				}
 				return expiration_time;
 			}
 			Err(e) => {
 				error!("Unable to create Arti instance, {}", e);
 				info!("Waiting for 60 seconds before retry to create Arti instance.");
-				std::thread::sleep(Duration::from_secs(60));
+				for _ in 0..60 {
+					std::thread::sleep(Duration::from_secs(1));
+					if is_shutdown_arti() {
+						return Utc::now().timestamp() + 600;
+					}
+				}
 			}
 		}
-	}
-}
-
-pub fn register_arti_restart_event() -> Result<std::sync::mpsc::Receiver<()>, Error> {
-	let mut arti_core = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
-	match &mut *arti_core {
-		Some(arti_core) => {
-			let (tx, rx) = mpsc::channel::<()>();
-			arti_core.restart_senders.push(tx);
-			Ok(rx)
-		}
-		None => Err(Error::TorProcess("Arti is not running".into())),
 	}
 }
 
@@ -575,7 +583,6 @@ pub struct ArtiCore {
 	tor_client: TorClient<PreferredRuntime>,
 	config: TorConfig,
 	base_dir: PathBuf,
-	restart_senders: Vec<std::sync::mpsc::Sender<()>>,
 }
 
 const WEB: &str = "web";
@@ -676,7 +683,6 @@ impl ArtiCore {
 					tor_client,
 					config: config.clone(),
 					base_dir: base_dir.into(),
-					restart_senders: Vec::new(),
 				},
 				expiration_time,
 			)),
