@@ -119,7 +119,9 @@ where
 		failed_service_callback,
 		service_status_callback,
 		handle_new_peer_callback,
-	)
+	);
+
+	Ok(())
 }
 
 /// Starts a new TCP server and listen to incoming connections. This is a
