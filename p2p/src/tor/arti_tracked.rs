@@ -19,7 +19,7 @@ pub struct ArtiRegistrator {
 }
 
 impl ArtiRegistrator {
-	fn new(name: String) -> Self {
+	pub fn new(name: String) -> Self {
 		arti::register_arti_active_object(name.clone());
 		ArtiRegistrator { name }
 	}

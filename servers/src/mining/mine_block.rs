@@ -78,8 +78,9 @@ pub fn get_block(
 	client: &HttpClient,
 	stop_state: &Arc<StopState>,
 ) -> Result<(core::Block, BlockFees), Error> {
-	let wallet_retry_interval = 5;
+	let wallet_retry_interval_sec = 1;
 	// get the latest chain state and build a block on top of it
+	let mut new_key_id = key_id.to_owned();
 	loop {
 		if stop_state.is_stopped() {
 			return Err(Error::General("Interrupted".into()));
@@ -88,7 +89,7 @@ pub fn get_block(
 		match build_block(
 			chain,
 			tx_pool,
-			key_id.clone(),
+			new_key_id.clone(),
 			wallet_listener_url.clone(),
 			client,
 		) {
@@ -97,7 +98,6 @@ pub fn get_block(
 			}
 			Err(e) => {
 				// On error report the problem and keep trying forever
-				let mut new_key_id = key_id.to_owned();
 				match e {
 					self::Error::Chain(c) => match c {
 						chain::Error::DuplicateCommitment(_) => {
@@ -116,7 +116,7 @@ pub fn get_block(
 							"Error building new block: Can't connect to wallet listener at {:?}; {}, will retry",
 							wallet_listener_url.as_ref().unwrap_or(&"BROKEN_URL".to_string()), msg
 						);
-						thread::sleep(Duration::from_secs(wallet_retry_interval));
+						thread::sleep(Duration::from_secs(wallet_retry_interval_sec));
 					}
 					ae => {
 						warn!("Error building new block: {:?}. Retrying.", ae);

@@ -14,6 +14,7 @@
 
 use crate::tor::arti;
 use crate::tor::arti::is_arti_restarting;
+use crate::tor::arti_tracked::ArtiRegistrator;
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr};
 use async_std::stream::StreamExt;
@@ -91,6 +92,8 @@ where
 /// Listening on Onion service.
 /// Here is we have a full workflow that monitors the onion service, restarting on network failre. It is
 /// Used at both mwc-node and mwc-wallet.
+/// Note!!!! This method can't throw errors!!!!
+/// Reason: registration / deregistration, listening process is critical, it can't just exit.
 pub fn listen_onion_service<F, G, H, K>(
 	context_id: u32,
 	stop_state: Arc<StopState>,
@@ -100,8 +103,7 @@ pub fn listen_onion_service<F, G, H, K>(
 	failed_service_callback: Option<G>,
 	service_status_callback: Option<K>,
 	handle_new_peer_callback: H,
-) -> Result<(), Error>
-where
+) where
 	F: Fn(Option<String>),
 	G: Fn(&Error) -> bool, // return true if want to exit on falure
 	H: Fn(TcpDataStream, Option<PeerAddr>),
@@ -136,7 +138,6 @@ where
 				let incoming_requests_object =
 					format!("{}_incoming_requests_{}", service_name, context_id);
 
-				arti::register_arti_active_object(onion_service_object.clone());
 				arti::register_arti_active_object(incoming_requests_object.clone());
 
 				let stop_state2 = stop_state.clone();
@@ -144,20 +145,20 @@ where
 				let service_name2 = String::from(service_name);
 				let service_status_callback2 = service_status_callback.clone();
 
-				let monitoring = thread::Builder::new()
+				let monitoring = match thread::Builder::new()
 					.name(format!(
 						"{}_onion_service_checker_{}",
 						service_name2, context_id2
 					))
 					.spawn(move || {
+						// Guard is needed for
+						let _arti_guard = ArtiRegistrator::new(onion_service_object);
 						let mut last_running_time = Instant::now();
 						if let Some(f) = &(*service_status_callback2) {
 							f(false);
 						};
 						loop {
 							if stop_state2.is_stopped() {
-								arti::unregister_arti_active_object(&onion_service_object);
-								drop(onion_service);
 								break;
 							}
 							let need_arti_restart = {
@@ -206,8 +207,6 @@ where
 							};
 
 							if need_arti_restart || arti::is_arti_restarting() {
-								drop(onion_service);
-								arti::unregister_arti_active_object(&onion_service_object);
 								arti::request_arti_restart("Onion service is dead, restarting");
 								break;
 							}
@@ -222,23 +221,27 @@ where
 						if let Some(f) = &(*service_status_callback2) {
 							f(false);
 						};
-					})
-					.map_err(|e| {
-						Error::Internal(format!(
-							"Unable to start {} onion_service_checker thread, {}",
-							service_name, e
-						))
-					})?;
+					}) {
+					Ok(handle) => Some(handle),
+					Err(e) => {
+						error!("Unable to start {} onion_service_checker thread (running without it), {}",
+							service_name, e);
+						None
+					}
+				};
 
 				let stop_state = stop_state.clone();
 				loop {
-					let request_res = arti::arti_async_block(async {
+					let request_res = match arti::arti_async_block(async {
 						mwc_util::tokio::time::timeout(
 							mwc_util::tokio::time::Duration::from_secs(1),
 							incoming_requests.next(),
 						)
 						.await
-					})?;
+					}) {
+						Ok(res) => res,
+						Err(_) => break, // Runtime is not available - tor needs to be restarted.
+					};
 
 					match request_res {
 						Ok(Some(stream_request)) => {
@@ -250,24 +253,41 @@ where
 							let request: &IncomingStreamRequest = stream_request.request();
 							match request {
 								IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-									let accept_result = arti::arti_async_block(async move {
-										stream_request.accept(Connected::new_empty()).await
-									})?;
+									let accept_result = match arti::arti_async_block(async move {
+										mwc_util::tokio::time::timeout(
+											mwc_util::tokio::time::Duration::from_secs(10),
+											stream_request.accept(Connected::new_empty()),
+										)
+										.await
+									}) {
+										Ok(res) => res,
+										Err(_) => break, // Runtime is not available - tor needs to be restarted.
+									};
 
 									match accept_result {
-										Ok(onion_service_stream) => {
-											let stream_id =
-												arti_streams.fetch_add(1, Ordering::Relaxed);
+										Ok(accept_result) => match accept_result {
+											Ok(onion_service_stream) => {
+												let stream_id =
+													arti_streams.fetch_add(1, Ordering::Relaxed);
 
-											handle_new_peer_callback(
-												TcpDataStream::from_data(
-													onion_service_stream,
-													format!("mwc_nodeLdata_stream_{}", stream_id),
-												),
-												None,
-											);
+												handle_new_peer_callback(
+													TcpDataStream::from_data(
+														onion_service_stream,
+														format!(
+															"mwc_nodeLdata_stream_{}",
+															stream_id
+														),
+													),
+													None,
+												);
+											}
+											Err(err) => {
+												error!("listen_onion_service accepting stream error: {}", err);
+											}
+										},
+										Err(_) => {
+											// timeout, nothing can be done. Stream will be dropped and closed automatically.
 										}
-										Err(err) => error!("Client error: {}", err),
 									}
 								}
 								_ => {
@@ -286,8 +306,9 @@ where
 						}
 					}
 				}
-				if monitoring.join().is_err() {
-					break;
+
+				if let Some(monitoring) = monitoring {
+					let _ = monitoring.join();
 				}
 				let expected_tor_instance_id = arti::get_next_arti_instance_id();
 				arti::unregister_arti_active_object(&incoming_requests_object);
@@ -299,7 +320,7 @@ where
 
 				// Waiting while arti is started
 				while !stop_state.is_stopped() {
-					if arti::get_current_arti_instance_id() == expected_tor_instance_id {
+					if arti::get_current_arti_instance_id() >= expected_tor_instance_id {
 						break;
 					}
 					thread::sleep(Duration::from_millis(300));
@@ -326,7 +347,8 @@ where
 
 				if let Some(failed_service_callback) = &failed_service_callback {
 					if failed_service_callback(&e) {
-						return Err(e);
+						error!("listen_onion_service exited because of callback response and error: {}", e);
+						return;
 					}
 				}
 
@@ -335,7 +357,7 @@ where
 				arti::request_arti_restart(&format!("Unable to start onion service, {}", e));
 				let expected_tor_instance_id = arti::get_next_arti_instance_id();
 				while !stop_state.is_stopped() {
-					if arti::get_current_arti_instance_id() == expected_tor_instance_id {
+					if arti::get_current_arti_instance_id() >= expected_tor_instance_id {
 						break;
 					}
 					thread::sleep(Duration::from_millis(300));
@@ -343,6 +365,4 @@ where
 			}
 		}
 	}
-
-	Ok(())
 }
