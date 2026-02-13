@@ -52,6 +52,7 @@ pub struct Peers {
 	pub adapter: Arc<dyn ChainAdapter>,
 	store: PeerStore,
 	peers: RwLock<HashMap<PeerAddr, Arc<Peer>>>,
+	last_add_peer_timestamp: RwLock<i64>,
 	config: P2PConfig,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
 	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
@@ -66,6 +67,7 @@ impl Peers {
 			store,
 			config: config.clone(),
 			peers: RwLock::new(HashMap::new()),
+			last_add_peer_timestamp: RwLock::new(0),
 			boost_peers_capabilities: RwLock::new(PeersCapabilities {
 				capabilities: Capabilities::UNKNOWN,
 				time: DateTime::default(),
@@ -146,6 +148,10 @@ impl Peers {
 				last_connected: Utc::now().timestamp(),
 			};
 			info!("Adding newly connected Healthy peer {}.", peer_data.addr);
+			// Reset success outbound counter, so seed thread can boost peers connections if needed
+			if peer.info.is_outbound() {
+				self.reset_last_peer_add_timestamp();
+			}
 			// Scope for peers vector lock - dont hold the peers lock while adding to lmdb
 			self.peers
 				.write()
@@ -156,6 +162,22 @@ impl Peers {
 			error!("Could not save connected peer address: {:?}", e);
 		}
 		Ok(())
+	}
+
+	/// Reset the last added time, so we could start counting non active time
+	pub fn reset_last_peer_add_timestamp(&self) {
+		*self
+			.last_add_peer_timestamp
+			.write()
+			.unwrap_or_else(|e| e.into_inner()) = Utc::now().timestamp();
+	}
+
+	/// Time of last added peer
+	pub fn get_last_peer_add_timestamp(&self) -> i64 {
+		*self
+			.last_add_peer_timestamp
+			.read()
+			.unwrap_or_else(|e| e.into_inner())
 	}
 
 	/// Add a peer as banned to block future connections, usually due to failed

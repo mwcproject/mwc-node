@@ -43,19 +43,20 @@ use std::{thread, time};
 
 const CONNECT_TO_SEED_INTERVAL: i64 = 30;
 const EXPIRE_INTERVAL: i64 = 3600;
-const PEERS_CHECK_TIME_FULL: i64 = 30;
-const PEERS_CHECK_TIME_BOOST: i64 = 3;
+const PEERS_CHECK_TIME_FULL: i64 = 60;
+const PEERS_CHECK_TIME_BOOST: i64 = 5;
 const PEERS_MONITOR_INTERVAL: i64 = 60;
 const PEERS_LISTEN_MIN_INTERVAL: i64 = 600; // Interval to add some new peers even if everything is fine
+const PEER_ACTIVE_BOOST_INTERVAL: i64 = 60; // How many seconds we can explore peers actively since any a new one was discovered
 
 const PEER_RECONNECT_INTERVAL: i64 = 600;
 const SEED_RECONNECT_INTERVAL: i64 = 60;
-const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
+const PEER_MAX_INITIATE_CONNECTIONS: usize = 30;
 
 // Clean up peers chances 1/100. Cleaning interval is 1 hour. I think we should be good with preventing much of the noise.
-const DELETE_ABSOLETE_PEER_CHANCES: u32 = 100;
+const DELETE_ABSOLETE_PEER_CHANCES: u32 = 150;
 
-const PEER_Q_EXPECTED_SIZE: usize = 40;
+const PEER_Q_EXPECTED_SIZE: usize = PEER_MAX_INITIATE_CONNECTIONS;
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -101,6 +102,8 @@ pub fn connect_and_monitor(
 			let mut connection_threads: Vec<thread::JoinHandle<()>> = Vec::new();
 
 			let network_last_outage_time = AtomicI64::new(0);
+
+			peers.reset_last_peer_add_timestamp();
 
 			loop {
 				if stop_state.is_stopped() {
@@ -180,7 +183,11 @@ pub fn connect_and_monitor(
 							&mut listen_q_addrs,
 							&seed_list,
 						);
-						let duration = if is_boost || !listen_q_addrs.is_empty() {
+
+						let outbound_was_discovered_boost = (now.timestamp()
+							- peers.get_last_peer_add_timestamp())
+							< PEER_ACTIVE_BOOST_INTERVAL;
+						let duration = if is_boost || outbound_was_discovered_boost {
 							PEERS_CHECK_TIME_BOOST
 						} else {
 							PEERS_CHECK_TIME_FULL
