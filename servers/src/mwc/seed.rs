@@ -50,12 +50,12 @@ const PEERS_LISTEN_MIN_INTERVAL: i64 = 600; // Interval to add some new peers ev
 
 const PEER_RECONNECT_INTERVAL: i64 = 600;
 const SEED_RECONNECT_INTERVAL: i64 = 60;
-const PEER_MAX_INITIATE_CONNECTIONS: usize = 50;
+const PEER_MAX_INITIATE_CONNECTIONS: usize = 20;
 
 // Clean up peers chances 1/100. Cleaning interval is 1 hour. I think we should be good with preventing much of the noise.
 const DELETE_ABSOLETE_PEER_CHANCES: u32 = 100;
 
-const PEER_Q_EXPECTED_SIZE: usize = 40;
+const PEER_Q_EXPECTED_SIZE: usize = PEER_MAX_INITIATE_CONNECTIONS;
 
 pub fn connect_and_monitor(
 	p2p_server: Arc<p2p::Server>,
@@ -180,7 +180,7 @@ pub fn connect_and_monitor(
 							&mut listen_q_addrs,
 							&seed_list,
 						);
-						let duration = if is_boost || !listen_q_addrs.is_empty() {
+						let duration = if is_boost {
 							PEERS_CHECK_TIME_BOOST
 						} else {
 							PEERS_CHECK_TIME_FULL
