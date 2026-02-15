@@ -986,7 +986,7 @@ impl ArtiCore {
 
 			if !std::path::Path::new(&client_path).exists() {
 				return Err(Error::TorConfig(format!(
-					"Unable to find pluggale webtunnel client {}",
+					"Unable to find pluggable webtunnel client {}",
 					client_path
 				)));
 			}
