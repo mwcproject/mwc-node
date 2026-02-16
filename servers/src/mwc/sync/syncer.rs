@@ -168,6 +168,12 @@ impl SyncRunner {
 					self.sync_state.update(SyncStatus::AwaitingPeers);
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
+					// Spend some extra time, not to flood logs
+					for _ in 0..5 {
+						if !self.stop_state.is_stopped() {
+							thread::sleep(time::Duration::from_secs(1));
+						}
+					}
 				}
 				SyncRequestResponses::Syncing => {
 					//debug_assert!(self.sync_state.is_syncing());
