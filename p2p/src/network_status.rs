@@ -38,9 +38,12 @@ static PROBE_URLS_HTTP: OnceLock<Vec<String>> = OnceLock::new();
 fn probe_urls_http() -> &'static Vec<String> {
 	PROBE_URLS_HTTP.get_or_init(|| {
         let candidates = vec![
-            "www.google.com",
-            "www.msftconnecttest.com",
-            "detectportal.firefox.com",
+			"1.1.1.1",
+			"8.8.8.8",
+			"cloudflare.com",
+			"amazon.com",
+			"github.com",
+            "google.com",
             "www.apple.com",
         ];
 
@@ -92,12 +95,13 @@ fn check_http_probe(host: &str) -> bool {
 }
 
 /// Pick a random **live** URL (after first-call filtering).
-pub fn get_random_http_probe_host() -> String {
+pub fn get_random_http_probe_host(num: usize) -> Vec<String> {
 	let urls = probe_urls_http();
-	match urls.choose(&mut rand::thread_rng()) {
-		Some(u) => u.clone(),
-		None => String::from("www.google.com"),
+	let mut res: Vec<String> = Vec::new();
+	for url in urls.choose_multiple(&mut rand::thread_rng(), num) {
+		res.push(url.clone());
 	}
+	res
 }
 
 #[test]
@@ -105,6 +109,7 @@ fn test_probe_urls() {
 	let domains = probe_urls_http();
 	assert!(domains.len() > 0);
 
-	let domain = get_random_http_probe_host();
-	assert!(domain.len() > 5);
+	let domain = get_random_http_probe_host(1);
+	assert!(domain.len() == 1);
+	assert!(domain[0].len() > 5);
 }

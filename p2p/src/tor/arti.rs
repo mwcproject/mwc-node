@@ -1085,39 +1085,46 @@ impl ArtiCore {
 	}
 
 	pub async fn test_circuit(tor_client: &TorClient<PreferredRuntime>) -> Result<(), Error> {
-		info!("Attempting to build circuit...");
-		let probe_host = network_status::get_random_http_probe_host();
-		let arti_shutdown = get_shutdown_arti_token();
-		let connect_res = tokio::select! {
-			res = tor_client.connect((probe_host.as_str(), 80)) => res,
-			_ = arti_shutdown.cancelled() => {
-				return Err(Error::Interrupted);
-			},
-		};
-		match connect_res {
-			Ok(stream) => {
-				let tunnel = stream
-					.client_stream_ctrl()
-					.ok_or(Error::TorProcess(
-						"failed to get client stream ctrl?!".into(),
-					))?
-					.tunnel()
-					.ok_or(Error::TorProcess("failed to get client circuit?!".into()))?;
-				let paths = tunnel.all_paths();
-				for (i, circ) in paths.into_iter().enumerate() {
-					debug!("Circ {i}:");
-					for node in circ.iter() {
-						debug!("\tNode: {node}");
-					}
-				}
+		let mut connection_error: Error = Error::Internal("NONE".into());
 
-				Ok(())
+		let hosts = network_status::get_random_http_probe_host(2);
+		for probe_host in hosts {
+			let arti_shutdown = get_shutdown_arti_token();
+			let connect_res = tokio::select! {
+				res = tor_client.connect((probe_host.as_str(), 443)) => res,
+				_ = arti_shutdown.cancelled() => {
+					return Err(Error::Interrupted);
+				},
+			};
+			match connect_res {
+				Ok(stream) => {
+					let tunnel = stream
+						.client_stream_ctrl()
+						.ok_or(Error::TorProcess(
+							"failed to get client stream ctrl?!".into(),
+						))?
+						.tunnel()
+						.ok_or(Error::TorProcess("failed to get client circuit?!".into()))?;
+					let paths = tunnel.all_paths();
+					for (i, circ) in paths.into_iter().enumerate() {
+						debug!("Circ {i}:");
+						for node in circ.iter() {
+							debug!("\tNode: {node}");
+						}
+					}
+					info!("Attempting to build circuit to {} - OK", probe_host);
+					return Ok(());
+				}
+				Err(e) => {
+					info!("Attempting to build circuit to {} - FAILED", probe_host);
+					connection_error =
+						Error::TorProcess(format!("Unable connect to the {}, {}", probe_host, e));
+					continue;
+				}
 			}
-			Err(e) => Err(Error::TorProcess(format!(
-				"Unable connect to the {}, {}",
-				probe_host, e
-			))),
 		}
+
+		Err(connection_error)
 	}
 
 	fn hash_str(s: &str) -> u64 {
