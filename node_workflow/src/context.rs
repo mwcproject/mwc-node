@@ -19,12 +19,15 @@ use lazy_static::lazy_static;
 use mwc_core::global;
 use mwc_core::global::ChainTypes;
 use mwc_p2p::tor::arti;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
 
 lazy_static! {
 	/// Global chain status flags. It is expected that init call will set them first for every needed context
 	/// Note, both node and wallet will need to set it up. Any param can be set once
 	static ref USED_CONTEXTS: RwLock<u64> = RwLock::new(0);
+	/// Context id index. We don't want to reuse imediatelly. Let's have some cooling down time instead.
+	static ref CURRENT_CONTEXT_IDX: AtomicU32 = AtomicU32::new(0);
 }
 
 /// Generate a new context Id
@@ -35,7 +38,8 @@ pub fn allocate_new_context(
 ) -> Result<u32, Error> {
 	let mut contexts = USED_CONTEXTS.write().unwrap_or_else(|e| e.into_inner());
 
-	for c_id in 1..64 {
+	for _ in 1..64 {
+		let c_id = CURRENT_CONTEXT_IDX.fetch_add(1, Ordering::Relaxed) % 64;
 		let mask = 1u64 << c_id;
 		if *contexts & mask == 0 {
 			*contexts |= mask;
