@@ -214,12 +214,13 @@ thread_local! {
 }
 
 /// Release
-pub fn release_context_data(context_id: u32) {
-	let mut params = GLOBAL_CHAIN_PARAMS
+pub fn release_context_data(_context_id: u32) {
+	// Chain type we better keep forever in case start and forget thread need to finish something.
+	/*let mut params = GLOBAL_CHAIN_PARAMS
 		.write()
 		.unwrap_or_else(|e| e.into_inner());
 	let params = &mut *params;
-	let _ = params.remove(&context_id);
+	let _ = params.remove(&context_id);*/
 }
 
 /// Set the chain type on a per-thread basis via thread_local storage.

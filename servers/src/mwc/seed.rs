@@ -40,14 +40,15 @@ use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::{thread, time};
+use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
 const CONNECT_TO_SEED_INTERVAL: i64 = 30;
 const EXPIRE_INTERVAL: i64 = 3600;
 const PEERS_CHECK_TIME_FULL: i64 = 60;
-const PEERS_CHECK_TIME_BOOST: i64 = 5;
+const PEERS_CHECK_TIME_BOOST: i64 = 10;
 const PEERS_MONITOR_INTERVAL: i64 = 60;
 const PEERS_LISTEN_MIN_INTERVAL: i64 = 600; // Interval to add some new peers even if everything is fine
-const PEER_ACTIVE_BOOST_INTERVAL: i64 = 60; // How many seconds we can explore peers actively since any a new one was discovered
+const PEER_ACTIVE_BOOST_INTERVAL: i64 = 40; // How many seconds we can explore peers actively since any a new one was discovered
 
 const PEER_RECONNECT_INTERVAL: i64 = 600;
 const SEED_RECONNECT_INTERVAL: i64 = 60;
@@ -105,6 +106,9 @@ pub fn connect_and_monitor(
 
 			peers.reset_last_peer_add_timestamp();
 
+			// CPU usage in the range 0.0 - 1.0
+			let mut cpu_usage: f64 = 0.0;
+
 			loop {
 				if stop_state.is_stopped() {
 					break;
@@ -112,6 +116,7 @@ pub fn connect_and_monitor(
 				// Pause egress peer connection request. Only for tests.
 				if stop_state.is_paused() || !p2p_server.is_ready() {
 					thread::sleep(time::Duration::from_secs(1));
+					cpu_usage = 0.0;
 					continue;
 				}
 
@@ -139,7 +144,7 @@ pub fn connect_and_monitor(
 					expire_check_time = now + Duration::seconds(EXPIRE_INTERVAL);
 				}
 
-				let request_more_connections = now > listen_time;
+				let request_more_connections = now >= listen_time;
 				let has_enough_peers = peers.enough_outbound_peers();
 
 				let listen_q_is_empty = listen_q_addrs.is_empty();
@@ -160,10 +165,17 @@ pub fn connect_and_monitor(
 					);
 
 					if peers.is_sync_mode() || !has_enough_peers {
-						peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL / 5); // every 12 seconds let's do the check
+						peer_monitor_time = now
+							+ Duration::seconds(
+								PEERS_MONITOR_INTERVAL / 5
+									+ (PEERS_MONITOR_INTERVAL as f64 * 4.0 / 5.0 * cpu_usage)
+										as i64,
+							); // every 12 seconds let's do the check
 					} else {
 						peer_monitor_time = now + Duration::seconds(PEERS_MONITOR_INTERVAL); // once a minute checking
 					}
+
+					listen_time = now + Duration::seconds(PEERS_LISTEN_MIN_INTERVAL);
 				}
 
 				// make several attempts to get peers as quick as possible
@@ -187,14 +199,16 @@ pub fn connect_and_monitor(
 						let outbound_was_discovered_boost = (now.timestamp()
 							- peers.get_last_peer_add_timestamp())
 							< PEER_ACTIVE_BOOST_INTERVAL;
-						let duration = if is_boost || outbound_was_discovered_boost {
+
+						let duration = if is_boost && outbound_was_discovered_boost {
 							PEERS_CHECK_TIME_BOOST
+								+ ((PEERS_CHECK_TIME_FULL - PEERS_CHECK_TIME_BOOST) as f64
+									* cpu_usage) as i64
 						} else {
 							PEERS_CHECK_TIME_FULL
 						};
 
 						peers_connect_time = now + Duration::seconds(duration);
-						listen_time = now + Duration::seconds(PEERS_LISTEN_MIN_INTERVAL);
 					}
 				}
 
@@ -210,7 +224,19 @@ pub fn connect_and_monitor(
 					}
 				}
 
+				let mut system = System::new_with_specifics(
+					RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
+				);
+
 				thread::sleep(time::Duration::from_secs(1));
+				system.refresh_cpu_usage();
+
+				let cpus = system.cpus();
+				let mut cpu_usage_sum = 0.0;
+				for cpu in cpus {
+					cpu_usage_sum += cpu.cpu_usage();
+				}
+				cpu_usage = cpu_usage_sum as f64 / cpus.len() as f64 / 100.0;
 			}
 		})
 }
