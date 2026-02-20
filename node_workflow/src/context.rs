@@ -39,7 +39,7 @@ pub fn allocate_new_context(
 	let mut contexts = USED_CONTEXTS.write().unwrap_or_else(|e| e.into_inner());
 
 	for _ in 1..64 {
-		let c_id = CURRENT_CONTEXT_IDX.fetch_add(1, Ordering::Relaxed) % 64;
+		let c_id = 1 + CURRENT_CONTEXT_IDX.fetch_add(1, Ordering::Relaxed) % 60;
 		let mask = 1u64 << c_id;
 		if *contexts & mask == 0 {
 			*contexts |= mask;
