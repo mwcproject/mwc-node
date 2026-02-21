@@ -610,7 +610,7 @@ fn listen_for_addrs(
 
 						let _ = peers_c.update_state(&addr_c, p2p::State::Healthy);
 					}
-					Err(mwc_p2p::Error::TorNotInitialized) => {
+					Err(mwc_p2p::Error::TorRestarting | mwc_p2p::Error::TorNotInitialized) => {
 						debug!("Trying connect when Tor is offline, skipping the attempt");
 					}
 					Err(e) => {

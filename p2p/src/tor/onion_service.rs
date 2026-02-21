@@ -335,7 +335,7 @@ pub fn listen_onion_service<F, G, H, K>(
 					service_name, context_id
 				);
 			}
-			Err(Error::TorNotInitialized) => {
+			Err(Error::TorRestarting | Error::TorNotInitialized) => {
 				if stop_state.is_stopped() {
 					break;
 				}

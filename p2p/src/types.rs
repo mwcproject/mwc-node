@@ -128,6 +128,9 @@ pub enum Error {
 	/// Tor is not initialized
 	#[error("Tor is not initialized")]
 	TorNotInitialized,
+	/// Tor is not initialized
+	#[error("Tor is restarting")]
+	TorRestarting,
 	/// Tor Process error
 	#[error("Onion Service Error: {0}")]
 	TorOnionService(String),
