@@ -485,7 +485,7 @@ where
 	F: FnOnce(&TorClient<PreferredRuntime>) -> Result<R, Error>,
 {
 	if is_arti_restarting() {
-		return Err(Error::TorNotInitialized);
+		return Err(Error::TorRestarting);
 	}
 	let guard = TOR_ARTI_INSTANCE.read().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
@@ -499,7 +499,7 @@ where
 	R: Send,
 {
 	if is_arti_restarting() {
-		return Err(Error::TorNotInitialized);
+		return Err(Error::TorRestarting);
 	}
 
 	let guard = TOR_ARTI_INSTANCE.read().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
@@ -842,7 +842,7 @@ impl ArtiCore {
 			})?;
 
 		if is_arti_restarting() {
-			return Err(Error::TorNotInitialized);
+			return Err(Error::TorRestarting);
 		}
 
 		if is_arti_cancelled(context_id) {
@@ -880,7 +880,7 @@ impl ArtiCore {
 
 		loop {
 			if is_arti_restarting() {
-				return Err(Error::TorNotInitialized);
+				return Err(Error::TorRestarting);
 			}
 			if is_shutdown_arti() || is_arti_cancelled(context_id) {
 				return Err(Error::Interrupted);
@@ -905,7 +905,7 @@ impl ArtiCore {
 		timeout_seconds: u64,
 	) -> Result<(), Error> {
 		if is_arti_restarting() {
-			return Err(Error::TorNotInitialized);
+			return Err(Error::TorRestarting);
 		}
 		if is_shutdown_arti() || is_arti_cancelled(context_id) {
 			return Err(Error::Interrupted);
