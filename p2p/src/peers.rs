@@ -651,7 +651,6 @@ impl Peers {
 			);
 		}
 
-		let mut peers = self.peers.write().unwrap_or_else(|e| e.into_inner());
 		for peer in peers.values() {
 			self.update_stop_healthy_state(&peer.info.addr);
 			peer.stop();
@@ -673,9 +672,11 @@ impl Peers {
 			}
 		}
 
+		let context_id = self.store.get_context_id();
+
 		let need_count = self
 			.config
-			.peer_min_preferred_outbound_count(self.is_sync_mode());
+			.peer_min_preferred_outbound_count(context_id, self.is_sync_mode());
 		if self.is_sync_mode() {
 			count >= need_count
 		} else {

@@ -34,7 +34,7 @@ lazy_static! {
 	static ref CALL_ROUTER_CONTEXT: RwLock< HashMap<u32, Router>> = RwLock::new(HashMap::new());
 }
 
-/// Stot the server jobs and release the server
+/// Stop the server jobs and release the server
 pub fn release_server(context_id: u32) {
 	if let Some(server) = SERVER_CONTEXT
 		.write()

@@ -42,6 +42,7 @@ use crate::tor::arti;
 use crate::util::secp::pedersen::RangeProof;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::types::HEADERS_PER_BATCH;
+use mwc_core::global::{get_chain_type, ChainTypes};
 use std::sync::RwLock;
 
 /// Maximum number of block headers a peer should ever send
@@ -67,10 +68,13 @@ const PEER_MAX_INBOUND_COUNT: u32 = 128;
 const PEER_MAX_OUTBOUND_COUNT: u32 = 10;
 
 /// The min preferred outbound peer count
-const PEER_MIN_PREFERRED_OUTBOUND_COUNT: u32 = 8;
+const PEER_MIN_PREFERRED_OUTBOUND_COUNT_MAIN: u32 = 8;
+const PEER_MIN_PREFERRED_OUTBOUND_COUNT_FLOO: u32 = 3;
 
 /// During sync process we want to boost peers discovery.
-const PEER_BOOST_OUTBOUND_COUNT: u32 = 20;
+const PEER_BOOST_OUTBOUND_COUNT_MAIN: u32 = 20;
+/// Booost for floonet is much smaller, there are not many servers
+const PEER_BOOST_OUTBOUND_COUNT_FLOO: u32 = 8;
 
 /// The peer listener buffer count. Allows temporarily accepting more connections
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
@@ -548,7 +552,7 @@ impl P2PConfig {
 	/// return maximum outbound peer connections count
 	pub fn peer_max_outbound_count(&self, peers_sync_mode: bool) -> u32 {
 		if peers_sync_mode {
-			PEER_BOOST_OUTBOUND_COUNT
+			PEER_BOOST_OUTBOUND_COUNT_MAIN + PEER_MIN_PREFERRED_OUTBOUND_COUNT_MAIN
 		} else {
 			match self.peer_max_outbound_count {
 				Some(n) => n,
@@ -558,13 +562,19 @@ impl P2PConfig {
 	}
 
 	/// return minimum preferred outbound peer count
-	pub fn peer_min_preferred_outbound_count(&self, peers_sync_mode: bool) -> u32 {
+	pub fn peer_min_preferred_outbound_count(&self, context_id: u32, peers_sync_mode: bool) -> u32 {
 		if peers_sync_mode {
-			PEER_BOOST_OUTBOUND_COUNT
+			match get_chain_type(context_id) {
+				ChainTypes::Mainnet => PEER_BOOST_OUTBOUND_COUNT_MAIN,
+				_ => PEER_BOOST_OUTBOUND_COUNT_FLOO,
+			}
 		} else {
 			match self.peer_min_preferred_outbound_count {
 				Some(n) => n,
-				None => PEER_MIN_PREFERRED_OUTBOUND_COUNT,
+				None => match get_chain_type(context_id) {
+					ChainTypes::Mainnet => PEER_MIN_PREFERRED_OUTBOUND_COUNT_MAIN,
+					_ => PEER_MIN_PREFERRED_OUTBOUND_COUNT_FLOO,
+				},
 			}
 		}
 	}
