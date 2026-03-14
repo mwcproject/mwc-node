@@ -1,6 +1,6 @@
 [package]
 name = "mwc_p2p"
-version = "6.0.0"
+version = "6.0.1"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -36,7 +36,7 @@ crossbeam = "0.8"
 
 # Tor embedded client, Arti project.
 # Note, all tor related crates must be from the same versions
-arti-client = { version = "0.39", default-features = false, features = [
+arti-client = { version = "0.40", default-features = false, features = [
     "tokio",
     "rustls",
     "onion-service-service",
@@ -47,26 +47,26 @@ arti-client = { version = "0.39", default-features = false, features = [
     "experimental-api"
 ] }
 tracing-subscriber = "0.3"
-tor-error = "0.39.0"
-tor-hsservice = "0.39.0"
-tor-proto = { version = "0.39.0", features = ["stream-ctrl"] }
-tor-cell = "0.39.0"
-tor-keymgr = "0.39.0"
-tor-config = "0.39.0"
-tor-hscrypto = "0.39.0"
-tor-llcrypto = "0.39.0"
-tor-rtcompat = { version = "0.39.0", default-features = false, features = ["tokio", "rustls"] }
+tor-error = "0.40.0"
+tor-hsservice = "0.40.0"
+tor-proto = { version = "0.40.0", features = ["stream-ctrl"] }
+tor-cell = "0.40.0"
+tor-keymgr = "0.40.0"
+tor-config = "0.40.0"
+tor-hscrypto = "0.40.0"
+tor-llcrypto = "0.40.0"
+tor-rtcompat = { version = "0.40.0", default-features = false, features = ["tokio", "rustls"] }
 # Adding it fix linking error under the windows
 rusqlite = { version = "0.38", features = ["bundled"] }
-safelog = "0.7"
+safelog = "0.8"
 
-mwc_core = { path = "../core", version = "6.0.0" }
-mwc_store = { path = "../store", version = "6.0.0" }
-mwc_util = { path = "../util", version = "6.0.0" }
-mwc_chain = { path = "../chain", version = "6.0.0" }
+mwc_core = { path = "../core", version = "6.0.1" }
+mwc_store = { path = "../store", version = "6.0.1" }
+mwc_util = { path = "../util", version = "6.0.1" }
+mwc_chain = { path = "../chain", version = "6.0.1" }
 
 [dev-dependencies]
-mwc_pool = { path = "../pool", version = "6.0.0" }
+mwc_pool = { path = "../pool", version = "6.0.1" }
 
 [features]
 # libp2p disabled by default
