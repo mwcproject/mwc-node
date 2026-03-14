@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "mwc_secp256k1zkp"
 version = "0.7.17"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.7.17#52cb0696412673264c3b4157e5603f5d3d20fec9"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.7.17#100b24afae6698b8ee57eb36c7e0780d270e5abd"
 dependencies = [
  "arrayvec 0.7.6",
  "cc",
