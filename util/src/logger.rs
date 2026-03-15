@@ -175,6 +175,18 @@ impl Visit for MessageVisitor {
 
 struct Log4rsLayer;
 
+fn should_skip_log(target: &str, msg: &str) -> bool {
+	// Filtering Arti folse alarm messages.
+	if target == "tor_hsservice::ipt_mgr"
+		&& msg.contains("missing previous key")
+		&& msg.contains("Regenerating")
+	{
+		return true;
+	}
+
+	false
+}
+
 impl<S> Layer<S> for Log4rsLayer
 where
 	S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -187,6 +199,10 @@ where
 			let target = event.metadata().target();
 			//let file = event.metadata().file();
 			//let line = event.metadata().line();
+
+			if should_skip_log(target, &message) {
+				return;
+			}
 
 			// Using very somple event redirection. Otherwise it doesn't work for us
 			match *event.metadata().level() {

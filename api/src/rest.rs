@@ -27,10 +27,9 @@ use hyper::service::make_service_fn;
 use hyper::{Body, Request, Server, StatusCode};
 use mwc_util::run_global_async_block;
 use mwc_util::tokio::net::TcpListener;
-use mwc_util::tokio_rustls::rustls::{Certificate, PrivateKey};
 use mwc_util::tokio_rustls::TlsAcceptor;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
-use rustls_pemfile as pemfile;
 use std::convert::Infallible;
 use std::fs::File;
 use std::net::SocketAddr;
@@ -80,7 +79,7 @@ impl TLSConfig {
 		}
 	}
 
-	fn load_certs(&self) -> Result<Vec<Certificate>, Error> {
+	fn load_certs(&self) -> Result<Vec<CertificateDer<'static>>, Error> {
 		let certfile = File::open(&self.certificate).map_err(|e| {
 			Error::Internal(format!(
 				"load_certs failed to open file {}, {}",
@@ -89,13 +88,12 @@ impl TLSConfig {
 		})?;
 		let mut reader = io::BufReader::new(certfile);
 
-		let certs = pemfile::certs(&mut reader)
-			.map_err(|_| Error::Internal("failed to load certificate".to_string()))?;
-
-		Ok(certs.into_iter().map(Certificate).collect())
+		rustls_pemfile::certs(&mut reader)
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(|e| Error::Internal(format!("failed to load certificate, {}", e)))
 	}
 
-	fn load_private_key(&self) -> Result<PrivateKey, Error> {
+	fn load_private_key(&self) -> Result<PrivateKeyDer<'static>, Error> {
 		let keyfile = File::open(&self.private_key).map_err(|e| {
 			Error::Internal(format!(
 				"load_private_key failed to open file {}, {}",
@@ -104,15 +102,9 @@ impl TLSConfig {
 		})?;
 		let mut reader = io::BufReader::new(keyfile);
 
-		let keys = pemfile::pkcs8_private_keys(&mut reader)
-			.map_err(|_| Error::Internal("failed to load private key".to_string()))?;
-		if keys.len() != 1 {
-			return Err(Error::Internal(format!(
-				"load_private_key expected a single private key, found {}",
-				keys.len()
-			)));
-		}
-		Ok(PrivateKey(keys[0].clone()))
+		rustls_pemfile::private_key(&mut reader)
+			.map_err(|e| Error::Internal(format!("failed to load private key, {}", e)))?
+			.ok_or_else(|| Error::Internal("no private key found".to_string()))
 	}
 
 	pub fn build_server_config(&self) -> Result<Arc<rustls::ServerConfig>, Error> {
@@ -120,7 +112,6 @@ impl TLSConfig {
 		let key = self.load_private_key()?;
 
 		let cfg = rustls::ServerConfig::builder()
-			.with_safe_defaults()
 			.with_no_client_auth()
 			.with_single_cert(certs, key)
 			.map_err(|e| Error::Internal(format!("set single certificate failed, {}", e)))?;
@@ -217,7 +208,6 @@ impl ApiServer {
 		let keys = conf.load_private_key()?;
 
 		let config = ServerConfig::builder()
-			.with_safe_defaults() // <- cipher suites
 			.with_no_client_auth()
 			.with_single_cert(certs, keys)
 			.map_err(|e| {

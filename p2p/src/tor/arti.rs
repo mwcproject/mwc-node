@@ -322,6 +322,10 @@ pub fn start_arti(
 		return Ok(());
 	}
 
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.map_err(|_| Error::TorProcess("Unable to init Arti default CryptoProvider".into()))?;
+
 	let expiration_time = {
 		let mut atri_writer = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner());
 
