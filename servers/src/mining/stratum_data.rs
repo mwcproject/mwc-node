@@ -92,7 +92,6 @@ impl WorkersMap {
 		}
 	}
 
-	#[allow(dead_code)]
 	fn size(&self) -> usize {
 		self.workers.read().unwrap_or_else(|e| e.into_inner()).len()
 	}
@@ -274,7 +273,6 @@ impl WorkersList {
 		}
 	}
 
-	#[allow(dead_code)]
 	pub fn count(&self) -> usize {
 		self.workers_map.size()
 	}
