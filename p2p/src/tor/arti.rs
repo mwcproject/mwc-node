@@ -529,7 +529,7 @@ where
 
 // return expiration time
 fn restart_arti(start_new_client: bool) -> i64 {
-	error!("Stopping ARTI...");
+	info!("Stopping ARTI...");
 	let (tor_runtime, config, base_dir) = {
 		let context_ids = release_arti_cancelling_all();
 		let mut guard = TOR_ARTI_INSTANCE.write().unwrap_or_else(|e| e.into_inner()); // ? converts PoisonError to E
