@@ -318,10 +318,17 @@ fn write_all_and_sync(file: &mut fs::File, bytes: &[u8]) -> io::Result<()> {
 	file.sync_all()
 }
 
+#[cfg(unix)]
 fn sync_parent_dir(path: &Path) -> io::Result<()> {
 	fs::File::open(normalized_parent(path))?.sync_all()
 }
 
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> io::Result<()> {
+	Ok(())
+}
+
+#[cfg(unix)]
 fn normalized_parent(path: &Path) -> &Path {
 	let parent = path.parent().unwrap_or_else(|| Path::new("."));
 	if parent.as_os_str().is_empty() {

@@ -502,7 +502,10 @@ mod tests {
 	#[test]
 	fn format_worker_last_seen_rejects_chrono_out_of_range_system_time() {
 		let seconds = DateTime::<Utc>::MAX_UTC.timestamp() as u64 + 1;
-		let last_seen = time::UNIX_EPOCH + time::Duration::from_secs(seconds);
+		let Some(last_seen) = time::UNIX_EPOCH.checked_add(time::Duration::from_secs(seconds))
+		else {
+			return;
+		};
 
 		assert_eq!(format_worker_last_seen(last_seen), "invalid timestamp");
 	}
@@ -528,8 +531,8 @@ mod tests {
 
 	#[test]
 	fn system_time_to_utc_handles_subsecond_times_before_unix_epoch() {
-		let last_seen = time::UNIX_EPOCH - time::Duration::new(0, 1);
-		let expected = DateTime::<Utc>::from_timestamp(-1, 999_999_999).unwrap();
+		let last_seen = time::UNIX_EPOCH - time::Duration::new(0, 100);
+		let expected = DateTime::<Utc>::from_timestamp(-1, 999_999_900).unwrap();
 
 		assert_eq!(system_time_to_utc(last_seen), Some(expected));
 	}

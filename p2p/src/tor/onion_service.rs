@@ -24,7 +24,7 @@ use mwc_crates::tokio;
 use mwc_crates::tor_cell::relaycell::msg::Connected;
 use mwc_crates::tor_hsservice;
 use mwc_crates::tor_hsservice::status::State;
-use mwc_crates::tor_proto::stream::IncomingStreamRequest;
+use mwc_crates::tor_proto::client::stream::IncomingStreamRequest;
 use mwc_crates::zeroize::Zeroizing;
 use mwc_util::StopState;
 use std::any::Any;

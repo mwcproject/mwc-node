@@ -28,17 +28,17 @@ regex = "1.12"
 serial_test = "3.4"
 
 # Tor / Arti onion-service stack used by `p2p/src/tor/*` and the Tor playground.
-arti_client = { package = "arti-client", version = "0.44", default-features = false, features = ["tokio", "rustls", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
-safelog = "0.9"
-tor_cell = { package = "tor-cell", version = "0.44.0" }
-tor_config = { package = "tor-config", version = "0.44.0" }
-tor_error = { package = "tor-error", version = "0.44.0" }
-tor_hscrypto = { package = "tor-hscrypto", version = "0.44.0" }
-tor_hsservice = { package = "tor-hsservice", version = "0.44.0" }
-tor_keymgr = { package = "tor-keymgr", version = "0.44.0" }
-tor_llcrypto = { package = "tor-llcrypto", version = "0.44.0" }
-tor_proto = { package = "tor-proto", version = "0.44.0", features = ["stream-ctrl"] }
-tor_rtcompat = { package = "tor-rtcompat", version = "0.44.0", default-features = false, features = ["tokio", "rustls"] }
+arti_client = { package = "arti-client", version = "0.43", default-features = false, features = ["tokio", "rustls", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
+safelog = "0.8.2"
+tor_cell = { package = "tor-cell", version = "0.43.0" }
+tor_config = { package = "tor-config", version = "0.43.0" }
+tor_error = { package = "tor-error", version = "0.43.0" }
+tor_hscrypto = { package = "tor-hscrypto", version = "0.43.0" }
+tor_hsservice = { package = "tor-hsservice", version = "0.43.0" }
+tor_keymgr = { package = "tor-keymgr", version = "0.43.0" }
+tor_llcrypto = { package = "tor-llcrypto", version = "0.43.0" }
+tor_proto = { package = "tor-proto", version = "0.43.0", features = ["stream-ctrl"] }
+tor_rtcompat = { package = "tor-rtcompat", version = "0.43.0", default-features = false, features = ["tokio", "rustls"] }
 tracing = "0.1"
 tracing_subscriber = { package = "tracing-subscriber", version = "0.3", default-features = false, features = ["registry", "std"] }
 # Windows build linking fix, need only include the crate, no usage requred

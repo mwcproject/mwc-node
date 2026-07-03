@@ -15,7 +15,9 @@
 
 use mwc_util::file;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::{self, Write};
 use std::path::Path;
 
 #[test]
@@ -187,11 +189,16 @@ fn open_owner_only_file_or_exposed_rejects_symlink_path() {
 
 	match create_file_symlink(&path, &link) {
 		Ok(()) => {}
-		Err(err) if cfg!(windows) && err.kind() == io::ErrorKind::PermissionDenied => {
-			fs::remove_dir_all(path.parent().unwrap()).unwrap();
-			return;
+		Err(err) => {
+			let symlink_privilege_missing = cfg!(windows)
+				&& (err.kind() == io::ErrorKind::PermissionDenied
+					|| err.raw_os_error() == Some(1314));
+			if symlink_privilege_missing {
+				fs::remove_dir_all(path.parent().unwrap()).unwrap();
+				return;
+			}
+			panic!("failed to create symlink: {}", err);
 		}
-		Err(err) => panic!("failed to create symlink: {}", err),
 	}
 
 	let err = match file::open_owner_only_file_or_exposed(&link) {
@@ -276,7 +283,6 @@ fn get_owner_only_first_line_zeroizing_rejects_invalid_utf8() {
 	fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn write_new_owner_only_file_rejects_existing_file() {
 	let path = owner_file_test_path("create_new");

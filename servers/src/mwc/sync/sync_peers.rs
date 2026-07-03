@@ -296,27 +296,42 @@ mod tests {
 		))
 	}
 
+	fn wait_until_after(instant: Instant) {
+		while Instant::now() <= instant {
+			std::hint::spin_loop();
+		}
+	}
+
 	fn seed_peer_statuses(sync_peers: &SyncPeers, count: usize, now: Instant) {
 		let mut peers_status = sync_peers.peers_status.write();
 		let mut new_events_peers = sync_peers.new_events_peers.write();
+		let mut newest_update = now;
 		for idx in 0..count {
 			let peer = peer_for_idx(idx);
 			let peer_key = peer.as_key();
-			let updated_at = now
-				.checked_sub(Duration::from_secs((count - idx + 1) as u64))
-				.unwrap();
+			let updated_at = now.checked_add(Duration::from_nanos(idx as u64)).unwrap();
+			newest_update = updated_at;
 			peers_status.insert(peer_key.clone(), PeerPibdStatus::new(&peer, updated_at));
 			new_events_peers.insert(peer_key);
+		}
+		drop(new_events_peers);
+		drop(peers_status);
+		if count > 0 {
+			wait_until_after(newest_update);
 		}
 	}
 
 	fn seed_banned_peers(sync_peers: &SyncPeers, count: usize, now: Instant) {
 		let mut banned_peers = sync_peers.banned_peers.write();
+		let mut newest_update = now;
 		for idx in 0..count {
-			let updated_at = now
-				.checked_sub(Duration::from_secs((count - idx + 1) as u64))
-				.unwrap();
+			let updated_at = now.checked_add(Duration::from_nanos(idx as u64)).unwrap();
+			newest_update = updated_at;
 			banned_peers.insert(peer_for_idx(idx), updated_at);
+		}
+		drop(banned_peers);
+		if count > 0 {
+			wait_until_after(newest_update);
 		}
 	}
 

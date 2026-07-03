@@ -213,8 +213,14 @@ fn set_file_mode(file: &File, mode: u32) -> Result<(), std::io::Error> {
 	file.set_permissions(std::fs::Permissions::from_mode(mode))
 }
 
+#[cfg(unix)]
 pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
 	File::open(normalized_parent(path))?.sync_all()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_parent_dir(_path: &Path) -> Result<(), std::io::Error> {
+	Ok(())
 }
 
 fn normalized_parent(path: &Path) -> &Path {
