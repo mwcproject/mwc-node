@@ -15,23 +15,12 @@
 
 //! Main for building the binary of a Mwc peer-to-peer node.
 
-#[macro_use]
-extern crate clap;
+use mwc_config::config::SERVER_CONFIG_FILE_NAME;
+use mwc_core::global;
 
-#[macro_use]
-extern crate log;
-use crate::config::config::SERVER_CONFIG_FILE_NAME;
-use crate::core::global;
-
-use mwc_api as api;
-use mwc_chain as chain;
-use mwc_config as config;
-use mwc_core as core;
-use mwc_p2p as p2p;
-use mwc_servers as servers;
-use mwc_util as util;
-
-use clap::App;
+use mwc_crates::clap::{App, YamlLoader};
+use mwc_crates::log::{debug, error, info, warn};
+use mwc_util::escape_to_printable_ascii;
 
 mod cmd;
 pub mod tui;
@@ -70,7 +59,17 @@ fn main() {
 }
 
 fn real_main() -> i32 {
-	let yml = load_yaml!("mwc.yml");
+	let yml = match YamlLoader::load_from_str(include_str!("mwc.yml")) {
+		Ok(yml) => yml,
+		Err(e) => {
+			println!("Error loading command line configuration: {}", e);
+			return -1;
+		}
+	};
+	let Some(yml) = yml.first() else {
+		println!("Error loading command line configuration: empty YAML");
+		return -1;
+	};
 	let args = App::from_yaml(yml)
 		.version(built_info::PKG_VERSION)
 		.get_matches();
@@ -87,8 +86,10 @@ fn real_main() -> i32 {
 	if let ("server", Some(server_args)) = args.subcommand() {
 		// If it's just a server config command, do it and exit
 		if let ("config", Some(_)) = server_args.subcommand() {
-			cmd::config_command_server(&chain_type, SERVER_CONFIG_FILE_NAME);
-			return 0;
+			return res_to_ret_val(cmd::config_command_server(
+				&chain_type,
+				SERVER_CONFIG_FILE_NAME,
+			));
 		}
 	}
 
@@ -97,19 +98,31 @@ fn real_main() -> i32 {
 		// When the subscommand is 'server' take into account the 'config_file' flag
 		("server", Some(server_args)) => {
 			if let Some(_path) = server_args.value_of("config_file") {
-				config::GlobalConfig::new(_path).unwrap_or_else(|e| {
-					panic!("Error loading server configuration: {}", e);
-				})
+				match mwc_config::GlobalConfig::new(_path) {
+					Ok(config) => config,
+					Err(e) => {
+						println!("Error loading server configuration: {}", e);
+						return -1;
+					}
+				}
 			} else {
-				config::initial_setup_server(&chain_type).unwrap_or_else(|e| {
-					panic!("Error loading server configuration: {}", e);
-				})
+				match mwc_config::initial_setup_server(&chain_type) {
+					Ok(config) => config,
+					Err(e) => {
+						println!("Error loading server configuration: {}", e);
+						return -1;
+					}
+				}
 			}
 		}
 		// Otherwise load up the node config as usual
-		_ => config::initial_setup_server(&chain_type).unwrap_or_else(|e| {
-			panic!("Error loading server configuration: {}", e);
-		}),
+		_ => match mwc_config::initial_setup_server(&chain_type) {
+			Ok(config) => config,
+			Err(e) => {
+				println!("Error loading server configuration: {}", e);
+				return -1;
+			}
+		},
 	};
 
 	let mut logging_config = config.members.logging.clone();
@@ -143,7 +156,7 @@ fn real_main() -> i32 {
 	if let Some(file_path) = &config.config_file_path {
 		info!(
 			"Using configuration file at {}",
-			file_path.to_str().unwrap()
+			file_path.to_string_lossy()
 		);
 	} else {
 		info!("Node configuration file not found, using default");
@@ -162,7 +175,7 @@ fn real_main() -> i32 {
 	);
 
 	// Execute subcommand
-	let res = match args.subcommand() {
+	let mut res = match args.subcommand() {
 		// server commands and options
 		("server", Some(server_args)) => res_to_ret_val(cmd::server_command(
 			context_id,
@@ -193,7 +206,14 @@ fn real_main() -> i32 {
 		_ => res_to_ret_val(cmd::server_command(context_id, None, config, logs_rx)),
 	};
 
-	let _ = mwc_node_workflow::context::release_context(context_id);
+	if let Err(e) = mwc_node_workflow::context::release_context(context_id) {
+		let msg = format!("Unable to release the context. {}", e);
+		println!("{}", escape_to_printable_ascii(&msg));
+		error!("{}", msg);
+		if res == 0 {
+			res = 1;
+		}
+	}
 
 	res
 }
@@ -202,7 +222,7 @@ fn res_to_ret_val(res: Result<(), crate::cmd::Error>) -> i32 {
 	match res {
 		Ok(_) => 0,
 		Err(e) => {
-			println!("{}", e);
+			println!("{}", escape_to_printable_ascii(&e.to_string()));
 			1
 		}
 	}

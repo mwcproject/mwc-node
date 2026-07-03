@@ -15,8 +15,8 @@
 
 //! Types specific to the UI module
 
-use crate::servers::ServerStats;
-use cursive::Cursive;
+use mwc_crates::cursive::Cursive;
+use mwc_servers::ServerStats;
 
 /// Main message struct to communicate between the UI and
 /// the main process

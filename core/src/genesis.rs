@@ -21,21 +21,22 @@
 use crate::core;
 use crate::core::hash::Hash;
 use crate::pow::{Difficulty, Proof, ProofOfWork};
-use chrono::prelude::{TimeZone, Utc};
 use keychain::BlindingFactor;
-use util::secp::constants::SINGLE_BULLET_PROOF_SIZE;
-use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::Signature;
+use mwc_crates::chrono::prelude::{TimeZone, Utc};
+use mwc_crates::secp::constants::SINGLE_BULLET_PROOF_SIZE;
+use mwc_crates::secp::pedersen::{Commitment, RangeProof};
+use mwc_crates::secp::{AggSigSignature, Secp256k1};
 
 /// Genesis block definition for development networks. The proof of work size
 /// is small enough to mine it on the fly, so it does not contain its own
 /// proof of work solution. Can also be easily mutated for different tests.
-pub fn genesis_dev(context_id: u32) -> core::Block {
+/// Note, unwrap calls are safe here because arguments are constants
+pub(crate) fn genesis_dev(context_id: u32) -> core::Block {
 	core::Block::with_header(
 		context_id,
 		core::BlockHeader {
 			height: 0,
-			timestamp: Utc.with_ymd_and_hms(1997, 8, 4, 0, 0, 0).unwrap(),
+			timestamp: Utc.with_ymd_and_hms(1997, 8, 4, 0, 0, 0).unwrap(), // safe because it is a constant
 			pow: ProofOfWork {
 				nonce: 0,
 				..ProofOfWork::default(context_id)
@@ -46,7 +47,7 @@ pub fn genesis_dev(context_id: u32) -> core::Block {
 }
 
 /// Floonet genesis block
-pub fn genesis_floo(context_id: u32) -> core::Block {
+pub fn genesis_floo(secp: &Secp256k1, context_id: u32) -> core::Block {
 	let gen = core::Block::with_header(
 		context_id,
 		core::BlockHeader {
@@ -100,13 +101,17 @@ pub fn genesis_floo(context_id: u32) -> core::Block {
 		excess: Commitment::from_vec(
 			util::from_hex("093d0aeae5f6aab0975096fde31e1a21fa42edfc93db318a1064156ace81f54671")
 				.unwrap(),
-		),
-		excess_sig: Signature::from_raw_data(&[
-			206, 29, 151, 239, 47, 44, 219, 103, 100, 240, 76, 52, 231, 174, 149, 129, 237, 164,
-			234, 60, 232, 149, 90, 94, 161, 93, 131, 148, 120, 81, 161, 155, 170, 177, 250, 64, 66,
-			25, 44, 82, 164, 227, 150, 5, 10, 166, 52, 150, 22, 179, 15, 50, 81, 15, 114, 9, 52,
-			239, 234, 80, 82, 118, 146, 30,
-		])
+		)
+		.unwrap(),
+		excess_sig: AggSigSignature::from_raw_data(
+			&secp,
+			&[
+				206, 29, 151, 239, 47, 44, 219, 103, 100, 240, 76, 52, 231, 174, 149, 129, 237,
+				164, 234, 60, 232, 149, 90, 94, 161, 93, 131, 148, 120, 81, 161, 155, 170, 177,
+				250, 64, 66, 25, 44, 82, 164, 227, 150, 5, 10, 166, 52, 150, 22, 179, 15, 50, 81,
+				15, 114, 9, 52, 239, 234, 80, 82, 118, 146, 30,
+			],
+		)
 		.unwrap(),
 	};
 	let output = core::Output::new(
@@ -114,7 +119,8 @@ pub fn genesis_floo(context_id: u32) -> core::Block {
 		Commitment::from_vec(
 			util::from_hex("0905a2ebf3913c7d378660a7b60e6bda983be451cb1de8779ad0f51f4d2fb079ea")
 				.unwrap(),
-		),
+		)
+		.unwrap(),
 		RangeProof {
 			plen: SINGLE_BULLET_PROOF_SIZE,
 			proof: [
@@ -159,12 +165,15 @@ pub fn genesis_floo(context_id: u32) -> core::Block {
 			],
 		},
 	);
+	// Note, expect is safe because gen is a block with constant data
 	gen.with_reward(output, kernel)
+		.expect("genesis_floo block body must be empty before reward")
 }
 
 /// MWC GENESIS - here how genesis block is defined. gen_gen suppose to update the numbers in this file.
 /// Mainnet genesis block
-pub fn genesis_main(context_id: u32) -> core::Block {
+/// Note, unwrap calls are safe here because arguments are constants
+pub fn genesis_main(secp: &Secp256k1, context_id: u32) -> core::Block {
 	let gen = core::Block::with_header(
 		context_id,
 		core::BlockHeader {
@@ -218,13 +227,17 @@ pub fn genesis_main(context_id: u32) -> core::Block {
 		excess: Commitment::from_vec(
 			util::from_hex("08b659fde3a41284819f45415890330272efef7ef991f833a64b746be802c8fd77")
 				.unwrap(),
-		),
-		excess_sig: Signature::from_raw_data(&[
-			189, 52, 60, 137, 172, 160, 134, 69, 17, 47, 82, 86, 169, 136, 4, 240, 104, 188, 8,
-			185, 90, 170, 220, 90, 88, 177, 222, 171, 198, 244, 149, 15, 238, 91, 152, 234, 248,
-			34, 72, 175, 213, 52, 179, 29, 165, 113, 70, 167, 30, 159, 163, 45, 67, 2, 136, 169,
-			248, 200, 90, 86, 70, 192, 73, 37,
-		])
+		)
+		.unwrap(),
+		excess_sig: AggSigSignature::from_raw_data(
+			&secp,
+			&[
+				189, 52, 60, 137, 172, 160, 134, 69, 17, 47, 82, 86, 169, 136, 4, 240, 104, 188, 8,
+				185, 90, 170, 220, 90, 88, 177, 222, 171, 198, 244, 149, 15, 238, 91, 152, 234,
+				248, 34, 72, 175, 213, 52, 179, 29, 165, 113, 70, 167, 30, 159, 163, 45, 67, 2,
+				136, 169, 248, 200, 90, 86, 70, 192, 73, 37,
+			],
+		)
 		.unwrap(),
 	};
 	let output = core::Output::new(
@@ -232,7 +245,8 @@ pub fn genesis_main(context_id: u32) -> core::Block {
 		Commitment::from_vec(
 			util::from_hex("089dfcac475c94c978861b3dbef1e37b038cc13f9f78de9a4e14f31ed36e7a54c9")
 				.unwrap(),
-		),
+		)
+		.unwrap(),
 		RangeProof {
 			plen: SINGLE_BULLET_PROOF_SIZE,
 			proof: [
@@ -277,7 +291,9 @@ pub fn genesis_main(context_id: u32) -> core::Block {
 			],
 		},
 	);
+	// Note, expect is safe because gen is a block with constant data
 	gen.with_reward(output, kernel)
+		.expect("genesis_main block body must be empty before reward")
 }
 
 #[cfg(test)]
@@ -290,42 +306,44 @@ mod test {
 
 	#[test]
 	fn floonet_genesis_hash() {
+		let secp = Secp256k1::without_caps().unwrap();
 		global::set_local_chain_type(global::ChainTypes::Floonet);
 		global::set_local_nrd_enabled(false);
-		let gen_hash = genesis_floo(0).hash().unwrap();
+		let gen_hash = genesis_floo(&secp, 0).hash(0).unwrap();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_floo(0), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(0, &genesis_floo(&secp, 0), ProtocolVersion(1)).unwrap();
 		println!(
 			"floonet genesis full hash: {}\n",
-			gen_bin.hash().unwrap().to_hex()
+			gen_bin.hash(0).unwrap().to_hex()
 		);
 		assert_eq!(
 			gen_hash.to_hex(),
 			"a10f32177e0b8de4495637c5735577512963cb3dca42ee893fc9c5fade29dfa7"
 		);
 		assert_eq!(
-			gen_bin.hash().unwrap().to_hex(),
+			gen_bin.hash(0).unwrap().to_hex(),
 			"1ed0cd8d166353ce22f14a47fd383e78888315b58a670aac95f77a3d49ce973c"
 		);
 	}
 
 	#[test]
 	fn mainnet_genesis_hash() {
+		let secp = Secp256k1::without_caps().unwrap();
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
 		global::set_local_nrd_enabled(false);
-		let gen_hash = genesis_main(0).hash().unwrap();
+		let gen_hash = genesis_main(&secp, 0).hash(0).unwrap();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(&genesis_main(0), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(0, &genesis_main(&secp, 0), ProtocolVersion(1)).unwrap();
 		println!(
 			"mainnet genesis full hash: {}\n",
-			gen_bin.hash().unwrap().to_hex()
+			gen_bin.hash(0).unwrap().to_hex()
 		);
 		assert_eq!(
 			gen_hash.to_hex(),
 			"e29e3a72496d85c5ada8186323016f4c7951880f77f3c8867d3b8cd3bf306c3d"
 		);
 		assert_eq!(
-			gen_bin.hash().unwrap().to_hex(),
+			gen_bin.hash(0).unwrap().to_hex(),
 			"4fb646ea25485a6dffd3e01e6655e2637d3d7c5758be168f869ac13115d1730e"
 		);
 	}

@@ -22,20 +22,23 @@
 
 use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::global::PROTOCOL_VERSION;
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
-use bytes::Buf;
 use keychain::{BlindingFactor, Identifier, IDENTIFIER_SIZE};
-use std::fmt::{self, Debug};
-use std::io::{self, Read, Write};
-use std::{cmp, marker, string};
-use util::secp::constants::{
+use mwc_crates::byteorder::{BigEndian, ByteOrder};
+use mwc_crates::bytes::Buf;
+use mwc_crates::secp;
+use mwc_crates::secp::constants::{
 	AGG_SIGNATURE_SIZE, COMPRESSED_PUBLIC_KEY_SIZE, MAX_PROOF_SIZE, PEDERSEN_COMMITMENT_SIZE,
 	SECRET_KEY_SIZE,
 };
-use util::secp::key::PublicKey;
-use util::secp::pedersen::{Commitment, RangeProof};
-use util::secp::Signature;
-use util::secp::{ContextFlag, Secp256k1};
+use mwc_crates::secp::key::PublicKey;
+use mwc_crates::secp::pedersen::{Commitment, RangeProof};
+use mwc_crates::secp::AggSigSignature;
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::zeroize::Zeroizing;
+use std::fmt::{self, Debug};
+use std::io::{self, Read, Write};
+use std::{cmp, marker};
+use util::secp_static;
 
 /// Serialization size limit for a single chunk/object or array.
 /// WARNING!!! You can increase the number, but never decrease
@@ -45,21 +48,14 @@ pub const READ_CHUNK_LIMIT: usize = 100_000;
 pub const READ_VEC_SIZE_LIMIT: u64 = 100_000;
 
 /// Possible errors deriving from serializing or deserializing.
-#[derive(thiserror::Error, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
 	/// Wraps an io error produced when reading or writing
-	#[error("Serialization IO error {0}, {1:?}")]
-	IOErr(
-		String,
-		#[serde(
-			serialize_with = "serialize_error_kind",
-			deserialize_with = "deserialize_error_kind"
-		)]
-		io::ErrorKind,
-	),
+	#[error("Serialization IO error {0}")]
+	IOErr(#[from] io::Error),
 	/// Wraps secp256k1 error
 	#[error("Serialization Secp error, {0}")]
-	SecpError(util::secp::Error),
+	SecpError(secp::Error),
 	/// Expected a given value that wasn't found
 	#[error("Unexpected Data, expected {expected:?}, got {received:?}")]
 	UnexpectedData {
@@ -71,6 +67,9 @@ pub enum Error {
 	/// Data wasn't in a consumable format
 	#[error("Serialization Corrupted data, {0}")]
 	CorruptedData(String),
+	/// Data overflow error
+	#[error("Serialization data overflow error, {0}")]
+	DataOverflow(String),
 	/// Incorrect number of elements (when deserializing a vec via read_multi say).
 	#[error("Serialization Count error, {0}")]
 	CountError(String),
@@ -100,20 +99,8 @@ pub enum Error {
 	UnsupportedProtocolVersion(String),
 }
 
-impl From<io::Error> for Error {
-	fn from(e: io::Error) -> Error {
-		Error::IOErr(format!("{}", e), e.kind())
-	}
-}
-
-impl From<io::ErrorKind> for Error {
-	fn from(e: io::ErrorKind) -> Error {
-		Error::IOErr(format!("{}", io::Error::from(e)), e)
-	}
-}
-
-impl From<util::secp::Error> for Error {
-	fn from(e: util::secp::Error) -> Error {
+impl From<secp::Error> for Error {
+	fn from(e: secp::Error) -> Error {
 		Error::SecpError(e)
 	}
 }
@@ -145,6 +132,9 @@ pub trait Writer {
 
 	/// Protocol version for version specific serialization rules.
 	fn protocol_version(&self) -> ProtocolVersion;
+
+	/// Return context Id for this writing session
+	fn get_context_id(&self) -> u32;
 
 	/// Writes a u8 as bytes
 	fn write_u8(&mut self, n: u8) -> Result<(), Error> {
@@ -202,27 +192,15 @@ pub trait Writer {
 	}
 }
 
-/// Signal to a deserializable object how much of its data should be deserialized
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum DeserializationMode {
-	/// Deserialize everything sufficiently to fully reconstruct the object
-	Full,
-	/// For Block Headers, skip reading proof
-	SkipPow,
-}
-
-impl DeserializationMode {
-	/// Default deserialization mode
-	pub fn default() -> Self {
-		DeserializationMode::Full
-	}
-}
-
 /// Implementations defined how different numbers and binary structures are
 /// read from an underlying stream or container (depending on implementation).
 pub trait Reader {
-	/// The mode this reader is reading from
-	fn deserialization_mode(&self) -> DeserializationMode;
+	/// Total bytes consumed by this reader.
+	fn bytes_read(&self) -> u64;
+	/// True when this reader can prove unread bytes are still buffered.
+	fn has_pending_data(&self) -> bool {
+		false
+	}
 	/// Read a u8 from the underlying Read
 	fn read_u8(&mut self) -> Result<u8, Error>;
 	/// Read a u16 from the underlying Read
@@ -298,14 +276,14 @@ where
 	T: Readable,
 	R: Reader,
 {
-	type Item = T;
+	type Item = Result<T, Error>;
 
-	fn next(&mut self) -> Option<T> {
+	fn next(&mut self) -> Option<Self::Item> {
 		if self.curr >= self.count {
 			return None;
 		}
 		self.curr += 1;
-		T::read(self.reader).ok()
+		Some(T::read(self.reader))
 	}
 }
 
@@ -329,14 +307,7 @@ where
 		)));
 	}
 
-	let res: Vec<T> = IteratingReader::new(reader, count).collect();
-	if res.len() as u64 != count {
-		return Err(Error::CountError(format!(
-			"Unable to read all data. Get {}, expected {}",
-			res.len(),
-			count
-		)));
-	}
+	let res: Vec<T> = IteratingReader::new(reader, count).collect::<Result<Vec<T>, Error>>()?;
 	Ok(res)
 }
 
@@ -346,6 +317,7 @@ where
 /// We may speak multiple versions to various peers and a potentially *different*
 /// version for our local db.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialOrd, PartialEq, Serialize)]
+#[serde(crate = "serde")]
 pub struct ProtocolVersion(pub u32);
 
 impl ProtocolVersion {
@@ -409,14 +381,25 @@ where
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, Error>;
 }
 
-/// Deserializes a Readable from any std::io::Read implementation.
-pub fn deserialize<T: Readable, R: Read>(
+/// Deserializes a Readable and requires the input to end exactly after it.
+pub fn deserialize_strict<T: Readable, R: Read>(
 	source: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
-	mode: DeserializationMode,
 ) -> Result<T, Error> {
-	let mut reader = BinReader::new(source, version, context_id, mode);
+	let mut reader = BinReader::new(source, version, context_id);
+	let value = T::read(&mut reader)?;
+	reader.expect_end()?;
+	Ok(value)
+}
+
+/// Deserializes a Readable while allowing forward-compatible trailing bytes.
+pub fn deserialize_permissive<T: Readable, R: Read>(
+	source: &mut R,
+	version: ProtocolVersion,
+	context_id: u32,
+) -> Result<T, Error> {
+	let mut reader = BinReader::new(source, version, context_id);
 	T::read(&mut reader)
 }
 
@@ -425,34 +408,38 @@ pub fn deserialize_default<T: Readable, R: Read>(
 	context_id: u32,
 	source: &mut R,
 ) -> Result<T, Error> {
-	deserialize(
-		source,
-		ProtocolVersion::local(),
-		context_id,
-		DeserializationMode::default(),
-	)
+	deserialize_strict(source, ProtocolVersion::local(), context_id)
 }
 
 /// Serializes a Writeable into any std::io::Write implementation.
 pub fn serialize<W: Writeable>(
 	sink: &mut dyn Write,
 	version: ProtocolVersion,
+	context_id: u32,
 	thing: &W,
 ) -> Result<(), Error> {
-	let mut writer = BinWriter::new(sink, version);
+	let mut writer = BinWriter::new(sink, version, context_id);
 	thing.write(&mut writer)
 }
 
 /// Serialize a Writeable according to our default "local" protocol version.
-pub fn serialize_default<W: Writeable>(sink: &mut dyn Write, thing: &W) -> Result<(), Error> {
-	serialize(sink, ProtocolVersion::local(), thing)
+pub fn serialize_default<W: Writeable>(
+	context_id: u32,
+	sink: &mut dyn Write,
+	thing: &W,
+) -> Result<(), Error> {
+	serialize(sink, ProtocolVersion::local(), context_id, thing)
 }
 
 /// Utility function to serialize a writeable directly in memory using a
 /// Vec<u8>.
-pub fn ser_vec<W: Writeable>(thing: &W, version: ProtocolVersion) -> Result<Vec<u8>, Error> {
+pub fn ser_vec<W: Writeable>(
+	context_id: u32,
+	thing: &W,
+	version: ProtocolVersion,
+) -> Result<Vec<u8>, Error> {
 	let mut vec = vec![];
-	serialize(&mut vec, version, thing)?;
+	serialize(&mut vec, version, context_id, thing)?;
 	Ok(vec)
 }
 
@@ -461,58 +448,128 @@ pub struct BinReader<'a, R: Read> {
 	source: &'a mut R,
 	version: ProtocolVersion,
 	context_id: u32,
-	deser_mode: DeserializationMode,
+	bytes_read: u64,
 }
 
 impl<'a, R: Read> BinReader<'a, R> {
 	/// Constructor for a new BinReader for the provided source and protocol version.
-	pub fn new(
-		source: &'a mut R,
-		version: ProtocolVersion,
-		context_id: u32,
-		mode: DeserializationMode,
-	) -> Self {
+	pub fn new(source: &'a mut R, version: ProtocolVersion, context_id: u32) -> Self {
 		BinReader {
 			source,
 			version,
 			context_id,
-			deser_mode: mode,
+			bytes_read: 0,
+		}
+	}
+
+	fn read_exact_counted(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+		read_exact_counted(self.source, buf, &mut self.bytes_read)
+	}
+
+	fn expect_end(&mut self) -> Result<(), Error> {
+		let mut buf = [0u8; 1];
+		loop {
+			match self.source.read(&mut buf) {
+				Ok(0) => return Ok(()),
+				Ok(_) => {
+					return Err(Error::CorruptedData(
+						"Trailing bytes after serialized object".to_string(),
+					));
+				}
+				Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+				Err(err) => return Err(map_io_err(err)),
+			}
 		}
 	}
 }
 
 fn map_io_err(err: io::Error) -> Error {
-	Error::IOErr(format!("{}", err), err.kind())
+	Error::IOErr(err)
+}
+
+fn add_bytes_read(bytes_read: &mut u64, read: usize) -> Result<(), Error> {
+	*bytes_read = bytes_read
+		.checked_add(read as u64)
+		.ok_or_else(|| Error::DataOverflow("bytes read counter overflow".to_string()))?;
+	Ok(())
+}
+
+fn read_exact_counted<R: Read + ?Sized>(
+	source: &mut R,
+	buf: &mut [u8],
+	bytes_read: &mut u64,
+) -> Result<(), Error> {
+	let mut read = 0;
+	while read < buf.len() {
+		match source.read(&mut buf[read..]) {
+			Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
+			Ok(n) => {
+				add_bytes_read(bytes_read, n)?;
+				read += n;
+			}
+			Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {}
+			Err(err) => return Err(map_io_err(err)),
+		}
+	}
+	Ok(())
+}
+
+fn check_len(len: u64) -> Result<usize, Error> {
+	if len > READ_CHUNK_LIMIT as u64 {
+		return Err(Error::TooLargeReadErr(format!(
+			"Try to read {} bytes, limit is 100K",
+			len
+		)));
+	}
+	if len > usize::MAX as u64 {
+		return Err(Error::DataOverflow(format!(
+			"Length prefix {} exceeds usize::MAX",
+			len
+		)));
+	}
+	Ok(len as usize)
 }
 
 /// Utility wrapper for an underlying byte Reader. Defines higher level methods
 /// to read numbers, byte vectors, hashes, etc.
 impl<'a, R: Read> Reader for BinReader<'a, R> {
-	fn deserialization_mode(&self) -> DeserializationMode {
-		self.deser_mode
+	fn bytes_read(&self) -> u64 {
+		self.bytes_read
 	}
 	fn read_u8(&mut self) -> Result<u8, Error> {
-		self.source.read_u8().map_err(map_io_err)
+		let mut buf = [0u8; 1];
+		self.read_exact_counted(&mut buf)?;
+		Ok(buf[0])
 	}
 	fn read_u16(&mut self) -> Result<u16, Error> {
-		self.source.read_u16::<BigEndian>().map_err(map_io_err)
+		let mut buf = [0u8; 2];
+		self.read_exact_counted(&mut buf)?;
+		Ok(BigEndian::read_u16(&buf))
 	}
 	fn read_u32(&mut self) -> Result<u32, Error> {
-		self.source.read_u32::<BigEndian>().map_err(map_io_err)
+		let mut buf = [0u8; 4];
+		self.read_exact_counted(&mut buf)?;
+		Ok(BigEndian::read_u32(&buf))
 	}
 	fn read_i32(&mut self) -> Result<i32, Error> {
-		self.source.read_i32::<BigEndian>().map_err(map_io_err)
+		let mut buf = [0u8; 4];
+		self.read_exact_counted(&mut buf)?;
+		Ok(BigEndian::read_i32(&buf))
 	}
 	fn read_u64(&mut self) -> Result<u64, Error> {
-		self.source.read_u64::<BigEndian>().map_err(map_io_err)
+		let mut buf = [0u8; 8];
+		self.read_exact_counted(&mut buf)?;
+		Ok(BigEndian::read_u64(&buf))
 	}
 	fn read_i64(&mut self) -> Result<i64, Error> {
-		self.source.read_i64::<BigEndian>().map_err(map_io_err)
+		let mut buf = [0u8; 8];
+		self.read_exact_counted(&mut buf)?;
+		Ok(BigEndian::read_i64(&buf))
 	}
 	/// Read a variable size vector from the underlying Read. Expects a usize
 	fn read_bytes_len_prefix(&mut self) -> Result<Vec<u8>, Error> {
 		let len = self.read_u64()?;
-		self.read_fixed_bytes(len as usize)
+		self.read_fixed_bytes(check_len(len)?)
 	}
 
 	/// Read a fixed number of bytes.
@@ -525,10 +582,8 @@ impl<'a, R: Read> Reader for BinReader<'a, R> {
 			)));
 		}
 		let mut buf = vec![0; len];
-		self.source
-			.read_exact(&mut buf)
-			.map(move |_| buf)
-			.map_err(map_io_err)
+		self.read_exact_counted(&mut buf)?;
+		Ok(buf)
 	}
 
 	fn expect_u8(&mut self, val: u8) -> Result<u8, Error> {
@@ -559,7 +614,6 @@ pub struct StreamingReader<'a> {
 	version: ProtocolVersion,
 	context_id: u32,
 	stream: &'a mut dyn Read,
-	deser_mode: DeserializationMode,
 }
 
 impl<'a> StreamingReader<'a> {
@@ -575,7 +629,6 @@ impl<'a> StreamingReader<'a> {
 			version,
 			context_id,
 			stream,
-			deser_mode: DeserializationMode::Full,
 		}
 	}
 
@@ -587,8 +640,8 @@ impl<'a> StreamingReader<'a> {
 
 /// Note: We use read_fixed_bytes() here to ensure our "async" I/O behaves as expected.
 impl<'a> Reader for StreamingReader<'a> {
-	fn deserialization_mode(&self) -> DeserializationMode {
-		self.deser_mode
+	fn bytes_read(&self) -> u64 {
+		self.total_bytes_read
 	}
 	fn read_u8(&mut self) -> Result<u8, Error> {
 		let buf = self.read_fixed_bytes(1)?;
@@ -618,15 +671,20 @@ impl<'a> Reader for StreamingReader<'a> {
 	/// Read a variable size vector from the underlying stream. Expects a usize
 	fn read_bytes_len_prefix(&mut self) -> Result<Vec<u8>, Error> {
 		let len = self.read_u64()?;
-		self.total_bytes_read += 8;
-		self.read_fixed_bytes(len as usize)
+		self.read_fixed_bytes(check_len(len)?)
 	}
 
 	/// Read a fixed number of bytes.
 	fn read_fixed_bytes(&mut self, len: usize) -> Result<Vec<u8>, Error> {
+		// not reading more than 100k bytes in a single read
+		if len > READ_CHUNK_LIMIT {
+			return Err(Error::TooLargeReadErr(format!(
+				"Try to read {} bytes, limit is 100K",
+				len
+			)));
+		}
 		let mut buf = vec![0u8; len];
-		self.stream.read_exact(&mut buf)?;
-		self.total_bytes_read += len as u64;
+		read_exact_counted(self.stream, &mut buf, &mut self.total_bytes_read)?;
 		Ok(buf)
 	}
 
@@ -656,8 +714,7 @@ pub struct BufReader<'a, B: Buf> {
 	inner: &'a mut B,
 	version: ProtocolVersion,
 	context_id: u32,
-	bytes_read: usize,
-	deser_mode: DeserializationMode,
+	bytes_read: u64,
 }
 
 impl<'a, B: Buf> BufReader<'a, B> {
@@ -668,34 +725,52 @@ impl<'a, B: Buf> BufReader<'a, B> {
 			version,
 			context_id,
 			bytes_read: 0,
-			deser_mode: DeserializationMode::Full,
 		}
 	}
 
 	/// Check whether the buffer has enough bytes remaining to perform a read
 	fn has_remaining(&mut self, len: usize) -> Result<(), Error> {
 		if self.inner.remaining() >= len {
-			self.bytes_read += len;
+			// Safe: bytes_read tracks bytes consumed from this buffer, and the
+			// remaining-byte check guarantees this read stays within the buffer's
+			// original usize-sized length.
+			add_bytes_read(&mut self.bytes_read, len)?;
 			Ok(())
 		} else {
-			Err(io::ErrorKind::UnexpectedEof.into())
+			Err(io::Error::from(io::ErrorKind::UnexpectedEof).into())
 		}
 	}
 
 	/// The total bytes read
 	pub fn bytes_read(&self) -> u64 {
-		self.bytes_read as u64
+		self.bytes_read
 	}
 
 	/// Convenience function to read from the buffer and deserialize
 	pub fn body<T: Readable>(&mut self) -> Result<T, Error> {
 		T::read(self)
 	}
+
+	/// Deserialize a complete body, rejecting bytes left in the buffer.
+	pub fn body_full<T: Readable>(&mut self) -> Result<T, Error> {
+		let body = T::read(self)?;
+		if self.inner.has_remaining() {
+			return Err(Error::CorruptedData(format!(
+				"Trailing bytes after serialized body: {} bytes",
+				self.inner.remaining()
+			)));
+		}
+		Ok(body)
+	}
 }
 
 impl<'a, B: Buf> Reader for BufReader<'a, B> {
-	fn deserialization_mode(&self) -> DeserializationMode {
-		self.deser_mode
+	fn bytes_read(&self) -> u64 {
+		self.bytes_read
+	}
+
+	fn has_pending_data(&self) -> bool {
+		self.inner.has_remaining()
 	}
 
 	fn read_u8(&mut self) -> Result<u8, Error> {
@@ -730,7 +805,7 @@ impl<'a, B: Buf> Reader for BufReader<'a, B> {
 
 	fn read_bytes_len_prefix(&mut self) -> Result<Vec<u8>, Error> {
 		let len = self.read_u64()?;
-		self.read_fixed_bytes(len as usize)
+		self.read_fixed_bytes(check_len(len)?)
 	}
 
 	fn read_fixed_bytes(&mut self, len: usize) -> Result<Vec<u8>, Error> {
@@ -774,7 +849,13 @@ impl Readable for Commitment {
 		let a = reader.read_fixed_bytes(PEDERSEN_COMMITMENT_SIZE)?;
 		let mut c = [0; PEDERSEN_COMMITMENT_SIZE];
 		c[..PEDERSEN_COMMITMENT_SIZE].clone_from_slice(&a[..PEDERSEN_COMMITMENT_SIZE]);
-		Ok(Commitment(c))
+		let commit = Commitment(c);
+		secp_static::with_commit(Error::from, |secp| {
+			secp.validate_commitment(&commit).map_err(|e| {
+				Error::CorruptedData(format!("Unable to read Pedersen commitment, {}", e))
+			})
+		})?;
+		Ok(commit)
 	}
 }
 
@@ -792,8 +873,9 @@ impl Writeable for BlindingFactor {
 
 impl Readable for BlindingFactor {
 	fn read<R: Reader>(reader: &mut R) -> Result<BlindingFactor, Error> {
-		let bytes = reader.read_fixed_bytes(SECRET_KEY_SIZE)?;
-		Ok(BlindingFactor::from_slice(&bytes))
+		let bytes = Zeroizing::new(reader.read_fixed_bytes(SECRET_KEY_SIZE)?);
+		BlindingFactor::from_slice(&bytes)
+			.map_err(|e| Error::CorruptedData(format!("BlindingFactor read error, {}", e)))
 	}
 }
 
@@ -806,12 +888,19 @@ impl Writeable for Identifier {
 impl Readable for Identifier {
 	fn read<R: Reader>(reader: &mut R) -> Result<Identifier, Error> {
 		let bytes = reader.read_fixed_bytes(IDENTIFIER_SIZE)?;
-		Ok(Identifier::from_bytes(&bytes))
+		Identifier::from_bytes(&bytes)
+			.map_err(|e| Error::CorruptedData(format!("corrupted Identifier data, {}", e)))
 	}
 }
 
 impl Writeable for RangeProof {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		if self.plen > MAX_PROOF_SIZE {
+			return Err(Error::TooLargeWriteErr(format!(
+				"RangeProof length {}, but max is {}",
+				self.plen, MAX_PROOF_SIZE
+			)));
+		}
 		writer.write_bytes(self)
 	}
 }
@@ -819,50 +908,147 @@ impl Writeable for RangeProof {
 impl Readable for RangeProof {
 	fn read<R: Reader>(reader: &mut R) -> Result<RangeProof, Error> {
 		let len = reader.read_u64()?;
+		if len > MAX_PROOF_SIZE as u64 {
+			return Err(Error::TooLargeReadErr(format!(
+				"RangeProof length {}, but max is {}",
+				len, MAX_PROOF_SIZE
+			)));
+		}
 		let max_len = cmp::min(len as usize, MAX_PROOF_SIZE);
 		let p = reader.read_fixed_bytes(max_len)?;
 		let mut proof = [0; MAX_PROOF_SIZE];
 		proof[..p.len()].clone_from_slice(&p[..]);
 		Ok(RangeProof {
-			plen: proof.len(),
+			plen: p.len(),
 			proof,
 		})
 	}
 }
 
-impl PMMRable for RangeProof {
-	type E = Self;
+/// Fixed-size on-disk PMMR representation for range proofs.
+///
+/// Ordinary RangeProof serialization writes only `plen` bytes. The rangeproof
+/// PMMR uses fixed-size storage, so its element format stores the logical
+/// length followed by a zero-padded proof buffer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RangeProofPmmr {
+	proof: RangeProof,
+}
 
-	fn as_elmt(&self) -> Result<RangeProof, Error> {
-		Ok(*self)
+impl RangeProofPmmr {
+	/// Return the logical range proof without PMMR padding.
+	pub fn into_inner(self) -> RangeProof {
+		self.proof
+	}
+}
+
+impl From<RangeProof> for RangeProofPmmr {
+	fn from(proof: RangeProof) -> Self {
+		RangeProofPmmr { proof }
+	}
+}
+
+impl From<RangeProofPmmr> for RangeProof {
+	fn from(proof: RangeProofPmmr) -> Self {
+		proof.into_inner()
+	}
+}
+
+impl PMMRIndexHashable for RangeProofPmmr {
+	fn hash_with_index(&self, context_id: u32, index: u64) -> Result<Hash, std::io::Error> {
+		self.proof.hash_with_index(context_id, index)
+	}
+}
+
+impl Writeable for RangeProofPmmr {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		if self.proof.plen > MAX_PROOF_SIZE {
+			return Err(Error::TooLargeWriteErr(format!(
+				"RangeProof PMMR length {}, but max is {}",
+				self.proof.plen, MAX_PROOF_SIZE
+			)));
+		}
+
+		writer.write_u64(self.proof.plen as u64)?;
+		let mut proof = [0; MAX_PROOF_SIZE];
+		proof[..self.proof.plen].copy_from_slice(&self.proof.proof[..self.proof.plen]);
+		writer.write_fixed_bytes(&proof)
+	}
+}
+
+impl Readable for RangeProofPmmr {
+	fn read<R: Reader>(reader: &mut R) -> Result<RangeProofPmmr, Error> {
+		let len = reader.read_u64()?;
+		if len > MAX_PROOF_SIZE as u64 {
+			return Err(Error::TooLargeReadErr(format!(
+				"RangeProof PMMR length {}, but max is {}",
+				len, MAX_PROOF_SIZE
+			)));
+		}
+		// Conversion is safe becasue len is capped by the small constant MAX_PROOF_SIZE
+		let plen = len as usize;
+		let p = reader.read_fixed_bytes(MAX_PROOF_SIZE)?;
+		if p[plen..].iter().any(|&b| b != 0) {
+			return Err(Error::CorruptedData(
+				"RangeProof PMMR element contains non-zero padding".to_string(),
+			));
+		}
+		let mut proof = [0; MAX_PROOF_SIZE];
+		proof[..plen].clone_from_slice(&p[..plen]);
+		Ok(RangeProofPmmr {
+			proof: RangeProof { plen, proof },
+		})
+	}
+}
+
+impl PMMRable for RangeProof {
+	type E = RangeProofPmmr;
+
+	fn as_elmt(&self) -> Result<RangeProofPmmr, Error> {
+		if self.plen > MAX_PROOF_SIZE {
+			return Err(Error::CorruptedData(format!(
+				"RangeProof PMMR element length {}, max {}",
+				self.plen, MAX_PROOF_SIZE
+			)));
+		}
+		Ok(RangeProofPmmr::from(*self))
 	}
 
 	// Size is length prefix (8 bytes for u64) + MAX_PROOF_SIZE.
 	fn elmt_size() -> Option<u16> {
+		// safe conversion because MAX_PROOF_SIZE is a small constant
 		Some(8 + MAX_PROOF_SIZE as u16)
 	}
 }
 
-impl Readable for Signature {
-	fn read<R: Reader>(reader: &mut R) -> Result<Signature, Error> {
+impl Readable for AggSigSignature {
+	fn read<R: Reader>(reader: &mut R) -> Result<AggSigSignature, Error> {
 		let a = reader.read_fixed_bytes(AGG_SIGNATURE_SIZE)?;
 		let mut c = [0; AGG_SIGNATURE_SIZE];
 		c[..AGG_SIGNATURE_SIZE].clone_from_slice(&a[..AGG_SIGNATURE_SIZE]);
-		Ok(Signature::from_raw_data(&c)?)
+		secp_static::with_none(Error::from, |secp| {
+			Ok(AggSigSignature::from_raw_data(secp, &c)?)
+		})
 	}
 }
 
-impl Writeable for Signature {
+impl Writeable for AggSigSignature {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		writer.write_fixed_bytes(self)
+		let bytes = secp_static::with_none(Error::from, |secp| {
+			self.serialize_raw(secp).map_err(|e| {
+				Error::CorruptedData(format!("Unable to write AggSigSignature, {}", e))
+			})
+		})?;
+		writer.write_fixed_bytes(bytes)
 	}
 }
 
 impl Writeable for PublicKey {
 	// Write the public key in compressed form
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		let secp = Secp256k1::with_caps(ContextFlag::None);
-		writer.write_fixed_bytes(self.serialize_vec(&secp, true))?;
+		let bytes =
+			secp_static::with_none(Error::from, |secp| Ok(self.serialize_vec(secp, true)?))?;
+		writer.write_fixed_bytes(bytes)?;
 		Ok(())
 	}
 }
@@ -871,9 +1057,10 @@ impl Readable for PublicKey {
 	// Read the public key in compressed form
 	fn read<R: Reader>(reader: &mut R) -> Result<Self, Error> {
 		let buf = reader.read_fixed_bytes(COMPRESSED_PUBLIC_KEY_SIZE)?;
-		let secp = Secp256k1::with_caps(ContextFlag::None);
-		let pk = PublicKey::from_slice(&secp, &buf)
-			.map_err(|e| Error::CorruptedData(format!("Unable to read public key, {}", e)))?;
+		let pk = secp_static::with_none(Error::from, |secp| {
+			PublicKey::from_slice(secp, &buf)
+				.map_err(|e| Error::CorruptedData(format!("Unable to read public key, {}", e)))
+		})?;
 		Ok(pk)
 	}
 }
@@ -897,22 +1084,230 @@ impl<T: Ord> VerifySortedAndUnique<T> for Vec<T> {
 	}
 }
 
+/// Sort hashable values by their consensus hash.
+pub fn sort_by_hash<T: Hashed>(context_id: u32, items: &mut Vec<T>) -> Result<(), Error> {
+	sort_slice_by_hash(context_id, items.as_mut_slice())
+}
+
+/// Sort values by the consensus hash of a projected key.
+pub fn sort_by_hash_key<T, K, F>(
+	context_id: u32,
+	items: &mut Vec<T>,
+	key_fn: F,
+) -> Result<(), Error>
+where
+	K: Hashed,
+	F: Fn(&T) -> &K,
+{
+	sort_slice_by_hash_key(context_id, items.as_mut_slice(), key_fn)
+}
+
+/// Sort hashable values by their consensus hash.
+pub fn sort_slice_by_hash<T: Hashed>(context_id: u32, items: &mut [T]) -> Result<(), Error> {
+	sort_slice_by_hash_key(context_id, items, |item| item)
+}
+
+/// Sort values by the consensus hash of a projected key.
+pub fn sort_slice_by_hash_key<T, K, F>(
+	context_id: u32,
+	items: &mut [T],
+	key_fn: F,
+) -> Result<(), Error>
+where
+	K: Hashed,
+	F: Fn(&T) -> &K,
+{
+	let mut keys = Vec::with_capacity(items.len());
+	for (index, item) in items.iter().enumerate() {
+		keys.push((key_fn(item).hash(context_id)?, index));
+	}
+	keys.sort_unstable_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+
+	let mut old_at_pos = (0..items.len()).collect::<Vec<_>>();
+	let mut pos_of_old = old_at_pos.clone();
+	for (new_pos, (_, old_needed)) in keys.into_iter().enumerate() {
+		let current_pos = pos_of_old[old_needed];
+		if current_pos == new_pos {
+			continue;
+		}
+
+		items.swap(new_pos, current_pos);
+
+		let old_at_new_pos = old_at_pos[new_pos];
+		let old_at_current_pos = old_at_pos[current_pos];
+		old_at_pos.swap(new_pos, current_pos);
+		pos_of_old[old_at_new_pos] = current_pos;
+		pos_of_old[old_at_current_pos] = new_pos;
+	}
+	Ok(())
+}
+
+/// Insert a hashable value into an already hash-sorted vec, skipping duplicates.
+pub fn insert_unique_by_hash<T: Hashed>(
+	context_id: u32,
+	items: &mut Vec<T>,
+	item: T,
+) -> Result<bool, Error> {
+	insert_unique_by_hash_key(context_id, items, item, |item| item)
+}
+
+/// Insert a value into an already hash-sorted vec by projected hash key, skipping duplicates.
+pub fn insert_unique_by_hash_key<T, K, F>(
+	context_id: u32,
+	items: &mut Vec<T>,
+	item: T,
+	key_fn: F,
+) -> Result<bool, Error>
+where
+	K: Hashed,
+	F: Fn(&T) -> &K,
+{
+	let item_hash = key_fn(&item).hash(context_id)?;
+	let mut left = 0;
+	let mut right = items.len();
+	while left < right {
+		let mid = left + (right - left) / 2;
+		match key_fn(&items[mid]).hash(context_id)?.cmp(&item_hash) {
+			cmp::Ordering::Less => left = mid + 1,
+			cmp::Ordering::Greater => right = mid,
+			cmp::Ordering::Equal => return Ok(false),
+		}
+	}
+	items.insert(left, item);
+	Ok(true)
+}
+
+/// Verify a hashable collection is sorted by consensus hash and contains no duplicates.
+pub fn verify_sorted_and_unique_by_hash<T: Hashed>(
+	context_id: u32,
+	items: &[T],
+) -> Result<(), Error> {
+	verify_sorted_and_unique_by_hash_key(context_id, items, |item| item)
+}
+
+/// Verify a collection is sorted by projected consensus hash and contains no duplicates.
+pub fn verify_sorted_and_unique_by_hash_key<T, K, F>(
+	context_id: u32,
+	items: &[T],
+	key_fn: F,
+) -> Result<(), Error>
+where
+	K: Hashed,
+	F: Fn(&T) -> &K,
+{
+	let mut prev_hash: Option<Hash> = None;
+	for item in items {
+		let hash = key_fn(item).hash(context_id)?;
+		if let Some(prev_hash) = prev_hash {
+			if prev_hash > hash {
+				return Err(Error::SortError);
+			} else if prev_hash == hash {
+				return Err(Error::DuplicateError);
+			}
+		}
+		prev_hash = Some(hash);
+	}
+	Ok(())
+}
+
+/// Compare two hashable values for equality by consensus hash.
+pub fn hashes_equal<T: Hashed>(context_id: u32, lhs: &T, rhs: &T) -> Result<bool, Error> {
+	Ok(lhs.hash(context_id)? == rhs.hash(context_id)?)
+}
+
+/// Compare two slices for equality by pairwise consensus hashes.
+pub fn slices_equal_by_hash<T: Hashed>(
+	context_id: u32,
+	lhs: &[T],
+	rhs: &[T],
+) -> Result<bool, Error> {
+	if lhs.len() != rhs.len() {
+		return Ok(false);
+	}
+	for (lhs, rhs) in lhs.iter().zip(rhs) {
+		if !hashes_equal(context_id, lhs, rhs)? {
+			return Ok(false);
+		}
+	}
+	Ok(true)
+}
+
+/// Compare two slices for equality by pairwise projected consensus hashes.
+pub fn slices_equal_by_hash_key<T, K, F>(
+	context_id: u32,
+	lhs: &[T],
+	rhs: &[T],
+	key_fn: F,
+) -> Result<bool, Error>
+where
+	K: Hashed,
+	F: Fn(&T) -> &K,
+{
+	if lhs.len() != rhs.len() {
+		return Ok(false);
+	}
+	for (lhs, rhs) in lhs.iter().zip(rhs) {
+		if !hashes_equal(context_id, key_fn(lhs), key_fn(rhs))? {
+			return Ok(false);
+		}
+	}
+	Ok(true)
+}
+
+/// Check for a hashable value in a slice by consensus hash.
+pub fn contains_by_hash<T: Hashed>(
+	context_id: u32,
+	items: &[T],
+	needle: &T,
+) -> Result<bool, Error> {
+	contains_by_hash_key(context_id, items, needle, |item| item)
+}
+
+/// Check for a value in a slice by projected consensus hash.
+pub fn contains_by_hash_key<T, K, F>(
+	context_id: u32,
+	items: &[T],
+	needle: &T,
+	key_fn: F,
+) -> Result<bool, Error>
+where
+	K: Hashed,
+	F: Fn(&T) -> &K,
+{
+	let needle_hash = key_fn(needle).hash(context_id)?;
+	for item in items {
+		if key_fn(item).hash(context_id)? == needle_hash {
+			return Ok(true);
+		}
+	}
+	Ok(false)
+}
+
 /// Utility wrapper for an underlying byte Writer. Defines higher level methods
 /// to write numbers, byte vectors, hashes, etc.
 pub struct BinWriter<'a> {
 	sink: &'a mut dyn Write,
 	version: ProtocolVersion,
+	context_id: u32,
 }
 
 impl<'a> BinWriter<'a> {
 	/// Wraps a standard Write in a new BinWriter
-	pub fn new(sink: &'a mut dyn Write, version: ProtocolVersion) -> BinWriter<'a> {
-		BinWriter { sink, version }
+	pub fn new(
+		sink: &'a mut dyn Write,
+		version: ProtocolVersion,
+		context_id: u32,
+	) -> BinWriter<'a> {
+		BinWriter {
+			sink,
+			version,
+			context_id,
+		}
 	}
 
 	/// Constructor for BinWriter with default "local" protocol version.
-	pub fn default(sink: &'a mut dyn Write) -> BinWriter<'a> {
-		BinWriter::new(sink, ProtocolVersion::local())
+	pub fn default(context_id: u32, sink: &'a mut dyn Write) -> BinWriter<'a> {
+		BinWriter::new(sink, ProtocolVersion::local(), context_id)
 	}
 }
 
@@ -928,6 +1323,10 @@ impl<'a> Writer for BinWriter<'a> {
 
 	fn protocol_version(&self) -> ProtocolVersion {
 		self.version
+	}
+
+	fn get_context_id(&self) -> u32 {
+		self.context_id
 	}
 }
 
@@ -961,11 +1360,39 @@ where
 	fn read<R: Reader>(reader: &mut R) -> Result<Vec<T>, Error> {
 		let mut buf = Vec::new();
 		loop {
+			let bytes_before = reader.bytes_read();
 			let elem = T::read(reader);
 			match elem {
-				Ok(e) => buf.push(e),
-				Err(Error::IOErr(ref _d, ref kind)) if *kind == io::ErrorKind::UnexpectedEof => {
-					break;
+				Ok(e) => {
+					if reader.bytes_read() == bytes_before {
+						return Err(Error::CorruptedData(
+							"Vector element read consumed no bytes".to_string(),
+						));
+					}
+					if buf.len() as u64 >= READ_VEC_SIZE_LIMIT {
+						return Err(Error::TooLargeReadErr(format!(
+							"Try to read more than {} items, limit is 100K",
+							READ_VEC_SIZE_LIMIT
+						)));
+					}
+					buf.push(e);
+				}
+				Err(Error::IOErr(ref err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
+					if reader.bytes_read() == bytes_before {
+						if reader.has_pending_data() {
+							return Err(io::Error::new(
+								io::ErrorKind::UnexpectedEof,
+								"Unexpected EOF while reading vector element",
+							)
+							.into());
+						}
+						break;
+					}
+					return Err(io::Error::new(
+						io::ErrorKind::UnexpectedEof,
+						"Unexpected EOF while reading vector element",
+					)
+					.into());
 				}
 				Err(e) => return Err(e),
 			}
@@ -1059,445 +1486,249 @@ pub trait PMMRable: Writeable + Clone + Debug + DefaultHashable {
 /// Generic trait to ensure PMMR elements can be hashed with an index
 pub trait PMMRIndexHashable {
 	/// Hash with a given index
-	fn hash_with_index(&self, index: u64) -> Result<Hash, std::io::Error>;
+	fn hash_with_index(&self, context_id: u32, index: u64) -> Result<Hash, std::io::Error>;
 }
 
 impl<T: DefaultHashable> PMMRIndexHashable for T {
-	fn hash_with_index(&self, index: u64) -> Result<Hash, std::io::Error> {
-		(index, self).hash()
+	fn hash_with_index(&self, context_id: u32, index: u64) -> Result<Hash, std::io::Error> {
+		(index, self).hash(context_id)
 	}
 }
 
-// serializer for io::Errorkind, originally auto-generated by serde-derive
-// slightly modified to handle the #[non_exhaustive] tag on io::ErrorKind
-fn serialize_error_kind<S>(kind: &io::ErrorKind, serializer: S) -> Result<S::Ok, S::Error>
-where
-	S: serde::Serializer,
-{
-	match *kind {
-		io::ErrorKind::NotFound => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 0u32, "NotFound")
-		}
-		io::ErrorKind::PermissionDenied => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			1u32,
-			"PermissionDenied",
-		),
-		io::ErrorKind::ConnectionRefused => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			2u32,
-			"ConnectionRefused",
-		),
-		io::ErrorKind::ConnectionReset => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			3u32,
-			"ConnectionReset",
-		),
-		io::ErrorKind::ConnectionAborted => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			4u32,
-			"ConnectionAborted",
-		),
-		io::ErrorKind::NotConnected => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 5u32, "NotConnected")
-		}
-		io::ErrorKind::AddrInUse => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 6u32, "AddrInUse")
-		}
-		io::ErrorKind::AddrNotAvailable => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			7u32,
-			"AddrNotAvailable",
-		),
-		io::ErrorKind::BrokenPipe => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 8u32, "BrokenPipe")
-		}
-		io::ErrorKind::AlreadyExists => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			9u32,
-			"AlreadyExists",
-		),
-		io::ErrorKind::WouldBlock => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 10u32, "WouldBlock")
-		}
-		io::ErrorKind::InvalidInput => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			11u32,
-			"InvalidInput",
-		),
-		io::ErrorKind::InvalidData => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 12u32, "InvalidData")
-		}
-		io::ErrorKind::TimedOut => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 13u32, "TimedOut")
-		}
-		io::ErrorKind::WriteZero => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 14u32, "WriteZero")
-		}
-		io::ErrorKind::Interrupted => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 15u32, "Interrupted")
-		}
-		io::ErrorKind::Other => {
-			serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 16u32, "Other")
-		}
-		io::ErrorKind::UnexpectedEof => serde::Serializer::serialize_unit_variant(
-			serializer,
-			"ErrorKind",
-			17u32,
-			"UnexpectedEof",
-		),
-		// #[non_exhaustive] is used on the definition of ErrorKind for future compatability
-		// That means match statements always need to match on _.
-		// The downside here is that rustc won't be able to warn us if io::ErrorKind another
-		// field is added to io::ErrorKind
-		_ => serde::Serializer::serialize_unit_variant(serializer, "ErrorKind", 16u32, "Other"),
-	}
-}
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use mwc_crates::secp::{ContextFlag, Secp256k1};
 
-// deserializer for io::Errorkind, originally auto-generated by serde-derive
-fn deserialize_error_kind<'de, D>(deserializer: D) -> Result<io::ErrorKind, D::Error>
-where
-	D: serde::Deserializer<'de>,
-{
-	#[allow(non_camel_case_types)]
-	enum Field {
-		field0,
-		field1,
-		field2,
-		field3,
-		field4,
-		field5,
-		field6,
-		field7,
-		field8,
-		field9,
-		field10,
-		field11,
-		field12,
-		field13,
-		field14,
-		field15,
-		field16,
-		field17,
-	}
-	struct FieldVisitor;
-	impl<'de> serde::de::Visitor<'de> for FieldVisitor {
-		type Value = Field;
-		fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-			fmt::Formatter::write_str(formatter, "variant identifier")
+	#[derive(Debug)]
+	struct EmptyReadable;
+
+	impl Readable for EmptyReadable {
+		fn read<R: Reader>(_reader: &mut R) -> Result<Self, Error> {
+			Ok(EmptyReadable)
 		}
-		fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-		where
-			E: serde::de::Error,
-		{
-			match value {
-				0u64 => Ok(Field::field0),
-				1u64 => Ok(Field::field1),
-				2u64 => Ok(Field::field2),
-				3u64 => Ok(Field::field3),
-				4u64 => Ok(Field::field4),
-				5u64 => Ok(Field::field5),
-				6u64 => Ok(Field::field6),
-				7u64 => Ok(Field::field7),
-				8u64 => Ok(Field::field8),
-				9u64 => Ok(Field::field9),
-				10u64 => Ok(Field::field10),
-				11u64 => Ok(Field::field11),
-				12u64 => Ok(Field::field12),
-				13u64 => Ok(Field::field13),
-				14u64 => Ok(Field::field14),
-				15u64 => Ok(Field::field15),
-				16u64 => Ok(Field::field16),
-				17u64 => Ok(Field::field17),
-				_ => Err(serde::de::Error::invalid_value(
-					serde::de::Unexpected::Unsigned(value),
-					&"variant index 0 <= i < 18",
-				)),
+	}
+
+	#[test]
+	fn commitment_read_rejects_invalid_pedersen_commitment() {
+		let bytes = [1u8; PEDERSEN_COMMITMENT_SIZE];
+
+		match deserialize_default::<Commitment, _>(0, &mut &bytes[..]) {
+			Err(Error::CorruptedData(msg)) => {
+				assert!(msg.contains("Pedersen commitment"), "{}", msg);
 			}
+			other => panic!("expected invalid commitment rejection, got {:?}", other),
 		}
-		fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-		where
-			E: serde::de::Error,
-		{
-			match value {
-				"NotFound" => Ok(Field::field0),
-				"PermissionDenied" => Ok(Field::field1),
-				"ConnectionRefused" => Ok(Field::field2),
-				"ConnectionReset" => Ok(Field::field3),
-				"ConnectionAborted" => Ok(Field::field4),
-				"NotConnected" => Ok(Field::field5),
-				"AddrInUse" => Ok(Field::field6),
-				"AddrNotAvailable" => Ok(Field::field7),
-				"BrokenPipe" => Ok(Field::field8),
-				"AlreadyExists" => Ok(Field::field9),
-				"WouldBlock" => Ok(Field::field10),
-				"InvalidInput" => Ok(Field::field11),
-				"InvalidData" => Ok(Field::field12),
-				"TimedOut" => Ok(Field::field13),
-				"WriteZero" => Ok(Field::field14),
-				"Interrupted" => Ok(Field::field15),
-				"Other" => Ok(Field::field16),
-				"UnexpectedEof" => Ok(Field::field17),
-				_ => Err(serde::de::Error::unknown_variant(value, VARIANTS)),
+	}
+
+	#[test]
+	fn commitment_read_accepts_valid_pedersen_commitment() {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let commit = secp.commit_value(1).unwrap();
+		let mut bytes = vec![];
+
+		serialize_default(0, &mut bytes, &commit).unwrap();
+		let decoded: Commitment = deserialize_default(0, &mut &bytes[..]).unwrap();
+
+		assert_eq!(decoded, commit);
+	}
+
+	#[test]
+	fn aggsig_signature_write_rejects_invalid_signature() {
+		let sig = AggSigSignature::blank();
+		let mut bytes = vec![];
+
+		match serialize_default(0, &mut bytes, &sig) {
+			Err(Error::CorruptedData(msg)) => {
+				assert!(msg.contains("AggSigSignature"), "{}", msg);
 			}
+			other => panic!("expected invalid signature rejection, got {:?}", other),
 		}
-		fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
-		where
-			E: serde::de::Error,
-		{
-			match value {
-				b"NotFound" => Ok(Field::field0),
-				b"PermissionDenied" => Ok(Field::field1),
-				b"ConnectionRefused" => Ok(Field::field2),
-				b"ConnectionReset" => Ok(Field::field3),
-				b"ConnectionAborted" => Ok(Field::field4),
-				b"NotConnected" => Ok(Field::field5),
-				b"AddrInUse" => Ok(Field::field6),
-				b"AddrNotAvailable" => Ok(Field::field7),
-				b"BrokenPipe" => Ok(Field::field8),
-				b"AlreadyExists" => Ok(Field::field9),
-				b"WouldBlock" => Ok(Field::field10),
-				b"InvalidInput" => Ok(Field::field11),
-				b"InvalidData" => Ok(Field::field12),
-				b"TimedOut" => Ok(Field::field13),
-				b"WriteZero" => Ok(Field::field14),
-				b"Interrupted" => Ok(Field::field15),
-				b"Other" => Ok(Field::field16),
-				b"UnexpectedEof" => Ok(Field::field17),
-				_ => {
-					let value = &string::String::from_utf8_lossy(value);
-					Err(serde::de::Error::unknown_variant(value, VARIANTS))
-				}
+		assert!(bytes.is_empty());
+	}
+
+	#[test]
+	fn deserialize_rejects_trailing_bytes() {
+		let bytes = [7u8, 8u8];
+
+		match deserialize_default::<u8, _>(0, &mut &bytes[..]) {
+			Err(Error::CorruptedData(msg)) => {
+				assert!(msg.contains("Trailing bytes"), "{}", msg);
 			}
+			other => panic!("expected trailing bytes rejection, got {:?}", other),
 		}
 	}
-	impl<'de> serde::Deserialize<'de> for Field {
-		#[inline]
-		fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-		where
-			D: serde::Deserializer<'de>,
-		{
-			serde::Deserializer::deserialize_identifier(deserializer, FieldVisitor)
+
+	#[test]
+	fn read_len_prefix_rejects_oversized_u64_before_cast() {
+		let bytes = u64::MAX.to_be_bytes();
+		let mut source = &bytes[..];
+		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0);
+
+		match reader.read_bytes_len_prefix() {
+			Err(Error::TooLargeReadErr(_)) => {}
+			other => panic!("expected oversized length rejection, got {:?}", other),
 		}
 	}
-	struct Visitor<'de> {
-		marker: marker::PhantomData<io::ErrorKind>,
-		lifetime: marker::PhantomData<&'de ()>,
-	}
-	impl<'de> serde::de::Visitor<'de> for Visitor<'de> {
-		type Value = io::ErrorKind;
-		fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-			fmt::Formatter::write_str(formatter, "enum io::ErrorKind")
+
+	#[test]
+	fn streaming_reader_rejects_oversized_fixed_read_before_allocation() {
+		let mut source = io::empty();
+		let mut reader = StreamingReader::new(&mut source, ProtocolVersion::local(), 0);
+
+		match reader.read_fixed_bytes(READ_CHUNK_LIMIT + 1) {
+			Err(Error::TooLargeReadErr(_)) => {}
+			other => panic!("expected oversized fixed read rejection, got {:?}", other),
 		}
-		fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
-		where
-			A: serde::de::EnumAccess<'de>,
-		{
-			match match serde::de::EnumAccess::variant(data) {
-				Ok(val) => val,
-				Err(err) => {
-					return Err(err);
-				}
-			} {
-				(Field::field0, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::NotFound)
-				}
-				(Field::field1, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::PermissionDenied)
-				}
-				(Field::field2, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::ConnectionRefused)
-				}
-				(Field::field3, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::ConnectionReset)
-				}
-				(Field::field4, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::ConnectionAborted)
-				}
-				(Field::field5, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::NotConnected)
-				}
-				(Field::field6, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::AddrInUse)
-				}
-				(Field::field7, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::AddrNotAvailable)
-				}
-				(Field::field8, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::BrokenPipe)
-				}
-				(Field::field9, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::AlreadyExists)
-				}
-				(Field::field10, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::WouldBlock)
-				}
-				(Field::field11, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::InvalidInput)
-				}
-				(Field::field12, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::InvalidData)
-				}
-				(Field::field13, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::TimedOut)
-				}
-				(Field::field14, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::WriteZero)
-				}
-				(Field::field15, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::Interrupted)
-				}
-				(Field::field16, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::Other)
-				}
-				(Field::field17, variant) => {
-					match serde::de::VariantAccess::unit_variant(variant) {
-						Ok(val) => val,
-						Err(err) => {
-							return Err(err);
-						}
-					};
-					Ok(io::ErrorKind::UnexpectedEof)
-				}
+	}
+
+	#[test]
+	fn rangeproof_pmmr_element_rejects_oversized_lengths() {
+		let proof = RangeProof {
+			plen: MAX_PROOF_SIZE + 1,
+			proof: [0; MAX_PROOF_SIZE],
+		};
+
+		match proof.as_elmt() {
+			Err(Error::CorruptedData(msg)) => {
+				assert!(msg.contains("PMMR element length"), "{}", msg);
 			}
+			other => panic!(
+				"expected oversized PMMR rangeproof rejection, got {:?}",
+				other
+			),
 		}
 	}
-	const VARIANTS: &[&str] = &[
-		"NotFound",
-		"PermissionDenied",
-		"ConnectionRefused",
-		"ConnectionReset",
-		"ConnectionAborted",
-		"NotConnected",
-		"AddrInUse",
-		"AddrNotAvailable",
-		"BrokenPipe",
-		"AlreadyExists",
-		"WouldBlock",
-		"InvalidInput",
-		"InvalidData",
-		"TimedOut",
-		"WriteZero",
-		"Interrupted",
-		"Other",
-		"UnexpectedEof",
-	];
-	serde::Deserializer::deserialize_enum(
-		deserializer,
-		"ErrorKind",
-		VARIANTS,
-		Visitor {
-			marker: marker::PhantomData::<io::ErrorKind>,
-			lifetime: marker::PhantomData,
-		},
-	)
+
+	#[test]
+	fn rangeproof_pmmr_element_accepts_variable_size_length() {
+		for plen in [0, 3, MAX_PROOF_SIZE] {
+			let proof = RangeProof {
+				plen,
+				proof: [0; MAX_PROOF_SIZE],
+			};
+
+			assert_eq!(proof.as_elmt().unwrap().into_inner(), proof);
+		}
+	}
+
+	#[test]
+	fn rangeproof_pmmr_serialization_pads_to_fixed_size() {
+		let mut proof = [9; MAX_PROOF_SIZE];
+		proof[..3].copy_from_slice(&[1, 2, 3]);
+		let proof = RangeProof { plen: 3, proof };
+		let mut bytes = vec![];
+
+		serialize_default(0, &mut bytes, &proof.as_elmt().unwrap()).unwrap();
+
+		assert_eq!(bytes.len(), 8 + MAX_PROOF_SIZE);
+		assert_eq!(&bytes[8..11], &[1, 2, 3]);
+		assert!(bytes[11..].iter().all(|&b| b == 0));
+
+		let decoded: RangeProofPmmr = deserialize_default(0, &mut &bytes[..]).unwrap();
+		assert_eq!(
+			decoded.into_inner(),
+			RangeProof {
+				plen: 3,
+				proof: {
+					let mut p = [0; MAX_PROOF_SIZE];
+					p[..3].copy_from_slice(&[1, 2, 3]);
+					p
+				},
+			}
+		);
+	}
+
+	#[test]
+	fn rangeproof_pmmr_read_rejects_nonzero_padding() {
+		let mut bytes = vec![];
+		bytes.extend_from_slice(&3u64.to_be_bytes());
+		bytes.extend_from_slice(&[1, 2, 3]);
+		bytes.extend_from_slice(&vec![0; MAX_PROOF_SIZE - 4]);
+		bytes.push(1);
+
+		match deserialize_default::<RangeProofPmmr, _>(0, &mut &bytes[..]) {
+			Err(Error::CorruptedData(msg)) => {
+				assert!(msg.contains("non-zero padding"), "{}", msg);
+			}
+			other => panic!("expected non-zero PMMR padding rejection, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn rangeproof_pmmr_hashes_like_inner_proof() {
+		let mut proof_bytes = [9; MAX_PROOF_SIZE];
+		proof_bytes[..3].copy_from_slice(&[1, 2, 3]);
+		let proof = RangeProof {
+			plen: 3,
+			proof: proof_bytes,
+		};
+		let elmt = proof.as_elmt().unwrap();
+
+		assert_eq!(
+			elmt.hash_with_index(0, 42).unwrap(),
+			proof.hash_with_index(0, 42).unwrap()
+		);
+	}
+
+	#[test]
+	fn vec_read_accepts_clean_eof_after_complete_elements() {
+		let bytes = [0u8, 1u8, 0u8, 2u8];
+
+		let decoded: Vec<u16> = deserialize_default(0, &mut &bytes[..]).unwrap();
+
+		assert_eq!(decoded, vec![1, 2]);
+	}
+
+	#[test]
+	fn vec_read_rejects_partial_final_element() {
+		let bytes = [0u8];
+
+		match deserialize_default::<Vec<u16>, _>(0, &mut &bytes[..]) {
+			Err(Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			other => panic!(
+				"expected truncated vector element rejection, got {:?}",
+				other
+			),
+		}
+	}
+
+	#[test]
+	fn vec_read_rejects_partial_final_element_with_buf_reader() {
+		let bytes = [0u8];
+		let mut source = &bytes[..];
+		let mut reader = BufReader::new(&mut source, ProtocolVersion::local(), 0);
+
+		match Vec::<u16>::read(&mut reader) {
+			Err(Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			other => panic!(
+				"expected truncated vector element rejection, got {:?}",
+				other
+			),
+		}
+	}
+
+	#[test]
+	fn vec_read_rejects_zero_byte_elements() {
+		let bytes = [1u8];
+
+		match deserialize_default::<Vec<EmptyReadable>, _>(0, &mut &bytes[..]) {
+			Err(Error::CorruptedData(msg)) => {
+				assert!(msg.contains("consumed no bytes"), "{}", msg);
+			}
+			other => panic!("expected zero-byte element rejection, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn vec_read_rejects_too_many_elements() {
+		let bytes = vec![0u8; READ_VEC_SIZE_LIMIT as usize + 1];
+
+		match deserialize_default::<Vec<u8>, _>(0, &mut &bytes[..]) {
+			Err(Error::TooLargeReadErr(msg)) => {
+				assert!(msg.contains("limit is 100K"), "{}", msg);
+			}
+			other => panic!("expected oversized vector rejection, got {:?}", other),
+		}
+	}
 }

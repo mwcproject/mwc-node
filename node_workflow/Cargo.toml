@@ -1,6 +1,6 @@
 [package]
 name = "mwc_node_workflow"
-version = "6.0.1"
+version = "7.0.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -10,23 +10,11 @@ workspace = ".."
 edition = "2024"
 
 [dependencies]
-serde_json = "1"
-log = "0.4"
-thiserror = "1"
-lazy_static = "1"
-futures = "0.3"
-hyper = "0.14"
-
-mwc_api = { path = "../api", version = "6.0.1" }
-mwc_chain = { path = "../chain", version = "6.0.1" }
-mwc_core = { path = "../core", version = "6.0.1" }
-mwc_keychain = { path = "../keychain", version = "6.0.1" }
-mwc_p2p = { path = "../p2p", version = "6.0.1" }
-mwc_pool = { path = "../pool", version = "6.0.1" }
-mwc_store = { path = "../store", version = "6.0.1" }
-mwc_util = { path = "../util", version = "6.0.1" }
-mwc_servers = { path = "../servers", version = "6.0.1" }
-
-
-[features]
-libp2p = ["mwc_p2p/libp2p", "mwc_api/libp2p"]
+mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
+mwc_api = { path = "../api", version = "7.0.0" }
+mwc_chain = { path = "../chain", version = "7.0.0" }
+mwc_core = { path = "../core", version = "7.0.0" }
+mwc_p2p = { path = "../p2p", version = "7.0.0" }
+mwc_util = { path = "../util", version = "7.0.0" }
+mwc_servers = { path = "../servers", version = "7.0.0" }
+thiserror.workspace = true

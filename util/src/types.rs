@@ -15,8 +15,8 @@
 
 //! Zeroing String
 
+use mwc_crates::zeroize::Zeroize;
 use std::ops::Deref;
-use zeroize::Zeroize;
 /// Zeroing string, mainly useful for password
 #[derive(Clone, PartialEq, PartialOrd)]
 pub struct ZeroingString(String);

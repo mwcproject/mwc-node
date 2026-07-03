@@ -14,14 +14,19 @@
 // limitations under the License.
 
 use crate::hex::from_hex;
-use data_encoding::BASE32;
-use ed25519_dalek::PublicKey as DalekPublicKey;
-use ed25519_dalek::SecretKey as DalekSecretKey;
-use sha3::{Digest, Sha3_256};
+use crate::ToHex;
+use mwc_crates::ed25519_dalek;
+use mwc_crates::ed25519_dalek::VerifyingKey;
+use mwc_crates::safelog::DispUnredacted;
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::tor_hsservice::HsId;
 use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 /// OnionV3 Address Errors
 #[derive(thiserror::Error)]
 pub enum OnionV3Error {
@@ -31,17 +36,26 @@ pub enum OnionV3Error {
 	/// Error with given private key
 	#[error("Invalid private key, {0}")]
 	InvalidPrivateKey(String),
+	/// Invalid OnionV3Address
+	#[error("Invalid onion address, {0}")]
+	InvalidOnionV3Address(String),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 /// Struct to hold an onion V3 address, represented internally as a raw
 /// ed25519 public key
 pub struct OnionV3Address([u8; 32]);
 
 impl OnionV3Address {
 	/// from bytes
-	pub fn from_bytes(bytes: [u8; 32]) -> Self {
-		OnionV3Address(bytes)
+	pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, OnionV3Error> {
+		match ed25519_dalek::VerifyingKey::from_bytes(&bytes) {
+			Ok(pk) => {
+				Self::validate_pk(&bytes, &pk)?;
+			}
+			Err(_) => return Err(OnionV3Error::InvalidOnionV3Address(bytes.to_hex())),
+		}
+		Ok(OnionV3Address(bytes))
 	}
 
 	/// as bytes
@@ -51,49 +65,58 @@ impl OnionV3Address {
 
 	/// populate from a private key
 	pub fn from_private(key: &[u8; 32]) -> Result<Self, OnionV3Error> {
-		let d_skey = match DalekSecretKey::from_bytes(key) {
-			Ok(k) => k,
-			Err(e) => {
-				return Err(OnionV3Error::InvalidPrivateKey(format!(
-					"Unable to create public key: {}",
-					e
-				)));
-			}
-		};
-		let d_pub_key: DalekPublicKey = (&d_skey).into();
-		Ok(OnionV3Address(*d_pub_key.as_bytes()))
+		let d_skey = ed25519_dalek::SigningKey::from_bytes(key);
+		let d_pub_key = d_skey.verifying_key();
+
+		if d_pub_key.is_weak() {
+			return Err(OnionV3Error::InvalidOnionV3Address(
+				"weak public key".into(),
+			));
+		}
+
+		Self::validate_pk(d_pub_key.as_bytes(), &d_pub_key)?;
+
+		Ok(OnionV3Address(d_pub_key.to_bytes()))
 	}
 
 	/// return dalek public key
-	pub fn to_ed25519(&self) -> Result<DalekPublicKey, OnionV3Error> {
-		let d_skey = match DalekPublicKey::from_bytes(&self.0) {
+	pub fn to_ed25519(&self) -> Result<ed25519_dalek::VerifyingKey, OnionV3Error> {
+		let d_skey = match ed25519_dalek::VerifyingKey::from_bytes(&self.0) {
 			Ok(k) => k,
 			Err(e) => {
-				return Err(OnionV3Error::InvalidPrivateKey(format!(
+				return Err(OnionV3Error::InvalidOnionV3Address(format!(
 					"Unable to create dalek public key: {}",
 					e
 				)));
 			}
 		};
+
+		Self::validate_pk(d_skey.as_bytes(), &d_skey)?;
 		Ok(d_skey)
 	}
 
 	/// Return as onion v3 address string
-	fn to_ov3_str(&self) -> String {
-		// calculate checksum
-		let mut hasher = Sha3_256::new();
-		hasher.input(b".onion checksum");
-		hasher.input(self.0);
-		hasher.input([0x03u8]);
-		let checksum = hasher.result();
+	pub fn to_ov3_str(&self) -> String {
+		// Onion address is expected to be valid on constrution. We don't need
+		//  extra validation on address to string conversion.
+		let hsid = HsId::from(self.0);
+		let onion = DispUnredacted(&hsid).to_string();
+		onion.strip_suffix(".onion").unwrap_or(&onion).to_string()
+	}
 
-		let mut address_bytes = self.0.to_vec();
-		address_bytes.push(checksum[0]);
-		address_bytes.push(checksum[1]);
-		address_bytes.push(0x03u8);
-
-		let ret = BASE32.encode(&address_bytes);
-		ret.to_lowercase()
+	fn validate_pk(bytes: &[u8; 32], pk: &VerifyingKey) -> Result<(), OnionV3Error> {
+		if pk.is_weak() {
+			return Err(OnionV3Error::InvalidOnionV3Address(
+				"weak public key".into(),
+			));
+		}
+		let canonical = pk.to_edwards().compress().to_bytes();
+		if canonical != *bytes {
+			return Err(OnionV3Error::InvalidOnionV3Address(
+				"not canonical PK".into(),
+			));
+		}
+		Ok(())
 	}
 }
 
@@ -103,60 +126,68 @@ impl fmt::Display for OnionV3Address {
 	}
 }
 
+impl Serialize for OnionV3Address {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: serde::Serializer,
+	{
+		self.0.serialize(serializer)
+	}
+}
+
+impl<'de> Deserialize<'de> for OnionV3Address {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		let bytes = <[u8; 32]>::deserialize(deserializer)?;
+		OnionV3Address::from_bytes(bytes).map_err(serde::de::Error::custom)
+	}
+}
+
 impl TryFrom<&str> for OnionV3Address {
 	type Error = OnionV3Error;
 
 	fn try_from(input: &str) -> Result<Self, Self::Error> {
 		// First attempt to decode a pubkey from hex
 		if let Ok(b) = from_hex(input) {
-			if b.len() == 32 {
-				let mut retval = OnionV3Address([0; 32]);
-				retval.0.copy_from_slice(&b[0..32]);
-				return Ok(retval);
-			} else {
-				return Err(OnionV3Error::AddressDecoding(
-					"(Interpreted as Hex String) Public key is wrong length".to_owned(),
-				));
-			}
+			let addr_bytes: [u8; 32] = b.try_into().map_err(|_| {
+				OnionV3Error::AddressDecoding(format!("Public key {} is wrong length", input))
+			})?;
+
+			return Ok(OnionV3Address::from_bytes(addr_bytes)?);
 		};
 
-		// Otherwise try to parse as onion V3 address
-		let mut input = input.to_uppercase();
-		if input.starts_with("HTTP://") || input.starts_with("HTTPS://") {
-			input = input.replace("HTTP://", "");
-			input = input.replace("HTTPS://", "");
+		let mut s = input.trim().to_lowercase();
+
+		// Accept URLs too, like your current code did.
+		if let Some(rest) = s.strip_prefix("http://") {
+			s = rest.to_string();
+		} else if let Some(rest) = s.strip_prefix("https://") {
+			s = rest.to_string();
 		}
-		if input.ends_with(".ONION") {
-			input = input.replace(".ONION", "");
+
+		// If a full URL/path was passed, keep only the host part.
+		if let Some((host, _)) = s.split_once('/') {
+			s = host.to_string();
 		}
-		let orig_address_raw = input.clone();
-		// for now, just check input is the right length and try and decode from base32
-		if input.len() != 56 {
-			return Err(OnionV3Error::AddressDecoding(
-				"(Interpreted as Base32 String) Input address is wrong length".to_owned(),
-			));
-		}
-		let address = match BASE32.decode(input.as_bytes()) {
-			Ok(a) => a,
-			Err(_) => {
-				return Err(OnionV3Error::AddressDecoding(
-					"(Interpreted as Base32 String) Input address is not base 32".to_owned(),
-				));
-			}
+
+		// Normalize to the representation HsId::from_str expects: "... .onion"
+		let onion_host = if s.ends_with(".onion") {
+			s
+		} else {
+			format!("{}.onion", s)
 		};
 
-		let mut retval = OnionV3Address([0; 32]);
-		retval.0.copy_from_slice(&address[0..32]);
+		// Note, silently accepts malformed non-canonical onion hostnames by reading first 56-character
+		// Let's keep it as it is, tor community might do that on purpose to maintain forward compatible addresses.
+		let hsid = HsId::from_str(&onion_host).map_err(|e| {
+			OnionV3Error::AddressDecoding(format!("Provided onion V3 address is invalid, {}", e))
+		})?;
 
-		let test_v3 = retval.to_ov3_str();
-		if test_v3.to_uppercase() != orig_address_raw.to_uppercase() {
-			return Err(OnionV3Error::AddressDecoding(
-				"(Interpreted as Base32 String) Provided onion V3 address is invalid (no match)"
-					.to_owned(),
-			));
-		}
+		let key_bytes: [u8; 32] = *hsid.as_ref();
 
-		Ok(retval)
+		Ok(OnionV3Address::from_bytes(key_bytes)?)
 	}
 }
 

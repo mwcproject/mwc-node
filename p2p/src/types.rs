@@ -15,35 +15,43 @@
 
 use crate::types::PeerAddr::Ip;
 use crate::types::PeerAddr::Onion;
-use std::convert::From;
+use mwc_crates::bitflags::bitflags;
+use std::convert::{From, TryFrom};
 use std::ffi::CString;
 use std::fmt;
-use std::fs::File;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 
-use chrono::prelude::*;
-use serde::de::{SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use mwc_crates::chrono::prelude::*;
+use mwc_crates::serde::de::{Error as SerdeDeError, SeqAccess, Visitor};
+use mwc_crates::serde::{self, Deserialize, Deserializer, Serialize};
 
-use crate::chain;
-use crate::chain::txhashset::BitmapChunk;
 use crate::msg::PeerAddrs;
-use crate::mwc_core::core;
-use crate::mwc_core::core::hash::Hash;
-use crate::mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
-use crate::mwc_core::global;
-use crate::mwc_core::pow::Difficulty;
-use crate::mwc_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
 use crate::tor::arti;
-use crate::util::secp::pedersen::RangeProof;
+use mwc_chain::txhashset::BitmapChunk;
 use mwc_chain::txhashset::Segmenter;
 use mwc_chain::types::HEADERS_PER_BATCH;
+use mwc_core::core;
+use mwc_core::core::hash::Hash;
+use mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use mwc_core::global;
 use mwc_core::global::{get_chain_type, ChainTypes};
-use std::sync::RwLock;
+use mwc_core::pow::Difficulty;
+use mwc_core::ser::{self, ProtocolVersion, Readable, Reader, Writeable, Writer};
+use mwc_core::ser_multiwrite;
+use mwc_core::try_iter_map_vec;
+use mwc_crates::enum_primitive::{
+	enum_from_primitive, enum_from_primitive_impl, enum_from_primitive_impl_ty,
+};
+use mwc_crates::parking_lot::RwLock;
+use mwc_crates::secp;
+use mwc_crates::secp::pedersen::RangeProof;
+use mwc_crates::secp::Secp256k1;
+use mwc_crates::zeroize::Zeroize;
 
 /// Maximum number of block headers a peer should ever send
 pub const MAX_BLOCK_HEADERS: u32 = HEADERS_PER_BATCH;
@@ -59,10 +67,10 @@ pub const MAX_PEER_ADDRS: u32 = 256;
 pub const MAX_LOCATORS: u32 = 20;
 
 /// How long a banned peer should be banned for
-const BAN_WINDOW: i64 = 10800;
+pub const BAN_WINDOW: i64 = 10800;
 
 /// The max inbound peer count
-const PEER_MAX_INBOUND_COUNT: u32 = 128;
+pub const PEER_MAX_INBOUND_COUNT: u32 = 128;
 
 /// The max outbound peer count
 const PEER_MAX_OUTBOUND_COUNT: u32 = 10;
@@ -78,17 +86,21 @@ const PEER_BOOST_OUTBOUND_COUNT_FLOO: u32 = 8;
 
 /// The peer listener buffer count. Allows temporarily accepting more connections
 /// than allowed by PEER_MAX_INBOUND_COUNT to encourage network bootstrapping.
-const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
+pub(crate) const PEER_LISTENER_BUFFER_COUNT: u32 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error("Secp error, {0}")]
+	SecpError(secp::Error),
 	#[error("p2p Serialization error, {0}")]
-	Serialization(ser::Error),
+	Serialization(#[from] ser::Error),
 	#[error("p2p Connection error, {0}")]
-	Connection(io::Error),
+	Connection(#[from] io::Error),
 	/// Header type does not match the expected message type
 	#[error("p2p bad message: {0}")]
 	BadMessage(String),
+	#[error("p2p bad handshake: {0}")]
+	BadHandshake(String),
 	#[error("p2p unexpected message {0}")]
 	UnexpectedMessage(String),
 	#[error("p2p message Length error")]
@@ -100,9 +112,9 @@ pub enum Error {
 	#[error("p2p timeout")]
 	Timeout,
 	#[error("p2p store error, {0}")]
-	Store(mwc_store::Error),
+	Store(#[from] mwc_store::Error),
 	#[error("p2p chain error, {0}")]
-	Chain(chain::Error),
+	Chain(#[from] mwc_chain::Error),
 	#[error("peer with self")]
 	PeerWithSelf,
 	#[error("p2p no dandelion relay")]
@@ -117,10 +129,14 @@ pub enum Error {
 	PeerNotBanned,
 	#[error("peer exception, {0}")]
 	PeerException(String),
+	#[error("peer thread panicked: {0}")]
+	PeerThreadPanic(String),
 	#[error("p2p internal error: {0}")]
 	Internal(String),
-	#[error("libp2p error: {0}")]
-	Libp2pError(String),
+	#[error("ip address requested from Tor")]
+	IpAddressRequestFromTor,
+	#[error("p2p data overflow error: {0}")]
+	DataOverflow(String),
 	#[error("configuration error: {0}")]
 	ConfigError(String),
 	/// Tor Configuration Error
@@ -145,28 +161,49 @@ pub enum Error {
 	Interrupted,
 }
 
-impl From<ser::Error> for Error {
-	fn from(e: ser::Error) -> Error {
-		Error::Serialization(e)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundConnectFailure {
+	/// The connection failed because of local state or policy, not peer quality.
+	Ignore,
+	/// The connection reached a peer/network failure that can affect reputation.
+	MarkDefunct,
+}
+
+impl Error {
+	/// Classify an outbound connection failure for peer-store reputation.
+	///
+	/// This is intentionally conservative. Variants that can represent local
+	/// state, local policy, transport availability, store/chain failures, or
+	/// ambiguous connection closure are ignored so they do not poison peer
+	/// reputation. Only clear protocol-level peer failures mark a peer defunct.
+	pub fn outbound_connect_failure(&self) -> OutboundConnectFailure {
+		match self {
+			Error::BadHandshake(_)
+			| Error::BadMessage(_)
+			| Error::GenesisMismatch { .. }
+			| Error::MsgLen
+			| Error::UnexpectedMessage(_) => OutboundConnectFailure::MarkDefunct,
+			_ => OutboundConnectFailure::Ignore,
+		}
 	}
 }
-impl From<mwc_store::Error> for Error {
-	fn from(e: mwc_store::Error) -> Error {
-		Error::Store(e)
-	}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BroadcastError {
+	#[error("p2p broadcast error, {0}")]
+	P2p(#[from] Error),
+	#[error("transaction error, {0}")]
+	Transaction(#[from] core::transaction::Error),
 }
-impl From<chain::Error> for Error {
-	fn from(e: chain::Error) -> Error {
-		Error::Chain(e)
-	}
-}
-impl From<io::Error> for Error {
-	fn from(e: io::Error) -> Error {
-		Error::Connection(e)
+
+impl From<secp::Error> for Error {
+	fn from(err: secp::Error) -> Self {
+		Error::SecpError(err)
 	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub enum PeerAddr {
 	Ip(SocketAddr),
 	Onion(String),
@@ -185,6 +222,12 @@ impl Writeable for PeerAddr {
 					);
 				}
 				SocketAddr::V6(sav6) => {
+					if sav6.flowinfo() != 0 || sav6.scope_id() != 0 {
+						return Err(ser::Error::CorruptedData(format!(
+							"IPv6 peer address {} contains nonzero flowinfo or scope_id",
+							sav6
+						)));
+					}
 					writer.write_u8(1)?;
 					for seg in &sav6.ip().segments() {
 						writer.write_u16(*seg)?;
@@ -193,10 +236,10 @@ impl Writeable for PeerAddr {
 				}
 			},
 			Onion(onion) => {
-				if onion.len() > 100 {
-					return Err(ser::Error::TooLargeWriteErr(format!(
-						"Unreasonable long onion address. UA length is {}",
-						onion.len()
+				if !arti::is_valid_onion_v3(onion.as_str()) {
+					return Err(ser::Error::CorruptedData(format!(
+						"Invalid onion address string {}",
+						onion
 					)));
 				}
 				writer.write_u8(2)?;
@@ -209,41 +252,44 @@ impl Writeable for PeerAddr {
 
 impl Readable for PeerAddr {
 	fn read<R: Reader>(reader: &mut R) -> Result<PeerAddr, ser::Error> {
-		let v4_or_v6 = reader.read_u8()?;
-		if v4_or_v6 == 0 {
-			let ip = reader.read_fixed_bytes(4)?;
-			let port = reader.read_u16()?;
-			Ok(PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
-				Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
-				port,
-			))))
-		} else if v4_or_v6 == 1 {
-			let ip = try_iter_map_vec!(0..8, |_| reader.read_u16());
-			let ipv6 = Ipv6Addr::new(ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7]);
-			let port = reader.read_u16()?;
-			if let Some(ipv4) = ipv6.to_ipv4() {
-				Ok(PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(ipv4, port))))
-			} else {
+		match reader.read_u8()? {
+			0 => {
+				let ip = reader.read_fixed_bytes(4)?;
+				let port = reader.read_u16()?;
+				Ok(PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
+					Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
+					port,
+				))))
+			}
+			1 => {
+				let ip = try_iter_map_vec!(0..8, |_| reader.read_u16());
+				let ipv6 = Ipv6Addr::new(ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7]);
+				let port = reader.read_u16()?;
 				Ok(PeerAddr::Ip(SocketAddr::V6(SocketAddrV6::new(
 					ipv6, port, 0, 0,
 				))))
 			}
-		} else {
-			// '2' is used for onion addresses now
-			let oa = reader.read_bytes_len_prefix()?;
-			let onion_address = String::from_utf8(oa).unwrap_or("".to_string());
-			if !arti::is_valid_onion_v3(onion_address.as_str()) {
-				return Err(ser::Error::CorruptedData(format!(
-					"Invalid onion address string {}",
-					onion_address
-				)));
+			2 => {
+				let oa = reader.read_bytes_len_prefix()?;
+				let onion_address =
+					String::from_utf8(oa).map_err(|e| ser::Error::Utf8Conversion(e.to_string()))?;
+				if !arti::is_valid_onion_v3(onion_address.as_str()) {
+					return Err(ser::Error::CorruptedData(format!(
+						"Invalid onion address string {}",
+						onion_address
+					)));
+				}
+				if CString::new(onion_address.as_str()).is_err() {
+					return Err(ser::Error::CorruptedData(
+						"onion_address contains NUL".into(),
+					));
+				}
+				Ok(PeerAddr::Onion(onion_address))
 			}
-			if CString::new(onion_address.as_str()).is_err() {
-				return Err(ser::Error::CorruptedData(
-					"onion_address contains NUL".into(),
-				));
-			}
-			Ok(PeerAddr::Onion(onion_address))
+			tag => Err(ser::Error::CorruptedData(format!(
+				"Invalid peer address type tag {}",
+				tag
+			))),
 		}
 	}
 }
@@ -262,8 +308,9 @@ impl<'de> Visitor<'de> for PeerAddrs {
 		let mut peers = Vec::with_capacity(access.size_hint().unwrap_or(0));
 
 		while let Some(entry) = access.next_element::<&str>()? {
-			// There is Onion addresses, we need to handle them
-			peers.push(PeerAddr::from_str(entry));
+			// Config parsing must reject invalid peer entries instead of
+			// treating every unresolved string as an onion address.
+			peers.push(PeerAddr::parse_config_addr(entry).map_err(M::Error::custom)?);
 		}
 		Ok(PeerAddrs { peers })
 	}
@@ -284,7 +331,7 @@ impl std::hash::Hash for PeerAddr {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		match self {
 			Ip(ip) => {
-				if ip.ip().is_loopback() {
+				if ip_addr_is_loopback(ip.ip()) {
 					ip.hash(state);
 				} else {
 					ip.ip().hash(state);
@@ -304,7 +351,7 @@ impl PartialEq for PeerAddr {
 		match self {
 			Ip(ip) => match other {
 				Ip(other_ip) => {
-					if ip.ip().is_loopback() {
+					if ip_addr_is_loopback(ip.ip()) {
 						ip == other_ip
 					} else {
 						ip.ip() == other_ip.ip()
@@ -321,6 +368,114 @@ impl PartialEq for PeerAddr {
 }
 
 impl Eq for PeerAddr {}
+
+fn ip_addr_is_loopback(ip: IpAddr) -> bool {
+	match ip {
+		IpAddr::V4(ipv4) => ipv4.is_loopback(),
+		IpAddr::V6(ipv6) => {
+			ipv6.is_loopback()
+				|| ipv6
+					.to_ipv4_mapped()
+					.map(|ipv4| ipv4.is_loopback())
+					.unwrap_or(false)
+		}
+	}
+}
+
+fn ipv4_gossip_rejection_reason(ip: &Ipv4Addr) -> Option<&'static str> {
+	let [a, b, c, _] = ip.octets();
+
+	if ip.is_unspecified() {
+		return Some("unspecified IPv4 address");
+	}
+	if a == 0 {
+		return Some("IPv4 0.0.0.0/8 is reserved for this network");
+	}
+	if ip.is_loopback() {
+		return Some("loopback IPv4 address");
+	}
+	if ip.is_private() {
+		return Some("private IPv4 address");
+	}
+	if a == 100 && (64..=127).contains(&b) {
+		return Some("carrier-grade NAT IPv4 address");
+	}
+	if ip.is_link_local() {
+		return Some("link-local IPv4 address");
+	}
+	if ip.is_multicast() {
+		return Some("multicast IPv4 address");
+	}
+	if ip.is_broadcast() {
+		return Some("broadcast IPv4 address");
+	}
+	if (a, b, c) == (192, 0, 0) {
+		return Some("IETF protocol assignment IPv4 address");
+	}
+	if (a, b, c) == (192, 88, 99) {
+		return Some("deprecated 6to4 relay anycast IPv4 address");
+	}
+	if a == 198 && (b == 18 || b == 19) {
+		return Some("network benchmarking IPv4 address");
+	}
+	if (a, b, c) == (192, 0, 2) || (a, b, c) == (198, 51, 100) || (a, b, c) == (203, 0, 113) {
+		return Some("documentation IPv4 address");
+	}
+	if a >= 240 {
+		return Some("reserved IPv4 address");
+	}
+
+	None
+}
+
+fn ipv6_gossip_rejection_reason(ip: &Ipv6Addr) -> Option<&'static str> {
+	let segments = ip.segments();
+
+	if ip.is_unspecified() {
+		return Some("unspecified IPv6 address");
+	}
+	if ip.is_loopback() {
+		return Some("loopback IPv6 address");
+	}
+	if ip.is_multicast() {
+		return Some("multicast IPv6 address");
+	}
+	if (segments[0] & 0xfe00) == 0xfc00 {
+		return Some("unique-local IPv6 address");
+	}
+	if (segments[0] & 0xffc0) == 0xfe80 {
+		return Some("link-local IPv6 address");
+	}
+	if segments[0] == 0x2001 && segments[1] == 0x0db8 {
+		return Some("documentation IPv6 address");
+	}
+	if segments[0] == 0x2001 && segments[1] == 0x0002 && segments[2] == 0 {
+		return Some("network benchmarking IPv6 address");
+	}
+	if segments[0] == 0x2001 && (segments[1] & 0xfe00) == 0 {
+		return Some("IETF protocol assignment IPv6 address");
+	}
+	if segments[0] == 0
+		&& segments[1] == 0
+		&& segments[2] == 0
+		&& segments[3] == 0
+		&& segments[4] == 0
+		&& segments[5] == 0xffff
+	{
+		return Some("IPv4-mapped IPv6 address");
+	}
+	if segments[0] == 0x2002 {
+		return Some("6to4 IPv6 address");
+	}
+	if segments[0] == 0x3fff && (segments[1] & 0xf000) == 0 {
+		return Some("documentation IPv6 address");
+	}
+	if (segments[0] & 0xe000) != 0x2000 {
+		return Some("IPv6 address outside global unicast 2000::/3");
+	}
+
+	None
+}
 
 impl std::fmt::Display for PeerAddr {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -346,31 +501,56 @@ impl PeerAddr {
 		PeerAddr::Ip(SocketAddr::new(addr, port))
 	}
 
-	pub fn from_str(addr: &str) -> PeerAddr {
-		let socket_addr = SocketAddr::from_str(addr);
-		match socket_addr {
-			Ok(socket_addr) => PeerAddr::Ip(socket_addr),
-			Err(_) => {
-				let socket_addrs = addr.to_socket_addrs();
+	pub fn from_str(addr: &str) -> Result<PeerAddr, String> {
+		PeerAddr::parse_config_addr(addr)
+	}
 
-				match socket_addrs {
-					Ok(socket_addrs) => {
-						let vec: Vec<SocketAddr> = socket_addrs.collect();
-						PeerAddr::Ip(vec[0])
-					}
-					Err(_) => PeerAddr::Onion(addr.to_string()),
-				}
-			}
+	fn parse_config_addr(addr: &str) -> Result<PeerAddr, String> {
+		if let Ok(socket_addr) = SocketAddr::from_str(addr) {
+			return Ok(PeerAddr::Ip(socket_addr));
+		}
+		if arti::is_valid_onion_v3(addr) {
+			return Ok(PeerAddr::Onion(addr.to_string()));
+		}
+		if config_addr_onion_host(addr).is_some() {
+			return Err(format!("invalid onion v3 address '{}'", addr));
+		}
+
+		let mut socket_addrs = addr
+			.to_socket_addrs()
+			.map_err(|e| format!("invalid peer address '{}': {}", addr, e))?;
+		match socket_addrs.next() {
+			Some(socket_addr) => Ok(PeerAddr::Ip(socket_addr)),
+			None => Err(format!(
+				"invalid peer address '{}': DNS lookup returned no addresses",
+				addr
+			)),
 		}
 	}
 
-	/// If the ip is loopback then our key is "ip:port" (mainly for local usernet testing).
+	/// Returns true only when the address variant and all address fields match.
+	/// This intentionally does not use PeerAddr equality, which ignores ports
+	/// for non-loopback IP addresses.
+	pub fn matches_exactly(&self, other: &PeerAddr) -> bool {
+		match (self, other) {
+			(Ip(ip), Ip(other_ip)) => ip == other_ip,
+			(Onion(onion), Onion(other_onion)) => onion == other_onion,
+			_ => false,
+		}
+	}
+
+	/// If the ip is loopback then our key is the full socket address
+	/// (mainly for local usernet testing).
 	/// Otherwise we only care about the ip (we disallow multiple peers on the same ip address).
+	/// The address family is not included in this key. For now this is acceptable
+	/// because callers are expected to use normalized IP addresses or valid v3
+	/// onion addresses, so IP/onion key collisions are not expected. Onion
+	/// address correctness will be tightened separately.
 	pub fn as_key(&self) -> String {
 		match self {
 			Ip(ip) => {
-				if ip.ip().is_loopback() {
-					format!("{}:{}", ip.ip(), ip.port())
+				if ip_addr_is_loopback(ip.ip()) {
+					format!("{}", ip)
 				} else {
 					format!("{}", ip.ip())
 				}
@@ -381,43 +561,88 @@ impl PeerAddr {
 
 	pub fn tor_address(&self) -> Result<String, Error> {
 		match self {
-			Ip(_ip) => {
-				return Err(Error::Internal(
-					"requested TOR pub key from IP address".to_string(),
-				))
-			}
+			Ip(_ip) => Err(Error::Internal(
+				"requested TOR pub key from IP address".to_string(),
+			)),
 			Onion(onion) => {
-				if onion.ends_with(".onion") {
-					let onion = &onion[..(onion.len() - ".onion".len())];
-					return Ok(onion.to_string());
+				let onion_address = if onion.ends_with(".onion") {
+					onion.clone()
 				} else {
-					return Ok(onion.clone());
-				}
+					format!("{}.onion", onion)
+				};
+				let canonical = arti::canonical_onion_v3(&onion_address).ok_or_else(|| {
+					Error::Internal(format!("invalid onion v3 address {}", onion))
+				})?;
+				Ok(canonical
+					.strip_suffix(".onion")
+					.unwrap_or(canonical.as_str())
+					.to_string())
 			}
 		}
 	}
 
 	pub fn is_loopback(&self) -> bool {
 		match self {
-			Ip(ip) => ip.ip().is_loopback(),
+			Ip(ip) => ip_addr_is_loopback(ip.ip()),
 			Onion(_) => {
 				false // we can't detect self onion address here in any case
 			}
 		}
 	}
+
+	/// Returns why an address should be rejected when it arrives from untrusted
+	/// peer gossip. This intentionally applies only to gossip candidates; local
+	/// configuration can still opt into private or otherwise special addresses.
+	pub fn gossip_rejection_reason(&self) -> Option<&'static str> {
+		match self {
+			Ip(socket) => {
+				if socket.port() == 0 {
+					return Some("port 0 is not connectable");
+				}
+				match socket.ip() {
+					IpAddr::V4(ip) => ipv4_gossip_rejection_reason(&ip),
+					IpAddr::V6(ip) => ipv6_gossip_rejection_reason(&ip),
+				}
+			}
+			Onion(onion) => {
+				if arti::is_valid_onion_v3(onion.as_str()) {
+					None
+				} else {
+					Some("invalid onion v3 address")
+				}
+			}
+		}
+	}
+
+	pub fn is_valid_gossip_candidate(&self) -> bool {
+		self.gossip_rejection_reason().is_none()
+	}
+}
+
+fn config_addr_onion_host(addr: &str) -> Option<&str> {
+	let host = match addr.rsplit_once(':') {
+		Some((host, _port)) => host,
+		None => addr,
+	};
+	let host = host.strip_suffix('.').unwrap_or(host);
+	if host
+		.as_bytes()
+		.get(host.len().saturating_sub(".onion".len())..)
+		.map(|suffix| suffix.eq_ignore_ascii_case(b".onion"))
+		.unwrap_or(false)
+	{
+		Some(host)
+	} else {
+		None
+	}
 }
 
 /// Type for Tor Configuration
-#[derive(Debug, Clone, Serialize, serde_derive::Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct TorConfig {
 	/// Whether to start tor listener on listener startup (default true)
 	pub tor_enabled: Option<bool>,
-	/// The port for the tor socks proxy to bind to
-	pub socks_port: Option<u16>,
-	/// Tor running externally (default false)
-	pub tor_external: Option<bool>,
-	/// Onion address to use, only applicable with external tor
-	pub onion_address: Option<String>,
 	/// alternative webtunnel bridge. In not specified, the community bridges might be used
 	pub webtunnel_bridge: Option<String>,
 }
@@ -426,9 +651,6 @@ impl Default for TorConfig {
 	fn default() -> TorConfig {
 		TorConfig {
 			tor_enabled: None,
-			tor_external: None,
-			socks_port: Some(51234),
-			onion_address: None,
 			webtunnel_bridge: None,
 		}
 	}
@@ -438,9 +660,6 @@ impl TorConfig {
 	pub fn no_tor_config() -> Self {
 		TorConfig {
 			tor_enabled: Some(false),
-			socks_port: None,
-			tor_external: None,
-			onion_address: None,
 			webtunnel_bridge: None,
 		}
 	}
@@ -448,9 +667,6 @@ impl TorConfig {
 	pub fn arti_tor_config() -> Self {
 		TorConfig {
 			tor_enabled: Some(true),
-			socks_port: None,
-			tor_external: Some(false),
-			onion_address: None,
 			webtunnel_bridge: None,
 		}
 	}
@@ -459,23 +675,14 @@ impl TorConfig {
 		self.tor_enabled.unwrap_or(true)
 	}
 
-	/// If tor running as external service
-	pub fn is_tor_internal_arti(&self) -> bool {
-		self.is_tor_enabled() && !self.tor_external.unwrap_or(false)
-	}
-
-	/// If tor running as external service
-	pub fn is_tor_external(&self) -> bool {
-		self.is_tor_enabled() && self.tor_external.unwrap_or(false)
-	}
-
 	pub fn need_start_arti(&self) -> bool {
-		self.is_tor_enabled() && !self.is_tor_external()
+		self.is_tor_enabled()
 	}
 }
 
 /// Configuration for the peer-to-peer server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct P2PConfig {
 	pub port: u16,
 
@@ -509,6 +716,14 @@ pub struct P2PConfig {
 	pub onion_expanded_key: Option<String>,
 }
 
+impl Drop for P2PConfig {
+	fn drop(&mut self) {
+		if let Some(onion_expanded_key) = &mut self.onion_expanded_key {
+			onion_expanded_key.zeroize();
+		}
+	}
+}
+
 /// Default address for peer-to-peer connections.
 impl Default for P2PConfig {
 	fn default() -> P2PConfig {
@@ -533,19 +748,21 @@ impl Default for P2PConfig {
 /// Note certain fields are options just so they don't have to be
 /// included in mwc-server.toml, but we don't want them to ever return none
 impl P2PConfig {
-	/// return ban window
-	pub fn ban_window(&self) -> i64 {
-		match self.ban_window {
-			Some(n) => n,
-			None => BAN_WINDOW,
-		}
-	}
-
-	/// return maximum inbound peer connections count
-	pub fn peer_max_inbound_count(&self) -> u32 {
-		match self.peer_max_inbound_count {
-			Some(n) => n,
-			None => PEER_MAX_INBOUND_COUNT,
+	pub fn clone_without_secrets(&self) -> P2PConfig {
+		P2PConfig {
+			port: self.port,
+			seeding_type: self.seeding_type,
+			seeds: self.seeds.clone(),
+			peers_allow: self.peers_allow.clone(),
+			peers_deny: self.peers_deny.clone(),
+			peers_preferred: self.peers_preferred.clone(),
+			ban_window: self.ban_window,
+			peer_max_inbound_count: self.peer_max_inbound_count,
+			peer_max_outbound_count: self.peer_max_outbound_count,
+			peer_min_preferred_outbound_count: self.peer_min_preferred_outbound_count,
+			peer_listener_buffer_count: self.peer_listener_buffer_count,
+			dandelion_peer: self.dandelion_peer.clone(),
+			onion_expanded_key: None,
 		}
 	}
 
@@ -578,18 +795,11 @@ impl P2PConfig {
 			}
 		}
 	}
-
-	/// return peer buffer count for listener
-	pub fn peer_listener_buffer_count(&self) -> u32 {
-		match self.peer_listener_buffer_count {
-			Some(n) => n,
-			None => PEER_LISTENER_BUFFER_COUNT,
-		}
-	}
 }
 
 /// Type of seeding the server will use to find other peers on the network.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub enum Seeding {
 	/// No seeding, mostly for tests that programmatically connect
 	None,
@@ -597,8 +807,6 @@ pub enum Seeding {
 	List,
 	/// Automatically get a list of seeds from multiple DNS
 	DNSSeed,
-	/// Mostly for tests, where connections are initiated programmatically
-	Programmatic,
 }
 
 impl Default for Seeding {
@@ -609,7 +817,8 @@ impl Default for Seeding {
 
 bitflags! {
 	/// Options for what type of interaction a peer supports
-	#[derive(Serialize, Deserialize)]
+	#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+	#[serde(crate = "serde")]
 	pub struct Capabilities: u32 {
 		/// We don't know (yet) what the peer can do.
 		const UNKNOWN = 0b0000_0000;
@@ -641,7 +850,6 @@ impl Capabilities {
 			| Capabilities::TXHASHSET_HIST
 			| Capabilities::PEER_LIST
 			| Capabilities::TX_KERNEL_HASH
-			| Capabilities::TOR_ADDRESS
 			| Capabilities::PIBD_HIST
 			| Capabilities::HEADERS_HASH;
 		if tor {
@@ -657,6 +865,7 @@ impl Capabilities {
 // Types of connection
 enum_from_primitive! {
 	#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+	#[serde(crate = "serde")]
 	pub enum Direction {
 		Inbound = 0,
 		Outbound = 1,
@@ -668,6 +877,7 @@ enum_from_primitive! {
 // Ban reason
 enum_from_primitive! {
 	#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+	#[serde(crate = "serde")]
 	pub enum ReasonForBan {
 		None = 0,
 		BadBlock = 1,
@@ -686,15 +896,17 @@ enum_from_primitive! {
 #[derive(Clone, Debug)]
 pub struct PeerAdvertised {
 	pub addr: PeerAddr,
+	source: PeerAddr,
 	last_advertised_ts: i64,
 	last_checked_ts: i64,
 	chunk_size: usize,
 }
 
 impl PeerAdvertised {
-	pub fn new(addr: PeerAddr, chunk_size: usize, now: i64) -> Self {
+	pub fn new(source: PeerAddr, addr: PeerAddr, chunk_size: usize, now: i64) -> Self {
 		PeerAdvertised {
 			addr,
+			source,
 			last_advertised_ts: now,
 			last_checked_ts: -1,
 			chunk_size,
@@ -704,13 +916,21 @@ impl PeerAdvertised {
 	/// Rank of that peer. Bigger is better
 	pub fn calc_rank(&self) -> i64 {
 		if self.last_checked_ts <= 0 {
-			return self.last_advertised_ts / self.chunk_size as i64;
+			let chunk_size = i64::try_from(self.chunk_size)
+				.ok()
+				.filter(|chunk_size| *chunk_size > 0)
+				.unwrap_or(i64::MAX);
+			return self.last_advertised_ts / chunk_size;
 		}
 		-self.last_checked_ts
 	}
 
 	pub fn get_last_advertised_ts(&self) -> i64 {
 		self.last_advertised_ts
+	}
+
+	pub fn source(&self) -> &PeerAddr {
+		&self.source
 	}
 
 	pub fn set_checked(&mut self, now: i64) {
@@ -730,9 +950,10 @@ impl PeerAdvertised {
 #[derive(Clone, Debug)]
 pub struct PeerLiveInfo {
 	pub total_difficulty: Difficulty,
+	pub max_total_difficulty: Difficulty,
 	pub height: u64,
 	pub last_seen: DateTime<Utc>,
-	pub stuck_detector: DateTime<Utc>,
+	pub stuck_detector: Instant,
 	pub first_seen: DateTime<Utc>,
 }
 
@@ -752,10 +973,11 @@ impl PeerLiveInfo {
 	pub fn new(difficulty: Difficulty) -> PeerLiveInfo {
 		PeerLiveInfo {
 			total_difficulty: difficulty,
+			max_total_difficulty: difficulty,
 			height: 0,
 			first_seen: Utc::now(),
 			last_seen: Utc::now(),
-			stuck_detector: Utc::now(),
+			stuck_detector: Instant::now(),
 		}
 	}
 }
@@ -763,10 +985,7 @@ impl PeerLiveInfo {
 impl PeerInfo {
 	/// The current total_difficulty of the peer.
 	pub fn total_difficulty(&self) -> Difficulty {
-		self.live_info
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.total_difficulty
+		self.live_info.read_recursive().total_difficulty
 	}
 
 	pub fn is_outbound(&self) -> bool {
@@ -779,43 +998,37 @@ impl PeerInfo {
 
 	/// The current height of the peer.
 	pub fn height(&self) -> u64 {
-		self.live_info
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.height
+		self.live_info.read_recursive().height
 	}
 
 	/// Time of last_seen for this peer (via ping/pong).
 	pub fn last_seen(&self) -> DateTime<Utc> {
-		self.live_info
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.last_seen
+		self.live_info.read_recursive().last_seen
 	}
 
 	/// Time of first_seen for this peer.
 	pub fn first_seen(&self) -> DateTime<Utc> {
-		self.live_info
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.first_seen
+		self.live_info.read_recursive().first_seen
 	}
 
 	/// Update the total_difficulty, height and last_seen of the peer.
 	/// Takes a write lock on the live_info.
 	pub fn update(&self, height: u64, total_difficulty: Difficulty) {
-		let mut live_info = self.live_info.write().unwrap_or_else(|e| e.into_inner());
-		if total_difficulty != live_info.total_difficulty {
-			live_info.stuck_detector = Utc::now();
+		let now = Utc::now();
+		let mut live_info = self.live_info.write();
+		if total_difficulty > live_info.max_total_difficulty {
+			live_info.max_total_difficulty = total_difficulty;
+			live_info.stuck_detector = Instant::now();
 		}
 		live_info.height = height;
 		live_info.total_difficulty = total_difficulty;
-		live_info.last_seen = Utc::now()
+		live_info.last_seen = now
 	}
 }
 
 /// This is needed for legacy purposes
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct PeerInfoDisplayLegacy {
 	pub capabilities: Capabilities,
 	pub user_agent: String,
@@ -830,6 +1043,7 @@ pub struct PeerInfoDisplayLegacy {
 /// Flatten out a PeerInfo and nested PeerLiveInfo (taking a read lock on it)
 /// so we can serialize/deserialize the data for the API and the TUI.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct PeerInfoDisplay {
 	pub capabilities: Capabilities,
 	pub user_agent: String,
@@ -843,12 +1057,8 @@ pub struct PeerInfoDisplay {
 
 impl From<PeerInfo> for PeerInfoDisplay {
 	fn from(info: PeerInfo) -> PeerInfoDisplay {
-		let peer_last_seen = info
-			.live_info
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.last_seen;
-		let last_seen = (Utc::now() - peer_last_seen).num_seconds() as u32;
+		let peer_last_seen = info.live_info.read_recursive().last_seen;
+		let last_seen = last_seen_seconds_ago(peer_last_seen);
 		PeerInfoDisplay {
 			capabilities: info.capabilities,
 			user_agent: info.user_agent.clone(),
@@ -862,7 +1072,13 @@ impl From<PeerInfo> for PeerInfoDisplay {
 	}
 }
 
+fn last_seen_seconds_ago(peer_last_seen: DateTime<Utc>) -> u32 {
+	let seconds = (Utc::now() - peer_last_seen).num_seconds();
+	seconds.clamp(0, u32::MAX as i64) as u32
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct ProcessStatus {
 	/// How long this process is running
 	pub process_running_time: u64,
@@ -876,38 +1092,34 @@ pub struct ProcessStatus {
 	pub host_swap_usage: f64,
 }
 
-/// The full txhashset data along with indexes required for a consumer to
-/// rewind to a consistent requested state.
-pub struct TxHashSetRead {
-	/// Output tree index the receiver should rewind to
-	pub output_index: u64,
-	/// Kernel tree index the receiver should rewind to
-	pub kernel_index: u64,
-	/// Binary stream for the txhashset zipped data
-	pub reader: File,
-}
-
 /// Bridge between the networking layer and the rest of the system. Handles the
 /// forwarding or querying of blocks and transactions from the network among
 /// other things.
 pub trait ChainAdapter: Sync + Send {
 	/// Current total difficulty on our chain
-	fn total_difficulty(&self) -> Result<Difficulty, chain::Error>;
+	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error>;
 
 	/// Current total height
-	fn total_height(&self) -> Result<u64, chain::Error>;
+	fn total_height(&self) -> Result<u64, mwc_chain::Error>;
 
 	/// A valid transaction has been received from one of our peers
-	fn transaction_received(&self, tx: core::Transaction, stem: bool)
-		-> Result<bool, chain::Error>;
+	fn transaction_received(
+		&self,
+		secp: &mut Secp256k1,
+		tx: core::Transaction,
+		stem: bool,
+	) -> Result<bool, mwc_chain::Error>;
 
-	fn get_transaction(&self, kernel_hash: Hash) -> Option<core::Transaction>;
+	fn get_transaction(
+		&self,
+		kernel_hash: Hash,
+	) -> Result<Option<core::Transaction>, mwc_chain::Error>;
 
 	fn tx_kernel_received(
 		&self,
 		kernel_hash: Hash,
 		peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error>;
+	) -> Result<bool, mwc_chain::Error>;
 
 	/// A block has been received from one of our peers. Returns true if the
 	/// block could be handled properly and is not deemed defective by the
@@ -915,22 +1127,24 @@ pub trait ChainAdapter: Sync + Send {
 	/// may result in the peer being banned.
 	fn block_received(
 		&self,
+		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: chain::Options,
-	) -> Result<bool, chain::Error>;
+		opts: mwc_chain::Options,
+	) -> Result<bool, mwc_chain::Error>;
 
 	fn compact_block_received(
 		&self,
+		secp: &mut Secp256k1,
 		cb: core::CompactBlock,
 		peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error>;
+	) -> Result<bool, mwc_chain::Error>;
 
 	fn header_received(
 		&self,
 		bh: core::BlockHeader,
 		peer_info: &PeerInfo,
-	) -> Result<bool, chain::Error>;
+	) -> Result<bool, mwc_chain::Error>;
 
 	/// A set of block header has been received, typically in response to a
 	/// block
@@ -940,61 +1154,61 @@ pub trait ChainAdapter: Sync + Send {
 		bh: &[core::BlockHeader],
 		remaining: u64,
 		peer_info: &PeerInfo,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	/// Get header locator
-	fn header_locator(&self) -> Result<Vec<Hash>, chain::Error>;
+	fn header_locator(&self) -> Result<Vec<Hash>, mwc_chain::Error>;
 
 	/// Finds a list of block headers based on the provided locator. Tries to
 	/// identify the common chain and gets the headers that follow it
 	/// immediately.
-	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, chain::Error>;
+	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, mwc_chain::Error>;
 
 	/// Gets a full block by its hash.
 	/// Converts block to v2 compatibility if necessary (based on peer protocol version).
-	fn get_block(&self, h: Hash, peer_info: &PeerInfo) -> Option<core::Block>;
-
-	/// Provides a reading view into the current txhashset state as well as
-	/// the required indexes for a consumer to rewind to a consistant state
-	/// at the provided block hash.
-	fn txhashset_read(&self, h: Hash) -> Option<TxHashSetRead>;
+	fn get_block(
+		&self,
+		secp: &Secp256k1,
+		h: Hash,
+		peer_info: &PeerInfo,
+	) -> Result<Option<core::Block>, mwc_chain::Error>;
 
 	/// Header of the txhashset archive currently being served to peers.
-	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, chain::Error>;
+	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, mwc_chain::Error>;
 
 	/// Get the Grin specific tmp dir
-	fn get_tmp_dir(&self) -> Result<PathBuf, chain::Error>;
+	fn get_tmp_dir(&self) -> Result<PathBuf, mwc_chain::Error>;
 
 	/// Get a tmp file path in above specific tmp dir (create tmp dir if not exist)
 	/// Delete file if tmp file already exists
-	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, chain::Error>;
+	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, mwc_chain::Error>;
 
 	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
-	fn prepare_segmenter(&self) -> Result<Segmenter, chain::Error>;
+	fn prepare_segmenter(&self) -> Result<Segmenter, mwc_chain::Error>;
 
 	fn get_kernel_segment(
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<Segment<TxKernel>, chain::Error>;
+	) -> Result<Segment<TxKernel>, mwc_chain::Error>;
 
 	fn get_bitmap_segment(
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<Segment<BitmapChunk>, chain::Error>;
+	) -> Result<Segment<BitmapChunk>, mwc_chain::Error>;
 
 	fn get_output_segment(
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<Segment<OutputIdentifier>, chain::Error>;
+	) -> Result<Segment<OutputIdentifier>, mwc_chain::Error>;
 
 	fn get_rangeproof_segment(
 		&self,
 		hash: Hash,
 		id: SegmentIdentifier,
-	) -> Result<Segment<RangeProof>, chain::Error>;
+	) -> Result<Segment<RangeProof>, mwc_chain::Error>;
 
 	fn recieve_pibd_status(
 		&self,
@@ -1002,62 +1216,62 @@ pub trait ChainAdapter: Sync + Send {
 		header_hash: Hash,
 		header_height: u64,
 		output_bitmap_root: Hash,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn recieve_another_archive_header(
 		&self,
 		peer: &PeerAddr,
 		header_hash: Hash,
 		header_height: u64,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn receive_headers_hash_response(
 		&self,
 		peer: &PeerAddr,
 		archive_height: u64,
 		headers_hash_root: Hash,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn get_header_hashes_segment(
 		&self,
 		header_hashes_root: Hash,
 		id: SegmentIdentifier,
-	) -> Result<Segment<Hash>, chain::Error>;
+	) -> Result<Segment<Hash>, mwc_chain::Error>;
 
 	fn receive_header_hashes_segment(
 		&self,
 		peer: &PeerAddr,
 		header_hashes_root: Hash,
 		segment: Segment<Hash>,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn receive_bitmap_segment(
 		&self,
 		peer: &PeerAddr,
 		archive_header_hash: Hash,
 		segment: Segment<BitmapChunk>,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn receive_output_segment(
 		&self,
 		peer: &PeerAddr,
 		archive_header_hash: Hash,
 		segment: Segment<OutputIdentifier>,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn receive_rangeproof_segment(
 		&self,
 		peer: &PeerAddr,
 		archive_header_hash: Hash,
 		segment: Segment<RangeProof>,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	fn receive_kernel_segment(
 		&self,
 		peer: &PeerAddr,
 		archive_header_hash: Hash,
 		segment: Segment<TxKernel>,
-	) -> Result<(), chain::Error>;
+	) -> Result<(), mwc_chain::Error>;
 
 	/// Heard total_difficulty from a connected peer (via ping/pong).
 	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64);
@@ -1068,16 +1282,24 @@ pub trait ChainAdapter: Sync + Send {
 pub trait NetAdapter: ChainAdapter {
 	/// Find good peers we know with the provided capability and return their
 	/// addresses.
-	fn find_peer_addrs(&self, capab: Capabilities) -> Vec<PeerAddr>;
+	fn find_peer_addrs(&self, capab: Capabilities) -> Result<Vec<PeerAddr>, Error>;
 
 	/// A list of peers has been received from one of our peers.
-	fn peer_addrs_received(&self, _: Vec<PeerAddr>);
+	fn peer_addrs_received(&self, _: &PeerAddr, _: Vec<PeerAddr>);
 
 	/// Is this peer currently banned?
-	fn is_banned(&self, addr: &PeerAddr) -> bool;
+	fn is_banned(&self, addr: &PeerAddr) -> Result<bool, Error>;
+
+	/// Last stored protocol version for this peer, if we have historical data.
+	fn peer_version(&self, addr: &PeerAddr) -> Result<Option<ProtocolVersion>, Error>;
 
 	/// Ban peer
-	fn ban_peer(&self, addr: &PeerAddr, ban_reason: ReasonForBan, message: &str);
+	fn ban_peer(
+		&self,
+		addr: &PeerAddr,
+		ban_reason: ReasonForBan,
+		message: &str,
+	) -> Result<(), Error>;
 }
 
 #[derive(Clone, Debug)]
@@ -1094,4 +1316,272 @@ pub struct AttachmentUpdate {
 	pub read: usize,
 	pub left: usize,
 	pub meta: Arc<AttachmentMeta>,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use mwc_crates::chrono::Duration;
+	use std::time::Duration as StdDuration;
+
+	#[test]
+	fn outbound_connect_failure_ignores_local_and_ambiguous_failures() {
+		for err in [
+			Error::TorRestarting,
+			Error::TorNotInitialized,
+			Error::Interrupted,
+			Error::PeerWithSelf,
+			Error::Connection(std::io::Error::new(
+				std::io::ErrorKind::TimedOut,
+				"connect timeout",
+			)),
+			Error::ConnectionClose("node is stopping".into()),
+			Error::ConnectionClose("connection closed by peer".into()),
+			Error::Timeout,
+			Error::TorConnect("Unable connect to peer".into()),
+			Error::Internal("invalid onion v3 address abc".into()),
+			Error::Serialization(ser::Error::CorruptedData(
+				"Invalid onion address string abc".into(),
+			)),
+		] {
+			assert_eq!(
+				err.outbound_connect_failure(),
+				OutboundConnectFailure::Ignore,
+				"{:?}",
+				err
+			);
+		}
+	}
+
+	#[test]
+	fn outbound_connect_failure_marks_peer_failures_defunct() {
+		for err in [
+			Error::BadHandshake("invalid handshake".into()),
+			Error::BadMessage("invalid message".into()),
+			Error::MsgLen,
+			Error::UnexpectedMessage("unexpected message".into()),
+		] {
+			assert_eq!(
+				err.outbound_connect_failure(),
+				OutboundConnectFailure::MarkDefunct,
+				"{:?}",
+				err
+			);
+		}
+	}
+
+	#[test]
+	fn peer_addr_write_rejects_ipv6_flowinfo_or_scope_id() {
+		for addr in [
+			SocketAddrV6::new(Ipv6Addr::LOCALHOST, 3414, 1, 0),
+			SocketAddrV6::new(Ipv6Addr::LOCALHOST, 3414, 0, 1),
+		] {
+			match ser::ser_vec(
+				0,
+				&PeerAddr::Ip(SocketAddr::V6(addr)),
+				ProtocolVersion::local(),
+			) {
+				Err(ser::Error::CorruptedData(msg)) => {
+					assert!(msg.contains("nonzero flowinfo or scope_id"));
+				}
+				other => panic!("expected corrupted data error, got {:?}", other),
+			}
+		}
+	}
+
+	#[test]
+	fn gossip_rejection_reason_documents_non_gossipable_ipv4() {
+		for (addr, reason) in [
+			(
+				SocketAddr::from(([8, 8, 8, 8], 0)),
+				"port 0 is not connectable",
+			),
+			(
+				SocketAddr::from(([0, 1, 2, 3], 3414)),
+				"IPv4 0.0.0.0/8 is reserved for this network",
+			),
+			(
+				SocketAddr::from(([10, 1, 2, 3], 3414)),
+				"private IPv4 address",
+			),
+			(
+				SocketAddr::from(([100, 64, 0, 1], 3414)),
+				"carrier-grade NAT IPv4 address",
+			),
+			(
+				SocketAddr::from(([192, 0, 0, 8], 3414)),
+				"IETF protocol assignment IPv4 address",
+			),
+			(
+				SocketAddr::from(([192, 0, 0, 9], 3414)),
+				"IETF protocol assignment IPv4 address",
+			),
+			(
+				SocketAddr::from(([192, 0, 0, 10], 3414)),
+				"IETF protocol assignment IPv4 address",
+			),
+			(
+				SocketAddr::from(([192, 88, 99, 1], 3414)),
+				"deprecated 6to4 relay anycast IPv4 address",
+			),
+			(
+				SocketAddr::from(([198, 18, 0, 1], 3414)),
+				"network benchmarking IPv4 address",
+			),
+			(
+				SocketAddr::from(([192, 0, 2, 1], 3414)),
+				"documentation IPv4 address",
+			),
+			(
+				SocketAddr::from(([240, 0, 0, 1], 3414)),
+				"reserved IPv4 address",
+			),
+		] {
+			assert_eq!(PeerAddr::Ip(addr).gossip_rejection_reason(), Some(reason));
+		}
+		assert_eq!(
+			PeerAddr::Ip(SocketAddr::from(([8, 8, 8, 8], 3414))).gossip_rejection_reason(),
+			None
+		);
+	}
+
+	#[test]
+	fn gossip_rejection_reason_documents_non_gossipable_ipv6() {
+		for (addr, reason) in [
+			(
+				SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 3414),
+				"loopback IPv6 address",
+			),
+			(
+				SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1)), 3414),
+				"unique-local IPv6 address",
+			),
+			(
+				SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 3414),
+				"link-local IPv6 address",
+			),
+			(
+				SocketAddr::new(
+					IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1)),
+					3414,
+				),
+				"documentation IPv6 address",
+			),
+			(
+				SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 1)), 3414),
+				"IETF protocol assignment IPv6 address",
+			),
+			(
+				SocketAddr::new(
+					IpAddr::V6(Ipv6Addr::new(0x2001, 0x0010, 0, 0, 0, 0, 0, 1)),
+					3414,
+				),
+				"IETF protocol assignment IPv6 address",
+			),
+			(
+				SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0x2002, 0, 0, 0, 0, 0, 0, 1)), 3414),
+				"6to4 IPv6 address",
+			),
+			(
+				SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 1)), 3414),
+				"documentation IPv6 address",
+			),
+		] {
+			assert_eq!(PeerAddr::Ip(addr).gossip_rejection_reason(), Some(reason));
+		}
+		assert_eq!(
+			PeerAddr::Ip(SocketAddr::new(
+				IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
+				3414
+			))
+			.gossip_rejection_reason(),
+			None
+		);
+	}
+
+	#[test]
+	fn last_seen_seconds_ago_clamps_future_times_to_zero() {
+		let peer_last_seen = Utc::now() + Duration::seconds(60);
+
+		assert_eq!(last_seen_seconds_ago(peer_last_seen), 0);
+	}
+
+	#[test]
+	fn peer_advertised_calc_rank_handles_invalid_chunk_size() {
+		let source = PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], 3414)));
+		let addr = PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], 3415)));
+
+		assert_eq!(
+			PeerAdvertised::new(source.clone(), addr.clone(), 10, 100).calc_rank(),
+			10
+		);
+		assert_eq!(
+			PeerAdvertised::new(source.clone(), addr.clone(), 0, 100).calc_rank(),
+			0
+		);
+		assert_eq!(
+			PeerAdvertised::new(source.clone(), addr.clone(), usize::MAX, 100).calc_rank(),
+			0
+		);
+
+		let _ = PeerAdvertised::new(source, addr, usize::MAX, i64::MIN).calc_rank();
+	}
+
+	#[test]
+	fn clone_without_onion_expanded_key_drops_secret_field() {
+		let mut config = P2PConfig::default();
+		config.port = 1234;
+		config.peer_min_preferred_outbound_count = Some(7);
+		config.onion_expanded_key = Some("0123456789abcdef".to_string());
+
+		let sanitized = config.clone_without_secrets();
+
+		assert_eq!(sanitized.port, config.port);
+		assert_eq!(
+			sanitized.peer_min_preferred_outbound_count,
+			config.peer_min_preferred_outbound_count
+		);
+		assert_eq!(sanitized.onion_expanded_key, None);
+		assert_eq!(
+			config.onion_expanded_key.as_deref(),
+			Some("0123456789abcdef")
+		);
+	}
+
+	#[test]
+	fn peer_update_only_refreshes_stuck_detector_on_new_max_difficulty() {
+		let peer_info = PeerInfo {
+			capabilities: Capabilities::UNKNOWN,
+			user_agent: "test".to_string(),
+			version: ProtocolVersion::local(),
+			addr: PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], 3414))),
+			direction: Direction::Outbound,
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::from_num(100)))),
+			tx_base_fee: 0,
+		};
+		let old_stuck_detector = Instant::now() - StdDuration::from_secs(60);
+		peer_info.live_info.write().stuck_detector = old_stuck_detector;
+
+		peer_info.update(1, Difficulty::from_num(99));
+		assert_eq!(
+			peer_info.live_info.read_recursive().stuck_detector,
+			old_stuck_detector
+		);
+
+		peer_info.update(2, Difficulty::from_num(100));
+		assert_eq!(
+			peer_info.live_info.read_recursive().stuck_detector,
+			old_stuck_detector
+		);
+
+		peer_info.update(3, Difficulty::from_num(101));
+		assert!(peer_info.live_info.read_recursive().stuck_detector > old_stuck_detector);
+	}
+
+	#[test]
+	fn last_seen_seconds_ago_clamps_values_above_u32_max() {
+		let peer_last_seen = Utc::now() - Duration::seconds(u32::MAX as i64 + 1);
+
+		assert_eq!(last_seen_seconds_ago(peer_last_seen), u32::MAX);
+	}
 }

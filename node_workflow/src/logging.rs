@@ -14,20 +14,23 @@
 
 // Loggers setup
 
+use crate::Error;
+use mwc_crates::log::info;
 use mwc_util::logger::{CallbackLoggingConfig, LogEntry, LoggingConfig};
 use std::sync::mpsc;
 
 /// Init logs for binaries
 pub fn init_bin_logs(
 	logging_config: &LoggingConfig,
-) -> Result<Option<mpsc::Receiver<LogEntry>>, String> {
+) -> Result<Option<mpsc::Receiver<LogEntry>>, Error> {
 	let (logs_tx, logs_rx) = if logging_config.tui_running.unwrap_or(false) {
 		let (logs_tx, logs_rx) = mpsc::sync_channel::<LogEntry>(200);
 		(Some(logs_tx), Some(logs_rx))
 	} else {
 		(None, None)
 	};
-	mwc_util::logger::init_logger(Some(logging_config), logs_tx)?;
+	mwc_util::logger::init_logger(Some(logging_config), logs_tx)
+		.map_err(|e| Error::LogError(e.to_string()))?;
 
 	info!("Logging is initialized");
 
@@ -35,8 +38,9 @@ pub fn init_bin_logs(
 }
 
 /// Init logs for libraries
-pub fn init_buffered_logs(logging_config: CallbackLoggingConfig) -> Result<(), String> {
-	mwc_util::logger::init_callback_logger(logging_config)?;
+pub fn init_buffered_logs(logging_config: CallbackLoggingConfig) -> Result<(), Error> {
+	mwc_util::logger::init_callback_logger(logging_config)
+		.map_err(|e| Error::LogError(e.to_string()))?;
 	info!("Buffered/Callback logging is initialized");
 	Ok(())
 }
@@ -45,6 +49,7 @@ pub fn init_buffered_logs(logging_config: CallbackLoggingConfig) -> Result<(), S
 pub fn get_buffered_logs(
 	last_known_entry_id: Option<u64>,
 	result_size_limit: usize,
-) -> Result<Vec<mwc_util::logger::LogBufferedEntry>, String> {
+) -> Result<Vec<mwc_util::logger::LogBufferedEntry>, Error> {
 	mwc_util::logger::read_buffered_logs(last_known_entry_id, result_size_limit)
+		.map_err(|e| Error::LogError(e.to_string()))
 }

@@ -38,8 +38,8 @@ path = "fuzz_targets/read_peer_addrs.rs"
 name = "read_peer_error"
 path = "fuzz_targets/read_peer_error.rs"
 [[bin]]
-name = "read_sock_addr"
-path = "fuzz_targets/read_sock_addr.rs"
+name = "read_peer_addr"
+path = "fuzz_targets/read_peer_addr.rs"
 [[bin]]
 name = "read_locator"
 path = "fuzz_targets/read_locator.rs"

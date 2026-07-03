@@ -18,9 +18,10 @@
 use crate::core::block::{Block, BlockHeader, Error, UntrustedBlockHeader};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::id::ShortIdentifiable;
-use crate::core::{Output, ShortId, TxKernel};
-use crate::ser::{self, read_multi, Readable, Reader, VerifySortedAndUnique, Writeable, Writer};
-use rand::{thread_rng, Rng};
+use crate::core::{Output, ShortId, TransactionBody, TxKernel};
+use crate::ser::{self, read_multi, Readable, Reader, Writeable, Writer};
+use mwc_crates::rand::rngs::SysRng;
+use mwc_crates::rand::TryRng;
 
 /// Container for full (full) outputs and kernels and kern_ids for a compact block.
 #[derive(Debug, Clone)]
@@ -36,6 +37,7 @@ pub struct CompactBlockBody {
 
 impl CompactBlockBody {
 	fn init(
+		context_id: u32,
 		out_full: Vec<Output>,
 		kern_full: Vec<TxKernel>,
 		kern_ids: Vec<ShortId>,
@@ -50,34 +52,64 @@ impl CompactBlockBody {
 		if verify_sorted {
 			// If we are verifying sort order then verify and
 			// return an error if not sorted lexicographically.
-			body.verify_sorted()?;
+			body.verify_sorted(context_id)?;
 			Ok(body)
 		} else {
 			// If we are not verifying sort order then sort in place and return.
 			let mut body = body;
-			body.sort();
+			body.sort(context_id)?;
+			body.verify_sorted(context_id)?;
 			Ok(body)
 		}
 	}
 
 	/// Sort everything.
-	fn sort(&mut self) {
-		self.out_full.sort_unstable();
-		self.kern_full.sort_unstable();
-		self.kern_ids.sort_unstable();
+	fn sort(&mut self, context_id: u32) -> Result<(), Error> {
+		ser::sort_by_hash_key(context_id, &mut self.out_full, |output| &output.identifier)?;
+		ser::sort_by_hash(context_id, &mut self.kern_full)?;
+		ser::sort_by_hash(context_id, &mut self.kern_ids)?;
+		Ok(())
 	}
 
 	/// "Lightweight" validation.
-	fn validate_read(&self) -> Result<(), Error> {
-		self.verify_sorted()?;
+	fn validate_read(&self, context_id: u32) -> Result<(), Error> {
+		TransactionBody::verify_compact_block_read_weight_for_size(
+			context_id,
+			self.out_full.len() as u64,
+			self.kern_full.len() as u64,
+			self.kern_ids.len() as u64,
+		)
+		.map_err(|e| match e {
+			ser::Error::TooLargeReadErr(_) | ser::Error::TooLargeWriteErr(_) => Error::TooHeavy,
+			ser::Error::DataOverflow(msg) => Error::DataOverflow(msg),
+			other => Error::Serialization(other),
+		})?;
+		self.verify_sorted(context_id)?;
+		self.verify_coinbase_full_entries()?;
+		Ok(())
+	}
+
+	fn verify_coinbase_full_entries(&self) -> Result<(), Error> {
+		if self.out_full.iter().any(|out| !out.is_coinbase()) {
+			return Err(Error::Other(
+				"Compact block contains non-coinbase full output".into(),
+			));
+		}
+		if self.kern_full.iter().any(|kernel| !kernel.is_coinbase()) {
+			return Err(Error::Other(
+				"Compact block contains non-coinbase full kernel".into(),
+			));
+		}
 		Ok(())
 	}
 
 	// Verify everything is sorted in lexicographical order and no duplicates present.
-	fn verify_sorted(&self) -> Result<(), Error> {
-		self.out_full.verify_sorted_and_unique()?;
-		self.kern_full.verify_sorted_and_unique()?;
-		self.kern_ids.verify_sorted_and_unique()?;
+	fn verify_sorted(&self, context_id: u32) -> Result<(), Error> {
+		ser::verify_sorted_and_unique_by_hash_key(context_id, &self.out_full, |output| {
+			&output.identifier
+		})?;
+		ser::verify_sorted_and_unique_by_hash(context_id, &self.kern_full)?;
+		ser::verify_sorted_and_unique_by_hash(context_id, &self.kern_ids)?;
 		Ok(())
 	}
 }
@@ -87,22 +119,24 @@ impl Readable for CompactBlockBody {
 		let (out_full_len, kern_full_len, kern_id_len) =
 			ser_multiread!(reader, read_u64, read_u64, read_u64);
 
-		if out_full_len > ser::READ_VEC_SIZE_LIMIT
-			|| kern_full_len > ser::READ_VEC_SIZE_LIMIT
-			|| kern_id_len > ser::READ_VEC_SIZE_LIMIT
-		{
-			return Err(ser::Error::TooLargeReadErr(format!(
-				"CompactBlockBody has too many items: outputs {}, kernels {}, kernel ids {}",
-				out_full_len, kern_full_len, kern_id_len
-			)));
-		}
+		TransactionBody::verify_compact_block_read_weight_for_size(
+			reader.get_context_id(),
+			out_full_len,
+			kern_full_len,
+			kern_id_len,
+		)?;
 
 		let out_full = read_multi(reader, out_full_len)?;
 		let kern_full = read_multi(reader, kern_full_len)?;
 		let kern_ids = read_multi(reader, kern_id_len)?;
 
 		// Initialize compact block body, verifying sort order.
-		let body = CompactBlockBody::init(out_full, kern_full, kern_ids, true).map_err(|e| {
+		let body =
+			CompactBlockBody::init(reader.get_context_id(), out_full, kern_full, kern_ids, true)
+				.map_err(|e| {
+					ser::Error::CorruptedData(format!("Unable to read compact block, {}", e))
+				})?;
+		body.verify_coinbase_full_entries().map_err(|e| {
 			ser::Error::CorruptedData(format!("Unable to read compact block, {}", e))
 		})?;
 
@@ -112,17 +146,12 @@ impl Readable for CompactBlockBody {
 
 impl Writeable for CompactBlockBody {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		if self.out_full.len() > ser::READ_VEC_SIZE_LIMIT as usize
-			|| self.kern_full.len() > ser::READ_VEC_SIZE_LIMIT as usize
-			|| self.kern_ids.len() > ser::READ_VEC_SIZE_LIMIT as usize
-		{
-			return Err(ser::Error::TooLargeWriteErr(format!(
-				"CompactBlockBody has too many items: outputs {}, kernels {}, kernel ids {}",
-				self.out_full.len(),
-				self.kern_full.len(),
-				self.kern_ids.len()
-			)));
-		}
+		TransactionBody::verify_compact_block_write_weight_for_size(
+			writer.get_context_id(),
+			self.out_full.len() as u64,
+			self.kern_full.len() as u64,
+			self.kern_ids.len() as u64,
+		)?;
 
 		ser_multiwrite!(
 			writer,
@@ -164,8 +193,8 @@ impl DefaultHashable for CompactBlock {}
 
 impl CompactBlock {
 	/// "Lightweight" validation.
-	fn validate_read(&self) -> Result<(), Error> {
-		self.body.validate_read()?;
+	fn validate_read(&self, context_id: u32) -> Result<(), Error> {
+		self.body.validate_read(context_id)?;
 		Ok(())
 	}
 
@@ -187,7 +216,10 @@ impl CompactBlock {
 	/// Convert Block into Compact block. Can't use From trait because conversion can return error
 	pub fn from(block: Block) -> Result<Self, Error> {
 		let header = block.header.clone();
-		let nonce = thread_rng().gen();
+		let context_id = header.pow.proof.context_id;
+		let nonce = SysRng
+			.try_next_u64()
+			.map_err(|e| Error::Other(format!("SysRng error: {}", e)))?;
 
 		let out_full = block
 			.outputs()
@@ -198,23 +230,18 @@ impl CompactBlock {
 
 		let mut kern_full = vec![];
 		let mut kern_ids = vec![];
+		let header_hash = header.hash(context_id)?;
 
 		for k in block.kernels() {
 			if k.is_coinbase() {
 				kern_full.push(k.clone());
 			} else {
-				let hash = header
-					.hash()
-					.map_err(|e| Error::Other(format!("Unable to build a hash, {}", e)))?;
-				kern_ids.push(
-					k.short_id(&hash, nonce)
-						.map_err(|e| Error::Other(format!("Hash calculation error, {}", e)))?,
-				);
+				kern_ids.push(k.short_id(context_id, &header_hash, nonce)?);
 			}
 		}
 
 		// Initialize a compact block body and sort everything.
-		let body = CompactBlockBody::init(out_full, kern_full, kern_ids, false)?;
+		let body = CompactBlockBody::init(context_id, out_full, kern_full, kern_ids, false)?;
 
 		Ok(CompactBlock {
 			header,
@@ -267,6 +294,13 @@ impl From<UntrustedCompactBlock> for CompactBlock {
 #[derive(Debug)]
 pub struct UntrustedCompactBlock(CompactBlock);
 
+impl UntrustedCompactBlock {
+	/// The underlying compact block, after lightweight read validation.
+	pub fn as_compact_block(&self) -> &CompactBlock {
+		&self.0
+	}
+}
+
 /// Implementation of Readable for an untrusted compact block, defines how to read a
 /// compact block from a binary stream.
 impl Readable for UntrustedCompactBlock {
@@ -282,10 +316,30 @@ impl Readable for UntrustedCompactBlock {
 		};
 
 		// Now validate the compact block and treat any validation error as corrupted data.
-		cb.validate_read().map_err(|e| {
+		cb.validate_read(reader.get_context_id()).map_err(|e| {
 			ser::Error::CorruptedData(format!("Failed to validate compact block, {}", e))
 		})?;
 
 		Ok(UntrustedCompactBlock(cb))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{consensus, global};
+
+	#[test]
+	fn compact_block_body_validate_read_rejects_overweight_body() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let overweight_kernel_ids =
+			global::max_block_weight(0) / consensus::BLOCK_KERNEL_WEIGHT + 1;
+		let body = CompactBlockBody {
+			out_full: vec![],
+			kern_full: vec![],
+			kern_ids: vec![ShortId::zero(); overweight_kernel_ids as usize],
+		};
+
+		assert!(matches!(body.validate_read(0), Err(Error::TooHeavy)));
 	}
 }

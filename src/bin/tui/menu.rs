@@ -15,15 +15,16 @@
 
 //! Main Menu definition
 
-use cursive::align::HAlign;
-use cursive::direction::Orientation;
-use cursive::event::Key;
-use cursive::view::Nameable;
-use cursive::view::View;
-use cursive::views::{
-	LinearLayout, OnEventView, ResizedView, SelectView, StackView, TextView, ViewRef,
+use mwc_crates::cursive::align::HAlign;
+use mwc_crates::cursive::direction::Orientation;
+use mwc_crates::cursive::event::Key;
+use mwc_crates::cursive::view::Nameable;
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::views::{
+	LinearLayout, OnEventView, ResizedView, SelectView, StackView, TextView,
 };
-use cursive::Cursive;
+use mwc_crates::cursive::Cursive;
+use mwc_crates::log::error;
 
 use crate::tui::constants::{
 	MAIN_MENU, ROOT_STACK, SUBMENU_MINING_BUTTON, VIEW_BASIC_STATUS, VIEW_LOGS, VIEW_MINING,
@@ -42,14 +43,29 @@ pub fn create() -> impl View {
 	main_menu.get_mut().add_item("Logs", VIEW_LOGS);
 	main_menu.get_mut().add_item("Version Info", VIEW_VERSION);
 	let change_view = |s: &mut Cursive, v: &&str| {
-		if *v == "" {
+		if v.is_empty() {
 			return;
 		}
 
-		let _ = s.call_on_name(ROOT_STACK, |sv: &mut StackView| {
-			let pos = sv.find_layer_from_name(v).unwrap();
-			sv.move_to_front(pos);
-		});
+		match s.call_on_name(ROOT_STACK, |sv: &mut StackView| {
+			if let Some(pos) = sv.find_layer_from_name(v) {
+				sv.move_to_front(pos);
+				true
+			} else {
+				false
+			}
+		}) {
+			Some(true) => {}
+			Some(false) => {
+				error!("TUI root stack layer not found for menu selection: {}", v);
+			}
+			None => {
+				error!(
+					"TUI root stack '{}' not found or has unexpected type for menu selection: {}",
+					ROOT_STACK, v
+				);
+			}
+		}
 	};
 
 	main_menu.get_mut().set_on_select(change_view);
@@ -57,24 +73,47 @@ pub fn create() -> impl View {
 		.get_mut()
 		.set_on_submit(|c: &mut Cursive, v: &str| {
 			if v == VIEW_MINING {
-				let _ = c.focus_name(SUBMENU_MINING_BUTTON);
+				if let Err(e) = c.focus_name(SUBMENU_MINING_BUTTON) {
+					error!(
+						"TUI mining submenu focus target '{}' not found or cannot be focused: {:?}",
+						SUBMENU_MINING_BUTTON, e
+					);
+				}
 			}
 		});
 	let main_menu = OnEventView::new(main_menu)
 		.on_pre_event('j', move |c| {
-			let mut s: ViewRef<SelectView<&str>> = c.find_name(MAIN_MENU).unwrap();
-			s.select_down(1)(c);
+			if let Some(mut s) = c.find_name::<SelectView<&str>>(MAIN_MENU) {
+				s.select_down(1)(c);
+			} else {
+				error!(
+					"TUI main menu '{}' not found or has unexpected type while handling 'j'",
+					MAIN_MENU
+				);
+			}
 		})
 		.on_pre_event('k', move |c| {
-			let mut s: ViewRef<SelectView<&str>> = c.find_name(MAIN_MENU).unwrap();
-			s.select_up(1)(c);
+			if let Some(mut s) = c.find_name::<SelectView<&str>>(MAIN_MENU) {
+				s.select_up(1)(c);
+			} else {
+				error!(
+					"TUI main menu '{}' not found or has unexpected type while handling 'k'",
+					MAIN_MENU
+				);
+			}
 		})
 		.on_pre_event(Key::Tab, move |c| {
-			let mut s: ViewRef<SelectView<&str>> = c.find_name(MAIN_MENU).unwrap();
-			if s.selected_id().unwrap() == s.len() - 1 {
-				s.set_selection(0)(c);
+			if let Some(mut s) = c.find_name::<SelectView<&str>>(MAIN_MENU) {
+				match (s.selected_id(), s.len().checked_sub(1)) {
+					(Some(selected), Some(last)) if selected == last => s.set_selection(0)(c),
+					(Some(_), Some(_)) => s.select_down(1)(c),
+					_ => {}
+				}
 			} else {
-				s.select_down(1)(c);
+				error!(
+					"TUI main menu '{}' not found or has unexpected type while handling Tab",
+					MAIN_MENU
+				);
 			}
 		});
 	let main_menu = LinearLayout::new(Orientation::Vertical)

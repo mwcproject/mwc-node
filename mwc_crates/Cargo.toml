@@ -1,0 +1,152 @@
+[package]
+name = "mwc_crates"
+version = "7.0.0"
+authors = ["Mwc Developers <info@mwc.mw>"]
+description = "Shared third-party dependency facade for mwc-node and mwc-wallet"
+license = "Apache-2.0"
+repository = "https://github.com/mwcproject/mwc-node"
+keywords = ["crypto", "mwc", "mimblewimble"]
+workspace = ".."
+edition = "2018"
+
+[dependencies]
+# Error handling and shared infrastructure used across most crates.
+anyhow = "1.0"
+atomic_float = "1.0"
+backtrace = "0.3"
+built = { version = "0.8", features = ["git2"] }
+crossbeam = "0.8"
+crossbeam_utils = { package = "crossbeam-utils", version = "0.8" }
+dirs = "6.0"
+env_logger = "0.11"
+lazy_static = "1.5"
+log = "0.4"
+log4rs = { version = "1.4", features = ["rolling_file_appender", "compound_policy", "size_trigger", "fixed_window_roller", "gzip"] }
+indexmap = "2"
+parking_lot = "0.12"
+regex = "1.12"
+serial_test = "3.4"
+
+# Tor / Arti onion-service stack used by `p2p/src/tor/*` and the Tor playground.
+arti_client = { package = "arti-client", version = "0.44", default-features = false, features = ["tokio", "rustls", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
+safelog = "0.9"
+tor_cell = { package = "tor-cell", version = "0.44.0" }
+tor_config = { package = "tor-config", version = "0.44.0" }
+tor_error = { package = "tor-error", version = "0.44.0" }
+tor_hscrypto = { package = "tor-hscrypto", version = "0.44.0" }
+tor_hsservice = { package = "tor-hsservice", version = "0.44.0" }
+tor_keymgr = { package = "tor-keymgr", version = "0.44.0" }
+tor_llcrypto = { package = "tor-llcrypto", version = "0.44.0" }
+tor_proto = { package = "tor-proto", version = "0.44.0", features = ["stream-ctrl"] }
+tor_rtcompat = { package = "tor-rtcompat", version = "0.44.0", default-features = false, features = ["tokio", "rustls"] }
+tracing = "0.1"
+tracing_subscriber = { package = "tracing-subscriber", version = "0.3", default-features = false, features = ["registry", "std"] }
+# Windows build linking fix, need only include the crate, no usage requred
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Async runtimes and transport glue shared by Tor, REST, stratum, and p2p networking.
+async_std = { package = "async-std", version = "1.13" }
+async_stream = { package = "async-stream", version = "0.3" }
+bytes = "1.11"
+futures = "0.3"
+http = "1.4"
+hyper = { version = "1.8", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls_native_certs = { package = "rustls-native-certs", version = "0.8" }
+rustls_pemfile = { package = "rustls-pemfile", version = "2.2" }
+tokio = { version = "1", features = ["full"] }
+tokio_rustls = { package = "tokio-rustls", version = "0.26" }
+tokio_socks = { package = "tokio-socks", version = "0.5" }
+tokio_util = { package = "tokio-util", version = "0.7", features = ["io"] }
+url = "2.5"
+
+# HTTP / RPC clients and servers layered on the async/TLS stack.
+easy_jsonrpc_mwc = { package = "easy-jsonrpc-mwc", git = "https://github.com/mwcproject/easy-jsonrpc-mwc.git", branch = "master"}
+#easy_jsonrpc_mwc = { package = "easy-jsonrpc-mwc", path = "../../easy-jsonrpc-mwc"}
+reqwest = { version = "0.13", default-features = false, features = ["http2", "system-proxy", "default-tls", "rustls", "socks", "blocking", "json", "form"] }
+ureq = "3"
+
+# CLI / TUI and operator-facing tools used by the node binaries.
+# Clap cn't be upgraded because they drop yaml support that is used to read config files
+clap = { version = "=2.33.3", features = ["yaml"] }
+colored = "3.1"
+ctrlc = { version = "3.5", features = ["termination"] }
+cursive = { version = "0.21", default-features = false, features = ["pancurses-backend"] }
+cursive_table_view = "0.15.0"
+humansize = "2.1"
+linefeed = "0.6"
+prettytable = { package = "prettytable-rs", version = "0.10" }
+qr_code = "2.0"
+rpassword = "7.4"
+rustyline = "17"
+term = "1.2"
+
+# Serialization, config parsing, and data formatting used across APIs and config files.
+base64 = "0.22"
+bigdecimal = "0.4"
+bitstream_io = { package = "bitstream-io", version = "4.9" }
+chrono = { version = "0.4", features = ["serde"] }
+enum_primitive = "0.1"
+shlex = "1.3.0"
+smaz = "0.1"
+toml = "1.0"
+uuid = { version = "1.22", features = ["serde", "v4"] }
+
+# Storage, filesystem, and process-environment helpers for chain state and packaging.
+croaring = "2.5"
+filetime = "0.2"
+fs2 = "0.4"
+lmdb_zero = { package = "lmdb-zero", version = "0.4.4" }
+memmap2 = "0.9"
+remove_dir_all = "0.7"
+same-file = "1"
+tempfile = "3.27"
+walkdir = "2.5"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# Secp256k1
+secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", version = "0.8.0", tag = "0.8.0", features = ["bullet-proof-sizing"] }
+#secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", branch = "audit", features = ["bullet-proof-sizing"]}
+#secp256k1zkp = { package = "mwc_secp256k1zkp", path = "../../rust-secp256k1-zkp", features = ["bullet-proof-sizing"]}
+# Dalek based encryption
+ed25519_dalek = { package = "ed25519-dalek", version = "2" }
+x25519_dalek = { package = "x25519-dalek", version = "2" }
+
+# Crypto primitives and encodings shared by core, keychain, API, and p2p.
+bit_vec = { package = "bit-vec", version = "0.9" }
+bitflags = { version = "2", features = ["serde"] }
+blake2_rfc = { package = "blake2-rfc", version = "0.2" }
+bs58 = "0.5"
+byteorder = "1"
+crc = "3.4"
+# Keep the shared digest stack aligned with sha2, hmac, pbkdf2 and ripemd
+digest = "0.11"
+sha2 = { version = "0.11", features = ["zeroize"] }
+hex = "0.4"
+hmac = { version = "0.13", features = ["zeroize"] }
+pbkdf2 = "0.13"
+ring = "0.17"
+subtle = "2"
+ripemd = "0.2"
+signature = "2.2"
+siphasher = "1.0"
+
+# Numeric, caching, and system-introspection utilities used throughout the node.
+lru = "0.16"
+nanoid = "0.4"
+num = "0.4"
+num_bigint = { package = "num-bigint", version = "0.4" }
+num_cpus = "1"
+semver = "1.0"
+sysinfo = "0.38"
+
+# Platform-specific TLS connector for webhook posting in `servers/src/common/hooks.rs`.
+# We keep Android/non-Android definitions separate because Rust otherwise unifies
+# `hyper-rustls` across targets in a way that breaks the Android build.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+hyper_rustls = { package = "hyper-rustls", version = "0.27" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+hyper_rustls = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["webpki-tokio"] }

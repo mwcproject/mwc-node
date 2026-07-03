@@ -18,10 +18,14 @@
 //! Implementation of BIP39 Mnemonic code for generating deterministic keys, as defined
 //! at https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki
 
-use digest::Digest;
-use hmac::Hmac;
-use pbkdf2::pbkdf2;
-use sha2::{Sha256, Sha512};
+use mwc_crates::digest::Digest;
+use mwc_crates::hmac::Hmac;
+use mwc_crates::lazy_static::lazy_static;
+use mwc_crates::pbkdf2::pbkdf2;
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::sha2::{Sha256, Sha512};
+use mwc_crates::zeroize::Zeroizing;
+use std::convert::TryFrom;
 
 lazy_static! {
 	/// List of bip39 words
@@ -30,69 +34,138 @@ lazy_static! {
 
 /// An error that might occur during mnemonic decoding
 #[derive(thiserror::Error, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub enum Error {
 	/// Invalid word encountered
-	#[error("invalid bip39 word {0}")]
-	BadWord(String),
+	#[error("invalid bip39 word")]
+	BadWord,
 	/// Checksum was not correct (expected, actual)
 	#[error("bip39 checksum 0x{0:x} does not match expected 0x{1:x}")]
 	BadChecksum(u8, u8),
 	/// The number of words/bytes was invalid
 	#[error("invalid mnemonic/entropy length {0}")]
 	InvalidLength(usize),
+	/// Invalid passphase
+	#[error("invalid passphrase encoding")]
+	IbvalidPassphraseEncoding,
+	/// Data overflow error
+	#[error("mnemonic data overflow error, {0}")]
+	DataOverflow(String),
 }
 
 /// Returns the index of a word in the wordlist
 pub fn search(word: &str) -> Result<u16, Error> {
-	let w = word.to_string();
+	let w = Zeroizing::new(word.to_string());
 	match WORDS.binary_search(&w) {
-		Ok(index) => Ok(index as u16),
-		Err(_) => Err(Error::BadWord(w)),
+		Ok(index) => u16::try_from(index).map_err(|_| {
+			Error::DataOverflow(format!(
+				"mnemonic::search, index={} words_len={}",
+				index,
+				WORDS.len()
+			))
+		}),
+		Err(_) => Err(Error::BadWord),
 	}
 }
 
-/// Converts a mnemonic to entropy
-pub fn to_entropy(mnemonic: &str) -> Result<Vec<u8>, Error> {
-	let words: Vec<String> = mnemonic.split_whitespace().map(|s| s.into()).collect();
+fn mnemonic_words(mnemonic: &str) -> Zeroizing<Vec<String>> {
+	Zeroizing::new(mnemonic.split_whitespace().map(|s| s.into()).collect())
+}
 
+fn to_entropy_from_words(words: &[String]) -> Result<Zeroizing<Vec<u8>>, Error> {
 	let sizes: [usize; 5] = [12, 15, 18, 21, 24];
 	if !sizes.contains(&words.len()) {
 		return Err(Error::InvalidLength(words.len()));
 	}
 
 	// u11 vector of indexes for each word
-	let mut indexes: Vec<u16> = words
-		.iter()
-		.map(|x| search(x))
-		.collect::<Result<Vec<_>, _>>()?;
+	let mut indexes: Zeroizing<Vec<u16>> = Zeroizing::new(Vec::with_capacity(words.len()));
+	for w in words {
+		indexes.push(search(w)?);
+	}
+
 	let checksum_bits = words.len() / 3;
-	let mask = ((1 << checksum_bits) - 1) as u8;
+	// mask = ((1 << checksum_bits) - 1) as u8;
+	let mask = 1u16
+		// Safe: accepted BIP39 word counts make checksum_bits 4..=8.
+		.checked_shl(checksum_bits as u32)
+		.and_then(|value| value.checked_sub(1))
+		.and_then(|value| u8::try_from(value).ok())
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"mnemonic::to_entropy_from_words, checksum_bits={}",
+				checksum_bits
+			))
+		})?;
 	let last = indexes.pop().ok_or(Error::InvalidLength(0))?;
+	// Safe: checksum_bits is at most 8, so truncating to the low byte preserves
+	// all checksum bits used by the mask.
 	let checksum = (last as u8) & mask;
 
-	let datalen = ((11 * words.len()) - checksum_bits) / 8 - 1;
-	let mut entropy: Vec<u8> = vec![0; datalen];
+	// datalen = ((11 * words.len()) - checksum_bits) / 8 - 1;
+	let datalen = words
+		.len()
+		.checked_mul(11)
+		.and_then(|value| value.checked_sub(checksum_bits))
+		// Safe: divisor is the fixed non-zero number of bits per byte.
+		.map(|value| value / 8)
+		.and_then(|value| value.checked_sub(1))
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"mnemonic::to_entropy_from_words, words_len={} checksum_bits={}",
+				words.len(),
+				checksum_bits
+			))
+		})?;
+	let mut entropy: Zeroizing<Vec<u8>> = Zeroizing::new(vec![0; datalen]);
 	// set the last byte to the data part of the last word
+	// Safe: last is an 11-bit word index and shifting by checksum_bits leaves
+	// at most 8 data bits.
 	entropy.push((last >> checksum_bits) as u8);
 	// start setting bits from this index
-	let mut loc: usize = 11 - checksum_bits;
+	let mut loc: usize = 11usize.checked_sub(checksum_bits).ok_or_else(|| {
+		Error::DataOverflow(format!(
+			"mnemonic::to_entropy_from_words, checksum_bits={}",
+			checksum_bits
+		))
+	})?;
 
 	// cast vector of u11 as u8
 	for index in indexes.iter().rev() {
 		for i in 0..11 {
 			let bit = index & (1 << i) != 0;
-			entropy[datalen - loc / 8] |= (bit as u8) << (loc % 8);
-			loc += 1;
+			// entropy[datalen - loc / 8] |= (bit as u8) << (loc % 8);
+			// loc += 1;
+			let entropy_idx = datalen.checked_sub(loc / 8).ok_or_else(|| {
+				Error::DataOverflow(format!(
+					"mnemonic::to_entropy_from_words, datalen={} loc={}",
+					datalen, loc
+				))
+			})?;
+			let byte = entropy
+				.get_mut(entropy_idx)
+				.ok_or(Error::InvalidLength(entropy_idx))?;
+			// Safe: loc % 8 bounds the shift to 0..=7 for a u8 bit.
+			*byte |= u8::from(bit) << (loc % 8);
+			loc = loc.checked_add(1).ok_or_else(|| {
+				Error::DataOverflow(format!("mnemonic::to_entropy_from_words, loc={}", loc))
+			})?;
 		}
 	}
 
-	let mut hash = [0; 32];
+	let mut hash = Zeroizing::new([0; 32]);
 	let mut sha2sum = Sha256::default();
 	sha2sum.update(&entropy);
-	#[allow(deprecated)]
-	hash.copy_from_slice(sha2sum.finalize().as_slice());
+	hash.copy_from_slice(sha2sum.finalize_reset().as_slice());
 
-	let actual = (hash[0] >> (8 - checksum_bits)) & mask;
+	// actual = (hash[0] >> (8 - checksum_bits)) & mask;
+	let actual_shift = 8usize.checked_sub(checksum_bits).ok_or_else(|| {
+		Error::DataOverflow(format!(
+			"mnemonic::to_entropy_from_words, checksum_bits={}",
+			checksum_bits
+		))
+	})?;
+	let actual = (hash[0] >> actual_shift) & mask;
 
 	if actual != checksum {
 		return Err(Error::BadChecksum(checksum, actual));
@@ -101,8 +174,14 @@ pub fn to_entropy(mnemonic: &str) -> Result<Vec<u8>, Error> {
 	Ok(entropy)
 }
 
+/// Converts a mnemonic to entropy
+pub fn to_entropy(mnemonic: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
+	let words = mnemonic_words(mnemonic);
+	to_entropy_from_words(&words)
+}
+
 /// Converts entropy to a mnemonic
-pub fn from_entropy(entropy: &[u8]) -> Result<String, Error> {
+pub fn from_entropy(entropy: &[u8]) -> Result<Zeroizing<String>, Error> {
 	let sizes: [usize; 5] = [16, 20, 24, 28, 32];
 	let length = entropy.len();
 	if !sizes.contains(&length) {
@@ -110,52 +189,119 @@ pub fn from_entropy(entropy: &[u8]) -> Result<String, Error> {
 	}
 
 	let checksum_bits = length / 4;
-	let mask = ((1 << checksum_bits) - 1) as u8;
+	// mask = ((1 << checksum_bits) - 1) as u8;
+	let mask = 1u16
+		// Safe: accepted BIP39 entropy lengths make checksum_bits 4..=8.
+		.checked_shl(checksum_bits as u32)
+		.and_then(|value| value.checked_sub(1))
+		.and_then(|value| u8::try_from(value).ok())
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"mnemonic::from_entropy, length={} checksum_bits={}",
+				length, checksum_bits
+			))
+		})?;
 
-	let mut hash = [0; 32];
+	let mut hash = Zeroizing::new([0; 32]);
 	let mut sha2sum = Sha256::default();
 	sha2sum.update(entropy);
-	#[allow(deprecated)]
-	hash.copy_from_slice(sha2sum.finalize().as_slice());
+	hash.copy_from_slice(sha2sum.finalize_reset().as_slice());
 
-	let checksum = (hash[0] >> 8 - checksum_bits) & mask;
+	//  checksum = (hash[0] >> 8 - checksum_bits) & mask;
+	let checksum_shift = 8usize.checked_sub(checksum_bits).ok_or_else(|| {
+		Error::DataOverflow(format!(
+			"mnemonic::from_entropy, checksum_bits={}",
+			checksum_bits
+		))
+	})?;
+	let checksum = (hash[0] >> checksum_shift) & mask;
 
-	let nwords = (length * 8 + checksum_bits) / 11;
-	let mut indexes: Vec<u16> = vec![0; nwords];
+	// nwords = (length * 8 + checksum_bits) / 11;
+	let nwords = length
+		.checked_mul(8)
+		.and_then(|value| value.checked_add(checksum_bits))
+		// Safe: divisor is the fixed non-zero number of bits per BIP39 word.
+		.map(|value| value / 11)
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"mnemonic::from_entropy, length={} checksum_bits={}",
+				length, checksum_bits
+			))
+		})?;
+	let mut indexes: Zeroizing<Vec<u16>> = Zeroizing::new(vec![0; nwords]);
 	let mut loc: usize = 0;
 
 	// u8 to u11
 	for byte in entropy.iter() {
 		for i in (0..8).rev() {
 			let bit = byte & (1 << i) != 0;
-			indexes[loc / 11] |= (bit as u16) << (10 - (loc % 11));
-			loc += 1;
+			// indexes[loc / 11] |= (bit as u16) << (10 - (loc % 11));
+			// loc += 1;
+			let shift = 10usize.checked_sub(loc % 11).ok_or_else(|| {
+				Error::DataOverflow(format!("mnemonic::from_entropy, loc={}", loc))
+			})?;
+			let word = indexes
+				.get_mut(loc / 11)
+				.ok_or(Error::InvalidLength(loc / 11))?;
+			// Safe: shift is 0..=10 and the source bit is 0 or 1, so the result
+			// remains within the 11-bit BIP39 word index range.
+			*word |= u16::from(bit) << shift;
+			loc = loc.checked_add(1).ok_or_else(|| {
+				Error::DataOverflow(format!("mnemonic::from_entropy, loc={}", loc))
+			})?;
 		}
 	}
 	for i in (0..checksum_bits).rev() {
 		let bit = checksum & (1 << i) != 0;
-		indexes[loc / 11] |= (bit as u16) << (10 - (loc % 11));
-		loc += 1;
+		// indexes[loc / 11] |= (bit as u16) << (10 - (loc % 11));
+		// loc += 1;
+		let shift = 10usize
+			.checked_sub(loc % 11)
+			.ok_or_else(|| Error::DataOverflow(format!("mnemonic::from_entropy, loc={}", loc)))?;
+		let word = indexes
+			.get_mut(loc / 11)
+			.ok_or(Error::InvalidLength(loc / 11))?;
+		// Safe: shift is 0..=10 and the source bit is 0 or 1, so the result
+		// remains within the 11-bit BIP39 word index range.
+		*word |= u16::from(bit) << shift;
+		loc = loc
+			.checked_add(1)
+			.ok_or_else(|| Error::DataOverflow(format!("mnemonic::from_entropy, loc={}", loc)))?;
 	}
 
-	let words: Vec<String> = indexes.iter().map(|x| WORDS[*x as usize].clone()).collect();
-	let mnemonic = words.join(" ");
+	let words: Zeroizing<Vec<String>> = Zeroizing::new(
+		indexes
+			.iter()
+			.map(|x| {
+				let idx = usize::from(*x);
+				WORDS.get(idx).cloned().ok_or(Error::InvalidLength(idx))
+			})
+			.collect::<Result<Vec<_>, _>>()?,
+	);
+	let mnemonic = Zeroizing::new(words.join(" "));
 	Ok(mnemonic)
 }
 
 /// Converts a nemonic and a passphrase into a seed
-pub fn to_seed<'a, T: 'a>(mnemonic: &str, passphrase: T) -> Result<[u8; 64], Error>
-where
-	Option<&'a str>: From<T>,
-{
-	// make sure the mnemonic is valid
-	to_entropy(mnemonic)?;
+/// Note, passphrase is a fixed controlled value
+pub fn to_seed(mnemonic: &str, passphrase: &str) -> Result<Zeroizing<[u8; 64]>, Error> {
+	// passphrase is a fixed controlled value. is_ascii guarantee that it will comply with UTF-8 NFKD
+	// Unicode passhrase and mnemonics intentionally are not supported by MWC
+	if !passphrase.is_ascii() {
+		return Err(Error::IbvalidPassphraseEncoding);
+	}
 
-	let salt = ("mnemonic".to_owned() + Option::from(passphrase).unwrap_or("")).into_bytes();
-	let data = mnemonic.as_bytes();
-	let mut seed = [0; 64];
+	let words = mnemonic_words(mnemonic);
+	// make sure the mnemonic is valid and use the same canonical whitespace for PBKDF2
+	to_entropy_from_words(&words)?;
+	let normalized_mnemonic = Zeroizing::new(words.join(" "));
 
-	pbkdf2::<Hmac<Sha512>>(data, &salt[..], 2048, &mut seed);
+	let salt = Zeroizing::new(("mnemonic".to_owned() + passphrase).into_bytes());
+	let data = normalized_mnemonic.as_bytes();
+	let mut seed = Zeroizing::new([0; 64]);
+
+	pbkdf2::<Hmac<Sha512>>(data, &salt[..], 2048, seed.as_mut_slice())
+		.map_err(|_| Error::InvalidLength(seed.len()))?;
 
 	Ok(seed)
 }
@@ -163,8 +309,8 @@ where
 #[cfg(test)]
 mod tests {
 	use super::{from_entropy, to_entropy, to_seed};
-	use crate::util::{from_hex, ToHex};
-	use rand::{thread_rng, Rng};
+	use mwc_crates::rand::{rng, RngExt};
+	use mwc_util::{from_hex, ToHex};
 
 	struct Test<'a> {
 		mnemonic: &'a str,
@@ -310,30 +456,47 @@ mod tests {
 				from_hex(t.entropy).unwrap()
 			);
 			assert_eq!(
-				from_entropy(&from_hex(t.entropy).unwrap()).unwrap(),
+				from_entropy(&from_hex(t.entropy).unwrap())
+					.unwrap()
+					.to_string(),
 				t.mnemonic
 			);
 		}
 	}
 
 	#[test]
+	fn test_bip39_whitespace_normalized() {
+		let canonical =
+			"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+		let variant =
+			"  abandon\tabandon  abandon\nabandon abandon   abandon abandon abandon abandon abandon abandon about  ";
+
+		assert_eq!(
+			to_entropy(canonical).unwrap().to_vec(),
+			to_entropy(variant).unwrap().to_vec()
+		);
+
+		let canonical_seed = to_seed(canonical, "TREZOR").unwrap();
+		let variant_seed = to_seed(variant, "TREZOR").unwrap();
+		assert_eq!(&canonical_seed[..], &variant_seed[..]);
+	}
+
+	#[test]
 	fn test_bip39_random() {
-		use rand::seq::SliceRandom;
+		use mwc_crates::rand::prelude::IndexedRandom;
 		let sizes: [usize; 5] = [16, 20, 24, 28, 32];
 
-		let mut rng = thread_rng();
+		let mut rng = rng();
 		let size = *sizes.choose(&mut rng).unwrap();
 		let mut entropy: Vec<u8> = Vec::with_capacity(size);
 
 		for _ in 0..size {
-			let val: u8 = rng.gen();
+			let val: u8 = rng.random();
 			entropy.push(val);
 		}
 
-		assert_eq!(
-			entropy,
-			to_entropy(&from_entropy(&entropy).unwrap()).unwrap()
-		)
+		let from = from_entropy(&entropy).unwrap().to_string();
+		assert_eq!(entropy, *to_entropy(&from).unwrap())
 	}
 
 	#[test]

@@ -29,33 +29,27 @@
 
 //! Base58 encoder and decoder
 
-use digest::Digest;
-use sha2::Sha256;
+use mwc_crates::digest::Digest;
+use mwc_crates::sha2::Sha256;
 use std::{fmt, str};
 
-use byteorder::{ByteOrder, LittleEndian};
+use mwc_crates::byteorder::{ByteOrder, LittleEndian};
+use mwc_crates::zeroize::Zeroizing;
 
 /// Sha256dHash
 pub fn sha256d_hash(data: &[u8]) -> [u8; 32] {
 	let mut ret = [0; 32];
 	let mut sha2 = Sha256::new();
 	sha2.update(data);
-	#[allow(deprecated)]
 	ret.copy_from_slice(sha2.finalize().as_slice());
 	sha2 = Sha256::new();
 	sha2.update(&ret);
-	#[allow(deprecated)]
 	ret.copy_from_slice(sha2.finalize().as_slice());
 	ret
 }
 
-#[inline]
-pub fn into_le_low_u32(data: &[u8; 32]) -> u32 {
-	LittleEndian::read_u64(&data[0..8]) as u32
-}
-
 /// An error that might occur during base58 decoding
-#[derive(thiserror::Error, Debug, PartialEq, Eq, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
 	/// Invalid character encountered
 	#[error("invalid base58 character 0x{0:x}")]
@@ -68,6 +62,12 @@ pub enum Error {
 	/// an estimate (and the checksum step may be skipped).
 	#[error("length {0} invalid for this base58 type")]
 	InvalidLength(usize),
+	/// The data is invalid
+	#[error("iinvalid data, {0}")]
+	InvalidData(String),
+	/// Data overflow error
+	#[error("base58 data overflow error, {0}")]
+	DataOverflow(String),
 	/// Version byte(s) were not recognized
 	#[error("version {0:?} invalid for this base58 type")]
 	InvalidVersion(Vec<u8>),
@@ -213,50 +213,73 @@ static BASE58_DIGITS: [Option<u8>; 128] = [
 ];
 
 /// Decode base58-encoded string into a byte vector
-pub fn from(data: &str) -> Result<Vec<u8>, Error> {
+pub fn from(data: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
 	// 11/15 is just over log_256(58)
-	let mut scratch = vec![0u8; 1 + data.len() * 11 / 15];
+	// scratch_len = 1 + data.len() * 11 / 15
+	let scratch_len = data
+		.len()
+		.checked_mul(11)
+		// Safe: divisor is the fixed non-zero base conversion constant.
+		.map(|len| len / 15)
+		.and_then(|len| len.checked_add(1))
+		.ok_or_else(|| Error::DataOverflow(format!("base58::from, data_len={}", data.len())))?;
+	let mut scratch = Zeroizing::new(vec![0u8; scratch_len]);
 	// Build in base 256
 	for d58 in data.bytes() {
 		// Compute "X = X * 58 + next_digit" in base 256
-		if d58 as usize > BASE58_DIGITS.len() {
+		let d58_index = usize::from(d58);
+		if d58_index >= BASE58_DIGITS.len() {
 			return Err(Error::BadByte(d58));
 		}
-		let mut carry = match BASE58_DIGITS[d58 as usize] {
-			Some(d58) => d58 as u32,
+		let mut carry = match BASE58_DIGITS[d58_index] {
+			Some(d58) => u32::from(d58),
 			None => {
 				return Err(Error::BadByte(d58));
 			}
 		};
 		for d256 in scratch.iter_mut().rev() {
-			carry += *d256 as u32 * 58;
-			*d256 = carry as u8;
+			// Safe: d256 is a byte and carry is the previous base-256 carry;
+			// d256 * 58 + carry stays far below u32::MAX in this algorithm.
+			let scaled = u32::from(*d256) * 58;
+			carry += scaled;
+			// Safe: base conversion intentionally stores the low byte, so modulo
+			// 256 bounds the value before converting to u8.
+			*d256 = (carry % 256) as u8;
+			// Safe: divisor is the fixed non-zero base conversion radix.
 			carry /= 256;
 		}
-		assert_eq!(carry, 0);
+		if carry != 0 {
+			return Err(Error::DataOverflow(format!(
+				"base58::from, carry={} scratch_len={}",
+				carry, scratch_len
+			)));
+		}
 	}
 
+	// Note, capacity is guarantee to contain all the data. There are some extra capacity left, we are fine with that.
+	let mut ret: Zeroizing<Vec<u8>> =
+		Zeroizing::new(Vec::with_capacity(data.len() + scratch.len()));
 	// Copy leading zeroes directly
-	let mut ret: Vec<u8> = data
-		.bytes()
-		.take_while(|&x| x == BASE58_CHARS[0])
-		.map(|_| 0)
-		.collect();
+	for _b in data.bytes().take_while(|&x| x == BASE58_CHARS[0]) {
+		ret.push(0u8);
+	}
 	// Copy rest of string
-	ret.extend(scratch.into_iter().skip_while(|&x| x == 0));
+	ret.extend(scratch.as_slice().into_iter().skip_while(|&x| *x == 0));
 	Ok(ret)
 }
 
 /// Decode a base58check-encoded string
-pub fn from_check(data: &str) -> Result<Vec<u8>, Error> {
-	let mut ret: Vec<u8> = from(data)?;
+pub fn from_check(data: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
+	let mut ret: Zeroizing<Vec<u8>> = from(data)?;
 	if ret.len() < 4 {
 		return Err(Error::TooShort(ret.len()));
 	}
+	// Safe: ret.len() was checked to be at least the 4-byte checksum length.
 	let ck_start = ret.len() - 4;
 	let expected = sha256d_hash(&ret[..ck_start]);
-	let expected = into_le_low_u32(&expected);
-	let actual = LittleEndian::read_u32(&ret[ck_start..(ck_start + 4)]);
+	let expected = LittleEndian::read_u32(&expected[0..4]);
+	let ck_end = ret.len();
+	let actual = LittleEndian::read_u32(&ret[ck_start..ck_end]);
 	if expected != actual {
 		return Err(Error::BadChecksum(expected, actual));
 	}
@@ -265,32 +288,47 @@ pub fn from_check(data: &str) -> Result<Vec<u8>, Error> {
 	Ok(ret)
 }
 
-fn encode_iter_utf8<I>(data: I) -> Vec<u8>
+fn encode_iter_utf8<I>(data: I) -> Result<Vec<u8>, Error>
 where
 	I: Iterator<Item = u8> + Clone,
 {
 	let (len, _) = data.size_hint();
 
 	// 7/5 is just over log_58(256)
-	let mut ret = Vec::with_capacity(1 + len * 7 / 5);
+	// capacity = 1 + len * 7 / 5
+	let capacity = len
+		.checked_mul(7)
+		.map(|len| len / 5)
+		.and_then(|len| len.checked_add(1))
+		.ok_or_else(|| Error::DataOverflow(format!("base58::encode_iter_utf8, len={}", len)))?;
+	let mut ret = Vec::with_capacity(capacity);
 
-	let mut leading_zero_count = 0;
+	let mut leading_zero_count: usize = 0;
 	let mut leading_zeroes = true;
 	// Build string in little endian with 0-58 in place of characters...
 	for d256 in data {
-		let mut carry = d256 as usize;
+		let mut carry = usize::from(d256);
 		if leading_zeroes && carry == 0 {
-			leading_zero_count += 1;
+			leading_zero_count = leading_zero_count.checked_add(1).ok_or_else(|| {
+				Error::DataOverflow(format!(
+					"base58::encode_iter_utf8, leading_zero_count={}",
+					leading_zero_count
+				))
+			})?;
 		} else {
 			leading_zeroes = false;
 		}
 
 		for ch in ret.iter_mut() {
-			let new_ch = *ch as usize * 256 + carry;
+			// Safe: ch is a base58 digit (0..=57) u8 and carry is bounded by the
+			// previous base58 division step, so this is far below usize::MAX.
+			let new_ch = usize::from(*ch) * 256 + carry;
+			// Safe: modulo 58 bounds the base58 digit to 0..=57 before converting.
 			*ch = (new_ch % 58) as u8;
 			carry = new_ch / 58;
 		}
 		while carry > 0 {
+			// Safe: modulo 58 bounds the base58 digit to 0..=57 before converting.
 			ret.push((carry % 58) as u8);
 			carry /= 58;
 		}
@@ -302,17 +340,21 @@ where
 	}
 	ret.reverse();
 	for ch in ret.iter_mut() {
-		*ch = BASE58_CHARS[*ch as usize];
+		// Safe: ch is produced modulo 58 or from leading zeroes, and BASE58_CHARS has 58 entries.
+		*ch = BASE58_CHARS[usize::from(*ch)];
 	}
-	ret
+	Ok(ret)
 }
 
-fn encode_iter<I>(data: I) -> String
+fn encode_iter<I>(data: I) -> Result<String, Error>
 where
 	I: Iterator<Item = u8> + Clone,
 {
-	let ret = encode_iter_utf8(data);
-	String::from_utf8(ret).unwrap_or("<INVALID_BASE58>".to_string())
+	let ret = encode_iter_utf8(data)?;
+	let res = String::from_utf8(ret)
+		.map_err(|_| Error::Other("Internal error, invalid encoded data".into()))?;
+
+	Ok(res)
 }
 
 /// Directly encode a slice as base58 into a `Formatter`.
@@ -320,18 +362,18 @@ fn _encode_iter_to_fmt<I>(fmt: &mut fmt::Formatter<'_>, data: I) -> fmt::Result
 where
 	I: Iterator<Item = u8> + Clone,
 {
-	let ret = encode_iter_utf8(data);
+	let ret = encode_iter_utf8(data).map_err(|_| std::fmt::Error)?;
 	fmt.write_str(str::from_utf8(&ret).map_err(|_| std::fmt::Error)?)
 }
 
 /// Directly encode a slice as base58
-pub fn _encode_slice(data: &[u8]) -> String {
+pub fn _encode_slice(data: &[u8]) -> Result<String, Error> {
 	encode_iter(data.iter().cloned())
 }
 
 /// Obtain a string with the base58check encoding of a slice
 /// (Tack the first 4 256-digits of the object's Bitcoin hash onto the end.)
-pub fn check_encode_slice(data: &[u8]) -> String {
+pub fn check_encode_slice(data: &[u8]) -> Result<String, Error> {
 	let checksum = sha256d_hash(&data);
 	encode_iter(data.iter().cloned().chain(checksum[0..4].iter().cloned()))
 }
@@ -347,24 +389,27 @@ pub fn _check_encode_slice_to_fmt(fmt: &mut fmt::Formatter<'_>, data: &[u8]) -> 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::util::from_hex;
+	use mwc_util::from_hex;
 
 	#[test]
 	fn test_base58_encode() {
 		// Basics
-		assert_eq!(&_encode_slice(&[0][..]), "1");
-		assert_eq!(&_encode_slice(&[1][..]), "2");
-		assert_eq!(&_encode_slice(&[58][..]), "21");
-		assert_eq!(&_encode_slice(&[13, 36][..]), "211");
+		assert_eq!(&_encode_slice(&[0][..]).unwrap(), "1");
+		assert_eq!(&_encode_slice(&[1][..]).unwrap(), "2");
+		assert_eq!(&_encode_slice(&[58][..]).unwrap(), "21");
+		assert_eq!(&_encode_slice(&[13, 36][..]).unwrap(), "211");
 
 		// Leading zeroes
-		assert_eq!(&_encode_slice(&[0, 13, 36][..]), "1211");
-		assert_eq!(&_encode_slice(&[0, 0, 0, 0, 13, 36][..]), "1111211");
+		assert_eq!(&_encode_slice(&[0, 13, 36][..]).unwrap(), "1211");
+		assert_eq!(
+			&_encode_slice(&[0, 0, 0, 0, 13, 36][..]).unwrap(),
+			"1111211"
+		);
 
 		// Addresses
 		let addr = from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap();
 		assert_eq!(
-			&check_encode_slice(&addr[..]),
+			&check_encode_slice(&addr[..]).unwrap(),
 			"1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH"
 		);
 	}
@@ -372,27 +417,35 @@ mod tests {
 	#[test]
 	fn test_base58_decode() {
 		// Basics
-		assert_eq!(from("1").ok(), Some(vec![0u8]));
-		assert_eq!(from("2").ok(), Some(vec![1u8]));
-		assert_eq!(from("21").ok(), Some(vec![58u8]));
-		assert_eq!(from("211").ok(), Some(vec![13u8, 36]));
+		assert_eq!(from("1").ok(), Some(Zeroizing::new(vec![0u8])));
+		assert_eq!(from("2").ok(), Some(Zeroizing::new(vec![1u8])));
+		assert_eq!(from("21").ok(), Some(Zeroizing::new(vec![58u8])));
+		assert_eq!(from("211").ok(), Some(Zeroizing::new(vec![13u8, 36])));
 
 		// Leading zeroes
-		assert_eq!(from("1211").ok(), Some(vec![0u8, 13, 36]));
-		assert_eq!(from("111211").ok(), Some(vec![0u8, 0, 0, 13, 36]));
+		assert_eq!(from("1211").ok(), Some(Zeroizing::new(vec![0u8, 13, 36])));
+		assert_eq!(
+			from("111211").ok(),
+			Some(Zeroizing::new(vec![0u8, 0, 0, 13, 36]))
+		);
 
 		// Addresses
 		assert_eq!(
 			from_check("1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH").ok(),
-			Some(from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap())
+			Some(Zeroizing::new(
+				from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap()
+			))
 		)
 	}
 
 	#[test]
 	fn test_base58_roundtrip() {
 		let s = "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs";
-		let v: Vec<u8> = from_check(s).unwrap();
-		assert_eq!(check_encode_slice(&v[..]), s);
-		assert_eq!(from_check(&check_encode_slice(&v[..])).ok(), Some(v));
+		let v: Zeroizing<Vec<u8>> = from_check(s).unwrap();
+		assert_eq!(check_encode_slice(&v[..]).unwrap(), s);
+		assert_eq!(
+			from_check(&check_encode_slice(&v[..]).unwrap()).ok(),
+			Some(v)
+		);
 	}
 }

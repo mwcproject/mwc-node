@@ -36,6 +36,8 @@ use crate::core::{Input, KernelFeatures, Output, OutputFeatures, Transaction, Tx
 use crate::libtx::proof::{self, ProofBuild};
 use crate::libtx::{aggsig, Error};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
+use mwc_crates::log::debug;
+use mwc_crates::secp::Secp256k1;
 
 /// Context information available to transaction combinators.
 pub struct Context<'a, K, B>
@@ -47,6 +49,10 @@ where
 	pub keychain: &'a K,
 	/// The bulletproof builder
 	pub builder: &'a B,
+	/// secp instance
+	pub secp: &'a mut Secp256k1,
+	/// Consensus context used for serialization, hashing and ordering.
+	pub context_id: u32,
 }
 
 /// Function type returned by the transaction combinators. Transforms a
@@ -67,14 +73,18 @@ where
 	Box::new(
 		move |build, acc| -> Result<(Transaction, BlindSum), Error> {
 			if let Ok((tx, sum)) = acc {
-				let commit =
-					build
-						.keychain
-						.commit(value, &key_id, SwitchCommitmentType::Regular)?;
+				let commit = build.keychain.commit(
+					&build.secp,
+					value,
+					&key_id,
+					SwitchCommitmentType::Regular,
+				)?;
 				// TODO: proper support for different switch commitment schemes
 				let input = Input::new(features, commit);
+				// Transaction::empty starts with commit-only inputs. This conversion is
+				// intentionally lossy: input.features is not stored in the transaction.
 				Ok((
-					tx.with_input(input),
+					tx.with_commit_input(build.context_id, input.commitment())?,
 					sum.sub_key_id(
 						key_id
 							.to_value_path(value)
@@ -95,10 +105,7 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	debug!(
-		"Building input (spending regular output): {}, {}",
-		value, key_id
-	);
+	debug!("Building input (spending regular output)");
 	build_input(value, OutputFeatures::Plain, key_id)
 }
 
@@ -108,7 +115,7 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	debug!("Building input (spending coinbase): {}, {}", value, key_id);
+	debug!("Building input (spending coinbase): {}", value);
 	build_input(value, OutputFeatures::Coinbase, key_id)
 }
 
@@ -126,11 +133,12 @@ where
 			// TODO: proper support for different switch commitment schemes
 			let switch = SwitchCommitmentType::Regular;
 
-			let commit = build.keychain.commit(value, &key_id, switch)?;
+			let commit = build.keychain.commit(&build.secp, value, &key_id, switch)?;
 
-			debug!("Building output: {}, {:?}", value, commit);
+			debug!("Building output");
 
 			let proof = proof::create(
+				build.secp,
 				build.keychain,
 				build.builder,
 				value,
@@ -141,7 +149,10 @@ where
 			)?;
 
 			Ok((
-				tx.with_output(Output::new(OutputFeatures::Plain, commit, proof)),
+				tx.with_output(
+					build.context_id,
+					Output::new(OutputFeatures::Plain, commit, proof),
+				)?,
 				sum.add_key_id(
 					key_id
 						.to_value_path(value)
@@ -186,6 +197,8 @@ where
 /// let (tx, sum) = build::transaction(tx, vec![input_rand(4), output_rand(1))], keychain)?;
 ///
 pub fn partial_transaction<K, B>(
+	context_id: u32,
+	secp: &mut Secp256k1,
 	tx: Transaction,
 	elems: &[Box<Append<K, B>>],
 	keychain: &K,
@@ -195,11 +208,22 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let mut ctx = Context { keychain, builder };
+	let mut ctx = Context {
+		keychain,
+		builder,
+		secp,
+		context_id,
+	};
 	let (tx, sum) = elems
 		.iter()
 		.fold(Ok((tx, BlindSum::new())), |acc, elem| elem(&mut ctx, acc))?;
-	let blind_sum = ctx.keychain.blind_sum(&sum)?;
+	let blind_sum = ctx.keychain.blind_sum(ctx.secp, &sum)?;
+
+	// Zero blinding sum is not accepted by consensus and safety rules
+	if blind_sum.is_zero() {
+		return Err(Error::ZeroBlindingSum);
+	}
+
 	Ok((tx, blind_sum))
 }
 
@@ -207,6 +231,8 @@ where
 /// NOTE: We only use this in tests (for convenience).
 /// In the real world we use signature aggregation across multiple participants.
 pub fn transaction<K, B>(
+	context_id: u32,
+	secp: &mut Secp256k1,
 	features: KernelFeatures,
 	elems: &[Box<Append<K, B>>],
 	keychain: &K,
@@ -216,26 +242,27 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let mut kernel = TxKernel::with_features(features);
+	let mut kernel = TxKernel::with_features(features)?;
 
 	// Construct the message to be signed.
-	let msg = kernel.msg_to_sign()?;
+	let msg = kernel.msg_to_sign(context_id)?;
 
 	// Generate kernel public excess and associated signature.
-	let secp = keychain.secp();
-	let excess = BlindingFactor::rand(secp);
+	let excess = BlindingFactor::rand(secp)?;
 	let skey = excess.secret_key(secp)?;
 	kernel.excess = secp.commit(0, skey)?;
 	let pubkey = &kernel.excess.to_pubkey(secp)?;
-	kernel.excess_sig = aggsig::sign_with_blinding(secp, &msg, &excess, Some(&pubkey))?;
-	kernel.verify(secp)?;
-	transaction_with_kernel(elems, kernel, excess, keychain, builder)
+	kernel.excess_sig = aggsig::sign_with_blinding(secp, &msg, &excess, &pubkey)?;
+	kernel.verify(context_id, secp)?;
+	transaction_with_kernel(context_id, secp, elems, kernel, excess, keychain, builder)
 }
 
 /// Build a complete transaction with the provided kernel and corresponding private excess.
 /// NOTE: Only used in tests (for convenience).
 /// Cannot recommend passing private excess around like this in the real world.
 pub fn transaction_with_kernel<K, B>(
+	context_id: u32,
+	secp: &mut Secp256k1,
 	elems: &[Box<Append<K, B>>],
 	kernel: TxKernel,
 	excess: BlindingFactor,
@@ -246,17 +273,26 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let mut ctx = Context { keychain, builder };
+	let mut ctx = Context {
+		keychain,
+		builder,
+		secp,
+		context_id,
+	};
 	let (tx, sum) = elems
 		.iter()
 		.fold(Ok((Transaction::empty(), BlindSum::new())), |acc, elem| {
 			elem(&mut ctx, acc)
 		})?;
-	let blind_sum = ctx.keychain.blind_sum(&sum)?;
+	let blind_sum = ctx.keychain.blind_sum(ctx.secp, &sum)?;
+	// Zero blinding sum is not accepted by consensus and safety rules
+	if blind_sum.is_zero() {
+		return Err(Error::ZeroBlindingSum);
+	}
 
 	// Update tx with new kernel and offset.
 	let mut tx = tx.replace_kernel(kernel);
-	tx.offset = blind_sum.split(&excess, keychain.secp())?;
+	tx.offset = blind_sum.split(&excess, secp)?;
 	Ok(tx)
 }
 
@@ -268,69 +304,115 @@ mod test {
 	use crate::global;
 	use crate::libtx::ProofBuilder;
 	use keychain::{ExtKeychain, ExtKeychainPath};
+	use mwc_crates::rand::rngs::SysRng;
+	use mwc_crates::secp::{ContextFlag, SecretKey};
+	use std::convert::TryInto;
 
 	#[test]
 	fn blind_simple_tx() {
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
-		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain).unwrap();
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
+		let keychain =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let builder = ProofBuilder::new(&mut secp, &keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
 
 		let tx = transaction(
-			KernelFeatures::Plain { fee: 2.into() },
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 2u32.try_into().unwrap(),
+			},
 			&[input(10, key_id1), input(12, key_id2), output(20, key_id3)],
 			&keychain,
 			&builder,
 		)
 		.unwrap();
 
-		tx.validate(0, Weighting::AsTransaction, keychain.secp())
-			.unwrap();
+		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 
 	#[test]
 	fn blind_simple_tx_with_offset() {
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
-		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain).unwrap();
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0).to_identifier().unwrap();
+		let keychain =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
 
 		let tx = transaction(
-			KernelFeatures::Plain { fee: 2.into() },
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 2u32.try_into().unwrap(),
+			},
 			&[input(10, key_id1), input(12, key_id2), output(20, key_id3)],
 			&keychain,
 			&builder,
 		)
 		.unwrap();
 
-		tx.validate(0, Weighting::AsTransaction, keychain.secp())
-			.unwrap();
+		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 
 	#[test]
 	fn blind_simpler_tx() {
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
-		let keychain = ExtKeychain::from_random_seed(false).unwrap();
-		let builder = ProofBuilder::new(&keychain).unwrap();
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0).to_identifier().unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0).to_identifier().unwrap();
+		let keychain =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
 
 		let tx = transaction(
-			KernelFeatures::Plain { fee: 4.into() },
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 4u32.try_into().unwrap(),
+			},
 			&[input(6, key_id1), output(2, key_id2)],
 			&keychain,
 			&builder,
 		)
 		.unwrap();
 
-		tx.validate(0, Weighting::AsTransaction, keychain.secp())
-			.unwrap();
+		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 }

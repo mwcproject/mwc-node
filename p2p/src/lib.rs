@@ -21,31 +21,9 @@
 #![deny(non_snake_case)]
 #![deny(unused_mut)]
 
-#[macro_use]
-extern crate bitflags;
-
-#[macro_use]
-extern crate enum_primitive;
-
-#[macro_use]
-extern crate mwc_core;
-use mwc_chain as chain;
-use mwc_util as util;
-
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate log;
-
-#[cfg(feature = "libp2p")]
-#[macro_use]
-extern crate lazy_static;
-
 mod codec;
 mod conn;
 pub mod handshake;
-#[cfg(feature = "libp2p")]
-pub mod libp2p_connection;
 mod listen;
 pub mod msg;
 pub mod network_status;
@@ -59,20 +37,12 @@ pub mod types;
 
 pub use crate::conn::SEND_CHANNEL_CAP;
 pub use crate::peer::Peer;
-pub use crate::peers::Peers;
+pub use crate::peers::{PeerCleanupSummary, Peers};
 pub use crate::serv::{DummyAdapter, Server};
 pub use crate::store::{PeerData, State};
 pub use crate::types::{
-	Capabilities, ChainAdapter, Direction, Error, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
-	Seeding, TorConfig, TxHashSetRead, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	BroadcastError, Capabilities, ChainAdapter, Direction, Error, P2PConfig, PeerAddr, PeerInfo,
+	ReasonForBan, Seeding, TorConfig, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
 };
 
 pub use listen::listen;
-pub use tor_hsservice;
-pub use tor_proto::client::stream::{DataStream, IncomingStreamRequest};
-
-#[cfg(feature = "libp2p")]
-pub use crate::libp2p_connection::{
-	add_new_peer, build_integrity_message, get_libp2p_connections, read_message_data,
-	run_libp2p_node, set_seed_list,
-};

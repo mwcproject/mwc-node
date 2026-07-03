@@ -14,20 +14,17 @@
 // limitations under the License.
 
 //! libtx specific errors
+use crate::consensus;
 use crate::core::transaction;
-use util::secp;
+use mwc_crates::secp;
 
 /// Lib tx error definition
-#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, thiserror::Error)]
 /// Libwallet error types
 pub enum Error {
 	/// SECP error
-	#[error("LibTx Secp Error, {source:?}")]
-	Secp {
-		/// SECP error
-		#[from]
-		source: secp::Error,
-	},
+	#[error("LibTx Secp Error, {0}")]
+	Secp(secp::Error),
 	/// Keychain error
 	#[error("LibTx Keychain Error, {source:?}")]
 	Keychain {
@@ -42,13 +39,28 @@ pub enum Error {
 		#[from]
 		source: transaction::Error,
 	},
+	/// Zero blinding sum
+	#[error("Zero blinding sum")]
+	ZeroBlindingSum,
 	/// Signature error
 	#[error("LibTx Signature Error, {0}")]
 	Signature(String),
 	/// Rangeproof error
 	#[error("LibTx Rangeproof Error, {0}")]
 	RangeProof(String),
+	/// Data overflow error
+	#[error("LibTx data overflow error, {0}")]
+	DataOverflow(String),
 	/// Other error
 	#[error("LibTx Other Error, {0}")]
 	Other(String),
+	/// Consensus error
+	#[error("Consensus error {0}")]
+	ConsensusError(#[from] consensus::Error),
+}
+
+impl From<secp::Error> for Error {
+	fn from(err: secp::Error) -> Self {
+		Error::Secp(err)
+	}
 }

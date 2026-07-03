@@ -15,34 +15,41 @@
 
 //! Message types that transit over the network and related serialization code.
 
-use crate::chain::txhashset::BitmapSegment;
 use crate::conn::Tracker;
-use crate::mwc_core::core::hash::Hash;
-use crate::mwc_core::core::transaction::{OutputIdentifier, TxKernel};
-use crate::mwc_core::core::{
-	BlockHeader, Segment, SegmentIdentifier, Transaction, UntrustedBlock, UntrustedBlockHeader,
-	UntrustedCompactBlock,
-};
-use crate::mwc_core::pow::Difficulty;
-use crate::mwc_core::ser::{
-	self, DeserializationMode, ProtocolVersion, Readable, Reader, StreamingReader, Writeable,
-	Writer,
-};
-use crate::mwc_core::{consensus, global};
+use crate::tor::arti::canonical_onion_v3;
 use crate::types::{
 	AttachmentUpdate, Capabilities, Error, PeerAddr, ReasonForBan, MAX_BLOCK_HEADERS, MAX_LOCATORS,
 	MAX_PEER_ADDRS,
 };
-use crate::util::secp::pedersen::RangeProof;
-use bytes::Bytes;
-use num::FromPrimitive;
-use std::fs::File;
+use mwc_chain::txhashset::BitmapSegment;
+use mwc_core::core::hash::{Hash, Hashed};
+use mwc_core::core::transaction::{OutputIdentifier, TxKernel};
+use mwc_core::core::{
+	BlockHeader, Segment, SegmentIdentifier, Transaction, UntrustedBlock, UntrustedBlockHeader,
+	UntrustedCompactBlock,
+};
+use mwc_core::pow::Difficulty;
+use mwc_core::ser::{self, ProtocolVersion, Readable, Reader, StreamingReader, Writeable, Writer};
+use mwc_core::ser_multiread;
+use mwc_core::ser_multiwrite;
+use mwc_core::{consensus, global};
+use mwc_crates::bytes::Bytes;
+use mwc_crates::enum_primitive::{
+	enum_from_primitive, enum_from_primitive_impl, enum_from_primitive_impl_ty,
+};
+use mwc_crates::log::{error, trace};
+use mwc_crates::num::FromPrimitive;
+use mwc_crates::secp::pedersen::RangeProof;
+use mwc_crates::serde::{self, Serialize};
+use std::convert::TryFrom;
+use std::fmt;
 use std::io::{Read, Write};
 use std::sync::Arc;
-use std::{fmt, thread, time::Duration};
 
 /// Mwc's user agent with current version
 pub const USER_AGENT: &str = concat!("MW/MWC ", env!("CARGO_PKG_VERSION"));
+pub const ONION_PROOF_SIGNATURE_LEN: usize = 64;
+pub const ONION_PROOF_TIMESTAMP_LEN: usize = 8;
 
 // MWC - Magic number are updated to be different from mwc.
 /// Magic numbers expected in the header of every message
@@ -77,7 +84,7 @@ enum_from_primitive! {
 		BanReason = 18,
 		GetTransaction = 19,
 		TransactionKernel = 20,
-		TorAddress = 23,
+		TorAddress = 23, // Not used, but keeping as reserved for backward compatibility
 		StartPibdSyncRequest = 24,
 		GetOutputBitmapSegment = 25,
 		OutputBitmapSegment = 26,
@@ -110,7 +117,7 @@ fn default_max_msg_size(context_id: u32) -> u64 {
 fn max_msg_size(context_id: u32, msg_type: Type) -> u64 {
 	match msg_type {
 		Type::Error => 0,
-		Type::Hand => 128 + 8,
+		Type::Hand => 128 + 8 + ONION_PROOF_SIGNATURE_LEN as u64 + ONION_PROOF_TIMESTAMP_LEN as u64,
 		Type::Shake => 88 + 8,
 		Type::Ping => 16,
 		Type::Pong => 16,
@@ -130,7 +137,7 @@ fn max_msg_size(context_id: u32, msg_type: Type) -> u64 {
 		Type::BanReason => 64,
 		Type::GetTransaction => 32,
 		Type::TransactionKernel => 32,
-		Type::TorAddress => 128,
+		Type::TorAddress => 128, // Not used, keeping for backward compatibility
 		Type::StartHeadersHashRequest => 8,
 		Type::StartHeadersHashResponse => 40, // 8+32=40
 		Type::GetHeadersHashesSegment => 41,
@@ -160,8 +167,8 @@ fn magic(context_id: u32) -> [u8; 2] {
 pub struct Msg {
 	header: MsgHeader,
 	body: Vec<u8>,
-	attachment: Option<File>,
 	version: ProtocolVersion,
+	context_id: u32,
 }
 
 impl Msg {
@@ -171,17 +178,20 @@ impl Msg {
 		version: ProtocolVersion,
 		context_id: u32,
 	) -> Result<Msg, Error> {
-		let body = ser::ser_vec(&msg, version)?;
+		let body = ser::ser_vec(context_id, &msg, version)?;
+		// Inbound message headers are checked against max_msg_size() because the
+		// advertised length is peer-controlled. Outbound messages are produced by
+		// local send paths after local validation, so this constructor deliberately
+		// frames the serialized body without repeating the per-type wire-size
+		// check. If a future outbound path passes peer-controlled or otherwise
+		// unbounded data through here, add a TooLargeWriteErr check at this
+		// boundary before constructing MsgHeader.
 		Ok(Msg {
-			header: MsgHeader::new(context_id, msg_type, body.len() as u64),
+			header: MsgHeader::new(context_id, msg_type, body.len()),
 			body,
-			attachment: None,
 			version,
+			context_id,
 		})
-	}
-
-	pub fn add_attachment(&mut self, attachment: File) {
-		self.attachment = Some(attachment)
 	}
 }
 
@@ -198,12 +208,7 @@ pub fn read_header<R: Read>(
 ) -> Result<MsgHeaderWrapper, Error> {
 	let mut head = vec![0u8; MsgHeader::LEN];
 	stream.read_exact(&mut head)?;
-	let header: MsgHeaderWrapper = ser::deserialize(
-		&mut &head[..],
-		version,
-		context_id,
-		DeserializationMode::default(),
-	)?;
+	let header: MsgHeaderWrapper = ser::deserialize_strict(&mut &head[..], version, context_id)?;
 	Ok(header)
 }
 
@@ -228,20 +233,16 @@ pub fn read_body<T: Readable, R: Read>(
 	version: ProtocolVersion,
 	context_id: u32,
 ) -> Result<T, Error> {
-	let mut body = vec![0u8; h.msg_len as usize];
+	let mut body = vec![0u8; h.msg_len];
 	stream.read_exact(&mut body)?;
-	ser::deserialize(
-		&mut &body[..],
-		version,
-		context_id,
-		DeserializationMode::default(),
-	)
-	.map_err(From::from)
+	// From the stream we might drop ending data because of forward compatibility. Future versions
+	// might have some extra data.
+	ser::deserialize_permissive(&mut &body[..], version, context_id).map_err(From::from)
 }
 
 /// Read (an unknown) message from the provided stream and discard it.
-pub fn read_discard<R: Read>(msg_len: u64, stream: &mut R) -> Result<(), Error> {
-	let mut buffer = vec![0u8; msg_len as usize];
+pub fn read_discard<R: Read>(msg_len: usize, stream: &mut R) -> Result<(), Error> {
+	let mut buffer = vec![0u8; msg_len];
 	stream.read_exact(&mut buffer)?;
 	Ok(())
 }
@@ -279,22 +280,6 @@ pub fn write_message<W: Write>(
 	msgs: &Vec<Msg>,
 	tracker: Arc<Tracker>,
 ) -> Result<(), Error> {
-	// Introduce a delay so messages are spaced at least 150ms apart.
-	// This gives a max msg rate of 60000/150 = 400 messages per minute.
-	// Exceeding 500 messages per minute will result in being banned as abusive.
-	if let Some(elapsed) = tracker
-		.sent_bytes
-		.read()
-		.unwrap_or_else(|e| e.into_inner())
-		.elapsed_since_last_msg()
-	{
-		let min_interval: u64 = 150;
-		let sleep_ms = min_interval.saturating_sub(elapsed);
-		if sleep_ms > 0 {
-			thread::sleep(Duration::from_millis(sleep_ms))
-		}
-	}
-
 	// sending tmp buffer.
 	let mut tmp_buf: Vec<u8> = vec![];
 
@@ -303,38 +288,8 @@ pub fn write_message<W: Write>(
 			"Sending message to the peer stream: {:?}",
 			msg.header.msg_type
 		);
-		tmp_buf.extend(ser::ser_vec(&msg.header, msg.version)?);
+		tmp_buf.extend(ser::ser_vec(msg.context_id, &msg.header, msg.version)?);
 		tmp_buf.extend(&msg.body[..]);
-		if let Some(file) = &msg.attachment {
-			// finalize what we have before attachments...
-			if !tmp_buf.is_empty() {
-				tracker.inc_sent(tmp_buf.len() as u64);
-				trace!(
-					"Sending {} bytes of data to the peer stream to finalize",
-					tmp_buf.len()
-				);
-				stream.write_all(&tmp_buf[..])?;
-				tmp_buf.clear();
-			}
-			let mut file = file.try_clone()?;
-			let mut buf = [0u8; 8000];
-			loop {
-				match file.read(&mut buf[..]) {
-					Ok(0) => break,
-					Ok(n) => {
-						tracker.inc_quiet_sent(n as u64);
-						trace!(
-							"Sending {} bytes of data to the peer stream as attachment",
-							n
-						);
-						stream.write_all(&buf[..n])?;
-						// Increase sent bytes "quietly" without incrementing the counter.
-						// (In a loop here for the single attachment).
-					}
-					Err(e) => return Err(From::from(e)),
-				}
-			}
-		}
 	}
 
 	if !tmp_buf.is_empty() {
@@ -358,7 +313,7 @@ pub enum MsgHeaderWrapper {
 	/// A "known" msg type with deserialized msg header.
 	Known(MsgHeader),
 	/// An unknown msg type with corresponding msg size in bytes.
-	Unknown(u64, u8),
+	Unknown(usize, u8),
 }
 
 /// Header of any protocol message, used to identify incoming messages.
@@ -368,7 +323,7 @@ pub struct MsgHeader {
 	/// Type of the message.
 	pub msg_type: Type,
 	/// Total length of the message in bytes.
-	pub msg_len: u64,
+	pub msg_len: usize,
 }
 
 impl MsgHeader {
@@ -376,7 +331,7 @@ impl MsgHeader {
 	pub const LEN: usize = 2 + 1 + 8;
 
 	/// Creates a new message header.
-	pub fn new(context_id: u32, msg_type: Type, len: u64) -> MsgHeader {
+	pub fn new(context_id: u32, msg_type: Type, len: usize) -> MsgHeader {
 		MsgHeader {
 			magic: magic(context_id),
 			msg_type: msg_type,
@@ -392,7 +347,7 @@ impl Writeable for MsgHeader {
 			[write_u8, self.magic[0]],
 			[write_u8, self.magic[1]],
 			[write_u8, self.msg_type as u8],
-			[write_u64, self.msg_len]
+			[write_u64, self.msg_len as u64]
 		);
 		Ok(())
 	}
@@ -428,6 +383,10 @@ impl Readable for MsgHeaderWrapper {
 					return Err(ser::Error::TooLargeReadErr(err_msg));
 				}
 
+				let msg_len = usize::try_from(msg_len).map_err(|_| {
+					ser::Error::DataOverflow(format!("MsgHeaderWrapper::read, msg_len={}", msg_len))
+				})?;
+
 				Ok(MsgHeaderWrapper::Known(MsgHeader {
 					magic: m,
 					msg_type,
@@ -450,6 +409,10 @@ impl Readable for MsgHeaderWrapper {
 					error!("{}", err_msg);
 					return Err(ser::Error::TooLargeReadErr(err_msg));
 				}
+
+				let msg_len = usize::try_from(msg_len).map_err(|_| {
+					ser::Error::DataOverflow(format!("MsgHeaderWrapper::read, msg_len={}", msg_len))
+				})?;
 
 				Ok(MsgHeaderWrapper::Unknown(msg_len, t))
 			}
@@ -479,6 +442,10 @@ pub struct Hand {
 	pub user_agent: String,
 	/// base fee (For protocol version 4)
 	pub tx_fee_base: u64,
+	/// Optional onion identity proof signature for protocol version 5+.
+	pub onion_sig: Option<[u8; ONION_PROOF_SIGNATURE_LEN]>,
+	/// Optional timestamp signed as part of the onion identity proof.
+	pub onion_sig_timestamp: Option<i64>,
 }
 
 impl Writeable for Hand {
@@ -503,6 +470,23 @@ impl Writeable for Hand {
 		if self.version.value() > 3 {
 			writer.write_u64(self.tx_fee_base)?;
 		}
+		match (&self.onion_sig, self.onion_sig_timestamp) {
+			(Some(onion_sig), Some(timestamp)) => {
+				writer.write_fixed_bytes(onion_sig)?;
+				writer.write_i64(timestamp)?;
+			}
+			(Some(_), None) => {
+				return Err(ser::Error::CorruptedData(
+					"onion proof signature timestamp is missing".into(),
+				));
+			}
+			(None, Some(_)) => {
+				return Err(ser::Error::CorruptedData(
+					"onion proof timestamp without signature".into(),
+				));
+			}
+			(None, None) => {}
+		}
 		Ok(())
 	}
 }
@@ -511,6 +495,9 @@ impl Readable for Hand {
 	fn read<R: Reader>(reader: &mut R) -> Result<Hand, ser::Error> {
 		let version = ProtocolVersion::read(reader)?;
 		let (capab, nonce) = ser_multiread!(reader, read_u32, read_u64);
+		// Handshake capability bits are optional peer features, not consensus
+		// data. Accept unknown future bits and downgrade them to the capabilities
+		// this binary knows how to negotiate.
 		let capabilities = Capabilities::from_bits_truncate(capab);
 		let total_difficulty = Difficulty::read(reader)?;
 		let sender_addr = PeerAddr::read(reader)?;
@@ -518,12 +505,19 @@ impl Readable for Hand {
 		let ua = reader.read_bytes_len_prefix()?;
 		let user_agent = String::from_utf8(ua)
 			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read User Agent, {}", e)))?;
+		validate_user_agent(&user_agent, "Hand.user_agent")?;
 		let genesis = Hash::read(reader)?;
 		let tx_fee_base = if version.value() > 3 {
 			reader.read_u64()?
 		} else {
 			// Default base fee before we start lowering it.
 			consensus::MILLI_MWC
+		};
+		let onion_sig = read_optional_onion_sig(reader)?;
+		let onion_sig_timestamp = if onion_sig.is_some() {
+			read_optional_onion_sig_timestamp(reader)?
+		} else {
+			None
 		};
 		Ok(Hand {
 			version,
@@ -535,7 +529,57 @@ impl Readable for Hand {
 			receiver_addr,
 			user_agent,
 			tx_fee_base,
+			onion_sig,
+			onion_sig_timestamp,
 		})
+	}
+}
+
+pub(crate) fn validate_user_agent(user_agent: &str, field: &str) -> Result<(), ser::Error> {
+	if user_agent.bytes().any(|b| !(0x20..=0x7e).contains(&b)) {
+		return Err(ser::Error::CorruptedData(format!(
+			"{} contains character outside printable ASCII",
+			field
+		)));
+	}
+	Ok(())
+}
+
+fn read_optional_onion_sig<R: Reader>(
+	reader: &mut R,
+) -> Result<Option<[u8; ONION_PROOF_SIGNATURE_LEN]>, ser::Error> {
+	let bytes_before = reader.bytes_read();
+	match reader.read_fixed_bytes(ONION_PROOF_SIGNATURE_LEN) {
+		Ok(bytes) => {
+			let sig =
+				<[u8; ONION_PROOF_SIGNATURE_LEN]>::try_from(bytes.as_slice()).map_err(|_| {
+					ser::Error::CorruptedData("Invalid onion proof signature length".to_string())
+				})?;
+			Ok(Some(sig))
+		}
+		Err(ser::Error::IOErr(err))
+			if err.kind() == std::io::ErrorKind::UnexpectedEof
+				&& reader.bytes_read() == bytes_before
+				&& !reader.has_pending_data() =>
+		{
+			Ok(None)
+		}
+		Err(e) => Err(e),
+	}
+}
+
+fn read_optional_onion_sig_timestamp<R: Reader>(reader: &mut R) -> Result<Option<i64>, ser::Error> {
+	let bytes_before = reader.bytes_read();
+	match reader.read_i64() {
+		Ok(timestamp) => Ok(Some(timestamp)),
+		Err(ser::Error::IOErr(err))
+			if err.kind() == std::io::ErrorKind::UnexpectedEof
+				&& reader.bytes_read() == bytes_before
+				&& !reader.has_pending_data() =>
+		{
+			Ok(None)
+		}
+		Err(e) => Err(e),
 	}
 }
 
@@ -559,18 +603,26 @@ pub struct Shake {
 
 impl Writeable for Shake {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		writer.protocol_version().write(writer)?;
-		writer.write_u32(self.capabilities.bits())?;
-		self.total_difficulty.write(writer)?;
-		if self.user_agent.len() > 10_000 {
+		let protocol_version = writer.protocol_version();
+		let user_agent_len = self.user_agent.len() as u64;
+		let tx_fee_len = if protocol_version.value() > 3 { 8 } else { 0 };
+		let msg_len = 4 + 4 + 8 + 8 + user_agent_len + 32 + tx_fee_len;
+		let max_len = max_msg_size(writer.get_context_id(), Type::Shake) * 4;
+		if msg_len > max_len {
 			return Err(ser::Error::TooLargeWriteErr(format!(
-				"Unreasonable long User Agent. UA length is {}",
+				"Too large Shake write, max_len: {}, msg_len: {}, user_agent_len: {}.",
+				max_len,
+				msg_len,
 				self.user_agent.len()
 			)));
 		}
+
+		protocol_version.write(writer)?;
+		writer.write_u32(self.capabilities.bits())?;
+		self.total_difficulty.write(writer)?;
 		writer.write_bytes(&self.user_agent)?;
 		self.genesis.write(writer)?;
-		if writer.protocol_version().value() > 3 {
+		if protocol_version.value() > 3 {
 			writer.write_u64(self.tx_fee_base)?;
 		}
 		Ok(())
@@ -581,11 +633,15 @@ impl Readable for Shake {
 	fn read<R: Reader>(reader: &mut R) -> Result<Shake, ser::Error> {
 		let version = ProtocolVersion::read(reader)?;
 		let capab = reader.read_u32()?;
+		// Handshake capability bits are optional peer features, not consensus
+		// data. Accept unknown future bits and downgrade them to the capabilities
+		// this binary knows how to negotiate.
 		let capabilities = Capabilities::from_bits_truncate(capab);
 		let total_difficulty = Difficulty::read(reader)?;
 		let ua = reader.read_bytes_len_prefix()?;
 		let user_agent = String::from_utf8(ua)
 			.map_err(|e| ser::Error::CorruptedData(format!("Fail to read User Agent, {}", e)))?;
+		validate_user_agent(&user_agent, "Shake.user_agent")?;
 		let genesis = Hash::read(reader)?;
 		let tx_fee_base = if version.value() > 3 {
 			reader.read_u64()?
@@ -620,6 +676,10 @@ impl Writeable for GetPeerAddrs {
 impl Readable for GetPeerAddrs {
 	fn read<R: Reader>(reader: &mut R) -> Result<GetPeerAddrs, ser::Error> {
 		let capab = reader.read_u32()?;
+		// Capability bits can come from a future node version, so we may not
+		// recognize every bit yet. Drop unknown bits before peer filtering:
+		// unknown network data is untrusted, and treating it as meaningful
+		// capability state would be unsafe.
 		let capabilities = Capabilities::from_bits_truncate(capab);
 		Ok(GetPeerAddrs { capabilities })
 	}
@@ -627,7 +687,10 @@ impl Readable for GetPeerAddrs {
 
 /// Peer addresses we know of that are fresh enough, in response to
 /// GetPeerAddrs.
+/// Peer lists are public network data, so they do not need zeroization when
+/// serialized in config templates.
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct PeerAddrs {
 	pub peers: Vec<PeerAddr>,
 }
@@ -686,6 +749,10 @@ impl PeerAddrs {
 
 	pub fn contains(&self, addr: &PeerAddr) -> bool {
 		self.peers.contains(addr)
+	}
+
+	pub fn contains_exact(&self, addr: &PeerAddr) -> bool {
+		self.peers.iter().any(|peer| peer.matches_exactly(addr))
 	}
 
 	pub fn difference(&self, other: &[PeerAddr]) -> PeerAddrs {
@@ -780,6 +847,13 @@ pub struct Headers {
 
 impl Writeable for Headers {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		if self.headers.len() > MAX_BLOCK_HEADERS as usize {
+			return Err(ser::Error::TooLargeWriteErr(format!(
+				"too many block headers: {}, max: {}",
+				self.headers.len(),
+				MAX_BLOCK_HEADERS
+			)));
+		}
 		writer.write_u16(self.headers.len() as u16)?;
 		for h in &self.headers {
 			h.write(writer)?
@@ -860,10 +934,7 @@ impl Writeable for BanReason {
 
 impl Readable for BanReason {
 	fn read<R: Reader>(reader: &mut R) -> Result<BanReason, ser::Error> {
-		let ban_reason_i32 = match reader.read_i32() {
-			Ok(h) => h,
-			Err(_) => 0,
-		};
+		let ban_reason_i32 = reader.read_i32()?;
 
 		let ban_reason = ReasonForBan::from_i32(ban_reason_i32).ok_or(
 			ser::Error::CorruptedData("Fail to read ban reason".to_string()),
@@ -1116,7 +1187,7 @@ pub enum Message {
 	TxHashSetRequest(ArchiveHeaderData),
 	TxHashSetArchive(TxHashSetArchive),
 	Attachment(AttachmentUpdate, Option<Bytes>),
-	TorAddress(TorAddress),
+	TorAddress(TorAddress), // Not used, keeping for backward compatibility
 	StartHeadersHashRequest(HashHeadersData),
 	StartHeadersHashResponse(StartHeadersHashResponse),
 	GetHeadersHashesSegment(SegmentRequest),
@@ -1154,12 +1225,54 @@ impl fmt::Display for Message {
 			Message::BanReason(ban_reason) => write!(f, "{:?}", ban_reason),
 			Message::TransactionKernel(hash) => write!(f, "TransactionKernel({})", hash),
 			Message::GetTransaction(hash) => write!(f, "GetTransaction({})", hash),
-			Message::Transaction(tx) => write!(f, "{:?}", tx),
-			Message::StemTransaction(tx) => write!(f, "STEM[{:?}]", tx),
+			Message::Transaction(tx) => write!(
+				f,
+				"Transaction(inputs:{}, outputs:{}, kernels:{})",
+				tx.body.inputs.len(),
+				tx.body.outputs.len(),
+				tx.body.kernels.len()
+			),
+			Message::StemTransaction(tx) => write!(
+				f,
+				"StemTransaction(inputs:{}, outputs:{}, kernels:{})",
+				tx.body.inputs.len(),
+				tx.body.outputs.len(),
+				tx.body.kernels.len()
+			),
 			Message::GetBlock(hash) => write!(f, "GetBlock({})", hash),
-			Message::Block(block) => write!(f, "{:?}", block),
+			Message::Block(block) => {
+				let block = block.as_block();
+				// Hash calculation can fail, but Display should only fail if writing fails.
+				let hash = block
+					.hash(block.header.pow.proof.context_id)
+					.unwrap_or(Hash::default());
+				write!(
+					f,
+					"Block(hash:{}, height:{}, inputs:{}, outputs:{}, kernels:{})",
+					hash,
+					block.header.height,
+					block.body.inputs.len(),
+					block.body.outputs.len(),
+					block.body.kernels.len()
+				)
+			}
 			Message::GetCompactBlock(hash) => write!(f, "GetCompactBlock({})", hash),
-			Message::CompactBlock(com_block) => write!(f, "{:?}", com_block),
+			Message::CompactBlock(com_block) => {
+				let com_block = com_block.as_compact_block();
+				// Hash calculation can fail, but Display should only fail if writing fails.
+				let hash = com_block
+					.hash(com_block.header.pow.proof.context_id)
+					.unwrap_or(Hash::default());
+				write!(
+					f,
+					"CompactBlock(hash:{}, height:{}, full_outputs:{}, full_kernels:{}, kernel_ids:{})",
+					hash,
+					com_block.header.height,
+					com_block.out_full().len(),
+					com_block.kern_full().len(),
+					com_block.kern_ids().len()
+				)
+			}
 			Message::GetHeaders(loc) => write!(f, "GetHeaders({:?})", loc),
 			Message::Header(header) => write!(f, "Header({:?})", header),
 			Message::Headers(headers) => match headers.headers.first() {
@@ -1230,8 +1343,8 @@ impl fmt::Display for Message {
 }
 
 impl fmt::Debug for Message {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "Consume({})", self)
+	fn fmt(&self, f2: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f2, "Consume({})", self)
 	}
 }
 
@@ -1284,6 +1397,7 @@ impl Readable for TxHashSetArchive {
 	}
 }
 
+// Not used, keeping for backward compatibility
 #[derive(Debug)]
 pub struct TorAddress {
 	pub address: String,
@@ -1291,11 +1405,13 @@ pub struct TorAddress {
 
 impl TorAddress {
 	/// Creates a new message TorAddress.
-	pub fn new(address: String) -> TorAddress {
+	#[cfg(test)]
+	pub(crate) fn new(address: String) -> TorAddress {
 		TorAddress { address }
 	}
 }
 
+#[cfg(test)]
 impl Writeable for TorAddress {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		ser_multiwrite!(writer, [write_bytes, &self.address]);
@@ -1303,13 +1419,347 @@ impl Writeable for TorAddress {
 	}
 }
 
+// Not used, keeping for backward compatibility
 impl Readable for TorAddress {
 	fn read<R: Reader>(reader: &mut R) -> Result<TorAddress, ser::Error> {
 		let address = String::from_utf8(reader.read_bytes_len_prefix()?);
 
 		match address {
-			Ok(address) => Ok(TorAddress { address }),
+			Ok(address) => match canonical_onion_v3(&address) {
+				Some(address) => Ok(TorAddress { address }),
+				None => Err(ser::Error::CorruptedData(format!(
+					"Invalid onion address string {}",
+					address
+				))),
+			},
 			Err(e) => Err(ser::Error::Utf8Conversion(e.to_string())),
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::types::PeerAddr;
+	use mwc_core::ser::{BinReader, BufReader, ProtocolVersion};
+	use mwc_crates::bytes::Bytes;
+	use std::io;
+	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+	const FUTURE_CAPABILITY_BIT: u32 = 0x0000_0100;
+
+	fn test_hand(onion_sig: Option<[u8; ONION_PROOF_SIGNATURE_LEN]>) -> Hand {
+		let onion_sig_timestamp = onion_sig.map(|_| 42);
+		Hand {
+			version: ProtocolVersion::local(),
+			capabilities: Capabilities::UNKNOWN,
+			nonce: 7,
+			genesis: Hash::from_vec(&[]),
+			total_difficulty: Difficulty::min(),
+			sender_addr: PeerAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1)),
+			receiver_addr: PeerAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 2)),
+			user_agent: "test".to_string(),
+			tx_fee_base: consensus::MILLI_MWC,
+			onion_sig,
+			onion_sig_timestamp,
+		}
+	}
+
+	fn test_shake(user_agent_len: usize) -> Shake {
+		Shake {
+			version: ProtocolVersion(5),
+			capabilities: Capabilities::UNKNOWN,
+			genesis: Hash::from_vec(&[]),
+			total_difficulty: Difficulty::min(),
+			user_agent: "a".repeat(user_agent_len),
+			tx_fee_base: consensus::MILLI_MWC,
+		}
+	}
+
+	fn inject_handshake_capability_bits(bytes: &mut [u8], capab: u32) {
+		bytes[4..8].copy_from_slice(&capab.to_be_bytes());
+	}
+
+	#[test]
+	fn ban_reason_read_propagates_truncated_input() {
+		let mut source = &[][..];
+		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0);
+
+		match BanReason::read(&mut reader) {
+			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			other => panic!("expected unexpected EOF, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn tor_address_read_accepts_valid_onion_v3() {
+		let onion = "zwecav6dgftsoscybpzufbo77d452mk3mox2fqzjqocu7265bxgq6oad.onion";
+		let bytes = ser::ser_vec(
+			0,
+			&TorAddress::new(onion.to_string()),
+			ProtocolVersion::local(),
+		)
+		.unwrap();
+		let address =
+			ser::deserialize_strict::<TorAddress, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+				.unwrap();
+
+		assert_eq!(address.address, onion);
+	}
+
+	#[test]
+	fn tor_address_read_rejects_invalid_onion() {
+		let bytes = ser::ser_vec(
+			0,
+			&TorAddress::new("not-an-onion".to_string()),
+			ProtocolVersion::local(),
+		)
+		.unwrap();
+		let err =
+			ser::deserialize_strict::<TorAddress, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+				.unwrap_err();
+
+		match err {
+			ser::Error::CorruptedData(msg) => {
+				assert!(msg.contains("Invalid onion address string not-an-onion"));
+			}
+			err => panic!("unexpected error: {:?}", err),
+		}
+	}
+
+	#[test]
+	fn tor_address_read_rejects_noncanonical_onion() {
+		let onion = "ZWECAV6DGFTSOSCYBPZUFBO77D452MK3MOX2FQZJQOCU7265BXGQ6OAD.onion";
+		let bytes = ser::ser_vec(
+			0,
+			&TorAddress::new(onion.to_string()),
+			ProtocolVersion::local(),
+		)
+		.unwrap();
+		let err =
+			ser::deserialize_strict::<TorAddress, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+				.unwrap_err();
+
+		match err {
+			ser::Error::CorruptedData(msg) => {
+				assert!(msg.contains("Invalid onion address string"));
+			}
+			err => panic!("unexpected error: {:?}", err),
+		}
+	}
+
+	#[test]
+	fn hand_read_accepts_absent_onion_signature() {
+		let bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+			.unwrap();
+
+		assert!(hand.onion_sig.is_none());
+		assert!(hand.onion_sig_timestamp.is_none());
+	}
+
+	#[test]
+	fn hand_read_accepts_full_onion_proof() {
+		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
+		let bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local()).unwrap();
+		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+			.unwrap();
+
+		assert_eq!(hand.onion_sig, Some(sig));
+		assert_eq!(hand.onion_sig_timestamp, Some(42));
+	}
+
+	#[test]
+	fn hand_read_silently_downgrades_unknown_capability_bits() {
+		let known_capabilities = Capabilities::PEER_LIST | Capabilities::TX_KERNEL_HASH;
+		let wire_capabilities = known_capabilities.bits() | FUTURE_CAPABILITY_BIT;
+		assert!(Capabilities::from_bits(wire_capabilities).is_none());
+
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		inject_handshake_capability_bits(&mut bytes, wire_capabilities);
+
+		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+			.unwrap();
+
+		assert_eq!(hand.capabilities, known_capabilities);
+	}
+
+	#[test]
+	fn hand_read_rejects_user_agent_outside_printable_ascii() {
+		for user_agent in [
+			"bad\0agent",
+			"bad\u{1b}[2Jagent",
+			"bad\u{7f}agent",
+			"bad\u{202e}agent",
+			"bad\u{e9}agent",
+		] {
+			let mut hand = test_hand(None);
+			hand.user_agent = user_agent.to_string();
+			let bytes = ser::ser_vec(0, &hand, ProtocolVersion::local()).unwrap();
+
+			match ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0) {
+				Err(ser::Error::CorruptedData(msg)) => {
+					assert!(
+						msg.contains("Hand.user_agent contains character outside printable ASCII"),
+						"{}",
+						msg
+					);
+				}
+				Ok(_) => panic!("expected non-printable ASCII user agent rejection"),
+				Err(err) => panic!("expected corrupted data error, got {:?}", err),
+			}
+		}
+	}
+
+	#[test]
+	fn hand_read_accepts_legacy_onion_signature_without_timestamp() {
+		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		bytes.extend_from_slice(&sig);
+
+		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+			.unwrap();
+
+		assert_eq!(hand.onion_sig, Some(sig));
+		assert!(hand.onion_sig_timestamp.is_none());
+	}
+
+	#[test]
+	fn hand_read_rejects_partial_onion_signature() {
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		bytes.push(1);
+
+		match ser::deserialize_permissive::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0) {
+			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			Ok(_) => panic!("expected partial signature EOF, got decoded Hand"),
+			Err(err) => panic!("expected partial signature EOF, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn hand_read_rejects_partial_onion_signature_with_buf_reader() {
+		let mut bytes =
+			Bytes::from(ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap());
+		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0);
+		let hand: Hand = reader.body().unwrap();
+		assert!(hand.onion_sig.is_none());
+
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		bytes.push(1);
+		let mut bytes = Bytes::from(bytes);
+		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0);
+
+		match reader.body::<Hand>() {
+			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			Ok(_) => panic!("expected partial signature EOF, got decoded Hand"),
+			Err(err) => panic!("expected partial signature EOF, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn hand_read_rejects_partial_onion_timestamp() {
+		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
+		let mut bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local()).unwrap();
+		bytes.pop();
+
+		match ser::deserialize_permissive::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0) {
+			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			Ok(_) => panic!("expected partial timestamp EOF, got decoded Hand"),
+			Err(err) => panic!("expected partial timestamp EOF, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn hand_read_rejects_partial_onion_timestamp_with_buf_reader() {
+		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
+		let mut bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local()).unwrap();
+		bytes.pop();
+		let mut bytes = Bytes::from(bytes);
+		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0);
+
+		match reader.body::<Hand>() {
+			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+			Ok(_) => panic!("expected partial timestamp EOF, got decoded Hand"),
+			Err(err) => panic!("expected partial timestamp EOF, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn shake_read_rejects_user_agent_outside_printable_ascii() {
+		for user_agent in [
+			"bad\0agent",
+			"bad\u{1b}[2Jagent",
+			"bad\u{7f}agent",
+			"bad\u{202e}agent",
+			"bad\u{e9}agent",
+		] {
+			let mut shake = test_shake(0);
+			shake.user_agent = user_agent.to_string();
+			let bytes = ser::ser_vec(0, &shake, ProtocolVersion::local()).unwrap();
+
+			match ser::deserialize_strict::<Shake, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+			{
+				Err(ser::Error::CorruptedData(msg)) => {
+					assert!(
+						msg.contains("Shake.user_agent contains character outside printable ASCII"),
+						"{}",
+						msg
+					);
+				}
+				Ok(_) => panic!("expected non-printable ASCII user agent rejection"),
+				Err(err) => panic!("expected corrupted data error, got {:?}", err),
+			}
+		}
+	}
+
+	#[test]
+	fn shake_read_silently_downgrades_unknown_capability_bits() {
+		let known_capabilities = Capabilities::PEER_LIST | Capabilities::TX_KERNEL_HASH;
+		let wire_capabilities = known_capabilities.bits() | FUTURE_CAPABILITY_BIT;
+		assert!(Capabilities::from_bits(wire_capabilities).is_none());
+
+		let mut bytes = ser::ser_vec(0, &test_shake(0), ProtocolVersion::local()).unwrap();
+		inject_handshake_capability_bits(&mut bytes, wire_capabilities);
+
+		let shake =
+			ser::deserialize_strict::<Shake, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+				.unwrap();
+
+		assert_eq!(shake.capabilities, known_capabilities);
+	}
+
+	#[test]
+	fn shake_write_enforces_effective_message_limit() {
+		let protocol_version = ProtocolVersion(5);
+		let max_len = max_msg_size(0, Type::Shake) * 4;
+		let fixed_len = 4 + 4 + 8 + 8 + 32 + 8;
+		let max_user_agent_len = usize::try_from(max_len - fixed_len).unwrap();
+
+		let bytes = ser::ser_vec(0, &test_shake(max_user_agent_len), protocol_version).unwrap();
+		assert_eq!(bytes.len(), usize::try_from(max_len).unwrap());
+
+		match ser::ser_vec(0, &test_shake(max_user_agent_len + 1), protocol_version) {
+			Err(ser::Error::TooLargeWriteErr(message)) => {
+				assert!(message.contains("Too large Shake write"));
+			}
+			Ok(_) => panic!("expected oversized Shake write to fail"),
+			Err(err) => panic!("expected TooLargeWriteErr, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn headers_write_rejects_count_above_max_block_headers() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let headers = Headers {
+			headers: vec![BlockHeader::default(0); MAX_BLOCK_HEADERS as usize + 1],
+		};
+
+		match ser::ser_vec(0, &headers, ProtocolVersion::local()) {
+			Err(ser::Error::TooLargeWriteErr(msg)) => {
+				assert!(msg.contains("too many block headers"), "{}", msg);
+			}
+			Ok(_) => panic!("expected oversized headers write rejection"),
+			Err(err) => panic!("expected too large write rejection, got {:?}", err),
 		}
 	}
 }

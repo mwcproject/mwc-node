@@ -14,9 +14,12 @@
 
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr, TorConfig};
-use mwc_util::tokio::net::TcpListener;
+use mwc_crates::log::{info, warn};
+use mwc_crates::tokio;
+use mwc_crates::tokio::net::TcpListener;
+use mwc_crates::zeroize::Zeroizing;
 use mwc_util::{run_global_async_block, StopState};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{io, thread};
@@ -25,8 +28,8 @@ pub fn listen<F, G, H, K>(
 	context_id: u32,
 	stop_state: Arc<StopState>,
 	tor_config: Option<TorConfig>,
-	listen_addr: Option<SocketAddr>, // Port in needed in not internal tor will be used
-	onion_expanded_key: Option<[u8; 64]>,
+	listen_addr: Option<SocketAddr>,
+	onion_expanded_key: Option<Zeroizing<[u8; 64]>>,
 	started_service_callback: Option<F>,
 	failed_service_callback: Option<G>,
 	service_status_callback: Option<K>,
@@ -40,40 +43,19 @@ where
 {
 	let tor_config = tor_config.unwrap_or(TorConfig::no_tor_config());
 
-	// Empty handshake means that we still can't listen. We need to know own onion address. In case of
-	// listen_onion_service that will happens after the service will be started. That takes time...
+	// Empty handshake means that we still can't connect to peers. For Tor the
+	// onion address is derived from the local identity key once the onion
+	// service is launched; full reachability is reported separately.
 	if tor_config.is_tor_enabled() {
-		if !tor_config.is_tor_external() {
-			// running own tor service
-			listen_onion_service(
-				context_id,
-				stop_state,
-				onion_expanded_key,
-				started_service_callback,
-				failed_service_callback,
-				service_status_callback,
-				handle_new_peer_callback,
-			)
-		} else {
-			// Listening on external Tor, listening on sockets
-			let onion_address = tor_config.onion_address.clone().ok_or(Error::ConfigError(
-				"For tor external config, internal onion address is not specified.".into(),
-			))?;
-			let port = listen_addr
-				.ok_or(Error::Internal("listening port in not set".into()))?
-				.port();
-
-			listen_socket(
-				stop_state,
-				IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-				port,
-				Some(onion_address),
-				started_service_callback,
-				failed_service_callback,
-				service_status_callback,
-				handle_new_peer_callback,
-			)
-		}
+		listen_onion_service(
+			context_id,
+			stop_state,
+			onion_expanded_key,
+			started_service_callback,
+			failed_service_callback,
+			service_status_callback,
+			handle_new_peer_callback,
+		)
 	} else {
 		let addr = listen_addr.ok_or(Error::Internal("listening port in not set".into()))?;
 		listen_socket(
@@ -92,7 +74,7 @@ where
 fn listen_onion_service<F, G, H, K>(
 	context_id: u32,
 	stop_state: Arc<StopState>,
-	onion_expanded_key: Option<[u8; 64]>,
+	onion_expanded_key: Option<Zeroizing<[u8; 64]>>,
 	started_service_callback: Option<F>,
 	failed_service_callback: Option<G>,
 	service_status_callback: Option<K>,
@@ -119,9 +101,7 @@ where
 		failed_service_callback,
 		service_status_callback,
 		handle_new_peer_callback,
-	);
-
-	Ok(())
+	)
 }
 
 /// Starts a new TCP server and listen to incoming connections. This is a
@@ -144,11 +124,16 @@ where
 {
 	// start TCP listener and handle incoming connections
 	let addr = SocketAddr::new(host, port);
-	let listener = match run_global_async_block(async { TcpListener::bind(addr).await }) {
+	let mut listener_healthy = false;
+	let listener = match run_global_async_block(async { TcpListener::bind(addr).await })
+		.map_err(|e| Error::Internal(format!("call TcpListener::bind errore, {}", e)))?
+	{
 		Ok(listener) => {
-			if let Some(f) = service_status_callback.as_ref() {
-				f(true)
-			}
+			set_listener_service_status(
+				service_status_callback.as_ref(),
+				&mut listener_healthy,
+				true,
+			);
 			if let Some(started_service_callback) = started_service_callback {
 				started_service_callback(onion_service_address);
 			}
@@ -163,6 +148,7 @@ where
 				host, port, e
 			));
 			if let Some(failed_service_callback) = failed_service_callback {
+				// result is ignored because we are exiting in any case.
 				let _ = failed_service_callback(&err);
 			}
 			return Err(err);
@@ -181,11 +167,7 @@ where
 		}
 
 		match run_global_async_block(async {
-			match mwc_util::tokio::time::timeout(
-				mwc_util::tokio::time::Duration::from_secs(1),
-				listener.accept(),
-			)
-			.await
+			match tokio::time::timeout(tokio::time::Duration::from_secs(1), listener.accept()).await
 			{
 				Ok(r) => r,
 				Err(_) => Err(io::Error::new(
@@ -193,8 +175,16 @@ where
 					"expected waiting timeout",
 				)),
 			}
-		}) {
+		})
+		.map_err(|e| Error::Internal(e.to_string()))?
+		{
 			Ok((stream, peer_addr)) => {
+				set_listener_service_status(
+					service_status_callback.as_ref(),
+					&mut listener_healthy,
+					true,
+				);
+
 				// We want out TCP stream to be in blocking mode.
 				// The TCP listener is in nonblocking mode so we *must* explicitly
 				// move the accepted TCP stream into blocking mode (or all kinds of
@@ -202,40 +192,173 @@ where
 				// A nonblocking TCP listener will accept nonblocking TCP streams which
 				// we do not want.
 
-				let mut peer_addr = PeerAddr::Ip(peer_addr);
-
-				// attempt to see if it an ipv4-mapped ipv6
-				// if yes convert to ipv4
-				match peer_addr {
-					PeerAddr::Ip(socket_addr) => {
-						if socket_addr.is_ipv6() {
-							if let IpAddr::V6(ipv6) = socket_addr.ip() {
-								if let Some(ipv4) = ipv6.to_ipv4() {
-									peer_addr = PeerAddr::Ip(SocketAddr::V4(SocketAddrV4::new(
-										ipv4,
-										socket_addr.port(),
-									)))
-								}
-							}
-						}
-					}
-					_ => {}
-				}
+				let peer_addr = PeerAddr::Ip(normalize_transport_socket_addr(peer_addr));
 
 				handle_new_peer_callback(TcpDataStream::from_tcp(stream), Some(peer_addr));
 			}
 			Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+				set_listener_service_status(
+					service_status_callback.as_ref(),
+					&mut listener_healthy,
+					true,
+				);
 				// nothing to do, will retry in next iteration
 			}
 			Err(e) => {
-				debug!("Couldn't establish new client connection: {:?}", e);
+				handle_listener_accept_error(
+					host,
+					port,
+					e,
+					failed_service_callback.as_ref(),
+					service_status_callback.as_ref(),
+					&mut listener_healthy,
+				)?;
 			}
 		}
 		thread::sleep(Duration::from_millis(5));
 	}
-	if let Some(f) = service_status_callback.as_ref() {
-		f(false)
-	}
+	set_listener_service_status(
+		service_status_callback.as_ref(),
+		&mut listener_healthy,
+		false,
+	);
 
 	Ok(())
+}
+
+fn normalize_transport_socket_addr(socket_addr: SocketAddr) -> SocketAddr {
+	match socket_addr {
+		SocketAddr::V6(ipv6_addr) => ipv6_addr
+			.ip()
+			.to_ipv4_mapped()
+			.map(|ipv4| SocketAddr::V4(SocketAddrV4::new(ipv4, ipv6_addr.port())))
+			.unwrap_or(SocketAddr::V6(ipv6_addr)),
+		SocketAddr::V4(_) => socket_addr,
+	}
+}
+
+fn set_listener_service_status<K>(
+	service_status_callback: Option<&K>,
+	listener_healthy: &mut bool,
+	healthy: bool,
+) where
+	K: Fn(bool),
+{
+	if *listener_healthy == healthy {
+		return;
+	}
+	*listener_healthy = healthy;
+	if let Some(f) = service_status_callback {
+		f(healthy);
+	}
+}
+
+fn handle_listener_accept_error<G, K>(
+	host: IpAddr,
+	port: u16,
+	err: io::Error,
+	failed_service_callback: Option<&G>,
+	service_status_callback: Option<&K>,
+	listener_healthy: &mut bool,
+) -> Result<(), Error>
+where
+	G: Fn(&Error) -> bool,
+	K: Fn(bool),
+{
+	let err = Error::TorProcess(format!(
+		"Unable to accept incoming connection on {}:{}, {}",
+		host, port, err
+	));
+	warn!("{}", err);
+
+	set_listener_service_status(service_status_callback, listener_healthy, false);
+
+	let should_exit = failed_service_callback.map_or(true, |f| f(&err));
+	if should_exit {
+		Err(err)
+	} else {
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::sync::{Arc, Mutex};
+
+	#[test]
+	fn accept_error_without_failure_callback_marks_service_down_and_returns() {
+		let statuses = Arc::new(Mutex::new(Vec::new()));
+		let statuses_for_callback = statuses.clone();
+		let status_callback = Some(move |healthy| {
+			statuses_for_callback.lock().unwrap().push(healthy);
+		});
+		let mut listener_healthy = true;
+
+		let err = handle_listener_accept_error(
+			"127.0.0.1".parse().unwrap(),
+			3414,
+			io::Error::new(io::ErrorKind::Other, "fd exhausted"),
+			None::<&fn(&Error) -> bool>,
+			status_callback.as_ref(),
+			&mut listener_healthy,
+		)
+		.unwrap_err();
+
+		match err {
+			Error::TorProcess(message) => assert!(message.contains("fd exhausted")),
+			err => panic!("expected TorProcess, got {:?}", err),
+		}
+		assert!(!listener_healthy);
+		assert_eq!(*statuses.lock().unwrap(), vec![false]);
+	}
+
+	#[test]
+	fn accept_error_can_continue_and_later_mark_service_healthy() {
+		let statuses = Arc::new(Mutex::new(Vec::new()));
+		let statuses_for_callback = statuses.clone();
+		let status_callback = Some(move |healthy| {
+			statuses_for_callback.lock().unwrap().push(healthy);
+		});
+
+		let failures = Arc::new(Mutex::new(Vec::new()));
+		let failures_for_callback = failures.clone();
+		let failed_callback = Some(move |err: &Error| {
+			failures_for_callback.lock().unwrap().push(err.to_string());
+			false
+		});
+
+		let mut listener_healthy = true;
+		handle_listener_accept_error(
+			"127.0.0.1".parse().unwrap(),
+			3414,
+			io::Error::new(io::ErrorKind::Other, "temporary listener error"),
+			failed_callback.as_ref(),
+			status_callback.as_ref(),
+			&mut listener_healthy,
+		)
+		.unwrap();
+
+		assert!(!listener_healthy);
+		assert_eq!(failures.lock().unwrap().len(), 1);
+
+		set_listener_service_status(status_callback.as_ref(), &mut listener_healthy, true);
+
+		assert!(listener_healthy);
+		assert_eq!(*statuses.lock().unwrap(), vec![false, true]);
+	}
+
+	#[test]
+	fn transport_socket_addr_normalizes_only_ipv4_mapped_ipv6() {
+		let mapped: SocketAddr = "[::ffff:203.0.113.8]:3414".parse().unwrap();
+		let compatible: SocketAddr = "[::203.0.113.8]:3414".parse().unwrap();
+		let localhost: SocketAddr = "[::1]:3414".parse().unwrap();
+
+		assert_eq!(
+			normalize_transport_socket_addr(mapped),
+			"203.0.113.8:3414".parse::<SocketAddr>().unwrap()
+		);
+		assert_eq!(normalize_transport_socket_addr(compatible), compatible);
+		assert_eq!(normalize_transport_socket_addr(localhost), localhost);
+	}
 }

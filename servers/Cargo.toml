@@ -1,6 +1,6 @@
 [package]
 name = "mwc_servers"
-version = "6.0.1"
+version = "7.0.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -10,37 +10,13 @@ workspace = ".."
 edition = "2018"
 
 [dependencies]
-hyper = { version = "0.14", features = ["full"] }
-fs2 = "0.4"
-futures = "0.3"
-rand = "0.6"
-serde = "1"
-log = "0.4"
-serde_derive = "1"
-serde_json = "1"
-chrono = "0.4.11"
-async-stream = "0.3"
-walkdir = "2.3.1"
-thiserror = "1"
-atomic_float = "1.0"
-sysinfo = "0.38"
-
-mwc_api = { path = "../api", version = "6.0.1" }
-mwc_chain = { path = "../chain", version = "6.0.1" }
-mwc_core = { path = "../core", version = "6.0.1" }
-mwc_keychain = { path = "../keychain", version = "6.0.1" }
-mwc_p2p = { path = "../p2p", version = "6.0.1" }
-mwc_pool = { path = "../pool", version = "6.0.1" }
-mwc_store = { path = "../store", version = "6.0.1" }
-mwc_util = { path = "../util", version = "6.0.1" }
-
-# NOTE. We can't have hyper-rustls the same version for Android and non android. because if how rust builds dependency.
-# Android must have v0.20+
-[target.'cfg(not(target_os = "android"))'.dependencies]
-hyper-rustls = "0.23"
-
-[target.'cfg(target_os = "android")'.dependencies]
-hyper-rustls = { version = "0.23", default-features = false, features = ["webpki-tokio"] }
-
-[features]
-libp2p = ["mwc_p2p/libp2p", "mwc_api/libp2p"]
+mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
+mwc_api = { path = "../api", version = "7.0.0" }
+mwc_chain = { path = "../chain", version = "7.0.0" }
+mwc_core = { path = "../core", version = "7.0.0" }
+mwc_keychain = { path = "../keychain", version = "7.0.0" }
+mwc_p2p = { path = "../p2p", version = "7.0.0" }
+mwc_pool = { path = "../pool", version = "7.0.0" }
+mwc_store = { path = "../store", version = "7.0.0" }
+mwc_util = { path = "../util", version = "7.0.0" }
+thiserror.workspace = true

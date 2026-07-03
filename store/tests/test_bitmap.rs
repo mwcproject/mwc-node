@@ -13,11 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use rand;
-
-use chrono::prelude::Utc;
-use croaring::{Bitmap, Portable};
-use rand::Rng;
+use mwc_crates::croaring::{Bitmap, Portable};
+use mwc_crates::rand;
+use mwc_crates::rand::RngExt;
+use std::time::Instant;
 
 // We can use "andnot" to rewind easily by passing in a "bitmask" of
 // all the subsequent pos we want to rewind.
@@ -65,10 +64,10 @@ fn test_a_small_bitmap() {
 
 #[test]
 fn test_1000_inputs() {
-	let mut rng = rand::thread_rng();
+	let mut rng = rand::rng();
 	let mut bitmap = Bitmap::new();
 	for _ in 1..1_000 {
-		let n = rng.gen_range(0, 1_000_000);
+		let n = rng.random_range(0..1_000_000);
 		bitmap.add(n);
 	}
 	let serialized_buffer = bitmap.serialize::<Portable>();
@@ -102,18 +101,16 @@ fn test_a_big_bitmap() {
 #[ignore]
 #[test]
 fn bench_fast_or() {
-	let nano_to_millis = 1.0 / 1_000_000.0;
-
 	let bitmaps_number = 256;
 	let size_of_each_bitmap = 1_000;
 
 	let init_bitmaps = || -> Vec<Bitmap> {
-		let mut rng = rand::thread_rng();
+		let mut rng = rand::rng();
 		let mut bitmaps = vec![];
 		for _ in 0..bitmaps_number {
 			let mut bitmap = Bitmap::new();
 			for _ in 0..size_of_each_bitmap {
-				let n = rng.gen_range(0, 1_000_000);
+				let n = rng.random_range(0..1_000_000);
 				bitmap.add(n);
 			}
 			bitmaps.push(bitmap);
@@ -123,12 +120,11 @@ fn bench_fast_or() {
 
 	let mut bitmaps = init_bitmaps();
 	let mut bitmap = Bitmap::new();
-	let start = Utc::now().timestamp_nanos_opt().unwrap();
+	let start = Instant::now();
 	for _ in 0..bitmaps_number {
 		bitmap.or_inplace(&bitmaps.pop().unwrap());
 	}
-	let fin = Utc::now().timestamp_nanos_opt().unwrap();
-	let dur_ms = (fin - start) as f64 * nano_to_millis;
+	let dur_ms = start.elapsed().as_secs_f64() * 1000.0;
 	println!(
 		"  or_inplace(): {:9.3?}ms. bitmap cardinality: {}",
 		dur_ms,
@@ -136,10 +132,9 @@ fn bench_fast_or() {
 	);
 
 	let bitmaps = init_bitmaps();
-	let start = Utc::now().timestamp_nanos_opt().unwrap();
+	let start = Instant::now();
 	let bitmap = Bitmap::fast_or(&bitmaps.iter().map(|x| x).collect::<Vec<&Bitmap>>());
-	let fin = Utc::now().timestamp_nanos_opt().unwrap();
-	let dur_ms = (fin - start) as f64 * nano_to_millis;
+	let dur_ms = start.elapsed().as_secs_f64() * 1000.0;
 	println!(
 		"     fast_or(): {:9.3?}ms. bitmap cardinality: {}",
 		dur_ms,
@@ -147,10 +142,9 @@ fn bench_fast_or() {
 	);
 
 	let bitmaps = init_bitmaps();
-	let start = Utc::now().timestamp_nanos_opt().unwrap();
+	let start = Instant::now();
 	let bitmap = Bitmap::fast_or_heap(&bitmaps.iter().map(|x| x).collect::<Vec<&Bitmap>>());
-	let fin = Utc::now().timestamp_nanos_opt().unwrap();
-	let dur_ms = (fin - start) as f64 * nano_to_millis;
+	let dur_ms = start.elapsed().as_secs_f64() * 1000.0;
 	println!(
 		"fast_or_heap(): {:9.3?}ms. bitmap cardinality: {}",
 		dur_ms,

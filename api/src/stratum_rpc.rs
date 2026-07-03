@@ -14,10 +14,10 @@
 
 //! JSON-RPC Stub generation for the Stratum API
 
-use crate::core::stratum;
 use crate::rest::*;
 use crate::stratum::Stratum;
-use easy_jsonrpc_mwc;
+use mwc_core::stratum;
+use mwc_crates::easy_jsonrpc_mwc;
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at

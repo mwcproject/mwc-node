@@ -15,39 +15,46 @@
 
 //! Storage of core types using LMDB.
 
-use std::any::type_name;
+use mwc_crates::lmdb_zero;
+use mwc_crates::lmdb_zero::traits::CreateCursor;
+use mwc_crates::lmdb_zero::LmdbResultExt;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
-use lmdb_zero as lmdb;
-use lmdb_zero::traits::CreateCursor;
-use lmdb_zero::LmdbResultExt;
-
-use crate::mwc_core::global;
-use crate::mwc_core::ser::{self, DeserializationMode, ProtocolVersion};
-use std::sync::RwLock;
+use crate::Error::NotFoundErr;
+use mwc_core::global;
+use mwc_core::ser::{self, ProtocolVersion};
+use mwc_crates::log::{debug, info, trace};
+use mwc_crates::parking_lot::{RwLock, RwLockReadGuard};
 
 /// number of bytes to grow the database by when needed
 pub const ALLOC_CHUNK_SIZE_DEFAULT: usize = 134_217_728; //128 MB
 /// And for test mode, to avoid too much disk allocation on windows
 pub const ALLOC_CHUNK_SIZE_DEFAULT_TEST: usize = 1_048_576; //1 MB
-const RESIZE_PERCENT: f32 = 0.9;
+const RESIZE_PERCENT_NUMERATOR: usize = 9;
+const RESIZE_PERCENT_DENOMINATOR: usize = 10;
 /// Want to ensure that each resize gives us at least this %
 /// of total space free
-const RESIZE_MIN_TARGET_PERCENT: f32 = 0.65;
+const RESIZE_MIN_TARGET_PERCENT_NUMERATOR: usize = 65;
+const RESIZE_MIN_TARGET_PERCENT_DENOMINATOR: usize = 100;
 
 /// Main error type for this lmdb
-#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
 	/// Couldn't find what we were looking for
 	#[error("DB Not Found Error: {0}")]
 	NotFoundErr(String),
+	/// Database handle is not currently available.
+	#[error("Database unavailable: {0}")]
+	DbUnavailable(String),
 	/// Wraps an error originating from LMDB
 	#[error("LMDB error, {0}")]
-	LmdbErr(lmdb::error::Error),
+	LmdbErr(#[from] lmdb_zero::error::Error),
 	/// Wraps a serialization error for Writeable or Readable
 	#[error("LMDB Serialization Error, {0}")]
-	SerErr(ser::Error),
+	SerErr(#[from] ser::Error),
 	/// File handling error
 	#[error("File handling Error: {0}")]
 	FileErr(String),
@@ -57,20 +64,24 @@ pub enum Error {
 	/// Batch type error
 	#[error("Incorrect batch type: {0}")]
 	BatchTypeError(String),
-	/// IOError
+	/// IO error
 	#[error("IO Error: {0}")]
-	IOError(String),
+	IOErr(#[from] std::io::Error),
+	/// Data overflow occurred.
+	#[error("Data overflow error, {0}")]
+	DataOverflow(String),
 }
 
-impl From<lmdb::error::Error> for Error {
-	fn from(e: lmdb::error::Error) -> Error {
-		Error::LmdbErr(e)
-	}
-}
-
-impl From<ser::Error> for Error {
-	fn from(e: ser::Error) -> Error {
-		Error::SerErr(e)
+impl Error {
+	/// Check if error related to DB related not found error
+	pub fn store_error_is_not_found(&self) -> bool {
+		match &self {
+			NotFoundErr(_) => true,
+			crate::Error::LmdbErr(mwc_crates::lmdb_zero::error::Error::Code(code)) => {
+				*code == mwc_crates::lmdb_zero::error::NOTFOUND
+			}
+			_ => false,
+		}
 	}
 }
 
@@ -86,13 +97,160 @@ where
 	}
 }
 
+fn prepare_lmdb_env_dir(full_path: &str) -> Result<(), Error> {
+	prepare_lmdb_env_dir_path(Path::new(full_path))
+}
+
+#[cfg(not(unix))]
+fn prepare_lmdb_env_dir_path(path1: &Path) -> Result<(), Error> {
+	// On non-Unix platforms we do not control filesystem permissions here. If
+	// an attacker already controls the OS filesystem, there is not much this
+	// storage layer can do to enforce LMDB directory isolation.
+	fs::create_dir_all(path1).map_err(|e| {
+		Error::FileErr(format!(
+			"Unable to create LMDB directory '{}': {:?}",
+			path1.display(),
+			e
+		))
+	})
+}
+
+#[cfg(unix)]
+fn prepare_lmdb_env_dir_path(path2: &Path) -> Result<(), Error> {
+	use std::io::ErrorKind;
+	use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+	let mut existed = path2.try_exists().map_err(|e| {
+		Error::FileErr(format!(
+			"Unable to inspect LMDB directory '{}': {:?}",
+			path2.display(),
+			e
+		))
+	})?;
+
+	if !existed {
+		let mut builder = fs::DirBuilder::new();
+		builder.recursive(true);
+		builder.mode(0o700);
+		match builder.create(path2) {
+			Ok(()) => {}
+			Err(e) if e.kind() == ErrorKind::AlreadyExists => existed = true,
+			Err(e) => {
+				return Err(Error::FileErr(format!(
+					"Unable to create LMDB directory '{}': {:?}",
+					path2.display(),
+					e
+				)))
+			}
+		}
+	}
+
+	let dir = fs::OpenOptions::new()
+		.read(true)
+		.custom_flags(
+			mwc_crates::libc::O_DIRECTORY
+				| mwc_crates::libc::O_NOFOLLOW
+				| mwc_crates::libc::O_CLOEXEC,
+		)
+		.open(path2)
+		.map_err(|e| {
+			Error::FileErr(format!(
+				"Unable to open LMDB directory '{}': {:?}",
+				path2.display(),
+				e
+			))
+		})?;
+
+	let metadata = dir.metadata().map_err(|e| {
+		Error::FileErr(format!(
+			"Unable to read LMDB directory metadata '{}': {:?}",
+			path2.display(),
+			e
+		))
+	})?;
+	if !metadata.is_dir() {
+		return Err(Error::FileErr(format!(
+			"LMDB path '{}' is not a directory",
+			path2.display()
+		)));
+	}
+
+	// Ownership is intentionally not checked here. We only reject directories
+	// that are writable by group/other and then tighten accepted directories to
+	// owner-only permissions.
+	// O_NOFOLLOW applies to the final path component opened above. LMDB is also
+	// opened later by path, so this function does not try to defend against an
+	// attacker who can modify ancestor directories, replace intermediate path
+	// components, or swap this path after validation. If an attacker controls
+	// the filesystem namespace above the database directory, this storage layer
+	// cannot reliably preserve the intended directory binding.
+	// This check is based on Unix mode bits only. Platform ACLs can grant access
+	// independently of those bits, and if an attacker controls filesystem ACL
+	// policy there is not much this layer can do to prevent access to the data.
+	let mode = metadata.permissions().mode() & 0o777;
+	if existed && (mode & 0o022) != 0 {
+		return Err(Error::FileErr(format!(
+			"LMDB directory '{}' has unsafe group/other write permissions {:o}",
+			path2.display(),
+			mode
+		)));
+	}
+
+	dir.set_permissions(fs::Permissions::from_mode(0o700))
+		.map_err(|e| {
+			Error::FileErr(format!(
+				"Unable to set LMDB directory '{}' permissions: {:?}",
+				path2.display(),
+				e
+			))
+		})
+}
+
+fn lmdb_size_used_bytes(page_size: usize, last_page: usize) -> Result<usize, Error> {
+	last_page
+		.checked_add(1)
+		.and_then(|lp| page_size.checked_mul(lp))
+		.ok_or_else(|| {
+			Error::OtherErr(format!(
+				"LMDB used size overflow, page_size={}, last_page={}",
+				page_size, last_page
+			))
+		})
+}
+
+fn resize_threshold_exceeded(
+	size_used: usize,
+	mapsize: usize,
+	numerator: usize,
+	denominator: usize,
+) -> Result<bool, Error> {
+	let lhs = (size_used as u128)
+		.checked_mul(denominator as u128)
+		.ok_or_else(|| {
+			Error::OtherErr(format!(
+				"LMDB resize threshold overflow, size_used={}, denominator={}",
+				size_used, denominator
+			))
+		})?;
+	let rhs = (mapsize as u128)
+		.checked_mul(numerator as u128)
+		.ok_or_else(|| {
+			Error::OtherErr(format!(
+				"LMDB resize threshold overflow, mapsize={}, numerator={}",
+				mapsize, numerator
+			))
+		})?;
+	Ok(lhs > rhs)
+}
+
 const DEFAULT_DB_VERSION: ProtocolVersion = ProtocolVersion(3);
 
 /// LMDB-backed store facilitating data access and serialization. All writes
 /// are done through a Batch abstraction providing atomicity.
 pub struct Store {
-	env: Arc<lmdb::Environment>,
-	db: Arc<RwLock<Option<Arc<lmdb::Database<'static>>>>>,
+	env: Arc<lmdb_zero::Environment>,
+	db: Arc<RwLock<Option<Arc<lmdb_zero::Database<'static>>>>>,
+	resize_lock: Arc<RwLock<()>>,
 	name: String,
 	version: ProtocolVersion,
 	alloc_chunk_size: usize,
@@ -119,15 +277,13 @@ impl Store {
 			Some(n) => n.to_owned(),
 			None => "lmdb".to_owned(),
 		};
+		// env_name is supplied by local, reviewable constants in current callers
+		// ("lmdb" or test environment names), not by user input. Keep that
+		// invariant rather than accepting path-like values here.
 		let full_path = [root_path.to_owned(), name].join("/");
-		fs::create_dir_all(&full_path).map_err(|e| {
-			Error::FileErr(format!(
-				"Unable to create directory 'db_root' to store chain_data: {:?}",
-				e
-			))
-		})?;
+		prepare_lmdb_env_dir(&full_path)?;
 
-		let mut env_builder = lmdb::EnvBuilder::new()?;
+		let mut env_builder = lmdb_zero::EnvBuilder::new()?;
 		env_builder.set_maxdbs(8)?;
 
 		if let Some(max_readers) = max_readers {
@@ -139,12 +295,13 @@ impl Store {
 			false => ALLOC_CHUNK_SIZE_DEFAULT_TEST,
 		};
 
-		let env = unsafe { env_builder.open(&full_path, lmdb::open::NOTLS, 0o600)? };
+		let env = unsafe { env_builder.open(&full_path, lmdb_zero::open::NOTLS, 0o600)? };
 
 		debug!("DB Mapsize for {} is {}", full_path, env.info()?.mapsize);
 		let res = Store {
 			env: Arc::new(env),
 			db: Arc::new(RwLock::new(None)),
+			resize_lock: Arc::new(RwLock::new(())),
 			name: db_name,
 			version: DEFAULT_DB_VERSION,
 			alloc_chunk_size,
@@ -152,11 +309,11 @@ impl Store {
 		};
 
 		{
-			let mut w = res.db.write().unwrap_or_else(|e| e.into_inner());
-			*w = Some(Arc::new(lmdb::Database::open(
+			let mut w = res.db.write();
+			*w = Some(Arc::new(lmdb_zero::Database::open(
 				res.env.clone(),
 				Some(&res.name),
-				&lmdb::DatabaseOptions::new(lmdb::db::CREATE),
+				&lmdb_zero::DatabaseOptions::new(lmdb_zero::db::CREATE),
 			)?));
 		}
 		Ok(res)
@@ -172,6 +329,7 @@ impl Store {
 		Store {
 			env: self.env.clone(),
 			db: self.db.clone(),
+			resize_lock: self.resize_lock.clone(),
 			name: self.name.clone(),
 			version,
 			alloc_chunk_size,
@@ -191,35 +349,48 @@ impl Store {
 
 	/// Opens the database environment
 	pub fn open(&self) -> Result<(), Error> {
-		let mut w = self.db.write().unwrap_or_else(|e| e.into_inner());
-		*w = Some(Arc::new(lmdb::Database::open(
+		let _resize_guard = self.resize_lock.read_recursive();
+		let mut w = self.db.write();
+		if w.is_some() {
+			return Ok(());
+		}
+		*w = Some(Arc::new(lmdb_zero::Database::open(
 			self.env.clone(),
 			Some(&self.name),
-			&lmdb::DatabaseOptions::new(lmdb::db::CREATE),
+			&lmdb_zero::DatabaseOptions::new(lmdb_zero::db::CREATE),
 		)?));
 		Ok(())
 	}
 
 	/// Determines whether the environment needs a resize based on a simple percentage threshold
 	pub fn needs_resize(&self) -> Result<bool, Error> {
+		let _resize_guard = self.resize_lock.read_recursive();
 		let env_info = self.env.info()?;
 		let stat = self.env.stat()?;
 
-		let size_used = stat.psize as usize * env_info.last_pgno;
+		let size_used = lmdb_size_used_bytes(stat.psize as usize, env_info.last_pgno)?;
 		trace!("DB map size: {}", env_info.mapsize);
 		trace!("Space used: {}", size_used);
+		if size_used >= env_info.mapsize {
+			trace!("Space remaining: 0");
+			trace!("Resize threshold met (LMDB reports used size >= map size)");
+			return Ok(true);
+		}
 		trace!("Space remaining: {}", env_info.mapsize - size_used);
-		let resize_percent = RESIZE_PERCENT;
 		trace!(
-			"Percent used: {:.*}  Percent threshold: {:.*}",
+			"Percent used: {:.*}  Percent threshold: {}/{}",
 			4,
 			size_used as f64 / env_info.mapsize as f64,
-			4,
-			resize_percent
+			RESIZE_PERCENT_NUMERATOR,
+			RESIZE_PERCENT_DENOMINATOR
 		);
 
-		if size_used as f32 / env_info.mapsize as f32 > resize_percent
-			|| env_info.mapsize < self.alloc_chunk_size
+		if resize_threshold_exceeded(
+			size_used,
+			env_info.mapsize,
+			RESIZE_PERCENT_NUMERATOR,
+			RESIZE_PERCENT_DENOMINATOR,
+		)? || env_info.mapsize < self.alloc_chunk_size
 		{
 			trace!("Resize threshold met (percent-based)");
 			Ok(true)
@@ -232,32 +403,56 @@ impl Store {
 	/// Increments the database size by as many ALLOC_CHUNK_SIZES
 	/// to give a minimum threshold of free space
 	pub fn do_resize(&self) -> Result<(), Error> {
+		// Do active waiting for write with try lock, because write() lock will block next read
+		// locks that can make a deadlock. Active write lock waiting should be fine
+		let _resize_guard = loop {
+			match self.resize_lock.try_write() {
+				Some(l) => break l,
+				None => {
+					std::thread::sleep(Duration::from_millis(25));
+					continue;
+				}
+			}
+		};
 		let env_info = self.env.info()?;
 		let stat = self.env.stat()?;
-		let size_used = stat.psize as usize * env_info.last_pgno;
+		let size_used = lmdb_size_used_bytes(stat.psize as usize, env_info.last_pgno)?;
 
 		let new_mapsize = if env_info.mapsize < self.alloc_chunk_size {
 			self.alloc_chunk_size
 		} else {
 			let mut tot = env_info.mapsize;
-			while size_used as f32 / tot as f32 > RESIZE_MIN_TARGET_PERCENT {
-				tot += self.alloc_chunk_size;
+			while resize_threshold_exceeded(
+				size_used,
+				tot,
+				RESIZE_MIN_TARGET_PERCENT_NUMERATOR,
+				RESIZE_MIN_TARGET_PERCENT_DENOMINATOR,
+			)? {
+				tot = tot.checked_add(self.alloc_chunk_size).ok_or_else(|| {
+					Error::OtherErr(format!(
+						"LMDB resize overflow, current mapsize={}, alloc_chunk_size={}",
+						tot, self.alloc_chunk_size
+					))
+				})?;
 			}
 			tot
 		};
 
-		// close
-		let mut w = self.db.write().unwrap_or_else(|e| e.into_inner());
+		// Note: Intentionally closing and None DB during resize.
+		// If resize failed, none of DB will be opened, so any db access will fails.
+		// It is expected behavior, we can't keep using prev instance because it is almost full
+		// and performance is degrading. We need to do resize of fail.
+		let mut w = self.db.write();
 		*w = None;
 
 		unsafe {
 			self.env.set_mapsize(new_mapsize)?;
 		}
 
-		*w = Some(Arc::new(lmdb::Database::open(
+		*w = Some(Arc::new(lmdb_zero::Database::open(
 			self.env.clone(),
 			Some(&self.name),
-			&lmdb::DatabaseOptions::new(lmdb::db::CREATE),
+			&lmdb_zero::DatabaseOptions::new(lmdb_zero::db::CREATE),
 		)?));
 
 		info!(
@@ -272,8 +467,8 @@ impl Store {
 	pub fn get_with<F, T>(
 		&self,
 		key: &[u8],
-		access: &lmdb::ConstAccessor<'_>,
-		db: &lmdb::Database<'_>,
+		access: &lmdb_zero::ConstAccessor<'_>,
+		db: &lmdb_zero::Database<'_>,
 		deserialize: F,
 	) -> Result<Option<T>, Error>
 	where
@@ -288,65 +483,68 @@ impl Store {
 
 	/// Gets a `Readable` value from the db, provided its key.
 	/// Note: Creates a new read transaction so will *not* see any uncommitted data.
-	pub fn get_ser<T: ser::Readable>(
-		&self,
-		key: &[u8],
-		deser_mode: Option<DeserializationMode>,
-	) -> Result<Option<T>, Error> {
-		let lock = self.db.read().unwrap_or_else(|e| e.into_inner());
+	pub fn get_ser<T: ser::Readable>(&self, key: &[u8]) -> Result<Option<T>, Error> {
+		let _resize_guard = self.resize_lock.read_recursive();
+		let lock = self.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
-		let txn = lmdb::ReadTransaction::new(self.env.clone())?;
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
+		let txn = lmdb_zero::ReadTransaction::new(self.env.clone())?;
 		let access = txn.access();
-		let d = match deser_mode {
-			Some(d) => d,
-			_ => DeserializationMode::default(),
-		};
 		self.get_with(key, &access, &db, |_, mut data| {
-			ser::deserialize(&mut data, self.protocol_version(), self.context_id, d)
+			ser::deserialize_strict(&mut data, self.protocol_version(), self.context_id)
 				.map_err(From::from)
 		})
 	}
 
 	/// Whether the provided key exists
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.db.read().unwrap_or_else(|e| e.into_inner());
+		let _resize_guard = self.resize_lock.read_recursive();
+		let lock = self.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
-		let txn = lmdb::ReadTransaction::new(self.env.clone())?;
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
+		let txn = lmdb_zero::ReadTransaction::new(self.env.clone())?;
 		let access = txn.access();
 
-		let res: Option<&lmdb::Ignore> = access.get(db, key).to_opt()?;
+		let res: Option<&lmdb_zero::Ignore> = access.get(db, key).to_opt()?;
 		Ok(res.is_some())
 	}
 
 	/// Produces an iterator from the provided key prefix.
-	pub fn iter<F, T>(&self, prefix: &[u8], deserialize: F) -> Result<PrefixIterator<F, T>, Error>
+	pub fn iter<F, T>(
+		&self,
+		prefix: &[u8],
+		deserialize: F,
+	) -> Result<PrefixIterator<'_, 'static, F, T>, Error>
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.db.read().unwrap_or_else(|e| e.into_inner());
+		let resize_guard = self.resize_lock.read_recursive();
+		let lock = self.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
-		let tx = Arc::new(lmdb::ReadTransaction::new(self.env.clone())?);
-		let cursor = Arc::new(tx.cursor(db.clone())?);
-		Ok(PrefixIterator::new(tx, cursor, prefix, deserialize))
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
+		let tx = Arc::new(lmdb_zero::ReadTransaction::new(self.env.clone())?);
+		let cursor = tx.cursor(db.clone())?;
+		Ok(PrefixIterator::new_owned_read(
+			tx,
+			cursor,
+			Some(resize_guard),
+			prefix,
+			deserialize,
+		))
 	}
 
 	/// Builds a new read only batch to be used with this store.
 	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
-		// check if the db needs resizing before returning the batch
-		if self.needs_resize()? {
-			self.do_resize()?;
-		}
-		let tx = lmdb::ReadTransaction::new(self.env.clone())?;
+		let resize_guard = self.resize_lock.read_recursive();
+		let tx = lmdb_zero::ReadTransaction::new(self.env.clone())?;
 		Ok(Batch {
 			store: self,
 			tx_w: None,
 			tx_r: Some(tx),
+			_resize_guard: Some(resize_guard),
 		})
 	}
 
@@ -356,11 +554,13 @@ impl Store {
 		if self.needs_resize()? {
 			self.do_resize()?;
 		}
-		let tx = lmdb::WriteTransaction::new(self.env.clone())?;
+		let resize_guard = self.resize_lock.read_recursive();
+		let tx = lmdb_zero::WriteTransaction::new(self.env.clone())?;
 		Ok(Batch {
 			store: self,
 			tx_w: Some(tx),
 			tx_r: None,
+			_resize_guard: Some(resize_guard),
 		})
 	}
 }
@@ -368,19 +568,21 @@ impl Store {
 /// Batch to write multiple Writeables to db in an atomic manner.
 pub struct Batch<'a> {
 	store: &'a Store,
-	tx_w: Option<lmdb::WriteTransaction<'a>>,
-	tx_r: Option<lmdb::ReadTransaction<'a>>,
+	tx_w: Option<lmdb_zero::WriteTransaction<'a>>,
+	tx_r: Option<lmdb_zero::ReadTransaction<'a>>,
+	_resize_guard: Option<RwLockReadGuard<'a, ()>>,
 }
 
 impl<'a> Batch<'a> {
 	/// Writes a single key/value pair to the db
 	pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
+		let lock = self.store.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
 		if let Some(tx) = &self.tx_w {
-			tx.access().put(db, key, value, lmdb::put::Flags::empty())?;
+			tx.access()
+				.put(db, key, value, lmdb_zero::put::Flags::empty())?;
 			Ok(())
 		} else {
 			return Err(Error::BatchTypeError(
@@ -413,7 +615,7 @@ impl<'a> Batch<'a> {
 		value: &W,
 		version: ProtocolVersion,
 	) -> Result<(), Error> {
-		let ser_value = ser::ser_vec(value, version);
+		let ser_value = ser::ser_vec(self.get_context_id(), value, version);
 		match ser_value {
 			Ok(data) => self.put(key, &data),
 			Err(err) => Err(err.into()),
@@ -426,10 +628,10 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
+		let lock = self.store.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
 
 		if let Some(tx) = &self.tx_r {
 			self.store.get_with(key, &tx.access(), &db, deserialize)
@@ -445,10 +647,10 @@ impl<'a> Batch<'a> {
 	/// Whether the provided key exists.
 	/// This is in the context of the current write transaction.
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
+		let lock = self.store.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
 
 		if let Some(tx) = &self.tx_r {
 			Ok(tx.access().get::<[u8], [u8]>(db, key).to_opt()?.is_some())
@@ -462,29 +664,53 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Produces an iterator from the provided key prefix.
-	pub fn iter<F, T>(&self, prefix: &[u8], deserialize: F) -> Result<PrefixIterator<F, T>, Error>
+	pub fn iter<F, T>(
+		&self,
+		prefix: &[u8],
+		deserialize: F,
+	) -> Result<PrefixIterator<'_, 'a, F, T>, Error>
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		self.store.iter(prefix, deserialize)
+		let lock = self.store.db.read_recursive();
+		let db = lock
+			.as_ref()
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
+
+		if let Some(tx) = &self.tx_r {
+			let cursor = tx.cursor(db.clone())?;
+			Ok(PrefixIterator {
+				tx: PrefixIteratorTransaction::BorrowedRead(tx),
+				cursor,
+				seek: false,
+				prefix: prefix.to_vec(),
+				deserialize,
+				_resize_guard: None,
+			})
+		} else if let Some(tx) = &self.tx_w {
+			let cursor = tx.cursor(db.clone())?;
+			Ok(PrefixIterator {
+				tx: PrefixIteratorTransaction::BorrowedWrite(tx),
+				cursor,
+				seek: false,
+				prefix: prefix.to_vec(),
+				deserialize,
+				_resize_guard: None,
+			})
+		} else {
+			Err(Error::BatchTypeError(
+				"No Read/Write transaction is found".to_string(),
+			))
+		}
 	}
 
 	/// Gets a `Readable` value from the db by provided key and provided deserialization strategy.
-	pub fn get_ser<T: ser::Readable>(
-		&self,
-		key: &[u8],
-		deser_mode: Option<DeserializationMode>,
-	) -> Result<Option<T>, Error> {
-		let d = match deser_mode {
-			Some(d) => d,
-			_ => DeserializationMode::default(),
-		};
+	pub fn get_ser<T: ser::Readable>(&self, key: &[u8]) -> Result<Option<T>, Error> {
 		self.get_with(key, |_, mut data| {
-			match ser::deserialize(
+			match ser::deserialize_strict(
 				&mut data,
 				self.protocol_version(),
 				self.store.get_context_id(),
-				d,
 			) {
 				Ok(res) => Ok(res),
 				Err(e) => Err(From::from(e)),
@@ -494,10 +720,10 @@ impl<'a> Batch<'a> {
 
 	/// Deletes a key/value pair from the db
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read().unwrap_or_else(|e| e.into_inner());
+		let lock = self.store.db.read_recursive();
 		let db = lock
 			.as_ref()
-			.ok_or_else(|| Error::NotFoundErr("chain db is None".to_string()))?;
+			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
 		if let Some(tx) = &self.tx_w {
 			tx.access().del_key(db, key)?;
 			Ok(())
@@ -536,88 +762,107 @@ impl<'a> Batch<'a> {
 				Some(tx) => Some(tx.child_tx()?),
 				None => None,
 			},
+			_resize_guard: None,
 		})
 	}
 }
 
 /// An iterator based on key prefix.
 /// Caller is responsible for deserialization of the data.
-pub struct PrefixIterator<F, T>
+pub struct PrefixIterator<'txn, 'env, F, T>
 where
 	F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 {
-	tx: Arc<lmdb::ReadTransaction<'static>>,
-	cursor: Arc<lmdb::Cursor<'static, 'static>>,
+	tx: PrefixIteratorTransaction<'txn, 'env>,
+	cursor: lmdb_zero::Cursor<'txn, 'static>,
 	seek: bool,
 	prefix: Vec<u8>,
 	deserialize: F,
+	_resize_guard: Option<RwLockReadGuard<'txn, ()>>,
 }
 
-impl<F, T> Iterator for PrefixIterator<F, T>
+enum PrefixIteratorTransaction<'txn, 'env> {
+	OwnedRead(Arc<lmdb_zero::ReadTransaction<'static>>),
+	BorrowedRead(&'txn lmdb_zero::ReadTransaction<'env>),
+	BorrowedWrite(&'txn lmdb_zero::WriteTransaction<'env>),
+}
+
+impl<F, T> Iterator for PrefixIterator<'_, '_, F, T>
 where
 	F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 {
-	type Item = T;
+	type Item = Result<T, Error>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		let access = self.tx.access();
-		let cursor = match Arc::get_mut(&mut self.cursor) {
-			Some(c) => c,
-			None => {
-				debug_assert!(false);
-				error!("Imdb, failed to get cursor");
-				return None;
-			}
-		};
+		let cursor = &mut self.cursor;
+		let seek = &mut self.seek;
+		let prefix = &self.prefix;
+		let deserialize = &self.deserialize;
 
-		loop {
-			let kv: Result<(&[u8], &[u8]), _> = if self.seek {
-				cursor.next(&access)
-			} else {
-				self.seek = true;
-				cursor.seek_range_k(&access, &self.prefix[..])
-			};
-			// In case of error, we want to skip this record
-			match kv.ok() {
-				Some((k, v)) => {
-					if !k.starts_with(self.prefix.as_slice()) {
-						return None;
-					}
-					match (self.deserialize)(k, v) {
-						Ok(v) => return Some(v),
-						Err(e) => {
-							error!(
-								"IMDB reading for {}. This item is deleted from DB!!! {}",
-								type_name::<T>(),
-								e
-							);
-							continue;
-						}
-					}
-				}
-				None => return None,
+		match &self.tx {
+			PrefixIteratorTransaction::OwnedRead(tx) => {
+				let access = tx.access();
+				next_with_access(cursor, seek, prefix, deserialize, &access)
+			}
+			PrefixIteratorTransaction::BorrowedRead(tx) => {
+				let access = tx.access();
+				next_with_access(cursor, seek, prefix, deserialize, &access)
+			}
+			PrefixIteratorTransaction::BorrowedWrite(tx) => {
+				let access = tx.access();
+				next_with_access(cursor, seek, prefix, deserialize, &access)
 			}
 		}
 	}
 }
 
-impl<F, T> PrefixIterator<F, T>
+fn next_with_access<F, T>(
+	cursor: &mut lmdb_zero::Cursor<'_, 'static>,
+	seek: &mut bool,
+	prefix: &[u8],
+	deserialize: &F,
+	access: &lmdb_zero::ConstAccessor<'_>,
+) -> Option<Result<T, Error>>
 where
 	F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 {
-	/// Initialize a new prefix iterator.
-	pub fn new(
-		tx: Arc<lmdb::ReadTransaction<'static>>,
-		cursor: Arc<lmdb::Cursor<'static, 'static>>,
+	let kv: Result<(&[u8], &[u8]), _> = if *seek {
+		cursor.next(access)
+	} else {
+		*seek = true;
+		cursor.seek_range_k(access, prefix)
+	};
+
+	match kv.to_opt() {
+		Ok(Some((k, v))) => {
+			if !k.starts_with(prefix) {
+				return None;
+			}
+			Some((deserialize)(k, v))
+		}
+		Ok(None) => None,
+		Err(e) => Some(Err(e.into())),
+	}
+}
+
+impl<'txn, 'env, F, T> PrefixIterator<'txn, 'env, F, T>
+where
+	F: Fn(&[u8], &[u8]) -> Result<T, Error>,
+{
+	fn new_owned_read(
+		tx: Arc<lmdb_zero::ReadTransaction<'static>>,
+		cursor: lmdb_zero::Cursor<'txn, 'static>,
+		resize_guard: Option<RwLockReadGuard<'txn, ()>>,
 		prefix: &[u8],
 		deserialize: F,
-	) -> PrefixIterator<F, T> {
+	) -> PrefixIterator<'txn, 'env, F, T> {
 		PrefixIterator {
-			tx,
+			tx: PrefixIteratorTransaction::OwnedRead(tx),
 			cursor,
 			seek: false,
 			prefix: prefix.to_vec(),
 			deserialize,
+			_resize_guard: resize_guard,
 		}
 	}
 }

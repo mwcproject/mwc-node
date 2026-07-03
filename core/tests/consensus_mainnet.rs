@@ -17,14 +17,11 @@
 //! Setting global::mining_mode() changes global shared state so automated tests should only use one
 //! mining mode/chain type per test file to avoid non-deterministic behaviour.
 
-use mwc_core as core;
-use std::collections::VecDeque;
-
-use self::core::consensus::*;
-use self::core::core::block::HeaderVersion;
-use self::core::global;
-use self::core::pow::Difficulty;
-use chrono::prelude::Utc;
+use mwc_core::consensus::*;
+use mwc_core::core::block::HeaderVersion;
+use mwc_core::global;
+use mwc_core::pow::Difficulty;
+use mwc_crates::chrono::prelude::Utc;
 use std::fmt::{self, Display};
 
 /// Last n blocks for difficulty calculation purposes
@@ -112,7 +109,7 @@ fn repeat(
 // Creates a new chain with a genesis at a simulated difficulty
 fn create_chain_sim(
 	diff: u64,
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+	cache_values: &mut DifficultyCache,
 ) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	println!(
 		"adding create: {}, {}",
@@ -137,12 +134,12 @@ fn create_chain_sim(
 
 fn get_diff_stats(
 	chain_sim: &[HeaderDifficultyInfo],
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+	cache_values: &mut DifficultyCache,
 ) -> DiffStats {
 	// Fill out some difficulty stats for convenience
 	let diff_iter = chain_sim.to_vec();
 	let last_blocks: Vec<HeaderDifficultyInfo> =
-		global::difficulty_data_to_vector(0, diff_iter.iter().cloned(), cache_values);
+		global::difficulty_data_to_vector(0, diff_iter.iter().cloned(), cache_values).unwrap();
 
 	let mut last_time = last_blocks[0].timestamp;
 	let tip_height = chain_sim.len();
@@ -155,6 +152,7 @@ fn get_diff_stats(
 
 	let sum_blocks: Vec<HeaderDifficultyInfo> =
 		global::difficulty_data_to_vector(0, diff_iter.iter().cloned(), cache_values)
+			.unwrap()
 			.into_iter()
 			.take(DIFFICULTY_ADJUST_WINDOW as usize)
 			.collect();
@@ -218,13 +216,13 @@ fn get_diff_stats(
 fn add_block(
 	interval: u64,
 	chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>,
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+	cache_values: &mut DifficultyCache,
 ) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	let mut ret_chain_sim = chain_sim.clone();
 	let mut return_chain: Vec<HeaderDifficultyInfo> =
 		chain_sim.clone().iter().map(|e| e.0.clone()).collect();
 	// get last interval
-	let diff = next_difficulty(0, 1, return_chain.clone(), cache_values);
+	let diff = next_difficulty(0, 1, return_chain.clone(), cache_values).unwrap();
 	let last_elem = chain_sim.first().unwrap().clone().0;
 	let time = last_elem.timestamp + interval;
 	return_chain.insert(
@@ -247,7 +245,7 @@ fn add_block_repeated(
 	interval: u64,
 	chain_sim: Vec<(HeaderDifficultyInfo, DiffStats)>,
 	iterations: usize,
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
+	cache_values: &mut DifficultyCache,
 ) -> Vec<(HeaderDifficultyInfo, DiffStats)> {
 	let mut return_chain = chain_sim;
 	for _ in 0..iterations {
@@ -313,7 +311,7 @@ fn adjustment_scenarios() {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
 	global::set_local_nrd_enabled(false);
 
-	let mut cache_values = VecDeque::new();
+	let mut cache_values = DifficultyCache::new();
 
 	// Genesis block with initial diff
 	let chain_sim = create_chain_sim(global::initial_block_difficulty(0), &mut cache_values);
@@ -392,7 +390,7 @@ fn next_target_adjustment() {
 	let cur_time = Utc::now().timestamp() as u64;
 	let diff_min = Difficulty::min();
 
-	let mut cache_values = VecDeque::new();
+	let mut cache_values = DifficultyCache::new();
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
 	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
@@ -406,7 +404,8 @@ fn next_target_adjustment() {
 			None,
 		),
 		&mut cache_values,
-	);
+	)
+	.unwrap();
 
 	assert_ne!(hinext.difficulty, diff_min);
 
@@ -423,6 +422,7 @@ fn next_target_adjustment() {
 			repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(10000)
 	);
@@ -432,11 +432,16 @@ fn next_target_adjustment() {
 		next_difficulty(
 			0,
 			1,
-			vec![HeaderDifficultyInfo::from_ts_diff(0, 42, hi.difficulty)],
+			vec![HeaderDifficultyInfo::from_ts_diff(
+				0,
+				DIFFICULTY_ADJUST_WINDOW,
+				hi.difficulty,
+			)],
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
-		Difficulty::from_num(14913)
+		Difficulty::from_num(14876)
 	);
 
 	// checking averaging works
@@ -451,7 +456,9 @@ fn next_target_adjustment() {
 	);
 	s2.append(&mut s1);
 	assert_eq!(
-		next_difficulty(0, 1, s2, &mut cache_values).difficulty,
+		next_difficulty(0, 1, s2, &mut cache_values)
+			.unwrap()
+			.difficulty,
 		Difficulty::from_num(1000),
 	);
 
@@ -464,6 +471,7 @@ fn next_target_adjustment() {
 			repeat(90, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(857)
 	);
@@ -474,6 +482,7 @@ fn next_target_adjustment() {
 			repeat(120, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(750)
 	);
@@ -486,6 +495,7 @@ fn next_target_adjustment() {
 			repeat(55, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1028)
 	);
@@ -496,6 +506,7 @@ fn next_target_adjustment() {
 			repeat(45, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1090)
 	);
@@ -506,6 +517,7 @@ fn next_target_adjustment() {
 			repeat(30, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1200)
 	);
@@ -518,6 +530,7 @@ fn next_target_adjustment() {
 			repeat(0, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1500)
 	);
@@ -530,6 +543,7 @@ fn next_target_adjustment() {
 			repeat(300, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(500)
 	);
@@ -540,6 +554,7 @@ fn next_target_adjustment() {
 			repeat(400, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(500)
 	);
@@ -553,6 +568,7 @@ fn next_target_adjustment() {
 			repeat(90, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::min()
 	);
@@ -654,13 +670,13 @@ fn test_secondary_pow_scale() {
 	// difficulty block
 	hi.is_secondary = false;
 	assert_eq!(
-		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
+		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()).unwrap(),
 		108
 	);
 	// all secondary on 90%, factor should go down a bit
 	hi.is_secondary = true;
 	assert_eq!(
-		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()),
+		secondary_pow_scaling(1, &(0..window).map(|_| hi.clone()).collect::<Vec<_>>()).unwrap(),
 		91
 	);
 	// all secondary on 1%, factor should go down to bound (divide by 2)
@@ -668,7 +684,8 @@ fn test_secondary_pow_scale() {
 		secondary_pow_scaling(
 			2 * YEAR_HEIGHT * 83 / 90,
 			&(0..window).map(|_| hi.clone()).collect::<Vec<_>>()
-		),
+		)
+		.unwrap(),
 		13
 	);
 	// same as above, testing lowest bound
@@ -679,7 +696,8 @@ fn test_secondary_pow_scale() {
 		secondary_pow_scaling(
 			2 * YEAR_HEIGHT,
 			&(0..window).map(|_| low_hi.clone()).collect::<Vec<_>>()
-		),
+		)
+		.unwrap(),
 		MIN_AR_SCALE as u32
 	);
 	// the right ratio of 95% secondary
@@ -692,7 +710,8 @@ fn test_secondary_pow_scale() {
 				.map(|_| primary_hi.clone())
 				.chain((0..(window * 9 / 10)).map(|_| hi.clone()))
 				.collect::<Vec<_>>()
-		),
+		)
+		.unwrap(),
 		88,
 	);
 	// 95% secondary, should come down based on 97.5 average
@@ -703,7 +722,8 @@ fn test_secondary_pow_scale() {
 				.map(|_| primary_hi.clone())
 				.chain((0..(window * 95 / 100)).map(|_| hi.clone()))
 				.collect::<Vec<_>>()
-		),
+		)
+		.unwrap(),
 		89
 	);
 	// 40% secondary, should come up based on 70 average
@@ -714,7 +734,8 @@ fn test_secondary_pow_scale() {
 				.map(|_| primary_hi.clone())
 				.chain((0..(window * 4 / 10)).map(|_| hi.clone()))
 				.collect::<Vec<_>>()
-		),
+		)
+		.unwrap(),
 		70
 	);
 }

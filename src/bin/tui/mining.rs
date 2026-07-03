@@ -16,26 +16,29 @@
 //! Mining status view definition
 
 use std::cmp::Ordering;
+use std::convert::TryFrom;
 
-use chrono::prelude::{DateTime, Utc};
-use cursive::direction::Orientation;
-use cursive::event::Key;
-use cursive::traits::{Nameable, Resizable};
-use cursive::view::View;
-use cursive::views::{
+use mwc_crates::chrono::prelude::{DateTime, Utc};
+use mwc_crates::cursive::direction::Orientation;
+use mwc_crates::cursive::event::Key;
+use mwc_crates::cursive::traits::{Nameable, Resizable};
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::views::{
 	Button, Dialog, LinearLayout, OnEventView, Panel, ResizedView, StackView, TextView,
 };
-use cursive::Cursive;
+use mwc_crates::cursive::Cursive;
+use mwc_crates::log::error;
 use std::sync::atomic;
 use std::time;
 
+use super::call_on_name_or_log;
 use crate::tui::constants::{
 	MAIN_MENU, SUBMENU_MINING_BUTTON, TABLE_MINING_DIFF_STATUS, TABLE_MINING_STATUS, VIEW_MINING,
 };
 use crate::tui::types::TUIStatusListener;
 
-use crate::servers::{DiffBlock, ServerStats, WorkerStats};
-use cursive_table_view::{TableView, TableViewItem};
+use mwc_crates::cursive_table_view::{TableView, TableViewItem};
+use mwc_servers::{DiffBlock, ServerStats, WorkerStats};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum StratumWorkerColumn {
@@ -66,20 +69,10 @@ impl StratumWorkerColumn {
 
 impl TableViewItem<StratumWorkerColumn> for WorkerStats {
 	fn to_column(&self, column: StratumWorkerColumn) -> String {
-		let datetime = DateTime::from_timestamp(
-			self.last_seen
-				.duration_since(time::UNIX_EPOCH)
-				.unwrap()
-				.as_secs() as i64,
-			0,
-		)
-		.unwrap_or_default()
-		.to_utc();
-
 		match column {
 			StratumWorkerColumn::Id => self.id.clone(),
 			StratumWorkerColumn::IsConnected => self.is_connected.to_string(),
-			StratumWorkerColumn::LastSeen => datetime.to_string(),
+			StratumWorkerColumn::LastSeen => format_worker_last_seen(self.last_seen),
 			StratumWorkerColumn::PowDifficulty => self.pow_difficulty.to_string(),
 			StratumWorkerColumn::NumAccepted => self.num_accepted.to_string(),
 			StratumWorkerColumn::NumRejected => self.num_rejected.to_string(),
@@ -106,6 +99,67 @@ impl TableViewItem<StratumWorkerColumn> for WorkerStats {
 		}
 	}
 }
+
+fn format_worker_last_seen(last_seen: time::SystemTime) -> String {
+	system_time_to_utc(last_seen)
+		.map(|datetime| datetime.to_string())
+		.unwrap_or_else(|| "invalid timestamp".to_string())
+}
+
+fn format_diff_block_time(time: u64) -> String {
+	i64::try_from(time)
+		.ok()
+		.and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
+		.map(|datetime| datetime.to_string())
+		.unwrap_or_else(|| "invalid timestamp".to_string())
+}
+
+fn system_time_to_utc(system_time: time::SystemTime) -> Option<DateTime<Utc>> {
+	let (seconds, nanos) = match system_time.duration_since(time::UNIX_EPOCH) {
+		Ok(duration) => {
+			let seconds = i64::try_from(duration.as_secs()).ok()?;
+			(seconds, duration.subsec_nanos())
+		}
+		Err(error) => {
+			let duration = error.duration();
+			let seconds = i64::try_from(duration.as_secs()).ok()?;
+			let nanos = duration.subsec_nanos();
+			if nanos == 0 {
+				(seconds.checked_neg()?, 0)
+			} else {
+				(
+					seconds.checked_add(1)?.checked_neg()?,
+					1_000_000_000 - nanos,
+				)
+			}
+		}
+	};
+
+	DateTime::<Utc>::from_timestamp(seconds, nanos)
+}
+
+fn show_mining_stack_layer(c: &mut Cursive, layer_name: &str) {
+	match c.call_on_name("mining_stack_view", |sv: &mut StackView| {
+		if let Some(pos) = sv.find_layer_from_name(layer_name) {
+			sv.move_to_front(pos);
+			true
+		} else {
+			false
+		}
+	}) {
+		Some(true) => {}
+		Some(false) => {
+			error!("TUI mining stack layer '{}' not found", layer_name);
+		}
+		None => {
+			error!(
+				"TUI mining stack view 'mining_stack_view' not found or has unexpected type while switching to '{}'",
+				layer_name
+			);
+		}
+	}
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum DiffColumn {
 	Height,
@@ -129,15 +183,11 @@ impl DiffColumn {
 
 impl TableViewItem<DiffColumn> for DiffBlock {
 	fn to_column(&self, column: DiffColumn) -> String {
-		let datetime: DateTime<Utc> = DateTime::from_timestamp(self.time as i64, 0)
-			.unwrap_or_default()
-			.to_utc();
-
 		match column {
 			DiffColumn::Height => self.block_height.to_string(),
 			DiffColumn::Hash => self.block_hash.to_string(),
 			DiffColumn::Difficulty => self.difficulty.to_string(),
-			DiffColumn::Time => format!("{}", datetime),
+			DiffColumn::Time => format_diff_block_time(self.time),
 			DiffColumn::Duration => format!("{}s", self.duration),
 		}
 	}
@@ -162,17 +212,11 @@ impl TUIMiningView {
 	/// Create the mining view
 	pub fn create() -> impl View {
 		let devices_button = Button::new_raw("Mining Server Status", |s| {
-			let _ = s.call_on_name("mining_stack_view", |sv: &mut StackView| {
-				let pos = sv.find_layer_from_name("mining_device_view").unwrap();
-				sv.move_to_front(pos);
-			});
+			show_mining_stack_layer(s, "mining_device_view");
 		})
 		.with_name(SUBMENU_MINING_BUTTON);
 		let difficulty_button = Button::new_raw("Difficulty", |s| {
-			let _ = s.call_on_name("mining_stack_view", |sv: &mut StackView| {
-				let pos = sv.find_layer_from_name("mining_difficulty_view").unwrap();
-				sv.move_to_front(pos);
-			});
+			show_mining_stack_layer(s, "mining_difficulty_view");
 		});
 		let mining_submenu = LinearLayout::new(Orientation::Horizontal)
 			.child(Panel::new(devices_button))
@@ -296,7 +340,12 @@ impl TUIMiningView {
 			.child(view_stack);
 
 		let mining_view = OnEventView::new(mining_view).on_pre_event(Key::Esc, move |c| {
-			let _ = c.focus_name(MAIN_MENU);
+			if let Err(e) = c.focus_name(MAIN_MENU) {
+				error!(
+					"TUI main menu focus target '{}' not found or cannot be focused: {:?}",
+					MAIN_MENU, e
+				);
+			}
 		});
 
 		mining_view.with_name(VIEW_MINING)
@@ -306,23 +355,25 @@ impl TUIMiningView {
 impl TUIStatusListener for TUIMiningView {
 	/// update
 	fn update(c: &mut Cursive, stats: &ServerStats) {
-		c.call_on_name("diff_cur_height", |t: &mut TextView| {
+		call_on_name_or_log(c, "mining", "diff_cur_height", |t: &mut TextView| {
 			t.set_content(stats.diff_stats.height.to_string());
 		});
-		c.call_on_name("diff_adjust_window", |t: &mut TextView| {
+		call_on_name_or_log(c, "mining", "diff_adjust_window", |t: &mut TextView| {
 			t.set_content(stats.diff_stats.window_size.to_string());
 		});
 		let dur = time::Duration::from_secs(stats.diff_stats.average_block_time);
-		c.call_on_name("diff_avg_block_time", |t: &mut TextView| {
+		call_on_name_or_log(c, "mining", "diff_avg_block_time", |t: &mut TextView| {
 			t.set_content(format!("{} Secs", dur.as_secs()));
 		});
-		c.call_on_name("diff_avg_difficulty", |t: &mut TextView| {
+		call_on_name_or_log(c, "mining", "diff_avg_difficulty", |t: &mut TextView| {
 			t.set_content(stats.diff_stats.average_difficulty.to_string());
 		});
 
 		let mut diff_stats = stats.diff_stats.last_blocks.clone();
 		diff_stats.reverse();
-		let _ = c.call_on_name(
+		call_on_name_or_log(
+			c,
+			"mining",
 			TABLE_MINING_DIFF_STATUS,
 			|t: &mut TableView<DiffBlock, DiffColumn>| {
 				t.set_items(diff_stats);
@@ -372,32 +423,114 @@ impl TUIStatusListener for TUIMiningView {
 			),
 		};
 
-		c.call_on_name("stratum_config_status", |t: &mut TextView| {
+		call_on_name_or_log(c, "mining", "stratum_config_status", |t: &mut TextView| {
 			t.set_content(stratum_enabled);
 		});
-		c.call_on_name("stratum_is_running_status", |t: &mut TextView| {
-			t.set_content(stratum_is_running);
-		});
-		c.call_on_name("stratum_num_workers_status", |t: &mut TextView| {
-			t.set_content(stratum_num_workers);
-		});
-		c.call_on_name("stratum_blocks_found_status", |t: &mut TextView| {
-			t.set_content(stratum_blocks_found);
-		});
-		c.call_on_name("stratum_block_height_status", |t: &mut TextView| {
-			t.set_content(stratum_block_height);
-		});
-		c.call_on_name("stratum_network_difficulty_status", |t: &mut TextView| {
-			t.set_content(stratum_network_difficulty);
-		});
-		c.call_on_name("stratum_network_hashrate", |t: &mut TextView| {
-			t.set_content(stratum_network_hashrate);
-		});
-		let _ = c.call_on_name(
+		call_on_name_or_log(
+			c,
+			"mining",
+			"stratum_is_running_status",
+			|t: &mut TextView| {
+				t.set_content(stratum_is_running);
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"mining",
+			"stratum_num_workers_status",
+			|t: &mut TextView| {
+				t.set_content(stratum_num_workers);
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"mining",
+			"stratum_blocks_found_status",
+			|t: &mut TextView| {
+				t.set_content(stratum_blocks_found);
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"mining",
+			"stratum_block_height_status",
+			|t: &mut TextView| {
+				t.set_content(stratum_block_height);
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"mining",
+			"stratum_network_difficulty_status",
+			|t: &mut TextView| {
+				t.set_content(stratum_network_difficulty);
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"mining",
+			"stratum_network_hashrate",
+			|t: &mut TextView| {
+				t.set_content(stratum_network_hashrate);
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"mining",
 			TABLE_MINING_STATUS,
 			|t: &mut TableView<WorkerStats, StratumWorkerColumn>| {
 				t.set_items_stable(worker_stats);
 			},
 		);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn format_worker_last_seen_handles_valid_system_time() {
+		let last_seen = time::UNIX_EPOCH + time::Duration::new(1, 123_000_000);
+		let expected = DateTime::<Utc>::from_timestamp(1, 123_000_000)
+			.unwrap()
+			.to_string();
+
+		assert_eq!(format_worker_last_seen(last_seen), expected);
+	}
+
+	#[test]
+	fn format_worker_last_seen_rejects_chrono_out_of_range_system_time() {
+		let seconds = DateTime::<Utc>::MAX_UTC.timestamp() as u64 + 1;
+		let last_seen = time::UNIX_EPOCH + time::Duration::from_secs(seconds);
+
+		assert_eq!(format_worker_last_seen(last_seen), "invalid timestamp");
+	}
+
+	#[test]
+	fn format_diff_block_time_handles_valid_timestamp() {
+		let expected = DateTime::<Utc>::from_timestamp(1, 0).unwrap().to_string();
+
+		assert_eq!(format_diff_block_time(1), expected);
+	}
+
+	#[test]
+	fn format_diff_block_time_rejects_i64_overflow() {
+		assert_eq!(format_diff_block_time(u64::MAX), "invalid timestamp");
+	}
+
+	#[test]
+	fn format_diff_block_time_rejects_chrono_out_of_range_timestamp() {
+		let timestamp = DateTime::<Utc>::MAX_UTC.timestamp() as u64 + 1;
+
+		assert_eq!(format_diff_block_time(timestamp), "invalid timestamp");
+	}
+
+	#[test]
+	fn system_time_to_utc_handles_subsecond_times_before_unix_epoch() {
+		let last_seen = time::UNIX_EPOCH - time::Duration::new(0, 1);
+		let expected = DateTime::<Utc>::from_timestamp(-1, 999_999_999).unwrap();
+
+		assert_eq!(system_time_to_utc(last_seen), Some(expected));
 	}
 }

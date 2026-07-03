@@ -19,6 +19,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// Note: build scripts run at build time, so panicking on setup/generation failures
+// is acceptable and gives Cargo a clear failure reason.
 fn main() {
 	// Setting up git hooks in the project: rustfmt and so on.
 	let git_hooks = format!(
@@ -26,23 +28,35 @@ fn main() {
 		PathBuf::from("./.hooks").to_str().unwrap()
 	);
 
-	if cfg!(target_os = "windows") {
+	let output = if cfg!(target_os = "windows") {
 		Command::new("cmd")
 			.args(&["/C", &git_hooks])
 			.output()
-			.expect("failed to execute git config for hooks");
+			.expect("failed to execute git config for hooks")
 	} else {
 		Command::new("sh")
 			.args(&["-c", &git_hooks])
 			.output()
-			.expect("failed to execute git config for hooks");
+			.expect("failed to execute git config for hooks")
+	};
+
+	if !output.status.success() {
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		if stderr.trim().is_empty() {
+			panic!("failed to configure git hooks: {}", output.status);
+		}
+		panic!(
+			"failed to configure git hooks: {}: {}",
+			output.status,
+			stderr.trim()
+		);
 	}
 
 	// build and versioning information
 	let out_dir_path = format!("{}{}", env::var("OUT_DIR").unwrap(), "/built.rs");
-	// don't fail the build if something's missing, may just be cargo release
-	let _ = built::write_built_file_with_opts(
+	built::write_built_file_with_opts(
 		Some(Path::new(env!("CARGO_MANIFEST_DIR"))),
 		Path::new(&out_dir_path),
-	);
+	)
+	.expect("failed to generate built.rs build metadata");
 }

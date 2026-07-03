@@ -22,11 +22,11 @@ Exported functions:
 
 - `char *process_mwc_node_request(char const *input);` - Main API entry point. 'input' is a json string with API 
 request call. Response is a C string that represent json format. Note, that string is managed in library side.
-Use this string as a read only, don't store it in you code. When you copy, release it by calling 'free_node_lib_string'  
+Use this string as a read only, don't store it in you code. When you copy, release it by calling 'free_lib_string'  
 
-- `void free_node_lib_string(char *s);` - Release rust managed memory. 
+- `void free_lib_string(char *s);` - Release rust managed memory. 
 
-- `void register_lib_callback(char const *callback_name, int8_t const *(*cb)(void *, int8_t const *), void *ctx);` - 
+- `void register_lib_callback(char const *callback_name, void (*cb)(void *, int8_t const *), void *ctx);` - 
 register callback function. 
   - 'callback_name' - name of this callback functions. This name will be used in other api calls.
   - 'ctx' - pointer to context that will be passed to your callback. 
@@ -36,12 +36,12 @@ register callback function.
      // ctx - yout internal context that you passed to register_lib_callback
      // msg - some message, usually it is a pointer to C strign in Json format. This memory is 
      // managed on rust side and is valid during this callback only. Don't store or modify it. 
-    int8_t const * new_tx_callback(void* ctx, const int8_t* msg) {
+    void new_tx_callback(void* ctx, const int8_t* msg) {
          ...
     }
 ```
 
-- `void unregister_lib_callback(char const *callback_name);` - unregister your callback by it's name.
+- `void unregister_lib_callback(char const *callback_name);` - unregister your callback by it's name. Logs an error and removes nothing if the callback name is invalid UTF-8 or is not registered.
 
 Important callback lifetime rule:
 
@@ -76,7 +76,7 @@ Error response:
 }
 ```
 
-Pointer that 'process_mwc_node_request' returns, must be released with free_node_lib_string call.
+Pointer that 'process_mwc_node_request' returns, must be released with free_lib_string call.
 
 ## API Calls supported by process_mwc_node_request
 
@@ -162,7 +162,9 @@ All methods below are dispatched in:
 - Result:
   - `{}`
 - Notes:
-  - Stop Tor service and cancel all related tasks. Call it when you app is exiting, may be called before 'release_context'
+  - Requests Arti shutdown by cancelling the global Tor shutdown token. Call it when your app is exiting; it may be called before `release_context`.
+  - The `{}` result means the shutdown request was accepted, not that Tor has fully stopped.
+  - This call does not synchronously drop the Arti instance, join the monitoring thread, or verify that the Tor runtime stopped. Because the shutdown token is one-way for the process lifetime, later Tor bootstrap attempts may return `Interrupted`.
 
 ### 9) `tor_status`
 

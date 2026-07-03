@@ -13,17 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use self::core::core::hash::Hashed;
-use mwc_core as core;
-use mwc_util as util;
+use mwc_core::core::hash::Hashed;
 
-mod chain_test_helper;
-
-use self::chain_test_helper::{clean_output_dir, mine_chain};
+use super::chain_test_helper::{clean_output_dir, mine_chain};
 
 #[test]
 fn test_store_indices() {
-	util::init_test_logger();
+	mwc_util::init_test_logger().unwrap();
 
 	let chain_dir = ".mwc_idx_1";
 	clean_output_dir(chain_dir);
@@ -38,13 +34,13 @@ fn test_store_indices() {
 
 	// Check header_by_height index.
 	let block_header = chain.get_header_by_height(3).unwrap();
-	let block_hash = block_header.hash().unwrap();
+	let block_hash = block_header.hash(0).unwrap();
 	assert_eq!(block_hash, chain.head().unwrap().last_block_h);
 
 	{
 		// Block exists in the db.
 		assert_eq!(
-			chain.get_block(&block_hash).unwrap().hash().unwrap(),
+			chain.get_block(&block_hash).unwrap().hash(0).unwrap(),
 			block_hash
 		);
 

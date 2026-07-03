@@ -15,23 +15,27 @@
 
 //! High level JSON/HTTP client API
 
-use crate::core::global;
+use crate::auth::build_basic_auth_header_value;
 use crate::rest::Error;
-use crate::util::to_base64;
-use serde_json::Value;
+use mwc_core::global;
+use mwc_crates::serde_json;
+use mwc_crates::serde_json::Value;
+use mwc_crates::ureq;
+use mwc_crates::zeroize::Zeroizing;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct HttpClient {
 	agent: ureq::Agent,
-	api_secret: Option<String>,
+	api_secret: Option<Zeroizing<String>>,
 	context_id: u32,
 }
 
 impl HttpClient {
-	pub fn new(context_id: u32, timeout: Duration, api_secret: Option<String>) -> Self {
+	pub fn new(context_id: u32, timeout: Duration, api_secret: Option<Zeroizing<String>>) -> Self {
 		let config = ureq::Agent::config_builder()
 			.timeout_global(Some(timeout))
+			.proxy(None)
 			.build();
 		HttpClient {
 			agent: config.into(),
@@ -45,7 +49,7 @@ impl HttpClient {
 			Error::Internal(format!("Post Request, Can't serialize data to JSON, {}", e))
 		})?;
 
-		debug!("Building http POST request to {}, Body: {}", url, req_body);
+		//debug!("Building http POST request to {}, Body: {}", url, req_body);
 
 		let mut builder = self
 			.agent
@@ -54,22 +58,28 @@ impl HttpClient {
 			.header("accept", "application/json")
 			.header("content-type", "application/json");
 
+		// Do not force a specific protocol here: callers may use local or otherwise
+		// secured transports, and deployments are responsible for choosing an
+		// endpoint that is secure enough when api_secret is configured.
 		if let Some(basic_auth) = self.build_basic_auth_value() {
-			builder = builder.header("authorization", basic_auth);
+			builder = builder.header("authorization", basic_auth.as_str());
 		}
 
 		let mut resp = builder.send(&request).map_err(|e| {
 			Error::Internal(format!("Fails to make post request to {}, {}", url, e))
 		})?;
 
-		let response_str = resp
+		let response = resp
 			.body_mut()
-			.read_to_string()
+			.read_to_vec()
 			.map_err(|e| Error::Internal(format!("Fails to read response from {}, {}", url, e)))?;
 
-		debug!("Got response: {}", response_str);
+		let response_str = std::str::from_utf8(&response).unwrap_or("<non-UTF8 response>");
+		//debug!("Got response: {}", response_str);
 
-		let res: Value = serde_json::from_str(&response_str).map_err(|e| {
+		let res: Value = serde_json::from_slice(&response).map_err(|e| {
+			// Note, in case of error we want to reveal url and response_str. Even it can leak some data
+			// into the logs, it is needed for debugging.
 			Error::Internal(format!(
 				"Invalid response from {}, Response: {}, Error: {}",
 				url, response_str, e
@@ -79,7 +89,7 @@ impl HttpClient {
 	}
 
 	pub fn get(&self, url: &str) -> Result<Value, Error> {
-		debug!("Building http Get request to {}", url);
+		//debug!("Building http Get request to {}", url);
 
 		let mut builder = self
 			.agent
@@ -88,22 +98,29 @@ impl HttpClient {
 			.header("accept", "application/json")
 			.header("content-type", "application/json");
 
+		// Do not force a specific protocol here: callers may use local or otherwise
+		// secured transports, and deployments are responsible for choosing an
+		// endpoint that is secure enough when api_secret is configured.
 		if let Some(basic_auth) = self.build_basic_auth_value() {
-			builder = builder.header("authorization", basic_auth);
+			builder = builder.header("authorization", basic_auth.as_str());
 		}
 
 		let mut resp = builder
 			.call()
 			.map_err(|e| Error::Internal(format!("Fails to make get request to {}, {}", url, e)))?;
 
-		let response_str = resp
+		let response = resp
 			.body_mut()
-			.read_to_string()
+			.read_to_vec()
 			.map_err(|e| Error::Internal(format!("Fails to read response from {}, {}", url, e)))?;
 
-		debug!("Got response: {}", response_str);
+		let response_str = std::str::from_utf8(&response).unwrap_or("<non-UTF8 response>");
+		//debug!("Got response: {}", response_str);
 
-		let res: Value = serde_json::from_str(&response_str).map_err(|e| {
+		let res: Value = serde_json::from_slice(&response).map_err(|e| {
+			// Note, even url and response_str can provide some info, but it is not expecte dto have any
+			// sensitive information at node interaction. In this case url and response_str data
+			// is valuable for debugging
 			Error::Internal(format!(
 				"Invalid response from {}, Response: {}, Error: {}",
 				url, response_str, e
@@ -112,7 +129,7 @@ impl HttpClient {
 		Ok(res)
 	}
 
-	fn build_basic_auth_value(&self) -> Option<String> {
+	fn build_basic_auth_value(&self) -> Option<Zeroizing<String>> {
 		match &self.api_secret {
 			Some(api_secret) => {
 				let basic_auth_key = if global::is_mainnet(self.context_id) {
@@ -123,11 +140,7 @@ impl HttpClient {
 					"mwc"
 				};
 
-				let basic_auth = format!(
-					"Basic {}",
-					to_base64(&format!("{}:{}", basic_auth_key, api_secret))
-				);
-				Some(basic_auth)
+				Some(build_basic_auth_header_value(basic_auth_key, api_secret))
 			}
 			None => None,
 		}

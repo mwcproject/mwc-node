@@ -15,17 +15,6 @@
 
 //! Library module for the key holder functionalities provided by Mwc.
 
-use blake2_rfc as blake2;
-
-#[macro_use]
-extern crate mwc_util as util;
-
-#[macro_use]
-extern crate serde_derive;
-
-#[macro_use]
-extern crate lazy_static;
-
 pub mod base58;
 pub mod extkey_bip32;
 pub mod mnemonic;

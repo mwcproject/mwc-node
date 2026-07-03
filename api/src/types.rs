@@ -13,24 +13,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::chain;
-use crate::core::core::hash::Hashed;
-use crate::core::core::merkle_proof::MerkleProof;
-use crate::core::core::{FeeFields, KernelFeatures, TxKernel};
-use crate::core::{core, ser};
-use crate::p2p;
-use crate::util::secp::pedersen;
-use crate::util::{self, ToHex};
-use mwc_core::core::hash::Hash;
-#[cfg(feature = "libp2p")]
-use mwc_p2p::libp2p_connection;
-use serde;
-use serde::de::MapAccess;
-use serde::ser::SerializeStruct;
+use mwc_core::core::hash::Hashed;
+use mwc_core::core::merkle_proof::MerkleProof;
+use mwc_core::core::{FeeFields, KernelFeatures, TxKernel};
+use mwc_core::{core, libtx::secp_ser, ser};
+use mwc_crates::secp::{pedersen, Secp256k1};
+use mwc_crates::serde::de::{IntoDeserializer, MapAccess};
+use mwc_crates::serde::ser::SerializeStruct;
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::serde_json;
+use mwc_util::{self, ToHex};
 use std::fmt;
 
 macro_rules! no_dup {
 	($field:ident) => {
+		// This checks the stored value, not raw field presence. For nullable optional
+		// API fields, JSON null is intentionally treated the same as an omitted field
+		// so callers can send null and still let a later concrete value populate it.
 		if $field.is_some() {
 			return Err(serde::de::Error::duplicate_field("$field"));
 		}
@@ -39,6 +38,7 @@ macro_rules! no_dup {
 
 /// API Version Information
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "serde")]
 pub struct Version {
 	/// Current node API Version (api crate version)
 	pub node_version: String,
@@ -48,6 +48,7 @@ pub struct Version {
 
 /// The state of the current fork tip
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "serde")]
 pub struct Tip {
 	/// Height of the tip (max height of the fork)
 	pub height: u64,
@@ -60,7 +61,7 @@ pub struct Tip {
 }
 
 impl Tip {
-	pub fn from_tip(tip: chain::Tip) -> Tip {
+	pub fn from_tip(tip: mwc_chain::Tip) -> Tip {
 		Tip {
 			height: tip.height,
 			last_block_pushed: tip.last_block_h.to_hex(),
@@ -72,6 +73,7 @@ impl Tip {
 
 /// Status page containing different server information
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "serde")]
 pub struct Status {
 	// The protocol version
 	pub protocol_version: u32,
@@ -90,14 +92,14 @@ pub struct Status {
 
 impl Status {
 	pub fn from_tip_and_peers(
-		current_tip: chain::Tip,
+		current_tip: mwc_chain::Tip,
 		connections: u32,
 		sync_status: String,
 		sync_info: Option<serde_json::Value>,
 	) -> Status {
 		Status {
 			protocol_version: ser::ProtocolVersion::local().into(),
-			user_agent: p2p::msg::USER_AGENT.to_string(),
+			user_agent: mwc_p2p::msg::USER_AGENT.to_string(),
 			connections: connections,
 			tip: Tip::from_tip(current_tip),
 			sync_status,
@@ -108,6 +110,7 @@ impl Status {
 
 /// TxHashSet
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "serde")]
 pub struct TxHashSet {
 	/// Output Root Hash
 	pub output_root_hash: String,
@@ -121,7 +124,7 @@ impl TxHashSet {
 	/// A TxHashSet in the context of the api is simply the collection of PMMR roots.
 	/// We can obtain these in a lightweight way by reading them from the head of the chain.
 	/// We will have validated the roots on this header against the roots of the txhashset.
-	pub fn from_head(chain: &chain::Chain) -> Result<TxHashSet, chain::Error> {
+	pub fn from_head(chain: &mwc_chain::Chain) -> Result<TxHashSet, mwc_chain::Error> {
 		let header = chain.head_header()?;
 		Ok(TxHashSet {
 			output_root_hash: header.output_root.to_hex(),
@@ -134,51 +137,63 @@ impl TxHashSet {
 /// Wrapper around a list of txhashset nodes, so it can be
 /// presented properly via json
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "serde")]
 pub struct TxHashSetNode {
 	// The hash
 	pub hash: String,
 }
 
 impl TxHashSetNode {
-	pub fn get_last_n_output(chain: &chain::Chain, distance: u64) -> Vec<TxHashSetNode> {
+	pub fn get_last_n_output(
+		chain: &mwc_chain::Chain,
+		distance: u64,
+	) -> Result<Vec<TxHashSetNode>, mwc_chain::Error> {
 		let mut return_vec = Vec::new();
-		let last_n = chain.get_last_n_output(distance);
+		let last_n = chain.get_last_n_output(distance)?;
 		for x in last_n {
 			return_vec.push(TxHashSetNode { hash: x.0.to_hex() });
 		}
-		return_vec
+		Ok(return_vec)
 	}
 
-	pub fn get_last_n_rangeproof(chain: &chain::Chain, distance: u64) -> Vec<TxHashSetNode> {
+	pub fn get_last_n_rangeproof(
+		chain: &mwc_chain::Chain,
+		distance: u64,
+	) -> Result<Vec<TxHashSetNode>, mwc_chain::Error> {
 		let mut return_vec = Vec::new();
-		let last_n = chain.get_last_n_rangeproof(distance);
+		let last_n = chain.get_last_n_rangeproof(distance)?;
 		for elem in last_n {
 			return_vec.push(TxHashSetNode {
 				hash: elem.0.to_hex(),
 			});
 		}
-		return_vec
+		Ok(return_vec)
 	}
 
-	pub fn get_last_n_kernel(chain: &chain::Chain, distance: u64) -> Vec<TxHashSetNode> {
+	pub fn get_last_n_kernel(
+		chain: &mwc_chain::Chain,
+		distance: u64,
+	) -> Result<Vec<TxHashSetNode>, mwc_chain::Error> {
 		let mut return_vec = Vec::new();
-		let last_n = chain.get_last_n_kernel(distance);
+		let last_n = chain.get_last_n_kernel(distance)?;
 		for elem in last_n {
 			return_vec.push(TxHashSetNode {
 				hash: elem.0.to_hex(),
 			});
 		}
-		return_vec
+		Ok(return_vec)
 	}
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub enum OutputType {
 	Coinbase,
 	Transaction,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct Output {
 	/// The output commitment representing the amount
 	pub commit: PrintableCommitment,
@@ -251,12 +266,7 @@ impl<'de> serde::de::Visitor<'de> for PrintableCommitmentVisitor {
 		E: serde::de::Error,
 	{
 		Ok(PrintableCommitment {
-			commit: pedersen::Commitment::from_vec(util::from_hex(v).map_err(|e| {
-				serde::de::Error::custom(format!(
-					"Unable to parse pedersen Commitment {}, {}",
-					v, e
-				))
-			})?),
+			commit: secp_ser::commitment_from_hex(v.into_deserializer())?,
 		})
 	}
 }
@@ -281,16 +291,19 @@ pub struct OutputPrintable {
 	pub merkle_proof: Option<MerkleProof>,
 	/// MMR Position
 	pub mmr_index: u64,
+	/// Context id
+	pub context_id: u32,
 }
 
 impl OutputPrintable {
 	pub fn from_output(
+		secp: &Secp256k1,
 		output: &core::Output,
-		chain: &chain::Chain,
+		chain: &mwc_chain::Chain,
 		block_header: Option<&core::BlockHeader>,
 		include_proof: bool,
 		include_merkle_proof: bool,
-	) -> Result<OutputPrintable, chain::Error> {
+	) -> Result<OutputPrintable, mwc_chain::Error> {
 		let output_type = if output.is_coinbase() {
 			OutputType::Coinbase
 		} else {
@@ -313,7 +326,12 @@ impl OutputPrintable {
 			.or(block_header.map(|x| x.height));
 
 		let proof = if include_proof {
-			Some(output.proof_bytes().to_hex())
+			Some(
+				output
+					.proof_bytes()
+					.map_err(|e| mwc_chain::Error::Other(format!("RangeProof bytes error, {}", e)))?
+					.to_hex(),
+			)
 		} else {
 			None
 		};
@@ -324,28 +342,38 @@ impl OutputPrintable {
 		// compacted so we can still recreate the necessary proof.
 		let mut merkle_proof = None;
 		if include_merkle_proof && output.is_coinbase() && !spent {
-			if let Some(block_header) = block_header {
-				merkle_proof = chain.get_merkle_proof(output, &block_header).ok();
-			}
+			let fetched_header;
+			let block_header = match block_header {
+				Some(block_header) => block_header,
+				None => {
+					fetched_header = chain.get_header_for_output(output.commitment())?;
+					&fetched_header
+				}
+			};
+			merkle_proof = Some(chain.get_merkle_proof(secp, output, block_header)?);
 		};
+
+		let context_id = chain.get_context_id();
 
 		Ok(OutputPrintable {
 			output_type,
 			commit: output.commitment(),
 			spent,
 			proof,
-			proof_hash: output
-				.proof
-				.hash()
-				.map_err(|e| chain::Error::Other(format!("RangeProof hash build error, {}", e)))?
-				.to_hex(),
+			proof_hash: output.proof.hash(context_id)?.to_hex(),
 			block_height,
 			merkle_proof,
 			mmr_index: output_pos,
+			context_id,
 		})
 	}
 
 	pub fn commit(&self) -> Result<pedersen::Commitment, ser::Error> {
+		mwc_util::secp_static::with_commit(ser::Error::from, |secp| {
+			secp.validate_commitment(&self.commit).map_err(|e| {
+				ser::Error::CorruptedData(format!("Invalid Pedersen commitment, {}", e))
+			})
+		})?;
 		Ok(self.commit)
 	}
 
@@ -355,14 +383,11 @@ impl OutputPrintable {
 			.clone()
 			.ok_or_else(|| ser::Error::HexError("output range_proof missing".to_string()))?;
 
-		let p_vec = util::from_hex(&proof_str).map_err(|e| {
+		let deserializer: mwc_crates::serde::de::value::StrDeserializer<
+			mwc_crates::serde::de::value::Error,
+		> = proof_str.as_str().into_deserializer();
+		secp_ser::rangeproof_from_hex(deserializer).map_err(|e| {
 			ser::Error::HexError(format!("Unable to parse range_proof {}, {}", proof_str, e))
-		})?;
-		let mut p_bytes = [0; util::secp::constants::MAX_PROOF_SIZE];
-		p_bytes.clone_from_slice(&p_vec[..util::secp::constants::MAX_PROOF_SIZE]);
-		Ok(pedersen::RangeProof {
-			proof: p_bytes,
-			plen: p_bytes.len(),
 		})
 	}
 }
@@ -372,7 +397,7 @@ impl serde::ser::Serialize for OutputPrintable {
 	where
 		S: serde::ser::Serializer,
 	{
-		let mut state = serializer.serialize_struct("OutputPrintable", 7)?;
+		let mut state = serializer.serialize_struct("OutputPrintable", 8)?;
 		state.serialize_field("output_type", &self.output_type)?;
 		state.serialize_field("commit", &self.commit.to_hex())?;
 		state.serialize_field("spent", &self.spent)?;
@@ -380,11 +405,29 @@ impl serde::ser::Serialize for OutputPrintable {
 		state.serialize_field("proof_hash", &self.proof_hash)?;
 		state.serialize_field("block_height", &self.block_height)?;
 
-		let hex_merkle_proof = &self.merkle_proof.clone().map(|x| x.to_hex());
+		let hex_merkle_proof = match &self.merkle_proof {
+			Some(x) => Some(
+				x.to_hex(self.context_id)
+					.map_err(|e| serde::ser::Error::custom(e.to_string()))?,
+			),
+			None => None,
+		};
 		state.serialize_field("merkle_proof", &hex_merkle_proof)?;
 		state.serialize_field("mmr_index", &self.mmr_index)?;
 
 		state.end()
+	}
+}
+
+impl OutputPrintable {
+	pub fn deserialize_with_context<'de, D>(
+		context_id: u32,
+		deserializer: D,
+	) -> Result<Self, D::Error>
+	where
+		D: serde::de::Deserializer<'de>,
+	{
+		deserialize_output_printable_with_context(context_id, deserializer)
 	}
 }
 
@@ -393,146 +436,164 @@ impl<'de> serde::de::Deserialize<'de> for OutputPrintable {
 	where
 		D: serde::de::Deserializer<'de>,
 	{
-		#[derive(Deserialize)]
-		#[serde(field_identifier, rename_all = "snake_case")]
-		enum Field {
-			OutputType,
-			Commit,
-			Spent,
-			Proof,
-			ProofHash,
-			BlockHeight,
-			MerkleProof,
-			MmrIndex,
+		let _ = deserializer;
+		Err(serde::de::Error::custom(
+			"OutputPrintable requires context-aware deserialization",
+		))
+	}
+}
+
+fn deserialize_output_printable_with_context<'de, D>(
+	context_id: u32,
+	deserializer: D,
+) -> Result<OutputPrintable, D::Error>
+where
+	D: serde::de::Deserializer<'de>,
+{
+	#[derive(Deserialize)]
+	#[serde(crate = "serde")]
+	#[serde(field_identifier, rename_all = "snake_case")]
+	enum Field {
+		OutputType,
+		Commit,
+		Spent,
+		Proof,
+		ProofHash,
+		BlockHeight,
+		MerkleProof,
+		MmrIndex,
+	}
+
+	struct OutputPrintableVisitor {
+		context_id: u32,
+	}
+
+	impl<'de> serde::de::Visitor<'de> for OutputPrintableVisitor {
+		type Value = OutputPrintable;
+
+		fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+			formatter.write_str("a printable Output")
 		}
 
-		struct OutputPrintableVisitor;
+		fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+		where
+			A: MapAccess<'de>,
+		{
+			let mut output_type = None;
+			let mut commit = None;
+			let mut spent = None;
+			let mut proof = None;
+			let mut proof_hash = None;
+			let mut block_height = None;
+			let mut merkle_proof = None;
+			let mut mmr_index = None;
 
-		impl<'de> serde::de::Visitor<'de> for OutputPrintableVisitor {
-			type Value = OutputPrintable;
+			while let Some(key) = map.next_key()? {
+				match key {
+					Field::OutputType => {
+						no_dup!(output_type);
+						output_type = Some(map.next_value()?)
+					}
+					Field::Commit => {
+						no_dup!(commit);
 
-			fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-				formatter.write_str("a printable Output")
-			}
-
-			fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-			where
-				A: MapAccess<'de>,
-			{
-				let mut output_type = None;
-				let mut commit = None;
-				let mut spent = None;
-				let mut proof = None;
-				let mut proof_hash = None;
-				let mut block_height = None;
-				let mut merkle_proof = None;
-				let mut mmr_index = None;
-
-				while let Some(key) = map.next_key()? {
-					match key {
-						Field::OutputType => {
-							no_dup!(output_type);
-							output_type = Some(map.next_value()?)
-						}
-						Field::Commit => {
-							no_dup!(commit);
-
-							let val: String = map.next_value()?;
-							let vec = util::from_hex(&val).map_err(|e| {
-								serde::de::Error::custom(format!(
-									"Unable to parse commit {}, {}",
-									val, e
-								))
-							})?;
-							commit = Some(pedersen::Commitment::from_vec(vec));
-						}
-						Field::Spent => {
-							no_dup!(spent);
-							spent = Some(map.next_value()?)
-						}
-						Field::Proof => {
-							no_dup!(proof);
-							proof = map.next_value()?
-						}
-						Field::ProofHash => {
-							no_dup!(proof_hash);
-							proof_hash = Some(map.next_value()?)
-						}
-						Field::BlockHeight => {
-							no_dup!(block_height);
-							block_height = Some(map.next_value()?)
-						}
-						Field::MerkleProof => {
-							no_dup!(merkle_proof);
-							if let Some(hex) = map.next_value::<Option<String>>()? {
-								if let Ok(res) = MerkleProof::from_hex(0, &hex) {
-									merkle_proof = Some(res);
-								} else {
-									merkle_proof = Some(MerkleProof::empty());
-								}
-							}
-						}
-						Field::MmrIndex => {
-							no_dup!(mmr_index);
-							mmr_index = Some(map.next_value()?)
+						let val: String = map.next_value()?;
+						commit = Some(secp_ser::commitment_from_hex(val.into_deserializer())?)
+					}
+					Field::Spent => {
+						no_dup!(spent);
+						spent = Some(map.next_value()?)
+					}
+					Field::Proof => {
+						no_dup!(proof);
+						proof = map.next_value()?
+					}
+					Field::ProofHash => {
+						no_dup!(proof_hash);
+						proof_hash = Some(map.next_value()?)
+					}
+					Field::BlockHeight => {
+						no_dup!(block_height);
+						block_height = Some(map.next_value()?)
+					}
+					Field::MerkleProof => {
+						no_dup!(merkle_proof);
+						if let Some(hex) = map.next_value::<Option<String>>()? {
+							merkle_proof = Some(
+								MerkleProof::from_hex(self.context_id, &hex).map_err(|e| {
+									serde::de::Error::custom(format!("Invalid merkle_proof: {}", e))
+								})?,
+							);
 						}
 					}
+					Field::MmrIndex => {
+						no_dup!(mmr_index);
+						mmr_index = Some(map.next_value()?)
+					}
 				}
-
-				let mut err_str: Vec<String> = Vec::new();
-				if output_type.is_none() {
-					err_str.push("output type".to_string());
-				}
-				if commit.is_none() {
-					err_str.push("commit".to_string());
-				}
-				if spent.is_none() {
-					err_str.push("spent".to_string());
-				}
-				if proof_hash.is_none() {
-					err_str.push("proof_hash".to_string());
-				}
-				if mmr_index.is_none() {
-					err_str.push("mmr_index".to_string());
-				}
-				if block_height.is_none() {
-					err_str.push("block_height".to_string());
-				}
-
-				if !err_str.is_empty() {
-					return Err(serde::de::Error::custom(format!(
-						"invalid output, not found {}",
-						err_str.join(", ")
-					)));
-				}
-
-				Ok(OutputPrintable {
-					output_type: output_type.unwrap(),
-					commit: commit.unwrap(),
-					spent: spent.unwrap(),
-					proof: proof,
-					proof_hash: proof_hash.unwrap(),
-					block_height: block_height.unwrap(),
-					merkle_proof: merkle_proof,
-					mmr_index: mmr_index.unwrap(),
-				})
 			}
-		}
 
-		const FIELDS: &[&str] = &[
-			"output_type",
-			"commit",
-			"spent",
-			"proof",
-			"proof_hash",
-			"mmr_index",
-		];
-		deserializer.deserialize_struct("OutputPrintable", FIELDS, OutputPrintableVisitor)
+			let mut err_str: Vec<String> = Vec::new();
+			if output_type.is_none() {
+				err_str.push("output type".to_string());
+			}
+			if commit.is_none() {
+				err_str.push("commit".to_string());
+			}
+			if spent.is_none() {
+				err_str.push("spent".to_string());
+			}
+			if proof_hash.is_none() {
+				err_str.push("proof_hash".to_string());
+			}
+			if mmr_index.is_none() {
+				err_str.push("mmr_index".to_string());
+			}
+			if block_height.is_none() {
+				err_str.push("block_height".to_string());
+			}
+
+			if !err_str.is_empty() {
+				return Err(serde::de::Error::custom(format!(
+					"invalid output, not found {}",
+					err_str.join(", ")
+				)));
+			}
+
+			Ok(OutputPrintable {
+				output_type: output_type.unwrap(),
+				commit: commit.unwrap(),
+				spent: spent.unwrap(),
+				proof,
+				proof_hash: proof_hash.unwrap(),
+				block_height: block_height.unwrap(),
+				merkle_proof,
+				mmr_index: mmr_index.unwrap(),
+				context_id: self.context_id,
+			})
+		}
 	}
+
+	const FIELDS: &[&str] = &[
+		"output_type",
+		"commit",
+		"spent",
+		"proof",
+		"proof_hash",
+		"block_height",
+		"merkle_proof",
+		"mmr_index",
+	];
+	deserializer.deserialize_struct(
+		"OutputPrintable",
+		FIELDS,
+		OutputPrintableVisitor { context_id },
+	)
 }
 
 // Printable representation of a block
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct TxKernelPrintable {
 	pub features: String,
 	pub fee_shift: u8, // Keeping fee_shift for backward compability. Wallets of older are expecting that. Value must be 0
@@ -562,13 +623,14 @@ impl TxKernelPrintable {
 			fee,
 			lock_height,
 			excess: k.excess.to_hex(),
-			excess_sig: (&k.excess_sig.to_raw_data()[..]).to_hex(),
+			excess_sig: (&k.excess_sig.as_ref()[..]).to_hex(),
 		}
 	}
 }
 
 // Just the information required for wallet reconstruction
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct BlockHeaderDifficultyInfo {
 	// Hash
 	pub hash: String,
@@ -579,16 +641,19 @@ pub struct BlockHeaderDifficultyInfo {
 }
 
 impl BlockHeaderDifficultyInfo {
-	pub fn from_header(header: &core::BlockHeader) -> BlockHeaderDifficultyInfo {
-		BlockHeaderDifficultyInfo {
-			hash: header.hash().unwrap_or(Hash::default()).to_hex(),
+	pub fn from_header(
+		header: &core::BlockHeader,
+	) -> Result<BlockHeaderDifficultyInfo, std::io::Error> {
+		Ok(BlockHeaderDifficultyInfo {
+			hash: header.hash(header.pow.proof.context_id)?.to_hex(),
 			height: header.height,
 			previous: header.prev_hash.to_hex(),
-		}
+		})
 	}
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct BlockHeaderPrintable {
 	// Hash
 	pub hash: String,
@@ -627,9 +692,9 @@ pub struct BlockHeaderPrintable {
 }
 
 impl BlockHeaderPrintable {
-	pub fn from_header(header: &core::BlockHeader) -> BlockHeaderPrintable {
-		BlockHeaderPrintable {
-			hash: header.hash().unwrap_or(Hash::default()).to_hex(),
+	pub fn from_header(header: &core::BlockHeader) -> Result<BlockHeaderPrintable, std::io::Error> {
+		Ok(BlockHeaderPrintable {
+			hash: header.hash(header.pow.proof.context_id)?.to_hex(),
 			version: header.version.into(),
 			height: header.height,
 			previous: header.prev_hash.to_hex(),
@@ -646,16 +711,21 @@ impl BlockHeaderPrintable {
 			total_difficulty: header.pow.total_difficulty.to_num(),
 			secondary_scaling: header.pow.secondary_scaling,
 			total_kernel_offset: header.total_kernel_offset.to_hex(),
-		}
+		})
 	}
 }
 
 // Printable representation of a block
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct BlockPrintable {
 	/// The block header
 	pub header: BlockHeaderPrintable,
-	// Input transactions
+	/// Input commitments.
+	///
+	/// This legacy API field intentionally omits input features for backward
+	/// compatibility. Existing clients only consume the commitments here and do
+	/// not require feature metadata.
 	pub inputs: Vec<String>,
 	/// A printable version of the outputs
 	pub outputs: Vec<OutputPrintable>,
@@ -665,18 +735,25 @@ pub struct BlockPrintable {
 
 impl BlockPrintable {
 	pub fn from_block(
+		secp: &Secp256k1,
 		block: &core::Block,
-		chain: &chain::Chain,
+		chain: &mwc_chain::Chain,
 		include_proof: bool,
 		include_merkle_proof: bool,
-	) -> Result<BlockPrintable, chain::Error> {
-		let inputs: Vec<_> = block.inputs().into();
+	) -> Result<BlockPrintable, mwc_chain::Error> {
+		// Preserve the legacy printable block shape by returning input
+		// commitments only. This intentionally drops Input::features; current
+		// API clients do not require feature metadata for inputs.
+		let inputs = block
+			.inputs()
+			.into_commit_wrappers(chain.get_context_id())?;
 		let inputs = inputs.iter().map(|x| x.commitment().to_hex()).collect();
 		let outputs = block
 			.outputs()
 			.iter()
 			.map(|output| {
 				OutputPrintable::from_output(
+					secp,
 					output,
 					chain,
 					Some(&block.header),
@@ -692,7 +769,7 @@ impl BlockPrintable {
 			.map(|kernel| TxKernelPrintable::from_txkernel(kernel))
 			.collect();
 		Ok(BlockPrintable {
-			header: BlockHeaderPrintable::from_header(&block.header),
+			header: BlockHeaderPrintable::from_header(&block.header)?,
 			inputs: inputs,
 			outputs: outputs,
 			kernels: kernels,
@@ -701,6 +778,7 @@ impl BlockPrintable {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct CompactBlockPrintable {
 	/// The block header
 	pub header: BlockHeaderPrintable,
@@ -716,17 +794,25 @@ impl CompactBlockPrintable {
 	/// Convert a compact block into a printable representation suitable for
 	/// api response
 	pub fn from_compact_block(
+		secp: &Secp256k1,
 		cb: &core::CompactBlock,
-		chain: &chain::Chain,
-	) -> Result<CompactBlockPrintable, chain::Error> {
-		let block =
-			chain.get_block(&cb.hash().map_err(|e| {
-				chain::Error::Other(format!("CompactBlock hash build error, {}", e))
-			})?)?;
+		chain: &mwc_chain::Chain,
+		include_merkle_proof: bool,
+	) -> Result<CompactBlockPrintable, mwc_chain::Error> {
+		let block = chain.get_block(&cb.hash(chain.get_context_id())?)?;
 		let out_full = cb
 			.out_full()
 			.iter()
-			.map(|x| OutputPrintable::from_output(x, chain, Some(&block.header), false, true))
+			.map(|x| {
+				OutputPrintable::from_output(
+					secp,
+					x,
+					chain,
+					Some(&block.header),
+					false,
+					include_merkle_proof,
+				)
+			})
 			.collect::<Result<Vec<_>, _>>()?;
 		let kern_full = cb
 			.kern_full()
@@ -734,7 +820,7 @@ impl CompactBlockPrintable {
 			.map(|x| TxKernelPrintable::from_txkernel(x))
 			.collect();
 		Ok(CompactBlockPrintable {
-			header: BlockHeaderPrintable::from_header(&cb.header),
+			header: BlockHeaderPrintable::from_header(&cb.header)?,
 			out_full,
 			kern_full,
 			kern_ids: cb.kern_ids().iter().map(|x| x.to_hex()).collect(),
@@ -745,6 +831,7 @@ impl CompactBlockPrintable {
 // For wallet reconstruction, include the header info along with the
 // transactions in the block
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct BlockOutputs {
 	/// The block header
 	pub header: BlockHeaderDifficultyInfo,
@@ -755,6 +842,7 @@ pub struct BlockOutputs {
 // For traversing all outputs in the UTXO set
 // transactions in the block
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct OutputListing {
 	/// The last available output index
 	pub highest_index: u64,
@@ -766,6 +854,7 @@ pub struct OutputListing {
 
 // For traversing a set of all available blocks
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct BlockListing {
 	/// The last height retrieved
 	pub last_retrieved_height: u64,
@@ -774,6 +863,7 @@ pub struct BlockListing {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(crate = "serde")]
 pub struct LocatedTxKernel {
 	pub tx_kernel: TxKernel,
 	pub height: u64,
@@ -781,36 +871,36 @@ pub struct LocatedTxKernel {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct PoolInfo {
 	/// Size of the pool
 	pub pool_size: usize,
 }
 
-/// Libp2p peers from the node
-/// There are libp2p peers node  is connected to and node peers with tor addresses
-/// libp2p peers are preferable, nodes wit tor addresses can be used to expand the network
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Libp2pPeers {
-	/// Libp2p peers
-	pub libp2p_peers: Vec<String>,
-	/// Other nodes. There is a high chance that they are running libp2p network
-	pub node_peers: Vec<String>,
-}
-
-/// Libp2p message from this node
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Libp2pMessages {
-	/// Libp2p peers
-	pub current_time: i64,
-	/// Other nodes. There is a high chance that they are running libp2p network
-	#[cfg(feature = "libp2p")]
-	pub libp2p_messages: Vec<libp2p_connection::ReceivedMessage>,
-}
-
 #[cfg(test)]
 mod test {
 	use super::*;
-	use serde_json;
+	use mwc_crates::secp;
+	use mwc_util::secp_static;
+	use std::fs;
+	use std::sync::Arc;
+	use std::time::{SystemTime, UNIX_EPOCH};
+
+	fn unique_test_dir(test_name: &str) -> String {
+		let unique = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		std::env::temp_dir()
+			.join(format!(
+				"mwc_api_types_{}_{}_{}",
+				test_name,
+				std::process::id(),
+				unique
+			))
+			.to_string_lossy()
+			.into_owned()
+	}
 
 	#[test]
 	fn serialize_output_printable() {
@@ -824,9 +914,132 @@ mod test {
 			 \"merkle_proof\":null,\
 			 \"mmr_index\":0\
 			 }";
-		let deserialized: OutputPrintable = serde_json::from_str(&hex_output).unwrap();
+		let mut deserializer = serde_json::Deserializer::from_str(&hex_output);
+		let deserialized = OutputPrintable::deserialize_with_context(0, &mut deserializer).unwrap();
 		let serialized = serde_json::to_string(&deserialized).unwrap();
 		assert_eq!(serialized, hex_output);
+	}
+
+	#[test]
+	fn deserialize_output_printable_rejects_invalid_merkle_proof() {
+		let hex_output = "{\
+			 \"output_type\":\"Coinbase\",\
+			 \"commit\":\"083eafae5d61a85ab07b12e1a51b3918d8e6de11fc6cde641d54af53608aa77b9f\",\
+			 \"spent\":false,\
+			 \"proof\":null,\
+			 \"proof_hash\":\"ed6ba96009b86173bade6a9227ed60422916593fa32dd6d78b25b7a4eeef4946\",\
+			 \"block_height\":0,\
+			 \"merkle_proof\":\"not-a-proof\",\
+			 \"mmr_index\":0\
+			 }";
+		let mut deserializer = serde_json::Deserializer::from_str(&hex_output);
+		let err =
+			OutputPrintable::deserialize_with_context(0, &mut deserializer).expect_err("bad proof");
+
+		assert!(err.to_string().contains("Invalid merkle_proof"));
+	}
+
+	#[test]
+	fn deserialize_printable_commitment_rejects_invalid_commitment() {
+		let invalid_commit = "01".repeat(secp::constants::PEDERSEN_COMMITMENT_SIZE);
+		let err = serde_json::from_str::<PrintableCommitment>(&format!("\"{}\"", invalid_commit))
+			.expect_err("invalid commitment");
+
+		assert!(err.to_string().contains("Invalid Commit"));
+	}
+
+	#[test]
+	fn deserialize_output_printable_rejects_invalid_commitment() {
+		let invalid_commit = "01".repeat(secp::constants::PEDERSEN_COMMITMENT_SIZE);
+		let hex_output = format!(
+			"{{\
+			 \"output_type\":\"Coinbase\",\
+			 \"commit\":\"{}\",\
+			 \"spent\":false,\
+			 \"proof\":null,\
+			 \"proof_hash\":\"ed6ba96009b86173bade6a9227ed60422916593fa32dd6d78b25b7a4eeef4946\",\
+			 \"block_height\":0,\
+			 \"merkle_proof\":null,\
+			 \"mmr_index\":0\
+			 }}",
+			invalid_commit
+		);
+		let mut deserializer = serde_json::Deserializer::from_str(&hex_output);
+		let err = OutputPrintable::deserialize_with_context(0, &mut deserializer)
+			.expect_err("invalid commitment");
+
+		assert!(err.to_string().contains("Invalid Commit"));
+	}
+
+	#[test]
+	fn output_printable_range_proof_accepts_short_proof_bytes() {
+		let output = OutputPrintable {
+			output_type: OutputType::Coinbase,
+			commit: secp_static::commit_to_zero_value(),
+			spent: false,
+			proof: Some("00".to_string()),
+			proof_hash: "00".repeat(32),
+			block_height: Some(0),
+			merkle_proof: None,
+			mmr_index: 0,
+			context_id: 0,
+		};
+
+		let proof = output.range_proof().unwrap();
+
+		assert_eq!(proof.len().unwrap(), 1);
+	}
+
+	#[test]
+	fn output_printable_range_proof_rejects_oversized_proof() {
+		let output = OutputPrintable {
+			output_type: OutputType::Coinbase,
+			commit: secp_static::commit_to_zero_value(),
+			spent: false,
+			proof: Some("00".repeat(secp::constants::MAX_PROOF_SIZE + 1)),
+			proof_hash: "00".repeat(32),
+			block_height: Some(0),
+			merkle_proof: None,
+			mmr_index: 0,
+			context_id: 0,
+		};
+
+		let err = output.range_proof().expect_err("oversized range proof");
+
+		assert!(err.to_string().contains("range_proof"), "{}", err);
+	}
+
+	#[test]
+	fn output_printable_merkle_proof_fetches_missing_header() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("missing_merkle_header");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(secp::ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let output = *genesis.outputs().first().expect("genesis output");
+
+		let printable = {
+			let chain = mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				genesis,
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+			)
+			.unwrap();
+
+			OutputPrintable::from_output(&secp, &output, &chain, None, false, true).unwrap()
+		};
+
+		let _ = fs::remove_dir_all(&chain_dir);
+
+		assert!(printable.merkle_proof.is_some());
 	}
 
 	#[test]

@@ -16,6 +16,9 @@
 //! Utility structs to handle the 3 hashtrees (output, range proof,
 //! kernel) more conveniently and transactionally.
 
+use crate::error::Error;
+use mwc_core::core::pmmr::peak_sizes_height;
+
 mod bitmap_accumulator;
 mod desegmenter;
 mod headers_desegmenter;
@@ -34,3 +37,32 @@ pub use self::rewindable_kernel_view::*;
 pub use self::segmenter::*;
 pub use self::txhashset::*;
 pub use self::utxo_view::*;
+
+/// Verify that a PMMR size represents a complete MMR boundary.
+pub fn ensure_complete_pmmr_size(size: u64) -> Result<(), Error> {
+	let (_, next_height) = peak_sizes_height(size);
+	if next_height != 0 {
+		return Err(Error::InvalidMMRSize);
+	}
+	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::ensure_complete_pmmr_size;
+	use crate::error::Error;
+
+	#[test]
+	fn complete_pmmr_size_rejects_incomplete_subtree_boundaries() {
+		for size in [0, 1, 3, 4, 7, 8, 10] {
+			assert!(ensure_complete_pmmr_size(size).is_ok());
+		}
+
+		for size in [2, 5, 6, 9] {
+			assert!(matches!(
+				ensure_complete_pmmr_size(size),
+				Err(Error::InvalidMMRSize)
+			));
+		}
+	}
+}

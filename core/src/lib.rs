@@ -23,18 +23,11 @@
 #![warn(missing_docs)]
 
 #[macro_use]
-extern crate enum_primitive;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate log;
-#[macro_use]
 pub mod macros;
 
 pub mod consensus;
 pub mod core;
+pub mod difficulty_cache;
 pub mod genesis;
 pub mod global;
 pub mod libtx;

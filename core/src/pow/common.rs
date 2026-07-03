@@ -17,9 +17,9 @@
 
 use crate::pow::error::Error;
 use crate::pow::siphash::siphash24;
-use blake2::blake2b::blake2b;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use num::{PrimInt, ToPrimitive};
+use mwc_crates::blake2_rfc::blake2b::blake2b;
+use mwc_crates::byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use mwc_crates::num::{PrimInt, ToPrimitive};
 use std::fmt;
 use std::hash::Hash;
 use std::io::Cursor;
@@ -45,9 +45,12 @@ impl fmt::Display for Link {
 
 pub fn set_header_nonce(header: &[u8], nonce: Option<u32>) -> Result<[u64; 4], Error> {
 	if let Some(n) = nonce {
-		let len = header.len();
+		let header_len_without_nonce = header
+			.len()
+			.checked_sub(4)
+			.ok_or_else(|| Error::DataOverflow("header too short to replace nonce".to_string()))?;
 		let mut header = header.to_owned();
-		header.truncate(len - 4); // drop last 4 bytes (u32) off the end
+		header.truncate(header_len_without_nonce); // drop last 4 bytes (u32) off the end
 		header.write_u32::<LittleEndian>(n)?;
 		create_siphash_keys(&header)
 	} else {
@@ -81,6 +84,24 @@ pub struct CuckooParams {
 impl CuckooParams {
 	/// Instantiates new params and calculate edge mask, etc
 	pub fn new(edge_bits: u8, node_bits: u8, proof_size: usize) -> Result<CuckooParams, Error> {
+		if edge_bits < 2 || edge_bits > 33 {
+			return Err(Error::InvalidConfiguration(format!(
+				"Invalid edge_bits {}",
+				edge_bits
+			)));
+		}
+		if node_bits < 2 || node_bits > 33 {
+			return Err(Error::InvalidConfiguration(format!(
+				"Invalid node_bits {}",
+				node_bits
+			)));
+		}
+		if proof_size == 0 {
+			return Err(Error::InvalidConfiguration(
+				"Invalid proof_size 0".to_string(),
+			));
+		}
+
 		let num_edges = 1u64 << edge_bits;
 		let edge_mask = num_edges - 1;
 		let num_nodes = 1u64 << node_bits;
@@ -103,8 +124,52 @@ impl CuckooParams {
 
 	/// Return siphash masked for type
 	pub fn sipnode(&self, edge: u64, uorv: u64) -> Result<u64, Error> {
-		let hash_u64 = siphash24(&self.siphash_keys, 2 * edge + uorv);
+		// siphash_nonce = 2 * edge + uorv
+		let siphash_nonce = edge
+			.checked_mul(2)
+			.and_then(|edge| edge.checked_add(uorv))
+			.ok_or_else(|| Error::DataOverflow("sipnode nonce overflow".to_string()))?;
+		let hash_u64 = siphash24(&self.siphash_keys, siphash_nonce);
 		let node = hash_u64 & self.node_mask;
 		Ok(node)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn set_header_nonce_rejects_headers_shorter_than_nonce() {
+		let err = set_header_nonce(&[1, 2, 3], Some(1)).unwrap_err();
+		assert!(matches!(err, Error::DataOverflow(_)));
+	}
+
+	#[test]
+	fn new_rejects_zero_proof_size() {
+		assert!(matches!(
+			CuckooParams::new(15, 15, 0),
+			Err(Error::InvalidConfiguration(_))
+		));
+	}
+
+	#[test]
+	fn sipnode_rejects_nonce_arithmetic_overflow() {
+		let params = CuckooParams {
+			proof_size: 0,
+			num_edges: 0,
+			siphash_keys: [0; 4],
+			edge_mask: 0,
+			node_mask: u64::MAX,
+		};
+
+		assert!(matches!(
+			params.sipnode(u64::MAX, 0),
+			Err(Error::DataOverflow(_))
+		));
+		assert!(matches!(
+			params.sipnode(u64::MAX / 2, 2),
+			Err(Error::DataOverflow(_))
+		));
 	}
 }

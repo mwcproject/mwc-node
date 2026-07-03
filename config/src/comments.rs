@@ -14,6 +14,7 @@
 // limitations under the License.
 
 //! Comments for configuration + injection into output .toml
+use mwc_crates::zeroize::Zeroizing;
 use std::collections::HashMap;
 
 /// maps entries to Comments that should precede them
@@ -166,36 +167,10 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"libp2p_enabled".to_string(),
-		"
-#Start gossipsub libp2p node. Node will be started only if Tor is enabled. Default value: true
-"
-		.to_string(),
-	);
-
-	retval.insert(
-		"libp2p_port".to_string(),
-		"
-#libp2p node local port. libp2p node is run only with TOR. Note, this setting doesn't affect libp2p address at the network.
-"
-			.to_string(),
-	);
-
-	retval.insert(
 		"run_tui".to_string(),
 		"
 #whether to run the ncurses TUI. Ncurses must be installed and this
 #will also disable logging to stdout
-"
-		.to_string(),
-	);
-
-	retval.insert(
-		"run_test_miner".to_string(),
-		"
-#Whether to run a test miner. This is only for developer testing (chaintype
-#usertesting) at cuckoo 16, and will only mine into the default wallet port.
-#real mining should use the standalone mwc-miner
 "
 		.to_string(),
 	);
@@ -230,7 +205,8 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"nthreads".to_string(),
 		"
-#The number of worker threads that will be assigned to making the http requests.
+#The maximum number of concurrent webhook http requests.
+#Hook requests over this limit will be dropped.
 "
 		.to_string(),
 	);
@@ -280,7 +256,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"stem_probability".to_string(),
 		"
-#dandelion stem probability (stem 90% of the time, fluff 10% of the time)
+#dandelion stem probability, valid range is 0 to 100 (stem 90% of the time, fluff 10% of the time)
 "
 		.to_string(),
 	);
@@ -350,8 +326,7 @@ fn comments() -> HashMap<String, String> {
 	retval.insert(
 		"port".to_string(),
 		"
-# The port on which to listen. Will be used in case of not Arti conneciton. Host will be 0.0.0.0 if
-# tor is disabled. 127.0.0.1 if external Tor is enabled.
+# The port on which to listen when tor is disabled.
 "
 		.to_string(),
 	);
@@ -640,16 +615,6 @@ fn comments() -> HashMap<String, String> {
 # By default it is enabled
 # tor_enabled = true
 
-# Use external tor daemon for p2p connections. Default is false.
-# tor_external = false
-
-# External tor daemon socks port for connection. Tor should work as a proxy.
-# socks_port = 51234
-
-# External tor onion service address. This onion service is expected to serve to income connections.
-# torrc setting expected to be: HiddenServicePort 80 127.0.0.1:<port>
-# onion_address = \"<address>.onion\"
-
 # Optional webtunnel bridge connection line for internal tor client. In case if Tor is blocked in
 # your region. Use this option if tor is blocked in yout region and your own webtunnel bridge.
 # Note, mwc-node supports only webtunnel bridge because of there efficiency and ease of installation
@@ -673,40 +638,38 @@ fn get_key(line: &str) -> String {
 	}
 }
 
-pub fn insert_comments(orig: String) -> String {
+pub fn insert_comments(orig: &str) -> Zeroizing<String> {
 	let comments = comments();
-	let lines: Vec<&str> = orig.split('\n').collect();
-	let mut out_lines = vec![];
 	let mut section_ended_comments = None;
+	// Accepted risk: orig can contain sensitive values such as onion_expanded_key.
+	// Growing this String can leave old, non-zeroized allocations behind after
+	// reallocation. Keep this helper simple by adding headroom to reduce that
+	// chance rather than precomputing the exact commented config size.
+	let mut ret_val = Zeroizing::new(String::with_capacity(orig.len().saturating_mul(2)));
 
-	for l in lines {
+	for l in orig.split('\n') {
 		let key = get_key(l);
 
 		if key.starts_with('[') {
 			if let Some(ln) = section_ended_comments {
-				out_lines.push(ln);
-				out_lines.push("\n".to_owned());
+				ret_val.push_str(ln);
+				ret_val.push('\n');
 			}
 
 			let end_key = key.clone() + "_END";
-			section_ended_comments = comments.get(&end_key).map(|s| s.clone());
+			section_ended_comments = comments.get(&end_key).map(String::as_str);
 		}
 
 		if let Some(v) = comments.get(&key) {
-			out_lines.push(v.to_owned());
+			ret_val.push_str(v);
 		}
-		out_lines.push(l.to_owned());
-		out_lines.push("\n".to_owned());
+		ret_val.push_str(l);
+		ret_val.push('\n');
 	}
 
 	if let Some(ln) = section_ended_comments {
-		out_lines.push(ln);
-		out_lines.push("\n".to_owned());
-	}
-
-	let mut ret_val = String::from("");
-	for l in out_lines {
-		ret_val.push_str(&l);
+		ret_val.push_str(ln);
+		ret_val.push('\n');
 	}
 	ret_val
 }

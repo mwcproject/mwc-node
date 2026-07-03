@@ -25,9 +25,6 @@ pub mod merkle_proof;
 pub mod pmmr;
 pub mod transaction;
 
-use crate::consensus::MWC_BASE;
-use util::secp::pedersen::Commitment;
-
 pub use self::block::*;
 pub use self::block_sums::*;
 pub use self::committed::Committed;
@@ -35,6 +32,9 @@ pub use self::compact_block::*;
 pub use self::id::ShortId;
 pub use self::pmmr::segment::*;
 pub use self::transaction::*;
+use crate::consensus::MWC_BASE;
+use mwc_crates::secp;
+pub(crate) use secp::pedersen::Commitment;
 
 /// Common errors
 #[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
@@ -42,6 +42,12 @@ pub enum Error {
 	/// Human readable represenation of amount is invalid
 	#[error("Invalid amount string, {0}")]
 	InvalidAmountString(String),
+	/// Generic error
+	#[error("{0}")]
+	GenericError(String),
+	/// Data overflow occurred.
+	#[error("Data overflow error, {0}")]
+	DataOverflow(String),
 }
 
 /// Common method for parsing an amount from human-readable, and converting
@@ -61,12 +67,29 @@ pub fn amount_from_hr_string(amount: &str) -> Result<u64, Error> {
 			(parse_mwcs(gs)?, parse_nmwcs(&tail[1..])?)
 		}
 	};
-	Ok(mwcs * MWC_BASE + nmwcs)
+	// total_mwc = mwcs * MWC_BASE + nmwcs
+	let total_mwc = mwcs
+		.checked_mul(MWC_BASE)
+		.and_then(|n| n.checked_add(nmwcs))
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"amount_from_hr_string mwcs={} nmwcs={}",
+				mwcs, nmwcs
+			))
+		})?;
+
+	Ok(total_mwc)
 }
 
 fn parse_mwcs(amount: &str) -> Result<u64, Error> {
-	if amount == "" {
-		Ok(0)
+	if amount.is_empty() {
+		// Empty string
+		Err(Error::InvalidAmountString("Get empty MWC amount. Please don't use short notation for the decimals, specify zeroes".into()))
+	} else if !amount.bytes().all(|b| b.is_ascii_digit()) {
+		Err(Error::InvalidAmountString(format!(
+			"Invalid MWC amount {}, expected digits only",
+			amount
+		)))
 	} else {
 		amount
 			.parse::<u64>()
@@ -74,16 +97,22 @@ fn parse_mwcs(amount: &str) -> Result<u64, Error> {
 	}
 }
 
-lazy_static! {
-	static ref WIDTH: usize = (MWC_BASE as f64).log(10.0) as usize + 1;
-}
+const WIDTH: usize = MWC_BASE.ilog10() as usize;
 
 fn parse_nmwcs(amount: &str) -> Result<u64, Error> {
-	let amount = if amount.len() > *WIDTH {
-		&amount[..*WIDTH]
-	} else {
-		amount
-	};
+	if amount.len() > WIDTH {
+		return Err(Error::InvalidAmountString(format!(
+			"Too many digits in nano MWC {}, maximum suported digits {}",
+			amount, WIDTH
+		)));
+	}
+	if !amount.bytes().all(|b| b.is_ascii_digit()) {
+		return Err(Error::InvalidAmountString(format!(
+			"Invalid nano MWC amount {}, expected digits only",
+			amount
+		)));
+	}
+
 	format!("{:0<width$}", amount, width = WIDTH)
 		.parse::<u64>()
 		.map_err(|e| {
@@ -94,11 +123,12 @@ fn parse_nmwcs(amount: &str) -> Result<u64, Error> {
 /// Common method for converting an amount to a human-readable string
 
 pub fn amount_to_hr_string(amount: u64, truncate: bool) -> String {
-	let amount = (amount as f64 / MWC_BASE as f64) as f64;
-	let hr = format!("{:.*}", WIDTH, amount);
+	let mwcs = amount / MWC_BASE;
+	let nmwcs = amount % MWC_BASE;
+	let hr = format!("{}.{:0width$}", mwcs, nmwcs, width = WIDTH);
 	if truncate {
 		let nzeros = hr.chars().rev().take_while(|x| x == &'0').count();
-		if nzeros < *WIDTH {
+		if nzeros < WIDTH {
 			return hr.trim_end_matches('0').to_string();
 		} else {
 			return format!("{}0", hr.trim_end_matches('0'));
@@ -113,15 +143,25 @@ mod test {
 
 	#[test]
 	pub fn test_amount_from_hr() {
+		assert_eq!(9, WIDTH);
+
 		assert!(50123456789 == amount_from_hr_string("50.123456789").unwrap());
-		assert!(50123456789 == amount_from_hr_string("50.1234567899").unwrap());
-		assert!(50 == amount_from_hr_string(".000000050").unwrap());
-		assert!(1 == amount_from_hr_string(".000000001").unwrap());
-		assert!(0 == amount_from_hr_string(".0000000009").unwrap());
+		assert!(amount_from_hr_string("+1").is_err());
+		assert!(amount_from_hr_string("+1.0").is_err());
+		assert!(amount_from_hr_string("1.+0").is_err());
+		assert!(amount_from_hr_string("50.1234567899").is_err()); // Too many digits in nano MWC 1234567899, maximum suported digits 9
+		assert!(50 == amount_from_hr_string("0.000000050").unwrap());
+		assert!(amount_from_hr_string(".000000050").is_err());
+		assert!(1 == amount_from_hr_string("0.000000001").unwrap());
+		assert!(amount_from_hr_string(".000000001").is_err());
+		assert!(amount_from_hr_string(".0000000009").is_err());
+		assert!(amount_from_hr_string("0.0000000009").is_err()); // too many decimals
 		assert!(500_000_000_000 == amount_from_hr_string("500").unwrap());
 		assert!(
-			5_000_000_000_000_000_000 == amount_from_hr_string("5000000000.00000000000").unwrap()
+			5_000_000_000_000_000_000 == amount_from_hr_string("5000000000.000000000").unwrap()
 		);
+		assert!(5_000_000_000_000_000_000 == amount_from_hr_string("5000000000.00000").unwrap());
+		assert!(amount_from_hr_string("5000000000.00000000000").is_err());
 		assert!(66_600_000_000 == amount_from_hr_string("66.6").unwrap());
 		assert!(66_000_000_000 == amount_from_hr_string("66.").unwrap());
 	}
@@ -139,5 +179,8 @@ mod test {
 		assert!("5000000000.000000000" == amount_to_hr_string(5_000_000_000_000_000_000, false));
 		assert!("5000000000.0" == amount_to_hr_string(5_000_000_000_000_000_000, true));
 		assert!("66.6" == amount_to_hr_string(66600000000, true));
+		assert!("9007199.254740992" == amount_to_hr_string(9_007_199_254_740_992, false));
+		assert!("9007699.000000002" == amount_to_hr_string(9_007_699_000_000_002, false));
+		assert!("18446744073.709551615" == amount_to_hr_string(u64::MAX, false));
 	}
 }

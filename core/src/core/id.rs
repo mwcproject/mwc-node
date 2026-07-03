@@ -17,9 +17,11 @@
 
 use crate::core::hash::{DefaultHashable, Hash, Hashed};
 use crate::ser::{self, Readable, Reader, Writeable, Writer};
-use byteorder::{ByteOrder, LittleEndian};
-use siphasher::sip::SipHasher24;
-use std::cmp::{min, Ordering};
+use mwc_crates::byteorder::{ByteOrder, LittleEndian};
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::siphasher::sip::SipHasher24;
+use std::io;
+use std::io::ErrorKind;
 use util::ToHex;
 
 /// The size of a short id used to identify inputs|outputs|kernels (6 bytes)
@@ -29,7 +31,8 @@ pub const SHORT_ID_SIZE: usize = 6;
 pub trait ShortIdentifiable {
 	/// The short_id of a kernel uses a hash built from the block_header *and* a
 	/// connection specific nonce to minimize the effect of collisions.
-	fn short_id(&self, hash: &Hash, nonce: u64) -> Result<ShortId, std::io::Error>;
+	fn short_id(&self, context_id: u32, hash: &Hash, nonce: u64)
+		-> Result<ShortId, std::io::Error>;
 }
 
 impl<H: Hashed> ShortIdentifiable for H {
@@ -40,9 +43,14 @@ impl<H: Hashed> ShortIdentifiable for H {
 	///   * self.hash() passing in the siphasher24 instance
 	///   * drop the 2 most significant bytes (to return a 6 byte short_id)
 	///
-	fn short_id(&self, hash: &Hash, nonce: u64) -> Result<ShortId, std::io::Error> {
+	fn short_id(
+		&self,
+		context_id: u32,
+		hash: &Hash,
+		nonce: u64,
+	) -> Result<ShortId, std::io::Error> {
 		// take the block hash and the nonce and hash them together
-		let hash_with_nonce = (hash, nonce).hash()?;
+		let hash_with_nonce = (hash, nonce).hash(context_id)?;
 
 		// we "use" core::hash::Hash in the outer namespace
 		// so doing this here in the fn to minimize collateral damage/confusion
@@ -56,26 +64,30 @@ impl<H: Hashed> ShortIdentifiable for H {
 		let mut sip_hasher = SipHasher24::new_with_keys(k0, k1);
 
 		// hash our id (self.hash()) using the siphasher24 instance
-		sip_hasher.write(&self.hash()?.to_vec()[..]);
+		sip_hasher.write(&self.hash(context_id)?.to_vec()[..]);
 		let res = sip_hasher.finish();
 
 		// construct a short_id from the resulting bytes (dropping the 2 most
 		// significant bytes)
 		let mut buf = [0; 8];
 		LittleEndian::write_u64(&mut buf, res);
-		Ok(ShortId::from_bytes(&buf[0..6]))
+		Ok(ShortId::from_bytes(&buf[0..6]).map_err(|e| {
+			io::Error::new(ErrorKind::Other, format!("Unable to build ShortId, {}", e))
+		})?)
 	}
 }
 
 /// Short id for identifying inputs/outputs/kernels
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct ShortId([u8; 6]);
 
 impl DefaultHashable for ShortId {}
-// We want to sort short_ids in a canonical and consistent manner so we can
-// verify sort order in the same way we do for full inputs|outputs|kernels
-// themselves.
-hashable_ord!(ShortId);
+// Consensus ordering and equality for short ids is by canonical hash, not by
+// trait implementations on the type. Use ser::sort_by_hash,
+// ser::verify_sorted_and_unique_by_hash, ser::hashes_equal, or
+// ser::contains_by_hash so hash calculation errors are returned to callers
+// instead of being logged and ignored by Ord/PartialEq/Eq.
 
 impl ::std::fmt::Debug for ShortId {
 	fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
@@ -107,24 +119,51 @@ impl Writeable for ShortId {
 }
 
 impl ShortId {
-	/// Build a new short_id from a byte slice
-	pub fn from_bytes(bytes: &[u8]) -> ShortId {
+	/// Build a new short_id from a byte slice.
+	///
+	/// This constructor preserves the historical helper behavior: callers may
+	/// provide 1 through 6 bytes and any missing trailing bytes are filled with
+	/// zeroes. This means shorter encodings can alias a full six-byte short id
+	/// with trailing zeroes, so this must not be used as a canonical
+	/// deserialization check for untrusted/wire data.
+	///
+	/// Consensus serialization remains fixed-size: `Readable for ShortId` reads
+	/// exactly `SHORT_ID_SIZE` bytes and `Writeable for ShortId` writes exactly
+	/// `SHORT_ID_SIZE` bytes.
+	pub fn from_bytes(bytes: &[u8]) -> Result<ShortId, ser::Error> {
+		if bytes.len() > SHORT_ID_SIZE || bytes.len() == 0 {
+			return Err(ser::Error::CorruptedData(format!(
+				"Invalid shortId bytes len {}",
+				bytes.len()
+			)));
+		}
 		let mut hash = [0; SHORT_ID_SIZE];
-		let copy_size = min(SHORT_ID_SIZE, bytes.len());
+		let copy_size = bytes.len();
 		hash[..copy_size].copy_from_slice(&bytes[..copy_size]);
-		ShortId(hash)
+		Ok(ShortId(hash))
 	}
 
-	/// Reconstructs a switch commit hash from a hex string.
+	/// Reconstructs a short id from a hex string.
+	///
+	/// This follows `from_bytes` and accepts shortened non-empty encodings by
+	/// zero-padding the missing trailing bytes. Use the fixed-size consensus
+	/// reader when parsing untrusted serialized compact-block data.
 	pub fn from_hex(hex: &str) -> Result<ShortId, ser::Error> {
+		if hex.len() > SHORT_ID_SIZE * 2 + 2 {
+			return Err(ser::Error::CorruptedData(format!(
+				"Invalid shortId string len {}",
+				hex.len()
+			)));
+		}
+
 		let bytes = util::from_hex(hex)
 			.map_err(|e| ser::Error::HexError(format!("short_id from_hex error, {}", e)))?;
-		Ok(ShortId::from_bytes(&bytes))
+		ShortId::from_bytes(&bytes)
 	}
 
 	/// The zero short_id, convenient for generating a short_id for testing.
 	pub fn zero() -> ShortId {
-		ShortId::from_bytes(&[0])
+		ShortId([0; SHORT_ID_SIZE])
 	}
 }
 
@@ -135,14 +174,14 @@ mod test {
 
 	#[test]
 	fn short_id_ord() {
-		let id_1 = ShortId::from_bytes(&[1, 1, 1, 1]);
-		let id_2 = ShortId::from_bytes(&[2, 2, 2, 2]);
-		let id_3 = ShortId::from_bytes(&[3, 3, 3, 3]);
+		let id_1 = ShortId::from_bytes(&[1, 1, 1, 1]).unwrap();
+		let id_2 = ShortId::from_bytes(&[2, 2, 2, 2]).unwrap();
+		let id_3 = ShortId::from_bytes(&[3, 3, 3, 3]).unwrap();
 
 		let mut ids = vec![id_1.clone(), id_2.clone(), id_3.clone()];
 		println!("{:?}", ids);
 
-		let mut hashes = ids.iter().map(|x| x.hash().unwrap()).collect::<Vec<_>>();
+		let mut hashes = ids.iter().map(|x| x.hash(0).unwrap()).collect::<Vec<_>>();
 		println!("{:?}", hashes);
 
 		// NOTE: after sorting hash(3) comes before hash(2)
@@ -151,16 +190,28 @@ mod test {
 		assert_eq!(
 			hashes,
 			[
-				id_1.hash().unwrap(),
-				id_3.hash().unwrap(),
-				id_2.hash().unwrap()
+				id_1.hash(0).unwrap(),
+				id_3.hash(0).unwrap(),
+				id_2.hash(0).unwrap()
 			]
 		);
 
 		// NOTE: this also applies to sorting the ids (we sort based on hashes)
-		ids.sort();
+		ser::sort_by_hash(0, &mut ids).unwrap();
 		println!("{:?}", ids);
-		assert_eq!(ids, [id_1, id_3, id_2]);
+		assert_eq!(
+			ids.iter().map(|id| id.hash(0).unwrap()).collect::<Vec<_>>(),
+			[
+				id_1.hash(0).unwrap(),
+				id_3.hash(0).unwrap(),
+				id_2.hash(0).unwrap()
+			]
+		);
+		// Another compare by value, suppose to be the same
+		assert_eq!(
+			ids.iter().map(|id| id.as_ref()).collect::<Vec<_>>(),
+			[id_1.as_ref(), id_3.as_ref(), id_2.as_ref()]
+		);
 	}
 
 	#[test]
@@ -177,43 +228,45 @@ mod test {
 
 		impl DefaultHashable for Foo {}
 
+		fn assert_short_id_eq(actual: &ShortId, expected: &ShortId) {
+			assert_eq!(actual.as_ref(), expected.as_ref());
+			assert!(ser::hashes_equal(0, actual, expected).unwrap());
+		}
+
 		let foo = Foo(0);
 
 		let expected_hash =
 			Hash::from_hex("81e47a19e6b29b0a65b9591762ce5143ed30d0261e5d24a3201752506b20f15c")
 				.unwrap();
-		assert_eq!(foo.hash().unwrap(), expected_hash);
+		assert_eq!(foo.hash(0).unwrap(), expected_hash);
 
 		let other_hash = Hash::default();
-		assert_eq!(
-			foo.short_id(&other_hash, foo.0).unwrap(),
-			ShortId::from_hex("4cc808b62476").unwrap()
-		);
+		let short_id = foo.short_id(0, &other_hash, foo.0).unwrap();
+		let expected = ShortId::from_hex("4cc808b62476").unwrap();
+		assert_short_id_eq(&short_id, &expected);
 
 		let foo = Foo(5);
 		let expected_hash =
 			Hash::from_hex("3a42e66e46dd7633b57d1f921780a1ac715e6b93c19ee52ab714178eb3a9f673")
 				.unwrap();
-		assert_eq!(foo.hash().unwrap(), expected_hash);
+		assert_eq!(foo.hash(0).unwrap(), expected_hash);
 
 		let other_hash = Hash::default();
-		assert_eq!(
-			foo.short_id(&other_hash, foo.0).unwrap(),
-			ShortId::from_hex("02955a094534").unwrap()
-		);
+		let short_id = foo.short_id(0, &other_hash, foo.0).unwrap();
+		let expected = ShortId::from_hex("02955a094534").unwrap();
+		assert_short_id_eq(&short_id, &expected);
 
 		let foo = Foo(5);
 		let expected_hash =
 			Hash::from_hex("3a42e66e46dd7633b57d1f921780a1ac715e6b93c19ee52ab714178eb3a9f673")
 				.unwrap();
-		assert_eq!(foo.hash().unwrap(), expected_hash);
+		assert_eq!(foo.hash(0).unwrap(), expected_hash);
 
 		let other_hash =
 			Hash::from_hex("81e47a19e6b29b0a65b9591762ce5143ed30d0261e5d24a3201752506b20f15c")
 				.unwrap();
-		assert_eq!(
-			foo.short_id(&other_hash, foo.0).unwrap(),
-			ShortId::from_hex("3e9cde72a687").unwrap()
-		);
+		let short_id = foo.short_id(0, &other_hash, foo.0).unwrap();
+		let expected = ShortId::from_hex("3e9cde72a687").unwrap();
+		assert_short_id_eq(&short_id, &expected);
 	}
 }

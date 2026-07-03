@@ -17,21 +17,25 @@ use arti_client::config::onion_service::OnionServiceConfigBuilder;
 use arti_client::config::pt::TransportConfigBuilder;
 use arti_client::config::{BoolOrAuto, BridgeConfigBuilder, CfgPath};
 use arti_client::{BootstrapBehavior, TorAddrError, TorClient, TorClientConfig};
-use futures::future::{select, Either};
-use futures::{Stream, StreamExt};
 use hex::FromHex;
 use log::{error, info};
+use mwc_crates::futures;
+use mwc_crates::futures::future::{select, Either};
+use mwc_crates::futures::{Stream, StreamExt};
+use mwc_crates::log::{error, info};
+use mwc_crates::tokio;
+use mwc_crates::tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use mwc_crates::tokio::time::{interval, Instant};
+use mwc_crates::tor_hsservice;
+use mwc_crates::tor_hsservice::StreamRequest;
 use safelog::DisplayRedacted;
 use std::io;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::time::{interval, Instant};
 use tor_cell::relaycell::msg::Connected;
 use tor_config::ExplicitOrAuto;
 use tor_hscrypto::pk::HsIdKeypair;
-use tor_hsservice::StreamRequest;
 use tor_keymgr::config::ArtiKeystoreKind;
 use tor_llcrypto::pk::ed25519;
 use tor_proto::client::stream::{DataReader, DataWriter, IncomingStreamRequest};
@@ -68,8 +72,6 @@ pub enum Error {
 	PeerException(String),
 	#[error("p2p internal error: {0}")]
 	Internal(String),
-	#[error("libp2p error: {0}")]
-	Libp2pError(String),
 	#[error("configuration error: {0}")]
 	ConfigError(String),
 	/// Tor Configuration Error

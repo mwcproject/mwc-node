@@ -13,21 +13,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::chain::{self, SyncState, SyncStatus};
 use crate::mwc::sync::sync_manager::SyncManager;
 use crate::mwc::sync::sync_utils::SyncRequestResponses;
-use crate::p2p;
-use crate::util::StopState;
-use chrono::Utc;
-use mwc_p2p::{Capabilities, Peer};
+use mwc_chain::{self, SyncState, SyncStatus};
+use mwc_crates::chrono::Utc;
+use mwc_crates::log::{debug, error, info};
+use mwc_p2p::{Capabilities, Peer, Peers};
+use mwc_util::StopState;
 use std::sync::Arc;
 use std::thread;
 use std::time;
 
+const SYNC_LOOP_INTERVAL_MS: u64 = 200;
+
 pub fn run_sync(
 	sync_state: Arc<SyncState>,
-	peers: Arc<p2p::Peers>,
-	chain: Arc<chain::Chain>,
+	peers: Arc<Peers>,
+	chain: Arc<mwc_chain::Chain>,
 	stop_state: Arc<StopState>,
 	sync_manager: Arc<SyncManager>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -41,8 +43,8 @@ pub fn run_sync(
 
 pub struct SyncRunner {
 	sync_state: Arc<SyncState>,
-	peers: Arc<p2p::Peers>,
-	chain: Arc<chain::Chain>,
+	peers: Arc<Peers>,
+	chain: Arc<mwc_chain::Chain>,
 	stop_state: Arc<StopState>,
 	sync_manager: Arc<SyncManager>,
 }
@@ -50,8 +52,8 @@ pub struct SyncRunner {
 impl SyncRunner {
 	fn new(
 		sync_state: Arc<SyncState>,
-		peers: Arc<p2p::Peers>,
-		chain: Arc<chain::Chain>,
+		peers: Arc<Peers>,
+		chain: Arc<mwc_chain::Chain>,
 		stop_state: Arc<StopState>,
 		sync_manager: Arc<SyncManager>,
 	) -> SyncRunner {
@@ -64,7 +66,7 @@ impl SyncRunner {
 		}
 	}
 
-	fn wait_for_min_peers(&self) -> Result<(), chain::Error> {
+	fn wait_for_min_peers(&self) -> Result<(), mwc_chain::Error> {
 		let wait_secs = if let SyncStatus::AwaitingPeers = self.sync_state.status() {
 			30
 		} else {
@@ -107,6 +109,12 @@ impl SyncRunner {
 	}
 
 	/// Starts the syncing loop, just spawns two threads that loop forever
+	///
+	/// Runtime sync errors are handled with a best-effort strategy. The sync
+	/// worker intentionally logs failures and keeps running instead of returning
+	/// them through the JoinHandle, so transient peer, chain, store, or compaction
+	/// errors do not stop the server. Startup still reports thread spawn failure
+	/// through run_sync; after that, sync_loop owns retrying and recovery.
 	fn sync_loop(&self) {
 		// Wait for connections reach at least MIN_PEERS
 		self.sync_state.update(SyncStatus::AwaitingPeers);
@@ -115,22 +123,20 @@ impl SyncRunner {
 		}
 
 		// Main syncing loop
-		let mut last_peer_dump = Utc::now();
-		let mut sleep_time = 1000;
+		let mut last_peer_dump = time::Instant::now();
+		let mut sleep_time = SYNC_LOOP_INTERVAL_MS;
 		loop {
 			if self.stop_state.is_stopped() {
 				break;
 			}
-			// Sync manager request might be relatevely heavy, it is expected that latency is higer then 1 second, so
-			// waiting time for 1000ms is reasonable.
+			// Sync manager requests are the source of regular visible sync progress updates.
 			thread::sleep(time::Duration::from_millis(sleep_time));
 
 			self.sync_manager.headers_blocks_request(&self.peers);
 
 			// Onle in a while let's dump the peers. Needed to understand how network is doing
-			let now = Utc::now();
-			if (now - last_peer_dump).num_seconds() > 60 * 20 {
-				last_peer_dump = now;
+			if last_peer_dump.elapsed() > time::Duration::from_secs(60 * 20) {
+				last_peer_dump = time::Instant::now();
 				let peers: Vec<Arc<Peer>> = self.peers.iter().connected().into_iter().collect();
 				info!("Has connected peers: {}", peers.len());
 				for p in peers {
@@ -148,7 +154,7 @@ impl SyncRunner {
 				}
 			}
 
-			sleep_time = 1000;
+			sleep_time = SYNC_LOOP_INTERVAL_MS;
 
 			// run each sync stage, each of them deciding whether they're needed
 			// except for state sync that only runs if body sync return true (means txhashset is needed)
@@ -175,14 +181,19 @@ impl SyncRunner {
 						}
 					}
 				}
-				SyncRequestResponses::Syncing => {
+				SyncRequestResponses::Syncing
+				| SyncRequestResponses::WaitingForHeaders
+				| SyncRequestResponses::WaitingForHeadersHash
+				| SyncRequestResponses::BadState => {
 					//debug_assert!(self.sync_state.is_syncing());
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
 				}
 				SyncRequestResponses::HasMoreHeadersToApply => {
 					debug!("Has more headers to apply, will continue soon");
-					sleep_time = 100;
+					self.peers
+						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
+					sleep_time = SYNC_LOOP_INTERVAL_MS;
 				}
 				SyncRequestResponses::SyncDone => {
 					self.sync_state.update(SyncStatus::NoSync);
@@ -190,7 +201,15 @@ impl SyncRunner {
 					self.peers
 						.set_boost_peers_capabilities(Capabilities::UNKNOWN);
 
-					if let Err(e) = self.chain.compact() {
+					if self.stop_state.is_stopped() {
+						break;
+					}
+
+					if let Err(e) = self.chain.compact(self.stop_state.clone()) {
+						if matches!(e, mwc_chain::Error::Stopped) {
+							debug!("Compact chain stopped during shutdown");
+							break;
+						}
 						error!("Compact chain is failed. Error: {}", e);
 					}
 
@@ -204,7 +223,17 @@ impl SyncRunner {
 						}
 					}
 				}
-				_ => debug_assert!(false),
+				response @ (SyncRequestResponses::HeadersHashReady
+				| SyncRequestResponses::HeadersPibdReady
+				| SyncRequestResponses::HeadersReady
+				| SyncRequestResponses::StatePibdReady
+				| SyncRequestResponses::BodyReady) => {
+					debug_assert!(false);
+					error!(
+						"sync_manager returned internal sync response {:?}: {}",
+						response, sync_reponse.message
+					);
+				}
 			}
 
 			let new_state = self.sync_state.status();

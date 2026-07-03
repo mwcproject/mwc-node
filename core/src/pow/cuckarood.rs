@@ -37,6 +37,12 @@ pub fn new_cuckarood_ctx(
 	edge_bits: u8,
 	proof_size: usize,
 ) -> Result<Box<dyn PoWContext>, Error> {
+	if edge_bits < 2 {
+		return Err(Error::InvalidConfiguration(format!(
+			"invalid edge_bits {}",
+			edge_bits
+		)));
+	}
 	let params = CuckooParams::new(edge_bits, edge_bits - 1, proof_size)?;
 	Ok(Box::new(CuckaroodContext { params, context_id }))
 }
@@ -58,7 +64,9 @@ impl PoWContext for CuckaroodContext {
 	}
 
 	fn find_cycles(&mut self) -> Result<Vec<Proof>, Error> {
-		unimplemented!()
+		Err(Error::NotImplemented(
+			"CuckaroodContext only supports verification".into(),
+		))
 	}
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {
@@ -115,6 +123,9 @@ impl PoWContext for CuckaroodContext {
 		let mut i = 0;
 		let mut j;
 		loop {
+			if n >= size {
+				return Err(Error::Verification("cycle too long".to_owned()));
+			}
 			// follow cycle
 			j = i;
 			let mut k = if i & 1 == 0 {

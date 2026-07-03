@@ -15,10 +15,12 @@
 
 //! Common test functions
 
+use std::convert::TryInto;
+
 use keychain::{Identifier, Keychain};
 use mwc_core::core::hash::DefaultHashable;
 use mwc_core::core::{
-	Block, BlockHeader, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
+	Block, BlockHeader, Inputs, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
 };
 use mwc_core::libtx::{
 	build::{self, input, output},
@@ -27,18 +29,30 @@ use mwc_core::libtx::{
 };
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, Error, PMMRable, Readable, Reader, Writeable, Writer};
+use mwc_crates::rand::rngs::SysRng;
+use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]
 pub fn tx2i1o() -> Transaction {
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain).unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain = keychain::ExtKeychain::from_seed(
+		&secp,
+		&SecretKey::new(&secp, &mut SysRng).unwrap().0,
+		false,
+	)
+	.unwrap();
+	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
 	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 2.into() },
+		0,
+		&mut secp,
+		KernelFeatures::Plain {
+			fee: 2u32.try_into().unwrap(),
+		},
 		&[input(10, key_id1), input(11, key_id2), output(19, key_id3)],
 		&keychain,
 		&builder,
@@ -51,13 +65,23 @@ pub fn tx2i1o() -> Transaction {
 // utility producing a transaction with a single input and output
 #[allow(dead_code)]
 pub fn tx1i1o() -> Transaction {
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain).unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain = keychain::ExtKeychain::from_seed(
+		&secp,
+		&SecretKey::new(&secp, &mut SysRng).unwrap().0,
+		false,
+	)
+	.unwrap();
+	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 2.into() },
+		0,
+		&mut secp,
+		KernelFeatures::Plain {
+			fee: 2u32.try_into().unwrap(),
+		},
 		&[input(5, key_id1), output(3, key_id2)],
 		&keychain,
 		&builder,
@@ -71,7 +95,10 @@ pub fn tx1i1o() -> Transaction {
 pub fn tx1i10_v2_compatible() -> Transaction {
 	let tx = tx1i1o();
 
-	let inputs: Vec<_> = tx.inputs().into();
+	let inputs = tx
+		.inputs()
+		.into_commit_wrappers(0)
+		.expect("convert inputs to commit-only form");
 	let inputs: Vec<_> = inputs
 		.iter()
 		.map(|input| OutputIdentifier {
@@ -80,7 +107,13 @@ pub fn tx1i10_v2_compatible() -> Transaction {
 		})
 		.collect();
 	Transaction {
-		body: tx.body.replace_inputs(inputs.as_slice().into()),
+		body: tx
+			.body
+			.replace_inputs(
+				0,
+				Inputs::from_output_identifiers(0, inputs.as_slice()).unwrap(),
+			)
+			.unwrap(),
 		..tx
 	}
 }
@@ -90,14 +123,24 @@ pub fn tx1i10_v2_compatible() -> Transaction {
 // Note: this tx has an "offset" kernel
 #[allow(dead_code)]
 pub fn tx1i2o() -> Transaction {
-	let keychain = keychain::ExtKeychain::from_random_seed(false).unwrap();
-	let builder = ProofBuilder::new(&keychain).unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain = keychain::ExtKeychain::from_seed(
+		&secp,
+		&SecretKey::new(&secp, &mut SysRng).unwrap().0,
+		false,
+	)
+	.unwrap();
+	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
 	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
 	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
 
 	let tx = build::transaction(
-		KernelFeatures::Plain { fee: 2.into() },
+		0,
+		&mut secp,
+		KernelFeatures::Plain {
+			fee: 2u32.try_into().unwrap(),
+		},
 		&[input(6, key_id1), output(3, key_id2), output(1, key_id3)],
 		&keychain,
 		&builder,
@@ -121,7 +164,8 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let fees = txs.iter().map(|tx| tx.fee()).sum();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
 	let reward_output = reward::output(
 		0,
 		keychain,
@@ -130,7 +174,7 @@ where
 		fees,
 		false,
 		previous_header.height + 1,
-		keychain.secp(),
+		&mut secp,
 	)
 	.unwrap();
 	Block::new(
@@ -139,7 +183,7 @@ where
 		txs,
 		Difficulty::min(),
 		reward_output,
-		keychain.secp(),
+		&mut secp,
 	)
 	.unwrap()
 }
@@ -158,8 +202,13 @@ where
 	K: Keychain,
 	B: ProofBuild,
 {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	build::transaction(
-		KernelFeatures::Plain { fee: 2.into() },
+		0,
+		&mut secp,
+		KernelFeatures::Plain {
+			fee: 2u32.try_into().unwrap(),
+		},
 		&[input(v, key_id1), output(3, key_id2)],
 		keychain,
 		builder,

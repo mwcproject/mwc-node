@@ -15,33 +15,100 @@
 
 //! Foreign API External Definition
 
-use crate::chain::{Chain, SyncState};
-use crate::core::core::hash::Hash;
-use crate::core::core::hash::Hashed;
-use crate::core::core::transaction::Transaction;
 use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
 use crate::handlers::peers_api::PeersConnectedHandler;
 use crate::handlers::pool_api::PoolHandler;
 use crate::handlers::transactions_api::TxHashSetHandler;
 use crate::handlers::version_api::VersionHandler;
-use crate::pool::{self, BlockChain, PoolAdapter, PoolEntry};
 use crate::types::{
 	BlockHeaderPrintable, BlockPrintable, LocatedTxKernel, OutputListing, OutputPrintable, Tip,
 	Version,
 };
 use crate::{rest::*, BlockListing};
-#[cfg(feature = "libp2p")]
-use crate::{Libp2pMessages, Libp2pPeers};
-#[cfg(feature = "libp2p")]
-use chrono::Utc;
-#[cfg(feature = "libp2p")]
-use mwc_p2p::libp2p_connection;
+use mwc_chain::{Chain, SyncState};
+use mwc_core::core::hash::Hash;
+use mwc_core::core::hash::Hashed;
+use mwc_core::core::transaction::Transaction;
+use mwc_crates::log::warn;
+use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::secp::Secp256k1;
+use mwc_crates::sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use mwc_p2p::types::PeerInfoDisplayLegacy;
-use mwc_util::secp::Secp256k1;
-use std::sync::RwLock;
-use std::sync::Weak;
-use std::time::Instant;
+use mwc_pool::{self, BlockChain, PoolAdapter};
+use std::cmp::max;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
+
+const PROCESS_STATUS_CACHE_MAX_AGE: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy)]
+pub struct ProcessHostMetrics {
+	pub host_cpu_usage: f64,
+	pub host_ram_usage: f64,
+	pub host_swap_usage: f64,
+}
+
+pub struct ProcessStatusCache {
+	system: System,
+	sampled_at: Instant,
+	updated_at: Option<Instant>,
+	metrics: ProcessHostMetrics,
+}
+
+impl ProcessStatusCache {
+	pub fn new() -> Self {
+		let system = System::new_with_specifics(
+			RefreshKind::nothing()
+				.with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+				.with_memory(MemoryRefreshKind::everything()),
+		);
+		ProcessStatusCache {
+			system,
+			sampled_at: Instant::now(),
+			updated_at: None,
+			metrics: ProcessHostMetrics {
+				host_cpu_usage: 0.0,
+				host_ram_usage: 0.0,
+				host_swap_usage: 0.0,
+			},
+		}
+	}
+
+	pub fn get(&mut self) -> ProcessHostMetrics {
+		if self.updated_at.map_or(true, |updated_at| {
+			updated_at.elapsed() >= PROCESS_STATUS_CACHE_MAX_AGE
+		}) {
+			self.refresh();
+		}
+		self.metrics
+	}
+
+	fn refresh(&mut self) {
+		self.system.refresh_memory();
+		if self.updated_at.is_none() {
+			std::thread::sleep(
+				mwc_crates::sysinfo::MINIMUM_CPU_UPDATE_INTERVAL
+					.saturating_sub(self.sampled_at.elapsed()),
+			);
+		}
+		self.system.refresh_cpu_usage();
+		self.sampled_at = Instant::now();
+
+		let cpus = self.system.cpus();
+		let cpu_usage_sum = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>();
+		let host_cpu_usage = (cpu_usage_sum / max(1, cpus.len()) as f32) as f64;
+		let total_ram = self.system.total_memory();
+		let total_swap = self.system.total_swap();
+
+		self.metrics = ProcessHostMetrics {
+			host_cpu_usage,
+			host_ram_usage: self.system.used_memory() as f64 / max(1u64, total_ram) as f64,
+			host_swap_usage: self.system.used_swap() as f64 / max(1u64, total_swap) as f64,
+		};
+		self.updated_at = Some(Instant::now());
+	}
+}
 
 /// Main interface into all node API functions.
 /// Node APIs are split into two separate blocks of functionality
@@ -57,8 +124,9 @@ where
 {
 	pub peers: Weak<mwc_p2p::Peers>,
 	pub chain: Weak<Chain>,
-	pub tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
+	pub tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
+	pub process_status_cache: Arc<Mutex<ProcessStatusCache>>,
 	start_time: Instant,
 }
 
@@ -83,15 +151,17 @@ where
 	pub fn new(
 		peers: Weak<mwc_p2p::Peers>,
 		chain: Weak<Chain>,
-		tx_pool: Weak<RwLock<pool::TransactionPool<B, P>>>,
+		tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
 		sync_state: Weak<SyncState>,
 		start_time: Instant,
+		process_status_cache: Arc<Mutex<ProcessStatusCache>>,
 	) -> Self {
 		Foreign {
 			peers,
 			chain,
 			tx_pool,
 			sync_state,
+			process_status_cache,
 			start_time,
 		}
 	}
@@ -112,6 +182,7 @@ where
 
 	pub fn get_header(
 		&self,
+		secp: &Secp256k1,
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
@@ -119,7 +190,7 @@ where
 		let header_handler = HeaderHandler {
 			chain: self.chain.clone(),
 		};
-		let hash = header_handler.parse_inputs(height, hash, commit)?;
+		let hash = header_handler.parse_inputs(secp, height, hash, commit)?;
 		header_handler.get_header_v2(&hash)
 	}
 
@@ -141,6 +212,7 @@ where
 
 	pub fn get_block(
 		&self,
+		secp: &Secp256k1,
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
@@ -150,8 +222,9 @@ where
 		let block_handler = BlockHandler {
 			chain: self.chain.clone(),
 		};
-		let hash = block_handler.parse_inputs(height, hash, commit)?;
+		let hash = block_handler.parse_inputs(secp, height, hash, commit)?;
 		block_handler.get_block(
+			secp,
 			&hash,
 			include_proof.unwrap_or(true),
 			include_merkle_proof.unwrap_or(false),
@@ -161,12 +234,13 @@ where
 	/// Returns a [`BlockListing`](types/struct.BlockListing.html) of available blocks
 	/// between `min_height` and `max_height`
 	/// The method will query the database for blocks starting at the block height `min_height`
-	/// and continue until `max_height`, skipping any blocks that aren't available.
+	/// and continue until `max_height`, stopping at the first block that isn't available.
 	///
 	/// # Arguments
 	/// * `start_height` - starting height to lookup.
 	/// * `end_height` - ending height to to lookup.
 	/// * 'max` - The max number of blocks to return.
+	///   Must be greater than 0.
 	///   Note this is overriden with BLOCK_TRANSFER_LIMIT if BLOCK_TRANSFER_LIMIT is exceeded
 	///
 	/// # Returns
@@ -177,6 +251,7 @@ where
 
 	pub fn get_blocks(
 		&self,
+		secp: &Secp256k1,
 		start_height: u64,
 		end_height: u64,
 		max: u64,
@@ -185,7 +260,7 @@ where
 		let block_handler = BlockHandler {
 			chain: self.chain.clone(),
 		};
-		block_handler.get_blocks(start_height, end_height, max, include_proof)
+		block_handler.get_blocks(secp, start_height, end_height, max, include_proof)
 	}
 
 	/// Returns the node version and block header version (used by mwc-wallet).
@@ -252,8 +327,6 @@ where
 	///
 	/// # Arguments
 	/// * `commits` - a vector of unspent output commitments.
-	/// * `start_height` - start height to start the lookup.
-	/// * `end_height` - end height to stop the lookup.
 	/// * `include_proof` - whether or not to include the range proof in the response.
 	/// * `include_merkle_proof` - whether or not to include the merkle proof in the response.
 	///
@@ -265,22 +338,15 @@ where
 
 	pub fn get_outputs(
 		&self,
-		commits: Option<Vec<String>>,
-		start_height: Option<u64>,
-		end_height: Option<u64>,
+		secp: &Secp256k1,
+		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error> {
 		let output_handler = OutputHandler {
 			chain: self.chain.clone(),
 		};
-		output_handler.get_outputs_v2(
-			commits,
-			start_height,
-			end_height,
-			include_proof,
-			include_merkle_proof,
-		)
+		output_handler.get_outputs_v2(secp, commits, include_proof, include_merkle_proof)
 	}
 
 	/// UTXO traversal. Retrieves last utxos since a `start_index` until a `max`.
@@ -299,6 +365,7 @@ where
 
 	pub fn get_unspent_outputs(
 		&self,
+		secp: &Secp256k1,
 		start_index: u64,
 		end_index: Option<u64>,
 		max: u64,
@@ -307,7 +374,7 @@ where
 		let output_handler = OutputHandler {
 			chain: self.chain.clone(),
 		};
-		output_handler.get_unspent_outputs(start_index, end_index, max, include_proof)
+		output_handler.get_unspent_outputs(secp, start_index, end_index, max, include_proof)
 	}
 
 	/// Retrieves the PMMR indices based on the provided block height(s).
@@ -357,31 +424,16 @@ where
 		pool_handler.get_pool_size()
 	}
 
-	/// Returns the number of transaction in the stem transaction pool.
-	///
-	/// # Returns
-	/// * Result Containing:
-	/// * `usize`
-	/// * or [`Error`](struct.Error.html) if an error is encountered.
-	///
-
-	pub fn get_stempool_size(&self) -> Result<usize, Error> {
-		let pool_handler = PoolHandler {
-			tx_pool: self.tx_pool.clone(),
-		};
-		pool_handler.get_stempool_size()
-	}
-
-	/// Returns the unconfirmed transactions in the transaction pool.
+	/// Returns up to 1,000 unconfirmed transactions in the transaction pool.
 	/// Will not return transactions in the stempool.
 	///
 	/// # Returns
 	/// * Result Containing:
-	/// * A vector of [`PoolEntry`](types/struct.PoolEntry.html)
+	/// * A vector of transactions.
 	/// * or [`Error`](struct.Error.html) if an error is encountered.
 	///
 
-	pub fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error> {
+	pub fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error> {
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
@@ -390,24 +442,31 @@ where
 
 	/// Push new transaction to our local transaction pool.
 	///
+	/// Transactions accepted into the local pool are handed to the network adapter
+	/// for relay on a best-effort basis. Adapter relay failures are logged by the
+	/// pool and do not make this method fail after local acceptance.
+	///
 	/// # Arguments
 	/// * `tx` - the Mwc transaction to push.
 	/// * `fluff` - boolean to bypass Dandelion relay.
 	///
 	/// # Returns
 	/// * Result Containing:
-	/// * `Ok(())` if the transaction was pushed successfully
+	/// * `Ok(())` if the transaction was accepted into the local transaction pool
 	/// * or [`Error`](struct.Error.html) if an error is encountered.
 	///
 	pub fn push_transaction(
 		&self,
 		tx: Transaction,
 		fluff: Option<bool>,
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<(), Error> {
-		let tx_hash = tx
-			.hash()
-			.map_err(|e| Error::Internal(format!("Transaction build hash error, {}", e)))?;
+		let context_id = self
+			.chain
+			.upgrade()
+			.ok_or_else(|| Error::Internal("chain is not available".into()))?
+			.get_context_id();
+		let tx_hash = tx.hash(context_id)?;
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
@@ -417,43 +476,6 @@ where
 				tx_hash, e
 			);
 			e
-		})
-	}
-
-	#[cfg(feature = "libp2p")]
-	pub fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
-		let libp2p_peers: Vec<String> = libp2p_connection::get_libp2p_connections()
-			.iter()
-			.map(|peer| peer.to_string())
-			.collect();
-
-		let node_peers = if let Some(peers) = self.peers.upgrade() {
-			let connected_peers: Vec<String> = peers
-				.iter()
-				.connected()
-				.into_iter()
-				.map(|peer| peer.info.addr.tor_address().unwrap_or("".to_string()))
-				.filter(|addr| !addr.is_empty())
-				.collect();
-			connected_peers
-		} else {
-			vec![]
-		};
-
-		Ok(Libp2pPeers {
-			libp2p_peers,
-			node_peers,
-		})
-	}
-
-	#[cfg(feature = "libp2p")]
-	pub fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
-		Ok(Libp2pMessages {
-			current_time: Utc::now().timestamp(),
-			libp2p_messages: libp2p_connection::get_received_messages(false)
-				.iter()
-				.cloned()
-				.collect(),
 		})
 	}
 

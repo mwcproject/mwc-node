@@ -15,16 +15,18 @@
 
 //! Owner API External Definition
 
-use crate::chain::{Chain, SyncState};
-use crate::core::core::hash::Hash;
 use crate::handlers::chain_api::{ChainCompactHandler, ChainValidationHandler};
 use crate::handlers::peers_api::{PeerHandler, PeersConnectedHandler};
 use crate::handlers::server_api::StatusHandler;
 use crate::handlers::utils::w;
-use crate::p2p::{self, PeerData};
 use crate::rest::*;
 use crate::types::Status;
+use mwc_chain::{Chain, SyncState};
+use mwc_core::core::hash::Hash;
+use mwc_crates::secp::Secp256k1;
 use mwc_p2p::types::PeerInfoDisplayLegacy;
+use mwc_p2p::{self, PeerData};
+use mwc_util::StopState;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Weak;
@@ -38,8 +40,9 @@ use std::sync::Weak;
 
 pub struct Owner {
 	pub chain: Weak<Chain>,
-	pub peers: Weak<p2p::Peers>,
+	pub peers: Weak<mwc_p2p::Peers>,
 	pub sync_state: Weak<SyncState>,
+	pub stop_state: Weak<StopState>,
 }
 
 impl Owner {
@@ -56,11 +59,17 @@ impl Owner {
 	/// * An instance of the Node holding references to the current chain, transaction pool, peers and sync_state.
 	///
 
-	pub fn new(chain: Weak<Chain>, peers: Weak<p2p::Peers>, sync_state: Weak<SyncState>) -> Self {
+	pub fn new(
+		chain: Weak<Chain>,
+		peers: Weak<mwc_p2p::Peers>,
+		sync_state: Weak<SyncState>,
+		stop_state: Weak<StopState>,
+	) -> Self {
 		Owner {
 			chain,
 			peers,
 			sync_state,
+			stop_state,
 		}
 	}
 
@@ -92,11 +101,15 @@ impl Owner {
 	/// * or [`Error`](struct.Error.html) if an error is encountered.
 	///
 
-	pub fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), Error> {
+	pub fn validate_chain(
+		&self,
+		secp: &Secp256k1,
+		assume_valid_rangeproofs_kernels: bool,
+	) -> Result<(), Error> {
 		let chain_validation_handler = ChainValidationHandler {
 			chain: self.chain.clone(),
 		};
-		chain_validation_handler.validate_chain(assume_valid_rangeproofs_kernels)
+		chain_validation_handler.validate_chain(secp, assume_valid_rangeproofs_kernels)
 	}
 
 	/// Trigger a compaction of the chain state to regain storage space.
@@ -110,24 +123,28 @@ impl Owner {
 	pub fn compact_chain(&self) -> Result<(), Error> {
 		let chain_compact_handler = ChainCompactHandler {
 			chain: self.chain.clone(),
+			stop_state: w(&self.stop_state)?,
 		};
 		chain_compact_handler.compact_chain()
 	}
 
-	pub fn reset_chain_head(&self, hash: String) -> Result<(), Error> {
+	pub fn reset_chain_head(&self, secp: &Secp256k1, hash: String) -> Result<(), Error> {
 		let hash =
 			Hash::from_hex(&hash).map_err(|_| Error::RequestError("invalid header hash".into()))?;
 
 		let chain = w(&self.chain)?;
-		let header = chain.get_block_header(&hash)?;
-		chain.reset_chain_head(&header, true)?;
+		let header = chain.get_block_header(&hash).map_err(|e| {
+			let msg = format!("Block header for hash {}, {}", hash, e);
+			Error::chain_read_error(e, msg)
+		})?;
+		chain.reset_chain_head(secp, &header, true)?;
 
 		// Reset the sync status and clear out any sync error.
 		w(&self.sync_state)?.reset();
 		Ok(())
 	}
 
-	pub fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error> {
+	pub fn invalidate_header(&self, secp: &Secp256k1, hash: Vec<String>) -> Result<(), Error> {
 		let mut banned_headers: HashSet<Hash> = HashSet::new();
 		for hstr in &hash {
 			let h = Hash::from_hex(&hstr)
@@ -136,7 +153,7 @@ impl Owner {
 		}
 
 		let chain = w(&self.chain)?;
-		chain.apply_invalid_blocks(banned_headers)?;
+		chain.apply_invalid_blocks(secp, banned_headers)?;
 		Ok(())
 	}
 

@@ -4,10 +4,16 @@ extern crate libfuzzer_sys;
 extern crate mwc_core;
 extern crate mwc_p2p;
 
+mod fuzz_global;
+
 use mwc_core::ser;
+use mwc_core::ser::ProtocolVersion;
 use mwc_p2p::msg::PeerAddrs;
 
 fuzz_target!(|data: &[u8]| {
-	let mut d = data.clone();
-	let _t: Result<PeerAddrs, ser::Error> = ser::deserialize(&mut d);
+	fuzz_global::init();
+	let mut d = data;
+	// it is fuzz test, no error handling expected
+	let _t: Result<PeerAddrs, ser::Error> =
+		ser::deserialize_strict(&mut d, ProtocolVersion::local_db(), 0);
 });

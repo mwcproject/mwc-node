@@ -103,6 +103,7 @@ impl SipHash24 {
 	}
 
 	fn round(&mut self, rot_e: u8) {
+		// Safe: SipHash is defined over u64 words with addition modulo 2^64.
 		self.0 = self.0.wrapping_add(self.1);
 		self.2 = self.2.wrapping_add(self.3);
 		rotl!(self.1, 13);
@@ -110,9 +111,14 @@ impl SipHash24 {
 		self.1 ^= self.0;
 		self.3 ^= self.2;
 		rotl!(self.0, 32);
+		// Safe: SipHash is defined over u64 words with addition modulo 2^64.
 		self.2 = self.2.wrapping_add(self.1);
 		self.0 = self.0.wrapping_add(self.3);
 		rotl!(self.1, 17);
+		// Invariant: all PoW call sites pass a fixed rotation constant
+		// (21 for standard SipHash, 25 for Cuckarood), both less than 64.
+		// Note: This is miner hot-path code; keep the explicit rotation macro unless
+		// a replacement such as rotate_left has been benchmarked as equivalent.
 		rotl!(self.3, rot_e);
 		self.1 ^= self.2;
 		self.3 ^= self.0;

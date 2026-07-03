@@ -14,12 +14,12 @@
 // limitations under the License.
 
 use super::utils::w;
-use crate::chain;
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::Version;
 use crate::web::*;
-use hyper::{Body, Request};
+use mwc_crates::bytes::Bytes;
+use mwc_crates::hyper::Request;
 use std::sync::Weak;
 
 const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -27,7 +27,7 @@ const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Version handler. Get running node API version
 /// GET /v1/version
 pub struct VersionHandler {
-	pub chain: Weak<chain::Chain>,
+	pub chain: Weak<mwc_chain::Chain>,
 }
 
 impl VersionHandler {
@@ -44,7 +44,7 @@ impl VersionHandler {
 }
 
 impl Handler for VersionHandler {
-	fn get(&self, _req: Request<Body>) -> ResponseFuture {
+	fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
 		result_to_response(self.get_version())
 	}
 }

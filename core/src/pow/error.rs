@@ -15,7 +15,10 @@
 
 //! Cuckatoo specific errors
 
+use crate::consensus;
+
 /// Cuckatoo solver or validation error
+
 #[derive(Debug, thiserror::Error)]
 /// Libwallet error types
 pub enum Error {
@@ -47,4 +50,19 @@ pub enum Error {
 	/// No Solution
 	#[error("POW No Solution")]
 	NoSolution,
+	/// Unsupported operation
+	#[error("POW operation is not implemented: {0}")]
+	NotImplemented(String),
+	/// Data overflow error
+	#[error("POW data overflow error: {0}")]
+	DataOverflow(String),
+	/// SysRnd error
+	#[error("SysRnd failure")]
+	SysRndError,
+	/// Consensus error
+	#[error("Consensus error {0}")]
+	ConsensusError(#[from] consensus::Error),
+	/// Invalid configuraiton
+	#[error("Invalid configuraiton: {0}")]
+	InvalidConfiguration(String),
 }

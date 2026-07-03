@@ -15,31 +15,34 @@
 
 pub mod common;
 
-use self::core::core::{transaction, Weighting};
-use self::core::global;
-use self::keychain::{ExtKeychain, Keychain};
-use self::pool::TxSource;
 use crate::common::*;
-use mwc_core as core;
-use mwc_keychain as keychain;
-use mwc_pool as pool;
-use mwc_util as util;
+use mwc_core::core::hash::Hashed;
+use mwc_core::core::{transaction, Weighting};
+use mwc_core::global;
+use mwc_core::ser;
+use mwc_crates::rand::rngs::SysRng;
+use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
+use mwc_keychain::{ExtKeychain, Keychain};
+use mwc_pool::{PoolError, TxSource};
 use std::sync::Arc;
 
 /// Test we can add some txs to the pool (both stempool and txpool).
 #[test]
 fn test_the_transaction_pool() {
-	util::init_test_logger();
+	mwc_util::init_test_logger().unwrap();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-	global::set_local_accept_fee_base(1);
+	global::set_local_accept_fee_base(1).unwrap();
 	global::set_local_nrd_enabled(false);
-	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain: ExtKeychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
 
 	let db_root = "target/.transaction_pool";
 	clean_output_dir(db_root.into());
 
 	let genesis = genesis_block(&keychain);
-	let chain = Arc::new(init_chain(db_root, genesis));
+	let chain = Arc::new(init_chain(&secp, db_root, genesis));
 
 	// Initialize a new pool with our chain adapter.
 	let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
@@ -47,11 +50,12 @@ fn test_the_transaction_pool() {
 	}));
 
 	// mine past HF4 to see effect of set_local_accept_fee_base
-	add_some_blocks(&chain, 4 * 3, &keychain);
+	add_some_blocks(&mut secp, &chain, 4 * 3, &keychain);
 	let header = chain.head_header().unwrap();
 
 	let header_1 = chain.get_header_by_height(1).unwrap();
 	let initial_tx = test_transaction_spending_coinbase(
+		&mut secp,
 		&keychain,
 		&header_1,
 		vec![500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400],
@@ -59,7 +63,7 @@ fn test_the_transaction_pool() {
 
 	// Add this tx to the pool (stem=false, direct to txpool).
 	{
-		pool.add_to_pool(test_source(), initial_tx, false, &header, chain.secp())
+		pool.add_to_pool(test_source(), initial_tx, false, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 1);
 	}
@@ -67,28 +71,44 @@ fn test_the_transaction_pool() {
 	// Test adding a tx that "double spends" an output currently spent by a tx
 	// already in the txpool. In this case we attempt to spend the original coinbase twice.
 	{
-		let tx = test_transaction_spending_coinbase(&keychain, &header, vec![501]);
+		let tx = test_transaction_spending_coinbase(&mut secp, &keychain, &header, vec![501]);
 		assert!(pool
-			.add_to_pool(test_source(), tx, false, &header, chain.secp())
+			.add_to_pool(test_source(), tx, false, &header, &mut secp)
 			.is_err());
 	}
 
 	// tx1 spends some outputs from the initial test tx.
-	let tx1 = test_transaction(&keychain, vec![500, 600], vec![469, 569]);
+	let tx1 = test_transaction(&mut secp, &keychain, vec![500, 600], vec![469, 569]);
 	// tx2 spends some outputs from both tx1 and the initial test tx.
-	let tx2 = test_transaction(&keychain, vec![469, 700], vec![498]);
+	let tx2 = test_transaction(&mut secp, &keychain, vec![469, 700], vec![498]);
 
 	{
 		// Check we have a single initial tx in the pool.
 		assert_eq!(pool.total_size(), 1);
 
 		// First, add a simple tx directly to the txpool (stem = false).
-		pool.add_to_pool(test_source(), tx1.clone(), false, &header, chain.secp())
+		pool.add_to_pool(test_source(), tx1.clone(), false, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 2);
+		let tx1_kernel_hash = tx1
+			.kernels()
+			.first()
+			.unwrap()
+			.hash(chain.get_context_id())
+			.unwrap();
+		let retrieved_tx = pool
+			.retrieve_tx_by_kernel_hash(tx1_kernel_hash)
+			.unwrap()
+			.unwrap();
+		assert!(ser::slices_equal_by_hash(
+			chain.get_context_id(),
+			retrieved_tx.kernels(),
+			tx1.kernels()
+		)
+		.unwrap());
 
 		// Add another tx spending outputs from the previous tx.
-		pool.add_to_pool(test_source(), tx2.clone(), false, &header, chain.secp())
+		pool.add_to_pool(test_source(), tx2.clone(), false, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 3);
 	}
@@ -98,24 +118,24 @@ fn test_the_transaction_pool() {
 	// outputs and duplicate kernels.
 	{
 		assert!(pool
-			.add_to_pool(test_source(), tx1.clone(), false, &header, chain.secp())
+			.add_to_pool(test_source(), tx1.clone(), false, &header, &mut secp)
 			.is_err());
 	}
 
 	// Test adding a duplicate tx with the same input and outputs.
 	// Note: not the *same* tx, just same underlying inputs/outputs.
 	{
-		let tx1a = test_transaction(&keychain, vec![500, 600], vec![469, 569]);
+		let tx1a = test_transaction(&mut secp, &keychain, vec![500, 600], vec![469, 569]);
 		assert!(pool
-			.add_to_pool(test_source(), tx1a, false, &header, chain.secp())
+			.add_to_pool(test_source(), tx1a, false, &header, &mut secp)
 			.is_err());
 	}
 
 	// Test adding a tx attempting to spend a non-existent output.
 	{
-		let bad_tx = test_transaction(&keychain, vec![10_001], vec![9_900]);
+		let bad_tx = test_transaction(&mut secp, &keychain, vec![10_001], vec![9_900]);
 		assert!(pool
-			.add_to_pool(test_source(), bad_tx, false, &header, chain.secp())
+			.add_to_pool(test_source(), bad_tx, false, &header, &mut secp)
 			.is_err());
 	}
 
@@ -124,28 +144,28 @@ fn test_the_transaction_pool() {
 	// be unique. Otherwise spending one will almost certainly cause the other
 	// to be immediately stolen via a "replay" tx.
 	{
-		let tx = test_transaction(&keychain, vec![900], vec![498]);
+		let tx = test_transaction(&mut secp, &keychain, vec![900], vec![498]);
 		assert!(pool
-			.add_to_pool(test_source(), tx, false, &header, chain.secp())
+			.add_to_pool(test_source(), tx, false, &header, &mut secp)
 			.is_err());
 	}
 
 	// Confirm the tx pool correctly identifies an invalid tx (already spent).
 	{
-		let tx3 = test_transaction(&keychain, vec![500], vec![467]);
+		let tx3 = test_transaction(&mut secp, &keychain, vec![500], vec![467]);
 		assert!(pool
-			.add_to_pool(test_source(), tx3, false, &header, chain.secp())
+			.add_to_pool(test_source(), tx3, false, &header, &mut secp)
 			.is_err());
 		assert_eq!(pool.total_size(), 3);
 	}
 
 	// Now add a couple of txs to the stempool (stem = true).
 	{
-		let tx = test_transaction(&keychain, vec![569], vec![538]);
-		pool.add_to_pool(test_source(), tx, true, &header, chain.secp())
+		let tx = test_transaction(&mut secp, &keychain, vec![569], vec![538]);
+		pool.add_to_pool(test_source(), tx, true, &header, &mut secp)
 			.unwrap();
-		let tx2 = test_transaction(&keychain, vec![538], vec![507]);
-		pool.add_to_pool(test_source(), tx2, true, &header, chain.secp())
+		let tx2 = test_transaction(&mut secp, &keychain, vec![538], vec![507]);
+		pool.add_to_pool(test_source(), tx2, true, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 3);
 		assert_eq!(pool.stempool.size(), 2);
@@ -156,11 +176,11 @@ fn test_the_transaction_pool() {
 	{
 		let agg_tx = pool
 			.stempool
-			.all_transactions_aggregate(None, chain.secp())
+			.all_transactions_aggregate(None, &mut secp)
 			.unwrap()
 			.unwrap();
 		assert_eq!(agg_tx.kernels().len(), 2);
-		pool.add_to_pool(test_source(), agg_tx, false, &header, chain.secp())
+		pool.add_to_pool(test_source(), agg_tx, false, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 4);
 		assert!(pool.stempool.is_empty());
@@ -169,15 +189,15 @@ fn test_the_transaction_pool() {
 	// Adding a duplicate tx to the stempool will result in it being fluffed.
 	// This handles the case of the stem path having a cycle in it.
 	{
-		let tx = test_transaction(&keychain, vec![507], vec![476]);
-		pool.add_to_pool(test_source(), tx.clone(), true, &header, chain.secp())
+		let tx = test_transaction(&mut secp, &keychain, vec![507], vec![476]);
+		pool.add_to_pool(test_source(), tx.clone(), true, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 4);
 		assert_eq!(pool.txpool.size(), 4);
 		assert_eq!(pool.stempool.size(), 1);
 
 		// Duplicate stem tx so fluff, adding it to txpool and removing it from stempool.
-		pool.add_to_pool(test_source(), tx.clone(), true, &header, chain.secp())
+		pool.add_to_pool(test_source(), tx.clone(), true, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 5);
 		assert_eq!(pool.txpool.size(), 5);
@@ -189,21 +209,26 @@ fn test_the_transaction_pool() {
 	// We will do this be adding a new tx to the pool
 	// that is a superset of a tx already in the pool.
 	{
-		let tx4 = test_transaction(&keychain, vec![800], vec![769]);
+		let tx4 = test_transaction(&mut secp, &keychain, vec![800], vec![769]);
 
 		// tx1 and tx2 are already in the txpool (in aggregated form)
 		// tx4 is the "new" part of this aggregated tx that we care about
-		let agg_tx =
-			transaction::aggregate(&[tx1.clone(), tx2.clone(), tx4], chain.secp()).unwrap();
+		let agg_tx = transaction::aggregate(
+			chain.get_context_id(),
+			&[tx1.clone(), tx2.clone(), tx4],
+			&mut secp,
+		)
+		.unwrap();
 
 		agg_tx
-			.validate(0, Weighting::AsTransaction, chain.secp())
+			.validate(0, Weighting::AsTransaction, &mut secp)
 			.unwrap();
 
-		pool.add_to_pool(test_source(), agg_tx, false, &header, chain.secp())
+		pool.add_to_pool(test_source(), agg_tx, false, &header, &mut secp)
 			.unwrap();
 		assert_eq!(pool.total_size(), 6);
-		let entry = pool.txpool.entries.last().unwrap();
+		let entries = pool.txpool.all_entries();
+		let entry = entries.last().unwrap();
 		assert_eq!(entry.tx.kernels().len(), 1);
 		assert_eq!(entry.src, TxSource::Deaggregate);
 	}
@@ -211,7 +236,8 @@ fn test_the_transaction_pool() {
 	// Check we cannot "double spend" an output spent in a previous block.
 	// We use the initial coinbase output here for convenience.
 	{
-		let double_spend_tx = test_transaction_spending_coinbase(&keychain, &header, vec![1000]);
+		let double_spend_tx =
+			test_transaction_spending_coinbase(&mut secp, &keychain, &header, vec![1000]);
 
 		// check we cannot add a double spend to the stempool
 		assert!(pool
@@ -220,7 +246,7 @@ fn test_the_transaction_pool() {
 				double_spend_tx.clone(),
 				true,
 				&header,
-				chain.secp()
+				&mut secp
 			)
 			.is_err());
 
@@ -231,11 +257,185 @@ fn test_the_transaction_pool() {
 				double_spend_tx.clone(),
 				false,
 				&header,
-				chain.secp()
+				&mut secp
 			)
 			.is_err());
 	}
 
 	// Cleanup db directory
+	clean_output_dir(db_root.into());
+}
+
+#[test]
+fn test_stempool_remove_tx_by_transaction() {
+	mwc_util::init_test_logger().unwrap();
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_accept_fee_base(1).unwrap();
+	global::set_local_nrd_enabled(false);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain: ExtKeychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
+
+	let db_root = "target/.transaction_pool_remove_tx";
+	clean_output_dir(db_root.into());
+
+	let genesis = genesis_block(&keychain);
+	let chain = Arc::new(init_chain(&secp, db_root, genesis));
+	add_some_blocks(&mut secp, &chain, 4 * 3, &keychain);
+	let header = chain.head_header().unwrap();
+	let header_1 = chain.get_header_by_height(1).unwrap();
+
+	let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+		chain: chain.clone(),
+	}));
+	let initial_tx =
+		test_transaction_spending_coinbase(&mut secp, &keychain, &header_1, vec![500, 600]);
+	pool.add_to_pool(test_source(), initial_tx, false, &header, &mut secp)
+		.unwrap();
+
+	let stem_tx = test_transaction(&mut secp, &keychain, vec![500], vec![469]);
+	pool.add_to_pool(test_source(), stem_tx.clone(), true, &header, &mut secp)
+		.unwrap();
+	assert_eq!(pool.stempool.size(), 1);
+	assert!(pool.stempool.contains_tx(&stem_tx).unwrap());
+
+	let removed = pool.stempool.remove_tx(&stem_tx).unwrap();
+	assert!(removed.is_some());
+	assert!(pool.stempool.is_empty());
+	assert!(pool.stempool.remove_tx(&stem_tx).unwrap().is_none());
+
+	clean_output_dir(db_root.into());
+}
+
+#[test]
+fn test_reconcile_reorg_cache_retains_valid_entries() {
+	mwc_util::init_test_logger().unwrap();
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_accept_fee_base(1).unwrap();
+	global::set_local_nrd_enabled(false);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain: ExtKeychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
+
+	let db_root = "target/.transaction_pool_reorg_cache";
+	clean_output_dir(db_root.into());
+
+	let genesis = genesis_block(&keychain);
+	let chain = Arc::new(init_chain(&secp, db_root, genesis));
+	add_some_blocks(&mut secp, &chain, 4 * 3, &keychain);
+	let header = chain.head_header().unwrap();
+	let header_1 = chain.get_header_by_height(1).unwrap();
+
+	let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+		chain: chain.clone(),
+	}));
+	let tx = test_transaction_spending_coinbase(&mut secp, &keychain, &header_1, vec![500, 600]);
+	pool.add_to_pool(test_source(), tx, false, &header, &mut secp)
+		.unwrap();
+
+	assert_eq!(pool.txpool.size(), 1);
+	assert_eq!(pool.reorg_cache.read().len(), 1);
+
+	pool.reconcile_reorg_cache(&header, &mut secp);
+	assert_eq!(pool.txpool.size(), 1);
+	assert_eq!(pool.reorg_cache.read().len(), 1);
+
+	pool.txpool.entries.clear();
+	assert_eq!(pool.txpool.size(), 0);
+
+	pool.reconcile_reorg_cache(&header, &mut secp);
+	assert_eq!(pool.txpool.size(), 1);
+	assert_eq!(pool.reorg_cache.read().len(), 1);
+
+	clean_output_dir(db_root.into());
+}
+
+#[test]
+fn test_transaction_pool_capacity_limits() {
+	mwc_util::init_test_logger().unwrap();
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_accept_fee_base(1).unwrap();
+	global::set_local_nrd_enabled(false);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain: ExtKeychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
+
+	let db_root = "target/.transaction_pool_capacity_limits";
+	clean_output_dir(db_root.into());
+
+	let genesis = genesis_block(&keychain);
+	let chain = Arc::new(init_chain(&secp, db_root, genesis));
+
+	// mine past HF4 to see effect of set_local_accept_fee_base
+	add_some_blocks(&mut secp, &chain, 4 * 3, &keychain);
+	let header = chain.head_header().unwrap();
+	let header_1 = chain.get_header_by_height(1).unwrap();
+	let header_2 = chain.get_header_by_height(2).unwrap();
+	let header_3 = chain.get_header_by_height(3).unwrap();
+
+	{
+		let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+			chain: chain.clone(),
+		}));
+		pool.config.max_pool_size = 1;
+
+		let initial_tx =
+			test_transaction_spending_coinbase(&mut secp, &keychain, &header_1, vec![500, 600]);
+		pool.add_to_pool(test_source(), initial_tx, false, &header, &mut secp)
+			.unwrap();
+		assert_eq!(pool.txpool.size(), 1);
+
+		let low_fee_tx = test_transaction(&mut secp, &keychain, vec![600], vec![599]);
+		let err = pool
+			.add_to_pool(test_source(), low_fee_tx, false, &header, &mut secp)
+			.unwrap_err();
+		assert!(matches!(err, PoolError::LowFeeTransaction(1)));
+		assert_eq!(pool.txpool.size(), 1);
+
+		let tx = test_transaction(&mut secp, &keychain, vec![500], vec![469]);
+		pool.add_to_pool(test_source(), tx, false, &header, &mut secp)
+			.unwrap();
+		assert_eq!(pool.txpool.size(), 1);
+	}
+
+	{
+		let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+			chain: chain.clone(),
+		}));
+		pool.config.max_pool_size = 0;
+
+		let tx = test_transaction_spending_coinbase(&mut secp, &keychain, &header_2, vec![700]);
+		pool.add_to_pool(test_source(), tx, false, &header, &mut secp)
+			.unwrap();
+		assert_eq!(pool.txpool.size(), 0);
+	}
+
+	{
+		let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+			chain: chain.clone(),
+		}));
+		pool.config.max_stempool_size = 1;
+
+		let initial_tx =
+			test_transaction_spending_coinbase(&mut secp, &keychain, &header_3, vec![800, 900]);
+		pool.add_to_pool(test_source(), initial_tx, false, &header, &mut secp)
+			.unwrap();
+
+		let tx = test_transaction(&mut secp, &keychain, vec![800], vec![769]);
+		pool.add_to_pool(test_source(), tx, true, &header, &mut secp)
+			.unwrap();
+		assert_eq!(pool.stempool.size(), 1);
+
+		let tx = test_transaction(&mut secp, &keychain, vec![900], vec![869]);
+		let err = pool
+			.add_to_pool(test_source(), tx, true, &header, &mut secp)
+			.unwrap_err();
+		assert!(matches!(err, PoolError::OverCapacity));
+		assert_eq!(pool.stempool.size(), 1);
+	}
+
 	clean_output_dir(db_root.into());
 }

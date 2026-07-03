@@ -15,21 +15,19 @@
 
 //! JSON-RPC Stub generation for the Foreign API
 
-use crate::core::core::hash::Hash;
-use crate::core::core::transaction::Transaction;
 use crate::foreign::Foreign;
-use crate::handlers::utils::w;
-use crate::pool::PoolEntry;
-use crate::pool::{BlockChain, PoolAdapter};
 use crate::rest::Error;
 use crate::types::{
 	BlockHeaderPrintable, BlockListing, BlockPrintable, LocatedTxKernel, OutputListing,
 	OutputPrintable, Tip, Version,
 };
-use crate::{util, Libp2pMessages, Libp2pPeers};
+use mwc_core::core::hash::Hash;
+use mwc_core::core::transaction::Transaction;
+use mwc_crates::easy_jsonrpc_mwc;
 use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
+use mwc_pool::{BlockChain, PoolAdapter};
+use mwc_util::secp_static;
 use std::time::Instant;
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at
@@ -744,8 +742,6 @@ pub trait ForeignRpc: Sync + Send {
 				"09bab2bdba2e6aed690b5eda11accc13c06723ca5965bb460c5f2383655989af3f",
 				"08ecd94ae293863286e99d37f4685f07369bc084ba74d5c59c7f15359a75c84c03"
 			],
-			376150,
-			376154,
 			true,
 			true
 		],
@@ -808,9 +804,7 @@ pub trait ForeignRpc: Sync + Send {
 	 */
 	fn get_outputs(
 		&self,
-		commits: Option<Vec<String>>,
-		start_height: Option<u64>,
-		end_height: Option<u64>,
+		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error>;
@@ -902,6 +896,7 @@ pub trait ForeignRpc: Sync + Send {
 				  "last_retrieved_index": 2,
 				  "outputs": []
 			}
+		}
 	}
 	# "#
 	# );
@@ -979,37 +974,8 @@ pub trait ForeignRpc: Sync + Send {
 	fn get_pool_size(&self) -> Result<usize, Error>;
 
 	/**
-	Networked version of [Foreign::get_stempool_size](struct.Foreign.html#method.get_stempool_size).
-
-	# Json rpc example
-
-	```
-	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
-	# r#"
-	{
-		"jsonrpc": "2.0",
-		"method": "get_stempool_size",
-		"params": [],
-		"id": 1
-	}
-	# "#
-	# ,
-	# r#"
-	{
-		"id": 1,
-		"jsonrpc": "2.0",
-		"result": {
-			"Ok": 0
-		}
-	}
-	# "#
-	# );
-	```
-	 */
-	fn get_stempool_size(&self) -> Result<usize, Error>;
-
-	/**
 	Networked version of [Foreign::get_unconfirmed_transactions](struct.Foreign.html#method.get_unconfirmed_transactions).
+	Returns up to 1,000 unconfirmed transactions from the transaction pool.
 
 	# Json rpc example
 
@@ -1030,9 +996,7 @@ pub trait ForeignRpc: Sync + Send {
 		"jsonrpc": "2.0",
 		"result": {
 			"Ok": [
-			{
-				"src": "Broadcast",
-				"tx": {
+				{
 				"body": {
 					"inputs": [
 					{
@@ -1069,9 +1033,7 @@ pub trait ForeignRpc: Sync + Send {
 					]
 				},
 				"offset": "0eb2c2669ce918675c72697891e5527bd13da5a499396381409219b8bbbd8129"
-				},
-				"tx_at": "2019-10-07T16:20:08.709114Z"
-			}
+				}
 			]
 		}
 	}
@@ -1079,10 +1041,14 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error>;
+	fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error>;
 
 	/**
 	Networked version of [Foreign::push_transaction](struct.Foreign.html#method.push_transaction).
+
+	This method reports success once the transaction is accepted into the local
+	transaction pool. Relay through the network adapter is best-effort; adapter
+	failures after local acceptance are logged and are not returned to the caller.
 
 	# Json rpc example
 
@@ -1145,46 +1111,6 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error>;
-
-	/**
-	Networked version of [Owner::get_libp2p_peers](struct.Owner.html#method.get_libp2p_peers).
-
-	# Json rpc example
-
-	```
-	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
-	# r#"
-	{
-		"jsonrpc": "2.0",
-		"method": "get_libp2p_peers",
-		"params": [],
-		"id": 1
-	}
-	# "#
-	# ,
-	# r#"
-	{
-		"id": 1,
-		"jsonrpc": "2.0",
-		"result": {
-			"Ok": {
-				"libp2p_peers": [],
-				"node_peers": [],
-			}
-		}
-	}
-	# "#
-	# );
-	```
-	 */
-	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error>;
-
-	/**
-		Networked version of [Owner::get_libp2p_messages](struct.Owner.html#method.get_libp2p_messages).
-
-		// No example because if current time dynamic nature.
-	*/
-	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error>;
 }
 
 impl<B, P> ForeignRpc for Foreign<B, P>
@@ -1200,11 +1126,14 @@ where
 	) -> Result<BlockHeaderPrintable, Error> {
 		let mut parsed_hash: Option<Hash> = None;
 		if let Some(hash) = hash {
-			let vec = util::from_hex(&hash)
-				.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?;
-			parsed_hash = Some(Hash::from_vec(&vec));
+			parsed_hash = Some(
+				Hash::from_hex(&hash)
+					.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?,
+			);
 		}
-		Foreign::get_header(self, height, parsed_hash, commit)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_header(self, secp, height, parsed_hash, commit)
+		})
 	}
 
 	fn get_block(
@@ -1226,18 +1155,23 @@ where
 	) -> Result<BlockPrintable, Error> {
 		let mut parsed_hash: Option<Hash> = None;
 		if let Some(hash) = hash {
-			let vec = util::from_hex(&hash)
-				.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?;
-			parsed_hash = Some(Hash::from_vec(&vec));
+			parsed_hash = Some(
+				Hash::from_hex(&hash)
+					.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?,
+			);
 		}
-		Foreign::get_block(
-			self,
-			height,
-			parsed_hash,
-			commit,
-			include_proof,
-			include_merkle_proof,
-		)
+
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_block(
+				self,
+				secp,
+				height,
+				parsed_hash,
+				commit,
+				include_proof,
+				include_merkle_proof,
+			)
+		})
 	}
 
 	fn get_blocks(
@@ -1247,7 +1181,9 @@ where
 		max: u64,
 		include_proof: Option<bool>,
 	) -> Result<BlockListing, Error> {
-		Foreign::get_blocks(self, start_height, end_height, max, include_proof)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_blocks(self, secp, start_height, end_height, max, include_proof)
+		})
 	}
 
 	fn get_version(&self) -> Result<Version, Error> {
@@ -1269,20 +1205,13 @@ where
 
 	fn get_outputs(
 		&self,
-		commits: Option<Vec<String>>,
-		start_height: Option<u64>,
-		end_height: Option<u64>,
+		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error> {
-		Foreign::get_outputs(
-			self,
-			commits,
-			start_height,
-			end_height,
-			include_proof,
-			include_merkle_proof,
-		)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_outputs(self, secp, commits, include_proof, include_merkle_proof)
+		})
 	}
 
 	fn get_unspent_outputs(
@@ -1292,7 +1221,9 @@ where
 		max: u64,
 		include_proof: Option<bool>,
 	) -> Result<OutputListing, Error> {
-		Foreign::get_unspent_outputs(self, start_index, end_index, max, include_proof)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_unspent_outputs(self, secp, start_index, end_index, max, include_proof)
+		})
 	}
 
 	fn get_pmmr_indices(
@@ -1314,32 +1245,14 @@ where
 			None => 0,
 		};
 
-		let mut system = System::new_with_specifics(
-			RefreshKind::nothing()
-				.with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-				.with_memory(MemoryRefreshKind::everything()),
-		);
-		let total_ram = system.total_memory();
-		let used_ram = system.used_memory();
-		let total_swap = system.total_swap();
-		let used_swap = system.used_swap();
-
-		std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-
-		system.refresh_cpu_usage();
-
-		let cpus = system.cpus();
-		let mut cpu_usage_sum = 0.0;
-		for cpu in cpus {
-			cpu_usage_sum += cpu.cpu_usage();
-		}
+		let host_metrics = self.process_status_cache.lock().get();
 
 		Ok(ProcessStatus {
 			process_running_time: self.get_running_time(),
 			tor_online_time,
-			host_cpu_usage: (cpu_usage_sum / cpus.len() as f32) as f64,
-			host_ram_usage: used_ram as f64 / total_ram as f64,
-			host_swap_usage: used_swap as f64 / total_swap as f64,
+			host_cpu_usage: host_metrics.host_cpu_usage,
+			host_ram_usage: host_metrics.host_ram_usage,
+			host_swap_usage: host_metrics.host_swap_usage,
 		})
 	}
 
@@ -1347,73 +1260,62 @@ where
 		Foreign::get_pool_size(self)
 	}
 
-	fn get_stempool_size(&self) -> Result<usize, Error> {
-		Foreign::get_stempool_size(self)
-	}
-
-	fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error> {
+	fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error> {
 		Foreign::get_unconfirmed_transactions(self)
 	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
-		Foreign::push_transaction(self, tx, fluff, w(&self.chain)?.secp())
-	}
-	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
-		#[cfg(feature = "libp2p")]
-		return Foreign::get_libp2p_peers(self);
-
-		#[cfg(not(feature = "libp2p"))]
-		Err(Error::Internal("libp2p feature is disabled".into()))
-	}
-	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
-		#[cfg(feature = "libp2p")]
-		return Foreign::get_libp2p_messages(self);
-
-		#[cfg(not(feature = "libp2p"))]
-		Err(Error::Internal("libp2p feature is disabled".into()))
+		secp_static::with_commit_mut(Error::from, |secp| {
+			Foreign::push_transaction(self, tx, fluff, secp)
+		})
 	}
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! doctest_helper_json_rpc_foreign_assert_response {
-	($request:expr, $expected_response:expr) => {
-		// create temporary mwc server, run jsonrpc request on node api, delete server, return
-		// json response.
-
-		{
-			/*use mwc_servers::test_framework::framework::run_doctest;
-			use mwc_util as util;
-			use serde_json;
-			use serde_json::Value;
-			use tempfile::tempdir;
-
-			let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
-			let dir = dir
-				.path()
-				.to_str()
-				.ok_or("Failed to convert tmpdir path to string.".to_owned())
-				.unwrap();
-
-			let request_val: Value = serde_json::from_str($request).unwrap();
-			let expected_response: Value = serde_json::from_str($expected_response).unwrap();
-			let response = run_doctest(
-				request_val,
-				dir,
-				$use_token,
-				$blocks_to_mine,
-				$perform_tx,
-				$lock_tx,
-				$finalize_tx,
-					)
-			.unwrap()
-			.unwrap();
-			if response != expected_response {
-				panic!(
-					"(left != right) \nleft: {}\nright: {}",
-					serde_json::to_string_pretty(&response).unwrap(),
-					serde_json::to_string_pretty(&expected_response).unwrap()
-				);
-				}*/
-		}
-	};
+	($request:expr, $expected_response:expr) => {{
+		$crate::json_rpc::doctest_assert_json_rpc_response(
+			$request,
+			$expected_response,
+			&[
+				("get_header", &["height", "hash", "commit"]),
+				("get_block", &["height", "hash", "commit"]),
+				(
+					"get_block_ex",
+					&[
+						"height",
+						"hash",
+						"commit",
+						"include_proof",
+						"include_merkle_proof",
+					],
+				),
+				(
+					"get_blocks",
+					&["start_height", "end_height", "max", "include_proof"],
+				),
+				("get_version", &[]),
+				("get_tip", &[]),
+				("get_kernel", &["excess", "min_height", "max_height"]),
+				(
+					"get_outputs",
+					&["commits", "include_proof", "include_merkle_proof"],
+				),
+				(
+					"get_unspent_outputs",
+					&["start_index", "end_index", "max", "include_proof"],
+				),
+				(
+					"get_pmmr_indices",
+					&["start_block_height", "end_block_height"],
+				),
+				("get_connected_peers", &[]),
+				("get_process_status", &[]),
+				("get_pool_size", &[]),
+				("get_unconfirmed_transactions", &[]),
+				("push_transaction", &["tx", "fluff"]),
+			],
+		)
+		.unwrap_or_else(|err| panic!("{}", err));
+	}};
 }

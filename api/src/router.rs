@@ -13,62 +13,66 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::future::{self, Future};
-use hyper::service::Service;
-use hyper::{Body, Method, Request, Response, StatusCode};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use mwc_crates::bytes::Bytes;
+use mwc_crates::futures::future::{self, Future};
+use mwc_crates::http::request::Parts;
+use mwc_crates::http_body_util::Full;
+use mwc_crates::hyper::service::Service;
+use mwc_crates::hyper::{Method, Request, Response, StatusCode};
+use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
-lazy_static! {
-	static ref WILDCARD_HASH: u64 = calculate_hash(&"*");
-	static ref WILDCARD_STOP_HASH: u64 = calculate_hash(&"**");
-}
+const WILDCARD: &str = "*";
+const WILDCARD_STOP: &str = "**";
 
-pub type ResponseFuture = Pin<Box<dyn Future<Output = Result<Response<Body>, RouterError>> + Send>>;
+pub type ResponseFuture =
+	Pin<Box<dyn Future<Output = Result<Response<Full<Bytes>>, RouterError>> + Send>>;
 
 pub trait Handler {
-	fn get(&self, _req: Request<Body>) -> ResponseFuture {
+	fn pre_body_response(&self, _parts: &Parts) -> Option<ResponseFuture> {
+		None
+	}
+
+	fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn post(&self, _req: Request<Body>) -> ResponseFuture {
+	fn post(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn put(&self, _req: Request<Body>) -> ResponseFuture {
+	fn put(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn patch(&self, _req: Request<Body>) -> ResponseFuture {
+	fn patch(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn delete(&self, _req: Request<Body>) -> ResponseFuture {
+	fn delete(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn head(&self, _req: Request<Body>) -> ResponseFuture {
+	fn head(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn options(&self, _req: Request<Body>) -> ResponseFuture {
+	fn options(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn trace(&self, _req: Request<Body>) -> ResponseFuture {
+	fn trace(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
-	fn connect(&self, _req: Request<Body>) -> ResponseFuture {
+	fn connect(&self, _req: Request<Bytes>) -> ResponseFuture {
 		not_found()
 	}
 
 	fn call(
 		&self,
-		req: Request<Body>,
+		req: Request<Bytes>,
 		mut _handlers: Box<dyn Iterator<Item = HandlerObj>>,
 	) -> ResponseFuture {
 		match *req.method() {
@@ -87,6 +91,7 @@ pub trait Handler {
 }
 
 #[derive(Clone, thiserror::Error, Eq, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub enum RouterError {
 	#[error("Route {0} already exists")]
 	RouteAlreadyExists(String),
@@ -94,6 +99,8 @@ pub enum RouterError {
 	RouteNotFound(String),
 	#[error("Route value not found for {0}")]
 	NoValue(String),
+	#[error("Path {0} must start with '/'")]
+	InvalidPath(String),
 	#[error("{0}")]
 	Internal(String),
 }
@@ -112,7 +119,7 @@ pub type HandlerObj = Arc<dyn Handler + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Node {
-	key: u64,
+	segment: String,
 	value: Option<HandlerObj>,
 	children: [NodeId; MAX_CHILDREN],
 	children_count: usize,
@@ -121,7 +128,7 @@ pub struct Node {
 
 impl Router {
 	pub fn new() -> Router {
-		let root = Node::new(calculate_hash(&""), None);
+		let root = Node::new("", None);
 		let mut nodes = vec![];
 		nodes.push(root);
 		Router { nodes }
@@ -143,22 +150,27 @@ impl Router {
 		&mut self.nodes[id.0]
 	}
 
-	fn find(&self, parent: NodeId, key: u64) -> Option<NodeId> {
+	fn find_exact(&self, parent: NodeId, segment: &str) -> Option<NodeId> {
 		let node = self.node(parent);
 		node.children
 			.iter()
-			.find(|&id| {
-				let node_key = self.node(*id).key;
-				node_key == key || node_key == *WILDCARD_HASH || node_key == *WILDCARD_STOP_HASH
-			})
+			.take(node.children_count)
+			.find(|&id| self.node(*id).segment == segment)
 			.cloned()
 	}
 
-	fn add_empty_node(&mut self, parent: NodeId, key: u64) -> NodeId {
+	fn find_route_match(&self, parent: NodeId, segment: &str) -> Option<NodeId> {
+		self.find_exact(parent, segment)
+			.or_else(|| self.find_exact(parent, WILDCARD))
+			.or_else(|| self.find_exact(parent, WILDCARD_STOP))
+	}
+
+	fn add_empty_node(&mut self, parent: NodeId, segment: &str) -> Result<NodeId, RouterError> {
+		self.node(parent).ensure_child_capacity()?;
 		let id = NodeId(self.nodes.len());
-		self.nodes.push(Node::new(key, None));
-		self.node_mut(parent).add_child(id);
-		id
+		self.nodes.push(Node::new(segment, None));
+		self.node_mut(parent).add_child(id)?;
+		Ok(id)
 	}
 
 	pub fn add_route(
@@ -166,12 +178,13 @@ impl Router {
 		route: &'static str,
 		value: HandlerObj,
 	) -> Result<&mut Node, RouterError> {
-		let keys = generate_path(route);
+		let segments = generate_path(route)?;
 		let mut node_id = self.root();
-		for key in keys {
-			node_id = self
-				.find(node_id, key)
-				.unwrap_or_else(|| self.add_empty_node(node_id, key));
+		for segment in segments {
+			node_id = match self.find_exact(node_id, segment) {
+				Some(node_id) => node_id,
+				None => self.add_empty_node(node_id, segment)?,
+			};
 		}
 		match self.node(node_id).value() {
 			None => {
@@ -184,17 +197,17 @@ impl Router {
 	}
 
 	pub fn get(&self, path: &str) -> Result<impl Iterator<Item = HandlerObj>, RouterError> {
-		let keys = generate_path(path);
+		let segments = generate_path(path)?;
 		let mut handlers = vec![];
 		let mut node_id = self.root();
 		collect_node_middleware(&mut handlers, self.node(node_id));
-		for key in keys {
+		for segment in segments {
 			node_id = self
-				.find(node_id, key)
+				.find_route_match(node_id, segment)
 				.ok_or(RouterError::RouteNotFound(path.to_string()))?;
 			let node = self.node(node_id);
-			collect_node_middleware(&mut handlers, self.node(node_id));
-			if node.key == *WILDCARD_STOP_HASH {
+			collect_node_middleware(&mut handlers, node);
+			if node.segment == WILDCARD_STOP {
 				break;
 			}
 		}
@@ -206,18 +219,24 @@ impl Router {
 			Err(RouterError::NoValue(path.to_string()))
 		}
 	}
+
+	pub fn pre_body_response(&self, parts: &Parts) -> Option<ResponseFuture> {
+		let handlers = self.get(parts.uri.path()).ok()?;
+		for handler in handlers {
+			if let Some(response) = handler.pre_body_response(parts) {
+				return Some(response);
+			}
+		}
+		None
+	}
 }
 
-impl Service<Request<Body>> for Router {
-	type Response = Response<Body>;
+impl Service<Request<Bytes>> for Router {
+	type Response = Response<Full<Bytes>>;
 	type Error = RouterError;
 	type Future = ResponseFuture;
 
-	fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-		Poll::Ready(Ok(()))
-	}
-
-	fn call(&mut self, req: Request<Body>) -> Self::Future {
+	fn call(&self, req: Request<Bytes>) -> Self::Future {
 		match self.get(req.uri().path()) {
 			Err(_) => not_found(),
 			Ok(mut handlers) => match handlers.next() {
@@ -229,9 +248,9 @@ impl Service<Request<Body>> for Router {
 }
 
 impl Node {
-	fn new(key: u64, value: Option<HandlerObj>) -> Node {
+	fn new(segment: &str, value: Option<HandlerObj>) -> Node {
 		Node {
-			key,
+			segment: segment.to_string(),
 			value,
 			children: [NodeId(0); MAX_CHILDREN],
 			children_count: 0,
@@ -260,33 +279,34 @@ impl Node {
 		self.value = Some(value);
 	}
 
-	fn add_child(&mut self, child_id: NodeId) {
-		if self.children_count == MAX_CHILDREN {
-			panic!("Can't add a route, children limit exceeded");
+	fn ensure_child_capacity(&self) -> Result<(), RouterError> {
+		if self.children_count >= MAX_CHILDREN {
+			return Err(RouterError::Internal(
+				"Can't add a route, children limit exceeded".into(),
+			));
 		}
+		Ok(())
+	}
+
+	fn add_child(&mut self, child_id: NodeId) -> Result<(), RouterError> {
+		self.ensure_child_capacity()?;
 		self.children[self.children_count] = child_id;
 		self.children_count += 1;
+		Ok(())
 	}
 }
 
 pub fn not_found() -> ResponseFuture {
-	let mut response = Response::new(Body::empty());
+	let mut response = Response::new(Full::new(Bytes::new()));
 	*response.status_mut() = StatusCode::NOT_FOUND;
 	Box::pin(future::ok(response))
 }
 
-fn calculate_hash<T: Hash>(t: &T) -> u64 {
-	let mut s = DefaultHasher::new();
-	t.hash(&mut s);
-	s.finish()
-}
-
-fn generate_path(route: &str) -> Vec<u64> {
-	route
-		.split('/')
-		.skip(1)
-		.map(|path| calculate_hash(&path))
-		.collect()
+fn generate_path(route: &str) -> Result<Vec<&str>, RouterError> {
+	if !route.starts_with('/') {
+		return Err(RouterError::InvalidPath(route.to_string()));
+	}
+	Ok(route.split('/').skip(1).collect())
 }
 
 fn collect_node_middleware(handlers: &mut Vec<HandlerObj>, node: &Node) {
@@ -301,17 +321,17 @@ fn collect_node_middleware(handlers: &mut Vec<HandlerObj>, node: &Node) {
 mod tests {
 
 	use super::*;
-	use futures::executor::block_on;
+	use mwc_crates::futures::executor::block_on;
 
 	struct HandlerImpl(u16);
 
 	impl Handler for HandlerImpl {
-		fn get(&self, _req: Request<Body>) -> ResponseFuture {
+		fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
 			let code = self.0;
 			Box::pin(async move {
 				let res = Response::builder()
 					.status(code)
-					.body(Body::default())
+					.body(Full::new(Bytes::new()))
 					.unwrap();
 				Ok(res)
 			})
@@ -329,10 +349,50 @@ mod tests {
 		routes.add_route("/v1/users/xxx", h3.clone()).unwrap();
 		routes.add_route("/v1/users/xxx/yyy", h3.clone()).unwrap();
 		routes.add_route("/v1/zzz/*", h3.clone()).unwrap();
+		routes.add_route("/v1/zzz/ccc", h2.clone()).unwrap();
 		assert!(routes.add_route("/v1/zzz/ccc", h2.clone()).is_err());
 		routes
 			.add_route("/v1/zzz/*/zzz", Arc::new(HandlerImpl(6)))
 			.unwrap();
+	}
+
+	#[test]
+	fn test_rejected_child_limit_does_not_leak_node() {
+		let mut routes = Router::new();
+		let route_names = [
+			"/route0", "/route1", "/route2", "/route3", "/route4", "/route5", "/route6", "/route7",
+			"/route8", "/route9", "/route10", "/route11", "/route12", "/route13", "/route14",
+			"/route15",
+		];
+
+		assert_eq!(route_names.len(), MAX_CHILDREN);
+		for (i, route) in route_names.iter().enumerate() {
+			routes
+				.add_route(*route, Arc::new(HandlerImpl(i as u16)))
+				.unwrap();
+		}
+
+		let node_count = routes.nodes.len();
+		assert!(routes
+			.add_route("/too_many_routes", Arc::new(HandlerImpl(999)))
+			.is_err());
+		assert_eq!(routes.nodes.len(), node_count);
+	}
+
+	#[test]
+	fn test_rejects_relative_route_paths() {
+		let mut routes = Router::new();
+		let node_count = routes.nodes.len();
+
+		assert!(matches!(
+			routes.add_route("v1/users", Arc::new(HandlerImpl(201))),
+			Err(RouterError::InvalidPath(route)) if route == "v1/users"
+		));
+		assert!(matches!(
+			routes.add_route("v1", Arc::new(HandlerImpl(202))),
+			Err(RouterError::InvalidPath(route)) if route == "v1"
+		));
+		assert_eq!(routes.nodes.len(), node_count);
 	}
 
 	#[test]
@@ -361,7 +421,7 @@ mod tests {
 					.unwrap()
 					.next()
 					.unwrap()
-					.get(Request::new(Body::default()))
+					.get(Request::new(Bytes::new()))
 					.await
 					.unwrap();
 				resp.status().as_u16()
@@ -377,5 +437,52 @@ mod tests {
 		assert_eq!(call_handler("/v1/zzz/1"), 103);
 		assert_eq!(call_handler("/v1/zzz/2"), 103);
 		assert_eq!(call_handler("/v1/zzz/2/zzz"), 106);
+	}
+
+	#[test]
+	fn test_get_rejects_relative_paths() {
+		let mut routes = Router::new();
+		routes
+			.add_route("/v1/users", Arc::new(HandlerImpl(201)))
+			.unwrap();
+
+		assert!(matches!(
+			routes.get("v1/users"),
+			Err(RouterError::InvalidPath(path)) if path == "v1/users"
+		));
+		assert!(matches!(
+			routes.get("v1"),
+			Err(RouterError::InvalidPath(path)) if path == "v1"
+		));
+	}
+
+	#[test]
+	fn test_add_route_does_not_reuse_wildcard_node_for_exact_route() {
+		let mut routes = Router::new();
+		routes
+			.add_route("/a/*/b", Arc::new(HandlerImpl(201)))
+			.unwrap();
+		routes
+			.add_route("/a/c", Arc::new(HandlerImpl(202)))
+			.unwrap();
+
+		let call_handler = |url| {
+			let task = async {
+				let resp = routes
+					.get(url)
+					.unwrap()
+					.next()
+					.unwrap()
+					.get(Request::new(Bytes::new()))
+					.await
+					.unwrap();
+				resp.status().as_u16()
+			};
+			block_on(task)
+		};
+
+		assert_eq!(call_handler("/a/c"), 202);
+		assert!(routes.get("/a/d").is_err());
+		assert_eq!(call_handler("/a/d/b"), 201);
 	}
 }

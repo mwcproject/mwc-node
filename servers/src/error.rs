@@ -14,12 +14,12 @@
 // limitations under the License.
 
 //! Implementation specific error types
-use crate::util::secp;
-use crate::util::OnionV3AddressError;
+use mwc_crates::secp;
+use mwc_util::OnionV3Error;
 
 /// Error definition
 /// Wallet errors, mostly wrappers around underlying crypto or I/O errors.
-#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
 	/// Configuration Error
 	#[error("Config Error: {0}")]
@@ -39,11 +39,11 @@ pub enum Error {
 
 	/// Onion V3 Address Error
 	#[error("Onion V3 Address Error")]
-	OnionV3Address(OnionV3AddressError),
+	OnionV3Address(#[from] OnionV3Error),
 
 	/// Error when formatting json
 	#[error("IO error, {0}")]
-	IO(String),
+	IO(#[from] std::io::Error),
 
 	/// Secp Error
 	#[error("Secp error, {0}")]
@@ -57,23 +57,21 @@ pub enum Error {
 	#[error("Address is not an Onion v3 Address: {0}")]
 	NotOnion(String),
 
-	/// Generic Error
-	#[error("libp2p Error, {0}")]
-	LibP2P(String),
+	/// Data overflow error
+	#[error("Server data overflow error, {0}")]
+	DataOverflow(String),
 
 	/// Generic Error
 	#[error("Node server error, {0}")]
 	ServerError(String),
+
+	/// Hooks Error
+	#[error("Hooks error, {0}")]
+	HooksError(String),
 }
 
 impl From<secp::Error> for Error {
 	fn from(error: secp::Error) -> Error {
 		Error::Secp(error)
-	}
-}
-
-impl From<OnionV3AddressError> for Error {
-	fn from(error: OnionV3AddressError) -> Error {
-		Error::OnionV3Address(error)
 	}
 }

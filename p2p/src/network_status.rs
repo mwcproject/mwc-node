@@ -15,12 +15,10 @@
 // Network related status. We need to know when if was offline/back online so we could
 // start using Defunct peers faster
 
-use rand::prelude::SliceRandom;
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use mwc_crates::rand;
+use mwc_crates::rand::prelude::IndexedRandom;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
-use std::time::Duration;
 
 static NETWORK_OUTAGE_TIME: AtomicI64 = AtomicI64::new(0);
 
@@ -37,36 +35,39 @@ static PROBE_URLS_HTTP: OnceLock<Vec<String>> = OnceLock::new();
 /// Return the live probe list (filtered on first call, **blocking**).
 fn probe_urls_http() -> &'static Vec<String> {
 	PROBE_URLS_HTTP.get_or_init(|| {
-        let candidates = vec![
+		let candidates = vec![
 			"1.1.1.1",
 			"8.8.8.8",
 			"cloudflare.com",
 			"amazon.com",
 			"github.com",
-            "google.com",
-            "www.apple.com",
-        ];
+			"google.com",
+			"apple.com",
+		];
 
-        let mut live = Vec::with_capacity(candidates.len());
-        for url in &candidates {
-            if check_http_probe(url) {
-                live.push(url.to_string());
-            }
-        }
+		let mut live = Vec::with_capacity(candidates.len());
+		for url in &candidates {
+			// Probe is disable because of privacy issues.
+			//            if check_http_probe(url) {
+			live.push(url.to_string());
+			//          }
+		}
 
-        if live.is_empty() {
-            error!("Unable to build list of probe domains, all reported as offline. Do you have internet conneciton issues?");
+		/*        if live.is_empty() {
+			error!("Unable to build list of probe domains, all reported as offline. Do you have internet conneciton issues?");
 			for url in &candidates {
 				live.push(url.to_string());
 			}
-        }
+		}*/
 
-        live
-    })
+		live
+	})
 }
 
-/// Blocking TCP probe: open, send HEAD, expect HTTP/1.1 2xx.
-fn check_http_probe(host: &str) -> bool {
+// Note, TCP probe can't be used safely because it is leaking our real IP address.
+//  It is a privacy issue, this functionality not worth it
+// Blocking TCP probe: open, send HEAD, expect HTTP/1.1 2xx.
+/*fn check_http_probe(host: &str) -> bool {
 	let addr = match (host, 80).to_socket_addrs() {
 		Ok(mut addr) => match addr.next() {
 			Some(addr) => addr,
@@ -92,13 +93,13 @@ fn check_http_probe(host: &str) -> bool {
 		Ok(n) if n > 10 => buf[..n].starts_with(b"HTTP/1.1"),
 		_ => false,
 	}
-}
+}*/
 
 /// Pick a random **live** URL (after first-call filtering).
 pub fn get_random_http_probe_host(num: usize) -> Vec<String> {
 	let urls = probe_urls_http();
 	let mut res: Vec<String> = Vec::new();
-	for url in urls.choose_multiple(&mut rand::thread_rng(), num) {
+	for url in urls.sample(&mut rand::rng(), num) {
 		res.push(url.clone());
 	}
 	res

@@ -13,22 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mwc_chain as chain;
-use mwc_core as core;
-use mwc_p2p as p2p;
-use mwc_pool as pool;
-
-use mwc_util as util;
-
-#[macro_use]
-extern crate lazy_static;
-
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-#[macro_use]
-extern crate log;
-
 #[macro_use]
 mod web;
 pub mod auth;
@@ -50,7 +34,7 @@ pub use crate::auth::{
 };
 pub use crate::foreign::Foreign;
 pub use crate::foreign_rpc::ForeignRpc;
-pub use crate::handlers::{build_node_router, node_apis};
+pub use crate::handlers::{build_node_router, node_apis, NodeApiThreads};
 pub use crate::owner::Owner;
 pub use crate::owner_rpc::OwnerRpc;
 pub use crate::rest::*;

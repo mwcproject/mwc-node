@@ -31,22 +31,28 @@
 //! Modified from above to integrate into mwc and allow for different
 //! hashing algorithms if desired
 
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use std::convert::TryFrom;
 use std::default::Default;
 use std::fmt;
 use std::io::Cursor;
 use std::str::FromStr;
 
 use crate::mnemonic;
-use crate::util::secp::key::{PublicKey, SecretKey};
-use crate::util::secp::{self, ContextFlag, Secp256k1};
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use mwc_crates::byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use mwc_crates::secp;
+use mwc_crates::secp::key::{PublicKey, SecretKey};
+use mwc_crates::secp::Secp256k1;
 
-#[allow(deprecated)]
-use digest::generic_array::GenericArray;
-use digest::Digest;
-use hmac::{Hmac, Mac, NewMac};
-use ripemd160::Ripemd160;
-use sha2::{Sha256, Sha512};
+use mwc_crates::digest::Digest;
+use mwc_crates::hmac::{digest::KeyInit, Hmac, Mac};
+use mwc_crates::ripemd::Ripemd160;
+use mwc_crates::sha2::{Sha256, Sha512};
+use mwc_crates::zeroize::Zeroizing;
+use mwc_util::{
+	impl_array_newtype, impl_array_newtype_encodable, impl_array_newtype_show, impl_index_newtype,
+	secp_static,
+};
 
 use crate::base58;
 
@@ -56,7 +62,6 @@ type HmacSha512 = Hmac<Sha512>;
 /// A chain code
 pub struct ChainCode([u8; 32]);
 impl_array_newtype!(ChainCode, u8, 32);
-impl_array_newtype_show!(ChainCode);
 impl_array_newtype_encodable!(ChainCode, u8, 32);
 
 /// A fingerprint
@@ -64,6 +69,12 @@ pub struct Fingerprint([u8; 4]);
 impl_array_newtype!(Fingerprint, u8, 4);
 impl_array_newtype_show!(Fingerprint);
 impl_array_newtype_encodable!(Fingerprint, u8, 4);
+
+impl ::std::fmt::Debug for ChainCode {
+	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+		write!(f, "ChainCode(******)")
+	}
+}
 
 impl Default for Fingerprint {
 	fn default() -> Fingerprint {
@@ -82,17 +93,27 @@ pub trait BIP32Hasher {
 	fn network_pub(&self) -> [u8; 4];
 	fn master_seed() -> [u8; 12];
 	fn init_sha512(&mut self, seed: &[u8]) -> Result<(), Error>;
-	fn append_sha512(&mut self, value: &[u8]);
-	fn result_sha512(&mut self) -> [u8; 64];
+	fn append_sha512(&mut self, value: &[u8]) -> Result<(), Error>;
+	fn result_sha512(&mut self) -> Result<[u8; 64], Error>;
 	fn sha_256(&self, input: &[u8]) -> [u8; 32];
 	fn ripemd_160(&self, input: &[u8]) -> [u8; 20];
 }
 
 /// Implementation of the above that uses the standard BIP32 Hash algorithms
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BIP32MwcHasher {
 	is_floo: bool,
-	hmac_sha512: Hmac<Sha512>,
+	hmac_sha512: Option<Hmac<Sha512>>,
+}
+
+impl fmt::Debug for BIP32MwcHasher {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("BIP32MwcHasher")
+			.field("is_floo", &self.is_floo)
+			// Hash internal is hidden because it might reveal secrets
+			.field("hmac_sha512", &self.hmac_sha512.is_some())
+			.finish()
+	}
 }
 
 impl BIP32MwcHasher {
@@ -100,8 +121,7 @@ impl BIP32MwcHasher {
 	pub fn new(is_floo: bool) -> BIP32MwcHasher {
 		BIP32MwcHasher {
 			is_floo: is_floo,
-			#[allow(deprecated)]
-			hmac_sha512: HmacSha512::new(GenericArray::from_slice(&[0u8; 128])),
+			hmac_sha512: None,
 		}
 	}
 }
@@ -125,23 +145,34 @@ impl BIP32Hasher for BIP32MwcHasher {
 		b"IamVoldemort".to_owned()
 	}
 	fn init_sha512(&mut self, seed: &[u8]) -> Result<(), Error> {
-		self.hmac_sha512 = HmacSha512::new_from_slice(seed)
-			.map_err(|e| Error::Generic(format!("Unable init sha512 from seed, {}", e)))?;
+		self.hmac_sha512 = Some(
+			HmacSha512::new_from_slice(seed)
+				.map_err(|e| Error::Generic(format!("Unable init sha512 from seed, {}", e)))?,
+		);
 		Ok(())
 	}
-	fn append_sha512(&mut self, value: &[u8]) {
-		self.hmac_sha512.update(value);
+	fn append_sha512(&mut self, value: &[u8]) -> Result<(), Error> {
+		let hmac_sha512 = self
+			.hmac_sha512
+			.as_mut()
+			.ok_or_else(|| Error::Generic("sha512 is not initialized".into()))?;
+		hmac_sha512.update(value);
+		Ok(())
 	}
-	fn result_sha512(&mut self) -> [u8; 64] {
+	fn result_sha512(&mut self) -> Result<[u8; 64], Error> {
+		let hmac_sha512 = self
+			.hmac_sha512
+			.take()
+			.ok_or_else(|| Error::Generic("sha512 is not initialized".into()))?;
+		let mac_output = hmac_sha512.finalize();
 		let mut result = [0; 64];
-		result.copy_from_slice(&self.hmac_sha512.to_owned().finalize().into_bytes());
-		result
+		result.copy_from_slice(mac_output.as_bytes());
+		Ok(result)
 	}
 	fn sha_256(&self, input: &[u8]) -> [u8; 32] {
 		let mut sha2_res = [0; 32];
 		let mut sha2 = Sha256::new();
 		sha2.update(input);
-		#[allow(deprecated)]
 		sha2_res.copy_from_slice(sha2.finalize().as_slice());
 		sha2_res
 	}
@@ -149,7 +180,6 @@ impl BIP32Hasher for BIP32MwcHasher {
 		let mut ripemd_res = [0; 20];
 		let mut ripemd = Ripemd160::new();
 		ripemd.update(input);
-		#[allow(deprecated)]
 		ripemd_res.copy_from_slice(ripemd.finalize().as_slice());
 		ripemd_res
 	}
@@ -189,8 +219,10 @@ pub struct ExtendedPubKey {
 	pub chain_code: ChainCode,
 }
 
+const CHILD_NUMBER_LIMIT: u32 = 1u32 << 31;
+
 /// A child number for a derived key
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ChildNumber {
 	/// Non-hardened key
 	Normal {
@@ -204,33 +236,30 @@ pub enum ChildNumber {
 	},
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "serde")]
+enum ChildNumberSerde {
+	Normal { index: u32 },
+	Hardened { index: u32 },
+}
+
 impl ChildNumber {
 	/// Create a [`Normal`] from an index, panics if the index is not within
 	/// [0, 2^31 - 1].
 	///
 	/// [`Normal`]: #variant.Normal
-	pub fn from_normal_idx(index: u32) -> Self {
-		assert_eq!(
-			index & (1 << 31),
-			0,
-			"ChildNumber indices have to be within [0, 2^31 - 1], is: {}",
-			index
-		);
-		ChildNumber::Normal { index: index }
+	pub fn from_normal_idx(index: u32) -> Result<Self, Error> {
+		Self::validate_index_range(index)?;
+		Ok(ChildNumber::Normal { index: index })
 	}
 
 	/// Create a [`Hardened`] from an index, panics if the index is not within
 	/// [0, 2^31 - 1].
 	///
 	/// [`Hardened`]: #variant.Hardened
-	pub fn from_hardened_idx(index: u32) -> Self {
-		assert_eq!(
-			index & (1 << 31),
-			0,
-			"ChildNumber indices have to be within [0, 2^31 - 1], is: {}",
-			index
-		);
-		ChildNumber::Hardened { index: index }
+	pub fn from_hardened_idx(index: u32) -> Result<Self, Error> {
+		Self::validate_index_range(index)?;
+		Ok(ChildNumber::Hardened { index: index })
 	}
 
 	/// Returns `true` if the child number is a [`Normal`] value.
@@ -249,9 +278,54 @@ impl ChildNumber {
 			ChildNumber::Normal { .. } => false,
 		}
 	}
+
+	pub(crate) fn validate_index_range(index: u32) -> Result<(), Error> {
+		if index >= CHILD_NUMBER_LIMIT {
+			Err(Error::ChildNumberOutOfRange)
+		} else {
+			Ok(())
+		}
+	}
+}
+
+impl Serialize for ChildNumber {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: serde::Serializer,
+	{
+		let value = match *self {
+			ChildNumber::Normal { index } => {
+				Self::validate_index_range(index).map_err(serde::ser::Error::custom)?;
+				ChildNumberSerde::Normal { index }
+			}
+			ChildNumber::Hardened { index } => {
+				Self::validate_index_range(index).map_err(serde::ser::Error::custom)?;
+				ChildNumberSerde::Hardened { index }
+			}
+		};
+
+		value.serialize(serializer)
+	}
+}
+
+impl<'de> Deserialize<'de> for ChildNumber {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		match ChildNumberSerde::deserialize(deserializer)? {
+			ChildNumberSerde::Normal { index } => {
+				ChildNumber::from_normal_idx(index).map_err(serde::de::Error::custom)
+			}
+			ChildNumberSerde::Hardened { index } => {
+				ChildNumber::from_hardened_idx(index).map_err(serde::de::Error::custom)
+			}
+		}
+	}
 }
 
 impl From<u32> for ChildNumber {
+	// Leading 1 bit define the type.
 	fn from(number: u32) -> Self {
 		if number & (1 << 31) != 0 {
 			ChildNumber::Hardened {
@@ -263,11 +337,20 @@ impl From<u32> for ChildNumber {
 	}
 }
 
-impl From<ChildNumber> for u32 {
-	fn from(cnum: ChildNumber) -> Self {
+impl TryFrom<ChildNumber> for u32 {
+	type Error = Error;
+
+	fn try_from(cnum: ChildNumber) -> Result<Self, Error> {
+		// Leading 1 bit define the type.
 		match cnum {
-			ChildNumber::Normal { index } => index,
-			ChildNumber::Hardened { index } => index | (1 << 31),
+			ChildNumber::Normal { index } => {
+				ChildNumber::validate_index_range(index)?;
+				Ok(index)
+			}
+			ChildNumber::Hardened { index } => {
+				ChildNumber::validate_index_range(index)?;
+				Ok(index | (1u32 << 31))
+			}
 		}
 	}
 }
@@ -283,6 +366,7 @@ impl fmt::Display for ChildNumber {
 
 /// A BIP32 error
 #[derive(thiserror::Error, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub enum Error {
 	/// A pk->pk derivation was attempted on a hardened key
 	#[error("cannot derive hardened key from public key")]
@@ -299,6 +383,15 @@ pub enum Error {
 	/// Generic internal error
 	#[error("{0}")]
 	Generic(String),
+	/// Data overflow error
+	#[error("BIP32 data overflow error, {0}")]
+	DataOverflow(String),
+	/// Out of range child number value
+	#[error("Child number out of range")]
+	ChildNumberOutOfRange,
+	/// Seed is too short
+	#[error("Seed length is out of range: {0}")]
+	SeedLengthOutOfRange(usize),
 }
 
 impl From<secp::Error> for Error {
@@ -317,17 +410,23 @@ impl ExtendedPrivKey {
 	where
 		H: BIP32Hasher,
 	{
+		if seed.len() < 16 || seed.len() > 64 {
+			return Err(Error::SeedLengthOutOfRange(seed.len()));
+		}
+
 		hasher.init_sha512(&H::master_seed())?;
-		hasher.append_sha512(seed);
-		let result = hasher.result_sha512();
+		hasher.append_sha512(seed)?;
+		let result = Zeroizing::new(hasher.result_sha512()?);
 
 		Ok(ExtendedPrivKey {
 			network: hasher.network_priv(),
 			depth: 0,
 			parent_fingerprint: Default::default(),
-			child_number: ChildNumber::from_normal_idx(0),
+			child_number: ChildNumber::from_normal_idx(0)?,
 			secret_key: SecretKey::from_slice(secp, &result[..32]).map_err(Error::Ecdsa)?,
-			chain_code: ChainCode::from(&result[32..]),
+			chain_code: ChainCode::try_from(&result[32..]).map_err(|e| {
+				Error::Generic(format!("Unable to build ChainCode from sha512, {}", e))
+			})?,
 		})
 	}
 
@@ -340,8 +439,24 @@ impl ExtendedPrivKey {
 	) -> Result<ExtendedPrivKey, Error> {
 		let seed = mnemonic::to_seed(mnemonic, passphrase).map_err(Error::MnemonicError)?;
 		let mut hasher = BIP32MwcHasher::new(is_floo);
-		let key = ExtendedPrivKey::new_master(secp, &mut hasher, &seed)?;
+		let key = ExtendedPrivKey::new_master(secp, &mut hasher, seed.as_ref())?;
 		Ok(key)
+	}
+
+	/// Serialize as a Base58Check-encoded extended private key.
+	pub fn to_base58(&self) -> Result<String, Error> {
+		let child_number = u32::try_from(self.child_number)?;
+		let mut ret = [0; 78];
+		ret[0..4].copy_from_slice(&self.network[0..4]);
+		ret[4] = self.depth;
+		ret[5..9].copy_from_slice(&self.parent_fingerprint[..]);
+		BigEndian::write_u32(&mut ret[9..13], child_number);
+		ret[13..45].copy_from_slice(&self.chain_code[..]);
+		ret[45] = 0;
+		ret[46..78].copy_from_slice(&self.secret_key[..]);
+		let res_str = base58::check_encode_slice(&ret[..])
+			.map_err(|e| Error::Generic(format!("base58 encoding error, {}", e)))?;
+		Ok(res_str)
 	}
 
 	/// Attempts to derive an extended private key from a path.
@@ -371,61 +486,74 @@ impl ExtendedPrivKey {
 	where
 		H: BIP32Hasher,
 	{
+		let child_index = u32::try_from(i)?;
 		hasher.init_sha512(&self.chain_code[..])?;
 		let mut be_n = [0; 4];
 		match i {
 			ChildNumber::Normal { .. } => {
 				// Non-hardened key: compute public data and use that
 				hasher.append_sha512(
-					&PublicKey::from_secret_key(secp, &self.secret_key)?.serialize_vec(secp, true)
-						[..],
-				);
+					&PublicKey::from_secret_key(secp, &self.secret_key)?
+						.serialize_vec(secp, true)?[..],
+				)?;
 			}
 			ChildNumber::Hardened { .. } => {
 				// Hardened key: use only secret data to prevent public derivation
-				hasher.append_sha512(&[0u8]);
-				hasher.append_sha512(&self.secret_key[..]);
+				hasher.append_sha512(&[0u8])?;
+				hasher.append_sha512(&self.secret_key[..])?;
 			}
 		}
-		BigEndian::write_u32(&mut be_n, u32::from(i));
+		BigEndian::write_u32(&mut be_n, child_index);
 
-		hasher.append_sha512(&be_n);
-		let result = hasher.result_sha512();
+		hasher.append_sha512(&be_n)?;
+		let result = Zeroizing::new(hasher.result_sha512()?);
 		let mut sk = SecretKey::from_slice(secp, &result[..32]).map_err(Error::Ecdsa)?;
 		sk.add_assign(secp, &self.secret_key)
 			.map_err(Error::Ecdsa)?;
 
+		let depth = self.depth.checked_add(1).ok_or_else(|| {
+			Error::DataOverflow(format!("ExtendedPrivKey::ckd_priv, depth={}", self.depth))
+		})?;
+
 		Ok(ExtendedPrivKey {
 			network: self.network,
-			depth: self.depth + 1,
-			parent_fingerprint: self.fingerprint(hasher)?,
+			depth,
+			parent_fingerprint: self.fingerprint(secp, hasher)?,
 			child_number: i,
 			secret_key: sk,
-			chain_code: ChainCode::from(&result[32..]),
+			chain_code: ChainCode::try_from(&result[32..]).map_err(|e| {
+				Error::Generic(format!("Unable to build ChainCode from sha512, {}", e))
+			})?,
 		})
 	}
 
 	/// Returns the HASH160 of the chaincode
-	pub fn identifier<H>(&self, hasher: &mut H) -> Result<[u8; 20], Error>
+	pub fn identifier<H>(&self, secp: &Secp256k1, hasher: &mut H) -> Result<[u8; 20], Error>
 	where
 		H: BIP32Hasher,
 	{
-		let secp = Secp256k1::with_caps(ContextFlag::SignOnly);
 		// Compute extended public key
 		let pk: ExtendedPubKey = ExtendedPubKey::from_private::<H>(&secp, self, hasher)?;
 		// Do SHA256 of just the ECDSA pubkey
-		let sha2_res = hasher.sha_256(&pk.public_key.serialize_vec(&secp, true)[..]);
+		let sha2_res = hasher.sha_256(&pk.public_key.serialize_vec(&secp, true)?[..]);
 		// do RIPEMD160
 		let res = hasher.ripemd_160(&sha2_res);
 		Ok(res)
 	}
 
 	/// Returns the first four bytes of the identifier
-	pub fn fingerprint<H>(&self, hasher: &mut H) -> Result<Fingerprint, Error>
+	pub fn fingerprint<H>(&self, secp: &Secp256k1, hasher: &mut H) -> Result<Fingerprint, Error>
 	where
 		H: BIP32Hasher,
 	{
-		Ok(Fingerprint::from(&self.identifier(hasher)?[0..4]))
+		Ok(
+			Fingerprint::try_from(&self.identifier(secp, hasher)?[0..4]).map_err(|e| {
+				Error::Generic(format!(
+					"Unable to build Fingerprint from identifier, {}",
+					e
+				))
+			})?,
+		)
 	}
 }
 
@@ -434,13 +562,18 @@ impl ExtendedPubKey {
 	pub fn from_private<H>(
 		secp: &Secp256k1,
 		sk: &ExtendedPrivKey,
-		hasher: &mut H,
+		hasher: &H,
 	) -> Result<ExtendedPubKey, Error>
 	where
 		H: BIP32Hasher,
 	{
-		let public_key = PublicKey::from_secret_key(secp, &sk.secret_key)
-			.map_err(|e| Error::Generic(format!("Unable to build public key, {}", e)))?;
+		let public_key = PublicKey::from_secret_key(secp, &sk.secret_key)?;
+
+		if sk.network != hasher.network_priv() {
+			return Err(Error::Generic(
+				"extended private key network does not match hasher".into(),
+			));
+		}
 
 		Ok(ExtendedPubKey {
 			network: hasher.network_pub(),
@@ -450,6 +583,25 @@ impl ExtendedPubKey {
 			public_key,
 			chain_code: sk.chain_code,
 		})
+	}
+
+	/// Serialize as a Base58Check-encoded extended public key.
+	pub fn to_base58(&self) -> Result<String, Error> {
+		let child_number = u32::try_from(self.child_number)?;
+		let mut ret = [0; 78];
+		ret[0..4].copy_from_slice(&self.network[0..4]);
+		ret[4] = self.depth;
+		ret[5..9].copy_from_slice(&self.parent_fingerprint[..]);
+		BigEndian::write_u32(&mut ret[9..13], child_number);
+		ret[13..45].copy_from_slice(&self.chain_code[..]);
+		let pk = secp_static::with_none(
+			|e| Error::Generic(format!("Unable create secp instance, {}", e)),
+			|secp| Ok(self.public_key.serialize_vec(secp, true)?),
+		)?;
+		ret[45..78].copy_from_slice(&pk[..]);
+		let res_str = base58::check_encode_slice(&ret[..])
+			.map_err(|e| Error::Generic(format!("base58 encoding error, {}", e)))?;
+		Ok(res_str)
 	}
 
 	/// Attempts to derive an extended public key from a path.
@@ -462,6 +614,12 @@ impl ExtendedPubKey {
 	where
 		H: BIP32Hasher,
 	{
+		if self.network != hasher.network_pub() {
+			return Err(Error::Generic(
+				"Hasher network doesn't match ExtendedPubKey network".into(),
+			));
+		}
+
 		let mut pk: ExtendedPubKey = *self;
 		for cnum in cnums {
 			pk = pk.ckd_pub(secp, hasher, *cnum)?
@@ -482,16 +640,19 @@ impl ExtendedPubKey {
 		match i {
 			ChildNumber::Hardened { .. } => Err(Error::CannotDeriveFromHardenedKey),
 			ChildNumber::Normal { index: n } => {
+				ChildNumber::validate_index_range(n)?;
 				hasher.init_sha512(&self.chain_code[..])?;
-				hasher.append_sha512(&self.public_key.serialize_vec(secp, true)[..]);
+				hasher.append_sha512(&self.public_key.serialize_vec(secp, true)?[..])?;
 				let mut be_n = [0; 4];
 				BigEndian::write_u32(&mut be_n, n);
-				hasher.append_sha512(&be_n);
+				hasher.append_sha512(&be_n)?;
 
-				let result = hasher.result_sha512();
+				let result = hasher.result_sha512()?;
 
 				let secret_key = SecretKey::from_slice(secp, &result[..32])?;
-				let chain_code = ChainCode::from(&result[32..]);
+				let chain_code = ChainCode::try_from(&result[32..]).map_err(|e| {
+					Error::Generic(format!("Unable to build ChainCode from sha512, {}", e))
+				})?;
 				Ok((secret_key, chain_code))
 			}
 		}
@@ -511,10 +672,14 @@ impl ExtendedPubKey {
 		let mut pk = self.public_key;
 		pk.add_exp_assign(secp, &sk).map_err(Error::Ecdsa)?;
 
+		let depth = self.depth.checked_add(1).ok_or_else(|| {
+			Error::DataOverflow(format!("ExtendedPubKey::ckd_pub, depth={}", self.depth))
+		})?;
+
 		Ok(ExtendedPubKey {
 			network: self.network,
-			depth: self.depth + 1,
-			parent_fingerprint: self.fingerprint(secp, hasher),
+			depth,
+			parent_fingerprint: self.fingerprint(secp, hasher)?,
 			child_number: i,
 			public_key: pk,
 			chain_code: chain_code,
@@ -522,190 +687,170 @@ impl ExtendedPubKey {
 	}
 
 	/// Returns the HASH160 of the chaincode
-	pub fn identifier<H>(&self, secp: &Secp256k1, hasher: &mut H) -> [u8; 20]
+	pub fn identifier<H>(&self, secp: &Secp256k1, hasher: &mut H) -> Result<[u8; 20], Error>
 	where
 		H: BIP32Hasher,
 	{
 		// Do SHA256 of just the ECDSA pubkey
-		let sha2_res = hasher.sha_256(&self.public_key.serialize_vec(secp, true)[..]);
+		let sha2_res = hasher.sha_256(&self.public_key.serialize_vec(secp, true)?[..]);
 		// do RIPEMD160
-		hasher.ripemd_160(&sha2_res)
+		Ok(hasher.ripemd_160(&sha2_res))
 	}
 
 	/// Returns the first four bytes of the identifier
-	pub fn fingerprint<H>(&self, secp: &Secp256k1, hasher: &mut H) -> Fingerprint
+	pub fn fingerprint<H>(&self, secp: &Secp256k1, hasher: &mut H) -> Result<Fingerprint, Error>
 	where
 		H: BIP32Hasher,
 	{
-		Fingerprint::from(&self.identifier(secp, hasher)[0..4])
+		Ok(
+			Fingerprint::try_from(&self.identifier(secp, hasher)?[0..4]).map_err(|e| {
+				Error::Generic(format!(
+					"Unable to build Fingerprint from identifier, {}",
+					e
+				))
+			})?,
+		)
 	}
 }
 
-impl fmt::Display for ExtendedPrivKey {
-	fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let mut ret = [0; 78];
-		ret[0..4].copy_from_slice(&self.network[0..4]);
-		ret[4] = self.depth as u8;
-		ret[5..9].copy_from_slice(&self.parent_fingerprint[..]);
-
-		BigEndian::write_u32(&mut ret[9..13], u32::from(self.child_number));
-
-		ret[13..45].copy_from_slice(&self.chain_code[..]);
-		ret[45] = 0;
-		ret[46..78].copy_from_slice(&self.secret_key[..]);
-		fmt.write_str(&base58::check_encode_slice(&ret[..]))
+fn validate_master_key_metadata(
+	depth: u8,
+	parent_fingerprint: &[u8],
+	child_number: u32,
+) -> Result<(), base58::Error> {
+	if depth == 0 && (child_number != 0 || parent_fingerprint.iter().any(|byte| *byte != 0)) {
+		return Err(base58::Error::InvalidData(
+			"BIP32 master key must have zero parent fingerprint and child number".into(),
+		));
 	}
+	Ok(())
 }
 
 impl FromStr for ExtendedPrivKey {
 	type Err = base58::Error;
 
 	fn from_str(inp: &str) -> Result<ExtendedPrivKey, base58::Error> {
-		let s = Secp256k1::without_caps();
+		if inp.len() > 78 * 2 {
+			return Err(base58::Error::InvalidLength(inp.len()));
+		}
+
 		let data = base58::from_check(inp)?;
 
 		if data.len() != 78 {
 			return Err(base58::Error::InvalidLength(data.len()));
 		}
 
+		if data[45] != 0 {
+			return Err(base58::Error::InvalidData(
+				"ExtendedPrivKey invalid byte 45 value".into(),
+			));
+		}
+
 		let cn_int: u32 = Cursor::new(&data[9..13])
 			.read_u32::<BigEndian>()
 			.map_err(|e| base58::Error::Other(format!("u32 read error, {}", e)))?;
+		validate_master_key_metadata(data[4], &data[5..9], cn_int)?;
 		let child_number: ChildNumber = ChildNumber::from(cn_int);
 
 		let mut network = [0; 4];
 		network.copy_from_slice(&data[0..4]);
+		if !is_allowed_priv_network(&network) {
+			return Err(base58::Error::InvalidVersion(network.to_vec()));
+		}
 
 		Ok(ExtendedPrivKey {
 			network: network,
 			depth: data[4],
-			parent_fingerprint: Fingerprint::from(&data[5..9]),
+			parent_fingerprint: Fingerprint::try_from(&data[5..9]).map_err(|e| {
+				base58::Error::Other(format!(
+					"Unable to build Fingerprint from identifier, {}",
+					e
+				))
+			})?,
 			child_number: child_number,
-			chain_code: ChainCode::from(&data[13..45]),
-			secret_key: SecretKey::from_slice(&s, &data[46..78])
-				.map_err(|e| base58::Error::Other(format!("Unable to read priv key, {}", e)))?,
+			chain_code: ChainCode::try_from(&data[13..45]).map_err(|e| {
+				base58::Error::Other(format!("Unable to build ChainCode from sha512, {}", e))
+			})?,
+			secret_key: secp_static::with_none(
+				|e| base58::Error::Other(format!("Unable create secp instance, {}", e)),
+				|secp| {
+					SecretKey::from_slice(secp, &data[46..78]).map_err(|e| {
+						base58::Error::Other(format!("Unable to read priv key, {}", e))
+					})
+				},
+			)?,
 		})
 	}
 }
 
-impl fmt::Display for ExtendedPubKey {
-	fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let secp = Secp256k1::without_caps();
-		let mut ret = [0; 78];
-		ret[0..4].copy_from_slice(&self.network[0..4]);
-		ret[4] = self.depth as u8;
-		ret[5..9].copy_from_slice(&self.parent_fingerprint[..]);
+fn is_allowed_priv_network(network: &[u8; 4]) -> bool {
+	*network == BIP32MwcHasher::new(false).network_priv()
+		|| *network == BIP32MwcHasher::new(true).network_priv()
+}
 
-		BigEndian::write_u32(&mut ret[9..13], u32::from(self.child_number));
-
-		ret[13..45].copy_from_slice(&self.chain_code[..]);
-		ret[45..78].copy_from_slice(&self.public_key.serialize_vec(&secp, true)[..]);
-		fmt.write_str(&base58::check_encode_slice(&ret[..]))
-	}
+fn is_allowed_pub_network(network: &[u8; 4]) -> bool {
+	*network == BIP32MwcHasher::new(false).network_pub()
+		|| *network == BIP32MwcHasher::new(true).network_pub()
 }
 
 impl FromStr for ExtendedPubKey {
 	type Err = base58::Error;
 
 	fn from_str(inp: &str) -> Result<ExtendedPubKey, base58::Error> {
-		let s = Secp256k1::without_caps();
+		if inp.len() > 78 * 2 {
+			return Err(base58::Error::InvalidLength(inp.len()));
+		}
+
 		let data = base58::from_check(inp)?;
 
 		if data.len() != 78 {
 			return Err(base58::Error::InvalidLength(data.len()));
 		}
 
+		let mut network = [0; 4];
+		network.copy_from_slice(&data[0..4]);
+		if !is_allowed_pub_network(&network) {
+			return Err(base58::Error::InvalidVersion(network.to_vec()));
+		}
+
 		let cn_int: u32 = Cursor::new(&data[9..13])
 			.read_u32::<BigEndian>()
 			.map_err(|e| base58::Error::Other(format!("u32 read error, {}", e)))?;
+		validate_master_key_metadata(data[4], &data[5..9], cn_int)?;
 		let child_number: ChildNumber = ChildNumber::from(cn_int);
-
-		let mut network = [0; 4];
-		network.copy_from_slice(&data[0..4]);
 
 		Ok(ExtendedPubKey {
 			network: network,
 			depth: data[4],
-			parent_fingerprint: Fingerprint::from(&data[5..9]),
+			parent_fingerprint: Fingerprint::try_from(&data[5..9]).map_err(|e| {
+				base58::Error::Other(format!(
+					"Unable to build Fingerprint from identifier, {}",
+					e
+				))
+			})?,
 			child_number: child_number,
-			chain_code: ChainCode::from(&data[13..45]),
-			public_key: PublicKey::from_slice(&s, &data[45..78])
-				.map_err(|e| base58::Error::Other(format!("Unable to read pub key, {}", e)))?,
+			chain_code: ChainCode::try_from(&data[13..45]).map_err(|e| {
+				base58::Error::Other(format!("Unable to build ChainCode from sha512, {}", e))
+			})?,
+			public_key: secp_static::with_none(
+				|e| base58::Error::Other(format!("Unable create secp instance, {}", e)),
+				|secp| {
+					PublicKey::from_slice(secp, &data[45..78])
+						.map_err(|e| base58::Error::Other(format!("Unable to read pub key, {}", e)))
+				},
+			)?,
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
-
 	use std::str::FromStr;
-	use std::string::ToString;
 
-	use crate::util::from_hex;
-	use crate::util::secp::Secp256k1;
+	use mwc_crates::secp::Secp256k1;
+	use mwc_util::from_hex;
 
 	use super::*;
-
-	use digest::generic_array::GenericArray;
-	use digest::Digest;
-	use hmac::{Hmac, Mac};
-	use ripemd160::Ripemd160;
-	use sha2::{Sha256, Sha512};
-
-	/// Implementation of the above that uses the standard BIP32 Hash algorithms
-	pub struct BIP32ReferenceHasher {
-		hmac_sha512: Hmac<Sha512>,
-	}
-
-	impl BIP32ReferenceHasher {
-		/// New empty hasher
-		pub fn new() -> BIP32ReferenceHasher {
-			BIP32ReferenceHasher {
-				hmac_sha512: HmacSha512::new(GenericArray::from_slice(&[0u8; 128])),
-			}
-		}
-	}
-
-	impl BIP32Hasher for BIP32ReferenceHasher {
-		fn network_priv(&self) -> [u8; 4] {
-			// bitcoin network (xprv) (for test vectors)
-			[0x04, 0x88, 0xAD, 0xE4]
-		}
-		fn network_pub(&self) -> [u8; 4] {
-			// bitcoin network (xpub) (for test vectors)
-			[0x04, 0x88, 0xB2, 0x1E]
-		}
-		fn master_seed() -> [u8; 12] {
-			b"Bitcoin seed".to_owned()
-		}
-		fn init_sha512(&mut self, seed: &[u8]) -> Result<(), Error> {
-			self.hmac_sha512 = HmacSha512::new_from_slice(seed)
-				.map_err(|e| Error::Generic(format!("Unable init sha512 from seed, {}", e)))?;
-			Ok(())
-		}
-		fn append_sha512(&mut self, value: &[u8]) {
-			self.hmac_sha512.update(value);
-		}
-		fn result_sha512(&mut self) -> [u8; 64] {
-			let mut result = [0; 64];
-			result.copy_from_slice(&self.hmac_sha512.to_owned().finalize().into_bytes());
-			result
-		}
-		fn sha_256(&self, input: &[u8]) -> [u8; 32] {
-			let mut sha2_res = [0; 32];
-			let mut sha2 = Sha256::new();
-			sha2.update(input);
-			sha2_res.copy_from_slice(sha2.finalize().as_slice());
-			sha2_res
-		}
-		fn ripemd_160(&self, input: &[u8]) -> [u8; 20] {
-			let mut ripemd_res = [0; 20];
-			let mut ripemd = Ripemd160::new();
-			ripemd.update(input);
-			ripemd_res.copy_from_slice(ripemd.finalize().as_slice());
-			ripemd_res
-		}
-	}
 
 	fn test_path(
 		secp: &Secp256k1,
@@ -714,27 +859,32 @@ mod tests {
 		expected_sk: &str,
 		expected_pk: &str,
 	) {
-		let mut h = BIP32ReferenceHasher::new();
+		let mut h = BIP32MwcHasher::new(false);
 		let mut sk = ExtendedPrivKey::new_master(secp, &mut h, seed).unwrap();
-		let mut pk =
-			ExtendedPubKey::from_private::<BIP32ReferenceHasher>(secp, &sk, &mut h).unwrap();
+		let mut pk = ExtendedPubKey::from_private::<BIP32MwcHasher>(secp, &sk, &mut h).unwrap();
 
 		// Check derivation convenience method for ExtendedPrivKey
 		assert_eq!(
-			&sk.derive_priv(secp, &mut h, path).unwrap().to_string()[..],
+			&sk.derive_priv(secp, &mut h, path)
+				.unwrap()
+				.to_base58()
+				.unwrap()[..],
 			expected_sk
 		);
 
 		// Check derivation convenience method for ExtendedPubKey, should error
 		// appropriately if any ChildNumber is hardened
 		if path.iter().any(|cnum| cnum.is_hardened()) {
-			assert_eq!(
+			assert!(matches!(
 				pk.derive_pub(secp, &mut h, path),
 				Err(Error::CannotDeriveFromHardenedKey)
-			);
+			));
 		} else {
 			assert_eq!(
-				&pk.derive_pub(secp, &mut h, path).unwrap().to_string()[..],
+				&pk.derive_pub(secp, &mut h, path)
+					.unwrap()
+					.to_base58()
+					.unwrap()[..],
 				expected_pk
 			);
 		}
@@ -745,116 +895,197 @@ mod tests {
 			match num {
 				ChildNumber::Normal { .. } => {
 					let pk2 = pk.ckd_pub(secp, &mut h, num).unwrap();
-					pk = ExtendedPubKey::from_private::<BIP32ReferenceHasher>(secp, &sk, &mut h)
-						.unwrap();
+					pk = ExtendedPubKey::from_private::<BIP32MwcHasher>(secp, &sk, &mut h).unwrap();
 					assert_eq!(pk, pk2);
 				}
 				ChildNumber::Hardened { .. } => {
-					assert_eq!(
+					assert!(matches!(
 						pk.ckd_pub(secp, &mut h, num),
 						Err(Error::CannotDeriveFromHardenedKey)
-					);
-					pk = ExtendedPubKey::from_private::<BIP32ReferenceHasher>(secp, &sk, &mut h)
-						.unwrap();
+					));
+					pk = ExtendedPubKey::from_private::<BIP32MwcHasher>(secp, &sk, &mut h).unwrap();
 				}
 			}
 		}
 
 		// Check result against expected base58
-		assert_eq!(&sk.to_string()[..], expected_sk);
-		assert_eq!(&pk.to_string()[..], expected_pk);
+		assert_eq!(&sk.to_base58().unwrap()[..], expected_sk);
+		assert_eq!(&pk.to_base58().unwrap()[..], expected_pk);
 		// Check decoded base58 against result
 		let decoded_sk = ExtendedPrivKey::from_str(expected_sk);
+		assert_eq!(sk, decoded_sk.unwrap());
 		let decoded_pk = ExtendedPubKey::from_str(expected_pk);
-		assert_eq!(Ok(sk), decoded_sk);
-		assert_eq!(Ok(pk), decoded_pk);
+		assert_eq!(pk, decoded_pk.unwrap());
+	}
+
+	#[test]
+	fn mwc_extended_public_key_from_str_rejects_non_public_versions() {
+		let secp = Secp256k1::new().unwrap();
+		let seed = from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
+		let mut h = BIP32MwcHasher::new(false);
+		let sk = ExtendedPrivKey::new_master(&secp, &mut h, &seed).unwrap();
+		let pk = ExtendedPubKey::from_private::<BIP32MwcHasher>(&secp, &sk, &mut h).unwrap();
+
+		let encoded_public = pk.to_base58().unwrap();
+		assert_eq!(ExtendedPubKey::from_str(&encoded_public).unwrap(), pk);
+
+		let mut private_version_pk = pk;
+		private_version_pk.network = h.network_priv();
+		let encoded_private_version = private_version_pk.to_base58().unwrap();
+		assert!(matches!(
+			ExtendedPubKey::from_str(&encoded_private_version),
+			Err(base58::Error::InvalidVersion(_))
+		));
+
+		let mut unknown_version_pk = pk;
+		unknown_version_pk.network = [0, 1, 2, 3];
+		let encoded_unknown_version = unknown_version_pk.to_base58().unwrap();
+		assert!(matches!(
+			ExtendedPubKey::from_str(&encoded_unknown_version),
+			Err(base58::Error::InvalidVersion(_))
+		));
+	}
+
+	#[test]
+	fn extended_key_from_str_rejects_malformed_master_metadata() {
+		let secp = Secp256k1::new().unwrap();
+		let seed = from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
+		let mut h = BIP32MwcHasher::new(false);
+		let sk = ExtendedPrivKey::new_master(&secp, &mut h, &seed).unwrap();
+		let pk = ExtendedPubKey::from_private::<BIP32MwcHasher>(&secp, &sk, &mut h).unwrap();
+
+		let mut sk_with_parent = sk.clone();
+		sk_with_parent.depth = 0;
+		sk_with_parent.parent_fingerprint = Fingerprint::try_from(&[1, 0, 0, 0][..]).unwrap();
+		assert!(matches!(
+			ExtendedPrivKey::from_str(&sk_with_parent.to_base58().unwrap()),
+			Err(base58::Error::InvalidData(_))
+		));
+
+		let mut sk_with_child = sk.clone();
+		sk_with_child.depth = 0;
+		sk_with_child.child_number = ChildNumber::from_normal_idx(1).unwrap();
+		assert!(matches!(
+			ExtendedPrivKey::from_str(&sk_with_child.to_base58().unwrap()),
+			Err(base58::Error::InvalidData(_))
+		));
+
+		let mut pk_with_parent = pk;
+		pk_with_parent.depth = 0;
+		pk_with_parent.parent_fingerprint = Fingerprint::try_from(&[1, 0, 0, 0][..]).unwrap();
+		assert!(matches!(
+			ExtendedPubKey::from_str(&pk_with_parent.to_base58().unwrap()),
+			Err(base58::Error::InvalidData(_))
+		));
+
+		let mut pk_with_child = pk;
+		pk_with_child.depth = 0;
+		pk_with_child.child_number = ChildNumber::from_normal_idx(1).unwrap();
+		assert!(matches!(
+			ExtendedPubKey::from_str(&pk_with_child.to_base58().unwrap()),
+			Err(base58::Error::InvalidData(_))
+		));
+	}
+
+	#[test]
+	fn test_base58_rejects_invalid_child_number() {
+		let secp = Secp256k1::new().unwrap();
+		let seed = from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
+		let mut h = BIP32MwcHasher::new(false);
+		let mut sk = ExtendedPrivKey::new_master(&secp, &mut h, &seed).unwrap();
+		sk.child_number = ChildNumber::Normal { index: 1 << 31 };
+		assert!(matches!(sk.to_base58(), Err(Error::ChildNumberOutOfRange)));
+
+		let mut pk = ExtendedPubKey::from_private::<BIP32MwcHasher>(&secp, &sk, &mut h).unwrap();
+		pk.child_number = ChildNumber::Normal { index: 1 << 31 };
+		assert!(matches!(pk.to_base58(), Err(Error::ChildNumberOutOfRange)));
 	}
 
 	#[test]
 	fn test_vector_1() {
-		let secp = Secp256k1::new();
+		let secp = Secp256k1::new().unwrap();
 		let seed = from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
 
 		// m
 		test_path(&secp, &seed, &[],
-                  "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
-                  "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8");
+                  "gprv4fhnhBfcc9MdRrRZ2pABw1W1yBgMGvGCnQEXgei2GATSc7TYSgCmswycD87uLXfo6VDtZC1koyk33RfWqtLenu8ugMP7uUvPpK6cDuS5i6N",
+                  "gpub9CPpqbhrkX3JKKTLvTpnLRA8YDCHSFT7MhqJyAkKgSFqSbiK552N4SbUPGmyQLTmJRM6iNZMetV5JfjxZNKt3q2xcoidhjSmVRppuL9VNAU");
 
 		// m/0h
-		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0)],
-                  "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7",
-                  "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw");
+		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0).unwrap()],
+                  "gprv4iTeAn3j5BMS6Uz1dH2iQYaKM5jrYwkE8snDEfnU3kY2qP9sHPSDKiDj5RX7WNoJiYpyniD93sNWEw5oL7TdTXMu7PZ2TpHKc5mH2Wr3oTb",
+                  "gpub9F9gKC5yDZ36yx1oWvhJoxERv7FniGw8iBNzXBpmU2LRfsQdunFoWCqbFbXBjQ4bFwUWBHTYgZc6c9Ev2UbfPUBHpACsrz3QCsqAK2UKGCx");
 
 		// m/0h/1
-		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0), ChildNumber::from_normal_idx(1)],
-                   "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs",
-                   "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ");
+		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0).unwrap(), ChildNumber::from_normal_idx(1).unwrap()],
+                   "gprv4mHz5FRpNZvEoc3PFvYfF3RmL6EgU5LnQryzAgU9D34TX2U3EWa81JiPM9s3bzjUnyL9SM2pNi6nno7qLtg4znvs9tqFcu75PfbUUymUJVm",
+                   "gpub9Hz2DfU4Wwbuh55B9aDFeT5su7kcdQXgzAamTCWSdJrrMWioruPiBoLFXKHeGAjDr3xzPJ1e7oYjZLB2cTXo4WRaUG8V9J8dwa36XKuXYYa");
 
 		// m/0h/1/2h
-		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0), ChildNumber::from_normal_idx(1), ChildNumber::from_hardened_idx(2)],
-                  "xprv9z4pot5VBttmtdRTWfWQmoH1taj2axGVzFqSb8C9xaxKymcFzXBDptWmT7FwuEzG3ryjH4ktypQSAewRiNMjANTtpgP4mLTj34bhnZX7UiM",
-                  "xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5");
+		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0).unwrap(), ChildNumber::from_normal_idx(1).unwrap(), ChildNumber::from_hardened_idx(2).unwrap()],
+                  "gprv4mVic6cs2VaeaW37LDoKRi9gu3ch7TQFdhCPj2h2fVTePp4zphELN93ZD6N8MYznKaLn4fH3gamiMJ4iM51YDhVcVGyFovAe6k8erTFZ8FH",
+                  "gpub9JBkkWf7AsGKTy4uDsTuq7ooU58dGnbACzoB1YjL5mG3EJKmT63vYdfRPGK4crj6YPJ3ugTn7wSgLShWw3cFn5oPBsBDqvkjBH91SJ1tTu3");
 
 		// m/0h/1/2h/2
-		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0), ChildNumber::from_normal_idx(1), ChildNumber::from_hardened_idx(2), ChildNumber::from_normal_idx(2)],
-                  "xprvA2JDeKCSNNZky6uBCviVfJSKyQ1mDYahRjijr5idH2WwLsEd4Hsb2Tyh8RfQMuPh7f7RtyzTtdrbdqqsunu5Mm3wDvUAKRHSC34sJ7in334",
-                  "xpub6FHa3pjLCk84BayeJxFW2SP4XRrFd1JYnxeLeU8EqN3vDfZmbqBqaGJAyiLjTAwm6ZLRQUMv1ZACTj37sR62cfN7fe5JnJ7dh8zL4fiyLHV");
+		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0).unwrap(), ChildNumber::from_normal_idx(1).unwrap(), ChildNumber::from_hardened_idx(2).unwrap(), ChildNumber::from_normal_idx(2).unwrap()],
+                  "gprv4p3ezs55MBFgJPd6e7ohzb4AuAc1HiD4Wt2GwNdsZD4EPq5Nv2bBEq4cg4zPJjox4p1HtkKLtXGgiPpzywhSYpxFooJY8K6nSYUT5Qi3xv5",
+                  "gpub9Ljh9H7KVYwMBretXmUJPziHUC7wT3Py6Bd4DtgAyUrdEKL9YRQmRKgUrCzsErsZ38u5852Wi4mBk55GwDpa3eLQcpQPiGPeKxAoEfe78P1");
 
 		// m/0h/1/2h/2/1000000000
-		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0), ChildNumber::from_normal_idx(1), ChildNumber::from_hardened_idx(2), ChildNumber::from_normal_idx(2), ChildNumber::from_normal_idx(1000000000)],
-                  "xprvA41z7zogVVwxVSgdKUHDy1SKmdb533PjDz7J6N6mV6uS3ze1ai8FHa8kmHScGpWmj4WggLyQjgPie1rFSruoUihUZREPSL39UNdE3BBDu76",
-                  "xpub6H1LXWLaKsWFhvm6RVpEL9P4KfRZSW7abD2ttkWP3SSQvnyA8FSVqNTEcYFgJS2UaFcxupHiYkro49S8yGasTvXEYBVPamhGW6cFJodrTHy");
+		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0).unwrap(), ChildNumber::from_normal_idx(1).unwrap(), ChildNumber::from_hardened_idx(2).unwrap(), ChildNumber::from_normal_idx(2).unwrap(), ChildNumber::from_normal_idx(1000000000).unwrap()],
+                  "gprv4qUYp3r5MAxsUz2msdtrka7dALWMH2kVkb8Byd8PANsFf2bfRBscWQC94tsU3VBDtWrP2cKs5gBydA1rzKA1V3ALSZg5Su5AA1hM35QtQqE",
+                  "gpub9NAaxTtKVYeYNT4ZmHZT9ymjjN2HSMwQKtiyG9AgaefeVWrS3ahCgtp1EzMgXDBv9uotiwPZSYyvFuWFfbumvoBcWYHs7yqC6sNwURT76Q6");
 	}
 
 	#[test]
 	fn test_vector_2() {
-		let secp = Secp256k1::new();
+		let secp = Secp256k1::new().unwrap();
 		let seed = from_hex("fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542").unwrap();
 
 		// m
 		test_path(&secp, &seed, &[],
-                  "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U",
-                  "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB");
+                  "gprv4fhnhBfcc9MdTFXZmoMqu8SoxEjAFj8aP5GRrBdp4gmiFLxZCgdqMWMLWQxasb8ZeeNYz15E5wru65r8DQN2B5Y5oERRorpsUXqowwadV9W",
+                  "gpub9CPpqbhrkX3JLiZMfT2SJY6vXGF6R4KUxNsD8hg7Uxa75qDKq5TRXzyCgYmPfkMQ7jZzqYNoSJhWtZ82KKet5iRMfCnCgsBqwWRCTLAKX2v");
 
 		// m/0
-		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0)],
-                  "xprv9vHkqa6EV4sPZHYqZznhT2NPtPCjKuDKGY38FBWLvgaDx45zo9WQRUT3dKYnjwih2yJD9mkrocEZXo1ex8G81dwSM1fwqWpWkeS3v86pgKt",
-                  "xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6wb7ERfvrnKZjXoUmmDznezpbZb7ap6r1D3tgFxHmwMkQTPH");
+		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0).unwrap()],
+                  "gprv4i6PDr5sHB15nhkFDnH72FCavz5trqcPVqdTQfGa5gReLG6kJoGxDSGjBj3RVAKnF36tPRZKNgD7Ym2MS72E1hfQJ7YNd67adS3Lfvkgc1G",
+                  "gpub9EnRNG87RYgkgAn37RwhRerhW1bq2AoJ59EEhBJsVxE3AkMWwC6YPvtbMqZFi7Jdf4Y42YGqdNYcStorzPkBaMtdQXiSmEbiH44nKeGKiLf");
 
 		// m/0/2147483647h
-		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0), ChildNumber::from_hardened_idx(2147483647)],
-                  "xprv9wSp6B7kry3Vj9m1zSnLvN3xH8RdsPP1Mh7fAaR7aRLcQMKTR2vidYEeEg2mUCTAwCd6vnxVrcjfy2kRgVsFawNzmjuHc2YmYRmagcEPdU9",
-                  "xpub6ASAVgeehLbnwdqV6UKMHVzgqAG8Gr6riv3Fxxpj8ksbH9ebxaEyBLZ85ySDhKiLDBrQSARLq1uNRts8RuJiHjaDMBU4Zn9h8LZNnBC5y4a");
+		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0).unwrap(), ChildNumber::from_hardened_idx(2147483647).unwrap()],
+                  "gprv4kY3ejLHg5TEK83nJs4md8LSDeM3Zvm6p3ueCrxhpcZcidvRWBtN6zEDfZTye76ws8GUz6wKrZ7fTKjPFQyKDrXrJmuBdEZpGZXZvRYDwA1",
+                  "gpub9HE5o9NXpT8uCb5aCWjN2XzYnfryjFx1PMWRVP11EtN1Z8BC8ahxHUr5qh4WGNXrPt5Tsj11ZqcM2ykpJcWZSap5Mx7VLcH8973v9vKsByR");
 
 		// m/0/2147483647h/1
-		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0), ChildNumber::from_hardened_idx(2147483647), ChildNumber::from_normal_idx(1)],
-                  "xprv9zFnWC6h2cLgpmSA46vutJzBcfJ8yaJGg8cX1e5StJh45BBciYTRXSd25UEPVuesF9yog62tGAQtHjXajPPdbRCHuWS6T8XA2ECKADdw4Ef",
-                  "xpub6DF8uhdarytz3FWdA8TvFSvvAh8dP3283MY7p2V4SeE2wyWmG5mg5EwVvmdMVCQcoNJxGoWaU9DCWh89LojfZ537wTfunKau47EL2dhHKon");
+		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0).unwrap(), ChildNumber::from_hardened_idx(2147483647).unwrap(), ChildNumber::from_normal_idx(1).unwrap()],
+                  "gprv4nyJp12Rehz7DTUTEqGGdxs7UWAn7sARgENZgvYjmtMvhFVrDkr6c5MQZTo7NyRFg6piks5JnwDWY1StQC2tDeYk7u4C97HqQ4Bd4jDH4BT",
+                  "gpub9KfLxR4fo5fn6vWF8Uvs3NXE3XgiHCMLFXyLySb3CAAKXjkcr9fgnZyGjccQxmW2DVp5ezcux8rx2XtZyjErwRF2Vm2EKckXMbToYgaKWt1");
 
 		// m/0/2147483647h/1/2147483646h
-		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0), ChildNumber::from_hardened_idx(2147483647), ChildNumber::from_normal_idx(1), ChildNumber::from_hardened_idx(2147483646)],
-                  "xprvA1RpRA33e1JQ7ifknakTFpgNXPmW2YvmhqLQYMmrj4xJXXWYpDPS3xz7iAxn8L39njGVyuoseXzU6rcxFLJ8HFsTjSyQbLYnMpCqE2VbFWc",
-                  "xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL");
+		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0).unwrap(), ChildNumber::from_hardened_idx(2147483647).unwrap(), ChildNumber::from_normal_idx(1).unwrap(), ChildNumber::from_hardened_idx(2147483646).unwrap()],
+                  "gprv4owvCk6NJQazsR3LG1E7hY8XXSrWghFec39ULDver1SRprSjUbjFL67dcTYpAPkkftyALLag9bhjyM6xZVtb6M2V6MpBW3r94F5JraD1pNo",
+                  "gpub9LdxMA8cSnGfkt589eti6wne6UNSr2SZBLkFcjxxGHEpfLhW6zYqWajVncAMrtd5CNgMzFWNwtZyXpWb8SY9H3Hxy5Z7CoHEADXvTd1fdsB");
 
 		// m/0/2147483647h/1/2147483646h/2
-		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0), ChildNumber::from_hardened_idx(2147483647), ChildNumber::from_normal_idx(1), ChildNumber::from_hardened_idx(2147483646), ChildNumber::from_normal_idx(2)],
-                  "xprvA2nrNbFZABcdryreWet9Ea4LvTJcGsqrMzxHx98MMrotbir7yrKCEXw7nadnHM8Dq38EGfSh6dqA9QWTyefMLEcBYJUuekgW4BYPJcr9E7j",
-                  "xpub6FnCn6nSzZAw5Tw7cgR9bi15UV96gLZhjDstkXXxvCLsUXBGXPdSnLFbdpq8p9HmGsApME5hQTZ3emM2rnY5agb9rXpVGyy3bdW6EEgAtqt");
+		test_path(&secp, &seed, &[ChildNumber::from_normal_idx(0).unwrap(), ChildNumber::from_hardened_idx(2147483647).unwrap(), ChildNumber::from_normal_idx(1).unwrap(), ChildNumber::from_hardened_idx(2147483646).unwrap(), ChildNumber::from_normal_idx(2).unwrap()],
+                  "gprv4rRwiH31fpvzpuGVHE485fdkhsr4QZaE63VELoGYdkyCYNdoPHZHQxXEMpE2XKQGFbYykaPNza9WGCLDFyjAxoFeFqJk8YjPbTLQve9V7Vg",
+                  "gpub9P7yrh5FpCcfiNJHAsiiV5HsGuMzZtm8fM61dKJr42mbNrta1gNsbT96XwoJEvajF56mTwS3T8n5asUgmMxAo2LhYqjmo2UBVYwCqza3DTD");
 	}
 
 	#[test]
 	fn test_vector_3() {
-		let secp = Secp256k1::new();
+		let secp = Secp256k1::new().unwrap();
 		let seed = from_hex("4b381541583be4423346c643850da4b320e46a87ae3d2a4e6da11eba819cd4acba45d239319ac14f863b8d5ab5a0d0c64d2e8a1e7d1457df2e5a3c51c73235be").unwrap();
 
 		// m
 		test_path(&secp, &seed, &[],
-                  "xprv9s21ZrQH143K25QhxbucbDDuQ4naNntJRi4KUfWT7xo4EKsHt2QJDu7KXp1A3u7Bi1j8ph3EGsZ9Xvz9dGuVrtHHs7pXeTzjuxBrCmmhgC6",
-                  "xpub661MyMwAqRbcEZVB4dScxMAdx6d4nFc9nvyvH3v4gJL378CSRZiYmhRoP7mBy6gSPSCYk6SzXPTf3ND1cZAceL7SfJ1Z3GC8vBgp2epUt13");
+                  "gprv4fhnhBfcc9MdSsEqgy9AM1C2pUdNV1PUZF5x3ZW86fFAviHdRt8kvyKAiQ3UFTBXT5RqXK4iq7KY4vmgS2iQK9dU3tFCmLoiuSiJ4CnRRQd",
+                  "gpub9CPpqbhrkX3JLLGdacokkQr9PW9JeLaP8YgjL5YRWw3ZmCYQ4GxM7Tw2tXvjSNzNZvFsLm7L87fuzfznGvhpKWhg27iK4YWYVJpfQTvYJXb");
 
 		// m/0h
-		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0)],
-                  "xprv9uPDJpEQgRQfDcW7BkF7eTya6RPxXeJCqCJGHuCJ4GiRVLzkTXBAJMu2qaMWPrS7AANYqdq6vcBcBUdJCVVFceUvJFjaPdGZ2y9WACViL4L",
-                  "xpub68NZiKmJWnxxS6aaHmn81bvJeTESw724CRDs6HbuccFQN9Ku14VQrADWgqbhhTHBaohPX4CjNLf9fq9MYo6oDaPPLPxSb7gwQN3ih19Zm4Y");
+		test_path(&secp, &seed, &[ChildNumber::from_hardened_idx(0).unwrap()],
+                  "gprv4jPnYDwM3SBU39fyi5Hi5GJZJmgPRzTmqYHzBa6r2hk9rVi2KnLBbqedKbRpujzFf8kCinZGzefv4i5CZBTt75Y175CHu8DSQgGqB7Mc7YH",
+                  "gpub9G5pgdybBos8vchmbixJUfxfsoCKbKegQqtmU699SyYYgyxnxB9mnLGVVkxACzm78u6xJPNPDHx9GoYCLat5zVZzYenVdcC8ivHVQBo6CYi");
 	}
 }

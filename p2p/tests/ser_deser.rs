@@ -13,56 +13,62 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mwc_p2p as p2p;
-
-use num::FromPrimitive;
+use mwc_crates::num::FromPrimitive;
 
 // Test that Healthy == 0.
 #[test]
 fn test_store_state_enum() {
-	assert_eq!(p2p::State::from_i32(0), Some(p2p::State::Healthy));
+	assert_eq!(mwc_p2p::State::from_i32(0), Some(mwc_p2p::State::Healthy));
 }
 
 #[test]
 fn test_direction_enum() {
-	assert_eq!(p2p::Direction::from_i32(0), Some(p2p::Direction::Inbound));
+	assert_eq!(
+		mwc_p2p::Direction::from_i32(0),
+		Some(mwc_p2p::Direction::Inbound)
+	);
 }
 
 #[test]
 fn test_reason_for_ban_enum() {
 	assert_eq!(
-		p2p::types::ReasonForBan::from_i32(0),
-		Some(p2p::types::ReasonForBan::None)
+		mwc_p2p::types::ReasonForBan::from_i32(0),
+		Some(mwc_p2p::types::ReasonForBan::None)
 	);
 }
 
 #[test]
 fn test_type_enum() {
-	assert_eq!(p2p::msg::Type::from_i32(0), Some(p2p::msg::Type::Error));
+	assert_eq!(
+		mwc_p2p::msg::Type::from_i32(0),
+		Some(mwc_p2p::msg::Type::Error)
+	);
 }
 
 #[test]
 fn test_capabilities() {
-	let expected = p2p::types::Capabilities::new(true, false);
+	let expected = mwc_p2p::types::Capabilities::new(true, false);
 
 	assert_eq!(
-		p2p::types::Capabilities::from_bits_truncate(0b_0000_0000 as u32),
-		p2p::types::Capabilities::UNKNOWN
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b_0000_0000 as u32),
+		mwc_p2p::types::Capabilities::UNKNOWN
 	);
 	assert_eq!(
-		p2p::types::Capabilities::from_bits_truncate(0b1_0000_0000 as u32),
-		p2p::types::Capabilities::UNKNOWN
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b1_0000_0000 as u32),
+		mwc_p2p::types::Capabilities::UNKNOWN
 	);
 
 	assert_eq!(
 		expected,
-		p2p::types::Capabilities::from_bits_truncate(0b_1011_1111 as u32),
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b_1011_1111 as u32),
 	);
 
-	assert!(p2p::types::Capabilities::from_bits_truncate(0b_1111_1111 as u32).contains(expected));
+	assert!(
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b_1111_1111 as u32).contains(expected)
+	);
 
 	assert!(
-		p2p::types::Capabilities::from_bits_truncate(0b00101111 as u32)
-			.contains(p2p::types::Capabilities::TX_KERNEL_HASH)
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b00101111 as u32)
+			.contains(mwc_p2p::types::Capabilities::TX_KERNEL_HASH)
 	);
 }

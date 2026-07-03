@@ -42,28 +42,6 @@ macro_rules! try_iter_map_vec {
 	};
 }
 
-/// Eliminates some of the verbosity in having iter and collect
-/// around every filter_map call.
-#[macro_export]
-macro_rules! filter_map_vec {
-	($thing:expr, $mapfn:expr) => {
-		$thing.iter().filter_map($mapfn).collect::<Vec<_>>();
-	};
-}
-
-/// Allows the conversion of an expression that doesn't return anything to one
-/// that returns the provided identifier.
-/// Example:
-///   let foo = vec![1,2,3]
-///   println!(tee!(foo, foo.append(vec![3,4,5]))
-#[macro_export]
-macro_rules! tee {
-	($thing:ident, $thing_expr:expr) => {{
-		$thing_expr;
-		$thing
-	}};
-}
-
 /// Eliminate some of the boilerplate of deserialization (package ser) by
 /// passing just the list of reader function (with optional single param)
 /// Example before:
@@ -92,55 +70,4 @@ macro_rules! ser_multiwrite {
   ($wrtr:ident, $([ $write_call:ident, $val:expr ]),* ) => {
     $($wrtr.$write_call($val)? );*
   }
-}
-
-// don't seem to be able to define an Ord implementation for Hash due to
-// Ord being defined on all pointers, resorting to a macro instead
-macro_rules! hashable_ord {
-	($hashable:ident) => {
-		impl Ord for $hashable {
-			fn cmp(&self, other: &$hashable) -> Ordering {
-				let h1 = match self.hash() {
-					Ok(h) => h,
-					Err(e) => {
-						error!("Calculation hash error: {}", e);
-						return Ordering::Less;
-					}
-				};
-				let h2 = match other.hash() {
-					Ok(h) => h,
-					Err(e) => {
-						error!("Calculation hash error: {}", e);
-						return Ordering::Greater;
-					}
-				};
-				h1.cmp(&h2)
-			}
-		}
-		impl PartialOrd for $hashable {
-			fn partial_cmp(&self, other: &$hashable) -> Option<Ordering> {
-				Some(self.cmp(other))
-			}
-		}
-		impl PartialEq for $hashable {
-			fn eq(&self, other: &$hashable) -> bool {
-				let h1 = match self.hash() {
-					Ok(h) => h,
-					Err(e) => {
-						error!("Calculation hash error: {}", e);
-						return false;
-					}
-				};
-				let h2 = match other.hash() {
-					Ok(h) => h,
-					Err(e) => {
-						error!("Calculation hash error: {}", e);
-						return false;
-					}
-				};
-				h1 == h2
-			}
-		}
-		impl Eq for $hashable {}
-	};
 }

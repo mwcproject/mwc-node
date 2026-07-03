@@ -8,6 +8,7 @@ edition = "2018"
 [dependencies]
 chrono = "0.4.11"
 libfuzzer-sys = "0.4.0"
+mwc_crates = { path = "../../mwc_crates" }
 mwc_chain = { path = "../../chain" }
 mwc_core = { path = "../../core" }
 mwc_keychain = { path = "../../keychain" }

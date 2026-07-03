@@ -14,10 +14,11 @@
 
 use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
+use mwc_crates::log::debug;
+use mwc_crates::parking_lot::RwLock;
 use mwc_p2p::{PeerAddr, Peers};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::RwLock;
 
 #[derive(Clone, Debug)]
 pub struct HeadersRequest {
@@ -44,6 +45,9 @@ pub struct HeadersBlocksRequests {
 }
 
 impl HeadersBlocksRequests {
+	const MAX_QUEUED_BLOCK_REQUESTS: usize = 1000;
+	const MAX_REQUEST_PER_PEER: u32 = 3;
+
 	pub fn new(chain: Arc<Chain>) -> Self {
 		HeadersBlocksRequests {
 			chain,
@@ -59,7 +63,7 @@ impl HeadersBlocksRequests {
 		height: u64,
 		locator: Vec<Hash>,
 	) {
-		let mut headers = self.headers.write().unwrap_or_else(|e| e.into_inner());
+		let mut headers = self.headers.write();
 		for req in &*headers {
 			if req.addr == *addr {
 				debug!("Ignored header request to {}, already in the Q", addr);
@@ -82,7 +86,7 @@ impl HeadersBlocksRequests {
 		block_hash: Hash,
 		opts: mwc_chain::Options,
 	) {
-		let mut blocks = self.blocks.write().unwrap_or_else(|e| e.into_inner());
+		let mut blocks = self.blocks.write();
 
 		match blocks.get_mut(&height) {
 			Some(requests) => {
@@ -121,9 +125,29 @@ impl HeadersBlocksRequests {
 				blocks.insert(height, req);
 			}
 		}
-	}
 
-	const MAX_REQUEST_PER_PEER: u32 = 3;
+		let mut queued_requests = blocks
+			.values()
+			.map(|requests| requests.len())
+			.sum::<usize>();
+		while queued_requests > Self::MAX_QUEUED_BLOCK_REQUESTS {
+			let evict_height = match blocks.keys().next_back().cloned() {
+				Some(height) => height,
+				None => break,
+			};
+
+			if let Some(evicted) = blocks.remove(&evict_height) {
+				debug!(
+					"Evicted {} block requests for height {}, block request queue is full",
+					evicted.len(),
+					evict_height
+				);
+				queued_requests = queued_requests.saturating_sub(evicted.len());
+			} else {
+				break;
+			}
+		}
+	}
 
 	pub fn process_request(&self, peers: &Arc<Peers>) -> Result<(), mwc_chain::Error> {
 		let mut requests_per_peer: HashMap<PeerAddr, u32> = HashMap::new();
@@ -132,22 +156,52 @@ impl HeadersBlocksRequests {
 		let head_header = self.chain.head_header()?.height;
 		{
 			// Requesting single heads chain
-			let mut headers = self.headers.write().unwrap_or_else(|e| e.into_inner());
+			let mut headers = self.headers.write();
 			loop {
 				// Requesting single series of headers
 				match headers.pop_front() {
 					Some(head_req) => {
-						let known_header: bool = head_req
-							.head_header_hash
-							.map(|hash| self.chain.get_block_header(&hash).is_ok())
-							.unwrap_or(head_req.height <= head_header);
+						let known_header: bool = match head_req.head_header_hash {
+							Some(hash) => match self.chain.get_block_header(&hash) {
+								Ok(_) => true,
+								Err(e) if e.is_not_found() => false,
+								Err(e) => {
+									headers.push_back(head_req);
+									return Err(e);
+								}
+							},
+							None => {
+								if head_req.height <= head_header {
+									match self.chain.get_header_by_height(head_req.height) {
+										Ok(_) => true,
+										Err(e) if e.is_not_found() => false,
+										Err(e) => {
+											headers.push_back(head_req);
+											return Err(e);
+										}
+									}
+								} else {
+									false
+								}
+							}
+						};
 						if !known_header {
 							if let Some(peer) = peers.get_connected_peer(&head_req.addr) {
 								debug!("process_request, requesting headers from {}, target height: {}", head_req.addr, head_req.height);
 								// processign single headers request at a time
-								if peer.send_header_request(head_req.locator).is_ok() {
-									*requests_per_peer.entry(head_req.addr).or_insert(0) += 1;
-									break;
+								match peer.send_header_request(head_req.locator.clone()) {
+									Ok(_) => {
+										*requests_per_peer.entry(head_req.addr).or_insert(0) += 1;
+										break;
+									}
+									Err(e) => {
+										let msg = format!(
+												"Failed to send header request to {}, target height {}: {}",
+												head_req.addr, head_req.height, e
+											);
+										headers.push_back(head_req);
+										return Err(mwc_chain::Error::Other(msg));
+									}
 								}
 							}
 						}
@@ -162,26 +216,47 @@ impl HeadersBlocksRequests {
 		// My point that if we prefer any block vs others, it will be possible to organizes attack
 		// to stale the node progress.
 		{
-			let mut blocks = self.blocks.write().unwrap_or_else(|e| e.into_inner());
+			let mut blocks = self.blocks.write();
 			for (_height, requests) in &mut *blocks {
 				let mut skipped_requests = Vec::new();
 				while !requests.is_empty() {
 					let block_req = requests.pop_front().ok_or(mwc_chain::Error::Other(
 						"Internal error, blocks are empty".into(),
 					))?;
-					if !self.chain.block_exists(&block_req.block_hash)? {
+					let block_exists = match self.chain.block_exists(&block_req.block_hash) {
+						Ok(block_exists) => block_exists,
+						Err(e) => {
+							requests.push_back(block_req);
+							for r in skipped_requests {
+								requests.push_back(r);
+							}
+							return Err(e);
+						}
+					};
+					if !block_exists {
 						if let Some(peer) = peers.get_connected_peer(&block_req.addr) {
 							debug!("process_request, requesting block from {}, target height: {} , hash: {}",
                                         block_req.addr, block_req.height, block_req.block_hash);
 
 							let cnt = requests_per_peer.entry(block_req.addr.clone()).or_insert(0);
 							if *cnt < Self::MAX_REQUEST_PER_PEER {
-								if peer
-									.send_block_request(block_req.block_hash, block_req.opts)
-									.is_ok()
+								match peer.send_block_request(block_req.block_hash, block_req.opts)
 								{
-									*cnt += 1;
-									break;
+									Ok(_) => {
+										*cnt += 1;
+										break;
+									}
+									Err(e) => {
+										let msg = format!(
+													"Failed to send block request to {}, target height {}, hash {}: {}",
+													block_req.addr, block_req.height, block_req.block_hash, e
+												);
+										requests.push_back(block_req);
+										for r in skipped_requests {
+											requests.push_back(r);
+										}
+										return Err(mwc_chain::Error::Other(msg));
+									}
 								}
 							} else {
 								skipped_requests.push(block_req);
@@ -197,5 +272,89 @@ impl HeadersBlocksRequests {
 		}
 
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use mwc_chain::types::NoopAdapter;
+	use mwc_core::{genesis, global, pow};
+	use mwc_crates::secp::{ContextFlag, Secp256k1};
+	use std::collections::HashSet;
+	use std::fs;
+
+	#[test]
+	fn block_request_queue_evicts_highest_height_bucket_when_full() {
+		global::set_local_chain_type(global::ChainTypes::Floonet);
+		global::set_local_nrd_enabled(false);
+
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let nanos = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		let dir = std::env::temp_dir().join(format!(
+			"mwc_block_request_queue_{}_{}",
+			std::process::id(),
+			nanos
+		));
+		let dir_str = dir.to_string_lossy().to_string();
+		let _ = fs::remove_dir_all(&dir_str);
+
+		let chain = Arc::new(
+			Chain::init(
+				&secp,
+				0,
+				dir_str.clone(),
+				Arc::new(NoopAdapter {}),
+				genesis::genesis_floo(&secp, 0),
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+			)
+			.unwrap(),
+		);
+		let requests = HeadersBlocksRequests::new(chain);
+		let addr = PeerAddr::Ip("127.0.0.1:3414".parse().unwrap());
+
+		for height in 0..(HeadersBlocksRequests::MAX_QUEUED_BLOCK_REQUESTS as u64 - 1) {
+			requests.add_block_request(
+				&addr,
+				height,
+				Hash::from_vec(&height.to_be_bytes()),
+				mwc_chain::Options::NONE,
+			);
+		}
+
+		let evicted_height = HeadersBlocksRequests::MAX_QUEUED_BLOCK_REQUESTS as u64;
+		requests.add_block_request(
+			&addr,
+			evicted_height,
+			Hash::from_vec(&evicted_height.to_be_bytes()),
+			mwc_chain::Options::NONE,
+		);
+		requests.add_block_request(
+			&PeerAddr::Ip("127.0.0.1:3415".parse().unwrap()),
+			evicted_height,
+			Hash::from_vec(&(evicted_height + 1).to_be_bytes()),
+			mwc_chain::Options::NONE,
+		);
+
+		let blocks = requests.blocks.read_recursive();
+		let queued_count = blocks
+			.values()
+			.map(|requests| requests.len())
+			.sum::<usize>();
+		assert_eq!(
+			queued_count,
+			HeadersBlocksRequests::MAX_QUEUED_BLOCK_REQUESTS - 1
+		);
+		assert!(!blocks.contains_key(&evicted_height));
+
+		drop(blocks);
+		let _ = fs::remove_dir_all(&dir_str);
 	}
 }
