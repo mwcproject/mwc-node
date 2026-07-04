@@ -16,6 +16,7 @@
 //! JSON-RPC Stub generation for the Foreign API
 
 use crate::foreign::Foreign;
+use crate::handlers::chain_api::OutputHandler;
 use crate::rest::Error;
 use crate::types::{
 	BlockHeaderPrintable, BlockListing, BlockPrintable, LocatedTxKernel, OutputListing,
@@ -24,6 +25,8 @@ use crate::types::{
 use mwc_core::core::hash::Hash;
 use mwc_core::core::transaction::Transaction;
 use mwc_crates::easy_jsonrpc_mwc;
+use mwc_crates::easy_jsonrpc_mwc::{Handler, InvalidArgs, Params, Value};
+use mwc_crates::serde::de::DeserializeOwned;
 use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
 use mwc_pool::{BlockChain, PoolAdapter};
 use mwc_util::secp_static;
@@ -1111,6 +1114,378 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error>;
+}
+
+/// Compatibility handler for older positional JSON-RPC clients.
+pub struct ForeignRpcCompat<'a, B, P>
+where
+	B: BlockChain,
+	P: PoolAdapter,
+{
+	inner: &'a Foreign<B, P>,
+}
+
+impl<'a, B, P> ForeignRpcCompat<'a, B, P>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+{
+	pub fn new(inner: &'a Foreign<B, P>) -> Self {
+		ForeignRpcCompat { inner }
+	}
+
+	fn generated(&self) -> &(dyn ForeignRpc + 'static) {
+		self.inner as &(dyn ForeignRpc + 'static)
+	}
+
+	fn handle_get_outputs(&self, params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+		match normalize_get_outputs_params(params)? {
+			GetOutputsParams::Current(params) => self.generated().handle("get_outputs", params),
+			GetOutputsParams::Legacy(args) => {
+				let result = secp_static::with_verify_only(Error::from, |secp| {
+					let output_handler = OutputHandler {
+						chain: self.inner.chain.clone(),
+					};
+					output_handler.get_outputs_v2(
+						secp,
+						args.commits,
+						args.start_height,
+						args.end_height,
+						args.include_proof,
+						args.include_merkle_proof,
+					)
+				});
+				easy_jsonrpc_mwc::try_serialize(&result)
+			}
+		}
+	}
+}
+
+impl<B, P> Handler for ForeignRpcCompat<'_, B, P>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+{
+	fn handle(&self, method: &str, params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+		match method {
+			"get_header" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 0, 3, method)?,
+			),
+			"get_block" => self.generated().handle(
+				"get_block_ex",
+				normalize_trailing_optional_params(params, 0, 5, method)?,
+			),
+			"get_block_ex" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 0, 5, method)?,
+			),
+			"get_blocks" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 3, 4, method)?,
+			),
+			"get_kernel" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 1, 3, method)?,
+			),
+			"get_outputs" => self.handle_get_outputs(params),
+			"get_unspent_outputs" => self
+				.generated()
+				.handle(method, normalize_get_unspent_outputs_params(params)?),
+			"get_pmmr_indices" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 1, 2, method)?,
+			),
+			"push_transaction" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 1, 2, method)?,
+			),
+			_ => self.generated().handle(method, params),
+		}
+	}
+}
+
+fn normalize_trailing_optional_params(
+	params: Params,
+	min_len: usize,
+	max_len: usize,
+	method: &str,
+) -> Result<Params, easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(mut args) => {
+			if args.len() < min_len || args.len() > max_len {
+				return Err(wrong_number_of_args(method, min_len, max_len, args.len()));
+			}
+			while args.len() < max_len {
+				args.push(Value::Null);
+			}
+			Ok(Params::Positional(args))
+		}
+		Params::Named(args) => Ok(Params::Named(args)),
+	}
+}
+
+fn normalize_get_unspent_outputs_params(params: Params) -> Result<Params, easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(args) => match args.len() {
+			2 => {
+				let mut args = args.into_iter();
+				Ok(Params::Positional(vec![
+					args.next().unwrap(),
+					Value::Null,
+					args.next().unwrap(),
+					Value::Null,
+				]))
+			}
+			3 => {
+				let mut args = args.into_iter();
+				let start_index = args.next().unwrap();
+				let second = args.next().unwrap();
+				let third = args.next().unwrap();
+				if is_optional_bool(&third) {
+					Ok(Params::Positional(vec![
+						start_index,
+						Value::Null,
+						second,
+						third,
+					]))
+				} else {
+					Ok(Params::Positional(vec![
+						start_index,
+						second,
+						third,
+						Value::Null,
+					]))
+				}
+			}
+			4 => Ok(Params::Positional(args)),
+			actual => Err(wrong_number_of_args("get_unspent_outputs", 2, 4, actual)),
+		},
+		Params::Named(args) => Ok(Params::Named(args)),
+	}
+}
+
+struct LegacyGetOutputsArgs {
+	commits: Option<Vec<String>>,
+	start_height: Option<u64>,
+	end_height: Option<u64>,
+	include_proof: Option<bool>,
+	include_merkle_proof: Option<bool>,
+}
+
+enum GetOutputsParams {
+	Current(Params),
+	Legacy(LegacyGetOutputsArgs),
+}
+
+fn normalize_get_outputs_params(
+	params: Params,
+) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(args) => normalize_get_outputs_positional(args),
+		Params::Named(args) => normalize_get_outputs_named(args),
+	}
+}
+
+fn normalize_get_outputs_positional(
+	args: Vec<Value>,
+) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
+	if args.len() > 5 {
+		return Err(wrong_number_of_args("get_outputs", 1, 5, args.len()));
+	}
+	if uses_current_get_outputs_layout(&args) {
+		return normalize_trailing_optional_params(Params::Positional(args), 1, 3, "get_outputs")
+			.map(GetOutputsParams::Current);
+	}
+	parse_legacy_get_outputs_args(args).map(GetOutputsParams::Legacy)
+}
+
+fn normalize_get_outputs_named(
+	mut args: easy_jsonrpc_mwc::serde_json::Map<String, Value>,
+) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
+	if !args.contains_key("start_height") && !args.contains_key("end_height") {
+		return Ok(GetOutputsParams::Current(Params::Named(args)));
+	}
+
+	let commits = parse_named_arg(&mut args, "commits", 0)?;
+	let start_height = parse_named_arg(&mut args, "start_height", 1)?;
+	let end_height = parse_named_arg(&mut args, "end_height", 2)?;
+	let include_proof = parse_named_arg(&mut args, "include_proof", 3)?;
+	let include_merkle_proof = parse_named_arg(&mut args, "include_merkle_proof", 4)?;
+	if let Some(key) = args.keys().next() {
+		return Err(InvalidArgs::ExtraNamedParameter { name: key.clone() }.into());
+	}
+
+	Ok(GetOutputsParams::Legacy(LegacyGetOutputsArgs {
+		commits,
+		start_height,
+		end_height,
+		include_proof,
+		include_merkle_proof,
+	}))
+}
+
+fn parse_legacy_get_outputs_args(
+	mut args: Vec<Value>,
+) -> Result<LegacyGetOutputsArgs, easy_jsonrpc_mwc::Error> {
+	while args.len() < 5 {
+		args.push(Value::Null);
+	}
+	let mut args = args.into_iter();
+	Ok(LegacyGetOutputsArgs {
+		commits: parse_arg(args.next().unwrap(), "commits", 0)?,
+		start_height: parse_arg(args.next().unwrap(), "start_height", 1)?,
+		end_height: parse_arg(args.next().unwrap(), "end_height", 2)?,
+		include_proof: parse_arg(args.next().unwrap(), "include_proof", 3)?,
+		include_merkle_proof: parse_arg(args.next().unwrap(), "include_merkle_proof", 4)?,
+	})
+}
+
+fn parse_named_arg<T: DeserializeOwned>(
+	args: &mut easy_jsonrpc_mwc::serde_json::Map<String, Value>,
+	name: &'static str,
+	index: usize,
+) -> Result<T, easy_jsonrpc_mwc::Error> {
+	parse_arg(args.remove(name).unwrap_or(Value::Null), name, index)
+}
+
+fn parse_arg<T: DeserializeOwned>(
+	value: Value,
+	name: &'static str,
+	index: usize,
+) -> Result<T, easy_jsonrpc_mwc::Error> {
+	easy_jsonrpc_mwc::serde_json::from_value(value).map_err(|_| -> easy_jsonrpc_mwc::Error {
+		InvalidArgs::invalid_arg_structure(name, index, "parsing error".to_string()).into()
+	})
+}
+
+fn uses_current_get_outputs_layout(args: &[Value]) -> bool {
+	match args.len() {
+		1 => true,
+		2 => is_optional_bool(&args[1]),
+		3 => is_optional_bool(&args[1]) && is_optional_bool(&args[2]),
+		_ => false,
+	}
+}
+
+fn is_optional_bool(value: &Value) -> bool {
+	value.is_null() || value.is_boolean()
+}
+
+fn wrong_number_of_args(
+	method: &str,
+	min_len: usize,
+	max_len: usize,
+	actual: usize,
+) -> easy_jsonrpc_mwc::Error {
+	let expected = if min_len == max_len {
+		min_len.to_string()
+	} else {
+		format!("{} to {}", min_len, max_len)
+	};
+	easy_jsonrpc_mwc::Error::invalid_params(format!(
+		"WrongNumberOfArgs for {}. Expected {}. Actual {}",
+		method, expected, actual
+	))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use mwc_crates::serde_json::json;
+
+	#[test]
+	fn normalize_trailing_optional_params_pads_positional_args() {
+		let params = Params::Positional(vec![json!(1), Value::Null, Value::Null]);
+
+		let params = normalize_trailing_optional_params(params, 0, 5, "get_block").unwrap();
+
+		match params {
+			Params::Positional(args) => {
+				assert_eq!(
+					args,
+					vec![json!(1), Value::Null, Value::Null, Value::Null, Value::Null]
+				);
+			}
+			Params::Named(_) => panic!("expected positional params"),
+		}
+	}
+
+	#[test]
+	fn normalize_get_outputs_accepts_current_positional_layout() {
+		let params = Params::Positional(vec![
+			json!(["09bab2bdba2e6aed690b5eda11accc13c06723ca5965bb460c5f2383655989af3f"]),
+			json!(false),
+			json!(true),
+		]);
+
+		let params = normalize_get_outputs_params(params).unwrap();
+
+		match params {
+			GetOutputsParams::Current(Params::Positional(args)) => {
+				assert_eq!(args.len(), 3);
+				assert_eq!(args[1], json!(false));
+				assert_eq!(args[2], json!(true));
+			}
+			_ => panic!("expected current positional params"),
+		}
+	}
+
+	#[test]
+	fn normalize_get_outputs_accepts_legacy_positional_layout() {
+		let params = Params::Positional(vec![
+			Value::Null,
+			json!(10),
+			json!(12),
+			json!(false),
+			json!(true),
+		]);
+
+		let params = normalize_get_outputs_params(params).unwrap();
+
+		match params {
+			GetOutputsParams::Legacy(args) => {
+				assert_eq!(args.commits, None);
+				assert_eq!(args.start_height, Some(10));
+				assert_eq!(args.end_height, Some(12));
+				assert_eq!(args.include_proof, Some(false));
+				assert_eq!(args.include_merkle_proof, Some(true));
+			}
+			_ => panic!("expected legacy get_outputs params"),
+		}
+	}
+
+	#[test]
+	fn normalize_get_unspent_outputs_accepts_omitted_middle_arg() {
+		let params = Params::Positional(vec![json!(1), json!(100), json!(true)]);
+
+		let params = normalize_get_unspent_outputs_params(params).unwrap();
+
+		match params {
+			Params::Positional(args) => {
+				assert_eq!(args.len(), 4);
+				assert_eq!(args[0], json!(1));
+				assert_eq!(args[1], Value::Null);
+				assert_eq!(args[2], json!(100));
+				assert_eq!(args[3], json!(true));
+			}
+			Params::Named(_) => panic!("expected positional params"),
+		}
+	}
+
+	#[test]
+	fn normalize_trailing_optional_params_rejects_out_of_range_arg_counts() {
+		let params = Params::Positional(vec![
+			json!(1),
+			Value::Null,
+			Value::Null,
+			json!(true),
+			json!(false),
+			json!(false),
+		]);
+
+		assert!(normalize_trailing_optional_params(params, 0, 5, "get_block").is_err());
+	}
 }
 
 impl<B, P> ForeignRpc for Foreign<B, P>

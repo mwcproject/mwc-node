@@ -346,7 +346,14 @@ where
 		let output_handler = OutputHandler {
 			chain: self.chain.clone(),
 		};
-		output_handler.get_outputs_v2(secp, commits, include_proof, include_merkle_proof)
+		output_handler.get_outputs_v2(
+			secp,
+			Some(commits),
+			None,
+			None,
+			include_proof,
+			include_merkle_proof,
+		)
 	}
 
 	/// UTXO traversal. Retrieves last utxos since a `start_index` until a `max`.

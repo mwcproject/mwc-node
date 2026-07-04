@@ -42,7 +42,7 @@ use crate::auth::{
 	BasicAuthMiddleware, BasicAuthURIMiddleware, MWC_BASIC_REALM, MWC_FOREIGN_BASIC_REALM,
 };
 use crate::foreign::{Foreign, ProcessStatusCache};
-use crate::foreign_rpc::ForeignRpc;
+use crate::foreign_rpc::ForeignRpcCompat;
 use crate::owner::Owner;
 use crate::owner_rpc::OwnerRpc;
 use crate::rest::{ApiServer, Error, TLSConfig};
@@ -337,7 +337,7 @@ where
 		Box::pin(async move {
 			match parse_body(req).await {
 				Ok(val) => {
-					let foreign_api = &api as &dyn ForeignRpc;
+					let foreign_api = ForeignRpcCompat::new(&api);
 					let res = match foreign_api.handle_request(val) {
 						MaybeReply::Reply(r) => r,
 						MaybeReply::DontReply => {

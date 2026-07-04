@@ -155,10 +155,13 @@ impl OutputHandler {
 	pub fn get_outputs_v2(
 		&self,
 		secp: &Secp256k1,
-		commits: Vec<String>,
+		commits: Option<Vec<String>>,
+		start_height: Option<u64>,
+		end_height: Option<u64>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error> {
+		let commits = commits.unwrap_or_default();
 		if commits.len() > MAX_GET_OUTPUTS_COMMITS {
 			return Err(Error::RequestError(format!(
 				"too many output commitments requested: {}, max {}",
@@ -197,6 +200,34 @@ impl OutputHandler {
 					return Err(e);
 				}
 			};
+		}
+		if let (Some(start_height), Some(end_height)) = (start_height, end_height) {
+			let height_count = end_height
+				.checked_sub(start_height)
+				.and_then(|span| span.checked_add(1))
+				.ok_or_else(|| {
+					Error::RequestError(format!(
+						"invalid block height range: {}-{}",
+						start_height, end_height
+					))
+				})?;
+			if height_count > MAX_OUTPUTS_BY_HEIGHT_RANGE {
+				return Err(Error::RequestError(format!(
+					"too many block heights requested: {}, max {}",
+					height_count, MAX_OUTPUTS_BY_HEIGHT_RANGE
+				)));
+			}
+			for height in (start_height..=end_height).rev() {
+				if let Ok(block_outputs) = self.outputs_at_height(
+					secp,
+					height,
+					&[],
+					include_proof.unwrap_or(false),
+					include_merkle_proof.unwrap_or(false),
+				) {
+					outputs.extend(block_outputs.outputs);
+				}
+			}
 		}
 		Ok(outputs)
 	}
@@ -278,6 +309,7 @@ impl OutputHandler {
 		block_height: u64,
 		commitments: &[Commitment],
 		include_proof: bool,
+		include_merkle_proof: bool,
 	) -> Result<BlockOutputs, Error> {
 		let header = w(&self.chain)?
 			.get_header_by_height(block_height)
@@ -309,7 +341,7 @@ impl OutputHandler {
 					&chain,
 					Some(&header),
 					include_proof,
-					true,
+					include_merkle_proof,
 				)
 			})
 			.collect::<Result<Vec<_>, _>>()
@@ -360,7 +392,7 @@ impl OutputHandler {
 
 		let mut return_vec = vec![];
 		for i in (start_height..=end_height).rev() {
-			match self.outputs_at_height(secp, i, &commitments, include_rp) {
+			match self.outputs_at_height(secp, i, &commitments, include_rp, true) {
 				Ok(res) => {
 					if !res.outputs.is_empty() {
 						return_vec.push(res);
@@ -769,7 +801,7 @@ mod tests {
 		let commits = vec!["00".repeat(33); MAX_GET_OUTPUTS_COMMITS + 1];
 
 		let err = output_handler
-			.get_outputs_v2(&secp, commits, None, None)
+			.get_outputs_v2(&secp, Some(commits), None, None, None, None)
 			.unwrap_err();
 
 		match err {
@@ -792,7 +824,7 @@ mod tests {
 		let commits = vec![VALID_COMMIT.to_string(); MAX_GET_OUTPUTS_COMMITS];
 
 		let err = output_handler
-			.get_outputs_v2(&secp, commits, None, None)
+			.get_outputs_v2(&secp, Some(commits), None, None, None, None)
 			.unwrap_err();
 
 		match err {
