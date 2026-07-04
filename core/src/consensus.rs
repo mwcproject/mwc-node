@@ -623,13 +623,11 @@ pub fn secondary_pow_scaling(
 	// Safe because scale_sum is much smaller than u64::MAX, target_pct is less than 45,
 	let scale = scale_sum * target_pct / max(1, adj_count);
 
-	// Minimum AR scale avoids getting stuck due to dampening.
-	// If one PoW method dominates the adjustment window, the balancing formula can
-	// exceed u32::MAX. Saturating here is intentional consensus behavior: it keeps
-	// the chain live and pushes secondary PoW to the easiest allowed setting instead
-	// of treating this expected edge case as fatal overflow.
-	let scale = u32::try_from(max(MIN_AR_SCALE, scale)).unwrap_or(u32::MAX);
-	Ok(scale)
+	// Keep the historical wrapping cast here. This value is consensus-critical
+	// and existing Floonet/Mainnet headers were mined with the legacy `as u32`
+	// behavior when the balancing formula exceeds u32::MAX. Saturating instead
+	// changes the expected secondary scale and causes valid peers to be rejected.
+	Ok(max(MIN_AR_SCALE, scale) as u32)
 }
 
 /// Hard fork modifications:
@@ -942,6 +940,47 @@ mod test {
 			assert_eq!(entry.height, idx as u64);
 		}
 		next_difficulty_from_diff_data(1, &diff_data).unwrap();
+	}
+
+	#[test]
+	fn secondary_pow_scaling_preserves_legacy_u32_wrapping() {
+		let diff_data = (0..DIFFICULTY_ADJUST_WINDOW)
+			.map(|height| {
+				HeaderDifficultyInfo::new(
+					height,
+					Some(Hash::from_vec(&height.to_le_bytes())),
+					1_000 + height * BLOCK_TIME_SEC,
+					Difficulty::from_num(100),
+					u32::MAX,
+					false,
+				)
+			})
+			.collect::<Vec<_>>();
+
+		let target_pct = secondary_pow_ratio(1);
+		let target_count = DIFFICULTY_ADJUST_WINDOW * target_pct;
+		let adj_count = clamp(
+			damp(
+				ar_count(1, &diff_data),
+				target_count,
+				ar_scale_damp_factor(1),
+			)
+			.unwrap(),
+			target_count,
+			CLAMP_FACTOR,
+		)
+		.unwrap();
+		let scale_sum = diff_data
+			.iter()
+			.map(|dd| dd.secondary_scaling as u64)
+			.sum::<u64>();
+		let raw_scale = scale_sum * target_pct / max(1, adj_count);
+		assert!(raw_scale > u32::MAX as u64);
+
+		assert_eq!(
+			secondary_pow_scaling(1, &diff_data).unwrap(),
+			max(MIN_AR_SCALE, raw_scale) as u32
+		);
 	}
 
 	#[test]
