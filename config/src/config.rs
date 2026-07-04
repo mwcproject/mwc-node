@@ -66,101 +66,20 @@ fn get_mwc_path(chain_type: &global::ChainTypes) -> Result<PathBuf, ConfigError>
 	Ok(mwc_path)
 }
 
-#[cfg(unix)]
 fn ensure_secure_mwc_dir(path: &Path) -> Result<(), ConfigError> {
-	use std::io::ErrorKind;
-	use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-
-	if !path.try_exists()? {
-		let mut builder = fs::DirBuilder::new();
-		builder.mode(0o700);
-		match builder.create(path) {
-			Ok(()) => {}
-			Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-			Err(e) => {
-				return Err(ConfigError::FileIOError(
-					path.display().to_string(),
-					format!("Unable to create MWC directory: {}", e),
-				));
-			}
+	match file::ensure_owner_only_dir(path) {
+		Ok(()) => Ok(()),
+		Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+			Err(ConfigError::ConfigError(e.to_string()))
 		}
-	}
-
-	let dir = fs::OpenOptions::new()
-		.read(true)
-		.custom_flags(
-			mwc_crates::libc::O_DIRECTORY
-				| mwc_crates::libc::O_NOFOLLOW
-				| mwc_crates::libc::O_CLOEXEC,
-		)
-		.open(path)
-		.map_err(|e| {
-			ConfigError::FileIOError(
-				path.display().to_string(),
-				format!("Unable to open MWC directory: {}", e),
-			)
-		})?;
-
-	let metadata = dir.metadata().map_err(|e| {
-		ConfigError::FileIOError(
+		Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+			Err(ConfigError::ConfigError(e.to_string()))
+		}
+		Err(e) => Err(ConfigError::FileIOError(
 			path.display().to_string(),
-			format!("Unable to read MWC directory metadata: {}", e),
-		)
-	})?;
-	if !metadata.is_dir() {
-		return Err(ConfigError::ConfigError(format!(
-			"MWC path is not a directory: {}",
-			path.display()
-		)));
+			format!("Unable to secure MWC directory: {}", e),
+		)),
 	}
-	// SAFETY: geteuid has no arguments and only reads the process effective UID.
-	// A safe wrapper crate would avoid this unsafe block, but we accept this
-	// localized FFI use here to avoid adding a dependency for a single call.
-	let effective_uid = unsafe { mwc_crates::libc::geteuid() };
-	if metadata.uid() != effective_uid {
-		return Err(ConfigError::ConfigError(format!(
-			"MWC directory '{}' is owned by uid {}, expected effective uid {}",
-			path.display(),
-			metadata.uid(),
-			effective_uid
-		)));
-	}
-
-	let mode = metadata.permissions().mode() & 0o777;
-	// If the directory was group/other writable, another local user may have
-	// already tampered with its contents. Tightening permissions now would not
-	// prove the existing files are trustworthy, so require manual recovery.
-	if (mode & 0o022) != 0 {
-		return Err(ConfigError::ConfigError(format!(
-			"MWC directory '{}' has unsafe group/other write permissions {:o}",
-			path.display(),
-			mode
-		)));
-	}
-
-	dir.set_permissions(fs::Permissions::from_mode(0o700))
-		.map_err(|e| {
-			ConfigError::FileIOError(
-				path.display().to_string(),
-				format!("Unable to set MWC directory permissions: {}", e),
-			)
-		})
-}
-
-#[cfg(not(unix))]
-fn ensure_secure_mwc_dir(path2: &Path) -> Result<(), ConfigError> {
-	// Non-Unix access control is OS-specific, and Rust std does not provide a
-	// portable API for enforcing owner-only directory permissions here.
-	if !path2.try_exists()? {
-		fs::create_dir(path2)?;
-	}
-	if !path2.metadata()?.is_dir() {
-		return Err(ConfigError::ConfigError(format!(
-			"MWC path is not a directory: {}",
-			path2.display()
-		)));
-	}
-	Ok(())
 }
 
 fn check_config_current_dir(path: &str) -> Result<Option<PathBuf>, ConfigError> {

@@ -74,24 +74,26 @@ fn peer_handshake() {
 	let mut tor_config = mwc_p2p::TorConfig::default();
 	tor_config.tor_enabled = Some(false);
 
+	let db_root = TempDir::new().unwrap();
 	let net_adapter = Arc::new(mwc_p2p::DummyAdapter {});
+	let stop_state = Arc::new(StopState::new());
 	let server_inner = mwc_p2p::Server::new(
 		HANDSHAKE_TEST_CONTEXT_ID,
-		".mwc",
+		db_root.path().to_str().unwrap(),
 		mwc_p2p::Capabilities::UNKNOWN,
 		&p2p_config,
 		&tor_config,
 		net_adapter.clone(),
 		Hash::from_vec(&vec![]),
 		Arc::new(SyncState::new()),
-		Arc::new(StopState::new()),
+		stop_state.clone(),
 	)
 	.unwrap();
 	let server = Arc::new(server_inner.clone());
 
 	let p2p_inner = server.clone();
 	let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
-	let _ = thread::spawn(move || p2p_inner.listen(Some(p2p_tx)));
+	let listen_thread = thread::spawn(move || p2p_inner.listen(Some(p2p_tx)));
 
 	p2p_rx.recv().unwrap().unwrap();
 
@@ -135,6 +137,9 @@ fn peer_handshake() {
 	let server_peer = server.peers.get_connected_peer(&my_addr).unwrap();
 	assert_eq!(server_peer.info.total_difficulty(), Difficulty::min());
 	assert!(server.peers.iter().connected().count() > 0);
+
+	stop_state.stop();
+	listen_thread.join().unwrap().unwrap();
 }
 
 #[test]

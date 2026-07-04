@@ -1288,6 +1288,7 @@ impl ArtiCore {
 			.kind(ExplicitOrAuto::Explicit(ArtiKeystoreKind::Ephemeral));
 
 		let base_data_dir = base_dir.join("arti").join(connection_path);
+		mwc_util::file::ensure_owner_only_dir_all(&base_data_dir)?;
 
 		let creation_timestamp_fn = base_data_dir.join("create_time.txt");
 		let creation_timestamp = match fs::read_to_string(&creation_timestamp_fn) {
@@ -1322,7 +1323,7 @@ impl ArtiCore {
 				Err(e) => return Err(e.into()),
 			}
 
-			fs::create_dir_all(base_data_dir.clone())?;
+			mwc_util::file::ensure_owner_only_dir_all(&base_data_dir)?;
 			let mut f = File::create(creation_timestamp_fn)?;
 			writeln!(f, "{now}")?;
 			now
@@ -1604,7 +1605,7 @@ fn build_config_handles_extreme_creation_timestamps() {
 	for timestamp in [i64::MIN, i64::MAX] {
 		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
 		let data_dir = dir.path().join("arti").join("direct");
-		fs::create_dir_all(&data_dir).unwrap();
+		mwc_util::file::ensure_owner_only_dir_all(&data_dir).unwrap();
 		let timestamp_file = data_dir.join("create_time.txt");
 		fs::write(&timestamp_file, timestamp.to_string()).unwrap();
 
@@ -1629,7 +1630,7 @@ fn build_config_handles_extreme_creation_timestamps() {
 fn build_config_rejects_malformed_creation_timestamp_without_cleanup() {
 	let dir = mwc_crates::tempfile::TempDir::new().unwrap();
 	let data_dir = dir.path().join("arti").join("direct");
-	fs::create_dir_all(&data_dir).unwrap();
+	mwc_util::file::ensure_owner_only_dir_all(&data_dir).unwrap();
 	let timestamp_file = data_dir.join("create_time.txt");
 	let marker_file = data_dir.join("marker");
 	fs::write(&timestamp_file, "not-a-timestamp").unwrap();

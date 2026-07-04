@@ -121,7 +121,7 @@ fn lmdb_rejects_symlink_env_dir() {
 
 	match mwc_store::Store::new(0, test_dir, Some("test1"), None, None) {
 		Err(mwc_store::Error::FileErr(msg)) => {
-			assert!(msg.contains("Unable to open LMDB directory"));
+			assert!(msg.contains("Unable to secure LMDB directory"));
 		}
 		Err(e) => panic!("expected FileErr, got {}", e),
 		Ok(_) => panic!("expected symlink LMDB directory to be rejected"),

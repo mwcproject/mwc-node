@@ -2456,7 +2456,7 @@ impl Chain {
 		Self::validate_tmpfile_name(&tmpfile_name)?;
 
 		let mut tmp = self.get_tmp_dir();
-		fs::create_dir_all(&tmp)?;
+		mwc_util::file::ensure_owner_only_dir_all(&tmp)?;
 		tmp.push(tmpfile_name);
 		match fs::remove_file(&tmp) {
 			Ok(()) => {}

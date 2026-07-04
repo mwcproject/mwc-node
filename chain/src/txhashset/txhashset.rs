@@ -135,9 +135,10 @@ impl<T: PMMRable> PMMRHandle<T> {
 		header: Option<&BlockHeader>,
 		metadata_validation: VariableSizeMetadataValidation,
 	) -> Result<PMMRHandle<T>, Error> {
-		fs::create_dir_all(&path)?;
+		let path = path.as_ref();
+		mwc_util::file::ensure_owner_only_dir_all(path)?;
 		let backend = PMMRBackend::new(
-			&path,
+			path,
 			prunable,
 			version,
 			context_id,
@@ -3916,7 +3917,7 @@ mod tests {
 		let kernel_dir = Path::new(chain_dir)
 			.join(TXHASHSET_SUBDIR)
 			.join(KERNEL_SUBDIR);
-		fs::create_dir_all(&kernel_dir).unwrap();
+		mwc_util::file::ensure_owner_only_dir_all(&kernel_dir).unwrap();
 		{
 			let mut backend = PMMRBackend::<TxKernel>::new(
 				&kernel_dir,

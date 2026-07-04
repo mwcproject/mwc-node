@@ -555,13 +555,14 @@ impl Server {
 	// This uses fs2 and should be safe cross-platform unless somebody abuses the file itself.
 	fn one_mwc_at_a_time(config: &ServerConfig) -> Result<Arc<File>, Error> {
 		let path = Path::new(&config.db_root);
-		fs::create_dir_all(&path).map_err(|e| {
+		mwc_util::file::ensure_owner_only_dir_all(path).map_err(|e| {
 			Error::ServerError(format!(
-				"Unable to create data directory {}, {}",
+				"Unable to secure data directory {}, {}",
 				path.to_str().unwrap_or("<Unknown>"),
 				e
 			))
 		})?;
+
 		let path = path.join("mwc.lock");
 		let lock_file = fs::OpenOptions::new()
 			.read(true)
@@ -925,6 +926,47 @@ fn build_tls_config(config: &ServerConfig) -> Result<Option<TLSConfig>, Error> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(unix)]
+	#[test]
+	fn one_mwc_at_a_time_creates_owner_only_db_root() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let db_root = temp_dir.path().join("chain_data");
+		let config = ServerConfig {
+			db_root: db_root.to_str().unwrap().to_owned(),
+			..ServerConfig::default()
+		};
+
+		let _lock_file = Server::one_mwc_at_a_time(&config).unwrap();
+
+		let mode = fs::metadata(&db_root).unwrap().permissions().mode() & 0o777;
+		assert_eq!(mode, 0o700);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn one_mwc_at_a_time_rejects_group_writable_db_root() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let db_root = temp_dir.path().join("chain_data");
+		fs::create_dir(&db_root).unwrap();
+		fs::set_permissions(&db_root, fs::Permissions::from_mode(0o777)).unwrap();
+		let config = ServerConfig {
+			db_root: db_root.to_str().unwrap().to_owned(),
+			..ServerConfig::default()
+		};
+
+		match Server::one_mwc_at_a_time(&config) {
+			Err(Error::ServerError(msg)) => {
+				assert!(msg.contains("unsafe group/other write permissions"));
+			}
+			Err(err) => panic!("expected data directory security error, got {}", err),
+			Ok(_) => panic!("expected unsafe data directory to be rejected"),
+		}
+	}
 
 	#[test]
 	fn build_tls_config_without_certificate_or_key_disables_tls() {

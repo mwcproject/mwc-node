@@ -18,8 +18,6 @@
 use mwc_crates::lmdb_zero;
 use mwc_crates::lmdb_zero::traits::CreateCursor;
 use mwc_crates::lmdb_zero::LmdbResultExt;
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -98,83 +96,6 @@ where
 }
 
 fn prepare_lmdb_env_dir(full_path: &str) -> Result<(), Error> {
-	prepare_lmdb_env_dir_path(Path::new(full_path))
-}
-
-#[cfg(not(unix))]
-fn prepare_lmdb_env_dir_path(path1: &Path) -> Result<(), Error> {
-	// On non-Unix platforms we do not control filesystem permissions here. If
-	// an attacker already controls the OS filesystem, there is not much this
-	// storage layer can do to enforce LMDB directory isolation.
-	fs::create_dir_all(path1).map_err(|e| {
-		Error::FileErr(format!(
-			"Unable to create LMDB directory '{}': {:?}",
-			path1.display(),
-			e
-		))
-	})
-}
-
-#[cfg(unix)]
-fn prepare_lmdb_env_dir_path(path2: &Path) -> Result<(), Error> {
-	use std::io::ErrorKind;
-	use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-
-	let mut existed = path2.try_exists().map_err(|e| {
-		Error::FileErr(format!(
-			"Unable to inspect LMDB directory '{}': {:?}",
-			path2.display(),
-			e
-		))
-	})?;
-
-	if !existed {
-		let mut builder = fs::DirBuilder::new();
-		builder.recursive(true);
-		builder.mode(0o700);
-		match builder.create(path2) {
-			Ok(()) => {}
-			Err(e) if e.kind() == ErrorKind::AlreadyExists => existed = true,
-			Err(e) => {
-				return Err(Error::FileErr(format!(
-					"Unable to create LMDB directory '{}': {:?}",
-					path2.display(),
-					e
-				)))
-			}
-		}
-	}
-
-	let dir = fs::OpenOptions::new()
-		.read(true)
-		.custom_flags(
-			mwc_crates::libc::O_DIRECTORY
-				| mwc_crates::libc::O_NOFOLLOW
-				| mwc_crates::libc::O_CLOEXEC,
-		)
-		.open(path2)
-		.map_err(|e| {
-			Error::FileErr(format!(
-				"Unable to open LMDB directory '{}': {:?}",
-				path2.display(),
-				e
-			))
-		})?;
-
-	let metadata = dir.metadata().map_err(|e| {
-		Error::FileErr(format!(
-			"Unable to read LMDB directory metadata '{}': {:?}",
-			path2.display(),
-			e
-		))
-	})?;
-	if !metadata.is_dir() {
-		return Err(Error::FileErr(format!(
-			"LMDB path '{}' is not a directory",
-			path2.display()
-		)));
-	}
-
 	// Ownership is intentionally not checked here. We only reject directories
 	// that are writable by group/other and then tighten accepted directories to
 	// owner-only permissions.
@@ -187,23 +108,12 @@ fn prepare_lmdb_env_dir_path(path2: &Path) -> Result<(), Error> {
 	// This check is based on Unix mode bits only. Platform ACLs can grant access
 	// independently of those bits, and if an attacker controls filesystem ACL
 	// policy there is not much this layer can do to prevent access to the data.
-	let mode = metadata.permissions().mode() & 0o777;
-	if existed && (mode & 0o022) != 0 {
-		return Err(Error::FileErr(format!(
-			"LMDB directory '{}' has unsafe group/other write permissions {:o}",
-			path2.display(),
-			mode
-		)));
-	}
-
-	dir.set_permissions(fs::Permissions::from_mode(0o700))
-		.map_err(|e| {
-			Error::FileErr(format!(
-				"Unable to set LMDB directory '{}' permissions: {:?}",
-				path2.display(),
-				e
-			))
-		})
+	mwc_util::file::ensure_owner_only_dir_all_no_owner_check(full_path).map_err(|e| {
+		Error::FileErr(format!(
+			"Unable to secure LMDB directory '{}': {}",
+			full_path, e
+		))
+	})
 }
 
 fn lmdb_size_used_bytes(page_size: usize, last_page: usize) -> Result<usize, Error> {
