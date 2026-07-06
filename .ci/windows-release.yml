@@ -7,14 +7,18 @@ steps:
     displayName: Build Release
     condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - script: |
-      set WEBTUNNEL_DIR=$(Build.BinariesDirectory)\webtunnel
+      set "WEBTUNNEL_DIR=$(Build.BinariesDirectory)\webtunnel"
+      set "WEBTUNNEL_CLIENT=$(Build.BinariesDirectory)\webtunnelclient.exe"
       if exist "%WEBTUNNEL_DIR%" rmdir /s /q "%WEBTUNNEL_DIR%"
       git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "%WEBTUNNEL_DIR%"
       cd /d "%WEBTUNNEL_DIR%\main\client"
-      go build
-      rename client.exe webtunnelclient.exe
-      copy /y webtunnelclient.exe "$(Build.SourcesDirectory)\target\release\"
+      go build -o "%WEBTUNNEL_CLIENT%"
     displayName: Build WebTunnel Client
+    condition: and(succeeded(), eq( variables['Agent.OS'], 'Windows_NT' ), eq(variables['CI_JOB'], 'release' ))
+  - script: |
+      copy /y "$(Build.BinariesDirectory)\webtunnelclient.exe" "$(Build.SourcesDirectory)\target\release\"
+    displayName: Copy WebTunnel Client for Release
+    condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq( variables['Agent.OS'], 'Windows_NT' ), eq(variables['CI_JOB'], 'release' ))
   - script: |
       SET MY_TAG=$(Build.SourceBranch)
       SET MY_TAG=%MY_TAG:~10%
