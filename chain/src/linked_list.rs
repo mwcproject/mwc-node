@@ -15,14 +15,17 @@
 
 //! Implements "linked list" storage primitive for lmdb index supporting multiple entries.
 
-use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::store::Batch;
 use crate::types::CommitPos;
-use crate::util::secp::pedersen::Commitment;
-use enum_primitive::FromPrimitive;
-use mwc_store as store;
+use mwc_core::ser::{self, Readable, Reader, Writeable, Writer};
+use mwc_crates::enum_primitive::FromPrimitive;
+use mwc_crates::enum_primitive::{
+	enum_from_primitive, enum_from_primitive_impl, enum_from_primitive_impl_ty,
+};
+use mwc_crates::log::debug;
+use mwc_crates::secp::pedersen::Commitment;
+use mwc_store::{to_key, to_key_u64, Error};
 use std::marker::PhantomData;
-use store::{to_key, to_key_u64, Error};
 
 enum_from_primitive! {
 	#[derive(Copy, Clone, Debug, PartialEq)]
@@ -89,7 +92,7 @@ pub trait ListIndex {
 	/// Key is "prefix|commit".
 	/// Note the key for an individual entry in the list is "prefix|commit|pos".
 	fn get_list(&self, batch: &Batch<'_>, commit: Commitment) -> Result<Option<Self::List>, Error> {
-		batch.db.get_ser(&self.list_key(commit), None)
+		batch.db.get_ser(&self.list_key(commit))
 	}
 
 	/// Returns one of "head", "tail" or "middle" entry variants.
@@ -100,7 +103,7 @@ pub trait ListIndex {
 		commit: Commitment,
 		pos: u64,
 	) -> Result<Option<Self::Entry>, Error> {
-		batch.db.get_ser(&self.entry_key(commit, pos)?, None)
+		batch.db.get_ser(&self.entry_key(commit, pos)?)
 	}
 
 	/// Peek the head of the list for the specified commitment.
@@ -366,6 +369,7 @@ where
 						Some(ListEntry::Tail { pos, .. }) => {
 							let list = ListWrapper::Single { pos };
 							batch.delete(&self.entry_key(commit, current_pos.pos())?)?;
+							batch.delete(&self.entry_key(commit, pos.pos())?)?;
 							batch.db.put_ser(&self.list_key(commit), &list)?;
 							Ok(Some(current_pos))
 						}
@@ -396,17 +400,24 @@ impl<T: PosEntry> RewindableListIndex for MultiIndex<T> {
 
 impl<T: PosEntry> PruneableListIndex for MultiIndex<T> {
 	fn clear(&self, batch: &Batch<'_>) -> Result<(), Error> {
-		let mut list_count = 0;
-		let mut entry_count = 0;
 		let prefix = to_key(self.list_prefix, "");
-		for key in batch.db.iter(&prefix, |k, _| Ok(k.to_vec()))? {
-			let _ = batch.delete(&key);
-			list_count += 1;
+		let list_keys = batch
+			.db
+			.iter(&prefix, |k, _| Ok(k.to_vec()))?
+			.collect::<Result<Vec<_>, Error>>()?;
+		let list_count = list_keys.len();
+		for key in list_keys {
+			batch.delete(&key)?;
 		}
+
 		let prefix = to_key(self.entry_prefix, "");
-		for key in batch.db.iter(&prefix, |k, _| Ok(k.to_vec()))? {
-			let _ = batch.delete(&key);
-			entry_count += 1;
+		let entry_keys = batch
+			.db
+			.iter(&prefix, |k, _| Ok(k.to_vec()))?
+			.collect::<Result<Vec<_>, Error>>()?;
+		let entry_count = entry_keys.len();
+		for key in entry_keys {
+			batch.delete(&key)?;
 		}
 		debug!(
 			"clear: lists deleted: {}, entries deleted: {}",
@@ -422,9 +433,9 @@ impl<T: PosEntry> PruneableListIndex for MultiIndex<T> {
 		_commit: Commitment,
 		_cutoff_pos: u64,
 	) -> Result<(), Error> {
-		unimplemented!(
-			"we currently rebuild index on startup/compaction, pruning not yet implemented"
-		);
+		Err(Error::OtherErr(
+			"we currently rebuild index on startup/compaction, pruning not yet implemented".into(),
+		))
 	}
 
 	/// Pop off the back/tail of the linked list.
@@ -459,6 +470,7 @@ impl<T: PosEntry> PruneableListIndex for MultiIndex<T> {
 						Some(ListEntry::Head { pos, .. }) => {
 							let list = ListWrapper::Single { pos };
 							batch.delete(&self.entry_key(commit, current_pos.pos())?)?;
+							batch.delete(&self.entry_key(commit, pos.pos())?)?;
 							batch.db.put_ser(&self.list_key(commit), &list)?;
 							Ok(Some(current_pos))
 						}

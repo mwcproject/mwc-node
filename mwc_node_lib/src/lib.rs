@@ -18,5 +18,5 @@
 /// FFI interface
 pub mod ffi;
 
-/// node workflow mwthods calls.
+/// node workflow methods calls.
 pub mod mwc_node_calls;

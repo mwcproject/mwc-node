@@ -17,7 +17,7 @@ extern "C" {
  *  Free process_mwc_node_request response string
  */
 void
-free_node_lib_string (
+free_lib_string (
     char * s);
 
 /** \brief
@@ -34,17 +34,36 @@ process_mwc_node_request (
 #include <stdint.h>
 
 /** \brief
- *  Register a callback and context pointer from C
- *  Note, Callback will get temprary string pointer, C code can't store it.
+ *  Register a callback and context pointer from C.
+ *
+ *  The context pointer is owned by the caller. Rust stores it only as an opaque
+ *  pointer and never owns, frees, or otherwise manages the pointed-to data. The
+ *  caller must keep it valid until `unregister_lib_callback` returns after being
+ *  called with the exact registered callback name.
+ *
+ *  Callback implementations must not synchronously call `register_lib_callback`
+ *  or `unregister_lib_callback`; dispatch holds the callback registry read lock
+ *  until the callback returns so unregister can wait for in-flight users of
+ *  `ctx`.
+ *
+ *  Note, Callback will get temporary string pointer, C code can't store it.
  */
 void
 register_lib_callback (
     char const * callback_name,
-    int8_t const * (*cb)(void *, int8_t const *),
+    void (*cb)(void *, int8_t const *),
     void * ctx);
 
 /** \brief
- *  Unregister the callback
+ *  Unregister the callback.
+ *
+ *  After this returns for a registered callback name, no future callback
+ *  dispatch by this name will use the registered function/context pair. If a
+ *  dispatch is already in progress, this call waits for it to finish before
+ *  returning. The caller may free or reuse the caller-owned context only after
+ *  calling this function with the exact registered callback name and waiting for
+ *  it to return. Invalid UTF-8 or unregistered callback names remove nothing and
+ *  are logged as errors.
  */
 void
 unregister_lib_callback (

@@ -57,7 +57,9 @@ impl PoWContext for CuckaroomContext {
 	}
 
 	fn find_cycles(&mut self) -> Result<Vec<Proof>, Error> {
-		unimplemented!()
+		Err(Error::NotImplemented(
+			"CuckaroomContext only supports verification".into(),
+		))
 	}
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {

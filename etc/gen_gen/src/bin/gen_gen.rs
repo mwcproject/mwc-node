@@ -88,7 +88,9 @@ fn main() {
 	let keychain: ExtKeychain = seed.derive_keychain(false).unwrap();
 	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0);
 	let reward = core::libtx::reward::output(&keychain, &key_id, 0).unwrap();
-	gen = gen.with_reward(reward.0, reward.1);
+	gen = gen
+		.with_reward(reward.0, reward.1)
+		.expect("genesis block body must be empty before reward");
 
 	{
 		// setup a tmp chain to set block header roots
@@ -265,7 +267,7 @@ fn update_genesis_rs(gen: &core::core::Block) {
 }
 
 fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {
-	util::init_test_logger();
+	util::init_test_logger().unwrap();
 	let _ = fs::remove_dir_all(dir_name);
 	let db_env = Arc::new(store::new_env(dir_name.to_string()));
 	chain::Chain::init(

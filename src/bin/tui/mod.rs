@@ -13,6 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::Cursive;
+use mwc_crates::log::error;
+
 mod constants;
 mod logs;
 mod menu;
@@ -22,3 +26,16 @@ mod status;
 mod types;
 pub mod ui;
 mod version;
+
+fn call_on_name_or_log<V, F>(c: &mut Cursive, context: &str, name: &str, callback: F)
+where
+	V: View,
+	F: FnOnce(&mut V),
+{
+	if c.call_on_name(name, callback).is_none() {
+		error!(
+			"TUI {} update target '{}' not found or has unexpected type",
+			context, name
+		);
+	}
+}

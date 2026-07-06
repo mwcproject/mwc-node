@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use mwc_crates::term;
+
 /// Error type wrapping underlying module errors.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -27,6 +29,9 @@ pub enum Error {
 	/// Write IO error
 	#[error("Write IO error: {0}")]
 	WriteIO(#[from] std::io::Error),
+	/// Server startup error
+	#[error("Unable to start mwc-node, {0}")]
+	ServerStart(String),
 	/// Argumnet error
 	#[error("{0}")]
 	ArgumentError(String),

@@ -16,11 +16,12 @@
 //! JSON-RPC Stub generation for the Owner API
 
 use crate::owner::Owner;
-use crate::p2p::PeerData;
 use crate::rest::Error;
 use crate::types::Status;
-use easy_jsonrpc_mwc;
+use mwc_crates::easy_jsonrpc_mwc;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::types::PeerInfoDisplayLegacy;
+use mwc_p2p::PeerData;
 use std::net::SocketAddr;
 
 /// Public definition used to generate Node jsonrpc api.
@@ -137,9 +138,11 @@ pub trait OwnerRpc: Sync + Send {
 	fn reset_chain_head(&self, hash: String) -> Result<(), Error>;
 
 	/**
-	Specify a ban list for headers. Expected that a full list is set. Prev settings will be removed.
-	It is the same data that can be set with 'invalid_block_hashes' from config file.
-	If you need to make those settings permanent, consider to update mwc-server.toml
+	Add hashes to the runtime ban list for headers. Existing banned hashes remain active;
+	omitted hashes are not removed, and an empty list does not clear the runtime cache.
+	This appends to the same in-process cache initialized from 'invalid_block_hashes'
+	in the config file. If you need to make those settings permanent, update
+	mwc-server.toml.
 
 	```
 	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
@@ -396,15 +399,18 @@ impl OwnerRpc for Owner {
 	}
 
 	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), Error> {
-		Owner::validate_chain(self, assume_valid_rangeproofs_kernels)
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		Owner::validate_chain(self, &secp, assume_valid_rangeproofs_kernels)
 	}
 
 	fn reset_chain_head(&self, hash: String) -> Result<(), Error> {
-		Owner::reset_chain_head(self, hash)
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		Owner::reset_chain_head(self, &secp, hash)
 	}
 
 	fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error> {
-		Owner::invalidate_header(self, hash)
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		Owner::invalidate_header(self, &secp, hash)
 	}
 
 	fn compact_chain(&self) -> Result<(), Error> {
@@ -431,44 +437,22 @@ impl OwnerRpc for Owner {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! doctest_helper_json_rpc_owner_assert_response {
-	($request:expr, $expected_response:expr) => {
-		// create temporary mwc server, run jsonrpc request on node api, delete server, return
-		// json response.
-
-		{
-			/*use mwc_servers::test_framework::framework::run_doctest;
-			use mwc_util as util;
-			use serde_json;
-			use serde_json::Value;
-			use tempfile::tempdir;
-
-			let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
-			let dir = dir
-				.path()
-				.to_str()
-				.ok_or("Failed to convert tmpdir path to string.".to_owned())
-				.unwrap();
-
-			let request_val: Value = serde_json::from_str($request).unwrap();
-			let expected_response: Value = serde_json::from_str($expected_response).unwrap();
-			let response = run_doctest(
-				request_val,
-				dir,
-				$use_token,
-				$blocks_to_mine,
-				$perform_tx,
-				$lock_tx,
-				$finalize_tx,
-					)
-			.unwrap()
-			.unwrap();
-			if response != expected_response {
-				panic!(
-					"(left != right) \nleft: {}\nright: {}",
-					serde_json::to_string_pretty(&response).unwrap(),
-					serde_json::to_string_pretty(&expected_response).unwrap()
-				);
-				}*/
-		}
-	};
+	($request:expr, $expected_response:expr) => {{
+		$crate::json_rpc::doctest_assert_json_rpc_response(
+			$request,
+			$expected_response,
+			&[
+				("get_status", &[]),
+				("validate_chain", &["assume_valid_rangeproofs_kernels"]),
+				("reset_chain_head", &["hash"]),
+				("invalidate_header", &["hash"]),
+				("compact_chain", &[]),
+				("get_peers", &["peer_addr"]),
+				("get_connected_peers", &[]),
+				("ban_peer", &["peer_addr"]),
+				("unban_peer", &["peer_addr"]),
+			],
+		)
+		.unwrap_or_else(|err| panic!("{}", err));
+	}};
 }

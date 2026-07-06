@@ -23,20 +23,24 @@ use crate::core::{
 	pmmr, transaction, Commitment, Inputs, KernelFeatures, Output, Transaction, TransactionBody,
 	TxKernel, Weighting,
 };
-use crate::global;
 use crate::pow::{verify_size, Difficulty, Proof, ProofOfWork};
 use crate::ser::{
 	self, deserialize_default, serialize_default, PMMRable, Readable, Reader, Writeable, Writer,
 };
-use chrono::prelude::{DateTime, Utc};
-use chrono::Duration;
+use crate::{global, pow};
 use keychain::{self, BlindingFactor};
+use mwc_crates::chrono;
+use mwc_crates::chrono::prelude::{DateTime, Utc};
+use mwc_crates::chrono::Duration;
+use mwc_crates::log::{error, trace};
+use mwc_crates::secp;
+use mwc_crates::secp::Secp256k1;
+use mwc_crates::serde::{self, Serialize};
+use std::convert::TryFrom;
 use util::from_hex;
-use util::secp;
-use util::secp::Secp256k1;
 
 /// Errors thrown by Block validation
-#[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
 	/// The sum of output minus input commitments does not
 	/// match the sum of kernel commitments
@@ -71,45 +75,39 @@ pub enum Error {
 	NRDKernelNotEnabled,
 	/// Underlying tx related error
 	#[error("Block Invalid Transaction, {0}")]
-	Transaction(transaction::Error),
+	Transaction(#[from] transaction::Error),
 	/// Underlying Secp256k1 error (signature validation or invalid public key
 	/// typically)
 	#[error("Secp256k1 error, {0}")]
 	Secp(secp::Error),
 	/// Underlying keychain related error
 	#[error("keychain error, {0}")]
-	Keychain(keychain::Error),
+	Keychain(#[from] keychain::Error),
 	/// Error when verifying kernel sums via committed trait.
 	#[error("Block Commits error, {0}")]
-	Committed(committed::Error),
+	Committed(#[from] committed::Error),
 	/// Validation error relating to cut-through.
 	/// Specifically the tx is spending its own output, which is not valid.
 	#[error("Block cut-through error")]
 	CutThrough,
 	/// Underlying serialization error.
 	#[error("Block serialization error, {0}")]
-	Serialization(ser::Error),
+	Serialization(#[from] ser::Error),
+	/// Underlying IO error.
+	#[error("Block IO error, {0}")]
+	IO(#[from] std::io::Error),
+	/// Data overflow error.
+	#[error("Block data overflow error, {0}")]
+	DataOverflow(String),
 	/// Other unspecified error condition
 	#[error("Block Generic error, {0}")]
 	Other(String),
-}
-
-impl From<committed::Error> for Error {
-	fn from(e: committed::Error) -> Error {
-		Error::Committed(e)
-	}
-}
-
-impl From<transaction::Error> for Error {
-	fn from(e: transaction::Error) -> Error {
-		Error::Transaction(e)
-	}
-}
-
-impl From<ser::Error> for Error {
-	fn from(e: ser::Error) -> Error {
-		Error::Serialization(e)
-	}
+	/// Pow related error
+	#[error("POW error, {0}")]
+	PowError(#[from] pow::Error),
+	/// Consensus error
+	#[error("Consensus error {0}")]
+	ConsensusError(#[from] consensus::Error),
 }
 
 impl From<secp::Error> for Error {
@@ -118,9 +116,12 @@ impl From<secp::Error> for Error {
 	}
 }
 
-impl From<keychain::Error> for Error {
-	fn from(e: keychain::Error) -> Error {
-		Error::Keychain(e)
+impl From<pmmr::Error> for Error {
+	fn from(e: pmmr::Error) -> Error {
+		match e {
+			pmmr::Error::DataOverflow(msg) => Error::DataOverflow(msg),
+			e => Error::Other(format!("PMMR error, {}", e)),
+		}
 	}
 }
 
@@ -145,14 +146,20 @@ impl Readable for HeaderEntry {
 		let secondary_scaling = reader.read_u32()?;
 
 		// Using a full byte to represent the bool for now.
-		let is_secondary = reader.read_u8()? != 0;
+		let is_secondary_flag = reader.read_u8()?;
+		if is_secondary_flag > 1 {
+			return Err(ser::Error::CorruptedData(format!(
+				"invalid is_secondary_flag value {}",
+				is_secondary_flag
+			)));
+		}
 
 		Ok(HeaderEntry {
 			hash,
 			timestamp,
 			total_difficulty,
 			secondary_scaling,
-			is_secondary,
+			is_secondary: is_secondary_flag != 0,
 		})
 	}
 }
@@ -176,13 +183,14 @@ impl Writeable for HeaderEntry {
 
 impl Hashed for HeaderEntry {
 	/// The hash of the underlying block.
-	fn hash(&self) -> Result<Hash, std::io::Error> {
+	fn hash(&self, _context_id: u32) -> Result<Hash, std::io::Error> {
 		Ok(self.hash)
 	}
 }
 
 /// Some type safety around header versioning.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Serialize)]
+#[serde(crate = "serde")]
 pub struct HeaderVersion(pub u16);
 
 impl From<HeaderVersion> for u16 {
@@ -206,6 +214,7 @@ impl Readable for HeaderVersion {
 
 /// Block header, fairly standard compared to other blockchains.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(crate = "serde")]
 pub struct BlockHeader {
 	/// Version of the block
 	pub version: HeaderVersion,
@@ -234,15 +243,25 @@ pub struct BlockHeader {
 	/// Proof of work and related
 	pub pow: ProofOfWork,
 }
+// Note, BlockHeader using only pow.edge_bits to build a hash. It should be good enough
 impl DefaultHashable for BlockHeader {}
 
 impl PMMRable for BlockHeader {
 	type E = HeaderEntry;
 
 	fn as_elmt(&self) -> Result<Self::E, ser::Error> {
+		self.validate_timestamp_precision()?;
+
+		// timestamp i64 to u64
+		let timestamp = u64::try_from(self.timestamp.timestamp()).map_err(|_| {
+			ser::Error::DataOverflow(format!(
+				"BlockHeader::as_elmt, timestamp={}",
+				self.timestamp.timestamp()
+			))
+		})?;
 		Ok(HeaderEntry {
-			hash: self.hash()?,
-			timestamp: self.timestamp.timestamp() as u64,
+			hash: self.hash(self.pow.proof.context_id)?,
+			timestamp,
 			total_difficulty: self.total_difficulty(),
 			secondary_scaling: self.pow.secondary_scaling,
 			is_secondary: self.pow.is_secondary(),
@@ -261,6 +280,13 @@ impl Writeable for BlockHeader {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		if !writer.serialization_mode().is_hash_mode() {
 			self.write_pre_pow(writer)?;
+		} else {
+			// Header hash mode intentionally hashes only the proof nonces. The
+			// rest of the header is bound through PoW verification: a valid proof
+			// must solve the graph generated from the pre-PoW bytes, which include
+			// the consensus-critical header fields, PoW pre-PoW fields, and nonce.
+			// Therefore this hash describes the full header only once the header's
+			// PoW has been verified.
 		}
 		self.pow.write(writer)?;
 		Ok(())
@@ -315,12 +341,35 @@ impl Readable for BlockHeader {
 }
 
 impl BlockHeader {
+	const PRE_POW_WITHOUT_NONCE_LEN: usize = 2 // version
+			+ 8 // height
+			+ 8 // timestamp
+			+ (5 * Hash::LEN) // prev_hash, prev_root, output_root, range_proof_root, kernel_root
+			+ secp::constants::SECRET_KEY_SIZE // total_kernel_offset
+			+ 8 // output_mmr_size
+			+ 8 // kernel_mmr_size
+			+ Difficulty::LEN // total_difficulty
+			+ 4; // secondary_scaling
+
+	/// Validate that the timestamp can be represented by the consensus
+	/// serialization format without silently losing precision.
+	pub fn validate_timestamp_precision(&self) -> Result<(), ser::Error> {
+		let subsecond_nanos = self.timestamp.timestamp_subsec_nanos();
+		if subsecond_nanos != 0 {
+			return Err(ser::Error::CorruptedData(format!(
+				"BlockHeader timestamp must not contain subsecond nanoseconds, timestamp={} nanos={}",
+				self.timestamp, subsecond_nanos
+			)));
+		}
+		Ok(())
+	}
+
 	/// Create empty block
 	pub fn default(context_id: u32) -> BlockHeader {
 		BlockHeader {
 			version: HeaderVersion(1),
 			height: 0,
-			timestamp: DateTime::from_timestamp(0, 0).unwrap().to_utc(),
+			timestamp: DateTime::from_timestamp(0, 0).unwrap().to_utc(), // Safe because unwrap from a constant value
 			prev_hash: ZERO_HASH,
 			prev_root: ZERO_HASH,
 			output_root: ZERO_HASH,
@@ -335,6 +384,8 @@ impl BlockHeader {
 
 	/// Write the pre-hash portion of the header
 	pub fn write_pre_pow<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.validate_timestamp_precision()?;
+
 		self.version.write(writer)?;
 		ser_multiwrite!(
 			writer,
@@ -359,7 +410,7 @@ impl BlockHeader {
 	pub fn pre_pow(&self) -> Result<Vec<u8>, Error> {
 		let mut header_buf = vec![];
 		{
-			let mut writer = ser::BinWriter::default(&mut header_buf);
+			let mut writer = ser::BinWriter::default(self.pow.proof.context_id, &mut header_buf);
 			self.write_pre_pow(&mut writer)?;
 			self.pow.write_pre_pow(&mut writer)?;
 			writer.write_u64(self.pow.nonce)?;
@@ -367,7 +418,8 @@ impl BlockHeader {
 		Ok(header_buf)
 	}
 
-	/// Constructs a header given pre_pow string, nonce, and proof
+	/// Constructs a header from canonical pre-PoW bytes without the nonce or proof,
+	/// plus the provided nonce and proof.
 	pub fn from_pre_pow_and_proof(
 		context_id: u32,
 		pre_pow: String,
@@ -375,34 +427,76 @@ impl BlockHeader {
 		proof: Proof,
 	) -> Result<Self, Error> {
 		// Convert hex pre pow string
+		if pre_pow.len() > Self::PRE_POW_WITHOUT_NONCE_LEN * 2 + 2 {
+			return Err(ser::Error::CorruptedData(format!(
+				"Invalid pre_pow hex length {}",
+				pre_pow.len()
+			))
+			.into());
+		}
 		let mut header_bytes = from_hex(&pre_pow).map_err(|e| {
 			Error::Serialization(ser::Error::HexError(format!(
 				"Unable to process {}, {}",
 				pre_pow, e
 			)))
 		})?;
+
+		if header_bytes.len() != Self::PRE_POW_WITHOUT_NONCE_LEN {
+			return Err(ser::Error::CorruptedData(format!(
+				"Invalid pre_pow length {}, expected {}",
+				header_bytes.len(),
+				Self::PRE_POW_WITHOUT_NONCE_LEN
+			))
+			.into());
+		}
+
+		if proof.context_id != context_id {
+			return Err(ser::Error::CorruptedData(format!(
+				"Proof context_id {} does not match header context_id {}",
+				proof.context_id, context_id
+			))
+			.into());
+		}
+
 		// Serialize and append serialized nonce and proof
-		serialize_default(&mut header_bytes, &nonce)?;
-		serialize_default(&mut header_bytes, &proof)?;
+		serialize_default(context_id, &mut header_bytes, &nonce)?;
+		serialize_default(context_id, &mut header_bytes, &proof)?;
 
 		// Deserialize header from constructed bytes
-		Ok(deserialize_default(context_id, &mut &header_bytes[..])?)
+		let mut input = &header_bytes[..];
+		let header: BlockHeader = deserialize_default(context_id, &mut input)?;
+		if !input.is_empty() {
+			return Err(ser::Error::CorruptedData(format!(
+				"Trailing bytes after reconstructed header: {}",
+				input.len()
+			))
+			.into());
+		}
+
+		if header.pow.nonce != nonce || header.pow.proof != proof {
+			return Err(ser::Error::CorruptedData(
+				"Reconstructed header POW does not match supplied nonce/proof".into(),
+			)
+			.into());
+		}
+
+		Ok(header)
 	}
 
 	/// Total number of outputs (spent and unspent) based on output MMR size committed to in this block.
 	/// Note: *Not* the number of outputs in this block but total up to and including this block.
 	/// The MMR size is the total number of hashes contained in the full MMR structure.
 	/// We want the corresponding number of leaves in the MMR given the size.
-	pub fn output_mmr_count(&self) -> u64 {
-		pmmr::n_leaves(self.output_mmr_size)
+	pub fn output_mmr_count(&self) -> Result<u64, Error> {
+		pmmr::n_leaves(self.output_mmr_size).map_err(Error::from)
 	}
 
 	/// Total number of kernels based on kernel MMR size committed to in this block.
 	/// Note: *Not* the number of kernels in this block but total up to and including this block.
 	/// The MMR size is the total number of hashes contained in the full MMR structure.
 	/// We want the corresponding number of leaves in the MMR given the size.
-	pub fn kernel_mmr_count(&self) -> u64 {
-		pmmr::n_leaves(self.kernel_mmr_size)
+	pub fn kernel_mmr_count(&self) -> Result<u64, Error> {
+		pmmr::n_leaves(self.kernel_mmr_size).map_err(Error::from)
 	}
 
 	/// Total difficulty accumulated by the proof of work on this header
@@ -412,31 +506,41 @@ impl BlockHeader {
 
 	/// The "overage" to use when verifying the kernel sums.
 	/// For a block header the overage is 0 - reward.
-	pub fn overage(&self, context_id: u32) -> i64 {
+	pub fn overage(&self, context_id: u32) -> Result<i64, Error> {
 		// MWC strategy
-		(calc_mwc_block_reward(context_id, self.height) as i64)
-			.checked_neg()
-			.unwrap_or(0)
+		let reward = calc_mwc_block_reward(context_id, self.height);
+		let reward = i64::try_from(reward).map_err(|_| {
+			Error::DataOverflow(format!(
+				"BlockHeader::overage, context_id={} height={} reward={}",
+				context_id, self.height, reward
+			))
+		})?;
+		reward.checked_neg().ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"BlockHeader::overage (checked_neg), context_id={} height={} reward={}",
+				context_id, self.height, reward
+			))
+		})
 	}
 
 	/// The "total overage" to use when verifying the kernel sums for a full
 	/// chain state. For a full chain state this is 0 - (height * reward).
-	pub fn total_overage(&self, context_id: u32, genesis_had_reward: bool) -> i64 {
+	pub fn total_overage(&self, context_id: u32, genesis_had_reward: bool) -> Result<i64, Error> {
 		let reward_count = self.height;
 
-		// Legacy Grin strategy:
-		/*
-			if genesis_had_reward {
-			((reward_count * REWARD) as i64).checked_neg().unwrap_or(0)
-		*/
-
-		// MWC DEBUG - want to understand when genesis doesn't have a reward
-		//if !genesis_had_reward {panic!("total_overage call with genesis_had_reward false");}
-
-		// MWC strategy:
-		(calc_mwc_block_overage(context_id, reward_count, genesis_had_reward) as i64)
-			.checked_neg()
-			.unwrap_or(0)
+		let overage = calc_mwc_block_overage(context_id, reward_count, genesis_had_reward);
+		let overage = i64::try_from(overage).map_err(|_| {
+			Error::DataOverflow(format!(
+				"BlockHeader::total_overage, context_id={} reward_count={} genesis_had_reward={} overage={}",
+				context_id, reward_count, genesis_had_reward, overage
+			))
+		})?;
+		overage.checked_neg().ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"BlockHeader::total_overage, context_id={} reward_count={} genesis_had_reward={} overage={}",
+				context_id, reward_count, genesis_had_reward, overage
+			))
+		})
 	}
 
 	/// Total kernel offset for the chain state up to and including this block.
@@ -460,14 +564,23 @@ pub struct UntrustedBlockHeader(BlockHeader);
 impl Readable for UntrustedBlockHeader {
 	fn read<R: Reader>(reader: &mut R) -> Result<UntrustedBlockHeader, ser::Error> {
 		let header = read_block_header(reader)?;
-		if header.timestamp
-			> Utc::now() + Duration::seconds(12 * (consensus::BLOCK_TIME_SEC as i64))
-		{
+		// 12 * (consensus::BLOCK_TIME_SEC as i64)) contains only the constants - it is safe
+		let max_future_timestamp = Utc::now()
+			.checked_add_signed(Duration::seconds(12 * (consensus::BLOCK_TIME_SEC as i64)))
+			.ok_or_else(|| {
+				ser::Error::DataOverflow(
+					"UntrustedBlockHeader::read, max_future_timestamp calculation".into(),
+				)
+			})?;
+		if header.timestamp > max_future_timestamp {
 			// refuse blocks more than 12 blocks intervals in future (as in bitcoin)
+			// This is intentionally an untrusted network admission rule, not a
+			// consensus rule: it depends on local wall-clock time and should only
+			// reject headers/blocks received from peers before chain validation.
 			// TODO add warning in p2p code if local time is too different from peers
 			let error_msg = format!(
 				"block header {} validation error: block time is more than 12 blocks in future",
-				header.hash()?
+				header.hash(reader.get_context_id())?
 			);
 			error!("{}", error_msg);
 			return Err(ser::Error::CorruptedData(error_msg));
@@ -488,7 +601,7 @@ impl Readable for UntrustedBlockHeader {
 		if !header.pow.is_primary(reader.get_context_id()) && !header.pow.is_secondary() {
 			let error_msg = format!(
 				"block header {} validation error: invalid edge bits",
-				header.hash()?
+				header.hash(reader.get_context_id())?
 			);
 			error!("{}", error_msg);
 			return Err(ser::Error::CorruptedData(error_msg));
@@ -496,7 +609,7 @@ impl Readable for UntrustedBlockHeader {
 		if let Err(e) = verify_size(reader.get_context_id(), &header) {
 			let error_msg = format!(
 				"block header {} validation error: invalid POW: {}",
-				header.hash()?,
+				header.hash(reader.get_context_id())?,
 				e
 			);
 			error!("{}", error_msg);
@@ -504,9 +617,38 @@ impl Readable for UntrustedBlockHeader {
 		}
 
 		// Validate global output and kernel MMR sizes against upper bounds based on block height.
-		let global_weight =
-			Transaction::weight_for_size(0, header.output_mmr_count(), header.kernel_mmr_count());
-		if global_weight > global::max_block_weight(reader.get_context_id()) * (header.height + 1) {
+		let output_mmr_count = header.output_mmr_count().map_err(|e| {
+			ser::Error::DataOverflow(format!(
+				"UntrustedBlockHeader::read, output_mmr_size={} error={}",
+				header.output_mmr_size, e
+			))
+		})?;
+		let kernel_mmr_count = header.kernel_mmr_count().map_err(|e| {
+			ser::Error::DataOverflow(format!(
+				"UntrustedBlockHeader::read, kernel_mmr_size={} error={}",
+				header.kernel_mmr_size, e
+			))
+		})?;
+		let global_weight = Transaction::weight_for_size(0, output_mmr_count, kernel_mmr_count)
+			.map_err(|e| ser::Error::CorruptedData(format!("Tx global weight error, {}", e)))?;
+		let height_plus_1 = header.height.checked_add(1).ok_or_else(|| {
+			ser::Error::DataOverflow(format!(
+				"UntrustedBlockHeader::read, header_height={}",
+				header.height
+			))
+		})?;
+		let max_global_weight = global::max_block_weight(reader.get_context_id())
+			.checked_mul(height_plus_1)
+			.ok_or_else(|| {
+				ser::Error::DataOverflow(format!(
+					"UntrustedBlockHeader::read, max_block_weight={} height_plus_1={}",
+					global::max_block_weight(reader.get_context_id()),
+					height_plus_1
+				))
+			})?;
+
+		// Note, this check is really loose sanity check. At this read stage we can't do better because no DB access exist here.
+		if global_weight > max_global_weight {
 			return Err(ser::Error::CorruptedData(
 				"Tx global weight is exceed the limit".to_string(),
 			));
@@ -521,6 +663,7 @@ impl Readable for UntrustedBlockHeader {
 /// bitcoin's schedule) and expressed as a global transaction fee (added v.H),
 /// additive to the total of fees ever collected.
 #[derive(Debug, Clone, Serialize)]
+#[serde(crate = "serde")]
 pub struct Block {
 	/// The header with metadata and commitments to the rest of the data
 	pub header: BlockHeader,
@@ -530,8 +673,11 @@ pub struct Block {
 
 impl Hashed for Block {
 	/// The hash of the underlying block.
-	fn hash(&self) -> Result<Hash, std::io::Error> {
-		self.header.hash()
+	/// A block is identified by its header hash. The header commits to the
+	/// block body through the output, range proof, and kernel roots, so two
+	/// different valid blocks cannot have the same block hash.
+	fn hash(&self, context_id: u32) -> Result<Hash, std::io::Error> {
+		self.header.hash(context_id)
 	}
 }
 
@@ -561,15 +707,21 @@ impl Readable for Block {
 /// Provides all information from a block that allows the calculation of total
 /// Pedersen commitment.
 impl Committed for Block {
-	fn inputs_committed(&self) -> Vec<Commitment> {
+	fn inputs_committed(
+		&self,
+	) -> Result<committed::CommitmentIterator<'_>, crate::core::committed::Error> {
 		self.body.inputs_committed()
 	}
 
-	fn outputs_committed(&self) -> Vec<Commitment> {
+	fn outputs_committed(
+		&self,
+	) -> Result<committed::CommitmentIterator<'_>, crate::core::committed::Error> {
 		self.body.outputs_committed()
 	}
 
-	fn kernels_committed(&self) -> Vec<Commitment> {
+	fn kernels_committed(
+		&self,
+	) -> Result<committed::CommitmentIterator<'_>, crate::core::committed::Error> {
 		self.body.kernels_committed()
 	}
 }
@@ -612,7 +764,8 @@ impl Block {
 		// Now set the pow on the header so block hashing works as expected.
 		{
 			let proof_size = global::proofsize(context_id);
-			block.header.pow.proof = Proof::random(context_id, proof_size);
+			block.header.pow.proof = Proof::random(context_id, proof_size)
+				.map_err(|e| Error::Other(format!("Unable to generate pow proof, {}", e)))?;
 		}
 
 		Ok(block)
@@ -624,8 +777,7 @@ impl Block {
 	pub fn hydrate_from(cb: CompactBlock, txs: &[Transaction]) -> Result<Block, Error> {
 		trace!(
 			"block: hydrate_from: {}, {} txs",
-			cb.hash()
-				.map_err(|e| Error::Other(format!("Build hash error, {}", e)))?,
+			cb.hash(cb.header.pow.proof.context_id)?,
 			txs.len()
 		);
 
@@ -636,15 +788,17 @@ impl Block {
 		let mut kernels = vec![];
 
 		// collect all the inputs, outputs and kernels from the txs
+		let context_id = cb.header.pow.proof.context_id;
 		for tx in txs {
-			let tx_inputs: Vec<_> = tx.inputs().into();
+			let tx_inputs = tx.inputs().into_commit_wrappers(context_id)?;
 			inputs.extend_from_slice(tx_inputs.as_slice());
 			outputs.extend_from_slice(tx.outputs());
 			kernels.extend_from_slice(tx.kernels());
 		}
 
 		// apply cut-through to our tx inputs and outputs
-		let (inputs, outputs, _, _) = transaction::cut_through(&mut inputs, &mut outputs)?;
+		let (inputs, outputs, _, _) =
+			transaction::cut_through(context_id, &mut inputs, &mut outputs)?;
 
 		let mut outputs = outputs.to_vec();
 		let mut kernels = kernels.to_vec();
@@ -654,7 +808,7 @@ impl Block {
 		kernels.extend_from_slice(cb.kern_full());
 
 		// Initialize a tx body and sort everything.
-		let body = TransactionBody::init(inputs.into(), &outputs, &kernels, false)?;
+		let body = TransactionBody::init(context_id, inputs.into(), &outputs, &kernels, false)?;
 
 		// Finally return the full block.
 		// Note: we have not actually validated the block here,
@@ -664,6 +818,8 @@ impl Block {
 
 	/// Build a new empty block from a specified header
 	pub fn with_header(context_id: u32, header: BlockHeader) -> Block {
+		// Note, we intentionally want to construct block with default() because it allow to build valid
+		//  block for this context. Context must be defined, otherwise it a fatal error so we want to panic
 		Block {
 			header,
 			..Block::default(context_id)
@@ -685,9 +841,10 @@ impl Block {
 		// A block is just a big transaction, aggregate and add the reward output
 		// and reward kernel. At this point the tx is technically invalid but the
 		// tx body is valid if we account for the reward (i.e. as a block).
-		let agg_tx = transaction::aggregate(txs, secp)?
-			.with_output(reward_out)
-			.with_kernel(reward_kern);
+		// Note, if reward_out and reward_kern already exist, they will be skipped.
+		let agg_tx = transaction::aggregate(context_id, txs, secp)?
+			.with_output(context_id, reward_out)?
+			.with_kernel(context_id, reward_kern)?;
 
 		// Now add the kernel offset of the previous block for a total
 		let total_kernel_offset = committed::sum_kernel_offsets(
@@ -697,7 +854,9 @@ impl Block {
 		)?;
 
 		// Determine the height and associated version for the new header.
-		let height = prev.height + 1;
+		let height = prev.height.checked_add(1).ok_or_else(|| {
+			Error::DataOverflow(format!("Block::from_reward, prev_height={}", prev.height))
+		})?;
 		let version = consensus::header_version(context_id, height);
 
 		let now = Utc::now().timestamp();
@@ -713,27 +872,38 @@ impl Block {
 				version,
 				height,
 				timestamp,
-				prev_hash: prev
-					.hash()
-					.map_err(|e| Error::Other(format!("Build hash error, {}", e)))?,
+				prev_hash: prev.hash(context_id)?,
 				total_kernel_offset,
 				pow: ProofOfWork {
-					total_difficulty: difficulty + prev.pow.total_difficulty,
+					total_difficulty: (difficulty + prev.pow.total_difficulty)?,
 					..ProofOfWork::default(context_id)
 				},
 				..BlockHeader::default(context_id)
 			},
-			body: agg_tx.into(),
+			body: agg_tx.body,
 		};
 		Ok(block)
 	}
 
-	/// Consumes this block and returns a new block with the coinbase output
-	/// and kernels added
-	pub fn with_reward(mut self, reward_out: Output, reward_kern: TxKernel) -> Block {
+	/// Consumes this empty block and returns a new block with the coinbase
+	/// output and kernel added.
+	pub fn with_reward(
+		mut self,
+		reward_out: Output,
+		reward_kern: TxKernel,
+	) -> Result<Block, Error> {
+		if !self.body.inputs().is_empty()
+			|| !self.body.outputs().is_empty()
+			|| !self.body.kernels().is_empty()
+		{
+			return Err(Error::Other(
+				"Block::with_reward requires an empty block body".into(),
+			));
+		}
+
 		self.body.outputs = vec![reward_out];
 		self.body.kernels = vec![reward_kern];
-		self
+		Ok(self)
 	}
 
 	/// Get inputs
@@ -752,8 +922,8 @@ impl Block {
 	}
 
 	/// Sum of all fees (inputs less outputs) in the block
-	pub fn total_fees(&self) -> u64 {
-		self.body.fee()
+	pub fn total_fees(&self) -> Result<u64, Error> {
+		Ok(self.body.fee()?)
 	}
 
 	/// "Lightweight" validation that we can perform quickly during read/deserialization.
@@ -765,6 +935,7 @@ impl Block {
 	pub fn validate_read(&self, context_id: u32) -> Result<(), Error> {
 		self.body.validate_read(context_id, Weighting::AsBlock)?;
 		self.verify_kernel_lock_heights()?;
+		self.verify_nrd_kernels_for_header_version(context_id)?;
 		Ok(())
 	}
 
@@ -794,7 +965,7 @@ impl Block {
 		&self,
 		context_id: u32,
 		prev_kernel_offset: &BlindingFactor,
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<Commitment, Error> {
 		self.body.validate(context_id, Weighting::AsBlock, secp)?;
 
@@ -805,7 +976,7 @@ impl Block {
 		// take the kernel offset for this block (block offset minus previous) and
 		// verify.body.outputs and kernel sums
 		let (_utxo_sum, kernel_sum) = self.verify_kernel_sums(
-			self.header.overage(context_id),
+			self.header.overage(context_id)?,
 			self.block_kernel_offset(prev_kernel_offset.clone(), secp)?,
 			secp,
 		)?;
@@ -833,7 +1004,7 @@ impl Block {
 
 		{
 			let over_commit =
-				secp.commit_value(reward(context_id, self.total_fees(), self.header.height))?;
+				secp.commit_value(reward(context_id, self.total_fees()?, self.header.height)?)?;
 
 			let out_adjust_sum =
 				secp.commit_sum(map_vec!(cb_outs, |x| x.commitment()), vec![over_commit])?;
@@ -890,26 +1061,31 @@ impl From<UntrustedBlock> for Block {
 #[derive(Debug)]
 pub struct UntrustedBlock(Block);
 
+impl UntrustedBlock {
+	/// The underlying block, after lightweight read validation.
+	pub fn as_block(&self) -> &Block {
+		&self.0
+	}
+}
+
 /// Deserialization of an untrusted block header
 impl Readable for UntrustedBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<UntrustedBlock, ser::Error> {
 		// we validate header here before parsing the body
 		let header = UntrustedBlockHeader::read(reader)?;
 		let body = TransactionBody::read(reader)?;
-
-		// Now "lightweight" validation of the block.
-		// Treat any validation issues as data corruption.
-		// An example of this would be reading a block
-		// that exceeded the allowed number of inputs.
-		body.validate_read(reader.get_context_id(), Weighting::AsBlock)
-			.map_err(|e| {
-				error!("read validation error: {}", e);
-				ser::Error::CorruptedData(format!("Fail to validate Tx body, {}", e))
-			})?;
 		let block = Block {
 			header: header.into(),
 			body,
 		};
+		// Now "lightweight" validation of the block.
+		// Treat any validation issues as data corruption.
+		// An example of this would be reading a block
+		// that exceeded the allowed number of inputs.
+		block.validate_read(reader.get_context_id()).map_err(|e| {
+			error!("read validation UntrustedBlock error: {}", e);
+			ser::Error::CorruptedData(format!("Fail to validate UntrustedBlock, {}", e))
+		})?;
 		Ok(UntrustedBlock(block))
 	}
 }

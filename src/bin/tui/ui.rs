@@ -16,22 +16,22 @@
 //! Basic TUI to better output the overall system status and status
 //! of various subsystems
 
-use chrono::prelude::Utc;
-use cursive::direction::Orientation;
-use cursive::theme::BaseColor::{Black, Blue, Cyan, White};
-use cursive::theme::Color::Dark;
-use cursive::theme::PaletteColor::{
+use mwc_crates::cursive;
+use mwc_crates::cursive::direction::Orientation;
+use mwc_crates::cursive::theme::BaseColor::{Black, Blue, Cyan, White};
+use mwc_crates::cursive::theme::Color::Dark;
+use mwc_crates::cursive::theme::PaletteColor::{
 	Background, Highlight, HighlightInactive, Primary, Shadow, View,
 };
-use cursive::theme::{BaseColor, BorderStyle, Color, Theme};
-use cursive::traits::{Nameable, Resizable};
-use cursive::utils::markup::StyledString;
-use cursive::views::{
-	CircularFocus, Dialog, LinearLayout, Panel, SelectView, StackView, TextView, ViewRef,
+use mwc_crates::cursive::theme::{BaseColor, BorderStyle, Color, Theme};
+use mwc_crates::cursive::traits::{Nameable, Resizable};
+use mwc_crates::cursive::utils::markup::StyledString;
+use mwc_crates::cursive::views::{
+	CircularFocus, Dialog, LinearLayout, Panel, SelectView, StackView, TextView,
 };
-use cursive::{CursiveRunnable, CursiveRunner};
+use mwc_crates::cursive::{CursiveRunnable, CursiveRunner};
 use std::sync::mpsc;
-use std::{thread, time};
+use std::time::{self, Instant};
 
 use super::constants::MAIN_MENU;
 use crate::built_info;
@@ -39,6 +39,7 @@ use crate::tui::constants::{ROOT_STACK, VIEW_BASIC_STATUS, VIEW_MINING, VIEW_PEE
 use crate::tui::types::{TUIStatusListener, UIMessage};
 use crate::tui::{logs, menu, mining, peers, status, version};
 use mwc_core::global;
+use mwc_crates::log::{error, warn};
 use mwc_util::logger::LogEntry;
 
 pub struct UI {
@@ -67,11 +68,14 @@ impl UI {
 		context_id: u32,
 		controller_tx: mpsc::Sender<ControllerMessage>,
 		logs_rx: mpsc::Receiver<LogEntry>,
-	) -> UI {
+	) -> Result<UI, String> {
 		let (ui_tx, ui_rx) = mpsc::channel::<UIMessage>();
+		let cursive = cursive::default()
+			.try_into_runner()
+			.map_err(|e| format!("Unable to initialize TUI backend: {}", e))?;
 
 		let mut mwc_ui = UI {
-			cursive: cursive::default().into_runner(),
+			cursive,
 			ui_tx,
 			ui_rx,
 			controller_tx,
@@ -125,12 +129,12 @@ impl UI {
 		mwc_ui.cursive.add_global_callback('q', move |c| {
 			let content = StyledString::styled("Shutting down...", Color::Light(BaseColor::Yellow));
 			c.add_layer(CircularFocus::new(Dialog::around(TextView::new(content))).wrap_tab());
-			controller_tx_clone
-				.send(ControllerMessage::Shutdown)
-				.unwrap();
+			if let Err(e) = controller_tx_clone.send(ControllerMessage::Shutdown) {
+				warn!("Unable to send shutdown message to TUI controller: {}", e);
+			}
 		});
-		mwc_ui.cursive.set_fps(3);
-		mwc_ui
+		mwc_ui.cursive.set_fps(5);
+		Ok(mwc_ui)
 	}
 
 	/// Step the UI by calling into Cursive's step function, then
@@ -146,17 +150,22 @@ impl UI {
 
 		// Process any pending UI messages
 		while let Some(message) = self.ui_rx.try_iter().next() {
-			let menu: ViewRef<SelectView<&str>> = self.cursive.find_name(MAIN_MENU).unwrap();
-			if let Some(selection) = menu.selection() {
-				match message {
-					UIMessage::UpdateStatus(update) => match *selection {
-						VIEW_BASIC_STATUS => {
-							status::TUIStatusView::update(&mut self.cursive, &update)
-						}
-						VIEW_MINING => mining::TUIMiningView::update(&mut self.cursive, &update),
-						VIEW_PEER_SYNC => peers::TUIPeerView::update(&mut self.cursive, &update),
-						_ => {}
-					},
+			if let Some(menu) = self.cursive.find_name::<SelectView<&str>>(MAIN_MENU) {
+				if let Some(selection) = menu.selection() {
+					match message {
+						UIMessage::UpdateStatus(update) => match *selection {
+							VIEW_BASIC_STATUS => {
+								status::TUIStatusView::update(&mut self.cursive, &update)
+							}
+							VIEW_MINING => {
+								mining::TUIMiningView::update(&mut self.cursive, &update)
+							}
+							VIEW_PEER_SYNC => {
+								peers::TUIPeerView::update(&mut self.cursive, &update)
+							}
+							_ => {}
+						},
+					}
 				}
 			}
 		}
@@ -187,15 +196,16 @@ impl Controller {
 		let (tx, rx) = mpsc::channel::<ControllerMessage>();
 		Ok(Controller {
 			rx,
-			ui: UI::new(context_id, tx, logs_rx),
+			ui: UI::new(context_id, tx, logs_rx)?,
 		})
 	}
 
 	/// Run the controller
 	pub fn run(&mut self, context_id: u32) {
-		let stat_update_interval = 1;
-		let mut next_stat_update = Utc::now().timestamp() + stat_update_interval;
-		let delay = time::Duration::from_millis(250);
+		let stat_update_interval = time::Duration::from_millis(200);
+		let stats_error_log_interval = time::Duration::from_secs(60);
+		let mut next_stat_update = Instant::now() + stat_update_interval;
+		let mut next_stats_error_log = Instant::now();
 		while self.ui.step() {
 			if let Some(message) = self.rx.try_iter().next() {
 				match message {
@@ -208,13 +218,23 @@ impl Controller {
 				}
 			}
 
-			if Utc::now().timestamp() > next_stat_update {
-				next_stat_update = Utc::now().timestamp() + stat_update_interval;
-				if let Ok(stats) = mwc_node_workflow::server::get_server_stats(context_id) {
-					self.ui.ui_tx.send(UIMessage::UpdateStatus(stats)).unwrap();
+			if Instant::now() > next_stat_update {
+				let now = Instant::now();
+				next_stat_update = now + stat_update_interval;
+				match mwc_node_workflow::server::get_server_stats(context_id) {
+					Ok(stats) => {
+						if let Err(e) = self.ui.ui_tx.send(UIMessage::UpdateStatus(stats)) {
+							error!("Unable to send status update to TUI: {}", e);
+						}
+					}
+					Err(e) => {
+						if now >= next_stats_error_log {
+							error!("Unable to get server stats for TUI: {}", e);
+							next_stats_error_log = now + stats_error_log_interval;
+						}
+					}
 				}
 			}
-			thread::sleep(delay);
 		}
 		mwc_node_workflow::server::release_server(context_id);
 	}

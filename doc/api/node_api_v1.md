@@ -287,11 +287,13 @@ Trigger a compaction of the chain state to regain storage space.
 
 ### GET Chain Validate
 
-Trigger a validation of the chain state.
+Trigger a validation of the chain state. By default, this runs fast validation and skips rangeproof verification and kernel signature verification. Pass `fast=false` to run full validation.
 
 * **URL**
 
-  /v1/chain/validate
+  * /v1/chain/validate
+  * /v1/chain/validate?fast=true
+  * /v1/chain/validate?fast=false
 
 * **Method:**
 
@@ -299,7 +301,10 @@ Trigger a validation of the chain state.
   
 * **URL Params**
 
-  None
+  **Optional:**
+  `fast=[boolean]`
+
+  Defaults to `true`. When `true`, rangeproof verification and kernel signature verification are skipped. When `false`, full validation is performed.
 
 * **Data Params**
 
@@ -311,13 +316,13 @@ Trigger a validation of the chain state.
 
 * **Error Response:**
 
-  * **Code:** 500
+  * **Code:** 400 for invalid parameters, or 500 for validation failures
 
 * **Sample Call:**
 
   ```javascript
     $.ajax({
-      url: "/v1/chain/validate",
+      url: "/v1/chain/validate?fast=false",
       dataType: "json",
       type : "GET",
       success : function(r) {
@@ -981,6 +986,8 @@ Retrieves basic information about the transaction pool.
 ### POST Pool Push
 
 Push new transaction to our local transaction pool. Add `?fluff` at the end of the URL to bypass Dandelion relay.
+
+Success means the transaction was accepted into the local transaction pool. Network relay is best-effort after local acceptance; adapter relay failures are logged by the node and are not returned by this endpoint.
 
 * **URL**
 

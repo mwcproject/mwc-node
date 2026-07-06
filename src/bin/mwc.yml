@@ -28,8 +28,12 @@ subcommands:
             short: p
             long: port
             takes_value: true
+        - api_host:
+            help: Explicit host IP on which to start the api server; required with --api_port
+            long: api_host
+            takes_value: true
         - api_port:
-            help: Port on which to start the api server (e.g. transaction pool api)
+            help: Port on which to start the api server (requires --api_host)
             short: api
             long: api_port
             takes_value: true

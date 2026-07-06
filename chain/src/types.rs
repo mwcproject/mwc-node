@@ -15,21 +15,31 @@
 
 //! Base types that the block chain pipeline requires.
 
-use chrono::prelude::{DateTime, Utc};
+use mwc_crates::bitflags::bitflags;
+use mwc_crates::serde::{self, Deserialize, Serialize};
 
-use crate::core::core::hash::{Hash, Hashed, ZERO_HASH};
-use crate::core::core::{Block, BlockHeader};
-use crate::core::pow::Difficulty;
-use crate::core::ser::{self, Readable, Reader, Writeable, Writer};
 use crate::error::Error;
-use std::sync::{RwLock, RwLockWriteGuard};
+use mwc_core::core::hash::{Hash, Hashed, ZERO_HASH};
+use mwc_core::core::{Block, BlockHeader};
+use mwc_core::pow::Difficulty;
+use mwc_core::ser::{self, Readable, Reader, Writeable, Writer};
+use mwc_crates::log::{debug, info};
+use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::secp::Secp256k1;
+use std::collections::HashSet;
+use std::convert::TryFrom;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 bitflags! {
-/// Options for block validation
+	/// Options for block validation
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 	pub struct Options: u32 {
 		/// No flags
 		const NONE = 0b0000_0000;
-		/// Runs without checking the Proof of Work, mostly to make testing easier.
+		/// Runs without checking the Proof of Work.
+		/// This is accepted only for cfg(test) builds or non-production chain modes.
+		#[cfg(test)]
 		const SKIP_POW = 0b0000_0001;
 		/// Adds block while in syncing mode.
 		const SYNC = 0b0000_0010;
@@ -40,9 +50,104 @@ bitflags! {
 
 /// We receive 512 headers from a peer in a batch. Let's use it for planning.
 pub const HEADERS_PER_BATCH: u32 = 512;
+pub(crate) const SYNC_STATUS_UPDATE_INTERVAL_MS: u64 = 200;
+
+/// Helper for sync phases that can produce progress faster than the UI can use.
+/// Using throttle to minimize unneeded updates
+pub(crate) struct SyncStatusUpdateThrottle {
+	start: Instant,
+	next_update_ms: AtomicU64,
+}
+
+impl SyncStatusUpdateThrottle {
+	pub(crate) fn new() -> SyncStatusUpdateThrottle {
+		SyncStatusUpdateThrottle {
+			start: Instant::now(),
+			next_update_ms: AtomicU64::new(SYNC_STATUS_UPDATE_INTERVAL_MS),
+		}
+	}
+
+	pub(crate) fn should_update(&self, force: bool) -> bool {
+		if force {
+			return true;
+		}
+
+		let elapsed_ms = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+		let mut next_update_ms = self.next_update_ms.load(Ordering::Relaxed);
+		loop {
+			if elapsed_ms < next_update_ms {
+				return false;
+			}
+
+			match self.next_update_ms.compare_exchange_weak(
+				next_update_ms,
+				elapsed_ms.saturating_add(SYNC_STATUS_UPDATE_INTERVAL_MS),
+				Ordering::Relaxed,
+				Ordering::Relaxed,
+			) {
+				Ok(_) => return true,
+				Err(current) => next_update_ms = current,
+			}
+		}
+	}
+}
+
+/// Progress steps for txhashset state validation before full rangeproof and
+/// kernel signature checks take over.
+pub const TXHASHSET_STATE_VALIDATION_STEPS: u64 = 4;
+
+/// The txhashset state validation sub-stage currently running.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(crate = "serde")]
+pub enum TxHashsetStateValidationStage {
+	/// Rewinding the writeable txhashset extension to the PIBD archive header.
+	Rewind,
+	/// Validating internal MMR hashes and sums.
+	ValidateMmrs,
+	/// Validating MMR roots against the archive header.
+	ValidateRoots,
+	/// Validating MMR sizes against the archive header.
+	ValidateSizes,
+	/// Validating the txhashset kernel sums.
+	ValidateKernelSums,
+}
+
+impl TxHashsetStateValidationStage {
+	/// Stable status name for API consumers.
+	pub fn api_name(self) -> &'static str {
+		match self {
+			TxHashsetStateValidationStage::Rewind => "rewind",
+			TxHashsetStateValidationStage::ValidateMmrs => "validate_mmrs",
+			TxHashsetStateValidationStage::ValidateRoots => "validate_roots",
+			TxHashsetStateValidationStage::ValidateSizes => "validate_sizes",
+			TxHashsetStateValidationStage::ValidateKernelSums => "validate_kernel_sums",
+		}
+	}
+
+	/// Human-readable label for local status displays.
+	pub fn display_name(self) -> &'static str {
+		match self {
+			TxHashsetStateValidationStage::Rewind => "writeable rewind",
+			TxHashsetStateValidationStage::ValidateMmrs => "MMR validation",
+			TxHashsetStateValidationStage::ValidateRoots => "root validation",
+			TxHashsetStateValidationStage::ValidateSizes => "size validation",
+			TxHashsetStateValidationStage::ValidateKernelSums => "kernel sums",
+		}
+	}
+
+	/// Unit name used by status displays for the progress counters.
+	pub fn progress_unit(self) -> &'static str {
+		match self {
+			TxHashsetStateValidationStage::Rewind => "blocks",
+			TxHashsetStateValidationStage::ValidateKernelSums => "commitments",
+			_ => "steps",
+		}
+	}
+}
 
 /// Various status sync can be in, whether it's fast sync or archival.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(crate = "serde")]
 pub enum SyncStatus {
 	/// Initial State (we do not yet know if we are/should be syncing)
 	Initial,
@@ -75,10 +180,8 @@ pub enum SyncStatus {
 		total_segments: usize,
 	},
 	/// Validating kernels history
-	ValidatingKernelsHistory,
-	/// Setting up before validation
-	TxHashsetHeadersValidation {
-		/// number of 'headers' for which kernels have been checked
+	ValidatingKernelsHistory {
+		/// number of headers for which kernel history has been checked
 		headers: u64,
 		/// headers total
 		headers_total: u64,
@@ -89,6 +192,29 @@ pub enum SyncStatus {
 		kernel_pos: u64,
 		/// total kernel position
 		kernel_pos_total: u64,
+	},
+	/// Building the output commitment to position/height index.
+	TxHashsetOutputPosIndexBuild {
+		/// outputs processed
+		outputs: u64,
+		/// outputs in total
+		outputs_total: u64,
+	},
+	/// Building the kernel excess to position/height index.
+	TxHashsetKernelPosIndexBuild {
+		/// kernels processed
+		kernels: u64,
+		/// kernels in total
+		kernels_total: u64,
+	},
+	/// Validating txhashset state before full rangeproof and kernel checks.
+	TxHashsetStateValidation {
+		/// current validation sub-stage
+		stage: TxHashsetStateValidationStage,
+		/// current progress within the sub-stage
+		current: u64,
+		/// total progress within the sub-stage
+		total: u64,
 	},
 	/// Validating the range proofs
 	TxHashsetRangeProofsValidation {
@@ -117,36 +243,6 @@ pub enum SyncStatus {
 	Shutdown,
 }
 
-/// Stats for TxHashsetDownload stage
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
-pub struct TxHashsetDownloadStats {
-	/// when download started
-	pub start_time: DateTime<Utc>,
-	/// time of the previous update
-	pub prev_update_time: DateTime<Utc>,
-	/// time of the latest update
-	pub update_time: DateTime<Utc>,
-	/// size of the previous chunk
-	pub prev_downloaded_size: u64,
-	/// size of the the latest chunk
-	pub downloaded_size: u64,
-	/// downloaded since the start
-	pub total_size: u64,
-}
-
-impl Default for TxHashsetDownloadStats {
-	fn default() -> Self {
-		TxHashsetDownloadStats {
-			start_time: Utc::now(),
-			update_time: Utc::now(),
-			prev_update_time: Utc::now(),
-			prev_downloaded_size: 0,
-			downloaded_size: 0,
-			total_size: 0,
-		}
-	}
-}
-
 /// Current sync state. Encapsulates the current SyncStatus.
 pub struct SyncState {
 	current: RwLock<SyncStatus>,
@@ -168,20 +264,20 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		match *self.current.read().unwrap_or_else(|e| e.into_inner()) {
+		match *self.current.read_recursive() {
 			SyncStatus::NoSync => false,
 			SyncStatus::BodySync {
 				archive_height: _,
 				current_height,
 				highest_height,
-			} => current_height + 10 < highest_height,
+			} => highest_height.saturating_sub(current_height) > 10,
 			_ => true,
 		}
 	}
 
 	/// Check if headers download process is done. In this case it make sense to request more top headers
 	pub fn are_headers_done(&self) -> bool {
-		match *self.current.read().unwrap_or_else(|e| e.into_inner()) {
+		match *self.current.read_recursive() {
 			SyncStatus::Initial => false,
 			SyncStatus::HeaderHashSync {
 				completed_blocks: _,
@@ -195,14 +291,28 @@ impl SyncState {
 		}
 	}
 
+	/// Whether the node is in a long txhashset/header PMMR validation phase.
+	pub fn is_txhashset_validation(&self) -> bool {
+		matches!(
+			*self.current.read_recursive(),
+			SyncStatus::ValidatingKernelsHistory { .. }
+				| SyncStatus::TxHashsetKernelsPosValidation { .. }
+				| SyncStatus::TxHashsetOutputPosIndexBuild { .. }
+				| SyncStatus::TxHashsetKernelPosIndexBuild { .. }
+				| SyncStatus::TxHashsetStateValidation { .. }
+				| SyncStatus::TxHashsetRangeProofsValidation { .. }
+				| SyncStatus::TxHashsetKernelsValidation { .. }
+		)
+	}
+
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
-		*self.current.read().unwrap_or_else(|e| e.into_inner())
+		*self.current.read_recursive()
 	}
 
 	/// Update the syncing status
 	pub fn update(&self, new_status: SyncStatus) -> bool {
-		let status = self.current.write().unwrap_or_else(|e| e.into_inner());
+		let status = self.current.write();
 		self.update_with_guard(new_status, status)
 	}
 
@@ -225,7 +335,7 @@ impl SyncState {
 	where
 		F: Fn(SyncStatus) -> bool,
 	{
-		let status = self.current.write().unwrap_or_else(|e| e.into_inner());
+		let status = self.current.write();
 		if f(*status) {
 			self.update_with_guard(new_status, status)
 		} else {
@@ -254,46 +364,50 @@ pub struct TxHashSetRoots {
 impl TxHashSetRoots {
 	/// Validate roots against the provided block header.
 	pub fn validate(&self, header: &BlockHeader) -> Result<(), Error> {
-		debug!("{}", self.get_validate_info_str(header));
+		let validate_info = self.get_validate_info_str(header)?;
+		debug!("{}", validate_info);
 
 		if header.output_root != self.output_root {
 			Err(Error::InvalidRoot(format!(
 				"Failed Output root validation. {}",
-				self.get_validate_info_str(header)
+				validate_info
 			)))
 		} else if header.range_proof_root != self.rproof_root {
 			Err(Error::InvalidRoot(format!(
 				"Failed Range Proof root validation. {}",
-				self.get_validate_info_str(header)
+				validate_info
 			)))
 		} else if header.kernel_root != self.kernel_root {
 			Err(Error::InvalidRoot(format!(
 				"Failed Kernel root validation. {}",
-				self.get_validate_info_str(header)
+				validate_info
 			)))
 		} else {
 			Ok(())
 		}
 	}
 
-	fn get_validate_info_str(&self, header: &BlockHeader) -> String {
-		format!("Validating at height {}. Output MMR size: {}  Kernel MMR size: {}  .validate roots: {} at {}, Outputs roots {} vs. {}, sz {} vs {}, Range Proof roots {} vs {}, sz {} vs {}, Kernel Roots {} vs {}, sz {} vs {}",
-				header.height, header.output_mmr_size, header.kernel_mmr_size,
-				header.hash().unwrap_or(Hash::default()),
-				header.height,
-				header.output_root,
-				self.output_root,
-				header.output_mmr_size,
-				self.output_mmr_size,
-				header.range_proof_root,
-				self.rproof_root,
-				header.output_mmr_size,
-				self.rproof_mmr_size,
-				header.kernel_root,
-				self.kernel_root,
-				header.kernel_mmr_size,
-				self.kernel_mmr_size,
-		)
+	fn get_validate_info_str(&self, header: &BlockHeader) -> Result<String, Error> {
+		Ok(format!(
+			"Validating at height {}. Output MMR size: {}  Kernel MMR size: {}  .validate roots: {} at {}, Outputs roots {} vs. {}, sz {} vs {}, Range Proof roots {} vs {}, sz {} vs {}, Kernel Roots {} vs {}, sz {} vs {}",
+			header.height,
+			header.output_mmr_size,
+			header.kernel_mmr_size,
+			header.hash(header.pow.proof.context_id)?,
+			header.height,
+			header.output_root,
+			self.output_root,
+			header.output_mmr_size,
+			self.output_mmr_size,
+			header.range_proof_root,
+			self.rproof_root,
+			header.output_mmr_size,
+			self.rproof_mmr_size,
+			header.kernel_root,
+			self.kernel_root,
+			header.kernel_mmr_size,
+			self.kernel_mmr_size,
+		))
 	}
 }
 
@@ -315,6 +429,31 @@ impl Readable for CommitPos {
 }
 
 impl Writeable for CommitPos {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_u64(self.pos)?;
+		writer.write_u64(self.height)?;
+		Ok(())
+	}
+}
+
+/// Minimal struct representing a known kernel MMR position and associated block height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KernelPos {
+	/// Kernel MMR position
+	pub pos: u64,
+	/// Block height
+	pub height: u64,
+}
+
+impl Readable for KernelPos {
+	fn read<R: Reader>(reader: &mut R) -> Result<KernelPos, ser::Error> {
+		let pos = reader.read_u64()?;
+		let height = reader.read_u64()?;
+		Ok(KernelPos { pos, height })
+	}
+}
+
+impl Writeable for KernelPos {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		writer.write_u64(self.pos)?;
 		writer.write_u64(self.height)?;
@@ -353,6 +492,7 @@ impl Writeable for HashHeight {
 /// blocks
 /// for convenience and the total difficulty.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(crate = "serde")]
 pub struct Tip {
 	/// Height of the tip (max height of the fork)
 	pub height: u64,
@@ -365,32 +505,20 @@ pub struct Tip {
 }
 
 impl Tip {
-	/// Creates a new tip based on provided header.
-	pub fn from_header(header: &BlockHeader) -> Tip {
-		header.into()
-	}
-}
-
-impl From<BlockHeader> for Tip {
-	fn from(header: BlockHeader) -> Self {
-		Self::from(&header)
-	}
-}
-
-impl From<&BlockHeader> for Tip {
-	fn from(header: &BlockHeader) -> Self {
-		Tip {
+	/// Creates a new tip based on provided header, propagating hash errors.
+	pub fn try_from_header(header: &BlockHeader) -> Result<Tip, Error> {
+		Ok(Tip {
 			height: header.height,
-			last_block_h: header.hash().unwrap_or(Hash::default()),
+			last_block_h: header.hash(header.pow.proof.context_id)?,
 			prev_block_h: header.prev_hash,
 			total_difficulty: header.total_difficulty(),
-		}
+		})
 	}
 }
 
 impl Hashed for Tip {
 	/// The hash of the underlying block.
-	fn hash(&self) -> Result<Hash, std::io::Error> {
+	fn hash(&self, _context_id: u32) -> Result<Hash, std::io::Error> {
 		Ok(self.last_block_h)
 	}
 }
@@ -437,14 +565,31 @@ impl ser::Readable for Tip {
 pub trait ChainAdapter {
 	/// The blockchain pipeline has accepted this block as valid and added
 	/// it to our chain.
-	fn block_accepted(&self, block: &Block, status: BlockStatus, opts: Options);
+	fn block_accepted(
+		&self,
+		secp: &mut Secp256k1,
+		block: &Block,
+		status: BlockStatus,
+		opts: Options,
+	);
+
+	/// A sourced block failed validation. The source peers are string encoded
+	/// to avoid coupling chain internals to p2p address types.
+	fn block_rejected(&self, _hash: &Hash, _source_peers: &HashSet<String>, _err: &Error) {}
 }
 
 /// Dummy adapter used as a placeholder for real implementations
 pub struct NoopAdapter {}
 
 impl ChainAdapter for NoopAdapter {
-	fn block_accepted(&self, _b: &Block, _status: BlockStatus, _opts: Options) {}
+	fn block_accepted(
+		&self,
+		_secp: &mut Secp256k1,
+		_b: &Block,
+		_status: BlockStatus,
+		_opts: Options,
+	) {
+	}
 }
 
 /// Status of an accepted block.

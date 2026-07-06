@@ -14,23 +14,20 @@
 // limitations under the License.
 
 //! Server types
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::serde_json;
 use std::convert::From;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use chrono::prelude::Utc;
-use rand::prelude::*;
+use mwc_crates::rand::{rng, RngExt};
 
-use crate::api;
-use crate::chain;
-use crate::core::global::ChainTypes;
-use crate::core::{core, libtx, pow};
-use crate::keychain;
-use crate::p2p;
-use crate::pool;
-use crate::pool::types::DandelionConfig;
-use crate::store;
-use mwc_core::global;
+use mwc_core::global::ChainTypes;
+use mwc_core::{consensus, global};
+use mwc_core::{core, libtx, pow};
+use mwc_crates::log::info;
 use mwc_p2p::types::TorConfig;
+use mwc_pool::types::DandelionConfig;
 use std::collections::HashSet;
 
 /// Error type wrapping underlying module errors.
@@ -38,31 +35,37 @@ use std::collections::HashSet;
 pub enum Error {
 	/// Error originating from the core implementation.
 	#[error("Core error, {0}")]
-	Core(core::block::Error),
+	Core(#[from] core::block::Error),
 	/// Error originating from the libtx implementation.
 	#[error("LibTx error, {0}")]
-	LibTx(libtx::Error),
+	LibTx(#[from] libtx::Error),
 	/// Error originating from the db storage.
 	#[error("Db Store error, {0}")]
-	Store(store::Error),
+	Store(#[from] mwc_store::Error),
 	/// Error originating from the blockchain implementation.
 	#[error("Blockchain error, {0}")]
-	Chain(chain::Error),
+	Chain(#[from] mwc_chain::Error),
 	/// Error originating from the peer-to-peer network.
 	#[error("P2P error, {0}")]
-	P2P(p2p::Error),
+	P2P(#[from] mwc_p2p::Error),
 	/// Error originating from HTTP API calls.
 	#[error("Http API error, {0}")]
-	API(api::Error),
+	API(#[from] mwc_api::Error),
 	/// Error originating from the cuckoo miner
 	#[error("Cuckoo miner error, {0}")]
-	Cuckoo(pow::Error),
+	Cuckoo(#[from] pow::Error),
+	/// Data overflow error
+	#[error("Server data overflow error, {0}")]
+	DataOverflow(String),
 	/// Error originating from the transaction pool.
 	#[error("Tx Pool error, {0}")]
-	Pool(pool::PoolError),
+	Pool(#[from] mwc_pool::PoolError),
+	/// Error originating from transaction processing.
+	#[error("Transaction error, {0}")]
+	Transaction(core::transaction::Error),
 	/// Error originating from the keychain.
 	#[error("Keychain error, {0}")]
-	Keychain(keychain::Error),
+	Keychain(#[from] mwc_keychain::Error),
 	/// Invalid Arguments.
 	#[error("Invalid argument, {0}")]
 	ArgumentError(String),
@@ -71,74 +74,30 @@ pub enum Error {
 	WalletComm(String),
 	/// Error originating from some I/O operation (likely a file on disk).
 	#[error("IO error, {0}")]
-	IOError(std::io::Error),
+	IOError(#[from] std::io::Error),
 	/// Configuration error
 	#[error("Configuration error, {0}")]
 	Configuration(String),
 	/// General error
 	#[error("General error, {0}")]
 	General(String),
+	/// Consensus error
+	#[error("Consensus error {0}")]
+	ConsensusError(#[from] consensus::Error),
 }
 
-impl From<core::block::Error> for Error {
-	fn from(e: core::block::Error) -> Error {
-		Error::Core(e)
-	}
-}
-impl From<chain::Error> for Error {
-	fn from(e: chain::Error) -> Error {
-		Error::Chain(e)
-	}
-}
-impl From<std::io::Error> for Error {
-	fn from(e: std::io::Error) -> Error {
-		Error::IOError(e)
-	}
-}
-impl From<p2p::Error> for Error {
-	fn from(e: p2p::Error) -> Error {
-		Error::P2P(e)
-	}
-}
-
-impl From<pow::Error> for Error {
-	fn from(e: pow::Error) -> Error {
-		Error::Cuckoo(e)
-	}
-}
-
-impl From<store::Error> for Error {
-	fn from(e: store::Error) -> Error {
-		Error::Store(e)
-	}
-}
-
-impl From<api::Error> for Error {
-	fn from(e: api::Error) -> Error {
-		Error::API(e)
-	}
-}
-
-impl From<pool::PoolError> for Error {
-	fn from(e: pool::PoolError) -> Error {
-		Error::Pool(e)
-	}
-}
-
-impl From<keychain::Error> for Error {
-	fn from(e: keychain::Error) -> Error {
-		Error::Keychain(e)
-	}
-}
-
-impl From<libtx::Error> for Error {
-	fn from(e: libtx::Error) -> Error {
-		Error::LibTx(e)
+impl From<core::transaction::Error> for Error {
+	fn from(e: core::transaction::Error) -> Error {
+		match e {
+			core::transaction::Error::DataOverflow(msg) => Error::DataOverflow(msg),
+			e => Error::Transaction(e),
+		}
 	}
 }
 
 /// Type of seeding the server will use to find other peers on the network.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub enum ChainValidationMode {
 	/// Run full chain validation after processing every block.
 	EveryBlock,
@@ -156,6 +115,7 @@ impl Default for ChainValidationMode {
 /// Full server configuration, aggregating configurations required for the
 /// different components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct ServerConfig {
 	/// Directory under which the rocksdb stores will be created
 	pub db_root: String,
@@ -205,33 +165,16 @@ pub struct ServerConfig {
 	/// if enabled, this will disable logging to stdout
 	pub run_tui: Option<bool>,
 
-	/// Whether to run the test miner (internal, cuckoo 16)
-	pub run_test_miner: Option<bool>,
-
-	/// Test miner wallet URL
-	pub test_miner_wallet_url: Option<String>,
-
-	/// Enable libp2p server. It can run only with TOR. Needed for wallets to send messages to each other.
-	/// Default value: enabled
-	pub libp2p_enabled: Option<bool>,
-
-	/// Topics that node will listen on and collect the data.
-	/// Default: SwapMarketplace
-	pub libp2p_topics: Option<Vec<String>>,
-
-	/// libp2p connection port (will be activated with Tor)
-	pub libp2p_port: Option<u16>,
-
 	/// Configuration for the peer-to-peer server
-	pub p2p_config: p2p::P2PConfig,
+	pub p2p_config: mwc_p2p::P2PConfig,
 
 	/// Transaction pool configuration
 	#[serde(default)]
-	pub pool_config: pool::PoolConfig,
+	pub pool_config: mwc_pool::PoolConfig,
 
 	/// Dandelion configuration
 	#[serde(default)]
-	pub dandelion_config: pool::DandelionConfig,
+	pub dandelion_config: DandelionConfig,
 
 	/// Configuration for the mining daemon
 	#[serde(default)]
@@ -255,23 +198,18 @@ impl Default for ServerConfig {
 			foreign_api_secret_path: Some(".foreign_api_secret".to_string()),
 			tls_certificate_file: None,
 			tls_certificate_key: None,
-			p2p_config: p2p::P2PConfig::default(),
-			dandelion_config: pool::DandelionConfig::default(),
+			p2p_config: mwc_p2p::P2PConfig::default(),
+			dandelion_config: DandelionConfig::default(),
 			stratum_mining_config: StratumServerConfig::default(),
 			chain_type: ChainTypes::default(),
 			archive_mode: Some(false),
 			chain_validation_mode: ChainValidationMode::default(),
-			pool_config: pool::PoolConfig::default(),
+			pool_config: mwc_pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
 			invalid_block_hashes: Some(vec![]),
 			duration_sync_short: Some(30),
 			duration_sync_long: Some(50),
 			run_tui: Some(true),
-			run_test_miner: Some(false),
-			test_miner_wallet_url: None,
-			libp2p_enabled: None,
-			libp2p_port: None,
-			libp2p_topics: None,
 			webhook_config: WebHooksConfig::default(),
 			tor_config: TorConfig::default(),
 		}
@@ -280,6 +218,7 @@ impl Default for ServerConfig {
 
 /// Stratum (Mining server) configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct StratumServerConfig {
 	/// Run a stratum mining server (the only way to communicate to mine this
 	/// node via mwc-miner
@@ -308,15 +247,15 @@ pub struct StratumServerConfig {
 
 	/// Maximum number of connections. Stratum will drop some workers if that limit will be exceeded.
 	#[serde(default = "StratumServerConfig::default_workers_connection_limit")]
-	pub workers_connection_limit: i32,
+	pub workers_connection_limit: u32,
 
 	/// Number of points to ban IP address
 	#[serde(default = "StratumServerConfig::default_ban_action_limit")]
-	pub ban_action_limit: i32,
+	pub ban_action_limit: usize,
 
 	/// Weight of 'submit shares' event vs ban events
 	#[serde(default = "StratumServerConfig::default_shares_weight")]
-	pub shares_weight: i32,
+	pub shares_weight: usize,
 
 	/// Timeout for worker's login
 	#[serde(default = "StratumServerConfig::default_worker_login_timeout_ms")]
@@ -324,7 +263,7 @@ pub struct StratumServerConfig {
 
 	/// History length used for ban IPs. After that period, ban will be lifted
 	#[serde(default = "StratumServerConfig::default_ip_pool_ban_history_s")]
-	pub ip_pool_ban_history_s: i64,
+	pub ip_pool_ban_history_s: u64,
 
 	/// Connection pace per IP per worker (average time interval between connections from the same IP)
 	#[serde(default = "StratumServerConfig::default_connection_pace_ms")]
@@ -343,19 +282,19 @@ impl StratumServerConfig {
 	fn default_ip_tracking() -> bool {
 		false
 	}
-	fn default_workers_connection_limit() -> i32 {
+	fn default_workers_connection_limit() -> u32 {
 		10000
 	}
-	fn default_ban_action_limit() -> i32 {
+	fn default_ban_action_limit() -> usize {
 		5
 	}
-	fn default_shares_weight() -> i32 {
+	fn default_shares_weight() -> usize {
 		5
 	}
 	fn default_worker_login_timeout_ms() -> i64 {
 		-1
 	}
-	fn default_ip_pool_ban_history_s() -> i64 {
+	fn default_ip_pool_ban_history_s() -> u64 {
 		3600
 	}
 	fn default_connection_pace_ms() -> i64 {
@@ -387,6 +326,7 @@ impl Default for StratumServerConfig {
 
 /// Web hooks configuration
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct WebHooksConfig {
 	/// url to POST transaction data when a new transaction arrives from a peer
 	pub tx_received_url: Option<String>,
@@ -396,7 +336,7 @@ pub struct WebHooksConfig {
 	pub block_received_url: Option<String>,
 	/// url to POST block data when a new block is accepted by our node (might be a reorg or a fork)
 	pub block_accepted_url: Option<String>,
-	/// number of worker threads in the tokio runtime
+	/// maximum number of concurrent webhook HTTP requests; requests over this limit are dropped
 	#[serde(default = "default_nthreads")]
 	pub nthreads: u16,
 	/// timeout in seconds for the http request
@@ -431,11 +371,15 @@ impl Default for WebHooksConfig {
 
 impl std::fmt::Debug for WebHooksConfig {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let tx_received_url = self.tx_received_url.as_ref().map(|_| "<configured>");
+		let header_received_url = self.header_received_url.as_ref().map(|_| "<configured>");
+		let block_received_url = self.block_received_url.as_ref().map(|_| "<configured>");
+		let block_accepted_url = self.block_accepted_url.as_ref().map(|_| "<configured>");
 		f.debug_struct("WebHooksConfig")
-			.field("tx_received_url", &self.tx_received_url)
-			.field("header_received_url", &self.header_received_url)
-			.field("block_received_url", &self.block_received_url)
-			.field("block_accepted_url", &self.block_accepted_url)
+			.field("tx_received_url", &tx_received_url)
+			.field("header_received_url", &header_received_url)
+			.field("block_received_url", &block_received_url)
+			.field("block_accepted_url", &block_accepted_url)
 			.field("nthreads", &self.nthreads)
 			.field("timeout", &self.timeout)
 			.finish()
@@ -460,11 +404,11 @@ impl PartialEq for WebHooksConfig {
 pub struct DandelionEpoch {
 	config: DandelionConfig,
 	// When did this epoch start?
-	start_time: Option<i64>,
+	start_time: Option<Instant>,
 	// Are we in "stem" mode or "fluff" mode for this epoch?
 	is_stem: bool,
 	// Our current Dandelion relay peer (effective for this epoch).
-	relay_peer: Option<Arc<p2p::Peer>>,
+	relay_peer: Option<Arc<mwc_p2p::Peer>>,
 	// App session id
 	context_id: u32,
 }
@@ -487,8 +431,8 @@ impl DandelionEpoch {
 		match self.start_time {
 			None => true,
 			Some(start_time) => {
-				let epoch_secs = self.config.epoch_secs;
-				Utc::now().timestamp().saturating_sub(start_time) > epoch_secs as i64
+				let epoch_duration = Duration::from_secs(self.config.epoch_secs as u64);
+				start_time.elapsed() > epoch_duration
 			}
 		}
 	}
@@ -496,8 +440,8 @@ impl DandelionEpoch {
 	/// Transition to next Dandelion epoch.
 	/// Select stem/fluff based on configured stem_probability.
 	/// Choose a new outbound stem relay peer.
-	pub fn next_epoch(&mut self, peers: &Arc<p2p::Peers>) {
-		self.start_time = Some(Utc::now().timestamp());
+	pub fn next_epoch(&mut self, peers: &Arc<mwc_p2p::Peers>) {
+		self.start_time = Some(Instant::now());
 		let my_fee_base = global::get_accept_fee_base(self.context_id);
 		self.relay_peer = peers
 			.iter()
@@ -508,8 +452,8 @@ impl DandelionEpoch {
 
 		// If stem_probability == 90 then we stem 90% of the time.
 		let stem_probability = self.config.stem_probability;
-		let mut rng = rand::thread_rng();
-		self.is_stem = rng.gen_range(0, 100) < stem_probability;
+		let mut rng = rng();
+		self.is_stem = rng.random_range(0..100) < stem_probability;
 
 		let addr = self.relay_peer.clone().map(|p| p.info.addr.clone());
 		info!(
@@ -530,7 +474,7 @@ impl DandelionEpoch {
 
 	/// What is our current relay peer?
 	/// If it is not connected then choose a new one.
-	pub fn relay_peer(&mut self, peers: &Arc<p2p::Peers>) -> Option<Arc<p2p::Peer>> {
+	pub fn relay_peer(&mut self, peers: &Arc<mwc_p2p::Peers>) -> Option<Arc<mwc_p2p::Peer>> {
 		let mut update_relay = false;
 		if let Some(peer) = &self.relay_peer {
 			if !peer.is_connected() {

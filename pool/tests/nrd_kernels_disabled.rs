@@ -15,31 +15,33 @@
 
 pub mod common;
 
-use self::core::consensus;
-use self::core::core::{HeaderVersion, KernelFeatures, NRDRelativeHeight};
-use self::core::global;
-use self::keychain::{ExtKeychain, Keychain};
-use self::pool::types::PoolError;
 use crate::common::*;
-use mwc_core as core;
-use mwc_keychain as keychain;
-use mwc_pool as pool;
-use mwc_util as util;
+use mwc_core::consensus;
+use mwc_core::core::{HeaderVersion, KernelFeatures, NRDRelativeHeight};
+use mwc_core::global;
+use mwc_crates::rand::rngs::SysRng;
+use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
+use mwc_keychain::{ExtKeychain, Keychain};
+use mwc_pool::types::PoolError;
+use std::convert::TryInto;
 use std::sync::Arc;
 
 #[test]
 fn test_nrd_kernels_disabled() {
-	util::init_test_logger();
+	mwc_util::init_test_logger().unwrap();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(false);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 
-	let keychain: ExtKeychain = Keychain::from_random_seed(false).unwrap();
+	let keychain: ExtKeychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
 
 	let db_root = "target/.nrd_kernels_disabled";
 	clean_output_dir(db_root.into());
 
 	let genesis = genesis_block(&keychain);
-	let chain = Arc::new(init_chain(db_root, genesis));
+	let chain = Arc::new(init_chain(&secp, db_root, genesis));
 
 	// Initialize a new pool with our chain adapter.
 	let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
@@ -47,20 +49,25 @@ fn test_nrd_kernels_disabled() {
 	}));
 
 	// Add some blocks.
-	add_some_blocks(&chain, 3, &keychain);
+	add_some_blocks(&mut secp, &chain, 3, &keychain);
 
 	// Spend the initial coinbase.
 	let header_1 = chain.get_header_by_height(1).unwrap();
-	let tx =
-		test_transaction_spending_coinbase(&keychain, &header_1, vec![1_000, 2_000, 3_000, 4_000]);
-	add_block(&chain, &[tx], &keychain);
+	let tx = test_transaction_spending_coinbase(
+		&mut secp,
+		&keychain,
+		&header_1,
+		vec![1_000, 2_000, 3_000, 4_000],
+	);
+	add_block(&mut secp, &chain, &[tx], &keychain);
 
 	let tx_1 = test_transaction_with_kernel_features(
+		&mut secp,
 		&keychain,
 		vec![1_000, 2_000],
 		vec![2_400],
 		KernelFeatures::NoRecentDuplicate {
-			fee: 600.into(),
+			fee: 600u32.try_into().unwrap(),
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 	);
@@ -68,25 +75,25 @@ fn test_nrd_kernels_disabled() {
 	let header = chain.head_header().unwrap();
 	assert!(header.version < HeaderVersion(4));
 
-	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, chain.secp()),
+	assert!(matches!(
+		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, &mut secp),
 		Err(PoolError::NRDKernelNotEnabled)
-	);
+	));
 
 	// Now mine several more blocks out to HF3
-	add_some_blocks(&chain, 5, &keychain);
+	add_some_blocks(&mut secp, &chain, 5, &keychain);
 	let header = chain.head_header().unwrap();
 	assert_eq!(header.height, consensus::TESTING_THIRD_HARD_FORK);
 	assert_eq!(header.version, HeaderVersion(4));
 
 	// NRD kernel support not enabled via feature flag, so not valid.
-	assert_eq!(
-		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, chain.secp()),
+	assert!(matches!(
+		pool.add_to_pool(test_source(), tx_1.clone(), false, &header, &mut secp),
 		Err(PoolError::NRDKernelNotEnabled)
-	);
+	));
 
 	assert_eq!(pool.total_size(), 0);
-	let txs = pool.prepare_mineable_transactions(chain.secp()).unwrap();
+	let txs = pool.prepare_mineable_transactions(&mut secp).unwrap();
 	assert_eq!(txs.len(), 0);
 
 	// Cleanup db directory

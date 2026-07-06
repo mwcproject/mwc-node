@@ -23,8 +23,10 @@ use crate::libtx::{
 	proof::{self, ProofBuild},
 };
 use keychain::{Identifier, Keychain, SwitchCommitmentType};
-use util::secp;
-use util::secp::Secp256k1;
+use mwc_crates::log::trace;
+#[cfg(test)]
+use mwc_crates::secp::key::SecretKey;
+use mwc_crates::secp::Secp256k1;
 
 /// output a reward output
 pub fn output<K, B>(
@@ -35,47 +37,49 @@ pub fn output<K, B>(
 	fees: u64,
 	test_mode: bool,
 	height: u64,
-	secp: &Secp256k1,
+	secp: &mut Secp256k1,
 ) -> Result<(Output, TxKernel), Error>
 where
 	K: Keychain,
 	B: ProofBuild,
 {
-	let value = reward(context_id, fees, height);
+	let value = reward(context_id, fees, height)?;
 	// TODO: proper support for different switch commitment schemes
 	let switch = SwitchCommitmentType::Regular;
-	let commit = keychain.commit(value, key_id, switch)?;
+	let commit = keychain.commit(secp, value, key_id, switch)?;
 
 	trace!("Block reward - Pedersen Commit is: {:?}", commit,);
 
-	let proof = proof::create(keychain, builder, value, key_id, switch, commit, None)?;
+	let proof = proof::create(secp, keychain, builder, value, key_id, switch, commit, None)?;
 
 	let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 
-	let over_commit = secp.commit_value(reward(context_id, fees, height))?;
+	let over_commit = secp.commit_value(reward(context_id, fees, height)?)?;
 	let out_commit = output.commitment();
 	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
 	let pubkey = excess.to_pubkey(&secp)?;
 
 	let features = KernelFeatures::Coinbase;
-	let msg = features.kernel_sig_msg()?;
-	let sig = match test_mode {
-		true => {
-			let test_nonce = secp::key::SecretKey::from_slice(&secp, &[1; 32])?;
-			aggsig::sign_from_key_id(
-				&secp,
-				keychain,
-				&msg,
-				value,
-				&key_id,
-				Some(&test_nonce),
-				Some(&pubkey),
-			)?
-		}
-		false => {
-			aggsig::sign_from_key_id(&secp, keychain, &msg, value, &key_id, None, Some(&pubkey))?
-		}
+	let msg = features.kernel_sig_msg(context_id)?;
+	#[cfg(not(test))]
+	if test_mode {
+		return Err(Error::Other(
+			"reward test_mode nonce is only available in tests".to_string(),
+		));
+	}
+
+	#[cfg(test)]
+	let nonce = if test_mode {
+		Some(SecretKey::from_slice(&secp, &[1; 32])?)
+	} else {
+		None
 	};
+	#[cfg(test)]
+	let nonce = nonce.as_ref();
+	#[cfg(not(test))]
+	let nonce = None;
+
+	let sig = aggsig::sign_from_key_id(&secp, keychain, &msg, value, &key_id, nonce, &pubkey)?;
 
 	let kernel = TxKernel {
 		features: KernelFeatures::Coinbase,

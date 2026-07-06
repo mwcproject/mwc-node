@@ -17,77 +17,100 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
+use mwc_crates::parking_lot::RwLock;
+use std::convert::TryFrom;
+use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::{mpsc, RwLock};
-use std::{convert::TryInto, fs};
-use std::{
-	thread::{self, JoinHandle},
-	time,
-};
+use std::thread::{self, JoinHandle};
 
-use fs2::FileExt;
-use walkdir::WalkDir;
+use mwc_crates::fs2::FileExt;
+use mwc_crates::walkdir::WalkDir;
 
-use crate::api;
-use crate::api::TLSConfig;
-use crate::chain::{self, SyncState, SyncStatus};
 use crate::common::adapters::{
 	ChainToPoolAndNetAdapter, NetToChainAdapter, PoolToChainAdapter, PoolToNetAdapter,
 };
-use crate::common::hooks::{init_chain_hooks, init_net_hooks};
+use crate::common::hooks::init_hooks;
 use crate::common::stats::{
 	ChainStats, DiffBlock, DiffStats, PeerStats, ServerStateInfo, ServerStats, TxStats,
 };
 use crate::common::types::{ServerConfig, StratumServerConfig};
-use crate::core::core::hash::{Hashed, ZERO_HASH};
-use crate::core::ser::ProtocolVersion;
-use crate::core::stratum::connections;
-use crate::core::{consensus, genesis, global, pow};
 use crate::mining::stratumserver;
-use crate::mining::test_miner::Miner;
 use crate::mwc::{dandelion_monitor, seed, sync};
-use crate::p2p;
-use crate::pool;
-use crate::util::file::get_first_line;
-use crate::util::StopState;
 use crate::Error;
-use std::collections::{HashSet, VecDeque};
+use mwc_api::TLSConfig;
+use mwc_chain::{self, SyncState, SyncStatus};
+use mwc_core::core::hash::{Hashed, ZERO_HASH};
+use mwc_core::ser::ProtocolVersion;
+use mwc_core::stratum::connections;
+use mwc_core::{consensus, global, pow};
+use mwc_util::file::get_owner_only_first_line_zeroizing;
+use mwc_util::StopState;
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
 use crate::mwc::sync::sync_manager::SyncManager;
-#[cfg(feature = "libp2p")]
-use crate::p2p::libp2p_connection;
-#[cfg(feature = "libp2p")]
-use chrono::Utc;
 use mwc_api::Router;
-use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_core::core::hash::Hash;
-#[cfg(feature = "libp2p")]
-use mwc_core::core::TxKernel;
+use mwc_crates::log::{debug, error, info, warn};
+use mwc_crates::secp::Secp256k1;
 use mwc_p2p::Capabilities;
-#[cfg(feature = "libp2p")]
-use mwc_util::from_hex;
-#[cfg(feature = "libp2p")]
-use mwc_util::secp::constants::SECRET_KEY_SIZE;
-#[cfg(feature = "libp2p")]
-use mwc_util::secp::pedersen::Commitment;
-#[cfg(feature = "libp2p")]
-use std::collections::HashMap;
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
-pub type ServerTxPool = Arc<RwLock<pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
+pub type ServerTxPool =
+	Arc<RwLock<mwc_pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
+
+/// Pending p2p listener startup. Waiting on this can block on TCP bind/Tor
+/// readiness, so callers should not hold global registry locks while waiting.
+pub struct PendingPeerListener {
+	listen_peers_thread: JoinHandle<Result<(), mwc_p2p::Error>>,
+	startup_rx: mpsc::Receiver<Result<(), mwc_p2p::Error>>,
+}
+
+/// Successfully started p2p listener thread handle.
+pub struct StartedPeerListener {
+	listen_peers_thread: JoinHandle<Result<(), mwc_p2p::Error>>,
+}
+
+impl PendingPeerListener {
+	pub fn wait_for_startup(self) -> Result<StartedPeerListener, Error> {
+		match self.startup_rx.recv() {
+			Ok(Ok(())) => Ok(StartedPeerListener {
+				listen_peers_thread: self.listen_peers_thread,
+			}),
+			Ok(Err(e)) => Err(Server::join_failed_peer_listener_startup(
+				self.listen_peers_thread,
+				e.to_string(),
+			)),
+			Err(e) => Err(Server::join_failed_peer_listener_startup(
+				self.listen_peers_thread,
+				format!("p2p startup status channel closed, {}", e),
+			)),
+		}
+	}
+}
+
+impl StartedPeerListener {
+	/// Wait for listener shutdown.
+	///
+	/// Listener shutdown is best effort: join panics and listener errors are
+	/// logged, and callers do not need the final shutdown result.
+	pub fn wait_for_shutdown(self) {
+		Server::wait_for_result_thread(Some(self.listen_peers_thread), "listen_peers_thread");
+	}
+}
 
 /// Mwc server holding internal structures.
 pub struct Server {
 	/// server config
 	pub config: ServerConfig,
 	/// handle to our network server
-	pub p2p: Arc<p2p::Server>,
+	pub p2p: Arc<mwc_p2p::Server>,
 	/// data store access
-	pub chain: Arc<chain::Chain>,
+	pub chain: Arc<mwc_chain::Chain>,
 	/// in-memory transaction pool
 	pub tx_pool: ServerTxPool,
 	/// Whether we're currently syncing
@@ -101,11 +124,12 @@ pub struct Server {
 	connect_thread: Option<JoinHandle<()>>,
 	sync_thread: Option<JoinHandle<()>>,
 	dandelion_thread: Option<JoinHandle<()>>,
-	stratum_thread: Option<JoinHandle<()>>,
-	miner_thread: Option<JoinHandle<()>>,
+	stratum_thread: Option<JoinHandle<Result<(), Error>>>,
 	connect_and_monitor_thread: Option<JoinHandle<()>>,
-	listen_peers_thread: Option<JoinHandle<()>>,
+	listen_peers_starting: bool,
+	listen_peers_thread: Option<JoinHandle<Result<(), mwc_p2p::Error>>>,
 	api_thread: Option<JoinHandle<()>>,
+	api_monitor_thread: Option<JoinHandle<Result<(), String>>>,
 
 	// Stratum pool
 	stratum_ip_pool: Arc<connections::StratumIpPool>,
@@ -117,7 +141,22 @@ pub struct Server {
 
 impl Server {
 	/// Create a new server instance. No jobs will be started
-	pub fn create_server(context_id: u32, config: ServerConfig) -> Result<Self, Error> {
+	pub fn create_server(
+		secp: &Secp256k1,
+		context_id: u32,
+		config: ServerConfig,
+	) -> Result<Self, Error> {
+		if let Some(ban_window) = config.p2p_config.ban_window {
+			if ban_window <= 0 {
+				return Err(Error::Config(format!(
+					"Invalid p2p_config.ban_window: {}. ban_window must be positive.",
+					ban_window
+				)));
+			}
+		}
+
+		config.dandelion_config.validate().map_err(Error::Config)?;
+
 		let stratum_ip_pool = Arc::new(connections::StratumIpPool::new(
 			config.stratum_mining_config.ban_action_limit,
 			config.stratum_mining_config.shares_weight,
@@ -147,7 +186,7 @@ impl Server {
 			context_id,
 			config.dandelion_config.clone(),
 		));
-		let tx_pool = Arc::new(RwLock::new(pool::TransactionPool::new(
+		let tx_pool = Arc::new(RwLock::new(mwc_pool::TransactionPool::new(
 			context_id,
 			config.pool_config.clone(),
 			pool_adapter.clone(),
@@ -159,23 +198,22 @@ impl Server {
 		// This translates to false here so we do not skip by default.
 		sync_state.update(SyncStatus::AwaitingPeers);
 
+		let hooks = init_hooks(&config)?;
+		let chain_hooks = hooks.chain_hooks;
+		let net_hooks = hooks.net_hooks;
+
 		let chain_adapter = Arc::new(ChainToPoolAndNetAdapter::new(
 			tx_pool.clone(),
-			init_chain_hooks(&config),
+			sync_state.clone(),
+			chain_hooks,
 		));
 
-		let genesis = match config.chain_type {
-			global::ChainTypes::AutomatedTesting => pow::mine_genesis_block(context_id)
-				.map_err(|e| Error::ServerError(format!("Unable to build genesis, {}", e)))?,
-			global::ChainTypes::UserTesting => pow::mine_genesis_block(context_id)
-				.map_err(|e| Error::ServerError(format!("Unable to build genesis, {}", e)))?,
-			global::ChainTypes::Floonet => genesis::genesis_floo(context_id),
-			global::ChainTypes::Mainnet => genesis::genesis_main(context_id),
-		};
+		let genesis = global::get_genesis_block(secp, context_id)
+			.map_err(|e| Error::ServerError(format!("Unable to build genesis, {}", e)))?;
 
 		info!(
 			"Starting server, genesis block: {}",
-			genesis.hash().unwrap_or(Hash::default())
+			genesis.hash(context_id)?
 		);
 
 		let invalid_blocks: HashSet<Hash> = match &config.invalid_block_hashes {
@@ -193,7 +231,8 @@ impl Server {
 		};
 
 		let shared_chain = Arc::new(
-			chain::Chain::init(
+			mwc_chain::Chain::init(
+				secp,
 				context_id,
 				config.db_root.clone(),
 				chain_adapter.clone(),
@@ -201,11 +240,15 @@ impl Server {
 				pow::verify_size,
 				archive_mode,
 				invalid_blocks,
+				Some(sync_state.clone()),
+				Some(stop_state.clone()),
 			)
 			.map_err(|e| Error::ServerError(format!("Unable to read blockchain data, {}", e)))?,
 		);
 
-		pool_adapter.set_chain(shared_chain.clone());
+		pool_adapter
+			.set_chain(shared_chain.clone())
+			.map_err(|e| Error::ServerError(e.to_string()))?;
 
 		let sync_manager: Arc<SyncManager> = Arc::new(SyncManager::new(
 			shared_chain.clone(),
@@ -219,8 +262,8 @@ impl Server {
 			shared_chain.clone(),
 			sync_manager.clone(),
 			tx_pool.clone(),
-			config.clone(),
-			init_net_hooks(&config),
+			config.chain_validation_mode.clone(),
+			net_hooks,
 		));
 
 		// Initialize our capabilities.
@@ -230,16 +273,14 @@ impl Server {
 		debug!("Capabilities: {:?}", capabilities);
 
 		let p2p_server = Arc::new(
-			p2p::Server::new(
+			mwc_p2p::Server::new(
 				context_id,
 				&config.db_root,
 				capabilities,
 				&config.p2p_config,
 				&config.tor_config,
 				net_adapter.clone(),
-				genesis
-					.hash()
-					.map_err(|e| Error::IO(format!("genesis hash error, {}", e)))?,
+				genesis.hash(context_id)?,
 				sync_state.clone(),
 				stop_state.clone(),
 			)
@@ -247,9 +288,13 @@ impl Server {
 		);
 
 		// Initialize various adapters with our dynamic set of connected peers.
-		chain_adapter.init(p2p_server.peers.clone());
-		pool_net_adapter.init(p2p_server.peers.clone());
-		net_adapter.init(p2p_server.peers.clone());
+		chain_adapter.init(p2p_server.peers.clone())?;
+		pool_net_adapter
+			.init(p2p_server.peers.clone())
+			.map_err(|e| Error::ServerError(e.to_string()))?;
+		net_adapter
+			.init(p2p_server.peers.clone())
+			.map_err(|e| Error::ServerError(e.to_string()))?;
 
 		Ok(Server {
 			config,
@@ -266,10 +311,11 @@ impl Server {
 			sync_thread: None,
 			dandelion_thread: None,
 			stratum_thread: None,
-			miner_thread: None,
 			connect_and_monitor_thread: None,
+			listen_peers_starting: false,
 			listen_peers_thread: None,
 			api_thread: None,
+			api_monitor_thread: None,
 			stratum_ip_pool,
 			sync_manager,
 			pool_net_adapter,
@@ -290,49 +336,48 @@ impl Server {
 				.store(true, Ordering::Relaxed);
 			self.start_stratum_server(self.config.stratum_mining_config.clone())?;
 		}
-
-		let enable_test_miner = self.config.run_test_miner;
-		let test_miner_wallet_url = self.config.test_miner_wallet_url.clone();
-
-		if let Some(s) = enable_test_miner {
-			if s {
-				self.start_test_miner(test_miner_wallet_url)?;
-			}
-		}
 		Ok(())
 	}
 
 	/// Start pees discovery p2p peers job
 	pub fn start_discover_peers(&mut self) -> Result<(), Error> {
-		if self.config.p2p_config.seeding_type != p2p::Seeding::Programmatic {
-			let seed_list = match self.config.p2p_config.seeding_type {
-				p2p::Seeding::None => {
-					warn!("No seed configured, will stay solo until connected to");
-					seed::predefined_seeds(vec![])
-				}
-				p2p::Seeding::List => match &self.config.p2p_config.seeds {
-					Some(seeds) => seed::predefined_seeds(seeds.peers.clone()),
-					None => {
-						return Err(Error::ServerError(
-							"Seeds must be configured for seeding type List".to_owned(),
-						));
-					}
-				},
-				p2p::Seeding::DNSSeed => seed::default_dns_seeds(self.chain.get_context_id()),
-				_ => unreachable!(),
-			};
-
-			let connect_thread = seed::connect_and_monitor(
-				self.p2p.clone(),
-				seed_list,
-				self.config.p2p_config.clone(),
-				self.stop_state.clone(),
-				self.config.tor_config.is_tor_enabled(),
-			)
-			.map_err(|e| Error::ServerError(format!("Unable to start monitoring, {}", e)))?;
-
-			self.connect_and_monitor_thread = Some(connect_thread);
+		if self.connect_and_monitor_thread.is_some() {
+			return Err(Error::ServerError(
+				"peer discovery is already running".into(),
+			));
 		}
+
+		let seed_list = match self.config.p2p_config.seeding_type {
+			mwc_p2p::Seeding::None => {
+				warn!("No seed configured, will stay solo until connected to");
+				seed::predefined_seeds(vec![])
+			}
+			mwc_p2p::Seeding::List => match &self.config.p2p_config.seeds {
+				Some(seeds) => seed::predefined_seeds(seeds.peers.clone()),
+				None => {
+					return Err(Error::ServerError(
+						"Seeds must be configured for seeding type List".to_owned(),
+					));
+				}
+			},
+			mwc_p2p::Seeding::DNSSeed => seed::default_dns_seeds(self.chain.get_context_id()),
+		};
+
+		// Peer discovery can fail on peer-store reads or persistence, but it can
+		// also spend a long time on DNS, Tor health checks, and outbound connects.
+		// Do not block server startup waiting for those operations just so this
+		// method can report discovery errors synchronously. Keep startup fast and
+		// let the seed monitor log and retry discovery failures after it starts.
+		let connect_thread = seed::connect_and_monitor(
+			self.p2p.clone(),
+			seed_list,
+			self.config.p2p_config.clone_without_secrets(),
+			self.stop_state.clone(),
+			self.config.tor_config.is_tor_enabled(),
+		)
+		.map_err(|e| Error::ServerError(format!("Unable to start monitoring, {}", e)))?;
+
+		self.connect_and_monitor_thread = Some(connect_thread);
 		Ok(())
 	}
 
@@ -356,61 +401,100 @@ impl Server {
 	}
 
 	/// Start p2p listening job. Needed for inbound peers connection
-	/// wait_for_starting is intended to fix
-	pub fn start_listen_peers(&mut self, wait_for_starting: bool) -> Result<(), Error> {
+	/// startup is always confirmed so listener bind/Tor failures are returned.
+	pub fn start_listen_peers(&mut self) -> Result<(), Error> {
+		let pending_listener = self.begin_start_listen_peers()?;
+		match pending_listener.wait_for_startup() {
+			Ok(started_listener) => self.finish_start_listen_peers(started_listener),
+			Err(e) => {
+				self.finish_failed_listen_peers_startup();
+				Err(e)
+			}
+		}
+	}
+
+	/// Spawn the p2p listener thread and return its pending startup status.
+	///
+	/// The returned handle must be waited on and then finalized with either
+	/// `finish_start_listen_peers` or `finish_failed_listen_peers_startup`.
+	pub fn begin_start_listen_peers(&mut self) -> Result<PendingPeerListener, Error> {
+		if self.listen_peers_starting || self.listen_peers_thread.is_some() {
+			return Err(Error::ServerError(
+				"peer listener is already running".into(),
+			));
+		}
+
 		let p2p_inner = self.p2p.clone();
-		let (p2p_tx, p2p_rx) = if wait_for_starting {
-			let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
-			(Some(p2p_tx), Some(p2p_rx))
-		} else {
-			(None, None)
-		};
+		let (p2p_tx, p2p_rx) = mpsc::sync_channel::<Result<(), mwc_p2p::Error>>(1);
 
 		let listen_peers_thread = thread::Builder::new()
 			.name("p2p-server".to_string())
-			.spawn(move || {
-				if let Err(e) = p2p_inner.listen(p2p_tx) {
-					// QW wallet using for tracking
-					error!("P2P server failed with erorr: {:?}", e);
-				}
-			})
+			.spawn(move || p2p_inner.listen(Some(p2p_tx)))
 			.map_err(|e| Error::ServerError(format!("Listen job is failed, {}", e)))?;
-		// waiting until p2p server was able to init
-		if let Some(p2p_rx) = p2p_rx {
-			let p2p_start_result = p2p_rx
-				.recv()
-				.map_err(|e| Error::ServerError(format!("Broken  mpsc::sync_channel, {}", e)))?;
-			p2p_start_result
-				.map_err(|e| Error::ServerError(format!("Failed to start p2p server, {}", e)))?;
+
+		self.listen_peers_starting = true;
+		Ok(PendingPeerListener {
+			listen_peers_thread,
+			startup_rx: p2p_rx,
+		})
+	}
+
+	/// Store a successfully started p2p listener thread in the server state.
+	pub fn finish_start_listen_peers(
+		&mut self,
+		started_listener: StartedPeerListener,
+	) -> Result<(), Error> {
+		if !self.listen_peers_starting {
+			self.stop_state.stop();
+			started_listener.wait_for_shutdown();
+			return Err(Error::ServerError(
+				"peer listener startup was not pending".into(),
+			));
 		}
 
-		self.listen_peers_thread = Some(listen_peers_thread);
-
+		self.listen_peers_starting = false;
+		self.listen_peers_thread = Some(started_listener.listen_peers_thread);
 		Ok(())
+	}
+
+	/// Clear the pending p2p listener startup state after startup failure.
+	pub fn finish_failed_listen_peers_startup(&mut self) {
+		self.listen_peers_starting = false;
+	}
+
+	fn join_failed_peer_listener_startup(
+		listen_peers_thread: JoinHandle<Result<(), mwc_p2p::Error>>,
+		startup_error: String,
+	) -> Error {
+		match listen_peers_thread.join() {
+			Ok(Err(e)) => Error::ServerError(format!("Failed to start p2p server, {}", e)),
+			Ok(Ok(())) => {
+				Error::ServerError(format!("Failed to start p2p server, {}", startup_error))
+			}
+			Err(e) => Error::ServerError(format!(
+				"Failed to start p2p server, {}; p2p listener thread panicked: {:?}",
+				startup_error, e
+			)),
+		}
 	}
 
 	/// Starting node rest API, needed for communication with mwc-wallet
 	pub fn start_rest_api(&mut self) -> Result<(), Error> {
-		info!("Starting rest apis at: {}", &self.config.api_http_addr);
-		let api_secret = get_first_line(self.config.api_secret_path.clone());
-		let foreign_api_secret = get_first_line(self.config.foreign_api_secret_path.clone());
-		let tls_conf = match self.config.tls_certificate_file.clone() {
-			None => None,
-			Some(file) => {
-				let key = match self.config.tls_certificate_key.clone() {
-					Some(k) => k,
-					None => {
-						return Err(Error::Config(
-							"Private key for certificate is not set".into(),
-						));
-					}
-				};
-				Some(TLSConfig::new(file, key))
-			}
-		};
+		if self.api_thread.is_some() || self.api_monitor_thread.is_some() {
+			return Err(Error::ServerError("rest api is already running".into()));
+		}
 
-		// TODO fix API shutdown and join this thread
-		let api_thread = api::node_apis(
+		info!("Starting rest apis at: {}", &self.config.api_http_addr);
+		let api_secret = get_owner_only_first_line_zeroizing(self.config.api_secret_path.clone())
+			.map_err(|e| Error::Config(format!("Unable to read API secret, {}", e)))?;
+		let foreign_api_secret =
+			get_owner_only_first_line_zeroizing(self.config.foreign_api_secret_path.clone())
+				.map_err(|e| Error::Config(format!("Unable to read foreign API secret, {}", e)))?;
+		// TLS is intentionally controlled by configuration. Node operators choose
+		// the transport security level that is appropriate for their deployment.
+		let tls_conf = build_tls_config(&self.config)?;
+
+		let api_threads = mwc_api::node_apis(
 			&self.config.api_http_addr,
 			self.chain.clone(),
 			self.tx_pool.clone(),
@@ -424,13 +508,14 @@ impl Server {
 		)
 		.map_err(|e| Error::ServerError(format!("Node API starting error, {}", e)))?;
 
-		self.api_thread = Some(api_thread);
+		self.api_thread = Some(api_threads.api_thread);
+		self.api_monitor_thread = Some(api_threads.api_monitor_thread);
 		Ok(())
 	}
 
 	/// Build router for Lib related API. Note, secrets for all APIs are None
 	pub fn build_api_router_no_secrets(&self) -> Result<Router, Error> {
-		let route = api::build_node_router(
+		let route = mwc_api::build_node_router(
 			self.chain.clone(),
 			self.tx_pool.clone(),
 			self.p2p.peers.clone(),
@@ -438,6 +523,7 @@ impl Server {
 			None,
 			None,
 			self.stratum_ip_pool.clone(),
+			self.stop_state.clone(),
 		)
 		.map_err(|e| Error::ServerError(format!("Failed to build node router, {}", e)))?;
 
@@ -446,6 +532,12 @@ impl Server {
 
 	/// Start dandelion protocol. Needed for publishing transactions
 	pub fn start_dandelion(&mut self) -> Result<(), Error> {
+		if self.dandelion_thread.is_some() {
+			return Err(Error::ServerError(
+				"dandelion monitor is already running".into(),
+			));
+		}
+
 		info!("Starting dandelion monitor...");
 		let dandelion_thread = dandelion_monitor::monitor_transactions(
 			self.config.dandelion_config.clone(),
@@ -458,132 +550,19 @@ impl Server {
 		Ok(())
 	}
 
-	// Lib p2p currently is disabled, just storing the code here
-	#[cfg(feature = "libp2p")]
-	pub fn start_libp2p_node(&self) {
-		// if config.libp2p_enabled.unwrap_or(true) && onion_address.is_some() && tor_secret.is_some()
-
-		let onion_address = onion_address.clone().unwrap();
-		let tor_secret = tor_secret.unwrap();
-		let tor_secret = from_hex(&tor_secret).map_err(|e| {
-			Error::General(format!("Unable to parse secret hex {}, {}", tor_secret, e))
-		})?;
-
-		let libp2p_port = config.libp2p_port;
-		let tor_socks_port = config.tor_config.socks_port;
-		let fee_base = config.pool_config.tx_fee_base;
-		api::set_server_onion_address(&onion_address);
-
-		let clone_shared_chain = shared_chain.clone();
-		let libp2p_topics = config
-			.libp2p_topics
-			.clone()
-			.unwrap_or(vec!["SwapMarketplace".to_string()]);
-
-		thread::Builder::new()
-			.name("libp2p_node".to_string())
-			.spawn(move || {
-				let requested_kernel_cache: RwLock<HashMap<Commitment, (TxKernel, u64)>> =
-					RwLock::new(HashMap::new());
-				let last_time_cache_cleanup: RwLock<i64> = RwLock::new(0);
-
-				let output_validation_fn =
-					move |excess: &Commitment| -> Result<Option<TxKernel>, mwc_p2p::Error> {
-						// Tip is needed in order to request from last 24 hours (1440 blocks)
-						let tip_height = clone_shared_chain.head()?.height;
-
-						let cur_time = Utc::now().timestamp();
-						// let's clean cache every 10 minutes. Removing all expired items
-						{
-							let mut last_time_cache_cleanup = last_time_cache_cleanup.write();
-							if cur_time - 600 > *last_time_cache_cleanup {
-								let min_height = tip_height
-									- libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS
-									- libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS / 12;
-								requested_kernel_cache
-									.write()
-									.retain(|_k, v| v.1 > min_height);
-								*last_time_cache_cleanup = cur_time;
-							}
-						}
-
-						// Checking if we hit the cache
-						if let Some(tx) = requested_kernel_cache.read().get(excess) {
-							return Ok(Some(tx.clone().0));
-						}
-
-						// !!! Note, get_kernel_height does iteration through the MMR. That will work until we
-						// Ban nodes that sent us incorrect excess. For now it should work fine. Normally
-						// peers reusing the integrity kernels so cache hit should happen most of the time.
-						match clone_shared_chain.get_kernel_height(
-							excess,
-							Some(tip_height - libp2p_connection::INTEGRITY_FEE_VALID_BLOCKS),
-							None,
-						)? {
-							Some((tx_kernel, height, _)) => {
-								requested_kernel_cache
-									.write()
-									.insert(excess.clone(), (tx_kernel.clone(), height));
-								Ok(Some(tx_kernel))
-							}
-							None => Ok(None),
-						}
-					};
-
-				let mut secret: [u8; SECRET_KEY_SIZE] = [0; SECRET_KEY_SIZE];
-				secret.copy_from_slice(&tor_secret);
-
-				let validation_fn = Arc::new(output_validation_fn);
-
-				let libp2p_stopper = Arc::new(std::sync::Mutex::new(1));
-
-				loop {
-					for t in &libp2p_topics {
-						libp2p_connection::add_topic(t, 1);
-					}
-
-					let libp2p_node_runner = libp2p_connection::run_libp2p_node(
-						tor_socks_port,
-						&secret,
-						libp2p_port.unwrap_or(3417),
-						fee_base,
-						validation_fn.clone(),
-						libp2p_stopper.clone(), // passing new obj, because we never will stop the libp2p process
-					);
-
-					info!("Starting gossipsub libp2p server");
-					let rt = tokio::runtime::Runtime::new().unwrap();
-
-					match rt.block_on(libp2p_node_runner) {
-						Ok(_) => info!("libp2p node is exited"),
-						Err(e) => error!("Unable to start libp2p node, {}", e),
-					}
-					// Swarm is not valid any more, let's update our global instance.
-					libp2p_connection::reset_libp2p_swarm();
-
-					if *libp2p_stopper.lock().unwrap() == 0 {
-						// Should never happen for the node
-						debug_assert!(false);
-						break;
-					}
-				}
-			})?;
-
-		// TODO store thread handle in the server, wait for thread at stopping
-	}
-
 	// Exclusive (advisory) lock_file to ensure we do not run multiple
 	// instance of mwc server from the same dir.
 	// This uses fs2 and should be safe cross-platform unless somebody abuses the file itself.
 	fn one_mwc_at_a_time(config: &ServerConfig) -> Result<Arc<File>, Error> {
 		let path = Path::new(&config.db_root);
-		fs::create_dir_all(&path).map_err(|e| {
+		mwc_util::file::ensure_owner_only_dir_all(path).map_err(|e| {
 			Error::ServerError(format!(
-				"Unable to create data directory {}, {}",
+				"Unable to secure data directory {}, {}",
 				path.to_str().unwrap_or("<Unknown>"),
 				e
 			))
 		})?;
+
 		let path = path.join("mwc.lock");
 		let lock_file = fs::OpenOptions::new()
 			.read(true)
@@ -618,26 +597,9 @@ impl Server {
 		Ok(Arc::new(lock_file))
 	}
 
-	/// Ping all peers, mostly useful for tests to have connected peers share
-	/// their heights
-	pub fn ping_peers(&self) -> Result<(), Error> {
-		let head = self
-			.chain
-			.head()
-			.map_err(|e| Error::ServerError(format!("Get chain tip error, {}", e)))?;
-		self.p2p.peers.check_all(head.total_difficulty, head.height);
-		Ok(())
-	}
-
 	/// Number of peers
-	pub fn peer_count(&self) -> u32 {
-		self.p2p
-			.peers
-			.iter()
-			.connected()
-			.count()
-			.try_into()
-			.unwrap_or(0)
+	pub fn peer_count(&self) -> usize {
+		self.p2p.peers.iter().connected().count()
 	}
 
 	/// Start a minimal "stratum" mining service on a separate thread
@@ -658,76 +620,55 @@ impl Server {
 		);
 
 		let proof_size = global::proofsize(self.p2p.get_context_id());
+		let (startup_tx, startup_rx) = mpsc::channel();
+		stratum_server.set_startup_status_tx(startup_tx);
 		let stratum_thread = thread::Builder::new()
 			.name("stratum_server".to_string())
-			.spawn(move || {
-				stratum_server.run_loop(proof_size);
-			})
+			.spawn(move || stratum_server.run_loop(proof_size))
 			.map_err(|e| Error::ServerError(format!("Unable to start stratum thread, {}", e)))?;
-		self.stratum_thread = Some(stratum_thread);
-		Ok(())
+
+		match startup_rx.recv() {
+			Ok(Ok(())) => {
+				// The stratum thread can still return an error after startup has
+				// succeeded. That result is intentionally deferred until shutdown:
+				// server services are started only once by this manager, and callers
+				// do not need a runtime restart/running-state contract for stratum.
+				self.stratum_thread = Some(stratum_thread);
+				Ok(())
+			}
+			Ok(Err(e)) => Err(Self::join_failed_stratum_startup(stratum_thread, e)),
+			Err(e) => Err(Self::join_failed_stratum_startup(
+				stratum_thread,
+				format!("stratum startup status channel closed, {}", e),
+			)),
+		}
 	}
 
-	/// Start mining for blocks internally on a separate thread. Relies on
-	/// internal miner, and should only be used for automated testing. Burns
-	/// reward if wallet_listener_url is 'None'
-	fn start_test_miner(&mut self, wallet_listener_url: Option<String>) -> Result<(), Error> {
-		if self.miner_thread.is_some() {
-			return Err(Error::ServerError("test miner is already running".into()));
+	fn join_failed_stratum_startup(
+		stratum_thread: JoinHandle<Result<(), Error>>,
+		startup_error: String,
+	) -> Error {
+		match stratum_thread.join() {
+			Ok(Err(e)) => e,
+			Ok(Ok(())) => {
+				Error::ServerError(format!("Unable to start stratum server, {}", startup_error))
+			}
+			Err(e) => Error::ServerError(format!(
+				"Unable to start stratum server, {}; stratum thread panicked: {:?}",
+				startup_error, e
+			)),
 		}
-		info!("start_test_miner - start",);
-		let sync_state = self.sync_state.clone();
-		let config_wallet_url = match wallet_listener_url.clone() {
-			Some(u) => u,
-			None => String::from("http://127.0.0.1:13415"),
-		};
-
-		let config = StratumServerConfig {
-			attempt_time_per_block: 60,
-			burn_reward: false,
-			enable_stratum_server: None,
-			stratum_server_addr: None,
-			wallet_listener_url: config_wallet_url,
-			minimum_share_difficulty: 1,
-			ip_tracking: false,
-			workers_connection_limit: 30000,
-			ban_action_limit: 5,
-			shares_weight: 5,
-			worker_login_timeout_ms: -1,
-			ip_pool_ban_history_s: 3600,
-			connection_pace_ms: -1,
-			ip_white_list: HashSet::new(),
-			ip_black_list: HashSet::new(),
-		};
-
-		let mut miner = Miner::new(
-			config,
-			self.chain.clone(),
-			self.tx_pool.clone(),
-			self.stop_state.clone(),
-			sync_state,
-		);
-		miner.set_debug_output_id(format!("Port {}", self.config.p2p_config.port));
-		let miner_thread = thread::Builder::new()
-			.name("test_miner".to_string())
-			.spawn(move || miner.run_loop(wallet_listener_url))
-			.map_err(|e| {
-				Error::ServerError(format!("Unable to start the test miner thread, {}", e))
-			})?;
-
-		self.miner_thread = Some(miner_thread);
-		Ok(())
 	}
 
 	/// The chain head
-	pub fn head(&self) -> Result<chain::Tip, Error> {
+	pub fn head(&self) -> Result<mwc_chain::Tip, Error> {
 		self.chain
 			.head()
 			.map_err(|e| Error::ServerError(format!("Get chain head error, {}", e)))
 	}
 
 	/// The head of the block header chain
-	pub fn header_head(&self) -> Result<chain::Tip, Error> {
+	pub fn header_head(&self) -> Result<mwc_chain::Tip, Error> {
 		self.chain
 			.header_head()
 			.map_err(|e| Error::ServerError(format!("Get chain header head error, {}", e)))
@@ -749,7 +690,7 @@ impl Server {
 		// code clean. This may be handy for testing but not really needed
 		// for release
 		let diff_stats = {
-			let mut cache_values: VecDeque<HeaderDifficultyInfo> = VecDeque::new();
+			let mut cache_values = consensus::DifficultyCache::new();
 			let last_blocks: Vec<consensus::HeaderDifficultyInfo> =
 				global::difficulty_data_to_vector(
 					self.p2p.get_context_id(),
@@ -758,24 +699,29 @@ impl Server {
 					})?,
 					&mut cache_values,
 				)
+				.map_err(|e| Error::ServerError(format!("Difficulty data error, {}", e)))?
 				.into_iter()
 				.collect();
 
-			let tip_height = self.head()?.height as i64;
-			let mut height = tip_height as i64 - last_blocks.len() as i64 + 1;
+			let tip_height = self.head()?.height;
+			// difficulty_data_to_vector pads early chains to a full difficulty window.
+			// Clamp synthetic history to the current tip instead of failing stats.
+			let displayed_blocks = last_blocks.len().saturating_sub(1) as u64;
 
 			let diff_entries: Vec<DiffBlock> = last_blocks
 				.windows(2)
-				.map(|pair| {
+				.enumerate()
+				.map(|(idx, pair)| {
 					let prev = &pair[0];
 					let next = &pair[1];
 
-					height += 1;
-
 					let block_hash = next.hash.unwrap_or(ZERO_HASH);
+					let height_lag = displayed_blocks
+						.saturating_sub(1)
+						.saturating_sub(idx as u64);
 
 					DiffBlock {
-						block_height: height,
+						block_height: tip_height.saturating_sub(height_lag),
 						block_hash,
 						difficulty: next.difficulty.to_num(),
 						time: next.timestamp,
@@ -787,12 +733,20 @@ impl Server {
 				.collect();
 
 			let block_time_sum = diff_entries.iter().fold(0, |sum, t| sum + t.duration);
-			let block_diff_sum = diff_entries.iter().fold(0, |sum, d| sum + d.difficulty);
+			let block_diff_sum: u128 = diff_entries.iter().map(|d| u128::from(d.difficulty)).sum();
+			let average_difficulty =
+				block_diff_sum / u128::from(consensus::DIFFICULTY_ADJUST_WINDOW - 1);
+			let average_difficulty = u64::try_from(average_difficulty).map_err(|_| {
+				Error::DataOverflow(format!(
+					"Difficulty stats average difficulty {} exceeds u64::MAX",
+					average_difficulty
+				))
+			})?;
 			DiffStats {
-				height: height as u64,
+				height: tip_height,
 				last_blocks: diff_entries,
 				average_block_time: block_time_sum / (consensus::DIFFICULTY_ADJUST_WINDOW - 1),
-				average_difficulty: block_diff_sum / (consensus::DIFFICULTY_ADJUST_WINDOW - 1),
+				average_difficulty,
 				window_size: consensus::DIFFICULTY_ADJUST_WINDOW,
 			}
 		};
@@ -810,7 +764,7 @@ impl Server {
 		// acquire various read locks with a timeout.
 
 		let tx_stats = {
-			let pool = self.tx_pool.read().unwrap_or_else(|e| e.into_inner());
+			let pool = self.tx_pool.read_recursive();
 			TxStats {
 				tx_pool_size: pool.txpool.size(),
 				tx_pool_kernels: pool.txpool.kernel_count(),
@@ -826,9 +780,7 @@ impl Server {
 		let head_stats = ChainStats {
 			latest_timestamp: head.timestamp,
 			height: head.height,
-			last_block_h: head
-				.hash()
-				.map_err(|e| Error::IO(format!("Header hash build error, {}", e)))?,
+			last_block_h: head.hash(self.chain.get_context_id())?,
 			total_difficulty: head.total_difficulty(),
 		};
 
@@ -838,18 +790,12 @@ impl Server {
 			.map_err(|e| Error::ServerError(format!("Chain header head access error, {}", e)))?;
 		let header = self
 			.chain
-			.get_block_header(
-				&header_head
-					.hash()
-					.map_err(|e| Error::IO(format!("Tip hash build error, {}", e)))?,
-			)
+			.get_block_header(&header_head.hash(self.chain.get_context_id())?)
 			.map_err(|e| Error::ServerError(format!("Chain block header access error, {}", e)))?;
 		let header_stats = ChainStats {
 			latest_timestamp: header.timestamp,
 			height: header.height,
-			last_block_h: header
-				.hash()
-				.map_err(|e| Error::IO(format!("Header hash build error, {}", e)))?,
+			last_block_h: header.hash(self.chain.get_context_id())?,
 			total_difficulty: header.total_difficulty(),
 		};
 
@@ -857,10 +803,23 @@ impl Server {
 			.min_depth(1)
 			.max_depth(3)
 			.into_iter()
-			.filter_map(|entry| entry.ok())
-			.filter_map(|entry| entry.metadata().ok())
-			.filter(|metadata| metadata.is_file())
-			.fold(0, |acc, m| acc + m.len());
+			.try_fold(0_u64, |acc, entry| -> Result<u64, Error> {
+				let entry = entry
+					.map_err(|e| Error::ServerError(format!("Disk usage walk error, {}", e)))?;
+				let metadata = entry.metadata().map_err(|e| {
+					Error::ServerError(format!(
+						"Disk usage metadata access error for {}, {}",
+						entry.path().display(),
+						e
+					))
+				})?;
+
+				if metadata.is_file() {
+					Ok(acc.saturating_add(metadata.len()))
+				} else {
+					Ok(acc)
+				}
+			})?;
 
 		let disk_usage_gb = format!("{:.*}", 3, (disk_usage_bytes as f64 / 1_000_000_000_f64));
 
@@ -882,25 +841,39 @@ impl Server {
 		self.sync_state.update(SyncStatus::Shutdown);
 		self.stop_state.stop();
 
+		// Shutdown is best effort once the server is being consumed. Thread joins,
+		// service shutdowns, p2p stop, and lock release can fail independently; with
+		// this stop(self) API the best we can do is log each error and keep trying to
+		// release the remaining resources.
+		//
+		// Stop p2p before waiting on the seed/listener threads. The seed monitor can
+		// be joining outbound peer_connect workers, including Tor connects. Stopping
+		// p2p first cancels those workers and stops active peers from continuing to
+		// process sync traffic during shutdown.
+		if let Err(e) = self.p2p.stop() {
+			error!("failed to stop p2p server: {}", e);
+		}
 		Self::wait_for_thread(self.connect_thread, "connect_thread");
 		Self::wait_for_thread(self.sync_thread, "sync_thread");
 		Self::wait_for_thread(self.dandelion_thread, "dandelion_thread");
-		Self::wait_for_thread(self.stratum_thread, "stratum_thread");
-		Self::wait_for_thread(self.miner_thread, "miner_thread");
+		Self::wait_for_result_thread(self.stratum_thread, "stratum_thread");
 		Self::wait_for_thread(
 			self.connect_and_monitor_thread,
 			"connect_and_monitor_thread",
 		);
-		Self::wait_for_thread(self.listen_peers_thread, "listen_peers_thread");
+		Self::wait_for_result_thread(self.listen_peers_thread, "listen_peers_thread");
+		Self::wait_for_result_thread(self.api_monitor_thread, "api_monitor_thread");
 		Self::wait_for_thread(self.api_thread, "api_thread");
 
-		// this call is blocking and makes sure all peers stop, however
-		// we can't be sure that we stopped a listener blocked on accept, so we don't join the p2p thread
-		self.p2p.stop();
-		let _ = FileExt::unlock(&*self.lock_file);
+		if let Err(e) = FileExt::unlock(&*self.lock_file) {
+			error!("failed to unlock server lock file: {}", e);
+		}
 		warn!("Shutdown complete");
 	}
 
+	// Thread waits follow the same best-effort shutdown policy as Server::stop:
+	// join failures are logged because the caller is already using best-effort
+	// shutdown and has no useful recovery path for these background threads.
 	fn wait_for_thread(thread: Option<JoinHandle<()>>, thread_name: &str) {
 		if let Some(sync_thread) = thread {
 			match sync_thread.join() {
@@ -910,11 +883,17 @@ impl Server {
 		}
 	}
 
-	/// Pause the p2p server.
-	pub fn pause(&self) {
-		self.stop_state.pause();
-		thread::sleep(time::Duration::from_secs(1));
-		self.p2p.pause();
+	fn wait_for_result_thread<E: std::fmt::Display>(
+		thread: Option<JoinHandle<Result<(), E>>>,
+		thread_name: &str,
+	) {
+		if let Some(sync_thread) = thread {
+			match sync_thread.join() {
+				Err(e) => error!("failed to join to thread {}: {:?}", thread_name, e),
+				Ok(Err(e)) => error!("{} thread failed: {}", thread_name, e),
+				Ok(Ok(_)) => info!("{} thread is stopped", thread_name),
+			}
+		}
 	}
 
 	/// Resume p2p server.
@@ -927,5 +906,133 @@ impl Server {
 	pub fn stop_test_miner(&self, stop: Arc<StopState>) {
 		stop.stop();
 		info!("stop_test_miner - stop",);
+	}
+}
+
+fn build_tls_config(config: &ServerConfig) -> Result<Option<TLSConfig>, Error> {
+	match (
+		config.tls_certificate_file.clone(),
+		config.tls_certificate_key.clone(),
+	) {
+		(None, None) => Ok(None),
+		(Some(file), Some(key)) => Ok(Some(TLSConfig::new(file, key))),
+		(Some(_), None) => Err(Error::Config(
+			"Private key for certificate is not set".into(),
+		)),
+		(None, Some(_)) => Err(Error::Config("Certificate file is not set".into())),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[cfg(unix)]
+	#[test]
+	fn one_mwc_at_a_time_creates_owner_only_db_root() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let db_root = temp_dir.path().join("chain_data");
+		let config = ServerConfig {
+			db_root: db_root.to_str().unwrap().to_owned(),
+			..ServerConfig::default()
+		};
+
+		let _lock_file = Server::one_mwc_at_a_time(&config).unwrap();
+
+		let mode = fs::metadata(&db_root).unwrap().permissions().mode() & 0o777;
+		assert_eq!(mode, 0o700);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn one_mwc_at_a_time_rejects_group_writable_db_root() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let db_root = temp_dir.path().join("chain_data");
+		fs::create_dir(&db_root).unwrap();
+		fs::set_permissions(&db_root, fs::Permissions::from_mode(0o777)).unwrap();
+		let config = ServerConfig {
+			db_root: db_root.to_str().unwrap().to_owned(),
+			..ServerConfig::default()
+		};
+
+		match Server::one_mwc_at_a_time(&config) {
+			Err(Error::ServerError(msg)) => {
+				assert!(msg.contains("unsafe group/other write permissions"));
+			}
+			Err(err) => panic!("expected data directory security error, got {}", err),
+			Ok(_) => panic!("expected unsafe data directory to be rejected"),
+		}
+	}
+
+	#[test]
+	fn build_tls_config_without_certificate_or_key_disables_tls() {
+		let config = ServerConfig {
+			tls_certificate_file: None,
+			tls_certificate_key: None,
+			..ServerConfig::default()
+		};
+
+		assert!(build_tls_config(&config).unwrap().is_none());
+	}
+
+	#[test]
+	fn build_tls_config_with_certificate_and_key_enables_tls() {
+		let config = ServerConfig {
+			tls_certificate_file: Some("cert.pem".to_string()),
+			tls_certificate_key: Some("key.pem".to_string()),
+			..ServerConfig::default()
+		};
+
+		let tls_config = build_tls_config(&config).unwrap().unwrap();
+		assert_eq!(tls_config.certificate, "cert.pem");
+		assert_eq!(tls_config.private_key, "key.pem");
+	}
+
+	#[test]
+	fn build_tls_config_rejects_certificate_without_key() {
+		let config = ServerConfig {
+			tls_certificate_file: Some("cert.pem".to_string()),
+			tls_certificate_key: None,
+			..ServerConfig::default()
+		};
+
+		match build_tls_config(&config) {
+			Err(Error::Config(msg)) => assert_eq!(msg, "Private key for certificate is not set"),
+			other => panic!("expected certificate key config error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn build_tls_config_rejects_key_without_certificate() {
+		let config = ServerConfig {
+			tls_certificate_file: None,
+			tls_certificate_key: Some("key.pem".to_string()),
+			..ServerConfig::default()
+		};
+
+		match build_tls_config(&config) {
+			Err(Error::Config(msg)) => assert_eq!(msg, "Certificate file is not set"),
+			other => panic!("expected certificate file config error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn create_server_rejects_invalid_dandelion_config() {
+		let secp = Secp256k1::with_caps(mwc_crates::secp::ContextFlag::Commit).unwrap();
+		let mut config = ServerConfig::default();
+		config.dandelion_config.stem_probability = 101;
+
+		match Server::create_server(&secp, 0, config) {
+			Err(Error::Config(msg)) => {
+				assert!(msg.contains("stem_probability"));
+				assert!(msg.contains("0..=100"));
+			}
+			Err(e) => panic!("expected dandelion config error, got {}", e),
+			Ok(_) => panic!("expected dandelion config error"),
+		}
 	}
 }

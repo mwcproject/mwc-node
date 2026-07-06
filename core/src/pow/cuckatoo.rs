@@ -16,8 +16,9 @@ use crate::global;
 use crate::pow::common::{CuckooParams, Link};
 use crate::pow::error::Error;
 use crate::pow::{PoWContext, Proof};
-use byteorder::{BigEndian, WriteBytesExt};
-use croaring::Bitmap;
+use mwc_crates::byteorder::{BigEndian, WriteBytesExt};
+use mwc_crates::croaring::Bitmap64;
+use std::convert::TryFrom;
 use std::mem;
 use util::ToHex;
 
@@ -31,13 +32,17 @@ struct Graph {
 	/// Index into links array
 	adj_list: Vec<u64>,
 	///
-	visited: Bitmap,
+	visited: Bitmap64,
 	/// Maximum solutions
 	max_sols: u32,
 	///
 	pub solutions: Vec<Proof>,
+	/// Number of completed solutions in solutions.
+	solution_count: usize,
 	/// proof size
 	proof_size: usize,
+	/// Edge bits used for returned proof metadata
+	edge_bits: u8,
 	/// define NIL type
 	nil: u64,
 	/// ontext Id to select correct network
@@ -51,6 +56,7 @@ impl Graph {
 		max_edges: u64,
 		max_sols: u32,
 		proof_size: usize,
+		edge_bits: u8,
 	) -> Result<Graph, Error> {
 		if max_edges >= u64::max_value() / 2 {
 			return Err(Error::Verification("graph is to big to build".to_string()));
@@ -61,27 +67,90 @@ impl Graph {
 			max_nodes,
 			max_sols,
 			proof_size,
+			edge_bits,
 			links: vec![],
 			adj_list: vec![],
-			visited: Bitmap::new(),
+			visited: Bitmap64::new(),
 			solutions: vec![],
+			solution_count: 0,
 			nil: u64::max_value(),
 			context_id,
 		})
 	}
 
+	fn zero_proof(&self) -> Proof {
+		Proof {
+			edge_bits: self.edge_bits,
+			nonces: vec![0; self.proof_size],
+			context_id: self.context_id,
+		}
+	}
+
 	pub fn reset(&mut self) -> Result<(), Error> {
 		//TODO: Can be optimised
-		self.links = Vec::with_capacity(2 * self.max_nodes as usize);
-		self.adj_list = vec![u64::max_value(); 2 * self.max_nodes as usize];
-		self.solutions = vec![Proof::zero(self.context_id, self.proof_size); 1];
-		self.visited = Bitmap::new();
+		let graph_nodes = self.graph_node_count()?;
+
+		self.links = Vec::with_capacity(graph_nodes);
+		self.adj_list = vec![u64::max_value(); graph_nodes];
+		self.solutions = vec![self.zero_proof(); 1];
+		self.solution_count = 0;
+		self.visited = Bitmap64::new();
+		Ok(())
+	}
+
+	fn graph_node_count(&self) -> Result<usize, Error> {
+		let graph_nodes = usize::try_from(self.max_nodes).map_err(|_| {
+			Error::DataOverflow(format!(
+				"Graph::graph_node_count, max_nodes={}",
+				self.max_nodes
+			))
+		})?;
+		graph_nodes.checked_mul(2).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"Graph::graph_node_count, max_nodes={}",
+				self.max_nodes
+			))
+		})
+	}
+
+	fn ensure_initialized(&self) -> Result<(), Error> {
+		let graph_nodes = self.graph_node_count()?;
+		if self.adj_list.len() != graph_nodes || self.solutions.is_empty() {
+			return Err(Error::InvalidConfiguration(format!(
+				"Graph is not initialized: adj_list_len={} expected={} solutions_len={}",
+				self.adj_list.len(),
+				graph_nodes,
+				self.solutions.len()
+			)));
+		}
 		Ok(())
 	}
 
 	pub fn byte_count(&self) -> Result<u64, Error> {
-		Ok(2 * self.max_edges * mem::size_of::<Link>() as u64
-			+ mem::size_of::<u64>() as u64 * 2 * self.max_nodes)
+		// Return: 2 * self.max_edges * mem::size_of::<Link>() as u64
+		// 			+ mem::size_of::<u64>() as u64 * 2 * self.max_nodes
+
+		let links_bytes = self
+			.max_edges
+			.checked_mul(2)
+			.and_then(|edges| edges.checked_mul(mem::size_of::<Link>() as u64))
+			.ok_or_else(|| {
+				Error::DataOverflow(format!("Graph::byte_count, max_edges={}", self.max_edges))
+			})?;
+		let adj_list_bytes = self
+			.max_nodes
+			.checked_mul(2)
+			.and_then(|nodes| nodes.checked_mul(mem::size_of::<u64>() as u64))
+			.ok_or_else(|| {
+				Error::DataOverflow(format!("Graph::byte_count, max_nodes={}", self.max_nodes))
+			})?;
+
+		links_bytes.checked_add(adj_list_bytes).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"Graph::byte_count, max_edges={} max_nodes={}",
+				self.max_edges, self.max_nodes
+			))
+		})
 	}
 
 	/// Add an edge to the graph
@@ -89,10 +158,11 @@ impl Graph {
 		if u >= self.max_nodes || v >= self.max_nodes {
 			return Err(Error::EdgeAddition);
 		}
+		self.ensure_initialized()?;
 		v = v + self.max_nodes;
 		let adj_u = self.adj_list[(u ^ 1) as usize];
 		let adj_v = self.adj_list[(v ^ 1) as usize];
-		if adj_u != self.nil && adj_v != self.nil {
+		if adj_u != self.nil && adj_v != self.nil && !self.max_solutions_reached() {
 			let sol_index = self.solutions.len() - 1;
 			self.solutions[sol_index].nonces[0] = self.links.len() as u64 / 2;
 			self.cycles_with_link(1, u, v)?;
@@ -115,32 +185,44 @@ impl Graph {
 		Ok(())
 	}
 
-	fn test_bit(&mut self, u: u64) -> bool {
-		self.visited.contains(u as u32)
+	fn test_bit(&self, u: u64) -> bool {
+		self.visited.contains(u)
 	}
 
-	fn cycles_with_link(&mut self, len: u32, u: u64, dest: u64) -> Result<(), Error> {
+	fn max_solutions_reached(&self) -> bool {
+		self.solution_count >= self.max_sols as usize
+	}
+
+	fn cycles_with_link(&mut self, len: usize, u: u64, dest: u64) -> Result<(), Error> {
+		if self.max_solutions_reached() {
+			return Ok(());
+		}
 		if self.test_bit(u >> 1) {
 			return Ok(());
 		}
 		if (u ^ 1) == dest {
-			if len == self.proof_size as u32 {
-				if self.solutions.len() < self.max_sols as usize {
+			if len == self.proof_size {
+				self.solution_count += 1;
+				if !self.max_solutions_reached() {
 					// create next solution
-					self.solutions
-						.push(Proof::zero(self.context_id, self.proof_size));
+					let proof = self.zero_proof();
+					self.solutions.push(proof);
 				}
 				return Ok(());
 			}
-		} else if len == self.proof_size as u32 {
+		}
+		if len >= self.proof_size {
 			return Ok(());
 		}
 		let mut au1 = self.adj_list[(u ^ 1) as usize];
 		if au1 != self.nil {
-			self.visited.add((u >> 1) as u32);
+			self.visited.add(u >> 1);
 			while au1 != self.nil {
-				let i = self.solutions.len() - 1;
-				self.solutions[i].nonces[len as usize] = au1 / 2;
+				if self.max_solutions_reached() {
+					break;
+				}
+				let i = self.solution_count;
+				self.solutions[i].nonces[len] = au1 / 2;
 				let link_index = (au1 ^ 1) as usize;
 				let link = self.links[link_index].to;
 				if link != self.nil {
@@ -148,7 +230,7 @@ impl Graph {
 				}
 				au1 = self.links[au1 as usize].next;
 			}
-			self.visited.remove((u >> 1) as u32);
+			self.visited.remove(u >> 1);
 		}
 		Ok(())
 	}
@@ -207,15 +289,23 @@ impl CuckatooContext {
 		let num_edges = params.num_edges;
 		Ok(CuckatooContext {
 			params,
-			graph: Graph::new(context_id, num_edges, max_sols, proof_size)?,
+			graph: Graph::new(context_id, num_edges, max_sols, proof_size, edge_bits)?,
 			context_id,
 		})
 	}
 
 	/// Get a siphash key as a hex string (for display convenience)
 	pub fn sipkey_hex(&self, index: usize) -> Result<String, Error> {
+		let key = self
+			.params
+			.siphash_keys
+			.get(index)
+			.copied()
+			.ok_or_else(|| {
+				Error::InvalidConfiguration(format!("siphash key index {} out of range", index))
+			})?;
 		let mut rdr = vec![];
-		rdr.write_u64::<BigEndian>(self.params.siphash_keys[index])?;
+		rdr.write_u64::<BigEndian>(key)?;
 		Ok(rdr.to_hex())
 	}
 
@@ -243,6 +333,7 @@ impl CuckatooContext {
 	where
 		I: Iterator<Item = u64>,
 	{
+		self.graph.reset()?;
 		let mut val = vec![];
 		for n in iter {
 			val.push(n);
@@ -250,19 +341,49 @@ impl CuckatooContext {
 			let v = self.params.sipnode(n, 1)?;
 			self.graph.add_edge(u, v)?;
 		}
-		self.graph.solutions.pop();
+		self.graph.solutions.truncate(self.graph.solution_count);
 		for s in &mut self.graph.solutions {
-			s.nonces = map_vec!(s.nonces, |n| val[*n as usize]);
+			s.nonces = s
+				.nonces
+				.iter()
+				.map(|n| {
+					let index = usize::try_from(*n).map_err(|_| {
+						Error::DataOverflow(format!(
+							"CuckatooContext::find_cycles_iter, nonce index={}",
+							n
+						))
+					})?;
+					val.get(index).copied().ok_or_else(|| {
+						Error::Verification(format!(
+							"solution nonce index {} outside edge set of length {}",
+							n,
+							val.len()
+						))
+					})
+				})
+				.collect::<Result<Vec<_>, Error>>()?;
 			s.nonces.sort_unstable();
 		}
-		for s in &self.graph.solutions {
-			self.verify_impl(&s)?;
-		}
-		if self.graph.solutions.is_empty() {
+		let verified_solutions = self.filter_verified_solutions(self.graph.solutions.clone())?;
+		if verified_solutions.is_empty() {
 			Err(Error::NoSolution)
 		} else {
-			Ok(self.graph.solutions.clone())
+			Ok(verified_solutions)
 		}
+	}
+
+	fn filter_verified_solutions(&self, solutions: Vec<Proof>) -> Result<Vec<Proof>, Error> {
+		let mut verified_solutions = vec![];
+		for solution in solutions {
+			match self.verify_impl(&solution) {
+				Ok(()) => verified_solutions.push(solution),
+				// Graph traversal can produce candidate cycles that fail proof validation.
+				// Those candidates are mining misses, not fatal solver failures.
+				Err(Error::Verification(_)) => {}
+				Err(e) => return Err(e),
+			}
+		}
+		Ok(verified_solutions)
 	}
 
 	/// Verify that given edges are ascending and form a cycle in a header-generated
@@ -436,6 +557,146 @@ mod test {
 		0x1e4e3da0c,
 	];
 
+	fn test_graph(max_edges: u64, max_nodes: u64) -> Graph {
+		Graph {
+			max_edges,
+			max_nodes,
+			links: vec![],
+			adj_list: vec![],
+			visited: Bitmap64::new(),
+			max_sols: 1,
+			solutions: vec![],
+			solution_count: 0,
+			proof_size: 0,
+			edge_bits: 0,
+			nil: u64::max_value(),
+			context_id: 0,
+		}
+	}
+
+	fn test_graph_with_max_nodes(max_nodes: u64) -> Graph {
+		test_graph(0, max_nodes)
+	}
+
+	#[test]
+	fn reset_rejects_graph_node_count_overflow() {
+		let mut graph = test_graph_with_max_nodes(usize::MAX as u64);
+		assert!(matches!(graph.reset(), Err(Error::DataOverflow(_))));
+	}
+
+	#[test]
+	fn byte_count_rejects_link_byte_count_overflow() {
+		let graph = test_graph(u64::MAX / mem::size_of::<Link>() as u64, 0);
+		assert!(matches!(graph.byte_count(), Err(Error::DataOverflow(_))));
+	}
+
+	#[test]
+	fn byte_count_rejects_adj_list_byte_count_overflow() {
+		let graph = test_graph(0, u64::MAX / mem::size_of::<u64>() as u64);
+		assert!(matches!(graph.byte_count(), Err(Error::DataOverflow(_))));
+	}
+
+	#[test]
+	fn sipkey_hex_rejects_out_of_range_index() {
+		let ctx = CuckatooContext::new_impl(15, 42, 10, 0).unwrap();
+		assert!(matches!(
+			ctx.sipkey_hex(4),
+			Err(Error::InvalidConfiguration(_))
+		));
+	}
+
+	#[test]
+	fn new_impl_rejects_zero_proof_size() {
+		assert!(matches!(
+			CuckatooContext::new_impl(15, 0, 10, 0),
+			Err(Error::InvalidConfiguration(_))
+		));
+	}
+
+	#[test]
+	fn visited_nodes_do_not_alias_above_u32_max() {
+		let mut graph = test_graph(0, 0);
+		graph.visited.add(0);
+
+		assert!(!graph.test_bit(u64::from(u32::MAX) + 1));
+	}
+
+	#[test]
+	fn completed_solution_is_kept_when_max_sols_is_one() -> Result<(), Error> {
+		let mut graph = test_graph(0, 0);
+		graph.max_sols = 1;
+		graph.proof_size = 1;
+		graph.solutions = vec![graph.zero_proof()];
+
+		graph.cycles_with_link(1, 0, 1)?;
+		graph.solutions.truncate(graph.solution_count);
+
+		assert_eq!(graph.solution_count, 1);
+		assert_eq!(graph.solutions.len(), 1);
+		Ok(())
+	}
+
+	#[test]
+	fn cycles_with_link_does_not_truncate_oversized_proof_size() -> Result<(), Error> {
+		let mut graph = test_graph(0, 0);
+		graph.max_sols = 1;
+		graph.proof_size = u32::MAX as usize + 1;
+		graph.solutions = vec![Proof {
+			edge_bits: 0,
+			nonces: vec![],
+			context_id: 0,
+		}];
+		graph.adj_list = vec![graph.nil; 2];
+
+		graph.cycles_with_link(0, 0, 1)?;
+
+		assert_eq!(graph.solution_count, 0);
+		assert_eq!(graph.solutions.len(), 1);
+		Ok(())
+	}
+
+	#[test]
+	fn add_edge_does_not_overwrite_completed_solution_after_max_sols() -> Result<(), Error> {
+		let mut graph = test_graph(0, 4);
+		graph.max_sols = 1;
+		graph.proof_size = 1;
+		graph.solution_count = 1;
+		graph.solutions = vec![graph.zero_proof()];
+		graph.solutions[0].nonces[0] = 7;
+		graph.adj_list = vec![graph.nil; 8];
+		graph.adj_list[1] = 0;
+		graph.adj_list[5] = 2;
+		graph.links = vec![
+			Link {
+				next: graph.nil,
+				to: graph.nil,
+			};
+			4
+		];
+
+		graph.add_edge(0, 0)?;
+
+		assert_eq!(graph.solution_count, 1);
+		assert_eq!(graph.solutions[0].nonces[0], 7);
+		Ok(())
+	}
+
+	#[test]
+	fn add_edge_rejects_uninitialized_graph() {
+		let mut graph = test_graph(0, 4);
+		assert!(matches!(
+			graph.add_edge(0, 0),
+			Err(Error::InvalidConfiguration(_))
+		));
+	}
+
+	#[cfg(target_pointer_width = "32")]
+	#[test]
+	fn reset_rejects_graph_nodes_that_do_not_fit_usize() {
+		let mut graph = test_graph_with_max_nodes(u64::from(u32::MAX) + 1);
+		assert!(matches!(graph.reset(), Err(Error::DataOverflow(_))));
+	}
+
 	#[test]
 	fn cuckatoo() {
 		global::set_local_chain_type(global::ChainTypes::Mainnet);
@@ -509,6 +770,72 @@ mod test {
 		Ok(())
 	}
 
+	#[test]
+	fn filters_invalid_candidate_solutions() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
+
+		let ctx = CuckatooContext::new_impl(15, 42, 10, 0).unwrap();
+		let invalid = Proof {
+			edge_bits: 15,
+			nonces: vec![0; 42],
+			context_id: 0,
+		};
+
+		assert!(ctx
+			.filter_verified_solutions(vec![invalid])
+			.unwrap()
+			.is_empty());
+	}
+
+	#[test]
+	fn keeps_solution_when_max_sols_reached() -> Result<(), Error> {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		global::set_local_nrd_enabled(false);
+
+		let nonce = 1546569;
+		let header = [0u8; 80].to_vec();
+		let proof_size = 42;
+		let edge_bits = 15;
+		let max_sols = 2;
+
+		let mut ctx = CuckatooContext::new_impl(edge_bits, proof_size, max_sols, 0)?;
+		ctx.set_header_nonce(header, Some(nonce), true)?;
+
+		let sols = ctx.find_cycles()?;
+		assert_eq!(sols.len(), max_sols as usize);
+		for sol in &sols {
+			ctx.verify_impl(sol)?;
+		}
+		Ok(())
+	}
+
+	#[test]
+	fn find_cycles_resets_graph_on_fresh_context() -> Result<(), Error> {
+		let mut ctx = CuckatooContext::new_impl(15, 42, 10, 0)?;
+		let _ = ctx.find_cycles();
+		assert!(!ctx.graph.adj_list.is_empty());
+		Ok(())
+	}
+
+	#[test]
+	fn find_cycles_resets_graph_after_verify_setup() -> Result<(), Error> {
+		let mut ctx = CuckatooContext::new_impl(15, 42, 10, 0)?;
+		ctx.set_header_nonce([0u8; 80].to_vec(), Some(20), false)?;
+		let _ = ctx.find_cycles();
+		assert!(!ctx.graph.adj_list.is_empty());
+		Ok(())
+	}
+
+	#[test]
+	fn find_cycles_iter_resets_graph_on_fresh_context() -> Result<(), Error> {
+		let mut ctx = CuckatooContext::new_impl(15, 42, 10, 0)?;
+		let err = ctx.find_cycles_iter(0..0).unwrap_err();
+		assert!(matches!(err, Error::NoSolution));
+		assert!(!ctx.graph.adj_list.is_empty());
+		Ok(())
+	}
+
 	fn basic_solve() -> Result<(), Error> {
 		let nonce = 1546569;
 		let _range = 1;
@@ -545,6 +872,7 @@ mod test {
 		// We know this nonce has 2 solutions
 		assert_eq!(sols.len(), 2);
 		for s in sols {
+			assert_eq!(s.edge_bits, edge_bits);
 			println!("{:?}", s);
 		}
 		Ok(())

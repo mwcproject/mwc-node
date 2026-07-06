@@ -22,20 +22,6 @@
 #![deny(unused_mut)]
 #![warn(missing_docs)]
 
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate log;
-
-use mwc_api as api;
-use mwc_chain as chain;
-use mwc_core as core;
-use mwc_keychain as keychain;
-use mwc_p2p as p2p;
-use mwc_pool as pool;
-use mwc_store as store;
-use mwc_util as util;
-
 mod error;
 pub use crate::error::Error;
 
@@ -45,5 +31,4 @@ mod mwc;
 
 pub use crate::common::stats::{DiffBlock, PeerStats, ServerStats, StratumStats, WorkerStats};
 pub use crate::common::types::{ServerConfig, StratumServerConfig};
-pub use crate::core::global::{FLOONET_DNS_SEEDS, MAINNET_DNS_SEEDS};
 pub use crate::mwc::server::{Server, ServerTxPool};

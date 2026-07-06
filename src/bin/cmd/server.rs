@@ -14,20 +14,22 @@
 // limitations under the License.
 
 /// Mwc server commands processing
-use std::process::exit;
+use mwc_crates::ctrlc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use clap::ArgMatches;
+use mwc_crates::clap::ArgMatches;
 
 use crate::cmd::error::Error;
-use crate::config::GlobalConfig;
-use crate::p2p::Seeding;
 use crate::tui::ui;
+use mwc_config::GlobalConfig;
+use mwc_crates::log::{error, info, warn};
 use mwc_p2p::msg::PeerAddrs;
 use mwc_p2p::PeerAddr;
+use mwc_p2p::Seeding;
 use mwc_util::logger::LogEntry;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{mpsc, Arc};
 
 /// wrap below to allow UI to clean up on stop
@@ -36,11 +38,9 @@ pub fn start_server(
 	config: mwc_servers::ServerConfig,
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	offline: bool,
-) {
-	if let Err(e) = start_server_tui(context_id, config, logs_rx, offline) {
-		println!("Unable to start mwc-node, {}", e);
-	}
-	exit(0);
+) -> Result<(), Error> {
+	start_server_tui(context_id, config, logs_rx, offline)
+		.map_err(|e| Error::ServerStart(e.to_string()))
 }
 
 fn start_server_tui(
@@ -50,7 +50,7 @@ fn start_server_tui(
 	offline: bool,
 ) -> Result<(), mwc_node_workflow::Error> {
 	// Starting the server...
-	if config.tor_config.need_start_arti() {
+	if !offline && config.tor_config.need_start_arti() {
 		info!("Bootstrapping tor rich client Arti...");
 		mwc_node_workflow::server::start_tor(&config.tor_config, &config.db_root)?;
 	}
@@ -58,65 +58,79 @@ fn start_server_tui(
 	info!("Creating MWC node server...");
 	mwc_node_workflow::server::create_server(context_id, config.clone())?;
 
-	if !offline {
-		info!("Starting listening peers...");
-		mwc_node_workflow::server::start_listen_peers(context_id, true)?;
-		info!("Starting discovery peers...");
-		mwc_node_workflow::server::start_discover_peers(context_id)?;
-		info!("Starting syncyng...");
-		mwc_node_workflow::server::start_sync_monitoring(context_id)?;
+	let res = (|| {
+		if !offline {
+			info!("Starting listening peers...");
+			mwc_node_workflow::server::start_listen_peers(context_id)?;
+			info!("Starting discovery peers...");
+			mwc_node_workflow::server::start_discover_peers(context_id)?;
+			info!("Starting syncyng...");
+			mwc_node_workflow::server::start_sync_monitoring(context_id)?;
 
-		info!("Starting node API...");
-		mwc_node_workflow::server::start_rest_api(context_id)?;
+			info!("Starting node API...");
+			mwc_node_workflow::server::start_rest_api(context_id)?;
 
-		info!("Starting dandellion...");
-		mwc_node_workflow::server::start_dandelion(context_id)?;
+			info!("Starting dandellion...");
+			mwc_node_workflow::server::start_dandelion(context_id)?;
 
-		if config
-			.stratum_mining_config
-			.enable_stratum_server
-			.unwrap_or(false)
-		{
-			info!("Starting stratum server...");
-			mwc_node_workflow::server::start_stratum(context_id)?;
-		}
-	}
-	info!("MC node is started and running");
-
-	// Run the UI controller.. here for now for simplicity to access
-	// everything it might need
-	if config.run_tui.unwrap_or(false) {
-		warn!("Starting MWC UI...");
-
-		match logs_rx {
-			Some(logs_rx) => {
-				let mut controller = ui::Controller::new(context_id, logs_rx).map_err(|e| {
-					mwc_node_workflow::Error::UIError(format!("Error loading UI controller: {}", e))
-				})?;
-				controller.run(context_id);
-			}
-			None => {
-				error!("Internal error, logs_rx is  not set properly");
+			if config
+				.stratum_mining_config
+				.enable_stratum_server
+				.unwrap_or(false)
+			{
+				info!("Starting stratum server...");
+				mwc_node_workflow::server::start_stratum(context_id)?;
 			}
 		}
-		Ok(())
-	} else {
-		warn!("Running MWC w/o UI...");
+		info!("MC node is started and running");
 
-		let running = Arc::new(AtomicBool::new(true));
-		let r = running.clone();
-		ctrlc::set_handler(move || {
-			r.store(false, Ordering::SeqCst);
-		})
-		.expect("Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill)");
+		// Run the UI controller.. here for now for simplicity to access
+		// everything it might need
+		if config.run_tui.unwrap_or(false) {
+			warn!("Starting MWC UI...");
 
-		while running.load(Ordering::SeqCst) {
-			thread::sleep(Duration::from_millis(300));
+			match logs_rx {
+				Some(logs_rx) => {
+					let mut controller = ui::Controller::new(context_id, logs_rx).map_err(|e| {
+						error!("{}", e);
+						mwc_node_workflow::Error::UIError(e)
+					})?;
+					controller.run(context_id);
+					Ok(())
+				}
+				None => {
+					let msg = "Internal error, logs_rx is not set properly";
+					error!("{}", msg);
+					Err(mwc_node_workflow::Error::UIError(msg.to_string()))
+				}
+			}
+		} else {
+			warn!("Running MWC w/o UI...");
+
+			let running = Arc::new(AtomicBool::new(true));
+			let r = running.clone();
+			if let Err(e) = ctrlc::set_handler(move || {
+				r.store(false, Ordering::SeqCst);
+			}) {
+				return Err(mwc_node_workflow::Error::ServerError(format!(
+					"Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill): {}",
+					e
+				)));
+			}
+
+			while running.load(Ordering::SeqCst) {
+				thread::sleep(Duration::from_millis(300));
+			}
+			warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
+			mwc_node_workflow::server::release_server(context_id);
+			Ok(())
 		}
-		warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
+	})();
+
+	if res.is_err() {
 		mwc_node_workflow::server::release_server(context_id);
-		Ok(())
 	}
+	res
 }
 
 /// Handles the server part of the command line, mostly running, starting and
@@ -140,9 +154,21 @@ pub fn server_command(
 			})?;
 		}
 
-		if let Some(api_port) = a.value_of("api_port") {
-			let default_ip = "0.0.0.0";
-			server_config.api_http_addr = format!("{}:{}", default_ip, api_port);
+		match (a.value_of("api_host"), a.value_of("api_port")) {
+			(Some(host), Some(port)) => {
+				server_config.api_http_addr = api_http_addr_from_host_port(host, port)?;
+			}
+			(None, Some(_)) => {
+				return Err(Error::ArgumentError(
+					"--api_port requires --api_host so API binding is explicit".into(),
+				));
+			}
+			(Some(_), None) => {
+				return Err(Error::ArgumentError(
+					"--api_host requires --api_port so API binding is explicit".into(),
+				));
+			}
+			(None, None) => {}
 		}
 
 		if let Some(wallet_url) = a.value_of("wallet_url") {
@@ -151,9 +177,12 @@ pub fn server_command(
 
 		if let Some(seeds) = a.values_of("seed") {
 			let peers = seeds
-				.filter_map(|s| s.parse().ok())
-				.map(PeerAddr::Ip)
-				.collect();
+				.map(|s| {
+					s.parse().map(PeerAddr::Ip).map_err(|e| {
+						Error::ArgumentError(format!("Invalid value at 'seed' value {}, {}", s, e))
+					})
+				})
+				.collect::<Result<Vec<_>, _>>()?;
 			server_config.p2p_config.seeding_type = Seeding::List;
 			server_config.p2p_config.seeds = Some(PeerAddrs { peers });
 		}
@@ -168,21 +197,50 @@ pub fn server_command(
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(context_id, server_config, logs_rx, offline);
+				start_server(context_id, server_config, logs_rx, offline)?;
 			}
 			("", _) => {
-				println!("Subcommand required, use 'mwc help server' for details");
+				return Err(Error::ArgumentError(
+					"Subcommand required, use 'mwc help server' for details".into(),
+				));
 			}
 			(cmd, _) => {
-				println!(":: {:?}", server_args);
-				panic!(
+				return Err(Error::ArgumentError(format!(
 					"Unknown server command '{}', use 'mwc help server' for details",
 					cmd
-				);
+				)));
 			}
 		}
 	} else {
-		start_server(context_id, server_config, logs_rx, offline);
+		start_server(context_id, server_config, logs_rx, offline)?;
 	}
 	Ok(())
+}
+
+fn api_http_addr_from_host_port(api_host: &str, api_port: &str) -> Result<String, Error> {
+	let host = api_host.trim();
+	let host = host
+		.strip_prefix('[')
+		.and_then(|host| host.strip_suffix(']'))
+		.unwrap_or(host);
+	if host.is_empty() {
+		return Err(Error::ArgumentError(
+			"Invalid value for --api_host: host must not be empty".into(),
+		));
+	}
+
+	let ip = host.parse::<IpAddr>().map_err(|e| {
+		Error::ArgumentError(format!(
+			"Invalid value for --api_host '{}': {}",
+			api_host, e
+		))
+	})?;
+	let port = api_port.parse::<u16>().map_err(|e| {
+		Error::ArgumentError(format!(
+			"Invalid value for --api_port '{}': {}",
+			api_port, e
+		))
+	})?;
+
+	Ok(SocketAddr::new(ip, port).to_string())
 }

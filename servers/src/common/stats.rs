@@ -16,20 +16,21 @@
 //! Server stat collection types, to be used by tests, logging or GUI/TUI
 //! to collect information about server status
 
-use crate::core::core::hash::Hash;
-use crate::core::ser::ProtocolVersion;
-use atomic_float::AtomicF64;
+use mwc_core::core::hash::Hash;
+use mwc_core::ser::ProtocolVersion;
+use mwc_crates::atomic_float::AtomicF64;
+use mwc_crates::parking_lot::RwLock;
+use mwc_crates::serde::{self, Serialize};
 use std::sync::atomic::*;
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::time::SystemTime;
 
-use chrono::prelude::*;
+use mwc_crates::chrono::prelude::*;
 
-use crate::chain::SyncStatus;
-use crate::p2p;
-use crate::p2p::Capabilities;
+use mwc_chain::SyncStatus;
 use mwc_core::pow::Difficulty;
+use mwc_p2p::types::Direction;
+use mwc_p2p::{Capabilities, Peer};
 
 /// Server state info collection struct, to be passed around into internals
 /// and populated when required
@@ -51,7 +52,7 @@ impl Default for ServerStateInfo {
 #[derive(Debug, Clone)]
 pub struct ServerStats {
 	/// Number of peers
-	pub peer_count: u32,
+	pub peer_count: usize,
 	/// Chain head
 	pub chain_stats: ChainStats,
 	/// Header head (may differ from chain head)
@@ -76,7 +77,7 @@ impl serde::Serialize for ServerStats {
 		S: serde::Serializer,
 	{
 		use serde::ser::SerializeStruct;
-		let mut state = serializer.serialize_struct("ServerStats", 9)?;
+		let mut state = serializer.serialize_struct("ServerStats", 8)?;
 		state.serialize_field("peer_count", &self.peer_count)?;
 		state.serialize_field("chain_stats", &self.chain_stats)?;
 		state.serialize_field("header_stats", &self.header_stats)?;
@@ -92,6 +93,7 @@ impl serde::Serialize for ServerStats {
 
 /// Chain Statistics
 #[derive(Clone, Serialize, Debug)]
+#[serde(crate = "serde")]
 pub struct ChainStats {
 	/// Height of the tip (max height of the fork)
 	pub height: u64,
@@ -104,6 +106,7 @@ pub struct ChainStats {
 }
 /// Transaction Statistics
 #[derive(Clone, Serialize, Debug)]
+#[serde(crate = "serde")]
 pub struct TxStats {
 	/// Number of transactions in the transaction pool
 	pub tx_pool_size: usize,
@@ -116,6 +119,7 @@ pub struct TxStats {
 }
 /// Struct to return relevant information about stratum workers
 #[derive(Clone, Serialize, Debug)]
+#[serde(crate = "serde")]
 pub struct WorkerStats {
 	/// Unique ID for this worker
 	pub id: String,
@@ -155,7 +159,7 @@ pub struct StratumStats {
 	/// Number of blocks found by all workers
 	pub blocks_found: AtomicUsize,
 	/// current network Hashrate (for edge_bits)
-	pub network_hashrate: atomic_float::AtomicF64,
+	pub network_hashrate: AtomicF64,
 	/// The minimum acceptable share difficulty to request from miners
 	pub minimum_share_difficulty: AtomicU64,
 	/// Individual worker status
@@ -190,7 +194,7 @@ impl serde::Serialize for StratumStats {
 		)?;
 
 		// snapshot the worker list while we hold the lock
-		let workers = self.worker_stats.read().unwrap_or_else(|e| e.into_inner());
+		let workers = self.worker_stats.read_recursive();
 		state.serialize_field("worker_stats", &*workers)?;
 
 		state.end()
@@ -198,7 +202,8 @@ impl serde::Serialize for StratumStats {
 }
 
 /// Stats on the last WINDOW blocks and the difficulty calculation
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(crate = "serde")]
 pub struct DiffStats {
 	/// latest height
 	pub height: u64,
@@ -213,10 +218,11 @@ pub struct DiffStats {
 }
 
 /// Last n blocks for difficulty calculation purposes
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(crate = "serde")]
 pub struct DiffBlock {
-	/// Block height (can be negative for a new chain)
-	pub block_height: i64,
+	/// Block height
+	pub block_height: u64,
 	/// Block hash (may be synthetic for a new chain)
 	pub block_hash: Hash,
 	/// Block network difficulty
@@ -233,6 +239,7 @@ pub struct DiffBlock {
 
 /// Struct to return relevant information about peers
 #[derive(Clone, Debug, Serialize)]
+#[serde(crate = "serde")]
 pub struct PeerStats {
 	/// Current state of peer
 	pub state: String,
@@ -280,7 +287,7 @@ impl StratumStats {
 	/// Allocate a new slot for the worker. Assuming that caller will never fail.
 	/// returns worker Id for the Worker tist
 	pub fn allocate_new_worker(&self, pow_difficulty: u64) -> usize {
-		let mut worker_stats = self.worker_stats.write().unwrap_or_else(|e| e.into_inner());
+		let mut worker_stats = self.worker_stats.write();
 
 		let worker_id = worker_stats
 			.iter()
@@ -304,31 +311,32 @@ impl StratumStats {
 	/// Get worker Stat info
 	pub fn get_stats(&self, worker_id: usize) -> Option<WorkerStats> {
 		self.worker_stats
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
+			.read_recursive()
 			.get(worker_id)
 			.map(|ws| ws.clone())
 	}
 
 	/// Update stats record for the worker
 	/// callback expected to be short and non locking
-	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats) -> ()) {
-		let mut worker_stats = self.worker_stats.write().unwrap_or_else(|e| e.into_inner());
-		f(&mut worker_stats[worker_id]);
+	pub fn update_stats(&self, worker_id: usize, f: impl FnOnce(&mut WorkerStats)) -> bool {
+		let mut worker_stats = self.worker_stats.write();
+		if let Some(stats) = worker_stats.get_mut(worker_id) {
+			f(stats);
+			true
+		} else {
+			false
+		}
 	}
 
 	/// Copy stat data. Expected that caller is understand the impact of this call.
 	pub fn get_worker_stats(&self) -> Vec<WorkerStats> {
-		self.worker_stats
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.clone()
+		self.worker_stats.read_recursive().clone()
 	}
 }
 
 impl PeerStats {
 	/// Convert from a peer directly
-	pub fn from_peer(peer: &p2p::Peer) -> PeerStats {
+	pub fn from_peer(peer: &Peer) -> PeerStats {
 		// State
 		let state = if peer.is_banned() {
 			"Banned"
@@ -339,10 +347,10 @@ impl PeerStats {
 		};
 		let addr = peer.info.addr.to_string();
 		let direction = match peer.info.direction {
-			p2p::types::Direction::Inbound => "Inbound",
-			p2p::types::Direction::Outbound => "Outbound",
-			p2p::types::Direction::InboundTor => "Inbound  (TOR)",
-			p2p::types::Direction::OutboundTor => "Outbound (TOR)",
+			Direction::Inbound => "Inbound",
+			Direction::Outbound => "Outbound",
+			Direction::InboundTor => "Inbound  (TOR)",
+			Direction::OutboundTor => "Outbound (TOR)",
 		};
 		PeerStats {
 			state: state.to_string(),
@@ -353,18 +361,11 @@ impl PeerStats {
 			height: peer.info.height(),
 			direction: direction.to_string(),
 			last_seen: peer.info.last_seen(),
-			sent_bytes_per_sec: peer
-				.tracker()
-				.sent_bytes
-				.read()
-				.unwrap_or_else(|e| e.into_inner())
-				.bytes_per_min()
-				/ 60,
+			sent_bytes_per_sec: peer.tracker().sent_bytes.read_recursive().bytes_per_min() / 60,
 			received_bytes_per_sec: peer
 				.tracker()
 				.received_bytes
-				.read()
-				.unwrap_or_else(|e| e.into_inner())
+				.read_recursive()
 				.bytes_per_min()
 				/ 60,
 			capabilities: peer.info.capabilities,
@@ -402,5 +403,25 @@ impl Default for StratumStats {
 			minimum_share_difficulty: AtomicU64::new(1),
 			worker_stats: RwLock::new(Vec::new()),
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::StratumStats;
+
+	#[test]
+	fn update_stats_returns_false_for_unknown_worker() {
+		let stats = StratumStats::default();
+
+		assert!(!stats.update_stats(0, |_| panic!("unexpected stats update")));
+
+		let worker_id = stats.allocate_new_worker(42);
+		assert!(stats.update_stats(worker_id, |worker_stats| {
+			worker_stats.num_accepted = 1;
+		}));
+		assert_eq!(stats.get_stats(worker_id).unwrap().num_accepted, 1);
+
+		assert!(!stats.update_stats(worker_id + 1, |_| panic!("unexpected stats update")));
 	}
 }

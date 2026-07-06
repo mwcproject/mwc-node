@@ -14,18 +14,21 @@
 // limitations under the License.
 
 use crate::conn::MessageHandler;
-use crate::mwc_core::core::{hash::Hashed, CompactBlock};
-use crate::{chain, Capabilities, ReasonForBan};
+use crate::{Capabilities, ReasonForBan};
+use mwc_core::core::{hash::Hashed, CompactBlock, Segment};
 
 use crate::msg::{
 	ArchiveHeaderData, Consumed, Headers, HeadersHashSegmentResponse, Message, Msg,
 	OutputBitmapSegmentResponse, OutputSegmentResponse, PeerAddrs, PibdSyncState, Pong,
-	SegmentRequest, SegmentResponse, StartHeadersHashResponse, TxHashSetArchive, Type,
+	SegmentRequest, SegmentResponse, StartHeadersHashResponse, Type,
 };
 use crate::serv::Server;
 use crate::tor::arti::is_valid_onion_v3;
 use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
-use mwc_core::core::hash::Hash;
+use mwc_chain::txhashset::BitmapSegment;
+use mwc_crates::log::{debug, error, info, trace, warn};
+use mwc_crates::secp::Secp256k1;
+use std::convert::TryFrom;
 use std::sync::Arc;
 
 pub struct Protocol {
@@ -45,13 +48,13 @@ impl Protocol {
 }
 
 impl MessageHandler for Protocol {
-	fn consume(&self, message: Message) -> Result<Consumed, Error> {
+	fn consume(&self, secp: &mut Secp256k1, message: Message) -> Result<Consumed, Error> {
 		let adapter = &self.adapter;
 
 		// If we received a msg from a banned peer then log and drop it.
 		// If we are getting a lot of these then maybe we are not cleaning
 		// banned peers up correctly?
-		if adapter.is_banned(&self.peer_info.addr) {
+		if adapter.is_banned(&self.peer_info.addr)? {
 			debug!(
 				"handler: consume: peer {:?} banned, received: {}, dropping.",
 				self.peer_info.addr, message,
@@ -61,12 +64,14 @@ impl MessageHandler for Protocol {
 
 		let consumed = match message {
 			Message::Attachment(_update, _) => {
-				error!("handle_payload: Message::Attachment received but we never requested it. It is disabled in this version of node");
+				error!(
+					"handle_payload: Message::Attachment received but we never requested it. It is disabled in this version of node"
+				);
 				adapter.ban_peer(
 					&self.peer_info.addr,
 					ReasonForBan::BadRequest,
 					"Message::Attachment received but we never requested it",
-				);
+				)?;
 				return Err(Error::BadMessage("Unexpected Message::Attachment".into()));
 			}
 
@@ -101,7 +106,7 @@ impl MessageHandler for Protocol {
 
 			Message::GetTransaction(h) => {
 				debug!("handle_payload: GetTransaction: {}", h);
-				let tx = adapter.get_transaction(h);
+				let tx = adapter.get_transaction(h)?;
 				if let Some(tx) = tx {
 					Consumed::Response(Msg::new(
 						Type::Transaction,
@@ -116,19 +121,19 @@ impl MessageHandler for Protocol {
 
 			Message::Transaction(tx) => {
 				debug!("handle_payload: received tx");
-				adapter.transaction_received(tx, false)?;
+				adapter.transaction_received(secp, tx, false)?;
 				Consumed::None
 			}
 
 			Message::StemTransaction(tx) => {
 				debug!("handle_payload: received stem tx");
-				adapter.transaction_received(tx, true)?;
+				adapter.transaction_received(secp, tx, true)?;
 				Consumed::None
 			}
 
 			Message::GetBlock(h) => {
 				trace!("handle_payload: GetBlock: {}", h);
-				let bo = adapter.get_block(h, &self.peer_info);
+				let bo = adapter.get_block(secp, h, &self.peer_info)?;
 				if let Some(b) = bo {
 					Consumed::Response(Msg::new(
 						Type::Block,
@@ -146,18 +151,18 @@ impl MessageHandler for Protocol {
 				debug!(
 					"handle_payload: received block {}, {}",
 					b.header.height,
-					b.hash().unwrap_or(Hash::default())
+					b.hash(self.server.get_context_id())?
 				);
 				// We default to NONE opts here as we do not know know yet why this block was
 				// received.
 				// If we requested this block from a peer due to our node syncing then
 				// the peer adapter will override opts to reflect this.
-				adapter.block_received(b, &self.peer_info, chain::Options::NONE)?;
+				adapter.block_received(secp, b, &self.peer_info, mwc_chain::Options::NONE)?;
 				Consumed::None
 			}
 
 			Message::GetCompactBlock(h) => {
-				if let Some(b) = adapter.get_block(h, &self.peer_info) {
+				if let Some(b) = adapter.get_block(secp, h, &self.peer_info)? {
 					let cb: CompactBlock = CompactBlock::from(b).map_err(|e| {
 						Error::Internal(format!("Unable to build COmpact block, {}", e))
 					})?;
@@ -174,52 +179,15 @@ impl MessageHandler for Protocol {
 
 			Message::CompactBlock(b) => {
 				debug!("handle_payload: received compact block");
-				adapter.compact_block_received(b.into(), &self.peer_info)?;
+				adapter.compact_block_received(secp, b.into(), &self.peer_info)?;
 				Consumed::None
 			}
 			Message::TorAddress(tor_address) => {
+				// Not used, keeping for backward compatibility
 				debug!(
-					"TorAddress received from {:?}, address = {:?}",
+					"TorAddress received from {:?}, address = {:?} - Skipped",
 					self.peer_info, tor_address
 				);
-
-				let new_peer_addr = PeerAddr::Onion(tor_address.address.clone());
-				info!("Adding newly connected Healthy peer {:?}", new_peer_addr);
-
-				let peer = self.server.peers.get_peer(&self.peer_info.addr);
-				if let Err(e) = self.server.peers.delete_peer(&self.peer_info.addr) {
-					warn!(
-						"Unable to delete expected TOR temp peer: {}, Error: {}",
-						self.peer_info.addr, e
-					);
-				}
-				match peer {
-					Ok(mut peer) => {
-						peer.addr = new_peer_addr.clone();
-						self.server.peers.save_peer(&peer)?;
-					}
-					Err(e) => {
-						warn!(
-							"Unable to get expected TOR temp peer: {}, Error: {}",
-							self.peer_info.addr, e
-						);
-					}
-				}
-
-				if self.server.peers.is_banned(&new_peer_addr) {
-					let peer = self.server.peers.get_peer(&self.peer_info.addr)?;
-					warn!("banned peer tried to connect! {:?}", peer);
-					if let Err(e) = self.server.peers.ban_peer(
-						&peer.addr,
-						ReasonForBan::BadHandshake,
-						"banned peer tried to connect",
-					) {
-						warn!(
-							"Unable to ban tried to connect peer {}, Error: {}",
-							peer.addr, e
-						);
-					}
-				}
 				Consumed::None
 			}
 
@@ -250,7 +218,7 @@ impl MessageHandler for Protocol {
 
 			Message::GetPeerAddrs(get_peers) => {
 				let mut peers =
-					adapter.find_peer_addrs(get_peers.capabilities & !Capabilities::TOR_ADDRESS);
+					adapter.find_peer_addrs(get_peers.capabilities & !Capabilities::TOR_ADDRESS)?;
 
 				// Loopbacks really not interesting for other peers. Loopbacks are possible because of the local setup
 				peers.retain(|p| !p.is_loopback());
@@ -315,55 +283,65 @@ impl MessageHandler for Protocol {
 						}
 					}
 				}
-				adapter.peer_addrs_received(peers);
+				adapter.peer_addrs_received(&self.peer_info.addr, peers);
 				Consumed::None
 			}
 
-			Message::TxHashSetRequest(sm_req) => {
-				debug!(
-					"handle_payload: txhashset req for {} at {}",
-					sm_req.hash, sm_req.height
+			Message::TxHashSetRequest(_sm_req) => {
+				warn!(
+					"Get message TxHashSetRequest, it is dropped as old and open for DDOS attack protocol. mwc-node unable to request all chain any more."
 				);
-
-				let txhashset_header = self.adapter.txhashset_archive_header()?;
-				let txhashset_header_hash = txhashset_header
-					.hash()
-					.map_err(|e| Error::Internal(format!("Header hash error, {}", e)))?;
-				let txhashset = self.adapter.txhashset_read(txhashset_header_hash);
-
-				if let Some(txhashset) = txhashset {
-					let file_sz = txhashset.reader.metadata()?.len();
-					let mut resp = Msg::new(
-						Type::TxHashSetArchive,
-						&TxHashSetArchive {
-							height: txhashset_header.height as u64,
-							hash: txhashset_header_hash,
-							bytes: file_sz,
-						},
-						self.peer_info.version,
-						self.server.get_context_id(),
-					)?;
-					resp.add_attachment(txhashset.reader);
-					Consumed::Response(resp)
-				} else {
-					Consumed::None
-				}
+				adapter.ban_peer(
+					&self.peer_info.addr,
+					ReasonForBan::BadRequest,
+					"txhashset archive requested",
+				)?;
+				return Err(Error::BadMessage("Unexpected TxHashSetRequest".into()));
 			}
 
 			Message::TxHashSetArchive(_sm_arch) => {
-				error!("handle_payload: txhashset archive received but we never requested it. It is disabled in this version of node");
+				error!(
+					"handle_payload: txhashset archive received but we never requested it. It is disabled in this version of node"
+				);
 				adapter.ban_peer(
 					&self.peer_info.addr,
 					ReasonForBan::BadRequest,
 					"txhashset archive received but we never requested it",
-				);
+				)?;
 				return Err(Error::BadMessage("Unexpected TxHashSetArchive".into()));
 			}
+			// PIBD/header-hash sync is best-effort. If we cannot prepare or serve
+			// a requested segment, log the failure and let the peer retry or fall
+			// back through normal sync. Bad received segments are reported to state
+			// sync where peers are penalized, so keep this protocol layer coarse and
+			// only split out cases that need a response, such as archive mismatch.
 			Message::StartHeadersHashRequest(sm_req) => {
 				debug!(
 					"handle_payload: start Headers Hash request for archive hegiht {}",
 					sm_req.archive_height
 				);
+				let archive_header = match self.adapter.txhashset_archive_header() {
+					Ok(header) => header,
+					Err(e) => {
+						warn!(
+							"Unable to read archive header for Headers Hash request {}. Error: {}",
+							sm_req.archive_height, e
+						);
+						return Ok(Consumed::None);
+					}
+				};
+				let archive_hash = archive_header.hash(self.server.get_context_id())?;
+				if archive_header.height != sm_req.archive_height {
+					return Ok(Consumed::Response(Msg::new(
+						Type::HasAnotherArchiveHeader,
+						&ArchiveHeaderData {
+							height: archive_header.height,
+							hash: archive_hash,
+						},
+						self.peer_info.version,
+						self.server.get_context_id(),
+					)?));
+				}
 				match self.adapter.prepare_segmenter() {
 					Ok(segmenter) => {
 						let header = segmenter.header();
@@ -382,9 +360,7 @@ impl MessageHandler for Protocol {
 								Type::HasAnotherArchiveHeader,
 								&ArchiveHeaderData {
 									height: header.height,
-									hash: header.hash().map_err(|e| {
-										Error::Internal(format!("Header hash error, {}", e))
-									})?,
+									hash: header.hash(self.server.get_context_id())?,
 								},
 								self.peer_info.version,
 								self.server.get_context_id(),
@@ -439,7 +415,7 @@ impl MessageHandler for Protocol {
 						self.peer_info.version,
 						self.server.get_context_id(),
 					)?),
-					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
 							Type::HasAnotherArchiveHeader,
 							&ArchiveHeaderData {
@@ -451,7 +427,10 @@ impl MessageHandler for Protocol {
 						)?)
 					}
 					Err(e) => {
-						warn!("Failed to process GetHeadersHashesSegment for header_hashes_root={} and identifier={:?}. Error: {}", header_hashes_root, identifier, e);
+						warn!(
+							"Failed to process GetHeadersHashesSegment for header_hashes_root={} and identifier={:?}. Error: {}",
+							header_hashes_root, identifier, e
+						);
 						Consumed::None
 					}
 				}
@@ -478,28 +457,54 @@ impl MessageHandler for Protocol {
 					"handle_payload: start PIBD request for {} at {}",
 					sm_req.hash, sm_req.height
 				);
+				let archive_header = match self.adapter.txhashset_archive_header() {
+					Ok(header) => header,
+					Err(e) => {
+						warn!(
+							"Unable to read archive header for PIBD request for {} at {}. Error: {}",
+							sm_req.hash, sm_req.height, e
+						);
+						return Ok(Consumed::None);
+					}
+				};
+				let archive_hash = archive_header.hash(self.server.get_context_id())?;
+				if archive_hash != sm_req.hash || archive_header.height != sm_req.height {
+					return Ok(Consumed::Response(Msg::new(
+						Type::HasAnotherArchiveHeader,
+						&ArchiveHeaderData {
+							height: archive_header.height,
+							hash: archive_hash,
+						},
+						self.peer_info.version,
+						self.server.get_context_id(),
+					)?));
+				}
 				match self.adapter.prepare_segmenter() {
 					Ok(segmenter) => {
 						let header = segmenter.header();
-						let header_hash = header
-							.hash()
-							.map_err(|e| Error::Internal(format!("Header hash error, {}", e)))?;
+						let header_hash = header.hash(self.server.get_context_id())?;
 						if header_hash == sm_req.hash && header.height == sm_req.height {
-							if let Ok(bitmap_root_hash) = segmenter.bitmap_root() {
-								// we can start the sync process, let's prepare the segmenter
-								Consumed::Response(Msg::new(
-									Type::PibdSyncState,
-									&PibdSyncState {
-										header_height: header.height,
-										header_hash: header_hash,
-										output_bitmap_root: bitmap_root_hash,
-									},
-									self.peer_info.version,
-									self.server.get_context_id(),
-								)?)
-							} else {
-								Consumed::None
-							}
+							let bitmap_root_hash = match segmenter.bitmap_root() {
+								Ok(hash) => hash,
+								Err(e) => {
+									warn!(
+										"Unable to calculate bitmap root for PIBD request for {} at {}. Error: {}",
+										sm_req.hash, sm_req.height, e
+									);
+									return Err(e.into());
+								}
+							};
+							// we can start the sync process, let's prepare the segmenter
+							Consumed::Response(Msg::new(
+								Type::PibdSyncState,
+								&PibdSyncState {
+									header_height: header.height,
+									header_hash: header_hash,
+									output_bitmap_root: bitmap_root_hash,
+								},
+								self.peer_info.version,
+								self.server.get_context_id(),
+							)?)
 						} else {
 							Consumed::Response(Msg::new(
 								Type::HasAnotherArchiveHeader,
@@ -532,12 +537,12 @@ impl MessageHandler for Protocol {
 						Type::OutputBitmapSegment,
 						OutputBitmapSegmentResponse {
 							block_hash,
-							segment: segment.into(),
+							segment: BitmapSegment::try_from(segment)?,
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
 					)?),
-					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
 							Type::HasAnotherArchiveHeader,
 							&ArchiveHeaderData {
@@ -549,7 +554,10 @@ impl MessageHandler for Protocol {
 						)?)
 					}
 					Err(e) => {
-						warn!("Failed to process GetOutputBitmapSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						warn!(
+							"Failed to process GetOutputBitmapSegment for block_hash={} and identifier={:?}. Error: {}",
+							block_hash, identifier, e
+						);
 						Consumed::None
 					}
 				}
@@ -572,7 +580,7 @@ impl MessageHandler for Protocol {
 						self.peer_info.version,
 						self.server.get_context_id(),
 					)?),
-					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
 							Type::HasAnotherArchiveHeader,
 							&ArchiveHeaderData {
@@ -584,7 +592,10 @@ impl MessageHandler for Protocol {
 						)?)
 					}
 					Err(e) => {
-						warn!("Failed to process GetOutputSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						warn!(
+							"Failed to process GetOutputSegment for block_hash={} and identifier={:?}. Error: {}",
+							block_hash, identifier, e
+						);
 						Consumed::None
 					}
 				}
@@ -604,7 +615,7 @@ impl MessageHandler for Protocol {
 						self.peer_info.version,
 						self.server.get_context_id(),
 					)?),
-					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
 							Type::HasAnotherArchiveHeader,
 							&ArchiveHeaderData {
@@ -616,7 +627,10 @@ impl MessageHandler for Protocol {
 						)?)
 					}
 					Err(e) => {
-						warn!("Failed to process GetRangeProofSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						warn!(
+							"Failed to process GetRangeProofSegment for block_hash={} and identifier={:?}. Error: {}",
+							block_hash, identifier, e
+						);
 						Consumed::None
 					}
 				}
@@ -637,7 +651,7 @@ impl MessageHandler for Protocol {
 						self.peer_info.version,
 						self.server.get_context_id(),
 					)?),
-					Err(chain::Error::SegmenterHeaderMismatch(hash, height)) => {
+					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
 							Type::HasAnotherArchiveHeader,
 							&ArchiveHeaderData {
@@ -649,19 +663,30 @@ impl MessageHandler for Protocol {
 						)?)
 					}
 					Err(e) => {
-						warn!("Failed to process GetKernelSegment for block_hash={} and identifier={:?}. Error: {}", block_hash, identifier, e);
+						warn!(
+							"Failed to process GetKernelSegment for block_hash={} and identifier={:?}. Error: {}",
+							block_hash, identifier, e
+						);
 						Consumed::None
 					}
 				}
 			}
 			Message::PibdSyncState(req) => {
-				debug!("Received PibdSyncState from peer {:?}. Header height={}, output_bitmap_root={}", self.peer_info.addr, req.header_height, req.output_bitmap_root);
-				self.adapter.recieve_pibd_status(
+				debug!(
+					"Received PibdSyncState from peer {:?}. Header height={}, output_bitmap_root={}",
+					self.peer_info.addr, req.header_height, req.output_bitmap_root
+				);
+				if let Err(e) = self.adapter.recieve_pibd_status(
 					&self.peer_info.addr,
 					req.header_hash,
 					req.header_height,
 					req.output_bitmap_root,
-				)?;
+				) {
+					info!(
+						"recieve_pibd_status will retry because it failed with error, {}",
+						e
+					)
+				}
 				Consumed::None
 			}
 			Message::HasAnotherArchiveHeader(req) => {
@@ -669,11 +694,13 @@ impl MessageHandler for Protocol {
 					"Received HasAnotherArchiveHeader from peer {:?}. Has header at height {}",
 					self.peer_info.addr, req.height
 				);
-				self.adapter.recieve_another_archive_header(
+				if let Err(e) = self.adapter.recieve_another_archive_header(
 					&self.peer_info.addr,
 					req.hash,
 					req.height,
-				)?;
+				) {
+					info!("recieve_another_archive_header will retry because it failed with error, {}", e)
+				}
 				Consumed::None
 			}
 			Message::OutputBitmapSegment(req) => {
@@ -686,7 +713,11 @@ impl MessageHandler for Protocol {
 					block_hash, segment.identifier
 				);
 
-				adapter.receive_bitmap_segment(&self.peer_info.addr, block_hash, segment.into())?;
+				adapter.receive_bitmap_segment(
+					&self.peer_info.addr,
+					block_hash,
+					Segment::try_from(segment)?,
+				)?;
 				Consumed::None
 			}
 			Message::OutputSegment(req) => {

@@ -79,12 +79,19 @@ macro_rules! impl_array_newtype {
 			}
 		}
 
-		impl<'a> From<&'a [$ty]> for $thing {
-			fn from(data: &'a [$ty]) -> $thing {
-				assert_eq!(data.len(), $len);
+		impl<'a> TryFrom<&'a [$ty]> for $thing {
+			type Error = $crate::Error;
+
+			fn try_from(data: &'a [$ty]) -> Result<$thing, $crate::Error> {
+				if data.len() != $len {
+					return Err($crate::Error::InvalidLength {
+						actual: data.len(),
+						expected: $len,
+					});
+				}
 				let mut ret = [0; $len];
-				ret.copy_from_slice(&data[..]);
-				$thing(ret)
+				ret.copy_from_slice(data);
+				Ok($thing(ret))
 			}
 		}
 
@@ -129,7 +136,7 @@ macro_rules! impl_array_newtype {
 		impl Clone for $thing {
 			#[inline]
 			fn clone(&self) -> $thing {
-				$thing::from(&self[..])
+				$thing(self.0.clone())
 			}
 		}
 
@@ -161,15 +168,15 @@ macro_rules! impl_array_newtype {
 macro_rules! impl_array_newtype_encodable {
 	($thing:ident, $ty:ty, $len:expr) => {
 		#[cfg(feature = "serde")]
-		impl<'de> $crate::serde::Deserialize<'de> for $thing {
+		impl<'de> serde::Deserialize<'de> for $thing {
 			fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 			where
-				D: $crate::serde::Deserializer<'de>,
+				D: serde::Deserializer<'de>,
 			{
-				use $crate::std::fmt::{self, Formatter};
+				use std::fmt::{self, Formatter};
 
 				struct Visitor;
-				impl<'de> $crate::serde::de::Visitor<'de> for Visitor {
+				impl<'de> serde::de::Visitor<'de> for Visitor {
 					type Value = $thing;
 
 					fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {
@@ -179,16 +186,19 @@ macro_rules! impl_array_newtype_encodable {
 					#[inline]
 					fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
 					where
-						A: $crate::serde::de::SeqAccess<'de>,
+						A: serde::de::SeqAccess<'de>,
 					{
 						let mut ret: [$ty; $len] = [0; $len];
-						for item in ret.iter_mut() {
+						for (idx, item) in ret.iter_mut().enumerate() {
 							*item = match seq.next_element()? {
 								Some(c) => c,
 								None => {
-									return Err($crate::serde::de::Error::custom("end of stream"));
+									return Err(serde::de::Error::invalid_length(idx, &self));
 								}
 							};
+						}
+						if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+							return Err(serde::de::Error::invalid_length($len + 1, &self));
 						}
 						Ok($thing(ret))
 					}
@@ -199,10 +209,10 @@ macro_rules! impl_array_newtype_encodable {
 		}
 
 		#[cfg(feature = "serde")]
-		impl $crate::serde::Serialize for $thing {
+		impl serde::Serialize for $thing {
 			fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 			where
-				S: $crate::serde::Serializer,
+				S: serde::Serializer,
 			{
 				let &$thing(ref dat) = self;
 				(&dat[..]).serialize(serializer)

@@ -16,24 +16,34 @@
 //! Sane serialization & deserialization of cryptographic structs into hex
 
 use keychain::BlindingFactor;
-use serde::{Deserialize, Deserializer, Serializer};
-use util::secp::pedersen::{Commitment, RangeProof};
+use mwc_crates::secp::constants::MAX_PROOF_SIZE;
+use mwc_crates::secp::pedersen::{Commitment, RangeProof};
+use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
 use util::{from_hex, ToHex};
 
 /// Serializes a secp PublicKey to and from hex
 pub mod pubkey_serde {
-	use serde::{Deserialize, Deserializer, Serializer};
-	use util::secp::key::PublicKey;
-	use util::{from_hex, static_secp_instance, ToHex};
+	use mwc_crates::secp::key::PublicKey;
+	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
+	use util::{from_hex, secp_static, ToHex};
 
 	///
 	pub fn serialize<S>(key: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
-		serializer.serialize_str(&key.serialize_vec(&static_secp, true).to_hex())
+		use mwc_crates::serde::ser::Error;
+
+		let hex_str = secp_static::with_none(
+			|err| Error::custom(format!("Unable create Secp, {}", err)),
+			|secp| {
+				key.serialize_vec(secp, true).map_err(|err| {
+					Error::custom(format!("Public Key serialization error, {}", err))
+				})
+			},
+		)?
+		.to_hex();
+		serializer.serialize_str(&hex_str)
 	}
 
 	///
@@ -41,9 +51,7 @@ pub mod pubkey_serde {
 	where
 		D: Deserializer<'de>,
 	{
-		use serde::de::Error;
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
+		use mwc_crates::serde::de::Error;
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -51,55 +59,99 @@ pub mod pubkey_serde {
 				})
 			})
 			.and_then(|bytes: Vec<u8>| {
-				PublicKey::from_slice(&static_secp, &bytes).map_err(|err| {
-					Error::custom(format!("Unable to build Pub Key from {:?}, {}", bytes, err))
-				})
+				secp_static::with_none(
+					|err| Error::custom(format!("Unable create Secp, {}", err)),
+					|secp| {
+						PublicKey::from_slice(secp, &bytes).map_err(|err| {
+							Error::custom(format!(
+								"Unable to build Pub Key from {:?}, {}",
+								bytes, err
+							))
+						})
+					},
+				)
 			})
 	}
 }
 
 /// Serializes an Option<secp::Signature> to and from hex
 pub mod option_sig_serde {
-	use serde::de::Error;
-	use serde::{Deserialize, Deserializer, Serializer};
-	use util::{from_hex, secp, static_secp_instance, ToHex};
+	use mwc_crates::secp;
+	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
+	use util::{from_hex, secp_static, ToHex};
 
 	///
-	pub fn serialize<S>(sig: &Option<secp::Signature>, serializer: S) -> Result<S::Ok, S::Error>
+	pub fn serialize<S>(
+		sig: &Option<secp::AggSigSignature>,
+		serializer: S,
+	) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		match sig {
 			Some(sig) => {
-				serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
+				let sig_ser = secp_static::with_none(
+					|err| {
+						mwc_crates::serde::ser::Error::custom(format!(
+							"Unable create Secp, {}",
+							err
+						))
+					},
+					|secp| {
+						sig.serialize_raw(secp).map_err(|err| {
+							mwc_crates::serde::ser::Error::custom(format!(
+								"Unable serialize signature, {}",
+								err
+							))
+						})
+					},
+				)?;
+				serializer.serialize_str(&(&sig_ser[..]).to_hex())
 			}
 			None => serializer.serialize_none(),
 		}
 	}
 
 	///
-	pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<secp::Signature>, D::Error>
+	pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<secp::AggSigSignature>, D::Error>
 	where
 		D: Deserializer<'de>,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
 			Some(string) => from_hex(&string)
 				.map_err(|err| {
-					Error::custom(format!("Fail to parse signature HEX {}, {}", string, err))
+					mwc_crates::serde::de::Error::custom(format!(
+						"Fail to parse signature HEX {}, {}",
+						string, err
+					))
 				})
 				.and_then(|bytes: Vec<u8>| {
-					if bytes.len() < 64 {
-						return Err(Error::invalid_length(bytes.len(), &"64 bytes"));
+					if bytes.len() != 64 {
+						return Err(mwc_crates::serde::de::Error::invalid_length(
+							bytes.len(),
+							&"64 bytes",
+						));
 					}
 					let mut b = [0u8; 64];
 					b.copy_from_slice(&bytes[0..64]);
-					secp::Signature::from_compact(&static_secp, &b)
-						.map(Some)
-						.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
+					secp_static::with_none(
+						|err| {
+							mwc_crates::serde::de::Error::custom(format!(
+								"Unable create Secp, {}",
+								err
+							))
+						},
+						|secp| {
+							secp::AggSigSignature::from_raw_data(secp, &b)
+								.map(Some)
+								.map_err(|err| {
+									mwc_crates::serde::de::Error::custom(format!(
+										"Fail to decode signature, {}",
+										err
+									))
+								})
+						},
+					)
 				}),
 			None => Ok(None),
 		})
@@ -108,9 +160,12 @@ pub mod option_sig_serde {
 
 /// Serializes an Option<secp::SecretKey> to and from hex
 pub mod option_seckey_serde {
-	use serde::de::Error;
-	use serde::{Deserialize, Deserializer, Serializer};
-	use util::{from_hex, secp, static_secp_instance, ToHex};
+	use mwc_crates::secp;
+	use mwc_crates::secp::constants::SECRET_KEY_SIZE;
+	use mwc_crates::serde::de::Error;
+	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
+	use mwc_crates::zeroize::Zeroizing;
+	use util::{decode_secret_key_hex, secp_static, ToHex, ZeroingString};
 
 	///
 	pub fn serialize<S>(
@@ -121,7 +176,10 @@ pub mod option_seckey_serde {
 		S: Serializer,
 	{
 		match key {
-			Some(key) => serializer.serialize_str(&key.0.to_hex()),
+			Some(key) => {
+				let key_str: Zeroizing<String> = Zeroizing::new(key.0.to_hex());
+				serializer.serialize_str(&key_str)
+			}
 			None => serializer.serialize_none(),
 		}
 	}
@@ -131,23 +189,25 @@ pub mod option_seckey_serde {
 	where
 		D: Deserializer<'de>,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
-			Some(string) => from_hex(&string)
-				.map_err(|err| {
-					Error::custom(format!("Fail to parse key from HEX {}, {}", string, err))
-				})
-				.and_then(|bytes: Vec<u8>| {
-					if bytes.len() < 32 {
-						return Err(Error::invalid_length(bytes.len(), &"32 bytes"));
-					}
-					let mut b = [0u8; 32];
-					b.copy_from_slice(&bytes[0..32]);
-					secp::key::SecretKey::from_slice(&static_secp, &b)
-						.map(Some)
-						.map_err(|err| Error::custom(format!("Fail to decode key, {}", err)))
-				}),
+			Some(string) => {
+				let string = ZeroingString::from(string);
+				let bytes =
+					decode_secret_key_hex::<SECRET_KEY_SIZE>(&string).map_err(|err| match err {
+						util::Error::InvalidLength { actual, .. } => {
+							Error::invalid_length(actual, &"32 bytes")
+						}
+						_ => Error::custom("invalid secret key hex"),
+					})?;
+				secp_static::with_none(
+					|err| Error::custom(format!("Unable create Secp, {}", err)),
+					|secp| {
+						secp::key::SecretKey::from_slice(secp, bytes.as_ref())
+							.map(Some)
+							.map_err(|err| Error::custom(format!("Fail to decode key, {}", err)))
+					},
+				)
+			}
 			None => Ok(None),
 		})
 	}
@@ -155,27 +215,35 @@ pub mod option_seckey_serde {
 
 /// Serializes a secp::Signature to and from hex
 pub mod sig_serde {
-	use serde::de::Error;
-	use serde::{Deserialize, Deserializer, Serializer};
-	use util::{from_hex, secp, static_secp_instance, ToHex};
+	use mwc_crates::secp;
+	use mwc_crates::serde::de::Error;
+	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
+	use util::{from_hex, secp_static, ToHex};
 
 	///
-	pub fn serialize<S>(sig: &secp::Signature, serializer: S) -> Result<S::Ok, S::Error>
+	pub fn serialize<S>(sig: &secp::AggSigSignature, serializer: S) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
-		serializer.serialize_str(&(&sig.serialize_compact(&static_secp)[..]).to_hex())
+		let sig_ser = secp_static::with_none(
+			|err| mwc_crates::serde::ser::Error::custom(format!("Unable create Secp, {}", err)),
+			|secp| {
+				sig.serialize_raw(secp).map_err(|err| {
+					mwc_crates::serde::ser::Error::custom(format!(
+						"Unable serialize signature, {}",
+						err
+					))
+				})
+			},
+		)?;
+		serializer.serialize_str(&(&sig_ser[..]).to_hex())
 	}
 
 	///
-	pub fn deserialize<'de, D>(deserializer: D) -> Result<secp::Signature, D::Error>
+	pub fn deserialize<'de, D>(deserializer: D) -> Result<secp::AggSigSignature, D::Error>
 	where
 		D: Deserializer<'de>,
 	{
-		let static_secp = static_secp_instance();
-		let static_secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
 		String::deserialize(deserializer)
 			.and_then(|string| {
 				from_hex(&string).map_err(|err| {
@@ -183,23 +251,31 @@ pub mod sig_serde {
 				})
 			})
 			.and_then(|bytes: Vec<u8>| {
-				if bytes.len() < 64 {
+				if bytes.len() != 64 {
 					return Err(Error::invalid_length(bytes.len(), &"64 bytes"));
 				}
 				let mut b = [0u8; 64];
 				b.copy_from_slice(&bytes[0..64]);
-				secp::Signature::from_compact(&static_secp, &b)
-					.map_err(|err| Error::custom(format!("Fail to decode signature, {}", err)))
+				secp_static::with_none(
+					|err| {
+						mwc_crates::serde::de::Error::custom(format!("Unable create Secp, {}", err))
+					},
+					|secp| {
+						secp::AggSigSignature::from_raw_data(secp, &b).map_err(|err| {
+							Error::custom(format!("Fail to decode signature, {}", err))
+						})
+					},
+				)
 			})
 	}
 }
 
 /// Serializes an Option<secp::Commitment> to and from hex
 pub mod option_commitment_serde {
-	use serde::de::Error;
-	use serde::{Deserialize, Deserializer, Serializer};
-	use util::secp::pedersen::Commitment;
-	use util::{from_hex, ToHex};
+	use mwc_crates::secp::pedersen::Commitment;
+	use mwc_crates::serde::de::Error;
+	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
+	use util::{from_hex, secp_static, ToHex};
 
 	///
 	pub fn serialize<S>(commit: &Option<Commitment>, serializer: S) -> Result<S::Ok, S::Error>
@@ -222,7 +298,19 @@ pub mod option_commitment_serde {
 				.map_err(|err| {
 					Error::custom(format!("Fail to parse Commit from HEX {}, {}", string, err))
 				})
-				.and_then(|bytes: Vec<u8>| Ok(Some(Commitment::from_vec(bytes.to_vec())))),
+				.and_then(|bytes: Vec<u8>| {
+					let commitment = Commitment::from_vec(bytes)
+						.map_err(|e| Error::custom(format!("Invalid Commit {}, {}", string, e)))?;
+					secp_static::with_commit(
+						|err| Error::custom(format!("Unable create Secp, {}", err)),
+						|secp| {
+							secp.validate_commitment(&commitment).map_err(|err| {
+								Error::custom(format!("Invalid Commit {}, {}", string, err))
+							})
+						},
+					)?;
+					Ok(Some(commitment))
+				}),
 			None => Ok(None),
 		})
 	}
@@ -232,14 +320,10 @@ pub fn blind_from_hex<'de, D>(deserializer: D) -> Result<BlindingFactor, D::Erro
 where
 	D: Deserializer<'de>,
 {
-	use serde::de::Error;
+	use mwc_crates::serde::de::Error;
 	String::deserialize(deserializer).and_then(|string| {
-		BlindingFactor::from_hex(&string).map_err(|err| {
-			Error::custom(format!(
-				"Fail to parse blinding factor HEX {}, {}",
-				string, err
-			))
-		})
+		BlindingFactor::from_hex(&string)
+			.map_err(|err| Error::custom(format!("Fail to parse blinding factor, {}", err)))
 	})
 }
 
@@ -248,14 +332,35 @@ pub fn rangeproof_from_hex<'de, D>(deserializer: D) -> Result<RangeProof, D::Err
 where
 	D: Deserializer<'de>,
 {
-	use serde::de::{Error, IntoDeserializer};
+	use mwc_crates::serde::de::{Error, IntoDeserializer};
 
 	let val = String::deserialize(deserializer).and_then(|string| {
-		from_hex(&string).map_err(|err| {
-			Error::custom(format!("Fail to parse range proof HEX {}, {}", string, err))
-		})
+		let hex = string.trim();
+		let hex = hex.strip_prefix("0x").unwrap_or(hex);
+		let max_hex_len = MAX_PROOF_SIZE * 2;
+		if hex.len() > max_hex_len {
+			return Err(Error::invalid_length(
+				hex.len() / 2,
+				&"at most MAX_PROOF_SIZE bytes",
+			));
+		}
+		from_hex(hex)
+			.map_err(|err| Error::custom(format!("Fail to parse range proof HEX {}, {}", hex, err)))
 	})?;
 	RangeProof::deserialize(val.into_deserializer())
+}
+
+/// Serializes a RangeProof as hex after validating its public length.
+pub fn rangeproof_as_hex<S>(proof: &RangeProof, serializer: S) -> Result<S::Ok, S::Error>
+where
+	S: Serializer,
+{
+	use mwc_crates::serde::ser::Error;
+
+	let bytes = proof
+		.bytes()
+		.map_err(|err| Error::custom(format!("Invalid range proof, {}", err)))?;
+	serializer.serialize_str(&bytes.to_hex())
 }
 
 /// Creates a Pedersen Commitment from a hex string
@@ -263,14 +368,28 @@ pub fn commitment_from_hex<'de, D>(deserializer: D) -> Result<Commitment, D::Err
 where
 	D: Deserializer<'de>,
 {
-	use serde::de::Error;
+	use mwc_crates::serde::de::Error;
+	use util::secp_static;
+
 	String::deserialize(deserializer)
 		.and_then(|string| {
 			from_hex(&string).map_err(|err| {
 				Error::custom(format!("Fail to parse commitment HEX {}, {}", string, err))
 			})
 		})
-		.and_then(|bytes: Vec<u8>| Ok(Commitment::from_vec(bytes.to_vec())))
+		.and_then(|bytes: Vec<u8>| {
+			let commitment = Commitment::from_vec(bytes.to_vec())
+				.map_err(|e| Error::custom(format!("Invalid Commit {:?}, {}", bytes, e)))?;
+			secp_static::with_commit(
+				|err| Error::custom(format!("Unable create Secp, {}", err)),
+				|secp| {
+					secp.validate_commitment(&commitment).map_err(|err| {
+						Error::custom(format!("Invalid Commit {:?}, {}", bytes, err))
+					})
+				},
+			)?;
+			Ok(commitment)
+		})
 }
 
 /// Seralizes a byte string into hex
@@ -291,7 +410,7 @@ where
 pub mod string_or_u64 {
 	use std::fmt;
 
-	use serde::{de, Deserializer, Serializer};
+	use mwc_crates::serde::{de, Deserializer, Serializer};
 
 	/// serialize into a string
 	pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
@@ -335,7 +454,7 @@ pub mod string_or_u64 {
 pub mod opt_string_or_u64 {
 	use std::fmt;
 
-	use serde::{de, Deserializer, Serializer};
+	use mwc_crates::serde::{de, Deserializer, Serializer};
 
 	/// serialize into string or none
 	pub fn serialize<T, S>(value: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
@@ -388,26 +507,26 @@ pub mod opt_string_or_u64 {
 mod test {
 	use super::*;
 	use crate::libtx::aggsig;
-	use util::secp::key::{PublicKey, SecretKey};
-	use util::secp::{Message, Signature};
-	use util::static_secp_instance;
-
-	use serde_json;
-
-	use rand::{thread_rng, Rng};
+	use mwc_crates::rand::rngs::SysRng;
+	use mwc_crates::rand::TryRng;
+	use mwc_crates::secp::key::{PublicKey, SecretKey};
+	use mwc_crates::secp::{AggSigSignature, ContextFlag, Message, Secp256k1};
+	use mwc_crates::serde::{self, Deserialize, Serialize};
+	use mwc_crates::serde_json;
 
 	#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
+	#[serde(crate = "serde")]
 	struct SerTest {
 		#[serde(with = "option_seckey_serde")]
 		pub opt_skey: Option<SecretKey>,
 		#[serde(with = "pubkey_serde")]
 		pub pub_key: PublicKey,
 		#[serde(with = "option_sig_serde")]
-		pub opt_sig: Option<Signature>,
+		pub opt_sig: Option<AggSigSignature>,
 		#[serde(with = "option_commitment_serde")]
 		pub opt_commit: Option<Commitment>,
 		#[serde(with = "sig_serde")]
-		pub sig: Signature,
+		pub sig: AggSigSignature,
 		#[serde(with = "string_or_u64")]
 		pub num: u64,
 		#[serde(with = "opt_string_or_u64")]
@@ -416,20 +535,17 @@ mod test {
 
 	impl SerTest {
 		pub fn random() -> SerTest {
-			let static_secp = static_secp_instance();
-			let secp = static_secp.lock().unwrap_or_else(|e| e.into_inner());
-			let sk = SecretKey::new(&secp, &mut thread_rng());
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let sk = SecretKey::new(&secp, &mut SysRng).unwrap();
 			let mut msg = [0u8; 32];
-			thread_rng().fill(&mut msg);
+			SysRng.try_fill_bytes(&mut msg).unwrap();
 			let msg = Message::from_slice(&msg).unwrap();
-			let sig = aggsig::sign_single(&secp, &msg, &sk, None, None).unwrap();
-			let mut commit = [0u8; 33];
-			commit[0] = 0x09;
-			thread_rng().fill(&mut commit[1..]);
-			let commit = Commitment::from_vec(commit.to_vec());
+			let pub_key = PublicKey::from_secret_key(&secp, &sk).unwrap();
+			let sig = aggsig::sign_single(&secp, &msg, &sk, None, &pub_key).unwrap();
+			let commit = secp.commit(30, sk.clone()).unwrap();
 			SerTest {
 				opt_skey: Some(sk.clone()),
-				pub_key: PublicKey::from_secret_key(&secp, &sk).unwrap(),
+				pub_key,
 				opt_sig: Some(sig),
 				opt_commit: Some(commit),
 				sig: sig,
@@ -451,5 +567,167 @@ mod test {
 			println!();
 			assert_eq!(s, deserialized);
 		}
+	}
+
+	#[test]
+	fn serializes_aggsig_raw_bytes() {
+		let secp = Secp256k1::with_caps(ContextFlag::VerifyOnly).unwrap();
+		let s = SerTest::random();
+		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
+		let expected = util::to_hex(&s.sig.serialize_raw(&secp).unwrap());
+
+		assert_eq!(sig.as_str().unwrap(), expected);
+	}
+
+	#[test]
+	fn rejects_oversized_rangeproof_hex_before_decode() {
+		#[allow(dead_code)]
+		#[derive(Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct RangeProofTest {
+			#[serde(deserialize_with = "rangeproof_from_hex")]
+			pub proof: RangeProof,
+		}
+
+		let proof = "00".repeat(MAX_PROOF_SIZE + 1);
+		let serialized = format!(r#"{{"proof":"{}"}}"#, proof);
+
+		let err = serde_json::from_str::<RangeProofTest>(&serialized).unwrap_err();
+		let err = err.to_string();
+
+		assert!(err.contains("invalid length"));
+		assert!(err.contains("at most MAX_PROOF_SIZE bytes"));
+	}
+
+	#[test]
+	fn rejects_overlong_signature_hex() {
+		let s = SerTest::random();
+		let serialized = serde_json::to_string(&s).unwrap();
+		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
+		let sig = sig.as_str().unwrap();
+		let overlong_sig = format!("{}00", sig);
+		let serialized = serialized.replace(sig, &overlong_sig);
+
+		let res = serde_json::from_str::<SerTest>(&serialized);
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn rejects_overlong_optional_signature_hex() {
+		#[derive(Serialize, Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct OptionSigTest {
+			#[serde(with = "option_sig_serde")]
+			pub sig: Option<AggSigSignature>,
+		}
+
+		let s = SerTest::random();
+		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
+		let sig = sig.as_str().unwrap();
+		let serialized = format!(r#"{{"sig":"{}00"}}"#, sig);
+
+		let res = serde_json::from_str::<OptionSigTest>(&serialized);
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn rejects_invalid_signature_serialization() {
+		let mut s = SerTest::random();
+		s.sig = AggSigSignature::blank();
+
+		let res = serde_json::to_string(&s);
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn rejects_invalid_optional_signature_serialization() {
+		#[derive(Serialize, Debug)]
+		#[serde(crate = "serde")]
+		struct OptionSigTest {
+			#[serde(with = "option_sig_serde")]
+			pub sig: Option<AggSigSignature>,
+		}
+
+		let res = serde_json::to_string(&OptionSigTest {
+			sig: Some(AggSigSignature::blank()),
+		});
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn rejects_invalid_optional_commitment_hex() {
+		#[derive(Serialize, Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct OptionCommitmentTest {
+			#[serde(with = "option_commitment_serde")]
+			pub commit: Option<Commitment>,
+		}
+
+		let invalid_commit = "00".repeat(33);
+		let serialized = format!(r#"{{"commit":"{}"}}"#, invalid_commit);
+
+		let res = serde_json::from_str::<OptionCommitmentTest>(&serialized);
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn rejects_invalid_commitment_hex() {
+		#[derive(Serialize, Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct CommitmentTest {
+			#[serde(deserialize_with = "commitment_from_hex")]
+			pub commit: Commitment,
+		}
+
+		let invalid_commit = "00".repeat(33);
+		let serialized = format!(r#"{{"commit":"{}"}}"#, invalid_commit);
+
+		let res = serde_json::from_str::<CommitmentTest>(&serialized);
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn rejects_overlong_optional_secret_key_hex() {
+		#[derive(Serialize, Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct OptionSecretKeyTest {
+			#[serde(with = "option_seckey_serde")]
+			pub key: Option<SecretKey>,
+		}
+
+		let s = SerTest::random();
+		let key =
+			option_seckey_serde::serialize(&s.opt_skey, serde_json::value::Serializer).unwrap();
+		let key = key.as_str().unwrap();
+		let serialized = format!(r#"{{"key":"{}00"}}"#, key);
+
+		let res = serde_json::from_str::<OptionSecretKeyTest>(&serialized);
+
+		assert!(res.is_err());
+	}
+
+	#[test]
+	fn optional_secret_key_parse_error_is_redacted() {
+		#[derive(Serialize, Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct OptionSecretKeyTest {
+			#[serde(with = "option_seckey_serde")]
+			pub key: Option<SecretKey>,
+		}
+
+		let secret_like_input = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz";
+		let serialized = format!(r#"{{"key":"{}"}}"#, secret_like_input);
+
+		let err = serde_json::from_str::<OptionSecretKeyTest>(&serialized).unwrap_err();
+		let err = err.to_string();
+
+		assert!(err.contains("invalid secret key hex"));
+		assert!(!err.contains(secret_like_input));
 	}
 }

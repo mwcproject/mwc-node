@@ -15,11 +15,12 @@
 
 //! Readonly view of a PMMR.
 
+use std::convert::TryFrom;
 use std::marker;
 
 use crate::core::hash::Hash;
-use crate::core::pmmr::pmmr::{bintree_rightmost, ReadablePMMR};
-use crate::core::pmmr::{is_leaf, Backend};
+use crate::core::pmmr::pmmr::{bintree_rightmost, n_leaves, ReadablePMMR};
+use crate::core::pmmr::{is_leaf, Backend, Error};
 use crate::ser::PMMRable;
 
 /// Readonly view of a PMMR.
@@ -61,48 +62,82 @@ where
 	}
 
 	/// Helper function which returns un-pruned nodes from the insertion index
-	/// forward
-	/// returns last pmmr index returned along with data
+	/// forward. Each returned element is paired with its 1-based PMMR index.
+	/// Returns the terminal PMMR scan index along with indexed data.
 	pub fn elements_from_pmmr_index(
 		&self,
 		pmmr_index1: u64,
 		max_count: u64,
 		max_pmmr_pos1: Option<u64>,
-	) -> (u64, Vec<T::E>) {
+	) -> Result<(u64, Vec<(u64, T::E)>), Error> {
 		let mut return_vec = vec![];
-		let size = match max_pmmr_pos1 {
-			Some(p) => p,
-			None => self.size,
-		};
-		let mut pmmr_index = pmmr_index1.saturating_sub(1);
+		let size = max_pmmr_pos1.unwrap_or(self.size).min(self.size);
+		let pmmr_index = pmmr_index1.checked_sub(1).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"ReadonlyPMMR::elements_from_pmmr_index, pmmr_index1={}",
+				pmmr_index1
+			))
+		})?;
+		let max_count = usize::try_from(max_count).map_err(|_| {
+			Error::DataOverflow(format!(
+				"ReadonlyPMMR::elements_from_pmmr_index, max_count={}",
+				max_count
+			))
+		})?;
 
-		while return_vec.len() < max_count as usize && pmmr_index < size {
-			if let Some(t) = self.get_data(pmmr_index) {
-				return_vec.push(t);
-			}
-			pmmr_index += 1;
+		if max_count == 0 || pmmr_index >= size {
+			return Ok((pmmr_index, return_vec));
 		}
-		(pmmr_index, return_vec)
+
+		for pos0 in self.backend.leaf_pos_iter_from(pmmr_index)? {
+			let pos0 = pos0?;
+			if pos0 >= size {
+				break;
+			}
+			if let Some(t) = self.get_data(pos0)? {
+				// Returned element indexes are 1-based PMMR indexes.
+				let pos1 = pos0.checked_add(1).ok_or_else(|| {
+					Error::DataOverflow(format!(
+						"ReadonlyPMMR::elements_from_pmmr_index, pmmr_index={}",
+						pos0
+					))
+				})?;
+				return_vec.push((pos1, t));
+				if return_vec.len() == max_count {
+					return Ok((pos1, return_vec));
+				}
+			}
+		}
+		Ok((size, return_vec))
 	}
 
-	/// Helper function to get the last N nodes inserted, i.e. the last
-	/// n nodes along the bottom of the tree.
-	/// May return less than n items if the MMR has been pruned/compacted.
+	/// Helper function to get up to n unpruned leaf entries by scanning
+	/// backward along the bottom of the tree.
+	/// Pruned/compacted leaves do not count toward n, so this may scan farther
+	/// back than n historical insertions and may return entries older than the
+	/// most recent n insertion positions.
+	/// May return less than n items if the scan reaches the start of the MMR.
 	/// NOTE This should just iterate over insertion indices
 	/// to avoid the repeated calls to bintree_rightmost!
-	pub fn get_last_n_insertions(&self, n: u64) -> Vec<(Hash, T::E)> {
+	pub fn get_last_n_insertions(&self, n: u64) -> Result<Vec<(Hash, T::E)>, Error> {
 		let mut return_vec = vec![];
 		let mut last_leaf = self.size;
-		while return_vec.len() < n as usize && last_leaf > 0 {
-			last_leaf = bintree_rightmost(last_leaf - 1);
+		while (return_vec.len() as u64) < n && last_leaf > 0 {
+			let prev_pos = last_leaf.checked_sub(1).ok_or_else(|| {
+				Error::DataOverflow(format!(
+					"ReadonlyPMMR::get_last_n_insertions, last_leaf={}",
+					last_leaf
+				))
+			})?;
+			last_leaf = bintree_rightmost(prev_pos)?;
 
-			if let Some(hash) = self.backend.get_hash(last_leaf) {
-				if let Some(data) = self.backend.get_data(last_leaf) {
+			if let Some(hash) = self.backend.get_hash(last_leaf)? {
+				if let Some(data) = self.backend.get_data(last_leaf)? {
 					return_vec.push((hash, data));
 				}
 			}
 		}
-		return_vec
+		Ok(return_vec)
 	}
 }
 
@@ -113,50 +148,63 @@ where
 {
 	type Item = T::E;
 
-	fn get_hash(&self, pos0: u64) -> Option<Hash> {
+	fn get_context_id(&self) -> u32 {
+		self.backend.get_context_id()
+	}
+
+	fn get_hash(&self, pos0: u64) -> Result<Option<Hash>, Error> {
 		if pos0 >= self.size {
-			None
+			Ok(None)
 		} else if is_leaf(pos0) {
 			// If we are a leaf then get hash from the backend.
 			self.backend.get_hash(pos0)
 		} else {
 			// If we are not a leaf get hash ignoring the remove log.
-			self.backend.get_from_file(pos0)
+			match self.backend.get_from_file(pos0)? {
+				Some(hash) => Ok(Some(hash)),
+				None if self.backend.is_compacted(pos0)? => Ok(None),
+				None => Err(Error::DataCorruption(format!(
+					"Missing non-compacted PMMR hash at position {}.",
+					pos0
+				))),
+			}
 		}
 	}
 
-	fn get_data(&self, pos0: u64) -> Option<Self::Item> {
+	fn get_data(&self, pos0: u64) -> Result<Option<Self::Item>, Error> {
 		if pos0 >= self.size {
 			// If we are beyond the rhs of the MMR return None.
-			None
+			Ok(None)
 		} else if is_leaf(pos0) {
 			// If we are a leaf then get data from the backend.
 			self.backend.get_data(pos0)
 		} else {
 			// If we are not a leaf then return None as only leaves have data.
-			None
+			Ok(None)
 		}
 	}
 
-	fn get_from_file(&self, pos0: u64) -> Option<Hash> {
+	fn get_from_file(&self, pos0: u64) -> Result<Option<Hash>, Error> {
 		if pos0 >= self.size {
-			None
+			Ok(None)
 		} else {
 			self.backend.get_from_file(pos0)
 		}
 	}
 
-	fn get_peak_from_file(&self, pos0: u64) -> Option<Hash> {
+	fn get_peak_from_file(&self, pos0: u64) -> Result<Option<Hash>, Error> {
 		if pos0 >= self.size {
-			None
+			Ok(None)
 		} else {
 			self.backend.get_peak_from_file(pos0)
 		}
 	}
 
-	fn get_data_from_file(&self, pos0: u64) -> Option<Self::Item> {
+	fn get_data_from_file(&self, pos0: u64) -> Result<Option<Self::Item>, Error> {
 		if pos0 >= self.size {
-			None
+			Ok(None)
+		} else if !is_leaf(pos0) {
+			Ok(None)
 		} else {
 			self.backend.get_data_from_file(pos0)
 		}
@@ -166,19 +214,18 @@ where
 		self.size
 	}
 
-	fn leaf_pos_iter(&self) -> Box<dyn Iterator<Item = u64> + '_> {
-		self.backend.leaf_pos_iter()
+	fn leaf_pos_iter(&self) -> Result<Box<dyn Iterator<Item = Result<u64, Error>> + '_>, Error> {
+		let size = self.size;
+		Ok(Box::new(self.backend.leaf_pos_iter()?.filter(
+			move |pos| match pos {
+				Ok(pos) => *pos < size,
+				Err(_) => true,
+			},
+		)))
 	}
 
-	fn leaf_idx_iter(&self, from_idx: u64) -> Box<dyn Iterator<Item = u64> + '_> {
-		self.backend.leaf_idx_iter(from_idx)
-	}
-
-	fn n_unpruned_leaves(&self) -> u64 {
-		self.backend.n_unpruned_leaves()
-	}
-
-	fn n_unpruned_leaves_to_index(&self, to_index: u64) -> u64 {
+	fn n_unpruned_leaves_to_index(&self, to_index: u64) -> Result<u64, Error> {
+		let to_index = to_index.min(n_leaves(self.size)?);
 		self.backend.n_unpruned_leaves_to_index(to_index)
 	}
 }

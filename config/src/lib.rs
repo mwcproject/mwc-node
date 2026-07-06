@@ -21,14 +21,6 @@
 #![deny(unused_mut)]
 #![warn(missing_docs)]
 
-#[macro_use]
-extern crate serde_derive;
-
-use mwc_core as core;
-use mwc_p2p as p2p;
-use mwc_servers as servers;
-use mwc_util as util;
-
 mod comments;
 pub mod config;
 pub mod types;

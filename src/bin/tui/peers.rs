@@ -17,21 +17,23 @@
 
 use std::cmp::Ordering;
 
-use crate::servers::{PeerStats, ServerStats};
+use mwc_servers::{PeerStats, ServerStats};
 
-use chrono::prelude::*;
-use humansize::{file_size_opts::CONVENTIONAL, FileSize};
+use mwc_crates::chrono::prelude::*;
+use mwc_crates::humansize::{format_size, WINDOWS};
 
-use cursive::direction::Orientation;
-use cursive::event::Key;
-use cursive::traits::{Nameable, Resizable};
-use cursive::view::View;
-use cursive::views::{Dialog, LinearLayout, OnEventView, ResizedView, TextView};
-use cursive::Cursive;
+use mwc_crates::cursive::direction::Orientation;
+use mwc_crates::cursive::event::Key;
+use mwc_crates::cursive::traits::{Nameable, Resizable};
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::views::{Dialog, LinearLayout, OnEventView, ResizedView, TextView};
+use mwc_crates::cursive::Cursive;
+use mwc_crates::log::error;
 
+use super::call_on_name_or_log;
 use crate::tui::constants::{MAIN_MENU, TABLE_PEER_STATUS, VIEW_PEER_SYNC};
 use crate::tui::types::TUIStatusListener;
-use cursive_table_view::{TableView, TableViewItem};
+use mwc_crates::cursive_table_view::{TableView, TableViewItem};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum PeerColumn {
@@ -64,8 +66,7 @@ impl TableViewItem<PeerColumn> for PeerStats {
 	fn to_column(&self, column: PeerColumn) -> String {
 		// Converts optional size to human readable size
 		fn size_to_string(size: u64) -> String {
-			size.file_size(CONVENTIONAL)
-				.unwrap_or_else(|_| "-".to_string())
+			format_size(size, WINDOWS)
 		}
 
 		match column {
@@ -95,13 +96,12 @@ impl TableViewItem<PeerColumn> for PeerStats {
 	{
 		// Compares used bandwidth of two peers
 		fn cmp_used_bandwidth(curr: &PeerStats, other: &PeerStats) -> Ordering {
-			let curr_recv_bytes = curr.received_bytes_per_sec;
-			let curr_sent_bytes = curr.sent_bytes_per_sec;
-			let other_recv_bytes = other.received_bytes_per_sec;
-			let other_sent_bytes = other.sent_bytes_per_sec;
-
-			let curr_sum = curr_recv_bytes + curr_sent_bytes;
-			let other_sum = other_recv_bytes + other_sent_bytes;
+			let curr_sum = curr
+				.received_bytes_per_sec
+				.saturating_add(curr.sent_bytes_per_sec);
+			let other_sum = other
+				.received_bytes_per_sec
+				.saturating_add(other.sent_bytes_per_sec);
 
 			curr_sum.cmp(&other_sum)
 		}
@@ -165,7 +165,12 @@ impl TUIPeerView {
 
 		let peer_status_view =
 			OnEventView::new(peer_status_view).on_pre_event(Key::Esc, move |c| {
-				let _ = c.focus_name(MAIN_MENU);
+				if let Err(e) = c.focus_name(MAIN_MENU) {
+					error!(
+						"TUI main menu focus target '{}' not found or cannot be focused: {:?}",
+						MAIN_MENU, e
+					);
+				}
 			});
 
 		peer_status_view
@@ -188,13 +193,15 @@ impl TUIStatusListener for TUIPeerView {
 			),
 			None => "".to_string(),
 		};
-		let _ = c.call_on_name(
+		call_on_name_or_log(
+			c,
+			"peer",
 			TABLE_PEER_STATUS,
 			|t: &mut TableView<PeerStats, PeerColumn>| {
 				t.set_items_stable(stats.peer_stats.clone());
 			},
 		);
-		let _ = c.call_on_name("peers_total", |t: &mut TextView| {
+		call_on_name_or_log(c, "peer", "peers_total", |t: &mut TextView| {
 			t.set_content(format!(
 				"Total Peers: {} (Outbound: {})",
 				stats.peer_stats.len(),
@@ -205,7 +212,7 @@ impl TUIStatusListener for TUIPeerView {
 					.count(),
 			));
 		});
-		let _ = c.call_on_name("longest_work_peer", |t: &mut TextView| {
+		call_on_name_or_log(c, "peer", "longest_work_peer", |t: &mut TextView| {
 			t.set_content(lp_str);
 		});
 	}

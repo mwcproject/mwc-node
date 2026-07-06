@@ -1,6 +1,6 @@
 [package]
 name = "mwc_p2p"
-version = "6.0.1"
+version = "7.0.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Chain implementation for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -10,66 +10,9 @@ workspace = ".."
 edition = "2018"
 
 [dependencies]
-bitflags = "1"
-enum_primitive = "0.1"
-lru = "0.12"
-thiserror = "1"
-num = "0.2"
-rand = "0.6"
-serde = "1"
-serde_derive = "1"
-tempfile = "3.1"
-log = "0.4"
-chrono = { version = "0.4.11", features = ["serde"] }
-futures = "0.3"
-# Commented becaise libp2p is disabled
-#libp2p-tokio-socks5 = { path = "../../rust-libp2p-tokio-socks5" }
-#libp2p = { path = "../../rust-libp2p", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"] }
-#mwc-libp2p-tokio-socks5 = { git = "https://github.com/mwcproject/rust-libp2p-tokio-socks5", version = "0.7.2", branch = "master", optional = true }
-#mwc-libp2p = { git = "https://github.com/mwcproject/rust-libp2p", branch = "master", version="0.35.3", default-features = false, features = [ "noise", "yamux", "mplex", "dns", "tcp-tokio", "ping", "gossipsub"], optional = true}
-lazy_static = "1"
-async-std = "1.9"
-ed25519-dalek = "1"
-serde_json = "1"
-bytes = "0.5"
-crossbeam = "0.8"
-
-# Tor embedded client, Arti project.
-# Note, all tor related crates must be from the same versions
-arti-client = { version = "0.40", default-features = false, features = [
-    "tokio",
-    "rustls",
-    "onion-service-service",
-    "onion-service-client",
-    "pt-client",
-    "keymgr",
-    "ephemeral-keystore",
-    "experimental-api"
-] }
-tracing-subscriber = "0.3"
-tor-error = "0.40.0"
-tor-hsservice = "0.40.0"
-tor-proto = { version = "0.40.0", features = ["stream-ctrl"] }
-tor-cell = "0.40.0"
-tor-keymgr = "0.40.0"
-tor-config = "0.40.0"
-tor-hscrypto = "0.40.0"
-tor-llcrypto = "0.40.0"
-tor-rtcompat = { version = "0.40.0", default-features = false, features = ["tokio", "rustls"] }
-# Adding it fix linking error under the windows
-rusqlite = { version = "0.38", features = ["bundled"] }
-safelog = "0.8"
-rustls = { version = "0.23", features = ["ring","logging","tls12"], default-features = false }
-
-mwc_core = { path = "../core", version = "6.0.1" }
-mwc_store = { path = "../store", version = "6.0.1" }
-mwc_util = { path = "../util", version = "6.0.1" }
-mwc_chain = { path = "../chain", version = "6.0.1" }
-
-[dev-dependencies]
-mwc_pool = { path = "../pool", version = "6.0.1" }
-
-[features]
-# libp2p disabled by default
-# real dependency: libp2p = ["dep:mwc-libp2p-tokio-socks5", "dep:mwc-libp2p"]
-libp2p = []
+mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
+mwc_core = { path = "../core", version = "7.0.0" }
+mwc_store = { path = "../store", version = "7.0.0" }
+mwc_util = { path = "../util", version = "7.0.0" }
+mwc_chain = { path = "../chain", version = "7.0.0" }
+thiserror.workspace = true

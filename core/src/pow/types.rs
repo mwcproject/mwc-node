@@ -17,15 +17,16 @@ use crate::consensus::{graph_weight, MIN_DIFFICULTY, SECOND_POW_EDGE_BITS};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::global;
 use crate::pow::error::Error;
-use crate::ser::{self, DeserializationMode, Readable, Reader, Writeable, Writer};
-use rand::{thread_rng, Rng};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use crate::ser::{self, Readable, Reader, Writeable, Writer};
+use mwc_crates::rand::rngs::SysRng;
+use mwc_crates::rand::TryRng;
+use mwc_crates::serde::{self, de, Deserialize, Deserializer, Serialize, Serializer};
 /// Types for a Cuck(at)oo proof of work and its encapsulation as a fully usable
 /// proof of work within a block header.
 use std::cmp::{max, min};
+use std::fmt;
 use std::ops::{Add, Div, Mul, Sub};
 use std::u64;
-use std::{fmt, iter};
 
 /// Generic trait for a solver/verifier providing common interface into Cuckoo-family PoW
 /// Mostly used for verification, but also for test mining if necessary
@@ -84,20 +85,20 @@ impl Difficulty {
 		context_id: u32,
 		height: u64,
 		proof: &Proof,
-	) -> Result<Difficulty, std::io::Error> {
+	) -> Result<Difficulty, Error> {
 		// scale with natural scaling factor
 		Ok(Difficulty::from_num(proof.scaled_difficulty(
-			graph_weight(context_id, height, proof.edge_bits),
+			graph_weight(context_id, height, proof.edge_bits)?,
 		)?))
 	}
 
 	/// Same as `from_proof_adjusted` but instead of an adjustment based on
 	/// cycle size, scales based on a provided factor. Used by dual PoW system
 	/// to scale one PoW against the other.
-	fn from_proof_scaled(proof: &Proof, scaling: u32) -> Result<Difficulty, std::io::Error> {
+	fn from_proof_scaled(proof: &Proof, scaling: u32) -> Result<Difficulty, Error> {
 		// Scaling between 2 proof of work algos
 		Ok(Difficulty::from_num(
-			proof.scaled_difficulty(scaling as u64)?,
+			proof.scaled_difficulty(u64::from(scaling))?,
 		))
 	}
 
@@ -114,38 +115,61 @@ impl fmt::Display for Difficulty {
 }
 
 impl Add<Difficulty> for Difficulty {
-	type Output = Difficulty;
-	fn add(self, other: Difficulty) -> Difficulty {
-		Difficulty {
-			num: self.num + other.num,
-		}
+	type Output = Result<Difficulty, Error>;
+
+	fn add(self, other: Difficulty) -> Self::Output {
+		let num = self.num.checked_add(other.num).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"Difficulty::add, lhs={} rhs={}",
+				self.num, other.num
+			))
+		})?;
+		Ok(Difficulty { num })
 	}
 }
 
 impl Sub<Difficulty> for Difficulty {
-	type Output = Difficulty;
-	fn sub(self, other: Difficulty) -> Difficulty {
-		Difficulty {
-			num: self.num - other.num,
-		}
+	type Output = Result<Difficulty, Error>;
+
+	fn sub(self, other: Difficulty) -> Self::Output {
+		let num = self.num.checked_sub(other.num).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"Difficulty::sub, lhs={} rhs={}",
+				self.num, other.num
+			))
+		})?;
+		Ok(Difficulty { num })
 	}
 }
 
 impl Mul<Difficulty> for Difficulty {
-	type Output = Difficulty;
-	fn mul(self, other: Difficulty) -> Difficulty {
-		Difficulty {
-			num: self.num * other.num,
-		}
+	type Output = Result<Difficulty, Error>;
+
+	fn mul(self, other: Difficulty) -> Self::Output {
+		let num = self.num.checked_mul(other.num).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"Difficulty::mul, lhs={} rhs={}",
+				self.num, other.num
+			))
+		})?;
+		Ok(Difficulty { num })
 	}
 }
 
 impl Div<Difficulty> for Difficulty {
-	type Output = Difficulty;
-	fn div(self, other: Difficulty) -> Difficulty {
-		Difficulty {
-			num: self.num / other.num,
+	type Output = Result<Difficulty, Error>;
+
+	fn div(self, other: Difficulty) -> Self::Output {
+		let num = self.num.checked_div(other.num).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"Difficulty::div, lhs={} rhs={}",
+				self.num, other.num
+			))
+		})?;
+		if num == 0 {
+			return Err(Error::DataOverflow("Difficulty::div result is zero".into()));
 		}
+		Ok(Difficulty { num })
 	}
 }
 
@@ -158,6 +182,11 @@ impl Writeable for Difficulty {
 impl Readable for Difficulty {
 	fn read<R: Reader>(reader: &mut R) -> Result<Difficulty, ser::Error> {
 		let data = reader.read_u64()?;
+		if data == 0 {
+			return Err(ser::Error::CorruptedData(
+				"invalid zero difficulty".to_string(),
+			));
+		}
 		Ok(Difficulty { num: data })
 	}
 }
@@ -201,6 +230,12 @@ impl<'de> de::Visitor<'de> for DiffVisitor {
 		let num_in = s
 			.parse::<u64>()
 			.map_err(|_| de::Error::invalid_value(de::Unexpected::Str(s), &"a value number"))?;
+		if num_in == 0 {
+			return Err(de::Error::invalid_value(
+				de::Unexpected::Str(s),
+				&"invalid zero difficulty",
+			));
+		}
 		Ok(Difficulty { num: num_in })
 	}
 
@@ -208,12 +243,19 @@ impl<'de> de::Visitor<'de> for DiffVisitor {
 	where
 		E: de::Error,
 	{
+		if value == 0 {
+			return Err(de::Error::invalid_value(
+				de::Unexpected::Unsigned(value),
+				&"invalid zero difficulty",
+			));
+		}
 		Ok(Difficulty { num: value })
 	}
 }
 
 /// Block header information pertaining to the proof of work
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(crate = "serde")]
 pub struct ProofOfWork {
 	/// Total accumulated difficulty since genesis block
 	pub total_difficulty: Difficulty,
@@ -274,11 +316,7 @@ impl ProofOfWork {
 	}
 
 	/// Maximum difficulty this proof of work can achieve
-	pub fn to_difficulty(
-		&self,
-		context_id: u32,
-		height: u64,
-	) -> Result<Difficulty, std::io::Error> {
+	pub fn to_difficulty(&self, context_id: u32, height: u64) -> Result<Difficulty, Error> {
 		// 2 proof of works, Cuckoo29 (for now) and Cuckoo30+, which are scaled
 		// differently (scaling not controlled for now)
 		if self.proof.edge_bits == SECOND_POW_EDGE_BITS {
@@ -289,7 +327,7 @@ impl ProofOfWork {
 	}
 
 	/// Maximum unscaled difficulty this proof of work can achieve
-	pub fn to_unscaled_difficulty(&self) -> Result<Difficulty, std::io::Error> {
+	pub fn to_unscaled_difficulty(&self) -> Result<Difficulty, Error> {
 		// using scale = 1 gives "unscaled" value
 		Ok(Difficulty::from_num(self.proof.scaled_difficulty(1u64)?))
 	}
@@ -328,6 +366,7 @@ impl ProofOfWork {
 /// writing as a little endian byte array, and hashing with blake2b using 256 bit digest.
 
 #[derive(Clone, PartialOrd, PartialEq, Serialize)]
+#[serde(crate = "serde")]
 pub struct Proof {
 	/// Power of 2 used for the size of the cuckoo graph
 	pub edge_bits: u8,
@@ -382,21 +421,19 @@ impl Proof {
 	/// Builds a proof with random POW data,
 	/// needed so that tests that ignore POW
 	/// don't fail due to duplicate hashes
-	pub fn random(context_id: u32, proof_size: usize) -> Proof {
+	pub fn random(context_id: u32, proof_size: usize) -> Result<Proof, Error> {
 		let edge_bits = global::min_edge_bits(context_id);
-		let nonce_mask = (1 << edge_bits) - 1;
-		let mut rng = thread_rng();
+		let nonce_mask: u64 = (1 << edge_bits) - 1;
 		// force the random num to be within edge_bits bits
-		let mut v: Vec<u64> = iter::repeat(())
-			.map(|()| (rng.gen::<u32>() & nonce_mask) as u64)
-			.take(proof_size)
-			.collect();
+		let mut v: Vec<u64> = (0..proof_size)
+			.map(|_| Ok(SysRng.try_next_u64().map_err(|_| Error::SysRndError)? & nonce_mask))
+			.collect::<Result<Vec<u64>, Error>>()?;
 		v.sort_unstable();
-		Proof {
+		Ok(Proof {
 			edge_bits: global::min_edge_bits(context_id),
 			nonces: v,
 			context_id,
-		}
+		})
 	}
 
 	/// Returns the proof size
@@ -404,20 +441,59 @@ impl Proof {
 		self.nonces.len()
 	}
 
+	fn validate_packable(&self) -> Result<usize, ser::Error> {
+		if self.edge_bits == 0 || self.edge_bits > 63 {
+			return Err(ser::Error::CorruptedData(format!(
+				"Unexpected edge bit {}",
+				self.edge_bits
+			)));
+		}
+
+		let bytes_len = Proof::pack_len(self.context_id, self.edge_bits);
+		if bytes_len < 8 {
+			return Err(ser::Error::CorruptedData(format!(
+				"Nonce length {} is too small",
+				bytes_len
+			)));
+		}
+
+		let proof_size = global::proofsize(self.context_id);
+		if self.nonces.len() != proof_size {
+			return Err(ser::Error::CorruptedData(format!(
+				"Unexpected proof nonce count {}, expected {}",
+				self.nonces.len(),
+				proof_size
+			)));
+		}
+
+		let nonce_limit = 1u64 << self.edge_bits;
+		for nonce in &self.nonces {
+			if *nonce >= nonce_limit {
+				return Err(ser::Error::CorruptedData(format!(
+					"Nonce {} exceeds edge bits {}",
+					nonce, self.edge_bits
+				)));
+			}
+		}
+
+		Ok(bytes_len)
+	}
+
 	/// Pack the nonces of the proof to their exact bit size as described above
-	pub fn pack_nonces(&self) -> Vec<u8> {
-		let mut compressed = vec![0u8; Proof::pack_len(self.context_id, self.edge_bits)];
+	pub fn pack_nonces(&self) -> Result<Vec<u8>, ser::Error> {
+		let bytes_len = self.validate_packable()?;
+		let mut compressed = vec![0u8; bytes_len];
 		pack_bits(
 			self.edge_bits,
 			&self.nonces[0..self.nonces.len()],
 			&mut compressed,
 		);
-		compressed
+		Ok(compressed)
 	}
 
 	/// Difficulty achieved by this proof with given scaling factor
 	fn scaled_difficulty(&self, scale: u64) -> Result<u64, std::io::Error> {
-		let diff = ((scale as u128) << 64) / (max(1, self.hash()?.to_u64()) as u128);
+		let diff = ((scale as u128) << 64) / (max(1, self.hash(self.context_id)?.to_u64()) as u128);
 		Ok(min(diff, <u64>::max_value() as u128) as u64)
 	}
 }
@@ -497,60 +573,54 @@ impl Readable for Proof {
 
 		let context_id = reader.get_context_id();
 
-		// prepare nonces and read the right number of bytes
-		// If skipping pow proof, we can stop after reading edge bits
-		if reader.deserialization_mode() != DeserializationMode::SkipPow {
-			let mut nonces = Vec::with_capacity(global::proofsize(context_id));
-			let nonce_bits = edge_bits as usize;
-			let bytes_len = Proof::pack_len(context_id, edge_bits);
-			if bytes_len < 8 {
-				return Err(ser::Error::CorruptedData(format!(
-					"Nonce length {} is too small",
-					bytes_len
-				)));
-			}
-			let bits = reader.read_fixed_bytes(bytes_len)?;
-			for n in 0..global::proofsize(context_id) {
-				nonces.push(read_number(&bits, n * nonce_bits, nonce_bits));
-			}
-
-			//// check the last bits of the last byte are zeroed, we don't use them but
-			//// still better to enforce to avoid any malleability
-			let end_of_data = global::proofsize(context_id) * nonce_bits;
-			if read_number(&bits, end_of_data, bytes_len * 8 - end_of_data) != 0 {
-				return Err(ser::Error::CorruptedData(
-					"Fail to read nonce as a number".to_string(),
-				));
-			}
-			Ok(Proof {
-				edge_bits,
-				nonces,
-				context_id,
-			})
-		} else {
-			Ok(Proof {
-				edge_bits,
-				nonces: vec![],
-				context_id,
-			})
+		let mut nonces = Vec::with_capacity(global::proofsize(context_id));
+		let nonce_bits = edge_bits as usize;
+		let bytes_len = Proof::pack_len(context_id, edge_bits);
+		if bytes_len < 8 {
+			return Err(ser::Error::CorruptedData(format!(
+				"Nonce length {} is too small",
+				bytes_len
+			)));
 		}
+		let bits = reader.read_fixed_bytes(bytes_len)?;
+		for n in 0..global::proofsize(context_id) {
+			nonces.push(read_number(&bits, n * nonce_bits, nonce_bits));
+		}
+
+		//// check the last bits of the last byte are zeroed, we don't use them but
+		//// still better to enforce to avoid any malleability
+		let end_of_data = global::proofsize(context_id) * nonce_bits;
+		if read_number(&bits, end_of_data, bytes_len * 8 - end_of_data) != 0 {
+			return Err(ser::Error::CorruptedData(
+				"Fail to read nonce as a number".to_string(),
+			));
+		}
+
+		let proof = Proof {
+			edge_bits,
+			nonces,
+			context_id,
+		};
+		proof.validate_packable()?;
+		Ok(proof)
 	}
 }
 
 impl Writeable for Proof {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		let nonces = self.pack_nonces()?;
 		if writer.serialization_mode() != ser::SerializationMode::Hash {
 			writer.write_u8(self.edge_bits)?;
 		}
-		writer.write_fixed_bytes(&self.pack_nonces())
+		writer.write_fixed_bytes(&nonces)
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ser::{BinReader, BinWriter, DeserializationMode, ProtocolVersion};
-	use rand::Rng;
+	use crate::ser::{self, BinReader, BinWriter, ProtocolVersion};
+	use mwc_crates::rand::{rng, RngExt};
 	use std::io::Cursor;
 
 	#[test]
@@ -561,17 +631,12 @@ mod tests {
 			let mut proof = Proof::new(0, gen_proof(edge_bits as u32));
 			proof.edge_bits = edge_bits;
 			let mut buf = Cursor::new(Vec::new());
-			let mut w = BinWriter::new(&mut buf, ProtocolVersion::local());
+			let mut w = BinWriter::new(&mut buf, ProtocolVersion::local(), 0);
 			if let Err(e) = proof.write(&mut w) {
 				panic!("failed to write proof {:?}", e);
 			}
 			buf.set_position(0);
-			let mut r = BinReader::new(
-				&mut buf,
-				ProtocolVersion::local(),
-				0,
-				DeserializationMode::default(),
-			);
+			let mut r = BinReader::new(&mut buf, ProtocolVersion::local(), 0);
 			match Proof::read(&mut r) {
 				Err(e) => panic!("failed to read proof: {:?}", e),
 				Ok(p) => assert_eq!(p, proof),
@@ -579,18 +644,102 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn difficulty_read_rejects_zero() {
+		let bytes = [0; Difficulty::LEN];
+
+		let err = ser::deserialize_default::<Difficulty, _>(0, &mut &bytes[..]).unwrap_err();
+		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	#[test]
+	fn difficulty_read_accepts_nonzero() {
+		let mut bytes = Vec::new();
+		ser::serialize_default(0, &mut bytes, &42_u64).unwrap();
+
+		let difficulty: Difficulty = ser::deserialize_default(0, &mut &bytes[..]).unwrap();
+		assert_eq!(difficulty.to_num(), 42);
+	}
+
+	#[test]
+	fn proof_write_rejects_invalid_edge_bits() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let mut proof = Proof::zero(0, global::proofsize(0));
+		proof.edge_bits = 64;
+
+		let err = write_proof(&proof).unwrap_err();
+		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	#[test]
+	fn proof_write_rejects_invalid_nonce_count() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let proof = Proof::zero(0, global::proofsize(0) - 1);
+
+		let err = write_proof(&proof).unwrap_err();
+		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	#[test]
+	fn proof_write_rejects_nonce_exceeding_edge_bits() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let mut proof = Proof::zero(0, global::proofsize(0));
+		proof.edge_bits = 10;
+		proof.nonces[0] = 1 << proof.edge_bits;
+
+		let err = write_proof(&proof).unwrap_err();
+		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	#[test]
+	fn proof_read_rejects_invalid_edge_bits() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
+		let err = read_proof(&[64]).unwrap_err();
+		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	#[test]
+	fn proof_read_rejects_nonzero_padding() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let mut proof = Proof::zero(0, global::proofsize(0));
+		proof.edge_bits = 10;
+		let mut bytes = write_proof_bytes(&proof).unwrap();
+		*bytes.last_mut().unwrap() |= 0x80;
+
+		let err = read_proof(&bytes).unwrap_err();
+		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	fn write_proof(proof: &Proof) -> Result<(), ser::Error> {
+		write_proof_bytes(proof).map(|_| ())
+	}
+
+	fn write_proof_bytes(proof: &Proof) -> Result<Vec<u8>, ser::Error> {
+		let mut buf = Vec::new();
+		let mut w = BinWriter::new(&mut buf, ProtocolVersion::local(), 0);
+		proof.write(&mut w)?;
+		Ok(buf)
+	}
+
+	fn read_proof(bytes: &[u8]) -> Result<Proof, ser::Error> {
+		let mut cursor = Cursor::new(bytes);
+		let mut r = BinReader::new(&mut cursor, ProtocolVersion::local(), 0);
+		Proof::read(&mut r)
+	}
+
 	fn gen_proof(bits: u32) -> Vec<u64> {
-		let mut rng = rand::thread_rng();
+		let from = u64::pow(2, bits - 1);
+		let to = if bits == 64 {
+			std::u64::MAX
+		} else {
+			u64::pow(2, bits)
+		};
+
+		let mut rng = rng();
 		let mut v = Vec::with_capacity(42);
 		for _ in 0..42 {
-			v.push(rng.gen_range(
-				u64::pow(2, bits - 1),
-				if bits == 64 {
-					std::u64::MAX
-				} else {
-					u64::pow(2, bits)
-				},
-			))
+			v.push(rng.random_range(from..to))
 		}
 		v
 	}

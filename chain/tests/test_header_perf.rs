@@ -13,41 +13,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mwc_chain as chain;
-use mwc_core as core;
-use mwc_util as util;
+use mwc_crates::log::debug;
 use std::collections::HashSet;
-
-#[macro_use]
-extern crate log;
 
 use std::sync::Arc;
 
-use crate::chain::types::{NoopAdapter, Options};
-use crate::core::core::hash::Hashed;
-use crate::core::{genesis, global, pow};
-
 use self::chain_test_helper::clean_output_dir;
+use mwc_chain::types::{NoopAdapter, Options};
+use mwc_core::core::hash::Hashed;
+use mwc_core::{genesis, global, pow};
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 
+#[path = "../src/tests/chain_test_helper.rs"]
 mod chain_test_helper;
 
-fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir: &str) {
+fn test_header_perf_impl(
+	secp: &Secp256k1,
+	is_test_chain: bool,
+	src_root_dir: &str,
+	dest_root_dir: &str,
+) {
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
-	let mut genesis = genesis::genesis_main(0);
+	let mut genesis = genesis::genesis_main(secp, 0);
 
 	if is_test_chain {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-		genesis = pow::mine_genesis_block(0).unwrap();
+		genesis = global::get_genesis_block(secp, 0).unwrap();
 	}
 	global::set_local_nrd_enabled(false);
 
 	{
-		debug!("Reading Chain, genesis block: {}", genesis.hash().unwrap());
+		debug!("Reading Chain, genesis block: {}", genesis.hash(0).unwrap());
 		let dummy_adapter = Arc::new(NoopAdapter {});
 
 		// The original chain we're reading from
 		let src_chain = Arc::new(
-			chain::Chain::init(
+			mwc_chain::Chain::init(
+				secp,
 				0,
 				src_root_dir.into(),
 				dummy_adapter.clone(),
@@ -55,13 +57,16 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 				pow::verify_size,
 				false,
 				HashSet::new(),
+				None,
+				None,
 			)
 			.unwrap(),
 		);
 
 		// And the output chain we're writing to
 		let dest_chain = Arc::new(
-			chain::Chain::init(
+			mwc_chain::Chain::init(
+				secp,
 				0,
 				dest_root_dir.into(),
 				dummy_adapter,
@@ -69,15 +74,17 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 				pow::verify_size,
 				false,
 				HashSet::new(),
+				None,
+				None,
 			)
 			.unwrap(),
 		);
 
 		let sh = src_chain.get_header_by_height(0).unwrap();
-		debug!("Source Genesis - {}", sh.hash().unwrap());
+		debug!("Source Genesis - {}", sh.hash(0).unwrap());
 
 		let dh = dest_chain.get_header_by_height(0).unwrap();
-		debug!("Destination Genesis - {}", dh.hash().unwrap());
+		debug!("Destination Genesis - {}", dh.hash(0).unwrap());
 
 		let horizon_header = src_chain.txhashset_archive_header().unwrap();
 
@@ -115,12 +122,13 @@ fn test_header_perf_impl(is_test_chain: bool, src_root_dir: &str, dest_root_dir:
 #[ignore]
 // Ignored during CI, but use this to run this test on a real instance of a chain pointed where you like
 fn test_header_perf() {
-	util::init_test_logger();
+	mwc_util::init_test_logger().unwrap();
 	// if testing against a real chain, insert location here
 	// NOTE: Modify to point at your own paths
 	let src_root_dir = format!("/Users/yeastplume/Projects/mwc_project/server/chain_data");
 	let dest_root_dir = format!("/Users/yeastplume/Projects/mwc_project/server/.chain_data_copy");
 	clean_output_dir(&dest_root_dir);
-	test_header_perf_impl(false, &src_root_dir, &dest_root_dir);
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	test_header_perf_impl(&secp, false, &src_root_dir, &dest_root_dir);
 	clean_output_dir(&dest_root_dir);
 }

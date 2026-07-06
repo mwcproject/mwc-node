@@ -21,22 +21,8 @@
 #![deny(unused_mut)]
 #![warn(missing_docs)]
 
-#[macro_use]
-extern crate bitflags;
-
-#[macro_use]
-extern crate enum_primitive;
-
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate lazy_static;
-
-use mwc_core as core;
-use mwc_keychain as keychain;
-use mwc_util as util;
+#[cfg(test)]
+extern crate self as mwc_chain;
 
 mod chain;
 mod error;
@@ -47,11 +33,14 @@ pub mod store;
 pub mod txhashset;
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 // Re-export the base interface
 
 pub use crate::chain::Chain;
 pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{
-	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetDownloadStats,
+	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetStateValidationStage,
 };

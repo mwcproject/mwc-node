@@ -15,26 +15,23 @@
 
 //! Common test functions
 
-use self::chain::types::{NoopAdapter, Options};
-use self::chain::Chain;
-use self::core::consensus;
-use self::core::core::hash::Hash;
-use self::core::core::{
+use mwc_chain::types::{NoopAdapter, Options};
+use mwc_chain::Chain;
+use mwc_core::consensus;
+use mwc_core::core::hash::Hash;
+use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
+use mwc_core::core::{
 	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction, TxKernel,
 };
-use self::core::genesis;
-use self::core::global;
-use self::core::libtx::{build, reward, ProofBuilder};
-use self::core::pow;
-use self::keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain};
-use self::pool::types::*;
-use self::pool::TransactionPool;
-use chrono::Duration;
-use mwc_chain as chain;
-use mwc_core as core;
-use mwc_keychain as keychain;
-use mwc_pool as pool;
-use std::collections::{HashSet, VecDeque};
+use mwc_core::global;
+use mwc_core::libtx::{build, reward, ProofBuilder};
+use mwc_core::pow;
+use mwc_crates::chrono::Duration;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
+use mwc_keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain};
+use mwc_pool::types::*;
+use mwc_pool::TransactionPool;
+use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
@@ -44,24 +41,70 @@ pub fn genesis_block<K>(keychain: &K) -> Block
 where
 	K: Keychain,
 {
-	let key_id = keychain::ExtKeychain::derive_key_id(1, 0, 0, 0, 0).unwrap();
+	let key_id = ExtKeychain::derive_key_id(1, 0, 0, 0, 0).unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain).unwrap(),
+		&ProofBuilder::new(&secp, keychain).unwrap(),
 		&key_id,
 		0,
 		false,
 		0,
-		keychain.secp(),
+		&mut secp,
 	)
 	.unwrap();
 
-	genesis::genesis_dev(0).with_reward(reward.0, reward.1)
+	let mut genesis = global::get_genesis_block(&secp, 0)
+		.expect("testing genesis must be available")
+		.with_reward(reward.0, reward.1)
+		.expect("genesis block body must be empty before reward");
+	set_genesis_mmr_roots(&mut genesis);
+
+	let context_id = genesis.header.pow.proof.context_id;
+	let difficulty = genesis.header.pow.total_difficulty;
+	pow::pow_size(
+		context_id,
+		&mut genesis.header,
+		difficulty,
+		global::proofsize(context_id),
+		global::min_edge_bits(context_id),
+	)
+	.expect("testing genesis PoW must be mineable");
+
+	genesis
 }
 
-pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
+fn set_genesis_mmr_roots(genesis: &mut Block) {
+	let context_id = genesis.header.pow.proof.context_id;
+
+	let mut output_backend = VecBackend::new(context_id);
+	let mut output_pmmr = PMMR::new(&mut output_backend);
+	for output in genesis.outputs() {
+		output_pmmr.push(&output.identifier()).unwrap();
+	}
+	genesis.header.output_mmr_size = output_pmmr.size();
+	genesis.header.output_root = output_pmmr.root().unwrap();
+
+	let mut rproof_backend = VecBackend::new(context_id);
+	let mut rproof_pmmr = PMMR::new(&mut rproof_backend);
+	for output in genesis.outputs() {
+		rproof_pmmr.push(&output.proof()).unwrap();
+	}
+	genesis.header.range_proof_root = rproof_pmmr.root().unwrap();
+
+	let mut kernel_backend = VecBackend::new(context_id);
+	let mut kernel_pmmr = PMMR::new(&mut kernel_backend);
+	for kernel in genesis.kernels() {
+		kernel_pmmr.push(kernel).unwrap();
+	}
+	genesis.header.kernel_mmr_size = kernel_pmmr.size();
+	genesis.header.kernel_root = kernel_pmmr.root().unwrap();
+}
+
+pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
 	Chain::init(
+		secp,
 		0,
 		dir_name.to_string(),
 		Arc::new(NoopAdapter {}),
@@ -69,45 +112,49 @@ pub fn init_chain(dir_name: &str, genesis: Block) -> Chain {
 		pow::verify_size,
 		false,
 		HashSet::new(),
+		None,
+		None,
 	)
 	.unwrap()
 }
 
-pub fn add_some_blocks<K>(chain: &Chain, count: u64, keychain: &K)
+pub fn add_some_blocks<K>(secp: &mut Secp256k1, chain: &Chain, count: u64, keychain: &K)
 where
 	K: Keychain,
 {
 	for _ in 0..count {
-		add_block(chain, &[], keychain);
+		add_block(secp, chain, &[], keychain);
 	}
 }
 
-pub fn add_block<K>(chain: &Chain, txs: &[Transaction], keychain: &K)
+pub fn add_block<K>(secp: &mut Secp256k1, chain: &Chain, txs: &[Transaction], keychain: &K)
 where
 	K: Keychain,
 {
 	let prev = chain.head_header().unwrap();
 	let height = prev.height + 1;
-	let mut cache_values = VecDeque::new();
+	let mut cache_values = consensus::DifficultyCache::new();
 	let next_header_info = consensus::next_difficulty(
 		0,
 		height,
 		chain.difficulty_iter().unwrap(),
 		&mut cache_values,
-	);
-	let fee = txs.iter().map(|x| x.fee()).sum();
+	)
+	.unwrap();
+	let fee = txs.iter().map(|x| x.fee().unwrap()).sum();
 	let key_id = ExtKeychainPath::new(1, height as u32, 0, 0, 0)
+		.unwrap()
 		.to_identifier()
 		.unwrap();
 	let reward = reward::output(
 		0,
 		keychain,
-		&ProofBuilder::new(keychain).unwrap(),
+		&ProofBuilder::new(secp, keychain).unwrap(),
 		&key_id,
 		fee,
 		false,
 		height,
-		chain.secp(),
+		secp,
 	)
 	.unwrap();
 
@@ -117,14 +164,14 @@ where
 		txs,
 		next_header_info.clone().difficulty,
 		reward,
-		chain.secp(),
+		secp,
 	)
 	.unwrap();
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
-	chain.set_txhashset_roots(&mut block).unwrap();
+	chain.set_txhashset_roots(secp, &mut block).unwrap();
 
 	let edge_bits = global::min_edge_bits(0);
 	block.header.pow.proof.edge_bits = edge_bits;
@@ -137,7 +184,9 @@ where
 	)
 	.unwrap();
 
-	chain.process_block(block, Options::NONE).unwrap();
+	chain
+		.process_block(secp, block, Options::NONE, std::collections::HashSet::new())
+		.unwrap();
 }
 
 #[derive(Clone)]
@@ -164,10 +213,10 @@ impl BlockChain for ChainAdapter {
 			.map_err(|e| PoolError::Other(format!("failed to get block sums, {}", e)))
 	}
 
-	fn validate_tx(&self, tx: &Transaction) -> Result<(), pool::PoolError> {
+	fn validate_tx(&self, tx: &Transaction) -> Result<(), PoolError> {
 		self.chain.validate_tx(tx).map_err(|e| match e {
-			chain::Error::Transaction { source: txe } => txe.into(),
-			chain::Error::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
+			mwc_chain::Error::Transaction(txe) => txe.into(),
+			mwc_chain::Error::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
 			_ => PoolError::Other("failed to validate tx".into()),
 		})
 	}
@@ -182,7 +231,10 @@ impl BlockChain for ChainAdapter {
 	fn verify_coinbase_maturity(&self, inputs: &Inputs) -> Result<(), PoolError> {
 		self.chain
 			.verify_coinbase_maturity(inputs)
-			.map_err(|_| PoolError::ImmatureCoinbase)
+			.map_err(|e| match e {
+				mwc_chain::Error::ImmatureCoinbase => PoolError::ImmatureCoinbase,
+				_ => PoolError::Other(format!("failed to verify coinbase maturity, {}", e)),
+			})
 	}
 
 	fn verify_tx_lock_height(&self, tx: &Transaction) -> Result<(), PoolError> {
@@ -216,6 +268,7 @@ where
 }
 
 pub fn test_transaction_spending_coinbase<K>(
+	secp: &mut Secp256k1,
 	keychain: &K,
 	header: &BlockHeader,
 	output_values: Vec<u64>,
@@ -225,7 +278,7 @@ where
 {
 	let output_sum = output_values.iter().sum::<u64>() as i64;
 
-	let coinbase_reward: u64 = core::consensus::MWC_FIRST_GROUP_REWARD;
+	let coinbase_reward: u64 = consensus::MWC_FIRST_GROUP_REWARD;
 
 	let fees: i64 = coinbase_reward as i64 - output_sum;
 	assert!(fees >= 0);
@@ -244,17 +297,20 @@ where
 	}
 
 	build::transaction(
+		0,
+		secp,
 		KernelFeatures::Plain {
 			fee: (fees as u64).try_into().unwrap(),
 		},
 		&tx_elements,
 		keychain,
-		&ProofBuilder::new(keychain).unwrap(),
+		&ProofBuilder::new(secp, keychain).unwrap(),
 	)
 	.unwrap()
 }
 
 pub fn test_transaction<K>(
+	secp: &mut Secp256k1,
 	keychain: &K,
 	input_values: Vec<u64>,
 	output_values: Vec<u64>,
@@ -268,6 +324,7 @@ where
 	assert!(fees >= 0);
 
 	test_transaction_with_kernel_features(
+		secp,
 		keychain,
 		input_values,
 		output_values,
@@ -278,6 +335,7 @@ where
 }
 
 pub fn test_transaction_with_kernel_features<K>(
+	secp: &mut Secp256k1,
 	keychain: &K,
 	input_values: Vec<u64>,
 	output_values: Vec<u64>,
@@ -299,15 +357,18 @@ where
 	}
 
 	build::transaction(
+		0,
+		secp,
 		kernel_features,
 		&tx_elements,
 		keychain,
-		&ProofBuilder::new(keychain).unwrap(),
+		&ProofBuilder::new(secp, keychain).unwrap(),
 	)
 	.unwrap()
 }
 
 pub fn test_transaction_with_kernel<K>(
+	secp: &mut Secp256k1,
 	keychain: &K,
 	input_values: Vec<u64>,
 	output_values: Vec<u64>,
@@ -330,11 +391,13 @@ where
 	}
 
 	build::transaction_with_kernel(
+		0,
+		secp,
 		&tx_elements,
 		kernel,
 		excess,
 		keychain,
-		&ProofBuilder::new(keychain).unwrap(),
+		&ProofBuilder::new(secp, keychain).unwrap(),
 	)
 	.unwrap()
 }
@@ -345,6 +408,8 @@ pub fn test_source() -> TxSource {
 
 pub fn clean_output_dir(db_root: String) {
 	if let Err(e) = fs::remove_dir_all(db_root) {
-		println!("cleaning output dir failed - {:?}", e)
+		if e.kind() != std::io::ErrorKind::NotFound {
+			println!("cleaning output dir failed - {:?}", e)
+		}
 	}
 }

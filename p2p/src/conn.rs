@@ -23,16 +23,20 @@
 
 use crate::codec::{Codec, BODY_IO_TIMEOUT};
 use crate::msg::{write_message, Consumed, Message, Msg};
-use crate::mwc_core::ser::ProtocolVersion;
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::types::Error;
-use crate::util::RateCounter;
-use crossbeam::channel::{RecvTimeoutError, TryRecvError};
 use mwc_chain::SyncState;
+use mwc_core::ser::ProtocolVersion;
+use mwc_crates::crossbeam;
+use mwc_crates::crossbeam::channel::{RecvTimeoutError, TryRecvError};
+use mwc_crates::log::{debug, error, info, trace, warn};
+use mwc_crates::parking_lot::RwLock;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
+use mwc_util::RateCounter;
+use std::any::Any;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -45,48 +49,95 @@ const CHANNEL_TIMEOUT: Duration = Duration::from_millis(1000);
 /// A trait to be implemented in order to receive messages from the
 /// connection. Allows providing an optional response.
 pub trait MessageHandler: Send + 'static {
-	fn consume(&self, message: Message) -> Result<Consumed, Error>;
+	fn consume(&self, secp: &mut Secp256k1, message: Message) -> Result<Consumed, Error>;
 }
 
-// Macro to simplify the boilerplate around I/O and Mwc error handling
-macro_rules! try_break {
+// Macro to simplify the boilerplate around retryable I/O and MWC error handling.
+macro_rules! try_return {
 	($inner:expr, $stage:expr, $peer:expr) => {
 		match $inner {
 			Ok(v) => Some(v),
-			Err(Error::Connection(ref e)) if e.kind() == io::ErrorKind::TimedOut => {
-				// Timeut suposed to be critical error. Why we need to keep not responded for a long time peers?
-				info!(
-					"try_break: exit the loop at {} for {}: {:?}",
-					$stage, $peer, e
-				);
-				break;
-			},
-			Err(Error::Connection(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
-				// to avoid the heavy polling which will consume CPU 100%
-				thread::sleep(Duration::from_millis(100));
-				None
-			}
-			Err(Error::Store(_))
-			| Err(Error::Chain(_))
-			| Err(Error::Internal(_))
-			| Err(Error::NoDandelionRelay) => None,
-			Err(ref e) => {
-				debug!(
-					"try_break: exit the loop at {} for {}: {:?}",
-					$stage, $peer, e
-				);
-				break;
+			Err(e) => {
+				if let Error::Connection(io_err) = &e {
+					if io_err.kind() == io::ErrorKind::WouldBlock {
+						// to avoid the heavy polling which will consume CPU 100%
+						thread::sleep(Duration::from_millis(100));
+						None
+					} else {
+						if io_err.kind() == io::ErrorKind::TimedOut {
+							info!(
+								"try_return: exit the loop at {} for {}: {:?}",
+								$stage, $peer, e
+							);
+						} else {
+							debug!(
+								"try_return: exit the loop at {} for {}: {:?}",
+								$stage, $peer, e
+							);
+						}
+						return Err(e);
+					}
+				} else {
+					debug!(
+						"try_return: exit the loop at {} for {}: {:?}",
+						$stage, $peer, e
+					);
+					return Err(e);
+				}
 			}
 		}
 	};
+}
+
+fn recv_send_batch(
+	send_rx: &crossbeam::channel::Receiver<Msg>,
+) -> Result<Vec<Msg>, RecvTimeoutError> {
+	let mut data = match send_rx.recv_timeout(CHANNEL_TIMEOUT) {
+		Ok(msg) => {
+			let mut data = Vec::with_capacity(SEND_CHANNEL_CAP);
+			data.push(msg);
+			data
+		}
+		Err(e) => return Err(e),
+	};
+
+	// The channel capacity bounds queued messages, but drained messages move into
+	// this local batch. Keep each write batch bounded as well.
+	while data.len() < SEND_CHANNEL_CAP {
+		match send_rx.try_recv() {
+			Ok(msg) => {
+				data.push(msg);
+			}
+			Err(TryRecvError::Empty) => break,
+			Err(TryRecvError::Disconnected) => {
+				// A disconnected send queue means the peer connection is being
+				// closed by another task. There is no reason to write a partially
+				// drained batch because the writer will exit and the peer will not
+				// be able to respond to us.
+				return Err(RecvTimeoutError::Disconnected);
+			}
+		}
+	}
+
+	Ok(data)
+}
+
+struct StopOnDrop {
+	stopped: Arc<AtomicBool>,
+}
+
+impl Drop for StopOnDrop {
+	fn drop(&mut self) {
+		self.stopped.store(true, Ordering::Relaxed);
+	}
 }
 
 pub struct StopHandle {
 	/// Channel to close the connection
 	stopped: Arc<AtomicBool>,
 	// we need Option to take ownhership of the handle in stop()
-	reader_thread: Option<JoinHandle<()>>,
-	writer_thread: Option<JoinHandle<()>>,
+	reader_thread: Option<JoinHandle<Result<(), Error>>>,
+	writer_thread: Option<JoinHandle<Result<(), Error>>>,
 }
 
 impl StopHandle {
@@ -99,27 +150,60 @@ impl StopHandle {
 		self.stopped.load(Ordering::Relaxed)
 	}
 
-	pub fn wait(&mut self) {
+	pub fn wait(&mut self) -> Result<(), Error> {
+		let mut first_error = None;
 		if let Some(reader_thread) = self.reader_thread.take() {
-			self.join_thread(reader_thread);
+			if let Err(e) = Self::join_thread(reader_thread) {
+				first_error.get_or_insert(e);
+			}
 		}
 		if let Some(writer_thread) = self.writer_thread.take() {
-			self.join_thread(writer_thread);
+			if let Err(e) = Self::join_thread(writer_thread) {
+				first_error.get_or_insert(e);
+			}
+		}
+
+		if let Some(e) = first_error {
+			Err(e)
+		} else {
+			Ok(())
 		}
 	}
 
-	fn join_thread(&self, peer_thread: JoinHandle<()>) {
+	fn join_thread(peer_thread: JoinHandle<Result<(), Error>>) -> Result<(), Error> {
 		// wait only if other thread is calling us, eg shutdown
 		if thread::current().id() != peer_thread.thread().id() {
-			debug!("waiting for thread {:?} exit", peer_thread.thread().id());
-			if let Err(e) = peer_thread.join() {
-				error!("failed to stop peer thread: {:?}", e);
+			let thread_id = peer_thread.thread().id();
+			debug!("waiting for thread {:?} exit", thread_id);
+			match peer_thread.join() {
+				Ok(Ok(())) => {}
+				Ok(Err(e)) => return Err(e),
+				Err(e) => {
+					let panic_msg = Self::panic_payload_to_string(e);
+					error!("failed to stop peer thread {:?}: {}", thread_id, panic_msg);
+					return Err(Error::PeerThreadPanic(format!(
+						"thread {:?}: {}",
+						thread_id, panic_msg
+					)));
+				}
 			}
 		} else {
 			debug!(
 				"attempt to stop thread {:?} from itself",
 				peer_thread.thread().id()
 			);
+		}
+
+		Ok(())
+	}
+
+	fn panic_payload_to_string(payload: Box<dyn Any + Send + 'static>) -> String {
+		match payload.downcast::<String>() {
+			Ok(msg) => *msg,
+			Err(payload) => match payload.downcast::<&'static str>() {
+				Ok(msg) => (*msg).to_owned(),
+				Err(_) => "unknown panic payload".to_owned(),
+			},
 		}
 	}
 }
@@ -134,10 +218,7 @@ impl ConnHandle {
 	/// Send msg via the synchronous, bounded channel (sync_sender).
 	/// Two possible failure cases -
 	/// * Disconnected: Propagate this up to the caller so the peer connection can be closed.
-	/// * Full: Our internal msg buffer is full. This is not a problem with the peer connection
-	/// and we do not want to close the connection. We drop the msg rather than blocking here.
-	/// If the buffer is full because there is an underlying issue with the peer
-	/// and potentially the peer connection. We assume this will be handled at the peer level.
+	/// * Full: Propagate this up to the caller so the backpressured peer can be closed.
 	pub fn send(&self, msg: Msg) -> Result<(), Error> {
 		match self.send_channel.try_send(msg) {
 			Ok(()) => Ok(()),
@@ -145,11 +226,27 @@ impl ConnHandle {
 				Err(Error::Send("try_send disconnected".to_owned()))
 			}
 			Err(crossbeam::channel::TrySendError::Full(_msg)) => {
-				debug!("conn_handle: try_send but buffer is full, dropping msg");
-				Ok(())
+				Err(Error::Send("try_send full".to_owned()))
 			}
 		}
 	}
+}
+
+#[cfg(test)]
+pub(crate) fn disconnected_test_handles() -> (ConnHandle, StopHandle) {
+	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
+	drop(send_rx);
+
+	(
+		ConnHandle {
+			send_channel: send_tx,
+		},
+		StopHandle {
+			stopped: Arc::new(AtomicBool::new(false)),
+			reader_thread: None,
+			writer_thread: None,
+		},
+	)
 }
 
 pub struct Tracker {
@@ -170,31 +267,11 @@ impl Tracker {
 	}
 
 	pub fn inc_received(&self, size: u64) {
-		self.received_bytes
-			.write()
-			.unwrap_or_else(|e| e.into_inner())
-			.inc(size);
+		self.received_bytes.write().inc(size);
 	}
 
 	pub fn inc_sent(&self, size: u64) {
-		self.sent_bytes
-			.write()
-			.unwrap_or_else(|e| e.into_inner())
-			.inc(size);
-	}
-
-	pub fn inc_quiet_received(&self, size: u64) {
-		self.received_bytes
-			.write()
-			.unwrap_or_else(|e| e.into_inner())
-			.inc_quiet(size);
-	}
-
-	pub fn inc_quiet_sent(&self, size: u64) {
-		self.sent_bytes
-			.write()
-			.unwrap_or_else(|e| e.into_inner())
-			.inc_quiet(size);
+		self.sent_bytes.write().inc(size);
 	}
 }
 
@@ -255,7 +332,7 @@ fn poll<H>(
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
 	peer_name: String,
-) -> io::Result<(JoinHandle<()>, JoinHandle<()>)>
+) -> io::Result<(JoinHandle<Result<(), Error>>, JoinHandle<Result<(), Error>>)>
 where
 	H: MessageHandler,
 {
@@ -264,15 +341,34 @@ where
 
 	let reader_tracker = tracker.clone();
 	let writer_tracker = tracker;
+	let writer_stopped = stopped.clone();
 
-	let (reader, mut writer) = conn.split();
+	let (reader, mut writer) = conn
+		.split()
+		.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 	let peer_name1 = peer_name.clone();
+	let peer_name_for_cleanup = peer_name.clone();
 
 	let reader_thread = thread::Builder::new()
 		.name(format!("peer_read_{}", peer_name1))
-		.spawn(move || {
+		.spawn(move || -> Result<(), Error> {
+			let _stop_on_drop = StopOnDrop {
+				stopped: reader_stopped.clone(),
+			};
 			debug!("Started peer_read thread for {}", peer_name1);
 			let mut codec = Codec::new(version, context_id, reader);
+
+			let mut secp = match Secp256k1::with_caps(ContextFlag::Commit) {
+				Ok(s) => s,
+				Err(e) => {
+					error!(
+						"peer_read for {} failed to start. Unable create secp concext, {}",
+						peer_name1, e
+					);
+					return Err(Error::SecpError(e));
+				}
+			};
+
 			loop {
 				// check the close channel
 				if reader_stopped.load(Ordering::Relaxed) {
@@ -287,7 +383,7 @@ where
 				let (next, bytes_read) = codec.read();
 
 				// retry on TimedOut & WouldBlock
-				if codec.is_none_state() {
+				if codec.is_none_state() && !codec.has_buffered_data() {
 					match &next {
 						Err(Error::Connection(io_err)) => {
 							if io_err.kind() == io::ErrorKind::TimedOut
@@ -300,28 +396,27 @@ where
 					}
 				}
 
-				// During sync process we don't want to ban peers becasue of abuse. It is expected to maintain high traffic for fast sync
+				// During sync process we don't want to ban peers because of abuse. It is expected to maintain high traffic for fast sync
 				if !sync_state.is_syncing() {
 					// increase the appropriate counter
-					match &next {
-						Ok(Message::Attachment(_, _)) => {
-							reader_tracker.inc_quiet_received(bytes_read)
-						}
-						Ok(Message::Headers(data)) => {
-							// We process a full 512 headers locally in smaller 32 header batches.
-							// We only want to increment the msg count once for the full 512 headers.
-							if data.remaining == 0 {
-								reader_tracker.inc_received(bytes_read);
-							} else {
-								reader_tracker.inc_quiet_received(bytes_read);
-							}
-						}
-						_ => reader_tracker.inc_received(bytes_read),
-					}
+					reader_tracker.inc_received(bytes_read as u64)
 				}
 
-				let message = match try_break!(next, "read income message", peer_name1) {
-					Some(Message::Unknown(type_byte)) => {
+				let message = match try_return!(next, "read income message", peer_name1) {
+					Some(message) => message,
+					None => continue,
+				};
+
+				if reader_stopped.load(Ordering::Relaxed) {
+					debug!(
+						"Exited {} because stop was requested after read",
+						peer_name1
+					);
+					break;
+				}
+
+				let message = match message {
+					Message::Unknown(type_byte) => {
 						debug!(
 							"Received unknown message, type {:?}, len {}.",
 							type_byte, bytes_read
@@ -329,20 +424,18 @@ where
 						continue;
 					}
 
-					Some(message) => {
+					message => {
 						trace!("Received message, type {}, len {}.", message, bytes_read);
 						message
 					}
-					None => continue,
 				};
 
 				//debug!("IN_{} {}: {:?}", counter, peer_addr, message);
-				let consumed = try_break!(handler.consume(message), "handler.consume", peer_name1)
-					.unwrap_or(Consumed::None);
+				let consumed = handler.consume(&mut secp, message)?;
 				//debug!("OUT_{} {}: {:?}", counter, peer_addr, consumed);
 				match consumed {
 					Consumed::Response(resp_msg) => {
-						try_break!(conn_handle.send(resp_msg), "conn_handle.send", peer_name1);
+						conn_handle.send(resp_msg)?;
 					}
 					Consumed::Disconnect => {
 						debug!("Exited {} because got Consumed::Disconnect", peer_name1);
@@ -352,68 +445,242 @@ where
 				}
 			}
 
-			reader_stopped.store(true, Ordering::Relaxed);
 			debug!("Exiting reader for {}", peer_name1);
+			Ok(())
 		})?;
 
-	let writer_thread = thread::Builder::new()
+	let writer_thread = match thread::Builder::new()
 		.name(format!("peer_write_{}", peer_name))
-		.spawn(move || {
+		.spawn(move || -> Result<(), Error> {
+			let _stop_on_drop = StopOnDrop {
+				stopped: writer_stopped.clone(),
+			};
 			debug!("Started peer_write thread for {}", peer_name);
-			let mut retry_send = Err(());
-			writer.set_write_timeout(BODY_IO_TIMEOUT);
-			loop {
-				let maybe_data = retry_send.or_else(|_| {
-					let mut data = match send_rx.recv_timeout(CHANNEL_TIMEOUT) {
-						Ok(msg) => vec![msg],
-						Err(e) => return Err(e),
-					};
-					// send_rx expected to have capacity. Capacity will limit the number of messages that we can read form the stream
-					loop {
-						match send_rx.try_recv() {
-							Ok(msg) => {
-								data.push(msg);
+			let result = (|| -> Result<(), Error> {
+				let mut retry_send = Err(());
+				writer.set_write_timeout(BODY_IO_TIMEOUT);
+				loop {
+					let maybe_data = retry_send.or_else(|_| recv_send_batch(&send_rx));
+					retry_send = Err(());
+					match maybe_data {
+						Ok(data) => {
+							let written = try_return!(
+								write_message(&mut writer, &data, writer_tracker.clone()),
+								"write_message",
+								peer_name
+							);
+							if written.is_none() {
+								retry_send = Ok(data);
 							}
-							Err(TryRecvError::Empty) => break,
-							Err(TryRecvError::Disconnected) => {
-								return Err(RecvTimeoutError::Disconnected)
-							} // All other error are fatal, report as disconnected
 						}
-					}
-					Ok(data)
-				});
-				retry_send = Err(());
-				match maybe_data {
-					Ok(data) => {
-						let written = try_break!(
-							write_message(&mut writer, &data, writer_tracker.clone()),
-							"write_message",
-							peer_name
-						);
-						if written.is_none() {
-							retry_send = Ok(data);
+						Err(RecvTimeoutError::Disconnected) => {
+							debug!(
+								"peer_write: mpsc channel disconnected during recv_timeout for {}",
+								peer_name
+							);
+							break;
 						}
+						Err(RecvTimeoutError::Timeout) => {}
 					}
-					Err(RecvTimeoutError::Disconnected) => {
-						debug!(
-							"peer_write: mpsc channel disconnected during recv_timeout for {}",
-							peer_name
-						);
+
+					// check the close channel
+					if writer_stopped.load(Ordering::Relaxed) {
+						debug!("Exiting peer_write thread for {}", peer_name);
 						break;
 					}
-					Err(RecvTimeoutError::Timeout) => {}
 				}
+				Ok(())
+			})();
 
-				// check the close channel
-				if stopped.load(Ordering::Relaxed) {
-					debug!("Exiting peer_write thread for {}", peer_name);
-					break;
-				}
-			}
-
-			stopped.store(true, Ordering::Relaxed);
 			debug!("Shutting down writer connection for {}", peer_name);
-			let _ = writer.shutdown();
-		})?;
+			// Intentionally do not propagate shutdown errors here. Callers are
+			// interested in the writer loop result; shutdown is best-effort
+			// cleanup after that result has already been determined.
+			if let Err(e) = writer.shutdown() {
+				warn!(
+					"Failed to shutdown writer connection for {}: {}",
+					peer_name, e
+				);
+			}
+			result
+		}) {
+		Ok(writer_thread) => writer_thread,
+		Err(e) => {
+			return Err(stop_reader_after_writer_spawn_error(
+				&stopped,
+				reader_thread,
+				e,
+				&peer_name_for_cleanup,
+			));
+		}
+	};
 	Ok((reader_thread, writer_thread))
+}
+
+fn stop_reader_after_writer_spawn_error(
+	stopped: &Arc<AtomicBool>,
+	reader_thread: JoinHandle<Result<(), Error>>,
+	spawn_error: io::Error,
+	peer_name: &str,
+) -> io::Error {
+	stopped.store(true, Ordering::Relaxed);
+	if let Err(e) = StopHandle::join_thread(reader_thread) {
+		// Keep this setup-failure path simple: the writer spawn error remains
+		// the returned cause, while the reader cleanup failure is logged here.
+		error!(
+			"failed to stop peer_read thread after peer_write spawn failure for {}: {}",
+			peer_name, e
+		);
+	}
+	spawn_error
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::msg::{Ping, Type};
+	use mwc_core::global;
+	use mwc_core::pow::Difficulty;
+
+	#[test]
+	fn send_returns_error_when_channel_is_full() {
+		const SEND_FULL_TEST_CONTEXT_ID: u32 = 230;
+		global::init_global_chain_type(
+			SEND_FULL_TEST_CONTEXT_ID,
+			global::ChainTypes::AutomatedTesting,
+		)
+		.unwrap();
+		let (send_channel, _recv_channel) = crossbeam::channel::bounded(0);
+		let conn_handle = ConnHandle { send_channel };
+		let msg = Msg::new(
+			Type::Ping,
+			Ping {
+				total_difficulty: Difficulty::min(),
+				height: 0,
+			},
+			ProtocolVersion(5),
+			SEND_FULL_TEST_CONTEXT_ID,
+		)
+		.unwrap();
+
+		let err = conn_handle
+			.send(msg)
+			.expect_err("full send queue should be reported as an error");
+
+		match err {
+			Error::Send(message) => assert_eq!(message, "try_send full"),
+			other => panic!("expected send error for full queue, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn recv_send_batch_caps_drained_messages() {
+		const SEND_BATCH_TEST_CONTEXT_ID: u32 = 231;
+		global::init_global_chain_type(
+			SEND_BATCH_TEST_CONTEXT_ID,
+			global::ChainTypes::AutomatedTesting,
+		)
+		.unwrap();
+		let (send_channel, recv_channel) = crossbeam::channel::unbounded();
+
+		for _ in 0..(SEND_CHANNEL_CAP + 1) {
+			let msg = Msg::new(
+				Type::Ping,
+				Ping {
+					total_difficulty: Difficulty::min(),
+					height: 0,
+				},
+				ProtocolVersion(5),
+				SEND_BATCH_TEST_CONTEXT_ID,
+			)
+			.unwrap();
+			send_channel.send(msg).unwrap();
+		}
+
+		let data = recv_send_batch(&recv_channel).unwrap();
+
+		assert_eq!(data.len(), SEND_CHANNEL_CAP);
+		assert_eq!(recv_channel.len(), 1);
+	}
+
+	#[test]
+	fn stop_on_drop_sets_stopped_during_panic_unwind() {
+		let stopped = Arc::new(AtomicBool::new(false));
+		let stopped1 = stopped.clone();
+
+		let result = std::panic::catch_unwind(move || {
+			let _stop_on_drop = StopOnDrop { stopped: stopped1 };
+			panic!("reader panic");
+		});
+
+		assert!(result.is_err());
+		assert!(stopped.load(Ordering::Relaxed));
+	}
+
+	#[test]
+	fn wait_returns_error_when_peer_thread_panics() {
+		let reader_thread = thread::spawn(|| panic!("reader panic"));
+		let writer_thread = thread::spawn(|| Ok(()));
+		let mut stop_handle = StopHandle {
+			stopped: Arc::new(AtomicBool::new(false)),
+			reader_thread: Some(reader_thread),
+			writer_thread: Some(writer_thread),
+		};
+
+		let err = stop_handle
+			.wait()
+			.expect_err("wait should report peer thread panic");
+
+		match err {
+			Error::PeerThreadPanic(msg) => assert!(msg.contains("reader panic")),
+			e => panic!("unexpected error: {:?}", e),
+		}
+		assert!(stop_handle.reader_thread.is_none());
+		assert!(stop_handle.writer_thread.is_none());
+	}
+
+	#[test]
+	fn wait_returns_error_when_peer_thread_returns_error() {
+		let reader_thread = thread::spawn(|| Err(Error::Internal("reader failed".into())));
+		let writer_thread = thread::spawn(|| Ok(()));
+		let mut stop_handle = StopHandle {
+			stopped: Arc::new(AtomicBool::new(false)),
+			reader_thread: Some(reader_thread),
+			writer_thread: Some(writer_thread),
+		};
+
+		let err = stop_handle
+			.wait()
+			.expect_err("wait should report peer thread error");
+
+		match err {
+			Error::Internal(msg) => assert!(msg.contains("reader failed")),
+			e => panic!("unexpected error: {:?}", e),
+		}
+		assert!(stop_handle.reader_thread.is_none());
+		assert!(stop_handle.writer_thread.is_none());
+	}
+
+	#[test]
+	fn writer_spawn_failure_stops_and_joins_reader_thread() {
+		let stopped = Arc::new(AtomicBool::new(false));
+		let reader_stopped = stopped.clone();
+		let reader_exited = Arc::new(AtomicBool::new(false));
+		let reader_exited1 = reader_exited.clone();
+		let reader_thread = thread::spawn(move || {
+			while !reader_stopped.load(Ordering::Relaxed) {
+				thread::sleep(Duration::from_millis(10));
+			}
+			reader_exited1.store(true, Ordering::Relaxed);
+			Ok(())
+		});
+		let spawn_error = io::Error::new(io::ErrorKind::Other, "writer spawn failed");
+
+		let err =
+			stop_reader_after_writer_spawn_error(&stopped, reader_thread, spawn_error, "test_peer");
+
+		assert_eq!(err.kind(), io::ErrorKind::Other);
+		assert!(stopped.load(Ordering::Relaxed));
+		assert!(reader_exited.load(Ordering::Relaxed));
+	}
 }

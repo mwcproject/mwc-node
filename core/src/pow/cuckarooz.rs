@@ -37,7 +37,10 @@ pub fn new_cuckarooz_ctx(
 	edge_bits: u8,
 	proof_size: usize,
 ) -> Result<Box<dyn PoWContext>, Error> {
-	let params = CuckooParams::new(edge_bits, edge_bits + 1, proof_size)?;
+	let node_bits = edge_bits.checked_add(1).ok_or_else(|| {
+		Error::DataOverflow(format!("new_cuckarooz_ctx, edge_bits={}", edge_bits))
+	})?;
+	let params = CuckooParams::new(edge_bits, node_bits, proof_size)?;
 	Ok(Box::new(CuckaroozContext { params, context_id }))
 }
 
@@ -58,7 +61,9 @@ impl PoWContext for CuckaroozContext {
 	}
 
 	fn find_cycles(&mut self) -> Result<Vec<Proof>, Error> {
-		unimplemented!()
+		Err(Error::NotImplemented(
+			"CuckaroozContext only supports verification".into(),
+		))
 	}
 
 	fn verify(&self, proof: &Proof) -> Result<(), Error> {
@@ -198,8 +203,17 @@ mod test {
 		assert!(ctx29.verify(&Proof::zero(0, 42)).is_err());
 	}
 
+	#[test]
+	fn cuckarooz_rejects_edge_bits_overflow() {
+		assert!(matches!(
+			new_cuckarooz_ctx(0, u8::MAX, 42),
+			Err(Error::DataOverflow(_))
+		));
+	}
+
 	fn new_impl(edge_bits: u8, proof_size: usize) -> CuckaroozContext {
-		let params = CuckooParams::new(edge_bits, edge_bits + 1, proof_size).unwrap();
+		let node_bits = edge_bits.checked_add(1).unwrap();
+		let params = CuckooParams::new(edge_bits, node_bits, proof_size).unwrap();
 		CuckaroozContext {
 			params,
 			context_id: 0,

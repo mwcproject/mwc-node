@@ -15,10 +15,10 @@
 
 //! Version and build info
 
-use cursive::direction::Orientation;
-use cursive::traits::Nameable;
-use cursive::view::View;
-use cursive::views::{LinearLayout, ResizedView, TextView};
+use mwc_crates::cursive::direction::Orientation;
+use mwc_crates::cursive::traits::Nameable;
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::views::{LinearLayout, ResizedView, TextView};
 
 use crate::tui::constants::VIEW_VERSION;
 

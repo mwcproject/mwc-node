@@ -22,27 +22,50 @@
 #![deny(unused_mut)]
 #![warn(missing_docs)]
 
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate serde_derive;
-
 mod ov3;
+use mwc_crates::base64;
+use mwc_crates::base64::Engine;
 pub use ov3::OnionV3Address;
-pub use ov3::OnionV3Error as OnionV3AddressError;
+pub use ov3::OnionV3Error;
+
+/// Utility error type.
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
+pub enum Error {
+	/// A one-time value was initialized more than once.
+	#[error("OneTime::set, value is already initialized")]
+	OneTimeAlreadyInitialized,
+	/// A one-time value was borrowed before initialization.
+	#[error("OneTime::borrow, value is not initialized")]
+	OneTimeNotInitialized,
+	/// Async runtime setup or execution failed.
+	#[error("Async runtime error, {0}")]
+	AsyncRuntime(String),
+	/// Logging setup or access failed.
+	#[error("Logging error, {0}")]
+	Logging(String),
+	/// Hex decoding failed.
+	#[error("Hex error, {0}")]
+	Hex(String),
+	/// Data overflow occurred.
+	#[error("Data overflow error, {0}")]
+	DataOverflow(String),
+	/// Invalid fixed-length input.
+	#[error("Invalid length, actual={actual} expected={expected}")]
+	InvalidLength {
+		/// Actual input length.
+		actual: usize,
+		/// Expected input length.
+		expected: usize,
+	},
+}
 
 // Re-export so only has to be included once
-pub use secp256k1zkp as secp;
-
 // Logging related
 pub mod logger;
 pub use crate::logger::{init_logger, init_test_logger};
 
 // Static secp instance
 pub mod secp_static;
-pub use crate::secp_static::static_secp_instance;
 
 pub mod types;
 pub use crate::types::ZeroingString;
@@ -50,17 +73,13 @@ pub use crate::types::ZeroingString;
 pub mod macros;
 
 // other utils
-#[allow(unused_imports)]
-use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 mod hex;
 pub use crate::hex::*;
 
 /// File util
 pub mod file;
-/// Compress and decompress zip bz2 archives
-pub mod zip;
 
 mod async_runtime;
 mod rate_counter;
@@ -68,19 +87,16 @@ mod rate_counter;
 pub use crate::rate_counter::RateCounter;
 
 pub use crate::async_runtime::global_runtime;
+pub use crate::async_runtime::init_global_runtime;
 pub use crate::async_runtime::run_global_async_block;
 
 pub use crate::logger::is_console_output_enabled;
 
-pub extern crate tokio;
-pub extern crate tokio_rustls;
-pub extern crate tokio_socks;
-pub extern crate tokio_util;
+pub use mwc_crates::parking_lot::{Mutex, RwLock};
 
 /// Encapsulation of a RwLock<Option<T>> for one-time initialization.
-/// This implementation will purposefully fail hard if not used
-/// properly, for example if not initialized before being first used
-/// (borrowed).
+/// Misuse is reported as an error if borrowed before initialization or
+/// initialized more than once without override.
 #[derive(Clone)]
 pub struct OneTime<T> {
 	/// The inner value.
@@ -99,41 +115,40 @@ where
 	}
 
 	/// Initializes the OneTime, should only be called once after construction.
-	/// Will panic (via assert) if called more than once.
-	pub fn init(&self, value: T) {
-		self.set(value, false);
+	pub fn init(&self, value: T) -> Result<(), Error> {
+		self.set(value, false)
 	}
 
 	/// Allows the one time to be set again with an override.
-	pub fn set(&self, value: T, is_override: bool) {
-		let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
-		if !is_override {
-			assert!(inner.is_none());
+	pub fn set(&self, value: T, is_override: bool) -> Result<(), Error> {
+		let mut inner = self.inner.write();
+		if !is_override && inner.is_some() {
+			return Err(Error::OneTimeAlreadyInitialized);
 		}
 		*inner = Some(value);
+		Ok(())
 	}
 
-	/// Borrows the OneTime, should only be called after initialization.
-	/// Will panic (via expect) if called before initialization.
-	pub fn borrow(&self) -> T {
-		let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
-		inner
-			.clone()
-			.expect("Cannot borrow one_time before initialization.")
+	/// Borrows the OneTime, returning an error if it has not been initialized.
+	pub fn borrow(&self) -> Result<T, Error> {
+		let inner = self.inner.read_recursive();
+		inner.clone().ok_or(Error::OneTimeNotInitialized)
 	}
 
 	/// Has this OneTime been initialized?
 	pub fn is_init(&self) -> bool {
-		self.inner
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.is_some()
+		self.inner.read_recursive().is_some()
 	}
 }
 
 /// Encode an utf8 string to a base64 string
 pub fn to_base64(s: &str) -> String {
-	base64::encode(s)
+	base64::engine::general_purpose::STANDARD.encode(s)
+}
+
+/// Escape a UTF-8 string so the result contains only printable ASCII bytes.
+pub fn escape_to_printable_ascii(input: &str) -> String {
+	input.chars().flat_map(char::escape_default).collect()
 }
 
 /// Global stopped/paused state shared across various subcomponents of Mwc.
@@ -178,5 +193,18 @@ impl StopState {
 	/// Resume a paused server (only used in tests).
 	pub fn resume(&self) {
 		self.paused.store(false, Ordering::Relaxed)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::escape_to_printable_ascii;
+
+	#[test]
+	fn escape_to_printable_ascii_escapes_controls_and_unicode() {
+		let escaped = escape_to_printable_ascii("ok\nbad\u{1b}[2J\u{7f}\u{e9}");
+
+		assert_eq!(escaped, "ok\\nbad\\u{1b}[2J\\u{7f}\\u{e9}");
+		assert!(escaped.bytes().all(|b| (0x20..=0x7e).contains(&b)));
 	}
 }

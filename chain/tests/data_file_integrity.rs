@@ -13,33 +13,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mwc_core::genesis;
-use mwc_core::global;
-use mwc_util as util;
-
 use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
+use mwc_core::core::hash::Hashed;
+use mwc_core::core::Block;
+use mwc_core::global;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 
+#[path = "../src/tests/chain_test_helper.rs"]
 mod chain_test_helper;
 
 #[test]
 fn data_files() {
-	util::init_test_logger();
+	mwc_util::init_test_logger().unwrap();
 	global::set_local_nrd_enabled(false);
 
 	let chain_dir = ".mwc_df";
 	clean_output_dir(chain_dir);
 
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
 	// Mine a few blocks on a new chain.
-	{
+	let genesis: Block = {
 		let chain = mine_chain(chain_dir, 4);
-		chain.validate(false).unwrap();
+		chain.validate(&secp, false).unwrap();
 		assert_eq!(chain.head().unwrap().height, 3);
+		chain
+			.get_block(&chain.get_header_by_height(0).unwrap().hash(0).unwrap())
+			.unwrap()
 	};
 
 	// Now reload the chain from existing data files and check it is valid.
 	{
-		let chain = init_chain(chain_dir, genesis::genesis_dev(0));
-		chain.validate(false).unwrap();
+		let chain = init_chain(&secp, chain_dir, genesis);
+		chain.validate(&secp, false).unwrap();
 		assert_eq!(chain.head().unwrap().height, 3);
 	}
 

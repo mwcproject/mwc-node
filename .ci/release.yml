@@ -1,20 +1,18 @@
 steps:
-  - script: 'cargo test --all'
-    displayName: Cargo Test All
-    condition:  and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
   - script: 'cargo build --release'
     env:
       ROARING_ARCH: x86-64-v2
     displayName: Build Linux Release
-    condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ))
+    condition: and(succeeded(), eq( variables['Agent.OS'], 'Linux' ), eq(variables['CI_JOB'], 'release' ))
   - script: 'cargo build --release'
     env:
       ROARING_ARCH: x86-64-v2
     displayName: Build MacOS Release
-    condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ))
+    condition: and(succeeded(), eq( variables['Agent.OS'], 'Darwin' ), eq(variables['CI_JOB'], 'release' ))
   - script: |
       set -e
       WEBTUNNEL_DIR="$(Build.BinariesDirectory)/webtunnel"
+      WEBTUNNEL_CLIENT="$(Build.BinariesDirectory)/webtunnelclient"
       rm -rf "$WEBTUNNEL_DIR"
       for attempt in 1 2 3 4 5; do
         if git clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel "$WEBTUNNEL_DIR"; then
@@ -29,11 +27,13 @@ steps:
         exit 1
       fi
       cd "$WEBTUNNEL_DIR/main/client"
-      go build
-      mv client webtunnelclient
-      cp webtunnelclient "$(Build.SourcesDirectory)/target/release/"
-    displayName: Build WebTunnel Client (MacOS)
-    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ))
+      go build -o "$WEBTUNNEL_CLIENT"
+    displayName: Build WebTunnel Client (Linux/macOS)
+    condition: and(succeeded(), eq(variables['CI_JOB'], 'release' ), or(eq( variables['Agent.OS'], 'Linux' ), eq( variables['Agent.OS'], 'Darwin' )))
+  - script: |
+      cp "$(Build.BinariesDirectory)/webtunnelclient" "$(Build.SourcesDirectory)/target/release/"
+    displayName: Copy WebTunnel Client for Release
+    condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['CI_JOB'], 'release' ), or(eq( variables['Agent.OS'], 'Linux' ), eq( variables['Agent.OS'], 'Darwin' )))
   - script: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}

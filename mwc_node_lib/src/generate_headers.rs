@@ -19,6 +19,7 @@ mod mwc_node_calls;
 
 fn main() -> ::std::io::Result<()> {
 	::safer_ffi::headers::builder()
+		.with_guard("__RUST_MWC_NODE_LIB__")
 		.to_file("mwc_node_lib/c_header/mwc_node_interface.h")?
 		.generate()?;
 	Ok(())

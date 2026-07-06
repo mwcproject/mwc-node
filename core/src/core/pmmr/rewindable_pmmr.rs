@@ -18,7 +18,7 @@
 
 use std::marker;
 
-use crate::core::pmmr::{round_up_to_leaf_pos, Backend, ReadonlyPMMR};
+use crate::core::pmmr::{round_up_to_leaf_pos, Backend, Error, ReadonlyPMMR};
 use crate::ser::PMMRable;
 
 /// Rewindable (but still readonly) view of a PMMR.
@@ -61,11 +61,18 @@ where
 
 	/// Note: We only rewind the last_pos, we do not rewind the (readonly) backend.
 	/// Prunable backends are not supported here.
-	pub fn rewind(&mut self, position: u64) -> Result<(), String> {
+	pub fn rewind(&mut self, position: u64) -> Result<(), Error> {
 		// Identify which actual position we should rewind to as the provided
 		// position is a leaf. We traverse the MMR to include any parent(s) that
 		// need to be included for the MMR to be valid.
-		self.last_pos = round_up_to_leaf_pos(position);
+		let leaf_pos = round_up_to_leaf_pos(position)?;
+		if leaf_pos > self.last_pos {
+			return Err(Error::InvalidState(format!(
+				"cannot rewind PMMR forward from {} to {}",
+				self.last_pos, leaf_pos
+			)));
+		}
+		self.last_pos = leaf_pos;
 		Ok(())
 	}
 

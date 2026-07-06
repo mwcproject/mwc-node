@@ -15,39 +15,44 @@
 // Server management routine
 
 use crate::Error;
-use hyper::http;
-use hyper::service::Service;
-use lazy_static::lazy_static;
 use mwc_api::Router;
+use mwc_crates::bytes::Bytes;
+use mwc_crates::futures;
+use mwc_crates::http;
+use mwc_crates::http_body_util::Full;
+use mwc_crates::hyper::service::Service;
+use mwc_crates::lazy_static::lazy_static;
+use mwc_crates::log::error;
+use mwc_crates::parking_lot::RwLock;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::tor::arti;
 use mwc_p2p::TorConfig;
 use mwc_servers::{Server, ServerConfig, ServerStats};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::Arc;
 
 lazy_static! {
 		/// Global chain status flags. It is expected that init call will set them first for every needed context
 		/// Note, both node and wallet will need to set it up. Any param can be set once
 	static ref SERVER_CONTEXT: RwLock< HashMap<u32, mwc_servers::Server>> = RwLock::new(HashMap::new());
 
-	static ref CALL_ROUTER_CONTEXT: RwLock< HashMap<u32, Router>> = RwLock::new(HashMap::new());
+	static ref CALL_ROUTER_CONTEXT: RwLock< HashMap<u32, Arc<Router>>> = RwLock::new(HashMap::new());
 }
 
-/// Stop the server jobs and release the server
+/// Stop the server jobs and release the server.
+///
+/// This is a best-effort, idempotent cleanup operation. If the server for this
+/// context was already released or was never created, the call still succeeds
+/// after clearing any remaining per-context router/chain data.
 pub fn release_server(context_id: u32) {
-	if let Some(server) = SERVER_CONTEXT
-		.write()
-		.unwrap_or_else(|e| e.into_inner())
-		.remove(&context_id)
-	{
+	let mut servers = SERVER_CONTEXT.write();
+	let server = servers.remove(&context_id);
+	CALL_ROUTER_CONTEXT.write().remove(&context_id);
+	if let Some(server) = server {
 		server.stop();
 	}
-
-	CALL_ROUTER_CONTEXT
-		.write()
-		.unwrap_or_else(|e| e.into_inner())
-		.remove(&context_id);
+	mwc_chain::pipe::release_context_data(context_id);
 }
 
 /// Tor client needs to be started once, no context_id is requred
@@ -69,14 +74,15 @@ pub fn tor_status() -> (bool, bool) {
 
 /// Create a new server instance. No jobs will be started
 pub fn create_server(context_id: u32, config: ServerConfig) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+	let mut servers = SERVER_CONTEXT.write();
 	if servers.contains_key(&context_id) {
 		return Err(Error::ContextError(
 			"Node server already created for this context".into(),
 		));
 	}
-
-	let serv = Server::create_server(context_id, config)
+	let secp = Secp256k1::with_caps(ContextFlag::Commit)
+		.map_err(|e| Error::ServerError(format!("Secp instance creation error, {}", e)))?;
+	let serv = Server::create_server(&secp, context_id, config)
 		.map_err(|e| Error::ServerError(format!("Unable to create server, {}", e)))?;
 
 	servers.insert(context_id, serv);
@@ -85,7 +91,7 @@ pub fn create_server(context_id: u32, config: ServerConfig) -> Result<(), Error>
 
 /// Start Stratum protocol, needed for the mining
 pub fn start_stratum(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+	let mut servers = SERVER_CONTEXT.write();
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_stratum()
@@ -94,7 +100,7 @@ pub fn start_stratum(context_id: u32) -> Result<(), Error> {
 			return Err(Error::ServerError(format!(
 				"Server not exist for context {}",
 				context_id
-			)))
+			)));
 		}
 	}
 
@@ -103,7 +109,7 @@ pub fn start_stratum(context_id: u32) -> Result<(), Error> {
 
 /// Start pees discovery p2p peers job
 pub fn start_discover_peers(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+	let mut servers = SERVER_CONTEXT.write();
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_discover_peers()
@@ -112,7 +118,7 @@ pub fn start_discover_peers(context_id: u32) -> Result<(), Error> {
 			return Err(Error::ServerError(format!(
 				"Server not exist for context {}",
 				context_id
-			)))
+			)));
 		}
 	}
 	Ok(())
@@ -120,7 +126,7 @@ pub fn start_discover_peers(context_id: u32) -> Result<(), Error> {
 
 /// Start node syncing job
 pub fn start_sync_monitoring(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+	let mut servers = SERVER_CONTEXT.write();
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_sync_monitoring()
@@ -129,24 +135,57 @@ pub fn start_sync_monitoring(context_id: u32) -> Result<(), Error> {
 			return Err(Error::ServerError(format!(
 				"Server not exist for context {}",
 				context_id
-			)))
+			)));
 		}
 	}
 	Ok(())
 }
 
 /// Start p2p listening job. Needed for inbound peers connection
-pub fn start_listen_peers(context_id: u32, wait_for_starting: bool) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+pub fn start_listen_peers(context_id: u32) -> Result<(), Error> {
+	let pending_listener = {
+		let mut servers = SERVER_CONTEXT.write();
+		match servers.get_mut(&context_id) {
+			Some(serv) => serv.begin_start_listen_peers().map_err(|e| {
+				Error::ServerError(format!("Unable to start listening for peers, {}", e))
+			})?,
+			None => {
+				return Err(Error::ServerError(format!(
+					"Server not exist for context {}",
+					context_id
+				)));
+			}
+		}
+	};
+
+	let startup_result = pending_listener.wait_for_startup();
+
+	let mut servers = SERVER_CONTEXT.write();
 	match servers.get_mut(&context_id) {
-		Some(serv) => serv.start_listen_peers(wait_for_starting).map_err(|e| {
-			Error::ServerError(format!("Unable to start listening for peers, {}", e))
-		})?,
+		Some(serv) => match startup_result {
+			Ok(started_listener) => {
+				serv.finish_start_listen_peers(started_listener)
+					.map_err(|e| {
+						Error::ServerError(format!("Unable to start listening for peers, {}", e))
+					})?
+			}
+			Err(e) => {
+				serv.finish_failed_listen_peers_startup();
+				return Err(Error::ServerError(format!(
+					"Unable to start listening for peers, {}",
+					e
+				)));
+			}
+		},
 		None => {
+			drop(servers);
+			if let Ok(started_listener) = startup_result {
+				started_listener.wait_for_shutdown();
+			}
 			return Err(Error::ServerError(format!(
 				"Server not exist for context {}",
 				context_id
-			)))
+			)));
 		}
 	}
 	Ok(())
@@ -154,7 +193,7 @@ pub fn start_listen_peers(context_id: u32, wait_for_starting: bool) -> Result<()
 
 /// Starting node rest API, needed for communication with mwc-wallet
 pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+	let mut servers = SERVER_CONTEXT.write();
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_rest_api()
@@ -163,7 +202,7 @@ pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
 			return Err(Error::ServerError(format!(
 				"Server not exist for context {}",
 				context_id
-			)))
+			)));
 		}
 	}
 	Ok(())
@@ -171,27 +210,21 @@ pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
 
 /// Init router for lib based API
 pub fn init_call_api(context_id: u32) -> Result<(), Error> {
-	let router = {
-		let servers = SERVER_CONTEXT.read().unwrap_or_else(|e| e.into_inner());
-		match servers.get(&context_id) {
-			Some(serv) => {
-				let router = serv.build_api_router_no_secrets().map_err(|e| {
-					Error::ServerError(format!("Unable to build node call api, {}", e))
-				})?;
-				router
-			}
-			None => {
-				return Err(Error::ServerError(format!(
-					"Server not exist for context {}",
-					context_id
-				)))
-			}
+	let servers = SERVER_CONTEXT.read_recursive();
+	let router = match servers.get(&context_id) {
+		Some(serv) => serv
+			.build_api_router_no_secrets()
+			.map_err(|e| Error::ServerError(format!("Unable to build node call api, {}", e)))?,
+		None => {
+			return Err(Error::ServerError(format!(
+				"Server not exist for context {}",
+				context_id
+			)));
 		}
 	};
 	CALL_ROUTER_CONTEXT
 		.write()
-		.unwrap_or_else(|e| e.into_inner())
-		.insert(context_id, router);
+		.insert(context_id, Arc::new(router));
 	Ok(())
 }
 
@@ -201,12 +234,13 @@ pub fn process_call(
 	method: String,
 	uri: String,
 	body: String,
-) -> Result<http::Response<hyper::Body>, Error> {
-	match CALL_ROUTER_CONTEXT
-		.write()
-		.unwrap_or_else(|e| e.into_inner())
-		.get_mut(&context_id)
-	{
+) -> Result<http::Response<Full<Bytes>>, Error> {
+	let router = {
+		let routers = CALL_ROUTER_CONTEXT.read_recursive();
+		routers.get(&context_id).cloned()
+	};
+
+	match router {
 		Some(router) => {
 			let method = http::Method::from_bytes(method.as_bytes()).map_err(|e| {
 				Error::ServerError(format!("HTTP request get invalid method {}, {}", method, e))
@@ -215,16 +249,11 @@ pub fn process_call(
 				Error::ServerError(format!("HTTP request get invalid Uri {}, {}", uri, e))
 			})?;
 
-			let builder = http::Request::builder()
+			let request = http::Request::builder()
 				.method(method)
 				.uri(uri)
-				.version(http::Version::HTTP_10);
-
-			// All headers are skipped, router should handle that
-			let body = hyper::Body::from(body);
-
-			let request = builder
-				.body(body)
+				.version(http::Version::HTTP_10)
+				.body(Bytes::from(body))
 				.map_err(|e| Error::ServerError(format!("Unable to build a request, {}", e)))?;
 
 			let res = router.call(request);
@@ -250,7 +279,7 @@ pub fn process_call(
 
 /// Start dandelion protocol. Needed for publishing transactions
 pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write().unwrap_or_else(|e| e.into_inner());
+	let mut servers = SERVER_CONTEXT.write();
 	match servers.get_mut(&context_id) {
 		Some(serv) => serv
 			.start_dandelion()
@@ -259,7 +288,7 @@ pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
 			return Err(Error::ServerError(format!(
 				"Server not exist for context {}",
 				context_id
-			)))
+			)));
 		}
 	}
 	Ok(())
@@ -267,8 +296,8 @@ pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
 
 /// Get server stats data, used by node UI.
 pub fn get_server_stats(context_id: u32) -> Result<ServerStats, Error> {
-	match SERVER_CONTEXT.try_read() {
-		Ok(servers) => match servers.get(&context_id) {
+	match SERVER_CONTEXT.try_read_recursive() {
+		Some(servers) => match servers.get(&context_id) {
 			Some(serv) => Ok(serv.get_server_stats().map_err(|e| {
 				Error::ServerError(format!("Unable to get server stat data, {}", e))
 			})?),
@@ -277,6 +306,6 @@ pub fn get_server_stats(context_id: u32) -> Result<ServerStats, Error> {
 				context_id
 			))),
 		},
-		Err(_) => Err(Error::ServerError("Server is busy".into())),
+		None => Err(Error::ServerError("Server is busy".into())),
 	}
 }

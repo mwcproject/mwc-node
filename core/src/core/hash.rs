@@ -19,8 +19,10 @@
 //!
 
 use crate::ser::{self, Error, PMMRable, ProtocolVersion, Readable, Reader, Writeable, Writer};
-use blake2::blake2b::Blake2b;
-use byteorder::{BigEndian, ByteOrder};
+use mwc_crates::blake2_rfc::blake2b::Blake2b;
+use mwc_crates::byteorder::{BigEndian, ByteOrder};
+use mwc_crates::secp;
+use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::io::ErrorKind;
 use std::{cmp::min, convert::AsRef, fmt, ops};
 use util::ToHex;
@@ -31,22 +33,26 @@ pub const ZERO_HASH: Hash = Hash([0; 32]);
 /// A hash to uniquely (or close enough) identify one of the main blockchain
 /// constructs. Used pervasively for blocks, transactions and outputs.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub struct Hash([u8; 32]);
 
 impl DefaultHashable for Hash {}
 
 impl fmt::Debug for Hash {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	fn fmt(&self, f1: &mut fmt::Formatter<'_>) -> fmt::Result {
 		let hash_hex = self.to_hex();
 		const NUM_SHOW: usize = 12;
-
-		write!(f, "{}", &hash_hex[..NUM_SHOW])
+		write!(f1, "{}", &hash_hex[..NUM_SHOW])
 	}
 }
 
 impl fmt::Display for Hash {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		fmt::Debug::fmt(self, f)
+	fn fmt(&self, f2: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// Note, current UI expecting short HEX representation of the hash.
+		// If full hash is needed, use direct to_hex() conversions.
+		let hash_hex = self.to_hex();
+		const NUM_SHOW: usize = 12;
+		write!(f2, "{}", &hash_hex[..NUM_SHOW])
 	}
 }
 
@@ -87,8 +93,22 @@ impl Hash {
 
 	/// Convert hex string back to hash.
 	pub fn from_hex(hex: &str) -> Result<Hash, Error> {
+		if hex.len() > Hash::LEN * 2 + 2 {
+			return Err(Error::HexError(format!(
+				"invalid hash string length {}, expected no more than {}",
+				hex.len(),
+				Hash::LEN * 2 + 2
+			)));
+		}
 		let bytes = util::from_hex(hex)
 			.map_err(|e| Error::HexError(format!("failed to decode {}, {}", hex, e)))?;
+		if bytes.len() != Hash::LEN {
+			return Err(Error::HexError(format!(
+				"invalid hash length {}, expected {}",
+				bytes.len(),
+				Hash::LEN
+			)));
+		}
 		Ok(Hash::from_vec(&bytes))
 	}
 
@@ -168,9 +188,18 @@ impl Default for Hash {
 /// Serializer that outputs a hash of the serialized object
 pub struct HashWriter {
 	state: Blake2b,
+	context_id: u32,
 }
 
 impl HashWriter {
+	/// Build a hash writer for this consensus context.
+	pub fn new(context_id: u32) -> HashWriter {
+		HashWriter {
+			state: Blake2b::new(32),
+			context_id,
+		}
+	}
+
 	/// Consume the `HashWriter`, outputting its current hash into a 32-byte
 	/// array
 	pub fn finalize(self, output: &mut [u8]) {
@@ -183,14 +212,6 @@ impl HashWriter {
 		let mut res = [0; 32];
 		res.copy_from_slice(self.state.finalize().as_bytes());
 		Hash(res)
-	}
-}
-
-impl Default for HashWriter {
-	fn default() -> HashWriter {
-		HashWriter {
-			state: Blake2b::new(32),
-		}
 	}
 }
 
@@ -207,21 +228,30 @@ impl ser::Writer for HashWriter {
 	fn protocol_version(&self) -> ProtocolVersion {
 		ProtocolVersion::local()
 	}
+
+	fn get_context_id(&self) -> u32 {
+		self.context_id
+	}
 }
 
 /// A trait for types that have a canonical hash
 pub trait Hashed {
 	/// Obtain the hash of the object
-	fn hash(&self) -> Result<Hash, std::io::Error>;
+	fn hash(&self, context_id: u32) -> Result<Hash, std::io::Error>;
 }
 
 /// Implementing this trait enables the default
 /// hash implementation
 pub trait DefaultHashable: Writeable {}
 
+// Consensus hashes are the BLAKE2b digest of the legacy Writeable byte stream.
+// Some Writeable encodings, such as Vec<T> and tuples, are intentionally
+// unframed here because changing this would change existing consensus hashes.
+// New variable-length compound data should use an explicit tagged or
+// length-delimited hash format instead of relying on this blanket implementation.
 impl<D: DefaultHashable> Hashed for D {
-	fn hash(&self) -> Result<Hash, std::io::Error> {
-		let mut hasher = HashWriter::default();
+	fn hash(&self, context_id: u32) -> Result<Hash, std::io::Error> {
+		let mut hasher = HashWriter::new(context_id);
 		Writeable::write(self, &mut hasher).map_err(|e| {
 			std::io::Error::new(ErrorKind::Other, format!("Unable to build hash, {}", e))
 		})?;
@@ -236,7 +266,33 @@ impl<D: DefaultHashable, E: DefaultHashable> DefaultHashable for (D, E) {}
 impl<D: DefaultHashable, E: DefaultHashable, F: DefaultHashable> DefaultHashable for (D, E, F) {}
 
 /// Implement Hashed trait for external types here
-impl DefaultHashable for util::secp::pedersen::RangeProof {}
+impl DefaultHashable for secp::pedersen::RangeProof {}
 impl DefaultHashable for Vec<u8> {}
 impl DefaultHashable for u8 {}
 impl DefaultHashable for u64 {}
+
+#[cfg(test)]
+mod tests {
+	use super::Hash;
+
+	#[test]
+	fn hash_display_is_full_hex_and_debug_is_short() {
+		let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+		let hash = Hash::from_hex(hex).unwrap();
+
+		assert_eq!(format!("{}", hash), &hex[..12]);
+		assert_eq!(hash.to_string(), &hex[..12]);
+		assert_eq!(format!("{:?}", hash), &hex[..12]);
+	}
+
+	#[test]
+	fn hash_from_hex_rejects_invalid_lengths() {
+		for hex in [
+			"",
+			"0123456789abcdef",
+			"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
+		] {
+			assert!(Hash::from_hex(hex).is_err());
+		}
+	}
+}

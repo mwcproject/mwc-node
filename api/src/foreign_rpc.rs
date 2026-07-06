@@ -15,21 +15,24 @@
 
 //! JSON-RPC Stub generation for the Foreign API
 
-use crate::core::core::hash::Hash;
-use crate::core::core::transaction::Transaction;
 use crate::foreign::Foreign;
-use crate::handlers::utils::w;
-use crate::pool::PoolEntry;
-use crate::pool::{BlockChain, PoolAdapter};
+use crate::handlers::chain_api::OutputHandler;
 use crate::rest::Error;
 use crate::types::{
 	BlockHeaderPrintable, BlockListing, BlockPrintable, LocatedTxKernel, OutputListing,
 	OutputPrintable, Tip, Version,
 };
-use crate::{util, Libp2pMessages, Libp2pPeers};
+use mwc_core::core::hash::Hash;
+use mwc_core::core::transaction::{Transaction, TxKernel};
+use mwc_core::ser::{self, ProtocolVersion};
+use mwc_crates::easy_jsonrpc_mwc;
+use mwc_crates::easy_jsonrpc_mwc::{Handler, InvalidArgs, Params, Value};
+use mwc_crates::secp::{AggSigSignature, Secp256k1};
+use mwc_crates::serde::de::DeserializeOwned;
 use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
+use mwc_pool::{BlockChain, PoolAdapter};
+use mwc_util::{self, secp_static, ToHex};
 use std::time::Instant;
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at
@@ -744,8 +747,6 @@ pub trait ForeignRpc: Sync + Send {
 				"09bab2bdba2e6aed690b5eda11accc13c06723ca5965bb460c5f2383655989af3f",
 				"08ecd94ae293863286e99d37f4685f07369bc084ba74d5c59c7f15359a75c84c03"
 			],
-			376150,
-			376154,
 			true,
 			true
 		],
@@ -808,9 +809,7 @@ pub trait ForeignRpc: Sync + Send {
 	 */
 	fn get_outputs(
 		&self,
-		commits: Option<Vec<String>>,
-		start_height: Option<u64>,
-		end_height: Option<u64>,
+		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error>;
@@ -902,6 +901,7 @@ pub trait ForeignRpc: Sync + Send {
 				  "last_retrieved_index": 2,
 				  "outputs": []
 			}
+		}
 	}
 	# "#
 	# );
@@ -979,37 +979,8 @@ pub trait ForeignRpc: Sync + Send {
 	fn get_pool_size(&self) -> Result<usize, Error>;
 
 	/**
-	Networked version of [Foreign::get_stempool_size](struct.Foreign.html#method.get_stempool_size).
-
-	# Json rpc example
-
-	```
-	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
-	# r#"
-	{
-		"jsonrpc": "2.0",
-		"method": "get_stempool_size",
-		"params": [],
-		"id": 1
-	}
-	# "#
-	# ,
-	# r#"
-	{
-		"id": 1,
-		"jsonrpc": "2.0",
-		"result": {
-			"Ok": 0
-		}
-	}
-	# "#
-	# );
-	```
-	 */
-	fn get_stempool_size(&self) -> Result<usize, Error>;
-
-	/**
 	Networked version of [Foreign::get_unconfirmed_transactions](struct.Foreign.html#method.get_unconfirmed_transactions).
+	Returns up to 1,000 unconfirmed transactions from the transaction pool.
 
 	# Json rpc example
 
@@ -1030,9 +1001,7 @@ pub trait ForeignRpc: Sync + Send {
 		"jsonrpc": "2.0",
 		"result": {
 			"Ok": [
-			{
-				"src": "Broadcast",
-				"tx": {
+				{
 				"body": {
 					"inputs": [
 					{
@@ -1069,9 +1038,7 @@ pub trait ForeignRpc: Sync + Send {
 					]
 				},
 				"offset": "0eb2c2669ce918675c72697891e5527bd13da5a499396381409219b8bbbd8129"
-				},
-				"tx_at": "2019-10-07T16:20:08.709114Z"
-			}
+				}
 			]
 		}
 	}
@@ -1079,10 +1046,14 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error>;
+	fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error>;
 
 	/**
 	Networked version of [Foreign::push_transaction](struct.Foreign.html#method.push_transaction).
+
+	This method reports success once the transaction is accepted into the local
+	transaction pool. Relay through the network adapter is best-effort; adapter
+	failures after local acceptance are logged and are not returned to the caller.
 
 	# Json rpc example
 
@@ -1145,46 +1116,759 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error>;
+}
 
-	/**
-	Networked version of [Owner::get_libp2p_peers](struct.Owner.html#method.get_libp2p_peers).
+/// Compatibility handler for older positional JSON-RPC clients.
+pub struct ForeignRpcCompat<'a, B, P>
+where
+	B: BlockChain,
+	P: PoolAdapter,
+{
+	inner: &'a Foreign<B, P>,
+}
 
-	# Json rpc example
-
-	```
-	# mwc_api::doctest_helper_json_rpc_owner_assert_response!(
-	# r#"
-	{
-		"jsonrpc": "2.0",
-		"method": "get_libp2p_peers",
-		"params": [],
-		"id": 1
+impl<'a, B, P> ForeignRpcCompat<'a, B, P>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+{
+	pub fn new(inner: &'a Foreign<B, P>) -> Self {
+		ForeignRpcCompat { inner }
 	}
-	# "#
-	# ,
-	# r#"
-	{
-		"id": 1,
-		"jsonrpc": "2.0",
-		"result": {
-			"Ok": {
-				"libp2p_peers": [],
-				"node_peers": [],
+
+	fn generated(&self) -> &(dyn ForeignRpc + 'static) {
+		self.inner as &(dyn ForeignRpc + 'static)
+	}
+
+	fn handle_get_outputs(&self, params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+		match normalize_get_outputs_params(params)? {
+			GetOutputsParams::Current(params) => self.generated().handle("get_outputs", params),
+			GetOutputsParams::Legacy(args) => {
+				let result = secp_static::with_verify_only(Error::from, |secp| {
+					let output_handler = OutputHandler {
+						chain: self.inner.chain.clone(),
+					};
+					output_handler.get_outputs_v2(
+						secp,
+						args.commits,
+						args.start_height,
+						args.end_height,
+						args.include_proof,
+						args.include_merkle_proof,
+					)
+				});
+				easy_jsonrpc_mwc::try_serialize(&result)
 			}
 		}
 	}
-	# "#
-	# );
-	```
-	 */
-	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error>;
 
-	/**
-		Networked version of [Owner::get_libp2p_messages](struct.Owner.html#method.get_libp2p_messages).
+	fn handle_push_transaction(&self, params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+		let context_id = self
+			.inner
+			.chain
+			.upgrade()
+			.ok_or_else(|| {
+				easy_jsonrpc_mwc::Error::invalid_params("chain is not available".to_string())
+			})?
+			.get_context_id();
+		let (tx, fluff) = secp_static::with_commit(
+			|err| easy_jsonrpc_mwc::Error::invalid_params(format!("Unable create Secp, {}", err)),
+			|secp| parse_push_transaction_args(params, context_id, secp),
+		)?;
+		let result = secp_static::with_commit_mut(Error::from, |secp| {
+			Foreign::push_transaction(self.inner, tx, fluff, secp)
+		});
+		easy_jsonrpc_mwc::try_serialize(&result)
+	}
+}
 
-		// No example because if current time dynamic nature.
-	*/
-	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error>;
+impl<B, P> Handler for ForeignRpcCompat<'_, B, P>
+where
+	B: BlockChain + 'static,
+	P: PoolAdapter + 'static,
+{
+	fn handle(&self, method: &str, params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+		match method {
+			"get_header" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 0, 3, method)?,
+			),
+			"get_block" => self.generated().handle(
+				"get_block_ex",
+				normalize_trailing_optional_params(params, 0, 5, method)?,
+			),
+			"get_block_ex" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 0, 5, method)?,
+			),
+			"get_blocks" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 3, 4, method)?,
+			),
+			"get_kernel" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 1, 3, method)?,
+			),
+			"get_outputs" => self.handle_get_outputs(params),
+			"get_unspent_outputs" => self
+				.generated()
+				.handle(method, normalize_get_unspent_outputs_params(params)?),
+			"get_pmmr_indices" => self.generated().handle(
+				method,
+				normalize_trailing_optional_params(params, 1, 2, method)?,
+			),
+			"push_transaction" => self.handle_push_transaction(params),
+			_ => self.generated().handle(method, params),
+		}
+	}
+}
+
+fn normalize_trailing_optional_params(
+	params: Params,
+	min_len: usize,
+	max_len: usize,
+	method: &str,
+) -> Result<Params, easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(mut args) => {
+			if args.len() < min_len || args.len() > max_len {
+				return Err(wrong_number_of_args(method, min_len, max_len, args.len()));
+			}
+			while args.len() < max_len {
+				args.push(Value::Null);
+			}
+			Ok(Params::Positional(args))
+		}
+		Params::Named(args) => Ok(Params::Named(args)),
+	}
+}
+
+fn normalize_get_unspent_outputs_params(params: Params) -> Result<Params, easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(args) => match args.len() {
+			2 => {
+				let mut args = args.into_iter();
+				Ok(Params::Positional(vec![
+					args.next().unwrap(),
+					Value::Null,
+					args.next().unwrap(),
+					Value::Null,
+				]))
+			}
+			3 => {
+				let mut args = args.into_iter();
+				let start_index = args.next().unwrap();
+				let second = args.next().unwrap();
+				let third = args.next().unwrap();
+				if is_optional_bool(&third) {
+					Ok(Params::Positional(vec![
+						start_index,
+						Value::Null,
+						second,
+						third,
+					]))
+				} else {
+					Ok(Params::Positional(vec![
+						start_index,
+						second,
+						third,
+						Value::Null,
+					]))
+				}
+			}
+			4 => Ok(Params::Positional(args)),
+			actual => Err(wrong_number_of_args("get_unspent_outputs", 2, 4, actual)),
+		},
+		Params::Named(args) => Ok(Params::Named(args)),
+	}
+}
+
+fn parse_push_transaction_args(
+	params: Params,
+	context_id: u32,
+	secp: &Secp256k1,
+) -> Result<(Transaction, Option<bool>), easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(mut args) => {
+			if args.len() < 1 || args.len() > 2 {
+				return Err(wrong_number_of_args("push_transaction", 1, 2, args.len()));
+			}
+			while args.len() < 2 {
+				args.push(Value::Null);
+			}
+			let mut args = args.into_iter();
+			let tx = parse_transaction_arg(args.next().unwrap(), "tx", 0, context_id, secp)?;
+			let fluff = parse_arg(args.next().unwrap(), "fluff", 1)?;
+			Ok((tx, fluff))
+		}
+		Params::Named(mut args) => {
+			let tx = parse_transaction_arg(
+				args.remove("tx").unwrap_or(Value::Null),
+				"tx",
+				0,
+				context_id,
+				secp,
+			)?;
+			let fluff = parse_arg(args.remove("fluff").unwrap_or(Value::Null), "fluff", 1)?;
+			if let Some(key) = args.keys().next() {
+				return Err(InvalidArgs::ExtraNamedParameter { name: key.clone() }.into());
+			}
+			Ok((tx, fluff))
+		}
+	}
+}
+
+fn parse_transaction_arg(
+	mut value: Value,
+	name: &'static str,
+	index: usize,
+	context_id: u32,
+	secp: &Secp256k1,
+) -> Result<Transaction, easy_jsonrpc_mwc::Error> {
+	if let Some(tx) = parse_transaction_hex_arg(&value, context_id)? {
+		return Ok(tx);
+	}
+
+	let raw = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()).ok();
+
+	normalize_legacy_transaction_value(&mut value);
+	let normalized = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()).ok();
+	let canonical = transaction_with_canonical_signatures(value, secp)
+		.ok()
+		.and_then(|value| easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value).ok());
+
+	select_transaction_with_valid_signature(raw, normalized, canonical, context_id, secp)
+		.ok_or_else(|| -> easy_jsonrpc_mwc::Error {
+			InvalidArgs::invalid_arg_structure(name, index, "parsing error".to_string()).into()
+		})
+}
+
+fn parse_transaction_hex_arg(
+	value: &Value,
+	context_id: u32,
+) -> Result<Option<Transaction>, easy_jsonrpc_mwc::Error> {
+	let tx_hex = match value {
+		Value::String(tx_hex) => Some(tx_hex.as_str()),
+		Value::Object(args) => args.get("tx_hex").and_then(Value::as_str),
+		_ => None,
+	};
+
+	let Some(tx_hex) = tx_hex else {
+		return Ok(None);
+	};
+
+	let tx_bin = mwc_util::from_hex(tx_hex).map_err(|_| -> easy_jsonrpc_mwc::Error {
+		InvalidArgs::invalid_arg_structure("tx", 0, "parsing error".to_string()).into()
+	})?;
+	let tx: Transaction = ser::deserialize_strict(&mut &tx_bin[..], ProtocolVersion(1), context_id)
+		.map_err(|_| -> easy_jsonrpc_mwc::Error {
+			InvalidArgs::invalid_arg_structure("tx", 0, "parsing error".to_string()).into()
+		})?;
+	Ok(Some(tx))
+}
+
+fn normalize_legacy_transaction_value(value: &mut Value) {
+	let Some(kernels) = value
+		.get_mut("body")
+		.and_then(|body| body.get_mut("kernels"))
+		.and_then(Value::as_array_mut)
+	else {
+		return;
+	};
+
+	for kernel in kernels {
+		normalize_legacy_kernel_value(kernel);
+	}
+}
+
+fn transaction_with_canonical_signatures(
+	mut value: Value,
+	secp: &Secp256k1,
+) -> Result<Value, String> {
+	let kernels = value
+		.get_mut("body")
+		.and_then(|body| body.get_mut("kernels"))
+		.and_then(Value::as_array_mut)
+		.ok_or_else(|| "missing body.kernels".to_string())?;
+
+	for kernel in kernels {
+		convert_kernel_signature_to_raw(kernel, secp)?;
+	}
+
+	Ok(value)
+}
+
+fn convert_kernel_signature_to_raw(kernel: &mut Value, secp: &Secp256k1) -> Result<(), String> {
+	let sig_hex = kernel
+		.get("excess_sig")
+		.and_then(Value::as_str)
+		.ok_or_else(|| "missing kernel.excess_sig".to_string())?;
+
+	let sig_bytes = mwc_util::from_hex(sig_hex)
+		.map_err(|e| format!("failed to parse canonical signature hex: {}", e))?;
+	if sig_bytes.len() != 64 {
+		return Err(format!(
+			"invalid canonical signature length {}, expected 64 bytes",
+			sig_bytes.len()
+		));
+	}
+
+	let sig = AggSigSignature::from_compact(secp, &sig_bytes)
+		.map_err(|e| format!("failed to decode canonical signature: {}", e))?;
+	let raw_sig = sig
+		.serialize_raw(secp)
+		.map_err(|e| format!("failed to serialize canonical signature as raw: {}", e))?;
+
+	let sig_value = kernel
+		.get_mut("excess_sig")
+		.ok_or_else(|| "missing kernel.excess_sig".to_string())?;
+	*sig_value = easy_jsonrpc_mwc::serde_json::json!((&raw_sig[..]).to_hex());
+
+	Ok(())
+}
+
+fn select_transaction_with_valid_signature(
+	raw: Option<Transaction>,
+	normalized: Option<Transaction>,
+	canonical: Option<Transaction>,
+	context_id: u32,
+	secp: &Secp256k1,
+) -> Option<Transaction> {
+	if let Some(tx) = &raw {
+		if tx_kernel_signatures_verify(tx, context_id, secp) {
+			return Some(tx.clone());
+		}
+	}
+	if let Some(tx) = &normalized {
+		if tx_kernel_signatures_verify(tx, context_id, secp) {
+			return Some(tx.clone());
+		}
+	}
+
+	if let Some(tx) = canonical {
+		if tx_kernel_signatures_verify(&tx, context_id, secp) {
+			return Some(tx);
+		}
+	}
+
+	normalized.or(raw)
+}
+
+fn tx_kernel_signatures_verify(tx: &Transaction, context_id: u32, secp: &Secp256k1) -> bool {
+	TxKernel::batch_sig_verify(context_id, tx.kernels(), secp).is_ok()
+}
+
+fn normalize_legacy_kernel_value(kernel: &mut Value) {
+	let Some(kernel) = kernel.as_object_mut() else {
+		return;
+	};
+	if kernel.get("features").is_some_and(Value::is_object) {
+		normalize_nested_kernel_features(kernel);
+		return;
+	}
+
+	let Some(feature_name) = legacy_kernel_feature_name(kernel.get("features")) else {
+		return;
+	};
+
+	match feature_name {
+		"Plain" => {
+			let Some(fee) = kernel.remove("fee").and_then(normalize_u64_json_value) else {
+				return;
+			};
+			kernel.remove("lock_height");
+			kernel.insert(
+				"features".to_string(),
+				easy_jsonrpc_mwc::serde_json::json!({ "Plain": { "fee": fee } }),
+			);
+		}
+		"Coinbase" => {
+			kernel.remove("fee");
+			kernel.remove("lock_height");
+			kernel.insert(
+				"features".to_string(),
+				Value::String("Coinbase".to_string()),
+			);
+		}
+		"HeightLocked" => {
+			let Some(fee) = kernel.remove("fee").and_then(normalize_u64_json_value) else {
+				return;
+			};
+			let Some(lock_height) = kernel
+				.remove("lock_height")
+				.and_then(normalize_u64_json_value)
+			else {
+				return;
+			};
+			kernel.insert(
+				"features".to_string(),
+				easy_jsonrpc_mwc::serde_json::json!({
+					"HeightLocked": {
+						"fee": fee,
+						"lock_height": lock_height
+					}
+				}),
+			);
+		}
+		_ => {}
+	}
+}
+
+fn normalize_nested_kernel_features(kernel: &mut easy_jsonrpc_mwc::serde_json::Map<String, Value>) {
+	if let Some(Value::Object(features)) = kernel.get_mut("features") {
+		for payload in features.values_mut() {
+			let Some(payload) = payload.as_object_mut() else {
+				continue;
+			};
+			for field in ["fee", "lock_height", "relative_height"] {
+				if let Some(value) = payload.remove(field) {
+					let value = match normalize_u64_json_value(value.clone()) {
+						Some(value) => value,
+						None => value,
+					};
+					payload.insert(field.to_string(), value);
+				}
+			}
+		}
+	}
+}
+
+fn legacy_kernel_feature_name(value: Option<&Value>) -> Option<&'static str> {
+	match value {
+		Some(Value::String(feature)) => match feature.as_str() {
+			"Plain" => Some("Plain"),
+			"Coinbase" => Some("Coinbase"),
+			"HeightLocked" => Some("HeightLocked"),
+			_ => None,
+		},
+		Some(Value::Number(feature)) => match feature.as_u64() {
+			Some(0) => Some("Plain"),
+			Some(1) => Some("Coinbase"),
+			Some(2) => Some("HeightLocked"),
+			_ => None,
+		},
+		_ => None,
+	}
+}
+
+fn normalize_u64_json_value(value: Value) -> Option<Value> {
+	match value {
+		Value::Number(_) => Some(value),
+		Value::String(value) => value.parse::<u64>().ok().map(Value::from),
+		_ => None,
+	}
+}
+
+struct LegacyGetOutputsArgs {
+	commits: Option<Vec<String>>,
+	start_height: Option<u64>,
+	end_height: Option<u64>,
+	include_proof: Option<bool>,
+	include_merkle_proof: Option<bool>,
+}
+
+enum GetOutputsParams {
+	Current(Params),
+	Legacy(LegacyGetOutputsArgs),
+}
+
+fn normalize_get_outputs_params(
+	params: Params,
+) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
+	match params {
+		Params::Positional(args) => normalize_get_outputs_positional(args),
+		Params::Named(args) => normalize_get_outputs_named(args),
+	}
+}
+
+fn normalize_get_outputs_positional(
+	args: Vec<Value>,
+) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
+	if args.len() > 5 {
+		return Err(wrong_number_of_args("get_outputs", 1, 5, args.len()));
+	}
+	if uses_current_get_outputs_layout(&args) {
+		return normalize_trailing_optional_params(Params::Positional(args), 1, 3, "get_outputs")
+			.map(GetOutputsParams::Current);
+	}
+	parse_legacy_get_outputs_args(args).map(GetOutputsParams::Legacy)
+}
+
+fn normalize_get_outputs_named(
+	mut args: easy_jsonrpc_mwc::serde_json::Map<String, Value>,
+) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
+	if !args.contains_key("start_height") && !args.contains_key("end_height") {
+		return Ok(GetOutputsParams::Current(Params::Named(args)));
+	}
+
+	let commits = parse_named_arg(&mut args, "commits", 0)?;
+	let start_height = parse_named_arg(&mut args, "start_height", 1)?;
+	let end_height = parse_named_arg(&mut args, "end_height", 2)?;
+	let include_proof = parse_named_arg(&mut args, "include_proof", 3)?;
+	let include_merkle_proof = parse_named_arg(&mut args, "include_merkle_proof", 4)?;
+	if let Some(key) = args.keys().next() {
+		return Err(InvalidArgs::ExtraNamedParameter { name: key.clone() }.into());
+	}
+
+	Ok(GetOutputsParams::Legacy(LegacyGetOutputsArgs {
+		commits,
+		start_height,
+		end_height,
+		include_proof,
+		include_merkle_proof,
+	}))
+}
+
+fn parse_legacy_get_outputs_args(
+	mut args: Vec<Value>,
+) -> Result<LegacyGetOutputsArgs, easy_jsonrpc_mwc::Error> {
+	while args.len() < 5 {
+		args.push(Value::Null);
+	}
+	let mut args = args.into_iter();
+	Ok(LegacyGetOutputsArgs {
+		commits: parse_arg(args.next().unwrap(), "commits", 0)?,
+		start_height: parse_arg(args.next().unwrap(), "start_height", 1)?,
+		end_height: parse_arg(args.next().unwrap(), "end_height", 2)?,
+		include_proof: parse_arg(args.next().unwrap(), "include_proof", 3)?,
+		include_merkle_proof: parse_arg(args.next().unwrap(), "include_merkle_proof", 4)?,
+	})
+}
+
+fn parse_named_arg<T: DeserializeOwned>(
+	args: &mut easy_jsonrpc_mwc::serde_json::Map<String, Value>,
+	name: &'static str,
+	index: usize,
+) -> Result<T, easy_jsonrpc_mwc::Error> {
+	parse_arg(args.remove(name).unwrap_or(Value::Null), name, index)
+}
+
+fn parse_arg<T: DeserializeOwned>(
+	value: Value,
+	name: &'static str,
+	index: usize,
+) -> Result<T, easy_jsonrpc_mwc::Error> {
+	easy_jsonrpc_mwc::serde_json::from_value(value).map_err(|_| -> easy_jsonrpc_mwc::Error {
+		InvalidArgs::invalid_arg_structure(name, index, "parsing error".to_string()).into()
+	})
+}
+
+fn uses_current_get_outputs_layout(args: &[Value]) -> bool {
+	match args.len() {
+		1 => true,
+		2 => is_optional_bool(&args[1]),
+		3 => is_optional_bool(&args[1]) && is_optional_bool(&args[2]),
+		_ => false,
+	}
+}
+
+fn is_optional_bool(value: &Value) -> bool {
+	value.is_null() || value.is_boolean()
+}
+
+fn wrong_number_of_args(
+	method: &str,
+	min_len: usize,
+	max_len: usize,
+	actual: usize,
+) -> easy_jsonrpc_mwc::Error {
+	let expected = if min_len == max_len {
+		min_len.to_string()
+	} else {
+		format!("{} to {}", min_len, max_len)
+	};
+	easy_jsonrpc_mwc::Error::invalid_params(format!(
+		"WrongNumberOfArgs for {}. Expected {}. Actual {}",
+		method, expected, actual
+	))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use mwc_core::core::transaction::{FeeFields, KernelFeatures};
+	use mwc_core::libtx::build;
+	use mwc_core::libtx::proof::ProofBuilder;
+	use mwc_crates::rand::rngs::SysRng;
+	use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
+	use mwc_crates::serde_json::{self, json};
+	use mwc_keychain::{ExtKeychain, Keychain};
+	use mwc_util::ToHex;
+
+	#[test]
+	fn normalize_trailing_optional_params_pads_positional_args() {
+		let params = Params::Positional(vec![json!(1), Value::Null, Value::Null]);
+
+		let params = normalize_trailing_optional_params(params, 0, 5, "get_block").unwrap();
+
+		match params {
+			Params::Positional(args) => {
+				assert_eq!(
+					args,
+					vec![json!(1), Value::Null, Value::Null, Value::Null, Value::Null]
+				);
+			}
+			Params::Named(_) => panic!("expected positional params"),
+		}
+	}
+
+	#[test]
+	fn normalize_get_outputs_accepts_current_positional_layout() {
+		let params = Params::Positional(vec![
+			json!(["09bab2bdba2e6aed690b5eda11accc13c06723ca5965bb460c5f2383655989af3f"]),
+			json!(false),
+			json!(true),
+		]);
+
+		let params = normalize_get_outputs_params(params).unwrap();
+
+		match params {
+			GetOutputsParams::Current(Params::Positional(args)) => {
+				assert_eq!(args.len(), 3);
+				assert_eq!(args[1], json!(false));
+				assert_eq!(args[2], json!(true));
+			}
+			_ => panic!("expected current positional params"),
+		}
+	}
+
+	#[test]
+	fn normalize_get_outputs_accepts_legacy_positional_layout() {
+		let params = Params::Positional(vec![
+			Value::Null,
+			json!(10),
+			json!(12),
+			json!(false),
+			json!(true),
+		]);
+
+		let params = normalize_get_outputs_params(params).unwrap();
+
+		match params {
+			GetOutputsParams::Legacy(args) => {
+				assert_eq!(args.commits, None);
+				assert_eq!(args.start_height, Some(10));
+				assert_eq!(args.end_height, Some(12));
+				assert_eq!(args.include_proof, Some(false));
+				assert_eq!(args.include_merkle_proof, Some(true));
+			}
+			_ => panic!("expected legacy get_outputs params"),
+		}
+	}
+
+	#[test]
+	fn normalize_get_unspent_outputs_accepts_omitted_middle_arg() {
+		let params = Params::Positional(vec![json!(1), json!(100), json!(true)]);
+
+		let params = normalize_get_unspent_outputs_params(params).unwrap();
+
+		match params {
+			Params::Positional(args) => {
+				assert_eq!(args.len(), 4);
+				assert_eq!(args[0], json!(1));
+				assert_eq!(args[1], Value::Null);
+				assert_eq!(args[2], json!(100));
+				assert_eq!(args[3], json!(true));
+			}
+			Params::Named(_) => panic!("expected positional params"),
+		}
+	}
+
+	#[test]
+	fn normalize_trailing_optional_params_rejects_out_of_range_arg_counts() {
+		let params = Params::Positional(vec![
+			json!(1),
+			Value::Null,
+			Value::Null,
+			json!(true),
+			json!(false),
+			json!(false),
+		]);
+
+		assert!(normalize_trailing_optional_params(params, 0, 5, "get_block").is_err());
+	}
+
+	#[test]
+	fn parse_push_transaction_accepts_legacy_flat_plain_kernel() {
+		let tx = transaction_with_kernel(KernelFeatures::Plain {
+			fee: FeeFields::new(42).unwrap(),
+		});
+		let mut value = serde_json::to_value(&tx).unwrap();
+		let kernel = value["body"]["kernels"][0].as_object_mut().unwrap();
+		kernel.insert("features".to_string(), json!("Plain"));
+		kernel.insert("fee".to_string(), json!("42"));
+		kernel.insert("lock_height".to_string(), json!("0"));
+
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let parsed = parse_transaction_arg(value, "tx", 0, 0, &secp).unwrap();
+
+		match parsed.kernels()[0].features {
+			KernelFeatures::Plain { fee } => assert_eq!(fee.fee(), 42),
+			other => panic!("unexpected kernel features: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn parse_push_transaction_accepts_string_nested_fee() {
+		let tx = transaction_with_kernel(KernelFeatures::Plain {
+			fee: FeeFields::new(84).unwrap(),
+		});
+		let mut value = serde_json::to_value(&tx).unwrap();
+		value["body"]["kernels"][0]["features"]["Plain"]["fee"] = json!("84");
+
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let parsed = parse_transaction_arg(value, "tx", 0, 0, &secp).unwrap();
+
+		match parsed.kernels()[0].features {
+			KernelFeatures::Plain { fee } => assert_eq!(fee.fee(), 84),
+			other => panic!("unexpected kernel features: {:?}", other),
+		}
+	}
+
+	#[test]
+	fn parse_push_transaction_accepts_canonical_kernel_signature() {
+		let tx = transaction_with_kernel(KernelFeatures::Plain {
+			fee: FeeFields::new(126).unwrap(),
+		});
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let compact_sig = tx.kernels()[0].excess_sig.serialize_compact(&secp).unwrap();
+		let mut value = serde_json::to_value(&tx).unwrap();
+		value["body"]["kernels"][0]["excess_sig"] = json!((&compact_sig[..]).to_hex());
+
+		let parsed = parse_transaction_arg(value, "tx", 0, 0, &secp).unwrap();
+
+		parsed.kernels()[0].verify(0, &secp).unwrap();
+		assert_eq!(
+			parsed.kernels()[0].excess_sig.serialize_raw(&secp).unwrap(),
+			tx.kernels()[0].excess_sig.serialize_raw(&secp).unwrap()
+		);
+	}
+
+	fn transaction_with_kernel(features: KernelFeatures) -> Transaction {
+		let fee = match features {
+			KernelFeatures::Plain { fee }
+			| KernelFeatures::HeightLocked { fee, .. }
+			| KernelFeatures::NoRecentDuplicate { fee, .. } => fee.fee(),
+			KernelFeatures::Coinbase => 0,
+		};
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let keychain =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+		let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+		let tx = build::transaction(
+			0,
+			&mut secp,
+			features,
+			&[build::input(fee + 10, key_id1), build::output(10, key_id2)],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+		tx
+	}
 }
 
 impl<B, P> ForeignRpc for Foreign<B, P>
@@ -1200,11 +1884,14 @@ where
 	) -> Result<BlockHeaderPrintable, Error> {
 		let mut parsed_hash: Option<Hash> = None;
 		if let Some(hash) = hash {
-			let vec = util::from_hex(&hash)
-				.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?;
-			parsed_hash = Some(Hash::from_vec(&vec));
+			parsed_hash = Some(
+				Hash::from_hex(&hash)
+					.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?,
+			);
 		}
-		Foreign::get_header(self, height, parsed_hash, commit)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_header(self, secp, height, parsed_hash, commit)
+		})
 	}
 
 	fn get_block(
@@ -1226,18 +1913,23 @@ where
 	) -> Result<BlockPrintable, Error> {
 		let mut parsed_hash: Option<Hash> = None;
 		if let Some(hash) = hash {
-			let vec = util::from_hex(&hash)
-				.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?;
-			parsed_hash = Some(Hash::from_vec(&vec));
+			parsed_hash = Some(
+				Hash::from_hex(&hash)
+					.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?,
+			);
 		}
-		Foreign::get_block(
-			self,
-			height,
-			parsed_hash,
-			commit,
-			include_proof,
-			include_merkle_proof,
-		)
+
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_block(
+				self,
+				secp,
+				height,
+				parsed_hash,
+				commit,
+				include_proof,
+				include_merkle_proof,
+			)
+		})
 	}
 
 	fn get_blocks(
@@ -1247,7 +1939,9 @@ where
 		max: u64,
 		include_proof: Option<bool>,
 	) -> Result<BlockListing, Error> {
-		Foreign::get_blocks(self, start_height, end_height, max, include_proof)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_blocks(self, secp, start_height, end_height, max, include_proof)
+		})
 	}
 
 	fn get_version(&self) -> Result<Version, Error> {
@@ -1269,20 +1963,13 @@ where
 
 	fn get_outputs(
 		&self,
-		commits: Option<Vec<String>>,
-		start_height: Option<u64>,
-		end_height: Option<u64>,
+		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error> {
-		Foreign::get_outputs(
-			self,
-			commits,
-			start_height,
-			end_height,
-			include_proof,
-			include_merkle_proof,
-		)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_outputs(self, secp, commits, include_proof, include_merkle_proof)
+		})
 	}
 
 	fn get_unspent_outputs(
@@ -1292,7 +1979,9 @@ where
 		max: u64,
 		include_proof: Option<bool>,
 	) -> Result<OutputListing, Error> {
-		Foreign::get_unspent_outputs(self, start_index, end_index, max, include_proof)
+		secp_static::with_verify_only(Error::from, |secp| {
+			Foreign::get_unspent_outputs(self, secp, start_index, end_index, max, include_proof)
+		})
 	}
 
 	fn get_pmmr_indices(
@@ -1314,32 +2003,14 @@ where
 			None => 0,
 		};
 
-		let mut system = System::new_with_specifics(
-			RefreshKind::nothing()
-				.with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-				.with_memory(MemoryRefreshKind::everything()),
-		);
-		let total_ram = system.total_memory();
-		let used_ram = system.used_memory();
-		let total_swap = system.total_swap();
-		let used_swap = system.used_swap();
-
-		std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-
-		system.refresh_cpu_usage();
-
-		let cpus = system.cpus();
-		let mut cpu_usage_sum = 0.0;
-		for cpu in cpus {
-			cpu_usage_sum += cpu.cpu_usage();
-		}
+		let host_metrics = self.process_status_cache.lock().get();
 
 		Ok(ProcessStatus {
 			process_running_time: self.get_running_time(),
 			tor_online_time,
-			host_cpu_usage: (cpu_usage_sum / cpus.len() as f32) as f64,
-			host_ram_usage: used_ram as f64 / total_ram as f64,
-			host_swap_usage: used_swap as f64 / total_swap as f64,
+			host_cpu_usage: host_metrics.host_cpu_usage,
+			host_ram_usage: host_metrics.host_ram_usage,
+			host_swap_usage: host_metrics.host_swap_usage,
 		})
 	}
 
@@ -1347,73 +2018,62 @@ where
 		Foreign::get_pool_size(self)
 	}
 
-	fn get_stempool_size(&self) -> Result<usize, Error> {
-		Foreign::get_stempool_size(self)
-	}
-
-	fn get_unconfirmed_transactions(&self) -> Result<Vec<PoolEntry>, Error> {
+	fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error> {
 		Foreign::get_unconfirmed_transactions(self)
 	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
-		Foreign::push_transaction(self, tx, fluff, w(&self.chain)?.secp())
-	}
-	fn get_libp2p_peers(&self) -> Result<Libp2pPeers, Error> {
-		#[cfg(feature = "libp2p")]
-		return Foreign::get_libp2p_peers(self);
-
-		#[cfg(not(feature = "libp2p"))]
-		Err(Error::Internal("libp2p feature is disabled".into()))
-	}
-	fn get_libp2p_messages(&self) -> Result<Libp2pMessages, Error> {
-		#[cfg(feature = "libp2p")]
-		return Foreign::get_libp2p_messages(self);
-
-		#[cfg(not(feature = "libp2p"))]
-		Err(Error::Internal("libp2p feature is disabled".into()))
+		secp_static::with_commit_mut(Error::from, |secp| {
+			Foreign::push_transaction(self, tx, fluff, secp)
+		})
 	}
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! doctest_helper_json_rpc_foreign_assert_response {
-	($request:expr, $expected_response:expr) => {
-		// create temporary mwc server, run jsonrpc request on node api, delete server, return
-		// json response.
-
-		{
-			/*use mwc_servers::test_framework::framework::run_doctest;
-			use mwc_util as util;
-			use serde_json;
-			use serde_json::Value;
-			use tempfile::tempdir;
-
-			let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
-			let dir = dir
-				.path()
-				.to_str()
-				.ok_or("Failed to convert tmpdir path to string.".to_owned())
-				.unwrap();
-
-			let request_val: Value = serde_json::from_str($request).unwrap();
-			let expected_response: Value = serde_json::from_str($expected_response).unwrap();
-			let response = run_doctest(
-				request_val,
-				dir,
-				$use_token,
-				$blocks_to_mine,
-				$perform_tx,
-				$lock_tx,
-				$finalize_tx,
-					)
-			.unwrap()
-			.unwrap();
-			if response != expected_response {
-				panic!(
-					"(left != right) \nleft: {}\nright: {}",
-					serde_json::to_string_pretty(&response).unwrap(),
-					serde_json::to_string_pretty(&expected_response).unwrap()
-				);
-				}*/
-		}
-	};
+	($request:expr, $expected_response:expr) => {{
+		$crate::json_rpc::doctest_assert_json_rpc_response(
+			$request,
+			$expected_response,
+			&[
+				("get_header", &["height", "hash", "commit"]),
+				("get_block", &["height", "hash", "commit"]),
+				(
+					"get_block_ex",
+					&[
+						"height",
+						"hash",
+						"commit",
+						"include_proof",
+						"include_merkle_proof",
+					],
+				),
+				(
+					"get_blocks",
+					&["start_height", "end_height", "max", "include_proof"],
+				),
+				("get_version", &[]),
+				("get_tip", &[]),
+				("get_kernel", &["excess", "min_height", "max_height"]),
+				(
+					"get_outputs",
+					&["commits", "include_proof", "include_merkle_proof"],
+				),
+				(
+					"get_unspent_outputs",
+					&["start_index", "end_index", "max", "include_proof"],
+				),
+				(
+					"get_pmmr_indices",
+					&["start_block_height", "end_block_height"],
+				),
+				("get_connected_peers", &[]),
+				("get_process_status", &[]),
+				("get_pool_size", &[]),
+				("get_unconfirmed_transactions", &[]),
+				("push_transaction", &["tx", "fluff"]),
+			],
+		)
+		.unwrap_or_else(|err| panic!("{}", err));
+	}};
 }

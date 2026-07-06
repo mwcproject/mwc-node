@@ -24,7 +24,33 @@ use crate::core::hash::Hash;
 use crate::global;
 use crate::pow::Difficulty;
 use std::cmp::{max, min};
-use std::collections::VecDeque;
+use std::convert::TryFrom;
+
+pub use crate::difficulty_cache::DifficultyCache;
+
+/// Errors thrown by consensus calculations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	/// Data overflow error
+	#[error("Consensus data overflow error, {0}")]
+	DataOverflow(String),
+	/// Not enough history data. This error can be triggered by data storage failure or data corruption.
+	/// If needed data is not accessible this error will be returned
+	#[error("Blocks history is too short, less than a window size")]
+	HistoryTooShort,
+	/// Unable to read header difficulty data.
+	#[error("Unable to read header difficulty data, {0}")]
+	HeaderIO(String),
+	/// Invalid edge bits value
+	#[error("Invalid edge bits value {0}")]
+	InvalidEdgeBits(u8),
+	/// Already initialized
+	#[error("Already initialized: {0}")]
+	AlreadyInitialized(String),
+	/// Invalid parameter
+	#[error("Invalid parameter: {0}")]
+	InvalidParameter(String),
+}
 
 /// A mwc is divisible to 10^9, following the SI prefixes
 pub const MWC_BASE: u64 = 1_000_000_000;
@@ -46,10 +72,15 @@ pub const BLOCK_TIME_SEC: u64 = 60;
 //pub const REWARD: u64 = BLOCK_TIME_SEC * MWC_BASE;
 
 /// Actual block reward for a given total fee amount
-pub fn reward(context_id: u32, fee: u64, height: u64) -> u64 {
+pub fn reward(context_id: u32, fee: u64, height: u64) -> Result<u64, Error> {
 	// MWC has block reward schedule similar to bitcoin
 	let block_reward = calc_mwc_block_reward(context_id, height);
-	block_reward.saturating_add(fee)
+	block_reward.checked_add(fee).ok_or_else(|| {
+		Error::DataOverflow(format!(
+			"consensus::reward, block_reward={} fee={}",
+			block_reward, fee
+		))
+	})
 }
 
 /// MWC  genesis block reward in nanocoins (10M coins)
@@ -233,12 +264,24 @@ pub const AR_SCALE_DAMP_FACTOR: u64 = 13;
 /// Must be made dependent on height to phase out C31 in early 2020
 /// Later phase outs are on hold for now
 /// MWC modification: keep the initial calculation permanently so always favor C31.
-pub fn graph_weight(context_id: u32, height: u64, edge_bits: u8) -> u64 {
+pub fn graph_weight(context_id: u32, height: u64, edge_bits: u8) -> Result<u64, Error> {
+	if edge_bits < global::base_edge_bits(context_id) {
+		return Err(Error::InvalidEdgeBits(edge_bits));
+	}
 	if height < get_c31_hard_fork_block_height(context_id) || edge_bits <= 31 {
-		(2u64 << ((edge_bits as u64) - global::base_edge_bits(context_id) as u64) as u64)
-			* (edge_bits as u64)
+		// Safe because all values are constants, no data overflow is possible
+		let weight_base = 2u64
+			.checked_shl((edge_bits as u32) - global::base_edge_bits(context_id) as u32)
+			.ok_or_else(|| Error::DataOverflow(format!("graph_weight edge_bits={}", edge_bits)))?;
+		let res_base = weight_base.checked_mul(edge_bits as u64).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"graph_weight edge_bits={} weight_base={}",
+				edge_bits, weight_base
+			))
+		})?;
+		Ok(res_base)
 	} else {
-		1
+		Ok(1)
 	}
 }
 
@@ -278,6 +321,24 @@ pub struct HeaderDifficultyInfo {
 	pub secondary_scaling: u32,
 	/// Whether the header is a secondary proof of work
 	pub is_secondary: bool,
+}
+
+/// Converts difficulty iterator items into header difficulty data.
+pub trait IntoHeaderDifficultyInfo {
+	/// Convert into header difficulty data.
+	fn into_header_difficulty_info(self) -> Result<HeaderDifficultyInfo, Error>;
+}
+
+impl IntoHeaderDifficultyInfo for HeaderDifficultyInfo {
+	fn into_header_difficulty_info(self) -> Result<HeaderDifficultyInfo, Error> {
+		Ok(self)
+	}
+}
+
+impl IntoHeaderDifficultyInfo for Result<HeaderDifficultyInfo, Error> {
+	fn into_header_difficulty_info(self) -> Result<HeaderDifficultyInfo, Error> {
+		self
+	}
 }
 
 impl HeaderDifficultyInfo {
@@ -336,13 +397,34 @@ impl HeaderDifficultyInfo {
 }
 
 /// Move value linearly toward a goal
-pub fn damp(actual: u64, goal: u64, damp_factor: u64) -> u64 {
-	(actual + (damp_factor - 1) * goal) / damp_factor
+pub fn damp(actual: u64, goal: u64, damp_factor: u64) -> Result<u64, Error> {
+	//(actual + (damp_factor - 1) * goal) / damp_factor
+	damp_factor
+		.checked_sub(1)
+		.and_then(|n| n.checked_mul(goal))
+		.and_then(|n| n.checked_add(actual))
+		.and_then(|n| n.checked_div(damp_factor))
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"consensus::damp, actual={} goal={} damp_factor={}",
+				actual, goal, damp_factor
+			))
+		})
 }
 
 /// limit value to be within some factor from a goal
-pub fn clamp(actual: u64, goal: u64, clamp_factor: u64) -> u64 {
-	max(goal / clamp_factor, min(actual, goal * clamp_factor))
+pub fn clamp(actual: u64, goal: u64, clamp_factor: u64) -> Result<u64, Error> {
+	// max(goal / clamp_factor, min(actual, goal * clamp_factor))
+	let lower = goal.checked_div(clamp_factor);
+	let upper = goal.checked_mul(clamp_factor);
+
+	match (lower, upper) {
+		(Some(lower), Some(upper)) => Ok(max(lower, min(actual, upper))),
+		_ => Err(Error::DataOverflow(format!(
+			"consensus::clamp, actual={} goal={} clamp_factor={}",
+			actual, goal, clamp_factor
+		))),
+	}
 }
 
 /// Computes the proof-of-work difficulty that the next block should comply
@@ -362,55 +444,168 @@ pub fn next_difficulty<T>(
 	context_id: u32,
 	height: u64,
 	cursor: T,
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
-) -> HeaderDifficultyInfo
+	cache_values: &mut DifficultyCache,
+) -> Result<HeaderDifficultyInfo, Error>
 where
-	T: IntoIterator<Item = HeaderDifficultyInfo>,
+	T: IntoIterator,
+	T::Item: IntoHeaderDifficultyInfo,
 {
 	// Create vector of difficulty data running from earliest
 	// to latest, and pad with simulated pre-genesis data to allow earlier
 	// adjustment if there isn't enough window data length will be
 	// DIFFICULTY_ADJUST_WINDOW + 1 (for initial block time bound)
-	let diff_data = global::difficulty_data_to_vector(context_id, cursor, cache_values);
+	let diff_data = global::difficulty_data_to_vector(context_id, cursor, cache_values)?;
+
+	next_difficulty_from_diff_data(height, &diff_data)
+}
+
+pub(crate) fn next_difficulty_from_diff_data(
+	height: u64,
+	diff_data: &[HeaderDifficultyInfo],
+) -> Result<HeaderDifficultyInfo, Error> {
+	let expected_len = DIFFICULTY_ADJUST_WINDOW as usize + 1;
+	if diff_data.len() != expected_len {
+		return Err(Error::InvalidParameter(format!(
+			"difficulty data length {} does not match expected window length {}",
+			diff_data.len(),
+			expected_len
+		)));
+	}
+
+	validate_difficulty_data_sequence(height, diff_data)?;
 
 	// First, get the ratio of secondary PoW vs primary, skipping initial header
-	let sec_pow_scaling = secondary_pow_scaling(height, &diff_data[1..]);
+	let sec_pow_scaling = secondary_pow_scaling(height, &diff_data[1..])?;
 
 	// Get the timestamp delta across the window
-	let ts_delta: u64 =
-		diff_data[DIFFICULTY_ADJUST_WINDOW as usize].timestamp - diff_data[0].timestamp;
+	let last_timestamp = diff_data[DIFFICULTY_ADJUST_WINDOW as usize].timestamp;
+	let first_timestamp = diff_data[0].timestamp;
+	let ts_delta = last_timestamp.checked_sub(first_timestamp).ok_or_else(|| {
+		Error::DataOverflow(format!(
+			"consensus::next_difficulty, last_timestamp={} first_timestamp={}",
+			last_timestamp, first_timestamp
+		))
+	})?;
 
-	// Get the difficulty sum of the last DIFFICULTY_ADJUST_WINDOW elements
-	let diff_sum: u64 = diff_data
+	// 128 bit sum is safe. DIFFICULTY_ADJUST_WINDOW size is relatevly small
+	let diff_sum: u128 = diff_data
 		.iter()
 		.skip(1)
-		.map(|dd| dd.difficulty.to_num())
+		.map(|dd| dd.difficulty.to_num() as u128)
 		.sum();
 
 	// adjust time delta toward goal subject to dampening and clamping
 	let adj_ts = clamp(
-		damp(ts_delta, BLOCK_TIME_WINDOW, DIFFICULTY_DAMP_FACTOR),
+		damp(ts_delta, BLOCK_TIME_WINDOW, DIFFICULTY_DAMP_FACTOR)?,
 		BLOCK_TIME_WINDOW,
 		CLAMP_FACTOR,
-	);
-	// minimum difficulty avoids getting stuck due to dampening
-	let difficulty = max(MIN_DIFFICULTY, diff_sum * BLOCK_TIME_SEC / adj_ts);
+	)?;
 
-	HeaderDifficultyInfo::from_diff_scaling(Difficulty::from_num(difficulty), sec_pow_scaling)
+	// diff_sum * BLOCK_TIME_SEC / adj_ts
+	let res_difficulty = diff_sum
+		.checked_mul(BLOCK_TIME_SEC as u128)
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"consensus::next_difficulty, diff_sum={} block_time_sec={}",
+				diff_sum, BLOCK_TIME_SEC
+			))
+		})? / max(1u128, adj_ts as u128);
+	// It is implicit change in consensus, in case if difficulty will skyrocket, we don't want to go offline because of that.
+	// In case of overflow we will specify maximum possible difficulty
+	let res_difficulty = match u64::try_from(res_difficulty) {
+		Ok(r) => r,
+		Err(_) => u64::MAX - 1,
+	};
+	// minimum difficulty avoids getting stuck due to dampening
+	let difficulty = max(MIN_DIFFICULTY, res_difficulty);
+
+	Ok(HeaderDifficultyInfo::from_diff_scaling(
+		Difficulty::from_num(difficulty),
+		sec_pow_scaling,
+	))
+}
+
+fn validate_difficulty_data_sequence(
+	height: u64,
+	diff_data: &[HeaderDifficultyInfo],
+) -> Result<(), Error> {
+	if let Some(latest_real_header) = diff_data.iter().rev().find(|entry| entry.hash.is_some()) {
+		let expected_height = latest_real_header.height.checked_add(1).ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"consensus::validate_difficulty_data_sequence, latest_real_header.height={}",
+				latest_real_header.height
+			))
+		})?;
+		if height != expected_height {
+			return Err(Error::InvalidParameter(format!(
+				"difficulty height {} does not follow latest difficulty data height {}",
+				height, latest_real_header.height
+			)));
+		}
+	}
+
+	let mut saw_real_header = false;
+	for entry in diff_data {
+		if entry.hash.is_some() {
+			saw_real_header = true;
+		} else if saw_real_header {
+			return Err(Error::InvalidParameter(
+				"synthetic difficulty data appears after real header data".to_string(),
+			));
+		}
+	}
+
+	for pair in diff_data.windows(2) {
+		let prev = &pair[0];
+		let next = &pair[1];
+
+		if next.timestamp < prev.timestamp {
+			return Err(Error::InvalidParameter(format!(
+				"difficulty data timestamps are descreasing: height {} timestamp {} follows height {} timestamp {}",
+				next.height, next.timestamp, prev.height, prev.timestamp
+			)));
+		}
+
+		// Synthetic pre-genesis padding cannot represent true negative block
+		// heights in this u64 field. Validate real header continuity and rely
+		// on timestamp ordering across the synthetic-to-real boundary.
+		if prev.hash.is_some() && next.hash.is_some() {
+			let expected_height = prev.height.checked_add(1).ok_or_else(|| {
+				Error::DataOverflow(format!(
+					"consensus::validate_difficulty_data_sequence, prev.height={}",
+					prev.height
+				))
+			})?;
+			if next.height != expected_height {
+				return Err(Error::InvalidParameter(format!(
+					"difficulty data is not contiguous: height {} follows {}",
+					next.height, prev.height
+				)));
+			}
+		}
+	}
+
+	Ok(())
 }
 
 /// Count, in units of 1/100 (a percent), the number of "secondary" (AR) blocks in the provided window of blocks.
 pub fn ar_count(_height: u64, diff_data: &[HeaderDifficultyInfo]) -> u64 {
+	// Safe because diff_data.len() is much smaller than u64, 100 is a small constant
 	100 * diff_data.iter().filter(|n| n.is_secondary).count() as u64
 }
 
 /// Factor by which the secondary proof of work difficulty will be adjusted
-pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderDifficultyInfo]) -> u32 {
+pub fn secondary_pow_scaling(
+	height: u64,
+	diff_data: &[HeaderDifficultyInfo],
+) -> Result<u32, Error> {
 	// Get the scaling factor sum of the last DIFFICULTY_ADJUST_WINDOW elements
+	// Safe because dd.secondary_scaling is u32, so the values are small to overflow the sum
 	let scale_sum: u64 = diff_data.iter().map(|dd| dd.secondary_scaling as u64).sum();
 
 	// compute ideal 2nd_pow_fraction in pct and across window
 	let target_pct = secondary_pow_ratio(height);
+	// safe because target_pct is less than 54, DIFFICULTY_ADJUST_WINDOW is a small constant
 	let target_count = DIFFICULTY_ADJUST_WINDOW * target_pct;
 
 	// Get the secondary count across the window, adjusting count toward goal
@@ -420,14 +615,19 @@ pub fn secondary_pow_scaling(height: u64, diff_data: &[HeaderDifficultyInfo]) ->
 			ar_count(height, diff_data),
 			target_count,
 			ar_scale_damp_factor(height),
-		),
+		)?,
 		target_count,
 		CLAMP_FACTOR,
-	);
+	)?;
+
+	// Safe because scale_sum is much smaller than u64::MAX, target_pct is less than 45,
 	let scale = scale_sum * target_pct / max(1, adj_count);
 
-	// minimum AR scale avoids getting stuck due to dampening
-	max(MIN_AR_SCALE, scale) as u32
+	// Keep the historical wrapping cast here. This value is consensus-critical
+	// and existing Floonet/Mainnet headers were mined with the legacy `as u32`
+	// behavior when the balancing formula exceeds u32::MAX. Saturating instead
+	// changes the expected secondary scale and causes valid peers to be rejected.
+	Ok(max(MIN_AR_SCALE, scale) as u32)
 }
 
 /// Hard fork modifications:
@@ -442,6 +642,7 @@ fn get_c31_hard_fork_block_height(context_id: u32) -> u64 {
 }
 
 fn get_epoch_block_offset(context_id: u32, epoch: u8) -> u64 {
+	// Safe because get_c31_hard_fork_block_height is a constant, DAY_HEIGHT & WEEK_HEIGHT are constants as well
 	let mut ret = get_c31_hard_fork_block_height(context_id);
 	if epoch >= 2 {
 		if global::get_chain_type(context_id) == global::ChainTypes::Floonet {
@@ -451,65 +652,77 @@ fn get_epoch_block_offset(context_id: u32, epoch: u8) -> u64 {
 		}
 	}
 
+	// Safe because get_epoch_duration are constants as well and there sum much smaller than u64::MAX
 	let mut i = 3;
 	while i <= epoch {
-		ret += get_epoch_duration(context_id, i - 1);
-		i = i + 1;
+		match get_epoch_duration(context_id, i - 1) {
+			Some(len) => ret += len,
+			None => return u64::MAX, // None mean that the length is unlimited, so the prev offset is the resulting one.
+		}
+		let (next_i, overflowed) = i.overflowing_add(1);
+		if overflowed {
+			break;
+		}
+		i = next_i;
 	}
 	ret
 }
 
-fn get_epoch_duration(context_id: u32, epoch: u8) -> u64 {
+fn get_epoch_duration(context_id: u32, epoch: u8) -> Option<u64> {
 	match epoch {
 		2 => {
 			// second epoch is 1 day on floonet and 120 days on mainnet
 			if global::get_chain_type(context_id) == global::ChainTypes::Floonet {
-				DAY_HEIGHT
+				Some(DAY_HEIGHT)
 			} else {
-				120 * DAY_HEIGHT
+				Some(120 * DAY_HEIGHT)
 			}
 		}
 		3 => {
 			// third epoch is 1 day on floonet and 60 days on mainnet
 			if global::get_chain_type(context_id) == global::ChainTypes::Floonet {
-				DAY_HEIGHT
+				Some(DAY_HEIGHT)
 			} else {
-				60 * DAY_HEIGHT
+				Some(60 * DAY_HEIGHT)
 			}
 		}
 		4 => {
 			// fourth epoch is 120 days
-			120 * DAY_HEIGHT
+			Some(120 * DAY_HEIGHT)
 		}
 		5 => {
 			// fifth epoch is 180 days
-			180 * DAY_HEIGHT
+			Some(180 * DAY_HEIGHT)
 		}
 		6 => {
 			// sixth epoch is 180 days
-			180 * DAY_HEIGHT
+			Some(180 * DAY_HEIGHT)
 		}
 		7 => {
 			// seventh epoch is 1 year
-			YEAR_HEIGHT
+			Some(YEAR_HEIGHT)
 		}
 		8 => {
 			// eigth epoch is 1 year
-			YEAR_HEIGHT
+			Some(YEAR_HEIGHT)
 		}
 		9 => {
 			// nineth epoch is 6 years
-			6 * YEAR_HEIGHT
+			Some(6 * YEAR_HEIGHT)
 		}
 		10 => {
 			// tenth epoch is 10 years
-			10 * YEAR_HEIGHT
+			Some(10 * YEAR_HEIGHT)
 		}
-		_ => {
+		11 => {
 			// eleventh epoch is 1667+ years
 			// epoch 11
-			876_349_148 // Just over 1667 years.
+			Some(876_349_148) // Just over 1667 years.
 		}
+		12 => {
+			Some(1) // One block to mine MWC_LAST_BLOCK_REWARD
+		}
+		_ => None, // Next epoches don't have any limitations on the length
 	}
 }
 
@@ -547,9 +760,12 @@ fn get_epoch_reward(epoch: u8) -> u64 {
 		11 => {
 			10_000_000 // 0.01 MWC
 		}
-		_ => {
-			/* epoch == 12 */
+		12 => {
 			MWC_LAST_BLOCK_REWARD // final block reward just to make it to be 20M coins.
+		}
+		_ => {
+			/* epoch == 13  - no rewards */
+			0
 		}
 	}
 }
@@ -566,40 +782,27 @@ pub fn calc_mwc_block_reward(context_id: u32, height: u64) -> u64 {
 		// Genesis block
 		return get_epoch_reward(0);
 	}
-
-	if height < get_epoch_block_offset(context_id, 2) {
-		return get_epoch_reward(1);
-	} else if height < get_epoch_block_offset(context_id, 3) {
-		return get_epoch_reward(2);
-	} else if height < get_epoch_block_offset(context_id, 4) {
-		return get_epoch_reward(3);
-	} else if height < get_epoch_block_offset(context_id, 5) {
-		return get_epoch_reward(4);
-	} else if height < get_epoch_block_offset(context_id, 6) {
-		return get_epoch_reward(5);
-	} else if height < get_epoch_block_offset(context_id, 7) {
-		return get_epoch_reward(6);
-	} else if height < get_epoch_block_offset(context_id, 8) {
-		return get_epoch_reward(7);
-	} else if height < get_epoch_block_offset(context_id, 9) {
-		return get_epoch_reward(8);
-	} else if height < get_epoch_block_offset(context_id, 10) {
-		return get_epoch_reward(9);
-	} else if height < get_epoch_block_offset(context_id, 11) {
-		return get_epoch_reward(10);
-	} else if height < get_epoch_block_offset(context_id, 11) + get_epoch_duration(context_id, 11) {
-		return get_epoch_reward(11);
-	} else if height == get_epoch_block_offset(context_id, 11) + get_epoch_duration(context_id, 11)
-	{
-		// last block
-		return get_epoch_reward(12);
+	// edge case, even impossible but let's handle it
+	if height == u64::MAX {
+		return 0;
 	}
 
-	return 0;
+	for epoch in 2u8..255u8 {
+		if height < get_epoch_block_offset(context_id, epoch) {
+			return get_epoch_reward(epoch - 1);
+		}
+	}
+	panic!("calc_mwc_block_reward internal error");
 }
 
 /// MWC  calculate the total number of rewarded coins in all blocks including this one
 pub fn calc_mwc_block_overage(context_id: u32, height: u64, genesis_had_reward: bool) -> u64 {
+	// height u64::MAX is an edge case. Total reward is the same as u64::MAX - 1
+	// because rewards are already zero in the final unbounded epoch.
+	if height == u64::MAX {
+		return calc_mwc_block_overage(context_id, height - 1, genesis_had_reward);
+	}
+
 	// including this one happens implicitly.
 	// Because "this block is included", but 0 block (genesis) block is excluded, we will keep height as it is
 	let mut overage: u64 = get_epoch_reward(0); // genesis block reward
@@ -612,86 +815,173 @@ pub fn calc_mwc_block_overage(context_id: u32, height: u64, genesis_had_reward: 
 	}
 	overage += get_epoch_reward(1) * (get_epoch_block_offset(context_id, 2) - 1);
 
-	if height < get_epoch_block_offset(context_id, 3) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 2)) * get_epoch_reward(2);
+	for epoch in 3u8..255u8 {
+		let prev_epoch_offset = get_epoch_block_offset(context_id, epoch - 1);
+		let epoch_block_offset = get_epoch_block_offset(context_id, epoch);
+		if height < epoch_block_offset {
+			let blocks_in_epoch = height - prev_epoch_offset + 1;
+			return overage + blocks_in_epoch * get_epoch_reward(epoch - 1);
+		}
+		overage += get_epoch_reward(epoch - 1) * (epoch_block_offset - prev_epoch_offset);
 	}
-	overage += get_epoch_reward(2)
-		* (get_epoch_block_offset(context_id, 3) - get_epoch_block_offset(context_id, 2));
-
-	if height < get_epoch_block_offset(context_id, 4) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 3)) * get_epoch_reward(3);
-	}
-	overage += get_epoch_reward(3)
-		* (get_epoch_block_offset(context_id, 4) - get_epoch_block_offset(context_id, 3));
-
-	if height < get_epoch_block_offset(context_id, 5) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 4)) * get_epoch_reward(4);
-	}
-	overage += get_epoch_reward(4)
-		* (get_epoch_block_offset(context_id, 5) - get_epoch_block_offset(context_id, 4));
-
-	if height < get_epoch_block_offset(context_id, 6) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 5)) * get_epoch_reward(5);
-	}
-	overage += get_epoch_reward(5)
-		* (get_epoch_block_offset(context_id, 6) - get_epoch_block_offset(context_id, 5));
-
-	if height < get_epoch_block_offset(context_id, 7) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 6)) * get_epoch_reward(6);
-	}
-	overage += get_epoch_reward(6)
-		* (get_epoch_block_offset(context_id, 7) - get_epoch_block_offset(context_id, 6));
-
-	if height < get_epoch_block_offset(context_id, 8) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 7)) * get_epoch_reward(7);
-	}
-	overage += get_epoch_reward(7)
-		* (get_epoch_block_offset(context_id, 8) - get_epoch_block_offset(context_id, 7));
-
-	if height < get_epoch_block_offset(context_id, 9) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 8)) * get_epoch_reward(8);
-	}
-	overage += get_epoch_reward(8)
-		* (get_epoch_block_offset(context_id, 9) - get_epoch_block_offset(context_id, 8));
-
-	if height < get_epoch_block_offset(context_id, 10) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 9)) * get_epoch_reward(9);
-	}
-	overage += get_epoch_reward(9)
-		* (get_epoch_block_offset(context_id, 10) - get_epoch_block_offset(context_id, 9));
-
-	if height < get_epoch_block_offset(context_id, 11) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 10)) * get_epoch_reward(10);
-	}
-	overage += get_epoch_reward(10)
-		* (get_epoch_block_offset(context_id, 11) - get_epoch_block_offset(context_id, 10));
-
-	if height < get_epoch_block_offset(context_id, 11) + get_epoch_duration(context_id, 11) {
-		return overage
-			+ ((height + 1) - get_epoch_block_offset(context_id, 11)) * get_epoch_reward(11);
-	}
-	overage += get_epoch_reward(11) * (get_epoch_duration(context_id, 11));
-
-	// we add the last block reward to get us to 20 million
-	if height >= get_epoch_block_offset(context_id, 11) + get_epoch_duration(context_id, 11) {
-		overage += get_epoch_reward(12);
-	}
-
-	overage
+	panic!("Internal calc_mwc_block_overage error");
 }
 
 #[cfg(test)]
 mod test {
 	use super::*;
+
+	fn real_difficulty_data() -> Vec<HeaderDifficultyInfo> {
+		(0..=DIFFICULTY_ADJUST_WINDOW)
+			.map(|height| {
+				HeaderDifficultyInfo::new(
+					height,
+					Some(Hash::from_vec(&height.to_le_bytes())),
+					1_000 + height * BLOCK_TIME_SEC,
+					Difficulty::from_num(100),
+					1,
+					false,
+				)
+			})
+			.collect()
+	}
+
+	fn real_difficulty_next_height() -> u64 {
+		DIFFICULTY_ADJUST_WINDOW + 1
+	}
+
+	#[test]
+	fn next_difficulty_rejects_short_difficulty_window() {
+		let mut diff_data = real_difficulty_data();
+		diff_data.pop();
+
+		let err =
+			next_difficulty_from_diff_data(real_difficulty_next_height(), &diff_data).unwrap_err();
+		assert!(matches!(err, Error::InvalidParameter(_)));
+	}
+
+	#[test]
+	fn next_difficulty_rejects_overlong_difficulty_window() {
+		let mut diff_data = real_difficulty_data();
+		diff_data.push(HeaderDifficultyInfo::new(
+			DIFFICULTY_ADJUST_WINDOW + 1,
+			Some(Hash::from_vec(
+				&(DIFFICULTY_ADJUST_WINDOW + 1).to_le_bytes(),
+			)),
+			1_000 + (DIFFICULTY_ADJUST_WINDOW + 1) * BLOCK_TIME_SEC,
+			Difficulty::from_num(100),
+			1,
+			false,
+		));
+
+		let err =
+			next_difficulty_from_diff_data(DIFFICULTY_ADJUST_WINDOW + 2, &diff_data).unwrap_err();
+		assert!(matches!(err, Error::InvalidParameter(_)));
+	}
+
+	#[test]
+	fn next_difficulty_rejects_non_contiguous_real_difficulty_heights() {
+		let mut diff_data = real_difficulty_data();
+		diff_data[10].height += 1;
+
+		let err =
+			next_difficulty_from_diff_data(real_difficulty_next_height(), &diff_data).unwrap_err();
+		assert!(matches!(err, Error::InvalidParameter(_)));
+	}
+
+	#[test]
+	fn next_difficulty_rejects_descreased_real_difficulty_timestamps() {
+		let mut diff_data = real_difficulty_data();
+		diff_data[10].timestamp = diff_data[9].timestamp;
+
+		// Not increasing is fine - it is part of cncensus.
+		next_difficulty_from_diff_data(real_difficulty_next_height(), &diff_data).unwrap();
+
+		// Decriasing is not allowed, must be rejected
+		diff_data[10].timestamp = diff_data[9].timestamp.saturating_sub(1);
+		let err =
+			next_difficulty_from_diff_data(real_difficulty_next_height(), &diff_data).unwrap_err();
+		assert!(matches!(err, Error::InvalidParameter(_)));
+	}
+
+	#[test]
+	fn next_difficulty_rejects_height_that_does_not_follow_latest_real_header() {
+		let diff_data = real_difficulty_data();
+
+		let err = next_difficulty_from_diff_data(real_difficulty_next_height() + 1, &diff_data)
+			.unwrap_err();
+		assert!(matches!(err, Error::InvalidParameter(_)));
+	}
+
+	#[test]
+	fn next_difficulty_allows_synthetic_padding_before_real_header() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+
+		let real_header = HeaderDifficultyInfo::new(
+			0,
+			Some(Hash::from_vec(&[0])),
+			DIFFICULTY_ADJUST_WINDOW * BLOCK_TIME_SEC,
+			Difficulty::from_num(100),
+			1,
+			false,
+		);
+		let mut cache_values = DifficultyCache::new();
+		let diff_data =
+			global::difficulty_data_to_vector(0, vec![real_header], &mut cache_values).unwrap();
+
+		for pair in diff_data.windows(2) {
+			assert!(pair[1].timestamp > pair[0].timestamp);
+		}
+		for (idx, entry) in diff_data
+			.iter()
+			.take_while(|entry| entry.hash.is_none())
+			.enumerate()
+		{
+			assert_eq!(entry.height, idx as u64);
+		}
+		next_difficulty_from_diff_data(1, &diff_data).unwrap();
+	}
+
+	#[test]
+	fn secondary_pow_scaling_preserves_legacy_u32_wrapping() {
+		let diff_data = (0..DIFFICULTY_ADJUST_WINDOW)
+			.map(|height| {
+				HeaderDifficultyInfo::new(
+					height,
+					Some(Hash::from_vec(&height.to_le_bytes())),
+					1_000 + height * BLOCK_TIME_SEC,
+					Difficulty::from_num(100),
+					u32::MAX,
+					false,
+				)
+			})
+			.collect::<Vec<_>>();
+
+		let target_pct = secondary_pow_ratio(1);
+		let target_count = DIFFICULTY_ADJUST_WINDOW * target_pct;
+		let adj_count = clamp(
+			damp(
+				ar_count(1, &diff_data),
+				target_count,
+				ar_scale_damp_factor(1),
+			)
+			.unwrap(),
+			target_count,
+			CLAMP_FACTOR,
+		)
+		.unwrap();
+		let scale_sum = diff_data
+			.iter()
+			.map(|dd| dd.secondary_scaling as u64)
+			.sum::<u64>();
+		let raw_scale = scale_sum * target_pct / max(1, adj_count);
+		assert!(raw_scale > u32::MAX as u64);
+
+		assert_eq!(
+			secondary_pow_scaling(1, &diff_data).unwrap(),
+			max(MIN_AR_SCALE, raw_scale) as u32
+		);
+	}
 
 	#[test]
 	fn test_graph_weight() {
@@ -699,49 +989,67 @@ mod test {
 		global::set_local_nrd_enabled(false);
 
 		// initial weights
-		assert_eq!(graph_weight(0, 1, 31), 256 * 31);
-		assert_eq!(graph_weight(0, 1, 32), 512 * 32);
-		assert_eq!(graph_weight(0, 1, 33), 1024 * 33);
+		assert_eq!(graph_weight(0, 1, 31).unwrap(), 256 * 31);
+		assert_eq!(graph_weight(0, 1, 32).unwrap(), 512 * 32);
+		assert_eq!(graph_weight(0, 1, 33).unwrap(), 1024 * 33);
 
 		// one year in, 31 starts going down, the rest stays the same
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(0, YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(0, YEAR_HEIGHT, 32), 1);
-		assert_eq!(graph_weight(0, YEAR_HEIGHT, 33), 1);
+		assert_eq!(graph_weight(0, YEAR_HEIGHT, 31).unwrap(), 256 * 31);
+		assert_eq!(graph_weight(0, YEAR_HEIGHT, 32).unwrap(), 1);
+		assert_eq!(graph_weight(0, YEAR_HEIGHT, 33).unwrap(), 1);
 
 		// 31 loses one factor per week
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(0, YEAR_HEIGHT + WEEK_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(0, YEAR_HEIGHT + 2 * WEEK_HEIGHT, 31), 256 * 31);
 		assert_eq!(
-			graph_weight(0, YEAR_HEIGHT + 32 * WEEK_HEIGHT, 31),
+			graph_weight(0, YEAR_HEIGHT + WEEK_HEIGHT, 31).unwrap(),
+			256 * 31
+		);
+		assert_eq!(
+			graph_weight(0, YEAR_HEIGHT + 2 * WEEK_HEIGHT, 31).unwrap(),
+			256 * 31
+		);
+		assert_eq!(
+			graph_weight(0, YEAR_HEIGHT + 32 * WEEK_HEIGHT, 31).unwrap(),
 			256 * 31
 		);
 
 		// 2 years in, 31 still at 0, 32 starts decreasing
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT, 32), 1);
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT, 33), 1);
+		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT, 31).unwrap(), 256 * 31);
+		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT, 32).unwrap(), 1);
+		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT, 33).unwrap(), 1);
 
 		// 32 phaseout on hold
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT + WEEK_HEIGHT, 32), 1);
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT + WEEK_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT + 30 * WEEK_HEIGHT, 32), 1);
-		assert_eq!(graph_weight(0, 2 * YEAR_HEIGHT + 31 * WEEK_HEIGHT, 32), 1);
+		assert_eq!(
+			graph_weight(0, 2 * YEAR_HEIGHT + WEEK_HEIGHT, 32).unwrap(),
+			1
+		);
+		assert_eq!(
+			graph_weight(0, 2 * YEAR_HEIGHT + WEEK_HEIGHT, 31).unwrap(),
+			256 * 31
+		);
+		assert_eq!(
+			graph_weight(0, 2 * YEAR_HEIGHT + 30 * WEEK_HEIGHT, 32).unwrap(),
+			1
+		);
+		assert_eq!(
+			graph_weight(0, 2 * YEAR_HEIGHT + 31 * WEEK_HEIGHT, 32).unwrap(),
+			1
+		);
 
 		// 3 years in, nothing changes
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(0, 3 * YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(0, 3 * YEAR_HEIGHT, 32), 1);
-		assert_eq!(graph_weight(0, 3 * YEAR_HEIGHT, 33), 1);
+		assert_eq!(graph_weight(0, 3 * YEAR_HEIGHT, 31).unwrap(), 256 * 31);
+		assert_eq!(graph_weight(0, 3 * YEAR_HEIGHT, 32).unwrap(), 1);
+		assert_eq!(graph_weight(0, 3 * YEAR_HEIGHT, 33).unwrap(), 1);
 
 		// 4 years in, still on hold
 		// after hard fork, constant values despite height
-		assert_eq!(graph_weight(0, 4 * YEAR_HEIGHT, 31), 256 * 31);
-		assert_eq!(graph_weight(0, 4 * YEAR_HEIGHT, 32), 1);
-		assert_eq!(graph_weight(0, 4 * YEAR_HEIGHT, 33), 1);
+		assert_eq!(graph_weight(0, 4 * YEAR_HEIGHT, 31).unwrap(), 256 * 31);
+		assert_eq!(graph_weight(0, 4 * YEAR_HEIGHT, 32).unwrap(), 1);
+		assert_eq!(graph_weight(0, 4 * YEAR_HEIGHT, 33).unwrap(), 1);
 	}
 
 	// MWC test the epoch dates
@@ -762,9 +1070,28 @@ mod test {
 		assert_eq!(get_epoch_block_offset(0, 10), 5_356_260); // February 7, 2030 tenth epoch begins
 		assert_eq!(get_epoch_block_offset(0, 11), 10_597_860); // February 7, 2040 eleventh epoch begins
 		assert_eq!(
-			get_epoch_block_offset(0, 11) + get_epoch_duration(0, 11),
+			get_epoch_block_offset(0, 11) + get_epoch_duration(0, 11).unwrap(),
 			886_947_008
 		);
+		assert_eq!(
+			get_epoch_block_offset(0, 11) + get_epoch_duration(0, 11).unwrap(),
+			get_epoch_block_offset(0, 12)
+		);
+		assert_eq!(
+			get_epoch_block_offset(0, 12) + get_epoch_duration(0, 12).unwrap(),
+			886_947_009
+		);
+		assert_eq!(
+			get_epoch_block_offset(0, 12) + get_epoch_duration(0, 12).unwrap(),
+			get_epoch_block_offset(0, 13)
+		);
+		assert_eq!(get_epoch_block_offset(0, 13), 886_947_009);
+		assert_eq!(get_epoch_block_offset(0, 14), u64::MAX);
+		assert_eq!(get_epoch_block_offset(0, 15), u64::MAX);
+		assert!(get_epoch_duration(0, 13).is_none());
+		assert!(get_epoch_duration(0, 14).is_none());
+		assert!(get_epoch_duration(0, 15).is_none());
+		assert!(get_epoch_duration(0, 16).is_none());
 	}
 
 	// MWC  testing calc_mwc_block_reward output for the scedule that documented at definition of calc_mwc_block_reward
@@ -911,20 +1238,19 @@ mod test {
 			25_000_000
 		);
 
+		let last_block_idx = get_epoch_block_offset(0, 11) + get_epoch_duration(0, 11).unwrap();
+
 		// last block reward is special
 		assert_eq!(
-			calc_mwc_block_reward(0, get_epoch_block_offset(0, 11) + get_epoch_duration(0, 11)),
+			calc_mwc_block_reward(0, last_block_idx),
 			MWC_LAST_BLOCK_REWARD
 		);
 
 		// 0
-		assert_eq!(
-			calc_mwc_block_reward(
-				0,
-				get_epoch_block_offset(0, 11) + get_epoch_duration(0, 11) + 1
-			),
-			0
-		);
+		assert_eq!(calc_mwc_block_reward(0, last_block_idx + 1), 0);
+		assert_eq!(calc_mwc_block_reward(0, last_block_idx + 2), 0);
+		assert_eq!(calc_mwc_block_reward(0, last_block_idx + 200), 0);
+		assert_eq!(calc_mwc_block_reward(0, last_block_idx + 20000), 0);
 
 		// far far future
 		assert_eq!(calc_mwc_block_reward(0, 2_100_000 * 320000000 + 200), 0); // no reward
@@ -1288,6 +1614,16 @@ mod test {
 		let total_blocks_reward = calc_mwc_block_overage(0, 2_100_000_000 * 1000, true);
 		// Expected 20M in total. The coin base is exactly 20M
 		assert_eq!(total_blocks_reward, 20000000000000000);
+
+		let max_height_reward = calc_mwc_block_overage(0, u64::MAX - 1, true);
+		assert_eq!(max_height_reward, total_blocks_reward);
+		assert_eq!(calc_mwc_block_overage(0, u64::MAX, true), max_height_reward);
+
+		let max_height_reward_without_genesis = calc_mwc_block_overage(0, u64::MAX - 1, false);
+		assert_eq!(
+			calc_mwc_block_overage(0, u64::MAX, false),
+			max_height_reward_without_genesis
+		);
 	}
 
 	// Brute force test to validate that calc_mwc_block_reward and calc_mwc_block_overage are in sync fo all blocks
@@ -1332,7 +1668,7 @@ mod test {
 		);
 
 		assert_eq!(total_coins, 20000000000000000);
-		assert!(height > get_epoch_block_offset(0, 12) + 99);
+		assert!(height >= get_epoch_block_offset(0, 13) + 99);
 
 		// Test finished with output:
 		//		Current height=884000000, reward=10000000, coins=19970529927788020, progress=99.7%

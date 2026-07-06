@@ -18,24 +18,23 @@
 //! resulting tx pool can be added to the current chain state to produce a
 //! valid chain state.
 
-use self::core::core::hash::{Hash, Hashed};
-use self::core::core::id::ShortId;
-use self::core::core::{
-	transaction, Block, BlockHeader, HeaderVersion, OutputIdentifier, Transaction, Weighting,
-};
-use self::core::global;
 use crate::pool::Pool;
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
-use chrono::prelude::*;
-use lru::LruCache;
-use mwc_core as core;
+use mwc_core::core::hash::{Hash, Hashed};
+use mwc_core::core::id::ShortId;
+use mwc_core::core::{
+	transaction, Block, BlockHeader, HeaderVersion, Inputs, OutputIdentifier, Transaction,
+	Weighting,
+};
+use mwc_core::global;
 use mwc_core::ser;
-use mwc_keychain::base58;
-use mwc_util::secp::Secp256k1;
+use mwc_crates::log::{debug, log_enabled};
+use mwc_crates::log::{warn, Level};
+use mwc_crates::parking_lot::RwLock;
+use mwc_crates::secp::Secp256k1;
 use std::collections::VecDeque;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::RwLock;
+use std::time::Duration;
 
 /// Transaction pool implementation.
 pub struct TransactionPool<B, P>
@@ -55,8 +54,6 @@ where
 	pub blockchain: Arc<B>,
 	/// The pool adapter
 	pub adapter: Arc<P>,
-	///the replay attack cache
-	pub replay_verifier_cache: Arc<RwLock<LruCache<[u8; 32], ()>>>,
 	context_id: u32,
 }
 
@@ -74,9 +71,6 @@ where
 			reorg_cache: Arc::new(RwLock::new(VecDeque::new())),
 			blockchain: chain,
 			adapter,
-			replay_verifier_cache: Arc::new(RwLock::new(LruCache::new(
-				NonZeroUsize::new(1000).unwrap(),
-			))),
 			context_id,
 		}
 	}
@@ -91,14 +85,14 @@ where
 		entry: &PoolEntry,
 		header: &BlockHeader,
 		extra_tx: Option<Transaction>,
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
 		self.stempool
 			.add_to_pool(entry.clone(), extra_tx, header, secp)
 	}
 
 	fn add_to_reorg_cache(&mut self, entry: &PoolEntry) {
-		let mut cache = self.reorg_cache.write().unwrap_or_else(|e| e.into_inner());
+		let mut cache = self.reorg_cache.write();
 		cache.push_back(entry.clone());
 
 		// We cache 30 mins of txs but we have a hard limit to avoid catastrophic failure.
@@ -113,9 +107,9 @@ where
 	// Returns the new deaggregated tx or the original tx if no deaggregation.
 	fn deaggregate_tx(&self, entry: PoolEntry, secp: &Secp256k1) -> Result<PoolEntry, PoolError> {
 		if entry.tx.kernels().len() > 1 {
-			let txs = self.txpool.find_matching_transactions(entry.tx.kernels());
+			let txs = self.txpool.find_matching_transactions(entry.tx.kernels())?;
 			if !txs.is_empty() {
-				let tx = transaction::deaggregate(entry.tx, &txs, secp)?;
+				let tx = transaction::deaggregate(self.context_id, entry.tx, &txs, secp)?;
 				return Ok(PoolEntry::new(tx, TxSource::Deaggregate));
 			}
 		}
@@ -126,7 +120,7 @@ where
 		&mut self,
 		entry: &PoolEntry,
 		header: &BlockHeader,
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
 		self.txpool.add_to_pool(entry.clone(), None, header, secp)?;
 
@@ -164,15 +158,15 @@ where
 		tx: Transaction,
 		stem: bool,
 		header: &BlockHeader,
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
 		// Quick check for duplicate txs.
 		// Our stempool is private and we do not want to reveal anything about the txs contained.
 		// If this is a stem tx and is already present in stempool then fluff by adding to txpool.
 		// Otherwise if already present in txpool return a "duplicate tx" error.
-		if stem && self.stempool.contains_tx(&tx) {
+		if stem && self.stempool.contains_tx(&tx)? {
 			return self.add_to_pool(src, tx, false, header, secp);
-		} else if self.txpool.contains_tx(&tx) {
+		} else if self.txpool.contains_tx(&tx)? {
 			return Err(PoolError::DuplicateTx);
 		}
 
@@ -191,7 +185,7 @@ where
 		// Does this transaction pay the required fees and fit within the pool capacity?
 		let acceptability = self.is_acceptable(tx, stem);
 		let mut evict = false;
-		if !stem && acceptability.as_ref().err() == Some(&PoolError::OverCapacity) {
+		if !stem && matches!(acceptability.as_ref().err(), Some(PoolError::OverCapacity)) {
 			evict = true;
 		} else if acceptability.is_err() {
 			return acceptability;
@@ -205,27 +199,7 @@ where
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
 
-		{
-			let mut replay_cache = self
-				.replay_verifier_cache
-				.write()
-				.unwrap_or_else(|e| e.into_inner());
-			let mut vec = Vec::new();
-			ser::serialize_default(&mut vec, &tx)
-				.map_err(|e| PoolError::Other(format!("Unable to serialize tx, {}", e)))?;
-			// let mut sha2 = Sha256::new();
-			// sha2.input(vec);
-			// let tx_hash = sha2.result();
-			let tx_hash = base58::sha256d_hash(&vec);
-			let mut tx_need_to_verify = false;
-			if !replay_cache.contains(&tx_hash) {
-				tx_need_to_verify = true;
-			}
-			if tx_need_to_verify {
-				self.blockchain.replay_attack_check(tx)?;
-				replay_cache.put(tx_hash, ());
-			}
-		}
+		self.blockchain.replay_attack_check(tx)?;
 
 		// If stem we want to account for the txpool.
 		let extra_tx = if stem {
@@ -247,8 +221,9 @@ where
 			.filter(|x| x.is_coinbase())
 			.cloned()
 			.collect();
-		self.blockchain
-			.verify_coinbase_maturity(&coinbase_inputs.as_slice().into())?;
+		let coinbase_inputs =
+			Inputs::from_output_identifiers(self.context_id, coinbase_inputs.as_slice())?;
+		self.blockchain.verify_coinbase_maturity(&coinbase_inputs)?;
 
 		// Convert the tx to "v2" compatibility with "features and commit" inputs.
 		let ref entry = self.convert_tx_v2(entry, &spent_pool, &spent_utxo, secp)?;
@@ -265,11 +240,14 @@ where
 		// Add tx to txpool.
 		self.add_to_txpool(entry, header, secp)?;
 		self.add_to_reorg_cache(entry);
-		self.adapter.tx_accepted(entry);
+		if let Err(e) = self.adapter.tx_accepted(entry) {
+			// Local acceptance is the contract here; network relay is best-effort.
+			warn!("txpool adapter failed after accepting tx: {}", e);
+		}
 
 		// Transaction passed all the checks but we have to make space for it
 		if evict {
-			self.evict_from_txpool(secp);
+			self.evict_from_txpool(secp)?;
 		}
 
 		Ok(())
@@ -284,21 +262,25 @@ where
 		entry: PoolEntry,
 		spent_pool: &[OutputIdentifier],
 		spent_utxo: &[OutputIdentifier],
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<PoolEntry, PoolError> {
 		let tx = entry.tx;
 		debug!(
 			"convert_tx_v2: {} ({} -> v2)",
-			tx.hash().unwrap_or(Hash::default()),
+			tx.hash(self.context_id)?,
 			tx.inputs().version_str(),
 		);
 
 		let mut inputs = spent_utxo.to_vec();
 		inputs.extend_from_slice(spent_pool);
-		inputs.sort_unstable();
+		ser::sort_by_hash(self.context_id, &mut inputs)
+			.map_err(|e| PoolError::Other(format!("convert_tx_v2 input sorting error, {}", e)))?;
 
 		let tx = Transaction {
-			body: tx.body.replace_inputs(inputs.as_slice().into()),
+			body: tx.body.replace_inputs(
+				self.context_id,
+				Inputs::from_output_identifiers(self.context_id, inputs.as_slice())?,
+			)?,
 			..tx
 		};
 
@@ -311,15 +293,21 @@ where
 	// Evict a transaction from the txpool.
 	// Uses bucket logic to identify the "last" transaction.
 	// No other tx depends on it and it has low fee_rate
-	pub fn evict_from_txpool(&mut self, secp: &Secp256k1) {
+	pub fn evict_from_txpool(&mut self, secp: &mut Secp256k1) -> Result<(), PoolError> {
 		self.txpool.evict_transaction(secp)
 	}
 
 	// Old txs will "age out" after 30 mins.
-	pub fn truncate_reorg_cache(&mut self, cutoff: DateTime<Utc>) {
-		let mut cache = self.reorg_cache.write().unwrap_or_else(|e| e.into_inner());
+	// This is intentionally best-effort cleanup for a bounded reorg cache,
+	// not a correctness boundary. Pruning from the front is enough to keep
+	// normally ordered entries from lingering for a long time.
+	pub fn truncate_reorg_cache(&mut self, max_age: Duration) {
+		let mut cache = self.reorg_cache.write();
 
-		while cache.front().map(|x| x.tx_at < cutoff).unwrap_or(false) {
+		while cache
+			.front()
+			.map_or(false, |entry| entry.tx_at.elapsed() > max_age)
+		{
 			let _tx = cache.pop_front();
 			debug!(
 				"truncate_reorg_cache: for {:?},  new size: {}",
@@ -329,41 +317,123 @@ where
 		}
 	}
 
-	pub fn reconcile_reorg_cache(
-		&mut self,
-		header: &BlockHeader,
-		secp: &Secp256k1,
-	) -> Result<(), PoolError> {
-		let entries = self
-			.reorg_cache
-			.read()
-			.unwrap_or_else(|e| e.into_inner())
-			.iter()
-			.cloned()
-			.collect::<Vec<_>>();
+	pub fn reconcile_reorg_cache(&mut self, header: &BlockHeader, secp: &mut Secp256k1) {
+		let entries = {
+			let cache = self.reorg_cache.read_recursive();
+			cache.iter().cloned().collect::<Vec<_>>()
+		};
 		debug!(
 			"reconcile_reorg_cache: size: {}, block: {:?} ...",
 			entries.len(),
-			header.hash(),
+			header.hash(self.context_id),
 		);
-		for entry in entries {
-			let _ = self.add_to_txpool(&entry, header, secp);
+
+		let mut replayed = 0;
+		let mut duplicates = 0;
+		let mut dropped = 0;
+		let mut retained = VecDeque::new();
+		let mut entries = entries.into_iter();
+		let mut added = false;
+
+		while let Some(entry) = entries.next() {
+			if self.total_size() >= self.config.max_pool_size {
+				retained.push_back(entry);
+				retained.extend(entries);
+				break;
+			}
+
+			// Reorg-cache entries already passed the public txpool admission path
+			// before they were cached. Replay uses the lower-level pool insertion
+			// path so we revalidate the aggregate against the current chain state
+			// without repeating top-level side effects such as deaggregation,
+			// re-caching, or network acceptance callbacks.
+			//
+			// This intentionally does not re-run fee policy or standalone
+			// Weighting::AsTransaction validation here. Those checks are stable for
+			// retained cache entries because accept_fee_base is initialized once per
+			// node context and max transaction weight is derived from fixed chain
+			// constants. The context-sensitive checks that can change across blocks
+			// or reorgs are still re-run by Pool::add_to_pool().
+			match self.txpool.add_to_pool(entry.clone(), None, header, secp) {
+				Ok(()) => {
+					added = true;
+					replayed += 1;
+					retained.push_back(entry);
+				}
+				Err(PoolError::DuplicateTx) => {
+					// The reorg cache mirrors previously accepted txpool entries.
+					// If reconcile_block kept the tx valid and in txpool, replaying
+					// the cached entry is expected to hit the duplicate path.
+					duplicates += 1;
+					debug!("reconcile_reorg_cache: skipping duplicate tx {:?}", entry);
+					retained.push_back(entry);
+				}
+				Err(e) => {
+					// Reorg cache replay is best-effort. Cached txs can become stale
+					// after blocks or reorgs, and it is acceptable to miss a few extra
+					// transactions here instead of keeping failed replay candidates.
+					dropped += 1;
+					debug!(
+						"reconcile_reorg_cache: dropping stale cached tx {:?}: {}",
+						entry, e
+					);
+				}
+			}
 		}
+
+		if added {
+			match self.txpool.all_transactions_aggregate(None, secp) {
+				Ok(txpool_agg) => {
+					if let Err(e) = self.stempool.reconcile(txpool_agg, header, secp) {
+						warn!(
+							"reconcile_reorg_cache failed to reconcile stempool after replay: {}",
+							e
+						);
+						self.clear_pool_state();
+						return;
+					}
+				}
+				Err(e) => {
+					warn!(
+						"reconcile_reorg_cache failed to aggregate txpool after replay: {}",
+						e
+					);
+					self.clear_pool_state();
+					return;
+				}
+			}
+		}
+
+		while retained.len() > self.config.max_pool_size {
+			let _ = retained.pop_front();
+		}
+
+		let retained_len = retained.len();
+		*self.reorg_cache.write() = retained;
+
 		debug!(
-			"reconcile_reorg_cache: block: {:?} ... done.",
-			header.hash()
+			"reconcile_reorg_cache: block: {:?} ... done. replayed: {}, duplicate: {}, dropped: {}, retained: {}",
+			header.hash(self.context_id),
+			replayed,
+			duplicates,
+			dropped,
+			retained_len,
 		);
-		Ok(())
+	}
+
+	fn clear_pool_state(&mut self) {
+		self.txpool.entries.clear();
+		self.stempool.entries.clear();
 	}
 
 	/// Reconcile the transaction pool (both txpool and stempool) against the
 	/// provided block.
-	pub fn reconcile_block(&mut self, block: &Block, secp: &Secp256k1) -> Result<(), PoolError> {
-		if log_enabled!(log::Level::Debug) {
+	pub fn reconcile_block(&mut self, block: &Block, secp: &mut Secp256k1) {
+		if log_enabled!(Level::Debug) {
 			debug!("reconcile_block Started for block {:?}", block);
 
 			debug!("---------------- BEFORE START --------------");
-			let reorg_cache = self.reorg_cache.read().unwrap_or_else(|e| e.into_inner());
+			let reorg_cache = self.reorg_cache.read_recursive();
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -371,44 +441,55 @@ where
 			}
 
 			debug!("txpool size: {}", self.txpool.entries.len());
-			for pe in &self.txpool.entries {
+			for pe in self.txpool.all_entries() {
 				debug!("  txpool tx: {:?}", pe);
 			}
 			debug!("---------------- BEFORE END --------------");
 		}
 
-		// First reconcile the txpool.
-		self.txpool.reconcile_block(block);
-		self.txpool.reconcile(None, &block.header, secp)?;
+		let res: Result<(), PoolError> = (|| {
+			self.txpool.reconcile_block(block)?;
+			self.txpool.reconcile(None, &block.header, secp)?;
 
-		// Now reconcile our stempool, accounting for the updated txpool txs.
-		self.stempool.reconcile_block(block);
-		{
+			self.stempool.reconcile_block(block)?;
 			let txpool_tx = self.txpool.all_transactions_aggregate(None, secp)?;
 			self.stempool.reconcile(txpool_tx, &block.header, secp)?;
+
+			Ok(())
+		})();
+
+		if let Err(e) = res {
+			warn!(
+				"reconcile_block failed, clearing txpool and stempool: {}",
+				e
+			);
+			self.clear_pool_state();
 		}
 
-		if log_enabled!(log::Level::Debug) {
+		if log_enabled!(Level::Debug) {
 			debug!("---------------- AFTER START --------------");
-			let reorg_cache = self.reorg_cache.read().unwrap_or_else(|e| e.into_inner());
+			let reorg_cache = self.reorg_cache.read_recursive();
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
 				debug!("  reorg_cache tx: {:?}", pe);
 			}
 			debug!("txpool size: {}", self.txpool.entries.len());
-			for pe in &self.txpool.entries {
+			for pe in self.txpool.all_entries() {
 				debug!("  txpool tx: {:?}", pe);
 			}
 			debug!("---------------- AFTER END --------------");
 		}
-
-		Ok(())
 	}
 
 	/// Retrieve individual transaction for the given kernel hash.
-	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Option<Transaction> {
-		self.txpool.retrieve_tx_by_kernel_hash(hash)
+	pub fn retrieve_tx_by_kernel_hash(&self, hash: Hash) -> Result<Option<Transaction>, PoolError> {
+		Ok(self.txpool.retrieve_tx_by_kernel_hash(hash))
+	}
+
+	/// Check whether the txpool contains an entry for the given kernel hash.
+	pub fn contains_tx_by_kernel_hash(&self, hash: Hash) -> bool {
+		self.txpool.contains_tx_by_kernel_hash(hash)
 	}
 
 	/// Retrieve all transactions matching the provided "compact block"
@@ -419,29 +500,30 @@ where
 		hash: Hash,
 		nonce: u64,
 		kern_ids: &[ShortId],
-	) -> (Vec<Transaction>, Vec<ShortId>) {
+	) -> Result<(Vec<Transaction>, Vec<ShortId>), PoolError> {
 		self.txpool.retrieve_transactions(hash, nonce, kern_ids)
 	}
 
 	/// Whether the transaction is acceptable to the pool, given both how
 	/// full the pool is and the transaction weight.
 	fn is_acceptable(&self, tx: &Transaction, stem: bool) -> Result<(), PoolError> {
-		if self.total_size() > self.config.max_pool_size {
-			return Err(PoolError::OverCapacity);
-		}
-
-		// Check that the stempool can accept this transaction
-		if stem && self.stempool.size() > self.config.max_stempool_size
-			|| self.total_size() > self.config.max_pool_size
-		{
-			return Err(PoolError::OverCapacity);
-		}
-
 		// weight for a basic transaction (2 inputs, 2 outputs, 1 kernel) -
 		// (2 * 1) + (2 * 21) + (1 * 3) = 47
 		// minfees = 47 * 500_000 = 23_500_000
-		if tx.fee() < tx.accept_fee(self.context_id) {
-			return Err(PoolError::LowFeeTransaction(tx.fee()));
+		let fee = tx.fee()?;
+		let accept_fee = tx.accept_fee(self.context_id)?;
+		if fee < accept_fee {
+			return Err(PoolError::LowFeeTransaction(fee));
+		}
+
+		// Treat equality as full because accepting this tx would insert one more entry.
+		if self.total_size() >= self.config.max_pool_size {
+			return Err(PoolError::OverCapacity);
+		}
+
+		// Check that the stempool can accept this transaction.
+		if stem && self.stempool.size() >= self.config.max_stempool_size {
+			return Err(PoolError::OverCapacity);
 		}
 		Ok(())
 	}
@@ -456,7 +538,7 @@ where
 	/// block from them.
 	pub fn prepare_mineable_transactions(
 		&self,
-		secp: &Secp256k1,
+		secp: &mut Secp256k1,
 	) -> Result<Vec<Transaction>, PoolError> {
 		self.txpool
 			.prepare_mineable_transactions(self.config.mineable_max_weight, secp)

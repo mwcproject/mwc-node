@@ -19,18 +19,23 @@
 
 use crate::consensus;
 use crate::consensus::{
-	graph_weight, HeaderDifficultyInfo, BASE_EDGE_BITS, BLOCK_KERNEL_WEIGHT, BLOCK_OUTPUT_WEIGHT,
-	BLOCK_TIME_SEC, COINBASE_MATURITY, CUT_THROUGH_HORIZON, DAY_HEIGHT, DEFAULT_MIN_EDGE_BITS,
-	DIFFICULTY_ADJUST_WINDOW, INITIAL_DIFFICULTY, MAX_BLOCK_WEIGHT, PROOFSIZE,
-	SECOND_POW_EDGE_BITS, STATE_SYNC_THRESHOLD,
+	graph_weight, Error, HeaderDifficultyInfo, IntoHeaderDifficultyInfo, BASE_EDGE_BITS,
+	BLOCK_KERNEL_WEIGHT, BLOCK_OUTPUT_WEIGHT, COINBASE_MATURITY, CUT_THROUGH_HORIZON, DAY_HEIGHT,
+	DEFAULT_MIN_EDGE_BITS, INITIAL_DIFFICULTY, MAX_BLOCK_WEIGHT, PROOFSIZE, SECOND_POW_EDGE_BITS,
+	STATE_SYNC_THRESHOLD,
 };
 use crate::core::block::Block;
+use crate::difficulty_cache::DifficultyCache;
 use crate::genesis;
 use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
+use mwc_crates::lazy_static::lazy_static;
+use mwc_crates::log::error;
+use mwc_crates::parking_lot::RwLock;
+use mwc_crates::secp::Secp256k1;
+use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
-use std::sync::RwLock;
+use std::collections::HashMap;
 
 /// An enum collecting sets of parameters used throughout the
 /// code wherever mining is needed. This should allow for
@@ -45,7 +50,8 @@ use std::sync::RwLock;
 /// for both the backend database and MMR data files.
 /// NOTE, mwc bump the protocol version to 1000, but in any case so far 1,2,3 are supported.
 /// 3 -> 4 Added extra param (base_fee) for handshake, bumping protocol version for that
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(4);
+/// 4 -> 5 Added onion identity proof to Hand messages
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(5);
 
 /// Automated testing edge_bits
 pub const AUTOMATED_TESTING_MIN_EDGE_BITS: u8 = 10;
@@ -89,17 +95,17 @@ pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC / 1000; // Keeping
 
 /// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
 /// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
-pub const STUCK_PEER_KICK_TIME_SECONDS: i64 = 2 * 3600;
+pub const STUCK_PEER_KICK_TIME_SECONDS: u64 = 2 * 3600;
 
 /// Peers ping interval. It is expected that peers should respond for the ping. Otherwise peer
 /// will be kicked out
-pub const PEER_PING_INTERVAL_SECONDS: i64 = 10;
+pub const PEER_PING_INTERVAL_SECONDS: u64 = 10;
 
 /// If a peer's last seen time is 2 weeks ago we will forget such kind of defunct peers.
-const PEER_EXPIRATION_DAYS: i64 = 7 * 2;
+const PEER_EXPIRATION_DAYS: u64 = 7 * 2;
 
 /// Constant that expresses defunct peer timeout in seconds to be used in checks.
-pub const PEER_EXPIRATION_REMOVE_TIME: i64 = PEER_EXPIRATION_DAYS * 24 * 3600;
+pub const PEER_EXPIRATION_REMOVE_TIME: u64 = PEER_EXPIRATION_DAYS * 24 * 3600;
 
 /// Trigger compaction check on average every day for all nodes.
 /// Randomized per node - roll the dice on every block to decide.
@@ -149,6 +155,7 @@ pub const FLOONET_DNS_SEEDS: &'static [&'static str] = &[
 /// Types of chain a server can run with, dictates the genesis block and
 /// and mining parameters used.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub enum ChainTypes {
 	/// For CI testing
 	AutomatedTesting,
@@ -214,13 +221,10 @@ thread_local! {
 }
 
 /// Release
-pub fn release_context_data(_context_id: u32) {
-	// Chain type we better keep forever in case start and forget thread need to finish something.
-	/*let mut params = GLOBAL_CHAIN_PARAMS
-		.write()
-		.unwrap_or_else(|e| e.into_inner());
+pub fn release_context_data(context_id: u32) {
+	let mut params = GLOBAL_CHAIN_PARAMS.write();
 	let params = &mut *params;
-	let _ = params.remove(&context_id);*/
+	let _ = params.remove(&context_id);
 }
 
 /// Set the chain type on a per-thread basis via thread_local storage.
@@ -232,17 +236,19 @@ pub fn set_local_chain_type(new_type: ChainTypes) {
 pub fn get_chain_type(context_id: u32) -> ChainTypes {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().chain_type {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read().unwrap_or_else(|e| e.into_inner());
+			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.chain_type {
 						Some (chain_type) => return chain_type.clone(),
 						None => {
+							// Note, in case of setup issue we want to panic. It is our best option to handle issue like this.
 							panic!("chain_type is not set for context {}. Consider set_local_chain_type() in tests.", context_id);
 						}
 					}
-				}
+				},
 				None => {
+					// Note, in case of setup issue we want to panic. It is our best option to handle issue like this.
 					panic!("chain_type is not set, context {} is empty. Consider set_local_chain_type() in tests.", context_id);
 				}
 			}
@@ -252,42 +258,58 @@ pub fn get_chain_type(context_id: u32) -> ChainTypes {
 }
 
 /// Return genesis block for the active chain type
-pub fn get_genesis_block(context_id: u32) -> Block {
+pub fn get_genesis_block(secp: &Secp256k1, context_id: u32) -> Result<Block, pow::Error> {
 	match get_chain_type(context_id) {
-		ChainTypes::Mainnet => genesis::genesis_main(context_id),
-		ChainTypes::Floonet => genesis::genesis_floo(context_id),
-		_ => genesis::genesis_dev(context_id),
+		ChainTypes::Mainnet => Ok(genesis::genesis_main(secp, context_id)),
+		ChainTypes::Floonet => Ok(genesis::genesis_floo(secp, context_id)),
+		ChainTypes::AutomatedTesting | ChainTypes::UserTesting => {
+			pow::mine_genesis_block(context_id)
+		}
 	}
 }
 
 /// One time initialization of the global chain_type.
 /// Will panic if we attempt to re-initialize this (via OneTime).
-pub fn init_global_chain_type(context_id: u32, new_type: ChainTypes) {
-	let mut params = GLOBAL_CHAIN_PARAMS
-		.write()
-		.unwrap_or_else(|e| e.into_inner());
+pub fn init_global_chain_type(context_id: u32, new_type: ChainTypes) -> Result<(), Error> {
+	let mut params = GLOBAL_CHAIN_PARAMS.write();
 	let params = &mut *params;
 	let params = params
 		.entry(context_id)
 		.or_insert_with(|| ChainGlobalParams::new());
-	// It is not allowed to change the chain type on the fly. For a single instance it must be a contant
-	assert!(params.chain_type.is_none());
+	// It is not allowed to change the chain type on the fly. For a single instance it must be a constant
+	if params.chain_type.is_some() {
+		error!(
+			"chain_type is already initialized for context {}",
+			context_id
+		);
+		return Err(Error::AlreadyInitialized(
+			"init_global_chain_type".to_string(),
+		));
+	}
 	params.chain_type = Some(new_type);
+	Ok(())
 }
 
 /// One time initialization of the global chain_type.
 /// Will panic if we attempt to re-initialize this (via OneTime).
-pub fn init_global_nrd_enabled(context_id: u32, enabled: bool) {
-	let mut params = GLOBAL_CHAIN_PARAMS
-		.write()
-		.unwrap_or_else(|e| e.into_inner());
+pub fn init_global_nrd_enabled(context_id: u32, enabled: bool) -> Result<(), Error> {
+	let mut params = GLOBAL_CHAIN_PARAMS.write();
 	let params = &mut *params;
 	let params = params
 		.entry(context_id)
 		.or_insert_with(|| ChainGlobalParams::new());
 	// It is not allowed to change the chain type on the fly. For a single instance it must be a contant
-	assert!(params.nrd_feature_enabled.is_none());
+	if params.nrd_feature_enabled.is_some() {
+		error!(
+			"nrd_feature_enabled is already initialized for context {}",
+			context_id
+		);
+		return Err(Error::AlreadyInitialized(
+			"init_global_nrd_enabled".to_string(),
+		));
+	}
 	params.nrd_feature_enabled = Some(enabled);
+	Ok(())
 }
 
 /// Explicitly enable the NRD global feature flag.
@@ -302,17 +324,19 @@ pub fn set_local_nrd_enabled(enabled: bool) {
 pub fn is_nrd_enabled(context_id: u32) -> bool {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().nrd_feature_enabled {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read().unwrap_or_else(|e| e.into_inner());
+			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.nrd_feature_enabled {
 						Some (nrd_feature_enabled) => return nrd_feature_enabled.clone(),
 						None => {
+							// Note, in case of setup issue we want to panic. It is our best option to handle issue like this.
 							panic!("nrd_feature_enabled is not set for context {}. Consider set_local_nrd_enabled() in tests.", context_id);
 						}
 					}
-				}
+				},
 				None => {
+					// Note, in case of setup issue we want to panic. It is our best option to handle issue like this.
 					panic!("nrd_feature_enabled is not set, context {} is empty. Consider set_local_nrd_enabled() in tests.", context_id);
 				}
 			}
@@ -323,23 +347,38 @@ pub fn is_nrd_enabled(context_id: u32) -> bool {
 
 /// One time initialization of the global accept fee base
 /// Will panic if we attempt to re-initialize this (via OneTime).
-pub fn init_global_accept_fee_base(context_id: u32, new_base: u64) {
-	let mut params = GLOBAL_CHAIN_PARAMS
-		.write()
-		.unwrap_or_else(|e| e.into_inner());
+pub fn init_global_accept_fee_base(context_id: u32, new_base: u64) -> Result<(), Error> {
+	if new_base == 0 {
+		return Err(Error::InvalidParameter("zero fee base".into()));
+	}
+
+	let mut params = GLOBAL_CHAIN_PARAMS.write();
 	let params = &mut *params;
 	let params = params
 		.entry(context_id)
 		.or_insert_with(|| ChainGlobalParams::new());
 	// It is not allowed to change the chain type on the fly. For a single instance it must be a contant
-	assert!(params.accept_fee_base.is_none());
+	if params.accept_fee_base.is_some() {
+		error!(
+			"accept_fee_base is already initialized for context {}",
+			context_id
+		);
+		return Err(Error::AlreadyInitialized(
+			"init_global_accept_fee_base".to_string(),
+		));
+	}
 	params.accept_fee_base = Some(new_base);
+	Ok(())
 }
 
 /// Set the accept fee base on a per-thread basis via thread_local storage.
-pub fn set_local_accept_fee_base(new_base: u64) {
+pub fn set_local_accept_fee_base(new_base: u64) -> Result<(), Error> {
+	if new_base == 0 {
+		return Err(Error::InvalidParameter("zero fee base".into()));
+	}
 	LOCAL_CHAIN_PARAMS
 		.with(|chain_params| chain_params.borrow_mut().accept_fee_base = Some(new_base));
+	Ok(())
 }
 
 /// Accept Fee Base
@@ -348,17 +387,19 @@ pub fn set_local_accept_fee_base(new_base: u64) {
 pub fn get_accept_fee_base(context_id: u32) -> u64 {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().accept_fee_base {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read().unwrap_or_else(|e| e.into_inner());
+			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.accept_fee_base {
 						Some (accept_fee_base) => return accept_fee_base.clone(),
 						None => {
+							// Note, in case of setup issue we want to panic. It is our best option to handle issue like this.
 							panic!("accept_fee_base is not set for context {}. Consider set_local_accept_fee_base() in tests.", context_id);
 						}
 					}
-				}
+				},
 				None => {
+					// Note, in case of setup issue we want to panic. It is our best option to handle issue like this.
 					panic!("accept_fee_base is not set, context {} is empty. Consider set_local_accept_fee_base() in tests.", context_id);
 				}
 			}
@@ -448,8 +489,10 @@ pub fn initial_graph_weight(context_id: u32) -> u32 {
 	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_INITIAL_GRAPH_WEIGHT,
 		ChainTypes::UserTesting => TESTING_INITIAL_GRAPH_WEIGHT,
-		ChainTypes::Floonet => graph_weight(context_id, 0, SECOND_POW_EDGE_BITS) as u32,
-		ChainTypes::Mainnet => graph_weight(context_id, 0, SECOND_POW_EDGE_BITS) as u32,
+		// graph_weight as u32 is safe because all inputs are constants
+		// Unwrap is safe here because SECOND_POW_EDGE_BITS is a constant that mmet all requirements
+		ChainTypes::Floonet => graph_weight(context_id, 0, SECOND_POW_EDGE_BITS).unwrap() as u32,
+		ChainTypes::Mainnet => graph_weight(context_id, 0, SECOND_POW_EDGE_BITS).unwrap() as u32,
 	}
 }
 
@@ -465,8 +508,11 @@ pub fn max_block_weight(context_id: u32) -> u64 {
 
 /// Maximum allowed transaction weight (1 weight unit ~= 32 bytes)
 pub fn max_tx_weight(context_id: u32) -> u64 {
+	// Safe: both weights are small fixed consensus constants.
 	let coinbase_weight = BLOCK_OUTPUT_WEIGHT + BLOCK_KERNEL_WEIGHT;
-	max_block_weight(context_id).saturating_sub(coinbase_weight) as u64
+	// Safe: all chain configurations set MAX_BLOCK_WEIGHT above the fixed
+	// coinbase output+kernel weight.
+	max_block_weight(context_id) - coinbase_weight
 }
 
 /// Horizon at which we can cut-through and do full local pruning
@@ -525,15 +571,6 @@ pub fn is_mainnet(context_id: u32) -> bool {
 	}
 }
 
-/// Tor port for libp2p network
-pub fn get_tor_libp2p_port(context_id: u32) -> u16 {
-	if is_mainnet(context_id) {
-		81
-	} else {
-		82
-	}
-}
-
 /// Get a network name
 pub fn get_network_name(context_id: u32) -> String {
 	let name = match get_chain_type(context_id) {
@@ -545,119 +582,22 @@ pub fn get_network_name(context_id: u32) -> String {
 	name.to_string()
 }
 
-/// Converts an iterator of block difficulty data to more a more manageable
-/// vector and pads if needed (which will) only be needed for the first few
-/// blocks after genesis
-/// cache_values is needed becuase during headers sync process, this step taking almost 50% of time (cpmparable to header POW verification time)
+/// Converts an iterator of block difficulty data to a more manageable vector
+/// and pads if needed, which is only needed for the first few blocks after
+/// genesis.
+/// cache_values is needed because during header sync this step is comparable
+/// to header PoW verification time.
+#[inline]
 pub fn difficulty_data_to_vector<T>(
 	context_id: u32,
 	cursor: T,
-	cache_values: &mut VecDeque<HeaderDifficultyInfo>,
-) -> Vec<HeaderDifficultyInfo>
+	cache_values: &mut DifficultyCache,
+) -> Result<Vec<HeaderDifficultyInfo>, consensus::Error>
 where
-	T: IntoIterator<Item = HeaderDifficultyInfo>,
+	T: IntoIterator,
+	T::Item: IntoHeaderDifficultyInfo,
 {
-	// Convert iterator to vector, so we can append to it if necessary
-	let needed_block_count = DIFFICULTY_ADJUST_WINDOW as usize + 1;
-
-	// In debug mode we want to validate the cache. It is expected that last_n are exactly the same with and without a cache
-	#[cfg(debug_assertions)]
-	let test_last_n: Vec<HeaderDifficultyInfo> = cursor.into_iter().take(needed_block_count).collect();
-	#[cfg(debug_assertions)]
-	let cursor = test_last_n.clone().into_iter();
-
-	let mut last_n: Vec<HeaderDifficultyInfo> = Vec::with_capacity(needed_block_count);
-
-	let mut iter = cursor.into_iter();
-	while let Some(item) = iter.next() {
-		if !cache_values.is_empty() {
-			let cache_tail = cache_values.front().unwrap();
-			let cache_head = cache_values.back().unwrap();
-
-			if item.height
-				>= cache_tail.height + (needed_block_count - 1) as u64 - last_n.len() as u64
-				&& item.height <= cache_head.height
-			{
-				let item_idx = (item.height - cache_tail.height) as usize;
-				debug_assert!(cache_values[item_idx].height == item.height);
-				if cache_values[item_idx].hash == item.hash {
-					let base_idx = item_idx + last_n.len();
-					// cash hit, can finish the query
-					while let Some(h) = last_n.pop() {
-						debug_assert!(cache_values.back().unwrap().height + 1 == h.height);
-						cache_values.push_back(h);
-					}
-					debug_assert!(last_n.is_empty());
-					for i in 0..needed_block_count {
-						last_n.push(cache_values[base_idx - i].clone());
-					}
-					// done with cursor, last_n is full
-					break;
-				} else {
-					// cache is invalid, probably there are branches
-					cache_values.clear();
-				}
-			}
-		}
-		last_n.push(item);
-		if last_n.len() == needed_block_count && needed_block_count > 2 {
-			// cache is absolete, lets init it, but hirst we want to invalidate the data
-			// In test cases there are cases that we can't cache well
-			let mut last_n_valid = true;
-
-			for i in 1..last_n.len() {
-				let h1 = &last_n[i - 1];
-				let h2 = &last_n[i];
-				if h1.height <= h2.height
-					|| h1.hash.is_none()
-					|| h1.difficulty <= h2.difficulty
-					|| h1.timestamp <= h2.timestamp
-				{
-					last_n_valid = false;
-					break;
-				}
-			}
-
-			cache_values.clear();
-			if last_n_valid {
-				cache_values.extend(last_n.iter().rev().cloned());
-			}
-			break;
-		}
-	}
-
-	if cache_values.len() > needed_block_count * 10 {
-		cache_values.drain(0..(cache_values.len() - needed_block_count * 7));
-	}
-
-	#[cfg(debug_assertions)]
-	{
-		assert!(test_last_n == last_n);
-	}
-
-	// Only needed just after blockchain launch... basically ensures there's
-	// always enough data by simulating perfectly timed pre-genesis
-	// blocks at the genesis difficulty as needed.
-	let n = last_n.len();
-	if needed_block_count > n {
-		let last_ts_delta = if n > 1 {
-			last_n[0].timestamp - last_n[1].timestamp
-		} else {
-			BLOCK_TIME_SEC
-		};
-		let last_diff = last_n[0].difficulty;
-
-		// fill in simulated blocks with values from the previous real block
-		let mut last_ts = last_n.last().unwrap().timestamp;
-		for _ in n..needed_block_count {
-			last_ts = last_ts.saturating_sub(last_ts_delta);
-			last_n.push(HeaderDifficultyInfo::from_ts_diff(
-				context_id, last_ts, last_diff,
-			));
-		}
-	}
-	last_n.reverse();
-	last_n
+	crate::difficulty_cache::difficulty_data_to_vector(context_id, cursor, cache_values)
 }
 
 /// Calculates the size of a header (in bytes) given a number of edge bits in the PoW
@@ -673,12 +613,11 @@ mod test {
 	use super::*;
 	use crate::core::Block;
 	use crate::genesis::*;
-	use crate::pow::mine_genesis_block;
 	use crate::ser::{BinWriter, Writeable};
 
 	fn test_header_len(genesis: Block) {
 		let mut raw = Vec::<u8>::with_capacity(1_024);
-		let mut writer = BinWriter::new(&mut raw, ProtocolVersion::local());
+		let mut writer = BinWriter::new(&mut raw, ProtocolVersion::local(), 0);
 		genesis.header.write(&mut writer).unwrap();
 		assert_eq!(
 			raw.len(),
@@ -689,24 +628,28 @@ mod test {
 	#[test]
 	fn automated_testing_header_len() {
 		set_local_chain_type(ChainTypes::AutomatedTesting);
-		test_header_len(mine_genesis_block(0).unwrap());
+		let secp = Secp256k1::without_caps().unwrap();
+		test_header_len(get_genesis_block(&secp, 0).unwrap());
 	}
 
 	#[test]
 	fn user_testing_header_len() {
 		set_local_chain_type(ChainTypes::UserTesting);
-		test_header_len(mine_genesis_block(0).unwrap());
+		let secp = Secp256k1::without_caps().unwrap();
+		test_header_len(get_genesis_block(&secp, 0).unwrap());
 	}
 
 	#[test]
 	fn floonet_header_len() {
 		set_local_chain_type(ChainTypes::Floonet);
-		test_header_len(genesis_floo(0));
+		let secp = Secp256k1::without_caps().unwrap();
+		test_header_len(genesis_floo(&secp, 0));
 	}
 
 	#[test]
 	fn mainnet_header_len() {
 		set_local_chain_type(ChainTypes::Mainnet);
-		test_header_len(genesis_main(0));
+		let secp = Secp256k1::without_caps().unwrap();
+		test_header_len(genesis_main(&secp, 0));
 	}
 }

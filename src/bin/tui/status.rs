@@ -15,22 +15,31 @@
 
 //! Basic status view definition
 
-use cursive::direction::Orientation;
-use cursive::traits::Nameable;
-use cursive::view::View;
-use cursive::views::{LinearLayout, ResizedView, TextView};
-use cursive::Cursive;
+use mwc_crates::cursive::direction::Orientation;
+use mwc_crates::cursive::traits::Nameable;
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::views::{LinearLayout, ResizedView, TextView};
+use mwc_crates::cursive::Cursive;
 use std::borrow::Cow;
 
+use super::call_on_name_or_log;
 use crate::tui::constants::VIEW_BASIC_STATUS;
 use crate::tui::types::TUIStatusListener;
 
-use crate::chain::SyncStatus;
-use crate::servers::ServerStats;
+use mwc_chain::SyncStatus;
+use mwc_servers::ServerStats;
 
 pub struct TUIStatusView;
 
 impl TUIStatusView {
+	fn percent(numerator: u64, denominator: u64) -> u128 {
+		if denominator == 0 {
+			0
+		} else {
+			u128::from(numerator) * 100 / u128::from(denominator)
+		}
+	}
+
 	pub fn update_sync_status(sync_status: SyncStatus) -> Cow<'static, str> {
 		match sync_status {
 			SyncStatus::Initial => Cow::Borrowed("Initializing"),
@@ -41,19 +50,15 @@ impl TUIStatusView {
 				// total number of leaves required by archive header
 				total_blocks,
 			} => Cow::Owned(format!(
-				"Sync step 1/7: Downloading headers hashes - {}/{}",
+				"Sync step 1/10: Downloading headers hashes - {}/{}",
 				completed_blocks, total_blocks
 			)),
 			SyncStatus::HeaderSync {
 				current_height,
 				archive_height,
 			} => {
-				let percent = if archive_height == 0 {
-					0
-				} else {
-					current_height * 100 / archive_height
-				};
-				Cow::Owned(format!("Sync step 1/7: Downloading headers: {}%", percent))
+				let percent = Self::percent(current_height, archive_height);
+				Cow::Owned(format!("Sync step 1/10: Downloading headers: {}%", percent))
 			}
 			SyncStatus::TxHashsetPibd {
 				recieved_segments,
@@ -61,62 +66,71 @@ impl TUIStatusView {
 			} => {
 				if recieved_segments == 0 && total_segments == 100 {
 					Cow::Owned(
-						"Sync step 2/7: Selecting peers, waiting for PIBD root hash".to_string(),
+						"Sync step 2/10: Selecting peers, waiting for PIBD root hash".to_string(),
 					)
 				} else {
-					let percent = if total_segments == 0 {
-						0
-					} else {
-						recieved_segments * 100 / total_segments
-					};
+					let percent = Self::percent(recieved_segments as u64, total_segments as u64);
 					Cow::Owned(format!(
-						"Sync step 2/7: Downloading Tx state (PIBD) - {} / {} segments - {}%",
+						"Sync step 2/10: Downloading Tx state (PIBD) - {} / {} segments - {}%",
 						recieved_segments, total_segments, percent
 					))
 				}
 			}
-			SyncStatus::ValidatingKernelsHistory => {
-				Cow::Owned("Sync step 3/7: Validating kernels history".to_string())
-			}
-			SyncStatus::TxHashsetHeadersValidation {
+			SyncStatus::ValidatingKernelsHistory {
 				headers,
 				headers_total,
 			} => {
-				let percent = if headers_total == 0 {
-					0
-				} else {
-					headers * 100 / headers_total
-				};
+				let percent = Self::percent(headers, headers_total);
 				Cow::Owned(format!(
-					"Sync step 3/7: Validating headers - {} / {} segments - {}%",
-					headers, headers_total, percent
+					"Sync step 3/10: Validating kernels history - {}%",
+					percent
 				))
 			}
 			SyncStatus::TxHashsetKernelsPosValidation {
 				kernel_pos,
 				kernel_pos_total,
 			} => {
-				let percent = if kernel_pos_total == 0 {
-					0
-				} else {
-					kernel_pos * 100 / kernel_pos_total
-				};
+				let percent = Self::percent(kernel_pos, kernel_pos_total);
 				Cow::Owned(format!(
-					"Sync step 4/7: Validation kernel position - {}/{} - {}%",
-					kernel_pos, kernel_pos_total, percent
+					"Sync step 4/10: Validation kernel position - {}%",
+					percent
 				))
 			}
+			SyncStatus::TxHashsetOutputPosIndexBuild {
+				outputs,
+				outputs_total,
+			} => {
+				let percent = Self::percent(outputs, outputs_total);
+				Cow::Owned(format!(
+					"Sync step 8/10: Building output position index - {}%",
+					percent
+				))
+			}
+			SyncStatus::TxHashsetKernelPosIndexBuild {
+				kernels,
+				kernels_total,
+			} => {
+				let percent = Self::percent(kernels, kernels_total);
+				Cow::Owned(format!(
+					"Sync step 9/10: Building kernel position index - {}%",
+					percent
+				))
+			}
+			SyncStatus::TxHashsetStateValidation {
+				stage,
+				current: _,
+				total: _,
+			} => Cow::Owned(format!(
+				"Sync step 5/10: Validating chain state - {}",
+				stage.display_name(),
+			)),
 			SyncStatus::TxHashsetRangeProofsValidation {
 				rproofs,
 				rproofs_total,
 			} => {
-				let r_percent = if rproofs_total > 0 {
-					(rproofs * 100) / rproofs_total
-				} else {
-					0
-				};
+				let r_percent = Self::percent(rproofs, rproofs_total);
 				Cow::Owned(format!(
-					"Sync step 5/7: Validating chain state - range proofs: {}%",
+					"Sync step 6/10: Validating chain state - range proofs: {}%",
 					r_percent
 				))
 			}
@@ -124,13 +138,9 @@ impl TUIStatusView {
 				kernels,
 				kernels_total,
 			} => {
-				let k_percent = if kernels_total > 0 {
-					(kernels * 100) / kernels_total
-				} else {
-					0
-				};
+				let k_percent = Self::percent(kernels, kernels_total);
 				Cow::Owned(format!(
-					"Sync step 6/7: Validating chain state - kernels: {}%",
+					"Sync step 7/10: Validating chain state - kernels: {}%",
 					k_percent
 				))
 			}
@@ -139,13 +149,11 @@ impl TUIStatusView {
 				current_height,
 				highest_height,
 			} => {
-				let percent = if highest_height.saturating_sub(archive_height) == 0 {
-					0
-				} else {
-					current_height.saturating_sub(archive_height) * 100
-						/ highest_height.saturating_sub(archive_height)
-				};
-				Cow::Owned(format!("Sync step 7/7: Downloading blocks: {}%", percent))
+				let percent = Self::percent(
+					current_height.saturating_sub(archive_height),
+					highest_height.saturating_sub(archive_height),
+				);
+				Cow::Owned(format!("Sync step 10/10: Downloading blocks: {}%", percent))
 			}
 			SyncStatus::Shutdown => Cow::Borrowed("Shutting down, closing connections"),
 		}
@@ -267,52 +275,87 @@ impl TUIStatusListener for TUIStatusView {
 	fn update(c: &mut Cursive, stats: &ServerStats) {
 		let basic_status = TUIStatusView::update_sync_status(stats.sync_status);
 
-		c.call_on_name("basic_current_status", |t: &mut TextView| {
-			t.set_content(basic_status);
-		});
-		c.call_on_name("connected_peers", |t: &mut TextView| {
+		call_on_name_or_log(
+			c,
+			"basic status",
+			"basic_current_status",
+			|t: &mut TextView| {
+				t.set_content(basic_status);
+			},
+		);
+		call_on_name_or_log(c, "basic status", "connected_peers", |t: &mut TextView| {
 			t.set_content(stats.peer_count.to_string());
 		});
-		c.call_on_name("disk_usage", |t: &mut TextView| {
+		call_on_name_or_log(c, "basic status", "disk_usage", |t: &mut TextView| {
 			t.set_content(stats.disk_usage_gb.clone());
 		});
-		c.call_on_name("tip_hash", |t: &mut TextView| {
+		call_on_name_or_log(c, "basic status", "tip_hash", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.last_block_h.to_string() + "...");
 		});
-		c.call_on_name("chain_height", |t: &mut TextView| {
+		call_on_name_or_log(c, "basic status", "chain_height", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.height.to_string());
 		});
-		c.call_on_name("basic_total_difficulty", |t: &mut TextView| {
-			t.set_content(stats.chain_stats.total_difficulty.to_string());
-		});
-		c.call_on_name("chain_timestamp", |t: &mut TextView| {
+		call_on_name_or_log(
+			c,
+			"basic status",
+			"basic_total_difficulty",
+			|t: &mut TextView| {
+				t.set_content(stats.chain_stats.total_difficulty.to_string());
+			},
+		);
+		call_on_name_or_log(c, "basic status", "chain_timestamp", |t: &mut TextView| {
 			t.set_content(stats.chain_stats.latest_timestamp.to_string());
 		});
-		c.call_on_name("basic_header_tip_hash", |t: &mut TextView| {
-			t.set_content(stats.header_stats.last_block_h.to_string() + "...");
-		});
-		c.call_on_name("basic_header_chain_height", |t: &mut TextView| {
-			t.set_content(stats.header_stats.height.to_string());
-		});
-		c.call_on_name("basic_header_total_difficulty", |t: &mut TextView| {
-			t.set_content(stats.header_stats.total_difficulty.to_string());
-		});
-		c.call_on_name("basic_header_timestamp", |t: &mut TextView| {
-			t.set_content(stats.header_stats.latest_timestamp.to_string());
-		});
+		call_on_name_or_log(
+			c,
+			"basic status",
+			"basic_header_tip_hash",
+			|t: &mut TextView| {
+				t.set_content(stats.header_stats.last_block_h.to_string() + "...");
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"basic status",
+			"basic_header_chain_height",
+			|t: &mut TextView| {
+				t.set_content(stats.header_stats.height.to_string());
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"basic status",
+			"basic_header_total_difficulty",
+			|t: &mut TextView| {
+				t.set_content(stats.header_stats.total_difficulty.to_string());
+			},
+		);
+		call_on_name_or_log(
+			c,
+			"basic status",
+			"basic_header_timestamp",
+			|t: &mut TextView| {
+				t.set_content(stats.header_stats.latest_timestamp.to_string());
+			},
+		);
 		if let Some(tx_stats) = &stats.tx_stats {
-			c.call_on_name("tx_pool_size", |t: &mut TextView| {
+			call_on_name_or_log(c, "basic status", "tx_pool_size", |t: &mut TextView| {
 				t.set_content(tx_stats.tx_pool_size.to_string());
 			});
-			c.call_on_name("stem_pool_size", |t: &mut TextView| {
+			call_on_name_or_log(c, "basic status", "stem_pool_size", |t: &mut TextView| {
 				t.set_content(tx_stats.stem_pool_size.to_string());
 			});
-			c.call_on_name("tx_pool_kernels", |t: &mut TextView| {
+			call_on_name_or_log(c, "basic status", "tx_pool_kernels", |t: &mut TextView| {
 				t.set_content(tx_stats.tx_pool_kernels.to_string());
 			});
-			c.call_on_name("stem_pool_kernels", |t: &mut TextView| {
-				t.set_content(tx_stats.stem_pool_kernels.to_string());
-			});
+			call_on_name_or_log(
+				c,
+				"basic status",
+				"stem_pool_kernels",
+				|t: &mut TextView| {
+					t.set_content(tx_stats.stem_pool_kernels.to_string());
+				},
+			);
 		}
 	}
 }
@@ -335,4 +378,121 @@ fn test_status_txhashset_rproofs() {
 	};
 	let basic_status = TUIStatusView::update_sync_status(status);
 	assert!(basic_status.contains("64%"), "{}", basic_status);
+}
+
+#[test]
+fn test_status_validating_kernels_history_has_sync_step() {
+	let basic_status = TUIStatusView::update_sync_status(SyncStatus::ValidatingKernelsHistory {
+		headers: 250,
+		headers_total: 1000,
+	});
+	assert!(
+		basic_status.contains("Sync step 3/10: Validating kernels history"),
+		"{}",
+		basic_status
+	);
+	assert!(basic_status.contains("25%"), "{}", basic_status);
+}
+
+#[test]
+fn test_status_txhashset_output_pos_index_build_has_sync_step() {
+	let basic_status =
+		TUIStatusView::update_sync_status(SyncStatus::TxHashsetOutputPosIndexBuild {
+			outputs: 40,
+			outputs_total: 100,
+		});
+	assert!(
+		basic_status.contains("Sync step 8/10: Building output position index"),
+		"{}",
+		basic_status
+	);
+	assert!(basic_status.contains("40%"), "{}", basic_status);
+}
+
+#[test]
+fn test_status_txhashset_kernel_pos_index_build_has_sync_step() {
+	let basic_status =
+		TUIStatusView::update_sync_status(SyncStatus::TxHashsetKernelPosIndexBuild {
+			kernels: 50,
+			kernels_total: 100,
+		});
+	assert!(
+		basic_status.contains("Sync step 9/10: Building kernel position index"),
+		"{}",
+		basic_status
+	);
+	assert!(basic_status.contains("50%"), "{}", basic_status);
+}
+
+#[test]
+fn test_status_txhashset_state_validation_has_sync_step() {
+	let basic_status = TUIStatusView::update_sync_status(SyncStatus::TxHashsetStateValidation {
+		stage: mwc_chain::TxHashsetStateValidationStage::ValidateKernelSums,
+		current: 3,
+		total: 4,
+	});
+	assert!(
+		basic_status.contains("Sync step 5/10: Validating chain state"),
+		"{}",
+		basic_status
+	);
+	assert!(basic_status.contains("kernel sums"), "{}", basic_status);
+}
+
+#[test]
+fn test_status_txhashset_state_validation_displays_running_step_from_one() {
+	let basic_status = TUIStatusView::update_sync_status(SyncStatus::TxHashsetStateValidation {
+		stage: mwc_chain::TxHashsetStateValidationStage::ValidateMmrs,
+		current: 0,
+		total: 4,
+	});
+	assert!(basic_status.contains("MMR validation"), "{}", basic_status);
+}
+
+#[test]
+fn test_status_percent_uses_u128_arithmetic() {
+	let statuses = [
+		SyncStatus::HeaderSync {
+			current_height: u64::MAX,
+			archive_height: u64::MAX,
+		},
+		SyncStatus::TxHashsetPibd {
+			recieved_segments: usize::MAX,
+			total_segments: usize::MAX,
+		},
+		SyncStatus::ValidatingKernelsHistory {
+			headers: u64::MAX,
+			headers_total: u64::MAX,
+		},
+		SyncStatus::TxHashsetKernelsPosValidation {
+			kernel_pos: u64::MAX,
+			kernel_pos_total: u64::MAX,
+		},
+		SyncStatus::TxHashsetOutputPosIndexBuild {
+			outputs: u64::MAX,
+			outputs_total: u64::MAX,
+		},
+		SyncStatus::TxHashsetKernelPosIndexBuild {
+			kernels: u64::MAX,
+			kernels_total: u64::MAX,
+		},
+		SyncStatus::TxHashsetRangeProofsValidation {
+			rproofs: u64::MAX,
+			rproofs_total: u64::MAX,
+		},
+		SyncStatus::TxHashsetKernelsValidation {
+			kernels: u64::MAX,
+			kernels_total: u64::MAX,
+		},
+		SyncStatus::BodySync {
+			archive_height: 0,
+			current_height: u64::MAX,
+			highest_height: u64::MAX,
+		},
+	];
+
+	for status in statuses {
+		let basic_status = TUIStatusView::update_sync_status(status);
+		assert!(basic_status.contains("100%"), "{}", basic_status);
+	}
 }

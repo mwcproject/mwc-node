@@ -15,10 +15,12 @@
 
 //! Lightweight readonly view into kernel MMR for convenience.
 
-use crate::core::core::pmmr::{ReadablePMMR, ReadonlyPMMR, RewindablePMMR};
-use crate::core::core::{BlockHeader, TxKernel};
 use crate::error::Error;
+use mwc_core::core::pmmr::{ReadablePMMR, ReadonlyPMMR, RewindablePMMR};
+use mwc_core::core::{BlockHeader, TxKernel};
 use mwc_store::pmmr::PMMRBackend;
+
+use super::ensure_complete_pmmr_size;
 
 /// Rewindable (but readonly) view of the kernel set (based on kernel MMR).
 pub struct RewindableKernelView<'a> {
@@ -39,9 +41,10 @@ impl<'a> RewindableKernelView<'a> {
 	/// We accomplish this in a readonly way because we can rewind the PMMR
 	/// via last_pos, without rewinding the underlying backend files.
 	pub fn rewind(&mut self, header: &BlockHeader) -> Result<(), Error> {
+		ensure_complete_pmmr_size(header.kernel_mmr_size)?;
 		self.pmmr
 			.rewind(header.kernel_mmr_size)
-			.map_err(|e| Error::TxHashSetErr(e))?;
+			.map_err(|e| Error::TxHashSetErr(e.to_string()))?;
 
 		// Update our header to reflect the one we rewound to.
 		self.header = header.clone();
@@ -55,10 +58,7 @@ impl<'a> RewindableKernelView<'a> {
 	/// fast sync where a reorg past the horizon could allow a whole rewrite of
 	/// the kernel set.
 	pub fn validate_root(&self) -> Result<(), Error> {
-		let root = self
-			.readonly_pmmr()
-			.root()
-			.map_err(|e| Error::InvalidRoot(e))?;
+		let root = self.readonly_pmmr().root()?;
 		if root != self.header.kernel_root {
 			return Err(Error::InvalidTxHashSet(format!(
 				"Kernel root at {} does not match",

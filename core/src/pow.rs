@@ -54,7 +54,7 @@ pub use crate::pow::cuckaroom::{new_cuckaroom_ctx, CuckaroomContext};
 pub use crate::pow::cuckarooz::{new_cuckarooz_ctx, CuckaroozContext};
 pub use crate::pow::cuckatoo::{new_cuckatoo_ctx, CuckatooContext};
 pub use crate::pow::error::Error;
-use chrono::prelude::DateTime;
+use mwc_crates::chrono::prelude::DateTime;
 
 const MAX_SOLS: u32 = 10;
 
@@ -78,7 +78,7 @@ pub fn verify_size(context_id: u32, bh: &BlockHeader) -> Result<(), Error> {
 }
 
 /// Mines a genesis block using the internal miner
-pub fn mine_genesis_block(context_id: u32) -> Result<Block, Error> {
+pub(crate) fn mine_genesis_block(context_id: u32) -> Result<Block, Error> {
 	let mut gen = genesis::genesis_dev(context_id);
 
 	// total_difficulty on the genesis header *is* the difficulty of that block
@@ -121,20 +121,28 @@ pub fn pow_size(
 			None,
 			true,
 		)?;
-		if let Ok(proofs) = ctx.find_cycles() {
-			bh.pow.proof = proofs[0].clone();
-			if bh.pow.to_difficulty(context_id, bh.height)? >= diff {
-				return Ok(());
+		match ctx.find_cycles() {
+			Ok(proofs) => {
+				if let Some(proof) = proofs.first() {
+					bh.pow.proof = proof.clone();
+					if bh.pow.to_difficulty(context_id, bh.height)? >= diff {
+						return Ok(());
+					}
+				}
 			}
+			Err(Error::NoSolution) => {}
+			Err(e) => return Err(e),
 		}
 
-		// otherwise increment the nonce
+		// Otherwise increment the nonce. The overflow flag is ignored intentionally:
+		// mining should try every u64 nonce, wrapping from u64::MAX back to 0.
 		let (res, _) = bh.pow.nonce.overflowing_add(1);
 		bh.pow.nonce = res;
 
 		// and if we're back where we started, update the time (changes the hash as
 		// well)
 		if bh.pow.nonce == start_nonce {
+			// Unwrap is safe because time build from contants
 			bh.timestamp = DateTime::from_timestamp(0, 0).unwrap().to_utc();
 		}
 	}

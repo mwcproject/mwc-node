@@ -13,18 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cursive::theme::{BaseColor, Color, ColorStyle};
-use cursive::traits::Nameable;
-use cursive::view::View;
-use cursive::views::ResizedView;
-use cursive::{Cursive, Printer};
+use mwc_crates::cursive::theme::{BaseColor, Color, ColorStyle};
+use mwc_crates::cursive::traits::Nameable;
+use mwc_crates::cursive::view::View;
+use mwc_crates::cursive::views::ResizedView;
+use mwc_crates::cursive::{Cursive, Printer};
 
 use crate::tui::constants::VIEW_LOGS;
-use cursive::utils::lines::spans::{LinesIterator, Row};
-use cursive::utils::markup::StyledString;
-use log::Level;
+use mwc_crates::cursive::utils::lines::spans::{LinesIterator, Row};
+use mwc_crates::cursive::utils::markup::StyledString;
+use mwc_crates::log::{warn, Level};
 use mwc_util::logger::LogEntry;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static LOGS_VIEW_MISSING_WARNED: AtomicBool = AtomicBool::new(false);
 
 pub struct TUILogsView;
 
@@ -35,9 +38,13 @@ impl TUILogsView {
 	}
 
 	pub fn update(c: &mut Cursive, entry: LogEntry) {
-		c.call_on_name("logs", |t: &mut LogBufferView| {
+		if c.call_on_name("logs", |t: &mut LogBufferView| {
 			t.update(entry);
-		});
+		})
+		.is_none() && !LOGS_VIEW_MISSING_WARNED.swap(true, Ordering::Relaxed)
+		{
+			warn!("TUI logs view not found; dropping log entry");
+		}
 	}
 }
 
@@ -87,7 +94,7 @@ impl LogBufferView {
 
 impl View for LogBufferView {
 	fn draw(&self, printer: &Printer) {
-		let mut i = 0;
+		let mut i: usize = 0;
 		for entry in self.buffer.iter().take(printer.size.y) {
 			printer.with_color(LogBufferView::color(entry.level), |p| {
 				let log_message = StyledString::plain(entry.log.as_str());
@@ -95,8 +102,12 @@ impl View for LogBufferView {
 				rows.reverse(); // So stack traces are in the right order.
 				for row in rows {
 					for span in row.resolve(&log_message) {
-						p.print((0, p.size.y.saturating_sub(i + 1)), span.content);
+						// Safe, data overflow can't happen because i can't be bigger than self.buffer.len() which is limited
 						i += 1;
+						if i <= p.size.y {
+							// Safe: row_offset is checked to be within the printer height.
+							p.print((0, p.size.y - i), span.content);
+						}
 					}
 				}
 			});

@@ -16,15 +16,15 @@
 //! The primary module containing the implementations of the transaction pool
 //! and its top-level members.
 
-use self::core::consensus;
-use self::core::core::block;
-use self::core::core::committed;
-use self::core::core::hash::Hash;
-use self::core::core::transaction::{self, Transaction};
-use self::core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
-use chrono::prelude::*;
-use mwc_core as core;
-use mwc_keychain as keychain;
+use mwc_core::consensus;
+use mwc_core::core::block;
+use mwc_core::core::committed;
+use mwc_core::core::hash::Hash;
+use mwc_core::core::transaction::{self, Transaction};
+use mwc_core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
+use mwc_core::ser;
+use mwc_crates::serde::{self, Deserialize, Serialize};
+use std::time::Instant;
 
 /// Dandelion "epoch" length.
 const DANDELION_EPOCH_SECS: u16 = 600;
@@ -37,6 +37,7 @@ const DANDELION_AGGREGATION_SECS: u16 = 30;
 
 /// Dandelion stem probability (stem 90% of the time, fluff 10%).
 const DANDELION_STEM_PROBABILITY: u8 = 90;
+const DANDELION_STEM_PROBABILITY_MAX: u8 = 100;
 
 /// Always stem our (pushed via api) txs?
 /// Defaults to true to match the Dandelion++ paper.
@@ -47,6 +48,7 @@ const DANDELION_ALWAYS_STEM_OUR_TXS: bool = true;
 /// Configuration for "Dandelion".
 /// Note: shared between p2p and pool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct DandelionConfig {
 	/// Length of each "epoch".
 	#[serde(default = "default_dandelion_epoch_secs")]
@@ -58,12 +60,24 @@ pub struct DandelionConfig {
 	/// Dandelion aggregation timer.
 	#[serde(default = "default_dandelion_aggregation_secs")]
 	pub aggregation_secs: u16,
-	/// Dandelion stem probability (stem 90% of the time, fluff 10% etc.)
+	/// Dandelion stem probability from 0 to 100.
 	#[serde(default = "default_dandelion_stem_probability")]
 	pub stem_probability: u8,
 	/// Default to always stem our txs as described in Dandelion++ paper.
 	#[serde(default = "default_dandelion_always_stem_our_txs")]
 	pub always_stem_our_txs: bool,
+}
+
+impl DandelionConfig {
+	pub fn validate(&self) -> Result<(), String> {
+		if self.stem_probability > DANDELION_STEM_PROBABILITY_MAX {
+			return Err(format!(
+				"dandelion stem_probability must be in 0..={}, got {}",
+				DANDELION_STEM_PROBABILITY_MAX, self.stem_probability
+			));
+		}
+		Ok(())
+	}
 }
 
 impl Default for DandelionConfig {
@@ -100,6 +114,7 @@ fn default_dandelion_always_stem_our_txs() -> bool {
 
 /// Transaction pool configuration
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct PoolConfig {
 	/// Base fee for a transaction to be accepted by the pool. The transaction
 	/// weight is computed from its number of inputs, outputs and kernels and
@@ -157,12 +172,12 @@ fn default_mineable_max_weight() -> u64 {
 
 /// Represents a single entry in the pool.
 /// A single (possibly aggregated) transaction.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct PoolEntry {
 	/// Info on where this tx originated from.
 	pub src: TxSource,
-	/// Timestamp of when this tx was originally added to the pool.
-	pub tx_at: DateTime<Utc>,
+	/// Monotonic time when this tx was originally added to the pool.
+	pub tx_at: Instant,
 	/// The transaction itself.
 	pub tx: Transaction,
 }
@@ -171,7 +186,7 @@ impl PoolEntry {
 	pub fn new(tx: Transaction, src: TxSource) -> PoolEntry {
 		PoolEntry {
 			src,
-			tx_at: Utc::now(),
+			tx_at: Instant::now(),
 			tx,
 		}
 	}
@@ -184,6 +199,7 @@ impl PoolEntry {
 /// Most likely this will evolve to contain some sort of network identifier,
 /// once we get a better sense of what transaction building might look like.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(crate = "serde")]
 pub enum TxSource {
 	PushApi,
 	Broadcast,
@@ -203,20 +219,26 @@ impl TxSource {
 }
 
 /// Possible errors when interacting with the transaction pool.
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, thiserror::Error)]
 pub enum PoolError {
 	/// An invalid pool entry caused by underlying tx validation error
 	#[error("Tx Pool Invalid Tx {0}")]
 	InvalidTx(transaction::Error),
 	/// An invalid pool entry caused by underlying block validation error
 	#[error("Tx Pool Invalid Block {0}")]
-	InvalidBlock(block::Error),
+	InvalidBlock(#[from] block::Error),
 	/// Underlying keychain error.
 	#[error("Tx Pool Keychain error {0}")]
-	Keychain(keychain::Error),
+	Keychain(#[from] mwc_keychain::Error),
 	/// Underlying "committed" error.
 	#[error("Tx Pool Committed error {0}")]
-	Committed(committed::Error),
+	Committed(#[from] committed::Error),
+	/// Underlying serialization error.
+	#[error("Tx Pool Serialization error {0}")]
+	Serialization(#[from] ser::Error),
+	/// Underlying IO error.
+	#[error("Tx Pool IO error {0}")]
+	IO(#[from] std::io::Error),
 	/// Attempt to add a transaction to the pool with lock_height
 	/// greater than height of current block
 	#[error("Tx Pool Immature transaction")]
@@ -260,26 +282,9 @@ impl From<transaction::Error> for PoolError {
 	fn from(e: transaction::Error) -> PoolError {
 		match e {
 			transaction::Error::InvalidNRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
+			transaction::Error::NRDKernelNotEnabled => PoolError::NRDKernelNotEnabled,
 			e @ _ => PoolError::InvalidTx(e),
 		}
-	}
-}
-
-impl From<block::Error> for PoolError {
-	fn from(e: block::Error) -> PoolError {
-		PoolError::InvalidBlock(e)
-	}
-}
-
-impl From<keychain::Error> for PoolError {
-	fn from(e: keychain::Error) -> PoolError {
-		PoolError::Keychain(e)
-	}
-}
-
-impl From<committed::Error> for PoolError {
-	fn from(e: committed::Error) -> PoolError {
-		PoolError::Committed(e)
 	}
 }
 
@@ -313,7 +318,7 @@ pub trait BlockChain: Sync + Send {
 /// importantly the broadcasting of transactions to our peers.
 pub trait PoolAdapter: Send + Sync {
 	/// The transaction pool has accepted this transaction as valid.
-	fn tx_accepted(&self, entry: &PoolEntry);
+	fn tx_accepted(&self, entry: &PoolEntry) -> Result<(), PoolError>;
 
 	/// The stem transaction pool has accepted this transactions as valid.
 	fn stem_tx_accepted(&self, entry: &PoolEntry) -> Result<(), PoolError>;
@@ -324,8 +329,30 @@ pub trait PoolAdapter: Send + Sync {
 pub struct NoopPoolAdapter {}
 
 impl PoolAdapter for NoopPoolAdapter {
-	fn tx_accepted(&self, _entry: &PoolEntry) {}
+	fn tx_accepted(&self, _entry: &PoolEntry) -> Result<(), PoolError> {
+		Ok(())
+	}
 	fn stem_tx_accepted(&self, _entry: &PoolEntry) -> Result<(), PoolError> {
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn dandelion_config_validates_stem_probability_bounds() {
+		let mut config = DandelionConfig::default();
+
+		config.stem_probability = 0;
+		assert!(config.validate().is_ok());
+
+		config.stem_probability = 100;
+		assert!(config.validate().is_ok());
+
+		config.stem_probability = 101;
+		let err = config.validate().unwrap_err();
+		assert!(err.contains("stem_probability"));
 	}
 }

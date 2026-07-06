@@ -28,6 +28,7 @@ mod error;
 pub mod proof;
 pub mod reward;
 pub mod secp_ser;
+mod zeroizing_blake2b;
 
 use crate::core::Transaction;
 use crate::global::get_accept_fee_base;
@@ -36,14 +37,31 @@ pub use self::proof::ProofBuilder;
 pub use crate::libtx::error::Error;
 
 /// Transaction fee calculation given numbers of inputs, outputs, and kernels
-pub fn tx_fee(context_id: u32, input_len: usize, output_len: usize, kernel_len: usize) -> u64 {
-	Transaction::weight_for_fee(input_len as u64, output_len as u64, kernel_len as u64)
-		* get_accept_fee_base(context_id)
+pub fn tx_fee(
+	context_id: u32,
+	input_len: usize,
+	output_len: usize,
+	kernel_len: usize,
+) -> Result<u64, Error> {
+	// Transaction::weight_for_fee(input_len as u64, output_len as u64, kernel_len as u64)
+	//	* get_accept_fee_base(context_id)
+	let weight =
+		Transaction::weight_for_fee(input_len as u64, output_len as u64, kernel_len as u64);
+	let fee_base = get_accept_fee_base(context_id);
+	weight.checked_mul(fee_base).ok_or_else(|| {
+		Error::DataOverflow(format!(
+			"libtx::tx_fee, context_id={} weight={} fee_base={}",
+			context_id, weight, fee_base
+		))
+	})
 }
 
 /// How many min number of inputs needed to maintain minimum possible fee
-pub fn inputs_for_minimal_fee(output_len: usize, kernel_len: usize) -> usize {
-	Transaction::inputs_for_minimal_fee(output_len as u64, kernel_len as u64)
+pub fn inputs_for_minimal_fee(output_len: usize, kernel_len: usize) -> Result<usize, Error> {
+	Ok(Transaction::inputs_for_minimal_fee(
+		output_len as u64,
+		kernel_len as u64,
+	)?)
 }
 
 /// How many min number of inputs needed to maintain the fee
@@ -52,10 +70,18 @@ pub fn inputs_for_fee_points(
 	fee: u64,
 	output_len: usize,
 	kernel_len: usize,
-) -> usize {
-	Transaction::inputs_for_fee_points(
-		fee / get_accept_fee_base(context_id),
+) -> Result<usize, Error> {
+	let fee_points = fee
+		.checked_div(get_accept_fee_base(context_id))
+		.ok_or_else(|| {
+			Error::DataOverflow(format!(
+				"libtx::inputs_for_fee_points, context_id={} fee={}",
+				context_id, fee
+			))
+		})?;
+	Ok(Transaction::inputs_for_fee_points(
+		fee_points,
 		output_len as u64,
 		kernel_len as u64,
-	)
+	)?)
 }

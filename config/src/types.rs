@@ -15,11 +15,12 @@
 
 //! Public types for config modules
 
+use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
 
-use crate::servers::ServerConfig;
-use crate::util::logger::LoggingConfig;
+use mwc_servers::ServerConfig;
+use mwc_util::logger::LoggingConfig;
 
 pub(crate) const CONFIG_FILE_VERSION: u32 = 3;
 
@@ -33,6 +34,9 @@ pub enum ConfigError {
 	/// Error with fileIO while reading config file
 	#[error("Node Config file {0} IO error, {1}")]
 	FileIOError(String, String),
+	/// Underlying IO error.
+	#[error("Node Config IO error, {0}")]
+	IO(#[from] io::Error),
 
 	/// No file found
 	#[error("Node Configuration file not found: {0}")]
@@ -47,15 +51,6 @@ pub enum ConfigError {
 	ConfigError(String),
 }
 
-impl From<io::Error> for ConfigError {
-	fn from(error: io::Error) -> ConfigError {
-		ConfigError::FileIOError(
-			String::from(""),
-			format!("Error loading config file: {}", error),
-		)
-	}
-}
-
 /// Going to hold all of the various configuration types
 /// separately for now, then put them together as a single
 /// ServerConfig object afterwards. This is to flatten
@@ -64,6 +59,7 @@ impl From<io::Error> for ConfigError {
 /// Most structs optional, as they may or may not
 /// be needed depending on what's being run
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct GlobalConfig {
 	/// Keep track of the file we've read
 	pub config_file_path: Option<PathBuf>,
@@ -76,6 +72,7 @@ pub struct GlobalConfig {
 /// internal state that we don't necessarily
 /// want serialised or deserialised
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde")]
 pub struct ConfigMembers {
 	/// Config file version (None == version 1)
 	pub config_file_version: Option<u32>,

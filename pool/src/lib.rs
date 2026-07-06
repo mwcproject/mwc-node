@@ -21,16 +21,6 @@
 #![deny(non_snake_case)]
 #![deny(unused_mut)]
 
-//extern crate blake2_rfc as blake2;
-//extern crate mwc_core as core;
-//extern crate mwc_keychain as keychain;
-//extern crate mwc_util as util;
-#[allow(unused_imports)]
-#[macro_use] // Needed for Serialize/Deserialize. The compiler complaining here is a bug.
-extern crate serde_derive;
-#[macro_use]
-extern crate log;
-
 mod pool;
 pub mod transaction_pool;
 pub mod types;

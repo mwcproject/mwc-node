@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::Utc;
 use mwc_core::consensus::{
-	next_difficulty, HeaderDifficultyInfo, AR_SCALE_DAMP_FACTOR, BLOCK_TIME_SEC,
+	next_difficulty, DifficultyCache, HeaderDifficultyInfo, AR_SCALE_DAMP_FACTOR, BLOCK_TIME_SEC,
 	DIFFICULTY_ADJUST_WINDOW, MIN_DIFFICULTY,
 };
+use mwc_core::core::hash::Hash;
 use mwc_core::global;
 use mwc_core::pow::Difficulty;
-use std::collections::VecDeque;
+use mwc_crates::chrono::Utc;
 
 /// Checks different next_target adjustments and difficulty boundaries
 #[test]
@@ -33,7 +33,7 @@ fn next_target_adjustment() {
 	// Check we don't get stuck on difficulty <= MIN_DIFFICULTY (at 4x faster blocks at least)
 	let mut hi = HeaderDifficultyInfo::from_diff_scaling(diff_min, AR_SCALE_DAMP_FACTOR as u32);
 	hi.is_secondary = false;
-	let mut cache_values = VecDeque::new();
+	let mut cache_values = DifficultyCache::new();
 	let hinext = next_difficulty(
 		0,
 		1,
@@ -44,7 +44,8 @@ fn next_target_adjustment() {
 			None,
 		),
 		&mut cache_values,
-	);
+	)
+	.unwrap();
 
 	assert_ne!(hinext.difficulty, diff_min);
 
@@ -61,6 +62,7 @@ fn next_target_adjustment() {
 			repeat(BLOCK_TIME_SEC, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(10000)
 	);
@@ -70,11 +72,16 @@ fn next_target_adjustment() {
 		next_difficulty(
 			0,
 			1,
-			vec![HeaderDifficultyInfo::from_ts_diff(0, 42, hi.difficulty)],
+			vec![HeaderDifficultyInfo::from_ts_diff(
+				0,
+				DIFFICULTY_ADJUST_WINDOW,
+				hi.difficulty,
+			)],
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
-		Difficulty::from_num(14913)
+		Difficulty::from_num(14876)
 	);
 
 	// checking averaging works
@@ -89,7 +96,9 @@ fn next_target_adjustment() {
 	);
 	s2.append(&mut s1);
 	assert_eq!(
-		next_difficulty(0, 1, s2, &mut cache_values).difficulty,
+		next_difficulty(0, 1, s2, &mut cache_values)
+			.unwrap()
+			.difficulty,
 		Difficulty::from_num(1000)
 	);
 
@@ -102,6 +111,7 @@ fn next_target_adjustment() {
 			repeat(90, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(857)
 	);
@@ -112,6 +122,7 @@ fn next_target_adjustment() {
 			repeat(120, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(750)
 	);
@@ -124,6 +135,7 @@ fn next_target_adjustment() {
 			repeat(55, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1028)
 	);
@@ -134,6 +146,7 @@ fn next_target_adjustment() {
 			repeat(45, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1090)
 	);
@@ -144,6 +157,7 @@ fn next_target_adjustment() {
 			repeat(30, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(1200)
 	);
@@ -153,11 +167,12 @@ fn next_target_adjustment() {
 		next_difficulty(
 			0,
 			1,
-			repeat(0, hi.clone(), just_enough, None),
+			repeat(1, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
-		Difficulty::from_num(1500)
+		Difficulty::from_num(1487)
 	);
 
 	// hitting higher time bound, should always get the same result above
@@ -168,6 +183,7 @@ fn next_target_adjustment() {
 			repeat(300, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(500)
 	);
@@ -178,6 +194,7 @@ fn next_target_adjustment() {
 			repeat(400, hi.clone(), just_enough, None),
 			&mut cache_values
 		)
+		.unwrap()
 		.difficulty,
 		Difficulty::from_num(500)
 	);
@@ -185,13 +202,69 @@ fn next_target_adjustment() {
 	// We should never drop below minimum
 	hi.difficulty = Difficulty::zero();
 	assert_eq!(
-		next_difficulty(0, 1, repeat(90, hi, just_enough, None), &mut cache_values).difficulty,
+		next_difficulty(0, 1, repeat(90, hi, just_enough, None), &mut cache_values)
+			.unwrap()
+			.difficulty,
 		Difficulty::min()
 	);
 }
 
+#[test]
+fn difficulty_data_to_vector_populates_opaque_cache() {
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+	let needed_block_count = DIFFICULTY_ADJUST_WINDOW as usize + 1;
+	let mut cache_values = DifficultyCache::new();
+
+	let cursor = (0..needed_block_count as u64)
+		.rev()
+		.map(difficulty_header)
+		.collect::<Vec<_>>();
+	let mut expected = cursor.clone();
+	expected.reverse();
+	let result = global::difficulty_data_to_vector(0, cursor, &mut cache_values).unwrap();
+
+	assert_eq!(result, expected);
+	assert_eq!(cache_values.iter().cloned().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn difficulty_data_to_vector_reuses_opaque_cache_for_next_window() {
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+	let needed_block_count = DIFFICULTY_ADJUST_WINDOW as usize + 1;
+	let mut cache_values = DifficultyCache::new();
+
+	let cursor = (0..needed_block_count as u64)
+		.rev()
+		.map(difficulty_header)
+		.collect::<Vec<_>>();
+	global::difficulty_data_to_vector(0, cursor, &mut cache_values).unwrap();
+
+	let next_height = needed_block_count as u64;
+	let cursor = (1..=next_height)
+		.rev()
+		.map(difficulty_header)
+		.collect::<Vec<_>>();
+	let result = global::difficulty_data_to_vector(0, cursor, &mut cache_values).unwrap();
+	let expected = (1..=next_height).map(difficulty_header).collect::<Vec<_>>();
+
+	assert_eq!(result, expected);
+}
+
 // Builds an iterator for next difficulty calculation with the provided
 // constant time interval, difficulty and total length.
+fn difficulty_header(height: u64) -> HeaderDifficultyInfo {
+	HeaderDifficultyInfo::new(
+		height,
+		Some(Hash::from_vec(&height.to_le_bytes())),
+		1_000_000 + height,
+		Difficulty::from_num(height + 1),
+		AR_SCALE_DAMP_FACTOR as u32,
+		false,
+	)
+}
+
 fn repeat(
 	interval: u64,
 	diff: HeaderDifficultyInfo,

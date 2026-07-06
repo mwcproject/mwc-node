@@ -12,40 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mwc_chain as chain;
-use mwc_core as core;
-use mwc_util as util;
+use mwc_crates::log::info;
 use std::collections::HashSet;
 
-#[macro_use]
-extern crate log;
-
-use crate::chain::types::NoopAdapter;
-use crate::core::core::hash::Hashed;
-use crate::core::{genesis, global, pow};
+use mwc_chain::types::NoopAdapter;
 use mwc_core::consensus::MWC_BASE;
+use mwc_core::core::hash::Hashed;
 use mwc_core::core::KernelFeatures;
+use mwc_core::{genesis, global, pow};
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 use std::sync::Arc;
 
+#[path = "../src/tests/chain_test_helper.rs"]
 mod chain_test_helper;
 
 #[test]
 #[ignore]
 // Manual checking test, one time test
 fn test_chain_validation() {
-	util::init_test_logger();
+	mwc_util::init_test_logger().unwrap();
 
 	let src_root_dir = format!("/Users/mw/main_archive_aug27/chain_data");
 	info!("Read data from {}", src_root_dir);
 
 	global::set_local_chain_type(global::ChainTypes::Mainnet);
 	global::set_local_nrd_enabled(false);
-	let genesis = genesis::genesis_main(0);
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let genesis = genesis::genesis_main(&secp, 0);
 
 	let dummy_adapter = Arc::new(NoopAdapter {});
 
 	// The original chain we're reading from
-	let src_chain = chain::Chain::init(
+	let src_chain = mwc_chain::Chain::init(
+		&secp,
 		0,
 		src_root_dir.into(),
 		dummy_adapter.clone(),
@@ -53,6 +52,8 @@ fn test_chain_validation() {
 		pow::verify_size,
 		false,
 		HashSet::new(),
+		None,
+		None,
 	)
 	.unwrap();
 
@@ -64,7 +65,7 @@ fn test_chain_validation() {
 			info!("Processing block {}", height);
 		}
 		let hdr = src_chain.get_header_by_height(height).unwrap();
-		let block = src_chain.get_block(&hdr.hash().unwrap()).unwrap();
+		let block = src_chain.get_block(&hdr.hash(0).unwrap()).unwrap();
 		for kernel in &block.body.kernels {
 			let fee = match kernel.features {
 				KernelFeatures::Plain { fee } => fee.fee(),
