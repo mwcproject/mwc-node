@@ -123,6 +123,7 @@ impl Owner {
 	pub fn compact_chain(&self) -> Result<(), Error> {
 		let chain_compact_handler = ChainCompactHandler {
 			chain: self.chain.clone(),
+			sync_state: self.sync_state.clone(),
 			stop_state: w(&self.stop_state)?,
 		};
 		chain_compact_handler.compact_chain()

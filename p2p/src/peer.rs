@@ -819,6 +819,10 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.total_height()
 	}
 
+	fn is_chain_liveness_deferred(&self) -> bool {
+		self.adapter.is_chain_liveness_deferred()
+	}
+
 	fn get_transaction(
 		&self,
 		kernel_hash: Hash,
@@ -1096,7 +1100,7 @@ impl NetAdapter for TrackingAdapter {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::serv::DummyAdapter;
+	use crate::serv::{set_dummy_adapter_liveness_deferred_for_test, DummyAdapter};
 	use crate::types::{Direction, PeerLiveInfo};
 	use std::net::SocketAddr;
 	use std::sync::atomic::{AtomicBool, Ordering};
@@ -1589,6 +1593,42 @@ mod tests {
 		assert!(summary.first_persistence_error().is_some());
 		assert!(peers.get_connected_peer(&addr).is_none());
 		assert!(!peers.is_known(&addr));
+	}
+
+	#[test]
+	fn clean_peers_preserves_dead_ping_peer_when_liveness_deferred() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+		struct LivenessGuard(bool);
+		impl Drop for LivenessGuard {
+			fn drop(&mut self) {
+				set_dummy_adapter_liveness_deferred_for_test(self.0);
+			}
+		}
+
+		let previous = set_dummy_adapter_liveness_deferred_for_test(true);
+		let _guard = LivenessGuard(previous);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &P2PConfig::default());
+		let peer = Arc::new(connected_test_peer());
+		let addr = peer.info.addr.clone();
+		peer.info.live_info.write().last_seen = mwc_crates::chrono::Utc::now()
+			- mwc_crates::chrono::Duration::seconds(
+				(global::PEER_PING_INTERVAL_SECONDS as i64) * 11,
+			);
+		peers.add_connected(peer).unwrap();
+
+		let summary = peers.clean_peers(
+			usize::MAX,
+			usize::MAX,
+			Capabilities::UNKNOWN,
+			P2PConfig::default(),
+		);
+
+		assert_eq!(summary.removed_peers, 0);
+		assert!(peers.get_connected_peer(&addr).is_some());
+		assert!(peers.is_known(&addr));
 	}
 
 	#[test]

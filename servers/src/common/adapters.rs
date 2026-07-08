@@ -56,6 +56,7 @@ const COMPACT_BLOCK_RECONSTRUCTION_RETRY_SECS: u64 = 15;
 const COMPACT_BLOCK_RECONSTRUCTION_STALE_SECS: u64 = 10 * 60;
 const COMPACT_BLOCK_RECONSTRUCTION_MAX_ENTRIES: usize = 3_000;
 const EVENT_CACHE_LOCK_MILLIS: u64 = 1_000;
+const CHAIN_LIVENESS_DEFER_GRACE_INTERVALS: u64 = 3;
 
 // NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
 // This cache will drop sequence of the events during the second
@@ -359,6 +360,8 @@ where
 	/// Entries are also pruned by age and capped by count so hostile peers cannot
 	/// grow this in-memory cache without bound.
 	compact_block_reconstruction_cache: RwLock<HashMap<Hash, Instant>>,
+	cached_tip: RwLock<(Difficulty, u64)>,
+	chain_liveness_deferred_until: RwLock<Option<Instant>>,
 }
 
 impl<B, P> mwc_p2p::ChainAdapter for NetToChainAdapter<B, P>
@@ -367,11 +370,15 @@ where
 	P: PoolAdapter,
 {
 	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		Ok(self.chain()?.head()?.total_difficulty)
+		Ok(self.current_tip_for_peer_liveness()?.0)
 	}
 
 	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		Ok(self.chain()?.head()?.height)
+		Ok(self.current_tip_for_peer_liveness()?.1)
+	}
+
+	fn is_chain_liveness_deferred(&self) -> bool {
+		self.is_chain_liveness_deferred_now()
 	}
 
 	fn get_transaction(
@@ -1175,7 +1182,7 @@ where
 	/// Heard total_difficulty from a connected peer (via ping/pong).
 	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64) {
 		let res = || -> Result<(), mwc_chain::Error> {
-			if self.sync_state.is_syncing() {
+			if self.is_chain_liveness_deferred_now() || self.sync_state.is_syncing() {
 				return Ok(());
 			}
 
@@ -1218,6 +1225,13 @@ where
 		chain_validation_mode: ChainValidationMode,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	) -> Self {
+		let cached_tip = match chain.head() {
+			Ok(tip) => (tip.total_difficulty, tip.height),
+			Err(e) => {
+				warn!("NetToChainAdapter: unable to initialize cached tip: {}", e);
+				(Difficulty::zero(), 0)
+			}
+		};
 		NetToChainAdapter {
 			sync_state,
 			sync_manager,
@@ -1230,7 +1244,42 @@ where
 			processed_transactions: EventCache::new(),
 			legacy_v2_block_conversion_throttle: LegacyV2BlockConversionThrottle::new(),
 			compact_block_reconstruction_cache: RwLock::new(HashMap::new()),
+			cached_tip: RwLock::new(cached_tip),
+			chain_liveness_deferred_until: RwLock::new(None),
 		}
+	}
+
+	fn current_tip_for_peer_liveness(&self) -> Result<(Difficulty, u64), mwc_chain::Error> {
+		if self.is_chain_liveness_deferred_now() {
+			return Ok(*self.cached_tip.read_recursive());
+		}
+
+		let tip = self.chain()?.head()?;
+		let cached_tip = (tip.total_difficulty, tip.height);
+		*self.cached_tip.write() = cached_tip;
+		Ok(cached_tip)
+	}
+
+	fn is_chain_liveness_deferred_now(&self) -> bool {
+		let now = Instant::now();
+		if self.sync_state.is_txhashset_validation()
+			|| matches!(self.sync_state.status(), SyncStatus::Shutdown)
+		{
+			let grace = Duration::from_secs(
+				(global::PEER_PING_INTERVAL_SECONDS as u64) * CHAIN_LIVENESS_DEFER_GRACE_INTERVALS,
+			);
+			*self.chain_liveness_deferred_until.write() = now.checked_add(grace);
+			return true;
+		}
+
+		let mut deferred_until = self.chain_liveness_deferred_until.write();
+		if let Some(until) = *deferred_until {
+			if now <= until {
+				return true;
+			}
+			*deferred_until = None;
+		}
+		false
 	}
 
 	/// Initialize a NetToChainAdaptor with reference to a Peers object.

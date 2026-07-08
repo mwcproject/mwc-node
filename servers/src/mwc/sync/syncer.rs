@@ -205,7 +205,10 @@ impl SyncRunner {
 						break;
 					}
 
-					if let Err(e) = self.chain.compact(self.stop_state.clone()) {
+					if let Err(e) = self
+						.chain
+						.compact(Some(self.sync_state.clone()), self.stop_state.clone())
+					{
 						if matches!(e, mwc_chain::Error::Stopped) {
 							debug!("Compact chain stopped during shutdown");
 							break;

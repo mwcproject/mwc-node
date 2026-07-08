@@ -2730,7 +2730,11 @@ impl Chain {
 	/// * compacts the txhashset based on current prune_list
 	/// * removes historical blocks and associated data from the db (unless archive mode)
 	///
-	pub fn compact(&self, stop_state: Arc<StopState>) -> Result<(), Error> {
+	pub fn compact(
+		&self,
+		sync_state: Option<Arc<SyncState>>,
+		stop_state: Arc<StopState>,
+	) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
 		if stop_state.is_stopped() {
 			return Err(Error::Stopped);
@@ -2820,14 +2824,25 @@ impl Chain {
 					batch.save_body_tail(&Tip::try_from_header(&horizon_header)?)?;
 
 					// Make sure our output_pos index is consistent with the UTXO set.
-					txhashset.init_output_pos_index(&batch, None, Some(stop_state.clone()))?;
+					// Normal block processing maintains this index incrementally, so
+					// avoid the full historical header scan unless a recovery path
+					// explicitly marked the index incomplete.
+					if batch.is_output_pos_index_complete()? {
+						debug!("compact: output_pos index is complete, skipping rebuild");
+					} else {
+						txhashset.init_output_pos_index(
+							&batch,
+							sync_state.clone(),
+							Some(stop_state.clone()),
+						)?;
+					}
 
 					// TODO - Why is this part of chain compaction?
 					// Rebuild our NRD kernel_pos index based on recent kernel history.
 					txhashset.init_recent_kernel_pos_index(
 						&header_pmmr,
 						&batch,
-						None,
+						sync_state.clone(),
 						Some(stop_state.clone()),
 					)?;
 
