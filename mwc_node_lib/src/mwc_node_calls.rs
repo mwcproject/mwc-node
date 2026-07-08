@@ -281,8 +281,12 @@ fn process_create_server_request(params: &mut Value) -> Result<Value, String> {
 		config.p2p_config.onion_expanded_key = Some(std::mem::take(&mut *onion_expanded_key));
 	}
 
-	mwc_node_workflow::server::create_server(context_id, config)
-		.map_err(|e| format!("Unable to start the node server, {}", e))?;
+	mwc_node_workflow::server::create_server(
+		context_id,
+		config,
+		Arc::new(mwc_util::StopState::new()),
+	)
+	.map_err(|e| format!("Unable to start the node server, {}", e))?;
 	Ok(json!({}))
 }
 

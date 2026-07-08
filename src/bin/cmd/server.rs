@@ -49,16 +49,53 @@ fn start_server_tui(
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	offline: bool,
 ) -> Result<(), mwc_node_workflow::Error> {
-	// Starting the server...
-	if !offline && config.tor_config.need_start_arti() {
-		info!("Bootstrapping tor rich client Arti...");
-		mwc_node_workflow::server::start_tor(&config.tor_config, &config.db_root)?;
+	let run_tui = config.run_tui.unwrap_or(false);
+	let running = Arc::new(AtomicBool::new(true));
+	let startup_stop_state = Arc::new(mwc_util::StopState::new());
+
+	if !run_tui {
+		let r = running.clone();
+		let stop_state = startup_stop_state.clone();
+		if let Err(e) = ctrlc::set_handler(move || {
+			r.store(false, Ordering::SeqCst);
+			stop_state.stop();
+			mwc_node_workflow::server::release_server(context_id);
+		}) {
+			return Err(mwc_node_workflow::Error::ServerError(format!(
+				"Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill): {}",
+				e
+			)));
+		}
 	}
 
 	info!("Creating MWC node server...");
-	mwc_node_workflow::server::create_server(context_id, config.clone())?;
+	if let Err(e) =
+		mwc_node_workflow::server::create_server(context_id, config.clone(), startup_stop_state)
+	{
+		if !run_tui && !running.load(Ordering::SeqCst) {
+			warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
+			mwc_node_workflow::server::release_server(context_id);
+			return Err(mwc_node_workflow::Error::ServerError(format!(
+				"Server start was cancelled, {}",
+				e
+			)));
+		}
+		return Err(e);
+	}
+	if !run_tui && !running.load(Ordering::SeqCst) {
+		warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
+		mwc_node_workflow::server::release_server(context_id);
+		return Err(mwc_node_workflow::Error::ServerError(
+			"Server start was cancelled".into(),
+		));
+	}
 
 	let res = (|| {
+		if !offline && config.tor_config.need_start_arti() {
+			info!("Bootstrapping tor rich client Arti...");
+			mwc_node_workflow::server::start_tor(&config.tor_config, &config.db_root)?;
+		}
+
 		if !offline {
 			info!("Starting listening peers...");
 			mwc_node_workflow::server::start_listen_peers(context_id)?;
@@ -86,7 +123,7 @@ fn start_server_tui(
 
 		// Run the UI controller.. here for now for simplicity to access
 		// everything it might need
-		if config.run_tui.unwrap_or(false) {
+		if run_tui {
 			warn!("Starting MWC UI...");
 
 			match logs_rx {
@@ -106,17 +143,6 @@ fn start_server_tui(
 			}
 		} else {
 			warn!("Running MWC w/o UI...");
-
-			let running = Arc::new(AtomicBool::new(true));
-			let r = running.clone();
-			if let Err(e) = ctrlc::set_handler(move || {
-				r.store(false, Ordering::SeqCst);
-			}) {
-				return Err(mwc_node_workflow::Error::ServerError(format!(
-					"Error setting handler for both SIGINT (Ctrl+C) and SIGTERM (kill): {}",
-					e
-				)));
-			}
 
 			while running.load(Ordering::SeqCst) {
 				thread::sleep(Duration::from_millis(300));
