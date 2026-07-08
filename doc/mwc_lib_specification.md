@@ -26,7 +26,7 @@ Use this string as a read only, don't store it in you code. When you copy, relea
 
 - `void free_lib_string(char *s);` - Release rust managed memory. 
 
-- `void register_lib_callback(char const *callback_name, void (*cb)(void *, int8_t const *), void *ctx);` - 
+- `void register_lib_callback(char const *callback_name, int8_t const * (*cb)(void *, int8_t const *), void *ctx);` - 
 register callback function. 
   - 'callback_name' - name of this callback functions. This name will be used in other api calls.
   - 'ctx' - pointer to context that will be passed to your callback. 
@@ -36,8 +36,9 @@ register callback function.
      // ctx - yout internal context that you passed to register_lib_callback
      // msg - some message, usually it is a pointer to C strign in Json format. This memory is 
      // managed on rust side and is valid during this callback only. Don't store or modify it. 
-    void new_tx_callback(void* ctx, const int8_t* msg) {
+    const int8_t* new_tx_callback(void* ctx, const int8_t* msg) {
          ...
+         return NULL;
     }
 ```
 
@@ -46,6 +47,7 @@ register callback function.
 Important callback lifetime rule:
 
 - Callback message pointers are temporary and must not be stored on the C side. Copy data during callback execution.
+- Notification callbacks may return null. Wallet node-client callbacks must synchronously return a valid JSON response C string; Rust copies it before returning from the callback call.
 
 ## JSON Request/Response Contract
 

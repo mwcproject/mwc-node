@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use mwc_crates::chrono;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::{Mutex, RwLock};
 use mwc_crates::rand;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -123,6 +123,10 @@ pub struct Peers {
 	peers: RwLock<HashMap<PeerAddr, Arc<Peer>>>,
 	last_add_peer_timestamp: RwLock<Option<Instant>>,
 	config: P2PConfig,
+	// Peers removed from the live map but whose connection threads still need
+	// to be joined. Holding them here preserves the StopHandle until the reader
+	// thread drops its Codec and any Tor read-half active object.
+	stopped_peers: Mutex<Vec<Arc<Peer>>>,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
 	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
 	out_peers_failures: Arc<RwLock<HashMap<PeerAddr, u32>>>,
@@ -137,6 +141,7 @@ impl Peers {
 			store,
 			config: config.clone_without_secrets(),
 			peers: RwLock::new(HashMap::new()),
+			stopped_peers: Mutex::new(Vec::new()),
 			last_add_peer_timestamp: RwLock::new(None),
 			boost_peers_capabilities: RwLock::new(PeersCapabilities {
 				capabilities: Capabilities::UNKNOWN,
@@ -363,6 +368,78 @@ impl Peers {
 		}
 	}
 
+	pub fn stop_and_reap_peer(&self, peer: Arc<Peer>) {
+		peer.stop();
+		{
+			let mut stopped_peers = self.stopped_peers.lock();
+			// `peer.stop()` only signals the reader/writer threads. Keep the peer
+			// owned until we can join those threads; otherwise dropping the
+			// StopHandle detaches them and Tor active objects can stay registered.
+			if !stopped_peers.iter().any(|p| Arc::ptr_eq(p, &peer)) {
+				stopped_peers.push(peer);
+			}
+		}
+		self.reap_finished_stopped_peers();
+	}
+
+	fn log_peer_wait_error(peer: &Peer, err: Error) -> Option<Error> {
+		let expected_disconnect = matches!(err, Error::Connection(_) | Error::ConnectionClose(_));
+		if expected_disconnect {
+			debug!("failed to stop peer {}: {}", peer.info.addr, err);
+			None
+		} else {
+			error!("failed to stop peer {}: {}", peer.info.addr, err);
+			Some(err)
+		}
+	}
+
+	fn wait_stopped_peer(peer: Arc<Peer>) -> Option<Error> {
+		match peer.wait() {
+			Ok(()) => None,
+			Err(e) => Self::log_peer_wait_error(&peer, e),
+		}
+	}
+
+	fn reap_finished_stopped_peers(&self) {
+		let mut ready_peers = Vec::new();
+		{
+			let mut stopped_peers = self.stopped_peers.lock();
+			let mut idx = 0;
+			// Normal maintenance must not block on peer thread shutdown. Move
+			// only finished peers out of the queue; full node shutdown drains the
+			// remaining peers with blocking waits.
+			while idx < stopped_peers.len() {
+				if stopped_peers[idx].is_wait_ready() {
+					ready_peers.push(stopped_peers.swap_remove(idx));
+				} else {
+					idx += 1;
+				}
+			}
+		}
+
+		for peer in ready_peers {
+			let _ = Self::wait_stopped_peer(peer);
+		}
+	}
+
+	fn wait_stopped_peers(&self) -> Option<Error> {
+		let stopped_peers = {
+			let mut stopped_peers = self.stopped_peers.lock();
+			// Shutdown is the synchronization point where all queued stopped
+			// peers must be joined, including peers that were removed earlier by
+			// cleanup, ping failure, ban, or failed broadcast paths.
+			mem::take(&mut *stopped_peers)
+		};
+
+		let mut first_error = None;
+		for peer in stopped_peers {
+			if let Some(e) = Self::wait_stopped_peer(peer) {
+				first_error.get_or_insert(e);
+			}
+		}
+		first_error
+	}
+
 	pub fn is_banned(&self, peer_addr: &PeerAddr) -> Result<bool, Error> {
 		match self.store.get_peer(peer_addr) {
 			Ok(peer) => Ok(peer.flags == State::Banned),
@@ -403,7 +480,7 @@ impl Peers {
 					peer_addr, e
 				);
 			}
-			peer.stop();
+			self.stop_and_reap_peer(peer);
 		}
 
 		ban_result
@@ -462,7 +539,7 @@ impl Peers {
 							p.info.addr
 						);
 					}
-					p.stop();
+					self.stop_and_reap_peer(p.clone());
 				}
 				Err(e) => {
 					error!("Error broadcasting {:?}: {:?}", obj_name, e);
@@ -563,6 +640,7 @@ impl Peers {
 	/// Ping all our connected peers. Always automatically expects a pong back
 	/// or disconnects. This acts as a liveness test.
 	pub fn check_all(&self, total_difficulty: Difficulty, height: u64) -> PeerCheckSummary {
+		self.reap_finished_stopped_peers();
 		let mut summary = PeerCheckSummary::default();
 
 		for p in self.iter().connected() {
@@ -576,10 +654,11 @@ impl Peers {
 					);
 					summary.record_persistence_failure(e);
 				}
-				p.stop();
+				self.stop_and_reap_peer(p.clone());
 			}
 		}
 
+		self.reap_finished_stopped_peers();
 		summary
 	}
 
@@ -691,6 +770,7 @@ impl Peers {
 		boost_capability: Capabilities,
 		config: P2PConfig,
 	) -> PeerCleanupSummary {
+		self.reap_finished_stopped_peers();
 		let mut summary = PeerCleanupSummary::default();
 		let preferred_peers = config
 			.peers_preferred
@@ -888,11 +968,12 @@ impl Peers {
 						summary.record_persistence_failure(e);
 					}
 				}
-				peer.stop();
+				self.stop_and_reap_peer(peer);
 				summary.removed_peers += 1;
 			}
 		}
 
+		self.reap_finished_stopped_peers();
 		summary
 	}
 
@@ -904,6 +985,9 @@ impl Peers {
 		}
 
 		let mut first_error = None;
+		if let Some(e) = self.wait_stopped_peers() {
+			first_error.get_or_insert(e);
+		}
 		for peer in peers.values() {
 			if let Err(e) = self.update_removed_peer_state(peer) {
 				error!(
@@ -915,16 +999,12 @@ impl Peers {
 			peer.stop();
 		}
 		for (_, peer) in peers.drain() {
-			if let Err(e) = peer.wait() {
-				let expected_disconnect =
-					matches!(e, Error::Connection(_) | Error::ConnectionClose(_));
-				if expected_disconnect {
-					debug!("failed to stop peer {}: {}", peer.info.addr, e);
-				} else {
-					error!("failed to stop peer {}: {}", peer.info.addr, e);
-					first_error.get_or_insert(e);
-				}
+			if let Some(e) = Self::wait_stopped_peer(peer) {
+				first_error.get_or_insert(e);
 			}
+		}
+		if let Some(e) = self.wait_stopped_peers() {
+			first_error.get_or_insert(e);
 		}
 
 		if let Some(e) = first_error {

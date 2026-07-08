@@ -304,6 +304,20 @@ impl Peer {
 			.unwrap_or(false)
 	}
 
+	/// Whether `wait()` can reap this peer without blocking.
+	/// Removed peers can keep Tor read/write halves alive inside their
+	/// connection threads; the reaper waits for readiness before joining them.
+	pub(crate) fn is_wait_ready(&self) -> bool {
+		self.connection
+			.lock()
+			.as_ref()
+			.map(|connection| match connection {
+				PeerConnection::Active(connection) => connection.stop_handle.is_finished(),
+				PeerConnection::Starting { .. } => false,
+			})
+			.unwrap_or(true)
+	}
+
 	/// Whether this peer has been banned.
 	pub fn is_banned(&self) -> bool {
 		State::Banned == *self.state.read_recursive()

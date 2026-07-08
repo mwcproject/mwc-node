@@ -596,13 +596,13 @@ impl Server {
 	fn add_connected_peer(&self, peer: Peer, stream: TcpDataStream) -> Result<Arc<Peer>, Error> {
 		let peer = Arc::new(peer);
 		if let Err(e) = self.peers.add_connected(peer.clone()) {
-			peer.stop();
+			self.peers.stop_and_reap_peer(peer);
 			return Err(e);
 		}
 
 		if let Err(e) = peer.start_listening(stream, self.sync_state.clone(), self.clone()) {
 			self.peers.remove_connected_if_same(&peer);
-			peer.stop();
+			self.peers.stop_and_reap_peer(peer);
 			return Err(e.into());
 		}
 
@@ -610,7 +610,7 @@ impl Server {
 			Ok(banned) => banned,
 			Err(e) => {
 				self.peers.remove_connected_if_same(&peer);
-				peer.stop();
+				self.peers.stop_and_reap_peer(peer);
 				return Err(e);
 			}
 		};
@@ -622,10 +622,14 @@ impl Server {
 			|| persisted_banned
 		{
 			self.peers.remove_connected_if_same(&peer);
-			peer.stop();
+			let peer_addr = peer.info.addr.clone();
+			// `start_listening` may already have spawned peer_read/peer_write.
+			// Route startup cancellation through the reaper so those threads are
+			// joined and any Tor read-half registration is released.
+			self.peers.stop_and_reap_peer(peer);
 			return Err(Error::ConnectionClose(format!(
 				"Peer {} stopped during startup",
-				peer.info.addr
+				peer_addr
 			)));
 		}
 

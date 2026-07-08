@@ -46,12 +46,15 @@ process_mwc_node_request (
  *  until the callback returns so unregister can wait for in-flight users of
  *  `ctx`.
  *
- *  Note, Callback will get temporary string pointer, C code can't store it.
+ *  Note, Callback will get temporary string pointer, C code cannot store it.
+ *  Notification callbacks may return NULL. Wallet node-client callbacks must
+ *  synchronously return a valid JSON response C string; Rust copies it before
+ *  the callback frame is released.
  */
 void
 register_lib_callback (
     char const * callback_name,
-    void (*cb)(void *, int8_t const *),
+    int8_t const * (*cb)(void *, int8_t const *),
     void * ctx);
 
 /** \brief
