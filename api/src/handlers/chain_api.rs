@@ -18,6 +18,7 @@ use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::web::*;
+use mwc_chain::SyncState;
 use mwc_core::core::hash::Hashed;
 use mwc_core::libtx::secp_ser;
 use mwc_crates::bytes::Bytes;
@@ -120,13 +121,14 @@ impl Handler for ChainValidationHandler {
 /// POST /v1/chain/compact
 pub struct ChainCompactHandler {
 	pub chain: Weak<mwc_chain::Chain>,
+	pub sync_state: Weak<SyncState>,
 	pub stop_state: Arc<StopState>,
 }
 
 impl ChainCompactHandler {
 	pub fn compact_chain(&self) -> Result<(), Error> {
 		w(&self.chain)?
-			.compact(self.stop_state.clone())
+			.compact(Some(w(&self.sync_state)?), self.stop_state.clone())
 			.map_err(|e| Error::Internal(format!("compact chain error {}", e)))
 	}
 }

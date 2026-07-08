@@ -545,6 +545,7 @@ where
 	};
 	let chain_compact_handler = ChainCompactHandler {
 		chain: Arc::downgrade(&chain),
+		sync_state: Arc::downgrade(&sync_state),
 		stop_state,
 	};
 	let chain_validation_handler = ChainValidationHandler {

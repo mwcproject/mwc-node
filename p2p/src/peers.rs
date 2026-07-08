@@ -772,6 +772,10 @@ impl Peers {
 	) -> PeerCleanupSummary {
 		self.reap_finished_stopped_peers();
 		let mut summary = PeerCleanupSummary::default();
+		let liveness_deferred = self.adapter.is_chain_liveness_deferred();
+		if liveness_deferred {
+			debug!("clean_peers: skipping dead-ping and stuck-peer eviction while local chain maintenance is active");
+		}
 		let preferred_peers = config
 			.peers_preferred
 			.clone()
@@ -815,6 +819,11 @@ impl Peers {
 						summary.record_persistence_failure(e);
 					}
 					rm.push((peer.clone(), CleanupStateUpdate::PreserveState));
+				} else if liveness_deferred {
+					trace!(
+						"clean_peers {:?}, liveness checks deferred by local chain maintenance",
+						peer.info.addr
+					);
 				} else {
 					let (stuck, diff, dead_ping) = peer.is_stuck();
 					let stuck_peer = match self.adapter.total_difficulty() {
@@ -1252,6 +1261,10 @@ impl ChainAdapter for Peers {
 
 	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
 		self.adapter.total_height()
+	}
+
+	fn is_chain_liveness_deferred(&self) -> bool {
+		self.adapter.is_chain_liveness_deferred()
 	}
 
 	fn get_transaction(

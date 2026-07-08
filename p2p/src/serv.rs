@@ -835,12 +835,25 @@ impl Server {
 /// adapters or a dedicated test-utils feature before making this type private.
 pub struct DummyAdapter {}
 
+#[cfg(test)]
+static DUMMY_ADAPTER_DEFER_LIVENESS: std::sync::atomic::AtomicBool =
+	std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn set_dummy_adapter_liveness_deferred_for_test(deferred: bool) -> bool {
+	DUMMY_ADAPTER_DEFER_LIVENESS.swap(deferred, Ordering::SeqCst)
+}
+
 impl ChainAdapter for DummyAdapter {
 	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
 		Ok(Difficulty::min())
 	}
 	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
 		Ok(0)
+	}
+	#[cfg(test)]
+	fn is_chain_liveness_deferred(&self) -> bool {
+		DUMMY_ADAPTER_DEFER_LIVENESS.load(Ordering::SeqCst)
 	}
 	fn get_transaction(&self, _h: Hash) -> Result<Option<core::Transaction>, mwc_chain::Error> {
 		Ok(None)

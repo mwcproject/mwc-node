@@ -1102,6 +1102,11 @@ pub trait ChainAdapter: Sync + Send {
 	/// Current total height
 	fn total_height(&self) -> Result<u64, mwc_chain::Error>;
 
+	/// Whether local chain maintenance can delay peer ping/pong processing.
+	fn is_chain_liveness_deferred(&self) -> bool {
+		false
+	}
+
 	/// A valid transaction has been received from one of our peers
 	fn transaction_received(
 		&self,

@@ -2060,7 +2060,7 @@ fn spend_in_fork_and_compact() {
 		}
 
 		chain.validate(&secp, false).unwrap();
-		if let Err(e) = chain.compact(Arc::new(StopState::new())) {
+		if let Err(e) = chain.compact(None, Arc::new(StopState::new())) {
 			panic!("Error compacting chain: {:?}", e);
 		}
 		if let Err(e) = chain.validate(&secp, false) {
@@ -2069,6 +2069,74 @@ fn spend_in_fork_and_compact() {
 	}
 	// Cleanup chain directory
 	clean_output_dir(".mwc6");
+}
+
+fn compact_missing_output_pos_result(test_name: &str, index_complete: bool) -> Option<CommitPos> {
+	let chain_dir = test_chain_dir(test_name);
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
+	let genesis = genesis_block(&mut secp, &keychain);
+	let genesis_commit = genesis.outputs()[0].commitment();
+
+	let result = {
+		let chain = init_chain(&secp, &chain_dir, genesis);
+		let mut head = chain.head_header().unwrap();
+		for n in 1..80 {
+			let next = prepare_block(&mut secp, &keychain, &head, &chain, n);
+			head = next.header.clone();
+			chain
+				.process_block(
+					&mut secp,
+					next,
+					Options::SKIP_POW,
+					std::collections::HashSet::new(),
+				)
+				.unwrap();
+		}
+
+		let store = chain.get_store_for_tests();
+		assert!(store
+			.get_output_pos_height(&genesis_commit)
+			.unwrap()
+			.is_some());
+		{
+			let batch = store.batch_write().unwrap();
+			assert!(batch.is_output_pos_index_complete().unwrap());
+			batch.delete_output_pos_height(&genesis_commit).unwrap();
+			batch.set_output_pos_index_complete(index_complete).unwrap();
+			batch.commit().unwrap();
+		}
+
+		chain.compact(None, Arc::new(StopState::new())).unwrap();
+		store.get_output_pos_height(&genesis_commit).unwrap()
+	};
+
+	clean_output_dir(&chain_dir);
+	result
+}
+
+#[test]
+fn compact_skips_output_pos_rebuild_when_index_complete() {
+	assert!(compact_missing_output_pos_result(
+		"compact_skips_output_pos_rebuild_when_index_complete",
+		true
+	)
+	.is_none());
+}
+
+#[test]
+fn compact_rebuilds_output_pos_when_index_incomplete() {
+	assert!(compact_missing_output_pos_result(
+		"compact_rebuilds_output_pos_when_index_incomplete",
+		false
+	)
+	.is_some());
 }
 
 /// Test ability to retrieve block headers for a given output
