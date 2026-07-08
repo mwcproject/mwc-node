@@ -166,7 +166,7 @@ impl Server {
 		// Obtain our lock_file or fail immediately with an error.
 		let lock_file = Server::one_mwc_at_a_time(&config).map_err(|e| {
 			error!(
-				"Unable to lock db. Likely your DB path is wrong. Error: {}",
+				"Unable to lock db. Another mwc-node process is probably already running with this DB path. Error: {}",
 				e
 			);
 			e
@@ -582,14 +582,14 @@ impl Server {
 				let mut stderr = std::io::stderr();
 				_ = writeln!(
 					&mut stderr,
-					"Failed to lock {:?} (mwc server already running?)",
+					"Failed to lock {:?}. Another mwc-node process is probably already running with this DB path.",
 					path
 				);
 				e
 			})
 			.map_err(|e| {
 				Error::ServerError(format!(
-					"Unable to get a lock for file {}, {}",
+					"Unable to get exclusive lock for {}. Another mwc-node process is probably already running with this DB path. Stop the other node or use a different db_root. OS error: {}",
 					path.to_str().unwrap_or("<Unknown>"),
 					e
 				))

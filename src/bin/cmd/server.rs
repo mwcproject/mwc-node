@@ -49,16 +49,15 @@ fn start_server_tui(
 	logs_rx: Option<mpsc::Receiver<LogEntry>>,
 	offline: bool,
 ) -> Result<(), mwc_node_workflow::Error> {
-	// Starting the server...
-	if !offline && config.tor_config.need_start_arti() {
-		info!("Bootstrapping tor rich client Arti...");
-		mwc_node_workflow::server::start_tor(&config.tor_config, &config.db_root)?;
-	}
-
 	info!("Creating MWC node server...");
 	mwc_node_workflow::server::create_server(context_id, config.clone())?;
 
 	let res = (|| {
+		if !offline && config.tor_config.need_start_arti() {
+			info!("Bootstrapping tor rich client Arti...");
+			mwc_node_workflow::server::start_tor(&config.tor_config, &config.db_root)?;
+		}
+
 		if !offline {
 			info!("Starting listening peers...");
 			mwc_node_workflow::server::start_listen_peers(context_id)?;
