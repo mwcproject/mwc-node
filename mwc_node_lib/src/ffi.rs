@@ -20,7 +20,13 @@ use mwc_crates::parking_lot::RwLock;
 use safer_ffi::prelude::*;
 use std::collections::HashMap;
 
-pub type CallbackFn = extern "C" fn(ctx: *mut std::ffi::c_void, message: *const libc::c_char);
+/// Callback receives a temporary message pointer.
+///
+/// Notification callbacks may return null. Response-style callbacks, such as
+/// wallet node-client callbacks, return a pointer to a valid C string that
+/// remains valid until Rust copies it after the callback returns.
+pub type CallbackFn =
+	extern "C" fn(ctx: *mut std::ffi::c_void, message: *const libc::c_char) -> *const libc::c_char;
 
 lazy_static! {
 	// FFI safety note:
@@ -47,7 +53,10 @@ lazy_static! {
 /// until the callback returns so unregister can wait for in-flight users of
 /// `ctx`.
 ///
-/// Note, Callback will get temporary string pointer, C code can't store it.
+/// Note, Callback will get temporary string pointer, C code cannot store it.
+/// Notification callbacks may return null. Wallet node-client callbacks must
+/// synchronously return a valid JSON response C string; Rust copies it before
+/// the callback frame is released.
 #[ffi_export]
 pub fn register_lib_callback(
 	callback_name: char_p::Ref<'static>,
@@ -58,8 +67,8 @@ pub fn register_lib_callback(
 		return;
 	};
 
-	// Keep the ABI void-compatible: callers cannot receive invalid-name or
-	// duplicate-name errors without a signature change. Logging is not reliable
+	// Keep the registration API void-compatible: callers cannot receive invalid-name
+	// or duplicate-name errors without a signature change. Logging is not reliable
 	// at this stage either, since this registration may be setting up the
 	// logging callback.
 	let Some(callback_name) = std::str::from_utf8(callback_name.to_bytes()).ok() else {
@@ -141,7 +150,12 @@ mod tests {
 	use std::ffi::CStr;
 	use std::ptr::NonNull;
 
-	extern "C" fn test_callback(_ctx: *mut std::ffi::c_void, _message: *const libc::c_char) {}
+	extern "C" fn test_callback(
+		_ctx: *mut std::ffi::c_void,
+		_message: *const libc::c_char,
+	) -> *const libc::c_char {
+		std::ptr::null()
+	}
 
 	fn callback_name(name: &'static [u8]) -> char_p::Ref<'static> {
 		char_p::Ref::from(CStr::from_bytes_with_nul(name).unwrap())

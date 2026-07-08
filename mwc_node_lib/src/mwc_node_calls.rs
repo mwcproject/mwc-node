@@ -46,7 +46,7 @@ fn call_lib_callback(callback_name: &str, message: *const libc::c_char) {
 		// Keep the registry read lock until the C callback returns. This makes
 		// unregister_lib_callback wait before the caller-owned context can be
 		// freed or reused by the host application.
-		cb(*ctx as *mut std::ffi::c_void, message);
+		let _ = cb(*ctx as *mut std::ffi::c_void, message);
 	}
 }
 
