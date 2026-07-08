@@ -202,9 +202,8 @@ where
 											break;
 										}
 										let need_arti_restart = {
-											let onion_service_details = onion_service.status();
 											let onion_service_status =
-												onion_service_details.state();
+												onion_service.status().state();
 											let ready_for_traffic =
 												match arti::access_arti(|arti| {
 													Ok(arti.bootstrap_status().ready_for_traffic())
@@ -241,12 +240,10 @@ where
 												};
 
 											info!(
-												"Current {} onion service status: {:?}, ready for traffic: {}, details: {:?}, current problem: {:?}",
+												"Current {} onion service status: {:?}, ready for traffic: {}",
 												service_name2,
 												onion_service_status,
 												ready_for_traffic,
-												onion_service_details,
-												onion_service_details.current_problem()
 											);
 
 											let need_arti_restart = if ready_for_traffic {

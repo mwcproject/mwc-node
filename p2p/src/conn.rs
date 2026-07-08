@@ -150,6 +150,23 @@ impl StopHandle {
 		self.stopped.load(Ordering::Relaxed)
 	}
 
+	/// True when both connection threads can be joined without blocking.
+	/// The peer reaper uses this to keep stop handles alive until thread-local
+	/// stream wrappers have been dropped, without stalling normal peer cleanup.
+	pub fn is_finished(&self) -> bool {
+		let reader_finished = self
+			.reader_thread
+			.as_ref()
+			.map(|thread| thread.is_finished())
+			.unwrap_or(true);
+		let writer_finished = self
+			.writer_thread
+			.as_ref()
+			.map(|thread| thread.is_finished())
+			.unwrap_or(true);
+		reader_finished && writer_finished
+	}
+
 	pub fn wait(&mut self) -> Result<(), Error> {
 		let mut first_error = None;
 		if let Some(reader_thread) = self.reader_thread.take() {
