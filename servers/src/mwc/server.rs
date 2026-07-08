@@ -145,6 +145,7 @@ impl Server {
 		secp: &Secp256k1,
 		context_id: u32,
 		config: ServerConfig,
+		stop_state: Arc<StopState>,
 	) -> Result<Self, Error> {
 		if let Some(ban_window) = config.p2p_config.ban_window {
 			if ban_window <= 0 {
@@ -156,6 +157,10 @@ impl Server {
 		}
 
 		config.dandelion_config.validate().map_err(Error::Config)?;
+
+		if stop_state.is_stopped() {
+			return Err(Error::ServerError("Server start was cancelled".into()));
+		}
 
 		let stratum_ip_pool = Arc::new(connections::StratumIpPool::new(
 			config.stratum_mining_config.ban_action_limit,
@@ -179,7 +184,9 @@ impl Server {
 			Some(b) => b,
 		};
 
-		let stop_state = Arc::new(StopState::new());
+		if stop_state.is_stopped() {
+			return Err(Error::ServerError("Server start was cancelled".into()));
+		}
 
 		let pool_adapter = Arc::new(PoolToChainAdapter::new());
 		let pool_net_adapter = Arc::new(PoolToNetAdapter::new(
@@ -245,6 +252,10 @@ impl Server {
 			)
 			.map_err(|e| Error::ServerError(format!("Unable to read blockchain data, {}", e)))?,
 		);
+
+		if stop_state.is_stopped() {
+			return Err(Error::ServerError("Server start was cancelled".into()));
+		}
 
 		pool_adapter
 			.set_chain(shared_chain.clone())
@@ -1026,7 +1037,7 @@ mod tests {
 		let mut config = ServerConfig::default();
 		config.dandelion_config.stem_probability = 101;
 
-		match Server::create_server(&secp, 0, config) {
+		match Server::create_server(&secp, 0, config, Arc::new(StopState::new())) {
 			Err(Error::Config(msg)) => {
 				assert!(msg.contains("stem_probability"));
 				assert!(msg.contains("0..=100"));

@@ -28,6 +28,7 @@ use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::tor::arti;
 use mwc_p2p::TorConfig;
 use mwc_servers::{Server, ServerConfig, ServerStats};
+use mwc_util::StopState;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +37,9 @@ lazy_static! {
 		/// Global chain status flags. It is expected that init call will set them first for every needed context
 		/// Note, both node and wallet will need to set it up. Any param can be set once
 	static ref SERVER_CONTEXT: RwLock< HashMap<u32, mwc_servers::Server>> = RwLock::new(HashMap::new());
+
+	static ref SERVER_STARTUP_STOP_STATE: RwLock<HashMap<u32, Arc<StopState>>> =
+		RwLock::new(HashMap::new());
 
 	static ref CALL_ROUTER_CONTEXT: RwLock< HashMap<u32, Arc<Router>>> = RwLock::new(HashMap::new());
 }
@@ -46,13 +50,25 @@ lazy_static! {
 /// context was already released or was never created, the call still succeeds
 /// after clearing any remaining per-context router/chain data.
 pub fn release_server(context_id: u32) {
-	let mut servers = SERVER_CONTEXT.write();
-	let server = servers.remove(&context_id);
+	let startup_stop_state = SERVER_STARTUP_STOP_STATE
+		.read_recursive()
+		.get(&context_id)
+		.cloned();
+	if let Some(stop_state) = &startup_stop_state {
+		stop_state.stop();
+	}
+
+	let server = {
+		let mut servers = SERVER_CONTEXT.write();
+		servers.remove(&context_id)
+	};
 	CALL_ROUTER_CONTEXT.write().remove(&context_id);
 	if let Some(server) = server {
 		server.stop();
+		mwc_chain::pipe::release_context_data(context_id);
+	} else if startup_stop_state.is_none() {
+		mwc_chain::pipe::release_context_data(context_id);
 	}
-	mwc_chain::pipe::release_context_data(context_id);
 }
 
 /// Tor client needs to be started once, no context_id is requred
@@ -72,20 +88,94 @@ pub fn tor_status() -> (bool, bool) {
 	(arti::is_arti_started(), arti::is_arti_healthy())
 }
 
-/// Create a new server instance. No jobs will be started
-pub fn create_server(context_id: u32, config: ServerConfig) -> Result<(), Error> {
-	let mut servers = SERVER_CONTEXT.write();
-	if servers.contains_key(&context_id) {
+/// Create a new server instance. No jobs will be started.
+///
+/// The provided stop state is registered before chain initialization begins,
+/// allowing callers to cancel txhashset startup indexing before the server is
+/// fully constructed.
+pub fn create_server(
+	context_id: u32,
+	config: ServerConfig,
+	stop_state: Arc<StopState>,
+) -> Result<(), Error> {
+	{
+		let mut startup_states = SERVER_STARTUP_STOP_STATE.write();
+		if startup_states.contains_key(&context_id) {
+			return Err(Error::ContextError(
+				"Node server is already starting for this context".into(),
+			));
+		}
+		startup_states.insert(context_id, stop_state.clone());
+	}
+
+	if SERVER_CONTEXT.read_recursive().contains_key(&context_id) {
+		SERVER_STARTUP_STOP_STATE.write().remove(&context_id);
 		return Err(Error::ContextError(
 			"Node server already created for this context".into(),
 		));
 	}
-	let secp = Secp256k1::with_caps(ContextFlag::Commit)
-		.map_err(|e| Error::ServerError(format!("Secp instance creation error, {}", e)))?;
-	let serv = Server::create_server(&secp, context_id, config)
-		.map_err(|e| Error::ServerError(format!("Unable to create server, {}", e)))?;
 
-	servers.insert(context_id, serv);
+	let secp = match Secp256k1::with_caps(ContextFlag::Commit) {
+		Ok(secp) => secp,
+		Err(e) => {
+			SERVER_STARTUP_STOP_STATE.write().remove(&context_id);
+			return Err(Error::ServerError(format!(
+				"Secp instance creation error, {}",
+				e
+			)));
+		}
+	};
+
+	let serv = match Server::create_server(&secp, context_id, config, stop_state.clone()) {
+		Ok(serv) => serv,
+		Err(e) => {
+			SERVER_STARTUP_STOP_STATE.write().remove(&context_id);
+			mwc_chain::pipe::release_context_data(context_id);
+			return Err(Error::ServerError(format!(
+				"Unable to create server, {}",
+				e
+			)));
+		}
+	};
+
+	if stop_state.is_stopped() {
+		SERVER_STARTUP_STOP_STATE.write().remove(&context_id);
+		serv.stop();
+		mwc_chain::pipe::release_context_data(context_id);
+		return Err(Error::ServerError(
+			"Server start was cancelled during blockchain indexing".into(),
+		));
+	}
+
+	let mut serv = Some(serv);
+	let inserted = {
+		let mut servers = SERVER_CONTEXT.write();
+		if servers.contains_key(&context_id) {
+			false
+		} else {
+			servers.insert(context_id, serv.take().expect("server is present"));
+			true
+		}
+	};
+
+	if !inserted {
+		SERVER_STARTUP_STOP_STATE.write().remove(&context_id);
+		if let Some(serv) = serv {
+			serv.stop();
+		}
+		return Err(Error::ContextError(
+			"Node server already created for this context".into(),
+		));
+	}
+
+	SERVER_STARTUP_STOP_STATE.write().remove(&context_id);
+	if stop_state.is_stopped() {
+		release_server(context_id);
+		return Err(Error::ServerError(
+			"Server start was cancelled during blockchain indexing".into(),
+		));
+	}
+
 	Ok(())
 }
 
