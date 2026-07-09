@@ -79,22 +79,22 @@ pub fn verify_size(context_id: u32, bh: &BlockHeader) -> Result<(), Error> {
 
 /// Mines a genesis block using the internal miner
 pub(crate) fn mine_genesis_block(context_id: u32) -> Result<Block, Error> {
-	let mut gen = genesis::genesis_dev(context_id);
+	let mut genesis = genesis::genesis_dev(context_id);
 
 	// total_difficulty on the genesis header *is* the difficulty of that block
-	let genesis_difficulty = gen.header.pow.total_difficulty;
+	let genesis_difficulty = genesis.header.pow.total_difficulty;
 
 	let sz = global::min_edge_bits(context_id);
 	let proof_size = global::proofsize(context_id);
 
 	pow_size(
 		context_id,
-		&mut gen.header,
+		&mut genesis.header,
 		genesis_difficulty,
 		proof_size,
 		sz,
 	)?;
-	Ok(gen)
+	Ok(genesis)
 }
 
 /// Runs a proof of work computation over the provided block using the provided

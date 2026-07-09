@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/mwcproject/mwc-node"
 keywords = ["crypto", "mwc", "mimblewimble"]
 workspace = ".."
-edition = "2018"
+edition = "2024"
 
 [dependencies]
 # Error handling and shared infrastructure used across most crates.

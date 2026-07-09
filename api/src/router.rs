@@ -196,7 +196,7 @@ impl Router {
 		}
 	}
 
-	pub fn get(&self, path: &str) -> Result<impl Iterator<Item = HandlerObj>, RouterError> {
+	pub fn get(&self, path: &str) -> Result<impl Iterator<Item = HandlerObj> + use<>, RouterError> {
 		let segments = generate_path(path)?;
 		let mut handlers = vec![];
 		let mut node_id = self.root();

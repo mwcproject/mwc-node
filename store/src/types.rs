@@ -716,7 +716,7 @@ where
 			return self.truncate_unsynced(pos);
 		}
 
-		if let SizeInfo::VariableSize(ref mut size_file) = &mut self.size_info {
+		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
 			size_file.rewind(pos)?;
 		}
 
@@ -769,7 +769,7 @@ where
 				),
 			));
 		}
-		if let SizeInfo::VariableSize(ref mut size_file) = &mut self.size_info {
+		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
 			size_file.truncate_unsynced(pos)?;
 		}
 		self.buffer.truncate(new_len);
@@ -924,7 +924,7 @@ where
 			self.parent_dir_needs_sync = false;
 		}
 
-		if let SizeInfo::VariableSize(ref mut size_file) = &mut self.size_info {
+		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
 			// Flush size metadata only after the data file is durable. If this
 			// fails, a later retry will truncate and rewrite the data buffer.
 			size_file.flush()?
@@ -954,7 +954,7 @@ where
 		}
 
 		// Discarding the data file will discard the associated size file if we have one.
-		if let SizeInfo::VariableSize(ref mut size_file) = &mut self.size_info {
+		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
 			size_file.discard();
 		}
 
@@ -1189,7 +1189,7 @@ where
 	}
 
 	fn rebuild_size_file(&mut self) -> io::Result<()> {
-		if let SizeInfo::VariableSize(ref mut size_file) = &mut self.size_info {
+		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
 			// Note: Reading from data file and writing sizes to the associated (tmp) size_file.
 			let tmp_path = size_file.path.with_extension("tmp");
 			debug!("rebuild_size_file: {:?}", tmp_path);
@@ -1288,7 +1288,7 @@ where
 		self.file = None;
 
 		// Remember to release the size_file as well if we have one.
-		if let SizeInfo::VariableSize(ref mut size_file) = &mut self.size_info {
+		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
 			size_file.release();
 		}
 	}

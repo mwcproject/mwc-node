@@ -284,7 +284,12 @@ impl Peers {
 
 	/// Add a peer as banned to block future connections, usually due to failed
 	/// handshake
-	pub fn add_banned(&self, addr: PeerAddr, ban_reason: ReasonForBan) -> Result<(), Error> {
+	pub fn add_banned(
+		&self,
+		addr: PeerAddr,
+		ban_reason: ReasonForBan,
+		ban_message: &str,
+	) -> Result<(), Error> {
 		let peer_data = match self.get_peer(&addr) {
 			Ok(peer) => PeerData {
 				addr: addr.clone(),
@@ -308,7 +313,10 @@ impl Peers {
 			},
 			Err(e) => return Err(e),
 		};
-		info!("Banning peer {}, ban_reason={:?}", addr, ban_reason);
+		info!(
+			"Banning peer {}, ban_reason={:?}, ban_message={}",
+			addr, ban_reason, ban_message
+		);
 		self.save_peer(&peer_data).map(|_| ())
 	}
 
@@ -460,7 +468,7 @@ impl Peers {
 		);
 		// Persist the ban even if the peer row was pruned from the peer-store
 		// cache before delayed bad-block attribution fired.
-		let ban_result = self.add_banned(peer_addr.clone(), ban_reason);
+		let ban_result = self.add_banned(peer_addr.clone(), ban_reason, message);
 
 		// Remove the peer directly from the live map. Do not use
 		// get_connected_peer() here because it filters excluded peers, and banning
