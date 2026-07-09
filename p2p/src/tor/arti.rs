@@ -1080,7 +1080,7 @@ impl ArtiCore {
 		(
 			Arc<tor_hsservice::RunningOnionService>,
 			String,
-			impl futures::Stream<Item = tor_hsservice::RendRequest> + Send,
+			impl futures::Stream<Item = tor_hsservice::RendRequest> + Send + use<>,
 		),
 		Error,
 	> {

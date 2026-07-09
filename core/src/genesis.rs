@@ -48,7 +48,7 @@ pub(crate) fn genesis_dev(context_id: u32) -> core::Block {
 
 /// Floonet genesis block
 pub fn genesis_floo(secp: &Secp256k1, context_id: u32) -> core::Block {
-	let gen = core::Block::with_header(
+	let genesis = core::Block::with_header(
 		context_id,
 		core::BlockHeader {
 			height: 0,
@@ -165,8 +165,9 @@ pub fn genesis_floo(secp: &Secp256k1, context_id: u32) -> core::Block {
 			],
 		},
 	);
-	// Note, expect is safe because gen is a block with constant data
-	gen.with_reward(output, kernel)
+	// Note, expect is safe because genesis is a block with constant data
+	genesis
+		.with_reward(output, kernel)
 		.expect("genesis_floo block body must be empty before reward")
 }
 
@@ -174,7 +175,7 @@ pub fn genesis_floo(secp: &Secp256k1, context_id: u32) -> core::Block {
 /// Mainnet genesis block
 /// Note, unwrap calls are safe here because arguments are constants
 pub fn genesis_main(secp: &Secp256k1, context_id: u32) -> core::Block {
-	let gen = core::Block::with_header(
+	let genesis = core::Block::with_header(
 		context_id,
 		core::BlockHeader {
 			height: 0,
@@ -291,8 +292,9 @@ pub fn genesis_main(secp: &Secp256k1, context_id: u32) -> core::Block {
 			],
 		},
 	);
-	// Note, expect is safe because gen is a block with constant data
-	gen.with_reward(output, kernel)
+	// Note, expect is safe because genesis is a block with constant data
+	genesis
+		.with_reward(output, kernel)
 		.expect("genesis_main block body must be empty before reward")
 }
 

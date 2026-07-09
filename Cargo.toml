@@ -9,7 +9,7 @@ keywords = [ "crypto", "mwc", "mimblewimble" ]
 readme = "README.md"
 exclude = ["**/*.mwc", "**/*.mwc"]
 build = "src/build/build.rs"
-edition = "2018"
+edition = "2024"
 
 [workspace]
 members = ["api", "chain", "config", "core", "keychain", "mwc_crates", "p2p", "servers", "store", "util", "pool", "node_workflow", "mwc_node_lib"]

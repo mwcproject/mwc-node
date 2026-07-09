@@ -23,7 +23,6 @@ use mwc_crates::log::{error, info, warn};
 use mwc_crates::tokio;
 use mwc_crates::tor_cell::relaycell::msg::Connected;
 use mwc_crates::tor_hsservice;
-use mwc_crates::tor_hsservice::status::State;
 use mwc_crates::tor_proto::client::stream::IncomingStreamRequest;
 use mwc_crates::zeroize::Zeroizing;
 use mwc_util::StopState;
@@ -246,30 +245,13 @@ where
 												ready_for_traffic,
 											);
 
-											let need_arti_restart = if ready_for_traffic {
-												match onion_service_status {
-													State::Broken => true,
-													state if state.is_fully_reachable() => {
-														last_running_time = Instant::now();
-														if let Some(f) =
-															&(*service_status_callback2)
-														{
-															f(true);
-														};
-														false
-													}
-													_ => {
-														if let Some(f) =
-															&(*service_status_callback2)
-														{
-															f(false);
-														};
-														let elapsed = Instant::now()
-															.duration_since(last_running_time);
-														// Giving 3 minutes to arti to restore
-														elapsed > Duration::from_secs(180)
-													}
-												}
+											if ready_for_traffic {
+												// Removed state.is_fully_reachable() because in reality it doesn't work as expected.
+												// Tor can work fine and be in the booting state for a very long time. There is
+												//  not much what we can do. ready_for_traffic arti.bootstrap_status().ready_for_traffic()
+												// is the best indicator so far.
+												last_running_time = Instant::now();
+												false
 											} else {
 												if let Some(f) = &(*service_status_callback2) {
 													f(false);
@@ -278,8 +260,7 @@ where
 													.duration_since(last_running_time);
 												// Giving 3 minutes to arti to restore
 												elapsed > Duration::from_secs(180)
-											};
-											need_arti_restart
+											}
 										};
 
 										if need_arti_restart || arti::is_arti_restarting() {
@@ -606,10 +587,7 @@ where
 				}
 				if let Some(failed_service_callback) = &failed_service_callback {
 					if failed_service_callback(&e) {
-						error!(
-							"listen_onion_service exited because of callback response and error: {}",
-							e
-						);
+						error!("listen_onion_service exited because of callback response and error: {}", e);
 						return Err(e);
 					}
 				}
@@ -622,7 +600,10 @@ where
 
 				if let Some(failed_service_callback) = &failed_service_callback {
 					if failed_service_callback(&e) {
-						error!("listen_onion_service exited because of callback response and error: {}", e);
+						error!(
+							"listen_onion_service exited because of callback response and error: {}",
+							e
+						);
 						return Err(e);
 					}
 				}
