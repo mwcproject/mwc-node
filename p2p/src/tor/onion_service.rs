@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::network_status;
 use crate::tor::arti;
 use crate::tor::arti::is_arti_restarting;
 use crate::tor::arti_tracked::ArtiRegistrator;
 use crate::tor::tcp_data_stream::TcpDataStream;
 use crate::{Error, PeerAddr};
 use mwc_crates::async_std::stream::StreamExt;
+use mwc_crates::chrono::Utc;
 use mwc_crates::futures;
 use mwc_crates::log::{error, info, warn};
 use mwc_crates::tokio;
@@ -193,6 +195,8 @@ where
 									// Guard is needed for
 									let _arti_guard = ArtiRegistrator::new(onion_service_object)?;
 									let mut last_running_time = Instant::now();
+									let mut last_reliable_connection_time : Option<i64> = None;
+									let mut was_non_reliable_connection = false;
 									if let Some(f) = &(*service_status_callback2) {
 										f(false);
 									};
@@ -246,6 +250,29 @@ where
 											);
 
 											if ready_for_traffic {
+												let now = Utc::now().timestamp();
+												let non_reliable_connection =
+													!onion_service_status.is_fully_reachable();
+												if non_reliable_connection {
+													if !was_non_reliable_connection {
+														info!("{} onion service detect non reliable connection",service_name2);
+													}
+													was_non_reliable_connection = true;
+												} else {
+													if was_non_reliable_connection {
+														if let Some(last_reliable_connection_time) = last_reliable_connection_time
+														{
+															network_status::update_last_network_reliable_time(last_reliable_connection_time);
+															info!(
+																"{} onion service became fully reachable; restoring Defunct peers connected since {}",
+																service_name2, last_reliable_connection_time
+															);
+														}
+													}
+													last_reliable_connection_time = Some(now);
+													was_non_reliable_connection = false;
+												}
+
 												// Removed state.is_fully_reachable() because in reality it doesn't work as expected.
 												// Tor can work fine and be in the booting state for a very long time. There is
 												//  not much what we can do. ready_for_traffic arti.bootstrap_status().ready_for_traffic()

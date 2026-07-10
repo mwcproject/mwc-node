@@ -38,7 +38,6 @@ use mwc_util::StopState;
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::ToSocketAddrs;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::{thread, time};
 
@@ -108,7 +107,7 @@ pub fn connect_and_monitor(
 
 			let mut connection_threads: Vec<PeerConnectThread> = Vec::new();
 
-			let network_last_outage_time = AtomicI64::new(0);
+			let mut last_peer_restore_time_limit = 0;
 
 			peers.reset_last_peer_add_timestamp();
 
@@ -172,7 +171,7 @@ pub fn connect_and_monitor(
 						use_tor_connection,
 						&mut listen_q_addrs,
 						request_more_connections,
-						&network_last_outage_time,
+						&mut last_peer_restore_time_limit,
 						&mut connecting_history,
 						PEER_Q_EXPECTED_SIZE,
 					) {
@@ -279,7 +278,7 @@ fn monitor_peers(
 	use_tor_connection: bool,
 	listen_q_addrs: &mut VecDeque<PeerAddr>,
 	request_more_connections: bool,
-	network_last_outage_time: &AtomicI64,
+	last_peer_restore_time_limit: &mut i64,
 	connecting_history: &mut HashMap<PeerAddr, time::Instant>,
 	q_expected_size: usize,
 ) -> Result<(), mwc_p2p::Error> {
@@ -375,30 +374,13 @@ fn monitor_peers(
 		}
 	}
 
-	let outage_time = network_status::get_network_outage_time();
-	if network_last_outage_time.load(Ordering::Relaxed) != outage_time {
-		let connection_time_limit = Utc::now().timestamp() - 3600;
-		let mut first_restore_error = None;
-
+	let restore_time_limit = network_status::get_last_network_reliable_time();
+	if *last_peer_restore_time_limit != restore_time_limit {
 		// Outage was recently detected, reverting recent Defuncts peers back to healthy
-		for peer in &defuncts {
-			if peer.last_connected > connection_time_limit {
-				if let Err(e) = peers.update_state(&peer.addr, mwc_p2p::State::Healthy) {
-					error!(
-						"failed to restore peer {} from Defunct to Healthy after network outage: {}",
-						peer.addr, e
-					);
-					if first_restore_error.is_none() {
-						first_restore_error = Some(e);
-					}
-				}
-			}
-		}
-		if let Some(e) = first_restore_error {
-			return Err(e);
-		}
+		// Taking extra 3 minutes into the safe connecitons time
+		peers.restore_defunct_peers_since(restore_time_limit.saturating_sub(60 * 3))?;
 
-		network_last_outage_time.store(outage_time, Ordering::Relaxed);
+		*last_peer_restore_time_limit = restore_time_limit;
 		// reset connection history
 		connecting_history.clear();
 		peers.reset_advertised_peer_checks();

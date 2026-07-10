@@ -791,7 +791,8 @@ fn restart_arti(start_new_client: bool, context_ids: Vec<u32>) -> i64 {
 				// the freshly incremented instance id.
 				TOR_RESTART_REQUEST.store(tor_id, Ordering::SeqCst);
 				*TOR_RESTART_TIME.write() = Some(Instant::now());
-				network_status::update_network_outage_time(Utc::now().timestamp());
+				let now = Utc::now().timestamp();
+				network_status::update_last_network_reliable_time(now);
 				return expiration_time;
 			}
 			Err(e) => {

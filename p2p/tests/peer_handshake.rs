@@ -177,7 +177,11 @@ fn peer_connect_rejects_banned_outbound_peer() {
 	let peer_addr = PeerAddr::Ip(addr);
 	server_inner
 		.peers
-		.add_banned(peer_addr.clone(), mwc_p2p::ReasonForBan::BadHandshake)
+		.add_banned(
+			peer_addr.clone(),
+			mwc_p2p::ReasonForBan::BadHandshake,
+			"test ban",
+		)
 		.unwrap();
 
 	let async_rt = mwc_util::global_runtime().unwrap();
@@ -246,7 +250,11 @@ fn server_connect_rejects_banned_peer_before_dialing() {
 	let peer_addr = PeerAddr::Ip(listener.local_addr().unwrap());
 	server
 		.peers
-		.add_banned(peer_addr.clone(), mwc_p2p::ReasonForBan::ManualBan)
+		.add_banned(
+			peer_addr.clone(),
+			mwc_p2p::ReasonForBan::ManualBan,
+			"test ban",
+		)
 		.unwrap();
 
 	match server.connect(&peer_addr) {

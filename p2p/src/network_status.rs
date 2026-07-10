@@ -12,22 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Network related status. We need to know when if was offline/back online so we could
-// start using Defunct peers faster
+// Network related status. We need to know the last time the network was reliable
+// so we can start using recently Defunct peers faster after connectivity recovers.
 
 use mwc_crates::rand;
 use mwc_crates::rand::prelude::IndexedRandom;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
 
-static NETWORK_OUTAGE_TIME: AtomicI64 = AtomicI64::new(0);
+static LAST_NETWORK_RELIABLE_TIME: AtomicI64 = AtomicI64::new(0);
 
-pub fn get_network_outage_time() -> i64 {
-	NETWORK_OUTAGE_TIME.load(Ordering::Relaxed)
+pub fn get_last_network_reliable_time() -> i64 {
+	LAST_NETWORK_RELIABLE_TIME.load(Ordering::Relaxed)
 }
 
-pub fn update_network_outage_time(time: i64) {
-	NETWORK_OUTAGE_TIME.store(time, Ordering::Relaxed);
+pub fn update_last_network_reliable_time(time: i64) {
+	LAST_NETWORK_RELIABLE_TIME.store(time, Ordering::Relaxed);
 }
 
 static PROBE_URLS_HTTP: OnceLock<Vec<String>> = OnceLock::new();

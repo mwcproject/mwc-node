@@ -1193,7 +1193,7 @@ mod tests {
 		let peer = Arc::new(test_peer());
 		let addr = peer.info.addr.clone();
 		peers
-			.add_banned(addr.clone(), ReasonForBan::ManualBan)
+			.add_banned(addr.clone(), ReasonForBan::ManualBan, "test ban")
 			.unwrap();
 
 		let result = peers.add_connected(peer);
