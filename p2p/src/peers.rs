@@ -753,6 +753,34 @@ impl Peers {
 			.map_err(From::from)
 	}
 
+	/// Restores Defunct peers that were last connected at or after `connection_time_limit`.
+	pub fn restore_defunct_peers_since(&self, connection_time_limit: i64) -> Result<u32, Error> {
+		let mut restored = 0;
+		let mut first_restore_error = None;
+
+		for peer in self.all_peer_data(Capabilities::UNKNOWN)? {
+			if peer.flags == State::Defunct && peer.last_connected >= connection_time_limit {
+				if let Err(e) = self.update_state(&peer.addr, State::Healthy) {
+					error!(
+						"failed to restore peer {} from Defunct to Healthy: {}",
+						peer.addr, e
+					);
+					if first_restore_error.is_none() {
+						first_restore_error = Some(e);
+					}
+				} else {
+					restored += 1;
+				}
+			}
+		}
+
+		if let Some(e) = first_restore_error {
+			return Err(e);
+		}
+
+		Ok(restored)
+	}
+
 	/// Updates the state of a peer in store
 	pub fn update_stop_healthy_state(&self, peer_addr: &PeerAddr) -> Result<(), Error> {
 		self.store
@@ -1755,6 +1783,7 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 mod tests {
 	use super::*;
 	use crate::serv::DummyAdapter;
+	use mwc_core::ser::ProtocolVersion;
 	use std::net::SocketAddr;
 
 	fn test_source_addr(i: usize) -> PeerAddr {
@@ -1769,6 +1798,19 @@ mod tests {
 			[1, 1, (i / 250 + 1) as u8, (i % 250 + 1) as u8],
 			3414,
 		)))
+	}
+
+	fn test_peer_data(i: usize, flags: State, last_connected: i64) -> PeerData {
+		PeerData {
+			addr: test_source_addr(i),
+			capabilities: Capabilities::UNKNOWN,
+			user_agent: "test".to_string(),
+			flags,
+			last_banned: 0,
+			ban_reason: ReasonForBan::None,
+			last_connected,
+			version: ProtocolVersion::local(),
+		}
 	}
 
 	#[test]
@@ -1789,6 +1831,45 @@ mod tests {
 		let stored = peers.get_peer(&addr).unwrap();
 		assert_eq!(stored.flags, State::Banned);
 		assert_eq!(stored.ban_reason, ReasonForBan::BadBlock);
+	}
+
+	#[test]
+	fn restore_defunct_peers_since_respects_cutoff() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let peers = Peers::new(store, Arc::new(DummyAdapter {}), &P2PConfig::default());
+
+		let old_defunct = test_peer_data(1, State::Defunct, 99);
+		let cutoff_defunct = test_peer_data(2, State::Defunct, 100);
+		let newer_defunct = test_peer_data(3, State::Defunct, 101);
+		let healthy = test_peer_data(4, State::Healthy, 101);
+
+		peers
+			.save_peers(vec![
+				old_defunct.clone(),
+				cutoff_defunct.clone(),
+				newer_defunct.clone(),
+				healthy.clone(),
+			])
+			.unwrap();
+
+		assert_eq!(peers.restore_defunct_peers_since(100).unwrap(), 2);
+
+		assert_eq!(
+			peers.get_peer(&old_defunct.addr).unwrap().flags,
+			State::Defunct
+		);
+		assert_eq!(
+			peers.get_peer(&cutoff_defunct.addr).unwrap().flags,
+			State::Healthy
+		);
+		assert_eq!(
+			peers.get_peer(&newer_defunct.addr).unwrap().flags,
+			State::Healthy
+		);
+		assert_eq!(peers.get_peer(&healthy.addr).unwrap().flags, State::Healthy);
 	}
 
 	#[test]
