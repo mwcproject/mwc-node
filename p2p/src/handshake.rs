@@ -589,7 +589,7 @@ impl Handshake {
 			});
 		}
 
-		let addr = resolve_peer_addr(&hand.sender_addr, &conn)?;
+		let addr = resolve_peer_addr(&hand, &conn)?;
 		// Check the nonce to see if we are trying to connect to ourselves.
 		let peer_with_self = self.nonces.read_recursive().contains(&hand.nonce);
 
@@ -727,17 +727,15 @@ fn learned_ip_receiver_addr_from_samples(
 /// IP. Onion peers are different: Tor does not expose a caller onion identity to
 /// the service, so protocol versions before v5 only provide an advertised
 /// address. In v5+ an onion sender must include a Hand signature proving control
-/// of the advertised onion key. That proof does not prove reachability; only a
-/// successful outbound Tor connection proves the address can be dialed.
-fn resolve_peer_addr(advertised: &PeerAddr, conn: &TcpDataStream) -> Result<PeerAddr, Error> {
+/// of the advertised onion key. That proof does not prove future reachability;
+/// it only binds the active peer to the advertised onion identity.
+fn resolve_peer_addr(hand: &Hand, conn: &TcpDataStream) -> Result<PeerAddr, Error> {
+	let advertised = &hand.sender_addr;
 	match advertised {
 		Ip(socket_addr) => resolve_ip_peer_addr(socket_addr, conn.peer_addr()),
 		Onion(_) => match conn.peer_addr() {
 			Err(Error::IpAddressRequestFromTor) => Ok(advertised.clone()),
-			Ok(PeerAddr::Ip(ip_addr)) => Err(bad_handshake(format!(
-				"cannot accept advertised onion sender address {} over IP transport {}",
-				advertised, ip_addr
-			))),
+			Ok(PeerAddr::Ip(_)) => Ok(advertised.clone()),
 			Ok(addr) => Err(bad_handshake(format!(
 				"cannot verify advertised onion sender address {} over non-Tor transport {}",
 				advertised, addr
@@ -806,6 +804,7 @@ mod tests {
 	use super::*;
 	use crate::msg::MsgHeader;
 	use mwc_core::ser;
+	use mwc_crates::tokio::net::{TcpListener, TcpStream};
 	use mwc_crates::tor_llcrypto::pk::ed25519::{ExpandedKeypair, Keypair};
 
 	fn onion_from_seed(seed: &[u8; 32]) -> String {
@@ -1001,6 +1000,98 @@ mod tests {
 			}
 			err => panic!("expected BadHandshake, got {:?}", err),
 		}
+	}
+
+	#[test]
+	fn resolve_onion_peer_addr_allows_ip_transport_without_proof() {
+		let sender_addr = PeerAddr::Onion(onion_from_seed(&[24u8; 32]));
+		let receiver_addr = PeerAddr::Ip("127.0.0.1:3414".parse().unwrap());
+		let hand = test_hand(
+			ProtocolVersion(ONION_PROOF_PROTOCOL_VERSION),
+			sender_addr.clone(),
+			receiver_addr,
+			None,
+			None,
+		);
+		mwc_util::init_global_runtime().unwrap();
+		let async_rt = mwc_util::global_runtime().unwrap();
+		let (_client, server) = async_rt.block_on(async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let addr = listener.local_addr().unwrap();
+			let client = TcpStream::connect(addr).await.unwrap();
+			let (server, _) = listener.accept().await.unwrap();
+			(client, server)
+		});
+		let stream = TcpDataStream::from_tcp(server);
+
+		assert_eq!(resolve_peer_addr(&hand, &stream).unwrap(), sender_addr);
+	}
+
+	#[test]
+	fn verify_onion_hand_proof_rejects_v5_without_signature() {
+		let sender_addr = PeerAddr::Onion(onion_from_seed(&[26u8; 32]));
+		let receiver_addr = PeerAddr::Ip("127.0.0.1:3414".parse().unwrap());
+		let receiver_hs = test_handshake(None, None);
+		let hand = test_hand(
+			ProtocolVersion(ONION_PROOF_PROTOCOL_VERSION),
+			sender_addr,
+			receiver_addr,
+			None,
+			None,
+		);
+
+		let err = receiver_hs
+			.verify_onion_hand_proof_with_stored_version(&hand, None)
+			.unwrap_err();
+
+		match err {
+			Error::BadHandshake(message) => {
+				assert!(message.contains("missing onion identity proof"))
+			}
+			err => panic!("expected BadHandshake, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn resolve_onion_peer_addr_allows_signed_ip_transport() {
+		let sender_seed = [25u8; 32];
+		let sender_onion = onion_from_seed(&sender_seed);
+		let sender_addr = PeerAddr::Onion(sender_onion.clone());
+		let receiver_addr = PeerAddr::Ip("127.0.0.1:3414".parse().unwrap());
+		let sender_hs = test_handshake(
+			Some(sender_onion),
+			Some(expanded_key_from_seed(&sender_seed)),
+		);
+		let timestamp = Utc::now().timestamp();
+		let sig = sender_hs
+			.sign_onion_hand_proof(
+				&sender_addr,
+				&receiver_addr,
+				42,
+				timestamp,
+				&Hash::from_vec(&[]),
+			)
+			.unwrap()
+			.unwrap();
+		let hand = test_hand(
+			ProtocolVersion(ONION_PROOF_PROTOCOL_VERSION),
+			sender_addr.clone(),
+			receiver_addr,
+			Some(timestamp),
+			Some(sig),
+		);
+		mwc_util::init_global_runtime().unwrap();
+		let async_rt = mwc_util::global_runtime().unwrap();
+		let (_client, server) = async_rt.block_on(async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let addr = listener.local_addr().unwrap();
+			let client = TcpStream::connect(addr).await.unwrap();
+			let (server, _) = listener.accept().await.unwrap();
+			(client, server)
+		});
+		let stream = TcpDataStream::from_tcp(server);
+
+		assert_eq!(resolve_peer_addr(&hand, &stream).unwrap(), sender_addr);
 	}
 
 	#[test]

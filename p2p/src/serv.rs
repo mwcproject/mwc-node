@@ -666,7 +666,7 @@ impl Server {
 				if let Err(e) = self.peers.add_banned(
 					peer.clone(),
 					ReasonForBan::BadHandshake,
-					&format!("Aaccepting peer error: {}", err),
+					&format!("accepting peer error: {}", err),
 				) {
 					warn!("Failed to ban peer {} after bad handshake: {}", peer, e);
 				}
