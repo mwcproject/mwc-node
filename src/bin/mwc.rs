@@ -128,8 +128,8 @@ fn real_main() -> i32 {
 	let mut logging_config = config.members.logging.clone();
 	logging_config.tui_running = config.members.server.run_tui;
 
-	let logs_rx = match mwc_node_workflow::logging::init_bin_logs(&logging_config) {
-		Ok(rx) => rx,
+	let tui_logs = match mwc_node_workflow::logging::init_bin_logs(&logging_config) {
+		Ok(logs) => logs,
 		Err(e) => {
 			println!("Unable to initilize the logs. {}", e);
 			return -1;
@@ -181,7 +181,7 @@ fn real_main() -> i32 {
 			context_id,
 			Some(server_args),
 			config,
-			logs_rx,
+			tui_logs,
 		)),
 		// client commands and options
 		("client", Some(client_args)) => {
@@ -203,7 +203,7 @@ fn real_main() -> i32 {
 		// If nothing is specified, try to just use the config file instead
 		// this could possibly become the way to configure most things
 		// with most command line options being phased out
-		_ => res_to_ret_val(cmd::server_command(context_id, None, config, logs_rx)),
+		_ => res_to_ret_val(cmd::server_command(context_id, None, config, tui_logs)),
 	};
 
 	if let Err(e) = mwc_node_workflow::context::release_context(context_id) {
