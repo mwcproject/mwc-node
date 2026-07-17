@@ -23,17 +23,21 @@ use crate::tui::constants::VIEW_LOGS;
 use mwc_crates::cursive::utils::lines::spans::{LinesIterator, Row};
 use mwc_crates::cursive::utils::markup::StyledString;
 use mwc_crates::log::{warn, Level};
-use mwc_util::logger::LogEntry;
+use mwc_util::logger::{LogEntry, TUI_LOG_BUFFER_CAPACITY};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static LOGS_VIEW_MISSING_WARNED: AtomicBool = AtomicBool::new(false);
+// Keep the full pending batch plus one synthetic omission notice in the visible history.
+const TUI_LOG_VIEW_CAPACITY: usize = TUI_LOG_BUFFER_CAPACITY + 1;
 
 pub struct TUILogsView;
 
 impl TUILogsView {
 	pub fn create() -> impl View {
-		let logs_view = ResizedView::with_full_screen(LogBufferView::new(200).with_name("logs"));
+		let logs_view = ResizedView::with_full_screen(
+			LogBufferView::new(TUI_LOG_VIEW_CAPACITY).with_name("logs"),
+		);
 		logs_view.with_name(VIEW_LOGS)
 	}
 

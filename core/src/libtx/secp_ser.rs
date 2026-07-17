@@ -16,10 +16,21 @@
 //! Sane serialization & deserialization of cryptographic structs into hex
 
 use keychain::BlindingFactor;
+use mwc_crates::secp;
 use mwc_crates::secp::constants::MAX_PROOF_SIZE;
 use mwc_crates::secp::pedersen::{Commitment, RangeProof};
 use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
 use util::{from_hex, ToHex};
+
+fn serialize_legacy_compact(
+	sig: &secp::AggSigSignature,
+	secp: &secp::Secp256k1,
+) -> Result<[u8; secp::constants::AGG_SIGNATURE_SIZE], secp::Error> {
+	if !sig.is_valid(secp) {
+		return Err(secp::Error::InvalidSignature);
+	}
+	sig.serialize_compact(secp)
+}
 
 /// Serializes a secp PublicKey to and from hex
 pub mod pubkey_serde {
@@ -98,7 +109,7 @@ pub mod option_sig_serde {
 						))
 					},
 					|secp| {
-						sig.serialize_raw(secp).map_err(|err| {
+						super::serialize_legacy_compact(sig, secp).map_err(|err| {
 							mwc_crates::serde::ser::Error::custom(format!(
 								"Unable serialize signature, {}",
 								err
@@ -142,7 +153,7 @@ pub mod option_sig_serde {
 							))
 						},
 						|secp| {
-							secp::AggSigSignature::from_raw_data(secp, &b)
+							secp::AggSigSignature::from_compact(secp, &b)
 								.map(Some)
 								.map_err(|err| {
 									mwc_crates::serde::de::Error::custom(format!(
@@ -228,7 +239,7 @@ pub mod sig_serde {
 		let sig_ser = secp_static::with_none(
 			|err| mwc_crates::serde::ser::Error::custom(format!("Unable create Secp, {}", err)),
 			|secp| {
-				sig.serialize_raw(secp).map_err(|err| {
+				super::serialize_legacy_compact(sig, secp).map_err(|err| {
 					mwc_crates::serde::ser::Error::custom(format!(
 						"Unable serialize signature, {}",
 						err
@@ -261,7 +272,7 @@ pub mod sig_serde {
 						mwc_crates::serde::de::Error::custom(format!("Unable create Secp, {}", err))
 					},
 					|secp| {
-						secp::AggSigSignature::from_raw_data(secp, &b).map_err(|err| {
+						secp::AggSigSignature::from_compact(secp, &b).map_err(|err| {
 							Error::custom(format!("Fail to decode signature, {}", err))
 						})
 					},
@@ -570,13 +581,14 @@ mod test {
 	}
 
 	#[test]
-	fn serializes_aggsig_raw_bytes() {
+	fn serializes_aggsig_legacy_compact_bytes() {
 		let secp = Secp256k1::with_caps(ContextFlag::VerifyOnly).unwrap();
 		let s = SerTest::random();
-		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
-		let expected = util::to_hex(&s.sig.serialize_raw(&secp).unwrap());
+		let serialized = serde_json::to_value(&s).unwrap();
+		let expected = util::to_hex(&s.sig.serialize_compact(&secp).unwrap());
 
-		assert_eq!(sig.as_str().unwrap(), expected);
+		assert_eq!(serialized["sig"].as_str().unwrap(), expected);
+		assert_eq!(serialized["opt_sig"].as_str().unwrap(), expected);
 	}
 
 	#[test]

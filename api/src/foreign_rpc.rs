@@ -23,15 +23,14 @@ use crate::types::{
 	OutputPrintable, Tip, Version,
 };
 use mwc_core::core::hash::Hash;
-use mwc_core::core::transaction::{Transaction, TxKernel};
+use mwc_core::core::transaction::Transaction;
 use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::easy_jsonrpc_mwc;
 use mwc_crates::easy_jsonrpc_mwc::{Handler, InvalidArgs, Params, Value};
-use mwc_crates::secp::{AggSigSignature, Secp256k1};
 use mwc_crates::serde::de::DeserializeOwned;
 use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
 use mwc_pool::{BlockChain, PoolAdapter};
-use mwc_util::{self, secp_static, ToHex};
+use mwc_util::{self, secp_static};
 use std::time::Instant;
 
 /// Public definition used to generate Node jsonrpc api.
@@ -1171,10 +1170,7 @@ where
 				easy_jsonrpc_mwc::Error::invalid_params("chain is not available".to_string())
 			})?
 			.get_context_id();
-		let (tx, fluff) = secp_static::with_commit(
-			|err| easy_jsonrpc_mwc::Error::invalid_params(format!("Unable create Secp, {}", err)),
-			|secp| parse_push_transaction_args(params, context_id, secp),
-		)?;
+		let (tx, fluff) = parse_push_transaction_args(params, context_id)?;
 		let result = secp_static::with_commit_mut(Error::from, |secp| {
 			Foreign::push_transaction(self.inner, tx, fluff, secp)
 		});
@@ -1286,7 +1282,6 @@ fn normalize_get_unspent_outputs_params(params: Params) -> Result<Params, easy_j
 fn parse_push_transaction_args(
 	params: Params,
 	context_id: u32,
-	secp: &Secp256k1,
 ) -> Result<(Transaction, Option<bool>), easy_jsonrpc_mwc::Error> {
 	match params {
 		Params::Positional(mut args) => {
@@ -1297,7 +1292,7 @@ fn parse_push_transaction_args(
 				args.push(Value::Null);
 			}
 			let mut args = args.into_iter();
-			let tx = parse_transaction_arg(args.next().unwrap(), "tx", 0, context_id, secp)?;
+			let tx = parse_transaction_arg(args.next().unwrap(), "tx", 0, context_id)?;
 			let fluff = parse_arg(args.next().unwrap(), "fluff", 1)?;
 			Ok((tx, fluff))
 		}
@@ -1307,7 +1302,6 @@ fn parse_push_transaction_args(
 				"tx",
 				0,
 				context_id,
-				secp,
 			)?;
 			let fluff = parse_arg(args.remove("fluff").unwrap_or(Value::Null), "fluff", 1)?;
 			if let Some(key) = args.keys().next() {
@@ -1323,21 +1317,18 @@ fn parse_transaction_arg(
 	name: &'static str,
 	index: usize,
 	context_id: u32,
-	secp: &Secp256k1,
 ) -> Result<Transaction, easy_jsonrpc_mwc::Error> {
 	if let Some(tx) = parse_transaction_hex_arg(&value, context_id)? {
 		return Ok(tx);
 	}
 
-	let raw = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()).ok();
+	let current = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()).ok();
 
 	normalize_legacy_transaction_value(&mut value);
-	let normalized = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()).ok();
-	let canonical = transaction_with_canonical_signatures(value, secp)
-		.ok()
-		.and_then(|value| easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value).ok());
+	let normalized = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value).ok();
 
-	select_transaction_with_valid_signature(raw, normalized, canonical, context_id, secp)
+	current
+		.or(normalized)
 		.ok_or_else(|| -> easy_jsonrpc_mwc::Error {
 			InvalidArgs::invalid_arg_structure(name, index, "parsing error".to_string()).into()
 		})
@@ -1379,83 +1370,6 @@ fn normalize_legacy_transaction_value(value: &mut Value) {
 	for kernel in kernels {
 		normalize_legacy_kernel_value(kernel);
 	}
-}
-
-fn transaction_with_canonical_signatures(
-	mut value: Value,
-	secp: &Secp256k1,
-) -> Result<Value, String> {
-	let kernels = value
-		.get_mut("body")
-		.and_then(|body| body.get_mut("kernels"))
-		.and_then(Value::as_array_mut)
-		.ok_or_else(|| "missing body.kernels".to_string())?;
-
-	for kernel in kernels {
-		convert_kernel_signature_to_raw(kernel, secp)?;
-	}
-
-	Ok(value)
-}
-
-fn convert_kernel_signature_to_raw(kernel: &mut Value, secp: &Secp256k1) -> Result<(), String> {
-	let sig_hex = kernel
-		.get("excess_sig")
-		.and_then(Value::as_str)
-		.ok_or_else(|| "missing kernel.excess_sig".to_string())?;
-
-	let sig_bytes = mwc_util::from_hex(sig_hex)
-		.map_err(|e| format!("failed to parse canonical signature hex: {}", e))?;
-	if sig_bytes.len() != 64 {
-		return Err(format!(
-			"invalid canonical signature length {}, expected 64 bytes",
-			sig_bytes.len()
-		));
-	}
-
-	let sig = AggSigSignature::from_compact(secp, &sig_bytes)
-		.map_err(|e| format!("failed to decode canonical signature: {}", e))?;
-	let raw_sig = sig
-		.serialize_raw(secp)
-		.map_err(|e| format!("failed to serialize canonical signature as raw: {}", e))?;
-
-	let sig_value = kernel
-		.get_mut("excess_sig")
-		.ok_or_else(|| "missing kernel.excess_sig".to_string())?;
-	*sig_value = easy_jsonrpc_mwc::serde_json::json!((&raw_sig[..]).to_hex());
-
-	Ok(())
-}
-
-fn select_transaction_with_valid_signature(
-	raw: Option<Transaction>,
-	normalized: Option<Transaction>,
-	canonical: Option<Transaction>,
-	context_id: u32,
-	secp: &Secp256k1,
-) -> Option<Transaction> {
-	if let Some(tx) = &raw {
-		if tx_kernel_signatures_verify(tx, context_id, secp) {
-			return Some(tx.clone());
-		}
-	}
-	if let Some(tx) = &normalized {
-		if tx_kernel_signatures_verify(tx, context_id, secp) {
-			return Some(tx.clone());
-		}
-	}
-
-	if let Some(tx) = canonical {
-		if tx_kernel_signatures_verify(&tx, context_id, secp) {
-			return Some(tx);
-		}
-	}
-
-	normalized.or(raw)
-}
-
-fn tx_kernel_signatures_verify(tx: &Transaction, context_id: u32, secp: &Secp256k1) -> bool {
-	TxKernel::batch_sig_verify(context_id, tx.kernels(), secp).is_ok()
 }
 
 fn normalize_legacy_kernel_value(kernel: &mut Value) {
@@ -1799,8 +1713,7 @@ mod tests {
 		kernel.insert("fee".to_string(), json!("42"));
 		kernel.insert("lock_height".to_string(), json!("0"));
 
-		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		let parsed = parse_transaction_arg(value, "tx", 0, 0, &secp).unwrap();
+		let parsed = parse_transaction_arg(value, "tx", 0, 0).unwrap();
 
 		match parsed.kernels()[0].features {
 			KernelFeatures::Plain { fee } => assert_eq!(fee.fee(), 42),
@@ -1816,8 +1729,7 @@ mod tests {
 		let mut value = serde_json::to_value(&tx).unwrap();
 		value["body"]["kernels"][0]["features"]["Plain"]["fee"] = json!("84");
 
-		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		let parsed = parse_transaction_arg(value, "tx", 0, 0, &secp).unwrap();
+		let parsed = parse_transaction_arg(value, "tx", 0, 0).unwrap();
 
 		match parsed.kernels()[0].features {
 			KernelFeatures::Plain { fee } => assert_eq!(fee.fee(), 84),
@@ -1826,22 +1738,22 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_push_transaction_accepts_canonical_kernel_signature() {
+	fn parse_push_transaction_accepts_legacy_compact_kernel_signature() {
 		let tx = transaction_with_kernel(KernelFeatures::Plain {
 			fee: FeeFields::new(126).unwrap(),
 		});
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let compact_sig = tx.kernels()[0].excess_sig.serialize_compact(&secp).unwrap();
-		let mut value = serde_json::to_value(&tx).unwrap();
-		value["body"]["kernels"][0]["excess_sig"] = json!((&compact_sig[..]).to_hex());
+		let value = serde_json::to_value(&tx).unwrap();
+		assert_eq!(
+			value["body"]["kernels"][0]["excess_sig"],
+			json!((&compact_sig[..]).to_hex())
+		);
 
-		let parsed = parse_transaction_arg(value, "tx", 0, 0, &secp).unwrap();
+		let parsed = parse_transaction_arg(value, "tx", 0, 0).unwrap();
 
 		parsed.kernels()[0].verify(0, &secp).unwrap();
-		assert_eq!(
-			parsed.kernels()[0].excess_sig.serialize_raw(&secp).unwrap(),
-			tx.kernels()[0].excess_sig.serialize_raw(&secp).unwrap()
-		);
+		assert_eq!(parsed.kernels()[0].excess_sig, tx.kernels()[0].excess_sig);
 	}
 
 	fn transaction_with_kernel(features: KernelFeatures) -> Transaction {

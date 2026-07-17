@@ -54,7 +54,15 @@ fn test_transaction_json_ser_deser() {
 	// Note: Tx kernel "features" serialize in a slightly unexpected way.
 	assert_eq!(value["body"]["kernels"][0]["features"]["Plain"]["fee"], 2);
 	assert!(value["body"]["kernels"][0]["excess"].is_string());
-	assert!(value["body"]["kernels"][0]["excess_sig"].is_string());
+	let secp = Secp256k1::with_caps(ContextFlag::VerifyOnly).unwrap();
+	let compact_sig = tx1.kernels()[0]
+		.excess_sig
+		.serialize_compact(&secp)
+		.unwrap();
+	assert_eq!(
+		value["body"]["kernels"][0]["excess_sig"].as_str().unwrap(),
+		util::to_hex(&compact_sig)
+	);
 
 	let mut invalid_value = value.clone();
 	invalid_value["body"]["kernels"][0]["features"]["Plain"]["fee"] = 0.into();

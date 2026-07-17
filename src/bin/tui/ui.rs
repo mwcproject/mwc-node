@@ -39,15 +39,15 @@ use crate::tui::constants::{ROOT_STACK, VIEW_BASIC_STATUS, VIEW_MINING, VIEW_PEE
 use crate::tui::types::{TUIStatusListener, UIMessage};
 use crate::tui::{logs, menu, mining, peers, status, version};
 use mwc_core::global;
-use mwc_crates::log::{error, warn};
-use mwc_util::logger::LogEntry;
+use mwc_crates::log::{error, warn, Level};
+use mwc_util::logger::{LogEntry, TuiLogBuffer};
 
 pub struct UI {
 	cursive: CursiveRunner<CursiveRunnable>,
 	ui_rx: mpsc::Receiver<UIMessage>,
 	ui_tx: mpsc::Sender<UIMessage>,
 	controller_tx: mpsc::Sender<ControllerMessage>,
-	logs_rx: mpsc::Receiver<LogEntry>,
+	tui_logs: TuiLogBuffer,
 }
 
 fn modify_theme(theme: &mut Theme) {
@@ -67,7 +67,7 @@ impl UI {
 	pub fn new(
 		context_id: u32,
 		controller_tx: mpsc::Sender<ControllerMessage>,
-		logs_rx: mpsc::Receiver<LogEntry>,
+		tui_logs: TuiLogBuffer,
 	) -> Result<UI, String> {
 		let (ui_tx, ui_rx) = mpsc::channel::<UIMessage>();
 		let cursive = cursive::default()
@@ -79,7 +79,7 @@ impl UI {
 			ui_tx,
 			ui_rx,
 			controller_tx,
-			logs_rx,
+			tui_logs,
 		};
 
 		// Create UI objects, etc
@@ -144,7 +144,21 @@ impl UI {
 			return false;
 		}
 
-		while let Some(message) = self.logs_rx.try_iter().next() {
+		let log_batch = self.tui_logs.drain();
+
+		if log_batch.omitted > 0 {
+			logs::TUILogsView::update(
+				&mut self.cursive,
+				LogEntry {
+					log: format!(
+						"{} older TUI log entries omitted; see the log file",
+						log_batch.omitted
+					),
+					level: Level::Warn,
+				},
+			);
+		}
+		for message in log_batch.entries {
 			logs::TUILogsView::update(&mut self.cursive, message);
 		}
 
@@ -192,11 +206,11 @@ pub enum ControllerMessage {
 
 impl Controller {
 	/// Create a new controller
-	pub fn new(context_id: u32, logs_rx: mpsc::Receiver<LogEntry>) -> Result<Controller, String> {
+	pub fn new(context_id: u32, tui_logs: TuiLogBuffer) -> Result<Controller, String> {
 		let (tx, rx) = mpsc::channel::<ControllerMessage>();
 		Ok(Controller {
 			rx,
-			ui: UI::new(context_id, tx, logs_rx)?,
+			ui: UI::new(context_id, tx, tui_logs)?,
 		})
 	}
 

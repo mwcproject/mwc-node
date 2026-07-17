@@ -49,8 +49,6 @@ use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{panic, thread};
 
@@ -74,6 +72,9 @@ const LOGGING_PATTERN: &str = "{d(%Y%m%d %H:%M:%S%.3f)} {h({l})} {M} - {m}{n}";
 /// 32 log files to rotate over by default
 const DEFAULT_ROTATE_LOG_FILES: u32 = 32 as u32;
 
+/// Number of recent log entries retained for the TUI.
+pub const TUI_LOG_BUFFER_CAPACITY: usize = 200;
+
 /// Log Entry
 #[derive(Clone, Serialize, Debug)]
 #[serde(crate = "serde")]
@@ -82,6 +83,70 @@ pub struct LogEntry {
 	pub log: String,
 	/// The log levelO
 	pub level: Level,
+}
+
+/// A batch of pending TUI log entries and the number of older entries omitted.
+#[derive(Debug)]
+pub struct TuiLogBatch {
+	/// Pending entries, ordered from oldest to newest.
+	pub entries: Vec<LogEntry>,
+	/// Number of older entries overwritten since the previous drain.
+	pub omitted: u64,
+}
+
+#[derive(Debug)]
+struct TuiLogBufferInner {
+	entries: VecDeque<LogEntry>,
+	omitted: u64,
+	capacity: usize,
+}
+
+/// Bounded, shared buffer that retains the most recent log entries for the TUI.
+#[derive(Clone, Debug)]
+pub struct TuiLogBuffer {
+	inner: Arc<Mutex<TuiLogBufferInner>>,
+}
+
+impl TuiLogBuffer {
+	/// Creates a TUI log buffer with the standard capacity.
+	pub fn new() -> Self {
+		Self::with_capacity(TUI_LOG_BUFFER_CAPACITY)
+	}
+
+	fn with_capacity(capacity: usize) -> Self {
+		debug_assert!(capacity > 0);
+		Self {
+			inner: Arc::new(Mutex::new(TuiLogBufferInner {
+				entries: VecDeque::with_capacity(capacity),
+				omitted: 0,
+				capacity,
+			})),
+		}
+	}
+
+	fn push(&self, entry: LogEntry) {
+		let mut inner = self.inner.lock();
+		if inner.entries.len() == inner.capacity {
+			let _ = inner.entries.pop_front();
+			// Logging must remain infallible even if this diagnostic counter is exhausted.
+			inner.omitted = inner.omitted.saturating_add(1);
+		}
+		inner.entries.push_back(entry);
+	}
+
+	/// Removes all pending entries and resets the omitted-entry counter.
+	pub fn drain(&self) -> TuiLogBatch {
+		let mut inner = self.inner.lock();
+		let entries = inner.entries.drain(..).collect();
+		let omitted = std::mem::take(&mut inner.omitted);
+		TuiLogBatch { entries, omitted }
+	}
+}
+
+impl Default for TuiLogBuffer {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 /// Log entry for the buffer based logging
@@ -286,12 +351,12 @@ where
 }
 
 #[derive(Debug)]
-struct ChannelAppender {
-	output: Mutex<SyncSender<LogEntry>>,
+struct TuiLogAppender {
+	buffer: TuiLogBuffer,
 	encoder: Box<dyn Encode>,
 }
 
-impl Append for ChannelAppender {
+impl Append for TuiLogAppender {
 	fn append(&self, record: &Record) -> Result<(), anyhow::Error> {
 		let mut writer = SimpleWriter(Vec::new());
 		self.encoder.encode(&mut writer, record)?;
@@ -303,13 +368,8 @@ impl Append for ChannelAppender {
 			level: record.level(),
 		};
 
-		match self.output.lock().try_send(entry) {
-			Ok(()) => Ok(()),
-			Err(TrySendError::Full(_entry)) => Err(anyhow::Error::msg("TUI log channel is full")),
-			Err(TrySendError::Disconnected(_entry)) => {
-				Err(anyhow::Error::msg("TUI log channel is disconnected"))
-			}
-		}
+		self.buffer.push(entry);
+		Ok(())
 	}
 
 	fn flush(&self) {}
@@ -318,7 +378,7 @@ impl Append for ChannelAppender {
 /// Initialize the logger with the given configuration
 pub fn init_logger(
 	config: Option<&LoggingConfig>,
-	logs_tx: Option<mpsc::SyncSender<LogEntry>>,
+	tui_logs: Option<TuiLogBuffer>,
 ) -> Result<(), Error> {
 	if let Some(c) = config {
 		let tui_running = c.tui_running.unwrap_or(false);
@@ -343,17 +403,17 @@ pub fn init_logger(
 		let mut appenders = vec![];
 
 		if tui_running {
-			let logs_tx =
-				logs_tx.ok_or_else(|| Error::Logging("init_logger, logs_tx is empty".into()))?;
-			let channel_appender = ChannelAppender {
+			let tui_logs =
+				tui_logs.ok_or_else(|| Error::Logging("init_logger, tui_logs is empty".into()))?;
+			let tui_appender = TuiLogAppender {
 				encoder: Box::new(SanitizingEncoder::new(&LOGGING_PATTERN)),
-				output: Mutex::new(logs_tx),
+				buffer: tui_logs,
 			};
 
 			appenders.push(
 				Appender::builder()
 					.filter(Box::new(ThresholdFilter::new(level_stdout)))
-					.build("tui", Box::new(channel_appender)),
+					.build("tui", Box::new(tui_appender)),
 			);
 			root = root.appender("tui");
 		} else if c.log_to_stdout {
@@ -750,4 +810,61 @@ fn send_panic_to_log() {
 		}
 		// Node should never print to stdout/std error because it can run without terminal access
 	}));
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn log_entry(number: usize) -> LogEntry {
+		LogEntry {
+			log: number.to_string(),
+			level: Level::Warn,
+		}
+	}
+
+	#[test]
+	fn tui_log_buffer_retains_latest_entries_and_aggregates_omissions() {
+		let buffer = TuiLogBuffer::with_capacity(3);
+		let producer = buffer.clone();
+
+		for number in 0..5 {
+			producer.push(log_entry(number));
+		}
+
+		let batch = buffer.drain();
+		assert_eq!(batch.omitted, 2);
+		assert_eq!(
+			batch
+				.entries
+				.iter()
+				.map(|entry| entry.log.as_str())
+				.collect::<Vec<_>>(),
+			vec!["2", "3", "4"]
+		);
+
+		let next_batch = buffer.drain();
+		assert!(next_batch.entries.is_empty());
+		assert_eq!(next_batch.omitted, 0);
+	}
+
+	#[test]
+	fn tui_log_buffer_handles_observed_tor_burst() {
+		let buffer = TuiLogBuffer::new();
+		for number in 0..363 {
+			buffer.push(log_entry(number));
+		}
+
+		let batch = buffer.drain();
+		assert_eq!(batch.entries.len(), TUI_LOG_BUFFER_CAPACITY);
+		assert_eq!(batch.omitted, 163);
+		assert_eq!(
+			batch.entries.first().map(|entry| entry.log.as_str()),
+			Some("163")
+		);
+		assert_eq!(
+			batch.entries.last().map(|entry| entry.log.as_str()),
+			Some("362")
+		);
+	}
 }

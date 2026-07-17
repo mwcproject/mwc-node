@@ -28,25 +28,25 @@ use mwc_crates::log::{error, info, warn};
 use mwc_p2p::msg::PeerAddrs;
 use mwc_p2p::PeerAddr;
 use mwc_p2p::Seeding;
-use mwc_util::logger::LogEntry;
+use mwc_util::logger::TuiLogBuffer;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
 /// wrap below to allow UI to clean up on stop
 pub fn start_server(
 	context_id: u32,
 	config: mwc_servers::ServerConfig,
-	logs_rx: Option<mpsc::Receiver<LogEntry>>,
+	tui_logs: Option<TuiLogBuffer>,
 	offline: bool,
 ) -> Result<(), Error> {
-	start_server_tui(context_id, config, logs_rx, offline)
+	start_server_tui(context_id, config, tui_logs, offline)
 		.map_err(|e| Error::ServerStart(e.to_string()))
 }
 
 fn start_server_tui(
 	context_id: u32,
 	config: mwc_servers::ServerConfig,
-	logs_rx: Option<mpsc::Receiver<LogEntry>>,
+	tui_logs: Option<TuiLogBuffer>,
 	offline: bool,
 ) -> Result<(), mwc_node_workflow::Error> {
 	let run_tui = config.run_tui.unwrap_or(false);
@@ -126,17 +126,18 @@ fn start_server_tui(
 		if run_tui {
 			warn!("Starting MWC UI...");
 
-			match logs_rx {
-				Some(logs_rx) => {
-					let mut controller = ui::Controller::new(context_id, logs_rx).map_err(|e| {
-						error!("{}", e);
-						mwc_node_workflow::Error::UIError(e)
-					})?;
+			match tui_logs {
+				Some(tui_logs) => {
+					let mut controller =
+						ui::Controller::new(context_id, tui_logs).map_err(|e| {
+							error!("{}", e);
+							mwc_node_workflow::Error::UIError(e)
+						})?;
 					controller.run(context_id);
 					Ok(())
 				}
 				None => {
-					let msg = "Internal error, logs_rx is not set properly";
+					let msg = "Internal error, tui_logs is not set properly";
 					error!("{}", msg);
 					Err(mwc_node_workflow::Error::UIError(msg.to_string()))
 				}
@@ -167,7 +168,7 @@ pub fn server_command(
 	context_id: u32,
 	server_args: Option<&ArgMatches<'_>>,
 	global_config: GlobalConfig,
-	logs_rx: Option<mpsc::Receiver<LogEntry>>,
+	tui_logs: Option<TuiLogBuffer>,
 ) -> Result<(), Error> {
 	// just get defaults from the global config
 	let mut server_config = global_config.members.server.clone();
@@ -223,7 +224,7 @@ pub fn server_command(
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(context_id, server_config, logs_rx, offline)?;
+				start_server(context_id, server_config, tui_logs, offline)?;
 			}
 			("", _) => {
 				return Err(Error::ArgumentError(
@@ -238,7 +239,7 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(context_id, server_config, logs_rx, offline)?;
+		start_server(context_id, server_config, tui_logs, offline)?;
 	}
 	Ok(())
 }

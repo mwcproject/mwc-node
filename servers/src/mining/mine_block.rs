@@ -28,12 +28,12 @@ use mwc_crates::chrono::prelude::{DateTime, Utc};
 use mwc_crates::log::{debug, error, trace, warn};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::rand::{rng, RngExt};
-use mwc_crates::secp::{AggSigSignature, Secp256k1, SecretKey};
+use mwc_crates::secp::{Secp256k1, SecretKey};
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_crates::serde_json;
 use mwc_crates::serde_json::json;
 use mwc_keychain::{ExtKeychain, Identifier, Keychain};
-use mwc_util::{StopState, ToHex};
+use mwc_util::StopState;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -341,7 +341,7 @@ fn get_coinbase(
 			return burn_reward(context_id, block_fees, secp);
 		}
 		Some(wallet_listener_url) => {
-			let res = create_coinbase(client, &wallet_listener_url, &block_fees, context_id, secp)?;
+			let res = create_coinbase(client, &wallet_listener_url, &block_fees)?;
 			let output = res.output;
 			let kernel = res.kernel;
 			let key_id = res.key_id;
@@ -362,8 +362,6 @@ fn create_coinbase(
 	client: &HttpClient,
 	dest: &str,
 	block_fees: &BlockFees,
-	context_id: u32,
-	secp: &Secp256k1,
 ) -> Result<CbData, Error> {
 	let url = format!("{}/v2/foreign", dest);
 	let req_body = json!({
@@ -397,7 +395,7 @@ fn create_coinbase(
 
 	let cb_data = res["result"]["Ok"].clone();
 	trace!("cb_data: {}", cb_data);
-	let ret_val = match deserialize_cb_data(cb_data, context_id, secp) {
+	let ret_val = match serde_json::from_value::<CbData>(cb_data) {
 		Ok(r) => r,
 		Err(e) => {
 			let report = format!("Couldn't deserialize CbData: {}", e);
@@ -407,75 +405,6 @@ fn create_coinbase(
 	};
 
 	Ok(ret_val)
-}
-
-fn deserialize_cb_data(
-	cb_data: serde_json::Value,
-	context_id: u32,
-	secp: &Secp256k1,
-) -> Result<CbData, String> {
-	let raw = serde_json::from_value::<CbData>(cb_data.clone());
-	let canonical = cb_data_with_canonical_signature(cb_data, secp)
-		.and_then(|cb_data| serde_json::from_value::<CbData>(cb_data).map_err(|e| e.to_string()));
-
-	match (raw, canonical) {
-		(Ok(raw), Ok(canonical)) => {
-			if canonical.kernel.verify(context_id, secp).is_ok() {
-				if raw.kernel.verify(context_id, secp).is_err() {
-					debug!("Decoded wallet coinbase signature as canonical aggsig");
-				}
-				Ok(canonical)
-			} else {
-				Ok(raw)
-			}
-		}
-		(Ok(raw), Err(_)) => Ok(raw),
-		(Err(raw_err), Ok(canonical)) => {
-			debug!(
-				"Decoded wallet coinbase signature as canonical aggsig after raw decode failed: {}",
-				raw_err
-			);
-			Ok(canonical)
-		}
-		(Err(raw_err), Err(canonical_err)) => Err(format!(
-			"{}; canonical signature fallback failed: {}",
-			raw_err, canonical_err
-		)),
-	}
-}
-
-fn cb_data_with_canonical_signature(
-	mut cb_data: serde_json::Value,
-	secp: &Secp256k1,
-) -> Result<serde_json::Value, String> {
-	let sig_hex = cb_data
-		.get("kernel")
-		.and_then(|kernel| kernel.get("excess_sig"))
-		.and_then(|sig| sig.as_str())
-		.ok_or_else(|| "missing kernel.excess_sig".to_string())?;
-
-	let sig_bytes = mwc_util::from_hex(sig_hex)
-		.map_err(|e| format!("failed to parse canonical signature hex: {}", e))?;
-	if sig_bytes.len() != 64 {
-		return Err(format!(
-			"invalid canonical signature length {}, expected 64 bytes",
-			sig_bytes.len()
-		));
-	}
-
-	let sig = AggSigSignature::from_compact(secp, &sig_bytes)
-		.map_err(|e| format!("failed to decode canonical signature: {}", e))?;
-	let raw_sig = sig
-		.serialize_raw(secp)
-		.map_err(|e| format!("failed to serialize canonical signature as raw: {}", e))?;
-
-	let sig_value = cb_data
-		.get_mut("kernel")
-		.and_then(|kernel| kernel.get_mut("excess_sig"))
-		.ok_or_else(|| "missing kernel.excess_sig".to_string())?;
-	*sig_value = json!((&raw_sig[..]).to_hex());
-
-	Ok(cb_data)
 }
 
 #[cfg(test)]
@@ -502,30 +431,19 @@ mod tests {
 	}
 
 	#[test]
-	fn deserialize_cb_data_accepts_raw_wallet_signature() {
-		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		let cb_data = test_cb_data(&mut secp);
-		let cb_data_json = serde_json::to_value(&cb_data).unwrap();
-
-		let parsed = deserialize_cb_data(cb_data_json, 0, &secp).unwrap();
-
-		parsed.kernel.verify(0, &secp).unwrap();
-	}
-
-	#[test]
-	fn deserialize_cb_data_accepts_canonical_wallet_signature() {
+	fn deserialize_cb_data_accepts_legacy_compact_wallet_signature() {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let cb_data = test_cb_data(&mut secp);
 		let compact_sig = cb_data.kernel.excess_sig.serialize_compact(&secp).unwrap();
-		let mut cb_data_json = serde_json::to_value(&cb_data).unwrap();
-		cb_data_json["kernel"]["excess_sig"] = json!((&compact_sig[..]).to_hex());
+		let cb_data_json = serde_json::to_value(&cb_data).unwrap();
+		assert_eq!(
+			cb_data_json["kernel"]["excess_sig"],
+			json!(mwc_util::to_hex(&compact_sig))
+		);
 
-		let parsed = deserialize_cb_data(cb_data_json, 0, &secp).unwrap();
+		let parsed: CbData = serde_json::from_value(cb_data_json).unwrap();
 
 		parsed.kernel.verify(0, &secp).unwrap();
-		assert_eq!(
-			parsed.kernel.excess_sig.serialize_raw(&secp).unwrap(),
-			cb_data.kernel.excess_sig.serialize_raw(&secp).unwrap()
-		);
+		assert_eq!(parsed.kernel.excess_sig, cb_data.kernel.excess_sig);
 	}
 }

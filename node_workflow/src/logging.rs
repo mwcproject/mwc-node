@@ -16,25 +16,21 @@
 
 use crate::Error;
 use mwc_crates::log::info;
-use mwc_util::logger::{CallbackLoggingConfig, LogEntry, LoggingConfig};
-use std::sync::mpsc;
+use mwc_util::logger::{CallbackLoggingConfig, LoggingConfig, TuiLogBuffer};
 
 /// Init logs for binaries
-pub fn init_bin_logs(
-	logging_config: &LoggingConfig,
-) -> Result<Option<mpsc::Receiver<LogEntry>>, Error> {
-	let (logs_tx, logs_rx) = if logging_config.tui_running.unwrap_or(false) {
-		let (logs_tx, logs_rx) = mpsc::sync_channel::<LogEntry>(200);
-		(Some(logs_tx), Some(logs_rx))
+pub fn init_bin_logs(logging_config: &LoggingConfig) -> Result<Option<TuiLogBuffer>, Error> {
+	let tui_logs = if logging_config.tui_running.unwrap_or(false) {
+		Some(TuiLogBuffer::new())
 	} else {
-		(None, None)
+		None
 	};
-	mwc_util::logger::init_logger(Some(logging_config), logs_tx)
+	mwc_util::logger::init_logger(Some(logging_config), tui_logs.clone())
 		.map_err(|e| Error::LogError(e.to_string()))?;
 
 	info!("Logging is initialized");
 
-	Ok(logs_rx)
+	Ok(tui_logs)
 }
 
 /// Init logs for libraries
