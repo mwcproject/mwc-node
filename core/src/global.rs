@@ -345,6 +345,39 @@ pub fn is_nrd_enabled(context_id: u32) -> bool {
 	})
 }
 
+#[cfg(feature = "test-support")]
+thread_local! {
+	/// Test-only per-thread switch for the block-level spent-commitment replay
+	/// check (pipe::replay_attack_check). It is deliberately NOT part of
+	/// ChainGlobalParams: production nodes never touch it, so the check stays
+	/// enabled everywhere unless a test explicitly disables it on the thread
+	/// that processes blocks. The wallet integration tests need this because
+	/// they build a real replay on a low-height AutomatedTesting chain, where
+	/// the check activates at header version 3 while production networks have
+	/// not reached the activation version yet.
+	static LOCAL_REPLAY_PROTECTION_ENABLED: RefCell<bool> = RefCell::new(true);
+}
+
+/// Test-only: enable or disable the block-level spent-commitment replay check
+/// on the current thread. Production code must not call this.
+#[cfg(feature = "test-support")]
+pub fn set_local_replay_protection_enabled(enabled: bool) {
+	LOCAL_REPLAY_PROTECTION_ENABLED.with(|enabled_flag| *enabled_flag.borrow_mut() = enabled);
+}
+
+/// Whether the block-level spent-commitment replay check is enabled on this
+/// thread. Builds without `test-support` always return true.
+pub fn is_replay_protection_enabled() -> bool {
+	#[cfg(feature = "test-support")]
+	{
+		LOCAL_REPLAY_PROTECTION_ENABLED.with(|enabled_flag| *enabled_flag.borrow())
+	}
+	#[cfg(not(feature = "test-support"))]
+	{
+		true
+	}
+}
+
 /// One time initialization of the global accept fee base
 /// Will panic if we attempt to re-initialize this (via OneTime).
 pub fn init_global_accept_fee_base(context_id: u32, new_base: u64) -> Result<(), Error> {

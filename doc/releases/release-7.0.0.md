@@ -1,8 +1,8 @@
-# Release 6.1.0
+# Release 7.0.0
 
 ## Release Highlights
 
-Release 6.1.0 address audit comments/issues that was found with AI code review. Also, because code changes affect 
+Release 7.0.0 address audit comments/issues that was found with AI code review. Also, because code changes affect 
 performance, the node sync process was optimized by using all available CPU cores.
 
 Atri (Tor) is upgraded to the latest version.
