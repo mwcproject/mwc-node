@@ -1021,24 +1021,55 @@ impl PMMRable for RangeProof {
 	}
 }
 
+// The legacy ECDSA compact codec reverses the byte order of each 32-byte
+// aggregate-signature component. Binary consensus encoding uses canonical
+// `(R.x || s)` bytes, so convert at the compact API boundary. The operation is
+// symmetric and is used for both serialization and deserialization.
+fn reverse_aggsig_component_byte_order(bytes: &mut [u8; AGG_SIGNATURE_SIZE]) {
+	let (rx, s) = bytes.split_at_mut(AGG_SIGNATURE_SIZE / 2);
+	rx.reverse();
+	s.reverse();
+}
+
 impl Readable for AggSigSignature {
 	fn read<R: Reader>(reader: &mut R) -> Result<AggSigSignature, Error> {
 		let a = reader.read_fixed_bytes(AGG_SIGNATURE_SIZE)?;
+		// An all-zero aggregate signature means "not signed yet". Wallets need
+		// this sentinel to deserialize stored partial transactions while their
+		// slates are still being negotiated. It remains invalid for transaction
+		// validation and must never be accepted as a completed kernel signature.
+		if a.iter().all(|byte| *byte == 0) {
+			return Ok(AggSigSignature::blank());
+		}
 		let mut c = [0; AGG_SIGNATURE_SIZE];
 		c[..AGG_SIGNATURE_SIZE].clone_from_slice(&a[..AGG_SIGNATURE_SIZE]);
+		reverse_aggsig_component_byte_order(&mut c);
 		secp_static::with_none(Error::from, |secp| {
-			Ok(AggSigSignature::from_raw_data(secp, &c)?)
+			Ok(AggSigSignature::from_compact(secp, &c)?)
 		})
 	}
 }
 
 impl Writeable for AggSigSignature {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		let bytes = secp_static::with_none(Error::from, |secp| {
-			self.serialize_raw(secp).map_err(|e| {
+		// Treat the all-zero signature as an absent signature so wallets can
+		// persist partial transactions (slates) before aggregation is complete.
+		// This is only a serialization exception; signature validation still
+		// rejects the blank value for finalized transactions and blocks.
+		if *self == AggSigSignature::blank() {
+			return writer.write_fixed_bytes([0; AGG_SIGNATURE_SIZE]);
+		}
+		let mut bytes = secp_static::with_none(Error::from, |secp| {
+			if !self.is_valid(secp) {
+				return Err(Error::CorruptedData(
+					"Unable to write AggSigSignature, invalid signature".to_string(),
+				));
+			}
+			self.serialize_compact(secp).map_err(|e| {
 				Error::CorruptedData(format!("Unable to write AggSigSignature, {}", e))
 			})
 		})?;
+		reverse_aggsig_component_byte_order(&mut bytes);
 		writer.write_fixed_bytes(bytes)
 	}
 }
@@ -1534,17 +1565,49 @@ mod tests {
 	}
 
 	#[test]
-	fn aggsig_signature_write_rejects_invalid_signature() {
+	fn aggsig_blank_signature_roundtrips_for_partial_transactions() {
 		let sig = AggSigSignature::blank();
 		let mut bytes = vec![];
 
-		match serialize_default(0, &mut bytes, &sig) {
-			Err(Error::CorruptedData(msg)) => {
-				assert!(msg.contains("AggSigSignature"), "{}", msg);
-			}
-			other => panic!("expected invalid signature rejection, got {:?}", other),
-		}
-		assert!(bytes.is_empty());
+		serialize_default(0, &mut bytes, &sig).unwrap();
+		assert_eq!(bytes, [0; AGG_SIGNATURE_SIZE]);
+
+		let decoded: AggSigSignature = deserialize_default(0, &mut &bytes[..]).unwrap();
+		assert_eq!(decoded, sig);
+		assert!(!decoded.is_valid(&Secp256k1::without_caps().unwrap()));
+	}
+
+	#[test]
+	fn aggsig_signature_read_rejects_nonzero_invalid_signature() {
+		let mut bytes = [0; AGG_SIGNATURE_SIZE];
+		bytes[AGG_SIGNATURE_SIZE - 1] = 1;
+
+		assert!(deserialize_default::<AggSigSignature, _>(0, &mut &bytes[..]).is_err());
+	}
+
+	#[test]
+	fn aggsig_signature_binary_encoding_is_canonical() {
+		let secp = Secp256k1::without_caps().unwrap();
+		let compact = [
+			155, 161, 81, 120, 148, 131, 93, 161, 94, 90, 149, 232, 60, 234, 164, 237, 129, 149,
+			174, 231, 52, 76, 240, 100, 103, 219, 44, 47, 239, 151, 29, 206, 30, 146, 118, 82, 80,
+			234, 239, 52, 9, 114, 15, 81, 50, 15, 179, 22, 150, 52, 166, 10, 5, 150, 227, 164, 82,
+			44, 25, 66, 64, 250, 177, 170,
+		];
+		let canonical = [
+			206, 29, 151, 239, 47, 44, 219, 103, 100, 240, 76, 52, 231, 174, 149, 129, 237, 164,
+			234, 60, 232, 149, 90, 94, 161, 93, 131, 148, 120, 81, 161, 155, 170, 177, 250, 64, 66,
+			25, 44, 82, 164, 227, 150, 5, 10, 166, 52, 150, 22, 179, 15, 50, 81, 15, 114, 9, 52,
+			239, 234, 80, 82, 118, 146, 30,
+		];
+		let sig = AggSigSignature::from_compact(&secp, &compact).unwrap();
+		let mut bytes = vec![];
+
+		serialize_default(0, &mut bytes, &sig).unwrap();
+		assert_eq!(bytes, canonical);
+
+		let decoded: AggSigSignature = deserialize_default(0, &mut &bytes[..]).unwrap();
+		assert_eq!(decoded, sig);
 	}
 
 	#[test]
