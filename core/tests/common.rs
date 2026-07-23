@@ -15,25 +15,48 @@
 
 //! Common test functions
 
-use std::convert::TryInto;
-
+#[cfg(feature = "test-support")]
+use self::build::{input, output};
 use keychain::{Identifier, Keychain};
 use mwc_core::core::hash::DefaultHashable;
-use mwc_core::core::{
-	Block, BlockHeader, Inputs, KernelFeatures, OutputFeatures, OutputIdentifier, Transaction,
-};
-use mwc_core::libtx::{
-	build::{self, input, output},
-	proof::{ProofBuild, ProofBuilder},
-	reward,
-};
+use mwc_core::core::{Block, BlockHeader, Transaction};
+#[cfg(feature = "test-support")]
+use mwc_core::core::{Inputs, KernelFeatures, OutputFeatures, OutputIdentifier};
+#[cfg(feature = "test-support")]
+use mwc_core::libtx::proof::ProofBuilder;
+use mwc_core::libtx::{proof::ProofBuild, reward};
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, Error, PMMRable, Readable, Reader, Writeable, Writer};
+#[cfg(feature = "test-support")]
 use mwc_crates::rand::rngs::SysRng;
-use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
+#[cfg(feature = "test-support")]
+use mwc_crates::secp::SecretKey;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
+#[cfg(feature = "test-support")]
+use std::convert::TryInto;
+
+// Keep test targets compilable without exposing the production builder. Any
+// affected test reaches this shim and fails with an actionable runtime error.
+#[allow(dead_code, unused_imports)]
+pub mod build {
+	pub use mwc_core::libtx::build::*;
+
+	#[cfg(not(feature = "test-support"))]
+	pub fn output<K, B>(
+		_value: u64,
+		_key_id: keychain::Identifier,
+	) -> Box<mwc_core::libtx::build::Append<K, B>>
+	where
+		K: keychain::Keychain,
+		B: mwc_core::libtx::proof::ProofBuild,
+	{
+		panic!("test-support feature is required to run the tests");
+	}
+}
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]
+#[cfg(feature = "test-support")]
 pub fn tx2i1o() -> Transaction {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let keychain = keychain::ExtKeychain::from_seed(
@@ -62,8 +85,15 @@ pub fn tx2i1o() -> Transaction {
 	tx
 }
 
+#[allow(dead_code)]
+#[cfg(not(feature = "test-support"))]
+pub fn tx2i1o() -> Transaction {
+	panic!("test-support feature is required to run the tests");
+}
+
 // utility producing a transaction with a single input and output
 #[allow(dead_code)]
+#[cfg(feature = "test-support")]
 pub fn tx1i1o() -> Transaction {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let keychain = keychain::ExtKeychain::from_seed(
@@ -92,6 +122,13 @@ pub fn tx1i1o() -> Transaction {
 }
 
 #[allow(dead_code)]
+#[cfg(not(feature = "test-support"))]
+pub fn tx1i1o() -> Transaction {
+	panic!("test-support feature is required to run the tests");
+}
+
+#[allow(dead_code)]
+#[cfg(feature = "test-support")]
 pub fn tx1i10_v2_compatible() -> Transaction {
 	let tx = tx1i1o();
 
@@ -118,10 +155,17 @@ pub fn tx1i10_v2_compatible() -> Transaction {
 	}
 }
 
+#[allow(dead_code)]
+#[cfg(not(feature = "test-support"))]
+pub fn tx1i10_v2_compatible() -> Transaction {
+	panic!("test-support feature is required to run the tests");
+}
+
 // utility producing a transaction with a single input
 // and two outputs (one change output)
 // Note: this tx has an "offset" kernel
 #[allow(dead_code)]
+#[cfg(feature = "test-support")]
 pub fn tx1i2o() -> Transaction {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let keychain = keychain::ExtKeychain::from_seed(
@@ -148,6 +192,12 @@ pub fn tx1i2o() -> Transaction {
 	.unwrap();
 
 	tx
+}
+
+#[allow(dead_code)]
+#[cfg(not(feature = "test-support"))]
+pub fn tx1i2o() -> Transaction {
+	panic!("test-support feature is required to run the tests");
 }
 
 // utility to create a block without worrying about the key or previous
@@ -191,6 +241,7 @@ where
 // utility producing a transaction that spends an output with the provided
 // value and blinding key
 #[allow(dead_code)]
+#[cfg(feature = "test-support")]
 pub fn txspend1i1o<K, B>(
 	v: u64,
 	keychain: &K,
@@ -214,6 +265,22 @@ where
 		builder,
 	)
 	.unwrap()
+}
+
+#[allow(dead_code)]
+#[cfg(not(feature = "test-support"))]
+pub fn txspend1i1o<K, B>(
+	_v: u64,
+	_keychain: &K,
+	_builder: &B,
+	_key_id1: Identifier,
+	_key_id2: Identifier,
+) -> Transaction
+where
+	K: Keychain,
+	B: ProofBuild,
+{
+	panic!("test-support feature is required to run the tests");
 }
 
 #[allow(dead_code)]

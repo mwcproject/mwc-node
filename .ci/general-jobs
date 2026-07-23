@@ -20,8 +20,16 @@ case "${CI_JOB}" in
     "test")
         for dir in ${CI_JOB_ARGS}; do
             printf "executing tests in directory \`%s\`...\n" "${dir}"
+            case "${dir}" in
+                api|chain|core|pool|servers)
+                    test_feature_args="--features test-support"
+                    ;;
+                *)
+                    test_feature_args=""
+                    ;;
+            esac
             cd "${dir}" && \
-            cargo test --release && \
+            cargo test --release ${test_feature_args} && \
             cd - > /dev/null || exit 1
         done
         ;;

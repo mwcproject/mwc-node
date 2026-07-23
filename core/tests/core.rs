@@ -17,6 +17,7 @@
 
 pub mod common;
 
+use crate::common::build::{self, initial_tx, input, output, with_excess};
 use crate::common::{new_block, tx1i1o, tx1i2o, tx2i1o};
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core::core::block::BlockHeader;
@@ -26,7 +27,6 @@ use mwc_core::core::{
 	aggregate, deaggregate, Inputs, KernelFeatures, Output, OutputFeatures, OutputIdentifier,
 	Transaction, TxKernel, Weighting,
 };
-use mwc_core::libtx::build::{self, initial_tx, input, output, with_excess};
 use mwc_core::libtx::{aggsig, ProofBuilder};
 use mwc_core::{global, ser};
 use mwc_crates::rand::rngs::SysRng;

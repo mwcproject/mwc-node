@@ -14,6 +14,7 @@
 // limitations under the License.
 
 mod common;
+use crate::common::build::{self, input, output};
 use crate::common::{new_block, tx1i2o, tx2i1o, txspend1i1o};
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core::consensus::{self, BLOCK_OUTPUT_WEIGHT};
@@ -25,7 +26,6 @@ use mwc_core::core::transaction::{
 	Transaction,
 };
 use mwc_core::core::{Committed, CompactBlock, CompactBlockBody, Inputs, UntrustedCompactBlock};
-use mwc_core::libtx::build::{self, input, output};
 use mwc_core::libtx::{reward, ProofBuilder};
 use mwc_core::ser::{Writeable, Writer};
 use mwc_core::{global, pow, ser};

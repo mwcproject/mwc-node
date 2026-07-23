@@ -17,7 +17,7 @@ use mwc_chain::types::NoopAdapter;
 use mwc_chain::Error;
 use mwc_core::core::KernelFeatures;
 use mwc_core::global::{self, ChainTypes};
-use mwc_core::libtx::{self, build, ProofBuilder};
+use mwc_core::libtx::{self, ProofBuilder};
 use mwc_core::{consensus, pow};
 use mwc_crates::chrono::Duration;
 use mwc_crates::rand::rngs::SysRng;
@@ -27,6 +27,10 @@ use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
+
+#[path = "../src/tests/chain_test_helper.rs"]
+mod chain_test_helper;
+use self::chain_test_helper::build;
 
 fn clean_output_dir(dir_name: &str) {
 	let _ = fs::remove_dir_all(dir_name);

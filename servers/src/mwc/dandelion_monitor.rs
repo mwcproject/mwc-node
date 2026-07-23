@@ -303,6 +303,8 @@ fn process_expired_entries(
 
 #[cfg(test)]
 mod tests {
+	#![cfg_attr(not(feature = "test-support"), allow(unused_imports))]
+
 	use super::*;
 	use mwc_core::core::KernelFeatures;
 	use mwc_core::global;
@@ -312,6 +314,7 @@ mod tests {
 	use mwc_keychain::{ExtKeychain, Keychain};
 	use std::convert::TryInto;
 
+	#[cfg(feature = "test-support")]
 	fn test_transaction(
 		secp: &mut Secp256k1,
 		keychain: &ExtKeychain,
@@ -337,6 +340,13 @@ mod tests {
 		.unwrap()
 	}
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn aggregate_fluffable_txs_splits_oversized_aggregate() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn aggregate_fluffable_txs_splits_oversized_aggregate() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);

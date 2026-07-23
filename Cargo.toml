@@ -40,7 +40,12 @@ built = { version = "0.8", features = ["git2"] }
 
 [features]
 default = []
-test-support = ["mwc_core/test-support"]
+test-support = [
+	"mwc_api/test-support",
+	"mwc_chain/test-support",
+	"mwc_core/test-support",
+	"mwc_servers/test-support",
+]
 
 [profile.release-with-debug]
 inherits = "release"

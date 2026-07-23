@@ -20,3 +20,11 @@ thiserror.workspace = true
 
 [dev-dependencies]
 mwc_keychain = { path = "../keychain", version = "7.0.0" }
+
+[features]
+default = []
+test-support = [
+	"mwc_chain/test-support",
+	"mwc_core/test-support",
+	"mwc_pool/test-support",
+]

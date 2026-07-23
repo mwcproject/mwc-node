@@ -38,7 +38,7 @@ In case of problems with trying out mwc, before starting to contribute, there's 
 
 ## Testing
 
-Run all tests with `cargo test --all` and please remember to test locally before creating a PR on github.
+Run all tests with `cargo test --all --features test-support` and please remember to test locally before creating a PR on github.
 
 ### Check Travis output
 

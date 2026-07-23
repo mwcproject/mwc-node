@@ -16,10 +16,11 @@
 #[path = "../src/tests/chain_test_helper.rs"]
 mod chain_test_helper;
 
+use self::chain_test_helper::build;
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use mwc_chain::{Chain, Options};
 use mwc_core::core::{Block, KernelFeatures, NRDRelativeHeight, Transaction};
-use mwc_core::libtx::{build, reward, ProofBuilder};
+use mwc_core::libtx::{reward, ProofBuilder};
 use mwc_core::{consensus, global, pow};
 use mwc_crates::chrono::Duration;
 use mwc_crates::rand::rngs::SysRng;

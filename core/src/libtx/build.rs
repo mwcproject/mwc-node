@@ -32,8 +32,12 @@
 //!   ]
 //! )
 
-use crate::core::{Input, KernelFeatures, Output, OutputFeatures, Transaction, TxKernel};
-use crate::libtx::proof::{self, ProofBuild};
+#[cfg(feature = "test-support")]
+use crate::core::Output;
+use crate::core::{Input, KernelFeatures, OutputFeatures, Transaction, TxKernel};
+#[cfg(feature = "test-support")]
+use crate::libtx::proof;
+use crate::libtx::proof::ProofBuild;
 use crate::libtx::{aggsig, Error};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
 use mwc_crates::log::debug;
@@ -121,6 +125,10 @@ where
 
 /// Adds an output with the provided value and key identifier from the
 /// keychain.
+///
+/// Wallet code normally uses a different builder that tags rangeproofs. This
+/// untagged output builder is therefore available for tests only.
+#[cfg(feature = "test-support")]
 pub fn output<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
 where
 	K: Keychain,
@@ -299,15 +307,30 @@ where
 // Just a simple test, most exhaustive tests in the core.
 #[cfg(test)]
 mod test {
+	#[cfg(feature = "test-support")]
 	use super::*;
+	#[cfg(feature = "test-support")]
 	use crate::core::transaction::Weighting;
+	#[cfg(feature = "test-support")]
 	use crate::global;
+	#[cfg(feature = "test-support")]
 	use crate::libtx::ProofBuilder;
+	#[cfg(feature = "test-support")]
 	use keychain::{ExtKeychain, ExtKeychainPath};
+	#[cfg(feature = "test-support")]
 	use mwc_crates::rand::rngs::SysRng;
+	#[cfg(feature = "test-support")]
 	use mwc_crates::secp::{ContextFlag, SecretKey};
+	#[cfg(feature = "test-support")]
 	use std::convert::TryInto;
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn blind_simple_tx() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn blind_simple_tx() {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -345,6 +368,13 @@ mod test {
 		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn blind_simple_tx_with_offset() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn blind_simple_tx_with_offset() {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -382,6 +412,13 @@ mod test {
 		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn blind_simpler_tx() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn blind_simpler_tx() {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();

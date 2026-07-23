@@ -16,6 +16,7 @@
 //! Transaction integration tests
 
 pub mod common;
+use crate::common::build;
 use crate::common::tx1i10_v2_compatible;
 use keychain::{ExtKeychain, Keychain};
 use mwc_core::core::hash::Hashed;
@@ -26,7 +27,7 @@ use mwc_core::core::{
 };
 use mwc_core::global;
 use mwc_core::libtx::proof::{self, ProofBuilder};
-use mwc_core::libtx::{build, tx_fee};
+use mwc_core::libtx::tx_fee;
 use mwc_core::{consensus, ser};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::constants::{MAX_PROOF_SIZE, PEDERSEN_COMMITMENT_SIZE};

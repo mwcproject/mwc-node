@@ -24,7 +24,7 @@ use mwc_core::core::{
 	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction, TxKernel,
 };
 use mwc_core::global;
-use mwc_core::libtx::{build, reward, ProofBuilder};
+use mwc_core::libtx::{reward, ProofBuilder};
 use mwc_core::pow;
 use mwc_crates::chrono::Duration;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
@@ -35,6 +35,25 @@ use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
+
+// Keep test targets compilable without exposing the production builder. Any
+// affected test reaches this shim and fails with an actionable runtime error.
+#[allow(dead_code, unused_imports)]
+pub mod build {
+	pub use mwc_core::libtx::build::*;
+
+	#[cfg(not(feature = "test-support"))]
+	pub fn output<K, B>(
+		_value: u64,
+		_key_id: mwc_keychain::Identifier,
+	) -> Box<mwc_core::libtx::build::Append<K, B>>
+	where
+		K: mwc_keychain::Keychain,
+		B: mwc_core::libtx::proof::ProofBuild,
+	{
+		panic!("test-support feature is required to run the tests");
+	}
+}
 
 /// Build genesis block with reward (non-empty, like we have in mainnet).
 pub fn genesis_block<K>(keychain: &K) -> Block
