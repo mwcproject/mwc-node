@@ -20,3 +20,12 @@ mwc_pool = { path = "../pool", version = "7.0.0" }
 mwc_store = { path = "../store", version = "7.0.0" }
 mwc_util = { path = "../util", version = "7.0.0" }
 thiserror.workspace = true
+
+[features]
+default = []
+test-support = [
+	"mwc_api/test-support",
+	"mwc_chain/test-support",
+	"mwc_core/test-support",
+	"mwc_pool/test-support",
+]

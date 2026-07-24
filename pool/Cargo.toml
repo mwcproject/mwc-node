@@ -18,3 +18,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 mwc_chain = { path = "../chain", version = "7.0.0" }
+
+[features]
+default = []
+test-support = ["mwc_core/test-support"]

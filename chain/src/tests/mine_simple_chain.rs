@@ -22,7 +22,6 @@ use mwc_core::core::{
 	Transaction,
 };
 use mwc_core::global::ChainTypes;
-use mwc_core::libtx::build::{self, Append};
 use mwc_core::libtx::proof::{self, ProofBuild};
 use mwc_core::libtx::{self, Error, ProofBuilder};
 use mwc_core::pow::Difficulty;
@@ -40,6 +39,7 @@ use std::collections::HashSet;
 use std::convert::TryInto;
 use std::sync::Arc;
 
+use super::chain_test_helper::build::{self, Append};
 use super::chain_test_helper::{
 	clean_output_dir, genesis_block, init_chain, mine_chain, test_chain_dir,
 };

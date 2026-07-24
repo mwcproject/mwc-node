@@ -17,3 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 blake2 = "0.10"
+
+[features]
+default = []
+test-support = []

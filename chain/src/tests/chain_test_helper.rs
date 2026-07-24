@@ -33,6 +33,25 @@ use std::sync::Arc;
 
 static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+// Keep test targets compilable without exposing the production builder. Any
+// affected test reaches this shim and fails with an actionable runtime error.
+#[allow(dead_code, unused_imports)]
+pub mod build {
+	pub use mwc_core::libtx::build::*;
+
+	#[cfg(not(feature = "test-support"))]
+	pub fn output<K, B>(
+		_value: u64,
+		_key_id: mwc_keychain::Identifier,
+	) -> Box<mwc_core::libtx::build::Append<K, B>>
+	where
+		K: mwc_keychain::Keychain,
+		B: mwc_core::libtx::proof::ProofBuild,
+	{
+		panic!("test-support feature is required to run the tests");
+	}
+}
+
 #[allow(dead_code)]
 #[cfg(test)]
 pub fn clean_output_dir(dir_name: &str) {

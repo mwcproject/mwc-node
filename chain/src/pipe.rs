@@ -556,7 +556,11 @@ pub fn replay_attack_check(
 	// accept HeaderVersion(3) at the activation height before this runs for
 	// normal Mainnet/Floonet blocks. If replay protection is required for an
 	// earlier production version, this gate must be updated to cover it.
-	if b.header.version >= HeaderVersion(3) {
+	// The global flag is a test-only escape hatch: integration tests that
+	// deliberately build a replay on an AutomatedTesting chain (which reaches
+	// HeaderVersion(3) within a few blocks) disable it on the block processing
+	// thread. It is always enabled in production.
+	if b.header.version >= HeaderVersion(3) && global::is_replay_protection_enabled() {
 		check_against_spent_output(
 			&b.body,
 			Some(fork_point_height),

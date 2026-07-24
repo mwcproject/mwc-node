@@ -679,10 +679,36 @@ impl Writeable for TxKernel {
 
 impl Readable for TxKernel {
 	fn read<R: Reader>(reader: &mut R) -> Result<TxKernel, ser::Error> {
+		let features = KernelFeatures::read(reader)?;
+		let excess_bytes = reader.read_fixed_bytes(constants::PEDERSEN_COMMITMENT_SIZE)?;
+		let excess = Commitment::from_vec(excess_bytes)?;
+		let excess_sig = secp::AggSigSignature::read(reader)?;
+
+		if excess.as_ref().iter().all(|byte| *byte == 0) {
+			// A partial transaction (slate) has neither a final kernel excess nor
+			// a final aggregate signature yet. The zero signature is treated as
+			// "none", and only that absent signature permits the matching zero
+			// excess placeholder while the partial transaction is stored.
+			if excess_sig != secp::AggSigSignature::blank() {
+				return Err(ser::Error::CorruptedData(
+					"A zero kernel excess requires an absent aggregate signature".to_string(),
+				));
+			}
+		} else {
+			util::secp_static::with_commit(ser::Error::from, |secp| {
+				secp.validate_commitment(&excess).map_err(|e| {
+					ser::Error::CorruptedData(format!(
+						"Unable to read kernel excess commitment, {}",
+						e
+					))
+				})
+			})?;
+		}
+
 		Ok(TxKernel {
-			features: KernelFeatures::read(reader)?,
-			excess: Commitment::read(reader)?,
-			excess_sig: secp::AggSigSignature::read(reader)?,
+			features,
+			excess,
+			excess_sig,
 		})
 	}
 }
@@ -2846,13 +2872,13 @@ mod test {
 
 	// For ser/deser signature must be valid. One form floo genesis should work
 	fn get_test_valid_signature(secp: &Secp256k1) -> AggSigSignature {
-		AggSigSignature::from_raw_data(
+		AggSigSignature::from_compact(
 			&secp,
 			&[
-				206, 29, 151, 239, 47, 44, 219, 103, 100, 240, 76, 52, 231, 174, 149, 129, 237,
-				164, 234, 60, 232, 149, 90, 94, 161, 93, 131, 148, 120, 81, 161, 155, 170, 177,
-				250, 64, 66, 25, 44, 82, 164, 227, 150, 5, 10, 166, 52, 150, 22, 179, 15, 50, 81,
-				15, 114, 9, 52, 239, 234, 80, 82, 118, 146, 30,
+				155, 161, 81, 120, 148, 131, 93, 161, 94, 90, 149, 232, 60, 234, 164, 237, 129,
+				149, 174, 231, 52, 76, 240, 100, 103, 219, 44, 47, 239, 151, 29, 206, 30, 146, 118,
+				82, 80, 234, 239, 52, 9, 114, 15, 81, 50, 15, 179, 22, 150, 52, 166, 10, 5, 150,
+				227, 164, 82, 44, 25, 66, 64, 250, 177, 170,
 			],
 		)
 		.unwrap()
@@ -2906,6 +2932,39 @@ mod test {
 		);
 		assert_eq!(kernel2.excess, commit);
 		assert_eq!(kernel2.excess_sig, sig.clone());
+	}
+
+	#[test]
+	fn partial_kernel_roundtrips_for_slate_storage() {
+		let kernel = TxKernel::with_features(KernelFeatures::Plain {
+			fee: 10u32.try_into().unwrap(),
+		})
+		.unwrap();
+		let mut bytes = vec![];
+
+		ser::serialize_default(0, &mut bytes, &kernel).unwrap();
+		let decoded: TxKernel = ser::deserialize_default(0, &mut &bytes[..]).unwrap();
+
+		assert_eq!(decoded.excess, kernel.excess);
+		assert_eq!(decoded.excess_sig, AggSigSignature::blank());
+		assert!(decoded
+			.verify(0, &Secp256k1::with_caps(ContextFlag::Commit).unwrap())
+			.is_err());
+	}
+
+	#[test]
+	fn zero_kernel_excess_requires_absent_signature() {
+		let kernel = TxKernel {
+			features: KernelFeatures::Plain {
+				fee: 10u32.try_into().unwrap(),
+			},
+			excess: Commitment::from_vec(vec![0; constants::PEDERSEN_COMMITMENT_SIZE]).unwrap(),
+			excess_sig: get_test_valid_signature(&Secp256k1::without_caps().unwrap()),
+		};
+		let mut bytes = vec![];
+
+		ser::serialize_default(0, &mut bytes, &kernel).unwrap();
+		assert!(ser::deserialize_default::<TxKernel, _>(0, &mut &bytes[..]).is_err());
 	}
 
 	#[test]

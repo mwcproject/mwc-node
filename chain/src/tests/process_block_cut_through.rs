@@ -13,12 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::chain_test_helper::build;
 use super::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use mwc_chain::{pipe, store::PendingChainOperation, Chain, Options};
 use mwc_core::core::hash::Hash;
 use mwc_core::core::{block, pmmr, transaction};
 use mwc_core::core::{Block, FeeFields, KernelFeatures, Transaction, Weighting};
-use mwc_core::libtx::{build, reward, ProofBuilder};
+use mwc_core::libtx::{reward, ProofBuilder};
 use mwc_core::{consensus, global, pow};
 use mwc_crates::chrono::Duration;
 use mwc_crates::rand::rngs::SysRng;

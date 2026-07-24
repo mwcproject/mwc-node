@@ -1600,13 +1600,22 @@ fn wrong_number_of_args(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[cfg(feature = "test-support")]
 	use mwc_core::core::transaction::{FeeFields, KernelFeatures};
+	#[cfg(feature = "test-support")]
 	use mwc_core::libtx::build;
+	#[cfg(feature = "test-support")]
 	use mwc_core::libtx::proof::ProofBuilder;
+	#[cfg(feature = "test-support")]
 	use mwc_crates::rand::rngs::SysRng;
+	#[cfg(feature = "test-support")]
 	use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
-	use mwc_crates::serde_json::{self, json};
+	#[cfg(feature = "test-support")]
+	use mwc_crates::serde_json;
+	use mwc_crates::serde_json::json;
+	#[cfg(feature = "test-support")]
 	use mwc_keychain::{ExtKeychain, Keychain};
+	#[cfg(feature = "test-support")]
 	use mwc_util::ToHex;
 
 	#[test]
@@ -1702,6 +1711,13 @@ mod tests {
 		assert!(normalize_trailing_optional_params(params, 0, 5, "get_block").is_err());
 	}
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn parse_push_transaction_accepts_legacy_flat_plain_kernel() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn parse_push_transaction_accepts_legacy_flat_plain_kernel() {
 		let tx = transaction_with_kernel(KernelFeatures::Plain {
@@ -1721,6 +1737,13 @@ mod tests {
 		}
 	}
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn parse_push_transaction_accepts_string_nested_fee() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn parse_push_transaction_accepts_string_nested_fee() {
 		let tx = transaction_with_kernel(KernelFeatures::Plain {
@@ -1737,6 +1760,13 @@ mod tests {
 		}
 	}
 
+	#[cfg(not(feature = "test-support"))]
+	#[test]
+	fn parse_push_transaction_accepts_legacy_compact_kernel_signature() {
+		panic!("test-support feature is required to run the tests");
+	}
+
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn parse_push_transaction_accepts_legacy_compact_kernel_signature() {
 		let tx = transaction_with_kernel(KernelFeatures::Plain {
@@ -1756,6 +1786,7 @@ mod tests {
 		assert_eq!(parsed.kernels()[0].excess_sig, tx.kernels()[0].excess_sig);
 	}
 
+	#[cfg(feature = "test-support")]
 	fn transaction_with_kernel(features: KernelFeatures) -> Transaction {
 		let fee = match features {
 			KernelFeatures::Plain { fee }

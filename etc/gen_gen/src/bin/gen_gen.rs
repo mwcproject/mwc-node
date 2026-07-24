@@ -158,6 +158,12 @@ fn main() {
 }
 
 fn update_genesis_rs(gen: &core::core::Block) {
+	let excess_sig = util::secp_static::with_none(
+		|err| err,
+		|secp| gen.kernels()[0].excess_sig.serialize_compact(secp),
+	)
+	.unwrap();
+
 	// set the replacement patterns
 	let mut replacements = vec![];
 	replacements.push((
@@ -222,8 +228,8 @@ fn update_genesis_rs(gen: &core::core::Block) {
 	replacements.push((
 		"excess_sig".to_string(),
 		format!(
-			"Signature::from_raw_data(&{:?}).unwrap()",
-			gen.kernels()[0].excess_sig.to_raw_data().to_vec(),
+			"AggSigSignature::from_compact(&secp, &{:?}).unwrap()",
+			excess_sig.to_vec(),
 		),
 	));
 	replacements.push((
