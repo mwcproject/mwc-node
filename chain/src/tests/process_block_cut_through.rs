@@ -115,7 +115,7 @@ fn missing_predecessor_header_returns_orphan() -> Result<(), mwc_chain::Error> {
 	let keychain =
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 	let mut block = build_block(&mut secp, &chain, &keychain, &[], false)?;
 	block.header.prev_hash = Hash::from_vec(&[42]);
 
@@ -157,7 +157,7 @@ fn process_block_cut_through() -> Result<(), mwc_chain::Error> {
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 	let pb = ProofBuilder::new(&secp, &keychain).unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 
 	// Mine a few empty blocks.
 	for _ in 1..6 {
@@ -294,7 +294,7 @@ fn readonly_pmmr_operation_preserves_existing_pending_marker() -> Result<(), mwc
 	let keychain =
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 	let marker = PendingChainOperation::ResetToGenesis;
 
 	chain

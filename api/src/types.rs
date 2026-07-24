@@ -1031,6 +1031,7 @@ mod test {
 				std::collections::HashSet::new(),
 				None,
 				None,
+				true,
 			)
 			.unwrap();
 

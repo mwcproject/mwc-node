@@ -44,7 +44,7 @@ fn data_files() {
 
 	// Now reload the chain from existing data files and check it is valid.
 	{
-		let chain = init_chain(&secp, chain_dir, genesis);
+		let chain = init_chain(&secp, chain_dir, genesis, true);
 		chain.validate(&secp, false).unwrap();
 		assert_eq!(chain.head().unwrap().height, 3);
 	}

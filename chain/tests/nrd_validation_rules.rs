@@ -121,7 +121,7 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 
 	for n in 1..9 {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0)
@@ -302,7 +302,7 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 
 	for n in 1..9 {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0)
@@ -452,7 +452,7 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 
 	for n in 1..9 {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0)

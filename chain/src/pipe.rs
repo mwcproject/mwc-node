@@ -24,9 +24,7 @@ use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::Committed;
 use mwc_core::core::Transaction;
-use mwc_core::core::{
-	block, Block, BlockHeader, BlockSums, HeaderVersion, OutputIdentifier, TransactionBody,
-};
+use mwc_core::core::{block, Block, BlockHeader, BlockSums, OutputIdentifier, TransactionBody};
 use mwc_core::difficulty_cache::DifficultyCache;
 use mwc_core::global;
 use mwc_core::pow;
@@ -47,6 +45,8 @@ use std::iter::FromIterator;
 pub struct BlockContext<'a> {
 	/// The options
 	pub opts: Options,
+	/// Whether this node enforces spent-output replay protection while processing blocks.
+	pub replay_protection_enabled: bool,
 	/// The pow verifier to use when processing a block.
 	pub pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	/// The active txhashset (rewindable MMRs) to use for block processing.
@@ -469,6 +469,7 @@ pub fn process_blocks_series(
 
 	// Start a chain extension unit of work dependent on the success of the
 	// internal validation and saving operations
+	let replay_protection_enabled = ctx.replay_protection_enabled;
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
@@ -480,7 +481,14 @@ pub fn process_blocks_series(
 		let mut local_branch_blocks = fork_point_local_blocks.1;
 
 		for b in blocks {
-			replay_attack_check(b, fork_point.height, &local_branch_blocks, ext, batch)?;
+			replay_attack_check(
+				b,
+				fork_point.height,
+				&local_branch_blocks,
+				ext,
+				batch,
+				replay_protection_enabled,
+			)?;
 
 			// Check any coinbase being spent have matured sufficiently.
 			// This needs to be done within the context of a potentially
@@ -549,18 +557,14 @@ pub fn replay_attack_check(
 	local_branch_blocks: &Vec<Hash>,
 	ext: &txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
+	replay_protection_enabled: bool,
 ) -> Result<(), Error> {
-	// Replay protection is a consensus rule, so HeaderVersion is the visible
-	// hard-fork signal for enabling this block-level check. Keep this gate in
-	// sync with consensus::valid_header_version(): production networks must
-	// accept HeaderVersion(3) at the activation height before this runs for
-	// normal Mainnet/Floonet blocks. If replay protection is required for an
-	// earlier production version, this gate must be updated to cover it.
-	// The global flag is a test-only escape hatch: integration tests that
-	// deliberately build a replay on an AutomatedTesting chain (which reaches
-	// HeaderVersion(3) within a few blocks) disable it on the block processing
-	// thread. It is always enabled in production.
-	if b.header.version >= HeaderVersion(3) && global::is_replay_protection_enabled() {
+	// Replay protection is activated as a node-local mining policy. Nodes with
+	// Stratum enabled apply it to every block they process, regardless of where
+	// the block was mined. Non-mining nodes continue to accept the legacy rule
+	// set. The global flag is a test-only escape hatch for integration tests
+	// that deliberately build a replay.
+	if replay_protection_enabled && global::is_replay_protection_enabled() {
 		check_against_spent_output(
 			&b.body,
 			Some(fork_point_height),

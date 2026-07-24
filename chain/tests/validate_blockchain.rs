@@ -54,6 +54,7 @@ fn test_chain_validation() {
 		HashSet::new(),
 		None,
 		None,
+		true,
 	)
 	.unwrap();
 

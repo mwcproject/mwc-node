@@ -133,7 +133,7 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 			.unwrap();
 	let pb = ProofBuilder::new(&secp, &keychain).unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 
 	for n in 1..9 {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0)
@@ -210,7 +210,7 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 			.unwrap();
 	let pb = ProofBuilder::new(&secp, &keychain).unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let chain = init_chain(&secp, chain_dir, genesis.clone());
+	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
 
 	for n in 1..8 {
 		let key_id = ExtKeychainPath::new(1, n, 0, 0, 0)

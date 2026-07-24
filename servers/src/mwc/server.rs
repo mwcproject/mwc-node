@@ -183,6 +183,13 @@ impl Server {
 			None => false,
 			Some(b) => b,
 		};
+		// This is the configured Stratum activation flag, not runtime service
+		// state. Mining nodes enforce spent-output replay protection for every
+		// block they process; non-mining nodes retain the legacy acceptance rule.
+		let replay_protection_enabled = config
+			.stratum_mining_config
+			.enable_stratum_server
+			.unwrap_or(false);
 
 		if stop_state.is_stopped() {
 			return Err(Error::ServerError("Server start was cancelled".into()));
@@ -249,6 +256,7 @@ impl Server {
 				invalid_blocks,
 				Some(sync_state.clone()),
 				Some(stop_state.clone()),
+				replay_protection_enabled,
 			)
 			.map_err(|e| Error::ServerError(format!("Unable to read blockchain data, {}", e)))?,
 		);

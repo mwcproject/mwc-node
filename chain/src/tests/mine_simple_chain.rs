@@ -87,6 +87,7 @@ fn setup_with_status_adapter(
 		HashSet::new(),
 		None,
 		None,
+		true,
 	)
 	.unwrap();
 
@@ -225,7 +226,7 @@ fn block_height_range_to_pmmr_indices_caps_header_only_end_height() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -262,7 +263,7 @@ fn block_height_range_to_pmmr_indices_uses_body_chain_on_header_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -338,7 +339,7 @@ fn init_output_pos_index_rebuilds_missing_genesis_output_at_height_zero() {
 	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let genesis = genesis::genesis_floo(&secp, 0);
 	let commit = genesis.outputs()[0].commitment();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 	let store = chain.get_store_for_tests();
 	assert!(store
 		.batch_read()
@@ -387,7 +388,7 @@ fn reset_pibd_chain_keeps_genesis_output_visible_after_compaction() {
 	let genesis_commit = genesis.outputs()[0].commitment();
 
 	{
-		let chain = init_chain(&secp, &chain_dir, genesis);
+		let chain = init_chain(&secp, &chain_dir, genesis, true);
 		let mut head = chain.head_header().unwrap();
 
 		let b = prepare_block_key_idx(&mut secp, &keychain, &head, &chain, 2, 2);
@@ -648,7 +649,7 @@ fn get_header_for_output_uses_body_chain_when_header_pmmr_is_on_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, &chain_dir, genesis);
+	let chain = init_chain(&secp, &chain_dir, genesis, true);
 	let context_id = chain.get_context_id();
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
@@ -708,7 +709,7 @@ fn get_kernel_height_rejects_stale_kernel_pos_height() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, &chain_dir, genesis);
+	let chain = init_chain(&secp, &chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -763,7 +764,7 @@ fn get_header_for_kernel_index_uses_body_chain_when_header_pmmr_is_on_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, &chain_dir, genesis);
+	let chain = init_chain(&secp, &chain_dir, genesis, true);
 	let context_id = chain.get_context_id();
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
@@ -820,7 +821,7 @@ fn init_output_pos_index_maps_missing_outputs_from_body_chain() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, &chain_dir, genesis);
+	let chain = init_chain(&secp, &chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -932,7 +933,7 @@ fn rewind_bad_block_removes_header_only_chain_state() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -978,7 +979,7 @@ fn rewind_bad_block_on_header_fork_preserves_body_head() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -1031,7 +1032,7 @@ fn known_header_fast_path_rejects_different_header() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -1074,7 +1075,7 @@ fn header_only_validation_rejects_incomplete_body_mmr_sizes() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -1114,7 +1115,7 @@ fn header_only_validation_rejects_wrong_height_as_bad_data() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -1146,7 +1147,7 @@ fn known_full_block_fast_path_rejects_different_header() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = init_chain(&secp, chain_dir, genesis);
+	let chain = init_chain(&secp, chain_dir, genesis, true);
 
 	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
 	process_block(&mut secp, &chain, &block_a);
@@ -1522,7 +1523,12 @@ fn mine_forks() {
 	global::set_local_nrd_enabled(false);
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	{
-		let chain = init_chain(&secp, ".mwc2", global::get_genesis_block(&secp, 0).unwrap());
+		let chain = init_chain(
+			&secp,
+			".mwc2",
+			global::get_genesis_block(&secp, 0).unwrap(),
+			true,
+		);
 		let kc =
 			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 				.unwrap();
@@ -1602,6 +1608,7 @@ fn mine_losing_fork() {
 			&secp,
 			&chain_dir,
 			global::get_genesis_block(&secp, 0).unwrap(),
+			true,
 		);
 
 		// add a first block we'll be forking from
@@ -1678,7 +1685,7 @@ fn longer_fork() {
 	// then send back on the 1st
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
 	{
-		let chain = init_chain(&secp, ".mwc4", genesis.clone());
+		let chain = init_chain(&secp, ".mwc4", genesis.clone(), true);
 
 		// add blocks to both chains, 20 on the main one, only the first 5
 		// for the forked chain
@@ -1741,6 +1748,7 @@ fn spend_rewind_spend() {
 			&secp,
 			chain_dir,
 			global::get_genesis_block(&secp, 0).unwrap(),
+			true,
 		);
 		let prev = chain.head_header().unwrap();
 		let kc =
@@ -1764,8 +1772,10 @@ fn spend_rewind_spend() {
 			)
 			.unwrap();
 
-		// now mine three further blocks
-		for n in 3..6 {
+		// Mine two further blocks. This leaves the replay block at height 5,
+		// where AutomatedTesting still uses header version 2. Replay protection
+		// is activated by node policy, not by the block version.
+		for n in 3..5 {
 			let b = prepare_block(&mut secp, &kc, &head, &chain, n);
 			head = b.header.clone();
 			chain
@@ -1806,6 +1816,7 @@ fn spend_rewind_spend() {
 		.unwrap();
 
 		let b = prepare_block_tx(&mut secp, &kc, &head, &chain, 6, &[tx1.clone()]);
+		assert_eq!(b.header.version, block::HeaderVersion(2));
 		head = b.header.clone();
 		chain
 			.process_block(
@@ -1820,15 +1831,17 @@ fn spend_rewind_spend() {
 		// Now mine another block, reusing the private key for the coinbase we just spent.
 		{
 			let b = prepare_block_key_idx(&mut secp, &kc, &head, &chain, 7, 1);
-			//due to recent change of checking output against spent output, this process will fail.
-			assert!(chain
+			assert_eq!(b.header.version, block::HeaderVersion(2));
+			let err = chain
 				.process_block(
 					&mut secp,
 					b,
 					Options::SKIP_POW,
-					std::collections::HashSet::new()
+					std::collections::HashSet::new(),
 				)
-				.is_err());
+				.unwrap_err();
+			assert!(matches!(err, mwc_chain::Error::ReplayAttack(_)));
+			assert!(err.is_bad_data());
 		}
 
 		// Now mine a competing block also spending the same coinbase output from earlier.
@@ -1851,6 +1864,104 @@ fn spend_rewind_spend() {
 }
 
 #[test]
+fn spent_output_replay_is_accepted_when_replay_policy_disabled() {
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let chain_dir = test_chain_dir("spent_output_replay_policy_disabled");
+	clean_output_dir(&chain_dir);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	{
+		let chain = init_chain(
+			&secp,
+			&chain_dir,
+			global::get_genesis_block(&secp, 0).unwrap(),
+			false,
+		);
+		let kc =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let pb = ProofBuilder::new(&secp, &kc).unwrap();
+		let mut head = chain.head_header().unwrap();
+
+		let first = prepare_block_key_idx(&mut secp, &kc, &head, &chain, 2, 1);
+		let replayed_commitment = first.outputs()[0].commitment();
+		head = first.header.clone();
+		chain
+			.process_block(
+				&mut secp,
+				first,
+				Options::SKIP_POW,
+				std::collections::HashSet::new(),
+			)
+			.unwrap();
+
+		for n in 3..5 {
+			let b = prepare_block(&mut secp, &kc, &head, &chain, n);
+			head = b.header.clone();
+			chain
+				.process_block(
+					&mut secp,
+					b,
+					Options::SKIP_POW,
+					std::collections::HashSet::new(),
+				)
+				.unwrap();
+		}
+
+		let key_id_coinbase = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let spend = build::transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 20000u32.try_into().unwrap(),
+			},
+			&[
+				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+		let spend_block = prepare_block_tx(&mut secp, &kc, &head, &chain, 6, &[spend]);
+		assert_eq!(spend_block.header.version, block::HeaderVersion(2));
+		head = spend_block.header.clone();
+		chain
+			.process_block(
+				&mut secp,
+				spend_block,
+				Options::SKIP_POW,
+				std::collections::HashSet::new(),
+			)
+			.unwrap();
+
+		let replay = prepare_block_key_idx(&mut secp, &kc, &head, &chain, 7, 1);
+		assert_eq!(replay.header.version, block::HeaderVersion(2));
+		assert_eq!(replay.outputs()[0].commitment(), replayed_commitment);
+		chain
+			.process_block(
+				&mut secp,
+				replay,
+				Options::SKIP_POW,
+				std::collections::HashSet::new(),
+			)
+			.unwrap();
+		assert!(chain.get_unspent(replayed_commitment).unwrap().is_some());
+	}
+
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
 fn spend_in_fork_and_compact() {
 	clean_output_dir(".mwc6");
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
@@ -1858,7 +1969,12 @@ fn spend_in_fork_and_compact() {
 	mwc_util::init_test_logger().unwrap();
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	{
-		let chain = init_chain(&secp, ".mwc6", global::get_genesis_block(&secp, 0).unwrap());
+		let chain = init_chain(
+			&secp,
+			".mwc6",
+			global::get_genesis_block(&secp, 0).unwrap(),
+			true,
+		);
 		let prev = chain.head_header().unwrap();
 		let kc =
 			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
@@ -1881,10 +1997,9 @@ fn spend_in_fork_and_compact() {
 			)
 			.unwrap();
 
-		//only mine 2 blocks because from height 6 it will be header version 3 and it
-		//will trigger replay attack check.
+		// Build the common prefix needed for the fork/replay scenario. Replay
+		// protection is enabled for this test at every header version.
 		for n in 3..5 {
-			//only mine 2 blocks because from height 6 it will be header version 3 and it
 			let b = prepare_block(&mut secp, &kc, &fork_head, &chain, n);
 			fork_head = b.header.clone();
 			chain
@@ -2085,7 +2200,7 @@ fn compact_missing_output_pos_result(test_name: &str, index_complete: bool) -> O
 	let genesis_commit = genesis.outputs()[0].commitment();
 
 	let result = {
-		let chain = init_chain(&secp, &chain_dir, genesis);
+		let chain = init_chain(&secp, &chain_dir, genesis, true);
 		let mut head = chain.head_header().unwrap();
 		for n in 1..80 {
 			let next = prepare_block(&mut secp, &keychain, &head, &chain, n);
@@ -2154,6 +2269,7 @@ fn output_header_mappings() {
 			&secp,
 			&chain_dir,
 			global::get_genesis_block(&secp, 0).unwrap(),
+			true,
 		);
 		let keychain =
 			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
@@ -2305,6 +2421,7 @@ fn test_overflow_cached_rangeproof() {
 			&secp,
 			".mwc_overflow",
 			global::get_genesis_block(&secp, 0).unwrap(),
+			true,
 		);
 		let prev = chain.head_header().unwrap();
 		let kc =
@@ -2573,6 +2690,7 @@ fn actual_diff_iter_output() {
 		HashSet::new(),
 		None,
 		None,
+		true,
 	)
 	.unwrap();
 	let iter = chain.difficulty_iter().unwrap();

@@ -919,6 +919,7 @@ mod tests {
 			HashSet::new(),
 			None,
 			None,
+			true,
 		)
 		.unwrap();
 

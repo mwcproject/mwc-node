@@ -240,6 +240,7 @@ pub struct Chain {
 	// POW verification function
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	archive_mode: bool,
+	replay_protection_enabled: bool,
 	genesis: Block,
 	cache_header_difficulty: Arc<RwLock<DifficultyCache>>,
 	pibd_params: Arc<PibdParams>,
@@ -490,6 +491,7 @@ impl Chain {
 		invalid_blocks: HashSet<Hash>,
 		sync_state: Option<Arc<SyncState>>,
 		stop_state: Option<Arc<StopState>>,
+		replay_protection_enabled: bool,
 	) -> Result<Chain, Error> {
 		validate_genesis_for_init(secp, context_id, &genesis, pow_verifier)?;
 
@@ -563,6 +565,7 @@ impl Chain {
 			pibd_segmenter: Arc::new(RwLock::new(None)),
 			pow_verifier,
 			archive_mode,
+			replay_protection_enabled,
 			genesis: genesis,
 			cache_header_difficulty: Arc::new(RwLock::new(DifficultyCache::new())),
 			pibd_params,
@@ -1510,6 +1513,7 @@ impl Chain {
 	) -> Result<pipe::BlockContext<'a>, Error> {
 		Ok(pipe::BlockContext {
 			opts,
+			replay_protection_enabled: self.replay_protection_enabled,
 			pow_verifier: self.pow_verifier,
 			header_pmmr,
 			txhashset,
@@ -4659,6 +4663,7 @@ mod tests {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap();
 

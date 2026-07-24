@@ -133,6 +133,7 @@ pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
 		HashSet::new(),
 		None,
 		None,
+		true,
 	)
 	.unwrap()
 }

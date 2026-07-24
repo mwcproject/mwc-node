@@ -76,7 +76,12 @@ pub fn test_chain_dir(test_name: &str) -> String {
 	format!(".mwc_test_{}_{}_{}", sanitized, std::process::id(), counter)
 }
 
-pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
+pub fn init_chain(
+	secp: &Secp256k1,
+	dir_name: &str,
+	genesis: Block,
+	replay_protection_enabled: bool,
+) -> Chain {
 	Chain::init(
 		&secp,
 		0,
@@ -88,6 +93,7 @@ pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
 		HashSet::new(),
 		None,
 		None,
+		replay_protection_enabled,
 	)
 	.unwrap()
 }
@@ -169,7 +175,7 @@ pub fn mine_chain(dir_name: &str, chain_length: u64) -> Chain {
 	)
 	.unwrap();
 	let genesis = genesis_block(&mut secp, &keychain);
-	let mut chain = init_chain(&secp, dir_name, genesis.clone());
+	let mut chain = init_chain(&secp, dir_name, genesis.clone(), true);
 	mine_some_on_top(&mut secp, &mut chain, chain_length, &keychain);
 	chain
 }
