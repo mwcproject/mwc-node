@@ -286,14 +286,19 @@ pub fn read_owner_only_file<P: AsRef<Path>>(path: P) -> io::Result<Zeroizing<Vec
 	Ok(bytes)
 }
 
-/// Create or truncate a regular file as owner-only and write all bytes to it.
+/// Create or truncate a regular file as owner-only and durably write all bytes to it.
 pub fn write_owner_only_file<P, B>(path: P, bytes: B) -> io::Result<()>
 where
 	P: AsRef<Path>,
 	B: AsRef<[u8]>,
 {
+	let path = path.as_ref();
 	let mut file = create_owner_only_file(path)?;
-	write_all_and_sync(&mut file, bytes.as_ref())
+	write_all_and_sync(&mut file, bytes.as_ref())?;
+	// If this call created the file, syncing the file itself is not enough:
+	// the containing directory must also be synced to persist the new name.
+	// Sync unconditionally to avoid a racy pre-open existence check.
+	sync_parent_dir(path)
 }
 
 /// Create a new owner-only regular file and write all bytes to it.
