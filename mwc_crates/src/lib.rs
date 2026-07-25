@@ -3,6 +3,7 @@
 // All used crates must be exported. It is the only purpose of mwc_crates.
 
 pub use anyhow;
+pub use argon2;
 pub use arti_client;
 pub use async_std;
 pub use async_stream;

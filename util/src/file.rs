@@ -12,6 +12,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//! # Access-control lists
+//!
+//! The owner-only filesystem helpers in this module intentionally do not inspect or modify
+//! platform-specific access-control lists (ACLs), because Rust's standard library does not
+//! provide portable ACL support. ACL configuration, including removing access or inheritable
+//! entries that grant other principals access, is the user's responsibility.
 use mwc_crates::walkdir::WalkDir;
 use mwc_crates::zeroize::Zeroizing;
 use std::convert::TryFrom;
