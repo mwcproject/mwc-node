@@ -1384,12 +1384,7 @@ where
 				Ok(true)
 			}
 			Err(e) => {
-				if matches!(&e, mwc_chain::Error::OldBlock)
-					|| matches!(&e, mwc_chain::Error::Unfit(msg)
-						if msg == "already known in head"
-							|| msg == "already known in store"
-							|| msg == "duplicate block")
-				{
+				if e.is_known_block() {
 					debug!(
 						"process_block: block {} from peer {} is already known: {}",
 						bhash, peer_info.addr, e

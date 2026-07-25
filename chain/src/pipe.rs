@@ -24,9 +24,7 @@ use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::Committed;
 use mwc_core::core::Transaction;
-use mwc_core::core::{
-	block, Block, BlockHeader, BlockSums, HeaderVersion, OutputIdentifier, TransactionBody,
-};
+use mwc_core::core::{block, Block, BlockHeader, BlockSums, OutputIdentifier, TransactionBody};
 use mwc_core::difficulty_cache::DifficultyCache;
 use mwc_core::global;
 use mwc_core::pow;
@@ -147,8 +145,9 @@ fn check_known(
 	Ok(KnownStatus::Unknown)
 }
 
-///check the outputs of this block against the spent output in the lmdb within the horizon.
-///beyond that, the blocks are compacted.
+/// Check the outputs of this block against spent outputs in the LMDB within the
+/// cut-through horizon. Older duplicates are accepted consistently, including
+/// by archive nodes that still retain their historical spent-commitment entries.
 pub fn check_against_spent_output(
 	tx: &TransactionBody,
 	fork_point_height: Option<u64>,
@@ -156,10 +155,23 @@ pub fn check_against_spent_output(
 	header_extension: &txhashset::HeaderExtension<'_>,
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
-	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
+	// Note, Coinbase duplicated from recently spent outputs are accepted.
+	// Reason: It is a real case, recreated mining wallet will produce the case coinbase outputs
+	let output_commits = tx
+		.outputs
+		.iter()
+		.filter(|output| !output.is_coinbase())
+		.map(|output| output.identifier.commit);
 	let tip = batch
 		.head()
 		.map_err(|e| Error::Other(format!("Unable to get a head from batch, {}", e)))?;
+	// Note, using half of horizon because it covers our need for mwc-wallet.
+	// We better don't use all cut_through_horizon, because in case of deep reorg, number
+	// of indexed blocks can be reduced and become less than cut_through_horizon.
+	// We really don't want index to be incomplete to validate commit existance
+	let replay_horizon_height = tip
+		.height
+		.saturating_sub(u64::from(global::cut_through_horizon(batch.get_context_id())) / 2);
 	let fork_height = fork_point_height.unwrap_or(tip.height);
 	//convert the list of local branch bocks header hashes to a hash set for quick search
 	let empty_vec = Vec::new();
@@ -182,6 +194,12 @@ pub fn check_against_spent_output(
 					)));
 				}
 
+				// Keep the boundary inclusive. Only spends strictly below
+				// tip - CUT_THROUGH_HORIZON are accepted.
+				if header.height < replay_horizon_height {
+					continue;
+				}
+
 				//first check the local branch.
 				if header.height > fork_height && local_branch_blocks_set.contains(&hash_val.hash) {
 					//first check the local branch.
@@ -189,7 +207,7 @@ pub fn check_against_spent_output(
 						"output contains spent commtiment:{:?} from local branch",
 						commit
 					);
-					return Err(Error::ReplayAttack(commit));
+					return Err(Error::ReplayAttack(commit, tip.height, hash_val.height));
 				} else if header.height <= fork_height {
 					if header_extension
 						.is_on_current_chain(Tip::try_from_header(&header)?, batch)?
@@ -198,7 +216,7 @@ pub fn check_against_spent_output(
 							"output contains spent commtiment:{:?} from the main chain",
 							commit
 						);
-						return Err(Error::ReplayAttack(commit));
+						return Err(Error::ReplayAttack(commit, tip.height, hash_val.height));
 					}
 				}
 			}
@@ -480,7 +498,14 @@ pub fn process_blocks_series(
 		let mut local_branch_blocks = fork_point_local_blocks.1;
 
 		for b in blocks {
-			replay_attack_check(b, fork_point.height, &local_branch_blocks, ext, batch)?;
+			replay_attack_check(
+				context_id,
+				b,
+				fork_point.height,
+				&local_branch_blocks,
+				ext,
+				batch,
+			)?;
 
 			// Check any coinbase being spent have matured sufficiently.
 			// This needs to be done within the context of a potentially
@@ -542,32 +567,29 @@ pub fn process_blocks_series(
 	res
 }
 
-///
+/// Check a block for spent-output replays once protection is active for its chain.
 pub fn replay_attack_check(
+	context_id: u32,
 	b: &Block,
 	fork_point_height: u64,
 	local_branch_blocks: &Vec<Hash>,
 	ext: &txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
-	// Replay protection is a consensus rule, so HeaderVersion is the visible
-	// hard-fork signal for enabling this block-level check. Keep this gate in
-	// sync with consensus::valid_header_version(): production networks must
-	// accept HeaderVersion(3) at the activation height before this runs for
-	// normal Mainnet/Floonet blocks. If replay protection is required for an
-	// earlier production version, this gate must be updated to cover it.
-	// The global flag is a test-only escape hatch: integration tests that
-	// deliberately build a replay on an AutomatedTesting chain (which reaches
-	// HeaderVersion(3) within a few blocks) disable it on the block processing
-	// thread. It is always enabled in production.
-	if b.header.version >= HeaderVersion(3) && global::is_replay_protection_enabled() {
+	let height_limit = match global::get_chain_type(context_id) {
+		global::ChainTypes::Mainnet => 3533000,
+		global::ChainTypes::Floonet => 1700000,
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => 5,
+	};
+
+	if b.header.height > height_limit && global::is_replay_protection_enabled() {
 		check_against_spent_output(
 			&b.body,
 			Some(fork_point_height),
 			Some(local_branch_blocks),
 			ext.header_extension,
 			batch,
-		)?;
+		)?
 	}
 	Ok(())
 }

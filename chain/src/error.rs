@@ -82,8 +82,8 @@ pub enum Error {
 	#[error("Duplicate Commitment: {0:?}")]
 	DuplicateCommitment(Commitment),
 	/// An output reuses a previously spent commitment on the retained chain.
-	#[error("Replay attack detected: {0:?}")]
-	ReplayAttack(Commitment),
+	#[error("Replay attack detected. Commit {0:?} observed at height {1} and {2}")]
+	ReplayAttack(Commitment, u64, u64),
 	/// Attempt to spend a coinbase output before it sufficiently matures.
 	#[error("Attempt to spend immature coinbase")]
 	ImmatureCoinbase,
@@ -275,7 +275,7 @@ impl Error {
 			| Error::AlreadySpent(_)
 			| Error::InputMismatch(_)
 			| Error::DuplicateCommitment(_)
-			| Error::ReplayAttack(_)
+			| Error::ReplayAttack(_,_,_)
 			| Error::ImmatureCoinbase
 			| Error::MerkleProof(_)
 			| Error::OutputNotFound(_)
@@ -336,6 +336,21 @@ impl Error {
 			| Error::EmptyMMR => false,
 
 			Error::TxHashSetDiscardAfterError { primary, .. } => primary.is_bad_data(),
+		}
+	}
+
+	/// Whether this error only reports that the full block is already known.
+	///
+	/// Body sync intentionally issues redundant requests, so these outcomes can
+	/// be produced by a normal race between two valid peer responses.
+	pub fn is_known_block(&self) -> bool {
+		match self {
+			Error::OldBlock => true,
+			Error::Unfit(msg) => matches!(
+				msg.as_str(),
+				"already known in head" | "already known in store" | "duplicate block"
+			),
+			_ => false,
 		}
 	}
 
@@ -433,7 +448,7 @@ mod tests {
 		let bad_data_errors = vec![
 			Error::InvalidPow,
 			Error::InputMismatch(Commitment::from_vec([1; 33].to_vec()).unwrap()),
-			Error::ReplayAttack(Commitment::from_vec([2; 33].to_vec()).unwrap()),
+			Error::ReplayAttack(Commitment::from_vec([2; 33].to_vec()).unwrap(), 10, 20),
 			Error::InvalidRoot("output root mismatch".into()),
 			Error::InvalidBitmapRoot,
 			Error::InvalidHeadersRoot,
@@ -444,6 +459,17 @@ mod tests {
 		for err in bad_data_errors {
 			assert!(err.is_bad_data(), "{:?}", err);
 		}
+	}
+
+	#[test]
+	fn known_block_errors_are_classified_separately() {
+		assert!(Error::OldBlock.is_known_block());
+		assert!(Error::Unfit("already known in head".into()).is_known_block());
+		assert!(Error::Unfit("already known in store".into()).is_known_block());
+		assert!(Error::Unfit("duplicate block".into()).is_known_block());
+
+		assert!(!Error::Unfit("conflicting orphan body".into()).is_known_block());
+		assert!(!Error::InvalidPow.is_known_block());
 	}
 
 	#[test]

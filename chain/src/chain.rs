@@ -1069,7 +1069,16 @@ impl Chain {
 				return Ok(tip);
 			}
 			Err(e) => {
-				if e.is_bad_data() {
+				// A duplicate can pass the initial unlocked known-block check and
+				// then lose a race to another peer response before the pipeline
+				// acquires its write locks. The block is valid and already stored,
+				// so this is normal sync control flow rather than a rejection.
+				if e.is_known_block() {
+					debug!(
+						"process_block_single found block already known after a concurrent update: {}",
+						e
+					);
+				} else if e.is_bad_data() {
 					error!("process_block_single failed with error: {}", e);
 					if !report_peers.is_empty() {
 						self.adapter.block_rejected(&block_hash, &report_peers, &e);

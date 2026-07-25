@@ -349,12 +349,8 @@ pub fn is_nrd_enabled(context_id: u32) -> bool {
 thread_local! {
 	/// Test-only per-thread switch for the block-level spent-commitment replay
 	/// check (pipe::replay_attack_check). It is deliberately NOT part of
-	/// ChainGlobalParams: production nodes never touch it, so the check stays
-	/// enabled everywhere unless a test explicitly disables it on the thread
-	/// that processes blocks. The wallet integration tests need this because
-	/// they build a real replay on a low-height AutomatedTesting chain, where
-	/// the check activates at header version 3 while production networks have
-	/// not reached the activation version yet.
+	/// ChainGlobalParams; it only lets tests that deliberately build a replay
+	/// bypass the check on the processing thread.
 	static LOCAL_REPLAY_PROTECTION_ENABLED: RefCell<bool> = RefCell::new(true);
 }
 

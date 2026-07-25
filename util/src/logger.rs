@@ -306,6 +306,20 @@ fn should_skip_log(target: &str, msg: &str) -> bool {
 		return true;
 	}
 
+	if target == "tor_circmgr::mgr"
+		&& (msg.contains("All tunnel attempts failed due to timeout")
+			|| msg.contains("Request failed"))
+	{
+		return true;
+	}
+
+	if target == "tor_circmgr"
+		&& msg.contains("Failed to build preemptive circuit")
+		&& msg.contains("Spent too long trying to construct circuits")
+	{
+		return true;
+	}
+
 	false
 }
 
@@ -821,6 +835,32 @@ mod tests {
 			log: number.to_string(),
 			level: Level::Warn,
 		}
+	}
+
+	#[test]
+	fn skips_expected_tor_circuit_manager_noise() {
+		assert!(should_skip_log(
+			"tor_circmgr::mgr",
+			"All tunnel attempts failed due to timeout"
+		));
+		assert!(should_skip_log("tor_circmgr::mgr", "Request failed"));
+		assert!(should_skip_log(
+			"tor_circmgr",
+			"Failed to build preemptive circuit [scrubbed] error=Unable to find or build a tunnel: Spent too long trying to construct circuits for this request"
+		));
+
+		assert!(!should_skip_log(
+			"tor_circmgr::mgr",
+			"A different circuit manager warning"
+		));
+		assert!(!should_skip_log(
+			"another_target",
+			"All tunnel attempts failed due to timeout"
+		));
+		assert!(!should_skip_log(
+			"tor_circmgr",
+			"Failed to build preemptive circuit for a different reason"
+		));
 	}
 
 	#[test]
