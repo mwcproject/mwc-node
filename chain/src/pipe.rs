@@ -582,7 +582,7 @@ pub fn replay_attack_check(
 		1700000
 	};
 
-	if b.header.height < height_limit && global::is_replay_protection_enabled() {
+	if b.header.height > height_limit && global::is_replay_protection_enabled() {
 		check_against_spent_output(
 			&b.body,
 			Some(fork_point_height),
