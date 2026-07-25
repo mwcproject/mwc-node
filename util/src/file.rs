@@ -286,7 +286,8 @@ pub fn read_owner_only_file<P: AsRef<Path>>(path: P) -> io::Result<Zeroizing<Vec
 	Ok(bytes)
 }
 
-/// Create or truncate a regular file as owner-only and durably write all bytes to it.
+/// Create or truncate a regular file as owner-only, then synchronize the file
+/// and, on Unix, its containing directory.
 pub fn write_owner_only_file<P, B>(path: P, bytes: B) -> io::Result<()>
 where
 	P: AsRef<Path>,

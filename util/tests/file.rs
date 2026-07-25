@@ -84,6 +84,30 @@ fn write_owner_only_file_sets_owner_only_permissions() {
 
 #[cfg(unix)]
 #[test]
+fn write_owner_only_file_reports_parent_sync_failure() {
+	use std::os::unix::fs::PermissionsExt;
+
+	// Root bypasses the permission check used to make opening the parent fail.
+	if unsafe { mwc_crates::libc::geteuid() } == 0 {
+		return;
+	}
+
+	let path = owner_file_test_path("write_parent_sync");
+	let parent = path.parent().unwrap();
+	// Write + execute allow file creation, while the missing read bit prevents
+	// sync_parent_dir from opening the directory for synchronization.
+	fs::set_permissions(parent, fs::Permissions::from_mode(0o300)).unwrap();
+	let result = file::write_owner_only_file(&path, b"secret");
+	fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+
+	let err = result.unwrap_err();
+	assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+	assert_eq!(fs::read(&path).unwrap(), b"secret");
+	fs::remove_dir_all(parent).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn write_owner_only_file_rejects_existing_exposed_file() {
 	use std::os::unix::fs::PermissionsExt;
 
