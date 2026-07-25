@@ -45,8 +45,6 @@ use std::iter::FromIterator;
 pub struct BlockContext<'a> {
 	/// The options
 	pub opts: Options,
-	/// Whether this node enforces spent-output replay protection while processing blocks.
-	pub replay_protection_enabled: bool,
 	/// The pow verifier to use when processing a block.
 	pub pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	/// The active txhashset (rewindable MMRs) to use for block processing.
@@ -147,8 +145,9 @@ fn check_known(
 	Ok(KnownStatus::Unknown)
 }
 
-///check the outputs of this block against the spent output in the lmdb within the horizon.
-///beyond that, the blocks are compacted.
+/// Check the outputs of this block against spent outputs in the LMDB within the
+/// cut-through horizon. Older duplicates are accepted consistently, including
+/// by archive nodes that still retain their historical spent-commitment entries.
 pub fn check_against_spent_output(
 	tx: &TransactionBody,
 	fork_point_height: Option<u64>,
@@ -156,10 +155,23 @@ pub fn check_against_spent_output(
 	header_extension: &txhashset::HeaderExtension<'_>,
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
-	let output_commits = tx.outputs.iter().map(|output| output.identifier.commit);
+	// Note, Coinbase duplicated from recently spent outputs are accepted.
+	// Reason: It is a real case, recreated mining wallet will produce the case coinbase outputs
+	let output_commits = tx
+		.outputs
+		.iter()
+		.filter(|output| !output.is_coinbase())
+		.map(|output| output.identifier.commit);
 	let tip = batch
 		.head()
 		.map_err(|e| Error::Other(format!("Unable to get a head from batch, {}", e)))?;
+	// Note, using half of horizon because it covers our need for mwc-wallet.
+	// We better don't use all cut_through_horizon, because in case of deep reorg, number
+	// of indexed blocks can be reduced and become less than cut_through_horizon.
+	// We really don't want index to be incomplete to validate commit existance
+	let replay_horizon_height = tip
+		.height
+		.saturating_sub(u64::from(global::cut_through_horizon(batch.get_context_id())) / 2);
 	let fork_height = fork_point_height.unwrap_or(tip.height);
 	//convert the list of local branch bocks header hashes to a hash set for quick search
 	let empty_vec = Vec::new();
@@ -182,6 +194,12 @@ pub fn check_against_spent_output(
 					)));
 				}
 
+				// Keep the boundary inclusive. Only spends strictly below
+				// tip - CUT_THROUGH_HORIZON are accepted.
+				if header.height < replay_horizon_height {
+					continue;
+				}
+
 				//first check the local branch.
 				if header.height > fork_height && local_branch_blocks_set.contains(&hash_val.hash) {
 					//first check the local branch.
@@ -189,7 +207,7 @@ pub fn check_against_spent_output(
 						"output contains spent commtiment:{:?} from local branch",
 						commit
 					);
-					return Err(Error::ReplayAttack(commit));
+					return Err(Error::ReplayAttack(commit, tip.height, hash_val.height));
 				} else if header.height <= fork_height {
 					if header_extension
 						.is_on_current_chain(Tip::try_from_header(&header)?, batch)?
@@ -198,7 +216,7 @@ pub fn check_against_spent_output(
 							"output contains spent commtiment:{:?} from the main chain",
 							commit
 						);
-						return Err(Error::ReplayAttack(commit));
+						return Err(Error::ReplayAttack(commit, tip.height, hash_val.height));
 					}
 				}
 			}
@@ -469,7 +487,6 @@ pub fn process_blocks_series(
 
 	// Start a chain extension unit of work dependent on the success of the
 	// internal validation and saving operations
-	let replay_protection_enabled = ctx.replay_protection_enabled;
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
@@ -482,12 +499,12 @@ pub fn process_blocks_series(
 
 		for b in blocks {
 			replay_attack_check(
+				context_id,
 				b,
 				fork_point.height,
 				&local_branch_blocks,
 				ext,
 				batch,
-				replay_protection_enabled,
 			)?;
 
 			// Check any coinbase being spent have matured sufficiently.
@@ -552,26 +569,27 @@ pub fn process_blocks_series(
 
 ///
 pub fn replay_attack_check(
+	context_id: u32,
 	b: &Block,
 	fork_point_height: u64,
 	local_branch_blocks: &Vec<Hash>,
 	ext: &txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
-	replay_protection_enabled: bool,
 ) -> Result<(), Error> {
-	// Replay protection is activated as a node-local mining policy. Nodes with
-	// Stratum enabled apply it to every block they process, regardless of where
-	// the block was mined. Non-mining nodes continue to accept the legacy rule
-	// set. The global flag is a test-only escape hatch for integration tests
-	// that deliberately build a replay.
-	if replay_protection_enabled && global::is_replay_protection_enabled() {
+	let height_limit = if global::is_mainnet(context_id) {
+		3533000
+	} else {
+		1700000
+	};
+
+	if b.header.height < height_limit && global::is_replay_protection_enabled() {
 		check_against_spent_output(
 			&b.body,
 			Some(fork_point_height),
 			Some(local_branch_blocks),
 			ext.header_extension,
 			batch,
-		)?;
+		)?
 	}
 	Ok(())
 }

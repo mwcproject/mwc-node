@@ -204,6 +204,19 @@ impl BodySync {
 							debug!("push stuck orphan was successful. Should be able continue to go forward now");
 							fork_point = self.chain.fork_point()?;
 						}
+						Err(e) if e.is_known_block() => {
+							// Another in-flight response can commit this block after
+							// it was selected from the orphan pool. It is terminal for
+							// this orphan entry, but it is not a body-sync failure.
+							debug!(
+								"Removing already-known stuck orphan {} at {}: {}",
+								next_block_hash, next_block.height, e
+							);
+							let _ = self
+								.chain
+								.remove_orphan(next_block.height, &next_block_hash);
+							self.request_series.write().clear();
+						}
 						Err(e) if e.is_bad_data() => {
 							warn!(
 								"Removing bad stuck orphan {} at {}. Error: {}",

@@ -768,7 +768,6 @@ mod tests {
 					std::collections::HashSet::new(),
 					None,
 					None,
-					true,
 				)
 				.unwrap(),
 			);
@@ -924,7 +923,6 @@ mod tests {
 					std::collections::HashSet::new(),
 					None,
 					None,
-					true,
 				)
 				.unwrap(),
 			);

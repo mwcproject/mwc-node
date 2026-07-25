@@ -27,19 +27,24 @@ pub enum OwnerOnlyFile {
 	Exposed,
 }
 
+/// Ensure an existing directory is writable only by the current owner, without creating it.
+pub fn ensure_existing_owner_only_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
+	ensure_owner_only_dir_impl(path.as_ref(), false, false, true)
+}
+
 /// Ensure a directory exists and is writable only by the current owner.
 pub fn ensure_owner_only_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
-	ensure_owner_only_dir_impl(path.as_ref(), false, true)
+	ensure_owner_only_dir_impl(path.as_ref(), true, false, true)
 }
 
 /// Ensure a directory and any missing parents exist, with the final directory owner-only.
 pub fn ensure_owner_only_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
-	ensure_owner_only_dir_impl(path.as_ref(), true, true)
+	ensure_owner_only_dir_impl(path.as_ref(), true, true, true)
 }
 
 /// Ensure a directory and any missing parents exist without checking directory ownership.
 pub fn ensure_owner_only_dir_all_no_owner_check<P: AsRef<Path>>(path: P) -> io::Result<()> {
-	ensure_owner_only_dir_impl(path.as_ref(), true, false)
+	ensure_owner_only_dir_impl(path.as_ref(), true, true, false)
 }
 
 /// Delete a directory or file
@@ -354,11 +359,30 @@ fn normalized_parent(path: &Path) -> &Path {
 }
 
 #[cfg(unix)]
-fn ensure_owner_only_dir_impl(path: &Path, recursive: bool, check_owner: bool) -> io::Result<()> {
+fn ensure_owner_only_dir_impl(
+	path: &Path,
+	create_if_missing: bool,
+	recursive: bool,
+	check_owner: bool,
+) -> io::Result<()> {
 	use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+
+	// A trailing separator or terminal "." makes the preceding component
+	// non-final during POSIX pathname resolution, which would allow a directory
+	// symlink to bypass O_NOFOLLOW below. Rebuild the path from components so
+	// the final meaningful component is also the final component passed to the
+	// filesystem. This is lexical only: it does not resolve symlinks or "..".
+	let normalized_path: PathBuf = path.components().collect();
+	let path = normalized_path.as_path();
 
 	let mut existed = path.try_exists()?;
 	if !existed {
+		if !create_if_missing {
+			return Err(io::Error::new(
+				io::ErrorKind::NotFound,
+				format!("owner-only directory '{}' does not exist", path.display()),
+			));
+		}
 		let mut builder = fs::DirBuilder::new();
 		builder.mode(0o700);
 		if recursive {
@@ -419,15 +443,30 @@ fn ensure_owner_only_dir_impl(path: &Path, recursive: bool, check_owner: bool) -
 }
 
 #[cfg(not(unix))]
-fn ensure_owner_only_dir_impl(path: &Path, recursive: bool, _check_owner: bool) -> io::Result<()> {
+fn ensure_owner_only_dir_impl(
+	path: &Path,
+	create_if_missing: bool,
+	recursive: bool,
+	_check_owner: bool,
+) -> io::Result<()> {
+	let normalized_path: PathBuf = path.components().collect();
+	let path = normalized_path.as_path();
+
 	if !path.try_exists()? {
+		if !create_if_missing {
+			return Err(io::Error::new(
+				io::ErrorKind::NotFound,
+				format!("owner-only directory '{}' does not exist", path.display()),
+			));
+		}
 		if recursive {
 			fs::create_dir_all(path)?;
 		} else {
 			fs::create_dir(path)?;
 		}
 	}
-	if !path.metadata()?.is_dir() {
+	let metadata = fs::symlink_metadata(path)?;
+	if metadata.file_type().is_symlink() || !metadata.is_dir() {
 		return Err(io::Error::new(
 			io::ErrorKind::InvalidInput,
 			format!("owner-only path '{}' is not a directory", path.display()),
@@ -626,6 +665,78 @@ fn open_owner_only_file_or_exposed_impl(path2: &Path) -> io::Result<OwnerOnlyFil
 mod tests {
 	use super::*;
 
+	#[test]
+	fn ensure_existing_owner_only_dir_does_not_create_missing_directory() {
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let path = temp_dir.path().join("missing");
+
+		let err = ensure_existing_owner_only_dir(&path).unwrap_err();
+
+		assert_eq!(err.kind(), io::ErrorKind::NotFound);
+		assert!(!path.exists());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn ensure_existing_owner_only_dir_tightens_without_recreating_directory() {
+		use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let path = temp_dir.path().join("child");
+		fs::create_dir(&path).unwrap();
+		fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+		let inode_before = fs::metadata(&path).unwrap().ino();
+
+		ensure_existing_owner_only_dir(&path).unwrap();
+
+		let metadata = fs::metadata(&path).unwrap();
+		assert_eq!(metadata.ino(), inode_before);
+		assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn ensure_existing_owner_only_dir_rejects_group_or_world_writable_directory() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let path = temp_dir.path().join("child");
+		fs::create_dir(&path).unwrap();
+		fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+
+		let err = ensure_existing_owner_only_dir(&path).unwrap_err();
+
+		assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+		assert!(err
+			.to_string()
+			.contains("unsafe group/other write permissions"));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn ensure_existing_owner_only_dir_rejects_symlinked_directory() {
+		use std::os::unix::fs::{symlink, PermissionsExt};
+
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let target = temp_dir.path().join("target");
+		let link = temp_dir.path().join("link");
+		fs::create_dir(&target).unwrap();
+		fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+		symlink(&target, &link).unwrap();
+
+		for path in symlinked_directory_path_variants(&link) {
+			assert!(
+				ensure_existing_owner_only_dir(&path).is_err(),
+				"owner-only validation followed directory symlink {}",
+				path.display()
+			);
+		}
+		assert_eq!(
+			fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+			0o755
+		);
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn ensure_owner_only_dir_all_creates_owner_only_directory() {
@@ -675,15 +786,36 @@ mod tests {
 
 	#[cfg(unix)]
 	#[test]
-	fn ensure_owner_only_dir_rejects_symlinked_directory() {
-		use std::os::unix::fs::symlink;
+	fn ensure_owner_only_dir_all_rejects_symlinked_directory() {
+		use std::os::unix::fs::{symlink, PermissionsExt};
 
 		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
 		let target = temp_dir.path().join("target");
 		let link = temp_dir.path().join("link");
 		fs::create_dir(&target).unwrap();
+		fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
 		symlink(&target, &link).unwrap();
 
-		assert!(ensure_owner_only_dir(&link).is_err());
+		for path in symlinked_directory_path_variants(&link) {
+			assert!(
+				ensure_owner_only_dir_all(&path).is_err(),
+				"recursive owner-only creation followed directory symlink {}",
+				path.display()
+			);
+		}
+		assert_eq!(
+			fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+			0o755
+		);
+	}
+
+	#[cfg(unix)]
+	fn symlinked_directory_path_variants(link: &Path) -> [PathBuf; 4] {
+		[
+			link.to_path_buf(),
+			PathBuf::from(format!("{}/", link.display())),
+			PathBuf::from(format!("{}/.", link.display())),
+			PathBuf::from(format!("{}/./", link.display())),
+		]
 	}
 }

@@ -291,7 +291,7 @@ impl OrphansSync {
 								info!("Processed stuck block {} at {}", bl_hash, bl_height)
 							}
 							Err(mwc_chain::Error::Orphan(_)) => {}
-							Err(e) if e.is_bad_data() || Self::is_known_block_error(&e) => {
+							Err(e) if e.is_bad_data() || e.is_known_block() => {
 								let _ = self.chain.remove_orphan(bl_height, &bl_hash);
 								info!(
 									"Dropped terminal stuck block {} at {}. Error: {}",
@@ -479,16 +479,6 @@ impl OrphansSync {
 	fn serialized_block_hash(context_id: u32, block: &Block) -> Result<Hash, mwc_chain::Error> {
 		let block_bytes = ser::ser_vec(context_id, block, ProtocolVersion::local())?;
 		Ok(block_bytes.hash(context_id)?)
-	}
-
-	fn is_known_block_error(error: &mwc_chain::Error) -> bool {
-		matches!(
-			error,
-			mwc_chain::Error::Unfit(msg)
-				if msg == "already known in head"
-					|| msg == "already known in store"
-					|| msg == "duplicate block"
-		)
 	}
 }
 

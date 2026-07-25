@@ -349,9 +349,8 @@ pub fn is_nrd_enabled(context_id: u32) -> bool {
 thread_local! {
 	/// Test-only per-thread switch for the block-level spent-commitment replay
 	/// check (pipe::replay_attack_check). It is deliberately NOT part of
-	/// ChainGlobalParams: production activation comes from the immutable
-	/// chain-level mining policy, while this switch only lets tests that
-	/// deliberately build a replay bypass the check on the processing thread.
+	/// ChainGlobalParams; it only lets tests that deliberately build a replay
+	/// bypass the check on the processing thread.
 	static LOCAL_REPLAY_PROTECTION_ENABLED: RefCell<bool> = RefCell::new(true);
 }
 
@@ -363,8 +362,7 @@ pub fn set_local_replay_protection_enabled(enabled: bool) {
 }
 
 /// Whether the block-level spent-commitment replay check is enabled on this
-/// thread. This does not activate replay protection by itself. Builds without
-/// `test-support` always return true so the chain-level policy is authoritative.
+/// thread. Builds without `test-support` always return true.
 pub fn is_replay_protection_enabled() -> bool {
 	#[cfg(feature = "test-support")]
 	{

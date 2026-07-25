@@ -613,7 +613,6 @@ mod tests {
 					std::collections::HashSet::new(),
 					None,
 					None,
-					true,
 				)
 				.unwrap(),
 			);

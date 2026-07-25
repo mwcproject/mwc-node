@@ -82,7 +82,6 @@ impl SegmenterResponder {
 					HashSet::new(),
 					None,
 					None,
-					true,
 				)
 				.unwrap(),
 			),
@@ -163,7 +162,6 @@ impl DesegmenterRequestor {
 					HashSet::new(),
 					None,
 					None,
-					true,
 				)
 				.unwrap(),
 			),
@@ -453,7 +451,7 @@ fn headers_receive_cache_rejects_missing_header_hash_entry() {
 	let chain_dir = test_chain_dir("headers_receive_cache_missing_header_hash");
 	clean_output_dir(&chain_dir);
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let chain = Arc::new(init_chain(&secp, &chain_dir, genesis.clone(), true));
+	let chain = Arc::new(init_chain(&secp, &chain_dir, genesis.clone()));
 	let context_id = chain.get_context_id();
 	let header_desegmenter = HeaderHashesDesegmenter::new(
 		context_id,
@@ -522,7 +520,6 @@ fn test_chain_validation() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	)
 	.unwrap();
 
@@ -537,7 +534,6 @@ fn test_chain_validation() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	)
 	.unwrap();
 

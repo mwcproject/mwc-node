@@ -60,7 +60,7 @@ fn check_known() {
 
 	// attempt to reprocess latest block
 	{
-		let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
+		let chain = init_chain(&secp, chain_dir, genesis.clone());
 		let res = chain.process_block(
 			&mut secp,
 			latest.clone(),
@@ -72,7 +72,7 @@ fn check_known() {
 
 	// attempt to reprocess genesis block
 	{
-		let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
+		let chain = init_chain(&secp, chain_dir, genesis.clone());
 		let res = chain.process_block(
 			&mut secp,
 			genesis.clone(),
@@ -84,7 +84,7 @@ fn check_known() {
 
 	// reset chain head to earlier state
 	{
-		let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
+		let chain = init_chain(&secp, chain_dir, genesis.clone());
 		let store = chain.get_store_for_tests();
 		let batch = store.batch_write().unwrap();
 		let head_header = chain.head_header().unwrap();
@@ -97,7 +97,7 @@ fn check_known() {
 
 	// reprocess latest block and check the updated head
 	{
-		let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
+		let chain = init_chain(&secp, chain_dir, genesis.clone());
 		let head = chain
 			.process_block(
 				&mut secp,
@@ -181,7 +181,7 @@ fn reset_to_genesis_rebuilds_missing_genesis_body_mmrs() {
 	assert!(genesis.header.kernel_mmr_size > 0);
 
 	{
-		let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
+		let chain = init_chain(&secp, chain_dir, genesis.clone());
 		chain
 			.get_store_for_tests()
 			.set_pending_chain_operation(&PendingChainOperation::ResetToGenesis)
@@ -194,7 +194,7 @@ fn reset_to_genesis_rebuilds_missing_genesis_body_mmrs() {
 
 	fs::remove_dir_all(Path::new(chain_dir).join("txhashset")).unwrap();
 
-	let chain = init_chain(&secp, chain_dir, genesis.clone(), true);
+	let chain = init_chain(&secp, chain_dir, genesis.clone());
 	let genesis_header = chain.genesis();
 	let roots = chain
 		.get_txhashset_for_test()
@@ -290,7 +290,6 @@ fn rejects_genesis_context_id_mismatch() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 	assert!(!Path::new(chain_dir).exists());
@@ -309,7 +308,6 @@ fn rejects_genesis_context_id_mismatch() {
 			HashSet::new(),
 			None,
 			None,
-			true,
 		)
 		.unwrap();
 		assert_eq!(chain.head().unwrap().last_block_h, valid_genesis_hash);
@@ -341,7 +339,6 @@ fn rejects_genesis_with_invalid_height() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 	assert!(!Path::new(chain_dir).exists());
@@ -369,7 +366,6 @@ fn rejects_genesis_with_invalid_pow() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	);
 	assert!(matches!(res, Err(Error::InvalidPow)));
 	assert!(!Path::new(chain_dir).exists());
@@ -398,7 +394,6 @@ fn rejects_production_genesis_with_mutated_txhashset_commitments() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 
@@ -429,7 +424,6 @@ fn rejects_genesis_hash_mismatch_with_existing_chain_data() {
 			HashSet::new(),
 			None,
 			None,
-			true,
 		)
 		.unwrap();
 		assert_eq!(chain.head().unwrap().last_block_h, valid_genesis_hash);
@@ -451,7 +445,6 @@ fn rejects_genesis_hash_mismatch_with_existing_chain_data() {
 		HashSet::new(),
 		None,
 		None,
-		true,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 
@@ -467,7 +460,6 @@ fn rejects_genesis_hash_mismatch_with_existing_chain_data() {
 			HashSet::new(),
 			None,
 			None,
-			true,
 		)
 		.unwrap();
 		assert_eq!(chain.head().unwrap().last_block_h, valid_genesis_hash);

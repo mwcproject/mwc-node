@@ -59,7 +59,6 @@ fn test_header_perf_impl(
 				HashSet::new(),
 				None,
 				None,
-				true,
 			)
 			.unwrap(),
 		);
@@ -77,7 +76,6 @@ fn test_header_perf_impl(
 				HashSet::new(),
 				None,
 				None,
-				true,
 			)
 			.unwrap(),
 		);

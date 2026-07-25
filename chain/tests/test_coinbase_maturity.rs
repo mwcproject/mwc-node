@@ -59,7 +59,6 @@ fn test_coinbase_maturity() {
 			HashSet::new(),
 			None,
 			None,
-			true,
 		)
 		.unwrap();
 

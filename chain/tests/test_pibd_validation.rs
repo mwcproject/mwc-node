@@ -60,7 +60,6 @@ fn test_pibd_chain_validation_impl(secp: &Secp256k1, is_test_chain: bool, src_ro
 				HashSet::new(),
 				None,
 				None,
-				true,
 			)
 			.unwrap(),
 		);
