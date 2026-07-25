@@ -335,6 +335,34 @@ where
 	sync_parent_dir(path)
 }
 
+/// Atomically replace a file with complete owner-only contents.
+///
+/// The replacement is written and synchronized in the target directory before it is
+/// renamed over the destination. The containing directory is then synchronized on Unix.
+/// If writing or renaming fails, the original destination is left intact.
+pub fn replace_owner_only_file<P, B>(path: P, bytes: B) -> io::Result<()>
+where
+	P: AsRef<Path>,
+	B: AsRef<[u8]>,
+{
+	let path = path.as_ref();
+	let mut replacement = mwc_crates::tempfile::Builder::new()
+		.prefix(".mwc-owner-only-")
+		.tempfile_in(normalized_parent(path))?;
+
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		replacement
+			.as_file()
+			.set_permissions(fs::Permissions::from_mode(0o600))?;
+	}
+
+	write_all_and_sync(replacement.as_file_mut(), bytes.as_ref())?;
+	replacement.persist(path).map_err(|e| e.error)?;
+	sync_parent_dir(path)
+}
+
 /// Create or truncate an owner-only regular file.
 pub fn create_owner_only_file<P: AsRef<Path>>(path: P) -> io::Result<fs::File> {
 	create_owner_only_file_impl(path.as_ref(), false)
@@ -360,7 +388,6 @@ fn sync_parent_dir(_path: &Path) -> io::Result<()> {
 	Ok(())
 }
 
-#[cfg(unix)]
 fn normalized_parent(path: &Path) -> &Path {
 	let parent = path.parent().unwrap_or_else(|| Path::new("."));
 	if parent.as_os_str().is_empty() {
@@ -761,6 +788,25 @@ mod tests {
 
 		let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
 		assert_eq!(mode, 0o700);
+	}
+
+	#[test]
+	fn replace_owner_only_file_replaces_complete_contents() {
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let path = temp_dir.path().join("secret");
+		write_new_owner_only_file(&path, b"old contents").unwrap();
+
+		replace_owner_only_file(&path, b"new contents").unwrap();
+
+		assert_eq!(&*read_owner_only_file(&path).unwrap(), b"new contents");
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			assert_eq!(
+				fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+				0o600
+			);
+		}
 	}
 
 	#[cfg(unix)]

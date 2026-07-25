@@ -14,6 +14,9 @@ mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
 mwc_util = { path = "../util", version = "7.0.0" }
 thiserror.workspace = true
 
+[dev-dependencies]
+blake2 = "0.10"
+
 [features]
 clippy = []
 serde = []

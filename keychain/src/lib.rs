@@ -20,6 +20,7 @@ pub mod extkey_bip32;
 pub mod mnemonic;
 mod types;
 pub mod view_key;
+pub mod zeroizing_blake2b;
 
 pub mod keychain;
 pub use crate::extkey_bip32::ChildNumber;

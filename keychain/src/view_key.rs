@@ -18,8 +18,8 @@ use super::extkey_bip32::{
 	Fingerprint,
 };
 use super::types::{Error, MAX_DEPTH_USIZE};
+use crate::zeroizing_blake2b::zeroizing_blake2b;
 use crate::SwitchCommitmentType;
-use mwc_crates::blake2_rfc::blake2b::blake2b;
 use mwc_crates::byteorder::{BigEndian, ByteOrder};
 use mwc_crates::digest::Digest;
 use mwc_crates::secp::key::{PublicKey, SecretKey};
@@ -105,7 +105,7 @@ impl ViewKey {
 		switch_public_key.mul_assign(secp, &ext_key.secret_key)?;
 		let switch_public_key = Some(switch_public_key);
 
-		let rewind_hash = Zeroizing::new(Self::rewind_hash(secp, public_key)?);
+		let rewind_hash = Self::rewind_hash(secp, public_key)?;
 
 		Ok(Self {
 			is_floo,
@@ -120,9 +120,12 @@ impl ViewKey {
 		})
 	}
 
-	pub fn rewind_hash(secp: &Secp256k1, public_root_key: PublicKey) -> Result<Vec<u8>, Error> {
+	pub fn rewind_hash(
+		secp: &Secp256k1,
+		public_root_key: PublicKey,
+	) -> Result<Zeroizing<Vec<u8>>, Error> {
 		let ser = public_root_key.serialize_vec(secp, true)?;
-		Ok(blake2b(32, &[], &ser[..]).as_bytes().to_vec())
+		Ok(zeroizing_blake2b(32, &[], &ser[..]))
 	}
 
 	/// Returns how many derivations this key is from the master key.

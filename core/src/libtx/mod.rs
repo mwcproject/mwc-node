@@ -28,7 +28,6 @@ mod error;
 pub mod proof;
 pub mod reward;
 pub mod secp_ser;
-mod zeroizing_blake2b;
 
 use crate::core::Transaction;
 use crate::global::get_accept_fee_base;

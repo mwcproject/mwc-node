@@ -115,7 +115,7 @@ ed25519_dalek = { package = "ed25519-dalek", version = "2" }
 x25519_dalek = { package = "x25519-dalek", version = "2" }
 
 # Crypto primitives and encodings shared by core, keychain, API, and p2p.
-argon2 = "0.5"
+argon2 = { version = "0.5", features = ["zeroize"] }
 bit_vec = { package = "bit-vec", version = "0.9" }
 bitflags = { version = "2", features = ["serde"] }
 blake2_rfc = { package = "blake2-rfc", version = "0.2" }

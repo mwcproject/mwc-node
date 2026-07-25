@@ -202,6 +202,7 @@ dependencies = [
  "blake2",
  "cpufeatures 0.2.17",
  "password-hash",
+ "zeroize",
 ]
 
 [[package]]
@@ -3561,7 +3562,6 @@ dependencies = [
 name = "mwc_core"
 version = "7.0.0"
 dependencies = [
- "blake2",
  "mwc_crates",
  "mwc_keychain",
  "mwc_util",
@@ -3685,6 +3685,7 @@ dependencies = [
 name = "mwc_keychain"
 version = "7.0.0"
 dependencies = [
+ "blake2",
  "mwc_crates",
  "mwc_util",
  "thiserror 2.0.18",

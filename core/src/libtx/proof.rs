@@ -16,8 +16,8 @@
 //! Rangeproof library functions
 
 use crate::libtx::error::Error;
-use crate::libtx::zeroizing_blake2b::zeroizing_blake2b;
 use keychain::extkey_bip32::BIP32MwcHasher;
+use keychain::zeroizing_blake2b::zeroizing_blake2b;
 use keychain::{Identifier, Keychain, SwitchCommitmentType, ViewKey};
 use mwc_crates::secp;
 use mwc_crates::secp::key::SecretKey;
