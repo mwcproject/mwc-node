@@ -567,7 +567,7 @@ pub fn process_blocks_series(
 	res
 }
 
-///
+/// Check a block for spent-output replays once protection is active for its chain.
 pub fn replay_attack_check(
 	context_id: u32,
 	b: &Block,
@@ -576,10 +576,10 @@ pub fn replay_attack_check(
 	ext: &txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
-	let height_limit = if global::is_mainnet(context_id) {
-		3533000
-	} else {
-		1700000
+	let height_limit = match global::get_chain_type(context_id) {
+		global::ChainTypes::Mainnet => 3533000,
+		global::ChainTypes::Floonet => 1700000,
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => 5,
 	};
 
 	if b.header.height > height_limit && global::is_replay_protection_enabled() {
