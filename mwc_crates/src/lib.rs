@@ -19,6 +19,7 @@ pub use bs58;
 pub use built;
 pub use byteorder;
 pub use bytes;
+pub use chacha20poly1305;
 pub use chrono;
 pub use clap;
 pub use colored;

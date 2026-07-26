@@ -121,6 +121,7 @@ bitflags = { version = "2", features = ["serde"] }
 blake2_rfc = { package = "blake2-rfc", version = "0.2" }
 bs58 = "0.5"
 byteorder = "1"
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 crc = "3.4"
 # Keep the shared digest stack aligned with sha2, hmac, pbkdf2 and ripemd
 digest = "0.11"
