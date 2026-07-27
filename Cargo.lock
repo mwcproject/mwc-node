@@ -3802,7 +3802,7 @@ dependencies = [
 [[package]]
 name = "mwc_secp256k1zkp"
 version = "0.8.0"
-source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.8.0#fb797325e9b730f06efb0c45804b118cfa7012db"
+source = "git+https://github.com/mwcproject/rust-secp256k1-zkp?tag=0.8.0#ddb7ae905c34c12df11087bc602727969c2e3838"
 dependencies = [
  "arrayvec 0.7.8",
  "cc",
@@ -8608,6 +8608,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 
