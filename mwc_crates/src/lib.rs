@@ -86,7 +86,6 @@ pub use sha2;
 pub use shlex;
 pub use signature;
 pub use siphasher;
-pub use smaz;
 pub use subtle;
 pub use sysinfo;
 pub use tempfile;
