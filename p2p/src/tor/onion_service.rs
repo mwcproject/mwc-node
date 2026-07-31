@@ -250,6 +250,9 @@ where
 											);
 
 											if ready_for_traffic {
+												if let Some(f) = &(*service_status_callback2) {
+													f(true);
+												};
 												let now = Utc::now().timestamp();
 												let non_reliable_connection =
 													!onion_service_status.is_fully_reachable();
