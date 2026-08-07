@@ -2950,7 +2950,8 @@ impl Chain {
 			// Resolve bounds from the fully validated body chain. The header PMMR can
 			// be ahead of, or forked away from, the body head during header-first sync.
 			let start_mmr_size = if start_block_height == 0 {
-				0
+				// Note PMMR are 1 based, for the first PMMR index is 1.
+				1
 			} else {
 				let start_header = self.body_chain_header_at_height_maybe_fast(
 					header_pmmr,

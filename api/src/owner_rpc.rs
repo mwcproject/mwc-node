@@ -15,6 +15,7 @@
 
 //! JSON-RPC Stub generation for the Owner API
 
+use crate::json_rpc::{IntoRpcResult, RpcResult};
 use crate::owner::Owner;
 use crate::rest::Error;
 use crate::types::Status;
@@ -73,7 +74,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_status(&self) -> Result<Status, Error>;
+	fn get_status(&self) -> RpcResult<Status>;
 
 	/**
 	Networked version of [Owner::validate_chain](struct.Owner.html#method.validate_chain).
@@ -103,7 +104,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), Error>;
+	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> RpcResult<()>;
 
 	/**
 	Networked version of [Owner::compact_chain](struct.Owner.html#method.compact_chain).
@@ -133,9 +134,9 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn compact_chain(&self) -> Result<(), Error>;
+	fn compact_chain(&self) -> RpcResult<()>;
 
-	fn reset_chain_head(&self, hash: String) -> Result<(), Error>;
+	fn reset_chain_head(&self, hash: String) -> RpcResult<()>;
 
 	/**
 	Add hashes to the runtime ban list for headers. Existing banned hashes remain active;
@@ -169,7 +170,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error>;
+	fn invalidate_header(&self, hash: Vec<String>) -> RpcResult<()>;
 
 	/**
 	Networked version of [Owner::get_peers](struct.Owner.html#method.get_peers).
@@ -211,7 +212,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_peers(&self, peer_addr: Option<SocketAddr>) -> Result<Vec<PeerData>, Error>;
+	fn get_peers(&self, peer_addr: Option<SocketAddr>) -> RpcResult<Vec<PeerData>>;
 
 	/**
 	Networked version of [Owner::get_connected_peers](struct.Owner.html#method.get_connected_peers).
@@ -330,7 +331,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error>;
+	fn get_connected_peers(&self) -> RpcResult<Vec<PeerInfoDisplayLegacy>>;
 
 	/**
 	Networked version of [Owner::ban_peer](struct.Owner.html#method.ban_peer).
@@ -360,7 +361,7 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn ban_peer(&self, peer_addr: SocketAddr) -> Result<(), Error>;
+	fn ban_peer(&self, peer_addr: SocketAddr) -> RpcResult<()>;
 
 	/**
 	Networked version of [Owner::unban_peer](struct.Owner.html#method.unban_peer).
@@ -390,47 +391,47 @@ pub trait OwnerRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn unban_peer(&self, peer_addr: SocketAddr) -> Result<(), Error>;
+	fn unban_peer(&self, peer_addr: SocketAddr) -> RpcResult<()>;
 }
 
 impl OwnerRpc for Owner {
-	fn get_status(&self) -> Result<Status, Error> {
-		Owner::get_status(self)
+	fn get_status(&self) -> RpcResult<Status> {
+		Owner::get_status(self).into_rpc_result()
 	}
 
-	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> Result<(), Error> {
-		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-		Owner::validate_chain(self, &secp, assume_valid_rangeproofs_kernels)
+	fn validate_chain(&self, assume_valid_rangeproofs_kernels: bool) -> RpcResult<()> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).map_err(Error::from)?;
+		Owner::validate_chain(self, &secp, assume_valid_rangeproofs_kernels).into_rpc_result()
 	}
 
-	fn reset_chain_head(&self, hash: String) -> Result<(), Error> {
-		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-		Owner::reset_chain_head(self, &secp, hash)
+	fn reset_chain_head(&self, hash: String) -> RpcResult<()> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).map_err(Error::from)?;
+		Owner::reset_chain_head(self, &secp, hash).into_rpc_result()
 	}
 
-	fn invalidate_header(&self, hash: Vec<String>) -> Result<(), Error> {
-		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-		Owner::invalidate_header(self, &secp, hash)
+	fn invalidate_header(&self, hash: Vec<String>) -> RpcResult<()> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).map_err(Error::from)?;
+		Owner::invalidate_header(self, &secp, hash).into_rpc_result()
 	}
 
-	fn compact_chain(&self) -> Result<(), Error> {
-		Owner::compact_chain(self)
+	fn compact_chain(&self) -> RpcResult<()> {
+		Owner::compact_chain(self).into_rpc_result()
 	}
 
-	fn get_peers(&self, addr: Option<SocketAddr>) -> Result<Vec<PeerData>, Error> {
-		Owner::get_peers(self, addr)
+	fn get_peers(&self, addr: Option<SocketAddr>) -> RpcResult<Vec<PeerData>> {
+		Owner::get_peers(self, addr).into_rpc_result()
 	}
 
-	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
-		Owner::get_connected_peers(self)
+	fn get_connected_peers(&self) -> RpcResult<Vec<PeerInfoDisplayLegacy>> {
+		Owner::get_connected_peers(self).into_rpc_result()
 	}
 
-	fn ban_peer(&self, addr: SocketAddr) -> Result<(), Error> {
-		Owner::ban_peer(self, addr)
+	fn ban_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+		Owner::ban_peer(self, addr).into_rpc_result()
 	}
 
-	fn unban_peer(&self, addr: SocketAddr) -> Result<(), Error> {
-		Owner::unban_peer(self, addr)
+	fn unban_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+		Owner::unban_peer(self, addr).into_rpc_result()
 	}
 }
 

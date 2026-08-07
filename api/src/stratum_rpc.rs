@@ -14,7 +14,7 @@
 
 //! JSON-RPC Stub generation for the Stratum API
 
-use crate::rest::*;
+use crate::json_rpc::{IntoRpcResult, RpcResult};
 use crate::stratum::Stratum;
 use mwc_core::stratum;
 use mwc_crates::easy_jsonrpc_mwc;
@@ -71,7 +71,7 @@ pub trait StratumRpc: Sync + Send {
 	fn get_ip_list(
 		&self,
 		banned: Option<bool>,
-	) -> Result<Vec<stratum::connections::StratumIpPrintable>, Error>;
+	) -> RpcResult<Vec<stratum::connections::StratumIpPrintable>>;
 
 	/**
 	Clean IP data. As a result, if it is banned, it will become active.
@@ -95,7 +95,7 @@ pub trait StratumRpc: Sync + Send {
 	}
 
 	*/
-	fn clean_ip(&self, ip: String) -> Result<(), Error>;
+	fn clean_ip(&self, ip: String) -> RpcResult<()>;
 
 	/*
 	 Get single IP info stratum IP pool
@@ -129,22 +129,22 @@ pub trait StratumRpc: Sync + Send {
 	  }
 	}
 	*/
-	fn get_ip_info(&self, ip: String) -> Result<stratum::connections::StratumIpPrintable, Error>;
+	fn get_ip_info(&self, ip: String) -> RpcResult<stratum::connections::StratumIpPrintable>;
 }
 
 impl StratumRpc for Stratum {
 	fn get_ip_list(
 		&self,
 		banned: Option<bool>,
-	) -> Result<Vec<stratum::connections::StratumIpPrintable>, Error> {
-		Stratum::get_ip_list(self, banned)
+	) -> RpcResult<Vec<stratum::connections::StratumIpPrintable>> {
+		Stratum::get_ip_list(self, banned).into_rpc_result()
 	}
 
-	fn clean_ip(&self, ip: String) -> Result<(), Error> {
-		Stratum::clean_ip(self, &ip)
+	fn clean_ip(&self, ip: String) -> RpcResult<()> {
+		Stratum::clean_ip(self, &ip).into_rpc_result()
 	}
 
-	fn get_ip_info(&self, ip: String) -> Result<stratum::connections::StratumIpPrintable, Error> {
-		Stratum::get_ip_info(self, &ip)
+	fn get_ip_info(&self, ip: String) -> RpcResult<stratum::connections::StratumIpPrintable> {
+		Stratum::get_ip_info(self, &ip).into_rpc_result()
 	}
 }

@@ -157,7 +157,8 @@ impl ViewKey {
 				BigEndian::write_u32(&mut be_n, n);
 				hasher.append_sha512(&be_n)?;
 
-				let result = hasher.result_sha512()?;
+				let mut result = crate::extkey_bip32::BIP32HmacOutput::new([0u8; 64]);
+				hasher.result_sha512(&mut result)?;
 
 				let secret_key = SecretKey::from_slice(secp, &result[..32])?;
 				let chain_code = ChainCode::try_from(&result[32..]).map_err(|e| {

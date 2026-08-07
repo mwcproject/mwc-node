@@ -21,6 +21,7 @@ pub mod mnemonic;
 mod types;
 pub mod view_key;
 pub mod zeroizing_blake2b;
+pub mod zeroizing_hmac_sha512;
 
 pub mod keychain;
 pub use crate::extkey_bip32::ChildNumber;
