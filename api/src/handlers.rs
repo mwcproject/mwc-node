@@ -43,6 +43,7 @@ use crate::auth::{
 };
 use crate::foreign::{Foreign, ProcessStatusCache};
 use crate::foreign_rpc::ForeignRpcCompat;
+use crate::json_rpc::handle_request_with_error_context;
 use crate::owner::Owner;
 use crate::owner_rpc::OwnerRpc;
 use crate::rest::{ApiServer, Error, TLSConfig};
@@ -55,7 +56,7 @@ use mwc_chain::{Chain, SyncState};
 use mwc_core::global;
 use mwc_core::stratum;
 use mwc_crates::bytes::Bytes;
-use mwc_crates::easy_jsonrpc_mwc::{Handler, MaybeReply};
+use mwc_crates::easy_jsonrpc_mwc::MaybeReply;
 use mwc_crates::http_body_util::Full;
 use mwc_crates::hyper;
 use mwc_crates::hyper::{Request, Response, StatusCode};
@@ -259,7 +260,7 @@ impl crate::router::Handler for OwnerAPIHandlerV2 {
 			match parse_body(req).await {
 				Ok(val) => {
 					let owner_api = &api as &dyn OwnerRpc;
-					let res = match owner_api.handle_request(val) {
+					let res = match handle_request_with_error_context(owner_api, val) {
 						MaybeReply::Reply(r) => r,
 						MaybeReply::DontReply => {
 							// Since it's http, we need to return something. We return [] because jsonrpc
@@ -338,7 +339,7 @@ where
 			match parse_body(req).await {
 				Ok(val) => {
 					let foreign_api = ForeignRpcCompat::new(&api);
-					let res = match foreign_api.handle_request(val) {
+					let res = match handle_request_with_error_context(&foreign_api, val) {
 						MaybeReply::Reply(r) => r,
 						MaybeReply::DontReply => {
 							// Since it's http, we need to return something. We return [] because jsonrpc
@@ -381,7 +382,7 @@ impl crate::router::Handler for StratumAPIHandlerV2 {
 			match parse_body(req).await {
 				Ok(val) => {
 					let stratum_api = &api as &dyn StratumRpc;
-					let res = match stratum_api.handle_request(val) {
+					let res = match handle_request_with_error_context(stratum_api, val) {
 						MaybeReply::Reply(r) => r,
 						MaybeReply::DontReply => {
 							// Since it's http, we need to return something. We return [] because jsonrpc

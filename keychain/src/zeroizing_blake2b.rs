@@ -155,7 +155,7 @@ impl Drop for ZeroizingBlake2b {
 }
 
 /// Computes BLAKE2b into zeroizing output storage and wipes local hash objects.
-pub(super) fn zeroizing_blake2b(outlen: usize, key: &[u8], data: &[u8]) -> Zeroizing<Vec<u8>> {
+pub fn zeroizing_blake2b(outlen: usize, key: &[u8], data: &[u8]) -> Zeroizing<Vec<u8>> {
 	let mut state = ZeroizingBlake2b::new(outlen, key.len());
 	state.set_key(key);
 	state.update(data);

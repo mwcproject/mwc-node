@@ -15,9 +15,6 @@ keychain = { package = "mwc_keychain", path = "../keychain", version = "7.0.0" }
 util = { package = "mwc_util", path = "../util", version = "7.0.0" }
 thiserror.workspace = true
 
-[dev-dependencies]
-blake2 = "0.10"
-
 [features]
 default = []
 test-support = []

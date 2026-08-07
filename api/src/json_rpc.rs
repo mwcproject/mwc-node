@@ -15,12 +15,76 @@
 // Derived from https://github.com/apoelstra/rust-jsonrpc
 
 //! JSON RPC Client functionality
-use mwc_crates::easy_jsonrpc_mwc::{self, Handler, MaybeReply, Value};
+use mwc_crates::easy_jsonrpc_mwc::{self, Handler, MaybeReply, Params, Value};
 use mwc_crates::hyper;
 use mwc_crates::serde;
 use mwc_crates::serde::{Deserialize, Serialize};
 use mwc_crates::serde_json;
 use std::{error, fmt};
+
+/// String representation of an application error returned by an RPC method.
+///
+/// Keeping this type separate from [`crate::Error`] preserves structured errors
+/// inside the node while giving every JSON-RPC method a consistently serializable
+/// error representation at the wire boundary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, thiserror::Error)]
+#[serde(crate = "serde", transparent)]
+#[error("{0}")]
+pub struct RpcMethodError(pub String);
+
+impl From<crate::rest::Error> for RpcMethodError {
+	fn from(error: crate::rest::Error) -> Self {
+		RpcMethodError(error.to_string())
+	}
+}
+
+/// Result type exposed by application-level JSON-RPC methods.
+pub type RpcResult<T> = Result<T, RpcMethodError>;
+
+/// Convert an internal API result to its JSON-RPC wire representation.
+pub(crate) trait IntoRpcResult<T> {
+	fn into_rpc_result(self) -> RpcResult<T>;
+}
+
+impl<T> IntoRpcResult<T> for Result<T, crate::rest::Error> {
+	fn into_rpc_result(self) -> RpcResult<T> {
+		self.map_err(Into::into)
+	}
+}
+
+/// Dispatch a JSON-RPC request and add call context to application errors.
+pub(crate) fn handle_request_with_error_context<H>(handler: &H, raw_request: Value) -> MaybeReply
+where
+	H: Handler + ?Sized,
+{
+	RpcErrorContextHandler { inner: handler }.handle_request(raw_request)
+}
+
+struct RpcErrorContextHandler<'a, H>
+where
+	H: Handler + ?Sized,
+{
+	inner: &'a H,
+}
+
+impl<H> Handler for RpcErrorContextHandler<'_, H>
+where
+	H: Handler + ?Sized,
+{
+	fn handle(&self, method: &str, params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+		let params_text = match &params {
+			Params::Positional(values) => serde_json::to_string(values),
+			Params::Named(values) => serde_json::to_string(values),
+		}
+		.unwrap_or_else(|_| String::from("<unavailable>"));
+
+		let mut result = self.inner.handle(method, params)?;
+		if let Some(Value::String(message)) = result.get_mut("Err") {
+			*message = format!("{}({}): {}", method, params_text, message);
+		}
+		Ok(result)
+	}
+}
 
 /// Builds a request
 pub fn build_request<'a, 'b>(
@@ -419,6 +483,16 @@ pub fn _result_to_response(
 mod tests {
 	use super::*;
 
+	struct ApplicationErrorHandler;
+
+	impl Handler for ApplicationErrorHandler {
+		fn handle(&self, _method: &str, _params: Params) -> Result<Value, easy_jsonrpc_mwc::Error> {
+			easy_jsonrpc_mwc::try_serialize(&RpcResult::<()>::Err(RpcMethodError(String::from(
+				"API failure",
+			))))
+		}
+	}
+
 	fn response_with_version(jsonrpc: Option<&str>) -> Response {
 		Response {
 			result: Some(serde_json::from_str(r#"{"Ok":7}"#).unwrap()),
@@ -491,6 +565,66 @@ mod tests {
 			}
 			other => panic!("expected method error, got {:?}", other),
 		}
+	}
+
+	#[test]
+	fn result_returns_method_error_from_string_err_wrapper() {
+		let response = Response {
+			result: Some(serde_json::json!({"Err": "get_tip([]): API Chain error"})),
+			error: None,
+			id: serde_json::Value::from(1),
+			jsonrpc: Some(String::from("2.0")),
+		};
+
+		let err = response.result::<Option<u64>>().unwrap_err();
+
+		match err {
+			Error::Method(msg) => assert_eq!(msg, "get_tip([]): API Chain error"),
+			other => panic!("expected method error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn skipped_internal_errors_serialize_after_rpc_conversion() {
+		let errors = vec![
+			crate::rest::Error::IO(std::io::Error::new(
+				std::io::ErrorKind::Other,
+				"disk read failed",
+			)),
+			crate::rest::Error::Chain(mwc_chain::Error::FileReadErr(String::from(
+				"chain read failed",
+			))),
+		];
+
+		for error in errors {
+			let expected = error.to_string();
+			let result: RpcResult<()> = Err(error).into_rpc_result();
+			let serialized = easy_jsonrpc_mwc::try_serialize(&result).unwrap();
+			assert_eq!(serialized, serde_json::json!({"Err": expected}));
+		}
+	}
+
+	#[test]
+	fn rpc_dispatch_adds_method_and_params_to_application_errors() {
+		let request = serde_json::json!({
+			"jsonrpc": "2.0",
+			"method": "get_pmmr_indices",
+			"params": [0, 100],
+			"id": 1
+		});
+
+		let response = handle_request_with_error_context(&ApplicationErrorHandler, request);
+		let response = match response {
+			MaybeReply::Reply(response) => response,
+			MaybeReply::DontReply => panic!("expected a JSON-RPC response"),
+		};
+
+		assert_eq!(
+			response.pointer("/result/Err"),
+			Some(&Value::String(String::from(
+				"get_pmmr_indices([0,100]): API failure"
+			)))
+		);
 	}
 
 	#[test]

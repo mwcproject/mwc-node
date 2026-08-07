@@ -39,15 +39,15 @@ use std::io::Cursor;
 use std::str::FromStr;
 
 use crate::mnemonic;
+use crate::zeroizing_hmac_sha512::ZeroizingHmacSha512;
 use mwc_crates::byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use mwc_crates::secp;
 use mwc_crates::secp::key::{PublicKey, SecretKey};
 use mwc_crates::secp::Secp256k1;
 
 use mwc_crates::digest::Digest;
-use mwc_crates::hmac::{digest::KeyInit, Hmac, Mac};
 use mwc_crates::ripemd::Ripemd160;
-use mwc_crates::sha2::{Sha256, Sha512};
+use mwc_crates::sha2::Sha256;
 use mwc_crates::zeroize::Zeroizing;
 use mwc_util::{
 	impl_array_newtype, impl_array_newtype_encodable, impl_array_newtype_show, impl_index_newtype,
@@ -55,9 +55,6 @@ use mwc_util::{
 };
 
 use crate::base58;
-
-// Create alias for HMAC-SHA512
-type HmacSha512 = Hmac<Sha512>;
 
 /// A chain code
 pub struct ChainCode([u8; 32]);
@@ -94,16 +91,19 @@ pub trait BIP32Hasher {
 	fn master_seed() -> [u8; 12];
 	fn init_sha512(&mut self, seed: &[u8]) -> Result<(), Error>;
 	fn append_sha512(&mut self, value: &[u8]) -> Result<(), Error>;
-	fn result_sha512(&mut self) -> Result<[u8; 64], Error>;
+	fn result_sha512(&mut self, output: &mut BIP32HmacOutput) -> Result<(), Error>;
 	fn sha_256(&self, input: &[u8]) -> [u8; 32];
 	fn ripemd_160(&self, input: &[u8]) -> [u8; 20];
 }
+
+/// Protected output storage for secret-bearing BIP32 HMAC-SHA512 results.
+pub type BIP32HmacOutput = Zeroizing<[u8; 64]>;
 
 /// Implementation of the above that uses the standard BIP32 Hash algorithms
 #[derive(Clone)]
 pub struct BIP32MwcHasher {
 	is_floo: bool,
-	hmac_sha512: Option<Hmac<Sha512>>,
+	hmac_sha512: Option<ZeroizingHmacSha512>,
 }
 
 impl fmt::Debug for BIP32MwcHasher {
@@ -145,10 +145,7 @@ impl BIP32Hasher for BIP32MwcHasher {
 		b"IamVoldemort".to_owned()
 	}
 	fn init_sha512(&mut self, seed: &[u8]) -> Result<(), Error> {
-		self.hmac_sha512 = Some(
-			HmacSha512::new_from_slice(seed)
-				.map_err(|e| Error::Generic(format!("Unable init sha512 from seed, {}", e)))?,
-		);
+		self.hmac_sha512 = Some(ZeroizingHmacSha512::new(seed)?);
 		Ok(())
 	}
 	fn append_sha512(&mut self, value: &[u8]) -> Result<(), Error> {
@@ -159,15 +156,13 @@ impl BIP32Hasher for BIP32MwcHasher {
 		hmac_sha512.update(value);
 		Ok(())
 	}
-	fn result_sha512(&mut self) -> Result<[u8; 64], Error> {
+	fn result_sha512(&mut self, output: &mut BIP32HmacOutput) -> Result<(), Error> {
 		let hmac_sha512 = self
 			.hmac_sha512
 			.take()
 			.ok_or_else(|| Error::Generic("sha512 is not initialized".into()))?;
-		let mac_output = hmac_sha512.finalize();
-		let mut result = [0; 64];
-		result.copy_from_slice(mac_output.as_bytes());
-		Ok(result)
+		hmac_sha512.finalize_into(output);
+		Ok(())
 	}
 	fn sha_256(&self, input: &[u8]) -> [u8; 32] {
 		let mut sha2_res = [0; 32];
@@ -416,7 +411,8 @@ impl ExtendedPrivKey {
 
 		hasher.init_sha512(&H::master_seed())?;
 		hasher.append_sha512(seed)?;
-		let result = Zeroizing::new(hasher.result_sha512()?);
+		let mut result = BIP32HmacOutput::new([0u8; 64]);
+		hasher.result_sha512(&mut result)?;
 
 		Ok(ExtendedPrivKey {
 			network: hasher.network_priv(),
@@ -506,7 +502,8 @@ impl ExtendedPrivKey {
 		BigEndian::write_u32(&mut be_n, child_index);
 
 		hasher.append_sha512(&be_n)?;
-		let result = Zeroizing::new(hasher.result_sha512()?);
+		let mut result = BIP32HmacOutput::new([0u8; 64]);
+		hasher.result_sha512(&mut result)?;
 		let mut sk = SecretKey::from_slice(secp, &result[..32]).map_err(Error::Ecdsa)?;
 		sk.add_assign(secp, &self.secret_key)
 			.map_err(Error::Ecdsa)?;
@@ -647,7 +644,8 @@ impl ExtendedPubKey {
 				BigEndian::write_u32(&mut be_n, n);
 				hasher.append_sha512(&be_n)?;
 
-				let result = hasher.result_sha512()?;
+				let mut result = BIP32HmacOutput::new([0u8; 64]);
+				hasher.result_sha512(&mut result)?;
 
 				let secret_key = SecretKey::from_slice(secp, &result[..32])?;
 				let chain_code = ChainCode::try_from(&result[32..]).map_err(|e| {

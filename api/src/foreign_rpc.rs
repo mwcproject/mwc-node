@@ -17,6 +17,7 @@
 
 use crate::foreign::Foreign;
 use crate::handlers::chain_api::OutputHandler;
+use crate::json_rpc::{IntoRpcResult, RpcResult};
 use crate::rest::Error;
 use crate::types::{
 	BlockHeaderPrintable, BlockListing, BlockPrintable, LocatedTxKernel, OutputListing,
@@ -133,7 +134,7 @@ pub trait ForeignRpc: Sync + Send {
 		height: Option<u64>,
 		hash: Option<String>,
 		commit: Option<String>,
-	) -> Result<BlockHeaderPrintable, Error>;
+	) -> RpcResult<BlockHeaderPrintable>;
 
 	/**
 	Networked version of [Foreign::get_block](struct.Foreign.html#method.get_block).
@@ -251,7 +252,7 @@ pub trait ForeignRpc: Sync + Send {
 		height: Option<u64>,
 		hash: Option<String>,
 		commit: Option<String>,
-	) -> Result<BlockPrintable, Error>;
+	) -> RpcResult<BlockPrintable>;
 
 	/**
 	Networked version with all parameters of [Foreign::get_block](struct.Node.html#method.get_block).
@@ -372,7 +373,7 @@ pub trait ForeignRpc: Sync + Send {
 		commit: Option<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
-	) -> Result<BlockPrintable, Error>;
+	) -> RpcResult<BlockPrintable>;
 
 	/**
 	Networked version of [Foreign::get_blocks](struct.Foreign.html#method.get_blocks).
@@ -617,7 +618,7 @@ pub trait ForeignRpc: Sync + Send {
 		end_height: u64,
 		max: u64,
 		include_proof: Option<bool>,
-	) -> Result<BlockListing, Error>;
+	) -> RpcResult<BlockListing>;
 
 	/**
 	Networked version of [Foreign::get_version](struct.Foreign.html#method.get_version).
@@ -650,7 +651,7 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_version(&self) -> Result<Version, Error>;
+	fn get_version(&self) -> RpcResult<Version>;
 
 	/**
 	Networked version of [Foreign::get_tip](struct.Foreign.html#method.get_tip).
@@ -685,7 +686,7 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_tip(&self) -> Result<Tip, Error>;
+	fn get_tip(&self) -> RpcResult<Tip>;
 
 	/**
 	Networked version of [Foreign::get_kernel](struct.Foreign.html#method.get_kernel).
@@ -728,7 +729,7 @@ pub trait ForeignRpc: Sync + Send {
 		excess: String,
 		min_height: Option<u64>,
 		max_height: Option<u64>,
-	) -> Result<LocatedTxKernel, Error>;
+	) -> RpcResult<LocatedTxKernel>;
 
 	/**
 	Networked version of [Foreign::get_outputs](struct.Foreign.html#method.get_outputs).
@@ -811,7 +812,7 @@ pub trait ForeignRpc: Sync + Send {
 		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
-	) -> Result<Vec<OutputPrintable>, Error>;
+	) -> RpcResult<Vec<OutputPrintable>>;
 
 	/**
 	Networked version of [Foreign::get_unspent_outputs](struct.Foreign.html#method.get_unspent_outputs).
@@ -872,7 +873,7 @@ pub trait ForeignRpc: Sync + Send {
 		end_index: Option<u64>,
 		max: u64,
 		include_proof: Option<bool>,
-	) -> Result<OutputListing, Error>;
+	) -> RpcResult<OutputListing>;
 
 	/**
 	Networked version of [Foreign::get_pmmr_indices](struct.Foreign.html#method.get_pmmr_indices).
@@ -910,7 +911,7 @@ pub trait ForeignRpc: Sync + Send {
 		&self,
 		start_block_height: u64,
 		end_block_height: Option<u64>,
-	) -> Result<OutputListing, Error>;
+	) -> RpcResult<OutputListing>;
 
 	/**
 	Networked version of [Foreign::get_pool_size](struct.Foreign.html#method.get_pool_size).
@@ -940,12 +941,12 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error>;
+	fn get_connected_peers(&self) -> RpcResult<Vec<PeerInfoDisplayLegacy>>;
 
 	/**
 	Networked version of [Foreign::get_process_status](struct.Foreign.html#method.get_process_status).
 	 */
-	fn get_process_status(&self) -> Result<ProcessStatus, Error>;
+	fn get_process_status(&self) -> RpcResult<ProcessStatus>;
 
 	/**
 	Networked version of [Foreign::get_pool_size](struct.Foreign.html#method.get_pool_size).
@@ -975,7 +976,7 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_pool_size(&self) -> Result<usize, Error>;
+	fn get_pool_size(&self) -> RpcResult<usize>;
 
 	/**
 	Networked version of [Foreign::get_unconfirmed_transactions](struct.Foreign.html#method.get_unconfirmed_transactions).
@@ -1045,7 +1046,7 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error>;
+	fn get_unconfirmed_transactions(&self) -> RpcResult<Vec<Transaction>>;
 
 	/**
 	Networked version of [Foreign::push_transaction](struct.Foreign.html#method.push_transaction).
@@ -1114,7 +1115,7 @@ pub trait ForeignRpc: Sync + Send {
 	# );
 	```
 	 */
-	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error>;
+	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> RpcResult<()>;
 }
 
 /// Compatibility handler for older positional JSON-RPC clients.
@@ -1156,7 +1157,7 @@ where
 						args.include_merkle_proof,
 					)
 				});
-				easy_jsonrpc_mwc::try_serialize(&result)
+				easy_jsonrpc_mwc::try_serialize(&result.into_rpc_result())
 			}
 		}
 	}
@@ -1174,7 +1175,7 @@ where
 		let result = secp_static::with_commit_mut(Error::from, |secp| {
 			Foreign::push_transaction(self.inner, tx, fluff, secp)
 		});
-		easy_jsonrpc_mwc::try_serialize(&result)
+		easy_jsonrpc_mwc::try_serialize(&result.into_rpc_result())
 	}
 }
 
@@ -1824,7 +1825,7 @@ where
 		height: Option<u64>,
 		hash: Option<String>,
 		commit: Option<String>,
-	) -> Result<BlockHeaderPrintable, Error> {
+	) -> RpcResult<BlockHeaderPrintable> {
 		let mut parsed_hash: Option<Hash> = None;
 		if let Some(hash) = hash {
 			parsed_hash = Some(
@@ -1835,6 +1836,7 @@ where
 		secp_static::with_verify_only(Error::from, |secp| {
 			Foreign::get_header(self, secp, height, parsed_hash, commit)
 		})
+		.into_rpc_result()
 	}
 
 	fn get_block(
@@ -1842,7 +1844,7 @@ where
 		height: Option<u64>,
 		hash: Option<String>,
 		commit: Option<String>,
-	) -> Result<BlockPrintable, Error> {
+	) -> RpcResult<BlockPrintable> {
 		self.get_block_ex(height, hash, commit, None, None)
 	}
 
@@ -1853,7 +1855,7 @@ where
 		commit: Option<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
-	) -> Result<BlockPrintable, Error> {
+	) -> RpcResult<BlockPrintable> {
 		let mut parsed_hash: Option<Hash> = None;
 		if let Some(hash) = hash {
 			parsed_hash = Some(
@@ -1873,6 +1875,7 @@ where
 				include_merkle_proof,
 			)
 		})
+		.into_rpc_result()
 	}
 
 	fn get_blocks(
@@ -1881,18 +1884,19 @@ where
 		end_height: u64,
 		max: u64,
 		include_proof: Option<bool>,
-	) -> Result<BlockListing, Error> {
+	) -> RpcResult<BlockListing> {
 		secp_static::with_verify_only(Error::from, |secp| {
 			Foreign::get_blocks(self, secp, start_height, end_height, max, include_proof)
 		})
+		.into_rpc_result()
 	}
 
-	fn get_version(&self) -> Result<Version, Error> {
-		Foreign::get_version(self)
+	fn get_version(&self) -> RpcResult<Version> {
+		Foreign::get_version(self).into_rpc_result()
 	}
 
-	fn get_tip(&self) -> Result<Tip, Error> {
-		Foreign::get_tip(self)
+	fn get_tip(&self) -> RpcResult<Tip> {
+		Foreign::get_tip(self).into_rpc_result()
 	}
 
 	fn get_kernel(
@@ -1900,8 +1904,8 @@ where
 		excess: String,
 		min_height: Option<u64>,
 		max_height: Option<u64>,
-	) -> Result<LocatedTxKernel, Error> {
-		Foreign::get_kernel(self, excess, min_height, max_height)
+	) -> RpcResult<LocatedTxKernel> {
+		Foreign::get_kernel(self, excess, min_height, max_height).into_rpc_result()
 	}
 
 	fn get_outputs(
@@ -1909,10 +1913,11 @@ where
 		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
-	) -> Result<Vec<OutputPrintable>, Error> {
+	) -> RpcResult<Vec<OutputPrintable>> {
 		secp_static::with_verify_only(Error::from, |secp| {
 			Foreign::get_outputs(self, secp, commits, include_proof, include_merkle_proof)
 		})
+		.into_rpc_result()
 	}
 
 	fn get_unspent_outputs(
@@ -1921,25 +1926,26 @@ where
 		end_index: Option<u64>,
 		max: u64,
 		include_proof: Option<bool>,
-	) -> Result<OutputListing, Error> {
+	) -> RpcResult<OutputListing> {
 		secp_static::with_verify_only(Error::from, |secp| {
 			Foreign::get_unspent_outputs(self, secp, start_index, end_index, max, include_proof)
 		})
+		.into_rpc_result()
 	}
 
 	fn get_pmmr_indices(
 		&self,
 		start_block_height: u64,
 		end_block_height: Option<u64>,
-	) -> Result<OutputListing, Error> {
-		Foreign::get_pmmr_indices(self, start_block_height, end_block_height)
+	) -> RpcResult<OutputListing> {
+		Foreign::get_pmmr_indices(self, start_block_height, end_block_height).into_rpc_result()
 	}
 
-	fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {
-		Foreign::get_connected_peers(self)
+	fn get_connected_peers(&self) -> RpcResult<Vec<PeerInfoDisplayLegacy>> {
+		Foreign::get_connected_peers(self).into_rpc_result()
 	}
 
-	fn get_process_status(&self) -> Result<ProcessStatus, Error> {
+	fn get_process_status(&self) -> RpcResult<ProcessStatus> {
 		let now = Instant::now();
 		let tor_online_time = match mwc_p2p::tor::arti::get_arti_restart_time() {
 			Some(start) => now.duration_since(start).as_secs(),
@@ -1957,17 +1963,18 @@ where
 		})
 	}
 
-	fn get_pool_size(&self) -> Result<usize, Error> {
-		Foreign::get_pool_size(self)
+	fn get_pool_size(&self) -> RpcResult<usize> {
+		Foreign::get_pool_size(self).into_rpc_result()
 	}
 
-	fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error> {
-		Foreign::get_unconfirmed_transactions(self)
+	fn get_unconfirmed_transactions(&self) -> RpcResult<Vec<Transaction>> {
+		Foreign::get_unconfirmed_transactions(self).into_rpc_result()
 	}
-	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> Result<(), Error> {
+	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> RpcResult<()> {
 		secp_static::with_commit_mut(Error::from, |secp| {
 			Foreign::push_transaction(self, tx, fluff, secp)
 		})
+		.into_rpc_result()
 	}
 }
 

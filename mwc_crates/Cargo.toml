@@ -90,7 +90,6 @@ bitstream_io = { package = "bitstream-io", version = "4.9" }
 chrono = { version = "0.4", features = ["serde"] }
 enum_primitive = "0.1"
 shlex = "1.3.0"
-smaz = "0.1"
 toml = "1.0"
 uuid = { version = "1.22", features = ["serde", "v4"] }
 
@@ -115,11 +114,13 @@ ed25519_dalek = { package = "ed25519-dalek", version = "2" }
 x25519_dalek = { package = "x25519-dalek", version = "2" }
 
 # Crypto primitives and encodings shared by core, keychain, API, and p2p.
+argon2 = { version = "0.5", features = ["zeroize"] }
 bit_vec = { package = "bit-vec", version = "0.9" }
 bitflags = { version = "2", features = ["serde"] }
 blake2_rfc = { package = "blake2-rfc", version = "0.2" }
 bs58 = "0.5"
 byteorder = "1"
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 crc = "3.4"
 # Keep the shared digest stack aligned with sha2, hmac, pbkdf2 and ripemd
 digest = "0.11"

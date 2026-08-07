@@ -15,18 +15,18 @@
 
 /// Implementation of the Keychain trait based on an extended key derivation
 /// scheme.
-use mwc_crates::blake2_rfc::blake2b::blake2b;
-
 use crate::extkey_bip32::{
 	BIP32MwcHasher, ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint,
 };
 use crate::types::{
 	BlindSum, BlindingFactor, Error, ExtKeychainPath, Identifier, Keychain, SwitchCommitmentType,
 };
+use crate::zeroizing_blake2b::zeroizing_blake2b;
 use mwc_crates::secp;
 use mwc_crates::secp::key::{PublicKey, SecretKey};
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::{EcdsaSignature, Message, Secp256k1};
+use mwc_crates::subtle::ConstantTimeEq;
 use mwc_crates::zeroize::Zeroizing;
 use mwc_util::secp_static;
 use std::convert::TryFrom;
@@ -64,16 +64,17 @@ impl MaskedMasterKey {
 	}
 
 	fn unmask(&self, secp: &Secp256k1, mask: &SecretKey) -> Result<ExtendedPrivKey, Error> {
-		let unmasked_secret_key = xor_secret_key_bytes(self.secret_key.as_ref(), mask);
+		let unmasked_secret_key =
+			Zeroizing::new(xor_secret_key_bytes(self.secret_key.as_ref(), mask));
 		let integrity_tag = master_key_integrity_tag(
 			self.network,
 			self.depth,
 			self.parent_fingerprint,
 			self.child_number,
 			self.chain_code,
-			&unmasked_secret_key,
+			&unmasked_secret_key[..],
 		)?;
-		if integrity_tag != self.integrity_tag {
+		if !bool::from(integrity_tag.ct_eq(&self.integrity_tag)) {
 			return Err(Error::InvalidMasterKeyMask);
 		}
 		Ok(ExtendedPrivKey {
@@ -81,7 +82,7 @@ impl MaskedMasterKey {
 			depth: self.depth,
 			parent_fingerprint: self.parent_fingerprint,
 			child_number: self.child_number,
-			secret_key: SecretKey::from_slice(secp, &unmasked_secret_key)?,
+			secret_key: SecretKey::from_slice(secp, &unmasked_secret_key[..])?,
 			chain_code: self.chain_code,
 		})
 	}
@@ -117,7 +118,7 @@ fn master_key_integrity_tag(
 	data.extend_from_slice(&chain_code[..]);
 	data.extend_from_slice(secret_key);
 	let mut integrity_tag = [0u8; 32];
-	integrity_tag.copy_from_slice(blake2b(32, &[], &data).as_bytes());
+	integrity_tag.copy_from_slice(&zeroizing_blake2b(32, &[], &data));
 	Ok(integrity_tag)
 }
 
