@@ -36,6 +36,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
+enum PoolAddOutcome {
+	/// The transaction was accepted into the stempool and relayed through the
+	/// Dandelion stem path.
+	Stemmed,
+	/// The transaction was accepted into the public txpool and should be
+	/// broadcast on a best-effort basis.
+	Fluff(PoolEntry),
+}
+
 /// Transaction pool implementation.
 pub struct TransactionPool<B, P>
 where
@@ -88,7 +97,7 @@ where
 		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
 		self.stempool
-			.add_to_pool(entry.clone(), extra_tx, header, secp)
+			.add_entry(entry.clone(), extra_tx, header, secp)
 	}
 
 	fn add_to_reorg_cache(&mut self, entry: &PoolEntry) {
@@ -104,16 +113,20 @@ where
 	}
 
 	// Deaggregate this tx against the txpool.
-	// Returns the new deaggregated tx or the original tx if no deaggregation.
-	fn deaggregate_tx(&self, entry: PoolEntry, secp: &Secp256k1) -> Result<PoolEntry, PoolError> {
+	// Returns the resulting entry and whether deaggregation changed the tx.
+	fn deaggregate_tx(
+		&self,
+		entry: PoolEntry,
+		secp: &Secp256k1,
+	) -> Result<(PoolEntry, bool), PoolError> {
 		if entry.tx.kernels().len() > 1 {
 			let txs = self.txpool.find_matching_transactions(entry.tx.kernels())?;
 			if !txs.is_empty() {
 				let tx = transaction::deaggregate(self.context_id, entry.tx, &txs, secp)?;
-				return Ok(PoolEntry::new(tx, TxSource::Deaggregate));
+				return Ok((PoolEntry::new(tx, TxSource::Deaggregate), true));
 			}
 		}
-		Ok(entry)
+		Ok((entry, false))
 	}
 
 	fn add_to_txpool(
@@ -122,7 +135,7 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
-		self.txpool.add_to_pool(entry.clone(), None, header, secp)?;
+		self.txpool.add_entry(entry.clone(), None, header, secp)?;
 
 		// We now need to reconcile the stempool based on the new state of the txpool.
 		// Some stempool txs may no longer be valid and we need to evict them.
@@ -150,29 +163,69 @@ where
 		Ok(())
 	}
 
-	/// Add the given tx to the pool, directing it to either the stempool or
-	/// txpool based on stem flag provided.
-	pub fn add_to_pool(
-		&mut self,
+	/// Validate and submit a transaction through the shared transaction pool.
+	///
+	/// This is the public transaction-admission boundary. State-independent
+	/// cryptographic validation happens before the pool write lock is acquired,
+	/// pool- and chain-dependent admission happens under the lock, and public
+	/// fluff relay happens after the lock is released.
+	pub fn submit_to_pool(
+		tx_pool: &RwLock<Self>,
 		src: TxSource,
 		tx: Transaction,
 		stem: bool,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
+		let (context_id, adapter) = {
+			let tx_pool = tx_pool.read_recursive();
+			(tx_pool.context_id, tx_pool.adapter.clone())
+		};
+
+		tx.validate(context_id, Weighting::AsTransaction, secp)?;
+
+		let outcome = {
+			let mut tx_pool = tx_pool.write();
+			if tx_pool.context_id != context_id {
+				return Err(PoolError::Other(format!(
+					"transaction context {} does not match pool context {}",
+					context_id, tx_pool.context_id
+				)));
+			}
+			tx_pool.admit_prevalidated(src, tx, stem, header, secp)?
+		};
+
+		if let PoolAddOutcome::Fluff(entry) = outcome {
+			if let Err(e) = adapter.tx_accepted(&entry) {
+				// Local acceptance is the contract here; network relay is best-effort.
+				warn!("txpool adapter failed after accepting tx: {}", e);
+			}
+		}
+
+		Ok(())
+	}
+
+	fn admit_prevalidated(
+		&mut self,
+		src: TxSource,
+		tx: Transaction,
+		stem: bool,
+		header: &BlockHeader,
+		secp: &mut Secp256k1,
+	) -> Result<PoolAddOutcome, PoolError> {
 		// Quick check for duplicate txs.
 		// Our stempool is private and we do not want to reveal anything about the txs contained.
 		// If this is a stem tx and is already present in stempool then fluff by adding to txpool.
 		// Otherwise if already present in txpool return a "duplicate tx" error.
 		if stem && self.stempool.contains_tx(&tx)? {
-			return self.add_to_pool(src, tx, false, header, secp);
+			return self.admit_prevalidated(src, tx, false, header, secp);
 		} else if self.txpool.contains_tx(&tx)? {
 			return Err(PoolError::DuplicateTx);
 		}
 
 		// Attempt to deaggregate the tx if not stem tx.
-		let entry = if stem {
-			PoolEntry::new(tx, src)
+		let (entry, deaggregated) = if stem {
+			(PoolEntry::new(tx, src), false)
 		} else {
 			self.deaggregate_tx(PoolEntry::new(tx, src), secp)?
 		};
@@ -187,14 +240,16 @@ where
 		let mut evict = false;
 		if !stem && matches!(acceptability.as_ref().err(), Some(PoolError::OverCapacity)) {
 			evict = true;
-		} else if acceptability.is_err() {
-			return acceptability;
+		} else {
+			acceptability?;
 		}
 
-		// Make sure the transaction is valid before anything else.
-		// Validate tx accounting for max tx weight.
-		tx.validate(self.context_id, Weighting::AsTransaction, secp)
-			.map_err(PoolError::InvalidTx)?;
+		// A deaggregated transaction differs from the transaction validated before
+		// taking the write lock and must be checked again.
+		if deaggregated {
+			tx.validate(self.context_id, Weighting::AsTransaction, secp)
+				.map_err(PoolError::InvalidTx)?;
+		}
 
 		// Check the tx lock_time is valid based on current chain state.
 		self.blockchain.verify_tx_lock_height(tx)?;
@@ -226,31 +281,27 @@ where
 		self.blockchain.verify_coinbase_maturity(&coinbase_inputs)?;
 
 		// Convert the tx to "v2" compatibility with "features and commit" inputs.
-		let ref entry = self.convert_tx_v2(entry, &spent_pool, &spent_utxo, secp)?;
+		let entry = self.convert_tx_v2(entry, &spent_pool, &spent_utxo, secp)?;
 
 		// If this is a stem tx then attempt to add it to stempool.
 		// If the adapter fails to accept the new stem tx then fallback to fluff via txpool.
 		if stem {
-			self.add_to_stempool(entry, header, extra_tx, secp)?;
-			if self.adapter.stem_tx_accepted(entry).is_ok() {
-				return Ok(());
+			self.add_to_stempool(&entry, header, extra_tx, secp)?;
+			if self.adapter.stem_tx_accepted(&entry).is_ok() {
+				return Ok(PoolAddOutcome::Stemmed);
 			}
 		}
 
 		// Add tx to txpool.
-		self.add_to_txpool(entry, header, secp)?;
-		self.add_to_reorg_cache(entry);
-		if let Err(e) = self.adapter.tx_accepted(entry) {
-			// Local acceptance is the contract here; network relay is best-effort.
-			warn!("txpool adapter failed after accepting tx: {}", e);
-		}
+		self.add_to_txpool(&entry, header, secp)?;
+		self.add_to_reorg_cache(&entry);
 
 		// Transaction passed all the checks but we have to make space for it
 		if evict {
 			self.evict_from_txpool(secp)?;
 		}
 
-		Ok(())
+		Ok(PoolAddOutcome::Fluff(entry))
 	}
 
 	/// Convert a transaction for v2 compatibility.
@@ -353,8 +404,8 @@ where
 			// retained cache entries because accept_fee_base is initialized once per
 			// node context and max transaction weight is derived from fixed chain
 			// constants. The context-sensitive checks that can change across blocks
-			// or reorgs are still re-run by Pool::add_to_pool().
-			match self.txpool.add_to_pool(entry.clone(), None, header, secp) {
+			// or reorgs are still re-run by Pool::add_entry().
+			match self.txpool.add_entry(entry.clone(), None, header, secp) {
 				Ok(()) => {
 					added = true;
 					replayed += 1;

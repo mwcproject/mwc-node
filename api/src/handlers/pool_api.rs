@@ -18,7 +18,7 @@ use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::web::*;
-use mwc_core::core::hash::Hashed;
+use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::Transaction;
 use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::bytes::Bytes;
@@ -28,7 +28,7 @@ use mwc_crates::parking_lot::RwLock;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_pool::{self, BlockChain, PoolAdapter};
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 pub const MAX_UNCONFIRMED_TRANSACTIONS: usize = 1_000;
 
@@ -89,13 +89,12 @@ where
 	pub fn push_transaction(
 		&self,
 		tx: Transaction,
+		tx_hash: Hash,
 		fluff: Option<bool>,
 		secp: &mut Secp256k1,
 	) -> Result<(), Error> {
 		let pool_arc = w(&self.tx_pool)?;
-		let context_id = pool_arc.read_recursive().get_context_id();
 		let source = mwc_pool::TxSource::PushApi;
-		let tx_hash = tx.hash(context_id)?;
 		info!(
 			"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {}, fluff: {:?})",
 			tx_hash,
@@ -105,15 +104,22 @@ where
 			fluff,
 		);
 
-		//  Push to tx pool.
-		let mut tx_pool = pool_arc.write();
-		let header = tx_pool
-			.blockchain
+		let blockchain = {
+			let tx_pool = pool_arc.read_recursive();
+			tx_pool.blockchain.clone()
+		};
+		let header = blockchain
 			.chain_head()
 			.map_err(|e| Error::Internal(format!("Failed to get chain head, {}", e)))?;
-		tx_pool
-			.add_to_pool(source, tx, !fluff.unwrap_or(false), &header, secp)
-			.map_err(pool_error_to_api_error)?;
+		mwc_pool::TransactionPool::submit_to_pool(
+			pool_arc.as_ref(),
+			source,
+			tx,
+			!fluff.unwrap_or(false),
+			&header,
+			secp,
+		)
+		.map_err(pool_error_to_api_error)?;
 
 		info!("transaction {} was added to the pool", tx_hash);
 
@@ -207,27 +213,12 @@ where
 			))
 		})?;
 
-	let source = mwc_pool::TxSource::PushApi;
-	info!(
-		"Pushing transaction {} to pool (inputs: {}, outputs: {}, kernels: {})",
-		tx.hash(context_id)?,
-		tx.inputs().len(),
-		tx.outputs().len(),
-		tx.kernels().len(),
-	);
-
+	let tx_hash = tx.hash(context_id)?;
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-
-	//  Push to tx pool.
-	let mut tx_pool = pool.write();
-	let header = tx_pool
-		.blockchain
-		.chain_head()
-		.map_err(|e| Error::Internal(format!("Failed to get chain head: {}", e)))?;
-	tx_pool
-		.add_to_pool(source, tx, !fluff, &header, &mut secp)
-		.map_err(pool_error_to_api_error)?;
-	Ok(())
+	let pool_handler = PoolHandler {
+		tx_pool: Arc::downgrade(&pool),
+	};
+	pool_handler.push_transaction(tx, tx_hash, Some(fluff), &mut secp)
 }
 
 impl<B, P> Handler for PoolPushHandler<B, P>

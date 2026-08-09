@@ -241,7 +241,7 @@ where
 	// Aggregate this new tx with all existing txs in the pool.
 	// If we can validate the aggregated tx against the current chain state
 	// then we can safely add the tx to the pool.
-	pub fn add_to_pool(
+	pub(crate) fn add_entry(
 		&mut self,
 		entry: PoolEntry,
 		extra_tx: Option<Transaction>,
@@ -286,7 +286,7 @@ where
 
 	fn log_pool_add(&self, entry: &PoolEntry, header: &BlockHeader) {
 		debug!(
-			"add_to_pool [{}]: {} ({:?}) [in/out/kern: {}/{}/{}] pool: {} (at block {})",
+			"pool add_entry [{}]: {} ({:?}) [in/out/kern: {}/{}/{}] pool: {} (at block {})",
 			self.name,
 			entry.tx.hash(self.context_id).unwrap_or(Hash::default()),
 			entry.src,
@@ -477,7 +477,7 @@ where
 		self.entries.clear();
 		for x in existing_entries {
 			let tx_hash = x.tx.hash(self.context_id).unwrap_or(Hash::default());
-			if let Err(e) = self.add_to_pool(x, extra_tx.clone(), header, secp) {
+			if let Err(e) = self.add_entry(x, extra_tx.clone(), header, secp) {
 				warn!(
 					"reconcile [{}]: evicting tx {} at block {} due to error: {}",
 					self.name, tx_hash, header_hash, e,

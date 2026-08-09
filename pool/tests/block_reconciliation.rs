@@ -120,8 +120,7 @@ fn test_transaction_pool_block_reconciliation() {
 	assert_eq!(pool.total_size(), 0);
 
 	for tx in &txs_to_add {
-		pool.add_to_pool(test_source(), tx.clone(), false, &header, &mut secp)
-			.unwrap();
+		submit_to_pool!(pool, test_source(), tx.clone(), false, &header, &mut secp).unwrap();
 	}
 
 	assert_eq!(pool.total_size(), txs_to_add.len());

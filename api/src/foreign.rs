@@ -477,13 +477,15 @@ where
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
-		pool_handler.push_transaction(tx, fluff, secp).map_err(|e| {
-			warn!(
-				"Unable to push transaction {} into the pool, {}",
-				tx_hash, e
-			);
-			e
-		})
+		pool_handler
+			.push_transaction(tx, tx_hash, fluff, secp)
+			.map_err(|e| {
+				warn!(
+					"Unable to push transaction {} into the pool, {}",
+					tx_hash, e
+				);
+				e
+			})
 	}
 
 	pub fn get_running_time(&self) -> u64 {

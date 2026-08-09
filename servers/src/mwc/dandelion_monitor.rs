@@ -21,7 +21,9 @@ use mwc_core::global;
 use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::rand::{rng, RngExt};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
-use mwc_pool::{BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TxSource};
+use mwc_pool::{
+	BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TransactionPool, TxSource,
+};
 use mwc_util::StopState;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -126,16 +128,15 @@ fn process_fluff_phase(
 	adapter: &Arc<dyn DandelionAdapter>,
 	secp: &mut Secp256k1,
 ) -> Result<(), PoolError> {
-	// Take a write lock on the txpool for the duration of this processing.
-	let mut tx_pool = tx_pool.write();
+	let mut pool = tx_pool.write();
 
-	let all_entries = tx_pool.stempool.all_entries();
+	let all_entries = pool.stempool.all_entries();
 	if all_entries.is_empty() {
 		return Ok(());
 	}
 
 	let cutoff_secs = dandelion_config.aggregation_secs as u32;
-	let cutoff_entries = select_txs_cutoff(&tx_pool.stempool, cutoff_secs);
+	let cutoff_entries = select_txs_cutoff(&pool.stempool, cutoff_secs);
 
 	// If epoch is expired, fluff *all* outstanding entries in stempool.
 	// If *any* entry older than aggregation_secs (30s) then fluff *all* entries.
@@ -144,13 +145,13 @@ fn process_fluff_phase(
 		return Ok(());
 	}
 
-	let header = tx_pool.chain_head()?;
-	let context_id = tx_pool.get_context_id();
+	let header = pool.chain_head()?;
+	let context_id = pool.get_context_id();
 
 	let fluffable_txs = {
-		let txpool_tx = tx_pool.txpool.all_transactions_aggregate(None, secp)?;
+		let txpool_tx = pool.txpool.all_transactions_aggregate(None, secp)?;
 		let txs: Vec<_> = all_entries.iter().map(|x| x.tx.clone()).collect();
-		tx_pool.stempool.validate_raw_txs(
+		pool.stempool.validate_raw_txs(
 			&txs,
 			txpool_tx,
 			&header,
@@ -166,7 +167,7 @@ fn process_fluff_phase(
 	for entry in &all_entries {
 		let tx_hash = entry.tx.hash(context_id)?;
 		if !fluffable_hashes.contains(&tx_hash) {
-			if tx_pool.stempool.remove_tx(&entry.tx)?.is_some() {
+			if pool.stempool.remove_tx(&entry.tx)?.is_some() {
 				skipped += 1;
 				debug!(
 					"dand_mon: removed skipped stempool tx {} after failed aggregate validation",
@@ -186,6 +187,7 @@ fn process_fluff_phase(
 		return Ok(());
 	}
 
+	drop(pool);
 	let fluff_txs = aggregate_fluffable_txs(context_id, &fluffable_txs, secp)?;
 	debug!(
 		"dand_mon: fluffing {} stempool txs as {} transaction batches",
@@ -194,7 +196,22 @@ fn process_fluff_phase(
 	);
 
 	for tx in fluff_txs {
-		tx_pool.add_to_pool(TxSource::Fluff, tx, false, &header, secp)?;
+		match TransactionPool::submit_to_pool(
+			tx_pool.as_ref(),
+			TxSource::Fluff,
+			tx,
+			false,
+			&header,
+			secp,
+		) {
+			Ok(()) => {}
+			Err(PoolError::DuplicateTx) => {
+				// Admission is deliberately done after releasing the stempool lock.
+				// Another inbound path may have fluffed this same batch meanwhile.
+				debug!("dand_mon: fluff batch was already present in txpool");
+			}
+			Err(e) => return Err(e),
+		}
 	}
 	Ok(())
 }
@@ -240,11 +257,7 @@ fn aggregate_as_transaction(
 	txs: &[transaction::Transaction],
 	secp: &mut Secp256k1,
 ) -> Result<transaction::Transaction, PoolError> {
-	let agg_tx = transaction::aggregate(context_id, txs, secp)?;
-	agg_tx
-		.validate(context_id, transaction::Weighting::AsTransaction, secp)
-		.map_err(PoolError::InvalidTx)?;
-	Ok(agg_tx)
+	Ok(transaction::aggregate(context_id, txs, secp)?)
 }
 
 fn checked_add_weight(current_weight: u64, tx_weight: u64) -> Result<u64, PoolError> {
@@ -261,11 +274,10 @@ fn process_expired_entries(
 	tx_pool: &ServerTxPool,
 	secp: &mut Secp256k1,
 ) -> Result<(), PoolError> {
-	// Take a write lock on the txpool for the duration of this processing.
-	let mut tx_pool = tx_pool.write();
+	let pool = tx_pool.write();
 
 	let embargo_secs = dandelion_config.embargo_secs as u32 + rng().random_range(0..31);
-	let expired_entries = select_txs_cutoff(&tx_pool.stempool, embargo_secs);
+	let expired_entries = select_txs_cutoff(&pool.stempool, embargo_secs);
 
 	if expired_entries.is_empty() {
 		return Ok(());
@@ -273,20 +285,26 @@ fn process_expired_entries(
 
 	debug!("dand_mon: Found {} expired txs.", expired_entries.len());
 
-	let header = tx_pool.chain_head()?;
-	let context_id = tx_pool.get_context_id();
+	let header = pool.chain_head()?;
+	let context_id = pool.get_context_id();
+	drop(pool);
 
 	for entry in expired_entries {
 		let txhash = entry.tx.hash(context_id)?;
-		match tx_pool.add_to_pool(
+		match TransactionPool::submit_to_pool(
+			tx_pool.as_ref(),
 			TxSource::EmbargoExpired,
 			entry.tx.clone(),
 			false,
 			&header,
 			secp,
 		) {
-			Ok(_) => info!(
+			Ok(()) => info!(
 				"dand_mon: embargo expired for {}, fluffed successfully.",
+				txhash
+			),
+			Err(PoolError::DuplicateTx) => debug!(
+				"dand_mon: embargo-expired tx {} was already present in txpool",
 				txhash
 			),
 			Err(e) => {
@@ -294,7 +312,7 @@ fn process_expired_entries(
 					"dand_mon: failed to fluff expired tx {}, evicting from stempool: {:?}",
 					txhash, e
 				);
-				tx_pool.stempool.remove_tx(&entry.tx)?;
+				tx_pool.write().stempool.remove_tx(&entry.tx)?;
 			}
 		};
 	}

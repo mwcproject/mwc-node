@@ -43,6 +43,7 @@ use mwc_core::global;
 use mwc_core::libtx::{build, reward, ProofBuilder};
 use mwc_core::pow;
 use mwc_crates::chrono::Duration;
+use mwc_crates::parking_lot::RwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_keychain::{ExtKeychain, ExtKeychainPath, Keychain};
@@ -222,7 +223,7 @@ pub struct PoolFuzzer {
 	pub chain: Arc<Chain>,
 	pub secp: Secp256k1,
 	pub keychain: ExtKeychain,
-	pub pool: TransactionPool<ChainAdapter, NoopPoolAdapter>,
+	pub pool: RwLock<TransactionPool<ChainAdapter, NoopPoolAdapter>>,
 }
 
 impl PoolFuzzer {
@@ -246,7 +247,7 @@ impl PoolFuzzer {
 			chain,
 			secp,
 			keychain,
-			pool,
+			pool: RwLock::new(pool),
 		};
 
 		ret.add_some_blocks(3);

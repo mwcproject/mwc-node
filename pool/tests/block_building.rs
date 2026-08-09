@@ -75,13 +75,48 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 
 	{
 		// Add the three root txs to the pool.
-		pool.add_to_pool(test_source(), root_tx_1.clone(), false, &header, &mut secp)?;
-		pool.add_to_pool(test_source(), root_tx_2.clone(), false, &header, &mut secp)?;
-		pool.add_to_pool(test_source(), root_tx_3.clone(), false, &header, &mut secp)?;
+		submit_to_pool!(
+			pool,
+			test_source(),
+			root_tx_1.clone(),
+			false,
+			&header,
+			&mut secp
+		)?;
+		submit_to_pool!(
+			pool,
+			test_source(),
+			root_tx_2.clone(),
+			false,
+			&header,
+			&mut secp
+		)?;
+		submit_to_pool!(
+			pool,
+			test_source(),
+			root_tx_3.clone(),
+			false,
+			&header,
+			&mut secp
+		)?;
 
 		// Now add the two child txs to the pool.
-		pool.add_to_pool(test_source(), child_tx_1.clone(), false, &header, &mut secp)?;
-		pool.add_to_pool(test_source(), child_tx_2.clone(), false, &header, &mut secp)?;
+		submit_to_pool!(
+			pool,
+			test_source(),
+			child_tx_1.clone(),
+			false,
+			&header,
+			&mut secp
+		)?;
+		submit_to_pool!(
+			pool,
+			test_source(),
+			child_tx_2.clone(),
+			false,
+			&header,
+			&mut secp
+		)?;
 
 		assert_eq!(pool.total_size(), 5);
 	}

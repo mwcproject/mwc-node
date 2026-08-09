@@ -110,8 +110,7 @@ fn test_block_building_max_weight() {
 
 	// Populate our txpool with the txs.
 	for tx in txs {
-		pool.add_to_pool(test_source(), tx, false, &header, &mut secp)
-			.unwrap();
+		submit_to_pool!(pool, test_source(), tx, false, &header, &mut secp).unwrap();
 	}
 
 	// Check we added them all to the txpool successfully.

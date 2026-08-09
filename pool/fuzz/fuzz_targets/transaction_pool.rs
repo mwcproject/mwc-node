@@ -123,13 +123,11 @@ fuzz_target!(|data: &[u8]| {
 	global::set_local_accept_fee_base(global::DEFAULT_ACCEPT_FEE_BASE)
 		.expect("valid accept fee base");
 
-	// check for corpus generation arguments
-	// only generate corpus once, skipping on every other run
-	if let Ok(gen_corpus) = std::env::var("MWC_POOL_GEN_CORPUS") {
-		if gen_corpus == "0" {
-			gen_tx_corpus().unwrap();
-			std::env::set_var("MWC_POOL_GEN_CORPUS", "1");
-		}
+	// Check for corpus generation arguments and generate at most once per
+	// process. Avoid mutating the process environment from the fuzz callback.
+	static GENERATE_CORPUS: std::sync::Once = std::sync::Once::new();
+	if std::env::var("MWC_POOL_GEN_CORPUS").as_deref() == Ok("0") {
+		GENERATE_CORPUS.call_once(|| gen_tx_corpus().unwrap());
 	}
 
 	let mut fuzzer = PoolFuzzer::new("fuzz/target/.transaction_pool");
@@ -147,14 +145,19 @@ fuzz_target!(|data: &[u8]| {
 			// attempt to add fuzzed tx to the transaction pool
 			//   fuzz tx source on random first byte of fuzzer input
 			//   add to tx pool, then stem pool
-			match fuzzer
-				.pool
-				.add_to_pool(tx_source, tx.unwrap(), i, &header, &mut fuzzer.secp)
-			{
+			match mwc_pool::TransactionPool::submit_to_pool(
+				&fuzzer.pool,
+				tx_source,
+				tx.unwrap(),
+				i,
+				&header,
+				&mut fuzzer.secp,
+			) {
 				Ok(_) if i => {
-					assert!(fuzzer.pool.stempool.size() >= 1 || fuzzer.pool.total_size() >= 1)
+					let pool = fuzzer.pool.read_recursive();
+					assert!(pool.stempool.size() >= 1 || pool.total_size() >= 1)
 				}
-				Ok(_) => assert!(fuzzer.pool.total_size() >= 1),
+				Ok(_) => assert!(fuzzer.pool.read_recursive().total_size() >= 1),
 				Err(_) => continue,
 			}
 		}

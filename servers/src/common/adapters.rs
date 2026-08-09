@@ -449,8 +449,14 @@ where
 			hook.on_transaction_received(self.context_id, &tx);
 		}
 
-		let mut tx_pool = self.tx_pool.write();
-		match tx_pool.add_to_pool(source, tx, stem, &header, secp) {
+		match mwc_pool::TransactionPool::submit_to_pool(
+			self.tx_pool.as_ref(),
+			source,
+			tx,
+			stem,
+			&header,
+			secp,
+		) {
 			Ok(_) => {
 				self.processed_transactions.contains(&tx_hash, true);
 				Ok(true)

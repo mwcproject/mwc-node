@@ -75,7 +75,8 @@ pub enum Error {
 	Internal(String),
 	#[error("API Bad arguments: {0}")]
 	Argument(String),
-	#[error("API Not found: {0}")]
+	// Note, keep 'NotFound' because wallet using it to classify the error types
+	#[error("API NotFound: {0}")]
 	NotFound(String),
 	#[error("API Request error: {0}")]
 	RequestError(String),

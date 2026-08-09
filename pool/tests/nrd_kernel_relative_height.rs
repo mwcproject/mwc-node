@@ -138,34 +138,30 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	};
 
 	// Confirm we can successfully add tx1 with NRD kernel to stempool.
-	assert!(pool
-		.add_to_pool(test_source(), tx1.clone(), true, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx1.clone(), true, &header, &mut secp).is_ok());
 	assert_eq!(pool.stempool.size(), 1);
 
 	// Confirm we cannot add tx2 to stempool while tx1 is in there (duplicate NRD kernels).
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx2.clone(), true, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx2.clone(), true, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
 	// Confirm we can successfully add tx1 with NRD kernel to txpool,
 	// removing existing instance of tx1 from stempool in the process.
-	assert!(pool
-		.add_to_pool(test_source(), tx1.clone(), false, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx1.clone(), false, &header, &mut secp).is_ok());
 	assert_eq!(pool.txpool.size(), 1);
 	assert_eq!(pool.stempool.size(), 0);
 
 	// Confirm we cannot add tx2 to stempool while tx1 is in txpool (duplicate NRD kernels).
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx2.clone(), true, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx2.clone(), true, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
 	// Confirm we cannot add tx2 to txpool while tx1 is in there (duplicate NRD kernels).
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx2.clone(), false, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx2.clone(), false, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
@@ -191,13 +187,13 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 
 	// Confirm we cannot add tx2 to stempool with tx1 in previous block (NRD relative_height=2)
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx2.clone(), true, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx2.clone(), true, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
 	// Confirm we cannot add tx2 to txpool with tx1 in previous block (NRD relative_height=2)
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx2.clone(), false, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx2.clone(), false, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
@@ -206,27 +202,23 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	let header = chain.head_header().unwrap();
 
 	// Confirm we can now add tx2 to stempool with NRD relative_height rule met.
-	assert!(pool
-		.add_to_pool(test_source(), tx2.clone(), true, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx2.clone(), true, &header, &mut secp).is_ok());
 	assert_eq!(pool.total_size(), 0);
 	assert_eq!(pool.txpool.size(), 0);
 	assert_eq!(pool.stempool.size(), 1);
 
 	// Confirm we cannot yet add tx3 to stempool (NRD relative_height=1)
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx3.clone(), true, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx3.clone(), true, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
 	// Confirm we can now add tx2 to txpool with NRD relative_height rule met.
-	assert!(pool
-		.add_to_pool(test_source(), tx2.clone(), false, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx2.clone(), false, &header, &mut secp).is_ok());
 
 	// Confirm we cannot yet add tx3 to txpool (NRD relative_height=1)
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx3.clone(), false, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx3.clone(), false, &header, &mut secp),
 		Err(PoolError::NRDKernelRelativeHeight)
 	));
 
@@ -250,18 +242,14 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	assert_eq!(pool.stempool.size(), 0);
 
 	// Confirm we can now add tx3 to stempool with tx2 in immediate previous block (NRD relative_height=1)
-	assert!(pool
-		.add_to_pool(test_source(), tx3.clone(), true, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx3.clone(), true, &header, &mut secp).is_ok());
 
 	assert_eq!(pool.total_size(), 0);
 	assert_eq!(pool.txpool.size(), 0);
 	assert_eq!(pool.stempool.size(), 1);
 
 	// Confirm we can now add tx3 to txpool with tx2 in immediate previous block (NRD relative_height=1)
-	assert!(pool
-		.add_to_pool(test_source(), tx3.clone(), false, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx3.clone(), false, &header, &mut secp).is_ok());
 
 	assert_eq!(pool.total_size(), 1);
 	assert_eq!(pool.txpool.size(), 1);

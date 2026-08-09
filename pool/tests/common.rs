@@ -36,6 +36,25 @@ use std::convert::TryInto;
 use std::fs;
 use std::sync::Arc;
 
+#[allow(unused_macros)]
+macro_rules! submit_to_pool {
+	($pool:expr, $src:expr, $tx:expr, $stem:expr, $header:expr, $secp:expr) => {{
+		let tx_pool_lock = mwc_crates::parking_lot::RwLock::new($pool);
+		let result = mwc_pool::TransactionPool::submit_to_pool(
+			&tx_pool_lock,
+			$src,
+			$tx,
+			$stem,
+			$header,
+			$secp,
+		);
+		$pool = tx_pool_lock.into_inner();
+		result
+	}};
+}
+#[allow(unused_imports)]
+pub(crate) use submit_to_pool;
+
 // Keep test targets compilable without exposing the production builder. Any
 // affected test reaches this shim and fails with an actionable runtime error.
 #[allow(dead_code, unused_imports)]

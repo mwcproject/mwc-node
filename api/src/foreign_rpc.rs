@@ -28,6 +28,7 @@ use mwc_core::core::transaction::Transaction;
 use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::easy_jsonrpc_mwc;
 use mwc_crates::easy_jsonrpc_mwc::{Handler, InvalidArgs, Params, Value};
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_crates::serde::de::DeserializeOwned;
 use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
 use mwc_pool::{BlockChain, PoolAdapter};
@@ -1172,9 +1173,10 @@ where
 			})?
 			.get_context_id();
 		let (tx, fluff) = parse_push_transaction_args(params, context_id)?;
-		let result = secp_static::with_commit_mut(Error::from, |secp| {
-			Foreign::push_transaction(self.inner, tx, fluff, secp)
-		});
+		// Relay may re-enter the thread-local secp context while serializing the tx.
+		let result = Secp256k1::with_caps(ContextFlag::Commit)
+			.map_err(Error::from)
+			.and_then(|mut secp| Foreign::push_transaction(self.inner, tx, fluff, &mut secp));
 		easy_jsonrpc_mwc::try_serialize(&result.into_rpc_result())
 	}
 }
@@ -1971,10 +1973,11 @@ where
 		Foreign::get_unconfirmed_transactions(self).into_rpc_result()
 	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> RpcResult<()> {
-		secp_static::with_commit_mut(Error::from, |secp| {
-			Foreign::push_transaction(self, tx, fluff, secp)
-		})
-		.into_rpc_result()
+		// Relay may re-enter the thread-local secp context while serializing the tx.
+		Secp256k1::with_caps(ContextFlag::Commit)
+			.map_err(Error::from)
+			.and_then(|mut secp| Foreign::push_transaction(self, tx, fluff, &mut secp))
+			.into_rpc_result()
 	}
 }
 
