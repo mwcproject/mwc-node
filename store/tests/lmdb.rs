@@ -258,6 +258,30 @@ fn test_iter() -> Result<(), mwc_store::Error> {
 }
 
 #[test]
+fn batch_iter_from_is_inclusive_and_prefix_bounded() -> Result<(), mwc_store::Error> {
+	let test_dir = "target/batch_iter_from_is_inclusive_and_prefix_bounded";
+	setup(test_dir);
+
+	let store = mwc_store::Store::new(0, test_dir, Some("test1"), None, None)?;
+	let batch = store.batch_write()?;
+	for key in [[0, 1], [0, 3], [0, 5], [1, 0]] {
+		batch.put(&key, &key)?;
+	}
+	batch.commit()?;
+
+	let batch = store.batch_read()?;
+	let mut iter = batch.iter_from(&[0], &[0, 3], |key, _| Ok(key.to_vec()))?;
+	assert_eq!(iter.next().transpose()?, Some(vec![0, 3]));
+	assert_eq!(iter.next().transpose()?, Some(vec![0, 5]));
+	assert_eq!(iter.next().transpose()?, None);
+	drop(iter);
+	drop(batch);
+
+	clean_output_dir(test_dir);
+	Ok(())
+}
+
+#[test]
 fn iter_returns_deserialize_errors() -> Result<(), mwc_store::Error> {
 	let test_dir = "target/iter_returns_deserialize_errors";
 	setup(test_dir);

@@ -1077,12 +1077,17 @@ fn last_seen_seconds_ago(peer_last_seen: DateTime<Utc>) -> u32 {
 	seconds.clamp(0, u32::MAX as i64) as u32
 }
 
+/// Process and host status reported by the node foreign API.
+///
+/// Host CPU, RAM, and swap fields are sampled together by the node and may be
+/// up to five seconds old when returned.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(crate = "serde")]
 pub struct ProcessStatus {
 	/// How long this process is running
 	pub process_running_time: u64,
-	/// How long arti is running
+	/// Seconds since the current healthy Arti generation started, or 0 when
+	/// Arti is stopped or restarting.
 	pub tor_online_time: u64,
 	/// This host CPU usage, percentage
 	pub host_cpu_usage: f64,

@@ -245,6 +245,8 @@ fn process_create_server_request(params: &mut Value) -> Result<Value, String> {
 	// For this case we have to build the config by ourselves
 	let context_id: u32 = get_object_param(params, "context_id")?;
 	let db_root: String = get_object_param(params, "db_root")?;
+	let skip_start_blockchain_validation: bool =
+		get_object_param(params, "skip_start_blockchain_validation")?;
 
 	let mut config = ServerConfig::default();
 	config.db_root = db_root;
@@ -285,6 +287,7 @@ fn process_create_server_request(params: &mut Value) -> Result<Value, String> {
 		context_id,
 		config,
 		Arc::new(mwc_util::StopState::new()),
+		skip_start_blockchain_validation,
 	)
 	.map_err(|e| format!("Unable to start the node server, {}", e))?;
 	Ok(json!({}))

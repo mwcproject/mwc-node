@@ -220,19 +220,62 @@ fn segment_from_pmmr_keeps_legacy_size_limit_boundary() {
 }
 
 #[test]
-fn segment_from_pmmr_bitmap_bounds_initial_construction_work() {
+fn segment_from_pmmr_bitmap_applies_size_limit_after_pruning() {
 	let id = SegmentIdentifier { height: 1, idx: 0 };
 	let mut backend = pmmr::VecBackend::new(0);
 	let mut mmr = pmmr::PMMR::new(&mut backend);
 	mmr.push(&TestElem([0, 0, 0, 1])).unwrap();
 	mmr.push(&TestElem([0, 0, 0, 2])).unwrap();
+	let mmr = mmr.readonly_pmmr();
+	let mmr_size = mmr.unpruned_size();
+	let root = mmr.root().unwrap();
+	let result_size_limit = 40;
 
+	// The two physical leaves require 48 bytes in the temporary copy, but the
+	// fully pruned result contains one 40-byte hash entry and must be accepted.
 	let bitmap = Bitmap::new();
+	let segment =
+		Segment::<TestElem>::from_pmmr(id, &mmr, Some(&bitmap), 16, result_size_limit).unwrap();
+	segment.validate(0, mmr_size, Some(&bitmap), &root).unwrap();
 
+	// Retaining the leaf pair produces a 48-byte result and must still be rejected.
+	let mut bitmap = Bitmap::new();
+	bitmap.add(0);
 	assert!(matches!(
-		Segment::<TestElem>::from_pmmr(id, &mmr.readonly_pmmr(), Some(&bitmap), 16, 24),
+		Segment::<TestElem>::from_pmmr(id, &mmr, Some(&bitmap), 16, result_size_limit),
 		Err(SegmentError::SegmentSizeAboveLimit)
 	));
+}
+
+#[test]
+fn segment_from_pmmr_accepts_sparse_h10_result_at_twice_pibd_limit() {
+	let id = SegmentIdentifier { height: 10, idx: 0 };
+	let mut backend = pmmr::VecBackend::new(0);
+	let mut mmr = pmmr::PMMR::new(&mut backend);
+	for i in 0..(1 << 10) {
+		mmr.push(&TestElem([i / 7, i / 5, i / 3, i])).unwrap();
+	}
+	let mmr = mmr.readonly_pmmr();
+	let mmr_size = mmr.unpruned_size();
+	let root = mmr.root().unwrap();
+
+	// Match RangeProof PMMR accounting: 683 bytes per leaf plus its position.
+	// A dense temporary copy exceeds the 2x PIBD limit, while the sparse
+	// resulting segment remains comfortably below it.
+	let rangeproof_leaf_size = 683;
+	let twice_pibd_limit = 2 * 256 * 1034;
+	let mut bitmap = Bitmap::new();
+	bitmap.add(511);
+
+	let segment = Segment::<TestElem>::from_pmmr(
+		id,
+		&mmr,
+		Some(&bitmap),
+		rangeproof_leaf_size,
+		twice_pibd_limit,
+	)
+	.unwrap();
+	segment.validate(0, mmr_size, Some(&bitmap), &root).unwrap();
 }
 
 #[test]

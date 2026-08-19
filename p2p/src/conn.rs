@@ -168,6 +168,8 @@ impl StopHandle {
 	}
 
 	pub fn wait(&mut self) -> Result<(), Error> {
+		// Keeping the first thread error is sufficient for debugging the failed
+		// shutdown. Both threads are still joined, so any later error can be dropped.
 		let mut first_error = None;
 		if let Some(reader_thread) = self.reader_thread.take() {
 			if let Err(e) = Self::join_thread(reader_thread) {

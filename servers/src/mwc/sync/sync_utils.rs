@@ -158,20 +158,25 @@ impl PeerTrackData {
 }
 
 pub struct RequestData {
+	token: Arc<()>,
 	peer: PeerAddr,
 	request_time: Instant,
 	request_message: String, // for logging and debugging
 }
 
 impl RequestData {
-	fn new(peer: PeerAddr, request_message: String) -> Self {
+	fn new(token: Arc<()>, peer: PeerAddr, request_message: String) -> Self {
 		RequestData {
+			token,
 			peer,
 			request_time: Instant::now(),
 			request_message,
 		}
 	}
 }
+
+/// Opaque identity for one exact request registration.
+pub struct RequestToken(Arc<()>);
 
 struct LatencyTracker {
 	latency_history: VecDeque<i64>,
@@ -231,7 +236,7 @@ pub struct RequestTracker<K>
 where
 	K: std::cmp::Eq + std::hash::Hash,
 {
-	// Values: peer, time, message.
+	// Values: token, peer, time, message.
 	requested: RwLock<HashMap<K, RequestData>>, //  Lock 1
 	// there are so many peers and many requests, so we better to hande 'slow' peer cases
 	peers_stats: RwLock<HashMap<PeerAddr, PeerTrackData>>, // Lock 2
@@ -262,6 +267,22 @@ where
 		}
 	}
 
+	fn decrement_peer_requests(
+		peers_stats: &mut HashMap<PeerAddr, PeerTrackData>,
+		peer: &PeerAddr,
+	) {
+		let remove_peer = match peers_stats.get_mut(peer) {
+			Some(peer_stat) => {
+				peer_stat.requests = peer_stat.requests.saturating_sub(1);
+				peer_stat.requests == 0
+			}
+			None => false,
+		};
+		if remove_peer {
+			peers_stats.remove(peer);
+		}
+	}
+
 	pub fn retain_expired(
 		&self,
 		expiration_time_interval_sec: u32,
@@ -275,14 +296,11 @@ where
 
 		// first let's clean up stale requests...
 		requested.retain(|_, request_data| {
-			let peer_stat = peers_stats.get_mut(&request_data.peer);
 			if request_data.request_time.elapsed() > expiration_time_interval {
 				sync_peers
 					.report_no_response(&request_data.peer, request_data.request_message.clone());
 				res.insert(request_data.peer.clone());
-				if let Some(n) = peer_stat {
-					n.requests = n.requests.saturating_sub(1);
-				}
+				Self::decrement_peer_requests(peers_stats, &request_data.peer);
 				return false;
 			}
 			true
@@ -345,14 +363,15 @@ where
 		self.peers_stats.read_recursive().get(peer).cloned()
 	}
 
-	pub fn register_request(&self, key: K, peer: PeerAddr, message: String) {
+	pub fn register_request(&self, key: K, peer: PeerAddr, message: String) -> RequestToken {
+		let token = Arc::new(());
 		let mut requested = self.requested.write();
 		let peers_stats = &mut self.peers_stats.write();
 
-		if let Some(request_data) = requested.insert(key, RequestData::new(peer.clone(), message)) {
-			if let Some(n) = peers_stats.get_mut(&request_data.peer) {
-				n.requests = n.requests.saturating_sub(1);
-			}
+		if let Some(request_data) =
+			requested.insert(key, RequestData::new(token.clone(), peer.clone(), message))
+		{
+			Self::decrement_peer_requests(peers_stats, &request_data.peer);
 		}
 
 		match peers_stats.get_mut(&peer) {
@@ -363,6 +382,49 @@ where
 				peers_stats.insert(peer.clone(), PeerTrackData::new(1));
 			}
 		}
+
+		RequestToken(token)
+	}
+
+	/// Roll back a request that could not be sent. The token check prevents a late
+	/// send failure from removing a newer request registered for the same key.
+	/// Unlike response removal, rollback must not contribute a latency sample.
+	pub fn rollback_request(&self, key: &K, request_token: &RequestToken) -> bool {
+		let mut requested = self.requested.write();
+		let peers_stats = &mut self.peers_stats.write();
+		let matches_request = requested.get(key).map_or(false, |request_data| {
+			Arc::ptr_eq(&request_data.token, &request_token.0)
+		});
+		if !matches_request {
+			return false;
+		}
+
+		if let Some(request_data) = requested.remove(key) {
+			Self::decrement_peer_requests(peers_stats, &request_data.peer);
+			true
+		} else {
+			false
+		}
+	}
+
+	/// Cancel obsolete requests without treating them as responses or timeouts.
+	pub fn cancel_requests<'a, I>(&self, keys: I) -> usize
+	where
+		K: 'a,
+		I: IntoIterator<Item = &'a K>,
+	{
+		let mut requested = self.requested.write();
+		let peers_stats = &mut self.peers_stats.write();
+		let mut removed = 0usize;
+
+		for key in keys {
+			if let Some(request_data) = requested.remove(key) {
+				Self::decrement_peer_requests(peers_stats, &request_data.peer);
+				removed = removed.saturating_add(1);
+			}
+		}
+
+		removed
 	}
 
 	pub fn remove_request(&self, key: &K, peer: &PeerAddr) -> Option<PeerAddr> {
@@ -372,13 +434,11 @@ where
 		if let Some(request_data) = requested.get(key) {
 			let res_peer = request_data.peer.clone();
 			if request_data.peer == *peer {
-				if let Some(n) = peers_stats.get_mut(&request_data.peer) {
-					n.requests = n.requests.saturating_sub(1);
-				}
 				let latency_ms = i64::try_from(request_data.request_time.elapsed().as_millis())
 					.unwrap_or(i64::MAX / 15);
 				self.latency_tracker.write().add_latency(latency_ms);
 				requested.remove(key);
+				Self::decrement_peer_requests(peers_stats, &res_peer);
 			}
 			Some(res_peer)
 		} else {
@@ -390,20 +450,14 @@ where
 		let mut requested = self.requested.write();
 		let peers_stats = &mut self.peers_stats.write();
 
-		if let Some(request_data) = requested.get(key) {
+		if let Some(request_data) = requested.remove(key) {
 			let res_peer = request_data.peer.clone();
-
-			if let Some(n) = peers_stats.get_mut(&request_data.peer) {
-				n.requests = n.requests.saturating_sub(1);
-			}
-
+			Self::decrement_peer_requests(peers_stats, &res_peer);
 			if request_data.peer == *peer {
 				let latency_ms = i64::try_from(request_data.request_time.elapsed().as_millis())
 					.unwrap_or(i64::MAX / 15);
 				self.latency_tracker.write().add_latency(latency_ms);
 			}
-
-			requested.remove(key);
 			Some(res_peer)
 		} else {
 			None
@@ -541,10 +595,11 @@ pub fn get_sync_peers<T: std::cmp::Eq + std::hash::Hash>(
 #[cfg(test)]
 mod tests {
 	use super::{CachedResponse, LatencyTracker, QuorumSelection, RequestTracker};
+	use crate::mwc::sync::sync_peers::SyncPeers;
 	use mwc_chain::pibd_params;
 	use mwc_p2p::PeerAddr;
 	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-	use std::time::Duration;
+	use std::time::{Duration, Instant};
 
 	fn peer_for_idx(idx: u8) -> PeerAddr {
 		PeerAddr::Ip(SocketAddr::new(
@@ -679,13 +734,7 @@ mod tests {
 
 		assert_eq!(tracker.remove_request(&42, &peer), Some(peer.clone()));
 		assert_eq!(tracker.get_requests_num(), 0);
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&peer)
-				.expect("peer stats")
-				.requests,
-			0
-		);
+		assert!(tracker.get_peer_track_data(&peer).is_none());
 	}
 
 	#[test]
@@ -699,13 +748,7 @@ mod tests {
 
 		assert_eq!(tracker.get_requests_num(), 1);
 		assert_eq!(tracker.get_expected_peer(&42), Some(second_peer.clone()));
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&first_peer)
-				.expect("first peer stats")
-				.requests,
-			0
-		);
+		assert!(tracker.get_peer_track_data(&first_peer).is_none());
 		assert_eq!(
 			tracker
 				.get_peer_track_data(&second_peer)
@@ -718,13 +761,7 @@ mod tests {
 			tracker.remove_request(&42, &second_peer),
 			Some(second_peer.clone())
 		);
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&second_peer)
-				.expect("second peer stats")
-				.requests,
-			0
-		);
+		assert!(tracker.get_peer_track_data(&second_peer).is_none());
 	}
 
 	#[test]
@@ -764,14 +801,93 @@ mod tests {
 		);
 		assert_eq!(tracker.get_requests_num(), 0);
 		assert_eq!(tracker.get_expected_peer(&42), None);
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&original_peer)
-				.expect("original peer stats")
-				.requests,
-			0
-		);
+		assert!(tracker.get_peer_track_data(&original_peer).is_none());
 		assert!(tracker.get_peer_track_data(&duplicate_peer).is_none());
 		assert_eq!(tracker.get_average_latency(), None);
+	}
+
+	#[test]
+	fn rollback_request_removes_matching_registration_without_latency() {
+		let tracker = RequestTracker::<u64>::new();
+		let peer = peer_for_idx(1);
+		let request_token = tracker.register_request(42, peer.clone(), "request".into());
+
+		assert!(tracker.rollback_request(&42, &request_token));
+		assert_eq!(tracker.get_requests_num(), 0);
+		assert!(tracker.get_peer_track_data(&peer).is_none());
+		assert_eq!(tracker.get_average_latency(), None);
+	}
+
+	#[test]
+	fn rollback_request_does_not_remove_newer_registration() {
+		let tracker = RequestTracker::<u64>::new();
+		let first_peer = peer_for_idx(1);
+		let second_peer = peer_for_idx(2);
+		let first_request_token = tracker.register_request(42, first_peer.clone(), "first".into());
+		let second_request_token =
+			tracker.register_request(42, second_peer.clone(), "second".into());
+
+		assert!(!tracker.rollback_request(&42, &first_request_token));
+		assert_eq!(tracker.get_expected_peer(&42), Some(second_peer.clone()));
+		assert_eq!(
+			tracker
+				.get_peer_track_data(&second_peer)
+				.expect("second peer stats")
+				.requests,
+			1
+		);
+		assert!(tracker.rollback_request(&42, &second_request_token));
+		assert_eq!(tracker.get_requests_num(), 0);
+		assert!(tracker.get_peer_track_data(&first_peer).is_none());
+		assert!(tracker.get_peer_track_data(&second_peer).is_none());
+	}
+
+	#[test]
+	fn cancel_requests_clears_accounting_without_latency() {
+		let tracker = RequestTracker::<u64>::new();
+		let first_peer = peer_for_idx(1);
+		let second_peer = peer_for_idx(2);
+		tracker.register_request(41, first_peer.clone(), "first".into());
+		tracker.register_request(42, second_peer.clone(), "second".into());
+
+		assert_eq!(tracker.cancel_requests([&41, &42]), 2);
+		assert_eq!(tracker.get_requests_num(), 0);
+		assert!(tracker.get_peer_track_data(&first_peer).is_none());
+		assert!(tracker.get_peer_track_data(&second_peer).is_none());
+		assert_eq!(tracker.get_average_latency(), None);
+	}
+
+	#[test]
+	fn expired_request_removes_peer_stats() {
+		let tracker = RequestTracker::<u64>::new();
+		let peer = peer_for_idx(1);
+		tracker.register_request(42, peer.clone(), "request".into());
+		tracker
+			.requested
+			.write()
+			.get_mut(&42)
+			.expect("request")
+			.request_time = Instant::now()
+			.checked_sub(Duration::from_secs(2))
+			.expect("valid request time");
+
+		let expired = tracker.retain_expired(1, &SyncPeers::new());
+
+		assert_eq!(expired, std::collections::HashSet::from([peer.clone()]));
+		assert_eq!(tracker.get_requests_num(), 0);
+		assert!(tracker.get_peer_track_data(&peer).is_none());
+	}
+
+	#[test]
+	fn sequential_peer_replacement_does_not_accumulate_peer_stats() {
+		let tracker = RequestTracker::<u64>::new();
+
+		for idx in 1..=100 {
+			tracker.register_request(42, peer_for_idx(idx), "request".into());
+			assert_eq!(tracker.peers_stats.read_recursive().len(), 1);
+		}
+
+		assert_eq!(tracker.cancel_requests([&42]), 1);
+		assert!(tracker.peers_stats.read_recursive().is_empty());
 	}
 }

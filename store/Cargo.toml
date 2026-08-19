@@ -1,6 +1,6 @@
 [package]
 name = "mwc_store"
-version = "7.0.0"
+version = "7.1.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -10,7 +10,7 @@ workspace = ".."
 edition = "2024"
 
 [dependencies]
-mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
-mwc_core = { path = "../core", version = "7.0.0" }
-mwc_util = { path = "../util", version = "7.0.0" }
+mwc_crates = { path = "../mwc_crates", version = "7.1.0" }
+mwc_core = { path = "../core", version = "7.1.0" }
+mwc_util = { path = "../util", version = "7.1.0" }
 thiserror.workspace = true

@@ -138,10 +138,11 @@ impl Owner {
 			let msg = format!("Block header for hash {}, {}", hash, e);
 			Error::chain_read_error(e, msg)
 		})?;
+		let sync_state = w(&self.sync_state)?;
 		chain.reset_chain_head(secp, &header, true)?;
 
 		// Reset the sync status and clear out any sync error.
-		w(&self.sync_state)?.reset();
+		sync_state.reset();
 		Ok(())
 	}
 

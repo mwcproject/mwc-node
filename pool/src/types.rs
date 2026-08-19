@@ -21,7 +21,7 @@ use mwc_core::core::block;
 use mwc_core::core::committed;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::transaction::{self, Transaction};
-use mwc_core::core::{BlockHeader, BlockSums, Inputs, OutputIdentifier};
+use mwc_core::core::{BlockHeader, BlockSums, Inputs, Output, OutputIdentifier};
 use mwc_core::ser;
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::time::Instant;
@@ -300,6 +300,13 @@ pub trait BlockChain: Sync + Send {
 
 	/// Validate a transaction against the current utxo.
 	fn validate_tx(&self, tx: &Transaction) -> Result<(), PoolError>;
+
+	/// Reject candidate outputs that already exist in the current UTXO set.
+	///
+	/// This is a cheap negative admission filter used before pool-wide aggregation.
+	/// A successful result is not authoritative: callers must still validate the
+	/// final aggregate against chain state because the chain can change afterward.
+	fn validate_outputs(&self, outputs: &[Output]) -> Result<(), PoolError>;
 
 	/// Validate inputs against the current utxo.
 	/// Returns the vec of output identifiers that would be spent

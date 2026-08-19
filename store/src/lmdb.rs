@@ -582,10 +582,25 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
+		self.iter_from(prefix, prefix, deserialize)
+	}
+
+	/// Produces an iterator from `start`, restricted to keys with the provided
+	/// prefix. The first returned key is greater than or equal to `start`.
+	pub fn iter_from<F, T>(
+		&self,
+		prefix: &[u8],
+		start: &[u8],
+		deserialize: F,
+	) -> Result<PrefixIterator<'_, 'a, F, T>, Error>
+	where
+		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
+	{
 		let lock = self.store.db.read_recursive();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
+		let seek_key = if start < prefix { prefix } else { start }.to_vec();
 
 		if let Some(tx) = &self.tx_r {
 			let cursor = tx.cursor(db.clone())?;
@@ -594,6 +609,7 @@ impl<'a> Batch<'a> {
 				cursor,
 				seek: false,
 				prefix: prefix.to_vec(),
+				seek_key,
 				deserialize,
 				_resize_guard: None,
 			})
@@ -604,6 +620,7 @@ impl<'a> Batch<'a> {
 				cursor,
 				seek: false,
 				prefix: prefix.to_vec(),
+				seek_key,
 				deserialize,
 				_resize_guard: None,
 			})
@@ -687,6 +704,7 @@ where
 	cursor: lmdb_zero::Cursor<'txn, 'static>,
 	seek: bool,
 	prefix: Vec<u8>,
+	seek_key: Vec<u8>,
 	deserialize: F,
 	_resize_guard: Option<RwLockReadGuard<'txn, ()>>,
 }
@@ -707,20 +725,21 @@ where
 		let cursor = &mut self.cursor;
 		let seek = &mut self.seek;
 		let prefix = &self.prefix;
+		let seek_key = &self.seek_key;
 		let deserialize = &self.deserialize;
 
 		match &self.tx {
 			PrefixIteratorTransaction::OwnedRead(tx) => {
 				let access = tx.access();
-				next_with_access(cursor, seek, prefix, deserialize, &access)
+				next_with_access(cursor, seek, prefix, seek_key, deserialize, &access)
 			}
 			PrefixIteratorTransaction::BorrowedRead(tx) => {
 				let access = tx.access();
-				next_with_access(cursor, seek, prefix, deserialize, &access)
+				next_with_access(cursor, seek, prefix, seek_key, deserialize, &access)
 			}
 			PrefixIteratorTransaction::BorrowedWrite(tx) => {
 				let access = tx.access();
-				next_with_access(cursor, seek, prefix, deserialize, &access)
+				next_with_access(cursor, seek, prefix, seek_key, deserialize, &access)
 			}
 		}
 	}
@@ -730,6 +749,7 @@ fn next_with_access<F, T>(
 	cursor: &mut lmdb_zero::Cursor<'_, 'static>,
 	seek: &mut bool,
 	prefix: &[u8],
+	seek_key: &[u8],
 	deserialize: &F,
 	access: &lmdb_zero::ConstAccessor<'_>,
 ) -> Option<Result<T, Error>>
@@ -740,7 +760,7 @@ where
 		cursor.next(access)
 	} else {
 		*seek = true;
-		cursor.seek_range_k(access, prefix)
+		cursor.seek_range_k(access, seek_key)
 	};
 
 	match kv.to_opt() {
@@ -771,6 +791,7 @@ where
 			cursor,
 			seek: false,
 			prefix: prefix.to_vec(),
+			seek_key: prefix.to_vec(),
 			deserialize,
 			_resize_guard: resize_guard,
 		}

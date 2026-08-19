@@ -387,15 +387,19 @@ impl HeaderSync {
 			return Ok(resp);
 		}
 
+		// Register before queueing the network message. The peer reader runs on a
+		// different thread and can otherwise process a fast response before the
+		// request is visible, leaving a stale request that later times out.
+		let request_token = self.request_tracker.register_request(
+			header_head_hash,
+			sync_peer.info.addr.clone(),
+			format!("Tail header for {}", header_head.height),
+		);
 		match self.request_headers(header_head, sync_peer.clone()) {
-			Ok(_) => {
-				self.request_tracker.register_request(
-					header_head_hash,
-					sync_peer.info.addr.clone(),
-					format!("Tail header for {}", header_head.height),
-				);
-			}
+			Ok(_) => {}
 			Err(e) => {
+				self.request_tracker
+					.rollback_request(&header_head_hash, &request_token);
 				let msg = format!(
 					"Failed to send headers request to {} for height {}, Error: {}",
 					sync_peer.info.addr, header_head.height, e
@@ -500,6 +504,12 @@ impl HeaderSync {
 			bhs
 		};
 
+		// Do not confuse this with p2p's HeaderRequestTracker: that layer has
+		// already checked the first prev_hash against every hash in the requested
+		// locator. This scheduling tracker stores one exact Hash key per request
+		// (the newest locator hash for regular sync, or the checkpoint for PIBD), so
+		// a valid fork response starting from an older locator can be admitted by
+		// p2p without tracked_request being true here.
 		let request_key = bhs[0].prev_hash;
 		let tracked_request = self.request_tracker.has_request(&request_key);
 
@@ -534,6 +544,11 @@ impl HeaderSync {
 		if let Some(header_hashes_desegmenter) = header_hashes.as_ref() {
 			let header_hashes = header_hashes_desegmenter.read_recursive();
 			if bhs[0].height <= header_hashes.get_target_height() {
+				// Below-horizon PIBD requests are sent by request_headers_for_hash()
+				// with a singleton locator containing the exact checkpoint hash. Unlike
+				// regular above-horizon sync, there is no older locator hash that may
+				// legitimately anchor the response: p2p rejects any response whose first
+				// prev_hash is not that requested checkpoint before it reaches this path.
 				if !tracked_request {
 					debug!(
 						"headers_received: ignored unsolicited PIBD headers from {}, height {}",
@@ -637,18 +652,21 @@ impl HeaderSync {
 					// then we can request relevant headers in the next batch.
 					if !self.request_tracker.has_request(&sync_head.last_block_h) {
 						if let Some(sync_peer) = Self::choose_sync_peer(peers) {
+							let request_key = sync_head.last_block_h;
+							let request_token = self.request_tracker.register_request(
+								request_key,
+								sync_peer.info.addr.clone(),
+								format!("Tail headers for {}", sync_head.height),
+							);
 							match self.request_headers(sync_head, sync_peer.clone()) {
 								Ok(_) => {
-									self.request_tracker.register_request(
-										sync_head.last_block_h,
-										sync_peer.info.addr.clone(),
-										format!("Tail headers for {}", sync_head.height),
-									);
 									if matched_request {
 										sync_peers.report_ok_response(peer);
 									}
 								}
 								Err(e) => {
+									self.request_tracker
+										.rollback_request(&request_key, &request_token);
 									let msg = format!("Failed to send headers request to {} for height {}, Error: {}", sync_peer.info.addr, sync_head.height, e);
 									error!("{}", msg);
 									sync_peers.report_no_response(&sync_peer.info.addr, msg);
@@ -741,6 +759,13 @@ impl HeaderSync {
 	}
 
 	/// Request some block headers from a peer to advance us.
+	///
+	/// Locator construction and queueing are deliberately treated as one
+	/// best-effort scheduler operation. Callers use the same rollback path and a
+	/// soft `report_no_response` event if either step fails so sync backs off and
+	/// retries elsewhere without leaving partial request state. That event is
+	/// liveness bookkeeping, not a bad-data accusation or an immediate peer ban;
+	/// keeping the failure path unified here is intentional.
 	fn request_headers(
 		&self,
 		sync_head: mwc_chain::Tip,
@@ -894,15 +919,15 @@ impl HeaderSync {
 					let peer = peers.choose(&mut rng).ok_or(mwc_chain::Error::Other(
 						"Internal error. peers are empty".into(),
 					))?;
+					let request_token = self.request_tracker.register_request(
+						hash,
+						peer.info.addr.clone(),
+						format!("Header {}, {}", hash, height),
+					);
 					match self.request_headers_for_hash(hash.clone(), height, peer.clone()) {
-						Ok(_) => {
-							self.request_tracker.register_request(
-								hash,
-								peer.info.addr.clone(),
-								format!("Header {}, {}", hash, height),
-							);
-						}
+						Ok(_) => {}
 						Err(e) => {
+							self.request_tracker.rollback_request(&hash, &request_token);
 							let msg = format!(
 								"Failed to send headers request to {} for hash {}, Error: {}",
 								peer.info.addr, hash, e

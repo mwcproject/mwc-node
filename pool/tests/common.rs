@@ -21,7 +21,8 @@ use mwc_core::consensus;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use mwc_core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction, TxKernel,
+	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputIdentifier, Transaction,
+	TxKernel,
 };
 use mwc_core::global;
 use mwc_core::libtx::{reward, ProofBuilder};
@@ -152,6 +153,7 @@ pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap()
 }
@@ -256,6 +258,13 @@ impl BlockChain for ChainAdapter {
 			mwc_chain::Error::Transaction(txe) => txe.into(),
 			mwc_chain::Error::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
 			_ => PoolError::Other("failed to validate tx".into()),
+		})
+	}
+
+	fn validate_outputs(&self, outputs: &[Output]) -> Result<(), PoolError> {
+		self.chain.validate_outputs(outputs).map_err(|e| match e {
+			mwc_chain::Error::DuplicateCommitment(_) => PoolError::DuplicateCommitment,
+			_ => PoolError::Other(format!("failed to validate outputs, {}", e)),
 		})
 	}
 

@@ -16,7 +16,7 @@
 //! Implements storage primitives required by the chain
 
 use crate::linked_list::MultiIndex;
-use crate::types::{CommitPos, HashHeight, KernelPos, Tip};
+use crate::types::{CommitPos, KernelPos, SpentCommitmentRecord, SpentOutput, Tip};
 use mwc_core::consensus::{self, HeaderDifficultyInfo};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, BlockHeader, BlockSums, Inputs};
@@ -29,6 +29,7 @@ use mwc_crates::log::debug;
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_store::{option_to_not_found, to_key, to_key_u64, Error};
 use std::convert::{TryFrom, TryInto};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const STORE_SUBPATH: &str = "chain";
@@ -49,10 +50,11 @@ pub const NRD_KERNEL_ENTRY_PREFIX: u8 = b'k';
 const BLOCK_INPUT_BITMAP_PREFIX: u8 = b'B';
 const BLOCK_SUMS_PREFIX: u8 = b'M';
 const BLOCK_SPENT_PREFIX: u8 = b'S';
-/// Replay index keyed by output commitment. Values are block hashes/heights of
-/// retained full blocks that spent the commitment. On normal nodes this is not
-/// an all-history spent-output set because compacted block bodies are pruned
-/// and their entries are deleted with them.
+/// Replay and spent-occurrence index keyed by output commitment. Values identify
+/// both the retained block that spent the commitment and the exact output PMMR
+/// occurrence it consumed. On normal nodes this is not an all-history set
+/// because compacted block bodies are pruned and their entries are deleted with
+/// them.
 const BLOCK_SPENT_COMMITMENT_PREFIX: u8 = b'C';
 
 /// Prefix for various boolean flags stored in the db.
@@ -65,8 +67,30 @@ const BLOCKS_V3_MIGRATED: &str = "blocks_v3_migrated";
 const KERNEL_POS_INDEX_COMPLETE: &str = "kernel_pos_index_complete";
 /// Boolean flag for output_pos index completeness.
 const OUTPUT_POS_INDEX_COMPLETE: &str = "output_pos_index_complete";
-/// Boolean flag for spent commitment replay index completeness across retained full blocks.
-const RETAINED_SPENT_COMMITMENT_INDEX_COMPLETE: &str = "retained_spent_commitment_index_complete";
+/// Boolean marker that the spent commitment index contains a complete baseline
+/// for canonical body blocks within one cut-through horizon of the head.
+/// Subsequent validation may add records for locally processed forks.
+const SPENT_COMMITMENT_RECORD_INDEX_COMPLETE: &str = "spent_commitment_record_index_complete";
+/// Boolean marker that legacy positions-only per-block spent indexes have been
+/// migrated to the exact `SpentOutput` occurrence format.
+const SPENT_INDEX_MIGRATED: &str = "spent_index_migrated";
+
+/// Compare a trusted stored block with a candidate using the canonical v3
+/// database representation. V3 intentionally normalizes legacy
+/// feature-bearing inputs to commitment-only inputs.
+pub(crate) fn blocks_equal_as_v3(
+	context_id: u32,
+	stored: &Block,
+	candidate: &Block,
+) -> Result<bool, ser::Error> {
+	if stored.header != candidate.header {
+		return Ok(false);
+	}
+
+	let version = ProtocolVersion(3);
+	Ok(ser::ser_vec(context_id, &stored.body, version)?
+		== ser::ser_vec(context_id, &candidate.body, version)?)
+}
 
 /// All chain-related database operations
 pub struct ChainStore {
@@ -290,10 +314,98 @@ impl<'a> Batch<'a> {
 		self.db.exists(&to_key(BLOCK_PREFIX, h))
 	}
 
+	/// Whether any persisted block-header records exist.
+	pub(crate) fn has_any_block_headers(&self) -> Result<bool, Error> {
+		self.has_any_prefixed_records(BLOCK_HEADER_PREFIX)
+	}
+
+	/// Whether any persisted full-block records exist.
+	pub(crate) fn has_any_full_blocks(&self) -> Result<bool, Error> {
+		self.has_any_prefixed_records(BLOCK_PREFIX)
+	}
+
+	fn has_any_prefixed_records(&self, record_prefix: u8) -> Result<bool, Error> {
+		let prefix = to_key(record_prefix, "");
+		let mut entries = self.db.iter(&prefix, |_, _| Ok(()))?;
+		match entries.next() {
+			Some(entry) => {
+				entry?;
+				Ok(true)
+			}
+			None => Ok(false),
+		}
+	}
+
+	/// Whether any persisted chain records exist that cannot be created by the
+	/// pre-setup migration of an otherwise fresh database.
+	///
+	/// `BLOCKS_V3_MIGRATED` is deliberately excluded because startup writes it
+	/// before `setup_head()` even when the chain database has never held a block.
+	pub(crate) fn has_any_auxiliary_chain_state(&self) -> Result<bool, Error> {
+		for prefix in [
+			OUTPUT_POS_PREFIX,
+			KERNEL_POS_PREFIX,
+			NRD_KERNEL_LIST_PREFIX,
+			NRD_KERNEL_ENTRY_PREFIX,
+			BLOCK_INPUT_BITMAP_PREFIX,
+			BLOCK_SUMS_PREFIX,
+			BLOCK_SPENT_PREFIX,
+			BLOCK_SPENT_COMMITMENT_PREFIX,
+			CHAIN_MARKER_PREFIX,
+		] {
+			if self.has_any_prefixed_records(prefix)? {
+				return Ok(true);
+			}
+		}
+
+		// Existence, rather than the decoded boolean value, is the freshness
+		// signal. A persisted false completeness flag still proves that setup or
+		// recovery previously reached this database.
+		for flag in [
+			KERNEL_POS_INDEX_COMPLETE,
+			OUTPUT_POS_INDEX_COMPLETE,
+			SPENT_COMMITMENT_RECORD_INDEX_COMPLETE,
+		] {
+			if self.db.exists(&to_key(BOOL_FLAG_PREFIX, flag))? {
+				return Ok(true);
+			}
+		}
+
+		Ok(false)
+	}
+
 	/// Save the block to the db.
 	/// Note: the block header is not saved to the db here, assumes this has already been done.
+	/// This is a low-level persistence primitive: it does not validate PoW or the
+	/// body, so production callers must perform consensus validation first. It
+	/// enforces exact identity with the separately stored complete header and
+	/// preserves any canonical full body already stored under the block hash.
 	pub fn save_block(&self, b: &Block) -> Result<(), Error> {
 		let block_hash = b.hash(self.get_context_id())?;
+		let stored_header = self.get_block_header(&block_hash)?;
+		if stored_header != b.header {
+			return Err(Error::OtherErr(format!(
+				"refusing to save full block {} with a header that differs from the separately stored header",
+				block_hash
+			)));
+		}
+
+		match self.get_block(&block_hash) {
+			Ok(existing) if blocks_equal_as_v3(self.get_context_id(), &existing, b)? => {
+				// Preserve the validated body that first claimed this header. This is
+				// also the idempotent path for equivalent v2/v3 input encodings.
+				return Ok(());
+			}
+			Ok(_) => {
+				return Err(Error::OtherErr(format!(
+					"refusing to overwrite full block {} with a different body for the same header",
+					block_hash
+				)));
+			}
+			Err(e) if e.store_error_is_not_found() => {}
+			Err(e) => return Err(e),
+		}
+
 		debug!(
 			"save_block: {} at {} ({} -> v{})",
 			block_hash,
@@ -305,9 +417,11 @@ impl<'a> Batch<'a> {
 		Ok(())
 	}
 
-	/// We maintain a "spent" index for each full block to allow the output_pos
-	/// to be easily reverted during rewind.
-	pub fn save_spent_index(&self, h: &Hash, spent: &[CommitPos]) -> Result<(), Error> {
+	/// Maintain the exact outputs spent by each full block so `output_pos` can be
+	/// restored during rewind. Each PMMR position remains paired with the
+	/// commitment authenticated at that position during block validation; callers
+	/// must not reconstruct this association from block input order.
+	pub fn save_spent_index(&self, h: &Hash, spent: &[SpentOutput]) -> Result<(), Error> {
 		self.db
 			.put_ser(&to_key(BLOCK_SPENT_PREFIX, h)[..], &spent.to_vec())?;
 		Ok(())
@@ -319,18 +433,17 @@ impl<'a> Batch<'a> {
 	/// The index contains commitments spent by retained block bodies only. Normal
 	/// nodes delete older full blocks during compaction, and delete these entries
 	/// at the same time, so callers must not treat this as all historical spends.
-	pub fn save_spent_commitments(&self, spent: &Commitment, hh: HashHeight) -> Result<(), Error> {
-		let hash_list = self
+	pub fn save_spent_commitments(
+		&self,
+		spent: &Commitment,
+		record: SpentCommitmentRecord,
+	) -> Result<(), Error> {
+		let records = self
 			.db
 			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))?;
-		let mut spent_list;
-		if let Some(list) = hash_list {
-			spent_list = list;
-		} else {
-			spent_list = Vec::new();
-		}
+		let mut spent_list = records.unwrap_or_default();
 
-		if !Self::append_spent_commitment(&mut spent_list, hh)? {
+		if !Self::append_spent_commitment(&mut spent_list, record)? {
 			return Ok(());
 		}
 		self.db.put_ser(
@@ -341,20 +454,35 @@ impl<'a> Batch<'a> {
 	}
 
 	fn append_spent_commitment(
-		spent_list: &mut Vec<HashHeight>,
-		hh: HashHeight,
+		spent_list: &mut Vec<SpentCommitmentRecord>,
+		record: SpentCommitmentRecord,
 	) -> Result<bool, Error> {
-		if spent_list.contains(&hh) {
-			return Ok(false);
+		if let Some(existing) = spent_list
+			.iter()
+			.find(|existing| existing.spending_block.hash == record.spending_block.hash)
+		{
+			if existing == &record {
+				return Ok(false);
+			}
+			return Err(Error::OtherErr(format!(
+				"conflicting spent commitment records for spending block {}: existing {:?}, new {:?}",
+				record.spending_block.hash, existing, record
+			)));
 		}
-		if spent_list.len() as u64 >= ser::READ_VEC_SIZE_LIMIT {
+		let spent_count = u64::try_from(spent_list.len()).map_err(|_| {
+			Error::DataOverflow(format!(
+				"spent commitment list length does not fit u64: {}",
+				spent_list.len()
+			))
+		})?;
+		if spent_count >= ser::READ_VEC_SIZE_LIMIT {
 			return Err(ser::Error::TooLargeWriteErr(format!(
 				"spent commitment list length exceeds {} entries",
 				ser::READ_VEC_SIZE_LIMIT
 			))
 			.into());
 		}
-		spent_list.push(hh);
+		spent_list.push(record);
 		Ok(true)
 	}
 
@@ -362,11 +490,11 @@ impl<'a> Batch<'a> {
 	///
 	/// `None` means no retained indexed block is known to have spent this
 	/// commitment. It is only safe to interpret this as a replay-check miss after
-	/// `is_retained_spent_commitment_index_complete()` has returned true.
+	/// `is_spent_commitment_record_index_complete()` has returned true.
 	pub fn get_spent_commitments(
 		&self,
 		spent: &Commitment,
-	) -> Result<Option<Vec<HashHeight>>, Error> {
+	) -> Result<Option<Vec<SpentCommitmentRecord>>, Error> {
 		self.db
 			.get_ser(&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent))
 	}
@@ -410,22 +538,32 @@ impl<'a> Batch<'a> {
 		self.set_bool_flag(OUTPUT_POS_INDEX_COMPLETE, complete)
 	}
 
-	/// DB flag representing a spent commitment replay index complete for retained full blocks.
-	///
-	/// This marker deliberately says "retained": non-archive nodes cannot prove
-	/// or rebuild entries for compacted historical blocks whose bodies were
-	/// pruned below BODY_TAIL.
-	/// Default to false if flag not present.
-	pub fn is_retained_spent_commitment_index_complete(&self) -> Result<bool, Error> {
-		self.get_bool_flag(RETAINED_SPENT_COMMITMENT_INDEX_COMPLETE)
+	/// Whether BLOCK_SPENT_COMMITMENT_PREFIX is complete and all values use
+	/// `SpentCommitmentRecord`. Production code establishes this at an empty trusted
+	/// boundary, maintains it through validated UTXO transitions, or rebuilds it
+	/// from the local per-block spent index. That per-block index is admissible for
+	/// rebuild because its exact positions were produced by UTXO validation (with
+	/// migrated commitments additionally resolved from the raw output PMMR), and
+	/// rebuild rechecks the corresponding canonical block bodies. This marker must
+	/// not be established from peer-supplied or otherwise unauthenticated positions.
+	pub fn is_spent_commitment_record_index_complete(&self) -> Result<bool, Error> {
+		self.get_bool_flag(SPENT_COMMITMENT_RECORD_INDEX_COMPLETE)
 	}
 
-	/// Set DB flag representing a spent commitment replay index complete for retained full blocks.
-	pub fn set_retained_spent_commitment_index_complete(
-		&self,
-		complete: bool,
-	) -> Result<(), Error> {
-		self.set_bool_flag(RETAINED_SPENT_COMMITMENT_INDEX_COMPLETE, complete)
+	/// Set the exact spent-occurrence index trust/completeness marker.
+	pub fn set_spent_commitment_record_index_complete(&self, complete: bool) -> Result<(), Error> {
+		self.set_bool_flag(SPENT_COMMITMENT_RECORD_INDEX_COMPLETE, complete)
+	}
+
+	/// Check whether legacy positions-only per-block spent indexes in the active
+	/// rewind window have been migrated to the exact `SpentOutput` format.
+	pub fn is_spent_index_migrated(&self) -> Result<bool, Error> {
+		self.get_bool_flag(SPENT_INDEX_MIGRATED)
+	}
+
+	/// Set the spent index migration marker.
+	pub fn set_spent_index_migrated(&self, migrated: bool) -> Result<(), Error> {
+		self.set_bool_flag(SPENT_INDEX_MIGRATED, migrated)
 	}
 
 	/// Read a named DB boolean flag.
@@ -495,9 +633,43 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Delete a full block. Does not delete any record associated with a block
-	/// header.
+	/// header. Verify the full-block key and complete header before trusting its
+	/// inputs to remove secondary spent-commitment entries.
 	pub fn delete_block(&self, bh: &Hash) -> Result<(), Error> {
 		let block = self.get_block(bh)?;
+		self.delete_block_with_body(bh, block)
+	}
+
+	/// Delete a full block if its canonical record still exists.
+	///
+	/// Returns `false` only when the initial full-block lookup is missing. Once
+	/// the block has been loaded, all subsequent errors (including a missing
+	/// separately stored header) are propagated as persisted-state failures.
+	pub fn delete_block_if_exists(&self, bh: &Hash) -> Result<bool, Error> {
+		let block = match self.get_block(bh) {
+			Ok(block) => block,
+			Err(e) if e.store_error_is_not_found() => return Ok(false),
+			Err(e) => return Err(e),
+		};
+		self.delete_block_with_body(bh, block)?;
+		Ok(true)
+	}
+
+	fn delete_block_with_body(&self, bh: &Hash, block: Block) -> Result<(), Error> {
+		let block_hash = block.hash(self.get_context_id())?;
+		if block_hash != *bh {
+			return Err(Error::OtherErr(format!(
+				"refusing to delete full block loaded from key {} with computed hash {}",
+				bh, block_hash
+			)));
+		}
+		let stored_header = self.get_block_header(bh)?;
+		if block.header != stored_header {
+			return Err(Error::OtherErr(format!(
+				"refusing to delete full block {} with a header that differs from the separately stored header",
+				bh
+			)));
+		}
 		let inputs = block.inputs();
 		match inputs {
 			// Missing records are acceptable during idempotent cleanup.
@@ -529,6 +701,20 @@ impl<'a> Batch<'a> {
 	/// Save block header to db.
 	pub fn save_block_header(&self, header: &BlockHeader) -> Result<(), Error> {
 		let hash = header.hash(self.get_context_id())?;
+		// Defense in depth for local persistence. This is not a cryptographic
+		// collision check: normal PoW validation is what binds the complete header
+		// to this proof-derived key.
+		match self.get_block_header(&hash) {
+			Ok(stored) if stored != *header => {
+				return Err(Error::OtherErr(format!(
+					"refusing to overwrite header key {} with a different complete header",
+					hash
+				)));
+			}
+			Ok(_) => return Ok(()),
+			Err(e) if e.store_error_is_not_found() => {}
+			Err(e) => return Err(e),
+		}
 
 		// Store the header itself indexed by hash.
 		self.db
@@ -628,17 +814,16 @@ impl<'a> Batch<'a> {
 	/// Called when a retained full block is deleted during compaction or cleanup.
 	/// This keeps the replay index scoped to locally retained full block bodies.
 	pub fn delete_spent_commitments(&self, spent: &Commitment, hash: &Hash) -> Result<(), Error> {
-		let hash_list = self.get_spent_commitments(spent)?;
-		let hash_list_unwrap = hash_list.unwrap_or(vec![]);
-		let filtered_list: Vec<&HashHeight> = hash_list_unwrap
-			.iter()
-			.filter(|hash_height| hash_height.hash != *hash)
+		let records = self.get_spent_commitments(spent)?.unwrap_or_default();
+		let filtered_list: Vec<SpentCommitmentRecord> = records
+			.into_iter()
+			.filter(|record| record.spending_block.hash != *hash)
 			.collect();
 
-		if filtered_list.len() != 0 {
+		if !filtered_list.is_empty() {
 			self.db.put_ser(
 				&to_key(BLOCK_SPENT_COMMITMENT_PREFIX, spent)[..],
-				&filtered_list.to_vec(),
+				&filtered_list,
 			)?;
 		} else {
 			self.db
@@ -706,7 +891,10 @@ impl<'a> Batch<'a> {
 		// Clean up the legacy input bitmap as well.
 		Self::ignore_not_found(self.db.delete(&to_key(BLOCK_INPUT_BITMAP_PREFIX, bh)))?;
 
-		self.db.delete(&to_key(BLOCK_SPENT_PREFIX, bh))
+		// Tolerate a missing record: the spent index migration deletes
+		// entries outside the supported rewind window before their blocks
+		// are cleaned up.
+		Self::ignore_not_found(self.db.delete(&to_key(BLOCK_SPENT_PREFIX, bh)))
 	}
 
 	/// Save block_sums for the block.
@@ -732,11 +920,11 @@ impl<'a> Batch<'a> {
 		match self.get_spent_index(bh) {
 			Ok(spent) => {
 				let mut bitmap = Bitmap::new();
-				for x in spent {
-					let pos = x.pos.try_into().map_err(|e| {
+				for spent_output in spent {
+					let pos = spent_output.position.pos.try_into().map_err(|e| {
 						Error::OtherErr(format!(
 							"Invalid commit pos, spent index value {:?}, {}",
-							x, e
+							spent_output, e
 						))
 					})?;
 					bitmap.add(pos);
@@ -771,12 +959,43 @@ impl<'a> Batch<'a> {
 		)
 	}
 
-	/// Get the "spent index" from the db for the specified block.
-	/// If we need to rewind a block then we use this to "unspend" the spent outputs.
-	pub fn get_spent_index(&self, bh: &Hash) -> Result<Vec<CommitPos>, Error> {
+	/// Get the exact commitment-to-occurrence index for the specified block.
+	/// If we rewind the block, the positions are used to unspend its inputs.
+	pub fn get_spent_index(&self, bh: &Hash) -> Result<Vec<SpentOutput>, Error> {
 		option_to_not_found(self.db.get_ser(&to_key(BLOCK_SPENT_PREFIX, bh)), || {
 			format!("spent index: {}", bh)
 		})
+	}
+
+	/// Read a spent index entry written before the exact-occurrence format:
+	/// positions only, paired positionally with the block's inputs.
+	pub fn get_spent_index_legacy(&self, bh: &Hash) -> Result<Vec<CommitPos>, Error> {
+		option_to_not_found(self.db.get_ser(&to_key(BLOCK_SPENT_PREFIX, bh)), || {
+			format!("legacy spent index: {}", bh)
+		})
+	}
+
+	/// Write a legacy-format (positions only) spent index entry. Exists so
+	/// tests can model databases written before the exact-occurrence format.
+	#[cfg(test)]
+	pub fn save_spent_index_legacy(&self, h: &Hash, spent: &[CommitPos]) -> Result<(), Error> {
+		self.db
+			.put_ser(&to_key(BLOCK_SPENT_PREFIX, h)[..], &spent.to_vec())?;
+		Ok(())
+	}
+
+	/// Iterator over raw per-block spent index keys starting at `start`.
+	///
+	/// Values are deliberately not loaded: the spent index migration reads
+	/// each entry through the typed accessors after inspecting the record key.
+	/// The first key is greater than or equal to `start`, allowing the migration
+	/// to release its read transaction between write chunks.
+	pub fn spent_index_key_iter_from(
+		&self,
+		start: &[u8],
+	) -> Result<impl Iterator<Item = Result<Vec<u8>, Error>> + '_, Error> {
+		let prefix = to_key(BLOCK_SPENT_PREFIX, "");
+		self.db.iter_from(&prefix, start, |key, _| Ok(key.to_vec()))
 	}
 
 	/// Commits this batch. If it's a child batch, it will be merged with the
@@ -799,8 +1018,17 @@ impl<'a> Batch<'a> {
 		let key = to_key(BLOCK_PREFIX, "");
 		let protocol_version = self.db.protocol_version();
 		let context_id = self.db.get_context_id();
-		self.db.iter(&key, move |_, mut v| {
-			ser::deserialize_strict(&mut v, protocol_version, context_id).map_err(From::from)
+		self.db.iter(&key, move |raw_key, mut v| {
+			let block: Block = ser::deserialize_strict(&mut v, protocol_version, context_id)?;
+			let block_hash = block.hash(context_id)?;
+			let expected_key = to_key(BLOCK_PREFIX, block_hash);
+			if raw_key != expected_key.as_slice() {
+				return Err(Error::OtherErr(format!(
+					"full block {} is stored under noncanonical key {:?}",
+					block_hash, raw_key
+				)));
+			}
+			Ok(block)
 		})
 	}
 
@@ -1102,6 +1330,54 @@ pub enum PendingChainOperation {
 		/// Header head before the operation started.
 		original_header_head: Tip,
 	},
+	/// Chain compaction was interrupted after selecting a durable rewind horizon.
+	Compact {
+		/// Body head from which the compact horizon was selected.
+		original_body_head: Tip,
+		/// Header head before the operation started.
+		original_header_head: Tip,
+		/// Oldest body-chain state that must remain rewindable after compaction.
+		target_body_tail: Tip,
+	},
+}
+
+/// Keeps the in-memory recovery signal consistent with an installed durable
+/// pending-operation marker when control leaves an operation unexpectedly.
+///
+/// The marker owner must disarm the guard only after either clearing the marker
+/// or explicitly setting the recovery signal on a handled failure. In
+/// particular, dropping an armed guard during panic unwinding leaves the
+/// durable marker intact and makes the next chain access initiate recovery.
+#[must_use = "an installed pending chain operation must remain guarded until it is finalized"]
+pub(crate) struct PendingChainOperationGuard {
+	requires_init_recovery: Arc<AtomicBool>,
+	armed: bool,
+}
+
+impl PendingChainOperationGuard {
+	pub(crate) fn new(requires_init_recovery: Arc<AtomicBool>) -> Self {
+		Self {
+			requires_init_recovery,
+			armed: true,
+		}
+	}
+
+	pub(crate) fn disarm(&mut self) {
+		self.armed = false;
+	}
+
+	pub(crate) fn require_recovery(&mut self) {
+		self.requires_init_recovery.store(true, Ordering::SeqCst);
+		self.disarm();
+	}
+}
+
+impl Drop for PendingChainOperationGuard {
+	fn drop(&mut self) {
+		if self.armed {
+			self.requires_init_recovery.store(true, Ordering::SeqCst);
+		}
+	}
 }
 
 impl PendingChainOperation {
@@ -1112,6 +1388,7 @@ impl PendingChainOperation {
 			PendingChainOperation::ResetToGenesis => ChainOperationKind::ResetToGenesis,
 			PendingChainOperation::ResetChainHead { .. } => ChainOperationKind::ResetChainHead,
 			PendingChainOperation::ReconcileHeads { kind, .. } => *kind,
+			PendingChainOperation::Compact { .. } => ChainOperationKind::Compact,
 		}
 	}
 }
@@ -1145,6 +1422,16 @@ impl Writeable for PendingChainOperation {
 				kind.write(writer)?;
 				original_body_head.write(writer)?;
 				original_header_head.write(writer)
+			}
+			PendingChainOperation::Compact {
+				original_body_head,
+				original_header_head,
+				target_body_tail,
+			} => {
+				writer.write_u8(4)?;
+				original_body_head.write(writer)?;
+				original_header_head.write(writer)?;
+				target_body_tail.write(writer)
 			}
 		}
 	}
@@ -1197,6 +1484,11 @@ impl Readable for PendingChainOperation {
 					original_header_head,
 				})
 			}
+			4 => Ok(PendingChainOperation::Compact {
+				original_body_head: Tip::read(reader)?,
+				original_header_head: Tip::read(reader)?,
+				target_body_tail: Tip::read(reader)?,
+			}),
 			x => Err(ser::Error::CorruptedData(format!(
 				"Invalid pending chain operation variant {}",
 				x
@@ -1238,14 +1530,283 @@ impl Writeable for BoolFlag {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use mwc_core::core::{CommitWrapper, Input, OutputFeatures};
 	use mwc_core::global;
 	use mwc_core::ser::{BinReader, ProtocolVersion};
+	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use std::fs;
 
 	fn read_bool_flag(bytes: &[u8]) -> Result<BoolFlag, ser::Error> {
 		let mut source = bytes;
 		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0);
 		BoolFlag::read(&mut reader)
+	}
+
+	#[test]
+	fn block_writes_require_exact_separately_stored_header() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let chain_dir = "target/block_writes_require_exact_separately_stored_header";
+		let _ = fs::remove_dir_all(chain_dir);
+		let store = ChainStore::new(0, chain_dir).unwrap();
+
+		let mut expected_block = Block::default(0);
+		expected_block.header.height = 1;
+		expected_block.header.pow.proof.nonces[0] = 1;
+		let expected_hash = expected_block.hash(0).unwrap();
+		let mut altered_block = expected_block.clone();
+		altered_block.header.height = 99;
+		assert_eq!(altered_block.hash(0).unwrap(), expected_hash);
+		assert_ne!(altered_block.header, expected_block.header);
+
+		let batch = store.batch_write().unwrap();
+		batch.save_block_header(&expected_block.header).unwrap();
+		batch.save_block(&expected_block).unwrap();
+		match batch.save_block(&altered_block).unwrap_err() {
+			Error::OtherErr(msg) => assert!(msg.contains("separately stored header"), "{}", msg),
+			other => panic!("expected full-block header mismatch, got {:?}", other),
+		}
+		match batch.save_block_header(&altered_block.header).unwrap_err() {
+			Error::OtherErr(msg) => assert!(msg.contains("different complete header"), "{}", msg),
+			other => panic!(
+				"expected stored-header overwrite rejection, got {:?}",
+				other
+			),
+		}
+		assert_eq!(
+			batch.get_block_header(&expected_hash).unwrap(),
+			expected_block.header
+		);
+
+		// The delete path also consumes body data to clean secondary indexes, so
+		// model raw corruption and require the same complete-header invariant.
+		batch
+			.db
+			.put_ser(&to_key(BLOCK_PREFIX, expected_hash), &altered_block)
+			.unwrap();
+		match batch.delete_block(&expected_hash).unwrap_err() {
+			Error::OtherErr(msg) => assert!(msg.contains("separately stored header"), "{}", msg),
+			other => panic!("expected delete header mismatch, got {:?}", other),
+		}
+
+		drop(batch);
+		drop(store);
+		let _ = fs::remove_dir_all(chain_dir);
+	}
+
+	#[test]
+	fn block_writes_preserve_existing_canonical_body() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let chain_dir = format!(
+			"target/block_writes_preserve_existing_canonical_body_{}",
+			std::process::id()
+		);
+		let _ = fs::remove_dir_all(&chain_dir);
+		let store = ChainStore::new(0, &chain_dir).unwrap();
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+		let stored_commit = secp.commit_value(1).unwrap();
+		let conflicting_commit = secp.commit_value(2).unwrap();
+		let mut stored = Block::default(0);
+		stored.header.height = 1;
+		stored.header.pow.proof.nonces[0] = 1;
+		stored.body.inputs = Inputs::CommitOnly(vec![CommitWrapper::from(stored_commit)]);
+
+		// Feature-bearing legacy inputs and commitment-only v3 inputs are the
+		// same canonical database body and must remain idempotent.
+		let mut equivalent = stored.clone();
+		equivalent.body.inputs =
+			Inputs::FeaturesAndCommit(vec![Input::new(OutputFeatures::Plain, stored_commit)]);
+		assert!(blocks_equal_as_v3(0, &stored, &equivalent).unwrap());
+
+		let mut conflicting = stored.clone();
+		conflicting.body.inputs = Inputs::CommitOnly(vec![CommitWrapper::from(conflicting_commit)]);
+		assert_eq!(stored.hash(0).unwrap(), conflicting.hash(0).unwrap());
+		assert!(!blocks_equal_as_v3(0, &stored, &conflicting).unwrap());
+
+		let block_hash = stored.hash(0).unwrap();
+		let batch = store.batch_write().unwrap();
+		batch.save_block_header(&stored.header).unwrap();
+		batch.save_block(&stored).unwrap();
+		batch.save_block(&equivalent).unwrap();
+		match batch.save_block(&conflicting).unwrap_err() {
+			Error::OtherErr(msg) => assert!(msg.contains("different body"), "{}", msg),
+			other => panic!("expected full-block overwrite rejection, got {:?}", other),
+		}
+
+		let persisted = batch.get_block(&block_hash).unwrap();
+		assert!(blocks_equal_as_v3(0, &persisted, &stored).unwrap());
+		assert!(!blocks_equal_as_v3(0, &persisted, &conflicting).unwrap());
+
+		drop(batch);
+		drop(store);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn delete_block_if_exists_only_ignores_an_initially_missing_block() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let chain_dir = format!(
+			"target/delete_block_if_exists_only_ignores_missing_block_{}",
+			std::process::id()
+		);
+		let _ = fs::remove_dir_all(&chain_dir);
+		let store = ChainStore::new(0, &chain_dir).unwrap();
+
+		let mut block = Block::default(0);
+		block.header.height = 1;
+		block.header.pow.proof.nonces[0] = 1;
+		let block_hash = block.hash(0).unwrap();
+
+		{
+			let batch = store.batch_write().unwrap();
+			assert!(!batch.delete_block_if_exists(&block_hash).unwrap());
+			batch.save_block_header(&block.header).unwrap();
+			batch.save_block(&block).unwrap();
+			batch.commit().unwrap();
+		}
+
+		{
+			let batch = store.batch_write().unwrap();
+			batch.delete_block_header(&block_hash).unwrap();
+			batch.commit().unwrap();
+		}
+
+		{
+			let batch = store.batch_write().unwrap();
+			assert!(batch.block_exists(&block_hash).unwrap());
+			match batch.delete_block_if_exists(&block_hash).unwrap_err() {
+				Error::NotFoundErr(msg) => assert!(msg.contains("BLOCK HEADER"), "{}", msg),
+				other => panic!("expected missing-header error, got {:?}", other),
+			}
+		}
+
+		assert!(store.block_exists(&block_hash).unwrap());
+		drop(store);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn delete_block_removes_only_its_spent_commitment_occurrence_record() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let chain_dir = format!(
+			"target/delete_block_removes_only_its_spent_record_{}",
+			std::process::id()
+		);
+		let _ = fs::remove_dir_all(&chain_dir);
+		let store = ChainStore::new(0, &chain_dir).unwrap();
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let commitment = secp.commit_value(11).unwrap();
+		let mut block = Block::default(0);
+		block.header.height = 2;
+		block.header.pow.proof.nonces[0] = 1;
+		block.body.inputs =
+			Inputs::FeaturesAndCommit(vec![Input::new(OutputFeatures::Plain, commitment)]);
+		let block_hash = block.hash(0).unwrap();
+		let other_hash = Hash::from_vec(&[8; Hash::LEN]);
+		let block_record = SpentCommitmentRecord {
+			spending_block: crate::types::HashHeight {
+				hash: block_hash,
+				height: 2,
+			},
+			spent_output: CommitPos { pos: 1, height: 0 },
+		};
+		let other_record = SpentCommitmentRecord {
+			spending_block: crate::types::HashHeight {
+				hash: other_hash,
+				height: 2,
+			},
+			spent_output: CommitPos { pos: 1, height: 0 },
+		};
+
+		{
+			let batch = store.batch_write().unwrap();
+			batch.save_block_header(&block.header).unwrap();
+			batch.save_block(&block).unwrap();
+			batch
+				.save_spent_index(
+					&block_hash,
+					&[SpentOutput {
+						commitment,
+						position: block_record.spent_output,
+					}],
+				)
+				.unwrap();
+			batch
+				.save_spent_commitments(&commitment, block_record)
+				.unwrap();
+			batch
+				.save_spent_commitments(&commitment, other_record)
+				.unwrap();
+			batch.commit().unwrap();
+		}
+
+		{
+			let batch = store.batch_write().unwrap();
+			batch.delete_block(&block_hash).unwrap();
+			batch.commit().unwrap();
+		}
+		let batch = store.batch_read().unwrap();
+		assert_eq!(
+			batch.get_spent_commitments(&commitment).unwrap(),
+			Some(vec![other_record])
+		);
+		assert!(batch.get_spent_index(&block_hash).is_err());
+
+		drop(batch);
+		drop(store);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn blocks_iter_rejects_noncanonical_full_block_keys() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+		for malformed_key_kind in ["wrong_hash", "extra_suffix"] {
+			let chain_dir = format!(
+				"target/blocks_iter_rejects_{}_{}",
+				malformed_key_kind,
+				std::process::id()
+			);
+			let _ = fs::remove_dir_all(&chain_dir);
+			let store = ChainStore::new(0, &chain_dir).unwrap();
+
+			let mut block = Block::default(0);
+			block.header.height = 1;
+			block.header.pow.proof.nonces[0] = 1;
+			let block_hash = block.hash(0).unwrap();
+			let mut malformed_key = to_key(BLOCK_PREFIX, block_hash);
+			match malformed_key_kind {
+				"wrong_hash" => malformed_key[2] ^= 1,
+				"extra_suffix" => malformed_key.push(0),
+				_ => unreachable!(),
+			}
+
+			{
+				let batch = store.batch_write().unwrap();
+				batch.db.put_ser(&malformed_key, &block).unwrap();
+				batch.commit().unwrap();
+			}
+
+			{
+				let batch = store.batch_read().unwrap();
+				let err = batch
+					.blocks_iter()
+					.unwrap()
+					.next()
+					.expect("malformed full-block record must be scanned")
+					.unwrap_err();
+				match err {
+					Error::OtherErr(msg) => {
+						assert!(msg.contains("noncanonical key"), "{}", msg)
+					}
+					other => panic!("expected noncanonical-key error, got {:?}", other),
+				}
+				assert!(batch.db.exists(&malformed_key).unwrap());
+			}
+
+			drop(store);
+			let _ = fs::remove_dir_all(&chain_dir);
+		}
 	}
 
 	#[test]
@@ -1387,28 +1948,41 @@ mod tests {
 	}
 
 	#[test]
-	fn retained_spent_commitment_index_complete_flag_defaults_false_and_roundtrips() {
+	fn spent_commitment_record_index_complete_flag_defaults_false_and_roundtrips() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-		let chain_dir = "target/retained_spent_commitment_index_complete_flag_roundtrips";
+		let chain_dir = "target/spent_commitment_record_index_complete_flag_roundtrips";
 		let _ = fs::remove_dir_all(chain_dir);
 		let store = ChainStore::new(0, chain_dir).unwrap();
 
 		{
 			let batch = store.batch_read().unwrap();
-			assert!(!batch.is_retained_spent_commitment_index_complete().unwrap());
+			assert!(!batch.is_spent_commitment_record_index_complete().unwrap());
 		}
 
 		{
 			let batch = store.batch_write().unwrap();
 			batch
-				.set_retained_spent_commitment_index_complete(true)
+				.set_spent_commitment_record_index_complete(true)
 				.unwrap();
 			batch.commit().unwrap();
 		}
 
 		{
 			let batch = store.batch_read().unwrap();
-			assert!(batch.is_retained_spent_commitment_index_complete().unwrap());
+			assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+		}
+
+		{
+			let batch = store.batch_write().unwrap();
+			batch
+				.set_spent_commitment_record_index_complete(false)
+				.unwrap();
+			batch.commit().unwrap();
+		}
+
+		{
+			let batch = store.batch_read().unwrap();
+			assert!(!batch.is_spent_commitment_record_index_complete().unwrap());
 		}
 
 		drop(store);
@@ -1427,10 +2001,10 @@ mod tests {
 		{
 			let batch = store.batch_write().unwrap();
 			batch
-				.save_spent_commitments(&first_commit, test_hash_height(1))
+				.save_spent_commitments(&first_commit, test_spent_record(1))
 				.unwrap();
 			batch
-				.save_spent_commitments(&second_commit, test_hash_height(2))
+				.save_spent_commitments(&second_commit, test_spent_record(2))
 				.unwrap();
 			batch.commit().unwrap();
 		}
@@ -1587,27 +2161,35 @@ mod tests {
 		let _ = fs::remove_dir_all(chain_dir);
 	}
 
-	fn test_hash_height(height: u64) -> HashHeight {
-		HashHeight {
-			hash: Hash::from_vec(&height.to_le_bytes()),
-			height,
+	fn test_spent_record(height: u64) -> SpentCommitmentRecord {
+		SpentCommitmentRecord {
+			spending_block: crate::types::HashHeight {
+				hash: Hash::from_vec(&height.to_le_bytes()),
+				height,
+			},
+			spent_output: CommitPos {
+				pos: height.saturating_mul(2).saturating_add(1),
+				height,
+			},
 		}
 	}
 
 	#[test]
 	fn spent_commitment_append_rejects_unreadable_list_growth() {
-		let max_spent_list: Vec<HashHeight> = (0..ser::READ_VEC_SIZE_LIMIT)
-			.map(test_hash_height)
+		let max_spent_list: Vec<SpentCommitmentRecord> = (0..ser::READ_VEC_SIZE_LIMIT)
+			.map(test_spent_record)
 			.collect();
 		let mut duplicate_list = max_spent_list.clone();
 		let mut overflow_list = max_spent_list;
 
-		assert!(!Batch::append_spent_commitment(&mut duplicate_list, test_hash_height(0)).unwrap());
+		assert!(
+			!Batch::append_spent_commitment(&mut duplicate_list, test_spent_record(0)).unwrap()
+		);
 		assert_eq!(duplicate_list.len(), ser::READ_VEC_SIZE_LIMIT as usize);
 
 		let err = Batch::append_spent_commitment(
 			&mut overflow_list,
-			test_hash_height(ser::READ_VEC_SIZE_LIMIT),
+			test_spent_record(ser::READ_VEC_SIZE_LIMIT),
 		)
 		.unwrap_err();
 		match err {
@@ -1617,5 +2199,20 @@ mod tests {
 			other => panic!("expected TooLargeWriteErr, got {:?}", other),
 		}
 		assert_eq!(overflow_list.len(), ser::READ_VEC_SIZE_LIMIT as usize);
+	}
+
+	#[test]
+	fn spent_commitment_append_rejects_conflicting_record_for_same_block() {
+		let original = test_spent_record(7);
+		let mut conflicting = original;
+		conflicting.spent_output.pos = conflicting.spent_output.pos.saturating_add(2);
+		let mut records = vec![original];
+
+		let err = Batch::append_spent_commitment(&mut records, conflicting).unwrap_err();
+		assert!(matches!(
+			err,
+			Error::OtherErr(msg) if msg.contains("conflicting spent commitment records")
+		));
+		assert_eq!(records, vec![original]);
 	}
 }

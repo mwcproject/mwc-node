@@ -39,6 +39,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MIN_PIBD_ROOT_RESPONSES: usize = 2;
+// Accepted commitments are never evicted during a PIBD session. This limit is
+// enforced before sending a request, so every accepted response still has a slot.
+const MAX_PIBD_ROOT_RESPONSE_ENTRIES: usize = 10240;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PibdRootSelection {
@@ -65,6 +68,8 @@ pub struct StateSync {
 	target_archive_height: AtomicU64,
 	target_archive_hash: RwLock<Hash>,
 	requested_root_hash: RwLock<HashMap<PeerAddr, Instant>>, // Lock 1
+	// Session-long peer commitments. Retain these across disconnect/reconnect so
+	// the peer remains tied to its advertised root and can be banned on failure.
 	responded_root_hash: RwLock<HashMap<PeerAddr, (Hash, Instant)>>, // Lock 2
 	// sync for segments
 	request_tracker: RequestTracker<(SegmentType, u64)>,
@@ -78,13 +83,23 @@ pub struct StateSync {
 	send_requests_lock: RwLock<u8>,
 }
 
-struct ValidatedDesegmenter<'a> {
-	// This guard binds the validation result to the live PIBD session. Without
-	// it, reset_desegmenter_data() could clear/replace the current session while
-	// the caller still applies a segment through the returned Arc.
-	_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
-	desegmenter: Arc<Desegmenter>,
-	root_hash: Hash,
+enum DesegmenterValidation<'a> {
+	Valid {
+		// Bind validation to the live PIBD session through segment application
+		// and request tracking.
+		_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
+		desegmenter: Arc<Desegmenter>,
+		root_hash: Hash,
+	},
+	// Keep the current session pinned until the caller has updated request
+	// tracking. Otherwise a reset can replace the session between validation and
+	// tracking, allowing this response to remove a new session's request.
+	PeerMismatch {
+		_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
+	},
+	// The response belongs to an inactive, locally invalidated, or replaced
+	// session. It must not affect peer scoring or current-session requests.
+	Stale,
 }
 
 struct LiveDesegmenter<'a> {
@@ -122,6 +137,18 @@ impl StateSync {
 		return Capabilities::PIBD_HIST;
 	}
 
+	fn remaining_pibd_root_peer_capacity(
+		requested_root_hash: &HashMap<PeerAddr, Instant>,
+		responded_root_hash: &HashMap<PeerAddr, (Hash, Instant)>,
+		max_entries: usize,
+	) -> usize {
+		max_entries.saturating_sub(
+			requested_root_hash
+				.len()
+				.saturating_add(responded_root_hash.len()),
+		)
+	}
+
 	fn select_pibd_root<'a>(
 		root_hashes: impl Iterator<Item = &'a Hash>,
 		required_responses: usize,
@@ -157,7 +184,7 @@ impl StateSync {
 		best_height: u64,
 	) -> Result<SyncResponse, mwc_chain::Error> {
 		// In case of archive mode, this step is must be skipped. Body sync will catch up.
-		if self.is_complete.load(Ordering::Relaxed) || self.chain.archive_mode() {
+		if self.is_complete.load(Ordering::Acquire) || self.chain.archive_mode() {
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::StatePibdReady,
 				Capabilities::UNKNOWN,
@@ -194,7 +221,7 @@ impl StateSync {
 		if head.height >= target_archive_height {
 			// We are good, no needs to PIBD sync
 			info!("No needs to sync, data until archive is ready");
-			self.is_complete.store(true, Ordering::Relaxed);
+			self.complete_pibd_sync();
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::StatePibdReady,
 				Capabilities::UNKNOWN,
@@ -231,6 +258,19 @@ impl StateSync {
 			self.reset_desegmenter_data();
 		}
 		*self.target_archive_hash.write() = archive_header_hash;
+
+		let now = Instant::now();
+		let request_timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
+		{
+			let mut requested_root_hash = self.requested_root_hash.write();
+			requested_root_hash.retain(|peer, req_time| {
+				if now.saturating_duration_since(*req_time) > request_timeout {
+					sync_peers.report_no_response(peer, "root hash".into());
+					return false;
+				}
+				true
+			});
+		}
 
 		let excluded_peers = self
 			.request_tracker
@@ -270,25 +310,24 @@ impl StateSync {
 			}
 		}
 
-		let now = Instant::now();
-		let request_timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
 		let mut root_request_failures = 0;
 
 		{
 			let mut requested_root_hash = self.requested_root_hash.write();
 			let responded_root_hash = self.responded_root_hash.read_recursive();
-
-			// checking to timeouts for handshakes...
-			requested_root_hash.retain(|peer, req_time| {
-				if req_time.elapsed() > request_timeout {
-					sync_peers.report_no_response(peer, "root hash".into());
-					return false;
-				}
-				true
-			});
+			let mut remaining_root_peer_capacity = Self::remaining_pibd_root_peer_capacity(
+				&requested_root_hash,
+				&responded_root_hash,
+				MAX_PIBD_ROOT_RESPONSE_ENTRIES,
+			);
 
 			// request handshakes if needed
 			for peer in &peers {
+				// Never make room by evicting a response: it is the peer's root
+				// commitment for reconnect authorization and any later session ban.
+				if remaining_root_peer_capacity == 0 {
+					break;
+				}
 				if !(requested_root_hash.contains_key(&peer.info.addr)
 					|| responded_root_hash.contains_key(&peer.info.addr))
 				{
@@ -298,6 +337,8 @@ impl StateSync {
 					{
 						Ok(_) => {
 							requested_root_hash.insert(peer.info.addr.clone(), now);
+							remaining_root_peer_capacity =
+								remaining_root_peer_capacity.saturating_sub(1);
 						}
 						Err(e) => {
 							root_request_failures += 1;
@@ -316,6 +357,16 @@ impl StateSync {
 			}
 		}
 
+		let stale_desegmenter = self
+			.desegmenter
+			.read_recursive()
+			.as_ref()
+			.map(|desegmenter| !desegmenter.is_current())
+			.unwrap_or(false);
+		if stale_desegmenter {
+			warn!("Discarding PIBD desegmenter invalidated by chain-state recovery");
+			self.reset_desegmenter.store(true, Ordering::Relaxed);
+		}
 		if self.reset_desegmenter.swap(false, Ordering::Relaxed) {
 			self.reset_desegmenter_data();
 		}
@@ -405,16 +456,6 @@ impl StateSync {
 						best_count,
 					} => {
 						if requested_root_hash.is_empty() {
-							let response_peers: Vec<PeerAddr> = peers
-								.iter()
-								.filter_map(|peer| {
-									if responded_root_hash.contains_key(&peer.info.addr) {
-										Some(peer.info.addr.clone())
-									} else {
-										None
-									}
-								})
-								.collect();
 							let msg = format!(
 								concat!(
 									"No quorum for PIBD root at archive height {}. ",
@@ -427,14 +468,11 @@ impl StateSync {
 								best_count,
 								required_responses
 							);
-							drop(requested_root_hash);
-							drop(responded_root_hash);
 							warn!("{}", msg);
-							for peer in &response_peers {
-								sync_peers.report_error_response(peer, msg.clone());
-							}
-							self.requested_root_hash.write().clear();
-							self.responded_root_hash.write().clear();
+							// A split vote proves disagreement, but does not identify the
+							// dishonest peer. Keep the existing commitments so a newly
+							// connected peer can break the tie, and do not feed ambiguous
+							// votes into peer error scoring.
 							return Ok(SyncResponse::new(
 								SyncRequestResponses::WaitingForPeers,
 								Self::get_peer_capabilities(),
@@ -528,7 +566,7 @@ impl StateSync {
 			match desegmenter.validate_complete_state(sync_state, stop_state) {
 				Ok(_) => {
 					info!("PIBD download and valiadion is done with success!");
-					self.is_complete.store(true, Ordering::Relaxed);
+					self.complete_pibd_sync();
 					return Ok(SyncResponse::new(
 						SyncRequestResponses::StatePibdReady,
 						Capabilities::UNKNOWN,
@@ -629,18 +667,30 @@ impl StateSync {
 		self.reset_desegmenter.store(true, Ordering::Relaxed);
 	}
 
+	fn clear_pibd_root_tracking(&self) {
+		self.requested_root_hash.write().clear();
+		self.responded_root_hash.write().clear();
+	}
+
+	fn complete_pibd_sync(&self) {
+		// Publish completion before clearing peer commitments. Segment responses
+		// already in flight can then be recognized as terminal-session traffic and
+		// ignored instead of being counted as invalid peer responses.
+		self.is_complete.store(true, Ordering::Release);
+		self.clear_pibd_root_tracking();
+	}
+
 	pub fn reset_desegmenter_data(&self) {
 		// Keep this write lock as the first operation: receive handlers use the
 		// desegmenter read guard as the session barrier from validation through
 		// segment application.
 		*self.desegmenter.write() = None;
-		self.requested_root_hash.write().clear();
-		self.responded_root_hash.write().clear();
+		self.clear_pibd_root_tracking();
 		*self.target_archive_hash.write() = Hash::default();
 		self.request_tracker.clear();
 		self.last_retry_idx.write().clear();
 		self.retry_expiration_times.write().clear();
-		self.is_complete.store(false, Ordering::Relaxed);
+		self.is_complete.store(false, Ordering::Release);
 	}
 
 	pub fn recieve_pibd_status(
@@ -669,6 +719,8 @@ impl StateSync {
 			return;
 		}
 
+		// Keep this commitment for the complete PIBD session. It authorizes this
+		// peer again after reconnect and preserves evidence for a session-wide ban.
 		self.responded_root_hash
 			.write()
 			.insert(peer.clone(), (output_bitmap_root, Instant::now()));
@@ -687,33 +739,46 @@ impl StateSync {
 	}
 
 	// Return the selected desegmenter and root hash if validation was successful.
+	// Distinguish stale session traffic from a peer mismatch so delayed responses
+	// after a reset are not counted against an honest peer.
 	fn validated_desegmenter(
 		&self,
 		peer: &PeerAddr,
 		archive_header_hash: &Hash,
-	) -> Option<ValidatedDesegmenter<'_>> {
+	) -> DesegmenterValidation<'_> {
 		let guard = self.desegmenter.read_recursive();
-		let desegmenter = guard.as_ref().cloned()?;
+		let desegmenter = match guard.as_ref().cloned() {
+			Some(desegmenter) => desegmenter,
+			None => return DesegmenterValidation::Stale,
+		};
+		if !desegmenter.is_current() {
+			self.reset_desegmenter.store(true, Ordering::Relaxed);
+			return DesegmenterValidation::Stale;
+		}
 		if *self.target_archive_hash.read_recursive() != *archive_header_hash {
-			return None;
+			return DesegmenterValidation::Stale;
 		}
 
 		let hash_for_peer = self.responded_root_hash.read_recursive().get(peer).cloned();
 		match hash_for_peer {
 			Some((hash, _)) if *desegmenter.get_bitmap_root_hash() == hash => {
-				Some(ValidatedDesegmenter {
+				DesegmenterValidation::Valid {
 					_guard: guard,
 					desegmenter,
 					root_hash: hash,
-				})
+				}
 			}
-			_ => None,
+			_ => DesegmenterValidation::PeerMismatch { _guard: guard },
 		}
 	}
 
 	fn live_desegmenter(&self) -> Option<LiveDesegmenter<'_>> {
 		let guard = self.desegmenter.read_recursive();
 		let desegmenter = guard.as_ref().cloned()?;
+		if !desegmenter.is_current() {
+			self.reset_desegmenter.store(true, Ordering::Relaxed);
+			return None;
+		}
 		let archive_hash = self.target_archive_hash.read_recursive().clone();
 		if archive_hash == Hash::default() {
 			return None;
@@ -728,6 +793,9 @@ impl StateSync {
 	}
 
 	// Return true if the response came from the registered peer.
+	// Segment receive callers keep their DesegmenterValidation alive through this
+	// call so reset_desegmenter_data() cannot replace the session between segment
+	// application and request removal/scheduling.
 	fn track_and_request_more_segments(
 		&self,
 		key: &(SegmentType, u64),
@@ -814,15 +882,20 @@ impl StateSync {
 		peers: &Arc<mwc_p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) -> Result<(), mwc_chain::Error> {
+		if self.is_complete.load(Ordering::Acquire) {
+			return Ok(());
+		}
+
 		let key = (SegmentType::Bitmap, segment.leaf_offset()?);
 		let mut accepted_segment = false;
 
-		if let Some(validated) = self.validated_desegmenter(peer, archive_header_hash) {
-			let res = validated
-				.desegmenter
-				.add_bitmap_segment(segment, &validated.root_hash);
-			drop(validated);
-			match res {
+		let validation = self.validated_desegmenter(peer, archive_header_hash);
+		match &validation {
+			DesegmenterValidation::Valid {
+				desegmenter,
+				root_hash,
+				..
+			} => match desegmenter.add_bitmap_segment(segment, root_hash) {
 				Ok(_) => {
 					accepted_segment = true;
 				}
@@ -837,10 +910,19 @@ impl StateSync {
 					error!("{}", msg);
 					sync_peers.report_error_response(peer, msg);
 				}
+			},
+			DesegmenterValidation::PeerMismatch { .. } => {
+				if self.is_complete.load(Ordering::Acquire) {
+					// Completion can race validation and clear the peer commitment after the
+					// initial check. A response from that completed session is not a peer fault.
+					return Ok(());
+				}
+				sync_peers.report_error_response(
+					peer,
+					"bitmap_segment, validate_root_hash failure".into(),
+				);
 			}
-		} else {
-			sync_peers
-				.report_error_response(peer, "bitmap_segment, validate_root_hash failure".into());
+			DesegmenterValidation::Stale => return Ok(()),
 		}
 
 		let matched_request =
@@ -848,6 +930,7 @@ impl StateSync {
 		if accepted_segment && matched_request {
 			sync_peers.report_ok_response(peer);
 		}
+		drop(validation);
 		Ok(())
 	}
 
@@ -859,18 +942,23 @@ impl StateSync {
 		peers: &Arc<mwc_p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) -> Result<(), mwc_chain::Error> {
+		if self.is_complete.load(Ordering::Acquire) {
+			return Ok(());
+		}
+
 		let key = (SegmentType::Output, segment.leaf_offset()?);
 		let mut accepted_segment = false;
 
 		// Be conservative here: every output-segment failure is counted against
 		// the peer. Reporting an error only feeds peer scoring; it is not an
 		// immediate ban.
-		if let Some(validated) = self.validated_desegmenter(peer, archive_header_hash) {
-			let res = validated
-				.desegmenter
-				.add_output_segment(segment, &validated.root_hash);
-			drop(validated);
-			match res {
+		let validation = self.validated_desegmenter(peer, archive_header_hash);
+		match &validation {
+			DesegmenterValidation::Valid {
+				desegmenter,
+				root_hash,
+				..
+			} => match desegmenter.add_output_segment(segment, root_hash) {
 				Ok(_) => {
 					accepted_segment = true;
 				}
@@ -882,9 +970,14 @@ impl StateSync {
 					error!("{}", msg);
 					sync_peers.report_error_response(peer, msg);
 				}
+			},
+			DesegmenterValidation::PeerMismatch { .. } => {
+				if self.is_complete.load(Ordering::Acquire) {
+					return Ok(());
+				}
+				sync_peers.report_error_response(peer, "validate_root_hash failed".into());
 			}
-		} else {
-			sync_peers.report_error_response(peer, "validate_root_hash failed".into());
+			DesegmenterValidation::Stale => return Ok(()),
 		}
 
 		let matched_request =
@@ -892,6 +985,7 @@ impl StateSync {
 		if accepted_segment && matched_request {
 			sync_peers.report_ok_response(peer);
 		}
+		drop(validation);
 		Ok(())
 	}
 
@@ -903,16 +997,21 @@ impl StateSync {
 		peers: &Arc<mwc_p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) -> Result<(), mwc_chain::Error> {
+		if self.is_complete.load(Ordering::Acquire) {
+			return Ok(());
+		}
+
 		let key = (SegmentType::RangeProof, segment.leaf_offset()?);
 		let mut accepted_segment = false;
 
 		// Process first, unregister after. During unregister we might issue more requests.
-		if let Some(validated) = self.validated_desegmenter(peer, archive_header_hash) {
-			let res = validated
-				.desegmenter
-				.add_rangeproof_segment(segment, &validated.root_hash);
-			drop(validated);
-			match res {
+		let validation = self.validated_desegmenter(peer, archive_header_hash);
+		match &validation {
+			DesegmenterValidation::Valid {
+				desegmenter,
+				root_hash,
+				..
+			} => match desegmenter.add_rangeproof_segment(segment, root_hash) {
 				Ok(_) => {
 					accepted_segment = true;
 				}
@@ -930,9 +1029,14 @@ impl StateSync {
 					error!("{}", msg);
 					sync_peers.report_error_response(peer, msg);
 				}
+			},
+			DesegmenterValidation::PeerMismatch { .. } => {
+				if self.is_complete.load(Ordering::Acquire) {
+					return Ok(());
+				}
+				sync_peers.report_error_response(peer, "validate_root_hash error".into());
 			}
-		} else {
-			sync_peers.report_error_response(peer, "validate_root_hash error".into());
+			DesegmenterValidation::Stale => return Ok(()),
 		}
 
 		let matched_request =
@@ -940,6 +1044,7 @@ impl StateSync {
 		if accepted_segment && matched_request {
 			sync_peers.report_ok_response(peer);
 		}
+		drop(validation);
 		Ok(())
 	}
 
@@ -951,15 +1056,20 @@ impl StateSync {
 		peers: &Arc<mwc_p2p::Peers>,
 		sync_peers: &SyncPeers,
 	) -> Result<(), mwc_chain::Error> {
+		if self.is_complete.load(Ordering::Acquire) {
+			return Ok(());
+		}
+
 		let key = (SegmentType::Kernel, segment.leaf_offset()?);
 		let mut accepted_segment = false;
 
-		if let Some(validated) = self.validated_desegmenter(peer, archive_header_hash) {
-			let res = validated
-				.desegmenter
-				.add_kernel_segment(segment, &validated.root_hash);
-			drop(validated);
-			match res {
+		let validation = self.validated_desegmenter(peer, archive_header_hash);
+		match &validation {
+			DesegmenterValidation::Valid {
+				desegmenter,
+				root_hash,
+				..
+			} => match desegmenter.add_kernel_segment(segment, root_hash) {
 				Ok(_) => {
 					accepted_segment = true;
 				}
@@ -976,9 +1086,14 @@ impl StateSync {
 					error!("{}", msg);
 					sync_peers.report_error_response(peer, msg);
 				}
+			},
+			DesegmenterValidation::PeerMismatch { .. } => {
+				if self.is_complete.load(Ordering::Acquire) {
+					return Ok(());
+				}
+				sync_peers.report_error_response(peer, "validate_root_hash failed".into());
 			}
-		} else {
-			sync_peers.report_error_response(peer, "validate_root_hash failed".into());
+			DesegmenterValidation::Stale => return Ok(()),
 		}
 
 		let matched_request =
@@ -986,6 +1101,7 @@ impl StateSync {
 		if accepted_segment && matched_request {
 			sync_peers.report_ok_response(peer);
 		}
+		drop(validation);
 		Ok(())
 	}
 
@@ -1153,17 +1269,21 @@ impl StateSync {
 										"Internal error, peers data is empty".into(),
 									))?;
 
+							// Register before queueing the network message. The p2p receive
+							// path runs concurrently and may otherwise process a fast response
+							// before this request is visible, leaving a stale request that later
+							// times out against a peer that actually responded.
+							let msg = format!("{:?}", key);
+							let request_token = self.request_tracker.register_request(
+								key.clone(),
+								peer.info.addr.clone(),
+								msg,
+							);
 							let send_res = Self::send_request(peer, &seg, target_archive_hash);
 							match send_res {
-								Ok(_) => {
-									let msg = format!("{:?}", key);
-									self.request_tracker.register_request(
-										key,
-										peer.info.addr.clone(),
-										msg,
-									);
-								}
+								Ok(_) => {}
 								Err(e) => {
+									self.request_tracker.rollback_request(&key, &request_token);
 									let msg = format!(
 										"Error sending segment request to peer at {}, reason: {:?}",
 										peer.info.addr, e
@@ -1262,9 +1382,24 @@ impl StateSync {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 	fn test_hash(value: u8) -> Hash {
 		Hash::from_vec(&[value; Hash::LEN])
+	}
+
+	#[test]
+	fn root_capacity_check_keeps_existing_commitment() {
+		let peer = PeerAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 30_001));
+		let root = test_hash(9);
+		let requested = HashMap::new();
+		let responses = HashMap::from([(peer.clone(), (root, Instant::now()))]);
+
+		assert_eq!(
+			StateSync::remaining_pibd_root_peer_capacity(&requested, &responses, 1),
+			0
+		);
+		assert_eq!(responses.get(&peer).map(|(hash, _)| *hash), Some(root));
 	}
 
 	#[test]

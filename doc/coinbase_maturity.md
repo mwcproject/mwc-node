@@ -1,5 +1,16 @@
 # The Coinbase Maturity Rule (aka Output Lock Heights)
 
+> **Current implementation note:** Parts of the discussion below describe an
+> early design in which an input supplied a Merkle proof against the block that
+> created a coinbase output. The node does not use origin-header proofs for
+> coinbase maturity. It validates maturity from the current UTXO position and
+> the canonical cutoff header. Merkle proofs returned by the API are for the
+> current output PMMR state only. This is intentional: compaction retains the
+> maximal pruned-subtree roots needed by the current state, not every peak from
+> every historical MMR size. A proof must therefore be verified with an output
+> root whose MMR size matches the `mmr_size` embedded in the proof, not
+> automatically with the output's originating block header.
+
 *Read this in other languages: [Korean](translations/coinbase_maturity_KR.md), [简体中文](translations/coinbase_maturity_ZH-CN).*
 
 Coinbase outputs (block rewards & fees) are "locked" and require 1,440 confirmations (i.e 24 hours worth of blocks added to the chain) before they mature sufficiently to be spendable. This is to reduce the risk of later txs being reversed if a chain reorganization occurs.

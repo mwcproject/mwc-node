@@ -34,6 +34,9 @@ pub struct RpcMethodError(pub String);
 
 impl From<crate::rest::Error> for RpcMethodError {
 	fn from(error: crate::rest::Error) -> Self {
+		// JSON-RPC clients intentionally receive the complete internal error text.
+		// Although this can reveal server implementation details, these diagnostics
+		// are more useful for debugging node and client failures than a generic error.
 		RpcMethodError(error.to_string())
 	}
 }

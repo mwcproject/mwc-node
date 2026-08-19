@@ -253,7 +253,7 @@ pub fn verify_partial_sig(
 /// let switch = SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(&secp, value, &key_id, switch).unwrap();
 /// let builder = proof::ProofBuilder::new(&secp, &keychain).unwrap();
-/// let proof = proof::create(&mut secp, &keychain, &builder, value, &key_id, switch, commit, None).unwrap();
+/// let proof = proof::create(&mut secp, &keychain, &builder, value, &key_id, switch, commit).unwrap();
 /// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(0, fees, height).unwrap()).unwrap();
@@ -321,7 +321,7 @@ where
 /// let switch = SwitchCommitmentType::Regular;
 /// let commit = keychain.commit(&secp, value, &key_id, switch).unwrap();
 /// let builder = proof::ProofBuilder::new(&secp, &keychain).unwrap();
-/// let proof = proof::create(&mut secp, &keychain, &builder, value, &key_id, switch, commit, None).unwrap();
+/// let proof = proof::create(&mut secp, &keychain, &builder, value, &key_id, switch, commit).unwrap();
 /// let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 /// let height = 20;
 /// let over_commit = secp.commit_value(reward(0, fees, height).unwrap()).unwrap();

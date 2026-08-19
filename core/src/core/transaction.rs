@@ -34,6 +34,7 @@ use mwc_crates::serde::de;
 use mwc_crates::serde::{self, Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
 use std::cmp::{max, min};
+use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::fmt::Display;
@@ -1798,6 +1799,29 @@ impl Transaction {
 		Ok(())
 	}
 
+	/// Validate an aggregate assembled exclusively from transactions whose
+	/// rangeproofs and kernel signatures have already been fully verified.
+	///
+	/// Aggregation preserves individual outputs, rangeproofs, kernels, and kernel
+	/// signatures, so re-verifying those cryptographic components does not add a
+	/// new security check. The properties that can change during aggregation are
+	/// still verified here: features, NRD rules, weight, ordering, uniqueness,
+	/// cut-through, and the aggregate kernel sums.
+	///
+	/// Do not use this as an admission check for an unvalidated transaction.
+	pub fn validate_aggregate_from_validated_components(
+		&self,
+		context_id: u32,
+		weighting: Weighting,
+		secp: &Secp256k1,
+	) -> Result<(), Error> {
+		self.body.verify_features()?;
+		self.body.verify_nrd_enabled(context_id)?;
+		self.body.validate_read(context_id, weighting)?;
+		self.verify_kernel_sums(self.overage()?, self.offset.clone(), secp)?;
+		Ok(())
+	}
+
 	/// Can be used to compare txs by their fee/weight ratio, aka feerate.
 	/// Don't use these values for anything else though due to precision multiplier.
 	pub fn fee_rate(&self) -> Result<u64, Error> {
@@ -2153,6 +2177,42 @@ pub fn aggregate(
 	Ok(tx)
 }
 
+/// Return the unique candidates whose projected consensus hashes are absent
+/// from `removed`.
+///
+/// Precomputing both hash sets ensures each component is hashed once during the
+/// difference calculation instead of repeatedly scanning and hashing an
+/// ever-growing retained-component vector.
+fn unique_hash_difference_by_key<T, K, I, F>(
+	context_id: u32,
+	candidates: I,
+	removed: &[T],
+	key_fn: F,
+) -> Result<Vec<T>, Error>
+where
+	K: Hashed,
+	I: IntoIterator<Item = T>,
+	F: Fn(&T) -> &K,
+{
+	let mut removed_hashes = HashSet::with_capacity(removed.len());
+	for item in removed {
+		removed_hashes.insert(key_fn(item).hash(context_id)?);
+	}
+
+	let candidates = candidates.into_iter();
+	let candidate_capacity = candidates.size_hint().0;
+	let mut retained = Vec::with_capacity(candidate_capacity);
+	let mut retained_hashes = HashSet::with_capacity(candidate_capacity);
+	for candidate in candidates {
+		let hash = key_fn(&candidate).hash(context_id)?;
+		if !removed_hashes.contains(&hash) && retained_hashes.insert(hash) {
+			retained.push(candidate);
+		}
+	}
+
+	Ok(retained)
+}
+
 /// Attempt to deaggregate a multi-kernel transaction based on multiple
 /// transactions
 pub fn deaggregate(
@@ -2161,10 +2221,6 @@ pub fn deaggregate(
 	txs: &[Transaction],
 	secp: &Secp256k1,
 ) -> Result<Transaction, Error> {
-	let mut inputs: Vec<CommitWrapper> = vec![];
-	let mut outputs: Vec<Output> = vec![];
-	let mut kernels: Vec<TxKernel> = vec![];
-
 	// we will subtract these at the end to give us the overall offset for the
 	// transaction
 	let mut kernel_offsets = vec![];
@@ -2173,29 +2229,20 @@ pub fn deaggregate(
 
 	let mk_inputs = mk_tx.inputs().into_commit_wrappers(context_id)?;
 	let tx_inputs = tx.inputs().into_commit_wrappers(context_id)?;
-	for mk_input in mk_inputs {
-		if !ser::contains_by_hash(context_id, &tx_inputs, &mk_input)?
-			&& !ser::contains_by_hash(context_id, &inputs, &mk_input)?
-		{
-			inputs.push(mk_input);
-		}
-	}
-	for mk_output in mk_tx.outputs() {
-		if !ser::contains_by_hash_key(context_id, tx.outputs(), mk_output, |output| {
-			&output.identifier
-		})? && !ser::contains_by_hash_key(context_id, &outputs, mk_output, |output| {
-			&output.identifier
-		})? {
-			outputs.push(*mk_output);
-		}
-	}
-	for mk_kernel in mk_tx.kernels() {
-		if !ser::contains_by_hash(context_id, tx.kernels(), mk_kernel)?
-			&& !ser::contains_by_hash(context_id, &kernels, mk_kernel)?
-		{
-			kernels.push(*mk_kernel);
-		}
-	}
+	let mut inputs =
+		unique_hash_difference_by_key(context_id, mk_inputs, &tx_inputs, |input| input)?;
+	let mut outputs = unique_hash_difference_by_key(
+		context_id,
+		mk_tx.outputs().iter().copied(),
+		tx.outputs(),
+		|output| &output.identifier,
+	)?;
+	let mut kernels = unique_hash_difference_by_key(
+		context_id,
+		mk_tx.kernels().iter().copied(),
+		tx.kernels(),
+		|kernel| kernel,
+	)?;
 
 	kernel_offsets.push(tx.offset);
 
@@ -2467,6 +2514,19 @@ impl Writeable for Inputs {
 
 impl Inputs {
 	/// Compare input collections by consensus hash ordering/equality.
+	///
+	/// Empty collections are equal across protocol representations because they
+	/// contain no feature data. Nonempty cross-representation collections remain
+	/// unequal because commit-only inputs cannot preserve consensus-relevant
+	/// legacy input features. This is the correct rule for two unvalidated bodies,
+	/// including orphans: without the parent UTXO state there is no safe way to
+	/// reconstruct or verify the missing feature.
+	///
+	/// A known-block check is a deliberately different case. It may project a
+	/// candidate and an already validated stored block to the v3 commit-only
+	/// representation, provided equality only suppresses the candidate and the
+	/// trusted stored block remains authoritative. Do not weaken this method to
+	/// implement that special case.
 	pub fn eq_by_hash(&self, context_id: u32, other: &Self) -> Result<bool, ser::Error> {
 		match (self, other) {
 			(Inputs::CommitOnly(lhs), Inputs::CommitOnly(rhs)) => {
@@ -2475,7 +2535,10 @@ impl Inputs {
 			(Inputs::FeaturesAndCommit(lhs), Inputs::FeaturesAndCommit(rhs)) => {
 				ser::slices_equal_by_hash(context_id, lhs, rhs)
 			}
-			_ => Ok(false),
+			(Inputs::CommitOnly(commits), Inputs::FeaturesAndCommit(inputs))
+			| (Inputs::FeaturesAndCommit(inputs), Inputs::CommitOnly(commits)) => {
+				Ok(commits.is_empty() && inputs.is_empty())
+			}
 		}
 	}
 
@@ -2869,6 +2932,74 @@ mod test {
 	use mwc_crates::rand::rngs::SysRng;
 	use mwc_crates::secp::{AggSigSignature, ContextFlag, SecretKey};
 	use std::convert::TryInto;
+	use std::sync::{
+		atomic::{AtomicUsize, Ordering as AtomicOrdering},
+		Arc,
+	};
+
+	#[derive(Clone, Debug)]
+	struct CountingHashable {
+		value: u32,
+		hash_calls: Arc<AtomicUsize>,
+		fail: bool,
+	}
+
+	impl Hashed for CountingHashable {
+		fn hash(&self, _context_id: u32) -> Result<Hash, std::io::Error> {
+			self.hash_calls.fetch_add(1, AtomicOrdering::Relaxed);
+			if self.fail {
+				Err(std::io::Error::new(
+					std::io::ErrorKind::Other,
+					"injected hash failure",
+				))
+			} else {
+				Ok(Hash::from_vec(&self.value.to_be_bytes()))
+			}
+		}
+	}
+
+	#[test]
+	fn unique_hash_difference_hashes_each_item_once() {
+		let hash_calls = Arc::new(AtomicUsize::new(0));
+		let item = |value| CountingHashable {
+			value,
+			hash_calls: Arc::clone(&hash_calls),
+			fail: false,
+		};
+		let removed = (0..128).map(&item).collect::<Vec<_>>();
+		let mut candidates = (64..256).map(&item).collect::<Vec<_>>();
+		candidates.push(item(200));
+		let expected_hash_calls = removed.len() + candidates.len();
+
+		let retained =
+			unique_hash_difference_by_key(0, candidates, &removed, |candidate| candidate).unwrap();
+
+		assert_eq!(
+			retained
+				.into_iter()
+				.map(|candidate| candidate.value)
+				.collect::<Vec<_>>(),
+			(128..256).collect::<Vec<_>>(),
+		);
+		assert_eq!(
+			hash_calls.load(AtomicOrdering::Relaxed),
+			expected_hash_calls,
+		);
+	}
+
+	#[test]
+	fn unique_hash_difference_propagates_hash_errors() {
+		let hash_calls = Arc::new(AtomicUsize::new(0));
+		let candidate = CountingHashable {
+			value: 1,
+			hash_calls,
+			fail: true,
+		};
+
+		let err = unique_hash_difference_by_key(0, vec![candidate], &[], |candidate| candidate)
+			.expect_err("candidate hash failure must be returned");
+		assert!(matches!(err, Error::IO(_)));
+	}
 
 	// For ser/deser signature must be valid. One form floo genesis should work
 	fn get_test_valid_signature(secp: &Secp256k1) -> AggSigSignature {

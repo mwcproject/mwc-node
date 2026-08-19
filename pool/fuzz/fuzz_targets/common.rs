@@ -37,7 +37,7 @@ use mwc_core::consensus;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use mwc_core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction,
+	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputIdentifier, Transaction,
 };
 use mwc_core::global;
 use mwc_core::libtx::{build, reward, ProofBuilder};
@@ -169,6 +169,13 @@ impl BlockChain for ChainAdapter {
 			mwc_chain::Error::Transaction(txe) => txe.into(),
 			mwc_chain::Error::NRDRelativeHeight => PoolError::NRDKernelRelativeHeight,
 			_ => PoolError::Other("failed to validate tx".into()),
+		})
+	}
+
+	fn validate_outputs(&self, outputs: &[Output]) -> Result<(), PoolError> {
+		self.chain.validate_outputs(outputs).map_err(|e| match e {
+			mwc_chain::Error::DuplicateCommitment(_) => PoolError::DuplicateCommitment,
+			_ => PoolError::Other(format!("failed to validate outputs, {}", e)),
 		})
 	}
 
@@ -385,6 +392,7 @@ impl PoolFuzzer {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap()
 	}

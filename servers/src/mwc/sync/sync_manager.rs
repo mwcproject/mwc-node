@@ -505,8 +505,12 @@ impl SyncManager {
 		}
 
 		if valid_block != Some(false) && opts == mwc_chain::Options::NONE {
-			let source_peer = valid_block.is_none().then(|| peer.to_string());
-			self.orphans.recieve_block_reporting(b, source_peer)
+			// Orphan candidate admission is peer-scoped. Keep the peer identity even
+			// for known/accepted reports; accepted blocks are discarded by the
+			// block-exists check, while conflicting orphan bodies still need correct
+			// attribution and replacement behavior. Preserve PeerAddr here so candidate
+			// ownership uses the same normalized identity as peer admission and banning.
+			self.orphans.recieve_block_reporting(b, Some(peer.clone()))
 		} else {
 			Ok(false)
 		}

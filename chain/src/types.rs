@@ -25,6 +25,7 @@ use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, Readable, Reader, Writeable, Writer};
 use mwc_crates::log::{debug, info};
 use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::Secp256k1;
 use std::collections::HashSet;
 use std::convert::TryFrom;
@@ -436,6 +437,35 @@ impl Writeable for CommitPos {
 	}
 }
 
+/// A commitment paired with the exact output occurrence consumed by a block.
+///
+/// Unlike `CommitPos`, this is specifically a per-block spent-input cache entry.
+/// Keeping the association explicit avoids relying on block input order, which
+/// can change when inputs are converted between protocol representations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpentOutput {
+	/// Commitment of the output consumed by the block.
+	pub commitment: Commitment,
+	/// Exact output PMMR position and creation height.
+	pub position: CommitPos,
+}
+
+impl Readable for SpentOutput {
+	fn read<R: Reader>(reader: &mut R) -> Result<SpentOutput, ser::Error> {
+		Ok(SpentOutput {
+			commitment: Commitment::read(reader)?,
+			position: CommitPos::read(reader)?,
+		})
+	}
+}
+
+impl Writeable for SpentOutput {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.commitment.write(writer)?;
+		self.position.write(writer)
+	}
+}
+
 /// Minimal struct representing a known kernel MMR position and associated block height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KernelPos {
@@ -483,6 +513,37 @@ impl Writeable for HashHeight {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 		self.hash.write(writer)?;
 		writer.write_u64(self.height)?;
+		Ok(())
+	}
+}
+
+/// A retained block's exact spend of one output occurrence.
+///
+/// Commitments may be recreated after they are spent and the same commitment
+/// may also be spent on competing forks. The spending block therefore
+/// identifies the record, while `spent_output` disambiguates the precise PMMR
+/// occurrence consumed by that block.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpentCommitmentRecord {
+	/// Block that spent the output occurrence.
+	pub spending_block: HashHeight,
+	/// Exact output PMMR position and creation height consumed by the block.
+	pub spent_output: CommitPos,
+}
+
+impl Readable for SpentCommitmentRecord {
+	fn read<R: Reader>(reader: &mut R) -> Result<SpentCommitmentRecord, ser::Error> {
+		Ok(SpentCommitmentRecord {
+			spending_block: HashHeight::read(reader)?,
+			spent_output: CommitPos::read(reader)?,
+		})
+	}
+}
+
+impl Writeable for SpentCommitmentRecord {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.spending_block.write(writer)?;
+		self.spent_output.write(writer)?;
 		Ok(())
 	}
 }

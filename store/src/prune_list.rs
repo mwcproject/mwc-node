@@ -451,6 +451,14 @@ impl PruneList {
 		self.bitmap.is_empty()
 	}
 
+	/// Highest retained pruned-subtree root as a 1-based PMMR position.
+	///
+	/// A rewind target below this position would truncate at least one retained
+	/// root while leaving its prune-list entry and derived shifts behind.
+	pub(crate) fn last_pruned_root_pos1(&self) -> Option<u64> {
+		self.bitmap.maximum().map(u64::from)
+	}
+
 	/// A pos is pruned if it is a pruned root directly or if it is
 	/// beneath the "next" pruned subtree.
 	/// We only need to consider the "next" subtree due to the append-only MMR structure.

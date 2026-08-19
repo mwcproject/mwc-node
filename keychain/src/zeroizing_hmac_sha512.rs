@@ -51,7 +51,7 @@ impl ZeroizingSha512 {
 		buffer.digest_blocks(data, |blocks| core.update_blocks(blocks));
 	}
 
-	fn finalize_into(mut self, output: &mut Zeroizing<[u8; HMAC_SHA512_OUTPUT_SIZE]>) {
+	fn finalize_into(&mut self, output: &mut Zeroizing<[u8; HMAC_SHA512_OUTPUT_SIZE]>) {
 		output.zeroize();
 		let output: &mut Output<Sha512VarCore> = (&mut **output).into();
 		self.core.finalize_variable_core(&mut self.buffer, output);
@@ -108,13 +108,14 @@ impl ZeroizingHmacSha512 {
 		self.inner.update(data);
 	}
 
-	/// Consumes the HMAC state and writes the tag directly into zeroizing storage.
-	pub fn finalize_into(self, output: &mut Zeroizing<[u8; HMAC_SHA512_OUTPUT_SIZE]>) {
-		let Self { inner, mut outer } = self;
+	/// Finalizes the HMAC state in place and writes the tag into zeroizing storage.
+	///
+	/// This is a terminal operation; the state should be dropped immediately afterward.
+	pub fn finalize_into(&mut self, output: &mut Zeroizing<[u8; HMAC_SHA512_OUTPUT_SIZE]>) {
 		let mut inner_hash = Zeroizing::new([0u8; HMAC_SHA512_OUTPUT_SIZE]);
-		inner.finalize_into(&mut inner_hash);
-		outer.update(&inner_hash[..]);
-		outer.finalize_into(output);
+		self.inner.finalize_into(&mut inner_hash);
+		self.outer.update(&inner_hash[..]);
+		self.outer.finalize_into(output);
 	}
 }
 

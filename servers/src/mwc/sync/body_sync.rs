@@ -68,13 +68,25 @@ impl BodySync {
 		sync_peers: &SyncPeers,
 		best_height: u64,
 	) -> Result<SyncResponse, mwc_chain::Error> {
+		// Do not gate block requests on spent-commitment index readiness. PIBD
+		// intentionally starts with an empty retained-body index, and the blocks
+		// requested here populate it one by one. The same readiness state can also
+		// occur temporarily during reorg or recovery, so treating it as BadState
+		// could reset an otherwise valid chain.
 		// check if we need something
 		let head = self.chain.head()?;
 		let header_head = self.chain.header_head()?;
 
 		let max_avail_height = cmp::min(best_height, header_head.height);
+		self.invalidate_stale_request_series(max_avail_height)?;
 
-		// Last few blocks no need to sync, new mined blocks will be synced regular way
+		// BodySync is only the bulk height catch-up path. Once the body head is
+		// within the normal near-tip window, readiness is intentionally based on
+		// height rather than fork_point. Normal block handling owns branch
+		// reconciliation: orphan tracking requests missing ancestors and
+		// Chain::process_block fully validates and applies the branch when it
+		// connects. Reorgs beyond the configured cut-through horizon are
+		// deliberately outside the automatic-rewind policy.
 		if head.height > max_avail_height.saturating_sub(7) {
 			// Expected by QT wallet
 			info!(
@@ -115,6 +127,10 @@ impl BodySync {
 			}
 		}
 
+		// Historical-block capability is selected from the body head, not the fork
+		// point, for the same reason: this path requests BLOCK_HIST only for bulk
+		// catch-up from an old body height. Near-tip competing branches are left to
+		// the regular orphan/reorg flow described above.
 		let (peer_capabilities, required_capabilities) =
 			if self.chain.archive_mode() && head.height <= archive_height {
 				(
@@ -201,6 +217,9 @@ impl BodySync {
 						orph.source_peers,
 					) {
 						Ok(_) => {
+							let _ = self
+								.chain
+								.remove_orphan(next_block.height, &next_block_hash);
 							debug!("push stuck orphan was successful. Should be able continue to go forward now");
 							fork_point = self.chain.fork_point()?;
 						}
@@ -398,6 +417,63 @@ impl BodySync {
 		Ok(self.chain.is_orphan(&hash) || self.chain.block_exists(&hash)?)
 	}
 
+	/// A request series is derived from one canonical header branch. Validate its
+	/// highest retained entry before using it again so a header reorg or a lower
+	/// sync target cannot leave body sync retrying hashes from an obsolete branch.
+	fn invalidate_stale_request_series(
+		&self,
+		max_avail_height: u64,
+	) -> Result<(), mwc_chain::Error> {
+		// Keep the request-series lock while authenticating the anchor. send_requests
+		// takes the same lock before reading or sending entries, so no stale entry can
+		// be queued between validation and invalidation.
+		let mut request_series = self.request_series.write();
+		let Some((anchor_hash, anchor_height)) = request_series.first().cloned() else {
+			return Ok(());
+		};
+
+		let stale_reason = if anchor_height > max_avail_height {
+			Some(format!(
+				"anchor height {} exceeds available height {}",
+				anchor_height, max_avail_height
+			))
+		} else {
+			match self.chain.get_header_by_height(anchor_height) {
+				Ok(header) => {
+					let canonical_hash = header.hash(self.chain.get_context_id())?;
+					if canonical_hash == anchor_hash {
+						None
+					} else {
+						Some(format!(
+							"anchor {} at {} is no longer canonical (current {})",
+							anchor_hash, anchor_height, canonical_hash
+						))
+					}
+				}
+				Err(e) if e.is_not_found() => Some(format!(
+					"anchor header {} at {} is no longer available",
+					anchor_hash, anchor_height
+				)),
+				Err(e) => return Err(e),
+			}
+		};
+
+		if let Some(stale_reason) = stale_reason {
+			let cancelled_requests = self
+				.request_tracker
+				.cancel_requests(request_series.iter().map(|(hash, _)| hash));
+			request_series.clear();
+			*self.last_retry_height.write() = 0;
+			self.retry_expiration_times.write().clear();
+			debug!(
+				"Invalidated stale body request series ({}); cancelled {} tracked requests",
+				stale_reason, cancelled_requests
+			);
+		}
+
+		Ok(())
+	}
+
 	fn push_retry_expiration(&self, now: Instant) -> Result<(), mwc_chain::Error> {
 		let retry_latency = self.request_tracker.get_retry_latency();
 		let retry_expiration = now.checked_add(retry_latency).ok_or_else(|| {
@@ -585,19 +661,19 @@ impl BodySync {
 					"Processing request for the block {} at {}, peer {:?}",
 					hash, height, peer.info.addr
 				);
+				let request_token = self.request_tracker.register_request(
+					hash.clone(),
+					peer.info.addr.clone(),
+					format!("Block {}, {}", hash, height),
+				);
 				if let Err(e) = peer.send_block_request(hash.clone(), mwc_chain::Options::SYNC) {
+					self.request_tracker.rollback_request(&hash, &request_token);
 					let msg = format!(
 						"Failed to send block request to peer {}, {}",
 						peer.info.addr, e
 					);
 					warn!("{}", msg);
 					sync_peers.report_no_response(&peer.info.addr, msg);
-				} else {
-					self.request_tracker.register_request(
-						hash.clone(),
-						peer.info.addr.clone(),
-						format!("Block {}, {}", hash, height),
-					);
 				}
 			}
 		}

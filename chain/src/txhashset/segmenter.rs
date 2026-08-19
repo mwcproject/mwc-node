@@ -28,7 +28,9 @@ use mwc_crates::log::debug;
 use mwc_crates::parking_lot::RwLock;
 use mwc_crates::secp::pedersen::RangeProof;
 use std::convert::TryFrom;
-use std::{sync::Arc, time::Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 // Accept alternate peer segment layouts, but do not let one request scan an
 // unbounded sparse prunable PMMR range before the payload limit is reached.
@@ -231,6 +233,9 @@ pub struct Segmenter {
 	bitmap_snapshot: Arc<BitmapAccumulator>,
 	bitmap: Bitmap,
 	header: BlockHeader,
+	requires_init_recovery: Arc<AtomicBool>,
+	state_generation: Arc<AtomicU64>,
+	created_at_state_generation: u64,
 }
 
 impl Segmenter {
@@ -240,6 +245,28 @@ impl Segmenter {
 		txhashset: Arc<RwLock<TxHashSet>>,
 		bitmap_snapshot: BitmapAccumulator,
 		header: BlockHeader,
+	) -> Result<Segmenter, Error> {
+		Self::new_guarded(
+			header_pmmr,
+			txhashset,
+			bitmap_snapshot,
+			header,
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicU64::new(0)),
+			0,
+		)
+	}
+
+	/// Create a segmenter tied to the chain-state generation that produced
+	/// its immutable bitmap and header-hash snapshots.
+	pub(crate) fn new_guarded(
+		header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
+		txhashset: Arc<RwLock<TxHashSet>>,
+		bitmap_snapshot: BitmapAccumulator,
+		header: BlockHeader,
+		requires_init_recovery: Arc<AtomicBool>,
+		state_generation: Arc<AtomicU64>,
+		created_at_state_generation: u64,
 	) -> Result<Segmenter, Error> {
 		let bitmap = bitmap_snapshot
 			.build_bitmap()
@@ -251,7 +278,36 @@ impl Segmenter {
 			bitmap_snapshot: Arc::new(bitmap_snapshot),
 			bitmap,
 			header,
+			requires_init_recovery,
+			state_generation,
+			created_at_state_generation,
 		})
+	}
+
+	/// Whether this instance has been explicitly invalidated by chain recovery
+	/// or a state-reset operation.
+	///
+	/// Ordinary body reorgs deliberately do not invalidate Segmenters. The PIBD
+	/// archive point is kept at least `state_sync_threshold` blocks behind HEAD
+	/// (and rounded down to an archive interval), which is intended to keep it
+	/// behind normal reorgs. If an exceptional deeper reorg crosses an in-flight
+	/// archive point, the receiver validates every segment against the PMMR roots
+	/// committed in the archive header. Mismatched data is rejected and PIBD must
+	/// restart against the new canonical archive header; invalid state cannot be
+	/// accepted.
+	pub(crate) fn is_current(&self) -> bool {
+		!self.requires_init_recovery.load(Ordering::SeqCst)
+			&& self.state_generation.load(Ordering::SeqCst) == self.created_at_state_generation
+	}
+
+	fn ensure_current(&self) -> Result<(), Error> {
+		if self.is_current() {
+			Ok(())
+		} else {
+			Err(Error::Other(
+				"PIBD segmenter is stale because chain state changed or recovery is pending".into(),
+			))
+		}
 	}
 
 	/// Header associated with this segmenter instance.
@@ -262,22 +318,27 @@ impl Segmenter {
 
 	/// Root hash for headers Hashes MMR
 	pub fn headers_root(&self) -> Result<Hash, Error> {
+		self.ensure_current()?;
 		let header_pmmr = self.header_pmmr.read_recursive();
 		let pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
 		let root = pmmr.root()?;
+		self.ensure_current()?;
 		Ok(root)
 	}
 
 	/// The root of the bitmap snapshot PMMR.
 	pub fn bitmap_root(&self) -> Result<Hash, Error> {
+		self.ensure_current()?;
 		let pmmr = self.bitmap_snapshot.readonly_pmmr();
 		let root = pmmr.root()?;
+		self.ensure_current()?;
 		Ok(root)
 	}
 
 	/// Create a utxo bitmap segment based on our bitmap "snapshot" and return it with
 	/// the corresponding output root.
 	pub fn bitmap_segment(&self, id: SegmentIdentifier) -> Result<Segment<BitmapChunk>, Error> {
+		self.ensure_current()?;
 		let now = Instant::now();
 		let bitmap_pmmr = self.bitmap_snapshot.readonly_pmmr();
 		let segment = Segment::<BitmapChunk>::from_pmmr(
@@ -295,11 +356,13 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
+		self.ensure_current()?;
 		Ok(segment)
 	}
 
 	/// Create headers segment.
 	pub fn headers_segment(&self, id: SegmentIdentifier) -> Result<Segment<Hash>, Error> {
+		self.ensure_current()?;
 		let now = Instant::now();
 		let header_pmmr = self.header_pmmr.read_recursive();
 		let header_pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
@@ -318,6 +381,7 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
+		self.ensure_current()?;
 		Ok(segment)
 	}
 
@@ -326,8 +390,11 @@ impl Segmenter {
 		&self,
 		id: SegmentIdentifier,
 	) -> Result<Segment<OutputIdentifier>, Error> {
+		self.ensure_current()?;
 		let now = Instant::now();
 		let txhashset = self.txhashset.read_recursive();
+		// A writer may have failed while this request waited for txhashset.
+		self.ensure_current()?;
 		let output_pmmr = txhashset.output_pmmr_at(&self.header);
 		validate_prunable_segment_scan_span("output_segment", id, output_pmmr.unpruned_size())?;
 		let leaf_size = OutputIdentifier::elmt_size()
@@ -348,13 +415,17 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
+		self.ensure_current()?;
 		Ok(segment)
 	}
 
 	/// Create a kernel segment.
 	pub fn kernel_segment(&self, id: SegmentIdentifier) -> Result<Segment<TxKernel>, Error> {
+		self.ensure_current()?;
 		let now = Instant::now();
 		let txhashset = self.txhashset.read_recursive();
+		// A writer may have failed while this request waited for txhashset.
+		self.ensure_current()?;
 		let kernel_pmmr = txhashset.kernel_pmmr_at(&self.header);
 		let segment = Segment::<TxKernel>::from_pmmr(
 			id,
@@ -371,13 +442,17 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
+		self.ensure_current()?;
 		Ok(segment)
 	}
 
 	/// Create a rangeproof segment.
 	pub fn rangeproof_segment(&self, id: SegmentIdentifier) -> Result<Segment<RangeProof>, Error> {
+		self.ensure_current()?;
 		let now = Instant::now();
 		let txhashset = self.txhashset.read_recursive();
+		// A writer may have failed while this request waited for txhashset.
+		self.ensure_current()?;
 		let pmmr = txhashset.rangeproof_pmmr_at(&self.header);
 		validate_prunable_segment_scan_span("rangeproof_segment", id, pmmr.unpruned_size())?;
 		let segment_size_limit = pibd_params::PIBD_MESSAGE_SIZE_LIMIT * 2;
@@ -400,6 +475,7 @@ impl Segmenter {
 			segment.proof().size(),
 			now.elapsed().as_millis()
 		);
+		self.ensure_current()?;
 		Ok(segment)
 	}
 }

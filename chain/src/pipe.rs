@@ -15,10 +15,11 @@
 
 //! Implementation of the chain block acceptance (or refusal) pipeline.
 
+use crate::chain::{blocks_equal_as_v3, bodies_equal_header_committed};
 use crate::error::Error;
 use crate::store;
 use crate::txhashset;
-use crate::types::{CommitPos, Options, Tip};
+use crate::types::{CommitPos, Options, SpentCommitmentRecord, SpentOutput, Tip};
 use mwc_core::consensus;
 use mwc_core::consensus::HeaderDifficultyInfo;
 use mwc_core::core::hash::{Hash, Hashed};
@@ -28,17 +29,19 @@ use mwc_core::core::{block, Block, BlockHeader, BlockSums, OutputIdentifier, Tra
 use mwc_core::difficulty_cache::DifficultyCache;
 use mwc_core::global;
 use mwc_core::pow;
-use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::crossbeam;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::{debug, error, info};
 use mwc_crates::num_cpus;
 use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::Secp256k1;
 use mwc_store::Error::NotFoundErr;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::FromIterator;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Contextual information required to process a new block and either reject or
 /// accept it.
@@ -114,6 +117,20 @@ pub fn init_invalid_block_hashes(context_id: u32, hashes: HashSet<Hash>) {
 		.extend(hashes);
 }
 
+/// Validate that a caller-supplied header belongs to the active chain context.
+/// This must run before hashing, serializing, or performing PoW operations on
+/// the header because proof packing consults global parameters by context ID.
+pub fn validate_header_context_id(context_id: u32, header: &BlockHeader) -> Result<(), Error> {
+	let actual = header.pow.proof.context_id;
+	if actual != context_id {
+		return Err(Error::InvalidHeaderContext {
+			expected: context_id,
+			actual,
+		});
+	}
+	Ok(())
+}
+
 /// Validate the block hash, check if it is banned
 pub fn validate_header_hash(context_id: u32, hash: &Hash) -> Result<(), Error> {
 	let hashes = INVALID_BLOCK_HASHES.read_recursive();
@@ -145,11 +162,48 @@ fn check_known(
 	Ok(KnownStatus::Unknown)
 }
 
+/// Return true only when the complete incoming header exactly matches the
+/// stored record and cannot improve the current header chain.
+///
+/// Hash equality alone is insufficient before PoW validation because header
+/// hash mode serializes only the proof. An exact stored header with more work
+/// than `header_head` is deliberately reported as unknown so it can be
+/// reapplied after a reset or recovery.
+pub(crate) fn is_exact_known_header(
+	context_id: u32,
+	header: &BlockHeader,
+	header_head: &Tip,
+	batch: &store::Batch<'_>,
+) -> Result<bool, Error> {
+	let bh = header.hash(context_id)?;
+	match batch.get_block_header(&bh) {
+		Ok(existing) => {
+			if existing != *header {
+				return Err(Error::Block(block::Error::Other(
+					"known header hash matches a different header".into(),
+				)));
+			}
+			Ok(!has_more_work(&existing, header_head))
+		}
+		Err(NotFoundErr(_)) => Ok(false),
+		Err(e) => Err(Error::StoreErr(e, "pipe get exact known header".to_owned())),
+	}
+}
+
 /// Check the outputs of this block against spent outputs in the LMDB within the
-/// cut-through horizon. Older duplicates are accepted consistently, including
-/// by archive nodes that still retain their historical spent-commitment entries.
+/// replay window (half the cut-through horizon). Older duplicates are accepted
+/// consistently, including by archive nodes that still retain their historical
+/// spent-commitment entries.
+///
+/// This policy must not be treated as proof that a commitment has only one raw
+/// output occurrence in locally retained history. Coinbase outputs are excluded
+/// below, compaction can lag the configured horizon, and archive nodes retain
+/// deeper history. Code that restores or preserves a historical output position
+/// must therefore authenticate the position independently rather than relying on
+/// this replay window.
 pub fn check_against_spent_output(
 	tx: &TransactionBody,
+	replay_tip_height: u64,
 	fork_point_height: Option<u64>,
 	local_branch_blocks: Option<&Vec<Hash>>,
 	header_extension: &txhashset::HeaderExtension<'_>,
@@ -162,40 +216,46 @@ pub fn check_against_spent_output(
 		.iter()
 		.filter(|output| !output.is_coinbase())
 		.map(|output| output.identifier.commit);
-	let tip = batch
-		.head()
-		.map_err(|e| Error::Other(format!("Unable to get a head from batch, {}", e)))?;
-	// Note, using half of horizon because it covers our need for mwc-wallet.
-	// We better don't use all cut_through_horizon, because in case of deep reorg, number
-	// of indexed blocks can be reduced and become less than cut_through_horizon.
-	// We really don't want index to be incomplete to validate commit existance
-	let replay_horizon_height = tip
-		.height
+	// Use the candidate state immediately before this transaction or block is
+	// applied. The durable body head can belong to a different branch and is not
+	// advanced between blocks in a validation series.
+	//
+	// Half of the cut-through horizon is the configured replay window. Using the
+	// full horizon would make deep reorgs more likely to require pruned history.
+	let replay_horizon_height = replay_tip_height
 		.saturating_sub(u64::from(global::cut_through_horizon(batch.get_context_id())) / 2);
-	let fork_height = fork_point_height.unwrap_or(tip.height);
-	//convert the list of local branch bocks header hashes to a hash set for quick search
+	let fork_height = fork_point_height.unwrap_or(replay_tip_height);
+	// Convert the local-branch block header hashes to a set for quick lookup.
 	let empty_vec = Vec::new();
 	let local_branch_blocks_list = local_branch_blocks.unwrap_or(&empty_vec);
 	let local_branch_blocks_set = HashSet::<&Hash>::from_iter(local_branch_blocks_list.iter());
 
-	if !batch.is_retained_spent_commitment_index_complete()? {
+	// This is deliberately a best-effort check over locally indexed blocks.
+	// "Complete" means the canonical body window has a trusted baseline; it does
+	// not promise pre-PIBD history or coverage of old retained forks. Subsequent
+	// block validation adds canonical and fork records incrementally. Missing
+	// historical coverage must not trigger chain resets because it can also occur
+	// during synchronization, recovery, and reorgs.
+	if !batch.is_spent_commitment_record_index_complete()? {
 		return Err(Error::SpentCommitmentIndexIncomplete);
 	}
 
 	for commit in output_commits {
 		let commit_hash = batch.get_spent_commitments(&commit)?; // check to see if this commitment is in the spent records in db
 		if let Some(c_hash) = commit_hash {
-			for hash_val in c_hash {
+			for record in c_hash {
+				let hash_val = record.spending_block;
 				let header = batch.get_block_header(&hash_val.hash)?;
-				if header.height != hash_val.height {
+				let loaded_hash = header.hash(batch.get_context_id())?;
+				if loaded_hash != hash_val.hash || header.height != hash_val.height {
 					return Err(Error::TxHashSetErr(format!(
-						"spent commitment index height mismatch for block {}: index height {}, header height {}",
-						hash_val.hash, hash_val.height, header.height
+						"spent commitment index block mismatch for {} at height {}: stored header hashes to {} at height {}",
+						hash_val.hash, hash_val.height, loaded_hash, header.height
 					)));
 				}
 
-				// Keep the boundary inclusive. Only spends strictly below
-				// tip - CUT_THROUGH_HORIZON are accepted.
+				// Keep the boundary inclusive. Only spends strictly below the
+				// candidate replay tip minus CUT_THROUGH_HORIZON / 2 are accepted.
 				if header.height < replay_horizon_height {
 					continue;
 				}
@@ -207,7 +267,11 @@ pub fn check_against_spent_output(
 						"output contains spent commtiment:{:?} from local branch",
 						commit
 					);
-					return Err(Error::ReplayAttack(commit, tip.height, hash_val.height));
+					return Err(Error::ReplayAttack(
+						commit,
+						replay_tip_height,
+						hash_val.height,
+					));
 				} else if header.height <= fork_height {
 					if header_extension
 						.is_on_current_chain(Tip::try_from_header(&header)?, batch)?
@@ -216,7 +280,11 @@ pub fn check_against_spent_output(
 							"output contains spent commtiment:{:?} from the main chain",
 							commit
 						);
-						return Err(Error::ReplayAttack(commit, tip.height, hash_val.height));
+						return Err(Error::ReplayAttack(
+							commit,
+							replay_tip_height,
+							hash_val.height,
+						));
 					}
 				}
 			}
@@ -268,38 +336,91 @@ fn validate_pow_batch_parallel(
 	headers: &[BlockHeader],
 	ctx: &BlockContext<'_>,
 ) -> Result<(), Error> {
-	let skip_pow = ctx.skip_pow();
+	validate_pow_batch_parallel_inner(context_id, headers, ctx.pow_verifier, ctx.skip_pow())
+}
 
+fn validate_pow_batch_parallel_inner(
+	context_id: u32,
+	headers: &[BlockHeader],
+	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	skip_pow: bool,
+) -> Result<(), Error> {
 	if skip_pow || headers.len() <= 32 {
 		for header in headers {
-			validate_pow_only(context_id, header, ctx.pow_verifier, skip_pow)?;
+			validate_pow_only(context_id, header, pow_verifier, skip_pow)?;
 		}
 		return Ok(());
 	}
 
 	let worker_count = num_cpus::get().max(1).min(headers.len());
 	let chunk_size = (headers.len() + worker_count - 1) / worker_count;
-	let pow_verifier = ctx.pow_verifier;
+	// PoW validation is deliberately fail-fast. Once one chunk rejects the
+	// batch, continuing through otherwise valid chunks gives an untrusted peer
+	// an avoidable CPU-amplification opportunity.
+	let cancelled = AtomicBool::new(false);
 
 	let verify_result = crossbeam::thread::scope(|s| {
 		let mut handles = Vec::with_capacity(worker_count);
+		let mut first_error = None;
+		let mut worker_panicked = false;
 		for chunk in headers.chunks(chunk_size) {
-			handles.push(s.spawn(move |_| {
-				for header in chunk {
-					validate_pow_only(context_id, header, pow_verifier, false)?;
+			let cancelled = &cancelled;
+			let handle = match s.builder().spawn(move |_| {
+				let result = panic::catch_unwind(AssertUnwindSafe(|| {
+					for header in chunk {
+						if cancelled.load(Ordering::Relaxed) {
+							return Ok(());
+						}
+						validate_pow_only(context_id, header, pow_verifier, false)?;
+					}
+					Ok::<(), Error>(())
+				}));
+
+				match result {
+					Ok(Ok(())) => Ok(()),
+					Ok(Err(e)) => {
+						cancelled.store(true, Ordering::Relaxed);
+						Err(e)
+					}
+					Err(payload) => {
+						cancelled.store(true, Ordering::Relaxed);
+						panic::resume_unwind(payload)
+					}
 				}
-				Ok::<(), Error>(())
-			}));
+			}) {
+				Ok(handle) => handle,
+				Err(e) => {
+					cancelled.store(true, Ordering::Relaxed);
+					first_error = Some(Error::Other(format!(
+						"failed to spawn header PoW worker: {}",
+						e
+					)));
+					break;
+				}
+			};
+			handles.push(handle);
 		}
 
 		for handle in handles {
-			let result = handle
-				.join()
-				.map_err(|_| Error::Other("header PoW crossbeam runtime failure".into()))?;
-			result?;
+			match handle.join() {
+				Ok(Ok(())) => {}
+				Ok(Err(e)) => {
+					if first_error.is_none() {
+						first_error = Some(e);
+					}
+				}
+				Err(_) => worker_panicked = true,
+			}
 		}
 
-		Ok::<(), Error>(())
+		if worker_panicked {
+			return Err(Error::Other("header PoW crossbeam runtime failure".into()));
+		}
+
+		match first_error {
+			Some(e) => Err(e),
+			None => Ok(()),
+		}
 	})
 	.map_err(|_| Error::Other("header PoW crossbeam runtime failure".into()))?;
 	verify_result
@@ -412,6 +533,9 @@ pub fn process_blocks_series(
 	let first_block = blocks.first().ok_or(Error::Other(
 		"Invalid process_blocks_series param blocks - it is empty".into(),
 	))?;
+	for block in blocks {
+		validate_header_context_id(context_id, &block.header)?;
+	}
 	debug!(
 		"pipe: process_blocks_series {} at {}, blocks in series: {}",
 		first_block.hash(context_id)?,
@@ -477,8 +601,9 @@ pub fn process_blocks_series(
 	// Treat a known full block as duplicate only after the incoming block has
 	// passed PoW and internal block validation. Before that, the proof-derived
 	// header hash alone is not a safe identity for peer-supplied full blocks.
-	if let Some(e) = check_known_exact_full_block(context_id, first_block, &head, ctx)?.into_error()
-	{
+	// Simple mutations fail those checks; this ordering prevents them from being
+	// incorrectly accepted as already-known data first.
+	if let Some(e) = check_known_full_blocks(context_id, blocks, &head, &ctx.batch)?.into_error() {
 		return Err(e);
 	}
 
@@ -490,8 +615,9 @@ pub fn process_blocks_series(
 	let header_pmmr = &mut ctx.header_pmmr;
 	let txhashset = &mut ctx.txhashset;
 	let batch = &mut ctx.batch;
+	let mut retained_spent_records = Vec::new();
+	let mut retained_spent_indexes = Vec::new();
 	let fork_point = txhashset::extending(header_pmmr, txhashset, batch, |ext, batch| {
-		*state_may_have_changed = true;
 		let fork_point_local_blocks = rewind_and_apply_fork(context_id, &prev, ext, batch, secp)?;
 
 		let fork_point = fork_point_local_blocks.0;
@@ -525,9 +651,21 @@ pub fn process_blocks_series(
 			// Apply the block to the txhashset state.
 			// Validate the txhashset roots and sizes against the block header.
 			// Block is invalid if there are any discrepencies.
-			apply_block_to_txhashset(b, ext, batch)?;
+			let block_spent_records = apply_block_to_txhashset(b, ext, batch)?;
+			let block_hash = b.hash(context_id)?;
+			retained_spent_indexes.push((
+				block_hash,
+				block_spent_records
+					.iter()
+					.map(|(commitment, record)| SpentOutput {
+						commitment: *commitment,
+						position: record.spent_output,
+					})
+					.collect::<Vec<_>>(),
+			));
+			retained_spent_records.extend(block_spent_records);
 
-			local_branch_blocks.push(b.hash(context_id)?); // appending processed block to the local branch
+			local_branch_blocks.push(block_hash); // appending processed block to the local branch
 		}
 
 		// The txhashset extension and the later BODY_HEAD update must make the
@@ -539,6 +677,14 @@ pub fn process_blocks_series(
 
 		Ok(fork_point)
 	})?;
+	// A successful higher-work extension has committed its child batch and
+	// synchronized the body PMMRs. Any later error requires reconciliation.
+	// Ordinary pre-sync extension errors have already discarded their provisional
+	// PMMR changes. Sync-stage and discard failures are explicitly classified as
+	// recovery-worthy by their error variants.
+	if series_has_more_work {
+		*state_may_have_changed = true;
+	}
 
 	// Add the validated block to the db.
 	// Note we do this in the outer batch, not the child batch from the extension
@@ -546,6 +692,16 @@ pub fn process_blocks_series(
 	// We want to save the block to the db regardless.
 	for b in blocks {
 		add_block(b, &ctx.batch)?;
+	}
+	// A losing-fork extension deliberately rolls its child batch back, but the
+	// fully validated block body is retained. Persist its spent-position cache
+	// and exact records in the outer batch as well. On a winning branch this is
+	// idempotent.
+	for (block_hash, spent_index) in retained_spent_indexes {
+		ctx.batch.save_spent_index(&block_hash, &spent_index)?;
+	}
+	for (commitment, record) in retained_spent_records {
+		ctx.batch.save_spent_commitments(&commitment, record)?;
 	}
 
 	// If we have no "tail" then set it now.
@@ -583,8 +739,13 @@ pub fn replay_attack_check(
 	};
 
 	if b.header.height > height_limit && global::is_replay_protection_enabled() {
+		let replay_tip_height = ext.extension.head().height;
+		if replay_tip_height.checked_add(1) != Some(b.header.height) {
+			return Err(Error::InvalidBlockHeight);
+		}
 		check_against_spent_output(
 			&b.body,
+			replay_tip_height,
 			Some(fork_point_height),
 			Some(local_branch_blocks),
 			ext.header_extension,
@@ -606,6 +767,9 @@ pub fn process_block_headers(
 ) -> Result<Option<Tip>, Error> {
 	if headers.is_empty() {
 		return Ok(None);
+	}
+	for header in headers {
+		validate_header_context_id(context_id, header)?;
 	}
 	let last_header = headers.last().ok_or(Error::Other(
 		"process_block_headers internal error, headers param is empty".into(),
@@ -752,36 +916,42 @@ pub fn process_block_header(
 	ctx: &mut BlockContext<'_>,
 	state_may_have_changed: &mut bool,
 ) -> Result<(), Error> {
-	// If we have already processed the full block for this header then done.
+	validate_header_context_id(context_id, header)?;
+
+	// Denylist policy is authoritative even for exact headers already in the
+	// store. Keep this ahead of every known-header success shortcut.
+	validate_header_hash(context_id, &header.hash(context_id)?)?;
+
+	// If we have already processed the full block for this header then done,
+	// unless the header can still improve a rewound header chain.
 	// Note: "already known" in this context is success so subsequent processing can continue.
+	let head = ctx.batch.head()?;
+	let header_head = ctx.batch.header_head()?;
+	if check_known(context_id, header, &head, ctx)?.is_known()
+		&& !has_more_work(header, &header_head)
 	{
-		let head = ctx.batch.head()?;
-		if check_known(context_id, header, &head, ctx)?.is_known() {
-			return Ok(());
-		}
+		return Ok(());
 	}
 
-	// Check this header is not an orphan, we must know about the previous header to continue.
-	let prev_header = prev_header_store(header, &ctx.batch)?;
+	// Check this header is not an orphan, we must know about the previous header
+	// to continue. A missing parent must not bypass standalone PoW validation:
+	// callers may use the proof-derived header hash as an orphan-cache key, and
+	// that hash binds the rest of the header only after its PoW is authenticated.
+	let prev_header = match prev_header_store(header, &ctx.batch) {
+		Ok(prev_header) => prev_header,
+		Err(e @ Error::Orphan(_)) => {
+			validate_pow_only(context_id, header, ctx.pow_verifier, ctx.skip_pow())?;
+			return Err(e);
+		}
+		Err(e) => return Err(e),
+	};
 
 	// If we have not yet seen the full block then check if we have seen this header.
 	// If it does not increase total_difficulty beyond our current header_head
 	// then we can (re)accept this header and process the full block (or request it).
 	// This header is on a fork and we should still accept it as the fork may eventually win.
-	let header_head = ctx.batch.header_head()?;
-	match ctx.batch.get_block_header(&header.hash(context_id)?) {
-		Ok(existing) => {
-			if existing != *header {
-				return Err(Error::Block(block::Error::Other(
-					"known header hash matches a different header".into(),
-				)));
-			}
-			if !has_more_work(&existing, &header_head) {
-				return Ok(());
-			}
-		}
-		Err(NotFoundErr(_)) => {}
-		Err(e) => return Err(Error::StoreErr(e, "pipe check existing header".to_owned())),
+	if is_exact_known_header(context_id, header, &header_head, &ctx.batch)? {
+		return Ok(());
 	}
 
 	// We want to validate this individual header before applying it to our header PMMR.
@@ -789,21 +959,29 @@ pub fn process_block_header(
 
 	// Apply the header to the header PMMR, making sure we put the extension in the correct state
 	// based on previous header first.
+	let improves_header_head = has_more_work(header, &header_head);
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		*state_may_have_changed = true;
 		rewind_and_apply_header_fork(context_id, &prev_header, ext, batch)?;
 		ext.validate_root(header)?;
 		ext.apply_header(header)?;
-		if !has_more_work(&header, &header_head) {
+		if !improves_header_head {
 			ext.force_rollback();
 		}
 		Ok(())
 	})?;
+	// A successful higher-work extension has committed its child batch and
+	// synchronized the header PMMR. Any later error requires reconciliation.
+	// Ordinary pre-sync extension errors have already discarded their provisional
+	// PMMR changes. Sync-stage and discard failures are explicitly classified as
+	// recovery-worthy by their error variants.
+	if improves_header_head {
+		*state_may_have_changed = true;
+	}
 
 	// Add this new block header to the db.
 	add_block_header(header, &ctx.batch)?;
 
-	if has_more_work(header, &header_head) {
+	if improves_header_head {
 		update_header_head(&Tip::try_from_header(header)?, &mut ctx.batch)?;
 	}
 
@@ -876,19 +1054,41 @@ fn check_known_exact_full_block(
 	context_id: u32,
 	block: &Block,
 	head: &Tip,
-	ctx: &BlockContext<'_>,
+	batch: &store::Batch<'_>,
 ) -> Result<KnownStatus, Error> {
 	let bh = block.hash(context_id)?;
-	let existing = match ctx.batch.get_block(&bh) {
+	let existing = match batch.get_block(&bh) {
 		Ok(existing) => existing,
 		Err(NotFoundErr(_)) => return Ok(KnownStatus::Unknown),
 		Err(e) => return Err(Error::StoreErr(e, "pipe get known full block".to_owned())),
 	};
+	if existing.header != block.header {
+		return Err(Error::Block(block::Error::Other(
+			"known block hash matches a different header".into(),
+		)));
+	}
 
-	let existing_bytes = ser::ser_vec(context_id, &existing, ProtocolVersion::local())?;
-	let incoming_bytes = ser::ser_vec(context_id, block, ProtocolVersion::local())?;
-	if existing_bytes != incoming_bytes {
-		return Ok(KnownStatus::Unknown);
+	// Outputs, rangeproofs and kernels are committed by the header's cumulative
+	// MMR roots. Once both the stored block and candidate have passed internal
+	// validation, different encodings here prove that the candidate cannot match
+	// this header (absent a cryptographic hash collision). Classify this as bad
+	// remote data so the caller can reject the peer instead of silently returning
+	// the generic duplicate/control-flow error below.
+	if !bodies_equal_header_committed(context_id, &existing.body, &block.body)? {
+		return Err(Error::InvalidRoot(format!(
+			"header-committed body conflicts with stored block {}",
+			bh
+		)));
+	}
+
+	// This is a trusted-store-versus-candidate comparison, not orphan
+	// deduplication. Normalize v2 input features only for this known-block
+	// decision; see blocks_equal_as_v3 for the safety boundary and tradeoff.
+	if !blocks_equal_as_v3(context_id, &existing, block)? {
+		return Err(Error::Unfit(format!(
+			"conflicting full block inputs for existing header {}",
+			bh
+		)));
 	}
 
 	if bh == head.last_block_h || bh == head.prev_block_h {
@@ -902,6 +1102,27 @@ fn check_known_exact_full_block(
 	} else {
 		Ok(KnownStatus::KnownInStore)
 	}
+}
+
+/// Classify the first block for existing duplicate handling and reject a
+/// conflicting stored body anywhere in the series before opening a txhashset
+/// extension. Later exact bodies retain their existing reapplication behavior.
+fn check_known_full_blocks(
+	context_id: u32,
+	blocks: &[Block],
+	head: &Tip,
+	batch: &store::Batch<'_>,
+) -> Result<KnownStatus, Error> {
+	let first = blocks.first().ok_or_else(|| {
+		Error::InvalidBlocksSeries("cannot check known status for an empty block series".into())
+	})?;
+	let first_status = check_known_exact_full_block(context_id, first, head, batch)?;
+	for block in blocks.iter().skip(1) {
+		// Ignore duplicate status for later blocks, matching the existing series
+		// behavior, but never ignore a conflicting body error.
+		check_known_exact_full_block(context_id, block, head, batch)?;
+	}
+	Ok(first_status)
 }
 
 // Find the previous header from the store.
@@ -1022,12 +1243,13 @@ fn apply_block_to_txhashset(
 	block: &Block,
 	ext: &mut txhashset::ExtensionPair<'_>,
 	batch: &store::Batch<'_>,
-) -> Result<(), Error> {
-	ext.extension
+) -> Result<Vec<(Commitment, SpentCommitmentRecord)>, Error> {
+	let spent_records = ext
+		.extension
 		.apply_block(block, ext.header_extension, batch)?;
 	ext.extension.validate_roots(&block.header)?;
 	ext.extension.validate_sizes(&block.header)?;
-	Ok(())
+	Ok(spent_records)
 }
 
 /// Officially adds the block to our chain (possibly on a losing fork).
@@ -1090,24 +1312,82 @@ pub fn rewind_and_apply_header_fork(
 	ext: &mut txhashset::HeaderExtension<'_>,
 	batch: &store::Batch<'_>,
 ) -> Result<(), Error> {
-	let mut fork_hashes = vec![];
+	rewind_and_apply_header_fork_impl(context_id, header, ext, batch, None)
+}
+
+/// Rewind the header PMMR to an authoritative persisted header during
+/// incomplete-operation recovery.
+///
+/// Unlike the normal path, membership is compared directly against PMMR data
+/// after `authenticate_header` binds every complete persisted header to its
+/// proof. The speculative PMMR suffix being discarded may have no BlockHeader
+/// records because its enclosing DB transaction never committed. Persisted
+/// ancestry is also not re-evaluated against the mutable denylist during this
+/// durability repair.
+pub(crate) fn rewind_and_apply_header_fork_for_recovery(
+	context_id: u32,
+	header: &BlockHeader,
+	ext: &mut txhashset::HeaderExtension<'_>,
+	batch: &store::Batch<'_>,
+	authenticate_header: &dyn Fn(&BlockHeader) -> Result<(), Error>,
+) -> Result<(), Error> {
+	rewind_and_apply_header_fork_impl(context_id, header, ext, batch, Some(authenticate_header))
+}
+
+fn rewind_and_apply_header_fork_impl(
+	context_id: u32,
+	header: &BlockHeader,
+	ext: &mut txhashset::HeaderExtension<'_>,
+	batch: &store::Batch<'_>,
+	recovery_authenticator: Option<&dyn Fn(&BlockHeader) -> Result<(), Error>>,
+) -> Result<(), Error> {
+	let mut fork_headers = vec![];
 	let mut current = header.clone();
-	while current.height > 0 {
-		let current_tip = Tip::try_from_header(&current)?;
-		if ext.is_on_current_chain(current_tip, batch)? {
+	let mut visited = HashSet::new();
+	loop {
+		// HeaderEntry and the indexed PMMR leaf hash do not commit to every
+		// BlockHeader field. Recovery must therefore cryptographically bind the
+		// complete persisted header to its proof before trusting a PMMR match.
+		if let Some(authenticate_header) = recovery_authenticator {
+			authenticate_header(&current)?;
+		}
+
+		// A header already represented by the current PMMR was accepted earlier
+		// and is the fork point. Do not re-evaluate it or its ancestors against the
+		// mutable denylist; only fork headers appended below use the current list.
+		let on_current_chain = if recovery_authenticator.is_some() {
+			ext.is_persisted_header_on_current_chain(&current)?
+		} else {
+			ext.is_header_on_current_chain(&current, batch)?
+		};
+		if on_current_chain {
 			break;
 		}
-		fork_hashes.push(current_tip.last_block_h);
-		current = batch.get_previous_header(&current)?;
+		if current.height == 0 {
+			return Err(Error::InvalidPersistedChainState(format!(
+				"rewind_and_apply_header_fork reached noncanonical genesis {}",
+				current.hash(context_id)?
+			)));
+		}
+		fork_headers.push(current.clone());
+		current = crate::checked_previous_header(
+			context_id,
+			&current,
+			&mut visited,
+			"rewind_and_apply_header_fork",
+			|hash| batch.get_block_header(hash),
+		)?;
 	}
-	fork_hashes.reverse();
+	fork_headers.reverse();
 
 	let forked_header = current;
 
 	// Rewind the txhashset state back to the block where we forked from the most work chain.
 	ext.rewind(&forked_header)?;
 
-	let invalid_block_hashes = {
+	let invalid_block_hashes = if recovery_authenticator.is_some() {
+		HashSet::new()
+	} else {
 		let invalid_hashes = INVALID_BLOCK_HASHES.read_recursive();
 		if let Some(blocked_hashes) = invalid_hashes.get(&context_id) {
 			blocked_hashes.clone()
@@ -1117,13 +1397,10 @@ pub fn rewind_and_apply_header_fork(
 	};
 
 	// Re-apply all headers on this fork.
-	for h in fork_hashes {
-		let header = batch
-			.get_block_header(&h)
-			.map_err(|e| Error::StoreErr(e, "getting forked headers".to_string()))?;
-
-		// Re-validate every header being re-applied.
-		// This makes it possible to check all header hashes against the ctx specific "denylist".
+	for header in fork_headers {
+		// Recheck the denylist and header-MMR linkage while reapplying. Normal
+		// operation relies on admission-time PoW validation; recovery repeated PoW
+		// authentication above before adding this header to fork_headers.
 		let header_hash = header.hash(context_id)?;
 		if invalid_block_hashes.contains(&header_hash) {
 			return Err(Error::Block(block::Error::Other(
@@ -1150,40 +1427,127 @@ pub fn rewind_and_apply_fork(
 	batch: &store::Batch<'_>,
 	secp: &Secp256k1,
 ) -> Result<(BlockHeader, Vec<Hash>), Error> {
+	rewind_and_apply_fork_impl(context_id, header, ext, batch, secp, None)
+}
+
+/// Reconcile body PMMR state to an authoritative durable body head.
+///
+/// The header traversal used as a temporary body-fork index authenticates
+/// persisted ancestry but deliberately ignores the mutable denylist. This must
+/// remain restricted to incomplete-operation recovery; peer admission and
+/// explicit bad-block rewinds use [`rewind_and_apply_fork`].
+pub(crate) fn rewind_and_apply_fork_for_recovery(
+	context_id: u32,
+	header: &BlockHeader,
+	ext: &mut txhashset::ExtensionPair<'_>,
+	batch: &store::Batch<'_>,
+	secp: &Secp256k1,
+	authenticate_header: &dyn Fn(&BlockHeader) -> Result<(), Error>,
+) -> Result<(BlockHeader, Vec<Hash>), Error> {
+	rewind_and_apply_fork_impl(
+		context_id,
+		header,
+		ext,
+		batch,
+		secp,
+		Some(authenticate_header),
+	)
+}
+
+fn rewind_and_apply_fork_impl(
+	context_id: u32,
+	header: &BlockHeader,
+	ext: &mut txhashset::ExtensionPair<'_>,
+	batch: &store::Batch<'_>,
+	secp: &Secp256k1,
+	recovery_authenticator: Option<&dyn Fn(&BlockHeader) -> Result<(), Error>>,
+) -> Result<(BlockHeader, Vec<Hash>), Error> {
 	let extension = &mut ext.extension;
 	let header_extension = &mut ext.header_extension;
 
 	// Prepare the header MMR.
-	rewind_and_apply_header_fork(context_id, header, header_extension, batch)?;
+	if let Some(authenticate_header) = recovery_authenticator {
+		rewind_and_apply_header_fork_for_recovery(
+			context_id,
+			header,
+			header_extension,
+			batch,
+			authenticate_header,
+		)?;
+	} else {
+		rewind_and_apply_header_fork(context_id, header, header_extension, batch)?;
+	}
 
 	// Rewind the txhashset extension back to common ancestor based on header MMR.
 	let mut current = batch.head_header()?;
-	while current.height > 0
-		&& !header_extension.is_on_current_chain(Tip::try_from_header(&current)?, batch)?
-	{
-		current = batch.get_previous_header(&current)?;
+	let mut visited = HashSet::new();
+	while !header_extension.is_header_on_current_chain(&current, batch)? {
+		if current.height == 0 {
+			return Err(Error::InvalidPersistedChainState(format!(
+				"rewind_and_apply_fork body ancestry reached noncanonical genesis {}",
+				current.hash(context_id)?
+			)));
+		}
+		current = crate::checked_previous_header(
+			context_id,
+			&current,
+			&mut visited,
+			"rewind_and_apply_fork body ancestry",
+			|hash| batch.get_block_header(hash),
+		)?;
 	}
 	let fork_point = current;
-	extension.rewind(&fork_point, batch, header_extension, None)?;
 
 	// Then apply all full blocks since this common ancestor
 	// to put txhashet extension in a state to accept the new block.
-	let mut fork_hashes = vec![];
+	let mut fork_headers = vec![];
 	let mut current = header.clone();
+	let mut visited = HashSet::new();
 	while current.height > fork_point.height {
-		fork_hashes.push(current.hash(context_id)?);
-		current = batch.get_previous_header(&current)?;
+		fork_headers.push(current.clone());
+		current = crate::checked_previous_header(
+			context_id,
+			&current,
+			&mut visited,
+			"rewind_and_apply_fork fork ancestry",
+			|hash| batch.get_block_header(hash),
+		)?;
 	}
-	fork_hashes.reverse();
+	if current != fork_point {
+		return Err(Error::InvalidPersistedChainState(format!(
+			"rewind_and_apply_fork expected fork point {} at height {}, found {} at height {}",
+			fork_point.hash(context_id)?,
+			fork_point.height,
+			current.hash(context_id)?,
+			current.height
+		)));
+	}
+	fork_headers.reverse();
 
-	for h in &fork_hashes {
-		let fb = match batch
-			.get_block(&h)
-			.map_err(|e| Error::StoreErr(e, "getting forked blocks".to_string()))
-		{
-			Ok(fb) => fb,
-			Err(e) => return Err(e),
-		};
+	// Preflight every full block before rewinding or applying body state. These
+	// persisted records are not passed through normal PoW validation again, so
+	// each must carry the exact validated header selected by ancestry traversal.
+	// A mismatch indicates inconsistent local state, not an accepted peer block.
+	for expected_header in &fork_headers {
+		crate::checked_block_for_header(
+			context_id,
+			expected_header,
+			"rewind_and_apply_fork preflight",
+			|hash| batch.get_block(hash),
+		)?;
+	}
+
+	extension.rewind(&fork_point, batch, None)?;
+
+	let mut fork_hashes = Vec::with_capacity(fork_headers.len());
+	for expected_header in &fork_headers {
+		let fb = crate::checked_block_for_header(
+			context_id,
+			expected_header,
+			"rewind_and_apply_fork apply",
+			|hash| batch.get_block(hash),
+		)?;
+		fork_hashes.push(expected_header.hash(context_id)?);
 
 		// Re-verify coinbase maturity along this fork.
 		verify_coinbase_maturity(context_id, &fb, ext, batch)?;
@@ -1211,4 +1575,171 @@ fn validate_utxo(
 	extension
 		.utxo_view(header_extension)
 		.validate_block(block, batch)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use mwc_core::core::{CommitWrapper, Inputs, Output, OutputFeatures};
+	use mwc_crates::secp::pedersen::RangeProof;
+	use mwc_crates::secp::ContextFlag;
+	use std::cell::Cell;
+	use std::fs;
+	use std::sync::atomic::{AtomicBool as TestAtomicBool, AtomicUsize};
+	use std::sync::{Arc, Barrier, Mutex};
+	use std::thread;
+	use std::time::Duration;
+
+	static POW_TEST_BARRIER: Mutex<Option<Arc<Barrier>>> = Mutex::new(None);
+	static POW_TEST_CALLS: AtomicUsize = AtomicUsize::new(0);
+	static POW_TEST_REJECTED: TestAtomicBool = TestAtomicBool::new(false);
+
+	thread_local! {
+		static POW_TEST_FIRST_CALL: Cell<bool> = const { Cell::new(true) };
+	}
+
+	fn reject_first_parallel_pow(_: u32, header: &BlockHeader) -> Result<(), pow::Error> {
+		POW_TEST_CALLS.fetch_add(1, Ordering::SeqCst);
+		let first_call = POW_TEST_FIRST_CALL.with(|first| first.replace(false));
+
+		if first_call {
+			let barrier = POW_TEST_BARRIER
+				.lock()
+				.expect("PoW test barrier lock poisoned")
+				.as_ref()
+				.expect("PoW test barrier not initialized")
+				.clone();
+			barrier.wait();
+		}
+
+		if header.height == 0 {
+			POW_TEST_REJECTED.store(true, Ordering::SeqCst);
+			return Err(pow::Error::Verification(
+				"forced parallel PoW failure".into(),
+			));
+		}
+
+		if first_call {
+			while !POW_TEST_REJECTED.load(Ordering::SeqCst) {
+				thread::yield_now();
+			}
+			// Give the rejecting worker time to publish the production cancellation
+			// flag before the other workers attempt their next header.
+			thread::sleep(Duration::from_millis(100));
+		}
+		Ok(())
+	}
+
+	#[test]
+	fn parallel_pow_validation_cancels_remaining_headers_after_error() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let mut headers = vec![BlockHeader::default(0); 512];
+		for (height, header) in headers.iter_mut().enumerate() {
+			header.height = height as u64;
+			// Secondary PoW classification does not consult per-thread chain
+			// parameters, so this test isolates worker cancellation behavior.
+			header.pow.proof.edge_bits = consensus::SECOND_POW_EDGE_BITS;
+		}
+
+		let worker_count = num_cpus::get().max(1).min(headers.len());
+		let chunk_size = (headers.len() + worker_count - 1) / worker_count;
+		let chunk_count = headers.chunks(chunk_size).count();
+		POW_TEST_CALLS.store(0, Ordering::SeqCst);
+		POW_TEST_REJECTED.store(false, Ordering::SeqCst);
+		*POW_TEST_BARRIER
+			.lock()
+			.expect("PoW test barrier lock poisoned") = Some(Arc::new(Barrier::new(chunk_count)));
+
+		let err = validate_pow_batch_parallel_inner(0, &headers, reject_first_parallel_pow, false)
+			.unwrap_err();
+
+		*POW_TEST_BARRIER
+			.lock()
+			.expect("PoW test barrier lock poisoned") = None;
+		assert!(matches!(err, Error::InvalidPow), "{err:?}");
+		assert_eq!(POW_TEST_CALLS.load(Ordering::SeqCst), chunk_count);
+	}
+
+	#[test]
+	fn known_full_block_preflight_rejects_later_series_conflict() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let chain_dir = format!(
+			"target/known_full_block_preflight_rejects_later_series_conflict_{}",
+			std::process::id()
+		);
+		let _ = fs::remove_dir_all(&chain_dir);
+		let chain_store = store::ChainStore::new(0, &chain_dir).unwrap();
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+		let mut first = Block::default(0);
+		first.header.height = 1;
+		first.header.pow.proof.nonces[0] = 1;
+
+		let mut stored_second = Block::default(0);
+		stored_second.header.height = 2;
+		stored_second.header.pow.proof.nonces[0] = 2;
+		stored_second.body.inputs =
+			Inputs::CommitOnly(vec![CommitWrapper::from(secp.commit_value(1).unwrap())]);
+		let mut conflicting_second = stored_second.clone();
+		conflicting_second.body.inputs =
+			Inputs::CommitOnly(vec![CommitWrapper::from(secp.commit_value(2).unwrap())]);
+
+		let first_hash = first.hash(0).unwrap();
+		let second_hash = stored_second.hash(0).unwrap();
+		assert_ne!(first_hash, second_hash);
+		assert_eq!(second_hash, conflicting_second.hash(0).unwrap());
+
+		let batch = chain_store.batch_write().unwrap();
+		batch.save_block_header(&first.header).unwrap();
+		batch.save_block(&first).unwrap();
+		batch.save_block_header(&stored_second.header).unwrap();
+		batch.save_block(&stored_second).unwrap();
+
+		// Even though the first element is already the current head, preflight
+		// must inspect the rest of the series before duplicate handling returns.
+		let mut head = Tip::default();
+		head.height = first.header.height;
+		head.last_block_h = first_hash;
+		let err = check_known_full_blocks(
+			0,
+			&[first.clone(), conflicting_second.clone()],
+			&head,
+			&batch,
+		)
+		.unwrap_err();
+		match &err {
+			Error::Unfit(msg) => assert!(msg.contains("conflicting full block inputs"), "{}", msg),
+			other => panic!("expected conflicting-body rejection, got {:?}", other),
+		}
+		assert!(!err.is_known_block());
+		assert!(!err.is_bad_data());
+
+		// A conflict in outputs, rangeproofs or kernels cannot match the roots in
+		// the already validated header. Unlike the input-only case above, this is
+		// unambiguously invalid peer data and must reach peer rejection/scoring.
+		let mut committed_conflict = stored_second.clone();
+		committed_conflict.body.outputs.push(Output::new(
+			OutputFeatures::Plain,
+			secp.commit_value(3).unwrap(),
+			RangeProof::zero(),
+		));
+		let committed_err =
+			check_known_full_blocks(0, &[first.clone(), committed_conflict], &head, &batch)
+				.unwrap_err();
+		assert!(
+			matches!(&committed_err, Error::InvalidRoot(msg) if msg.contains("header-committed body conflicts")),
+			"{:?}",
+			committed_err
+		);
+		assert!(committed_err.is_bad_data());
+		assert!(!committed_err.is_known_block());
+
+		let persisted = batch.get_block(&second_hash).unwrap();
+		assert!(blocks_equal_as_v3(0, &persisted, &stored_second).unwrap());
+		assert!(!blocks_equal_as_v3(0, &persisted, &conflicting_second).unwrap());
+
+		drop(batch);
+		drop(chain_store);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
 }

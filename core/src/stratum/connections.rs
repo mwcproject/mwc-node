@@ -377,9 +377,10 @@ impl StratumIpPool {
 	}
 
 	/// Get IP info info for API
-	pub fn get_ip_info(&self, ip: &String) -> StratumIpPrintable {
-		match self.connection_info.read_recursive().get(ip) {
-			Some(con) => StratumIpPrintable::from_stratum_connection(
+	pub fn get_ip_info(&self, ip: &str) -> Option<StratumIpPrintable> {
+		let connection_info = self.connection_info.read_recursive();
+		connection_info.get(ip).map(|con| {
+			StratumIpPrintable::from_stratum_connection(
 				con,
 				con.is_banned(
 					self.ban_action_limit,
@@ -387,9 +388,8 @@ impl StratumIpPool {
 					self.connection_pace_ms,
 					false,
 				),
-			),
-			None => StratumIpPrintable::from_ip(ip),
-		}
+			)
+		})
 	}
 
 	/// Clean IP from the pool.
@@ -445,20 +445,6 @@ impl StratumIpPrintable {
 			failed_requests: stratum_connection.ban_noise.len(),
 		}
 	}
-
-	// Empty for IP
-	fn from_ip(ip: &String) -> Self {
-		StratumIpPrintable {
-			ip: ip.clone(),
-			ban: false,
-			last_connect_time_ms: None,
-			workers: 0,
-			ok_shares: 0,
-			ok_logins: 0,
-			failed_login: 0,
-			failed_requests: 0,
-		}
-	}
 }
 
 #[cfg(test)]
@@ -487,7 +473,7 @@ mod tests {
 		pool.delete_worker(&ip).unwrap();
 		pool.retire_old_events(Duration::from_secs(1));
 
-		let info = pool.get_ip_info(&ip);
+		let info = pool.get_ip_info(&ip).unwrap();
 		assert_eq!(info.workers, 0);
 		assert!(info.last_connect_time_ms.is_some());
 
@@ -501,9 +487,7 @@ mod tests {
 			.clone_from(&(Instant::now() - Duration::from_secs(2)));
 		pool.retire_old_events(Duration::from_secs(1));
 
-		let info = pool.get_ip_info(&ip);
-		assert_eq!(info.workers, 0);
-		assert!(info.last_connect_time_ms.is_none());
+		assert!(pool.get_ip_info(&ip).is_none());
 	}
 
 	#[test]
@@ -571,7 +555,7 @@ mod tests {
 		);
 		pool.report_ok_shares(&ip).unwrap();
 
-		let info = pool.get_ip_info(&ip);
+		let info = pool.get_ip_info(&ip).unwrap();
 		assert_eq!(info.workers, 1);
 		assert_eq!(info.ok_shares, 1);
 
@@ -593,7 +577,7 @@ mod tests {
 			pool.report_fail_noise(&ip).unwrap();
 		}
 
-		let info = pool.get_ip_info(&ip);
+		let info = pool.get_ip_info(&ip).unwrap();
 		assert_eq!(info.ok_shares, 20);
 		assert_eq!(info.ok_logins, 20);
 		assert_eq!(info.failed_login, 20);

@@ -25,12 +25,13 @@ use mwc_crates::log::{error, info, warn};
 use mwc_crates::tokio;
 use mwc_crates::tor_cell::relaycell::msg::Connected;
 use mwc_crates::tor_hsservice;
-use mwc_crates::tor_proto::client::stream::IncomingStreamRequest;
+use mwc_crates::tor_proto::stream::IncomingStreamRequest;
 use mwc_crates::zeroize::Zeroizing;
 use mwc_util::StopState;
 use std::any::Any;
 use std::pin::Pin;
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -162,6 +163,16 @@ where
 				let incoming_requests_guard =
 					match ArtiRegistrator::new(incoming_requests_object.clone()) {
 						Ok(registrator) => registrator,
+						Err(Error::TorRestarting) => {
+							info!(
+								"Unable to register {} active object because Arti is restarting; retrying",
+								incoming_requests_object
+							);
+							if let Some(f) = &(*service_status_callback) {
+								f(false);
+							};
+							continue;
+						}
 						Err(err) => {
 							error!(
 								"Unable to register {} active object: {}",
@@ -171,9 +182,22 @@ where
 								f(false);
 							};
 							if let Some(failed_service_callback) = &failed_service_callback {
-								let _ = failed_service_callback(&err);
+								if failed_service_callback(&err) {
+									error!(
+										"listen_onion_service exited because of callback response and error: {}",
+										err
+									);
+									return Err(err);
+								}
 							}
-							return Err(err);
+							if stop_state.is_stopped() {
+								break;
+							}
+							arti::request_arti_restart(&format!(
+								"Unable to register {} active object: {}",
+								incoming_requests_object, err
+							));
+							continue;
 						}
 					};
 
@@ -181,7 +205,8 @@ where
 				let context_id2 = context_id;
 				let service_name2 = String::from(service_name);
 				let service_status_callback2 = service_status_callback.clone();
-				let (monitor_failure_tx, monitor_failure_rx) = mpsc::channel();
+				let monitor_stop = Arc::new(AtomicBool::new(false));
+				let monitor_stop2 = monitor_stop.clone();
 				let monitor_thread_name =
 					format!("{}_onion_service_checker_{}", service_name2, context_id2);
 				let monitor_thread_name_for_panic = monitor_thread_name.clone();
@@ -189,7 +214,7 @@ where
 				let monitoring =
 					match thread::Builder::new()
 						.name(monitor_thread_name)
-						.spawn(move || {
+						.spawn(move || -> Result<(), Error> {
 							let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
 								|| -> Result<(), Error> {
 									// Guard is needed for
@@ -201,7 +226,9 @@ where
 										f(false);
 									};
 									loop {
-										if stop_state2.is_stopped() {
+										if monitor_stop2.load(Ordering::Relaxed)
+											|| stop_state2.is_stopped()
+										{
 											break;
 										}
 										let need_arti_restart = {
@@ -293,6 +320,10 @@ where
 											}
 										};
 
+										if monitor_stop2.load(Ordering::Relaxed) {
+											break;
+										}
+
 										if need_arti_restart || arti::is_arti_restarting() {
 											arti::request_arti_restart(
 												"Onion service is dead, restarting",
@@ -301,7 +332,8 @@ where
 										}
 
 										for _ in 0..30 {
-											if stop_state2.is_stopped()
+											if monitor_stop2.load(Ordering::Relaxed)
+												|| stop_state2.is_stopped()
 												|| arti::is_arti_restarting()
 											{
 												break;
@@ -316,7 +348,7 @@ where
 								},
 							));
 							match result {
-								Ok(Ok(())) => {}
+								Ok(Ok(())) => Ok(()),
 								Ok(Err(err)) => {
 									error!(
 										"{} onion_service_checker thread failed: {}",
@@ -324,10 +356,10 @@ where
 									);
 									let err_msg =
 										format!("{}: {}", monitor_thread_name_for_panic, err);
-									let _ = monitor_failure_tx.send(err_msg);
 									arti::request_arti_restart(
 										"Onion service checker failed, restarting",
 									);
+									Err(Error::PeerThreadPanic(err_msg))
 								}
 								Err(payload) => {
 									let panic_msg = panic_payload_to_string(payload);
@@ -337,10 +369,10 @@ where
 										"{} onion_service_checker thread panicked: {}",
 										service_name2, panic_msg
 									);
-									let _ = monitor_failure_tx.send(err_msg);
 									arti::request_arti_restart(
 										"Onion service checker panicked, restarting",
 									);
+									Err(Error::PeerThreadPanic(err_msg))
 								}
 							}
 						}) {
@@ -375,22 +407,8 @@ where
 				let stop_state = stop_state.clone();
 				let mut listener_error = None;
 				loop {
-					match monitor_failure_rx.try_recv() {
-						Ok(err_msg) => {
-							let err = Error::PeerThreadPanic(err_msg);
-							error!("Onion service monitor failed: {}", err);
-							if let Some(f) = &(*service_status_callback) {
-								f(false);
-							};
-							if let Some(failed_service_callback) = &failed_service_callback {
-								if failed_service_callback(&err) {
-									listener_error = Some(err);
-								}
-							}
-							break;
-						}
-						Err(mpsc::TryRecvError::Empty) => {}
-						Err(mpsc::TryRecvError::Disconnected) => {}
+					if monitoring.is_finished() {
+						break;
 					}
 
 					let request_res = match arti::arti_async_block(async {
@@ -514,7 +532,10 @@ where
 												handle_new_peer_callback(stream, None);
 											}
 											Err(err) => {
-												error!("listen_onion_service accepting stream error: {}", err);
+												error!(
+													"listen_onion_service accepting stream error: {}",
+													err
+												);
 											}
 										},
 										Err(_) => {
@@ -547,16 +568,25 @@ where
 					}
 				}
 
+				monitor_stop.store(true, Ordering::Relaxed);
 				let thread_id = monitoring.thread().id();
-				if let Err(payload) = monitoring.join() {
-					let panic_msg = panic_payload_to_string(payload);
-					let err =
-						Error::PeerThreadPanic(format!("thread {:?}: {}", thread_id, panic_msg));
-					error!(
-						"failed to stop {} onion_service_checker thread {:?}: {}",
-						service_name, thread_id, panic_msg
-					);
-					if listener_error.is_none() {
+				let monitor_result = match monitoring.join() {
+					Ok(result) => result,
+					Err(payload) => {
+						let panic_msg = panic_payload_to_string(payload);
+						error!(
+							"failed to stop {} onion_service_checker thread {:?}: {}",
+							service_name, thread_id, panic_msg
+						);
+						Err(Error::PeerThreadPanic(format!(
+							"thread {:?}: {}",
+							thread_id, panic_msg
+						)))
+					}
+				};
+				if listener_error.is_none() {
+					if let Err(err) = monitor_result {
+						error!("Onion service monitor failed: {}", err);
 						if let Some(f) = &(*service_status_callback) {
 							f(false);
 						};
@@ -566,9 +596,7 @@ where
 							}
 						}
 						if listener_error.is_none() && !stop_state.is_stopped() {
-							arti::request_arti_restart(
-								"Onion service checker panicked, restarting",
-							);
+							arti::request_arti_restart("Onion service checker failed, restarting");
 						}
 					}
 				}
@@ -607,6 +635,16 @@ where
 				}
 				thread::sleep(Duration::from_millis(500));
 			}
+			// A restart can begin after ArtiCore's pre-launch restart check but
+			// before start_onion_service checks its cancelled context. That race is
+			// reported as Interrupted even though the replacement Arti instance can
+			// be retried normally.
+			Err(Error::Interrupted) if arti::is_arti_restarting() => {
+				if stop_state.is_stopped() {
+					break;
+				}
+				thread::sleep(Duration::from_millis(500));
+			}
 			Err(e @ Error::TorNotInitialized) => {
 				if stop_state.is_stopped() {
 					break;
@@ -617,7 +655,10 @@ where
 				}
 				if let Some(failed_service_callback) = &failed_service_callback {
 					if failed_service_callback(&e) {
-						error!("listen_onion_service exited because of callback response and error: {}", e);
+						error!(
+							"listen_onion_service exited because of callback response and error: {}",
+							e
+						);
 						return Err(e);
 					}
 				}

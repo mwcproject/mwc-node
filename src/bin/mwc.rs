@@ -81,6 +81,7 @@ fn real_main() -> i32 {
 	} else {
 		global::ChainTypes::Mainnet
 	};
+	let skip_start_blockchain_validation = args.is_present("skip_start_blockchain_validation");
 
 	// Deal with configuration file creation
 	if let ("server", Some(server_args)) = args.subcommand() {
@@ -182,6 +183,7 @@ fn real_main() -> i32 {
 			Some(server_args),
 			config,
 			tui_logs,
+			skip_start_blockchain_validation,
 		)),
 		// client commands and options
 		("client", Some(client_args)) => {
@@ -203,7 +205,13 @@ fn real_main() -> i32 {
 		// If nothing is specified, try to just use the config file instead
 		// this could possibly become the way to configure most things
 		// with most command line options being phased out
-		_ => res_to_ret_val(cmd::server_command(context_id, None, config, tui_logs)),
+		_ => res_to_ret_val(cmd::server_command(
+			context_id,
+			None,
+			config,
+			tui_logs,
+			skip_start_blockchain_validation,
+		)),
 	};
 
 	if let Err(e) = mwc_node_workflow::context::release_context(context_id) {
@@ -216,6 +224,24 @@ fn real_main() -> i32 {
 	}
 
 	res
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn parses_skip_start_blockchain_validation_global_flag() {
+		let yml = YamlLoader::load_from_str(include_str!("mwc.yml")).unwrap();
+		let args = App::from_yaml(yml.first().unwrap()).get_matches_from(vec![
+			"mwc",
+			"--skip_start_blockchain_validation",
+			"server",
+			"run",
+		]);
+
+		assert!(args.is_present("skip_start_blockchain_validation"));
+	}
 }
 
 fn res_to_ret_val(res: Result<(), crate::cmd::Error>) -> i32 {

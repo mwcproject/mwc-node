@@ -96,7 +96,10 @@ pub trait Backend<T: PMMRable> {
 
 	/// Get hash for peak pos.
 	/// Optimized for reading peak hashes rather than arbitrary pos hashes.
-	/// Peaks can be assumed to not be compacted.
+	/// Peaks of the backend's current MMR state can be assumed not to be
+	/// compacted. A node that was a peak at an earlier MMR size can later be
+	/// compacted beneath a larger pruned-subtree root; this API does not promise
+	/// historical-size proof availability.
 	fn get_peak_from_file(&self, pos0: u64) -> Result<Option<Hash>, Error>;
 
 	/// Get a Data Element by original insertion position

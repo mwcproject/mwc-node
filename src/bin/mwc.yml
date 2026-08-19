@@ -12,6 +12,10 @@ args:
       help: Run mwc as a local-only network. Doesn't block peer connections but will not connect to any peer or seed
       long: usernet
       takes_value: false
+  - skip_start_blockchain_validation:
+      help: Skip comprehensive blockchain data validation during node startup
+      long: skip_start_blockchain_validation
+      takes_value: false
 subcommands:
   - clean:
       about: Clean MWC chain data

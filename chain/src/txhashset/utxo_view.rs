@@ -57,13 +57,7 @@ impl<'a> UTXOView<'a> {
 		block: &Block,
 		batch: &Batch<'_>,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
-		let mut output_commits = BTreeSet::new();
-		for output in block.outputs() {
-			if !output_commits.insert(output.commitment()) {
-				return Err(Error::DuplicateCommitment(output.commitment()));
-			}
-			self.validate_output(output, batch)?;
-		}
+		self.validate_outputs(block.outputs(), batch)?;
 		self.validate_inputs(&block.inputs(), batch)
 	}
 
@@ -75,14 +69,21 @@ impl<'a> UTXOView<'a> {
 		tx: &Transaction,
 		batch: &Batch<'_>,
 	) -> Result<Vec<(OutputIdentifier, CommitPos)>, Error> {
+		self.validate_outputs(tx.outputs(), batch)?;
+		self.validate_inputs(&tx.inputs(), batch)
+	}
+
+	/// Validate candidate outputs against the current UTXO set without checking
+	/// transaction inputs or kernels. No duplicate output commitments are allowed.
+	pub fn validate_outputs(&self, outputs: &[Output], batch: &Batch<'_>) -> Result<(), Error> {
 		let mut output_commits = BTreeSet::new();
-		for output in tx.outputs() {
+		for output in outputs {
 			if !output_commits.insert(output.commitment()) {
 				return Err(Error::DuplicateCommitment(output.commitment()));
 			}
 			self.validate_output(output, batch)?;
 		}
-		self.validate_inputs(&tx.inputs(), batch)
+		Ok(())
 	}
 
 	/// Validate the provided inputs.

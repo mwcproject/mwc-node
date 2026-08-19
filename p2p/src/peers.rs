@@ -129,7 +129,6 @@ pub struct Peers {
 	stopped_peers: Mutex<Vec<Arc<Peer>>>,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
 	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
-	out_peers_failures: Arc<RwLock<HashMap<PeerAddr, u32>>>,
 	advertised_peers: Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>>,
 	advertised_peer_source_limits: Arc<RwLock<HashMap<PeerAddr, AdvertisedPeerSourceLimit>>>,
 }
@@ -148,7 +147,6 @@ impl Peers {
 				time: None,
 			}),
 			excluded_peers: Arc::new(RwLock::new(HashSet::new())),
-			out_peers_failures: Arc::new(RwLock::new(HashMap::new())),
 			advertised_peers: Arc::new(RwLock::new(HashMap::new())),
 			advertised_peer_source_limits: Arc::new(RwLock::new(HashMap::new())),
 		}
@@ -292,7 +290,9 @@ impl Peers {
 	) -> Result<(), Error> {
 		let peer_data = match self.get_peer(&addr) {
 			Ok(peer) => PeerData {
-				addr: addr.clone(),
+				// `addr` may be an inbound transport address with an ephemeral port.
+				// Preserve the previously verified listening address for known peers.
+				addr: peer.addr,
 				capabilities: peer.capabilities,
 				user_agent: peer.user_agent,
 				flags: State::Banned,
@@ -308,7 +308,9 @@ impl Peers {
 				flags: State::Banned,
 				last_banned: Utc::now().timestamp(),
 				ban_reason,
-				last_connected: Utc::now().timestamp(),
+				// A failed first handshake is not a successful connection. Keep this
+				// peer unverified so it is not advertised after the ban expires.
+				last_connected: 0,
 				version: mwc_core::ser::ProtocolVersion(1),
 			},
 			Err(e) => return Err(e),
@@ -426,6 +428,9 @@ impl Peers {
 		}
 
 		for peer in ready_peers {
+			// Reaping during normal maintenance is best effort. wait_stopped_peer
+			// already logs unexpected thread errors, and the stopped peer has no
+			// further recovery action here, so logging is sufficient.
 			let _ = Self::wait_stopped_peer(peer);
 		}
 	}
@@ -758,6 +763,10 @@ impl Peers {
 		let mut restored = 0;
 		let mut first_restore_error = None;
 
+		// This scan and the updates below are intentionally non-atomic. A concurrent
+		// state change, including a ban, can be overwritten by the Healthy update.
+		// Peer state is local connection policy rather than consensus-critical state,
+		// so this narrow race is accepted to keep the peer-store API simple.
 		for peer in self.all_peer_data(Capabilities::UNKNOWN)? {
 			if peer.flags == State::Defunct && peer.last_connected >= connection_time_limit {
 				if let Err(e) = self.update_state(&peer.addr, State::Healthy) {
@@ -810,7 +819,7 @@ impl Peers {
 		let mut summary = PeerCleanupSummary::default();
 		let liveness_deferred = self.adapter.is_chain_liveness_deferred();
 		if liveness_deferred {
-			debug!("clean_peers: skipping dead-ping and stuck-peer eviction while local chain maintenance is active");
+			debug!("clean_peers: skipping all liveness-based peer eviction while local chain maintenance is active");
 		}
 		let preferred_peers = config
 			.peers_preferred
@@ -910,75 +919,22 @@ impl Peers {
 
 		// check here to make sure we don't have too many outgoing connections
 		// Preferred peers are treated preferentially here.
-		// Also choose outbound peers with lowest total difficulty to drop.
-		// Reducing outbound connection gradually
-		let mut excess_outgoing_count = cmp::min(
+		// Capacity cleanup is independent of peer liveness and remains active while
+		// local chain maintenance is running.
+		// Reducing outbound connections gradually.
+		let excess_outgoing_count = cmp::min(
 			2,
 			outbound_peers().count().saturating_sub(max_outbound_count),
 		);
-
-		// Filtering out excess and underperforming outbound peers.
-		// If local chain state cannot be read, use conservative fallbacks so
-		// this cleanup pass does not evict peers for low performance.
-		let my_difficulty = match self.adapter.total_difficulty() {
-			Ok(total_difficulty) => total_difficulty,
-			Err(e) => {
-				error!(
-					"failed to get total difficulty during peer cleanup: {:?}",
-					e
-				);
-				Difficulty::zero()
-			}
-		};
-		let my_height = match self.adapter.total_height() {
-			Ok(total_height) => total_height,
-			Err(e) => {
-				error!("failed to get total height during peer cleanup: {:?}", e);
-				0
-			}
-		};
-		let mut out_peers_failures = self.out_peers_failures.write();
-		let mut next_failures = HashMap::new();
 
 		let mut peer_infos: Vec<Arc<Peer>> = outbound_peers()
 			.filter(|x| !preferred_peers.contains(&x.info.addr))
 			.collect();
 
-		let rm_sz0 = rm.len();
-		for peer in &peer_infos {
-			// If peer 2 blocks behind for 3 check cycyles, we want to exclude it.
-			// Reason for that: we want outbound peers be high quality.
-			if peer.info.height() < my_height.saturating_sub(2)
-				&& peer.info.total_difficulty() < my_difficulty
-			{
-				let fail_counter = out_peers_failures
-					.get(&peer.info.addr)
-					.cloned()
-					.unwrap_or(0)
-					.saturating_add(1);
-				if fail_counter >= 5 {
-					info!(
-						"Requesting disconnect for outband peer {:?} because of low performance",
-						peer.info.addr
-					);
-					rm.push((peer.clone(), CleanupStateUpdate::MarkHealthyOnStop));
-				}
-				next_failures.insert(peer.info.addr.clone(), fail_counter);
-			}
-		}
-		*out_peers_failures = next_failures;
-
-		// rm.len() - rm_sz0 is safe because rm is only grawing since rm_sz0 was assigned to rm.len()
-		excess_outgoing_count = excess_outgoing_count.saturating_sub(rm.len() - rm_sz0);
 		if excess_outgoing_count > 0 {
-			let my_base_fee = global::get_accept_fee_base(self.store.get_context_id());
-			peer_infos.sort_unstable_by_key(|x| {
-				if x.info.tx_base_fee < my_base_fee {
-					x.info.total_difficulty().to_num() / 2 // we don't want to see peers with lower than we are base fee
-				} else {
-					x.info.total_difficulty().to_num()
-				}
-			});
+			// Height, total difficulty, and fee are advertised by the remote peer.
+			// Do not let those unverified values influence which connection survives.
+			peer_infos.shuffle(&mut rand::rng());
 			let mut addrs = peer_infos
 				.into_iter()
 				.map(|x| (x, CleanupStateUpdate::MarkHealthyOnStop))
@@ -1831,6 +1787,13 @@ mod tests {
 		let stored = peers.get_peer(&addr).unwrap();
 		assert_eq!(stored.flags, State::Banned);
 		assert_eq!(stored.ban_reason, ReasonForBan::BadBlock);
+		assert_eq!(stored.last_connected, 0);
+
+		peers.unban_peer(&addr).unwrap();
+		assert!(!peers
+			.find_peer_addrs(Capabilities::UNKNOWN)
+			.unwrap()
+			.contains(&addr));
 	}
 
 	#[test]

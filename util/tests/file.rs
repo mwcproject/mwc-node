@@ -234,6 +234,33 @@ fn open_owner_only_file_or_exposed_rejects_symlink_path() {
 	fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn create_owner_only_file_rejects_symlink_without_truncating_target() {
+	let path = owner_file_test_path("create_symlink_path");
+	let link = path.with_file_name("secret_link");
+	fs::write(&path, b"original").unwrap();
+
+	match create_file_symlink(&path, &link) {
+		Ok(()) => {}
+		Err(err) => {
+			let symlink_privilege_missing = cfg!(windows)
+				&& (err.kind() == io::ErrorKind::PermissionDenied
+					|| err.raw_os_error() == Some(1314));
+			if symlink_privilege_missing {
+				fs::remove_dir_all(path.parent().unwrap()).unwrap();
+				return;
+			}
+			panic!("failed to create symlink: {}", err);
+		}
+	}
+
+	let err = file::create_owner_only_file(&link).unwrap_err();
+	assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+	assert_eq!(fs::read(&path).unwrap(), b"original");
+	fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn get_owner_only_first_line_reads_owner_only_file() {

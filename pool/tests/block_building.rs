@@ -16,7 +16,6 @@
 pub mod common;
 
 use crate::common::*;
-use mwc_core::core::hash::Hashed;
 use mwc_core::global;
 use mwc_core::ser;
 use mwc_crates::rand::rngs::SysRng;
@@ -126,9 +125,8 @@ fn test_transaction_pool_block_building() -> Result<(), PoolError> {
 	add_block(&mut secp, &chain, &txs, &keychain);
 
 	// Get full block from head of the chain (block we just processed).
-	let block = chain
-		.get_block(&chain.head().unwrap().hash(chain.get_context_id()).unwrap())
-		.unwrap();
+	let header = chain.head_header().unwrap();
+	let block = chain.get_block_for_header(&header).unwrap();
 
 	// Check the block contains what we expect.
 	assert_eq!(block.inputs().len(), 4);

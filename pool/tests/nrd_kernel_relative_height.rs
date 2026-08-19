@@ -17,7 +17,6 @@ pub mod common;
 
 use crate::common::*;
 use mwc_core::consensus;
-use mwc_core::core::hash::Hashed;
 use mwc_core::core::{HeaderVersion, KernelFeatures, NRDRelativeHeight, TxKernel};
 use mwc_core::global;
 use mwc_core::libtx::aggsig;
@@ -175,9 +174,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	// Mine block containing tx1 from the txpool.
 	add_block(&mut secp, &chain, &txs, &keychain);
 	let header = chain.head_header().unwrap();
-	let block = chain
-		.get_block(&header.hash(chain.get_context_id()).unwrap())
-		.unwrap();
+	let block = chain.get_block_for_header(&header).unwrap();
 
 	// Confirm the stempool/txpool is empty after reconciling the new block.
 	pool.reconcile_block(&block, &mut secp);
@@ -232,9 +229,7 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	// Mine block containing tx2 from the txpool.
 	add_block(&mut secp, &chain, &txs, &keychain);
 	let header = chain.head_header().unwrap();
-	let block = chain
-		.get_block(&header.hash(chain.get_context_id()).unwrap())
-		.unwrap();
+	let block = chain.get_block_for_header(&header).unwrap();
 	pool.reconcile_block(&block, &mut secp);
 
 	assert_eq!(pool.total_size(), 0);

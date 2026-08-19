@@ -26,7 +26,7 @@ use mwc_util::run_global_async_block;
 use std::io::{ErrorKind, Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub enum TcpData {
 	Tcp(TcpStream),
@@ -48,6 +48,11 @@ pub struct TcpDataStream {
 	pub stream: TcpData,
 	read_timeout: Duration,
 	write_timeout: Duration,
+}
+
+struct DeadlineReader<'a> {
+	stream: &'a mut TcpDataStream,
+	deadline: Instant,
 }
 
 pub struct TcpDataReadHalfStream {
@@ -85,6 +90,35 @@ impl TcpDataStream {
 
 	pub fn set_write_timeout(&mut self, write_timeout: Duration) {
 		self.write_timeout = write_timeout;
+	}
+
+	/// Build a reader for one operation with a total time budget. Individual
+	/// reads still use `read_timeout`, but partial progress cannot extend the
+	/// operation deadline.
+	pub(crate) fn deadline_reader(&mut self, timeout: Duration) -> impl Read + '_ {
+		let now = Instant::now();
+		DeadlineReader {
+			stream: self,
+			deadline: now.checked_add(timeout).unwrap_or(now),
+		}
+	}
+
+	fn read_with_timeout(
+		&mut self,
+		buf: &mut [u8],
+		read_timeout: Duration,
+	) -> Result<usize, std::io::Error> {
+		let r = match &mut self.stream {
+			TcpData::Tcp(s) => run_global_async_block(async {
+				tokio::time::timeout(read_timeout, s.read(buf)).await
+			})
+			.map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
+			TcpData::Tor(s) => {
+				arti_async_block(async { tokio::time::timeout(read_timeout, s.read(buf)).await })
+					.map_err(|e| arti_async_block_error(e, "read"))?
+			}
+		};
+		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "read timeout"))?
 	}
 
 	pub fn is_alive(&mut self) -> bool {
@@ -242,19 +276,28 @@ impl AsyncWrite for TcpData {
 /* ---------- std::io::Read ---------- */
 impl Read for TcpDataStream {
 	fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-		let read_timeout = &self.read_timeout;
-		let r = match &mut self.stream {
-			TcpData::Tcp(s) => run_global_async_block(async {
-				tokio::time::timeout(*read_timeout, s.read(buf)).await
-			})
-			.map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
-			TcpData::Tor(s) => {
-				arti_async_block(async { tokio::time::timeout(*read_timeout, s.read(buf)).await })
-					.map_err(|e| arti_async_block_error(e, "read"))?
-			}
-		};
-		r.map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "read timeout"))?
+		self.read_with_timeout(buf, self.read_timeout)
 	}
+}
+
+impl Read for DeadlineReader<'_> {
+	fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+		let read_timeout =
+			effective_read_timeout(self.stream.read_timeout, self.deadline, Instant::now())?;
+		self.stream.read_with_timeout(buf, read_timeout)
+	}
+}
+
+fn effective_read_timeout(
+	read_timeout: Duration,
+	read_deadline: Instant,
+	now: Instant,
+) -> std::io::Result<Duration> {
+	let remaining = read_deadline
+		.checked_duration_since(now)
+		.filter(|remaining| !remaining.is_zero())
+		.ok_or_else(|| std::io::Error::new(ErrorKind::TimedOut, "read deadline elapsed"))?;
+	Ok(std::cmp::min(read_timeout, remaining))
 }
 
 /* ---------- std::io::Write ---------- */
@@ -471,6 +514,26 @@ impl Write for TcpDataWriteHalfStream {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn effective_read_timeout_is_limited_by_absolute_deadline() {
+		let now = Instant::now();
+		let remaining = Duration::from_millis(25);
+
+		assert_eq!(
+			effective_read_timeout(Duration::from_secs(15), now + remaining, now,).unwrap(),
+			remaining
+		);
+	}
+
+	#[test]
+	fn effective_read_timeout_rejects_elapsed_deadline() {
+		let now = Instant::now();
+		let err = effective_read_timeout(Duration::from_secs(15), now, now)
+			.expect_err("an elapsed total read deadline must fail");
+
+		assert_eq!(err.kind(), ErrorKind::TimedOut);
+	}
 
 	#[test]
 	fn read_timeout_result_preserves_inner_read_error_kind() {

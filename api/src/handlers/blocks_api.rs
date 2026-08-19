@@ -12,20 +12,24 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use super::utils::{get_output, get_output_v2, w};
+use super::utils::{get_output, w};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
 use crate::web::*;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::hash::Hashed;
+use mwc_core::core::BlockHeader;
 use mwc_crates::bytes::Bytes;
 use mwc_crates::hyper::{Request, StatusCode};
-use mwc_crates::secp::Secp256k1;
-use mwc_util::secp_static;
 use std::sync::Weak;
 
-pub const BLOCK_TRANSFER_LIMIT: u64 = 1000;
+/// Maximum number of full blocks returned by a single get_blocks request.
+/// Kept small because every returned block is fully materialized in memory,
+/// performs per-output UTXO/proof lookups, and is hex-expanded when proofs
+/// are requested, so the response cost scales with both block count and block
+/// contents. Callers can paginate via `last_retrieved_height`.
+pub const BLOCK_TRANSFER_LIMIT: u64 = 10;
 const MAX_U64_DECIMAL_LEN: usize = 20;
 const INVALID_INPUT_PREVIEW_CHARS: usize = 80;
 
@@ -92,7 +96,7 @@ fn parse_block_query(params: Option<&str>) -> Result<BlockQueryOptions, Error> {
 				return Err(Error::RequestError(format!(
 					"unsupported query parameter: {}",
 					param
-				)))
+				)));
 			}
 		}
 	}
@@ -130,10 +134,19 @@ impl HeaderHandler {
 			}
 		}
 		let h = Hash::from_hex(&input).map_err(|e| invalid_hash_or_height(&input, e))?;
-		let header = w(&self.chain)?.get_block_header(&h).map_err(|e| {
+		let chain = w(&self.chain)?;
+		let header = chain.get_block_header(&h).map_err(|e| {
 			let msg = format!("Block header for hash {}, {}", h, e);
 			Error::chain_read_error(e, msg)
 		})?;
+		let actual_hash = header.hash(chain.get_context_id())?;
+		if actual_hash != h {
+			return Err(mwc_chain::Error::InvalidPersistedChainState(format!(
+				"block header record key/hash mismatch: requested {}, loaded {}",
+				h, actual_hash
+			))
+			.into());
+		}
 		Ok(BlockHeaderPrintable::from_header(&header)?)
 	}
 
@@ -160,13 +173,20 @@ impl HeaderHandler {
 			let msg = format!("Block header for hash {}, {}", h, e);
 			Error::chain_read_error(e, msg)
 		})?;
+		let actual_hash = header.hash(chain.get_context_id())?;
+		if actual_hash != *h {
+			return Err(mwc_chain::Error::InvalidPersistedChainState(format!(
+				"block header record key/hash mismatch: requested {}, loaded {}",
+				h, actual_hash
+			))
+			.into());
+		}
 		Ok(BlockHeaderPrintable::from_header(&header)?)
 	}
 
 	// Try to get hash from height, hash or output commit
 	pub fn parse_inputs(
 		&self,
-		secp: &Secp256k1,
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
@@ -184,7 +204,7 @@ impl HeaderHandler {
 			return Ok(hash);
 		}
 		if let Some(commit) = commit {
-			let oid = match get_output_v2(secp, &self.chain, &commit, false, false)? {
+			let oid = match get_output(&self.chain, &commit)? {
 				Some((_, o)) => o,
 				None => return Err(Error::NotFound("Output not found".to_string())),
 			};
@@ -220,6 +240,10 @@ impl Handler for HeaderHandler {
 ///
 /// Optionally turn off the Merkle proof extraction by passing "?no_merkle_proof" query
 /// param GET /v1/blocks/<hash>?no_merkle_proof
+///
+/// Included proofs describe the node's current output PMMR state. For a
+/// historical block response they do not verify against the block header in
+/// that response; consumers must use a root matching each proof's `mmr_size`.
 pub struct BlockHandler {
 	pub chain: Weak<mwc_chain::Chain>,
 }
@@ -234,17 +258,33 @@ impl BlockHandler {
 
 	pub fn get_block(
 		&self,
-		secp: &Secp256k1,
 		h: &Hash,
 		include_proof: bool,
 		include_merkle_proof: bool,
 	) -> Result<BlockPrintable, Error> {
 		let chain = w(&self.chain)?;
-		let block = chain.get_block(h).map_err(|e| {
+		chain.with_output_read_snapshot(|snapshot| {
+			let header = snapshot.get_block_header(h).map_err(|e| {
+				let msg = format!("Block header for hash {}, {}", h, e);
+				Error::chain_read_error(e, msg)
+			})?;
+			self.get_block_for_header(snapshot, &header, include_proof, include_merkle_proof)
+		})
+	}
+
+	fn get_block_for_header(
+		&self,
+		snapshot: &mwc_chain::OutputReadSnapshot<'_>,
+		header: &BlockHeader,
+		include_proof: bool,
+		include_merkle_proof: bool,
+	) -> Result<BlockPrintable, Error> {
+		let h = header.hash(snapshot.get_context_id())?;
+		let block = snapshot.get_block_for_header(header).map_err(|e| {
 			let msg = format!("Block for hash {}, {}", h, e);
 			Error::chain_read_error(e, msg)
 		})?;
-		BlockPrintable::from_block(secp, &block, &chain, include_proof, include_merkle_proof)
+		BlockPrintable::from_block_snapshot(&block, snapshot, include_proof, include_merkle_proof)
 			.map_err(|e| {
 				Error::Internal(format!("chain error, broken block for hash {}. {}", h, e))
 			})
@@ -252,8 +292,7 @@ impl BlockHandler {
 
 	pub fn get_blocks(
 		&self,
-		secp: &Secp256k1,
-		mut start_height: u64,
+		start_height: u64,
 		end_height: u64,
 		mut max: u64,
 		include_proof: Option<bool>,
@@ -265,90 +304,101 @@ impl BlockHandler {
 		if max > BLOCK_TRANSFER_LIMIT {
 			max = BLOCK_TRANSFER_LIMIT;
 		}
-		let tail_height = self.get_tail_height()?;
-		let orig_start_height = start_height;
-
-		if start_height < tail_height {
-			start_height = tail_height;
-		}
-
-		// In full archive node, tail will be set to 1, so include genesis block as well
-		// for consistency
-		if start_height == 1 && orig_start_height == 0 {
-			start_height = 0;
-		}
-
-		let mut result_set = BlockListing {
-			last_retrieved_height: 0,
-			blocks: vec![],
-		};
-		let mut block_count = 0;
-		for h in start_height..=end_height {
-			let hash = match self.parse_inputs(secp, Some(h), None, None) {
-				Err(e) => {
-					if Self::is_unavailable_block_error(&e) {
-						break;
-					} else {
-						return Err(e);
-					}
-				}
-				Ok(h) => h,
-			};
-
-			let block_res = self.get_block(secp, &hash, include_proof == Some(true), false);
-
-			match block_res {
-				Err(e) => {
-					if Self::is_unavailable_block_error(&e) {
-						break;
-					} else {
-						return Err(e);
-					}
-				}
-				Ok(b) => {
-					block_count += 1;
-					result_set.blocks.push(b);
-					result_set.last_retrieved_height = h;
-				}
-			}
-			if block_count >= max {
-				break;
-			}
-		}
-		Ok(result_set)
-	}
-
-	pub fn get_tail_height(&self) -> Result<u64, Error> {
 		let chain = w(&self.chain)?;
-		Ok(chain
-			.get_tail()
-			.map_err(|e| Error::chain_read_error(e, "Tail not found".to_string()))?
-			.height)
+		chain.with_output_read_snapshot(|snapshot| {
+			let mut start_height = start_height;
+			let tail_height = snapshot
+				.get_tail()
+				.map_err(|e| Error::chain_read_error(e, "Tail not found".to_string()))?
+				.height;
+			let orig_start_height = start_height;
+			if start_height < tail_height {
+				start_height = tail_height;
+			}
+
+			// In full archive node, tail will be set to 1, so include genesis block as well
+			// for consistency
+			if start_height == 1 && orig_start_height == 0 {
+				start_height = 0;
+			}
+
+			let mut result_set = BlockListing {
+				last_retrieved_height: 0,
+				blocks: vec![],
+			};
+			let mut block_count = 0;
+			for h in start_height..=end_height {
+				let header = match snapshot.get_header_by_height(h).map_err(|e| {
+					let msg = format!("Header for height {}, {}", h, e);
+					Error::chain_read_error(e, msg)
+				}) {
+					Err(e) => {
+						if Self::is_unavailable_block_error(&e) {
+							break;
+						} else {
+							return Err(e);
+						}
+					}
+					Ok(header) => header,
+				};
+
+				let block_res = self.get_block_for_header(
+					snapshot,
+					&header,
+					include_proof == Some(true),
+					false,
+				);
+
+				match block_res {
+					Err(e) => {
+						if Self::is_unavailable_block_error(&e) {
+							break;
+						} else {
+							return Err(e);
+						}
+					}
+					Ok(b) => {
+						block_count += 1;
+						result_set.blocks.push(b);
+						result_set.last_retrieved_height = h;
+					}
+				}
+				if block_count >= max {
+					break;
+				}
+			}
+			Ok(result_set)
+		})
 	}
 
 	fn get_compact_block(
 		&self,
-		secp: &Secp256k1,
 		h: &Hash,
 		include_merkle_proof: bool,
 	) -> Result<CompactBlockPrintable, Error> {
 		let chain = w(&self.chain)?;
-		let block = chain.get_block(h).map_err(|e| {
-			let msg = format!("Block for hash {}, {}", h, e);
-			Error::chain_read_error(e, msg)
-		})?;
-		CompactBlockPrintable::from_compact_block(
-			secp,
-			&mwc_core::core::CompactBlock::from(block)
-				.map_err(|e| Error::Internal(format!("Unable to build a CompactBlock, {}", e)))?,
-			&chain,
-			include_merkle_proof,
-		)
-		.map_err(|e| {
-			Error::Internal(format!(
-				"chain error, broken compact block for hash {}, {}",
-				h, e
-			))
+		chain.with_output_read_snapshot(|snapshot| {
+			let header = snapshot.get_block_header(h).map_err(|e| {
+				let msg = format!("Block header for hash {}, {}", h, e);
+				Error::chain_read_error(e, msg)
+			})?;
+			let block = snapshot.get_block_for_header(&header).map_err(|e| {
+				let msg = format!("Block for hash {}, {}", h, e);
+				Error::chain_read_error(e, msg)
+			})?;
+			CompactBlockPrintable::from_compact_block_snapshot(
+				&mwc_core::core::CompactBlock::from(block).map_err(|e| {
+					Error::Internal(format!("Unable to build a CompactBlock, {}", e))
+				})?,
+				snapshot,
+				include_merkle_proof,
+			)
+			.map_err(|e| {
+				Error::Internal(format!(
+					"chain error, broken compact block for hash {}, {}",
+					h, e
+				))
+			})
 		})
 	}
 
@@ -369,7 +419,6 @@ impl BlockHandler {
 	// Try to get hash from height, hash or output commit
 	pub fn parse_inputs(
 		&self,
-		secp: &Secp256k1,
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
@@ -387,7 +436,7 @@ impl BlockHandler {
 			return Ok(hash);
 		}
 		if let Some(commit) = commit {
-			let oid = match get_output_v2(secp, &self.chain, &commit, false, false)? {
+			let oid = match get_output(&self.chain, &commit)? {
 				Some((_, o)) => o,
 				None => return Err(Error::NotFound("Output not found".to_string())),
 			};
@@ -426,30 +475,17 @@ impl Handler for BlockHandler {
 		};
 
 		if options.compact {
-			return result_to_response(secp_static::with_verify_only(
-				|e| Error::Internal(format!("failed to create secp instance: {}", e)),
-				|secp| self.get_compact_block(secp, &h, options.include_merkle_proof),
-			));
+			return result_to_response(self.get_compact_block(&h, options.include_merkle_proof));
 		}
 
-		result_to_response(secp_static::with_verify_only(
-			|e| Error::Internal(format!("failed to create secp instance: {}", e)),
-			|secp| {
-				self.get_block(
-					secp,
-					&h,
-					options.include_proof,
-					options.include_merkle_proof,
-				)
-			},
-		))
+		result_to_response(self.get_block(&h, options.include_proof, options.include_merkle_proof))
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use mwc_crates::secp::ContextFlag;
+	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use mwc_util::ToHex;
 	use std::fs;
 	use std::sync::Arc;
@@ -469,6 +505,90 @@ mod tests {
 			))
 			.to_string_lossy()
 			.into_owned()
+	}
+
+	#[test]
+	fn full_and_compact_blocks_build_output_metadata_from_snapshot() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("block_response_snapshot");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let output = *genesis.outputs().first().expect("genesis output");
+		let block_hash = genesis.hash(0).unwrap();
+		let output_root = genesis.header.output_root;
+		let output_mmr_size = genesis.header.output_mmr_size;
+		let source_compact =
+			mwc_core::core::CompactBlock::from(genesis.clone()).expect("compact genesis block");
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				genesis,
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let handler = BlockHandler {
+			chain: Arc::downgrade(&chain),
+		};
+
+		let printable = handler.get_block(&block_hash, true, true).unwrap();
+		let printable_output = printable
+			.outputs
+			.iter()
+			.find(|printable| printable.commit == output.commitment())
+			.expect("genesis output in printable block");
+		let proof = printable_output
+			.merkle_proof
+			.as_ref()
+			.expect("coinbase merkle proof");
+		let pos0 = printable_output
+			.mmr_index
+			.checked_sub(1)
+			.expect("one-based output position");
+		assert_eq!(proof.mmr_size, output_mmr_size);
+		proof
+			.verify(0, output_root, &output.identifier(), pos0)
+			.unwrap();
+
+		let compact = handler.get_compact_block(&block_hash, true).unwrap();
+		let converted_compact =
+			CompactBlockPrintable::from_compact_block(&source_compact, &chain, true)
+				.expect("printable compact genesis block");
+		assert_eq!(converted_compact.nonce, source_compact.nonce);
+		let serialized_compact =
+			mwc_crates::serde_json::to_value(&converted_compact).expect("serialize compact block");
+		assert_eq!(
+			serialized_compact
+				.get("nonce")
+				.and_then(|nonce| nonce.as_u64()),
+			Some(source_compact.nonce)
+		);
+		let compact_output = compact
+			.out_full
+			.iter()
+			.find(|printable| printable.commit == output.commitment())
+			.expect("genesis output in printable compact block");
+		assert_eq!(compact_output.context_id, printable_output.context_id);
+		assert_eq!(
+			compact_output
+				.merkle_proof
+				.as_ref()
+				.map(|proof| proof.mmr_size),
+			Some(output_mmr_size)
+		);
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
 	}
 
 	#[test]
@@ -593,6 +713,81 @@ mod tests {
 	}
 
 	#[test]
+	fn get_header_v2_rejects_misindexed_record() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("misindexed_header_record");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let chain = mwc_chain::Chain::init(
+			&secp,
+			0,
+			chain_dir.clone(),
+			Arc::new(mwc_chain::types::NoopAdapter {}),
+			mwc_core::genesis::genesis_floo(&secp, 0),
+			mwc_core::pow::verify_size,
+			false,
+			std::collections::HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+		let header = chain.genesis();
+		let actual_hash = header.hash(chain.get_context_id()).unwrap();
+
+		let mut wrong_hash_bytes = actual_hash.to_vec();
+		wrong_hash_bytes[0] ^= 1;
+		let wrong_hash = Hash::from_vec(&wrong_hash_bytes);
+		drop(chain);
+		mwc_chain::pipe::release_context_data(0);
+
+		let store = mwc_chain::ChainStore::new(0, &chain_dir).unwrap();
+		let batch = store.batch_write().unwrap();
+		let mut wrong_key = Vec::with_capacity(Hash::LEN + 2);
+		wrong_key.extend_from_slice(b"h:");
+		wrong_key.extend_from_slice(wrong_hash.as_bytes());
+		batch.db.put_ser(&wrong_key, &header).unwrap();
+		batch.commit().unwrap();
+		drop(store);
+
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				mwc_core::genesis::genesis_floo(&secp, 0),
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let handler = HeaderHandler {
+			chain: Arc::downgrade(&chain),
+		};
+		let result = handler.get_header_v2(&wrong_hash);
+
+		drop(handler);
+		drop(chain);
+		mwc_chain::pipe::release_context_data(0);
+		let _ = fs::remove_dir_all(&chain_dir);
+
+		match result {
+			Err(Error::Chain(mwc_chain::Error::InvalidPersistedChainState(msg))) => {
+				assert!(msg.contains("key/hash mismatch"), "{}", msg);
+				assert!(msg.contains(&wrong_hash.to_string()), "{}", msg);
+				assert!(msg.contains(&actual_hash.to_string()), "{}", msg);
+			}
+			other => panic!("expected persisted-chain-state error, got {:?}", other),
+		}
+	}
+
+	#[test]
 	fn get_header_for_output_returns_none_for_missing_output_probe() {
 		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
 		mwc_core::global::set_local_nrd_enabled(false);
@@ -613,6 +808,7 @@ mod tests {
 					std::collections::HashSet::new(),
 					None,
 					None,
+					false,
 				)
 				.unwrap(),
 			);

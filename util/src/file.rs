@@ -353,14 +353,62 @@ where
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt;
-		replacement
+		if let Err(error) = replacement
 			.as_file()
-			.set_permissions(fs::Permissions::from_mode(0o600))?;
+			.set_permissions(fs::Permissions::from_mode(0o600))
+		{
+			return Err(cleanup_replacement_after_error(
+				replacement,
+				"setting replacement permissions failed",
+				error,
+			));
+		}
 	}
 
-	write_all_and_sync(replacement.as_file_mut(), bytes.as_ref())?;
-	replacement.persist(path).map_err(|e| e.error)?;
-	sync_parent_dir(path)
+	if let Err(error) = write_all_and_sync(replacement.as_file_mut(), bytes.as_ref()) {
+		return Err(cleanup_replacement_after_error(
+			replacement,
+			"writing or synchronizing replacement failed",
+			error,
+		));
+	}
+
+	match replacement.persist(path) {
+		Ok(_) => sync_parent_dir(path),
+		Err(persist_error) => {
+			let mwc_crates::tempfile::PersistError { error, file } = persist_error;
+			Err(cleanup_replacement_after_error(
+				file,
+				"persisting replacement failed",
+				error,
+			))
+		}
+	}
+}
+
+fn cleanup_replacement_after_error(
+	replacement: mwc_crates::tempfile::NamedTempFile,
+	context: &str,
+	primary: io::Error,
+) -> io::Error {
+	let replacement_path = replacement.path().to_path_buf();
+	match replacement.close() {
+		Ok(()) => primary,
+		Err(cleanup) => {
+			// This is the final cleanup attempt. A failure here cannot itself be
+			// recovered by another cleanup attempt because `close` consumes the
+			// temporary-file handle; reporting both errors and the path is the
+			// limit of this API.
+			let kind = cleanup.kind();
+			io::Error::new(
+				kind,
+				format!(
+					"{context}: {primary}; additionally failed to remove temporary owner-only file {}: {cleanup}",
+					replacement_path.display()
+				),
+			)
+		}
+	}
 }
 
 /// Create or truncate an owner-only regular file.
@@ -584,12 +632,17 @@ fn create_owner_only_file_impl(path: &Path, create_new: bool) -> io::Result<fs::
 }
 
 #[cfg(not(unix))]
-fn create_owner_only_file_impl(path: &Path, create_new2: bool) -> io::Result<fs::File> {
+fn create_owner_only_file_impl(path: &Path, create_new: bool) -> io::Result<fs::File> {
 	let mut options = fs::OpenOptions::new();
 	options.write(true);
-	if create_new2 {
+	if create_new {
 		options.create_new(true);
 	} else {
+		match owner_only_regular_file_metadata(path) {
+			Ok(_) => {}
+			Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+			Err(err) => return Err(err),
+		}
 		options.create(true).truncate(true);
 	}
 	let file = options.open(path)?;
@@ -807,6 +860,57 @@ mod tests {
 				0o600
 			);
 		}
+	}
+
+	#[test]
+	fn replace_owner_only_file_cleans_up_after_persist_failure() {
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let parent = temp_dir.path().join("parent");
+		let destination = parent.join("destination");
+		fs::create_dir(&parent).unwrap();
+		fs::create_dir(&destination).unwrap();
+
+		replace_owner_only_file(&destination, b"owner-only contents").unwrap_err();
+
+		assert!(destination.is_dir());
+		assert!(fs::read_dir(&parent).unwrap().all(|entry| {
+			!entry
+				.unwrap()
+				.file_name()
+				.to_string_lossy()
+				.starts_with(".mwc-owner-only-")
+		}));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn cleanup_replacement_after_error_reports_terminal_cleanup_failure() {
+		let temp_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let original_parent = temp_dir.path().join("original");
+		let moved_parent = temp_dir.path().join("moved");
+		fs::create_dir(&original_parent).unwrap();
+		let replacement = mwc_crates::tempfile::Builder::new()
+			.prefix(".mwc-owner-only-")
+			.tempfile_in(&original_parent)
+			.unwrap();
+		let original_path = replacement.path().to_path_buf();
+		let moved_path = moved_parent.join(original_path.file_name().unwrap());
+		fs::rename(&original_parent, &moved_parent).unwrap();
+
+		let error = cleanup_replacement_after_error(
+			replacement,
+			"simulated replacement failure",
+			io::Error::new(io::ErrorKind::WriteZero, "primary write error"),
+		);
+
+		assert_eq!(error.kind(), io::ErrorKind::NotFound);
+		let message = error.to_string();
+		assert!(message.contains("simulated replacement failure"));
+		assert!(message.contains("primary write error"));
+		assert!(message.contains("additionally failed to remove"));
+		assert!(message.contains(&original_path.display().to_string()));
+		assert!(moved_path.exists());
+		fs::remove_file(moved_path).unwrap();
 	}
 
 	#[cfg(unix)]

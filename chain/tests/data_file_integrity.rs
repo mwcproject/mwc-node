@@ -14,7 +14,6 @@
 // limitations under the License.
 
 use self::chain_test_helper::{clean_output_dir, init_chain, mine_chain};
-use mwc_core::core::hash::Hashed;
 use mwc_core::core::Block;
 use mwc_core::global;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
@@ -37,9 +36,8 @@ fn data_files() {
 		let chain = mine_chain(chain_dir, 4);
 		chain.validate(&secp, false).unwrap();
 		assert_eq!(chain.head().unwrap().height, 3);
-		chain
-			.get_block(&chain.get_header_by_height(0).unwrap().hash(0).unwrap())
-			.unwrap()
+		let header = chain.get_header_by_height(0).unwrap();
+		chain.get_block_for_header(&header).unwrap()
 	};
 
 	// Now reload the chain from existing data files and check it is valid.

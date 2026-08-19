@@ -15,7 +15,7 @@
 
 use crate::conn::Tracker;
 use crate::msg::{
-	read_body, read_header, read_message, write_message, Hand, Msg, MsgHeaderWrapper, Shake, Type,
+	read_body, read_header, write_message, Hand, Msg, MsgHeaderWrapper, Shake, Type,
 	ONION_PROOF_SIGNATURE_LEN, USER_AGENT,
 };
 use crate::peer::Peer;
@@ -35,6 +35,7 @@ use mwc_crates::log::{debug, info, trace};
 use mwc_crates::parking_lot::RwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::rand::TryRng;
+use mwc_crates::tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use mwc_crates::zeroize::Zeroizing;
 use mwc_util::OnionV3Address;
 use std::collections::{HashMap, VecDeque};
@@ -104,6 +105,41 @@ fn read_hand_message<R: Read>(
 	}
 }
 
+fn read_shake_message(
+	conn: &mut TcpDataStream,
+	version: ProtocolVersion,
+	context_id: u32,
+	timeout: Duration,
+) -> Result<Shake, Error> {
+	let mut reader = conn.deadline_reader(timeout);
+	let shake = match read_header(&mut reader, version, context_id) {
+		Ok(MsgHeaderWrapper::Known(header)) => {
+			if header.msg_type == Type::Shake {
+				read_body(&header, &mut reader, version, context_id)
+			} else {
+				Err(Error::BadMessage(format!(
+					"header.msg_type={:?} but expected {:?}",
+					header.msg_type,
+					Type::Shake
+				)))
+			}
+		}
+		Ok(MsgHeaderWrapper::Unknown(msg_len, tp)) => Err(Error::BadMessage(format!(
+			"Unknown message of length {} and type {} while expecting {:?}",
+			msg_len,
+			tp,
+			Type::Shake
+		))),
+		Err(err) => Err(err),
+	};
+	shake.map_err(|err| match err {
+		Error::Serialization(err) => {
+			bad_handshake(format!("invalid Shake message from peer: {}", err))
+		}
+		err => err,
+	})
+}
+
 /// Handles the handshake negotiation when two peers connect and decides on
 /// protocol.
 pub struct Handshake {
@@ -125,7 +161,10 @@ pub struct Handshake {
 	context_id: u32,
 	tracker: Arc<Tracker>,
 	pub onion_address: Option<String>,
-	onion_expanded_key: Option<Zeroizing<[u8; 64]>>,
+	// Parse once during setup so every outbound handshake does not create another
+	// temporary copy of the onion identity secret. ExpandedKeypair's secret is
+	// zeroized when dropped.
+	onion_signing_key: Result<Option<ExpandedKeypair>, &'static str>,
 }
 
 impl Handshake {
@@ -137,6 +176,11 @@ impl Handshake {
 		onion_address: Option<String>,
 		onion_expanded_key: Option<Zeroizing<[u8; 64]>>,
 	) -> Handshake {
+		let onion_signing_key = onion_expanded_key
+			.as_ref()
+			.map(parse_onion_expanded_key)
+			.transpose();
+
 		Handshake {
 			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
 			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
@@ -145,7 +189,7 @@ impl Handshake {
 			))),
 			genesis,
 			// Accepted risk: config.onion_expanded_key may keep the original onion
-			// identity key string alive as a duplicate of the parsed Zeroizing key
+			// identity key string alive as a duplicate of the parsed signing key
 			// below. Keep the full P2PConfig here because handshake validation uses
 			// the peer policy settings from it, and callers rely on the complete
 			// config being preserved across handshake setup. P2PConfig zeroizes this
@@ -155,7 +199,7 @@ impl Handshake {
 			context_id,
 			tracker: Arc::new(Tracker::new()),
 			onion_address: onion_address,
-			onion_expanded_key,
+			onion_signing_key,
 		}
 	}
 
@@ -351,11 +395,14 @@ impl Handshake {
 			Onion(onion) => onion,
 			Ip(_) => return Ok(None),
 		};
-		let expanded_key = self.onion_expanded_key.as_ref().ok_or_else(|| {
-			Error::TorConfig("onion identity key is required to advertise onion address".into())
-		})?;
-		let keypair = parse_onion_expanded_key(&*expanded_key)
-			.map_err(|e| Error::TorConfig(format!("invalid onion identity key, {}", e)))?;
+		let keypair = self
+			.onion_signing_key
+			.as_ref()
+			.map_err(|e| Error::TorConfig(format!("invalid onion identity key, {}", e)))?
+			.as_ref()
+			.ok_or_else(|| {
+				Error::TorConfig("onion identity key is required to advertise onion address".into())
+			})?;
 		let sender_onion_addr = OnionV3Address::try_from(sender_onion.as_str()).map_err(|e| {
 			Error::TorConfig(format!(
 				"unable to parse local onion address {}: {}",
@@ -513,13 +560,14 @@ impl Handshake {
 		let msg = Msg::new(Type::Hand, hand, self.protocol_version, self.context_id)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
-		let shake: Shake = read_message(conn, self.protocol_version, self.context_id, Type::Shake)
-			.map_err(|err| match err {
-				Error::Serialization(err) => {
-					bad_handshake(format!("invalid Shake message from peer: {}", err))
-				}
-				err => err,
-			})?;
+		// Bound the complete Shake response to one deadline. Repeated partial reads
+		// can otherwise extend a per-read timeout far beyond its intended limit.
+		let shake = read_shake_message(
+			conn,
+			self.protocol_version,
+			self.context_id,
+			SHAKE_READ_TIMEOUT,
+		)?;
 		if shake.genesis != self.genesis {
 			return Err(Error::GenesisMismatch {
 				us: self.genesis,
@@ -577,10 +625,15 @@ impl Handshake {
 		// Set explicit timeouts on the tcp stream for hand/shake messages.
 		// Once the peer is up and running we will set new values for these.
 		// We accept an inbound connection, reading a Hand then writing a Shake reply.
-		let _ = conn.set_read_timeout(HAND_READ_TIMEOUT);
-		let _ = conn.set_write_timeout(SHAKE_WRITE_TIMEOUT);
+		conn.set_read_timeout(HAND_READ_TIMEOUT);
+		conn.set_write_timeout(SHAKE_WRITE_TIMEOUT);
 
-		let hand: Hand = read_hand_message(conn, self.protocol_version, self.context_id)?;
+		// A per-read idle timeout is insufficient here because read_exact may make
+		// repeated partial reads. Bound the complete Hand message to one deadline.
+		let hand: Hand = {
+			let mut reader = conn.deadline_reader(HAND_READ_TIMEOUT);
+			read_hand_message(&mut reader, self.protocol_version, self.context_id)?
+		};
 
 		if hand.genesis != self.genesis {
 			return Err(Error::GenesisMismatch {
@@ -735,7 +788,19 @@ fn resolve_peer_addr(hand: &Hand, conn: &TcpDataStream) -> Result<PeerAddr, Erro
 		Ip(socket_addr) => resolve_ip_peer_addr(socket_addr, conn.peer_addr()),
 		Onion(_) => match conn.peer_addr() {
 			Err(Error::IpAddressRequestFromTor) => Ok(advertised.clone()),
-			Ok(PeerAddr::Ip(_)) => Ok(advertised.clone()),
+			Ok(PeerAddr::Ip(_)) => {
+				// Accepted policy: resolving an onion identity over a TCP transport
+				// discards the observed socket IP for peer allow/deny and ban checks.
+				// Consequently, a source covered by an IP peer-deny rule can still be
+				// accepted under its onion identity. The socket IP may belong to a
+				// shared Tor exit or gateway rather than to the peer, so persistently
+				// treating it as the peer identity would cause collateral blocking and
+				// undermine Tor connectivity. IP rules are therefore peer-identity
+				// rules, not firewall-style transport rules; transport-level blocking
+				// must be enforced separately at the listener or firewall boundary.
+				// Onion identity authentication is handled by verify_onion_hand_proof.
+				Ok(advertised.clone())
+			}
 			Ok(addr) => Err(bad_handshake(format!(
 				"cannot verify advertised onion sender address {} over non-Tor transport {}",
 				advertised, addr
@@ -806,6 +871,8 @@ mod tests {
 	use mwc_core::ser;
 	use mwc_crates::tokio::net::{TcpListener, TcpStream};
 	use mwc_crates::tor_llcrypto::pk::ed25519::{ExpandedKeypair, Keypair};
+	use std::io::Write;
+	use std::time::Instant;
 
 	fn onion_from_seed(seed: &[u8; 32]) -> String {
 		format!(
@@ -886,6 +953,104 @@ mod tests {
 			Ok(_) => panic!("expected BadMessage, got decoded Hand"),
 			Err(err) => panic!("expected BadMessage, got {:?}", err),
 		}
+	}
+
+	#[test]
+	fn read_shake_message_rejects_unknown_type_without_body_discard() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		mwc_util::init_global_runtime().unwrap();
+		let async_rt = mwc_util::global_runtime().unwrap();
+		let (client, server) = async_rt.block_on(async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let addr = listener.local_addr().unwrap();
+			let client = TcpStream::connect(addr).await.unwrap();
+			let (server, _) = listener.accept().await.unwrap();
+			(client, server)
+		});
+		let mut client = client.into_std().unwrap();
+		client.set_nonblocking(false).unwrap();
+		let mut conn = TcpDataStream::from_tcp(server);
+		let mut header = ser::ser_vec(
+			0,
+			&MsgHeader::new(0, Type::Ping, 10),
+			ProtocolVersion::local(),
+		)
+		.unwrap();
+		header[2] = 255;
+		client.write_all(&header).unwrap();
+		client.shutdown(std::net::Shutdown::Write).unwrap();
+
+		match read_shake_message(
+			&mut conn,
+			ProtocolVersion::local(),
+			0,
+			Duration::from_secs(1),
+		) {
+			Err(Error::BadMessage(message)) => {
+				assert!(message.contains("while expecting Shake"), "{}", message);
+			}
+			Ok(_) => panic!("expected BadMessage, got decoded Shake"),
+			Err(err) => panic!("expected BadMessage, got {:?}", err),
+		}
+	}
+
+	#[test]
+	fn outbound_shake_read_has_total_deadline() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		mwc_util::init_global_runtime().unwrap();
+		let async_rt = mwc_util::global_runtime().unwrap();
+		let (client, server) = async_rt.block_on(async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let addr = listener.local_addr().unwrap();
+			let client = TcpStream::connect(addr).await.unwrap();
+			let (server, _) = listener.accept().await.unwrap();
+			(client, server)
+		});
+		let mut client = client.into_std().unwrap();
+		client.set_nonblocking(false).unwrap();
+		let mut conn = TcpDataStream::from_tcp(server);
+		conn.set_read_timeout(Duration::from_secs(2));
+		let header = ser::ser_vec(
+			0,
+			&MsgHeader::new(0, Type::Shake, 0),
+			ProtocolVersion::local(),
+		)
+		.unwrap();
+
+		let writer = std::thread::spawn(move || {
+			for byte in header.into_iter().take(3) {
+				if client.write_all(&[byte]).is_err() {
+					break;
+				}
+				std::thread::sleep(Duration::from_millis(30));
+			}
+		});
+
+		let start = Instant::now();
+		let err = match read_shake_message(
+			&mut conn,
+			ProtocolVersion::local(),
+			0,
+			Duration::from_millis(50),
+		) {
+			Err(err) => err,
+			Ok(_) => panic!("expected the Shake read to time out"),
+		};
+		let elapsed = start.elapsed();
+		drop(conn);
+		writer.join().unwrap();
+
+		match err {
+			Error::Connection(err) => {
+				assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+			}
+			err => panic!("expected connection timeout, got {:?}", err),
+		}
+		assert!(
+			elapsed < Duration::from_secs(1),
+			"total deadline was not enforced: {:?}",
+			elapsed
+		);
 	}
 
 	#[test]

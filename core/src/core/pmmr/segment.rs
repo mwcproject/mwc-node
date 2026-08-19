@@ -533,24 +533,24 @@ where
 		// Segment validity is defined by payload size, not by an independent
 		// height/range cap. Large sparse bitmap segments are valid protocol data,
 		// so keep segment_size_limit as the only size criterion here.
+		// Note, we can estimate size (segment_size_limit) after the prune step
+		// only!!! Temporary segment can be much larger, so we can't apply size limit logic to it.
 		if let Some(bitmap) = bitmap {
-			// let's try to build the segment and prune it...
+			// Build a temporary segment copy and prune it before applying the result
+			// size limit. The temporary representation depends on the serving node's
+			// local compaction state and is not part of the resulting segment payload.
 			let mut segm_copy_data: VecBackend<T> = VecBackend::new(pmmr.get_context_id());
 			let mut segm_copy = PMMR::new(&mut segm_copy_data);
 			segm_copy.update_index_offset(segment_first_pos);
 
-			// constructin the segment in the memory.
+			// Construct the temporary segment in memory.
 			let mut prune_pos = Vec::new();
-			let mut construction_size = 0usize;
 			for pos0 in segment_first_pos..=segment_last_pos {
-				check_segment_size_limit(construction_size, segment_size_limit)?;
 				if pmmr::is_leaf(pos0) {
 					let keeping = bitmap_keeps_leaf(pos0, mmr_last_pos, bitmap)?;
 					match pmmr.get_data_from_file(pos0)? {
 						Some(data) => {
 							let data = T::from(data);
-							construction_size =
-								add_leaf_payload_size(construction_size, leaf_size)?;
 							segm_copy.push(&data).map_err(|e| {
 								SegmentError::GenericError(format!(
 									"Unable to build a segment, {}",
@@ -575,8 +575,6 @@ where
 						))
 					})?;
 					if pos0_copy >= segm_copy.size() {
-						construction_size =
-							add_segment_payload_size(construction_size, SEGMENT_HASH_PAYLOAD_SIZE)?;
 						segm_copy
 							.push_pruned_subtree(hash, pos0_copy)
 							.map_err(|e| {

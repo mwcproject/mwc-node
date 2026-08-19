@@ -20,7 +20,6 @@ use mwc_core::core::OutputIdentifier;
 use mwc_core::libtx::secp_ser;
 use mwc_crates::secp::constants::PEDERSEN_COMMITMENT_SIZE;
 use mwc_crates::secp::pedersen::Commitment;
-use mwc_crates::secp::Secp256k1;
 use mwc_crates::serde::de::IntoDeserializer;
 use std::sync::{Arc, Weak};
 
@@ -77,51 +76,6 @@ pub fn get_output(
 		Output::new(&out.commitment(), pos.height, pos.pos),
 		out,
 	)))
-}
-
-/// Retrieves an output from the chain given a commit id (a tiny bit iteratively)
-pub fn get_output_v2(
-	secp: &Secp256k1,
-	chain: &Weak<mwc_chain::Chain>,
-	id: &str,
-	include_proof: bool,
-	include_merkle_proof: bool,
-) -> Result<Option<(OutputPrintable, OutputIdentifier)>, Error> {
-	let chain = w(chain)?;
-	let (out, pos) = match get_unspent(&chain, id)? {
-		Some(x) => x,
-		None => return Ok(None),
-	};
-
-	let output = chain.get_unspent_output_at(pos.pos - 1)?;
-	if output.commitment() != out.commitment() {
-		return Err(Error::Internal(format!(
-			"output commitment mismatch at position {}: requested {:?}, found {:?}",
-			pos.pos,
-			out.commitment(),
-			output.commitment()
-		)));
-	}
-
-	let header = if include_merkle_proof && output.is_coinbase() {
-		Some(chain.get_header_for_output(out.commitment()).map_err(|e| {
-			let msg = format!("Header for output {:?}, {}", out, e);
-			Error::chain_read_error(e, msg)
-		})?)
-	} else {
-		None
-	};
-
-	let output_printable = OutputPrintable::from_output(
-		secp,
-		&output,
-		&chain,
-		header.as_ref(),
-		include_proof,
-		include_merkle_proof,
-	)?;
-
-	Ok(Some((output_printable, out)))
 }
 
 #[cfg(test)]

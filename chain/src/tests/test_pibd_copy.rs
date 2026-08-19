@@ -82,6 +82,7 @@ impl SegmenterResponder {
 					HashSet::new(),
 					None,
 					None,
+					false,
 				)
 				.unwrap(),
 			),
@@ -162,6 +163,7 @@ impl DesegmenterRequestor {
 					HashSet::new(),
 					None,
 					None,
+					false,
 				)
 				.unwrap(),
 			),
@@ -520,6 +522,7 @@ fn test_chain_validation() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap();
 
@@ -534,6 +537,7 @@ fn test_chain_validation() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap();
 
@@ -617,7 +621,8 @@ fn test_chain_validation() {
 			blocks_are_done = false;
 
 			let block_hash = hashes.choose(&mut rng).unwrap();
-			let block = src_chain.get_block(block_hash).unwrap();
+			let header = src_chain.get_block_header(block_hash).unwrap();
+			let block = src_chain.get_block_for_header(&header).unwrap();
 
 			debug!(
 				"Request size: {},  requested block {} at height {}",

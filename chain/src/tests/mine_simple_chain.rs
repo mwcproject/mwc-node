@@ -13,12 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use mwc_chain::store::{ChainOperationKind, PendingChainOperation};
 use mwc_chain::types::{CommitPos, KernelPos, NoopAdapter, Tip};
 use mwc_chain::Chain;
 use mwc_chain::{BlockStatus, ChainAdapter, Options};
-use mwc_core::core::hash::Hashed;
+use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{
-	block, pmmr, transaction, Block, BlockHeader, KernelFeatures, Output, OutputFeatures,
+	block, pmmr, transaction, Block, BlockHeader, Inputs, KernelFeatures, Output, OutputFeatures,
 	Transaction,
 };
 use mwc_core::global::ChainTypes;
@@ -37,6 +38,8 @@ use mwc_keychain::{
 use mwc_util::StopState;
 use std::collections::HashSet;
 use std::convert::TryInto;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::chain_test_helper::build::{self, Append};
@@ -87,10 +90,36 @@ fn setup_with_status_adapter(
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap();
 
 	chain
+}
+
+fn accept_test_pow(_: u32, _: &BlockHeader) -> Result<(), pow::Error> {
+	Ok(())
+}
+
+// Some recovery fixtures intentionally persist randomly generated proofs while
+// processing blocks with SKIP_POW. Keep their configured recovery verifier
+// equally explicit and local to those tests.
+fn init_chain_accepting_test_pow(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
+	let context_id = genesis.header.pow.proof.context_id;
+	Chain::init(
+		secp,
+		context_id,
+		dir_name.to_string(),
+		Arc::new(NoopAdapter {}),
+		genesis,
+		accept_test_pow,
+		false,
+		HashSet::new(),
+		None,
+		None,
+		false,
+	)
+	.unwrap()
 }
 
 #[test]
@@ -109,6 +138,104 @@ fn mine_short_chain() {
 	let chain = mine_chain(chain_dir, 4);
 	assert_eq!(chain.head().unwrap().height, 3);
 	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn known_block_check_normalizes_nonempty_v2_inputs_to_v3() {
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let chain_dir = test_chain_dir("known_block_check_normalizes_nonempty_v2_inputs_to_v3");
+	clean_output_dir(&chain_dir);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	{
+		let chain = init_chain(
+			&secp,
+			&chain_dir,
+			global::get_genesis_block(&secp, 0).unwrap(),
+		);
+		let kc =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let pb = ProofBuilder::new(&secp, &kc).unwrap();
+		let mut head = chain.head_header().unwrap();
+
+		// Mine enough blocks for the height-1 coinbase output to mature.
+		for key_idx in 1..=3 {
+			let block = prepare_block_key_idx(&mut secp, &kc, &head, &chain, 1, key_idx);
+			head = block.header.clone();
+			chain
+				.process_block(&mut secp, block, Options::SKIP_POW, HashSet::new())
+				.unwrap();
+		}
+
+		let coinbase_key = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let output_key = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let spend = build::transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 20_000u32.try_into().unwrap(),
+			},
+			&[
+				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, coinbase_key),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20_000, output_key),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+		let block = prepare_block_tx_key_idx(&mut secp, &kc, &head, &chain, 1, 4, &[spend]);
+		let block_header = block.header.clone();
+		chain
+			.process_block(&mut secp, block, Options::SKIP_POW, HashSet::new())
+			.unwrap();
+
+		let stored = chain.get_block_for_header(&block_header).unwrap();
+		assert!(matches!(
+			stored.inputs(),
+			Inputs::CommitOnly(ref inputs) if !inputs.is_empty()
+		));
+		let legacy = chain.convert_block_v2(&secp, stored).unwrap();
+		assert!(matches!(
+			legacy.inputs(),
+			Inputs::FeaturesAndCommit(ref inputs) if !inputs.is_empty()
+		));
+
+		let result =
+			chain.process_block(&mut secp, legacy.clone(), Options::SKIP_POW, HashSet::new());
+		assert!(matches!(
+			result,
+			Err(mwc_chain::Error::Unfit(ref msg)) if msg == "already known in head"
+		));
+
+		// Known-block comparison intentionally ignores legacy input features. The
+		// trusted v3 block remains authoritative and this candidate is discarded.
+		let mut wrong_feature = legacy;
+		match &mut wrong_feature.body.inputs {
+			Inputs::FeaturesAndCommit(inputs) => {
+				assert_eq!(inputs.len(), 1);
+				assert!(inputs[0].is_coinbase());
+				inputs[0].features = OutputFeatures::Plain;
+			}
+			Inputs::CommitOnly(_) => panic!("expected legacy feature-bearing inputs"),
+		}
+		let result =
+			chain.process_block(&mut secp, wrong_feature, Options::SKIP_POW, HashSet::new());
+		assert!(matches!(
+			result,
+			Err(mwc_chain::Error::Unfit(ref msg)) if msg == "already known in head"
+		));
+	}
+
+	clean_output_dir(&chain_dir);
 }
 
 #[test]
@@ -150,6 +277,48 @@ fn unspent_outputs_by_pmmr_index_clamps_reported_highest_index() {
 }
 
 #[test]
+fn merkle_proof_uses_current_output_pmmr_state() {
+	let chain_dir = test_chain_dir("merkle_proof_uses_current_output_pmmr_state");
+	clean_output_dir(&chain_dir);
+	let chain = mine_chain(&chain_dir, 4);
+
+	let origin_header = chain.get_header_by_height(1).unwrap();
+	let origin_block = chain.get_block_for_header(&origin_header).unwrap();
+	let output = origin_block.outputs()[0];
+	assert!(output.is_coinbase());
+
+	let current_header = chain.head_header().unwrap();
+	assert!(current_header.height > origin_header.height);
+	let proof = chain.get_merkle_proof(&output).unwrap();
+	let pos0 = chain.get_output_pos(&output.commitment()).unwrap();
+	assert_eq!(proof.mmr_size, current_header.output_mmr_size);
+	proof
+		.verify(
+			chain.get_context_id(),
+			current_header.output_root,
+			&output.identifier(),
+			pos0,
+		)
+		.unwrap();
+
+	// The API intentionally does not promise an origin-header proof. Once the
+	// PMMR has grown, this current-state proof must not be verified against the
+	// root from the block that created the output.
+	assert!(proof
+		.verify(
+			chain.get_context_id(),
+			origin_header.output_root,
+			&output.identifier(),
+			pos0,
+		)
+		.is_err());
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	drop(chain);
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
 fn locate_headers_returns_header_pmmr_lookup_error() {
 	let chain_dir = ".mwc.locate_headers_pmmr_lookup_error";
 	clean_output_dir(chain_dir);
@@ -166,6 +335,30 @@ fn locate_headers_returns_header_pmmr_lookup_error() {
 	assert!(matches!(res, Err(mwc_chain::Error::InvalidHeaderHeight(1))));
 
 	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn fork_point_returns_header_pmmr_lookup_error() {
+	let chain_dir = test_chain_dir("fork_point_pmmr_lookup_error");
+	clean_output_dir(&chain_dir);
+	let chain = mine_chain(&chain_dir, 4);
+	let head = chain.head().unwrap();
+
+	{
+		let header_pmmr = chain.get_header_pmmr_for_test();
+		header_pmmr.write().size = 1;
+	}
+
+	let res = chain.fork_point();
+
+	assert!(matches!(
+		res,
+		Err(mwc_chain::Error::InvalidHeaderHeight(height)) if height == head.height
+	));
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	drop(chain);
+	clean_output_dir(&chain_dir);
 }
 
 #[test]
@@ -321,9 +514,40 @@ fn block_height_range_to_pmmr_indices_rejects_body_chain_predecessor_skip() {
 	let res = chain.block_height_range_to_pmmr_indices(3, Some(corrupt_head.height));
 	assert!(matches!(
 		res,
-		Err(mwc_chain::Error::Other(msg))
-			if msg.contains("body chain header traversal stopped at height 1")
-				&& msg.contains("below requested height 2")
+		Err(mwc_chain::Error::InvalidPersistedChainState(msg))
+			if msg.contains("body_chain_header_at_height_maybe_fast ancestry")
+				&& msg.contains("at height 3, found height 1")
+	));
+
+	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn block_height_range_to_pmmr_indices_rejects_non_decreasing_body_predecessor() {
+	let chain_dir = ".mwc.pmmr_height_range_body_prev_non_decreasing";
+	clean_output_dir(chain_dir);
+	let chain = mine_chain(chain_dir, 5);
+	let context_id = chain.get_context_id();
+	let store = chain.get_store_for_tests();
+	let original_head = chain.head_header().unwrap();
+	let mut corrupt_head = original_head.clone();
+	corrupt_head.prev_hash = original_head.hash(context_id).unwrap();
+	corrupt_head.pow.proof.nonces[0] += 1;
+	let corrupt_tip = Tip::try_from_header(&corrupt_head).unwrap();
+
+	{
+		let batch = store.batch_write().unwrap();
+		batch.save_block_header(&corrupt_head).unwrap();
+		batch.save_body_head(&corrupt_tip).unwrap();
+		batch.commit().unwrap();
+	}
+
+	let res = chain.block_height_range_to_pmmr_indices(3, Some(corrupt_head.height));
+	assert!(matches!(
+		res,
+		Err(mwc_chain::Error::InvalidPersistedChainState(msg))
+			if msg.contains("body_chain_header_at_height_maybe_fast ancestry")
+				&& msg.contains("at height 3, found height 4")
 	));
 
 	clean_output_dir(chain_dir);
@@ -387,7 +611,7 @@ fn reset_pibd_chain_keeps_genesis_output_visible_after_compaction() {
 	let genesis_commit = genesis.outputs()[0].commitment();
 
 	{
-		let chain = init_chain(&secp, &chain_dir, genesis);
+		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis);
 		let mut head = chain.head_header().unwrap();
 
 		let b = prepare_block_key_idx(&mut secp, &keychain, &head, &chain, 2, 2);
@@ -495,7 +719,7 @@ fn get_unspent_rebuilds_index_with_stale_height() {
 	let chain = mine_chain(chain_dir, 4);
 	let store = chain.get_store_for_tests();
 	let block_header = chain.get_header_by_height(1).unwrap();
-	let block = chain.get_block(&block_header.hash(0).unwrap()).unwrap();
+	let block = chain.get_block_for_header(&block_header).unwrap();
 	let commit = block.outputs()[0].commitment();
 	let original_pos = store.get_output_pos_height(&commit).unwrap().unwrap();
 	assert_eq!(original_pos.height, 1);
@@ -531,13 +755,13 @@ fn get_unspent_rebuild_repairs_all_stale_heights() {
 	let store = chain.get_store_for_tests();
 
 	let block_a_header = chain.get_header_by_height(1).unwrap();
-	let block_a = chain.get_block(&block_a_header.hash(0).unwrap()).unwrap();
+	let block_a = chain.get_block_for_header(&block_a_header).unwrap();
 	let commit_a = block_a.outputs()[0].commitment();
 	let original_a = store.get_output_pos_height(&commit_a).unwrap().unwrap();
 	assert_eq!(original_a.height, 1);
 
 	let block_b_header = chain.get_header_by_height(2).unwrap();
-	let block_b = chain.get_block(&block_b_header.hash(0).unwrap()).unwrap();
+	let block_b = chain.get_block_for_header(&block_b_header).unwrap();
 	let commit_b = block_b.outputs()[0].commitment();
 	let original_b = store.get_output_pos_height(&commit_b).unwrap().unwrap();
 	assert_eq!(original_b.height, 2);
@@ -586,7 +810,7 @@ fn get_unspent_does_not_rebuild_index_with_missing_entry() {
 	let chain = mine_chain(chain_dir, 4);
 	let store = chain.get_store_for_tests();
 	let block_header = chain.get_header_by_height(1).unwrap();
-	let block = chain.get_block(&block_header.hash(0).unwrap()).unwrap();
+	let block = chain.get_block_for_header(&block_header).unwrap();
 	let commit = block.outputs()[0].commitment();
 	let original_pos = store.get_output_pos_height(&commit).unwrap().unwrap();
 	assert_eq!(original_pos.height, 1);
@@ -610,7 +834,7 @@ fn get_header_for_output_rebuilds_index_with_stale_height() {
 	let chain = mine_chain(chain_dir, 4);
 	let store = chain.get_store_for_tests();
 	let block_header = chain.get_header_by_height(1).unwrap();
-	let block = chain.get_block(&block_header.hash(0).unwrap()).unwrap();
+	let block = chain.get_block_for_header(&block_header).unwrap();
 	let commit = block.outputs()[0].commitment();
 	let original_pos = store.get_output_pos_height(&commit).unwrap().unwrap();
 	assert_eq!(original_pos.height, 1);
@@ -811,6 +1035,48 @@ fn get_header_for_kernel_index_uses_body_chain_when_header_pmmr_is_on_fork() {
 }
 
 #[test]
+fn fork_point_descends_when_header_head_is_below_body_head() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = test_chain_dir("fork_point_shorter_header_head");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, &chain_dir, genesis);
+	let context_id = chain.get_context_id();
+
+	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &block_a);
+	let body_block = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	process_block(&mut secp, &chain, &body_block);
+
+	let mut header_fork = prepare_block(&mut secp, &kc, &chain.genesis(), &chain, 10).header;
+	header_fork.output_mmr_size = body_block.header.output_mmr_size;
+	process_header(&chain, &header_fork);
+
+	assert_eq!(
+		chain.head().unwrap(),
+		Tip::try_from_header(&body_block.header).unwrap()
+	);
+	assert_eq!(
+		chain.header_head().unwrap(),
+		Tip::try_from_header(&header_fork).unwrap()
+	);
+	assert!(header_fork.height < body_block.header.height);
+
+	let fork_point = chain.fork_point().unwrap();
+	assert_eq!(
+		fork_point.hash(context_id).unwrap(),
+		chain.genesis().hash(context_id).unwrap()
+	);
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
 fn init_output_pos_index_maps_missing_outputs_from_body_chain() {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let chain_dir = test_chain_dir("output_pos_repair_body_chain");
@@ -876,7 +1142,7 @@ fn init_output_pos_index_errors_on_unmapped_missing_output() {
 	clean_output_dir(chain_dir);
 	let chain = mine_chain(chain_dir, 2);
 	let block_header = chain.get_header_by_height(1).unwrap();
-	let block = chain.get_block(&block_header.hash(0).unwrap()).unwrap();
+	let block = chain.get_block_for_header(&block_header).unwrap();
 	let commit = block.outputs()[0].commitment();
 	let genesis_tip = Tip::try_from_header(&chain.genesis()).unwrap();
 	let store = chain.get_store_for_tests();
@@ -969,6 +1235,64 @@ fn rewind_bad_block_removes_header_only_chain_state() {
 }
 
 #[test]
+fn rewind_bad_block_uses_canonical_header_head_and_invalidates_pibd_state() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = ".mwc.rewind_bad_stale_header_head";
+	clean_output_dir(chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, chain_dir, genesis);
+
+	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &block_a);
+	let block_b = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	process_header(&chain, &block_b.header);
+
+	let old_segmenter = chain.segmenter().unwrap();
+	let old_desegmenter = chain.init_desegmenter(0, Hash::default()).unwrap();
+	assert!(old_segmenter.is_current());
+	assert!(old_desegmenter.is_current());
+
+	// Preserve the authoritative selected hash while making the redundant cached
+	// height lower than the denied header. A raw Tip height check would incorrectly
+	// classify block_b as being above the current header chain.
+	let store = chain.get_store_for_tests();
+	let mut stale_header_head = Tip::try_from_header(&block_b.header).unwrap();
+	stale_header_head.height = 0;
+	{
+		let batch = store.batch_write().unwrap();
+		batch.save_header_head(&stale_header_head).unwrap();
+		batch.commit().unwrap();
+	}
+	assert_eq!(chain.header_head().unwrap(), stale_header_head);
+
+	let bad_hash = block_b.hash(0).unwrap();
+	chain
+		.apply_invalid_blocks(&secp, std::iter::once(bad_hash).collect())
+		.unwrap();
+
+	assert_eq!(
+		chain.head().unwrap(),
+		Tip::try_from_header(&block_a.header).unwrap()
+	);
+	assert_eq!(
+		chain.header_head().unwrap(),
+		Tip::try_from_header(&block_a.header).unwrap()
+	);
+	assert!(chain.get_block_header(&bad_hash).is_err());
+	assert!(store.pending_chain_operation().unwrap().is_none());
+	assert!(!old_segmenter.is_current());
+	assert!(!old_desegmenter.is_current());
+
+	drop(store);
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(chain_dir);
+}
+
+#[test]
 fn rewind_bad_block_on_header_fork_preserves_body_head() {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let chain_dir = ".mwc.rewind_bad_header_fork";
@@ -1002,6 +1326,7 @@ fn rewind_bad_block_on_header_fork_preserves_body_head() {
 
 	let bad_hash = block_b.hash(0).unwrap();
 	let body_hash = block_b_fork.hash(0).unwrap();
+	assert!(chain.get_block_for_header(&block_b.header).is_ok());
 	let mut invalid_blocks = HashSet::new();
 	invalid_blocks.insert(bad_hash);
 	chain.apply_invalid_blocks(&secp, invalid_blocks).unwrap();
@@ -1015,7 +1340,224 @@ fn rewind_bad_block_on_header_fork_preserves_body_head() {
 		Tip::try_from_header(&block_a.header).unwrap()
 	);
 	assert!(chain.get_block_header(&bad_hash).is_err());
-	assert!(chain.get_block(&body_hash).is_ok());
+	assert!(chain.get_block_for_header(&block_b.header).is_err());
+	assert!(chain.get_block_for_header(&block_b_fork.header).is_ok());
+
+	// The retained body fork is already known as a full block, but it still has
+	// more work than the rewound header head. Reprocessing its header must repair
+	// HEADER_HEAD and the header PMMR instead of returning through the BODY_HEAD
+	// known-block shortcut.
+	process_header(&chain, &block_b_fork.header);
+	assert_eq!(
+		chain.header_head().unwrap(),
+		Tip::try_from_header(&block_b_fork.header).unwrap()
+	);
+	{
+		let header_pmmr = chain.get_header_pmmr_for_test();
+		assert_eq!(header_pmmr.read().head_hash().unwrap(), body_hash);
+	}
+	chain.validate(&secp, false).unwrap();
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn marked_body_recovery_ignores_denylist_on_durable_competing_fork() {
+	// Most chain tests use context 0 and release its process-global denylist on
+	// teardown. Use a dedicated context so parallel tests cannot clear this
+	// test's denylist between recovery and the admission assertion below.
+	let context_id = 0x5049_4244;
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = ".mwc.recovery_denylisted_body_fork";
+	clean_output_dir(chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, context_id).unwrap();
+	let chain = init_chain_accepting_test_pow(&secp, chain_dir, genesis);
+
+	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &block_a);
+
+	let header_branch = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	let body_branch = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	process_header(&chain, &header_branch.header);
+	process_header(&chain, &body_branch.header);
+	process_block(&mut secp, &chain, &body_branch);
+	process_block(&mut secp, &chain, &header_branch);
+
+	let durable_body_head = Tip::try_from_header(&body_branch.header).unwrap();
+	let durable_header_head = Tip::try_from_header(&header_branch.header).unwrap();
+	assert_eq!(chain.head().unwrap(), durable_body_head);
+	assert_eq!(chain.header_head().unwrap(), durable_header_head);
+
+	let denied_body_hash = body_branch.hash(context_id).unwrap();
+	mwc_chain::pipe::init_invalid_block_hashes(
+		chain.get_context_id(),
+		std::iter::once(denied_body_hash).collect(),
+	);
+	let store = chain.get_store_for_tests();
+	let marker = PendingChainOperation::ReconcileHeads {
+		kind: ChainOperationKind::RewindBadBlock,
+		original_body_head: durable_body_head.clone(),
+		original_header_head: durable_header_head.clone(),
+	};
+	store.set_pending_chain_operation(&marker).unwrap();
+
+	// Encountering the existing marker latches in-process recovery without
+	// changing either durable head.
+	let trigger_err = chain.reset_pibd_chain().unwrap_err();
+	assert!(matches!(
+		trigger_err,
+		mwc_chain::Error::Other(msg)
+			if msg.contains("pending chain operation requires chain init recovery")
+	));
+	assert_eq!(store.pending_chain_operation().unwrap(), Some(marker));
+
+	// Recovery must replay the durable body branch as persisted state, even
+	// though new admission of that same header is denied.
+	assert_eq!(chain.head().unwrap(), durable_body_head);
+	assert_eq!(chain.header_head().unwrap(), durable_header_head);
+	assert!(store.pending_chain_operation().unwrap().is_none());
+	let admission_err = chain
+		.process_block_header(&body_branch.header, Options::SKIP_POW)
+		.unwrap_err();
+	assert!(matches!(admission_err, mwc_chain::Error::InvalidHash));
+
+	drop(store);
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn rewind_bad_block_on_body_fork_preserves_header_head() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = ".mwc.rewind_bad_body_fork";
+	clean_output_dir(chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, chain_dir, genesis);
+
+	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &block_a);
+
+	let block_b = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	let block_b_fork = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+
+	process_header(&chain, &block_b.header);
+	process_header(&chain, &block_b_fork.header);
+	process_block(&mut secp, &chain, &block_b_fork);
+	process_block(&mut secp, &chain, &block_b);
+
+	assert_eq!(
+		chain.header_head().unwrap(),
+		Tip::try_from_header(&block_b.header).unwrap()
+	);
+	assert_eq!(
+		chain.head().unwrap(),
+		Tip::try_from_header(&block_b_fork.header).unwrap()
+	);
+
+	let bad_body_hash = block_b_fork.hash(0).unwrap();
+	let mut invalid_blocks = HashSet::new();
+	invalid_blocks.insert(bad_body_hash);
+	chain.apply_invalid_blocks(&secp, invalid_blocks).unwrap();
+
+	assert_eq!(
+		chain.head().unwrap(),
+		Tip::try_from_header(&block_a.header).unwrap()
+	);
+	assert_eq!(
+		chain.header_head().unwrap(),
+		Tip::try_from_header(&block_b.header).unwrap()
+	);
+	assert!(chain.get_block_for_header(&block_b_fork.header).is_err());
+	assert!(chain.get_block_header(&bad_body_hash).is_ok());
+	assert!(chain.get_block_for_header(&block_b.header).is_ok());
+	chain.validate(&secp, false).unwrap();
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn rewind_bad_block_rejects_denylist_key_header_hash_mismatch() {
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = ".mwc.rewind_bad_key_mismatch";
+	clean_output_dir(chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, chain_dir, genesis);
+	let old_body_head = chain.head().unwrap();
+	let old_header_head = chain.header_head().unwrap();
+
+	let denied_key = Hash::from_vec(&[7; Hash::LEN]);
+	let stored_header = chain.genesis();
+	assert_ne!(denied_key, stored_header.hash(0).unwrap());
+	let store = chain.get_store_for_tests();
+	{
+		let batch = store.batch_write().unwrap();
+		batch
+			.db
+			.put_ser(&mwc_store::to_key(b'h', denied_key), &stored_header)
+			.unwrap();
+		batch.commit().unwrap();
+	}
+
+	let invalid_blocks = std::iter::once(denied_key).collect();
+	let res = chain.rewind_bad_block(&secp, &invalid_blocks);
+	// `get_block_header` rejects a record that does not hash back to its key
+	// before `rewind_bad_block` applies its own denylist handling.
+	assert!(matches!(
+		res,
+		Err(mwc_chain::Error::InvalidPersistedChainState(msg))
+			if msg.contains("key/hash mismatch") && msg.contains(&denied_key.to_string())
+	));
+	assert_eq!(chain.head().unwrap(), old_body_head);
+	assert_eq!(chain.header_head().unwrap(), old_header_head);
+	assert!(store.pending_chain_operation().unwrap().is_none());
+
+	drop(store);
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn rewind_bad_block_rejects_body_rewind_below_body_tail() {
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = ".mwc.rewind_bad_below_tail";
+	clean_output_dir(chain_dir);
+	let chain = mine_chain(chain_dir, 2);
+	let old_body_head = chain.head().unwrap();
+	let old_header_head = chain.header_head().unwrap();
+	let old_body_tail = chain.tail().unwrap();
+	assert_eq!(old_body_tail, old_body_head);
+
+	let bad_hash = old_body_head.last_block_h;
+	let invalid_blocks = std::iter::once(bad_hash).collect();
+	let res = chain.rewind_bad_block(&secp, &invalid_blocks);
+	assert!(matches!(
+		res,
+		Err(mwc_chain::Error::Other(msg))
+			if msg.contains("below BODY_TAIL") && msg.contains("full chain-state reset")
+	));
+	assert_eq!(chain.head().unwrap(), old_body_head);
+	assert_eq!(chain.header_head().unwrap(), old_header_head);
+	assert_eq!(chain.tail().unwrap(), old_body_tail);
+	let bad_header = chain.get_block_header(&bad_hash).unwrap();
+	assert!(chain.get_block_for_header(&bad_header).is_ok());
+	assert!(chain
+		.get_store_for_tests()
+		.pending_chain_operation()
+		.unwrap()
+		.is_none());
+	chain.validate(&secp, false).unwrap();
 
 	mwc_chain::pipe::release_context_data(chain.get_context_id());
 	clean_output_dir(chain_dir);
@@ -1102,6 +1644,119 @@ fn header_only_validation_rejects_incomplete_body_mmr_sizes() {
 
 	mwc_chain::pipe::release_context_data(chain.get_context_id());
 	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn invalid_header_prev_root_clears_pending_operation_marker() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = ".mwc.invalid_header_prev_root_marker";
+	clean_output_dir(chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, chain_dir, genesis);
+
+	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &block_a);
+	let block_b = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	let old_header_head = Tip::try_from_header(&block_a.header).unwrap();
+
+	let mut invalid = block_b.header.clone();
+	invalid.prev_root = Hash::from_vec(&[42; Hash::LEN]);
+	assert_ne!(invalid.prev_root, block_b.header.prev_root);
+
+	let err = chain
+		.process_block_header(&invalid, Options::SKIP_POW)
+		.unwrap_err();
+	assert!(matches!(err, mwc_chain::Error::InvalidRoot(_)));
+
+	// header_extending successfully discarded the provisional rewind, so this
+	// ordinary validation failure must not retain a recovery marker.
+	assert!(chain
+		.get_store_for_tests()
+		.pending_chain_operation()
+		.unwrap()
+		.is_none());
+	assert_eq!(chain.header_head().unwrap(), old_header_head);
+	{
+		let header_pmmr = chain.get_header_pmmr_for_test();
+		assert_eq!(
+			header_pmmr.read().head_hash().unwrap(),
+			block_a.hash(0).unwrap()
+		);
+	}
+
+	// The valid header can be applied immediately without a reconcile pass.
+	process_header(&chain, &block_b.header);
+	assert_eq!(
+		chain.header_head().unwrap(),
+		Tip::try_from_header(&block_b.header).unwrap()
+	);
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	clean_output_dir(chain_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_header_pmmr_sync_retains_pending_operation_marker() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = test_chain_dir("partial_header_pmmr_sync_marker");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, &chain_dir, genesis);
+
+	let block_a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &block_a);
+	let block_b = prepare_block(&mut secp, &kc, &block_a.header, &chain, 2);
+	let old_header_head = Tip::try_from_header(&block_a.header).unwrap();
+	let store = chain.get_store_for_tests();
+
+	let header_dir = Path::new(&chain_dir).join("header").join("header_head");
+	let hash_path = header_dir.join("pmmr_hash.bin");
+	let data_path = header_dir.join("pmmr_data.bin");
+	let data_backup_path = header_dir.join("pmmr_data.bin.before_sync_failure");
+	let hash_len_before = fs::metadata(&hash_path).unwrap().len();
+
+	// AppendOnlyFile::flush reopens its path. Replacing only the data-file path
+	// with a directory lets the preceding hash-file flush complete, then forces
+	// the data-file flush to fail. Unix permits renaming the currently mapped
+	// data file while the live PMMR handle continues reading the old inode.
+	fs::rename(&data_path, &data_backup_path).unwrap();
+	fs::create_dir(&data_path).unwrap();
+	let res = chain.process_block_header(&block_b.header, Options::SKIP_POW);
+	let hash_len_after = fs::metadata(&hash_path).unwrap().len();
+
+	// Restore the path before asserting so a failed assertion cannot leave the
+	// live backend pointed at a deliberately invalid file type.
+	fs::remove_dir(&data_path).unwrap();
+	fs::rename(&data_backup_path, &data_path).unwrap();
+
+	assert!(matches!(
+		res,
+		Err(mwc_chain::Error::PmmrSyncStateUncertain { context, .. })
+			if context == "header_extending sync"
+	));
+	assert!(hash_len_after > hash_len_before);
+	assert_eq!(store.header_head().unwrap(), old_header_head);
+	assert!(matches!(
+		store.pending_chain_operation().unwrap(),
+		Some(PendingChainOperation::ReconcileHeads {
+			kind: ChainOperationKind::ProcessHeader,
+			..
+		})
+	));
+
+	mwc_chain::pipe::release_context_data(chain.get_context_id());
+	drop(store);
+	drop(chain);
+	clean_output_dir(&chain_dir);
 }
 
 #[test]
@@ -1475,6 +2130,9 @@ fn mine_reorg() {
 		let head = chain.head().unwrap();
 		assert_eq!(head.height, NUM_BLOCKS_MAIN);
 		assert_eq!(head.hash(0).unwrap(), prev.hash(0).unwrap());
+		let old_segmenter = chain.segmenter().unwrap();
+		assert!(old_segmenter.is_current());
+		assert!(old_segmenter.bitmap_root().is_ok());
 
 		// Reorg chain should exceed main chain's total difficulty to be considered
 		let reorg_difficulty = head.total_difficulty.to_num();
@@ -1509,6 +2167,12 @@ fn mine_reorg() {
 		let head = chain.head().unwrap();
 		assert_eq!(head.height, NUM_BLOCKS_MAIN - REORG_DEPTH + 1);
 		assert_eq!(head.hash(0).unwrap(), reorg_head.hash(0).unwrap());
+
+		// Ordinary reorgs do not invalidate the PIBD generation. The archive delay
+		// is the normal reorg safety margin; an exceptional reorg crossing that
+		// point is handled by the receiver's segment/root validation and a retry.
+		assert!(old_segmenter.is_current());
+		assert!(old_segmenter.bitmap_root().is_ok());
 	}
 
 	// Cleanup chain directory
@@ -1839,6 +2503,263 @@ fn spend_rewind_spend() {
 }
 
 #[test]
+fn migrate_spent_index_converts_legacy_entries() {
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let chain_dir = test_chain_dir("migrate_spent_index_converts_legacy_entries");
+	clean_output_dir(&chain_dir);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	{
+		let chain = init_chain(
+			&secp,
+			&chain_dir,
+			global::get_genesis_block(&secp, 0).unwrap(),
+		);
+		let kc =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let pb = ProofBuilder::new(&secp, &kc).unwrap();
+		let mut head = chain.head_header().unwrap();
+
+		// Mine a few blocks so the coinbase from key_idx 1 is spendable.
+		for key_idx in 1..=3 {
+			let block =
+				prepare_block_key_idx(&mut secp, &kc, &head, &chain, u64::from(key_idx), key_idx);
+			head = block.header.clone();
+			chain
+				.process_block(
+					&mut secp,
+					block,
+					Options::SKIP_POW,
+					std::collections::HashSet::new(),
+				)
+				.unwrap();
+		}
+
+		let key_id_coinbase = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let spend = build::transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 20000u32.try_into().unwrap(),
+			},
+			&[
+				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+		let spend_block = prepare_block_tx(&mut secp, &kc, &head, &chain, 4, &[spend]);
+		let spend_hash = spend_block.hash(0).unwrap();
+		chain
+			.process_block(
+				&mut secp,
+				spend_block,
+				Options::SKIP_POW,
+				std::collections::HashSet::new(),
+			)
+			.unwrap();
+
+		let store = chain.get_store_for_tests();
+		let expected = store
+			.batch_read()
+			.unwrap()
+			.get_spent_index(&spend_hash)
+			.unwrap();
+		assert!(!expected.is_empty());
+
+		// Model a pre-upgrade database: the same entry in the legacy
+		// positions-only format, with the migration marker unset. Remove the
+		// full block as well: migration is driven by the spent-index key and its
+		// canonical header, and resolves data through the output PMMR directly.
+		{
+			let batch = store.batch_write().unwrap();
+			let legacy: Vec<CommitPos> = expected.iter().map(|spent| spent.position).collect();
+			batch.save_spent_index_legacy(&spend_hash, &legacy).unwrap();
+			batch.delete(&mwc_store::to_key(b'b', spend_hash)).unwrap();
+			batch.set_spent_index_migrated(false).unwrap();
+			batch.commit().unwrap();
+		}
+		// The legacy entry no longer parses in the current format.
+		assert!(store
+			.batch_read()
+			.unwrap()
+			.get_spent_index(&spend_hash)
+			.is_err());
+
+		{
+			let txhashset = chain.get_txhashset_for_test();
+			let txhashset = txhashset.read_recursive();
+			Chain::migrate_spent_index(&store, &txhashset, None).unwrap();
+		}
+
+		let batch = store.batch_read().unwrap();
+		assert!(batch.is_spent_index_migrated().unwrap());
+		// The migration must reproduce the exact occurrences recorded when the
+		// block was applied, resolving commitments from the output MMR data.
+		assert_eq!(batch.get_spent_index(&spend_hash).unwrap(), expected);
+	}
+
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
+fn migrate_spent_index_deletes_records_outside_active_window() {
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let chain_dir = test_chain_dir("migrate_spent_index_deletes_records_outside_active_window");
+	clean_output_dir(&chain_dir);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	{
+		let chain = init_chain(
+			&secp,
+			&chain_dir,
+			global::get_genesis_block(&secp, 0).unwrap(),
+		);
+		let kc =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let mut head = chain.head_header().unwrap();
+
+		// Mine past the cut-through horizon so early blocks fall out of the
+		// migration window.
+		let horizon = u64::from(global::cut_through_horizon(0));
+		let mut hashes = vec![head.hash(0).unwrap()];
+		for height in 1..=(horizon + 10) {
+			let block = prepare_block_key_idx(&mut secp, &kc, &head, &chain, height, height as u32);
+			head = block.header.clone();
+			chain
+				.process_block(
+					&mut secp,
+					block,
+					Options::SKIP_POW,
+					std::collections::HashSet::new(),
+				)
+				.unwrap();
+			hashes.push(head.hash(0).unwrap());
+		}
+		let window_start = head.height - horizon;
+
+		let store = chain.get_store_for_tests();
+
+		// Every applied block carries a spent index record before migration.
+		{
+			let batch = store.batch_read().unwrap();
+			for hash in &hashes {
+				batch.get_spent_index(hash).unwrap();
+			}
+		}
+
+		// Plant inactive legacy records with positions that cannot be resolved.
+		// Migration must delete both without trying to read compactable PMMR data.
+		let old_hash = hashes[1];
+		let boundary_hash = hashes[window_start as usize];
+		let inactive_legacy = vec![CommitPos {
+			pos: u64::MAX,
+			height: 0,
+		}];
+
+		// Also plant two records that must be deleted: one selected by HEADER_HEAD
+		// but absent from the canonical body chain, and one with no header at all.
+		let (fork_hash, orphan_hash) = {
+			let batch = store.batch_write().unwrap();
+			batch
+				.save_spent_index_legacy(&old_hash, &inactive_legacy)
+				.unwrap();
+			batch
+				.save_spent_index_legacy(&boundary_hash, &inactive_legacy)
+				.unwrap();
+			// Extend the body head with a header-only block and make it HEADER_HEAD.
+			// Migration must still anchor canonicality at the persisted body HEAD.
+			let body_head_hash = head.hash(0).unwrap();
+			let mut fork_header = head.clone();
+			fork_header.height += 1;
+			fork_header.prev_hash = body_head_hash;
+			fork_header.pow.proof.nonces[0] = fork_header.pow.proof.nonces[0].wrapping_add(1);
+			let fork_hash = fork_header.hash(0).unwrap();
+			assert_ne!(fork_hash, body_head_hash);
+			batch.save_block_header(&fork_header).unwrap();
+			batch
+				.save_header_head(&Tip::try_from_header(&fork_header).unwrap())
+				.unwrap();
+			batch
+				.save_spent_index_legacy(&fork_hash, &[CommitPos { pos: 1, height: 1 }])
+				.unwrap();
+			let orphan_hash = Hash::from_vec(&[9u8; Hash::LEN]);
+			batch
+				.save_spent_index_legacy(&orphan_hash, &[CommitPos { pos: 1, height: 1 }])
+				.unwrap();
+			batch.set_spent_index_migrated(false).unwrap();
+			batch.commit().unwrap();
+			(fork_hash, orphan_hash)
+		};
+
+		{
+			let txhashset = chain.get_txhashset_for_test();
+			let txhashset = txhashset.read_recursive();
+			Chain::migrate_spent_index(&store, &txhashset, None).unwrap();
+		}
+
+		{
+			let batch = store.batch_read().unwrap();
+			assert!(batch.is_spent_index_migrated().unwrap());
+			for (height, hash) in hashes.iter().enumerate() {
+				if (height as u64) <= window_start {
+					let err = batch.get_spent_index_legacy(hash).unwrap_err();
+					assert!(
+						err.store_error_is_not_found(),
+						"inactive record at height {} survived",
+						height
+					);
+				} else {
+					assert!(
+						batch.get_spent_index(hash).is_ok(),
+						"active record at height {} was deleted",
+						height
+					);
+				}
+			}
+			// Per-block spent indexes are derived caches. Removing them does not
+			// remove the retained full blocks, including the boundary block.
+			assert!(batch.get_block(&old_hash).is_ok());
+			assert!(batch.get_block(&boundary_hash).is_ok());
+			let fork_err = batch.get_spent_index_legacy(&fork_hash).unwrap_err();
+			assert!(fork_err.store_error_is_not_found(), "{:?}", fork_err);
+			let orphan_err = batch.get_spent_index_legacy(&orphan_hash).unwrap_err();
+			assert!(orphan_err.store_error_is_not_found(), "{:?}", orphan_err);
+		}
+
+		// Rebuilding the active spent-commitment index must also skip the exact
+		// boundary, whose per-block spent index was deleted above.
+		{
+			let batch = store.batch_write().unwrap();
+			batch
+				.set_spent_commitment_record_index_complete(false)
+				.unwrap();
+			batch.commit().unwrap();
+		}
+		Chain::init_spent_commitment_index(&store, None).unwrap();
+		let batch = store.batch_read().unwrap();
+		assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+	}
+
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
 fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(false);
@@ -1968,6 +2889,161 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 		assert!(matches!(&err, mwc_chain::Error::ReplayAttack(_, _, _)));
 		assert!(err.is_bad_data());
 		assert!(chain.get_unspent(replayed_commitment).unwrap().is_none());
+	}
+
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
+fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let chain_dir = test_chain_dir("replay_cutoff_uses_shorter_higher_work_candidate_tip");
+	clean_output_dir(&chain_dir);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	{
+		let chain = init_chain(
+			&secp,
+			&chain_dir,
+			global::get_genesis_block(&secp, 0).unwrap(),
+		);
+		let kc =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let pb = ProofBuilder::new(&secp, &kc).unwrap();
+		let mut common_head = chain.head_header().unwrap();
+
+		for key_idx in 1..=3 {
+			let block = prepare_block_key_idx(
+				&mut secp,
+				&kc,
+				&common_head,
+				&chain,
+				u64::from(key_idx),
+				key_idx,
+			);
+			common_head = block.header.clone();
+			chain
+				.process_block(&mut secp, block, Options::SKIP_POW, HashSet::new())
+				.unwrap();
+		}
+		let fork_head = common_head.clone();
+
+		// Move the durable body head far enough ahead that deriving the replay
+		// cutoff from it would skip the candidate spend at height 5.
+		let mut main_head = common_head;
+		for height in 4u32..=45 {
+			let block = prepare_block_key_idx(
+				&mut secp,
+				&kc,
+				&main_head,
+				&chain,
+				u64::from(height),
+				height,
+			);
+			main_head = block.header.clone();
+			chain
+				.process_block(&mut secp, block, Options::SKIP_POW, HashSet::new())
+				.unwrap();
+		}
+		assert_eq!(chain.head().unwrap().height, 45);
+
+		let key_id_coinbase_1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id_coinbase_2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+
+		let create = build::transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 20000u32.try_into().unwrap(),
+			},
+			&[
+				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+		let replayed_commitment = create.outputs()[0].commitment();
+		let create_block =
+			prepare_block_tx_key_idx(&mut secp, &kc, &fork_head, &chain, 1, 300, &[create]);
+		let create_head = create_block.header.clone();
+		chain
+			.process_block(&mut secp, create_block, Options::SKIP_POW, HashSet::new())
+			.unwrap();
+
+		let spend = build::transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 20000u32.try_into().unwrap(),
+			},
+			&[
+				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+		let spend_block =
+			prepare_block_tx_key_idx(&mut secp, &kc, &create_head, &chain, 1, 301, &[spend]);
+		let candidate_tip = spend_block.header.clone();
+		chain
+			.process_block(&mut secp, spend_block, Options::SKIP_POW, HashSet::new())
+			.unwrap();
+		assert_eq!(candidate_tip.height, 5);
+		assert_eq!(chain.head().unwrap().height, 45);
+
+		let recreate = build::transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 20000u32.try_into().unwrap(),
+			},
+			&[
+				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
+				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+			],
+			&kc,
+			&pb,
+		)
+		.unwrap();
+		assert_eq!(recreate.outputs()[0].commitment(), replayed_commitment);
+
+		let winning_difficulty = chain.head().unwrap().total_difficulty.to_num();
+		let replay = prepare_block_tx_key_idx(
+			&mut secp,
+			&kc,
+			&candidate_tip,
+			&chain,
+			winning_difficulty,
+			302,
+			&[recreate],
+		);
+		assert!(replay.header.total_difficulty() > chain.head().unwrap().total_difficulty);
+		let err = chain
+			.process_block(&mut secp, replay, Options::SKIP_POW, HashSet::new())
+			.unwrap_err();
+		assert!(matches!(err, mwc_chain::Error::ReplayAttack(_, 5, 5)));
+		assert_eq!(chain.head().unwrap().height, 45);
 	}
 
 	clean_output_dir(&chain_dir);
@@ -2125,7 +3201,7 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 			.unwrap();
 		assert!(retained_spends
 			.iter()
-			.any(|spent| spent.height == spent_height));
+			.any(|spent| spent.spending_block.height == spent_height));
 
 		chain.replay_attack_check(&recreate).unwrap();
 		let replay = prepare_block_tx(&mut secp, &kc, &head, &chain, 1000, &[recreate]);
@@ -2220,6 +3296,7 @@ fn spend_in_fork_and_compact() {
 		.unwrap();
 
 		let next = prepare_block_tx(&mut secp, &kc, &fork_head, &chain, 7, &[tx1.clone()]);
+		let main_tx1_spend_hash = next.hash(0).unwrap();
 		let prev_main = next.header.clone();
 		chain
 			.process_block(
@@ -2274,6 +3351,7 @@ fn spend_in_fork_and_compact() {
 
 		// mine 2 forked blocks from the first
 		let fork = prepare_block_tx(&mut secp, &kc, &fork_head, &chain, 6, &[tx1.clone()]);
+		let fork_tx1_spend_hash = fork.hash(0).unwrap();
 		let prev_fork = fork.header.clone();
 		chain
 			.process_block(
@@ -2296,6 +3374,26 @@ fn spend_in_fork_and_compact() {
 			.unwrap();
 
 		chain.validate(&secp, false).unwrap();
+
+		// The fork is still losing, but it was fully validated and retained. Its
+		// per-block positions and exact commitment record must already be durable;
+		// a later reorg must not depend on scanning output history to recover them.
+		let spent_commitment = b.outputs()[0].commitment();
+		let store = chain.get_store_for_tests();
+		let batch = store.batch_read().unwrap();
+		assert!(batch.get_spent_index(&fork_tx1_spend_hash).is_ok());
+		let records = batch
+			.get_spent_commitments(&spent_commitment)
+			.unwrap()
+			.unwrap();
+		assert!(records
+			.iter()
+			.any(|record| { record.spending_block.hash == main_tx1_spend_hash }));
+		assert!(records
+			.iter()
+			.any(|record| { record.spending_block.hash == fork_tx1_spend_hash }));
+		drop(batch);
+		drop(store);
 
 		// check state
 		let head = chain.head_header().unwrap();
@@ -2429,6 +3527,78 @@ fn compact_rebuilds_output_pos_when_index_incomplete() {
 		false
 	)
 	.is_some());
+}
+
+#[test]
+fn interrupted_compaction_recovers_recorded_body_tail() {
+	let chain_dir = test_chain_dir("interrupted_compaction_recovers_recorded_body_tail");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+			.unwrap();
+	let genesis = genesis_block(&mut secp, &keychain);
+	let restart_genesis = genesis.clone();
+
+	let expected_tail = {
+		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis);
+		let mut head = chain.head_header().unwrap();
+		for n in 1..80 {
+			let next = prepare_block(&mut secp, &keychain, &head, &chain, n);
+			head = next.header.clone();
+			process_block(&mut secp, &chain, &next);
+		}
+
+		let store = chain.get_store_for_tests();
+		let original_body_head = chain.head().unwrap();
+		let original_header_head = chain.header_head().unwrap();
+		let old_tail = chain.tail().unwrap();
+		let horizon_height = original_body_head
+			.height
+			.saturating_sub(u64::from(global::cut_through_horizon(0)));
+		let horizon_header = chain.get_header_by_height(horizon_height).unwrap();
+		let target_body_tail = Tip::try_from_header(&horizon_header).unwrap();
+		assert!(old_tail.height < target_body_tail.height);
+
+		let marker = PendingChainOperation::Compact {
+			original_body_head,
+			original_header_head,
+			target_body_tail,
+		};
+		store.set_pending_chain_operation(&marker).unwrap();
+
+		// Model a crash after the PMMR file replacements have been flushed but
+		// before BODY_TAIL is staged and the enclosing LMDB batch commits.
+		{
+			let header_pmmr = chain.get_header_pmmr_for_test();
+			let _header_pmmr = header_pmmr.read_recursive();
+			let txhashset = chain.get_txhashset_for_test();
+			let mut txhashset = txhashset.write();
+			let batch = store.batch_write().unwrap();
+			txhashset.compact(&horizon_header, &batch).unwrap();
+			drop(batch);
+		}
+
+		assert_eq!(store.tail().unwrap(), old_tail);
+		assert_eq!(store.pending_chain_operation().unwrap(), Some(marker));
+		mwc_chain::pipe::release_context_data(chain.get_context_id());
+		drop(store);
+		drop(chain);
+		target_body_tail
+	};
+
+	let restarted = init_chain_accepting_test_pow(&secp, &chain_dir, restart_genesis);
+	let store = restarted.get_store_for_tests();
+	assert_eq!(restarted.tail().unwrap(), expected_tail);
+	assert!(store.pending_chain_operation().unwrap().is_none());
+
+	mwc_chain::pipe::release_context_data(restarted.get_context_id());
+	drop(store);
+	drop(restarted);
+	clean_output_dir(&chain_dir);
 }
 
 /// Test ability to retrieve block headers for a given output
@@ -2572,7 +3742,6 @@ where
 				&key_id,
 				switch,
 				proof_commit,
-				None,
 			)?;
 
 			// we return the output and the value is subtracted instead of added
@@ -2819,7 +3988,8 @@ fn prepare_block_nosum<K>(
 where
 	K: Keychain,
 {
-	let proof_size = global::proofsize(0);
+	let context_id = prev.pow.proof.context_id;
+	let proof_size = global::proofsize(context_id);
 	let key_id = ExtKeychainPath::new(1, key_idx, 0, 0, 0)
 		.unwrap()
 		.to_identifier()
@@ -2827,7 +3997,7 @@ where
 
 	let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
 	let reward = libtx::reward::output(
-		0,
+		context_id,
 		kc,
 		&libtx::ProofBuilder::new(secp, kc).unwrap(),
 		&key_id,
@@ -2837,13 +4007,20 @@ where
 		secp,
 	)
 	.unwrap();
-	let mut b = match Block::new(0, prev, txs, Difficulty::from_num(diff), reward, secp) {
+	let mut b = match Block::new(
+		context_id,
+		prev,
+		txs,
+		Difficulty::from_num(diff),
+		reward,
+		secp,
+	) {
 		Err(e) => panic!("{:?}", e),
 		Ok(b) => b,
 	};
 	b.header.timestamp = prev.timestamp + Duration::seconds(60);
 	b.header.pow.total_difficulty = (prev.total_difficulty() + Difficulty::from_num(diff)).unwrap();
-	b.header.pow.proof = pow::Proof::random(0, proof_size).unwrap();
+	b.header.pow.proof = pow::Proof::random(context_id, proof_size).unwrap();
 	b
 }
 
@@ -2865,6 +4042,7 @@ fn actual_diff_iter_output() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap();
 	let iter = chain.difficulty_iter().unwrap();

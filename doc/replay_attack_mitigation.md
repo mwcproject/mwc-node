@@ -46,6 +46,22 @@ iii) add height info when we build the output commitment. During the wallet scan
 trigger self spend workflow. Of course, user will loose some tx fee for each self-spend.  There will be a self spend configuration on the QT 
 wallet, user can opt out if they understand and want to take the risk.
 
+## PIBD and reorganization behavior
+
+The spent-commitment index is a best-effort replay-mitigation cache, not a
+consensus-complete history. PIBD restores the authenticated txhashset state but
+does not download the old full block bodies used to reconstruct this cache. The
+node therefore initializes an empty retained-body index after PIBD; the normal
+one-by-one body sync populates it as each following block is validated.
+
+Index coverage or temporary readiness must never cause the chain to reset.
+During synchronization, recovery, or a reorganization, the locally retained
+body window can change temporarily. Treating that condition as proof that chain
+state is invalid could reset otherwise healthy nodes at the same time. The node
+continues with the history it has and performs replay detection on a best-effort
+basis. In particular, a PIBD node may not detect a replay whose earlier spend is
+only in pre-snapshot block history; the wallet-side mitigations above remain
+part of the overall protection.
 
 
 

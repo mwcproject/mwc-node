@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::utils::{get_output, get_output_v2, w};
+use super::utils::{parse_commitment, w};
 use crate::rest::*;
 use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
@@ -28,11 +28,12 @@ use mwc_crates::secp::constants::PEDERSEN_COMMITMENT_SIZE;
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_crates::serde::de::IntoDeserializer;
-use mwc_util::secp_static;
 use mwc_util::StopState;
+use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
 const MAX_GET_OUTPUTS_COMMITS: usize = 1_000;
+const MAX_GET_OUTPUTS_MERKLE_PROOF_COMMITS: usize = 100;
 const MAX_OUTPUTS_BY_HEIGHT_RANGE: u64 = 100;
 
 /// Chain handler. Get the head details.
@@ -99,19 +100,11 @@ impl Handler for ChainValidationHandler {
 		};
 		let secp = match Secp256k1::with_caps(ContextFlag::Commit) {
 			Ok(s) => s,
-			Err(e) => {
-				return response(
-					StatusCode::INTERNAL_SERVER_ERROR,
-					format!("Secp error, {}", e),
-				);
-			}
+			Err(e) => return result_to_response::<()>(Err(e.into())),
 		};
 		match self.validate_chain(&secp, fast_validation) {
 			Ok(_) => response(StatusCode::OK, "{}"),
-			Err(e) => response(
-				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("chain validation is failed, {}", e),
-			),
+			Err(e) => result_to_response::<()>(Err(e)),
 		}
 	}
 }
@@ -119,6 +112,15 @@ impl Handler for ChainValidationHandler {
 /// Chain compaction handler. Trigger a compaction of the chain state to regain
 /// storage space.
 /// POST /v1/chain/compact
+///
+/// This endpoint intentionally runs compaction synchronously. A concurrent
+/// request can temporarily occupy an API runtime worker while waiting for the
+/// chain locks, but `Chain::compact` repeats its eligibility check after
+/// acquiring those locks, so a queued request skips compaction if an earlier
+/// request has already completed it. Compaction is rare and normally not long
+/// running, so the temporary delay is expected to pass without operational
+/// impact. Keeping this synchronous request/response behavior is the preferred
+/// design here.
 pub struct ChainCompactHandler {
 	pub chain: Weak<mwc_chain::Chain>,
 	pub sync_state: Weak<SyncState>,
@@ -137,10 +139,7 @@ impl Handler for ChainCompactHandler {
 	fn post(&self, _req: Request<Bytes>) -> ResponseFuture {
 		match self.compact_chain() {
 			Ok(_) => response(StatusCode::OK, "{}"),
-			Err(e) => response(
-				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("chain compact failed: {}", e),
-			),
+			Err(e) => result_to_response::<()>(Err(e)),
 		}
 	}
 }
@@ -156,7 +155,6 @@ pub struct OutputHandler {
 impl OutputHandler {
 	pub fn get_outputs_v2(
 		&self,
-		secp: &Secp256k1,
 		commits: Option<Vec<String>>,
 		start_height: Option<u64>,
 		end_height: Option<u64>,
@@ -164,6 +162,17 @@ impl OutputHandler {
 		include_merkle_proof: Option<bool>,
 	) -> Result<Vec<OutputPrintable>, Error> {
 		let commits = commits.unwrap_or_default();
+		let include_proof = include_proof.unwrap_or(false);
+		let include_merkle_proof = include_merkle_proof.unwrap_or(false);
+		let height_range = match (start_height, end_height) {
+			(Some(start_height), Some(end_height)) => Some((start_height, end_height)),
+			(None, None) => None,
+			_ => {
+				return Err(Error::RequestError(
+					"start_height and end_height must be provided together".to_string(),
+				));
+			}
+		};
 		if commits.len() > MAX_GET_OUTPUTS_COMMITS {
 			return Err(Error::RequestError(format!(
 				"too many output commitments requested: {}, max {}",
@@ -171,8 +180,19 @@ impl OutputHandler {
 				MAX_GET_OUTPUTS_COMMITS
 			)));
 		}
+		if include_merkle_proof && commits.len() > MAX_GET_OUTPUTS_MERKLE_PROOF_COMMITS {
+			return Err(Error::RequestError(format!(
+				"too many output commitments requested with merkle proofs: {}, max {}",
+				commits.len(),
+				MAX_GET_OUTPUTS_MERKLE_PROOF_COMMITS
+			)));
+		}
+		// Merkle proofs are built from the current read-only txhashset state. They
+		// are not proofs against each output's origin header; normal compaction does
+		// not retain the historical peaks required for that contract. Preserve the
+		// legacy behavior for duplicate commitments: every list entry counts toward
+		// the proof-specific limit above.
 
-		let mut outputs: Vec<OutputPrintable> = Vec::with_capacity(commits.len());
 		// First check the commits length
 		for commit in &commits {
 			if commit.len() != 66 {
@@ -182,28 +202,20 @@ impl OutputHandler {
 				)));
 			}
 		}
+		let mut parsed_commits = Vec::with_capacity(commits.len());
 		for commit in commits {
-			match get_output_v2(
-				secp,
-				&self.chain,
-				&commit,
-				include_proof.unwrap_or(false),
-				include_merkle_proof.unwrap_or(false),
-			) {
-				Ok(Some((output, _))) => outputs.push(output),
-				Ok(None) => {
-					// Ignore outputs that are not found
-				}
+			match parse_commitment(&commit) {
+				Ok(parsed) => parsed_commits.push((commit, parsed)),
 				Err(e) => {
 					error!(
-						"Failure to get output for commitment {} with error {}",
+						"Failure to parse output commitment {} with error {}",
 						commit, e
 					);
 					return Err(e);
 				}
-			};
+			}
 		}
-		if let (Some(start_height), Some(end_height)) = (start_height, end_height) {
+		if let Some((start_height, end_height)) = height_range {
 			let height_count = end_height
 				.checked_sub(start_height)
 				.and_then(|span| span.checked_add(1))
@@ -219,25 +231,58 @@ impl OutputHandler {
 					height_count, MAX_OUTPUTS_BY_HEIGHT_RANGE
 				)));
 			}
-			for height in (start_height..=end_height).rev() {
-				if let Ok(block_outputs) = self.outputs_at_height(
-					secp,
-					height,
-					&[],
-					include_proof.unwrap_or(false),
-					include_merkle_proof.unwrap_or(false),
-				) {
+		}
+
+		if parsed_commits.is_empty() && height_range.is_none() {
+			return Ok(Vec::new());
+		}
+
+		let chain = w(&self.chain)?;
+		chain.with_output_read_snapshot(|snapshot| {
+			let mut outputs = Vec::with_capacity(parsed_commits.len());
+			for (commit_text, commit) in &parsed_commits {
+				match snapshot.get_unspent_output(*commit, include_merkle_proof) {
+					Ok(Some((output, _, pos, merkle_proof))) => {
+						outputs.push(OutputPrintable::from_output_snapshot(
+							&output,
+							Some(pos),
+							merkle_proof,
+							snapshot.get_context_id(),
+							None,
+							include_proof,
+						)?);
+					}
+					Ok(None) => {
+						// Ignore outputs that are not found
+					}
+					Err(e) => {
+						error!(
+							"Failure to get output for commitment {} with error {}",
+							commit_text, e
+						);
+						return Err(e.into());
+					}
+				}
+			}
+			if let Some((start_height, end_height)) = height_range {
+				for height in (start_height..=end_height).rev() {
+					let block_outputs = self.outputs_at_height(
+						snapshot,
+						height,
+						None,
+						include_proof,
+						include_merkle_proof,
+					)?;
 					outputs.extend(block_outputs.outputs);
 				}
 			}
-		}
-		Ok(outputs)
+			Ok::<_, Error>(outputs)
+		})
 	}
 
 	// allows traversal of utxo set
 	pub fn get_unspent_outputs(
 		&self,
-		secp: &Secp256k1,
 		start_index: u64,
 		end_index: Option<u64>,
 		mut max: u64,
@@ -248,35 +293,39 @@ impl OutputHandler {
 			max = 10_000;
 		}
 		let chain = w(&self.chain)?;
-		let outputs = chain
-			.unspent_outputs_by_pmmr_index(start_index, max, end_index)
-			.map_err(|e| {
-				let msg = format!(
-					"Unspent outputs for PMMR {}-{:?}, {}",
-					start_index, end_index, e
-				);
-				Error::chain_read_error(e, msg)
-			})?;
-		let out = OutputListing {
-			last_retrieved_index: outputs.0,
-			highest_index: outputs.1,
-			outputs: outputs
-				.2
+		let include_proof = include_proof.unwrap_or(false);
+		chain.with_output_read_snapshot(|snapshot| {
+			let (last_retrieved_index, highest_index, outputs) = snapshot
+				.unspent_outputs_by_pmmr_index(start_index, max, end_index)
+				.map_err(|e| {
+					let msg = format!(
+						"Unspent outputs for PMMR {}-{:?}, {}",
+						start_index, end_index, e
+					);
+					Error::chain_read_error(e, msg)
+				})?;
+			let outputs = outputs
 				.iter()
-				.map(|x| {
-					OutputPrintable::from_output(
-						secp,
-						x,
-						&chain,
+				.map(|output| {
+					let (pos, merkle_proof) =
+						snapshot.get_output_status(&output.identifier(), false)?;
+					OutputPrintable::from_output_snapshot(
+						output,
+						pos,
+						merkle_proof,
+						snapshot.get_context_id(),
 						None,
-						include_proof.unwrap_or(false),
-						false,
+						include_proof,
 					)
 				})
-				.collect::<Result<Vec<_>, _>>()
-				.map_err(|e| Error::Internal(format!("chain error, {}", e)))?,
-		};
-		Ok(out)
+				.collect::<Result<Vec<_>, mwc_chain::Error>>()
+				.map_err(|e| Error::Internal(format!("chain error, {}", e)))?;
+			Ok(OutputListing {
+				last_retrieved_index,
+				highest_index,
+				outputs,
+			})
+		})
 	}
 
 	fn outputs_by_ids(&self, req: &Request<Bytes>) -> Result<Vec<Output>, Error> {
@@ -286,46 +335,62 @@ impl OutputHandler {
 		let params = QueryParams::from_query_str(query)?;
 		params.process_multival_param("id", |id| push_output_id_param(&mut commitments, id))?;
 
-		let mut outputs: Vec<Output> = vec![];
-		for x in commitments {
-			match get_output(&self.chain, &x) {
-				Ok(Some((output, _))) => outputs.push(output),
-				Ok(None) => {
-					// Ignore outputs that are not found
-				}
+		let mut parsed_commits = Vec::with_capacity(commitments.len());
+		for commit_text in commitments {
+			match parse_commitment(&commit_text) {
+				Ok(commit) => parsed_commits.push((commit_text, commit)),
 				Err(e) => {
 					error!(
-						"Failure to get output for commitment {} with error {}",
-						x, e
+						"Failure to parse output commitment {} with error {}",
+						commit_text, e
 					);
 					return Err(e);
 				}
-			};
+			}
 		}
-		Ok(outputs)
+
+		let chain = w(&self.chain)?;
+		chain.with_output_read_snapshot(|snapshot| {
+			let mut outputs = Vec::with_capacity(parsed_commits.len());
+			for (commit_text, commit) in &parsed_commits {
+				match snapshot.get_unspent_output_position(*commit) {
+					Ok(Some((output, pos))) => {
+						outputs.push(Output::new(&output.commitment(), pos.height, pos.pos));
+					}
+					Ok(None) => {
+						// Ignore outputs that are not found
+					}
+					Err(e) => {
+						error!(
+							"Failure to get output for commitment {} with error {}",
+							commit_text, e
+						);
+						return Err(e.into());
+					}
+				}
+			}
+			Ok(outputs)
+		})
 	}
 
 	fn outputs_at_height(
 		&self,
-		secp: &Secp256k1,
+		snapshot: &mwc_chain::OutputReadSnapshot<'_>,
 		block_height: u64,
-		commitments: &[Commitment],
+		commitment_filter: Option<&HashSet<Commitment>>,
 		include_proof: bool,
 		include_merkle_proof: bool,
 	) -> Result<BlockOutputs, Error> {
-		let header = w(&self.chain)?
-			.get_header_by_height(block_height)
-			.map_err(|e| {
-				let msg = format!("Header at height {}, {}", block_height, e);
-				Error::chain_read_error(e, msg)
-			})?;
+		let header = snapshot.get_header_by_height(block_height).map_err(|e| {
+			let msg = format!("Header at height {}, {}", block_height, e);
+			Error::chain_read_error(e, msg)
+		})?;
 
 		// TODO - possible to compact away blocks we care about
 		// in the period between accepting the block and refreshing the wallet
-		let chain = w(&self.chain)?;
-		let context_id = chain.get_context_id();
+		let context_id = snapshot.get_context_id();
 		let header_hash = header.hash(context_id)?;
-		let block = chain.get_block(&header_hash).map_err(|e| {
+		let block = snapshot.get_block_for_header(&header).map_err(|e| {
 			let msg = format!(
 				"Block at height {} for hash {}, {}",
 				block_height, header_hash, e
@@ -335,15 +400,21 @@ impl OutputHandler {
 		let outputs = block
 			.outputs()
 			.iter()
-			.filter(|output| commitments.is_empty() || commitments.contains(&output.commitment()))
+			.filter(|output| {
+				commitment_filter.map_or(true, |commitments| {
+					commitments.contains(&output.commitment())
+				})
+			})
 			.map(|output| {
-				OutputPrintable::from_output(
-					secp,
+				let (pos, merkle_proof) =
+					snapshot.get_output_status(&output.identifier(), include_merkle_proof)?;
+				OutputPrintable::from_output_snapshot(
 					output,
-					&chain,
+					pos,
+					merkle_proof,
+					context_id,
 					Some(&header),
 					include_proof,
-					include_merkle_proof,
 				)
 			})
 			.collect::<Result<Vec<_>, _>>()
@@ -356,11 +427,7 @@ impl OutputHandler {
 	}
 
 	// returns outputs for a specified range of blocks
-	fn outputs_block_batch(
-		&self,
-		secp: &Secp256k1,
-		req: &Request<Bytes>,
-	) -> Result<Vec<BlockOutputs>, Error> {
+	fn outputs_block_batch(&self, req: &Request<Bytes>) -> Result<Vec<BlockOutputs>, Error> {
 		let mut commitments: Vec<Commitment> = vec![];
 
 		let query = must_get_query!(req);
@@ -391,20 +458,33 @@ impl OutputHandler {
 			"outputs_block_batch: {}-{}, {:?}, {:?}",
 			start_height, end_height, commitments, include_rp,
 		);
+		let commitment_filter = if commitments.is_empty() {
+			None
+		} else {
+			Some(commitments.into_iter().collect::<HashSet<_>>())
+		};
 
-		let mut return_vec = vec![];
-		for i in (start_height..=end_height).rev() {
-			match self.outputs_at_height(secp, i, &commitments, include_rp, true) {
-				Ok(res) => {
-					if !res.outputs.is_empty() {
-						return_vec.push(res);
+		let chain = w(&self.chain)?;
+		chain.with_output_read_snapshot(|snapshot| {
+			let mut return_vec = vec![];
+			for i in (start_height..=end_height).rev() {
+				match self.outputs_at_height(
+					snapshot,
+					i,
+					commitment_filter.as_ref(),
+					include_rp,
+					true,
+				) {
+					Ok(res) => {
+						if !res.outputs.is_empty() {
+							return_vec.push(res);
+						}
 					}
+					Err(e) => return Err(e),
 				}
-				Err(e) => return Err(e),
 			}
-		}
-
-		Ok(return_vec)
+			Ok(return_vec)
+		})
 	}
 }
 
@@ -469,10 +549,7 @@ impl Handler for OutputHandler {
 	fn get(&self, req: Request<Bytes>) -> ResponseFuture {
 		match right_path_element!(req) {
 			"byids" => result_to_response(self.outputs_by_ids(&req)),
-			"byheight" => result_to_response(secp_static::with_verify_only(
-				|e| Error::Internal(format!("failed to create secp instance: {}", e)),
-				|secp| self.outputs_block_batch(secp, &req),
-			)),
+			"byheight" => result_to_response(self.outputs_block_batch(&req)),
 			_ => response(StatusCode::BAD_REQUEST, ""),
 		}
 	}
@@ -768,6 +845,7 @@ mod tests {
 					std::collections::HashSet::new(),
 					None,
 					None,
+					false,
 				)
 				.unwrap(),
 			);
@@ -799,11 +877,10 @@ mod tests {
 	#[test]
 	fn get_outputs_v2_rejects_commit_lists_above_limit() {
 		let output_handler = OutputHandler { chain: Weak::new() };
-		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let commits = vec!["00".repeat(33); MAX_GET_OUTPUTS_COMMITS + 1];
 
 		let err = output_handler
-			.get_outputs_v2(&secp, Some(commits), None, None, None, None)
+			.get_outputs_v2(Some(commits), None, None, None, None)
 			.unwrap_err();
 
 		match err {
@@ -822,11 +899,10 @@ mod tests {
 	#[test]
 	fn get_outputs_v2_allows_commit_lists_at_limit() {
 		let output_handler = OutputHandler { chain: Weak::new() };
-		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let commits = vec![VALID_COMMIT.to_string(); MAX_GET_OUTPUTS_COMMITS];
 
 		let err = output_handler
-			.get_outputs_v2(&secp, Some(commits), None, None, None, None)
+			.get_outputs_v2(Some(commits), None, None, None, None)
 			.unwrap_err();
 
 		match err {
@@ -835,6 +911,222 @@ mod tests {
 			}
 			other => panic!("expected internal weak reference error, got {:?}", other),
 		}
+	}
+
+	#[test]
+	fn get_outputs_v2_rejects_merkle_proof_commit_lists_above_limit() {
+		let output_handler = OutputHandler { chain: Weak::new() };
+		let commits = vec![VALID_COMMIT.to_string(); MAX_GET_OUTPUTS_MERKLE_PROOF_COMMITS + 1];
+
+		let err = output_handler
+			.get_outputs_v2(Some(commits), None, None, None, Some(true))
+			.unwrap_err();
+
+		match err {
+			Error::RequestError(msg) => {
+				assert!(
+					msg.contains("too many output commitments requested with merkle proofs"),
+					"{}",
+					msg
+				);
+				assert!(msg.contains("max 100"), "{}", msg);
+			}
+			other => panic!("expected request error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn get_outputs_v2_allows_merkle_proof_commit_lists_at_limit() {
+		let output_handler = OutputHandler { chain: Weak::new() };
+		let commits = vec![VALID_COMMIT.to_string(); MAX_GET_OUTPUTS_MERKLE_PROOF_COMMITS];
+
+		let err = output_handler
+			.get_outputs_v2(Some(commits), None, None, None, Some(true))
+			.unwrap_err();
+
+		match err {
+			Error::Internal(msg) => {
+				assert!(msg.contains("failed to upgrade weak reference"), "{}", msg);
+			}
+			other => panic!("expected internal weak reference error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn get_outputs_v2_rejects_incomplete_height_ranges() {
+		let output_handler = OutputHandler { chain: Weak::new() };
+
+		for (start_height, end_height) in [(Some(1), None), (None, Some(1))] {
+			let err = output_handler
+				.get_outputs_v2(None, start_height, end_height, None, None)
+				.unwrap_err();
+
+			match err {
+				Error::RequestError(msg) => {
+					assert!(
+						msg.contains("start_height and end_height must be provided together"),
+						"{}",
+						msg
+					);
+				}
+				other => panic!("expected request error, got {:?}", other),
+			}
+		}
+	}
+
+	#[test]
+	fn get_outputs_v2_propagates_missing_requested_heights() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("get_outputs_v2_missing_height");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+		let err = {
+			let chain = Arc::new(
+				mwc_chain::Chain::init(
+					&secp,
+					0,
+					chain_dir.clone(),
+					Arc::new(mwc_chain::types::NoopAdapter {}),
+					mwc_core::genesis::genesis_floo(&secp, 0),
+					mwc_core::pow::verify_size,
+					false,
+					std::collections::HashSet::new(),
+					None,
+					None,
+					false,
+				)
+				.unwrap(),
+			);
+			let output_handler = OutputHandler {
+				chain: Arc::downgrade(&chain),
+			};
+
+			output_handler
+				.get_outputs_v2(None, Some(1), Some(1), None, None)
+				.unwrap_err()
+		};
+
+		let _ = fs::remove_dir_all(&chain_dir);
+
+		match err {
+			Error::NotFound(msg) => {
+				assert!(msg.contains("Header at height 1"), "{}", msg);
+			}
+			other => panic!("expected not found error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn get_outputs_v2_returns_matching_merkle_proof_and_position() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("get_outputs_v2_matching_merkle_proof");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let output = *genesis.outputs().first().expect("genesis output");
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				genesis,
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let output_handler = OutputHandler {
+			chain: Arc::downgrade(&chain),
+		};
+
+		let outputs = output_handler
+			.get_outputs_v2(
+				Some(vec![output.commitment().to_hex()]),
+				None,
+				None,
+				Some(false),
+				Some(true),
+			)
+			.unwrap();
+		assert_eq!(outputs.len(), 1);
+		let printable = &outputs[0];
+		let pos0 = printable
+			.mmr_index
+			.checked_sub(1)
+			.expect("one-based output position");
+		let proof = printable
+			.merkle_proof
+			.as_ref()
+			.expect("coinbase merkle proof");
+		let head = chain.head_header().unwrap();
+		assert_eq!(proof.mmr_size, head.output_mmr_size);
+		proof
+			.verify(0, head.output_root, &output.identifier(), pos0)
+			.unwrap();
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn get_unspent_outputs_returns_snapshot_metadata() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("get_unspent_outputs_snapshot");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let output = *genesis.outputs().first().expect("genesis output");
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				genesis,
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let output_handler = OutputHandler {
+			chain: Arc::downgrade(&chain),
+		};
+
+		let listing = output_handler
+			.get_unspent_outputs(1, None, 10_000, Some(true))
+			.unwrap();
+		let printable = listing
+			.outputs
+			.iter()
+			.find(|printable| printable.commit == output.commitment())
+			.expect("genesis output in unspent listing");
+		let head = chain.head_header().unwrap();
+		assert_eq!(listing.highest_index, head.output_mmr_size);
+		assert_eq!(listing.last_retrieved_index, head.output_mmr_size);
+		assert!(!printable.spent);
+		assert!(printable.mmr_index > 0);
+		assert_eq!(printable.block_height, Some(0));
+		assert_eq!(printable.context_id, 0);
+		assert_eq!(
+			printable.proof.as_deref(),
+			Some(output.proof_bytes().unwrap().to_hex().as_str())
+		);
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
 	}
 
 	#[test]
@@ -856,6 +1148,52 @@ mod tests {
 			}
 			other => panic!("expected request error, got {:?}", other),
 		}
+	}
+
+	#[test]
+	fn outputs_by_ids_returns_positions_from_snapshot() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("outputs_by_ids_snapshot");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let output = *genesis.outputs().first().expect("genesis output");
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				genesis,
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let output_handler = OutputHandler {
+			chain: Arc::downgrade(&chain),
+		};
+		let req = Request::builder()
+			.uri(format!(
+				"/v1/chain/outputs/byids?id={}",
+				output.commitment().to_hex()
+			))
+			.body(Bytes::new())
+			.unwrap();
+
+		let outputs = output_handler.outputs_by_ids(&req).unwrap();
+		assert_eq!(outputs.len(), 1);
+		assert_eq!(outputs[0].commit.commit(), output.commitment());
+		assert_eq!(outputs[0].height, 0);
+		assert!(outputs[0].mmr_index > 0);
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
 	}
 
 	#[test]
@@ -882,7 +1220,6 @@ mod tests {
 	#[test]
 	fn outputs_block_batch_rejects_height_ranges_above_limit() {
 		let output_handler = OutputHandler { chain: Weak::new() };
-		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let req = Request::builder()
 			.uri(format!(
 				"/v1/chain/outputs/byheight?start_height=1&end_height={}",
@@ -891,7 +1228,7 @@ mod tests {
 			.body(Bytes::new())
 			.unwrap();
 
-		let err = output_handler.outputs_block_batch(&secp, &req).unwrap_err();
+		let err = output_handler.outputs_block_batch(&req).unwrap_err();
 
 		match err {
 			Error::RequestError(msg) => {
@@ -923,6 +1260,7 @@ mod tests {
 					std::collections::HashSet::new(),
 					None,
 					None,
+					false,
 				)
 				.unwrap(),
 			);
@@ -934,7 +1272,7 @@ mod tests {
 				.body(Bytes::new())
 				.unwrap();
 
-			output_handler.outputs_block_batch(&secp, &req).unwrap_err()
+			output_handler.outputs_block_batch(&req).unwrap_err()
 		};
 
 		let _ = fs::remove_dir_all(&chain_dir);
@@ -973,13 +1311,12 @@ mod tests {
 	#[test]
 	fn outputs_block_batch_rejects_invalid_commit_length_before_decode() {
 		let output_handler = OutputHandler { chain: Weak::new() };
-		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let req = Request::builder()
 			.uri("/v1/chain/outputs/byheight?start_height=1&end_height=1&id=00")
 			.body(Bytes::new())
 			.unwrap();
 
-		let err = output_handler.outputs_block_batch(&secp, &req).unwrap_err();
+		let err = output_handler.outputs_block_batch(&req).unwrap_err();
 
 		match err {
 			Error::RequestError(msg) => {

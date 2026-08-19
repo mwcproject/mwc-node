@@ -12,19 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Logging wrapper to be used throughout all crates in the workspace
+//! Logging wrapper to be used throughout all crates in the workspace.
+//!
+//! This module exclusively owns the process-global [`log`](mwc_crates::log)
+//! logger. External code must never install a global `log` logger directly;
+//! every logger installation must use one of this module's initialization
+//! functions so repeated and concurrent calls can be rejected before file
+//! appenders are constructed.
 use mwc_crates::anyhow;
 use mwc_crates::lazy_static::lazy_static;
-use mwc_crates::log4rs;
 use mwc_crates::parking_lot::Mutex;
 use mwc_crates::tracing;
+use std::cell::RefCell;
 use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::Error;
 use mwc_crates::backtrace::Backtrace;
 use mwc_crates::log::{error, info};
-use mwc_crates::log::{Level, Record};
+use mwc_crates::log::{Level, LevelFilter, Record};
 use mwc_crates::log4rs::append::console::ConsoleAppender;
 use mwc_crates::log4rs::append::file::FileAppender;
 use mwc_crates::log4rs::append::rolling_file::{
@@ -42,6 +48,7 @@ use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_crates::tracing::field::{Field, Visit};
 use mwc_crates::tracing::Event;
 use mwc_crates::tracing_subscriber;
+use mwc_crates::tracing_subscriber::filter::LevelFilter as TracingLevelFilter;
 use mwc_crates::tracing_subscriber::layer::SubscriberExt;
 use mwc_crates::tracing_subscriber::registry::LookupSpan;
 use mwc_crates::tracing_subscriber::Layer;
@@ -58,7 +65,18 @@ lazy_static! {
 
 	static ref LOGGER_BUFFER: Mutex<Option<LogBuffer>> = Mutex::new(None);
 
+	/// Serializes all process-global logger initialization paths. This module is
+	/// the exclusive owner of the global `log` logger; external code must never
+	/// install one directly.
+	static ref LOGGER_INITIALIZED: Mutex<bool> = Mutex::new(false);
+
 	static ref CONSOLE_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
+}
+
+std::thread_local! {
+	/// Prevents a callback from recursively dispatching records to itself on the same thread.
+	/// Nested records still pass through the appender and are retained in `LOGGER_BUFFER`.
+	static CALLBACK_DISPATCH_GUARD: RefCell<()> = const { RefCell::new(()) };
 }
 
 /// True if everything is running as a console app. Otherwice it is a library,
@@ -69,8 +87,8 @@ pub fn is_console_output_enabled() -> bool {
 
 const LOGGING_PATTERN: &str = "{d(%Y%m%d %H:%M:%S%.3f)} {h({l})} {M} - {m}{n}";
 
-/// 32 log files to rotate over by default
-const DEFAULT_ROTATE_LOG_FILES: u32 = 32 as u32;
+/// Three archived log files to retain by default.
+const DEFAULT_ROTATE_LOG_FILES: u32 = 3 as u32;
 
 /// Number of recent log entries retained for the TUI.
 pub const TUI_LOG_BUFFER_CAPACITY: usize = 200;
@@ -205,7 +223,7 @@ impl Default for LoggingConfig {
 			file_log_level: Level::Info,
 			log_file_path: String::from("mwc.log"),
 			log_file_append: true,
-			log_max_size: Some(1024 * 1024 * 16), // 16 megabytes default
+			log_max_size: Some(1024 * 1024 * 4), // 4 MiB by default
 			log_max_files: Some(DEFAULT_ROTATE_LOG_FILES),
 			tui_running: None,
 		}
@@ -295,6 +313,27 @@ impl Visit for EventVisitor {
 
 struct Log4rsLayer;
 
+fn tracing_level_to_log(level: &tracing::Level) -> Level {
+	match *level {
+		tracing::Level::ERROR => Level::Error,
+		tracing::Level::WARN => Level::Warn,
+		tracing::Level::INFO => Level::Info,
+		tracing::Level::DEBUG => Level::Debug,
+		tracing::Level::TRACE => Level::Trace,
+	}
+}
+
+fn log_level_to_tracing_filter(level: LevelFilter) -> TracingLevelFilter {
+	match level {
+		LevelFilter::Off => TracingLevelFilter::OFF,
+		LevelFilter::Error => TracingLevelFilter::ERROR,
+		LevelFilter::Warn => TracingLevelFilter::WARN,
+		LevelFilter::Info => TracingLevelFilter::INFO,
+		LevelFilter::Debug => TracingLevelFilter::DEBUG,
+		LevelFilter::Trace => TracingLevelFilter::TRACE,
+	}
+}
+
 fn should_skip_log(target: &str, msg: &str) -> bool {
 	// Filtering Arti false alarm messages.
 	// Intentionally the event level is not checked. msg.contains used to suppress noisy massages that user don't
@@ -328,6 +367,12 @@ where
 	S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
 	fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+		let metadata = event.metadata();
+		let level = tracing_level_to_log(metadata.level());
+		if !mwc_crates::log::log_enabled!(target: metadata.target(), level) {
+			return;
+		}
+
 		let mut visitor = EventVisitor {
 			message: None,
 			fields: Vec::new(),
@@ -335,19 +380,11 @@ where
 		event.record(&mut visitor);
 
 		if let Some(message) = visitor.into_log_message() {
-			let target = event.metadata().target();
+			let target = metadata.target();
 
 			if should_skip_log(target, &message) {
 				return;
 			}
-
-			let level = match *event.metadata().level() {
-				tracing::Level::ERROR => Level::Error,
-				tracing::Level::WARN => Level::Warn,
-				tracing::Level::INFO => Level::Info,
-				tracing::Level::DEBUG => Level::Debug,
-				tracing::Level::TRACE => Level::Trace,
-			};
 
 			let log_args = format_args!("{}", message);
 			let record = Record::builder()
@@ -355,8 +392,8 @@ where
 				.level(level)
 				.target(target)
 				.module_path(Some(target))
-				.file(event.metadata().file())
-				.line(event.metadata().line())
+				.file(metadata.file())
+				.line(metadata.line())
 				.build();
 
 			mwc_crates::log::logger().log(&record);
@@ -389,23 +426,54 @@ impl Append for TuiLogAppender {
 	fn flush(&self) {}
 }
 
-/// Initialize the logger with the given configuration
+fn active_root_level(config: &LoggingConfig, tui_running: bool) -> LevelFilter {
+	[
+		(tui_running || config.log_to_stdout).then_some(config.stdout_log_level.to_level_filter()),
+		config
+			.log_to_file
+			.then_some(config.file_log_level.to_level_filter()),
+	]
+	.into_iter()
+	.flatten()
+	.max()
+	.unwrap_or(LevelFilter::Off)
+}
+
+fn install_tracing_bridge(level: LevelFilter) {
+	let subscriber = tracing_subscriber::registry()
+		.with(Log4rsLayer.with_filter(log_level_to_tracing_filter(level)));
+	if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+		// Log4rs is already committed and cannot be rolled back. An embedding
+		// application may legitimately own the tracing subscriber.
+		error!(
+			"Unable to capture Arti/Tor logs. tracing set_global_default failed with error: {}",
+			e
+		);
+	}
+}
+
+/// Initialize the process-global logger with the given configuration.
+///
+/// Initialization is one-shot: after the first successful configuration, every
+/// later or concurrent call returns a logging error. An attempt that fails
+/// before configuration is committed may be retried.
 pub fn init_logger(
 	config: Option<&LoggingConfig>,
 	tui_logs: Option<TuiLogBuffer>,
 ) -> Result<(), Error> {
 	if let Some(c) = config {
+		let mut initialized = LOGGER_INITIALIZED.lock();
+		if *initialized {
+			return Err(Error::Logging(
+				"init_logger, logging is already initialized".into(),
+			));
+		}
+
 		let tui_running = c.tui_running.unwrap_or(false);
 
 		let level_stdout = c.stdout_log_level.to_level_filter();
 		let level_file = c.file_log_level.to_level_filter();
-
-		// Determine minimum logging level for Root logger
-		let level_minimum = if level_stdout > level_file {
-			level_stdout
-		} else {
-			level_file
-		};
+		let root_level = active_root_level(c, tui_running);
 
 		// Start logger
 		let stdout = ConsoleAppender::builder()
@@ -440,52 +508,47 @@ pub fn init_logger(
 		}
 
 		if c.log_to_file {
-			// If maximum log size is specified, use rolling file appender
-			// or use basic one otherwise
 			// Note, we don't want enforcing restrictive file or directory permissions and without validating ownership/symlink status
 			//       because it is overcomplicated the setup for users. Instead we never log security related data.
 			let filter = Box::new(ThresholdFilter::new(level_file));
-			let file: Box<dyn Append> = {
-				if let Some(size) = c.log_max_size {
-					let count = c.log_max_files.unwrap_or_else(|| DEFAULT_ROTATE_LOG_FILES);
-					let roller = FixedWindowRoller::builder()
-						.build(&format!("{}.{{}}.gz", c.log_file_path), count)
+			let file: Box<dyn Append> = if let Some(size) = c.log_max_size {
+				let count = c.log_max_files.unwrap_or(DEFAULT_ROTATE_LOG_FILES);
+				let roller = FixedWindowRoller::builder()
+					.build(&format!("{}.{{}}.gz", c.log_file_path), count)
+					.map_err(|e| {
+						Error::Logging(format!(
+							"init_logger, unable to build FixedWindowRoller, {}",
+							e
+						))
+					})?;
+				let policy =
+					CompoundPolicy::new(Box::new(SizeTrigger::new(size)), Box::new(roller));
+
+				Box::new(
+					RollingFileAppender::builder()
+						.append(c.log_file_append)
+						.encoder(Box::new(SanitizingEncoder::new(&LOGGING_PATTERN)))
+						.build(c.log_file_path.clone(), Box::new(policy))
 						.map_err(|e| {
 							Error::Logging(format!(
-								"init_logger, unable to build FixedWindowRoller, {}",
-								e
+								"init_logger, failed to create logfile at {}, {}",
+								c.log_file_path, e
 							))
-						})?;
-					let trigger = SizeTrigger::new(size);
-
-					let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
-
-					Box::new(
-						RollingFileAppender::builder()
-							.append(c.log_file_append)
-							.encoder(Box::new(SanitizingEncoder::new(&LOGGING_PATTERN)))
-							.build(c.log_file_path.clone(), Box::new(policy))
-							.map_err(|e| {
-								Error::Logging(format!(
-									"init_logger, failed to create logfile at {}, {}",
-									c.log_file_path, e
-								))
-							})?,
-					)
-				} else {
-					Box::new(
-						FileAppender::builder()
-							.append(c.log_file_append)
-							.encoder(Box::new(SanitizingEncoder::new(&LOGGING_PATTERN)))
-							.build(c.log_file_path.clone())
-							.map_err(|e| {
-								Error::Logging(format!(
-									"init_logger, failed to create logfile at {}, {}",
-									c.log_file_path, e
-								))
-							})?,
-					)
-				}
+						})?,
+				)
+			} else {
+				Box::new(
+					FileAppender::builder()
+						.append(c.log_file_append)
+						.encoder(Box::new(SanitizingEncoder::new(&LOGGING_PATTERN)))
+						.build(c.log_file_path.clone())
+						.map_err(|e| {
+							Error::Logging(format!(
+								"init_logger, failed to create logfile at {}, {}",
+								c.log_file_path, e
+							))
+						})?,
+				)
 			};
 
 			appenders.push(Appender::builder().filter(filter).build("file", file));
@@ -494,30 +557,23 @@ pub fn init_logger(
 
 		let config = Config::builder()
 			.appenders(appenders)
-			.build(root.build(level_minimum))
+			.build(root.build(root_level))
 			.map_err(|e| {
 				Error::Logging(format!("init_logger, failed to build Config object, {}", e))
 			})?;
 
-		let _ =
-			init_config_with_err_handler(config, Box::new(|err| println!("Logger error: {}", err)))
-				.map_err(|e| {
-					Error::Logging(format!("init_logger, failed to init log4rs, {}", e))
-				})?;
+		init_config_with_err_handler(config, Box::new(|err| println!("Logger error: {}", err)))
+			.map_err(|e| {
+				Error::Logging(format!("init_logger, failed to register log4rs, {}", e))
+			})?;
+		*initialized = true;
+		drop(initialized);
 
-		// forward tracing events into the `log` crate (i.e. into log4rs)
-		// Then set up tracing with your custom layer
-		let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
-		tracing::subscriber::set_global_default(subscriber).map_err(|e| {
-			Error::Logging(format!(
-				"init_logger, failed to redirect logs with tracing, {}",
-				e
-			))
-		})?;
+		install_tracing_bridge(root_level);
 
 		info!(
-			"log4rs is initialized, file level: {:?}, stdout level: {:?}, min. level: {:?}",
-			level_file, level_stdout, level_minimum
+			"log4rs is initialized, file level: {:?}, stdout level: {:?}, root level: {:?}",
+			level_file, level_stdout, root_level
 		);
 
 		// Now, tracing macros will go through your layer and into log4rs
@@ -535,12 +591,19 @@ pub fn init_test_logger() -> Result<(), Error> {
 	if *was_init_ref.deref() {
 		return Ok(());
 	}
+	let mut initialized = LOGGER_INITIALIZED.lock();
+	if *initialized {
+		return Err(Error::Logging(
+			"init_test_logger, logging is already initialized".into(),
+		));
+	}
+
 	let mut logger = LoggingConfig::default();
 	logger.log_to_file = false;
 	logger.stdout_log_level = Level::Debug;
 
 	let level_stdout = logger.stdout_log_level.to_level_filter();
-	let level_minimum = level_stdout; // minimum logging level for Root logger
+	let root_level = level_stdout;
 
 	// Start logger
 	let stdout = ConsoleAppender::builder()
@@ -565,7 +628,7 @@ pub fn init_test_logger() -> Result<(), Error> {
 
 	let config = Config::builder()
 		.appenders(appenders)
-		.build(root.build(level_minimum))
+		.build(root.build(root_level))
 		.map_err(|e| {
 			Error::Logging(format!(
 				"init_test_logger, unable to build log config, {}",
@@ -573,16 +636,18 @@ pub fn init_test_logger() -> Result<(), Error> {
 			))
 		})?;
 
-	_ = log4rs::init_config(config).map_err(|e| {
-		Error::Logging(format!(
-			"init_test_logger, unable to init the testing logs, {}",
-			e
-		))
-	})?;
+	init_config_with_err_handler(config, Box::new(|err| println!("Logger error: {}", err)))
+		.map_err(|e| {
+			Error::Logging(format!(
+				"init_test_logger, failed to register log4rs, {}",
+				e
+			))
+		})?;
+	*initialized = true;
 
 	info!(
-		"log4rs is initialized, stdout level: {:?}, min. level: {:?}",
-		level_stdout, level_minimum
+		"log4rs is initialized, stdout level: {:?}, root level: {:?}",
+		level_stdout, root_level
 	);
 
 	*was_init_ref = true;
@@ -615,7 +680,11 @@ impl Append for CallbackAppender {
 		};
 
 		if let Some(cb) = &*self.callback {
-			(cb)(entry.clone());
+			CALLBACK_DISPATCH_GUARD.with(|guard| {
+				if let Ok(_dispatch_guard) = guard.try_borrow_mut() {
+					(cb)(entry.clone());
+				}
+			});
 		}
 
 		let mut logger_buffer = LOGGER_BUFFER.lock();
@@ -652,12 +721,19 @@ impl Append for CallbackAppender {
 /// Init logs as a callback logs. By design the first callback and cached buffer remain active for
 /// the process lifetime. It is expected that logging system can be set once and never changed after.
 pub fn init_callback_logger(config: CallbackLoggingConfig) -> Result<(), Error> {
+	let mut initialized = LOGGER_INITIALIZED.lock();
+	if *initialized {
+		return Err(Error::Logging(
+			"init_callback_logger, logging is already initialized".into(),
+		));
+	}
 	let mut logger_buffer = LOGGER_BUFFER.lock();
 	if logger_buffer.is_some() {
 		return Err(Error::Logging(
 			"init_callback_logger, CallbackLoggingConfig is already set".into(),
 		));
 	}
+	let root_level = config.log_level.to_level_filter();
 
 	let callback_appender = CallbackAppender {
 		// Logg message formatter
@@ -667,15 +743,13 @@ pub fn init_callback_logger(config: CallbackLoggingConfig) -> Result<(), Error> 
 
 	let mut root = Root::builder();
 	let appenders = vec![Appender::builder()
-		.filter(Box::new(ThresholdFilter::new(
-			config.log_level.to_level_filter(),
-		)))
+		.filter(Box::new(ThresholdFilter::new(root_level)))
 		.build("callback", Box::new(callback_appender))];
 	root = root.appender("callback");
 
 	let log4rs_config = Config::builder()
 		.appenders(appenders)
-		.build(root.build(config.log_level.to_level_filter()))
+		.build(root.build(root_level))
 		.map_err(|e| {
 			Error::Logging(format!(
 				"init_callback_logger, unable to build log4rs config, {}",
@@ -683,34 +757,30 @@ pub fn init_callback_logger(config: CallbackLoggingConfig) -> Result<(), Error> 
 			))
 		})?;
 
-	let _ = log4rs::init_config(log4rs_config).map_err(|e| {
-		Error::Logging(format!(
-			"init_callback_logger, unable to init log4rs, {}",
-			e
-		))
-	})?;
-
-	CONSOLE_OUTPUT_ENABLED.store(false, Ordering::Relaxed);
-
 	*logger_buffer = Some(LogBuffer {
 		buffer: VecDeque::with_capacity(config.log_buffer_size),
 		log_buffer_size: config.log_buffer_size,
 		// current id
 		last_id: 0,
 	});
+	if let Err(e) = init_config_with_err_handler(
+		log4rs_config,
+		Box::new(|err| println!("Logger error: {}", err)),
+	) {
+		*logger_buffer = None;
+		return Err(Error::Logging(format!(
+			"init_callback_logger, failed to register log4rs, {}",
+			e
+		)));
+	}
+	*initialized = true;
+
+	CONSOLE_OUTPUT_ENABLED.store(false, Ordering::Relaxed);
 
 	drop(logger_buffer);
+	drop(initialized);
 
-	// forward tracing events into the `log` crate (i.e. into log4rs)
-	// Then set up tracing with your custom layer
-	let subscriber = tracing_subscriber::registry().with(Log4rsLayer);
-	if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
-		// Logs capturing is not fatal error, so we can go forward
-		error!(
-			"Unable to capture Arti/Tor logs. tracing set_global_default failed with error: {}",
-			e
-		);
-	}
+	install_tracing_bridge(root_level);
 
 	let cb_enabled = if config.callback.is_some() {
 		"ON"
@@ -829,11 +899,189 @@ fn send_panic_to_log() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::process::Command;
+	use std::sync::atomic::AtomicUsize;
+
+	const LOGGER_TEST_MODE: &str = "MWC_UTIL_LOGGER_TEST_MODE";
+	const LOGGER_TEST_PATH: &str = "MWC_UTIL_LOGGER_TEST_PATH";
+
+	fn file_logging_config(path: String) -> LoggingConfig {
+		LoggingConfig {
+			log_to_stdout: false,
+			log_to_file: true,
+			log_file_path: path,
+			log_file_append: false,
+			log_max_size: None,
+			..LoggingConfig::default()
+		}
+	}
+
+	fn run_logger_child(mode: &str) {
+		let tempdir = mwc_crates::tempfile::tempdir().unwrap();
+		let log_path = tempdir.path().join("logger.log");
+		let output = Command::new(std::env::current_exe().unwrap())
+			.arg("logger_process_child")
+			.arg("--nocapture")
+			.env(LOGGER_TEST_MODE, mode)
+			.env(LOGGER_TEST_PATH, &log_path)
+			.output()
+			.unwrap();
+
+		assert!(
+			output.status.success(),
+			"logger child failed: stdout={} stderr={}",
+			String::from_utf8_lossy(&output.stdout),
+			String::from_utf8_lossy(&output.stderr)
+		);
+	}
 
 	fn log_entry(number: usize) -> LogEntry {
 		LogEntry {
 			log: number.to_string(),
 			level: Level::Warn,
+		}
+	}
+
+	#[test]
+	fn active_root_level_uses_only_active_destinations() {
+		let mut config = LoggingConfig {
+			log_to_stdout: true,
+			stdout_log_level: Level::Warn,
+			log_to_file: false,
+			file_log_level: Level::Debug,
+			..LoggingConfig::default()
+		};
+		assert_eq!(active_root_level(&config, false), LevelFilter::Warn);
+
+		config.log_to_stdout = false;
+		assert_eq!(active_root_level(&config, false), LevelFilter::Off);
+		assert_eq!(active_root_level(&config, true), LevelFilter::Warn);
+
+		config.log_to_file = true;
+		assert_eq!(active_root_level(&config, false), LevelFilter::Debug);
+	}
+
+	#[test]
+	fn tracing_level_filter_skips_disabled_field_evaluation() {
+		let evaluations = AtomicUsize::new(0);
+		let subscriber =
+			tracing_subscriber::registry().with(Log4rsLayer.with_filter(TracingLevelFilter::WARN));
+
+		tracing::subscriber::with_default(subscriber, || {
+			tracing::debug!(
+				expensive = evaluations.fetch_add(1, Ordering::SeqCst),
+				"filtered event"
+			);
+		});
+
+		assert_eq!(evaluations.load(Ordering::SeqCst), 0);
+	}
+
+	#[test]
+	fn repeated_initialization_does_not_truncate_active_log() {
+		run_logger_child("repeat");
+	}
+
+	#[test]
+	fn concurrent_initialization_has_exactly_one_winner() {
+		run_logger_child("concurrent");
+	}
+
+	#[test]
+	fn existing_tracing_subscriber_is_degraded_success() {
+		run_logger_child("existing_tracing");
+	}
+
+	#[test]
+	fn reentrant_callback_is_suppressed_but_nested_logs_are_buffered() {
+		run_logger_child("reentrant_callback");
+	}
+
+	#[test]
+	fn logger_process_child() {
+		let Some(mode) = std::env::var_os(LOGGER_TEST_MODE) else {
+			return;
+		};
+		let path = std::env::var_os(LOGGER_TEST_PATH).unwrap();
+		let path_string = std::path::PathBuf::from(&path)
+			.to_string_lossy()
+			.into_owned();
+
+		match mode.to_string_lossy().as_ref() {
+			"repeat" => {
+				let config = file_logging_config(path_string);
+				init_logger(Some(&config), None).unwrap();
+				mwc_crates::log::warn!("first initialization marker");
+				assert!(init_logger(Some(&config), None).is_err());
+				assert!(std::fs::read_to_string(path)
+					.unwrap()
+					.contains("first initialization marker"));
+			}
+			"concurrent" => {
+				let config = Arc::new(file_logging_config(path_string));
+				let barrier = Arc::new(std::sync::Barrier::new(2));
+				let calls = (0..2)
+					.map(|_| {
+						let config = Arc::clone(&config);
+						let barrier = Arc::clone(&barrier);
+						std::thread::spawn(move || {
+							barrier.wait();
+							init_logger(Some(&config), None)
+						})
+					})
+					.collect::<Vec<_>>();
+				let results = calls
+					.into_iter()
+					.map(|call| call.join().unwrap())
+					.collect::<Vec<_>>();
+
+				assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+				assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+				let error = results.into_iter().find_map(Result::err).unwrap();
+				assert!(error.to_string().contains("logging is already initialized"));
+			}
+			"existing_tracing" => {
+				tracing::subscriber::set_global_default(tracing_subscriber::registry()).unwrap();
+				let config = file_logging_config(path_string);
+				init_logger(Some(&config), None).unwrap();
+				mwc_crates::log::warn!("log4rs remains active");
+				assert!(std::fs::read_to_string(path)
+					.unwrap()
+					.contains("log4rs remains active"));
+			}
+			"reentrant_callback" => {
+				let callback_calls = Arc::new(AtomicUsize::new(0));
+				let calls_from_callback = Arc::clone(&callback_calls);
+				let callback: Box<dyn Fn(LogEntry) + Send + Sync> = Box::new(move |_| {
+					calls_from_callback.fetch_add(1, Ordering::SeqCst);
+					mwc_crates::log::info!("nested callback marker");
+				});
+
+				init_callback_logger(CallbackLoggingConfig {
+					log_level: Level::Info,
+					log_buffer_size: 16,
+					callback: Arc::new(Some(callback)),
+				})
+				.unwrap();
+
+				assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+
+				mwc_crates::log::info!("top-level callback marker");
+				assert_eq!(callback_calls.load(Ordering::SeqCst), 2);
+
+				let buffered = read_buffered_logs(None, usize::MAX).unwrap();
+				assert_eq!(
+					buffered
+						.iter()
+						.filter(|entry| entry.log_entry.log.contains("nested callback marker"))
+						.count(),
+					2
+				);
+				assert!(buffered
+					.iter()
+					.any(|entry| entry.log_entry.log.contains("top-level callback marker")));
+			}
+			mode => panic!("unknown logger child mode: {}", mode),
 		}
 	}
 

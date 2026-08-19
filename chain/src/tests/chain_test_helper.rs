@@ -77,9 +77,10 @@ pub fn test_chain_dir(test_name: &str) -> String {
 }
 
 pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
+	let context_id = genesis.header.pow.proof.context_id;
 	Chain::init(
 		&secp,
-		0,
+		context_id,
 		dir_name.to_string(),
 		Arc::new(NoopAdapter {}),
 		genesis,
@@ -88,6 +89,7 @@ pub fn init_chain(secp: &Secp256k1, dir_name: &str, genesis: Block) -> Chain {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap()
 }
@@ -237,7 +239,7 @@ where
 		assert_eq!(header.hash(0).unwrap(), bhash);
 
 		// now check the block itself
-		let block = chain.get_block(&header.hash(0).unwrap()).unwrap();
+		let block = chain.get_block_for_header(&header).unwrap();
 		assert_eq!(block.header.height, n);
 		assert_eq!(block.hash(0).unwrap(), bhash);
 		assert_eq!(block.outputs().len(), 1);

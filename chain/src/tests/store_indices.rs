@@ -40,7 +40,11 @@ fn test_store_indices() {
 	{
 		// Block exists in the db.
 		assert_eq!(
-			chain.get_block(&block_hash).unwrap().hash(0).unwrap(),
+			chain
+				.get_block_for_header(&block_header)
+				.unwrap()
+				.hash(0)
+				.unwrap(),
 			block_hash
 		);
 
@@ -58,7 +62,7 @@ fn test_store_indices() {
 		}
 
 		// Check the batch did not commit any changes to the store .
-		assert!(chain.get_block(&block_hash).is_ok());
+		assert!(chain.get_block_for_header(&block_header).is_ok());
 	}
 
 	// Cleanup chain directory

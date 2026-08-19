@@ -2021,6 +2021,122 @@ fn pmmr_compact_entire_peak() {
 }
 
 #[test]
+fn pmmr_rewind_rejects_target_inside_compacted_subtree() {
+	let (data_dir, elems) = setup("rewind_inside_compacted_subtree");
+	{
+		let mut backend = mwc_store::pmmr::PMMRBackend::new(
+			data_dir.clone(),
+			true,
+			ProtocolVersion(1),
+			0,
+			None,
+			VariableSizeMetadataValidation::Full,
+		)
+		.unwrap();
+		let mmr_size = load(0, &elems[0..5], &mut backend);
+		assert_eq!(mmr_size, 8);
+		backend.sync().unwrap();
+
+		// Compact positions 0 through 6 into their retained root at position 6.
+		// The later leaf at position 7 ensures that the old count-only check has
+		// enough physical hash and data records to incorrectly accept target 1.
+		{
+			let mut pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut backend, mmr_size);
+			for pos0 in [0, 1, 3, 4] {
+				pmmr.prune(pos0).unwrap();
+			}
+		}
+		backend.sync().unwrap();
+		backend.check_compact(6, &Bitmap::new()).unwrap();
+
+		assert_eq!(backend.hash_size().unwrap(), 2);
+		assert_eq!(backend.data_size().unwrap(), 1);
+
+		for target in [0, 1, 6] {
+			match backend.validate_rewind_target(target).unwrap_err() {
+				pmmr::Error::InvalidState(msg) => {
+					assert!(msg.contains("target would discard retained compacted-subtree root"));
+				}
+				other => panic!("unexpected rewind target error: {:?}", other),
+			}
+		}
+
+		let hash_size = backend.hash_size().unwrap();
+		let data_size = backend.data_size().unwrap();
+		match backend.rewind(0, &Bitmap::new()).unwrap_err() {
+			pmmr::Error::InvalidState(msg) => {
+				assert!(msg.contains("target would discard retained compacted-subtree root"));
+			}
+			other => panic!("unexpected rewind error: {:?}", other),
+		}
+		assert_eq!(backend.hash_size().unwrap(), hash_size);
+		assert_eq!(backend.data_size().unwrap(), data_size);
+		assert_eq!(backend.unpruned_size().unwrap(), mmr_size);
+
+		// A boundary after the retained root keeps the prune list consistent.
+		backend.validate_rewind_target(7).unwrap();
+		backend.validate_rewind_target(mmr_size).unwrap();
+	}
+	teardown(data_dir);
+}
+
+#[test]
+fn pmmr_rewind_rejects_target_before_later_compacted_subtree() {
+	let (data_dir, elems) = setup("rewind_before_later_compacted_subtree");
+	{
+		let mut backend = mwc_store::pmmr::PMMRBackend::new(
+			data_dir.clone(),
+			true,
+			ProtocolVersion(1),
+			0,
+			None,
+			VariableSizeMetadataValidation::Full,
+		)
+		.unwrap();
+		let mmr_size = load(0, &elems[0..5], &mut backend);
+		assert_eq!(mmr_size, 8);
+		backend.sync().unwrap();
+
+		// Keep positions 0 through 2, but compact positions 3 through 5 into
+		// their retained root at position 5.
+		{
+			let mut pmmr: PMMR<'_, TestElem, _> = PMMR::at(&mut backend, mmr_size);
+			for pos0 in [3, 4] {
+				pmmr.prune(pos0).unwrap();
+			}
+		}
+		backend.sync().unwrap();
+		backend.check_compact(6, &Bitmap::new()).unwrap();
+
+		// Target 3 is a valid PMMR boundary and is wholly before the compacted
+		// subtree, but rewinding there would truncate its retained root while
+		// leaving the prune-list entry and shifts behind.
+		match backend.validate_rewind_target(3).unwrap_err() {
+			pmmr::Error::InvalidState(msg) => {
+				assert!(msg.contains("target would discard retained compacted-subtree root"));
+			}
+			other => panic!("unexpected rewind target error: {:?}", other),
+		}
+
+		let hash_size = backend.hash_size().unwrap();
+		let data_size = backend.data_size().unwrap();
+		match backend.rewind(3, &Bitmap::new()).unwrap_err() {
+			pmmr::Error::InvalidState(msg) => {
+				assert!(msg.contains("target would discard retained compacted-subtree root"));
+			}
+			other => panic!("unexpected rewind error: {:?}", other),
+		}
+		assert_eq!(backend.hash_size().unwrap(), hash_size);
+		assert_eq!(backend.data_size().unwrap(), data_size);
+		assert_eq!(backend.unpruned_size().unwrap(), mmr_size);
+
+		backend.validate_rewind_target(7).unwrap();
+		backend.validate_rewind_target(mmr_size).unwrap();
+	}
+	teardown(data_dir);
+}
+
+#[test]
 fn pmmr_compact_horizon() {
 	let (data_dir, elems) = setup("compact_horizon");
 	{

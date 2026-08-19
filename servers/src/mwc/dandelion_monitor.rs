@@ -15,7 +15,7 @@
 
 use crate::common::adapters::DandelionAdapter;
 use crate::ServerTxPool;
-use mwc_core::core::hash::{Hash, Hashed};
+use mwc_core::core::hash::Hashed;
 use mwc_core::core::transaction;
 use mwc_core::global;
 use mwc_crates::log::{debug, error, info, warn};
@@ -25,7 +25,6 @@ use mwc_pool::{
 	BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TransactionPool, TxSource,
 };
 use mwc_util::StopState;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -130,8 +129,7 @@ fn process_fluff_phase(
 ) -> Result<(), PoolError> {
 	let mut pool = tx_pool.write();
 
-	let all_entries = pool.stempool.all_entries();
-	if all_entries.is_empty() {
+	if pool.stempool.is_empty() {
 		return Ok(());
 	}
 
@@ -148,34 +146,10 @@ fn process_fluff_phase(
 	let header = pool.chain_head()?;
 	let context_id = pool.get_context_id();
 
-	let fluffable_txs = {
-		let txpool_tx = pool.txpool.all_transactions_aggregate(None, secp)?;
-		let txs: Vec<_> = all_entries.iter().map(|x| x.tx.clone()).collect();
-		pool.stempool.validate_raw_txs(
-			&txs,
-			txpool_tx,
-			&header,
-			transaction::Weighting::NoLimit,
-			secp,
-		)?
-	};
-	let fluffable_hashes = fluffable_txs
-		.iter()
-		.map(|tx| tx.hash(context_id))
-		.collect::<Result<HashSet<Hash>, _>>()?;
-	let mut skipped = 0;
-	for entry in &all_entries {
-		let tx_hash = entry.tx.hash(context_id)?;
-		if !fluffable_hashes.contains(&tx_hash) {
-			if pool.stempool.remove_tx(&entry.tx)?.is_some() {
-				skipped += 1;
-				debug!(
-					"dand_mon: removed skipped stempool tx {} after failed aggregate validation",
-					tx_hash
-				);
-			}
-		}
-	}
+	// Pool entries were fully authenticated at admission. Reconcile the complete
+	// aggregate once, using the pool's bounded per-entry fallback only if bulk
+	// validation fails, instead of repeatedly validating every growing prefix.
+	let (fluffable_txs, skipped) = pool.reconcile_stempool_for_fluff(&header, secp)?;
 
 	debug!(
 		"dand_mon: Found {} txs in local stempool to fluff, removed {} skipped txs",
@@ -195,6 +169,11 @@ fn process_fluff_phase(
 		fluff_txs.len()
 	);
 
+	// The stempool is a best-effort, non-durable cache. Promoting an earlier batch
+	// can reconcile and evict entries captured in this snapshot; if a later batch
+	// fails, deliberately do not restore the failed or unsubmitted entries. Wallets
+	// are responsible for reposting transactions that remain unconfirmed, and
+	// retaining/restoring partial snapshots would add state and retry complexity.
 	for tx in fluff_txs {
 		match TransactionPool::submit_to_pool(
 			tx_pool.as_ref(),

@@ -17,7 +17,7 @@
 //! segmenter
 
 use crate::error::Error;
-use crate::store::PendingChainOperation;
+use crate::store::{PendingChainOperation, PendingChainOperationGuard};
 use crate::txhashset;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::types::{SyncStatusUpdateThrottle, Tip, TxHashsetStateValidationStage};
@@ -34,6 +34,7 @@ use mwc_crates::num_cpus;
 use mwc_crates::parking_lot::RwLock;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_util::StopState;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -60,6 +61,8 @@ pub struct Desegmenter {
 
 	genesis: BlockHeader,
 	requires_init_recovery: Arc<AtomicBool>,
+	state_generation: Arc<AtomicU64>,
+	created_at_state_generation: u64,
 
 	outputs_bitmap_accumulator: RwLock<BitmapAccumulator>, // Lock 1
 	outputs_bitmap_mmr_size: u64,
@@ -193,8 +196,14 @@ impl Desegmenter {
 			.map(|x| x / leaves_num)
 	}
 
+	/// Whether this PIBD session still describes the current chain state.
+	pub fn is_current(&self) -> bool {
+		!self.requires_init_recovery.load(Ordering::SeqCst)
+			&& self.state_generation.load(Ordering::SeqCst) == self.created_at_state_generation
+	}
+
 	fn ensure_robust(&self) -> Result<(), Error> {
-		if self.requires_init_recovery.load(Ordering::SeqCst) {
+		if !self.is_current() {
 			return Err(Error::ChainRestartRequired);
 		}
 		Ok(())
@@ -236,16 +245,44 @@ impl Desegmenter {
 		Ok(())
 	}
 
-	fn set_pending_operation(&self, op: &PendingChainOperation) -> Result<(), Error> {
+	fn set_pending_operation(
+		&self,
+		op: &PendingChainOperation,
+	) -> Result<PendingChainOperationGuard, Error> {
 		self.ensure_header_pmmr_locked_for_marker("desegmenter set_pending_operation")?;
+		// Callers hold header_pmmr here, so recovery cannot advance the generation
+		// between this check and the protected PMMR mutation.
+		self.ensure_robust()?;
 		match self.store.set_pending_chain_operation(op) {
-			Ok(()) => Ok(()),
+			Ok(()) => Ok(PendingChainOperationGuard::new(
+				self.requires_init_recovery.clone(),
+			)),
 			Err(e) => {
 				self.require_init_recovery(format_args!(
 					"failed to set pending chain operation {:?}: {}",
 					op, e
 				));
 				Err(e.into())
+			}
+		}
+	}
+
+	fn finish_pending_operation(
+		&self,
+		failure_context: &str,
+		res: Result<(), Error>,
+		mut marker_guard: PendingChainOperationGuard,
+	) -> Result<(), Error> {
+		match res {
+			Ok(()) => {
+				self.clear_pending_operation_checked()?;
+				marker_guard.disarm();
+				Ok(())
+			}
+			Err(e) => {
+				self.require_init_recovery(format_args!("{}: {}", failure_context, e));
+				marker_guard.disarm();
+				Err(e)
 			}
 		}
 	}
@@ -263,8 +300,9 @@ impl Desegmenter {
 		}
 	}
 
-	/// Create a new segmenter based on the provided txhashset and the specified block header
-	pub fn new(
+	/// Create a desegmenter tied to the chain-state generation from which its
+	/// archive header, bitmap accumulator, and accepted-segment cursors derive.
+	pub(crate) fn new_guarded(
 		txhashset: Arc<RwLock<TxHashSet>>,
 		header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
 		archive_header: BlockHeader,
@@ -273,6 +311,8 @@ impl Desegmenter {
 		store: Arc<store::ChainStore>,
 		pibd_params: Arc<PibdParams>,
 		requires_init_recovery: Arc<AtomicBool>,
+		state_generation: Arc<AtomicU64>,
+		created_at_state_generation: u64,
 	) -> Result<Desegmenter, Error> {
 		info!(
 			"Creating new desegmenter for bitmap_root_hash {}, height {}",
@@ -296,6 +336,8 @@ impl Desegmenter {
 			store,
 			genesis,
 			requires_init_recovery,
+			state_generation,
+			created_at_state_generation,
 			outputs_bitmap_accumulator: RwLock::new(BitmapAccumulator::new(context_id)),
 			outputs_bitmap_mmr_size: bitmap_mmr_size,
 			bitmap_segment_cache: RwLock::new(SegmentsCache::new(
@@ -337,6 +379,9 @@ impl Desegmenter {
 
 	/// Whether we have all the segments we need
 	pub fn is_complete(&self) -> bool {
+		if !self.is_current() {
+			return false;
+		}
 		if !self
 			.output_segment_cache
 			.read_recursive()
@@ -438,7 +483,7 @@ impl Desegmenter {
 
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+		let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
 		let res = (|| {
 			let mut _batch = self.store.batch_write()?;
 			txhashset::extending(&mut header_pmmr, &mut txhashset, &mut _batch, |ext, _| {
@@ -448,16 +493,11 @@ impl Desegmenter {
 			})?;
 			Ok(())
 		})();
-		match res {
-			Ok(()) => self.clear_pending_operation_checked(),
-			Err(e) => {
-				self.require_init_recovery(format_args!(
-					"check_update_leaf_set_state failed while updating txhashset leaf sets: {}",
-					e
-				));
-				Err(e)
-			}
-		}
+		self.finish_pending_operation(
+			"check_update_leaf_set_state failed while updating txhashset leaf sets",
+			res,
+			marker_guard,
+		)
 	}
 
 	fn validate_kernel_history_parallel(
@@ -487,6 +527,7 @@ impl Desegmenter {
 		let mut first_error = None;
 		let processed = Arc::new(AtomicU64::new(0));
 		let status_throttle = Arc::new(SyncStatusUpdateThrottle::new());
+		let context_id = self.store.get_context_id();
 		for thr_idx in 0..num_cores {
 			let handle_result =
 				(|| -> Result<std::thread::JoinHandle<Result<(), Error>>, Error> {
@@ -498,6 +539,13 @@ impl Desegmenter {
 						.read_recursive()
 						.get_block_header(&start_block_hash)?;
 					let processed = processed.clone();
+					let actual_start_block_hash = start_block.hash(context_id)?;
+					if actual_start_block_hash != start_block_hash {
+						return Err(Error::InvalidPersistedChainState(format!(
+							"Desegmenter::validate_complete_state, start block at height {} hashes to {}, expected PMMR-selected hash {}",
+							start_height, actual_start_block_hash, start_block_hash
+						)));
+					}
 					if start_block.height != start_height {
 						return Err(Error::InvalidSegment(format!(
 							"Desegmenter::validate_complete_state, start_block.height={} start_height={}",
@@ -517,10 +565,17 @@ impl Desegmenter {
 								&*txhashset.read_recursive(),
 								|view, batch| {
 									let mut start_block = start_block.clone();
+									let mut visited = HashSet::new();
 									while start_block.height > end_height {
 										view.rewind(&start_block)?;
 										view.validate_root()?;
-										start_block = batch.get_previous_header(&start_block)?;
+										start_block = crate::checked_previous_header(
+											context_id,
+											&start_block,
+											&mut visited,
+											"Desegmenter::validate_kernel_history_parallel",
+											|hash| batch.get_block_header(hash),
+										)?;
 										let completed = processed
 											.fetch_add(1, Ordering::Relaxed)
 											.saturating_add(1);
@@ -590,9 +645,9 @@ impl Desegmenter {
 			txhashset.roots()?.validate(&self.archive_header)?;
 		}
 
-		// Validate full kernel history.
-		// Check the kernel MMR root for every block header, then check NRD
-		// relative height rules for the full kernel history.
+		// Validate full kernel history. Check the kernel MMR root for every block
+		// header, then use each header's kernel-MMR boundary to enforce contextual
+		// HeightLocked and NRD rules over the full history.
 		{
 			info!("desegmenter validation: validating kernel history");
 			self.validate_kernel_history_parallel(
@@ -606,6 +661,7 @@ impl Desegmenter {
 			let batch = self.store.batch_write()?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis,
+				&self.archive_header,
 				&header_pmmr,
 				&batch,
 				Some(status.clone()),
@@ -621,7 +677,7 @@ impl Desegmenter {
 		let mut header_pmmr = self.header_pmmr.write();
 		self.ensure_archive_header_canonical(&header_pmmr)?;
 		let mut txhashset = self.txhashset.write();
-		self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+		let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
 		let res = (|| {
 			info!("desegmenter validation: rewinding a 2nd time (writeable)");
 			let mut batch = self.store.batch_write()?;
@@ -633,7 +689,6 @@ impl Desegmenter {
 				archive_tip,
 				|ext, batch| {
 					let extension = &mut ext.extension;
-					let header_extension = &mut ext.header_extension;
 					{
 						let status_throttle = SyncStatusUpdateThrottle::new();
 						let mut rewind_progress = |current: u64, total: u64| {
@@ -654,7 +709,6 @@ impl Desegmenter {
 						extension.rewind(
 							&self.archive_header,
 							batch,
-							header_extension,
 							Some(&mut rewind_progress),
 						)?;
 					}
@@ -711,7 +765,6 @@ impl Desegmenter {
 
 			// Rebuild our NRD kernel_pos index based on recent kernel history.
 			txhashset.init_recent_kernel_pos_index(
-				&header_pmmr,
 				&batch,
 				Some(status.clone()),
 				Some(stop_state.clone()),
@@ -719,7 +772,7 @@ impl Desegmenter {
 
 			// The full kernel excess index is rebuilt after this commit in chunks.
 			batch.set_kernel_pos_index_complete(false)?;
-			batch.set_retained_spent_commitment_index_complete(false)?;
+			batch.set_spent_commitment_record_index_complete(false)?;
 
 			// Commit all the changes to the db.
 			batch.commit()?;
@@ -731,20 +784,19 @@ impl Desegmenter {
 				Some(stop_state.clone()),
 			)?;
 			info!("desegmenter_validation: rebuilt full kernel_pos index");
-			Chain::init_empty_retained_spent_commitment_index(self.store.as_ref())?;
+			// Replay protection is best effort after PIBD. Start with the empty
+			// retained-body index and let the following one-by-one block sync build
+			// it. Replay-index coverage must never decide whether PIBD state or a
+			// reorganized chain is reset.
+			Chain::init_empty_spent_commitment_record_index(self.store.as_ref())?;
 			info!("desegmenter_validation: initialized empty spent commitment replay index");
 			Ok(())
 		})();
-		match res {
-			Ok(()) => self.clear_pending_operation_checked(),
-			Err(e) => {
-				self.require_init_recovery(format_args!(
-					"validate_complete_state failed while validating and rebuilding txhashset: {}",
-					e
-				));
-				Err(e)
-			}
-		}
+		self.finish_pending_operation(
+			"validate_complete_state failed while validating and rebuilding txhashset",
+			res,
+			marker_guard,
+		)
 	}
 
 	/// Return list of the next preferred segments the desegmenter needs based on
@@ -1021,6 +1073,10 @@ impl Desegmenter {
 		let bitmap_cache_became_complete = {
 			let mut bitmap_segment_cache = self.bitmap_segment_cache.write();
 			let mut bitmap_accumulator = self.outputs_bitmap_accumulator.write();
+			// Bitmap state is private to this Desegmenter and does not share the PMMR
+			// recovery locks. Recheck after taking its own mutation locks so a
+			// completed recovery cannot revive and extend an old accumulator.
+			self.ensure_robust()?;
 			let was_complete = bitmap_segment_cache.is_complete();
 
 			let res = bitmap_segment_cache.apply_new_segment(
@@ -1054,6 +1110,7 @@ impl Desegmenter {
 			}
 		};
 
+		self.ensure_robust()?;
 		if bitmap_cache_became_complete {
 			if let Err(e) = self.finalize_bitmap_init_segment_caches() {
 				self.require_init_recovery(format_args!(
@@ -1064,7 +1121,7 @@ impl Desegmenter {
 			}
 		}
 
-		Ok(())
+		self.ensure_robust()
 	}
 
 	/// Adds a output segment
@@ -1127,7 +1184,7 @@ impl Desegmenter {
 
 				let mut header_pmmr = self.header_pmmr.write();
 				let mut txhashset = self.txhashset.write();
-				self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+				let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
 				let res = (|| {
 					let mut batch = self.store.batch_write()?;
 
@@ -1171,16 +1228,11 @@ impl Desegmenter {
 					)?;
 					Ok(())
 				})();
-				return match res {
-					Ok(()) => self.clear_pending_operation_checked(),
-					Err(e) => {
-						self.require_init_recovery(format_args!(
-							"add_output_segment failed while applying output segment to txhashset: {}",
-							e
-						));
-						Err(e)
-					}
-				};
+				return self.finish_pending_operation(
+					"add_output_segment failed while applying output segment to txhashset",
+					res,
+					marker_guard,
+				);
 			}
 		}
 		return Err(Error::BitmapNotReady);
@@ -1246,7 +1298,7 @@ impl Desegmenter {
 
 				let mut header_pmmr = self.header_pmmr.write();
 				let mut txhashset = self.txhashset.write();
-				self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+				let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
 				let res = (|| {
 					let mut batch = self.store.batch_write()?;
 
@@ -1289,16 +1341,11 @@ impl Desegmenter {
 
 					Ok(())
 				})();
-				return match res {
-					Ok(()) => self.clear_pending_operation_checked(),
-					Err(e) => {
-						self.require_init_recovery(format_args!(
-							"add_rangeproof_segment failed while applying rangeproof segment to txhashset: {}",
-							e
-						));
-						Err(e)
-					}
-				};
+				return self.finish_pending_operation(
+					"add_rangeproof_segment failed while applying rangeproof segment to txhashset",
+					res,
+					marker_guard,
+				);
 			}
 		}
 
@@ -1365,7 +1412,7 @@ impl Desegmenter {
 
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
-			self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+			let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
 			let res = (|| {
 				let mut batch = self.store.batch_write()?;
 
@@ -1403,16 +1450,11 @@ impl Desegmenter {
 
 				Ok(())
 			})();
-			return match res {
-				Ok(()) => self.clear_pending_operation_checked(),
-				Err(e) => {
-					self.require_init_recovery(format_args!(
-						"add_kernel_segment failed while applying kernel segment to txhashset: {}",
-						e
-					));
-					Err(e)
-				}
-			};
+			return self.finish_pending_operation(
+				"add_kernel_segment failed while applying kernel segment to txhashset",
+				res,
+				marker_guard,
+			);
 		}
 
 		return Err(Error::BitmapNotReady);

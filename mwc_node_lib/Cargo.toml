@@ -1,6 +1,6 @@
 [package]
 name = "mwc_node_lib"
-version = "7.0.0"
+version = "7.1.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -19,10 +19,10 @@ path = "src/generate_headers.rs"
 
 [dependencies]
 safer-ffi.workspace = true
-mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
-mwc_node_workflow = { path = "../node_workflow", version = "7.0.0" }
-mwc_core = { path = "../core", version = "7.0.0" }
-mwc_p2p = { path = "../p2p", version = "7.0.0" }
-mwc_util = { path = "../util", version = "7.0.0" }
-mwc_servers = { path = "../servers", version = "7.0.0" }
+mwc_crates = { path = "../mwc_crates", version = "7.1.0" }
+mwc_node_workflow = { path = "../node_workflow", version = "7.1.0" }
+mwc_core = { path = "../core", version = "7.1.0" }
+mwc_p2p = { path = "../p2p", version = "7.1.0" }
+mwc_util = { path = "../util", version = "7.1.0" }
+mwc_servers = { path = "../servers", version = "7.1.0" }
 thiserror.workspace = true
