@@ -725,6 +725,7 @@ fn api_secret_test_path(name: &str) -> PathBuf {
 	dir
 }
 
+#[allow(unused_variables)]
 #[cfg(test)]
 fn set_api_secret_owner_only(path: &Path) {
 	#[cfg(unix)]

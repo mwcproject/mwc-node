@@ -402,6 +402,7 @@ pub struct Chain {
 	genesis: Block,
 	cache_header_difficulty: Arc<RwLock<DifficultyCache>>,
 	pibd_params: Arc<PibdParams>,
+	stop_state: Option<Arc<StopState>>,
 	requires_init_recovery: Arc<AtomicBool>,
 	pibd_state_generation: Arc<AtomicU64>,
 	#[cfg(test)]
@@ -872,6 +873,7 @@ impl Chain {
 			&mut txhashset,
 			&secp,
 			self.pow_verifier,
+			self.stop_state.clone(),
 		) {
 			Ok(()) => {
 				self.requires_init_recovery.store(false, Ordering::SeqCst);
@@ -1151,6 +1153,8 @@ impl Chain {
 		// blocks here.
 		Chain::init_spent_commitment_index(&store, stop_state.clone())?;
 
+		mark_interrupted_pibd_for_recovery(&genesis, &store, &txhashset)?;
+
 		recover_pending_chain_operation(
 			&genesis,
 			&store,
@@ -1158,6 +1162,7 @@ impl Chain {
 			&mut txhashset,
 			secp,
 			pow_verifier,
+			stop_state.clone(),
 		)?;
 
 		setup_head(
@@ -1167,6 +1172,7 @@ impl Chain {
 			&mut txhashset,
 			&secp,
 			pow_verifier,
+			stop_state.clone(),
 			skip_start_blockchain_validation,
 			None,
 		)?;
@@ -1214,6 +1220,7 @@ impl Chain {
 			genesis: genesis,
 			cache_header_difficulty: Arc::new(RwLock::new(DifficultyCache::new())),
 			pibd_params,
+			stop_state,
 			requires_init_recovery: Arc::new(AtomicBool::new(false)),
 			pibd_state_generation: Arc::new(AtomicU64::new(0)),
 			#[cfg(test)]
@@ -1269,6 +1276,7 @@ impl Chain {
 			&mut txhashset,
 			&secp,
 			self.pow_verifier,
+			self.stop_state.clone(),
 		);
 
 		match res {
@@ -1351,6 +1359,8 @@ impl Chain {
 			&mut txhashset,
 			&secp,
 			self.pow_verifier,
+			self.stop_state.clone(),
+			true,
 		);
 		match res {
 			Ok(()) => {
@@ -5724,6 +5734,57 @@ impl Chain {
 	}
 }
 
+fn mark_interrupted_pibd_for_recovery(
+	genesis: &Block,
+	store: &store::ChainStore,
+	txhashset: &TxHashSet,
+) -> Result<(), Error> {
+	if store.pending_chain_operation()?.is_some() {
+		return Ok(());
+	}
+
+	let batch = store.batch_read()?;
+	let stored_head = match batch.head() {
+		Ok(head) => head,
+		Err(NotFoundErr(_)) => return Ok(()),
+		Err(e) => return Err(Error::StoreErr(e, "interrupted PIBD load HEAD".into())),
+	};
+	let (_, head) = canonical_tip_header("HEAD", &stored_head, &batch)?;
+	let genesis_head = Tip::try_from_header(&genesis.header)?;
+	if head != genesis_head {
+		return Ok(());
+	}
+
+	let expected_sizes = (
+		genesis.header.output_mmr_size,
+		genesis.header.output_mmr_size,
+		genesis.header.kernel_mmr_size,
+	);
+	let actual_sizes = (
+		txhashset.output_mmr_size(),
+		txhashset.rangeproof_mmr_size(),
+		txhashset.kernel_mmr_size(),
+	);
+	if actual_sizes == expected_sizes {
+		return Ok(());
+	}
+	drop(batch);
+
+	warn!(
+		"Detected interrupted PIBD body state at genesis: output/rangeproof/kernel PMMR sizes are {}/{}/{}, expected {}/{}/{}. Scheduling a full PIBD body reset while preserving HEADER_HEAD",
+		actual_sizes.0,
+		actual_sizes.1,
+		actual_sizes.2,
+		expected_sizes.0,
+		expected_sizes.1,
+		expected_sizes.2,
+	);
+	if !store.set_pending_chain_operation_if_absent(&PendingChainOperation::PibdReset)? {
+		warn!("A pending chain operation was installed while scheduling interrupted PIBD recovery");
+	}
+	Ok(())
+}
+
 fn reset_pibd_chain_state(
 	genesis: &Block,
 	store: &store::ChainStore,
@@ -5731,8 +5792,18 @@ fn reset_pibd_chain_state(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 ) -> Result<(), Error> {
-	reset_chain_head_to_genesis_state(genesis, store, header_pmmr, txhashset, secp, pow_verifier)?;
+	reset_chain_head_to_genesis_state(
+		genesis,
+		store,
+		header_pmmr,
+		txhashset,
+		secp,
+		pow_verifier,
+		stop_state,
+		false,
+	)?;
 	Ok(())
 }
 
@@ -5780,6 +5851,7 @@ fn recover_pending_chain_operation(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 ) -> Result<(), Error> {
 	let op = match store.pending_chain_operation()? {
 		None => return Ok(()),
@@ -5794,6 +5866,7 @@ fn recover_pending_chain_operation(
 		txhashset,
 		secp,
 		pow_verifier,
+		stop_state,
 		&op,
 	)
 }
@@ -5805,12 +5878,19 @@ fn recover_marked_chain_operation(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 	op: &PendingChainOperation,
 ) -> Result<(), Error> {
 	let res = match op {
-		PendingChainOperation::PibdReset => {
-			reset_pibd_chain_state(genesis, store, header_pmmr, txhashset, secp, pow_verifier)
-		}
+		PendingChainOperation::PibdReset => reset_pibd_chain_state(
+			genesis,
+			store,
+			header_pmmr,
+			txhashset,
+			secp,
+			pow_verifier,
+			stop_state.clone(),
+		),
 		PendingChainOperation::ResetToGenesis => reset_chain_head_to_genesis_state(
 			genesis,
 			store,
@@ -5818,6 +5898,8 @@ fn recover_marked_chain_operation(
 			txhashset,
 			secp,
 			pow_verifier,
+			stop_state.clone(),
+			true,
 		),
 		PendingChainOperation::Compact {
 			original_body_head,
@@ -5830,6 +5912,7 @@ fn recover_marked_chain_operation(
 			txhashset,
 			secp,
 			pow_verifier,
+			stop_state.clone(),
 			original_body_head,
 			original_header_head,
 			target_body_tail,
@@ -5845,13 +5928,20 @@ fn recover_marked_chain_operation(
 			txhashset,
 			secp,
 			pow_verifier,
+			stop_state.clone(),
 			original_body_head,
 			original_header_head,
 		),
 		PendingChainOperation::ResetChainHead { .. }
-		| PendingChainOperation::ReconcileHeads { .. } => {
-			reconcile_pmmrs_to_db_heads(genesis, store, header_pmmr, txhashset, secp, pow_verifier)
-		}
+		| PendingChainOperation::ReconcileHeads { .. } => reconcile_pmmrs_to_db_heads(
+			genesis,
+			store,
+			header_pmmr,
+			txhashset,
+			secp,
+			pow_verifier,
+			stop_state,
+		),
 	};
 
 	match res {
@@ -5887,6 +5977,7 @@ fn recover_legacy_compact_chain_operation(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 	original_body_head: &Tip,
 	original_header_head: &Tip,
 ) -> Result<(), Error> {
@@ -5928,6 +6019,7 @@ fn recover_legacy_compact_chain_operation(
 		txhashset,
 		secp,
 		pow_verifier,
+		stop_state,
 		&canonical_body_head,
 		&canonical_header_head,
 		&target_body_tail,
@@ -5948,6 +6040,7 @@ fn recover_compact_chain_operation(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 	original_body_head: &Tip,
 	original_header_head: &Tip,
 	target_body_tail: &Tip,
@@ -6021,7 +6114,15 @@ fn recover_compact_chain_operation(
 
 	// Compaction does not intentionally change either head, but its marker also
 	// protects against unrelated speculative PMMR writes. Repair those first.
-	reconcile_pmmrs_to_db_heads(genesis, store, header_pmmr, txhashset, secp, pow_verifier)?;
+	reconcile_pmmrs_to_db_heads(
+		genesis,
+		store,
+		header_pmmr,
+		txhashset,
+		secp,
+		pow_verifier,
+		stop_state,
+	)?;
 
 	let batch = store.batch_read()?;
 	let stored_body_head = batch.head()?;
@@ -6221,6 +6322,7 @@ fn reconcile_pmmrs_to_db_heads(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 ) -> Result<(), Error> {
 	// Reconciliation repairs PMMRs to the durable DB-selected heads. It
 	// intentionally does not apply INVALID_BLOCK_HASHES to ancestry already
@@ -6260,6 +6362,7 @@ fn reconcile_pmmrs_to_db_heads(
 		header_pmmr,
 		&header_header,
 		pow_verifier,
+		stop_state.clone(),
 	)?;
 	reconcile_body_pmmr_to_header(
 		&genesis.header,
@@ -6269,6 +6372,7 @@ fn reconcile_pmmrs_to_db_heads(
 		secp,
 		&body_header,
 		pow_verifier,
+		stop_state,
 	)?;
 
 	// Publish both repaired caches only after both PMMRs authenticate. Keeping
@@ -6289,9 +6393,17 @@ fn reconcile_body_pmmr_to_header(
 	secp: &Secp256k1,
 	header: &BlockHeader,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 ) -> Result<(), Error> {
 	let context_id = store.get_context_id();
 	let authenticate_header = |candidate: &BlockHeader| {
+		if stop_state
+			.as_ref()
+			.map(|state| state.is_stopped())
+			.unwrap_or(false)
+		{
+			return Err(Error::Stopped);
+		}
 		authenticate_persisted_header_for_recovery(context_id, genesis, candidate, pow_verifier)
 	};
 	let mut batch = store.batch_write()?;
@@ -6311,7 +6423,7 @@ fn reconcile_body_pmmr_to_header(
 		// output-position index before recovery can clear its marker.
 		ext.extension.validate_output_pos_index(batch, header)?;
 		ext.extension
-			.validate(genesis, true, None, header, None, secp)?;
+			.validate(genesis, true, None, header, stop_state.clone(), secp)?;
 		Ok(())
 	})?;
 	batch.commit()?;
@@ -6324,9 +6436,17 @@ fn reconcile_header_pmmr_to_header(
 	header_pmmr: &mut PMMRHandle<BlockHeader>,
 	header: &BlockHeader,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 ) -> Result<(), Error> {
 	let context_id = store.get_context_id();
 	let authenticate_header = |candidate: &BlockHeader| {
+		if stop_state
+			.as_ref()
+			.map(|state| state.is_stopped())
+			.unwrap_or(false)
+		{
+			return Err(Error::Stopped);
+		}
 		authenticate_persisted_header_for_recovery(context_id, genesis, candidate, pow_verifier)
 	};
 	let mut batch = store.batch_write()?;
@@ -6343,7 +6463,7 @@ fn reconcile_header_pmmr_to_header(
 				batch,
 				&authenticate_header,
 			)?;
-			ext.validate_persisted_ancestry(header, batch, pow_verifier)
+			ext.validate_persisted_ancestry(header, batch, pow_verifier, stop_state.as_deref())
 		},
 	)?;
 	batch.commit()?;
@@ -6474,9 +6594,14 @@ fn reset_chain_head_to_genesis_state(
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
+	validate_retained_headers: bool,
 ) -> Result<(), Error> {
 	validate_genesis_context_id(genesis, store.get_context_id())?;
 	let head = Tip::try_from_header(&genesis.header)?;
+	// Header sync authenticates every header before storing it. A PIBD body reset
+	// intentionally preserves that chain, so it must not turn into another full
+	// persisted-ancestry validation while holding both PMMR write locks.
 	setup_head(
 		genesis,
 		store,
@@ -6484,20 +6609,30 @@ fn reset_chain_head_to_genesis_state(
 		txhashset,
 		secp,
 		pow_verifier,
-		false,
+		stop_state.clone(),
+		!validate_retained_headers,
 		Some(head),
 	)?;
 
-	// Resetting body state to genesis intentionally preserves the downloaded
-	// header chain. init_head() and rewind() establish only its logical head and
-	// size; they do not authenticate HeaderEntry data, leaf hashes, parent hashes,
-	// or persisted prev_hash ancestry. Reconcile the retained PMMR so callers may
-	// clear a recovery marker only after validate_persisted_ancestry succeeds.
+	if !validate_retained_headers {
+		return Ok(());
+	}
+
+	// Preserve the original reset ordering and validation boundaries: setup the
+	// genesis body state first, then reconcile the retained header PMMR to its
+	// durable HEADER_HEAD.
 	let batch = store.batch_read()?;
 	let stored_header_head = batch.header_head()?;
 	let (header, _) = canonical_tip_header("HEADER_HEAD", &stored_header_head, &batch)?;
 	drop(batch);
-	reconcile_header_pmmr_to_header(&genesis.header, store, header_pmmr, &header, pow_verifier)
+	reconcile_header_pmmr_to_header(
+		&genesis.header,
+		store,
+		header_pmmr,
+		&header,
+		pow_verifier,
+		stop_state,
+	)
 }
 
 fn validate_genesis_context_id(genesis: &Block, context_id: u32) -> Result<(), Error> {
@@ -6806,6 +6941,7 @@ fn setup_head(
 	txhashset: &mut txhashset::TxHashSet,
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
+	stop_state: Option<Arc<StopState>>,
 	skip_start_blockchain_validation: bool,
 	body_head_override: Option<Tip>,
 ) -> Result<(), Error> {
@@ -6860,7 +6996,12 @@ fn setup_head(
 				if skip_start_blockchain_validation {
 					Ok(())
 				} else {
-					ext.validate_persisted_ancestry(&header, batch, pow_verifier)
+					ext.validate_persisted_ancestry(
+						&header,
+						batch,
+						pow_verifier,
+						stop_state.as_deref(),
+					)
 				}
 			})?;
 			if stored_head != head {
@@ -6877,7 +7018,12 @@ fn setup_head(
 			let head = Tip::try_from_header(&header)?;
 			if !skip_start_blockchain_validation {
 				txhashset::header_extending(header_pmmr, &mut batch, |ext, batch| {
-					ext.validate_persisted_ancestry(&header, batch, pow_verifier)
+					ext.validate_persisted_ancestry(
+						&header,
+						batch,
+						pow_verifier,
+						stop_state.as_deref(),
+					)
 				})?;
 			}
 			batch.save_header_head(&head)?;
@@ -6914,13 +7060,13 @@ fn setup_head(
 				Ok(())
 			})?;
 
-			txhashset.init_output_pos_index(&batch, None, None)?;
-			txhashset.init_recent_kernel_pos_index(&batch, None, None)?;
+			txhashset.init_output_pos_index(&batch, None, stop_state.clone())?;
+			txhashset.init_recent_kernel_pos_index(&batch, None, stop_state.clone())?;
 			batch.commit()?;
 
 			// Clear any full kernel_pos entries left above genesis and rebuild the
 			// complete index before the reset operation reports success.
-			txhashset.init_kernel_pos_index_chunked(store, None, None)?;
+			txhashset.init_kernel_pos_index_chunked(store, None, stop_state.clone())?;
 			return Ok(());
 		}
 		batch.save_body_head(&head)?;
@@ -6980,8 +7126,14 @@ fn setup_head(
 					// Fast validation still verifies the MMRs, roots, sizes, leaf-set
 					// pairing, and kernel sums; it skips only rangeproof and kernel
 					// signature verification.
-					let (utxo_sum, kernel_sum) =
-						extension.validate(&genesis.header, true, None, &header, None, secp)?;
+					let (utxo_sum, kernel_sum) = extension.validate(
+						&genesis.header,
+						true,
+						None,
+						&header,
+						stop_state.clone(),
+						secp,
+					)?;
 					// PMMR roots authenticate append history, but not the exact
 					// membership of the prunable output/rangeproof leaf sets. For a
 					// zero-step startup rewind, bind those leaf sets to the independently
@@ -9032,6 +9184,85 @@ mod tests {
 	}
 
 	#[test]
+	fn pibd_reset_skips_but_explicit_reset_validates_retained_headers() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let chain_dir = format!(
+			"target/pibd_reset_skips_retained_header_validation_{}",
+			std::process::id()
+		);
+		let _ = fs::remove_dir_all(&chain_dir);
+		let genesis = global::get_genesis_block(&secp, 0).unwrap();
+		let chain = Chain::init(
+			&secp,
+			0,
+			chain_dir.clone(),
+			Arc::new(crate::types::NoopAdapter {}),
+			genesis.clone(),
+			reject_non_genesis_pow,
+			false,
+			HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+
+		let header = recovery_test_header(1, genesis.hash(0).unwrap(), 1);
+		let header_tip = Tip::try_from_header(&header).unwrap();
+		{
+			let mut header_pmmr = chain.header_pmmr.write();
+			let mut batch = chain.store.batch_write().unwrap();
+			txhashset::header_extending(&mut header_pmmr, &mut batch, |ext, batch| {
+				ext.apply_header(&header)?;
+				batch.save_block_header(&header)?;
+				batch.save_header_head(&header_tip)?;
+				Ok(())
+			})
+			.unwrap();
+			batch.commit().unwrap();
+		}
+
+		// The configured verifier rejects this non-genesis header. Both the live
+		// PIBD reset and recovery from its durable marker must still preserve it.
+		chain.reset_pibd_chain().unwrap();
+		assert_eq!(chain.header_head().unwrap(), header_tip);
+
+		chain
+			.store
+			.set_pending_chain_operation(&PendingChainOperation::PibdReset)
+			.unwrap();
+		chain.requires_init_recovery.store(true, Ordering::SeqCst);
+		chain.ensure_chain_robust().unwrap();
+		assert_eq!(chain.header_head().unwrap(), header_tip);
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+
+		let err = chain.reset_chain_head_to_genesis().unwrap_err();
+		assert!(
+			matches!(
+				&err,
+				Error::InvalidPersistedChainState(msg)
+					if msg.contains("forced non-genesis PoW failure")
+			),
+			"unexpected explicit reset error: {:?}",
+			err
+		);
+		assert_eq!(
+			chain
+				.store
+				.pending_chain_operation()
+				.unwrap()
+				.unwrap()
+				.kind(),
+			ChainOperationKind::ResetToGenesis
+		);
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
 	fn existing_pending_chain_operation_marks_recovery_required() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
@@ -9605,6 +9836,7 @@ mod tests {
 			&mut header_pmmr,
 			&header,
 			accept_recovery_test_pow,
+			None,
 		)
 		.unwrap();
 		assert_eq!(header_pmmr.size, 3);
@@ -9656,6 +9888,7 @@ mod tests {
 			&mut header_pmmr,
 			&old_header,
 			accept_recovery_test_pow,
+			None,
 		)
 		.unwrap_err();
 		assert!(matches!(
@@ -9710,6 +9943,7 @@ mod tests {
 			&mut header_pmmr,
 			&authoritative_header,
 			accept_recovery_test_pow,
+			None,
 		)
 		.unwrap_err();
 		assert!(matches!(
@@ -9768,6 +10002,7 @@ mod tests {
 			&mut header_pmmr,
 			&altered,
 			pow::verify_size,
+			None,
 		)
 		.unwrap_err();
 		assert!(matches!(
@@ -9825,6 +10060,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 			)
 			.unwrap_err();
 			assert!(matches!(
@@ -9923,6 +10159,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 			)
 			.unwrap_err();
 			let details = match err {
@@ -10032,6 +10269,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 			)
 			.unwrap_err();
 			let details = match err {
@@ -10087,6 +10325,7 @@ mod tests {
 				&secp,
 				&genesis.header,
 				pow::verify_size,
+				None,
 			)
 			.unwrap_err();
 			assert!(matches!(
@@ -10145,6 +10384,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 				&op,
 			)
 			.unwrap_err();
@@ -10210,6 +10450,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 			)
 			.unwrap();
 		}
@@ -10968,6 +11209,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 				false,
 				None,
 			)
@@ -10987,6 +11229,42 @@ mod tests {
 		drop(chain);
 		let _ = fs::remove_dir_all(&chain_dir);
 		let _ = fs::remove_dir_all(&corrupt_header_dir);
+	}
+
+	#[test]
+	fn setup_head_persisted_ancestry_validation_honors_stop_state() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let chain_dir = format!(
+			"target/setup_head_stopped_ancestry_validation_{}",
+			std::process::id()
+		);
+		let _ = fs::remove_dir_all(&chain_dir);
+		let chain = init_automated_test_chain(&chain_dir, &secp);
+		let stop_state = Arc::new(StopState::new());
+		stop_state.stop();
+
+		let err = {
+			let mut header_pmmr = chain.header_pmmr.write();
+			let mut txhashset = chain.txhashset.write();
+			setup_head(
+				&chain.genesis,
+				&chain.store,
+				&mut header_pmmr,
+				&mut txhashset,
+				&secp,
+				pow::verify_size,
+				Some(stop_state),
+				false,
+				None,
+			)
+			.unwrap_err()
+		};
+		assert!(matches!(err, Error::Stopped));
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
 	}
 
 	#[test]
@@ -11020,6 +11298,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 				false,
 				None,
 			)
@@ -11157,6 +11436,7 @@ mod tests {
 				&mut txhashset,
 				&secp,
 				pow::verify_size,
+				None,
 				false,
 				None,
 			)

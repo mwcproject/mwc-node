@@ -2697,6 +2697,7 @@ impl<'a> HeaderExtension<'a> {
 		header: &BlockHeader,
 		batch: &Batch<'_>,
 		pow_verifier: fn(u32, &BlockHeader) -> Result<(), mwc_core::pow::Error>,
+		stop_state: Option<&StopState>,
 	) -> Result<(), Error> {
 		let started = Instant::now();
 		info!(
@@ -2704,7 +2705,13 @@ impl<'a> HeaderExtension<'a> {
 			header.height,
 			self.size()
 		);
-		let result = self.validate_persisted_ancestry_inner(header, batch, pow_verifier, &started);
+		let result = self.validate_persisted_ancestry_inner(
+			header,
+			batch,
+			pow_verifier,
+			stop_state,
+			&started,
+		);
 		match &result {
 			Ok(()) => info!(
 				"validate_persisted_ancestry: finished successfully in {}s",
@@ -2724,8 +2731,12 @@ impl<'a> HeaderExtension<'a> {
 		header: &BlockHeader,
 		batch: &Batch<'_>,
 		pow_verifier: fn(u32, &BlockHeader) -> Result<(), mwc_core::pow::Error>,
+		stop_state: Option<&StopState>,
 		started: &Instant,
 	) -> Result<(), Error> {
+		if stop_state.map(StopState::is_stopped).unwrap_or(false) {
+			return Err(Error::Stopped);
+		}
 		let context_id = self.pmmr.get_context_id();
 		let expected_head = Tip::try_from_header(header)?;
 		if self.head != expected_head {
@@ -2762,6 +2773,9 @@ impl<'a> HeaderExtension<'a> {
 		let mut expected_current_hash = expected_head.last_block_h;
 		let mut last_progress_log = Instant::now();
 		loop {
+			if stop_state.map(StopState::is_stopped).unwrap_or(false) {
+				return Err(Error::Stopped);
+			}
 			crate::pipe::validate_header_context_id(context_id, &current).map_err(|e| {
 				Error::InvalidPersistedChainState(format!(
 					"persisted header at height {} failed context validation: {}",
@@ -2880,6 +2894,9 @@ impl<'a> HeaderExtension<'a> {
 		let mut node_stack: Vec<(u64, Hash)> = Vec::new();
 		last_progress_log = Instant::now();
 		for pos0 in 0..expected_size {
+			if stop_state.map(StopState::is_stopped).unwrap_or(false) {
+				return Err(Error::Stopped);
+			}
 			let height = pmmr::bintree_postorder_height(pos0);
 			if height == 0 {
 				let leaf_hash = leaf_hashes.next().ok_or_else(|| {

@@ -19,7 +19,9 @@ use mwc_crates::serde_json;
 use mwc_api::client::HttpClient;
 use mwc_api::*;
 use mwc_core::global;
-use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::net::SocketAddr;
+#[cfg(not(windows))]
+use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +43,7 @@ pub struct CounterMiddleware {
 	counter: AtomicUsize,
 }
 
+#[allow(dead_code)]
 impl CounterMiddleware {
 	fn new() -> CounterMiddleware {
 		CounterMiddleware {

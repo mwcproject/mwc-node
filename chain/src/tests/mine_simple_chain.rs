@@ -38,7 +38,9 @@ use mwc_keychain::{
 use mwc_util::StopState;
 use std::collections::HashSet;
 use std::convert::TryInto;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -596,8 +598,8 @@ fn init_output_pos_index_rebuilds_missing_genesis_output_at_height_zero() {
 }
 
 #[test]
-fn reset_pibd_chain_keeps_genesis_output_visible_after_compaction() {
-	let chain_dir = test_chain_dir("pibd_reset_genesis_after_compaction");
+fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
+	let chain_dir = test_chain_dir("pibd_restart_genesis_after_compaction");
 	clean_output_dir(&chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(false);
@@ -611,7 +613,7 @@ fn reset_pibd_chain_keeps_genesis_output_visible_after_compaction() {
 	let genesis_commit = genesis.outputs()[0].commitment();
 
 	{
-		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis);
+		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis.clone());
 		let mut head = chain.head_header().unwrap();
 
 		let b = prepare_block_key_idx(&mut secp, &keychain, &head, &chain, 2, 2);
@@ -697,7 +699,28 @@ fn reset_pibd_chain_keeps_genesis_output_visible_after_compaction() {
 			batch.commit().unwrap();
 		}
 
-		chain.reset_pibd_chain().unwrap();
+		let retained_header_head = chain.header_head().unwrap();
+		let genesis_head = Tip::try_from_header(&genesis.header).unwrap();
+		{
+			let store = chain.get_store_for_tests();
+			let batch = store.batch_write().unwrap();
+			batch.save_body_head(&genesis_head).unwrap();
+			batch.save_body_tail(&genesis_head).unwrap();
+			batch.commit().unwrap();
+		}
+		drop(chain);
+
+		// A completed PIBD reset leaves HEAD at genesis while subsequently applied
+		// segments can leave compacted body PMMR roots beyond it. Restart must
+		// discard that incomplete body state without discarding downloaded headers.
+		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis.clone());
+		assert_eq!(chain.head().unwrap(), genesis_head);
+		assert_eq!(chain.header_head().unwrap(), retained_header_head);
+		assert!(chain
+			.get_store_for_tests()
+			.pending_chain_operation()
+			.unwrap()
+			.is_none());
 
 		let txhashset = chain.get_txhashset_for_test();
 		let txhashset = txhashset.read_recursive();
