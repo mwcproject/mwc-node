@@ -28,7 +28,7 @@ regex = "1.12"
 serial_test = "3.4"
 
 # Tor / Arti onion-service stack used by `p2p/src/tor/*` and the Tor playground.
-arti_client = { package = "arti-client", version = "0.45", default-features = false, features = ["tokio", "rustls", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
+arti_client = { package = "arti-client", version = "0.45", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
 safelog = "0.9"
 tor_cell = { package = "tor-cell", version = "0.45.0" }
 tor_config = { package = "tor-config", version = "0.45.0" }
