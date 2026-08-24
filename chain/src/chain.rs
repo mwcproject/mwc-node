@@ -7156,6 +7156,10 @@ fn setup_head(
 					// BlockSums is a derived acceleration cache. Replace it from the
 					// validated txhashset rather than accepting any persisted value.
 					batch.save_block_sums(&header_hash, block_sums)?;
+					info!(
+						"setup_head: startup txhashset validation finished at height {}; synchronizing PMMR backends",
+						header.height
+					);
 
 					debug!(
 						"init: rewinding and validating before we start... {} at {}",
@@ -7167,6 +7171,10 @@ fn setup_head(
 
 				match res {
 					Ok(()) => {
+						info!(
+							"setup_head: PMMR backend synchronization finished at height {}",
+							header.height
+						);
 						let output_mmr_size_after = txhashset.output_mmr_size();
 						let kernel_mmr_size_after = txhashset.kernel_mmr_size();
 						let output_mmr_rewound = output_mmr_size_before > output_mmr_size_after;

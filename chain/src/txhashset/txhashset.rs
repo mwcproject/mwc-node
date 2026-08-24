@@ -63,6 +63,7 @@ const COMMIT_SUM_BATCH_SIZE: usize = 10_000;
 const INDEX_REBUILD_LOG_INTERVAL_SECS: u64 = 1;
 const PERSISTED_ANCESTRY_LOG_INTERVAL_SECS: u64 = 5;
 const KERNEL_SUM_PROGRESS_LOG_INTERVAL_SECS: u64 = 5;
+const OUTPUT_POS_VALIDATION_PROGRESS_LOG_INTERVAL_SECS: u64 = 5;
 
 const OUTPUT_SUBDIR: &str = "output";
 const RANGE_PROOF_SUBDIR: &str = "rangeproof";
@@ -1197,6 +1198,12 @@ impl TxHashSet {
 		// relative height.
 		// Safe: WEEK_HEIGHT is a small fixed consensus constant.
 		let cutoff = head.height.saturating_sub(WEEK_HEIGHT * 2);
+		let ancestry_links = head.height.saturating_sub(cutoff);
+		let ancestry_boundaries = ancestry_links.saturating_add(1);
+		info!(
+			"init_recent_kernel_pos_index: starting recent NRD kernel_pos index rebuild from height {} to {}; collecting {} body header boundaries",
+			cutoff, head.height, ancestry_boundaries
+		);
 
 		// HEAD and the kernel PMMR describe the validated body chain. The header
 		// PMMR may legally be ahead on a different fork, so recover every kernel
@@ -1205,6 +1212,8 @@ impl TxHashSet {
 		let mut current_header = head_header.clone();
 		let mut boundaries = Vec::new();
 		let mut visited = HashSet::new();
+		let ancestry_started = Instant::now();
+		let mut last_ancestry_log = Instant::now();
 		while current_header.height > cutoff {
 			Self::check_stop_state(&stop_state)?;
 			boundaries.push(KernelHeaderBoundary::from(&current_header));
@@ -1226,6 +1235,17 @@ impl TxHashSet {
 				)));
 			}
 			current_header = prev_header;
+			if last_ancestry_log.elapsed().as_secs() >= PERSISTED_ANCESTRY_LOG_INTERVAL_SECS {
+				let traversed = head.height.saturating_sub(current_header.height);
+				info!(
+					"init_recent_kernel_pos_index: body ancestry progress {}/{} ({}%), reached height {}",
+					traversed,
+					ancestry_links,
+					traversed.saturating_mul(100) / ancestry_links.max(1),
+					current_header.height
+				);
+				last_ancestry_log = Instant::now();
+			}
 		}
 		if current_header.height != cutoff {
 			return Err(Error::TxHashSetErr(format!(
@@ -1260,8 +1280,9 @@ impl TxHashSet {
 		};
 
 		info!(
-			"init_recent_kernel_pos_index: starting recent NRD kernel_pos index rebuild from height {} to {}",
-			cutoff, head.height
+			"init_recent_kernel_pos_index: collected {} body header boundaries in {}s; starting recent kernel scan",
+			boundaries.len(),
+			ancestry_started.elapsed().as_secs()
 		);
 		self.verify_kernel_pos_index_with_status(
 			&cutoff_header,
@@ -1739,6 +1760,7 @@ impl TxHashSet {
 		let mut count = 0u64;
 		let mut applied = 0u64;
 		let status_throttle = SyncStatusUpdateThrottle::new();
+		let mut last_progress_log = Instant::now();
 		if let Some(ref s) = status {
 			if build_status {
 				s.update(SyncStatus::TxHashsetKernelPosIndexBuild {
@@ -1835,6 +1857,19 @@ impl TxHashSet {
 							});
 						}
 					}
+				}
+				if Self::should_log_index_rebuild_progress(&mut last_progress_log, false) {
+					info!(
+						"verify_kernel_pos_index: {} progress {}/{} kernels ({}%)",
+						if build_status {
+							"rebuild"
+						} else {
+							"validation"
+						},
+						applied,
+						total,
+						applied.saturating_mul(100) / total.max(1)
+					);
 				}
 			}
 			if let Some(ref s) = stop_state {
@@ -4272,6 +4307,14 @@ impl<'a> Extension<'a> {
 			));
 		}
 
+		let now = Instant::now();
+		let total_outputs = self.output_pmmr.n_unpruned_leaves()?;
+		info!(
+			"validate_output_pos_index: starting bidirectional output_pos validation at height {}, output_mmr_size {}, utxos {}",
+			header.height, header.output_mmr_size, total_outputs
+		);
+		let index_pass_started = Instant::now();
+		let mut last_progress_log = Instant::now();
 		let mut indexed_outputs = 0u64;
 		let output_pos_iter = batch
 			.output_pos_iter()
@@ -4313,8 +4356,26 @@ impl<'a> Extension<'a> {
 			indexed_outputs = indexed_outputs.checked_add(1).ok_or_else(|| {
 				Error::DataOverflow("validate_output_pos_index indexed output count".into())
 			})?;
+			if last_progress_log.elapsed().as_secs()
+				>= OUTPUT_POS_VALIDATION_PROGRESS_LOG_INTERVAL_SECS
+			{
+				info!(
+					"validate_output_pos_index: index-to-UTXO progress {}/{} entries ({}%)",
+					indexed_outputs,
+					total_outputs,
+					(indexed_outputs.saturating_mul(100) / total_outputs.max(1)).min(100)
+				);
+				last_progress_log = Instant::now();
+			}
 		}
+		info!(
+			"validate_output_pos_index: index-to-UTXO pass finished, checked {} entries in {}s; starting UTXO-to-index pass",
+			indexed_outputs,
+			index_pass_started.elapsed().as_secs()
+		);
 
+		let utxo_pass_started = Instant::now();
+		last_progress_log = Instant::now();
 		let mut output_leaves = 0u64;
 		for pos0 in self.output_pmmr.leaf_pos_iter()? {
 			let pos0 = pos0?;
@@ -4360,6 +4421,17 @@ impl<'a> Extension<'a> {
 			output_leaves = output_leaves.checked_add(1).ok_or_else(|| {
 				Error::DataOverflow("validate_output_pos_index output leaf count".into())
 			})?;
+			if last_progress_log.elapsed().as_secs()
+				>= OUTPUT_POS_VALIDATION_PROGRESS_LOG_INTERVAL_SECS
+			{
+				info!(
+					"validate_output_pos_index: UTXO-to-index progress {}/{} outputs ({}%)",
+					output_leaves,
+					total_outputs,
+					(output_leaves.saturating_mul(100) / total_outputs.max(1)).min(100)
+				);
+				last_progress_log = Instant::now();
+			}
 		}
 
 		if indexed_outputs != output_leaves {
@@ -4369,6 +4441,13 @@ impl<'a> Extension<'a> {
 			)));
 		}
 
+		info!(
+			"validate_output_pos_index: finished successfully, checked {} entries and {} UTXOs in {}s (UTXO-to-index pass {}s)",
+			indexed_outputs,
+			output_leaves,
+			now.elapsed().as_secs(),
+			utxo_pass_started.elapsed().as_secs()
+		);
 		Ok(())
 	}
 
