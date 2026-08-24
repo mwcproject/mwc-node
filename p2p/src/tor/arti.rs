@@ -1143,7 +1143,10 @@ impl ArtiCore {
 		match tor_client {
 			Ok(tor_client) => Ok((tor_client, arti_rt)),
 			Err(e) => {
-				arti_rt.shutdown_timeout(Duration::from_secs(5));
+				// The managed PT gets five seconds to exit gracefully before its
+				// supervisor kills and reaps it. Give runtime destruction enough
+				// time to finish that cleanup before trying the next bridge.
+				arti_rt.shutdown_timeout(Duration::from_secs(10));
 				Err(e)
 			}
 		}
@@ -1295,6 +1298,13 @@ impl ArtiCore {
 		res
 	}
 
+	fn webtunnel_client_filename() -> String {
+		// Release builds use the native executable suffix. In particular, the
+		// Windows package contains webtunnelclient.exe, while Unix packages use
+		// webtunnelclient without a suffix.
+		format!("webtunnelclient{}", std::env::consts::EXE_SUFFIX)
+	}
+
 	// return config and expiration time
 	fn build_config(
 		webtunnel_bridge: &Option<String>,
@@ -1324,7 +1334,7 @@ impl ArtiCore {
 			let path = exe
 				.parent()
 				.ok_or(Error::TorConfig("Failed to locate executable path".into()))?;
-			let client_path = path.join("webtunnelclient");
+			let client_path = path.join(Self::webtunnel_client_filename());
 
 			if !client_path.try_exists().map_err(|e| {
 				Error::TorConfig(format!(
@@ -1727,6 +1737,20 @@ fn build_config_rejects_malformed_creation_timestamp_without_cleanup() {
 				&& msg.contains("create_time.txt")
 	));
 	assert!(marker_file.exists());
+}
+
+#[test]
+fn webtunnel_client_filename_uses_target_executable_suffix() {
+	let filename = ArtiCore::webtunnel_client_filename();
+	assert_eq!(
+		filename,
+		format!("webtunnelclient{}", std::env::consts::EXE_SUFFIX)
+	);
+
+	#[cfg(windows)]
+	assert_eq!(filename, "webtunnelclient.exe");
+	#[cfg(not(windows))]
+	assert_eq!(filename, "webtunnelclient");
 }
 
 #[test]

@@ -39,3 +39,4 @@
 - Handle server create/release race conditions. 
 - Limit PIBD root hash cache.
 - Connect PIDB related requests with active Desegmenter. That allow to ignore late responses from the peers. 
+- Fix Arti possible process leaking for webtunnelclient. Fix webtunnelclient problem Under the Windows (it didn't start there). 

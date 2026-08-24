@@ -7514,8 +7514,6 @@ dependencies = [
 [[package]]
 name = "tor-ptmgr"
 version = "0.45.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d052da1eadd9f65cc46aa367adb8b573d397acf3d0635d39351670bbe40a82f7"
 dependencies = [
  "async-trait",
  "cfg-if",
