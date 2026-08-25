@@ -30,6 +30,40 @@ use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_keychain::{BlindingFactor, ExtKeychain, ExtKeychainPath, Identifier, Keychain};
 use std::convert::TryInto;
+use std::sync::{Mutex, MutexGuard};
+
+const TEST_CHAIN_CONFIG_CONTEXT_ID: u32 = 0;
+static GLOBAL_CHAIN_CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+struct GlobalChainConfigGuard {
+	context_id: u32,
+	_lock: MutexGuard<'static, ()>,
+}
+
+impl GlobalChainConfigGuard {
+	fn automated_testing_with_nrd_enabled() -> Self {
+		let lock = GLOBAL_CHAIN_CONFIG_LOCK
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner());
+		global::release_context_data(TEST_CHAIN_CONFIG_CONTEXT_ID);
+		global::init_global_chain_type(
+			TEST_CHAIN_CONFIG_CONTEXT_ID,
+			global::ChainTypes::AutomatedTesting,
+		)
+		.unwrap();
+		global::init_global_nrd_enabled(TEST_CHAIN_CONFIG_CONTEXT_ID, true).unwrap();
+		GlobalChainConfigGuard {
+			context_id: TEST_CHAIN_CONFIG_CONTEXT_ID,
+			_lock: lock,
+		}
+	}
+}
+
+impl Drop for GlobalChainConfigGuard {
+	fn drop(&mut self) {
+		global::release_context_data(self.context_id);
+	}
+}
 
 fn build_block<K>(
 	secp: &mut Secp256k1,
@@ -107,6 +141,7 @@ where
 
 #[test]
 fn process_block_nrd_validation() -> Result<(), Error> {
+	let _global_chain_config = GlobalChainConfigGuard::automated_testing_with_nrd_enabled();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(true);
 
@@ -263,6 +298,7 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 			std::collections::HashSet::new()
 		)
 		.is_err());
+	assert_eq!(chain.head()?.height, 9);
 
 	// Block at height 10 is valid if we do not include tx2.
 	let block_valid_10 = build_block(&mut secp, &chain, &keychain, &key_id10, vec![])?;
@@ -288,6 +324,7 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 
 #[test]
 fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
+	let _global_chain_config = GlobalChainConfigGuard::automated_testing_with_nrd_enabled();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(true);
 
@@ -438,6 +475,7 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 
 #[test]
 fn process_block_nrd_validation_fork() -> Result<(), Error> {
+	let _global_chain_config = GlobalChainConfigGuard::automated_testing_with_nrd_enabled();
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(true);
 

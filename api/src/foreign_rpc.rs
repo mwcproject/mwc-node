@@ -28,11 +28,11 @@ use mwc_core::core::transaction::Transaction;
 use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::easy_jsonrpc_mwc;
 use mwc_crates::easy_jsonrpc_mwc::{Handler, InvalidArgs, Params, Value};
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_crates::serde::de::DeserializeOwned;
 use mwc_p2p::types::{PeerInfoDisplayLegacy, ProcessStatus};
 use mwc_pool::{BlockChain, PoolAdapter};
-use mwc_util::{self, secp_static};
-use std::time::Instant;
+use mwc_util;
 
 /// Public definition used to generate Node jsonrpc api.
 /// * When running `mwc` with defaults, the V2 api is available at
@@ -1144,19 +1144,16 @@ where
 		match normalize_get_outputs_params(params)? {
 			GetOutputsParams::Current(params) => self.generated().handle("get_outputs", params),
 			GetOutputsParams::Legacy(args) => {
-				let result = secp_static::with_verify_only(Error::from, |secp| {
-					let output_handler = OutputHandler {
-						chain: self.inner.chain.clone(),
-					};
-					output_handler.get_outputs_v2(
-						secp,
-						args.commits,
-						args.start_height,
-						args.end_height,
-						args.include_proof,
-						args.include_merkle_proof,
-					)
-				});
+				let output_handler = OutputHandler {
+					chain: self.inner.chain.clone(),
+				};
+				let result = output_handler.get_outputs_v2(
+					args.commits,
+					args.start_height,
+					args.end_height,
+					args.include_proof,
+					args.include_merkle_proof,
+				);
 				easy_jsonrpc_mwc::try_serialize(&result.into_rpc_result())
 			}
 		}
@@ -1172,9 +1169,10 @@ where
 			})?
 			.get_context_id();
 		let (tx, fluff) = parse_push_transaction_args(params, context_id)?;
-		let result = secp_static::with_commit_mut(Error::from, |secp| {
-			Foreign::push_transaction(self.inner, tx, fluff, secp)
-		});
+		// Relay may re-enter the thread-local secp context while serializing the tx.
+		let result = Secp256k1::with_caps(ContextFlag::Commit)
+			.map_err(Error::from)
+			.and_then(|mut secp| Foreign::push_transaction(self.inner, tx, fluff, &mut secp));
 		easy_jsonrpc_mwc::try_serialize(&result.into_rpc_result())
 	}
 }
@@ -1323,16 +1321,15 @@ fn parse_transaction_arg(
 		return Ok(tx);
 	}
 
-	let current = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()).ok();
+	if let Ok(tx) = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value.clone()) {
+		return Ok(tx);
+	}
 
-	normalize_legacy_transaction_value(&mut value);
-	let normalized = easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value).ok();
-
-	current
-		.or(normalized)
-		.ok_or_else(|| -> easy_jsonrpc_mwc::Error {
-			InvalidArgs::invalid_arg_structure(name, index, "parsing error".to_string()).into()
-		})
+	let parsing_error = || -> easy_jsonrpc_mwc::Error {
+		InvalidArgs::invalid_arg_structure(name, index, "parsing error".to_string()).into()
+	};
+	normalize_legacy_transaction_value(&mut value).map_err(|_| parsing_error())?;
+	easy_jsonrpc_mwc::serde_json::from_value::<Transaction>(value).map_err(|_| parsing_error())
 }
 
 fn parse_transaction_hex_arg(
@@ -1359,38 +1356,49 @@ fn parse_transaction_hex_arg(
 	Ok(Some(tx))
 }
 
-fn normalize_legacy_transaction_value(value: &mut Value) {
+#[derive(Debug)]
+struct LegacyNormalizationError;
+
+fn normalize_legacy_transaction_value(value: &mut Value) -> Result<(), LegacyNormalizationError> {
 	let Some(kernels) = value
 		.get_mut("body")
 		.and_then(|body| body.get_mut("kernels"))
 		.and_then(Value::as_array_mut)
 	else {
-		return;
+		return Ok(());
 	};
 
 	for kernel in kernels {
-		normalize_legacy_kernel_value(kernel);
+		normalize_legacy_kernel_value(kernel)?;
 	}
+	Ok(())
 }
 
-fn normalize_legacy_kernel_value(kernel: &mut Value) {
+fn normalize_legacy_kernel_value(kernel: &mut Value) -> Result<(), LegacyNormalizationError> {
 	let Some(kernel) = kernel.as_object_mut() else {
-		return;
+		return Ok(());
 	};
 	if kernel.get("features").is_some_and(Value::is_object) {
 		normalize_nested_kernel_features(kernel);
-		return;
+		return Ok(());
 	}
 
 	let Some(feature_name) = legacy_kernel_feature_name(kernel.get("features")) else {
-		return;
+		return Ok(());
 	};
 
 	match feature_name {
 		"Plain" => {
-			let Some(fee) = kernel.remove("fee").and_then(normalize_u64_json_value) else {
-				return;
-			};
+			let fee = kernel
+				.get("fee")
+				.cloned()
+				.and_then(normalize_u64_json_value)
+				.ok_or(LegacyNormalizationError)?;
+			if normalized_u64_field(kernel.get("lock_height")) != Some(0) {
+				return Err(LegacyNormalizationError);
+			}
+
+			kernel.remove("fee");
 			kernel.remove("lock_height");
 			kernel.insert(
 				"features".to_string(),
@@ -1398,6 +1406,12 @@ fn normalize_legacy_kernel_value(kernel: &mut Value) {
 			);
 		}
 		"Coinbase" => {
+			if normalized_u64_field(kernel.get("fee")) != Some(0)
+				|| normalized_u64_field(kernel.get("lock_height")) != Some(0)
+			{
+				return Err(LegacyNormalizationError);
+			}
+
 			kernel.remove("fee");
 			kernel.remove("lock_height");
 			kernel.insert(
@@ -1406,15 +1420,19 @@ fn normalize_legacy_kernel_value(kernel: &mut Value) {
 			);
 		}
 		"HeightLocked" => {
-			let Some(fee) = kernel.remove("fee").and_then(normalize_u64_json_value) else {
-				return;
-			};
-			let Some(lock_height) = kernel
-				.remove("lock_height")
+			let fee = kernel
+				.get("fee")
+				.cloned()
 				.and_then(normalize_u64_json_value)
-			else {
-				return;
-			};
+				.ok_or(LegacyNormalizationError)?;
+			let lock_height = kernel
+				.get("lock_height")
+				.cloned()
+				.and_then(normalize_u64_json_value)
+				.ok_or(LegacyNormalizationError)?;
+
+			kernel.remove("fee");
+			kernel.remove("lock_height");
 			kernel.insert(
 				"features".to_string(),
 				easy_jsonrpc_mwc::serde_json::json!({
@@ -1427,6 +1445,7 @@ fn normalize_legacy_kernel_value(kernel: &mut Value) {
 		}
 		_ => {}
 	}
+	Ok(())
 }
 
 fn normalize_nested_kernel_features(kernel: &mut easy_jsonrpc_mwc::serde_json::Map<String, Value>) {
@@ -1474,6 +1493,13 @@ fn normalize_u64_json_value(value: Value) -> Option<Value> {
 	}
 }
 
+fn normalized_u64_field(value: Option<&Value>) -> Option<u64> {
+	value
+		.cloned()
+		.and_then(normalize_u64_json_value)
+		.and_then(|value| value.as_u64())
+}
+
 struct LegacyGetOutputsArgs {
 	commits: Option<Vec<String>>,
 	start_height: Option<u64>,
@@ -1499,8 +1525,9 @@ fn normalize_get_outputs_params(
 fn normalize_get_outputs_positional(
 	args: Vec<Value>,
 ) -> Result<GetOutputsParams, easy_jsonrpc_mwc::Error> {
-	if args.len() > 5 {
-		return Err(wrong_number_of_args("get_outputs", 1, 5, args.len()));
+	let actual = args.len();
+	if !(1..=5).contains(&actual) {
+		return Err(wrong_number_of_args("get_outputs", 1, 5, actual));
 	}
 	if uses_current_get_outputs_layout(&args) {
 		return normalize_trailing_optional_params(Params::Positional(args), 1, 3, "get_outputs")
@@ -1712,6 +1739,76 @@ mod tests {
 		assert!(normalize_trailing_optional_params(params, 0, 5, "get_block").is_err());
 	}
 
+	#[test]
+	fn normalize_legacy_plain_kernel_accepts_zero_lock_height() {
+		for lock_height in [json!(0), json!("0")] {
+			let mut kernel = json!({
+				"features": "Plain",
+				"fee": "42",
+				"lock_height": lock_height,
+			});
+
+			normalize_legacy_kernel_value(&mut kernel).unwrap();
+
+			assert_eq!(kernel["features"], json!({ "Plain": { "fee": 42 } }));
+			assert!(kernel.get("fee").is_none());
+			assert!(kernel.get("lock_height").is_none());
+		}
+	}
+
+	#[test]
+	fn normalize_legacy_plain_kernel_rejects_invalid_lock_height_without_mutating() {
+		let lock_heights = [
+			None,
+			Some(json!(1)),
+			Some(json!("1")),
+			Some(json!("invalid")),
+			Some(json!(-1)),
+			Some(json!(0.0)),
+			Some(Value::Null),
+			Some(json!({})),
+		];
+
+		for lock_height in lock_heights {
+			let mut kernel = json!({
+				"features": "Plain",
+				"fee": "42",
+			});
+			if let Some(lock_height) = lock_height {
+				kernel["lock_height"] = lock_height;
+			}
+			let original = kernel.clone();
+
+			assert!(normalize_legacy_kernel_value(&mut kernel).is_err());
+			assert_eq!(kernel, original);
+		}
+	}
+
+	#[test]
+	fn normalize_legacy_coinbase_kernel_validates_discarded_fields() {
+		let mut valid = json!({
+			"features": "Coinbase",
+			"fee": "0",
+			"lock_height": "0",
+		});
+		normalize_legacy_kernel_value(&mut valid).unwrap();
+		assert_eq!(valid["features"], json!("Coinbase"));
+		assert!(valid.get("fee").is_none());
+		assert!(valid.get("lock_height").is_none());
+
+		for (fee, lock_height) in [(json!(1), json!(0)), (json!(0), json!(1))] {
+			let mut kernel = json!({
+				"features": "Coinbase",
+				"fee": fee,
+				"lock_height": lock_height,
+			});
+			let original = kernel.clone();
+
+			assert!(normalize_legacy_kernel_value(&mut kernel).is_err());
+			assert_eq!(kernel, original);
+		}
+	}
+
 	#[cfg(not(feature = "test-support"))]
 	#[test]
 	fn parse_push_transaction_accepts_legacy_flat_plain_kernel() {
@@ -1735,6 +1832,24 @@ mod tests {
 		match parsed.kernels()[0].features {
 			KernelFeatures::Plain { fee } => assert_eq!(fee.fee(), 42),
 			other => panic!("unexpected kernel features: {:?}", other),
+		}
+	}
+
+	#[cfg(feature = "test-support")]
+	#[test]
+	fn parse_push_transaction_rejects_invalid_legacy_plain_lock_height() {
+		let tx = transaction_with_kernel(KernelFeatures::Plain {
+			fee: FeeFields::new(42).unwrap(),
+		});
+
+		for lock_height in [json!(1), json!("invalid")] {
+			let mut value = serde_json::to_value(&tx).unwrap();
+			let kernel = value["body"]["kernels"][0].as_object_mut().unwrap();
+			kernel.insert("features".to_string(), json!("Plain"));
+			kernel.insert("fee".to_string(), json!("42"));
+			kernel.insert("lock_height".to_string(), lock_height);
+
+			assert!(parse_transaction_arg(value, "tx", 0, 0).is_err());
 		}
 	}
 
@@ -1833,10 +1948,7 @@ where
 					.map_err(|e| Error::Argument(format!("invalid block hash: {}", e)))?,
 			);
 		}
-		secp_static::with_verify_only(Error::from, |secp| {
-			Foreign::get_header(self, secp, height, parsed_hash, commit)
-		})
-		.into_rpc_result()
+		Foreign::get_header(self, height, parsed_hash, commit).into_rpc_result()
 	}
 
 	fn get_block(
@@ -1864,17 +1976,14 @@ where
 			);
 		}
 
-		secp_static::with_verify_only(Error::from, |secp| {
-			Foreign::get_block(
-				self,
-				secp,
-				height,
-				parsed_hash,
-				commit,
-				include_proof,
-				include_merkle_proof,
-			)
-		})
+		Foreign::get_block(
+			self,
+			height,
+			parsed_hash,
+			commit,
+			include_proof,
+			include_merkle_proof,
+		)
 		.into_rpc_result()
 	}
 
@@ -1885,10 +1994,7 @@ where
 		max: u64,
 		include_proof: Option<bool>,
 	) -> RpcResult<BlockListing> {
-		secp_static::with_verify_only(Error::from, |secp| {
-			Foreign::get_blocks(self, secp, start_height, end_height, max, include_proof)
-		})
-		.into_rpc_result()
+		Foreign::get_blocks(self, start_height, end_height, max, include_proof).into_rpc_result()
 	}
 
 	fn get_version(&self) -> RpcResult<Version> {
@@ -1914,10 +2020,7 @@ where
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
 	) -> RpcResult<Vec<OutputPrintable>> {
-		secp_static::with_verify_only(Error::from, |secp| {
-			Foreign::get_outputs(self, secp, commits, include_proof, include_merkle_proof)
-		})
-		.into_rpc_result()
+		Foreign::get_outputs(self, commits, include_proof, include_merkle_proof).into_rpc_result()
 	}
 
 	fn get_unspent_outputs(
@@ -1927,10 +2030,8 @@ where
 		max: u64,
 		include_proof: Option<bool>,
 	) -> RpcResult<OutputListing> {
-		secp_static::with_verify_only(Error::from, |secp| {
-			Foreign::get_unspent_outputs(self, secp, start_index, end_index, max, include_proof)
-		})
-		.into_rpc_result()
+		Foreign::get_unspent_outputs(self, start_index, end_index, max, include_proof)
+			.into_rpc_result()
 	}
 
 	fn get_pmmr_indices(
@@ -1946,11 +2047,8 @@ where
 	}
 
 	fn get_process_status(&self) -> RpcResult<ProcessStatus> {
-		let now = Instant::now();
-		let tor_online_time = match mwc_p2p::tor::arti::get_arti_restart_time() {
-			Some(start) => now.duration_since(start).as_secs(),
-			None => 0,
-		};
+		let tor_online_time =
+			mwc_p2p::tor::arti::get_arti_online_duration().map_or(0, |duration| duration.as_secs());
 
 		let host_metrics = self.process_status_cache.lock().get();
 
@@ -1971,10 +2069,11 @@ where
 		Foreign::get_unconfirmed_transactions(self).into_rpc_result()
 	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> RpcResult<()> {
-		secp_static::with_commit_mut(Error::from, |secp| {
-			Foreign::push_transaction(self, tx, fluff, secp)
-		})
-		.into_rpc_result()
+		// Relay may re-enter the thread-local secp context while serializing the tx.
+		Secp256k1::with_caps(ContextFlag::Commit)
+			.map_err(Error::from)
+			.and_then(|mut secp| Foreign::push_transaction(self, tx, fluff, &mut secp))
+			.into_rpc_result()
 	}
 }
 

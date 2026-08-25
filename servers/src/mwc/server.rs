@@ -146,6 +146,7 @@ impl Server {
 		context_id: u32,
 		config: ServerConfig,
 		stop_state: Arc<StopState>,
+		skip_start_blockchain_validation: bool,
 	) -> Result<Self, Error> {
 		if let Some(ban_window) = config.p2p_config.ban_window {
 			if ban_window <= 0 {
@@ -249,6 +250,7 @@ impl Server {
 				invalid_blocks,
 				Some(sync_state.clone()),
 				Some(stop_state.clone()),
+				skip_start_blockchain_validation,
 			)
 			.map_err(|e| Error::ServerError(format!("Unable to read blockchain data, {}", e)))?,
 		);
@@ -267,15 +269,20 @@ impl Server {
 			stop_state.clone(),
 		));
 
-		let net_adapter = Arc::new(NetToChainAdapter::new(
-			context_id,
-			sync_state.clone(),
-			shared_chain.clone(),
-			sync_manager.clone(),
-			tx_pool.clone(),
-			config.chain_validation_mode.clone(),
-			net_hooks,
-		));
+		let net_adapter = Arc::new(
+			NetToChainAdapter::new(
+				context_id,
+				sync_state.clone(),
+				shared_chain.clone(),
+				sync_manager.clone(),
+				tx_pool.clone(),
+				config.chain_validation_mode.clone(),
+				net_hooks,
+			)
+			.map_err(|e| {
+				Error::ServerError(format!("Unable to initialize network chain adapter, {}", e))
+			})?,
+		);
 
 		// Initialize our capabilities.
 		// Currently either "default" or with optional "archive_mode" (block history) support enabled.
@@ -1037,7 +1044,7 @@ mod tests {
 		let mut config = ServerConfig::default();
 		config.dandelion_config.stem_probability = 101;
 
-		match Server::create_server(&secp, 0, config, Arc::new(StopState::new())) {
+		match Server::create_server(&secp, 0, config, Arc::new(StopState::new()), false) {
 			Err(Error::Config(msg)) => {
 				assert!(msg.contains("stem_probability"));
 				assert!(msg.contains("0..=100"));

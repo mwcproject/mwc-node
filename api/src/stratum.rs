@@ -70,11 +70,15 @@ impl Stratum {
 			})
 	}
 
-	pub fn get_ip_info(
-		&self,
-		ip: &String,
-	) -> Result<stratum::connections::StratumIpPrintable, Error> {
-		Ok(self.stratum_ip_pool.get_ip_info(ip))
+	pub fn get_ip_info(&self, ip: &str) -> Result<stratum::connections::StratumIpPrintable, Error> {
+		let canonical_ip = ip
+			.parse::<IpAddr>()
+			.map_err(|e| Error::Argument(format!("invalid IP address {}: {}", ip, e)))?
+			.to_string();
+
+		self.stratum_ip_pool
+			.get_ip_info(&canonical_ip)
+			.ok_or_else(|| Error::NotFound(format!("IP {} not found", canonical_ip)))
 	}
 }
 
@@ -123,7 +127,7 @@ mod tests {
 		}
 
 		api.stratum_ip_pool.report_ok_shares(&ip).unwrap();
-		let info = api.stratum_ip_pool.get_ip_info(&ip);
+		let info = api.stratum_ip_pool.get_ip_info(&ip).unwrap();
 		assert_eq!(info.workers, 1);
 		assert_eq!(info.ok_shares, 1);
 	}
@@ -141,5 +145,39 @@ mod tests {
 			Err(Error::NotFound(msg)) => assert!(msg.contains("127.0.0.1")),
 			other => panic!("expected not found error after cleanup, got {:?}", other),
 		}
+	}
+
+	#[test]
+	fn get_ip_info_rejects_invalid_ip() {
+		let api = new_stratum();
+
+		match api.get_ip_info("not-an-ip") {
+			Err(Error::Argument(msg)) => assert!(msg.contains("invalid IP address")),
+			other => panic!("expected invalid IP argument error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn get_ip_info_reports_untracked_ip() {
+		let api = new_stratum();
+
+		match api.get_ip_info("127.0.0.1") {
+			Err(Error::NotFound(msg)) => assert!(msg.contains("127.0.0.1")),
+			other => panic!("expected not found error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn get_ip_info_canonicalizes_ipv6() {
+		let api = new_stratum();
+		let canonical_ip = "2001:db8::1".to_string();
+		api.stratum_ip_pool.add_worker(&canonical_ip);
+
+		let info = api
+			.get_ip_info("2001:0db8:0000:0000:0000:0000:0000:0001")
+			.unwrap();
+
+		assert_eq!(info.ip, canonical_ip);
+		assert_eq!(info.workers, 1);
 	}
 }

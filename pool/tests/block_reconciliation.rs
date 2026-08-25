@@ -17,7 +17,6 @@ pub mod common;
 
 use crate::common::ChainAdapter;
 use crate::common::*;
-use mwc_core::core::hash::Hashed;
 use mwc_core::global;
 use mwc_core::ser;
 use mwc_crates::rand::rngs::SysRng;
@@ -120,8 +119,7 @@ fn test_transaction_pool_block_reconciliation() {
 	assert_eq!(pool.total_size(), 0);
 
 	for tx in &txs_to_add {
-		pool.add_to_pool(test_source(), tx.clone(), false, &header, &mut secp)
-			.unwrap();
+		submit_to_pool!(pool, test_source(), tx.clone(), false, &header, &mut secp).unwrap();
 	}
 
 	assert_eq!(pool.total_size(), txs_to_add.len());
@@ -139,9 +137,8 @@ fn test_transaction_pool_block_reconciliation() {
 
 	let block_txs = &[block_tx_1, block_tx_2, block_tx_3, block_tx_4];
 	add_block(&mut secp, &chain, block_txs, &keychain);
-	let block = chain
-		.get_block(&chain.head().unwrap().hash(chain.get_context_id()).unwrap())
-		.unwrap();
+	let header = chain.head_header().unwrap();
+	let block = chain.get_block_for_header(&header).unwrap();
 
 	// Check the pool still contains everything we expect at this point.
 	assert_eq!(pool.total_size(), txs_to_add.len());

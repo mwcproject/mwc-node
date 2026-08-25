@@ -15,6 +15,7 @@
 
 use crate::serv::Server;
 use mwc_crates::parking_lot::{Condvar, Mutex, RwLock};
+use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -51,6 +52,8 @@ use mwc_crates::secp::Secp256k1;
 
 const MAX_TRACK_SIZE: usize = 2500; // Currently mac income peers limit is 256, the tracking must be much larger
 const MAX_PEER_MSG_PER_MIN: u64 = 1000;
+const HEADER_REQUEST_TIMEOUT: Duration =
+	Duration::from_secs(mwc_chain::pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
 #[cfg(not(test))]
 const PEER_STARTING_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -508,7 +511,16 @@ impl Peer {
 
 	/// Sends a request for block headers from the provided block locator
 	pub fn send_header_request(&self, locator: Vec<Hash>) -> Result<(), Error> {
-		self.send(&Locator { hashes: locator }, msg::Type::GetHeaders)
+		let request_id = self.tracking_adapter.next_request_id();
+		let mut header_requests = self.tracking_adapter.header_requests.lock();
+		header_requests.register(request_id, locator.clone(), Instant::now());
+
+		if let Err(e) = self.send(&Locator { hashes: locator }, msg::Type::GetHeaders) {
+			header_requests.rollback(request_id);
+			return Err(e);
+		}
+
+		Ok(())
 	}
 
 	pub fn send_tx_request(&self, h: Hash) -> Result<(), Error> {
@@ -729,6 +741,7 @@ struct TrackingAdapter {
 	adapter: Arc<dyn NetAdapter>,
 	received: Arc<RwLock<LruCache<Hash, ()>>>,
 	requested: Arc<RwLock<LruCache<Hash, RequestEntry>>>,
+	header_requests: Arc<Mutex<HeaderRequestTracker>>,
 	next_request_id: Arc<AtomicU64>,
 	context_id: u32,
 }
@@ -745,6 +758,153 @@ struct RequestRestore {
 	previous: Option<RequestEntry>,
 }
 
+#[derive(Debug)]
+struct HeaderRequestEntry {
+	id: u64,
+	locator: Vec<Hash>,
+	requested_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderResponseState {
+	Idle,
+	Receiving { expected_prev_hash: Hash },
+	Rejecting,
+}
+
+#[derive(Debug)]
+struct HeaderRequestTracker {
+	// Header responses are produced in request order by the peer protocol. Keep
+	// the full locator because a fork response can start after any common hash,
+	// not necessarily after the newest (first) locator hash.
+	pending: VecDeque<HeaderRequestEntry>,
+	// The codec delivers one Headers message in 32-header fragments. This state
+	// makes all fragments share one request ticket and prevents rejected trailing
+	// fragments from being mistaken for a new response.
+	response_state: HeaderResponseState,
+}
+
+impl HeaderRequestTracker {
+	fn new() -> Self {
+		Self {
+			pending: VecDeque::new(),
+			response_state: HeaderResponseState::Idle,
+		}
+	}
+
+	fn register(&mut self, id: u64, locator: Vec<Hash>, now: Instant) {
+		// Higher-level scheduling keeps at most three GetHeaders requests outstanding
+		// per peer. Responses consume their entries in wire order, and expired entries
+		// are removed here before a new request is registered. MAX_TRACK_SIZE is thus
+		// only a defensive memory bound for behavior outside that scheduling contract;
+		// normal operation never evicts a live request at this point.
+		self.prune_expired(now);
+		if self.pending.len() >= MAX_TRACK_SIZE {
+			self.pending.pop_front();
+		}
+		self.pending.push_back(HeaderRequestEntry {
+			id,
+			locator,
+			requested_at: now,
+		});
+	}
+
+	fn rollback(&mut self, id: u64) {
+		if let Some(position) = self.pending.iter().position(|entry| entry.id == id) {
+			self.pending.remove(position);
+		}
+	}
+
+	fn prune_expired(&mut self, now: Instant) {
+		while self.pending.front().map_or(false, |entry| {
+			now.saturating_duration_since(entry.requested_at) >= HEADER_REQUEST_TIMEOUT
+		}) {
+			self.pending.pop_front();
+		}
+	}
+
+	fn admit_headers(
+		&mut self,
+		headers: &[core::BlockHeader],
+		remaining: u64,
+		context_id: u32,
+		now: Instant,
+	) -> Result<bool, mwc_chain::Error> {
+		self.prune_expired(now);
+
+		let first = match headers.first() {
+			Some(first) => first,
+			None => {
+				self.response_state = if remaining == 0 {
+					HeaderResponseState::Idle
+				} else {
+					HeaderResponseState::Rejecting
+				};
+				return Ok(false);
+			}
+		};
+
+		match self.response_state {
+			HeaderResponseState::Rejecting => {
+				if remaining == 0 {
+					self.response_state = HeaderResponseState::Idle;
+				}
+				Ok(false)
+			}
+			HeaderResponseState::Receiving { expected_prev_hash } => {
+				if first.prev_hash != expected_prev_hash {
+					self.reject_through_end(remaining);
+					return Ok(false);
+				}
+				self.accept_fragment(headers, remaining, context_id)
+			}
+			HeaderResponseState::Idle => {
+				let matches_oldest_request = self
+					.pending
+					.front()
+					.map_or(false, |entry| entry.locator.contains(&first.prev_hash));
+				if !matches_oldest_request {
+					self.reject_through_end(remaining);
+					return Ok(false);
+				}
+
+				self.pending.pop_front();
+				self.accept_fragment(headers, remaining, context_id)
+			}
+		}
+	}
+
+	fn accept_fragment(
+		&mut self,
+		headers: &[core::BlockHeader],
+		remaining: u64,
+		context_id: u32,
+	) -> Result<bool, mwc_chain::Error> {
+		if remaining == 0 {
+			self.response_state = HeaderResponseState::Idle;
+			return Ok(true);
+		}
+
+		// Reject later fragments if hashing the accepted boundary header fails.
+		self.response_state = HeaderResponseState::Rejecting;
+		let last = match headers.last() {
+			Some(last) => last,
+			None => return Ok(false),
+		};
+		let expected_prev_hash = last.hash(context_id)?;
+		self.response_state = HeaderResponseState::Receiving { expected_prev_hash };
+		Ok(true)
+	}
+
+	fn reject_through_end(&mut self, remaining: u64) {
+		self.response_state = if remaining == 0 {
+			HeaderResponseState::Idle
+		} else {
+			HeaderResponseState::Rejecting
+		};
+	}
+}
+
 impl TrackingAdapter {
 	fn new(context_id: u32, adapter: Arc<dyn NetAdapter>) -> TrackingAdapter {
 		// unwrap safe because build from positive constant
@@ -753,6 +913,7 @@ impl TrackingAdapter {
 			adapter,
 			received: Arc::new(RwLock::new(LruCache::new(track_size))),
 			requested: Arc::new(RwLock::new(LruCache::new(track_size))),
+			header_requests: Arc::new(Mutex::new(HeaderRequestTracker::new())),
 			next_request_id: Arc::new(AtomicU64::new(0)),
 			context_id,
 		}
@@ -906,6 +1067,20 @@ impl ChainAdapter for TrackingAdapter {
 		remaining: u64,
 		peer_info: &PeerInfo,
 	) -> Result<(), mwc_chain::Error> {
+		let admitted = self.header_requests.lock().admit_headers(
+			bh,
+			remaining,
+			self.context_id,
+			Instant::now(),
+		)?;
+		if !admitted {
+			debug!(
+				"Ignoring unsolicited or mismatched headers response from {}",
+				peer_info.addr
+			);
+			return Ok(());
+		}
+
 		// Batch headers are only expected on the sync response path.
 		// These headers are normally far from the tip, so we do not track
 		// them as "already seen" for broadcast suppression.
@@ -1596,7 +1771,7 @@ mod tests {
 	}
 
 	#[test]
-	fn clean_peers_preserves_dead_ping_peer_when_liveness_deferred() {
+	fn clean_peers_preserves_dead_ping_peer_across_deferred_cleanup_passes() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 
 		struct LivenessGuard(bool);
@@ -1619,16 +1794,20 @@ mod tests {
 			);
 		peers.add_connected(peer).unwrap();
 
-		let summary = peers.clean_peers(
-			usize::MAX,
-			usize::MAX,
-			Capabilities::UNKNOWN,
-			P2PConfig::default(),
-		);
+		// This exceeds the former five-pass performance-strike threshold. Deferred
+		// liveness must not accumulate state that eventually evicts the peer.
+		for _ in 0..6 {
+			let summary = peers.clean_peers(
+				usize::MAX,
+				usize::MAX,
+				Capabilities::UNKNOWN,
+				P2PConfig::default(),
+			);
 
-		assert_eq!(summary.removed_peers, 0);
-		assert!(peers.get_connected_peer(&addr).is_some());
-		assert!(peers.is_known(&addr));
+			assert_eq!(summary.removed_peers, 0);
+			assert!(peers.get_connected_peer(&addr).is_some());
+			assert!(peers.is_known(&addr));
+		}
 	}
 
 	#[test]
@@ -1699,6 +1878,184 @@ mod tests {
 		));
 		assert!(peers.get_connected_peer(&addr).is_none());
 		assert!(!peers.is_known(&addr));
+	}
+
+	fn header_with_prev_hash(prev_hash: Hash) -> core::BlockHeader {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let mut header = core::BlockHeader::default(0);
+		header.prev_hash = prev_hash;
+		header
+	}
+
+	#[test]
+	fn header_response_matches_any_hash_in_requested_locator() {
+		let now = Instant::now();
+		let newest_locator = Hash::from_vec(&[10]);
+		let lower_fork_locator = Hash::from_vec(&[11]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![newest_locator, lower_fork_locator], now);
+
+		let response = header_with_prev_hash(lower_fork_locator);
+
+		assert!(tracker.admit_headers(&[response], 0, 0, now).unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn unsolicited_header_response_is_rejected() {
+		let now = Instant::now();
+		let mut tracker = HeaderRequestTracker::new();
+		let response = header_with_prev_hash(Hash::from_vec(&[12]));
+
+		assert!(!tracker.admit_headers(&[response], 0, 0, now).unwrap());
+		assert_eq!(tracker.response_state, HeaderResponseState::Idle);
+	}
+
+	#[test]
+	fn mismatched_header_response_does_not_consume_request() {
+		let now = Instant::now();
+		let requested_locator = Hash::from_vec(&[13]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![requested_locator], now);
+
+		let mismatched = header_with_prev_hash(Hash::from_vec(&[14]));
+		assert!(!tracker.admit_headers(&[mismatched], 0, 0, now).unwrap());
+		assert_eq!(tracker.pending.len(), 1);
+
+		let matched = header_with_prev_hash(requested_locator);
+		assert!(tracker.admit_headers(&[matched], 0, 0, now).unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn fragmented_header_response_uses_one_request_ticket() {
+		let now = Instant::now();
+		let first_locator = Hash::from_vec(&[15]);
+		let second_locator = Hash::from_vec(&[16]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![first_locator], now);
+		tracker.register(2, vec![second_locator], now);
+
+		let first_fragment = header_with_prev_hash(first_locator);
+		let continuation_anchor = first_fragment.hash(0).unwrap();
+		assert!(tracker.admit_headers(&[first_fragment], 1, 0, now).unwrap());
+		assert_eq!(tracker.pending.len(), 1);
+
+		let final_fragment = header_with_prev_hash(continuation_anchor);
+		assert!(tracker.admit_headers(&[final_fragment], 0, 0, now).unwrap());
+		assert_eq!(tracker.pending.len(), 1);
+
+		let second_response = header_with_prev_hash(second_locator);
+		assert!(tracker
+			.admit_headers(&[second_response], 0, 0, now)
+			.unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn broken_header_fragment_link_rejects_rest_of_response() {
+		let now = Instant::now();
+		let first_locator = Hash::from_vec(&[23]);
+		let next_locator = Hash::from_vec(&[24]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![first_locator], now);
+		tracker.register(2, vec![next_locator], now);
+
+		let first_fragment = header_with_prev_hash(first_locator);
+		assert!(tracker.admit_headers(&[first_fragment], 2, 0, now).unwrap());
+
+		let broken_continuation = header_with_prev_hash(Hash::from_vec(&[25]));
+		assert!(!tracker
+			.admit_headers(&[broken_continuation], 1, 0, now)
+			.unwrap());
+		assert_eq!(tracker.response_state, HeaderResponseState::Rejecting);
+
+		let trailing_fragment = header_with_prev_hash(next_locator);
+		assert!(!tracker
+			.admit_headers(std::slice::from_ref(&trailing_fragment), 0, 0, now)
+			.unwrap());
+		assert_eq!(tracker.pending.len(), 1);
+
+		assert!(tracker
+			.admit_headers(&[trailing_fragment], 0, 0, now)
+			.unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn rejected_header_response_discards_all_its_fragments() {
+		let now = Instant::now();
+		let requested_locator = Hash::from_vec(&[17]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![requested_locator], now);
+
+		let unsolicited_first_fragment = header_with_prev_hash(Hash::from_vec(&[18]));
+		assert!(!tracker
+			.admit_headers(&[unsolicited_first_fragment], 1, 0, now)
+			.unwrap());
+		assert_eq!(tracker.response_state, HeaderResponseState::Rejecting);
+
+		let matching_but_same_response = header_with_prev_hash(requested_locator);
+		let matching_fragment = std::slice::from_ref(&matching_but_same_response);
+		assert!(!tracker.admit_headers(matching_fragment, 0, 0, now).unwrap());
+		assert_eq!(tracker.response_state, HeaderResponseState::Idle);
+		assert_eq!(tracker.pending.len(), 1);
+
+		assert!(tracker
+			.admit_headers(&[matching_but_same_response], 0, 0, now)
+			.unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn header_responses_must_follow_request_order() {
+		let now = Instant::now();
+		let first_locator = Hash::from_vec(&[19]);
+		let second_locator = Hash::from_vec(&[20]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![first_locator], now);
+		tracker.register(2, vec![second_locator], now);
+
+		let out_of_order = header_with_prev_hash(second_locator);
+		assert!(!tracker.admit_headers(&[out_of_order], 0, 0, now).unwrap());
+		assert_eq!(tracker.pending.len(), 2);
+
+		let first_response = header_with_prev_hash(first_locator);
+		assert!(tracker.admit_headers(&[first_response], 0, 0, now).unwrap());
+		let second_response = header_with_prev_hash(second_locator);
+		assert!(tracker
+			.admit_headers(&[second_response], 0, 0, now)
+			.unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn expired_header_request_does_not_admit_response() {
+		let now = Instant::now();
+		let locator = Hash::from_vec(&[21]);
+		let mut tracker = HeaderRequestTracker::new();
+		tracker.register(1, vec![locator], now);
+
+		let response = header_with_prev_hash(locator);
+		assert!(!tracker
+			.admit_headers(&[response], 0, 0, now + HEADER_REQUEST_TIMEOUT)
+			.unwrap());
+		assert!(tracker.pending.is_empty());
+	}
+
+	#[test]
+	fn failed_header_request_send_rolls_back_ticket() {
+		let peer = test_peer();
+
+		assert!(peer
+			.send_header_request(vec![Hash::from_vec(&[22])])
+			.is_err());
+		assert!(peer
+			.tracking_adapter
+			.header_requests
+			.lock()
+			.pending
+			.is_empty());
 	}
 
 	#[test]

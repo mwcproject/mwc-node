@@ -51,6 +51,14 @@ pub enum Error {
 	/// The proof of work is invalid
 	#[error("Invalid PoW")]
 	InvalidPow,
+	/// The proof context does not match the chain context.
+	#[error("Block header proof context mismatch: expected {expected}, got {actual}")]
+	InvalidHeaderContext {
+		/// Context assigned to the chain store.
+		expected: u32,
+		/// Context embedded in the supplied proof.
+		actual: u32,
+	},
 	/// Peer abusively sending us an old block we already have
 	#[error("Old Block")]
 	OldBlock,
@@ -139,6 +147,15 @@ pub enum Error {
 	/// Error with the txhashset
 	#[error("TxHashSetErr: {0}")]
 	TxHashSetErr(String),
+	/// A PMMR sync failed after durable persistence may already have begun.
+	#[error("{context}: PMMR sync failed after persistence may have begun: {source}")]
+	PmmrSyncStateUncertain {
+		/// Sync stage for diagnostics.
+		context: String,
+		/// Underlying I/O failure.
+		#[source]
+		source: io::Error,
+	},
 	/// A readonly or rollback txhashset/header PMMR operation failed to discard changes.
 	#[error("{context}: failed to discard txhashset/header PMMR changes: {discard}")]
 	TxHashSetDiscard {
@@ -166,6 +183,18 @@ pub enum Error {
 	/// Tx is not valid due to NRD relative_height restriction.
 	#[error("NRD Relative Height")]
 	NRDRelativeHeight,
+	/// A body rewind target is older than the locally supported horizon.
+	#[error(
+		"Cannot rewind body from head height {head_height} to target height {target_height}: minimum supported height is {minimum_height}"
+	)]
+	RewindBeyondHorizon {
+		/// Height of the authenticated body head.
+		head_height: u64,
+		/// Requested rewind target height.
+		target_height: u64,
+		/// Oldest height to which this body head may rewind.
+		minimum_height: u64,
+	},
 	/// No chain exists and genesis block is required
 	#[error("Genesis Block Required")]
 	GenesisBlockRequired,
@@ -240,6 +269,30 @@ pub enum Error {
 	/// Invalid genesis hash.
 	#[error("Invalid genesis hash")]
 	InvalidGenesisHash,
+	/// Persisted chain metadata or header ancestry is internally inconsistent.
+	#[error("Invalid persisted chain state: {0}")]
+	InvalidPersistedChainState(String),
+	/// A durable database head requires PMMR entries no longer present in the backend files.
+	///
+	/// Rewind-only reconciliation cannot manufacture the missing entries. Startup
+	/// must stop with the pending operation marker intact so an operator can reset
+	/// or resynchronize chain state explicitly.
+	#[error(
+		"Automatic PMMR recovery stopped before mutation: {0}. The pending chain-operation marker was retained; reset or resynchronize chain state before restarting"
+	)]
+	PmmrRecoveryRequired(String),
+	/// Durable chain state was committed, but the follow-up recovery failed.
+	///
+	/// The nested error describes a node-local post-commit failure and must not
+	/// be used to attribute bad data to the peer that supplied the accepted data.
+	#[error("{context}: chain state was committed, but recovery failed: {source}")]
+	CommittedRecoveryFailed {
+		/// Operation whose durable commit preceded the recovery failure.
+		context: String,
+		/// Underlying recovery failure, retained for diagnostics.
+		#[source]
+		source: Box<Error>,
+	},
 	/// Desegmenter creation error
 	#[error("Unable to create desegmenter, {0}")]
 	DesegmenterCreationError(String),
@@ -255,6 +308,15 @@ pub enum Error {
 }
 
 impl Error {
+	/// Preserve the post-commit phase when exposing a recovery failure through
+	/// the public chain error type.
+	pub(crate) fn committed_recovery_failed(context: impl Into<String>, source: Error) -> Self {
+		Self::CommittedRecoveryFailed {
+			context: context.into(),
+			source: Box::new(source),
+		}
+	}
+
 	/// Whether the error is due to a block that was intrinsically wrong
 	pub fn is_bad_data(&self) -> bool {
 		match self {
@@ -266,6 +328,7 @@ impl Error {
 			| Error::InvalidHash
 			| Error::InvalidScaling
 			| Error::InvalidPow
+			| Error::InvalidHeaderContext { .. }
 			| Error::OldBlock
 			| Error::InvalidBlockTime
 			| Error::InvalidBlockHeight
@@ -312,6 +375,9 @@ impl Error {
 			| Error::Orphan(_)
 			| Error::Keychain(_)
 			| Error::StoreErr(_, _)
+			| Error::InvalidPersistedChainState(_)
+			| Error::PmmrRecoveryRequired(_)
+			| Error::CommittedRecoveryFailed { .. }
 			| Error::FileReadErr(_)
 			| Error::IOErr(_)
 			| Error::SerErr(_)
@@ -319,8 +385,10 @@ impl Error {
 			| Error::KernelPosIndexIncomplete
 			| Error::SpentCommitmentIndexIncomplete
 			| Error::TxHashSetErr(_)
+			| Error::PmmrSyncStateUncertain { .. }
 			| Error::TxHashSetDiscard { .. }
 			| Error::PMMRErr(_)
+			| Error::RewindBeyondHorizon { .. }
 			| Error::GenesisBlockRequired
 			| Error::Other(_)
 			| Error::ChainRestartRequired
@@ -360,6 +428,14 @@ impl Error {
 			self,
 			Error::TxHashSetDiscard { .. } | Error::TxHashSetDiscardAfterError { .. }
 		)
+	}
+
+	/// Whether a pending chain-operation marker must be retained for recovery.
+	pub fn requires_chain_recovery(&self) -> bool {
+		matches!(
+			self,
+			Error::PmmrSyncStateUncertain { .. } | Error::CommittedRecoveryFailed { .. }
+		) || self.is_txhashset_discard_failure()
 	}
 
 	/// Whether this error represents missing chain data.
@@ -423,11 +499,21 @@ mod tests {
 	fn is_bad_data_returns_false_for_local_internal_errors() {
 		let local_errors = vec![
 			Error::FileReadErr("append-only file read failed".into()),
+			Error::PmmrRecoveryRequired("durable HEAD is ahead of output PMMR".into()),
 			Error::ChainRestartRequired,
 			Error::Stopped,
 			Error::Bitmap,
 			Error::KernelPosIndexIncomplete,
+			Error::RewindBeyondHorizon {
+				head_height: 100,
+				target_height: 29,
+				minimum_height: 30,
+			},
 			Error::Other("generic local failure".into()),
+			Error::PmmrSyncStateUncertain {
+				context: "header_extending sync".into(),
+				source: io::Error::new(io::ErrorKind::Other, "forced sync failure"),
+			},
 			Error::SyncError("sync state unavailable".into()),
 			Error::AbortingPIBDError,
 			Error::ChainInSyncing("headers are still syncing".into()),
@@ -447,6 +533,10 @@ mod tests {
 	fn is_bad_data_returns_true_for_explicit_bad_remote_data() {
 		let bad_data_errors = vec![
 			Error::InvalidPow,
+			Error::InvalidHeaderContext {
+				expected: 7,
+				actual: 11,
+			},
 			Error::InputMismatch(Commitment::from_vec([1; 33].to_vec()).unwrap()),
 			Error::ReplayAttack(Commitment::from_vec([2; 33].to_vec()).unwrap(), 10, 20),
 			Error::InvalidRoot("output root mismatch".into()),
@@ -459,6 +549,23 @@ mod tests {
 		for err in bad_data_errors {
 			assert!(err.is_bad_data(), "{:?}", err);
 		}
+	}
+
+	#[test]
+	fn committed_recovery_failure_is_never_bad_peer_data() {
+		let err = Error::committed_recovery_failed(
+			"process_block_header committed marker cleanup",
+			Error::InvalidRoot("forced local recovery mismatch".into()),
+		);
+
+		assert!(!err.is_bad_data(), "{:?}", err);
+		assert!(err.requires_chain_recovery());
+		assert!(matches!(
+			&err,
+			Error::CommittedRecoveryFailed { context, source }
+				if context == "process_block_header committed marker cleanup"
+					&& matches!(source.as_ref(), Error::InvalidRoot(_))
+		));
 	}
 
 	#[test]
@@ -481,6 +588,23 @@ mod tests {
 		};
 
 		assert!(err.is_bad_data(), "{:?}", err);
+	}
+
+	#[test]
+	fn uncertain_pmmr_sync_and_discard_failures_require_chain_recovery() {
+		let sync_err = Error::PmmrSyncStateUncertain {
+			context: "header_extending sync".into(),
+			source: io::Error::new(io::ErrorKind::Other, "forced sync failure"),
+		};
+		assert!(sync_err.requires_chain_recovery());
+
+		let discard_err = Error::TxHashSetDiscard {
+			context: "header_extending rollback".into(),
+			discard: Box::new(Error::TxHashSetErr("forced discard failure".into())),
+		};
+		assert!(discard_err.requires_chain_recovery());
+
+		assert!(!Error::InvalidRoot("pre-sync validation failure".into()).requires_chain_recovery());
 	}
 
 	#[test]

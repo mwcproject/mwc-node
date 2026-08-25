@@ -1,4 +1,4 @@
-mod chain_test_helper;
+pub(crate) mod chain_test_helper;
 
 mod mine_simple_chain;
 mod process_block_cut_through;

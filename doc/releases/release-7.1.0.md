@@ -1,0 +1,42 @@
+# Release 7.1.0
+
+## Fixed issues 
+
+- Invalidate full blockchain data at the node start, add flag `--skip_start_blockchain_validation` to control this step.
+- Address bunch of audit comments about data consistency.
+- Range proof private nonce calculation is changes to address possible weakness. Because of the same reason removed not used extra data (to address possible future issue)
+- Eliminate possible race conditions during Arti (Tor) stop/restart.
+- Limit data volume at get_blocks REST API.
+- Limit data for output API if proofs are requested.
+- Address block v2 and v3 request and migraiton issues. Address problem that inputs can be sorted differently.
+- Address block v2 and v3 compare problems (needed to track malicious node). 
+- Make reading from multiple DBs transactional (one of data consistency problem).
+- Address possible PIBD retry race conditions (ignoring late responses).
+- Address bunch of crash in the middle of blockchain issues. Many if such errors should be recoverable now.
+- Handle long rewinds with duplicated commitments (realistic case for coinbase outputs). Update spent commitments index to support that functionality.
+- Update Secp context creations to address performance issues. For frequent secp operations we can hold only one fast secp instance per thread. The next instances come with performance impact.
+- Address possible race conditions for Desegmenter and Segmenter. 
+- Update how node difficulty cache can handle reorgs.
+- Limit rewinds for archive node, so the behaviour will be the same as non archive nodes have.
+- Handle better failures during save operations, do the best not to leak any data on failure.
+- Address possible problems because of very slow peers. Timeouts now applied with more fair policy.
+- Update log files rotation policy to save some HDD space. 
+- Address comment regarding logging, conventing logs from different libraries. 
+- Update peers eviction policy. Switch back to pure random.
+- Rewind changes to make it more tolerant to posiible data corruption.
+- Limit amount of calculations needed to update the transactions in the pool.
+- Optimize Tx pool operations. Add indexes so we can deny already accepted or conflicting transactions fast.
+- Data size checking for signature serialization.
+- Tighten block and headers validation. Checking that all data across all DB matching each other.
+- Update getting compact block REST API. Nonce was missing there. 
+- Make p2p protocol more DDoS proof and stale requests proof.
+- Fixed secondary transaction submission problem. Second transaction submit can fluff, even first copy still at dandellion phase.
+- Fixed bunch of orphan blocks caching problems.
+- Optimize transaction submit workflow, so transaction pool will be more DDoS attack proof.
+- Optimize dandelion pool and transaction pool to be able to handle large number of transactions efficiently. 
+- Update IP based peer tracking, switch to pure IP address without port to track peers.  
+- Fixed PIBD Segmenter size estimation issue for segments that are partly pruned.
+- Handle server create/release race conditions. 
+- Limit PIBD root hash cache.
+- Connect PIDB related requests with active Desegmenter. That allow to ignore late responses from the peers. 
+- Fix Arti possible process leaking for webtunnelclient. Fix webtunnelclient problem Under the Windows (it didn't start there). 

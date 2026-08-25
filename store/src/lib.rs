@@ -200,7 +200,14 @@ fn replacement_file_mode(original: &Path) -> Result<u32, std::io::Error> {
 				original.display()
 			),
 		)),
-		Ok(metadata) => Ok(metadata.permissions().mode() & 0o777),
+		Ok(metadata) if metadata.file_type().is_file() => Ok(metadata.permissions().mode() & 0o777),
+		Ok(_) => Err(std::io::Error::new(
+			std::io::ErrorKind::InvalidInput,
+			format!(
+				"refusing to replace non-regular file {} via temporary file",
+				original.display()
+			),
+		)),
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0o600),
 		Err(e) => Err(e),
 	}
@@ -406,6 +413,35 @@ mod tests {
 		assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 		assert!(err.to_string().contains("symlink"));
 		assert_eq!(std::fs::read(&target).unwrap(), b"target");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn save_via_temp_file_rejects_socket_replacement_path() {
+		use std::os::unix::fs::FileTypeExt;
+		use std::os::unix::net::UnixListener;
+
+		create_dir_all("target").unwrap();
+		let path = test_path("replace_socket");
+		let listener = UnixListener::bind(&path).unwrap();
+		let mut writer_called = false;
+
+		let err = save_via_temp_file(&path, ".tmp", |file| {
+			writer_called = true;
+			file.write_all(b"new")
+		})
+		.unwrap_err();
+
+		assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+		assert!(err.to_string().contains("non-regular file"));
+		assert!(!writer_called);
+		assert!(std::fs::symlink_metadata(&path)
+			.unwrap()
+			.file_type()
+			.is_socket());
+
+		drop(listener);
+		std::fs::remove_file(path).unwrap();
 	}
 
 	#[cfg(unix)]

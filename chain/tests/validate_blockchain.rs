@@ -17,7 +17,6 @@ use std::collections::HashSet;
 
 use mwc_chain::types::NoopAdapter;
 use mwc_core::consensus::MWC_BASE;
-use mwc_core::core::hash::Hashed;
 use mwc_core::core::KernelFeatures;
 use mwc_core::{genesis, global, pow};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
@@ -54,6 +53,7 @@ fn test_chain_validation() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	)
 	.unwrap();
 
@@ -65,7 +65,7 @@ fn test_chain_validation() {
 			info!("Processing block {}", height);
 		}
 		let hdr = src_chain.get_header_by_height(height).unwrap();
-		let block = src_chain.get_block(&hdr.hash(0).unwrap()).unwrap();
+		let block = src_chain.get_block_for_header(&hdr).unwrap();
 		for kernel in &block.body.kernels {
 			let fee = match kernel.features {
 				KernelFeatures::Plain { fee } => fee.fee(),

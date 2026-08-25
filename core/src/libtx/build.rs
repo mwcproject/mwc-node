@@ -153,7 +153,6 @@ where
 				&key_id,
 				switch,
 				commit,
-				None,
 			)?;
 
 			Ok((

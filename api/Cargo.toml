@@ -1,6 +1,6 @@
 [package]
 name = "mwc_api"
-version = "7.0.0"
+version = "7.1.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "APIs for mwc, a simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -10,16 +10,16 @@ workspace = ".."
 edition = "2024"
 
 [dependencies]
-mwc_crates = { path = "../mwc_crates", version = "7.0.0" }
-mwc_core = { path = "../core", version = "7.0.0" }
-mwc_chain = { path = "../chain", version = "7.0.0" }
-mwc_p2p = { path = "../p2p", version = "7.0.0" }
-mwc_pool = { path = "../pool", version = "7.0.0" }
-mwc_util = { path = "../util", version = "7.0.0" }
+mwc_crates = { path = "../mwc_crates", version = "7.1.0" }
+mwc_core = { path = "../core", version = "7.1.0" }
+mwc_chain = { path = "../chain", version = "7.1.0" }
+mwc_p2p = { path = "../p2p", version = "7.1.0" }
+mwc_pool = { path = "../pool", version = "7.1.0" }
+mwc_util = { path = "../util", version = "7.1.0" }
 thiserror.workspace = true
 
 [dev-dependencies]
-mwc_keychain = { path = "../keychain", version = "7.0.0" }
+mwc_keychain = { path = "../keychain", version = "7.1.0" }
 
 [features]
 default = []

@@ -210,6 +210,12 @@ pub fn random_http_probe_url() -> &'static str {
 	}
 }
 
+#[derive(Clone, Copy)]
+struct ArtiOnlineSince {
+	generation: u64,
+	since: Instant,
+}
+
 lazy_static! {
 	// It is a tor server only running instance, in case of libraries can be shared by multiple nodes and wallets
 	static ref TOR_ARTI_INSTANCE: mwc_crates::parking_lot::RwLock<Option<ArtiCore>> = mwc_crates::parking_lot::RwLock::new(None);
@@ -217,8 +223,10 @@ lazy_static! {
 	static ref TOR_ARTI_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	// Tor service full restart request. Value 0 - not requsted. Otherwise next ArtiCore instance_id
 	static ref TOR_RESTART_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-	// Last restarting time (need to understand how long the tor was online without any issue)
-	static ref TOR_RESTART_TIME: mwc_crates::parking_lot::RwLock<Option<Instant>> = mwc_crates::parking_lot::RwLock::new(None);
+	// Start of the currently published Arti generation. Pairing the timestamp
+	// with its generation prevents a reader from applying an old timestamp to a
+	// newly published client while a restart is in progress.
+	static ref TOR_ONLINE_SINCE: mwc_crates::parking_lot::RwLock<Option<ArtiOnlineSince>> = mwc_crates::parking_lot::RwLock::new(None);
 	// Monitoring thread. Only one instance is allowed
 	static ref TOR_MONITORING_THREAD : mwc_crates::parking_lot::RwLock<Option<std::thread::JoinHandle<()>>> = mwc_crates::parking_lot::RwLock::new(None);
 	// Stores monitor thread panics observed outside stop_arti() so synchronous cleanup can report them.
@@ -243,14 +251,31 @@ pub fn init_arti_cancelling(context_id: u32) {
 	}
 }
 
-pub fn init_arti_cancelling_all(context_ids: Vec<u32>) {
-	let mut guard = CANCELLING_ARTI.write();
-
+fn rearm_arti_cancelling_tokens(
+	tokens: &mut HashMap<u32, CancellationToken>,
+	context_ids: Vec<u32>,
+) {
 	for id in context_ids {
-		if let Some(token) = guard.insert(id, CancellationToken::new()) {
-			token.cancel();
+		// A cancelled entry is the same context registration retained by
+		// release_arti_cancelling_all(). An absent entry was released while Arti
+		// restarted, and a live entry belongs to a context initialized (or reused)
+		// after the snapshot. Neither of those entries may be overwritten.
+		if let Some(token) = tokens.get_mut(&id) {
+			if token.is_cancelled() {
+				*token = CancellationToken::new();
+			}
 		}
 	}
+}
+
+/// Rearm context registrations cancelled by release_arti_cancelling_all().
+///
+/// Missing registrations were released during the restart, while live tokens
+/// belong to contexts initialized after the restart snapshot; both are left
+/// unchanged.
+pub fn init_arti_cancelling_all(context_ids: Vec<u32>) {
+	let mut guard = CANCELLING_ARTI.write();
+	rearm_arti_cancelling_tokens(&mut guard, context_ids);
 }
 
 pub fn release_arti_cancelling(context_id: u32) {
@@ -260,26 +285,38 @@ pub fn release_arti_cancelling(context_id: u32) {
 	}
 }
 
-// Trigger all cancelling events. Used in cases like arti restart, so all arti users will be dropped.
-// Return all context Ids so we could recreate it
-pub fn release_arti_cancelling_all() -> Vec<u32> {
-	let mut res: Vec<u32> = Vec::new();
-	CANCELLING_ARTI.write().retain(|id, token| {
-		res.push(id.clone());
+fn cancel_arti_context_tokens(tokens: &mut HashMap<u32, CancellationToken>) -> Vec<u32> {
+	let mut context_ids = Vec::with_capacity(tokens.len());
+	for (id, token) in tokens.iter() {
+		context_ids.push(*id);
 		token.cancel();
-		false
-	});
+	}
+	context_ids
+}
 
-	debug_assert!(CANCELLING_ARTI.read_recursive().is_empty());
+// Trigger all cancelling events. Used in cases like an Arti restart, so all
+// Arti users will be dropped. Keep the cancelled entries as restart tombstones:
+// release_arti_cancelling() can then remove a context while bootstrap is in
+// progress, and init_arti_cancelling() can replace an old context generation.
+// Return the context IDs so unchanged registrations can be rearmed.
+pub fn release_arti_cancelling_all() -> Vec<u32> {
+	let mut guard = CANCELLING_ARTI.write();
+	let context_ids = cancel_arti_context_tokens(&mut guard);
 
-	res
+	debug_assert!(guard.values().all(CancellationToken::is_cancelled));
+
+	context_ids
 }
 
 pub fn is_arti_cancelled(context_id: u32) -> bool {
 	// Cancellation tokens are optional context guards; Arti may still run with no
 	// token registered. Treating a missing registration as cancelled is the more
 	// conservative behavior we want for context-scoped operations.
-	!CANCELLING_ARTI.read_recursive().contains_key(&context_id)
+	CANCELLING_ARTI
+		.read_recursive()
+		.get(&context_id)
+		.map(CancellationToken::is_cancelled)
+		.unwrap_or(true)
 }
 
 /// Return a context cancellation token for waiters.
@@ -291,6 +328,7 @@ pub fn get_arti_cancell_token(context_id: u32) -> Option<CancellationToken> {
 	CANCELLING_ARTI
 		.read_recursive()
 		.get(&context_id)
+		.filter(|token| !token.is_cancelled())
 		.map(|token| token.child_token())
 }
 
@@ -301,6 +339,7 @@ pub fn get_arti_cancell_token(context_id: u32) -> Option<CancellationToken> {
 /// that need synchronous cleanup should use stop_arti().
 pub fn shutdown_arti() {
 	SHUTDOWN_ARTI.cancel();
+	*TOR_ONLINE_SINCE.write() = None;
 }
 
 pub(crate) fn is_shutdown_arti() -> bool {
@@ -376,12 +415,24 @@ pub fn is_arti_started() -> bool {
 	is_arti_monitor_running()
 }
 
-pub fn get_arti_restart_time() -> Option<Instant> {
-	if is_arti_healthy() {
-		TOR_RESTART_TIME.read_recursive().clone()
-	} else {
-		None
+/// Returns the elapsed time for the current healthy Arti generation.
+///
+/// The generation check keeps the timestamp coherent with the instance IDs
+/// across concurrent restart publication. `None` is returned while Arti is
+/// stopped, restarting, or only partially published.
+pub fn get_arti_online_duration() -> Option<Duration> {
+	if !is_arti_healthy() {
+		return None;
 	}
+
+	let online_since = (*TOR_ONLINE_SINCE.read_recursive())?;
+	let tor_version = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst);
+	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::SeqCst);
+	if online_since.generation != tor_version || restart_requested != tor_version {
+		return None;
+	}
+
+	Some(online_since.since.elapsed())
 }
 
 pub fn is_arti_healthy() -> bool {
@@ -437,6 +488,16 @@ pub fn allocate_arti_object_id() -> u64 {
 
 pub fn register_arti_active_object(obj_name: String) -> Result<(), Error> {
 	let mut active_objects = TOR_ACTIVE_OBJECTS.write();
+	// Keep the shutdown/restart-state checks and insertion under the same lock
+	// observed by stop_start_arti's drain. A registration is therefore either
+	// visible to the drain before it sees an empty set, or rejected after shutdown
+	// or restart is requested.
+	if is_shutdown_arti() {
+		return Err(Error::Interrupted);
+	}
+	if is_arti_restarting() {
+		return Err(Error::TorRestarting);
+	}
 	if !active_objects.insert(obj_name.clone()) {
 		return Err(Error::Internal(format!(
 			"Duplicate Arti active object registration: {}",
@@ -573,9 +634,12 @@ pub fn start_arti(
 	};
 
 	let previous_arti = TOR_ARTI_INSTANCE.write().replace(new_arti);
+	*TOR_ONLINE_SINCE.write() = Some(ArtiOnlineSince {
+		generation: tor_id,
+		since: Instant::now(),
+	});
 	TOR_ARTI_INSTANCE_ID.store(tor_id, Ordering::SeqCst);
 	let _ = TOR_RESTART_REQUEST.fetch_max(tor_id, Ordering::SeqCst);
-	*TOR_RESTART_TIME.write() = Some(Instant::now());
 
 	let mut monitoring_thread = TOR_MONITORING_THREAD.write();
 	debug_assert!(monitoring_thread.is_none());
@@ -592,7 +656,7 @@ pub fn start_arti(
 		// instance. Keep TOR_RESTART_REQUEST monotonic so concurrent restart
 		// requests are not erased.
 		TOR_ARTI_INSTANCE_ID.store(previous_instance_id, Ordering::SeqCst);
-		*TOR_RESTART_TIME.write() = None;
+		*TOR_ONLINE_SINCE.write() = None;
 		if let Some(new_arti) = new_arti {
 			shutdown_arti_core(new_arti);
 		}
@@ -650,14 +714,27 @@ fn stop_start_arti(start_new_client: bool) -> i64 {
 	restart_arti(start_new_client, context_ids)
 }
 
+/// Stop Arti and synchronously complete monitor and runtime cleanup.
+///
+/// This API intentionally requires a regular OS thread that is not currently
+/// entered into a Tokio runtime. The cleanup path uses
+/// `Runtime::shutdown_timeout` with a nonzero timeout, which Tokio does not
+/// permit from an async runtime context. Async code should use
+/// [`shutdown_arti`] for signal-only shutdown, or arrange for `stop_arti()` to
+/// run on a dedicated non-Tokio thread when synchronous cleanup is required.
 pub fn stop_arti() -> Result<(), Error> {
-	let _start_stop_guard = TOR_ARTI_START_STOP_LOCK.lock();
+	// Signal first so a concurrent start_arti() can interrupt network-dependent
+	// bootstrap and release the serialization lock for synchronous cleanup.
 	shutdown_arti();
+	let _start_stop_guard = TOR_ARTI_START_STOP_LOCK.lock();
+	// is_arti_monitor_running() keeps this lock while publishing a finished
+	// monitor's panic. Take the handle first so any such publication is complete
+	// before we consume the stored error below.
+	let monitoring_thread = TOR_MONITORING_THREAD.write().take();
 	let mut first_error = TOR_MONITORING_THREAD_ERROR
 		.write()
 		.take()
 		.map(Error::PeerThreadPanic);
-	let monitoring_thread = TOR_MONITORING_THREAD.write().take();
 	if let Some(monitoring_thread) = monitoring_thread {
 		if let Some(err_msg) = join_arti_monitor_thread(monitoring_thread) {
 			first_error.get_or_insert(Error::PeerThreadPanic(err_msg));
@@ -739,6 +816,7 @@ fn restart_arti(start_new_client: bool, context_ids: Vec<u32>) -> i64 {
 			Some(arti) => {
 				drop(arti.tor_client);
 				drop(guard);
+				*TOR_ONLINE_SINCE.write() = None;
 				(arti.tor_runtime, arti.config, arti.base_dir)
 			}
 			None => {
@@ -784,13 +862,16 @@ fn restart_arti(start_new_client: bool, context_ids: Vec<u32>) -> i64 {
 					.load(Ordering::SeqCst)
 					.saturating_add(1);
 				init_arti_cancelling_all(context_ids);
+				*TOR_ONLINE_SINCE.write() = Some(ArtiOnlineSince {
+					generation: tor_id,
+					since: Instant::now(),
+				});
 				TOR_ARTI_INSTANCE_ID.store(tor_id, Ordering::SeqCst);
 				// Restart requests are coalesced, not counted. Requests that
 				// arrive while this replacement client is still being published
 				// are treated as satisfied by this start, even if they observed
 				// the freshly incremented instance id.
 				TOR_RESTART_REQUEST.store(tor_id, Ordering::SeqCst);
-				*TOR_RESTART_TIME.write() = Some(Instant::now());
 				let now = Utc::now().timestamp();
 				network_status::update_last_network_reliable_time(now);
 				return expiration_time;
@@ -1062,7 +1143,10 @@ impl ArtiCore {
 		match tor_client {
 			Ok(tor_client) => Ok((tor_client, arti_rt)),
 			Err(e) => {
-				arti_rt.shutdown_timeout(Duration::from_secs(5));
+				// The managed PT gets five seconds to exit gracefully before its
+				// supervisor kills and reaps it. Give runtime destruction enough
+				// time to finish that cleanup before trying the next bridge.
+				arti_rt.shutdown_timeout(Duration::from_secs(10));
 				Err(e)
 			}
 		}
@@ -1214,6 +1298,13 @@ impl ArtiCore {
 		res
 	}
 
+	fn webtunnel_client_filename() -> String {
+		// Release builds use the native executable suffix. In particular, the
+		// Windows package contains webtunnelclient.exe, while Unix packages use
+		// webtunnelclient without a suffix.
+		format!("webtunnelclient{}", std::env::consts::EXE_SUFFIX)
+	}
+
 	// return config and expiration time
 	fn build_config(
 		webtunnel_bridge: &Option<String>,
@@ -1243,7 +1334,7 @@ impl ArtiCore {
 			let path = exe
 				.parent()
 				.ok_or(Error::TorConfig("Failed to locate executable path".into()))?;
-			let client_path = path.join("webtunnelclient");
+			let client_path = path.join(Self::webtunnel_client_filename());
 
 			if !client_path.try_exists().map_err(|e| {
 				Error::TorConfig(format!(
@@ -1649,6 +1740,20 @@ fn build_config_rejects_malformed_creation_timestamp_without_cleanup() {
 }
 
 #[test]
+fn webtunnel_client_filename_uses_target_executable_suffix() {
+	let filename = ArtiCore::webtunnel_client_filename();
+	assert_eq!(
+		filename,
+		format!("webtunnelclient{}", std::env::consts::EXE_SUFFIX)
+	);
+
+	#[cfg(windows)]
+	assert_eq!(filename, "webtunnelclient.exe");
+	#[cfg(not(windows))]
+	assert_eq!(filename, "webtunnelclient");
+}
+
+#[test]
 fn bridge_cache_key_uses_stable_sha256_digest() {
 	assert_eq!(
 		ArtiCore::hash_str("abc"),
@@ -1657,12 +1762,52 @@ fn bridge_cache_key_uses_stable_sha256_digest() {
 }
 
 #[test]
-fn active_object_tracking_rejects_duplicate_and_missing_entries() {
+fn arti_restart_rearms_only_unchanged_context_registrations() {
+	let unchanged_id = 1;
+	let released_id = 2;
+	let reused_id = 3;
+	let mut tokens = HashMap::new();
+	for id in [unchanged_id, released_id, reused_id] {
+		tokens.insert(id, CancellationToken::new());
+	}
+
+	let unchanged_waiter = tokens[&unchanged_id].child_token();
+	let context_ids = cancel_arti_context_tokens(&mut tokens);
+	assert!(tokens.values().all(CancellationToken::is_cancelled));
+	assert!(unchanged_waiter.is_cancelled());
+
+	// Simulate one context being released and another ID being reused while the
+	// replacement Arti client is bootstrapping.
+	tokens.remove(&released_id);
+	let reused_token = CancellationToken::new();
+	tokens.insert(reused_id, reused_token.clone());
+
+	rearm_arti_cancelling_tokens(&mut tokens, context_ids);
+
+	assert!(!tokens[&unchanged_id].is_cancelled());
+	assert!(!tokens.contains_key(&released_id));
+	assert_eq!(tokens[&reused_id], reused_token);
+	assert!(!reused_token.is_cancelled());
+}
+
+#[test]
+fn active_object_tracking_rejects_restart_duplicate_and_missing_entries() {
+	let current_id = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst);
+	let original_restart_request = TOR_RESTART_REQUEST.load(Ordering::SeqCst);
 	let name = format!("test_arti_active_object_{}", allocate_arti_object_id());
 
+	TOR_RESTART_REQUEST.store(current_id.saturating_add(1), Ordering::SeqCst);
+	assert!(matches!(
+		register_arti_active_object(name.clone()),
+		Err(Error::TorRestarting)
+	));
+	assert!(!TOR_ACTIVE_OBJECTS.read_recursive().contains(&name));
+
+	TOR_RESTART_REQUEST.store(current_id, Ordering::SeqCst);
 	register_arti_active_object(name.clone()).unwrap();
 	assert!(register_arti_active_object(name.clone()).is_err());
 
 	unregister_arti_active_object(&name).unwrap();
 	assert!(unregister_arti_active_object(&name).is_err());
+	TOR_RESTART_REQUEST.store(original_restart_request, Ordering::SeqCst);
 }

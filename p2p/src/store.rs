@@ -507,6 +507,11 @@ impl PeerStore {
 			max_peers
 		);
 
+		// Eviction selection and deletion intentionally use separate transactions.
+		// A concurrent save can refresh a selected row before this batch deletes it.
+		// This is a bounded, best-effort peer cache rather than consensus state, and
+		// once it exceeds max_peers some peer must be evicted anyway. Accept the
+		// narrow race here to keep cache pruning simple.
 		let batch = self.db.batch_write()?;
 		for peer in to_remove {
 			Self::delete_peer_key_allow_missing(&batch, &peer_key(&peer.addr)[..])?;

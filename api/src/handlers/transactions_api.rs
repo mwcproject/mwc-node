@@ -20,7 +20,6 @@ use crate::types::*;
 use crate::web::*;
 use mwc_crates::bytes::Bytes;
 use mwc_crates::hyper::{Request, StatusCode};
-use mwc_crates::secp::Secp256k1;
 use mwc_util::{secp_static, ToHex};
 use std::sync::Weak;
 // Sum tree handler. Retrieve the roots:
@@ -36,7 +35,8 @@ use std::sync::Weak;
 // GET /v1/txhashset/outputs?start_index=1&max=100
 // GET /v1/txhashset/heightstopmmr?start_height=1&end_height=1000
 //
-// Build a merkle proof for a given pos
+// Build a Merkle proof for a currently unspent output. The proof targets the
+// node's current output PMMR state, not the output's origin header.
 // GET /v1/txhashset/merkleproof?n=1
 
 const MAX_LAST_TXHASHSET_INSERTIONS: u64 = 10_000;
@@ -77,7 +77,6 @@ impl TxHashSetHandler {
 	// allows traversal of utxo set
 	fn outputs(
 		&self,
-		secp: &Secp256k1,
 		start_index: u64,
 		end_index: Option<u64>,
 		mut max: u64,
@@ -87,45 +86,42 @@ impl TxHashSetHandler {
 			max = 10_000;
 		}
 		let chain = w(&self.chain)?;
-		let outputs = chain
-			.unspent_outputs_by_pmmr_index(start_index, max, end_index)
-			.map_err(|e| {
-				let msg = format!(
-					"Unspent output for PMMR {}-{:?}, {}",
-					start_index, end_index, e
-				);
-				Error::chain_read_error(e, msg)
-			})?;
-		let out = OutputListing {
-			last_retrieved_index: outputs.0,
-			highest_index: outputs.1,
-			outputs: outputs
+		chain.with_output_read_snapshot(|snapshot| {
+			let outputs = snapshot
+				.unspent_outputs_by_pmmr_index(start_index, max, end_index)
+				.map_err(|e| {
+					let msg = format!(
+						"Unspent output for PMMR {}-{:?}, {}",
+						start_index, end_index, e
+					);
+					Error::chain_read_error(e, msg)
+				})?;
+			let printable_outputs = outputs
 				.2
 				.iter()
-				.map(|x| {
-					// Requesting headers for voinbase only. Reson for that is:
-					// when include_merkle_proof is true, it only builds a
-					//   Merkle proof for unspent coinbase outputs. That proof needs the block
-					//   header so the chain can rewind the PMMR to the correct block state.
-					let header = if x.is_coinbase() {
-						Some(chain.get_header_for_output(x.commitment()).map_err(|e| {
-							let msg = format!(
-								"Header for output commitment {}, {}",
-								x.commitment().to_hex(),
-								e
-							);
-							Error::chain_read_error(e, msg)
-						})?)
-					} else {
-						None
-					};
-
-					OutputPrintable::from_output(secp, x, &chain, header.as_ref(), true, true)
-						.map_err(|e| Error::Internal(format!("chain error: {}", e)))
+				.map(|output| {
+					// These are current-state proofs. An origin header is intentionally
+					// not fetched because it is not a valid verification target.
+					let (pos, merkle_proof) = snapshot
+						.get_output_status(&output.identifier(), true)
+						.map_err(|e| Error::Internal(format!("chain error: {}", e)))?;
+					OutputPrintable::from_output_snapshot(
+						output,
+						pos,
+						merkle_proof,
+						snapshot.get_context_id(),
+						None,
+						true,
+					)
+					.map_err(|e| Error::Internal(format!("chain error: {}", e)))
 				})
-				.collect::<Result<Vec<_>, _>>()?,
-		};
-		Ok(out)
+				.collect::<Result<Vec<_>, _>>()?;
+			Ok(OutputListing {
+				last_retrieved_index: outputs.0,
+				highest_index: outputs.1,
+				outputs: printable_outputs,
+			})
+		})
 	}
 
 	// allows traversal of utxo set bounded within a block range
@@ -152,41 +148,34 @@ impl TxHashSetHandler {
 		Ok(out)
 	}
 
-	// return a dummy output with merkle proof for position filled out
-	// (to avoid having to create a new type to pass around)
-	fn get_merkle_proof_for_output(
-		&self,
-		context_id: u32,
-		id: &str,
-	) -> Result<OutputPrintable, Error> {
+	// Return a dummy output carrying a current-state Merkle proof (to avoid
+	// introducing another legacy response type). The proof's `mmr_size`, not an
+	// origin block, identifies the output-root state used for verification.
+	fn get_merkle_proof_for_output(&self, id: &str) -> Result<OutputPrintable, Error> {
 		let commit = parse_commitment(id)?;
 		let commit_hex = commit.to_hex();
 		let chain = w(&self.chain)?;
-		let output_pos = chain.get_output_pos(&commit).map_err(|e| {
-			let msg = format!(
-				"Unable to get a MMR position for commit {}, {}",
-				commit_hex, e
-			);
-			Error::chain_read_error(e, msg)
-		})?;
-		let merkle_proof =
-			mwc_chain::Chain::get_merkle_proof_for_pos(&chain, commit).map_err(|e| {
-				let msg = format!(
-					"Unable to get a merkle proof for commit {}, {}",
-					commit_hex, e
-				);
-				Error::chain_read_error(e, msg)
-			})?;
-		Ok(OutputPrintable {
-			output_type: OutputType::Coinbase,
-			commit: secp_static::commit_to_zero_value(),
-			spent: false,
-			proof: None,
-			proof_hash: "".to_string(),
-			block_height: None,
-			merkle_proof: Some(merkle_proof),
-			mmr_index: output_pos,
-			context_id,
+		chain.with_output_read_snapshot(|snapshot| {
+			let (output_pos, merkle_proof) = snapshot
+				.get_output_pos_and_merkle_proof(commit)
+				.map_err(|e| {
+					let msg = format!(
+						"Unable to get a MMR position and merkle proof for commit {}, {}",
+						commit_hex, e
+					);
+					Error::chain_read_error(e, msg)
+				})?;
+			Ok(OutputPrintable {
+				output_type: OutputType::Coinbase,
+				commit: secp_static::commit_to_zero_value(),
+				spent: false,
+				proof: None,
+				proof_hash: "".to_string(),
+				block_height: None,
+				merkle_proof: Some(merkle_proof),
+				mmr_index: output_pos,
+				context_id: snapshot.get_context_id(),
+			})
 		})
 	}
 }
@@ -230,17 +219,11 @@ impl Handler for TxHashSetHandler {
 				"lastoutputs" => result_to_response(self.get_last_n_output(last_n)),
 				"lastrangeproofs" => result_to_response(self.get_last_n_rangeproof(last_n)),
 				"lastkernels" => result_to_response(self.get_last_n_kernel(last_n)),
-				"outputs" => result_to_response(secp_static::with_verify_only(
-					|e| Error::Internal(format!("failed to create secp instance: {}", e)),
-					|secp| self.outputs(secp, start_index, end_index, max),
-				)),
+				"outputs" => result_to_response(self.outputs(start_index, end_index, max)),
 				"heightstopmmr" => result_to_response(
 					self.block_height_range_to_pmmr_indices(start_height, end_height),
 				),
-				"merkleproof" => result_to_response((|| {
-					let context_id = w(&self.chain)?.get_context_id();
-					self.get_merkle_proof_for_output(context_id, &id)
-				})()),
+				"merkleproof" => result_to_response(self.get_merkle_proof_for_output(&id)),
 				_ => response(StatusCode::BAD_REQUEST, ""),
 			})
 		})();
@@ -256,13 +239,97 @@ impl Handler for TxHashSetHandler {
 mod tests {
 	use super::*;
 	use mwc_crates::secp::constants::PEDERSEN_COMMITMENT_SIZE;
+	use mwc_crates::secp::{ContextFlag, Secp256k1};
+	use std::fs;
+	use std::sync::Arc;
+	use std::time::{SystemTime, UNIX_EPOCH};
+
+	fn unique_test_dir(test_name: &str) -> String {
+		let unique = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		std::env::temp_dir()
+			.join(format!(
+				"mwc_api_{}_{}_{}",
+				test_name,
+				std::process::id(),
+				unique
+			))
+			.to_string_lossy()
+			.into_owned()
+	}
+
+	#[test]
+	fn legacy_output_listing_and_proof_use_matching_snapshot_data() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("legacy_output_snapshot");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let output = *genesis.outputs().first().expect("genesis output");
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				genesis,
+				mwc_core::pow::verify_size,
+				false,
+				std::collections::HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let handler = TxHashSetHandler {
+			chain: Arc::downgrade(&chain),
+		};
+
+		let listing = handler.outputs(1, None, 100).unwrap();
+		let listed = listing
+			.outputs
+			.iter()
+			.find(|listed| listed.commit == output.commitment())
+			.expect("genesis output in listing");
+		let proof_output = handler
+			.get_merkle_proof_for_output(&output.commitment().to_hex())
+			.unwrap();
+		let proof = proof_output
+			.merkle_proof
+			.as_ref()
+			.expect("current-state merkle proof");
+		let head = chain.head_header().unwrap();
+
+		assert_eq!(listing.highest_index, head.output_mmr_size);
+		assert_eq!(listed.context_id, proof_output.context_id);
+		assert_eq!(
+			listed.mmr_index.checked_sub(1),
+			Some(proof_output.mmr_index)
+		);
+		assert_eq!(proof.mmr_size, head.output_mmr_size);
+		proof
+			.verify(
+				proof_output.context_id,
+				head.output_root,
+				&output.identifier(),
+				proof_output.mmr_index,
+			)
+			.unwrap();
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
+	}
 
 	#[test]
 	fn get_merkle_proof_rejects_overlong_commitment_with_bounded_error() {
 		let handler = TxHashSetHandler { chain: Weak::new() };
 		let id = "00".repeat(PEDERSEN_COMMITMENT_SIZE + 1024);
 
-		let err = match handler.get_merkle_proof_for_output(0, &id) {
+		let err = match handler.get_merkle_proof_for_output(&id) {
 			Err(err) => err,
 			Ok(_) => panic!("expected oversized commitment to be rejected"),
 		};

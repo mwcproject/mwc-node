@@ -50,7 +50,7 @@ where
 
 	trace!("Block reward - Pedersen Commit is: {:?}", commit,);
 
-	let proof = proof::create(secp, keychain, builder, value, key_id, switch, commit, None)?;
+	let proof = proof::create(secp, keychain, builder, value, key_id, switch, commit)?;
 
 	let output = Output::new(OutputFeatures::Coinbase, commit, proof);
 

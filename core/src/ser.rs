@@ -1021,6 +1021,10 @@ impl PMMRable for RangeProof {
 	}
 }
 
+// This compact-codec bridge preserves the legacy aggregate-signature format
+// used by mwc-wallet. It is retained for backward compatibility with existing
+// wallet data; changing it requires an explicitly versioned wallet migration.
+//
 // The legacy ECDSA compact codec reverses the byte order of each 32-byte
 // aggregate-signature component. Binary consensus encoding uses canonical
 // `(R.x || s)` bytes, so convert at the compact API boundary. The operation is

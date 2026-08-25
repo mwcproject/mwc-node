@@ -110,8 +110,7 @@ fn test_block_building_max_weight() {
 
 	// Populate our txpool with the txs.
 	for tx in txs {
-		pool.add_to_pool(test_source(), tx, false, &header, &mut secp)
-			.unwrap();
+		submit_to_pool!(pool, test_source(), tx, false, &header, &mut secp).unwrap();
 	}
 
 	// Check we added them all to the txpool successfully.
@@ -140,9 +139,8 @@ fn test_block_building_max_weight() {
 	);
 
 	add_block(&mut secp, &chain, &txs, &keychain);
-	let block = chain
-		.get_block(&chain.head().unwrap().last_block_h)
-		.unwrap();
+	let header = chain.head_header().unwrap();
+	let block = chain.get_block_for_header(&header).unwrap();
 
 	// Check contents of the block itself (including coinbase reward).
 	assert_eq!(block.inputs().len(), 3);

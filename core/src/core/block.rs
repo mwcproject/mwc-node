@@ -128,7 +128,7 @@ impl From<pmmr::Error> for Error {
 /// Header entry for storing in the header MMR.
 /// Note: we hash the block header itself and maintain the hash in the entry.
 /// This allows us to lookup the original header from the db as necessary.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HeaderEntry {
 	/// Hash for the BlockHeader
 	pub hash: Hash,
@@ -673,9 +673,10 @@ pub struct Block {
 
 impl Hashed for Block {
 	/// The hash of the underlying block.
-	/// A block is identified by its header hash. The header commits to the
-	/// block body through the output, range proof, and kernel roots, so two
-	/// different valid blocks cannot have the same block hash.
+	/// A block is identified by its header hash. The header commits to output,
+	/// range proof, and kernel state, but does not commit to individual input
+	/// identities. Persistence must therefore prevent a different full body from
+	/// replacing the validated body already stored under this hash.
 	fn hash(&self, context_id: u32) -> Result<Hash, std::io::Error> {
 		self.header.hash(context_id)
 	}
@@ -1023,13 +1024,7 @@ impl Block {
 	// Verify any absolute kernel lock heights.
 	fn verify_kernel_lock_heights(&self) -> Result<(), Error> {
 		for k in self.kernels() {
-			// check we have no kernels with lock_heights greater than current height
-			// no tx can be included in a block earlier than its lock_height
-			if let KernelFeatures::HeightLocked { lock_height, .. } = k.features {
-				if lock_height > self.header.height {
-					return Err(Error::KernelLockHeight(lock_height, self.header.height));
-				}
-			}
+			verify_kernel_lock_height(k, self.header.height)?;
 		}
 		Ok(())
 	}
@@ -1038,16 +1033,40 @@ impl Block {
 	// NRD kernels were introduced in HF3 and are not valid for block version < 4.
 	// Blocks prior to HF3 containing any NRD kernel(s) are invalid.
 	fn verify_nrd_kernels_for_header_version(&self, context_id: u32) -> Result<(), Error> {
-		if self.kernels().iter().any(|k| k.is_nrd()) {
-			if !global::is_nrd_enabled(context_id) {
-				return Err(Error::NRDKernelNotEnabled);
-			}
-			if self.header.version < HeaderVersion(4) {
-				return Err(Error::NRDKernelPreHF3);
-			}
+		for k in self.kernels() {
+			verify_nrd_kernel_for_header_version(k, self.header.version, context_id)?;
 		}
 		Ok(())
 	}
+}
+
+/// Verify that a kernel's absolute lock height permits inclusion in the
+/// specified block height.
+pub fn verify_kernel_lock_height(kernel: &TxKernel, header_height: u64) -> Result<(), Error> {
+	if let KernelFeatures::HeightLocked { lock_height, .. } = kernel.features {
+		if lock_height > header_height {
+			return Err(Error::KernelLockHeight(lock_height, header_height));
+		}
+	}
+	Ok(())
+}
+
+/// Verify that an NRD kernel is enabled and permitted by the including header
+/// version.
+pub fn verify_nrd_kernel_for_header_version(
+	kernel: &TxKernel,
+	header_version: HeaderVersion,
+	context_id: u32,
+) -> Result<(), Error> {
+	if kernel.is_nrd() {
+		if !global::is_nrd_enabled(context_id) {
+			return Err(Error::NRDKernelNotEnabled);
+		}
+		if header_version < HeaderVersion(4) {
+			return Err(Error::NRDKernelPreHF3);
+		}
+	}
+	Ok(())
 }
 
 impl From<UntrustedBlock> for Block {

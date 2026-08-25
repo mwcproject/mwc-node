@@ -145,6 +145,51 @@ fn missing_predecessor_header_returns_orphan() -> Result<(), mwc_chain::Error> {
 }
 
 #[test]
+fn state_invalid_block_clears_pending_operation_marker() -> Result<(), mwc_chain::Error> {
+	let chain_dir = ".mwc.state_invalid_block_marker";
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	mwc_util::init_test_logger().unwrap();
+	clean_output_dir(chain_dir);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	let keychain =
+		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
+	let genesis = genesis_block(&mut secp, &keychain);
+	let chain = init_chain(&secp, chain_dir, genesis);
+
+	// The header is valid and accepted independently, but the body roots are
+	// deliberately left invalid. This ensures body processing reaches the
+	// stateful txhashset extension without committing a new header extension in
+	// the same pending operation.
+	let block = build_block(&mut secp, &chain, &keychain, &[], true)?;
+	chain.process_block_header(&block.header, Options::SKIP_POW)?;
+	let old_head = chain.head()?;
+
+	let err = chain
+		.process_block(
+			&mut secp,
+			block,
+			Options::SKIP_POW,
+			std::collections::HashSet::new(),
+		)
+		.unwrap_err();
+	assert!(matches!(err, mwc_chain::Error::InvalidRoot(_)));
+
+	// extending() discarded the provisional PMMR and child-batch changes, so
+	// this ordinary validation error must neither move HEAD nor retain a marker
+	// that would force full chain reconciliation before the next operation.
+	assert_eq!(chain.head()?, old_head);
+	assert!(chain
+		.get_store_for_tests()
+		.pending_chain_operation()?
+		.is_none());
+
+	clean_output_dir(chain_dir);
+	Ok(())
+}
+
+#[test]
 fn process_block_cut_through() -> Result<(), mwc_chain::Error> {
 	let chain_dir = ".mwc.cut_through";
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
@@ -283,7 +328,7 @@ fn process_block_cut_through() -> Result<(), mwc_chain::Error> {
 }
 
 #[test]
-fn readonly_pmmr_operation_preserves_existing_pending_marker() -> Result<(), mwc_chain::Error> {
+fn readonly_pmmr_operation_rejects_existing_pending_marker() -> Result<(), mwc_chain::Error> {
 	let chain_dir = ".mwc.readonly_pmmr_existing_marker";
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(false);
@@ -300,12 +345,24 @@ fn readonly_pmmr_operation_preserves_existing_pending_marker() -> Result<(), mwc
 	chain
 		.get_store_for_tests()
 		.set_pending_chain_operation(&marker)?;
-	let _block = build_block(&mut secp, &chain, &keychain, &[], false)?;
+	let err = build_block(&mut secp, &chain, &keychain, &[], false).unwrap_err();
+	assert!(matches!(
+		err,
+		mwc_chain::Error::Other(ref msg)
+			if msg == "pending chain operation requires chain init recovery"
+	));
 
+	// A non-owner must neither run the readonly PMMR operation nor clear the
+	// existing marker. The next guarded chain access performs recovery.
 	assert_eq!(
 		chain.get_store_for_tests().pending_chain_operation()?,
 		Some(marker)
 	);
+	chain.head()?;
+	assert!(chain
+		.get_store_for_tests()
+		.pending_chain_operation()?
+		.is_none());
 
 	clean_output_dir(chain_dir);
 	Ok(())

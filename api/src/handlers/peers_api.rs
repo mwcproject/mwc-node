@@ -236,10 +236,10 @@ impl Handler for PeerHandler {
 				StatusCode::NOT_FOUND,
 				format!("peer {} not found", peer_addr),
 			),
-			Err(e) => response(
-				StatusCode::INTERNAL_SERVER_ERROR,
-				format!("Unable to get peer for address {}, {}", peer_addr, e),
-			),
+			Err(e) => result_to_response::<()>(Err(Error::P2pError(format!(
+				"Unable to get peer for address {}, {}",
+				peer_addr, e
+			)))),
 		}
 	}
 
@@ -267,17 +267,17 @@ impl Handler for PeerHandler {
 		match command {
 			"ban" => match peers.ban_peer(&addr, ReasonForBan::ManualBan, "banned from CLI") {
 				Ok(_) => response(StatusCode::OK, "{}"),
-				Err(e) => response(
-					StatusCode::INTERNAL_SERVER_ERROR,
-					format!("ban for peer {} failed, {:?}", addr, e),
-				),
+				Err(e) => result_to_response::<()>(Err(Error::P2pError(format!(
+					"ban for peer {} failed: {}",
+					addr, e
+				)))),
 			},
 			"unban" => match peers.unban_peer(&addr) {
 				Ok(_) => response(StatusCode::OK, "{}"),
-				Err(e) => response(
-					StatusCode::INTERNAL_SERVER_ERROR,
-					format!("unban for peer {} failed, {:?}", addr, e),
-				),
+				Err(e) => result_to_response::<()>(Err(Error::P2pError(format!(
+					"unban for peer {} failed: {}",
+					addr, e
+				)))),
 			},
 			_ => response(
 				StatusCode::BAD_REQUEST,

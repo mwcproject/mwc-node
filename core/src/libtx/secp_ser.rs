@@ -32,6 +32,29 @@ fn serialize_legacy_compact(
 	sig.serialize_compact(secp)
 }
 
+fn parse_legacy_compact_hex<E>(input: &str) -> Result<[u8; secp::constants::AGG_SIGNATURE_SIZE], E>
+where
+	E: mwc_crates::serde::de::Error,
+{
+	let hex = input.trim();
+	let hex = hex.strip_prefix("0x").unwrap_or(hex);
+	const HEX_SIZE: usize = secp::constants::AGG_SIGNATURE_SIZE * 2;
+
+	if hex.len() != HEX_SIZE {
+		return Err(E::invalid_length(hex.len(), &"128 hex characters"));
+	}
+
+	let bytes =
+		from_hex(hex).map_err(|err| E::custom(format!("Fail to parse signature HEX, {}", err)))?;
+	if bytes.len() != secp::constants::AGG_SIGNATURE_SIZE {
+		return Err(E::invalid_length(bytes.len(), &"64 bytes"));
+	}
+
+	let mut compact = [0u8; secp::constants::AGG_SIGNATURE_SIZE];
+	compact.copy_from_slice(&bytes);
+	Ok(compact)
+}
+
 /// Serializes a secp PublicKey to and from hex
 pub mod pubkey_serde {
 	use mwc_crates::secp::key::PublicKey;
@@ -89,7 +112,7 @@ pub mod pubkey_serde {
 pub mod option_sig_serde {
 	use mwc_crates::secp;
 	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
-	use util::{from_hex, secp_static, ToHex};
+	use util::{secp_static, ToHex};
 
 	///
 	pub fn serialize<S>(
@@ -129,41 +152,23 @@ pub mod option_sig_serde {
 		D: Deserializer<'de>,
 	{
 		Option::<String>::deserialize(deserializer).and_then(|res| match res {
-			Some(string) => from_hex(&string)
-				.map_err(|err| {
-					mwc_crates::serde::de::Error::custom(format!(
-						"Fail to parse signature HEX {}, {}",
-						string, err
-					))
-				})
-				.and_then(|bytes: Vec<u8>| {
-					if bytes.len() != 64 {
-						return Err(mwc_crates::serde::de::Error::invalid_length(
-							bytes.len(),
-							&"64 bytes",
-						));
-					}
-					let mut b = [0u8; 64];
-					b.copy_from_slice(&bytes[0..64]);
-					secp_static::with_none(
-						|err| {
-							mwc_crates::serde::de::Error::custom(format!(
-								"Unable create Secp, {}",
-								err
-							))
-						},
-						|secp| {
-							secp::AggSigSignature::from_compact(secp, &b)
-								.map(Some)
-								.map_err(|err| {
-									mwc_crates::serde::de::Error::custom(format!(
-										"Fail to decode signature, {}",
-										err
-									))
-								})
-						},
-					)
-				}),
+			Some(string) => super::parse_legacy_compact_hex(&string).and_then(|b| {
+				secp_static::with_none(
+					|err| {
+						mwc_crates::serde::de::Error::custom(format!("Unable create Secp, {}", err))
+					},
+					|secp| {
+						secp::AggSigSignature::from_compact(secp, &b)
+							.map(Some)
+							.map_err(|err| {
+								mwc_crates::serde::de::Error::custom(format!(
+									"Fail to decode signature, {}",
+									err
+								))
+							})
+					},
+				)
+			}),
 			None => Ok(None),
 		})
 	}
@@ -229,7 +234,7 @@ pub mod sig_serde {
 	use mwc_crates::secp;
 	use mwc_crates::serde::de::Error;
 	use mwc_crates::serde::{Deserialize, Deserializer, Serializer};
-	use util::{from_hex, secp_static, ToHex};
+	use util::{secp_static, ToHex};
 
 	///
 	pub fn serialize<S>(sig: &secp::AggSigSignature, serializer: S) -> Result<S::Ok, S::Error>
@@ -256,17 +261,8 @@ pub mod sig_serde {
 		D: Deserializer<'de>,
 	{
 		String::deserialize(deserializer)
-			.and_then(|string| {
-				from_hex(&string).map_err(|err| {
-					Error::custom(format!("Fail to parse signature HEX {}, {}", string, err))
-				})
-			})
-			.and_then(|bytes: Vec<u8>| {
-				if bytes.len() != 64 {
-					return Err(Error::invalid_length(bytes.len(), &"64 bytes"));
-				}
-				let mut b = [0u8; 64];
-				b.copy_from_slice(&bytes[0..64]);
+			.and_then(|string| super::parse_legacy_compact_hex(&string))
+			.and_then(|b| {
 				secp_static::with_none(
 					|err| {
 						mwc_crates::serde::de::Error::custom(format!("Unable create Secp, {}", err))
@@ -613,21 +609,31 @@ mod test {
 
 	#[test]
 	fn rejects_overlong_signature_hex() {
+		#[allow(dead_code)]
+		#[derive(Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct SigTest {
+			#[serde(with = "sig_serde")]
+			pub sig: AggSigSignature,
+		}
+
 		let s = SerTest::random();
-		let serialized = serde_json::to_string(&s).unwrap();
 		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
 		let sig = sig.as_str().unwrap();
 		let overlong_sig = format!("{}00", sig);
-		let serialized = serialized.replace(sig, &overlong_sig);
+		let serialized = format!(r#"{{"sig":"{}"}}"#, overlong_sig);
 
-		let res = serde_json::from_str::<SerTest>(&serialized);
+		let err = serde_json::from_str::<SigTest>(&serialized).unwrap_err();
+		let err = err.to_string();
 
-		assert!(res.is_err());
+		assert!(err.contains("invalid length 130"));
+		assert!(err.contains("128 hex characters"));
 	}
 
 	#[test]
-	fn rejects_overlong_optional_signature_hex() {
-		#[derive(Serialize, Deserialize, Debug)]
+	fn rejects_overlong_malformed_optional_signature_without_echoing_input() {
+		#[allow(dead_code)]
+		#[derive(Deserialize, Debug)]
 		#[serde(crate = "serde")]
 		struct OptionSigTest {
 			#[serde(with = "option_sig_serde")]
@@ -637,11 +643,38 @@ mod test {
 		let s = SerTest::random();
 		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
 		let sig = sig.as_str().unwrap();
-		let serialized = format!(r#"{{"sig":"{}00"}}"#, sig);
+		let overlong_sig = format!("{}zz", sig);
+		let serialized = format!(r#"{{"sig":"{}"}}"#, overlong_sig);
 
-		let res = serde_json::from_str::<OptionSigTest>(&serialized);
+		let err = serde_json::from_str::<OptionSigTest>(&serialized).unwrap_err();
+		let err = err.to_string();
 
-		assert!(res.is_err());
+		assert!(err.contains("invalid length 130"));
+		assert!(err.contains("128 hex characters"));
+		assert!(!err.contains("invalid symbol"));
+		assert!(!err.contains(&overlong_sig));
+	}
+
+	#[test]
+	fn accepts_normalized_signature_hex() {
+		#[derive(Deserialize, Debug)]
+		#[serde(crate = "serde")]
+		struct NormalizedSigTest {
+			#[serde(with = "sig_serde")]
+			pub sig: AggSigSignature,
+			#[serde(with = "option_sig_serde")]
+			pub opt_sig: Option<AggSigSignature>,
+		}
+
+		let s = SerTest::random();
+		let sig = sig_serde::serialize(&s.sig, serde_json::value::Serializer).unwrap();
+		let sig = sig.as_str().unwrap();
+		let serialized = format!(r#"{{"sig":"  0x{}  ","opt_sig":"  0x{}  "}}"#, sig, sig);
+
+		let deserialized = serde_json::from_str::<NormalizedSigTest>(&serialized).unwrap();
+
+		assert_eq!(deserialized.sig, s.sig);
+		assert_eq!(deserialized.opt_sig, Some(s.sig));
 	}
 
 	#[test]

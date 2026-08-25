@@ -37,12 +37,13 @@ use mwc_core::consensus;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use mwc_core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, OutputIdentifier, Transaction,
+	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputIdentifier, Transaction,
 };
 use mwc_core::global;
 use mwc_core::libtx::{build, reward, ProofBuilder};
 use mwc_core::pow;
 use mwc_crates::chrono::Duration;
+use mwc_crates::parking_lot::RwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_keychain::{ExtKeychain, ExtKeychainPath, Keychain};
@@ -171,6 +172,13 @@ impl BlockChain for ChainAdapter {
 		})
 	}
 
+	fn validate_outputs(&self, outputs: &[Output]) -> Result<(), PoolError> {
+		self.chain.validate_outputs(outputs).map_err(|e| match e {
+			mwc_chain::Error::DuplicateCommitment(_) => PoolError::DuplicateCommitment,
+			_ => PoolError::Other(format!("failed to validate outputs, {}", e)),
+		})
+	}
+
 	fn validate_inputs(&self, inputs: &Inputs) -> Result<Vec<OutputIdentifier>, PoolError> {
 		self.chain
 			.validate_inputs(inputs)
@@ -222,7 +230,7 @@ pub struct PoolFuzzer {
 	pub chain: Arc<Chain>,
 	pub secp: Secp256k1,
 	pub keychain: ExtKeychain,
-	pub pool: TransactionPool<ChainAdapter, NoopPoolAdapter>,
+	pub pool: RwLock<TransactionPool<ChainAdapter, NoopPoolAdapter>>,
 }
 
 impl PoolFuzzer {
@@ -246,7 +254,7 @@ impl PoolFuzzer {
 			chain,
 			secp,
 			keychain,
-			pool,
+			pool: RwLock::new(pool),
 		};
 
 		ret.add_some_blocks(3);
@@ -384,6 +392,7 @@ impl PoolFuzzer {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap()
 	}

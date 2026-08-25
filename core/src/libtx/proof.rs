@@ -26,7 +26,10 @@ use mwc_crates::secp::Secp256k1;
 use mwc_crates::zeroize::{Zeroize, Zeroizing};
 use std::convert::TryFrom;
 
-/// Create a bulletproof
+/// Create a bulletproof without variable extra transcript data.
+///
+/// Proof builder nonces are deterministic, so supporting independently variable
+/// extra data here could reuse proof masks across distinct transcripts.
 pub fn create<K, B>(
 	secp: &mut Secp256k1,
 	k: &K,
@@ -35,7 +38,6 @@ pub fn create<K, B>(
 	key_id: &Identifier,
 	switch: SwitchCommitmentType,
 	commit: Commitment,
-	extra_data: Option<Vec<u8>>,
 ) -> Result<RangeProof, Error>
 where
 	K: Keychain,
@@ -53,14 +55,16 @@ where
 	}
 	let skey = k.derive_key(secp, amount, key_id, switch)?;
 	let rewind_nonce = b.rewind_nonce(secp, &commit)?;
-	let private_nonce = b.private_nonce(secp, &commit)?;
+	let private_nonce = b.private_nonce(secp, &commit, key_id)?;
 	let message = b.proof_message(secp, key_id, switch)?;
 	Ok(secp.bullet_proof(
 		amount,
 		skey,
 		rewind_nonce,
 		private_nonce,
-		extra_data,
+		// Do not expose variable extra data unless it is first bound into the
+		// deterministic private nonce.
+		None,
 		Some(message),
 	)?)
 }
@@ -113,8 +117,16 @@ pub trait ProofBuild {
 	/// Create a BP nonce that will allow to rewind the derivation path and flags
 	fn rewind_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error>;
 
-	/// Create a BP nonce that blinds the private key
-	fn private_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error>;
+	/// Create a BP nonce that blinds the private key. The nonce binds the
+	/// output identifier so the same commitment can never be re-proven with
+	/// a different proof message while reusing the same tau1/tau2 masks
+	/// (such reuse leaks the output blinding factor).
+	fn private_nonce(
+		&self,
+		secp: &Secp256k1,
+		commit: &Commitment,
+		key_id: &Identifier,
+	) -> Result<SecretKey, Error>;
 
 	/// Create a BP message
 	fn proof_message(
@@ -176,6 +188,7 @@ where
 		&self,
 		secp: &Secp256k1,
 		commit: &Commitment,
+		key_id: Option<&Identifier>,
 		private: bool,
 	) -> Result<SecretKey, Error> {
 		let hash = if private {
@@ -183,7 +196,19 @@ where
 		} else {
 			&self.rewind_hash
 		};
-		let nonce_bytes = zeroizing_blake2b(32, &commit.0, hash);
+		let nonce_bytes = match key_id {
+			// Mix the full identifier bytes (including the anti-replay height
+			// stored in the unused path word) into the private nonce, so every
+			// distinct proof message gets distinct tau1/tau2 masks.
+			Some(id) => {
+				let id_bytes = id.to_bytes();
+				let mut data = Vec::with_capacity(commit.0.len() + id_bytes.len());
+				data.extend_from_slice(&commit.0);
+				data.extend_from_slice(&id_bytes);
+				zeroizing_blake2b(32, &data, hash)
+			}
+			None => zeroizing_blake2b(32, &commit.0, hash),
+		};
 		SecretKey::from_slice(secp, nonce_bytes.as_slice()).map_err(|e| {
 			Error::RangeProof(format!(
 				"Unable to extract nonce from commit {:?}, {}",
@@ -198,11 +223,16 @@ where
 	K: Keychain,
 {
 	fn rewind_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
-		self.nonce(secp, commit, false)
+		self.nonce(secp, commit, None, false)
 	}
 
-	fn private_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
-		self.nonce(secp, commit, true)
+	fn private_nonce(
+		&self,
+		secp: &Secp256k1,
+		commit: &Commitment,
+		key_id: &Identifier,
+	) -> Result<SecretKey, Error> {
+		self.nonce(secp, commit, Some(key_id), true)
 	}
 
 	/// Message bytes:
@@ -307,8 +337,25 @@ where
 		})
 	}
 
-	fn nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
-		let nonce_bytes = zeroizing_blake2b(32, &commit.0, &self.root_hash);
+	fn nonce(
+		&self,
+		secp: &Secp256k1,
+		commit: &Commitment,
+		key_id: Option<&Identifier>,
+	) -> Result<SecretKey, Error> {
+		let nonce_bytes = match key_id {
+			// Same binding as ProofBuilder: the private nonce commits to the
+			// full identifier bytes so proof masks can never be reused across
+			// different proof messages for the same commitment.
+			Some(id) => {
+				let id_bytes = id.to_bytes();
+				let mut data = Vec::with_capacity(commit.0.len() + id_bytes.len());
+				data.extend_from_slice(&commit.0);
+				data.extend_from_slice(&id_bytes);
+				zeroizing_blake2b(32, &data, &self.root_hash)
+			}
+			None => zeroizing_blake2b(32, &commit.0, &self.root_hash),
+		};
 		SecretKey::from_slice(secp, nonce_bytes.as_slice()).map_err(|e| {
 			Error::RangeProof(format!(
 				"Unable to extract nonce from commit {:?}, {}",
@@ -323,14 +370,19 @@ where
 	K: Keychain,
 {
 	fn rewind_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
-		self.nonce(secp, commit)
+		self.nonce(secp, commit, None)
 	}
 
-	fn private_nonce(&self, secp: &Secp256k1, commit: &Commitment) -> Result<SecretKey, Error> {
+	fn private_nonce(
+		&self,
+		secp: &Secp256k1,
+		commit: &Commitment,
+		key_id: &Identifier,
+	) -> Result<SecretKey, Error> {
 		// Legacy proofs used the same nonce for rewind and private nonce. Keep this
 		// behavior for compatibility with old pre-hard-fork outputs that wallets may
 		// still need to scan and rewind; new outputs should use ProofBuilder.
-		self.nonce(secp, commit)
+		self.nonce(secp, commit, Some(key_id))
 	}
 
 	/// Message bytes:
@@ -415,7 +467,12 @@ impl ProofBuild for ViewKey {
 		})
 	}
 
-	fn private_nonce(&self, _secp: &Secp256k1, _commit: &Commitment) -> Result<SecretKey, Error> {
+	fn private_nonce(
+		&self,
+		_secp: &Secp256k1,
+		_commit: &Commitment,
+		_key_id: &Identifier,
+	) -> Result<SecretKey, Error> {
 		Err(Error::RangeProof(
 			"ViewKey cannot create private rangeproof nonces".into(),
 		))
@@ -522,10 +579,7 @@ mod tests {
 			ExtKeychain::derive_key_id(3, rng.random(), rng.random(), rng.random(), 0).unwrap();
 		let switch = SwitchCommitmentType::Regular;
 		let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
-		let proof = create(
-			&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-		)
-		.unwrap();
+		let proof = create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 		assert!(verify(&mut secp, commit, proof, None).is_ok());
 		let rewind = rewind(&mut secp, &builder, commit, None, proof).unwrap();
 		assert!(rewind.is_some());
@@ -568,9 +622,7 @@ mod tests {
 		let switch = SwitchCommitmentType::Regular;
 		let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
 
-		let res = create(
-			&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-		);
+		let res = create(&mut secp, &keychain, &builder, amount, &id, switch, commit);
 
 		assert!(matches!(
 			res,
@@ -598,7 +650,6 @@ mod tests {
 			&id,
 			switch,
 			wrong_commit,
-			None,
 		);
 
 		assert!(matches!(
@@ -642,10 +693,7 @@ mod tests {
 		let id = ExtKeychain::derive_key_id(3, 1, 2, 3, 0).unwrap();
 		let switch = SwitchCommitmentType::Regular;
 		let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
-		let proof = create(
-			&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-		)
-		.unwrap();
+		let proof = create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 
 		let rewind = rewind(&mut secp, &other_builder, commit, None, proof).unwrap();
 
@@ -767,10 +815,8 @@ mod tests {
 		let commit_a = {
 			let switch = SwitchCommitmentType::Regular;
 			let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
-			let proof = create(
-				&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-			)
-			.unwrap();
+			let proof =
+				create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 			assert!(verify(&mut secp, commit, proof, None).is_ok());
 			let rewind = rewind(&mut secp, &builder, commit, None, proof).unwrap();
 			assert!(rewind.is_some());
@@ -784,10 +830,8 @@ mod tests {
 		let commit_b = {
 			let switch = SwitchCommitmentType::None;
 			let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
-			let proof = create(
-				&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-			)
-			.unwrap();
+			let proof =
+				create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 			assert!(verify(&mut secp, commit, proof, None).is_ok());
 			let rewind = rewind(&mut secp, &builder, commit, None, proof).unwrap();
 			assert!(rewind.is_some());
@@ -828,10 +872,7 @@ mod tests {
 		let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
 
 		// Generate proof with ProofBuilder..
-		let proof = create(
-			&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-		)
-		.unwrap();
+		let proof = create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 		// ..and rewind with ViewKey
 		let rewind = rewind(&mut secp, &view_key, commit, None, proof);
 
@@ -871,10 +912,7 @@ mod tests {
 		let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
 
 		// Generate proof with ProofBuilder..
-		let proof = create(
-			&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-		)
-		.unwrap();
+		let proof = create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 		// ..and rewind with ViewKey
 		let rewind = rewind(&mut secp, &view_key, commit, None, proof);
 
@@ -914,10 +952,7 @@ mod tests {
 		let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
 
 		// Generate proof with ProofBuilder..
-		let proof = create(
-			&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-		)
-		.unwrap();
+		let proof = create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 		// ..and rewind with ViewKey
 		let rewind = rewind(&mut secp, &view_key, commit, None, proof);
 
@@ -964,10 +999,8 @@ mod tests {
 			let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
 
 			// Generate proof with ProofBuilder..
-			let proof = create(
-				&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-			)
-			.unwrap();
+			let proof =
+				create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 			// ..and rewind with child ViewKey
 			let rewind = rewind(&mut secp, &child_view_key, commit, None, proof);
 
@@ -1004,10 +1037,8 @@ mod tests {
 			let commit = keychain.commit(&secp, amount, &id, switch).unwrap();
 
 			// Generate proof with ProofBuilder..
-			let proof = create(
-				&mut secp, &keychain, &builder, amount, &id, switch, commit, None,
-			)
-			.unwrap();
+			let proof =
+				create(&mut secp, &keychain, &builder, amount, &id, switch, commit).unwrap();
 			// ..and rewind with child ViewKey
 			let rewind = rewind(&mut secp, &child_view_key, commit, None, proof);
 

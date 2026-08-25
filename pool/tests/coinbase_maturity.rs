@@ -55,16 +55,15 @@ fn test_coinbase_maturity() {
 	// Coinbase is not yet matured and cannot be spent.
 	let header = chain.head_header().unwrap();
 	assert!(matches!(
-		pool.add_to_pool(test_source(), tx.clone(), true, &header, &mut secp),
+		submit_to_pool!(pool, test_source(), tx.clone(), true, &header, &mut secp),
 		Err(PoolError::ImmatureCoinbase)
 	));
 
 	// Add 2 more blocks. Original coinbase output is now matured and can be spent.
 	add_some_blocks(&mut secp, &chain, 2, &keychain);
 	let header = chain.head_header().unwrap();
-	assert!(pool
-		.add_to_pool(test_source(), tx.clone(), true, &header, &mut secp)
-		.is_ok());
+	assert!(submit_to_pool!(pool, test_source(), tx.clone(), true, &header, &mut secp).is_ok());
+	assert_eq!(pool.stempool.size(), 1);
 
 	clean_output_dir(db_root.into());
 }

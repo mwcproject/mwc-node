@@ -608,6 +608,13 @@ impl Readable for Proof {
 
 impl Writeable for Proof {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		let writer_context_id = writer.get_context_id();
+		if self.context_id != writer_context_id {
+			return Err(ser::Error::CorruptedData(format!(
+				"Proof context_id {} does not match writer context_id {}",
+				self.context_id, writer_context_id
+			)));
+		}
 		let nonces = self.pack_nonces()?;
 		if writer.serialization_mode() != ser::SerializationMode::Hash {
 			writer.write_u8(self.edge_bits)?;
@@ -689,6 +696,20 @@ mod tests {
 
 		let err = write_proof(&proof).unwrap_err();
 		assert!(matches!(err, ser::Error::CorruptedData(_)));
+	}
+
+	#[test]
+	fn proof_write_rejects_context_mismatch_before_packing() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let mut proof = Proof::zero(0, global::proofsize(0));
+		proof.context_id = u32::MAX;
+
+		let err = write_proof(&proof).unwrap_err();
+		assert!(matches!(
+			err,
+			ser::Error::CorruptedData(ref msg)
+				if msg == "Proof context_id 4294967295 does not match writer context_id 0"
+		));
 	}
 
 	#[test]

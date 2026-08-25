@@ -235,6 +235,26 @@ fn commit_wrapper_from_input_commitment_only_is_explicit() {
 }
 
 #[test]
+fn empty_inputs_compare_equal_across_protocol_representations() {
+	let commit_only = Inputs::CommitOnly(vec![]);
+	let features_and_commit = Inputs::FeaturesAndCommit(vec![]);
+
+	assert!(commit_only.eq_by_hash(0, &features_and_commit).unwrap());
+	assert!(features_and_commit.eq_by_hash(0, &commit_only).unwrap());
+}
+
+#[test]
+fn nonempty_inputs_do_not_compare_equal_across_protocol_representations() {
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let input = Input::new(OutputFeatures::Plain, secp.commit_value(1).unwrap());
+	let commit_only = Inputs::CommitOnly(vec![CommitWrapper::from_input_commitment_only(&input)]);
+	let features_and_commit = Inputs::FeaturesAndCommit(vec![input]);
+
+	assert!(!commit_only.eq_by_hash(0, &features_and_commit).unwrap());
+	assert!(!features_and_commit.eq_by_hash(0, &commit_only).unwrap());
+}
+
+#[test]
 fn commit_wrapper_write_rejects_invalid_commitment() {
 	let invalid_commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
 	let input = CommitWrapper::from(invalid_commit);
@@ -345,10 +365,7 @@ fn test_output_ser_deser() {
 	let switch = keychain::SwitchCommitmentType::Regular;
 	let commit = keychain.commit(&secp, 5, &key_id, switch).unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let proof = proof::create(
-		&mut secp, &keychain, &builder, 5, &key_id, switch, commit, None,
-	)
-	.unwrap();
+	let proof = proof::create(&mut secp, &keychain, &builder, 5, &key_id, switch, commit).unwrap();
 
 	let out = Output::new(OutputFeatures::Plain, commit, proof);
 

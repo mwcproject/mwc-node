@@ -1,6 +1,6 @@
 [package]
 name = "mwc"
-version = "7.0.0"
+version = "7.1.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -13,7 +13,15 @@ edition = "2024"
 
 [workspace]
 members = ["api", "chain", "config", "core", "keychain", "mwc_crates", "p2p", "servers", "store", "util", "pool", "node_workflow", "mwc_node_lib"]
-exclude = ["etc/gen_gen"]
+exclude = ["etc/gen_gen", "vendor/saturating-time", "vendor/tor-ptmgr"]
+
+[patch.crates-io]
+# Arti 0.44+ exercises a Windows hang in saturating-time 0.4.0 while parsing a consensus.
+saturating-time = { path = "vendor/saturating-time" }
+# Arti 0.45's PT stdout worker cannot observe transport destruction while a
+# quiet child is blocked without producing another stdout line. Keep the
+# managed child supervisor under our control until the fix is released upstream.
+tor-ptmgr = { path = "vendor/tor-ptmgr" }
 
 [workspace.dependencies]
 thiserror = "2"
@@ -24,15 +32,15 @@ name = "mwc"
 path = "src/bin/mwc.rs"
 
 [dependencies]
-mwc_crates = { path = "./mwc_crates", version = "7.0.0" }
-mwc_api = { path = "./api", version = "7.0.0" }
-mwc_config = { path = "./config", version = "7.0.0" }
-mwc_chain = { path = "./chain", version = "7.0.0" }
-mwc_core = { path = "./core", version = "7.0.0" }
-mwc_p2p = { path = "./p2p", version = "7.0.0" }
-mwc_servers = { path = "./servers", version = "7.0.0" }
-mwc_util = { path = "./util", version = "7.0.0" }
-mwc_node_workflow = { path = "./node_workflow", version = "7.0.0" }
+mwc_crates = { path = "./mwc_crates", version = "7.1.0" }
+mwc_api = { path = "./api", version = "7.1.0" }
+mwc_config = { path = "./config", version = "7.1.0" }
+mwc_chain = { path = "./chain", version = "7.1.0" }
+mwc_core = { path = "./core", version = "7.1.0" }
+mwc_p2p = { path = "./p2p", version = "7.1.0" }
+mwc_servers = { path = "./servers", version = "7.1.0" }
+mwc_util = { path = "./util", version = "7.1.0" }
+mwc_node_workflow = { path = "./node_workflow", version = "7.1.0" }
 thiserror.workspace = true
 
 [build-dependencies]

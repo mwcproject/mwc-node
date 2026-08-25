@@ -42,6 +42,11 @@ use std::time::{Duration, Instant};
 
 const PROCESS_STATUS_CACHE_MAX_AGE: Duration = Duration::from_secs(5);
 
+/// A host-utilization snapshot shared by foreign API requests.
+///
+/// The three metrics are sampled together and reused for at most
+/// `PROCESS_STATUS_CACHE_MAX_AGE`. They are monitoring data and are not used
+/// for authorization, consensus, or resource-admission decisions.
 #[derive(Clone, Copy)]
 pub struct ProcessHostMetrics {
 	pub host_cpu_usage: f64,
@@ -75,6 +80,11 @@ impl ProcessStatusCache {
 		}
 	}
 
+	/// Returns the current snapshot, refreshing it once its bounded age expires.
+	///
+	/// Keeping the `System` sampler between calls is required for meaningful CPU
+	/// deltas and avoids making every public status request sleep for sysinfo's
+	/// minimum CPU update interval.
 	pub fn get(&mut self) -> ProcessHostMetrics {
 		if self.updated_at.map_or(true, |updated_at| {
 			updated_at.elapsed() >= PROCESS_STATUS_CACHE_MAX_AGE
@@ -182,7 +192,6 @@ where
 
 	pub fn get_header(
 		&self,
-		secp: &Secp256k1,
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
@@ -190,7 +199,7 @@ where
 		let header_handler = HeaderHandler {
 			chain: self.chain.clone(),
 		};
-		let hash = header_handler.parse_inputs(secp, height, hash, commit)?;
+		let hash = header_handler.parse_inputs(height, hash, commit)?;
 		header_handler.get_header_v2(&hash)
 	}
 
@@ -202,7 +211,9 @@ where
 	/// * `hash` - block hash.
 	/// * `commit` - output commitment.
 	/// * `include_proof` - include range proofs for outputs. Default: false
-	/// * `include_merkle_proof` - include merkle proofs (for unspent coinbase outputs).  Default: false
+	/// * `include_merkle_proof` - include current-output-PMMR Merkle proofs for
+	///   unspent coinbase outputs. These proofs are not tied to the returned
+	///   block's header, even when an older block is requested. Default: false.
 	///
 	/// # Returns
 	/// * Result Containing:
@@ -212,7 +223,6 @@ where
 
 	pub fn get_block(
 		&self,
-		secp: &Secp256k1,
 		height: Option<u64>,
 		hash: Option<Hash>,
 		commit: Option<String>,
@@ -222,9 +232,8 @@ where
 		let block_handler = BlockHandler {
 			chain: self.chain.clone(),
 		};
-		let hash = block_handler.parse_inputs(secp, height, hash, commit)?;
+		let hash = block_handler.parse_inputs(height, hash, commit)?;
 		block_handler.get_block(
-			secp,
 			&hash,
 			include_proof.unwrap_or(true),
 			include_merkle_proof.unwrap_or(false),
@@ -251,7 +260,6 @@ where
 
 	pub fn get_blocks(
 		&self,
-		secp: &Secp256k1,
 		start_height: u64,
 		end_height: u64,
 		max: u64,
@@ -260,7 +268,7 @@ where
 		let block_handler = BlockHandler {
 			chain: self.chain.clone(),
 		};
-		block_handler.get_blocks(secp, start_height, end_height, max, include_proof)
+		block_handler.get_blocks(start_height, end_height, max, include_proof)
 	}
 
 	/// Returns the node version and block header version (used by mwc-wallet).
@@ -328,7 +336,12 @@ where
 	/// # Arguments
 	/// * `commits` - a vector of unspent output commitments.
 	/// * `include_proof` - whether or not to include the range proof in the response.
-	/// * `include_merkle_proof` - whether or not to include the merkle proof in the response.
+	/// * `include_merkle_proof` - whether to include a current-output-PMMR Merkle
+	///   proof for each unspent coinbase output. It is not an origin-header proof;
+	///   use the proof's `mmr_size` to select the matching output root.
+	///   Requests enabling this option accept at most 100 commitment entries.
+	///   Duplicate commitments retain legacy response behavior and count separately
+	///   toward that limit.
 	///
 	/// # Returns
 	/// * Result Containing:
@@ -338,7 +351,6 @@ where
 
 	pub fn get_outputs(
 		&self,
-		secp: &Secp256k1,
 		commits: Vec<String>,
 		include_proof: Option<bool>,
 		include_merkle_proof: Option<bool>,
@@ -347,7 +359,6 @@ where
 			chain: self.chain.clone(),
 		};
 		output_handler.get_outputs_v2(
-			secp,
 			Some(commits),
 			None,
 			None,
@@ -372,7 +383,6 @@ where
 
 	pub fn get_unspent_outputs(
 		&self,
-		secp: &Secp256k1,
 		start_index: u64,
 		end_index: Option<u64>,
 		max: u64,
@@ -381,7 +391,7 @@ where
 		let output_handler = OutputHandler {
 			chain: self.chain.clone(),
 		};
-		output_handler.get_unspent_outputs(secp, start_index, end_index, max, include_proof)
+		output_handler.get_unspent_outputs(start_index, end_index, max, include_proof)
 	}
 
 	/// Retrieves the PMMR indices based on the provided block height(s).
@@ -477,13 +487,15 @@ where
 		let pool_handler = PoolHandler {
 			tx_pool: self.tx_pool.clone(),
 		};
-		pool_handler.push_transaction(tx, fluff, secp).map_err(|e| {
-			warn!(
-				"Unable to push transaction {} into the pool, {}",
-				tx_hash, e
-			);
-			e
-		})
+		pool_handler
+			.push_transaction(tx, tx_hash, fluff, secp)
+			.map_err(|e| {
+				warn!(
+					"Unable to push transaction {} into the pool, {}",
+					tx_hash, e
+				);
+				e
+			})
 	}
 
 	pub fn get_running_time(&self) -> u64 {

@@ -48,7 +48,8 @@ pub trait ReadablePMMR {
 
 	/// Get the hash for the provided peak pos.
 	/// Optimized for reading peak hashes rather than arbitrary pos hashes.
-	/// Peaks can be assumed to not be compacted.
+	/// Peaks of the current MMR state can be assumed not to be compacted. This
+	/// guarantee does not extend to nodes that were peaks at an earlier size.
 	fn get_peak_from_file(&self, pos: u64) -> Result<Option<Hash>, Error>;
 
 	/// Get the data element at provided position in the MMR (ignores the remove log).
@@ -926,6 +927,8 @@ pub fn round_up_to_leaf_pos(pos0: u64) -> Result<u64, Error> {
 /// Returns the 0-based pmmr index of 0-based leaf index n
 pub fn insertion_to_pmmr_index(nleaf0: u64) -> Result<u64, Error> {
 	// 2 * nleaf0 - nleaf0.count_ones() as u64
+	// Note, we understand that we can calculate it nleaf0 + (nleaf0 - popcount(nleaf0))
+	// a little safer.  But this implementaiton is much easier to read and understand, so let keep it as it is
 	let ones = u64::from(nleaf0.count_ones());
 	nleaf0
 		.checked_mul(2)

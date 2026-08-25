@@ -744,11 +744,45 @@ impl<T: Clone> HeadersRecieveCache<T> {
 				debug_assert!(!headers.is_empty());
 				debug_assert!(headers.len() == HEADERS_PER_BATCH as usize);
 				debug_assert!(headers.first().map(|header| header.height) == Some(*height));
-				let ending_height = headers
+
+				// The terminal PIBD response can contain unvalidated padding above the
+				// archive target. Derive the applicable prefix from the authenticated
+				// batch start and target before allowing any padding header to influence
+				// stale detection or chain application.
+				let applicable_len = self
+					.archive_header_height
+					.checked_sub(*height)
+					.and_then(|remaining| remaining.checked_add(1))
+					.ok_or_else(|| {
+						(
+							None,
+							Error::DataOverflow(format!(
+								"HeadersRecieveCache::apply_cache, cached batch range {}..{}",
+								height, self.archive_header_height
+							)),
+						)
+					})?;
+				let applicable_len = usize::try_from(applicable_len).map_err(|_| {
+					(
+						None,
+						Error::DataOverflow(format!(
+							"HeadersRecieveCache::apply_cache, applicable_len={}",
+							applicable_len
+						)),
+					)
+				})?;
+				let applicable_len = cmp::min(headers.len(), applicable_len);
+				let mut bhs = headers[..applicable_len].to_vec();
+				if bhs.is_empty() {
+					stale_heights.push(*height);
+					continue;
+				}
+
+				let ending_height = bhs
 					.last()
 					.ok_or((
 						None,
-						Error::Other("Internal error, header expected to be defined".into()),
+						Error::Other("Internal error, bhs expected to be defined".into()),
 					))?
 					.height;
 				if ending_height <= tip_height {
@@ -762,28 +796,7 @@ impl<T: Clone> HeadersRecieveCache<T> {
 				if *height > next_tip_height {
 					break;
 				}
-				let mut bhs = headers.clone();
-				// The terminal PIBD batch can be full sized even when the archive target
-				// falls inside it. Keep the applied range bounded by the PIBD target.
-				// Note, trancating addrees the comment that said that series length/consystency is
-				// not validated above the header height.
-				if let Some(idx) = bhs
-					.iter()
-					.position(|header| header.height > self.archive_header_height)
-				{
-					bhs.truncate(idx);
-				}
-				if bhs.is_empty() {
-					stale_heights.push(*height);
-					continue;
-				}
-				tip_height = bhs
-					.last()
-					.ok_or((
-						Some(peer.clone()),
-						Error::Other("Internal error, bhs expected to be defined".into()),
-					))?
-					.height;
+				tip_height = ending_height;
 
 				headers_by_peer.push((*height, bhs.clone(), peer.clone()));
 				headers_all.append(&mut bhs);
@@ -831,16 +844,10 @@ impl<T: Clone> HeadersRecieveCache<T> {
 						match self.chain.sync_block_headers(&hdr, tip, Options::NONE) {
 							Ok(_) => self.remove_cached_header_batches(&[height]),
 							Err(e) => {
-								let evict_cached_batch =
-									e.is_bad_data() || matches!(&e, Error::Orphan(_));
+								let bad_data = e.is_bad_data();
+								let err = if bad_data { (Some(peer), e) } else { (None, e) };
 
-								let err = if e.is_bad_data() || matches!(&e, Error::Orphan(_)) {
-									(Some(peer), e)
-								} else {
-									(None, e)
-								};
-
-								if evict_cached_batch {
+								if bad_data {
 									self.remove_cached_header_batches(&[height]);
 								}
 								return Err(err);
@@ -919,6 +926,7 @@ mod tests {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap();
 
@@ -1049,12 +1057,19 @@ mod tests {
 		let (chain, chain_dir) =
 			init_test_chain("apply_cache_evicts_bad_batch_and_keeps_later_unapplied_batches");
 		let context_id = chain.get_context_id();
+		let genesis_hash = chain.genesis().hash(context_id).unwrap();
 		let headers_per_batch = u64::from(HEADERS_PER_BATCH);
 		let headers_cache = headers_receive_cache(chain.clone(), 2 * headers_per_batch);
 
 		{
 			let mut main_headers_cache = headers_cache.main_headers_cache.write();
-			main_headers_cache.insert(1, (dummy_headers(context_id, 1), "bad-peer".to_string()));
+			main_headers_cache.insert(
+				1,
+				(
+					linked_dummy_headers(context_id, 1, genesis_hash),
+					"bad-peer".to_string(),
+				),
+			);
 			main_headers_cache.insert(
 				headers_per_batch + 1,
 				(
@@ -1070,6 +1085,63 @@ mod tests {
 		let main_headers_cache = headers_cache.main_headers_cache.read_recursive();
 		assert!(!main_headers_cache.contains_key(&1));
 		assert!(main_headers_cache.contains_key(&(headers_per_batch + 1)));
+
+		cleanup_test_chain(&chain, &chain_dir);
+	}
+
+	#[test]
+	fn apply_cache_ignores_unvalidated_terminal_padding_for_stale_detection() {
+		let (chain, chain_dir) =
+			init_test_chain("apply_cache_ignores_unvalidated_terminal_padding_for_stale_detection");
+		let context_id = chain.get_context_id();
+		let genesis_hash = chain.genesis().hash(context_id).unwrap();
+		let headers_cache = headers_receive_cache(chain.clone(), 1);
+		let mut headers = linked_dummy_headers(context_id, 1, genesis_hash);
+
+		// The only applicable header is at height 1. A peer-controlled padding
+		// header must not make that required prefix look stale against the
+		// genesis tip at height 0.
+		headers.last_mut().unwrap().height = 0;
+		headers_cache
+			.main_headers_cache
+			.write()
+			.insert(1, (headers, "padding-peer".to_string()));
+
+		let res = headers_cache.apply_cache();
+		assert!(
+			matches!(&res, Err((Some(peer), e)) if peer == "padding-peer" && e.is_bad_data()),
+			"the applicable prefix should reach chain validation: {:?}",
+			res
+		);
+
+		cleanup_test_chain(&chain, &chain_dir);
+	}
+
+	#[test]
+	fn apply_cache_retains_orphan_without_peer_attribution() {
+		let (chain, chain_dir) =
+			init_test_chain("apply_cache_retains_orphan_without_peer_attribution");
+		let context_id = chain.get_context_id();
+		let headers_cache = headers_receive_cache(chain.clone(), 1);
+
+		// The missing predecessor makes this a local-context failure. Cache
+		// admission normally authenticates the predecessor hash, so apply_cache
+		// must neither blame the serving peer nor discard the retryable batch.
+		headers_cache
+			.main_headers_cache
+			.write()
+			.insert(1, (dummy_headers(context_id, 1), "honest-peer".to_string()));
+
+		let res = headers_cache.apply_cache();
+		assert!(
+			matches!(&res, Err((None, Error::Orphan(_)))),
+			"unexpected result: {:?}",
+			res
+		);
+		assert!(headers_cache
+			.main_headers_cache
+			.read_recursive()
+			.contains_key(&1));
 
 		cleanup_test_chain(&chain, &chain_dir);
 	}

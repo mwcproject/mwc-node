@@ -28,18 +28,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const MAX_UNKNOWN_BLOCK_CANDIDATES_PER_HASH: usize = 4;
-const MAX_UNKNOWN_BLOCK_SOURCE_PEERS: usize = 16;
+const MAX_UNKNOWN_BLOCK_PEERS_PER_HASH: usize = 4;
 const MAX_ORPHAN_RETRY_REQUESTS_PER_PEER: usize = 1;
 
 struct UnknownBlock {
 	block: Block,
-	// BLAKE2b over the canonical full-block serialization. The header hash
-	// alone is not a safe identity until the body is validated against the
-	// header roots.
-	serialized_hash: Hash,
 	added: Instant,
-	source_peers: HashSet<String>,
+	// PeerAddr equality and hashing intentionally ignore the port for non-loopback
+	// IP peers. Using PeerAddr here prevents one IP from consuming multiple
+	// candidate slots by reconnecting with different advertised ports.
+	source_peers: HashSet<PeerAddr>,
 }
 
 struct OrphanRetryBudget {
@@ -99,7 +97,7 @@ impl OrphansSync {
 	pub fn recieve_block_reporting(
 		&self,
 		block: Block,
-		source_peer: Option<String>,
+		source_peer: Option<PeerAddr>,
 	) -> Result<bool, mwc_chain::Error> {
 		let context_id = self.chain.get_context_id();
 		let bhash = block.hash(context_id)?;
@@ -113,6 +111,11 @@ impl OrphansSync {
 		if self.chain.block_exists(&bhash)? {
 			return Ok(false);
 		}
+		// A block already owned by the regular orphan pool must not also consume
+		// space in the unknown-header cache or be replayed from both caches.
+		if self.chain.is_orphan(&bhash) {
+			return Ok(need_prev_block);
+		}
 
 		if !keep_unknown_block {
 			return Ok(false);
@@ -121,53 +124,42 @@ impl OrphansSync {
 		let mut unknown_blocks = self.unknown_blocks.write();
 		let unknown_blocks_count: usize = unknown_blocks
 			.values()
-			.map(|candidates| candidates.len())
+			.map(|candidates| Self::unknown_block_slots(candidates))
 			.sum();
+		let unknown_blocks_limit = self.unknown_blocks_limit();
 		if let Some(candidates) = unknown_blocks.get_mut(&bhash) {
-			let serialized_hash = Self::serialized_block_hash(context_id, &block)?;
 			// A block hash is only the header hash. Until a full block is
-			// validated against the header roots, only byte-identical arrivals are
-			// duplicates. Byte-distinct arrivals are kept as bounded alternatives
-			// so a malicious first body cannot pin this cache for the header hash.
-			if let Some(unknown_block) = candidates
-				.iter_mut()
-				.find(|candidate| candidate.serialized_hash == serialized_hash)
-			{
-				if let Some(source_peer) = source_peer {
-					Self::insert_source_peer_capped(&mut unknown_block.source_peers, source_peer);
-				}
-				return Ok(need_prev_block);
-			}
-
-			if candidates.len() >= MAX_UNKNOWN_BLOCK_CANDIDATES_PER_HASH
-				|| unknown_blocks_count >= self.unknown_blocks_limit()
-			{
-				// We still need to request prev block, even cache wasn't updated with orphan
-				// Idea is requesting prev blocks until we reach the head
-				return Ok(need_prev_block);
-			}
-
-			candidates.push(UnknownBlock {
+			// validated against the header roots, only losslessly identical arrivals
+			// are duplicates. Protocol-v3+ full-block serialization is not suitable
+			// for this comparison because it discards input features and the input
+			// representation. Distinct arrivals are kept as bounded alternatives so
+			// a malicious first body cannot pin this cache for the header hash or
+			// inherit an honest candidate's source peer.
+			// Each peer owns at most one candidate slot for this header hash. If it
+			// sends a different body, move its attribution to the new body. Identical
+			// bodies remain coalesced so multiple peers can attest to one candidate
+			// without duplicating the block in memory.
+			Self::cache_candidate(
+				context_id,
+				candidates,
 				block,
-				serialized_hash,
-				added: Instant::now(),
-				source_peers: source_peer.into_iter().collect(),
-			});
+				source_peer,
+				unknown_blocks_count,
+				unknown_blocks_limit,
+			)?;
 			return Ok(need_prev_block);
 		}
 
-		if unknown_blocks_count >= self.unknown_blocks_limit() {
+		if unknown_blocks_count >= unknown_blocks_limit {
 			// We still need to request prev block, even cache wasn't updated with orphan
 			// Idea is requesting prev blocks until we reach the head
 			return Ok(need_prev_block);
 		}
 
-		let serialized_hash = Self::serialized_block_hash(context_id, &block)?;
 		unknown_blocks.insert(
 			bhash,
 			vec![UnknownBlock {
 				block,
-				serialized_hash,
 				added: Instant::now(),
 				source_peers: source_peer.into_iter().collect(),
 			}],
@@ -197,22 +189,31 @@ impl OrphansSync {
 			// Otherwise Chain::process_block can move one unvalidated candidate
 			// into the regular orphan pool before body validation, recreating
 			// first-writer poisoning there.
-			let mut blocks: Vec<(Hash, Hash, Block, HashSet<String>)> = unknown_blocks
+			// The write lock held for this whole block keeps candidate indexes stable
+			// until bad candidates are removed below.
+			let mut blocks: Vec<(Hash, usize, Block, HashSet<String>)> = unknown_blocks
 				.iter()
 				.flat_map(|(hash, candidates)| {
-					candidates.iter().map(move |unknown| {
-						(
-							hash.clone(),
-							unknown.serialized_hash,
-							unknown.block.clone(),
-							unknown.source_peers.clone(),
-						)
-					})
+					candidates
+						.iter()
+						.enumerate()
+						.map(move |(candidate_index, unknown)| {
+							(
+								hash.clone(),
+								candidate_index,
+								unknown.block.clone(),
+								unknown
+									.source_peers
+									.iter()
+									.map(|peer| peer.to_string())
+									.collect(),
+							)
+						})
 				})
 				.collect();
 			blocks.sort_by_key(|(_, _, b, _)| b.header.height);
-			let mut bad_candidates = Vec::new();
-			for (hash, serialized_hash, b, source_peers) in blocks {
+			let mut bad_candidates: HashMap<Hash, HashSet<usize>> = HashMap::new();
+			for (hash, candidate_index, b, source_peers) in blocks {
 				if self.chain.block_exists(&hash)? {
 					continue;
 				}
@@ -225,13 +226,27 @@ impl OrphansSync {
 				{
 					Ok(_) => {}
 					Err(mwc_chain::Error::Orphan(_)) => {}
-					Err(e) if e.is_bad_data() => bad_candidates.push((hash, serialized_hash)),
+					// Another peer can commit the same block after block_exists()
+					// above but before process_block() acquires the chain locks.
+					// The requested result is already present, so continue the pass.
+					Err(e) if e.is_known_block() => {}
+					Err(e) if e.is_bad_data() => {
+						bad_candidates
+							.entry(hash)
+							.or_default()
+							.insert(candidate_index);
+					}
 					Err(e) => return Err(e),
 				}
 			}
-			for (hash, serialized_hash) in bad_candidates {
+			for (hash, bad_candidate_indexes) in bad_candidates {
 				if let Some(candidates) = unknown_blocks.get_mut(&hash) {
-					candidates.retain(|unknown| unknown.serialized_hash != serialized_hash);
+					let mut candidate_index = 0;
+					candidates.retain(|_| {
+						let keep = !bad_candidate_indexes.contains(&candidate_index);
+						candidate_index += 1;
+						keep
+					});
 				}
 			}
 
@@ -253,7 +268,7 @@ impl OrphansSync {
 
 			if unknown_blocks
 				.values()
-				.map(|candidates| candidates.len())
+				.map(|candidates| Self::unknown_block_slots(candidates))
 				.sum::<usize>()
 				> self.unknown_blocks_limit()
 			{
@@ -274,8 +289,22 @@ impl OrphansSync {
 		for orph_hash in &block_to_validate {
 			let block_hash_height = match orphans_pool.get_orphan(orph_hash) {
 				Some(orphan) => {
-					let prev_block_hash = orphan.block.header.prev_hash.clone();
 					let bl_height = orphan.block.header.height;
+					// A concurrently accepted block can leave an older body for the same
+					// header hash in the orphan pool. Do not replay that stale body: an
+					// input-only conflict with the stored block is intentionally neither a
+					// known-block nor bad-data error, so replaying it would otherwise keep
+					// returning the same terminal error without evicting the orphan.
+					if self.chain.block_exists(orph_hash)? {
+						let _ = self.chain.remove_orphan(bl_height, orph_hash);
+						info!(
+							"Dropped stale orphan {} at {} because the block is already stored",
+							orph_hash, bl_height
+						);
+						continue;
+					}
+
+					let prev_block_hash = orphan.block.header.prev_hash.clone();
 					if self.chain.block_exists(&prev_block_hash)? {
 						// it is a stale oprphan, we can process it...
 						let bl_hash = orphan.block.hash(context_id)?;
@@ -468,40 +497,364 @@ impl OrphansSync {
 		self.pibd_params.get_orphans_num_limit()
 	}
 
-	fn insert_source_peer_capped(source_peers: &mut HashSet<String>, source_peer: String) {
-		if source_peers.len() < MAX_UNKNOWN_BLOCK_SOURCE_PEERS
-			|| source_peers.contains(&source_peer)
-		{
-			source_peers.insert(source_peer);
-		}
+	// A body without peer attribution still consumes one slot. Normally every
+	// network arrival is attributed, but keeping Option<PeerAddr> support makes the
+	// cache safe for internal callers as well.
+	fn unknown_block_slots(candidates: &[UnknownBlock]) -> usize {
+		candidates
+			.iter()
+			.map(|candidate| candidate.source_peers.len().max(1))
+			.sum()
 	}
 
-	fn serialized_block_hash(context_id: u32, block: &Block) -> Result<Hash, mwc_chain::Error> {
-		let block_bytes = ser::ser_vec(context_id, block, ProtocolVersion::local())?;
-		Ok(block_bytes.hash(context_id)?)
+	fn cache_candidate(
+		context_id: u32,
+		candidates: &mut Vec<UnknownBlock>,
+		block: Block,
+		source_peer: Option<PeerAddr>,
+		total_slots: usize,
+		total_limit: usize,
+	) -> Result<(), mwc_chain::Error> {
+		// Finish all fallible comparisons before mutating the cache so a
+		// serialization/hash error leaves the previous candidate intact.
+		let mut matching_candidate = Self::find_lossless_candidate(context_id, candidates, &block)?;
+		let previous_candidate = source_peer.as_ref().and_then(|source_peer| {
+			candidates
+				.iter()
+				.position(|candidate| candidate.source_peers.contains(source_peer))
+		});
+
+		// An exact repeat from the same peer neither consumes another slot nor
+		// refreshes the candidate's expiry time.
+		if matching_candidate.is_some() && matching_candidate == previous_candidate {
+			return Ok(());
+		}
+
+		let replacing_peer = previous_candidate.is_some();
+		let mut available_total_slots = total_slots;
+		if let (Some(previous_candidate), Some(source_peer)) =
+			(previous_candidate, source_peer.as_ref())
+		{
+			let removed = candidates[previous_candidate]
+				.source_peers
+				.remove(source_peer);
+			debug_assert!(removed);
+			available_total_slots = available_total_slots.checked_sub(1).ok_or_else(|| {
+				mwc_chain::Error::DataOverflow(
+					"OrphansSync::cache_candidate peer slot count underflow".to_owned(),
+				)
+			})?;
+
+			if candidates[previous_candidate].source_peers.is_empty() {
+				candidates.remove(previous_candidate);
+				if let Some(matching_candidate) = matching_candidate.as_mut() {
+					if *matching_candidate > previous_candidate {
+						*matching_candidate -= 1;
+					}
+				}
+			}
+		}
+
+		let hash_slots = Self::unknown_block_slots(candidates);
+		if let Some(matching_candidate) = matching_candidate {
+			if let Some(source_peer) = source_peer {
+				// Adding the first peer to an anonymous candidate adopts its existing
+				// slot. A replacement is also slot-neutral, so both remain possible
+				// when the cache is otherwise full.
+				let adopts_anonymous_slot = candidates[matching_candidate].source_peers.is_empty();
+				if adopts_anonymous_slot
+					|| replacing_peer
+					|| (hash_slots < MAX_UNKNOWN_BLOCK_PEERS_PER_HASH
+						&& available_total_slots < total_limit)
+				{
+					candidates[matching_candidate]
+						.source_peers
+						.insert(source_peer);
+				}
+			}
+			return Ok(());
+		}
+
+		// At the global or per-hash limit, an alternative from a new peer is
+		// deliberately dropped instead of evicting an existing candidate. A bad
+		// first candidate cannot permanently pin the slot: once its previous full
+		// block is available, sync_orphans() passes its attributed source peers to
+		// Chain::process_block(). Bad-data reporting bans those peers, and this sync
+		// pass removes the bad candidate, leaving room for a subsequent (or
+		// re-requested) honest delivery. Sustained replacement from fresh peer
+		// identities is a peer/Sybil-flood concern rather than a cache-admission
+		// guarantee.
+		if replacing_peer
+			|| (hash_slots < MAX_UNKNOWN_BLOCK_PEERS_PER_HASH
+				&& available_total_slots < total_limit)
+		{
+			candidates.push(UnknownBlock {
+				block,
+				added: Instant::now(),
+				source_peers: source_peer.into_iter().collect(),
+			});
+		}
+
+		Ok(())
+	}
+
+	fn blocks_equal_lossless(
+		context_id: u32,
+		left: &Block,
+		right: &Block,
+	) -> Result<bool, mwc_chain::Error> {
+		if left.header != right.header
+			|| !left
+				.body
+				.inputs
+				.eq_by_hash(context_id, &right.body.inputs)?
+		{
+			return Ok(false);
+		}
+
+		let version = ProtocolVersion::local();
+		Ok(ser::ser_vec(context_id, &left.body.outputs, version)?
+			== ser::ser_vec(context_id, &right.body.outputs, version)?
+			&& ser::ser_vec(context_id, &left.body.kernels, version)?
+				== ser::ser_vec(context_id, &right.body.kernels, version)?)
+	}
+
+	fn find_lossless_candidate(
+		context_id: u32,
+		candidates: &[UnknownBlock],
+		block: &Block,
+	) -> Result<Option<usize>, mwc_chain::Error> {
+		for (candidate_index, candidate) in candidates.iter().enumerate() {
+			if Self::blocks_equal_lossless(context_id, &candidate.block, block)? {
+				return Ok(Some(candidate_index));
+			}
+		}
+		Ok(None)
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use mwc_core::core::{CommitWrapper, Input, Inputs, OutputFeatures};
+	use mwc_core::global::{self, ChainTypes};
+	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+	fn candidate_block(context_id: u32, value: u64) -> Block {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let commit = secp.commit_value(value).unwrap();
+		let mut block = Block::default(context_id);
+		block.body.inputs =
+			Inputs::FeaturesAndCommit(vec![Input::new(OutputFeatures::Plain, commit)]);
+		block
+	}
+
+	fn candidate_peer(ip_suffix: u8, port: u16) -> PeerAddr {
+		PeerAddr::Ip(SocketAddr::new(
+			IpAddr::V4(Ipv4Addr::new(8, 8, 8, ip_suffix)),
+			port,
+		))
+	}
+
+	fn cache_for_peer(
+		context_id: u32,
+		candidates: &mut Vec<UnknownBlock>,
+		block: Block,
+		peer: PeerAddr,
+	) {
+		let total_slots = OrphansSync::unknown_block_slots(candidates);
+		OrphansSync::cache_candidate(
+			context_id,
+			candidates,
+			block,
+			Some(peer),
+			total_slots,
+			usize::MAX,
+		)
+		.unwrap();
+	}
 
 	#[test]
-	fn insert_source_peer_capped_limits_unknown_block_metadata() {
-		let mut source_peers = HashSet::new();
+	fn same_peer_replaces_its_previous_candidate() {
+		let context_id = 0;
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let mut candidates = Vec::new();
+		let peer_a = candidate_peer(1, 3414);
 
-		for idx in 0..(MAX_UNKNOWN_BLOCK_SOURCE_PEERS + 4) {
-			OrphansSync::insert_source_peer_capped(&mut source_peers, format!("peer-{}", idx));
+		for value in 1..=6 {
+			cache_for_peer(
+				context_id,
+				&mut candidates,
+				candidate_block(context_id, value),
+				peer_a.clone(),
+			);
 		}
 
-		assert_eq!(source_peers.len(), MAX_UNKNOWN_BLOCK_SOURCE_PEERS);
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 1);
+		assert_eq!(
+			candidates[0].source_peers,
+			std::iter::once(peer_a).collect()
+		);
+		assert!(OrphansSync::blocks_equal_lossless(
+			context_id,
+			&candidates[0].block,
+			&candidate_block(context_id, 6),
+		)
+		.unwrap());
+	}
 
-		let retained_peer = source_peers.iter().next().unwrap().clone();
-		OrphansSync::insert_source_peer_capped(&mut source_peers, retained_peer);
-		assert_eq!(source_peers.len(), MAX_UNKNOWN_BLOCK_SOURCE_PEERS);
+	#[test]
+	fn peer_moves_between_coalesced_candidates() {
+		let context_id = 0;
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let first = candidate_block(context_id, 1);
+		let second = candidate_block(context_id, 2);
+		let mut candidates = Vec::new();
+		let peer_a = candidate_peer(1, 3414);
+		let peer_b = candidate_peer(2, 3414);
 
-		OrphansSync::insert_source_peer_capped(&mut source_peers, "overflow-peer".to_string());
-		assert_eq!(source_peers.len(), MAX_UNKNOWN_BLOCK_SOURCE_PEERS);
-		assert!(!source_peers.contains("overflow-peer"));
+		cache_for_peer(context_id, &mut candidates, first.clone(), peer_a.clone());
+		cache_for_peer(context_id, &mut candidates, first.clone(), peer_b.clone());
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 2);
+
+		cache_for_peer(context_id, &mut candidates, second.clone(), peer_a.clone());
+		assert_eq!(candidates.len(), 2);
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 2);
+
+		let first_index = OrphansSync::find_lossless_candidate(context_id, &candidates, &first)
+			.unwrap()
+			.unwrap();
+		let second_index = OrphansSync::find_lossless_candidate(context_id, &candidates, &second)
+			.unwrap()
+			.unwrap();
+		assert_eq!(
+			candidates[first_index].source_peers,
+			std::iter::once(peer_b).collect()
+		);
+		assert_eq!(
+			candidates[second_index].source_peers,
+			std::iter::once(peer_a).collect()
+		);
+	}
+
+	#[test]
+	fn same_ip_with_different_ports_owns_only_one_candidate_slot() {
+		let context_id = 0;
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let first = candidate_block(context_id, 1);
+		let replacement = candidate_block(context_id, 2);
+		let mut candidates = Vec::new();
+
+		cache_for_peer(context_id, &mut candidates, first, candidate_peer(1, 3414));
+		cache_for_peer(
+			context_id,
+			&mut candidates,
+			replacement.clone(),
+			candidate_peer(1, 4414),
+		);
+
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 1);
+		assert!(
+			OrphansSync::blocks_equal_lossless(context_id, &candidates[0].block, &replacement,)
+				.unwrap()
+		);
+	}
+
+	#[test]
+	fn four_peer_cache_rejects_a_fifth_peer_but_allows_replacement() {
+		let context_id = 0;
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let mut candidates = Vec::new();
+
+		for peer_index in 0..MAX_UNKNOWN_BLOCK_PEERS_PER_HASH {
+			cache_for_peer(
+				context_id,
+				&mut candidates,
+				candidate_block(context_id, peer_index as u64 + 1),
+				candidate_peer(peer_index as u8 + 1, 3414),
+			);
+		}
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 4);
+
+		let replacement = candidate_block(context_id, 10);
+		cache_for_peer(
+			context_id,
+			&mut candidates,
+			replacement.clone(),
+			candidate_peer(5, 3414),
+		);
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 4);
+		assert_eq!(
+			OrphansSync::find_lossless_candidate(context_id, &candidates, &replacement).unwrap(),
+			None
+		);
+
+		let peer_zero = candidate_peer(1, 3414);
+		cache_for_peer(
+			context_id,
+			&mut candidates,
+			replacement.clone(),
+			peer_zero.clone(),
+		);
+		assert_eq!(OrphansSync::unknown_block_slots(&candidates), 4);
+		let replacement_index =
+			OrphansSync::find_lossless_candidate(context_id, &candidates, &replacement)
+				.unwrap()
+				.unwrap();
+		assert!(candidates[replacement_index]
+			.source_peers
+			.contains(&peer_zero));
+	}
+
+	#[test]
+	fn lossless_unknown_block_identity_preserves_input_features_and_representation() {
+		let context_id = 0;
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let commit = secp.commit_value(1).unwrap();
+
+		let mut plain = Block::default(context_id);
+		plain.body.inputs =
+			Inputs::FeaturesAndCommit(vec![Input::new(OutputFeatures::Plain, commit)]);
+
+		let mut coinbase = plain.clone();
+		coinbase.body.inputs =
+			Inputs::FeaturesAndCommit(vec![Input::new(OutputFeatures::Coinbase, commit)]);
+
+		// The old local-protocol fingerprint cannot distinguish these bodies.
+		assert_eq!(
+			ser::ser_vec(context_id, &plain, ProtocolVersion::local()).unwrap(),
+			ser::ser_vec(context_id, &coinbase, ProtocolVersion::local()).unwrap()
+		);
+		assert!(!OrphansSync::blocks_equal_lossless(context_id, &plain, &coinbase).unwrap());
+		let candidates = vec![UnknownBlock {
+			block: plain.clone(),
+			added: Instant::now(),
+			source_peers: std::iter::once(candidate_peer(1, 3414)).collect(),
+		}];
+		assert_eq!(
+			OrphansSync::find_lossless_candidate(context_id, &candidates, &coinbase).unwrap(),
+			None
+		);
+
+		let mut commit_only = plain.clone();
+		commit_only.body.inputs = Inputs::CommitOnly(vec![CommitWrapper::from(commit)]);
+		assert_eq!(
+			ser::ser_vec(context_id, &plain, ProtocolVersion::local()).unwrap(),
+			ser::ser_vec(context_id, &commit_only, ProtocolVersion::local()).unwrap()
+		);
+		assert!(!OrphansSync::blocks_equal_lossless(context_id, &plain, &commit_only).unwrap());
+		assert_eq!(
+			OrphansSync::find_lossless_candidate(context_id, &candidates, &commit_only).unwrap(),
+			None
+		);
+		assert_eq!(
+			OrphansSync::find_lossless_candidate(context_id, &candidates, &plain).unwrap(),
+			Some(0)
+		);
+		assert!(OrphansSync::blocks_equal_lossless(context_id, &plain, &plain).unwrap());
 	}
 }

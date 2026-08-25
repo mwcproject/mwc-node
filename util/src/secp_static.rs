@@ -13,24 +13,84 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Thread-local secp256k1 contexts to avoid repeated initialization overhead
-//! without sharing a context across threads.
+//! Thread-local secp256k1 context pools to avoid repeated initialization overhead
+//! without sharing a context across threads. Each pool grows on demand when a
+//! call recursively requests another context and retains that context for reuse.
 
-use mwc_crates::log::debug;
+use mwc_crates::log::warn;
 use mwc_crates::secp;
 use mwc_crates::secp::constants;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::thread::LocalKey;
 
-type CachedContext = RefCell<Result<Secp256k1, secp::Error>>;
+type CachedContext = Result<Secp256k1, secp::Error>;
+type CachedContextSlot = Rc<RefCell<CachedContext>>;
+
+struct ContextPool {
+	caps: ContextFlag,
+	contexts: RefCell<Vec<CachedContextSlot>>,
+	active: Cell<usize>,
+}
+
+impl ContextPool {
+	fn new(caps: ContextFlag) -> Self {
+		Self {
+			caps,
+			contexts: RefCell::new(Vec::new()),
+			active: Cell::new(0),
+		}
+	}
+
+	/// Acquires the context for the current recursion depth, creating it if this
+	/// thread has not reached that depth before.
+	fn acquire(&self) -> (CachedContextSlot, ContextLease<'_>) {
+		let index = self.active.get();
+		// Checked arithmetic is unnecessary here: `index` is the number of live
+		// recursive calls on this thread. The thread would exhaust its stack long
+		// before reaching `usize::MAX`; normally this pool contains only a few contexts.
+		let depth = index + 1;
+		let (context, grew) = {
+			let mut contexts = self.contexts.borrow_mut();
+			let grew = index == contexts.len();
+			if grew {
+				contexts.push(Rc::new(RefCell::new(create_context(self.caps))));
+			}
+			(Rc::clone(&contexts[index]), grew)
+		};
+
+		self.active.set(depth);
+		let lease = ContextLease {
+			active: &self.active,
+		};
+		if grew && index >= 4 {
+			warn!(
+				"Thread-local secp256k1 {:?} context pool at recursion depth {}",
+				self.caps, depth
+			);
+		}
+		(context, lease)
+	}
+}
+
+struct ContextLease<'a> {
+	active: &'a Cell<usize>,
+}
+
+impl Drop for ContextLease<'_> {
+	fn drop(&mut self) {
+		let active = self.active.get();
+		debug_assert!(active > 0);
+		self.active.set(active - 1);
+	}
+}
 
 thread_local! {
-	static SECP_NONE: CachedContext = RefCell::new(Secp256k1::without_caps());
-	static SECP_FULL: CachedContext = RefCell::new(Secp256k1::with_caps(ContextFlag::Full));
-	static SECP_VERIFY_ONLY: CachedContext =
-		RefCell::new(Secp256k1::with_caps(ContextFlag::VerifyOnly));
-	static SECP_COMMIT: CachedContext = RefCell::new(Secp256k1::with_caps(ContextFlag::Commit));
+	static SECP_NONE: ContextPool = ContextPool::new(ContextFlag::None);
+	static SECP_FULL: ContextPool = ContextPool::new(ContextFlag::Full);
+	static SECP_VERIFY_ONLY: ContextPool = ContextPool::new(ContextFlag::VerifyOnly);
+	static SECP_COMMIT: ContextPool = ContextPool::new(ContextFlag::Commit);
 }
 
 fn create_context(caps: ContextFlag) -> Result<Secp256k1, secp::Error> {
@@ -40,9 +100,19 @@ fn create_context(caps: ContextFlag) -> Result<Secp256k1, secp::Error> {
 	}
 }
 
+fn use_context<T, E, F, M>(cached: &CachedContext, map_context_error: M, f: F) -> Result<T, E>
+where
+	F: FnOnce(&Secp256k1) -> Result<T, E>,
+	M: FnOnce(secp::Error) -> E,
+{
+	match cached {
+		Ok(secp) => f(secp),
+		Err(e) => Err(map_context_error(*e)),
+	}
+}
+
 fn with_context<T, E, F, M>(
-	context: &'static LocalKey<CachedContext>,
-	caps: ContextFlag,
+	context: &'static LocalKey<ContextPool>,
 	map_context_error: M,
 	f: F,
 ) -> Result<T, E>
@@ -50,25 +120,15 @@ where
 	F: FnOnce(&Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	context.with(|context| match context.try_borrow() {
-		Ok(cached) => match &*cached {
-			Ok(secp) => f(secp),
-			Err(e) => Err(map_context_error(*e)),
-		},
-		Err(e) => {
-			debug!(
-				"Thread-local secp256k1 {:?} context is already mutably borrowed; using temporary context: {}",
-				caps, e
-			);
-			let secp = create_context(caps).map_err(map_context_error)?;
-			f(&secp)
-		}
+	context.with(|pool| {
+		let (context, _lease) = pool.acquire();
+		let cached = context.borrow();
+		use_context(&cached, map_context_error, f)
 	})
 }
 
 fn with_context_mut<T, E, F, M>(
-	context: &'static LocalKey<CachedContext>,
-	caps: ContextFlag,
+	context: &'static LocalKey<ContextPool>,
 	map_context_error: M,
 	f: F,
 ) -> Result<T, E>
@@ -76,18 +136,12 @@ where
 	F: FnOnce(&mut Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	context.with(|context| match context.try_borrow_mut() {
-		Ok(mut cached) => match &mut *cached {
+	context.with(|pool| {
+		let (context, _lease) = pool.acquire();
+		let mut cached = context.borrow_mut();
+		match &mut *cached {
 			Ok(secp) => f(secp),
 			Err(e) => Err(map_context_error(*e)),
-		},
-		Err(e) => {
-			debug!(
-				"Thread-local secp256k1 {:?} context is already borrowed; using temporary context: {}",
-				caps, e
-			);
-			let mut secp = create_context(caps).map_err(map_context_error)?;
-			f(&mut secp)
 		}
 	})
 }
@@ -98,7 +152,7 @@ where
 	F: FnOnce(&Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context(&SECP_NONE, ContextFlag::None, map_context_error, f)
+	with_context(&SECP_NONE, map_context_error, f)
 }
 
 /// Uses this thread's cached mutable context with no secp256k1 capabilities.
@@ -107,7 +161,7 @@ where
 	F: FnOnce(&mut Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context_mut(&SECP_NONE, ContextFlag::None, map_context_error, f)
+	with_context_mut(&SECP_NONE, map_context_error, f)
 }
 
 /// Uses this thread's cached full secp256k1 context.
@@ -116,7 +170,7 @@ where
 	F: FnOnce(&Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context(&SECP_FULL, ContextFlag::Full, map_context_error, f)
+	with_context(&SECP_FULL, map_context_error, f)
 }
 
 /// Uses this thread's cached mutable full secp256k1 context.
@@ -125,7 +179,7 @@ where
 	F: FnOnce(&mut Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context_mut(&SECP_FULL, ContextFlag::Full, map_context_error, f)
+	with_context_mut(&SECP_FULL, map_context_error, f)
 }
 
 /// Uses this thread's cached verify-only secp256k1 context.
@@ -134,12 +188,7 @@ where
 	F: FnOnce(&Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context(
-		&SECP_VERIFY_ONLY,
-		ContextFlag::VerifyOnly,
-		map_context_error,
-		f,
-	)
+	with_context(&SECP_VERIFY_ONLY, map_context_error, f)
 }
 
 /// Uses this thread's cached mutable verify-only secp256k1 context.
@@ -148,12 +197,7 @@ where
 	F: FnOnce(&mut Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context_mut(
-		&SECP_VERIFY_ONLY,
-		ContextFlag::VerifyOnly,
-		map_context_error,
-		f,
-	)
+	with_context_mut(&SECP_VERIFY_ONLY, map_context_error, f)
 }
 
 /// Uses this thread's cached commitment-capable secp256k1 context.
@@ -162,7 +206,7 @@ where
 	F: FnOnce(&Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context(&SECP_COMMIT, ContextFlag::Commit, map_context_error, f)
+	with_context(&SECP_COMMIT, map_context_error, f)
 }
 
 /// Uses this thread's cached mutable commitment-capable secp256k1 context.
@@ -171,7 +215,7 @@ where
 	F: FnOnce(&mut Secp256k1) -> Result<T, E>,
 	M: FnOnce(secp::Error) -> E,
 {
-	with_context_mut(&SECP_COMMIT, ContextFlag::Commit, map_context_error, f)
+	with_context_mut(&SECP_COMMIT, map_context_error, f)
 }
 
 /// Convenient way to generate a commitment to zero.
@@ -185,15 +229,121 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn reentrant_access_uses_temporary_context() {
-		let res = with_commit_mut(
-			|e| e,
-			|_secp| {
-				with_commit(|e| e, |_nested| Ok(()))?;
-				with_commit_mut(|e| e, |_nested| Ok(()))?;
-				Ok(())
-			},
-		);
-		assert!(res.is_ok());
+	fn reentrant_mutable_access_grows_and_reuses_the_context_pool() {
+		fn recurse(
+			remaining: usize,
+			contexts: &mut Vec<*const Secp256k1>,
+		) -> Result<(), secp::Error> {
+			if remaining == 0 {
+				return Ok(());
+			}
+			with_commit_mut(
+				|e| e,
+				|secp| {
+					contexts.push(secp as *const Secp256k1);
+					recurse(remaining - 1, contexts)
+				},
+			)
+		}
+
+		std::thread::spawn(|| {
+			const RECURSION_DEPTH: usize = 6;
+
+			SECP_COMMIT.with(|pool| assert!(pool.contexts.borrow().is_empty()));
+
+			let mut first_use = Vec::new();
+			recurse(RECURSION_DEPTH, &mut first_use).unwrap();
+			assert_eq!(first_use.len(), RECURSION_DEPTH);
+			assert!(first_use
+				.iter()
+				.enumerate()
+				.all(|(index, context)| !first_use[..index].contains(context)));
+			SECP_COMMIT.with(|pool| {
+				assert_eq!(pool.active.get(), 0);
+				assert_eq!(pool.contexts.borrow().len(), RECURSION_DEPTH);
+			});
+
+			let mut second_use = Vec::new();
+			recurse(RECURSION_DEPTH, &mut second_use).unwrap();
+			assert_eq!(second_use, first_use);
+			SECP_COMMIT.with(|pool| {
+				assert_eq!(pool.active.get(), 0);
+				assert_eq!(pool.contexts.borrow().len(), RECURSION_DEPTH);
+			});
+		})
+		.join()
+		.unwrap();
+	}
+
+	#[test]
+	fn reentrant_shared_access_uses_the_next_context() {
+		std::thread::spawn(|| {
+			let mut outer_address = std::ptr::null();
+			let mut inner_address = std::ptr::null();
+
+			with_commit(
+				|e| e,
+				|outer| {
+					outer_address = outer;
+					with_commit(
+						|e| e,
+						|inner| {
+							inner_address = inner;
+							Ok(())
+						},
+					)
+				},
+			)
+			.unwrap();
+
+			assert!(!std::ptr::eq(outer_address, inner_address));
+			SECP_COMMIT.with(|pool| {
+				assert_eq!(pool.active.get(), 0);
+				assert_eq!(pool.contexts.borrow().len(), 2);
+			});
+
+			with_commit(
+				|e| e,
+				|reused| {
+					assert!(std::ptr::eq(outer_address, reused));
+					Ok(())
+				},
+			)
+			.unwrap();
+		})
+		.join()
+		.unwrap();
+	}
+
+	#[test]
+	fn panic_restores_the_active_context_index() {
+		std::thread::spawn(|| {
+			let mut first_address = std::ptr::null();
+			let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				let _: Result<(), secp::Error> = with_none(
+					|e| e,
+					|secp| {
+						first_address = secp;
+						panic!("test callback panic");
+					},
+				);
+			}));
+			assert!(panic.is_err());
+
+			SECP_NONE.with(|pool| {
+				assert_eq!(pool.active.get(), 0);
+				assert_eq!(pool.contexts.borrow().len(), 1);
+			});
+			with_none(
+				|e| e,
+				|reused| {
+					assert!(std::ptr::eq(first_address, reused));
+					Ok(())
+				},
+			)
+			.unwrap();
+		})
+		.join()
+		.unwrap();
 	}
 }

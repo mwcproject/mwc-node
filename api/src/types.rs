@@ -17,7 +17,7 @@ use mwc_core::core::hash::Hashed;
 use mwc_core::core::merkle_proof::MerkleProof;
 use mwc_core::core::{FeeFields, KernelFeatures, TxKernel};
 use mwc_core::{core, libtx::secp_ser, ser};
-use mwc_crates::secp::{pedersen, Secp256k1};
+use mwc_crates::secp::pedersen;
 use mwc_crates::serde::de::{IntoDeserializer, MapAccess};
 use mwc_crates::serde::ser::SerializeStruct;
 use mwc_crates::serde::{self, Deserialize, Serialize};
@@ -287,7 +287,10 @@ pub struct OutputPrintable {
 	pub proof_hash: String,
 	/// Block height at which the output is found
 	pub block_height: Option<u64>,
-	/// Merkle Proof
+	/// Merkle proof for this output against the node's current output PMMR state
+	/// at the time the response was built. This is not an origin-block proof;
+	/// `MerkleProof::mmr_size` identifies the MMR state whose root must be used
+	/// for verification.
 	pub merkle_proof: Option<MerkleProof>,
 	/// MMR Position
 	pub mmr_index: u64,
@@ -297,20 +300,39 @@ pub struct OutputPrintable {
 
 impl OutputPrintable {
 	pub fn from_output(
-		secp: &Secp256k1,
 		output: &core::Output,
 		chain: &mwc_chain::Chain,
 		block_header: Option<&core::BlockHeader>,
 		include_proof: bool,
 		include_merkle_proof: bool,
 	) -> Result<OutputPrintable, mwc_chain::Error> {
+		chain.with_output_read_snapshot(|snapshot| {
+			let (pos, merkle_proof) =
+				snapshot.get_output_status(&output.identifier(), include_merkle_proof)?;
+			Self::from_output_snapshot(
+				output,
+				pos,
+				merkle_proof,
+				snapshot.get_context_id(),
+				block_header,
+				include_proof,
+			)
+		})
+	}
+
+	pub(crate) fn from_output_snapshot(
+		output: &core::Output,
+		pos: Option<mwc_chain::types::CommitPos>,
+		merkle_proof: Option<MerkleProof>,
+		context_id: u32,
+		block_header: Option<&core::BlockHeader>,
+		include_proof: bool,
+	) -> Result<OutputPrintable, mwc_chain::Error> {
 		let output_type = if output.is_coinbase() {
 			OutputType::Coinbase
 		} else {
 			OutputType::Transaction
 		};
-
-		let pos = chain.get_unspent(output.commitment())?;
 
 		let spent = pos.is_none();
 
@@ -320,10 +342,8 @@ impl OutputPrintable {
 		// api is currently doing the right thing here:
 		// An output can be spent and then subsequently reused and the new instance unspent.
 		// This would result in a height that differs from the provided block height.
-		let output_pos = pos.map(|(_, x)| x.pos).unwrap_or(0);
-		let block_height = pos
-			.map(|(_, x)| x.height)
-			.or(block_header.map(|x| x.height));
+		let output_pos = pos.map(|x| x.pos).unwrap_or(0);
+		let block_height = pos.map(|x| x.height).or(block_header.map(|x| x.height));
 
 		let proof = if include_proof {
 			Some(
@@ -335,25 +355,6 @@ impl OutputPrintable {
 		} else {
 			None
 		};
-
-		// Get the Merkle proof for all unspent coinbase outputs (to verify maturity on
-		// spend). We obtain the Merkle proof by rewinding the PMMR.
-		// We require the rewind() to be stable even after the PMMR is pruned and
-		// compacted so we can still recreate the necessary proof.
-		let mut merkle_proof = None;
-		if include_merkle_proof && output.is_coinbase() && !spent {
-			let fetched_header;
-			let block_header = match block_header {
-				Some(block_header) => block_header,
-				None => {
-					fetched_header = chain.get_header_for_output(output.commitment())?;
-					&fetched_header
-				}
-			};
-			merkle_proof = Some(chain.get_merkle_proof(secp, output, block_header)?);
-		};
-
-		let context_id = chain.get_context_id();
 
 		Ok(OutputPrintable {
 			output_type,
@@ -693,8 +694,15 @@ pub struct BlockHeaderPrintable {
 
 impl BlockHeaderPrintable {
 	pub fn from_header(header: &core::BlockHeader) -> Result<BlockHeaderPrintable, std::io::Error> {
+		Self::from_header_with_context(header, header.pow.proof.context_id)
+	}
+
+	pub(crate) fn from_header_with_context(
+		header: &core::BlockHeader,
+		context_id: u32,
+	) -> Result<BlockHeaderPrintable, std::io::Error> {
 		Ok(BlockHeaderPrintable {
-			hash: header.hash(header.pow.proof.context_id)?.to_hex(),
+			hash: header.hash(context_id)?.to_hex(),
 			version: header.version.into(),
 			height: header.height,
 			previous: header.prev_hash.to_hex(),
@@ -735,30 +743,42 @@ pub struct BlockPrintable {
 
 impl BlockPrintable {
 	pub fn from_block(
-		secp: &Secp256k1,
 		block: &core::Block,
 		chain: &mwc_chain::Chain,
 		include_proof: bool,
 		include_merkle_proof: bool,
 	) -> Result<BlockPrintable, mwc_chain::Error> {
+		chain.with_output_read_snapshot(|snapshot| {
+			Self::from_block_snapshot(block, snapshot, include_proof, include_merkle_proof)
+		})
+	}
+
+	pub(crate) fn from_block_snapshot(
+		block: &core::Block,
+		snapshot: &mwc_chain::OutputReadSnapshot<'_>,
+		include_proof: bool,
+		include_merkle_proof: bool,
+	) -> Result<BlockPrintable, mwc_chain::Error> {
+		let context_id = snapshot.get_context_id();
+		mwc_chain::pipe::validate_header_context_id(context_id, &block.header)?;
 		// Preserve the legacy printable block shape by returning input
 		// commitments only. This intentionally drops Input::features; current
 		// API clients do not require feature metadata for inputs.
-		let inputs = block
-			.inputs()
-			.into_commit_wrappers(chain.get_context_id())?;
+		let inputs = block.inputs().into_commit_wrappers(context_id)?;
 		let inputs = inputs.iter().map(|x| x.commitment().to_hex()).collect();
 		let outputs = block
 			.outputs()
 			.iter()
 			.map(|output| {
-				OutputPrintable::from_output(
-					secp,
+				let (pos, merkle_proof) =
+					snapshot.get_output_status(&output.identifier(), include_merkle_proof)?;
+				OutputPrintable::from_output_snapshot(
 					output,
-					chain,
+					pos,
+					merkle_proof,
+					context_id,
 					Some(&block.header),
 					include_proof,
-					include_merkle_proof,
 				)
 			})
 			.collect::<Result<Vec<_>, _>>()?;
@@ -769,7 +789,7 @@ impl BlockPrintable {
 			.map(|kernel| TxKernelPrintable::from_txkernel(kernel))
 			.collect();
 		Ok(BlockPrintable {
-			header: BlockHeaderPrintable::from_header(&block.header)?,
+			header: BlockHeaderPrintable::from_header_with_context(&block.header, context_id)?,
 			inputs: inputs,
 			outputs: outputs,
 			kernels: kernels,
@@ -782,6 +802,8 @@ impl BlockPrintable {
 pub struct CompactBlockPrintable {
 	/// The block header
 	pub header: BlockHeaderPrintable,
+	/// Nonce used with the block hash to derive kernel short IDs.
+	pub nonce: u64,
 	/// Full outputs, specifically coinbase output(s)
 	pub out_full: Vec<OutputPrintable>,
 	/// Full kernels, specifically coinbase kernel(s)
@@ -794,23 +816,35 @@ impl CompactBlockPrintable {
 	/// Convert a compact block into a printable representation suitable for
 	/// api response
 	pub fn from_compact_block(
-		secp: &Secp256k1,
 		cb: &core::CompactBlock,
 		chain: &mwc_chain::Chain,
 		include_merkle_proof: bool,
 	) -> Result<CompactBlockPrintable, mwc_chain::Error> {
-		let block = chain.get_block(&cb.hash(chain.get_context_id())?)?;
+		chain.with_output_read_snapshot(|snapshot| {
+			Self::from_compact_block_snapshot(cb, snapshot, include_merkle_proof)
+		})
+	}
+
+	pub(crate) fn from_compact_block_snapshot(
+		cb: &core::CompactBlock,
+		snapshot: &mwc_chain::OutputReadSnapshot<'_>,
+		include_merkle_proof: bool,
+	) -> Result<CompactBlockPrintable, mwc_chain::Error> {
+		let block = snapshot.get_block_for_header(&cb.header)?;
+		let context_id = snapshot.get_context_id();
 		let out_full = cb
 			.out_full()
 			.iter()
-			.map(|x| {
-				OutputPrintable::from_output(
-					secp,
-					x,
-					chain,
+			.map(|output| {
+				let (pos, merkle_proof) =
+					snapshot.get_output_status(&output.identifier(), include_merkle_proof)?;
+				OutputPrintable::from_output_snapshot(
+					output,
+					pos,
+					merkle_proof,
+					context_id,
 					Some(&block.header),
 					false,
-					include_merkle_proof,
 				)
 			})
 			.collect::<Result<Vec<_>, _>>()?;
@@ -821,6 +855,7 @@ impl CompactBlockPrintable {
 			.collect();
 		Ok(CompactBlockPrintable {
 			header: BlockHeaderPrintable::from_header(&cb.header)?,
+			nonce: cb.nonce,
 			out_full,
 			kern_full,
 			kern_ids: cb.kern_ids().iter().map(|x| x.to_hex()).collect(),
@@ -880,7 +915,7 @@ pub struct PoolInfo {
 #[cfg(test)]
 mod test {
 	use super::*;
-	use mwc_crates::secp;
+	use mwc_crates::secp::{self, Secp256k1};
 	use mwc_util::secp_static;
 	use std::fs;
 	use std::sync::Arc;
@@ -1010,16 +1045,16 @@ mod test {
 	}
 
 	#[test]
-	fn output_printable_merkle_proof_fetches_missing_header() {
+	fn output_printable_current_merkle_proof_does_not_require_origin_header() {
 		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
 		mwc_core::global::set_local_nrd_enabled(false);
-		let chain_dir = unique_test_dir("missing_merkle_header");
+		let chain_dir = unique_test_dir("current_merkle_proof_without_origin_header");
 		let _ = fs::remove_dir_all(&chain_dir);
 		let secp = Secp256k1::with_caps(secp::ContextFlag::Commit).unwrap();
 		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
 		let output = *genesis.outputs().first().expect("genesis output");
 
-		let printable = {
+		let (printable, current_mmr_size) = {
 			let chain = mwc_chain::Chain::init(
 				&secp,
 				0,
@@ -1031,15 +1066,60 @@ mod test {
 				std::collections::HashSet::new(),
 				None,
 				None,
+				false,
 			)
 			.unwrap();
 
-			OutputPrintable::from_output(&secp, &output, &chain, None, false, true).unwrap()
+			let current_mmr_size = chain.head_header().unwrap().output_mmr_size;
+			(
+				OutputPrintable::from_output(&output, &chain, None, false, true).unwrap(),
+				current_mmr_size,
+			)
 		};
 
 		let _ = fs::remove_dir_all(&chain_dir);
 
-		assert!(printable.merkle_proof.is_some());
+		assert_eq!(printable.merkle_proof.unwrap().mmr_size, current_mmr_size);
+	}
+
+	#[test]
+	fn block_printable_rejects_header_context_mismatch() {
+		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
+		mwc_core::global::set_local_nrd_enabled(false);
+		let chain_dir = unique_test_dir("block_header_context_mismatch");
+		let _ = fs::remove_dir_all(&chain_dir);
+		let secp = Secp256k1::with_caps(secp::ContextFlag::Commit).unwrap();
+		let genesis = mwc_core::genesis::genesis_floo(&secp, 0);
+		let mut mismatched_block = genesis.clone();
+		let chain = mwc_chain::Chain::init(
+			&secp,
+			0,
+			chain_dir.clone(),
+			Arc::new(mwc_chain::types::NoopAdapter {}),
+			genesis,
+			mwc_core::pow::verify_size,
+			false,
+			std::collections::HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+		mismatched_block.header.pow.proof.context_id = u32::MAX;
+
+		let err = BlockPrintable::from_block(&mismatched_block, &chain, false, false)
+			.expect_err("mismatched block context");
+
+		match err {
+			mwc_chain::Error::InvalidHeaderContext { expected, actual } => {
+				assert_eq!(expected, 0);
+				assert_eq!(actual, u32::MAX);
+			}
+			other => panic!("expected InvalidHeaderContext, got {:?}", other),
+		}
+
+		drop(chain);
+		let _ = fs::remove_dir_all(&chain_dir);
 	}
 
 	#[test]

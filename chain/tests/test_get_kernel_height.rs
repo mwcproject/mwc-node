@@ -18,7 +18,6 @@ mod chain_test_helper;
 
 use self::chain_test_helper::{clean_output_dir, mine_chain};
 use mwc_chain::{ChainStore, Error};
-use mwc_core::core::hash::Hashed;
 use mwc_util::secp_static;
 
 fn assert_data_overflow<T>(result: Result<T, Error>) {
@@ -75,7 +74,7 @@ fn test_get_kernel_height() {
 	assert_missing(Some(100), Some(99));
 
 	let header = chain.get_header_by_height(2).unwrap();
-	let block = chain.get_block(&header.hash(0).unwrap()).unwrap();
+	let block = chain.get_block_for_header(&header).unwrap();
 	let located = chain
 		.get_kernel_height(&block.kernels()[0].excess, None, None)
 		.unwrap()

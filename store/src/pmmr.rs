@@ -570,52 +570,8 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 
 	/// Rewind the PMMR backend to the given position.
 	fn rewind(&mut self, position: u64, rewind_rm_pos: &Bitmap) -> Result<(), Error> {
-		let (hash_pos, data_pos) = if self.prunable {
-			// Rewind the hash file accounting for pruned/compacted pos.
-			let shift = if position == 0 {
-				0
-			} else {
-				self.prune_list.get_shift(position - 1)?
-			};
-			let hash_pos = position.checked_sub(shift).ok_or_else(|| {
-				Error::DataOverflow(format!(
-					"PMMRBackend::rewind position={} shift={}",
-					position, shift
-				))
-			})?;
-
-			// Rewind the data file accounting for pruned/compacted pos.
-			let flatfile_pos = pmmr::n_leaves(position)?;
-			let leaf_shift = if position == 0 {
-				0
-			} else {
-				self.prune_list.get_leaf_shift(position)?
-			};
-			let data_pos = flatfile_pos.checked_sub(leaf_shift).ok_or_else(|| {
-				Error::DataOverflow(format!(
-					"PMMRBackend::rewind flatfile_pos={} leaf_shift={}",
-					flatfile_pos, leaf_shift
-				))
-			})?;
-			(hash_pos, data_pos)
-		} else {
-			(position, pmmr::n_leaves(position)?)
-		};
-
-		let hash_size = self.hash_file.size_unsync()?;
-		if hash_pos > hash_size {
-			return Err(Error::InvalidState(format!(
-				"cannot rewind hash file forward from {} to {}",
-				hash_size, hash_pos
-			)));
-		}
-		let data_size = self.data_file.size_unsync()?;
-		if data_pos > data_size {
-			return Err(Error::InvalidState(format!(
-				"cannot rewind data file forward from {} to {}",
-				data_size, data_pos
-			)));
-		}
+		let (hash_pos, data_pos) = self.rewind_file_positions(position)?;
+		self.validate_rewind_file_positions(hash_pos, data_pos)?;
 
 		// Only mutate backend state after all fallible position calculations succeed.
 		if self.prunable {
@@ -664,6 +620,89 @@ impl<T: PMMRable> Backend<T> for PMMRBackend<T> {
 }
 
 impl<T: PMMRable> PMMRBackend<T> {
+	fn validate_rewind_boundary(&self, position: u64) -> Result<(), Error> {
+		if !self.prunable {
+			return Ok(());
+		}
+
+		if let Some(last_root_pos1) = self.prune_list.last_pruned_root_pos1() {
+			if position < last_root_pos1 {
+				return Err(Error::InvalidState(format!(
+					"cannot rewind to PMMR position {}: target would discard retained compacted-subtree root at position {}",
+					position, last_root_pos1
+				)));
+			}
+		}
+		Ok(())
+	}
+
+	fn rewind_file_positions(&self, position: u64) -> Result<(u64, u64), Error> {
+		// A retained pruned-subtree root replaces every physical record beneath
+		// it and contributes to the prune-list shift caches. Rewinding before such
+		// a root would truncate its hash while leaving its logical shifts behind.
+		self.validate_rewind_boundary(position)?;
+
+		if self.prunable {
+			// Translate the logical PMMR position to the compacted hash file.
+			let shift = if position == 0 {
+				0
+			} else {
+				self.prune_list.get_shift(position - 1)?
+			};
+			let hash_pos = position.checked_sub(shift).ok_or_else(|| {
+				Error::DataOverflow(format!(
+					"PMMRBackend::rewind position={} shift={}",
+					position, shift
+				))
+			})?;
+
+			// Translate the logical leaf count to the compacted flat data file.
+			let flatfile_pos = pmmr::n_leaves(position)?;
+			let leaf_shift = if position == 0 {
+				0
+			} else {
+				self.prune_list.get_leaf_shift(position)?
+			};
+			let data_pos = flatfile_pos.checked_sub(leaf_shift).ok_or_else(|| {
+				Error::DataOverflow(format!(
+					"PMMRBackend::rewind flatfile_pos={} leaf_shift={}",
+					flatfile_pos, leaf_shift
+				))
+			})?;
+			Ok((hash_pos, data_pos))
+		} else {
+			Ok((position, pmmr::n_leaves(position)?))
+		}
+	}
+
+	fn validate_rewind_file_positions(&self, hash_pos: u64, data_pos: u64) -> Result<(), Error> {
+		let hash_size = self.hash_file.size_unsync()?;
+		if hash_pos > hash_size {
+			return Err(Error::InvalidState(format!(
+				"cannot rewind hash file forward from {} to {}",
+				hash_size, hash_pos
+			)));
+		}
+		let data_size = self.data_file.size_unsync()?;
+		if data_pos > data_size {
+			return Err(Error::InvalidState(format!(
+				"cannot rewind data file forward from {} to {}",
+				data_size, data_pos
+			)));
+		}
+		Ok(())
+	}
+
+	/// Validate that the backend files contain a requested rewind target.
+	///
+	/// Compaction means a logical PMMR position cannot be compared directly with
+	/// either physical file length. This performs the same prune-aware calculation
+	/// as `rewind`, but does not mutate any backend state.
+	pub fn validate_rewind_target(&self, position: u64) -> Result<(), Error> {
+		let (hash_pos, data_pos) = self.rewind_file_positions(position)?;
+		self.validate_rewind_file_positions(hash_pos, data_pos)
+	}
+
 	/// Instantiates a new PMMR backend.
 	/// If optional size is provided then treat as "fixed" size otherwise "variable" size backend.
 	/// Use the provided dir to store its files.
@@ -1143,8 +1182,13 @@ impl<T: PMMRable> PMMRBackend<T> {
 	}
 }
 
-/// Filter remove list to exclude roots.
-/// We want to keep roots around so we have hashes for Merkle proofs.
+/// Filter the remove list to exclude maximal roots.
+///
+/// We keep the current pruned-subtree roots needed for current-state Merkle
+/// proofs. When adjacent pruned subtrees are rolled into a larger root, their
+/// child roots may be removed. That is intentional: the backend does not retain
+/// every historical peak and does not support proofs against arbitrary old MMR
+/// sizes.
 fn removed_excl_roots(removed: &Bitmap) -> Result<Bitmap, Error> {
 	let mut bitmap = Bitmap::new();
 	for pos in removed.iter() {

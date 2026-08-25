@@ -38,9 +38,16 @@ pub fn start_server(
 	config: mwc_servers::ServerConfig,
 	tui_logs: Option<TuiLogBuffer>,
 	offline: bool,
+	skip_start_blockchain_validation: bool,
 ) -> Result<(), Error> {
-	start_server_tui(context_id, config, tui_logs, offline)
-		.map_err(|e| Error::ServerStart(e.to_string()))
+	start_server_tui(
+		context_id,
+		config,
+		tui_logs,
+		offline,
+		skip_start_blockchain_validation,
+	)
+	.map_err(|e| Error::ServerStart(e.to_string()))
 }
 
 fn start_server_tui(
@@ -48,6 +55,7 @@ fn start_server_tui(
 	config: mwc_servers::ServerConfig,
 	tui_logs: Option<TuiLogBuffer>,
 	offline: bool,
+	skip_start_blockchain_validation: bool,
 ) -> Result<(), mwc_node_workflow::Error> {
 	let run_tui = config.run_tui.unwrap_or(false);
 	let running = Arc::new(AtomicBool::new(true));
@@ -69,9 +77,12 @@ fn start_server_tui(
 	}
 
 	info!("Creating MWC node server...");
-	if let Err(e) =
-		mwc_node_workflow::server::create_server(context_id, config.clone(), startup_stop_state)
-	{
+	if let Err(e) = mwc_node_workflow::server::create_server(
+		context_id,
+		config.clone(),
+		startup_stop_state,
+		skip_start_blockchain_validation,
+	) {
 		if !run_tui && !running.load(Ordering::SeqCst) {
 			warn!("Received SIGINT (Ctrl+C) or SIGTERM (kill).");
 			mwc_node_workflow::server::release_server(context_id);
@@ -169,6 +180,7 @@ pub fn server_command(
 	server_args: Option<&ArgMatches<'_>>,
 	global_config: GlobalConfig,
 	tui_logs: Option<TuiLogBuffer>,
+	skip_start_blockchain_validation: bool,
 ) -> Result<(), Error> {
 	// just get defaults from the global config
 	let mut server_config = global_config.members.server.clone();
@@ -224,7 +236,13 @@ pub fn server_command(
 	if let Some(a) = server_args {
 		match a.subcommand() {
 			("run", _) => {
-				start_server(context_id, server_config, tui_logs, offline)?;
+				start_server(
+					context_id,
+					server_config,
+					tui_logs,
+					offline,
+					skip_start_blockchain_validation,
+				)?;
 			}
 			("", _) => {
 				return Err(Error::ArgumentError(
@@ -239,7 +257,13 @@ pub fn server_command(
 			}
 		}
 	} else {
-		start_server(context_id, server_config, tui_logs, offline)?;
+		start_server(
+			context_id,
+			server_config,
+			tui_logs,
+			offline,
+			skip_start_blockchain_validation,
+		)?;
 	}
 	Ok(())
 }

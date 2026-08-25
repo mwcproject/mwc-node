@@ -221,15 +221,43 @@ where
 									&& cached_item.hash.is_some()
 									&& cached_item.hash == item.hash =>
 							{
+								// A matching ancestor authenticates cached entries at that
+								// height and below, but not cached descendants. Any entries
+								// already observed from the cursor at overlapping heights must
+								// therefore match the cache before cached descendants can be
+								// substituted for them.
+								let observed_overlap_matches = last_n.iter().all(|observed| {
+									if observed.height < cache_tail_height
+										|| observed.height > cache_head_height
+									{
+										return true;
+									}
+
+									// Safe: observed.height is inside the capped cache span.
+									let observed_idx =
+										(observed.height - cache_tail_height) as usize;
+									matches!(
+										cache_values.entries.get(observed_idx),
+										Some(cached_observed)
+											if cached_observed.height == observed.height
+												&& cached_observed.hash.is_some()
+												&& observed.hash.is_some()
+												&& cached_observed.hash == observed.hash
+									)
+								});
+
 								// Safe: the check above guarantees this subtraction cannot
 								// underflow. base_idx is bounded by max_cache_len + window.
 								let start_idx = base_idx + 1 - needed_block_count;
 
 								let cache_len = cache_values.entries.len();
 								let mut cached_last_n = Vec::with_capacity(needed_block_count);
-								let mut cache_hit_valid = true;
+								let mut cache_hit_valid = observed_overlap_matches;
 
 								for idx in (start_idx..=base_idx).rev() {
+									if !cache_hit_valid {
+										break;
+									}
 									let (cached_header, expected_height) = if idx < cache_len {
 										// Safe: idx is inside the capped, contiguous cache span,
 										// so cache_tail_height + idx cannot exceed cache_head_height.
@@ -501,6 +529,41 @@ mod tests {
 
 		assert_eq!(result, expected);
 		assert!(cache_values.is_empty());
+	}
+
+	#[test]
+	fn cache_hit_rejects_conflicting_observed_fork_entries() {
+		let needed_block_count = DIFFICULTY_ADJUST_WINDOW as usize + 1;
+		let fork_start_height = needed_block_count as u64 - 5;
+		let mut cache_values = DifficultyCache::new();
+		cache_values
+			.entries
+			.extend((0..needed_block_count as u64).map(header_with_hash));
+
+		let cursor = (0..needed_block_count as u64)
+			.rev()
+			.map(|height| {
+				if height >= fork_start_height {
+					header(
+						height,
+						Some(Hash::from_vec(
+							&(height + needed_block_count as u64).to_le_bytes(),
+						)),
+						2_000_000,
+						10_000,
+					)
+				} else {
+					header_with_hash(height)
+				}
+			})
+			.collect::<Vec<_>>();
+		let mut expected = cursor.clone();
+		expected.reverse();
+
+		let result = difficulty_data_to_vector(0, cursor, &mut cache_values).unwrap();
+
+		assert_eq!(result, expected);
+		assert_eq!(cache_values.iter().cloned().collect::<Vec<_>>(), expected);
 	}
 
 	#[test]

@@ -32,8 +32,8 @@ use mwc_chain::txhashset::Segmenter;
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::transaction::Transaction;
 use mwc_core::core::{
-	BlockHeader, BlockSums, CompactBlock, Inputs, OutputIdentifier, Segment, SegmentIdentifier,
-	TxKernel,
+	BlockHeader, BlockSums, CompactBlock, Inputs, Output, OutputIdentifier, Segment,
+	SegmentIdentifier, TxKernel,
 };
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::ProtocolVersion;
@@ -221,6 +221,13 @@ impl LegacyV2BlockConversionBucket {
 struct LegacyV2BlockConversionThrottle {
 	// Adapter-wide manager for per-peer legacy conversion buckets. The limit is
 	// keyed by PeerAddr so one legacy peer cannot consume all conversion capacity.
+	//
+	// Accepted risk: one attacker can use many IP or Tor identities to obtain
+	// independent buckets. There is no reliable way to distinguish that Sybil
+	// behavior from many honest legacy peers. A shared or global limit would let
+	// an attacker exhaust the common budget and prevent honest peers from syncing,
+	// so we intentionally keep this as a fairness limit per observed peer identity
+	// rather than attempting to enforce an aggregate anti-Sybil limit here.
 	// Stale entries are pruned so disconnected legacy peers do not grow this map
 	// indefinitely.
 	peers: RwLock<HashMap<PeerAddr, LegacyV2BlockConversionBucket>>,
@@ -360,6 +367,9 @@ where
 	/// Entries are also pruned by age and capped by count so hostile peers cannot
 	/// grow this in-memory cache without bound.
 	compact_block_reconstruction_cache: RwLock<HashMap<Hash, Instant>>,
+	/// Last accepted peer-difficulty notification per peer. Admission is capped at
+	/// once per half ping interval before any chain or locator reads are performed.
+	peer_difficulty_request_cache: RwLock<HashMap<PeerAddr, Instant>>,
 	cached_tip: RwLock<(Difficulty, u64)>,
 	chain_liveness_deferred_until: RwLock<Option<Instant>>,
 }
@@ -434,7 +444,10 @@ where
 		let tx_hash = tx.hash(self.context_id)?;
 		// For transaction we allow double processing, we want to be sure that TX will be stored in the pool
 		// because there is no recovery plan for transactions. So we want to use natural retry to help us handle failures
-		if self.processed_transactions.contains(&tx_hash, false) {
+		// Stem duplicates must reach the pool: a repeated stem transaction breaks a
+		// Dandelion cycle by promoting the transaction to fluff. A public fluff
+		// arriving shortly after the stem must likewise not be hidden by this cache.
+		if !stem && self.processed_transactions.contains(&tx_hash, false) {
 			debug!("transaction_received, cache for {} Rejected", tx_hash);
 			return Ok(true);
 		} else {
@@ -449,10 +462,20 @@ where
 			hook.on_transaction_received(self.context_id, &tx);
 		}
 
-		let mut tx_pool = self.tx_pool.write();
-		match tx_pool.add_to_pool(source, tx, stem, &header, secp) {
+		match mwc_pool::TransactionPool::submit_to_pool(
+			self.tx_pool.as_ref(),
+			source,
+			tx,
+			stem,
+			&header,
+			secp,
+		) {
 			Ok(_) => {
-				self.processed_transactions.contains(&tx_hash, true);
+				// Caching a stem transaction would suppress the duplicate event used for
+				// Dandelion cycle detection and stem-to-fluff promotion.
+				if !stem {
+					self.processed_transactions.contains(&tx_hash, true);
+				}
 				Ok(true)
 			}
 			Err(e) => {
@@ -906,7 +929,12 @@ where
 			return Ok(None);
 		}
 		let chain = self.chain()?;
-		let block = match chain.get_block(&h) {
+		let header = match chain.get_block_header(&h) {
+			Ok(header) => header,
+			Err(e) if e.is_not_found() => return Ok(None),
+			Err(e) => return Err(e),
+		};
+		let block = match chain.get_block_for_header(&header) {
 			Ok(block) => block,
 			Err(e) if e.is_not_found() => return Ok(None),
 			Err(e) => return Err(e),
@@ -1186,9 +1214,24 @@ where
 				return Ok(());
 			}
 
+			// Do not sleep or delay Pong responses. Atomically suppress only the
+			// expensive chain/locator work until half the expected ping interval passes.
+			{
+				let now = Instant::now();
+				let cooldown = Duration::from_secs(global::PEER_PING_INTERVAL_SECONDS) / 2;
+				let mut peers = self.peer_difficulty_request_cache.write();
+				peers.retain(|_, reserved_at| {
+					now.saturating_duration_since(*reserved_at) < cooldown
+				});
+				if peers.contains_key(peer) {
+					return Ok(());
+				}
+				peers.insert(peer.clone(), now);
+			}
+
 			let chain = self.chain()?;
 			let tip = chain.head()?;
-			if difficulty > tip.total_difficulty && height > tip.height {
+			if difficulty > tip.total_difficulty {
 				let tip_height = tip.height;
 				let heights = get_locator_heights(tip_height);
 				let locator = chain.get_locator_hashes(tip, &heights)?;
@@ -1224,15 +1267,10 @@ where
 		tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
 		chain_validation_mode: ChainValidationMode,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
-	) -> Self {
-		let cached_tip = match chain.head() {
-			Ok(tip) => (tip.total_difficulty, tip.height),
-			Err(e) => {
-				warn!("NetToChainAdapter: unable to initialize cached tip: {}", e);
-				(Difficulty::zero(), 0)
-			}
-		};
-		NetToChainAdapter {
+	) -> Result<Self, mwc_chain::Error> {
+		let tip = chain.head()?;
+		let cached_tip = (tip.total_difficulty, tip.height);
+		Ok(NetToChainAdapter {
 			sync_state,
 			sync_manager,
 			chain: Arc::downgrade(&chain),
@@ -1244,9 +1282,10 @@ where
 			processed_transactions: EventCache::new(),
 			legacy_v2_block_conversion_throttle: LegacyV2BlockConversionThrottle::new(),
 			compact_block_reconstruction_cache: RwLock::new(HashMap::new()),
+			peer_difficulty_request_cache: RwLock::new(HashMap::new()),
 			cached_tip: RwLock::new(cached_tip),
 			chain_liveness_deferred_until: RwLock::new(None),
-		}
+		})
 	}
 
 	fn current_tip_for_peer_liveness(&self) -> Result<(Difficulty, u64), mwc_chain::Error> {
@@ -1678,13 +1717,16 @@ where
 		if source_peers.is_empty() {
 			return;
 		}
-		if self.sync_state.is_syncing() && matches!(err, mwc_chain::Error::OldBlock) {
-			// During sync, the same block can arrive from several peers after
-			// another in-flight batch already advanced the local chain. That is
-			// stale data, not a bad-block signal.
+		if err.is_known_block() {
+			// The same valid block can arrive from several peers or remain in an
+			// orphan cache after another response stores it. Known-block outcomes
+			// are stale/redundant data, not a bad-block signal.
 			debug!(
-				"Skipping peer ban for old block {} from {:?}",
-				hash, source_peers
+				"Skipping peer ban for known block {} from {:?}, syncing={}: {}",
+				hash,
+				source_peers,
+				self.sync_state.is_syncing(),
+				err
 			);
 			return;
 		}
@@ -1987,6 +2029,13 @@ impl mwc_pool::BlockChain for PoolToChainAdapter {
 		chain
 			.validate_tx(tx)
 			.map_err(|e| chain_validation_error_to_pool_error(e, "validate tx"))
+	}
+
+	fn validate_outputs(&self, outputs: &[Output]) -> Result<(), mwc_pool::PoolError> {
+		let chain = self.chain()?;
+		chain
+			.validate_outputs(outputs)
+			.map_err(|e| chain_validation_error_to_pool_error(e, "validate outputs"))
 	}
 
 	fn validate_inputs(

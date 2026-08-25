@@ -21,7 +21,7 @@ use mwc_chain::Error;
 use mwc_chain::Options;
 use mwc_chain::Tip;
 use mwc_core::core::hash::{Hash, Hashed};
-use mwc_core::core::{block, BlockHeader};
+use mwc_core::core::{block, BlockHeader, Inputs};
 use mwc_core::{genesis, global, pow};
 use mwc_crates::chrono::Duration;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
@@ -50,11 +50,10 @@ fn check_known() {
 	// mine some blocks
 	let (latest, genesis) = {
 		let chain = mine_chain(chain_dir, 3);
-		let genesis = chain
-			.get_block(&chain.get_header_by_height(0).unwrap().hash(0).unwrap())
-			.unwrap();
-		let head = chain.head().unwrap();
-		let latest = chain.get_block(&head.last_block_h).unwrap();
+		let genesis_header = chain.get_header_by_height(0).unwrap();
+		let genesis = chain.get_block_for_header(&genesis_header).unwrap();
+		let head_header = chain.head_header().unwrap();
+		let latest = chain.get_block_for_header(&head_header).unwrap();
 		(latest, genesis)
 	};
 
@@ -64,6 +63,26 @@ fn check_known() {
 		let res = chain.process_block(
 			&mut secp,
 			latest.clone(),
+			mwc_chain::Options::NONE,
+			std::collections::HashSet::new(),
+		);
+		assert!(matches!( res, Err(Error::Unfit(ref s)) if s == "already known in head"));
+
+		// The v3 store reads an inputless block as CommitOnly, while the v2
+		// compatibility representation uses FeaturesAndCommit. The representation
+		// difference must not bypass the known-block fast path.
+		assert!(matches!(
+			latest.inputs(),
+			Inputs::CommitOnly(ref inputs) if inputs.is_empty()
+		));
+		let latest_v2 = chain.convert_block_v2(&secp, latest.clone()).unwrap();
+		assert!(matches!(
+			latest_v2.inputs(),
+			Inputs::FeaturesAndCommit(ref inputs) if inputs.is_empty()
+		));
+		let res = chain.process_block(
+			&mut secp,
+			latest_v2,
 			mwc_chain::Options::NONE,
 			std::collections::HashSet::new(),
 		);
@@ -120,8 +139,8 @@ fn full_block_known_hash_with_different_body_is_not_duplicate() {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 
 	let chain = mine_chain(chain_dir, 2);
-	let head = chain.head().unwrap();
-	let mut block = chain.get_block(&head.last_block_h).unwrap();
+	let head = chain.head_header().unwrap();
+	let mut block = chain.get_block_for_header(&head).unwrap();
 	assert!(!block.body.outputs.is_empty());
 	let original_hash = block.hash(0).unwrap();
 
@@ -235,7 +254,7 @@ fn reset_to_genesis_restores_genesis_metadata() {
 	let genesis_header = chain.get_header_by_height(0).unwrap();
 	let genesis_hash = genesis_header.hash(0).unwrap();
 	let first_header = chain.get_header_by_height(1).unwrap();
-	let first_block = chain.get_block(&first_header.hash(0).unwrap()).unwrap();
+	let first_block = chain.get_block_for_header(&first_header).unwrap();
 
 	{
 		let store = chain.get_store_for_tests();
@@ -243,14 +262,14 @@ fn reset_to_genesis_restores_genesis_metadata() {
 		batch.delete_block(&genesis_hash).unwrap();
 		batch.commit().unwrap();
 	}
-	assert!(chain.get_block(&genesis_hash).is_err());
+	assert!(chain.get_block_for_header(&genesis_header).is_err());
 	assert!(chain.get_block_sums(&genesis_hash).is_err());
 
 	chain.reset_chain_head_to_genesis().unwrap();
 
 	assert_eq!(chain.head().unwrap().last_block_h, genesis_hash);
 	assert_eq!(chain.tail().unwrap().last_block_h, genesis_hash);
-	assert!(chain.get_block(&genesis_hash).is_ok());
+	assert!(chain.get_block_for_header(&genesis_header).is_ok());
 	assert!(chain.get_block_sums(&genesis_hash).is_ok());
 
 	let head = chain
@@ -265,6 +284,75 @@ fn reset_to_genesis_restores_genesis_metadata() {
 		head,
 		Some(Tip::try_from_header(&first_block.header).unwrap())
 	);
+
+	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn reset_to_genesis_rebuilds_full_kernel_pos_index() {
+	let chain_dir = ".mwc.reset_genesis_kernel_pos_index";
+	mwc_util::init_test_logger().unwrap();
+	clean_output_dir(chain_dir);
+	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+	let chain = mine_chain(chain_dir, 3);
+	let genesis_header = chain.get_header_by_height(0).unwrap();
+	let genesis = chain.get_block_for_header(&genesis_header).unwrap();
+	let old_header = chain.get_header_by_height(2).unwrap();
+	let old_block = chain.get_block_for_header(&old_header).unwrap();
+	let old_excess = old_block.kernels()[0].excess;
+	let genesis_excess = genesis.kernels()[0].excess;
+
+	assert_ne!(old_excess, genesis_excess);
+	assert_eq!(
+		chain
+			.get_kernel_height(&old_excess, None, None)
+			.unwrap()
+			.unwrap()
+			.1,
+		old_header.height
+	);
+	assert!(chain
+		.get_store_for_tests()
+		.batch_read()
+		.unwrap()
+		.is_kernel_pos_index_complete()
+		.unwrap());
+
+	chain.reset_chain_head_to_genesis().unwrap();
+
+	assert_eq!(chain.head().unwrap().height, 0);
+	{
+		let store = chain.get_store_for_tests();
+		let batch = store.batch_read().unwrap();
+		assert!(batch.is_kernel_pos_index_complete().unwrap());
+		assert!(batch.kernel_pos_iter(&old_excess).unwrap().next().is_none());
+	}
+	assert!(chain
+		.get_kernel_height(&old_excess, None, None)
+		.unwrap()
+		.is_none());
+	assert_eq!(
+		chain
+			.get_kernel_height(&genesis_excess, None, None)
+			.unwrap()
+			.unwrap()
+			.1,
+		0
+	);
+
+	drop(chain);
+	let chain = init_chain(&secp, chain_dir, genesis);
+	assert!(chain
+		.get_store_for_tests()
+		.batch_read()
+		.unwrap()
+		.is_kernel_pos_index_complete()
+		.unwrap());
+	assert!(chain
+		.get_kernel_height(&old_excess, None, None)
+		.unwrap()
+		.is_none());
 
 	clean_output_dir(chain_dir);
 }
@@ -290,6 +378,7 @@ fn rejects_genesis_context_id_mismatch() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 	assert!(!Path::new(chain_dir).exists());
@@ -308,6 +397,7 @@ fn rejects_genesis_context_id_mismatch() {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap();
 		assert_eq!(chain.head().unwrap().last_block_h, valid_genesis_hash);
@@ -339,6 +429,7 @@ fn rejects_genesis_with_invalid_height() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 	assert!(!Path::new(chain_dir).exists());
@@ -366,6 +457,7 @@ fn rejects_genesis_with_invalid_pow() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	);
 	assert!(matches!(res, Err(Error::InvalidPow)));
 	assert!(!Path::new(chain_dir).exists());
@@ -394,6 +486,7 @@ fn rejects_production_genesis_with_mutated_txhashset_commitments() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 
@@ -424,6 +517,7 @@ fn rejects_genesis_hash_mismatch_with_existing_chain_data() {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap();
 		assert_eq!(chain.head().unwrap().last_block_h, valid_genesis_hash);
@@ -445,6 +539,7 @@ fn rejects_genesis_hash_mismatch_with_existing_chain_data() {
 		HashSet::new(),
 		None,
 		None,
+		false,
 	);
 	assert!(matches!(res, Err(Error::InvalidGenesisHash)));
 
@@ -460,6 +555,7 @@ fn rejects_genesis_hash_mismatch_with_existing_chain_data() {
 			HashSet::new(),
 			None,
 			None,
+			false,
 		)
 		.unwrap();
 		assert_eq!(chain.head().unwrap().last_block_h, valid_genesis_hash);

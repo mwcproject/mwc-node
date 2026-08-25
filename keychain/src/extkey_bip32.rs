@@ -159,9 +159,13 @@ impl BIP32Hasher for BIP32MwcHasher {
 	fn result_sha512(&mut self, output: &mut BIP32HmacOutput) -> Result<(), Error> {
 		let hmac_sha512 = self
 			.hmac_sha512
-			.take()
+			.as_mut()
 			.ok_or_else(|| Error::Generic("sha512 is not initialized".into()))?;
 		hmac_sha512.finalize_into(output);
+
+		// Direct assignment drops the Some payload in place. Do not use take(),
+		// because moving secret-bearing state can leave the old storage unwiped.
+		self.hmac_sha512 = None;
 		Ok(())
 	}
 	fn sha_256(&self, input: &[u8]) -> [u8; 32] {
