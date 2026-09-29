@@ -616,7 +616,7 @@ fn comments() -> HashMap<String, String> {
 # tor_enabled = true
 
 {}",
-			include_str!("tor_comments.toml")
+			crate::TOR_CONFIG_COMMENTS
 		),
 	);
 
