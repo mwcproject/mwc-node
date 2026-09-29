@@ -609,20 +609,15 @@ fn comments() -> HashMap<String, String> {
 
 	retval.insert(
 		"[server.tor_config]_END".to_string(),
-		"# Enable tor connection for the mwc nodes p2p connection. MWC node using internal tor client.
+		format!(
+			"# Enable Tor for node P2P connections using the embedded Arti client.
 # Recommended if you are running your node behind the firewall or NAT.
-# Try it even Tor is banned in your region.
 # By default it is enabled
 # tor_enabled = true
 
-# Optional webtunnel bridge connection line for internal tor client. In case if Tor is blocked in
-# your region. Use this option if tor is blocked in yout region and your own webtunnel bridge.
-# Note, mwc-node supports only webtunnel bridge because of there efficiency and ease of installation
-# and maintaining.
-# webtunnel_bridge = \"webtunnel 10.0.0.2:443 <webtunnel_hash> https://webtunnel_url\"
-"
-
-			.to_string(),
+{}",
+			include_str!("tor_comments.toml")
+		),
 	);
 
 	retval

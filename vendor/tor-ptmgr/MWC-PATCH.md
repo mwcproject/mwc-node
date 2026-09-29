@@ -11,7 +11,7 @@ only when it tries to forward another stdout line into the disconnected channel.
 After PT negotiation, `webtunnelclient` is normally quiet while waiting for
 SOCKS connections, so the blocked stdout read may never return and stdin stays
 open. A failed Arti bridge attempt can therefore leave its old
-`webtunnelclient` running while subsequent bridges start more instances.
+`webtunnelclient` running while subsequent connection attempts start more instances.
 
 ## Exact changes
 
@@ -26,7 +26,7 @@ open. A failed Arti bridge attempt can therefore leave its old
   message and joins the supervisor. The supervisor closes stdin, waits up to
   `GRACEFUL_EXIT_TIME` (five seconds), then kills and reaps a child which did not
   exit. Joining guarantees that a failed PT is gone before Arti can start the
-  next bridge attempt.
+  next connection attempt.
 - [`src/ipc.rs`](src/ipc.rs),
   `dropping_quiet_child_stops_and_reaps_process`: adds a regression test whose
   child becomes quiet and exits only after stdin EOF. This reproduces the
@@ -34,10 +34,7 @@ open. A failed Arti bridge attempt can therefore leave its old
 - [`../../p2p/src/tor/arti.rs`](../../p2p/src/tor/arti.rs),
   `ArtiCore::bootstrap_tor_client`: gives failed Arti runtime destruction ten
   seconds, so the supervisor's bounded five-second graceful/forced shutdown can
-  finish before the next bridge is tried.
-- [`../../p2p/src/tor/arti.rs`](../../p2p/src/tor/arti.rs),
-  `ArtiCore::webtunnel_client_filename`: uses the target platform's executable
-  suffix, allowing Windows builds to find the packaged `webtunnelclient.exe`.
+  finish before retrying the configured connection.
 - [`../../Cargo.toml`](../../Cargo.toml), `[patch.crates-io]`: redirects
   `tor-ptmgr` to this patched source.
 

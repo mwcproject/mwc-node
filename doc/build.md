@@ -124,33 +124,6 @@ as a validating node on your low powered device might be possible.
 To cross-compile `mwc` on a x86 Linux platform and produce ARM binaries,
 say, for a Raspberry Pi.
 
-## Build webtunnel client
-
-In order to launch Tor in restricted areas, Node need webtunnelclient executable. Here is how you can build it.
-
-### Intall go.
-
-MacOS:
-```
-brew install go
-```
-
-Ubuntu:
-```
-sudo apt-get install -y golang
-```
-
-### Build webtunnelclient
-
-```
-clone https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel
-cd webtunnel/main/client
-go build
-mv client ../../webtunnelclient
-```
-
-webtunnelclient copy into the same directory where mwc-node executable is located. 
-
 ## Using mwc
 
 The wiki page [Wallet User Guide](https://github.com/mimblewimble/docs/wiki/Wallet-User-Guide)

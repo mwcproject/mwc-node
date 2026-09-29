@@ -42,7 +42,8 @@ pub use crate::serv::{DummyAdapter, Server};
 pub use crate::store::{PeerData, State};
 pub use crate::types::{
 	BroadcastError, Capabilities, ChainAdapter, Direction, Error, P2PConfig, PeerAddr, PeerInfo,
-	ReasonForBan, Seeding, TorConfig, MAX_BLOCK_HEADERS, MAX_LOCATORS, MAX_PEER_ADDRS,
+	ReasonForBan, Seeding, TorBridgeConfig, TorConfig, TorTransportConfig, MAX_BLOCK_HEADERS,
+	MAX_LOCATORS, MAX_PEER_ADDRS,
 };
 
 pub use listen::listen;

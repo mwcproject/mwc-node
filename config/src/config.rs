@@ -445,13 +445,31 @@ impl GlobalConfig {
 	/// Serialize config
 	pub fn ser_config(&mut self) -> Result<Zeroizing<String>, ConfigError> {
 		self.validate()?;
-		let encoded: Result<String, toml::ser::Error> = toml::to_string(&self.members);
-		match encoded {
-			Ok(enc) => return Ok(Zeroizing::new(enc)),
-			Err(e) => {
-				return Err(ConfigError::SerializationError(format!("{}", e)));
-			}
+		// Avoid cloning the server's sensitive fields just to omit this table.
+		// Restore it before returning any serialization error.
+		let bridge = self.members.server.tor_config.tor_bridge.take();
+		let encoded = toml::to_string(&self.members);
+		self.members.server.tor_config.tor_bridge = bridge;
+		let mut encoded =
+			Zeroizing::new(encoded.map_err(|e| ConfigError::SerializationError(e.to_string()))?);
+		if let Some(bridge) = &self.members.server.tor_config.tor_bridge {
+			let inline = bridge
+				.to_inline_toml()
+				.map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+			// The parser identifies the real header even when another setting
+			// contains a multiline string with an identical-looking line.
+			let offset = toml::de::DeTable::parse(&encoded)
+				.map_err(|e| ConfigError::SerializationError(e.to_string()))?
+				.get_ref()
+				.get("server")
+				.and_then(|server| server.get_ref().get("tor_config"))
+				.map(|table| table.span().end)
+				.ok_or_else(|| {
+					ConfigError::SerializationError("Serialized Tor section is missing".into())
+				})?;
+			encoded.insert_str(offset, &format!("\ntor_bridge = {}", inline));
 		}
+		Ok(encoded)
 	}
 
 	/// Write configuration to a file
@@ -932,6 +950,58 @@ fn init_api_secret_creates_owner_only_file() {
 	let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
 	assert_eq!(mode, 0o600);
 	fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn tor_bridge_round_trips_on_one_config_line() {
+	let mut config = GlobalConfig::default();
+	let tor: mwc_p2p::TorConfig = toml::from_str(
+		r#"tor_bridge = { bridges = ["obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=example iat-mode=0"], transports = [{ protocols = ["obfs4"], path = "/absolute/helper", arguments = ["--label", "quoted\"value", "line\nbreak"], run_on_startup = true }], proxy = "socks5://user:password@127.0.0.1:1080" }"#,
+	)
+	.unwrap();
+	config.members.server.tor_config = tor.clone();
+	config.members.server.api_secret_path = Some("prefix\n[server.tor_config]\nsuffix".into());
+	let before = config.members.clone();
+	let serialized = config.ser_config().unwrap();
+	assert_eq!(
+		serialized
+			.lines()
+			.filter(|l| l.starts_with("tor_bridge = "))
+			.count(),
+		1
+	);
+	assert!(!serialized.contains("[server.tor_config.tor_bridge"));
+	assert!(!serialized.contains("[[server.tor_config.tor_bridge"));
+	let bridge_line = serialized
+		.lines()
+		.find(|line| line.starts_with("tor_bridge = "))
+		.unwrap();
+	let one_line_tor: mwc_p2p::TorConfig = toml::from_str(bridge_line).unwrap();
+	assert_eq!(one_line_tor, tor);
+	let decoded: ConfigMembers = toml::from_str(&serialized).unwrap();
+	assert_eq!(decoded.server.tor_config, tor);
+	assert_eq!(config.members, before);
+	assert_eq!(decoded, before);
+}
+
+#[test]
+fn fresh_config_documents_tor_options_without_enabling_bridges() {
+	let mut config = GlobalConfig::default();
+	let commented = insert_comments(&config.ser_config().unwrap());
+	assert!(commented.contains("Embedded Arti connects directly by default"));
+	assert!(!commented
+		.lines()
+		.any(|line| line.starts_with("tor_bridge = ")));
+	let mut examples = 0;
+	for line in commented
+		.lines()
+		.filter_map(|line| line.strip_prefix("# tor_bridge = "))
+	{
+		let tor: mwc_p2p::TorConfig = toml::from_str(&format!("tor_bridge = {}", line)).unwrap();
+		assert!(tor.tor_bridge.is_some());
+		examples += 1;
+	}
+	assert_eq!(examples, 17);
 }
 
 #[cfg(unix)]

@@ -639,19 +639,55 @@ fn config_addr_onion_host(addr: &str) -> Option<&str> {
 
 /// Type for Tor Configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(crate = "serde")]
+#[serde(crate = "serde", deny_unknown_fields)]
 pub struct TorConfig {
 	/// Whether to start tor listener on listener startup (default true)
 	pub tor_enabled: Option<bool>,
-	/// alternative webtunnel bridge. In not specified, the community bridges might be used
-	pub webtunnel_bridge: Option<String>,
+	/// Explicit bridge, transport, and upstream proxy configuration. Unset means direct Tor.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tor_bridge: Option<TorBridgeConfig>,
+}
+
+/// Settings represented by the single `tor_bridge = { ... }` configuration line.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde", deny_unknown_fields)]
+pub struct TorBridgeConfig {
+	/// Tor bridge lines, including any per-bridge transport parameters.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub bridges: Vec<String>,
+	/// Executable helpers or existing SOCKS5 pluggable transport endpoints.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub transports: Vec<TorTransportConfig>,
+	/// Optional SOCKS4, SOCKS5, or HTTP CONNECT upstream proxy URI.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub proxy: Option<String>,
+}
+
+/// One managed or unmanaged Arti pluggable transport.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde", deny_unknown_fields)]
+pub struct TorTransportConfig {
+	/// Protocol names supplied by this transport, such as obfs4 or webtunnel.
+	pub protocols: Vec<String>,
+	/// Absolute path of an installed helper; mutually exclusive with proxy_addr.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub path: Option<String>,
+	/// Arguments passed directly to the helper, without invoking a shell.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub arguments: Vec<String>,
+	/// Whether to start a managed helper immediately instead of when first needed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub run_on_startup: Option<bool>,
+	/// IP:port of a SOCKS5 transport already running outside Arti.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub proxy_addr: Option<String>,
 }
 
 impl Default for TorConfig {
 	fn default() -> TorConfig {
 		TorConfig {
 			tor_enabled: None,
-			webtunnel_bridge: None,
+			tor_bridge: None,
 		}
 	}
 }
@@ -660,14 +696,14 @@ impl TorConfig {
 	pub fn no_tor_config() -> Self {
 		TorConfig {
 			tor_enabled: Some(false),
-			webtunnel_bridge: None,
+			tor_bridge: None,
 		}
 	}
 
 	pub fn arti_tor_config() -> Self {
 		TorConfig {
 			tor_enabled: Some(true),
-			webtunnel_bridge: None,
+			tor_bridge: None,
 		}
 	}
 	/// If tor service is enabled. Default: true
