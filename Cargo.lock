@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "mwc"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "built",
  "mwc_api",
@@ -3626,7 +3626,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_api"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_chain",
  "mwc_core",
@@ -3640,7 +3640,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_chain"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_core",
  "mwc_crates",
@@ -3652,7 +3652,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_config"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_core",
  "mwc_crates",
@@ -3664,7 +3664,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_core"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_crates",
  "mwc_keychain",
@@ -3674,7 +3674,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_crates"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3787,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_keychain"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "blake2",
  "mwc_crates",
@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_node_lib"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_core",
  "mwc_crates",
@@ -3811,7 +3811,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_node_workflow"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_api",
  "mwc_chain",
@@ -3825,7 +3825,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_p2p"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_chain",
  "mwc_core",
@@ -3837,7 +3837,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_pool"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_chain",
  "mwc_core",
@@ -3863,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_servers"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_api",
  "mwc_chain",
@@ -3879,7 +3879,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_store"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_core",
  "mwc_crates",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "mwc_util"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "mwc_crates",
  "thiserror 2.0.20",

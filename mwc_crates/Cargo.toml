@@ -1,6 +1,6 @@
 [package]
 name = "mwc_crates"
-version = "7.1.0"
+version = "7.2.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Shared third-party dependency facade for mwc-node and mwc-wallet"
 license = "Apache-2.0"
