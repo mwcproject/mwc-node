@@ -205,8 +205,8 @@ where
 	let version = ProtocolVersion(1);
 	let context_id = pool.read_recursive().get_context_id();
 	let tx_bin_len = tx_bin.len();
-	let tx: Transaction =
-		ser::deserialize_strict(&mut &tx_bin[..], version, context_id).map_err(|e| {
+	let tx: Transaction = ser::deserialize_strict(&mut &tx_bin[..], version, context_id, true)
+		.map_err(|e| {
 			Error::RequestError(format!(
 				"Unable to deserialize transaction binary of length {}, {}",
 				tx_bin_len, e

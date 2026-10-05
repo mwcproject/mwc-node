@@ -106,7 +106,7 @@ walkdir = "2.5"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 # Secp256k1
-secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", version = "0.8.0", tag = "0.8.0", features = ["bullet-proof-sizing"] }
+secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", version = "0.8.1", tag = "0.8.1", features = ["bullet-proof-sizing"] }
 #secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", branch = "audit", features = ["bullet-proof-sizing"]}
 #secp256k1zkp = { package = "mwc_secp256k1zkp", path = "../../rust-secp256k1-zkp", features = ["bullet-proof-sizing"]}
 # Dalek based encryption
@@ -124,7 +124,6 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 crc = "3.4"
 # Keep the shared digest stack aligned with sha2, hmac, pbkdf2 and ripemd
 digest = "0.11"
-sha2 = { version = "0.11", features = ["zeroize"] }
 hex = "0.4"
 hmac = { version = "0.13", features = ["zeroize"] }
 pbkdf2 = "0.13"

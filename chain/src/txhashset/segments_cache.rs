@@ -332,7 +332,7 @@ mod tests {
 
 	fn empty_segment(identifier: SegmentIdentifier) -> Segment<()> {
 		let mut proof_bytes = [0u8; 8].as_ref();
-		let proof: SegmentProof = ser::deserialize_default(0, &mut proof_bytes).unwrap();
+		let proof: SegmentProof = ser::deserialize_default(0, &mut proof_bytes, true).unwrap();
 		Segment::from_parts(
 			identifier,
 			Vec::new(),

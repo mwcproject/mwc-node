@@ -1188,6 +1188,12 @@ fn validate_block(
 	ctx: &mut BlockContext<'_>,
 	secp: &mut Secp256k1,
 ) -> Result<(), Error> {
+	// Reject blocks missing the required opening before further validation.
+	if consensus::is_coinbase_binding_enabled(context_id, block.header.height)
+		&& block.coinbase_opening.is_none()
+	{
+		return Err(Error::BlockMissCoinbaseOpening);
+	}
 	let prev = prev_header_store(&block.header, &ctx.batch)?;
 	block
 		.validate(context_id, &prev.total_kernel_offset, secp)
@@ -1658,6 +1664,62 @@ mod tests {
 			.expect("PoW test barrier lock poisoned") = None;
 		assert!(matches!(err, Error::InvalidPow), "{err:?}");
 		assert_eq!(POW_TEST_CALLS.load(Ordering::SeqCst), chunk_count);
+	}
+
+	#[cfg(feature = "test-support")]
+	#[test]
+	fn incomplete_coinbase_block_is_bad_data() {
+		use mwc_core::ser::ProtocolVersion;
+		use mwc_crates::secp::s2c::Opening;
+		use mwc_store::types::VariableSizeMetadataValidation;
+
+		const CONTEXT: u32 = 2_984_100;
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().to_str().unwrap().to_owned();
+		let store = Arc::new(store::ChainStore::new(CONTEXT, &path).unwrap());
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut trees = txhashset::TxHashSet::open(path, store.clone(), None, &secp).unwrap();
+		let mut headers = txhashset::PMMRHandle::<BlockHeader>::new(
+			dir.path().join("headers"),
+			false,
+			ProtocolVersion(1),
+			CONTEXT,
+			None,
+			VariableSizeMetadataValidation::Full,
+		)
+		.unwrap();
+		let difficulty = RwLock::new(DifficultyCache::new());
+		let batch = store.batch_write().unwrap();
+		let mut parent = BlockHeader::default(CONTEXT);
+		parent.height = 3;
+		batch.save_block_header(&parent).unwrap();
+		let mut ctx = BlockContext {
+			opts: Options::SKIP_POW,
+			pow_verifier: |_, _| Ok(()),
+			txhashset: &mut trees,
+			header_pmmr: &mut headers,
+			batch,
+			difficulty_cache: difficulty.write(),
+		};
+		let mut incomplete = Block::default(CONTEXT);
+		incomplete.header.height = 4;
+		incomplete.header.prev_hash = parent.hash(CONTEXT).unwrap();
+		// This body also fails ordinary coinbase validation. Report the missing
+		// opening first; both errors are bad block data.
+		let err = validate_block(CONTEXT, &incomplete, &mut ctx, &mut secp).unwrap_err();
+		assert!(matches!(err, Error::BlockMissCoinbaseOpening));
+		assert!(err.is_bad_data());
+		let bytes = mwc_util::from_hex(
+			"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+		)
+		.unwrap();
+		incomplete.coinbase_opening = Some(Opening::from_slice(&secp, &bytes).unwrap());
+		let err = validate_block(CONTEXT, &incomplete, &mut ctx, &mut secp).unwrap_err();
+		assert!(matches!(err, Error::Block(_)));
+		assert!(err.is_bad_data());
 	}
 
 	#[test]

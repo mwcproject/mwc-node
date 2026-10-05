@@ -638,12 +638,12 @@ mod tests {
 			let mut proof = Proof::new(0, gen_proof(edge_bits as u32));
 			proof.edge_bits = edge_bits;
 			let mut buf = Cursor::new(Vec::new());
-			let mut w = BinWriter::new(&mut buf, ProtocolVersion::local(), 0);
+			let mut w = BinWriter::new(&mut buf, ProtocolVersion::local(), 0, true);
 			if let Err(e) = proof.write(&mut w) {
 				panic!("failed to write proof {:?}", e);
 			}
 			buf.set_position(0);
-			let mut r = BinReader::new(&mut buf, ProtocolVersion::local(), 0);
+			let mut r = BinReader::new(&mut buf, ProtocolVersion::local(), 0, true);
 			match Proof::read(&mut r) {
 				Err(e) => panic!("failed to read proof: {:?}", e),
 				Ok(p) => assert_eq!(p, proof),
@@ -655,16 +655,16 @@ mod tests {
 	fn difficulty_read_rejects_zero() {
 		let bytes = [0; Difficulty::LEN];
 
-		let err = ser::deserialize_default::<Difficulty, _>(0, &mut &bytes[..]).unwrap_err();
+		let err = ser::deserialize_default::<Difficulty, _>(0, &mut &bytes[..], true).unwrap_err();
 		assert!(matches!(err, ser::Error::CorruptedData(_)));
 	}
 
 	#[test]
 	fn difficulty_read_accepts_nonzero() {
 		let mut bytes = Vec::new();
-		ser::serialize_default(0, &mut bytes, &42_u64).unwrap();
+		ser::serialize_default(0, &mut bytes, &42_u64, true).unwrap();
 
-		let difficulty: Difficulty = ser::deserialize_default(0, &mut &bytes[..]).unwrap();
+		let difficulty: Difficulty = ser::deserialize_default(0, &mut &bytes[..], true).unwrap();
 		assert_eq!(difficulty.to_num(), 42);
 	}
 
@@ -738,14 +738,14 @@ mod tests {
 
 	fn write_proof_bytes(proof: &Proof) -> Result<Vec<u8>, ser::Error> {
 		let mut buf = Vec::new();
-		let mut w = BinWriter::new(&mut buf, ProtocolVersion::local(), 0);
+		let mut w = BinWriter::new(&mut buf, ProtocolVersion::local(), 0, true);
 		proof.write(&mut w)?;
 		Ok(buf)
 	}
 
 	fn read_proof(bytes: &[u8]) -> Result<Proof, ser::Error> {
 		let mut cursor = Cursor::new(bytes);
-		let mut r = BinReader::new(&mut cursor, ProtocolVersion::local(), 0);
+		let mut r = BinReader::new(&mut cursor, ProtocolVersion::local(), 0, true);
 		Proof::read(&mut r)
 	}
 

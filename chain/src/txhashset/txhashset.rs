@@ -25,6 +25,7 @@ use crate::types::{
 	Tip, TxHashSetRoots, TxHashsetStateValidationStage, TXHASHSET_STATE_VALIDATION_STEPS,
 };
 use crate::{SyncState, SyncStatus};
+use mwc_core::consensus;
 use mwc_core::consensus::WEEK_HEIGHT;
 use mwc_core::core::block::{verify_kernel_lock_height, verify_nrd_kernel_for_header_version};
 use mwc_core::core::committed::{verify_kernel_sums_iter, Error as CommittedError};
@@ -33,9 +34,12 @@ use mwc_core::core::merkle_proof::MerkleProof;
 use mwc_core::core::pmmr::{self, Backend, ReadablePMMR, ReadonlyPMMR, RewindablePMMR, PMMR};
 use mwc_core::core::{
 	amount_to_hr_string, Block, BlockHeader, Inputs, KernelFeatures, Output, OutputIdentifier,
-	Segment, TxKernel,
+	Segment, TransactionBody, TxKernel,
 };
 use mwc_core::global;
+use mwc_core::libtx::coinbase_binding::{
+	canonical_input_hash, unspent_bitmap_hash, verify_coinbase_binding, CoinbaseBindingContext,
+};
 use mwc_core::ser::{self, PMMRIndexHashable, PMMRable, ProtocolVersion};
 use mwc_crates::croaring::Bitmap;
 use mwc_crates::crossbeam;
@@ -3121,22 +3125,25 @@ impl<'a> Extension<'a> {
 		header_ext: &HeaderExtension<'_>,
 		batch: &Batch<'_>,
 	) -> Result<Vec<(Commitment, SpentCommitmentRecord)>, Error> {
-		let mut affected_pos = vec![];
-
+		// Require the opening before resolving inputs or modifying the extension.
+		if consensus::is_coinbase_binding_enabled(self.context_id, b.header.height)
+			&& b.coinbase_opening.is_none()
+		{
+			return Err(Error::BlockMissCoinbaseOpening);
+		}
 		// Resolve spent outputs before adding any new outputs from this block.
 		// Inputs must be validated against the pre-block UTXO set.
 		let spent = self
 			.utxo_view(header_ext)
 			.validate_inputs(&b.inputs(), batch)?;
+		self.validate_block_binding(b, &spent, header_ext, batch)?;
 		let mut spent_records = Vec::with_capacity(spent.len());
 		let b_hash = b.hash(self.context_id)?;
 
 		// Apply the output to the output and rangeproof MMRs.
-		// Add pos to affected_pos to update the accumulator later on.
 		// Add the new output to the output_pos index.
 		for out in b.outputs() {
 			let pos = self.apply_output(out, batch)?;
-			affected_pos.push(pos);
 			batch.save_output_pos_height(
 				&out.commitment(),
 				CommitPos {
@@ -3147,12 +3154,10 @@ impl<'a> Extension<'a> {
 		}
 
 		// Apply inputs to remove previously resolved spent outputs from the output and rangeproof MMRs.
-		// Add spent_pos to affected_pos to update the accumulator later on.
 		// Remove the spent outputs from the output_pos index.
 		//save the spent commitment in the db for replay attack detection.
 		for (out, pos) in &spent {
 			self.apply_input(out.commitment(), *pos)?;
-			affected_pos.push(pos.pos);
 			batch.delete_output_pos_height(&out.commitment())?;
 			//save the spent commitments.
 			let record = SpentCommitmentRecord {
@@ -3186,6 +3191,123 @@ impl<'a> Extension<'a> {
 		self.head = Tip::try_from_header(&b.header)?;
 
 		Ok(spent_records)
+	}
+
+	/// Hash the current unspent-output bitmap directly from the ordered leaf indexes.
+	/// The PMMR view limits the iterator to this branch's logical size. Its full
+	/// historical leaf count includes spent outputs and bounds trailing zero bits.
+	fn bitmap_hash(&self) -> Result<Hash, Error> {
+		let leaf_count = pmmr::n_leaves(self.output_pmmr.unpruned_size())?;
+		Ok(unspent_bitmap_hash(
+			self.output_pmmr.leaf_idx_iter(0)?,
+			leaf_count,
+		)?)
+	}
+
+	/// Calculate the digest from the parent bitmap and exact resolved inputs.
+	/// Compute it at every mining height; consensus enforcement remains gated
+	/// separately. Candidate outputs and spends do not change this bitmap.
+	/// The transaction body has already undergone aggregation and cut-through and
+	/// excludes the single reward output and kernel that will subsequently be added.
+	pub fn coinbase_binding_for_template(
+		&self,
+		parent: &BlockHeader,
+		body: &TransactionBody,
+		header_ext: &HeaderExtension<'_>,
+		batch: &Batch<'_>,
+	) -> Result<CoinbaseBindingContext, Error> {
+		let height = parent
+			.height
+			.checked_add(1)
+			.ok_or(Error::InvalidBlockHeight)?;
+		if body.outputs().iter().any(Output::is_coinbase)
+			|| body.kernels().iter().any(TxKernel::is_coinbase)
+		{
+			return Err(Error::InvalidCoinbaseBinding(
+				"template body already includes coinbase".into(),
+			));
+		}
+		let spent = self
+			.utxo_view(header_ext)
+			.validate_inputs(&body.inputs(), batch)?;
+		self.utxo_view(header_ext)
+			.validate_outputs(body.outputs(), batch)?;
+		let reward = consensus::reward(self.context_id, body.fee()?, height)
+			.map_err(|e| Error::InvalidCoinbaseBinding(e.to_string()))?;
+		self.binding_context(parent, &spent, reward, header_ext)
+	}
+
+	fn binding_context(
+		&self,
+		parent: &BlockHeader,
+		spent: &[(OutputIdentifier, CommitPos)],
+		reward: u64,
+		header_ext: &HeaderExtension<'_>,
+	) -> Result<CoinbaseBindingContext, Error> {
+		let inputs = spent
+			.iter()
+			.map(|(output, pos)| (pos.pos, *output))
+			.collect::<Vec<_>>();
+		Ok(CoinbaseBindingContext {
+			genesis_hash: header_ext
+				.get_header_hash_by_height(0)?
+				.ok_or(Error::InvalidGenesisHash)?,
+			prev_hash: parent.hash(self.context_id)?,
+			height: parent
+				.height
+				.checked_add(1)
+				.ok_or(Error::InvalidBlockHeight)?,
+			input_hash: canonical_input_hash(&inputs)
+				.map_err(|e| Error::InvalidCoinbaseBinding(e.to_string()))?,
+			bitmap_hash: self.bitmap_hash()?,
+			output_leaf_count: pmmr::n_leaves(self.output_pmmr.unpruned_size())?,
+			reward,
+		})
+	}
+
+	fn validate_block_binding(
+		&self,
+		block: &Block,
+		spent: &[(OutputIdentifier, CommitPos)],
+		header_ext: &HeaderExtension<'_>,
+		batch: &Batch<'_>,
+	) -> Result<(), Error> {
+		if !consensus::is_coinbase_binding_enabled(self.context_id, block.header.height) {
+			return Ok(());
+		}
+		let parent = crate::checked_previous_header(
+			self.context_id,
+			&block.header,
+			&mut HashSet::new(),
+			"coinbase binding",
+			|h| batch.get_block_header(h),
+		)?;
+		if self.head.last_block_h != block.header.prev_hash || self.head.height != parent.height {
+			return Err(Error::InvalidCoinbaseBinding(
+				"binding parent does not match candidate branch".into(),
+			));
+		}
+		if block.outputs().iter().filter(|o| o.is_coinbase()).count() != 1
+			|| block.kernels().iter().filter(|k| k.is_coinbase()).count() != 1
+		{
+			return Err(Error::InvalidCoinbaseBinding(
+				"expected one coinbase output and one kernel".into(),
+			));
+		}
+		let reward = consensus::reward(self.context_id, block.total_fees()?, block.header.height)
+			.map_err(|e| Error::InvalidCoinbaseBinding(e.to_string()))?;
+		// This is the authoritative parent bitmap: no outputs or inputs from
+		// the candidate block have been applied yet, including after PIBD.
+		let calculated = self.binding_context(&parent, spent, reward, header_ext)?;
+		let kernel = block.kernels().iter().find(|k| k.is_coinbase()).unwrap();
+		let opening = block
+			.coinbase_opening
+			.as_ref()
+			.ok_or(Error::BlockMissCoinbaseOpening)?;
+		secp_static::with_commit(Error::from, |secp| {
+			verify_coinbase_binding(self.context_id, secp, kernel, opening, &calculated)
+				.map_err(|e| Error::InvalidCoinbaseBinding(e.to_string()))
+		})
 	}
 
 	// Prune output and rangeproof PMMRs based on provided pos.
@@ -5381,15 +5503,25 @@ mod tests {
 
 	fn empty_segment_proof() -> SegmentProof {
 		let mut proof_bytes = [0u8; 8].as_ref();
-		mwc_core::ser::deserialize_default(0, &mut proof_bytes).unwrap()
+		mwc_core::ser::deserialize_default(0, &mut proof_bytes, true).unwrap()
 	}
 
 	fn reward_kernel(secp: &mut Secp256k1, child: u32) -> TxKernel {
 		let keychain = ExtKeychain::from_seed(secp, &[0; 32], false).unwrap();
 		let proof_builder = ProofBuilder::new(secp, &keychain).unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, child, 0, 0, 0).unwrap();
-		let (_, kernel) =
-			reward::output(0, &keychain, &proof_builder, &key_id, 0, false, 1, secp).unwrap();
+		// Storage fixtures exercise the ordinary kernel signature without a parent state.
+		let (_, kernel, _) = reward::output_s2c(
+			0,
+			&keychain,
+			&proof_builder,
+			&key_id,
+			0,
+			1,
+			secp,
+			Hash::default(),
+		)
+		.unwrap();
 		kernel
 	}
 
@@ -5420,6 +5552,19 @@ mod tests {
 			if header.height > 0 {
 				let mut block = Block::default(0);
 				block.header = header.clone();
+				if consensus::is_coinbase_binding_enabled(0, header.height) {
+					// Storage-only fixture: use a valid point for the required wire field.
+					// These deliberately empty bodies are never consensus-validated.
+					let secp = Secp256k1::with_caps(ContextFlag::None).unwrap();
+					// Note, binding is a valid point, but not valid chain binding. Needed because
+					// save requires it.
+					let bytes = mwc_util::from_hex(
+						"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+					)
+					.unwrap();
+					block.coinbase_opening =
+						Some(mwc_crates::secp::s2c::Opening::from_slice(&secp, &bytes).unwrap());
+				}
 				batch.save_block(&block).unwrap();
 				batch
 					.save_spent_index(&header.hash(0).unwrap(), &[])
@@ -6299,20 +6444,7 @@ mod tests {
 		let _ = fs::remove_dir_all(chain_dir);
 		let store = Arc::new(ChainStore::new(0, chain_dir).unwrap());
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		let keychain = ExtKeychain::from_seed(&secp, &[0; 32], false).unwrap();
-		let proof_builder = ProofBuilder::new(&secp, &keychain).unwrap();
-		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-		let (_, kernel) = reward::output(
-			0,
-			&keychain,
-			&proof_builder,
-			&key_id,
-			0,
-			false,
-			1,
-			&mut secp,
-		)
-		.unwrap();
+		let kernel = reward_kernel(&mut secp, 1);
 		kernel.verify(0, &secp).unwrap();
 
 		let kernel_dir = Path::new(chain_dir)
@@ -7015,7 +7147,11 @@ mod tests {
 			false,
 		)
 		.unwrap();
-		let block = Block { header, body };
+		let block = Block {
+			header,
+			body,
+			coinbase_opening: None,
+		};
 
 		{
 			let batch = store.batch_write().unwrap();
@@ -7366,7 +7502,7 @@ mod tests {
 
 		let mut altered_intermediate_block = Block::default(0);
 		altered_intermediate_block.header = intermediate.clone();
-		altered_intermediate_block.header.height = 99;
+		altered_intermediate_block.header.height = 3;
 		assert_eq!(
 			altered_intermediate_block.hash(0).unwrap(),
 			intermediate_hash
@@ -8320,18 +8456,19 @@ mod tests {
 		let keychain = ExtKeychain::from_seed(&secp, &[0; 32], false).unwrap();
 		let proof_builder = ProofBuilder::new(&secp, &keychain).unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-		let reward = reward::output(
+		// Genesis has no parent binding context and does not include an opening.
+		let (output, kernel, _) = reward::output_s2c(
 			0,
 			&keychain,
 			&proof_builder,
 			&key_id,
 			0,
-			false,
 			0,
 			&mut secp,
+			Hash::default(),
 		)
 		.unwrap();
-		let genesis = Block::default(0).with_reward(reward.0, reward.1).unwrap();
+		let genesis = Block::default(0).with_reward(output, kernel).unwrap();
 		assert_eq!(genesis.header.output_mmr_size, 0);
 		assert_eq!(genesis.header.kernel_mmr_size, 0);
 		assert_eq!(genesis.header.output_root, ZERO_HASH);
@@ -8455,18 +8592,19 @@ mod tests {
 		let keychain = ExtKeychain::from_seed(&secp, &[0; 32], false).unwrap();
 		let proof_builder = ProofBuilder::new(&secp, &keychain).unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-		let reward = reward::output(
+		// Genesis has no parent binding context and does not include an opening.
+		let (output, kernel, _) = reward::output_s2c(
 			0,
 			&keychain,
 			&proof_builder,
 			&key_id,
 			0,
-			false,
 			0,
 			&mut secp,
+			Hash::default(),
 		)
 		.unwrap();
-		let mut genesis = Block::default(0).with_reward(reward.0, reward.1).unwrap();
+		let mut genesis = Block::default(0).with_reward(output, kernel).unwrap();
 		let mut txhashset =
 			TxHashSet::open(chain_dir.to_string(), store.clone(), None, &secp).unwrap();
 		let mut header_pmmr = PMMRHandle::<BlockHeader>::new(
@@ -8566,18 +8704,19 @@ mod tests {
 		let keychain = ExtKeychain::from_seed(&secp, &[0; 32], false).unwrap();
 		let proof_builder = ProofBuilder::new(&secp, &keychain).unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-		let reward = reward::output(
+		// Genesis has no parent binding context and does not include an opening.
+		let (output, kernel, _) = reward::output_s2c(
 			0,
 			&keychain,
 			&proof_builder,
 			&key_id,
 			0,
-			false,
 			0,
 			&mut secp,
+			Hash::default(),
 		)
 		.unwrap();
-		let mut genesis = Block::default(0).with_reward(reward.0, reward.1).unwrap();
+		let mut genesis = Block::default(0).with_reward(output, kernel).unwrap();
 		let mut txhashset =
 			TxHashSet::open(chain_dir.to_string(), store.clone(), None, &secp).unwrap();
 		let mut header_pmmr = PMMRHandle::<BlockHeader>::new(
@@ -9080,5 +9219,737 @@ mod tests {
 		drop(txhashset);
 		drop(store);
 		let _ = fs::remove_dir_all(chain_dir);
+	}
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod coinbase_binding_tests {
+	use super::*;
+	use mwc_core::core::{FeeFields, Input, OutputFeatures, Transaction};
+	use mwc_core::libtx::proof::ProofBuilder;
+	use mwc_core::libtx::{aggsig, reward};
+	use mwc_core::pow::{Difficulty, Proof};
+	use mwc_crates::secp::{ContextFlag, SecretKey};
+	use mwc_keychain::{ExtKeychain, Keychain};
+
+	fn secret(secp: &Secp256k1, n: u8) -> SecretKey {
+		let mut bytes = [0u8; 32];
+		bytes[31] = n;
+		SecretKey::from_slice(secp, &bytes).unwrap()
+	}
+
+	fn output(secp: &mut Secp256k1, value: u64, blind: u8) -> Output {
+		let blind = secret(secp, blind);
+		let commitment = secp.commit(value, blind.clone()).unwrap();
+		let proof = secp
+			.bullet_proof(value, blind, secret(secp, 80), secret(secp, 81), None, None)
+			.unwrap();
+		Output::new(OutputFeatures::Plain, commitment, proof)
+	}
+
+	struct Fixture {
+		_dir: mwc_crates::tempfile::TempDir,
+		store: Arc<ChainStore>,
+		trees: TxHashSet,
+		headers: PMMRHandle<BlockHeader>,
+		parent: BlockHeader,
+		outputs: Vec<Output>,
+		parent_bitmap_hash: Hash,
+	}
+
+	impl Fixture {
+		fn new(context_id: u32, secp: &mut Secp256k1, parent_height: u64) -> Self {
+			let outputs = vec![
+				output(secp, 4, 11),
+				output(secp, 6, 22),
+				output(secp, 3, 9),
+				output(secp, 7, 24),
+			];
+			assert_eq!(
+				secp.commit_sum(
+					outputs[..2].iter().map(Output::commitment).collect(),
+					vec![]
+				)
+				.unwrap(),
+				secp.commit_sum(
+					outputs[2..].iter().map(Output::commitment).collect(),
+					vec![]
+				)
+				.unwrap()
+			);
+			Self::with_outputs(context_id, secp, outputs, parent_height)
+		}
+
+		fn with_outputs(
+			context_id: u32,
+			secp: &mut Secp256k1,
+			outputs: Vec<Output>,
+			parent_height: u64,
+		) -> Self {
+			global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+			global::set_local_nrd_enabled(false);
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap().to_string();
+			let store = Arc::new(ChainStore::new(context_id, &path).unwrap());
+			let mut trees = TxHashSet::open(path, store.clone(), None, secp).unwrap();
+			let mut headers = PMMRHandle::<BlockHeader>::new(
+				dir.path().join("headers"),
+				false,
+				ProtocolVersion(1),
+				context_id,
+				None,
+				VariableSizeMetadataValidation::Full,
+			)
+			.unwrap();
+			let mut parent = BlockHeader::default(context_id);
+			let batch = store.batch_write().unwrap();
+			let sizes;
+			{
+				let mut extension = Extension::new(context_id, &mut trees, Tip::default());
+				for output in &outputs {
+					let pos = extension.apply_output(output, &batch).unwrap();
+					batch
+						.save_output_pos_height(&output.commitment(), CommitPos { pos, height: 0 })
+						.unwrap();
+				}
+				let roots = extension.roots().unwrap();
+				parent.output_root = roots.output_root;
+				parent.range_proof_root = roots.rproof_root;
+				parent.kernel_root = roots.kernel_root;
+				parent.output_mmr_size = roots.output_mmr_size;
+				parent.kernel_mmr_size = roots.kernel_mmr_size;
+				sizes = extension.sizes();
+			}
+			trees.output_pmmr_h.size = sizes.0;
+			trees.rproof_pmmr_h.size = sizes.1;
+			trees.kernel_pmmr_h.size = sizes.2;
+			trees.output_pmmr_h.backend.sync().unwrap();
+			trees.rproof_pmmr_h.backend.sync().unwrap();
+			trees.kernel_pmmr_h.backend.sync().unwrap();
+			{
+				let mut pmmr = PMMR::at(&mut headers.backend, 0);
+				for height in 0..=parent_height {
+					if height > 0 {
+						parent.prev_hash = parent.hash(context_id).unwrap();
+						parent.height = height;
+						parent.pow.proof.nonces[0] = height;
+					}
+					batch.save_block_header(&parent).unwrap();
+					pmmr.push(&parent).unwrap();
+				}
+				headers.size = pmmr.size();
+			}
+			let tip = Tip::try_from_header(&parent).unwrap();
+			batch.save_body_head(&tip).unwrap();
+			batch.save_header_head(&tip).unwrap();
+			batch
+				.set_spent_commitment_record_index_complete(true)
+				.unwrap();
+			batch.commit().unwrap();
+			headers.backend.sync().unwrap();
+			let parent_bitmap_hash = bitmap_hash(0..outputs.len() as u64, outputs.len() as u64);
+			Self {
+				_dir: dir,
+				store,
+				trees,
+				headers,
+				parent,
+				outputs,
+				parent_bitmap_hash,
+			}
+		}
+	}
+
+	fn bitmap_hash(indices: impl IntoIterator<Item = u64>, size: u64) -> Hash {
+		unspent_bitmap_hash(indices.into_iter().map(Ok), size).unwrap()
+	}
+
+	fn current_bitmap_hash(trees: &TxHashSet) -> Hash {
+		let pmmr = ReadonlyPMMR::at(&trees.output_pmmr_h.backend, trees.output_pmmr_h.size);
+		unspent_bitmap_hash(
+			pmmr.leaf_idx_iter(0).unwrap(),
+			pmmr::n_leaves(pmmr.unpruned_size()).unwrap(),
+		)
+		.unwrap()
+	}
+
+	fn transaction(context_id: u32, secp: &mut Secp256k1, inputs: &[Output]) -> Transaction {
+		let output = output(secp, 9, 40);
+		let features = KernelFeatures::Plain {
+			fee: FeeFields::new(1).unwrap(),
+		};
+		let key = secret(secp, 7);
+		let excess = secp.commit(0, key.clone()).unwrap();
+		let sig = aggsig::sign_single(
+			secp,
+			&features.kernel_sig_msg(context_id).unwrap(),
+			&key,
+			None,
+			&excess.to_pubkey(secp).unwrap(),
+		)
+		.unwrap();
+		let kernel = TxKernel {
+			features,
+			excess,
+			excess_sig: sig,
+		};
+		let inputs = inputs
+			.iter()
+			.map(|out| Input::new(OutputFeatures::Plain, out.commitment()))
+			.collect::<Vec<_>>();
+		Transaction::new(
+			context_id,
+			Inputs::from(inputs.as_slice()),
+			&[output],
+			&[kernel],
+		)
+		.unwrap()
+	}
+
+	fn bound_block(
+		context_id: u32,
+		secp: &mut Secp256k1,
+		parent: &BlockHeader,
+		transaction: &Transaction,
+		context: &CoinbaseBindingContext,
+		nonce: u64,
+	) -> Block {
+		let keychain = ExtKeychain::from_seed(secp, &[5; 32], false).unwrap();
+		let key = ExtKeychain::derive_key_id(1, 10, 0, 0, 0).unwrap();
+		let builder = ProofBuilder::new(secp, &keychain).unwrap();
+		let (output, kernel, opening) = reward::output_s2c(
+			context_id,
+			&keychain,
+			&builder,
+			&key,
+			transaction.fee().unwrap(),
+			parent.height + 1,
+			secp,
+			context.digest().unwrap(),
+		)
+		.unwrap();
+		let mut block = Block::from_reward(
+			context_id,
+			parent,
+			&[transaction.clone()],
+			output,
+			kernel,
+			Difficulty::from_num(1),
+			secp,
+		)
+		.unwrap();
+		block.coinbase_opening = Some(opening);
+		block.header.pow.proof = Proof::new(context_id, vec![nonce; global::proofsize(context_id)]);
+		block
+	}
+
+	#[test]
+	fn coinbase_binding_rejects_equal_sum_substitution_and_rewinds_branch_state() {
+		let context_id = 940_001;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut f = Fixture::new(context_id, &mut secp, 3);
+
+		let tx_a = transaction(context_id, &mut secp, &f.outputs[..2]);
+		let tx_b = Transaction::new(
+			context_id,
+			Inputs::from(
+				f.outputs[2..]
+					.iter()
+					.map(|o| Input::new(OutputFeatures::Plain, o.commitment()))
+					.collect::<Vec<_>>()
+					.as_slice(),
+			),
+			tx_a.outputs(),
+			tx_a.kernels(),
+		)
+		.unwrap();
+		let batch = f.store.batch_write().unwrap();
+		let mut ext = Extension::new(
+			context_id,
+			&mut f.trees,
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let header_ext = HeaderExtension::new(
+			PMMR::at(&mut f.headers.backend, f.headers.size),
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let binding_a = ext
+			.coinbase_binding_for_template(&f.parent, &tx_a.body, &header_ext, &batch)
+			.unwrap();
+		let binding_b = ext
+			.coinbase_binding_for_template(&f.parent, &tx_b.body, &header_ext, &batch)
+			.unwrap();
+		assert_ne!(binding_a.input_hash, binding_b.input_hash);
+		assert_eq!(binding_a.bitmap_hash, f.parent_bitmap_hash);
+		assert_eq!(binding_a.bitmap_hash, binding_b.bitmap_hash);
+		assert_eq!(binding_a.output_leaf_count, 4);
+		assert_eq!(binding_b.output_leaf_count, 4);
+		assert_ne!(binding_a.digest().unwrap(), binding_b.digest().unwrap());
+		let mut block = bound_block(context_id, &mut secp, &f.parent, &tx_a, &binding_a, 1);
+		let mut changed = block.clone();
+		changed.body = TransactionBody::init(
+			context_id,
+			tx_b.inputs(),
+			block.outputs(),
+			block.kernels(),
+			false,
+		)
+		.unwrap();
+		assert_eq!(
+			block.hash(context_id).unwrap(),
+			changed.hash(context_id).unwrap()
+		);
+		block
+			.validate(context_id, &f.parent.total_kernel_offset, &mut secp)
+			.unwrap();
+		changed
+			.validate(context_id, &f.parent.total_kernel_offset, &mut secp)
+			.unwrap();
+		let initial_sizes = ext.sizes();
+		assert!(matches!(
+			ext.apply_block(&changed, &header_ext, &batch),
+			Err(Error::InvalidCoinbaseBinding(_))
+		));
+		assert_eq!(initial_sizes, ext.sizes());
+		assert_eq!(ext.bitmap_hash().unwrap(), f.parent_bitmap_hash);
+		ext.apply_block(&block, &header_ext, &batch).unwrap();
+		let roots = ext.roots().unwrap();
+		block.header.output_root = roots.output_root;
+		block.header.range_proof_root = roots.rproof_root;
+		block.header.kernel_root = roots.kernel_root;
+		block.header.output_mmr_size = roots.output_mmr_size;
+		block.header.kernel_mmr_size = roots.kernel_mmr_size;
+		batch.save_block_header(&block.header).unwrap();
+		batch.save_block(&block).unwrap();
+		ext.rewind(&f.parent, &batch, None).unwrap();
+		assert_eq!(ext.bitmap_hash().unwrap(), f.parent_bitmap_hash);
+		assert_eq!(pmmr::n_leaves(ext.output_pmmr.unpruned_size()).unwrap(), 4);
+		let other = bound_block(context_id, &mut secp, &f.parent, &tx_b, &binding_b, 2);
+		ext.apply_block(&other, &header_ext, &batch).unwrap();
+		assert_eq!(ext.bitmap_hash().unwrap(), bitmap_hash([0, 1, 4, 5], 6));
+	}
+
+	#[test]
+	fn coinbase_binding_extension_rollback_preserves_parent_bitmap_hash() {
+		let context_id = 940_003;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut f = Fixture::new(context_id, &mut secp, 3);
+
+		let tx = transaction(context_id, &mut secp, &f.outputs[..2]);
+		let binding = {
+			let batch = f.store.batch_read().unwrap();
+			let extension = Extension::new(
+				context_id,
+				&mut f.trees,
+				Tip::try_from_header(&f.parent).unwrap(),
+			);
+			let header_ext = HeaderExtension::new(
+				PMMR::at(&mut f.headers.backend, f.headers.size),
+				Tip::try_from_header(&f.parent).unwrap(),
+			);
+			extension
+				.coinbase_binding_for_template(&f.parent, &tx.body, &header_ext, &batch)
+				.unwrap()
+		};
+		let block = bound_block(context_id, &mut secp, &f.parent, &tx, &binding, 3);
+		let mut batch = f.store.batch_write().unwrap();
+		let result = extending(&mut f.headers, &mut f.trees, &mut batch, |pair, batch| {
+			pair.extension
+				.apply_block(&block, pair.header_extension, batch)?;
+			assert_eq!(pair.extension.bitmap_hash()?, bitmap_hash(2..6, 6));
+			Err::<(), _>(Error::Other(
+				"injected failure after block application".into(),
+			))
+		});
+		assert!(result.is_err());
+		assert_eq!(current_bitmap_hash(&f.trees), f.parent_bitmap_hash);
+		assert_eq!(f.trees.roots().unwrap().output_root, f.parent.output_root);
+		for output in &f.outputs {
+			assert!(f.trees.get_unspent(output.commitment()).unwrap().is_some());
+		}
+		// A validated losing fork is also rolled back without replacing the
+		// canonical bitmap hash.
+		extending(&mut f.headers, &mut f.trees, &mut batch, |pair, batch| {
+			pair.extension
+				.apply_block(&block, pair.header_extension, batch)?;
+			pair.extension.force_rollback();
+			Ok(())
+		})
+		.unwrap();
+		assert_eq!(current_bitmap_hash(&f.trees), f.parent_bitmap_hash);
+	}
+
+	#[test]
+	fn coinbase_binding_activation_uses_candidate_parent_without_checkpoint() {
+		let context_id = 940_002;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut f = Fixture::new(context_id, &mut secp, 2);
+
+		let batch = f.store.batch_write().unwrap();
+		let mut ext = Extension::new(
+			context_id,
+			&mut f.trees,
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let header_ext = HeaderExtension::new(
+			PMMR::at(&mut f.headers.backend, f.headers.size),
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let keychain = ExtKeychain::from_seed(&secp, &[19; 32], false).unwrap();
+		let builder = mwc_core::libtx::ProofBuilder::new(&secp, &keychain).unwrap();
+		let before_binding = ext
+			.coinbase_binding_for_template(
+				&f.parent,
+				&TransactionBody::empty(),
+				&header_ext,
+				&batch,
+			)
+			.unwrap();
+		assert_eq!(before_binding.prev_hash, f.parent.hash(context_id).unwrap());
+		assert_eq!(before_binding.height, 3);
+		assert_eq!(before_binding.output_leaf_count, 4);
+		assert_eq!(before_binding.bitmap_hash, f.parent_bitmap_hash);
+		let tx = transaction(context_id, &mut secp, &f.outputs[..2]);
+		let with_inputs = ext
+			.coinbase_binding_for_template(&f.parent, &tx.body, &header_ext, &batch)
+			.unwrap();
+		assert_ne!(with_inputs.input_hash, before_binding.input_hash);
+		assert_eq!(with_inputs.bitmap_hash, before_binding.bitmap_hash);
+
+		// Mining verifies the S2C response before activation, but its opening
+		// stays out of the block and the ordinary kernel signature remains valid.
+		let key = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+		let (out, kernel, opening) = reward::output_s2c(
+			context_id,
+			&keychain,
+			&builder,
+			&key,
+			0,
+			3,
+			&mut secp,
+			before_binding.digest().unwrap(),
+		)
+		.unwrap();
+		verify_coinbase_binding(context_id, &secp, &kernel, &opening, &before_binding).unwrap();
+		let mut before = Block::from_reward(
+			context_id,
+			&f.parent,
+			&[],
+			out,
+			kernel,
+			Difficulty::from_num(1),
+			&secp,
+		)
+		.unwrap();
+		before.header.pow.proof = Proof::new(context_id, vec![4; global::proofsize(context_id)]);
+		assert!(before.coinbase_opening.is_none());
+		let encoded = ser::ser_vec(context_id, &before, ProtocolVersion::local(), true).unwrap();
+		let mut legacy_encoded = Vec::new();
+		ser::Writeable::write(
+			&before,
+			&mut ser::BinWriter::new(
+				&mut legacy_encoded,
+				ProtocolVersion::local(),
+				context_id,
+				false,
+			),
+		)
+		.unwrap();
+		assert_eq!(encoded, legacy_encoded);
+		let decoded: Block =
+			ser::deserialize_default(context_id, &mut encoded.as_slice(), true).unwrap();
+		assert!(decoded.coinbase_opening.is_none());
+		before
+			.validate(context_id, &f.parent.total_kernel_offset, &mut secp)
+			.unwrap();
+		ext.apply_block(&before, &header_ext, &batch).unwrap();
+		let roots = ext.roots().unwrap();
+		before.header.output_root = roots.output_root;
+		before.header.range_proof_root = roots.rproof_root;
+		before.header.kernel_root = roots.kernel_root;
+		before.header.output_mmr_size = roots.output_mmr_size;
+		before.header.kernel_mmr_size = roots.kernel_mmr_size;
+		batch.save_block_header(&before.header).unwrap();
+		batch.save_block(&before).unwrap();
+
+		// The first active template initializes its bitmap from this branch's
+		// actual H-1 state, including its newly appended reward output.
+		let binding = ext
+			.coinbase_binding_for_template(
+				&before.header,
+				&TransactionBody::empty(),
+				&header_ext,
+				&batch,
+			)
+			.unwrap();
+		assert_eq!(binding.prev_hash, before.hash(context_id).unwrap());
+		assert_eq!(binding.height, 4);
+		assert_eq!(binding.output_leaf_count, 5);
+		assert_eq!(binding.bitmap_hash, bitmap_hash(0..5, 5));
+
+		let key = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+		// Deliberately omit the valid S2C opening to exercise missing-data rejection.
+		let (out, kernel, _) = reward::output_s2c(
+			context_id,
+			&keychain,
+			&builder,
+			&key,
+			0,
+			4,
+			&mut secp,
+			binding.digest().unwrap(),
+		)
+		.unwrap();
+		let mut missing_opening = Block::from_reward(
+			context_id,
+			&before.header,
+			&[],
+			out,
+			kernel,
+			Difficulty::from_num(1),
+			&secp,
+		)
+		.unwrap();
+		missing_opening.header.pow.proof =
+			Proof::new(context_id, vec![5; global::proofsize(context_id)]);
+		missing_opening
+			.validate(context_id, &before.header.total_kernel_offset, &mut secp)
+			.unwrap();
+		let sizes = ext.sizes();
+		assert!(matches!(
+			ext.apply_block(&missing_opening, &header_ext, &batch),
+			Err(Error::BlockMissCoinbaseOpening)
+		));
+		assert_eq!(ext.sizes(), sizes);
+		let mut active = bound_block(
+			context_id,
+			&mut secp,
+			&before.header,
+			&Transaction::empty(),
+			&binding,
+			6,
+		);
+		active
+			.validate(context_id, &before.header.total_kernel_offset, &mut secp)
+			.unwrap();
+		ext.apply_block(&active, &header_ext, &batch).unwrap();
+		let roots = ext.roots().unwrap();
+		active.header.output_root = roots.output_root;
+		active.header.range_proof_root = roots.rproof_root;
+		active.header.kernel_root = roots.kernel_root;
+		active.header.output_mmr_size = roots.output_mmr_size;
+		active.header.kernel_mmr_size = roots.kernel_mmr_size;
+		batch.save_block_header(&active.header).unwrap();
+		batch.save_block(&active).unwrap();
+		assert_eq!(ext.bitmap_hash().unwrap(), bitmap_hash(0..6, 6));
+		assert_eq!(pmmr::n_leaves(ext.output_pmmr.unpruned_size()).unwrap(), 6);
+
+		// Crossing the boundary in reverse restores branch state, without a
+		// remembered first-seen H-1 hash preventing an alternative legacy branch.
+		ext.rewind(&f.parent, &batch, None).unwrap();
+		assert_eq!(ext.bitmap_hash().unwrap(), f.parent_bitmap_hash);
+		let tx = transaction(context_id, &mut secp, &f.outputs[..2]);
+		let key = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+		let alternative_binding = ext
+			.coinbase_binding_for_template(&f.parent, &tx.body, &header_ext, &batch)
+			.unwrap();
+		let (out, kernel, _) = reward::output_s2c(
+			context_id,
+			&keychain,
+			&builder,
+			&key,
+			tx.fee().unwrap(),
+			3,
+			&mut secp,
+			alternative_binding.digest().unwrap(),
+		)
+		.unwrap();
+		let mut alternative = Block::from_reward(
+			context_id,
+			&f.parent,
+			&[tx],
+			out,
+			kernel,
+			Difficulty::from_num(1),
+			&secp,
+		)
+		.unwrap();
+		alternative.header.pow.proof =
+			Proof::new(context_id, vec![7; global::proofsize(context_id)]);
+		alternative
+			.validate(context_id, &f.parent.total_kernel_offset, &mut secp)
+			.unwrap();
+		ext.apply_block(&alternative, &header_ext, &batch).unwrap();
+		let roots = ext.roots().unwrap();
+		alternative.header.output_root = roots.output_root;
+		alternative.header.range_proof_root = roots.rproof_root;
+		alternative.header.kernel_root = roots.kernel_root;
+		alternative.header.output_mmr_size = roots.output_mmr_size;
+		alternative.header.kernel_mmr_size = roots.kernel_mmr_size;
+		batch.save_block_header(&alternative.header).unwrap();
+		batch.save_block(&alternative).unwrap();
+		let other = ext
+			.coinbase_binding_for_template(
+				&alternative.header,
+				&TransactionBody::empty(),
+				&header_ext,
+				&batch,
+			)
+			.unwrap();
+		assert_ne!(other.prev_hash, binding.prev_hash);
+		assert_ne!(other.bitmap_hash, binding.bitmap_hash);
+		let active_other = bound_block(
+			context_id,
+			&mut secp,
+			&alternative.header,
+			&Transaction::empty(),
+			&other,
+			8,
+		);
+		ext.apply_block(&active_other, &header_ext, &batch).unwrap();
+		assert_eq!(other.output_leaf_count, 6);
+		assert_eq!(ext.bitmap_hash().unwrap(), bitmap_hash(2..7, 7));
+		assert_eq!(pmmr::n_leaves(ext.output_pmmr.unpruned_size()).unwrap(), 7);
+	}
+
+	#[test]
+	fn coinbase_binding_repeated_templates_and_commit_hash_correct_state() {
+		let context_id = 940_004;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut f = Fixture::new(context_id, &mut secp, 3);
+
+		let tx = transaction(context_id, &mut secp, &f.outputs[..2]);
+		let parent = f.parent.clone();
+		let mut binding = None;
+		for _ in 0..2 {
+			binding = Some(
+				extending_readonly(context_id, &mut f.headers, &mut f.trees, |pair, batch| {
+					// Normal mining rewinds even when already at the parent.
+					pair.extension.rewind(&parent, batch, None)?;
+					pair.extension.coinbase_binding_for_template(
+						&parent,
+						&tx.body,
+						pair.header_extension,
+						batch,
+					)
+				})
+				.unwrap(),
+			);
+			assert_eq!(binding.as_ref().unwrap().bitmap_hash, f.parent_bitmap_hash);
+			assert_eq!(current_bitmap_hash(&f.trees), f.parent_bitmap_hash);
+		}
+		let block = bound_block(context_id, &mut secp, &parent, &tx, &binding.unwrap(), 9);
+		let mut batch = f.store.batch_write().unwrap();
+		let hash = extending(&mut f.headers, &mut f.trees, &mut batch, |pair, batch| {
+			pair.extension
+				.apply_block(&block, pair.header_extension, batch)?;
+			pair.extension.bitmap_hash()
+		})
+		.unwrap();
+		assert_eq!(hash, bitmap_hash(2..6, 6));
+		assert_eq!(current_bitmap_hash(&f.trees), hash);
+	}
+
+	#[test]
+	fn coinbase_bitmap_hash_excludes_leaves_beyond_the_pmmr_view() {
+		let context_id = 940_007;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let f = Fixture::new(context_id, &mut secp, 3);
+		assert_eq!(current_bitmap_hash(&f.trees), bitmap_hash(0..4, 4));
+
+		// Keep the later output in the backend leaf set. The smaller view must
+		// exclude it, even though its bit occupies the same byte as earlier leaves.
+		let size = pmmr::insertion_to_pmmr_index(3).unwrap();
+		let view = ReadonlyPMMR::at(&f.trees.output_pmmr_h.backend, size);
+		let hash = unspent_bitmap_hash(
+			view.leaf_idx_iter(0).unwrap(),
+			pmmr::n_leaves(view.unpruned_size()).unwrap(),
+		)
+		.unwrap();
+		assert_eq!(hash, bitmap_hash(0..3, 3));
+		assert_ne!(hash, f.parent_bitmap_hash);
+	}
+
+	#[test]
+	fn coinbase_binding_rejects_changed_parent_bitmap_with_same_header_and_inputs() {
+		let context_id = 940_005;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut f = Fixture::new(context_id, &mut secp, 3);
+
+		let tx = transaction(context_id, &mut secp, &f.outputs[..2]);
+		let batch = f.store.batch_write().unwrap();
+		let mut ext = Extension::new(
+			context_id,
+			&mut f.trees,
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let header_ext = HeaderExtension::new(
+			PMMR::at(&mut f.headers.backend, f.headers.size),
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let binding = ext
+			.coinbase_binding_for_template(&f.parent, &tx.body, &header_ext, &batch)
+			.unwrap();
+		let block = bound_block(context_id, &mut secp, &f.parent, &tx, &binding, 10);
+		// Simulate an incorrect PIBD bitmap: keep the candidate's two inputs
+		// live, but mark a different parent output spent. Header roots stay equal.
+		ext.update_leaf_sets(&[0, 1, 3].into_iter().collect())
+			.unwrap();
+		let changed = ext
+			.coinbase_binding_for_template(&f.parent, &tx.body, &header_ext, &batch)
+			.unwrap();
+		assert_eq!(binding.input_hash, changed.input_hash);
+		assert_eq!(binding.prev_hash, changed.prev_hash);
+		assert_eq!(binding.output_leaf_count, changed.output_leaf_count);
+		assert_ne!(binding.bitmap_hash, changed.bitmap_hash);
+		assert_eq!(ext.roots().unwrap().output_root, f.parent.output_root);
+		let sizes = ext.sizes();
+		assert!(matches!(
+			ext.apply_block(&block, &header_ext, &batch),
+			Err(Error::InvalidCoinbaseBinding(_))
+		));
+		assert_eq!(ext.sizes(), sizes);
+	}
+
+	#[test]
+	fn coinbase_binding_accepts_empty_parent_and_excludes_candidate_reward() {
+		let context_id = 940_006;
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut f = Fixture::with_outputs(context_id, &mut secp, vec![], 3);
+
+		let batch = f.store.batch_write().unwrap();
+		let mut ext = Extension::new(
+			context_id,
+			&mut f.trees,
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let header_ext = HeaderExtension::new(
+			PMMR::at(&mut f.headers.backend, f.headers.size),
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		let binding = ext
+			.coinbase_binding_for_template(
+				&f.parent,
+				&TransactionBody::empty(),
+				&header_ext,
+				&batch,
+			)
+			.unwrap();
+		assert_eq!(binding.output_leaf_count, 0);
+		assert_eq!(binding.bitmap_hash, bitmap_hash([], 0));
+		let block = bound_block(
+			context_id,
+			&mut secp,
+			&f.parent,
+			&Transaction::empty(),
+			&binding,
+			11,
+		);
+		block
+			.validate(context_id, &f.parent.total_kernel_offset, &mut secp)
+			.unwrap();
+		ext.apply_block(&block, &header_ext, &batch).unwrap();
+		assert_eq!(pmmr::n_leaves(ext.output_pmmr.unpruned_size()).unwrap(), 1);
+		assert_eq!(ext.bitmap_hash().unwrap(), bitmap_hash([0], 1));
 	}
 }

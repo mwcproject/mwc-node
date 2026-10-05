@@ -72,6 +72,9 @@ pub enum Error {
 	/// Wallet communication error
 	#[error("Wallet coomunication error, {0}")]
 	WalletComm(String),
+	/// A bound coinbase cannot be obtained; operator intervention is required.
+	#[error("Mining wallet coinbase binding error, {0}")]
+	WalletBinding(String),
 	/// Error originating from some I/O operation (likely a file on disk).
 	#[error("IO error, {0}")]
 	IOError(#[from] std::io::Error),

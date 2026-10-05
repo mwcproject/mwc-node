@@ -447,7 +447,7 @@ where
 
 	/// Append element to append-only file by serializing it to bytes and appending the bytes.
 	fn append_elmt(&mut self, data: &T) -> io::Result<()> {
-		let mut bytes = ser::ser_vec(self.context_id, data, self.version)
+		let mut bytes = ser::ser_vec(self.context_id, data, self.version, true)
 			.map_err(|e| ser_error_to_io("Fail to append data", e))?;
 		self.validate_serialized_elmt_size(bytes.len())?;
 		self.append(&mut bytes)?;
@@ -493,7 +493,7 @@ where
 		let file_len = reader.metadata()?.len();
 		let mut buf_reader = BufReader::new(reader);
 		let mut streaming_reader =
-			StreamingReader::new(&mut buf_reader, self.version, self.context_id);
+			StreamingReader::new(&mut buf_reader, self.version, self.context_id, true);
 
 		let mut pos = 0u64;
 		let mut current_offset = 0u64;
@@ -1002,7 +1002,7 @@ where
 			Some(data) => data,
 			None => return Ok(None),
 		};
-		ser::deserialize_strict(&mut &data[..], self.version, self.context_id)
+		ser::deserialize_strict(&mut &data[..], self.version, self.context_id, true)
 			.map(Some)
 			.map_err(|e| ser_error_to_io("Fail to deserialize data", e))
 	}
@@ -1103,7 +1103,7 @@ where
 		let file_len = reader.metadata()?.len();
 		let mut buf_reader = BufReader::new(reader);
 		let mut streaming_reader =
-			StreamingReader::new(&mut buf_reader, self.version, self.context_id);
+			StreamingReader::new(&mut buf_reader, self.version, self.context_id, true);
 
 		let mut options = OpenOptions::new();
 		options.write(true).create(true).truncate(true);
@@ -1112,7 +1112,8 @@ where
 		let mut current_pos = 0u64;
 		let mut prune_pos = prune_pos;
 		{
-			let mut bin_writer = BinWriter::new(&mut buf_writer, self.version, self.context_id);
+			let mut bin_writer =
+				BinWriter::new(&mut buf_writer, self.version, self.context_id, true);
 			while streaming_reader.total_bytes_read() < file_len {
 				let bytes_before = streaming_reader.total_bytes_read();
 				let elmt = T::read(&mut streaming_reader)
@@ -1200,7 +1201,7 @@ where
 				let file_len = reader.metadata()?.len();
 				let mut buf_reader = BufReader::new(reader);
 				let mut streaming_reader =
-					StreamingReader::new(&mut buf_reader, self.version, self.context_id);
+					StreamingReader::new(&mut buf_reader, self.version, self.context_id, true);
 
 				let mut options = OpenOptions::new();
 				options.write(true).create(true).truncate(true);
@@ -1209,7 +1210,7 @@ where
 				let mut current_offset = 0;
 				{
 					let mut bin_writer =
-						BinWriter::new(&mut buf_writer, self.version, self.context_id);
+						BinWriter::new(&mut buf_writer, self.version, self.context_id, true);
 					while streaming_reader.total_bytes_read() < file_len {
 						T::read(&mut streaming_reader)
 							.map_err(|e| ser_error_to_io("Fail to read at rebuild_size_file", e))?;
@@ -1484,7 +1485,7 @@ mod tests {
 		] {
 			size_file
 				.buffer
-				.extend(ser::ser_vec(0, &entry, ProtocolVersion(1)).unwrap());
+				.extend(ser::ser_vec(0, &entry, ProtocolVersion(1), true).unwrap());
 		}
 
 		let err = file.rewind(2).unwrap_err();

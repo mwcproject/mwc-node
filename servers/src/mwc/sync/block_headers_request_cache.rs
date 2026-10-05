@@ -16,7 +16,7 @@ use mwc_chain::Chain;
 use mwc_core::core::hash::Hash;
 use mwc_crates::log::debug;
 use mwc_crates::parking_lot::RwLock;
-use mwc_p2p::{PeerAddr, Peers};
+use mwc_p2p::{PeerAddr, PeerInfo, Peers};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -81,11 +81,16 @@ impl HeadersBlocksRequests {
 
 	pub fn add_block_request(
 		&self,
-		addr: &PeerAddr,
+		peer_info: &PeerInfo,
 		height: u64,
 		block_hash: Hash,
 		opts: mwc_chain::Options,
 	) {
+		// Queue only requests whose original supplier supports block extras.
+		if !peer_info.is_block_extra() {
+			return;
+		}
+		let addr = &peer_info.addr;
 		let mut blocks = self.blocks.write();
 
 		match blocks.get_mut(&height) {
@@ -234,11 +239,17 @@ impl HeadersBlocksRequests {
 						}
 					};
 					if !block_exists {
-						if let Some(peer) = peers.get_connected_peer(&block_req.addr) {
-							debug!("process_request, requesting block from {}, target height: {} , hash: {}",
-                                        block_req.addr, block_req.height, block_req.block_hash);
+						// Recheck in case this address reconnected with different capabilities.
+						if let Some(peer) = peers
+							.get_connected_peer(&block_req.addr)
+							.filter(|peer| peer.info.is_block_extra())
+						{
+							debug!(
+								"process_request, requesting block from {}, target height: {} , hash: {}",
+								peer.info.addr, block_req.height, block_req.block_hash
+							);
 
-							let cnt = requests_per_peer.entry(block_req.addr.clone()).or_insert(0);
+							let cnt = requests_per_peer.entry(peer.info.addr.clone()).or_insert(0);
 							if *cnt < Self::MAX_REQUEST_PER_PEER {
 								match peer.send_block_request(block_req.block_hash, block_req.opts)
 								{
@@ -248,9 +259,12 @@ impl HeadersBlocksRequests {
 									}
 									Err(e) => {
 										let msg = format!(
-													"Failed to send block request to {}, target height {}, hash {}: {}",
-													block_req.addr, block_req.height, block_req.block_hash, e
-												);
+											"Failed to send block request to {}, target height {}, hash {}: {}",
+											peer.info.addr,
+											block_req.height,
+											block_req.block_hash,
+											e
+										);
 										requests.push_back(block_req);
 										for r in skipped_requests {
 											requests.push_back(r);
@@ -279,13 +293,13 @@ impl HeadersBlocksRequests {
 mod tests {
 	use super::*;
 	use mwc_chain::types::NoopAdapter;
-	use mwc_core::{genesis, global, pow};
+	use mwc_core::{genesis, global, pow, ser::ProtocolVersion};
 	use mwc_crates::secp::{ContextFlag, Secp256k1};
+	use mwc_p2p::types::{Capabilities, Direction, PeerLiveInfo};
 	use std::collections::HashSet;
 	use std::fs;
 
-	#[test]
-	fn block_request_queue_evicts_highest_height_bucket_when_full() {
+	fn test_requests() -> (HeadersBlocksRequests, String) {
 		global::set_local_chain_type(global::ChainTypes::Floonet);
 		global::set_local_nrd_enabled(false);
 
@@ -318,12 +332,64 @@ mod tests {
 			)
 			.unwrap(),
 		);
-		let requests = HeadersBlocksRequests::new(chain);
-		let addr = PeerAddr::Ip("127.0.0.1:3414".parse().unwrap());
+		(HeadersBlocksRequests::new(chain), dir_str)
+	}
+
+	fn peer_info(port: u16, capabilities: Capabilities) -> PeerInfo {
+		PeerInfo {
+			capabilities,
+			user_agent: "queue-test".into(),
+			version: ProtocolVersion::local(),
+			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
+			direction: Direction::Outbound,
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+			tx_base_fee: 0,
+		}
+	}
+
+	#[test]
+	fn block_request_queue_requires_block_extra_and_drops_disconnected_supplier() {
+		let (requests, dir_str) = test_requests();
+		let legacy = peer_info(3414, Capabilities::UNKNOWN);
+		let capable = peer_info(3415, Capabilities::BLOCK_EXTRA);
+		let hash = Hash::from_vec(&[42; 32]);
+		requests.add_block_request(&legacy, 1, hash, mwc_chain::Options::NONE);
+		assert!(requests.blocks.read_recursive().is_empty());
+		// Legacy peers still supply headers; only block queue admission is gated.
+		requests.add_header_request(&legacy.addr, Some(hash), 1, vec![]);
+		assert_eq!(requests.headers.read_recursive().len(), 1);
+
+		requests.add_block_request(&capable, 1, hash, mwc_chain::Options::NONE);
+		{
+			let blocks = requests.blocks.read_recursive();
+			let queued = blocks.get(&1).unwrap();
+			assert_eq!(queued.len(), 1);
+			assert_eq!(queued[0].addr, capable.addr);
+		}
+
+		// No connection remains for the selected supplier. Ordinary sync or a
+		// new announcement can request the block again; this queue drops it.
+		let peer_dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = mwc_p2p::store::PeerStore::new(0, peer_dir.path().to_str().unwrap()).unwrap();
+		let peers = Arc::new(Peers::new(
+			store,
+			Arc::new(mwc_p2p::DummyAdapter {}),
+			&mwc_p2p::P2PConfig::default(),
+		));
+		requests.process_request(&peers).unwrap();
+		assert!(requests.blocks.read_recursive().is_empty());
+		drop(requests);
+		let _ = fs::remove_dir_all(&dir_str);
+	}
+
+	#[test]
+	fn block_request_queue_evicts_highest_height_bucket_when_full() {
+		let (requests, dir_str) = test_requests();
+		let peer = peer_info(3414, Capabilities::BLOCK_EXTRA);
 
 		for height in 0..(HeadersBlocksRequests::MAX_QUEUED_BLOCK_REQUESTS as u64 - 1) {
 			requests.add_block_request(
-				&addr,
+				&peer,
 				height,
 				Hash::from_vec(&height.to_be_bytes()),
 				mwc_chain::Options::NONE,
@@ -332,13 +398,13 @@ mod tests {
 
 		let evicted_height = HeadersBlocksRequests::MAX_QUEUED_BLOCK_REQUESTS as u64;
 		requests.add_block_request(
-			&addr,
+			&peer,
 			evicted_height,
 			Hash::from_vec(&evicted_height.to_be_bytes()),
 			mwc_chain::Options::NONE,
 		);
 		requests.add_block_request(
-			&PeerAddr::Ip("127.0.0.1:3415".parse().unwrap()),
+			&peer_info(3415, Capabilities::BLOCK_EXTRA),
 			evicted_height,
 			Hash::from_vec(&(evicted_height + 1).to_be_bytes()),
 			mwc_chain::Options::NONE,

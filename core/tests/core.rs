@@ -17,7 +17,7 @@
 
 pub mod common;
 
-use crate::common::build::{self, initial_tx, input, output, with_excess};
+use crate::common::build::{self, feature_input, height_tagged_output, initial_tx, with_excess};
 use crate::common::{new_block, tx1i1o, tx1i2o, tx2i1o};
 use keychain::{BlindingFactor, ExtKeychain, Keychain};
 use mwc_core::core::block::BlockHeader;
@@ -46,12 +46,12 @@ fn simple_tx_ser() {
 
 	// Default protocol version (3).
 	let mut vec = Vec::new();
-	ser::serialize_default(0, &mut vec, &tx).expect("serialization failed");
+	ser::serialize_default(0, &mut vec, &tx, true).expect("serialization failed");
 	assert_eq!(vec.len(), 945);
 
 	// Explicit protocol version 3.
 	let mut vec = Vec::new();
-	ser::serialize(&mut vec, ser::ProtocolVersion(3), 0, &tx).expect("serialization failed");
+	ser::serialize(&mut vec, ser::ProtocolVersion(3), 0, &tx, true).expect("serialization failed");
 	assert_eq!(vec.len(), 945);
 
 	// We need to convert the tx to v2 compatibility with "features and commitment" inputs
@@ -81,22 +81,22 @@ fn simple_tx_ser() {
 
 	// Explicit protocol version 1.
 	let mut vec = Vec::new();
-	ser::serialize(&mut vec, ser::ProtocolVersion(1), 0, &tx).expect("serialization failed");
+	ser::serialize(&mut vec, ser::ProtocolVersion(1), 0, &tx, true).expect("serialization failed");
 	assert_eq!(vec.len(), 955);
 
 	// Explicit protocol version 2.
 	let mut vec = Vec::new();
-	ser::serialize(&mut vec, ser::ProtocolVersion(2), 0, &tx).expect("serialization failed");
+	ser::serialize(&mut vec, ser::ProtocolVersion(2), 0, &tx, true).expect("serialization failed");
 	assert_eq!(vec.len(), 947);
 
 	// Check we can still serialize to protocol version 3 without explicitly converting the tx.
 	let mut vec = Vec::new();
-	ser::serialize(&mut vec, ser::ProtocolVersion(3), 0, &tx).expect("serialization failed");
+	ser::serialize(&mut vec, ser::ProtocolVersion(3), 0, &tx, true).expect("serialization failed");
 	assert_eq!(vec.len(), 945);
 
 	// And default protocol version for completeness.
 	let mut vec = Vec::new();
-	ser::serialize_default(0, &mut vec, &tx).expect("serialization failed");
+	ser::serialize_default(0, &mut vec, &tx, true).expect("serialization failed");
 	assert_eq!(vec.len(), 945);
 }
 
@@ -105,8 +105,8 @@ fn simple_tx_ser_deser() {
 	test_setup();
 	let tx = tx2i1o();
 	let mut vec = Vec::new();
-	ser::serialize_default(0, &mut vec, &tx).expect("serialization failed");
-	let dtx: Transaction = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+	ser::serialize_default(0, &mut vec, &tx, true).expect("serialization failed");
+	let dtx: Transaction = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 	assert_eq!(dtx.fee().unwrap(), 2);
 	assert_eq!(dtx.inputs().len(), 2);
 	assert_eq!(dtx.outputs().len(), 1);
@@ -120,12 +120,12 @@ fn tx_double_ser_deser() {
 	let btx = tx2i1o();
 
 	let mut vec = Vec::new();
-	assert!(ser::serialize_default(0, &mut vec, &btx).is_ok());
-	let dtx: Transaction = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+	assert!(ser::serialize_default(0, &mut vec, &btx, true).is_ok());
+	let dtx: Transaction = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 
 	let mut vec2 = Vec::new();
-	assert!(ser::serialize_default(0, &mut vec2, &btx).is_ok());
-	let dtx2: Transaction = ser::deserialize_default(0, &mut &vec2[..]).unwrap();
+	assert!(ser::serialize_default(0, &mut vec2, &btx, true).is_ok());
+	let dtx2: Transaction = ser::deserialize_default(0, &mut &vec2[..], true).unwrap();
 
 	assert_eq!(btx.hash(0).unwrap(), dtx.hash(0).unwrap());
 	assert_eq!(dtx.hash(0).unwrap(), dtx2.hash(0).unwrap());
@@ -139,7 +139,7 @@ fn test_zero_commit_fails() {
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
 
 	// blinding should be ok because zero sum currently is acceptable
 	let res = build::transaction(
@@ -148,7 +148,10 @@ fn test_zero_commit_fails() {
 		KernelFeatures::Plain {
 			fee: 1u64.try_into().unwrap(),
 		},
-		&[input(10, key_id1.clone()), output(10, key_id1)],
+		&[
+			feature_input(10, OutputFeatures::Plain, key_id1.clone()),
+			height_tagged_output(10, key_id1, 1),
+		],
 		&keychain,
 		&builder,
 	);
@@ -163,9 +166,9 @@ fn build_tx_kernel() {
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	// first build a valid tx with corresponding blinding factor
 	let tx = build::transaction(
@@ -174,7 +177,11 @@ fn build_tx_kernel() {
 		KernelFeatures::Plain {
 			fee: 2u32.try_into().unwrap(),
 		},
-		&[input(10, key_id1), output(5, key_id2), output(3, key_id3)],
+		&[
+			feature_input(10, OutputFeatures::Plain, key_id1),
+			height_tagged_output(5, key_id2, 1),
+			height_tagged_output(3, key_id3, 1),
+		],
 		&keychain,
 		&builder,
 	)
@@ -214,9 +221,9 @@ fn build_two_half_kernels() {
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	// build kernel with associated private excess
 	let mut kernel = TxKernel::with_features(KernelFeatures::Plain {
@@ -238,7 +245,10 @@ fn build_two_half_kernels() {
 	let tx1 = build::transaction_with_kernel(
 		0,
 		&mut secp,
-		&[input(10, key_id1), output(8, key_id2.clone())],
+		&[
+			feature_input(10, OutputFeatures::Plain, key_id1),
+			height_tagged_output(8, key_id2.clone(), 1),
+		],
 		kernel.clone(),
 		excess.clone(),
 		&keychain,
@@ -249,7 +259,10 @@ fn build_two_half_kernels() {
 	let tx2 = build::transaction_with_kernel(
 		0,
 		&mut secp,
-		&[input(8, key_id2), output(6, key_id3)],
+		&[
+			feature_input(8, OutputFeatures::Plain, key_id2),
+			height_tagged_output(6, key_id3, 1),
+		],
 		kernel.clone(),
 		excess.clone(),
 		&keychain,
@@ -535,9 +548,9 @@ fn hash_output() {
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	let tx = build::transaction(
 		0,
@@ -545,7 +558,11 @@ fn hash_output() {
 		KernelFeatures::Plain {
 			fee: 1u32.try_into().unwrap(),
 		},
-		&[input(75, key_id1), output(42, key_id2), output(32, key_id3)],
+		&[
+			feature_input(75, OutputFeatures::Plain, key_id1),
+			height_tagged_output(42, key_id2, 1),
+			height_tagged_output(32, key_id3, 1),
+		],
 		&keychain,
 		&builder,
 	)
@@ -596,24 +613,28 @@ fn tx_build_exchange() {
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 			.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
-	let key_id4 = ExtKeychain::derive_key_id(1, 4, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
+	let key_id4 = ExtKeychain::derive_key_id(3, 0, 0, 4, 0).unwrap();
 
 	let (tx_alice, blind_sum) = {
 		// Alice gets 2 of her pre-existing outputs to send 5 coins to Bob, they
 		// become inputs in the new transaction
-		let (in1, in2) = (input(4, key_id1), input(3, key_id2));
+		let (in1, in2) = (
+			feature_input(4, OutputFeatures::Plain, key_id1),
+			feature_input(3, OutputFeatures::Plain, key_id2),
+		);
 
 		// Alice builds her transaction, with change, which also produces the sum
 		// of blinding factors before they're obscured.
-		let tx = Transaction::empty();
+		let mut tx = Transaction::empty();
+		tx.body.inputs = Inputs::FeaturesAndCommit(vec![]);
 		let (tx, sum) = build::partial_transaction(
 			0,
 			&mut secp,
 			tx,
-			&[in1, in2, output(1, key_id3)],
+			&[in1, in2, height_tagged_output(1, key_id3, 1)],
 			&keychain,
 			&builder,
 		)
@@ -634,7 +655,7 @@ fn tx_build_exchange() {
 		&[
 			initial_tx(tx_alice),
 			with_excess(blind_sum),
-			output(4, key_id4),
+			height_tagged_output(4, key_id4, 1),
 		],
 		&keychain,
 		&builder,
@@ -723,9 +744,9 @@ fn test_block_with_timelocked_tx() {
 	)
 	.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	// first check we can add a timelocked tx where lock height matches current
 	// block height and that the resulting block is valid
@@ -736,7 +757,10 @@ fn test_block_with_timelocked_tx() {
 			fee: 2u32.try_into().unwrap(),
 			lock_height: 1,
 		},
-		&[input(5, key_id1.clone()), output(3, key_id2.clone())],
+		&[
+			feature_input(5, OutputFeatures::Plain, key_id1.clone()),
+			height_tagged_output(3, key_id2.clone(), 1),
+		],
 		&keychain,
 		&builder,
 	)
@@ -762,7 +786,10 @@ fn test_block_with_timelocked_tx() {
 			fee: 2u32.try_into().unwrap(),
 			lock_height: 2,
 		},
-		&[input(5, key_id1), output(3, key_id2)],
+		&[
+			feature_input(5, OutputFeatures::Plain, key_id1),
+			height_tagged_output(3, key_id2, 1),
+		],
 		&keychain,
 		&builder,
 	)

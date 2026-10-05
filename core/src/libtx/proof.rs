@@ -69,6 +69,84 @@ where
 	)?)
 }
 
+const PROOF_MESSAGE_SIZE: usize = 20;
+const PROOF_MESSAGE_IDENTIFIER_START: usize = 3;
+const PROOF_MESSAGE_HEIGHT_START: usize = 16;
+const PROOF_MESSAGE_HEIGHT_END: usize = 20;
+
+fn height_tagged_proof_message(
+	key_id: &Identifier,
+	switch: SwitchCommitmentType,
+	height: u32,
+) -> Result<ProofMessage, Error> {
+	let path = key_id.to_path()?;
+	if path.depth != 3 {
+		return Err(Error::RangeProof(format!(
+			"Height-tagged output key must have derivation depth 3, key_id={}",
+			key_id
+		)));
+	}
+
+	let mut message = [0u8; PROOF_MESSAGE_SIZE];
+	message[2] = u8::from(switch);
+	message[PROOF_MESSAGE_IDENTIFIER_START..].copy_from_slice(&key_id.to_bytes());
+	message[PROOF_MESSAGE_HEIGHT_START..PROOF_MESSAGE_HEIGHT_END]
+		.copy_from_slice(&height.to_be_bytes());
+	Ok(ProofMessage::from_bytes(&message)?)
+}
+
+/// Build a commitment and a rangeproof whose proof message carries the
+/// historical anti-replay height without making that height part of the
+/// BIP32 derivation path. The key must be a canonical depth-three wallet
+/// identifier (everything the wallet generates through `next_child`).
+/// The height must remain fixed for this commitment: the rewind nonce also
+/// determines alpha/rho and sL/sR, so changing only the height-bound private
+/// nonce does not prevent amount-mask reuse. Compact rebuilds retain the
+/// original height in their private transaction context.
+pub fn height_tagged_rangeproof<K, B>(
+	secp: &mut Secp256k1,
+	keychain: &K,
+	builder: &B,
+	value: u64,
+	key_id: &Identifier,
+	height: u64,
+) -> Result<(Commitment, RangeProof), Error>
+where
+	K: Keychain,
+	B: ProofBuild,
+{
+	let height = u32::try_from(height).map_err(|e| {
+		Error::RangeProof(format!(
+			"proof::height_tagged_rangeproof, height exceeds u32, height={} error={}",
+			height, e
+		))
+	})?;
+	let switch = SwitchCommitmentType::Regular;
+	let message = height_tagged_proof_message(key_id, switch, height)?;
+
+	let commit = keychain.commit(secp, value, key_id, switch)?;
+	let skey = keychain.derive_key(secp, value, key_id, switch)?;
+	let rewind_nonce = builder.rewind_nonce(secp, &commit)?;
+	// Bind the private nonce to the exact identifier bytes in the proof
+	// message, including its anti-replay height. ProofBuilder hashes these
+	// bytes to give each height distinct tau1/tau2 masks. The construction
+	// height must still remain fixed for this commitment, as documented above.
+	// This height-tagged identifier is only nonce input. Key derivation and
+	// commitments above must continue to use the canonical key_id.
+	let nonce_id = Identifier::from_bytes(&message.as_bytes()[PROOF_MESSAGE_IDENTIFIER_START..])?;
+	let private_nonce = builder.private_nonce(secp, &commit, &nonce_id)?;
+	let rangeproof = secp.bullet_proof(
+		value,
+		skey,
+		rewind_nonce,
+		private_nonce,
+		None,
+		Some(message),
+	)?;
+
+	Ok((commit, rangeproof))
+}
+
 /// Verify a proof
 pub fn verify(
 	secp: &mut Secp256k1,
@@ -564,6 +642,25 @@ mod tests {
 		let id_bytes = id.to_bytes();
 		msg[3..20].clone_from_slice(&id_bytes[..17]);
 		ProofMessage::from_bytes(&msg).unwrap()
+	}
+
+	#[test]
+	fn height_message_matches_historical_proof_builder_bytes() -> Result<(), Error> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		let keychain = ExtKeychain::from_seed(&secp, &[1u8; 32], true)?;
+		let builder = ProofBuilder::new(&secp, &keychain)?;
+		let key_id = ExtKeychain::derive_key_id(3, 1, 2, 3, 0)?;
+		let height = 654_321u32;
+
+		let mut historical_id_bytes = key_id.to_bytes();
+		historical_id_bytes[13..17].copy_from_slice(&height.to_be_bytes());
+		let historical_id = Identifier::from_bytes(&historical_id_bytes)?;
+		let historical =
+			builder.proof_message(&secp, &historical_id, SwitchCommitmentType::Regular)?;
+		let current = height_tagged_proof_message(&key_id, SwitchCommitmentType::Regular, height)?;
+
+		assert_eq!(current.as_bytes(), historical.as_bytes());
+		Ok(())
 	}
 
 	#[test]

@@ -665,7 +665,7 @@ fn fixed_size_data_file_flush_truncates_prior_partial_append() {
 	// failed before the in-memory buffer was cleared.
 	fs::write(
 		&path,
-		mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1)).unwrap(),
+		mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1), true).unwrap(),
 	)
 	.unwrap();
 
@@ -800,12 +800,13 @@ fn variable_size_data_file_rebuilds_size_file_with_bad_offsets() {
 		SizeEntry { offset: 4, size: 4 },
 		SizeEntry { offset: 0, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -842,12 +843,13 @@ fn variable_size_data_file_rebuilds_size_file_with_bad_boundaries() {
 		SizeEntry { offset: 0, size: 3 },
 		SizeEntry { offset: 3, size: 5 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -885,12 +887,13 @@ fn variable_size_data_file_rebuilds_size_file_with_zero_size_entry() {
 		SizeEntry { offset: 4, size: 0 },
 		SizeEntry { offset: 4, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -928,7 +931,8 @@ fn variable_size_data_file_fast_validation_skips_data_deserialize() {
 		SizeEntry { offset: 0, size: 4 },
 		SizeEntry { offset: 4, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	fs::write(&data_path, [1u8, 2, 3, 4, 5, 6, 7, 8]).unwrap();
@@ -964,12 +968,13 @@ fn variable_size_data_file_fast_validation_rebuilds_bad_offsets() {
 		SizeEntry { offset: 4, size: 4 },
 		SizeEntry { offset: 0, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -1074,14 +1079,14 @@ fn variable_size_data_file_replace_with_tmp_rejects_unsynced_size_state() {
 		)
 		.unwrap();
 		data_file.append(&elems[0]).unwrap();
-		let data_len = mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1))
+		let data_len = mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1), true)
 			.unwrap()
 			.len() as u64;
 		data_file.rewind(0).unwrap();
 		data_file.flush().unwrap();
 		fs::write(
 			&tmp_path,
-			mwc_core::ser::ser_vec(0, &elems[1], ProtocolVersion(1)).unwrap(),
+			mwc_core::ser::ser_vec(0, &elems[1], ProtocolVersion(1), true).unwrap(),
 		)
 		.unwrap();
 		data_file.append(&elems[2]).unwrap();

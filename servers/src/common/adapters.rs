@@ -647,7 +647,7 @@ where
 					&cb_hash,
 				);
 				self.sync_manager.add_block_request(
-					&peer_info.addr,
+					peer_info,
 					cb.header.height,
 					cb.header.hash(self.context_id)?,
 					Options::NONE,
@@ -723,7 +723,7 @@ where
 					&cb_hash,
 				);
 				self.sync_manager.add_block_request(
-					&peer_info.addr,
+					peer_info,
 					cb.header.height,
 					cb.header.hash(self.context_id)?,
 					Options::NONE,
@@ -817,7 +817,7 @@ where
 							< chain.get_pibd_params().get_orphans_num_limit() as u64
 					{
 						self.sync_manager.add_block_request(
-							&peer_info.addr,
+							peer_info,
 							bh.height,
 							bh_hash,
 							Options::NONE,
@@ -882,7 +882,7 @@ where
 						Ok(_) => {
 							if !chain.block_exists(&hash)? {
 								self.sync_manager.add_block_request(
-									&peer_info.addr,
+									peer_info,
 									bh.height,
 									hash,
 									Options::NONE,
@@ -1414,7 +1414,7 @@ where
 				self.validate_chain(secp, &bhash)?;
 				//self.check_compact();  Currently Sync process does that. No needs, also we don't want collision to happens
 				self.sync_manager.recieve_block_reporting(
-					Some(true),
+					Some(Ok(())),
 					&peer_info.addr,
 					b,
 					Options::SYNC,
@@ -1432,7 +1432,7 @@ where
 					// Clear the request tracker without running orphan bookkeeping for an
 					// already-known block.
 					self.sync_manager.recieve_block_reporting(
-						Some(true),
+						Some(Ok(())),
 						&peer_info.addr,
 						b,
 						opts,
@@ -1441,16 +1441,11 @@ where
 					return Ok(true);
 				}
 
-				if e.is_bad_data() {
+				if e.is_bad_data() && !e.requires_chain_recovery() {
 					warn!("process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}", bhash, peer_info.addr, e);
 					self.validate_chain(secp, &bhash)?;
-					self.sync_manager.recieve_block_reporting(
-						Some(false),
-						&peer_info.addr,
-						b,
-						opts,
-						&peers,
-					)?;
+					// ChainAdapter already reported this terminal outcome, including
+					// the same failure when it occurs later while draining orphans.
 					return Ok(false);
 				}
 
@@ -1497,7 +1492,7 @@ where
 						prev_block_hash, peer_info.addr
 					);
 					self.sync_manager.add_block_request(
-						&peer_info.addr,
+						peer_info,
 						block_height - 1,
 						prev_block_hash,
 						Options::NONE,
@@ -1607,11 +1602,12 @@ where
 			return Ok(());
 		}
 
-		match peers.get_connected_peer(&peer_info.addr) {
-			None => Err(mwc_chain::Error::Other(format!(
-				"send_block_request_to_peer: can't send request to peer {:?}, not connected",
-				peer_info.addr
-			))),
+		let supplier = peers
+			.get_connected_peer(&peer_info.addr)
+			.filter(|peer| peer.info.is_block_extra());
+		match supplier {
+			// Wait for another header announcement or ordinary sync discovery.
+			None => Ok(()),
 			Some(peer) => {
 				f(&peer, h).map_err(|e| {
 					mwc_chain::Error::Other(format!(
@@ -1636,6 +1632,7 @@ where
 	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
 	sync_state: Arc<SyncState>,
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
+	sync_manager: OneTime<Weak<SyncManager>>,
 	hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 }
 
@@ -1713,57 +1710,71 @@ where
 		}
 	}
 
-	fn block_rejected(&self, hash: &Hash, source_peers: &HashSet<String>, err: &mwc_chain::Error) {
+	fn block_rejected(
+		&self,
+		block: &core::Block,
+		source_peers: &HashSet<String>,
+		err: &mwc_chain::Error,
+	) {
 		if source_peers.is_empty() {
 			return;
 		}
-		if err.is_known_block() {
-			// The same valid block can arrive from several peers or remain in an
-			// orphan cache after another response stores it. Known-block outcomes
-			// are stale/redundant data, not a bad-block signal.
-			debug!(
-				"Skipping peer ban for known block {} from {:?}, syncing={}: {}",
-				hash,
-				source_peers,
-				self.sync_state.is_syncing(),
-				err
-			);
-			return;
-		}
-
+		info!(
+			"Rejected block at {} from {:?}, syncing={}: {}",
+			block.header.height,
+			source_peers,
+			self.sync_state.is_syncing(),
+			err
+		);
 		let peers = match self.peers() {
 			Ok(peers) => peers,
 			Err(e) => {
 				error!(
-					"Unable to ban peers for bad block {}: failed to obtain peers list: {}",
-					hash, e
+					"Unable to report rejected block at {}: {}",
+					block.header.height, e
 				);
 				return;
 			}
 		};
-
+		let sync_manager = self
+			.sync_manager
+			.borrow()
+			.ok()
+			.and_then(|manager| manager.upgrade());
+		let bad_peer_data =
+			err.is_bad_data() && !err.is_known_block() && !err.requires_chain_recovery();
 		for source_peer in source_peers {
 			let parse_peer = source_peer.strip_prefix("tor://").unwrap_or(source_peer);
 			let peer_addr = match PeerAddr::from_str(parse_peer) {
 				Ok(peer_addr) => peer_addr,
 				Err(e) => {
-					warn!(
-						"Unable to parse source peer {} for bad block {}: {}",
-						source_peer, hash, e
-					);
+					warn!("Unable to parse block source peer {}: {}", source_peer, e);
 					continue;
 				}
 			};
-
-			let message = format!(
-				"Got bad block with hash: {} during validation: {}",
-				hash, err
-			);
-			if let Err(e) = peers.ban_peer(&peer_addr, mwc_p2p::ReasonForBan::BadBlock, &message) {
-				warn!(
-					"Failed to ban peer {} for bad block {}: {}",
-					peer_addr, hash, e
-				);
+			if bad_peer_data {
+				let message = format!("Invalid block at height {}: {}", block.header.height, err);
+				if let Err(e) =
+					peers.ban_peer(&peer_addr, mwc_p2p::ReasonForBan::BadBlock, &message)
+				{
+					warn!("Failed to ban peer {} for invalid block: {}", peer_addr, e);
+				}
+			}
+			// This also releases the request after local errors. Sync bookkeeping
+			// independently excludes those errors from peer penalties and PIBD counts.
+			if let Some(manager) = &sync_manager {
+				if let Err(e) = manager.recieve_block_reporting(
+					Some(Err(err)),
+					&peer_addr,
+					block.clone(),
+					Options::SYNC,
+					&peers,
+				) {
+					warn!(
+						"Rejected block sync reporting failed for {}: {}",
+						peer_addr, e
+					);
+				}
 			}
 		}
 	}
@@ -1784,15 +1795,23 @@ where
 			tx_pool,
 			sync_state,
 			peers: OneTime::new(),
+			sync_manager: OneTime::new(),
 			hooks: hooks,
 		}
 	}
 
-	/// Initialize a ChainToPoolAndNetAdapter instance with handle to a Peers
-	/// object. Should only be called once.
-	pub fn init(&self, peers: Arc<mwc_p2p::Peers>) -> Result<(), crate::Error> {
+	/// Initialize network and sync references once. Weak references avoid a
+	/// cycle through SyncManager's chain and this chain adapter.
+	pub fn init(
+		&self,
+		peers: Arc<mwc_p2p::Peers>,
+		sync_manager: Arc<SyncManager>,
+	) -> Result<(), crate::Error> {
 		self.peers
 			.init(Arc::downgrade(&peers))
+			.map_err(|e| crate::Error::ServerError(e.to_string()))?;
+		self.sync_manager
+			.init(Arc::downgrade(&sync_manager))
 			.map_err(|e| crate::Error::ServerError(e.to_string()))
 	}
 

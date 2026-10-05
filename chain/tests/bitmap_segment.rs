@@ -68,12 +68,12 @@ fn test_roundtrip(entries: usize) {
 
 	// Serialize `BitmapSegment`
 	let mut cursor = Cursor::new(Vec::<u8>::new());
-	let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+	let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 	Writeable::write(&bms, &mut writer).unwrap();
 
 	// Read `BitmapSegment`
 	cursor.set_position(0);
-	let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+	let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 	let bms2: BitmapSegment = Readable::read(&mut reader).unwrap();
 	assert_eq!(bms, bms2);
 

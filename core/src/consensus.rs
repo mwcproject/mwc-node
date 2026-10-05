@@ -83,6 +83,31 @@ pub fn reward(context_id: u32, fee: u64, height: u64) -> Result<u64, Error> {
 	})
 }
 
+/// First mainnet block requiring the coinbase input/state binding.
+pub const COINBASE_BINDING_MAINNET_HEIGHT: u64 = 3_632_000;
+/// First floonet block requiring the coinbase input/state binding.
+pub const COINBASE_BINDING_FLOONET_HEIGHT: u64 = 1_753_000;
+
+/// First development-network block requiring binding. The block 1 coinbase
+/// matures at this height, allowing activation tests to spend a legacy reward.
+pub const COINBASE_BINDING_TESTING_HEIGHT: u64 = 4;
+
+/// Scheduled activation height for each network, including development networks.
+pub fn coinbase_binding_activation_height(context_id: u32) -> u64 {
+	match global::get_chain_type(context_id) {
+		global::ChainTypes::Mainnet => COINBASE_BINDING_MAINNET_HEIGHT,
+		global::ChainTypes::Floonet => COINBASE_BINDING_FLOONET_HEIGHT,
+		global::ChainTypes::AutomatedTesting | global::ChainTypes::UserTesting => {
+			COINBASE_BINDING_TESTING_HEIGHT
+		}
+	}
+}
+
+/// Whether coinbase binding is required at this block height.
+pub fn is_coinbase_binding_enabled(context_id: u32, height: u64) -> bool {
+	height >= coinbase_binding_activation_height(context_id)
+}
+
 /// MWC  genesis block reward in nanocoins (10M coins)
 pub const GENESIS_BLOCK_REWARD: u64 = 10_000_000_000_000_000 + 41_800_000;
 

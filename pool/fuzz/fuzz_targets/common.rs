@@ -37,7 +37,8 @@ use mwc_core::consensus;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use mwc_core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputIdentifier, Transaction,
+	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputFeatures,
+	OutputIdentifier, Transaction,
 };
 use mwc_core::global;
 use mwc_core::libtx::{build, reward, ProofBuilder};
@@ -61,21 +62,22 @@ where
 	K: Keychain,
 {
 	let key_id = ExtKeychain::derive_key_id(1, 0, 0, 0, 0).unwrap();
-	let reward = reward::output(
+	// Genesis has no parent binding context and does not include an opening.
+	let (output, kernel, _) = reward::output_s2c(
 		0,
 		keychain,
 		&ProofBuilder::new(secp, keychain).unwrap(),
 		&key_id,
 		0,
-		false,
 		0,
 		secp,
+		Hash::default(),
 	)
 	.unwrap();
 
 	let mut genesis = global::get_genesis_block(secp, 0)
 		.expect("testing genesis must be available")
-		.with_reward(reward.0, reward.1)
+		.with_reward(output, kernel)
 		.expect("genesis block body must be empty before reward");
 	set_genesis_mmr_roots(&mut genesis);
 
@@ -282,14 +284,18 @@ impl PoolFuzzer {
 			// Fuzz-only key path construction: unchecked narrowing to u32 is
 			// accepted for deterministic fixture keys.
 			let key_id = ExtKeychain::derive_key_id(1, header.height as u32, 0, 0, 0).unwrap();
-			tx_elements.push(build::coinbase_input(coinbase_reward, key_id));
+			tx_elements.push(build::feature_input(
+				coinbase_reward,
+				OutputFeatures::Coinbase,
+				key_id,
+			));
 		}
 
 		for output_value in output_values {
 			// Fuzz-only key path construction: unchecked narrowing of arbitrary
 			// output values is accepted; collisions only reuse fixture keys here.
-			let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
-			tx_elements.push(build::output(output_value, key_id));
+			let key_id = ExtKeychain::derive_key_id(3, output_value as u32, 0, 0, 0).unwrap();
+			tx_elements.push(build::height_tagged_output(output_value, key_id, 1));
 		}
 
 		let keychain = &self.keychain;
@@ -354,15 +360,19 @@ impl PoolFuzzer {
 		for input_value in input_values {
 			// Fuzz-only key path construction: unchecked narrowing of arbitrary
 			// input values is accepted; collisions only reuse fixture keys here.
-			let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0).unwrap();
-			tx_elements.push(build::input(input_value, key_id));
+			let key_id = ExtKeychain::derive_key_id(3, input_value as u32, 0, 0, 0).unwrap();
+			tx_elements.push(build::feature_input(
+				input_value,
+				OutputFeatures::Plain,
+				key_id,
+			));
 		}
 
 		for output_value in output_values {
 			// Fuzz-only key path construction: unchecked narrowing of arbitrary
 			// output values is accepted; collisions only reuse fixture keys here.
-			let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
-			tx_elements.push(build::output(output_value, key_id));
+			let key_id = ExtKeychain::derive_key_id(3, output_value as u32, 0, 0, 0).unwrap();
+			tx_elements.push(build::height_tagged_output(output_value, key_id, 1));
 		}
 
 		let keychain = &self.keychain;
@@ -445,17 +455,23 @@ impl PoolFuzzer {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let reward = reward::output(
+		let aggregate = mwc_core::core::transaction::aggregate(0, &txs, &self.secp).unwrap();
+		let binding = chain
+			.coinbase_binding_for_template(&self.secp, &prev, &aggregate.body)
+			.unwrap();
+		let builder = ProofBuilder::new(&self.secp, &self.keychain).unwrap();
+		let (output, kernel, opening) = reward::output_s2c(
 			0,
 			&self.keychain,
-			&ProofBuilder::new(&mut self.secp, &self.keychain).unwrap(),
+			&builder,
 			&key_id,
 			fee,
-			false,
 			height,
 			&mut self.secp,
+			binding.digest().unwrap(),
 		)
 		.unwrap();
+		let reward = (output, kernel);
 
 		let mut block = Block::new(
 			0,
@@ -466,6 +482,9 @@ impl PoolFuzzer {
 			&self.secp,
 		)
 		.unwrap();
+
+		block.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(0, height).then_some(opening);
 
 		// Fuzz-only timestamp arithmetic: chrono's panicking Add is accepted
 		// here because block times come from this deterministic synthetic chain.

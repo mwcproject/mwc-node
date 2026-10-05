@@ -127,9 +127,11 @@ fn max_msg_size(context_id: u32, msg_type: Type) -> u64 {
 		Type::Header => 365,
 		Type::Headers => 2 + 365 * MAX_BLOCK_HEADERS as u64,
 		Type::GetBlock => 32,
-		Type::Block => max_block_size(context_id),
+		// Allow the negotiated S2C opening; the body decoder enforces its presence.
+		Type::Block => max_block_size(context_id) + 33,
 		Type::GetCompactBlock => 32,
-		Type::CompactBlock => max_block_size(context_id) / 10,
+		// Allow the negotiated S2C opening; the body decoder enforces its presence.
+		Type::CompactBlock => max_block_size(context_id) / 10 + 33,
 		Type::StemTransaction => max_block_size(context_id),
 		Type::Transaction => max_block_size(context_id),
 		Type::TxHashSetRequest => 40, // 32+8=40
@@ -177,8 +179,9 @@ impl Msg {
 		msg: T,
 		version: ProtocolVersion,
 		context_id: u32,
+		block_extra: bool,
 	) -> Result<Msg, Error> {
-		let body = ser::ser_vec(context_id, &msg, version)?;
+		let body = ser::ser_vec(context_id, &msg, version, block_extra)?;
 		// Inbound message headers are checked against max_msg_size() because the
 		// advertised length is peer-controlled. Outbound messages are produced by
 		// local send paths after local validation, so this constructor deliberately
@@ -205,10 +208,12 @@ pub fn read_header<R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 ) -> Result<MsgHeaderWrapper, Error> {
 	let mut head = vec![0u8; MsgHeader::LEN];
 	stream.read_exact(&mut head)?;
-	let header: MsgHeaderWrapper = ser::deserialize_strict(&mut &head[..], version, context_id)?;
+	let header: MsgHeaderWrapper =
+		ser::deserialize_strict(&mut &head[..], version, context_id, block_extra)?;
 	Ok(header)
 }
 
@@ -219,8 +224,9 @@ pub fn read_item<T: Readable, R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 ) -> Result<(T, u64), Error> {
-	let mut reader = StreamingReader::new(stream, version, context_id);
+	let mut reader = StreamingReader::new(stream, version, context_id, block_extra);
 	let res = T::read(&mut reader)?;
 	Ok((res, reader.total_bytes_read()))
 }
@@ -232,12 +238,14 @@ pub fn read_body<T: Readable, R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 ) -> Result<T, Error> {
 	let mut body = vec![0u8; h.msg_len];
 	stream.read_exact(&mut body)?;
 	// From the stream we might drop ending data because of forward compatibility. Future versions
 	// might have some extra data.
-	ser::deserialize_permissive(&mut &body[..], version, context_id).map_err(From::from)
+	ser::deserialize_permissive(&mut &body[..], version, context_id, block_extra)
+		.map_err(From::from)
 }
 
 /// Read (an unknown) message from the provided stream and discard it.
@@ -253,11 +261,12 @@ pub fn read_message<T: Readable, R: Read>(
 	version: ProtocolVersion,
 	context_id: u32,
 	msg_type: Type,
+	block_extra: bool,
 ) -> Result<T, Error> {
-	match read_header(stream, version, context_id)? {
+	match read_header(stream, version, context_id, block_extra)? {
 		MsgHeaderWrapper::Known(header) => {
 			if header.msg_type == msg_type {
-				read_body(&header, stream, version, context_id)
+				read_body(&header, stream, version, context_id, block_extra)
 			} else {
 				Err(Error::BadMessage(format!(
 					"header.msg_type={:?} but expected {:?}",
@@ -288,7 +297,13 @@ pub fn write_message<W: Write>(
 			"Sending message to the peer stream: {:?}",
 			msg.header.msg_type
 		);
-		tmp_buf.extend(ser::ser_vec(msg.context_id, &msg.header, msg.version)?);
+		// Message headers have no block extra data; the body is already encoded.
+		tmp_buf.extend(ser::ser_vec(
+			msg.context_id,
+			&msg.header,
+			msg.version,
+			true,
+		)?);
 		tmp_buf.extend(&msg.body[..]);
 	}
 
@@ -1441,12 +1456,113 @@ impl Readable for TorAddress {
 mod tests {
 	use super::*;
 	use crate::types::PeerAddr;
+	use mwc_core::core::{Block, CompactBlock};
 	use mwc_core::ser::{BinReader, BufReader, ProtocolVersion};
 	use mwc_crates::bytes::Bytes;
 	use std::io;
 	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-	const FUTURE_CAPABILITY_BIT: u32 = 0x0000_0100;
+	const FUTURE_CAPABILITY_BIT: u32 = 0x0000_0200;
+
+	#[test]
+	fn block_extra_wire_encoding_preserves_legacy_prefix_and_bounds() {
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let secp =
+			mwc_crates::secp::Secp256k1::with_caps(mwc_crates::secp::ContextFlag::Commit).unwrap();
+		let bytes = mwc_util::from_hex(
+			"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+		)
+		.unwrap();
+		let opening = mwc_crates::secp::s2c::Opening::from_slice(&secp, &bytes).unwrap();
+		let mut block = Block::default(0);
+		block.header.height = consensus::COINBASE_BINDING_MAINNET_HEIGHT;
+		block.coinbase_opening = Some(opening.clone());
+		let version = ProtocolVersion::local();
+		let legacy = Msg::new(Type::Block, &block, version, 0, false)
+			.unwrap()
+			.body;
+		let extended = Msg::new(Type::Block, &block, version, 0, true)
+			.unwrap()
+			.body;
+		assert_eq!(extended, ser::ser_vec(0, &block, version, true).unwrap());
+		assert_eq!(&extended[..legacy.len()], legacy.as_slice());
+		assert_eq!(&extended[legacy.len()..], opening.serialize());
+		// Exercise the complete helper chain for both negotiated wire formats.
+		for (block_extra, expected_bytes, expected_opening) in [
+			(false, &legacy, None),
+			(true, &extended, Some(opening.clone())),
+		] {
+			assert_eq!(
+				&ser::ser_vec(0, &block, version, block_extra).unwrap(),
+				expected_bytes
+			);
+			let mut encoded = Vec::new();
+			ser::serialize(&mut encoded, version, 0, &block, block_extra).unwrap();
+			assert_eq!(&encoded, expected_bytes);
+			encoded.clear();
+			ser::serialize_default(0, &mut encoded, &block, block_extra).unwrap();
+			assert_eq!(&encoded, expected_bytes);
+
+			let restored: Block =
+				ser::deserialize_strict(&mut encoded.as_slice(), version, 0, block_extra).unwrap();
+			assert_eq!(restored.coinbase_opening, expected_opening);
+			let restored: Block =
+				ser::deserialize_permissive(&mut encoded.as_slice(), version, 0, block_extra)
+					.unwrap();
+			assert_eq!(restored.coinbase_opening, expected_opening);
+			let restored: Block =
+				ser::deserialize_default(0, &mut encoded.as_slice(), block_extra).unwrap();
+			assert_eq!(restored.coinbase_opening, expected_opening);
+
+			let (restored, consumed): (Block, _) =
+				read_item(&mut encoded.as_slice(), version, 0, block_extra).unwrap();
+			assert_eq!(consumed as usize, encoded.len());
+			assert_eq!(restored.coinbase_opening, expected_opening);
+			let header = MsgHeader::new(0, Type::Block, encoded.len());
+			let mut frame = ser::ser_vec(0, &header, version, block_extra).unwrap();
+			frame.extend_from_slice(&encoded);
+			let restored: Block =
+				read_message(&mut frame.as_slice(), version, 0, Type::Block, block_extra).unwrap();
+			assert_eq!(restored.coinbase_opening, expected_opening);
+		}
+		assert!(
+			ser::deserialize_strict::<Block, _>(&mut legacy.as_slice(), version, 0, true).is_err()
+		);
+		assert!(
+			ser::deserialize_strict::<Block, _>(&mut extended.as_slice(), version, 0, false)
+				.is_err()
+		);
+		let mut encoded = Bytes::from(extended.clone());
+		let mut reader = BufReader::new(&mut encoded, version, 0, true);
+		let restored: Block = reader.body_full().unwrap();
+		assert_eq!(restored.coinbase_opening, Some(opening.clone()));
+		let mut truncated = Bytes::copy_from_slice(&extended[..extended.len() - 1]);
+		assert!(BufReader::new(&mut truncated, version, 0, true)
+			.body_full::<Block>()
+			.is_err());
+		let mut extra_byte = extended;
+		extra_byte.push(0);
+		let mut extra_byte = Bytes::from(extra_byte);
+		assert!(BufReader::new(&mut extra_byte, version, 0, true)
+			.body_full::<Block>()
+			.is_err());
+
+		let compact = CompactBlock::from(block).unwrap();
+		let legacy = Msg::new(Type::CompactBlock, &compact, version, 0, false)
+			.unwrap()
+			.body;
+		let extended = Msg::new(Type::CompactBlock, &compact, version, 0, true)
+			.unwrap()
+			.body;
+		assert_eq!(extended, ser::ser_vec(0, &compact, version, true).unwrap());
+		assert_eq!(&extended[..legacy.len()], legacy.as_slice());
+		assert_eq!(&extended[legacy.len()..], opening.serialize());
+		assert_eq!(max_msg_size(0, Type::Block), max_block_size(0) + 33);
+		assert_eq!(
+			max_msg_size(0, Type::CompactBlock),
+			max_block_size(0) / 10 + 33
+		);
+	}
 
 	fn test_hand(onion_sig: Option<[u8; ONION_PROOF_SIGNATURE_LEN]>) -> Hand {
 		let onion_sig_timestamp = onion_sig.map(|_| 42);
@@ -1483,7 +1599,7 @@ mod tests {
 	#[test]
 	fn ban_reason_read_propagates_truncated_input() {
 		let mut source = &[][..];
-		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0);
+		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0, true);
 
 		match BanReason::read(&mut reader) {
 			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
@@ -1498,11 +1614,16 @@ mod tests {
 			0,
 			&TorAddress::new(onion.to_string()),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
-		let address =
-			ser::deserialize_strict::<TorAddress, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-				.unwrap();
+		let address = ser::deserialize_strict::<TorAddress, _>(
+			&mut &bytes[..],
+			ProtocolVersion::local(),
+			0,
+			true,
+		)
+		.unwrap();
 
 		assert_eq!(address.address, onion);
 	}
@@ -1513,11 +1634,16 @@ mod tests {
 			0,
 			&TorAddress::new("not-an-onion".to_string()),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
-		let err =
-			ser::deserialize_strict::<TorAddress, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-				.unwrap_err();
+		let err = ser::deserialize_strict::<TorAddress, _>(
+			&mut &bytes[..],
+			ProtocolVersion::local(),
+			0,
+			true,
+		)
+		.unwrap_err();
 
 		match err {
 			ser::Error::CorruptedData(msg) => {
@@ -1534,11 +1660,16 @@ mod tests {
 			0,
 			&TorAddress::new(onion.to_string()),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
-		let err =
-			ser::deserialize_strict::<TorAddress, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-				.unwrap_err();
+		let err = ser::deserialize_strict::<TorAddress, _>(
+			&mut &bytes[..],
+			ProtocolVersion::local(),
+			0,
+			true,
+		)
+		.unwrap_err();
 
 		match err {
 			ser::Error::CorruptedData(msg) => {
@@ -1550,9 +1681,10 @@ mod tests {
 
 	#[test]
 	fn hand_read_accepts_absent_onion_signature() {
-		let bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
-		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-			.unwrap();
+		let bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local(), true).unwrap();
+		let hand =
+			ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0, true)
+				.unwrap();
 
 		assert!(hand.onion_sig.is_none());
 		assert!(hand.onion_sig_timestamp.is_none());
@@ -1561,9 +1693,10 @@ mod tests {
 	#[test]
 	fn hand_read_accepts_full_onion_proof() {
 		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
-		let bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local()).unwrap();
-		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-			.unwrap();
+		let bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local(), true).unwrap();
+		let hand =
+			ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0, true)
+				.unwrap();
 
 		assert_eq!(hand.onion_sig, Some(sig));
 		assert_eq!(hand.onion_sig_timestamp, Some(42));
@@ -1575,11 +1708,12 @@ mod tests {
 		let wire_capabilities = known_capabilities.bits() | FUTURE_CAPABILITY_BIT;
 		assert!(Capabilities::from_bits(wire_capabilities).is_none());
 
-		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local(), true).unwrap();
 		inject_handshake_capability_bits(&mut bytes, wire_capabilities);
 
-		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-			.unwrap();
+		let hand =
+			ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0, true)
+				.unwrap();
 
 		assert_eq!(hand.capabilities, known_capabilities);
 	}
@@ -1595,9 +1729,14 @@ mod tests {
 		] {
 			let mut hand = test_hand(None);
 			hand.user_agent = user_agent.to_string();
-			let bytes = ser::ser_vec(0, &hand, ProtocolVersion::local()).unwrap();
+			let bytes = ser::ser_vec(0, &hand, ProtocolVersion::local(), true).unwrap();
 
-			match ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0) {
+			match ser::deserialize_strict::<Hand, _>(
+				&mut &bytes[..],
+				ProtocolVersion::local(),
+				0,
+				true,
+			) {
 				Err(ser::Error::CorruptedData(msg)) => {
 					assert!(
 						msg.contains("Hand.user_agent contains character outside printable ASCII"),
@@ -1614,11 +1753,12 @@ mod tests {
 	#[test]
 	fn hand_read_accepts_legacy_onion_signature_without_timestamp() {
 		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
-		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local(), true).unwrap();
 		bytes.extend_from_slice(&sig);
 
-		let hand = ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-			.unwrap();
+		let hand =
+			ser::deserialize_strict::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0, true)
+				.unwrap();
 
 		assert_eq!(hand.onion_sig, Some(sig));
 		assert!(hand.onion_sig_timestamp.is_none());
@@ -1626,10 +1766,15 @@ mod tests {
 
 	#[test]
 	fn hand_read_rejects_partial_onion_signature() {
-		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local(), true).unwrap();
 		bytes.push(1);
 
-		match ser::deserialize_permissive::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0) {
+		match ser::deserialize_permissive::<Hand, _>(
+			&mut &bytes[..],
+			ProtocolVersion::local(),
+			0,
+			true,
+		) {
 			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
 			Ok(_) => panic!("expected partial signature EOF, got decoded Hand"),
 			Err(err) => panic!("expected partial signature EOF, got {:?}", err),
@@ -1639,15 +1784,15 @@ mod tests {
 	#[test]
 	fn hand_read_rejects_partial_onion_signature_with_buf_reader() {
 		let mut bytes =
-			Bytes::from(ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap());
-		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0);
+			Bytes::from(ser::ser_vec(0, &test_hand(None), ProtocolVersion::local(), true).unwrap());
+		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0, true);
 		let hand: Hand = reader.body().unwrap();
 		assert!(hand.onion_sig.is_none());
 
-		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local()).unwrap();
+		let mut bytes = ser::ser_vec(0, &test_hand(None), ProtocolVersion::local(), true).unwrap();
 		bytes.push(1);
 		let mut bytes = Bytes::from(bytes);
-		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0);
+		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0, true);
 
 		match reader.body::<Hand>() {
 			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
@@ -1659,10 +1804,16 @@ mod tests {
 	#[test]
 	fn hand_read_rejects_partial_onion_timestamp() {
 		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
-		let mut bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local()).unwrap();
+		let mut bytes =
+			ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local(), true).unwrap();
 		bytes.pop();
 
-		match ser::deserialize_permissive::<Hand, _>(&mut &bytes[..], ProtocolVersion::local(), 0) {
+		match ser::deserialize_permissive::<Hand, _>(
+			&mut &bytes[..],
+			ProtocolVersion::local(),
+			0,
+			true,
+		) {
 			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
 			Ok(_) => panic!("expected partial timestamp EOF, got decoded Hand"),
 			Err(err) => panic!("expected partial timestamp EOF, got {:?}", err),
@@ -1672,10 +1823,11 @@ mod tests {
 	#[test]
 	fn hand_read_rejects_partial_onion_timestamp_with_buf_reader() {
 		let sig = [42u8; ONION_PROOF_SIGNATURE_LEN];
-		let mut bytes = ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local()).unwrap();
+		let mut bytes =
+			ser::ser_vec(0, &test_hand(Some(sig)), ProtocolVersion::local(), true).unwrap();
 		bytes.pop();
 		let mut bytes = Bytes::from(bytes);
-		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0);
+		let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 0, true);
 
 		match reader.body::<Hand>() {
 			Err(ser::Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
@@ -1695,10 +1847,14 @@ mod tests {
 		] {
 			let mut shake = test_shake(0);
 			shake.user_agent = user_agent.to_string();
-			let bytes = ser::ser_vec(0, &shake, ProtocolVersion::local()).unwrap();
+			let bytes = ser::ser_vec(0, &shake, ProtocolVersion::local(), true).unwrap();
 
-			match ser::deserialize_strict::<Shake, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
-			{
+			match ser::deserialize_strict::<Shake, _>(
+				&mut &bytes[..],
+				ProtocolVersion::local(),
+				0,
+				true,
+			) {
 				Err(ser::Error::CorruptedData(msg)) => {
 					assert!(
 						msg.contains("Shake.user_agent contains character outside printable ASCII"),
@@ -1718,11 +1874,11 @@ mod tests {
 		let wire_capabilities = known_capabilities.bits() | FUTURE_CAPABILITY_BIT;
 		assert!(Capabilities::from_bits(wire_capabilities).is_none());
 
-		let mut bytes = ser::ser_vec(0, &test_shake(0), ProtocolVersion::local()).unwrap();
+		let mut bytes = ser::ser_vec(0, &test_shake(0), ProtocolVersion::local(), true).unwrap();
 		inject_handshake_capability_bits(&mut bytes, wire_capabilities);
 
 		let shake =
-			ser::deserialize_strict::<Shake, _>(&mut &bytes[..], ProtocolVersion::local(), 0)
+			ser::deserialize_strict::<Shake, _>(&mut &bytes[..], ProtocolVersion::local(), 0, true)
 				.unwrap();
 
 		assert_eq!(shake.capabilities, known_capabilities);
@@ -1735,10 +1891,16 @@ mod tests {
 		let fixed_len = 4 + 4 + 8 + 8 + 32 + 8;
 		let max_user_agent_len = usize::try_from(max_len - fixed_len).unwrap();
 
-		let bytes = ser::ser_vec(0, &test_shake(max_user_agent_len), protocol_version).unwrap();
+		let bytes =
+			ser::ser_vec(0, &test_shake(max_user_agent_len), protocol_version, true).unwrap();
 		assert_eq!(bytes.len(), usize::try_from(max_len).unwrap());
 
-		match ser::ser_vec(0, &test_shake(max_user_agent_len + 1), protocol_version) {
+		match ser::ser_vec(
+			0,
+			&test_shake(max_user_agent_len + 1),
+			protocol_version,
+			true,
+		) {
 			Err(ser::Error::TooLargeWriteErr(message)) => {
 				assert!(message.contains("Too large Shake write"));
 			}
@@ -1754,7 +1916,7 @@ mod tests {
 			headers: vec![BlockHeader::default(0); MAX_BLOCK_HEADERS as usize + 1],
 		};
 
-		match ser::ser_vec(0, &headers, ProtocolVersion::local()) {
+		match ser::ser_vec(0, &headers, ProtocolVersion::local(), true) {
 			Err(ser::Error::TooLargeWriteErr(msg)) => {
 				assert!(msg.contains("too many block headers"), "{}", msg);
 			}

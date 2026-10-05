@@ -875,6 +875,8 @@ bitflags! {
 		const BLOCK_HIST = 0b0100_0000;
 		/// Can provide PIBD Headers Hashes
 		const HEADERS_HASH = 0b1000_0000;
+		/// Negotiates the Coinbase S2C opening in ordinary Block/CompactBlock messages.
+		const BLOCK_EXTRA = 0b1_0000_0000;
 	}
 }
 
@@ -887,7 +889,8 @@ impl Capabilities {
 			| Capabilities::PEER_LIST
 			| Capabilities::TX_KERNEL_HASH
 			| Capabilities::PIBD_HIST
-			| Capabilities::HEADERS_HASH;
+			| Capabilities::HEADERS_HASH
+			| Capabilities::BLOCK_EXTRA;
 		if tor {
 			res |= Capabilities::TOR_ADDRESS;
 		}
@@ -1030,6 +1033,11 @@ impl PeerInfo {
 
 	pub fn is_inbound(&self) -> bool {
 		self.direction == Direction::Inbound || self.direction == Direction::InboundTor
+	}
+
+	/// Whether this peer supports block extras.
+	pub fn is_block_extra(&self) -> bool {
+		self.capabilities.contains(Capabilities::BLOCK_EXTRA)
 	}
 
 	/// The current height of the peer.
@@ -1426,6 +1434,7 @@ mod tests {
 				0,
 				&PeerAddr::Ip(SocketAddr::V6(addr)),
 				ProtocolVersion::local(),
+				true,
 			) {
 				Err(ser::Error::CorruptedData(msg)) => {
 					assert!(msg.contains("nonzero flowinfo or scope_id"));

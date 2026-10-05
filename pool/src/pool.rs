@@ -1816,8 +1816,8 @@ mod tests {
 		keychain: &ExtKeychain,
 		secp: &mut Secp256k1,
 	) -> Transaction {
-		let input_id = ExtKeychain::derive_key_id(1, key_index, 0, 0, 0).unwrap();
-		let output_id = ExtKeychain::derive_key_id(1, key_index + 1, 0, 0, 0).unwrap();
+		let input_id = ExtKeychain::derive_key_id(3, key_index, 0, 0, 0).unwrap();
+		let output_id = ExtKeychain::derive_key_id(3, key_index + 1, 0, 0, 0).unwrap();
 		build::transaction(
 			0,
 			secp,
@@ -1825,8 +1825,8 @@ mod tests {
 				fee: (input_value - output_value).try_into().unwrap(),
 			},
 			&[
-				build::input(input_value, input_id),
-				build::output(output_value, output_id),
+				build::feature_input(input_value, OutputFeatures::Plain, input_id),
+				build::height_tagged_output(output_value, output_id, 1),
 			],
 			keychain,
 			&ProofBuilder::new(secp, keychain).unwrap(),
@@ -1856,14 +1856,14 @@ mod tests {
 		kernel.excess_sig = aggsig::sign_with_blinding(secp, &msg, excess, &public_key).unwrap();
 		kernel.verify(0, secp).unwrap();
 
-		let input_id = ExtKeychain::derive_key_id(1, input_key_index, 0, 0, 0).unwrap();
-		let output_id = ExtKeychain::derive_key_id(1, output_key_index, 0, 0, 0).unwrap();
+		let input_id = ExtKeychain::derive_key_id(3, input_key_index, 0, 0, 0).unwrap();
+		let output_id = ExtKeychain::derive_key_id(3, output_key_index, 0, 0, 0).unwrap();
 		build::transaction_with_kernel(
 			0,
 			secp,
 			&[
-				build::input(input_value, input_id),
-				build::output(output_value, output_id),
+				build::feature_input(input_value, OutputFeatures::Plain, input_id),
+				build::height_tagged_output(output_value, output_id, 1),
 			],
 			kernel,
 			excess.clone(),
@@ -2112,6 +2112,7 @@ mod tests {
 		assert_eq!(fluffable_txs[0].hash(0).unwrap(), stem_hash);
 
 		let block = Block {
+			coinbase_opening: None,
 			header,
 			body: Default::default(),
 		};
@@ -2167,7 +2168,10 @@ mod tests {
 		let header = global::get_genesis_block(&secp, 0).unwrap().header;
 		let mut pool = Pool::new(0, Arc::new(AcceptingChain), "test".into());
 
-		let tx = test_transaction(10, 8, 1, &keychain, &mut secp);
+		let mut tx = test_transaction(10, 8, 1, &keychain, &mut secp);
+		// Model the commitment-only inputs received over the node protocol.
+		let inputs = Inputs::CommitOnly(tx.inputs().into_commit_wrappers(0).unwrap());
+		tx.body = tx.body.replace_inputs(0, inputs).unwrap();
 		let mut entry =
 			ValidatedPoolEntry::authenticate(0, tx, TxSource::Broadcast, &mut secp).unwrap();
 		let resolved_inputs = entry

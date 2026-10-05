@@ -634,9 +634,12 @@ pub trait ChainAdapter {
 		opts: Options,
 	);
 
-	/// A sourced block failed validation. The source peers are string encoded
-	/// to avoid coupling chain internals to p2p address types.
-	fn block_rejected(&self, _hash: &Hash, _source_peers: &HashSet<String>, _err: &Error) {}
+	/// A sourced block reached a terminal processing error, including deferred
+	/// orphan validation. Called after PMMR locks are released; the adapter must
+	/// distinguish invalid remote data from local failures before penalizing peers.
+	/// The full body preserves its header and input identity for sync bookkeeping.
+	/// Source peers are strings to avoid coupling chain internals to P2P types.
+	fn block_rejected(&self, _block: &Block, _source_peers: &HashSet<String>, _err: &Error) {}
 }
 
 /// Dummy adapter used as a placeholder for real implementations

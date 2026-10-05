@@ -392,6 +392,7 @@ impl Store {
 	}
 
 	/// Gets a `Readable` value from the db, provided its key.
+	/// Database values use the full block format, including block extras.
 	/// Note: Creates a new read transaction so will *not* see any uncommitted data.
 	pub fn get_ser<T: ser::Readable>(&self, key: &[u8]) -> Result<Option<T>, Error> {
 		let _resize_guard = self.resize_lock.read_recursive();
@@ -402,7 +403,7 @@ impl Store {
 		let txn = lmdb_zero::ReadTransaction::new(self.env.clone())?;
 		let access = txn.access();
 		self.get_with(key, &access, &db, |_, mut data| {
-			ser::deserialize_strict(&mut data, self.protocol_version(), self.context_id)
+			ser::deserialize_strict(&mut data, self.protocol_version(), self.context_id, true)
 				.map_err(From::from)
 		})
 	}
@@ -519,13 +520,14 @@ impl<'a> Batch<'a> {
 
 	/// Writes a single key and its `Writeable` value to the db.
 	/// Encapsulates serialization using the specified protocol version.
+	/// Database values use the full block format, including block extras.
 	pub fn put_ser_with_version<W: ser::Writeable>(
 		&self,
 		key: &[u8],
 		value: &W,
 		version: ProtocolVersion,
 	) -> Result<(), Error> {
-		let ser_value = ser::ser_vec(self.get_context_id(), value, version);
+		let ser_value = ser::ser_vec(self.get_context_id(), value, version, true);
 		match ser_value {
 			Ok(data) => self.put(key, &data),
 			Err(err) => Err(err.into()),
@@ -632,12 +634,14 @@ impl<'a> Batch<'a> {
 	}
 
 	/// Gets a `Readable` value from the db by provided key and provided deserialization strategy.
+	/// Database values use the full block format, including block extras.
 	pub fn get_ser<T: ser::Readable>(&self, key: &[u8]) -> Result<Option<T>, Error> {
 		self.get_with(key, |_, mut data| {
 			match ser::deserialize_strict(
 				&mut data,
 				self.protocol_version(),
 				self.store.get_context_id(),
+				true,
 			) {
 				Ok(res) => Ok(res),
 				Err(e) => Err(From::from(e)),

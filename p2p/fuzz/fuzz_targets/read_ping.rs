@@ -15,5 +15,5 @@ fuzz_target!(|data: &[u8]| {
 	let mut d = data;
 	// it is fuzz test, no error handling expected
 	let _t: Result<Ping, ser::Error> =
-		ser::deserialize_strict(&mut d, ProtocolVersion::local_db(), 0);
+		ser::deserialize_strict(&mut d, ProtocolVersion::local_db(), 0, true);
 });

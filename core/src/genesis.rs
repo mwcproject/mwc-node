@@ -313,7 +313,7 @@ mod test {
 		global::set_local_nrd_enabled(false);
 		let gen_hash = genesis_floo(&secp, 0).hash(0).unwrap();
 		println!("floonet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(0, &genesis_floo(&secp, 0), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(0, &genesis_floo(&secp, 0), ProtocolVersion(1), true).unwrap();
 		println!(
 			"floonet genesis full hash: {}\n",
 			gen_bin.hash(0).unwrap().to_hex()
@@ -335,7 +335,7 @@ mod test {
 		global::set_local_nrd_enabled(false);
 		let gen_hash = genesis_main(&secp, 0).hash(0).unwrap();
 		println!("mainnet genesis hash: {}", gen_hash.to_hex());
-		let gen_bin = ser::ser_vec(0, &genesis_main(&secp, 0), ProtocolVersion(1)).unwrap();
+		let gen_bin = ser::ser_vec(0, &genesis_main(&secp, 0), ProtocolVersion(1), true).unwrap();
 		println!(
 			"mainnet genesis full hash: {}\n",
 			gen_bin.hash(0).unwrap().to_hex()

@@ -21,8 +21,8 @@ use mwc_core::consensus;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use mwc_core::core::{
-	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputIdentifier, Transaction,
-	TxKernel,
+	Block, BlockHeader, BlockSums, Inputs, KernelFeatures, Output, OutputFeatures,
+	OutputIdentifier, Transaction, TxKernel,
 };
 use mwc_core::global;
 use mwc_core::libtx::{reward, ProofBuilder};
@@ -56,24 +56,8 @@ macro_rules! submit_to_pool {
 #[allow(unused_imports)]
 pub(crate) use submit_to_pool;
 
-// Keep test targets compilable without exposing the production builder. Any
-// affected test reaches this shim and fails with an actionable runtime error.
-#[allow(dead_code, unused_imports)]
-pub mod build {
-	pub use mwc_core::libtx::build::*;
-
-	#[cfg(not(feature = "test-support"))]
-	pub fn output<K, B>(
-		_value: u64,
-		_key_id: mwc_keychain::Identifier,
-	) -> Box<mwc_core::libtx::build::Append<K, B>>
-	where
-		K: mwc_keychain::Keychain,
-		B: mwc_core::libtx::proof::ProofBuild,
-	{
-		panic!("test-support feature is required to run the tests");
-	}
-}
+#[allow(unused_imports)]
+pub use mwc_core::libtx::build;
 
 /// Build genesis block with reward (non-empty, like we have in mainnet).
 pub fn genesis_block<K>(keychain: &K) -> Block
@@ -82,21 +66,22 @@ where
 {
 	let key_id = ExtKeychain::derive_key_id(1, 0, 0, 0, 0).unwrap();
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-	let reward = reward::output(
+	// Genesis has no parent binding context and does not include an opening.
+	let (output, kernel, _) = reward::output_s2c(
 		0,
 		keychain,
 		&ProofBuilder::new(&secp, keychain).unwrap(),
 		&key_id,
 		0,
-		false,
 		0,
 		&mut secp,
+		Hash::default(),
 	)
 	.unwrap();
 
 	let mut genesis = global::get_genesis_block(&secp, 0)
 		.expect("testing genesis must be available")
-		.with_reward(reward.0, reward.1)
+		.with_reward(output, kernel)
 		.expect("genesis block body must be empty before reward");
 	set_genesis_mmr_roots(&mut genesis);
 
@@ -186,17 +171,23 @@ where
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let reward = reward::output(
+	let aggregate = mwc_core::core::transaction::aggregate(0, txs, secp).unwrap();
+	let binding = chain
+		.coinbase_binding_for_template(secp, &prev, &aggregate.body)
+		.unwrap();
+	let builder = ProofBuilder::new(secp, keychain).unwrap();
+	let (output, kernel, opening) = reward::output_s2c(
 		0,
 		keychain,
-		&ProofBuilder::new(secp, keychain).unwrap(),
+		&builder,
 		&key_id,
 		fee,
-		false,
 		height,
 		secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 
 	let mut block = Block::new(
 		0,
@@ -207,6 +198,8 @@ where
 		secp,
 	)
 	.unwrap();
+
+	block.coinbase_opening = consensus::is_coinbase_binding_enabled(0, height).then_some(opening);
 
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
@@ -335,12 +328,16 @@ where
 	// single input spending a single coinbase (deterministic key_id aka height)
 	{
 		let key_id = ExtKeychain::derive_key_id(1, header.height as u32, 0, 0, 0).unwrap();
-		tx_elements.push(build::coinbase_input(coinbase_reward, key_id));
+		tx_elements.push(build::feature_input(
+			coinbase_reward,
+			OutputFeatures::Coinbase,
+			key_id,
+		));
 	}
 
 	for output_value in output_values {
-		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
-		tx_elements.push(build::output(output_value, key_id));
+		let key_id = ExtKeychain::derive_key_id(3, output_value as u32, 0, 0, 0).unwrap();
+		tx_elements.push(build::height_tagged_output(output_value, key_id, 1));
 	}
 
 	build::transaction(
@@ -394,13 +391,17 @@ where
 	let mut tx_elements = Vec::new();
 
 	for input_value in input_values {
-		let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0).unwrap();
-		tx_elements.push(build::input(input_value, key_id));
+		let key_id = ExtKeychain::derive_key_id(3, input_value as u32, 0, 0, 0).unwrap();
+		tx_elements.push(build::feature_input(
+			input_value,
+			OutputFeatures::Plain,
+			key_id,
+		));
 	}
 
 	for output_value in output_values {
-		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
-		tx_elements.push(build::output(output_value, key_id));
+		let key_id = ExtKeychain::derive_key_id(3, output_value as u32, 0, 0, 0).unwrap();
+		tx_elements.push(build::height_tagged_output(output_value, key_id, 1));
 	}
 
 	build::transaction(
@@ -428,13 +429,17 @@ where
 	let mut tx_elements = Vec::new();
 
 	for input_value in input_values {
-		let key_id = ExtKeychain::derive_key_id(1, input_value as u32, 0, 0, 0).unwrap();
-		tx_elements.push(build::input(input_value, key_id));
+		let key_id = ExtKeychain::derive_key_id(3, input_value as u32, 0, 0, 0).unwrap();
+		tx_elements.push(build::feature_input(
+			input_value,
+			OutputFeatures::Plain,
+			key_id,
+		));
 	}
 
 	for output_value in output_values {
-		let key_id = ExtKeychain::derive_key_id(1, output_value as u32, 0, 0, 0).unwrap();
-		tx_elements.push(build::output(output_value, key_id));
+		let key_id = ExtKeychain::derive_key_id(3, output_value as u32, 0, 0, 0).unwrap();
+		tx_elements.push(build::height_tagged_output(output_value, key_id, 1));
 	}
 
 	build::transaction_with_kernel(

@@ -48,17 +48,21 @@ fn build_block(secp: &mut Secp256k1, chain: &Chain) -> Block {
 		&mut cache_values,
 	)
 	.unwrap();
-	let reward = reward::output(
+	let binding = chain
+		.coinbase_binding_for_template(secp, &prev, &mwc_core::core::TransactionBody::empty())
+		.unwrap();
+	let (output, kernel, opening) = reward::output_s2c(
 		0,
 		&keychain,
 		&ProofBuilder::new(secp, &keychain).unwrap(),
 		&pk,
 		0,
-		false,
 		prev.height + 1,
 		secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 	let mut block = Block::new(
 		0,
 		&prev,
@@ -69,6 +73,8 @@ fn build_block(secp: &mut Secp256k1, chain: &Chain) -> Block {
 	)
 	.unwrap();
 
+	block.coinbase_opening =
+		consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 

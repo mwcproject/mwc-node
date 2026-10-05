@@ -246,6 +246,7 @@ impl Peer {
 			});
 		}
 
+		let block_extra = self.info.is_block_extra();
 		let handler = Protocol::new(
 			Arc::new(self.tracking_adapter.clone()),
 			self.info.clone(),
@@ -255,6 +256,7 @@ impl Peer {
 			conn,
 			self.info.version,
 			self.context_id,
+			block_extra,
 			self.tracker.clone(),
 			sync_state,
 			self.info.addr.to_string(),
@@ -383,7 +385,13 @@ impl Peer {
 				)));
 			}
 		};
-		let msg = Msg::new(msg_type, msg, self.info.version, self.context_id)?;
+		let msg = Msg::new(
+			msg_type,
+			msg,
+			self.info.version,
+			self.context_id,
+			self.info.is_block_extra(),
+		)?;
 		match connection.send_handle.send(msg) {
 			Ok(()) => Ok(()),
 			Err(e) => {
@@ -1318,6 +1326,12 @@ mod tests {
 		connect_test_peer(peer)
 	}
 
+	fn connected_block_extra_peer(port: u16, fee: u64) -> Peer {
+		let mut peer = connected_test_peer_with_addr_fee(port, fee);
+		peer.info.capabilities = Capabilities::BLOCK_EXTRA;
+		peer
+	}
+
 	fn connect_test_peer(peer: Peer) -> Peer {
 		let (send_handle, stop_handle) = conn::disconnected_test_handles();
 		*peer.connection.lock() = Some(PeerConnection::Active(ActivePeerConnection {
@@ -1339,6 +1353,64 @@ mod tests {
 			],
 		)
 		.unwrap()
+	}
+
+	#[test]
+	fn compact_block_wire_format_uses_peer_capability() {
+		use mwc_core::{consensus, ser};
+		use mwc_crates::secp::s2c::Opening;
+
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let secp = Secp256k1::with_caps(mwc_crates::secp::ContextFlag::Commit).unwrap();
+		let secret = mwc_crates::secp::SecretKey::from_slice(&secp, &[1; 32]).unwrap();
+		let point = mwc_crates::secp::key::PublicKey::from_secret_key(&secp, &secret).unwrap();
+		let opening =
+			Opening::from_slice(&secp, &point.serialize_vec(&secp, true).unwrap()).unwrap();
+
+		for remote in [Capabilities::UNKNOWN, Capabilities::BLOCK_EXTRA] {
+			let mut info = test_peer().info;
+			info.capabilities = remote;
+			let peer = Peer::new(info, Arc::new(DummyAdapter {}), 0);
+			let expected_extra = remote.contains(Capabilities::BLOCK_EXTRA);
+			let (send_handle, stop_handle, receiver) = conn::test_handles();
+			*peer.connection.lock() = Some(PeerConnection::Active(ActivePeerConnection {
+				send_handle,
+				stop_handle,
+			}));
+
+			for activated in [false, true] {
+				let mut block = core::Block::default(0);
+				block.header.height =
+					consensus::COINBASE_BINDING_MAINNET_HEIGHT - u64::from(!activated);
+				block.coinbase_opening = activated.then_some(opening);
+				let compact = core::CompactBlock::from(block).unwrap();
+				assert!(peer.send_compact_block(&compact).unwrap());
+				let sent = receiver.try_recv().unwrap();
+				let mut frame = Vec::new();
+				msg::write_message(&mut frame, &vec![sent], peer.tracker.clone()).unwrap();
+				let mut source = frame.as_slice();
+				let version = ProtocolVersion::local();
+				match msg::read_header(&mut source, version, 0, expected_extra).unwrap() {
+					msg::MsgHeaderWrapper::Known(header) => {
+						assert_eq!(header.msg_type, Type::CompactBlock);
+						assert_eq!(header.msg_len, source.len());
+					}
+					_ => panic!("compact block must use its existing message type"),
+				}
+				let mut legacy = Vec::new();
+				compact
+					.write_no_opening(&mut ser::BinWriter::new(&mut legacy, version, 0, true))
+					.unwrap();
+				if expected_extra && activated {
+					assert_eq!(source.len(), legacy.len() + 33);
+					let restored: core::CompactBlock =
+						ser::deserialize_strict(&mut source, version, 0, expected_extra).unwrap();
+					assert_eq!(restored.coinbase_opening, Some(opening));
+				} else {
+					assert_eq!(source, legacy.as_slice());
+				}
+			}
+		}
 	}
 
 	#[test]
@@ -1571,6 +1643,332 @@ mod tests {
 	}
 
 	#[test]
+	fn peer_discovery_and_outbound_target_follow_current_sync_stage() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_accept_fee_base(1000).unwrap();
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let config = P2PConfig::default();
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		// Discovery must work before any block-extra supplier has been found.
+		for (boost, expected) in [
+			(Capabilities::UNKNOWN, Capabilities::BLOCK_EXTRA),
+			(Capabilities::HEADER_HIST, Capabilities::HEADER_HIST),
+			(Capabilities::HEADERS_HASH, Capabilities::HEADERS_HASH),
+			(Capabilities::PIBD_HIST, Capabilities::PIBD_HIST),
+			(
+				Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
+				Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
+			),
+		] {
+			peers.set_boost_peers_capabilities(boost);
+			assert_eq!(peers.get_peer_discovery_capabilities(), expected);
+			assert!(!peers.enough_outbound_peers());
+		}
+
+		let legacy_capabilities =
+			Capabilities::HEADER_HIST | Capabilities::HEADERS_HASH | Capabilities::PIBD_HIST;
+		for index in 0..config.peer_min_preferred_outbound_count(1, true) {
+			let mut peer = connected_test_peer_with_addr_fee(3520 + index as u16, 0);
+			peer.info.capabilities = legacy_capabilities;
+			peers.add_connected(Arc::new(peer)).unwrap();
+		}
+		for boost in [
+			Capabilities::HEADER_HIST,
+			Capabilities::HEADERS_HASH,
+			Capabilities::PIBD_HIST,
+		] {
+			peers.set_boost_peers_capabilities(boost);
+			assert_eq!(peers.get_peer_discovery_capabilities(), boost);
+			assert!(peers.enough_outbound_peers());
+		}
+	}
+
+	#[test]
+	fn clean_peers_does_not_reserve_block_extra_peers_during_header_or_pibd_sync() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for boost in [
+			Capabilities::HEADER_HIST,
+			Capabilities::HEADERS_HASH,
+			Capabilities::PIBD_HIST,
+		] {
+			for supports_stage in [false, true] {
+				let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+				let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+				let mut preferred = connected_test_peer_with_addr_fee(3546, 0);
+				preferred.info.capabilities = boost;
+				let preferred = Arc::new(preferred);
+				let mut extra = connected_block_extra_peer(3547, 0);
+				if supports_stage {
+					extra.info.capabilities |= boost;
+				}
+				let extra = Arc::new(extra);
+				let mut config = P2PConfig::default();
+				config.peer_max_outbound_count = Some(1);
+				config.peers_preferred = Some(crate::msg::PeerAddrs {
+					peers: vec![preferred.info.addr.clone()],
+				});
+				let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+				peers.add_connected(preferred.clone()).unwrap();
+				peers.add_connected(extra.clone()).unwrap();
+
+				// Boost removes an unsuitable peer; capacity removes the excess suitable
+				// peer. BLOCK_EXTRA must not exempt either from the normal rules.
+				let summary = peers.clean_peers(10, 1, boost, config);
+
+				assert_eq!(summary.removed_peers, 1);
+				assert!(peers.is_known(&preferred.info.addr));
+				assert!(!peers.is_known(&extra.info.addr));
+			}
+		}
+	}
+
+	#[test]
+	fn clean_peers_respects_zero_and_single_outbound_capacity() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for (normal_limit, current_limit) in [(0, 0), (1, 1), (10, 0), (10, 1)] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let mut config = P2PConfig::default();
+			config.peer_max_outbound_count = Some(normal_limit);
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			for port in 3528..3530 {
+				peers
+					.add_connected(Arc::new(connected_block_extra_peer(port, 0)))
+					.unwrap();
+			}
+
+			let summary = peers.clean_peers(10, current_limit, Capabilities::UNKNOWN, config);
+
+			assert_eq!(summary.removed_peers as usize, 2 - current_limit);
+			assert_eq!(peers.iter().outbound().connected().count(), current_limit);
+		}
+	}
+
+	#[test]
+	fn clean_peers_includes_sync_excluded_connections_in_health_and_capacity_cleanup() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for direction in [Direction::Inbound, Direction::Outbound] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let mut dead = connected_block_extra_peer(3540, 0);
+			let mut excluded = connected_block_extra_peer(3541, 0);
+			let mut preferred = connected_block_extra_peer(3542, 0);
+			dead.info.direction = direction;
+			excluded.info.direction = direction;
+			preferred.info.direction = direction;
+			let (dead, excluded, preferred) =
+				(Arc::new(dead), Arc::new(excluded), Arc::new(preferred));
+			let mut config = P2PConfig::default();
+			config.peer_max_outbound_count = Some(1);
+			config.peers_preferred = Some(crate::msg::PeerAddrs {
+				peers: vec![preferred.info.addr.clone()],
+			});
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			for peer in [&dead, &excluded, &preferred] {
+				peers.add_connected(peer.clone()).unwrap();
+			}
+			peers.set_excluded_peers(&vec![dead.info.addr.clone(), excluded.info.addr.clone()]);
+			dead.set_defunct();
+
+			let summary = peers.clean_peers(1, 1, Capabilities::UNKNOWN, config);
+
+			assert_eq!(summary.removed_peers, 2);
+			assert!(!peers.is_known(&dead.info.addr));
+			assert!(!peers.is_known(&excluded.info.addr));
+			assert!(peers.is_known(&preferred.info.addr));
+			assert_eq!(
+				peers.get_peer(&dead.info.addr).unwrap().flags,
+				crate::store::State::Defunct
+			);
+		}
+	}
+
+	#[test]
+	fn clean_peers_counts_dead_peer_removal_before_capacity_cleanup() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for direction in [Direction::Inbound, Direction::Outbound] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let mut dead = connected_test_peer_with_addr_fee(3550, 0);
+			let mut healthy = connected_test_peer_with_addr_fee(3551, 0);
+			dead.info.direction = direction;
+			healthy.info.direction = direction;
+			dead.info.capabilities = Capabilities::HEADER_HIST;
+			healthy.info.capabilities = Capabilities::HEADER_HIST;
+			dead.info.live_info.write().last_seen = mwc_crates::chrono::Utc::now()
+				- mwc_crates::chrono::Duration::seconds(
+					(global::PEER_PING_INTERVAL_SECONDS as i64) * 11,
+				);
+			let (dead, healthy) = (Arc::new(dead), Arc::new(healthy));
+			let mut config = P2PConfig::default();
+			// A preferred dead peer cannot be selected for capacity eviction. Counting
+			// its pending removal twice would therefore evict the healthy peer too.
+			config.peers_preferred = Some(crate::msg::PeerAddrs {
+				peers: vec![dead.info.addr.clone()],
+			});
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			peers.add_connected(dead.clone()).unwrap();
+			peers.add_connected(healthy.clone()).unwrap();
+
+			let summary = peers.clean_peers(1, 1, Capabilities::HEADER_HIST, config);
+
+			assert_eq!(summary.removed_peers, 1);
+			assert!(!peers.is_known(&dead.info.addr));
+			assert!(peers.is_known(&healthy.info.addr));
+		}
+	}
+
+	#[test]
+	fn clean_peers_disconnects_legacy_outbound_outside_header_and_pibd_sync() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for required_capabilities in [
+			Capabilities::UNKNOWN,
+			Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
+		] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let legacy_capabilities =
+				Capabilities::HEADER_HIST | Capabilities::HEADERS_HASH | Capabilities::PIBD_HIST;
+			let mut preferred = connected_test_peer_with_addr_fee(3552, 0);
+			let mut legacy = connected_test_peer_with_addr_fee(3553, 0);
+			let mut capable = connected_test_peer_with_addr_fee(3554, 0);
+			let mut inbound = connected_test_peer_with_addr_fee(3555, 0);
+			for peer in [&mut preferred, &mut legacy, &mut capable, &mut inbound] {
+				peer.info.capabilities = legacy_capabilities;
+			}
+			capable.info.capabilities |= Capabilities::BLOCK_EXTRA;
+			inbound.info.direction = Direction::Inbound;
+			let (preferred, legacy, capable, inbound) = (
+				Arc::new(preferred),
+				Arc::new(legacy),
+				Arc::new(capable),
+				Arc::new(inbound),
+			);
+			let mut config = P2PConfig::default();
+			config.peers_preferred = Some(crate::msg::PeerAddrs {
+				peers: vec![preferred.info.addr.clone()],
+			});
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			for peer in [&preferred, &legacy, &capable, &inbound] {
+				peers.add_connected(peer.clone()).unwrap();
+			}
+
+			// Legacy connections remain useful during header and PIBD synchronization.
+			for boost in [
+				Capabilities::HEADER_HIST,
+				Capabilities::HEADERS_HASH,
+				Capabilities::PIBD_HIST,
+			] {
+				let summary = peers.clean_peers(10, 10, boost, config.clone_without_secrets());
+				assert_eq!(summary.removed_peers, 0);
+				assert_eq!(peers.iter().connected().count(), 4);
+			}
+
+			// Normal operation and body sync need openings even below capacity,
+			// including on preferred peers.
+			let summary = peers.clean_peers(10, 10, required_capabilities, config);
+
+			assert_eq!(summary.removed_peers, 2);
+			for peer in [&preferred, &legacy] {
+				assert!(!peers.is_known(&peer.info.addr));
+				assert!(!peer.is_banned());
+				assert_eq!(
+					peers.get_peer(&peer.info.addr).unwrap().flags,
+					crate::store::State::Healthy
+				);
+			}
+			assert!(peers.is_known(&capable.info.addr));
+			assert!(peers.is_known(&inbound.info.addr));
+			assert_eq!(peers.iter().connected().count(), 2);
+		}
+	}
+
+	#[test]
+	fn clean_peers_keeps_peers_when_sync_boost_quota_is_already_satisfied() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let config = P2PConfig::default();
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		for port in 3560..3570 {
+			let mut peer = connected_test_peer_with_addr_fee(port, 0);
+			if port < 3565 {
+				peer.info.capabilities = Capabilities::PIBD_HIST;
+			}
+			peers.add_connected(Arc::new(peer)).unwrap();
+		}
+
+		let summary = peers.clean_peers(10, 10, Capabilities::PIBD_HIST, config);
+
+		assert_eq!(summary.removed_peers, 0);
+		assert_eq!(peers.iter().outbound().connected().count(), 10);
+	}
+
+	#[test]
+	fn clean_peers_counts_sync_boost_removals_before_capacity_cleanup() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let config = P2PConfig::default();
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		for port in 3570..3576 {
+			let mut peer = connected_test_peer_with_addr_fee(port, 0);
+			if port < 3572 {
+				peer.info.capabilities = Capabilities::PIBD_HIST;
+			}
+			peers.add_connected(Arc::new(peer)).unwrap();
+		}
+
+		let summary = peers.clean_peers(10, 4, Capabilities::PIBD_HIST, config);
+
+		assert_eq!(summary.removed_peers, 2);
+		assert_eq!(peers.iter().outbound().connected().count(), 4);
+		assert_eq!(
+			peers
+				.iter()
+				.outbound()
+				.connected()
+				.with_capabilities(Capabilities::PIBD_HIST)
+				.count(),
+			2
+		);
+	}
+
+	#[test]
+	fn clean_peers_limits_outbound_capacity_evictions_and_preserves_preferred_peer() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let mut preferred = connected_test_peer_with_addr_fee(3580, 0);
+		preferred.info.capabilities = Capabilities::HEADER_HIST;
+		let preferred = Arc::new(preferred);
+		let mut config = P2PConfig::default();
+		config.peers_preferred = Some(crate::msg::PeerAddrs {
+			peers: vec![preferred.info.addr.clone()],
+		});
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		peers.add_connected(preferred.clone()).unwrap();
+		for port in 3581..3585 {
+			let mut peer = connected_test_peer_with_addr_fee(port, 0);
+			peer.info.capabilities = Capabilities::HEADER_HIST;
+			peers.add_connected(Arc::new(peer)).unwrap();
+		}
+
+		for remaining in [3, 1] {
+			let summary = peers.clean_peers(
+				10,
+				1,
+				Capabilities::HEADER_HIST,
+				config.clone_without_secrets(),
+			);
+			assert_eq!(summary.removed_peers, 2);
+			assert_eq!(peers.iter().outbound().connected().count(), remaining);
+			assert!(peers.is_known(&preferred.info.addr));
+		}
+	}
+
+	#[test]
 	fn enough_outbound_peers_requires_one_fee_match_for_minimum_one() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_accept_fee_base(1000).unwrap();
@@ -1579,8 +1977,9 @@ mod tests {
 		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
 		let mut config = P2PConfig::default();
 		config.peer_min_preferred_outbound_count = Some(1);
+		config.peer_max_outbound_count = Some(1);
 		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
-		let peer = Arc::new(connected_test_peer_with_addr_fee(3500, 2000));
+		let peer = Arc::new(connected_block_extra_peer(3500, 2000));
 		peers.add_connected(peer).unwrap();
 
 		assert!(!peers.enough_outbound_peers());
@@ -1604,17 +2003,14 @@ mod tests {
 			(3514, 2000),
 		] {
 			peers
-				.add_connected(Arc::new(connected_test_peer_with_addr_fee(
-					port,
-					tx_base_fee,
-				)))
+				.add_connected(Arc::new(connected_block_extra_peer(port, tx_base_fee)))
 				.unwrap();
 		}
 
 		assert!(!peers.enough_outbound_peers());
 
 		peers
-			.add_connected(Arc::new(connected_test_peer_with_addr_fee(3515, 500)))
+			.add_connected(Arc::new(connected_block_extra_peer(3515, 500)))
 			.unwrap();
 
 		assert!(peers.enough_outbound_peers());
@@ -1786,7 +2182,7 @@ mod tests {
 		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
 		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
 		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &P2PConfig::default());
-		let peer = Arc::new(connected_test_peer());
+		let peer = Arc::new(connected_block_extra_peer(3414, 0));
 		let addr = peer.info.addr.clone();
 		peer.info.live_info.write().last_seen = mwc_crates::chrono::Utc::now()
 			- mwc_crates::chrono::Duration::seconds(

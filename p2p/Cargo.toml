@@ -16,3 +16,6 @@ mwc_store = { path = "../store", version = "7.2.0" }
 mwc_util = { path = "../util", version = "7.2.0" }
 mwc_chain = { path = "../chain", version = "7.2.0" }
 thiserror.workspace = true
+
+[features]
+test-support = ["mwc_core/test-support"]

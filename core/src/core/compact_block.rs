@@ -15,13 +15,16 @@
 
 //! Compact Blocks.
 
-use crate::core::block::{Block, BlockHeader, Error, UntrustedBlockHeader};
+use crate::core::block::{
+	read_coinbase_opening, write_coinbase_opening, Block, BlockHeader, Error, UntrustedBlockHeader,
+};
 use crate::core::hash::{DefaultHashable, Hashed};
 use crate::core::id::ShortIdentifiable;
 use crate::core::{Output, ShortId, TransactionBody, TxKernel};
 use crate::ser::{self, read_multi, Readable, Reader, Writeable, Writer};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::rand::TryRng;
+use mwc_crates::secp::s2c::Opening;
 
 /// Container for full (full) outputs and kernels and kern_ids for a compact block.
 #[derive(Debug, Clone)]
@@ -187,6 +190,8 @@ pub struct CompactBlock {
 	pub nonce: u64,
 	/// Container for out_full, kern_full and kern_ids in the compact block.
 	body: CompactBlockBody,
+	/// Public opening carried unchanged through compact-block reconstruction.
+	pub coinbase_opening: Option<Opening>,
 }
 
 impl DefaultHashable for CompactBlock {}
@@ -247,6 +252,7 @@ impl CompactBlock {
 			header,
 			nonce,
 			body,
+			coinbase_opening: block.coinbase_opening,
 		})
 	}
 }
@@ -256,29 +262,40 @@ impl CompactBlock {
 /// purpose of full serialization and the one of just extracting a hash.
 impl Writeable for CompactBlock {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		self.header.write(writer)?;
-
-		if writer.serialization_mode() != ser::SerializationMode::Hash {
-			writer.write_u64(self.nonce)?;
-			self.body.write(writer)?;
+		self.write_no_opening(writer)?;
+		if !writer.serialization_mode().is_hash_mode() {
+			write_coinbase_opening(&self.header, self.coinbase_opening.as_ref(), writer)?;
 		}
-
 		Ok(())
 	}
 }
 
-/// Implementation of Readable for a compact block, defines how to read a
-/// compact block from a binary stream.
 impl Readable for CompactBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<CompactBlock, ser::Error> {
-		let header = BlockHeader::read(reader)?;
-		let nonce = reader.read_u64()?;
-		let body = CompactBlockBody::read(reader)?;
+		let mut block = Self::read_no_opening(reader)?;
+		block.coinbase_opening = read_coinbase_opening(&block.header, reader)?;
+		Ok(block)
+	}
+}
 
-		Ok(CompactBlock {
-			header,
-			nonce,
-			body,
+impl CompactBlock {
+	/// Encode the original compact-block wire format for legacy peers.
+	pub fn write_no_opening<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.header.write(writer)?;
+		if !writer.serialization_mode().is_hash_mode() {
+			writer.write_u64(self.nonce)?;
+			self.body.write(writer)?;
+		}
+		Ok(())
+	}
+
+	/// Decode a legacy compact block without a Coinbase opening.
+	pub fn read_no_opening<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		Ok(Self {
+			header: BlockHeader::read(reader)?,
+			nonce: reader.read_u64()?,
+			body: CompactBlockBody::read(reader)?,
+			coinbase_opening: None,
 		})
 	}
 }
@@ -305,6 +322,15 @@ impl UntrustedCompactBlock {
 /// compact block from a binary stream.
 impl Readable for UntrustedCompactBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<UntrustedCompactBlock, ser::Error> {
+		let mut block = Self::read_no_opening(reader)?;
+		block.0.coinbase_opening = read_coinbase_opening(&block.0.header, reader)?;
+		Ok(block)
+	}
+}
+
+impl UntrustedCompactBlock {
+	/// Decode and perform lightweight validation of the legacy wire format.
+	pub fn read_no_opening<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
 		let header = UntrustedBlockHeader::read(reader)?;
 		let nonce = reader.read_u64()?;
 		let body = CompactBlockBody::read(reader)?;
@@ -313,6 +339,7 @@ impl Readable for UntrustedCompactBlock {
 			header: header.into(),
 			nonce,
 			body,
+			coinbase_opening: None,
 		};
 
 		// Now validate the compact block and treat any validation error as corrupted data.

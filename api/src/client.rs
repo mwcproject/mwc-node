@@ -80,7 +80,7 @@ impl HttpClient {
 		let res: Value = serde_json::from_slice(&response).map_err(|e| {
 			// Note, in case of error we want to reveal url and response_str. Even it can leak some data
 			// into the logs, it is needed for debugging.
-			Error::Internal(format!(
+			Error::ResponseError(format!(
 				"Invalid response from {}, Response: {}, Error: {}",
 				url, response_str, e
 			))

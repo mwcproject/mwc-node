@@ -15,7 +15,7 @@
 
 use mwc_chain::types::NoopAdapter;
 use mwc_chain::Error;
-use mwc_core::core::KernelFeatures;
+use mwc_core::core::{KernelFeatures, OutputFeatures};
 use mwc_core::global::{self, ChainTypes};
 use mwc_core::libtx::{self, ProofBuilder};
 use mwc_core::{consensus, pow};
@@ -73,7 +73,7 @@ fn test_coinbase_maturity() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+		let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -95,9 +95,25 @@ fn test_coinbase_maturity() {
 			&mut cache_values,
 		)
 		.unwrap();
-		let reward =
-			libtx::reward::output(0, &keychain, &builder, &key_id1, 0, false, 1, &mut secp)
-				.unwrap();
+		let binding = chain
+			.coinbase_binding_for_template(
+				&mut secp,
+				&prev,
+				&mwc_core::core::TransactionBody::empty(),
+			)
+			.unwrap();
+		let (output, kernel, opening) = libtx::reward::output_s2c(
+			0,
+			&keychain,
+			&builder,
+			&key_id1,
+			0,
+			1,
+			&mut secp,
+			binding.digest().unwrap(),
+		)
+		.unwrap();
+		let reward = (output, kernel);
 		let mut block = mwc_core::core::Block::new(
 			0,
 			&prev,
@@ -110,6 +126,8 @@ fn test_coinbase_maturity() {
 		block.header.timestamp = prev.timestamp + Duration::seconds(60);
 		block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
+		block.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 		chain.set_txhashset_roots(&secp, &mut block).unwrap();
 
 		pow::pow_size(
@@ -150,8 +168,8 @@ fn test_coinbase_maturity() {
 				fee: 2u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(amount, key_id1.clone()),
-				build::output(amount - 2, key_id2.clone()),
+				build::feature_input(amount, OutputFeatures::Coinbase, key_id1.clone()),
+				build::height_tagged_output(amount - 2, key_id2.clone(), 1),
 			],
 			&keychain,
 			&builder,
@@ -160,17 +178,22 @@ fn test_coinbase_maturity() {
 
 		let txs = &[coinbase_txn.clone()];
 		let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
-		let reward = libtx::reward::output(
+		let aggregate = mwc_core::core::transaction::aggregate(0, txs, &mut secp).unwrap();
+		let binding = chain
+			.coinbase_binding_for_template(&mut secp, &prev, &aggregate.body)
+			.unwrap();
+		let (output, kernel, opening) = libtx::reward::output_s2c(
 			0,
 			&keychain,
 			&builder,
 			&key_id3,
 			fees,
-			false,
 			prev.height + 1,
 			&mut secp,
+			binding.digest().unwrap(),
 		)
 		.unwrap();
+		let reward = (output, kernel);
 		let next_header_info = consensus::next_difficulty(
 			0,
 			prev.height + 1,
@@ -190,17 +213,16 @@ fn test_coinbase_maturity() {
 		block.header.timestamp = prev.timestamp + Duration::seconds(60);
 		block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
+		block.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 		chain.set_txhashset_roots(&secp, &mut block).unwrap();
 
 		// Confirm the tx attempting to spend the coinbase output
 		// is not valid at the current block height given the current chain state.
-		match chain.verify_coinbase_maturity(&coinbase_txn.inputs()) {
-			Ok(_) => {}
-			Err(e) => match e {
-				Error::ImmatureCoinbase => {}
-				_ => panic!("Expected transaction error with immature coinbase."),
-			},
-		}
+		assert!(matches!(
+			chain.verify_coinbase_maturity(&coinbase_txn.inputs()),
+			Err(Error::ImmatureCoinbase)
+		));
 
 		pow::pow_size(
 			0,
@@ -213,7 +235,7 @@ fn test_coinbase_maturity() {
 
 		// mine enough blocks to increase the height sufficiently for
 		// coinbase to reach maturity and be spendable in the next block
-		for _ in 0..3 {
+		for _ in 0..2 {
 			let prev = chain.head_header().unwrap();
 
 			let keychain = ExtKeychain::from_seed(
@@ -235,17 +257,25 @@ fn test_coinbase_maturity() {
 				&mut cache_values,
 			)
 			.unwrap();
-			let reward = libtx::reward::output(
+			let binding = chain
+				.coinbase_binding_for_template(
+					&mut secp,
+					&prev,
+					&mwc_core::core::TransactionBody::empty(),
+				)
+				.unwrap();
+			let (output, kernel, opening) = libtx::reward::output_s2c(
 				0,
 				&keychain,
 				&builder,
 				&key_id1,
 				0,
-				false,
 				prev.height + 1,
 				&mut secp,
+				binding.digest().unwrap(),
 			)
 			.unwrap();
+			let reward = (output, kernel);
 			let mut block = mwc_core::core::Block::new(
 				0,
 				&prev,
@@ -259,6 +289,8 @@ fn test_coinbase_maturity() {
 			block.header.timestamp = prev.timestamp + Duration::seconds(60);
 			block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
+			block.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 			chain.set_txhashset_roots(&secp, &mut block).unwrap();
 
 			pow::pow_size(
@@ -282,215 +314,84 @@ fn test_coinbase_maturity() {
 					std::collections::HashSet::new(),
 				)
 				.unwrap();
-
-			let prev = chain.head_header().unwrap();
-
-			let amount = consensus::MWC_FIRST_GROUP_REWARD;
-
-			let lock_height = 1 + global::coinbase_maturity(0);
-			assert_eq!(lock_height, 4);
-
-			// here we build a tx that attempts to spend the earlier coinbase output
-			// this is not a valid tx as the coinbase output cannot be spent yet
-			let coinbase_txn = build::transaction(
-				0,
-				&mut secp,
-				KernelFeatures::Plain {
-					fee: 2u32.try_into().unwrap(),
-				},
-				&[
-					build::coinbase_input(amount, key_id1.clone()),
-					build::output(amount - 2, key_id2.clone()),
-				],
-				&keychain,
-				&builder,
-			)
-			.unwrap();
-
-			let txs = &[coinbase_txn.clone()];
-			let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
-			let reward = libtx::reward::output(
-				0,
-				&keychain,
-				&builder,
-				&key_id3,
-				fees,
-				false,
-				prev.height + 1,
-				&mut secp,
-			)
-			.unwrap();
-			let next_header_info = consensus::next_difficulty(
-				0,
-				prev.height + 1,
-				chain.difficulty_iter().unwrap(),
-				&mut cache_values,
-			)
-			.unwrap();
-			let mut block = mwc_core::core::Block::new(
-				0,
-				&prev,
-				txs,
-				next_header_info.difficulty,
-				reward,
-				&mut secp,
-			)
-			.unwrap();
-			block.header.timestamp = prev.timestamp + Duration::seconds(60);
-			block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
-
-			chain.set_txhashset_roots(&secp, &mut block).unwrap();
-
-			// Confirm the tx attempting to spend the coinbase output
-			// is not valid at the current block height given the current chain state.
-			match chain.verify_coinbase_maturity(&coinbase_txn.inputs()) {
-				Ok(_) => {}
-				Err(e) => match e {
-					Error::ImmatureCoinbase => {}
-					_ => panic!("Expected transaction error with immature coinbase."),
-				},
-			}
-
-			pow::pow_size(
-				0,
-				&mut block.header,
-				next_header_info.difficulty,
-				global::proofsize(0),
-				global::min_edge_bits(0),
-			)
-			.unwrap();
-
-			// mine enough blocks to increase the height sufficiently for
-			// coinbase to reach maturity and be spendable in the next block
-			for _ in 0..3 {
-				let prev = chain.head_header().unwrap();
-
-				let keychain = ExtKeychain::from_seed(
-					&secp,
-					&SecretKey::new(&secp, &mut SysRng).unwrap().0,
-					false,
-				)
-				.unwrap();
-				let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-				let pk = ExtKeychainPath::new(1, 1, 0, 0, 0)
-					.unwrap()
-					.to_identifier()
-					.unwrap();
-
-				let reward = libtx::reward::output(
-					0,
-					&keychain,
-					&builder,
-					&pk,
-					0,
-					false,
-					prev.height + 1,
-					&mut secp,
-				)
-				.unwrap();
-				let next_header_info = consensus::next_difficulty(
-					0,
-					prev.height + 1,
-					chain.difficulty_iter().unwrap(),
-					&mut cache_values,
-				)
-				.unwrap();
-				let mut block = mwc_core::core::Block::new(
-					0,
-					&prev,
-					&[],
-					next_header_info.difficulty,
-					reward,
-					&mut secp,
-				)
-				.unwrap();
-				block.header.timestamp = prev.timestamp + Duration::seconds(60);
-				block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
-
-				chain.set_txhashset_roots(&secp, &mut block).unwrap();
-
-				pow::pow_size(
-					0,
-					&mut block.header,
-					next_header_info.difficulty,
-					global::proofsize(0),
-					global::min_edge_bits(0),
-				)
-				.unwrap();
-
-				chain
-					.process_block(
-						&mut secp,
-						block,
-						mwc_chain::Options::MINE,
-						std::collections::HashSet::new(),
-					)
-					.unwrap();
-			}
-
-			let prev = chain.head_header().unwrap();
-
-			// Confirm the tx spending the coinbase output is now valid.
-			// The coinbase output has matured sufficiently based on current chain state.
-			chain
-				.verify_coinbase_maturity(&coinbase_txn.inputs())
-				.unwrap();
-
-			let txs = &[coinbase_txn];
-			let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
-			let next_header_info = consensus::next_difficulty(
-				0,
-				prev.height + 1,
-				chain.difficulty_iter().unwrap(),
-				&mut cache_values,
-			)
-			.unwrap();
-			let reward = libtx::reward::output(
-				0,
-				&keychain,
-				&builder,
-				&key_id4,
-				fees,
-				false,
-				prev.height + 1,
-				&mut secp,
-			)
-			.unwrap();
-			let mut block = mwc_core::core::Block::new(
-				0,
-				&prev,
-				txs,
-				next_header_info.difficulty,
-				reward,
-				&mut secp,
-			)
-			.unwrap();
-
-			block.header.timestamp = prev.timestamp + Duration::seconds(60);
-			block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
-
-			chain.set_txhashset_roots(&secp, &mut block).unwrap();
-
-			pow::pow_size(
-				0,
-				&mut block.header,
-				next_header_info.difficulty,
-				global::proofsize(0),
-				global::min_edge_bits(0),
-			)
-			.unwrap();
-
-			let result = chain.process_block(
-				&mut secp,
-				block,
-				mwc_chain::Options::MINE,
-				std::collections::HashSet::new(),
-			);
-			match result {
-				Ok(_) => (),
-				Err(_) => panic!("we did not expect an error here"),
-			};
 		}
+
+		let prev = chain.head_header().unwrap();
+
+		// Confirm the tx spending the coinbase output is now valid.
+		// The coinbase output has matured sufficiently based on current chain state.
+		chain
+			.verify_coinbase_maturity(&coinbase_txn.inputs())
+			.unwrap();
+
+		let txs = &[coinbase_txn];
+		let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
+		let next_header_info = consensus::next_difficulty(
+			0,
+			prev.height + 1,
+			chain.difficulty_iter().unwrap(),
+			&mut cache_values,
+		)
+		.unwrap();
+		let aggregate = mwc_core::core::transaction::aggregate(0, txs, &mut secp).unwrap();
+		let binding = chain
+			.coinbase_binding_for_template(&mut secp, &prev, &aggregate.body)
+			.unwrap();
+		let (output, kernel, opening) = libtx::reward::output_s2c(
+			0,
+			&keychain,
+			&builder,
+			&key_id4,
+			fees,
+			prev.height + 1,
+			&mut secp,
+			binding.digest().unwrap(),
+		)
+		.unwrap();
+		let reward = (output, kernel);
+		let mut block = mwc_core::core::Block::new(
+			0,
+			&prev,
+			txs,
+			next_header_info.difficulty,
+			reward,
+			&mut secp,
+		)
+		.unwrap();
+
+		block.header.timestamp = prev.timestamp + Duration::seconds(60);
+		block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
+
+		block.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
+		chain.set_txhashset_roots(&secp, &mut block).unwrap();
+
+		pow::pow_size(
+			0,
+			&mut block.header,
+			next_header_info.difficulty,
+			global::proofsize(0),
+			global::min_edge_bits(0),
+		)
+		.unwrap();
+
+		assert_eq!(block.header.height, 4);
+		assert!(block.coinbase_opening.is_some());
+		assert_eq!(block.inputs().len(), 1);
+		assert_eq!(
+			block.inputs().into_commit_wrappers(0).unwrap()[0].commitment(),
+			coinbase_output.commitment()
+		);
+		let result = chain.process_block(
+			&mut secp,
+			block,
+			mwc_chain::Options::MINE,
+			std::collections::HashSet::new(),
+		);
+		match result {
+			Ok(_) => (),
+			Err(_) => panic!("we did not expect an error here"),
+		};
 	}
 	// Cleanup chain directory
 	clean_output_dir(chain_dir);

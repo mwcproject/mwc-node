@@ -34,6 +34,7 @@ use mwc_crates::chrono::prelude::{DateTime, Utc};
 use mwc_crates::chrono::Duration;
 use mwc_crates::log::{error, trace};
 use mwc_crates::secp;
+use mwc_crates::secp::s2c::Opening;
 use mwc_crates::secp::Secp256k1;
 use mwc_crates::serde::{self, Serialize};
 use std::convert::TryFrom;
@@ -52,6 +53,9 @@ pub enum Error {
 	/// Same as above but for the coinbase part of a block, including reward
 	#[error("Block Invalid total kernel sum plus reward")]
 	CoinbaseSumMismatch,
+	/// Bound blocks must contain exactly one coinbase output and kernel.
+	#[error("Block must contain exactly one coinbase output and one coinbase kernel")]
+	CoinbaseCardinality,
 	/// Restrict block total weight.
 	#[error("Block total weight is too heavy")]
 	TooHeavy,
@@ -410,7 +414,8 @@ impl BlockHeader {
 	pub fn pre_pow(&self) -> Result<Vec<u8>, Error> {
 		let mut header_buf = vec![];
 		{
-			let mut writer = ser::BinWriter::default(self.pow.proof.context_id, &mut header_buf);
+			let mut writer =
+				ser::BinWriter::default(self.pow.proof.context_id, &mut header_buf, true);
 			self.write_pre_pow(&mut writer)?;
 			self.pow.write_pre_pow(&mut writer)?;
 			writer.write_u64(self.pow.nonce)?;
@@ -459,12 +464,12 @@ impl BlockHeader {
 		}
 
 		// Serialize and append serialized nonce and proof
-		serialize_default(context_id, &mut header_bytes, &nonce)?;
-		serialize_default(context_id, &mut header_bytes, &proof)?;
+		serialize_default(context_id, &mut header_bytes, &nonce, true)?;
+		serialize_default(context_id, &mut header_bytes, &proof, true)?;
 
 		// Deserialize header from constructed bytes
 		let mut input = &header_bytes[..];
-		let header: BlockHeader = deserialize_default(context_id, &mut input)?;
+		let header: BlockHeader = deserialize_default(context_id, &mut input, true)?;
 		if !input.is_empty() {
 			return Err(ser::Error::CorruptedData(format!(
 				"Trailing bytes after reconstructed header: {}",
@@ -669,6 +674,9 @@ pub struct Block {
 	pub header: BlockHeader,
 	/// The body - inputs/outputs/kernels
 	pub body: TransactionBody,
+	/// Public opening of the activated Coinbase kernel S2C commitment.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub coinbase_opening: Option<Opening>,
 }
 
 impl Hashed for Block {
@@ -687,21 +695,60 @@ impl Hashed for Block {
 /// full serialization and the one of just extracting a hash.
 impl Writeable for Block {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
-		self.header.write(writer)?;
+		self.write_legacy(writer)?;
 		if !writer.serialization_mode().is_hash_mode() {
-			self.body.write(writer)?;
+			write_coinbase_opening(&self.header, self.coinbase_opening.as_ref(), writer)?;
 		}
 		Ok(())
 	}
 }
 
-/// Implementation of Readable for a block, defines how to read a full block
-/// from a binary stream.
+/// Canonical storage and extended-wire encoding. Preactivation blocks keep
+/// their original bytes; activated blocks append one required 33-byte opening.
 impl Readable for Block {
 	fn read<R: Reader>(reader: &mut R) -> Result<Block, ser::Error> {
-		let header = BlockHeader::read(reader)?;
-		let body = TransactionBody::read(reader)?;
-		Ok(Block { header, body })
+		let mut block = Self::read_legacy(reader)?;
+		block.coinbase_opening = read_coinbase_opening(&block.header, reader)?;
+		Ok(block)
+	}
+}
+
+pub(super) fn read_coinbase_opening<R: Reader>(
+	header: &BlockHeader,
+	reader: &mut R,
+) -> Result<Option<Opening>, ser::Error> {
+	if !reader.block_extra() {
+		return Ok(None);
+	}
+	if consensus::is_coinbase_binding_enabled(reader.get_context_id(), header.height) {
+		Ok(Some(Opening::read(reader)?))
+	} else {
+		Ok(None)
+	}
+}
+
+pub(super) fn write_coinbase_opening<W: Writer>(
+	header: &BlockHeader,
+	opening: Option<&Opening>,
+	writer: &mut W,
+) -> Result<(), ser::Error> {
+	if !writer.block_extra() {
+		return Ok(());
+	}
+	if consensus::is_coinbase_binding_enabled(writer.get_context_id(), header.height) {
+		opening
+			.ok_or_else(|| {
+				ser::Error::CorruptedData(
+					"activated block is missing its Coinbase S2C opening".into(),
+				)
+			})?
+			.write(writer)
+	} else if opening.is_some() {
+		Err(ser::Error::CorruptedData(
+			"preactivation block must not contain a Coinbase S2C opening".into(),
+		))
+	} else {
+		Ok(())
 	}
 }
 
@@ -728,11 +775,32 @@ impl Committed for Block {
 }
 
 impl Block {
+	/// Encode the original block representation for peers without BLOCK_EXTRA.
+	/// Database writes use Writeable instead, preserving the required opening.
+	pub fn write_legacy<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		self.header.write(writer)?;
+		if !writer.serialization_mode().is_hash_mode() {
+			self.body.write(writer)?;
+		}
+		Ok(())
+	}
+
+	/// Decode the original block representation. An activated block received
+	/// this way is incomplete and cannot pass stateful binding validation.
+	pub fn read_legacy<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
+		Ok(Self {
+			header: BlockHeader::read(reader)?,
+			body: TransactionBody::read(reader)?,
+			coinbase_opening: None,
+		})
+	}
+
 	/// Default properties for a block, everything zeroed out and empty vectors.
 	pub fn default(context_id: u32) -> Block {
 		Block {
 			header: BlockHeader::default(context_id),
 			body: Default::default(),
+			coinbase_opening: None,
 		}
 	}
 
@@ -814,7 +882,11 @@ impl Block {
 		// Finally return the full block.
 		// Note: we have not actually validated the block here,
 		// caller must validate the block.
-		Ok(Block { header, body })
+		Ok(Block {
+			header,
+			body,
+			coinbase_opening: cb.coinbase_opening,
+		})
 	}
 
 	/// Build a new empty block from a specified header
@@ -882,6 +954,7 @@ impl Block {
 				..BlockHeader::default(context_id)
 			},
 			body: agg_tx.body,
+			coinbase_opening: None,
 		};
 		Ok(block)
 	}
@@ -1003,6 +1076,12 @@ impl Block {
 			.filter(|kernel| kernel.is_coinbase())
 			.collect::<Vec<&TxKernel>>();
 
+		if consensus::is_coinbase_binding_enabled(context_id, self.header.height)
+			&& (cb_outs.len() != 1 || cb_kerns.len() != 1)
+		{
+			return Err(Error::CoinbaseCardinality);
+		}
+
 		{
 			let over_commit =
 				secp.commit_value(reward(context_id, self.total_fees()?, self.header.height)?)?;
@@ -1090,12 +1169,22 @@ impl UntrustedBlock {
 /// Deserialization of an untrusted block header
 impl Readable for UntrustedBlock {
 	fn read<R: Reader>(reader: &mut R) -> Result<UntrustedBlock, ser::Error> {
+		let mut block = Self::read_legacy(reader)?;
+		block.0.coinbase_opening = read_coinbase_opening(&block.0.header, reader)?;
+		Ok(block)
+	}
+}
+
+impl UntrustedBlock {
+	/// Read and check the legacy wire representation before any stateful checks.
+	pub fn read_legacy<R: Reader>(reader: &mut R) -> Result<Self, ser::Error> {
 		// we validate header here before parsing the body
 		let header = UntrustedBlockHeader::read(reader)?;
 		let body = TransactionBody::read(reader)?;
 		let block = Block {
 			header: header.into(),
 			body,
+			coinbase_opening: None,
 		};
 		// Now "lightweight" validation of the block.
 		// Treat any validation issues as data corruption.
@@ -1106,5 +1195,193 @@ impl Readable for UntrustedBlock {
 			ser::Error::CorruptedData(format!("Fail to validate UntrustedBlock, {}", e))
 		})?;
 		Ok(UntrustedBlock(block))
+	}
+}
+
+#[cfg(test)]
+mod opening_serialization_tests {
+	use super::*;
+	use crate::ser::ProtocolVersion;
+
+	#[test]
+	fn opening_roundtrip_preserves_legacy_bytes_hash_and_compact_hydration() {
+		const CONTEXT: u32 = 943_110;
+		global::init_global_chain_type(CONTEXT, global::ChainTypes::AutomatedTesting).unwrap();
+		let secp = Secp256k1::with_caps(secp::ContextFlag::Commit).unwrap();
+		let key = secp::key::SecretKey::from_slice(&secp, &[1; 32]).unwrap();
+		let point = secp::key::PublicKey::from_secret_key(&secp, &key).unwrap();
+		let opening =
+			Opening::from_slice(&secp, &point.serialize_vec(&secp, true).unwrap()).unwrap();
+		let version = ProtocolVersion(3);
+		let mut block = Block::default(CONTEXT);
+		block.header.height = consensus::COINBASE_BINDING_TESTING_HEIGHT - 1;
+		let mut legacy = Vec::new();
+		block
+			.write_legacy(&mut ser::BinWriter::new(
+				&mut legacy,
+				version,
+				CONTEXT,
+				true,
+			))
+			.unwrap();
+		assert_eq!(
+			ser::ser_vec(CONTEXT, &block, version, true).unwrap(),
+			legacy
+		);
+		let restored: Block =
+			ser::deserialize_strict(&mut legacy.as_slice(), version, CONTEXT, true).unwrap();
+		assert_eq!(restored.coinbase_opening, None);
+		let mut without_extra = Vec::new();
+		block
+			.write(&mut ser::BinWriter::new(
+				&mut without_extra,
+				version,
+				CONTEXT,
+				false,
+			))
+			.unwrap();
+		assert_eq!(without_extra, legacy);
+		let compact_before_activation = CompactBlock::from(block.clone()).unwrap();
+		let compact_before_bytes =
+			ser::ser_vec(CONTEXT, &compact_before_activation, version, true).unwrap();
+		without_extra.clear();
+		compact_before_activation
+			.write(&mut ser::BinWriter::new(
+				&mut without_extra,
+				version,
+				CONTEXT,
+				false,
+			))
+			.unwrap();
+		assert_eq!(without_extra, compact_before_bytes);
+
+		block.header.height = consensus::COINBASE_BINDING_TESTING_HEIGHT;
+		assert!(ser::ser_vec(CONTEXT, &block, version, true).is_err());
+		assert!(ser::ser_vec(
+			CONTEXT,
+			&CompactBlock::from(block.clone()).unwrap(),
+			version,
+			true
+		)
+		.is_err());
+		block.coinbase_opening = Some(opening);
+		legacy.clear();
+		block
+			.write_legacy(&mut ser::BinWriter::new(
+				&mut legacy,
+				version,
+				CONTEXT,
+				true,
+			))
+			.unwrap();
+		let encoded = ser::ser_vec(CONTEXT, &block, version, true).unwrap();
+		assert_eq!(&encoded[..legacy.len()], legacy.as_slice());
+		assert_eq!(&encoded[legacy.len()..], &opening.serialize());
+		without_extra.clear();
+		block
+			.write(&mut ser::BinWriter::new(
+				&mut without_extra,
+				version,
+				CONTEXT,
+				false,
+			))
+			.unwrap();
+		assert_eq!(without_extra, legacy);
+		let mut body = encoded.as_slice();
+		assert_eq!(
+			ser::BufReader::new(&mut body, version, CONTEXT, true)
+				.body_full::<Block>()
+				.unwrap()
+				.coinbase_opening,
+			Some(opening)
+		);
+		let mut body = without_extra.as_slice();
+		assert_eq!(
+			ser::BufReader::new(&mut body, version, CONTEXT, false)
+				.body_full::<Block>()
+				.unwrap()
+				.coinbase_opening,
+			None
+		);
+		let mut body = without_extra.as_slice();
+		assert!(ser::BufReader::new(&mut body, version, CONTEXT, true)
+			.body_full::<Block>()
+			.is_err());
+		// A peer that did not negotiate extra data must not silently accept it.
+		let mut body = encoded.as_slice();
+		assert!(ser::BufReader::new(&mut body, version, CONTEXT, false)
+			.body_full::<Block>()
+			.is_err());
+		let restored: Block =
+			ser::deserialize_strict(&mut encoded.as_slice(), version, CONTEXT, true).unwrap();
+		assert_eq!(restored.coinbase_opening, Some(opening));
+		assert_eq!(
+			restored.hash(CONTEXT).unwrap(),
+			block.header.hash(CONTEXT).unwrap()
+		);
+		for length in [legacy.len(), encoded.len() - 1] {
+			assert!(ser::deserialize_strict::<Block, _>(
+				&mut &encoded[..length],
+				version,
+				CONTEXT,
+				true
+			)
+			.is_err());
+		}
+		let mut trailing = encoded.clone();
+		trailing.push(0);
+		assert!(ser::deserialize_strict::<Block, _>(
+			&mut trailing.as_slice(),
+			version,
+			CONTEXT,
+			true
+		)
+		.is_err());
+		let compact = CompactBlock::from(block.clone()).unwrap();
+		assert_eq!(compact.hash(CONTEXT).unwrap(), block.hash(CONTEXT).unwrap());
+		let bytes = ser::ser_vec(CONTEXT, &compact, version, true).unwrap();
+		let mut body = bytes.as_slice();
+		assert_eq!(
+			ser::BufReader::new(&mut body, version, CONTEXT, true)
+				.body_full::<CompactBlock>()
+				.unwrap()
+				.coinbase_opening,
+			Some(opening)
+		);
+		without_extra.clear();
+		compact
+			.write(&mut ser::BinWriter::new(
+				&mut without_extra,
+				version,
+				CONTEXT,
+				false,
+			))
+			.unwrap();
+		assert_eq!(&bytes[..without_extra.len()], without_extra.as_slice());
+		assert_eq!(&bytes[without_extra.len()..], &opening.serialize());
+		let mut body = without_extra.as_slice();
+		assert_eq!(
+			ser::BufReader::new(&mut body, version, CONTEXT, false)
+				.body_full::<CompactBlock>()
+				.unwrap()
+				.coinbase_opening,
+			None
+		);
+		let mut body = without_extra.as_slice();
+		assert!(ser::BufReader::new(&mut body, version, CONTEXT, true)
+			.body_full::<CompactBlock>()
+			.is_err());
+		let mut body = bytes.as_slice();
+		assert!(ser::BufReader::new(&mut body, version, CONTEXT, false)
+			.body_full::<CompactBlock>()
+			.is_err());
+		let compact: CompactBlock =
+			ser::deserialize_strict(&mut bytes.as_slice(), version, CONTEXT, true).unwrap();
+		let hydrated = Block::hydrate_from(compact, &[]).unwrap();
+		assert_eq!(hydrated.coinbase_opening, block.coinbase_opening);
+		assert_eq!(
+			ser::ser_vec(CONTEXT, &hydrated, version, true).unwrap(),
+			encoded
+		);
 	}
 }

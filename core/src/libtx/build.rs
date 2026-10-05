@@ -32,15 +32,11 @@
 //!   ]
 //! )
 
-#[cfg(feature = "test-support")]
-use crate::core::Output;
-use crate::core::{Input, KernelFeatures, OutputFeatures, Transaction, TxKernel};
-#[cfg(feature = "test-support")]
+use crate::core::{Input, Inputs, KernelFeatures, Output, OutputFeatures, Transaction, TxKernel};
 use crate::libtx::proof;
 use crate::libtx::proof::ProofBuild;
 use crate::libtx::{aggsig, Error};
 use keychain::{BlindSum, BlindingFactor, Identifier, Keychain, SwitchCommitmentType};
-use mwc_crates::log::debug;
 use mwc_crates::secp::Secp256k1;
 
 /// Context information available to transaction combinators.
@@ -67,107 +63,67 @@ pub type Append<K, B> = dyn for<'a> Fn(
 	Result<(Transaction, BlindSum), Error>,
 ) -> Result<(Transaction, BlindSum), Error>;
 
-/// Adds an input with the provided value and blinding key to the transaction
-/// being built.
-fn build_input<K, B>(value: u64, features: OutputFeatures, key_id: Identifier) -> Box<Append<K, B>>
-where
-	K: Keychain,
-	B: ProofBuild,
-{
-	Box::new(
-		move |build, acc| -> Result<(Transaction, BlindSum), Error> {
-			if let Ok((tx, sum)) = acc {
-				let commit = build.keychain.commit(
-					&build.secp,
-					value,
-					&key_id,
-					SwitchCommitmentType::Regular,
-				)?;
-				// TODO: proper support for different switch commitment schemes
-				let input = Input::new(features, commit);
-				// Transaction::empty starts with commit-only inputs. This conversion is
-				// intentionally lossy: input.features is not stored in the transaction.
-				Ok((
-					tx.with_commit_input(build.context_id, input.commitment())?,
-					sum.sub_key_id(
-						key_id
-							.to_value_path(value)
-							.map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?,
-					),
-				))
-			} else {
-				acc
-			}
-		},
-	)
-}
-
-/// Adds an input with the provided value and blinding key to the transaction
-/// being built.
-pub fn input<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
-where
-	K: Keychain,
-	B: ProofBuild,
-{
-	debug!("Building input (spending regular output)");
-	build_input(value, OutputFeatures::Plain, key_id)
-}
-
-/// Adds a coinbase input spending a coinbase output.
-pub fn coinbase_input<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
-where
-	K: Keychain,
-	B: ProofBuild,
-{
-	debug!("Building input (spending coinbase): {}", value);
-	build_input(value, OutputFeatures::Coinbase, key_id)
-}
-
-/// Adds an output with the provided value and key identifier from the
-/// keychain.
+/// Build a feature-preserving transaction input.
 ///
-/// Wallet code normally uses a different builder that tags rangeproofs. This
-/// untagged output builder is therefore available for tests only.
-#[cfg(feature = "test-support")]
-pub fn output<K, B>(value: u64, key_id: Identifier) -> Box<Append<K, B>>
+/// Core wire transactions use commit-only inputs at the current protocol
+/// version, but V2/V3 slates explicitly exchange input features. Wallet slate
+/// construction must retain that metadata until the transaction is serialized
+/// for the node. The transaction must use `Inputs::FeaturesAndCommit`.
+pub fn feature_input<K, B>(
+	value: u64,
+	features: OutputFeatures,
+	key_id: Identifier,
+) -> Box<Append<K, B>>
 where
 	K: Keychain,
 	B: ProofBuild,
 {
-	Box::new(
-		move |build, acc| -> Result<(Transaction, BlindSum), Error> {
-			let (tx, sum) = acc?;
-
-			// TODO: proper support for different switch commitment schemes
-			let switch = SwitchCommitmentType::Regular;
-
-			let commit = build.keychain.commit(&build.secp, value, &key_id, switch)?;
-
-			debug!("Building output");
-
-			let proof = proof::create(
-				build.secp,
-				build.keychain,
-				build.builder,
-				value,
-				&key_id,
-				switch,
-				commit,
-			)?;
-
-			Ok((
-				tx.with_output(
-					build.context_id,
-					Output::new(OutputFeatures::Plain, commit, proof),
-				)?,
-				sum.add_key_id(
-					key_id
-						.to_value_path(value)
-						.map_err(|e| Error::Other(format!("Unable to build a key, {}", e)))?,
-				),
+	Box::new(move |build, acc| -> Result<(_, BlindSum), Error> {
+		let (tx, sum) = acc?;
+		let commit =
+			build
+				.keychain
+				.commit(build.secp, value, &key_id, SwitchCommitmentType::Regular)?;
+		let input = Input::new(features, commit);
+		let value_path = key_id.to_value_path(value).map_err(|e| {
+			Error::Other(format!(
+				"Unable to build a feature-preserving input key: {}",
+				e
 			))
-		},
-	)
+		})?;
+		Ok((
+			tx.with_input(build.context_id, input)?,
+			sum.sub_key_id(value_path),
+		))
+	})
+}
+
+/// Build an output whose proof message carries the historical anti-replay
+/// height without making that height part of the BIP32 derivation path.
+pub fn height_tagged_output<K, B>(value: u64, key_id: Identifier, height: u64) -> Box<Append<K, B>>
+where
+	K: Keychain,
+	B: ProofBuild,
+{
+	Box::new(move |build, acc| {
+		let (tx, sum) = acc?;
+		let (commit, rangeproof) = proof::height_tagged_rangeproof(
+			build.secp,
+			build.keychain,
+			build.builder,
+			value,
+			&key_id,
+			height,
+		)?;
+
+		Ok((
+			tx.with_output(
+				build.context_id,
+				Output::new(OutputFeatures::Plain, commit, rangeproof),
+			)?,
+			sum.add_key_id(key_id.to_value_path(value)?),
+		))
+	})
 }
 
 /// Adds a known excess value on the transaction being built. Usually used in
@@ -286,11 +242,13 @@ where
 		secp,
 		context_id,
 	};
+	let mut tx = Transaction::empty();
+	// Keep input features while building, as wallet slates do. Wire
+	// serialization can explicitly convert to commitment-only inputs later.
+	tx.body.inputs = Inputs::FeaturesAndCommit(vec![]);
 	let (tx, sum) = elems
 		.iter()
-		.fold(Ok((Transaction::empty(), BlindSum::new())), |acc, elem| {
-			elem(&mut ctx, acc)
-		})?;
+		.fold(Ok((tx, BlindSum::new())), |acc, elem| elem(&mut ctx, acc))?;
 	let blind_sum = ctx.keychain.blind_sum(ctx.secp, &sum)?;
 	// Zero blinding sum is not accepted by consensus and safety rules
 	if blind_sum.is_zero() {
@@ -306,30 +264,15 @@ where
 // Just a simple test, most exhaustive tests in the core.
 #[cfg(test)]
 mod test {
-	#[cfg(feature = "test-support")]
 	use super::*;
-	#[cfg(feature = "test-support")]
 	use crate::core::transaction::Weighting;
-	#[cfg(feature = "test-support")]
 	use crate::global;
-	#[cfg(feature = "test-support")]
 	use crate::libtx::ProofBuilder;
-	#[cfg(feature = "test-support")]
 	use keychain::{ExtKeychain, ExtKeychainPath};
-	#[cfg(feature = "test-support")]
 	use mwc_crates::rand::rngs::SysRng;
-	#[cfg(feature = "test-support")]
 	use mwc_crates::secp::{ContextFlag, SecretKey};
-	#[cfg(feature = "test-support")]
 	use std::convert::TryInto;
 
-	#[cfg(not(feature = "test-support"))]
-	#[test]
-	fn blind_simple_tx() {
-		panic!("test-support feature is required to run the tests");
-	}
-
-	#[cfg(feature = "test-support")]
 	#[test]
 	fn blind_simple_tx() {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -339,59 +282,15 @@ mod test {
 			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 				.unwrap();
 		let builder = ProofBuilder::new(&mut secp, &keychain).unwrap();
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+		let key_id1 = ExtKeychainPath::new(3, 0, 0, 1, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+		let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
-			.unwrap()
-			.to_identifier()
-			.unwrap();
-
-		let tx = transaction(
-			0,
-			&mut secp,
-			KernelFeatures::Plain {
-				fee: 2u32.try_into().unwrap(),
-			},
-			&[input(10, key_id1), input(12, key_id2), output(20, key_id3)],
-			&keychain,
-			&builder,
-		)
-		.unwrap();
-
-		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
-	}
-
-	#[cfg(not(feature = "test-support"))]
-	#[test]
-	fn blind_simple_tx_with_offset() {
-		panic!("test-support feature is required to run the tests");
-	}
-
-	#[cfg(feature = "test-support")]
-	#[test]
-	fn blind_simple_tx_with_offset() {
-		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-		global::set_local_nrd_enabled(false);
-		let keychain =
-			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
-				.unwrap();
-		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
-			.unwrap()
-			.to_identifier()
-			.unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
-			.unwrap()
-			.to_identifier()
-			.unwrap();
-		let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+		let key_id3 = ExtKeychainPath::new(3, 0, 0, 3, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -402,7 +301,11 @@ mod test {
 			KernelFeatures::Plain {
 				fee: 2u32.try_into().unwrap(),
 			},
-			&[input(10, key_id1), input(12, key_id2), output(20, key_id3)],
+			&[
+				feature_input(10, OutputFeatures::Plain, key_id1),
+				feature_input(12, OutputFeatures::Plain, key_id2),
+				height_tagged_output(20, key_id3, 1),
+			],
 			&keychain,
 			&builder,
 		)
@@ -411,13 +314,47 @@ mod test {
 		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 
-	#[cfg(not(feature = "test-support"))]
 	#[test]
-	fn blind_simpler_tx() {
-		panic!("test-support feature is required to run the tests");
+	fn blind_simple_tx_with_offset() {
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let keychain =
+			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+				.unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let key_id1 = ExtKeychainPath::new(3, 0, 0, 1, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+		let key_id3 = ExtKeychainPath::new(3, 0, 0, 3, 0)
+			.unwrap()
+			.to_identifier()
+			.unwrap();
+
+		let tx = transaction(
+			0,
+			&mut secp,
+			KernelFeatures::Plain {
+				fee: 2u32.try_into().unwrap(),
+			},
+			&[
+				feature_input(10, OutputFeatures::Plain, key_id1),
+				feature_input(12, OutputFeatures::Plain, key_id2),
+				height_tagged_output(20, key_id3, 1),
+			],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+
+		tx.validate(0, Weighting::AsTransaction, &mut secp).unwrap();
 	}
 
-	#[cfg(feature = "test-support")]
 	#[test]
 	fn blind_simpler_tx() {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -428,11 +365,11 @@ mod test {
 			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 				.unwrap();
 		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-		let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+		let key_id1 = ExtKeychainPath::new(3, 0, 0, 1, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+		let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -443,7 +380,10 @@ mod test {
 			KernelFeatures::Plain {
 				fee: 4u32.try_into().unwrap(),
 			},
-			&[input(6, key_id1), output(2, key_id2)],
+			&[
+				feature_input(6, OutputFeatures::Plain, key_id1),
+				height_tagged_output(2, key_id2, 1),
+			],
 			&keychain,
 			&builder,
 		)

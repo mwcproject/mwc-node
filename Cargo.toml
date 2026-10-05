@@ -18,7 +18,7 @@ exclude = ["etc/gen_gen", "vendor/saturating-time", "vendor/tor-ptmgr"]
 [patch.crates-io]
 # Arti 0.44+ exercises a Windows hang in saturating-time 0.4.0 while parsing a consensus.
 saturating-time = { path = "vendor/saturating-time" }
-# Arti 0.45's PT stdout worker cannot observe transport destruction while a
+# Arti 0.46's PT stdout worker cannot observe transport destruction while a
 # quiet child is blocked without producing another stdout line. Keep the
 # managed child supervisor under our control until the fix is released upstream.
 tor-ptmgr = { path = "vendor/tor-ptmgr" }

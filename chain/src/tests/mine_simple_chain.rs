@@ -44,6 +44,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+// Use a fixed proof construction height below so recreated outputs keep the same proof.
 use super::chain_test_helper::build::{self, Append};
 use super::chain_test_helper::{
 	clean_output_dir, genesis_block, init_chain, mine_chain, test_chain_dir,
@@ -176,7 +177,7 @@ fn known_block_check_normalizes_nonempty_v2_inputs_to_v3() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let output_key = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let output_key = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -187,8 +188,16 @@ fn known_block_check_normalizes_nonempty_v2_inputs_to_v3() {
 				fee: 20_000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, coinbase_key),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20_000, output_key),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					coinbase_key,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20_000,
+					output_key,
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -645,7 +654,7 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -657,8 +666,12 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&keychain,
 			&proof_builder,
@@ -2474,7 +2487,7 @@ fn spend_rewind_spend() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2486,8 +2499,16 @@ fn spend_rewind_spend() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase.clone(),
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -2565,7 +2586,7 @@ fn migrate_spent_index_converts_legacy_entries() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2576,8 +2597,12 @@ fn migrate_spent_index_converts_legacy_entries() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -2825,7 +2850,7 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2836,8 +2861,16 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_1,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -2855,7 +2888,7 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 			)
 			.unwrap();
 
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2866,8 +2899,12 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31, 1),
 			],
 			&kc,
 			&pb,
@@ -2892,8 +2929,12 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_2,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -2981,11 +3022,11 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2997,8 +3038,16 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_1,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3019,8 +3068,12 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31, 1),
 			],
 			&kc,
 			&pb,
@@ -3042,8 +3095,12 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_2,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -3115,7 +3172,7 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3126,8 +3183,16 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_1,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3145,7 +3210,7 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 			)
 			.unwrap();
 
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3156,8 +3221,12 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31, 1),
 			],
 			&kc,
 			&pb,
@@ -3183,8 +3252,12 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_2,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -3294,11 +3367,11 @@ fn spend_in_fork_and_compact() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3310,8 +3383,16 @@ fn spend_in_fork_and_compact() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id2.clone(),
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3338,8 +3419,16 @@ fn spend_in_fork_and_compact() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 40000,
+					key_id31.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3660,17 +3749,25 @@ fn output_header_mappings() {
 				.unwrap()
 				.to_identifier()
 				.unwrap();
-			let reward = libtx::reward::output(
+			let binding = chain
+				.coinbase_binding_for_template(
+					&mut secp,
+					&prev,
+					&mwc_core::core::TransactionBody::empty(),
+				)
+				.unwrap();
+			let (output, kernel, opening) = libtx::reward::output_s2c(
 				0,
 				&keychain,
 				&libtx::ProofBuilder::new(&secp, &keychain).unwrap(),
 				&pk,
 				0,
-				false,
 				prev.height + 1,
 				&mut secp,
+				binding.digest().unwrap(),
 			)
 			.unwrap();
+			let reward = (output, kernel);
 			reward_outputs.push(reward.0.clone());
 			let mut b = Block::new(
 				0,
@@ -3684,6 +3781,8 @@ fn output_header_mappings() {
 			b.header.timestamp = prev.timestamp + Duration::seconds(60);
 			b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
+			b.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(0, b.header.height).then_some(opening);
 			chain.set_txhashset_roots(&secp, &mut b).unwrap();
 
 			let edge_bits = global::min_edge_bits(0);
@@ -3832,15 +3931,15 @@ fn test_overflow_cached_rangeproof() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id32 = ExtKeychainPath::new(1, 32, 0, 0, 0)
+		let key_id32 = ExtKeychainPath::new(3, 0, 0, 32, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3853,13 +3952,15 @@ fn test_overflow_cached_rangeproof() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(
+				build::feature_input(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height),
+					OutputFeatures::Coinbase,
 					key_id2.clone(),
 				),
-				build::output(
+				build::height_tagged_output(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000,
 					key_id30.clone(),
+					1,
 				),
 			],
 			&kc,
@@ -3890,15 +3991,17 @@ fn test_overflow_cached_rangeproof() {
 				fee: tx2_fee.try_into().unwrap(),
 			},
 			&[
-				build::input(
+				build::feature_input(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000,
+					OutputFeatures::Plain,
 					key_id30.clone(),
 				),
-				build::output(
+				build::height_tagged_output(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height)
 						- 20000 - u64::from(tx2_fee)
 						+ 1_000_000_000_000_000,
 					key_id31.clone(),
+					1,
 				),
 				build_output_negative(1_000_000_000_000_000, key_id32.clone()),
 			],
@@ -3962,7 +4065,7 @@ fn prepare_block_key_idx<K>(
 where
 	K: Keychain,
 {
-	let mut b = prepare_block_nosum(secp, kc, prev, diff, key_idx, &[]);
+	let mut b = prepare_block_nosum(secp, kc, prev, chain, diff, key_idx, &[]);
 	chain.set_txhashset_roots(secp, &mut b).unwrap();
 	b
 }
@@ -3995,7 +4098,7 @@ fn prepare_block_tx_key_idx<K>(
 where
 	K: Keychain,
 {
-	let mut b = prepare_block_nosum(secp, kc, prev, diff, key_idx, txs);
+	let mut b = prepare_block_nosum(secp, kc, prev, chain, diff, key_idx, txs);
 	chain.set_txhashset_roots(secp, &mut b).unwrap();
 	b
 }
@@ -4004,6 +4107,7 @@ fn prepare_block_nosum<K>(
 	secp: &mut Secp256k1,
 	kc: &K,
 	prev: &BlockHeader,
+	chain: &Chain,
 	diff: u64,
 	key_idx: u32,
 	txs: &[Transaction],
@@ -4019,17 +4123,22 @@ where
 		.unwrap();
 
 	let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
-	let reward = libtx::reward::output(
+	let aggregate = mwc_core::core::transaction::aggregate(context_id, txs, secp).unwrap();
+	let binding = chain
+		.coinbase_binding_for_template(secp, prev, &aggregate.body)
+		.unwrap();
+	let (output, kernel, opening) = libtx::reward::output_s2c(
 		context_id,
 		kc,
 		&libtx::ProofBuilder::new(secp, kc).unwrap(),
 		&key_id,
 		fees,
-		false,
 		prev.height + 1,
 		secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 	let mut b = match Block::new(
 		context_id,
 		prev,
@@ -4041,6 +4150,8 @@ where
 		Err(e) => panic!("{:?}", e),
 		Ok(b) => b,
 	};
+	b.coinbase_opening =
+		consensus::is_coinbase_binding_enabled(context_id, b.header.height).then_some(opening);
 	b.header.timestamp = prev.timestamp + Duration::seconds(60);
 	b.header.pow.total_difficulty = (prev.total_difficulty() + Difficulty::from_num(diff)).unwrap();
 	b.header.pow.proof = pow::Proof::random(context_id, proof_size).unwrap();

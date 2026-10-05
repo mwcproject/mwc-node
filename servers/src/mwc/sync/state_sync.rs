@@ -73,6 +73,7 @@ pub struct StateSync {
 	responded_root_hash: RwLock<HashMap<PeerAddr, (Hash, Instant)>>, // Lock 2
 	// sync for segments
 	request_tracker: RequestTracker<(SegmentType, u64)>,
+	// Import completion is independent of the following ordinary block sync.
 	is_complete: AtomicBool,
 	pibd_params: Arc<PibdParams>,
 
@@ -102,15 +103,15 @@ enum DesegmenterValidation<'a> {
 	Stale,
 }
 
-struct LiveDesegmenter<'a> {
+pub(super) struct LiveDesegmenter<'a> {
 	// Keep the live session pinned while scheduling segment requests. Resetting
 	// the PIBD session starts by taking the desegmenter write lock, so this
 	// guard prevents target_archive_hash and request caches from being cleared
 	// or replaced while requests are selected, sent, and registered.
 	_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
-	desegmenter: Arc<Desegmenter>,
-	archive_hash: Hash,
-	root_hash: Hash,
+	pub(super) desegmenter: Arc<Desegmenter>,
+	pub(super) archive_hash: Hash,
+	pub(super) root_hash: Hash,
 }
 
 impl StateSync {
@@ -183,6 +184,44 @@ impl StateSync {
 		stop_state: Arc<StopState>,
 		best_height: u64,
 	) -> Result<SyncResponse, mwc_chain::Error> {
+		// Keep the imported session and its root endorsements until ordinary
+		// block sync advances the chain or requests that this import be reset.
+		if self.has_imported_state() {
+			let height = self.target_archive_height.load(Ordering::Relaxed);
+			let head = self.chain.head()?;
+			if head.height > height {
+				// Normal block processing has advanced beyond the imported state.
+				self.complete_pibd_sync();
+			} else {
+				let archive_hash = *self.target_archive_hash.read_recursive();
+				let session = self.live_desegmenter();
+				let archive = self.chain.get_header_by_height(height)?;
+				let context_id = self.chain.get_context_id();
+				if self.reset_desegmenter.load(Ordering::Relaxed)
+					|| session.as_ref().map(|s| s.archive_hash) != Some(archive_hash)
+					|| head.last_block_h != archive_hash
+					|| archive.hash(context_id)? != archive_hash
+					|| Chain::height_2_archive_height(context_id, best_height) != height
+				{
+					// A reset request, changed target, or local recovery ends the
+					// imported session before ordinary block sync continues.
+					drop(session);
+					self.chain.reset_pibd_chain()?;
+					self.reset_desegmenter_data();
+					return Ok(SyncResponse::new(
+						SyncRequestResponses::Syncing,
+						Self::get_peer_capabilities(),
+						"Restarting PIBD after failed blocks or a changed session".into(),
+					));
+				}
+				return Ok(SyncResponse::new(
+					SyncRequestResponses::StatePibdReady,
+					Self::get_peer_capabilities(),
+					"PIBD imported; continuing with normal block sync".into(),
+				));
+			}
+		}
+
 		// In case of archive mode, this step is must be skipped. Body sync will catch up.
 		if self.is_complete.load(Ordering::Acquire) || self.chain.archive_mode() {
 			return Ok(SyncResponse::new(
@@ -563,9 +602,36 @@ impl StateSync {
 
 			// we are pretty good, we can do validation now...
 			info!("PIBD state is done, starting validate_complete_state...");
-			match desegmenter.validate_complete_state(sync_state, stop_state) {
+			match desegmenter.validate_complete_state(sync_state.clone(), stop_state) {
 				Ok(_) => {
-					info!("PIBD download and valiadion is done with success!");
+					info!("PIBD state download and validation completed");
+					let next_height = archive_header
+						.height
+						.checked_add(1)
+						.ok_or(mwc_chain::Error::InvalidBlockHeight)?;
+					if mwc_core::consensus::is_coinbase_binding_enabled(
+						self.chain.get_context_id(),
+						next_height,
+					) {
+						// Retain root endorsements for SyncManager while ordinary
+						// block sync checks the imported state. These endorsements
+						// belong only to this process/session.
+						self.is_complete.store(true, Ordering::Release);
+						// BodySync now owns block requests and their normal retries.
+						self.request_tracker.clear();
+						// Leave validation status so blocks can be processed, and show
+						// actual block progress while checking the imported state.
+						sync_state.update(SyncStatus::BodySync {
+							archive_height: archive_header.height,
+							current_height: archive_header.height,
+							highest_height: best_height,
+						});
+						return Ok(SyncResponse::new(
+							SyncRequestResponses::StatePibdReady,
+							Self::get_peer_capabilities(),
+							"PIBD imported; waiting to validate its successor block".into(),
+						));
+					}
 					self.complete_pibd_sync();
 					return Ok(SyncResponse::new(
 						SyncRequestResponses::StatePibdReady,
@@ -653,7 +719,21 @@ impl StateSync {
 		)
 	}
 
-	fn ban_this_session(&self, root_hash: &Hash, sync_peers: &SyncPeers) {
+	// return true: PIBD import is complete, and we still retain the peers’ root endorsements for the first-block failure handling.
+	// return false: Either import is not complete, or those endorsements have already been cleared.
+	fn has_imported_state(&self) -> bool {
+		self.is_complete.load(Ordering::Acquire)
+			&& !self.responded_root_hash.read_recursive().is_empty()
+	}
+
+	/// Pin a completed import and its retained root endorsements while the sync
+	/// coordinator handles the result of ordinary block processing.
+	pub(super) fn imported_state(&self) -> Option<LiveDesegmenter<'_>> {
+		let session = self.live_desegmenter()?;
+		self.has_imported_state().then_some(session)
+	}
+
+	pub(super) fn ban_this_session(&self, root_hash: &Hash, sync_peers: &SyncPeers) {
 		error!("Banning all peers joind for root hash {}", root_hash);
 		// Banning all peers that was agree with that hash...
 		{
@@ -672,7 +752,7 @@ impl StateSync {
 		self.responded_root_hash.write().clear();
 	}
 
-	fn complete_pibd_sync(&self) {
+	pub(super) fn complete_pibd_sync(&self) {
 		// Publish completion before clearing peer commitments. Segment responses
 		// already in flight can then be recognized as terminal-session traffic and
 		// ignored instead of being counted as invalid peer responses.
@@ -691,6 +771,27 @@ impl StateSync {
 		self.last_retry_idx.write().clear();
 		self.retry_expiration_times.write().clear();
 		self.is_complete.store(false, Ordering::Release);
+		self.reset_desegmenter.store(false, Ordering::Relaxed);
+	}
+
+	#[cfg(all(test, feature = "test-support"))]
+	pub(super) fn set_imported_state_for_test(
+		&self,
+		height: u64,
+		root: Hash,
+		votes: Vec<(PeerAddr, Hash)>,
+	) -> Result<(), mwc_chain::Error> {
+		self.reset_desegmenter_data();
+		let archive = self.chain.get_header_by_height(height)?;
+		*self.desegmenter.write() = Some(Arc::new(self.chain.init_desegmenter(height, root)?));
+		self.target_archive_height.store(height, Ordering::Relaxed);
+		*self.target_archive_hash.write() = archive.hash(self.chain.get_context_id())?;
+		*self.responded_root_hash.write() = votes
+			.into_iter()
+			.map(|(peer, root)| (peer, (root, Instant::now())))
+			.collect();
+		self.is_complete.store(true, Ordering::Release);
+		Ok(())
 	}
 
 	pub fn recieve_pibd_status(

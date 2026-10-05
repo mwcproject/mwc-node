@@ -24,6 +24,7 @@
 
 pub mod aggsig;
 pub mod build;
+pub mod coinbase_binding;
 mod error;
 pub mod proof;
 pub mod reward;

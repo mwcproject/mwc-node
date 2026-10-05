@@ -53,7 +53,7 @@ use mwc_store::types::VariableSizeMetadataValidation;
 use mwc_store::Error::NotFoundErr;
 use mwc_util::{StopState, ToHex};
 use std::cmp::min;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::convert::TryFrom;
 use std::fs;
@@ -63,7 +63,6 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, io::Cursor};
 
 /// When evicting, very old orphans are evicted first
 const MAX_ORPHAN_AGE_SECS: u64 = 3000;
@@ -132,10 +131,10 @@ pub(crate) fn bodies_equal_header_committed(
 	rhs: &TransactionBody,
 ) -> Result<bool, Error> {
 	let version = ProtocolVersion::local();
-	Ok(ser::ser_vec(context_id, &lhs.outputs, version)?
-		== ser::ser_vec(context_id, &rhs.outputs, version)?
-		&& ser::ser_vec(context_id, &lhs.kernels, version)?
-			== ser::ser_vec(context_id, &rhs.kernels, version)?)
+	Ok(ser::ser_vec(context_id, &lhs.outputs, version, true)?
+		== ser::ser_vec(context_id, &rhs.outputs, version, true)?
+		&& ser::ser_vec(context_id, &lhs.kernels, version, true)?
+			== ser::ser_vec(context_id, &rhs.kernels, version, true)?)
 }
 
 /// Lossless comparison of unvalidated block bodies.
@@ -1124,9 +1123,8 @@ impl Chain {
 
 		let pibd_params = Arc::new(PibdParams::new());
 
-		// DB migrations to be run prior to the chain being used.
-		// Migrate full blocks to protocol version v3.
-		Chain::migrate_db_v2_v3(&store)?;
+		// Reset obsolete storage or activated blocks missing S2C openings before rebuilding state.
+		store.reset_legacy_blocks()?;
 
 		// open the txhashset, creating a new one if necessary
 		let mut txhashset =
@@ -1141,19 +1139,27 @@ impl Chain {
 			VariableSizeMetadataValidation::Full,
 		)?;
 
-		// Migrate legacy positions-only per-block spent indexes to the exact
-		// occurrence format before recovery can rewind blocks that carry them.
-		// The output PMMR is open at this point, so the migration resolves each
-		// active-window legacy position's commitment from retained leaf data.
-		Chain::migrate_spent_index(&store, &txhashset, stop_state.clone())?;
-
-		// The spent-occurrence index must be complete before recovery runs:
-		// rewind and reconciliation paths consume it. An index left incomplete
-		// by a crash or an older version is rebuilt from the retained full
-		// blocks here.
-		Chain::init_spent_commitment_index(&store, stop_state.clone())?;
-
 		mark_interrupted_pibd_for_recovery(&genesis, &store, &txhashset)?;
+
+		// A full body reset rebuilds its indexes from genesis. Run it before
+		// attempting to rebuild old indexes from bodies a PIBD import lacks.
+		let resetting_body = matches!(
+			store.pending_chain_operation()?,
+			Some(PendingChainOperation::PibdReset | PendingChainOperation::ResetToGenesis)
+		);
+		if !resetting_body {
+			// Migrate legacy positions-only per-block spent indexes to the exact
+			// occurrence format before recovery can rewind blocks that carry them.
+			// The output PMMR is open at this point, so the migration resolves each
+			// active-window legacy position's commitment from retained leaf data.
+			Chain::migrate_spent_index(&store, &txhashset, stop_state.clone())?;
+
+			// The spent-occurrence index must be complete before recovery runs:
+			// rewind and reconciliation paths consume it. An index left incomplete
+			// by a crash or an older version is rebuilt from the retained full
+			// blocks here.
+			Chain::init_spent_commitment_index(&store, stop_state.clone())?;
+		}
 
 		recover_pending_chain_operation(
 			&genesis,
@@ -1260,7 +1266,7 @@ impl Chain {
 		&self.pibd_params
 	}
 
-	/// Reset chain to be ready to download data with PIBD
+	/// Clear stored bodies and rebuild genesis state, retaining headers for PIBD.
 	pub fn reset_pibd_chain(&self) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
 		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
@@ -1342,9 +1348,8 @@ impl Chain {
 		}
 	}
 
-	/// wipes the chain head down to genesis, without attempting to rewind
-	/// Used upon PIBD failure, where we want to keep the header chain but
-	/// restart the output PMMRs from scratch
+	/// Clear stored bodies and rebuild genesis PMMRs and indexes from scratch.
+	/// Retains and validates the header chain for subsequent synchronization.
 	pub fn reset_chain_head_to_genesis(&self) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
 		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
@@ -1802,172 +1807,180 @@ impl Chain {
 		opts: Options,
 		source_peers: HashSet<String>,
 	) -> Result<Option<Tip>, Error> {
-		self.ensure_chain_robust()?;
-		let context_id = self.store.get_context_id();
-		pipe::validate_header_context_id(context_id, &b.header)?;
-		let block_hash = b.hash(context_id)?;
-		let report_peers = source_peers.clone();
+		// Collect early returns and errors before reporting, after processing has
+		// released its chain locks.
+		let result = (|| {
+			self.ensure_chain_robust()?;
+			let context_id = self.store.get_context_id();
+			pipe::validate_header_context_id(context_id, &b.header)?;
 
-		// Check if block can be processed now. Overwise add it to orphans and returns error
-		if let Err(e) = self.check_block(&b, opts, source_peers) {
-			// OldBlock is also a known-block outcome. Exact stored duplicates must
-			// never be attributed to their source peers as invalid remote data.
-			if e.is_bad_data() && !e.is_known_block() && !report_peers.is_empty() {
-				self.adapter.block_rejected(&block_hash, &report_peers, &e);
-			}
-			return Err(e);
-		}
+			// Cache blocks whose parents are still missing for deferred validation.
+			self.check_block(&b, opts, source_peers.clone())?;
 
-		// block is not orphnan and it is great
-		// Let's try to add several blocks from the current active branch. Adding many in a single
-		// transaction is good for performance.
-		let mut blocks: Vec<Block> = vec![];
+			// block is not orphnan and it is great
+			// Let's try to add several blocks from the current active branch. Adding many in a single
+			// transaction is good for performance.
+			let mut blocks: Vec<Block> = vec![];
 
-		// We can't process as multiple during sync because it is slow.
-		// But also we better to process blocks one by one when node running because of possible reorg.
-		// Reord requires to roll back single block, not a whole package.
-		#[cfg(test)]
-		let batch_safety_depth = self.process_block_batch_safety_depth.load(Ordering::SeqCst);
-		#[cfg(not(test))]
-		let batch_safety_depth = 100;
-		let multiple_processing_height_limit = self
-			.header_head()?
-			.height
-			.saturating_sub(batch_safety_depth);
-		if b.header.height < multiple_processing_height_limit {
-			// if it is a block on the chain, let's try to add many of them
-			match self.get_header_by_height(b.header.height) {
-				Ok(header) => {
-					let context_id = self.store.get_context_id();
-					// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
-					if header.hash(context_id)? == b.hash(context_id)? {
-						blocks.push(b.clone());
-						loop {
-							let last_block = blocks.last().ok_or(Error::Other(
-								"Internal error, no blocks at process_block".into(),
-							))?;
-							let next_hegiht =
-								last_block.header.height.checked_add(1).ok_or_else(|| {
-									Error::DataOverflow(format!(
-										"Chain::process_block, last_block.header.height={}",
-										last_block.header.height
-									))
-								})?;
-							match self.get_header_by_height(next_hegiht) {
-								Ok(header) => {
-									if let Some(orphan) =
-										self.orphans.get_orphan(&header.hash(context_id)?)
-									{
-										blocks.push(orphan.block);
-										continue; // can process the next block
+			// We can't process as multiple during sync because it is slow.
+			// But also we better to process blocks one by one when node running because of possible reorg.
+			// Reord requires to roll back single block, not a whole package.
+			#[cfg(test)]
+			let batch_safety_depth = self.process_block_batch_safety_depth.load(Ordering::SeqCst);
+			#[cfg(not(test))]
+			let batch_safety_depth = 100;
+			let multiple_processing_height_limit = self
+				.header_head()?
+				.height
+				.saturating_sub(batch_safety_depth);
+			if b.header.height < multiple_processing_height_limit {
+				// if it is a block on the chain, let's try to add many of them
+				match self.get_header_by_height(b.header.height) {
+					Ok(header) => {
+						let context_id = self.store.get_context_id();
+						// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
+						if header.hash(context_id)? == b.hash(context_id)? {
+							blocks.push(b.clone());
+							loop {
+								let last_block = blocks.last().ok_or(Error::Other(
+									"Internal error, no blocks at process_block".into(),
+								))?;
+								let next_hegiht =
+									last_block.header.height.checked_add(1).ok_or_else(|| {
+										Error::DataOverflow(format!(
+											"Chain::process_block, last_block.header.height={}",
+											last_block.header.height
+										))
+									})?;
+								match self.get_header_by_height(next_hegiht) {
+									Ok(header) => {
+										if let Some(orphan) =
+											self.orphans.get_orphan(&header.hash(context_id)?)
+										{
+											blocks.push(orphan.block);
+											continue; // can process the next block
+										}
 									}
+									Err(e) if e.is_not_found() => {}
+									Err(e) => return Err(e),
 								}
-								Err(e) if e.is_not_found() => {}
-								Err(e) => return Err(e),
+								break;
 							}
-							break;
-						}
-						if blocks
-							.last()
-							.ok_or(Error::Other(
-								"Process block internal error, collection was empty".into(),
-							))?
-							.header
-							.height < multiple_processing_height_limit
-						{
-							// good, we can process multiple blocks, it should be faster than one by one
-							let mut block_hashes: Vec<(u64, Hash)> = Vec::new();
-							for b in &blocks {
-								block_hashes.push((b.header.height, b.hash(context_id)?));
-							}
-							match self.process_block_multiple(secp, &blocks, opts) {
-								Ok(tip) => {
-									info!(
-										"Accepted multiple blocks from {} to {}",
-										blocks.first().map(|b| b.header.height).unwrap_or(0),
-										blocks.last().map(|b| b.header.height).unwrap_or(0)
-									);
-									// We are good, let's clean up the orphans
-									for (height, hash) in block_hashes {
-										let _ = self
-											.orphans
-											.remove_by_height_header_hash(height, &hash);
-									}
-									return Ok(tip); // Done with success
+							if blocks
+								.last()
+								.ok_or(Error::Other(
+									"Process block internal error, collection was empty".into(),
+								))?
+								.header
+								.height < multiple_processing_height_limit
+							{
+								// good, we can process multiple blocks, it should be faster than one by one
+								let mut block_hashes: Vec<(u64, Hash)> = Vec::new();
+								for b in &blocks {
+									block_hashes.push((b.header.height, b.hash(context_id)?));
 								}
-								Err(BlockProcessingError::NotCommitted(e)) => {
-									self.ensure_chain_robust()?;
-									if e.is_bad_data() {
+								match self.process_block_multiple(secp, &blocks, opts) {
+									Ok(tip) => {
 										info!(
-											"Failed to process multiple blocks, will try process one by one. {}",
-											e
+											"Accepted multiple blocks from {} to {}",
+											blocks.first().map(|b| b.header.height).unwrap_or(0),
+											blocks.last().map(|b| b.header.height).unwrap_or(0)
 										);
-									} else {
-										debug!(
-											"Failed to process multiple blocks, will try process one by one. {}",
-											e
-										);
+										// We are good, let's clean up the orphans
+										for (height, hash) in block_hashes {
+											let _ = self
+												.orphans
+												.remove_by_height_header_hash(height, &hash);
+										}
+										return Ok(tip); // Done with success
 									}
-								}
-								Err(BlockProcessingError::CommittedRecoveryFailed(e)) => {
-									error!(
-										"Committed block batch could not complete chain recovery: {}",
-										e
-									);
-									return Err(Error::committed_recovery_failed(
-										"process_block_multiple committed marker cleanup",
-										e,
-									));
+									Err(BlockProcessingError::NotCommitted(e)) => {
+										self.ensure_chain_robust()?;
+										if e.is_bad_data() {
+											info!(
+												"Failed to process multiple blocks, will try process one by one. {}",
+												e
+											);
+										} else {
+											debug!(
+												"Failed to process multiple blocks, will try process one by one. {}",
+												e
+											);
+										}
+									}
+									Err(BlockProcessingError::CommittedRecoveryFailed(e)) => {
+										error!(
+											"Committed block batch could not complete chain recovery: {}",
+											e
+										);
+										return Err(Error::committed_recovery_failed(
+											"process_block_multiple committed marker cleanup",
+											e,
+										));
+									}
 								}
 							}
 						}
 					}
+					Err(e) if e.is_not_found() => {}
+					Err(e) => return Err(e),
 				}
-				Err(e) if e.is_not_found() => {}
-				Err(e) => return Err(e),
 			}
-		}
 
-		// Processing blocks one by one. It is slower, but any possible error will be caught on block level.
-		let height = b.header.height;
-		match self.process_block_single(secp, b, opts) {
-			Ok(tip) => {
-				let next_height = height.checked_add(1).ok_or_else(|| {
-					Error::DataOverflow(format!("Chain::process_block, height={}", height))
-				})?;
-				self.check_orphans(secp, next_height)?;
-				return Ok(tip);
-			}
-			Err(BlockProcessingError::NotCommitted(e)) => {
-				// A duplicate can pass the initial unlocked known-block check and
-				// then lose a race to another peer response before the pipeline
-				// acquires its write locks. The block is valid and already stored,
-				// so this is normal sync control flow rather than a rejection.
-				if e.is_known_block() {
-					debug!(
-						"process_block_single found block already known after a concurrent update: {}",
+			// Processing blocks one by one. It is slower, but any possible error will be caught on block level.
+			let height = b.header.height;
+			match self.process_block_single(secp, &b, opts) {
+				Ok(tip) => {
+					let next_height = height.checked_add(1).ok_or_else(|| {
+						Error::DataOverflow(format!("Chain::process_block, height={}", height))
+					})?;
+					self.check_orphans(secp, next_height)?;
+					return Ok(tip);
+				}
+				Err(BlockProcessingError::NotCommitted(e)) => {
+					// A duplicate can pass the initial unlocked known-block check and
+					// then lose a race to another peer response before the pipeline
+					// acquires its write locks. The block is valid and already stored,
+					// so this is normal sync control flow rather than a rejection.
+					if e.is_known_block() {
+						debug!(
+							"process_block_single found block already known after a concurrent update: {}",
+							e
+						);
+					} else if e.is_bad_data() {
+						error!("process_block_single failed with error: {}", e);
+					} else {
+						debug!("process_block_single failed with error: {}", e);
+					}
+					return Err(e);
+				}
+				Err(BlockProcessingError::CommittedRecoveryFailed(e)) => {
+					error!(
+						"Committed single block could not complete chain recovery: {}",
 						e
 					);
-				} else if e.is_bad_data() {
-					error!("process_block_single failed with error: {}", e);
-					if !report_peers.is_empty() {
-						self.adapter.block_rejected(&block_hash, &report_peers, &e);
-					}
-				} else {
-					debug!("process_block_single failed with error: {}", e);
+					return Err(Error::committed_recovery_failed(
+						"process_block_single committed marker cleanup",
+						e,
+					));
 				}
-				return Err(e);
 			}
-			Err(BlockProcessingError::CommittedRecoveryFailed(e)) => {
-				error!(
-					"Committed single block could not complete chain recovery: {}",
-					e
-				);
-				return Err(Error::committed_recovery_failed(
-					"process_block_single committed marker cleanup",
-					e,
-				));
-			}
+		})();
+		if let Err(error) = &result {
+			self.report_block_rejection(&b, &source_peers, error);
+		}
+		result
+	}
+
+	/// Report terminal outcomes after the processing call has released PMMR locks.
+	/// Missing headers and orphans are pending; missing inputs can be bad data.
+	fn report_block_rejection(&self, block: &Block, source_peers: &HashSet<String>, error: &Error) {
+		if !source_peers.is_empty()
+			&& !error.is_known_block()
+			&& !matches!(error, Error::Orphan(_))
+			&& !(error.is_not_found() && !error.is_bad_data())
+		{
+			self.adapter.block_rejected(block, source_peers, error);
 		}
 	}
 
@@ -1988,26 +2001,18 @@ impl Chain {
 		if block.inputs().is_empty() {
 			return Ok(Block {
 				header: block.header,
+				coinbase_opening: block.coinbase_opening,
 				body: block
 					.body
 					.replace_inputs(self.get_context_id(), Inputs::FeaturesAndCommit(vec![]))?,
 			});
 		}
 
-		let inputs: Vec<_> = loop {
+		let inputs: Vec<_> = {
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
 
-			// A writer may have failed while this thread was waiting for locks.
-			// Do not convert against PMMR/txhashset state that now requires recovery.
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(txhashset);
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
-
-			break self.with_locked_readonly_pmmr_discard_marker("convert_block_v2", || {
+			self.with_locked_readonly_pmmr_discard_marker("convert_block_v2", || {
 				txhashset::extending_readonly(
 					self.store.get_context_id(),
 					&mut header_pmmr,
@@ -2027,11 +2032,12 @@ impl Chain {
 							.map(|outputs| outputs.into_iter().map(|(out, _)| out).collect())
 					},
 				)
-			});
+			})
 		}?;
 		let inputs = Inputs::from_output_identifiers(context_id, inputs.as_slice())?;
 		Ok(Block {
 			header: block.header,
+			coinbase_opening: block.coinbase_opening,
 			body: block.body.replace_inputs(self.get_context_id(), inputs)?,
 		})
 	}
@@ -2167,6 +2173,14 @@ impl Chain {
 		// If valid then continue with block processing with header_head committed to db etc.
 		self.process_block_header(&b.header, opts)?;
 
+		// Reject blocks missing the required opening before orphan admission
+		// or UTXO validation.
+		if consensus::is_coinbase_binding_enabled(self.get_context_id(), b.header.height)
+			&& b.coinbase_opening.is_none()
+		{
+			return Err(Error::BlockMissCoinbaseOpening);
+		}
+
 		// Header processing above has already validated PoW and exact stored-header
 		// identity. Only an exact full-block duplicate is known here; a different
 		// body under the same validated header must continue through body/state
@@ -2186,7 +2200,7 @@ impl Chain {
 	fn process_block_single(
 		&self,
 		secp: &mut Secp256k1,
-		b: Block,
+		b: &Block,
 		opts: Options,
 	) -> Result<Option<Tip>, BlockProcessingError> {
 		let mut state_may_have_changed = false;
@@ -2259,7 +2273,7 @@ impl Chain {
 			block_hash, b.header.height
 		);
 		// notifying other parts of the system of the update
-		self.adapter.block_accepted(secp, &b, status, opts);
+		self.adapter.block_accepted(secp, b, status, opts);
 
 		Ok(head)
 	}
@@ -2588,11 +2602,14 @@ impl Chain {
 						orphan.opts.clone(),
 						source_peers.clone(),
 					) {
-						Ok(()) => self.process_block_single(secp, orphan.block, orphan.opts),
+						Ok(()) => self.process_block_single(secp, &orphan.block, orphan.opts),
 						// Header processing can commit before marker cleanup and recovery
 						// fail. Preserve that post-commit phase instead of treating it as
 						// an ordinary best-effort orphan rejection.
-						Err(e @ Error::CommittedRecoveryFailed { .. }) => return Err(e),
+						Err(e @ Error::CommittedRecoveryFailed { .. }) => {
+							self.report_block_rejection(&orphan.block, &source_peers, &e);
+							return Err(e);
+						}
 						Err(e) => Err(BlockProcessingError::NotCommitted(e)),
 					};
 					match res {
@@ -2601,17 +2618,17 @@ impl Chain {
 							height_accepted = height;
 						}
 						Err(BlockProcessingError::NotCommitted(e)) => {
-							// A concurrent response can make a drained orphan an exact
-							// known duplicate before it is retried here.
-							if e.is_bad_data() && !e.is_known_block() && !source_peers.is_empty() {
-								self.adapter.block_rejected(&block_hash, &source_peers, &e);
-							}
+							// Deferred failures use the same complete-body report as a
+							// direct response, including local retry-only outcomes.
+							self.report_block_rejection(&orphan.block, &source_peers, &e);
 						}
 						Err(BlockProcessingError::CommittedRecoveryFailed(e)) => {
-							return Err(Error::committed_recovery_failed(
+							let error = Error::committed_recovery_failed(
 								"check_orphans committed block recovery",
 								e,
-							));
+							);
+							self.report_block_rejection(&orphan.block, &source_peers, &error);
+							return Err(error);
 						}
 					}
 				}
@@ -2798,41 +2815,30 @@ impl Chain {
 		}
 
 		self.ensure_chain_robust()?;
-		loop {
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
+		let mut header_pmmr = self.header_pmmr.write();
+		let mut txhashset = self.txhashset.write();
 
-			// A writer may have failed while this thread was waiting for locks.
-			// Do not validate NRD kernels against state that now requires recovery.
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(txhashset);
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
-
-			return self.with_locked_readonly_pmmr_discard_marker("validate_tx_kernels", || {
-				txhashset::extending_readonly(
-					self.store.get_context_id(),
-					&mut header_pmmr,
-					&mut txhashset,
-					|ext, batch| {
-						// Do not call next_block_height() here. We already hold the
-						// header_pmmr and txhashset write locks, and that public path can
-						// trigger init recovery which needs the same locks.
-						let head = batch.head()?;
-						let next_block_height = head.height.checked_add(1).ok_or_else(|| {
-							Error::DataOverflow(format!(
-								"Chain::validate_tx_kernels, head.height={}",
-								head.height
-							))
-						})?;
-						ext.extension
-							.apply_kernels(tx.kernels(), next_block_height, batch, false)
-					},
-				)
-			});
-		}
+		self.with_locked_readonly_pmmr_discard_marker("validate_tx_kernels", || {
+			txhashset::extending_readonly(
+				self.store.get_context_id(),
+				&mut header_pmmr,
+				&mut txhashset,
+				|ext, batch| {
+					// Do not call next_block_height() here. We already hold the
+					// header_pmmr and txhashset write locks, and that public path can
+					// trigger init recovery which needs the same locks.
+					let head = batch.head()?;
+					let next_block_height = head.height.checked_add(1).ok_or_else(|| {
+						Error::DataOverflow(format!(
+							"Chain::validate_tx_kernels, head.height={}",
+							head.height
+						))
+					})?;
+					ext.extension
+						.apply_kernels(tx.kernels(), next_block_height, batch, false)
+				},
+			)
+		})
 	}
 
 	fn validate_tx_against_utxo(
@@ -2906,34 +2912,24 @@ impl Chain {
 	/// Do we need to do the check here? we are doing check for every tx regardless of the kernel version.
 	pub fn replay_attack_check(&self, tx: &Transaction) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
-		loop {
-			let mut header_pmmr = self.header_pmmr.write();
+		let mut header_pmmr = self.header_pmmr.write();
 
-			// A writer may have failed while this thread was waiting for the lock.
-			// Do not validate replay state against PMMR/DB state that now requires recovery.
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
-
-			return self.with_locked_readonly_pmmr_discard_marker("replay_attack_check", || {
-				let batch_read = self.store.batch_read()?;
-				txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
-					let body_header = batch.head_header()?;
-					self.rewind_and_apply_header_fork(&body_header, ext, batch)?;
-					pipe::check_against_spent_output(
-						&tx.body,
-						body_header.height,
-						None,
-						None,
-						ext,
-						batch,
-					)?;
-					Ok(())
-				})
-			});
-		}
+		self.with_locked_readonly_pmmr_discard_marker("replay_attack_check", || {
+			let batch_read = self.store.batch_read()?;
+			txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
+				let body_header = batch.head_header()?;
+				self.rewind_and_apply_header_fork(&body_header, ext, batch)?;
+				pipe::check_against_spent_output(
+					&tx.body,
+					body_header.height,
+					None,
+					None,
+					ext,
+					batch,
+				)?;
+				Ok(())
+			})
+		})
 	}
 
 	/// Validate the current chain state.
@@ -2984,18 +2980,10 @@ impl Chain {
 	/// Sets prev_root on a brand new block header by applying the previous header to the header MMR.
 	pub fn set_prev_root_only(&self, header: &mut BlockHeader) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
-		let prev_root = loop {
+		let prev_root = {
 			let mut header_pmmr = self.header_pmmr.write();
 
-			// A writer may have failed while this thread was waiting for the lock.
-			// Recovery acquires header_pmmr itself, so release it before retrying.
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
-
-			break self.with_locked_readonly_pmmr_discard_marker("set_prev_root_only", || {
+			self.with_locked_readonly_pmmr_discard_marker("set_prev_root_only", || {
 				let batch_read = self.store.batch_read()?;
 				txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
 					let prev_header = crate::checked_previous_header(
@@ -3008,7 +2996,7 @@ impl Chain {
 					self.rewind_and_apply_header_fork(&prev_header, ext, batch)?;
 					ext.root()
 				})
-			});
+			})
 		}?;
 
 		// Set the prev_root on the header.
@@ -3021,20 +3009,11 @@ impl Chain {
 	/// the current txhashset state.
 	pub fn set_txhashset_roots(&self, secp: &Secp256k1, b: &mut Block) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
-		let (prev_root, roots, sizes) = loop {
+		let (prev_root, roots, sizes) = {
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
 
-			// A writer may have failed while this thread was waiting for locks.
-			// Do not calculate roots from PMMR/txhashset state that now requires recovery.
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(txhashset);
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
-
-			break self.with_locked_readonly_pmmr_discard_marker("set_txhashset_roots", || {
+			self.with_locked_readonly_pmmr_discard_marker("set_txhashset_roots", || {
 				txhashset::extending_readonly(
 					self.store.get_context_id(),
 					&mut header_pmmr,
@@ -3068,7 +3047,7 @@ impl Chain {
 						Ok((prev_root, extension.roots()?, extension.sizes()))
 					},
 				)
-			});
+			})
 		}?;
 
 		// Set the output and kernel MMR sizes.
@@ -3265,20 +3244,11 @@ impl Chain {
 			header_hash, header.height
 		);
 
-		let (bitmap_snapshot, segm_header_pmmr_backend, state_generation) = loop {
+		let (bitmap_snapshot, segm_header_pmmr_backend, state_generation) = {
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
 
-			// A writer may have failed while segmenter initialization was waiting
-			// for the PMMR locks. Recover before deriving or caching any segment data.
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(txhashset);
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
-
-			break self.with_locked_readonly_pmmr_discard_marker("init_segmenter", || {
+			self.with_locked_readonly_pmmr_discard_marker("init_segmenter", || {
 				// `last_block_h` is the authoritative HEAD selector. Rebuild the
 				// redundant Tip fields from its selected header in one DB snapshot
 				// before deriving the archive period. In particular, a stale cached
@@ -3388,7 +3358,7 @@ impl Chain {
 						self.pibd_state_generation.load(Ordering::SeqCst),
 					))
 				})
-			});
+			})
 		}?;
 
 		debug!("init_segmenter: done, took {}ms", now.elapsed().as_millis());
@@ -4497,69 +4467,6 @@ impl Chain {
 		})
 	}
 
-	/// Migrate our local db from v2 to v3.
-	/// "commit only" inputs.
-	fn migrate_db_v2_v3(store: &ChainStore) -> Result<(), Error> {
-		if store.batch_read()?.is_blocks_v3_migrated()? {
-			// Previously migrated so skipping.
-			debug!("migrate_db_v2_v3: previously migrated, skipping");
-			return Ok(());
-		}
-		let mut total = 0u64;
-		let mut keys_to_migrate = vec![];
-		let context_id = store.get_context_id();
-		for item in store.batch_read()?.blocks_raw_iter()? {
-			let (k, v) = item?;
-			// Increment is safe because total is used for logging only
-			total += 1;
-
-			// We want to migrate all blocks that cannot be read via v3 protocol version.
-			let block_v3: Result<Block, _> =
-				ser::deserialize_strict(&mut Cursor::new(&v), ProtocolVersion(3), context_id);
-			if let Err(v3_err) = block_v3 {
-				let block_v2: Result<Block, _> =
-					ser::deserialize_strict(&mut Cursor::new(&v), ProtocolVersion(2), context_id);
-				match block_v2 {
-					Ok(_) => keys_to_migrate.push(k),
-					Err(v2_err) => {
-						return Err(Error::BlockMigration {
-							key: k,
-							v3_err,
-							v2_err,
-						});
-					}
-				}
-			}
-		}
-		debug!(
-			"migrate_db_v2_v3: {} (of {}) blocks to migrate",
-			keys_to_migrate.len(),
-			total,
-		);
-		let mut count = 0u64;
-		keys_to_migrate
-			.chunks(100)
-			.try_for_each(|keys| {
-				let batch = store.batch_write()?;
-				for key in keys {
-					batch.migrate_block(&key, ProtocolVersion(2), ProtocolVersion(3))?;
-					// Increment is safe because count is used for logging only
-					count += 1;
-				}
-				batch.commit()?;
-				debug!("migrate_db_v2_v3: successfully migrated {} blocks", count);
-				Ok(())
-			})
-			.and_then(|_| {
-				// Set flag to indicate we have migrated all blocks in the db.
-				// We will skip migration in the future.
-				let batch = store.batch_write()?;
-				batch.set_blocks_v3_migrated(true)?;
-				batch.commit()?;
-				Ok(())
-			})
-	}
-
 	fn set_spent_commitment_record_index_complete(
 		store: &ChainStore,
 		complete: bool,
@@ -5581,40 +5488,33 @@ impl Chain {
 		let context_id = self.store.get_context_id();
 		let sync_head_hash = sync_head.hash(context_id)?;
 
-		loop {
-			let mut header_pmmr = self.header_pmmr.write();
-			if self.requires_init_recovery.load(Ordering::SeqCst) {
-				drop(header_pmmr);
-				self.ensure_chain_robust()?;
-				continue;
-			}
+		let mut header_pmmr = self.header_pmmr.write();
 
-			return self.with_locked_readonly_pmmr_discard_marker("get_locator_hashes", || {
-				let batch_read = self.store.batch_read()?;
-				txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
-					let header = batch.get_block_header(&sync_head_hash)?;
-					self.rewind_and_apply_header_fork(&header, ext, batch)?;
+		self.with_locked_readonly_pmmr_discard_marker("get_locator_hashes", || {
+			let batch_read = self.store.batch_read()?;
+			txhashset::header_extending_readonly(&mut header_pmmr, batch_read, |ext, batch| {
+				let header = batch.get_block_header(&sync_head_hash)?;
+				self.rewind_and_apply_header_fork(&header, ext, batch)?;
 
-					let mut hashes = Vec::with_capacity(heights.len());
+				let mut hashes = Vec::with_capacity(heights.len());
 
-					for h in heights {
-						if *h > sync_head.height {
-							return Err(Error::InvalidHeaderHeight(*h));
-						}
-
-						let hash = ext.get_header_hash_by_height(*h)?.ok_or_else(|| {
-							Error::Other(format!(
-								"missing header PMMR entry for locator height {} after rewinding to sync head {} at height {}",
-								h, sync_head_hash, sync_head.height
-							))
-						})?;
-						hashes.push(hash);
+				for h in heights {
+					if *h > sync_head.height {
+						return Err(Error::InvalidHeaderHeight(*h));
 					}
 
-					Ok(hashes)
-				})
-			});
-		}
+					let hash = ext.get_header_hash_by_height(*h)?.ok_or_else(|| {
+						Error::Other(format!(
+							"missing header PMMR entry for locator height {} after rewinding to sync head {} at height {}",
+							h, sync_head_hash, sync_head.height
+						))
+					})?;
+					hashes.push(hash);
+				}
+
+				Ok(hashes)
+			})
+		})
 	}
 
 	/// Builds an iterator on blocks starting from the current chain head and
@@ -5734,16 +5634,30 @@ impl Chain {
 	}
 }
 
+/// Restart PIBD if its import was interrupted or no subsequent full block was
+/// saved. Root endorsements are in memory, so keeping an unconfirmed import
+/// across restart would lose the session needed for failure recovery.
 fn mark_interrupted_pibd_for_recovery(
 	genesis: &Block,
 	store: &store::ChainStore,
 	txhashset: &TxHashSet,
 ) -> Result<(), Error> {
-	if store.pending_chain_operation()?.is_some() {
-		return Ok(());
+	let batch = store.batch_write()?;
+	let pending =
+		batch.get_chain_marker::<PendingChainOperation>(store::ChainMarker::LastChainOperation)?;
+	match &pending {
+		None => (),
+		Some(PendingChainOperation::ReconcileHeads {
+			kind:
+				ChainOperationKind::ProcessBlock
+				| ChainOperationKind::ProcessHeader
+				| ChainOperationKind::SyncHeaders
+				| ChainOperationKind::ReadonlyPmmrDiscard,
+			..
+		}) => (),
+		// Explicit resets and compaction keep their own recovery semantics.
+		_ => return Ok(()),
 	}
-
-	let batch = store.batch_read()?;
 	let stored_head = match batch.head() {
 		Ok(head) => head,
 		Err(NotFoundErr(_)) => return Ok(()),
@@ -5751,37 +5665,61 @@ fn mark_interrupted_pibd_for_recovery(
 	};
 	let (_, head) = canonical_tip_header("HEAD", &stored_head, &batch)?;
 	let genesis_head = Tip::try_from_header(&genesis.header)?;
-	if head != genesis_head {
-		return Ok(());
-	}
-
-	let expected_sizes = (
-		genesis.header.output_mmr_size,
-		genesis.header.output_mmr_size,
-		genesis.header.kernel_mmr_size,
-	);
-	let actual_sizes = (
-		txhashset.output_mmr_size(),
-		txhashset.rangeproof_mmr_size(),
-		txhashset.kernel_mmr_size(),
-	);
-	if actual_sizes == expected_sizes {
-		return Ok(());
-	}
-	drop(batch);
-
-	warn!(
-		"Detected interrupted PIBD body state at genesis: output/rangeproof/kernel PMMR sizes are {}/{}/{}, expected {}/{}/{}. Scheduling a full PIBD body reset while preserving HEADER_HEAD",
-		actual_sizes.0,
-		actual_sizes.1,
-		actual_sizes.2,
-		expected_sizes.0,
-		expected_sizes.1,
-		expected_sizes.2,
-	);
-	if !store.set_pending_chain_operation_if_absent(&PendingChainOperation::PibdReset)? {
-		warn!("A pending chain operation was installed while scheduling interrupted PIBD recovery");
-	}
+	let reset = if head != genesis_head {
+		if head.height == 0 || batch.block_exists(&head.last_block_h)? {
+			return Ok(());
+		}
+		if let Some(PendingChainOperation::ReconcileHeads {
+			original_body_head, ..
+		}) = &pending
+		{
+			if original_body_head.last_block_h != head.last_block_h {
+				return Ok(());
+			}
+		}
+		match batch.tail() {
+			Err(NotFoundErr(_)) => (),
+			Err(e) => return Err(Error::StoreErr(e, "interrupted PIBD load BODY_TAIL".into())),
+			Ok(_) => return Ok(()),
+		}
+		warn!(
+			"PIBD import at height {} has no subsequent full block; resetting body state while preserving HEADER_HEAD to download PIBD again",
+			head.height,
+		);
+		// A preceding header operation may also have been interrupted. Use the
+		// existing reset that validates retained headers before clearing its marker.
+		PendingChainOperation::ResetToGenesis
+	} else {
+		if pending.is_some() {
+			return Ok(());
+		}
+		let expected_sizes = (
+			genesis.header.output_mmr_size,
+			genesis.header.output_mmr_size,
+			genesis.header.kernel_mmr_size,
+		);
+		let actual_sizes = (
+			txhashset.output_mmr_size(),
+			txhashset.rangeproof_mmr_size(),
+			txhashset.kernel_mmr_size(),
+		);
+		if actual_sizes == expected_sizes {
+			return Ok(());
+		}
+		warn!(
+			"Detected interrupted PIBD body state at genesis: output/rangeproof/kernel PMMR sizes are {}/{}/{}, expected {}/{}/{}. Scheduling a full PIBD body reset while preserving HEADER_HEAD",
+			actual_sizes.0,
+			actual_sizes.1,
+			actual_sizes.2,
+			expected_sizes.0,
+			expected_sizes.1,
+			expected_sizes.2,
+		);
+		PendingChainOperation::PibdReset
+	};
+	// Replace an interrupted ordinary operation atomically, before resetting data.
+	batch.set_chain_marker(store::ChainMarker::LastChainOperation, &reset)?;
+	batch.commit()?;
 	Ok(())
 }
 
@@ -5853,6 +5791,7 @@ fn recover_pending_chain_operation(
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	stop_state: Option<Arc<StopState>>,
 ) -> Result<(), Error> {
+	mark_interrupted_pibd_for_recovery(genesis, store, txhashset)?;
 	let op = match store.pending_chain_operation()? {
 		None => return Ok(()),
 		Some(op) => op,
@@ -6614,6 +6553,10 @@ fn reset_chain_head_to_genesis_state(
 		Some(head),
 	)?;
 
+	// Live resets must leave replay checks usable before their marker is cleared;
+	// they cannot depend on startup to finish rebuilding the spent index.
+	Chain::init_spent_commitment_index(store, stop_state.clone())?;
+
 	if !validate_retained_headers {
 		return Ok(());
 	}
@@ -6741,10 +6684,10 @@ fn is_exact_genesis_match(
 	expected_genesis: &Block,
 ) -> Result<bool, Error> {
 	let mut genesis_bytes = Vec::new();
-	ser::serialize_default(context_id, &mut genesis_bytes, genesis)?;
+	ser::serialize_default(context_id, &mut genesis_bytes, genesis, true)?;
 
 	let mut expected_bytes = Vec::new();
-	ser::serialize_default(context_id, &mut expected_bytes, expected_genesis)?;
+	ser::serialize_default(context_id, &mut expected_bytes, expected_genesis, true)?;
 
 	Ok(genesis_bytes == expected_bytes)
 }
@@ -7044,21 +6987,29 @@ fn setup_head(
 		// metadata reset even if setup_head later fails while syncing or
 		// rewinding PMMR state.
 		if head.height == 0 && head.last_block_h == genesis_hash {
-			// Recreate metadata normally created by the missing-head genesis
-			// init branch, then rebuild the body MMRs from genesis instead of
-			// only rewinding to the sizes committed in the genesis header.
+			// Every full reset clears old bodies and recreates genesis metadata in
+			// the same batch. Raw deletion also handles obsolete block encodings.
+			batch.clear_block_data()?;
 			save_genesis_block_metadata(genesis, &genesis_hash, &batch, secp, context_id)?;
 
-			txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-				ext.extension.reset_prune_lists()?;
-				ext.extension
-					.rebuild_genesis(genesis, ext.header_extension, batch)?;
-				ext.extension.validate_roots(&genesis.header)?;
-				ext.extension.validate_sizes(&genesis.header)?;
-				batch.save_body_tail(&head)?;
-				batch.save_body_head(&head)?;
-				Ok(())
-			})?;
+			// The old body HEAD may be missing. Use the explicit reset target while
+			// rebuilding the PMMRs, and publish it only with the successful batch.
+			txhashset::extending_with_head(
+				header_pmmr,
+				txhashset,
+				&mut batch,
+				head,
+				|ext, batch| {
+					ext.extension.reset_prune_lists()?;
+					ext.extension
+						.rebuild_genesis(genesis, ext.header_extension, batch)?;
+					ext.extension.validate_roots(&genesis.header)?;
+					ext.extension.validate_sizes(&genesis.header)?;
+					batch.save_body_tail(&head)?;
+					batch.save_body_head(&head)?;
+					Ok(())
+				},
+			)?;
 
 			txhashset.init_output_pos_index(&batch, None, stop_state.clone())?;
 			txhashset.init_recent_kernel_pos_index(&batch, None, stop_state.clone())?;
@@ -7251,7 +7202,9 @@ fn setup_head(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::tests::chain_test_helper::{clean_output_dir, genesis_block, mine_chain};
+	use crate::tests::chain_test_helper::{
+		clean_output_dir, genesis_block, init_chain, mine_chain,
+	};
 	use crate::types::SpentOutput;
 	use mwc_core::core::pmmr::Backend;
 	use mwc_core::core::{CommitWrapper, Input, OutputFeatures};
@@ -7303,6 +7256,8 @@ mod tests {
 	struct RecordingAdapter {
 		accepted: RwLock<Vec<(Hash, BlockStatus)>>,
 		rejected: RwLock<Vec<(Hash, HashSet<String>)>>,
+		// Full terminal reports, including local failures that must not blame peers.
+		reported: RwLock<Vec<(Block, HashSet<String>, bool)>>,
 	}
 
 	impl ChainAdapter for RecordingAdapter {
@@ -7319,10 +7274,18 @@ mod tests {
 				.push((block.hash(context_id).unwrap(), status));
 		}
 
-		fn block_rejected(&self, hash: &Hash, source_peers: &HashSet<String>, _err: &Error) {
-			self.rejected
+		fn block_rejected(&self, block: &Block, source_peers: &HashSet<String>, err: &Error) {
+			let bad_peer_data =
+				err.is_bad_data() && !err.is_known_block() && !err.requires_chain_recovery();
+			self.reported
 				.write()
-				.push((hash.clone(), source_peers.clone()));
+				.push((block.clone(), source_peers.clone(), bad_peer_data));
+			// A context mismatch is rejected before hashing untrusted context data.
+			if bad_peer_data && !matches!(err, Error::InvalidHeaderContext { .. }) {
+				if let Ok(hash) = block.hash(block.header.pow.proof.context_id) {
+					self.rejected.write().push((hash, source_peers.clone()));
+				}
+			}
 		}
 	}
 
@@ -7346,6 +7309,638 @@ mod tests {
 			false,
 		)
 		.unwrap()
+	}
+
+	fn make_imported_archive(chain: &Chain, interrupted_successor: bool) -> Hash {
+		let archive = chain.head().unwrap();
+		let operation =
+			prepare_reconcile_heads_operation(&chain.store, ChainOperationKind::ProcessBlock)
+				.unwrap();
+		let batch = chain.store.batch_write().unwrap();
+		let sums = batch.get_block_sums(&archive.last_block_h).unwrap();
+		// PIBD imports historical PMMR data without retaining archive bodies.
+		for height in 1..=archive.height {
+			let hash = chain
+				.header_pmmr
+				.read()
+				.get_header_hash_by_height(height)
+				.unwrap();
+			batch.delete_block(&hash).unwrap();
+		}
+		batch.delete_body_tail().unwrap();
+		batch.save_block_sums(&archive.last_block_h, sums).unwrap();
+
+		if interrupted_successor {
+			batch
+				.set_chain_marker(store::ChainMarker::LastChainOperation, &operation)
+				.unwrap();
+		}
+		batch.commit().unwrap();
+		Chain::init_empty_spent_commitment_record_index(&chain.store).unwrap();
+		archive.last_block_h
+	}
+
+	#[test]
+	fn pibd_restart_resets_import_without_archive_body() {
+		for interrupted in [false, true] {
+			for skip_validation in [false, true] {
+				let dir = mwc_crates::tempfile::tempdir().unwrap();
+				let path = dir.path().to_str().unwrap();
+				let chain = mine_chain(path, 3);
+				let genesis = chain.genesis.clone();
+				let headers = chain.header_head().unwrap();
+				let archive = make_imported_archive(&chain, interrupted);
+				assert!(!chain.store.block_exists(&archive).unwrap());
+				// Detection must precede rebuilding indexes from absent bodies.
+				let batch = chain.store.batch_write().unwrap();
+				batch
+					.set_spent_commitment_record_index_complete(false)
+					.unwrap();
+				batch.commit().unwrap();
+				drop(chain);
+				let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+				let restarted = Chain::init(
+					&secp,
+					0,
+					path.to_owned(),
+					Arc::new(crate::types::NoopAdapter {}),
+					genesis,
+					pow::verify_size,
+					false,
+					HashSet::new(),
+					None,
+					None,
+					skip_validation,
+				)
+				.unwrap();
+				assert_eq!(
+					restarted.head().unwrap(),
+					Tip::try_from_header(&restarted.genesis.header).unwrap()
+				);
+				assert_eq!(restarted.store.tail().unwrap(), restarted.head().unwrap());
+				assert_eq!(
+					restarted.txhashset.read().output_mmr_size(),
+					restarted.genesis.header.output_mmr_size
+				);
+				assert_eq!(restarted.header_head().unwrap(), headers);
+				assert!(restarted.store.pending_chain_operation().unwrap().is_none());
+				assert!(restarted
+					.store
+					.batch_read()
+					.unwrap()
+					.is_spent_commitment_record_index_complete()
+					.unwrap());
+			}
+		}
+	}
+
+	#[test]
+	fn pibd_generic_recovery_resets_import_without_archive_body() {
+		for kind in [
+			ChainOperationKind::ProcessBlock,
+			ChainOperationKind::ProcessHeader,
+			ChainOperationKind::SyncHeaders,
+			ChainOperationKind::ReadonlyPmmrDiscard,
+		] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let chain = mine_chain(dir.path().to_str().unwrap(), 3);
+			let headers = chain.header_head().unwrap();
+			make_imported_archive(&chain, false);
+			let operation = prepare_reconcile_heads_operation(&chain.store, kind).unwrap();
+			chain.store.set_pending_chain_operation(&operation).unwrap();
+			chain.requires_init_recovery.store(true, Ordering::SeqCst);
+			chain.ensure_chain_robust().unwrap();
+			assert_eq!(chain.head().unwrap().height, 0);
+			assert_eq!(chain.header_head().unwrap(), headers);
+			assert!(chain.store.pending_chain_operation().unwrap().is_none());
+		}
+	}
+
+	#[test]
+	fn pibd_reset_recovery_keeps_retained_header_validation() {
+		for skip_validation in [false, true] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 3);
+			let genesis = chain.genesis.clone();
+			let archive = make_imported_archive(&chain, true);
+			let headers = chain.header_head().unwrap();
+			let mut header = chain.store.get_block_header(&headers.last_block_h).unwrap();
+			header.prev_root = Hash::from_vec(&[42; Hash::LEN]);
+			assert_eq!(header.hash(0).unwrap(), headers.last_block_h);
+			assert!(pow::verify_size(0, &header).is_err());
+			let batch = chain.store.batch_write().unwrap();
+			// Model an interrupted header operation with inconsistent persisted data.
+			batch
+				.db
+				.put_ser(&mwc_store::to_key(b'h', headers.last_block_h), &header)
+				.unwrap();
+			batch.commit().unwrap();
+			chain.requires_init_recovery.store(true, Ordering::SeqCst);
+			assert!(chain.ensure_chain_robust().is_err());
+			assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
+			drop(chain);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let error = match Chain::init(
+				&secp,
+				0,
+				path.to_owned(),
+				Arc::new(crate::types::NoopAdapter {}),
+				genesis,
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				skip_validation,
+			) {
+				Ok(_) => panic!("PIBD reset skipped recovery validation of retained headers"),
+				Err(error) => error,
+			};
+			assert!(
+				matches!(error, Error::InvalidPersistedChainState(ref context)
+				if context.contains("failed PoW validation")),
+				"{:?}",
+				error
+			);
+			let store = ChainStore::new(0, path).unwrap();
+			assert_eq!(store.head().unwrap().last_block_h, archive);
+			assert_eq!(store.header_head().unwrap(), headers);
+			assert_eq!(
+				store.pending_chain_operation().unwrap(),
+				Some(PendingChainOperation::ResetToGenesis)
+			);
+		}
+	}
+
+	#[test]
+	fn pibd_interrupted_import_resets_before_missing_body_index_rebuild() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().to_str().unwrap();
+		let chain = mine_chain(path, 3);
+		let genesis = chain.genesis.clone();
+		let headers = chain.header_head().unwrap();
+		make_imported_archive(&chain, false);
+		let batch = chain.store.batch_write().unwrap();
+		batch
+			.set_spent_commitment_record_index_complete(false)
+			.unwrap();
+		batch
+			.set_chain_marker(
+				store::ChainMarker::LastChainOperation,
+				&PendingChainOperation::PibdReset,
+			)
+			.unwrap();
+		batch.commit().unwrap();
+		drop(chain);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let restarted = Chain::init(
+			&secp,
+			0,
+			path.to_owned(),
+			Arc::new(crate::types::NoopAdapter {}),
+			genesis,
+			pow::verify_size,
+			false,
+			HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+		assert_eq!(restarted.head().unwrap().height, 0);
+		assert_eq!(restarted.header_head().unwrap(), headers);
+		assert!(restarted.store.pending_chain_operation().unwrap().is_none());
+		assert!(restarted
+			.store
+			.batch_read()
+			.unwrap()
+			.is_spent_commitment_record_index_complete()
+			.unwrap());
+	}
+
+	#[test]
+	fn pibd_restart_keeps_missing_retained_and_corrupt_body_errors() {
+		for corrupt_body in [false, true] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 3);
+			let genesis = chain.genesis.clone();
+			let head = chain.head().unwrap();
+			let headers = chain.header_head().unwrap();
+			let batch = chain.store.batch_write().unwrap();
+			if corrupt_body {
+				let mut block = batch.get_block(&head.last_block_h).unwrap();
+				block.header.timestamp += mwc_crates::chrono::Duration::seconds(1);
+				// Bypass the writer's identity guard to model corrupt persisted data.
+				batch
+					.db
+					.put_ser_with_version(
+						&mwc_store::to_key(b'b', head.last_block_h),
+						&block,
+						ProtocolVersion(3),
+					)
+					.unwrap();
+				batch.delete_body_tail().unwrap();
+			} else {
+				// A retained tail means this is a missing ordinary block, not PIBD.
+				batch.delete_block(&head.last_block_h).unwrap();
+			}
+			batch.commit().unwrap();
+			drop(chain);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let error = match Chain::init(
+				&secp,
+				0,
+				path.to_owned(),
+				Arc::new(crate::types::NoopAdapter {}),
+				genesis,
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				false,
+			) {
+				Ok(_) => panic!("startup accepted a missing or corrupt retained body"),
+				Err(error) => error,
+			};
+			assert!(
+				matches!(error,
+					Error::StoreErr(_, ref context) | Error::InvalidPersistedChainState(ref context)
+					if context.contains("setup_head durable HEAD preflight")
+				),
+				"{:?}",
+				error
+			);
+			let store = ChainStore::new(0, path).unwrap();
+			assert_eq!(store.head().unwrap(), head);
+			assert_eq!(store.header_head().unwrap(), headers);
+			assert!(store.pending_chain_operation().unwrap().is_none());
+		}
+	}
+
+	#[cfg(feature = "test-support")]
+	#[test]
+	fn post_pibd_normal_block_processing_validates_bound_successor() {
+		let context_id = 940_004;
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		global::init_global_chain_type(context_id, global::ChainTypes::AutomatedTesting).unwrap();
+		global::init_global_nrd_enabled(context_id, false).unwrap();
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let adapter = Arc::new(RecordingAdapter::default());
+		let chain = Chain::init(
+			&secp,
+			context_id,
+			dir.path().to_str().unwrap().to_owned(),
+			adapter.clone(),
+			global::get_genesis_block(&secp, context_id).unwrap(),
+			pow::verify_size,
+			false,
+			HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+		let keychain = ExtKeychain::from_seed(&secp, &[43; 32], false).unwrap();
+		let build_next = |chain: &Chain, secp: &mut Secp256k1| {
+			let parent = chain.head_header().unwrap();
+			let height = parent.height + 1;
+			let key = ExtKeychain::derive_key_id(1, height as u32, 0, 0, 0).unwrap();
+			let builder = ProofBuilder::new(secp, &keychain).unwrap();
+			let binding = chain
+				.coinbase_binding_for_template(secp, &parent, &TransactionBody::empty())
+				.unwrap();
+			let (output, kernel, opening) = reward_builder::output_s2c(
+				context_id,
+				&keychain,
+				&builder,
+				&key,
+				0,
+				height,
+				secp,
+				binding.digest().unwrap(),
+			)
+			.unwrap();
+			let reward = (output, kernel);
+			let next = consensus::next_difficulty(
+				context_id,
+				height,
+				chain.difficulty_iter().unwrap(),
+				&mut consensus::DifficultyCache::new(),
+			)
+			.unwrap();
+			let mut block =
+				Block::new(context_id, &parent, &[], next.difficulty, reward, secp).unwrap();
+			block.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(context_id, height).then_some(opening);
+			block.header.timestamp = parent.timestamp + mwc_crates::chrono::Duration::seconds(60);
+			block.header.pow.secondary_scaling = next.secondary_scaling;
+			chain.set_txhashset_roots(secp, &mut block).unwrap();
+			pow::pow_size(
+				context_id,
+				&mut block.header,
+				next.difficulty,
+				global::proofsize(context_id),
+				global::min_edge_bits(context_id),
+			)
+			.unwrap();
+			block
+		};
+		for _ in 0..2 {
+			let block = build_next(&chain, &mut secp);
+			chain
+				.process_block(&mut secp, block, Options::SYNC, HashSet::new())
+				.unwrap();
+		}
+		let archive = build_next(&chain, &mut secp);
+		chain
+			.process_block(&mut secp, archive.clone(), Options::SYNC, HashSet::new())
+			.unwrap();
+		let block = build_next(&chain, &mut secp);
+		chain
+			.process_block_header(&block.header, Options::NONE)
+			.unwrap();
+		let parent_hash = archive.hash(context_id).unwrap();
+		let batch = chain.store.batch_write().unwrap();
+		let sums = batch.get_block_sums(&parent_hash).unwrap();
+		batch.delete_block(&parent_hash).unwrap();
+		batch.save_block_sums(&parent_hash, sums).unwrap();
+		batch.delete_body_tail().unwrap();
+		batch.commit().unwrap();
+		adapter.accepted.write().clear();
+		let peers = HashSet::from(["post-pibd-peer".to_owned()]);
+		let mut incomplete = block.clone();
+		incomplete.coinbase_opening = None;
+		incomplete.body.outputs[0].proof.proof[0] ^= 1;
+		let error = chain
+			.process_block(&mut secp, incomplete, Options::SYNC, peers.clone())
+			.unwrap_err();
+		assert!(matches!(error, Error::BlockMissCoinbaseOpening));
+		assert!(error.is_bad_data());
+		assert!(!chain.orphans.contains(&block.hash(context_id).unwrap()));
+		adapter.rejected.write().clear();
+		let mut invalid = block.clone();
+		invalid.body.outputs[0].proof.proof[0] ^= 1;
+		let error = chain
+			.process_block(&mut secp, invalid, Options::SYNC, peers.clone())
+			.unwrap_err();
+		assert!(error.is_bad_data());
+		assert_eq!(chain.head().unwrap().last_block_h, parent_hash);
+		assert!(!chain.store.block_exists(&parent_hash).unwrap());
+		assert_eq!(adapter.rejected.read().len(), 1);
+		assert_eq!(adapter.rejected.read()[0].1, peers);
+		let tip = chain
+			.process_block(&mut secp, block.clone(), Options::SYNC, peers)
+			.unwrap()
+			.unwrap();
+		assert_eq!(tip.last_block_h, block.hash(context_id).unwrap());
+		assert_eq!(chain.head().unwrap().height, 4);
+		assert_eq!(adapter.accepted.read().len(), 1);
+		assert_eq!(adapter.rejected.read().len(), 1);
+		let genesis = chain.genesis.clone();
+		let headers = chain.header_head().unwrap();
+		drop(chain);
+		let restarted = Chain::init(
+			&secp,
+			context_id,
+			dir.path().to_str().unwrap().to_owned(),
+			adapter,
+			genesis,
+			pow::verify_size,
+			false,
+			HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+		assert_eq!(restarted.head().unwrap(), tip);
+		assert_eq!(restarted.header_head().unwrap(), headers);
+		assert_eq!(
+			restarted
+				.store
+				.get_block(&tip.last_block_h)
+				.unwrap()
+				.coinbase_opening,
+			block.coinbase_opening
+		);
+
+		// Model upgrading an old node that saved this activated block using the
+		// legacy representation. Normal init must reset body state, retain headers,
+		// and leave no incomplete body that can suppress subsequent downloads.
+		let mut legacy = Vec::new();
+		block
+			.write_legacy(&mut ser::BinWriter::new(
+				&mut legacy,
+				ProtocolVersion(3),
+				context_id,
+				true,
+			))
+			.unwrap();
+		let batch = restarted.store.batch_write().unwrap();
+		batch
+			.db
+			.put(&mwc_store::to_key(b'b', tip.last_block_h), &legacy)
+			.unwrap();
+		batch
+			.delete(&mwc_store::to_key(b'F', "coinbase_s2c_blocks_checked"))
+			.unwrap();
+		batch.commit().unwrap();
+		let genesis = restarted.genesis.clone();
+		drop(restarted);
+		let reset = Chain::init(
+			&secp,
+			context_id,
+			dir.path().to_str().unwrap().to_owned(),
+			Arc::new(RecordingAdapter::default()),
+			genesis,
+			pow::verify_size,
+			false,
+			HashSet::new(),
+			None,
+			None,
+			false,
+		)
+		.unwrap();
+		assert_eq!(reset.head().unwrap().height, 0);
+		assert_eq!(reset.header_head().unwrap(), headers);
+		assert!(!reset.store.block_exists(&tip.last_block_h).unwrap());
+		assert!(reset.store.pending_chain_operation().unwrap().is_none());
+	}
+
+	#[test]
+	fn startup_resets_unmarked_block_database_and_resumes_sync() {
+		for has_head in [true, false] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 2);
+			let genesis = chain.genesis.clone();
+			let tip = chain.head().unwrap();
+			let headers = chain.header_head().unwrap();
+			let block = chain.store.get_block(&tip.last_block_h).unwrap();
+			let batch = chain.store.batch_write().unwrap();
+			// Missing migration bookkeeping conservatively resets even current
+			// preactivation bodies. Keep the S2C check flag set to exercise that case.
+			batch
+				.delete(&mwc_store::to_key(b'F', "blocks_v3_migrated"))
+				.unwrap();
+			batch.set_spent_index_migrated(false).unwrap();
+			batch
+				.set_spent_commitment_record_index_complete(false)
+				.unwrap();
+			if !has_head {
+				batch.delete(&[b'H']).unwrap();
+				batch
+					.db
+					.put(&mwc_store::to_key(b'b', tip.last_block_h), b"obsolete body")
+					.unwrap();
+			}
+			batch.commit().unwrap();
+			// Model stopping after the format check commits, before shared recovery.
+			chain.store.reset_legacy_blocks().unwrap();
+			assert!(chain.store.block_exists(&tip.last_block_h).unwrap());
+			assert_eq!(
+				chain.store.pending_chain_operation().unwrap(),
+				Some(PendingChainOperation::ResetToGenesis)
+			);
+			drop(chain);
+
+			let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let reset = init_chain(&secp, path, genesis.clone());
+			assert_eq!(reset.head().unwrap().height, 0);
+			assert_eq!(reset.store.tail().unwrap(), reset.head().unwrap());
+			assert_eq!(reset.header_head().unwrap(), headers);
+			assert_eq!(
+				reset.txhashset.read().output_mmr_size(),
+				genesis.header.output_mmr_size
+			);
+			assert_eq!(
+				reset.txhashset.read().kernel_mmr_size(),
+				genesis.header.kernel_mmr_size
+			);
+			assert!(!reset.store.block_exists(&tip.last_block_h).unwrap());
+			assert!(reset.store.pending_chain_operation().unwrap().is_none());
+			assert!(reset
+				.store
+				.batch_read()
+				.unwrap()
+				.is_blocks_v3_migrated()
+				.unwrap());
+
+			// Normal body sync can refill the retained header chain. The upgrade
+			// flags must prevent another reset at the following startup.
+			reset
+				.process_block(&mut secp, block, Options::SYNC, HashSet::new())
+				.unwrap();
+			assert_eq!(reset.head().unwrap(), tip);
+			drop(reset);
+			let restarted = init_chain(&secp, path, genesis);
+			assert_eq!(restarted.head().unwrap(), tip);
+			assert_eq!(restarted.header_head().unwrap(), headers);
+			assert!(restarted.store.block_exists(&tip.last_block_h).unwrap());
+			restarted.validate(&secp, false).unwrap();
+		}
+	}
+
+	#[test]
+	fn full_resets_clear_body_storage_and_resume_processing() {
+		for pibd in [false, true] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 3);
+			let genesis = chain.genesis.clone();
+			let tip = chain.head().unwrap();
+			let headers = chain.header_head().unwrap();
+			let second = chain.store.get_block(&tip.last_block_h).unwrap();
+			let first = chain.store.get_block(&second.header.prev_hash).unwrap();
+			let first_hash = first.hash(0).unwrap();
+			let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+
+			// Ordinary rewinds retain bodies above the new head. Full resets must
+			// remove these too, not just records on the current body chain.
+			chain.reset_chain_head(&secp, &first.header, false).unwrap();
+			assert!(chain.store.block_exists(&tip.last_block_h).unwrap());
+			assert_eq!(chain.header_head().unwrap(), headers);
+			let stale_commitment = first.outputs()[0].commitment();
+			let batch = chain.store.batch_write().unwrap();
+			batch
+				.save_spent_commitments(
+					&stale_commitment,
+					test_spent_commitment_record(tip.last_block_h, tip.height),
+				)
+				.unwrap();
+			batch.commit().unwrap();
+
+			if pibd {
+				chain.reset_pibd_chain().unwrap();
+			} else {
+				chain.reset_chain_head_to_genesis().unwrap();
+			}
+			assert_eq!(chain.head().unwrap().height, 0);
+			assert_eq!(chain.tail().unwrap(), chain.head().unwrap());
+			assert_eq!(chain.header_head().unwrap(), headers);
+			assert!(!chain.store.block_exists(&first_hash).unwrap());
+			assert!(!chain.store.block_exists(&tip.last_block_h).unwrap());
+			assert!(chain.store.get_block_sums(&first_hash).is_err());
+			assert!(chain.store.pending_chain_operation().unwrap().is_none());
+			{
+				let batch = chain.store.batch_read().unwrap();
+				assert!(batch.is_spent_index_migrated().unwrap());
+				assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+				assert!(batch.is_output_pos_index_complete().unwrap());
+				assert!(batch.is_kernel_pos_index_complete().unwrap());
+				assert!(batch
+					.get_spent_commitments(&stale_commitment)
+					.unwrap()
+					.is_none());
+			}
+
+			// Blocks must work immediately, without startup repairing any indexes.
+			chain
+				.process_block(&mut secp, first.clone(), Options::SYNC, HashSet::new())
+				.unwrap();
+			assert_eq!(chain.head().unwrap().last_block_h, first_hash);
+
+			// Leave the existing marker after the reset's state/index work to model
+			// an interruption before marker removal. Startup must repeat it safely.
+			let operation = if pibd {
+				PendingChainOperation::PibdReset
+			} else {
+				PendingChainOperation::ResetToGenesis
+			};
+			chain.store.set_pending_chain_operation(&operation).unwrap();
+			{
+				let mut header_pmmr = chain.header_pmmr.write();
+				let mut txhashset = chain.txhashset.write();
+				reset_chain_head_to_genesis_state(
+					&genesis,
+					&chain.store,
+					&mut header_pmmr,
+					&mut txhashset,
+					&secp,
+					pow::verify_size,
+					None,
+					!pibd,
+				)
+				.unwrap();
+			}
+			drop(chain);
+			let restarted = init_chain(&secp, path, genesis);
+			assert_eq!(restarted.head().unwrap().height, 0);
+			assert_eq!(restarted.header_head().unwrap(), headers);
+			assert!(restarted.store.pending_chain_operation().unwrap().is_none());
+			for block in [first, second] {
+				restarted
+					.process_block(&mut secp, block, Options::SYNC, HashSet::new())
+					.unwrap();
+			}
+			assert_eq!(restarted.head().unwrap(), tip);
+			restarted.validate(&secp, false).unwrap();
+		}
 	}
 
 	#[test]
@@ -7690,6 +8285,106 @@ mod tests {
 	}
 
 	#[test]
+	fn direct_context_failure_reports_original_block_once() {
+		let source_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let target_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let source = mine_chain(source_dir.path().to_str().unwrap(), 2);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let adapter = Arc::new(RecordingAdapter::default());
+		let chain = init_chain_with_recording_adapter(
+			target_dir.path().to_str().unwrap(),
+			&secp,
+			source.genesis.clone(),
+			adapter.clone(),
+		);
+		let mut block = source
+			.get_block_for_header(&source.head_header().unwrap())
+			.unwrap();
+		block.header.pow.proof.context_id = u32::MAX;
+		let source_peers = HashSet::from(["invalid-context-peer".to_owned()]);
+		let error = chain
+			.process_block(
+				&mut secp,
+				block.clone(),
+				Options::SYNC,
+				source_peers.clone(),
+			)
+			.unwrap_err();
+		assert!(matches!(error, Error::InvalidHeaderContext { .. }));
+		let reported = adapter.reported.read_recursive();
+		assert_eq!(reported.len(), 1);
+		assert_eq!(
+			mwc_crates::serde_json::to_value(&reported[0].0).unwrap(),
+			mwc_crates::serde_json::to_value(&block).unwrap()
+		);
+		assert_eq!(reported[0].1, source_peers);
+		assert!(reported[0].2);
+		assert_eq!(chain.head().unwrap().height, 0);
+	}
+
+	#[test]
+	fn deferred_orphan_rejection_reports_exact_body_and_all_original_sources_once() {
+		let source_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let target_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let source = mine_chain(source_dir.path().to_str().unwrap(), 3);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let adapter = Arc::new(RecordingAdapter::default());
+		let chain = init_chain_with_recording_adapter(
+			target_dir.path().to_str().unwrap(),
+			&secp,
+			source.genesis.clone(),
+			adapter.clone(),
+		);
+		let first = source
+			.get_block_for_header(&source.get_header_by_height(1).unwrap())
+			.unwrap();
+		let mut orphan = source
+			.get_block_for_header(&source.get_header_by_height(2).unwrap())
+			.unwrap();
+		for block in [&first, &orphan] {
+			chain
+				.process_block_header(&block.header, Options::SKIP_POW)
+				.unwrap();
+		}
+		orphan.body.outputs[0].proof.proof[0] ^= 1;
+		let orphan_hash = orphan.hash(0).unwrap();
+		let sources = HashSet::from([
+			"first-orphan-peer".to_owned(),
+			"second-orphan-peer".to_owned(),
+		]);
+		for peer in &sources {
+			let result = chain.process_block(
+				&mut secp,
+				orphan.clone(),
+				Options::SKIP_POW,
+				HashSet::from([peer.clone()]),
+			);
+			assert!(matches!(result, Err(Error::Orphan(_))));
+		}
+		assert!(adapter.reported.read_recursive().is_empty());
+		assert!(chain.is_orphan(&orphan_hash));
+		chain
+			.process_block(
+				&mut secp,
+				first,
+				Options::SKIP_POW,
+				HashSet::from(["honest-parent-peer".to_owned()]),
+			)
+			.unwrap();
+		let reported = adapter.reported.read_recursive();
+		assert_eq!(reported.len(), 1);
+		assert_eq!(
+			mwc_crates::serde_json::to_value(&reported[0].0).unwrap(),
+			mwc_crates::serde_json::to_value(&orphan).unwrap()
+		);
+		assert_eq!(reported[0].1, sources);
+		assert!(reported[0].2);
+		assert_eq!(adapter.accepted.read_recursive().len(), 1);
+		assert_eq!(chain.head().unwrap().height, 1);
+		assert!(!chain.is_orphan(&orphan_hash));
+	}
+
+	#[test]
 	fn old_known_block_does_not_reject_source_peer() {
 		let chain_dir = format!(
 			"target/old_known_block_no_peer_rejection_{}",
@@ -7746,17 +8441,25 @@ mod tests {
 
 		let prev = chain.head_header().unwrap();
 		let key_id = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-		let reward = reward_builder::output(
+		let binding = chain
+			.coinbase_binding_for_template(
+				&mut secp,
+				&prev,
+				&mwc_core::core::TransactionBody::empty(),
+			)
+			.unwrap();
+		let (output, kernel, opening) = reward_builder::output_s2c(
 			0,
 			&keychain,
 			&ProofBuilder::new(&secp, &keychain).unwrap(),
 			&key_id,
 			0,
-			false,
 			1,
 			&mut secp,
+			binding.digest().unwrap(),
 		)
 		.unwrap();
+		let reward = (output, kernel);
 		let mut stored = Block::new(
 			0,
 			&prev,
@@ -7766,6 +8469,8 @@ mod tests {
 			&secp,
 		)
 		.unwrap();
+		stored.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(0, stored.header.height).then_some(opening);
 		stored.header.timestamp = prev.timestamp + mwc_crates::chrono::Duration::seconds(60);
 		chain.set_txhashset_roots(&secp, &mut stored).unwrap();
 		let block_hash = stored.hash(0).unwrap();
@@ -7876,6 +8581,14 @@ mod tests {
 		assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
 		assert!(adapter.accepted.read_recursive().is_empty());
 		assert!(adapter.rejected.read_recursive().is_empty());
+		let reported = adapter.reported.read_recursive();
+		assert_eq!(reported.len(), 1);
+		assert_eq!(reported[0].0.hash(0).unwrap(), block_hash);
+		assert!(
+			!reported[0].2,
+			"local recovery failure must only release the request"
+		);
+		drop(reported);
 
 		chain.ensure_chain_robust().unwrap();
 		assert!(chain.store.pending_chain_operation().unwrap().is_none());
@@ -8223,8 +8936,8 @@ mod tests {
 		// Protocol v3+ full-data serialization normalizes both inputs to the
 		// same commit-only representation, despite their different features.
 		assert_eq!(
-			ser::ser_vec(0, &plain, ProtocolVersion::local()).unwrap(),
-			ser::ser_vec(0, &coinbase, ProtocolVersion::local()).unwrap()
+			ser::ser_vec(0, &plain, ProtocolVersion::local(), true).unwrap(),
+			ser::ser_vec(0, &coinbase, ProtocolVersion::local(), true).unwrap()
 		);
 		assert!(blocks_equal_as_v3(0, &plain, &coinbase).unwrap());
 
@@ -8233,8 +8946,8 @@ mod tests {
 			test_input(OutputFeatures::Plain).commitment(),
 		)]);
 		assert_eq!(
-			ser::ser_vec(0, &plain, ProtocolVersion::local()).unwrap(),
-			ser::ser_vec(0, &commit_only, ProtocolVersion::local()).unwrap()
+			ser::ser_vec(0, &plain, ProtocolVersion::local(), true).unwrap(),
+			ser::ser_vec(0, &commit_only, ProtocolVersion::local(), true).unwrap()
 		);
 		assert!(blocks_equal_as_v3(0, &plain, &commit_only).unwrap());
 
@@ -8503,7 +9216,7 @@ mod tests {
 	}
 
 	#[test]
-	fn init_segmenter_rechecks_recovery_after_acquiring_pmmr_locks() {
+	fn init_segmenter_defers_recovery_to_public_caller() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -8516,9 +9229,17 @@ mod tests {
 		chain.requires_init_recovery.store(true, Ordering::SeqCst);
 
 		let result = chain.init_segmenter(&chain.genesis());
-		if let Err(e) = result {
-			panic!("segmenter initialization failed after recovery: {}", e);
-		}
+		assert!(matches!(
+			result,
+			Err(Error::Other(ref message))
+				if message == "pending chain operation requires chain init recovery"
+		));
+		assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+
+		// Public segment preparation owns recovery and selects a fresh archive.
+		let segmenter = chain.segmenter().unwrap();
+		assert!(segmenter.is_current());
 		assert!(!chain.requires_init_recovery.load(Ordering::SeqCst));
 		assert!(chain.store.pending_chain_operation().unwrap().is_none());
 
@@ -8586,6 +9307,47 @@ mod tests {
 
 		drop(chain);
 		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn coinbase_template_defers_recovery_to_mining_retry() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let directory = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = init_automated_test_chain(directory.path().to_str().unwrap(), &secp);
+		let parent = chain.head_header().unwrap();
+		let body = TransactionBody::empty();
+		let expected = chain
+			.coinbase_binding_for_template(&secp, &parent, &body)
+			.unwrap();
+		let pending =
+			prepare_reconcile_heads_operation(&chain.store, ChainOperationKind::SyncHeaders)
+				.unwrap();
+		chain.store.set_pending_chain_operation(&pending).unwrap();
+		chain.requires_init_recovery.store(true, Ordering::SeqCst);
+
+		let error = chain
+			.coinbase_binding_for_template(&secp, &parent, &body)
+			.unwrap_err();
+		assert!(matches!(&error, Error::Other(message)
+			if message == "pending chain operation requires chain init recovery"));
+		assert!(!error.is_bad_data());
+		assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
+		assert_eq!(
+			chain.store.pending_chain_operation().unwrap(),
+			Some(pending)
+		);
+
+		// Each mining attempt starts with head_header(), which performs recovery.
+		let parent = chain.head_header().unwrap();
+		assert!(!chain.requires_init_recovery.load(Ordering::SeqCst));
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+		let actual = chain
+			.coinbase_binding_for_template(&secp, &parent, &body)
+			.unwrap();
+		assert_eq!(actual, expected);
+		assert_eq!(chain.head_header().unwrap(), parent);
 	}
 
 	#[test]
@@ -8916,7 +9678,7 @@ mod tests {
 			.unwrap();
 		let target_hash = target_header.hash(0).unwrap();
 		let mut corrupted_target = chain.get_block_for_header(&target_header).unwrap();
-		corrupted_target.header.height = corrupted_target.header.height.saturating_add(100);
+		corrupted_target.header.height = corrupted_target.header.height.saturating_add(1);
 		assert_eq!(corrupted_target.hash(0).unwrap(), target_hash);
 		assert_ne!(corrupted_target.header, target_header);
 		let body_head_before = chain.head().unwrap();
@@ -9485,6 +10247,17 @@ mod tests {
 		block.header.prev_hash = prev_hash;
 		if let Some(last_nonce) = block.header.pow.proof.nonces.last_mut() {
 			*last_nonce = proof_nonce;
+		}
+		if consensus::is_coinbase_binding_enabled(0, height) {
+			// Storage-only fixture: use a valid point for the required wire field.
+			// These deliberately empty bodies are never consensus-validated.
+			let secp = Secp256k1::with_caps(ContextFlag::None).unwrap();
+			let bytes = mwc_util::from_hex(
+				"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+			)
+			.unwrap();
+			block.coinbase_opening =
+				Some(mwc_crates::secp::s2c::Opening::from_slice(&secp, &bytes).unwrap());
 		}
 		block
 	}
@@ -11045,7 +11818,7 @@ mod tests {
 		let _ = fs::remove_dir_all(&chain_dir);
 		let store = Arc::new(ChainStore::new(0, &chain_dir).unwrap());
 
-		// The block migration runs before setup_head and writes this flag even for
+		// Format initialization runs before setup_head and writes this flag even for
 		// a genuinely unused database, so it must remain an allowed fresh state.
 		{
 			let batch = store.batch_write().unwrap();
@@ -11347,6 +12120,7 @@ mod tests {
 			ProtocolVersion(1),
 			0,
 			&replacement_output,
+			true,
 		)
 		.unwrap();
 		let output_data_path = Path::new(&chain_dir)
@@ -11477,9 +12251,9 @@ mod tests {
 			secp.commit_value(42).unwrap(),
 		);
 		let mut expected_bytes = Vec::new();
-		ser::serialize_default(0, &mut expected_bytes, &expected).unwrap();
+		ser::serialize_default(0, &mut expected_bytes, &expected, true).unwrap();
 		let mut corrupt_bytes = Vec::new();
-		ser::serialize_default(0, &mut corrupt_bytes, &corrupt).unwrap();
+		ser::serialize_default(0, &mut corrupt_bytes, &corrupt, true).unwrap();
 		assert_ne!(corrupt_bytes, expected_bytes);
 		{
 			let batch = chain.store.batch_write().unwrap();
@@ -11504,7 +12278,7 @@ mod tests {
 		.unwrap();
 		let rebuilt = restarted.store.get_block_sums(&head_hash).unwrap();
 		let mut rebuilt_bytes = Vec::new();
-		ser::serialize_default(0, &mut rebuilt_bytes, &rebuilt).unwrap();
+		ser::serialize_default(0, &mut rebuilt_bytes, &rebuilt, true).unwrap();
 		assert_eq!(rebuilt_bytes, expected_bytes);
 
 		drop(restarted);
@@ -12602,7 +13376,7 @@ mod tests {
 		// Restore the record, then model a same-key record whose complete header
 		// differs from the separately stored canonical ancestry header.
 		let mut corrupted_target = target_block.clone();
-		corrupted_target.header.height = corrupted_target.header.height.saturating_add(100);
+		corrupted_target.header.height = corrupted_target.header.height.saturating_add(1);
 		assert_eq!(corrupted_target.hash(context_id).unwrap(), target_hash);
 		assert_ne!(corrupted_target.header, target_header);
 		{
@@ -12754,5 +13528,39 @@ mod tests {
 
 		let res = genesis_block_sums(&genesis, 0, &secp);
 		assert!(matches!(res, Err(Error::Committed(_))), "got {:?}", res);
+	}
+}
+
+impl Chain {
+	/// Calculate the exact post-cut-through input and parent UTXO commitment for
+	/// a mining template, including before activation so the mining RPC always
+	/// checks wallet S2C support. The body excludes its coinbase output/kernel.
+	/// Pending recovery returns an error so mining can retry the whole template.
+	pub fn coinbase_binding_for_template(
+		&self,
+		secp: &Secp256k1,
+		parent: &BlockHeader,
+		body: &TransactionBody,
+	) -> Result<mwc_core::libtx::coinbase_binding::CoinbaseBindingContext, Error> {
+		let mut header_pmmr = self.header_pmmr.write();
+		let mut txhashset = self.txhashset.write();
+		self.with_locked_readonly_pmmr_discard_marker("coinbase binding template", || {
+			txhashset::extending_readonly(
+				self.store.get_context_id(),
+				&mut header_pmmr,
+				&mut txhashset,
+				|ext, batch| {
+					self.rewind_and_apply_fork(secp, parent, ext, batch)?;
+					ext.extension.validate_roots(parent)?;
+					ext.extension.validate_sizes(parent)?;
+					ext.extension.coinbase_binding_for_template(
+						parent,
+						body,
+						ext.header_extension,
+						batch,
+					)
+				},
+			)
+		})
 	}
 }

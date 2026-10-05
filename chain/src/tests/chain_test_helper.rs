@@ -33,24 +33,8 @@ use std::sync::Arc;
 
 static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-// Keep test targets compilable without exposing the production builder. Any
-// affected test reaches this shim and fails with an actionable runtime error.
-#[allow(dead_code, unused_imports)]
-pub mod build {
-	pub use mwc_core::libtx::build::*;
-
-	#[cfg(not(feature = "test-support"))]
-	pub fn output<K, B>(
-		_value: u64,
-		_key_id: mwc_keychain::Identifier,
-	) -> Box<mwc_core::libtx::build::Append<K, B>>
-	where
-		K: mwc_keychain::Keychain,
-		B: mwc_core::libtx::proof::ProofBuild,
-	{
-		panic!("test-support feature is required to run the tests");
-	}
-}
+#[allow(unused_imports)]
+pub use mwc_core::libtx::build;
 
 #[allow(dead_code)]
 #[cfg(test)]
@@ -100,17 +84,19 @@ where
 	K: Keychain,
 {
 	let key_id = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let reward = reward::output(
+	// Genesis has no parent UTXO state to bind; only its ordinary kernel signature is checked.
+	let (output, kernel, _) = reward::output_s2c(
 		0,
 		keychain,
 		&libtx::ProofBuilder::new(secp, keychain).unwrap(),
 		&key_id,
 		0,
-		false,
-		0, // at MWC genesys block has to has height 0, mwc it tolerant to that.
+		0,
 		secp,
+		mwc_core::core::hash::Hash::default(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 
 	let mut genesis = global::get_genesis_block(secp, 0)
 		.expect("testing genesis must be available")
@@ -195,21 +181,27 @@ where
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let reward = libtx::reward::output(
+		let binding = chain
+			.coinbase_binding_for_template(secp, &prev, &mwc_core::core::TransactionBody::empty())
+			.unwrap();
+		let (output, kernel, opening) = libtx::reward::output_s2c(
 			0,
 			keychain,
 			&libtx::ProofBuilder::new(secp, keychain).unwrap(),
 			&pk,
 			0,
-			false,
 			n,
 			secp,
+			binding.digest().unwrap(),
 		)
 		.unwrap();
+		let reward = (output, kernel);
 		let mut b = Block::new(0, &prev, &[], next_header_info.difficulty, reward, secp).unwrap();
 		b.header.timestamp = prev.timestamp + Duration::seconds(60);
 		b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
+		b.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(0, b.header.height).then_some(opening);
 		chain.set_txhashset_roots(secp, &mut b).unwrap();
 
 		let edge_bits = global::min_edge_bits(0);

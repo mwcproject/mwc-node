@@ -92,12 +92,13 @@ fn test_peer_addr_hashing() {
 #[test]
 fn test_peer_addr_ipv6_deserializes_as_ipv6() {
 	let peer_addr = PeerAddr::Ip("[::1]:3414".parse().unwrap());
-	let bytes = ser::ser_vec(0, &peer_addr, ProtocolVersion::local()).unwrap();
+	let bytes = ser::ser_vec(0, &peer_addr, ProtocolVersion::local(), true).unwrap();
 	assert_eq!(bytes[0], 1);
 
 	let mut reader = &bytes[..];
 	let decoded =
-		ser::deserialize_strict::<PeerAddr, _>(&mut reader, ProtocolVersion::local(), 0).unwrap();
+		ser::deserialize_strict::<PeerAddr, _>(&mut reader, ProtocolVersion::local(), 0, true)
+			.unwrap();
 
 	match decoded {
 		PeerAddr::Ip(SocketAddr::V6(addr)) => {
@@ -143,13 +144,14 @@ fn test_peer_addr_ipv4_mapped_loopback_is_loopback() {
 fn test_peer_addr_rejects_unknown_discriminator() {
 	let domain = "maxs4wuipojxv5gagcrvgsd3zjn7qkmi3rukiozqoq4uwtgelxbz6nqd.onion".to_string();
 	let peer_addr = PeerAddr::Onion(domain);
-	let mut bytes = ser::ser_vec(0, &peer_addr, ProtocolVersion::local()).unwrap();
+	let mut bytes = ser::ser_vec(0, &peer_addr, ProtocolVersion::local(), true).unwrap();
 	assert_eq!(bytes[0], 2);
 
 	bytes[0] = 3;
 	let mut reader = &bytes[..];
-	let err = ser::deserialize_strict::<PeerAddr, _>(&mut reader, ProtocolVersion::local(), 0)
-		.unwrap_err();
+	let err =
+		ser::deserialize_strict::<PeerAddr, _>(&mut reader, ProtocolVersion::local(), 0, true)
+			.unwrap_err();
 	match err {
 		ser::Error::CorruptedData(msg) => {
 			assert!(msg.contains("Invalid peer address type tag 3"));
@@ -162,8 +164,9 @@ fn test_peer_addr_rejects_unknown_discriminator() {
 fn test_peer_addr_rejects_invalid_onion_utf8() {
 	let bytes = vec![2, 0, 0, 0, 0, 0, 0, 0, 1, 0xff];
 	let mut reader = &bytes[..];
-	let err = ser::deserialize_strict::<PeerAddr, _>(&mut reader, ProtocolVersion::local(), 0)
-		.unwrap_err();
+	let err =
+		ser::deserialize_strict::<PeerAddr, _>(&mut reader, ProtocolVersion::local(), 0, true)
+			.unwrap_err();
 
 	match err {
 		ser::Error::Utf8Conversion(msg) => {
@@ -176,7 +179,7 @@ fn test_peer_addr_rejects_invalid_onion_utf8() {
 #[test]
 fn test_peer_addr_write_rejects_invalid_onion() {
 	let peer_addr = PeerAddr::Onion("not-an-onion".to_string());
-	let err = ser::ser_vec(0, &peer_addr, ProtocolVersion::local()).unwrap_err();
+	let err = ser::ser_vec(0, &peer_addr, ProtocolVersion::local(), true).unwrap_err();
 
 	match err {
 		ser::Error::CorruptedData(msg) => {
@@ -191,7 +194,7 @@ fn test_peer_addr_write_rejects_onion_with_nul() {
 	let peer_addr = PeerAddr::Onion(
 		"zwecav6dgftsoscybpzufbo77d452mk3mox2fqzjqocu7265bxgq6oad.onion\0".to_string(),
 	);
-	let err = ser::ser_vec(0, &peer_addr, ProtocolVersion::local()).unwrap_err();
+	let err = ser::ser_vec(0, &peer_addr, ProtocolVersion::local(), true).unwrap_err();
 
 	match err {
 		ser::Error::CorruptedData(_) => {}

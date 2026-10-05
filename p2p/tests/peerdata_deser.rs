@@ -34,7 +34,7 @@ fn make_peer(addr: &str) -> mwc_p2p::PeerData {
 fn serialize_peer_without_version(peer: &mwc_p2p::PeerData) -> Vec<u8> {
 	let mut bytes = Vec::new();
 	{
-		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 1);
+		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 1, true);
 		peer.addr.write(&mut writer).unwrap();
 		writer.write_u32(peer.capabilities.bits()).unwrap();
 		writer.write_bytes(&peer.user_agent).unwrap();
@@ -49,7 +49,7 @@ fn serialize_peer_without_version(peer: &mwc_p2p::PeerData) -> Vec<u8> {
 fn serialize_peer_without_last_connected_and_version(peer: &mwc_p2p::PeerData) -> Vec<u8> {
 	let mut bytes = Vec::new();
 	{
-		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 1);
+		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 1, true);
 		peer.addr.write(&mut writer).unwrap();
 		writer.write_u32(peer.capabilities.bits()).unwrap();
 		writer.write_bytes(&peer.user_agent).unwrap();
@@ -62,7 +62,7 @@ fn serialize_peer_without_last_connected_and_version(peer: &mwc_p2p::PeerData) -
 
 fn assert_buf_reader_rejects_unexpected_eof(bytes: Vec<u8>) {
 	let mut bytes = Bytes::from(bytes);
-	let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 1);
+	let mut reader = BufReader::new(&mut bytes, ProtocolVersion::local(), 1, true);
 
 	match reader.body::<mwc_p2p::PeerData>() {
 		Err(ser::Error::IOErr(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {}
@@ -79,7 +79,7 @@ fn peer_data_read_defaults_missing_last_connected_to_zero() {
 	bytes.truncate(bytes.len() - std::mem::size_of::<i64>());
 
 	let decoded: mwc_p2p::PeerData =
-		ser::deserialize_strict(&mut &bytes[..], ProtocolVersion::local(), 1).unwrap();
+		ser::deserialize_strict(&mut &bytes[..], ProtocolVersion::local(), 1, true).unwrap();
 
 	assert_eq!(decoded.last_connected, 0);
 	assert_eq!(decoded.version, ProtocolVersion(1));
@@ -100,7 +100,7 @@ fn peer_data_read_defaults_missing_version_to_protocol_1() {
 	let bytes = serialize_peer_without_version(&peer);
 
 	let decoded: mwc_p2p::PeerData =
-		ser::deserialize_strict(&mut &bytes[..], ProtocolVersion::local(), 1).unwrap();
+		ser::deserialize_strict(&mut &bytes[..], ProtocolVersion::local(), 1, true).unwrap();
 
 	assert_eq!(decoded.version, ProtocolVersion(1));
 }
@@ -118,10 +118,10 @@ fn peer_data_read_rejects_partial_version_with_buffered_reader() {
 fn peer_data_roundtrips_protocol_version() {
 	let mut peer = make_peer("127.0.0.1:3414");
 	peer.version = ProtocolVersion(5);
-	let bytes = ser::ser_vec(1, &peer, ProtocolVersion::local()).unwrap();
+	let bytes = ser::ser_vec(1, &peer, ProtocolVersion::local(), true).unwrap();
 
 	let decoded: mwc_p2p::PeerData =
-		ser::deserialize_strict(&mut &bytes[..], ProtocolVersion::local(), 1).unwrap();
+		ser::deserialize_strict(&mut &bytes[..], ProtocolVersion::local(), 1, true).unwrap();
 
 	assert_eq!(decoded.version, ProtocolVersion(5));
 }
@@ -131,7 +131,7 @@ fn peer_data_write_rejects_invalid_user_agent() {
 	let mut peer = make_peer("127.0.0.1:3414");
 	peer.user_agent = "bad\0agent".to_string();
 
-	match ser::ser_vec(1, &peer, ProtocolVersion::local()) {
+	match ser::ser_vec(1, &peer, ProtocolVersion::local(), true) {
 		Err(ser::Error::CorruptedData(message)) => {
 			assert!(
 				message.contains("PeerData.user_agent contains character outside printable ASCII")

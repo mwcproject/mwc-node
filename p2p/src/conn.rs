@@ -253,9 +253,14 @@ impl ConnHandle {
 
 #[cfg(test)]
 pub(crate) fn disconnected_test_handles() -> (ConnHandle, StopHandle) {
-	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
-	drop(send_rx);
+	let (send, stop, receiver) = test_handles();
+	drop(receiver);
+	(send, stop)
+}
 
+#[cfg(test)]
+pub(crate) fn test_handles() -> (ConnHandle, StopHandle, crossbeam::channel::Receiver<Msg>) {
+	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
 	(
 		ConnHandle {
 			send_channel: send_tx,
@@ -265,6 +270,7 @@ pub(crate) fn disconnected_test_handles() -> (ConnHandle, StopHandle) {
 			reader_thread: None,
 			writer_thread: None,
 		},
+		send_rx,
 	)
 }
 
@@ -301,6 +307,7 @@ pub fn listen<H>(
 	stream: TcpDataStream,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
 	peer_name: String,
@@ -322,6 +329,7 @@ where
 		conn_handle.clone(),
 		version,
 		context_id,
+		block_extra,
 		handler,
 		send_rx,
 		stopped.clone(),
@@ -345,6 +353,7 @@ fn poll<H>(
 	conn_handle: ConnHandle,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	handler: H,
 	send_rx: crossbeam::channel::Receiver<Msg>,
 	stopped: Arc<AtomicBool>,
@@ -375,7 +384,7 @@ where
 				stopped: reader_stopped.clone(),
 			};
 			debug!("Started peer_read thread for {}", peer_name1);
-			let mut codec = Codec::new(version, context_id, reader);
+			let mut codec = Codec::new(version, context_id, block_extra, reader);
 
 			let mut secp = match Secp256k1::with_caps(ContextFlag::Commit) {
 				Ok(s) => s,
@@ -579,6 +588,7 @@ mod tests {
 			},
 			ProtocolVersion(5),
 			SEND_FULL_TEST_CONTEXT_ID,
+			false,
 		)
 		.unwrap();
 
@@ -611,6 +621,7 @@ mod tests {
 				},
 				ProtocolVersion(5),
 				SEND_BATCH_TEST_CONTEXT_ID,
+				false,
 			)
 			.unwrap();
 			send_channel.send(msg).unwrap();

@@ -79,15 +79,16 @@ fn bad_handshake(message: impl Into<String>) -> Error {
 	Error::BadHandshake(message.into())
 }
 
+// Hand/Shake messages have no block extras, and peer capabilities are not known yet.
 fn read_hand_message<R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
 ) -> Result<Hand, Error> {
-	match read_header(stream, version, context_id)? {
+	match read_header(stream, version, context_id, true)? {
 		MsgHeaderWrapper::Known(header) => {
 			if header.msg_type == Type::Hand {
-				read_body(&header, stream, version, context_id)
+				read_body(&header, stream, version, context_id, true)
 			} else {
 				Err(Error::BadMessage(format!(
 					"header.msg_type={:?} but expected {:?}",
@@ -112,10 +113,10 @@ fn read_shake_message(
 	timeout: Duration,
 ) -> Result<Shake, Error> {
 	let mut reader = conn.deadline_reader(timeout);
-	let shake = match read_header(&mut reader, version, context_id) {
+	let shake = match read_header(&mut reader, version, context_id, true) {
 		Ok(MsgHeaderWrapper::Known(header)) => {
 			if header.msg_type == Type::Shake {
-				read_body(&header, &mut reader, version, context_id)
+				read_body(&header, &mut reader, version, context_id, true)
 			} else {
 				Err(Error::BadMessage(format!(
 					"header.msg_type={:?} but expected {:?}",
@@ -368,7 +369,7 @@ impl Handshake {
 		// by the onion identity signature.
 		let mut transcript = Vec::new();
 		{
-			let mut writer = BinWriter::new(&mut transcript, version, self.context_id);
+			let mut writer = BinWriter::new(&mut transcript, version, self.context_id, true);
 			writer.write_bytes(ONION_HAND_PROOF_DOMAIN)?;
 			sender_addr.write(&mut writer)?;
 			receiver_addr.write(&mut writer)?;
@@ -544,7 +545,8 @@ impl Handshake {
 
 		let hand = Hand {
 			version: self.protocol_version,
-			capabilities,
+			// Always advertise block-extra support, including for custom capability sets.
+			capabilities: capabilities | Capabilities::BLOCK_EXTRA,
 			nonce,
 			genesis: self.genesis,
 			total_difficulty,
@@ -557,7 +559,13 @@ impl Handshake {
 		};
 
 		// write and read the handshake response
-		let msg = Msg::new(Type::Hand, hand, self.protocol_version, self.context_id)?;
+		let msg = Msg::new(
+			Type::Hand,
+			hand,
+			self.protocol_version,
+			self.context_id,
+			true,
+		)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		// Bound the complete Shake response to one deadline. Repeated partial reads
@@ -691,14 +699,21 @@ impl Handshake {
 		// send our reply with our info
 		let shake = Shake {
 			version: self.protocol_version,
-			capabilities: capab,
+			// Match the mandatory support advertised by outbound handshakes.
+			capabilities: capab | Capabilities::BLOCK_EXTRA,
 			genesis: self.genesis,
 			total_difficulty: total_difficulty,
 			user_agent: USER_AGENT.to_string(),
 			tx_fee_base: global::get_accept_fee_base(self.context_id),
 		};
 
-		let msg = Msg::new(Type::Shake, shake, negotiated_version, self.context_id)?;
+		let msg = Msg::new(
+			Type::Shake,
+			shake,
+			negotiated_version,
+			self.context_id,
+			true,
+		)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		self.observe_inbound_receiver_addr(&hand, &addr);
@@ -942,6 +957,7 @@ mod tests {
 			0,
 			&MsgHeader::new(0, Type::Ping, 10),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
 		header[2] = 255;
@@ -974,6 +990,7 @@ mod tests {
 			0,
 			&MsgHeader::new(0, Type::Ping, 10),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
 		header[2] = 255;
@@ -1014,6 +1031,7 @@ mod tests {
 			0,
 			&MsgHeader::new(0, Type::Shake, 0),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
 

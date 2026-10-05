@@ -1,11 +1,18 @@
 # MWC tor-ptmgr patch
 
-This directory vendors `tor-ptmgr` 0.45.0 from crates.io, whose source commit is
-`009354f78d1a61214a878d6f1712a50844e6c215`.
+This directory vendors `tor-ptmgr` 0.46.0 from crates.io, whose source commit is
+`a71097fdf7b141b56d1eb3709628ee38d232c9d1`.
+
+## Upgrade review
+
+The published 0.46.0 `src/ipc.rs` is byte-for-byte identical to 0.45.0.
+The upstream changes are the package and Tor dependency versions in both
+manifests, plus a TODO comment in `src/lib.rs`. The existing process supervisor
+and quiet-child regression tests are retained unchanged.
 
 ## Problem
 
-Upstream 0.45.0 moves the `Child`, its `ChildStdin`, and its blocking stdout
+Upstream 0.46.0 moves the `Child`, its `ChildStdin`, and its blocking stdout
 reader into one OS thread. That thread notices that `AsyncPtChild` was dropped
 only when it tries to forward another stdout line into the disconnected channel.
 After PT negotiation, `webtunnelclient` is normally quiet while waiting for

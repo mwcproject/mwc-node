@@ -406,6 +406,7 @@ impl OrphansSync {
 			.iter()
 			.connected()
 			.with_min_height(block_height)
+			.with_capabilities(mwc_p2p::Capabilities::BLOCK_EXTRA)
 			.into_iter()
 			.filter(|p| retry_budget.can_send_to(&p.info.addr))
 			.collect();
@@ -613,10 +614,10 @@ impl OrphansSync {
 		}
 
 		let version = ProtocolVersion::local();
-		Ok(ser::ser_vec(context_id, &left.body.outputs, version)?
-			== ser::ser_vec(context_id, &right.body.outputs, version)?
-			&& ser::ser_vec(context_id, &left.body.kernels, version)?
-				== ser::ser_vec(context_id, &right.body.kernels, version)?)
+		Ok(ser::ser_vec(context_id, &left.body.outputs, version, true)?
+			== ser::ser_vec(context_id, &right.body.outputs, version, true)?
+			&& ser::ser_vec(context_id, &left.body.kernels, version, true)?
+				== ser::ser_vec(context_id, &right.body.kernels, version, true)?)
 	}
 
 	fn find_lossless_candidate(
@@ -826,8 +827,8 @@ mod tests {
 
 		// The old local-protocol fingerprint cannot distinguish these bodies.
 		assert_eq!(
-			ser::ser_vec(context_id, &plain, ProtocolVersion::local()).unwrap(),
-			ser::ser_vec(context_id, &coinbase, ProtocolVersion::local()).unwrap()
+			ser::ser_vec(context_id, &plain, ProtocolVersion::local(), true).unwrap(),
+			ser::ser_vec(context_id, &coinbase, ProtocolVersion::local(), true).unwrap()
 		);
 		assert!(!OrphansSync::blocks_equal_lossless(context_id, &plain, &coinbase).unwrap());
 		let candidates = vec![UnknownBlock {
@@ -843,8 +844,8 @@ mod tests {
 		let mut commit_only = plain.clone();
 		commit_only.body.inputs = Inputs::CommitOnly(vec![CommitWrapper::from(commit)]);
 		assert_eq!(
-			ser::ser_vec(context_id, &plain, ProtocolVersion::local()).unwrap(),
-			ser::ser_vec(context_id, &commit_only, ProtocolVersion::local()).unwrap()
+			ser::ser_vec(context_id, &plain, ProtocolVersion::local(), true).unwrap(),
+			ser::ser_vec(context_id, &commit_only, ProtocolVersion::local(), true).unwrap()
 		);
 		assert!(!OrphansSync::blocks_equal_lossless(context_id, &plain, &commit_only).unwrap());
 		assert_eq!(

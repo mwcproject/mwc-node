@@ -18,7 +18,7 @@ use super::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use mwc_chain::{pipe, store::PendingChainOperation, Chain, Options};
 use mwc_core::core::hash::Hash;
 use mwc_core::core::{block, pmmr, transaction};
-use mwc_core::core::{Block, FeeFields, KernelFeatures, Transaction, Weighting};
+use mwc_core::core::{Block, FeeFields, KernelFeatures, OutputFeatures, Transaction, Weighting};
 use mwc_core::libtx::{reward, ProofBuilder};
 use mwc_core::{consensus, global, pow};
 use mwc_crates::chrono::Duration;
@@ -43,21 +43,25 @@ where
 		consensus::next_difficulty(0, next_height, chain.difficulty_iter()?, &mut cache_values)
 			.unwrap();
 	let fee = txs.iter().map(|x| x.fee().unwrap()).sum();
-	let key_id = ExtKeychainPath::new(1, next_height as u32, 0, 0, 0)
+	let key_id = ExtKeychainPath::new(3, 0, 0, next_height as u32, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let reward = reward::output(
+	let aggregate = mwc_core::core::transaction::aggregate(0, txs, secp)
+		.map_err(mwc_core::core::block::Error::from)?;
+	let binding = chain.coinbase_binding_for_template(secp, &prev, &aggregate.body)?;
+	let (output, kernel, opening) = reward::output_s2c(
 		0,
 		keychain,
 		&ProofBuilder::new(secp, keychain).unwrap(),
 		&key_id,
 		fee,
-		false,
 		next_height,
 		secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 
 	let mut block = Block::new(
 		0,
@@ -69,6 +73,8 @@ where
 	)
 	.map_err(|e| mwc_chain::Error::Block(e))?;
 
+	block.coinbase_opening =
+		consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -215,15 +221,15 @@ fn process_block_cut_through() -> Result<(), mwc_chain::Error> {
 		)?;
 	}
 
-	let key_id1 = ExtKeychainPath::new(1, 1, 0, 0, 0)
+	let key_id1 = ExtKeychainPath::new(3, 0, 0, 1, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+	let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+	let key_id3 = ExtKeychainPath::new(3, 0, 0, 3, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
@@ -238,11 +244,19 @@ fn process_block_cut_through() -> Result<(), mwc_chain::Error> {
 			fee: FeeFields::new(10).unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(500_000_000 - 10, key_id2.clone()),
-			build::output(100_000_000, key_id3.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id2.clone(),
+			),
+			build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone(), 1),
+			build::height_tagged_output(500_000_000 - 10, key_id2.clone(), 1),
+			build::height_tagged_output(100_000_000, key_id3.clone(), 1),
 		],
 		&keychain,
 		&pb,
@@ -274,8 +288,19 @@ fn process_block_cut_through() -> Result<(), mwc_chain::Error> {
 		matches!(chain.validate_tx(&tx), Err(mwc_chain::Error::DuplicateCommitment(c)) if c==commit)
 	);
 
-	// Build a block with this single invalid transaction.
-	let block = build_block(&mut secp, &chain, &keychain, &[tx.clone()], true)?;
+	// Bind the real inputs first, then restore the duplicate output. Template
+	// validation correctly refuses duplicate outputs; block validation must
+	// still reject the received body's cut-through violation after activation.
+	let mut template_tx = tx.clone();
+	template_tx
+		.body
+		.outputs
+		.retain(|o| o.commitment() != commit);
+	let mut block = build_block(&mut secp, &chain, &keychain, &[template_tx], true)?;
+	let mut outputs = tx.outputs().to_vec();
+	outputs.extend(block.outputs().iter().filter(|o| o.is_coinbase()).copied());
+	block.body =
+		mwc_core::core::TransactionBody::init(0, tx.inputs(), &outputs, block.kernels(), false)?;
 
 	// The block is invalid due to cut-through.
 	let prev = chain.head_header()?;

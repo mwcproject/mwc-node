@@ -335,6 +335,7 @@ fn monitor_peers(
 
 	let boost_peers_capabilities = peers.get_boost_peers_capabilities();
 	let in_sync_mode = peers.is_sync_mode();
+	let discovery_capabilities = peers.get_peer_discovery_capabilities();
 
 	// maintenance step first, clean up p2p server peers
 	let summary = peers.clean_peers(
@@ -367,7 +368,7 @@ fn monitor_peers(
 	{
 		trace!("monitor_peers: ask {} for more peers", p.info.addr,);
 		if let Err(e) = p.send_peer_request(
-			Capabilities::PEER_LIST | boost_peers_capabilities,
+			Capabilities::PEER_LIST | discovery_capabilities,
 			use_tor_connection,
 		) {
 			error!("Failed send_peer_request to {}, Error: {}", p.info.addr, e);
@@ -420,7 +421,7 @@ fn monitor_peers(
 		// and queue them up for a connection attempt
 		// intentionally make too many attempts (2x) as some (most?) will fail
 		// as many nodes in our db are not publicly accessible
-		let new_peers = peers.find_peers(mwc_p2p::State::Healthy, boost_peers_capabilities)?;
+		let new_peers = peers.find_peers(mwc_p2p::State::Healthy, discovery_capabilities)?;
 		for p in new_peers.iter() {
 			if !peers.is_known(&p.addr) && !connecting_history.contains_key(&p.addr) {
 				listen_q_addrs.push_back(p.addr.clone());
@@ -704,7 +705,7 @@ fn listen_for_addrs(
 						if p.info.capabilities.contains(Capabilities::PEER_LIST) {
 							debug!("Sending peer request to {}", addr_c);
 							if let Err(e) = p.send_peer_request(
-								Capabilities::PEER_LIST | peers_c.get_boost_peers_capabilities(),
+								Capabilities::PEER_LIST | peers_c.get_peer_discovery_capabilities(),
 								use_tor_connection,
 							) {
 								mark_peer_defunct_after_initial_send_failure(

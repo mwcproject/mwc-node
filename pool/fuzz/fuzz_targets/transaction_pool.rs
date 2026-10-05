@@ -103,8 +103,14 @@ fn gen_tx_corpus() -> Result<(), Error> {
 		let dict = File::create(format!("fuzz/corpus/transaction_pool/{}", tx.name))
 			.map_err(|_| Error::IoErr)?;
 		let mut writer = BufWriter::new(dict);
-		ser::serialize(&mut writer, ser::ProtocolVersion(tx.version), 0, &tx.tx)
-			.map_err(|_| Error::SerErr)?;
+		ser::serialize(
+			&mut writer,
+			ser::ProtocolVersion(tx.version),
+			0,
+			&tx.tx,
+			true,
+		)
+		.map_err(|_| Error::SerErr)?;
 		writer.flush().map_err(|_| Error::IoErr)?;
 	}
 
@@ -139,7 +145,7 @@ fuzz_target!(|data: &[u8]| {
 		let tx_source = fuzz_tx_source(data[0]);
 		let mut data = &data[..];
 		let tx: Result<Transaction, ser::Error> =
-			ser::deserialize_strict(&mut data, ser::ProtocolVersion(2), 0);
+			ser::deserialize_strict(&mut data, ser::ProtocolVersion(2), 0, true);
 		// we only care about inputs that pass
 		if tx.is_ok() {
 			// attempt to add fuzzed tx to the transaction pool

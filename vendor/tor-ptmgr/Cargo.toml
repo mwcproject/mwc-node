@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.91"
 name = "tor-ptmgr"
-version = "0.45.0"
+version = "0.46.0"
 authors = [
     "The Tor Project, Inc.",
     "Nick Mathewson <nickm@torproject.org>",
@@ -119,37 +119,37 @@ features = ["derive"]
 version = "2"
 
 [dependencies.tor-async-utils]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tor-basic-utils]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tor-chanmgr]
-version = "0.45.0"
+version = "0.46.0"
 features = ["pt-client"]
 
 [dependencies.tor-config]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tor-config-path]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tor-error]
-version = "0.45.0"
+version = "0.46.0"
 features = ["tracing"]
 
 [dependencies.tor-linkspec]
-version = "0.45.0"
+version = "0.46.0"
 features = ["pt-client"]
 
 [dependencies.tor-proto]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tor-rtcompat]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tor-socksproto]
-version = "0.45.0"
+version = "0.46.0"
 
 [dependencies.tracing]
 version = "0.1.36"
@@ -176,7 +176,7 @@ features = [
 ]
 
 [dev-dependencies.tor-rtcompat]
-version = "0.45.0"
+version = "0.46.0"
 features = [
     "tokio",
     "native-tls",

@@ -189,14 +189,16 @@ impl Default for Hash {
 pub struct HashWriter {
 	state: Blake2b,
 	context_id: u32,
+	block_extra: bool,
 }
 
 impl HashWriter {
 	/// Build a hash writer for this consensus context.
-	pub fn new(context_id: u32) -> HashWriter {
+	pub fn new(context_id: u32, block_extra: bool) -> HashWriter {
 		HashWriter {
 			state: Blake2b::new(32),
 			context_id,
+			block_extra,
 		}
 	}
 
@@ -216,6 +218,10 @@ impl HashWriter {
 }
 
 impl ser::Writer for HashWriter {
+	fn block_extra(&self) -> bool {
+		self.block_extra
+	}
+
 	fn serialization_mode(&self) -> ser::SerializationMode {
 		ser::SerializationMode::Hash
 	}
@@ -251,7 +257,7 @@ pub trait DefaultHashable: Writeable {}
 // length-delimited hash format instead of relying on this blanket implementation.
 impl<D: DefaultHashable> Hashed for D {
 	fn hash(&self, context_id: u32) -> Result<Hash, std::io::Error> {
-		let mut hasher = HashWriter::new(context_id);
+		let mut hasher = HashWriter::new(context_id, true);
 		Writeable::write(self, &mut hasher).map_err(|e| {
 			std::io::Error::new(ErrorKind::Other, format!("Unable to build hash, {}", e))
 		})?;

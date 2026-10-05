@@ -721,7 +721,8 @@ impl Handler {
 		// Serialize the block header into pre and post nonce strings
 		let mut header_buf = vec![];
 		{
-			let mut writer = ser::BinWriter::default(self.chain.get_context_id(), &mut header_buf);
+			let mut writer =
+				ser::BinWriter::default(self.chain.get_context_id(), &mut header_buf, true);
 			bh.write_pre_pow(&mut writer).map_err(|e| {
 				RpcError::internal_error(&format!("Unable write into buffer, {}", e))
 			})?;
@@ -1113,6 +1114,9 @@ impl Handler {
 						Ok(built_block) => built_block,
 						Err(e) => {
 							error!("Build block error {}", e);
+							if matches!(&e, crate::common::types::Error::WalletBinding(_)) {
+								return Err(Error::ServerError(e.to_string()));
+							}
 							continue;
 						}
 					};

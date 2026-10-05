@@ -426,7 +426,7 @@ fn ser_round_trip() {
 	let segment = Segment::<TestElem>::from_pmmr(id, &mmr, Some(&bitmap), 1, usize::MAX).unwrap();
 
 	let mut cursor = Cursor::new(Vec::<u8>::new());
-	let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+	let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 	Writeable::write(&segment, &mut writer).unwrap();
 	assert_eq!(
 		cursor.position(),
@@ -434,7 +434,7 @@ fn ser_round_trip() {
 	);
 	cursor.set_position(0);
 
-	let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+	let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 	let segment2: Segment<TestElem> = Readable::read(&mut reader).unwrap();
 	assert_eq!(segment, segment2);
 

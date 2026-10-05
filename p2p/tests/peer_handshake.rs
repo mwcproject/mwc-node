@@ -53,9 +53,9 @@ fn test_setup(context_id: u32) {
 
 fn write_hand_message(socket: &mut StdTcpStream, hand: mwc_p2p::msg::Hand, context_id: u32) {
 	let version = ProtocolVersion::local();
-	let body = ser::ser_vec(context_id, &hand, version).unwrap();
+	let body = ser::ser_vec(context_id, &hand, version, true).unwrap();
 	let header = mwc_p2p::msg::MsgHeader::new(context_id, mwc_p2p::msg::Type::Hand, body.len());
-	let header = ser::ser_vec(context_id, &header, version).unwrap();
+	let header = ser::ser_vec(context_id, &header, version, true).unwrap();
 	socket.write_all(&header).unwrap();
 	socket.write_all(&body).unwrap();
 	socket.flush().unwrap();
@@ -127,6 +127,8 @@ fn peer_handshake() {
 	peer.start_listening(stream, Arc::new(SyncState::new()), server_inner)
 		.unwrap();
 
+	// Both local callers supplied UNKNOWN; the handshake must add BLOCK_EXTRA.
+	assert_eq!(peer.info.capabilities, mwc_p2p::Capabilities::BLOCK_EXTRA);
 	assert!(peer.info.user_agent.ends_with(env!("CARGO_PKG_VERSION")));
 
 	thread::sleep(time::Duration::from_secs(1));
@@ -135,6 +137,10 @@ fn peer_handshake() {
 	thread::sleep(time::Duration::from_secs(1));
 
 	let server_peer = server.peers.get_connected_peer(&my_addr).unwrap();
+	assert_eq!(
+		server_peer.info.capabilities,
+		mwc_p2p::Capabilities::BLOCK_EXTRA
+	);
 	assert_eq!(server_peer.info.total_difficulty(), Difficulty::min());
 	assert!(server.peers.iter().connected().count() > 0);
 

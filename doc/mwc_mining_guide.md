@@ -45,10 +45,30 @@ You are done and the block rewards will go to the mwc-wallet instance that you s
 
 Please check mwc-node and mwc-miner logs for errors. Wallet related errors you should see in mwc-node logs. 
 
-if node not able connect to the wallet, use can trouble shoot but running this API manually  
+If the node cannot connect to the wallet, verify that the wallet can build a Coinbase using the mining API:
+
 ```
-curl -d '{"id":1,"jsonrpc":"2.0","method":"build_coinbase","params":{"block_fees":{"fees":"0","height":"1307101","key_id":"030000000000000000000c02fd00000000"}}}' http://localhost:3415/v2/foreign
+curl -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"build_coinbase","id":1,"params":{"block_fees":{"fees":0,"height":5,"key_id":null,"binding_digest":"0101010101010101010101010101010101010101010101010101010101010101"}}}' http://localhost:3415/v2/foreign
 ```
+
+Expect `result.Ok` with the following fields (hex values vary by wallet and are abbreviated here):
+
+```json
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "Ok": {
+      "output": {"features": "Coinbase", "commit": "<hex>", "proof": "<hex>"},
+      "kernel": {"features": "Coinbase", "excess": "<hex>", "excess_sig": "<hex>"},
+      "key_id": "<wallet key identifier>",
+      "coinbase_opening": "<66 hex characters>"
+    }
+  }
+}
+```
+
+This call creates an unconfirmed Coinbase record in the wallet. The example height and `binding_digest` are for this API check only. During mining, mwc-node supplies the actual height and calculates the digest from each block template and its parent chain state.
 
 # Reward Schedule #
 

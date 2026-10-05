@@ -47,7 +47,7 @@ impl BodySync {
 		BodySync {
 			pibd_params: chain.get_pibd_params().clone(),
 			chain,
-			required_capabilities: RwLock::new(Capabilities::UNKNOWN),
+			required_capabilities: RwLock::new(Capabilities::BLOCK_EXTRA),
 			request_tracker: RequestTracker::new(),
 			request_series: RwLock::new(Vec::new()),
 			last_retry_height: RwLock::new(0),
@@ -131,16 +131,13 @@ impl BodySync {
 		// point, for the same reason: this path requests BLOCK_HIST only for bulk
 		// catch-up from an old body height. Near-tip competing branches are left to
 		// the regular orphan/reorg flow described above.
-		let (peer_capabilities, required_capabilities) =
-			if self.chain.archive_mode() && head.height <= archive_height {
-				(
-					Capabilities::BLOCK_HIST,
-					Capabilities::BLOCK_HIST | Capabilities::HEADER_HIST,
-				)
-			} else {
-				(Capabilities::UNKNOWN, Capabilities::HEADER_HIST) // needed for headers sync, that can go in parallel
-			};
-		*self.required_capabilities.write() = required_capabilities;
+		let peer_capabilities = if self.chain.archive_mode() && head.height <= archive_height {
+			Capabilities::BLOCK_HIST | Capabilities::BLOCK_EXTRA
+		} else {
+			Capabilities::BLOCK_EXTRA
+		};
+		// Header sync can run in parallel with body sync.
+		*self.required_capabilities.write() = peer_capabilities | Capabilities::HEADER_HIST;
 
 		// requested_blocks, check for expiration
 		let excluded_peers = self

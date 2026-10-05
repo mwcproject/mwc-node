@@ -306,7 +306,7 @@ impl Server {
 		);
 
 		// Initialize various adapters with our dynamic set of connected peers.
-		chain_adapter.init(p2p_server.peers.clone())?;
+		chain_adapter.init(p2p_server.peers.clone(), sync_manager.clone())?;
 		pool_net_adapter
 			.init(p2p_server.peers.clone())
 			.map_err(|e| Error::ServerError(e.to_string()))?;

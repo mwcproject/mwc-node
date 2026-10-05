@@ -60,7 +60,7 @@ fn generate<W: ser::Writeable>(
 	if !pattern_path.exists() {
 		let mut file = File::create(&pattern_path)
 			.map_err(|e| ser::Error::IOErr("can't create a pattern file".to_owned(), e.kind()))?;
-		ser::serialize(&mut file, version, 0, &obj)
+		ser::serialize(&mut file, version, 0, &obj, true)
 	} else {
 		Ok(())
 	}

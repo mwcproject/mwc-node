@@ -1349,10 +1349,12 @@ fn parse_transaction_hex_arg(
 	let tx_bin = mwc_util::from_hex(tx_hex).map_err(|_| -> easy_jsonrpc_mwc::Error {
 		InvalidArgs::invalid_arg_structure("tx", 0, "parsing error".to_string()).into()
 	})?;
-	let tx: Transaction = ser::deserialize_strict(&mut &tx_bin[..], ProtocolVersion(1), context_id)
-		.map_err(|_| -> easy_jsonrpc_mwc::Error {
-			InvalidArgs::invalid_arg_structure("tx", 0, "parsing error".to_string()).into()
-		})?;
+	let tx: Transaction =
+		ser::deserialize_strict(&mut &tx_bin[..], ProtocolVersion(1), context_id, true).map_err(
+			|_| -> easy_jsonrpc_mwc::Error {
+				InvalidArgs::invalid_arg_structure("tx", 0, "parsing error".to_string()).into()
+			},
+		)?;
 	Ok(Some(tx))
 }
 
@@ -1629,7 +1631,7 @@ fn wrong_number_of_args(
 mod tests {
 	use super::*;
 	#[cfg(feature = "test-support")]
-	use mwc_core::core::transaction::{FeeFields, KernelFeatures};
+	use mwc_core::core::transaction::{FeeFields, KernelFeatures, OutputFeatures};
 	#[cfg(feature = "test-support")]
 	use mwc_core::libtx::build;
 	#[cfg(feature = "test-support")]
@@ -1915,13 +1917,16 @@ mod tests {
 			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 				.unwrap();
 		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-		let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-		let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+		let key_id1 = ExtKeychain::derive_key_id(3, 1, 0, 0, 0).unwrap();
+		let key_id2 = ExtKeychain::derive_key_id(3, 2, 0, 0, 0).unwrap();
 		let tx = build::transaction(
 			0,
 			&mut secp,
 			features,
-			&[build::input(fee + 10, key_id1), build::output(10, key_id2)],
+			&[
+				build::feature_input(fee + 10, OutputFeatures::Plain, key_id1),
+				build::height_tagged_output(10, key_id2, 1),
+			],
 			&keychain,
 			&builder,
 		)

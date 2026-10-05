@@ -86,8 +86,22 @@ fn main() {
 	)
 	.unwrap();
 	let keychain: ExtKeychain = seed.derive_keychain(false).unwrap();
-	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0);
-	let reward = core::libtx::reward::output(&keychain, &key_id, 0).unwrap();
+	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0).unwrap();
+	// Genesis has no parent UTXO state; bind to the selected Bitcoin anchor.
+	let reward = util::secp_static::with_commit_mut(core::libtx::Error::from, |secp| {
+		let builder = core::libtx::ProofBuilder::new(secp, &keychain)?;
+		core::libtx::reward::output_s2c(
+			0,
+			&keychain,
+			&builder,
+			&key_id,
+			0,
+			0,
+			secp,
+			core::core::hash::Hash::from_hex(&h1).unwrap(),
+		)
+	})
+	.unwrap();
 	gen = gen
 		.with_reward(reward.0, reward.1)
 		.expect("genesis block body must be empty before reward");
@@ -148,7 +162,7 @@ fn main() {
 	gen.validate(&BlindingFactor::zero()).unwrap();
 
 	println!("\nFinal genesis cyclehash: {}", gen.hash().to_hex());
-	let gen_bin = core::ser::ser_vec(&gen).unwrap();
+	let gen_bin = core::ser::ser_vec(0, &gen, core::ser::ProtocolVersion::local(), true).unwrap();
 	println!("Final genesis full hash: {}\n", gen_bin.hash().to_hex());
 
 	update_genesis_rs(&gen);

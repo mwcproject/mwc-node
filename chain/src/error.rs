@@ -71,6 +71,12 @@ pub enum Error {
 	/// One of the root hashes in the block is invalid
 	#[error("Invalid Root, {0}")]
 	InvalidRoot(String),
+	/// Coinbase kernel does not authenticate its inputs and parent UTXO state.
+	#[error("Invalid coinbase binding: {0}")]
+	InvalidCoinbaseBinding(String),
+	/// A block response omitted the required S2C opening.
+	#[error("Coinbase S2C opening is missing")]
+	BlockMissCoinbaseOpening,
 	/// One of the MMR sizes in the block header is invalid
 	#[error("Invalid MMR Size")]
 	InvalidMMRSize,
@@ -134,16 +140,6 @@ pub enum Error {
 	/// Error serializing or deserializing a type
 	#[error("Chain Serialization Error, {0}")]
 	SerErr(#[from] ser::Error),
-	/// Error migrating a persisted full-block record between protocol versions.
-	#[error("Unable to migrate block record {key:?}; v3 error: {v3_err}; v2 error: {v2_err}")]
-	BlockMigration {
-		/// Raw database key for the block record.
-		key: Vec<u8>,
-		/// Error observed when reading the record as v3.
-		v3_err: ser::Error,
-		/// Error observed when reading the record as v2.
-		v2_err: ser::Error,
-	},
 	/// Error with the txhashset
 	#[error("TxHashSetErr: {0}")]
 	TxHashSetErr(String),
@@ -347,6 +343,8 @@ impl Error {
 			| Error::OutputSpent
 			| Error::InvalidBlockVersion(_)
 			| Error::InvalidTxHashSet(_)
+			| Error::InvalidCoinbaseBinding(_)
+			| Error::BlockMissCoinbaseOpening
 			| Error::TxLockHeight
 			| Error::NRDRelativeHeight
 			// These wrapped error enums can include both consensus failures and
@@ -381,7 +379,6 @@ impl Error {
 			| Error::FileReadErr(_)
 			| Error::IOErr(_)
 			| Error::SerErr(_)
-			| Error::BlockMigration { .. }
 			| Error::KernelPosIndexIncomplete
 			| Error::SpentCommitmentIndexIncomplete
 			| Error::TxHashSetErr(_)
@@ -540,6 +537,7 @@ mod tests {
 			Error::InputMismatch(Commitment::from_vec([1; 33].to_vec()).unwrap()),
 			Error::ReplayAttack(Commitment::from_vec([2; 33].to_vec()).unwrap(), 10, 20),
 			Error::InvalidRoot("output root mismatch".into()),
+			Error::BlockMissCoinbaseOpening,
 			Error::InvalidBitmapRoot,
 			Error::InvalidHeadersRoot,
 			Error::InvalidSegment("segment root mismatch".into()),

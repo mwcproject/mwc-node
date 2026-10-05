@@ -390,6 +390,7 @@ mod tests {
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let commit = secp.commit_value(42).unwrap();
 		let block = Block {
+			coinbase_opening: None,
 			header: BlockHeader::default(0),
 			body: TransactionBody {
 				inputs: Inputs::default(),

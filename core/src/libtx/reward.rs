@@ -16,75 +16,50 @@
 //! Builds the blinded output and related signature proof for the block
 //! reward.
 use crate::consensus::reward;
+use crate::core::hash::Hash;
 use crate::core::{KernelFeatures, Output, OutputFeatures, TxKernel};
 use crate::libtx::error::Error;
-use crate::libtx::{
-	aggsig,
-	proof::{self, ProofBuild},
-};
+use crate::libtx::proof::{self, ProofBuild};
 use keychain::{Identifier, Keychain, SwitchCommitmentType};
-use mwc_crates::log::trace;
-#[cfg(test)]
-use mwc_crates::secp::key::SecretKey;
+use mwc_crates::secp::s2c::Opening;
 use mwc_crates::secp::Secp256k1;
 
-/// output a reward output
-pub fn output<K, B>(
+/// Build a normal, wallet-rewindable reward output and an S2C-bound kernel.
+///
+/// Only the kernel nonce/signature commits to the supplied digest. The secret
+/// base nonce includes the digest, so reusing a reward key for another template
+/// never reuses the S2C nonce. The returned opening is public block data.
+pub fn output_s2c<K, B>(
 	context_id: u32,
 	keychain: &K,
 	builder: &B,
 	key_id: &Identifier,
 	fees: u64,
-	test_mode: bool,
 	height: u64,
 	secp: &mut Secp256k1,
-) -> Result<(Output, TxKernel), Error>
+	digest: Hash,
+) -> Result<(Output, TxKernel, Opening), Error>
 where
 	K: Keychain,
 	B: ProofBuild,
 {
 	let value = reward(context_id, fees, height)?;
-	// TODO: proper support for different switch commitment schemes
 	let switch = SwitchCommitmentType::Regular;
 	let commit = keychain.commit(secp, value, key_id, switch)?;
-
-	trace!("Block reward - Pedersen Commit is: {:?}", commit,);
-
 	let proof = proof::create(secp, keychain, builder, value, key_id, switch, commit)?;
-
 	let output = Output::new(OutputFeatures::Coinbase, commit, proof);
-
-	let over_commit = secp.commit_value(reward(context_id, fees, height)?)?;
-	let out_commit = output.commitment();
-	let excess = secp.commit_sum(vec![out_commit], vec![over_commit])?;
-	let pubkey = excess.to_pubkey(&secp)?;
-
+	let over_commit = secp.commit_value(value)?;
+	let excess = secp.commit_sum(vec![commit], vec![over_commit])?;
 	let features = KernelFeatures::Coinbase;
 	let msg = features.kernel_sig_msg(context_id)?;
-	#[cfg(not(test))]
-	if test_mode {
-		return Err(Error::Other(
-			"reward test_mode nonce is only available in tests".to_string(),
-		));
-	}
-
-	#[cfg(test)]
-	let nonce = if test_mode {
-		Some(SecretKey::from_slice(&secp, &[1; 32])?)
-	} else {
-		None
-	};
-	#[cfg(test)]
-	let nonce = nonce.as_ref();
-	#[cfg(not(test))]
-	let nonce = None;
-
-	let sig = aggsig::sign_from_key_id(&secp, keychain, &msg, value, &key_id, nonce, &pubkey)?;
-
+	let key = keychain.derive_key(secp, value, key_id, switch)?;
+	let mut data = [0; 32];
+	data.copy_from_slice(digest.as_bytes());
+	let (excess_sig, opening) = mwc_crates::secp::s2c::sign_single(secp, &msg, &key, &data)?;
 	let kernel = TxKernel {
-		features: KernelFeatures::Coinbase,
+		features,
 		excess,
-		excess_sig: sig,
+		excess_sig,
 	};
-	Ok((output, kernel))
+	Ok((output, kernel, opening))
 }

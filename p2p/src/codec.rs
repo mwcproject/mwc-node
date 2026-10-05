@@ -65,6 +65,7 @@ impl State {
 pub struct Codec {
 	pub version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	stream: TcpDataReadHalfStream,
 	buffer: BytesMut,
 	state: State,
@@ -73,10 +74,16 @@ pub struct Codec {
 }
 
 impl Codec {
-	pub fn new(version: ProtocolVersion, context_id: u32, stream: TcpDataReadHalfStream) -> Self {
+	pub fn new(
+		version: ProtocolVersion,
+		context_id: u32,
+		block_extra: bool,
+		stream: TcpDataReadHalfStream,
+	) -> Self {
 		Self {
 			version,
 			context_id,
+			block_extra,
 			stream,
 			buffer: BytesMut::with_capacity(8 * 1024),
 			state: None,
@@ -164,7 +171,7 @@ impl Codec {
 						io::ErrorKind::UnexpectedEof,
 						"failed to fill whole buffer",
 					)
-					.into())
+					.into());
 				}
 				Ok(read) => {
 					self.buffer.extend_from_slice(&read_buf[..read]);
@@ -191,7 +198,8 @@ impl Codec {
 				None => {
 					// Parse header and keep reading
 					let mut raw = self.buffer.split_to(next_len).freeze();
-					let mut reader = BufReader::new(&mut raw, self.version, self.context_id);
+					let mut reader =
+						BufReader::new(&mut raw, self.version, self.context_id, self.block_extra);
 					let header = MsgHeaderWrapper::read(&mut reader)?;
 					self.state = Header(header);
 				}
@@ -200,7 +208,12 @@ impl Codec {
 					if header.msg_type == Type::Headers {
 						// Special consideration for a list of headers, as we want to verify and process
 						// them as they come in instead of only after the full list has been received
-						let mut reader = BufReader::new(&mut raw, self.version, self.context_id);
+						let mut reader = BufReader::new(
+							&mut raw,
+							self.version,
+							self.context_id,
+							self.block_extra,
+						);
 						let items_left = reader.read_u16()? as usize;
 						if items_left > MAX_BLOCK_HEADERS as usize {
 							return Err(Error::BadMessage(format!(
@@ -224,7 +237,13 @@ impl Codec {
 						};
 					} else {
 						// Return full message
-						let msg = decode_message(header, &mut raw, self.version, self.context_id);
+						let msg = decode_message(
+							header,
+							&mut raw,
+							self.version,
+							self.context_id,
+							self.block_extra,
+						);
 						self.state = None;
 						self.body_deadline = Option::None;
 						return msg;
@@ -256,8 +275,12 @@ impl Codec {
 						}));
 					}
 
-					let mut reader =
-						BufReader::new(&mut self.buffer, self.version, self.context_id);
+					let mut reader = BufReader::new(
+						&mut self.buffer,
+						self.version,
+						self.context_id,
+						self.block_extra,
+					);
 					let header: UntrustedBlockHeader = reader.body()?;
 					let bytes_read = usize::try_from(reader.bytes_read()).map_err(|_| {
 						Error::DataOverflow(format!(
@@ -308,8 +331,11 @@ fn decode_message(
 	body: &mut Bytes,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 ) -> Result<Message, Error> {
-	let mut msg = BufReader::new(body, version, context_id);
+	// The handshake selects one wire format for this connection. Never retry
+	// another decoder after a missing opening or any other malformed body.
+	let mut msg = BufReader::new(body, version, context_id, block_extra);
 	let c = match header.msg_type {
 		Type::Ping => Message::Ping(msg.body_full()?),
 		Type::Pong => Message::Pong(msg.body_full()?),
@@ -347,7 +373,7 @@ fn decode_message(
 			return Err(Error::UnexpectedMessage(format!(
 				"get message with type {:?} (code {})",
 				header.msg_type, header.msg_type as u32
-			)))
+			)));
 		}
 		// Note, Type::TorAddress is depricated and will be ignored. Keeping here for backward compatibility
 		Type::TorAddress => Message::TorAddress(msg.body_full()?),
@@ -379,7 +405,7 @@ mod tests {
 
 		let stream = TcpDataStream::from_tcp(server);
 		let (reader, _) = stream.split().unwrap();
-		Codec::new(ProtocolVersion::local(), 0, reader)
+		Codec::new(ProtocolVersion::local(), 0, false, reader)
 	}
 
 	fn setup() {
@@ -393,30 +419,30 @@ mod tests {
 			height: 42,
 		};
 		let mut bytes = Vec::new();
-		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 0);
+		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 0, true);
 		ping.write(&mut writer).unwrap();
 		bytes
 	}
 
 	fn headers_message_with_count_only(count: u16) -> Vec<u8> {
 		let header = MsgHeader::new(0, Type::Headers, 2);
-		let mut bytes = ser::ser_vec(0, &header, ProtocolVersion::local()).unwrap();
-		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 0);
+		let mut bytes = ser::ser_vec(0, &header, ProtocolVersion::local(), true).unwrap();
+		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 0, true);
 		writer.write_u16(count).unwrap();
 		bytes
 	}
 
 	fn headers_message_with_len_and_count(msg_len: usize, count: u16) -> Vec<u8> {
 		let header = MsgHeader::new(0, Type::Headers, msg_len);
-		let mut bytes = ser::ser_vec(0, &header, ProtocolVersion::local()).unwrap();
-		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 0);
+		let mut bytes = ser::ser_vec(0, &header, ProtocolVersion::local(), true).unwrap();
+		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion::local(), 0, true);
 		writer.write_u16(count).unwrap();
 		bytes
 	}
 
 	fn partial_header_bytes() -> Vec<u8> {
 		let header = MsgHeader::new(0, Type::Ping, 0);
-		let mut bytes = ser::ser_vec(0, &header, ProtocolVersion::local()).unwrap();
+		let mut bytes = ser::ser_vec(0, &header, ProtocolVersion::local(), true).unwrap();
 		bytes.truncate(MsgHeader::LEN - 1);
 		bytes
 	}
@@ -428,7 +454,7 @@ mod tests {
 		let header = MsgHeader::new(0, Type::Ping, bytes.len());
 		let mut body = Bytes::from(bytes);
 
-		match decode_message(&header, &mut body, ProtocolVersion::local(), 0) {
+		match decode_message(&header, &mut body, ProtocolVersion::local(), 0, false) {
 			Ok(Message::Ping(ping)) => assert_eq!(ping.height, 42),
 			Ok(_) => panic!("expected ping message"),
 			Err(err) => panic!("expected successful ping decode, got {:?}", err),
@@ -443,12 +469,191 @@ mod tests {
 		let header = MsgHeader::new(0, Type::Ping, bytes.len());
 		let mut body = Bytes::from(bytes);
 
-		match decode_message(&header, &mut body, ProtocolVersion::local(), 0) {
+		match decode_message(&header, &mut body, ProtocolVersion::local(), 0, false) {
 			Err(Error::Serialization(ser::Error::CorruptedData(msg))) => {
 				assert!(msg.contains("Trailing bytes"), "{}", msg);
 			}
 			Ok(_) => panic!("expected trailing body byte rejection"),
 			Err(err) => panic!("expected corrupted data rejection, got {:?}", err),
+		}
+	}
+
+	#[cfg(feature = "test-support")]
+	mod block_extra_tests {
+		use super::*;
+		use mwc_core::core::{Block, CompactBlock};
+		use mwc_core::{consensus, pow};
+		use mwc_crates::secp::s2c::Opening;
+		use mwc_crates::secp::{self, Secp256k1};
+
+		fn opening() -> Opening {
+			let secp = Secp256k1::with_caps(secp::ContextFlag::Commit).unwrap();
+			let key = secp::key::SecretKey::from_slice(&secp, &[1; 32]).unwrap();
+			let point = secp::key::PublicKey::from_secret_key(&secp, &key).unwrap();
+			Opening::from_slice(&secp, &point.serialize_vec(&secp, true).unwrap()).unwrap()
+		}
+
+		fn block(context_id: u32, height: u64) -> Block {
+			let mut block = Block::default(context_id);
+			block.header.height = height;
+			block.header.version = consensus::header_version(context_id, height);
+			// Exercise the actual untrusted decoder, including header PoW checks.
+			pow::pow_size(
+				context_id,
+				&mut block.header,
+				Difficulty::min(),
+				global::proofsize(context_id),
+				global::min_edge_bits(context_id),
+			)
+			.unwrap();
+			if consensus::is_coinbase_binding_enabled(context_id, height) {
+				block.coinbase_opening = Some(opening());
+			}
+			block
+		}
+
+		fn encodings(context_id: u32, block: &Block) -> [(Type, Vec<u8>, Vec<u8>); 2] {
+			let compact = CompactBlock::from(block.clone()).unwrap();
+			let version = ProtocolVersion::local();
+			let mut legacy_block = Vec::new();
+			block
+				.write(&mut BinWriter::new(
+					&mut legacy_block,
+					version,
+					context_id,
+					false,
+				))
+				.unwrap();
+			let mut legacy_compact = Vec::new();
+			compact
+				.write(&mut BinWriter::new(
+					&mut legacy_compact,
+					version,
+					context_id,
+					false,
+				))
+				.unwrap();
+			[
+				(
+					Type::Block,
+					legacy_block,
+					ser::ser_vec(context_id, block, version, true).unwrap(),
+				),
+				(
+					Type::CompactBlock,
+					legacy_compact,
+					ser::ser_vec(context_id, &compact, version, true).unwrap(),
+				),
+			]
+		}
+
+		fn decode_opening(
+			context_id: u32,
+			msg_type: Type,
+			bytes: Vec<u8>,
+			block_extra: bool,
+		) -> Result<Option<Opening>, Error> {
+			let header = MsgHeader::new(context_id, msg_type, bytes.len());
+			let mut body = Bytes::from(bytes);
+			match decode_message(
+				&header,
+				&mut body,
+				ProtocolVersion::local(),
+				context_id,
+				block_extra,
+			)? {
+				Message::Block(block) => {
+					let block: Block = block.into();
+					Ok(block.coinbase_opening)
+				}
+				Message::CompactBlock(block) => {
+					let block: CompactBlock = block.into();
+					Ok(block.coinbase_opening)
+				}
+				_ => panic!("expected a block message"),
+			}
+		}
+
+		#[test]
+		fn negotiated_block_format_uses_existing_message_types() {
+			let context_id = 943_130;
+			global::init_global_chain_type(context_id, ChainTypes::AutomatedTesting).unwrap();
+			global::set_local_nrd_enabled(false);
+			for height in [3, 4] {
+				let block = block(context_id, height);
+				for (msg_type, legacy, extended) in encodings(context_id, &block) {
+					assert_eq!(
+						decode_opening(context_id, msg_type, legacy.clone(), false).unwrap(),
+						Option::None,
+					);
+					assert_eq!(
+						decode_opening(context_id, msg_type, extended.clone(), true).unwrap(),
+						block.coinbase_opening,
+					);
+					if height == 3 {
+						assert_eq!(legacy, extended);
+					} else {
+						// Negotiation is mandatory: neither direction falls back to the
+						// other format, even when the old body is otherwise valid.
+						assert!(decode_opening(context_id, msg_type, legacy, true).is_err());
+						assert!(decode_opening(context_id, msg_type, extended, false).is_err());
+					}
+				}
+			}
+		}
+
+		#[test]
+		fn negotiated_block_format_rejects_malformed_openings_and_trailing_bytes() {
+			let context_id = 943_131;
+			global::init_global_chain_type(context_id, ChainTypes::AutomatedTesting).unwrap();
+			global::set_local_nrd_enabled(false);
+			for height in [3, 4] {
+				for (msg_type, legacy, extended) in
+					encodings(context_id, &block(context_id, height))
+				{
+					if height == 3 {
+						let mut unexpected = legacy;
+						unexpected.extend_from_slice(&opening().serialize());
+						for block_extra in [false, true] {
+							assert!(decode_opening(
+								context_id,
+								msg_type,
+								unexpected.clone(),
+								block_extra
+							)
+							.is_err());
+						}
+						continue;
+					}
+					assert_eq!(extended.len(), legacy.len() + 33);
+					let mut truncated = extended.clone();
+					truncated.pop();
+					assert!(decode_opening(context_id, msg_type, truncated, true).is_err());
+					let mut invalid = extended.clone();
+					invalid[legacy.len()] = 0; // Not a compressed curve-point prefix.
+					assert!(decode_opening(context_id, msg_type, invalid, true).is_err());
+					let mut trailing = extended;
+					trailing.push(0);
+					assert!(decode_opening(context_id, msg_type, trailing, true).is_err());
+				}
+			}
+		}
+
+		#[test]
+		fn negotiated_block_formats_keep_untrusted_header_validation() {
+			let context_id = 943_132;
+			global::init_global_chain_type(context_id, ChainTypes::AutomatedTesting).unwrap();
+			global::set_local_nrd_enabled(false);
+			let mut block = block(context_id, 4);
+			block.header.version.0 = 0;
+			for (msg_type, legacy, extended) in encodings(context_id, &block) {
+				for (block_extra, bytes) in [(false, legacy), (true, extended)] {
+					assert!(matches!(
+						decode_opening(context_id, msg_type, bytes, block_extra),
+						Err(Error::Serialization(ser::Error::InvalidBlockVersion(_)))
+					));
+				}
+			}
 		}
 	}
 

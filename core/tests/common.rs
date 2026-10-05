@@ -15,48 +15,25 @@
 
 //! Common test functions
 
-#[cfg(feature = "test-support")]
-use self::build::{input, output};
+use self::build::{feature_input, height_tagged_output};
 use keychain::{Identifier, Keychain};
-use mwc_core::core::hash::DefaultHashable;
+use mwc_core::core::hash::{DefaultHashable, Hashed};
 use mwc_core::core::{Block, BlockHeader, Transaction};
-#[cfg(feature = "test-support")]
 use mwc_core::core::{Inputs, KernelFeatures, OutputFeatures, OutputIdentifier};
-#[cfg(feature = "test-support")]
 use mwc_core::libtx::proof::ProofBuilder;
 use mwc_core::libtx::{proof::ProofBuild, reward};
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, Error, PMMRable, Readable, Reader, Writeable, Writer};
-#[cfg(feature = "test-support")]
 use mwc_crates::rand::rngs::SysRng;
-#[cfg(feature = "test-support")]
 use mwc_crates::secp::SecretKey;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
-#[cfg(feature = "test-support")]
 use std::convert::TryInto;
 
-// Keep test targets compilable without exposing the production builder. Any
-// affected test reaches this shim and fails with an actionable runtime error.
-#[allow(dead_code, unused_imports)]
-pub mod build {
-	pub use mwc_core::libtx::build::*;
-
-	#[cfg(not(feature = "test-support"))]
-	pub fn output<K, B>(
-		_value: u64,
-		_key_id: keychain::Identifier,
-	) -> Box<mwc_core::libtx::build::Append<K, B>>
-	where
-		K: keychain::Keychain,
-		B: mwc_core::libtx::proof::ProofBuild,
-	{
-		panic!("test-support feature is required to run the tests");
-	}
-}
+#[allow(unused_imports)]
+pub use mwc_core::libtx::build;
 
 // utility producing a transaction with 2 inputs and a single outputs
 #[allow(dead_code)]
-#[cfg(feature = "test-support")]
 pub fn tx2i1o() -> Transaction {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let keychain = keychain::ExtKeychain::from_seed(
@@ -66,9 +43,9 @@ pub fn tx2i1o() -> Transaction {
 	)
 	.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	let tx = build::transaction(
 		0,
@@ -76,24 +53,26 @@ pub fn tx2i1o() -> Transaction {
 		KernelFeatures::Plain {
 			fee: 2u32.try_into().unwrap(),
 		},
-		&[input(10, key_id1), input(11, key_id2), output(19, key_id3)],
+		&[
+			feature_input(10, OutputFeatures::Plain, key_id1),
+			feature_input(11, OutputFeatures::Plain, key_id2),
+			height_tagged_output(19, key_id3, 1),
+		],
 		&keychain,
 		&builder,
 	)
 	.unwrap();
 
-	tx
-}
-
-#[allow(dead_code)]
-#[cfg(not(feature = "test-support"))]
-pub fn tx2i1o() -> Transaction {
-	panic!("test-support feature is required to run the tests");
+	// Protocol-3 fixtures compare wire hashes and aggregated bodies.
+	let inputs = Inputs::CommitOnly(tx.inputs().into_commit_wrappers(0).unwrap());
+	Transaction {
+		body: tx.body.replace_inputs(0, inputs).unwrap(),
+		..tx
+	}
 }
 
 // utility producing a transaction with a single input and output
 #[allow(dead_code)]
-#[cfg(feature = "test-support")]
 pub fn tx1i1o() -> Transaction {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let keychain = keychain::ExtKeychain::from_seed(
@@ -103,8 +82,8 @@ pub fn tx1i1o() -> Transaction {
 	)
 	.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
 
 	let tx = build::transaction(
 		0,
@@ -112,23 +91,24 @@ pub fn tx1i1o() -> Transaction {
 		KernelFeatures::Plain {
 			fee: 2u32.try_into().unwrap(),
 		},
-		&[input(5, key_id1), output(3, key_id2)],
+		&[
+			feature_input(5, OutputFeatures::Plain, key_id1),
+			height_tagged_output(3, key_id2, 1),
+		],
 		&keychain,
 		&builder,
 	)
 	.unwrap();
 
-	tx
+	// Protocol-3 fixtures compare wire hashes and aggregated bodies.
+	let inputs = Inputs::CommitOnly(tx.inputs().into_commit_wrappers(0).unwrap());
+	Transaction {
+		body: tx.body.replace_inputs(0, inputs).unwrap(),
+		..tx
+	}
 }
 
 #[allow(dead_code)]
-#[cfg(not(feature = "test-support"))]
-pub fn tx1i1o() -> Transaction {
-	panic!("test-support feature is required to run the tests");
-}
-
-#[allow(dead_code)]
-#[cfg(feature = "test-support")]
 pub fn tx1i10_v2_compatible() -> Transaction {
 	let tx = tx1i1o();
 
@@ -155,17 +135,10 @@ pub fn tx1i10_v2_compatible() -> Transaction {
 	}
 }
 
-#[allow(dead_code)]
-#[cfg(not(feature = "test-support"))]
-pub fn tx1i10_v2_compatible() -> Transaction {
-	panic!("test-support feature is required to run the tests");
-}
-
 // utility producing a transaction with a single input
 // and two outputs (one change output)
 // Note: this tx has an "offset" kernel
 #[allow(dead_code)]
-#[cfg(feature = "test-support")]
 pub fn tx1i2o() -> Transaction {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let keychain = keychain::ExtKeychain::from_seed(
@@ -175,9 +148,9 @@ pub fn tx1i2o() -> Transaction {
 	)
 	.unwrap();
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = keychain::ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = keychain::ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = keychain::ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	let tx = build::transaction(
 		0,
@@ -185,19 +158,22 @@ pub fn tx1i2o() -> Transaction {
 		KernelFeatures::Plain {
 			fee: 2u32.try_into().unwrap(),
 		},
-		&[input(6, key_id1), output(3, key_id2), output(1, key_id3)],
+		&[
+			feature_input(6, OutputFeatures::Plain, key_id1),
+			height_tagged_output(3, key_id2, 1),
+			height_tagged_output(1, key_id3, 1),
+		],
 		&keychain,
 		&builder,
 	)
 	.unwrap();
 
-	tx
-}
-
-#[allow(dead_code)]
-#[cfg(not(feature = "test-support"))]
-pub fn tx1i2o() -> Transaction {
-	panic!("test-support feature is required to run the tests");
+	// Protocol-3 fixtures compare wire hashes and aggregated bodies.
+	let inputs = Inputs::CommitOnly(tx.inputs().into_commit_wrappers(0).unwrap());
+	Transaction {
+		body: tx.body.replace_inputs(0, inputs).unwrap(),
+		..tx
+	}
 }
 
 // utility to create a block without worrying about the key or previous
@@ -216,32 +192,38 @@ where
 {
 	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 	let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
-	let reward_output = reward::output(
+	let height = previous_header.height + 1;
+	// These fixtures exercise stateless core validation and serialization.
+	// Chain tests calculate the actual input/state digest from their UTXO set.
+	let (output, kernel, opening) = reward::output_s2c(
 		0,
 		keychain,
 		builder,
-		&key_id,
+		key_id,
 		fees,
-		false,
-		previous_header.height + 1,
+		height,
 		&mut secp,
+		previous_header.hash(0).unwrap(),
 	)
 	.unwrap();
-	Block::new(
+	let mut block = Block::new(
 		0,
 		&previous_header,
 		txs,
 		Difficulty::min(),
-		reward_output,
+		(output, kernel),
 		&mut secp,
 	)
-	.unwrap()
+	.unwrap();
+	if mwc_core::consensus::is_coinbase_binding_enabled(0, height) {
+		block.coinbase_opening = Some(opening);
+	}
+	block
 }
 
 // utility producing a transaction that spends an output with the provided
 // value and blinding key
 #[allow(dead_code)]
-#[cfg(feature = "test-support")]
 pub fn txspend1i1o<K, B>(
 	v: u64,
 	keychain: &K,
@@ -260,27 +242,14 @@ where
 		KernelFeatures::Plain {
 			fee: 2u32.try_into().unwrap(),
 		},
-		&[input(v, key_id1), output(3, key_id2)],
+		&[
+			feature_input(v, OutputFeatures::Plain, key_id1),
+			height_tagged_output(3, key_id2, 1),
+		],
 		keychain,
 		builder,
 	)
 	.unwrap()
-}
-
-#[allow(dead_code)]
-#[cfg(not(feature = "test-support"))]
-pub fn txspend1i1o<K, B>(
-	_v: u64,
-	_keychain: &K,
-	_builder: &B,
-	_key_id1: Identifier,
-	_key_id2: Identifier,
-) -> Transaction
-where
-	K: Keychain,
-	B: ProofBuild,
-{
-	panic!("test-support feature is required to run the tests");
 }
 
 #[allow(dead_code)]

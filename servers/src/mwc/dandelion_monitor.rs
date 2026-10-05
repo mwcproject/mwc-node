@@ -303,7 +303,7 @@ mod tests {
 	#![cfg_attr(not(feature = "test-support"), allow(unused_imports))]
 
 	use super::*;
-	use mwc_core::core::KernelFeatures;
+	use mwc_core::core::{KernelFeatures, OutputFeatures};
 	use mwc_core::global;
 	use mwc_core::libtx::{build, ProofBuilder};
 	use mwc_crates::rand::rngs::SysRng;
@@ -317,8 +317,8 @@ mod tests {
 		keychain: &ExtKeychain,
 		idx: u32,
 	) -> transaction::Transaction {
-		let input_key_id = ExtKeychain::derive_key_id(1, 10_000 + idx, 0, 0, 0).unwrap();
-		let output_key_id = ExtKeychain::derive_key_id(1, 20_000 + idx, 0, 0, 0).unwrap();
+		let input_key_id = ExtKeychain::derive_key_id(3, 10_000 + idx, 0, 0, 0).unwrap();
+		let output_key_id = ExtKeychain::derive_key_id(3, 20_000 + idx, 0, 0, 0).unwrap();
 		let builder = ProofBuilder::new(secp, keychain).unwrap();
 
 		build::transaction(
@@ -328,8 +328,8 @@ mod tests {
 				fee: 10u32.try_into().unwrap(),
 			},
 			&[
-				build::input(1_000 + u64::from(idx), input_key_id),
-				build::output(990 + u64::from(idx), output_key_id),
+				build::feature_input(1_000 + u64::from(idx), OutputFeatures::Plain, input_key_id),
+				build::height_tagged_output(990 + u64::from(idx), output_key_id, 1),
 			],
 			keychain,
 			&builder,
