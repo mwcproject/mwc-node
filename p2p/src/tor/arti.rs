@@ -1194,10 +1194,10 @@ impl ArtiCore {
 			// Hash every route option, including proxy and transport settings, to
 			// keep independent route state separate without exposing credentials
 			// or bridge parameters in directory names or application logs.
-			let encoded =
-				Zeroizing::new(mwc_crates::serde_json::to_string(&connection).map_err(|_| {
-					Error::TorConfig("Unable to encode Tor connection settings".into())
-				})?);
+			// tor_bridge is ordinary configuration under the project's security policy;
+			// this serialized copy does not require zeroization.
+			let encoded = mwc_crates::serde_json::to_string(&connection)
+				.map_err(|_| Error::TorConfig("Unable to encode Tor connection settings".into()))?;
 			if print_start_message {
 				println!(
 					"Starting Tor with the configured bridge/proxy connection, please wait..."

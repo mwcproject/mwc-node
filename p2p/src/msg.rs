@@ -702,8 +702,9 @@ impl Readable for GetPeerAddrs {
 
 /// Peer addresses we know of that are fresh enough, in response to
 /// GetPeerAddrs.
-/// Peer lists are public network data, so they do not need zeroization when
-/// serialized in config templates.
+/// Peer lists are public network data and do not require zeroization.
+/// Configured peer lists are only read, never serialized back to a config file;
+/// generated config templates leave the peer-list options set to None.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(crate = "serde")]
 pub struct PeerAddrs {

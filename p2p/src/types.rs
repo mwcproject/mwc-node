@@ -649,6 +649,12 @@ pub struct TorConfig {
 }
 
 /// Settings represented by the single `tor_bridge = { ... }` configuration line.
+///
+/// Security policy: tor_bridge is classified as ordinary configuration and does
+/// not require zeroization, including its temporary serialized copies. This
+/// applies to bridge parameters, helper arguments, and proxy settings, including
+/// any embedded authentication fields. Debug and validation errors still omit
+/// these values to avoid accidental logging.
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(crate = "serde", deny_unknown_fields)]
 pub struct TorBridgeConfig {

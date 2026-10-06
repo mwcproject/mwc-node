@@ -221,15 +221,15 @@ impl OrphanBlockPool {
 		}
 	}
 
-	/// Add an unvalidated orphan, deduplicating bodies losslessly.
+	/// Add an unvalidated orphan, deduplicating bodies and openings losslessly.
 	///
 	/// Why this is needed: the orphan pool is keyed by the block hash, which
 	/// is the header hash only, while orphan bodies have not yet been
 	/// validated against the roots committed to by that header. Deduplication
 	/// (discarding a newly arrived body and merging its `source_peers` into
-	/// the cached entry) is therefore only sound if the two bodies are
-	/// losslessly identical. Any field the comparison fails to cover becomes
-	/// a cache-poisoning and peer-misattribution vector.
+	/// the cached entry) is therefore only sound if the bodies and optional
+	/// coinbase openings are losslessly identical. Any field the comparison
+	/// fails to cover becomes a cache-poisoning and peer-misattribution vector.
 	///
 	/// Attack vector with a lossy comparison:
 	/// 1. A malicious peer sends an orphan with the valid header and valid
@@ -257,6 +257,9 @@ impl OrphanBlockPool {
 	/// - Outputs (including rangeproofs) and kernels (including excess
 	///   signatures) serialize losslessly in full-data mode at any supported
 	///   protocol version, so their bytes are compared directly.
+	/// - Coinbase openings are outside TransactionBody and are compared
+	///   separately before merging sources. Their binding is validated later
+	///   against the parent state, so a different opening is a conflicting block.
 	fn add(&self, context_id: u32, mut orphan: Orphan) -> Result<(), Error> {
 		// Enforce the per-orphan bound for every caller, including an oversized
 		// source set supplied with the first insertion.
@@ -277,6 +280,11 @@ impl OrphanBlockPool {
 			// walkthrough. The source_peers merge below must stay behind this
 			// equality check.
 			if let Some(existing) = orphans.get_mut(&hash) {
+				if existing.block.coinbase_opening != orphan.block.coinbase_opening {
+					return Err(Error::Unfit(
+						"conflicting orphan coinbase opening for header".to_owned(),
+					));
+				}
 				if !bodies_equal_lossless(context_id, &existing.block.body, &orphan.block.body)? {
 					return Err(Error::Unfit(
 						"conflicting orphan body for header".to_owned(),
@@ -7174,8 +7182,8 @@ fn setup_head(
 			// override and intentionally retain their existing behavior.
 			// Save the genesis header with a "zero" header_root.
 			// We will update this later once we have the correct header_root.
-			// Keep every derived index explicitly non-authoritative until the
-			// post-setup initialization below has rebuilt and verified it.
+			// Derived indexes start non-authoritative. Complete the output index
+			// with genesis below; the remaining indexes are rebuilt after setup.
 			batch.set_output_pos_index_complete(false)?;
 			batch.set_kernel_pos_index_complete(false)?;
 			batch.set_spent_commitment_record_index_complete(false)?;
@@ -7188,6 +7196,12 @@ fn setup_head(
 					.rebuild_genesis(genesis, ext.header_extension, batch)?;
 				ext.extension.validate_roots(&genesis.header)?;
 				ext.extension.validate_sizes(&genesis.header)?;
+				// The fresh-store preflight and genesis application establish the
+				// entire output index. Verify and commit it with HEAD so a stop
+				// during later index initialization leaves a restartable state.
+				batch.set_output_pos_index_complete(true)?;
+				ext.extension
+					.validate_output_pos_index(batch, &genesis.header)?;
 				Ok(())
 			})?;
 
@@ -8378,6 +8392,98 @@ mod tests {
 		assert_eq!(adapter.accepted.read_recursive().len(), 1);
 		assert_eq!(chain.head().unwrap().height, 1);
 		assert!(!chain.is_orphan(&orphan_hash));
+	}
+
+	#[test]
+	fn orphan_opening_conflict_does_not_blame_honest_peer() {
+		let source_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let target_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let source = mine_chain(source_dir.path().to_str().unwrap(), 6);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let adapter = Arc::new(RecordingAdapter::default());
+		let chain = init_chain_with_recording_adapter(
+			target_dir.path().to_str().unwrap(),
+			&secp,
+			source.genesis.clone(),
+			adapter.clone(),
+		);
+		let blocks: Vec<_> = (1..=5)
+			.map(|height| {
+				source
+					.get_block_for_header(&source.get_header_by_height(height).unwrap())
+					.unwrap()
+			})
+			.collect();
+		for block in &blocks[..2] {
+			chain
+				.process_block(&mut secp, block.clone(), Options::SYNC, HashSet::new())
+				.unwrap();
+		}
+		for block in &blocks[2..4] {
+			chain
+				.process_block_header(&block.header, Options::SYNC)
+				.unwrap();
+		}
+
+		let good = blocks[3].clone();
+		let mut poisoned = good.clone();
+		// Another block's opening is a valid point, but does not authenticate
+		// this block. The header, body, and PoW remain unchanged.
+		poisoned.coinbase_opening = blocks[4].coinbase_opening;
+		assert!(good.coinbase_opening.is_some());
+		assert!(poisoned.coinbase_opening.is_some());
+		assert_ne!(poisoned.coinbase_opening, good.coinbase_opening);
+		let hash = good.hash(0).unwrap();
+		assert_eq!(poisoned.hash(0).unwrap(), hash);
+		let bad_sources =
+			HashSet::from(["first-attacker".to_owned(), "second-attacker".to_owned()]);
+		for peer in &bad_sources {
+			let result = chain.process_block(
+				&mut secp,
+				poisoned.clone(),
+				Options::SYNC,
+				HashSet::from([peer.clone()]),
+			);
+			assert!(matches!(result, Err(Error::Orphan(_))));
+		}
+
+		let honest_sources = HashSet::from(["honest-peer".to_owned()]);
+		let error = chain
+			.process_block(
+				&mut secp,
+				good.clone(),
+				Options::SYNC,
+				honest_sources.clone(),
+			)
+			.unwrap_err();
+		assert!(matches!(&error, Error::Unfit(_)));
+		assert!(!error.is_bad_data());
+		let cached = chain.get_orphan(&hash).unwrap();
+		assert_eq!(cached.block.coinbase_opening, poisoned.coinbase_opening);
+		assert_eq!(cached.source_peers, bad_sources);
+		assert!(adapter.rejected.read_recursive().is_empty());
+
+		chain
+			.process_block(&mut secp, blocks[2].clone(), Options::SYNC, HashSet::new())
+			.unwrap();
+		{
+			let reported = adapter.reported.read_recursive();
+			assert_eq!(reported.len(), 2);
+			assert_eq!(reported[0].1, honest_sources);
+			assert!(!reported[0].2);
+			assert_eq!(reported[1].0.coinbase_opening, poisoned.coinbase_opening);
+			assert_eq!(reported[1].1, bad_sources);
+			assert!(reported[1].2);
+		}
+		assert_eq!(chain.head().unwrap().height, 3);
+		assert!(!chain.is_orphan(&hash));
+		chain
+			.process_block(&mut secp, good, Options::SYNC, honest_sources)
+			.unwrap();
+		assert_eq!(chain.head().unwrap().height, 4);
+		let rejected = adapter.rejected.read_recursive();
+		assert_eq!(rejected.len(), 1);
+		assert_eq!(rejected[0], (hash, bad_sources));
 	}
 
 	#[test]
@@ -11868,6 +11974,105 @@ mod tests {
 		drop(header_pmmr);
 		drop(store);
 		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn init_restarts_after_interrupted_genesis_index_initialization() {
+		for chain_type in [
+			global::ChainTypes::Mainnet,
+			global::ChainTypes::Floonet,
+			global::ChainTypes::AutomatedTesting,
+		] {
+			global::set_local_chain_type(chain_type);
+			global::set_local_nrd_enabled(false);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let genesis = global::get_genesis_block(&secp, 0).unwrap();
+			let genesis_tip = Tip::try_from_header(&genesis.header).unwrap();
+
+			for request_stop in [true, false] {
+				let dir = mwc_crates::tempfile::tempdir().unwrap();
+				let path = dir.path().to_str().unwrap();
+				if request_stop {
+					let stop_state = Arc::new(StopState::new());
+					stop_state.stop();
+					// Skip routine validation on this first run so the pending stop
+					// reaches index initialization after genesis HEAD is committed.
+					let result = Chain::init(
+						&secp,
+						0,
+						path.to_owned(),
+						Arc::new(crate::types::NoopAdapter {}),
+						genesis.clone(),
+						pow::verify_size,
+						false,
+						HashSet::new(),
+						None,
+						Some(stop_state),
+						true,
+					);
+					assert!(matches!(result, Err(Error::Stopped)));
+				} else {
+					let store = Arc::new(ChainStore::new(0, path).unwrap());
+					store.reset_legacy_blocks().unwrap();
+					let mut txhashset =
+						TxHashSet::open(path.to_owned(), store.clone(), None, &secp).unwrap();
+					let mut header_pmmr = recovery_header_pmmr(path);
+					setup_head(
+						&genesis,
+						&store,
+						&mut header_pmmr,
+						&mut txhashset,
+						&secp,
+						pow::verify_size,
+						None,
+						false,
+						None,
+					)
+					.unwrap();
+					// Simulate process exit immediately after validated head setup,
+					// before Chain::init can finish the remaining index work.
+				}
+
+				{
+					let store = ChainStore::new(0, path).unwrap();
+					assert_eq!(store.head().unwrap(), genesis_tip);
+					assert!(store.pending_chain_operation().unwrap().is_none());
+					let batch = store.batch_read().unwrap();
+					assert!(!batch.is_kernel_pos_index_complete().unwrap());
+				}
+
+				// A normal restart must authenticate the committed genesis state
+				// and finish initializing, with startup validation enabled.
+				let restarted = Chain::init(
+					&secp,
+					0,
+					path.to_owned(),
+					Arc::new(crate::types::NoopAdapter {}),
+					genesis.clone(),
+					pow::verify_size,
+					false,
+					HashSet::new(),
+					None,
+					None,
+					false,
+				)
+				.unwrap();
+				assert_eq!(restarted.head().unwrap(), genesis_tip);
+				let batch = restarted.store.batch_read().unwrap();
+				assert!(batch.is_output_pos_index_complete().unwrap());
+				assert!(batch.is_kernel_pos_index_complete().unwrap());
+				assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+				assert_eq!(
+					batch
+						.output_pos_iter()
+						.unwrap()
+						.collect::<Result<Vec<_>, _>>()
+						.unwrap()
+						.len(),
+					genesis.outputs().len()
+				);
+			}
+		}
 	}
 
 	#[test]

@@ -51,6 +51,8 @@ impl fmt::Debug for TorTransportConfig {
 
 impl TorBridgeConfig {
 	/// Serialize this setting as a TOML value suitable for one configuration line.
+	/// The tor_bridge security policy permits ordinary strings and temporary TOML
+	/// values here; this configuration data does not require zeroization.
 	pub fn to_inline_toml(&self) -> Result<String, toml::ser::Error> {
 		Ok(inline_value(&toml::Value::try_from(self)?))
 	}

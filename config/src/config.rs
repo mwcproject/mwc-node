@@ -443,6 +443,18 @@ impl GlobalConfig {
 	}
 
 	/// Serialize config
+	///
+	/// Configured peer lists are read-only: the node reads the operator's seeds,
+	/// peers_allow, peers_deny, and peers_preferred settings and never serializes
+	/// those values back to a config file. Current production callers only generate
+	/// default files through write_to_file (initial_setup_server and
+	/// config_command_server), with all four options set to None. Version migration
+	/// edits the original TOML text separately and preserves the peer lists.
+	///
+	/// Known limitation: PeerAddrs derives table serialization, but its deserializer
+	/// expects an array of address strings. This mismatch does not affect the current
+	/// default-file generation paths. Align those formats before adding support for
+	/// saving configurations with populated peer lists.
 	pub fn ser_config(&mut self) -> Result<Zeroizing<String>, ConfigError> {
 		self.validate()?;
 		// Avoid cloning the server's sensitive fields just to omit this table.
@@ -453,6 +465,8 @@ impl GlobalConfig {
 		let mut encoded =
 			Zeroizing::new(encoded.map_err(|e| ConfigError::SerializationError(e.to_string()))?);
 		if let Some(bridge) = &self.members.server.tor_config.tor_bridge {
+			// tor_bridge is ordinary configuration under the project's security policy;
+			// its inline value and formatting temporaries do not require zeroization.
 			let inline = bridge
 				.to_inline_toml()
 				.map_err(|e| ConfigError::SerializationError(e.to_string()))?;
