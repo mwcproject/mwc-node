@@ -946,13 +946,7 @@ impl Readable for Identifier {
 
 impl Writeable for RangeProof {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		if self.plen > MAX_PROOF_SIZE {
-			return Err(Error::TooLargeWriteErr(format!(
-				"RangeProof length {}, but max is {}",
-				self.plen, MAX_PROOF_SIZE
-			)));
-		}
-		writer.write_bytes(self)
+		writer.write_bytes(self.bytes()?)
 	}
 }
 
@@ -967,12 +961,7 @@ impl Readable for RangeProof {
 		}
 		let max_len = cmp::min(len as usize, MAX_PROOF_SIZE);
 		let p = reader.read_fixed_bytes(max_len)?;
-		let mut proof = [0; MAX_PROOF_SIZE];
-		proof[..p.len()].clone_from_slice(&p[..]);
-		Ok(RangeProof {
-			plen: p.len(),
-			proof,
-		})
+		Ok(RangeProof::from_bytes(&p)?)
 	}
 }
 
@@ -1013,16 +1002,10 @@ impl PMMRIndexHashable for RangeProofPmmr {
 
 impl Writeable for RangeProofPmmr {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		if self.proof.plen > MAX_PROOF_SIZE {
-			return Err(Error::TooLargeWriteErr(format!(
-				"RangeProof PMMR length {}, but max is {}",
-				self.proof.plen, MAX_PROOF_SIZE
-			)));
-		}
-
-		writer.write_u64(self.proof.plen as u64)?;
+		let bytes = self.proof.bytes()?;
+		writer.write_u64(bytes.len() as u64)?;
 		let mut proof = [0; MAX_PROOF_SIZE];
-		proof[..self.proof.plen].copy_from_slice(&self.proof.proof[..self.proof.plen]);
+		proof[..bytes.len()].copy_from_slice(bytes);
 		writer.write_fixed_bytes(&proof)
 	}
 }
@@ -1044,10 +1027,8 @@ impl Readable for RangeProofPmmr {
 				"RangeProof PMMR element contains non-zero padding".to_string(),
 			));
 		}
-		let mut proof = [0; MAX_PROOF_SIZE];
-		proof[..plen].clone_from_slice(&p[..plen]);
 		Ok(RangeProofPmmr {
-			proof: RangeProof { plen, proof },
+			proof: RangeProof::from_bytes(&p[..plen])?,
 		})
 	}
 }
@@ -1056,12 +1037,7 @@ impl PMMRable for RangeProof {
 	type E = RangeProofPmmr;
 
 	fn as_elmt(&self) -> Result<RangeProofPmmr, Error> {
-		if self.plen > MAX_PROOF_SIZE {
-			return Err(Error::CorruptedData(format!(
-				"RangeProof PMMR element length {}, max {}",
-				self.plen, MAX_PROOF_SIZE
-			)));
-		}
+		self.bytes()?;
 		Ok(RangeProofPmmr::from(*self))
 	}
 
@@ -1725,30 +1701,16 @@ mod tests {
 	}
 
 	#[test]
-	fn rangeproof_pmmr_element_rejects_oversized_lengths() {
-		let proof = RangeProof {
-			plen: MAX_PROOF_SIZE + 1,
-			proof: [0; MAX_PROOF_SIZE],
-		};
-
-		match proof.as_elmt() {
-			Err(Error::CorruptedData(msg)) => {
-				assert!(msg.contains("PMMR element length"), "{}", msg);
-			}
-			other => panic!(
-				"expected oversized PMMR rangeproof rejection, got {:?}",
-				other
-			),
-		}
+	fn rangeproof_pmmr_read_rejects_oversized_lengths() {
+		let bytes = ((MAX_PROOF_SIZE + 1) as u64).to_be_bytes();
+		let err = deserialize_default::<RangeProofPmmr, _>(0, &mut &bytes[..], true).unwrap_err();
+		assert!(matches!(err, Error::TooLargeReadErr(_)));
 	}
 
 	#[test]
 	fn rangeproof_pmmr_element_accepts_variable_size_length() {
 		for plen in [0, 3, MAX_PROOF_SIZE] {
-			let proof = RangeProof {
-				plen,
-				proof: [0; MAX_PROOF_SIZE],
-			};
+			let proof = RangeProof::from_bytes(&[0; MAX_PROOF_SIZE][..plen]).unwrap();
 
 			assert_eq!(proof.as_elmt().unwrap().into_inner(), proof);
 		}
@@ -1756,9 +1718,8 @@ mod tests {
 
 	#[test]
 	fn rangeproof_pmmr_serialization_pads_to_fixed_size() {
-		let mut proof = [9; MAX_PROOF_SIZE];
-		proof[..3].copy_from_slice(&[1, 2, 3]);
-		let proof = RangeProof { plen: 3, proof };
+		let mut proof = RangeProof::from_bytes(&[1, 2, 3]).unwrap();
+		proof.proof[3..].fill(9);
 		let mut bytes = vec![];
 
 		serialize_default(0, &mut bytes, &proof.as_elmt().unwrap(), true).unwrap();
@@ -1770,14 +1731,7 @@ mod tests {
 		let decoded: RangeProofPmmr = deserialize_default(0, &mut &bytes[..], true).unwrap();
 		assert_eq!(
 			decoded.into_inner(),
-			RangeProof {
-				plen: 3,
-				proof: {
-					let mut p = [0; MAX_PROOF_SIZE];
-					p[..3].copy_from_slice(&[1, 2, 3]);
-					p
-				},
-			}
+			RangeProof::from_bytes(&[1, 2, 3]).unwrap()
 		);
 	}
 
@@ -1799,12 +1753,8 @@ mod tests {
 
 	#[test]
 	fn rangeproof_pmmr_hashes_like_inner_proof() {
-		let mut proof_bytes = [9; MAX_PROOF_SIZE];
-		proof_bytes[..3].copy_from_slice(&[1, 2, 3]);
-		let proof = RangeProof {
-			plen: 3,
-			proof: proof_bytes,
-		};
+		let mut proof = RangeProof::from_bytes(&[1, 2, 3]).unwrap();
+		proof.proof[3..].fill(9);
 		let elmt = proof.as_elmt().unwrap();
 
 		assert_eq!(

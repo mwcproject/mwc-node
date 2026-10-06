@@ -317,10 +317,7 @@ fn output_identifier_write_rejects_invalid_commitment() {
 		.to_string()
 		.contains("Unable to write Pedersen commitment"));
 
-	let output = identifier.into_output(RangeProof {
-		plen: 0,
-		proof: [0; MAX_PROOF_SIZE],
-	});
+	let output = identifier.into_output(RangeProof::zero());
 	let err = ser::serialize_default(0, &mut bytes, &output, true).unwrap_err();
 	assert!(err
 		.to_string()
@@ -384,56 +381,29 @@ fn test_output_ser_deser() {
 #[test]
 fn output_proof_bytes_returns_canonical_proof_length() {
 	let commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
-	let mut proof = [0; MAX_PROOF_SIZE];
-	proof[..3].copy_from_slice(&[1, 2, 3]);
-	proof[3] = 4;
-	let output = Output::new(OutputFeatures::Plain, commit, RangeProof { plen: 3, proof });
+	let mut proof = RangeProof::from_bytes(&[1, 2, 3]).unwrap();
+	proof.proof[3] = 4;
+	let output = Output::new(OutputFeatures::Plain, commit, proof);
 
 	assert_eq!(output.proof_bytes().unwrap(), &[1, 2, 3]);
 }
 
 #[test]
-fn output_proof_bytes_rejects_oversized_public_length() {
-	let commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
-	let output = Output::new(
-		OutputFeatures::Plain,
-		commit,
-		RangeProof {
-			plen: MAX_PROOF_SIZE + 1,
-			proof: [0; MAX_PROOF_SIZE],
-		},
-	);
-
-	assert!(output.proof_bytes().is_err());
+fn rangeproof_construction_rejects_oversized_input() {
+	assert!(RangeProof::from_bytes(&[0; MAX_PROOF_SIZE + 1]).is_err());
 }
 
 #[test]
-fn output_json_ser_rejects_oversized_rangeproof_without_panic() {
-	let commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
-	let output = Output::new(
-		OutputFeatures::Plain,
-		commit,
-		RangeProof {
-			plen: MAX_PROOF_SIZE + 1,
-			proof: [0; MAX_PROOF_SIZE],
-		},
-	);
-
-	let res = serde_json::to_string(&output);
-
-	assert!(res.is_err());
+fn rangeproof_json_deser_rejects_oversized_input() {
+	let json = serde_json::to_string(&vec![0u8; MAX_PROOF_SIZE + 1]).unwrap();
+	assert!(serde_json::from_str::<RangeProof>(&json).is_err());
 }
 
 #[test]
-fn rangeproof_write_rejects_oversized_public_length() {
-	let proof = RangeProof {
-		plen: MAX_PROOF_SIZE + 1,
-		proof: [0; MAX_PROOF_SIZE],
-	};
-
-	let mut vec = vec![];
-	let err = ser::serialize_default(0, &mut vec, &proof, true).unwrap_err();
-	assert!(matches!(err, ser::Error::TooLargeWriteErr(_)));
+fn rangeproof_read_rejects_oversized_length() {
+	let bytes = ((MAX_PROOF_SIZE + 1) as u64).to_be_bytes();
+	let err = ser::deserialize_default::<RangeProof, _>(0, &mut &bytes[..], true).unwrap_err();
+	assert!(matches!(err, ser::Error::TooLargeReadErr(_)));
 }
 
 // Test coverage for verifying cut-through during transaction validation.

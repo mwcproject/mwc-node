@@ -7211,7 +7211,6 @@ mod tests {
 	use mwc_core::libtx::{aggsig, proof::ProofBuilder, reward as reward_builder};
 	use mwc_core::ser::PMMRIndexHashable;
 	use mwc_crates::rand::rngs::SysRng;
-	use mwc_crates::secp::constants::MAX_PROOF_SIZE;
 	use mwc_crates::secp::SecretKey;
 	use mwc_keychain::{ExtKeychain, Keychain};
 	use std::fs::OpenOptions;
@@ -7240,10 +7239,7 @@ mod tests {
 	}
 
 	fn test_rangeproof() -> RangeProof {
-		RangeProof {
-			plen: 0,
-			proof: [0; MAX_PROOF_SIZE],
-		}
+		RangeProof::zero()
 	}
 
 	fn test_input(features: OutputFeatures) -> Input {
@@ -8957,9 +8953,7 @@ mod tests {
 			Inputs::CommitOnly(vec![CommitWrapper::from(secp.commit_value(2).unwrap())]);
 		assert!(!blocks_equal_as_v3(0, &commit_only, &different_commit).unwrap());
 
-		let mut first_proof = test_rangeproof();
-		first_proof.plen = 1;
-		first_proof.proof[0] = 1;
+		let first_proof = RangeProof::from_bytes(&[1]).unwrap();
 		let mut second_proof = first_proof;
 		second_proof.proof[0] = 2;
 		let mut first_output = Block::default(0);
