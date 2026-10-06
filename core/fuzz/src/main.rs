@@ -52,14 +52,13 @@ fn generate<W: ser::Writeable>(
 	if !dir_path.is_dir() {
 		fs::create_dir_all(&dir_path).map_err(|e| {
 			error!("fail: {}", e);
-			ser::Error::IOErr("can't create corpus directory".to_owned(), e.kind())
+			ser::Error::IOErr(e)
 		})?;
 	}
 
 	let pattern_path = dir_path.join("pattern");
 	if !pattern_path.exists() {
-		let mut file = File::create(&pattern_path)
-			.map_err(|e| ser::Error::IOErr("can't create a pattern file".to_owned(), e.kind()))?;
+		let mut file = File::create(&pattern_path).map_err(ser::Error::IOErr)?;
 		ser::serialize(&mut file, version, 0, &obj, true)
 	} else {
 		Ok(())

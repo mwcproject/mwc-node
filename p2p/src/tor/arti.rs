@@ -709,10 +709,11 @@ where
 
 	// slow path: already inside the global runtime → spawn + join
 	let res = thread::scope(|s| {
-		let r = s
-			.spawn(|| {
+		let r = thread::Builder::new()
+			.spawn_scoped(s, || {
 				atri_rt.block_on(fut) // runs on different thread
 			})
+			.map_err(|e| Error::Internal(format!("failed to spawn Arti async worker: {}", e)))?
 			.join()
 			.map_err(|_| Error::Internal("run_async_block join error".into()))?;
 		Ok::<R, Error>(r)

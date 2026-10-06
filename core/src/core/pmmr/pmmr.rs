@@ -529,7 +529,7 @@ where
 					))
 				})? / num_cores;
 
-				let handle = s.spawn(move |_| {
+				let handle = s.builder().spawn(move |_| {
 					for n in idx1..idx2 {
 						let height = bintree_postorder_height(n);
 						if height > 0 {
@@ -634,6 +634,9 @@ where
 					}
 					Ok(())
 				});
+				let handle = handle.map_err(|e| {
+					Error::InternalError(format!("failed to spawn PMMR validation worker: {}", e))
+				})?;
 				handles.push(handle);
 			}
 			for handle in handles {

@@ -1849,18 +1849,25 @@ impl Chain {
 						// this block is expected to be from the main chain, we are expecting approve long sequence, not a short branch
 						if header.hash(context_id)? == b.hash(context_id)? {
 							blocks.push(b.clone());
+							let mut use_batch = true;
 							loop {
 								let last_block = blocks.last().ok_or(Error::Other(
 									"Internal error, no blocks at process_block".into(),
 								))?;
-								let next_hegiht =
+								// A sequence reaching the cutoff must be processed one block
+								// at a time. Stop before looking beyond the known header tip.
+								if last_block.header.height >= multiple_processing_height_limit {
+									use_batch = false;
+									break;
+								}
+								let next_height =
 									last_block.header.height.checked_add(1).ok_or_else(|| {
 										Error::DataOverflow(format!(
 											"Chain::process_block, last_block.header.height={}",
 											last_block.header.height
 										))
 									})?;
-								match self.get_header_by_height(next_hegiht) {
+								match self.get_header_by_height(next_height) {
 									Ok(header) => {
 										if let Some(orphan) =
 											self.orphans.get_orphan(&header.hash(context_id)?)
@@ -1869,19 +1876,18 @@ impl Chain {
 											continue; // can process the next block
 										}
 									}
+									Err(Error::InvalidHeaderHeight(_)) => {
+										// The header chain can shrink between these optional
+										// lookups. Let normal block validation handle the block.
+										use_batch = false;
+										break;
+									}
 									Err(e) if e.is_not_found() => {}
 									Err(e) => return Err(e),
 								}
 								break;
 							}
-							if blocks
-								.last()
-								.ok_or(Error::Other(
-									"Process block internal error, collection was empty".into(),
-								))?
-								.header
-								.height < multiple_processing_height_limit
-							{
+							if use_batch {
 								// good, we can process multiple blocks, it should be faster than one by one
 								let mut block_hashes: Vec<(u64, Hash)> = Vec::new();
 								for b in &blocks {
@@ -1929,6 +1935,10 @@ impl Chain {
 								}
 							}
 						}
+					}
+					Err(Error::InvalidHeaderHeight(_)) => {
+						// A concurrent header rewind can make this optional lookup
+						// out of range. Fall back to single-block processing below.
 					}
 					Err(e) if e.is_not_found() => {}
 					Err(e) => return Err(e),
@@ -8845,6 +8855,74 @@ mod tests {
 		drop(source);
 		clean_output_dir(&target_dir);
 		clean_output_dir(&source_dir);
+	}
+
+	#[test]
+	fn process_block_drains_orphans_through_header_tip_without_rejecting_peers() {
+		let source_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let source = mine_chain(source_dir.path().to_str().unwrap(), 4);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let source_blocks: Vec<_> = (1..=3)
+			.map(|height| {
+				let header = source.get_header_by_height(height).unwrap();
+				source.get_block_for_header(&header).unwrap()
+			})
+			.collect();
+		let source_peers = HashSet::from(["127.0.0.1:3414".to_owned()]);
+
+		// Use a short mined chain to exercise both a cutoff at the header tip
+		// and a cutoff below it. Production retains its 100-block safety depth.
+		for batch_safety_depth in [0, 1] {
+			let target_dir = mwc_crates::tempfile::tempdir().unwrap();
+			let adapter = Arc::new(RecordingAdapter::default());
+			let chain = init_chain_with_recording_adapter(
+				target_dir.path().to_str().unwrap(),
+				&secp,
+				source.genesis.clone(),
+				adapter.clone(),
+			);
+			chain
+				.process_block_batch_safety_depth
+				.store(batch_safety_depth, Ordering::SeqCst);
+			for block in &source_blocks {
+				chain
+					.process_block_header(&block.header, Options::SYNC)
+					.unwrap();
+			}
+			for block in source_blocks.iter().skip(1) {
+				let result = chain.process_block(
+					&mut secp,
+					block.clone(),
+					Options::SYNC,
+					source_peers.clone(),
+				);
+				assert!(matches!(result, Err(Error::Orphan(_))));
+			}
+			assert_eq!(chain.orphans_len(), 2);
+
+			let tip = chain
+				.process_block(
+					&mut secp,
+					source_blocks[0].clone(),
+					Options::SYNC,
+					source_peers.clone(),
+				)
+				.unwrap()
+				.unwrap();
+
+			// The single-block path returns the parent's tip, then drains all
+			// connected orphans, including those at and above the batch cutoff.
+			assert_eq!(tip.height, 1);
+			assert_eq!(chain.head().unwrap(), source.head().unwrap());
+			assert_eq!(chain.orphans_len(), 0);
+			assert!(adapter.reported.read_recursive().is_empty());
+			let accepted = adapter.accepted.read_recursive();
+			assert_eq!(accepted.len(), source_blocks.len());
+			for ((hash, status), block) in accepted.iter().zip(&source_blocks) {
+				assert_eq!(*hash, block.hash(0).unwrap());
+				assert!(status.is_next());
+			}
+		}
 	}
 
 	#[test]

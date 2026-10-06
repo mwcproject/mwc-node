@@ -4894,24 +4894,38 @@ impl<'a> Extension<'a> {
 					let mut tx_kernels2process = Vec::with_capacity(tx_kernels.len());
 					tx_kernels2process.append(&mut tx_kernels);
 					debug_assert!(tx_kernels.is_empty());
-					let handle = s.spawn(move |_| {
-						secp_static::with_verify_only(Error::from, |secp| {
-							TxKernel::batch_sig_verify(self.context_id, &tx_kernels2process, secp)?;
-							Ok(tx_kernels2process.len())
+					let handle = s
+						.builder()
+						.spawn(move |_| {
+							secp_static::with_verify_only(Error::from, |secp| {
+								TxKernel::batch_sig_verify(
+									self.context_id,
+									&tx_kernels2process,
+									secp,
+								)?;
+								Ok(tx_kernels2process.len())
+							})
 						})
-					});
+						.map_err(|e| {
+							Error::Other(format!("failed to spawn kernel signature worker: {}", e))
+						})?;
 					running_threads.push_back(handle);
 				}
 			}
 
 			// remaining part which not full of batch_size range proofs
 			if !stopped && !tx_kernels.is_empty() {
-				let handle = s.spawn(move |_| {
-					secp_static::with_verify_only(Error::from, |secp| {
-						TxKernel::batch_sig_verify(self.context_id, &tx_kernels, secp)?;
-						Ok(tx_kernels.len())
+				let handle = s
+					.builder()
+					.spawn(move |_| {
+						secp_static::with_verify_only(Error::from, |secp| {
+							TxKernel::batch_sig_verify(self.context_id, &tx_kernels, secp)?;
+							Ok(tx_kernels.len())
+						})
 					})
-				});
+					.map_err(|e| {
+						Error::Other(format!("failed to spawn kernel signature worker: {}", e))
+					})?;
 				running_threads.push_back(handle);
 			}
 
@@ -5077,24 +5091,38 @@ impl<'a> Extension<'a> {
 					proofs2process.append(&mut proofs);
 					debug_assert!(proofs.is_empty());
 
-					let handle = s.spawn(move |_| {
-						secp_static::with_verify_only_mut(Error::from, |secp| {
-							Output::batch_verify_proofs(&commits2process, &proofs2process, secp)?;
-							Ok(proof_count)
+					let handle = s
+						.builder()
+						.spawn(move |_| {
+							secp_static::with_verify_only_mut(Error::from, |secp| {
+								Output::batch_verify_proofs(
+									&commits2process,
+									&proofs2process,
+									secp,
+								)?;
+								Ok(proof_count)
+							})
 						})
-					});
+						.map_err(|e| {
+							Error::Other(format!("failed to spawn rangeproof worker: {}", e))
+						})?;
 					running_threads.push_back(handle);
 				}
 			}
 
 			// remaining part which not full of batch_size range proofs
 			if !stopped && !proofs.is_empty() {
-				let handle = s.spawn(move |_| {
-					secp_static::with_verify_only_mut(Error::from, |secp| {
-						Output::batch_verify_proofs(&commits, &proofs, secp)?;
-						Ok(proof_count)
+				let handle = s
+					.builder()
+					.spawn(move |_| {
+						secp_static::with_verify_only_mut(Error::from, |secp| {
+							Output::batch_verify_proofs(&commits, &proofs, secp)?;
+							Ok(proof_count)
+						})
 					})
-				});
+					.map_err(|e| {
+						Error::Other(format!("failed to spawn rangeproof worker: {}", e))
+					})?;
 				running_threads.push_back(handle);
 			}
 
