@@ -836,10 +836,32 @@ impl Peers {
 		// Keep one snapshot and remove candidates from it as each stage decides.
 		let mut remaining: Vec<_> = self.peers.read_recursive().values().cloned().collect();
 
-		// build a list of peers to be cleaned up
+		// Check abuse before defunct/disconnected states so closing a connection
+		// cannot bypass a ban for messages already received.
 		remaining.retain(|peer| {
 			let state_update = if peer.is_banned() {
 				info!("clean_peers {:?}, peer banned", peer.info.addr);
+				Some(CleanupStateUpdate::PreserveState)
+			} else if peer.is_abusive() {
+				let received = peer.tracker().received_bytes.write().count_per_min();
+				let sent = peer.tracker().sent_bytes.write().count_per_min();
+				info!(
+					"clean_peers {:?}, abusive ({} sent, {} recv)",
+					peer.info.addr, sent, received,
+				);
+				// Cache pruning can remove a live peer's row. Create the ban
+				// record if needed so reconnecting cannot bypass abuse cleanup.
+				if let Err(e) = self.add_banned(
+					peer.info.addr.clone(),
+					ReasonForBan::BadRequest,
+					"Abusive message rate",
+				) {
+					error!(
+						"failed to mark abusive peer {} banned: {}",
+						peer.info.addr, e
+					);
+					summary.record_persistence_failure(e);
+				}
 				Some(CleanupStateUpdate::PreserveState)
 			} else if peer.is_defunct() {
 				info!("clean_peers {:?}, peer defunct", peer.info.addr);
@@ -851,21 +873,6 @@ impl Peers {
 			} else if !peer.is_connected() {
 				info!("clean_peers {:?}, not connected", peer.info.addr);
 				Some(CleanupStateUpdate::MarkHealthyOnStop)
-			} else if peer.is_abusive() {
-				let received = peer.tracker().received_bytes.write().count_per_min();
-				let sent = peer.tracker().sent_bytes.write().count_per_min();
-				info!(
-					"clean_peers {:?}, abusive ({} sent, {} recv)",
-					peer.info.addr, sent, received,
-				);
-				if let Err(e) = self.update_state(&peer.info.addr, State::Banned) {
-					error!(
-						"failed to mark abusive peer {} banned: {}",
-						peer.info.addr, e
-					);
-					summary.record_persistence_failure(e);
-				}
-				Some(CleanupStateUpdate::PreserveState)
 			} else if liveness_deferred {
 				trace!(
 					"clean_peers {:?}, liveness checks deferred by local chain maintenance",

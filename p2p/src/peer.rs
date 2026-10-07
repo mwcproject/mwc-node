@@ -2114,6 +2114,105 @@ mod tests {
 	}
 
 	#[test]
+	fn clean_peers_bans_abusive_peers_after_disconnect() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+		for defunct in [false, true] {
+			for abusive in [false, true] {
+				let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+				let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+				let config = P2PConfig::default();
+				let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+				let peer = Arc::new(connected_test_peer());
+				let addr = peer.info.addr.clone();
+				peers.add_connected(peer.clone()).unwrap();
+				for _ in 0..MAX_PEER_MSG_PER_MIN + u64::from(abusive) {
+					peer.tracker().inc_received(16);
+				}
+
+				// A remote disconnect or connection failure must not erase an abuse ban.
+				peer.stop();
+				if defunct {
+					peer.set_defunct();
+				}
+				assert!(!peer.is_connected());
+
+				let summary = peers.clean_peers(10, 10, Capabilities::UNKNOWN, config);
+
+				assert_eq!(summary.removed_peers, 1);
+				assert_eq!(summary.persistence_failures, 0);
+				assert!(!peers.is_known(&addr));
+				let expected = if abusive {
+					crate::store::State::Banned
+				} else if defunct {
+					crate::store::State::Defunct
+				} else {
+					crate::store::State::Healthy
+				};
+				assert_eq!(
+					peers.get_peer(&addr).unwrap().flags,
+					expected,
+					"defunct={defunct}, abusive={abusive}"
+				);
+				if abusive {
+					assert!(peers
+						.add_connected(Arc::new(connected_test_peer()))
+						.is_err());
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn clean_peers_bans_abusive_peer_after_store_pruning() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let config = P2PConfig::default();
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		let peer = Arc::new(connected_block_extra_peer(3414, 0));
+		let addr = peer.info.addr.clone();
+		peers.add_connected(peer.clone()).unwrap();
+		let stored_peer = peers.get_peer(&addr).unwrap();
+
+		// Fill the 3,000-entry cache with newer healthy peers so normal pruning
+		// evicts the older record while its connection remains alive.
+		let newer_peers = (4000..7000)
+			.map(|port| crate::store::PeerData {
+				addr: PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], port))),
+				last_connected: stored_peer.last_connected + 1,
+				..stored_peer.clone()
+			})
+			.collect();
+		peers.save_peers(newer_peers).unwrap();
+		assert!(!peers.exists_peer(&addr).unwrap());
+		assert!(peer.is_connected());
+		assert!(peers.is_known(&addr));
+
+		for _ in 0..=MAX_PEER_MSG_PER_MIN {
+			peer.tracker().inc_received(16);
+		}
+		let summary = peers.clean_peers(10, 10, Capabilities::UNKNOWN, config);
+
+		assert_eq!(summary.removed_peers, 1);
+		assert_eq!(summary.persistence_failures, 0);
+		assert!(summary.first_persistence_error().is_none());
+		assert!(!peer.is_connected());
+		assert!(!peers.is_known(&addr));
+		let banned = peers.get_peer(&addr).unwrap();
+		assert_eq!(banned.flags, crate::store::State::Banned);
+		assert_eq!(banned.ban_reason, ReasonForBan::BadRequest);
+		assert!(banned.last_banned > 0);
+		assert!(matches!(
+			peers.add_connected(Arc::new(connected_block_extra_peer(3414, 0))),
+			Err(Error::ConnectionClose(_))
+		));
+		assert!(!peers.is_known(&addr));
+		assert!(peers.is_banned(&addr).unwrap());
+	}
+
+	#[test]
 	fn clean_peers_reports_update_state_failure_and_removes_defunct_peer() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 

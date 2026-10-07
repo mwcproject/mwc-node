@@ -389,6 +389,108 @@ fn segment_proof_reads_pruned_leaf_sibling_from_hash_file() {
 }
 
 #[test]
+fn compacted_segment_leaf_clones_are_linear() {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	static LEAF_CLONES: AtomicUsize = AtomicUsize::new(0);
+
+	#[derive(Debug)]
+	struct CountedElem(TestElem);
+
+	impl Clone for CountedElem {
+		fn clone(&self) -> Self {
+			LEAF_CLONES.fetch_add(1, Ordering::Relaxed);
+			Self(self.0)
+		}
+	}
+
+	impl DefaultHashable for CountedElem {}
+
+	impl PMMRable for CountedElem {
+		type E = Self;
+
+		fn as_elmt(&self) -> Result<Self, Error> {
+			Ok(Self(self.0))
+		}
+
+		fn elmt_size() -> Option<u16> {
+			TestElem::elmt_size()
+		}
+	}
+
+	impl Writeable for CountedElem {
+		fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+			self.0.write(writer)
+		}
+	}
+
+	impl Readable for CountedElem {
+		fn read<R: Reader>(reader: &mut R) -> Result<Self, Error> {
+			Ok(Self(TestElem::read(reader)?))
+		}
+	}
+
+	for height in [12, 13] {
+		let data_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let mut backend = PMMRBackend::new(
+			data_dir.path(),
+			true,
+			ProtocolVersion(1),
+			0,
+			None,
+			VariableSizeMetadataValidation::Full,
+		)
+		.unwrap();
+		let n_leaves = 1u32 << height;
+		let mut bitmap = Bitmap::new();
+		let mut mmr = PMMR::new(&mut backend);
+		for i in 0..n_leaves {
+			mmr.push(&CountedElem(TestElem([i / 7, i / 5, i / 3, i])))
+				.unwrap();
+		}
+		let mmr_size = mmr.unpruned_size();
+		let root = mmr.root().unwrap();
+
+		// Alternate compacted pairs with retained pairs to force many separate
+		// pruned-subtree appends during segment construction.
+		for i in 0..n_leaves {
+			if i % 4 < 2 {
+				assert!(mmr
+					.prune(pmmr::insertion_to_pmmr_index(u64::from(i)).unwrap())
+					.unwrap());
+			} else {
+				bitmap.add(i);
+			}
+		}
+		backend.sync().unwrap();
+		backend.check_compact(mmr_size, &Bitmap::new()).unwrap();
+		backend.sync().unwrap();
+
+		let mmr = ReadonlyPMMR::at(&backend, mmr_size);
+		assert!(mmr.get_data_from_file(0).unwrap().is_none());
+		assert_eq!(mmr.root().unwrap(), root);
+		LEAF_CLONES.store(0, Ordering::Relaxed);
+		let segment = Segment::<CountedElem>::from_pmmr(
+			SegmentIdentifier { height, idx: 0 },
+			&mmr,
+			Some(&bitmap),
+			usize::from(TestElem::elmt_size().unwrap()),
+			2 * 256 * 1034,
+		)
+		.unwrap();
+		let clones = LEAF_CLONES.load(Ordering::Relaxed);
+		assert!(
+			clones <= 2 * n_leaves as usize,
+			"building a segment with {} leaves cloned leaf data {} times",
+			n_leaves,
+			clones
+		);
+		assert_eq!(segment.leaf_iter().count(), (n_leaves / 2) as usize);
+		segment.validate(0, mmr_size, Some(&bitmap), &root).unwrap();
+	}
+}
+
+#[test]
 fn ser_round_trip() {
 	let t = Utc::now();
 	let data_dir = format!(

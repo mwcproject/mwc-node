@@ -541,8 +541,23 @@ where
 			return Ok(true);
 		}
 
-		// No need to process this compact block if we have previously accepted the _full block_.
 		let chain = self.chain()?;
+		// Pruned blocks retain their headers, so is_known() alone cannot reject
+		// historical replays. Apply the full-block horizon before reconstruction
+		// or scheduling requests for missing transactions.
+		let horizon = chain
+			.head()?
+			.height
+			.saturating_sub(u64::from(global::cut_through_horizon(self.context_id)));
+		if cb.header.height < horizon {
+			debug!(
+				"compact_block_received: skipping block at {} below horizon {} from {}",
+				cb.header.height, horizon, peer_info.addr
+			);
+			return Ok(true);
+		}
+
+		// No need to process this compact block if we have previously accepted the _full block_.
 		match chain.is_known(&cb.header) {
 			Ok(()) => {}
 			Err(e) => {
@@ -557,14 +572,14 @@ where
 
 		let cb_hash = cb.hash(self.context_id)?;
 		debug!(
-				"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
-				cb_hash,
-				cb.header.height,
-				peer_info.addr,
-				cb.out_full().len(),
-				cb.kern_full().len(),
-				cb.kern_ids().len(),
-			);
+			"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
+			cb_hash,
+			cb.header.height,
+			peer_info.addr,
+			cb.out_full().len(),
+			cb.kern_full().len(),
+			cb.kern_ids().len(),
+		);
 
 		if cb.kern_ids().is_empty() {
 			// push the freshly hydrated block through the chain pipeline
@@ -1442,7 +1457,10 @@ where
 				}
 
 				if e.is_bad_data() && !e.requires_chain_recovery() {
-					warn!("process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}", bhash, peer_info.addr, e);
+					warn!(
+						"process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}",
+						bhash, peer_info.addr, e
+					);
 					self.validate_chain(secp, &bhash)?;
 					// ChainAdapter already reported this terminal outcome, including
 					// the same failure when it occurs later while draining orphans.
@@ -1473,7 +1491,10 @@ where
 				if !previous_known {
 					// requesting headers from that peer, intentionally without  self.sync_manager.add_header_request
 					if let Some(peer) = peers.get_connected_peer(&peer_info.addr) {
-						debug!("Got block with unknow headers, requesting headers from the peer {} at height {}", peer_info.addr, head.height);
+						debug!(
+							"Got block with unknow headers, requesting headers from the peer {} at height {}",
+							peer_info.addr, head.height
+						);
 						let heights = get_locator_heights(head.height);
 						let locator = chain.get_locator_hashes(head, &heights)?;
 						if let Err(e) = peer.send_header_request(locator) {
@@ -1921,7 +1942,7 @@ impl mwc_pool::PoolAdapter for PoolToNetAdapter {
 					return Err(mwc_pool::PoolError::Other(format!(
 						"PoolToNetAdapter::stem_tx_accepted, peers are not available, {}",
 						e
-					)))
+					)));
 				}
 			}
 		} else {
@@ -2312,6 +2333,197 @@ mod test {
 		let peers = throttle.peers.read_recursive();
 		assert!(!peers.contains_key(&stale_peer));
 		assert!(peers.contains_key(&active_peer));
+	}
+
+	#[test]
+	#[cfg(feature = "test-support")]
+	fn compact_block_received_skips_pruned_blocks_before_reconstruction() {
+		use mwc_chain::types::NoopAdapter;
+		use mwc_core::core::TransactionBody;
+		use mwc_core::libtx::{reward, ProofBuilder};
+		use mwc_core::{consensus, pow};
+		use mwc_crates::chrono;
+		use mwc_crates::secp::ContextFlag;
+		use mwc_crates::tempfile::TempDir;
+		use mwc_keychain::{ExtKeychain, Keychain};
+		use mwc_p2p::types::{Direction, PeerLiveInfo};
+		use mwc_p2p::{Capabilities, ChainAdapter};
+		use mwc_pool::types::{NoopPoolAdapter, PoolConfig};
+		use mwc_util::StopState;
+
+		fn with_missing_kernel(mut block: core::Block) -> CompactBlock {
+			// Kernel IDs are peer-supplied hints; the validated header does not
+			// prevent a peer from advertising an ID absent from our pool.
+			block.body.kernels.push(
+				TxKernel::with_features(core::KernelFeatures::Plain {
+					fee: 1u64.try_into().unwrap(),
+				})
+				.unwrap(),
+			);
+			CompactBlock::from(block).unwrap()
+		}
+
+		const CONTEXT: u32 = 1_932_001;
+		global::init_global_chain_type(CONTEXT, global::ChainTypes::AutomatedTesting).unwrap();
+		global::init_global_nrd_enabled(CONTEXT, false).unwrap();
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let dir = TempDir::new().unwrap();
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				CONTEXT,
+				dir.path().to_str().unwrap().to_string(),
+				Arc::new(NoopAdapter {}),
+				global::get_genesis_block(&secp, CONTEXT).unwrap(),
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let sync_state = Arc::new(SyncState::new());
+		sync_state.reset();
+		let stop_state = Arc::new(StopState::new());
+		let sync_manager = Arc::new(SyncManager::new(
+			chain.clone(),
+			sync_state.clone(),
+			stop_state.clone(),
+		));
+		let pool_chain = Arc::new(PoolToChainAdapter::new());
+		pool_chain.set_chain(chain.clone()).unwrap();
+		let pool = Arc::new(RwLock::new(mwc_pool::TransactionPool::new(
+			CONTEXT,
+			PoolConfig::default(),
+			pool_chain,
+			Arc::new(NoopPoolAdapter {}),
+		)));
+		let adapter = NetToChainAdapter::new(
+			CONTEXT,
+			sync_state,
+			chain.clone(),
+			sync_manager,
+			pool,
+			ChainValidationMode::Disabled,
+			vec![],
+		)
+		.unwrap();
+		let peer = PeerInfo {
+			capabilities: Capabilities::BLOCK_EXTRA,
+			user_agent: "test".into(),
+			version: ProtocolVersion::local(),
+			addr: test_peer_addr(3414),
+			direction: Direction::Inbound,
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+			tx_base_fee: 0,
+		};
+
+		let keychain = ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let final_horizon = 10;
+		let head_height = u64::from(global::cut_through_horizon(CONTEXT)) + final_horizon;
+		let mut old_blocks = Vec::new();
+		for height in 1..=head_height {
+			let parent = chain.head_header().unwrap();
+			let key =
+				ExtKeychain::derive_key_id(1, u32::try_from(height).unwrap(), 0, 0, 0).unwrap();
+			let binding = chain
+				.coinbase_binding_for_template(&secp, &parent, &TransactionBody::empty())
+				.unwrap();
+			let (output, kernel, opening) = reward::output_s2c(
+				CONTEXT,
+				&keychain,
+				&builder,
+				&key,
+				0,
+				height,
+				&mut secp,
+				binding.digest().unwrap(),
+			)
+			.unwrap();
+			let next = consensus::next_difficulty(
+				CONTEXT,
+				height,
+				chain.difficulty_iter().unwrap(),
+				&mut consensus::DifficultyCache::new(),
+			)
+			.unwrap();
+			let mut block = core::Block::new(
+				CONTEXT,
+				&parent,
+				&[],
+				next.difficulty,
+				(output, kernel),
+				&secp,
+			)
+			.unwrap();
+			block.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(CONTEXT, height).then_some(opening);
+			block.header.timestamp = parent.timestamp + chrono::Duration::seconds(60);
+			block.header.pow.secondary_scaling = next.secondary_scaling;
+			chain.set_txhashset_roots(&secp, &mut block).unwrap();
+			pow::pow_size(
+				CONTEXT,
+				&mut block.header,
+				next.difficulty,
+				global::proofsize(CONTEXT),
+				global::min_edge_bits(CONTEXT),
+			)
+			.unwrap();
+
+			if height == 1 {
+				// With a head below the horizon length, new compact blocks must
+				// still reach reconstruction (saturating subtraction).
+				let cb = with_missing_kernel(block.clone());
+				let hash = cb.hash(CONTEXT).unwrap();
+				assert!(adapter
+					.compact_block_received(&mut secp, cb, &peer)
+					.unwrap());
+				assert!(adapter
+					.compact_block_reconstruction_cache
+					.read_recursive()
+					.contains_key(&hash));
+				adapter.compact_block_reconstruction_cache.write().clear();
+			}
+			if height < final_horizon {
+				old_blocks.push(block.clone());
+			}
+			chain
+				.process_block(&mut secp, block, Options::NONE, HashSet::new())
+				.unwrap();
+		}
+		chain.compact(None, stop_state).unwrap();
+		assert_eq!(chain.tail().unwrap().height, final_horizon);
+
+		for block in &old_blocks {
+			let hash = block.hash(CONTEXT).unwrap();
+			assert!(!chain.block_exists(&hash).unwrap());
+			assert!(chain.get_block_header(&hash).is_ok());
+			chain.is_known(&block.header).unwrap();
+			for cb in [
+				CompactBlock::from(block.clone()).unwrap(),
+				with_missing_kernel(block.clone()),
+			] {
+				assert!(adapter
+					.compact_block_received(&mut secp, cb, &peer)
+					.unwrap());
+			}
+		}
+		assert!(adapter
+			.compact_block_reconstruction_cache
+			.read_recursive()
+			.is_empty());
+
+		// Exactly at the horizon, continue normal validation. Mutating a pruned
+		// header's height makes it invalid; silently skipping it would hide an
+		// off-by-one error in the admission check.
+		let mut boundary = with_missing_kernel(old_blocks.pop().unwrap());
+		boundary.header.height = final_horizon;
+		assert!(!adapter
+			.compact_block_received(&mut secp, boundary, &peer)
+			.unwrap());
 	}
 
 	#[test]

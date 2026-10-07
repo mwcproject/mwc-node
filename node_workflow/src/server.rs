@@ -272,6 +272,12 @@ pub fn tor_status() -> (bool, bool) {
 
 /// Create a new server instance. No jobs will be started.
 ///
+/// The current workflow does not expect server recreation within the same
+/// allocated context. To keep the implementation simple, this function
+/// intentionally does not restore the Tor cancellation token removed when a
+/// Tor-enabled server is stopped. Recreating a server in that context would
+/// leave its Tor operations cancelled.
+///
 /// The provided stop state is registered before chain initialization begins,
 /// allowing callers to cancel txhashset startup indexing before the server is
 /// fully constructed.

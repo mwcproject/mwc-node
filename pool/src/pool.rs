@@ -693,25 +693,23 @@ where
 
 		// Rehash all entries in the pool using short_ids based on provided hash and nonce.
 		'outer: for x in self.entries.values() {
+			let mut selected = false;
 			for k in x.tx.kernels() {
 				// rehash each kernel to calculate the block specific short_id
 				let short_id = k.short_id(self.context_id, &hash, nonce)?;
 				let short_id_hash = short_id.hash(self.context_id)?;
 				if kern_id_hashes.contains(&short_id_hash) {
-					txs.push(x.tx.clone());
+					// Pool entries are unique transactions. Clone each selected entry
+					// once, but continue scanning its kernels to account for every ID.
+					if !selected {
+						txs.push(x.tx.clone());
+						selected = true;
+					}
 					found_id_hashes.insert(short_id_hash);
 				}
 				if found_id_hashes.len() == kern_id_hashes.len() {
 					break 'outer;
 				}
-			}
-		}
-
-		let mut dedup_txs = Vec::with_capacity(txs.len());
-		let mut dedup_tx_hashes = HashSet::with_capacity(txs.len());
-		for tx in txs {
-			if dedup_tx_hashes.insert(tx.hash(self.context_id)?) {
-				dedup_txs.push(tx);
 			}
 		}
 
@@ -722,7 +720,7 @@ where
 			}
 		}
 
-		Ok((dedup_txs, missing_short_ids))
+		Ok((txs, missing_short_ids))
 	}
 
 	/// Take pool transactions, filtering and ordering them in a way that's
@@ -1942,6 +1940,79 @@ mod tests {
 		assert_eq!(pool.indexes.kernels, expected_kernels);
 		assert_eq!(pool.indexes.nrd_excesses, expected_nrd_excesses);
 		assert_eq!(pool.indexes.component_count, expected_components);
+	}
+
+	#[test]
+	fn retrieve_transactions_handles_aggregates_and_missing_kernels() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let keychain = ExtKeychain::from_seed(&secp, &[43u8; 32], false).unwrap();
+		let header = global::get_genesis_block(&secp, 0).unwrap().header;
+		let mut pool = Pool::new(0, Arc::new(AcceptingChain), "test".into());
+
+		let first = test_transaction(10, 8, 1, &keychain, &mut secp);
+		let second = test_transaction(11, 9, 3, &keychain, &mut secp);
+		let aggregate = transaction::aggregate(0, &[first, second], &secp).unwrap();
+		let single = test_transaction(12, 10, 5, &keychain, &mut secp);
+		let absent = test_transaction(13, 11, 7, &keychain, &mut secp);
+		for tx in [&aggregate, &single] {
+			pool.add_entry(
+				PoolEntry::new(tx.clone(), TxSource::Broadcast),
+				None,
+				&header,
+				&mut secp,
+			)
+			.unwrap();
+		}
+
+		let hash = header.hash(0).unwrap();
+		let nonce = 42;
+		let aggregate_ids = aggregate
+			.kernels()
+			.iter()
+			.map(|kernel| kernel.short_id(0, &hash, nonce).unwrap())
+			.collect::<Vec<_>>();
+		let single_id = single.kernels()[0].short_id(0, &hash, nonce).unwrap();
+		let absent_id = absent.kernels()[0].short_id(0, &hash, nonce).unwrap();
+
+		// All kernels of the aggregate must be marked found even though its
+		// transaction is selected once. Lookup must also reach the next entry.
+		let mut ids = aggregate_ids.clone();
+		ids.push(single_id);
+		let (found, missing) = pool.retrieve_transactions(hash, nonce, &ids).unwrap();
+		assert_eq!(found.len(), 2);
+		assert_eq!(found[0].hash(0).unwrap(), aggregate.hash(0).unwrap());
+		assert_eq!(found[1].hash(0).unwrap(), single.hash(0).unwrap());
+		assert!(missing.is_empty());
+
+		let mut ids = aggregate_ids.clone();
+		ids.push(absent_id.clone());
+		let (found, missing) = pool.retrieve_transactions(hash, nonce, &ids).unwrap();
+		assert_eq!(found.len(), 1);
+		assert_eq!(found[0].hash(0).unwrap(), aggregate.hash(0).unwrap());
+		assert_eq!(missing.len(), 1);
+		assert_eq!(missing[0].as_ref(), absent_id.as_ref());
+
+		// A subset of an aggregate's kernels still selects that transaction;
+		// the caller validates whether it reconstructs the requested block.
+		let (found, missing) = pool
+			.retrieve_transactions(hash, nonce, &aggregate_ids[..1])
+			.unwrap();
+		assert_eq!(found.len(), 1);
+		assert_eq!(found[0].hash(0).unwrap(), aggregate.hash(0).unwrap());
+		assert!(missing.is_empty());
+
+		let (found, missing) = pool
+			.retrieve_transactions(hash, nonce, &[absent_id.clone()])
+			.unwrap();
+		assert!(found.is_empty());
+		assert_eq!(missing.len(), 1);
+		assert_eq!(missing[0].as_ref(), absent_id.as_ref());
+
+		let (found, missing) = pool.retrieve_transactions(hash, nonce, &[]).unwrap();
+		assert!(found.is_empty());
+		assert!(missing.is_empty());
 	}
 
 	#[test]

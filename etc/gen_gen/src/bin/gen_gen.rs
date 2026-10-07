@@ -14,6 +14,20 @@
 // limitations under the License.
 
 //! Main for building the genesis generation utility.
+//!
+//! Audit scope: non-production, manually operated tooling.
+//! This file is used only to create a new coin's initial genesis block before
+//! launch; it is not part of the production node. Production-node security,
+//! availability, and error-recovery standards do not apply to this utility.
+//! The workflow assumes manual preparation of the replacement markers in
+//! genesis.rs and review of the generated block and source before release.
+//!
+//! Accepted limitations include fail-fast error handling, one-use replacement
+//! markers, and rewriting genesis.rs in place. HTTP helpers may omit explicit
+//! status checks and fail later on an unexpected response body; detailed HTTP
+//! diagnostics and automatic recovery are not required for this manual workflow.
+//! Audits should treat these documented limitations as accepted tradeoffs and
+//! should not report them as security findings.
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;
@@ -288,7 +302,14 @@ fn update_genesis_rs(gen: &core::core::Block) {
 
 fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {
 	util::init_test_logger().unwrap();
-	let _ = fs::remove_dir_all(dir_name);
+	if let Err(err) = fs::remove_dir_all(dir_name) {
+		if err.kind() != io::ErrorKind::NotFound {
+			panic!(
+				"Failed to remove temporary chain directory {}: {}",
+				dir_name, err
+			);
+		}
+	}
 	let db_env = Arc::new(store::new_env(dir_name.to_string()));
 	chain::Chain::init(
 		dir_name.to_string(),

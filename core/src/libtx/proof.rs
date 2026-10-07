@@ -95,6 +95,24 @@ fn height_tagged_proof_message(
 	Ok(ProofMessage::from_bytes(&message)?)
 }
 
+/// Recover a canonical derivation identifier from a current proof message.
+/// Depth-three messages may carry an anti-replay height in the fourth path
+/// word. Clear that metadata only in the decoding copy; depth-four messages
+/// use the same bytes for key derivation, and all other paths remain strict.
+fn proof_message_identifier(message: &[u8]) -> Result<Identifier, Error> {
+	let mut message = <[u8; PROOF_MESSAGE_SIZE]>::try_from(message).map_err(|_| {
+		Error::RangeProof(format!("Invalid proof message length {}", message.len()))
+	})?;
+	let depth = message[PROOF_MESSAGE_IDENTIFIER_START];
+	if depth == 3 {
+		message[PROOF_MESSAGE_HEIGHT_START..PROOF_MESSAGE_HEIGHT_END].fill(0);
+	}
+	Ok(Identifier::from_serialized_path(
+		depth,
+		&message[PROOF_MESSAGE_IDENTIFIER_START + 1..],
+	)?)
+}
+
 /// Build a commitment and a rangeproof whose proof message carries the
 /// historical anti-replay height without making that height part of the
 /// BIP32 derivation path. The key must be a canonical depth-three wallet
@@ -158,7 +176,9 @@ pub fn verify(
 	result.map(|_| ())
 }
 
-/// Rewind a rangeproof to retrieve the amount, derivation path and switch commitment type
+/// Rewind a rangeproof to retrieve the amount, derivation path and switch commitment type.
+/// Current depth-three proof messages may contain a height tag; the returned
+/// identifier excludes that metadata and is canonical for key derivation.
 pub fn rewind<B>(
 	secp: &mut Secp256k1,
 	b: &B,
@@ -355,7 +375,7 @@ where
 		if depth > 4 {
 			return Ok(None);
 		}
-		let id = Identifier::from_serialized_path(depth, &msg[4..])?;
+		let id = proof_message_identifier(msg)?;
 
 		let commit_exp = self.keychain.commit(secp, amount, &id, switch)?;
 		if commit == &commit_exp {
@@ -590,7 +610,7 @@ impl ProofBuild for ViewKey {
 		if depth > 4 {
 			return Ok(None);
 		}
-		let id = match Identifier::from_serialized_path(depth, &msg[4..]) {
+		let id = match proof_message_identifier(msg) {
 			Ok(id) => id,
 			Err(_) => return Ok(None),
 		};
@@ -660,6 +680,86 @@ mod tests {
 		let current = height_tagged_proof_message(&key_id, SwitchCommitmentType::Regular, height)?;
 
 		assert_eq!(current.as_bytes(), historical.as_bytes());
+		Ok(())
+	}
+
+	#[test]
+	fn check_output_preserves_depth_four_path() -> Result<(), Error> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		let keychain = ExtKeychain::from_seed(&secp, &[2u8; 32], false)?;
+		let builder = ProofBuilder::new(&secp, &keychain)?;
+		let mut hasher = keychain.hasher();
+		let view_key = ViewKey::create(&secp, keychain.master_key()?, &mut hasher, false)?;
+		let amount = 5;
+		let id = ExtKeychain::derive_key_id(4, 1, 2, 3, 4)?;
+		let switch = SwitchCommitmentType::Regular;
+		let commit = keychain.commit(&secp, amount, &id, switch)?;
+		let message = builder.proof_message(&secp, &id, switch)?;
+		let expected = Some((id, switch));
+
+		assert_eq!(
+			builder.check_output(&secp, &commit, amount, message.clone())?,
+			expected,
+		);
+		assert_eq!(
+			view_key.check_output(&secp, &commit, amount, message)?,
+			expected,
+		);
+		Ok(())
+	}
+
+	#[test]
+	fn check_output_rejects_height_tags_below_other_depths() -> Result<(), Error> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		let keychain = ExtKeychain::from_seed(&secp, &[3u8; 32], false)?;
+		let builder = ProofBuilder::new(&secp, &keychain)?;
+		let mut hasher = keychain.hasher();
+		let view_key = ViewKey::create(&secp, keychain.master_key()?, &mut hasher, false)?;
+		let amount = 5;
+		let switch = SwitchCommitmentType::Regular;
+
+		for depth in 0..3 {
+			let id = ExtKeychain::derive_key_id(depth, 0, 0, 0, 0)?;
+			let commit = keychain.commit(&secp, amount, &id, switch)?;
+			let mut message = builder
+				.proof_message(&secp, &id, switch)?
+				.as_bytes()
+				.to_vec();
+			message[16..20].copy_from_slice(&1u32.to_be_bytes());
+			let message = ProofMessage::from_bytes(&message)?;
+
+			assert!(builder
+				.check_output(&secp, &commit, amount, message.clone())
+				.is_err());
+			assert!(view_key
+				.check_output(&secp, &commit, amount, message)?
+				.is_none());
+		}
+		Ok(())
+	}
+
+	#[test]
+	fn height_tagged_message_requires_matching_commitment() -> Result<(), Error> {
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		let keychain = ExtKeychain::from_seed(&secp, &[4u8; 32], false)?;
+		let builder = ProofBuilder::new(&secp, &keychain)?;
+		let mut hasher = keychain.hasher();
+		let view_key = ViewKey::create(&secp, keychain.master_key()?, &mut hasher, false)?;
+		let amount = 5;
+		let id = ExtKeychain::derive_key_id(3, 1, 2, 3, 0)?;
+		let other_id = ExtKeychain::derive_key_id(3, 1, 2, 4, 0)?;
+		let switch = SwitchCommitmentType::Regular;
+		let commit = keychain.commit(&secp, amount, &id, switch)?;
+
+		for (claimed_amount, claimed_id) in [(amount + 1, &id), (amount, &other_id)] {
+			let message = height_tagged_proof_message(claimed_id, switch, 1)?;
+			assert!(builder
+				.check_output(&secp, &commit, claimed_amount, message.clone())?
+				.is_none());
+			assert!(view_key
+				.check_output(&secp, &commit, claimed_amount, message)?
+				.is_none());
+		}
 		Ok(())
 	}
 
@@ -940,6 +1040,33 @@ mod tests {
 		};
 		// The resulting pedersen commitments should be different
 		assert_ne!(commit_a, commit_b);
+	}
+
+	#[test]
+	fn view_key_rewinds_zero_value_outputs() -> Result<(), Error> {
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		let keychain = ExtKeychain::from_seed(&secp, &[1u8; 32], false)?;
+		let builder = ProofBuilder::new(&secp, &keychain)?;
+		let mut hasher = keychain.hasher();
+		let view_key = ViewKey::create(&secp, keychain.master_key()?, &mut hasher, false)?;
+		let id = ExtKeychain::derive_key_id(3, 1, 2, 3, 0)?;
+		let other_id = ExtKeychain::derive_key_id(3, 1, 2, 4, 0)?;
+
+		for switch in [SwitchCommitmentType::None, SwitchCommitmentType::Regular] {
+			let commit = keychain.commit(&secp, 0, &id, switch)?;
+			let proof = create(&mut secp, &keychain, &builder, 0, &id, switch, commit)?;
+
+			assert_eq!(
+				rewind(&mut secp, &view_key, commit, None, proof)?,
+				Some((0, id.clone(), switch))
+			);
+
+			let other_commit = keychain.commit(&secp, 0, &other_id, switch)?;
+			assert!(view_key
+				.check_output(&secp, &other_commit, 0, proof_message_for(&id, switch))?
+				.is_none());
+		}
+		Ok(())
 	}
 
 	#[test]

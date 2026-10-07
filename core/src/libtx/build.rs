@@ -268,10 +268,67 @@ mod test {
 	use crate::core::transaction::Weighting;
 	use crate::global;
 	use crate::libtx::ProofBuilder;
-	use keychain::{ExtKeychain, ExtKeychainPath};
+	use keychain::{ExtKeychain, ExtKeychainPath, ViewKey};
 	use mwc_crates::rand::rngs::SysRng;
 	use mwc_crates::secp::{ContextFlag, SecretKey};
 	use std::convert::TryInto;
+
+	#[test]
+	fn height_tagged_output_rewinds_with_wallet_and_view_key() -> Result<(), Error> {
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		let keychain = ExtKeychain::from_seed(&secp, &[1u8; 32], false)?;
+		let builder = ProofBuilder::new(&secp, &keychain)?;
+		let mut hasher = keychain.hasher();
+		let view_key = ViewKey::create(&secp, keychain.master_key()?, &mut hasher, false)?;
+		let value = 5;
+
+		// Use a distinct key for each height to avoid reusing proof masks with
+		// different messages for the same commitment.
+		for (child, height) in [(1, 0u32), (2, 1), (3, u32::MAX)] {
+			let key_id = ExtKeychain::derive_key_id(3, 1, 2, child, 0)?;
+			let append = height_tagged_output(value, key_id.clone(), u64::from(height));
+			let mut context = Context {
+				keychain: &keychain,
+				builder: &builder,
+				secp: &mut secp,
+				context_id: 0,
+			};
+			let (tx, sum) = append(&mut context, Ok((Transaction::empty(), BlindSum::new())))?;
+			assert_eq!(sum.positive_key_ids, vec![key_id.to_value_path(value)?]);
+			assert_eq!(tx.outputs().len(), 1);
+			let output = tx.outputs()[0];
+			let expected = Some((value, key_id, SwitchCommitmentType::Regular));
+			assert_eq!(
+				proof::rewind(&mut secp, &builder, output.commitment(), None, output.proof)?,
+				expected,
+				"wallet recovery at height {height}",
+			);
+			assert_eq!(
+				proof::rewind(
+					&mut secp,
+					&view_key,
+					output.commitment(),
+					None,
+					output.proof
+				)?,
+				expected,
+				"view-key recovery at height {height}",
+			);
+
+			// Height-aware wallet recovery reads the original message directly.
+			// Canonicalizing the returned key path must preserve that height tag.
+			let nonce = builder.rewind_nonce(&secp, &output.commitment())?;
+			let info =
+				secp.rewind_bullet_proof(output.commitment(), nonce, None, None, output.proof)?;
+			assert_eq!(info.value, value);
+			assert_eq!(
+				&info.message.as_bytes()[16..20],
+				&height.to_be_bytes(),
+				"original height tag after recovery at height {height}",
+			);
+		}
+		Ok(())
+	}
 
 	#[test]
 	fn blind_simple_tx() {
