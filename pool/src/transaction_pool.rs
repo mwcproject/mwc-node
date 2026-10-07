@@ -18,7 +18,9 @@
 //! resulting tx pool can be added to the current chain state to produce a
 //! valid chain state.
 
-use crate::pool::{Pool, ReconcileWorkBudget, ValidatedPoolAggregate, ValidatedPoolEntry};
+use crate::pool::{
+	MiningSnapshot, Pool, ReconcileWorkBudget, ValidatedPoolAggregate, ValidatedPoolEntry,
+};
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::id::ShortId;
@@ -786,12 +788,19 @@ where
 
 	/// Returns a vector of transactions from the txpool so we can build a
 	/// block from them.
+	/// For a locked pool, use `mining_snapshot` and release the lock before selection.
 	pub fn prepare_mineable_transactions(
 		&self,
 		secp: &mut Secp256k1,
 	) -> Result<Vec<Transaction>, PoolError> {
 		self.txpool
 			.prepare_mineable_transactions(self.config.mineable_max_weight, secp)
+	}
+
+	/// Capture authenticated public-pool entries for mining. Release the pool
+	/// lock before calling `prepare_mineable_transactions` on the owned snapshot.
+	pub fn mining_snapshot(&self) -> MiningSnapshot<B> {
+		self.txpool.mining_snapshot(self.config.mineable_max_weight)
 	}
 
 	// App sessions id
