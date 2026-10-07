@@ -59,6 +59,8 @@ use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::secp::Secp256k1;
 use mwc_p2p::Capabilities;
 
+const SERVER_LOCK_FILE: &str = "mwc.lock";
+
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
 pub type ServerTxPool =
 	Arc<RwLock<mwc_pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
@@ -581,7 +583,7 @@ impl Server {
 			))
 		})?;
 
-		let path = path.join("mwc.lock");
+		let path = path.join(SERVER_LOCK_FILE);
 		let lock_file = fs::OpenOptions::new()
 			.read(true)
 			.write(true)
@@ -613,6 +615,20 @@ impl Server {
 				))
 			})?;
 		Ok(Arc::new(lock_file))
+	}
+
+	/// Remove chain data only while holding the server's exclusive database lock.
+	/// Keep the directory and lock file so concurrent server starts continue to
+	/// lock the same file throughout cleanup and after it completes.
+	pub fn clean_chain_data(config: &ServerConfig) -> Result<(), Error> {
+		let _lock_file = Self::one_mwc_at_a_time(config)?;
+		for entry in fs::read_dir(&config.db_root)? {
+			let entry = entry?;
+			if entry.file_name() != SERVER_LOCK_FILE {
+				mwc_util::file::delete(entry.path())?;
+			}
+		}
+		Ok(())
 	}
 
 	/// Number of peers

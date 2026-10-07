@@ -105,7 +105,10 @@ impl StratumConnections {
 			.saturating_mul(shares_weight)
 			.saturating_add(self.ok_logins.len());
 		let ban_score = self.ban_login.len().saturating_add(self.ban_noise.len());
-		ban_score.saturating_sub(ok_score) > ban_action_limit
+		// At the history limit, further failures can replace old ones without
+		// increasing the score. Ban regardless of good credit at that point so
+		// filling the bounded queues cannot make an IP immune to banning.
+		ban_score >= self.events_limit || ban_score.saturating_sub(ok_score) > ban_action_limit
 	}
 
 	pub fn is_empty(&self) -> bool {
@@ -570,7 +573,7 @@ mod tests {
 		let ip = "127.0.0.1".to_string();
 
 		pool.add_worker(&ip);
-		for _ in 0..20 {
+		for _ in 0..100 {
 			pool.report_ok_shares(&ip).unwrap();
 			pool.report_ok_login(&ip).unwrap();
 			pool.report_fail_login(&ip).unwrap();
@@ -578,9 +581,106 @@ mod tests {
 		}
 
 		let info = pool.get_ip_info(&ip).unwrap();
-		assert_eq!(info.ok_shares, 20);
-		assert_eq!(info.ok_logins, 20);
-		assert_eq!(info.failed_login, 20);
-		assert_eq!(info.failed_requests, 20);
+		assert_eq!(info.ok_shares, 30);
+		assert_eq!(info.ok_logins, 30);
+		assert_eq!(info.failed_login, 30);
+		assert_eq!(info.failed_requests, 30);
+	}
+
+	#[test]
+	fn login_credits_cannot_hide_repeated_bad_requests() {
+		let pool = StratumIpPool::new(5, 5, -1);
+		let ip = "127.0.0.1".to_string();
+
+		for _ in 0..50 {
+			assert!(!pool.is_banned(&ip, true));
+			pool.add_worker(&ip);
+			pool.report_ok_login(&ip).unwrap();
+			pool.delete_worker(&ip).unwrap();
+		}
+		pool.add_worker(&ip);
+		for _ in 0..49 {
+			pool.report_fail_noise(&ip).unwrap();
+		}
+		assert!(!pool.is_banned(&ip, false));
+
+		pool.report_fail_noise(&ip).unwrap();
+		assert!(pool.is_banned(&ip, false));
+		assert!(pool.is_banned(&ip, true));
+		assert!(pool.get_banned_ips().contains(&ip));
+
+		for _ in 0..10_000 {
+			pool.report_fail_noise(&ip).unwrap();
+		}
+		let info = pool.get_ip_info(&ip).unwrap();
+		assert_eq!(info.ok_logins, 50);
+		assert_eq!(info.failed_requests, 50);
+		assert!(info.ban);
+	}
+
+	#[test]
+	fn share_credits_cannot_hide_combined_failures() {
+		for shares_weight in [5, usize::MAX] {
+			let pool = StratumIpPool::new(5, shares_weight, -1);
+			let ip = "127.0.0.1".to_string();
+			pool.add_worker(&ip);
+			for _ in 0..50 {
+				pool.report_ok_shares(&ip).unwrap();
+			}
+			for _ in 0..24 {
+				pool.report_fail_login(&ip).unwrap();
+				pool.report_fail_noise(&ip).unwrap();
+			}
+			pool.report_fail_login(&ip).unwrap();
+			assert!(!pool.is_banned(&ip, false));
+
+			pool.report_fail_noise(&ip).unwrap();
+			assert!(pool.is_banned(&ip, false));
+			assert!(pool.is_banned(&ip, true));
+			assert!(pool.get_banned_ips().contains(&ip));
+		}
+	}
+
+	#[test]
+	fn normal_failure_scoring_respects_login_and_share_credits() {
+		let pool = StratumIpPool::new(5, 5, -1);
+		let ip = "127.0.0.1".to_string();
+		pool.add_worker(&ip);
+		pool.report_ok_login(&ip).unwrap();
+		pool.report_ok_shares(&ip).unwrap();
+		for _ in 0..11 {
+			pool.report_fail_noise(&ip).unwrap();
+		}
+		assert!(!pool.is_banned(&ip, false));
+
+		pool.report_fail_noise(&ip).unwrap();
+		assert!(pool.is_banned(&ip, false));
+	}
+
+	#[test]
+	fn failure_limit_ban_expires_with_history() {
+		let pool = StratumIpPool::new(5, 5, -1);
+		let ip = "127.0.0.1".to_string();
+		pool.add_worker(&ip);
+		for _ in 0..50 {
+			pool.report_ok_login(&ip).unwrap();
+			pool.report_fail_noise(&ip).unwrap();
+		}
+		assert!(pool.is_banned(&ip, false));
+
+		{
+			let mut connections = pool.connection_info.write();
+			let conn = connections.get_mut(&ip).unwrap();
+			for event in &mut conn.ban_noise {
+				*event = Instant::now() - Duration::from_secs(120);
+			}
+		}
+		pool.retire_old_events(Duration::from_secs(60));
+		assert!(!pool.is_banned(&ip, false));
+		assert!(!pool.is_banned(&ip, true));
+		assert!(!pool.get_banned_ips().contains(&ip));
+		let info = pool.get_ip_info(&ip).unwrap();
+		assert_eq!(info.failed_requests, 0);
+		assert_eq!(info.ok_logins, 50);
 	}
 }

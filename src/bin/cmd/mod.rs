@@ -22,3 +22,12 @@ pub use self::client::client_command;
 pub use self::config::config_command_server;
 pub use self::error::Error;
 pub use self::server::server_command;
+
+pub(super) fn utf8_arg_value<'a>(name: &str, value: &'a std::ffi::OsStr) -> Result<&'a str, Error> {
+	value.to_str().ok_or_else(|| {
+		Error::ArgumentError(format!(
+			"Invalid value for --{}: value must be valid UTF-8",
+			name
+		))
+	})
+}

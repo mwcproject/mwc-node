@@ -470,6 +470,7 @@ fn comments() -> HashMap<String, String> {
 		"ban_action_limit".to_string(),
 		"
 #number of 'points' to ban an IP. worker get bad points for negative activity like flooding, no activity. Positive points can compensate negative ones.
+#An IP is also banned at max(30, 10 * ban_action_limit) recent bad events, regardless of positive points.
 "
 			.to_string(),
 	);

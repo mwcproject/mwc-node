@@ -98,8 +98,12 @@ fn real_main() -> i32 {
 	let config = match args.subcommand() {
 		// When the subscommand is 'server' take into account the 'config_file' flag
 		("server", Some(server_args)) => {
-			if let Some(_path) = server_args.value_of("config_file") {
-				match mwc_config::GlobalConfig::new(_path) {
+			if let Some(path) = server_args.value_of_os("config_file") {
+				let path = match cmd::utf8_arg_value("config_file", path) {
+					Ok(path) => path,
+					Err(e) => return res_to_ret_val(Err(e)),
+				};
+				match mwc_config::initial_setup_server_from_file(path) {
 					Ok(config) => config,
 					Err(e) => {
 						println!("Error loading server configuration: {}", e);
@@ -191,12 +195,12 @@ fn real_main() -> i32 {
 		}
 		// clean command
 		("clean", _) => {
-			let db_root_path = config.members.server.db_root;
+			let db_root_path = &config.members.server.db_root;
 			warn!("Cleaning chain data directory: {}", db_root_path);
-			match std::fs::remove_dir_all(db_root_path) {
+			match mwc_servers::Server::clean_chain_data(&config.members.server) {
 				Ok(_) => 0,
 				Err(e) => {
-					println!("{}", e);
+					println!("{}", escape_to_printable_ascii(&e.to_string()));
 					1
 				}
 			}

@@ -41,6 +41,7 @@ ip_tracking = true
 workers_connection_limit = 30000
 
 #number of 'points' to ban an IP. worker get bad points for negative activity like flooding, no activity. Positive points can compensate negative ones.
+#An IP is also banned at max(30, 10 * ban_action_limit) recent bad events, regardless of positive points.
 ban_action_limit = 5
 
 #Number of positive points for correct submitted work by miner.
@@ -78,6 +79,10 @@ Here are 'bad' events: miner didn't logged in, miner submitting some incorrect d
 
 shares_weight parameter define how many point (or bad events) cost successful share submission event. Since share submission is most valuable positive event, 
 we can tolarate shares_weight number of 'bad' events for that. 
+
+An IP is also banned when its retained bad events reach `max(30, 10 * ban_action_limit)` (50 with the defaults), regardless of good events.
+This ceiling prevents successful logins or shares from masking unlimited bad traffic when the event queues are full.
+Events still expire according to `ip_pool_ban_history_s`.
 
 If ip_tracking is false, then only ip_white_list & ip_black_list settings will be applicable. The rest will be disabled.
  

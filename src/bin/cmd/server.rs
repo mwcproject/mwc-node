@@ -22,6 +22,7 @@ use std::time::Duration;
 use mwc_crates::clap::ArgMatches;
 
 use crate::cmd::error::Error;
+use crate::cmd::utf8_arg_value;
 use crate::tui::ui;
 use mwc_config::GlobalConfig;
 use mwc_crates::log::{error, info, warn};
@@ -67,6 +68,9 @@ fn start_server_tui(
 		if let Err(e) = ctrlc::set_handler(move || {
 			r.store(false, Ordering::SeqCst);
 			stop_state.stop();
+			// Tor bootstrap observes a separate, process-wide shutdown token.
+			// Cancel it before waiting for server cleanup.
+			mwc_p2p::tor::arti::shutdown_arti();
 			mwc_node_workflow::server::release_server(context_id);
 		}) {
 			return Err(mwc_node_workflow::Error::ServerError(format!(
@@ -187,13 +191,19 @@ pub fn server_command(
 	let mut offline = false;
 
 	if let Some(a) = server_args {
-		if let Some(port) = a.value_of("port") {
+		let value_of = |name| {
+			a.value_of_os(name)
+				.map(|value| utf8_arg_value(name, value))
+				.transpose()
+		};
+
+		if let Some(port) = value_of("port")? {
 			server_config.p2p_config.port = port.parse().map_err(|e| {
 				Error::ArgumentError(format!("Invalid value at 'port' value {}, {}", port, e))
 			})?;
 		}
 
-		match (a.value_of("api_host"), a.value_of("api_port")) {
+		match (value_of("api_host")?, value_of("api_port")?) {
 			(Some(host), Some(port)) => {
 				server_config.api_http_addr = api_http_addr_from_host_port(host, port)?;
 			}
@@ -210,13 +220,14 @@ pub fn server_command(
 			(None, None) => {}
 		}
 
-		if let Some(wallet_url) = a.value_of("wallet_url") {
+		if let Some(wallet_url) = value_of("wallet_url")? {
 			server_config.stratum_mining_config.wallet_listener_url = wallet_url.to_string();
 		}
 
-		if let Some(seeds) = a.values_of("seed") {
+		if let Some(seeds) = a.values_of_os("seed") {
 			let peers = seeds
 				.map(|s| {
+					let s = utf8_arg_value("seed", s)?;
 					s.parse().map(PeerAddr::Ip).map_err(|e| {
 						Error::ArgumentError(format!("Invalid value at 'seed' value {}, {}", s, e))
 					})
@@ -294,4 +305,108 @@ fn api_http_addr_from_host_port(api_host: &str, api_port: &str) -> Result<String
 	})?;
 
 	Ok(SocketAddr::new(ip, port).to_string())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use super::*;
+	use mwc_crates::clap::{App, Arg, YamlLoader};
+	use std::ffi::OsString;
+	use std::os::unix::ffi::OsStringExt;
+
+	fn server_command_with_args(args: Vec<OsString>) -> Result<(), Error> {
+		let yaml = YamlLoader::load_from_str(include_str!("../mwc.yml")).unwrap();
+		let matches = App::from_yaml(&yaml[0])
+			.get_matches_from_safe(args)
+			.unwrap();
+		// Omitting the run subcommand validates arguments without starting services.
+		let server_args = matches.subcommand_matches("server").unwrap();
+		server_command(0, Some(server_args), GlobalConfig::default(), None, false)
+	}
+
+	#[test]
+	fn server_command_rejects_non_utf8_values() {
+		for name in ["port", "api_host", "api_port", "wallet_url", "seed"] {
+			let result = server_command_with_args(vec![
+				"mwc".into(),
+				"server".into(),
+				format!("--{}", name).into(),
+				OsString::from_vec(vec![0xff]),
+			]);
+			match result {
+				Err(Error::ArgumentError(message)) => assert_eq!(
+					message,
+					format!("Invalid value for --{}: value must be valid UTF-8", name)
+				),
+				other => panic!(
+					"expected UTF-8 argument error for --{}, got {:?}",
+					name, other
+				),
+			}
+		}
+	}
+
+	#[test]
+	fn server_command_rejects_non_utf8_after_valid_seed() {
+		let matches = App::new("server")
+			.arg(
+				Arg::with_name("seed")
+					.long("seed")
+					.takes_value(true)
+					.multiple(true),
+			)
+			.get_matches_from_safe(vec![
+				OsString::from("server"),
+				"--seed".into(),
+				"127.0.0.1:3414".into(),
+				"--seed".into(),
+				OsString::from_vec(vec![0xff]),
+			])
+			.unwrap();
+		assert_eq!(matches.values_of_os("seed").unwrap().count(), 2);
+		let result = server_command(0, Some(&matches), GlobalConfig::default(), None, false);
+		match result {
+			Err(Error::ArgumentError(message)) => assert_eq!(
+				message,
+				"Invalid value for --seed: value must be valid UTF-8"
+			),
+			other => panic!(
+				"expected UTF-8 argument error for later seed, got {:?}",
+				other
+			),
+		}
+	}
+
+	#[test]
+	fn server_command_accepts_valid_text_values() {
+		let result = server_command_with_args(
+			[
+				"mwc",
+				"server",
+				"--port",
+				"3414",
+				"--api_host",
+				"::1",
+				"--api_port",
+				"3413",
+				"--wallet_url",
+				"http://localhost:3415/кошелёк",
+				"--seed",
+				"[::1]:3414",
+			]
+			.iter()
+			.map(OsString::from)
+			.collect(),
+		);
+		match result {
+			Err(Error::ArgumentError(message)) => assert_eq!(
+				message,
+				"Subcommand required, use 'mwc help server' for details"
+			),
+			other => panic!(
+				"expected arguments to reach subcommand validation, got {:?}",
+				other
+			),
+		}
+	}
 }

@@ -212,11 +212,18 @@ fn check_configured_api_secret_files(config: &GlobalConfig) -> Result<(), Config
 	Ok(())
 }
 
+/// Load a server configuration and provision or validate its configured API secrets.
+pub fn initial_setup_server_from_file(file_path: &str) -> Result<GlobalConfig, ConfigError> {
+	let config = GlobalConfig::new(file_path)?;
+	check_configured_api_secret_files(&config)?;
+	Ok(config)
+}
+
 /// Handles setup and detection of paths for node
 pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalConfig, ConfigError> {
 	// Use config file if current directory if it exists, .mwc home otherwise
-	let config = if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME)? {
-		GlobalConfig::new(p.to_str().ok_or(ConfigError::ConfigError(
+	if let Some(p) = check_config_current_dir(SERVER_CONFIG_FILE_NAME)? {
+		initial_setup_server_from_file(p.to_str().ok_or(ConfigError::ConfigError(
 			"Internal error at server config file init".into(),
 		))?)
 	} else {
@@ -237,12 +244,10 @@ pub fn initial_setup_server(chain_type: &global::ChainTypes) -> Result<GlobalCon
 			)?)?;
 		}
 
-		GlobalConfig::new(config_path.to_str().ok_or(ConfigError::ConfigError(
+		initial_setup_server_from_file(config_path.to_str().ok_or(ConfigError::ConfigError(
 			"Internal error at server config file init".into(),
 		))?)
-	}?;
-	check_configured_api_secret_files(&config)?;
-	Ok(config)
+	}
 }
 
 /// Returns the defaults, as strewn throughout the code
@@ -527,18 +532,20 @@ impl GlobalConfig {
 		}
 
 		// Apply changes both textually and structurally
+		// Read TOML for validation only; update the original text to preserve its comments.
+		// We intentionally avoid rewriting the file with a TOML parser/writer.
+		// This version migration is tested for generated configs and is not intended
+		// to be robust against user edits to their formatting.
 		match config.config_file_version {
 			Some(config_file_version) => {
-				config_str = Zeroizing::new(
-					config_str.replace(
-						format!("\nconfig_file_version = {}\n", config_file_version).as_str(),
-						format!(
-							"\nconfig_file_version = {}\n",
-							crate::types::CONFIG_FILE_VERSION
-						)
-						.as_str(),
+				config_str = GlobalConfig::replace_config_text(
+					&config_str,
+					&format!("\nconfig_file_version = {}\n", config_file_version),
+					&format!(
+						"\nconfig_file_version = {}\n",
+						crate::types::CONFIG_FILE_VERSION
 					),
-				);
+				)?;
 			}
 			None => {
 				// Note, this is a legacy config upgrade code, it works for along time and we don't want to change it
@@ -547,10 +554,11 @@ impl GlobalConfig {
 					"\nconfig_file_version = {}\n\n#########################################\n### SERVER CONFIGURATION              ###",
 					crate::types::CONFIG_FILE_VERSION
 				);
-				config_str = Zeroizing::new(config_str.replace(
+				config_str = GlobalConfig::replace_config_text(
+					&config_str,
 					server_config_header,
 					versioned_server_config_header.as_str(),
-				));
+				)?;
 			}
 		}
 		config.config_file_version = Some(crate::types::CONFIG_FILE_VERSION);
@@ -559,20 +567,25 @@ impl GlobalConfig {
 		// with all comments and custom configs.
 		// We don't want to keep old accept_fee_base, tx_fee_base value should be reset.
 		// Config params are well known, no collisions can happens
-		config_str = Zeroizing::new(config_str.replace(
+		config_str = GlobalConfig::replace_config_text(
+			&config_str,
 			"\naccept_fee_base",
 			"\n# 'accept_fee_base' is renamed to 'tx_fee_base'. Normally you are not expected to set it, use default value.\n#accept_fee_base",
-		));
+		)?;
 
 		// Note, migration with replace works as intended. We want to keep the original toml as it is
 		// with all comments and custom configs.
 		// Config params are well known, no collisions can happens
-		config_str = Zeroizing::new(config_str.replace(
+		config_str = GlobalConfig::replace_config_text(
+			&config_str,
 			"\nhost",
 			"\n# 'host' is obsolete now because it value defined by tor usage.\n#host",
-		));
+		)?;
 
 		// Verify equivalence
+		// Parsing resolves peer hostnames again. Dynamic DNS can return different IPs
+		// between the two parses, causing this check to reject migration. We accept
+		// this behavior because our seed DNS names point to static IPs.
 
 		let restored_conf = {
 			let fixed = GlobalConfig::fix_warning_level(config_str.as_str());
@@ -591,6 +604,34 @@ impl GlobalConfig {
 		}
 
 		Ok((config_str, true))
+	}
+
+	// Match str::replace without reallocating after private keys have been copied.
+	fn replace_config_text(
+		conf: &str,
+		from: &str,
+		to: &str,
+	) -> Result<Zeroizing<String>, ConfigError> {
+		let output_len = conf
+			.match_indices(from)
+			.try_fold(conf.len(), |len, (_, matched)| {
+				len.checked_sub(matched.len())?.checked_add(to.len())
+			})
+			.ok_or_else(|| ConfigError::ConfigError("Migrated config is too large".into()))?;
+		// Reserve the full output before copying any sensitive config values. Wrapping
+		// str::replace's result cannot wipe allocations that it freed while growing.
+		let mut replaced = Zeroizing::new(String::with_capacity(output_len));
+		let capacity = replaced.capacity();
+		let mut last_end = 0;
+		for (start, matched) in conf.match_indices(from) {
+			replaced.push_str(&conf[last_end..start]);
+			replaced.push_str(to);
+			last_end = start + matched.len();
+		}
+		replaced.push_str(&conf[last_end..]);
+		debug_assert_eq!(replaced.len(), output_len);
+		debug_assert_eq!(replaced.capacity(), capacity);
+		Ok(replaced)
 	}
 
 	// For forwards compatibility old config needs `Warning` log level changed to standard log::Level `WARN`
@@ -678,6 +719,61 @@ impl GlobalConfig {
 		}
 
 		fixed.push_str(line);
+	}
+}
+
+#[test]
+fn config_text_replacements_preserve_literal_semantics() {
+	for (conf, from, to) in [
+		(
+			"onion_expanded_key = \"synthetic-key\"\nhost = \"one\"\nhost = \"two\"\n",
+			"\nhost",
+			"\n# obsolete host setting\n#host",
+		),
+		("config_file_version = 22", "22", "3"),
+		("hosthost", "host", "hosthost"),
+		("name = \"日本語\"", "本", "本本"),
+		("unchanged", "missing", "replacement"),
+		("é", "", "|"),
+	] {
+		let replaced = GlobalConfig::replace_config_text(conf, from, to).unwrap();
+		assert_eq!(replaced.as_str(), conf.replace(from, to));
+	}
+}
+
+#[test]
+fn migration_preserves_private_key_and_config_text() {
+	for version in [None, Some(1), Some(2)] {
+		let mut config = GlobalConfig::default();
+		config.members.config_file_version = version;
+		let synthetic_key = "0123456789abcdef".repeat(8);
+		config.members.server.p2p_config.onion_expanded_key = Some(synthetic_key.clone());
+		let serialized = config.ser_config().unwrap();
+		let legacy = Zeroizing::new(format!(
+			"\n#########################################\n### SERVER CONFIGURATION              ###\n# Keep this operator comment.\n{}",
+			serialized.replace(
+				"[server.pool_config]",
+				"host = \"0.0.0.0\"\n\n[server.pool_config]\naccept_fee_base = 1000",
+			),
+		));
+		// Both expanding replacements follow the private key, so an undersized
+		// destination would have to grow after copying the key.
+		let key_pos = legacy.find(&synthetic_key).unwrap();
+		assert!(key_pos < legacy.find("\nhost").unwrap());
+		assert!(key_pos < legacy.find("\naccept_fee_base").unwrap());
+
+		let (migrated, changed) = GlobalConfig::migrate_config_file_version_to_2(legacy).unwrap();
+
+		assert!(changed);
+		assert!(migrated.contains("# Keep this operator comment."));
+		assert!(migrated.contains("\n#host = \"0.0.0.0\""));
+		assert!(migrated.contains("\n#accept_fee_base = 1000"));
+		config.members.config_file_version = Some(crate::types::CONFIG_FILE_VERSION);
+		let decoded: ConfigMembers = toml::from_str(&migrated).unwrap();
+		assert_eq!(decoded, config.members);
+
+		let (_, changed_again) = GlobalConfig::migrate_config_file_version_to_2(migrated).unwrap();
+		assert!(!changed_again);
 	}
 }
 

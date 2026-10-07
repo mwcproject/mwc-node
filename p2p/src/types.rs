@@ -755,6 +755,11 @@ pub struct P2PConfig {
 	pub dandelion_peer: Option<PeerAddr>,
 
 	/// Expanded key (for seed nodes). The key to generate the onion service
+	///
+	/// Accepted risk: if deserialization reads this key and then fails before
+	/// constructing P2PConfig, the temporary String is freed without zeroization
+	/// because P2PConfig::drop never runs. We consider this risk very minor and
+	/// accept it to keep the field type and derived deserializer simple.
 	pub onion_expanded_key: Option<String>,
 }
 

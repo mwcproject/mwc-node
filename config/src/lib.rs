@@ -25,7 +25,7 @@ mod comments;
 pub mod config;
 pub mod types;
 
-pub use crate::config::initial_setup_server;
+pub use crate::config::{initial_setup_server, initial_setup_server_from_file};
 pub use crate::types::{ConfigError, ConfigMembers, GlobalConfig};
 
 /// Bridge, transport, and proxy guidance shared by node and wallet config templates.

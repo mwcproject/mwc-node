@@ -22,6 +22,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use crate::cmd::error::Error;
+use crate::cmd::utf8_arg_value;
 use mwc_api::client::HttpClient;
 use mwc_api::json_rpc;
 use mwc_api::types::Status;
@@ -491,15 +492,17 @@ pub fn client_command(
 			node_client.list_connected_peers()?;
 		}
 		("resetchainhead", Some(args)) => {
-			let hash = args.value_of("hash").ok_or(Error::ArgumentError(
+			let hash = args.value_of_os("hash").ok_or(Error::ArgumentError(
 				"Not found expected argument 'hash'".into(),
 			))?;
+			let hash = utf8_arg_value("hash", hash)?;
 			node_client.reset_chain_head(hash.to_string())?;
 		}
 		("invalidateheader", Some(args)) => {
-			let hash = args.value_of("hash").ok_or(Error::ArgumentError(
+			let hash = args.value_of_os("hash").ok_or(Error::ArgumentError(
 				"Not found expected argument 'hash'".into(),
 			))?;
+			let hash = utf8_arg_value("hash", hash)?;
 			node_client.invalidate_header(hash.to_string())?;
 		}
 		("verify-chain", Some(args)) => {
@@ -507,9 +510,10 @@ pub fn client_command(
 			node_client.verify_chain(assume_valid_rangeproofs_kernels)?;
 		}
 		("ban", Some(peer_args)) => {
-			let peer = peer_args.value_of("peer").ok_or(Error::ArgumentError(
+			let peer = peer_args.value_of_os("peer").ok_or(Error::ArgumentError(
 				"Not found expected argument 'peer'".into(),
 			))?;
+			let peer = utf8_arg_value("peer", peer)?;
 
 			if let Ok(addr) = peer.parse() {
 				node_client.ban_peer(&addr)?;
@@ -518,9 +522,10 @@ pub fn client_command(
 			}
 		}
 		("unban", Some(peer_args)) => {
-			let peer = peer_args.value_of("peer").ok_or(Error::ArgumentError(
+			let peer = peer_args.value_of_os("peer").ok_or(Error::ArgumentError(
 				"Not found expected argument 'peer'".into(),
 			))?;
+			let peer = utf8_arg_value("peer", peer)?;
 
 			if let Ok(addr) = peer.parse() {
 				node_client.unban_peer(&addr)?;
@@ -540,6 +545,47 @@ pub fn client_command(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(unix)]
+	#[test]
+	fn client_command_rejects_non_utf8_arguments() {
+		use mwc_crates::clap::{App, YamlLoader};
+		use std::ffi::OsString;
+		use std::os::unix::ffi::OsStringExt;
+
+		let yaml = YamlLoader::load_from_str(include_str!("../mwc.yml")).unwrap();
+		for (command, name) in [
+			("ban", "peer"),
+			("unban", "peer"),
+			("resetchainhead", "hash"),
+			("invalidateheader", "hash"),
+		] {
+			let mut args: Vec<OsString> = vec!["mwc".into(), "client".into(), command.into()];
+			if name == "peer" {
+				args.push("--peer".into());
+			}
+			args.push(OsString::from_vec(vec![0xff]));
+			let matches = App::from_yaml(&yaml[0])
+				.get_matches_from_safe(args)
+				.unwrap();
+			let client_args = matches.subcommand_matches("client").unwrap();
+			let mut config = GlobalConfig::default();
+			config.members.server.api_secret_path = None;
+
+			match client_command(0, client_args, config) {
+				Err(Error::ArgumentError(message)) => assert_eq!(
+					message,
+					format!("Invalid value for --{}: value must be valid UTF-8", name),
+					"unexpected error for {}",
+					command
+				),
+				other => panic!(
+					"expected UTF-8 argument error for {}, got {:?}",
+					command, other
+				),
+			}
+		}
+	}
 
 	fn api_secret() -> Zeroizing<String> {
 		Zeroizing::new("secret".to_owned())

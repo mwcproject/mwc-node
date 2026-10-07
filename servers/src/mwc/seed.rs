@@ -862,6 +862,11 @@ fn seed_addr_onion_host(addr: &str) -> bool {
 
 /// Convenience function to resolve DNS addresses from DNS records.
 ///
+/// Ordinary seed hostnames intentionally use system DNS even when Tor is enabled.
+/// We accept that DNS services and network observers may learn about MWC usage;
+/// hiding these lookups is not a requirement. Tor DNS can be unreliable, so we
+/// keep seed resolution independent of its availability.
+///
 /// Seed resolution is intentionally best-effort: an invalid onion seed or a
 /// failed DNS lookup is logged and skipped while the remaining seeds are
 /// still tried. Callers cannot recover from individual seed resolution
