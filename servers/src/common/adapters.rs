@@ -629,129 +629,65 @@ where
 				return Ok(true);
 			}
 
-			let (txs, missing_short_ids) = match {
-				self.tx_pool.read_recursive().retrieve_transactions(
-					cb_hash,
-					cb.nonce,
-					cb.kern_ids(),
-				)
-			} {
-				Ok(result) => result,
-				Err(e) => {
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
-					return Err(mwc_chain::Error::Other(format!(
-						"Failed to retrieve compact block transactions from tx pool, {}",
-						e
-					)));
-				}
-			};
+			let result = (|| {
+				let (txs, missing_short_ids) = self
+					.tx_pool
+					.read_recursive()
+					.retrieve_transactions(cb_hash, cb.nonce, cb.kern_ids())
+					.map_err(|e| {
+						mwc_chain::Error::Other(format!(
+							"Failed to retrieve compact block transactions from tx pool, {}",
+							e
+						))
+					})?;
 
-			debug!(
-				"compact_block_received: txs from tx pool - {}, (unknown kern_ids: {})",
-				txs.len(),
-				missing_short_ids.len(),
-			);
-
-			// If we have missing kernels then we know we cannot hydrate this compact block.
-			if !missing_short_ids.is_empty() {
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
+				debug!(
+					"compact_block_received: txs from tx pool - {}, (unknown kern_ids: {})",
+					txs.len(),
+					missing_short_ids.len(),
 				);
-				self.sync_manager.add_block_request(
-					peer_info,
-					cb.header.height,
-					cb.header.hash(self.context_id)?,
-					Options::NONE,
-				);
-				return Ok(true);
-			}
 
-			let block = match core::Block::hydrate_from(cb.clone(), &txs) {
-				Ok(block) => {
-					if !self.sync_state.is_syncing() {
-						for hook in &self.hooks {
-							hook.on_block_received(self.context_id, &block, &peer_info.addr);
-						}
-					}
-					block
-				}
-				Err(e) => {
-					debug!("Invalid hydrated block {}: {:?}", cb_hash, e);
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
-					return Ok(false);
-				}
-			};
-
-			let prev = match chain.get_previous_header(&cb.header) {
-				Ok(prev) => prev,
-				Err(e) if e.is_not_found() => {
-					debug!(
-						"compact_block_received: missing previous header for {} at {}, likely syncing",
-						cb_hash, cb.header.height
-					);
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
+				if !missing_short_ids.is_empty() {
+					self.sync_manager.add_block_request(
+						peer_info,
+						cb.header.height,
+						cb_hash,
+						Options::NONE,
 					);
 					return Ok(true);
 				}
-				Err(e) => {
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
-					return Err(e);
-				}
-			};
 
-			// Keep compact-block reconstruction conservative: any validation
-			// failure means the hydrated block is treated as invalid. This is
-			// acceptable because the node can request the full block and let the
-			// normal block-processing path validate it with complete data.
-			if block
-				.validate(self.context_id, &prev.total_kernel_offset, secp)
-				.is_ok()
-			{
-				debug!(
-					"successfully hydrated block: {} at {} ({})",
-					block.header.hash(self.context_id)?,
-					block.header.height,
-					block.inputs().version_str(),
-				);
-				let result = self.process_block(secp, block, peer_info, Options::NONE);
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
-				);
-				result
-			} else if self.sync_state.status() == SyncStatus::NoSync {
-				debug!("adapter: block invalid after hydration, requesting full block");
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
-				);
-				self.sync_manager.add_block_request(
-					peer_info,
-					cb.header.height,
-					cb.header.hash(self.context_id)?,
-					Options::NONE,
-				);
-				Ok(true)
-			} else {
-				debug!("block invalid after hydration, ignoring it, cause still syncing");
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
-				);
-				Ok(true)
-			}
+				// Example: a transaction owner gives our pool a valid rangeproof A,
+				// but the miner includes another valid proof B for the same output.
+				// The kernel (and its short ID) is identical, so we reconstruct with A.
+				// Block::validate can pass even though the header commits to B's proof
+				// root. This body mixes peer data and local guesses; even a failure
+				// during hydration must request complete data before blaming the peer.
+				let height = cb.header.height;
+				let block = match core::Block::hydrate_from(cb, &txs) {
+					Ok(block) => block,
+					Err(e) => {
+						debug!("Failed to hydrate compact block {}: {:?}", cb_hash, e);
+						self.sync_manager.add_block_request(
+							peer_info,
+							height,
+							cb_hash,
+							Options::NONE,
+						);
+						return Ok(true);
+					}
+				};
+				if !self.sync_state.is_syncing() {
+					for hook in &self.hooks {
+						hook.on_block_received(self.context_id, &block, &peer_info.addr);
+					}
+				}
+
+				self.process_reconstructed_block(secp, block, peer_info)
+			})();
+			// Finish on every outcome, including local errors and full-block fallback.
+			finish_compact_block_reconstruction(&self.compact_block_reconstruction_cache, &cb_hash);
+			result
 		}
 	}
 
@@ -1391,6 +1327,63 @@ where
 			));
 		}
 		Ok(segmenter)
+	}
+
+	// Validate a local reconstruction against the full chain state, including MMR
+	// roots and coinbase binding. The ordinary process_block path attributes the
+	// entire body to peer_info and can ban it inside Chain::report_block_rejection,
+	// before returning here. For the proof-A/proof-B workflow above, use the chain
+	// reconstruction entry point so a failed local guess can safely fetch the full
+	// block. Missing-parent reconstructions also bypass both orphan caches: the
+	// full response will provide a body that can be attributed during later replay.
+	fn process_reconstructed_block(
+		&self,
+		secp: &mut Secp256k1,
+		b: core::Block,
+		peer_info: &PeerInfo,
+	) -> Result<bool, mwc_chain::Error> {
+		let chain = self.chain()?;
+		let peers = self.peers()?;
+		let horizon = chain
+			.head()?
+			.height
+			.saturating_sub(u64::from(global::cut_through_horizon(self.context_id)));
+		if b.header.height < horizon {
+			return Ok(true);
+		}
+		let hash = b.hash(self.context_id)?;
+		match chain.process_reconstructed_block(secp, b.clone(), Options::NONE) {
+			Ok(_) => self.validate_chain(secp, &hash)?,
+			Err(e) if e.is_known_block() => {}
+			Err(e)
+				if !e.requires_chain_recovery()
+					&& (e.is_bad_data()
+						|| e.is_not_found()
+						|| matches!(e, mwc_chain::Error::Orphan(_))) =>
+			{
+				debug!(
+					"Reconstructed block {} needs a full block from {}: {}",
+					hash, peer_info.addr, e
+				);
+				self.sync_manager.add_block_request(
+					peer_info,
+					b.header.height,
+					hash,
+					Options::NONE,
+				);
+				return Ok(true);
+			}
+			// Storage and recovery failures are local errors, not failed guesses.
+			Err(e) => return Err(e),
+		}
+		self.sync_manager.recieve_block_reporting(
+			Some(Ok(())),
+			&peer_info.addr,
+			b,
+			Options::SYNC,
+			&peers,
+		)?;
+		Ok(true)
 	}
 
 	// pushing the new block through the chain pipeline
@@ -2118,6 +2111,10 @@ impl mwc_pool::BlockChain for PoolToChainAdapter {
 		})
 	}
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "compact_block_tests.rs"]
+mod compact_block_tests;
 
 #[cfg(test)]
 mod test {

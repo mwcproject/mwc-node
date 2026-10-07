@@ -118,6 +118,11 @@ impl SyncManager {
 			.add_block_request(peer_info, height, block_hash, opts);
 	}
 
+	#[cfg(all(test, feature = "test-support"))]
+	pub(crate) fn has_block_request(&self, peer: &PeerAddr, hash: &Hash) -> bool {
+		self.headers_block_requests.has_block_request(peer, hash)
+	}
+
 	pub fn sync_request(&self, peers: &Arc<Peers>) -> Result<SyncResponse, Error> {
 		self.clear_inactive_pibd_failures();
 		let cached_response = self.cached_response.read_recursive().clone();

@@ -48,6 +48,15 @@ impl HeadersBlocksRequests {
 	const MAX_QUEUED_BLOCK_REQUESTS: usize = 1000;
 	const MAX_REQUEST_PER_PEER: u32 = 3;
 
+	#[cfg(all(test, feature = "test-support"))]
+	pub(crate) fn has_block_request(&self, peer: &PeerAddr, hash: &Hash) -> bool {
+		self.blocks
+			.read_recursive()
+			.values()
+			.flatten()
+			.any(|request| request.addr == *peer && request.block_hash == *hash)
+	}
+
 	pub fn new(chain: Arc<Chain>) -> Self {
 		HeadersBlocksRequests {
 			chain,

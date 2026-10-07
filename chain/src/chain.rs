@@ -1815,6 +1815,34 @@ impl Chain {
 		opts: Options,
 		source_peers: HashSet<String>,
 	) -> Result<Option<Tip>, Error> {
+		self.process_block_internal(secp, b, opts, Some(source_peers))
+	}
+
+	/// Validate and process a body reconstructed from local transactions.
+	/// The compact-block sender did not supply this complete body, so failures
+	/// must not be attributed to it. Missing parents return an orphan error
+	/// without caching the speculative body; the caller must request a full block.
+	/// For example, two valid rangeproofs for one transaction have the same kernel
+	/// short IDs. Reconstructing with the locally held proof can fail the mined
+	/// header's rangeproof root even when the compact-block sender is honest.
+	pub fn process_reconstructed_block(
+		&self,
+		secp: &mut Secp256k1,
+		b: Block,
+		opts: Options,
+	) -> Result<Option<Tip>, Error> {
+		self.process_block_internal(secp, b, opts, None)
+	}
+
+	fn process_block_internal(
+		&self,
+		secp: &mut Secp256k1,
+		b: Block,
+		opts: Options,
+		// None denotes reconstruction. Some(empty) still permits ordinary orphan
+		// admission for complete blocks without a network source (e.g. local blocks).
+		source_peers: Option<HashSet<String>>,
+	) -> Result<Option<Tip>, Error> {
 		// Collect early returns and errors before reporting, after processing has
 		// released its chain locks.
 		let result = (|| {
@@ -1822,7 +1850,7 @@ impl Chain {
 			let context_id = self.store.get_context_id();
 			pipe::validate_header_context_id(context_id, &b.header)?;
 
-			// Cache blocks whose parents are still missing for deferred validation.
+			// Only complete supplied bodies may enter deferred orphan validation.
 			self.check_block(&b, opts, source_peers.clone())?;
 
 			// block is not orphnan and it is great
@@ -1984,8 +2012,8 @@ impl Chain {
 				}
 			}
 		})();
-		if let Err(error) = &result {
-			self.report_block_rejection(&b, &source_peers, error);
+		if let (Err(error), Some(source_peers)) = (&result, &source_peers) {
+			self.report_block_rejection(&b, source_peers, error);
 		}
 		result
 	}
@@ -2146,13 +2174,20 @@ impl Chain {
 		&self,
 		block: &Block,
 		opts: Options,
-		source_peers: HashSet<String>,
+		source_peers: Option<HashSet<String>>,
 	) -> Result<(), Error> {
 		let head = self.head()?;
 		let is_next = block.header.prev_hash == head.last_block_h;
 		if is_next || self.block_exists(&block.header.prev_hash)? {
 			return Ok(());
 		}
+		let Some(source_peers) = source_peers else {
+			// A speculative reconstruction must not pin an orphan slot or acquire
+			// peer attribution when a complete body later arrives for this header.
+			return Err(Error::Orphan(
+				"reconstructed block parent is missing".into(),
+			));
+		};
 
 		let context_id = self.store.get_context_id();
 		let block_hash = block.hash(context_id)?;
@@ -2184,7 +2219,7 @@ impl Chain {
 		&self,
 		b: &Block,
 		opts: Options,
-		source_peers: HashSet<String>,
+		source_peers: Option<HashSet<String>>,
 	) -> Result<(), Error> {
 		// Process the header first.
 		// If invalid then fail early.
@@ -2618,7 +2653,7 @@ impl Chain {
 					let res = match self.check_block(
 						&orphan.block,
 						orphan.opts.clone(),
-						source_peers.clone(),
+						Some(source_peers.clone()),
 					) {
 						Ok(()) => self.process_block_single(secp, &orphan.block, orphan.opts),
 						// Header processing can commit before marker cleanup and recovery
