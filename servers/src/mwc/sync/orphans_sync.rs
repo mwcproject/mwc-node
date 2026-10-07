@@ -605,6 +605,7 @@ impl OrphansSync {
 		right: &Block,
 	) -> Result<bool, mwc_chain::Error> {
 		if left.header != right.header
+			|| left.coinbase_opening != right.coinbase_opening
 			|| !left
 				.body
 				.inputs
@@ -639,6 +640,8 @@ mod tests {
 	use super::*;
 	use mwc_core::core::{CommitWrapper, Input, Inputs, OutputFeatures};
 	use mwc_core::global::{self, ChainTypes};
+	use mwc_crates::secp::key::{PublicKey, SecretKey};
+	use mwc_crates::secp::s2c::Opening;
 	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 	fn candidate_block(context_id: u32, value: u64) -> Block {
@@ -808,6 +811,73 @@ mod tests {
 		assert!(candidates[replacement_index]
 			.source_peers
 			.contains(&peer_zero));
+	}
+
+	#[test]
+	fn coinbase_opening_variants_preserve_candidates_and_source_peers() {
+		let context_id = 0;
+		global::set_local_chain_type(ChainTypes::AutomatedTesting);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let opening = |value| {
+			let key = SecretKey::from_slice(&secp, &[value; 32]).unwrap();
+			let point = PublicKey::from_secret_key(&secp, &key).unwrap();
+			Opening::from_slice(&secp, &point.serialize_vec(&secp, true).unwrap()).unwrap()
+		};
+		let mut first = candidate_block(context_id, 1);
+		first.header.height = mwc_core::consensus::COINBASE_BINDING_TESTING_HEIGHT;
+		first.coinbase_opening = Some(opening(1));
+		let peer_a = candidate_peer(1, 3414);
+		let peer_b = candidate_peer(2, 3414);
+		let peer_c = candidate_peer(3, 3414);
+
+		for alternate_opening in [Some(opening(2)), None] {
+			let mut alternate = first.clone();
+			alternate.coinbase_opening = alternate_opening;
+			let mut candidates = Vec::new();
+
+			cache_for_peer(context_id, &mut candidates, first.clone(), peer_a.clone());
+			cache_for_peer(
+				context_id,
+				&mut candidates,
+				alternate.clone(),
+				peer_b.clone(),
+			);
+			assert_eq!(candidates.len(), 2);
+			assert_eq!(candidates[0].block.coinbase_opening, first.coinbase_opening);
+			assert_eq!(candidates[1].block.coinbase_opening, alternate_opening);
+			assert_eq!(
+				candidates[0].source_peers,
+				std::iter::once(peer_a.clone()).collect()
+			);
+			assert_eq!(
+				candidates[1].source_peers,
+				std::iter::once(peer_b.clone()).collect()
+			);
+
+			// Exact repeats still coalesce, including blocks without an opening.
+			cache_for_peer(
+				context_id,
+				&mut candidates,
+				alternate.clone(),
+				peer_c.clone(),
+			);
+			assert_eq!(candidates.len(), 2);
+			assert_eq!(
+				candidates[1].source_peers,
+				[peer_b.clone(), peer_c.clone()].into_iter().collect()
+			);
+
+			// A peer can correct just its opening without keeping its old candidate.
+			cache_for_peer(context_id, &mut candidates, alternate, peer_a.clone());
+			assert_eq!(candidates.len(), 1);
+			assert_eq!(candidates[0].block.coinbase_opening, alternate_opening);
+			assert_eq!(
+				candidates[0].source_peers,
+				[peer_a.clone(), peer_b.clone(), peer_c.clone()]
+					.into_iter()
+					.collect()
+			);
+		}
 	}
 
 	#[test]

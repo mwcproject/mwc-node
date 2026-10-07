@@ -56,6 +56,10 @@ impl PeerPibdStatus {
 	fn add_event(&mut self, event: PeerStatusEvent, now: Instant) {
 		self.last_updated = now;
 		self.responses.push_back(event);
+		// Bans are queued until apply_peers_status runs. MIN_RESPONSE_NUM newer
+		// events (currently 13) can evict a pending Ban before it is applied.
+		// This is intentional: if the newer events are successful responses and
+		// the peer is acting honestly, we do not want to ban it for the older event.
 		while self.responses.len() > MIN_RESPONSE_NUM {
 			self.responses.pop_front();
 		}

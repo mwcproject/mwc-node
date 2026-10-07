@@ -16,9 +16,7 @@
 //! Mining Stratum Server
 
 use mwc_crates::async_stream;
-use mwc_crates::futures;
 use mwc_crates::futures::channel::oneshot;
-use mwc_crates::futures::pin_mut;
 use mwc_crates::futures::{SinkExt, StreamExt, TryStreamExt};
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_crates::serde_json;
@@ -51,7 +49,7 @@ use mwc_core::stratum::connections;
 use mwc_core::{pow, ser};
 use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
-use mwc_crates::tokio::sync::{mpsc, Mutex};
+use mwc_crates::tokio::sync::mpsc;
 use mwc_keychain;
 use mwc_util;
 use mwc_util::ToHex;
@@ -180,6 +178,21 @@ fn trigger_worker_shutdown(workers: &WorkersList) {
 				worker.id, e
 			);
 		}
+	}
+}
+
+async fn run_worker_io(
+	read: impl std::future::Future<Output = Result<(), ()>>,
+	write: impl std::future::Future<Output = Result<(), ()>>,
+	kill_switch_receiver: oneshot::Receiver<()>,
+) {
+	// Own both futures so finishing either direction or receiving a kill signal
+	// drops both socket halves before registration cleanup. Do not flush on
+	// disconnect: a peer that stops reading must not hold a connection slot.
+	tokio::select! {
+		_ = read => {},
+		_ = write => {},
+		_ = kill_switch_receiver => {},
 	}
 }
 
@@ -1477,8 +1490,7 @@ fn accept_connections(
 						socket,
 						LinesCodec::new_with_max_length(MAX_STRATUM_LINE_LENGTH),
 					);
-                    let (writer, mut reader) = framed.split();
-					let writer = Arc::new(Mutex::new(writer));
+                    let (mut writer, mut reader) = framed.split();
 
                     let h = handler.clone();
                     let workers = h.workers.clone();
@@ -1554,14 +1566,13 @@ fn accept_connections(
 						Result::<_, ()>::Ok(())
 					};
 
-					let writer2 = writer.clone();
 					let write = async move {
 						while let Some(line) = rx.recv().await {
 							// No need to add line separator for the client, because
 							// Frames with LinesCodec does that.
 							tokio::time::timeout(
 								Duration::from_secs(10),
-								writer2.lock().await.send(line),
+								writer.send(line),
 							)
 								.await
 								.map_err(|_| {
@@ -1579,12 +1590,8 @@ fn accept_connections(
 					let task_handler = handler.clone();
 					let task_ip_pool_disconnect = ip_pool_disconnect.clone();
 					let task_ip_disconnect = ip_disconnect.clone();
-					let task_writer = writer.clone();
 					let task = async move {
-						pin_mut!(read, write);
-						let rw = futures::future::select(read, write);
-						futures::future::select(rw, kill_switch_receiver).await;
-						let _ = task_writer.lock().await.close().await;
+						run_worker_io(read, write, kill_switch_receiver).await;
 						cleanup_worker_registration(
 							&task_handler,
 							&task_ip_pool_disconnect,
@@ -1601,7 +1608,6 @@ fn accept_connections(
 						Err(e) => {
 							error!("Unable to spawn stratum worker task: {}", e);
 							drop(task);
-							let _ = writer.lock().await.close().await;
 							cleanup_worker_registration(
 								&handler,
 								&ip_pool,
@@ -1840,6 +1846,83 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use mwc_crates::futures::poll;
+	use mwc_crates::tokio::io::AsyncReadExt;
+
+	enum WorkerDisconnect {
+		Kill,
+		ReadEof,
+		WriteTimeout,
+	}
+
+	async fn assert_worker_disconnect_drops_blocked_io(disconnect: WorkerDisconnect) {
+		let (socket, mut peer) = tokio::io::duplex(1);
+		let (mut writer, mut reader) = Framed::new(
+			socket,
+			LinesCodec::new_with_max_length(MAX_STRATUM_LINE_LENGTH),
+		)
+		.split();
+		let (tx, mut rx) = mpsc::channel(WORKER_RESPONSE_QUEUE_CAPACITY);
+		tx.try_send("response longer than the transport buffer".to_string())
+			.unwrap();
+		let (kill_switch, kill_switch_receiver) = oneshot::channel();
+		let send_timeout = match disconnect {
+			WorkerDisconnect::WriteTimeout => Duration::from_millis(10),
+			_ => Duration::from_secs(10),
+		};
+		let read = async move { reader.try_next().await.map(|_| ()).map_err(|_| ()) };
+		let write = async move {
+			while let Some(line) = rx.recv().await {
+				tokio::time::timeout(send_timeout, writer.send(line))
+					.await
+					.map_err(|_| ())?
+					.map_err(|_| ())?;
+			}
+			Ok(())
+		};
+		let mut io = Box::pin(run_worker_io(read, write, kill_switch_receiver));
+
+		// Poll once to fill the one-byte transport and suspend the write. Keep the
+		// peer's receiving side open and unread until disconnection has finished.
+		assert!(poll!(io.as_mut()).is_pending());
+		match disconnect {
+			WorkerDisconnect::Kill => kill_switch.send(()).unwrap(),
+			WorkerDisconnect::ReadEof => peer.shutdown().await.unwrap(),
+			WorkerDisconnect::WriteTimeout => {}
+		}
+		tokio::time::timeout(Duration::from_secs(1), io)
+			.await
+			.expect("worker I/O must finish without waiting for the peer to read");
+
+		assert!(
+			tx.is_closed(),
+			"the pending write must release its response queue"
+		);
+		let mut received = Vec::new();
+		tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut received))
+			.await
+			.expect("both socket halves must be dropped before cleanup")
+			.unwrap();
+		assert_eq!(
+			received, b"r",
+			"disconnect must discard the buffered response"
+		);
+	}
+
+	#[tokio::test]
+	async fn worker_kill_drops_blocked_io() {
+		assert_worker_disconnect_drops_blocked_io(WorkerDisconnect::Kill).await;
+	}
+
+	#[tokio::test]
+	async fn worker_read_eof_drops_blocked_io() {
+		assert_worker_disconnect_drops_blocked_io(WorkerDisconnect::ReadEof).await;
+	}
+
+	#[tokio::test]
+	async fn worker_send_timeout_drops_blocked_io() {
+		assert_worker_disconnect_drops_blocked_io(WorkerDisconnect::WriteTimeout).await;
+	}
 
 	#[test]
 	fn internal_error_hides_diagnostic() {
