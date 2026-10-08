@@ -296,6 +296,19 @@ fn next_block(
 	block
 }
 
+#[test]
+fn peer_rotation_reads_validated_headers_ahead_of_block_bodies() {
+	let mut f = Fixture::new(1_934_005);
+	let block = f.block(&[]);
+	let activation = consensus::coinbase_binding_activation_height(f.context);
+	assert_eq!(block.header.height, activation);
+	f.chain
+		.process_block_header(&block.header, Options::NONE)
+		.unwrap();
+	assert_eq!(f.peers.total_height().unwrap(), activation - 1);
+	assert_eq!(f.peers.header_height().unwrap(), activation);
+}
+
 // Workflow: mine height 4 with one proof, put the other proof in the receiver's
 // pool, and deliver the compact block twice. Then deliver an incorrect full
 // body from another peer and the correct full body from the original sender.

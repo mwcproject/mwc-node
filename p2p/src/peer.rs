@@ -1643,6 +1643,29 @@ mod tests {
 	}
 
 	#[test]
+	fn block_supplier_eligibility_uses_requested_height_on_each_network() {
+		for chain_type in [
+			global::ChainTypes::Mainnet,
+			global::ChainTypes::Floonet,
+			global::ChainTypes::AutomatedTesting,
+		] {
+			global::set_local_chain_type(chain_type);
+			let activation = mwc_core::consensus::coinbase_binding_activation_height(0);
+			let mut peer = test_peer();
+			peer.info.live_info.write().height = activation + 100;
+			for capable in [false, true] {
+				peer.info.capabilities = Capabilities::BLOCK_HIST;
+				if capable {
+					peer.info.capabilities |= Capabilities::BLOCK_EXTRA;
+				}
+				assert!(peer.info.can_serve_block(0, activation - 1));
+				assert_eq!(peer.info.can_serve_block(0, activation), capable);
+				assert_eq!(peer.info.can_serve_block(0, activation + 1), capable);
+			}
+		}
+	}
+
+	#[test]
 	fn peer_discovery_and_outbound_target_follow_current_sync_stage() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_accept_fee_base(1000).unwrap();
@@ -1652,13 +1675,13 @@ mod tests {
 		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
 		// Discovery must work before any block-extra supplier has been found.
 		for (boost, expected) in [
-			(Capabilities::UNKNOWN, Capabilities::BLOCK_EXTRA),
+			(Capabilities::UNKNOWN, Capabilities::UNKNOWN),
 			(Capabilities::HEADER_HIST, Capabilities::HEADER_HIST),
 			(Capabilities::HEADERS_HASH, Capabilities::HEADERS_HASH),
 			(Capabilities::PIBD_HIST, Capabilities::PIBD_HIST),
 			(
 				Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
-				Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
+				Capabilities::HEADER_HIST,
 			),
 		] {
 			peers.set_boost_peers_capabilities(boost);
@@ -1820,7 +1843,7 @@ mod tests {
 	}
 
 	#[test]
-	fn clean_peers_disconnects_legacy_outbound_outside_header_and_pibd_sync() {
+	fn clean_peers_keeps_legacy_outbound_before_activation_in_every_stage() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		for required_capabilities in [
 			Capabilities::UNKNOWN,
@@ -1865,13 +1888,12 @@ mod tests {
 				assert_eq!(peers.iter().connected().count(), 4);
 			}
 
-			// Normal operation and body sync need openings even below capacity,
-			// including on preferred peers.
+			// Missing block extras alone no longer disconnects a healthy peer.
 			let summary = peers.clean_peers(10, 10, required_capabilities, config);
 
-			assert_eq!(summary.removed_peers, 2);
+			assert_eq!(summary.removed_peers, 0);
 			for peer in [&preferred, &legacy] {
-				assert!(!peers.is_known(&peer.info.addr));
+				assert!(peers.is_known(&peer.info.addr));
 				assert!(!peer.is_banned());
 				assert_eq!(
 					peers.get_peer(&peer.info.addr).unwrap().flags,
@@ -1880,7 +1902,235 @@ mod tests {
 			}
 			assert!(peers.is_known(&capable.info.addr));
 			assert!(peers.is_known(&inbound.info.addr));
-			assert_eq!(peers.iter().connected().count(), 2);
+			assert_eq!(peers.iter().connected().count(), 4);
+		}
+	}
+
+	#[test]
+	fn activation_rotation_preserves_capable_preferred_and_underfilled_pools() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for boost in [
+			Capabilities::UNKNOWN,
+			Capabilities::PIBD_HIST,
+			Capabilities::HEADER_HIST,
+		] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let mut config = P2PConfig::default();
+			config.peer_min_preferred_outbound_count = Some(8);
+			let preferred = test_peer_with_addr_fee(3707, 0).info.addr;
+			config.peers_preferred = Some(crate::msg::PeerAddrs {
+				peers: vec![preferred.clone()],
+			});
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			for index in 0..12 {
+				let mut peer = connected_test_peer_with_addr_fee(3700 + index, 0);
+				peer.info.capabilities = boost;
+				if index < 3 || index >= 8 {
+					peer.info.capabilities |= Capabilities::BLOCK_EXTRA;
+				}
+				if index >= 8 {
+					peer.info.direction = Direction::Inbound;
+				}
+				peers.add_connected(Arc::new(peer)).unwrap();
+			}
+			let now = Instant::now();
+			let activation = mwc_core::consensus::COINBASE_BINDING_TESTING_HEIGHT;
+			assert_eq!(
+				peers
+					.clean_peers_at(20, 10, boost, config.clone(), now, Some(activation - 1))
+					.removed_peers,
+				0
+			);
+			// The validated header has activated while DummyAdapter's body height is still zero.
+			let result = peers.clean_peers_at(20, 10, boost, config.clone(), now, Some(activation));
+			assert_eq!(result.rotated_outbound_peers.len(), 2);
+			assert_eq!(result.outbound_replacement_attempts, 2);
+			assert_eq!(peers.iter().outbound().connected().count(), 6);
+			assert_eq!(
+				peers
+					.iter()
+					.outbound()
+					.connected()
+					.with_capabilities(Capabilities::BLOCK_EXTRA)
+					.count(),
+				3
+			);
+			assert_eq!(peers.iter().inbound().connected().count(), 4);
+			assert!(peers.is_known(&preferred));
+			for addr in result.rotated_outbound_peers {
+				assert_eq!(
+					peers.get_peer(&addr).unwrap().flags,
+					crate::store::State::Healthy
+				);
+				assert!(!peers.is_banned(&addr).unwrap());
+			}
+			// Even an overdue timer must not drain the six remaining peers.
+			assert_eq!(
+				peers
+					.clean_peers_at(
+						20,
+						10,
+						boost,
+						config,
+						now + Duration::from_secs(1200),
+						Some(activation)
+					)
+					.removed_peers,
+				0
+			);
+		}
+	}
+
+	#[test]
+	fn capacity_cleanup_rechecks_block_extra_share_after_each_removal() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let mut config = P2PConfig::default();
+		config.peer_min_preferred_outbound_count = Some(6);
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		for index in 0..8 {
+			let mut peer = connected_test_peer_with_addr_fee(3750 + index, 0);
+			peer.info.capabilities = if index < 4 {
+				Capabilities::BLOCK_EXTRA
+			} else {
+				Capabilities::PIBD_HIST
+			};
+			peers.add_connected(Arc::new(peer)).unwrap();
+		}
+		// The sync quota selects an extra-capable peer first. The second capacity
+		// eviction must select a legacy peer now that only 3 of 7 support extras.
+		let result = peers.clean_peers_at(
+			10,
+			6,
+			Capabilities::PIBD_HIST,
+			config,
+			Instant::now(),
+			Some(mwc_core::consensus::COINBASE_BINDING_TESTING_HEIGHT),
+		);
+		assert_eq!(result.rotated_outbound_peers.len(), 2);
+		assert_eq!(result.outbound_replacement_attempts, 0);
+		assert_eq!(peers.iter().outbound().connected().count(), 6);
+		assert_eq!(
+			peers
+				.iter()
+				.outbound()
+				.connected()
+				.with_capabilities(Capabilities::BLOCK_EXTRA)
+				.count(),
+			3
+		);
+	}
+
+	#[test]
+	fn outbound_rotation_waits_ten_minutes_and_does_not_stack_triggers() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+		let mut config = P2PConfig::default();
+		config.peer_min_preferred_outbound_count = Some(3);
+		let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+		for port in 3720..3723 {
+			peers
+				.add_connected(Arc::new(connected_test_peer_with_addr_fee(port, 0)))
+				.unwrap();
+		}
+		let now = Instant::now();
+		assert_eq!(
+			peers
+				.clean_peers_at(
+					10,
+					10,
+					Capabilities::UNKNOWN,
+					config.clone(),
+					now + Duration::from_secs(599),
+					Some(0)
+				)
+				.removed_peers,
+			0
+		);
+		// Inbound churn must not reset or suppress the outbound rotation timer.
+		let mut inbound = connected_test_peer_with_addr_fee(3727, 0);
+		inbound.info.direction = Direction::Inbound;
+		inbound.set_defunct();
+		peers.add_connected(Arc::new(inbound)).unwrap();
+		let result = peers.clean_peers_at(
+			10,
+			10,
+			Capabilities::UNKNOWN,
+			config.clone(),
+			now + Duration::from_secs(600),
+			Some(0),
+		);
+		assert_eq!(result.removed_peers, 2);
+		assert_eq!(result.rotated_outbound_peers.len(), 1);
+		assert_eq!(result.outbound_replacement_attempts, 1);
+		peers
+			.add_connected(Arc::new(connected_test_peer_with_addr_fee(3723, 0)))
+			.unwrap();
+		assert_eq!(
+			peers
+				.clean_peers_at(
+					10,
+					10,
+					Capabilities::UNKNOWN,
+					config.clone(),
+					now + Duration::from_secs(1199),
+					Some(0)
+				)
+				.removed_peers,
+			0
+		);
+		// Capacity, activation imbalance and the timer all apply, but share one budget.
+		for port in 3724..3727 {
+			peers
+				.add_connected(Arc::new(connected_test_peer_with_addr_fee(port, 0)))
+				.unwrap();
+		}
+		let result = peers.clean_peers_at(
+			10,
+			3,
+			Capabilities::UNKNOWN,
+			config,
+			now + Duration::from_secs(1200),
+			Some(4),
+		);
+		assert_eq!(result.rotated_outbound_peers.len(), 2);
+		assert_eq!(result.outbound_replacement_attempts, 0);
+		assert_eq!(peers.iter().outbound().connected().count(), 4);
+	}
+
+	#[test]
+	fn rotation_exempts_preferred_peers_and_keeps_last_connection() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for count in [1, 3] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let mut config = P2PConfig::default();
+			config.peer_min_preferred_outbound_count = Some(1);
+			if count > 1 {
+				config.peers_preferred = Some(crate::msg::PeerAddrs {
+					peers: (3740..3743)
+						.map(|port| test_peer_with_addr_fee(port, 0).info.addr)
+						.collect(),
+				});
+			}
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			for port in 3740..3740 + count {
+				peers
+					.add_connected(Arc::new(connected_test_peer_with_addr_fee(port, 0)))
+					.unwrap();
+			}
+			let result = peers.clean_peers_at(
+				10,
+				10,
+				Capabilities::UNKNOWN,
+				config,
+				Instant::now() + Duration::from_secs(601),
+				Some(4),
+			);
+			assert_eq!(result.removed_peers, 0);
 		}
 	}
 

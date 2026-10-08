@@ -387,6 +387,10 @@ where
 		Ok(self.current_tip_for_peer_liveness()?.1)
 	}
 
+	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
+		Ok(self.chain()?.header_head()?.height)
+	}
+
 	fn is_chain_liveness_deferred(&self) -> bool {
 		self.is_chain_liveness_deferred_now()
 	}
@@ -789,7 +793,7 @@ where
 
 		// we have successfully processed a new block header
 		// so we can go request the block itself
-		self.request_compact_block(bh_hash, peer_info)?;
+		self.request_compact_block(bh_hash, bh.height, peer_info)?;
 
 		// done receiving the header
 		Ok(true)
@@ -1559,9 +1563,10 @@ where
 	fn request_compact_block(
 		&self,
 		bh_hash: Hash,
+		height: u64,
 		peer_info: &PeerInfo,
 	) -> Result<(), mwc_chain::Error> {
-		self.send_block_request_to_peer(bh_hash, peer_info, |peer, h| {
+		self.send_block_request_to_peer(bh_hash, height, peer_info, |peer, h| {
 			peer.send_compact_block_request(h)
 		})
 	}
@@ -1602,6 +1607,7 @@ where
 	fn send_block_request_to_peer<F>(
 		&self,
 		h: Hash,
+		height: u64,
 		peer_info: &PeerInfo,
 		f: F,
 	) -> Result<(), mwc_chain::Error>
@@ -1618,7 +1624,7 @@ where
 
 		let supplier = peers
 			.get_connected_peer(&peer_info.addr)
-			.filter(|peer| peer.info.is_block_extra());
+			.filter(|peer| peer.info.can_serve_block(self.context_id, height));
 		match supplier {
 			// Wait for another header announcement or ordinary sync discovery.
 			None => Ok(()),

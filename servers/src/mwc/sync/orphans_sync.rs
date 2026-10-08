@@ -406,8 +406,11 @@ impl OrphansSync {
 			.iter()
 			.connected()
 			.with_min_height(block_height)
-			.with_capabilities(mwc_p2p::Capabilities::BLOCK_EXTRA)
 			.into_iter()
+			.filter(|p| {
+				p.info
+					.can_serve_block(self.chain.get_context_id(), block_height)
+			})
 			.filter(|p| retry_budget.can_send_to(&p.info.addr))
 			.collect();
 		if peers.is_empty() {

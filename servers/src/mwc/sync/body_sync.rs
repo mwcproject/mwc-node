@@ -47,7 +47,7 @@ impl BodySync {
 		BodySync {
 			pibd_params: chain.get_pibd_params().clone(),
 			chain,
-			required_capabilities: RwLock::new(Capabilities::BLOCK_EXTRA),
+			required_capabilities: RwLock::new(Capabilities::HEADER_HIST),
 			request_tracker: RequestTracker::new(),
 			request_series: RwLock::new(Vec::new()),
 			last_retry_height: RwLock::new(0),
@@ -58,6 +58,17 @@ impl BodySync {
 
 	pub fn get_peer_capabilities(&self) -> Capabilities {
 		self.required_capabilities.read_recursive().clone()
+	}
+
+	// Connection discovery uses the stage capabilities only. This additional
+	// filter applies to requests, using the earliest missing body rather than
+	// the local tip; older fork/history blocks can still come from legacy peers.
+	fn block_request_capabilities(&self, base: Capabilities, height: u64) -> Capabilities {
+		if mwc_core::consensus::is_coinbase_binding_enabled(self.chain.get_context_id(), height) {
+			base | Capabilities::BLOCK_EXTRA
+		} else {
+			base
+		}
 	}
 
 	// Expected that it is called ONLY when state_sync is done
@@ -132,9 +143,9 @@ impl BodySync {
 		// catch-up from an old body height. Near-tip competing branches are left to
 		// the regular orphan/reorg flow described above.
 		let peer_capabilities = if self.chain.archive_mode() && head.height <= archive_height {
-			Capabilities::BLOCK_HIST | Capabilities::BLOCK_EXTRA
+			Capabilities::BLOCK_HIST
 		} else {
-			Capabilities::BLOCK_EXTRA
+			Capabilities::UNKNOWN
 		};
 		// Header sync can run in parallel with body sync.
 		*self.required_capabilities.write() = peer_capabilities | Capabilities::HEADER_HIST;
@@ -148,7 +159,7 @@ impl BodySync {
 		let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 			in_peers,
 			self.pibd_params.get_blocks_request_per_peer(),
-			peer_capabilities,
+			self.block_request_capabilities(peer_capabilities, fork_point.height.saturating_add(1)),
 			head.height,
 			None,
 			&self.request_tracker,
@@ -384,7 +395,10 @@ impl BodySync {
 				let (peers, excluded_requests, excluded_peers) = sync_utils::get_sync_peers(
 					peers,
 					self.pibd_params.get_blocks_request_per_peer(),
-					*self.required_capabilities.read_recursive(),
+					self.block_request_capabilities(
+						self.get_peer_capabilities() & !Capabilities::HEADER_HIST,
+						self.chain.fork_point()?.height.saturating_add(1),
+					),
 					head.height,
 					None,
 					&self.request_tracker,
@@ -592,6 +606,7 @@ impl BodySync {
 							.filter(|p| {
 								p.info.addr != requested_peer
 									&& p.info.live_info.read_recursive().height >= height
+									&& p.info.can_serve_block(self.chain.get_context_id(), height)
 							})
 							.cloned()
 							.sample(&mut rng, duplicate_request_count);
@@ -644,7 +659,12 @@ impl BodySync {
 				// Safe: need_request == 0 is handled above.
 				*need_request -= 1;
 
-				peers.retain(|p| p.info.live_info.read_recursive().height >= height);
+				// A request batch can straddle activation. Apply the requirement
+				// to each block, including retries, before selecting a supplier.
+				peers.retain(|p| {
+					p.info.height() >= height
+						&& p.info.can_serve_block(self.chain.get_context_id(), height)
+				});
 
 				let peer = match peers.choose(&mut rng) {
 					Some(p) => p,
@@ -701,6 +721,7 @@ impl BodySync {
 					.filter(|p| {
 						p.info.addr != requested_peer
 							&& p.info.live_info.read_recursive().height >= height
+							&& p.info.can_serve_block(self.chain.get_context_id(), height)
 					})
 					.choose(&mut rng);
 

@@ -112,11 +112,33 @@ is strict and never retries a different format.
 
 `Capabilities::BLOCK_EXTRA` (`0x100`) selects the extended encoding using the
 existing block message types and protocol version 5. Local nodes always advertise
-it. Legacy peers receive encoding without the opening. Every block request
-requires a capable supplier, regardless of height. Near the tip, request only
-from the announcing peer if capable; otherwise wait for another announcement or
-ordinary sync. Normal operation and body sync disconnect incapable outbound
-peers without banning them. Header sync and PIBD may use them.
+it. Legacy peers receive encoding without the opening. Full and compact block
+requests require `BLOCK_EXTRA` only when the requested block's own height is at
+or above activation. This also applies to archive downloads and retries: old
+preactivation blocks can come from legacy peers even after the network activates.
+Archive sync still requires `BLOCK_HIST` for historical bodies. Near the tip,
+request from the announcing peer if eligible; otherwise wait for another
+announcement or ordinary sync. Header sync and PIBD retain their existing
+request capabilities.
+
+Connections prefer known `BLOCK_EXTRA` candidates in every sync stage, falling
+back to ordinary stage-capable or unknown candidates when no eligible capable
+candidate remains. Connected, denied, and cooling-down addresses do not prevent
+fallback. `BLOCK_EXTRA` is not a mandatory connection boost requirement.
+
+Healthy outbound connections rotate after ten minutes without an outbound
+eviction. Once the locally validated header height reaches activation, cleanup
+also rotates legacy outbound peers if fewer than half of connected outbound peers
+support `BLOCK_EXTRA`. Preferred peers count toward this fraction but are exempt
+from proactive eviction; inbound peers do not affect it. While below half, all
+proactive outbound cleanup, including excess-capacity cleanup, selects only
+legacy peers. Capacity, sync-capability, and binding-capability cleanup share a
+limit of two outbound removals per pass; timer-only rotation removes one.
+Underfilled pools are replenished before further healthy-peer rotation, and
+rotation never removes the last healthy outbound connection. Explicit capacity
+limits still apply. Rotation does not ban peers, schedules replacement attempts
+within outbound capacity even if the remaining count meets the target, and
+places removed addresses on the normal reconnect cooldown.
 
 Existing v3 databases preserve preactivation blocks without openings; no block
 rewriting or reset is needed, in either archive mode. A populated database missing

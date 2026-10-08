@@ -1051,6 +1051,12 @@ impl PeerInfo {
 		self.capabilities.contains(Capabilities::BLOCK_EXTRA)
 	}
 
+	/// Whether this peer can supply the encoding required at this block height.
+	pub fn can_serve_block(&self, context_id: u32, height: u64) -> bool {
+		!mwc_core::consensus::is_coinbase_binding_enabled(context_id, height)
+			|| self.is_block_extra()
+	}
+
 	/// The current height of the peer.
 	pub fn height(&self) -> u64 {
 		self.live_info.read_recursive().height
@@ -1161,6 +1167,11 @@ pub trait ChainAdapter: Sync + Send {
 
 	/// Current total height
 	fn total_height(&self) -> Result<u64, mwc_chain::Error>;
+
+	/// Locally validated header height, which may lead the downloaded block bodies.
+	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
+		self.total_height()
+	}
 
 	/// Whether local chain maintenance can delay peer ping/pong processing.
 	fn is_chain_liveness_deferred(&self) -> bool {

@@ -95,8 +95,8 @@ impl HeadersBlocksRequests {
 		block_hash: Hash,
 		opts: mwc_chain::Options,
 	) {
-		// Queue only requests whose original supplier supports block extras.
-		if !peer_info.is_block_extra() {
+		// The requested block's height determines whether its opening is required.
+		if !peer_info.can_serve_block(self.chain.get_context_id(), height) {
 			return;
 		}
 		let addr = &peer_info.addr;
@@ -249,10 +249,11 @@ impl HeadersBlocksRequests {
 					};
 					if !block_exists {
 						// Recheck in case this address reconnected with different capabilities.
-						if let Some(peer) = peers
-							.get_connected_peer(&block_req.addr)
-							.filter(|peer| peer.info.is_block_extra())
-						{
+						if let Some(peer) =
+							peers.get_connected_peer(&block_req.addr).filter(|peer| {
+								peer.info
+									.can_serve_block(self.chain.get_context_id(), block_req.height)
+							}) {
 							debug!(
 								"process_request, requesting block from {}, target height: {} , hash: {}",
 								peer.info.addr, block_req.height, block_req.block_hash
@@ -357,13 +358,25 @@ mod tests {
 	}
 
 	#[test]
-	fn block_request_queue_requires_block_extra_and_drops_disconnected_supplier() {
+	fn block_request_queue_gates_at_activation_and_drops_disconnected_supplier() {
 		let (requests, dir_str) = test_requests();
 		let legacy = peer_info(3414, Capabilities::UNKNOWN);
 		let capable = peer_info(3415, Capabilities::BLOCK_EXTRA);
 		let hash = Hash::from_vec(&[42; 32]);
-		requests.add_block_request(&legacy, 1, hash, mwc_chain::Options::NONE);
+		let activation = mwc_core::consensus::coinbase_binding_activation_height(0);
+		requests.add_block_request(&legacy, activation, hash, mwc_chain::Options::NONE);
 		assert!(requests.blocks.read_recursive().is_empty());
+		requests.add_block_request(&legacy, activation - 1, hash, mwc_chain::Options::NONE);
+		assert_eq!(
+			requests
+				.blocks
+				.read_recursive()
+				.get(&(activation - 1))
+				.unwrap()[0]
+				.addr,
+			legacy.addr
+		);
+		requests.blocks.write().clear();
 		// Legacy peers still supply headers; only block queue admission is gated.
 		requests.add_header_request(&legacy.addr, Some(hash), 1, vec![]);
 		assert_eq!(requests.headers.read_recursive().len(), 1);
