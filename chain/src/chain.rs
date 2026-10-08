@@ -2986,6 +2986,7 @@ impl Chain {
 	}
 
 	/// Validate the current chain state.
+	/// Explicit API and EveryBlock requests rerun the selected txhashset checks.
 	pub fn validate(&self, secp: &Secp256k1, fast_validation: bool) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
 
@@ -3002,6 +3003,7 @@ impl Chain {
 				continue;
 			}
 
+			crate::validation::reset_txhashset(self.get_context_id(), fast_validation);
 			return self.with_locked_readonly_pmmr_discard_marker("validate", || {
 				// We want to lock first and read the header next. Otherwise after the lock header might be different
 				let header = self.store.head_header()?;
@@ -5873,6 +5875,7 @@ fn recover_marked_chain_operation(
 	stop_state: Option<Arc<StopState>>,
 	op: &PendingChainOperation,
 ) -> Result<(), Error> {
+	crate::validation::reset(store.get_context_id());
 	let res = match op {
 		PendingChainOperation::PibdReset => reset_pibd_chain_state(
 			genesis,
@@ -6413,7 +6416,8 @@ fn reconcile_body_pmmr_to_header(
 		// uncommitted extension. Roots and kernel sums do not authenticate exact
 		// leaf membership, so require a bidirectional match with the committed
 		// output-position index before recovery can clear its marker.
-		ext.extension.validate_output_pos_index(batch, header)?;
+		ext.extension
+			.validate_output_pos_index_once(batch, header)?;
 		ext.extension
 			.validate(genesis, true, None, header, stop_state.clone(), secp)?;
 		Ok(())
@@ -6589,6 +6593,7 @@ fn reset_chain_head_to_genesis_state(
 	stop_state: Option<Arc<StopState>>,
 	validate_retained_headers: bool,
 ) -> Result<(), Error> {
+	crate::validation::reset(store.get_context_id());
 	validate_genesis_context_id(genesis, store.get_context_id())?;
 	let head = Tip::try_from_header(&genesis.header)?;
 	// Header sync authenticates every header before storing it. A PIBD body reset
@@ -7130,7 +7135,7 @@ fn setup_head(
 					// Fast validation still verifies the MMRs, roots, sizes, leaf-set
 					// pairing, and kernel sums; it skips only rangeproof and kernel
 					// signature verification.
-					let (utxo_sum, kernel_sum) = extension.validate(
+					let sums = extension.validate(
 						&genesis.header,
 						true,
 						None,
@@ -7148,18 +7153,19 @@ fn setup_head(
 					// the pre-rewind state and is not a valid authentication anchor. The
 					// success path below marks it incomplete so Chain::init rebuilds it.
 					if !body_pmmr_rewind_expected {
-						extension.validate_output_pos_index(batch, &header)?;
+						extension.validate_output_pos_index_once(batch, &header)?;
 					}
 
-					let header_hash = header.hash(context_id)?;
-					let block_sums = if header.height == 0 {
-						genesis_block_sums(genesis, context_id, secp)?
-					} else {
-						BlockSums::new(utxo_sum, kernel_sum)
-					};
-					// BlockSums is a derived acceleration cache. Replace it from the
-					// validated txhashset rather than accepting any persisted value.
-					batch.save_block_sums(&header_hash, block_sums)?;
+					if let Some((utxo_sum, kernel_sum)) = sums {
+						let header_hash = header.hash(context_id)?;
+						let block_sums = if header.height == 0 {
+							genesis_block_sums(genesis, context_id, secp)?
+						} else {
+							BlockSums::new(utxo_sum, kernel_sum)
+						};
+						// Refresh the derived cache only when validation calculated sums.
+						batch.save_block_sums(&header_hash, block_sums)?;
+					}
 					info!(
 						"setup_head: startup txhashset validation finished at height {}; synchronizing PMMR backends",
 						header.height
@@ -7246,7 +7252,7 @@ fn setup_head(
 				// during later index initialization leaves a restartable state.
 				batch.set_output_pos_index_complete(true)?;
 				ext.extension
-					.validate_output_pos_index(batch, &genesis.header)?;
+					.validate_output_pos_index_once(batch, &genesis.header)?;
 				Ok(())
 			})?;
 
@@ -7397,6 +7403,13 @@ mod tests {
 
 	#[test]
 	fn pibd_restart_resets_import_without_archive_body() {
+		static ANCESTOR_CHECKS: AtomicU64 = AtomicU64::new(0);
+		fn count_ancestor_checks(context_id: u32, header: &BlockHeader) -> Result<(), pow::Error> {
+			if header.height == 1 {
+				ANCESTOR_CHECKS.fetch_add(1, Ordering::SeqCst);
+			}
+			pow::verify_size(context_id, header)
+		}
 		for interrupted in [false, true] {
 			for skip_validation in [false, true] {
 				let dir = mwc_crates::tempfile::tempdir().unwrap();
@@ -7414,13 +7427,14 @@ mod tests {
 				batch.commit().unwrap();
 				drop(chain);
 				let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+				ANCESTOR_CHECKS.store(0, Ordering::SeqCst);
 				let restarted = Chain::init(
 					&secp,
 					0,
 					path.to_owned(),
 					Arc::new(crate::types::NoopAdapter {}),
 					genesis,
-					pow::verify_size,
+					count_ancestor_checks,
 					false,
 					HashSet::new(),
 					None,
@@ -7438,6 +7452,11 @@ mod tests {
 					restarted.genesis.header.output_mmr_size
 				);
 				assert_eq!(restarted.header_head().unwrap(), headers);
+				assert_eq!(
+					ANCESTOR_CHECKS.load(Ordering::SeqCst),
+					1,
+					"recovery and startup must share one ancestry scan"
+				);
 				assert!(restarted.store.pending_chain_operation().unwrap().is_none());
 				assert!(restarted
 					.store
@@ -7447,6 +7466,98 @@ mod tests {
 					.unwrap());
 			}
 		}
+	}
+
+	#[test]
+	fn pibd_validation_reuses_completed_checks() {
+		// Kernel-history workers need the same context as the test thread.
+		global::release_context_data(0);
+		global::init_global_chain_type(0, global::ChainTypes::AutomatedTesting).unwrap();
+		global::init_global_nrd_enabled(0, false).unwrap();
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 3);
+		let desegmenter = chain.init_desegmenter(2, Hash::default()).unwrap();
+		let archive_hash = chain.head().unwrap().last_block_h;
+		crate::validation::reset_body(0);
+		let batch = chain.store.batch_write().unwrap();
+		batch
+			.save_block_sums(&archive_hash, BlockSums::Empty)
+			.unwrap();
+		batch.commit().unwrap();
+		let status = Arc::new(SyncState::new());
+		let stop_state = Arc::new(StopState::new());
+		desegmenter
+			.validate_complete_state(status.clone(), stop_state.clone())
+			.unwrap();
+		let flags = crate::validation::get(0);
+		assert!(flags.kernel_history && flags.kernel_pos_index);
+		assert!(flags.output_mmr && flags.rangeproof_mmr && flags.kernel_mmr);
+		assert!(flags.roots && flags.sizes && flags.output_rangeproof_leaf_sets);
+		assert!(flags.kernel_sums && flags.rangeproofs && flags.kernel_signatures);
+		assert!(matches!(
+			chain.store.get_block_sums(&archive_hash).unwrap(),
+			BlockSums::NonEmpty { .. }
+		));
+		// A skipped check must leave the record untouched, even if it is empty.
+		let batch = chain.store.batch_write().unwrap();
+		batch
+			.save_block_sums(&archive_hash, BlockSums::Empty)
+			.unwrap();
+		batch.commit().unwrap();
+		desegmenter
+			.validate_complete_state(status, stop_state)
+			.unwrap();
+		assert_eq!(crate::validation::get(0), flags);
+		assert!(matches!(
+			chain.store.get_block_sums(&archive_hash).unwrap(),
+			BlockSums::Empty
+		));
+		global::release_context_data(0);
+	}
+
+	#[test]
+	fn explicit_validation_does_not_write_block_sums() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 3);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let head_hash = chain.head().unwrap().last_block_h;
+		let batch = chain.store.batch_write().unwrap();
+		batch.save_block_sums(&head_hash, BlockSums::Empty).unwrap();
+		batch.commit().unwrap();
+
+		for fast in [false, true, false] {
+			chain.validate(&secp, fast).unwrap();
+			assert!(matches!(
+				chain.store.get_block_sums(&head_hash).unwrap(),
+				BlockSums::Empty
+			));
+			let flags = crate::validation::get(0);
+			assert!(flags.kernel_sums);
+			assert!(flags.rangeproofs && flags.kernel_signatures);
+		}
+	}
+
+	#[test]
+	fn rewinds_preserve_validation_flags() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 4);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		chain.validate(&secp, false).unwrap();
+		let flags = crate::validation::get(0);
+		assert!(flags.header_ancestry && flags.kernel_sums && flags.rangeproofs);
+		let target = chain.get_header_by_height(2).unwrap();
+		chain.reset_chain_head(&secp, &target, false).unwrap();
+		assert_eq!(crate::validation::get(0), flags);
+		chain
+			.rewind_bad_block(&secp, &HashSet::from([target.hash(0).unwrap()]))
+			.unwrap();
+		assert_eq!(chain.head().unwrap().height, 1);
+		assert_eq!(crate::validation::get(0), flags);
+		chain.reset_pibd_chain().unwrap();
+		assert_eq!(
+			crate::validation::get(0),
+			crate::validation::ValidationFlags::default()
+		);
 	}
 
 	#[test]
@@ -11311,6 +11422,8 @@ mod tests {
 		{
 			let mut header_pmmr = chain.header_pmmr.write();
 			let mut txhashset = chain.txhashset.write();
+			// Model the reset performed by the startup/recovery entry point.
+			crate::validation::reset(0);
 			let err = reconcile_body_pmmr_to_header(
 				&genesis.header,
 				&chain.store,
@@ -12295,6 +12408,8 @@ mod tests {
 
 		let err = {
 			let mut txhashset = chain.txhashset.write();
+			// Model the reset performed by the startup/recovery entry point.
+			crate::validation::reset(0);
 			setup_head(
 				&genesis,
 				&chain.store,
@@ -12523,6 +12638,8 @@ mod tests {
 		let err = {
 			let mut header_pmmr = chain.header_pmmr.write();
 			let mut txhashset = chain.txhashset.write();
+			// Model the reset performed by the startup/recovery entry point.
+			crate::validation::reset(0);
 			setup_head(
 				&genesis,
 				&chain.store,

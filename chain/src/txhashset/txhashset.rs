@@ -24,6 +24,7 @@ use crate::types::{
 	CommitPos, HashHeight, KernelPos, SpentCommitmentRecord, SpentOutput, SyncStatusUpdateThrottle,
 	Tip, TxHashSetRoots, TxHashsetStateValidationStage, TXHASHSET_STATE_VALIDATION_STEPS,
 };
+use crate::validation;
 use crate::{SyncState, SyncStatus};
 use mwc_core::consensus;
 use mwc_core::consensus::WEEK_HEIGHT;
@@ -2738,6 +2739,24 @@ impl<'a> HeaderExtension<'a> {
 		pow_verifier: fn(u32, &BlockHeader) -> Result<(), mwc_core::pow::Error>,
 		stop_state: Option<&StopState>,
 	) -> Result<(), Error> {
+		if stop_state.map(StopState::is_stopped).unwrap_or(false) {
+			return Err(Error::Stopped);
+		}
+		validation::run(
+			self.pmmr.get_context_id(),
+			"persisted header ancestry",
+			|v| &mut v.header_ancestry,
+			|| self.validate_persisted_ancestry_uncached(header, batch, pow_verifier, stop_state),
+		)
+	}
+
+	fn validate_persisted_ancestry_uncached(
+		&self,
+		header: &BlockHeader,
+		batch: &Batch<'_>,
+		pow_verifier: fn(u32, &BlockHeader) -> Result<(), mwc_core::pow::Error>,
+		stop_state: Option<&StopState>,
+	) -> Result<(), Error> {
 		let started = Instant::now();
 		info!(
 			"validate_persisted_ancestry: started, target height {}, PMMR size {}",
@@ -3399,6 +3418,7 @@ impl<'a> Extension<'a> {
 	/// Once the PIBD set is downloaded, we need to ensure that the respective leaf sets
 	/// match the bitmap (particularly in the case of outputs being spent after a PIBD catch-up)
 	pub fn update_leaf_sets(&mut self, bitmap: &Bitmap) -> Result<(), Error> {
+		validation::reset_body(self.context_id);
 		let mut output_pos_to_prune = Vec::new();
 		for pos0 in self.output_pmmr.leaf_pos_iter()? {
 			let pos0 = pos0?;
@@ -3470,6 +3490,7 @@ impl<'a> Extension<'a> {
 		segments: Vec<Segment<OutputIdentifier>>,
 		bitmap: &Bitmap,
 	) -> Result<(), Error> {
+		validation::reset_body(self.context_id);
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
 			for &pos0 in &leaf_pos {
@@ -3554,6 +3575,7 @@ impl<'a> Extension<'a> {
 		segments: Vec<Segment<RangeProof>>,
 		bitmap: &Bitmap,
 	) -> Result<(), Error> {
+		validation::reset_body(self.context_id);
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
 			for &pos0 in &leaf_pos {
@@ -3660,6 +3682,7 @@ impl<'a> Extension<'a> {
 		&mut self,
 		segments: Vec<Segment<TxKernel>>,
 	) -> Result<(), Error> {
+		validation::reset_body(self.context_id);
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
 			if !hash_pos.is_empty() || !hashes.is_empty() {
@@ -4259,6 +4282,7 @@ impl<'a> Extension<'a> {
 		header_ext: &HeaderExtension<'_>,
 		batch: &Batch<'_>,
 	) -> Result<(), Error> {
+		validation::reset_body(self.context_id);
 		if genesis.header.height != 0 {
 			return Err(Error::InvalidGenesisHash);
 		}
@@ -4354,11 +4378,26 @@ impl<'a> Extension<'a> {
 
 		info!("Starting PMMR validation");
 		// validate all hashes and sums within the trees
-		self.output_pmmr.validate()?;
+		validation::run(
+			self.context_id,
+			"output PMMR",
+			|v| &mut v.output_mmr,
+			|| Ok(self.output_pmmr.validate()?),
+		)?;
 		info!("Finish outputs PMMR validation");
-		self.rproof_pmmr.validate()?;
+		validation::run(
+			self.context_id,
+			"rangeproof PMMR",
+			|v| &mut v.rangeproof_mmr,
+			|| Ok(self.rproof_pmmr.validate()?),
+		)?;
 		info!("Finish rangeproofs PMMR validation");
-		self.kernel_pmmr.validate()?;
+		validation::run(
+			self.context_id,
+			"kernel PMMR",
+			|v| &mut v.kernel_mmr,
+			|| Ok(self.kernel_pmmr.validate()?),
+		)?;
 		info!("Finish Kernels PMMR validation");
 
 		info!(
@@ -4403,6 +4442,19 @@ impl<'a> Extension<'a> {
 				}
 			}
 		}
+	}
+
+	pub(crate) fn validate_output_pos_index_once(
+		&self,
+		batch: &Batch<'_>,
+		header: &BlockHeader,
+	) -> Result<(), Error> {
+		validation::run(
+			self.context_id,
+			"output position index",
+			|v| &mut v.output_pos_index,
+			|| self.validate_output_pos_index(batch, header),
+		)
 	}
 
 	/// Validate exact UTXO leaf membership against the transactionally committed
@@ -4723,6 +4775,7 @@ impl<'a> Extension<'a> {
 
 	/// Validate the txhashset state against the provided block header.
 	/// A "fast validation" will skip rangeproof verification and kernel signature verification.
+	/// Returns newly calculated sums, or None when the sum check was already completed.
 	pub fn validate(
 		&self,
 		genesis: &BlockHeader,
@@ -4731,7 +4784,9 @@ impl<'a> Extension<'a> {
 		header: &BlockHeader,
 		stop_state: Option<Arc<StopState>>,
 		secp: &Secp256k1,
-	) -> Result<(Commitment, Commitment), Error> {
+	) -> Result<Option<(Commitment, Commitment)>, Error> {
+		Self::check_stop_state(&stop_state)?;
+		let context_id = self.context_id;
 		Self::update_state_validation_status(
 			&status,
 			TxHashsetStateValidationStage::ValidateMmrs,
@@ -4743,16 +4798,35 @@ impl<'a> Extension<'a> {
 			TxHashsetStateValidationStage::ValidateRoots,
 			1,
 		);
-		self.validate_roots(header)?;
+		validation::run(
+			context_id,
+			"txhashset roots",
+			|v| &mut v.roots,
+			|| self.validate_roots(header),
+		)?;
 		Self::update_state_validation_status(
 			&status,
 			TxHashsetStateValidationStage::ValidateSizes,
 			2,
 		);
-		self.validate_sizes(header)?;
-		self.validate_output_rangeproof_leaf_sets()?;
+		validation::run(
+			context_id,
+			"txhashset sizes",
+			|v| &mut v.sizes,
+			|| self.validate_sizes(header),
+		)?;
+		validation::run(
+			context_id,
+			"output/rangeproof leaf sets",
+			|v| &mut v.output_rangeproof_leaf_sets,
+			|| self.validate_output_rangeproof_leaf_sets(),
+		)?;
 
 		if self.can_skip_genesis_mmr_validation(header) && header.total_kernel_offset().is_zero() {
+			Self::check_stop_state(&stop_state)?;
+			if validation::get(context_id).kernel_sums {
+				return Ok(None);
+			}
 			if let Some(status) = &status {
 				status.update(SyncStatus::TxHashsetStateValidation {
 					stage: TxHashsetStateValidationStage::ValidateKernelSums,
@@ -4761,34 +4835,56 @@ impl<'a> Extension<'a> {
 				});
 			}
 			let zero_commit = secp_static::commit_to_zero_value();
-			return Ok((zero_commit, zero_commit));
+			validation::mark_done(context_id, |v| &mut v.kernel_sums);
+			return Ok(Some((zero_commit, zero_commit)));
 		}
 
-		// The real magicking happens here. Sum of kernel excesses should equal
+		// The real magic happens here. Sum of kernel excesses should equal
 		// sum of unspent outputs minus total supply.
-		let (output_sum, kernel_sum) =
-			self.validate_kernel_sums(genesis, header, status.clone(), stop_state.clone(), secp)?;
+		let sums = if validation::get(context_id).kernel_sums {
+			info!("validation: kernel sums already completed");
+			None
+		} else {
+			let sums = self.validate_kernel_sums(
+				genesis,
+				header,
+				status.clone(),
+				stop_state.clone(),
+				secp,
+			)?;
+			Self::check_stop_state(&stop_state)?;
+			validation::mark_done(context_id, |v| &mut v.kernel_sums);
+			Some(sums)
+		};
 
 		// These are expensive verification step (skipped for "fast validation").
 		if !fast_validation {
 			// Verify the rangeproof associated with each unspent output.
-			self.verify_rangeproofs(status.clone(), None, stop_state.clone())?;
-			if let Some(ref s) = stop_state {
-				if s.is_stopped() {
-					return Err(Error::Stopped.into());
-				}
-			}
+			validation::run(
+				context_id,
+				"range proofs",
+				|v| &mut v.rangeproofs,
+				|| {
+					self.verify_rangeproofs(status.clone(), None, stop_state.clone())?;
+					Self::check_stop_state(&stop_state)
+				},
+			)?;
+			Self::check_stop_state(&stop_state)?;
 
 			// Verify all the kernel signatures.
-			self.verify_kernel_signatures(status, stop_state.clone())?;
-			if let Some(ref s) = stop_state {
-				if s.is_stopped() {
-					return Err(Error::Stopped.into());
-				}
-			}
+			validation::run(
+				context_id,
+				"kernel signatures",
+				|v| &mut v.kernel_signatures,
+				|| {
+					self.verify_kernel_signatures(status, stop_state.clone())?;
+					Self::check_stop_state(&stop_state)
+				},
+			)?;
 		}
 
-		Ok((output_sum, kernel_sum))
+		Self::check_stop_state(&stop_state)?;
+		Ok(sums)
 	}
 
 	fn update_state_validation_status(
@@ -8569,7 +8665,7 @@ mod tests {
 			extension
 				.validate(&header, true, None, &header, None, &secp)
 				.unwrap(),
-			(zero_commit, zero_commit)
+			Some((zero_commit, zero_commit))
 		);
 
 		drop(extension);
@@ -8662,8 +8758,45 @@ mod tests {
 			genesis.header.kernel_root = roots.kernel_root;
 
 			let (output_sum, kernel_sum) = extension
+				.validate(&genesis.header, true, None, &genesis.header, None, &secp)
+				.unwrap()
+				.unwrap();
+			let flags = validation::get(0);
+			assert!(flags.output_mmr && flags.rangeproof_mmr && flags.kernel_mmr);
+			assert!(
+				flags.roots
+					&& flags.sizes && flags.output_rangeproof_leaf_sets
+					&& flags.kernel_sums
+			);
+			assert!(!flags.rangeproofs && !flags.kernel_signatures);
+			let full_sums = extension
 				.validate(&genesis.header, false, None, &genesis.header, None, &secp)
 				.unwrap();
+			assert_eq!(full_sums, None);
+			assert!(validation::get(0).rangeproofs && validation::get(0).kernel_signatures);
+			assert_eq!(
+				extension
+					.validate(&genesis.header, false, None, &genesis.header, None, &secp)
+					.unwrap(),
+				None
+			);
+			assert!(matches!(
+				batch.get_block_sums(&genesis.hash(0).unwrap()),
+				Err(NotFoundErr(_))
+			));
+			let stopped = Arc::new(StopState::new());
+			stopped.stop();
+			assert!(matches!(
+				extension.validate(
+					&genesis.header,
+					false,
+					None,
+					&genesis.header,
+					Some(stopped),
+					&secp
+				),
+				Err(Error::Stopped)
+			));
 			let zero_commit = secp_static::commit_to_zero_value();
 			assert_ne!(output_sum, zero_commit);
 			assert_ne!(kernel_sum, zero_commit);
@@ -8776,6 +8909,8 @@ mod tests {
 			extension
 				.validate(&genesis.header, true, None, &genesis.header, None, &secp)
 				.unwrap();
+			// Simulate a fresh integrity check after corrupting the retained state.
+			validation::reset(0);
 			assert!(extension.output_pmmr.prune(0).unwrap());
 			assert!(extension.rproof_pmmr.prune(0).unwrap());
 			assert!(extension.validate_roots(&genesis.header).is_ok());

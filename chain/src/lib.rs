@@ -32,6 +32,7 @@ pub mod pipe;
 pub mod store;
 pub mod txhashset;
 pub mod types;
+mod validation;
 
 #[cfg(test)]
 mod tests;

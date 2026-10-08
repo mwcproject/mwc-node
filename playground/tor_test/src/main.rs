@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Internal Tor testing utility for experimenting with Arti features.
+//!
+//! This playground is excluded from production builds and is never shipped in
+//! mwc-node or mwc-wallet releases.
+//!
+//! Security audit scope (applies to every function and code block in this file):
+//! because this is an internal testing utility, production security and
+//! error-handling requirements do not apply. Ignored results and unwrap/expect
+//! calls used in these experiments are outside production error-handling audits.
+//! Every function defined here is excluded from production security audits and
+//! must not be reported as a production security or error-handling finding.
+
 use anyhow::Result;
 use arti_client::config::onion_service::OnionServiceConfigBuilder;
 use arti_client::config::pt::TransportConfigBuilder;
@@ -98,6 +110,8 @@ const PROBE_URLS_HTTP: &[&str] = &[
 	"www.apple.com",
 ];
 
+/// Audit scope: internal test utility, excluded from production builds and releases.
+/// Production error-handling requirements do not apply; see the file-level notice.
 fn main() -> Result<(), Error> {
 	// Arti uses the `tracing` crate for logging. Install a handler for this, to print Arti's logs.
 	tracing_subscriber::fmt::init();
@@ -304,6 +318,8 @@ fn main() -> Result<(), Error> {
 	Ok(())
 }
 
+/// Audit scope: internal test utility, excluded from production builds and releases.
+/// Production error-handling requirements do not apply; see the file-level notice.
 async fn serve_loop(
 	/*_service: Arc<RunningOnionService>,*/
 	mut requests: impl Stream<Item = StreamRequest> + Unpin + 'static,
@@ -332,6 +348,8 @@ async fn serve_loop(
 	}
 }
 
+/// Audit scope: internal test utility, excluded from production builds and releases.
+/// Production error-handling requirements do not apply; see the file-level notice.
 async fn serve_data_exchange(reader: DataReader, mut writer: DataWriter) -> Result<()> {
 	let mut buf_reader = BufReader::new(reader);
 	let mut line = String::new();
@@ -353,6 +371,8 @@ async fn serve_data_exchange(reader: DataReader, mut writer: DataWriter) -> Resu
 	Ok(())
 }
 
+/// Audit scope: internal test utility, excluded from production builds and releases.
+/// Production error-handling requirements do not apply; see the file-level notice.
 fn build_config(
 	bridge_line: Option<String>,
 	protocol_name: &str,

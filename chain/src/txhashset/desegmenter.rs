@@ -21,6 +21,7 @@ use crate::store::{PendingChainOperation, PendingChainOperationGuard};
 use crate::txhashset;
 use crate::txhashset::{BitmapAccumulator, BitmapChunk, TxHashSet};
 use crate::types::{SyncStatusUpdateThrottle, Tip, TxHashsetStateValidationStage};
+use crate::validation;
 use crate::{pibd_params, store};
 use crate::{Chain, SyncState, SyncStatus};
 use mwc_core::core::hash::{Hash, Hashed};
@@ -521,8 +522,17 @@ impl Desegmenter {
 			));
 		}
 
-		let header_pmmr = self.header_pmmr.read_recursive();
+		// Serialize the completion check and scan with other validators and resets.
+		let header_pmmr = self.header_pmmr.write();
 		self.ensure_archive_header_canonical(&header_pmmr)?;
+		self.ensure_robust()?;
+		if stop_state.is_stopped() {
+			return Err(Error::Stopped);
+		}
+		if validation::get(self.store.get_context_id()).kernel_history {
+			info!("validation: kernel history already completed");
+			return Ok(());
+		}
 		let mut handles = Vec::with_capacity(num_cores);
 		let mut first_error = None;
 		let processed = Arc::new(AtomicU64::new(0));
@@ -624,6 +634,10 @@ impl Desegmenter {
 		if let Some(e) = first_error {
 			return Err(e);
 		}
+		if stop_state.is_stopped() {
+			return Err(Error::Stopped);
+		}
+		validation::mark_done(context_id, |v| &mut v.kernel_history);
 		debug!(
 			"desegmenter validation: validated kernel root on {} headers",
 			processed.load(Ordering::Relaxed)
@@ -657,15 +671,27 @@ impl Desegmenter {
 			)?;
 			let header_pmmr = self.header_pmmr.read_recursive();
 			self.ensure_archive_header_canonical(&header_pmmr)?;
+			self.ensure_robust()?;
 			let txhashset = self.txhashset.read_recursive();
 			let batch = self.store.batch_write()?;
-			txhashset.verify_kernel_pos_index(
-				&self.genesis,
-				&self.archive_header,
-				&header_pmmr,
-				&batch,
-				Some(status.clone()),
-				Some(stop_state.clone()),
+			validation::run(
+				self.store.get_context_id(),
+				"kernel position rules",
+				|v| &mut v.kernel_pos_index,
+				|| {
+					txhashset.verify_kernel_pos_index(
+						&self.genesis,
+						&self.archive_header,
+						&header_pmmr,
+						&batch,
+						Some(status.clone()),
+						Some(stop_state.clone()),
+					)?;
+					if stop_state.is_stopped() {
+						return Err(Error::Stopped);
+					}
+					Ok(())
+				},
 			)?;
 		}
 
@@ -717,7 +743,7 @@ impl Desegmenter {
 
 					// Validate the extension, generating the utxo_sum and kernel_sum.
 					// Full validation, including rangeproofs and kernel signature verification.
-					let (utxo_sum, kernel_sum) = extension.validate(
+					let sums = extension.validate(
 						&self.genesis,
 						false,
 						Some(status.clone()),
@@ -730,11 +756,12 @@ impl Desegmenter {
 						return Err(Error::Stopped);
 					}
 
-					// Save the block_sums (utxo_sum, kernel_sum) to the db for use later.
-					batch.save_block_sums(
-						&self.archive_header.hash(self.store.get_context_id())?,
-						BlockSums::new(utxo_sum, kernel_sum),
-					)?;
+					if let Some((utxo_sum, kernel_sum)) = sums {
+						batch.save_block_sums(
+							&self.archive_header.hash(self.store.get_context_id())?,
+							BlockSums::new(utxo_sum, kernel_sum),
+						)?;
+					}
 
 					Ok(())
 				},

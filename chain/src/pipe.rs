@@ -106,6 +106,7 @@ impl KnownStatus {
 /// Release Context related data
 pub fn release_context_data(context_id: u32) {
 	INVALID_BLOCK_HASHES.write().remove(&context_id);
+	crate::validation::release_context(context_id);
 }
 
 /// Setup the banned header hashes defined at the config.

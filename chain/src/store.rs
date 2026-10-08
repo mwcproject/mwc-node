@@ -101,6 +101,7 @@ impl ChainStore {
 	/// Create new chain store
 	pub fn new(context_id: u32, db_root: &str) -> Result<ChainStore, Error> {
 		let db = mwc_store::Store::new(context_id, db_root, None, Some(STORE_SUBPATH), None)?;
+		crate::validation::reset(context_id);
 		Ok(ChainStore { db })
 	}
 
