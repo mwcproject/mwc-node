@@ -457,6 +457,57 @@ where
 		pool_handler.get_unconfirmed_transactions()
 	}
 
+	/// Validate public transaction metadata without inserting or relaying it.
+	/// Signatures and rangeproofs cannot be represented by this request.
+	///
+	/// Transactions are ordered parent before child. Each transaction has its own
+	/// `is_complete` scope for balance and fee checks. Only complete successful
+	/// parents supply outputs to children in the temporary validation view.
+	/// `allow_future_height` permits an absolute timelock and reports its required
+	/// height. The response uses one current body-chain snapshot and a stable
+	/// local public-pool view, excludes private stempool state,
+	/// and does not reserve inputs or promise later admission. Callers must
+	/// still verify signatures, proofs, and protocol-specific terms locally.
+	/// `expected_tip`, when supplied, must remain on the active body chain;
+	/// newer blocks are allowed and validation uses the returned `checked_tip`.
+	///
+	/// Public-pool checks are intentionally best-effort. This node may not know
+	/// a parent transaction, and its pool may still await reconciliation after
+	/// a block updates the chain. The pool lock keeps entries stable during
+	/// this call but does not ensure they remain valid at `checked_tip`.
+	/// A missing parent can cause rejection; a stale parent can let a child's
+	/// checks pass even when that parent is already invalid at `checked_tip`.
+	/// This advisory endpoint intentionally neither waits for reconciliation
+	/// nor revalidates pool ancestors. Normal transaction admission performs
+	/// its own validation.
+	pub fn testmempoolaccept(
+		&self,
+		request: mwc_core::core::transaction_preflight::MempoolAcceptRequest,
+	) -> Result<mwc_core::core::transaction_preflight::MempoolAcceptResponse, Error> {
+		request.validate_size().map_err(Error::RequestError)?;
+		let chain = self
+			.chain
+			.upgrade()
+			.ok_or_else(|| Error::Internal("chain is not available".into()))?;
+		let pool_arc = self
+			.tx_pool
+			.upgrade()
+			.ok_or_else(|| Error::Internal("pool is not available".into()))?;
+		let secp = Secp256k1::with_caps(mwc_crates::secp::ContextFlag::Commit)?;
+		// Hold the public pool view through the chain snapshot. Pool admission
+		// uses the same pool-then-chain lock order. Do not examine stempool.
+		let pool = pool_arc.read_recursive();
+		let pool_state = request
+			.transactions
+			.iter()
+			.map(|tx| pool.txpool.preflight_state(tx))
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(|e| Error::Internal(e.to_string()))?;
+		chain
+			.test_mempool_accept(&request, &pool_state, &secp)
+			.map_err(|e| Error::RequestError(e.to_string()))
+	}
+
 	/// Push new transaction to our local transaction pool.
 	///
 	/// Transactions accepted into the local pool are handed to the network adapter

@@ -2836,6 +2836,199 @@ impl Chain {
 		})
 	}
 
+	/// Validate the supplied input/output commitments and unsigned kernel data
+	/// for all requested transactions against one body-chain snapshot. Complete,
+	/// successful parents fund later children in a temporary view. Public pool
+	/// state comes only from the API's locked local pool view. Those entries
+	/// were validated at admission and may still await reconciliation with
+	/// this body-chain tip; preflight uses them on a best-effort basis.
+	/// Signatures and rangeproofs are not supplied. This check does not insert
+	/// the transaction into the mempool or relay it.
+	pub fn test_mempool_accept(
+		&self,
+		request: &mwc_core::core::transaction_preflight::MempoolAcceptRequest,
+		pool_state: &[mwc_core::core::transaction_preflight::PreflightPoolState],
+		secp: &Secp256k1,
+	) -> Result<mwc_core::core::transaction_preflight::MempoolAcceptResponse, Error> {
+		use mwc_core::core::transaction_preflight::{
+			MempoolAcceptResponse, PreflightDependencies, PreflightPoolState,
+		};
+		let context_id = self.get_context_id();
+		request.validate_size().map_err(Error::Other)?;
+		if !pool_state.is_empty() && pool_state.len() != request.transactions.len() {
+			return Err(Error::Other(
+				"Preflight pool state does not match request".into(),
+			));
+		}
+		let transactions = request
+			.transactions
+			.iter()
+			.map(|tx| tx.validation_transaction(context_id, secp))
+			.collect::<Result<Vec<_>, _>>()
+			.map_err(Error::Other)?;
+		loop {
+			self.ensure_chain_robust()?;
+			let mut header_pmmr = self.header_pmmr.write();
+			let mut txhashset = self.txhashset.write();
+			if self.requires_init_recovery.load(Ordering::SeqCst) {
+				drop(txhashset);
+				drop(header_pmmr);
+				continue;
+			}
+			return self.with_locked_readonly_pmmr_discard_marker("test_mempool_accept", || {
+				txhashset::extending_readonly(
+					context_id,
+					&mut header_pmmr,
+					&mut txhashset,
+					|ext, batch| {
+						let head = batch.head_header()?;
+						let tip = head.hash(context_id)?;
+						let next_height = head
+							.height
+							.checked_add(1)
+							.ok_or_else(|| Error::DataOverflow("preflight height".into()))?;
+						self.rewind_and_apply_header_fork(&head, ext.header_extension, batch)?;
+						let mut response = MempoolAcceptResponse::new(request, tip, head.height);
+						if let Some(expected) = request.expected_tip {
+							let on_chain = match batch.get_block_header(&expected) {
+								Ok(anchor) if anchor.height <= head.height => {
+									ext.header_extension
+										.get_header_hash_by_height(anchor.height)?
+										== Some(expected)
+								}
+								Ok(_) => false,
+								Err(err) if err.store_error_is_not_found() => false,
+								Err(err) => return Err(err.into()),
+							};
+							if !on_chain {
+								response.reject(
+									"tip",
+									"Requested anchor is not on the current body chain".into(),
+								);
+								return Ok(response);
+							}
+						}
+						let mut dependencies = PreflightDependencies::default();
+						let empty_pool = PreflightPoolState::default();
+						for (index, (request, tx)) in
+							request.transactions.iter().zip(&transactions).enumerate()
+						{
+							let result = &mut response.transactions[index];
+							let pool = pool_state.get(index).unwrap_or(&empty_pool);
+							result.already_known = pool.already_known;
+							for conflict in &pool.conflicts {
+								result.reject("pool", conflict.clone());
+							}
+							request.check_balance(tx, secp, result);
+							result.valid_from_height = tx.lock_height();
+							let mut available = dependencies.check(request, result);
+							// Intentionally trust pool parents' admission-time validation here.
+							// Preflight does not wait for pool reconciliation or revalidate
+							// pool ancestors, so a stale parent can temporarily fund a child
+							// in this advisory result. Normal admission validates independently.
+							available.extend_from_slice(&pool.available_inputs);
+							if !request.allow_future_height
+								&& result.valid_from_height > next_height
+							{
+								result.reject(
+									"height",
+									format!(
+										"Transaction is locked until height {}",
+										result.valid_from_height
+									),
+								);
+							}
+							if request.is_complete {
+								let fee = tx.fee()?;
+								if fee < tx.accept_fee(context_id)? {
+									result.reject(
+										"fee",
+										"Transaction fee is below node policy".into(),
+									);
+								}
+							}
+							if tx.kernels().iter().any(|k| k.is_nrd()) {
+								if head.version < mwc_core::core::HeaderVersion(4) {
+									result.reject(
+										"kernels",
+										"NRD kernels are not active at this height".into(),
+									);
+								} else {
+									result.record(
+										"kernels",
+										ext.extension.apply_kernels(
+											tx.kernels(),
+											next_height,
+											batch,
+											false,
+										),
+									);
+								}
+							}
+							if !tx.outputs().is_empty() {
+								result.record(
+									"replay",
+									pipe::check_against_spent_output(
+										&tx.body,
+										head.height,
+										None,
+										None,
+										ext.header_extension,
+										batch,
+									),
+								);
+							}
+							let utxo = ext.extension.utxo_view(ext.header_extension);
+							result.record("outputs", utxo.validate_outputs(tx.outputs(), batch));
+							let check_inputs = || -> Result<(), Error> {
+								let mut chain_inputs = Vec::new();
+								for input in &request.inputs {
+									let output = if let Some(output) = available
+										.iter()
+										.find(|o| o.commitment() == input.commitment)
+									{
+										*output
+									} else {
+										let one = Inputs::CommitOnly(vec![
+											mwc_core::core::CommitWrapper::from(input.commitment),
+										]);
+										let outputs = utxo.validate_inputs(&one, batch)?;
+										let output = outputs[0].0;
+										chain_inputs.push(output);
+										output
+									};
+									if input
+										.features
+										.is_some_and(|features| features != output.features)
+									{
+										return Err(Error::InputMismatch(input.commitment));
+									}
+								}
+								let inputs =
+									Inputs::from_output_identifiers(context_id, &chain_inputs)?;
+								utxo.verify_coinbase_maturity(
+									context_id,
+									&inputs,
+									next_height,
+									batch,
+								)
+							};
+							match check_inputs() {
+								Err(Error::AlreadySpent(commitment)) => result.reject(
+									"input_missing",
+									format!("Input is not unspent: {:?}", commitment),
+								),
+								result_inputs => result.record("inputs", result_inputs),
+							}
+							dependencies.remember(request, result);
+						}
+						Ok(response.finish())
+					},
+				)
+			});
+		}
+	}
+
 	/// Validate the tx against the current UTXO set and recent kernels (NRD relative lock heights).
 	pub fn validate_tx(&self, tx: &Transaction) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
@@ -13269,6 +13462,498 @@ mod tests {
 		drop(batch);
 		drop(store);
 		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn preflight_checks_chain_state_without_mutating_it() {
+		global::set_local_accept_fee_base(1).unwrap();
+		use mwc_core::core::transaction_preflight::{
+			MempoolAcceptRequest, PreflightInput, PreflightKernel, PreflightOutput,
+			PreflightTransaction,
+		};
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 6);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let head = chain.head_header().unwrap();
+		let head_hash = head.hash(0).unwrap();
+		let newest = chain.get_block_for_header(&head).unwrap().outputs()[0];
+		let genesis_header = chain.get_header_by_height(0).unwrap();
+		let oldest = chain
+			.get_block_for_header(&genesis_header)
+			.unwrap()
+			.outputs()[0];
+		let mut request = MempoolAcceptRequest {
+			transactions: vec![PreflightTransaction {
+				is_complete: false,
+				inputs: vec![PreflightInput {
+					commitment: newest.commitment(),
+					features: None,
+				}],
+				outputs: vec![],
+				kernels: vec![],
+				offset: None,
+				allow_future_height: false,
+			}],
+			expected_tip: Some(head_hash),
+		};
+		let result = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(!result.checks_passed && !result.transactions[0].balance_checked);
+		assert!(result.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "inputs"));
+		request.transactions[0].inputs[0].commitment = oldest.commitment();
+		assert!(
+			chain
+				.test_mempool_accept(&request, &[], &secp)
+				.unwrap()
+				.checks_passed
+		);
+		request.transactions[0].inputs[0].features = Some(OutputFeatures::Plain);
+		assert!(
+			!chain
+				.test_mempool_accept(&request, &[], &secp)
+				.unwrap()
+				.checks_passed
+		);
+		request.transactions[0].inputs[0].commitment = secp.commit_value(42).unwrap();
+		let missing = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(missing.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "input_missing"));
+		request.transactions[0].inputs.clear();
+		request.transactions[0].outputs.push(PreflightOutput {
+			commitment: oldest.commitment(),
+			features: OutputFeatures::Plain,
+		});
+		assert!(
+			!chain
+				.test_mempool_accept(&request, &[], &secp)
+				.unwrap()
+				.checks_passed
+		);
+		// Record a recent canonical spend independently of any live UTXO.
+		let replay = secp.commit_value(43).unwrap();
+		let batch = chain.store.batch_write().unwrap();
+		batch
+			.save_spent_commitments(
+				&replay,
+				test_spent_commitment_record(head_hash, head.height),
+			)
+			.unwrap();
+		batch.commit().unwrap();
+		request.transactions[0].outputs[0].commitment = replay;
+		assert!(chain
+			.test_mempool_accept(&request, &[], &secp)
+			.unwrap()
+			.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "replay"));
+		// A future refund still checks balance despite its missing parent and height.
+		let key = |n| {
+			let mut b = [0; 32];
+			b[31] = n;
+			SecretKey::from_slice(&secp, &b).unwrap()
+		};
+		request.transactions[0].inputs = vec![PreflightInput {
+			commitment: secp.commit(100, key(1)).unwrap(),
+			features: Some(OutputFeatures::Plain),
+		}];
+		request.transactions[0].outputs[0].commitment = secp.commit(90, key(3)).unwrap();
+		request.transactions[0].kernels = vec![PreflightKernel {
+			features: mwc_core::core::KernelFeatures::HeightLocked {
+				fee: mwc_core::core::FeeFields::new(10).unwrap(),
+				lock_height: head.height + 100,
+			},
+			excess: Some(secp.commit(0, key(1)).unwrap()),
+			kernel_hash: None,
+		}];
+		request.transactions[0].offset =
+			Some(mwc_keychain::BlindingFactor::from_secret_key(key(1)).to_hex());
+		request.transactions[0].is_complete = true;
+		let result = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(result.transactions[0].balance_checked);
+		assert!(result.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "height"));
+		assert!(result.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "input_missing"));
+		assert!(!result.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "balance"));
+		request.expected_tip = Some(Hash::default());
+		assert!(chain
+			.test_mempool_accept(&request, &[], &secp)
+			.unwrap()
+			.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "tip"));
+		assert_eq!(chain.head_header().unwrap(), head);
+		assert!(chain.get_unspent(oldest.commitment()).unwrap().is_some());
+		assert!(chain.get_unspent(newest.commitment()).unwrap().is_some());
+		chain.validate(&secp, false).unwrap();
+	}
+
+	#[test]
+	fn preflight_validates_dependencies_without_publishing_or_ignoring_failures() {
+		use mwc_core::core::transaction_preflight::{
+			MempoolAcceptRequest, PreflightInput, PreflightKernel, PreflightOutput,
+			PreflightPoolState, PreflightTransaction,
+		};
+		global::set_local_accept_fee_base(1).unwrap();
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 6);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let head = chain.head_header().unwrap();
+		let funding = chain
+			.get_block_for_header(&chain.get_header_by_height(0).unwrap())
+			.unwrap()
+			.outputs()[0];
+		let newest = chain.get_block_for_header(&head).unwrap().outputs()[0];
+		let key = |n| {
+			let mut bytes = [0; 32];
+			bytes[31] = n;
+			SecretKey::from_slice(&secp, &bytes).unwrap()
+		};
+		let lock_output = secp.commit(100, key(1)).unwrap();
+		let refund_output = secp.commit(90, key(2)).unwrap();
+		let future_height = head.height + 100;
+		let describe = |input, output, fee, height| PreflightTransaction {
+			is_complete: true,
+			inputs: vec![PreflightInput {
+				commitment: input,
+				features: None,
+			}],
+			outputs: vec![PreflightOutput {
+				commitment: output,
+				features: OutputFeatures::Plain,
+			}],
+			kernels: vec![PreflightKernel {
+				features: if height == 0 {
+					KernelFeatures::Plain {
+						fee: mwc_core::core::FeeFields::new(fee).unwrap(),
+					}
+				} else {
+					KernelFeatures::HeightLocked {
+						fee: mwc_core::core::FeeFields::new(fee).unwrap(),
+						lock_height: height,
+					}
+				},
+				// Build unsigned balance metadata. No signatures or proofs are supplied.
+				excess: Some(
+					secp.commit_sum(vec![output, secp.commit_value(fee).unwrap()], vec![input])
+						.unwrap(),
+				),
+				kernel_hash: None,
+			}],
+			offset: Some(mwc_keychain::BlindingFactor::zero().to_hex()),
+			allow_future_height: height != 0,
+		};
+		let request = MempoolAcceptRequest {
+			transactions: vec![
+				describe(funding.commitment(), lock_output, 100, 0),
+				describe(lock_output, refund_output, 10, future_height),
+			],
+			expected_tip: Some(head.hash(0).unwrap()),
+		};
+		let accepted = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(accepted.checks_passed, "{:?}", accepted);
+		assert!(accepted
+			.transactions
+			.iter()
+			.all(|r| r.checks_passed && r.balance_checked && r.failures.is_empty()));
+		assert_eq!(accepted.transactions[1].valid_from_height, future_height);
+		assert_eq!(accepted.checked_tip, head.hash(0).unwrap());
+		// A child checked alone still fails, even when its future height is allowed.
+		let alone = chain
+			.test_mempool_accept(
+				&MempoolAcceptRequest::single(request.transactions[1].clone()),
+				&[],
+				&secp,
+			)
+			.unwrap();
+		assert!(alone.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "input_missing"));
+
+		for case in [
+			"missing_parent_input",
+			"parent_balance",
+			"parent_output",
+			"partial_parent",
+			"parent_pool_conflict",
+			"child_fee",
+			"double_spend",
+			"child_features",
+			"timelock",
+			"immature_coinbase",
+		] {
+			let mut invalid = request.clone();
+			let mut pool_state = Vec::new();
+			let (index, check) = match case {
+				"missing_parent_input" => {
+					invalid.transactions[0] =
+						describe(secp.commit(110, key(3)).unwrap(), lock_output, 100, 0);
+					(0, "input_missing")
+				}
+				"parent_balance" => {
+					invalid.transactions[0].offset =
+						Some(mwc_keychain::BlindingFactor::from_secret_key(key(1)).to_hex());
+					(0, "balance")
+				}
+				"parent_output" => {
+					invalid.transactions[0] =
+						describe(funding.commitment(), newest.commitment(), 100, 0);
+					invalid.transactions[1] =
+						describe(newest.commitment(), refund_output, 10, future_height);
+					(0, "outputs")
+				}
+				"partial_parent" => {
+					invalid.transactions[0].is_complete = false;
+					(1, "input_missing")
+				}
+				"parent_pool_conflict" => {
+					pool_state = vec![
+						PreflightPoolState {
+							conflicts: vec!["Input is already spent in the public pool".into()],
+							..Default::default()
+						},
+						PreflightPoolState::default(),
+					];
+					(0, "pool")
+				}
+				"child_fee" => {
+					invalid.transactions[1] =
+						describe(lock_output, refund_output, 1, future_height);
+					(1, "fee")
+				}
+				"double_spend" => {
+					invalid.transactions.push(describe(
+						lock_output,
+						secp.commit(80, key(4)).unwrap(),
+						10,
+						future_height,
+					));
+					(2, "inputs")
+				}
+				"child_features" => {
+					invalid.transactions[1].inputs[0].features = Some(OutputFeatures::Coinbase);
+					(1, "inputs")
+				}
+				"timelock" => {
+					invalid.transactions[1].allow_future_height = false;
+					(1, "height")
+				}
+				"immature_coinbase" => {
+					invalid.transactions[0] =
+						describe(newest.commitment(), lock_output, 100, future_height);
+					(0, "inputs")
+				}
+				_ => unreachable!(),
+			};
+			let rejected = chain
+				.test_mempool_accept(&invalid, &pool_state, &secp)
+				.unwrap();
+			assert!(!rejected.checks_passed, "{}: {:?}", case, rejected);
+			assert!(
+				rejected.transactions[index]
+					.failures
+					.iter()
+					.any(|f| f.check == check),
+				"{}: {:?}",
+				case,
+				rejected
+			);
+			if matches!(
+				case,
+				"missing_parent_input"
+					| "parent_balance"
+					| "partial_parent"
+					| "parent_pool_conflict"
+					| "immature_coinbase"
+			) {
+				assert!(
+					rejected.transactions[1]
+						.failures
+						.iter()
+						.any(|f| f.check == "input_missing"),
+					"{}: {:?}",
+					case,
+					rejected
+				);
+			}
+		}
+		// A future parent also constrains a child's earliest publication height.
+		let mut future_parent = request.clone();
+		future_parent.transactions[0] =
+			describe(funding.commitment(), lock_output, 100, future_height + 10);
+		let accepted = chain
+			.test_mempool_accept(&future_parent, &[], &secp)
+			.unwrap();
+		assert!(accepted.checks_passed);
+		assert_eq!(
+			accepted.transactions[1].valid_from_height,
+			future_height + 10
+		);
+		assert_eq!(chain.head_header().unwrap(), head);
+		assert!(chain.get_unspent(funding.commitment()).unwrap().is_some());
+		assert!(chain.get_unspent(lock_output).unwrap().is_none());
+		assert!(chain.get_unspent(refund_output).unwrap().is_none());
+		chain.validate(&secp, false).unwrap();
+	}
+
+	#[test]
+	fn preflight_accepts_ancestors_and_rechecks_current_outputs() {
+		use mwc_core::core::transaction_preflight::{
+			MempoolAcceptRequest, PreflightOutput, PreflightTransaction,
+		};
+		let source_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let source = mine_chain(source_dir.path().to_str().unwrap(), 6);
+		let target_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let chain = init_chain(
+			&secp,
+			target_dir.path().to_str().unwrap(),
+			source.genesis.clone(),
+		);
+		let block = |height| {
+			source
+				.get_block_for_header(&source.get_header_by_height(height).unwrap())
+				.unwrap()
+		};
+		for height in 1..=3 {
+			chain
+				.process_block(&mut secp, block(height), Options::SKIP_POW, HashSet::new())
+				.unwrap();
+		}
+		let anchor = chain.head().unwrap().last_block_h;
+		let mut request = MempoolAcceptRequest {
+			transactions: vec![PreflightTransaction {
+				is_complete: false,
+				inputs: vec![],
+				outputs: vec![PreflightOutput {
+					commitment: block(5).outputs()[0].commitment(),
+					features: OutputFeatures::Plain,
+				}],
+				kernels: vec![],
+				offset: None,
+				allow_future_height: false,
+			}],
+			expected_tip: Some(anchor),
+		};
+		assert!(
+			chain
+				.test_mempool_accept(&request, &[], &secp)
+				.unwrap()
+				.checks_passed
+		);
+
+		// Header sync can advance before body processing. Such a header cannot
+		// serve as an anchor for the UTXO state being checked.
+		let next = block(4);
+		chain
+			.process_block_header(&next.header, Options::SKIP_POW)
+			.unwrap();
+		request.expected_tip = Some(next.hash(0).unwrap());
+		let ahead = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(ahead.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "tip"));
+		request.expected_tip = Some(anchor);
+		let before = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(before.checks_passed);
+		assert_eq!(before.checked_tip, anchor);
+		assert_eq!(before.checked_height, 3);
+
+		chain
+			.process_block(&mut secp, next, Options::SKIP_POW, HashSet::new())
+			.unwrap();
+		let advanced = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(advanced.checks_passed);
+		assert_ne!(advanced.checked_tip, anchor);
+		assert_eq!(advanced.checked_tip, chain.head().unwrap().last_block_h);
+		assert_eq!(advanced.checked_height, 4);
+
+		// The anchor remains an ancestor, but the next block creates the same
+		// output commitment. Validation must now reject the output conflict.
+		chain
+			.process_block(&mut secp, block(5), Options::SKIP_POW, HashSet::new())
+			.unwrap();
+		let conflict = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(conflict.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "outputs"));
+		assert!(!conflict.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "tip"));
+		assert_eq!(conflict.checked_height, 5);
+		chain.validate(&secp, false).unwrap();
+	}
+
+	#[test]
+	fn preflight_rejects_off_chain_and_rewound_anchors() {
+		use mwc_core::core::transaction_preflight::{
+			MempoolAcceptRequest, PreflightOutput, PreflightTransaction,
+		};
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 6);
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let head = chain.head().unwrap();
+		let mut request = MempoolAcceptRequest {
+			transactions: vec![PreflightTransaction {
+				is_complete: false,
+				inputs: vec![],
+				outputs: vec![PreflightOutput {
+					commitment: secp.commit_value(42).unwrap(),
+					features: OutputFeatures::Plain,
+				}],
+				kernels: vec![],
+				offset: None,
+				allow_future_height: false,
+			}],
+			expected_tip: Some(head.last_block_h),
+		};
+		assert!(
+			chain
+				.test_mempool_accept(&request, &[], &secp)
+				.unwrap()
+				.checks_passed
+		);
+
+		// A stored header at a canonical height still need not belong to the
+		// active branch. Reject it even though the hash is known to the node.
+		let fork = recovery_test_header(head.height, head.prev_block_h, 999);
+		let batch = chain.store.batch_write().unwrap();
+		batch.save_block_header(&fork).unwrap();
+		batch.commit().unwrap();
+		request.expected_tip = Some(fork.hash(0).unwrap());
+		let off_chain = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(off_chain.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "tip"));
+
+		chain
+			.apply_invalid_blocks(&secp, HashSet::from([head.last_block_h]))
+			.unwrap();
+		assert_eq!(chain.head().unwrap().height, head.height - 1);
+		request.expected_tip = Some(head.last_block_h);
+		let rewound = chain.test_mempool_accept(&request, &[], &secp).unwrap();
+		assert!(rewound.transactions[0]
+			.failures
+			.iter()
+			.any(|f| f.check == "tip"));
 	}
 
 	#[test]

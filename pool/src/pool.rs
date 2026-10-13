@@ -724,6 +724,78 @@ where
 		self.indexes.clear();
 	}
 
+	/// Public-pool metadata for unsigned preflight. Call only on txpool, never
+	/// stempool: querying private stem conflicts would expose embargoed traffic.
+	pub fn preflight_state(
+		&self,
+		request: &mwc_core::core::transaction_preflight::PreflightTransaction,
+	) -> Result<mwc_core::core::transaction_preflight::PreflightPoolState, PoolError> {
+		use mwc_core::core::transaction_preflight::PreflightTransaction;
+		let mut known_owner = None;
+		if request.is_complete {
+			if let Some(owner) = request
+				.inputs
+				.first()
+				.and_then(|i| self.indexes.spent_inputs.get(&i.commitment))
+			{
+				if let Some(entry) = self.entries.get(owner) {
+					let existing =
+						PreflightTransaction::from_transaction(self.context_id, &entry.tx, true)?;
+					if request.same_transaction(&existing) {
+						known_owner = Some(*owner);
+					}
+				}
+			}
+		}
+		let mut available = Vec::new();
+		let mut conflicts = Vec::new();
+		for input in &request.inputs {
+			if let Some(owner) = self.indexes.spent_inputs.get(&input.commitment) {
+				if Some(*owner) != known_owner {
+					conflicts.push("Input is already spent in the public pool".into());
+				}
+			}
+			if let Some(output) = self.indexes.produced_outputs.get(&input.commitment) {
+				available.push(OutputIdentifier::new(output.features, &input.commitment));
+			}
+		}
+		for output in &request.outputs {
+			if let Some(existing) = self.indexes.produced_outputs.get(&output.commitment) {
+				if Some(existing.owner) != known_owner {
+					conflicts.push("Output already exists in the public pool".into());
+				}
+			}
+		}
+		for kernel in &request.kernels {
+			if let Some(hash) = kernel.kernel_hash {
+				if let Some(owner) = self.indexes.kernels.get(&hash) {
+					if Some(*owner) != known_owner {
+						conflicts.push("Kernel already exists in the public pool".into());
+					}
+				}
+			}
+			if matches!(
+				kernel.features,
+				mwc_core::core::KernelFeatures::NoRecentDuplicate { .. }
+			) {
+				if let Some(owner) = kernel
+					.excess
+					.as_ref()
+					.and_then(|e| self.indexes.nrd_excesses.get(e))
+				{
+					if Some(*owner) != known_owner {
+						conflicts.push("NRD excess already exists in the public pool".into());
+					}
+				}
+			}
+		}
+		Ok(mwc_core::core::transaction_preflight::PreflightPoolState {
+			already_known: known_owner.is_some(),
+			available_inputs: available,
+			conflicts,
+		})
+	}
+
 	pub fn ordered_entry_refs(&self) -> impl Iterator<Item = &PoolEntry> {
 		self.entries.values()
 	}
@@ -2097,6 +2169,41 @@ mod tests {
 		}
 
 		(pool, chain, txs, header, secp)
+	}
+
+	#[test]
+	fn preflight_public_pool_conflicts_parents_and_known_transaction_are_read_only() {
+		use mwc_core::core::transaction_preflight::{PreflightInput, PreflightTransaction};
+		let (pool, _, transactions, _, _) = populated_test_pool();
+		let original = pool.all_transactions();
+		let request = PreflightTransaction::from_transaction(0, &transactions[0], true).unwrap();
+		let state = pool.preflight_state(&request).unwrap();
+		assert!(state.already_known && state.conflicts.is_empty());
+		let mut partial = request.clone();
+		partial.is_complete = false;
+		let state = pool.preflight_state(&partial).unwrap();
+		assert!(!state.already_known && !state.conflicts.is_empty());
+		partial.outputs.clear();
+		partial.kernels.clear();
+		partial.offset = None;
+		partial.inputs = vec![PreflightInput {
+			commitment: transactions[0].outputs()[0].commitment(),
+			features: Some(OutputFeatures::Plain),
+		}];
+		let state = pool.preflight_state(&partial).unwrap();
+		let available = state.available_inputs;
+		assert!(state.conflicts.is_empty());
+		assert_eq!(available.len(), 1);
+		assert_eq!(
+			available[0].commitment(),
+			transactions[0].outputs()[0].commitment()
+		);
+		assert_eq!(available[0].features, OutputFeatures::Plain);
+		assert_eq!(
+			mwc_crates::serde_json::to_value(pool.all_transactions()).unwrap(),
+			mwc_crates::serde_json::to_value(original).unwrap()
+		);
+		assert_pool_indexes_consistent(&pool);
 	}
 
 	fn assert_pool_indexes_consistent<B: BlockChain>(pool: &Pool<B>) {

@@ -218,6 +218,8 @@ lazy_static! {
 thread_local! {
 	/// Local chain status flags. Normally used by tests. Any param can be set multiple times.
 	static LOCAL_CHAIN_PARAMS: RefCell<ChainGlobalParams> = RefCell::new(ChainGlobalParams::new());
+	#[cfg(feature = "test-support")]
+	static LOCAL_MAX_BLOCK_WEIGHT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Release
@@ -525,8 +527,20 @@ pub fn initial_graph_weight(context_id: u32) -> u32 {
 	}
 }
 
+/// Override only the block/transaction weight limit on this test thread.
+/// This lets size-boundary tests retain the automated chain's mining parameters.
+#[cfg(feature = "test-support")]
+pub fn set_local_max_block_weight(max_weight: Option<u64>) {
+	assert!(max_weight.is_none_or(|weight| weight > BLOCK_OUTPUT_WEIGHT + BLOCK_KERNEL_WEIGHT));
+	LOCAL_MAX_BLOCK_WEIGHT.with(|weight| weight.set(max_weight));
+}
+
 /// Maximum allowed block weight.
 pub fn max_block_weight(context_id: u32) -> u64 {
+	#[cfg(feature = "test-support")]
+	if let Some(weight) = LOCAL_MAX_BLOCK_WEIGHT.with(|weight| weight.get()) {
+		return weight;
+	}
 	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_MAX_BLOCK_WEIGHT,
 		ChainTypes::UserTesting => TESTING_MAX_BLOCK_WEIGHT,

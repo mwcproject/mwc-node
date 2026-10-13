@@ -25,6 +25,7 @@ use crate::types::{
 };
 use mwc_core::core::hash::Hash;
 use mwc_core::core::transaction::Transaction;
+use mwc_core::core::transaction_preflight::{MempoolAcceptRequest, MempoolAcceptResponse};
 use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::easy_jsonrpc_mwc;
 use mwc_crates::easy_jsonrpc_mwc::{Handler, InvalidArgs, Params, Value};
@@ -1116,6 +1117,159 @@ pub trait ForeignRpc: Sync + Send {
 	```
 	 */
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> RpcResult<()>;
+
+	/**
+	Check ordered unsigned transactions against a current body-chain snapshot and
+	the node's local public-pool view without publication.
+	Signatures and rangeproofs are not supplied. `expected_tip` may be the current
+	body-chain tip or an ancestor; `checked_tip` identifies the body-chain state checked.
+
+	Public-pool checks are intentionally best-effort: the local pool may lack
+	parents or still await reconciliation with `checked_tip`. A missing parent
+	can cause rejection, while a stale parent can temporarily let a child's
+	checks pass. Preflight does not wait for reconciliation or revalidate pool
+	ancestors. Normal transaction admission performs its own validation.
+
+	Supply `transactions` in parent-before-child order. Each result has the same
+	position as its transaction. Only complete parents that pass every check can
+	provide outputs to later children; duplicate spends within the request fail.
+
+	Each transaction carries `is_complete`. With `false`, only supplied components
+	are checked and `balance_checked` is false. Complete transactions require
+	inputs, outputs, kernel excesses and the transaction offset for balance checks.
+
+	`allow_future_height` defaults to false. Set it on a future refund to validate
+	its current inputs, outputs, balance and fees without requiring its absolute
+	timelock to have elapsed. Success reports `valid_from_height`, including any
+	supplied parent's timelock. Coinbase maturity and other current-state checks
+	still apply. This is no guarantee of future input availability or admission.
+
+	# Successful partial validation
+
+	Here the output commitment is unused and the supplied anchor is an ancestor
+	of the current tip. The response reports the newer tip without rejecting it.
+
+	```
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"method": "testmempoolaccept",
+		"params": [
+			{
+				"transactions": [
+					{
+						"is_complete": false,
+						"inputs": [],
+						"outputs": [
+							{
+								"commitment": "087c3ca7419751e96cdae4908bb8a92fc2826f2ad36690420b905d51beb7409ca0",
+								"features": "Plain"
+							}
+						],
+						"kernels": [],
+						"offset": null,
+						"allow_future_height": false
+					}
+				],
+				"expected_tip": "0000015957d92c9e04c6f3aec8c5b9976f3d25f52ff459c630a01a643af4a88c"
+			}
+		],
+		"id": 1
+	}
+	# "#,
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"id": 1,
+		"result": {
+			"Ok": {
+				"checks_passed": true,
+				"checked_tip": "00000100c54dcb7a9cbb03aaf55da511aca2c98b801ffd45046b3991e4f697f9",
+				"checked_height": 374336,
+				"transactions": [
+					{
+						"is_complete": false,
+						"checks_passed": true,
+						"balance_checked": false,
+						"valid_from_height": 0,
+						"already_known": false,
+						"failures": []
+					}
+				]
+			}
+		}
+	}
+	# "#);
+	```
+
+	# Validation error
+
+	An unknown anchor, or one removed from the active body chain, fails the
+	`tip` check. Validation failures use `result.Ok` with `checks_passed: false`
+	and a nonempty per-transaction `failures` list; malformed requests instead
+	return `result.Err`.
+
+	```
+	# mwc_api::doctest_helper_json_rpc_foreign_assert_response!(
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"method": "testmempoolaccept",
+		"params": [
+			{
+				"transactions": [
+					{
+						"is_complete": false,
+						"inputs": [],
+						"outputs": [
+							{
+								"commitment": "087c3ca7419751e96cdae4908bb8a92fc2826f2ad36690420b905d51beb7409ca0",
+								"features": "Plain"
+							}
+						],
+						"kernels": [],
+						"offset": null,
+						"allow_future_height": false
+					}
+				],
+				"expected_tip": "0000000000000000000000000000000000000000000000000000000000000000"
+			}
+		],
+		"id": 2
+	}
+	# "#,
+	# r#"
+	{
+		"jsonrpc": "2.0",
+		"id": 2,
+		"result": {
+			"Ok": {
+				"checks_passed": false,
+				"checked_tip": "00000100c54dcb7a9cbb03aaf55da511aca2c98b801ffd45046b3991e4f697f9",
+				"checked_height": 374336,
+				"transactions": [
+					{
+						"is_complete": false,
+						"checks_passed": false,
+						"balance_checked": false,
+						"valid_from_height": 0,
+						"already_known": false,
+						"failures": [
+							{
+								"check": "tip",
+								"reason": "Requested anchor is not on the current body chain"
+							}
+						]
+					}
+				]
+			}
+		}
+	}
+	# "#);
+	```
+	*/
+	fn testmempoolaccept(&self, request: MempoolAcceptRequest) -> RpcResult<MempoolAcceptResponse>;
 }
 
 /// Compatibility handler for older positional JSON-RPC clients.
@@ -2073,6 +2227,9 @@ where
 	fn get_unconfirmed_transactions(&self) -> RpcResult<Vec<Transaction>> {
 		Foreign::get_unconfirmed_transactions(self).into_rpc_result()
 	}
+	fn testmempoolaccept(&self, request: MempoolAcceptRequest) -> RpcResult<MempoolAcceptResponse> {
+		Foreign::testmempoolaccept(self, request).into_rpc_result()
+	}
 	fn push_transaction(&self, tx: Transaction, fluff: Option<bool>) -> RpcResult<()> {
 		// Relay may re-enter the thread-local secp context while serializing the tx.
 		Secp256k1::with_caps(ContextFlag::Commit)
@@ -2126,6 +2283,7 @@ macro_rules! doctest_helper_json_rpc_foreign_assert_response {
 				("get_pool_size", &[]),
 				("get_unconfirmed_transactions", &[]),
 				("push_transaction", &["tx", "fluff"]),
+				("testmempoolaccept", &["request"]),
 			],
 		)
 		.unwrap_or_else(|err| panic!("{}", err));

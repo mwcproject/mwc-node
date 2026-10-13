@@ -86,7 +86,7 @@ pub fn reward(context_id: u32, fee: u64, height: u64) -> Result<u64, Error> {
 /// First mainnet block requiring the coinbase input/state binding.
 pub const COINBASE_BINDING_MAINNET_HEIGHT: u64 = 3_632_000;
 /// First floonet block requiring the coinbase input/state binding.
-pub const COINBASE_BINDING_FLOONET_HEIGHT: u64 = 1_753_000;
+pub const COINBASE_BINDING_FLOONET_HEIGHT: u64 = 1_748_700;
 
 /// First development-network block requiring binding. The block 1 coinbase
 /// matures at this height, allowing activation tests to spend a legacy reward.
