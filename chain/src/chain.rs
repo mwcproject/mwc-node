@@ -826,7 +826,7 @@ impl Chain {
 	/// because no in-memory PIBD objects survive it.
 	fn advance_pibd_state_generation(&self) -> Result<(), Error> {
 		self.pibd_state_generation
-			.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |generation| {
+			.try_update(Ordering::SeqCst, Ordering::SeqCst, |generation| {
 				generation.checked_add(1)
 			})
 			.map(|_| ())

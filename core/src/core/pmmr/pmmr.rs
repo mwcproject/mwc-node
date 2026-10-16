@@ -17,7 +17,7 @@ use mwc_crates::crossbeam;
 use mwc_crates::log::debug;
 use mwc_crates::num_cpus;
 use std::convert::TryFrom;
-use std::{iter, marker, ops::Range, u64};
+use std::{iter, marker, ops::Range};
 
 use mwc_crates::croaring::Bitmap;
 

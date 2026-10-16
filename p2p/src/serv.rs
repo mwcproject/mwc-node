@@ -83,7 +83,7 @@ impl InboundHandshakeGuard {
 		established_inbound_count: usize,
 	) -> Option<Self> {
 		if in_flight
-			.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+			.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
 				if established_inbound_count
 					.saturating_add(usize::try_from(current).unwrap_or(usize::MAX))
 					< max_inbound_count

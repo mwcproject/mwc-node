@@ -929,13 +929,13 @@ impl TrackingAdapter {
 
 	fn next_request_id(&self) -> u64 {
 		self.next_request_id
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
 				// Request ids can wrap. After a full u64 cycle, duplicated ids
 				// should have been retired from the bounded request cache. Even if
 				// one has not, the impact is not critical for this tracking path.
 				Some(current.wrapping_add(1))
 			})
-			// Safe because fetch_update only returns Err if the closure returns
+			// Safe because try_update only returns Err if the closure returns
 			// None, and this closure always provides the next value.
 			.expect("request id update always returns Some")
 	}

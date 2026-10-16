@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 name = "saturating-time"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Clara Engler"]
 build = false
 autolib = false
@@ -37,9 +37,15 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/cve/saturating-time"
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
-nightly = []
+full = ["web-time-compat/full"]
 
 [lib]
 name = "saturating_time"
 path = "src/lib.rs"
+
+[dependencies.web-time-compat]
+version = "0.3.0"

@@ -353,7 +353,7 @@ where
 
 	pub fn get_update_requests_to_next_ask(&self) -> usize {
 		self.requests_to_next_ask
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
 				Some(current.saturating_sub(1))
 			})
 			.unwrap_or_else(|current| current)

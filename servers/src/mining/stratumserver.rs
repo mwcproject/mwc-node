@@ -157,7 +157,7 @@ fn cleanup_worker_registration(
 fn reserve_worker_connection(handler: &Handler) -> bool {
 	handler
 		.worker_connections
-		.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+		.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
 			if count >= handler.config.workers_connection_limit {
 				None
 			} else {
@@ -168,12 +168,11 @@ fn reserve_worker_connection(handler: &Handler) -> bool {
 }
 
 fn release_worker_connection(handler: &Handler) {
-	let _ =
-		handler
-			.worker_connections
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-				Some(count.saturating_sub(1))
-			});
+	let _ = handler
+		.worker_connections
+		.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+			Some(count.saturating_sub(1))
+		});
 }
 
 fn trigger_worker_shutdown(workers: &WorkersList) {

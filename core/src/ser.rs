@@ -329,7 +329,7 @@ pub struct ProtocolVersion(pub u32);
 
 impl ProtocolVersion {
 	/// The max protocol version supported.
-	pub const MAX: u32 = std::u32::MAX;
+	pub const MAX: u32 = u32::MAX;
 
 	/// Protocol version as u32 to allow for convenient exhaustive matching on values.
 	pub fn value(self) -> u32 {

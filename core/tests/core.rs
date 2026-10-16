@@ -589,7 +589,7 @@ fn blind_tx() {
 		.unwrap();
 
 	assert!(info.min == 0);
-	assert!(info.max == u64::max_value());
+	assert!(info.max == u64::MAX);
 }
 
 #[test]

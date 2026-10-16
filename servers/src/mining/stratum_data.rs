@@ -239,7 +239,7 @@ impl WorkersList {
 
 	fn next_connection_id(&self) -> Result<u64, &'static str> {
 		self.next_connection_id
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next_id| {
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |next_id| {
 				next_id.checked_add(1)
 			})
 			.map_err(|_| "connection id space exhausted")
@@ -434,7 +434,7 @@ impl WorkersList {
 	}
 
 	pub fn increment_block_found(&self) {
-		let _ = self.stratum_stats.blocks_found.fetch_update(
+		let _ = self.stratum_stats.blocks_found.try_update(
 			Ordering::Relaxed,
 			Ordering::Relaxed,
 			|blocks_found| Some(blocks_found.saturating_add(1)),

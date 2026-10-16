@@ -58,7 +58,7 @@ impl Graph {
 		proof_size: usize,
 		edge_bits: u8,
 	) -> Result<Graph, Error> {
-		if max_edges >= u64::max_value() / 2 {
+		if max_edges >= u64::MAX / 2 {
 			return Err(Error::Verification("graph is to big to build".to_string()));
 		}
 		let max_nodes = 2 * max_edges;
@@ -73,7 +73,7 @@ impl Graph {
 			visited: Bitmap64::new(),
 			solutions: vec![],
 			solution_count: 0,
-			nil: u64::max_value(),
+			nil: u64::MAX,
 			context_id,
 		})
 	}
@@ -91,7 +91,7 @@ impl Graph {
 		let graph_nodes = self.graph_node_count()?;
 
 		self.links = Vec::with_capacity(graph_nodes);
-		self.adj_list = vec![u64::max_value(); graph_nodes];
+		self.adj_list = vec![u64::MAX; graph_nodes];
 		self.solutions = vec![self.zero_proof(); 1];
 		self.solution_count = 0;
 		self.visited = Bitmap64::new();
@@ -569,7 +569,7 @@ mod test {
 			solution_count: 0,
 			proof_size: 0,
 			edge_bits: 0,
-			nil: u64::max_value(),
+			nil: u64::MAX,
 			context_id: 0,
 		}
 	}

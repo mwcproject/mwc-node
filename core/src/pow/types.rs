@@ -26,7 +26,6 @@ use mwc_crates::serde::{self, de, Deserialize, Deserializer, Serialize, Serializ
 use std::cmp::{max, min};
 use std::fmt;
 use std::ops::{Add, Div, Mul, Sub};
-use std::u64;
 
 /// Generic trait for a solver/verifier providing common interface into Cuckoo-family PoW
 /// Mostly used for verification, but also for test mining if necessary
@@ -494,7 +493,7 @@ impl Proof {
 	/// Difficulty achieved by this proof with given scaling factor
 	fn scaled_difficulty(&self, scale: u64) -> Result<u64, std::io::Error> {
 		let diff = ((scale as u128) << 64) / (max(1, self.hash(self.context_id)?.to_u64()) as u128);
-		Ok(min(diff, <u64>::max_value() as u128) as u64)
+		Ok(min(diff, u64::MAX as u128) as u64)
 	}
 }
 
@@ -752,7 +751,7 @@ mod tests {
 	fn gen_proof(bits: u32) -> Vec<u64> {
 		let from = u64::pow(2, bits - 1);
 		let to = if bits == 64 {
-			std::u64::MAX
+			u64::MAX
 		} else {
 			u64::pow(2, bits)
 		};

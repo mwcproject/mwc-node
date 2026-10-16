@@ -660,7 +660,7 @@ mod tests {
 		use crate::{consensus, global};
 		for (network, height) in [
 			(global::ChainTypes::Mainnet, 3_632_000),
-			(global::ChainTypes::Floonet, 1_753_000),
+			(global::ChainTypes::Floonet, 1_748_700),
 			(global::ChainTypes::AutomatedTesting, 4),
 			(global::ChainTypes::UserTesting, 4),
 		] {

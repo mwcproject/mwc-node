@@ -73,7 +73,8 @@ impl SaturatingTime for SystemTime {
 
 impl SaturatingTime for Instant {
 	fn anchor() -> Self {
-		Self::now()
+		use web_time_compat::InstantExt;
+		Self::get()
 	}
 
 	fn max_value() -> Self {
@@ -150,7 +151,7 @@ where
 					return res;
 				}
 				// (2.1) If Some, set res to the returned value and continue.
-				res = st
+				res = st;
 			}
 			None => {
 				if step == ONE_NS {
@@ -167,6 +168,21 @@ where
 
 #[cfg(test)]
 mod tests {
+	// @@ begin test lint list maintained by maint/add_warning @@
+	#![allow(clippy::bool_assert_comparison)]
+	#![allow(clippy::clone_on_copy)]
+	#![allow(clippy::dbg_macro)]
+	#![allow(clippy::mixed_attributes_style)]
+	#![allow(clippy::print_stderr)]
+	#![allow(clippy::print_stdout)]
+	#![allow(clippy::single_char_pattern)]
+	#![allow(clippy::unwrap_used)]
+	#![allow(clippy::unchecked_time_subtraction)]
+	#![allow(clippy::useless_vec)]
+	#![allow(clippy::needless_pass_by_value)]
+	#![allow(clippy::string_slice)] // See arti#2571
+	//! <!-- @@ end test lint list maintained by maint/add_warning @@ -->
+
 	use std::{
 		fmt::Debug,
 		ops::{Add, Sub},
@@ -174,6 +190,78 @@ mod tests {
 
 	use super::*;
 
+	/// A bounded clock with Windows SystemTime's 100 ns precision.
+	#[derive(Clone, Copy, Debug, PartialEq)]
+	struct CoarseTime(u64);
+
+	impl SaturatingTime for CoarseTime {
+		fn anchor() -> Self {
+			Self(5_000)
+		}
+
+		fn max_value() -> Self {
+			panic!("checked arithmetic must not evaluate the maximum")
+		}
+
+		fn min_value() -> Self {
+			panic!("checked arithmetic must not evaluate the minimum")
+		}
+
+		fn checked_add(&self, duration: Duration) -> Option<Self> {
+			let ticks = u64::try_from(duration.as_nanos() / 100).ok()?;
+			let next = self.0.checked_add(ticks)?;
+			(next <= 10_000).then_some(Self(next))
+		}
+
+		fn checked_sub(&self, duration: Duration) -> Option<Self> {
+			let ticks = u64::try_from(duration.as_nanos() / 100).ok()?;
+			self.0.checked_sub(ticks).map(Self)
+		}
+
+		fn checked_duration_since(&self, earlier: Self) -> Option<Duration> {
+			Some(Duration::from_nanos(self.0.checked_sub(earlier.0)? * 100))
+		}
+	}
+
+	impl crate::SaturatingTime for CoarseTime {}
+
+	/// Exercise the Windows rounding case on every host, with a bound so a
+	/// regression fails instead of hanging the test runner.
+	#[test]
+	fn limit_search_terminates_with_100ns_precision() {
+		for (operation, expected) in [
+			(
+				CoarseTime::checked_add as fn(&CoarseTime, Duration) -> Option<CoarseTime>,
+				CoarseTime(10_000),
+			),
+			(CoarseTime::checked_sub, CoarseTime(0)),
+		] {
+			let calls = std::cell::Cell::new(0);
+			let limit = find_limit(|value, step| {
+				calls.set(calls.get() + 1);
+				assert!(calls.get() < 512, "limit search did not terminate");
+				operation(value, step)
+			});
+			assert_eq!(limit, expected);
+		}
+	}
+
+	/// Ordinary arithmetic must not initialize either platform limit.
+	#[test]
+	fn checked_arithmetic_does_not_evaluate_limits() {
+		use crate::SaturatingTime as _;
+		let value = CoarseTime::anchor();
+		assert_eq!(
+			value.saturating_add(Duration::from_nanos(150)),
+			CoarseTime(5_001)
+		);
+		assert_eq!(
+			value.saturating_sub(Duration::from_nanos(150)),
+			CoarseTime(4_999)
+		);
+	}
+
+	/// Smallest decimal step that changes this platform's clock.
 	fn minimum_effective_step<T: SaturatingTime>() -> Duration {
 		let anchor = T::anchor();
 		let mut nanos = 1;

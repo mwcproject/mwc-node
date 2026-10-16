@@ -396,7 +396,7 @@ fn shutdown_bootstrapped_tor_client(tor_rt: Option<(Arc<TorClient<PreferredRunti
 // after the wrapping all old ids will be free
 pub fn allocate_arti_object_id() -> u64 {
 	ARTI_OBJECT_ID
-		.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+		.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
 			Some(current.wrapping_add(1))
 		})
 		.unwrap_or(0)
