@@ -14,7 +14,7 @@
 
 use mwc_crates::fs2::FileExt;
 use mwc_crates::tempfile::TempDir;
-use mwc_util::file::write_owner_only_file;
+use mwc_util::file::{ensure_owner_only_dir, write_owner_only_file};
 use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::process::{Command, Output};
@@ -159,7 +159,7 @@ fn explicit_config_reports_invalid_utf8() {
 fn clean_refuses_a_locked_database_without_deleting_data() {
 	let dir = config_dir();
 	let db = dir.path().join("chain_data");
-	fs::create_dir(&db).unwrap();
+	ensure_owner_only_dir(&db).unwrap();
 	let lock = OpenOptions::new()
 		.read(true)
 		.write(true)
@@ -186,7 +186,7 @@ fn clean_refuses_a_locked_database_without_deleting_data() {
 fn clean_removes_data_and_preserves_the_existing_lock_file() {
 	let dir = config_dir();
 	let db = dir.path().join("chain_data");
-	fs::create_dir(&db).unwrap();
+	ensure_owner_only_dir(&db).unwrap();
 	let lock_path = db.join("mwc.lock");
 	// Model a server that opened the lock file before cleanup, but has not yet
 	// acquired its lock. Its handle must remain valid for future exclusion.
