@@ -146,9 +146,18 @@ pub fn to_base64(s: &str) -> String {
 	base64::engine::general_purpose::STANDARD.encode(s)
 }
 
-/// Escape a UTF-8 string so the result contains only printable ASCII bytes.
+/// Escape a UTF-8 string to printable ASCII, except for newlines and QR code blocks.
 pub fn escape_to_printable_ascii(input: &str) -> String {
-	input.chars().flat_map(char::escape_default).collect()
+	let mut escaped = String::with_capacity(input.len());
+	for c in input.chars() {
+		match c {
+			// Slatepack QR codes need these blocks and line breaks to stay scannable.
+			// Escaping them would print literal escape sequences instead of the QR code.
+			'\n' | '█' | '▀' | '▄' => escaped.push(c),
+			_ => escaped.extend(c.escape_default()),
+		}
+	}
+	escaped
 }
 
 /// Global stopped/paused state shared across various subcomponents of Mwc.
@@ -199,12 +208,31 @@ impl StopState {
 #[cfg(test)]
 mod tests {
 	use super::escape_to_printable_ascii;
+	use mwc_crates::qr_code::QrCode;
 
 	#[test]
-	fn escape_to_printable_ascii_escapes_controls_and_unicode() {
-		let escaped = escape_to_printable_ascii("ok\nbad\u{1b}[2J\u{7f}\u{e9}");
+	fn escape_to_printable_ascii_escapes_other_controls_and_unicode() {
+		let escaped = escape_to_printable_ascii("ok\nbad\0\t\r\u{1b}[2J\u{7f}\u{85}\u{e9}\u{202e}");
 
-		assert_eq!(escaped, "ok\\nbad\\u{1b}[2J\\u{7f}\\u{e9}");
-		assert!(escaped.bytes().all(|b| (0x20..=0x7e).contains(&b)));
+		assert_eq!(
+			escaped,
+			"ok\nbad\\u{0}\\t\\r\\u{1b}[2J\\u{7f}\\u{85}\\u{e9}\\u{202e}"
+		);
+		assert!(escaped
+			.bytes()
+			.all(|b| b == b'\n' || (0x20..=0x7e).contains(&b)));
+	}
+
+	#[test]
+	fn escape_to_printable_ascii_preserves_slatepack_qr_code() {
+		let address = "25hmwrbw77nwfw7nvjg2l577wondhh6fyyuhxvivldi5y2dpxrhwyrid";
+		let qr = QrCode::new(address).unwrap().to_string(false, 3);
+		let message = format!("Slatepack Address is: {}\n{}", address, qr);
+
+		assert_eq!(escape_to_printable_ascii(&message), message);
+		assert_eq!(
+			escape_to_printable_ascii(&format!("{}\u{1b}[2J\r", message)),
+			format!("{}\\u{{1b}}[2J\\r", message)
+		);
 	}
 }
