@@ -38,9 +38,9 @@ bitflags! {
 	pub struct Options: u32 {
 		/// No flags
 		const NONE = 0b0000_0000;
-		/// Runs without checking the Proof of Work.
-		/// This is accepted only for cfg(test) builds or non-production chain modes.
-		#[cfg(test)]
+		/// Test-only bypass of Proof of Work and difficulty validation.
+		/// Available only in unit tests or explicit `test-support` builds.
+		#[cfg(any(test, feature = "test-support"))]
 		const SKIP_POW = 0b0000_0001;
 		/// Adds block while in syncing mode.
 		const SYNC = 0b0000_0010;

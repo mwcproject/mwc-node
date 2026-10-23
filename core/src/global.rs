@@ -93,10 +93,6 @@ pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
 /// Default unit of fee per tx weight, making each output cost about a Mwccent/100
 pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC / 1000; // Keeping default base is same, no changes for MWC     MWC_BASE / 100 / 20; // 500_000
 
-/// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
-/// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
-pub const STUCK_PEER_KICK_TIME_SECONDS: u64 = 2 * 3600;
-
 /// Peers ping interval. It is expected that peers should respond for the ping. Otherwise peer
 /// will be kicked out
 pub const PEER_PING_INTERVAL_SECONDS: u64 = 10;

@@ -258,7 +258,7 @@ pub(crate) fn disconnected_test_handles() -> (ConnHandle, StopHandle) {
 	(send, stop)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_handles() -> (ConnHandle, StopHandle, crossbeam::channel::Receiver<Msg>) {
 	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
 	(

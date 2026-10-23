@@ -24,6 +24,7 @@ thiserror.workspace = true
 [features]
 default = []
 test-support = [
+	"mwc_p2p/test-support",
 	"mwc_api/test-support",
 	"mwc_chain/test-support",
 	"mwc_core/test-support",

@@ -113,6 +113,21 @@ impl Peer {
 		}
 	}
 
+	/// In-memory connection for cross-crate protocol/sync regression tests.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn connected_for_test(
+		info: PeerInfo,
+		context_id: u32,
+	) -> (Self, mwc_crates::crossbeam::channel::Receiver<Msg>) {
+		let peer = Self::new(info, Arc::new(crate::DummyAdapter {}), context_id);
+		let (send_handle, stop_handle, receiver) = conn::test_handles();
+		*peer.connection.lock() = Some(PeerConnection::Active(ActivePeerConnection {
+			send_handle,
+			stop_handle,
+		}));
+		(peer, receiver)
+	}
+
 	pub fn accept(
 		mut conn: TcpDataStream,
 		capab: Capabilities,
@@ -333,22 +348,18 @@ impl Peer {
 		State::Defunct == *self.state.read_recursive()
 	}
 
-	/// Whether this peer is stuck on sync.
-	/// Return: (<difficulty_stuck_timeout>, <Difficulty>, <ping stuck_timeout>)
-	pub fn is_stuck(&self) -> (bool, Difficulty, bool) {
+	/// Return advertised work, height and ping timeout from one live-info snapshot.
+	pub fn check_liveness(&self) -> (Difficulty, u64, bool) {
 		let peer_live_info = self.info.live_info.read_recursive();
 		let now = Utc::now().timestamp();
-		// global::PEER_PING_INTERVAL_SECONDS * 10  as i64 is safe because it is a small constant
+		// Ten ping intervals without a response make a peer unresponsive.
 		let dead_ping = (now - peer_live_info.last_seen.timestamp())
-			> (global::PEER_PING_INTERVAL_SECONDS * 10) as i64; // 10 ping intervals considering as a reason to kick out
-													   // if last updated difficulty is 2 hours ago, we're sure this peer is a stuck node.
-		if peer_live_info.stuck_detector.elapsed()
-			> Duration::from_secs(global::STUCK_PEER_KICK_TIME_SECONDS)
-		{
-			(true, peer_live_info.total_difficulty, dead_ping)
-		} else {
-			(false, peer_live_info.total_difficulty, dead_ping)
-		}
+			> (global::PEER_PING_INTERVAL_SECONDS * 10) as i64;
+		(
+			peer_live_info.total_difficulty,
+			peer_live_info.height,
+			dead_ping,
+		)
 	}
 
 	/// Whether the peer is considered abusive, mostly for spammy nodes
@@ -988,6 +999,14 @@ impl ChainAdapter for TrackingAdapter {
 		self.adapter.total_height()
 	}
 
+	fn is_known_or_better_tip(
+		&self,
+		height: u64,
+		difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		self.adapter.is_known_or_better_tip(height, difficulty)
+	}
+
 	fn is_chain_liveness_deferred(&self) -> bool {
 		self.adapter.is_chain_liveness_deferred()
 	}
@@ -1333,11 +1352,8 @@ mod tests {
 	}
 
 	fn connect_test_peer(peer: Peer) -> Peer {
-		let (send_handle, stop_handle) = conn::disconnected_test_handles();
-		*peer.connection.lock() = Some(PeerConnection::Active(ActivePeerConnection {
-			send_handle,
-			stop_handle,
-		}));
+		let (peer, receiver) = Peer::connected_for_test(peer.info, peer.context_id);
+		drop(receiver);
 		peer
 	}
 

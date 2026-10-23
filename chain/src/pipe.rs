@@ -60,16 +60,9 @@ pub struct BlockContext<'a> {
 }
 
 impl<'a> BlockContext<'a> {
+	#[cfg(any(test, feature = "test-support"))]
 	fn skip_pow(&self) -> bool {
-		#[cfg(test)]
-		{
-			self.opts.contains(Options::SKIP_POW)
-		}
-		#[cfg(not(test))]
-		{
-			let _ = self;
-			false
-		}
+		self.opts.contains(Options::SKIP_POW)
 	}
 }
 
@@ -301,9 +294,9 @@ fn validate_pow_only(
 	context_id: u32,
 	header: &BlockHeader,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
-	skip_pow: bool,
+	#[cfg(any(test, feature = "test-support"))] skip_pow: bool,
 ) -> Result<(), Error> {
-	// Some of our tests require this check to be skipped (we should revisit this).
+	#[cfg(any(test, feature = "test-support"))]
 	if skip_pow {
 		return Ok(());
 	}
@@ -337,18 +330,34 @@ fn validate_pow_batch_parallel(
 	headers: &[BlockHeader],
 	ctx: &BlockContext<'_>,
 ) -> Result<(), Error> {
-	validate_pow_batch_parallel_inner(context_id, headers, ctx.pow_verifier, ctx.skip_pow())
+	validate_pow_batch_parallel_inner(
+		context_id,
+		headers,
+		ctx.pow_verifier,
+		#[cfg(any(test, feature = "test-support"))]
+		ctx.skip_pow(),
+	)
 }
 
 fn validate_pow_batch_parallel_inner(
 	context_id: u32,
 	headers: &[BlockHeader],
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
-	skip_pow: bool,
+	#[cfg(any(test, feature = "test-support"))] skip_pow: bool,
 ) -> Result<(), Error> {
-	if skip_pow || headers.len() <= 32 {
+	#[cfg(any(test, feature = "test-support"))]
+	if skip_pow {
+		return Ok(());
+	}
+	if headers.len() <= 32 {
 		for header in headers {
-			validate_pow_only(context_id, header, pow_verifier, skip_pow)?;
+			validate_pow_only(
+				context_id,
+				header,
+				pow_verifier,
+				#[cfg(any(test, feature = "test-support"))]
+				false,
+			)?;
 		}
 		return Ok(());
 	}
@@ -372,7 +381,13 @@ fn validate_pow_batch_parallel_inner(
 						if cancelled.load(Ordering::Relaxed) {
 							return Ok(());
 						}
-						validate_pow_only(context_id, header, pow_verifier, false)?;
+						validate_pow_only(
+							context_id,
+							header,
+							pow_verifier,
+							#[cfg(any(test, feature = "test-support"))]
+							false,
+						)?;
 					}
 					Ok::<(), Error>(())
 				}));
@@ -578,6 +593,7 @@ pub fn process_blocks_series(
 		"process_blocks_series blocks are empty".into(),
 	))?;
 	let series_has_more_work = has_more_work(&last_block.header, &head);
+	#[cfg(any(test, feature = "test-support"))]
 	let skip_pow = ctx.skip_pow();
 
 	for b in blocks {
@@ -587,7 +603,13 @@ pub fn process_blocks_series(
 		// Quick pow validation. No point proceeding if this is invalid.
 		// We want to do this before we add the block to the orphan pool so we
 		// want to do this now and not later during header validation.
-		validate_pow_only(context_id, &b.header, ctx.pow_verifier, skip_pow)?;
+		validate_pow_only(
+			context_id,
+			&b.header,
+			ctx.pow_verifier,
+			#[cfg(any(test, feature = "test-support"))]
+			skip_pow,
+		)?;
 
 		// Process the header for the block.
 		// Note: We still want to process the full block if we have seen this header before
@@ -783,7 +805,10 @@ pub fn process_block_headers(
 		"process_block_headers internal error, headers param is empty".into(),
 	))?;
 	let mut prev = prev_header_store(first_header, &ctx.batch)?;
+	#[cfg(any(test, feature = "test-support"))]
 	let skip_pow = ctx.skip_pow();
+	#[cfg(not(any(test, feature = "test-support")))]
+	let skip_pow = false;
 	let mut batch_difficulty_cache = DifficultyCache::new();
 	if !skip_pow {
 		batch_difficulty_cache
@@ -941,7 +966,13 @@ pub fn process_block_header(
 	let prev_header = match prev_header_store(header, &ctx.batch) {
 		Ok(prev_header) => prev_header,
 		Err(e @ Error::Orphan(_)) => {
-			validate_pow_only(context_id, header, ctx.pow_verifier, ctx.skip_pow())?;
+			validate_pow_only(
+				context_id,
+				header,
+				ctx.pow_verifier,
+				#[cfg(any(test, feature = "test-support"))]
+				ctx.skip_pow(),
+			)?;
 			return Err(e);
 		}
 		Err(e) => return Err(e),
@@ -1162,23 +1193,30 @@ fn validate_header(
 	// so now we can check the total_difficulty increase is also valid
 	// check the pow hash shows a difficulty at least as large
 	// as the target difficulty
-	let skipping_pow = ctx.skip_pow();
-	if !skipping_pow {
-		// Quick check of this header in isolation. No point proceeding if this fails.
-		// We can do this without needing to iterate over previous headers.
-		validate_pow_only(context_id, header, ctx.pow_verifier, false)?;
-
-		let diff_iter = store::DifficultyIter::from_batch(prev.hash(context_id)?, &ctx.batch);
-		let next_header_info = consensus::next_difficulty(
-			context_id,
-			header.height,
-			diff_iter,
-			&mut *ctx.difficulty_cache,
-		)
-		.map_err(|e| Error::Other(format!("Difficulty calculation error, {}", e)))?;
-
-		validate_header_difficulty(context_id, header, &prev, &next_header_info)?;
+	#[cfg(any(test, feature = "test-support"))]
+	if ctx.skip_pow() {
+		return Ok(());
 	}
+	// Quick check of this header in isolation. No point proceeding if this fails.
+	// We can do this without needing to iterate over previous headers.
+	validate_pow_only(
+		context_id,
+		header,
+		ctx.pow_verifier,
+		#[cfg(any(test, feature = "test-support"))]
+		false,
+	)?;
+
+	let diff_iter = store::DifficultyIter::from_batch(prev.hash(context_id)?, &ctx.batch);
+	let next_header_info = consensus::next_difficulty(
+		context_id,
+		header.height,
+		diff_iter,
+		&mut *ctx.difficulty_cache,
+	)
+	.map_err(|e| Error::Other(format!("Difficulty calculation error, {}", e)))?;
+
+	validate_header_difficulty(context_id, header, &prev, &next_header_info)?;
 
 	Ok(())
 }

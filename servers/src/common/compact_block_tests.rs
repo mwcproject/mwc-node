@@ -474,3 +474,128 @@ fn compact_invalid_header_still_bans_sender() {
 		.unwrap());
 	assert!(f.peers.is_banned(&f.peer.addr).unwrap());
 }
+
+#[test]
+fn peer_cleanup_counts_incompatible_and_lagging_tips_independently() {
+	// Exercise matching, lagging, incompatible and recovering peer advertisements.
+	// Cleanup must count the two policies independently and preserve useful peers.
+	let mut f = Fixture::new(943_810);
+	let blocks = f.history.clone();
+	let header_only = f.block(&[]).header;
+	f.chain
+		.process_block_header(&header_only, Options::NONE)
+		.unwrap();
+	let mut receivers = Vec::new();
+	let mut peer = |port: u16, inbound: bool, height: u64, work: Difficulty| {
+		let info = PeerInfo {
+			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
+			direction: if inbound {
+				Direction::Inbound
+			} else {
+				Direction::Outbound
+			},
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(work))),
+			..f.peer.clone()
+		};
+		info.update(height, work);
+		let (peer, receiver) = mwc_p2p::Peer::connected_for_test(info, f.context);
+		receivers.push(receiver);
+		let peer = Arc::new(peer);
+		f.peers.add_connected(peer.clone()).unwrap();
+		peer
+	};
+	let work = blocks[0].header.total_difficulty();
+	let matching = peer(3491, false, 1, work);
+	let wrong = peer(3492, false, 2, work);
+	let inbound = peer(3493, true, 2, work);
+	let progressing = peer(3494, false, 2, work);
+	progressing
+		.info
+		.update(3, blocks[1].header.total_difficulty());
+	let better = peer(
+		3495,
+		false,
+		4,
+		(blocks[2].header.total_difficulty() + Difficulty::from_num(1)).unwrap(),
+	);
+	let equal = peer(3496, false, 1, blocks[2].header.total_difficulty());
+	let one_behind = peer(3497, false, 2, blocks[1].header.total_difficulty());
+	let lagging_inbound = peer(3498, true, 1, work);
+	// The header-only lead must not change the cleanup baseline.
+	let summary = f
+		.peers
+		.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+	assert_eq!(summary.removed_peers, 0);
+	for peer in [&wrong, &progressing, &matching, &inbound, &better, &equal] {
+		assert!(f.peers.get_connected_peer(&peer.info.addr).is_some());
+	}
+
+	// Adapting to our branch resets this peer's first incompatible result.
+	wrong.info.update(1, work);
+	let summary = f
+		.peers
+		.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+	assert_eq!(summary.removed_peers, 1);
+	assert!(f.peers.get_connected_peer(&wrong.info.addr).is_some());
+	assert!(f.peers.get_connected_peer(&progressing.info.addr).is_none());
+	assert!(!f.peers.is_banned(&progressing.info.addr).unwrap());
+
+	// A later mismatch needs two new consecutive cleanup results.
+	wrong.info.update(2, work);
+	let summary = f
+		.peers
+		.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+	assert_eq!(summary.removed_peers, 0);
+	assert!(f.peers.get_connected_peer(&wrong.info.addr).is_some());
+	let summary = f
+		.peers
+		.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+	assert_eq!(summary.removed_peers, 1);
+	assert!(f.peers.get_connected_peer(&wrong.info.addr).is_none());
+	assert!(!f.peers.is_banned(&wrong.info.addr).unwrap());
+	for peer in [&matching, &inbound, &better, &equal] {
+		assert!(f.peers.get_connected_peer(&peer.info.addr).is_some());
+	}
+
+	// Four cleanup checks have elapsed. Moving within one block of our
+	// body tip resets the outbound peer's lag count, despite the header lead.
+	matching.info.update(2, blocks[1].header.total_difficulty());
+	for _ in 0..5 {
+		let summary = f
+			.peers
+			.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+		assert_eq!(summary.removed_peers, 0);
+		assert!(f
+			.peers
+			.get_connected_peer(&lagging_inbound.info.addr)
+			.is_some());
+	}
+	let summary = f
+		.peers
+		.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+	assert_eq!(summary.removed_peers, 1);
+	assert!(f
+		.peers
+		.get_connected_peer(&lagging_inbound.info.addr)
+		.is_none());
+	assert!(!f.peers.is_banned(&lagging_inbound.info.addr).unwrap());
+
+	// Falling behind again needs ten new consecutive checks, even on our branch.
+	matching.info.update(1, work);
+	for _ in 0..9 {
+		let summary = f
+			.peers
+			.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+		assert_eq!(summary.removed_peers, 0);
+		assert!(f.peers.get_connected_peer(&matching.info.addr).is_some());
+	}
+	let summary = f
+		.peers
+		.clean_peers(10, 10, Capabilities::UNKNOWN, P2PConfig::default());
+	assert_eq!(summary.removed_peers, 1);
+	assert!(f.peers.get_connected_peer(&matching.info.addr).is_none());
+	assert!(!f.peers.is_banned(&matching.info.addr).unwrap());
+	for peer in [&inbound, &better, &equal, &one_behind] {
+		assert!(f.peers.get_connected_peer(&peer.info.addr).is_some());
+	}
+}

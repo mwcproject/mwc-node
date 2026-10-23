@@ -24,7 +24,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
 
 use mwc_crates::chrono::prelude::*;
 use mwc_crates::serde::de::{Error as SerdeDeError, SeqAccess, Visitor};
@@ -1000,10 +999,12 @@ impl PeerAdvertised {
 #[derive(Clone, Debug)]
 pub struct PeerLiveInfo {
 	pub total_difficulty: Difficulty,
-	pub max_total_difficulty: Difficulty,
 	pub height: u64,
+	/// Consecutive incompatible-tip results from peer cleanup.
+	pub(crate) incompatible_tip_count: u8,
+	/// Consecutive checks with lower work and more than one block behind.
+	pub(crate) lagging_tip_count: u8,
 	pub last_seen: DateTime<Utc>,
-	pub stuck_detector: Instant,
 	pub first_seen: DateTime<Utc>,
 }
 
@@ -1023,11 +1024,11 @@ impl PeerLiveInfo {
 	pub fn new(difficulty: Difficulty) -> PeerLiveInfo {
 		PeerLiveInfo {
 			total_difficulty: difficulty,
-			max_total_difficulty: difficulty,
 			height: 0,
+			incompatible_tip_count: 0,
+			lagging_tip_count: 0,
 			first_seen: Utc::now(),
 			last_seen: Utc::now(),
-			stuck_detector: Instant::now(),
 		}
 	}
 }
@@ -1077,10 +1078,6 @@ impl PeerInfo {
 	pub fn update(&self, height: u64, total_difficulty: Difficulty) {
 		let now = Utc::now();
 		let mut live_info = self.live_info.write();
-		if total_difficulty > live_info.max_total_difficulty {
-			live_info.max_total_difficulty = total_difficulty;
-			live_info.stuck_detector = Instant::now();
-		}
 		live_info.height = height;
 		live_info.total_difficulty = total_difficulty;
 		live_info.last_seen = now
@@ -1171,6 +1168,16 @@ pub trait ChainAdapter: Sync + Send {
 	/// Locally validated header height, which may lead the downloaded block bodies.
 	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
 		self.total_height()
+	}
+
+	/// Whether an advertised tip is consistent with our body chain or has more work.
+	/// Adapters without chain access cannot establish that a peer is on a weaker fork.
+	fn is_known_or_better_tip(
+		&self,
+		_height: u64,
+		_difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		Ok(true)
 	}
 
 	/// Whether local chain maintenance can delay peer ping/pong processing.
@@ -1398,7 +1405,6 @@ pub struct AttachmentUpdate {
 mod tests {
 	use super::*;
 	use mwc_crates::chrono::Duration;
-	use std::time::Duration as StdDuration;
 
 	#[test]
 	fn outbound_connect_failure_ignores_local_and_ambiguous_failures() {
@@ -1623,36 +1629,6 @@ mod tests {
 			config.onion_expanded_key.as_deref(),
 			Some("0123456789abcdef")
 		);
-	}
-
-	#[test]
-	fn peer_update_only_refreshes_stuck_detector_on_new_max_difficulty() {
-		let peer_info = PeerInfo {
-			capabilities: Capabilities::UNKNOWN,
-			user_agent: "test".to_string(),
-			version: ProtocolVersion::local(),
-			addr: PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], 3414))),
-			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::from_num(100)))),
-			tx_base_fee: 0,
-		};
-		let old_stuck_detector = Instant::now() - StdDuration::from_secs(60);
-		peer_info.live_info.write().stuck_detector = old_stuck_detector;
-
-		peer_info.update(1, Difficulty::from_num(99));
-		assert_eq!(
-			peer_info.live_info.read_recursive().stuck_detector,
-			old_stuck_detector
-		);
-
-		peer_info.update(2, Difficulty::from_num(100));
-		assert_eq!(
-			peer_info.live_info.read_recursive().stuck_detector,
-			old_stuck_detector
-		);
-
-		peer_info.update(3, Difficulty::from_num(101));
-		assert!(peer_info.live_info.read_recursive().stuck_detector > old_stuck_detector);
 	}
 
 	#[test]

@@ -5690,6 +5690,29 @@ impl Chain {
 		}
 	}
 
+	/// Whether an advertised height/work pair matches this chain or claims more work.
+	/// This is a supplier-selection hint, not proof of a block's identity or availability.
+	pub fn is_known_or_better_tip(
+		&self,
+		height: u64,
+		difficulty: mwc_core::pow::Difficulty,
+		head: Tip,
+	) -> Result<bool, Error> {
+		self.with_robust_header_pmmr_read(|header_pmmr| {
+			let batch = self.store.batch_read()?;
+			let (_, head) = canonical_tip_header("peer comparison tip", &head, &batch)?;
+			if difficulty > head.total_difficulty {
+				return Ok(true);
+			}
+			if height > head.height {
+				return Ok(false);
+			}
+			let header =
+				self.body_chain_header_at_height_maybe_fast(header_pmmr, &batch, &head, height)?;
+			Ok(header.total_difficulty() == difficulty)
+		})
+	}
+
 	fn is_on_body_chain(&self, header: &BlockHeader, body_head: Tip) -> Result<bool, Error> {
 		let batch = self.store.batch_read()?;
 		let (mut current, canonical_head) = canonical_tip_header("BODY_HEAD", &body_head, &batch)?;

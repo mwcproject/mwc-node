@@ -391,6 +391,16 @@ where
 		Ok(self.chain()?.header_head()?.height)
 	}
 
+	fn is_known_or_better_tip(
+		&self,
+		height: u64,
+		difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		let chain = self.chain()?;
+		// A header-only lead must not evict a supplier that can advance our bodies.
+		chain.is_known_or_better_tip(height, difficulty, chain.head()?)
+	}
+
 	fn is_chain_liveness_deferred(&self) -> bool {
 		self.is_chain_liveness_deferred_now()
 	}

@@ -949,32 +949,70 @@ impl Peers {
 				info!("clean_peers {:?}, not connected", peer.info.addr);
 				Some(CleanupReason::Disconnected)
 			} else if liveness_deferred {
+				let mut live_info = peer.info.live_info.write();
+				live_info.incompatible_tip_count = 0;
+				live_info.lagging_tip_count = 0;
 				trace!(
 					"clean_peers {:?}, liveness checks deferred by local chain maintenance",
 					peer.info.addr
 				);
 				None
 			} else {
-				let (stuck, diff, dead_ping) = peer.is_stuck();
-				let stuck_peer = match self.adapter.total_difficulty() {
-					Ok(total_difficulty) => stuck && diff < total_difficulty,
-					Err(e) => {
-						error!("failed to get total difficulty: {:?}", e);
-						// If local chain state cannot be read, do not evict peers
-						// based on stuck-peer heuristics during this cleanup pass.
-						false
-					}
+				let (diff, height, dead_ping) = peer.check_liveness();
+				// Outbound peers on weaker forks have a shorter grace period
+				// than peers merely lagging behind our accepted body chain.
+				let stuck_outbound = if peer.info.is_outbound() {
+					let incompatible =
+						self.adapter
+							.is_known_or_better_tip(height, diff)
+							.and_then(|compatible| {
+								Ok(!compatible && diff < self.adapter.total_difficulty()?)
+							});
+					let incompatible = match incompatible {
+						Ok(incompatible) => incompatible,
+						Err(e) => {
+							// Local chain failures must not cause peer eviction.
+							warn!("Skipping peer tip comparison for {}: {}", peer.info.addr, e);
+							false
+						}
+					};
+
+					let lagging_peer = self.adapter.total_difficulty().and_then(|local_diff| {
+						Ok(diff < local_diff
+							&& self.adapter.total_height()?.saturating_sub(height) > 1)
+					});
+					let lagging_peer = match lagging_peer {
+						Ok(lagging) => lagging,
+						Err(e) => {
+							warn!("Skipping peer lag comparison for {}: {}", peer.info.addr, e);
+							false
+						}
+					};
+
+					// Count the two conditions independently. Clearing a condition
+					// or failing its local lookup resets the corresponding streak.
+					let mut live_info = peer.info.live_info.write();
+					live_info.incompatible_tip_count = if incompatible {
+						live_info.incompatible_tip_count.saturating_add(1)
+					} else {
+						0
+					};
+					live_info.lagging_tip_count = if lagging_peer {
+						live_info.lagging_tip_count.saturating_add(1)
+					} else {
+						0
+					};
+					live_info.incompatible_tip_count >= 2 || live_info.lagging_tip_count >= 10
+				} else {
+					false
 				};
-				if dead_ping || stuck_peer {
+				if dead_ping || stuck_outbound {
 					info!(
-						"clean_peers {:?}, dead ping: {} stuck peer: {}",
-						peer.info.addr, dead_ping, stuck_peer
+						"clean_peers {:?}, dead ping: {} stuck_outbound: {}",
+						peer.info.addr, dead_ping, stuck_outbound
 					);
 					if let Err(e) = self.update_state(&peer.info.addr, State::Defunct) {
-						error!(
-							"failed to mark stuck peer {} defunct: {}",
-							peer.info.addr, e
-						);
+						error!("failed to mark peer {} defunct: {}", peer.info.addr, e);
 						summary.record_persistence_failure(e);
 					}
 					Some(CleanupReason::Unhealthy)
@@ -1419,6 +1457,14 @@ impl ChainAdapter for Peers {
 
 	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
 		self.adapter.header_height()
+	}
+
+	fn is_known_or_better_tip(
+		&self,
+		height: u64,
+		difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		self.adapter.is_known_or_better_tip(height, difficulty)
 	}
 
 	fn is_chain_liveness_deferred(&self) -> bool {
