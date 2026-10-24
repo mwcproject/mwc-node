@@ -141,7 +141,10 @@ fn peer_handshake() {
 		server_peer.info.capabilities,
 		mwc_p2p::Capabilities::BLOCK_EXTRA
 	);
-	assert_eq!(server_peer.info.total_difficulty(), Difficulty::min());
+	assert_eq!(
+		server_peer.info.get_height_and_difficulty().1,
+		Difficulty::min()
+	);
 	assert!(server.peers.iter().connected().count() > 0);
 
 	stop_state.stop();

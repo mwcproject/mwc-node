@@ -15,15 +15,10 @@
 
 use crate::serv::Server;
 use mwc_crates::parking_lot::{Condvar, Mutex, RwLock};
-use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use mwc_crates::lru::LruCache;
 
 use crate::conn;
 use crate::handshake::Handshake;
@@ -33,27 +28,20 @@ use crate::msg::{
 };
 use crate::protocol::Protocol;
 use crate::tor::tcp_data_stream::TcpDataStream;
-use crate::types::{
-	Capabilities, ChainAdapter, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan,
-};
+use crate::types::{Capabilities, Error, NetAdapter, P2PConfig, PeerAddr, PeerInfo, ReasonForBan};
 use mwc_chain;
-use mwc_chain::txhashset::BitmapChunk;
-use mwc_chain::txhashset::Segmenter;
 use mwc_chain::SyncState;
 use mwc_core::core::hash::{Hash, Hashed};
-use mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
+use mwc_core::core::SegmentIdentifier;
 use mwc_core::pow::Difficulty;
-use mwc_core::ser::{ProtocolVersion, Writeable};
+use mwc_core::ser::Writeable;
 use mwc_core::{core, global};
 use mwc_crates::chrono::prelude::Utc;
 use mwc_crates::log::{debug, info, trace};
-use mwc_crates::secp::pedersen::RangeProof;
-use mwc_crates::secp::Secp256k1;
+use mwc_crates::lru::LruCache;
 
-const MAX_TRACK_SIZE: usize = 2500; // Currently mac income peers limit is 256, the tracking must be much larger
 const MAX_PEER_MSG_PER_MIN: u64 = 1000;
-const HEADER_REQUEST_TIMEOUT: Duration =
-	Duration::from_secs(mwc_chain::pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
+const RECEIVED_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(2500).unwrap();
 #[cfg(not(test))]
 const PEER_STARTING_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -72,8 +60,9 @@ enum State {
 pub struct Peer {
 	pub info: PeerInfo,
 	state: Arc<RwLock<State>>,
-	// set of all hashes known to this peer (so no need to send)
-	tracking_adapter: TrackingAdapter,
+	adapter: Arc<dyn NetAdapter>,
+	// Hashes received from this peer, shared with the protocol to suppress rebroadcasts.
+	received: Arc<RwLock<LruCache<Hash, ()>>>,
 	tracker: Arc<conn::Tracker>,
 	connection: Mutex<Option<PeerConnection>>,
 	connection_changed: Condvar,
@@ -100,12 +89,12 @@ impl Peer {
 	// Only accept and connect can be externally used to build a peer
 	fn new(info: PeerInfo, adapter: Arc<dyn NetAdapter>, context_id: u32) -> Peer {
 		let state = Arc::new(RwLock::new(State::Connected));
-		let tracking_adapter = TrackingAdapter::new(context_id, adapter);
 		let tracker = Arc::new(conn::Tracker::new());
 		Peer {
 			info,
 			state,
-			tracking_adapter,
+			adapter,
+			received: Arc::new(RwLock::new(LruCache::new(RECEIVED_CACHE_SIZE))),
 			tracker,
 			connection: Mutex::new(None),
 			connection_changed: Condvar::new(),
@@ -118,8 +107,9 @@ impl Peer {
 	pub fn connected_for_test(
 		info: PeerInfo,
 		context_id: u32,
+		adapter: Arc<dyn NetAdapter>,
 	) -> (Self, mwc_crates::crossbeam::channel::Receiver<Msg>) {
-		let peer = Self::new(info, Arc::new(crate::DummyAdapter {}), context_id);
+		let peer = Self::new(info, adapter, context_id);
 		let (send_handle, stop_handle, receiver) = conn::test_handles();
 		*peer.connection.lock() = Some(PeerConnection::Active(ActivePeerConnection {
 			send_handle,
@@ -263,9 +253,10 @@ impl Peer {
 
 		let block_extra = self.info.is_block_extra();
 		let handler = Protocol::new(
-			Arc::new(self.tracking_adapter.clone()),
+			self.adapter.clone(),
 			self.info.clone(),
 			server,
+			self.received.clone(),
 		);
 		let (send_handle, stop_handle) = match conn::listen(
 			conn,
@@ -435,7 +426,8 @@ impl Peer {
 
 	pub fn send_compact_block(&self, b: &core::CompactBlock) -> Result<bool, Error> {
 		let block_hash = b.hash(self.context_id)?;
-		if !self.tracking_adapter.has_recv(block_hash) {
+		let has_received = self.received.read().contains(&block_hash);
+		if !has_received {
 			trace!("Send compact block {} to {}", block_hash, self.info.addr);
 			self.send(b, msg::Type::CompactBlock)?;
 			Ok(true)
@@ -450,7 +442,8 @@ impl Peer {
 
 	pub fn send_header(&self, bh: &core::BlockHeader) -> Result<bool, Error> {
 		let header_hash = bh.hash(self.context_id)?;
-		if !self.tracking_adapter.has_recv(header_hash) {
+		let has_received = self.received.read().contains(&header_hash);
+		if !has_received {
 			debug!("Send header {} to {}", header_hash, self.info.addr);
 			self.send(bh, msg::Type::Header)?;
 			Ok(true)
@@ -464,7 +457,8 @@ impl Peer {
 	}
 
 	pub fn send_tx_kernel_hash(&self, h: Hash) -> Result<bool, Error> {
-		if !self.tracking_adapter.has_recv(h) {
+		let has_received = self.received.read().contains(&h);
+		if !has_received {
 			debug!("Send tx kernel hash {} to {}", h, self.info.addr);
 			self.send(h, msg::Type::TransactionKernel)?;
 			Ok(true)
@@ -495,10 +489,11 @@ impl Peer {
 			return self.send_tx_kernel_hash(kernel.hash(self.context_id)?);
 		}
 
-		if !self
-			.tracking_adapter
-			.has_recv(kernel.hash(self.context_id)?)
-		{
+		let has_received = self
+			.received
+			.read()
+			.contains(&kernel.hash(self.context_id)?);
+		if !has_received {
 			debug!(
 				"Send full tx {} to {}",
 				tx.hash(self.context_id)?,
@@ -517,7 +512,7 @@ impl Peer {
 	}
 
 	/// Sends the provided stem transaction to the remote peer.
-	/// Note: tracking adapter is ignored for stem transactions (while under
+	/// Note: the received cache is ignored for stem transactions (while under
 	/// embargo).
 	pub fn send_stem_transaction(&self, tx: &core::Transaction) -> Result<(), Error> {
 		debug!(
@@ -530,16 +525,18 @@ impl Peer {
 
 	/// Sends a request for block headers from the provided block locator
 	pub fn send_header_request(&self, locator: Vec<Hash>) -> Result<(), Error> {
-		let request_id = self.tracking_adapter.next_request_id();
-		let mut header_requests = self.tracking_adapter.header_requests.lock();
-		header_requests.register(request_id, locator.clone(), Instant::now());
+		self.send(&Locator { hashes: locator }, msg::Type::GetHeaders)
+	}
 
-		if let Err(e) = self.send(&Locator { hashes: locator }, msg::Type::GetHeaders) {
-			header_requests.rollback(request_id);
-			return Err(e);
-		}
-
-		Ok(())
+	/// Feed decoded response fragments to the request owner in sync tests.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn receive_headers_for_test(
+		&self,
+		headers: &[core::BlockHeader],
+		remaining: u64,
+	) -> Result<(), mwc_chain::Error> {
+		self.adapter
+			.headers_received(headers, remaining, &self.info)
 	}
 
 	pub fn send_tx_request(&self, h: Hash) -> Result<(), Error> {
@@ -551,15 +548,10 @@ impl Peer {
 	}
 
 	/// Sends a request for a specific block by hash.
-	/// Takes opts so we can track if this request was due to our node syncing or otherwise.
-	pub fn send_block_request(&self, h: Hash, opts: mwc_chain::Options) -> Result<(), Error> {
+	/// BodySync owns outstanding requests and response ordering.
+	pub fn send_block_request(&self, h: Hash) -> Result<(), Error> {
 		debug!("Requesting block {} from peer {}.", h, self.info.addr);
-		let restore = self.tracking_adapter.push_req(h, opts);
-		if let Err(e) = self.send(&h, msg::Type::GetBlock) {
-			self.tracking_adapter.restore_req(h, restore);
-			return Err(e);
-		}
-		Ok(())
+		self.send(&h, msg::Type::GetBlock)
 	}
 
 	/// Sends a request for a specific compact block by hash
@@ -752,558 +744,14 @@ impl Peer {
 	}
 }
 
-/// Adapter implementation that forwards everything to an underlying adapter
-/// but keeps track of the block and transaction hashes that were requested or
-/// received.
-#[derive(Clone)]
-struct TrackingAdapter {
-	adapter: Arc<dyn NetAdapter>,
-	received: Arc<RwLock<LruCache<Hash, ()>>>,
-	requested: Arc<RwLock<LruCache<Hash, RequestEntry>>>,
-	header_requests: Arc<Mutex<HeaderRequestTracker>>,
-	next_request_id: Arc<AtomicU64>,
-	context_id: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RequestEntry {
-	opts: mwc_chain::Options,
-	id: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RequestRestore {
-	inserted: RequestEntry,
-	previous: Option<RequestEntry>,
-}
-
-#[derive(Debug)]
-struct HeaderRequestEntry {
-	id: u64,
-	locator: Vec<Hash>,
-	requested_at: Instant,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeaderResponseState {
-	Idle,
-	Receiving { expected_prev_hash: Hash },
-	Rejecting,
-}
-
-#[derive(Debug)]
-struct HeaderRequestTracker {
-	// Header responses are produced in request order by the peer protocol. Keep
-	// the full locator because a fork response can start after any common hash,
-	// not necessarily after the newest (first) locator hash.
-	pending: VecDeque<HeaderRequestEntry>,
-	// The codec delivers one Headers message in 32-header fragments. This state
-	// makes all fragments share one request ticket and prevents rejected trailing
-	// fragments from being mistaken for a new response.
-	response_state: HeaderResponseState,
-}
-
-impl HeaderRequestTracker {
-	fn new() -> Self {
-		Self {
-			pending: VecDeque::new(),
-			response_state: HeaderResponseState::Idle,
-		}
-	}
-
-	fn register(&mut self, id: u64, locator: Vec<Hash>, now: Instant) {
-		// Higher-level scheduling keeps at most three GetHeaders requests outstanding
-		// per peer. Responses consume their entries in wire order, and expired entries
-		// are removed here before a new request is registered. MAX_TRACK_SIZE is thus
-		// only a defensive memory bound for behavior outside that scheduling contract;
-		// normal operation never evicts a live request at this point.
-		self.prune_expired(now);
-		if self.pending.len() >= MAX_TRACK_SIZE {
-			self.pending.pop_front();
-		}
-		self.pending.push_back(HeaderRequestEntry {
-			id,
-			locator,
-			requested_at: now,
-		});
-	}
-
-	fn rollback(&mut self, id: u64) {
-		if let Some(position) = self.pending.iter().position(|entry| entry.id == id) {
-			self.pending.remove(position);
-		}
-	}
-
-	fn prune_expired(&mut self, now: Instant) {
-		while self.pending.front().map_or(false, |entry| {
-			now.saturating_duration_since(entry.requested_at) >= HEADER_REQUEST_TIMEOUT
-		}) {
-			self.pending.pop_front();
-		}
-	}
-
-	fn admit_headers(
-		&mut self,
-		headers: &[core::BlockHeader],
-		remaining: u64,
-		context_id: u32,
-		now: Instant,
-	) -> Result<bool, mwc_chain::Error> {
-		self.prune_expired(now);
-
-		let first = match headers.first() {
-			Some(first) => first,
-			None => {
-				self.response_state = if remaining == 0 {
-					HeaderResponseState::Idle
-				} else {
-					HeaderResponseState::Rejecting
-				};
-				return Ok(false);
-			}
-		};
-
-		match self.response_state {
-			HeaderResponseState::Rejecting => {
-				if remaining == 0 {
-					self.response_state = HeaderResponseState::Idle;
-				}
-				Ok(false)
-			}
-			HeaderResponseState::Receiving { expected_prev_hash } => {
-				if first.prev_hash != expected_prev_hash {
-					self.reject_through_end(remaining);
-					return Ok(false);
-				}
-				self.accept_fragment(headers, remaining, context_id)
-			}
-			HeaderResponseState::Idle => {
-				let matches_oldest_request = self
-					.pending
-					.front()
-					.map_or(false, |entry| entry.locator.contains(&first.prev_hash));
-				if !matches_oldest_request {
-					self.reject_through_end(remaining);
-					return Ok(false);
-				}
-
-				self.pending.pop_front();
-				self.accept_fragment(headers, remaining, context_id)
-			}
-		}
-	}
-
-	fn accept_fragment(
-		&mut self,
-		headers: &[core::BlockHeader],
-		remaining: u64,
-		context_id: u32,
-	) -> Result<bool, mwc_chain::Error> {
-		if remaining == 0 {
-			self.response_state = HeaderResponseState::Idle;
-			return Ok(true);
-		}
-
-		// Reject later fragments if hashing the accepted boundary header fails.
-		self.response_state = HeaderResponseState::Rejecting;
-		let last = match headers.last() {
-			Some(last) => last,
-			None => return Ok(false),
-		};
-		let expected_prev_hash = last.hash(context_id)?;
-		self.response_state = HeaderResponseState::Receiving { expected_prev_hash };
-		Ok(true)
-	}
-
-	fn reject_through_end(&mut self, remaining: u64) {
-		self.response_state = if remaining == 0 {
-			HeaderResponseState::Idle
-		} else {
-			HeaderResponseState::Rejecting
-		};
-	}
-}
-
-impl TrackingAdapter {
-	fn new(context_id: u32, adapter: Arc<dyn NetAdapter>) -> TrackingAdapter {
-		// unwrap safe because build from positive constant
-		let track_size = NonZeroUsize::new(MAX_TRACK_SIZE).unwrap();
-		TrackingAdapter {
-			adapter,
-			received: Arc::new(RwLock::new(LruCache::new(track_size))),
-			requested: Arc::new(RwLock::new(LruCache::new(track_size))),
-			header_requests: Arc::new(Mutex::new(HeaderRequestTracker::new())),
-			next_request_id: Arc::new(AtomicU64::new(0)),
-			context_id,
-		}
-	}
-
-	fn next_request_id(&self) -> u64 {
-		self.next_request_id
-			.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-				// Request ids can wrap. After a full u64 cycle, duplicated ids
-				// should have been retired from the bounded request cache. Even if
-				// one has not, the impact is not critical for this tracking path.
-				Some(current.wrapping_add(1))
-			})
-			// Safe because try_update only returns Err if the closure returns
-			// None, and this closure always provides the next value.
-			.expect("request id update always returns Some")
-	}
-
-	fn has_recv(&self, hash: Hash) -> bool {
-		self.received.read_recursive().contains(&hash)
-	}
-
-	fn push_recv(&self, hash: Hash) {
-		self.received.write().put(hash, ());
-	}
-
-	/// Track a block hash requested by us.
-	/// Track the opts alongside the hash so we know if this was due to us syncing or not.
-	fn push_req(&self, hash: Hash, opts: mwc_chain::Options) -> RequestRestore {
-		let inserted = RequestEntry {
-			opts,
-			id: self.next_request_id(),
-		};
-		let previous = self.requested.write().put(hash, inserted);
-		RequestRestore { inserted, previous }
-	}
-
-	fn restore_req(&self, hash: Hash, restore: RequestRestore) {
-		let mut requested = self.requested.write();
-		match requested.pop(&hash) {
-			Some(current) if current == restore.inserted => {
-				if let Some(previous) = restore.previous {
-					requested.put(hash, previous);
-				}
-			}
-			Some(current) => {
-				requested.put(hash, current);
-			}
-			None => {}
-		}
-	}
-
-	fn remove_req(&self, hash: Hash) -> Option<mwc_chain::Options> {
-		self.requested.write().pop(&hash).map(|entry| entry.opts)
-	}
-}
-
-impl ChainAdapter for TrackingAdapter {
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		self.adapter.total_difficulty()
-	}
-
-	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		self.adapter.total_height()
-	}
-
-	fn is_known_or_better_tip(
-		&self,
-		height: u64,
-		difficulty: Difficulty,
-	) -> Result<bool, mwc_chain::Error> {
-		self.adapter.is_known_or_better_tip(height, difficulty)
-	}
-
-	fn is_chain_liveness_deferred(&self) -> bool {
-		self.adapter.is_chain_liveness_deferred()
-	}
-
-	fn get_transaction(
-		&self,
-		kernel_hash: Hash,
-	) -> Result<Option<core::Transaction>, mwc_chain::Error> {
-		self.adapter.get_transaction(kernel_hash)
-	}
-
-	fn tx_kernel_received(
-		&self,
-		kernel_hash: Hash,
-		peer_info: &PeerInfo,
-	) -> Result<bool, mwc_chain::Error> {
-		self.push_recv(kernel_hash);
-		self.adapter.tx_kernel_received(kernel_hash, peer_info)
-	}
-
-	fn transaction_received(
-		&self,
-		secp: &mut Secp256k1,
-		tx: core::Transaction,
-		stem: bool,
-	) -> Result<bool, mwc_chain::Error> {
-		// Do not track the tx hash for stem txs.
-		// Otherwise we fail to handle the subsequent fluff or embargo expiration
-		// correctly.
-		if !stem {
-			let kernel = tx.kernels().first().ok_or_else(|| {
-				mwc_chain::Error::Transaction(core::transaction::Error::Generic(
-					"received transaction with no kernels".into(),
-				))
-			})?;
-			self.push_recv(kernel.hash(self.context_id)?);
-		}
-		self.adapter.transaction_received(secp, tx, stem)
-	}
-
-	fn block_received(
-		&self,
-		secp: &mut Secp256k1,
-		b: core::Block,
-		peer_info: &PeerInfo,
-		opts: mwc_chain::Options,
-	) -> Result<bool, mwc_chain::Error> {
-		let bh = b.hash(self.context_id)?;
-		self.push_recv(bh);
-
-		// If we are currently tracking a request for this block then
-		// use the opts specified when we made the request.
-		// If we requested this block as part of sync then we want to
-		// let our adapter know this when we receive it.
-		let req_opts = self.remove_req(bh).unwrap_or(opts);
-		self.adapter.block_received(secp, b, peer_info, req_opts)
-	}
-
-	fn compact_block_received(
-		&self,
-		secp: &mut Secp256k1,
-		cb: core::CompactBlock,
-		peer_info: &PeerInfo,
-	) -> Result<bool, mwc_chain::Error> {
-		self.push_recv(cb.hash(self.context_id)?);
-		self.adapter.compact_block_received(secp, cb, peer_info)
-	}
-
-	fn header_received(
-		&self,
-		bh: core::BlockHeader,
-		peer_info: &PeerInfo,
-	) -> Result<bool, mwc_chain::Error> {
-		self.push_recv(bh.hash(self.context_id)?);
-		self.adapter.header_received(bh, peer_info)
-	}
-
-	fn header_locator(&self) -> Result<Vec<Hash>, mwc_chain::Error> {
-		self.adapter.header_locator()
-	}
-
-	fn headers_received(
-		&self,
-		bh: &[core::BlockHeader],
-		remaining: u64,
-		peer_info: &PeerInfo,
-	) -> Result<(), mwc_chain::Error> {
-		let admitted = self.header_requests.lock().admit_headers(
-			bh,
-			remaining,
-			self.context_id,
-			Instant::now(),
-		)?;
-		if !admitted {
-			debug!(
-				"Ignoring unsolicited or mismatched headers response from {}",
-				peer_info.addr
-			);
-			return Ok(());
-		}
-
-		// Batch headers are only expected on the sync response path.
-		// These headers are normally far from the tip, so we do not track
-		// them as "already seen" for broadcast suppression.
-		self.adapter.headers_received(bh, remaining, peer_info)
-	}
-
-	fn locate_headers(&self, locator: &[Hash]) -> Result<Vec<core::BlockHeader>, mwc_chain::Error> {
-		self.adapter.locate_headers(locator)
-	}
-
-	fn get_block(
-		&self,
-		secp: &Secp256k1,
-		h: Hash,
-		peer_info: &PeerInfo,
-	) -> Result<Option<core::Block>, mwc_chain::Error> {
-		self.adapter.get_block(secp, h, peer_info)
-	}
-
-	fn txhashset_archive_header(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
-		self.adapter.txhashset_archive_header()
-	}
-
-	fn get_tmp_dir(&self) -> Result<PathBuf, mwc_chain::Error> {
-		self.adapter.get_tmp_dir()
-	}
-
-	fn get_tmpfile_pathname(&self, tmpfile_name: String) -> Result<PathBuf, mwc_chain::Error> {
-		self.adapter.get_tmpfile_pathname(tmpfile_name)
-	}
-
-	fn recieve_pibd_status(
-		&self,
-		peer: &PeerAddr,
-		header_hash: Hash,
-		header_height: u64,
-		output_bitmap_root: Hash,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.recieve_pibd_status(peer, header_hash, header_height, output_bitmap_root)
-	}
-
-	fn recieve_another_archive_header(
-		&self,
-		peer: &PeerAddr,
-		header_hash: Hash,
-		header_height: u64,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.recieve_another_archive_header(peer, header_hash, header_height)
-	}
-
-	fn receive_headers_hash_response(
-		&self,
-		peer: &PeerAddr,
-		archive_height: u64,
-		headers_hash_root: Hash,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.receive_headers_hash_response(peer, archive_height, headers_hash_root)
-	}
-
-	fn get_header_hashes_segment(
-		&self,
-		header_hashes_root: Hash,
-		id: SegmentIdentifier,
-	) -> Result<Segment<Hash>, mwc_chain::Error> {
-		self.adapter
-			.get_header_hashes_segment(header_hashes_root, id)
-	}
-
-	fn receive_header_hashes_segment(
-		&self,
-		peer: &PeerAddr,
-		header_hashes_root: Hash,
-		segment: Segment<Hash>,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.receive_header_hashes_segment(peer, header_hashes_root, segment)
-	}
-
-	/// For MWC handshake we need to have a segmenter ready with output bitmap ready and commited.
-	fn prepare_segmenter(&self) -> Result<Segmenter, mwc_chain::Error> {
-		self.adapter.prepare_segmenter()
-	}
-
-	fn get_kernel_segment(
-		&self,
-		hash: Hash,
-		id: SegmentIdentifier,
-	) -> Result<Segment<TxKernel>, mwc_chain::Error> {
-		self.adapter.get_kernel_segment(hash, id)
-	}
-
-	fn get_bitmap_segment(
-		&self,
-		hash: Hash,
-		id: SegmentIdentifier,
-	) -> Result<Segment<BitmapChunk>, mwc_chain::Error> {
-		self.adapter.get_bitmap_segment(hash, id)
-	}
-
-	fn get_output_segment(
-		&self,
-		hash: Hash,
-		id: SegmentIdentifier,
-	) -> Result<Segment<OutputIdentifier>, mwc_chain::Error> {
-		self.adapter.get_output_segment(hash, id)
-	}
-
-	fn get_rangeproof_segment(
-		&self,
-		hash: Hash,
-		id: SegmentIdentifier,
-	) -> Result<Segment<RangeProof>, mwc_chain::Error> {
-		self.adapter.get_rangeproof_segment(hash, id)
-	}
-
-	fn receive_bitmap_segment(
-		&self,
-		peer: &PeerAddr,
-		archive_header_hash: Hash,
-		segment: Segment<BitmapChunk>,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.receive_bitmap_segment(peer, archive_header_hash, segment)
-	}
-
-	fn receive_output_segment(
-		&self,
-		peer: &PeerAddr,
-		archive_header_hash: Hash,
-		segment: Segment<OutputIdentifier>,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.receive_output_segment(peer, archive_header_hash, segment)
-	}
-
-	fn receive_rangeproof_segment(
-		&self,
-		peer: &PeerAddr,
-		archive_header_hash: Hash,
-		segment: Segment<RangeProof>,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.receive_rangeproof_segment(peer, archive_header_hash, segment)
-	}
-
-	fn receive_kernel_segment(
-		&self,
-		peer: &PeerAddr,
-		archive_header_hash: Hash,
-		segment: Segment<TxKernel>,
-	) -> Result<(), mwc_chain::Error> {
-		self.adapter
-			.receive_kernel_segment(peer, archive_header_hash, segment)
-	}
-
-	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
-		self.adapter.peer_difficulty(addr, diff, height)
-	}
-}
-
-impl NetAdapter for TrackingAdapter {
-	fn find_peer_addrs(&self, capab: Capabilities) -> Result<Vec<PeerAddr>, Error> {
-		self.adapter.find_peer_addrs(capab)
-	}
-
-	fn peer_addrs_received(&self, source: &PeerAddr, addrs: Vec<PeerAddr>) {
-		self.adapter.peer_addrs_received(source, addrs)
-	}
-
-	fn is_banned(&self, addr: &PeerAddr) -> Result<bool, Error> {
-		self.adapter.is_banned(addr)
-	}
-
-	fn peer_version(&self, addr: &PeerAddr) -> Result<Option<ProtocolVersion>, Error> {
-		self.adapter.peer_version(addr)
-	}
-
-	/// Ban peer
-	fn ban_peer(
-		&self,
-		addr: &PeerAddr,
-		ban_reason: ReasonForBan,
-		message: &str,
-	) -> Result<(), Error> {
-		self.adapter.ban_peer(addr, ban_reason, message)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::serv::{set_dummy_adapter_liveness_deferred_for_test, DummyAdapter};
 	use crate::types::{Direction, PeerLiveInfo};
+	use mwc_core::core::TxKernel;
+	use mwc_core::ser::ProtocolVersion;
+	use mwc_crates::secp::Secp256k1;
 	use std::net::SocketAddr;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::mpsc;
@@ -1352,7 +800,7 @@ mod tests {
 	}
 
 	fn connect_test_peer(peer: Peer) -> Peer {
-		let (peer, receiver) = Peer::connected_for_test(peer.info, peer.context_id);
+		let (peer, receiver) = Peer::connected_for_test(peer.info, peer.context_id, peer.adapter);
 		drop(receiver);
 		peer
 	}
@@ -1369,6 +817,21 @@ mod tests {
 			],
 		)
 		.unwrap()
+	}
+
+	#[test]
+	fn compact_block_relay_skips_its_supplier() {
+		// The protocol records a received compact hash before accepting its body.
+		// A later acceptance broadcast must not queue the compact block back to
+		// that same connection.
+		global::set_local_chain_type(global::ChainTypes::Mainnet);
+		let (peer, receiver) =
+			Peer::connected_for_test(test_peer().info, 0, Arc::new(DummyAdapter {}));
+		let compact = core::CompactBlock::from(core::Block::default(0)).unwrap();
+		let hash = compact.hash(0).unwrap();
+		peer.received.write().put(hash, ());
+		assert!(!peer.send_compact_block(&compact).unwrap());
+		assert_eq!(receiver.try_iter().count(), 0);
 	}
 
 	#[test]
@@ -1785,36 +1248,34 @@ mod tests {
 	}
 
 	#[test]
-	fn clean_peers_includes_sync_excluded_connections_in_health_and_capacity_cleanup() {
+	fn clean_peers_applies_health_and_capacity_cleanup_to_all_connections() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		for direction in [Direction::Inbound, Direction::Outbound] {
 			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
 			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
 			let mut dead = connected_block_extra_peer(3540, 0);
-			let mut excluded = connected_block_extra_peer(3541, 0);
+			let mut excess = connected_block_extra_peer(3541, 0);
 			let mut preferred = connected_block_extra_peer(3542, 0);
 			dead.info.direction = direction;
-			excluded.info.direction = direction;
+			excess.info.direction = direction;
 			preferred.info.direction = direction;
-			let (dead, excluded, preferred) =
-				(Arc::new(dead), Arc::new(excluded), Arc::new(preferred));
+			let (dead, excess, preferred) = (Arc::new(dead), Arc::new(excess), Arc::new(preferred));
 			let mut config = P2PConfig::default();
 			config.peer_max_outbound_count = Some(1);
 			config.peers_preferred = Some(crate::msg::PeerAddrs {
 				peers: vec![preferred.info.addr.clone()],
 			});
 			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
-			for peer in [&dead, &excluded, &preferred] {
+			for peer in [&dead, &excess, &preferred] {
 				peers.add_connected(peer.clone()).unwrap();
 			}
-			peers.set_excluded_peers(&vec![dead.info.addr.clone(), excluded.info.addr.clone()]);
 			dead.set_defunct();
 
 			let summary = peers.clean_peers(1, 1, Capabilities::UNKNOWN, config);
 
 			assert_eq!(summary.removed_peers, 2);
 			assert!(!peers.is_known(&dead.info.addr));
-			assert!(!peers.is_known(&excluded.info.addr));
+			assert!(!peers.is_known(&excess.info.addr));
 			assert!(peers.is_known(&preferred.info.addr));
 			assert_eq!(
 				peers.get_peer(&dead.info.addr).unwrap().flags,
@@ -1922,6 +1383,13 @@ mod tests {
 		}
 	}
 
+	// Supply one body-head snapshot to cleanup while controlling the activation height.
+	fn cleanup_test_head(height: u64) -> core::BlockHeader {
+		let mut head = core::BlockHeader::default(1);
+		head.height = height;
+		head
+	}
+
 	#[test]
 	fn activation_rotation_preserves_capable_preferred_and_underfilled_pools() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
@@ -1954,12 +1422,26 @@ mod tests {
 			let activation = mwc_core::consensus::COINBASE_BINDING_TESTING_HEIGHT;
 			assert_eq!(
 				peers
-					.clean_peers_at(20, 10, boost, config.clone(), now, Some(activation - 1))
+					.clean_peers_at(
+						20,
+						10,
+						boost,
+						config.clone(),
+						now,
+						Some(cleanup_test_head(activation - 1))
+					)
 					.removed_peers,
 				0
 			);
-			// The validated header has activated while DummyAdapter's body height is still zero.
-			let result = peers.clean_peers_at(20, 10, boost, config.clone(), now, Some(activation));
+			// Reaching activation with the body head enables the capability preference.
+			let result = peers.clean_peers_at(
+				20,
+				10,
+				boost,
+				config.clone(),
+				now,
+				Some(cleanup_test_head(activation)),
+			);
 			assert_eq!(result.rotated_outbound_peers.len(), 2);
 			assert_eq!(result.outbound_replacement_attempts, 2);
 			assert_eq!(peers.iter().outbound().connected().count(), 6);
@@ -1990,7 +1472,7 @@ mod tests {
 						boost,
 						config,
 						now + Duration::from_secs(1200),
-						Some(activation)
+						Some(cleanup_test_head(activation))
 					)
 					.removed_peers,
 				0
@@ -2023,7 +1505,9 @@ mod tests {
 			Capabilities::PIBD_HIST,
 			config,
 			Instant::now(),
-			Some(mwc_core::consensus::COINBASE_BINDING_TESTING_HEIGHT),
+			Some(cleanup_test_head(
+				mwc_core::consensus::COINBASE_BINDING_TESTING_HEIGHT,
+			)),
 		);
 		assert_eq!(result.rotated_outbound_peers.len(), 2);
 		assert_eq!(result.outbound_replacement_attempts, 0);
@@ -2061,7 +1545,7 @@ mod tests {
 					Capabilities::UNKNOWN,
 					config.clone(),
 					now + Duration::from_secs(599),
-					Some(0)
+					Some(cleanup_test_head(0))
 				)
 				.removed_peers,
 			0
@@ -2077,7 +1561,7 @@ mod tests {
 			Capabilities::UNKNOWN,
 			config.clone(),
 			now + Duration::from_secs(600),
-			Some(0),
+			Some(cleanup_test_head(0)),
 		);
 		assert_eq!(result.removed_peers, 2);
 		assert_eq!(result.rotated_outbound_peers.len(), 1);
@@ -2093,7 +1577,7 @@ mod tests {
 					Capabilities::UNKNOWN,
 					config.clone(),
 					now + Duration::from_secs(1199),
-					Some(0)
+					Some(cleanup_test_head(0))
 				)
 				.removed_peers,
 			0
@@ -2110,7 +1594,7 @@ mod tests {
 			Capabilities::UNKNOWN,
 			config,
 			now + Duration::from_secs(1200),
-			Some(4),
+			Some(cleanup_test_head(4)),
 		);
 		assert_eq!(result.rotated_outbound_peers.len(), 2);
 		assert_eq!(result.outbound_replacement_attempts, 0);
@@ -2144,7 +1628,7 @@ mod tests {
 				Capabilities::UNKNOWN,
 				config,
 				Instant::now() + Duration::from_secs(601),
-				Some(4),
+				Some(cleanup_test_head(4)),
 			);
 			assert_eq!(result.removed_peers, 0);
 		}
@@ -2641,240 +2125,12 @@ mod tests {
 		assert!(!peers.is_known(&addr));
 	}
 
-	fn header_with_prev_hash(prev_hash: Hash) -> core::BlockHeader {
-		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
-		let mut header = core::BlockHeader::default(0);
-		header.prev_hash = prev_hash;
-		header
-	}
-
 	#[test]
-	fn header_response_matches_any_hash_in_requested_locator() {
-		let now = Instant::now();
-		let newest_locator = Hash::from_vec(&[10]);
-		let lower_fork_locator = Hash::from_vec(&[11]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![newest_locator, lower_fork_locator], now);
-
-		let response = header_with_prev_hash(lower_fork_locator);
-
-		assert!(tracker.admit_headers(&[response], 0, 0, now).unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn unsolicited_header_response_is_rejected() {
-		let now = Instant::now();
-		let mut tracker = HeaderRequestTracker::new();
-		let response = header_with_prev_hash(Hash::from_vec(&[12]));
-
-		assert!(!tracker.admit_headers(&[response], 0, 0, now).unwrap());
-		assert_eq!(tracker.response_state, HeaderResponseState::Idle);
-	}
-
-	#[test]
-	fn mismatched_header_response_does_not_consume_request() {
-		let now = Instant::now();
-		let requested_locator = Hash::from_vec(&[13]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![requested_locator], now);
-
-		let mismatched = header_with_prev_hash(Hash::from_vec(&[14]));
-		assert!(!tracker.admit_headers(&[mismatched], 0, 0, now).unwrap());
-		assert_eq!(tracker.pending.len(), 1);
-
-		let matched = header_with_prev_hash(requested_locator);
-		assert!(tracker.admit_headers(&[matched], 0, 0, now).unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn fragmented_header_response_uses_one_request_ticket() {
-		let now = Instant::now();
-		let first_locator = Hash::from_vec(&[15]);
-		let second_locator = Hash::from_vec(&[16]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![first_locator], now);
-		tracker.register(2, vec![second_locator], now);
-
-		let first_fragment = header_with_prev_hash(first_locator);
-		let continuation_anchor = first_fragment.hash(0).unwrap();
-		assert!(tracker.admit_headers(&[first_fragment], 1, 0, now).unwrap());
-		assert_eq!(tracker.pending.len(), 1);
-
-		let final_fragment = header_with_prev_hash(continuation_anchor);
-		assert!(tracker.admit_headers(&[final_fragment], 0, 0, now).unwrap());
-		assert_eq!(tracker.pending.len(), 1);
-
-		let second_response = header_with_prev_hash(second_locator);
-		assert!(tracker
-			.admit_headers(&[second_response], 0, 0, now)
-			.unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn broken_header_fragment_link_rejects_rest_of_response() {
-		let now = Instant::now();
-		let first_locator = Hash::from_vec(&[23]);
-		let next_locator = Hash::from_vec(&[24]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![first_locator], now);
-		tracker.register(2, vec![next_locator], now);
-
-		let first_fragment = header_with_prev_hash(first_locator);
-		assert!(tracker.admit_headers(&[first_fragment], 2, 0, now).unwrap());
-
-		let broken_continuation = header_with_prev_hash(Hash::from_vec(&[25]));
-		assert!(!tracker
-			.admit_headers(&[broken_continuation], 1, 0, now)
-			.unwrap());
-		assert_eq!(tracker.response_state, HeaderResponseState::Rejecting);
-
-		let trailing_fragment = header_with_prev_hash(next_locator);
-		assert!(!tracker
-			.admit_headers(std::slice::from_ref(&trailing_fragment), 0, 0, now)
-			.unwrap());
-		assert_eq!(tracker.pending.len(), 1);
-
-		assert!(tracker
-			.admit_headers(&[trailing_fragment], 0, 0, now)
-			.unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn rejected_header_response_discards_all_its_fragments() {
-		let now = Instant::now();
-		let requested_locator = Hash::from_vec(&[17]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![requested_locator], now);
-
-		let unsolicited_first_fragment = header_with_prev_hash(Hash::from_vec(&[18]));
-		assert!(!tracker
-			.admit_headers(&[unsolicited_first_fragment], 1, 0, now)
-			.unwrap());
-		assert_eq!(tracker.response_state, HeaderResponseState::Rejecting);
-
-		let matching_but_same_response = header_with_prev_hash(requested_locator);
-		let matching_fragment = std::slice::from_ref(&matching_but_same_response);
-		assert!(!tracker.admit_headers(matching_fragment, 0, 0, now).unwrap());
-		assert_eq!(tracker.response_state, HeaderResponseState::Idle);
-		assert_eq!(tracker.pending.len(), 1);
-
-		assert!(tracker
-			.admit_headers(&[matching_but_same_response], 0, 0, now)
-			.unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn header_responses_must_follow_request_order() {
-		let now = Instant::now();
-		let first_locator = Hash::from_vec(&[19]);
-		let second_locator = Hash::from_vec(&[20]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![first_locator], now);
-		tracker.register(2, vec![second_locator], now);
-
-		let out_of_order = header_with_prev_hash(second_locator);
-		assert!(!tracker.admit_headers(&[out_of_order], 0, 0, now).unwrap());
-		assert_eq!(tracker.pending.len(), 2);
-
-		let first_response = header_with_prev_hash(first_locator);
-		assert!(tracker.admit_headers(&[first_response], 0, 0, now).unwrap());
-		let second_response = header_with_prev_hash(second_locator);
-		assert!(tracker
-			.admit_headers(&[second_response], 0, 0, now)
-			.unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn expired_header_request_does_not_admit_response() {
-		let now = Instant::now();
-		let locator = Hash::from_vec(&[21]);
-		let mut tracker = HeaderRequestTracker::new();
-		tracker.register(1, vec![locator], now);
-
-		let response = header_with_prev_hash(locator);
-		assert!(!tracker
-			.admit_headers(&[response], 0, 0, now + HEADER_REQUEST_TIMEOUT)
-			.unwrap());
-		assert!(tracker.pending.is_empty());
-	}
-
-	#[test]
-	fn failed_header_request_send_rolls_back_ticket() {
+	fn failed_header_request_send_returns_error() {
 		let peer = test_peer();
-
 		assert!(peer
 			.send_header_request(vec![Hash::from_vec(&[22])])
 			.is_err());
-		assert!(peer
-			.tracking_adapter
-			.header_requests
-			.lock()
-			.pending
-			.is_empty());
-	}
-
-	#[test]
-	fn restore_req_preserves_previous_block_request_opts() {
-		let tracking_adapter = TrackingAdapter::new(0, Arc::new(DummyAdapter {}));
-		let hash = Hash::from_vec(&[1]);
-
-		tracking_adapter.push_req(hash, mwc_chain::Options::SYNC);
-		let restore = tracking_adapter.push_req(hash, mwc_chain::Options::NONE);
-
-		tracking_adapter.restore_req(hash, restore);
-
-		assert_eq!(
-			tracking_adapter.remove_req(hash),
-			Some(mwc_chain::Options::SYNC)
-		);
-	}
-
-	#[test]
-	fn restore_req_removes_failed_request_without_previous_entry() {
-		let tracking_adapter = TrackingAdapter::new(0, Arc::new(DummyAdapter {}));
-		let hash = Hash::from_vec(&[2]);
-		let restore = tracking_adapter.push_req(hash, mwc_chain::Options::NONE);
-
-		tracking_adapter.restore_req(hash, restore);
-
-		assert_eq!(tracking_adapter.remove_req(hash), None);
-	}
-
-	#[test]
-	fn restore_req_does_not_clobber_newer_request_entry() {
-		let tracking_adapter = TrackingAdapter::new(0, Arc::new(DummyAdapter {}));
-		let hash = Hash::from_vec(&[3]);
-
-		tracking_adapter.push_req(hash, mwc_chain::Options::SYNC);
-		let failed_restore = tracking_adapter.push_req(hash, mwc_chain::Options::NONE);
-		tracking_adapter.push_req(hash, mwc_chain::Options::MINE);
-
-		tracking_adapter.restore_req(hash, failed_restore);
-
-		assert_eq!(
-			tracking_adapter.remove_req(hash),
-			Some(mwc_chain::Options::MINE)
-		);
-	}
-
-	#[test]
-	fn next_request_id_restarts_from_zero_on_overflow() {
-		let tracking_adapter = TrackingAdapter::new(0, Arc::new(DummyAdapter {}));
-		tracking_adapter
-			.next_request_id
-			.store(u64::MAX, Ordering::Relaxed);
-
-		let max_id = tracking_adapter.push_req(Hash::from_vec(&[4]), mwc_chain::Options::NONE);
-		let zero_id = tracking_adapter.push_req(Hash::from_vec(&[5]), mwc_chain::Options::NONE);
-
-		assert_eq!(max_id.inserted.id, u64::MAX);
-		assert_eq!(zero_id.inserted.id, 0);
 	}
 
 	#[test]

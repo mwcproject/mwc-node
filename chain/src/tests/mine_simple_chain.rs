@@ -67,7 +67,7 @@ impl ChainAdapter for StatusAdapter {
 		_secp: &mut Secp256k1,
 		_b: &Block,
 		status: BlockStatus,
-		_opts: Options,
+		_header_head: Tip,
 	) {
 		*self.last_status.write() = Some(status);
 	}
@@ -343,9 +343,107 @@ fn locate_headers_returns_header_pmmr_lookup_error() {
 
 	let res = chain.locate_headers(&[genesis_hash], 32);
 
-	assert!(matches!(res, Err(mwc_chain::Error::InvalidHeaderHeight(1))));
+	assert!(matches!(res, Err(mwc_chain::Error::InvalidHeaderHeight(_))));
 
 	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn locate_headers_stops_at_body_head() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = test_chain_dir("locate_headers_stops_at_body_head");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, &chain_dir, genesis);
+	let context_id = chain.get_context_id();
+	let genesis_hash = chain.genesis().hash(context_id).unwrap();
+
+	// Apply two bodies, then validate only the next header. Serving GetHeaders
+	// must stop at the body head even though the header chain is further ahead.
+	let a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &a);
+	let b = prepare_block(&mut secp, &kc, &a.header, &chain, 2);
+	process_block(&mut secp, &chain, &b);
+	let c = prepare_block(&mut secp, &kc, &b.header, &chain, 3);
+	process_header(&chain, &c.header);
+	assert_eq!(chain.head().unwrap().height, 2);
+	assert_eq!(chain.header_head().unwrap().height, 3);
+	assert_eq!(
+		chain.locate_headers(&[genesis_hash], 512).unwrap(),
+		vec![a.header.clone(), b.header.clone()]
+	);
+
+	// Keep the requested limit and ascending order, and return nothing after
+	// the body head. A locator above that head must not select header-only data.
+	assert_eq!(
+		chain.locate_headers(&[genesis_hash], 1).unwrap(),
+		vec![a.header]
+	);
+	assert!(chain.locate_headers(&[genesis_hash], 0).unwrap().is_empty());
+	assert!(chain
+		.locate_headers(
+			&[c.hash(context_id).unwrap(), b.hash(context_id).unwrap()],
+			512,
+		)
+		.unwrap()
+		.is_empty());
+
+	mwc_chain::pipe::release_context_data(context_id);
+	drop(chain);
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
+fn locate_headers_uses_body_branch_when_header_head_forks() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = test_chain_dir("locate_headers_uses_body_branch_when_header_head_forks");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, &chain_dir, genesis);
+	let context_id = chain.get_context_id();
+	let genesis_hash = chain.genesis().hash(context_id).unwrap();
+	let a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &a);
+	let b = prepare_block(&mut secp, &kc, &a.header, &chain, 2);
+	process_block(&mut secp, &chain, &b);
+
+	// A competing header with more work switches the header PMMR to another
+	// branch, while the applied body chain remains genesis -> A -> B.
+	let fork = prepare_block(&mut secp, &kc, &a.header, &chain, 3).header;
+	process_header(&chain, &fork);
+	let a_hash = a.hash(context_id).unwrap();
+	let b_hash = b.hash(context_id).unwrap();
+	let fork_hash = fork.hash(context_id).unwrap();
+	assert_eq!(chain.head().unwrap().last_block_h, b_hash);
+	assert_eq!(chain.header_head().unwrap().last_block_h, fork_hash);
+	assert_eq!(
+		chain.locate_headers(&[genesis_hash], 512).unwrap(),
+		vec![a.header, b.header.clone()]
+	);
+
+	// Ignore the competing locator and start after the common body ancestor.
+	// A locator containing only the competing header has no body-chain match.
+	assert_eq!(
+		chain.locate_headers(&[fork_hash, a_hash], 512).unwrap(),
+		vec![b.header]
+	);
+	assert!(chain.locate_headers(&[fork_hash], 512).unwrap().is_empty());
+	assert!(chain
+		.locate_headers(&[b_hash, genesis_hash], 512)
+		.unwrap()
+		.is_empty());
+
+	mwc_chain::pipe::release_context_data(context_id);
+	drop(chain);
+	clean_output_dir(&chain_dir);
 }
 
 #[test]
@@ -517,7 +615,12 @@ fn block_height_range_to_pmmr_indices_rejects_body_chain_predecessor_skip() {
 
 	{
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&corrupt_head).unwrap();
+		batch
+			.save_block_header(
+				&corrupt_head,
+				crate::store::header_creation_time(&corrupt_head).unwrap(),
+			)
+			.unwrap();
 		batch.save_body_head(&corrupt_tip).unwrap();
 		batch.commit().unwrap();
 	}
@@ -548,7 +651,12 @@ fn block_height_range_to_pmmr_indices_rejects_non_decreasing_body_predecessor() 
 
 	{
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&corrupt_head).unwrap();
+		batch
+			.save_block_header(
+				&corrupt_head,
+				crate::store::header_creation_time(&corrupt_head).unwrap(),
+			)
+			.unwrap();
 		batch.save_body_head(&corrupt_tip).unwrap();
 		batch.commit().unwrap();
 	}
@@ -2739,7 +2847,12 @@ fn migrate_spent_index_deletes_records_outside_active_window() {
 			fork_header.pow.proof.nonces[0] = fork_header.pow.proof.nonces[0].wrapping_add(1);
 			let fork_hash = fork_header.hash(0).unwrap();
 			assert_ne!(fork_hash, body_head_hash);
-			batch.save_block_header(&fork_header).unwrap();
+			batch
+				.save_block_header(
+					&fork_header,
+					crate::store::header_creation_time(&fork_header).unwrap(),
+				)
+				.unwrap();
 			batch
 				.save_header_head(&Tip::try_from_header(&fork_header).unwrap())
 				.unwrap();

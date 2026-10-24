@@ -5652,7 +5652,9 @@ mod tests {
 	fn save_block_headers(store: &ChainStore, headers: &[&BlockHeader]) {
 		let batch = store.batch_write().unwrap();
 		for header in headers {
-			batch.save_block_header(header).unwrap();
+			batch
+				.save_block_header(header, crate::store::header_creation_time(header).unwrap())
+				.unwrap();
 		}
 		batch.commit().unwrap();
 	}
@@ -5672,7 +5674,9 @@ mod tests {
 			.set_spent_commitment_record_index_complete(true)
 			.unwrap();
 		for header in &headers {
-			batch.save_block_header(header).unwrap();
+			batch
+				.save_block_header(header, crate::store::header_creation_time(header).unwrap())
+				.unwrap();
 			if header.height > 0 {
 				let mut block = Block::default(0);
 				block.header = header.clone();
@@ -5821,7 +5825,9 @@ mod tests {
 		{
 			let batch = store.batch_write().unwrap();
 			for header in &headers {
-				batch.save_block_header(header).unwrap();
+				batch
+					.save_block_header(header, crate::store::header_creation_time(header).unwrap())
+					.unwrap();
 			}
 			batch.commit().unwrap();
 		}
@@ -7474,9 +7480,24 @@ mod tests {
 		substituted_block.header = substituted_head.clone();
 		{
 			let batch = store.batch_write().unwrap();
-			batch.save_block_header(&target).unwrap();
-			batch.save_block_header(&selected_head).unwrap();
-			batch.save_block_header(&substituted_head).unwrap();
+			batch
+				.save_block_header(
+					&target,
+					crate::store::header_creation_time(&target).unwrap(),
+				)
+				.unwrap();
+			batch
+				.save_block_header(
+					&selected_head,
+					crate::store::header_creation_time(&selected_head).unwrap(),
+				)
+				.unwrap();
+			batch
+				.save_block_header(
+					&substituted_head,
+					crate::store::header_creation_time(&substituted_head).unwrap(),
+				)
+				.unwrap();
 			batch.save_block(&substituted_block).unwrap();
 			batch.save_spent_index(&substituted_hash, &[]).unwrap();
 			// Bypass the normal key/hash invariant to model a misindexed record.
@@ -7640,7 +7661,9 @@ mod tests {
 			// invariant to model raw database corruption under the proof-derived key.
 			let batch = store.batch_write().unwrap();
 			for header in [&target, &intermediate, &head] {
-				batch.save_block_header(header).unwrap();
+				batch
+					.save_block_header(header, crate::store::header_creation_time(header).unwrap())
+					.unwrap();
 			}
 			batch
 				.db
@@ -7728,8 +7751,18 @@ mod tests {
 			// Deliberately bypass both normal ingestion and the ChainStore write
 			// invariant to model raw database corruption under the proof-derived key.
 			let batch = store.batch_write().unwrap();
-			batch.save_block_header(&fork_point).unwrap();
-			batch.save_block_header(&fork_header).unwrap();
+			batch
+				.save_block_header(
+					&fork_point,
+					crate::store::header_creation_time(&fork_point).unwrap(),
+				)
+				.unwrap();
+			batch
+				.save_block_header(
+					&fork_header,
+					crate::store::header_creation_time(&fork_header).unwrap(),
+				)
+				.unwrap();
 			batch
 				.db
 				.put_ser(
@@ -8250,8 +8283,15 @@ mod tests {
 			Inputs::FeaturesAndCommit(vec![Input::new(OutputFeatures::Plain, spent_commit)]);
 		{
 			let batch = store.batch_write().unwrap();
-			batch.save_block_header(&horizon).unwrap();
-			batch.save_block_header(&head).unwrap();
+			batch
+				.save_block_header(
+					&horizon,
+					crate::store::header_creation_time(&horizon).unwrap(),
+				)
+				.unwrap();
+			batch
+				.save_block_header(&head, crate::store::header_creation_time(&head).unwrap())
+				.unwrap();
 			batch.save_block(&head_block).unwrap();
 			batch
 				.set_spent_commitment_record_index_complete(true)
@@ -8373,7 +8413,9 @@ mod tests {
 
 		{
 			let batch = store.batch_write().unwrap();
-			batch.save_block_header(&prev).unwrap();
+			batch
+				.save_block_header(&prev, crate::store::header_creation_time(&prev).unwrap())
+				.unwrap();
 			batch.save_spent_index(&head_hash, &[]).unwrap();
 			batch.commit().unwrap();
 		}
@@ -9327,7 +9369,12 @@ mod tests {
 			let batch = store.batch_write().unwrap();
 			batch.save_body_head(&genesis_tip).unwrap();
 			batch.save_header_head(&genesis_tip).unwrap();
-			batch.save_block_header(&archive_header).unwrap();
+			batch
+				.save_block_header(
+					&archive_header,
+					crate::store::header_creation_time(&archive_header).unwrap(),
+				)
+				.unwrap();
 			batch.commit().unwrap();
 		}
 
@@ -9497,7 +9544,12 @@ mod coinbase_binding_tests {
 						parent.height = height;
 						parent.pow.proof.nonces[0] = height;
 					}
-					batch.save_block_header(&parent).unwrap();
+					batch
+						.save_block_header(
+							&parent,
+							crate::store::header_creation_time(&parent).unwrap(),
+						)
+						.unwrap();
 					pmmr.push(&parent).unwrap();
 				}
 				headers.size = pmmr.size();
@@ -9682,7 +9734,12 @@ mod coinbase_binding_tests {
 		block.header.kernel_root = roots.kernel_root;
 		block.header.output_mmr_size = roots.output_mmr_size;
 		block.header.kernel_mmr_size = roots.kernel_mmr_size;
-		batch.save_block_header(&block.header).unwrap();
+		batch
+			.save_block_header(
+				&block.header,
+				crate::store::header_creation_time(&block.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&block).unwrap();
 		ext.rewind(&f.parent, &batch, None).unwrap();
 		assert_eq!(ext.bitmap_hash().unwrap(), f.parent_bitmap_hash);
@@ -9832,7 +9889,12 @@ mod coinbase_binding_tests {
 		before.header.kernel_root = roots.kernel_root;
 		before.header.output_mmr_size = roots.output_mmr_size;
 		before.header.kernel_mmr_size = roots.kernel_mmr_size;
-		batch.save_block_header(&before.header).unwrap();
+		batch
+			.save_block_header(
+				&before.header,
+				crate::store::header_creation_time(&before.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&before).unwrap();
 
 		// The first active template initializes its bitmap from this branch's
@@ -9902,7 +9964,12 @@ mod coinbase_binding_tests {
 		active.header.kernel_root = roots.kernel_root;
 		active.header.output_mmr_size = roots.output_mmr_size;
 		active.header.kernel_mmr_size = roots.kernel_mmr_size;
-		batch.save_block_header(&active.header).unwrap();
+		batch
+			.save_block_header(
+				&active.header,
+				crate::store::header_creation_time(&active.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&active).unwrap();
 		assert_eq!(ext.bitmap_hash().unwrap(), bitmap_hash(0..6, 6));
 		assert_eq!(pmmr::n_leaves(ext.output_pmmr.unpruned_size()).unwrap(), 6);
@@ -9949,7 +10016,12 @@ mod coinbase_binding_tests {
 		alternative.header.kernel_root = roots.kernel_root;
 		alternative.header.output_mmr_size = roots.output_mmr_size;
 		alternative.header.kernel_mmr_size = roots.kernel_mmr_size;
-		batch.save_block_header(&alternative.header).unwrap();
+		batch
+			.save_block_header(
+				&alternative.header,
+				crate::store::header_creation_time(&alternative.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&alternative).unwrap();
 		let other = ext
 			.coinbase_binding_for_template(

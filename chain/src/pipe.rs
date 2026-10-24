@@ -600,9 +600,7 @@ pub fn process_blocks_series(
 		// Validate block for deny list, just in case
 		validate_header_hash(context_id, &b.header.hash(context_id)?)?;
 
-		// Quick pow validation. No point proceeding if this is invalid.
-		// We want to do this before we add the block to the orphan pool so we
-		// want to do this now and not later during header validation.
+		// Reject invalid proof of work before any body/state processing.
 		validate_pow_only(
 			context_id,
 			&b.header,
@@ -781,15 +779,16 @@ pub fn replay_attack_check(
 /// Process a batch of sequential block headers.
 /// This is only used during header sync.
 /// Will update header_head locally if this batch of headers increases total work.
-/// Returns the updated sync_head, which may be on a fork.
+/// Returns the maximum stored progress time, or zero for an empty batch.
+/// `base_time` is the caller-selected progress timestamp in Unix microseconds.
 pub fn process_block_headers(
 	context_id: u32,
 	headers: &[BlockHeader],
-	sync_head: Tip,
 	ctx: &mut BlockContext<'_>,
-) -> Result<Option<Tip>, Error> {
+	base_time: u64,
+) -> Result<u64, Error> {
 	if headers.is_empty() {
-		return Ok(None);
+		return Ok(0);
 	}
 	for header in headers {
 		validate_header_context_id(context_id, header)?;
@@ -876,34 +875,31 @@ pub fn process_block_headers(
 
 	validate_pow_batch_parallel(context_id, headers, ctx)?;
 
+	let mut progress_time = 0;
 	for header in headers {
-		add_block_header(header, &ctx.batch)?;
+		let time = ctx
+			.batch
+			.save_block_header(header, base_time)
+			.map_err(|e| Error::StoreErr(e, "pipe save header progress".into()))?;
+		progress_time = progress_time.max(time);
 	}
 
 	// Now apply this entire chunk of headers to the header MMR.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		rewind_and_apply_header_fork(context_id, &last_header, ext, batch)?;
-
-		// If previous sync_head is not on the "current" chain then
-		// these headers are on an alternative fork to sync_head.
-		let alt_fork = !ext.is_on_current_chain(sync_head, batch)?;
+		rewind_and_apply_header_fork(context_id, last_header, ext, batch)?;
 
 		// Update our "header_head" if this batch results in an increase in total work.
 		// Otherwise rollback this header extension.
 		// Note the outer batch may still be committed to db assuming no errors occur in the extension.
-		let last_tip = Tip::try_from_header(last_header)?;
 		if has_more_work(last_header, &head) {
+			let last_tip = Tip::try_from_header(last_header)?;
 			update_header_head(&last_tip, &batch)?;
 		} else {
 			ext.force_rollback();
-		};
-
-		if alt_fork || has_more_work(last_header, &sync_head) {
-			Ok(Some(last_tip))
-		} else {
-			Ok(None)
 		}
-	})
+		Ok(())
+	})?;
+	Ok(progress_time)
 }
 
 fn validate_header_batch_contiguous(context_id: u32, headers: &[BlockHeader]) -> Result<(), Error> {
@@ -959,10 +955,9 @@ pub fn process_block_header(
 		return Ok(());
 	}
 
-	// Check this header is not an orphan, we must know about the previous header
-	// to continue. A missing parent must not bypass standalone PoW validation:
-	// callers may use the proof-derived header hash as an orphan-cache key, and
-	// that hash binds the rest of the header only after its PoW is authenticated.
+	// We need the previous header to continue. Even when it is missing, validate
+	// standalone PoW before callers treat this as an announcement of a peer tip:
+	// the proof-derived hash binds the other header fields only after this check.
 	let prev_header = match prev_header_store(header, &ctx.batch) {
 		Ok(prev_header) => prev_header,
 		Err(e @ Error::Orphan(_)) => {
@@ -1113,8 +1108,8 @@ fn check_known_exact_full_block(
 		)));
 	}
 
-	// This is a trusted-store-versus-candidate comparison, not orphan
-	// deduplication. Normalize v2 input features only for this known-block
+	// Compare against the trusted stored body. Normalize v2 input features only
+	// for this known-block
 	// decision; see blocks_equal_as_v3 for the safety boundary and tradeoff.
 	if !blocks_equal_as_v3(context_id, &existing, block)? {
 		return Err(Error::Unfit(format!(
@@ -1316,8 +1311,10 @@ fn update_body_tail(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Er
 
 /// Officially adds the block header to our header chain.
 fn add_block_header(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Error> {
+	let received_at = u64::try_from(mwc_crates::chrono::Utc::now().timestamp_micros())
+		.map_err(|_| Error::Other("negative local receipt time".into()))?;
 	batch
-		.save_block_header(bh)
+		.save_block_header(bh, received_at)
 		.map_err(|e| Error::StoreErr(e, "pipe save header".to_owned()))?;
 	Ok(())
 }
@@ -1734,7 +1731,12 @@ mod tests {
 		let batch = store.batch_write().unwrap();
 		let mut parent = BlockHeader::default(CONTEXT);
 		parent.height = 3;
-		batch.save_block_header(&parent).unwrap();
+		batch
+			.save_block_header(
+				&parent,
+				crate::store::header_creation_time(&parent).unwrap(),
+			)
+			.unwrap();
 		let mut ctx = BlockContext {
 			opts: Options::SKIP_POW,
 			pow_verifier: |_, _| Ok(()),
@@ -1791,9 +1793,19 @@ mod tests {
 		assert_eq!(second_hash, conflicting_second.hash(0).unwrap());
 
 		let batch = chain_store.batch_write().unwrap();
-		batch.save_block_header(&first.header).unwrap();
+		batch
+			.save_block_header(
+				&first.header,
+				crate::store::header_creation_time(&first.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&first).unwrap();
-		batch.save_block_header(&stored_second.header).unwrap();
+		batch
+			.save_block_header(
+				&stored_second.header,
+				crate::store::header_creation_time(&stored_second.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&stored_second).unwrap();
 
 		// Even though the first element is already the current head, preflight

@@ -1034,9 +1034,10 @@ impl PeerLiveInfo {
 }
 
 impl PeerInfo {
-	/// The current total_difficulty of the peer.
-	pub fn total_difficulty(&self) -> Difficulty {
-		self.live_info.read_recursive().total_difficulty
+	/// The best advertised or received height/work pair, read under one lock.
+	pub fn get_height_and_difficulty(&self) -> (u64, Difficulty) {
+		let info = self.live_info.read_recursive();
+		(info.height, info.total_difficulty)
 	}
 
 	pub fn is_outbound(&self) -> bool {
@@ -1058,12 +1059,7 @@ impl PeerInfo {
 			|| self.is_block_extra()
 	}
 
-	/// The current height of the peer.
-	pub fn height(&self) -> u64 {
-		self.live_info.read_recursive().height
-	}
-
-	/// Time of last_seen for this peer (via ping/pong).
+	/// Time of the latest tip advertisement or received header/block update.
 	pub fn last_seen(&self) -> DateTime<Utc> {
 		self.live_info.read_recursive().last_seen
 	}
@@ -1073,13 +1069,19 @@ impl PeerInfo {
 		self.live_info.read_recursive().first_seen
 	}
 
-	/// Update the total_difficulty, height and last_seen of the peer.
+	/// Retain the best total difficulty and its height, and refresh last_seen.
 	/// Takes a write lock on the live_info.
 	pub fn update(&self, height: u64, total_difficulty: Difficulty) {
 		let now = Utc::now();
 		let mut live_info = self.live_info.write();
-		live_info.height = height;
-		live_info.total_difficulty = total_difficulty;
+		// Keep the best work/height pair from advertisements and received headers/blocks.
+		// Otherwise a peer could advertise slightly lower work or change only its height
+		// after supplying canonical data, avoiding selection as a canonical block supplier.
+		// The handshake supplies work without height; allow its first matching height.
+		if total_difficulty > live_info.total_difficulty || live_info.height == 0 {
+			live_info.height = height;
+			live_info.total_difficulty = total_difficulty;
+		}
 		live_info.last_seen = now
 	}
 }
@@ -1117,14 +1119,15 @@ impl From<PeerInfo> for PeerInfoDisplay {
 	fn from(info: PeerInfo) -> PeerInfoDisplay {
 		let peer_last_seen = info.live_info.read_recursive().last_seen;
 		let last_seen = last_seen_seconds_ago(peer_last_seen);
+		let (height, total_difficulty) = info.get_height_and_difficulty();
 		PeerInfoDisplay {
 			capabilities: info.capabilities,
 			user_agent: info.user_agent.clone(),
 			version: info.version,
 			addr: info.clone().addr,
 			direction: info.direction,
-			total_difficulty: info.total_difficulty(),
-			height: info.height(),
+			total_difficulty,
+			height,
 			last_seen,
 		}
 	}
@@ -1159,16 +1162,8 @@ pub struct ProcessStatus {
 /// forwarding or querying of blocks and transactions from the network among
 /// other things.
 pub trait ChainAdapter: Sync + Send {
-	/// Current total difficulty on our chain
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error>;
-
-	/// Current total height
-	fn total_height(&self) -> Result<u64, mwc_chain::Error>;
-
-	/// Locally validated header height, which may lead the downloaded block bodies.
-	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
-		self.total_height()
-	}
+	/// Body-chain head. Read once when using its height and total difficulty together.
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error>;
 
 	/// Whether an advertised tip is consistent with our body chain or has more work.
 	/// Adapters without chain access cannot establish that a peer is on a weaker fork.
@@ -1213,7 +1208,6 @@ pub trait ChainAdapter: Sync + Send {
 		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: mwc_chain::Options,
 	) -> Result<bool, mwc_chain::Error>;
 
 	fn compact_block_received(
@@ -1355,9 +1349,6 @@ pub trait ChainAdapter: Sync + Send {
 		archive_header_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<(), mwc_chain::Error>;
-
-	/// Heard total_difficulty from a connected peer (via ping/pong).
-	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64);
 }
 
 /// Additional methods required by the protocol that don't need to be
@@ -1405,6 +1396,42 @@ pub struct AttachmentUpdate {
 mod tests {
 	use super::*;
 	use mwc_crates::chrono::Duration;
+
+	// Fill the height omitted by the handshake, then advertise weaker work and conflicting
+	// heights at equal work. Keep the best pair while refreshing liveness; higher work
+	// must replace both values even when the new branch has a lower height.
+	#[test]
+	fn peer_updates_preserve_best_work_and_its_height() {
+		let info = PeerInfo {
+			capabilities: Capabilities::UNKNOWN,
+			user_agent: "best-tip-test".into(),
+			version: ProtocolVersion::local(),
+			addr: PeerAddr::Ip(([127, 0, 0, 1], 3414).into()),
+			direction: Direction::Outbound,
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::from_num(100)))),
+			tx_base_fee: 0,
+		};
+		info.update(10, Difficulty::from_num(100));
+		assert_eq!(
+			info.get_height_and_difficulty(),
+			(10, Difficulty::from_num(100))
+		);
+		for (height, work) in [(11, 99), (11, 100), (9, 100)] {
+			let last_seen = Utc::now() - Duration::seconds(60);
+			info.live_info.write().last_seen = last_seen;
+			info.update(height, Difficulty::from_num(work));
+			assert_eq!(
+				info.get_height_and_difficulty(),
+				(10, Difficulty::from_num(100))
+			);
+			assert!(info.last_seen() > last_seen);
+		}
+		info.update(8, Difficulty::from_num(101));
+		assert_eq!(
+			info.get_height_and_difficulty(),
+			(8, Difficulty::from_num(101))
+		);
+	}
 
 	#[test]
 	fn outbound_connect_failure_ignores_local_and_ambiguous_failures() {

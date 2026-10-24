@@ -174,6 +174,12 @@ pub struct Msg {
 }
 
 impl Msg {
+	/// Inspect queued announcements without opening a network connection.
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn message_type_for_test(&self) -> Type {
+		self.header.msg_type
+	}
+
 	pub fn new<T: Writeable>(
 		msg_type: Type,
 		msg: T,

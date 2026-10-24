@@ -25,7 +25,7 @@ use mwc_chain::txhashset::BitmapChunk;
 use mwc_chain::{self, BlockStatus, ChainAdapter, Options, SyncState, SyncStatus};
 
 use crate::common::hooks::{ChainEvents, NetEvents};
-use crate::common::types::{ChainValidationMode, DandelionEpoch};
+use crate::common::types::DandelionEpoch;
 use crate::mwc::sync::get_locator_heights;
 use crate::mwc::sync::sync_manager::SyncManager;
 use mwc_chain::txhashset::Segmenter;
@@ -348,7 +348,6 @@ where
 	chain: Weak<mwc_chain::Chain>,
 	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
-	chain_validation_mode: ChainValidationMode,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	context_id: u32,
 
@@ -367,10 +366,6 @@ where
 	/// Entries are also pruned by age and capped by count so hostile peers cannot
 	/// grow this in-memory cache without bound.
 	compact_block_reconstruction_cache: RwLock<HashMap<Hash, Instant>>,
-	/// Last accepted peer-difficulty notification per peer. Admission is capped at
-	/// once per half ping interval before any chain or locator reads are performed.
-	peer_difficulty_request_cache: RwLock<HashMap<PeerAddr, Instant>>,
-	cached_tip: RwLock<(Difficulty, u64)>,
 	chain_liveness_deferred_until: RwLock<Option<Instant>>,
 }
 
@@ -379,16 +374,8 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		Ok(self.current_tip_for_peer_liveness()?.0)
-	}
-
-	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		Ok(self.current_tip_for_peer_liveness()?.1)
-	}
-
-	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
-		Ok(self.chain()?.header_head()?.height)
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
+		self.chain()?.head_header()
 	}
 
 	fn is_known_or_better_tip(
@@ -511,7 +498,6 @@ where
 		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: Options,
 	) -> Result<bool, mwc_chain::Error> {
 		let b_hash = b.hash(self.context_id)?;
 		if self.sync_state.is_txhashset_validation() {
@@ -536,8 +522,7 @@ where
 			b.kernels().len(),
 			b.header.prev_hash,
 		);
-		let processed = self.process_block(secp, b, peer_info, opts)?;
-		Ok(processed)
+		self.sync_manager.receive_block(secp, &b, peer_info, false)
 	}
 
 	fn compact_block_received(
@@ -546,11 +531,10 @@ where
 		cb: CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
-		if self.sync_state.is_txhashset_validation() {
-			let cb_hash = cb.hash(self.context_id)?;
+		if !self.sync_manager.state_is_ready() {
 			info!(
-				"compact_block_received: skipping {} at {} from {} while txhashset validation holds chain PMMR locks",
-				cb_hash, cb.header.height, peer_info.addr
+				"compact_block_received: skipping at height {} from {} until the state snapshot is ready",
+				cb.header.height, peer_info.addr
 			);
 			return Ok(true);
 		}
@@ -577,6 +561,9 @@ where
 			Err(e) => {
 				if let mwc_chain::Error::Unfit(msg) = &e {
 					if msg == "duplicate block" {
+						// This shortcut only checked the hash; use the validated stored header.
+						let header = chain.get_block_header(&cb.hash(self.context_id)?)?;
+						peer_info.update(header.height, header.total_difficulty());
 						return Ok(true);
 					}
 				}
@@ -610,7 +597,14 @@ where
 							hook.on_block_received(self.context_id, &block, &peer_info.addr);
 						}
 					}
-					self.process_block(secp, block, peer_info, Options::NONE)
+					let result = self.block_received(secp, block, peer_info);
+					if let Err(error) = &result {
+						error!(
+							"Failed to process hydrated block {} from {}: {}",
+							cb_hash, peer_info.addr, error
+						);
+					}
+					result
 				}
 				Err(e) => {
 					debug!("Invalid hydrated block {}: {:?}", cb_hash, e);
@@ -627,10 +621,13 @@ where
 				if matches!(e, mwc_chain::Error::Orphan(_)) || e.is_not_found() {
 					// Missing previous headers are expected during propagation or sync races.
 					// Treat them as recoverable; local chain failures still propagate below.
+					peer_info.update(cb.header.height, cb.header.total_difficulty());
 					return Ok(true);
 				}
 				return Err(e);
 			}
+
+			peer_info.update(cb.header.height, cb.header.total_difficulty());
 
 			if !reserve_compact_block_reconstruction(
 				&self.compact_block_reconstruction_cache,
@@ -662,12 +659,6 @@ where
 				);
 
 				if !missing_short_ids.is_empty() {
-					self.sync_manager.add_block_request(
-						peer_info,
-						cb.header.height,
-						cb_hash,
-						Options::NONE,
-					);
 					return Ok(true);
 				}
 
@@ -676,18 +667,11 @@ where
 				// The kernel (and its short ID) is identical, so we reconstruct with A.
 				// Block::validate can pass even though the header commits to B's proof
 				// root. This body mixes peer data and local guesses; even a failure
-				// during hydration must request complete data before blaming the peer.
-				let height = cb.header.height;
+				// during hydration leaves BodySync to fetch complete data before blaming the peer.
 				let block = match core::Block::hydrate_from(cb, &txs) {
 					Ok(block) => block,
 					Err(e) => {
 						debug!("Failed to hydrate compact block {}: {:?}", cb_hash, e);
-						self.sync_manager.add_block_request(
-							peer_info,
-							height,
-							cb_hash,
-							Options::NONE,
-						);
 						return Ok(true);
 					}
 				};
@@ -697,7 +681,8 @@ where
 					}
 				}
 
-				self.process_reconstructed_block(secp, block, peer_info)
+				self.sync_manager
+					.receive_block(secp, &block, peer_info, true)
 			})();
 			// Finish on every outcome, including local errors and full-block fallback.
 			finish_compact_block_reconstruction(&self.compact_block_reconstruction_cache, &cb_hash);
@@ -713,99 +698,33 @@ where
 		let bh_hash = bh.hash(self.context_id)?;
 		debug!("header_received, processing {}, {}", bh.height, bh_hash);
 
-		if matches!(self.sync_state.status(), SyncStatus::HeaderSync { .. }) {
-			debug!(
-				"header_received: skipping single header {} at {} from {} during header sync",
-				bh_hash, bh.height, peer_info.addr
-			);
-			return Ok(true);
-		}
-
-		if self.sync_state.is_txhashset_validation() {
+		if !self.sync_manager.state_is_ready() {
 			info!(
-				"header_received: skipping {} at {} from {} while txhashset validation holds chain PMMR locks",
+				"header_received: skipping {} at {} from {} until the state snapshot is ready",
 				bh_hash, bh.height, peer_info.addr
 			);
 			return Ok(true);
 		}
 
-		let chain = self.chain()?;
 		if !self.sync_state.is_syncing() {
 			for hook in &self.hooks {
 				hook.on_header_received(self.context_id, &bh, &peer_info.addr);
 			}
 		}
 
-		// pushing the new block header through the header chain pipeline
-		// we will go ask for the block if this is a new header
-		let res = chain.process_block_header(&bh, Options::NONE);
-
-		if let Err(e) = res {
-			debug!(
-				"Block header {} refused by chain: {:?}",
-				bh.hash(self.context_id)?,
-				e
+		if let Err(e) = self
+			.sync_manager
+			.receive_header(&bh, peer_info, &self.peers()?)
+		{
+			info!(
+				"Header {} from {} could not be processed: {}",
+				bh_hash, peer_info.addr, e
 			);
-			if e.is_bad_data() {
+			if e.is_bad_data() && !e.requires_chain_recovery() {
 				return Ok(false);
 			}
-
-			let recoverable_header_error =
-				matches!(&e, mwc_chain::Error::Orphan(_)) || e.is_not_found();
-			if !recoverable_header_error {
-				return Err(e);
-			}
-
-			if self.sync_state.are_headers_done() {
-				// we got an error when trying to process the block header
-				// but nothing serious enough to need to ban the peer upstream
-				// Probably child block doesn't exist, let's request them
-				let head = chain.head()?;
-				debug!(
-					"Got unknown header, requesting headers from the peer {} at height {}",
-					peer_info.addr, head.height
-				);
-				let heights = get_locator_heights(head.height);
-				let locator = chain.get_locator_hashes(head, &heights)?;
-				self.sync_manager.add_header_request(
-					&peer_info.addr,
-					Some(bh_hash),
-					bh.height,
-					locator,
-				);
-
-				if !self.sync_state.is_syncing() {
-					let tip = chain.head()?;
-					// Requesting of orphans buffer is large enough to finish the job with request
-					if bh.height > tip.height
-						&& bh.height - tip.height
-							< chain.get_pibd_params().get_orphans_num_limit() as u64
-					{
-						self.sync_manager.add_block_request(
-							peer_info,
-							bh.height,
-							bh_hash,
-							Options::NONE,
-						);
-					}
-				}
-			}
-			return Ok(true);
+			return Err(e);
 		}
-
-		// we have successfully processed a block header
-		// If we already have the full block, skip the compact-block request. This
-		// check is intentionally after process_block_header so a same-hash but
-		// different header cannot bypass header validation.
-		if chain.block_exists(&bh_hash)? {
-			return Ok(true);
-		}
-
-		// we have successfully processed a new block header
-		// so we can go request the block itself
-		self.request_compact_block(bh_hash, bh.height, peer_info)?;
-
-		// done receiving the header
 		Ok(true)
 	}
 
@@ -833,37 +752,13 @@ where
 			return Ok(());
 		}
 
-		self.sync_manager
-			.receive_headers(&peer_info.addr, bhs, remaining, self.peers()?)?;
-
-		if let Some(last) = bhs.last() {
-			if !self.sync_state.is_syncing() && last.total_difficulty() > self.total_difficulty()? {
-				// check if any header
-				let chain = self.chain()?;
-				for bh in bhs.iter() {
-					let hash = bh.hash(self.context_id)?;
-					// Header is already processed, checking here if it was accepted
-					match chain.get_block_header(&hash) {
-						Ok(_) => {
-							if !chain.block_exists(&hash)? {
-								self.sync_manager.add_block_request(
-									peer_info,
-									bh.height,
-									hash,
-									Options::NONE,
-								);
-							}
-						}
-						Err(e) if e.is_not_found() => {
-							break;
-						}
-						Err(e) => {
-							return Err(e);
-						}
-					}
-				}
-			}
+		if !self
+			.sync_manager
+			.receive_headers(peer_info, bhs, remaining, self.peers()?)?
+		{
+			return Ok(());
 		}
+
 		Ok(())
 	}
 
@@ -1171,51 +1066,6 @@ where
 		)?;
 		Ok(())
 	}
-
-	/// Heard total_difficulty from a connected peer (via ping/pong).
-	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64) {
-		let res = || -> Result<(), mwc_chain::Error> {
-			if self.is_chain_liveness_deferred_now() || self.sync_state.is_syncing() {
-				return Ok(());
-			}
-
-			// Do not sleep or delay Pong responses. Atomically suppress only the
-			// expensive chain/locator work until half the expected ping interval passes.
-			{
-				let now = Instant::now();
-				let cooldown = Duration::from_secs(global::PEER_PING_INTERVAL_SECONDS) / 2;
-				let mut peers = self.peer_difficulty_request_cache.write();
-				peers.retain(|_, reserved_at| {
-					now.saturating_duration_since(*reserved_at) < cooldown
-				});
-				if peers.contains_key(peer) {
-					return Ok(());
-				}
-				peers.insert(peer.clone(), now);
-			}
-
-			let chain = self.chain()?;
-			let tip = chain.head()?;
-			if difficulty > tip.total_difficulty {
-				let tip_height = tip.height;
-				let heights = get_locator_heights(tip_height);
-				let locator = chain.get_locator_hashes(tip, &heights)?;
-				if !self.sync_state.is_syncing() {
-					self.sync_manager
-						.add_header_request(peer, None, tip_height + 1, locator);
-				}
-			}
-
-			Ok(())
-		}();
-
-		if let Err(e) = res {
-			error!(
-				"peer_difficulty: failed to handle advertised difficulty from peer {} (height {}, difficulty {}): {}",
-				peer, height, difficulty, e
-			);
-		}
-	}
 }
 
 impl<B, P> NetToChainAdapter<B, P>
@@ -1230,38 +1080,21 @@ where
 		chain: Arc<mwc_chain::Chain>,
 		sync_manager: Arc<SyncManager>,
 		tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
-		chain_validation_mode: ChainValidationMode,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	) -> Result<Self, mwc_chain::Error> {
-		let tip = chain.head()?;
-		let cached_tip = (tip.total_difficulty, tip.height);
 		Ok(NetToChainAdapter {
 			sync_state,
 			sync_manager,
 			chain: Arc::downgrade(&chain),
 			tx_pool,
 			peers: OneTime::new(),
-			chain_validation_mode,
 			hooks,
 			context_id,
 			processed_transactions: EventCache::new(),
 			legacy_v2_block_conversion_throttle: LegacyV2BlockConversionThrottle::new(),
 			compact_block_reconstruction_cache: RwLock::new(HashMap::new()),
-			peer_difficulty_request_cache: RwLock::new(HashMap::new()),
-			cached_tip: RwLock::new(cached_tip),
 			chain_liveness_deferred_until: RwLock::new(None),
 		})
-	}
-
-	fn current_tip_for_peer_liveness(&self) -> Result<(Difficulty, u64), mwc_chain::Error> {
-		if self.is_chain_liveness_deferred_now() {
-			return Ok(*self.cached_tip.read_recursive());
-		}
-
-		let tip = self.chain()?.head()?;
-		let cached_tip = (tip.total_difficulty, tip.height);
-		*self.cached_tip.write() = cached_tip;
-		Ok(cached_tip)
 	}
 
 	fn is_chain_liveness_deferred_now(&self) -> bool {
@@ -1343,242 +1176,8 @@ where
 		Ok(segmenter)
 	}
 
-	// Validate a local reconstruction against the full chain state, including MMR
-	// roots and coinbase binding. The ordinary process_block path attributes the
-	// entire body to peer_info and can ban it inside Chain::report_block_rejection,
-	// before returning here. For the proof-A/proof-B workflow above, use the chain
-	// reconstruction entry point so a failed local guess can safely fetch the full
-	// block. Missing-parent reconstructions also bypass both orphan caches: the
-	// full response will provide a body that can be attributed during later replay.
-	fn process_reconstructed_block(
-		&self,
-		secp: &mut Secp256k1,
-		b: core::Block,
-		peer_info: &PeerInfo,
-	) -> Result<bool, mwc_chain::Error> {
-		let chain = self.chain()?;
-		let peers = self.peers()?;
-		let horizon = chain
-			.head()?
-			.height
-			.saturating_sub(u64::from(global::cut_through_horizon(self.context_id)));
-		if b.header.height < horizon {
-			return Ok(true);
-		}
-		let hash = b.hash(self.context_id)?;
-		match chain.process_reconstructed_block(secp, b.clone(), Options::NONE) {
-			Ok(_) => self.validate_chain(secp, &hash)?,
-			Err(e) if e.is_known_block() => {}
-			Err(e)
-				if !e.requires_chain_recovery()
-					&& (e.is_bad_data()
-						|| e.is_not_found()
-						|| matches!(e, mwc_chain::Error::Orphan(_))) =>
-			{
-				debug!(
-					"Reconstructed block {} needs a full block from {}: {}",
-					hash, peer_info.addr, e
-				);
-				self.sync_manager.add_block_request(
-					peer_info,
-					b.header.height,
-					hash,
-					Options::NONE,
-				);
-				return Ok(true);
-			}
-			// Storage and recovery failures are local errors, not failed guesses.
-			Err(e) => return Err(e),
-		}
-		self.sync_manager.recieve_block_reporting(
-			Some(Ok(())),
-			&peer_info.addr,
-			b,
-			Options::SYNC,
-			&peers,
-		)?;
-		Ok(true)
-	}
-
-	// pushing the new block through the chain pipeline
-	// remembering to reset the head if we have a bad block
-	fn process_block(
-		&self,
-		secp: &mut Secp256k1,
-		b: core::Block,
-		peer_info: &PeerInfo,
-		opts: Options,
-	) -> Result<bool, mwc_chain::Error> {
-		// We cannot process blocks earlier than the horizon so check for this here.
-		let chain = self.chain()?;
-		let peers = self.peers()?;
-
-		let head = {
-			let head = chain.head()?;
-			let horizon = head
-				.height
-				.saturating_sub(global::cut_through_horizon(self.context_id) as u64);
-			if b.header.height < horizon {
-				debug!("Got block is below horizon from peer {}", peer_info.addr);
-				return Ok(true);
-			}
-			head
-		};
-
-		let bhash = b.hash(self.context_id)?;
-		match chain.process_block(
-			secp,
-			b.clone(),
-			opts,
-			std::iter::once(peer_info.addr.to_string()).collect(),
-		) {
-			Ok(_) => {
-				self.validate_chain(secp, &bhash)?;
-				//self.check_compact();  Currently Sync process does that. No needs, also we don't want collision to happens
-				self.sync_manager.recieve_block_reporting(
-					Some(Ok(())),
-					&peer_info.addr,
-					b,
-					Options::SYNC,
-					&peers,
-				)?;
-				Ok(true)
-			}
-			Err(e) => {
-				if e.is_known_block() {
-					debug!(
-						"process_block: block {} from peer {} is already known: {}",
-						bhash, peer_info.addr, e
-					);
-					// This may still be a response to an outstanding body-sync request.
-					// Clear the request tracker without running orphan bookkeeping for an
-					// already-known block.
-					self.sync_manager.recieve_block_reporting(
-						Some(Ok(())),
-						&peer_info.addr,
-						b,
-						opts,
-						&peers,
-					)?;
-					return Ok(true);
-				}
-
-				if e.is_bad_data() && !e.requires_chain_recovery() {
-					warn!(
-						"process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}",
-						bhash, peer_info.addr, e
-					);
-					self.validate_chain(secp, &bhash)?;
-					// ChainAdapter already reported this terminal outcome, including
-					// the same failure when it occurs later while draining orphans.
-					return Ok(false);
-				}
-
-				if !(matches!(&e, mwc_chain::Error::Orphan(_)) || e.is_not_found()) {
-					info!(
-						"process_block: block {} from peer {} failed chain processing: {}",
-						bhash, peer_info.addr, e
-					);
-					return Err(e);
-				}
-				let prev_block_hash = b.header.prev_hash.clone();
-				let block_height = b.header.height;
-				let previous_known = match chain.get_previous_header(&b.header) {
-					Ok(_) => true,
-					Err(e) if e.is_not_found() => false,
-					Err(e) => return Err(e),
-				};
-				let need_request_prev_block = self.sync_manager.recieve_block_reporting(
-					None,
-					&peer_info.addr,
-					b,
-					opts,
-					&peers,
-				)?;
-				if !previous_known {
-					// requesting headers from that peer, intentionally without  self.sync_manager.add_header_request
-					if let Some(peer) = peers.get_connected_peer(&peer_info.addr) {
-						debug!(
-							"Got block with unknow headers, requesting headers from the peer {} at height {}",
-							peer_info.addr, head.height
-						);
-						let heights = get_locator_heights(head.height);
-						let locator = chain.get_locator_hashes(head, &heights)?;
-						if let Err(e) = peer.send_header_request(locator) {
-							warn!(
-								"process_block: failed to request recovery headers from peer {}: {}",
-								peer_info.addr, e
-							);
-						}
-					}
-				}
-				if need_request_prev_block && block_height > 0 {
-					// requesting headers from that peer
-					// requesting prev block from that peer
-					debug!(
-						"Got block with unknown child, requesting prev block {} from the peer {}",
-						prev_block_hash, peer_info.addr
-					);
-					self.sync_manager.add_block_request(
-						peer_info,
-						block_height - 1,
-						prev_block_hash,
-						Options::NONE,
-					);
-				}
-				Ok(true)
-			}
-		}
-	}
-
-	fn validate_chain(&self, secp: &Secp256k1, bhash: &Hash) -> Result<(), mwc_chain::Error> {
-		// If we are running in "validate the full chain every block" then
-		// panic here if validation fails for any reason.
-		// We are out of consensus at this point and want to track the problem
-		// down as soon as possible.
-		// Skip this if we are currently syncing (too slow).
-
-		let chain = self.chain()?;
-
-		if self.chain_validation_mode == ChainValidationMode::EveryBlock
-			&& chain.head()?.height > 0
-			&& !self.sync_state.is_syncing()
-		{
-			let now = Instant::now();
-
-			debug!(
-				"process_block: ***** validating full chain state at {}",
-				bhash,
-			);
-
-			chain
-				.validate(secp, false)
-				.expect("chain validation failed, hard stop");
-
-			debug!(
-				"process_block: ***** done validating full chain state, took {}s",
-				now.elapsed().as_secs(),
-			);
-		}
-		Ok(())
-	}
-
 	fn request_transaction(&self, h: Hash, peer_info: &PeerInfo) -> bool {
 		self.send_tx_request_to_peer(h, peer_info, |peer, h| peer.send_tx_request(h))
-	}
-
-	// After we have received a block header in "header first" propagation
-	// we need to go request the block (compact representation) from the
-	// same peer that gave us the header (unless we have already accepted the block)
-	fn request_compact_block(
-		&self,
-		bh_hash: Hash,
-		height: u64,
-		peer_info: &PeerInfo,
-	) -> Result<(), mwc_chain::Error> {
-		self.send_block_request_to_peer(bh_hash, height, peer_info, |peer, h| {
-			peer.send_compact_block_request(h)
-		})
 	}
 
 	fn send_tx_request_to_peer<F>(&self, h: Hash, peer_info: &PeerInfo, f: F) -> bool
@@ -1591,7 +1190,7 @@ where
 		let peers = match self.peers() {
 			Ok(peers) => peers,
 			Err(e) => {
-				error!("send_tx_request_to_peer: failed to access peers: {:?}", e);
+				warn!("send_tx_request_to_peer: failed to access peers: {:?}", e);
 				return false;
 			}
 		};
@@ -1606,46 +1205,10 @@ where
 			}
 			Some(peer) => {
 				if let Err(e) = f(&peer, h) {
-					error!("send_tx_request_to_peer: failed: {:?}", e);
+					info!("send_tx_request_to_peer: failed: {:?}", e);
 					return false;
 				}
 				true
-			}
-		}
-	}
-
-	fn send_block_request_to_peer<F>(
-		&self,
-		h: Hash,
-		height: u64,
-		peer_info: &PeerInfo,
-		f: F,
-	) -> Result<(), mwc_chain::Error>
-	where
-		F: Fn(&mwc_p2p::Peer, Hash) -> Result<(), mwc_p2p::Error>,
-	{
-		let peers = self.peers()?;
-		let chain = self.chain()?;
-
-		if chain.block_exists(&h)? {
-			debug!("send_block_request_to_peer: block {} already known", h);
-			return Ok(());
-		}
-
-		let supplier = peers
-			.get_connected_peer(&peer_info.addr)
-			.filter(|peer| peer.info.can_serve_block(self.context_id, height));
-		match supplier {
-			// Wait for another header announcement or ordinary sync discovery.
-			None => Ok(()),
-			Some(peer) => {
-				f(&peer, h).map_err(|e| {
-					mwc_chain::Error::Other(format!(
-						"send_block_request_to_peer: failed to send request to peer {:?}: {}",
-						peer_info.addr, e
-					))
-				})?;
-				Ok(())
 			}
 		}
 	}
@@ -1676,7 +1239,7 @@ where
 		secp: &mut Secp256k1,
 		b: &core::Block,
 		status: BlockStatus,
-		opts: Options,
+		header_head: mwc_chain::Tip,
 	) {
 		// Trigger all registered "on_block_accepted" hooks (logging and webhooks).
 		let context_id = self.tx_pool.read_recursive().get_context_id();
@@ -1684,35 +1247,25 @@ where
 			hook.on_block_accepted(context_id, b, status);
 		}
 
-		// Suppress broadcast of new blocks received during sync.
-		if !opts.contains(Options::SYNC) {
-			// If we mined the block then we want to broadcast the compact block.
-			// If we received the block from another node then broadcast "header first"
-			// to minimize network traffic.
-			match self.peers() {
-				Ok(peers) => {
-					if opts.contains(Options::MINE) {
-						// propagate compact block out if we mined the block
-						match CompactBlock::from(b.clone()) {
-							Ok(cb) => {
-								if let Err(e) = peers.broadcast_compact_block(&cb) {
-									error!("Failed to broadcast compact block: {}", e);
-								}
-							}
-							Err(e) => {
-								error!("Failed convert Block into CompactBlock, {}", e);
-							}
-						}
-					} else {
-						// "header first" propagation if we are not the originator of this block
-						if let Err(e) = peers.broadcast_header(&b.header) {
-							error!("Failed to broadcast block header: {}", e);
-						}
-					}
+		// Next/Reorg means this block became the body head. Compare with the
+		// header tip from that same commit, so neither older bodies nor losing
+		// forks are relayed. Mined and received blocks use the same message type
+		// to avoid identifying the mining node by its announcement format.
+		if status.is_next() || status.is_reorg() {
+			let broadcast = (|| -> Result<(), mwc_chain::Error> {
+				if b.hash(context_id)? != header_head.last_block_h {
+					return Ok(());
 				}
-				Err(e) => {
-					error!("Failed to obtain the peers list, {}", e);
-				}
+				let compact = CompactBlock::from(b.clone())?;
+				let peers = self
+					.peers()
+					.map_err(|error| mwc_chain::Error::Other(error.to_string()))?;
+				peers
+					.broadcast_compact_block(&compact)
+					.map_err(|error| mwc_chain::Error::Other(error.to_string()))
+			})();
+			if let Err(error) = broadcast {
+				info!("Failed to broadcast accepted compact block: {}", error);
 			}
 		}
 
@@ -1759,7 +1312,7 @@ where
 		let peers = match self.peers() {
 			Ok(peers) => peers,
 			Err(e) => {
-				error!(
+				warn!(
 					"Unable to report rejected block at {}: {}",
 					block.header.height, e
 				);
@@ -1790,16 +1343,10 @@ where
 					warn!("Failed to ban peer {} for invalid block: {}", peer_addr, e);
 				}
 			}
-			// This also releases the request after local errors. Sync bookkeeping
-			// independently excludes those errors from peer penalties and PIBD counts.
+			// Report PIBD failures without reentering BodySync's task lock.
+			// Local errors do not count against the snapshot's endorsing peers.
 			if let Some(manager) = &sync_manager {
-				if let Err(e) = manager.recieve_block_reporting(
-					Some(Err(err)),
-					&peer_addr,
-					block.clone(),
-					Options::SYNC,
-					&peers,
-				) {
+				if let Err(e) = manager.report_block_result(block, &peer_addr, Some(Err(err))) {
 					warn!(
 						"Rejected block sync reporting failed for {}: {}",
 						peer_addr, e
@@ -1896,7 +1443,7 @@ impl DandelionAdapter for PoolToNetAdapter {
 			Err(e) => {
 				// Keep the current epoch state and relay peer. Since the epoch remains
 				// expired, the Dandelion monitor will retry once peers are available.
-				error!(
+				warn!(
 					"PoolToNetAdapter next_epoch failed because peers are not available, will retry: {}",
 					e
 				)
@@ -1938,12 +1485,12 @@ impl mwc_pool::PoolAdapter for PoolToNetAdapter {
 								Ok(())
 							}
 							Err(e) => {
-								error!("Stemming tx failed. Fluffing. {:?}", e);
+								info!("Stemming tx failed. Fluffing. {:?}", e);
 								Err(mwc_pool::PoolError::DandelionError)
 							}
 						}
 					} else {
-						error!("No relay peer. Fluffing.");
+						info!("No relay peer. Fluffing.");
 						Err(mwc_pool::PoolError::DandelionError)
 					}
 				}
@@ -2419,7 +1966,6 @@ mod test {
 			chain.clone(),
 			sync_manager,
 			pool,
-			ChainValidationMode::Disabled,
 			vec![],
 		)
 		.unwrap();

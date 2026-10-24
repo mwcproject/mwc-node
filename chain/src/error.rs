@@ -30,7 +30,7 @@ pub enum Error {
 	/// The block doesn't fit anywhere in our chain
 	#[error("Block is unfit: {0}")]
 	Unfit(String),
-	/// Special case of orphan blocks
+	/// Missing predecessor header or body; callers may retry after downloading it.
 	#[error("Orphan, {0}")]
 	Orphan(String),
 	/// Difficulty is too low either compared to ours or the block PoW hash
@@ -573,7 +573,7 @@ mod tests {
 		assert!(Error::Unfit("already known in store".into()).is_known_block());
 		assert!(Error::Unfit("duplicate block".into()).is_known_block());
 
-		assert!(!Error::Unfit("conflicting orphan body".into()).is_known_block());
+		assert!(!Error::Unfit("conflicting full block inputs".into()).is_known_block());
 		assert!(!Error::InvalidPow.is_known_block());
 	}
 

@@ -555,7 +555,7 @@ impl Server {
 			}
 		};
 
-		let total_diff = self.peers.total_difficulty()?;
+		let total_diff = self.peers.get_head()?.total_difficulty();
 		let hs = self
 			.handshake
 			.read_recursive()
@@ -701,7 +701,7 @@ impl Server {
 			)));
 		}
 
-		let total_diff = self.peers.total_difficulty()?;
+		let total_diff = self.peers.get_head()?.total_difficulty();
 
 		let hs = self
 			.handshake
@@ -846,11 +846,32 @@ pub(crate) fn set_dummy_adapter_liveness_deferred_for_test(deferred: bool) -> bo
 }
 
 impl ChainAdapter for DummyAdapter {
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		Ok(Difficulty::min())
-	}
-	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		Ok(0)
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
+		// DummyAdapter has no chain context. Avoid BlockHeader::default(), which
+		// requires global chain settings even when only height and work are read.
+		Ok(core::BlockHeader {
+			version: core::HeaderVersion(1),
+			height: 0,
+			timestamp: mwc_crates::chrono::DateTime::UNIX_EPOCH,
+			prev_hash: Hash::default(),
+			prev_root: Hash::default(),
+			output_root: Hash::default(),
+			range_proof_root: Hash::default(),
+			kernel_root: Hash::default(),
+			total_kernel_offset: Default::default(),
+			output_mmr_size: 0,
+			kernel_mmr_size: 0,
+			pow: mwc_core::pow::ProofOfWork {
+				total_difficulty: Difficulty::min(),
+				secondary_scaling: 1,
+				nonce: 0,
+				proof: mwc_core::pow::Proof {
+					edge_bits: mwc_core::consensus::BASE_EDGE_BITS,
+					nonces: vec![0; mwc_core::consensus::PROOFSIZE],
+					context_id: 0,
+				},
+			},
+		})
 	}
 	#[cfg(test)]
 	fn is_chain_liveness_deferred(&self) -> bool {
@@ -895,7 +916,6 @@ impl ChainAdapter for DummyAdapter {
 		_secp: &mut Secp256k1,
 		_: core::Block,
 		_: &PeerInfo,
-		_: mwc_chain::Options,
 	) -> Result<bool, mwc_chain::Error> {
 		Ok(true)
 	}
@@ -1078,8 +1098,6 @@ impl ChainAdapter for DummyAdapter {
 	) -> Result<(), mwc_chain::Error> {
 		Ok(())
 	}
-
-	fn peer_difficulty(&self, _: &PeerAddr, _: Difficulty, _: u64) {}
 }
 
 impl NetAdapter for DummyAdapter {

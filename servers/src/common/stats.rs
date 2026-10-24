@@ -352,13 +352,14 @@ impl PeerStats {
 			Direction::InboundTor => "Inbound  (TOR)",
 			Direction::OutboundTor => "Outbound (TOR)",
 		};
+		let (height, total_difficulty) = peer.info.get_height_and_difficulty();
 		PeerStats {
 			state: state.to_string(),
 			addr: addr,
 			version: peer.info.version,
 			user_agent: peer.info.user_agent.clone(),
-			total_difficulty: peer.info.total_difficulty().to_num(),
-			height: peer.info.height(),
+			total_difficulty: total_difficulty.to_num(),
+			height,
 			direction: direction.to_string(),
 			last_seen: peer.info.last_seen(),
 			sent_bytes_per_sec: peer.tracker().sent_bytes.read_recursive().bytes_per_min() / 60,

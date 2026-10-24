@@ -38,7 +38,7 @@ const BITMAPS_BUFFER_LEN: [usize; 4] = [10, 20, 30, 40];
 const SEGMENTS_BUFFER_LEN: [usize; 4] = [30, 40, 50, 60];
 
 // One block can be up to 1.5Mb in size. We still need some to run the node
-const ORPHANS_BUFFER_LEN: [usize; 4] = [15, 50, 125, 250];
+const BLOCKS_BUFFER_LEN: [usize; 4] = [15, 50, 125, 250];
 
 const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [20, 30, 40, 40];
 
@@ -138,10 +138,10 @@ impl PibdParams {
 		.expect("PIBD memory parameter values must not be empty")
 	}
 
-	/// Man number of orphans to keep
-	pub fn get_orphans_num_limit(&self) -> usize {
+	/// Resource-based capacity for buffered and requested blocks.
+	pub fn get_blocks_buffer_size(&self) -> usize {
 		Self::calc_mem_adequate_val2(
-			&ORPHANS_BUFFER_LEN,
+			&BLOCKS_BUFFER_LEN,
 			self.get_available_memory_mb(),
 			self.cpu_num,
 		)
@@ -153,9 +153,9 @@ impl PibdParams {
 		self.cpu_num.saturating_mul(2).min(8)
 	}
 
-	/// Maxumum number of blocks that can await into the DB as orphans
+	/// Maximum body-sync tasks, including unanswered requests and buffered blocks.
 	pub fn get_blocks_request_limit(&self, average_latency_ms: Option<u32>) -> usize {
-		let req_limit = self.get_orphans_num_limit() / 2;
+		let req_limit = self.get_blocks_buffer_size() / 2;
 		cmp::max(
 			1,
 			(req_limit as f64 * self.get_network_speed_multiplier(average_latency_ms)).round()

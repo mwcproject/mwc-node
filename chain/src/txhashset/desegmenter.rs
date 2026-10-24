@@ -39,12 +39,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::pibd_params::PibdParams;
-use crate::txhashset::request_lookup::RequestLookup;
-use crate::txhashset::segments_cache::SegmentsCache;
 use mwc_crates::croaring::Bitmap;
-use mwc_crates::log::Level;
-use mwc_crates::log::{debug, info, log_enabled, trace, warn};
+use mwc_crates::log::{debug, info, trace, warn};
 use mwc_crates::secp::{constants, ContextFlag, Secp256k1};
 use std::convert::TryFrom;
 
@@ -70,13 +66,51 @@ pub struct Desegmenter {
 	/// In-memory 'raw' bitmap corresponding to contents of bitmap accumulator
 	outputs_bitmap: RwLock<Option<Bitmap>>,
 
-	bitmap_segment_cache: RwLock<SegmentsCache<BitmapChunk>>, // Lock 1
-	output_segment_cache: RwLock<Option<SegmentsCache<OutputIdentifier>>>,
-	rangeproof_segment_cache: RwLock<Option<SegmentsCache<RangeProof>>>,
-	kernel_segment_cache: RwLock<Option<SegmentsCache<TxKernel>>>,
+	// Only layouts and committed cursors live here. StateSync owns response buffers.
+	segments: RwLock<Vec<SegmentProgress>>,
 
-	pibd_params: Arc<PibdParams>,
 	progress_logged: AtomicU64,
+}
+
+/// A snapshot response before its Merkle proof has been authenticated.
+#[derive(Clone)]
+pub enum StateSegment {
+	/// Unspent output bitmap chunks.
+	Bitmap(Segment<BitmapChunk>),
+	/// Output identifiers and their PMMR proof.
+	Output(Segment<OutputIdentifier>),
+	/// Output rangeproofs and their PMMR proof.
+	RangeProof(Segment<RangeProof>),
+	/// Transaction kernels and their PMMR proof.
+	Kernel(Segment<TxKernel>),
+}
+
+impl StateSegment {
+	/// Full segment type and identifier used to match the requested task.
+	pub fn identifier(&self) -> SegmentTypeIdentifier {
+		let (kind, id) = match self {
+			Self::Bitmap(segment) => (SegmentType::Bitmap, segment.id()),
+			Self::Output(segment) => (SegmentType::Output, segment.id()),
+			Self::RangeProof(segment) => (SegmentType::RangeProof, segment.id()),
+			Self::Kernel(segment) => (SegmentType::Kernel, segment.id()),
+		};
+		SegmentTypeIdentifier::new(kind, *id)
+	}
+}
+
+/// Sanitized, authenticated data. Private fields prevent callers from bypassing
+/// proof validation or applying data authenticated for a different snapshot.
+pub struct ValidatedStateSegment {
+	segment: StateSegment,
+	archive_hash: Hash,
+	bitmap_root: Hash,
+	generation: u64,
+}
+
+struct SegmentProgress {
+	kind: SegmentType,
+	required: Vec<SegmentIdentifier>,
+	applied: usize,
 }
 
 fn kernel_validation_thread_range(
@@ -310,7 +344,6 @@ impl Desegmenter {
 		bitmap_root_hash: Hash,
 		genesis: BlockHeader,
 		store: Arc<store::ChainStore>,
-		pibd_params: Arc<PibdParams>,
 		requires_init_recovery: Arc<AtomicBool>,
 		state_generation: Arc<AtomicU64>,
 		created_at_state_generation: u64,
@@ -341,15 +374,12 @@ impl Desegmenter {
 			created_at_state_generation,
 			outputs_bitmap_accumulator: RwLock::new(BitmapAccumulator::new(context_id)),
 			outputs_bitmap_mmr_size: bitmap_mmr_size,
-			bitmap_segment_cache: RwLock::new(SegmentsCache::new(
-				SegmentType::Bitmap,
-				bitmap_segments,
-			)),
-			output_segment_cache: RwLock::new(None),
-			rangeproof_segment_cache: RwLock::new(None),
-			kernel_segment_cache: RwLock::new(None),
+			segments: RwLock::new(vec![SegmentProgress {
+				kind: SegmentType::Bitmap,
+				required: bitmap_segments,
+				applied: 0,
+			}]),
 			outputs_bitmap: RwLock::new(None),
-			pibd_params,
 			progress_logged: AtomicU64::new(0),
 		})
 	}
@@ -359,116 +389,34 @@ impl Desegmenter {
 		&self.bitmap_root_hash
 	}
 
-	/// Reset all state
-	pub fn reset(&self) {
-		// Keep this lock order in sync with add_bitmap_segment().
-		let mut bitmap_segment_cache = self.bitmap_segment_cache.write();
-		let mut bitmap_accumulator = self.outputs_bitmap_accumulator.write();
-
-		bitmap_segment_cache.reset();
-		bitmap_accumulator.reset();
-		*self.output_segment_cache.write() = None;
-		*self.rangeproof_segment_cache.write() = None;
-		*self.kernel_segment_cache.write() = None;
-		*self.outputs_bitmap.write() = None;
-	}
-
-	/// Return reference to the header used for validation
+	/// Return reference to the header used for validation.
 	pub fn header(&self) -> &BlockHeader {
 		&self.archive_header
 	}
 
-	/// Whether we have all the segments we need
+	/// Completion requires all four layouts to have been applied.
 	pub fn is_complete(&self) -> bool {
-		if !self.is_current() {
-			return false;
-		}
-		if !self
-			.output_segment_cache
-			.read_recursive()
-			.as_ref()
-			.map(|c| c.is_complete())
-			.unwrap_or(false)
-		{
-			return false;
-		}
-		if !self
-			.rangeproof_segment_cache
-			.read_recursive()
-			.as_ref()
-			.map(|c| c.is_complete())
-			.unwrap_or(false)
-		{
-			return false;
-		}
-		if !self
-			.kernel_segment_cache
-			.read_recursive()
-			.as_ref()
-			.map(|c| c.is_complete())
-			.unwrap_or(false)
-		{
-			return false;
-		}
-		true
+		let segments = self.segments.read_recursive();
+		self.is_current()
+			&& segments.len() == 4
+			&& segments
+				.iter()
+				.all(|plan| plan.applied == plan.required.len())
 	}
 
-	/// Check progress, update status if needed, returns true if all required
-	/// segments are in place
-	pub fn get_pibd_progress(&self) -> SyncStatus {
-		let (req1, rec1) = {
-			let cache = self.bitmap_segment_cache.read_recursive();
-			(
-				cache.get_required_segments_num(),
-				cache.get_accepted_segments(),
-			)
-		};
-
-		let (req2, rec2) = self
-			.output_segment_cache
-			.read_recursive()
-			.as_ref()
-			.map(|cache| {
-				(
-					cache.get_required_segments_num(),
-					cache.get_accepted_segments(),
-				)
-			})
-			.unwrap_or((100, 0));
-		let (req3, rec3) = self
-			.rangeproof_segment_cache
-			.read_recursive()
-			.as_ref()
-			.map(|cache| {
-				(
-					cache.get_required_segments_num(),
-					cache.get_accepted_segments(),
-				)
-			})
-			.unwrap_or((400, 0));
-		let (req4, rec4) = self
-			.kernel_segment_cache
-			.read_recursive()
-			.as_ref()
-			.map(|cache| {
-				(
-					cache.get_required_segments_num(),
-					cache.get_accepted_segments(),
-				)
-			})
-			.unwrap_or((1000, 0));
-
-		// Safe: each required count is the length of a real Vec<SegmentIdentifier>
-		// or a small fallback constant, and there are only four caches. Each received
-		// count is a cursor bounded by its corresponding required count.
-		let required = req1 + req2 + req3 + req4;
-		let received = rec1 + rec2 + rec3 + rec4;
-
-		// Should be updated once in every 3 seconds.
+	/// Include authenticated responses buffered by StateSync in download progress.
+	pub fn get_pibd_progress(&self, buffered: usize) -> SyncStatus {
+		let segments = self.segments.read_recursive();
+		let mut required: usize = segments.iter().map(|plan| plan.required.len()).sum();
+		if segments.len() == 1 {
+			// Retain the existing estimate until the bitmap determines the layouts.
+			required = required.saturating_add(1400);
+		}
+		let applied: usize = segments.iter().map(|plan| plan.applied).sum();
+		let received = applied.saturating_add(buffered).min(required);
 		if self.progress_logged.fetch_add(1, Ordering::Relaxed) % 15 == 0 {
 			info!("PIBD sync progress: {} from {}", received, required);
 		}
-
 		SyncStatus::TxHashsetPibd {
 			recieved_segments: received,
 			total_segments: required,
@@ -826,145 +774,33 @@ impl Desegmenter {
 		)
 	}
 
-	/// Return list of the next preferred segments the desegmenter needs based on
-	/// the current real state of the underlying elements. Second array - list of delayed requests. We better to retry them
-	/// 3-rd array - the list of waiting requests
-	pub fn next_desired_segments(
+	/// Read the next layout entries after the committed prefix and existing tasks.
+	/// Snapshot scheduling, retries and response buffering belong to StateSync.
+	pub fn next_segments(
 		&self,
-		need_requests: usize,
-		requested: &dyn RequestLookup<(SegmentType, u64)>,
-	) -> Result<
-		(
-			Vec<SegmentTypeIdentifier>,
-			Vec<SegmentTypeIdentifier>,
-			Vec<SegmentTypeIdentifier>,
-		),
-		Error,
-	> {
+		kind: &SegmentType,
+		queued: usize,
+		limit: usize,
+	) -> Result<Vec<SegmentTypeIdentifier>, Error> {
 		self.ensure_robust()?;
-		if need_requests == 0 {
-			return Ok((Vec::new(), Vec::new(), Vec::new()));
-		}
-
-		// First check for required bitmap elements
-		if self.outputs_bitmap.read_recursive().is_none() {
-			let mut bitmap_result: Vec<SegmentTypeIdentifier> = Vec::new();
-			// For bitmaps there is no duplicated requests, there is not much data.
-			for id in self
-				.bitmap_segment_cache
-				.read_recursive()
-				.next_desired_segments(
-					need_requests,
-					requested,
-					self.pibd_params.get_bitmaps_buffer_len(),
-				)?
-				.0
-			{
-				bitmap_result.push(SegmentTypeIdentifier::new(SegmentType::Bitmap, id))
-			}
-			return Ok((bitmap_result, Vec::new(), Vec::new()));
-		} else {
-			// We have all required bitmap segments and have recreated our local
-			// bitmap, now continue with other segments, evenly spreading requests
-			// among MMRs
-			debug_assert!(self.outputs_bitmap.read_recursive().is_some());
-			debug_assert!(self.rangeproof_segment_cache.read_recursive().is_some());
-			debug_assert!(self.kernel_segment_cache.read_recursive().is_some());
-			debug_assert!(self.output_segment_cache.read_recursive().is_some());
-
-			debug_assert!(need_requests > 0);
-			let mut need_requests = need_requests;
-
-			// Note, first requesting segments largest data items. Since item is large, the number of items per segment is low,
-			// so the number of segments is high.
-			let mut res_req: Vec<SegmentTypeIdentifier> = Vec::new();
-			let mut res_dup_req: Vec<SegmentTypeIdentifier> = Vec::new();
-			let mut waiting_req: Vec<SegmentTypeIdentifier> = Vec::new();
-
-			self.query_requests(
-				&mut need_requests,
-				&self.kernel_segment_cache,
-				requested,
-				&mut res_req,
-				&mut res_dup_req,
-				&mut waiting_req,
-			)?;
-
-			self.query_requests(
-				&mut need_requests,
-				&self.output_segment_cache,
-				requested,
-				&mut res_req,
-				&mut res_dup_req,
-				&mut waiting_req,
-			)?;
-
-			self.query_requests(
-				&mut need_requests,
-				&self.rangeproof_segment_cache,
-				requested,
-				&mut res_req,
-				&mut res_dup_req,
-				&mut waiting_req,
-			)?;
-
-			return Ok((res_req, res_dup_req, waiting_req));
-		}
+		let segments = self.segments.read_recursive();
+		let Some(plan) = segments.iter().find(|plan| &plan.kind == kind) else {
+			return Ok(Vec::new()); // The bitmap has not produced this layout yet.
+		};
+		let start = plan
+			.applied
+			.checked_add(queued)
+			.filter(|start| *start <= plan.required.len())
+			.ok_or_else(|| Error::Other("Snapshot tasks exceed segment layout".into()))?;
+		Ok(plan.required[start..]
+			.iter()
+			.take(limit)
+			.map(|id| SegmentTypeIdentifier::new(kind.clone(), *id))
+			.collect())
 	}
 
-	fn query_requests<T>(
-		&self,
-		need_requests: &mut usize,
-		cache: &RwLock<Option<SegmentsCache<T>>>,
-		requested: &dyn RequestLookup<(SegmentType, u64)>,
-		res_req: &mut Vec<SegmentTypeIdentifier>,
-		res_dup_req: &mut Vec<SegmentTypeIdentifier>,
-		waiting_req: &mut Vec<SegmentTypeIdentifier>,
-	) -> Result<(), Error> {
-		if *need_requests > 0 {
-			let cache = cache.read_recursive();
-			if let Some(cache) = &*cache {
-				if !cache.is_complete() {
-					let (requests, retry_requests, waiting_requests) = cache
-						.next_desired_segments(
-							*need_requests,
-							requested,
-							self.pibd_params.get_segments_buffer_len(),
-						)?;
-					debug_assert!(requests.len() <= *need_requests);
-					*need_requests =
-						need_requests.checked_sub(requests.len()).ok_or_else(|| {
-							Error::DataOverflow(format!(
-								"Desegmenter::query_requests, need_requests={} requests_len={}",
-								*need_requests,
-								requests.len()
-							))
-						})?;
-					let segment_type = cache.get_segment_type();
-					res_req.extend(
-						requests
-							.into_iter()
-							.map(|id| SegmentTypeIdentifier::new(segment_type.clone(), id)),
-					);
-					res_dup_req.extend(
-						retry_requests
-							.into_iter()
-							.map(|id| SegmentTypeIdentifier::new(segment_type.clone(), id)),
-					);
-					waiting_req.extend(
-						waiting_requests
-							.into_iter()
-							.map(|id| SegmentTypeIdentifier::new(segment_type.clone(), id)),
-					);
-				}
-			}
-		}
-		Ok(())
-	}
-
-	/// 'Finalize' the bitmap accumulator, storing an in-memory copy of the bitmap for
-	/// use in further validation and setting the accumulator on the underlying txhashset
-	fn finalize_bitmap_init_segment_caches(&self) -> Result<(), Error> {
+	/// Finalize the bitmap and derive the remaining segment layouts.
+	fn finalize_bitmap(&self, segments: &mut Vec<SegmentProgress>) -> Result<(), Error> {
 		if self.outputs_bitmap.read_recursive().is_some() {
 			return Ok(());
 		}
@@ -1003,14 +839,23 @@ impl Desegmenter {
 			kernel_segments.len()
 		);
 
-		*self.output_segment_cache.write() =
-			Some(SegmentsCache::new(SegmentType::Output, output_segments));
-		*self.rangeproof_segment_cache.write() = Some(SegmentsCache::new(
-			SegmentType::RangeProof,
-			rangeproof_segments,
-		));
-		*self.kernel_segment_cache.write() =
-			Some(SegmentsCache::new(SegmentType::Kernel, kernel_segments));
+		segments.extend([
+			SegmentProgress {
+				kind: SegmentType::Output,
+				required: output_segments,
+				applied: 0,
+			},
+			SegmentProgress {
+				kind: SegmentType::RangeProof,
+				required: rangeproof_segments,
+				applied: 0,
+			},
+			SegmentProgress {
+				kind: SegmentType::Kernel,
+				required: kernel_segments,
+				applied: 0,
+			},
+		]);
 		*self.outputs_bitmap.write() = Some(bitmap);
 		Ok(())
 	}
@@ -1062,429 +907,139 @@ impl Desegmenter {
 		Ok(bitmap_mmr_size)
 	}
 
-	/// Adds and validates a bitmap chunk
-	pub fn add_bitmap_segment(
-		&self,
-		segment: Segment<BitmapChunk>,
-		bitmap_root_hash: &Hash,
-	) -> Result<(), Error> {
+	/// Authenticate outside the scheduler lock, preserving parallel proof checks.
+	pub fn validate_segment(&self, segment: StateSegment) -> Result<ValidatedStateSegment, Error> {
 		self.ensure_robust()?;
-		if *bitmap_root_hash != self.bitmap_root_hash {
-			return Err(Error::InvalidBitmapRoot);
-		}
-
-		let cache_size_limit = self.pibd_params.get_bitmaps_buffer_len();
-		{
-			let bitmap_segment_cache = self.bitmap_segment_cache.read_recursive();
-			if !bitmap_segment_cache.has_segment(segment.id())? {
-				return Err(Error::InvalidSegmentId);
-			}
-			if bitmap_segment_cache.is_duplicate_segment(segment.id())? {
-				return Ok(());
-			}
-			if !bitmap_segment_cache.is_segment_in_receive_window(segment.id(), cache_size_limit)? {
-				return Err(Error::InvalidSegmentId);
-			}
-		}
-
-		trace!("pibd_desegmenter: add bitmap segment");
-		let segment = segment.validate(
-			self.store.get_context_id(),
-			self.outputs_bitmap_mmr_size, // Last MMR pos at the height being validated, in this case of the bitmap root
-			None,
-			&self.bitmap_root_hash,
-		)?;
-		trace!("pibd_desegmenter: adding segment to cache");
-		// All okay, add to our cached list of bitmap segments
-
-		let bitmap_cache_became_complete = {
-			let mut bitmap_segment_cache = self.bitmap_segment_cache.write();
-			let mut bitmap_accumulator = self.outputs_bitmap_accumulator.write();
-			// Bitmap state is private to this Desegmenter and does not share the PMMR
-			// recovery locks. Recheck after taking its own mutation locks so a
-			// completed recovery cannot revive and extend an old accumulator.
-			self.ensure_robust()?;
-			let was_complete = bitmap_segment_cache.is_complete();
-
-			let res = bitmap_segment_cache.apply_new_segment(
-				segment,
-				false,
-				cache_size_limit,
-				|segm_v| {
-					for segm in segm_v {
-						trace!(
-							"pibd_desegmenter: apply bitmap segment at segment {}",
-							segm.identifier().leaf_offset()?
-						);
-						let (_sid, _hash_pos, _hashes, _leaf_pos, leaf_data, _proof) = segm.parts();
-						for chunk in leaf_data.into_iter() {
-							bitmap_accumulator.append_chunk(chunk)?;
-						}
-					}
-					Ok(())
-				},
-			);
-
-			match res {
-				Ok(()) => !was_complete && bitmap_segment_cache.is_complete(),
-				Err(e) => {
-					self.require_init_recovery(format_args!(
-						"add_bitmap_segment failed while applying bitmap chunks to accumulator: {}",
-						e
-					));
-					return Err(e);
+		let context_id = self.store.get_context_id();
+		let segment = match segment {
+			StateSegment::Bitmap(segment) => {
+				if !segment.is_no_prune() {
+					return Err(Error::InvalidPruneState);
 				}
+				StateSegment::Bitmap(segment.validate(
+					context_id,
+					self.outputs_bitmap_mmr_size,
+					None,
+					&self.bitmap_root_hash,
+				)?)
+			}
+			StateSegment::Output(segment) => {
+				let bitmap = self.outputs_bitmap.read_recursive();
+				let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
+				StateSegment::Output(segment.validate(
+					context_id,
+					self.archive_header.output_mmr_size,
+					Some(bitmap),
+					&self.archive_header.output_root,
+				)?)
+			}
+			StateSegment::RangeProof(segment) => {
+				let bitmap = self.outputs_bitmap.read_recursive();
+				let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
+				StateSegment::RangeProof(segment.validate(
+					context_id,
+					self.archive_header.output_mmr_size,
+					Some(bitmap),
+					&self.archive_header.range_proof_root,
+				)?)
+			}
+			StateSegment::Kernel(segment) => {
+				if !segment.is_no_prune() {
+					return Err(Error::InvalidPruneState);
+				}
+				StateSegment::Kernel(segment.validate(
+					context_id,
+					self.archive_header.kernel_mmr_size,
+					None,
+					&self.archive_header.kernel_root,
+				)?)
 			}
 		};
-
 		self.ensure_robust()?;
-		if bitmap_cache_became_complete {
-			if let Err(e) = self.finalize_bitmap_init_segment_caches() {
-				self.require_init_recovery(format_args!(
-					"add_bitmap_segment failed while finalizing completed bitmap segment cache: {}",
-					e
-				));
-				return Err(e);
-			}
-		}
-
-		self.ensure_robust()
+		Ok(ValidatedStateSegment {
+			segment,
+			archive_hash: self.archive_header.hash(context_id)?,
+			bitmap_root: self.bitmap_root_hash,
+			generation: self.created_at_state_generation,
+		})
 	}
 
-	/// Adds a output segment
-	pub fn add_output_segment(
-		&self,
-		segment: Segment<OutputIdentifier>,
-		bitmap_root_hash: &Hash,
-	) -> Result<(), Error> {
+	/// Apply an authenticated segment in layout order. A cursor advances only
+	/// after storage mutation and recovery-marker cleanup have succeeded.
+	pub fn apply_segment(&self, validated: &ValidatedStateSegment) -> Result<(), Error> {
 		self.ensure_robust()?;
-		if *bitmap_root_hash != self.bitmap_root_hash {
-			return Err(Error::InvalidBitmapRoot);
-		}
-
-		let cache_size_limit = self.pibd_params.get_segments_buffer_len();
-		if let Some(outputs_bitmap) = self.outputs_bitmap.read_recursive().as_ref() {
-			// Only hold the cache lock for cheap eligibility checks. Segment
-			// authentication is CPU-heavy, so keeping it outside this lock lets
-			// peer receive threads validate different segments concurrently.
-			{
-				let output_segment_cache = self.output_segment_cache.read_recursive();
-				if let Some(output_segment_cache) = output_segment_cache.as_ref() {
-					if !output_segment_cache.has_segment(segment.id())? {
-						return Err(Error::InvalidSegmentId);
-					}
-					if output_segment_cache.is_duplicate_segment(segment.id())? {
-						return Ok(());
-					}
-					if !output_segment_cache
-						.is_segment_in_receive_window(segment.id(), cache_size_limit)?
-					{
-						return Err(Error::InvalidSegmentId);
-					}
-				} else {
-					return Err(Error::BitmapNotReady);
-				}
-			}
-
-			trace!("pibd_desegmenter: add output segment");
-			let segment = segment.validate(
-				self.store.get_context_id(),
-				self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
-				Some(outputs_bitmap),
-				&self.archive_header.output_root, // Output root we're checking for
-			)?;
-
-			// Another peer may have completed or advanced the cache while this
-			// thread was validating, so repeat the cheap checks before mutating.
-			if let Some(output_segment_cache) = self.output_segment_cache.write().as_mut() {
-				if !output_segment_cache.has_segment(segment.id())? {
-					return Err(Error::InvalidSegmentId);
-				}
-				if output_segment_cache.is_duplicate_segment(segment.id())? {
-					return Ok(());
-				}
-				if !output_segment_cache
-					.is_segment_in_receive_window(segment.id(), cache_size_limit)?
-				{
-					return Err(Error::InvalidSegmentId);
-				}
-
-				let mut header_pmmr = self.header_pmmr.write();
-				let mut txhashset = self.txhashset.write();
-				let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
-				let res = (|| {
-					let mut batch = self.store.batch_write()?;
-
-					output_segment_cache.apply_new_segment(
-						segment,
-						true,
-						cache_size_limit,
-						|segm| {
-							if log_enabled!(Level::Trace) {
-								trace!(
-									"pibd_desegmenter: applying output segment at segment {}-{}",
-									segm.first()
-										.ok_or(Error::Other(
-											"add_output_segment, empty segm value".into()
-										))?
-										.identifier()
-										.leaf_offset()?,
-									segm.last()
-										.ok_or(Error::Other(
-											"add_output_segment, empty segm value".into()
-										))?
-										.identifier()
-										.leaf_offset()?,
-								);
-							}
-							txhashset::extending(
-								&mut header_pmmr,
-								&mut txhashset,
-								&mut batch,
-								|ext, _batch| {
-									let extension = &mut ext.extension;
-									// The segment was authenticated above; do not run the
-									// Merkle proof/hash validation again while applying.
-									extension
-										.apply_validated_output_segments(segm, outputs_bitmap)?;
-									Ok(())
-								},
-							)?;
-							Ok(())
-						},
-					)?;
-					Ok(())
-				})();
-				return self.finish_pending_operation(
-					"add_output_segment failed while applying output segment to txhashset",
-					res,
-					marker_guard,
-				);
-			}
-		}
-		return Err(Error::BitmapNotReady);
-	}
-
-	/// Adds a Rangeproof segment
-	pub fn add_rangeproof_segment(
-		&self,
-		segment: Segment<RangeProof>,
-		bitmap_root_hash: &Hash,
-	) -> Result<(), Error> {
-		self.ensure_robust()?;
-		if *bitmap_root_hash != self.bitmap_root_hash {
-			return Err(Error::InvalidBitmapRoot);
-		}
-
-		let cache_size_limit = self.pibd_params.get_segments_buffer_len();
-		if let Some(outputs_bitmap) = self.outputs_bitmap.read_recursive().as_ref() {
-			// Only hold the cache lock for cheap eligibility checks. Segment
-			// authentication is CPU-heavy, so keeping it outside this lock lets
-			// peer receive threads validate different segments concurrently.
-			{
-				let rangeproof_segment_cache = self.rangeproof_segment_cache.read_recursive();
-				if let Some(rangeproof_segment_cache) = rangeproof_segment_cache.as_ref() {
-					if !rangeproof_segment_cache.has_segment(segment.id())? {
-						return Err(Error::InvalidSegmentId);
-					}
-					if rangeproof_segment_cache.is_duplicate_segment(segment.id())? {
-						return Ok(());
-					}
-					if !rangeproof_segment_cache
-						.is_segment_in_receive_window(segment.id(), cache_size_limit)?
-					{
-						return Err(Error::InvalidSegmentId);
-					}
-				} else {
-					return Err(Error::BitmapNotReady);
-				}
-			}
-
-			trace!("pibd_desegmenter: add rangeproof segment");
-			let segment = segment.validate(
-				self.store.get_context_id(),
-				self.archive_header.output_mmr_size, // Last MMR pos at the height being validated
-				Some(outputs_bitmap),
-				&self.archive_header.range_proof_root, // Range proof root we're checking for
-			)?;
-
-			// Another peer may have completed or advanced the cache while this
-			// thread was validating, so repeat the cheap checks before mutating.
-			if let Some(rangeproof_segment_cache) = self.rangeproof_segment_cache.write().as_mut() {
-				if !rangeproof_segment_cache.has_segment(segment.id())? {
-					return Err(Error::InvalidSegmentId);
-				}
-				if rangeproof_segment_cache.is_duplicate_segment(segment.id())? {
-					return Ok(());
-				}
-				if !rangeproof_segment_cache
-					.is_segment_in_receive_window(segment.id(), cache_size_limit)?
-				{
-					return Err(Error::InvalidSegmentId);
-				}
-
-				let mut header_pmmr = self.header_pmmr.write();
-				let mut txhashset = self.txhashset.write();
-				let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
-				let res = (|| {
-					let mut batch = self.store.batch_write()?;
-
-					rangeproof_segment_cache.apply_new_segment(
-						segment,
-						true,
-						cache_size_limit,
-						|seg| {
-							trace!(
-								"pibd_desegmenter: applying rangeproof segment at segment {}-{}",
-								seg.first()
-									.ok_or(Error::Other(
-										"add_rangeproof_segment, empty seg value".into()
-									))?
-									.identifier()
-									.leaf_offset()?,
-								seg.last()
-									.ok_or(Error::Other(
-										"add_rangeproof_segment, empty seg value".into()
-									))?
-									.identifier()
-									.leaf_offset()?,
-							);
-							txhashset::extending(
-								&mut header_pmmr,
-								&mut txhashset,
-								&mut batch,
-								|ext, _batch| {
-									let extension = &mut ext.extension;
-									// The segment was authenticated above; do not run the
-									// Merkle proof/hash validation again while applying.
-									extension
-										.apply_validated_rangeproof_segments(seg, outputs_bitmap)?;
-									Ok(())
-								},
-							)?;
-							Ok(())
-						},
-					)?;
-
-					Ok(())
-				})();
-				return self.finish_pending_operation(
-					"add_rangeproof_segment failed while applying rangeproof segment to txhashset",
-					res,
-					marker_guard,
-				);
-			}
-		}
-
-		return Err(Error::BitmapNotReady);
-	}
-
-	/// Adds a Kernel segment
-	pub fn add_kernel_segment(
-		&self,
-		segment: Segment<TxKernel>,
-		bitmap_root_hash: &Hash,
-	) -> Result<(), Error> {
-		self.ensure_robust()?;
-		if *bitmap_root_hash != self.bitmap_root_hash {
-			return Err(Error::InvalidBitmapRoot);
-		}
-
-		let cache_size_limit = self.pibd_params.get_segments_buffer_len();
-		// Only hold the cache lock for cheap eligibility checks. Segment
-		// authentication is CPU-heavy, so keeping it outside this lock lets peer
-		// receive threads validate different segments concurrently.
+		if validated.archive_hash != self.archive_header.hash(self.store.get_context_id())?
+			|| validated.bitmap_root != self.bitmap_root_hash
+			|| validated.generation != self.created_at_state_generation
 		{
-			let kernel_segment_cache = self.kernel_segment_cache.read_recursive();
-			if let Some(kernel_segment_cache) = kernel_segment_cache.as_ref() {
-				if !kernel_segment_cache.has_segment(segment.id())? {
-					return Err(Error::InvalidSegmentId);
-				}
-				if kernel_segment_cache.is_duplicate_segment(segment.id())? {
-					return Ok(());
-				}
-				if !kernel_segment_cache
-					.is_segment_in_receive_window(segment.id(), cache_size_limit)?
-				{
-					return Err(Error::InvalidSegmentId);
-				}
-			} else {
-				return Err(Error::BitmapNotReady);
-			}
+			return Err(Error::InvalidSegment(
+				"Segment belongs to another snapshot".into(),
+			));
+		}
+		let id = validated.segment.identifier();
+		let mut segments = self.segments.write();
+		let index = segments
+			.iter()
+			.position(|plan| plan.kind == id.segment_type)
+			.ok_or(Error::BitmapNotReady)?;
+		let plan = &segments[index];
+		if plan.required.get(plan.applied) != Some(&id.identifier) {
+			return Err(Error::InvalidSegmentId);
 		}
 
-		trace!("pibd_desegmenter: add kernel segment");
-		let context_id = self.store.get_context_id();
-		let kernel_mmr_size = self.archive_header.kernel_mmr_size;
-		let kernel_root = self.archive_header.kernel_root;
-		let segment = segment.validate(
-			context_id,
-			kernel_mmr_size, // Last MMR pos at the height being validated
-			None,
-			&kernel_root, // Kernel root we're checking for
-		)?;
-
-		// Another peer may have completed or advanced the cache while this
-		// thread was validating, so repeat the cheap checks before mutating.
-		if let Some(kernel_segment_cache) = self.kernel_segment_cache.write().as_mut() {
-			if !kernel_segment_cache.has_segment(segment.id())? {
-				return Err(Error::InvalidSegmentId);
+		if let StateSegment::Bitmap(segment) = &validated.segment {
+			self.ensure_robust()?;
+			let mut bitmap = self.outputs_bitmap_accumulator.write();
+			let (_, _, _, _, chunks, _) = segment.clone().parts();
+			for chunk in chunks {
+				if let Err(error) = bitmap.append_chunk(chunk) {
+					self.require_init_recovery(format_args!(
+						"Failed to apply bitmap segment: {}",
+						error
+					));
+					return Err(error);
+				}
 			}
-			if kernel_segment_cache.is_duplicate_segment(segment.id())? {
-				return Ok(());
-			}
-			if !kernel_segment_cache.is_segment_in_receive_window(segment.id(), cache_size_limit)? {
-				return Err(Error::InvalidSegmentId);
-			}
-
+			drop(bitmap);
+		} else {
+			let bitmap = self.outputs_bitmap.read_recursive();
+			let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
 			let mut header_pmmr = self.header_pmmr.write();
 			let mut txhashset = self.txhashset.write();
-			let marker_guard = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
-			let res = (|| {
+			let marker = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+			let result = (|| {
 				let mut batch = self.store.batch_write()?;
-
-				kernel_segment_cache.apply_new_segment(
-					segment,
-					false,
-					cache_size_limit,
-					|segm| {
-						trace!(
-							"pibd_desegmenter: applying kernel segment at segment {}-{}",
-							segm.first()
-								.ok_or(Error::Other("add_kernel_segment, empty segm value".into()))?
-								.identifier()
-								.leaf_offset()?,
-							segm.last()
-								.ok_or(Error::Other("add_kernel_segment, empty segm value".into()))?
-								.identifier()
-								.leaf_offset()?,
-						);
-						txhashset::extending(
-							&mut header_pmmr,
-							&mut txhashset,
-							&mut batch,
-							|ext, _batch| {
-								let extension = &mut ext.extension;
-								// The segment was authenticated above; do not run the
-								// Merkle proof/hash validation again while applying.
-								extension.apply_validated_kernel_segments(segm)?;
-								Ok(())
-							},
-						)?;
-						Ok(())
-					},
-				)?;
-
-				Ok(())
+				txhashset::extending(&mut header_pmmr, &mut txhashset, &mut batch, |ext, _| {
+					match &validated.segment {
+						StateSegment::Output(segment) => ext
+							.extension
+							.apply_validated_output_segments(vec![segment.clone()], bitmap)?,
+						StateSegment::RangeProof(segment) => ext
+							.extension
+							.apply_validated_rangeproof_segments(vec![segment.clone()], bitmap)?,
+						StateSegment::Kernel(segment) => ext
+							.extension
+							.apply_validated_kernel_segments(vec![segment.clone()])?,
+						StateSegment::Bitmap(_) => return Err(Error::InvalidSegmentId),
+					}
+					Ok(())
+				})
 			})();
-			return self.finish_pending_operation(
-				"add_kernel_segment failed while applying kernel segment to txhashset",
-				res,
-				marker_guard,
-			);
+			self.finish_pending_operation("Failed to apply snapshot segment", result, marker)?;
 		}
-
-		return Err(Error::BitmapNotReady);
+		segments[index].applied += 1;
+		if id.segment_type == SegmentType::Bitmap
+			&& segments[index].applied == segments[index].required.len()
+		{
+			if let Err(error) = self.finalize_bitmap(&mut segments) {
+				self.require_init_recovery(format_args!(
+					"Failed to finalize snapshot bitmap: {}",
+					error
+				));
+				return Err(error);
+			}
+		}
+		self.ensure_robust()
 	}
 
 	fn sibling_expanded_bitmap(bitmap: &Bitmap, leaves_num: u64) -> Result<Bitmap, Error> {

@@ -68,8 +68,8 @@ impl PeerPibdStatus {
 	/// Checking events log to decide if peer wasn't active enough
 	/// The responses log is bounded at insertion time, with trimming retained
 	/// here as a defensive fallback for any preexisting oversized queues.
-	/// Return: (ban, offline, comment)
-	fn check_for_ban(&mut self, peer: &String) -> (bool, bool, String) {
+	/// Return: (ban, comment)
+	fn check_for_ban(&mut self, peer: &String) -> (bool, String) {
 		let mut bans = 0;
 		let mut errors = 0;
 		let mut no_response = 0;
@@ -105,21 +105,19 @@ impl PeerPibdStatus {
 			}
 		}
 
-		let res_ban = bans > 0 || errors > 1;
-
-		let res_network_issue =
-			self.responses.len() >= MIN_RESPONSE_NUM && success <= self.responses.len() / 2;
+		// Tolerate six missed responses in the recent window; the seventh bans.
+		let res_ban = bans > 0 || errors > 1 || no_response > MIN_RESPONSE_NUM / 2;
 
 		debug!(
-			"Checking for Ban. Peer: {}, bans={} errors={} no_resp={} ok={}  RES={},{}",
-			peer, bans, errors, no_response, success, res_ban, res_network_issue
+			"Checking for Ban. Peer: {}, bans={} errors={} no_resp={} ok={}  RES={}",
+			peer, bans, errors, no_response, success, res_ban
 		);
 
 		while self.responses.len() > MIN_RESPONSE_NUM {
 			self.responses.pop_front();
 		}
 
-		(res_ban, res_network_issue, comment)
+		(res_ban, comment)
 	}
 
 	pub fn reset(&mut self) {
@@ -168,21 +166,19 @@ impl SyncPeers {
 		self.add_event(peer, PeerStatusEvent::Ban(message));
 	}
 
-	pub fn apply_peers_status(&self, peers: &Arc<Peers>) -> Vec<PeerAddr> {
+	pub fn apply_peers_status(&self, peers: &Arc<Peers>) {
 		let now = Instant::now();
 		let mut peers_status = self.peers_status.write();
 		let mut check_peers = self.new_events_peers.write();
 
 		let check_peer_keys: Vec<String> = check_peers.iter().cloned().collect();
-		let mut offline_peers: Vec<PeerAddr> = Vec::new();
 		let mut retry_peers = HashSet::new();
 		let mut remove_peer_keys = HashSet::new();
 		let mut banned_peer_addrs = Vec::new();
 		for cp in check_peer_keys {
 			if let Some(status) = peers_status.get_mut(&cp) {
-				let (ban, offline, comment) = status.check_for_ban(&cp);
+				let (ban, comment) = status.check_for_ban(&cp);
 				let peer_addr = status.peer_addr.clone();
-				let mut retry_ban = false;
 				if ban {
 					match peers.ban_peer(&peer_addr, ReasonForBan::PibdFailure, &comment) {
 						Ok(()) => {
@@ -192,15 +188,8 @@ impl SyncPeers {
 						}
 						Err(e) => {
 							warn!("failed to ban peer {}: {}", peer_addr, e);
-							retry_ban = true;
 							retry_peers.insert(cp.clone());
 						}
-					}
-				}
-				if offline {
-					offline_peers.push(peer_addr.clone());
-					if !retry_ban {
-						remove_peer_keys.insert(cp.clone());
 					}
 				}
 			}
@@ -231,7 +220,6 @@ impl SyncPeers {
 				}
 			}
 		}
-		offline_peers
 	}
 
 	fn add_event(&self, peer: &PeerAddr, event: PeerStatusEvent) {
@@ -386,6 +374,24 @@ mod tests {
 		let peers_status = sync_peers.peers_status.read_recursive();
 		let status = peers_status.get(&peer_key).expect("peer status");
 		assert!(status.peer_addr.matches_exactly(&updated_peer));
+	}
+
+	#[test]
+	fn repeated_no_responses_ban_within_the_recent_response_window() {
+		let peer = non_loopback_peer();
+		let now = Instant::now();
+		let mut status = PeerPibdStatus::new(&peer, now);
+		for _ in 0..6 {
+			status.add_event(PeerStatusEvent::NoResponse("timeout".into()), now);
+			assert!(!status.check_for_ban(&peer.as_key()).0);
+		}
+		status.add_event(PeerStatusEvent::NoResponse("timeout".into()), now);
+		assert!(status.check_for_ban(&peer.as_key()).0);
+		// Successes eventually move older failures out of the bounded window.
+		for _ in 0..7 {
+			status.add_event(PeerStatusEvent::Success, now);
+		}
+		assert!(!status.check_for_ban(&peer.as_key()).0);
 	}
 
 	#[test]

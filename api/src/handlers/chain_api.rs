@@ -381,10 +381,12 @@ impl OutputHandler {
 		include_proof: bool,
 		include_merkle_proof: bool,
 	) -> Result<BlockOutputs, Error> {
-		let header = snapshot.get_header_by_height(block_height).map_err(|e| {
-			let msg = format!("Header at height {}, {}", block_height, e);
-			Error::chain_read_error(e, msg)
-		})?;
+		let header = snapshot
+			.get_body_header_by_height(block_height)
+			.map_err(|e| {
+				let msg = format!("Header at height {}, {}", block_height, e);
+				Error::chain_read_error(e, msg)
+			})?;
 
 		// TODO - possible to compact away blocks we care about
 		// in the period between accepting the block and refreshing the wallet

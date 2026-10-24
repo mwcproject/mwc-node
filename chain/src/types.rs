@@ -42,8 +42,6 @@ bitflags! {
 		/// Available only in unit tests or explicit `test-support` builds.
 		#[cfg(any(test, feature = "test-support"))]
 		const SKIP_POW = 0b0000_0001;
-		/// Adds block while in syncing mode.
-		const SYNC = 0b0000_0010;
 		/// Block validation on a block we mined ourselves
 		const MINE = 0b0000_0100;
 	}
@@ -231,9 +229,10 @@ pub enum SyncStatus {
 		/// kernels in total
 		kernels_total: u64,
 	},
-	/// Downloading blocks above the archive (horizon) height
+	/// Downloading blocks on the selected header chain.
 	BodySync {
-		/// Archive header height. Starting height to download the blocks (if running in archive_mode, must be 0)
+		/// Starting height used for displayed block progress; zero in archive mode.
+		/// The field name is retained for API compatibility.
 		archive_height: u64,
 		/// current node height
 		current_height: u64,
@@ -625,17 +624,18 @@ impl ser::Readable for Tip {
 /// importantly the broadcasting of blocks to our peers.
 pub trait ChainAdapter {
 	/// The blockchain pipeline has accepted this block as valid and added
-	/// it to our chain.
+	/// it to our chain. `header_head` is from the same committed state as
+	/// `status`, so consumers can identify a block that completed body catch-up.
 	fn block_accepted(
 		&self,
 		secp: &mut Secp256k1,
 		block: &Block,
 		status: BlockStatus,
-		opts: Options,
+		header_head: Tip,
 	);
 
-	/// A sourced block reached a terminal processing error, including deferred
-	/// orphan validation. Called after PMMR locks are released; the adapter must
+	/// A sourced block reached a terminal processing error. Called after PMMR
+	/// locks are released; the adapter must
 	/// distinguish invalid remote data from local failures before penalizing peers.
 	/// The full body preserves its header and input identity for sync bookkeeping.
 	/// Source peers are strings to avoid coupling chain internals to P2P types.
@@ -651,7 +651,7 @@ impl ChainAdapter for NoopAdapter {
 		_secp: &mut Secp256k1,
 		_b: &Block,
 		_status: BlockStatus,
-		_opts: Options,
+		_header_head: Tip,
 	) {
 	}
 }

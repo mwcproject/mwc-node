@@ -278,7 +278,6 @@ impl Server {
 				shared_chain.clone(),
 				sync_manager.clone(),
 				tx_pool.clone(),
-				config.chain_validation_mode.clone(),
 				net_hooks,
 			)
 			.map_err(|e| {

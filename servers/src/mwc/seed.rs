@@ -244,21 +244,22 @@ pub fn connect_and_monitor(
 
 				// Ping connected peers on every 10s to monitor peers.
 				if prev_ping.elapsed() > time::Duration::from_secs(PEER_PING_INTERVAL_SECONDS) {
-					let total_diff = peers.total_difficulty();
-					let total_height = peers.total_height();
-					if let (Ok(total_diff), Ok(total_height)) = (total_diff, total_height) {
-						let summary = peers.check_all(total_diff, total_height);
-						if summary.persistence_failures > 0 {
-							if let Some(e) = summary.first_persistence_error() {
-								error!(
+					match peers.get_head() {
+						Ok(head) => {
+							let summary = peers.check_all(head.total_difficulty(), head.height);
+							if summary.persistence_failures > 0 {
+								if let Some(e) = summary.first_persistence_error() {
+									error!(
 									"failed to persist peer state for {} peer(s) removed after ping failure: {}",
 									summary.persistence_failures, e
 								);
+								}
 							}
+							prev_ping = time::Instant::now();
 						}
-						prev_ping = time::Instant::now();
-					} else {
-						error!("failed to get peers difficulty and/or height");
+						Err(error) => {
+							error!("Failed to read body head before pinging peers: {}", error)
+						}
 					}
 				}
 
@@ -754,35 +755,23 @@ fn listen_for_addrs(
 							}
 						}
 						// Requesting ping as well, need to know the height asap
-						let total_diff = match peers_c.total_difficulty() {
-							Ok(total_diff) => Some(total_diff),
+						match peers_c.get_head() {
+							Ok(head) => {
+								if let Err(e) = p.send_ping(head.total_difficulty(), head.height) {
+									mark_peer_defunct_after_initial_send_failure(
+										&peers_c,
+										&addr_c,
+										"send_ping",
+										&e,
+									)?;
+									return Err(e);
+								}
+							}
 							Err(e) => {
 								error!(
-									"Failed to get total difficulty before pinging {}: {}",
+									"Failed to read body head before pinging {}: {}",
 									p.info.addr, e
 								);
-								None
-							}
-						};
-						let total_height = match peers_c.total_height() {
-							Ok(total_height) => Some(total_height),
-							Err(e) => {
-								error!(
-									"Failed to get total height before pinging {}: {}",
-									p.info.addr, e
-								);
-								None
-							}
-						};
-						if let (Some(total_diff), Some(total_height)) = (total_diff, total_height) {
-							if let Err(e) = p.send_ping(total_diff, total_height) {
-								mark_peer_defunct_after_initial_send_failure(
-									&peers_c,
-									&addr_c,
-									"send_ping",
-									&e,
-								)?;
-								return Err(e);
 							}
 						}
 					}

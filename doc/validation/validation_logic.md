@@ -42,7 +42,7 @@ In all header difficulty calculations, the difficulty proven by the proof-of-wor
 ## Block
 
 * Run full header validation
-* Check we have the previous full block (orphan otherwise)
+* Check we have the previous full block (or the imported snapshot head). If ancestry is missing, retain any validated header progress and discard the body; regular sync downloads it again when needed.
 * Run standalone block validation
 * Validate the MMRs roots and sizes against our header
 * Block header goes through full header validation

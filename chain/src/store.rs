@@ -35,6 +35,8 @@ use std::sync::Arc;
 const STORE_SUBPATH: &str = "chain";
 
 const BLOCK_HEADER_PREFIX: u8 = b'h';
+// Local metadata, deliberately separate from the consensus/wire header encoding.
+const HEADER_PROGRESS_TIME_PREFIX: u8 = b'J';
 const BLOCK_PREFIX: u8 = b'b';
 const HEAD_PREFIX: u8 = b'H';
 const TAIL_PREFIX: u8 = b'T';
@@ -74,6 +76,12 @@ const SPENT_COMMITMENT_RECORD_INDEX_COMPLETE: &str = "spent_commitment_record_in
 /// Boolean marker that legacy positions-only per-block spent indexes have been
 /// migrated to the exact `SpentOutput` occurrence format.
 const SPENT_INDEX_MIGRATED: &str = "spent_index_migrated";
+
+pub(crate) fn header_creation_time(header: &BlockHeader) -> Result<u64, Error> {
+	u64::try_from(header.timestamp.timestamp_micros())
+		.map(|time| time.max(1))
+		.map_err(|_| Error::DataOverflow("negative header creation time".into()))
+}
 
 /// Compare a trusted stored block with a candidate using the canonical v3
 /// database representation. V3 intentionally normalizes legacy
@@ -237,6 +245,11 @@ impl ChainStore {
 		option_to_not_found(self.db.get_ser(&to_key(BLOCK_HEADER_PREFIX, h)), || {
 			format!("BLOCK HEADER: {}", h)
 		})
+	}
+
+	/// Local progress time in microseconds. Legacy headers use creation time.
+	pub fn get_header_progress_time(&self, h: &Hash) -> Result<u64, Error> {
+		self.batch_read()?.get_header_progress_time(h)
 	}
 
 	/// Get PMMR pos for the given output commitment.
@@ -425,6 +438,7 @@ impl<'a> Batch<'a> {
 	/// before `setup_head()` even when the chain database has never held a block.
 	pub(crate) fn has_any_auxiliary_chain_state(&self) -> Result<bool, Error> {
 		for prefix in [
+			HEADER_PROGRESS_TIME_PREFIX,
 			OUTPUT_POS_PREFIX,
 			KERNEL_POS_PREFIX,
 			NRD_KERNEL_LIST_PREFIX,
@@ -784,11 +798,14 @@ impl<'a> Batch<'a> {
 
 	/// Delete a block header.
 	pub fn delete_block_header(&self, h: &Hash) -> Result<(), Error> {
+		Self::ignore_not_found(self.db.delete(&to_key(HEADER_PROGRESS_TIME_PREFIX, h)))?;
 		self.db.delete(&to_key(BLOCK_HEADER_PREFIX, h)[..])
 	}
 
-	/// Save block header to db.
-	pub fn save_block_header(&self, header: &BlockHeader) -> Result<(), Error> {
+	/// Save the header and its progress time atomically. Known headers retain
+	/// their stored time; missing metadata is initialized with `base_time`.
+	/// `base_time` is a Unix timestamp in microseconds. Returns the stored time.
+	pub fn save_block_header(&self, header: &BlockHeader, base_time: u64) -> Result<u64, Error> {
 		let hash = header.hash(self.get_context_id())?;
 		// Defense in depth for local persistence. This is not a cryptographic
 		// collision check: normal PoW validation is what binds the complete header
@@ -800,16 +817,24 @@ impl<'a> Batch<'a> {
 					hash
 				)));
 			}
-			Ok(_) => return Ok(()),
-			Err(e) if e.store_error_is_not_found() => {}
+			Ok(_) => {
+				if let Some(time) = self
+					.db
+					.get_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, hash))?
+				{
+					return Ok(time);
+				}
+			}
+			Err(e) if e.store_error_is_not_found() => {
+				self.db
+					.put_ser(&to_key(BLOCK_HEADER_PREFIX, hash), header)?;
+			}
 			Err(e) => return Err(e),
 		}
-
-		// Store the header itself indexed by hash.
 		self.db
-			.put_ser(&to_key(BLOCK_HEADER_PREFIX, hash)[..], header)?;
+			.put_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, hash), &base_time)?;
 
-		Ok(())
+		Ok(base_time)
 	}
 
 	/// Save output_pos and block height to index.
@@ -973,6 +998,14 @@ impl<'a> Batch<'a> {
 		option_to_not_found(self.db.get_ser(&to_key(BLOCK_HEADER_PREFIX, h)), || {
 			format!("BLOCK HEADER: {}", h)
 		})
+	}
+
+	/// Read local progress metadata, with a deterministic legacy fallback.
+	pub fn get_header_progress_time(&self, h: &Hash) -> Result<u64, Error> {
+		match self.db.get_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, h))? {
+			Some(time) => Ok(time),
+			None => header_creation_time(&self.get_block_header(h)?),
+		}
 	}
 
 	/// Delete the block spent index.
@@ -1625,6 +1658,133 @@ mod tests {
 	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use std::fs;
 
+	fn progress_header(height: u64, previous: Hash) -> BlockHeader {
+		let mut header = BlockHeader::default(0);
+		header.height = height;
+		header.prev_hash = previous;
+		header.timestamp =
+			mwc_crates::chrono::DateTime::from_timestamp(100 + height as i64, 0).unwrap();
+		*header.pow.proof.nonces.last_mut().unwrap() = height;
+		header
+	}
+
+	#[test]
+	fn header_progress_persists_without_changing_wire_or_json_and_is_not_refreshed() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let parent = progress_header(0, mwc_core::core::hash::ZERO_HASH);
+		let header = progress_header(1, parent.hash(0).unwrap());
+		let child = progress_header(2, header.hash(0).unwrap());
+		let hash = header.hash(0).unwrap();
+		let child_hash = child.hash(0).unwrap();
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		{
+			let batch = store.batch_write().unwrap();
+			batch
+				.save_block_header(&parent, header_creation_time(&parent).unwrap())
+				.unwrap();
+			assert_eq!(
+				batch.save_block_header(&header, 200_000_000).unwrap(),
+				200_000_000
+			);
+			// Store the supplied creation time even when it predates the parent's time.
+			batch
+				.save_block_header(&child, header_creation_time(&child).unwrap())
+				.unwrap();
+			assert_eq!(
+				batch.get_header_progress_time(&child_hash).unwrap(),
+				102_000_000
+			);
+			batch.commit().unwrap();
+		}
+		drop(store);
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		assert_eq!(store.get_header_progress_time(&hash).unwrap(), 200_000_000);
+		{
+			let batch = store.batch_write().unwrap();
+			assert_eq!(
+				batch.save_block_header(&header, 900_000_000).unwrap(),
+				200_000_000
+			);
+			batch.commit().unwrap();
+		}
+		let stored = store.get_block_header(&hash).unwrap();
+		assert_eq!(stored, header);
+		for version in [
+			ProtocolVersion(1),
+			ProtocolVersion(2),
+			ProtocolVersion(3),
+			ProtocolVersion::local(),
+		] {
+			assert_eq!(
+				ser::ser_vec(0, &stored, version, true).unwrap(),
+				ser::ser_vec(0, &header, version, true).unwrap()
+			);
+		}
+		let json = mwc_crates::serde_json::to_value(&stored).unwrap();
+		assert!(json.get("progress_time").is_none());
+		assert_eq!(json, mwc_crates::serde_json::to_value(&header).unwrap());
+
+		let uncommitted = progress_header(3, child_hash);
+		{
+			let batch = store.batch_write().unwrap();
+			batch.save_block_header(&uncommitted, 300_000_000).unwrap();
+		}
+		assert!(store
+			.get_header_progress_time(&uncommitted.hash(0).unwrap())
+			.unwrap_err()
+			.store_error_is_not_found());
+		let batch = store.batch_write().unwrap();
+		batch.delete_block_header(&hash).unwrap();
+		batch.commit().unwrap();
+		assert!(store
+			.get_header_progress_time(&hash)
+			.unwrap_err()
+			.store_error_is_not_found());
+	}
+
+	#[test]
+	fn legacy_header_progress_is_initialized_once_from_base_time() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		let parent = progress_header(0, mwc_core::core::hash::ZERO_HASH);
+		let header = progress_header(1, parent.hash(0).unwrap());
+		let hash = header.hash(0).unwrap();
+		{
+			// This is exactly the old DB representation, with no metadata record.
+			let batch = store.batch_write().unwrap();
+			batch
+				.db
+				.put_ser(
+					&to_key(BLOCK_HEADER_PREFIX, parent.hash(0).unwrap()),
+					&parent,
+				)
+				.unwrap();
+			batch
+				.db
+				.put_ser(&to_key(BLOCK_HEADER_PREFIX, hash), &header)
+				.unwrap();
+			batch.commit().unwrap();
+		}
+		assert_eq!(store.get_header_progress_time(&hash).unwrap(), 101_000_000);
+		let batch = store.batch_write().unwrap();
+		assert_eq!(
+			batch.save_block_header(&header, 900_000_000).unwrap(),
+			900_000_000
+		);
+		assert_eq!(
+			batch.save_block_header(&header, 950_000_000).unwrap(),
+			900_000_000
+		);
+		batch.commit().unwrap();
+		let persisted: Option<u64> = store
+			.db
+			.get_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, hash))
+			.unwrap();
+		assert_eq!(persisted, Some(900_000_000));
+	}
+
 	fn read_bool_flag(bytes: &[u8]) -> Result<BoolFlag, ser::Error> {
 		let mut source = bytes;
 		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0, true);
@@ -1663,7 +1823,9 @@ mod tests {
 			.map(|prefix| to_key(prefix, hash));
 			{
 				let batch = store.batch_write().unwrap();
-				batch.save_block_header(&block.header).unwrap();
+				batch
+					.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+					.unwrap();
 				batch.save_header_head(&tip).unwrap();
 				if has_head {
 					batch.save_body_head(&tip).unwrap();
@@ -1768,13 +1930,24 @@ mod tests {
 		assert_ne!(altered_block.header, expected_block.header);
 
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&expected_block.header).unwrap();
+		batch
+			.save_block_header(
+				&expected_block.header,
+				header_creation_time(&expected_block.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&expected_block).unwrap();
 		match batch.save_block(&altered_block).unwrap_err() {
 			Error::OtherErr(msg) => assert!(msg.contains("separately stored header"), "{}", msg),
 			other => panic!("expected full-block header mismatch, got {:?}", other),
 		}
-		match batch.save_block_header(&altered_block.header).unwrap_err() {
+		match batch
+			.save_block_header(
+				&altered_block.header,
+				header_creation_time(&altered_block.header).unwrap(),
+			)
+			.unwrap_err()
+		{
 			Error::OtherErr(msg) => assert!(msg.contains("different complete header"), "{}", msg),
 			other => panic!(
 				"expected stored-header overwrite rejection, got {:?}",
@@ -1834,7 +2007,12 @@ mod tests {
 
 		let block_hash = stored.hash(0).unwrap();
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&stored.header).unwrap();
+		batch
+			.save_block_header(
+				&stored.header,
+				header_creation_time(&stored.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&stored).unwrap();
 		batch.save_block(&equivalent).unwrap();
 		match batch.save_block(&conflicting).unwrap_err() {
@@ -1869,7 +2047,9 @@ mod tests {
 		{
 			let batch = store.batch_write().unwrap();
 			assert!(!batch.delete_block_if_exists(&block_hash).unwrap());
-			batch.save_block_header(&block.header).unwrap();
+			batch
+				.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+				.unwrap();
 			batch.save_block(&block).unwrap();
 			batch.commit().unwrap();
 		}
@@ -1929,7 +2109,9 @@ mod tests {
 
 		{
 			let batch = store.batch_write().unwrap();
-			batch.save_block_header(&block.header).unwrap();
+			batch
+				.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+				.unwrap();
 			batch.save_block(&block).unwrap();
 			batch
 				.save_spent_index(
@@ -2465,7 +2647,9 @@ mod s2c_storage_tests {
 			{
 				let batch = store.batch_write().unwrap();
 				batch.set_blocks_v3_migrated(true).unwrap();
-				batch.save_block_header(&block.header).unwrap();
+				batch
+					.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+					.unwrap();
 				batch.db.put(&to_key(BLOCK_PREFIX, hash), &bytes).unwrap();
 				batch
 					.save_body_head(&Tip::try_from_header(&block.header).unwrap())

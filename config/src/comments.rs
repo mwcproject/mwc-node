@@ -107,17 +107,6 @@ fn comments() -> HashMap<String, String> {
 	);
 
 	retval.insert(
-		"chain_validation_mode".to_string(),
-		"
-#the chain validation mode, defines how often (if at all) we
-#want to run a full chain validation. Can be:
-#\"EveryBlock\" - run full chain validation when processing each block (except during sync)
-#\"Disabled\" - disable full chain validation (just run regular block validation)
-"
-		.to_string(),
-	);
-
-	retval.insert(
 		"archive_mode".to_string(),
 		"
 #run the node in \"full archive\" mode (default is fast-sync, pruned node)

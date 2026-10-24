@@ -136,7 +136,6 @@ pub struct Peers {
 	// thread drops its Codec and any Tor read-half active object.
 	stopped_peers: Mutex<Vec<Arc<Peer>>>,
 	boost_peers_capabilities: RwLock<PeersCapabilities>,
-	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
 	advertised_peers: Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>>,
 	advertised_peer_source_limits: Arc<RwLock<HashMap<PeerAddr, AdvertisedPeerSourceLimit>>>,
 }
@@ -155,18 +154,8 @@ impl Peers {
 				capabilities: Capabilities::UNKNOWN,
 				time: None,
 			}),
-			excluded_peers: Arc::new(RwLock::new(HashSet::new())),
 			advertised_peers: Arc::new(RwLock::new(HashMap::new())),
 			advertised_peer_source_limits: Arc::new(RwLock::new(HashMap::new())),
-		}
-	}
-
-	/// Mark those peers as excluded, so the will never be in 'connected' list
-	pub fn set_excluded_peers(&self, peers: &Vec<PeerAddr>) {
-		let mut excluded_peers = self.excluded_peers.write();
-		excluded_peers.clear();
-		for p in peers {
-			excluded_peers.insert(p.clone());
 		}
 	}
 
@@ -345,14 +334,7 @@ impl Peers {
 	/// This allows us to hide try_read_for() behind a cleaner interface.
 	/// PeersIter lets us chain various adaptors for convenience.
 	pub fn iter(&self) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
-		let excluded_peers = self.excluded_peers.read_recursive();
-		let peers: Vec<Arc<Peer>> = self
-			.peers
-			.read_recursive()
-			.values()
-			.filter(|p| !excluded_peers.contains(&p.info.addr))
-			.cloned()
-			.collect();
+		let peers: Vec<Arc<Peer>> = self.peers.read_recursive().values().cloned().collect();
 
 		PeersIter {
 			iter: peers.into_iter(),
@@ -493,9 +475,8 @@ impl Peers {
 		// cache before delayed bad-block attribution fired.
 		let ban_result = self.add_banned(peer_addr.clone(), ban_reason, message);
 
-		// Remove the peer directly from the live map. Do not use
-		// get_connected_peer() here because it filters excluded peers, and banning
-		// must stop any live connection for the address.
+		// Remove the peer directly from the live map so banning stops any
+		// connection for the address, regardless of its current state.
 		if let Some(peer) = self.remove_connected(peer_addr) {
 			debug!(
 				"Updating online peer with Ban {}, ban_reason {:?}",
@@ -592,7 +573,7 @@ impl Peers {
 	}
 
 	/// Broadcast a compact block to all our connected peers.
-	/// This is only used when initially broadcasting a newly mined block.
+	/// Used for both newly mined blocks and accepted blocks relayed from peers.
 	pub fn broadcast_compact_block(&self, b: &core::CompactBlock) -> Result<(), Error> {
 		let summary = self.broadcast("compact block", |p| p.send_compact_block(b))?;
 		Self::ensure_broadcast_progress("compact block", summary)?;
@@ -851,10 +832,13 @@ impl Peers {
 		boost_capability: Capabilities,
 		config: P2PConfig,
 	) -> PeerCleanupSummary {
-		let header_height = match self.adapter.header_height() {
-			Ok(height) => Some(height),
+		let head = match self.adapter.get_head() {
+			Ok(head) => Some(head),
 			Err(error) => {
-				warn!("Skipping activation-based peer rotation: {}", error);
+				warn!(
+					"Skipping peer tip comparisons and activation-based rotation: {}",
+					error
+				);
 				None
 			}
 		};
@@ -864,7 +848,7 @@ impl Peers {
 			boost_capability,
 			config,
 			Instant::now(),
-			header_height,
+			head,
 		)
 	}
 
@@ -874,7 +858,7 @@ impl Peers {
 	/// Healthy outbound removals share a two-peer limit per pass. The ten-minute
 	/// timer alone selects only one peer. Preferred peers are exempt from healthy
 	/// cleanup, and underfilled pools are replenished before further rotation.
-	/// `now` and the locally validated header height are explicit for testing.
+	/// `now` and the body head snapshot are explicit for testing.
 	pub(crate) fn clean_peers_at(
 		&self,
 		max_inbound_count: usize,
@@ -882,7 +866,7 @@ impl Peers {
 		boost_capability: Capabilities,
 		config: P2PConfig,
 		now: Instant,
-		header_height: Option<u64>,
+		head: Option<core::BlockHeader>,
 	) -> PeerCleanupSummary {
 		// Sync capabilities can influence rotation; BLOCK_EXTRA has its own
 		// height-dependent preference and must not become a connection requirement.
@@ -962,12 +946,13 @@ impl Peers {
 				// Outbound peers on weaker forks have a shorter grace period
 				// than peers merely lagging behind our accepted body chain.
 				let stuck_outbound = if peer.info.is_outbound() {
-					let incompatible =
-						self.adapter
+					let incompatible = match &head {
+						Some(head) => self
+							.adapter
 							.is_known_or_better_tip(height, diff)
-							.and_then(|compatible| {
-								Ok(!compatible && diff < self.adapter.total_difficulty()?)
-							});
+							.map(|compatible| !compatible && diff < head.total_difficulty()),
+						None => Ok(false),
+					};
 					let incompatible = match incompatible {
 						Ok(incompatible) => incompatible,
 						Err(e) => {
@@ -977,17 +962,9 @@ impl Peers {
 						}
 					};
 
-					let lagging_peer = self.adapter.total_difficulty().and_then(|local_diff| {
-						Ok(diff < local_diff
-							&& self.adapter.total_height()?.saturating_sub(height) > 1)
+					let lagging_peer = head.as_ref().is_some_and(|head| {
+						diff < head.total_difficulty() && head.height.saturating_sub(height) > 1
 					});
-					let lagging_peer = match lagging_peer {
-						Ok(lagging) => lagging,
-						Err(e) => {
-							warn!("Skipping peer lag comparison for {}: {}", peer.info.addr, e);
-							false
-						}
-					};
 
 					// Count the two conditions independently. Clearing a condition
 					// or failing its local lookup resets the corresponding streak.
@@ -1029,17 +1006,17 @@ impl Peers {
 		});
 
 		// 2. Select healthy peers for eviction. Count all live outbound survivors,
-		// including preferred and sync-excluded peers; inbound peers do not affect
+		// including preferred peers; inbound peers do not affect
 		// the outbound target or the BLOCK_EXTRA fraction.
 		let outbound_count = remaining.iter().filter(|p| p.info.is_outbound()).count();
 		let mut block_extra_remaining = remaining
 			.iter()
 			.filter(|p| p.info.is_outbound() && p.info.is_block_extra())
 			.count();
-		// Once validated headers activate binding (even if bodies lag), aim for
+		// Once the body head activates binding, aim for
 		// at least half BLOCK_EXTRA outbound peers, rounding up for odd totals.
-		let activated = header_height.is_some_and(|height| {
-			mwc_core::consensus::is_coinbase_binding_enabled(self.get_context_id(), height)
+		let activated = head.as_ref().is_some_and(|head| {
+			mwc_core::consensus::is_coinbase_binding_enabled(self.get_context_id(), head.height)
 		});
 		let initially_below_half = activated && block_extra_remaining < outbound_count.div_ceil(2);
 		let outbound_target = config.peer_min_preferred_outbound_count(
@@ -1447,16 +1424,8 @@ impl Peers {
 }
 
 impl ChainAdapter for Peers {
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		self.adapter.total_difficulty()
-	}
-
-	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		self.adapter.total_height()
-	}
-
-	fn header_height(&self) -> Result<u64, mwc_chain::Error> {
-		self.adapter.header_height()
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
+		self.adapter.get_head()
 	}
 
 	fn is_known_or_better_tip(
@@ -1500,10 +1469,9 @@ impl ChainAdapter for Peers {
 		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: mwc_chain::Options,
 	) -> Result<bool, mwc_chain::Error> {
 		let hash = b.hash(self.store.get_context_id())?;
-		if !self.adapter.block_received(secp, b, peer_info, opts)? {
+		if !self.adapter.block_received(secp, b, peer_info)? {
 			// if the peer sent us a block that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(
@@ -1720,13 +1688,6 @@ impl ChainAdapter for Peers {
 		self.adapter
 			.receive_kernel_segment(peer, archive_header_hash, segment)
 	}
-
-	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
-		if let Some(peer) = self.get_connected_peer(addr) {
-			peer.info.update(height, diff);
-		}
-		self.adapter.peer_difficulty(addr, diff, height)
-	}
 }
 
 impl NetAdapter for Peers {
@@ -1896,7 +1857,9 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 		F: Fn(Difficulty) -> bool,
 	{
 		PeersIter {
-			iter: self.iter.filter(move |p| f(p.info.total_difficulty())),
+			iter: self
+				.iter
+				.filter(move |p| f(p.info.get_height_and_difficulty().1)),
 		}
 	}
 
@@ -1921,7 +1884,7 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 		PeersIter {
 			iter: self
 				.iter
-				.filter(move |p| p.info.live_info.read_recursive().height >= height),
+				.filter(move |p| p.info.get_height_and_difficulty().0 >= height),
 		}
 	}
 
@@ -1938,7 +1901,9 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 
 	/// Find the max difficulty of the current (filtered) peers.
 	pub fn max_difficulty(self) -> Option<Difficulty> {
-		self.iter.map(|p| p.info.total_difficulty()).max()
+		self.iter
+			.map(|p| p.info.get_height_and_difficulty().1)
+			.max()
 	}
 
 	/// Count the current (filtered) peers.

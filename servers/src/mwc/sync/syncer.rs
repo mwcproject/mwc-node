@@ -17,7 +17,7 @@ use crate::mwc::sync::sync_manager::SyncManager;
 use crate::mwc::sync::sync_utils::SyncRequestResponses;
 use mwc_chain::{self, SyncState, SyncStatus};
 use mwc_crates::chrono::Utc;
-use mwc_crates::log::{debug, error, info};
+use mwc_crates::log::{debug, error, info, warn};
 use mwc_p2p::{Capabilities, Peer, Peers};
 use mwc_util::StopState;
 use std::sync::Arc;
@@ -132,8 +132,6 @@ impl SyncRunner {
 			// Sync manager requests are the source of regular visible sync progress updates.
 			thread::sleep(time::Duration::from_millis(sleep_time));
 
-			self.sync_manager.headers_blocks_request(&self.peers);
-
 			// Onle in a while let's dump the peers. Needed to understand how network is doing
 			if last_peer_dump.elapsed() > time::Duration::from_secs(60 * 20) {
 				last_peer_dump = time::Instant::now();
@@ -141,12 +139,13 @@ impl SyncRunner {
 				info!("Has connected peers: {}", peers.len());
 				for p in peers {
 					let last_seen_seconds_ago = (Utc::now() - p.info.last_seen()).num_seconds();
+					let (height, difficulty) = p.info.get_height_and_difficulty();
 					info!(
 						"Peer: {:?} {:?} H:{}  Diff:{} Cap: {} BFee: {}  Last seen (sec): {}",
 						p.info.addr,
 						p.info.direction,
-						p.info.height(),
-						p.info.total_difficulty().to_num(),
+						height,
+						difficulty.to_num(),
 						p.info.capabilities.bits(),
 						p.info.tx_base_fee,
 						last_seen_seconds_ago,
@@ -156,8 +155,7 @@ impl SyncRunner {
 
 			sleep_time = SYNC_LOOP_INTERVAL_MS;
 
-			// run each sync stage, each of them deciding whether they're needed
-			// except for state sync that only runs if body sync return true (means txhashset is needed)
+			// The coordinator completes PIBD before running regular header/body sync.
 			let sync_reponse = match self.sync_manager.sync_request(&self.peers) {
 				Ok(resp) => resp,
 				Err(e) => {
@@ -183,8 +181,7 @@ impl SyncRunner {
 				}
 				SyncRequestResponses::Syncing
 				| SyncRequestResponses::WaitingForHeaders
-				| SyncRequestResponses::WaitingForHeadersHash
-				| SyncRequestResponses::BadState => {
+				| SyncRequestResponses::WaitingForHeadersHash => {
 					//debug_assert!(self.sync_state.is_syncing());
 					self.peers
 						.set_boost_peers_capabilities(sync_reponse.peers_capabilities);
@@ -197,6 +194,20 @@ impl SyncRunner {
 				}
 				SyncRequestResponses::SyncDone => {
 					self.sync_state.update(SyncStatus::NoSync);
+					// Report the current tip on each completed outer pass. The polling
+					// loop below spaces these messages about 20 seconds apart while synced.
+					match self.chain.head() {
+						Ok(head) => info!(
+							"synchronized at {} @ {} [{}]",
+							head.total_difficulty.to_num(),
+							head.height,
+							head.last_block_h
+						),
+						Err(error) => warn!(
+							"Unable to read chain head for synchronization status log: {}",
+							error
+						),
+					}
 					// reset the boost mode
 					self.peers
 						.set_boost_peers_capabilities(Capabilities::UNKNOWN);
@@ -219,10 +230,15 @@ impl SyncRunner {
 					for _ in 0..20 {
 						if !self.stop_state.is_stopped() {
 							thread::sleep(time::Duration::from_secs(1));
-							// Processing regular headers/blocks requests.
-							// Every second we will fire the requests to headers/blocks from the queue
-							// Purpose of that to prevent data requests flooding.
-							self.sync_manager.headers_blocks_request(&self.peers);
+							match self.sync_manager.sync_request(&self.peers) {
+								Ok(response)
+									if response.response == SyncRequestResponses::SyncDone => {}
+								Ok(_) => break,
+								Err(error) => {
+									info!("Sync request failed; will retry: {}", error);
+									break;
+								}
+							}
 						}
 					}
 				}
