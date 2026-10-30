@@ -43,7 +43,8 @@ pub use crate::chain::{Chain, OutputReadSnapshot};
 pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{
-	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetStateValidationStage,
+	BlockStatus, ChainAdapter, ChainHeadReset, Options, SyncState, SyncStatus, Tip,
+	TxHashsetStateValidationStage,
 };
 
 use mwc_core::core::hash::{Hash, Hashed};

@@ -155,6 +155,10 @@ impl SyncRunner {
 
 			sleep_time = SYNC_LOOP_INTERVAL_MS;
 
+			if let Err(error) = self.sync_manager.truncate_header_head(&self.peers) {
+				error!("Header head truncation failed: {}", error);
+				continue;
+			}
 			// The coordinator completes PIBD before running regular header/body sync.
 			let sync_reponse = match self.sync_manager.sync_request(&self.peers) {
 				Ok(resp) => resp,

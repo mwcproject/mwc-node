@@ -47,6 +47,20 @@ bitflags! {
 	}
 }
 
+/// Which chain heads an explicit reset may change.
+#[derive(Debug, Clone, Copy)]
+pub enum ChainHeadReset {
+	/// Reset body state while preserving the selected header chain.
+	Body,
+	/// Truncate headers while preserving body state and rechecking the selected tip.
+	Headers {
+		/// Header head observed when choosing the target.
+		expected_head: Hash,
+	},
+	/// Reset both body state and the selected header chain.
+	Both,
+}
+
 /// We receive 512 headers from a peer in a batch. Let's use it for planning.
 pub const HEADERS_PER_BATCH: u32 = 512;
 pub(crate) const SYNC_STATUS_UPDATE_INTERVAL_MS: u64 = 200;

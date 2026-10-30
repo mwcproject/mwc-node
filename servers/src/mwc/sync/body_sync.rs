@@ -1323,7 +1323,11 @@ mod tests {
 				.unwrap();
 		}
 		f.chain
-			.reset_chain_head(&f.secp, &f.blocks[0].header, false)
+			.reset_chain_head(
+				&f.secp,
+				&f.blocks[0].header,
+				mwc_chain::ChainHeadReset::Body,
+			)
 			.unwrap();
 		assert_eq!(f.chain.head().unwrap().height, 1);
 		assert_eq!(f.chain.header_head().unwrap().height, 3);

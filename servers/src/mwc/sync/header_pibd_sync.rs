@@ -358,8 +358,11 @@ impl HeaderPibdSync {
 			}
 			// Preserve the existing below-horizon mismatch recovery policy.
 			let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-			self.chain
-				.reset_chain_head(&secp, &self.chain.genesis(), true)?;
+			self.chain.reset_chain_head(
+				&secp,
+				&self.chain.genesis(),
+				mwc_chain::ChainHeadReset::Both,
+			)?;
 		}
 		let current_height = self.chain.header_head()?.height;
 		if current_height >= target {

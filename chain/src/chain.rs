@@ -24,8 +24,9 @@ use crate::store::{ChainOperationKind, PendingChainOperation, PendingChainOperat
 use crate::txhashset;
 use crate::txhashset::{Desegmenter, PMMRHandle, Segmenter, TxHashSet};
 use crate::types::{
-	BlockStatus, ChainAdapter, CommitPos, HashHeight, Options, SpentCommitmentRecord, SpentOutput,
-	SyncState, SyncStatus, SyncStatusUpdateThrottle, Tip, HEADERS_PER_BATCH,
+	BlockStatus, ChainAdapter, ChainHeadReset, CommitPos, HashHeight, Options,
+	SpentCommitmentRecord, SpentOutput, SyncState, SyncStatus, SyncStatusUpdateThrottle, Tip,
+	HEADERS_PER_BATCH,
 };
 use crate::ChainStore;
 use crate::{
@@ -35,7 +36,7 @@ use crate::{
 use mwc_core::consensus;
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::merkle_proof::MerkleProof;
-use mwc_core::core::pmmr::{self, ReadablePMMR, VecBackend, PMMR};
+use mwc_core::core::pmmr::{ReadablePMMR, VecBackend, PMMR};
 use mwc_core::core::{
 	Block, BlockHeader, BlockSums, Committed, Inputs, KernelFeatures, Output, OutputIdentifier,
 	Transaction, TransactionBody, TxKernel,
@@ -1083,47 +1084,68 @@ impl Chain {
 		}
 	}
 
-	/// Reset both head and header_head to the provided header.
-	/// Handles simple rewind and more complex fork scenarios.
-	/// Used by the reset_chain_head owner api endpoint.
-	/// Caller can choose not to rewind headers, which can be used
-	/// during PIBD scenarios where it's desirable to restart the PIBD process
-	/// without re-downloading the header chain
+	/// Reset the selected body and/or header heads to a retained header.
+	/// Header-only resets preserve body state and return false if their target
+	/// became obsolete. Body resets require the target's full block.
 	pub fn reset_chain_head(
 		&self,
 		secp: &Secp256k1,
 		header: &BlockHeader,
-		rewind_headers: bool,
-	) -> Result<(), Error> {
+		reset: ChainHeadReset,
+	) -> Result<bool, Error> {
 		self.ensure_chain_robust()?;
-
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let op = prepare_reset_chain_head_operation(&self.store, header, rewind_headers)?;
-		let mut marker_guard = self.set_pending_chain_operation_checked(&op)?;
-		let res = reset_chain_head_state(
-			&self.store,
-			&mut header_pmmr,
-			&mut txhashset,
-			secp,
-			header,
-			rewind_headers,
-		);
-
-		match res {
-			Ok(()) => {
-				self.advance_pibd_state_generation()?;
-				self.clear_pending_chain_operation_checked()?;
-				marker_guard.disarm();
-				Ok(())
+		let op = match reset {
+			ChainHeadReset::Headers { .. } => {
+				prepare_reconcile_heads_operation(&self.store, ChainOperationKind::ProcessHeader)?
 			}
-			Err(e) => {
-				self.handle_failed_pending_chain_operation(
-					"reset_chain_head",
-					&e,
-					&mut marker_guard,
+			ChainHeadReset::Body | ChainHeadReset::Both => prepare_reset_chain_head_operation(
+				&self.store,
+				header,
+				matches!(reset, ChainHeadReset::Both),
+			)?,
+		};
+		let marker_guard = self.set_pending_chain_operation_checked(&op)?;
+		let mut state_may_have_changed = false;
+		let result = (|| {
+			let changed = reset_chain_head_state(
+				&self.store,
+				&mut header_pmmr,
+				&mut txhashset,
+				secp,
+				header,
+				reset,
+				&mut state_may_have_changed,
+			)?;
+			if changed && !matches!(reset, ChainHeadReset::Headers { .. }) {
+				self.advance_pibd_state_generation()?;
+			}
+			Ok(changed)
+		})();
+		let completion = self.finish_pending_chain_operation(
+			"reset_chain_head",
+			result,
+			state_may_have_changed,
+			marker_guard,
+		)?;
+		drop(txhashset);
+		drop(header_pmmr);
+		match completion {
+			PendingChainOperationCompletion::Complete(changed) => Ok(changed),
+			PendingChainOperationCompletion::CommittedNeedsRecovery {
+				value,
+				marker_error,
+			} => {
+				warn!(
+					"reset_chain_head completed but failed to clear the recovery marker: {}",
+					marker_error
 				);
-				Err(e)
+				self.recover_pending_chain_operation_checked("reset_chain_head marker cleanup")
+					.map_err(|error| {
+						Error::committed_recovery_failed("reset_chain_head marker cleanup", error)
+					})?;
+				Ok(value)
 			}
 		}
 	}
@@ -5747,55 +5769,6 @@ fn body_chain_ancestor_at_height(
 	Ok(current)
 }
 
-/// Refuse rewind-only recovery when a durable DB head is ahead of a PMMR file.
-///
-/// PMMR extensions sync their files before their caller commits the enclosing
-/// LMDB batch. A crash or failed outer commit after a rewind can therefore leave
-/// a completely valid but shorter PMMR on disk while HEAD or HEADER_HEAD still
-/// selects the previous, higher state. This is an expected cross-durability-
-/// domain failure mode; it does not imply that either individual store is
-/// internally corrupt.
-///
-/// The normal reconciliation code cannot repair that direction of mismatch. It
-/// initializes Extension and HeaderExtension from the durable DB tips and then
-/// uses rewind operations. If the files are shorter, the extensions incorrectly
-/// appear to be at the requested heads and eventually ask PMMRBackend::rewind to
-/// move a hash or data file forward. Rewind correctly rejects that request and
-/// cannot recreate the missing headers, outputs, rangeproofs, or kernels.
-///
-/// Validate the targets before mutating any PMMR. Returning a dedicated error on
-/// the first missing component makes node initialization fail with an actionable
-/// reason, bypasses the unsuitable body-only fallback, and preserves the pending-
-/// operation marker for an explicit reset or resynchronization.
-fn preflight_reconciliation_pmmr_capacity(
-	body_head: &Tip,
-	body_header: &BlockHeader,
-	header_head: &Tip,
-	header_header: &BlockHeader,
-	header_pmmr: &PMMRHandle<BlockHeader>,
-	txhashset: &TxHashSet,
-) -> Result<(), Error> {
-	let header_leaf_count = header_header.height.checked_add(1).ok_or_else(|| {
-		Error::DataOverflow(format!(
-			"recovery HEADER_HEAD height overflow: {}",
-			header_header.height
-		))
-	})?;
-	let header_position = pmmr::insertion_to_pmmr_index(header_leaf_count)?;
-
-	match header_pmmr.backend.validate_rewind_target(header_position) {
-		Ok(()) => {}
-		Err(pmmr::Error::InvalidState(reason)) => {
-			return Err(Error::PmmrRecoveryRequired(format!(
-				"durable HEADER_HEAD {} at height {} requires header PMMR position {}, but the current backend files are shorter: {}",
-				header_head.last_block_h, header_head.height, header_position, reason
-			)));
-		}
-		Err(err) => return Err(err.into()),
-	}
-	txhashset.validate_recovery_rewind_targets(body_head, body_header)
-}
-
 /// Authenticate the complete persisted header before recovery trusts the
 /// proof-derived identity stored in the header PMMR.
 ///
@@ -5862,14 +5835,9 @@ fn reconcile_pmmrs_to_db_heads(
 	let (body_header, canonical_body_head) = canonical_tip_header("HEAD", &body_head, &batch)?;
 	let (header_header, canonical_header_head) =
 		canonical_tip_header("HEADER_HEAD", &header_head, &batch)?;
-	preflight_reconciliation_pmmr_capacity(
-		&canonical_body_head,
-		&body_header,
-		&canonical_header_head,
-		&header_header,
-		header_pmmr,
-		txhashset,
-	)?;
+	// Retained headers can rebuild a suffix removed by an interrupted rewind or
+	// reorg. Body recovery still requires its PMMR files to cover the durable HEAD.
+	txhashset.validate_recovery_rewind_targets(&canonical_body_head, &body_header)?;
 	crate::checked_block_for_header(
 		store.get_context_id(),
 		&body_header,
@@ -6001,85 +5969,117 @@ fn reset_chain_head_state(
 	header_pmmr: &mut PMMRHandle<BlockHeader>,
 	txhashset: &mut TxHashSet,
 	secp: &Secp256k1,
-	header: &BlockHeader,
-	rewind_headers: bool,
-) -> Result<(), Error> {
+	target: &BlockHeader,
+	reset: ChainHeadReset,
+	state_may_have_changed: &mut bool,
+) -> Result<bool, Error> {
 	let context_id = store.get_context_id();
-	pipe::validate_header_context_id(context_id, header)?;
-	let requested_target = Tip::try_from_header(header)?;
+	pipe::validate_header_context_id(context_id, target)?;
 	let mut batch = store.batch_write()?;
-	let (header, head) = canonical_tip_header("reset target", &requested_target, &batch)?;
-
-	// A zero-step reset and a rewind to an existing ancestor do not otherwise
-	// load the target block.
-	crate::checked_block_for_header(
-		context_id,
-		&header,
-		"reset_chain_head target preflight",
-		|hash| batch.get_block(hash),
-	)?;
-
-	let (tail_header, tail) = match batch.tail() {
-		Ok(stored_tail) => canonical_tip_header("BODY_TAIL", &stored_tail, &batch)?,
-		Err(NotFoundErr(_)) => {
-			let stored_head = batch.head()?;
-			let (head_header, canonical_head) = canonical_tip_header("HEAD", &stored_head, &batch)?;
-			if canonical_head.height != 0 {
-				return Err(Error::InvalidPersistedChainState(format!(
-					"reset_chain_head BODY_TAIL is missing for HEAD at height {}",
-					canonical_head.height
-				)));
-			}
-			(head_header, canonical_head)
+	if let ChainHeadReset::Headers { expected_head } = reset {
+		if batch.header_head()?.last_block_h != expected_head {
+			return Ok(false);
 		}
-		Err(e) => return Err(Error::StoreErr(e, "reset_chain_head load BODY_TAIL".into())),
-	};
-	if head.height < tail.height {
-		return Err(Error::Other(format!(
-			"reset_chain_head cannot reset HEAD to height {} below BODY_TAIL at height {}",
-			head.height, tail.height
-		)));
 	}
-	let mut target_at_tail = header.clone();
-	let mut visited = HashSet::new();
-	while target_at_tail.height > tail.height {
-		target_at_tail = crate::checked_previous_header(
+	let (header, head) =
+		canonical_tip_header("reset target", &Tip::try_from_header(target)?, &batch)?;
+	if matches!(reset, ChainHeadReset::Headers { .. }) {
+		let (_, current) =
+			canonical_tip_header("header reset HEADER_HEAD", &batch.header_head()?, &batch)?;
+		let (_, body) = canonical_tip_header("header reset HEAD", &batch.head()?, &batch)?;
+		if header != *target {
+			return Err(Error::InvalidPersistedChainState(
+				"Header reset target differs from its stored header".into(),
+			));
+		}
+		if head.last_block_h == current.last_block_h
+			|| (head.last_block_h != body.last_block_h
+				&& (head.total_difficulty <= body.total_difficulty
+					|| head.total_difficulty >= current.total_difficulty))
+		{
+			return Ok(false);
+		}
+		if head.last_block_h != body.last_block_h
+			&& (head.height > current.height
+				|| header_pmmr.get_header_hash_by_height(head.height)? != head.last_block_h)
+		{
+			return Err(Error::InvalidPersistedChainState(
+				"Header reset target is outside the selected header chain".into(),
+			));
+		}
+	} else {
+		// A zero-step reset and a rewind to an existing ancestor do not otherwise
+		// load the target block.
+		crate::checked_block_for_header(
 			context_id,
-			&target_at_tail,
-			&mut visited,
-			"reset_chain_head target ancestry",
-			|hash| batch.get_block_header(hash),
+			&header,
+			"reset_chain_head target preflight",
+			|hash| batch.get_block(hash),
 		)?;
-	}
-	if target_at_tail != tail_header {
-		return Err(Error::Other(format!(
-			"reset_chain_head target ancestry does not contain BODY_TAIL {} at height {}",
-			tail.last_block_h, tail.height
-		)));
+
+		let (tail_header, tail) = match batch.tail() {
+			Ok(stored_tail) => canonical_tip_header("BODY_TAIL", &stored_tail, &batch)?,
+			Err(NotFoundErr(_)) => {
+				let stored_head = batch.head()?;
+				let (head_header, canonical_head) =
+					canonical_tip_header("HEAD", &stored_head, &batch)?;
+				if canonical_head.height != 0 {
+					return Err(Error::InvalidPersistedChainState(format!(
+						"reset_chain_head BODY_TAIL is missing for HEAD at height {}",
+						canonical_head.height
+					)));
+				}
+				(head_header, canonical_head)
+			}
+			Err(e) => return Err(Error::StoreErr(e, "reset_chain_head load BODY_TAIL".into())),
+		};
+		if head.height < tail.height {
+			return Err(Error::Other(format!(
+				"reset_chain_head cannot reset HEAD to height {} below BODY_TAIL at height {}",
+				head.height, tail.height
+			)));
+		}
+		let mut target_at_tail = header.clone();
+		let mut visited = HashSet::new();
+		while target_at_tail.height > tail.height {
+			target_at_tail = crate::checked_previous_header(
+				context_id,
+				&target_at_tail,
+				&mut visited,
+				"reset_chain_head target ancestry",
+				|hash| batch.get_block_header(hash),
+			)?;
+		}
+		if target_at_tail != tail_header {
+			return Err(Error::Other(format!(
+				"reset_chain_head target ancestry does not contain BODY_TAIL {} at height {}",
+				tail.last_block_h, tail.height
+			)));
+		}
+
+		// Rewind and reapply blocks to reset the output/rangeproof/kernel MMR.
+		txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
+			pipe::rewind_and_apply_fork(context_id, &header, ext, batch, secp)?;
+			ext.extension.validate_roots(&header)?;
+			ext.extension.validate_sizes(&header)?;
+			batch.save_body_tail(&tail)?;
+			batch.save_body_head(&head)?;
+			Ok(())
+		})?;
+		*state_may_have_changed = true;
 	}
 
-	// Rewind and reapply blocks to reset the output/rangeproof/kernel MMR.
-	txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
-		pipe::rewind_and_apply_fork(context_id, &header, ext, batch, secp)?;
-		ext.extension.validate_roots(&header)?;
-		ext.extension.validate_sizes(&header)?;
-		batch.save_body_tail(&tail)?;
-		batch.save_body_head(&head)?;
-		Ok(())
-	})?;
-
-	if rewind_headers {
-		// If the rewind of full blocks was successful then we can rewind the header MMR.
-		// Rewind and reapply headers to reset the header MMR.
+	if !matches!(reset, ChainHeadReset::Body) {
 		txhashset::header_extending(header_pmmr, &mut batch, |ext, batch| {
 			pipe::rewind_and_apply_header_fork(context_id, &header, ext, batch)?;
 			batch.save_header_head(&head)?;
 			Ok(())
 		})?;
+		*state_may_have_changed = true;
 	}
 
 	batch.commit()?;
-	Ok(())
+	Ok(true)
 }
 
 fn combine_positioned_outputs_and_rangeproofs(
@@ -6126,6 +6126,22 @@ fn reset_chain_head_to_genesis_state(
 	crate::validation::reset(store.get_context_id());
 	validate_genesis_context_id(genesis, store.get_context_id())?;
 	let head = Tip::try_from_header(&genesis.header)?;
+	if validate_retained_headers {
+		// An interrupted header update may leave the PMMR shorter than, or on a
+		// different branch from, the durable tip. Reconcile it before setup_head
+		// requires that tip to be present, including when restarting a PIBD import.
+		let batch = store.batch_read()?;
+		let (header, _) = canonical_tip_header("HEADER_HEAD", &batch.header_head()?, &batch)?;
+		drop(batch);
+		reconcile_header_pmmr_to_header(
+			&genesis.header,
+			store,
+			header_pmmr,
+			&header,
+			pow_verifier,
+			stop_state.clone(),
+		)?;
+	}
 	// Header sync authenticates every header before storing it. A PIBD body reset
 	// intentionally preserves that chain, so it must not turn into another full
 	// persisted-ancestry validation while holding both PMMR write locks.
@@ -6143,27 +6159,7 @@ fn reset_chain_head_to_genesis_state(
 
 	// Live resets must leave replay checks usable before their marker is cleared;
 	// they cannot depend on startup to finish rebuilding the spent index.
-	Chain::init_spent_commitment_index(store, stop_state.clone())?;
-
-	if !validate_retained_headers {
-		return Ok(());
-	}
-
-	// Preserve the original reset ordering and validation boundaries: setup the
-	// genesis body state first, then reconcile the retained header PMMR to its
-	// durable HEADER_HEAD.
-	let batch = store.batch_read()?;
-	let stored_header_head = batch.header_head()?;
-	let (header, _) = canonical_tip_header("HEADER_HEAD", &stored_header_head, &batch)?;
-	drop(batch);
-	reconcile_header_pmmr_to_header(
-		&genesis.header,
-		store,
-		header_pmmr,
-		&header,
-		pow_verifier,
-		stop_state,
-	)
+	Chain::init_spent_commitment_index(store, stop_state)
 }
 
 fn validate_genesis_context_id(genesis: &Block, context_id: u32) -> Result<(), Error> {
@@ -6804,6 +6800,7 @@ mod tests {
 		clean_output_dir, genesis_block, init_chain, mine_chain,
 	};
 	use crate::types::SpentOutput;
+	use mwc_core::core::pmmr;
 	use mwc_core::core::pmmr::Backend;
 	use mwc_core::core::{CommitWrapper, Input, OutputFeatures};
 	use mwc_core::libtx::{aggsig, proof::ProofBuilder, reward as reward_builder};
@@ -7079,7 +7076,9 @@ mod tests {
 		let flags = crate::validation::get(0);
 		assert!(flags.header_ancestry && flags.kernel_sums && flags.rangeproofs);
 		let target = chain.get_header_by_height(2).unwrap();
-		chain.reset_chain_head(&secp, &target, false).unwrap();
+		chain
+			.reset_chain_head(&secp, &target, ChainHeadReset::Body)
+			.unwrap();
 		assert_eq!(crate::validation::get(0), flags);
 		chain
 			.rewind_bad_block(&secp, &HashSet::from([target.hash(0).unwrap()]))
@@ -7091,6 +7090,203 @@ mod tests {
 			crate::validation::get(0),
 			crate::validation::ValidationFlags::default()
 		);
+	}
+
+	// Rewind headers while retaining the accepted body, stored blocks and progress
+	// times. Stale selections and targets below the body head must have no effect.
+	#[test]
+	fn reset_chain_head_headers_preserve_bodies_and_recheck_selection() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 5);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let original = chain.header_head().unwrap();
+		let original_header = chain.get_block_header(&original.last_block_h).unwrap();
+		let progress = chain
+			.get_header_progress_time(&original.last_block_h)
+			.unwrap();
+		let first = chain.get_header_by_height(1).unwrap();
+		let second = chain.get_header_by_height(2).unwrap();
+		let target = chain.get_header_by_height(3).unwrap();
+		chain
+			.reset_chain_head(&secp, &first, ChainHeadReset::Body)
+			.unwrap();
+		let body = chain.head().unwrap();
+		let tail = chain.tail().unwrap();
+		let body_size = chain.txhashset.read().output_mmr_size();
+		assert!(!chain
+			.reset_chain_head(
+				&secp,
+				&target,
+				ChainHeadReset::Headers {
+					expected_head: Hash::default()
+				}
+			)
+			.unwrap());
+		assert!(!chain
+			.reset_chain_head(
+				&secp,
+				&chain.genesis(),
+				ChainHeadReset::Headers {
+					expected_head: original.last_block_h
+				}
+			)
+			.unwrap());
+		assert!(chain
+			.reset_chain_head(
+				&secp,
+				&target,
+				ChainHeadReset::Headers {
+					expected_head: original.last_block_h
+				}
+			)
+			.unwrap());
+		assert_eq!(chain.head().unwrap(), body);
+		assert_eq!(chain.tail().unwrap(), tail);
+		assert_eq!(chain.txhashset.read().output_mmr_size(), body_size);
+		assert_eq!(
+			chain.header_head().unwrap(),
+			Tip::try_from_header(&target).unwrap()
+		);
+		assert_eq!(
+			chain.header_pmmr.read().head_hash().unwrap(),
+			target.hash(0).unwrap()
+		);
+		assert!(chain.block_exists(&original.last_block_h).unwrap());
+		assert_eq!(
+			chain
+				.get_header_progress_time(&original.last_block_h)
+				.unwrap(),
+			progress
+		);
+		assert!(chain.get_header_by_height(4).is_err());
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+		assert!(!chain.requires_init_recovery.load(Ordering::SeqCst));
+
+		// A returning supplier can reselect retained headers. If the body moves
+		// while a reset is being selected, its newer work remains the lower bound.
+		chain
+			.process_block_header(&original_header, Options::NONE)
+			.unwrap();
+		assert_eq!(chain.header_head().unwrap(), original);
+		let block = chain.get_block_for_header(&second).unwrap();
+		chain
+			.process_block(&mut secp, block, Options::NONE, HashSet::new())
+			.unwrap();
+		assert!(!chain
+			.reset_chain_head(
+				&secp,
+				&first,
+				ChainHeadReset::Headers {
+					expected_head: original.last_block_h
+				}
+			)
+			.unwrap());
+		assert_eq!(chain.head().unwrap().last_block_h, second.hash(0).unwrap());
+		let mut altered = target;
+		altered.height += 1;
+		assert!(chain
+			.reset_chain_head(
+				&secp,
+				&altered,
+				ChainHeadReset::Headers {
+					expected_head: original.last_block_h
+				}
+			)
+			.is_err());
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+	}
+
+	// Interrupt at each durability boundary: before PMMR sync, after its rewind,
+	// and after the DB selector commit. Restart must follow the committed DB tip:
+	// restore the old suffix before commit, or keep the truncated tip after commit.
+	#[test]
+	fn reset_chain_head_headers_recover_each_commit_boundary() {
+		for stage in 0..3 {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 4);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let genesis = chain.genesis.clone();
+			let first = chain.get_header_by_height(1).unwrap();
+			let target = chain.get_header_by_height(2).unwrap();
+			let target_tip = Tip::try_from_header(&target).unwrap();
+			chain
+				.reset_chain_head(&secp, &first, ChainHeadReset::Body)
+				.unwrap();
+			let body = chain.head().unwrap();
+			let original = chain.header_head().unwrap();
+			let operation =
+				prepare_reconcile_heads_operation(&chain.store, ChainOperationKind::ProcessHeader)
+					.unwrap();
+			chain.store.set_pending_chain_operation(&operation).unwrap();
+			assert_eq!(
+				chain.store.pending_chain_operation().unwrap(),
+				Some(operation)
+			);
+			if stage >= 1 {
+				let mut pmmr = chain.header_pmmr.write();
+				let mut batch = chain.store.batch_write().unwrap();
+				txhashset::header_extending(&mut pmmr, &mut batch, |ext, _| ext.rewind(&target))
+					.unwrap();
+				if stage == 2 {
+					batch.save_header_head(&target_tip).unwrap();
+					batch.commit().unwrap();
+				}
+			}
+			drop(chain);
+			let restarted = init_chain(&secp, path, genesis);
+			let expected = if stage == 2 { target_tip } else { original };
+			assert_eq!(restarted.head().unwrap(), body);
+			assert_eq!(restarted.header_head().unwrap(), expected);
+			assert_eq!(
+				restarted.header_pmmr.read().head_hash().unwrap(),
+				expected.last_block_h
+			);
+			assert!(restarted.get_block_header(&original.last_block_h).is_ok());
+			assert!(restarted.store.pending_chain_operation().unwrap().is_none());
+		}
+	}
+
+	// Restart an unconfirmed PIBD import after an interrupted header update. The
+	// shared reset must preserve the committed header tip even if its PMMR differs.
+	#[test]
+	fn reset_chain_head_headers_preserve_pibd_restart_policy() {
+		for committed in [false, true] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 5);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let genesis = chain.genesis.clone();
+			let archive = chain.get_header_by_height(3).unwrap();
+			chain
+				.reset_chain_head(&secp, &archive, ChainHeadReset::Body)
+				.unwrap();
+			make_imported_archive(&chain, false);
+			let original = chain.header_head().unwrap();
+			let target = chain.head().unwrap();
+			let operation =
+				prepare_reconcile_heads_operation(&chain.store, ChainOperationKind::ProcessHeader)
+					.unwrap();
+			chain.store.set_pending_chain_operation(&operation).unwrap();
+			{
+				let mut pmmr = chain.header_pmmr.write();
+				let mut batch = chain.store.batch_write().unwrap();
+				txhashset::header_extending(&mut pmmr, &mut batch, |ext, _| ext.rewind(&archive))
+					.unwrap();
+				if committed {
+					batch.save_header_head(&target).unwrap();
+					batch.commit().unwrap();
+				}
+			}
+			drop(chain);
+			let restarted = init_chain(&secp, path, genesis);
+			assert_eq!(restarted.head().unwrap().height, 0);
+			assert_eq!(
+				restarted.header_head().unwrap(),
+				if committed { target } else { original }
+			);
+			assert!(restarted.store.pending_chain_operation().unwrap().is_none());
+		}
 	}
 
 	#[test]
@@ -7158,7 +7354,7 @@ mod tests {
 			};
 			assert!(
 				matches!(error, Error::InvalidPersistedChainState(ref context)
-				if context.contains("failed PoW validation")),
+				if context.contains("failed PoW")),
 				"{:?}",
 				error
 			);
@@ -7563,7 +7759,9 @@ mod tests {
 
 			// Ordinary rewinds retain bodies above the new head. Full resets must
 			// remove these too, not just records on the current body chain.
-			chain.reset_chain_head(&secp, &first.header, false).unwrap();
+			chain
+				.reset_chain_head(&secp, &first.header, ChainHeadReset::Body)
+				.unwrap();
 			assert!(chain.store.block_exists(&tip.last_block_h).unwrap());
 			assert_eq!(chain.header_head().unwrap(), headers);
 			let stale_commitment = first.outputs()[0].commitment();
@@ -8506,7 +8704,7 @@ mod tests {
 		// Rewind the headers and accept only the parent. Explicitly redelivering
 		// the child must reapply its header and propagate a local recovery failure.
 		chain
-			.reset_chain_head(&secp, &source.genesis.header, true)
+			.reset_chain_head(&secp, &source.genesis.header, ChainHeadReset::Both)
 			.unwrap();
 		chain
 			.process_block_header(&header_one, Options::SKIP_POW)
@@ -9640,7 +9838,9 @@ mod tests {
 		let genesis = chain.genesis();
 
 		assert_successful_reset_invalidates_segmenters(&chain, || {
-			chain.reset_chain_head(&secp, &genesis, true)
+			chain
+				.reset_chain_head(&secp, &genesis, ChainHeadReset::Both)
+				.map(|_| ())
 		});
 		assert_successful_reset_invalidates_segmenters(&chain, || chain.reset_pibd_chain());
 		assert_successful_reset_invalidates_segmenters(&chain, || {
@@ -9895,7 +10095,7 @@ mod tests {
 		let mut header = chain.genesis();
 		header.pow.proof.context_id = u32::MAX;
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			chain.reset_chain_head(&secp, &header, true)
+			chain.reset_chain_head(&secp, &header, ChainHeadReset::Both)
 		}));
 		let err = result
 			.expect("context mismatch must return an error instead of panicking")
@@ -9918,7 +10118,8 @@ mod tests {
 					&mut txhashset,
 					&secp,
 					&header,
-					true,
+					ChainHeadReset::Both,
+					&mut false,
 				)
 			}))
 		};
@@ -10088,7 +10289,7 @@ mod tests {
 	}
 
 	#[test]
-	fn startup_recovers_speculative_header_pmmr_fork_missing_from_db() {
+	fn startup_recovers_shorter_header_pmmr_fork_missing_from_db() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -10109,20 +10310,23 @@ mod tests {
 		let mut durable = recovery_test_header(1, genesis_hash, 811);
 		durable.prev_root = genesis_root;
 		let durable_hash = durable.hash(0).unwrap();
-		let durable_tip = Tip::try_from_header(&durable).unwrap();
+		let mut durable_next = recovery_test_header(2, durable_hash, 813);
 		let mut speculative = recovery_test_header(1, genesis_hash, 812);
 		speculative.prev_root = genesis_root;
 		let speculative_hash = speculative.hash(0).unwrap();
 		let speculative_tip = Tip::try_from_header(&speculative).unwrap();
 		assert_ne!(durable_hash, speculative_hash);
 
-		// Establish a fully durable header branch first.
+		// Establish a two-header branch. The interrupted switch below replaces it
+		// with a shorter branch whose new records never reach the durable DB.
 		{
 			let mut header_pmmr = chain.header_pmmr.write();
 			let mut batch = chain.store.batch_write().unwrap();
 			txhashset::header_extending(&mut header_pmmr, &mut batch, |ext, _| {
 				ext.validate_root(&durable)?;
-				ext.apply_header(&durable)
+				ext.apply_header(&durable)?;
+				durable_next.prev_root = ext.root()?;
+				ext.apply_header(&durable_next)
 			})
 			.unwrap();
 			batch
@@ -10131,9 +10335,18 @@ mod tests {
 					crate::store::header_creation_time(&durable).unwrap(),
 				)
 				.unwrap();
-			batch.save_header_head(&durable_tip).unwrap();
+			batch
+				.save_block_header(
+					&durable_next,
+					crate::store::header_creation_time(&durable_next).unwrap(),
+				)
+				.unwrap();
+			batch
+				.save_header_head(&Tip::try_from_header(&durable_next).unwrap())
+				.unwrap();
 			batch.commit().unwrap();
 		}
+		let durable_tip = Tip::try_from_header(&durable_next).unwrap();
 
 		let op = prepare_reconcile_heads_operation(&chain.store, ChainOperationKind::SyncHeaders)
 			.unwrap();
@@ -10185,10 +10398,10 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(restarted.header_head().unwrap(), durable_tip);
-		assert_eq!(restarted.header_pmmr.read().size, 3);
+		assert_eq!(restarted.header_pmmr.read().size, 4);
 		assert_eq!(
 			restarted.header_pmmr.read().head_hash().unwrap(),
-			durable_hash
+			durable_tip.last_block_h
 		);
 		assert!(restarted.store.pending_chain_operation().unwrap().is_none());
 		assert!(restarted.store.get_block_header(&speculative_hash).is_err());
@@ -10223,7 +10436,8 @@ mod tests {
 			&mut txhashset,
 			&secp,
 			&genesis.header,
-			true,
+			ChainHeadReset::Both,
+			&mut false,
 		)
 		.unwrap_err();
 		assert!(matches!(
@@ -10277,7 +10491,8 @@ mod tests {
 			&mut txhashset,
 			&secp,
 			&genesis.header,
-			true,
+			ChainHeadReset::Both,
+			&mut false,
 		)
 		.unwrap_err();
 		assert!(matches!(below_tail, Error::Other(msg) if msg.contains("below BODY_TAIL")));
@@ -10288,7 +10503,8 @@ mod tests {
 			&mut txhashset,
 			&secp,
 			&fork_2.header,
-			true,
+			ChainHeadReset::Both,
+			&mut false,
 		)
 		.unwrap_err();
 		assert!(matches!(
@@ -10647,7 +10863,7 @@ mod tests {
 	}
 
 	#[test]
-	fn marked_recovery_reports_short_header_pmmr_and_startup_stops() {
+	fn marked_recovery_rejects_invalid_header_when_rebuilding_suffix() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		global::set_local_nrd_enabled(false);
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
@@ -10661,9 +10877,9 @@ mod tests {
 		let op = prepare_reconcile_heads_operation(&chain.store, ChainOperationKind::ProcessHeader)
 			.unwrap();
 
-		// Model the restart-visible result of a rewind that reached the PMMR
-		// durability domain without the matching LMDB transition: HEADER_HEAD
-		// requires two header leaves, while the file still contains only genesis.
+		// A missing PMMR suffix may be rebuilt only from authenticated headers.
+		// This stored header has invalid PoW: recovery must fail without changing
+		// either PMMR or clearing its marker, both live and after restart.
 		chain.store.set_pending_chain_operation(&op).unwrap();
 		{
 			let batch = chain.store.batch_write().unwrap();
@@ -10696,12 +10912,12 @@ mod tests {
 				None,
 			)
 			.unwrap_err();
-			let details = match err {
-				Error::PmmrRecoveryRequired(details) => details,
-				other => panic!("unexpected short-header recovery error: {:?}", other),
-			};
-			assert!(details.contains("durable HEADER_HEAD"), "{}", details);
-			assert!(details.contains("header PMMR position 3"), "{}", details);
+			assert!(
+				matches!(err, Error::InvalidPersistedChainState(ref details)
+				if details.contains("failed PoW authentication")),
+				"{:?}",
+				err
+			);
 			assert_eq!(header_pmmr.size, header_size_before);
 			assert_eq!(
 				(
@@ -10719,9 +10935,7 @@ mod tests {
 		assert_eq!(chain.head().unwrap(), original_body_head);
 		assert_eq!(chain.header_head().unwrap(), target_header_head);
 
-		// Chain::init invokes marked-operation recovery before setup_head. The same
-		// typed error therefore aborts node initialization instead of entering the
-		// body-only genesis fallback or clearing the marker.
+		// Startup must enforce the same authentication check and retain the marker.
 		drop(chain);
 		let restart_err = match Chain::init(
 			&secp,
@@ -10736,13 +10950,13 @@ mod tests {
 			None,
 			false,
 		) {
-			Ok(_) => panic!("startup accepted a durable head beyond the header PMMR"),
+			Ok(_) => panic!("startup rebuilt the PMMR from an unauthenticated header"),
 			Err(err) => err,
 		};
 		assert!(matches!(
 			restart_err,
-			Error::PmmrRecoveryRequired(ref details)
-				if details.contains("durable HEADER_HEAD")
+			Error::InvalidPersistedChainState(ref details)
+				if details.contains("failed PoW authentication")
 		));
 
 		let store = ChainStore::new(0, &chain_dir).unwrap();

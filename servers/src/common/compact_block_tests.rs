@@ -220,6 +220,40 @@ impl Fixture {
 	}
 }
 
+impl Drop for Fixture {
+	fn drop(&mut self) {
+		// Match server shutdown: drain Peers -> Peer -> Peers before removing
+		// the temporary stores, so completed tests cannot retain open files.
+		if let Err(error) = self.peers.stop() {
+			eprintln!("Failed to stop compact-block fixture peers: {}", error);
+		}
+	}
+}
+
+// A connected peer routes callbacks through Peers, creating a strong-reference
+// cycle until shutdown drains the peer collection. Dropping a fixture must
+// release that whole graph, including its chain and open database handles.
+#[test]
+fn dropping_fixture_releases_connected_peers_and_chain() {
+	let (peers, adapter, manager, chain) = {
+		let fixture = Fixture::new(970_019);
+		let _messages = fixture.request_missing_bodies();
+		(
+			Arc::downgrade(&fixture.peers),
+			Arc::downgrade(&fixture.adapter),
+			Arc::downgrade(&fixture.manager),
+			Arc::downgrade(&fixture.chain),
+		)
+	};
+	assert!(
+		peers.upgrade().is_none(),
+		"fixture retained connected peers"
+	);
+	assert!(adapter.upgrade().is_none(), "fixture retained its adapter");
+	assert!(manager.upgrade().is_none(), "fixture retained sync state");
+	assert!(chain.upgrade().is_none(), "fixture retained chain storage");
+}
+
 fn init_chain(
 	context: u32,
 	secp: &Secp256k1,
@@ -455,6 +489,218 @@ fn sync_loop_selects_all_ahead_peers_after_pong_updates() {
 			.manager
 			.header_download_for_test(&peer.info.addr)
 			.is_some());
+	}
+}
+
+// A peer supplies the strongest header fork and then disappears. Truncating
+// strictly below the survivor's work must start its header download, replace
+// obsolete body tasks, and eventually advance the body onto the survivor's branch.
+#[test]
+fn unsupported_headers_switch_to_the_remaining_peers_branch() {
+	let mut f = Fixture::new(1_934_040);
+	let body = f.chain.head().unwrap();
+	let strong_dir = TempDir::new().unwrap();
+	let strong = init_chain(f.context, &f.secp, &strong_dir, Arc::new(NoopAdapter {}));
+	let strong_keys = ExtKeychain::from_seed(&f.secp, &[43; 32], false).unwrap();
+	let mut abandoned = Vec::new();
+	for _ in 0..6 {
+		let block = next_block(&strong, &mut f.secp, &strong_keys, &[]);
+		abandoned.push(block.header.clone());
+		strong
+			.process_block(&mut f.secp, block, Options::NONE, HashSet::new())
+			.unwrap();
+	}
+	f.chain
+		.sync_block_headers(&abandoned, Options::NONE, 1000)
+		.unwrap();
+	let strong_tip = f.chain.header_head().unwrap();
+	let other_dir = TempDir::new().unwrap();
+	let other = init_chain(f.context, &f.secp, &other_dir, Arc::new(NoopAdapter {}));
+	for block in &f.history {
+		other
+			.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
+			.unwrap();
+	}
+	let mut bodies = Vec::new();
+	for _ in 0..2 {
+		let block = next_block(&other, &mut f.secp, &f.keychain, &[]);
+		other
+			.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
+			.unwrap();
+		bodies.push(block);
+	}
+	let other_tip = other.head().unwrap();
+	assert_eq!(abandoned[4].total_difficulty(), other_tip.total_difficulty);
+	let mut suppliers = Vec::new();
+	for (port, tip) in [(3540, strong_tip), (3541, other_tip)] {
+		let info = PeerInfo {
+			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+			..f.peer.clone()
+		};
+		info.update(tip.height, tip.total_difficulty);
+		let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
+		let peer = Arc::new(peer);
+		suppliers.push((peer, messages));
+	}
+	let (strong_peer, strong_messages) = &suppliers[0];
+	let (other_peer, other_messages) = &suppliers[1];
+	f.peers.add_connected(strong_peer.clone()).unwrap();
+	// Mirror Syncer's ordering. Equality with a connected supplier keeps the tip.
+	f.manager.truncate_header_head(&f.peers).unwrap();
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), strong_tip);
+	let requested = strong_messages.try_iter().count();
+	assert!((1..=6).contains(&requested));
+	let requested_hash = abandoned[requested - 1].hash(f.context).unwrap();
+	assert_eq!(other_messages.try_iter().count(), 0);
+	assert!(f
+		.manager
+		.has_block_request(&strong_peer.info.addr, &requested_hash));
+
+	// An alternative joins after the original body requests were assigned.
+	f.peers.add_connected(other_peer.clone()).unwrap();
+	f.peers.remove_connected(&strong_peer.info.addr);
+	f.manager.truncate_header_head(&f.peers).unwrap();
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(f.chain.head().unwrap(), body);
+	assert_eq!(f.chain.header_head().unwrap().height, 4);
+	assert!(f.chain.header_head().unwrap().total_difficulty < other_tip.total_difficulty);
+	assert!(!f
+		.manager
+		.has_block_request(&strong_peer.info.addr, &strong_tip.last_block_h));
+	assert_eq!(
+		other_messages.try_recv().unwrap().message_type_for_test(),
+		mwc_p2p::msg::Type::GetHeaders
+	);
+	assert_eq!(other_messages.try_iter().count(), 0);
+	assert!(f
+		.manager
+		.header_download_for_test(&other_peer.info.addr)
+		.is_some());
+
+	// The survivor is temporarily above our known headers. Another poll must
+	// preserve both the selected prefix and its already outstanding request.
+	let retained = f.chain.header_head().unwrap();
+	f.manager.truncate_header_head(&f.peers).unwrap();
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), retained);
+	assert_eq!(other_messages.try_iter().count(), 0);
+	let response: Vec<_> = f
+		.history
+		.iter()
+		.chain(bodies.iter())
+		.map(|block| block.header.clone())
+		.collect();
+	other_peer.receive_headers_for_test(&response, 0).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), other_tip);
+	let mut requests = Vec::new();
+	for block in bodies {
+		// The resource limit may allow only one body at a time. Refill on each
+		// pass and check that the replacement branch supplies both in order.
+		f.manager.truncate_header_head(&f.peers).unwrap();
+		f.manager.sync_request(&f.peers).unwrap();
+		requests.extend(
+			other_messages
+				.try_iter()
+				.map(|message| message.message_type_for_test()),
+		);
+		assert!(!f
+			.manager
+			.has_block_request(&strong_peer.info.addr, &requested_hash));
+		assert!(f
+			.manager
+			.has_block_request(&other_peer.info.addr, &block.hash(f.context).unwrap()));
+		assert!(f
+			.peers
+			.block_received(&mut f.secp, block, &other_peer.info)
+			.unwrap());
+	}
+	assert_eq!(requests, vec![mwc_p2p::msg::Type::GetBlock; 2]);
+	assert_eq!(f.chain.head().unwrap(), other_tip);
+	assert_eq!(f.chain.header_head().unwrap(), other_tip);
+	assert!(!f.peers.is_banned(&other_peer.info.addr).unwrap());
+	assert_eq!(
+		f.chain
+			.get_header_progress_time(&strong_tip.last_block_h)
+			.unwrap(),
+		1000
+	);
+	assert!(f.chain.get_block_header(&strong_tip.last_block_h).is_ok());
+}
+
+// With no peer ahead of the accepted body, select that exact body tip even
+// when the abandoned headers fork at genesis. Both PIBD gates must prevent
+// this policy from changing the checkpoint chain before validation completes.
+#[test]
+fn unsupported_headers_fall_back_to_body_only_after_snapshot_validation() {
+	for (context, connect_behind, equal_work) in [
+		(1_934_041, false, false),
+		(1_934_042, true, false),
+		(1_934_043, false, true),
+	] {
+		let mut f = Fixture::new(context);
+		let dir = TempDir::new().unwrap();
+		let fork = init_chain(f.context, &f.secp, &dir, Arc::new(NoopAdapter {}));
+		let keys = ExtKeychain::from_seed(&f.secp, &[44; 32], false).unwrap();
+		for _ in 0..4 {
+			let block = next_block(&fork, &mut f.secp, &keys, &[]);
+			fork.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
+				.unwrap();
+			f.chain
+				.process_block_header(&block.header, Options::NONE)
+				.unwrap();
+		}
+		let abandoned = f.chain.header_head().unwrap();
+		if equal_work {
+			// A mined body can tie a previously selected header on another fork.
+			// With no suppliers, the fallback must still select the body branch.
+			let block = f.block(&[]);
+			f.chain
+				.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
+				.unwrap();
+			f.history.push(block);
+			assert_eq!(f.chain.header_head().unwrap(), abandoned);
+			assert_eq!(
+				f.chain.head().unwrap().total_difficulty,
+				abandoned.total_difficulty
+			);
+		}
+		let body = f.chain.head().unwrap();
+		let _messages = if connect_behind {
+			f.peer.update(body.height, body.total_difficulty);
+			let (peer, messages) =
+				mwc_p2p::Peer::connected_for_test(f.peer.clone(), f.context, f.peers.clone());
+			f.peers.add_connected(Arc::new(peer)).unwrap();
+			Some(messages)
+		} else {
+			None
+		};
+		let status = Arc::new(SyncState::new());
+		let pending = SyncManager::new(f.chain.clone(), status.clone(), Arc::new(StopState::new()));
+		pending.truncate_header_head(&f.peers).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), abandoned);
+		status.reset();
+		let validating =
+			SyncManager::new(f.chain.clone(), status.clone(), Arc::new(StopState::new()));
+		status.update(SyncStatus::ValidatingKernelsHistory {
+			headers: 0,
+			headers_total: 4,
+		});
+		validating.truncate_header_head(&f.peers).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), abandoned);
+
+		f.manager.truncate_header_head(&f.peers).unwrap();
+		f.manager.sync_request(&f.peers).unwrap();
+		assert_eq!(f.chain.head().unwrap(), body);
+		assert_eq!(f.chain.header_head().unwrap(), body);
+		for block in &f.history {
+			assert_eq!(
+				f.chain.get_header_by_height(block.header.height).unwrap(),
+				block.header
+			);
+		}
+		assert!(f.chain.get_block_header(&abandoned.last_block_h).is_ok());
 	}
 }
 

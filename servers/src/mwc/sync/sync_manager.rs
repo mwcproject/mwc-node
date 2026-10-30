@@ -25,13 +25,13 @@ use crate::mwc::sync::state_sync::StateSync;
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils::{self, SyncRequestResponses, SyncResponse};
 use mwc_chain::txhashset::BitmapChunk;
-use mwc_chain::{Chain, Error, SyncState, SyncStatus};
-use mwc_core::core::hash::Hash;
+use mwc_chain::{Chain, ChainHeadReset, Error, SyncState, SyncStatus};
+use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, BlockHeader, OutputIdentifier, Segment, TxKernel};
 use mwc_crates::log::{debug, info, warn};
 use mwc_crates::parking_lot::RwLock;
 use mwc_crates::secp::pedersen::RangeProof;
-use mwc_crates::secp::Secp256k1;
+use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::{Capabilities, PeerAddr, PeerInfo, Peers};
 use mwc_util::StopState;
 use std::collections::HashSet;
@@ -286,6 +286,63 @@ impl SyncManager {
 			)),
 			_ => Ok(body),
 		}
+	}
+
+	/// Release a header-only branch whose suppliers have disappeared. Leave room
+	/// for a remaining peer's advertised work to start an ordinary header download.
+	pub fn truncate_header_head(&self, peers: &Arc<Peers>) -> Result<(), Error> {
+		if !self.state_is_ready() {
+			return Ok(());
+		}
+		let headers = self.chain.header_head()?;
+		let body = self.chain.head()?;
+		if headers.last_block_h == body.last_block_h {
+			return Ok(());
+		}
+		let best_work = peers
+			.iter()
+			.connected()
+			.into_iter()
+			.map(|peer| peer.info.get_height_and_difficulty().1)
+			.max();
+		if best_work.is_some_and(|work| work >= headers.total_difficulty) {
+			return Ok(());
+		}
+		let mut target = self.chain.get_block_header(&body.last_block_h)?;
+		if let Some(work) = best_work.filter(|work| *work > body.total_difficulty) {
+			target = self.chain.get_block_header(&headers.last_block_h)?;
+			// HeaderSync starts requests only for strictly greater work. Stopping
+			// at equality could leave a peer on another branch unable to qualify.
+			while target.total_difficulty() >= work {
+				let previous = self.chain.get_previous_header(&target)?;
+				if previous.height.checked_add(1) != Some(target.height)
+					|| previous.total_difficulty() >= target.total_difficulty()
+					|| previous.hash(self.chain.get_context_id())? != target.prev_hash
+				{
+					return Err(Error::InvalidPersistedChainState(
+						"Invalid header ancestry while selecting truncation target".into(),
+					));
+				}
+				target = previous;
+			}
+			if target.total_difficulty() <= body.total_difficulty {
+				target = self.chain.get_block_header(&body.last_block_h)?;
+			}
+		}
+		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
+		if self.chain.reset_chain_head(
+			&secp,
+			&target,
+			ChainHeadReset::Headers {
+				expected_head: headers.last_block_h,
+			},
+		)? {
+			info!(
+				"Truncated unsupported header head from {} at {} to height {} with work {}; best peer work {:?}",
+				headers.last_block_h, headers.height, target.height, target.total_difficulty(), best_work
+			);
+		}
+		Ok(())
 	}
 
 	pub fn receive_headers_hash_response(
