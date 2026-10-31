@@ -6461,6 +6461,90 @@ fn ensure_missing_head_is_fresh(
 	Err(Error::InvalidPersistedChainState(msg))
 }
 
+/// Check that the retained body chain is continuous during startup validation.
+/// Follow HEAD's ancestry; HEADER_HEAD may be on another fork.
+fn validate_retained_block_bodies(
+	head: &BlockHeader,
+	batch: &Batch<'_>,
+	stop_state: Option<&StopState>,
+) -> Result<(), Error> {
+	let context_id = batch.get_context_id();
+	let tail = match batch.tail() {
+		Ok(tail) => canonical_tip_header("retained BODY_TAIL", &tail, batch)?.0,
+		// A fresh genesis-only chain has no BODY_TAIL until its first full block.
+		Err(NotFoundErr(_)) if head.height == 0 => head.clone(),
+		Err(NotFoundErr(_)) => {
+			return Err(Error::InvalidPersistedChainState(format!(
+				"Missing BODY_TAIL for retained body head {} at height {}",
+				head.hash(context_id)?,
+				head.height
+			)));
+		}
+		Err(e) => return Err(Error::StoreErr(e, "startup retained body tail".into())),
+	};
+	if tail.height > head.height {
+		return Err(Error::InvalidPersistedChainState(format!(
+			"Retained body tail height {} exceeds head height {}",
+			tail.height, head.height
+		)));
+	}
+
+	let started = Instant::now();
+	let mut last_progress = started;
+	info!(
+		"Checking retained block bodies from height {} down to {}",
+		head.height, tail.height
+	);
+	let mut current = head.clone();
+	let mut visited = HashSet::new();
+	loop {
+		if stop_state.is_some_and(StopState::is_stopped) {
+			return Err(Error::Stopped);
+		}
+		let hash = current.hash(context_id)?;
+		if !batch.block_exists(&hash).map_err(|e| {
+			Error::StoreErr(
+				e,
+				format!("startup block {} at height {}", hash, current.height),
+			)
+		})? {
+			return Err(Error::InvalidPersistedChainState(format!(
+				"Missing retained block body {} at height {} (BODY_TAIL {}, HEAD {}). Restore the missing block or resync the node",
+				hash.to_hex(), current.height, tail.height, head.height
+			)));
+		}
+		if current.height == tail.height {
+			if current != tail {
+				return Err(Error::InvalidPersistedChainState(format!(
+					"Retained body tail {} at height {} is not on the body head's ancestry",
+					tail.hash(context_id)?,
+					tail.height
+				)));
+			}
+			break;
+		}
+		current = crate::checked_previous_header(
+			context_id,
+			&current,
+			&mut visited,
+			"startup retained body ancestry",
+			|hash| batch.get_block_header(hash),
+		)?;
+		if last_progress.elapsed().as_secs() >= 30 {
+			info!(
+				"Checking retained block bodies: reached height {}",
+				current.height
+			);
+			last_progress = Instant::now();
+		}
+	}
+	info!(
+		"Retained block body check finished in {}s",
+		started.elapsed().as_secs()
+	);
+	Ok(())
+}
+
 fn setup_head(
 	genesis: &Block,
 	store: &store::ChainStore,
@@ -6640,6 +6724,16 @@ fn setup_head(
 						"setup_head durable HEAD preflight",
 						|hash| batch.get_block(hash),
 					)?;
+					// Missing retained bodies cannot be repaired by rewinding: undoing
+					// a block requires its body. Report the error and stop startup.
+					if let Err(e) =
+						validate_retained_block_bodies(&header, &batch, stop_state.as_deref())
+					{
+						if !matches!(e, Error::Stopped) {
+							error!("Startup retained block check failed: {}", e);
+						}
+						return Err(e);
+					}
 				}
 				let output_mmr_size_before = txhashset.output_mmr_size();
 				let kernel_mmr_size_before = txhashset.kernel_mmr_size();
@@ -12208,6 +12302,158 @@ mod tests {
 
 		drop(chain);
 		let _ = fs::remove_dir_all(&chain_dir);
+	}
+
+	#[test]
+	fn startup_retained_body_check_respects_skip_without_changing_heads() {
+		// Complete derived indexes used to hide missing intermediate bodies.
+		// Validation must reject gaps at the tail and inside the retained range.
+		// Explicitly skipping validation allows these gaps and an absent HEAD body.
+		for (missing_height, skip_validation) in
+			[(1, false), (2, false), (1, true), (2, true), (3, true)]
+		{
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 4);
+			let genesis = chain.genesis.clone();
+			let head = chain.head().unwrap();
+			let headers = chain.header_head().unwrap();
+			let tail = chain.tail().unwrap();
+			let missing_hash = chain
+				.get_header_by_height(missing_height)
+				.unwrap()
+				.hash(0)
+				.unwrap();
+			{
+				let batch = chain.store.batch_write().unwrap();
+				assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+				// Model a lost body record while preserving its header, PMMR state,
+				// head/tail selectors and index completeness flags.
+				batch
+					.delete(&mwc_store::to_key(b'b', missing_hash))
+					.unwrap();
+				batch.commit().unwrap();
+			}
+			drop(chain);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			match Chain::init(
+				&secp,
+				0,
+				path.to_owned(),
+				Arc::new(crate::types::NoopAdapter {}),
+				genesis,
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				skip_validation,
+			) {
+				Ok(_) if skip_validation => (),
+				Ok(_) => panic!(
+					"startup accepted missing retained block at {}",
+					missing_height
+				),
+				Err(error) => {
+					assert!(!skip_validation, "validation was skipped: {}", error);
+					assert!(
+						matches!(&error, Error::InvalidPersistedChainState(message)
+						if message.contains("Missing retained block body")
+							&& message.contains(&missing_hash.to_hex())
+							&& message.contains(&format!("at height {}", missing_height))),
+						"{}",
+						error
+					);
+				}
+			}
+
+			// Neither failure nor skipping validation may rewind or reset the heads.
+			let store = ChainStore::new(0, path).unwrap();
+			assert_eq!(store.head().unwrap(), head);
+			assert_eq!(store.header_head().unwrap(), headers);
+			assert_eq!(store.tail().unwrap(), tail);
+			assert!(!store.block_exists(&missing_hash).unwrap());
+			assert!(store.pending_chain_operation().unwrap().is_none());
+		}
+	}
+
+	#[test]
+	fn startup_retained_body_check_allows_absent_bodies_outside_retained_range() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().to_str().unwrap();
+		let chain = mine_chain(path, 5);
+		let genesis = chain.genesis.clone();
+		let headers = chain.header_head().unwrap();
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let target = chain.get_header_by_height(3).unwrap();
+		chain
+			.reset_chain_head(&secp, &target, ChainHeadReset::Body)
+			.unwrap();
+		let head = chain.head().unwrap();
+		let tail = Tip::try_from_header(&chain.get_header_by_height(2).unwrap()).unwrap();
+		let old_hash = chain.get_header_by_height(1).unwrap().hash(0).unwrap();
+		{
+			let batch = chain.store.batch_write().unwrap();
+			// Bodies below the retained tail may be absent after pruning or PIBD.
+			// Headers above the body head may still await their full-block download.
+			batch.save_body_tail(&tail).unwrap();
+			batch.delete(&mwc_store::to_key(b'b', old_hash)).unwrap();
+			batch
+				.delete(&mwc_store::to_key(b'b', headers.last_block_h))
+				.unwrap();
+			batch.commit().unwrap();
+		}
+		drop(chain);
+		for skip_validation in [false, true] {
+			let restarted = Chain::init(
+				&secp,
+				0,
+				path.to_owned(),
+				Arc::new(crate::types::NoopAdapter {}),
+				genesis.clone(),
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				skip_validation,
+			)
+			.unwrap();
+			assert_eq!(restarted.head().unwrap(), head);
+			assert_eq!(restarted.tail().unwrap(), tail);
+			assert_eq!(restarted.header_head().unwrap(), headers);
+			assert!(!restarted.block_exists(&old_hash).unwrap());
+			assert!(!restarted.block_exists(&headers.last_block_h).unwrap());
+		}
+	}
+
+	#[test]
+	fn startup_retained_body_check_rejects_wrong_tail_and_honors_stop() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 4);
+		let head = chain.head_header().unwrap();
+		let stop = StopState::new();
+		stop.stop();
+		let batch = chain.store.batch_read().unwrap();
+		assert!(matches!(
+			validate_retained_block_bodies(&head, &batch, Some(&stop)),
+			Err(Error::Stopped)
+		));
+		drop(batch);
+
+		// A tail at a matching height on a different branch must not authorize a
+		// shorter check. Tail must be reached through the body's exact ancestry.
+		let other = retained_test_block(2, chain.genesis.hash(0).unwrap(), 381);
+		let batch = chain.store.batch_write().unwrap();
+		batch.save_block_header(&other.header, 0).unwrap();
+		batch
+			.save_body_tail(&Tip::try_from_header(&other.header).unwrap())
+			.unwrap();
+		batch.commit().unwrap();
+		let batch = chain.store.batch_read().unwrap();
+		let error = validate_retained_block_bodies(&head, &batch, None).unwrap_err();
+		assert!(matches!(error, Error::InvalidPersistedChainState(message)
+			if message.contains("not on the body head's ancestry")));
 	}
 
 	#[test]

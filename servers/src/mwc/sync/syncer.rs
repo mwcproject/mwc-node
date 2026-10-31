@@ -116,8 +116,17 @@ impl SyncRunner {
 	/// errors do not stop the server. Startup still reports thread spawn failure
 	/// through run_sync; after that, sync_loop owns retrying and recovery.
 	fn sync_loop(&self) {
-		// Wait for connections reach at least MIN_PEERS
+		if self.stop_state.is_stopped() {
+			return;
+		}
 		self.sync_state.update(SyncStatus::AwaitingPeers);
+		// Release unsupported persisted headers before waiting for peers. No PIBD
+		// work has started yet; with no suppliers the target is the retained body head.
+		if let Err(error) = self.sync_manager.truncate_header_head(&self.peers, true) {
+			error!("Startup header head truncation failed: {}", error);
+		}
+
+		// Wait for connections reach at least MIN_PEERS
 		if let Err(e) = self.wait_for_min_peers() {
 			error!("wait_for_min_peers failed: {:?}", e);
 		}
@@ -155,7 +164,7 @@ impl SyncRunner {
 
 			sleep_time = SYNC_LOOP_INTERVAL_MS;
 
-			if let Err(error) = self.sync_manager.truncate_header_head(&self.peers) {
+			if let Err(error) = self.sync_manager.truncate_header_head(&self.peers, false) {
 				error!("Header head truncation failed: {}", error);
 				continue;
 			}

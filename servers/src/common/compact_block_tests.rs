@@ -547,7 +547,7 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	let (other_peer, other_messages) = &suppliers[1];
 	f.peers.add_connected(strong_peer.clone()).unwrap();
 	// Mirror Syncer's ordering. Equality with a connected supplier keeps the tip.
-	f.manager.truncate_header_head(&f.peers).unwrap();
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
 	f.manager.sync_request(&f.peers).unwrap();
 	assert_eq!(f.chain.header_head().unwrap(), strong_tip);
 	let requested = strong_messages.try_iter().count();
@@ -561,7 +561,7 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	// An alternative joins after the original body requests were assigned.
 	f.peers.add_connected(other_peer.clone()).unwrap();
 	f.peers.remove_connected(&strong_peer.info.addr);
-	f.manager.truncate_header_head(&f.peers).unwrap();
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
 	f.manager.sync_request(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap(), body);
 	assert_eq!(f.chain.header_head().unwrap().height, 4);
@@ -582,7 +582,7 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	// The survivor is temporarily above our known headers. Another poll must
 	// preserve both the selected prefix and its already outstanding request.
 	let retained = f.chain.header_head().unwrap();
-	f.manager.truncate_header_head(&f.peers).unwrap();
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
 	f.manager.sync_request(&f.peers).unwrap();
 	assert_eq!(f.chain.header_head().unwrap(), retained);
 	assert_eq!(other_messages.try_iter().count(), 0);
@@ -598,7 +598,7 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	for block in bodies {
 		// The resource limit may allow only one body at a time. Refill on each
 		// pass and check that the replacement branch supplies both in order.
-		f.manager.truncate_header_head(&f.peers).unwrap();
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
 		f.manager.sync_request(&f.peers).unwrap();
 		requests.extend(
 			other_messages
@@ -678,7 +678,7 @@ fn unsupported_headers_fall_back_to_body_only_after_snapshot_validation() {
 		};
 		let status = Arc::new(SyncState::new());
 		let pending = SyncManager::new(f.chain.clone(), status.clone(), Arc::new(StopState::new()));
-		pending.truncate_header_head(&f.peers).unwrap();
+		pending.truncate_header_head(&f.peers, false).unwrap();
 		assert_eq!(f.chain.header_head().unwrap(), abandoned);
 		status.reset();
 		let validating =
@@ -687,10 +687,10 @@ fn unsupported_headers_fall_back_to_body_only_after_snapshot_validation() {
 			headers: 0,
 			headers_total: 4,
 		});
-		validating.truncate_header_head(&f.peers).unwrap();
+		validating.truncate_header_head(&f.peers, false).unwrap();
 		assert_eq!(f.chain.header_head().unwrap(), abandoned);
 
-		f.manager.truncate_header_head(&f.peers).unwrap();
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
 		f.manager.sync_request(&f.peers).unwrap();
 		assert_eq!(f.chain.head().unwrap(), body);
 		assert_eq!(f.chain.header_head().unwrap(), body);
@@ -701,6 +701,57 @@ fn unsupported_headers_fall_back_to_body_only_after_snapshot_validation() {
 			);
 		}
 		assert!(f.chain.get_block_header(&abandoned.last_block_h).is_ok());
+	}
+}
+
+#[test]
+fn unsupported_headers_are_truncated_at_startup_before_state_readiness() {
+	let mut f = Fixture::new(1_934_044);
+	let body = f.chain.head().unwrap();
+	let block = f.block(&[]);
+	f.chain
+		.process_block_header(&block.header, Options::NONE)
+		.unwrap();
+	let abandoned = f.chain.header_head().unwrap();
+	assert!(abandoned.height > body.height);
+
+	// A fresh sync session has no peers and has not established state readiness.
+	// The ordinary loop must still preserve headers while PIBD is pending.
+	let status = Arc::new(SyncState::new());
+	status.update(SyncStatus::AwaitingPeers);
+	let manager = SyncManager::new(f.chain.clone(), status.clone(), Arc::new(StopState::new()));
+	assert!(!manager.state_is_ready());
+	manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), abandoned);
+
+	// Even the startup call must not change headers during active validation.
+	status.update(SyncStatus::ValidatingKernelsHistory {
+		headers: 0,
+		headers_total: abandoned.height,
+	});
+	manager.truncate_header_head(&f.peers, true).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), abandoned);
+
+	// Before peer discovery/PIBD begins, startup can release the unsupported tip.
+	// It changes header selection, preserves bodies and stored headers, and does
+	// not authorize ordinary downloads before the state-readiness checks run.
+	status.update(SyncStatus::AwaitingPeers);
+	manager.truncate_header_head(&f.peers, true).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), body);
+	assert_eq!(f.chain.head().unwrap(), body);
+	assert!(!manager.state_is_ready());
+	assert_eq!(
+		f.chain.get_block_header(&abandoned.last_block_h).unwrap(),
+		block.header
+	);
+	for accepted in &f.history {
+		assert_eq!(
+			f.chain
+				.get_header_by_height(accepted.header.height)
+				.unwrap(),
+			accepted.header
+		);
+		assert!(f.chain.get_block_for_header(&accepted.header).is_ok());
 	}
 }
 

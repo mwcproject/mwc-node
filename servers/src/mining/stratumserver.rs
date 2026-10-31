@@ -52,7 +52,6 @@ use mwc_core::{pow, ser};
 use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_crates::tokio::sync::mpsc;
-use mwc_keychain;
 use mwc_util;
 use mwc_util::ToHex;
 use mwc_util::{global_runtime, run_global_async_block, secp_static, StopState};
@@ -1912,6 +1911,7 @@ mod tests {
 	use mwc_crates::futures::poll;
 	use mwc_crates::tempfile::TempDir;
 	use mwc_crates::tokio::io::AsyncReadExt;
+	use mwc_keychain;
 	use mwc_keychain::Keychain;
 	use std::collections::HashSet;
 
