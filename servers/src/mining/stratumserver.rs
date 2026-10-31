@@ -372,11 +372,9 @@ struct State {
 	current_block_versions_first_job_id: u64,
 	next_job_id: u64,
 	accepted_share_hashes: IndexSet<Hash>,
-	// to prevent the wallet from generating a new HD key derivation for each
-	// iteration, we keep the returned derivation to provide it back when
-	// nothing has changed. We only want to create a key_id for each new block,
-	// and reuse it when we rebuild the current block to add new tx.
-	current_key_id: Option<mwc_keychain::Identifier>,
+	// Reuse the coinbase key only while the candidate height and fees match.
+	// A fee change needs a separate output because an older job can still win.
+	current_block_fees: Option<mine_block::BlockFees>,
 	current_difficulty: u64,       // scaled
 	minimum_share_difficulty: u64, // unscaled
 }
@@ -388,7 +386,7 @@ impl State {
 			current_block_versions_first_job_id: 0,
 			next_job_id: 0,
 			accepted_share_hashes: IndexSet::new(),
-			current_key_id: None,
+			current_block_fees: None,
 			current_difficulty: 0,
 			minimum_share_difficulty,
 		}
@@ -630,7 +628,7 @@ impl Handler {
 							}
 						};
 						if let Ok((_, true)) = res {
-							self.current_state.write().current_key_id = None;
+							self.current_state.write().current_block_fees = None;
 						}
 						res.map(|(v, _)| v)
 					},
@@ -1164,9 +1162,9 @@ impl Handler {
 					} else {
 						None
 					};
-					let current_key_id = {
+					let current_block_fees = {
 						let state = self.current_state.read_recursive();
-						state.current_key_id.clone()
+						state.current_block_fees.clone()
 					};
 					// Build the new block (version)
 					// get_block retries transient failures until a template is available or
@@ -1181,7 +1179,7 @@ impl Handler {
 						&mut secp,
 						&self.chain,
 						tx_pool,
-						current_key_id,
+						current_block_fees,
 						wallet_listener_url,
 						&mining_wallet_client,
 						&self.stop_state,
@@ -1212,7 +1210,7 @@ impl Handler {
 						})?
 						.to_num();
 
-						state.current_key_id = built_block.fees.key_id();
+						state.current_block_fees = Some(built_block.fees.clone());
 
 						current_hash = new_parent_hash;
 						// set the minimum acceptable share unscaled difficulty for this block

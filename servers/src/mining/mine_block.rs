@@ -57,9 +57,17 @@ pub struct BlockFees {
 }
 
 impl BlockFees {
-	/// return key id
-	pub fn key_id(&self) -> Option<Identifier> {
-		self.key_id.clone()
+	fn new(fees: u64, height: u64, previous: Option<&Self>) -> Self {
+		// Older jobs can still win after a template rebuild. Changing the reward
+		// must not overwrite their pending wallet output under the same key.
+		let key_id = previous
+			.filter(|previous| previous.fees == fees && previous.height == height)
+			.and_then(|previous| previous.key_id.clone());
+		Self {
+			fees,
+			height,
+			key_id,
+		}
 	}
 }
 
@@ -96,14 +104,13 @@ pub fn get_block(
 	secp: &mut Secp256k1,
 	chain: &Arc<mwc_chain::Chain>,
 	tx_pool: &ServerTxPool,
-	key_id: Option<Identifier>,
+	mut previous_fees: Option<BlockFees>,
 	wallet_listener_url: Option<String>,
 	client: &HttpClient,
 	stop_state: &Arc<StopState>,
 ) -> Result<BuiltBlock, Error> {
 	let wallet_retry_interval_sec = 1;
 	// get the latest chain state and build a block on top of it
-	let mut new_key_id = key_id.to_owned();
 	loop {
 		if stop_state.is_stopped() {
 			return Err(Error::General("Interrupted".into()));
@@ -113,7 +120,7 @@ pub fn get_block(
 			secp,
 			chain,
 			tx_pool,
-			new_key_id.clone(),
+			&mut previous_fees,
 			wallet_listener_url.clone(),
 			client,
 		) {
@@ -132,7 +139,7 @@ pub fn get_block(
 								"Duplicate commit for potential coinbase detected. Trying next derivation."
 							);
 							// use the next available key to generate a different coinbase commitment
-							new_key_id = None;
+							previous_fees = None;
 						}
 						_ => {
 							error!("Chain Error: {}", c);
@@ -152,7 +159,10 @@ pub fn get_block(
 
 				// only wait if we are still using the same key: a different coinbase commitment is unlikely
 				// to have duplication
-				if new_key_id.is_some() {
+				if previous_fees
+					.as_ref()
+					.is_some_and(|fees| fees.key_id.is_some())
+				{
 					thread::sleep(Duration::from_millis(100));
 				}
 			}
@@ -166,7 +176,7 @@ fn build_block(
 	secp: &mut Secp256k1,
 	chain: &Arc<mwc_chain::Chain>,
 	tx_pool: &ServerTxPool,
-	key_id: Option<Identifier>,
+	previous_fees: &mut Option<BlockFees>,
 	wallet_listener_url: Option<String>,
 	client: &HttpClient,
 ) -> Result<BuildBlockResult, Error> {
@@ -231,11 +241,7 @@ fn build_block(
 			))
 		})
 	})?;
-	let block_fees = BlockFees {
-		fees,
-		key_id,
-		height,
-	};
+	let block_fees = BlockFees::new(fees, height, previous_fees.as_ref());
 
 	// The binding covers the final cut-through input set. A concatenation of
 	// the pool transactions can include outputs spent by another selected tx.
@@ -252,6 +258,9 @@ fn build_block(
 		secp,
 	)?;
 	verify_bound_coinbase_response(context_id, secp, &output, &kernel, &opening, &binding)?;
+	// A later build failure may retry this same reward. Keep its returned key
+	// with its fees and height so retries do not allocate another wallet output.
+	*previous_fees = Some(block_fees.clone());
 	let mut b = core::Block::from_reward(
 		context_id,
 		&head,
@@ -523,6 +532,37 @@ mod tests {
 			output_leaf_count: 1,
 			reward: consensus::reward(0, 0, 4).unwrap(),
 		}
+	}
+
+	#[test]
+	fn coinbase_key_reuse_tracks_reward_across_jobs() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let key = ExtKeychain::derive_key_id(3, 0, 0, 7, 0).unwrap();
+		let job_a = BlockFees {
+			fees: 0,
+			height: 4,
+			key_id: Some(key.clone()),
+		};
+		let mut binding = binding_context();
+		// A new binding with the same reward reuses the wallet output. A fee
+		// change must request a fresh key, while workers can still finish A.
+		binding.input_hash = Hash::from_vec(&[9; 32]);
+		let repeated = BlockFees::new(0, 4, Some(&job_a));
+		let request = coinbase_request(&repeated, &binding, 1).unwrap();
+		assert_eq!(request["params"]["block_fees"]["key_id"], json!(key));
+		for (fees, height) in [(13, 4), (0, 5)] {
+			let job_b = BlockFees::new(fees, height, Some(&job_a));
+			binding.height = height;
+			binding.reward = consensus::reward(0, fees, height).unwrap();
+			let request = coinbase_request(&job_b, &binding, 2).unwrap();
+			assert!(request["params"]["block_fees"]["key_id"].is_null());
+		}
+		assert_eq!(job_a.key_id, Some(key));
+		// Once the wallet returns B's key, unchanged rebuilds reuse that key.
+		let mut job_b = BlockFees::new(13, 4, Some(&job_a));
+		job_b.key_id = Some(ExtKeychain::derive_key_id(3, 0, 0, 8, 0).unwrap());
+		assert_eq!(BlockFees::new(13, 4, Some(&job_b)).key_id, job_b.key_id);
+		assert!(BlockFees::new(0, 4, Some(&job_b)).key_id.is_none());
 	}
 
 	#[test]
