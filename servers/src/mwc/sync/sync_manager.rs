@@ -290,8 +290,8 @@ impl SyncManager {
 
 	/// Release a header-only branch whose suppliers have disappeared. Leave room
 	/// for a remaining peer's advertised work to start an ordinary header download.
-	/// Startup runs before peer discovery completes and PIBD begins, so it does
-	/// not require this sync session to have established state readiness yet.
+	/// Startup runs after local validation and before peer connections or PIBD,
+	/// so it does not require this sync session to have established state readiness.
 	pub fn truncate_header_head(&self, peers: &Arc<Peers>, startup: bool) -> Result<(), Error> {
 		if self.sync_state.is_txhashset_validation()
 			|| (!startup && !self.state_ready.load(Ordering::Acquire))

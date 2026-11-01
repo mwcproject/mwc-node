@@ -756,6 +756,71 @@ fn unsupported_headers_are_truncated_at_startup_before_state_readiness() {
 }
 
 #[test]
+fn server_creation_truncates_headers_before_peer_jobs_start() {
+	for (context, skip_validation) in [(1_934_045, false), (1_934_046, true)] {
+		let mut f = Fixture::new(context);
+		let body = f.chain.head().unwrap();
+		let block = f.block(&[]);
+		f.chain
+			.process_block_header(&block.header, Options::NONE)
+			.unwrap();
+		assert!(f.chain.header_head().unwrap().height > body.height);
+
+		// Force an index rebuild on restart. Its final validation status must
+		// be cleared after Chain::init, or startup truncation silently skips work.
+		{
+			let store = f.chain.get_store_for_tests();
+			let batch = store.batch_write().unwrap();
+			batch.set_kernel_pos_index_complete(false).unwrap();
+			batch.commit().unwrap();
+		}
+		// Close the original chain while retaining its files for a real restart.
+		let directory = std::mem::replace(&mut f._chain_dir, TempDir::new().unwrap());
+		drop(f);
+		let config = crate::ServerConfig {
+			db_root: directory.path().to_str().unwrap().into(),
+			chain_type: global::ChainTypes::AutomatedTesting,
+			tor_config: mwc_p2p::TorConfig::no_tor_config(),
+			..crate::ServerConfig::default()
+		};
+		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let server = crate::Server::create_server(
+			&secp,
+			context,
+			config,
+			Arc::new(StopState::new()),
+			skip_validation,
+		)
+		.unwrap();
+
+		// No listener, discovery or sync worker has started. Header selection
+		// must already match the retained bodies, even when validation is skipped.
+		assert!(!server.p2p.is_ready());
+		assert_eq!(server.p2p.peers.get_number_connected_peers(), 0);
+		assert_eq!(server.sync_state.status(), SyncStatus::AwaitingPeers);
+		assert_eq!(server.chain.header_head().unwrap(), body);
+		assert_eq!(server.chain.head().unwrap(), body);
+		assert_eq!(
+			server.p2p.peers.get_head().unwrap(),
+			server.chain.head_header().unwrap()
+		);
+		// Truncation changes selection, preserving both stored headers and bodies.
+		assert_eq!(
+			server
+				.chain
+				.get_block_header(&block.hash(context).unwrap())
+				.unwrap(),
+			block.header
+		);
+		assert!(server
+			.chain
+			.get_block_for_header(&server.chain.head_header().unwrap())
+			.is_ok());
+		server.stop();
+	}
+}
+
+#[test]
 fn missing_ancestry_announcements_wait_for_the_sync_loop() {
 	for (context, full_block) in [(1_934_028, false), (1_934_029, true)] {
 		let mut f = Fixture::new(context);

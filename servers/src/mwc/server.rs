@@ -204,8 +204,6 @@ impl Server {
 		)));
 
 		let sync_state = Arc::new(SyncState::new());
-		// Defaults to None (optional) in config file.
-		// This translates to false here so we do not skip by default.
 		sync_state.update(SyncStatus::AwaitingPeers);
 
 		let hooks = init_hooks(&config)?;
@@ -261,6 +259,10 @@ impl Server {
 			return Err(Error::ServerError("Server start was cancelled".into()));
 		}
 
+		// Chain initialization has finished, including any index rebuilds. Clear
+		// their final validation status so startup truncation cannot be skipped.
+		sync_state.update(SyncStatus::AwaitingPeers);
+
 		pool_adapter
 			.set_chain(shared_chain.clone())
 			.map_err(|e| Error::ServerError(e.to_string()))?;
@@ -305,6 +307,15 @@ impl Server {
 			)
 			.map_err(|e| Error::ServerError(e.to_string()))?,
 		);
+
+		// Finish header selection before this server can start any peer jobs.
+		// A failure aborts startup instead of leaving unsupported headers in place
+		// while the sync loop waits for peers or state readiness.
+		sync_manager
+			.truncate_header_head(&p2p_server.peers, true)
+			.map_err(|e| {
+				Error::ServerError(format!("Startup header head truncation failed: {}", e))
+			})?;
 
 		// Initialize various adapters with our dynamic set of connected peers.
 		chain_adapter.init(p2p_server.peers.clone(), sync_manager.clone())?;
