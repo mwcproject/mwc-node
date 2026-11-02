@@ -31,6 +31,8 @@ use std::time::{Duration, Instant};
 struct BodyTask {
 	hash: Hash,
 	height: u64,
+	// Stop downloading/applying this task, but retain any request already sent.
+	obsolete: bool,
 	request: Option<BodyTaskRequest>,
 	// Receipt consumes the request. Keep the actual supplier for later validation,
 	// including when another peer supplies a block before the requested peer does.
@@ -86,6 +88,32 @@ struct BodyDownload {
 }
 
 impl BodyDownload {
+	fn obsolete_from(&mut self, index: usize) {
+		for task in self.tasks.iter_mut().skip(index) {
+			task.obsolete = true;
+			task.received = None;
+		}
+		self.tasks
+			.retain(|task| !task.obsolete || task.request.is_some());
+	}
+
+	fn expire_requests(&mut self, now: Instant, scores: &SyncPeers) {
+		for task in &mut self.tasks {
+			if let Some(request) = &task.request {
+				if now >= request.expires_at {
+					scores.report_no_response(
+						&request.peer,
+						format!("Block {} at {} timed out", task.hash, task.height),
+					);
+					task.request = None;
+				}
+			}
+		}
+		// Expired obsolete requests finish here; only active tasks can be retried.
+		self.tasks
+			.retain(|task| !task.obsolete || task.request.is_some());
+	}
+
 	fn request_timeout(&self) -> Duration {
 		let max_timeout = Duration::from_secs(u64::from(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS));
 		self.latency
@@ -129,8 +157,11 @@ impl BodySync {
 		})
 	}
 
-	pub(super) fn reset(&self) {
-		self.download.lock().tasks.clear();
+	pub(super) fn reset(&self, scores: &SyncPeers) {
+		let mut download = self.download.lock();
+		download.obsolete_from(0);
+		// Continue accounting for requests even while snapshot work pauses BodySync.
+		download.expire_requests(Instant::now(), scores);
 	}
 
 	fn get_task_num_limit(&self, download: &BodyDownload) -> usize {
@@ -153,18 +184,39 @@ impl BodySync {
 		}
 	}
 
+	fn retire_noncanonical_tasks(&self, download: &mut BodyDownload) -> Result<(), Error> {
+		let mut obsolete = None;
+		// Active tasks remain a contiguous chain. A canonical last active task
+		// proves its predecessors are still canonical at this check.
+		for (index, task) in download.tasks.iter().enumerate().rev() {
+			if task.obsolete {
+				continue;
+			}
+			if self.get_task_canonical_header(task)?.is_some() {
+				break;
+			}
+			obsolete = Some(index);
+		}
+		if let Some(index) = obsolete {
+			download.obsolete_from(index);
+		}
+		Ok(())
+	}
+
 	/// Update the window using the current resource limit and canonical headers.
-	/// An empty queue starts at the common ancestor and skips already accepted fork
+	/// With no active tasks, start at the common ancestor and skip accepted fork
 	/// bodies: those can be stored even while head() still belongs to another branch.
 	fn fill_tasks(&self, download: &mut BodyDownload) -> Result<(), Error> {
 		let limit = self.get_task_num_limit(download);
 		let tasks = &mut download.tasks;
 		// A smaller limit stops refilling; existing requests and buffered blocks
-		// stay in the queue until applied.
+		// stay until applied, answered or expired. Obsolete requests still consume space.
 		if tasks.len() >= limit {
 			return Ok(());
 		}
-		let (mut height, mut hash) = if let Some(task) = tasks.back() {
+		let last = tasks.iter().rfind(|task| !task.obsolete);
+		let mut has_active = last.is_some();
+		let (mut height, mut hash) = if let Some(task) = last {
 			(task.height, task.hash)
 		} else {
 			let fork = self.chain.fork_point()?;
@@ -183,7 +235,7 @@ impl BodySync {
 				break; // A concurrent reorg changed the selected branch.
 			}
 			hash = header.hash(self.chain.get_context_id())?;
-			if tasks.is_empty() {
+			if !has_active {
 				match self.chain.is_known(&header) {
 					// Resume beyond accepted fork bodies without a separate cursor.
 					Err(error) if error.is_known_block() => continue,
@@ -192,12 +244,24 @@ impl BodySync {
 					Ok(()) => {}
 				}
 			}
-			tasks.push_back(BodyTask {
-				hash,
-				height,
-				request: None,
-				received: None,
-			});
+			// The selected branch may return while its old requests are pending.
+			// Reuse those requests instead of creating two tasks for the same hash.
+			if let Some(index) = tasks.iter().position(|task| task.hash == hash) {
+				let mut task = tasks
+					.remove(index)
+					.ok_or_else(|| Error::Other("Missing retained body task".into()))?;
+				task.obsolete = false;
+				tasks.push_back(task);
+			} else {
+				tasks.push_back(BodyTask {
+					hash,
+					height,
+					obsolete: false,
+					request: None,
+					received: None,
+				});
+			}
+			has_active = true;
 		}
 		Ok(())
 	}
@@ -211,15 +275,16 @@ impl BodySync {
 		scores: &SyncPeers,
 	) -> Result<(), Error> {
 		let mut download = self.download.lock();
+		self.retire_noncanonical_tasks(&mut download)?;
 		// Usually this adds just the announced tip. If its parents are missing,
 		// build the intervening tasks first instead of creating a gap in the queue.
 		self.fill_tasks(&mut download)?;
-		let Some(index) = download.tasks.front().and_then(|first| {
-			header
-				.height
-				.checked_sub(first.height)
-				.and_then(|index| usize::try_from(index).ok())
-		}) else {
+		let hash = header.hash(self.chain.get_context_id())?;
+		let Some(index) = download
+			.tasks
+			.iter()
+			.position(|task| !task.obsolete && task.hash == hash)
+		else {
 			return Ok(());
 		};
 		let peer_requests = download
@@ -241,8 +306,7 @@ impl BodySync {
 		let Some(task) = download.tasks.get_mut(index) else {
 			return Ok(());
 		};
-		if task.hash == header.hash(self.chain.get_context_id())?
-			&& task.request.is_none()
+		if task.request.is_none()
 			&& task.received.is_none()
 			&& self.get_task_canonical_header(task)?.as_ref() == Some(header)
 			&& !self.chain.block_exists(&task.hash)?
@@ -257,13 +321,14 @@ impl BodySync {
 	/// attributed to the peer whose parent response made it ready.
 	fn apply_ready_tasks(
 		&self,
-		tasks: &mut VecDeque<BodyTask>,
+		download: &mut BodyDownload,
 		secp: &mut Secp256k1,
 		scores: &SyncPeers,
 	) -> Result<Option<PeerAddr>, Error> {
-		while let Some(task) = tasks.front_mut() {
+		while let Some(index) = download.tasks.iter().position(|task| !task.obsolete) {
+			let task = &mut download.tasks[index];
 			let Some(header) = self.get_task_canonical_header(task)? else {
-				tasks.clear();
+				download.obsolete_from(index);
 				break;
 			};
 			let (block, supplier, reconstructed) = if self.chain.block_exists(&task.hash)? {
@@ -300,7 +365,7 @@ impl BodySync {
 				Err(Error::Orphan(_)) => {
 					// A local rewind removed the parent. Chain processing checks ancestry
 					// for both forks and snapshot-backed state; scheduling will rebuild.
-					tasks.clear();
+					download.obsolete_from(index);
 					break;
 				}
 				Err(error) => {
@@ -330,7 +395,14 @@ impl BodySync {
 				supplier.update(header.height, header.total_difficulty());
 				scores.report_ok_response(&supplier.addr);
 			}
-			tasks.pop_front();
+			if task.request.is_some() {
+				// Another path (or a compact reconstruction) supplied this body.
+				// The full request is still on the wire and retains its allowance.
+				task.obsolete = true;
+				task.received = None;
+			} else {
+				download.tasks.remove(index);
+			}
 		}
 		Ok(None)
 	}
@@ -391,30 +463,23 @@ impl BodySync {
 				"Processing body tasks".into(),
 			));
 		};
+		download.expire_requests(Instant::now(), scores);
+		scores.apply_peers_status(peers);
 		if head.last_block_h == target.last_block_h {
-			download.tasks.clear();
+			download.obsolete_from(0);
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::BodyReady,
 				Capabilities::UNKNOWN,
 				format!("Body and header heads match at {}", head.height),
 			));
 		}
-		let fork = self.chain.fork_point()?;
-		// Every task follows the previous task's hash. A canonical last task
-		// therefore proves the whole queue is canonical at this check.
-		// Cancel obsolete tasks before scoring timeouts for the remaining requests.
-		while let Some(task) = download.tasks.back() {
-			if self.get_task_canonical_header(task)?.is_some() {
-				break;
-			}
-			download.tasks.pop_back();
-		}
+		self.retire_noncanonical_tasks(&mut download)?;
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-		self.apply_ready_tasks(&mut download.tasks, &mut secp, scores)?;
+		self.apply_ready_tasks(&mut download, &mut secp, scores)?;
 		let head = self.chain.head()?;
 		let target = self.chain.header_head()?;
 		if head.last_block_h == target.last_block_h {
-			download.tasks.clear();
+			download.obsolete_from(0);
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::BodyReady,
 				Capabilities::UNKNOWN,
@@ -425,19 +490,6 @@ impl BodySync {
 		let horizon = u64::from(global::cut_through_horizon(self.chain.get_context_id()));
 		let horizon_height = target.height.saturating_sub(horizon);
 
-		let now = Instant::now();
-		for task in &mut download.tasks {
-			if let Some(request) = &task.request {
-				if now >= request.expires_at {
-					scores.report_no_response(
-						&request.peer,
-						format!("Block {} at {} timed out", task.hash, task.height),
-					);
-					task.request = None;
-				}
-			}
-		}
-		scores.apply_peers_status(peers);
 		let candidates = self.canonical_peers(peers)?;
 		let per_peer = self.pibd_params.get_blocks_request_per_peer();
 		let timeout = download.request_timeout();
@@ -449,6 +501,7 @@ impl BodySync {
 		{
 			*peer_requests.entry(request.peer.clone()).or_default() += 1;
 		}
+		let fork = self.chain.fork_point()?;
 		// Preserve Done (NoSync) only if it is the current status and the gap is
 		// under ten blocks. Check under the status lock; all other states update normally.
 		sync_state.update_if(
@@ -460,7 +513,8 @@ impl BodySync {
 				},
 				current_height: download
 					.tasks
-					.front()
+					.iter()
+					.find(|task| !task.obsolete)
 					.map_or(fork.height, |task| task.height.saturating_sub(1)),
 				highest_height: target.height,
 			},
@@ -471,7 +525,8 @@ impl BodySync {
 		let mut rng = mwc_crates::rand::rng();
 		let mut required_capabilities = Capabilities::UNKNOWN;
 		for task in &mut download.tasks {
-			if task.request.is_some()
+			if task.obsolete
+				|| task.request.is_some()
 				|| task.received.is_some()
 				|| self.chain.block_exists(&task.hash)?
 			{
@@ -497,7 +552,7 @@ impl BodySync {
 		let requests = download
 			.tasks
 			.iter()
-			.filter(|task| task.request.is_some())
+			.filter(|task| !task.obsolete && task.request.is_some())
 			.count();
 		Ok(SyncResponse::new(
 			if sync_state.status() == SyncStatus::NoSync
@@ -511,7 +566,7 @@ impl BodySync {
 			},
 			required_capabilities,
 			format!(
-				"Canonical bodies {}..{}, {} tasks, {} requests",
+				"Canonical bodies {}..{}, {} tasks, {} active requests",
 				fork.height,
 				target.height,
 				download.tasks.len(),
@@ -521,43 +576,63 @@ impl BodySync {
 	}
 
 	/// Accept matching responses from any supplier, or append the next canonical
-	/// body while capacity permits. With no tasks, only a direct child of head()
-	/// may be applied. False identifies invalid peer data; ignored data returns true.
+	/// body while capacity permits. With no active tasks, only a direct child of
+	/// head() may be applied. While state is not ready, only settle obsolete requests.
+	/// False identifies invalid peer data; ignored data returns true.
 	pub fn receive_block(
 		&self,
 		secp: &mut Secp256k1,
 		block: &Block,
 		peer: &PeerInfo,
 		reconstructed: bool,
+		state_ready: bool,
 		scores: &SyncPeers,
 	) -> Result<bool, Error> {
 		let hash = block.hash(self.chain.get_context_id())?;
 		let mut download = self.download.lock();
+		if !state_ready {
+			download.obsolete_from(0);
+		}
+		// Old and current branches may have different hashes at the same height.
+		// Match the original request even after its task became obsolete.
+		let index = download.tasks.iter().position(|task| task.hash == hash);
+		if !state_ready && index.is_none() {
+			return Ok(true);
+		}
+		if let Some(matched) = index {
+			if !download.tasks[matched].obsolete
+				&& self
+					.get_task_canonical_header(&download.tasks[matched])?
+					.is_none()
+			{
+				// A reply may arrive before the scheduler notices the reorg.
+				let pending = download.tasks[matched].request.is_some();
+				download.obsolete_from(matched);
+				if !pending {
+					return Ok(true);
+				}
+				// Earlier tasks are retained, so the pending task keeps its index.
+			}
+			if download.tasks[matched].obsolete {
+				// Discard the response without validation, peer scoring or latency samples.
+				// A local reconstruction does not answer an outstanding full-body request.
+				if !reconstructed {
+					download.tasks.remove(matched);
+				}
+				return Ok(true);
+			}
+		}
 		let header = match self.chain.get_block_header(&hash) {
 			Ok(header) => Some(header),
 			Err(error) if error.is_not_found() => None,
 			Err(error) => return Err(error),
 		};
-		// Use the stored height so forged incoming fields cannot evade matching.
-		let index = header.as_ref().and_then(|header| {
-			download.tasks.front().and_then(|first| {
-				header
-					.height
-					.checked_sub(first.height)
-					.and_then(|index| usize::try_from(index).ok())
-					.filter(|index| {
-						download
-							.tasks
-							.get(*index)
-							.is_some_and(|task| task.hash == hash)
-					})
-			})
-		});
 		if header
 			.as_ref()
 			.is_some_and(|header| header != &block.header)
 		{
-			if let Some(task) = index.and_then(|index| download.tasks.get_mut(index)) {
+			if let Some(index) = index {
+				let task = &mut download.tasks[index];
 				if task
 					.request
 					.as_ref()
@@ -577,7 +652,7 @@ impl BodySync {
 		}
 		let index = if let Some(index) = index {
 			index
-		} else if let Some(tail) = download.tasks.back() {
+		} else if let Some(tail) = download.tasks.iter().rfind(|task| !task.obsolete) {
 			// Check both linkage and the canonical hash: competing children can
 			// share the same parent. A smaller limit never evicts existing tasks.
 			if download.tasks.len() >= self.get_task_num_limit(&download)
@@ -610,6 +685,7 @@ impl BodySync {
 			let task = BodyTask {
 				hash,
 				height: block.header.height,
+				obsolete: false,
 				request: None,
 				received: None,
 			};
@@ -674,7 +750,7 @@ impl BodySync {
 			return Ok(true); // First full response keeps its data and supplier.
 		}
 		// A locally reconstructed guess is not a full response. Preserve the
-		// outstanding request until the guess validates or the actual body arrives.
+		// outstanding request until the actual body arrives or its deadline expires.
 		let latency = if reconstructed {
 			None
 		} else {
@@ -698,10 +774,7 @@ impl BodySync {
 		if let Some(latency) = latency {
 			download.latency.add_latency(latency);
 		}
-		if index != 0 {
-			return Ok(true);
-		}
-		let rejected = self.apply_ready_tasks(&mut download.tasks, secp, scores)?;
+		let rejected = self.apply_ready_tasks(&mut download, secp, scores)?;
 		Ok(rejected.as_ref() != Some(&peer.addr))
 	}
 }
@@ -836,7 +909,14 @@ mod tests {
 			let supplier = self.peers.get_connected_peer(peer).unwrap();
 			assert_eq!(
 				self.body
-					.receive_block(&mut self.secp, &block, &supplier.info, false, &self.scores)
+					.receive_block(
+						&mut self.secp,
+						&block,
+						&supplier.info,
+						false,
+						true,
+						&self.scores
+					)
 					.unwrap(),
 				true
 			);
@@ -859,6 +939,337 @@ mod tests {
 				.filter(|task| task.request.is_some())
 				.count()
 		}
+
+		// Mine a competing branch and import only its headers. Pending body
+		// requests still refer to the original blocks in self.blocks.
+		fn select_fork(&mut self, count: usize) -> Vec<Block> {
+			let dir = TempDir::new().unwrap();
+			let fork = init_chain(self.chain.get_context_id(), &self.secp, &dir, true);
+			let keychain = ExtKeychain::from_seed(&self.secp, &[68; 32], false).unwrap();
+			let mut blocks = Vec::new();
+			for _ in 0..count {
+				let block = next_block(&fork, &mut self.secp, &keychain, &[]);
+				fork.process_block(&mut self.secp, block.clone(), Options::NONE, HashSet::new())
+					.unwrap();
+				self.chain
+					.process_block_header(&block.header, Options::NONE)
+					.unwrap();
+				blocks.push(block);
+			}
+			blocks
+		}
+	}
+
+	// Receive one abandoned child before scheduling notices the reorg, then mix
+	// old and current responses at the same heights. Each hash must settle only
+	// its own request; obsolete tasks must not block application of the new branch.
+	#[test]
+	fn reorg_retains_requests_and_matches_both_branches_by_hash() {
+		let mut f = Fixture::new(1_935_021, 3);
+		let (old_peer, old_rx) = f.supplier(4191);
+		f.poll();
+		assert_eq!(old_rx.try_iter().count(), 3);
+		let original: Vec<_> = f
+			.body
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| {
+				let request = task.request.as_ref().unwrap();
+				(task.hash, request.sent_at, request.expires_at)
+			})
+			.collect();
+		let fork = f.select_fork(4);
+		let target = f.chain.header_head().unwrap();
+		f.deliver(2, &old_peer.info.addr);
+		assert!(!f
+			.body
+			.has_block_request(&old_peer.info.addr, &original[2].0));
+		assert_eq!(f.chain.head().unwrap().height, 0);
+		let (new_peer, _rx) = f.supplier(4192);
+		f.poll();
+		{
+			let download = f.body.download.lock();
+			for (hash, sent_at, expires_at) in &original[..2] {
+				let task = download
+					.tasks
+					.iter()
+					.find(|task| task.hash == *hash)
+					.unwrap();
+				assert!(task.obsolete);
+				let request = task.request.as_ref().unwrap();
+				assert_eq!(request.peer, old_peer.info.addr);
+				assert_eq!(request.sent_at, *sent_at);
+				assert_eq!(request.expires_at, *expires_at);
+			}
+			assert!(download.tasks.len() <= f.body.get_task_num_limit(&download));
+		}
+		// New height 2 arrives before height 1; neither response answers the old hash.
+		for index in [1, 0] {
+			assert!(f
+				.body
+				.receive_block(
+					&mut f.secp,
+					&fork[index],
+					&new_peer.info,
+					false,
+					true,
+					&f.scores,
+				)
+				.unwrap());
+			assert!(f
+				.body
+				.has_block_request(&old_peer.info.addr, &original[index].0));
+		}
+		let head = f.chain.head().unwrap();
+		assert_eq!(
+			head.last_block_h,
+			fork[1].hash(f.chain.get_context_id()).unwrap()
+		);
+		// Old replies complete their original requests without applying the old fork.
+		for index in [1, 0] {
+			f.deliver(index, &old_peer.info.addr);
+			assert!(!f
+				.body
+				.has_block_request(&old_peer.info.addr, &original[index].0));
+			assert_eq!(f.chain.head().unwrap(), head);
+		}
+		f.blocks = fork;
+		f.deliver(2, &new_peer.info.addr);
+		f.deliver(3, &new_peer.info.addr);
+		// Any leftover timer for a completed old request would now trigger a ban.
+		for _ in 0..6 {
+			f.scores
+				.report_no_response(&old_peer.info.addr, "earlier request".into());
+		}
+		f.expire_requests();
+		assert_eq!(f.poll().response, SyncRequestResponses::BodyReady);
+		assert_eq!(f.chain.head().unwrap(), target);
+		assert!(f.body.download.lock().tasks.is_empty());
+		assert!(!f.peers.is_banned(&old_peer.info.addr).unwrap());
+	}
+
+	// Fill one peer's allowance, then replace the header branch. Obsolete requests
+	// must continue consuming that allowance, including for direct header announcements.
+	// Completing one old request frees exactly one slot for current work.
+	#[test]
+	fn obsolete_requests_keep_the_peer_allowance_until_answered() {
+		let count = PibdParams::new().get_blocks_request_per_peer();
+		let mut f = Fixture::new(1_935_022, count);
+		let (peer, rx) = f.supplier(4193);
+		f.poll();
+		let pending = rx.try_iter().count();
+		assert_eq!(
+			pending,
+			count.min(f.body.get_task_num_limit(&f.body.download.lock()))
+		);
+		let fork = f.select_fork(count + 1);
+		f.poll();
+		assert_eq!(rx.try_iter().count(), 0);
+		f.body
+			.request_header_block(&fork[0].header, &peer, &f.scores)
+			.unwrap();
+		assert_eq!(rx.try_iter().count(), 0);
+		assert_eq!(f.requests_num(), pending);
+		f.deliver(0, &peer.info.addr);
+		f.body
+			.request_header_block(&fork[0].header, &peer, &f.scores)
+			.unwrap();
+		assert_eq!(rx.try_iter().count(), 1);
+		assert!(f.body.has_block_request(
+			&peer.info.addr,
+			&fork[0].hash(f.chain.get_context_id()).unwrap()
+		));
+		assert_eq!(f.requests_num(), pending);
+		let download = f.body.download.lock();
+		assert!(download.tasks.len() <= f.body.get_task_num_limit(&download));
+	}
+
+	// Pause body application with a full request outstanding. A compact reconstruction
+	// cannot fulfil it, but its full response can, without advancing either chain head.
+	// Obsolete full data is discarded without validation or updating the peer's tip.
+	#[test]
+	fn paused_body_sync_accounts_for_full_responses_without_applying_them() {
+		let mut f = Fixture::new(1_935_023, 2);
+		let (peer, rx) = f.supplier(4194);
+		f.poll();
+		assert_eq!(rx.try_iter().count(), 2);
+		let head = f.chain.head().unwrap();
+		let headers = f.chain.header_head().unwrap();
+		assert!(f
+			.body
+			.receive_block(
+				&mut f.secp,
+				&f.blocks[0],
+				&peer.info,
+				true,
+				false,
+				&f.scores,
+			)
+			.unwrap());
+		assert_eq!(f.requests_num(), 2);
+		assert!(f
+			.body
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.all(|task| task.obsolete));
+		assert!(f
+			.body
+			.receive_block(
+				&mut f.secp,
+				&f.blocks[0],
+				&peer.info,
+				false,
+				false,
+				&f.scores,
+			)
+			.unwrap());
+		assert_eq!(f.requests_num(), 1);
+		let mut invalid = f.blocks[1].clone();
+		invalid.body.outputs[0].proof.proof[0] ^= 1;
+		invalid.header.height = u64::MAX;
+		invalid.coinbase_opening = None;
+		let (other, _rx) = f.supplier(4198);
+		let peer_tip = other.info.get_height_and_difficulty();
+		assert!(f
+			.body
+			.receive_block(&mut f.secp, &invalid, &other.info, false, false, &f.scores,)
+			.unwrap());
+		assert_eq!(f.requests_num(), 0);
+		assert_eq!(other.info.get_height_and_difficulty(), peer_tip);
+		assert!(f
+			.body
+			.receive_block(&mut f.secp, &invalid, &peer.info, false, false, &f.scores,)
+			.unwrap());
+		assert!(f.body.download.lock().tasks.is_empty());
+		assert_eq!(f.chain.head().unwrap(), head);
+		assert_eq!(f.chain.header_head().unwrap(), headers);
+	}
+
+	// Abandon a sent request and expire it while body sync is paused. It must produce
+	// exactly one timeout and no retry. Five prior failures plus this timeout stay
+	// below the ban threshold; one later failure proves the timeout was recorded.
+	#[test]
+	fn obsolete_timeout_is_scored_once_and_never_retried() {
+		let f = Fixture::new(1_935_024, 1);
+		let (peer, rx) = f.supplier(4195);
+		f.poll();
+		assert_eq!(rx.try_iter().count(), 1);
+		for _ in 0..5 {
+			f.scores
+				.report_no_response(&peer.info.addr, "earlier request".into());
+		}
+		f.body.reset(&f.scores);
+		assert_eq!(f.requests_num(), 1);
+		f.expire_requests();
+		for _ in 0..2 {
+			f.body.reset(&f.scores);
+			f.scores.apply_peers_status(&f.peers);
+			assert!(f.body.download.lock().tasks.is_empty());
+			assert_eq!(rx.try_iter().count(), 0);
+			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		}
+		f.scores
+			.report_no_response(&peer.info.addr, "later request".into());
+		f.scores.apply_peers_status(&f.peers);
+		assert!(f.peers.is_banned(&peer.info.addr).unwrap());
+	}
+
+	// Seven obsolete replies must not add success events that push earlier failures
+	// out of the scoring window. No blocks are applied; a subsequent real timeout
+	// still bans the peer after its six earlier failures.
+	#[test]
+	fn obsolete_responses_do_not_credit_the_peer() {
+		let mut f = Fixture::new(1_935_027, 1);
+		let (peer, rx) = f.supplier(4199);
+		for _ in 0..6 {
+			f.scores
+				.report_no_response(&peer.info.addr, "earlier request".into());
+		}
+		for _ in 0..7 {
+			f.poll();
+			assert_eq!(rx.try_iter().count(), 1);
+			f.body.reset(&f.scores);
+			f.deliver(0, &peer.info.addr);
+			assert!(f.body.download.lock().tasks.is_empty());
+			assert_eq!(f.chain.head().unwrap().height, 0);
+		}
+		assert!(f
+			.body
+			.download
+			.lock()
+			.latency
+			.get_average_latency()
+			.is_none());
+		f.scores
+			.report_no_response(&peer.info.addr, "later request".into());
+		f.scores.apply_peers_status(&f.peers);
+		assert!(f.peers.is_banned(&peer.info.addr).unwrap());
+	}
+
+	// Resume the same canonical work after pausing it. Reusing the retained tasks
+	// must preserve deadlines and produce neither duplicate hashes nor new sends.
+	#[test]
+	fn resumed_tasks_reuse_original_requests() {
+		let f = Fixture::new(1_935_026, 3);
+		let (peer, rx) = f.supplier(4197);
+		f.poll();
+		assert_eq!(rx.try_iter().count(), 3);
+		let original: Vec<_> = f
+			.body
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| (task.hash, task.request.as_ref().unwrap().expires_at))
+			.collect();
+		f.body.reset(&f.scores);
+		f.poll();
+		assert_eq!(rx.try_iter().count(), 0);
+		let download = f.body.download.lock();
+		assert_eq!(download.tasks.len(), original.len());
+		for (task, (hash, expires_at)) in download.tasks.iter().zip(original) {
+			assert!(!task.obsolete);
+			assert_eq!(task.hash, hash);
+			let request = task.request.as_ref().unwrap();
+			assert_eq!(request.peer, peer.info.addr);
+			assert_eq!(request.expires_at, expires_at);
+		}
+	}
+
+	// Another path stores the requested bodies and brings the heads together.
+	// BodyReady must keep the unanswered requests, accept one reply, and expire the
+	// other without creating more work or changing the already completed chain.
+	#[test]
+	fn matching_heads_keep_pending_requests_until_response_or_timeout() {
+		let mut f = Fixture::new(1_935_025, 2);
+		let (peer, rx) = f.supplier(4196);
+		f.poll();
+		assert_eq!(rx.try_iter().count(), 2);
+		for block in &f.blocks {
+			f.chain
+				.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
+				.unwrap();
+		}
+		assert_eq!(f.poll().response, SyncRequestResponses::BodyReady);
+		assert_eq!(f.requests_num(), 2);
+		assert!(f
+			.body
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.all(|task| task.obsolete));
+		f.deliver(1, &peer.info.addr);
+		assert_eq!(f.requests_num(), 1);
+		f.expire_requests();
+		assert_eq!(f.poll().response, SyncRequestResponses::BodyReady);
+		assert!(f.body.download.lock().tasks.is_empty());
+		assert_eq!(rx.try_iter().count(), 0);
+		assert_eq!(f.chain.head().unwrap(), f.chain.header_head().unwrap());
 	}
 
 	// Advertise a matching canonical tip, conflicting work, and a height beyond known headers.
@@ -1063,7 +1474,7 @@ mod tests {
 			.unwrap();
 		assert!(f
 			.body
-			.receive_block(&mut f.secp, &competing, &peer.info, false, &f.scores)
+			.receive_block(&mut f.secp, &competing, &peer.info, false, true, &f.scores)
 			.unwrap());
 		assert_eq!(f.body.download.lock().tasks.len(), 1);
 		f.deliver(1, &peer.info.addr);
@@ -1097,7 +1508,7 @@ mod tests {
 		let child = next_block(&source, &mut f.secp, &keychain, &[]);
 		assert!(f
 			.body
-			.receive_block(&mut f.secp, &child, &peer.info, false, &f.scores)
+			.receive_block(&mut f.secp, &child, &peer.info, false, true, &f.scores)
 			.unwrap());
 		assert_eq!(f.chain.header_head().unwrap().height, 2);
 		assert_eq!(f.chain.head().unwrap().height, 0);
@@ -1158,7 +1569,14 @@ mod tests {
 		f.deliver(0, &peer.info.addr);
 		assert_eq!(
 			f.body
-				.receive_block(&mut f.secp, &f.blocks[0], &peer.info, false, &f.scores)
+				.receive_block(
+					&mut f.secp,
+					&f.blocks[0],
+					&peer.info,
+					false,
+					true,
+					&f.scores
+				)
 				.unwrap(),
 			true
 		);
@@ -1172,7 +1590,7 @@ mod tests {
 			);
 			assert_eq!(
 				f.body
-					.receive_block(&mut f.secp, &block, &peer.info, false, &f.scores)
+					.receive_block(&mut f.secp, &block, &peer.info, false, true, &f.scores)
 					.unwrap(),
 				false
 			);
@@ -1233,7 +1651,7 @@ mod tests {
 			});
 		}
 		f.body
-			.apply_ready_tasks(&mut download.tasks, &mut f.secp, &f.scores)
+			.apply_ready_tasks(&mut download, &mut f.secp, &f.scores)
 			.unwrap();
 		assert_eq!(download.tasks.len(), 3);
 		assert_eq!(f.chain.head().unwrap().height, 0);
@@ -1243,7 +1661,7 @@ mod tests {
 			reconstructed: false,
 		});
 		f.body
-			.apply_ready_tasks(&mut download.tasks, &mut f.secp, &f.scores)
+			.apply_ready_tasks(&mut download, &mut f.secp, &f.scores)
 			.unwrap();
 		assert_eq!(f.chain.head().unwrap().height, 3);
 		assert!(download.tasks.is_empty());
@@ -1384,10 +1802,10 @@ mod tests {
 	}
 
 	// Replace the canonical headers while old body requests are outstanding, then deliver
-	// the new fork while the body head still follows the old branch. Obsolete requests
-	// must disappear, stored fork bodies must not be requested again, and sync must finish.
+	// the new fork while the body head still follows the old branch. Expired obsolete
+	// requests must disappear, stored fork bodies must not be requested again, and sync must finish.
 	#[test]
-	fn reorg_cancels_old_requests_and_skips_already_stored_fork_bodies() {
+	fn reorg_expires_old_requests_and_skips_already_stored_fork_bodies() {
 		let mut f = Fixture::new(1_935_007, 3);
 		let (old_peer, old_rx) = f.supplier(4160);
 		f.poll();
@@ -1488,7 +1906,14 @@ mod tests {
 		assert_eq!(rx.try_iter().count(), f.requests_num());
 		let error = f
 			.body
-			.receive_block(&mut f.secp, &f.blocks[0], &peer.info, false, &f.scores)
+			.receive_block(
+				&mut f.secp,
+				&f.blocks[0],
+				&peer.info,
+				false,
+				true,
+				&f.scores,
+			)
 			.unwrap_err();
 		assert!(matches!(
 			error,

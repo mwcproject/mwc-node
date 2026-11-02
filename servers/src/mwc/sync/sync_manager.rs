@@ -105,6 +105,9 @@ impl SyncManager {
 
 	pub fn sync_request(&self, peers: &Arc<Peers>) -> Result<SyncResponse, Error> {
 		self.clear_inactive_pibd_failures();
+		if !self.state_is_ready() {
+			self.body.reset(&self.state_sync_peers);
+		}
 		self.tip_headers
 			.check_header_requests(&self.headers_sync_peers, Instant::now());
 		self.headers_sync_peers.apply_peers_status(peers);
@@ -254,7 +257,7 @@ impl SyncManager {
 		if state.response != SyncRequestResponses::StatePibdReady {
 			self.state_ready.store(false, Ordering::Release);
 			self.tip_headers.reset();
-			self.body.reset();
+			self.body.reset(&self.state_sync_peers);
 			return Ok(state);
 		}
 		self.state_ready.store(true, Ordering::Release);
@@ -630,15 +633,20 @@ impl SyncManager {
 		peer: &PeerInfo,
 		reconstructed: bool,
 	) -> Result<bool, Error> {
-		if !self.state_is_ready() {
-			return Ok(true);
+		let state_ready = self.state_is_ready();
+		let accepted = self.body.receive_block(
+			secp,
+			block,
+			peer,
+			reconstructed,
+			state_ready,
+			&self.state_sync_peers,
+		)?;
+		if state_ready {
+			// Application can drain several buffered blocks. The current head,
+			// rather than receipt alone, determines whether PIBD has succeeded.
+			self.report_block_result(block, &peer.addr, None)?;
 		}
-		let accepted =
-			self.body
-				.receive_block(secp, block, peer, reconstructed, &self.state_sync_peers)?;
-		// Application can drain several buffered blocks. The current head,
-		// rather than receipt alone, determines whether PIBD has succeeded.
-		self.report_block_result(block, &peer.addr, None)?;
 		Ok(accepted)
 	}
 }
@@ -953,6 +961,41 @@ mod pibd_successor_flow {
 		assert!(!fixture.manager.state_ready.load(Ordering::Acquire));
 		assert_eq!(body_rx.try_iter().count(), 0);
 		assert_eq!(header_rx.try_iter().count(), 0);
+	}
+
+	// Start a normal body request, then pause application for state validation.
+	// SyncManager must still route the old reply to its retained request, while
+	// leaving the body head and snapshot-validation status unchanged.
+	#[test]
+	fn snapshot_validation_still_settles_outstanding_body_responses() {
+		let mut fixture = Fixture::new(961_115);
+		let rx = connect_sync_supplier(&fixture, 1, false);
+		let best_height = ARCHIVE_HEIGHT
+			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
+		fixture
+			.manager
+			.request_chain(&fixture.peers, best_height)
+			.unwrap();
+		assert_eq!(rx.try_iter().count(), 1);
+		let hash = fixture.block.hash(fixture.chain.get_context_id()).unwrap();
+		let head = fixture.chain.head().unwrap();
+		let validating = mwc_chain::SyncStatus::ValidatingKernelsHistory {
+			headers: 0,
+			headers_total: ARCHIVE_HEIGHT,
+		};
+		fixture.manager.sync_state.update(validating.clone());
+		fixture.manager.sync_request(&fixture.peers).unwrap();
+		assert!(fixture.manager.has_block_request(&peer(1), &hash));
+		let supplier = fixture.peers.get_connected_peer(&peer(1)).unwrap();
+		assert!(fixture
+			.manager
+			.receive_block(&mut fixture.secp, &fixture.block, &supplier.info, false,)
+			.unwrap());
+		assert!(!fixture.manager.has_block_request(&peer(1), &hash));
+		assert_eq!(fixture.chain.head().unwrap(), head);
+		assert!(!fixture.chain.block_exists(&hash).unwrap());
+		assert_eq!(fixture.manager.sync_state.status(), validating);
+		assert_eq!(rx.try_iter().count(), 0);
 	}
 
 	#[test]

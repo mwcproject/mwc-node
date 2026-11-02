@@ -494,7 +494,7 @@ fn sync_loop_selects_all_ahead_peers_after_pong_updates() {
 
 // A peer supplies the strongest header fork and then disappears. Truncating
 // strictly below the survivor's work must start its header download, replace
-// obsolete body tasks, and eventually advance the body onto the survivor's branch.
+// active body work while retaining old requests, and advance onto the survivor's branch.
 #[test]
 fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	let mut f = Fixture::new(1_934_040);
@@ -566,9 +566,9 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	assert_eq!(f.chain.head().unwrap(), body);
 	assert_eq!(f.chain.header_head().unwrap().height, 4);
 	assert!(f.chain.header_head().unwrap().total_difficulty < other_tip.total_difficulty);
-	assert!(!f
+	assert!(f
 		.manager
-		.has_block_request(&strong_peer.info.addr, &strong_tip.last_block_h));
+		.has_block_request(&strong_peer.info.addr, &requested_hash));
 	assert_eq!(
 		other_messages.try_recv().unwrap().message_type_for_test(),
 		mwc_p2p::msg::Type::GetHeaders
@@ -605,7 +605,7 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 				.try_iter()
 				.map(|message| message.message_type_for_test()),
 		);
-		assert!(!f
+		assert!(f
 			.manager
 			.has_block_request(&strong_peer.info.addr, &requested_hash));
 		assert!(f
@@ -617,6 +617,20 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 			.unwrap());
 	}
 	assert_eq!(requests, vec![mwc_p2p::msg::Type::GetBlock; 2]);
+	assert_eq!(f.chain.head().unwrap(), other_tip);
+	assert_eq!(f.chain.header_head().unwrap(), other_tip);
+	// A delayed response still completes its original request after the replacement
+	// branch has caught up, without changing the successfully synchronized heads.
+	let late = strong
+		.get_block_for_header(&abandoned[requested - 1])
+		.unwrap();
+	assert!(f
+		.manager
+		.receive_block(&mut f.secp, &late, &strong_peer.info, false)
+		.unwrap());
+	assert!(!f
+		.manager
+		.has_block_request(&strong_peer.info.addr, &requested_hash));
 	assert_eq!(f.chain.head().unwrap(), other_tip);
 	assert_eq!(f.chain.header_head().unwrap(), other_tip);
 	assert!(!f.peers.is_banned(&other_peer.info.addr).unwrap());
