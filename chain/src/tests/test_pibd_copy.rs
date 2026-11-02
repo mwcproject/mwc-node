@@ -177,7 +177,9 @@ impl DesegmenterRequestor {
 		archive_header_height: u64,
 		bitmap_root_hash: Hash,
 	) -> Desegmenter {
-		self.chain.reset_pibd_chain().unwrap();
+		self.chain
+			.reset_pibd_chain(crate::PibdResetMode::Body)
+			.unwrap();
 
 		self.chain
 			.init_desegmenter(archive_header_height, bitmap_root_hash)

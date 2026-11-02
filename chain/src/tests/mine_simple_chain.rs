@@ -715,7 +715,17 @@ fn init_output_pos_index_rebuilds_missing_genesis_output_at_height_zero() {
 }
 
 #[test]
-fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
+fn pibd_resets_compacted_body_and_selects_headers_by_mode() {
+	for mode in [
+		None,
+		Some(crate::PibdResetMode::Body),
+		Some(crate::PibdResetMode::Both),
+	] {
+		check_compacted_pibd_reset(mode);
+	}
+}
+
+fn check_compacted_pibd_reset(mode: Option<crate::PibdResetMode>) {
 	let chain_dir = test_chain_dir("pibd_restart_genesis_after_compaction");
 	clean_output_dir(&chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
@@ -822,7 +832,13 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 
 		let retained_header_head = chain.header_head().unwrap();
 		let genesis_head = Tip::try_from_header(&genesis.header).unwrap();
-		{
+		assert!(chain.tail().unwrap().height > 0);
+		if let Some(mode) = mode {
+			chain.reset_pibd_chain(mode).unwrap();
+			assert!(!chain
+				.block_exists(&retained_header_head.last_block_h)
+				.unwrap());
+		} else {
 			let store = chain.get_store_for_tests();
 			let batch = store.batch_write().unwrap();
 			batch.save_body_head(&genesis_head).unwrap();
@@ -831,12 +847,26 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 		}
 		drop(chain);
 
-		// A completed PIBD reset leaves HEAD at genesis while subsequently applied
-		// segments can leave compacted body PMMR roots beyond it. Restart must
-		// discard that incomplete body state without discarding downloaded headers.
+		// None models an interrupted import: restart must discard its body while
+		// keeping headers. Explicit resets must retain their chosen header policy
+		// across restart, including after physical compaction of spent outputs.
 		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis.clone());
 		assert_eq!(chain.head().unwrap(), genesis_head);
-		assert_eq!(chain.header_head().unwrap(), retained_header_head);
+		let expected_headers = if mode == Some(crate::PibdResetMode::Both) {
+			assert!(chain
+				.get_block_header(&retained_header_head.last_block_h)
+				.unwrap_err()
+				.is_not_found());
+			assert!(chain
+				.get_header_progress_time(&retained_header_head.last_block_h)
+				.unwrap_err()
+				.is_not_found());
+			genesis_head
+		} else {
+			retained_header_head
+		};
+		assert_eq!(chain.header_head().unwrap(), expected_headers);
+		assert_eq!(chain.tail().unwrap(), genesis_head);
 		assert!(chain
 			.get_store_for_tests()
 			.pending_chain_operation()
@@ -1552,7 +1582,9 @@ fn marked_body_recovery_ignores_denylist_on_durable_competing_fork() {
 
 	// Encountering the existing marker latches in-process recovery without
 	// changing either durable head.
-	let trigger_err = chain.reset_pibd_chain().unwrap_err();
+	let trigger_err = chain
+		.reset_pibd_chain(crate::PibdResetMode::Body)
+		.unwrap_err();
 	assert!(matches!(
 		trigger_err,
 		mwc_chain::Error::Other(msg)

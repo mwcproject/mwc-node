@@ -306,11 +306,16 @@ impl SyncManager {
 		if headers.last_block_h == body.last_block_h {
 			return Ok(());
 		}
+		// Height-zero peers cannot supply ordinary header downloads yet. Their
+		// handshake work must not keep an unsupported header branch selected.
 		let best_work = peers
 			.iter()
 			.connected()
 			.into_iter()
-			.map(|peer| peer.info.get_height_and_difficulty().1)
+			.filter_map(|peer| {
+				let (height, difficulty) = peer.info.get_height_and_difficulty();
+				(height != 0).then_some(difficulty)
+			})
 			.max();
 		if best_work.is_some_and(|work| work >= headers.total_difficulty) {
 			return Ok(());
@@ -318,8 +323,8 @@ impl SyncManager {
 		let mut target = self.chain.get_block_header(&body.last_block_h)?;
 		if let Some(work) = best_work.filter(|work| *work > body.total_difficulty) {
 			target = self.chain.get_block_header(&headers.last_block_h)?;
-			// HeaderSync starts requests only for strictly greater work. Stopping
-			// at equality could leave a peer on another branch unable to qualify.
+			// Stop below the peer's work so HeaderSync requests its branch even
+			// when the peer's advertised height matches our selected height.
 			while target.total_difficulty() >= work {
 				let previous = self.chain.get_previous_header(&target)?;
 				if previous.height.checked_add(1) != Some(target.height)
@@ -694,12 +699,33 @@ mod pibd_successor_flow {
 
 	impl Fixture {
 		fn new(context_id: u32) -> Self {
+			Self::build(context_id, ARCHIVE_HEIGHT, false)
+		}
+
+		fn build(context_id: u32, body_height: u64, with_genesis_output: bool) -> Self {
 			global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 			global::set_local_nrd_enabled(false);
 			global::init_global_chain_type(context_id, global::ChainTypes::AutomatedTesting)
 				.unwrap();
 			global::init_global_nrd_enabled(context_id, false).unwrap();
 			let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let mut genesis = global::get_genesis_block(&secp, context_id).unwrap();
+			if with_genesis_output {
+				// Snapshot application reserves the first leaf for genesis, as on
+				// deployed networks. Keep test-sized PoW for this funded genesis.
+				let test_pow = genesis.header.pow;
+				genesis = mwc_core::genesis::genesis_floo(&secp, context_id);
+				genesis.header.pow = test_pow;
+				let difficulty = genesis.header.pow.total_difficulty;
+				pow::pow_size(
+					context_id,
+					&mut genesis.header,
+					difficulty,
+					global::proofsize(context_id),
+					global::min_edge_bits(context_id),
+				)
+				.unwrap();
+			}
 			let chain_dir = TempDir::new().unwrap();
 			let chain = Arc::new(
 				Chain::init(
@@ -707,7 +733,7 @@ mod pibd_successor_flow {
 					context_id,
 					chain_dir.path().to_str().unwrap().to_string(),
 					Arc::new(NoopAdapter {}),
-					global::get_genesis_block(&secp, context_id).unwrap(),
+					genesis,
 					pow::verify_size,
 					false,
 					HashSet::new(),
@@ -719,8 +745,7 @@ mod pibd_successor_flow {
 			);
 			let keychain = ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
 			let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-			// Use the first real archive boundary. Mining through height 10
-			// exercises activation at 4 before validating its successor at 11.
+			// Mine the requested body chain and retain its next header for body sync.
 			let block = loop {
 				let parent = chain.head_header().unwrap();
 				let height = parent.height + 1;
@@ -762,7 +787,7 @@ mod pibd_successor_flow {
 					global::min_edge_bits(context_id),
 				)
 				.unwrap();
-				if height == ARCHIVE_HEIGHT + 1 {
+				if height == body_height + 1 {
 					chain
 						.process_block_header(&block.header, mwc_chain::Options::NONE)
 						.unwrap();
@@ -863,6 +888,20 @@ mod pibd_successor_flow {
 		id: u8,
 		better: bool,
 	) -> mwc_crates::crossbeam::channel::Receiver<mwc_p2p::msg::Msg> {
+		connect_supplier(
+			fixture,
+			id,
+			better,
+			Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
+		)
+	}
+
+	fn connect_supplier(
+		fixture: &Fixture,
+		id: u8,
+		better: bool,
+		capabilities: Capabilities,
+	) -> mwc_crates::crossbeam::channel::Receiver<mwc_p2p::msg::Msg> {
 		let tip = fixture.chain.header_head().unwrap();
 		let difficulty = if better {
 			(tip.total_difficulty + Difficulty::from_num(100)).unwrap()
@@ -870,7 +909,7 @@ mod pibd_successor_flow {
 			tip.total_difficulty
 		};
 		let info = mwc_p2p::PeerInfo {
-			capabilities: Capabilities::HEADER_HIST | Capabilities::BLOCK_EXTRA,
+			capabilities,
 			user_agent: "snapshot-gate-test".into(),
 			version: mwc_core::ser::ProtocolVersion::local(),
 			addr: peer(id),
@@ -949,7 +988,10 @@ mod pibd_successor_flow {
 		let body_rx = connect_sync_supplier(&fixture, 1, false);
 		let header_rx = connect_sync_supplier(&fixture, 2, true);
 		fixture.manager.state.reset_desegmenter_data();
-		fixture.chain.reset_pibd_chain().unwrap();
+		fixture
+			.chain
+			.reset_pibd_chain(mwc_chain::PibdResetMode::Body)
+			.unwrap();
 		assert!(fixture.manager.header_download_for_test(&peer(2)).is_none());
 		let best_height = ARCHIVE_HEIGHT
 			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
@@ -1028,6 +1070,142 @@ mod pibd_successor_flow {
 		assert!(fixture.manager.state_ready.load(Ordering::Acquire));
 		assert_eq!(header_rx.try_iter().count(), 1);
 		assert_eq!(body_rx.try_iter().count(), 1);
+	}
+
+	#[test]
+	fn failed_snapshot_validation_allows_session_restart() {
+		use mwc_chain::txhashset::StateSegment;
+		use mwc_core::core::SegmentType;
+		use mwc_p2p::msg::Type;
+
+		let best_height = ARCHIVE_HEIGHT + u64::from(global::TESTING_STATE_SYNC_THRESHOLD);
+		let fixture = Fixture::build(961_116, best_height, true);
+		// Save a real snapshot before resetting this chain to act as the receiver.
+		// Applying only its bitmap to the planner derives the remaining layouts
+		// without changing the source txhashset.
+		let (root, archive_hash, bitmap, output, rangeproof, kernel) = {
+			let segmenter = fixture.chain.segmenter().unwrap();
+			assert_eq!(segmenter.header().height, ARCHIVE_HEIGHT);
+			let root = segmenter.bitmap_root().unwrap();
+			let planner = fixture
+				.chain
+				.init_desegmenter(ARCHIVE_HEIGHT, root)
+				.unwrap();
+			let next_id = |kind| {
+				let ids = planner.next_segments(&kind, 0, usize::MAX).unwrap();
+				assert_eq!(ids.len(), 1);
+				ids[0].identifier
+			};
+			let bitmap = segmenter
+				.bitmap_segment(next_id(SegmentType::Bitmap))
+				.unwrap();
+			let validated = planner
+				.validate_segment(StateSegment::Bitmap(bitmap.clone()))
+				.unwrap();
+			planner.apply_segment(&validated).unwrap();
+			(
+				root,
+				segmenter
+					.header()
+					.hash(fixture.chain.get_context_id())
+					.unwrap(),
+				bitmap,
+				segmenter
+					.output_segment(next_id(SegmentType::Output))
+					.unwrap(),
+				segmenter
+					.rangeproof_segment(next_id(SegmentType::RangeProof))
+					.unwrap(),
+				segmenter
+					.kernel_segment(next_id(SegmentType::Kernel))
+					.unwrap(),
+			)
+		};
+		fixture.manager.state.reset_desegmenter_data();
+		fixture
+			.chain
+			.reset_pibd_chain(mwc_chain::PibdResetMode::Body)
+			.unwrap();
+		let capabilities = Capabilities::HEADERS_HASH | Capabilities::PIBD_HIST;
+		let first_rx = connect_supplier(&fixture, 1, false, capabilities);
+		let second_rx = connect_supplier(&fixture, 2, false, capabilities);
+		fixture.manager.sync_request(&fixture.peers).unwrap();
+		for receiver in [&first_rx, &second_rx] {
+			assert_eq!(
+				receiver.try_recv().unwrap().message_type_for_test(),
+				Type::StartPibdSyncRequest,
+			);
+		}
+		for id in 1..=2 {
+			fixture.manager.state.recieve_pibd_status(
+				&peer(id),
+				archive_hash,
+				ARCHIVE_HEIGHT,
+				root,
+			);
+		}
+		fixture.manager.sync_request(&fixture.peers).unwrap();
+		let state = &fixture.manager.state;
+		let scores = &fixture.manager.state_sync_peers;
+		state
+			.receive_bitmap_segment(&peer(1), &archive_hash, bitmap, &fixture.peers, scores)
+			.unwrap();
+		state
+			.receive_output_segment(&peer(1), &archive_hash, output, &fixture.peers, scores)
+			.unwrap();
+		state
+			.receive_rangeproof_segment(&peer(1), &archive_hash, rangeproof, &fixture.peers, scores)
+			.unwrap();
+		state
+			.receive_kernel_segment(&peer(1), &archive_hash, kernel, &fixture.peers, scores)
+			.unwrap();
+
+		// Cancellation deterministically fails the real validator after it has
+		// published ValidatingKernelsHistory. Use a separate stop signal so the
+		// coordinator remains running for the recovery check.
+		let validation_stop = Arc::new(StopState::new());
+		validation_stop.stop();
+		let failed = state
+			.request(
+				&fixture.peers,
+				fixture.manager.sync_state.clone(),
+				scores,
+				validation_stop,
+				best_height,
+			)
+			.unwrap();
+		assert_eq!(failed.response, SyncRequestResponses::Syncing);
+		assert_eq!(
+			failed.message,
+			format!(
+				"Restarting because validate_complete_state failed with error {}",
+				Error::Stopped
+			),
+		);
+		assert!(!fixture.manager.sync_state.is_txhashset_validation());
+		assert!(fixture.manager.sync_state.is_syncing());
+		assert!(!fixture.manager.state_ready.load(Ordering::Acquire));
+
+		// A normal coordinator poll must consume the queued reset and request
+		// fresh root commitments from replacement peers.
+		let replacements = [
+			connect_supplier(&fixture, 3, false, capabilities),
+			connect_supplier(&fixture, 4, false, capabilities),
+		];
+		let restarted = fixture.manager.sync_request(&fixture.peers).unwrap();
+		assert_eq!(restarted.response, SyncRequestResponses::Syncing);
+		for receiver in replacements {
+			assert_eq!(
+				receiver
+					.try_iter()
+					.map(|msg| msg.message_type_for_test())
+					.collect::<Vec<_>>(),
+				vec![Type::StartPibdSyncRequest],
+			);
+		}
+		assert_eq!(scores.get_banned_peers(), HashSet::from([peer(1), peer(2)]));
+		assert!(state.imported_state().is_none());
+		assert!(!fixture.manager.state_ready.load(Ordering::Acquire));
 	}
 
 	#[test]

@@ -43,7 +43,7 @@ pub use crate::chain::{Chain, OutputReadSnapshot};
 pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{
-	BlockStatus, ChainAdapter, ChainHeadReset, Options, SyncState, SyncStatus, Tip,
+	BlockStatus, ChainAdapter, ChainHeadReset, Options, PibdResetMode, SyncState, SyncStatus, Tip,
 	TxHashsetStateValidationStage,
 };
 

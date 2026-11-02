@@ -1078,7 +1078,12 @@ impl PeerInfo {
 		// Otherwise a peer could advertise slightly lower work or change only its height
 		// after supplying canonical data, avoiding selection as a canonical block supplier.
 		// The handshake supplies work without height; allow its first matching height.
-		if total_difficulty > live_info.total_difficulty || live_info.height == 0 {
+		// Zero-height updates only refresh liveness, preserving genesis peers without
+		// letting later advertisements reopen the handshake-height exception.
+		if height != 0
+			&& (total_difficulty > live_info.total_difficulty
+				|| (live_info.height == 0 && total_difficulty == live_info.total_difficulty))
+		{
 			live_info.height = height;
 			live_info.total_difficulty = total_difficulty;
 		}
@@ -1397,9 +1402,10 @@ mod tests {
 	use super::*;
 	use mwc_crates::chrono::Duration;
 
-	// Fill the height omitted by the handshake, then advertise weaker work and conflicting
-	// heights at equal work. Keep the best pair while refreshing liveness; higher work
-	// must replace both values even when the new branch has a lower height.
+	// Fill the height omitted by the handshake only at matching or higher work. Keep
+	// the best pair through zero-height advertisements, weaker work and conflicting
+	// heights at equal work, while refreshing liveness. Higher work at a nonzero
+	// height must replace both values even when the new branch has a lower height.
 	#[test]
 	fn peer_updates_preserve_best_work_and_its_height() {
 		let info = PeerInfo {
@@ -1411,12 +1417,19 @@ mod tests {
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::from_num(100)))),
 			tx_base_fee: 0,
 		};
+		for (height, work) in [(0, 100), (0, 101), (9, 99)] {
+			info.update(height, Difficulty::from_num(work));
+			assert_eq!(
+				info.get_height_and_difficulty(),
+				(0, Difficulty::from_num(100))
+			);
+		}
 		info.update(10, Difficulty::from_num(100));
 		assert_eq!(
 			info.get_height_and_difficulty(),
 			(10, Difficulty::from_num(100))
 		);
-		for (height, work) in [(11, 99), (11, 100), (9, 100)] {
+		for (height, work) in [(0, 101), (11, 100), (11, 99), (9, 100)] {
 			let last_seen = Utc::now() - Duration::seconds(60);
 			info.live_info.write().last_seen = last_seen;
 			info.update(height, Difficulty::from_num(work));

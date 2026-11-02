@@ -28,7 +28,6 @@ use mwc_crates::parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use mwc_crates::rand;
 use mwc_crates::rand::prelude::IteratorRandom;
 use mwc_crates::secp::pedersen::RangeProof;
-use mwc_p2p::types::Direction;
 use mwc_p2p::PeerAddr;
 use mwc_p2p::{self, Capabilities, Peer};
 use mwc_util::StopState;
@@ -278,11 +277,8 @@ impl StateSync {
 				) == height
 			})
 			.collect();
-		if candidates
-			.iter()
-			.any(|peer| peer.info.direction == Direction::Outbound)
-		{
-			candidates.retain(|peer| peer.info.direction == Direction::Outbound);
+		if candidates.iter().any(|peer| peer.info.is_outbound()) {
+			candidates.retain(|peer| peer.info.is_outbound());
 		}
 		candidates
 	}
@@ -355,7 +351,8 @@ impl StateSync {
 					// A reset request, changed target, or local recovery ends the
 					// imported session before ordinary block sync continues.
 					drop(session);
-					self.chain.reset_pibd_chain()?;
+					self.chain
+						.reset_pibd_chain(mwc_chain::PibdResetMode::Body)?;
 					self.reset_desegmenter_data();
 					return Ok(SyncResponse::new(
 						SyncRequestResponses::Syncing,
@@ -371,7 +368,16 @@ impl StateSync {
 			}
 		}
 
-		// In case of archive mode, this step is must be skipped. Body sync will catch up.
+		// After complete_pibd_sync(), completion intentionally bypasses the archive-height
+		// checks below; ordinary body sync handles subsequent catch-up in this process.
+		// Accepted limitation: a node that stays running through prolonged network loss
+		// can fall beyond non-archive peers' retained block horizon (about 7 days of
+		// blocks on mainnet/floonet, sooner if already behind). Catch-up then requires
+		// a peer with block history or a restart. Restarting creates StateSync with
+		// is_complete=false, so nodes stopped for a long time can use PIBD normally.
+		// Automatic PIBD re-entry for this prolonged-disconnection case is intentionally
+		// omitted to keep sync transitions simple.
+		// Archive nodes always skip PIBD and catch up through body sync.
 		if self.is_complete.load(Ordering::Acquire) || self.chain.archive_mode() {
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::StatePibdReady,
@@ -651,7 +657,7 @@ impl StateSync {
 				};
 
 				info!("Creating desegmenter for root hash {}", best_root_hash);
-				if let Err(e) = self.chain.reset_pibd_chain() {
+				if let Err(e) = self.chain.reset_pibd_chain(mwc_chain::PibdResetMode::Body) {
 					let msg = format!(
 						"Failed to reset chain before start BIPD state sync. Error: {}",
 						e
@@ -669,7 +675,8 @@ impl StateSync {
 					Err(e) => {
 						error!("Failed to create PIBD desgmenter, {}", e);
 						// let's try to reset everything...
-						if let Err(e) = self.chain.reset_pibd_chain() {
+						if let Err(e) = self.chain.reset_pibd_chain(mwc_chain::PibdResetMode::Body)
+						{
 							error!("reset_pibd_chain failed with error: {}", e);
 						}
 						return Err(e);
@@ -731,7 +738,7 @@ impl StateSync {
 						.height
 						.checked_add(1)
 						.ok_or(mwc_chain::Error::InvalidBlockHeight)?;
-					if mwc_core::consensus::is_coinbase_binding_enabled(
+					let response = if mwc_core::consensus::is_coinbase_binding_enabled(
 						self.chain.get_context_id(),
 						next_height,
 					) {
@@ -741,25 +748,27 @@ impl StateSync {
 						self.is_complete.store(true, Ordering::Release);
 						// BodySync now owns block requests and their normal retries.
 						*self.download.lock() = StateDownload::new();
-						// Leave validation status so blocks can be processed, and show
-						// actual block progress while checking the imported state.
-						sync_state.update(SyncStatus::BodySync {
-							archive_height: archive_header.height,
-							current_height: archive_header.height,
-							highest_height: best_height,
-						});
-						return Ok(SyncResponse::new(
+						SyncResponse::new(
 							SyncRequestResponses::StatePibdReady,
 							Capabilities::PIBD_HIST,
 							"PIBD imported; waiting to validate its successor block".into(),
-						));
-					}
-					self.complete_pibd_sync();
-					return Ok(SyncResponse::new(
-						SyncRequestResponses::StatePibdReady,
-						Capabilities::UNKNOWN,
-						"PIBD download and validaion is done with success!".into(),
-					));
+						)
+					} else {
+						self.complete_pibd_sync();
+						SyncResponse::new(
+							SyncRequestResponses::StatePibdReady,
+							Capabilities::UNKNOWN,
+							"PIBD download and validaion is done with success!".into(),
+						)
+					};
+					// Both successful paths must leave validation, even when no newer headers
+					// are available yet and BodySync returns without updating the status.
+					sync_state.update(SyncStatus::BodySync {
+						archive_height: archive_header.height,
+						current_height: archive_header.height,
+						highest_height: best_height,
+					});
+					return Ok(response);
 				}
 				Err(e) => {
 					error!(
@@ -767,6 +776,11 @@ impl StateSync {
 						e
 					);
 					self.ban_this_session(&session.root_hash, sync_peers);
+					// Leave validation so SyncManager can run the queued session reset.
+					sync_state.update(SyncStatus::TxHashsetPibd {
+						recieved_segments: 0,
+						total_segments: 100,
+					});
 					return Ok(SyncResponse::new(
 						SyncRequestResponses::Syncing,
 						Capabilities::PIBD_HIST,
@@ -1406,7 +1420,7 @@ mod task_tests {
 	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use mwc_crates::tempfile::TempDir;
 	use mwc_p2p::msg::Msg;
-	use mwc_p2p::types::PeerLiveInfo;
+	use mwc_p2p::types::{Direction, PeerLiveInfo};
 	use mwc_p2p::{DummyAdapter, P2PConfig, PeerInfo, Peers};
 	use std::collections::HashSet;
 	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -1452,7 +1466,9 @@ mod task_tests {
 			let source = init(&source_dir);
 			let chain = init(&chain_dir);
 			let root = source.segmenter().unwrap().bitmap_root().unwrap();
-			chain.reset_pibd_chain().unwrap();
+			chain
+				.reset_pibd_chain(mwc_chain::PibdResetMode::Body)
+				.unwrap();
 			let sync = StateSync::new(chain);
 			*sync.target_archive_hash.write() = genesis.hash(0).unwrap();
 			*sync.desegmenter.write() =
@@ -1475,6 +1491,10 @@ mod task_tests {
 		}
 
 		fn peer(&self, id: u8) -> (Arc<Peer>, Receiver<Msg>) {
+			self.peer_with_direction(id, Direction::Outbound)
+		}
+
+		fn peer_with_direction(&self, id: u8, direction: Direction) -> (Arc<Peer>, Receiver<Msg>) {
 			let addr = PeerAddr::Ip(SocketAddr::new(
 				IpAddr::V4(Ipv4Addr::new(10, 1, 0, id)),
 				3414,
@@ -1484,7 +1504,7 @@ mod task_tests {
 				user_agent: "state-task-test".into(),
 				version: ProtocolVersion::local(),
 				addr: addr.clone(),
-				direction: Direction::Outbound,
+				direction,
 				live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
 				tx_base_fee: 0,
 			};
@@ -1497,6 +1517,51 @@ mod task_tests {
 				.write()
 				.insert(addr, (root, Instant::now()));
 			(peer, messages)
+		}
+	}
+
+	#[test]
+	fn eligible_peers_prefers_outbound_over_both_transports() {
+		use Direction::{Inbound, InboundTor, Outbound, OutboundTor};
+
+		let cases: &[(&str, &[Direction], &[usize])] = &[
+			(
+				"Tor outbound peers exclude an inbound majority",
+				&[OutboundTor, OutboundTor, Inbound, InboundTor, InboundTor],
+				&[0, 1],
+			),
+			(
+				"ordinary outbound peers retain Tor outbound peers",
+				&[Outbound, OutboundTor, OutboundTor, Inbound, InboundTor],
+				&[0, 1, 2],
+			),
+			(
+				"inbound peers remain a fallback when no outbound peers qualify",
+				&[Inbound, InboundTor],
+				&[0, 1],
+			),
+		];
+		for &(case, directions, expected_indices) in cases {
+			let f = Fixture::new();
+			let peers: Vec<_> = directions
+				.iter()
+				.enumerate()
+				.map(|(index, direction)| {
+					f.peer_with_direction(u8::try_from(index + 1).unwrap(), *direction)
+				})
+				.collect();
+			let expected: HashSet<_> = expected_indices
+				.iter()
+				.map(|&index| peers[index].0.info.addr.clone())
+				.collect();
+			let selected: HashSet<_> = f
+				.sync
+				.eligible_peers(&f.peers)
+				.iter()
+				.map(|peer| peer.info.addr.clone())
+				.collect();
+
+			assert_eq!(selected, expected, "{}", case);
 		}
 	}
 

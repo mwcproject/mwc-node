@@ -912,6 +912,157 @@ fn missing_ancestry_announcements_wait_for_the_sync_loop() {
 	}
 }
 
+// Equal work must not let an unusable supplier pin an unsupported header tip.
+// Returning valid known headers at a different height earns a fine, not success.
+#[test]
+fn unsupported_headers_wrong_height_peer_is_fined_until_banned() {
+	for (context, advertised_height) in [(1_934_050, 1), (1_934_051, 5)] {
+		let mut f = Fixture::new(context);
+		let body = f.chain.head().unwrap();
+		let block = f.block(&[]);
+		f.chain
+			.process_block_header(&block.header, Options::NONE)
+			.unwrap();
+		let tip = f.chain.header_head().unwrap();
+		let mut headers: Vec<_> = f.history.iter().map(|block| block.header.clone()).collect();
+		headers.push(block.header.clone());
+		let info = PeerInfo {
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+			..f.peer.clone()
+		};
+		info.update(advertised_height, tip.total_difficulty);
+		let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
+		let peer = Arc::new(peer);
+		f.peers.add_connected(peer.clone()).unwrap();
+
+		for attempt in 0..7 {
+			// Match the sync loop's ordering. The advertised work still prevents
+			// truncation, but now its owner must answer a header request.
+			f.manager.truncate_header_head(&f.peers, false).unwrap();
+			assert_eq!(f.chain.header_head().unwrap(), tip);
+			f.manager.sync_request(&f.peers).unwrap();
+			assert_eq!(
+				messages.try_recv().unwrap().message_type_for_test(),
+				mwc_p2p::msg::Type::GetHeaders
+			);
+			assert_eq!(messages.try_iter().count(), 0);
+			assert!(f
+				.manager
+				.header_download_for_test(&peer.info.addr)
+				.is_some());
+			peer.receive_headers_for_test(&headers, 0).unwrap();
+			assert!(f
+				.manager
+				.header_download_for_test(&peer.info.addr)
+				.is_none());
+			f.manager.apply_header_scores_for_test(&f.peers);
+			// One changed advertisement could be a reorg. Repeated failures use
+			// the ordinary no-response policy and eventually ban the supplier.
+			assert_eq!(f.peers.is_banned(&peer.info.addr).unwrap(), attempt == 6);
+		}
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), body);
+		assert_eq!(f.chain.head().unwrap(), body);
+		assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
+	}
+}
+
+#[test]
+fn zero_height_peers_cannot_pin_unsupported_headers() {
+	for (context, higher_work) in [(1_934_053, false), (1_934_054, true)] {
+		let mut f = Fixture::new(context);
+		let body = f.chain.head().unwrap();
+		let block = f.block(&[]);
+		f.chain
+			.process_block_header(&block.header, Options::NONE)
+			.unwrap();
+		let tip = f.chain.header_head().unwrap();
+		let work = if higher_work {
+			(tip.total_difficulty + Difficulty::from_num(100)).unwrap()
+		} else {
+			tip.total_difficulty
+		};
+		let info = PeerInfo {
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(work))),
+			..f.peer.clone()
+		};
+		let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
+		let peer = Arc::new(peer);
+		f.peers.add_connected(peer.clone()).unwrap();
+		for _ in 0..7 {
+			// Repeated height-zero advertisements remain ineligible, without
+			// creating requests or penalizing a normal handshake's missing height.
+			peer.info.update(0, work);
+			f.manager.sync_request(&f.peers).unwrap();
+			assert_eq!(messages.try_iter().count(), 0);
+			assert!(f
+				.manager
+				.header_download_for_test(&peer.info.addr)
+				.is_none());
+			f.manager.apply_header_scores_for_test(&f.peers);
+			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		}
+		// Work without a height must not prevent falling back to the body tip.
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), body);
+		assert_eq!(f.chain.head().unwrap(), body);
+		assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
+	}
+}
+
+#[test]
+fn zero_height_peer_waits_for_advertisement_before_header_download() {
+	let mut f = Fixture::new(1_934_052);
+	let block = f.block(&[]);
+	let tip = mwc_chain::Tip::try_from_header(&block.header).unwrap();
+	let info = PeerInfo {
+		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+		..f.peer.clone()
+	};
+	let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
+	let peer = Arc::new(peer);
+	f.peers.add_connected(peer.clone()).unwrap();
+	assert_eq!(
+		peer.info.get_height_and_difficulty(),
+		(0, tip.total_difficulty)
+	);
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(messages.try_iter().count(), 0);
+	assert!(f
+		.manager
+		.header_download_for_test(&peer.info.addr)
+		.is_none());
+	// The same height/work update used by Ping/Pong makes this peer eligible.
+	peer.info.update(tip.height, tip.total_difficulty);
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(
+		messages.try_recv().unwrap().message_type_for_test(),
+		mwc_p2p::msg::Type::GetHeaders
+	);
+	assert_eq!(messages.try_iter().count(), 0);
+	peer.receive_headers_for_test(&[block.header.clone()], 0)
+		.unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), tip);
+	assert!(f
+		.manager
+		.header_download_for_test(&peer.info.addr)
+		.is_none());
+	assert_eq!(
+		peer.info.get_height_and_difficulty(),
+		(tip.height, tip.total_difficulty)
+	);
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(
+		messages.try_recv().unwrap().message_type_for_test(),
+		mwc_p2p::msg::Type::GetBlock
+	);
+	assert_eq!(messages.try_iter().count(), 0);
+	assert!(f
+		.manager
+		.has_block_request(&peer.info.addr, &tip.last_block_h));
+	assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+}
+
 #[test]
 fn header_progress_accepts_short_batches_and_known_duplicate_goals() {
 	let mut f = Fixture::new(1_934_020);

@@ -26,7 +26,6 @@ use mwc_core::core::{
 use mwc_crates::log::debug;
 use mwc_crates::parking_lot::{Mutex, RwLock};
 use mwc_crates::rand::seq::IteratorRandom;
-use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -338,31 +337,31 @@ impl HeaderPibdSync {
 		*self.download.lock() = None;
 		let checkpoints = hashes.get_header_hashes()?;
 		let target = hashes.get_target_height();
-		let tip = self.chain.header_head()?;
-		let max_index = tip.height.min(target) / HEADERS_PER_BATCH as u64;
-		for index in (0..=max_index).rev() {
-			let header = match self
-				.chain
-				.get_header_by_height(index * HEADERS_PER_BATCH as u64)
-			{
-				Ok(header) => header,
-				Err(err) if err.is_not_found() => continue,
-				Err(err) => return Err(err),
-			};
-			let checkpoint = usize::try_from(index)
-				.ok()
-				.and_then(|index| checkpoints.get(index))
-				.ok_or_else(|| Error::Other("Missing checkpoint hash".into()))?;
-			if header.hash(self.chain.get_context_id())? == *checkpoint {
+		{
+			let tip = self.chain.header_head()?;
+			let max_index = tip.height.min(target) / HEADERS_PER_BATCH as u64;
+			for index in (0..=max_index).rev() {
+				let header = match self
+					.chain
+					.get_header_by_height(index * HEADERS_PER_BATCH as u64)
+				{
+					Ok(header) => header,
+					Err(err) if err.is_not_found() => continue,
+					Err(err) => return Err(err),
+				};
+				let checkpoint = usize::try_from(index)
+					.ok()
+					.and_then(|index| checkpoints.get(index))
+					.ok_or_else(|| Error::Other("Missing checkpoint hash".into()))?;
+				if header.hash(self.chain.get_context_id())? == *checkpoint {
+					continue;
+				}
+				// Preserve the existing below-horizon mismatch recovery policy.
+				self.chain
+					.reset_pibd_chain(mwc_chain::PibdResetMode::Both)?;
+				// The selected chain is now at genesis; do not read its old heights.
 				break;
 			}
-			// Preserve the existing below-horizon mismatch recovery policy.
-			let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-			self.chain.reset_chain_head(
-				&secp,
-				&self.chain.genesis(),
-				mwc_chain::ChainHeadReset::Both,
-			)?;
 		}
 		let current_height = self.chain.header_head()?.height;
 		if current_height >= target {
@@ -651,6 +650,7 @@ mod tests {
 	use mwc_chain::types::NoopAdapter;
 	use mwc_core::core::pmmr::{self, ReadablePMMR, VecBackend, PMMR};
 	use mwc_core::{consensus, global, pow, ser::ProtocolVersion};
+	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use mwc_crates::tempfile::TempDir;
 	use mwc_p2p::{
 		msg::Msg,
@@ -1739,6 +1739,150 @@ mod tests {
 			.unwrap());
 		f.sync.prepare_download(&next_target, &agreed).unwrap();
 		assert_eq!(f.sync.download.lock().as_ref().unwrap().tasks.len(), 2);
+	}
+
+	// Keep an entirely matching prefix, then disagree first at an older checkpoint
+	// and then at the newest one. Each mismatch must reset both chain heads and
+	// restart at genesis without continuing lookups against the reset PMMR.
+	#[test]
+	fn prepare_download_checks_all_checkpoints_and_resets_on_any_mismatch() {
+		let context_id = 971_202;
+		let f = Fixture::with_context(context_id);
+		let body_hash = mine_first_body(&f.sync.chain);
+		let genesis = f.sync.chain.genesis();
+		let genesis_hash = genesis.hash(context_id).unwrap();
+		let headers = mine_headers(genesis, 1024);
+		let checkpoints = [
+			genesis_hash,
+			headers[511].hash(context_id).unwrap(),
+			headers[1023].hash(context_id).unwrap(),
+			hash(99),
+		];
+		for mismatch in [None, Some(1), Some(2)] {
+			for batch in headers.chunks(BATCH_SIZE) {
+				f.sync
+					.chain
+					.sync_block_headers(batch, Options::NONE, 1)
+					.unwrap();
+			}
+			let mut expected = checkpoints;
+			if let Some(index) = mismatch {
+				expected[index] = hash(98);
+			}
+			if mismatch != Some(2) {
+				// The first mismatch must rebuild a real body whose retained tail
+				// is above genesis. A normal reset_chain_head would reject it.
+				assert_eq!(f.sync.chain.head().unwrap().height, 1);
+				assert_eq!(f.sync.chain.tail().unwrap().height, 1);
+			}
+			f.sync
+				.prepare_download(&checkpoint_hashes(&expected, 1536), &HashSet::new())
+				.unwrap();
+			let download = f.sync.download.lock();
+			let download = download.as_ref().unwrap();
+			if mismatch.is_none() {
+				assert_eq!(f.sync.chain.header_head().unwrap().height, 1024);
+				assert_eq!(download.tasks.front().unwrap().height, 1024);
+				assert_eq!(download.tasks.len(), 1);
+			} else {
+				assert_eq!(
+					f.sync.chain.header_head().unwrap().last_block_h,
+					genesis_hash
+				);
+				assert_eq!(f.sync.chain.head().unwrap().last_block_h, genesis_hash);
+				assert_eq!(f.sync.chain.tail().unwrap().last_block_h, genesis_hash);
+				assert!(!f.sync.chain.block_exists(&body_hash).unwrap());
+				assert!(f
+					.sync
+					.chain
+					.get_block_header(&body_hash)
+					.unwrap_err()
+					.is_not_found());
+				assert_eq!(f.sync.chain.get_header_by_height(0).unwrap().height, 0);
+				for header in &headers {
+					let hash = header.hash(context_id).unwrap();
+					assert!(f
+						.sync
+						.chain
+						.get_block_header(&hash)
+						.unwrap_err()
+						.is_not_found());
+					assert!(f
+						.sync
+						.chain
+						.get_header_progress_time(&hash)
+						.unwrap_err()
+						.is_not_found());
+				}
+				assert!(matches!(
+					f.sync.chain.get_header_by_height(512),
+					Err(Error::InvalidHeaderHeight(512))
+				));
+				assert_eq!(download.tasks.front().unwrap().height, 0);
+				assert_eq!(download.tasks.len(), 3);
+			}
+		}
+	}
+
+	fn mine_first_body(chain: &Chain) -> Hash {
+		use mwc_core::core::{Block, TransactionBody};
+		use mwc_core::libtx::{reward, ProofBuilder};
+		use mwc_keychain::{ExtKeychain, Keychain};
+
+		let context_id = chain.get_context_id();
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let keychain = ExtKeychain::from_seed(&secp, &[71; 32], false).unwrap();
+		let key = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+		let parent = chain.genesis();
+		let binding = chain
+			.coinbase_binding_for_template(&secp, &parent, &TransactionBody::empty())
+			.unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let (output, kernel, opening) = reward::output_s2c(
+			context_id,
+			&keychain,
+			&builder,
+			&key,
+			0,
+			1,
+			&mut secp,
+			binding.digest().unwrap(),
+		)
+		.unwrap();
+		let difficulty = consensus::next_difficulty(
+			context_id,
+			1,
+			chain.difficulty_iter().unwrap(),
+			&mut consensus::DifficultyCache::new(),
+		)
+		.unwrap();
+		let mut block = Block::new(
+			context_id,
+			&parent,
+			&[],
+			difficulty.difficulty,
+			(output, kernel),
+			&secp,
+		)
+		.unwrap();
+		block.coinbase_opening =
+			consensus::is_coinbase_binding_enabled(context_id, 1).then_some(opening);
+		block.header.timestamp = parent.timestamp + mwc_crates::chrono::Duration::seconds(60);
+		block.header.pow.secondary_scaling = difficulty.secondary_scaling;
+		chain.set_txhashset_roots(&secp, &mut block).unwrap();
+		pow::pow_size(
+			context_id,
+			&mut block.header,
+			difficulty.difficulty,
+			global::proofsize(context_id),
+			global::min_edge_bits(context_id),
+		)
+		.unwrap();
+		let hash = block.hash(context_id).unwrap();
+		chain
+			.process_block(&mut secp, block, Options::NONE, HashSet::new())
+			.unwrap();
+		hash
 	}
 
 	fn mine_headers(genesis: BlockHeader, count: u64) -> Vec<BlockHeader> {

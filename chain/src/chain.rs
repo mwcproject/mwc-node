@@ -24,7 +24,7 @@ use crate::store::{ChainOperationKind, PendingChainOperation, PendingChainOperat
 use crate::txhashset;
 use crate::txhashset::{Desegmenter, PMMRHandle, Segmenter, TxHashSet};
 use crate::types::{
-	BlockStatus, ChainAdapter, ChainHeadReset, CommitPos, HashHeight, Options,
+	BlockStatus, ChainAdapter, ChainHeadReset, CommitPos, HashHeight, Options, PibdResetMode,
 	SpentCommitmentRecord, SpentOutput, SyncState, SyncStatus, SyncStatusUpdateThrottle, Tip,
 	HEADERS_PER_BATCH,
 };
@@ -929,7 +929,11 @@ impl Chain {
 		// attempting to rebuild old indexes from bodies a PIBD import lacks.
 		let resetting_body = matches!(
 			store.pending_chain_operation()?,
-			Some(PendingChainOperation::PibdReset | PendingChainOperation::ResetToGenesis)
+			Some(
+				PendingChainOperation::PibdReset
+					| PendingChainOperation::PibdResetBoth
+					| PendingChainOperation::ResetToGenesis
+			)
 		);
 		if !resetting_body {
 			// Migrate legacy positions-only per-block spent indexes to the exact
@@ -1047,15 +1051,19 @@ impl Chain {
 		&self.pibd_params
 	}
 
-	/// Clear stored bodies and rebuild genesis state, retaining headers for PIBD.
-	pub fn reset_pibd_chain(&self) -> Result<(), Error> {
+	/// Clear stored bodies and rebuild genesis state. `Both` also resets the
+	/// header chain and removes non-genesis headers and their progress records.
+	pub fn reset_pibd_chain(&self, mode: PibdResetMode) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
 		let secp = Secp256k1::with_caps(ContextFlag::Commit)?;
 
 		let mut header_pmmr = self.header_pmmr.write();
 		let mut txhashset = self.txhashset.write();
-		let mut marker_guard =
-			self.set_pending_chain_operation_checked(&PendingChainOperation::PibdReset)?;
+		let operation = match mode {
+			PibdResetMode::Body => PendingChainOperation::PibdReset,
+			PibdResetMode::Both => PendingChainOperation::PibdResetBoth,
+		};
+		let mut marker_guard = self.set_pending_chain_operation_checked(&operation)?;
 		let res = reset_pibd_chain_state(
 			&self.genesis,
 			&self.store,
@@ -1064,6 +1072,7 @@ impl Chain {
 			&secp,
 			self.pow_verifier,
 			self.stop_state.clone(),
+			mode,
 		);
 
 		match res {
@@ -3741,6 +3750,7 @@ impl Chain {
 				)
 			};
 			let mut marker_guard = self.set_pending_chain_operation_checked(&op)?;
+			let previous_sync_status = sync_state.as_ref().map(|state| (state, state.status()));
 			let res = (|| {
 				let batch = self.store.batch_write()?;
 
@@ -3820,6 +3830,17 @@ impl Chain {
 				batch.commit()?;
 				Ok(horizon_header)
 			})();
+			// Index rebuilds publish temporary validation statuses. Restore on both
+			// success and failure so sync can resume, without replacing newer statuses.
+			if let Some((state, previous_status)) = previous_sync_status {
+				state.update_if(previous_status, |status| {
+					matches!(
+						status,
+						SyncStatus::TxHashsetOutputPosIndexBuild { .. }
+							| SyncStatus::TxHashsetKernelPosIndexBuild { .. }
+					)
+				});
+			}
 			match res {
 				Ok(horizon_header) => {
 					self.clear_pending_chain_operation_checked()?;
@@ -5338,7 +5359,27 @@ fn reset_pibd_chain_state(
 	secp: &Secp256k1,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	stop_state: Option<Arc<StopState>>,
+	mode: PibdResetMode,
 ) -> Result<(), Error> {
+	if mode == PibdResetMode::Both {
+		validate_genesis_context_id(genesis, store.get_context_id())?;
+		validate_genesis_matches_header_pmmr(&genesis.hash(store.get_context_id())?, header_pmmr)?;
+		let head = Tip::try_from_header(&genesis.header)?;
+		let mut batch = store.batch_write()?;
+		// A previous attempt may have synced the truncated PMMR without committing
+		// HEADER_HEAD. Use genesis explicitly rather than resolving that old tip.
+		txhashset::header_extending_with_explicit_head(
+			header_pmmr,
+			&mut batch,
+			head,
+			|ext, batch| {
+				ext.rewind(&genesis.header)?;
+				batch.save_header_head(&head)?;
+				Ok(())
+			},
+		)?;
+		batch.commit()?;
+	}
 	reset_chain_head_to_genesis_state(
 		genesis,
 		store,
@@ -5349,6 +5390,13 @@ fn reset_pibd_chain_state(
 		stop_state,
 		false,
 	)?;
+	if mode == PibdResetMode::Both {
+		// Body heads and indexes now refer only to genesis. Keep the full-reset
+		// marker until header cleanup also commits so restart repeats every step.
+		let batch = store.batch_write()?;
+		batch.clear_header_data_except_genesis(&genesis.hash(store.get_context_id())?)?;
+		batch.commit()?;
+	}
 	Ok(())
 }
 
@@ -5437,6 +5485,17 @@ fn recover_marked_chain_operation(
 			secp,
 			pow_verifier,
 			stop_state.clone(),
+			PibdResetMode::Body,
+		),
+		PendingChainOperation::PibdResetBoth => reset_pibd_chain_state(
+			genesis,
+			store,
+			header_pmmr,
+			txhashset,
+			secp,
+			pow_verifier,
+			stop_state.clone(),
+			PibdResetMode::Both,
 		),
 		PendingChainOperation::ResetToGenesis => reset_chain_head_to_genesis_state(
 			genesis,
@@ -7179,7 +7238,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(chain.head().unwrap().height, 1);
 		assert_eq!(crate::validation::get(0), flags);
-		chain.reset_pibd_chain().unwrap();
+		chain.reset_pibd_chain(crate::PibdResetMode::Body).unwrap();
 		assert_eq!(
 			crate::validation::get(0),
 			crate::validation::ValidationFlags::default()
@@ -7838,6 +7897,148 @@ mod tests {
 	}
 
 	#[test]
+	fn pibd_reset_both_clears_unselected_headers_and_resumes_processing() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 4);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let hashes: Vec<_> = (1..=3)
+			.map(|height| chain.get_header_by_height(height).unwrap().hash(0).unwrap())
+			.collect();
+		let first = chain.store.get_block(&hashes[0]).unwrap();
+		let genesis = Tip::try_from_header(&chain.genesis()).unwrap();
+		let genesis_progress = chain
+			.get_header_progress_time(&genesis.last_block_h)
+			.unwrap();
+		// Retain stored headers and bodies beyond both selected heads. Cleanup
+		// must remove those records too, not just walk the selected header chain.
+		chain
+			.reset_chain_head(&secp, &first.header, ChainHeadReset::Both)
+			.unwrap();
+		assert!(chain.store.get_block_header(&hashes[2]).is_ok());
+		chain.reset_pibd_chain(PibdResetMode::Both).unwrap();
+		assert_eq!(chain.head().unwrap(), genesis);
+		assert_eq!(chain.tail().unwrap(), genesis);
+		assert_eq!(chain.header_head().unwrap(), genesis);
+		assert_eq!(chain.header_pmmr.read().size, 1);
+		assert_eq!(
+			chain
+				.get_header_progress_time(&genesis.last_block_h)
+				.unwrap(),
+			genesis_progress
+		);
+		for hash in hashes {
+			assert!(!chain.store.block_exists(&hash).unwrap());
+			assert!(chain
+				.store
+				.get_block_header(&hash)
+				.unwrap_err()
+				.store_error_is_not_found());
+			assert!(chain
+				.store
+				.get_header_progress_time(&hash)
+				.unwrap_err()
+				.store_error_is_not_found());
+		}
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+		chain.validate(&secp, false).unwrap();
+		chain
+			.process_block(&mut secp, first.clone(), Options::NONE, HashSet::new())
+			.unwrap();
+		assert_eq!(
+			chain.head().unwrap(),
+			Tip::try_from_header(&first.header).unwrap()
+		);
+		assert_eq!(chain.header_head().unwrap(), chain.head().unwrap());
+	}
+
+	#[test]
+	fn pibd_reset_both_recovers_each_commit_boundary() {
+		// Stop after the marker, header PMMR sync, header-head commit, body
+		// rebuild, or header cleanup. Every restart must finish the full reset.
+		for stage in 0..5 {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 3);
+			let genesis = chain.genesis.clone();
+			let genesis_tip = Tip::try_from_header(&genesis.header).unwrap();
+			let old_tip = chain.header_head().unwrap();
+			let first_header = chain.get_header_by_height(1).unwrap();
+			let first = chain.get_block_for_header(&first_header).unwrap();
+			let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			chain
+				.store
+				.set_pending_chain_operation(&PendingChainOperation::PibdResetBoth)
+				.unwrap();
+			{
+				let mut header_pmmr = chain.header_pmmr.write();
+				let mut txhashset = chain.txhashset.write();
+				if stage >= 1 {
+					let mut batch = chain.store.batch_write().unwrap();
+					txhashset::header_extending_with_explicit_head(
+						&mut header_pmmr,
+						&mut batch,
+						genesis_tip,
+						|ext, batch| {
+							ext.rewind(&genesis.header)?;
+							batch.save_header_head(&genesis_tip)?;
+							Ok(())
+						},
+					)
+					.unwrap();
+					// At stage 1 the PMMR is durable, but drop the uncommitted DB selector.
+					if stage >= 2 {
+						batch.commit().unwrap();
+					}
+				}
+				if stage >= 3 {
+					reset_chain_head_to_genesis_state(
+						&genesis,
+						&chain.store,
+						&mut header_pmmr,
+						&mut txhashset,
+						&secp,
+						pow::verify_size,
+						None,
+						false,
+					)
+					.unwrap();
+				}
+				if stage == 4 {
+					let batch = chain.store.batch_write().unwrap();
+					batch
+						.clear_header_data_except_genesis(&genesis_tip.last_block_h)
+						.unwrap();
+					batch.commit().unwrap();
+				}
+			}
+			drop(chain);
+			let restarted = init_chain(&secp, path, genesis);
+			assert_eq!(restarted.head().unwrap(), genesis_tip, "stage {}", stage);
+			assert_eq!(restarted.tail().unwrap(), genesis_tip);
+			assert_eq!(restarted.header_head().unwrap(), genesis_tip);
+			assert_eq!(restarted.header_pmmr.read().size, 1);
+			assert!(restarted
+				.get_block_header(&old_tip.last_block_h)
+				.unwrap_err()
+				.is_not_found());
+			assert!(restarted
+				.get_header_progress_time(&old_tip.last_block_h)
+				.unwrap_err()
+				.is_not_found());
+			assert!(!restarted.block_exists(&old_tip.last_block_h).unwrap());
+			assert!(restarted.store.pending_chain_operation().unwrap().is_none());
+			restarted.validate(&secp, false).unwrap();
+			restarted
+				.process_block(&mut secp, first.clone(), Options::NONE, HashSet::new())
+				.unwrap();
+			assert_eq!(
+				restarted.head().unwrap(),
+				Tip::try_from_header(&first.header).unwrap()
+			);
+		}
+	}
+
+	#[test]
 	fn full_resets_clear_body_storage_and_resume_processing() {
 		for pibd in [false, true] {
 			let dir = mwc_crates::tempfile::tempdir().unwrap();
@@ -7869,7 +8070,7 @@ mod tests {
 			batch.commit().unwrap();
 
 			if pibd {
-				chain.reset_pibd_chain().unwrap();
+				chain.reset_pibd_chain(crate::PibdResetMode::Body).unwrap();
 			} else {
 				chain.reset_chain_head_to_genesis().unwrap();
 			}
@@ -9936,7 +10137,12 @@ mod tests {
 				.reset_chain_head(&secp, &genesis, ChainHeadReset::Both)
 				.map(|_| ())
 		});
-		assert_successful_reset_invalidates_segmenters(&chain, || chain.reset_pibd_chain());
+		assert_successful_reset_invalidates_segmenters(&chain, || {
+			chain.reset_pibd_chain(crate::PibdResetMode::Body)
+		});
+		assert_successful_reset_invalidates_segmenters(&chain, || {
+			chain.reset_pibd_chain(PibdResetMode::Both)
+		});
 		assert_successful_reset_invalidates_segmenters(&chain, || {
 			chain.reset_chain_head_to_genesis()
 		});
@@ -9988,7 +10194,7 @@ mod tests {
 
 		// The configured verifier rejects this non-genesis header. Both the live
 		// PIBD reset and recovery from its durable marker must still preserve it.
-		chain.reset_pibd_chain().unwrap();
+		chain.reset_pibd_chain(crate::PibdResetMode::Body).unwrap();
 		assert_eq!(chain.header_head().unwrap(), header_tip);
 
 		chain
@@ -13841,6 +14047,88 @@ mod tests {
 			Chain::compact_eligibility_for_heights(context_id, tail_height, next_compact).unwrap(),
 			(true, next_compact)
 		);
+	}
+
+	#[test]
+	fn compact_restores_sync_status_after_index_rebuilds() {
+		for (nrd_enabled, previous_status) in [
+			(true, SyncStatus::NoSync),
+			(
+				false,
+				SyncStatus::BodySync {
+					archive_height: 0,
+					current_height: 77,
+					highest_height: 100,
+				},
+			),
+		] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let chain = mine_chain(dir.path().to_str().unwrap(), 78);
+			global::set_local_nrd_enabled(nrd_enabled);
+			{
+				let batch = chain.store.batch_write().unwrap();
+				// Test block processing advances BODY_TAIL; restore it to genesis
+				// so compaction is eligible, and request an output index rebuild.
+				batch
+					.save_body_tail(&Tip::try_from_header(&chain.genesis()).unwrap())
+					.unwrap();
+				batch.set_output_pos_index_complete(false).unwrap();
+				batch.commit().unwrap();
+			}
+			assert!(chain.compact_eligibility().unwrap().0);
+			let sync_state = Arc::new(SyncState::new());
+			sync_state.update(previous_status);
+
+			chain
+				.compact(Some(sync_state.clone()), Arc::new(StopState::new()))
+				.unwrap();
+
+			assert_eq!(chain.store.tail().unwrap().height, 7);
+			assert!(chain
+				.store
+				.batch_read()
+				.unwrap()
+				.is_output_pos_index_complete()
+				.unwrap());
+			assert_eq!(sync_state.status(), previous_status);
+			assert!(!sync_state.is_txhashset_validation());
+		}
+	}
+
+	#[test]
+	fn compact_restores_sync_status_after_index_rebuild_error() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let chain = mine_chain(dir.path().to_str().unwrap(), 78);
+		{
+			let batch = chain.store.batch_write().unwrap();
+			batch
+				.save_body_tail(&Tip::try_from_header(&chain.genesis()).unwrap())
+				.unwrap();
+			batch.set_output_pos_index_complete(false).unwrap();
+			// Inject a malformed index position so rebuilding fails after it
+			// publishes TxHashsetOutputPosIndexBuild progress.
+			batch
+				.save_output_pos_height(
+					&test_output_identifier().commitment(),
+					CommitPos { pos: 0, height: 0 },
+				)
+				.unwrap();
+			batch.commit().unwrap();
+		}
+		let sync_state = Arc::new(SyncState::new());
+		sync_state.update(SyncStatus::NoSync);
+
+		let err = chain
+			.compact(Some(sync_state.clone()), Arc::new(StopState::new()))
+			.unwrap_err();
+
+		assert!(matches!(
+			err,
+			Error::StoreErr(mwc_store::Error::DataOverflow(ref msg), _)
+				if msg.contains("TxHashSet::init_output_pos_index pos1.pos=0")
+		));
+		assert_eq!(sync_state.status(), SyncStatus::NoSync);
+		assert!(!sync_state.is_txhashset_validation());
 	}
 
 	#[test]

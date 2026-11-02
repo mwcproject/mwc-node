@@ -23,7 +23,7 @@ use mwc_core::pow::Difficulty;
 use mwc_crates::log::info;
 use mwc_crates::parking_lot::RwLock;
 use mwc_p2p::{Peer, PeerAddr, PeerInfo, Peers};
-use std::collections::VecDeque;
+use std::collections::{hash_map::Entry, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,16 @@ struct HeadersRequest {
 	sent: Option<Instant>,
 	response_headers: Vec<BlockHeader>,
 	init_ts: u64,
+	// Downloads wait for a nonzero height and must prove the complete advertised
+	// height/work pair captured when the task starts.
+	expected_height: u64,
 	expected_difficulty: Difficulty,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HeaderProgressError {
+	NoProgress,
+	TargetMismatch,
 }
 
 impl HeadersRequest {
@@ -52,14 +61,30 @@ impl HeadersRequest {
 	}
 
 	/// Records response progress and returns whether more headers need to be requested.
-	fn needs_more_headers(&mut self, res_ts: u64, work: Difficulty) -> Result<bool, &'static str> {
+	fn needs_more_headers(
+		&mut self,
+		res_ts: u64,
+		headers: &[BlockHeader],
+	) -> Result<bool, HeaderProgressError> {
 		let init_ts = self.init_ts;
 		self.init_ts = self.init_ts.max(res_ts);
-		if work >= self.expected_difficulty {
+		let last = headers.last().ok_or(HeaderProgressError::NoProgress)?;
+		if headers.iter().any(|header| {
+			header.height == self.expected_height
+				&& header.total_difficulty() == self.expected_difficulty
+		}) {
 			return Ok(false);
 		}
+		// No received header matched the advertised height/work pair. Valid ancestry
+		// increases in both values, so once either target has been reached,
+		// continuing along this branch cannot supply the missing pair.
+		if last.height >= self.expected_height
+			|| last.total_difficulty() >= self.expected_difficulty
+		{
+			return Err(HeaderProgressError::TargetMismatch);
+		}
 		if res_ts <= init_ts {
-			return Err("Headers response made no progress");
+			return Err(HeaderProgressError::NoProgress);
 		}
 		Ok(true)
 	}
@@ -109,39 +134,61 @@ impl HeaderSync {
 		!expired.is_empty()
 	}
 
-	/// Continue existing downloads and start new ones from every peer ahead of our header chain.
+	/// Download advertised work and check equal-work peers with a different height.
 	pub(super) fn request(
 		&self,
 		peers: &Arc<Peers>,
 		scores: &SyncPeers,
 	) -> Result<bool, mwc_chain::Error> {
+		// The handshake supplies work without height. Wait for a nonzero height
+		// advertisement so every download can verify the complete height/work pair.
 		let connected: Vec<_> = peers
 			.iter()
 			.connected()
 			.into_iter()
-			.map(|peer| {
-				let (_, difficulty) = peer.info.get_height_and_difficulty();
-				(peer, difficulty)
+			.filter_map(|peer| {
+				let (height, difficulty) = peer.info.get_height_and_difficulty();
+				(height != 0).then_some((peer, height, difficulty))
 			})
 			.collect();
 		let mut headers = self.headers.write();
-		headers.retain(|req| connected.iter().any(|(peer, _)| peer.info.addr == req.addr));
+		headers.retain(|req| {
+			connected
+				.iter()
+				.any(|(peer, _, _)| peer.info.addr == req.addr)
+		});
 		if connected.is_empty() {
 			return Ok(true);
 		}
 		let head = self.chain.header_head()?;
-		let mut locator = Vec::new();
+		let mut locators = HashMap::new();
 		let mut send_errors = Vec::new();
-		for (peer, difficulty) in &connected {
+		for (peer, height, difficulty) in &connected {
 			let index = match headers.iter().position(|req| req.addr == peer.info.addr) {
 				Some(index) => index,
 				None => {
-					if *difficulty <= head.total_difficulty {
+					// A peer can advertise our header tip's work with a different height.
+					// This prevents truncate_header_head() from falling back, but excludes
+					// the peer from body downloads because its height/work pair does not
+					// match our chain. Requesting only greater work would let it keep
+					// answering pings without ever serving data or receiving a timeout.
+					// Request headers for equal-work height mismatches too, so an unproven
+					// claim is subject to the normal response and timeout penalties.
+					if *difficulty < head.total_difficulty
+						|| (*difficulty == head.total_difficulty && *height == head.height)
+					{
 						continue;
 					}
-					if locator.is_empty() {
-						locator = self.get_locator(head)?;
-					}
+					// Responses start after the matching locator, so begin below the
+					// claimed height to allow it to be included in the response.
+					let locator_height = head.height.min(height.saturating_sub(1));
+					let locator = match locators.entry(locator_height) {
+						Entry::Occupied(entry) => entry.into_mut(),
+						Entry::Vacant(entry) => entry.insert(
+							self.chain
+								.get_locator_hashes(head, &get_locator_heights(locator_height))?,
+						),
+					};
 					let index = headers.len();
 					headers.push_back(HeadersRequest {
 						addr: peer.info.addr.clone(),
@@ -149,6 +196,7 @@ impl HeaderSync {
 						sent: None,
 						response_headers: Vec::new(),
 						init_ts: 0,
+						expected_height: *height,
 						expected_difficulty: *difficulty,
 					});
 					index
@@ -281,7 +329,7 @@ impl HeaderSync {
 				supplier.info.update(last.height, last.total_difficulty());
 			}
 			req.sent = None;
-			match req.needs_more_headers(progress_time, last.total_difficulty()) {
+			match req.needs_more_headers(progress_time, &bhs) {
 				Ok(false) => {
 					requests.remove(index);
 					sync_peers.report_ok_response(peer);
@@ -298,9 +346,17 @@ impl HeaderSync {
 					req.send(&supplier, sync_peers)?;
 					sync_peers.report_ok_response(peer);
 				}
-				Err(message) => {
-					// This response was handled by the fine policy. Retain its
-					// progress marker so retrying cannot start over at zero.
+				Err(error) => {
+					let message = match error {
+						// Retain the progress marker so replays cannot restart from zero.
+						HeaderProgressError::NoProgress => "Headers response made no progress",
+						HeaderProgressError::TargetMismatch => {
+							// A reorg can invalidate an advertisement. Fine this attempt,
+							// then let a new task capture the peer's latest advertised pair.
+							requests.remove(index);
+							"Headers response did not match the advertised height and difficulty"
+						}
+					};
 					info!("Header download from {} will retry: {}", peer, message);
 					sync_peers.report_no_response(peer, message.into());
 				}
@@ -331,40 +387,69 @@ mod tests {
 	use std::fs;
 	use std::time::Duration;
 
-	// Advance a download toward advertised work, then replay equal and older timestamps.
-	// Only increasing timestamps permit continuation; reaching the work target completes
+	fn header_at(height: u64, work: u64) -> BlockHeader {
+		let mut header = BlockHeader::default(0);
+		header.height = height;
+		header.pow.total_difficulty = Difficulty::from_num(work);
+		header
+	}
+
+	// Advance a download toward its advertised tip, then replay equal and older timestamps.
+	// Only increasing timestamps permit continuation; reaching the height/work target completes
 	// the download even when the final headers have an older stored timestamp.
 	#[test]
-	fn header_download_requires_progress_until_advertised_work_is_proven() {
+	fn header_download_requires_progress_until_advertised_tip_is_proven() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 		let mut req = HeadersRequest {
 			addr: peer_info(3414, Capabilities::HEADER_HIST).addr,
 			locator: vec![Hash::from_vec(&[1; 32])],
 			sent: None,
 			response_headers: Vec::new(),
 			init_ts: 0,
+			expected_height: 10,
 			expected_difficulty: Difficulty::from_num(100),
 		};
-		assert_eq!(
-			req.needs_more_headers(10, Difficulty::from_num(30)),
-			Ok(true)
-		);
+		assert_eq!(req.needs_more_headers(10, &[header_at(3, 30)]), Ok(true));
 		assert_eq!(req.init_ts, 10);
-		assert!(req
-			.needs_more_headers(10, Difficulty::from_num(30))
-			.is_err());
-		assert!(req.needs_more_headers(9, Difficulty::from_num(31)).is_err());
+		assert!(req.needs_more_headers(10, &[header_at(3, 30)]).is_err());
+		assert!(req.needs_more_headers(9, &[header_at(3, 31)]).is_err());
 		assert_eq!(req.init_ts, 10);
-		assert_eq!(
-			req.needs_more_headers(20, Difficulty::from_num(40)),
-			Ok(true)
-		);
+		assert_eq!(req.needs_more_headers(20, &[header_at(4, 40)]), Ok(true));
 		assert_eq!(req.init_ts, 20);
 		// Reaching the goal completes even if the final headers were already known.
 		assert_eq!(
-			req.needs_more_headers(10, Difficulty::from_num(100)),
+			req.needs_more_headers(10, &[header_at(10, 100), header_at(11, 110)]),
 			Ok(false)
 		);
+		assert_eq!(req.expected_height, 10);
 		assert_eq!(req.expected_difficulty, Difficulty::from_num(100));
+	}
+
+	#[test]
+	fn advertised_tip_requires_height_and_work_from_the_same_header() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let mut req = HeadersRequest {
+			addr: peer_info(3414, Capabilities::HEADER_HIST).addr,
+			locator: Vec::new(),
+			sent: None,
+			response_headers: Vec::new(),
+			init_ts: 0,
+			expected_height: 10,
+			expected_difficulty: Difficulty::from_num(100),
+		};
+		// Neither reaching the work early nor reaching the height with different
+		// work proves the pair. A response that passes the target must include it.
+		for response in [
+			vec![header_at(9, 100)],
+			vec![header_at(10, 99)],
+			vec![header_at(9, 100), header_at(10, 110)],
+			vec![header_at(11, 110)],
+		] {
+			assert_eq!(
+				req.needs_more_headers(10, &response),
+				Err(HeaderProgressError::TargetMismatch)
+			);
+		}
 	}
 
 	fn test_requests() -> (HeaderSync, String) {
@@ -506,8 +591,8 @@ mod tests {
 			header
 		}
 
-		// Start one download, then add peers with more work and peers at or below our work.
-		// Every peer ahead gets one request; existing downloads keep their deadline and
+		// Start one download, then add peers with more work or an inconsistent equal-work tip.
+		// Peers requiring verification get one request; existing downloads keep their deadline and
 		// advertised target, including when their peer later advertises less work.
 		#[test]
 		fn starts_all_ahead_peers_and_preserves_existing_downloads() {
@@ -528,29 +613,51 @@ mod tests {
 				receivers.push(receiver);
 			}
 			let mut ignored = Vec::new();
-			for (port, work) in [
-				(3472, local_difficulty),
-				(3473, (local_difficulty - Difficulty::from_num(1)).unwrap()),
+			for (port, height, work) in [
+				(3472, 15, local_difficulty),
+				(
+					3473,
+					15,
+					(local_difficulty - Difficulty::from_num(1)).unwrap(),
+				),
+				(3474, 0, local_difficulty),
+				(3475, 0, difficulty),
 			] {
 				let info = peer_info(port, Capabilities::UNKNOWN);
-				info.update(15, work);
+				// Seed handshake work directly; update() cannot lower the helper's
+				// initial minimum difficulty, which exceeds Floonet genesis work.
+				info.live_info.write().total_difficulty = work;
+				info.update(height, work);
+				assert_eq!(info.get_height_and_difficulty(), (height, work));
 				let (peer, receiver) =
 					Peer::connected_for_test(info, 0, Arc::new(mwc_p2p::DummyAdapter {}));
 				f.peers.add_connected(Arc::new(peer)).unwrap();
-				ignored.push(receiver);
+				if height != 0 && work == local_difficulty {
+					receivers.push(receiver);
+				} else {
+					ignored.push(receiver);
+				}
 			}
 			assert!(!f.requests.request(&f.peers, &f.scores).unwrap());
 			assert_eq!(f.receiver.try_iter().count(), 1);
 			assert!(receivers.iter().all(|rx| rx.try_iter().count() == 1));
 			assert!(ignored.iter().all(|rx| rx.try_iter().count() == 0));
-			assert_eq!(f.requests.headers.read_recursive().len(), 13);
+			assert_eq!(f.requests.headers.read_recursive().len(), 14);
 			assert_eq!(f.requests.headers.read_recursive()[0].sent, sent_at);
+			assert_eq!(f.requests.headers.read_recursive()[0].expected_height, 100);
+			// A new advertisement cannot move either part of an active task's target.
+			f.peer
+				.info
+				.update(200, (difficulty + Difficulty::from_num(1)).unwrap());
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			assert_eq!(f.receiver.try_iter().count(), 0);
 			assert!(receivers.iter().all(|rx| rx.try_iter().count() == 0));
 			// A lower advertised difficulty must not stop an existing download's retry.
 			f.peer.info.update(10, local_difficulty);
-			assert_eq!(f.peer.info.get_height_and_difficulty().1, difficulty);
+			assert_eq!(
+				f.peer.info.get_height_and_difficulty().1,
+				(difficulty + Difficulty::from_num(1)).unwrap()
+			);
 			f.requests.headers.write()[0].sent = None;
 			f.dispatch();
 			assert_eq!(f.receiver.try_iter().count(), 1);
@@ -558,6 +665,7 @@ mod tests {
 				f.requests.headers.read_recursive()[0].expected_difficulty,
 				difficulty
 			);
+			assert_eq!(f.requests.headers.read_recursive()[0].expected_height, 100);
 			assert!(receivers.iter().all(|rx| rx.try_iter().count() == 0));
 			assert!(ignored.iter().all(|rx| rx.try_iter().count() == 0));
 		}
@@ -573,7 +681,11 @@ mod tests {
 				// Set up each fixture state directly; announcements cannot lower the best tip.
 				{
 					let mut info = f.peer.info.live_info.write();
-					info.height = head.height;
+					info.height = if active {
+						head.height + 100
+					} else {
+						head.height
+					};
 					info.total_difficulty = if active {
 						f.expected_difficulty()
 					} else {
@@ -634,6 +746,33 @@ mod tests {
 			assert_eq!(f.receiver.try_iter().count(), 1);
 			f.dispatch();
 			assert_eq!(f.receiver.try_iter().count(), 0);
+		}
+
+		#[test]
+		fn equal_work_wrong_height_peer_is_banned_after_header_timeouts() {
+			let f = Fixture::new();
+			let head = f.requests.chain.header_head().unwrap();
+			{
+				let mut info = f.peer.info.live_info.write();
+				info.height = head.height + 1;
+				info.total_difficulty = head.total_difficulty;
+			}
+			for attempt in 0..7 {
+				f.dispatch();
+				assert_eq!(f.receiver.try_iter().count(), 1);
+				let deadline = f.deadline();
+				// Ping/Pong and repeated sync passes cannot renew the header deadline.
+				f.peer.info.update(head.height + 1, head.total_difficulty);
+				f.dispatch();
+				assert_eq!(f.receiver.try_iter().count(), 0);
+				assert_eq!(f.deadline(), deadline);
+				assert!(f.check(deadline));
+				assert!(!f.check(deadline));
+				f.scores.apply_peers_status(&f.peers);
+				assert_eq!(f.peers.is_banned(&f.peer.info.addr).unwrap(), attempt == 6);
+			}
+			f.dispatch();
+			assert!(f.requests.headers.read_recursive().is_empty());
 		}
 
 		// Keep the peer connected and advertising more work while withholding all headers.

@@ -61,6 +61,15 @@ pub enum ChainHeadReset {
 	Both,
 }
 
+/// State to discard when rebuilding a PIBD session from genesis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PibdResetMode {
+	/// Rebuild body state while retaining the validated header chain.
+	Body,
+	/// Rebuild both heads and remove all non-genesis headers and bodies.
+	Both,
+}
+
 /// We receive 512 headers from a peer in a batch. Let's use it for planning.
 pub const HEADERS_PER_BATCH: u32 = 512;
 pub(crate) const SYNC_STATUS_UPDATE_INTERVAL_MS: u64 = 200;

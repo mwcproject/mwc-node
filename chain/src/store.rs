@@ -735,6 +735,24 @@ impl<'a> Batch<'a> {
 		Ok(())
 	}
 
+	/// Remove discarded headers and progress records, including stored forks.
+	/// Only a marked full reset may call this, after rebuilding the body at genesis.
+	pub(crate) fn clear_header_data_except_genesis(&self, genesis: &Hash) -> Result<(), Error> {
+		for prefix in [BLOCK_HEADER_PREFIX, HEADER_PROGRESS_TIME_PREFIX] {
+			let genesis_key = to_key(prefix, genesis);
+			let keys = self
+				.db
+				.iter(&to_key(prefix, ""), |key, _| Ok(key.to_vec()))?
+				.collect::<Result<Vec<_>, Error>>()?;
+			for key in keys {
+				if key != genesis_key {
+					self.db.delete(&key)?;
+				}
+			}
+		}
+		Ok(())
+	}
+
 	/// Delete a full block. Does not delete any record associated with a block
 	/// header. Verify the full-block key and complete header before trusting its
 	/// inputs to remove secondary spent-commitment entries.
@@ -1428,6 +1446,8 @@ impl Readable for ChainOperationKind {
 pub enum PendingChainOperation {
 	/// PIBD reset was interrupted.
 	PibdReset,
+	/// Full PIBD body and header reset was interrupted.
+	PibdResetBoth,
 	/// Reset to genesis was interrupted.
 	ResetToGenesis,
 	/// Chain-head reset was interrupted.
@@ -1506,7 +1526,9 @@ impl PendingChainOperation {
 	/// Operation kind for logging and recovery decisions.
 	pub fn kind(&self) -> ChainOperationKind {
 		match self {
-			PendingChainOperation::PibdReset => ChainOperationKind::PibdReset,
+			PendingChainOperation::PibdReset | PendingChainOperation::PibdResetBoth => {
+				ChainOperationKind::PibdReset
+			}
 			PendingChainOperation::ResetToGenesis => ChainOperationKind::ResetToGenesis,
 			PendingChainOperation::ResetChainHead { .. } => ChainOperationKind::ResetChainHead,
 			PendingChainOperation::ReconcileHeads { kind, .. } => *kind,
@@ -1555,6 +1577,7 @@ impl Writeable for PendingChainOperation {
 				original_header_head.write(writer)?;
 				target_body_tail.write(writer)
 			}
+			PendingChainOperation::PibdResetBoth => writer.write_u8(5),
 		}
 	}
 }
@@ -1611,6 +1634,7 @@ impl Readable for PendingChainOperation {
 				original_header_head: Tip::read(reader)?,
 				target_body_tail: Tip::read(reader)?,
 			}),
+			5 => Ok(PendingChainOperation::PibdResetBoth),
 			x => Err(ser::Error::CorruptedData(format!(
 				"Invalid pending chain operation variant {}",
 				x
@@ -1666,6 +1690,24 @@ mod tests {
 			mwc_crates::chrono::DateTime::from_timestamp(100 + height as i64, 0).unwrap();
 		*header.pow.proof.nonces.last_mut().unwrap() = height;
 		header
+	}
+
+	#[test]
+	fn pibd_reset_markers_preserve_body_only_encoding() {
+		for (operation, bytes) in [
+			(PendingChainOperation::PibdReset, vec![1, 0]),
+			(PendingChainOperation::PibdResetBoth, vec![1, 5]),
+		] {
+			assert_eq!(
+				ser::ser_vec(0, &operation, ProtocolVersion::local(), true).unwrap(),
+				bytes
+			);
+			let decoded: PendingChainOperation =
+				ser::deserialize_strict(&mut bytes.as_slice(), ProtocolVersion::local(), 0, true)
+					.unwrap();
+			assert_eq!(decoded, operation);
+			assert_eq!(decoded.kind(), ChainOperationKind::PibdReset);
+		}
 	}
 
 	#[test]
