@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::mwc::sync::sync_peers::SyncPeers;
-use crate::mwc::sync::sync_utils::{LatencyTracker, SyncRequestResponses, SyncResponse};
-use mwc_chain::pibd_params::{self, PibdParams};
+use crate::mwc::sync::sync_utils::{SyncRequestResponses, SyncResponse};
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::{Chain, Error, Options, SyncState, SyncStatus};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, BlockHeader};
@@ -24,8 +24,9 @@ use mwc_crates::parking_lot::Mutex;
 use mwc_crates::rand::prelude::*;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::{Capabilities, Peer, PeerAddr, PeerInfo, Peers};
+use mwc_util::LatencyTracker;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 struct BodyTask {
@@ -49,6 +50,7 @@ struct ReceivedBlock {
 
 struct BodyTaskRequest {
 	peer: PeerAddr,
+	supplier: Weak<Peer>,
 	sent_at: Instant,
 	expires_at: Instant,
 }
@@ -56,7 +58,7 @@ struct BodyTaskRequest {
 impl BodyTask {
 	fn send_request(
 		&mut self,
-		peer: &Peer,
+		peer: &Arc<Peer>,
 		timeout: Duration,
 		scores: &SyncPeers,
 	) -> Result<bool, Error> {
@@ -75,6 +77,7 @@ impl BodyTask {
 		}
 		self.request = Some(BodyTaskRequest {
 			peer: peer.info.addr.clone(),
+			supplier: Arc::downgrade(peer),
 			sent_at,
 			expires_at,
 		});
@@ -112,18 +115,6 @@ impl BodyDownload {
 		// Expired obsolete requests finish here; only active tasks can be retried.
 		self.tasks
 			.retain(|task| !task.obsolete || task.request.is_some());
-	}
-
-	fn request_timeout(&self) -> Duration {
-		let max_timeout = Duration::from_secs(u64::from(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS));
-		self.latency
-			.get_average_latency()
-			.map_or(max_timeout, |latency| {
-				latency
-					.saturating_mul(2)
-					.max(Duration::from_secs(5))
-					.min(max_timeout)
-			})
 	}
 }
 
@@ -271,7 +262,7 @@ impl BodySync {
 	pub(super) fn request_header_block(
 		&self,
 		header: &BlockHeader,
-		peer: &Peer,
+		peer: &Arc<Peer>,
 		scores: &SyncPeers,
 	) -> Result<(), Error> {
 		let mut download = self.download.lock();
@@ -302,7 +293,7 @@ impl BodySync {
 		{
 			return Ok(());
 		}
-		let timeout = download.request_timeout();
+		let timeout = peer.request_timeout();
 		let Some(task) = download.tasks.get_mut(index) else {
 			return Ok(());
 		};
@@ -492,7 +483,6 @@ impl BodySync {
 
 		let candidates = self.canonical_peers(peers)?;
 		let per_peer = self.pibd_params.get_blocks_request_per_peer();
-		let timeout = download.request_timeout();
 		let mut peer_requests = HashMap::<PeerAddr, usize>::new();
 		for request in download
 			.tasks
@@ -545,7 +535,7 @@ impl BodySync {
 			let Some((peer, _)) = supplier else {
 				continue;
 			};
-			if task.send_request(peer, timeout, scores)? {
+			if task.send_request(peer, peer.request_timeout(), scores)? {
 				*peer_requests.entry(peer.info.addr.clone()).or_default() += 1;
 			}
 		}
@@ -757,13 +747,12 @@ impl BodySync {
 			task.request
 				.take()
 				.filter(|req| req.peer == peer.addr)
-				.and_then(|req| {
-					i64::try_from(
-						Instant::now()
-							.saturating_duration_since(req.sent_at)
-							.as_millis(),
-					)
-					.ok()
+				.map(|req| {
+					let latency = Instant::now().saturating_duration_since(req.sent_at);
+					if let Some(supplier) = req.supplier.upgrade() {
+						supplier.record_response_latency(latency);
+					}
+					latency
 				})
 		};
 		task.received = Some(ReceivedBlock {
@@ -772,7 +761,9 @@ impl BodySync {
 			reconstructed,
 		});
 		if let Some(latency) = latency {
-			download.latency.add_latency(latency);
+			if let Ok(latency_ms) = i64::try_from(latency.as_millis()) {
+				download.latency.add_latency(latency_ms);
+			}
 		}
 		let rejected = self.apply_ready_tasks(&mut download, secp, scores)?;
 		Ok(rejected.as_ref() != Some(&peer.addr))
@@ -1041,8 +1032,12 @@ mod tests {
 		// Any leftover timer for a completed old request would now trigger a ban.
 		for _ in 0..6 {
 			f.scores
+				.elapse_no_response_merge_interval(&old_peer.info.addr);
+			f.scores
 				.report_no_response(&old_peer.info.addr, "earlier request".into());
 		}
+		f.scores
+			.elapse_no_response_merge_interval(&old_peer.info.addr);
 		f.expire_requests();
 		assert_eq!(f.poll().response, SyncRequestResponses::BodyReady);
 		assert_eq!(f.chain.head().unwrap(), target);
@@ -1159,19 +1154,23 @@ mod tests {
 		f.poll();
 		assert_eq!(rx.try_iter().count(), 1);
 		for _ in 0..5 {
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.scores
 				.report_no_response(&peer.info.addr, "earlier request".into());
 		}
 		f.body.reset(&f.scores);
 		assert_eq!(f.requests_num(), 1);
+		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 		f.expire_requests();
 		for _ in 0..2 {
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.body.reset(&f.scores);
 			f.scores.apply_peers_status(&f.peers);
 			assert!(f.body.download.lock().tasks.is_empty());
 			assert_eq!(rx.try_iter().count(), 0);
 			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
 		}
+		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 		f.scores
 			.report_no_response(&peer.info.addr, "later request".into());
 		f.scores.apply_peers_status(&f.peers);
@@ -1186,6 +1185,7 @@ mod tests {
 		let mut f = Fixture::new(1_935_027, 1);
 		let (peer, rx) = f.supplier(4199);
 		for _ in 0..6 {
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.scores
 				.report_no_response(&peer.info.addr, "earlier request".into());
 		}
@@ -1204,6 +1204,7 @@ mod tests {
 			.latency
 			.get_average_latency()
 			.is_none());
+		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 		f.scores
 			.report_no_response(&peer.info.addr, "later request".into());
 		f.scores.apply_peers_status(&f.peers);
@@ -1403,6 +1404,7 @@ mod tests {
 		f.poll();
 		assert_eq!(rx.try_iter().count(), 1);
 		for attempt in 0..7 {
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.expire_requests();
 			f.poll();
 			assert_eq!(f.peers.is_banned(&peer.info.addr).unwrap(), attempt == 6);
@@ -1695,25 +1697,25 @@ mod tests {
 		assert_eq!(f.chain.head().unwrap().height, 2);
 	}
 
-	// Seed a four-second latency sample: new requests get an eight-second deadline.
+	// Seed a four-second latency sample: new requests get a sixteen-second deadline.
 	// New samples cannot move that deadline, and an expired-but-not-yet-reaped
 	// response remains acceptable, just as it does for header requests.
 	#[test]
 	fn adaptive_deadlines_stay_fixed_and_late_responses_are_accepted() {
 		let mut f = Fixture::new(1_935_012, 1);
 		let (peer, _rx) = f.supplier(4182);
-		f.body.download.lock().latency.add_latency(4_000);
+		peer.record_response_latency(Duration::from_secs(4));
 		f.poll();
 		let deadline = {
 			let download = f.body.download.lock();
 			let request = download.tasks[0].request.as_ref().unwrap();
 			assert_eq!(
 				request.expires_at.duration_since(request.sent_at),
-				Duration::from_secs(8)
+				Duration::from_secs(16)
 			);
 			request.expires_at
 		};
-		f.body.download.lock().latency.add_latency(20_000);
+		peer.record_response_latency(Duration::from_secs(20));
 		f.poll();
 		assert_eq!(
 			f.body.download.lock().tasks[0]

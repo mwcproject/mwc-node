@@ -15,12 +15,12 @@
 // sync_utils contain banch of shared between mutiple sync modules routines
 // Normally we would put that into the base class, but rust doesn't support that.
 
-use mwc_crates::log::{debug, warn};
+use mwc_crates::log::{debug, info, warn};
 use mwc_crates::parking_lot::RwLock;
 use mwc_p2p::{PeerAddr, Peers, ReasonForBan};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 enum PeerStatusEvent {
@@ -33,9 +33,10 @@ enum PeerStatusEvent {
 const MIN_RESPONSE_NUM: usize = 13; // 6*2+1  8 requests per peer is expected, see get_segments_request_per_peer()
 const MAX_PEER_STATUS_ENTRIES: usize = 10240;
 const MAX_BANNED_PEERS: usize = 10240;
+const NO_RESPONSE_MERGE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct PeerPibdStatus {
-	responses: VecDeque<PeerStatusEvent>,
+	responses: VecDeque<(Instant, PeerStatusEvent)>,
 	peer_addr: PeerAddr,
 	last_updated: Instant,
 }
@@ -53,9 +54,34 @@ impl PeerPibdStatus {
 		self.peer_addr = peer_addr.clone();
 	}
 
-	fn add_event(&mut self, event: PeerStatusEvent, now: Instant) {
+	fn add_event(&mut self, event: PeerStatusEvent, now: Instant) -> bool {
+		if matches!(&event, PeerStatusEvent::NoResponse(_)) {
+			for (time, previous) in self.responses.iter().rev() {
+				if now.saturating_duration_since(*time) >= NO_RESPONSE_MERGE_INTERVAL {
+					break;
+				}
+				if matches!(previous, PeerStatusEvent::NoResponse(_)) {
+					info!(
+						"Skipping as collapsed NoResponse event for peer {}",
+						self.peer_addr
+					);
+					return false;
+				}
+			}
+		}
+		match &event {
+			PeerStatusEvent::Success => {
+				debug!("Adding event {:?} for peer {}", event, self.peer_addr)
+			}
+			PeerStatusEvent::NoResponse(_) => {
+				info!("Adding NoResponse event for peer {}", self.peer_addr)
+			}
+			PeerStatusEvent::Error(_) | PeerStatusEvent::Ban(_) => {
+				warn!("Adding event {:?} for peer {}", event, self.peer_addr)
+			}
+		}
 		self.last_updated = now;
-		self.responses.push_back(event);
+		self.responses.push_back((now, event));
 		// Bans are queued until apply_peers_status runs. MIN_RESPONSE_NUM newer
 		// events (currently 13) can evict a pending Ban before it is applied.
 		// This is intentional: if the newer events are successful responses and
@@ -63,6 +89,7 @@ impl PeerPibdStatus {
 		while self.responses.len() > MIN_RESPONSE_NUM {
 			self.responses.pop_front();
 		}
+		true
 	}
 
 	/// Checking events log to decide if peer wasn't active enough
@@ -75,7 +102,7 @@ impl PeerPibdStatus {
 		let mut no_response = 0;
 		let mut success = 0;
 		let mut comment = String::new();
-		for e in &self.responses {
+		for (_, e) in &self.responses {
 			match e {
 				PeerStatusEvent::Success => success += 1,
 				PeerStatusEvent::NoResponse(m) => {
@@ -223,31 +250,18 @@ impl SyncPeers {
 	}
 
 	fn add_event(&self, peer: &PeerAddr, event: PeerStatusEvent) {
-		match &event {
-			PeerStatusEvent::Success | PeerStatusEvent::NoResponse(_) => {
-				debug!("Adding event {:?} for peer {}", event, peer)
-			}
-			PeerStatusEvent::Error(_) | PeerStatusEvent::Ban(_) => {
-				warn!("Adding event {:?} for peer {}", event, peer)
-			}
-		}
-
-		let now = Instant::now();
 		let peer_key = peer.as_key();
 		let mut peers_status = self.peers_status.write();
+		let now = Instant::now();
 		let mut new_events_peers = self.new_events_peers.write();
-		new_events_peers.insert(peer_key.clone());
-		match peers_status.get_mut(&peer_key) {
-			Some(status) => {
-				status.update_peer_addr(peer);
-				status.add_event(event, now);
-			}
-			None => {
-				let mut status = PeerPibdStatus::new(peer, now);
-				status.add_event(event, now);
-				peers_status.insert(peer_key, status);
-			}
+		let status = peers_status
+			.entry(peer_key.clone())
+			.or_insert_with(|| PeerPibdStatus::new(peer, now));
+		status.update_peer_addr(peer);
+		if !status.add_event(event, now) {
+			return;
 		}
+		new_events_peers.insert(peer_key);
 		while peers_status.len() > MAX_PEER_STATUS_ENTRIES {
 			let peer_key = peers_status
 				.iter()
@@ -262,6 +276,16 @@ impl SyncPeers {
 			}
 		}
 	}
+
+	#[cfg(test)]
+	pub(super) fn elapse_no_response_merge_interval(&self, peer: &PeerAddr) {
+		// Simulate separate timeout periods without sleeping in sync tests.
+		if let Some(status) = self.peers_status.write().get_mut(&peer.as_key()) {
+			for (time, _) in &mut status.responses {
+				*time -= NO_RESPONSE_MERGE_INTERVAL;
+			}
+		}
+	}
 }
 
 #[cfg(test)]
@@ -270,7 +294,6 @@ mod tests {
 	use mwc_core::global;
 	use mwc_p2p::{store::PeerStore, DummyAdapter, P2PConfig};
 	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-	use std::time::Duration;
 
 	fn non_loopback_peer() -> PeerAddr {
 		PeerAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 3414))
@@ -381,10 +404,14 @@ mod tests {
 		let peer = non_loopback_peer();
 		let now = Instant::now();
 		let mut status = PeerPibdStatus::new(&peer, now);
-		for _ in 0..6 {
-			status.add_event(PeerStatusEvent::NoResponse("timeout".into()), now);
+		for second in 0..6 {
+			status.add_event(
+				PeerStatusEvent::NoResponse("timeout".into()),
+				now + Duration::from_secs(second),
+			);
 			assert!(!status.check_for_ban(&peer.as_key()).0);
 		}
+		let now = now + Duration::from_secs(6);
 		status.add_event(PeerStatusEvent::NoResponse("timeout".into()), now);
 		assert!(status.check_for_ban(&peer.as_key()).0);
 		// Successes eventually move older failures out of the bounded window.
@@ -396,21 +423,96 @@ mod tests {
 
 	#[test]
 	fn no_response_events_are_bounded_at_insertion() {
-		let sync_peers = SyncPeers::new();
 		let peer = non_loopback_peer();
-		let peer_key = peer.as_key();
+		let now = Instant::now();
+		let mut status = PeerPibdStatus::new(&peer, now);
 
 		for idx in 0..(MIN_RESPONSE_NUM + 5) {
-			sync_peers.report_no_response(&peer, format!("timeout {}", idx));
+			status.add_event(
+				PeerStatusEvent::NoResponse(format!("timeout {}", idx)),
+				now + Duration::from_secs(idx as u64),
+			);
 		}
 
-		let peers_status = sync_peers.peers_status.read_recursive();
-		let status = peers_status.get(&peer_key).expect("peer status");
 		assert_eq!(status.responses.len(), MIN_RESPONSE_NUM);
 		assert!(matches!(
 			status.responses.front(),
-			Some(PeerStatusEvent::NoResponse(msg)) if msg == "timeout 5"
+			Some((_, PeerStatusEvent::NoResponse(msg))) if msg == "timeout 5"
 		));
+	}
+
+	#[test]
+	fn no_responses_merge_from_the_last_accepted_timeout() {
+		let peer = non_loopback_peer();
+		let now = Instant::now();
+		let mut status = PeerPibdStatus::new(&peer, now);
+		assert!(status.add_event(PeerStatusEvent::NoResponse("first".into()), now));
+		assert!(status.add_event(PeerStatusEvent::Success, now + Duration::from_millis(100)));
+		assert!(status.add_event(
+			PeerStatusEvent::Error("invalid data".into()),
+			now + Duration::from_millis(200),
+		));
+		for millis in [200, 500, 999] {
+			assert!(!status.add_event(
+				PeerStatusEvent::NoResponse("merged".into()),
+				now + Duration::from_millis(millis),
+			));
+		}
+		assert!(status.add_event(
+			PeerStatusEvent::NoResponse("second".into()),
+			now + Duration::from_secs(1),
+		));
+		assert_eq!(status.responses.len(), 4);
+		assert!(matches!(
+			status.responses.back(),
+			Some((_, PeerStatusEvent::NoResponse(msg))) if msg == "second"
+		));
+		assert!(!status.check_for_ban(&peer.as_key()).0);
+		// Invalid responses retain their normal scoring even inside the interval.
+		assert!(status.add_event(
+			PeerStatusEvent::Error("another invalid response".into()),
+			now + Duration::from_secs(1),
+		));
+		assert!(status.check_for_ban(&peer.as_key()).0);
+	}
+
+	#[test]
+	fn no_response_merge_uses_only_retained_history() {
+		let peer = non_loopback_peer();
+		let now = Instant::now();
+		let mut status = PeerPibdStatus::new(&peer, now);
+		status.add_event(PeerStatusEvent::NoResponse("old timeout".into()), now);
+		for _ in 0..MIN_RESPONSE_NUM {
+			status.add_event(PeerStatusEvent::Success, now + Duration::from_millis(100));
+		}
+		// Successful responses have evicted the old timeout from the scoring window.
+		assert!(status.add_event(
+			PeerStatusEvent::NoResponse("new timeout".into()),
+			now + Duration::from_millis(500),
+		));
+		assert!(!status.check_for_ban(&peer.as_key()).0);
+	}
+
+	#[test]
+	fn simultaneous_timeouts_are_merged_separately_for_each_peer() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let sync_peers = SyncPeers::new();
+		let (peers, _dir) = test_peers();
+		for idx in 1..=2 {
+			let peer = peer_for_idx(idx);
+			for request in 0..8 {
+				sync_peers.report_no_response(&peer, format!("timeout {}", request));
+			}
+			let peers_status = sync_peers.peers_status.read_recursive();
+			let status = peers_status.get(&peer.as_key()).unwrap();
+			assert_eq!(status.responses.len(), 1);
+			assert!(matches!(
+				status.responses.front(),
+				Some((_, PeerStatusEvent::NoResponse(msg))) if msg == "timeout 0"
+			));
+		}
+		sync_peers.apply_peers_status(&peers);
+		assert!(sync_peers.get_banned_peers().is_empty());
 	}
 
 	#[test]

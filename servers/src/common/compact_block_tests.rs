@@ -936,6 +936,9 @@ fn unsupported_headers_wrong_height_peer_is_fined_until_banned() {
 		f.peers.add_connected(peer.clone()).unwrap();
 
 		for attempt in 0..7 {
+			// Model separate no-response intervals without sleeping between attempts.
+			f.manager
+				.elapse_header_no_response_merge_interval_for_test(&peer.info.addr);
 			// Match the sync loop's ordering. The advertised work still prevents
 			// truncation, but now its owner must answer a header request.
 			f.manager.truncate_header_head(&f.peers, false).unwrap();
@@ -1377,6 +1380,9 @@ fn header_progress_replays_keep_cursor_and_advertised_goal_until_banned() {
 	// The first short response makes progress. Seven subsequent replays are fined.
 	for attempt in 0..8 {
 		if attempt > 0 {
+			// Each replay represents a separate no-response interval, without sleeping.
+			f.manager
+				.elapse_header_no_response_merge_interval_for_test(&peer.info.addr);
 			// A new Ping must neither raise the existing target nor reset its cursor.
 			peer.info.update(
 				last.height + 100 + attempt,

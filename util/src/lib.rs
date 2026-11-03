@@ -82,8 +82,10 @@ pub use crate::hex::*;
 pub mod file;
 
 mod async_runtime;
+mod latency_tracker;
 mod rate_counter;
 
+pub use crate::latency_tracker::LatencyTracker;
 pub use crate::rate_counter::RateCounter;
 
 pub use crate::async_runtime::global_runtime;

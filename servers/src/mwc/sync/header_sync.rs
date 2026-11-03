@@ -764,6 +764,8 @@ mod tests {
 				info.total_difficulty = head.total_difficulty;
 			}
 			for attempt in 0..7 {
+				f.scores
+					.elapse_no_response_merge_interval(&f.peer.info.addr);
 				f.dispatch();
 				assert_eq!(f.receiver.try_iter().count(), 1);
 				let deadline = f.deadline();
@@ -792,6 +794,7 @@ mod tests {
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			f.requests.headers.write()[0].init_ts = 42;
 			for attempt in 0..7 {
+				f.scores.elapse_no_response_merge_interval(addr);
 				f.dispatch();
 				assert_eq!(f.receiver.try_iter().count(), 1);
 				{

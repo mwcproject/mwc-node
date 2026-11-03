@@ -14,9 +14,7 @@
 
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
-use crate::mwc::sync::sync_utils::{
-	CachedResponse, LatencyTracker, SyncRequestResponses, SyncResponse,
-};
+use crate::mwc::sync::sync_utils::{CachedResponse, SyncRequestResponses, SyncResponse};
 use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{HeaderHashesDesegmenter, ValidatedHeaderHashesSegment};
 use mwc_chain::{self, pibd_params, SyncState, SyncStatus};
@@ -30,9 +28,10 @@ use mwc_crates::rand;
 use mwc_crates::rand::prelude::IteratorRandom;
 use mwc_p2p::{self, Capabilities, Peer};
 use mwc_p2p::{PeerAddr, ReasonForBan};
+use mwc_util::LatencyTracker;
 use std::cmp;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 const MIN_HEADERS_HASH_ROOT_RESPONSES: usize = 2;
@@ -85,6 +84,7 @@ struct HeaderHashTask {
 
 struct HeaderHashRequest {
 	peer: PeerAddr,
+	supplier: Weak<Peer>,
 	sent_at: Instant,
 	expires_at: Instant,
 }
@@ -735,12 +735,6 @@ impl HeadersPibdHashSync {
 			average.and_then(|latency| u32::try_from(latency.as_millis()).ok()),
 		);
 		let per_peer = self.pibd_params.get_segments_request_per_peer();
-		let timeout = average.map_or(request_timeout, |latency| {
-			latency
-				.saturating_mul(2)
-				.max(Duration::from_secs(5))
-				.min(request_timeout)
-		});
 		let mut counts = HashMap::<PeerAddr, usize>::new();
 		let mut pending = 0;
 		for request in self.tasks.iter().filter_map(|task| task.request.as_ref()) {
@@ -766,12 +760,14 @@ impl HeadersPibdHashSync {
 				break;
 			};
 			let sent_at = Instant::now();
+			let timeout = peer.request_timeout();
 			let expires_at = sent_at
 				.checked_add(timeout)
 				.ok_or_else(|| Error::Other("Checkpoint hash deadline overflow".into()))?;
 			// The manager's outer write lock covers registration and sending.
 			task.request = Some(HeaderHashRequest {
 				peer: peer.info.addr.clone(),
+				supplier: Arc::downgrade(peer),
 				sent_at,
 				expires_at,
 			});
@@ -946,12 +942,12 @@ impl HeadersPibdHashSync {
 		};
 		let task = &mut self.tasks[index];
 		if let Some(request) = task.request.take().filter(|request| request.peer == *peer) {
-			if let Ok(latency) = i64::try_from(
-				received_at
-					.saturating_duration_since(request.sent_at)
-					.as_millis(),
-			) {
-				self.latency.add_latency(latency);
+			let latency = received_at.saturating_duration_since(request.sent_at);
+			if let Some(supplier) = request.supplier.upgrade() {
+				supplier.record_response_latency(latency);
+			}
+			if let Ok(latency_ms) = i64::try_from(latency.as_millis()) {
+				self.latency.add_latency(latency_ms);
 			}
 		}
 		// A committed peer can fulfill a retry sent to another supplier. Remember
@@ -1243,9 +1239,17 @@ mod task_tests {
 		f.sync.headers_hash_desegmenter = Some(Arc::new(RwLock::new(
 			HeaderHashesDesegmenter::new(0, f.hashes[0], target, f.root).unwrap(),
 		)));
-		let (_first, first_messages) = f.peer(1, f.root);
-		let (_second, second_messages) = f.peer(2, f.root);
+		let (first, first_messages) = f.peer(1, f.root);
+		let (second, second_messages) = f.peer(2, f.root);
 		let (other, other_messages) = f.peer(3, Hash::default());
+		f.peers
+			.get_connected_peer(&first)
+			.unwrap()
+			.record_response_latency(Duration::from_millis(200));
+		f.peers
+			.get_connected_peer(&second)
+			.unwrap()
+			.record_response_latency(Duration::from_secs(12));
 		f.schedule();
 		let per_peer = f.sync.pibd_params.get_segments_request_per_peer();
 		let n1 = first_messages.try_iter().count();
@@ -1254,6 +1258,13 @@ mod task_tests {
 		assert!(n1 + n2 <= f.sync.pibd_params.get_segments_requests_limit(None));
 		assert!(f.sync.tasks.len() <= f.sync.pibd_params.get_headers_hash_buffer_len());
 		assert_eq!(other_messages.try_iter().count(), 0);
+		for request in f.sync.tasks.iter().filter_map(|task| task.request.as_ref()) {
+			let millis = if request.peer == first { 8400 } else { 30000 };
+			assert_eq!(
+				request.expires_at - request.sent_at,
+				Duration::from_millis(millis)
+			);
+		}
 		assert!(f
 			.sync
 			.tasks
@@ -1288,6 +1299,7 @@ mod task_tests {
 		// The first six whole-request timeouts are fines, with the same task
 		// retried each pass. The seventh triggers the existing SyncPeers ban.
 		for failure in 1..=7 {
+			f.scores.elapse_no_response_merge_interval(&peer);
 			f.sync.tasks[0].request.as_mut().unwrap().expires_at = Instant::now();
 			f.schedule();
 			assert_eq!(messages.try_iter().count(), 1);

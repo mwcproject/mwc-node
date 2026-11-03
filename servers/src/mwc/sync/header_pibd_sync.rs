@@ -14,8 +14,8 @@
 
 use crate::mwc::sync::header_pibd_hashes_sync::HeadersPibdHashSyncSnapshot;
 use crate::mwc::sync::sync_peers::SyncPeers;
-use crate::mwc::sync::sync_utils::{self, LatencyTracker, SyncRequestResponses, SyncResponse};
-use mwc_chain::pibd_params::{self, PibdParams};
+use crate::mwc::sync::sync_utils::{self, SyncRequestResponses, SyncResponse};
+use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::HeaderHashesDesegmenter;
 use mwc_chain::types::HEADERS_PER_BATCH;
 use mwc_chain::{pipe, Chain, Error, Options, SyncState, SyncStatus};
@@ -28,8 +28,8 @@ use mwc_crates::parking_lot::{Mutex, RwLock};
 use mwc_crates::rand::seq::IteratorRandom;
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 const BATCH_SIZE: usize = HEADERS_PER_BATCH as usize;
 
@@ -43,6 +43,7 @@ struct HeaderPibdTask {
 
 struct HeaderPibdTaskRequest {
 	peer: PeerAddr,
+	supplier: Weak<Peer>,
 	// Keep the start only for latency samples; the deadline is fixed at send.
 	sent_at: Instant,
 	expires_at: Instant,
@@ -98,9 +99,18 @@ impl HeaderPibdTask {
 			.filter(|offset| *offset < BATCH_SIZE)
 			.ok_or(Error::InvalidHeaderHeight(first.height))?;
 		if offset > request.headers.len() {
-			return Err(Error::InvalidBlocksSeries(
-				"Skipped checkpoint headers".into(),
-			));
+			// A timed-out response can still deliver chunks after we clear its
+			// buffer and retry. A forward gap alone is therefore not a peer error;
+			// skip the chunk with a debug message and keep the original deadline
+			// so an incomplete response is still handled by the normal timeout.
+			debug!(
+				"Ignoring checkpoint headers from {} at {}: received offset {}, buffered {} (possibly a delayed response)",
+				request.peer,
+				self.height,
+				offset,
+				request.headers.len(),
+			);
+			return Ok(());
 		}
 		// Note, already checked that offset < BATCH_SIZE
 		if headers.len() > BATCH_SIZE - offset || remaining > (BATCH_SIZE - headers.len()) as u64 {
@@ -153,7 +163,6 @@ struct HeaderPibdDownload {
 	target: u64,
 	tasks: VecDeque<HeaderPibdTask>,
 	agreed_peers: HashSet<PeerAddr>,
-	latency: LatencyTracker,
 }
 
 impl HeaderPibdDownload {
@@ -189,24 +198,11 @@ impl HeaderPibdDownload {
 			target,
 			tasks,
 			agreed_peers: HashSet::new(),
-			latency: LatencyTracker::new(),
 		})
 	}
 
 	fn matches(&self, hashes: &HeaderHashesDesegmenter) -> bool {
 		self.root == *hashes.get_headers_root_hash() && self.target == hashes.get_target_height()
-	}
-
-	fn request_timeout(&self) -> Duration {
-		let max_timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
-		self.latency
-			.get_average_latency()
-			.map_or(max_timeout, |latency| {
-				latency
-					.saturating_mul(2)
-					.max(Duration::from_secs(5))
-					.min(max_timeout)
-			})
 	}
 
 	fn expire_tasks(
@@ -220,7 +216,7 @@ impl HeaderPibdDownload {
 				continue;
 			};
 			if !task.is_ready() && now >= request.expires_at {
-				let elapsed = request
+				request
 					.expires_at
 					.checked_duration_since(request.sent_at)
 					.ok_or_else(|| Error::Other("Checkpoint deadline precedes send time".into()))?;
@@ -233,7 +229,6 @@ impl HeaderPibdDownload {
 						BATCH_SIZE
 					),
 				);
-				self.latency.add_latency(elapsed.as_millis() as i64);
 				task.reset();
 			}
 		}
@@ -278,6 +273,7 @@ impl HeaderPibdDownload {
 			return Ok(true);
 		}
 		let sent_at = request.sent_at;
+		let supplier = request.supplier.upgrade();
 		match task.receive(headers, remaining, self.target, context_id) {
 			Ok(()) if task.is_ready() => {
 				info!(
@@ -287,7 +283,9 @@ impl HeaderPibdDownload {
 					task.height + 1,
 				);
 				let elapsed = now.saturating_duration_since(sent_at);
-				self.latency.add_latency(elapsed.as_millis() as i64);
+				if let Some(supplier) = supplier {
+					supplier.record_response_latency(elapsed);
+				}
 				scores.report_ok_response(peer);
 			}
 			Ok(()) => (),
@@ -591,10 +589,6 @@ impl HeaderPibdSync {
 				}
 			}
 			let per_peer = self.pibd_params.get_segments_request_per_peer();
-			let timeout = download.request_timeout();
-			let expires_at = now
-				.checked_add(timeout)
-				.ok_or_else(|| Error::Other("Checkpoint request deadline overflow".into()))?;
 			let mut rng = mwc_crates::rand::rng();
 			// Ready buffers also occupy this window, so a stalled first task
 			// cannot cause unbounded accumulation of later responses.
@@ -609,8 +603,13 @@ impl HeaderPibdSync {
 				else {
 					break;
 				};
+				let timeout = peer.request_timeout();
+				let expires_at = now
+					.checked_add(timeout)
+					.ok_or_else(|| Error::Other("Checkpoint request deadline overflow".into()))?;
 				task.request = Some(HeaderPibdTaskRequest {
 					peer: peer.info.addr.clone(),
+					supplier: Arc::downgrade(peer),
 					sent_at: now,
 					expires_at,
 					headers: Vec::with_capacity(BATCH_SIZE),
@@ -653,6 +652,7 @@ impl HeaderPibdSync {
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
 	use super::*;
+	use mwc_chain::pibd_params;
 	use mwc_chain::types::NoopAdapter;
 	use mwc_core::core::pmmr::{self, ReadablePMMR, VecBackend, PMMR};
 	use mwc_core::{consensus, global, pow, ser::ProtocolVersion};
@@ -663,6 +663,7 @@ mod tests {
 		types::{Direction, PeerInfo, PeerLiveInfo},
 		DummyAdapter,
 	};
+	use std::time::Duration;
 
 	fn addr(id: u8) -> PeerAddr {
 		PeerAddr::Ip(([127, 0, 0, id], 3414).into())
@@ -687,13 +688,31 @@ mod tests {
 			.collect()
 	}
 
-	fn assign(task: &mut HeaderPibdTask, peer: PeerAddr, now: Instant, timeout: Duration) {
+	fn assign(
+		task: &mut HeaderPibdTask,
+		peer: PeerAddr,
+		now: Instant,
+		timeout: Duration,
+	) -> Arc<Peer> {
+		let info = PeerInfo {
+			capabilities: Capabilities::HEADERS_HASH | Capabilities::HEADER_HIST,
+			user_agent: "header-latency-test".into(),
+			version: ProtocolVersion::local(),
+			addr: peer.clone(),
+			direction: Direction::Outbound,
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+			tx_base_fee: 0,
+		};
+		let (supplier, _receiver) = Peer::connected_for_test(info, 0, Arc::new(DummyAdapter {}));
+		let supplier = Arc::new(supplier);
 		task.request = Some(HeaderPibdTaskRequest {
 			peer,
+			supplier: Arc::downgrade(&supplier),
 			sent_at: now,
 			expires_at: now + timeout,
 			headers: Vec::with_capacity(BATCH_SIZE),
 		});
+		supplier
 	}
 
 	fn download_for(headers: &[BlockHeader], target: u64) -> HeaderPibdDownload {
@@ -790,21 +809,17 @@ mod tests {
 				== now + Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64)));
 	}
 
-	// Skip the first or a later page, then separately introduce a height gap within a page.
-	// Each gap must reset the assigned request immediately, even above a partial target.
+	// A forward gap can be a delayed response after a retry. Ignore it without
+	// discarding the buffered prefix or extending the whole-response deadline.
 	#[test]
-	fn skipped_pages_and_heights_reject_the_response_immediately() {
+	fn skipped_pages_preserve_buffer_and_deadline() {
 		let headers = dummy_headers(0, hash(1));
 		let scores = SyncPeers::new();
 		let now = Instant::now();
+		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
 		for received in [0, 32] {
 			let mut download = download_for(&headers, 512);
-			assign(
-				&mut download.tasks[0],
-				addr(1),
-				now,
-				Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64),
-			);
+			assign(&mut download.tasks[0], addr(1), now, timeout);
 			if received > 0 {
 				download
 					.receive_headers(&addr(1), &headers[..received], 480, 0, now, &scores)
@@ -817,14 +832,80 @@ mod tests {
 					&headers[offset..offset + 32],
 					(480 - offset) as u64,
 					0,
-					now,
+					now + timeout - Duration::from_millis(1),
 					&scores
 				)
 				.unwrap());
+			let request = download.tasks[0].request.as_ref().unwrap();
+			assert_eq!(request.headers, headers[..received]);
+			assert_eq!(request.sent_at, now);
+			assert_eq!(request.expires_at, now + timeout);
+			download.expire_tasks(now + timeout, &scores, 1).unwrap();
 			assert!(download.tasks[0].request.is_none());
 		}
+	}
 
-		// A gap inside a page is also bad data, including in terminal padding.
+	// Expire a partial response and retry with the same peer. Its delayed tail must
+	// not reset the retry or ban the peer, and a fresh response must still complete.
+	#[test]
+	fn late_pages_after_same_peer_retry_do_not_ban_peer() {
+		let f = Fixture::new();
+		let _receiver = f.peer(1, 512);
+		let headers = dummy_headers(0, hash(1));
+		let mut download = download_for(&headers, 512);
+		let now = Instant::now();
+		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
+		assign(&mut download.tasks[0], addr(1), now, timeout);
+		download
+			.receive_headers(&addr(1), &headers[..160], 352, 0, now, &f.scores)
+			.unwrap();
+		let retried_at = now + timeout;
+		download.expire_tasks(retried_at, &f.scores, 1).unwrap();
+		assert!(download.tasks[0].request.is_none());
+		let supplier = assign(&mut download.tasks[0], addr(1), retried_at, timeout);
+		let received_at = retried_at + Duration::from_secs(1);
+		for offset in (160..512).step_by(32) {
+			assert!(download
+				.receive_headers(
+					&addr(1),
+					&headers[offset..offset + 32],
+					(480 - offset) as u64,
+					0,
+					received_at,
+					&f.scores,
+				)
+				.unwrap());
+			let request = download.tasks[0].request.as_ref().unwrap();
+			assert!(request.headers.is_empty());
+			assert_eq!(request.sent_at, retried_at);
+			assert_eq!(request.expires_at, retried_at + timeout);
+		}
+		assert_eq!(supplier.response_latency(), None);
+		f.scores.apply_peers_status(&f.peers);
+		assert!(!f.peers.is_banned(&addr(1)).unwrap());
+		for offset in (0..512).step_by(32) {
+			assert!(download
+				.receive_headers(
+					&addr(1),
+					&headers[offset..offset + 32],
+					(480 - offset) as u64,
+					0,
+					received_at,
+					&f.scores,
+				)
+				.unwrap());
+		}
+		assert!(download.tasks[0].is_ready());
+		assert_eq!(download.tasks[0].request.as_ref().unwrap().headers, headers);
+		assert_eq!(supplier.response_latency(), Some(Duration::from_secs(1)));
+	}
+
+	// A height gap inside an accepted page is still bad data, including in terminal padding.
+	#[test]
+	fn height_gaps_within_pages_reject_the_response_immediately() {
+		let headers = dummy_headers(0, hash(1));
+		let scores = SyncPeers::new();
+		let now = Instant::now();
 		for target in [1, 512] {
 			let mut download = download_for(&headers, target);
 			assign(
@@ -923,7 +1004,7 @@ mod tests {
 		for complete in [false, true] {
 			let scores = SyncPeers::new();
 			let mut download = download_for(&headers, 512);
-			assign(&mut download.tasks[0], addr(1), sent_at, timeout);
+			let supplier = assign(&mut download.tasks[0], addr(1), sent_at, timeout);
 			assert!(download
 				.receive_headers(&addr(1), &headers[..32], 480, 0, received_at, &scores)
 				.unwrap());
@@ -940,11 +1021,12 @@ mod tests {
 				assert!(download.tasks[0].is_ready());
 				assert_eq!(download.tasks[0].request.as_ref().unwrap().peer, addr(1));
 				assert_eq!(
-					download.latency.get_average_latency(),
+					supplier.response_latency(),
 					Some(timeout + Duration::from_secs(1))
 				);
 			} else {
 				assert!(download.tasks[0].request.is_none());
+				assert_eq!(supplier.response_latency(), None);
 			}
 		}
 	}
@@ -987,20 +1069,20 @@ mod tests {
 	}
 
 	// Receive one page after two seconds and finish after four: only completion supplies
-	// a latency sample, giving future attempts an eight-second timeout. Verify that the
-	// original deadline stays fixed, timeouts affect later estimates, and bounds apply.
+	// a latency sample, giving future attempts a sixteen-second timeout. Verify that the
+	// original deadline stays fixed, other peers keep their own estimates, and bounds apply.
 	#[test]
 	fn timeout_uses_complete_response_latency_and_is_fixed_per_attempt() {
 		let headers = dummy_headers(0, hash(1));
 		let mut download = download_for(&headers, 512);
 		let scores = SyncPeers::new();
 		let now = Instant::now();
+		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
+		let supplier = assign(&mut download.tasks[0], addr(1), now, timeout);
 		assert_eq!(
-			download.request_timeout(),
+			supplier.request_timeout(),
 			Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64)
 		);
-		let timeout = download.request_timeout();
-		assign(&mut download.tasks[0], addr(1), now, timeout);
 		download
 			.receive_headers(
 				&addr(1),
@@ -1011,7 +1093,7 @@ mod tests {
 				&scores,
 			)
 			.unwrap();
-		assert_eq!(download.latency.get_average_latency(), None);
+		assert_eq!(supplier.response_latency(), None);
 		download
 			.receive_headers(
 				&addr(1),
@@ -1022,28 +1104,34 @@ mod tests {
 				&scores,
 			)
 			.unwrap();
-		assert_eq!(download.request_timeout(), Duration::from_secs(8));
+		assert_eq!(supplier.request_timeout(), Duration::from_secs(16));
 		assert_eq!(
 			download.tasks[0].request.as_ref().unwrap().expires_at,
 			now + Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64)
 		);
-		// Expiring the next attempt adds its eight-second duration to the latency history.
+		// An unanswered attempt is not a completed-response latency sample.
 		download.tasks[0].reset();
-		assign(&mut download.tasks[0], addr(1), now, Duration::from_secs(8));
+		assign(
+			&mut download.tasks[0],
+			addr(1),
+			now,
+			Duration::from_secs(16),
+		);
+		download.tasks[0].request.as_mut().unwrap().supplier = Arc::downgrade(&supplier);
 		download
-			.expire_tasks(now + Duration::from_secs(8), &scores, 1)
+			.expire_tasks(now + Duration::from_secs(16), &scores, 1)
 			.unwrap();
-		assert_eq!(download.request_timeout(), Duration::from_secs(12));
+		assert_eq!(supplier.request_timeout(), Duration::from_secs(16));
 		// Extremely fast and slow samples must respect the minimum and configured maximum.
 		for _ in 0..15 {
-			download.latency.add_latency(1);
+			supplier.record_response_latency(Duration::from_millis(1));
 		}
-		assert_eq!(download.request_timeout(), Duration::from_secs(5));
+		assert_eq!(supplier.request_timeout(), Duration::from_millis(8002));
 		for _ in 0..15 {
-			download.latency.add_latency(60_000);
+			supplier.record_response_latency(Duration::from_secs(60));
 		}
 		assert_eq!(
-			download.request_timeout(),
+			supplier.request_timeout(),
 			Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64)
 		);
 	}
@@ -1202,6 +1290,14 @@ mod tests {
 		let mut download =
 			HeaderPibdDownload::new(&vec![hash(1); 101], hash(42), target, 0).unwrap();
 		download.agreed_peers = [addr(1), addr(2), addr(4)].into_iter().collect();
+		f.peers
+			.get_connected_peer(&addr(1))
+			.unwrap()
+			.record_response_latency(Duration::from_millis(200));
+		f.peers
+			.get_connected_peer(&addr(2))
+			.unwrap()
+			.record_response_latency(Duration::from_secs(12));
 		*f.sync.download.lock() = Some(download);
 		let _work = f.sync.work_lock.lock();
 		assert_eq!(f.sync.send_requests(&f.peers, &f.scores).unwrap(), 2);
@@ -1213,6 +1309,22 @@ mod tests {
 		assert!(n1 <= per_peer && n2 <= per_peer);
 		assert_eq!(uncommitted.try_iter().count(), 0);
 		assert_eq!(other_height.try_iter().count(), 0);
+		{
+			let download = f.sync.download.lock();
+			for request in download
+				.as_ref()
+				.unwrap()
+				.tasks
+				.iter()
+				.filter_map(|task| task.request.as_ref())
+			{
+				let millis = if request.peer == addr(1) { 8400 } else { 30000 };
+				assert_eq!(
+					request.expires_at - request.sent_at,
+					Duration::from_millis(millis)
+				);
+			}
+		}
 		f.sync.send_requests(&f.peers, &f.scores).unwrap();
 		assert_eq!(first.try_iter().count() + second.try_iter().count(), 0);
 		{
@@ -1354,7 +1466,14 @@ mod tests {
 				assert_eq!(request.peer, addr(1));
 				assert_eq!(request.expires_at, now + timeout);
 			}
-			assert_eq!(state.latency.get_average_latency(), None);
+			assert!(state
+				.tasks
+				.iter()
+				.filter_map(|task| task.request.as_ref())
+				.all(|request| request
+					.supplier
+					.upgrade()
+					.is_none_or(|supplier| supplier.response_latency().is_none())));
 		}
 	}
 
@@ -1383,6 +1502,7 @@ mod tests {
 				}
 				assert!(!download.tasks[0].is_ready());
 				for _ in 0..10 {
+					f.scores.elapse_no_response_merge_interval(&addr(1));
 					download
 						.expire_tasks(
 							now + Duration::from_secs(
@@ -1409,7 +1529,7 @@ mod tests {
 		let headers = dummy_headers(0, hash(1));
 		let now = Instant::now();
 		let mut download = download_for(&headers, 512);
-		assign(&mut download.tasks[0], addr(1), now, Duration::ZERO);
+		let supplier = assign(&mut download.tasks[0], addr(1), now, Duration::ZERO);
 		download.tasks[0].request.as_mut().unwrap().sent_at = now + Duration::from_secs(1);
 		*f.sync.download.lock() = Some(download);
 		for _ in 0..7 {
@@ -1418,16 +1538,7 @@ mod tests {
 				Err(Error::Other(_))
 			));
 		}
-		assert_eq!(
-			f.sync
-				.download
-				.lock()
-				.as_ref()
-				.unwrap()
-				.latency
-				.get_average_latency(),
-			None
-		);
+		assert_eq!(supplier.response_latency(), None);
 		f.scores.apply_peers_status(&f.peers);
 		assert!(!f.peers.is_banned(&addr(1)).unwrap());
 	}

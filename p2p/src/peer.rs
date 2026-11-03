@@ -39,6 +39,7 @@ use mwc_core::{core, global};
 use mwc_crates::chrono::prelude::Utc;
 use mwc_crates::log::{debug, info, trace};
 use mwc_crates::lru::LruCache;
+use mwc_util::LatencyTracker;
 
 const MAX_PEER_MSG_PER_MIN: u64 = 1000;
 const RECEIVED_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(2500).unwrap();
@@ -64,6 +65,7 @@ pub struct Peer {
 	// Hashes received from this peer, shared with the protocol to suppress rebroadcasts.
 	received: Arc<RwLock<LruCache<Hash, ()>>>,
 	tracker: Arc<conn::Tracker>,
+	latency: Mutex<LatencyTracker>,
 	connection: Mutex<Option<PeerConnection>>,
 	connection_changed: Condvar,
 	context_id: u32,
@@ -96,10 +98,30 @@ impl Peer {
 			adapter,
 			received: Arc::new(RwLock::new(LruCache::new(RECEIVED_CACHE_SIZE))),
 			tracker,
+			latency: Mutex::new(LatencyTracker::new()),
 			connection: Mutex::new(None),
 			connection_changed: Condvar::new(),
 			context_id,
 		}
+	}
+
+	/// Record only a complete response, measured from its request's send time.
+	pub fn record_response_latency(&self, elapsed: Duration) {
+		if let Ok(latency_ms) = i64::try_from(elapsed.as_millis()) {
+			self.latency.lock().add_latency(latency_ms);
+		}
+	}
+
+	pub fn response_latency(&self) -> Option<Duration> {
+		self.latency.lock().get_average_latency()
+	}
+
+	/// Fix this budget when sending the request; partial responses do not renew it.
+	pub fn request_timeout(&self) -> Duration {
+		let maximum = Duration::from_secs(u64::from(
+			mwc_chain::pibd_params::PIBD_REQUESTS_TIMEOUT_SECS,
+		));
+		self.latency.lock().get_time_out(maximum)
 	}
 
 	/// In-memory connection for cross-crate protocol/sync regression tests.
@@ -760,6 +782,26 @@ mod tests {
 
 	fn test_peer() -> Peer {
 		test_peer_with_user_agent("test".to_string())
+	}
+
+	#[test]
+	fn response_latency_is_independent_per_peer_and_connection() {
+		let fast = test_peer();
+		let mut slow = test_peer();
+		slow.info.addr = PeerAddr::Onion(
+			"oqtl7wlzukgp7r6kdp3uvyelzmc72ngknwd23lo7uw63rwornvcmg3yd.onion".into(),
+		);
+		// A fresh connection to the same address starts without the old history.
+		let fresh = test_peer();
+		fast.record_response_latency(Duration::from_millis(200));
+		slow.record_response_latency(Duration::from_secs(12));
+		assert_eq!(fast.request_timeout(), Duration::from_millis(8400));
+		assert_eq!(slow.request_timeout(), Duration::from_secs(30));
+		assert_eq!(fresh.request_timeout(), Duration::from_secs(30));
+		for _ in 0..30 {
+			fast.record_response_latency(Duration::from_millis(1));
+		}
+		assert_eq!(slow.request_timeout(), Duration::from_secs(30));
 	}
 
 	fn test_peer_with_user_agent(user_agent: String) -> Peer {

@@ -103,6 +103,12 @@ impl SyncManager {
 		self.headers_sync_peers.apply_peers_status(peers);
 	}
 
+	#[cfg(all(test, feature = "test-support"))]
+	pub(crate) fn elapse_header_no_response_merge_interval_for_test(&self, peer: &PeerAddr) {
+		self.headers_sync_peers
+			.elapse_no_response_merge_interval(peer);
+	}
+
 	pub fn sync_request(&self, peers: &Arc<Peers>) -> Result<SyncResponse, Error> {
 		self.clear_inactive_pibd_failures();
 		if !self.state_is_ready() {

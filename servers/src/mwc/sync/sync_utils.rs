@@ -18,7 +18,7 @@
 use mwc_chain::{Chain, Error};
 use mwc_p2p::{Capabilities, Peer, Peers};
 use std::cmp;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -155,51 +155,6 @@ impl<T> CachedResponse<T> {
 	}
 }
 
-pub(super) struct LatencyTracker {
-	latency_history: VecDeque<i64>,
-	latency_sum: i64,
-}
-
-impl LatencyTracker {
-	pub(super) fn new() -> Self {
-		LatencyTracker {
-			latency_history: VecDeque::new(),
-			latency_sum: 0,
-		}
-	}
-
-	pub(super) fn add_latency(&mut self, latency_ms: i64) {
-		if latency_ms <= 0 {
-			return;
-		}
-		self.latency_history.push_back(latency_ms);
-		// Safe: request latency is measured from an in-process timestamp and the
-		// history is capped at 15 entries, so the accumulated milliseconds stay
-		// far below i64::MAX.
-		self.latency_sum += latency_ms;
-		while self.latency_history.len() > 15 {
-			let Some(lt) = self.latency_history.pop_front() else {
-				break;
-			};
-			// Safe: lt was previously included in latency_sum.
-			self.latency_sum -= lt;
-		}
-	}
-
-	pub(super) fn get_average_latency(&self) -> Option<Duration> {
-		if self.latency_history.is_empty() {
-			None
-		} else {
-			let latency_ms = self.latency_sum / self.latency_history.len() as i64;
-			if latency_ms <= 0 {
-				Some(Duration::ZERO)
-			} else {
-				Some(Duration::from_millis(latency_ms as u64))
-			}
-		}
-	}
-}
-
 /// Get a list of qualify peers. Peers that has needed height and capability
 pub fn get_qualify_peers(
 	peers: &Arc<Peers>,
@@ -222,8 +177,9 @@ pub fn get_qualify_peers(
 
 #[cfg(test)]
 mod tests {
-	use super::{CachedResponse, LatencyTracker, QuorumSelection};
+	use super::{CachedResponse, QuorumSelection};
 	use mwc_chain::pibd_params;
+	use mwc_util::LatencyTracker;
 	use std::time::Duration;
 
 	#[test]

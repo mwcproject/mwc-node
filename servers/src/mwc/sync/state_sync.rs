@@ -15,7 +15,7 @@
 
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils;
-use crate::mwc::sync::sync_utils::{LatencyTracker, SyncRequestResponses, SyncResponse};
+use crate::mwc::sync::sync_utils::{SyncRequestResponses, SyncResponse};
 use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::{BitmapChunk, Desegmenter, StateSegment, ValidatedStateSegment};
 use mwc_chain::{self, pibd_params, SyncState};
@@ -30,11 +30,11 @@ use mwc_crates::rand::prelude::IteratorRandom;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_p2p::PeerAddr;
 use mwc_p2p::{self, Capabilities, Peer};
-use mwc_util::StopState;
+use mwc_util::{LatencyTracker, StopState};
 use std::cmp;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 const SEGMENT_TYPES: [SegmentType; 4] = [
@@ -97,6 +97,7 @@ struct StateTask {
 
 struct StateTaskRequest {
 	peer: PeerAddr,
+	supplier: Weak<Peer>,
 	sent_at: Instant,
 	expires_at: Instant,
 }
@@ -1083,20 +1084,21 @@ impl StateSync {
 					.request
 					.take()
 					.filter(|request| request.peer == *peer)
-					.and_then(|request| {
-						i64::try_from(
-							received_at
-								.saturating_duration_since(request.sent_at)
-								.as_millis(),
-						)
-						.ok()
+					.map(|request| {
+						let latency = received_at.saturating_duration_since(request.sent_at);
+						if let Some(supplier) = request.supplier.upgrade() {
+							supplier.record_response_latency(latency);
+						}
+						latency
 					});
 				task.received = Some(ReceivedSegment {
 					segment,
 					peer: peer.clone(),
 				});
 				if let Some(latency) = latency {
-					download.latency.add_latency(latency);
+					if let Ok(latency_ms) = i64::try_from(latency.as_millis()) {
+						download.latency.add_latency(latency_ms);
+					}
 				}
 				scores.report_ok_response(peer);
 				// Application retains the data until success. The existing broad
@@ -1228,16 +1230,6 @@ impl StateSync {
 			self.ban_this_session(&session.root_hash, scores);
 			return Err(error);
 		}
-		let max_timeout = Duration::from_secs(u64::from(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS));
-		let timeout = download
-			.latency
-			.get_average_latency()
-			.map_or(max_timeout, |latency| {
-				latency
-					.saturating_mul(2)
-					.max(Duration::from_secs(5))
-					.min(max_timeout)
-			});
 		let per_peer = self.pibd_params.get_segments_request_per_peer();
 		let mut counts = HashMap::<PeerAddr, usize>::new();
 		for request in download
@@ -1263,11 +1255,13 @@ impl StateSync {
 				continue;
 			};
 			let sent_at = Instant::now();
+			let timeout = peer.request_timeout();
 			let expires_at = sent_at.checked_add(timeout).ok_or_else(|| {
 				mwc_chain::Error::Other("Snapshot request deadline overflow".into())
 			})?;
 			task.request = Some(StateTaskRequest {
 				peer: peer.info.addr.clone(),
+				supplier: Arc::downgrade(peer),
 				sent_at,
 				expires_at,
 			});
@@ -1706,6 +1700,34 @@ mod task_tests {
 	}
 
 	#[test]
+	fn segment_requests_use_the_selected_peers_latency() {
+		let f = Fixture::new();
+		let (fast, fast_messages) = f.peer(1);
+		let (slow, slow_messages) = f.peer(2);
+		let (unknown, unknown_messages) = f.peer(3);
+		fast.record_response_latency(Duration::from_millis(200));
+		slow.record_response_latency(Duration::from_secs(12));
+		let session = f.sync.live_desegmenter().unwrap();
+		for (peer, messages, millis) in [
+			(fast, fast_messages, 8400),
+			(slow, slow_messages, 30000),
+			(unknown, unknown_messages, 30000),
+		] {
+			f.sync
+				.send_requests(&[peer.clone()], &session, &f.scores)
+				.unwrap();
+			assert_eq!(messages.try_iter().count(), 1);
+			let mut download = f.sync.download.lock();
+			let request = download.tasks[0].request.take().unwrap();
+			assert_eq!(request.peer, peer.info.addr);
+			assert_eq!(
+				request.expires_at - request.sent_at,
+				Duration::from_millis(millis)
+			);
+		}
+	}
+
+	#[test]
 	fn expired_task_is_retried_once_and_repeated_timeouts_ban_the_supplier() {
 		let f = Fixture::new();
 		let (peer, messages) = f.peer(1);
@@ -1723,7 +1745,9 @@ mod task_tests {
 			// in the job for retry, and another expiration pass must not fine twice.
 			download.expire_requests(deadline - Duration::from_millis(1), &f.scores);
 			assert!(download.tasks[0].request.is_some());
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			download.expire_requests(deadline, &f.scores);
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			download.expire_requests(deadline, &f.scores);
 			assert!(download.tasks[0].request.is_none());
 			drop(download);
