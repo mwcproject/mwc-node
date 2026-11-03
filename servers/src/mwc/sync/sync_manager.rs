@@ -303,7 +303,9 @@ impl SyncManager {
 		}
 		let headers = self.chain.header_head()?;
 		let body = self.chain.head()?;
-		if headers.last_block_h == body.last_block_h {
+		// Preserve initial header-download progress while the body is still at
+		// genesis, including startup before any peers can advertise their work.
+		if body.height == 0 || headers.last_block_h == body.last_block_h {
 			return Ok(());
 		}
 		// Height-zero peers cannot supply ordinary header downloads yet. Their

@@ -23,7 +23,7 @@ use mwc_core::core::{
 	hash::{Hash, Hashed},
 	BlockHeader,
 };
-use mwc_crates::log::debug;
+use mwc_crates::log::{debug, info};
 use mwc_crates::parking_lot::{Mutex, RwLock};
 use mwc_crates::rand::seq::IteratorRandom;
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
@@ -280,6 +280,12 @@ impl HeaderPibdDownload {
 		let sent_at = request.sent_at;
 		match task.receive(headers, remaining, self.target, context_id) {
 			Ok(()) if task.is_ready() => {
+				info!(
+					"Received {} block headers from {}, height {}",
+					BATCH_SIZE,
+					peer,
+					task.height + 1,
+				);
 				let elapsed = now.saturating_duration_since(sent_at);
 				self.latency.add_latency(elapsed.as_millis() as i64);
 				scores.report_ok_response(peer);

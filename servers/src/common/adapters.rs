@@ -572,7 +572,7 @@ where
 		}
 
 		let cb_hash = cb.hash(self.context_id)?;
-		debug!(
+		info!(
 			"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
 			cb_hash,
 			cb.header.height,

@@ -313,6 +313,12 @@ impl HeaderSync {
 			for header in &bhs {
 				pipe::validate_header_hash(context_id, &header.hash(context_id)?)?;
 			}
+			info!(
+				"Received {} block headers from {}, height {}",
+				bhs.len(),
+				peer,
+				bhs[0].height,
+			);
 			let received_at = u64::try_from(mwc_crates::chrono::Utc::now().timestamp_micros())
 				.map_err(|_| {
 					mwc_chain::Error::Other("negative local header receipt time".into())
