@@ -1202,6 +1202,8 @@ mod pibd_successor_flow {
 		state
 			.receive_bitmap_segment(&peer(1), &archive_hash, bitmap, &fixture.peers, scores)
 			.unwrap();
+		// The sync loop applies the buffered bitmap before requesting data streams.
+		fixture.manager.sync_request(&fixture.peers).unwrap();
 		state
 			.receive_output_segment(&peer(1), &archive_hash, output, &fixture.peers, scores)
 			.unwrap();

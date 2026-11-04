@@ -44,6 +44,9 @@ const SEGMENT_TYPES: [SegmentType; 4] = [
 	SegmentType::Kernel,
 ];
 
+// Bound each sync tick so request refilling and cancellation stay responsive.
+const MAX_SEGMENTS_PER_BATCH: usize = 16;
+
 const MIN_PIBD_ROOT_RESPONSES: usize = 2;
 // Accepted commitments are never evicted during a PIBD session. This limit is
 // enforced before sending a request, so every accepted response still has a slot.
@@ -64,9 +67,8 @@ enum PibdRootSelection {
 /// The StateSync struct implements and monitors the middle step.
 pub struct StateSync {
 	chain: Arc<Chain>,
-	// Write on initialization/reset. Segment receive paths hold a read guard
-	// across validation and segment application so reset cannot invalidate the
-	// PIBD session after validation but before the segment is applied.
+	// Write on initialization/reset. Receivers pin the session while validating
+	// and buffering; the sync loop pins it while applying and scheduling tasks.
 	desegmenter: RwLock<Option<Arc<Desegmenter>>>,
 	reset_desegmenter: AtomicBool,
 
@@ -81,7 +83,7 @@ pub struct StateSync {
 	// session pinned; storage writes release download so proof checks can proceed.
 	apply_lock: Mutex<()>,
 	// Unanswered requests and buffered responses. The writer temporarily owns
-	// one ready task while apply_lock prevents refilling its slot.
+	// a ready batch while apply_lock prevents refilling its slots.
 	download: Mutex<StateDownload>,
 	// Import completion is independent of the following ordinary block sync.
 	is_complete: AtomicBool,
@@ -196,8 +198,7 @@ impl StateDownload {
 
 enum DesegmenterValidation<'a> {
 	Valid {
-		// Bind validation to the live PIBD session through segment application
-		// and request tracking.
+		// Bind validation and buffering to the live PIBD session.
 		_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
 		desegmenter: Arc<Desegmenter>,
 	},
@@ -213,7 +214,7 @@ enum DesegmenterValidation<'a> {
 }
 
 pub(super) struct LiveDesegmenter<'a> {
-	// Keep the live session pinned while scheduling segment requests. Resetting
+	// Keep the live session pinned while applying and scheduling segments. Resetting
 	// the PIBD session starts by taking the desegmenter write lock, so this
 	// guard prevents target_archive_hash and request caches from being cleared
 	// or replaced while tasks are selected, sent, and registered.
@@ -1040,42 +1041,61 @@ impl StateSync {
 		if !desegmenter.is_current() {
 			return Err(mwc_chain::Error::ChainRestartRequired);
 		}
-		for kind in &SEGMENT_TYPES {
-			loop {
-				let (index, task) = {
-					let mut download = self.download.lock();
-					let Some(index) = download
-						.tasks
-						.iter()
-						.position(|task| &task.id.segment_type == kind)
-					else {
-						break;
-					};
-					if download.tasks[index].received.is_none() {
-						break;
-					}
-					(
-						index,
-						download.tasks.remove(index).expect("ready task exists"),
-					)
-				};
-				// Own the task during storage I/O. Planning waits on apply_lock, so
-				// it cannot refill this slot until the task is committed or restored.
-				let response = task.received.as_ref().expect("ready task has a response");
-				if let Err(error) = desegmenter.apply_segment(&response.segment) {
-					// Attribute deferred failures to the response's actual supplier.
-					let message = format!(
-						"Failed to apply snapshot segment {:?} from {}: {}",
-						task.id, response.peer, error
-					);
-					error!("{}", message);
-					scores.report_error_response(&response.peer, message);
-					// Application/planning and completion share apply_lock; reset
-					// needs the session write guard. The original index is still valid.
-					self.download.lock().tasks.insert(index, task);
-					return Err(error);
+		let tasks = {
+			let mut download = self.download.lock();
+			let mut tasks = Vec::new();
+			let mut blocked = Vec::new();
+			let mut index = 0;
+			while index < download.tasks.len() && tasks.len() < MAX_SEGMENTS_PER_BATCH {
+				let task = &download.tasks[index];
+				let kind = &task.id.segment_type;
+				if task.received.is_none() {
+					blocked.push(kind.clone());
 				}
+				if blocked.contains(kind) {
+					index += 1;
+					continue;
+				}
+				tasks.push((
+					index,
+					download.tasks.remove(index).expect("ready task exists"),
+				));
 			}
+			tasks
+		};
+		let segments: Vec<_> = tasks
+			.iter()
+			.map(|(_, task)| {
+				&task
+					.received
+					.as_ref()
+					.expect("ready task has a response")
+					.segment
+			})
+			.collect();
+		if let Err((failed, error)) = desegmenter.apply_segments(&segments) {
+			if let Some(offset) = failed {
+				let task = &tasks[offset].1;
+				let response = task.received.as_ref().expect("ready task has a response");
+				let message = format!(
+					"Failed to apply snapshot segment {:?} from {}: {}",
+					task.id, response.peer, error
+				);
+				error!("{}", message);
+				scores.report_error_response(&response.peer, message);
+			} else {
+				error!("Failed to commit snapshot batch: {}", error);
+			}
+			// Reverse the removals to restore every task at its original position.
+			// The application lock and pinned session keep these positions valid.
+			let mut download = self.download.lock();
+			for (index, task) in tasks.into_iter().rev() {
+				download.tasks.insert(index, task);
+			}
+			if !desegmenter.is_current() {
+				self.reset_desegmenter.store(true, Ordering::Relaxed);
+			}
+			return Err(error);
 		}
 		Ok(())
 	}
@@ -1085,7 +1105,7 @@ impl StateSync {
 		peer: &PeerAddr,
 		archive_header_hash: &Hash,
 		segment: StateSegment,
-		peers: &Arc<mwc_p2p::Peers>,
+		_peers: &Arc<mwc_p2p::Peers>,
 		scores: &SyncPeers,
 	) -> Result<(), mwc_chain::Error> {
 		if self.is_complete.load(Ordering::Acquire) {
@@ -1127,7 +1147,7 @@ impl StateSync {
 		if task.received.is_some() {
 			return Ok(());
 		}
-		let accepted = match result {
+		match result {
 			Ok(segment) => {
 				let latency = task
 					.request
@@ -1150,7 +1170,6 @@ impl StateSync {
 					}
 				}
 				scores.report_ok_response(peer);
-				true
 			}
 			Err(error) => {
 				if task
@@ -1163,40 +1182,10 @@ impl StateSync {
 				let message = format!("Invalid snapshot segment {:?} from {}: {}", id, peer, error);
 				info!("{}", message);
 				scores.report_error_response(peer, message);
-				false
-			}
-		};
-		drop(download);
-		if accepted {
-			if let Err(error) = self.apply_ready_tasks(desegmenter, scores) {
-				if !desegmenter.is_current() {
-					self.reset_desegmenter.store(true, Ordering::Relaxed);
-				}
-				info!("Snapshot application will restart or retry: {}", error);
-				return Ok(());
 			}
 		}
-		// Refill promptly without scheduling duplicate requests. The outer guard
-		// still pins this session while the follow-up requests are registered.
-		if let Some(session) = self.live_desegmenter() {
-			let commitments = self.responded_root_hash.read_recursive();
-			let suppliers: Vec<_> = self
-				.eligible_peers(peers)
-				.into_iter()
-				.filter(|peer| {
-					commitments
-						.get(&peer.info.addr)
-						.is_some_and(|(root, _)| *root == session.root_hash)
-				})
-				.collect();
-			drop(commitments);
-			if let Err(error) = self.send_requests(&suppliers, &session, scores) {
-				info!(
-					"Failed to schedule snapshot requests; sync loop will retry: {}",
-					error
-				);
-			}
-		}
+		// The existing sync loop applies and refills on its next tick. Peer
+		// readers can immediately receive the next response while storage runs.
 		Ok(())
 	}
 
@@ -1525,6 +1514,20 @@ mod task_tests {
 	}
 
 	impl Fixture {
+		fn poll(&self) {
+			let session = self.sync.live_desegmenter().unwrap();
+			self.sync
+				.apply_ready_tasks(&session.desegmenter, &self.scores)
+				.unwrap();
+			self.sync
+				.send_requests(
+					&self.sync.eligible_peers(&self.peers),
+					&session,
+					&self.scores,
+				)
+				.unwrap();
+		}
+
 		fn new() -> Self {
 			// Floonet genesis contains one output, rangeproof and kernel. It
 			// provides real authenticated segments without mining a test chain.
@@ -1762,8 +1765,8 @@ mod task_tests {
 		let segmenter = f.source.segmenter().unwrap();
 		let bitmap = segmenter.bitmap_segment(bitmap_id).unwrap();
 
-		// Another committed peer can fulfill the task. Completing the bitmap
-		// creates the other three streams, and its duplicate creates no new work.
+		// Another committed peer can fulfill the task. Responses only buffer;
+		// the next tick applies the bitmap and requests the other three streams.
 		f.sync
 			.receive_bitmap_segment(
 				&supplier.info.addr,
@@ -1784,6 +1787,12 @@ mod task_tests {
 			.unwrap();
 		assert_eq!(
 			first_messages.try_iter().count() + second_messages.try_iter().count(),
+			0
+		);
+		assert!(f.sync.download.lock().tasks[0].received.is_some());
+		f.poll();
+		assert_eq!(
+			first_messages.try_iter().count() + second_messages.try_iter().count(),
 			3
 		);
 		let ids: Vec<_> = f
@@ -1802,8 +1811,8 @@ mod task_tests {
 			.identifier;
 		let kernel = segmenter.kernel_segment(kernel_id).unwrap();
 
-		// Output is still pending at the front. A kernel response must nevertheless
-		// apply immediately; a duplicate must neither recreate it nor affect progress.
+		// Output is still pending at the front. The next tick must still apply
+		// a lone kernel, without waiting for a minimum batch size.
 		f.sync
 			.receive_kernel_segment(
 				&supplier.info.addr,
@@ -1813,6 +1822,7 @@ mod task_tests {
 				&f.scores,
 			)
 			.unwrap();
+		f.poll();
 		assert!(f
 			.sync
 			.download
@@ -1859,6 +1869,10 @@ mod task_tests {
 			)
 			.unwrap();
 
+		// Both responses are buffered until one tick applies the batch.
+		assert_eq!(f.sync.download.lock().tasks.len(), 2);
+		assert!(!session.desegmenter.is_complete());
+		f.poll();
 		// Every authenticated task has applied, and no more requests are needed.
 		assert!(session.desegmenter.is_complete());
 		assert!(f.sync.download.lock().tasks.is_empty());
@@ -1892,6 +1906,7 @@ mod task_tests {
 				&f.scores,
 			)
 			.unwrap();
+		f.poll();
 		assert_eq!(
 			first_messages.try_iter().count()
 				+ second_messages.try_iter().count()
@@ -1926,86 +1941,99 @@ mod task_tests {
 		std::thread::scope(|scope| {
 			// Hold storage read locks so application pauses before it can write.
 			// The closure releases them even if a concurrency assertion fails.
-			let (output_receive, proof_receive, kernel_receive, planner, reset) = f
-				.sync
-				.chain
-				.with_output_read_snapshot(|_| {
-					let output_receive = scope.spawn(|| receive(&first.info.addr, output.clone()));
-					wait_for(&|| {
-						f.sync.download.try_lock().is_some_and(|download| {
-							download.tasks.len() == 2
-								&& download
-									.tasks
-									.iter()
-									.all(|task| task.id.segment_type != SegmentType::Output)
-						})
-					});
+			let (writer, planner, reset) =
+				f.sync
+					.chain
+					.with_output_read_snapshot(|_| {
+						receive(&first.info.addr, output.clone()).unwrap();
+						let writer = scope.spawn(|| {
+							global::set_local_chain_type(global::ChainTypes::Floonet);
+							global::set_local_nrd_enabled(false);
+							let session = f.sync.live_desegmenter().unwrap();
+							f.sync.apply_ready_tasks(&session.desegmenter, &f.scores)?;
+							// Simulate the next tick under the same pinned session, so
+							// the pending reset cannot discard the later responses.
+							f.sync.apply_ready_tasks(&session.desegmenter, &f.scores)
+						});
+						wait_for(&|| {
+							f.sync.download.try_lock().is_some_and(|download| {
+								download.tasks.len() == 2
+									&& download
+										.tasks
+										.iter()
+										.all(|task| task.id.segment_type != SegmentType::Output)
+							})
+						});
 
-					// A planner waiting for the writer must not hold the queue lock.
-					let (planner_started, planner_ready) = std::sync::mpsc::channel();
-					let sync = &f.sync;
-					let scores = &f.scores;
-					let supplier = &first;
-					let planner = scope.spawn(move || {
-						let session = sync.live_desegmenter().unwrap();
-						planner_started.send(()).unwrap();
-						sync.send_requests(&[supplier.clone()], &session, scores)
-					});
-					planner_ready.recv_timeout(Duration::from_secs(5)).unwrap();
-					let proof_receive = scope.spawn(|| receive(&second.info.addr, proof.clone()));
-					let kernel_receive = scope.spawn(|| receive(&third.info.addr, kernel.clone()));
-					wait_for(&|| {
-						f.sync.download.try_lock().is_some_and(|download| {
-							download.tasks.len() == 2
-								&& download
-									.tasks
-									.iter()
-									.all(|task| task.received.is_some() && task.request.is_none())
-						})
-					});
-
-					// Duplicates of both the taken task and a buffered task must return
-					// without waiting for storage or applying either segment twice.
-					let (duplicate_done, duplicate_result) = std::sync::mpsc::channel();
-					let duplicates = [output.clone(), kernel.clone()];
-					let duplicate_peer = &first.info.addr;
-					scope.spawn(move || {
-						for duplicate in duplicates {
-							duplicate_done
-								.send(receive(duplicate_peer, duplicate))
+						// A planner waiting for the writer must not hold the queue lock.
+						let (planner_started, planner_ready) = std::sync::mpsc::channel();
+						let sync = &f.sync;
+						let scores = &f.scores;
+						let supplier = &first;
+						let planner = scope.spawn(move || {
+							let session = sync.live_desegmenter().unwrap();
+							planner_started.send(()).unwrap();
+							sync.send_requests(&[supplier.clone()], &session, scores)
+						});
+						planner_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+						let (received, finished) = std::sync::mpsc::channel();
+						for (peer, segment) in [
+							(&second.info.addr, proof.clone()),
+							(&third.info.addr, kernel.clone()),
+						] {
+							let received = received.clone();
+							scope.spawn(move || received.send(receive(peer, segment)).unwrap());
+						}
+						// Both peer readers must return while the writer is still blocked.
+						for _ in 0..2 {
+							finished
+								.recv_timeout(Duration::from_secs(5))
+								.unwrap()
 								.unwrap();
 						}
-					});
-					for _ in 0..2 {
-						duplicate_result
-							.recv_timeout(Duration::from_secs(5))
-							.unwrap()
-							.unwrap();
-					}
+						wait_for(&|| {
+							f.sync.download.try_lock().is_some_and(|download| {
+								download.tasks.len() == 2
+									&& download.tasks.iter().all(|task| {
+										task.received.is_some() && task.request.is_none()
+									})
+							})
+						});
 
-					// Reset still waits for receive handlers to finish the pinned session.
-					let (reset_done, reset_result) = std::sync::mpsc::channel();
-					let sync = &f.sync;
-					let reset = scope.spawn(move || {
-						sync.reset_desegmenter_data();
-						reset_done.send(()).unwrap();
-					});
-					assert!(matches!(
-						reset_result.recv_timeout(Duration::from_millis(50)),
-						Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-					));
-					Ok::<_, mwc_chain::Error>((
-						output_receive,
-						proof_receive,
-						kernel_receive,
-						planner,
-						(reset, reset_result),
-					))
-				})
-				.unwrap();
-			output_receive.join().unwrap().unwrap();
-			proof_receive.join().unwrap().unwrap();
-			kernel_receive.join().unwrap().unwrap();
+						// Duplicates of both the taken task and a buffered task must return
+						// without waiting for storage or applying either segment twice.
+						let (duplicate_done, duplicate_result) = std::sync::mpsc::channel();
+						let duplicates = [output.clone(), kernel.clone()];
+						let duplicate_peer = &first.info.addr;
+						scope.spawn(move || {
+							for duplicate in duplicates {
+								duplicate_done
+									.send(receive(duplicate_peer, duplicate))
+									.unwrap();
+							}
+						});
+						for _ in 0..2 {
+							duplicate_result
+								.recv_timeout(Duration::from_secs(5))
+								.unwrap()
+								.unwrap();
+						}
+
+						// Reset still waits for the writer to finish the pinned session.
+						let (reset_done, reset_result) = std::sync::mpsc::channel();
+						let sync = &f.sync;
+						let reset = scope.spawn(move || {
+							sync.reset_desegmenter_data();
+							reset_done.send(()).unwrap();
+						});
+						assert!(matches!(
+							reset_result.recv_timeout(Duration::from_millis(50)),
+							Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+						));
+						Ok::<_, mwc_chain::Error>((writer, planner, (reset, reset_result)))
+					})
+					.unwrap();
+			writer.join().unwrap().unwrap();
 			planner.join().unwrap().unwrap();
 			reset.1.recv_timeout(Duration::from_secs(5)).unwrap();
 			reset.0.join().unwrap();
@@ -2024,7 +2052,7 @@ mod task_tests {
 	}
 
 	#[test]
-	fn failed_application_restores_taken_task_at_its_original_position() {
+	fn failed_batch_restores_all_tasks_without_advancing_any_stream() {
 		let f = Fixture::new();
 		let (peer, _messages) = f.peer(1);
 		let session = f.sync.live_desegmenter().unwrap();
@@ -2042,6 +2070,7 @@ mod task_tests {
 				&f.scores,
 			)
 			.unwrap();
+		f.poll();
 		let ids: Vec<_> = f
 			.sync
 			.download
@@ -2050,6 +2079,16 @@ mod task_tests {
 			.iter()
 			.map(|task| task.id.clone())
 			.collect();
+		// The batch takes output and kernel, leaving a pending proof between them.
+		f.sync
+			.receive_output_segment(
+				&peer.info.addr,
+				&session.archive_hash,
+				segmenter.output_segment(ids[0].identifier).unwrap(),
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
 		let kernel_id = ids[2].identifier;
 		// Authenticate the same kernel with a different segment height. Its proof
 		// is valid, but application rejects it because it is outside the layout.
@@ -2077,10 +2116,10 @@ mod task_tests {
 			));
 			let download = f.sync.download.lock();
 			assert_eq!(download.tasks.len(), 3);
-			for (task, id) in download.tasks.iter().zip(&ids).take(2) {
+			for (index, (task, id)) in download.tasks.iter().zip(&ids).take(2).enumerate() {
 				assert_eq!(&task.id, id);
-				assert!(task.request.is_some());
-				assert!(task.received.is_none());
+				assert_eq!(task.request.is_some(), index == 1);
+				assert_eq!(task.received.is_some(), index == 0);
 			}
 			let restored = &download.tasks[2];
 			assert_eq!(restored.id.identifier, wrong_id);
@@ -2088,8 +2127,8 @@ mod task_tests {
 			assert_eq!(restored.received.as_ref().unwrap().peer, peer.info.addr);
 		}
 
-		// Correct the injected layout mismatch. A successful application removes
-		// only this task; the earlier outstanding streams stay in their order.
+		// Correct the later ID and retry both segments. This would fail if the
+		// first segment's cursor advanced before the rejected batch completed.
 		let segment = session
 			.desegmenter
 			.validate_segment(StateSegment::Kernel(
@@ -2112,8 +2151,152 @@ mod task_tests {
 				.iter()
 				.map(|task| task.id.clone())
 				.collect::<Vec<_>>(),
-			ids[..2]
+			ids[1..2]
 		);
+	}
+
+	#[test]
+	fn batch_rejects_duplicate_bitmap_before_advancing_its_cursor() {
+		let f = Fixture::new();
+		let session = f.sync.live_desegmenter().unwrap();
+		let before = session
+			.desegmenter
+			.next_segments(&SegmentType::Bitmap, 0, 10)
+			.unwrap();
+		assert_eq!(before.len(), 1);
+		let bitmap = f
+			.source
+			.segmenter()
+			.unwrap()
+			.bitmap_segment(before[0].identifier)
+			.unwrap();
+		let validated = session
+			.desegmenter
+			.validate_segment(StateSegment::Bitmap(bitmap))
+			.unwrap();
+		assert!(matches!(
+			session
+				.desegmenter
+				.apply_segments(&[&validated, &validated]),
+			Err((Some(1), mwc_chain::Error::InvalidSegmentId))
+		));
+		assert_eq!(
+			session
+				.desegmenter
+				.next_segments(&SegmentType::Bitmap, 0, 10)
+				.unwrap(),
+			before
+		);
+		session.desegmenter.apply_segments(&[&validated]).unwrap();
+		assert!(session
+			.desegmenter
+			.next_segments(&SegmentType::Bitmap, 0, 10)
+			.unwrap()
+			.is_empty());
+		assert_eq!(
+			session
+				.desegmenter
+				.next_segments(&SegmentType::Output, 0, 10)
+				.unwrap()
+				.len(),
+			1
+		);
+	}
+
+	#[test]
+	fn batch_marker_failure_restores_tasks_and_requires_recovery() {
+		let f = Fixture::new();
+		let (peer, _messages) = f.peer(1);
+		let session = f.sync.live_desegmenter().unwrap();
+		f.sync
+			.send_requests(&[peer.clone()], &session, &f.scores)
+			.unwrap();
+		let segmenter = f.source.segmenter().unwrap();
+		let bitmap_id = f.sync.download.lock().tasks[0].id.identifier;
+		f.sync
+			.receive_bitmap_segment(
+				&peer.info.addr,
+				&session.archive_hash,
+				segmenter.bitmap_segment(bitmap_id).unwrap(),
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
+		f.poll();
+		let ids: Vec<_> = f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| task.id.clone())
+			.collect();
+		for id in &ids {
+			let segment = match id.segment_type {
+				SegmentType::Output => {
+					StateSegment::Output(segmenter.output_segment(id.identifier).unwrap())
+				}
+				SegmentType::RangeProof => {
+					StateSegment::RangeProof(segmenter.rangeproof_segment(id.identifier).unwrap())
+				}
+				SegmentType::Kernel => {
+					StateSegment::Kernel(segmenter.kernel_segment(id.identifier).unwrap())
+				}
+				_ => unreachable!(),
+			};
+			f.sync
+				.receive_segment(
+					&peer.info.addr,
+					&session.archive_hash,
+					segment,
+					&f.peers,
+					&f.scores,
+				)
+				.unwrap();
+		}
+		// An existing recovery marker must prevent committing another batch.
+		f.sync
+			.chain
+			.get_store_for_tests()
+			.set_pending_chain_operation(&mwc_chain::store::PendingChainOperation::PibdReset)
+			.unwrap();
+		// One more supplier error would trigger a ban. This local commit failure
+		// must not count as invalid data from the supplier.
+		f.scores
+			.report_error_response(&peer.info.addr, "Earlier invalid response".into());
+		let result = f.sync.apply_ready_tasks(&session.desegmenter, &f.scores);
+		assert!(
+			matches!(&result, Err(mwc_chain::Error::StoreErr(..))),
+			"unexpected apply result: {:?}",
+			result
+		);
+		let download = f.sync.download.lock();
+		assert_eq!(
+			download
+				.tasks
+				.iter()
+				.map(|task| task.id.clone())
+				.collect::<Vec<_>>(),
+			ids
+		);
+		assert!(download.tasks.iter().all(|task| task.received.is_some()));
+		drop(download);
+		assert!(!session.desegmenter.is_current());
+		assert!(f.sync.reset_desegmenter.load(Ordering::Relaxed));
+		assert!(matches!(
+			f.sync
+				.chain
+				.get_store_for_tests()
+				.pending_chain_operation()
+				.unwrap(),
+			Some(mwc_chain::store::PendingChainOperation::PibdReset)
+		));
+		assert!(matches!(
+			f.sync.apply_ready_tasks(&session.desegmenter, &f.scores),
+			Err(mwc_chain::Error::ChainRestartRequired)
+		));
+		f.scores.apply_peers_status(&f.peers);
+		assert!(f.scores.get_banned_peers().is_empty());
 	}
 
 	#[test]

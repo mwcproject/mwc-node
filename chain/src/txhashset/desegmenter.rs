@@ -964,82 +964,139 @@ impl Desegmenter {
 		})
 	}
 
-	/// Apply an authenticated segment in layout order. A cursor advances only
-	/// after storage mutation and recovery-marker cleanup have succeeded.
+	/// Apply one authenticated segment, using the same commit path as a batch.
 	pub fn apply_segment(&self, validated: &ValidatedStateSegment) -> Result<(), Error> {
-		self.ensure_robust()?;
-		if validated.archive_hash != self.archive_header.hash(self.store.get_context_id())?
-			|| validated.bitmap_root != self.bitmap_root_hash
-			|| validated.generation != self.created_at_state_generation
-		{
-			return Err(Error::InvalidSegment(
-				"Segment belongs to another snapshot".into(),
-			));
-		}
-		let id = validated.segment.identifier();
-		let mut segments = self.segments.write();
-		let index = segments
-			.iter()
-			.position(|plan| plan.kind == id.segment_type)
-			.ok_or(Error::BitmapNotReady)?;
-		let plan = &segments[index];
-		if plan.required.get(plan.applied) != Some(&id.identifier) {
-			return Err(Error::InvalidSegmentId);
-		}
+		self.apply_segments(&[validated])
+			.map_err(|(_, error)| error)
+	}
 
-		if let StateSegment::Bitmap(segment) = &validated.segment {
+	/// Apply a bounded batch in per-stream layout order, with one storage flush.
+	/// Bitmap batches must be separate from the other streams. Cursors advance
+	/// only after the whole batch and recovery-marker cleanup succeed.
+	/// Errors identify the failing segment when known; storage/commit failures
+	/// have no segment index and must not be attributed to an arbitrary supplier.
+	pub fn apply_segments(
+		&self,
+		validated: &[&ValidatedStateSegment],
+	) -> Result<(), (Option<usize>, Error)> {
+		let mut failed_segment = None;
+		let result = (|| {
 			self.ensure_robust()?;
-			let mut bitmap = self.outputs_bitmap_accumulator.write();
-			let (_, _, _, _, chunks, _) = segment.clone().parts();
-			for chunk in chunks {
-				if let Err(error) = bitmap.append_chunk(chunk) {
-					self.require_init_recovery(format_args!(
-						"Failed to apply bitmap segment: {}",
-						error
+			let Some(first) = validated.first() else {
+				return Ok(());
+			};
+			let bitmap_batch = matches!(&first.segment, StateSegment::Bitmap(_));
+			let archive_hash = self.archive_header.hash(self.store.get_context_id())?;
+			let mut segments = self.segments.write();
+			let mut counts = vec![0; segments.len()];
+			// Check the entire batch before mutating storage, including later IDs.
+			for (offset, validated) in validated.iter().enumerate() {
+				failed_segment = Some(offset);
+				if validated.archive_hash != archive_hash
+					|| validated.bitmap_root != self.bitmap_root_hash
+					|| validated.generation != self.created_at_state_generation
+				{
+					return Err(Error::InvalidSegment(
+						"Segment belongs to another snapshot".into(),
 					));
-					return Err(error);
 				}
+				if matches!(&validated.segment, StateSegment::Bitmap(_)) != bitmap_batch {
+					return Err(Error::InvalidSegment(
+						"Bitmap and data segments require separate batches".into(),
+					));
+				}
+				let id = validated.segment.identifier();
+				let index = segments
+					.iter()
+					.position(|plan| plan.kind == id.segment_type)
+					.ok_or(Error::BitmapNotReady)?;
+				let plan = &segments[index];
+				let next = plan
+					.applied
+					.checked_add(counts[index])
+					.ok_or(Error::InvalidSegmentId)?;
+				if plan.required.get(next) != Some(&id.identifier) {
+					return Err(Error::InvalidSegmentId);
+				}
+				counts[index] += 1;
 			}
-			drop(bitmap);
-		} else {
-			let bitmap = self.outputs_bitmap.read_recursive();
-			let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
-			let mut header_pmmr = self.header_pmmr.write();
-			let mut txhashset = self.txhashset.write();
-			let marker = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
-			let result = (|| {
-				let mut batch = self.store.batch_write()?;
-				txhashset::extending(&mut header_pmmr, &mut txhashset, &mut batch, |ext, _| {
-					match &validated.segment {
-						StateSegment::Output(segment) => ext
-							.extension
-							.apply_validated_output_segments(vec![segment.clone()], bitmap)?,
-						StateSegment::RangeProof(segment) => ext
-							.extension
-							.apply_validated_rangeproof_segments(vec![segment.clone()], bitmap)?,
-						StateSegment::Kernel(segment) => ext
-							.extension
-							.apply_validated_kernel_segments(vec![segment.clone()])?,
-						StateSegment::Bitmap(_) => return Err(Error::InvalidSegmentId),
+			failed_segment = None;
+
+			if bitmap_batch {
+				self.ensure_robust()?;
+				let mut bitmap = self.outputs_bitmap_accumulator.write();
+				for (offset, validated) in validated.iter().enumerate() {
+					failed_segment = Some(offset);
+					let StateSegment::Bitmap(segment) = &validated.segment else {
+						return Err(Error::InvalidSegmentId);
+					};
+					let (_, _, _, _, chunks, _) = segment.clone().parts();
+					for chunk in chunks {
+						if let Err(error) = bitmap.append_chunk(chunk) {
+							self.require_init_recovery(format_args!(
+								"Failed to apply bitmap batch: {}",
+								error
+							));
+							return Err(error);
+						}
 					}
-					Ok(())
-				})
-			})();
-			self.finish_pending_operation("Failed to apply snapshot segment", result, marker)?;
-		}
-		segments[index].applied += 1;
-		if id.segment_type == SegmentType::Bitmap
-			&& segments[index].applied == segments[index].required.len()
-		{
-			if let Err(error) = self.finalize_bitmap(&mut segments) {
-				self.require_init_recovery(format_args!(
-					"Failed to finalize snapshot bitmap: {}",
-					error
-				));
-				return Err(error);
+				}
+				drop(bitmap);
+				failed_segment = None;
+				if segments.iter().zip(&counts).any(|(plan, count)| {
+					plan.kind == SegmentType::Bitmap && plan.applied + count == plan.required.len()
+				}) {
+					if let Err(error) = self.finalize_bitmap(&mut segments) {
+						self.require_init_recovery(format_args!(
+							"Failed to finalize snapshot bitmap: {}",
+							error
+						));
+						return Err(error);
+					}
+				}
+			} else {
+				let bitmap = self.outputs_bitmap.read_recursive();
+				let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
+				let mut header_pmmr = self.header_pmmr.write();
+				let mut txhashset = self.txhashset.write();
+				let marker = self.set_pending_operation(&PendingChainOperation::PibdReset)?;
+				let result = (|| {
+					let mut batch = self.store.batch_write()?;
+					txhashset::extending(&mut header_pmmr, &mut txhashset, &mut batch, |ext, _| {
+						for (offset, validated) in validated.iter().enumerate() {
+							failed_segment = Some(offset);
+							match &validated.segment {
+								StateSegment::Output(segment) => {
+									ext.extension.apply_validated_output_segments(
+										vec![segment.clone()],
+										bitmap,
+									)?
+								}
+								StateSegment::RangeProof(segment) => {
+									ext.extension.apply_validated_rangeproof_segments(
+										vec![segment.clone()],
+										bitmap,
+									)?
+								}
+								StateSegment::Kernel(segment) => ext
+									.extension
+									.apply_validated_kernel_segments(vec![segment.clone()])?,
+								StateSegment::Bitmap(_) => return Err(Error::InvalidSegmentId),
+							}
+							failed_segment = None;
+						}
+						Ok(())
+					})
+				})();
+				self.finish_pending_operation("Failed to apply snapshot batch", result, marker)?;
 			}
-		}
-		self.ensure_robust()
+			self.ensure_robust()?;
+			for (plan, count) in segments.iter_mut().zip(counts) {
+				plan.applied += count;
+			}
+			Ok(())
+		})();
+		result.map_err(|error| (failed_segment, error))
 	}
 
 	fn sibling_expanded_bitmap(bitmap: &Bitmap, leaves_num: u64) -> Result<Bitmap, Error> {
