@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-/// Rolling latency history for the last fifteen completed responses.
+/// Rolling latency history for the last seven completed responses.
 pub struct LatencyTracker {
 	latency_history: VecDeque<i64>,
 	latency_sum: i64,
@@ -37,10 +37,10 @@ impl LatencyTracker {
 		}
 		self.latency_history.push_back(latency_ms);
 		// Safe: request latency is measured from an in-process timestamp and the
-		// history is capped at 15 entries, so the accumulated milliseconds stay
+		// history is capped at 7 entries, so the accumulated milliseconds stay
 		// far below i64::MAX.
 		self.latency_sum += latency_ms;
-		while self.latency_history.len() > 15 {
+		while self.latency_history.len() > 7 {
 			let Some(lt) = self.latency_history.pop_front() else {
 				break;
 			};
@@ -100,10 +100,10 @@ mod tests {
 		tracker.add_latency(0);
 		assert_eq!(tracker.get_average_latency(), None);
 		tracker.add_latency(60_000);
-		for _ in 0..15 {
+		for _ in 0..7 {
 			tracker.add_latency(4_000);
 		}
-		assert_eq!(tracker.latency_history.len(), 15);
+		assert_eq!(tracker.latency_history.len(), 7);
 		assert_eq!(tracker.get_average_latency(), Some(Duration::from_secs(4)));
 		assert_eq!(
 			tracker.get_time_out(Duration::from_secs(30)),

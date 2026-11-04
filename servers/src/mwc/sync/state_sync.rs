@@ -1263,58 +1263,99 @@ impl StateSync {
 		{
 			*counts.entry(request.peer.clone()).or_default() += 1;
 		}
-		let mut rng = rand::rng();
-		for task in &mut download.tasks {
-			if task.request.is_some() || task.received.is_some() {
-				continue;
-			}
-			let Some(peer) = peers
-				.iter()
-				.filter(|peer| {
-					peer.is_connected()
-						&& counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
-				})
-				.choose(&mut rng)
-			else {
-				continue;
-			};
-			let sent_at = Instant::now();
-			let timeout = peer.request_timeout();
-			let expires_at = sent_at.checked_add(timeout).ok_or_else(|| {
-				mwc_chain::Error::Other("Snapshot request deadline overflow".into())
-			})?;
-			task.request = Some(StateTaskRequest {
-				peer: peer.info.addr.clone(),
-				supplier: Arc::downgrade(peer),
-				sent_at,
-				expires_at,
-			});
-			// Registration and sending share the task lock, so even an immediate
-			// response cannot arrive before its request is visible.
-			let result = match task.id.segment_type {
-				SegmentType::Bitmap => {
-					peer.send_bitmap_segment_request(session.archive_hash, task.id.identifier)
+		// Use the same zero-based latency offset as checkpoint headers. Unknown
+		// peers can start at the head until a completed response gives a sample.
+		let latencies: Vec<_> = peers
+			.iter()
+			.filter(|peer| peer.is_connected())
+			.map(|peer| {
+				(
+					peer,
+					peer.response_latency()
+						.map(|latency| latency.as_millis().max(1)),
+				)
+			})
+			.collect();
+		let best_latency = latencies
+			.iter()
+			.filter_map(|(_, latency)| *latency)
+			.min()
+			.unwrap_or(1);
+		let candidates: Vec<_> = latencies
+			.into_iter()
+			.map(|(peer, latency)| {
+				let first_index = usize::try_from(
+					(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
+				)
+				.unwrap_or(usize::MAX);
+				(peer, first_index)
+			})
+			.collect();
+		let max_first_index = candidates
+			.iter()
+			.filter(|(peer, _)| counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer)
+			.map(|(_, first_index)| *first_index)
+			.max();
+		// No available peer means there is no reason to scan the task queue.
+		if let Some(max_first_index) = max_first_index {
+			let mut rng = rand::rng();
+			for (index, task) in download.tasks.iter_mut().enumerate() {
+				if task.request.is_some() || task.received.is_some() {
+					continue;
 				}
-				SegmentType::Output => {
-					peer.send_output_segment_request(session.archive_hash, task.id.identifier)
-				}
-				SegmentType::RangeProof => {
-					peer.send_rangeproof_segment_request(session.archive_hash, task.id.identifier)
-				}
-				SegmentType::Kernel => {
-					peer.send_kernel_segment_request(session.archive_hash, task.id.identifier)
-				}
-			};
-			match result {
-				Ok(()) => *counts.entry(peer.info.addr.clone()).or_default() += 1,
-				Err(error) => {
-					task.request = None;
-					let message = format!(
-						"Failed to request snapshot segment {:?} from {}: {}",
-						task.id, peer.info.addr, error
-					);
-					info!("{}", message);
-					scores.report_no_response(&peer.info.addr, message);
+				let Some(peer) = candidates
+					.iter()
+					.filter(|(peer, first_index)| {
+						index >= *first_index
+							&& peer.is_connected()
+							&& counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
+					})
+					.map(|(peer, _)| *peer)
+					.choose(&mut rng)
+				else {
+					// Later tasks can admit slower peers only before this index.
+					if index >= max_first_index {
+						break;
+					}
+					continue;
+				};
+				let sent_at = Instant::now();
+				let timeout = peer.request_timeout();
+				let expires_at = sent_at.checked_add(timeout).ok_or_else(|| {
+					mwc_chain::Error::Other("Snapshot request deadline overflow".into())
+				})?;
+				task.request = Some(StateTaskRequest {
+					peer: peer.info.addr.clone(),
+					supplier: Arc::downgrade(peer),
+					sent_at,
+					expires_at,
+				});
+				// Registration and sending share the task lock, so even an immediate
+				// response cannot arrive before its request is visible.
+				let result = match task.id.segment_type {
+					SegmentType::Bitmap => {
+						peer.send_bitmap_segment_request(session.archive_hash, task.id.identifier)
+					}
+					SegmentType::Output => {
+						peer.send_output_segment_request(session.archive_hash, task.id.identifier)
+					}
+					SegmentType::RangeProof => peer
+						.send_rangeproof_segment_request(session.archive_hash, task.id.identifier),
+					SegmentType::Kernel => {
+						peer.send_kernel_segment_request(session.archive_hash, task.id.identifier)
+					}
+				};
+				match result {
+					Ok(()) => *counts.entry(peer.info.addr.clone()).or_default() += 1,
+					Err(error) => {
+						task.request = None;
+						let message = format!(
+							"Failed to request snapshot segment {:?} from {}: {}",
+							task.id, peer.info.addr, error
+						);
+						info!("{}", message);
+						scores.report_no_response(&peer.info.addr, message);
+					}
 				}
 			}
 		}
@@ -1798,11 +1839,100 @@ mod task_tests {
 	}
 
 	#[test]
+	fn scheduler_reserves_front_tasks_for_fast_peers_and_scans_to_slower_peers() {
+		let f = Fixture::new();
+		let (fast, fast_messages) = f.peer(1);
+		let (slow, slow_messages) = f.peer(2);
+		let (disconnected, disconnected_messages) = f.peer(3);
+		let per_peer = f.sync.pibd_params.get_segments_request_per_peer();
+		let slow_index = per_peer + 2;
+		fast.record_response_latency(Duration::from_millis(100));
+		// Include a fractional ratio to exercise rounding down.
+		slow.record_response_latency(Duration::from_millis((slow_index as u64 + 1) * 100 + 50));
+		disconnected.record_response_latency(Duration::from_millis(1));
+		disconnected.stop();
+		let session = f.sync.live_desegmenter().unwrap();
+		let task_limit = f.sync.pibd_params.get_segments_requests_limit(None);
+		assert!(task_limit > slow_index + per_peer);
+		// Preload an interleaved scheduling window; these tests only send requests.
+		f.sync.download.lock().tasks = (0..task_limit)
+			.map(|index| StateTask {
+				id: SegmentTypeIdentifier::new(
+					SEGMENT_TYPES[index % SEGMENT_TYPES.len()].clone(),
+					SegmentIdentifier::new(0, (index / SEGMENT_TYPES.len()) as u64),
+				),
+				request: None,
+				received: None,
+			})
+			.collect();
+		let response = f.sync.send_requests(&[], &session, &f.scores).unwrap();
+		assert_eq!(response.response, SyncRequestResponses::WaitingForPeers);
+		assert!(f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.all(|task| task.request.is_none()));
+		let suppliers = [fast.clone(), slow.clone(), disconnected];
+		f.sync
+			.send_requests(&suppliers, &session, &f.scores)
+			.unwrap();
+		assert_eq!(fast_messages.try_iter().count(), per_peer);
+		assert_eq!(slow_messages.try_iter().count(), per_peer);
+		assert_eq!(disconnected_messages.try_iter().count(), 0);
+		let before: Vec<_> = {
+			let download = f.sync.download.lock();
+			for (index, task) in download.tasks.iter().enumerate() {
+				if index < per_peer {
+					assert_eq!(task.request.as_ref().unwrap().peer, fast.info.addr);
+				} else if (slow_index..slow_index + per_peer).contains(&index) {
+					assert_eq!(task.request.as_ref().unwrap().peer, slow.info.addr);
+				} else {
+					assert!(task.request.is_none());
+				}
+			}
+			download
+				.tasks
+				.iter()
+				.map(|task| {
+					task.request
+						.as_ref()
+						.map(|request| (request.peer.clone(), request.expires_at))
+				})
+				.collect()
+		};
+		// Full peer allowances skip further assignments and preserve deadlines.
+		f.sync
+			.send_requests(&suppliers, &session, &f.scores)
+			.unwrap();
+		assert_eq!(
+			fast_messages.try_iter().count() + slow_messages.try_iter().count(),
+			0
+		);
+		let after: Vec<_> = f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| {
+				task.request
+					.as_ref()
+					.map(|request| (request.peer.clone(), request.expires_at))
+			})
+			.collect();
+		assert_eq!(before, after);
+	}
+
+	#[test]
 	fn segment_requests_use_the_selected_peers_latency() {
 		let f = Fixture::new();
 		let (fast, fast_messages) = f.peer(1);
 		let (slow, slow_messages) = f.peer(2);
 		let (unknown, unknown_messages) = f.peer(3);
+		let (zero, zero_messages) = f.peer(4);
+		zero.record_response_latency(Duration::ZERO);
 		fast.record_response_latency(Duration::from_millis(200));
 		slow.record_response_latency(Duration::from_secs(12));
 		let session = f.sync.live_desegmenter().unwrap();
@@ -1810,6 +1940,7 @@ mod task_tests {
 			(fast, fast_messages, 8400),
 			(slow, slow_messages, 30000),
 			(unknown, unknown_messages, 30000),
+			(zero, zero_messages, 30000),
 		] {
 			f.sync
 				.send_requests(&[peer.clone()], &session, &f.scores)
