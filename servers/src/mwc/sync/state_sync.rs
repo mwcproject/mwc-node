@@ -77,7 +77,11 @@ pub struct StateSync {
 	// Session-long peer commitments. Retain these across disconnect/reconnect so
 	// the peer remains tied to its advertised root and can be banned on failure.
 	responded_root_hash: RwLock<HashMap<PeerAddr, (Hash, Instant)>>, // Lock 2
-	// All unanswered requests and buffered responses belong to this bounded job.
+	// Serialize application and request planning. Lock before download, with the
+	// session pinned; storage writes release download so proof checks can proceed.
+	apply_lock: Mutex<()>,
+	// Unanswered requests and buffered responses. The writer temporarily owns
+	// one ready task while apply_lock prevents refilling its slot.
 	download: Mutex<StateDownload>,
 	// Import completion is independent of the following ordinary block sync.
 	is_complete: AtomicBool,
@@ -188,38 +192,6 @@ impl StateDownload {
 		}
 		Ok(())
 	}
-
-	fn apply_ready_tasks(
-		&mut self,
-		desegmenter: &Desegmenter,
-		scores: &SyncPeers,
-	) -> Result<(), mwc_chain::Error> {
-		for kind in &SEGMENT_TYPES {
-			while let Some(index) = self
-				.tasks
-				.iter()
-				.position(|task| &task.id.segment_type == kind)
-			{
-				let task = &self.tasks[index];
-				let Some(response) = &task.received else {
-					break;
-				};
-				if let Err(error) = desegmenter.apply_segment(&response.segment) {
-					// Attribute deferred failures to this response's supplier, not
-					// the peer whose response happened to make the prefix ready.
-					let message = format!(
-						"Failed to apply snapshot segment {:?} from {}: {}",
-						task.id, response.peer, error
-					);
-					error!("{}", message);
-					scores.report_error_response(&response.peer, message);
-					return Err(error);
-				}
-				self.tasks.remove(index);
-			}
-		}
-		Ok(())
-	}
 }
 
 enum DesegmenterValidation<'a> {
@@ -275,6 +247,7 @@ impl StateSync {
 			target_archive_hash: RwLock::new(Hash::default()),
 			requested_root_hash: RwLock::new(HashMap::new()),
 			responded_root_hash: RwLock::new(HashMap::new()),
+			apply_lock: Mutex::new(()),
 			download: Mutex::new(StateDownload::new()),
 			is_complete: AtomicBool::new(false),
 		}
@@ -728,9 +701,7 @@ impl StateSync {
 			.live_desegmenter()
 			.ok_or(mwc_chain::Error::Other("Desegmenter is not created".into()))?;
 		let desegmenter = session.desegmenter.as_ref();
-		self.download
-			.lock()
-			.apply_ready_tasks(desegmenter, sync_peers)?;
+		self.apply_ready_tasks(desegmenter, sync_peers)?;
 
 		if desegmenter.is_complete() {
 			// Be very conservative once the PIBD state is complete: any failure
@@ -770,6 +741,7 @@ impl StateSync {
 						// Retain root endorsements for SyncManager while ordinary
 						// block sync checks the imported state. These endorsements
 						// belong only to this process/session.
+						let _apply = self.apply_lock.lock();
 						self.is_complete.store(true, Ordering::Release);
 						// BodySync now owns block requests and their normal retries.
 						*self.download.lock() = StateDownload::new();
@@ -916,6 +888,7 @@ impl StateSync {
 	}
 
 	pub(super) fn complete_pibd_sync(&self) {
+		let _apply = self.apply_lock.lock();
 		// Publish completion before clearing peer commitments. Segment responses
 		// already in flight can then be recognized as terminal-session traffic and
 		// ignored instead of being counted as invalid peer responses.
@@ -1055,6 +1028,58 @@ impl StateSync {
 		})
 	}
 
+	// The caller must pin the session until application and queue updates finish.
+	fn apply_ready_tasks(
+		&self,
+		desegmenter: &Desegmenter,
+		scores: &SyncPeers,
+	) -> Result<(), mwc_chain::Error> {
+		let _apply = self.apply_lock.lock();
+		// Another writer may have invalidated the session while we waited. Do
+		// not attribute that local failure to an already buffered response.
+		if !desegmenter.is_current() {
+			return Err(mwc_chain::Error::ChainRestartRequired);
+		}
+		for kind in &SEGMENT_TYPES {
+			loop {
+				let (index, task) = {
+					let mut download = self.download.lock();
+					let Some(index) = download
+						.tasks
+						.iter()
+						.position(|task| &task.id.segment_type == kind)
+					else {
+						break;
+					};
+					if download.tasks[index].received.is_none() {
+						break;
+					}
+					(
+						index,
+						download.tasks.remove(index).expect("ready task exists"),
+					)
+				};
+				// Own the task during storage I/O. Planning waits on apply_lock, so
+				// it cannot refill this slot until the task is committed or restored.
+				let response = task.received.as_ref().expect("ready task has a response");
+				if let Err(error) = desegmenter.apply_segment(&response.segment) {
+					// Attribute deferred failures to the response's actual supplier.
+					let message = format!(
+						"Failed to apply snapshot segment {:?} from {}: {}",
+						task.id, response.peer, error
+					);
+					error!("{}", message);
+					scores.report_error_response(&response.peer, message);
+					// Application/planning and completion share apply_lock; reset
+					// needs the session write guard. The original index is still valid.
+					self.download.lock().tasks.insert(index, task);
+					return Err(error);
+				}
+			}
+		}
+		Ok(())
+	}
+
 	fn receive_segment(
 		&self,
 		peer: &PeerAddr,
@@ -1102,7 +1127,7 @@ impl StateSync {
 		if task.received.is_some() {
 			return Ok(());
 		}
-		match result {
+		let accepted = match result {
 			Ok(segment) => {
 				let latency = task
 					.request
@@ -1125,15 +1150,7 @@ impl StateSync {
 					}
 				}
 				scores.report_ok_response(peer);
-				// Application retains the data until success. The existing broad
-				// PIBD error policy scores the actual supplier on an apply failure.
-				if let Err(error) = download.apply_ready_tasks(desegmenter, scores) {
-					if !desegmenter.is_current() {
-						self.reset_desegmenter.store(true, Ordering::Relaxed);
-					}
-					info!("Snapshot application will restart or retry: {}", error);
-					return Ok(());
-				}
+				true
 			}
 			Err(error) => {
 				if task
@@ -1146,9 +1163,19 @@ impl StateSync {
 				let message = format!("Invalid snapshot segment {:?} from {}: {}", id, peer, error);
 				info!("{}", message);
 				scores.report_error_response(peer, message);
+				false
+			}
+		};
+		drop(download);
+		if accepted {
+			if let Err(error) = self.apply_ready_tasks(desegmenter, scores) {
+				if !desegmenter.is_current() {
+					self.reset_desegmenter.store(true, Ordering::Relaxed);
+				}
+				info!("Snapshot application will restart or retry: {}", error);
+				return Ok(());
 			}
 		}
-		drop(download);
 		// Refill promptly without scheduling duplicate requests. The outer guard
 		// still pins this session while the follow-up requests are registered.
 		if let Some(session) = self.live_desegmenter() {
@@ -1247,6 +1274,9 @@ impl StateSync {
 		session: &LiveDesegmenter<'_>,
 		scores: &SyncPeers,
 	) -> Result<SyncResponse, mwc_chain::Error> {
+		// Planning uses committed cursors plus queued tasks. It must not observe
+		// the queue while a removed task is still being applied.
+		let _apply = self.apply_lock.lock();
 		let mut download = self.download.lock();
 		if let Err(error) = download.fill_tasks(&session.desegmenter, &self.pibd_params) {
 			// Keep the existing session recovery policy for planning failures.
@@ -1263,58 +1293,99 @@ impl StateSync {
 		{
 			*counts.entry(request.peer.clone()).or_default() += 1;
 		}
-		let mut rng = rand::rng();
-		for task in &mut download.tasks {
-			if task.request.is_some() || task.received.is_some() {
-				continue;
-			}
-			let Some(peer) = peers
-				.iter()
-				.filter(|peer| {
-					peer.is_connected()
-						&& counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
-				})
-				.choose(&mut rng)
-			else {
-				continue;
-			};
-			let sent_at = Instant::now();
-			let timeout = peer.request_timeout();
-			let expires_at = sent_at.checked_add(timeout).ok_or_else(|| {
-				mwc_chain::Error::Other("Snapshot request deadline overflow".into())
-			})?;
-			task.request = Some(StateTaskRequest {
-				peer: peer.info.addr.clone(),
-				supplier: Arc::downgrade(peer),
-				sent_at,
-				expires_at,
-			});
-			// Registration and sending share the task lock, so even an immediate
-			// response cannot arrive before its request is visible.
-			let result = match task.id.segment_type {
-				SegmentType::Bitmap => {
-					peer.send_bitmap_segment_request(session.archive_hash, task.id.identifier)
+		// Use the same zero-based latency offset as checkpoint headers. Unknown
+		// peers can start at the head until a completed response gives a sample.
+		let latencies: Vec<_> = peers
+			.iter()
+			.filter(|peer| peer.is_connected())
+			.map(|peer| {
+				(
+					peer,
+					peer.response_latency()
+						.map(|latency| latency.as_millis().max(1)),
+				)
+			})
+			.collect();
+		let best_latency = latencies
+			.iter()
+			.filter_map(|(_, latency)| *latency)
+			.min()
+			.unwrap_or(1);
+		let candidates: Vec<_> = latencies
+			.into_iter()
+			.map(|(peer, latency)| {
+				let first_index = usize::try_from(
+					(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
+				)
+				.unwrap_or(usize::MAX);
+				(peer, first_index)
+			})
+			.collect();
+		let max_first_index = candidates
+			.iter()
+			.filter(|(peer, _)| counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer)
+			.map(|(_, first_index)| *first_index)
+			.max();
+		// No available peer means there is no reason to scan the task queue.
+		if let Some(max_first_index) = max_first_index {
+			let mut rng = rand::rng();
+			for (index, task) in download.tasks.iter_mut().enumerate() {
+				if task.request.is_some() || task.received.is_some() {
+					continue;
 				}
-				SegmentType::Output => {
-					peer.send_output_segment_request(session.archive_hash, task.id.identifier)
-				}
-				SegmentType::RangeProof => {
-					peer.send_rangeproof_segment_request(session.archive_hash, task.id.identifier)
-				}
-				SegmentType::Kernel => {
-					peer.send_kernel_segment_request(session.archive_hash, task.id.identifier)
-				}
-			};
-			match result {
-				Ok(()) => *counts.entry(peer.info.addr.clone()).or_default() += 1,
-				Err(error) => {
-					task.request = None;
-					let message = format!(
-						"Failed to request snapshot segment {:?} from {}: {}",
-						task.id, peer.info.addr, error
-					);
-					info!("{}", message);
-					scores.report_no_response(&peer.info.addr, message);
+				let Some(peer) = candidates
+					.iter()
+					.filter(|(peer, first_index)| {
+						index >= *first_index
+							&& peer.is_connected()
+							&& counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
+					})
+					.map(|(peer, _)| *peer)
+					.choose(&mut rng)
+				else {
+					// Later tasks can admit slower peers only before this index.
+					if index >= max_first_index {
+						break;
+					}
+					continue;
+				};
+				let sent_at = Instant::now();
+				let timeout = peer.request_timeout();
+				let expires_at = sent_at.checked_add(timeout).ok_or_else(|| {
+					mwc_chain::Error::Other("Snapshot request deadline overflow".into())
+				})?;
+				task.request = Some(StateTaskRequest {
+					peer: peer.info.addr.clone(),
+					supplier: Arc::downgrade(peer),
+					sent_at,
+					expires_at,
+				});
+				// Registration and sending share the task lock, so even an immediate
+				// response cannot arrive before its request is visible.
+				let result = match task.id.segment_type {
+					SegmentType::Bitmap => {
+						peer.send_bitmap_segment_request(session.archive_hash, task.id.identifier)
+					}
+					SegmentType::Output => {
+						peer.send_output_segment_request(session.archive_hash, task.id.identifier)
+					}
+					SegmentType::RangeProof => peer
+						.send_rangeproof_segment_request(session.archive_hash, task.id.identifier),
+					SegmentType::Kernel => {
+						peer.send_kernel_segment_request(session.archive_hash, task.id.identifier)
+					}
+				};
+				match result {
+					Ok(()) => *counts.entry(peer.info.addr.clone()).or_default() += 1,
+					Err(error) => {
+						task.request = None;
+						let message = format!(
+							"Failed to request snapshot segment {:?} from {}: {}",
+							task.id, peer.info.addr, error
+						);
+						info!("{}", message);
+						scores.report_no_response(&peer.info.addr, message);
+					}
 				}
 			}
 		}
@@ -1798,11 +1869,388 @@ mod task_tests {
 	}
 
 	#[test]
+	fn responses_validate_while_storage_is_blocked_and_reset_waits_for_application() {
+		let f = Fixture::new();
+		let (first, first_messages) = f.peer(1);
+		let (second, second_messages) = f.peer(2);
+		let (third, third_messages) = f.peer(3);
+		let session = f.sync.live_desegmenter().unwrap();
+		let archive_hash = session.archive_hash;
+		let desegmenter = Arc::clone(&session.desegmenter);
+		f.sync
+			.send_requests(&[first.clone()], &session, &f.scores)
+			.unwrap();
+		let bitmap_id = f.sync.download.lock().tasks[0].id.identifier;
+		drop(session);
+		let segmenter = f.source.segmenter().unwrap();
+		f.sync
+			.receive_bitmap_segment(
+				&first.info.addr,
+				&archive_hash,
+				segmenter.bitmap_segment(bitmap_id).unwrap(),
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
+		assert_eq!(
+			first_messages.try_iter().count()
+				+ second_messages.try_iter().count()
+				+ third_messages.try_iter().count(),
+			4
+		);
+		let ids: Vec<_> = f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| task.id.identifier)
+			.collect();
+		let output = StateSegment::Output(segmenter.output_segment(ids[0]).unwrap());
+		let proof = StateSegment::RangeProof(segmenter.rangeproof_segment(ids[1]).unwrap());
+		let kernel = StateSegment::Kernel(segmenter.kernel_segment(ids[2]).unwrap());
+		let receive = |peer: &PeerAddr, segment: StateSegment| {
+			global::set_local_chain_type(global::ChainTypes::Floonet);
+			global::set_local_nrd_enabled(false);
+			f.sync
+				.receive_segment(peer, &archive_hash, segment, &f.peers, &f.scores)
+		};
+		let wait_for = |condition: &dyn Fn() -> bool| {
+			let deadline = Instant::now() + Duration::from_secs(5);
+			while !condition() {
+				assert!(Instant::now() < deadline, "Segment processing stalled");
+				std::thread::sleep(Duration::from_millis(1));
+			}
+		};
+
+		std::thread::scope(|scope| {
+			// Hold storage read locks so application pauses before it can write.
+			// The closure releases them even if a concurrency assertion fails.
+			let (output_receive, proof_receive, kernel_receive, planner, reset) = f
+				.sync
+				.chain
+				.with_output_read_snapshot(|_| {
+					let output_receive = scope.spawn(|| receive(&first.info.addr, output.clone()));
+					wait_for(&|| {
+						f.sync.download.try_lock().is_some_and(|download| {
+							download.tasks.len() == 2
+								&& download
+									.tasks
+									.iter()
+									.all(|task| task.id.segment_type != SegmentType::Output)
+						})
+					});
+
+					// A planner waiting for the writer must not hold the queue lock.
+					let (planner_started, planner_ready) = std::sync::mpsc::channel();
+					let sync = &f.sync;
+					let scores = &f.scores;
+					let supplier = &first;
+					let planner = scope.spawn(move || {
+						let session = sync.live_desegmenter().unwrap();
+						planner_started.send(()).unwrap();
+						sync.send_requests(&[supplier.clone()], &session, scores)
+					});
+					planner_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+					let proof_receive = scope.spawn(|| receive(&second.info.addr, proof.clone()));
+					let kernel_receive = scope.spawn(|| receive(&third.info.addr, kernel.clone()));
+					wait_for(&|| {
+						f.sync.download.try_lock().is_some_and(|download| {
+							download.tasks.len() == 2
+								&& download
+									.tasks
+									.iter()
+									.all(|task| task.received.is_some() && task.request.is_none())
+						})
+					});
+
+					// Duplicates of both the taken task and a buffered task must return
+					// without waiting for storage or applying either segment twice.
+					let (duplicate_done, duplicate_result) = std::sync::mpsc::channel();
+					let duplicates = [output.clone(), kernel.clone()];
+					let duplicate_peer = &first.info.addr;
+					scope.spawn(move || {
+						for duplicate in duplicates {
+							duplicate_done
+								.send(receive(duplicate_peer, duplicate))
+								.unwrap();
+						}
+					});
+					for _ in 0..2 {
+						duplicate_result
+							.recv_timeout(Duration::from_secs(5))
+							.unwrap()
+							.unwrap();
+					}
+
+					// Reset still waits for receive handlers to finish the pinned session.
+					let (reset_done, reset_result) = std::sync::mpsc::channel();
+					let sync = &f.sync;
+					let reset = scope.spawn(move || {
+						sync.reset_desegmenter_data();
+						reset_done.send(()).unwrap();
+					});
+					assert!(matches!(
+						reset_result.recv_timeout(Duration::from_millis(50)),
+						Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+					));
+					Ok::<_, mwc_chain::Error>((
+						output_receive,
+						proof_receive,
+						kernel_receive,
+						planner,
+						(reset, reset_result),
+					))
+				})
+				.unwrap();
+			output_receive.join().unwrap().unwrap();
+			proof_receive.join().unwrap().unwrap();
+			kernel_receive.join().unwrap().unwrap();
+			planner.join().unwrap().unwrap();
+			reset.1.recv_timeout(Duration::from_secs(5)).unwrap();
+			reset.0.join().unwrap();
+		});
+		assert!(desegmenter.is_complete());
+		assert!(f.sync.desegmenter.read_recursive().is_none());
+		assert!(f.sync.download.lock().tasks.is_empty());
+		assert_eq!(
+			first_messages.try_iter().count()
+				+ second_messages.try_iter().count()
+				+ third_messages.try_iter().count(),
+			0
+		);
+		f.scores.apply_peers_status(&f.peers);
+		assert!(f.scores.get_banned_peers().is_empty());
+	}
+
+	#[test]
+	fn failed_application_restores_taken_task_at_its_original_position() {
+		let f = Fixture::new();
+		let (peer, _messages) = f.peer(1);
+		let session = f.sync.live_desegmenter().unwrap();
+		f.sync
+			.send_requests(&[peer.clone()], &session, &f.scores)
+			.unwrap();
+		let bitmap_id = f.sync.download.lock().tasks[0].id.identifier;
+		let segmenter = f.source.segmenter().unwrap();
+		f.sync
+			.receive_bitmap_segment(
+				&peer.info.addr,
+				&session.archive_hash,
+				segmenter.bitmap_segment(bitmap_id).unwrap(),
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
+		let ids: Vec<_> = f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| task.id.clone())
+			.collect();
+		let kernel_id = ids[2].identifier;
+		// Authenticate the same kernel with a different segment height. Its proof
+		// is valid, but application rejects it because it is outside the layout.
+		let wrong_id = SegmentIdentifier::new(kernel_id.height + 1, kernel_id.idx);
+		let segment = session
+			.desegmenter
+			.validate_segment(StateSegment::Kernel(
+				segmenter.kernel_segment(wrong_id).unwrap(),
+			))
+			.unwrap();
+		{
+			let mut download = f.sync.download.lock();
+			let task = &mut download.tasks[2];
+			task.id.identifier = wrong_id;
+			task.request = None;
+			task.received = Some(ReceivedSegment {
+				segment,
+				peer: peer.info.addr.clone(),
+			});
+		}
+		for _ in 0..2 {
+			assert!(matches!(
+				f.sync.apply_ready_tasks(&session.desegmenter, &f.scores),
+				Err(mwc_chain::Error::InvalidSegmentId)
+			));
+			let download = f.sync.download.lock();
+			assert_eq!(download.tasks.len(), 3);
+			for (task, id) in download.tasks.iter().zip(&ids).take(2) {
+				assert_eq!(&task.id, id);
+				assert!(task.request.is_some());
+				assert!(task.received.is_none());
+			}
+			let restored = &download.tasks[2];
+			assert_eq!(restored.id.identifier, wrong_id);
+			assert!(restored.request.is_none());
+			assert_eq!(restored.received.as_ref().unwrap().peer, peer.info.addr);
+		}
+
+		// Correct the injected layout mismatch. A successful application removes
+		// only this task; the earlier outstanding streams stay in their order.
+		let segment = session
+			.desegmenter
+			.validate_segment(StateSegment::Kernel(
+				segmenter.kernel_segment(kernel_id).unwrap(),
+			))
+			.unwrap();
+		{
+			let mut download = f.sync.download.lock();
+			let task = &mut download.tasks[2];
+			task.id = ids[2].clone();
+			task.received.as_mut().unwrap().segment = segment;
+		}
+		f.sync
+			.apply_ready_tasks(&session.desegmenter, &f.scores)
+			.unwrap();
+		let download = f.sync.download.lock();
+		assert_eq!(
+			download
+				.tasks
+				.iter()
+				.map(|task| task.id.clone())
+				.collect::<Vec<_>>(),
+			ids[..2]
+		);
+	}
+
+	#[test]
+	fn invalidated_session_keeps_buffered_response_without_scoring_supplier() {
+		let f = Fixture::new();
+		let (peer, _messages) = f.peer(1);
+		let session = f.sync.live_desegmenter().unwrap();
+		f.sync
+			.send_requests(&[peer.clone()], &session, &f.scores)
+			.unwrap();
+		let id = f.sync.download.lock().tasks[0].id.identifier;
+		let bitmap = f.source.segmenter().unwrap().bitmap_segment(id).unwrap();
+		let segment = session
+			.desegmenter
+			.validate_segment(StateSegment::Bitmap(bitmap))
+			.unwrap();
+		{
+			let mut download = f.sync.download.lock();
+			download.tasks[0].request = None;
+			download.tasks[0].received = Some(ReceivedSegment {
+				segment,
+				peer: peer.info.addr.clone(),
+			});
+		}
+		f.sync
+			.chain
+			.reset_pibd_chain(mwc_chain::PibdResetMode::Body)
+			.unwrap();
+		for _ in 0..2 {
+			assert!(matches!(
+				f.sync.apply_ready_tasks(&session.desegmenter, &f.scores),
+				Err(mwc_chain::Error::ChainRestartRequired)
+			));
+		}
+		let download = f.sync.download.lock();
+		assert_eq!(download.tasks.len(), 1);
+		assert!(download.tasks[0].received.is_some());
+		f.scores.apply_peers_status(&f.peers);
+		assert!(f.scores.get_banned_peers().is_empty());
+		assert!(peer.is_connected());
+	}
+
+	#[test]
+	fn scheduler_reserves_front_tasks_for_fast_peers_and_scans_to_slower_peers() {
+		let f = Fixture::new();
+		let (fast, fast_messages) = f.peer(1);
+		let (slow, slow_messages) = f.peer(2);
+		let (disconnected, disconnected_messages) = f.peer(3);
+		let per_peer = f.sync.pibd_params.get_segments_request_per_peer();
+		let slow_index = per_peer + 2;
+		fast.record_response_latency(Duration::from_millis(100));
+		// Include a fractional ratio to exercise rounding down.
+		slow.record_response_latency(Duration::from_millis((slow_index as u64 + 1) * 100 + 50));
+		disconnected.record_response_latency(Duration::from_millis(1));
+		disconnected.stop();
+		let session = f.sync.live_desegmenter().unwrap();
+		let task_limit = f.sync.pibd_params.get_segments_requests_limit(None);
+		assert!(task_limit > slow_index + per_peer);
+		// Preload an interleaved scheduling window; these tests only send requests.
+		f.sync.download.lock().tasks = (0..task_limit)
+			.map(|index| StateTask {
+				id: SegmentTypeIdentifier::new(
+					SEGMENT_TYPES[index % SEGMENT_TYPES.len()].clone(),
+					SegmentIdentifier::new(0, (index / SEGMENT_TYPES.len()) as u64),
+				),
+				request: None,
+				received: None,
+			})
+			.collect();
+		let response = f.sync.send_requests(&[], &session, &f.scores).unwrap();
+		assert_eq!(response.response, SyncRequestResponses::WaitingForPeers);
+		assert!(f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.all(|task| task.request.is_none()));
+		let suppliers = [fast.clone(), slow.clone(), disconnected];
+		f.sync
+			.send_requests(&suppliers, &session, &f.scores)
+			.unwrap();
+		assert_eq!(fast_messages.try_iter().count(), per_peer);
+		assert_eq!(slow_messages.try_iter().count(), per_peer);
+		assert_eq!(disconnected_messages.try_iter().count(), 0);
+		let before: Vec<_> = {
+			let download = f.sync.download.lock();
+			for (index, task) in download.tasks.iter().enumerate() {
+				if index < per_peer {
+					assert_eq!(task.request.as_ref().unwrap().peer, fast.info.addr);
+				} else if (slow_index..slow_index + per_peer).contains(&index) {
+					assert_eq!(task.request.as_ref().unwrap().peer, slow.info.addr);
+				} else {
+					assert!(task.request.is_none());
+				}
+			}
+			download
+				.tasks
+				.iter()
+				.map(|task| {
+					task.request
+						.as_ref()
+						.map(|request| (request.peer.clone(), request.expires_at))
+				})
+				.collect()
+		};
+		// Full peer allowances skip further assignments and preserve deadlines.
+		f.sync
+			.send_requests(&suppliers, &session, &f.scores)
+			.unwrap();
+		assert_eq!(
+			fast_messages.try_iter().count() + slow_messages.try_iter().count(),
+			0
+		);
+		let after: Vec<_> = f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.map(|task| {
+				task.request
+					.as_ref()
+					.map(|request| (request.peer.clone(), request.expires_at))
+			})
+			.collect();
+		assert_eq!(before, after);
+	}
+
+	#[test]
 	fn segment_requests_use_the_selected_peers_latency() {
 		let f = Fixture::new();
 		let (fast, fast_messages) = f.peer(1);
 		let (slow, slow_messages) = f.peer(2);
 		let (unknown, unknown_messages) = f.peer(3);
+		let (zero, zero_messages) = f.peer(4);
+		zero.record_response_latency(Duration::ZERO);
 		fast.record_response_latency(Duration::from_millis(200));
 		slow.record_response_latency(Duration::from_secs(12));
 		let session = f.sync.live_desegmenter().unwrap();
@@ -1810,6 +2258,7 @@ mod task_tests {
 			(fast, fast_messages, 8400),
 			(slow, slow_messages, 30000),
 			(unknown, unknown_messages, 30000),
+			(zero, zero_messages, 30000),
 		] {
 			f.sync
 				.send_requests(&[peer.clone()], &session, &f.scores)

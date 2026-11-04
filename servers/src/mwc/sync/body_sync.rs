@@ -508,7 +508,18 @@ impl BodySync {
 		let horizon = u64::from(global::cut_through_horizon(self.chain.get_context_id()));
 		let horizon_height = target.height.saturating_sub(horizon);
 
-		let candidates = self.canonical_peers(peers)?;
+		// Snapshot complete-response latencies once per pass. Eligibility and the
+		// best latency are determined per block, since suppliers differ by height.
+		let candidates: Vec<_> = self
+			.canonical_peers(peers)?
+			.into_iter()
+			.map(|(peer, height)| {
+				let latency = peer
+					.response_latency()
+					.map(|latency| latency.as_millis().max(1));
+				(peer, height, latency)
+			})
+			.collect();
 		let per_peer = self.pibd_params.get_blocks_request_per_peer();
 		let mut peer_requests = HashMap::<PeerAddr, usize>::new();
 		for request in download
@@ -539,31 +550,73 @@ impl BodySync {
 				status != SyncStatus::NoSync || target.height.saturating_sub(head.height) >= 10
 			},
 		);
-		let mut rng = mwc_crates::rand::rng();
+		// Determine peer-discovery requirements even when all current suppliers
+		// are at capacity and the assignment loop can be skipped.
 		let mut required_capabilities = Capabilities::UNKNOWN;
-		for task in &mut download.tasks {
-			if task.obsolete
-				|| task.request.is_some()
-				|| task.received.is_some()
-				|| self.chain.block_exists(&task.hash)?
-			{
-				continue;
-			}
-			if task.height < horizon_height {
+		for task in download.tasks.iter().filter(|task| {
+			!task.obsolete
+				&& task.request.is_none()
+				&& task.received.is_none()
+				&& task.height < horizon_height
+		}) {
+			if !self.chain.block_exists(&task.hash)? {
 				required_capabilities |= Capabilities::BLOCK_HIST;
+				break;
 			}
-			let supplier = candidates
-				.iter()
-				.filter(|(peer, peer_height)| {
+		}
+		let mut available_requests: usize = candidates
+			.iter()
+			.map(|(peer, _, _)| {
+				per_peer.saturating_sub(peer_requests.get(&peer.info.addr).copied().unwrap_or(0))
+			})
+			.sum();
+		if available_requests > 0 {
+			let mut rng = mwc_crates::rand::rng();
+			// Retained requests from obsolete branches consume capacity, but must
+			// not shift the latency offsets of the active queue.
+			for (index, task) in download
+				.tasks
+				.iter_mut()
+				.filter(|task| !task.obsolete)
+				.enumerate()
+			{
+				if task.request.is_some()
+					|| task.received.is_some()
+					|| self.chain.block_exists(&task.hash)?
+				{
+					continue;
+				}
+				let eligible = candidates.iter().filter(|(peer, peer_height, _)| {
 					self.can_supply(peer, *peer_height, task.height)
-						&& peer_requests.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
-				})
-				.choose(&mut rng);
-			let Some((peer, _)) = supplier else {
-				continue;
-			};
-			if task.send_request(peer, peer.request_timeout(), scores)? {
-				*peer_requests.entry(peer.info.addr.clone()).or_default() += 1;
+				});
+				let best_latency = eligible
+					.clone()
+					.filter_map(|(_, _, latency)| *latency)
+					.min()
+					.unwrap_or(1);
+				let Some(peer) = eligible
+					.filter(|(peer, _, latency)| {
+						let first_index = usize::try_from(
+							(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
+						)
+						.unwrap_or(usize::MAX);
+						index >= first_index
+							&& peer_requests.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
+					})
+					.map(|(peer, _, _)| peer)
+					.choose(&mut rng)
+				else {
+					// A later block may have different eligible suppliers, so a
+					// failed selection alone cannot end the scan.
+					continue;
+				};
+				if task.send_request(peer, peer.request_timeout(), scores)? {
+					*peer_requests.entry(peer.info.addr.clone()).or_default() += 1;
+					available_requests -= 1;
+					if available_requests == 0 {
+						break;
+					}
+				}
 			}
 		}
 		let requests = download
@@ -1434,6 +1487,87 @@ mod tests {
 		assert!(suppliers.iter().all(|(_, rx)| rx.try_iter().count() == 0));
 	}
 
+	#[test]
+	fn latency_scheduling_keeps_fast_peers_at_the_head_and_ignores_obsolete_indices() {
+		let f = Fixture::new(1_935_081, 24);
+		let (fast, fast_messages) = f.supplier(4180);
+		let (slow, slow_messages) = f.supplier(4181);
+		let per_peer = f.body.pibd_params.get_blocks_request_per_peer();
+		let slow_index = per_peer + 2;
+		fast.record_response_latency(Duration::from_millis(100));
+		slow.record_response_latency(Duration::from_millis((slow_index as u64 + 1) * 100));
+		// A retained old request consumes a slot without moving the active head.
+		let sent_at = Instant::now();
+		f.body.download.lock().tasks.push_back(BodyTask {
+			hash: Hash::default(),
+			height: 0,
+			obsolete: true,
+			request: Some(BodyTaskRequest {
+				peer: fast.info.addr.clone(),
+				supplier: Arc::downgrade(&fast),
+				sent_at,
+				expires_at: sent_at + Duration::from_secs(30),
+			}),
+			received: None,
+		});
+		f.poll();
+		let download = f.body.download.lock();
+		let active: Vec<_> = download
+			.tasks
+			.iter()
+			.filter(|task| !task.obsolete)
+			.collect();
+		let fast_count = (per_peer - 1).min(active.len());
+		let slow_count = per_peer.min(active.len().saturating_sub(slow_index));
+		assert_eq!(fast_messages.try_iter().count(), fast_count);
+		assert_eq!(slow_messages.try_iter().count(), slow_count);
+		for (index, task) in active.iter().enumerate() {
+			if index < fast_count {
+				assert_eq!(task.request.as_ref().unwrap().peer, fast.info.addr);
+			} else if (slow_index..slow_index + slow_count).contains(&index) {
+				assert_eq!(task.request.as_ref().unwrap().peer, slow.info.addr);
+			} else {
+				assert!(task.request.is_none());
+			}
+		}
+		let deadlines: Vec<_> = download
+			.tasks
+			.iter()
+			.map(|task| task.request.as_ref().map(|request| request.expires_at))
+			.collect();
+		drop(download);
+		f.poll();
+		assert_eq!(
+			fast_messages.try_iter().count() + slow_messages.try_iter().count(),
+			0
+		);
+		assert_eq!(
+			deadlines,
+			f.body
+				.download
+				.lock()
+				.tasks
+				.iter()
+				.map(|task| task.request.as_ref().map(|request| request.expires_at))
+				.collect::<Vec<_>>()
+		);
+		// Retrying the head keeps its preference while preserving tail requests.
+		f.body
+			.download
+			.lock()
+			.tasks
+			.iter_mut()
+			.find(|task| !task.obsolete)
+			.unwrap()
+			.request
+			.as_mut()
+			.unwrap()
+			.expires_at = Instant::now();
+		f.poll();
+		assert_eq!(fast_messages.try_iter().count(), 1);
+		assert_eq!(slow_messages.try_iter().count(), 0);
+	}
+
 	// Request one missing body and repeatedly age its unanswered request past the timeout.
 	// Each poll retries until the fifth timeout marks the supplier Defunct and clears the request.
 	#[test]
@@ -1887,10 +2021,19 @@ mod tests {
 		assert!(!f.body.can_supply(&regular, 3, 4));
 		assert!(f.body.can_supply(&legacy, 5, 3));
 		assert!(!f.body.can_supply(&legacy, 5, 4));
+		// The fastest peer cannot serve the newer encoding. Its latency must
+		// not defer the compatible suppliers beyond the current task window.
+		legacy.record_response_latency(Duration::from_millis(1));
+		archive.record_response_latency(Duration::from_secs(1));
+		regular.record_response_latency(Duration::from_secs(1));
 		f.poll();
 		for block in &f.blocks[3..] {
 			let hash = block.hash(f.chain.get_context_id()).unwrap();
 			assert!(!f.body.has_block_request(&legacy.info.addr, &hash));
+			assert!(
+				f.body.has_block_request(&archive.info.addr, &hash)
+					|| f.body.has_block_request(&regular.info.addr, &hash)
+			);
 		}
 	}
 

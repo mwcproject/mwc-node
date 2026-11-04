@@ -597,6 +597,28 @@ impl HeaderPibdSync {
 			.filter(|peer| download.agreed_peers.contains(&peer.info.addr))
 			.collect();
 			peer_count = candidates.len();
+			// First eligible zero-based index is floor(peer latency / best latency) - 1.
+			// Snapshot latency once per scheduling pass. Unmeasured peers start
+			// at the head until their first complete response supplies a sample.
+			let latencies: Vec<_> = candidates
+				.iter()
+				.map(|peer| {
+					peer.response_latency()
+						.map(|latency| latency.as_millis().max(1))
+				})
+				.collect();
+			let best_latency = latencies.iter().flatten().copied().min().unwrap_or(1);
+			let candidates: Vec<_> = candidates
+				.iter()
+				.zip(latencies)
+				.map(|(peer, latency)| {
+					let first_index = usize::try_from(
+						(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
+					)
+					.unwrap_or(usize::MAX);
+					(peer, first_index)
+				})
+				.collect();
 			let mut counts: HashMap<PeerAddr, usize> = HashMap::new();
 			// Count live assignments before filling gaps, including tasks deferred
 			// by a smaller window. Expired deferred requests retain their state
@@ -611,6 +633,15 @@ impl HeaderPibdSync {
 				}
 			}
 			let per_peer = self.pibd_params.get_segments_request_per_peer();
+			let Some(max_first_index) = candidates
+				.iter()
+				.filter(|(peer, _)| counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer)
+				.map(|(_, first_index)| *first_index)
+				.max()
+			else {
+				// No peer has capacity, so there is no task to assign this pass.
+				return Ok(peer_count);
+			};
 			let mut rng = mwc_crates::rand::rng();
 			// Ready buffers also occupy this window, so a stalled first task
 			// cannot cause unbounded accumulation of later responses.
@@ -620,10 +651,19 @@ impl HeaderPibdSync {
 				}
 				let Some(peer) = candidates
 					.iter()
-					.filter(|peer| counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer)
+					.filter(|(peer, first_index)| {
+						index >= *first_index
+							&& counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
+					})
+					.map(|(peer, _)| *peer)
 					.choose(&mut rng)
 				else {
-					break;
+					// Beyond the slowest available peer's starting index, all peers
+					// are eligible. A failed selection means their capacity is full.
+					if index >= max_first_index {
+						break;
+					}
+					continue;
 				};
 				let timeout = peer.request_timeout();
 				let expires_at = now
@@ -1327,20 +1367,21 @@ mod tests {
 		let n1 = first.try_iter().count();
 		let n2 = second.try_iter().count();
 		let per_peer = f.sync.pibd_params.get_segments_request_per_peer();
-		let expected = (per_peer * 2).min(f.sync.pibd_params.get_headers_buffer_len());
+		let window = f.sync.pibd_params.get_headers_buffer_len();
+		let expected = per_peer.min(window) + per_peer.min(window.saturating_sub(59));
 		assert_eq!(n1 + n2, expected);
 		assert!(n1 <= per_peer && n2 <= per_peer);
 		assert_eq!(uncommitted.try_iter().count(), 0);
 		assert_eq!(other_height.try_iter().count(), 0);
 		{
 			let download = f.sync.download.lock();
-			for request in download
-				.as_ref()
-				.unwrap()
-				.tasks
-				.iter()
-				.filter_map(|task| task.request.as_ref())
-			{
+			for (index, task) in download.as_ref().unwrap().tasks.iter().enumerate() {
+				let Some(request) = task.request.as_ref() else {
+					continue;
+				};
+				if request.peer == addr(2) {
+					assert!(index >= 59);
+				}
 				let millis = if request.peer == addr(1) { 8400 } else { 30000 };
 				assert_eq!(
 					request.expires_at - request.sent_at,
@@ -1398,6 +1439,46 @@ mod tests {
 			.iter()
 			.skip(window)
 			.all(|task| task.request.is_none()));
+	}
+
+	#[test]
+	fn scheduler_starts_slower_peers_at_their_latency_ratio_index() {
+		let f = Fixture::new();
+		let target = HEADERS_PER_BATCH as u64 * 100;
+		let per_peer = f.sync.pibd_params.get_segments_request_per_peer();
+		let slow_index = per_peer + 2;
+		let fast = f.peer(1, target);
+		let slow = f.peer(2, target);
+		for (id, millis) in [(1, 100), (2, (slow_index as u64 + 1) * 100)] {
+			f.peers
+				.get_connected_peer(&addr(id))
+				.unwrap()
+				.record_response_latency(Duration::from_millis(millis));
+		}
+		let mut download =
+			HeaderPibdDownload::new(&vec![hash(1); 101], hash(42), target, 0).unwrap();
+		download.agreed_peers = [addr(1), addr(2)].into_iter().collect();
+		*f.sync.download.lock() = Some(download);
+		let _work = f.sync.work_lock.lock();
+		f.sync.send_requests(&f.peers, &f.scores).unwrap();
+		assert_eq!(fast.try_iter().count(), per_peer);
+		assert_eq!(slow.try_iter().count(), per_peer);
+		let state = f.sync.download.lock();
+		let tasks = &state.as_ref().unwrap().tasks;
+		assert!(tasks
+			.iter()
+			.take(per_peer)
+			.all(|task| task.request.as_ref().unwrap().peer == addr(1)));
+		assert!(tasks
+			.iter()
+			.skip(per_peer)
+			.take(2)
+			.all(|task| task.request.is_none()));
+		assert!(tasks.iter().skip(slow_index).take(per_peer).all(|task| task
+			.request
+			.as_ref()
+			.unwrap()
+			.peer == addr(2)));
 	}
 
 	// Supply enough agreed peers to fill the header buffer while many more tasks remain.
