@@ -915,7 +915,7 @@ fn missing_ancestry_announcements_wait_for_the_sync_loop() {
 // Equal work must not let an unusable supplier pin an unsupported header tip.
 // Returning valid known headers at a different height earns a fine, not success.
 #[test]
-fn unsupported_headers_wrong_height_peer_is_fined_until_banned() {
+fn unsupported_headers_wrong_height_peer_is_fined_until_defunct() {
 	for (context, advertised_height) in [(1_934_050, 1), (1_934_051, 5)] {
 		let mut f = Fixture::new(context);
 		let body = f.chain.head().unwrap();
@@ -935,7 +935,7 @@ fn unsupported_headers_wrong_height_peer_is_fined_until_banned() {
 		let peer = Arc::new(peer);
 		f.peers.add_connected(peer.clone()).unwrap();
 
-		for attempt in 0..7 {
+		for attempt in 0..5 {
 			// Model separate no-response intervals without sleeping between attempts.
 			f.manager
 				.elapse_header_no_response_merge_interval_for_test(&peer.info.addr);
@@ -960,8 +960,23 @@ fn unsupported_headers_wrong_height_peer_is_fined_until_banned() {
 				.is_none());
 			f.manager.apply_header_scores_for_test(&f.peers);
 			// One changed advertisement could be a reorg. Repeated failures use
-			// the ordinary no-response policy and eventually ban the supplier.
-			assert_eq!(f.peers.is_banned(&peer.info.addr).unwrap(), attempt == 6);
+			// the ordinary no-response policy and eventually mark the supplier Defunct.
+			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+			assert_eq!(
+				f.peers.get_peer(&peer.info.addr).unwrap().flags,
+				if attempt == 4 {
+					mwc_p2p::State::Defunct
+				} else {
+					mwc_p2p::State::Healthy
+				}
+			);
+			assert_eq!(peer.is_connected(), attempt < 4);
+			assert_eq!(
+				f.peers.get_connected_peer(&peer.info.addr).is_some(),
+				attempt < 4
+			);
+			// Disconnecting for NoResponse must not send a BanReason message.
+			assert_eq!(messages.try_iter().count(), 0);
 		}
 		f.manager.truncate_header_head(&f.peers, false).unwrap();
 		assert_eq!(f.chain.header_head().unwrap(), body);
@@ -1362,7 +1377,69 @@ fn header_progress_advances_on_a_fork_before_it_becomes_head() {
 }
 
 #[test]
-fn header_progress_replays_keep_cursor_and_advertised_goal_until_banned() {
+fn reconnect_retires_old_header_requests_and_timeouts_through_the_adapter() {
+	let f = Fixture::new(1_934_080);
+	let headers: Vec<_> = f.history.iter().map(|block| block.header.clone()).collect();
+	let last = headers.last().unwrap();
+	let promised = (last.total_difficulty() + Difficulty::from_num(100)).unwrap();
+	let info = PeerInfo {
+		capabilities: Capabilities::HEADER_HIST,
+		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(promised))),
+		..f.peer.clone()
+	};
+	info.update(last.height + 100, promised);
+	let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
+	let peer = Arc::new(peer);
+	f.peers.add_connected(peer.clone()).unwrap();
+	// One useful response, followed by four separate responses without progress.
+	for _ in 0..5 {
+		f.manager
+			.elapse_header_no_response_merge_interval_for_test(&peer.info.addr);
+		f.manager.sync_request(&f.peers).unwrap();
+		assert_eq!(messages.try_iter().count(), 1);
+		peer.receive_headers_for_test(&headers, 0).unwrap();
+		f.manager.apply_header_scores_for_test(&f.peers);
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		assert!(peer.is_connected());
+	}
+	f.manager.sync_request(&f.peers).unwrap();
+	assert!(f
+		.manager
+		.header_download_for_test(&peer.info.addr)
+		.is_some());
+	peer.stop();
+	f.peers.remove_connected(&peer.info.addr);
+	let info = PeerInfo {
+		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(promised))),
+		..peer.info.clone()
+	};
+	let (replacement, messages) =
+		mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
+	let replacement = Arc::new(replacement);
+	f.peers.add_connected(replacement.clone()).unwrap();
+	assert!(f
+		.manager
+		.header_download_for_test(&peer.info.addr)
+		.is_none());
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(messages.try_iter().count(), 0);
+	replacement.info.update(last.height + 100, promised);
+	// Once its tip is known, the replacement starts fresh. Its first timeout
+	// must not combine with the four failures from the previous connection.
+	for _ in 0..2 {
+		f.manager
+			.elapse_header_no_response_merge_interval_for_test(&replacement.info.addr);
+		f.manager.sync_request(&f.peers).unwrap();
+		assert_eq!(messages.try_iter().count(), 1);
+		replacement.receive_headers_for_test(&headers, 0).unwrap();
+		f.manager.apply_header_scores_for_test(&f.peers);
+		assert!(!f.peers.is_banned(&replacement.info.addr).unwrap());
+		assert!(replacement.is_connected());
+	}
+}
+
+#[test]
+fn header_progress_replays_keep_cursor_and_advertised_goal_until_defunct() {
 	let f = Fixture::new(1_934_021);
 	let headers: Vec<_> = f.history.iter().map(|block| block.header.clone()).collect();
 	let last = headers.last().unwrap();
@@ -1377,8 +1454,8 @@ fn header_progress_replays_keep_cursor_and_advertised_goal_until_banned() {
 		.chain
 		.get_header_progress_time(&last.hash(f.context).unwrap())
 		.unwrap();
-	// The first short response makes progress. Seven subsequent replays are fined.
-	for attempt in 0..8 {
+	// The first short response makes progress. Five subsequent replays are fined.
+	for attempt in 0..6 {
 		if attempt > 0 {
 			// Each replay represents a separate no-response interval, without sleeping.
 			f.manager
@@ -1401,9 +1478,24 @@ fn header_progress_replays_keep_cursor_and_advertised_goal_until_banned() {
 			Some((known_time, promised))
 		);
 		f.manager.apply_header_scores_for_test(&f.peers);
-		assert_eq!(f.peers.is_banned(&peer.info.addr).unwrap(), attempt == 7);
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&peer.info.addr).unwrap().flags,
+			if attempt == 5 {
+				mwc_p2p::State::Defunct
+			} else {
+				mwc_p2p::State::Healthy
+			}
+		);
+		assert_eq!(peer.is_connected(), attempt < 5);
+		assert_eq!(
+			f.peers.get_connected_peer(&peer.info.addr).is_some(),
+			attempt < 5
+		);
 	}
 	f.manager.sync_request(&f.peers).unwrap();
+	// The Defunct peer gets neither a ban notification nor further requests.
+	assert_eq!(receiver.try_iter().count(), 0);
 	assert!(f
 		.manager
 		.header_download_for_test(&peer.info.addr)
@@ -1567,6 +1659,50 @@ fn body_catch_up_relays_only_the_completed_header_tip() {
 		announcements[0].message_type_for_test(),
 		mwc_p2p::msg::Type::CompactBlock
 	);
+}
+
+#[test]
+fn header_before_pong_is_accepted_and_body_requests_wait_for_a_known_tip() {
+	for (context, ahead) in [(1_934_081, false), (1_934_082, true)] {
+		let mut f = Fixture::new(context);
+		let block = f.block(&[]);
+		let handshake_work = if ahead {
+			(block.header.total_difficulty() + Difficulty::from_num(100)).unwrap()
+		} else {
+			block.header.total_difficulty()
+		};
+		let info = PeerInfo {
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(handshake_work))),
+			..f.peer.clone()
+		};
+		let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, context, f.peers.clone());
+		let peer = Arc::new(peer);
+		f.peers.add_connected(peer.clone()).unwrap();
+		assert!(!peer.info.has_known_tip());
+		// Normal propagation is allowed before a Ping/Pong supplies the height.
+		assert!(f
+			.peers
+			.header_received(block.header.clone(), &peer.info)
+			.unwrap());
+		let hash = block.hash(context).unwrap();
+		assert_eq!(f.chain.header_head().unwrap().last_block_h, hash);
+		assert_eq!(peer.info.has_known_tip(), !ahead);
+		assert_eq!(f.manager.has_block_request(&peer.info.addr, &hash), !ahead);
+		if ahead {
+			// An older valid header cannot supply the height of greater handshake
+			// work. The caller must wait without treating that as dishonest data.
+			assert_eq!(peer.info.get_height_and_difficulty(), (0, handshake_work));
+			assert_eq!(messages.try_iter().count(), 0);
+		} else {
+			assert_eq!(
+				messages.try_recv().unwrap().message_type_for_test(),
+				mwc_p2p::msg::Type::GetBlock
+			);
+			assert_eq!(messages.try_iter().count(), 0);
+		}
+		f.manager.apply_header_scores_for_test(&f.peers);
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+	}
 }
 
 #[test]

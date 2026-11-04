@@ -118,6 +118,10 @@ impl StateDownload {
 	fn expire_requests(&mut self, now: Instant, scores: &SyncPeers) {
 		for task in &mut self.tasks {
 			if let Some(request) = &task.request {
+				if !sync_utils::request_peer_is_connected(&request.supplier) {
+					task.request = None;
+					continue;
+				}
 				if now >= request.expires_at {
 					scores.report_no_response(
 						&request.peer,
@@ -248,6 +252,19 @@ pub(super) struct LiveDesegmenter<'a> {
 }
 
 impl StateSync {
+	pub(super) fn clear_peer_requests(&self, peer: &PeerAddr) {
+		self.requested_root_hash.write().remove(peer);
+		for task in &mut self.download.lock().tasks {
+			if task
+				.request
+				.as_ref()
+				.is_some_and(|request| request.peer == *peer)
+			{
+				task.request = None;
+			}
+		}
+	}
+
 	pub fn new(chain: Arc<Chain>) -> StateSync {
 		StateSync {
 			pibd_params: chain.get_pibd_params().clone(),
@@ -268,6 +285,7 @@ impl StateSync {
 		let mut candidates: Vec<_> = peers
 			.iter()
 			.connected()
+			.filter(|peer| peer.info.has_known_tip())
 			.with_capabilities(Capabilities::PIBD_HIST)
 			.with_min_height(height)
 			.into_iter()
@@ -470,6 +488,9 @@ impl StateSync {
 		{
 			let mut requested_root_hash = self.requested_root_hash.write();
 			requested_root_hash.retain(|peer, req_time| {
+				if in_peers.get_connected_peer(peer).is_none() {
+					return false;
+				}
 				if now.saturating_duration_since(*req_time) > request_timeout {
 					sync_peers.report_no_response(peer, "root hash".into());
 					return false;
@@ -505,6 +526,9 @@ impl StateSync {
 
 			// request handshakes if needed
 			for peer in &peers {
+				if !peer.is_connected() {
+					continue;
+				}
 				// Never make room by evicting a response: it is the peer's root
 				// commitment for reconnect authorization and any later session ban.
 				if remaining_root_peer_capacity == 0 {
@@ -1502,6 +1526,7 @@ mod task_tests {
 				live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
 				tx_base_fee: 0,
 			};
+			info.update(1, pow::Difficulty::min());
 			let (peer, messages) = Peer::connected_for_test(info, 0, Arc::new(DummyAdapter {}));
 			let peer = Arc::new(peer);
 			self.peers.add_connected(peer.clone()).unwrap();
@@ -1512,6 +1537,79 @@ mod task_tests {
 				.insert(addr, (root, Instant::now()));
 			(peer, messages)
 		}
+	}
+
+	#[test]
+	fn snapshot_suppliers_require_known_height_and_difficulty() {
+		let f = Fixture::new();
+		let (peer, _messages) = f.peer(1);
+		for (height, difficulty) in [(0, pow::Difficulty::min()), (1, pow::Difficulty::zero())] {
+			{
+				let mut info = peer.info.live_info.write();
+				info.height = height;
+				info.total_difficulty = difficulty;
+			}
+			assert!(f.sync.eligible_peers(&f.peers).is_empty());
+		}
+		peer.info.update(1, pow::Difficulty::min());
+		assert_eq!(f.sync.eligible_peers(&f.peers).len(), 1);
+	}
+
+	#[test]
+	fn reconnect_cancels_snapshot_requests_but_keeps_root_commitments() {
+		let f = Fixture::new();
+		let (peer, messages) = f.peer(1);
+		let session = f.sync.live_desegmenter().unwrap();
+		f.sync
+			.send_requests(&[peer.clone()], &session, &f.scores)
+			.unwrap();
+		assert_eq!(messages.try_iter().count(), 1);
+		f.sync
+			.requested_root_hash
+			.write()
+			.insert(peer.info.addr.clone(), Instant::now());
+		let commitment = f.sync.responded_root_hash.read_recursive()[&peer.info.addr];
+		f.sync.clear_peer_requests(&peer.info.addr);
+		assert!(f.sync.requested_root_hash.read_recursive().is_empty());
+		assert!(f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.all(|task| task.request.is_none()));
+		assert_eq!(
+			f.sync.responded_root_hash.read_recursive()[&peer.info.addr],
+			commitment
+		);
+		f.sync
+			.send_requests(&[peer.clone()], &session, &f.scores)
+			.unwrap();
+		assert_eq!(messages.try_iter().count(), 1);
+		for _ in 0..4 {
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
+			f.scores
+				.report_no_response(&peer.info.addr, "before disconnect".into());
+		}
+		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
+		peer.stop();
+		f.sync
+			.download
+			.lock()
+			.expire_requests(Instant::now() + Duration::from_secs(60), &f.scores);
+		assert!(f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.all(|task| task.request.is_none()));
+		f.scores.apply_peers_status(&f.peers);
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&peer.info.addr).unwrap().flags,
+			mwc_p2p::State::Healthy
+		);
 	}
 
 	#[test]
@@ -1728,11 +1826,11 @@ mod task_tests {
 	}
 
 	#[test]
-	fn expired_task_is_retried_once_and_repeated_timeouts_ban_the_supplier() {
+	fn expired_task_is_retried_once_and_repeated_timeouts_mark_supplier_defunct() {
 		let f = Fixture::new();
 		let (peer, messages) = f.peer(1);
 		let session = f.sync.live_desegmenter().unwrap();
-		for attempt in 0..7 {
+		for attempt in 0..5 {
 			f.sync
 				.send_requests(&[peer.clone()], &session, &f.scores)
 				.unwrap();
@@ -1752,10 +1850,12 @@ mod task_tests {
 			assert!(download.tasks[0].request.is_none());
 			drop(download);
 			f.scores.apply_peers_status(&f.peers);
+			assert!(f.scores.get_banned_peers().is_empty());
 			assert_eq!(
-				f.scores.get_banned_peers().contains(&peer.info.addr),
-				attempt == 6
+				f.peers.get_peer(&peer.info.addr).unwrap().flags == mwc_p2p::State::Defunct,
+				attempt == 4
 			);
+			assert_eq!(peer.is_connected(), attempt < 4);
 		}
 	}
 

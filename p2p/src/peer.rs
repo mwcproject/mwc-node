@@ -785,6 +785,70 @@ mod tests {
 	}
 
 	#[test]
+	fn outbound_tip_updates_must_qualify_to_prevent_liveness_timeout() {
+		// from_num(0) clamps to one; use an actual zero for invalid-work updates.
+		let difficulty = |work| {
+			if work == 0 {
+				Difficulty::zero()
+			} else {
+				Difficulty::from_num(work)
+			}
+		};
+		for direction in [
+			Direction::Outbound,
+			Direction::OutboundTor,
+			Direction::Inbound,
+			Direction::InboundTor,
+		] {
+			let mut peer = test_peer();
+			peer.info.direction = direction;
+			// Include both a fresh handshake and an established tip. Later replies
+			// must meet the current stored work, even when a height is already known.
+			for (old_height, old_work, height, work, refreshes_outbound) in [
+				(0, 100, 0, 100, false),
+				(10, 100, 0, 101, false),
+				(0, 100, 11, 99, false),
+				(10, 100, 11, 99, false),
+				(0, 0, 1, 0, false),
+				(0, 100, 11, 100, true),
+				(10, 100, 12, 100, true),
+				(0, 100, 11, 101, true),
+				(10, 100, 8, 101, true),
+			] {
+				let last_seen = Utc::now()
+					- mwc_crates::chrono::Duration::seconds(
+						(global::PEER_PING_INTERVAL_SECONDS * 11) as i64,
+					);
+				{
+					let mut info = peer.info.live_info.write();
+					info.height = old_height;
+					info.total_difficulty = difficulty(old_work);
+					info.last_seen = last_seen;
+				}
+				peer.info.update(height, difficulty(work));
+				if peer.info.is_outbound() && !refreshes_outbound {
+					assert_eq!(
+						peer.info.get_height_and_difficulty(),
+						(old_height, difficulty(old_work)),
+						"Rejected outbound updates must leave the stored tip unchanged"
+					);
+					assert_eq!(peer.info.last_seen(), last_seen);
+				}
+				assert_eq!(
+					peer.check_liveness().2,
+					peer.info.is_outbound() && !refreshes_outbound,
+					"{:?}: stored ({}, {}), update ({}, {})",
+					direction,
+					old_height,
+					old_work,
+					height,
+					work
+				);
+			}
+		}
+	}
+
+	#[test]
 	fn response_latency_is_independent_per_peer_and_connection() {
 		let fast = test_peer();
 		let mut slow = test_peer();
@@ -1323,6 +1387,40 @@ mod tests {
 				peers.get_peer(&dead.info.addr).unwrap().flags,
 				crate::store::State::Defunct
 			);
+		}
+	}
+
+	#[test]
+	fn zero_height_replies_do_not_keep_outbound_connections_alive() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for direction in [Direction::Outbound, Direction::OutboundTor] {
+			let mut peer = connected_test_peer();
+			peer.info.direction = direction;
+			peer.info.live_info.write().last_seen = Utc::now()
+				- mwc_crates::chrono::Duration::seconds(
+					(global::PEER_PING_INTERVAL_SECONDS * 11) as i64,
+				);
+			let peer = Arc::new(peer);
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = crate::store::PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let mut config = P2PConfig::default();
+			config.peers_preferred = Some(crate::msg::PeerAddrs {
+				peers: vec![peer.info.addr.clone()],
+			});
+			let peers = crate::Peers::new(store, Arc::new(DummyAdapter {}), &config);
+			peers.add_connected(peer.clone()).unwrap();
+			for _ in 0..3 {
+				peer.info.update(0, Difficulty::min());
+			}
+			// Health cleanup also removes a preferred peer and the last outbound.
+			let summary = peers.clean_peers(10, 10, Capabilities::UNKNOWN, config);
+			assert_eq!(summary.removed_peers, 1);
+			assert!(!peer.is_connected());
+			assert_eq!(
+				peers.get_peer(&peer.info.addr).unwrap().flags,
+				crate::store::State::Defunct
+			);
+			assert!(!peers.is_banned(&peer.info.addr).unwrap());
 		}
 	}
 

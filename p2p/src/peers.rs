@@ -259,6 +259,9 @@ impl Peers {
 				return Err(e);
 			}
 		}
+		// Retire the previous connection's sync requests/history before this
+		// connection can receive advertisements and become a sync supplier.
+		self.adapter.peer_connected(&peer.info);
 		// Reset success outbound counter, so seed thread can boost peers connections if needed
 		if peer.info.is_outbound() {
 			self.reset_last_peer_add_timestamp();

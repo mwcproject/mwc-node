@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::mwc::sync::sync_peers::SyncPeers;
-use crate::mwc::sync::sync_utils::{SyncRequestResponses, SyncResponse};
+use crate::mwc::sync::sync_utils::{self, SyncRequestResponses, SyncResponse};
 use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::{Chain, Error, Options, SyncState, SyncStatus};
 use mwc_core::core::hash::{Hash, Hashed};
@@ -103,6 +103,10 @@ impl BodyDownload {
 	fn expire_requests(&mut self, now: Instant, scores: &SyncPeers) {
 		for task in &mut self.tasks {
 			if let Some(request) = &task.request {
+				if !sync_utils::request_peer_is_connected(&request.supplier) {
+					task.request = None;
+					continue;
+				}
 				if now >= request.expires_at {
 					scores.report_no_response(
 						&request.peer,
@@ -130,6 +134,22 @@ pub struct BodySync {
 }
 
 impl BodySync {
+	pub(super) fn clear_peer_requests(&self, peer: &PeerAddr) {
+		let mut download = self.download.lock();
+		for task in &mut download.tasks {
+			if task
+				.request
+				.as_ref()
+				.is_some_and(|request| request.peer == *peer)
+			{
+				task.request = None;
+			}
+		}
+		download
+			.tasks
+			.retain(|task| !task.obsolete || task.request.is_some());
+	}
+
 	pub fn new(chain: Arc<Chain>) -> Self {
 		Self {
 			pibd_params: chain.get_pibd_params().clone(),
@@ -259,6 +279,7 @@ impl BodySync {
 
 	/// Request an accepted header's body from its announcing peer. Reuse the same
 	/// queue, capacity, per-peer allowance and deadline as scheduled downloads.
+	/// The caller selects a peer with a known height and difficulty.
 	pub(super) fn request_header_block(
 		&self,
 		header: &BlockHeader,
@@ -403,7 +424,12 @@ impl BodySync {
 	fn canonical_peers(&self, peers: &Arc<Peers>) -> Result<Vec<(Arc<Peer>, u64)>, Error> {
 		let tip = self.chain.header_head()?;
 		let mut candidates = Vec::new();
-		for peer in peers.iter().connected().into_iter() {
+		for peer in peers
+			.iter()
+			.connected()
+			.filter(|peer| peer.info.has_known_tip())
+			.into_iter()
+		{
 			let (height, difficulty) = peer.info.get_height_and_difficulty();
 			if height > tip.height {
 				continue;
@@ -425,7 +451,8 @@ impl BodySync {
 		let horizon_height = peer_height.saturating_sub(u64::from(global::cut_through_horizon(
 			self.chain.get_context_id(),
 		)));
-		peer_height >= height
+		peer.is_connected()
+			&& peer_height >= height
 			&& peer
 				.info
 				.can_serve_block(self.chain.get_context_id(), height)
@@ -1029,8 +1056,8 @@ mod tests {
 		f.blocks = fork;
 		f.deliver(2, &new_peer.info.addr);
 		f.deliver(3, &new_peer.info.addr);
-		// Any leftover timer for a completed old request would now trigger a ban.
-		for _ in 0..6 {
+		// Any leftover timer for a completed old request would now mark the peer Defunct.
+		for _ in 0..4 {
 			f.scores
 				.elapse_no_response_merge_interval(&old_peer.info.addr);
 			f.scores
@@ -1043,6 +1070,7 @@ mod tests {
 		assert_eq!(f.chain.head().unwrap(), target);
 		assert!(f.body.download.lock().tasks.is_empty());
 		assert!(!f.peers.is_banned(&old_peer.info.addr).unwrap());
+		assert!(old_peer.is_connected());
 	}
 
 	// Fill one peer's allowance, then replace the header branch. Obsolete requests
@@ -1145,15 +1173,15 @@ mod tests {
 	}
 
 	// Abandon a sent request and expire it while body sync is paused. It must produce
-	// exactly one timeout and no retry. Five prior failures plus this timeout stay
-	// below the ban threshold; one later failure proves the timeout was recorded.
+	// exactly one timeout and no retry. Three prior failures plus this timeout stay
+	// below the Defunct threshold; one later failure proves the timeout was recorded.
 	#[test]
 	fn obsolete_timeout_is_scored_once_and_never_retried() {
 		let f = Fixture::new(1_935_024, 1);
 		let (peer, rx) = f.supplier(4195);
 		f.poll();
 		assert_eq!(rx.try_iter().count(), 1);
-		for _ in 0..5 {
+		for _ in 0..3 {
 			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.scores
 				.report_no_response(&peer.info.addr, "earlier request".into());
@@ -1169,27 +1197,33 @@ mod tests {
 			assert!(f.body.download.lock().tasks.is_empty());
 			assert_eq!(rx.try_iter().count(), 0);
 			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+			assert!(peer.is_connected());
 		}
 		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 		f.scores
 			.report_no_response(&peer.info.addr, "later request".into());
 		f.scores.apply_peers_status(&f.peers);
-		assert!(f.peers.is_banned(&peer.info.addr).unwrap());
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&peer.info.addr).unwrap().flags,
+			mwc_p2p::State::Defunct
+		);
+		assert!(!peer.is_connected());
 	}
 
-	// Seven obsolete replies must not add success events that push earlier failures
+	// Nine obsolete replies must not add success events that push earlier failures
 	// out of the scoring window. No blocks are applied; a subsequent real timeout
-	// still bans the peer after its six earlier failures.
+	// still marks the peer Defunct after its four earlier failures.
 	#[test]
 	fn obsolete_responses_do_not_credit_the_peer() {
 		let mut f = Fixture::new(1_935_027, 1);
 		let (peer, rx) = f.supplier(4199);
-		for _ in 0..6 {
+		for _ in 0..4 {
 			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.scores
 				.report_no_response(&peer.info.addr, "earlier request".into());
 		}
-		for _ in 0..7 {
+		for _ in 0..9 {
 			f.poll();
 			assert_eq!(rx.try_iter().count(), 1);
 			f.body.reset(&f.scores);
@@ -1208,7 +1242,12 @@ mod tests {
 		f.scores
 			.report_no_response(&peer.info.addr, "later request".into());
 		f.scores.apply_peers_status(&f.peers);
-		assert!(f.peers.is_banned(&peer.info.addr).unwrap());
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&peer.info.addr).unwrap().flags,
+			mwc_p2p::State::Defunct
+		);
+		assert!(!peer.is_connected());
 	}
 
 	// Resume the same canonical work after pausing it. Reusing the retained tasks
@@ -1396,21 +1435,27 @@ mod tests {
 	}
 
 	// Request one missing body and repeatedly age its unanswered request past the timeout.
-	// Each poll retries until the seventh timeout bans the supplier and clears the request.
+	// Each poll retries until the fifth timeout marks the supplier Defunct and clears the request.
 	#[test]
-	fn unanswered_blocks_retry_and_repeated_timeouts_ban_supplier() {
+	fn unanswered_blocks_retry_and_repeated_timeouts_mark_supplier_defunct() {
 		let f = Fixture::new(1_935_003, 1);
 		let (peer, rx) = f.supplier(4120);
 		f.poll();
 		assert_eq!(rx.try_iter().count(), 1);
-		for attempt in 0..7 {
+		for attempt in 0..5 {
 			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 			f.expire_requests();
 			f.poll();
-			assert_eq!(f.peers.is_banned(&peer.info.addr).unwrap(), attempt == 6);
-			if attempt == 6 {
-				// Banning also emits a BanReason message. No block request remains.
+			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+			assert_eq!(
+				f.peers.get_peer(&peer.info.addr).unwrap().flags == mwc_p2p::State::Defunct,
+				attempt == 4
+			);
+			assert_eq!(peer.is_connected(), attempt < 4);
+			if attempt == 4 {
+				// No block request or BanReason message is sent after disconnecting.
 				assert_eq!(f.requests_num(), 0);
+				assert_eq!(rx.try_iter().count(), 0);
 			} else {
 				assert_eq!(rx.try_iter().count(), 1);
 			}
@@ -1487,6 +1532,52 @@ mod tests {
 		assert!(f.body.download.lock().tasks.is_empty());
 		f.deliver(2, &peer.info.addr);
 		assert_eq!(f.chain.head().unwrap(), f.chain.header_head().unwrap());
+	}
+
+	#[test]
+	fn reconnect_keeps_received_bodies_and_requires_a_known_tip() {
+		let mut f = Fixture::new(1_935_080, 2);
+		let (peer, messages) = f.supplier(4280);
+		let tip = f.chain.header_head().unwrap();
+		for (height, difficulty) in [(0, tip.total_difficulty), (tip.height, Difficulty::zero())] {
+			{
+				let mut info = peer.info.live_info.write();
+				info.height = height;
+				info.total_difficulty = difficulty;
+			}
+			f.poll();
+			assert_eq!(messages.try_iter().count(), 0);
+		}
+		peer.info.update(tip.height, tip.total_difficulty);
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 2);
+		f.deliver(1, &peer.info.addr);
+		f.body.clear_peer_requests(&peer.info.addr);
+		{
+			let download = f.body.download.lock();
+			assert!(download.tasks[0].request.is_none());
+			assert!(download.tasks[1].received.is_some());
+		}
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 1);
+		for _ in 0..4 {
+			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
+			f.scores
+				.report_no_response(&peer.info.addr, "before disconnect".into());
+		}
+		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
+		peer.stop();
+		f.body
+			.download
+			.lock()
+			.expire_requests(Instant::now() + Duration::from_secs(60), &f.scores);
+		assert!(f.body.download.lock().tasks[0].request.is_none());
+		f.scores.apply_peers_status(&f.peers);
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&peer.info.addr).unwrap().flags,
+			mwc_p2p::State::Healthy
+		);
 	}
 
 	#[test]

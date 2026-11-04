@@ -120,6 +120,19 @@ impl HeadersPibdHashSyncSnapshot {
 }
 
 impl HeadersPibdHashSync {
+	pub(super) fn clear_peer_requests(&mut self, peer: &PeerAddr) {
+		self.requested_headers_hash_from.remove(peer);
+		for task in &mut self.tasks {
+			if task
+				.request
+				.as_ref()
+				.is_some_and(|request| request.peer == *peer)
+			{
+				task.request = None;
+			}
+		}
+	}
+
 	pub fn new(chain: Arc<Chain>) -> HeadersPibdHashSync {
 		HeadersPibdHashSync {
 			pibd_params: chain.get_pibd_params().clone(),
@@ -424,6 +437,9 @@ impl HeadersPibdHashSync {
 		}
 
 		self.requested_headers_hash_from.retain(|peer, req_time| {
+			if peers.get_connected_peer(peer).is_none() {
+				return false;
+			}
 			if req_time.elapsed() > request_timeout {
 				sync_peers.report_no_response(peer, "header hashes".into());
 				return false;
@@ -692,6 +708,10 @@ impl HeadersPibdHashSync {
 		let now = Instant::now();
 		for task in &mut self.tasks {
 			if let Some(request) = &task.request {
+				if !sync_utils::request_peer_is_connected(&request.supplier) {
+					task.request = None;
+					continue;
+				}
 				if now >= request.expires_at {
 					sync_peers.report_no_response(
 						&request.peer,
@@ -1050,7 +1070,7 @@ mod task_tests {
 	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use mwc_crates::tempfile::TempDir;
 	use mwc_p2p::{
-		msg::{Msg, Type},
+		msg::Msg,
 		types::{Direction, PeerInfo, PeerLiveInfo},
 		DummyAdapter, P2PConfig, Peers,
 	};
@@ -1291,29 +1311,78 @@ mod task_tests {
 	}
 
 	#[test]
-	fn repeated_timeouts_use_the_existing_peer_fine_policy() {
+	fn reconnect_cancels_checkpoint_requests_but_keeps_root_commitments() {
+		let mut f = Fixture::new(1);
+		let (peer, messages) = f.peer(1, f.root);
+		let supplier = f.peers.get_connected_peer(&peer).unwrap();
+		let height = supplier.info.get_height_and_difficulty().0;
+		// The shared selector gates both root queries and checkpoint segments.
+		for (height, difficulty) in [
+			(0, pow::Difficulty::min()),
+			(height, pow::Difficulty::zero()),
+		] {
+			{
+				let mut info = supplier.info.live_info.write();
+				info.height = height;
+				info.total_difficulty = difficulty;
+			}
+			f.schedule();
+			assert_eq!(messages.try_iter().count(), 0);
+		}
+		supplier.info.update(height, pow::Difficulty::min());
+		f.schedule();
+		assert_eq!(messages.try_iter().count(), 1);
+		f.sync
+			.requested_headers_hash_from
+			.insert(peer.clone(), Instant::now());
+		let commitment = f.sync.responded_headers_hash_from[&peer];
+		f.sync.clear_peer_requests(&peer);
+		assert!(f.sync.requested_headers_hash_from.is_empty());
+		assert!(f.sync.tasks[0].request.is_none());
+		assert_eq!(f.sync.responded_headers_hash_from[&peer], commitment);
+		f.schedule();
+		assert_eq!(messages.try_iter().count(), 1);
+		for _ in 0..4 {
+			f.scores.elapse_no_response_merge_interval(&peer);
+			f.scores
+				.report_no_response(&peer, "before disconnect".into());
+		}
+		f.scores.elapse_no_response_merge_interval(&peer);
+		supplier.stop();
+		f.sync.tasks[0].request.as_mut().unwrap().expires_at = Instant::now();
+		f.schedule();
+		assert!(f.sync.tasks[0].request.is_none());
+		f.scores.apply_peers_status(&f.peers);
+		assert!(!f.peers.is_banned(&peer).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&peer).unwrap().flags,
+			mwc_p2p::State::Healthy
+		);
+	}
+
+	#[test]
+	fn repeated_timeouts_mark_the_supplier_defunct() {
 		let mut f = Fixture::new(1);
 		let (peer, messages) = f.peer(1, f.root);
 		f.schedule();
 		assert_eq!(messages.try_iter().count(), 1);
-		// The first six whole-request timeouts are fines, with the same task
-		// retried each pass. The seventh triggers the existing SyncPeers ban.
-		for failure in 1..=7 {
+		// The first four whole-request timeouts are fines, with the same task
+		// retried each pass. The fifth marks the supplier Defunct.
+		for failure in 1..=5 {
 			f.scores.elapse_no_response_merge_interval(&peer);
 			f.sync.tasks[0].request.as_mut().unwrap().expires_at = Instant::now();
 			f.schedule();
 			assert_eq!(messages.try_iter().count(), 1);
 			f.scores.apply_peers_status(&f.peers);
-			assert_eq!(f.scores.get_banned_peers().contains(&peer), failure == 7);
+			assert!(f.scores.get_banned_peers().is_empty());
+			assert_eq!(
+				f.peers.get_peer(&peer).unwrap().flags == mwc_p2p::State::Defunct,
+				failure == 5
+			);
+			assert_eq!(f.peers.get_connected_peer(&peer).is_some(), failure < 5);
 		}
-		// Banning notifies the peer; this is not another segment request.
-		assert_eq!(
-			messages
-				.try_iter()
-				.map(|message| message.message_type_for_test())
-				.collect::<Vec<_>>(),
-			vec![Type::BanReason]
-		);
+		// A timeout disconnect must not send a BanReason message.
+		assert_eq!(messages.try_iter().count(), 0);
 		// With no connected supplier, the last outstanding request still expires
 		// and leaves an unassigned task, ready when an agreed peer joins again.
 		f.sync.tasks[0].request.as_mut().unwrap().expires_at = Instant::now();

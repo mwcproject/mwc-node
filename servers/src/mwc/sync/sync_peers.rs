@@ -17,7 +17,7 @@
 
 use mwc_crates::log::{debug, info, warn};
 use mwc_crates::parking_lot::RwLock;
-use mwc_p2p::{PeerAddr, Peers, ReasonForBan};
+use mwc_p2p::{PeerAddr, Peers, ReasonForBan, State};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,7 +30,8 @@ enum PeerStatusEvent {
 	Ban(String),
 }
 
-const MIN_RESPONSE_NUM: usize = 13; // 6*2+1  8 requests per peer is expected, see get_segments_request_per_peer()
+const MIN_RESPONSE_NUM: usize = 13; // Retain the latest response events for peer scoring.
+const NO_RESPONSE_THRESHOLD: usize = 5;
 const MAX_PEER_STATUS_ENTRIES: usize = 10240;
 const MAX_BANNED_PEERS: usize = 10240;
 const NO_RESPONSE_MERGE_INTERVAL: Duration = Duration::from_secs(1);
@@ -92,11 +93,10 @@ impl PeerPibdStatus {
 		true
 	}
 
-	/// Checking events log to decide if peer wasn't active enough
+	/// Decide whether recent events require disconnecting or banning the peer.
 	/// The responses log is bounded at insertion time, with trimming retained
 	/// here as a defensive fallback for any preexisting oversized queues.
-	/// Return: (ban, comment)
-	fn check_for_ban(&mut self, peer: &String) -> (bool, String) {
+	fn check_status(&mut self, peer: &str) -> (State, String) {
 		let mut bans = 0;
 		let mut errors = 0;
 		let mut no_response = 0;
@@ -132,19 +132,27 @@ impl PeerPibdStatus {
 			}
 		}
 
-		// Tolerate six missed responses in the recent window; the seventh bans.
-		let res_ban = bans > 0 || errors > 1 || no_response > MIN_RESPONSE_NUM / 2;
+		// Missing replies can result from our own network outage, so the fifth
+		// timeout makes the peer Defunct and eligible for retry, not banned.
+		// Bad-data errors and explicit bans retain their thresholds and take priority.
+		let state = if bans > 0 || errors > 1 {
+			State::Banned
+		} else if no_response >= NO_RESPONSE_THRESHOLD {
+			State::Defunct
+		} else {
+			State::Healthy
+		};
 
 		debug!(
-			"Checking for Ban. Peer: {}, bans={} errors={} no_resp={} ok={}  RES={}",
-			peer, bans, errors, no_response, success, res_ban
+			"Checking peer status. Peer: {}, bans={} errors={} no_resp={} ok={} state={:?}",
+			peer, bans, errors, no_response, success, state
 		);
 
 		while self.responses.len() > MIN_RESPONSE_NUM {
 			self.responses.pop_front();
 		}
 
-		(res_ban, comment)
+		(state, comment)
 	}
 
 	pub fn reset(&mut self) {
@@ -181,6 +189,16 @@ impl SyncPeers {
 		self.add_event(peer, PeerStatusEvent::NoResponse(message));
 	}
 
+	/// A new connection gets a fresh timeout history, while valid responses,
+	/// bad-data errors and explicit bans retain their original order/timestamps.
+	pub fn clear_no_response(&self, peer: &PeerAddr) {
+		if let Some(status) = self.peers_status.write().get_mut(&peer.as_key()) {
+			status
+				.responses
+				.retain(|(_, event)| !matches!(event, PeerStatusEvent::NoResponse(_)));
+		}
+	}
+
 	pub fn report_error_response(&self, peer: &PeerAddr, message: String) {
 		self.add_event(peer, PeerStatusEvent::Error(message));
 	}
@@ -204,9 +222,9 @@ impl SyncPeers {
 		let mut banned_peer_addrs = Vec::new();
 		for cp in check_peer_keys {
 			if let Some(status) = peers_status.get_mut(&cp) {
-				let (ban, comment) = status.check_for_ban(&cp);
+				let (state, comment) = status.check_status(&cp);
 				let peer_addr = status.peer_addr.clone();
-				if ban {
+				if state == State::Banned {
 					match peers.ban_peer(&peer_addr, ReasonForBan::PibdFailure, &comment) {
 						Ok(()) => {
 							status.reset();
@@ -218,6 +236,22 @@ impl SyncPeers {
 							retry_peers.insert(cp.clone());
 						}
 					}
+				} else if state == State::Defunct {
+					info!(
+						"Marking unresponsive peer {} Defunct: {}",
+						peer_addr, comment
+					);
+					// The store preserves an existing ban. Stop the connection even if
+					// persistence fails, and retry the state update on the next pass.
+					let result = peers.update_state(&peer_addr, State::Defunct);
+					if let Some(peer) = peers.remove_connected(&peer_addr) {
+						peers.stop_and_reap_peer(peer);
+					}
+					if let Err(e) = result {
+						warn!("failed to mark peer {} Defunct: {}", peer_addr, e);
+						retry_peers.insert(cp.clone());
+					}
+					// Preserve other events; reconnect clears only NoResponse history.
 				}
 			}
 		}
@@ -361,6 +395,173 @@ mod tests {
 		(peers, dir)
 	}
 
+	#[cfg(feature = "test-support")]
+	fn connect_peer(
+		peers: &Peers,
+		addr: &PeerAddr,
+	) -> (
+		Arc<mwc_p2p::Peer>,
+		mwc_crates::crossbeam::channel::Receiver<mwc_p2p::msg::Msg>,
+	) {
+		let info = mwc_p2p::PeerInfo {
+			capabilities: mwc_p2p::Capabilities::UNKNOWN,
+			user_agent: "sync-status-test".into(),
+			version: mwc_core::ser::ProtocolVersion::local(),
+			addr: addr.clone(),
+			direction: mwc_p2p::Direction::Outbound,
+			live_info: Arc::new(RwLock::new(mwc_p2p::types::PeerLiveInfo::new(
+				mwc_core::pow::Difficulty::min(),
+			))),
+			tx_base_fee: 0,
+		};
+		let (peer, messages) =
+			mwc_p2p::Peer::connected_for_test(info, 1, Arc::new(DummyAdapter {}));
+		let peer = Arc::new(peer);
+		peers.add_connected(peer.clone()).unwrap();
+		(peer, messages)
+	}
+
+	#[test]
+	#[cfg(feature = "test-support")]
+	fn no_response_disconnect_preserves_errors_for_reconnect() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let scores = SyncPeers::new();
+		let (peers, _dir) = test_peers();
+		let addr = non_loopback_peer();
+		let (peer, messages) = connect_peer(&peers, &addr);
+		scores.report_ok_response(&addr);
+		scores.report_error_response(&addr, "invalid data".into());
+		for failure in 1..=5 {
+			scores.elapse_no_response_merge_interval(&addr);
+			scores.report_no_response(&addr, "timeout".into());
+			scores.apply_peers_status(&peers);
+			assert_eq!(
+				peers.get_peer(&addr).unwrap().flags,
+				if failure == 5 {
+					State::Defunct
+				} else {
+					State::Healthy
+				}
+			);
+			assert_eq!(peer.is_connected(), failure < 5);
+			assert_eq!(peers.get_connected_peer(&addr).is_some(), failure < 5);
+			assert!(!peers.is_banned(&addr).unwrap());
+			assert!(scores.get_banned_peers().is_empty());
+			assert_eq!(messages.try_iter().count(), 0);
+		}
+
+		// Use the existing reconnect hook: timeouts are cleared, but the prior
+		// bad-data error must still combine with a new error to cause a ban.
+		scores.clear_no_response(&addr);
+		{
+			let statuses = scores.peers_status.read_recursive();
+			let retained = &statuses[&addr.as_key()].responses;
+			assert_eq!(retained.len(), 2);
+			assert!(matches!(&retained[0].1, PeerStatusEvent::Success));
+			assert!(matches!(&retained[1].1, PeerStatusEvent::Error(_)));
+		}
+		let (reconnected, messages) = connect_peer(&peers, &addr);
+		scores.report_no_response(&addr, "new connection timeout".into());
+		scores.apply_peers_status(&peers);
+		assert!(reconnected.is_connected());
+		assert_eq!(peers.get_peer(&addr).unwrap().flags, State::Healthy);
+		scores.report_error_response(&addr, "more invalid data".into());
+		scores.apply_peers_status(&peers);
+		assert!(peers.is_banned(&addr).unwrap());
+		assert!(scores.get_banned_peers().contains(&addr));
+		assert!(!reconnected.is_connected());
+		assert_eq!(
+			messages
+				.try_iter()
+				.map(|msg| msg.message_type_for_test())
+				.collect::<Vec<_>>(),
+			vec![mwc_p2p::msg::Type::BanReason]
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "test-support")]
+	fn bad_data_and_explicit_bans_take_priority_over_no_response() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for explicit_ban in [false, true] {
+			let scores = SyncPeers::new();
+			let (peers, _dir) = test_peers();
+			let addr = non_loopback_peer();
+			let (peer, messages) = connect_peer(&peers, &addr);
+			for _ in 0..5 {
+				scores.elapse_no_response_merge_interval(&addr);
+				scores.report_no_response(&addr, "timeout".into());
+			}
+			if explicit_ban {
+				scores.ban_peer(&addr, "invalid root hash".into());
+			} else {
+				scores.report_error_response(&addr, "invalid data".into());
+				scores.report_error_response(&addr, "more invalid data".into());
+			}
+			scores.apply_peers_status(&peers);
+			assert!(peers.is_banned(&addr).unwrap());
+			assert!(scores.get_banned_peers().contains(&addr));
+			assert!(!peer.is_connected());
+			assert_eq!(
+				messages
+					.try_iter()
+					.map(|msg| msg.message_type_for_test())
+					.collect::<Vec<_>>(),
+				vec![mwc_p2p::msg::Type::BanReason]
+			);
+		}
+	}
+
+	#[test]
+	fn no_response_does_not_change_an_existing_ban() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let scores = SyncPeers::new();
+		let (peers, _dir) = test_peers();
+		let addr = non_loopback_peer();
+		peers
+			.ban_peer(&addr, ReasonForBan::BadRequest, "bad request")
+			.unwrap();
+		let banned = peers.get_peer(&addr).unwrap();
+		for _ in 0..5 {
+			scores.elapse_no_response_merge_interval(&addr);
+			scores.report_no_response(&addr, "timeout".into());
+		}
+		scores.apply_peers_status(&peers);
+		let stored = peers.get_peer(&addr).unwrap();
+		assert_eq!(stored.flags, State::Banned);
+		assert_eq!(stored.ban_reason, banned.ban_reason);
+		assert_eq!(stored.last_banned, banned.last_banned);
+		assert!(scores.get_banned_peers().is_empty());
+	}
+
+	#[test]
+	#[cfg(feature = "test-support")]
+	fn failed_defunct_update_disconnects_and_is_retried() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let scores = SyncPeers::new();
+		let (peers, _dir) = test_peers();
+		let addr = non_loopback_peer();
+		let (peer, _messages) = connect_peer(&peers, &addr);
+		let stored = peers.get_peer(&addr).unwrap();
+		peers.delete_peer(&addr).unwrap();
+		for _ in 0..5 {
+			scores.elapse_no_response_merge_interval(&addr);
+			scores.report_no_response(&addr, "timeout".into());
+		}
+		scores.apply_peers_status(&peers);
+		assert!(!peer.is_connected());
+		assert!(peers.get_connected_peer(&addr).is_none());
+		assert!(scores
+			.new_events_peers
+			.read_recursive()
+			.contains(&addr.as_key()));
+		peers.save_peer(&stored).unwrap();
+		scores.apply_peers_status(&peers);
+		assert_eq!(peers.get_peer(&addr).unwrap().flags, State::Defunct);
+		assert!(scores.new_events_peers.read_recursive().is_empty());
+		assert!(scores.get_banned_peers().is_empty());
+	}
+
 	#[test]
 	fn ban_peer_preserves_non_loopback_socket_address() {
 		let sync_peers = SyncPeers::new();
@@ -400,25 +601,103 @@ mod tests {
 	}
 
 	#[test]
-	fn repeated_no_responses_ban_within_the_recent_response_window() {
+	fn reconnect_clears_only_no_response_history() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let scores = SyncPeers::new();
+		let peer = non_loopback_peer();
+		for _ in 0..4 {
+			scores.elapse_no_response_merge_interval(&peer);
+			scores.report_no_response(&peer, "old connection".into());
+		}
+		scores.report_ok_response(&peer);
+		scores.report_error_response(&peer, "invalid data".into());
+		let retained_times: Vec<_> = scores.peers_status.read_recursive()[&peer.as_key()]
+			.responses
+			.iter()
+			.skip(4)
+			.map(|(time, _)| *time)
+			.collect();
+		let last_updated = scores.peers_status.read_recursive()[&peer.as_key()].last_updated;
+		scores.clear_no_response(&peer);
+		{
+			let statuses = scores.peers_status.read_recursive();
+			let status = &statuses[&peer.as_key()];
+			assert_eq!(status.responses.len(), 2);
+			assert!(matches!(&status.responses[0].1, PeerStatusEvent::Success));
+			assert!(
+				matches!(&status.responses[1].1, PeerStatusEvent::Error(msg) if msg == "invalid data")
+			);
+			assert_eq!(
+				status
+					.responses
+					.iter()
+					.map(|(time, _)| *time)
+					.collect::<Vec<_>>(),
+				retained_times
+			);
+			assert_eq!(status.last_updated, last_updated);
+		}
+		let (peers, _dir) = test_peers();
+		// The first timeout on the new connection does not combine with the old four.
+		scores.report_no_response(&peer, "new connection".into());
+		scores.apply_peers_status(&peers);
+		assert!(!peers.is_banned(&peer).unwrap());
+		// The previous bad-data error still counts toward the normal two-error ban.
+		scores.report_error_response(&peer, "more invalid data".into());
+		scores.apply_peers_status(&peers);
+		assert!(peers.is_banned(&peer).unwrap());
+	}
+
+	#[test]
+	fn reconnect_preserves_pending_bans_and_other_peers_history() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let scores = SyncPeers::new();
+		let peer = non_loopback_peer();
+		let other = peer_for_idx(1);
+		scores.report_no_response(&peer, "old timeout".into());
+		scores.ban_peer(&peer, "invalid root".into());
+		scores.report_no_response(&other, "other timeout".into());
+		scores.clear_no_response(&peer);
+		{
+			let statuses = scores.peers_status.read_recursive();
+			assert_eq!(statuses[&peer.as_key()].responses.len(), 1);
+			assert!(
+				matches!(&statuses[&peer.as_key()].responses[0].1, PeerStatusEvent::Ban(msg) if msg == "invalid root")
+			);
+			assert!(matches!(
+				&statuses[&other.as_key()].responses[0].1,
+				PeerStatusEvent::NoResponse(_)
+			));
+		}
+		let (peers, _dir) = test_peers();
+		scores.apply_peers_status(&peers);
+		assert!(peers.is_banned(&peer).unwrap());
+		assert!(!peers.is_banned(&other).unwrap());
+	}
+
+	#[test]
+	fn repeated_no_responses_mark_defunct_within_the_recent_response_window() {
 		let peer = non_loopback_peer();
 		let now = Instant::now();
 		let mut status = PeerPibdStatus::new(&peer, now);
-		for second in 0..6 {
+		for second in 0..4 {
 			status.add_event(
 				PeerStatusEvent::NoResponse("timeout".into()),
 				now + Duration::from_secs(second),
 			);
-			assert!(!status.check_for_ban(&peer.as_key()).0);
+			assert_eq!(status.check_status(&peer.as_key()).0, State::Healthy);
 		}
-		let now = now + Duration::from_secs(6);
+		let now = now + Duration::from_secs(4);
 		status.add_event(PeerStatusEvent::NoResponse("timeout".into()), now);
-		assert!(status.check_for_ban(&peer.as_key()).0);
-		// Successes eventually move older failures out of the bounded window.
-		for _ in 0..7 {
+		assert_eq!(status.check_status(&peer.as_key()).0, State::Defunct);
+		// The 13-event history still retains all five failures after eight successes.
+		for _ in 0..8 {
 			status.add_event(PeerStatusEvent::Success, now);
 		}
-		assert!(!status.check_for_ban(&peer.as_key()).0);
+		assert_eq!(status.check_status(&peer.as_key()).0, State::Defunct);
+		// One more success moves the oldest failure out of the bounded window.
+		status.add_event(PeerStatusEvent::Success, now);
+		assert_eq!(status.check_status(&peer.as_key()).0, State::Healthy);
 	}
 
 	#[test]
@@ -467,13 +746,13 @@ mod tests {
 			status.responses.back(),
 			Some((_, PeerStatusEvent::NoResponse(msg))) if msg == "second"
 		));
-		assert!(!status.check_for_ban(&peer.as_key()).0);
+		assert_eq!(status.check_status(&peer.as_key()).0, State::Healthy);
 		// Invalid responses retain their normal scoring even inside the interval.
 		assert!(status.add_event(
 			PeerStatusEvent::Error("another invalid response".into()),
 			now + Duration::from_secs(1),
 		));
-		assert!(status.check_for_ban(&peer.as_key()).0);
+		assert_eq!(status.check_status(&peer.as_key()).0, State::Banned);
 	}
 
 	#[test]
@@ -490,7 +769,7 @@ mod tests {
 			PeerStatusEvent::NoResponse("new timeout".into()),
 			now + Duration::from_millis(500),
 		));
-		assert!(!status.check_for_ban(&peer.as_key()).0);
+		assert_eq!(status.check_status(&peer.as_key()).0, State::Healthy);
 	}
 
 	#[test]

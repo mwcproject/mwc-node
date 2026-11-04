@@ -19,7 +19,7 @@ use mwc_chain::{Chain, Error};
 use mwc_p2p::{Capabilities, Peer, Peers};
 use std::cmp;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 // current height back to 0 decreasing in powers of 2
@@ -155,6 +155,12 @@ impl<T> CachedResponse<T> {
 	}
 }
 
+/// A lost connection cannot answer its old requests. Use the original Peer,
+/// since a replacement connection at the same address is a different supplier.
+pub(super) fn request_peer_is_connected(supplier: &Weak<Peer>) -> bool {
+	supplier.upgrade().is_some_and(|peer| peer.is_connected())
+}
+
 /// Get a list of qualify peers. Peers that has needed height and capability
 pub fn get_qualify_peers(
 	peers: &Arc<Peers>,
@@ -166,6 +172,7 @@ pub fn get_qualify_peers(
 		.iter()
 		.outbound()
 		.connected()
+		.filter(|peer| peer.info.has_known_tip())
 		.into_iter()
 		.filter(|peer| {
 			let (height, _) = peer.info.get_height_and_difficulty();

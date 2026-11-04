@@ -215,6 +215,10 @@ impl HeaderPibdDownload {
 			let Some(request) = &task.request else {
 				continue;
 			};
+			if !task.is_ready() && !sync_utils::request_peer_is_connected(&request.supplier) {
+				task.reset();
+				continue;
+			}
 			if !task.is_ready() && now >= request.expires_at {
 				request
 					.expires_at
@@ -312,6 +316,24 @@ pub struct HeaderPibdSync {
 }
 
 impl HeaderPibdSync {
+	pub(super) fn clear_peer_requests(&self, peer: &PeerAddr) {
+		// Sending also holds work_lock, so a delayed send failure cannot add a
+		// timeout after reconnect cleanup. Completed buffers remain usable.
+		let _work = self.work_lock.lock();
+		if let Some(download) = self.download.lock().as_mut() {
+			for task in &mut download.tasks {
+				if !task.is_ready()
+					&& task
+						.request
+						.as_ref()
+						.is_some_and(|request| request.peer == *peer)
+				{
+					task.reset();
+				}
+			}
+		}
+	}
+
 	pub fn new(chain: Arc<Chain>) -> Self {
 		Self {
 			pibd_params: chain.get_pibd_params().clone(),
@@ -819,7 +841,7 @@ mod tests {
 		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
 		for received in [0, 32] {
 			let mut download = download_for(&headers, 512);
-			assign(&mut download.tasks[0], addr(1), now, timeout);
+			let _supplier = assign(&mut download.tasks[0], addr(1), now, timeout);
 			if received > 0 {
 				download
 					.receive_headers(&addr(1), &headers[..received], 480, 0, now, &scores)
@@ -855,7 +877,7 @@ mod tests {
 		let mut download = download_for(&headers, 512);
 		let now = Instant::now();
 		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
-		assign(&mut download.tasks[0], addr(1), now, timeout);
+		let _old_supplier = assign(&mut download.tasks[0], addr(1), now, timeout);
 		download
 			.receive_headers(&addr(1), &headers[..160], 352, 0, now, &f.scores)
 			.unwrap();
@@ -932,7 +954,7 @@ mod tests {
 		let mut download = download_for(&headers, 512);
 		let scores = SyncPeers::new();
 		let now = Instant::now();
-		assign(
+		let _old_supplier = assign(
 			&mut download.tasks[0],
 			addr(1),
 			now,
@@ -1041,8 +1063,9 @@ mod tests {
 		let scores = SyncPeers::new();
 		let now = Instant::now();
 		let timeout = Duration::from_secs(10);
+		let mut suppliers = Vec::new();
 		for task in &mut download.tasks {
-			assign(task, addr(1), now, timeout);
+			suppliers.push(assign(task, addr(1), now, timeout));
 			let mut header = BlockHeader::default(0);
 			header.height = task.height + 1;
 			task.request.as_mut().unwrap().headers.push(header);
@@ -1347,16 +1370,17 @@ mod tests {
 
 		// A stalled front task plus ready later tasks fill the memory window.
 		let window = f.sync.pibd_params.get_headers_buffer_len();
+		let mut suppliers = Vec::new();
 		{
 			let mut state = f.sync.download.lock();
 			let state = state.as_mut().unwrap();
 			for task in state.tasks.iter_mut().take(window) {
-				assign(
+				suppliers.push(assign(
 					task,
 					addr(1),
 					Instant::now(),
 					Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64),
-				);
+				));
 				if task.height > 0 {
 					task.request.as_mut().unwrap().headers = dummy_headers(task.height, task.hash);
 				}
@@ -1479,17 +1503,17 @@ mod tests {
 
 	// With a target of one header, alternate test cases between silence and a one-header
 	// reply: both still lack the required 512-header task response. Repeated expiration
-	// scans fine each attempt once, and seven failed attempts ban the supplier.
+	// scans fine each attempt once, and five failed attempts mark the supplier Defunct.
 	#[test]
-	fn empty_and_incomplete_tasks_are_fined_once_and_eventually_banned() {
+	fn empty_and_incomplete_tasks_are_fined_once_and_eventually_defunct() {
 		for partial in [false, true] {
 			let f = Fixture::new();
 			let _receiver = f.peer(1, 10);
 			let headers = dummy_headers(0, f.sync.chain.genesis().hash(0).unwrap());
 			let mut download = download_for(&headers, 1);
 			let now = Instant::now();
-			for attempt in 0..7 {
-				assign(
+			for attempt in 0..5 {
+				let _supplier = assign(
 					&mut download.tasks[0],
 					addr(1),
 					now,
@@ -1514,9 +1538,88 @@ mod tests {
 						.unwrap();
 				}
 				f.scores.apply_peers_status(&f.peers);
-				assert_eq!(f.peers.is_banned(&addr(1)).unwrap(), attempt == 6);
+				assert!(!f.peers.is_banned(&addr(1)).unwrap());
+				assert_eq!(
+					f.peers.get_peer(&addr(1)).unwrap().flags == mwc_p2p::State::Defunct,
+					attempt == 4
+				);
+				assert_eq!(f.peers.get_connected_peer(&addr(1)).is_some(), attempt < 4);
 			}
 		}
+	}
+
+	#[test]
+	fn disconnected_header_requests_do_not_add_timeout_penalties() {
+		let f = Fixture::new();
+		let _receiver = f.peer(1, 512);
+		let headers = dummy_headers(0, hash(1));
+		let mut download = download_for(&headers, 512);
+		let now = Instant::now();
+		let supplier = assign(
+			&mut download.tasks[0],
+			addr(1),
+			now,
+			Duration::from_secs(30),
+		);
+		for _ in 0..4 {
+			f.scores.elapse_no_response_merge_interval(&addr(1));
+			f.scores
+				.report_no_response(&addr(1), "before disconnect".into());
+		}
+		f.scores.elapse_no_response_merge_interval(&addr(1));
+		// Keep the old Peer alive, as the connection reaper does. A different
+		// connection at this address must not make its old request punishable.
+		supplier.stop();
+		download
+			.expire_tasks(now + Duration::from_secs(60), &f.scores, 1)
+			.unwrap();
+		assert!(download.tasks[0].request.is_none());
+		f.scores.apply_peers_status(&f.peers);
+		assert!(!f.peers.is_banned(&addr(1)).unwrap());
+		assert_eq!(
+			f.peers.get_peer(&addr(1)).unwrap().flags,
+			mwc_p2p::State::Healthy
+		);
+	}
+
+	#[test]
+	fn reconnect_preserves_complete_header_batches_and_other_suppliers() {
+		let f = Fixture::new();
+		let first = dummy_headers(0, hash(1));
+		let second = dummy_headers(512, first.last().unwrap().hash(0).unwrap());
+		let third = dummy_headers(1024, second.last().unwrap().hash(0).unwrap());
+		let mut download = download_for(&[first.clone(), second, third].concat(), 1536);
+		let now = Instant::now();
+		let suppliers: Vec<_> = download
+			.tasks
+			.iter_mut()
+			.enumerate()
+			.map(|(index, task)| {
+				assign(
+					task,
+					addr(if index == 2 { 2 } else { 1 }),
+					now,
+					Duration::from_secs(30),
+				)
+			})
+			.collect();
+		download.tasks[0].request.as_mut().unwrap().headers = first.clone();
+		download.tasks[1]
+			.request
+			.as_mut()
+			.unwrap()
+			.headers
+			.push(BlockHeader::default(0));
+		*f.sync.download.lock() = Some(download);
+		f.sync.clear_peer_requests(&addr(1));
+		let download = f.sync.download.lock();
+		let tasks = &download.as_ref().unwrap().tasks;
+		assert_eq!(tasks[0].request.as_ref().unwrap().headers, first);
+		assert!(tasks[1].request.is_none());
+		assert_eq!(
+			tasks[2].request.as_ref().unwrap().peer,
+			suppliers[2].info.addr
+		);
 	}
 
 	// Corrupt local request metadata so its deadline precedes its send time.

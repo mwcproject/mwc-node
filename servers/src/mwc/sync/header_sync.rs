@@ -114,24 +114,39 @@ impl HeaderSync {
 	}
 
 	/// Called by the sync loop to expire unanswered requests, even when fully synced.
-	pub fn check_header_requests(&self, sync_peers: &SyncPeers, now: Instant) -> bool {
-		let mut expired = Vec::new();
+	pub fn check_header_requests(
+		&self,
+		peers: &Arc<Peers>,
+		sync_peers: &SyncPeers,
+		now: Instant,
+	) -> bool {
+		let mut expired = false;
 		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
 		self.headers.write().retain(|req| {
+			if peers.get_connected_peer(&req.addr).is_none() {
+				return false;
+			}
 			if req
 				.sent
 				.is_some_and(|sent_at| now.saturating_duration_since(sent_at) >= timeout)
 			{
-				expired.push((req.addr.clone(), req.locator[0]));
+				// Report under the request lock so reconnect cancellation completes
+				// before its timeout history is cleared.
+				sync_peers.report_no_response(
+					&req.addr,
+					format!("Headers after {} timed out", req.locator[0]),
+				);
+				expired = true;
 				false
 			} else {
 				true
 			}
 		});
-		for (peer, anchor) in &expired {
-			sync_peers.report_no_response(peer, format!("Headers after {} timed out", anchor));
-		}
-		!expired.is_empty()
+		expired
+	}
+
+	pub(super) fn clear_peer_requests(&self, peer: &PeerAddr) {
+		self.headers.write().retain(|request| request.addr != *peer);
 	}
 
 	/// Download advertised work and check equal-work peers with a different height.
@@ -145,10 +160,11 @@ impl HeaderSync {
 		let connected: Vec<_> = peers
 			.iter()
 			.connected()
+			.filter(|peer| peer.info.has_known_tip())
 			.into_iter()
-			.filter_map(|peer| {
+			.map(|peer| {
 				let (height, difficulty) = peer.info.get_height_and_difficulty();
-				(height != 0).then_some((peer, height, difficulty))
+				(peer, height, difficulty)
 			})
 			.collect();
 		let mut headers = self.headers.write();
@@ -164,6 +180,10 @@ impl HeaderSync {
 		let mut locators = HashMap::new();
 		let mut send_errors = Vec::new();
 		for (peer, height, difficulty) in &connected {
+			// The connection may have closed while waiting for the request lock.
+			if !peer.is_connected() {
+				continue;
+			}
 			let index = match headers.iter().position(|req| req.addr == peer.info.addr) {
 				Some(index) => index,
 				None => {
@@ -579,7 +599,8 @@ mod tests {
 			}
 
 			fn check(&self, now: Instant) -> bool {
-				self.requests.check_header_requests(&self.scores, now)
+				self.requests
+					.check_header_requests(&self.peers, &self.scores, now)
 			}
 		}
 
@@ -595,6 +616,22 @@ mod tests {
 			let mut header = BlockHeader::default(0);
 			header.prev_hash = prev;
 			header
+		}
+
+		#[test]
+		fn reconnect_cancels_pending_tip_headers_without_a_timeout() {
+			let f = Fixture::new();
+			f.dispatch();
+			let deadline = f.deadline();
+			f.requests.clear_peer_requests(&f.peer.info.addr);
+			assert!(!f.check(deadline));
+			assert!(f.requests.headers.read_recursive().is_empty());
+			f.dispatch();
+			assert_eq!(f.receiver.try_iter().count(), 2);
+			// A connection that disappears without reconnecting also earns no fine.
+			f.peer.stop();
+			assert!(!f.check(f.deadline()));
+			assert!(f.requests.headers.read_recursive().is_empty());
 		}
 
 		// Start one download, then add peers with more work or an inconsistent equal-work tip.
@@ -628,12 +665,16 @@ mod tests {
 				),
 				(3474, 0, local_difficulty),
 				(3475, 0, difficulty),
+				(3476, 20, Difficulty::zero()),
 			] {
 				let info = peer_info(port, Capabilities::UNKNOWN);
-				// Seed handshake work directly; update() cannot lower the helper's
-				// initial minimum difficulty, which exceeds Floonet genesis work.
-				info.live_info.write().total_difficulty = work;
-				info.update(height, work);
+				// Seed the selector's fixtures directly, including invalid zero-work
+				// tips that outbound update() correctly refuses to accept.
+				{
+					let mut live_info = info.live_info.write();
+					live_info.height = height;
+					live_info.total_difficulty = work;
+				}
 				assert_eq!(info.get_height_and_difficulty(), (height, work));
 				let (peer, receiver) =
 					Peer::connected_for_test(info, 0, Arc::new(mwc_p2p::DummyAdapter {}));
@@ -755,7 +796,7 @@ mod tests {
 		}
 
 		#[test]
-		fn equal_work_wrong_height_peer_is_banned_after_header_timeouts() {
+		fn equal_work_wrong_height_peer_is_defunct_after_header_timeouts() {
 			let f = Fixture::new();
 			let head = f.requests.chain.header_head().unwrap();
 			{
@@ -763,7 +804,7 @@ mod tests {
 				info.height = head.height + 1;
 				info.total_difficulty = head.total_difficulty;
 			}
-			for attempt in 0..7 {
+			for attempt in 0..5 {
 				f.scores
 					.elapse_no_response_merge_interval(&f.peer.info.addr);
 				f.dispatch();
@@ -777,7 +818,12 @@ mod tests {
 				assert!(f.check(deadline));
 				assert!(!f.check(deadline));
 				f.scores.apply_peers_status(&f.peers);
-				assert_eq!(f.peers.is_banned(&f.peer.info.addr).unwrap(), attempt == 6);
+				assert!(!f.peers.is_banned(&f.peer.info.addr).unwrap());
+				assert_eq!(
+					f.peers.get_peer(&f.peer.info.addr).unwrap().flags == mwc_p2p::State::Defunct,
+					attempt == 4
+				);
+				assert_eq!(f.peer.is_connected(), attempt < 4);
 			}
 			f.dispatch();
 			assert!(f.requests.headers.read_recursive().is_empty());
@@ -785,15 +831,15 @@ mod tests {
 
 		// Keep the peer connected and advertising more work while withholding all headers.
 		// Each expired attempt is removed and fined once; retries use a fresh task, and
-		// the seventh timeout bans the supplier so no further request is sent.
+		// the fifth timeout marks the supplier Defunct so no further request is sent.
 		#[test]
-		fn tip_download_retries_the_same_peer_until_repeated_timeouts_ban_it() {
+		fn tip_download_retries_the_same_peer_until_repeated_timeouts_mark_it_defunct() {
 			let f = Fixture::new();
 			let addr = &f.peer.info.addr;
 			let expected_difficulty = f.expected_difficulty();
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			f.requests.headers.write()[0].init_ts = 42;
-			for attempt in 0..7 {
+			for attempt in 0..5 {
 				f.scores.elapse_no_response_merge_interval(addr);
 				f.dispatch();
 				assert_eq!(f.receiver.try_iter().count(), 1);
@@ -825,9 +871,14 @@ mod tests {
 				}
 				assert!(f.requests.headers.read_recursive().is_empty());
 				f.scores.apply_peers_status(&f.peers);
-				assert_eq!(f.peers.is_banned(addr).unwrap(), attempt == 6);
+				assert!(!f.peers.is_banned(addr).unwrap());
+				assert_eq!(
+					f.peers.get_peer(addr).unwrap().flags == mwc_p2p::State::Defunct,
+					attempt == 4
+				);
+				assert_eq!(f.peer.is_connected(), attempt < 4);
 			}
-			f.receiver.try_iter().for_each(drop);
+			assert_eq!(f.receiver.try_iter().count(), 0);
 			f.dispatch();
 			assert!(f.requests.headers.read_recursive().is_empty());
 			assert_eq!(f.receiver.try_iter().count(), 0);
@@ -948,9 +999,10 @@ mod tests {
 						let (completed, checked) = std::sync::mpsc::channel();
 						let requests = &f.requests;
 						let scores = &f.scores;
+						let peers = &f.peers;
 						let check = scope.spawn(move || {
 							completed
-								.send(requests.check_header_requests(scores, expired_at))
+								.send(requests.check_header_requests(peers, scores, expired_at))
 								.unwrap();
 						});
 						assert!(matches!(

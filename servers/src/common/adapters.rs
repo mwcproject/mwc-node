@@ -374,6 +374,10 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
+	fn peer_connected(&self, peer: &PeerInfo) {
+		self.sync_manager.peer_connected(&peer.addr);
+	}
+
 	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
 		self.chain()?.head_header()
 	}

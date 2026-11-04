@@ -109,13 +109,26 @@ impl SyncManager {
 			.elapse_no_response_merge_interval(peer);
 	}
 
+	/// Called before a new connection becomes eligible for sync. Each downloader
+	/// serializes cancellation with timeout reporting, so old requests cannot
+	/// recreate NoResponse events after we clear the previous connection's history.
+	pub fn peer_connected(&self, peer: &PeerAddr) {
+		self.headers_hashes.write().clear_peer_requests(peer);
+		self.pibd_headers.clear_peer_requests(peer);
+		self.tip_headers.clear_peer_requests(peer);
+		self.state.clear_peer_requests(peer);
+		self.body.clear_peer_requests(peer);
+		self.headers_sync_peers.clear_no_response(peer);
+		self.state_sync_peers.clear_no_response(peer);
+	}
+
 	pub fn sync_request(&self, peers: &Arc<Peers>) -> Result<SyncResponse, Error> {
 		self.clear_inactive_pibd_failures();
 		if !self.state_is_ready() {
 			self.body.reset(&self.state_sync_peers);
 		}
 		self.tip_headers
-			.check_header_requests(&self.headers_sync_peers, Instant::now());
+			.check_header_requests(peers, &self.headers_sync_peers, Instant::now());
 		self.headers_sync_peers.apply_peers_status(peers);
 		self.state_sync_peers.apply_peers_status(peers);
 		if self.sync_state.is_txhashset_validation() {
@@ -141,15 +154,12 @@ impl SyncManager {
 			.iter()
 			.outbound()
 			.connected()
+			.filter(|peer| peer.info.has_known_tip())
 			.with_capabilities(Capabilities::HEADERS_HASH)
 			.into_iter()
-			.filter_map(|peer| {
+			.map(|peer| {
 				let (height, _) = peer.info.get_height_and_difficulty();
-				if height > 0 {
-					Some((Chain::height_2_archive_height(context_id, height), height))
-				} else {
-					None
-				}
+				(Chain::height_2_archive_height(context_id, height), height)
 			})
 			.collect();
 		let required_responses = sync_target_votes.len() / 2 + 1;
@@ -319,11 +329,9 @@ impl SyncManager {
 		let best_work = peers
 			.iter()
 			.connected()
+			.filter(|peer| peer.info.has_known_tip())
 			.into_iter()
-			.filter_map(|peer| {
-				let (height, difficulty) = peer.info.get_height_and_difficulty();
-				(height != 0).then_some(difficulty)
-			})
+			.map(|peer| peer.info.get_height_and_difficulty().1)
 			.max();
 		if best_work.is_some_and(|work| work >= headers.total_difficulty) {
 			return Ok(());
@@ -417,7 +425,13 @@ impl SyncManager {
 			.tip_headers
 			.receive_header(header, peer, &self.headers_sync_peers)?
 		{
-			if let Some(supplier) = peers.get_connected_peer(&peer.addr) {
+			// An honest announcement can precede Ping/Pong. It may establish the
+			// tip here, but lower work than the handshake leaves its height unknown.
+			// Accept the header and wait for a complete tip before assigning work.
+			if let Some(supplier) = peers
+				.get_connected_peer(&peer.addr)
+				.filter(|supplier| supplier.info.has_known_tip())
+			{
 				self.body
 					.request_header_block(header, &supplier, &self.state_sync_peers)?;
 			}
@@ -933,6 +947,36 @@ mod pibd_successor_flow {
 		);
 		fixture.peers.add_connected(Arc::new(supplier)).unwrap();
 		receiver
+	}
+
+	#[test]
+	fn reconnect_clears_header_and_state_timeout_history() {
+		let fixture = Fixture::new(961_117);
+		let _receiver = connect_sync_supplier(&fixture, 1, true);
+		let peer = peer(1);
+		let scores = [
+			&fixture.manager.headers_sync_peers,
+			&fixture.manager.state_sync_peers,
+		];
+		for score in scores {
+			for _ in 0..4 {
+				score.elapse_no_response_merge_interval(&peer);
+				score.report_no_response(&peer, "old connection".into());
+			}
+			score.report_error_response(&peer, "invalid data".into());
+		}
+		fixture.manager.peer_connected(&peer);
+		for score in scores {
+			score.report_no_response(&peer, "new connection".into());
+			score.apply_peers_status(&fixture.peers);
+			assert!(!fixture.peers.is_banned(&peer).unwrap());
+			assert!(fixture.peers.get_connected_peer(&peer).is_some());
+		}
+		for score in scores {
+			score.report_error_response(&peer, "more invalid data".into());
+			score.apply_peers_status(&fixture.peers);
+			assert!(score.get_banned_peers().contains(&peer));
+		}
 	}
 
 	#[test]
