@@ -72,6 +72,8 @@ pub enum PibdResetMode {
 
 /// We receive 512 headers from a peer in a batch. Let's use it for planning.
 pub const HEADERS_PER_BATCH: u32 = 512;
+/// Distance from the tip used to decide whether to display download status.
+pub const SYNC_STATUS_TIP_DISTANCE: u64 = 10;
 pub(crate) const SYNC_STATUS_UPDATE_INTERVAL_MS: u64 = 200;
 
 /// Helper for sync phases that can produce progress faster than the UI can use.
@@ -187,10 +189,13 @@ pub enum SyncStatus {
 	},
 	/// Downloading block headers below archive height
 	HeaderSync {
+		/// Header height when this download started.
+		#[serde(default)]
+		start_height: u64,
 		/// current sync head
 		current_height: u64,
 		/// height of the most advanced peer
-		archive_height: u64,
+		target_height: u64,
 	},
 	/// Performing PIBD reconstruction of txhashset
 	/// If PIBD syncer determines there's not enough
@@ -254,7 +259,7 @@ pub enum SyncStatus {
 	},
 	/// Downloading blocks on the selected header chain.
 	BodySync {
-		/// Starting height used for displayed block progress; zero in archive mode.
+		/// Body height when this download started, including resumed archive downloads.
 		/// The field name is retained for API compatibility.
 		archive_height: u64,
 		/// current node height
@@ -268,14 +273,25 @@ pub enum SyncStatus {
 
 /// Current sync state. Encapsulates the current SyncStatus.
 pub struct SyncState {
-	current: RwLock<SyncStatus>,
+	current: RwLock<SyncStateData>,
+}
+
+struct SyncStateData {
+	status: SyncStatus,
+	// Keep both baselines while header and body downloads run in parallel.
+	header_start: Option<u64>,
+	body_start: Option<u64>,
 }
 
 impl SyncState {
 	/// Return a new SyncState initialize to NoSync
 	pub fn new() -> SyncState {
 		SyncState {
-			current: RwLock::new(SyncStatus::Initial),
+			current: RwLock::new(SyncStateData {
+				status: SyncStatus::Initial,
+				header_start: None,
+				body_start: None,
+			}),
 		}
 	}
 
@@ -287,29 +303,26 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		match *self.current.read_recursive() {
+		match self.current.read_recursive().status {
 			SyncStatus::NoSync => false,
 			SyncStatus::BodySync {
 				archive_height: _,
 				current_height,
 				highest_height,
-			} => highest_height.saturating_sub(current_height) > 10,
+			} => highest_height.saturating_sub(current_height) > SYNC_STATUS_TIP_DISTANCE,
 			_ => true,
 		}
 	}
 
 	/// Check if headers download process is done. In this case it make sense to request more top headers
 	pub fn are_headers_done(&self) -> bool {
-		match *self.current.read_recursive() {
+		match self.current.read_recursive().status {
 			SyncStatus::Initial => false,
 			SyncStatus::HeaderHashSync {
 				completed_blocks: _,
 				total_blocks: _,
 			} => false,
-			SyncStatus::HeaderSync {
-				current_height: _,
-				archive_height: _,
-			} => false,
+			SyncStatus::HeaderSync { .. } => false,
 			_ => true,
 		}
 	}
@@ -317,7 +330,7 @@ impl SyncState {
 	/// Whether the node is in a long txhashset/header PMMR validation phase.
 	pub fn is_txhashset_validation(&self) -> bool {
 		matches!(
-			*self.current.read_recursive(),
+			self.current.read_recursive().status,
 			SyncStatus::ValidatingKernelsHistory { .. }
 				| SyncStatus::TxHashsetKernelsPosValidation { .. }
 				| SyncStatus::TxHashsetOutputPosIndexBuild { .. }
@@ -330,7 +343,17 @@ impl SyncState {
 
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
-		*self.current.read_recursive()
+		self.current.read_recursive().status
+	}
+
+	/// Starting header height retained throughout the current download.
+	pub fn header_sync_start_height(&self) -> Option<u64> {
+		self.current.read_recursive().header_start
+	}
+
+	/// Starting body height retained throughout the current download.
+	pub fn body_sync_start_height(&self) -> Option<u64> {
+		self.current.read_recursive().body_start
 	}
 
 	/// Update the syncing status
@@ -341,15 +364,40 @@ impl SyncState {
 
 	fn update_with_guard(
 		&self,
-		new_status: SyncStatus,
-		mut status: RwLockWriteGuard<SyncStatus>,
+		mut new_status: SyncStatus,
+		mut state: RwLockWriteGuard<SyncStateData>,
 	) -> bool {
-		if *status == new_status {
+		match &mut new_status {
+			SyncStatus::HeaderSync {
+				start_height,
+				current_height,
+				..
+			} => {
+				let start = state.header_start.get_or_insert(*start_height);
+				*start = (*start).min(*current_height);
+				*start_height = *start;
+			}
+			SyncStatus::BodySync {
+				archive_height,
+				current_height,
+				..
+			} => {
+				let start = state.body_start.get_or_insert(*archive_height);
+				*start = (*start).min(*current_height);
+				*archive_height = *start;
+			}
+			SyncStatus::AwaitingPeers => (),
+			_ => {
+				state.header_start = None;
+				state.body_start = None;
+			}
+		}
+		if state.status == new_status {
 			return false;
 		}
 		// Sync status is needed for QT wallet sync tracking. Please keep this message as info
 		info!("mwc-node sync status: {:?}", new_status);
-		*status = new_status;
+		state.status = new_status;
 		true
 	}
 
@@ -359,11 +407,78 @@ impl SyncState {
 		F: Fn(SyncStatus) -> bool,
 	{
 		let status = self.current.write();
-		if f(*status) {
+		if f(status.status) {
 			self.update_with_guard(new_status, status)
 		} else {
 			false
 		}
+	}
+}
+
+#[cfg(test)]
+mod sync_progress_tests {
+	use super::{SyncState, SyncStatus};
+
+	#[test]
+	fn download_baselines_survive_parallel_sync_and_peer_waits() {
+		let state = SyncState::new();
+		let headers = |height| SyncStatus::HeaderSync {
+			start_height: height,
+			current_height: height,
+			target_height: 200,
+		};
+		let bodies = |height| SyncStatus::BodySync {
+			archive_height: height,
+			current_height: height,
+			highest_height: 200,
+		};
+		state.update(headers(100));
+		state.update(bodies(50));
+		state.update(SyncStatus::AwaitingPeers);
+		state.update(headers(150));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::HeaderSync {
+				start_height: 100,
+				current_height: 150,
+				..
+			}
+		));
+		state.update(bodies(125));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::BodySync {
+				archive_height: 50,
+				current_height: 125,
+				..
+			}
+		));
+		// A rewind cannot leave the baseline above the current height.
+		state.update(bodies(25));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::BodySync {
+				archive_height: 25,
+				..
+			}
+		));
+		state.reset();
+		state.update(headers(180));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::HeaderSync {
+				start_height: 180,
+				..
+			}
+		));
+		state.update(bodies(175));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::BodySync {
+				archive_height: 175,
+				..
+			}
+		));
 	}
 }
 

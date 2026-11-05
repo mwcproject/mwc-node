@@ -713,6 +713,9 @@ impl HeadersPibdHashSync {
 					continue;
 				}
 				if now >= request.expires_at {
+					if let Some(supplier) = request.supplier.upgrade() {
+						supplier.record_response_timeout();
+					}
 					sync_peers.report_no_response(
 						&request.peer,
 						format!("Checkpoint hash segment {} timed out", task.id),
@@ -1300,8 +1303,20 @@ mod task_tests {
 			0
 		);
 		let id = f.sync.tasks[0].id;
+		let supplier = f.sync.tasks[0]
+			.request
+			.as_ref()
+			.unwrap()
+			.supplier
+			.upgrade()
+			.unwrap();
+		let previous_latency = supplier.response_latency().unwrap();
 		f.sync.tasks[0].request.as_mut().unwrap().expires_at = Instant::now();
 		f.schedule();
+		assert_eq!(
+			supplier.response_latency(),
+			Some((previous_latency + Duration::from_secs(60)) / 2)
+		);
 		assert_eq!(f.sync.tasks[0].id, id);
 		assert!(f.sync.tasks[0].request.is_some());
 		assert_eq!(

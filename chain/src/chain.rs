@@ -580,7 +580,7 @@ impl Chain {
 	#[cfg(test)]
 	fn should_fail_process_marker_clear(&self, op_name: &str) -> bool {
 		match op_name {
-			"process_block_single" => self
+			"process_block_single" | "process_block_series" => self
 				.fail_next_process_block_marker_clear
 				.swap(false, Ordering::SeqCst),
 			"process_block_header" => self
@@ -1618,12 +1618,31 @@ impl Chain {
 		opts: Options,
 		source_peers: HashSet<String>,
 	) -> Result<Option<Tip>, Error> {
+		self.process_blocks(secp, std::slice::from_ref(&b), opts, source_peers)
+	}
+
+	/// Validate and commit a consecutive batch, including batches of one block.
+	/// Multiple blocks share a commit and cannot be rewound one block at a time;
+	/// callers must limit the batch to one near the tip. Supplier attribution is
+	/// only possible for a single block: retry failed batches singly to identify it.
+	pub fn process_blocks(
+		&self,
+		secp: &mut Secp256k1,
+		blocks: &[Block],
+		opts: Options,
+		source_peers: HashSet<String>,
+	) -> Result<Option<Tip>, Error> {
+		let first = blocks
+			.first()
+			.ok_or_else(|| Error::InvalidBlocksSeries("empty block batch".into()))?;
 		// Report failures only after processing has released its chain locks.
 		let result = (|| {
 			self.ensure_chain_robust()?;
-			pipe::validate_header_context_id(self.store.get_context_id(), &b.header)?;
-			self.check_block(&b, opts)?;
-			match self.process_block_single(secp, &b, opts) {
+			for block in blocks {
+				pipe::validate_header_context_id(self.store.get_context_id(), &block.header)?;
+			}
+			self.check_block(first, opts)?;
+			match self.process_blocks_impl(secp, blocks, opts) {
 				Ok(tip) => Ok(tip),
 				Err(BlockProcessingError::NotCommitted(error)) => {
 					// A duplicate may have been committed concurrently after the
@@ -1643,14 +1662,20 @@ impl Chain {
 						error
 					);
 					Err(Error::committed_recovery_failed(
-						"process_block_single committed marker cleanup",
+						if blocks.len() == 1 {
+							"process_block_single committed marker cleanup"
+						} else {
+							"process_block_series committed marker cleanup"
+						},
 						error,
 					))
 				}
 			}
 		})();
 		if let Err(error) = &result {
-			self.report_block_rejection(&b, &source_peers, error);
+			if blocks.len() == 1 {
+				self.report_block_rejection(first, &source_peers, error);
+			}
 		}
 		result
 	}
@@ -1833,14 +1858,18 @@ impl Chain {
 		Ok(())
 	}
 
-	/// Attempt to add a new block to the chain.
-	/// Returns the new body tip if the block wins by work, or None for a valid fork.
-	fn process_block_single(
+	/// Commit the batch and publish each block only after recovery succeeds.
+	fn process_blocks_impl(
 		&self,
 		secp: &mut Secp256k1,
-		b: &Block,
+		blocks: &[Block],
 		opts: Options,
 	) -> Result<Option<Tip>, BlockProcessingError> {
+		let op_name = if blocks.len() == 1 {
+			"process_block_single"
+		} else {
+			"process_block_series"
+		};
 		let mut state_may_have_changed = false;
 		let completion = {
 			let mut header_pmmr = self.header_pmmr.write();
@@ -1851,13 +1880,12 @@ impl Chain {
 			let res = (|| {
 				let context_id = self.store.get_context_id();
 				let batch = self.store.batch_write()?;
-				let prev_head = batch.head()?;
+				let mut prev_head = batch.head()?;
 				let mut ctx = self.new_ctx(opts, batch, &mut header_pmmr, &mut txhashset)?;
 
-				let bv = vec![b.clone()];
 				let (head, fork_point) = pipe::process_blocks_series(
 					self.store.get_context_id(),
-					&bv,
+					blocks,
 					&mut ctx,
 					&mut state_may_have_changed,
 					secp,
@@ -1866,53 +1894,71 @@ impl Chain {
 				// Prepare every fallible input to the acceptance callback before the
 				// durable commit. A successful commit must leave only marker recovery
 				// and infallible publication work.
-				let prev = ctx.batch.get_previous_header(&b.header).map_err(|e| {
-					Error::StoreErr(e, "process_block_single get previous header".into())
-				})?;
-				let status = self.determine_status(
-					head,
-					Tip::try_from_header(&prev)?,
-					prev_head,
-					Tip::try_from_header(&fork_point)?,
-				);
-				let block_hash = b.hash(context_id)?;
+				let mut fork_point = Tip::try_from_header(&fork_point)?;
+				let mut accepted = Vec::with_capacity(blocks.len());
+				for b in blocks {
+					let prev = ctx.batch.get_previous_header(&b.header).map_err(|e| {
+						Error::StoreErr(e, format!("{} get previous header", op_name))
+					})?;
+					let tip = Tip::try_from_header(&b.header)?;
+					let block_head =
+						(tip.total_difficulty > prev_head.total_difficulty).then_some(tip);
+					let status = self.determine_status(
+						block_head,
+						Tip::try_from_header(&prev)?,
+						prev_head,
+						fork_point,
+					);
+					accepted.push((status, b.hash(context_id)?));
+					if let Some(tip) = block_head {
+						prev_head = tip;
+						fork_point = tip;
+					}
+				}
 				let header_head = ctx.batch.header_head()?;
 				ctx.batch.commit()?;
 
-				Ok((head, status, block_hash, header_head))
+				Ok((head, accepted, header_head))
 			})();
-			self.finish_pending_chain_operation(
-				"process_block_single",
-				res,
-				state_may_have_changed,
-				marker_guard,
-			)
+			self.finish_pending_chain_operation(op_name, res, state_may_have_changed, marker_guard)
 		}?;
 
-		let (head, status, block_hash, header_head) = match completion {
+		let (head, accepted, header_head) = match completion {
 			PendingChainOperationCompletion::Complete(value) => value,
 			PendingChainOperationCompletion::CommittedNeedsRecovery {
 				value,
 				marker_error,
 			} => {
 				warn!(
-					"process_block_single committed its block but failed to clear the recovery marker; recovering before publishing acceptance: {}",
-					marker_error
+					"{} committed its blocks but failed to clear the recovery marker; recovering before publishing acceptance: {}",
+					op_name, marker_error
 				);
-				self.recover_pending_chain_operation_checked(
-					"process_block_single committed marker cleanup",
-				)
+				self.recover_pending_chain_operation_checked(&format!(
+					"{} committed marker cleanup",
+					op_name
+				))
 				.map_err(BlockProcessingError::CommittedRecoveryFailed)?;
 				value
 			}
 		};
 
-		info!(
-			"Accepted single block {} for height {}",
-			block_hash, b.header.height
-		);
-		// notifying other parts of the system of the update
-		self.adapter.block_accepted(secp, b, status, header_head);
+		if blocks.len() > 1 {
+			info!(
+				"Accepted {} blocks in series, heights {}..{}",
+				blocks.len(),
+				blocks[0].header.height,
+				blocks[blocks.len() - 1].header.height
+			);
+		}
+		for (b, (status, block_hash)) in blocks.iter().zip(accepted) {
+			if blocks.len() == 1 {
+				info!(
+					"Accepted single block {} for height {}",
+					block_hash, b.header.height
+				);
+			}
+			self.adapter.block_accepted(secp, b, status, header_head);
+		}
 
 		Ok(head)
 	}
@@ -8430,6 +8476,57 @@ mod tests {
 	}
 
 	#[test]
+	fn block_series_rolls_back_bad_child_and_recovers_commit_marker() {
+		let source_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let target_dir = mwc_crates::tempfile::tempdir().unwrap();
+		let source = mine_chain(source_dir.path().to_str().unwrap(), 3);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let adapter = Arc::new(RecordingAdapter::default());
+		let chain = init_chain_with_recording_adapter(
+			target_dir.path().to_str().unwrap(),
+			&secp,
+			source.genesis.clone(),
+			adapter.clone(),
+		);
+		let blocks: Vec<_> = (1..=2)
+			.map(|height| {
+				source
+					.get_block_for_header(&source.get_header_by_height(height).unwrap())
+					.unwrap()
+			})
+			.collect();
+		let mut invalid = blocks.clone();
+		invalid[1].body.outputs[0].proof.proof[0] ^= 1;
+		assert!(chain
+			.process_blocks(&mut secp, &invalid, Options::NONE, HashSet::new())
+			.unwrap_err()
+			.is_bad_data());
+		assert_eq!(chain.head().unwrap().height, 0);
+		assert!(adapter.accepted.read_recursive().is_empty());
+		for block in &blocks {
+			assert!(!chain.block_exists(&block.hash(0).unwrap()).unwrap());
+		}
+
+		chain
+			.fail_next_process_block_marker_clear
+			.store(true, Ordering::SeqCst);
+		let tip = chain
+			.process_blocks(&mut secp, &blocks, Options::NONE, HashSet::new())
+			.unwrap()
+			.unwrap();
+		assert_eq!(tip.height, 2);
+		assert!(chain.store.pending_chain_operation().unwrap().is_none());
+		assert!(!chain.requires_init_recovery.load(Ordering::SeqCst));
+		let accepted = adapter.accepted.read_recursive();
+		assert_eq!(accepted.len(), 2);
+		for (entry, block) in accepted.iter().zip(&blocks) {
+			assert_eq!(entry.0, block.hash(0).unwrap());
+			assert!(entry.1.is_next());
+		}
+		chain.validate(&secp, false).unwrap();
+	}
+
+	#[test]
 	fn single_block_marker_clear_failure_preserves_acceptance() {
 		let source_dir = format!(
 			"target/single_block_marker_clear_source_{}",
@@ -14140,7 +14237,8 @@ mod tests {
 			std::process::id()
 		);
 		let _ = fs::remove_dir_all(&chain_dir);
-		let chain = mine_chain(&chain_dir, 78);
+		// Eligibility is rejected before compaction, so no horizon-length history is needed.
+		let chain = mine_chain(&chain_dir, 3);
 
 		let canonical_head = chain.store.head().unwrap();
 		let horizon = u64::from(global::cut_through_horizon(0));

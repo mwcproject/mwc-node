@@ -98,6 +98,14 @@ impl PibdParams {
 		res
 	}
 
+	/// Use a fixed CPU count so capacity tests need not fill the host's largest buffers.
+	#[cfg(feature = "test-support")]
+	pub fn with_cpu_count_for_test(cpu_num: usize) -> Self {
+		let mut params = Self::new();
+		params.cpu_num = cpu_num;
+		params
+	}
+
 	/// Buffer size for header hashes
 	pub fn get_headers_hash_buffer_len(&self) -> usize {
 		Self::calc_mem_adequate_val2(

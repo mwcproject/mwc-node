@@ -105,11 +105,18 @@ impl Peer {
 		}
 	}
 
-	/// Record only a complete response, measured from its request's send time.
+	/// Record a complete response duration or a synthetic timeout penalty.
 	pub fn record_response_latency(&self, elapsed: Duration) {
 		if let Ok(latency_ms) = i64::try_from(elapsed.as_millis()) {
 			self.latency.lock().add_latency(latency_ms);
 		}
+	}
+
+	/// Make unanswered requests count as twice the maximum request timeout.
+	pub fn record_response_timeout(&self) {
+		self.record_response_latency(Duration::from_secs(
+			u64::from(mwc_chain::pibd_params::PIBD_REQUESTS_TIMEOUT_SECS) * 2,
+		));
 	}
 
 	pub fn response_latency(&self) -> Option<Duration> {
@@ -846,6 +853,22 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn timeout_latency_penalty_recovers_with_successful_responses() {
+		let peer = test_peer();
+		for _ in 0..7 {
+			peer.record_response_latency(Duration::from_secs(4));
+		}
+		peer.record_response_timeout();
+		assert_eq!(peer.response_latency(), Some(Duration::from_secs(12)));
+		assert_eq!(peer.request_timeout(), Duration::from_secs(30));
+		for _ in 0..7 {
+			peer.record_response_latency(Duration::from_secs(4));
+		}
+		assert_eq!(peer.response_latency(), Some(Duration::from_secs(4)));
+		assert_eq!(peer.request_timeout(), Duration::from_secs(16));
 	}
 
 	#[test]

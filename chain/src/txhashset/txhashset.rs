@@ -39,7 +39,7 @@ use mwc_core::core::{
 };
 use mwc_core::global;
 use mwc_core::libtx::coinbase_binding::{
-	canonical_input_hash, unspent_bitmap_hash, verify_coinbase_binding, CoinbaseBindingContext,
+	canonical_input_hash, verify_coinbase_binding, CoinbaseBindingContext, UnspentBitmap,
 };
 use mwc_core::ser::{self, PMMRIndexHashable, PMMRable, ProtocolVersion};
 use mwc_crates::croaring::Bitmap;
@@ -47,6 +47,7 @@ use mwc_crates::crossbeam;
 use mwc_crates::crossbeam::thread::ScopedJoinHandle;
 use mwc_crates::log::{debug, error, info, trace, warn};
 use mwc_crates::num_cpus;
+use mwc_crates::parking_lot::RwLock;
 use mwc_crates::secp::pedersen::{Commitment, RangeProof};
 use mwc_crates::secp::Secp256k1;
 use mwc_store::pmmr::PMMRBackend;
@@ -61,6 +62,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+
+#[cfg(test)]
+use mwc_core::libtx::coinbase_binding::unspent_bitmap_hash;
 
 const TXHASHSET_SUBDIR: &str = "txhashset";
 const KERNEL_POS_INDEX_REBUILD_CHUNK_SIZE: usize = 10_000;
@@ -3079,6 +3083,8 @@ struct RewindBlockPlan {
 /// function.
 pub struct Extension<'a> {
 	head: Tip,
+	// Derived only from this extension; never survives rollback or commit.
+	bitmap_cache: RwLock<Option<UnspentBitmap>>,
 
 	output_pmmr: PMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
 	rproof_pmmr: PMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
@@ -3092,6 +3098,7 @@ impl<'a> Extension<'a> {
 	fn new(context_id: u32, trees: &'a mut TxHashSet, head: Tip) -> Extension<'a> {
 		Extension {
 			head,
+			bitmap_cache: RwLock::new(None),
 			output_pmmr: PMMR::at(&mut trees.output_pmmr_h.backend, trees.output_pmmr_h.size),
 			rproof_pmmr: PMMR::at(&mut trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.size),
 			kernel_pmmr: PMMR::at(&mut trees.kernel_pmmr_h.backend, trees.kernel_pmmr_h.size),
@@ -3129,6 +3136,7 @@ impl<'a> Extension<'a> {
 
 	/// Reset prune lists
 	pub fn reset_prune_lists(&mut self) -> Result<(), Error> {
+		*self.bitmap_cache.get_mut() = None;
 		self.output_pmmr.reset_prune_list()?;
 		self.rproof_pmmr.reset_prune_list()?;
 		Ok(())
@@ -3212,15 +3220,17 @@ impl<'a> Extension<'a> {
 		Ok(spent_records)
 	}
 
-	/// Hash the current unspent-output bitmap directly from the ordered leaf indexes.
-	/// The PMMR view limits the iterator to this branch's logical size. Its full
-	/// historical leaf count includes spent outputs and bounds trailing zero bits.
+	/// Build once per extension, then hash the packed bytes updated by spends and
+	/// outputs. The historical leaf count and zero padding remain consensus-identical.
 	fn bitmap_hash(&self) -> Result<Hash, Error> {
-		let leaf_count = pmmr::n_leaves(self.output_pmmr.unpruned_size())?;
-		Ok(unspent_bitmap_hash(
-			self.output_pmmr.leaf_idx_iter(0)?,
-			leaf_count,
-		)?)
+		let mut cache = self.bitmap_cache.write();
+		if cache.is_none() {
+			*cache = Some(UnspentBitmap::new(
+				self.output_pmmr.leaf_idx_iter(0)?,
+				pmmr::n_leaves(self.output_pmmr.unpruned_size())?,
+			)?);
+		}
+		Ok(cache.as_ref().unwrap().hash())
 	}
 
 	/// Calculate the digest from the parent bitmap and exact resolved inputs.
@@ -3337,6 +3347,9 @@ impl<'a> Extension<'a> {
 		})?;
 		match self.output_pmmr.prune(pos0)? {
 			true => {
+				if let Some(bitmap) = self.bitmap_cache.get_mut() {
+					bitmap.spend(pmmr::n_leaves(pos.pos)? - 1)?;
+				}
 				let rproof_pruned = self
 					.rproof_pmmr
 					.prune(pos0)
@@ -3386,6 +3399,10 @@ impl<'a> Extension<'a> {
 			.push(&out.identifier())
 			.map_err(|e| Error::TxHashSetErr(format!("pmmr output push error, {}", e)))?;
 
+		if let Some(bitmap) = self.bitmap_cache.get_mut() {
+			bitmap.append()?;
+		}
+
 		// push the rangeproof to the MMR.
 		let rproof_pos = self
 			.rproof_pmmr
@@ -3418,6 +3435,7 @@ impl<'a> Extension<'a> {
 	/// Once the PIBD set is downloaded, we need to ensure that the respective leaf sets
 	/// match the bitmap (particularly in the case of outputs being spent after a PIBD catch-up)
 	pub fn update_leaf_sets(&mut self, bitmap: &Bitmap) -> Result<(), Error> {
+		*self.bitmap_cache.get_mut() = None;
 		validation::reset_body(self.context_id);
 		let mut output_pos_to_prune = Vec::new();
 		for pos0 in self.output_pmmr.leaf_pos_iter()? {
@@ -3490,6 +3508,7 @@ impl<'a> Extension<'a> {
 		segments: Vec<Segment<OutputIdentifier>>,
 		bitmap: &Bitmap,
 	) -> Result<(), Error> {
+		*self.bitmap_cache.get_mut() = None;
 		validation::reset_body(self.context_id);
 		for segm in segments {
 			let (_sid, hash_pos, hashes, leaf_pos, leaf_data, _proof) = segm.parts();
@@ -4268,6 +4287,7 @@ impl<'a> Extension<'a> {
 				})
 			})
 			.collect::<Result<Bitmap, Error>>()?;
+		*self.bitmap_cache.get_mut() = None;
 		self.output_pmmr.rewind(output_pos, &bitmap)?;
 		self.rproof_pmmr.rewind(output_pos, &bitmap)?;
 		self.kernel_pmmr.rewind(kernel_pos, &Bitmap::new())?;
@@ -9728,6 +9748,12 @@ mod coinbase_binding_tests {
 		assert_eq!(initial_sizes, ext.sizes());
 		assert_eq!(ext.bitmap_hash().unwrap(), f.parent_bitmap_hash);
 		ext.apply_block(&block, &header_ext, &batch).unwrap();
+		// Normal application updates the existing cache; no subsequent scan is
+		// needed to represent both newly created outputs and the spent inputs.
+		assert_eq!(
+			ext.bitmap_cache.read().as_ref().unwrap().hash(),
+			bitmap_hash(2..6, 6)
+		);
 		let roots = ext.roots().unwrap();
 		block.header.output_root = roots.output_root;
 		block.header.range_proof_root = roots.rproof_root;
@@ -9742,6 +9768,7 @@ mod coinbase_binding_tests {
 			.unwrap();
 		batch.save_block(&block).unwrap();
 		ext.rewind(&f.parent, &batch, None).unwrap();
+		assert!(ext.bitmap_cache.read().is_none());
 		assert_eq!(ext.bitmap_hash().unwrap(), f.parent_bitmap_hash);
 		assert_eq!(pmmr::n_leaves(ext.output_pmmr.unpruned_size()).unwrap(), 4);
 		let other = bound_block(context_id, &mut secp, &f.parent, &tx_b, &binding_b, 2);
@@ -10089,7 +10116,7 @@ mod coinbase_binding_tests {
 	fn coinbase_bitmap_hash_excludes_leaves_beyond_the_pmmr_view() {
 		let context_id = 940_007;
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		let f = Fixture::new(context_id, &mut secp, 3);
+		let mut f = Fixture::new(context_id, &mut secp, 3);
 		assert_eq!(current_bitmap_hash(&f.trees), bitmap_hash(0..4, 4));
 
 		// Keep the later output in the backend leaf set. The smaller view must
@@ -10103,6 +10130,13 @@ mod coinbase_binding_tests {
 		.unwrap();
 		assert_eq!(hash, bitmap_hash(0..3, 3));
 		assert_ne!(hash, f.parent_bitmap_hash);
+		f.trees.output_pmmr_h.size = size;
+		let ext = Extension::new(
+			context_id,
+			&mut f.trees,
+			Tip::try_from_header(&f.parent).unwrap(),
+		);
+		assert_eq!(ext.bitmap_hash().unwrap(), hash);
 	}
 
 	#[test]

@@ -6,7 +6,6 @@ MWC has a code of conduct and the handling of vulnerability disclosure is no exc
 
 For all security related issues, MWC has 2 main points of contact:
 
-* Chris Gilliard (christopher.gilliard@gmail.com)
 * Konstantin Bay (konstantin.bay@gmail.com)
 
 Send all communications to all parties and expect a reply within 48h.

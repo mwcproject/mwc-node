@@ -89,12 +89,15 @@ fn sync_status_to_api(sync_status: SyncStatus) -> (String, Option<serde_json::Va
 			Some(json!({ "completed_blocks": completed_blocks, "total_blocks": total_blocks })),
 		),
 		SyncStatus::HeaderSync {
+			start_height,
 			current_height,
-			archive_height,
+			target_height,
 			..
 		} => (
 			"header_sync".to_string(),
-			Some(json!({ "current_height": current_height, "highest_height": archive_height })),
+			Some(
+				json!({ "start_height": start_height, "current_height": current_height, "target_height": target_height }),
+			),
 		),
 		SyncStatus::ValidatingKernelsHistory {
 			headers,
@@ -181,6 +184,15 @@ mod tests {
 	fn sync_status_to_api_maps_active_progress_states() {
 		let cases = [
 			(SyncStatus::Initial, "initial", None),
+			(
+				SyncStatus::HeaderSync {
+					start_height: 100,
+					current_height: 150,
+					target_height: 200,
+				},
+				"header_sync",
+				Some(json!({ "start_height": 100, "current_height": 150, "target_height": 200 })),
+			),
 			(
 				SyncStatus::HeaderHashSync {
 					completed_blocks: 2,

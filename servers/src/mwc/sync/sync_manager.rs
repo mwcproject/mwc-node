@@ -25,6 +25,7 @@ use crate::mwc::sync::state_sync::StateSync;
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils::{self, SyncRequestResponses, SyncResponse};
 use mwc_chain::txhashset::BitmapChunk;
+use mwc_chain::types::SYNC_STATUS_TIP_DISTANCE;
 use mwc_chain::{Chain, ChainHeadReset, Error, SyncState, SyncStatus};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, BlockHeader, OutputIdentifier, Segment, TxKernel};
@@ -284,27 +285,64 @@ impl SyncManager {
 				false
 			}
 		};
-		let body = self
-			.body
-			.request(peers, &self.sync_state, &self.state_sync_peers)?;
-		match body.response {
-			// Keep Running while new advertised headers are downloaded in the background.
-			SyncRequestResponses::BodyReady
-				if headers_ready || self.sync_state.status() == SyncStatus::NoSync =>
-			{
-				Ok(SyncResponse::new(
-					SyncRequestResponses::SyncDone,
-					Capabilities::UNKNOWN,
-					"DONE!".into(),
-				))
-			}
-			SyncRequestResponses::BodyReady => Ok(SyncResponse::new(
-				SyncRequestResponses::Syncing,
-				Capabilities::UNKNOWN,
-				"Downloading advertised headers".into(),
-			)),
-			_ => Ok(body),
+		let header_target = self.tip_headers.active_target_height(peers);
+		// Always schedule body work too: the visible header status must not pause it.
+		let mut body = self.body.request(
+			peers,
+			&self.sync_state,
+			&self.state_sync_peers,
+			header_target.is_some(),
+		)?;
+		if peers.iter().connected().count() == 0 {
+			return Ok(SyncResponse::new(
+				SyncRequestResponses::WaitingForPeers,
+				body.peers_capabilities,
+				"No connected peers".into(),
+			));
 		}
+		if let Some(target) = header_target {
+			let current_height = self.chain.header_head()?.height;
+			if target.saturating_sub(current_height) >= SYNC_STATUS_TIP_DISTANCE {
+				let start_height = self
+					.sync_state
+					.header_sync_start_height()
+					.unwrap_or(current_height);
+				self.sync_state.update(SyncStatus::HeaderSync {
+					start_height,
+					current_height,
+					target_height: target,
+				});
+				return Ok(SyncResponse::new(
+					SyncRequestResponses::WaitingForHeaders,
+					body.peers_capabilities,
+					"Downloading advertised headers".into(),
+				));
+			}
+			// Small header and body gaps remain Running while both downloaders work.
+			if current_height.saturating_sub(self.chain.head()?.height) < SYNC_STATUS_TIP_DISTANCE {
+				self.sync_state.update(SyncStatus::NoSync);
+				return Ok(SyncResponse::new(
+					SyncRequestResponses::SyncDone,
+					body.peers_capabilities,
+					"Following the tip".into(),
+				));
+			}
+		}
+		match body.response {
+			SyncRequestResponses::BodyReady => {
+				body.response = if headers_ready {
+					SyncRequestResponses::SyncDone
+				} else {
+					SyncRequestResponses::WaitingForPeers
+				};
+			}
+			// Headers are near the tip, but there is still a larger body backlog.
+			SyncRequestResponses::WaitingForHeaders => {
+				body.response = SyncRequestResponses::Syncing
+			}
+			_ => {}
+		}
+		Ok(body)
 	}
 
 	/// Release a header-only branch whose suppliers have disappeared. Leave room
@@ -1009,6 +1047,89 @@ mod pibd_successor_flow {
 			&peer(1),
 			&fixture.block.hash(fixture.chain.get_context_id()).unwrap()
 		));
+	}
+
+	#[test]
+	fn header_status_uses_ten_block_gap_and_keeps_body_downloads_active() {
+		let fixture = Fixture::new(961_130);
+		let header_rx = connect_sync_supplier(&fixture, 1, true);
+		let tip = fixture.chain.header_head().unwrap();
+		let supplier = fixture.peers.get_connected_peer(&peer(1)).unwrap();
+		supplier.info.update(
+			tip.height + 10,
+			(tip.total_difficulty + Difficulty::from_num(200)).unwrap(),
+		);
+		let best_height = ARCHIVE_HEIGHT
+			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
+		fixture.manager.sync_state.update(SyncStatus::AwaitingPeers);
+		let poll = || {
+			fixture
+				.manager
+				.request_chain(&fixture.peers, best_height)
+				.unwrap()
+		};
+		assert_eq!(poll().response, SyncRequestResponses::WaitingForHeaders);
+		assert_eq!(header_rx.try_iter().count(), 1);
+		let downloading = SyncStatus::HeaderSync {
+			start_height: tip.height,
+			current_height: tip.height,
+			target_height: tip.height + 10,
+		};
+		assert_eq!(fixture.manager.sync_state.status(), downloading);
+
+		// A canonical body supplier works concurrently with the higher header target.
+		let body_rx = connect_sync_supplier(&fixture, 2, false);
+		assert_eq!(poll().response, SyncRequestResponses::WaitingForHeaders);
+		assert_eq!(body_rx.try_iter().count(), 1);
+		assert!(fixture.manager.header_download_for_test(&peer(1)).is_some());
+		assert!(fixture.manager.has_block_request(
+			&peer(2),
+			&fixture.block.hash(fixture.chain.get_context_id()).unwrap()
+		));
+		assert_eq!(fixture.manager.sync_state.status(), downloading);
+		fixture.peers.remove_connected(&peer(1));
+		assert_eq!(poll().response, SyncRequestResponses::Syncing);
+		assert!(matches!(
+			fixture.manager.sync_state.status(),
+			SyncStatus::BodySync { .. }
+		));
+
+		// A nine-header gap stays Running, even when previously displaying sync.
+		let near_rx = connect_sync_supplier(&fixture, 3, true);
+		fixture
+			.peers
+			.get_connected_peer(&peer(3))
+			.unwrap()
+			.info
+			.update(
+				tip.height + 9,
+				(tip.total_difficulty + Difficulty::from_num(200)).unwrap(),
+			);
+		assert_eq!(poll().response, SyncRequestResponses::SyncDone);
+		assert_eq!(near_rx.try_iter().count(), 1);
+		assert_eq!(fixture.manager.sync_state.status(), SyncStatus::NoSync);
+		assert!(fixture.manager.has_block_request(
+			&peer(2),
+			&fixture.block.hash(fixture.chain.get_context_id()).unwrap()
+		));
+		fixture
+			.peers
+			.get_connected_peer(&peer(3))
+			.unwrap()
+			.info
+			.update(
+				tip.height + 10,
+				(tip.total_difficulty + Difficulty::from_num(300)).unwrap(),
+			);
+		assert_eq!(poll().response, SyncRequestResponses::WaitingForHeaders);
+		assert_eq!(fixture.manager.sync_state.status(), downloading);
+
+		fixture.peers.remove_connected(&peer(2));
+		fixture.peers.remove_connected(&peer(3));
+		assert_eq!(poll().response, SyncRequestResponses::WaitingForPeers);
+		// A failed header send cannot masquerade as an active download.
+		drop(connect_sync_supplier(&fixture, 4, true));
+		assert_eq!(poll().response, SyncRequestResponses::WaitingForPeers);
 	}
 
 	#[test]

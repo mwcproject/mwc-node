@@ -224,6 +224,9 @@ impl HeaderPibdDownload {
 					.expires_at
 					.checked_duration_since(request.sent_at)
 					.ok_or_else(|| Error::Other("Checkpoint deadline precedes send time".into()))?;
+				if let Some(supplier) = request.supplier.upgrade() {
+					supplier.record_response_timeout();
+				}
 				scores.report_no_response(
 					&request.peer,
 					format!(
@@ -463,9 +466,14 @@ impl HeaderPibdSync {
 					.map(|download| download.target)
 			};
 			if let Some(target) = pending_target {
+				let current_height = self.chain.header_head()?.height.min(target);
+				let start_height = sync_state
+					.header_sync_start_height()
+					.unwrap_or(current_height);
 				sync_state.update(SyncStatus::HeaderSync {
-					current_height: self.chain.header_head()?.height.min(target),
-					archive_height: target,
+					start_height,
+					current_height,
+					target_height: target,
 				});
 				let peer_count = self.send_requests(peers, scores)?;
 				return Ok(SyncResponse::new(
@@ -599,7 +607,7 @@ impl HeaderPibdSync {
 			peer_count = candidates.len();
 			// First eligible zero-based index is floor(peer latency / best latency) - 1.
 			// Snapshot latency once per scheduling pass. Unmeasured peers start
-			// at the head until their first complete response supplies a sample.
+			// at the head until a complete response or timeout supplies a sample.
 			let latencies: Vec<_> = candidates
 				.iter()
 				.map(|peer| {
@@ -608,6 +616,7 @@ impl HeaderPibdSync {
 				})
 				.collect();
 			let best_latency = latencies.iter().flatten().copied().min().unwrap_or(1);
+			let last_index = download.tasks.len().saturating_sub(1);
 			let candidates: Vec<_> = candidates
 				.iter()
 				.zip(latencies)
@@ -615,7 +624,8 @@ impl HeaderPibdSync {
 					let first_index = usize::try_from(
 						(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
 					)
-					.unwrap_or(usize::MAX);
+					.unwrap_or(usize::MAX)
+					.min(last_index);
 					(peer, first_index)
 				})
 				.collect();
@@ -1088,7 +1098,7 @@ mod tests {
 				);
 			} else {
 				assert!(download.tasks[0].request.is_none());
-				assert_eq!(supplier.response_latency(), None);
+				assert_eq!(supplier.response_latency(), Some(timeout * 2));
 			}
 		}
 	}
@@ -1172,7 +1182,7 @@ mod tests {
 			download.tasks[0].request.as_ref().unwrap().expires_at,
 			now + Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64)
 		);
-		// An unanswered attempt is not a completed-response latency sample.
+		// Even a shorter adaptive deadline incurs twice the configured maximum.
 		download.tasks[0].reset();
 		assign(
 			&mut download.tasks[0],
@@ -1184,7 +1194,8 @@ mod tests {
 		download
 			.expire_tasks(now + Duration::from_secs(16), &scores, 1)
 			.unwrap();
-		assert_eq!(supplier.request_timeout(), Duration::from_secs(16));
+		assert_eq!(supplier.response_latency(), Some(Duration::from_secs(32)));
+		assert_eq!(supplier.request_timeout(), Duration::from_secs(30));
 		// Extremely fast and slow samples must respect the minimum and configured maximum.
 		for _ in 0..15 {
 			supplier.record_response_latency(Duration::from_millis(1));
@@ -1341,7 +1352,7 @@ mod tests {
 
 	// Connect peers with matching, missing, or different archive commitments and schedule.
 	// Only eligible agreed peers receive tasks, within the buffer and per-peer limits.
-	// Repeated scheduling sends nothing extra; expiring one partial task retries only it.
+	// Repeated scheduling sends nothing extra; expiry frees one request allowance.
 	#[test]
 	fn scheduler_uses_agreed_peers_and_existing_limits_without_duplicate_sends() {
 		let f = Fixture::new();
@@ -1404,9 +1415,8 @@ mod tests {
 		assert_eq!(first.try_iter().count() + second.try_iter().count(), 1);
 		{
 			let state = f.sync.download.lock();
-			let request = state.as_ref().unwrap().tasks[0].request.as_ref().unwrap();
-			assert!(request.headers.is_empty());
-			assert!(request.expires_at > Instant::now());
+			// The timed-out peer moves back; the faster peer is still at capacity.
+			assert!(state.as_ref().unwrap().tasks[0].request.is_none());
 		}
 
 		// A stalled front task plus ready later tasks fill the memory window.
@@ -1439,6 +1449,47 @@ mod tests {
 			.iter()
 			.skip(window)
 			.all(|task| task.request.is_none()));
+	}
+
+	#[test]
+	fn timed_out_peer_moves_to_the_last_queued_task() {
+		let f = Fixture::new();
+		let per_peer = f.sync.pibd_params.get_segments_request_per_peer();
+		let task_count = per_peer + 1;
+		let interval = global::txhashset_archive_interval(0);
+		let target = task_count as u64 * HEADERS_PER_BATCH as u64 / interval * interval;
+		let fast_messages = f.peer(1, target);
+		let slow_messages = f.peer(2, target);
+		let fast = f.peers.get_connected_peer(&addr(1)).unwrap();
+		let slow = f.peers.get_connected_peer(&addr(2)).unwrap();
+		for _ in 0..7 {
+			fast.record_response_latency(Duration::from_millis(1));
+			slow.record_response_latency(Duration::from_millis(1));
+		}
+		let hashes = vec![hash(1); (target / HEADERS_PER_BATCH as u64 + 1) as usize];
+		let mut download = HeaderPibdDownload::new(&hashes, hash(42), target, 0).unwrap();
+		download.agreed_peers = [addr(1), addr(2)].into_iter().collect();
+		let now = Instant::now();
+		download.tasks[0].request = Some(HeaderPibdTaskRequest {
+			peer: addr(2),
+			supplier: Arc::downgrade(&slow),
+			sent_at: now - Duration::from_secs(30),
+			expires_at: now,
+			headers: Vec::new(),
+		});
+		*f.sync.download.lock() = Some(download);
+		let _work = f.sync.work_lock.lock();
+		f.sync.send_requests(&f.peers, &f.scores).unwrap();
+		assert_eq!(slow.response_latency(), Some(Duration::from_millis(8572)));
+		assert_eq!(fast_messages.try_iter().count(), per_peer);
+		assert_eq!(slow_messages.try_iter().count(), 1);
+		let state = f.sync.download.lock();
+		let tasks = &state.as_ref().unwrap().tasks;
+		assert_eq!(tasks[0].request.as_ref().unwrap().peer, addr(1));
+		assert_eq!(
+			tasks.back().unwrap().request.as_ref().unwrap().peer,
+			addr(2)
+		);
 	}
 
 	#[test]
@@ -1655,6 +1706,7 @@ mod tests {
 			.expire_tasks(now + Duration::from_secs(60), &f.scores, 1)
 			.unwrap();
 		assert!(download.tasks[0].request.is_none());
+		assert_eq!(supplier.response_latency(), None);
 		f.scores.apply_peers_status(&f.peers);
 		assert!(!f.peers.is_banned(&addr(1)).unwrap());
 		assert_eq!(
@@ -2241,6 +2293,41 @@ mod tests {
 			headers.push(header);
 		}
 		headers
+	}
+
+	#[test]
+	fn resumed_header_progress_excludes_existing_headers() {
+		let f = Fixture::with_context(971_203);
+		let genesis = f.sync.chain.genesis();
+		let headers = mine_headers(genesis.clone(), 8);
+		let snapshot = HeadersPibdHashSyncSnapshot {
+			agreed_peers: HashSet::new(),
+			target_archive_height: 100,
+			pibd_headers_are_loaded: false,
+			headers_hash_desegmenter: Some(Arc::new(RwLock::new(checkpoint_hashes(
+				&[genesis.hash(f.sync.chain.get_context_id()).unwrap()],
+				100,
+			)))),
+		};
+		let state = SyncState::new();
+		// Seven existing headers must display 0%, then the baseline stays fixed.
+		for current_height in [7, 8] {
+			f.sync
+				.chain
+				.sync_block_headers(&headers[..current_height], Options::NONE, 1)
+				.unwrap();
+			f.sync
+				.request(&f.peers, &state, &f.scores, &snapshot, 100)
+				.unwrap();
+			assert_eq!(
+				state.status(),
+				SyncStatus::HeaderSync {
+					start_height: 7,
+					current_height: current_height as u64,
+					target_height: 100,
+				}
+			);
+		}
 	}
 
 	// Complete the second range before the first, with invalid padding above target 513.

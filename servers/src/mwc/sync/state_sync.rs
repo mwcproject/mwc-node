@@ -129,6 +129,9 @@ impl StateDownload {
 					continue;
 				}
 				if now >= request.expires_at {
+					if let Some(supplier) = request.supplier.upgrade() {
+						supplier.record_response_timeout();
+					}
 					scores.report_no_response(
 						&request.peer,
 						format!("Snapshot segment {:?} timed out", task.id),
@@ -1283,7 +1286,7 @@ impl StateSync {
 			*counts.entry(request.peer.clone()).or_default() += 1;
 		}
 		// Use the same zero-based latency offset as checkpoint headers. Unknown
-		// peers can start at the head until a completed response gives a sample.
+		// peers can start at the head until a response or timeout gives a sample.
 		let latencies: Vec<_> = peers
 			.iter()
 			.filter(|peer| peer.is_connected())
@@ -1300,13 +1303,15 @@ impl StateSync {
 			.filter_map(|(_, latency)| *latency)
 			.min()
 			.unwrap_or(1);
+		let last_index = download.tasks.len().saturating_sub(1);
 		let candidates: Vec<_> = latencies
 			.into_iter()
 			.map(|(peer, latency)| {
 				let first_index = usize::try_from(
 					(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
 				)
-				.unwrap_or(usize::MAX);
+				.unwrap_or(usize::MAX)
+				.min(last_index);
 				(peer, first_index)
 			})
 			.collect();
@@ -2424,6 +2429,36 @@ mod task_tests {
 			})
 			.collect();
 		assert_eq!(before, after);
+
+		// A timeout pushes the peer back, but never beyond the queued tasks.
+		for _ in 0..7 {
+			fast.record_response_latency(Duration::from_millis(1));
+		}
+		{
+			let mut download = f.sync.download.lock();
+			let request = download.tasks[slow_index].request.as_mut().unwrap();
+			request.expires_at = request.sent_at;
+			let deadline = request.expires_at;
+			download.expire_requests(deadline, &f.scores);
+		}
+		f.sync
+			.send_requests(&suppliers, &session, &f.scores)
+			.unwrap();
+		assert_eq!(fast_messages.try_iter().count(), 0);
+		assert_eq!(slow_messages.try_iter().count(), 1);
+		assert_eq!(
+			f.sync
+				.download
+				.lock()
+				.tasks
+				.back()
+				.unwrap()
+				.request
+				.as_ref()
+				.unwrap()
+				.peer,
+			slow.info.addr,
+		);
 	}
 
 	#[test]

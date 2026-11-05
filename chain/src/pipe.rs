@@ -540,7 +540,7 @@ fn validate_header_difficulty(
 /// Returns new head if chain head updated and the "fork point" rewound to when processing the new block.
 pub fn process_blocks_series(
 	context_id: u32,
-	blocks: &Vec<Block>,
+	blocks: &[Block],
 	ctx: &mut BlockContext<'_>,
 	state_may_have_changed: &mut bool,
 	secp: &mut Secp256k1,

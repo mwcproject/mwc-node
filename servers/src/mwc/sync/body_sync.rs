@@ -15,6 +15,7 @@
 use crate::mwc::sync::sync_peers::SyncPeers;
 use crate::mwc::sync::sync_utils::{self, SyncRequestResponses, SyncResponse};
 use mwc_chain::pibd_params::PibdParams;
+use mwc_chain::types::SYNC_STATUS_TIP_DISTANCE;
 use mwc_chain::{Chain, Error, Options, SyncState, SyncStatus};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, BlockHeader};
@@ -28,6 +29,8 @@ use mwc_util::LatencyTracker;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+
+const SINGLE_BLOCK_TIP_DISTANCE: u64 = 100;
 
 struct BodyTask {
 	hash: Hash,
@@ -108,6 +111,9 @@ impl BodyDownload {
 					continue;
 				}
 				if now >= request.expires_at {
+					if let Some(supplier) = request.supplier.upgrade() {
+						supplier.record_response_timeout();
+					}
 					scores.report_no_response(
 						&request.peer,
 						format!("Block {} at {} timed out", task.hash, task.height),
@@ -328,6 +334,37 @@ impl BodySync {
 		Ok(())
 	}
 
+	/// Collect the consecutive prefix of received full bodies eligible for batching.
+	fn ready_full_blocks(
+		&self,
+		download: &BodyDownload,
+	) -> Result<(Vec<Block>, Vec<usize>), Error> {
+		let target = self.chain.header_head()?.height;
+		let mut blocks = Vec::new();
+		let mut indices = Vec::new();
+		for (index, task) in download
+			.tasks
+			.iter()
+			.enumerate()
+			.filter(|(_, task)| !task.obsolete)
+		{
+			// A shared PMMR/DB commit breaks rewind by one block. Apply every
+			// block within SINGLE_BLOCK_TIP_DISTANCE of the tip individually instead.
+			if target.saturating_sub(task.height) < SINGLE_BLOCK_TIP_DISTANCE {
+				break;
+			}
+			let Some(response) = &task.received else {
+				break;
+			};
+			if response.reconstructed || self.get_task_canonical_header(task)?.is_none() {
+				break;
+			}
+			blocks.push(response.block.clone());
+			indices.push(index);
+		}
+		Ok((blocks, indices))
+	}
+
 	/// Apply only the ready prefix, including bodies already stored after a rewind.
 	/// Return the rejected supplier, if any: a bad buffered child must not be
 	/// attributed to the peer whose parent response made it ready.
@@ -337,6 +374,39 @@ impl BodySync {
 		secp: &mut Secp256k1,
 		scores: &SyncPeers,
 	) -> Result<Option<PeerAddr>, Error> {
+		let (blocks, indices) = self.ready_full_blocks(download)?;
+		if blocks.len() > 1 {
+			match self
+				.chain
+				.process_blocks(secp, &blocks, Options::NONE, Default::default())
+			{
+				Ok(_) => {
+					for index in indices {
+						let task = &mut download.tasks[index];
+						if let Some(response) = task.received.take() {
+							response.peer.update(
+								response.block.header.height,
+								response.block.header.total_difficulty(),
+							);
+							scores.report_ok_response(&response.peer.addr);
+						}
+						task.obsolete = true;
+					}
+					// Requests still on the wire retain their allowance until settled.
+					download
+						.tasks
+						.retain(|task| !task.obsolete || task.request.is_some());
+				}
+				Err(error) => {
+					info!(
+						"Failed to apply block batch; retrying one by one: {}",
+						error
+					);
+				}
+			}
+		}
+		// On batch failure all responses remain queued. The original single-block
+		// path below identifies the failing block and its actual supplier.
 		while let Some(index) = download.tasks.iter().position(|task| !task.obsolete) {
 			let task = &mut download.tasks[index];
 			let Some(header) = self.get_task_canonical_header(task)? else {
@@ -465,13 +535,14 @@ impl BodySync {
 		peers: &Arc<Peers>,
 		sync_state: &SyncState,
 		scores: &SyncPeers,
+		headers_in_flight: bool,
 	) -> Result<SyncResponse, Error> {
 		let target = self.chain.header_head()?;
 		let head = self.chain.head()?;
 		let Some(mut download) = self.download.try_lock() else {
 			return Ok(SyncResponse::new(
 				if sync_state.status() == SyncStatus::NoSync
-					&& target.height.saturating_sub(head.height) < 10
+					&& target.height.saturating_sub(head.height) < SYNC_STATUS_TIP_DISTANCE
 				{
 					SyncRequestResponses::SyncDone
 				} else {
@@ -508,7 +579,7 @@ impl BodySync {
 		let horizon = u64::from(global::cut_through_horizon(self.chain.get_context_id()));
 		let horizon_height = target.height.saturating_sub(horizon);
 
-		// Snapshot complete-response latencies once per pass. Eligibility and the
+		// Snapshot peer latencies once per pass. Eligibility and the
 		// best latency are determined per block, since suppliers differ by height.
 		let candidates: Vec<_> = self
 			.canonical_peers(peers)?
@@ -530,24 +601,27 @@ impl BodySync {
 			*peer_requests.entry(request.peer.clone()).or_default() += 1;
 		}
 		let fork = self.chain.fork_point()?;
+		let current_height = download
+			.tasks
+			.iter()
+			.find(|task| !task.obsolete)
+			.map_or(fork.height, |task| task.height.saturating_sub(1));
+		// The fork point advances as blocks are accepted. Seed the baseline once;
+		// later updates use the saved height, including during parallel header sync.
+		let start_height = sync_state
+			.body_sync_start_height()
+			.unwrap_or(current_height);
 		// Preserve Done (NoSync) only if it is the current status and the gap is
 		// under ten blocks. Check under the status lock; all other states update normally.
 		sync_state.update_if(
 			SyncStatus::BodySync {
-				archive_height: if self.chain.archive_mode() {
-					0
-				} else {
-					horizon_height
-				},
-				current_height: download
-					.tasks
-					.iter()
-					.find(|task| !task.obsolete)
-					.map_or(fork.height, |task| task.height.saturating_sub(1)),
+				archive_height: start_height,
+				current_height,
 				highest_height: target.height,
 			},
 			|status| {
-				status != SyncStatus::NoSync || target.height.saturating_sub(head.height) >= 10
+				status != SyncStatus::NoSync
+					|| target.height.saturating_sub(head.height) >= SYNC_STATUS_TIP_DISTANCE
 			},
 		);
 		// Determine peer-discovery requirements even when all current suppliers
@@ -572,6 +646,7 @@ impl BodySync {
 			.sum();
 		if available_requests > 0 {
 			let mut rng = mwc_crates::rand::rng();
+			let last_index = download.tasks.len().saturating_sub(1);
 			// Retained requests from obsolete branches consume capacity, but must
 			// not shift the latency offsets of the active queue.
 			for (index, task) in download
@@ -599,7 +674,8 @@ impl BodySync {
 						let first_index = usize::try_from(
 							(latency.unwrap_or(best_latency) / best_latency).saturating_sub(1),
 						)
-						.unwrap_or(usize::MAX);
+						.unwrap_or(usize::MAX)
+						.min(last_index);
 						index >= first_index
 							&& peer_requests.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
 					})
@@ -626,11 +702,17 @@ impl BodySync {
 			.count();
 		Ok(SyncResponse::new(
 			if sync_state.status() == SyncStatus::NoSync
-				&& target.height.saturating_sub(head.height) < 10
+				&& target.height.saturating_sub(head.height) < SYNC_STATUS_TIP_DISTANCE
 			{
 				SyncRequestResponses::SyncDone
 			} else if requests == 0 {
-				SyncRequestResponses::WaitingForPeers
+				// Connected peers may not qualify until their advertised headers
+				// are verified. That is a header wait, not missing peers.
+				if headers_in_flight {
+					SyncRequestResponses::WaitingForHeaders
+				} else {
+					SyncRequestResponses::WaitingForPeers
+				}
 			} else {
 				SyncRequestResponses::Syncing
 			},
@@ -854,6 +936,7 @@ impl BodySync {
 mod tests {
 	use super::*;
 	use mwc_chain::types::NoopAdapter;
+	use mwc_core::core::pmmr::{self, ReadablePMMR, VecBackend, PMMR};
 	use mwc_core::core::{transaction, Transaction};
 	use mwc_core::libtx::{reward, ProofBuilder};
 	use mwc_core::pow::Difficulty;
@@ -898,10 +981,13 @@ mod tests {
 				source
 					.process_block(&mut secp, block.clone(), Options::NONE, HashSet::new())
 					.unwrap();
-				chain
-					.process_block_header(&block.header, Options::NONE)
-					.unwrap();
 				blocks.push(block);
+			}
+			if !blocks.is_empty() {
+				let headers: Vec<_> = blocks.iter().map(|block| block.header.clone()).collect();
+				chain
+					.sync_block_headers(&headers, Options::NONE, 1)
+					.unwrap();
 			}
 			let peers = Arc::new(Peers::new(
 				mwc_p2p::store::PeerStore::new(context, peer_dir.path().to_str().unwrap()).unwrap(),
@@ -921,6 +1007,78 @@ mod tests {
 				secp,
 				_dirs: vec![chain_dir, source_dir, peer_dir],
 			}
+		}
+
+		// Scheduling tests only need headers beyond the bodies they actually apply.
+		// Mine real header proofs in memory, then commit the tail in one batch.
+		fn extend_headers_to(&self, target: u64) {
+			Self::extend_chain_headers_to(&self.chain, target);
+		}
+
+		fn extend_chain_headers_to(chain: &Chain, target: u64) {
+			let context = chain.get_context_id();
+			let mut previous = chain
+				.get_header_by_height(chain.header_head().unwrap().height)
+				.unwrap();
+			let mut backend = VecBackend::new(context);
+			let mut mmr = PMMR::new(&mut backend);
+			for height in 0..=previous.height {
+				mmr.push(&chain.get_header_by_height(height).unwrap())
+					.unwrap();
+			}
+			let mut history: VecDeque<_> = chain
+				.difficulty_iter_from(previous.hash(context).unwrap())
+				.unwrap()
+				.collect::<Result<_, _>>()
+				.unwrap();
+			let mut cache = consensus::DifficultyCache::new();
+			let mut headers = Vec::new();
+			for height in previous.height + 1..=target {
+				let difficulty = consensus::next_difficulty(
+					context,
+					height,
+					history.iter().cloned(),
+					&mut cache,
+				)
+				.unwrap();
+				let mut header = previous.clone();
+				header.height = height;
+				header.version = consensus::header_version(context, height);
+				header.prev_hash = previous.hash(context).unwrap();
+				header.prev_root = mmr.root().unwrap();
+				header.timestamp += chrono::Duration::seconds(60);
+				header.output_mmr_size =
+					pmmr::insertion_to_pmmr_index(previous.output_mmr_count().unwrap() + 1)
+						.unwrap();
+				header.kernel_mmr_size =
+					pmmr::insertion_to_pmmr_index(previous.kernel_mmr_count().unwrap() + 1)
+						.unwrap();
+				header.pow.total_difficulty =
+					(previous.total_difficulty() + difficulty.difficulty).unwrap();
+				header.pow.secondary_scaling = difficulty.secondary_scaling;
+				pow::pow_size(
+					context,
+					&mut header,
+					difficulty.difficulty,
+					global::proofsize(context),
+					global::min_edge_bits(context),
+				)
+				.unwrap();
+				mmr.push(&header).unwrap();
+				history.push_front(consensus::HeaderDifficultyInfo::new(
+					height,
+					Some(header.hash(context).unwrap()),
+					header.timestamp.timestamp() as u64,
+					difficulty.difficulty,
+					difficulty.secondary_scaling,
+					header.pow.is_secondary(),
+				));
+				previous = header.clone();
+				headers.push(header);
+			}
+			chain
+				.sync_block_headers(&headers, Options::NONE, 1)
+				.unwrap();
 		}
 
 		fn peer(
@@ -971,7 +1129,7 @@ mod tests {
 
 		fn poll(&self) -> SyncResponse {
 			self.body
-				.request(&self.peers, &self.state, &self.scores)
+				.request(&self.peers, &self.state, &self.scores, false)
 				.unwrap()
 		}
 
@@ -1029,6 +1187,115 @@ mod tests {
 			}
 			blocks
 		}
+	}
+
+	#[test]
+	fn body_series_preserves_bad_supplier_and_stops_at_tip_boundary() {
+		let mut f = Fixture::new(1_935_030, 5);
+		f.extend_headers_to(SINGLE_BLOCK_TIP_DISTANCE + 3);
+		let (good, _good_rx) = f.supplier(4230);
+		let (bad, _bad_rx) = f.supplier(4231);
+		f.poll();
+		f.deliver(2, &good.info.addr);
+		let mut invalid = f.blocks[1].clone();
+		invalid.body.outputs[0].proof.proof[0] ^= 1;
+		assert!(f
+			.body
+			.receive_block(&mut f.secp, &invalid, &bad.info, false, true, &f.scores)
+			.unwrap());
+		// The parent is still missing.
+		assert_eq!(f.chain.head().unwrap().height, 0);
+		// Receiving the parent immediately applies the ready batch. Failure retries
+		// individually, accepting the parent and rejecting the bad child's supplier.
+		f.deliver(0, &good.info.addr);
+		{
+			let download = f.body.download.lock();
+			assert_eq!(f.chain.head().unwrap().height, 1);
+			assert!(download
+				.tasks
+				.iter()
+				.find(|task| task.height == 2)
+				.unwrap()
+				.received
+				.is_none());
+			assert!(download
+				.tasks
+				.iter()
+				.find(|task| task.height == 3)
+				.unwrap()
+				.received
+				.is_some());
+		}
+		{
+			let mut download = f.body.download.lock();
+			// Supply the repaired child directly to inspect the ready batch before
+			// applying it, including the transition to individual acceptance.
+			let task = download
+				.tasks
+				.iter_mut()
+				.find(|task| task.height == 2)
+				.unwrap();
+			task.received = Some(ReceivedBlock {
+				block: f.blocks[1].clone(),
+				peer: good.info.clone(),
+				reconstructed: false,
+			});
+			let task = download
+				.tasks
+				.iter_mut()
+				.find(|task| task.height == 4)
+				.unwrap();
+			task.received = Some(ReceivedBlock {
+				block: f.blocks[3].clone(),
+				peer: good.info.clone(),
+				reconstructed: false,
+			});
+			// Compact reconstructions end the full-block batch; never skip them.
+			for height in 2..=3 {
+				let index = download
+					.tasks
+					.iter()
+					.position(|task| task.height == height)
+					.unwrap();
+				download.tasks[index]
+					.received
+					.as_mut()
+					.unwrap()
+					.reconstructed = true;
+				assert_eq!(
+					f.body.ready_full_blocks(&download).unwrap().0.len(),
+					(height - 2) as usize
+				);
+				download.tasks[index]
+					.received
+					.as_mut()
+					.unwrap()
+					.reconstructed = false;
+			}
+			let (blocks, _) = f.body.ready_full_blocks(&download).unwrap();
+			assert_eq!(
+				blocks
+					.iter()
+					.map(|block| block.header.height)
+					.collect::<Vec<_>>(),
+				vec![2, 3]
+			);
+			f.body
+				.apply_ready_tasks(&mut download, &mut f.secp, &f.scores)
+				.unwrap();
+		}
+		assert_eq!(f.chain.head().unwrap().height, 4);
+		f.deliver(4, &good.info.addr);
+		assert_eq!(f.chain.head().unwrap().height, 5); // Near-tip receipt applies immediately.
+		f.chain
+			.reset_chain_head(
+				&f.secp,
+				&f.blocks[3].header,
+				mwc_chain::ChainHeadReset::Body,
+			)
+			.unwrap();
+		assert_eq!(f.chain.head().unwrap().height, 4);
+		f.chain.validate(&f.secp, false).unwrap();
 	}
 
 	// Receive one abandoned child before scheduling notices the reorg, then mix
@@ -1131,8 +1398,10 @@ mod tests {
 	// Completing one old request frees exactly one slot for current work.
 	#[test]
 	fn obsolete_requests_keep_the_peer_allowance_until_answered() {
-		let count = PibdParams::new().get_blocks_request_per_peer();
+		let params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let count = params.get_blocks_request_per_peer();
 		let mut f = Fixture::new(1_935_022, count);
+		f.body.pibd_params = params;
 		let (peer, rx) = f.supplier(4193);
 		f.poll();
 		let pending = rx.try_iter().count();
@@ -1420,13 +1689,51 @@ mod tests {
 		assert_eq!(f.chain.tail().unwrap().height, 1);
 	}
 
+	#[test]
+	fn resumed_archive_download_progress_starts_at_the_existing_body_height() {
+		let mut f = Fixture::new(1_935_090, 3);
+		assert!(f.chain.archive_mode());
+		f.chain
+			.process_block(
+				&mut f.secp,
+				f.blocks[0].clone(),
+				Options::NONE,
+				HashSet::new(),
+			)
+			.unwrap();
+		f.state.update(SyncStatus::Initial);
+		let (peer, _messages) = f.supplier(4190);
+		f.poll();
+		assert_eq!(
+			f.state.status(),
+			SyncStatus::BodySync {
+				archive_height: 1,
+				current_height: 1,
+				highest_height: 3
+			}
+		);
+		f.deliver(1, &peer.info.addr);
+		assert_eq!(f.chain.fork_point().unwrap().height, 2);
+		assert_eq!(f.state.body_sync_start_height(), Some(1));
+		f.poll();
+		assert_eq!(
+			f.state.status(),
+			SyncStatus::BodySync {
+				archive_height: 1,
+				current_height: 2,
+				highest_height: 3
+			}
+		);
+	}
+
 	// A ten-block gap starts visible sync. Reducing that gap to nine must keep
 	// the existing sync status, even though is_syncing() tolerates a small gap.
 	// For an already-running node, the same nine-block gap stays Running while
 	// waiting for peers, applying blocks under the queue lock, or sending requests.
 	#[test]
 	fn short_catch_up_preserves_only_an_existing_running_status() {
-		let mut f = Fixture::new(1_935_014, 10);
+		let mut f = Fixture::new(1_935_014, 1);
+		f.extend_headers_to(SYNC_STATUS_TIP_DISTANCE);
 		assert_eq!(f.poll().response, SyncRequestResponses::WaitingForPeers);
 		assert!(matches!(f.state.status(), SyncStatus::BodySync { .. }));
 		f.chain
@@ -1468,7 +1775,8 @@ mod tests {
 	// another poll must leave those outstanding requests alone.
 	#[test]
 	fn parallel_requests_use_resource_and_per_peer_limits() {
-		let f = Fixture::new(1_935_002, 24);
+		let f = Fixture::new(1_935_002, 0);
+		f.extend_headers_to(24);
 		let suppliers: Vec<_> = (4110..4113).map(|port| f.supplier(port)).collect();
 		f.poll();
 		let per_peer = f.body.pibd_params.get_blocks_request_per_peer();
@@ -1489,7 +1797,8 @@ mod tests {
 
 	#[test]
 	fn latency_scheduling_keeps_fast_peers_at_the_head_and_ignores_obsolete_indices() {
-		let f = Fixture::new(1_935_081, 24);
+		let f = Fixture::new(1_935_081, 0);
+		f.extend_headers_to(24);
 		let (fast, fast_messages) = f.supplier(4180);
 		let (slow, slow_messages) = f.supplier(4181);
 		let per_peer = f.body.pibd_params.get_blocks_request_per_peer();
@@ -1551,7 +1860,8 @@ mod tests {
 				.map(|task| task.request.as_ref().map(|request| request.expires_at))
 				.collect::<Vec<_>>()
 		);
-		// Retrying the head keeps its preference while preserving tail requests.
+		// The timed-out peer moves to the tail. The retained obsolete request
+		// still counts toward the queue length until it also expires.
 		f.body
 			.download
 			.lock()
@@ -1564,8 +1874,23 @@ mod tests {
 			.unwrap()
 			.expires_at = Instant::now();
 		f.poll();
+		assert_eq!(fast_messages.try_iter().count(), 0);
+		assert_eq!(slow_messages.try_iter().count(), 0);
+		f.body.download.lock().tasks[0]
+			.request
+			.as_mut()
+			.unwrap()
+			.expires_at = Instant::now();
+		f.poll();
 		assert_eq!(fast_messages.try_iter().count(), 1);
 		assert_eq!(slow_messages.try_iter().count(), 0);
+		let download = f.body.download.lock();
+		let mut active = download.tasks.iter().filter(|task| !task.obsolete);
+		assert!(active.next().unwrap().request.is_none());
+		assert_eq!(
+			active.last().unwrap().request.as_ref().unwrap().peer,
+			fast.info.addr
+		);
 	}
 
 	// Request one missing body and repeatedly age its unanswered request past the timeout.
@@ -1749,8 +2074,10 @@ mod tests {
 		// Fill the resource-based window and deliver its next canonical block.
 		// It must be discarded while full, then accepted after applying a task
 		// frees space. Buffered and unanswered tasks share the same allowance.
-		let count = PibdParams::new().get_blocks_request_limit(None) + 1;
+		let params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let count = params.get_blocks_request_limit(None) + 1;
 		let mut f = Fixture::new(1_935_019, count);
+		f.body.pibd_params = params;
 		let (peer, _rx) = f.supplier(4189);
 		f.poll();
 		let limit = f.body.get_task_num_limit(&f.body.download.lock());
@@ -1758,6 +2085,12 @@ mod tests {
 		f.deliver(limit, &peer.info.addr);
 		assert_eq!(f.body.download.lock().tasks.len(), limit);
 		f.deliver(0, &peer.info.addr);
+		{
+			let mut download = f.body.download.lock();
+			f.body
+				.apply_ready_tasks(&mut download, &mut f.secp, &f.scores)
+				.unwrap();
+		}
 		assert_eq!(f.body.download.lock().tasks.len(), limit - 1);
 		f.deliver(limit, &peer.info.addr);
 		let download = f.body.download.lock();
@@ -1769,12 +2102,14 @@ mod tests {
 	fn announced_headers_obey_the_same_peer_request_limit() {
 		// Announcing several canonical headers must use the same body queue and
 		// per-peer budget as polling. Repeated announcements must not resend.
-		let f = Fixture::new(1_935_020, 10);
+		let f = Fixture::new(1_935_020, 0);
+		f.extend_headers_to(10);
 		let (peer, rx) = f.supplier(4190);
 		for _ in 0..2 {
-			for block in &f.blocks {
+			for height in 1..=10 {
+				let header = f.chain.get_header_by_height(height).unwrap();
 				f.body
-					.request_header_block(&block.header, &peer, &f.scores)
+					.request_header_block(&header, &peer, &f.scores)
 					.unwrap();
 			}
 		}
@@ -1994,7 +2329,8 @@ mod tests {
 	// peers. Newer blocks require BLOCK_EXTRA and must not go to the legacy peer.
 	#[test]
 	fn archive_and_block_encoding_requirements_apply_per_block() {
-		let f = Fixture::new(1_935_006, 5);
+		let f = Fixture::new(1_935_006, 0);
+		f.extend_headers_to(5);
 		let tip = f.chain.header_head().unwrap();
 		let (archive, _archive_rx) = f.supplier(4150);
 		let (regular, _regular_rx) = f.peer(
@@ -2027,8 +2363,13 @@ mod tests {
 		archive.record_response_latency(Duration::from_secs(1));
 		regular.record_response_latency(Duration::from_secs(1));
 		f.poll();
-		for block in &f.blocks[3..] {
-			let hash = block.hash(f.chain.get_context_id()).unwrap();
+		for height in 4..=5 {
+			let hash = f
+				.chain
+				.get_header_by_height(height)
+				.unwrap()
+				.hash(context)
+				.unwrap();
 			assert!(!f.body.has_block_request(&legacy.info.addr, &hash));
 			assert!(
 				f.body.has_block_request(&archive.info.addr, &hash)
@@ -2124,16 +2465,17 @@ mod tests {
 		let fork_dir = TempDir::new().unwrap();
 		let fork = init_chain(f.chain.get_context_id(), &f.secp, &fork_dir, true);
 		let keychain = ExtKeychain::from_seed(&f.secp, &[69; 32], false).unwrap();
-		f.blocks.clear();
-		for _ in 0..=count {
-			let block = next_block(&fork, &mut f.secp, &keychain, &[]);
-			fork.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
-				.unwrap();
-			f.chain
-				.process_block_header(&block.header, Options::NONE)
-				.unwrap();
-			f.blocks.push(block);
-		}
+		// Only the first fork body is delivered; the remaining headers select the fork.
+		let block = next_block(&fork, &mut f.secp, &keychain, &[]);
+		fork.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
+			.unwrap();
+		Fixture::extend_chain_headers_to(&fork, count as u64 + 1);
+		let headers: Vec<_> = (1..=count as u64 + 1)
+			.map(|height| fork.get_header_by_height(height).unwrap())
+			.collect();
+		f.chain
+			.sync_block_headers(&headers, Options::NONE, 1)
+			.unwrap();
 		assert!(f.chain.header_head().unwrap().total_difficulty > original_head.total_difficulty);
 		assert_eq!(f.chain.fork_point().unwrap().height, 0);
 		let (peer, rx) = f.supplier(4183);
@@ -2142,14 +2484,7 @@ mod tests {
 		assert_eq!(rx.try_iter().count(), f.requests_num());
 		let error = f
 			.body
-			.receive_block(
-				&mut f.secp,
-				&f.blocks[0],
-				&peer.info,
-				false,
-				true,
-				&f.scores,
-			)
+			.receive_block(&mut f.secp, &block, &peer.info, false, true, &f.scores)
 			.unwrap_err();
 		assert!(matches!(
 			error,

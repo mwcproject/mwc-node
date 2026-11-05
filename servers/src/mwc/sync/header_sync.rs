@@ -241,6 +241,23 @@ impl HeaderSync {
 		self.headers.write().clear();
 	}
 
+	pub(super) fn active_target_height(&self, peers: &Peers) -> Option<u64> {
+		let now = Instant::now();
+		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
+		self.headers
+			.read_recursive()
+			.iter()
+			.filter(|request| {
+				request
+					.sent
+					.is_some_and(|sent| now.saturating_duration_since(sent) < timeout)
+			})
+			.filter_map(|request| peers.get_connected_peer(&request.addr))
+			// A peer can advance its advertised tip while an older request is pending.
+			.map(|peer| peer.info.get_height_and_difficulty().0)
+			.max()
+	}
+
 	fn get_locator(&self, tip: mwc_chain::Tip) -> Result<Vec<Hash>, mwc_chain::Error> {
 		self.chain
 			.get_locator_hashes(tip, &get_locator_heights(tip.height))
@@ -942,6 +959,7 @@ mod tests {
 			let peer = &f.peer.info.addr;
 			let anchor = f.requests.chain.header_head().unwrap().last_block_h;
 			f.requests.request(&f.peers, &f.scores).unwrap();
+			assert!(f.requests.active_target_height(&f.peers).is_some());
 			f.dispatch();
 			let first = response(anchor);
 			let last = response(first.hash(0).unwrap());
@@ -949,6 +967,11 @@ mod tests {
 				.requests
 				.receive_headers(peer, &[first], 1, &f.scores, &f.peers)
 				.unwrap());
+			f.requests.headers.write()[0].sent = Some(
+				Instant::now()
+					- Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64 + 1),
+			);
+			assert!(f.requests.active_target_height(&f.peers).is_none());
 			assert!(f.check(f.deadline()));
 			assert!(f.requests.headers.read_recursive().is_empty());
 			f.dispatch();
@@ -1091,6 +1114,7 @@ mod tests {
 			let (_, replacement) = mwc_crates::crossbeam::channel::unbounded();
 			drop(std::mem::replace(&mut f.receiver, replacement));
 			let error = f.requests.request(&f.peers, &f.scores).unwrap_err();
+			assert!(f.requests.active_target_height(&f.peers).is_none());
 			assert!(error.to_string().contains("Failed to send headers request"));
 			assert!(error.to_string().contains(&f.peer.info.addr.to_string()));
 			assert!(f.requests.headers.read_recursive().is_empty());

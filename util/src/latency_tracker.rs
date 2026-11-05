@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-/// Rolling latency history for the last seven completed responses.
+/// Rolling latency history for the last seven response or timeout samples.
 pub struct LatencyTracker {
 	latency_history: VecDeque<i64>,
 	latency_sum: i64,

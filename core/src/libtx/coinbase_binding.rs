@@ -126,6 +126,78 @@ where
 	Ok(Hash::from_vec(hash.finalize().as_bytes()))
 }
 
+/// In-memory packed bitmap for an extension. Updating spent/new outputs avoids
+/// rebuilding the encoding from every live PMMR leaf before each block.
+pub struct UnspentBitmap {
+	bytes: Vec<u8>,
+	leaf_count: u64,
+}
+
+impl UnspentBitmap {
+	/// Build from the same ordered, zero-based indexes as `unspent_bitmap_hash`.
+	pub fn new(
+		indices: impl IntoIterator<Item = Result<u64, pmmr::Error>>,
+		leaf_count: u64,
+	) -> Result<Self, pmmr::Error> {
+		let len = usize::try_from(leaf_count / 8 + u64::from(leaf_count % 8 != 0))
+			.map_err(|_| pmmr::Error::DataOverflow("unspent bitmap length".into()))?;
+		let mut bytes = Vec::new();
+		bytes
+			.try_reserve_exact(len)
+			.map_err(|e| pmmr::Error::DataOverflow(format!("unspent bitmap allocation: {}", e)))?;
+		bytes.resize(len, 0);
+		let mut bitmap = Self { bytes, leaf_count };
+		let mut previous = None;
+		for index in indices {
+			let index = index?;
+			if index >= leaf_count || previous.is_some_and(|prev| index <= prev) {
+				return Err(pmmr::Error::DataCorruption(format!(
+					"invalid unspent bitmap index {} after {:?}, leaf count {}",
+					index, previous, leaf_count
+				)));
+			}
+			bitmap.bytes[(index / 8) as usize] |= 0x80 >> (index % 8);
+			previous = Some(index);
+		}
+		Ok(bitmap)
+	}
+
+	/// Append a newly created, unspent output.
+	pub fn append(&mut self) -> Result<(), pmmr::Error> {
+		let next_count = self
+			.leaf_count
+			.checked_add(1)
+			.ok_or_else(|| pmmr::Error::DataOverflow("unspent bitmap leaf count".into()))?;
+		if self.leaf_count % 8 == 0 {
+			self.bytes.push(0);
+		}
+		self.bytes[(self.leaf_count / 8) as usize] |= 0x80 >> (self.leaf_count % 8);
+		self.leaf_count = next_count;
+		Ok(())
+	}
+
+	/// Clear a spent output's bit without renumbering historical outputs.
+	pub fn spend(&mut self, index: u64) -> Result<(), pmmr::Error> {
+		if index >= self.leaf_count {
+			return Err(pmmr::Error::DataCorruption(format!(
+				"spent bitmap index {} outside leaf count {}",
+				index, self.leaf_count
+			)));
+		}
+		self.bytes[(index / 8) as usize] &= !(0x80 >> (index % 8));
+		Ok(())
+	}
+
+	/// Preserve the consensus preimage, including the count and trailing zero bits.
+	pub fn hash(&self) -> Hash {
+		let mut hash = Blake2b::new(32);
+		hash.update(BITMAP_DOMAIN);
+		hash.update(&self.leaf_count.to_be_bytes());
+		hash.update(&self.bytes);
+		Hash::from_vec(hash.finalize().as_bytes())
+	}
+}
+
 /// Hash input records sorted by ascending one-based PMMR position.
 ///
 /// Preimage: INPUT_DOMAIN || count:u64be || (pos:u64be || features:u8 || C:33)*.
@@ -269,6 +341,13 @@ mod tests {
 		];
 		for &(count, indices, expected) in cases {
 			assert_eq!(
+				UnspentBitmap::new(indices.iter().copied().map(Ok), count)
+					.unwrap()
+					.hash()
+					.to_hex(),
+				expected
+			);
+			assert_eq!(
 				unspent_bitmap_hash(indices.iter().copied().map(Ok), count)
 					.unwrap()
 					.to_hex(),
@@ -278,6 +357,81 @@ mod tests {
 				indices
 			);
 		}
+	}
+
+	#[test]
+	fn packed_bitmap_updates_match_streaming_hash() {
+		for initial_count in [0, 1, 7, 8, 9, 1023, 1024, 1025, 3077] {
+			let mut live: BTreeSet<u64> = (0..initial_count).filter(|i| i % 3 != 0).collect();
+			let mut bitmap =
+				UnspentBitmap::new(live.iter().copied().map(Ok), initial_count).unwrap();
+			for count in initial_count..initial_count + 20 {
+				assert_eq!(
+					bitmap.hash(),
+					unspent_bitmap_hash(live.iter().copied().map(Ok), count).unwrap()
+				);
+				bitmap.append().unwrap();
+				live.insert(count);
+				if let Some(index) = live.iter().next().copied() {
+					bitmap.spend(index).unwrap();
+					live.remove(&index);
+				}
+			}
+			assert_eq!(
+				bitmap.hash(),
+				unspent_bitmap_hash(live.into_iter().map(Ok), initial_count + 20).unwrap()
+			);
+		}
+		for indices in [vec![0, 0], vec![1, 0], vec![8]] {
+			assert!(UnspentBitmap::new(indices.into_iter().map(Ok), 8).is_err());
+		}
+		assert!(UnspentBitmap::new([Err(pmmr::Error::DataCorruption("test".into()))], 8).is_err());
+		assert!(UnspentBitmap::new([], 0).unwrap().spend(0).is_err());
+	}
+
+	#[test]
+	#[ignore = "manual release-mode bitmap benchmark"]
+	fn bitmap_cache_benchmark() {
+		use std::hint::black_box;
+		use std::time::Instant;
+		const LEAVES: u64 = 1_000_000;
+		const BLOCKS: u64 = 32;
+		let positions: Vec<_> = (0..LEAVES)
+			.map(|i| pmmr::insertion_to_pmmr_index(i).unwrap())
+			.collect();
+		fn indexes(positions: &[u64]) -> impl Iterator<Item = Result<u64, pmmr::Error>> + '_ {
+			positions.iter().copied().map(|pos| {
+				assert!(pmmr::is_leaf(pos));
+				pmmr::n_leaves(pos + 1).map(|n| n - 1)
+			})
+		}
+		let mut positions_for_scan = positions.clone();
+		let start = Instant::now();
+		let mut scanned = Vec::new();
+		for count in LEAVES..LEAVES + BLOCKS {
+			scanned.push(black_box(
+				unspent_bitmap_hash(indexes(&positions_for_scan), count).unwrap(),
+			));
+			positions_for_scan.push(pmmr::insertion_to_pmmr_index(count).unwrap());
+		}
+		let scan_time = start.elapsed();
+		let start = Instant::now();
+		let mut cached = UnspentBitmap::new(indexes(&positions), LEAVES).unwrap();
+		let mut hashes = Vec::new();
+		for _ in 0..BLOCKS {
+			hashes.push(black_box(cached.hash()));
+			cached.append().unwrap();
+		}
+		let cache_time = start.elapsed();
+		assert_eq!(hashes, scanned);
+		println!(
+			"{} outputs, {} blocks: scan {:?}, cache {:?} (includes initial scan), {:.2}x",
+			LEAVES,
+			BLOCKS,
+			scan_time,
+			cache_time,
+			scan_time.as_secs_f64() / cache_time.as_secs_f64()
+		);
 	}
 
 	#[test]
