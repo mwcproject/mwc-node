@@ -921,7 +921,7 @@ where
 		file.set_len(buffer_start_offset)?;
 		file.seek(SeekFrom::Start(buffer_start_offset))?;
 		file.write_all(&self.buffer[..])?;
-		file.sync_all()?;
+		mwc_util::file::sync_file(&file)?;
 		if self.parent_dir_needs_sync {
 			sync_parent_dir(&self.path)?;
 			self.parent_dir_needs_sync = false;
@@ -1171,7 +1171,7 @@ where
 			));
 		}
 		buf_writer.flush()?;
-		buf_writer.get_ref().sync_all()?;
+		mwc_util::file::sync_file(buf_writer.get_ref())?;
 		Ok(())
 	}
 
@@ -1271,7 +1271,7 @@ where
 					}
 				}
 				buf_writer.flush()?;
-				buf_writer.get_ref().sync_all()?;
+				mwc_util::file::sync_file(buf_writer.get_ref())?;
 			}
 
 			// Replace the underlying file for our size_file -

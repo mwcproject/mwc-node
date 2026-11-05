@@ -27,6 +27,7 @@ pub fn as_millis(d: Duration) -> u128 {
 }
 
 #[test]
+#[ignore = "manual million-output performance benchmark; run with --ignored --nocapture"]
 fn test_leaf_set_performance() {
 	let (mut leaf_set, data_dir) = setup("leaf_set_perf");
 

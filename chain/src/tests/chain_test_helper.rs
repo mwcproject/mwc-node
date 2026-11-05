@@ -239,7 +239,8 @@ where
 		// now check the block height index
 		let header_by_height = chain.get_header_by_height(n).unwrap();
 		assert_eq!(header_by_height.hash(0).unwrap(), bhash);
-
-		chain.validate(secp, false).unwrap();
 	}
+	// Each block is validated when processed. Check the complete fixture once,
+	// instead of rechecking every earlier rangeproof and kernel after every block.
+	chain.validate(secp, false).unwrap();
 }

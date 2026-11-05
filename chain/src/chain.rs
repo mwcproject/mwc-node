@@ -12801,7 +12801,7 @@ mod tests {
 		);
 		output_data.seek(SeekFrom::Start(0)).unwrap();
 		output_data.write_all(&replacement_bytes).unwrap();
-		output_data.sync_all().unwrap();
+		mwc_util::file::sync_file(&output_data).unwrap();
 		drop(output_data);
 
 		let err = match Chain::init(

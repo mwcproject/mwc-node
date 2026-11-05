@@ -101,13 +101,13 @@ fn test_start_api() {
 	router.add_middleware(counter.clone());
 	let server_addr = "127.0.0.1:14434";
 	let addr: SocketAddr = server_addr.parse().expect("unable to parse server address");
-	assert!(server.start(addr, router, None).is_ok());
+	let handle = server.start(addr, router, None).unwrap();
 	let url = format!("http://{}/v1/", server_addr);
 	let index = request_with_retry(0, url.as_str()).unwrap();
 	assert_eq!(index.len(), 2);
 	assert_eq!(counter.value(), 1);
 	assert!(server.stop());
-	thread::sleep(time::Duration::from_millis(1_000));
+	assert!(handle.join().is_ok());
 }
 
 #[cfg(not(windows))]
@@ -149,9 +149,9 @@ fn test_start_api_reports_bind_failure() {
 	assert!(err.to_string().contains("Unable to bind"));
 
 	drop(occupied_listener);
-	assert!(server.start(addr, build_router(), None).is_ok());
+	let handle = server.start(addr, build_router(), None).unwrap();
 	assert!(server.stop());
-	thread::sleep(time::Duration::from_millis(1_000));
+	assert!(handle.join().is_ok());
 }
 
 // To enable this test you need a trusted PKCS12 (p12) certificate bundle

@@ -807,7 +807,8 @@ fn check_compacted_pibd_reset(mode: Option<crate::PibdResetMode>) {
 			)
 			.unwrap();
 
-		for n in 7..30 {
+		// The spend is at height 5; retain one block beyond the compaction point.
+		for n in 7..9 {
 			let b = prepare_block(&mut secp, &keychain, &head, &chain, n);
 			head = b.header.clone();
 			chain
@@ -821,7 +822,7 @@ fn check_compacted_pibd_reset(mode: Option<crate::PibdResetMode>) {
 		}
 
 		let store = chain.get_store_for_tests();
-		let horizon_header = chain.get_header_by_height(20).unwrap();
+		let horizon_header = chain.get_header_by_height(6).unwrap();
 		{
 			let txhashset = chain.get_txhashset_for_test();
 			let mut txhashset = txhashset.write();
@@ -3955,9 +3956,8 @@ fn output_header_mappings() {
 				.get_header_for_output(reward_outputs[n - 1].commitment())
 				.unwrap();
 			assert_eq!(header_for_output.height, n as u64);
-
-			chain.validate(&secp, false).unwrap();
 		}
+		chain.validate(&secp, false).unwrap();
 
 		// Check all output positions are as expected
 		for n in 1..15 {

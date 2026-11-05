@@ -1687,7 +1687,6 @@ mod compact_block_tests;
 mod test {
 	use super::*;
 	use mwc_crates::secp::pedersen::Commitment;
-	use std::thread;
 	use std::time::Duration;
 
 	fn test_peer_addr(port: u16) -> PeerAddr {
@@ -2238,7 +2237,8 @@ mod test {
 
 		assert_eq!(cache.contains(&def_hash1, true), false);
 		assert_eq!(cache.contains(&def_hash2, true), true);
-		thread::sleep(Duration::from_millis(1050));
+		*cache.time.write() =
+			Some(Instant::now() - Duration::from_millis(EVENT_CACHE_LOCK_MILLIS + 1));
 		assert_eq!(cache.contains(&def_hash1, false), false);
 		assert_eq!(cache.contains(&def_hash1, true), false);
 		assert_eq!(cache.contains(&def_hash2, true), true);

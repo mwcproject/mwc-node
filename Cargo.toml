@@ -59,6 +59,10 @@ test-support = [
 inherits = "release"
 debug = true
 
+# Proof generation and verification are expensive in unoptimized test fixtures.
+[profile.test.package.mwc_secp256k1zkp]
+opt-level = 2
+
 #[profile.test]
 #opt-level = 3  # Same as the release profile
 #debug = false  # Disable debug symbols (if not needed)

@@ -9,6 +9,9 @@ keywords = [ "crypto", "mwc", "mimblewimble" ]
 workspace = ".."
 edition = "2024"
 
+[features]
+test-support = ["mwc_util/test-support"]
+
 [dependencies]
 mwc_crates = { path = "../mwc_crates", version = "7.2.0" }
 mwc_core = { path = "../core", version = "7.2.0" }

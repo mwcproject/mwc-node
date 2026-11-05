@@ -17,4 +17,4 @@ thiserror.workspace = true
 
 [features]
 default = []
-test-support = []
+test-support = ["util/test-support"]

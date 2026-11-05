@@ -421,14 +421,24 @@ pub fn create_new_owner_only_file<P: AsRef<Path>>(path: P) -> io::Result<fs::Fil
 	create_owner_only_file_impl(path.as_ref(), true)
 }
 
+/// Sync file contents and metadata unless `test-support` is enabled.
+/// Test builds still write data, but skip power-loss durability barriers.
+pub fn sync_file(file: &fs::File) -> io::Result<()> {
+	if cfg!(feature = "test-support") {
+		Ok(())
+	} else {
+		file.sync_all()
+	}
+}
+
 fn write_all_and_sync(file: &mut fs::File, bytes: &[u8]) -> io::Result<()> {
 	file.write_all(bytes)?;
-	file.sync_all()
+	sync_file(file)
 }
 
 #[cfg(unix)]
 fn sync_parent_dir(path: &Path) -> io::Result<()> {
-	fs::File::open(normalized_parent(path))?.sync_all()
+	sync_file(&fs::File::open(normalized_parent(path))?)
 }
 
 #[cfg(not(unix))]

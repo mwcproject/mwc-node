@@ -2455,11 +2455,10 @@ mod tests {
 	fn chain_processing_enforces_the_rewind_horizon() {
 		let count = global::AUTOMATED_TESTING_CUT_THROUGH_HORIZON as usize + 1;
 		let mut f = Fixture::new(1_935_013, count);
-		for block in &f.blocks {
-			f.chain
-				.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
-				.unwrap();
-		}
+		// This fixture only needs the final head; commit its existing bodies together.
+		f.chain
+			.process_blocks(&mut f.secp, &f.blocks, Options::NONE, Default::default())
+			.unwrap();
 		let original_head = f.chain.head().unwrap();
 		assert!(f.chain.archive_mode());
 		let fork_dir = TempDir::new().unwrap();
