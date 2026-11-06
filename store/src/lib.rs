@@ -228,6 +228,12 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(not(unix))]
 pub(crate) fn sync_parent_dir(_path: &Path) -> Result<(), std::io::Error> {
+	// On Windows, the temporary file's contents are synced before rename, but
+	// the rename itself is not forced to disk. A power failure can therefore
+	// lose the replacement even after a successful flush, leaving an old or
+	// missing destination file. We accept this Windows durability limitation
+	// to avoid complicating the implementation with Windows-specific
+	// persistence handling.
 	Ok(())
 }
 

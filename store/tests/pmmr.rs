@@ -1520,6 +1520,52 @@ fn push_consecutive_pruned_leaf_subtrees_reads_stored_sibling_hash() {
 }
 
 #[test]
+fn imported_sibling_subtrees_preserve_hashes_and_size_after_reopen() {
+	for (left_pos, right_pos, parent_pos) in [(0, 1, 2), (2, 5, 6)] {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let open = || {
+			mwc_store::pmmr::PMMRBackend::<TestElem>::new(
+				dir.path(),
+				true,
+				ProtocolVersion(1),
+				0,
+				None,
+				VariableSizeMetadataValidation::Full,
+			)
+			.unwrap()
+		};
+		let left = Hash::from_vec(&[1]);
+		let right = Hash::from_vec(&[2]);
+		let parent = (left, right).hash_with_index(0, parent_pos).unwrap();
+		{
+			let mut backend = open();
+			{
+				let mut pmmr = PMMR::new(&mut backend);
+				pmmr.push_pruned_subtree(left, left_pos).unwrap();
+				pmmr.push_pruned_subtree(right, right_pos).unwrap();
+			}
+			assert_eq!(backend.unpruned_size().unwrap(), parent_pos + 1);
+			assert_eq!(backend.get_from_file(parent_pos).unwrap(), Some(parent));
+			backend.sync().unwrap();
+			assert_eq!(backend.hash_size().unwrap(), 3);
+		}
+
+		// Reopening and syncing must preserve the exact stored roots each time.
+		for _ in 0..2 {
+			let mut backend = open();
+			assert_eq!(backend.unpruned_size().unwrap(), parent_pos + 1);
+			assert_eq!(backend.hash_size().unwrap(), 3);
+			assert_eq!(backend.get_from_file(left_pos).unwrap(), Some(left));
+			assert_eq!(backend.get_from_file(right_pos).unwrap(), Some(right));
+			assert_eq!(backend.get_from_file(parent_pos).unwrap(), Some(parent));
+			let pmmr = PMMR::at(&mut backend, parent_pos + 1);
+			assert_eq!(pmmr.root().unwrap(), parent);
+			backend.sync().unwrap();
+		}
+	}
+}
+
+#[test]
 fn data_file_rewind_rejects_forward_position() {
 	let (data_dir, elems) = setup("data_file_rewind_forward");
 	let path = format!("{}/data.bin", data_dir);

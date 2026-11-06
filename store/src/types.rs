@@ -902,6 +902,11 @@ where
 
 	/// Syncs all writes (fsync), reallocating the memory map to make the newly
 	/// written data accessible.
+	///
+	/// A flush failure, including disk-full or related storage errors, is fatal
+	/// to continued node operation. Callers are not expected to restore this
+	/// object's state or recover by retrying the flush. An error may leave data
+	/// partially persisted and memory maps unavailable.
 	pub fn flush(&mut self) -> io::Result<()> {
 		if !self.needs_flush() {
 			return Ok(());
@@ -915,9 +920,8 @@ where
 		})?;
 		self.parent_dir_needs_sync |= created;
 
-		// Make flush retry-safe. If a previous flush wrote bytes but failed
-		// before clearing the buffer, truncate back to the logical buffered
-		// start before writing the buffer again.
+		// Truncate back to the logical buffer start before writing. This applies
+		// pending rewinds and removes any bytes left by an incomplete write.
 		file.set_len(buffer_start_offset)?;
 		file.seek(SeekFrom::Start(buffer_start_offset))?;
 		file.write_all(&self.buffer[..])?;
@@ -928,8 +932,7 @@ where
 		}
 
 		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
-			// Flush size metadata only after the data file is durable. If this
-			// fails, a later retry will truncate and rewrite the data buffer.
+			// Flush size metadata only after the data file is durable.
 			size_file.flush()?
 		}
 

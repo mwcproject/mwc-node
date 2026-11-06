@@ -395,9 +395,11 @@ impl SyncState {
 		if state.status == new_status {
 			return false;
 		}
+		state.status = new_status;
+		// Logging callbacks may read the sync state synchronously.
+		drop(state);
 		// Sync status is needed for QT wallet sync tracking. Please keep this message as info
 		info!("mwc-node sync status: {:?}", new_status);
-		state.status = new_status;
 		true
 	}
 

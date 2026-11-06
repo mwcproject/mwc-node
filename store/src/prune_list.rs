@@ -67,6 +67,8 @@ pub struct PruneList {
 
 impl PruneList {
 	/// Instantiate a new prune list from the provided path and 1-based bitmap.
+	/// Rolls up pruned siblings; the backing files must reflect the same compaction.
+	/// Use `open` to restore persisted roots without changing their physical offsets.
 	/// Note: Does not flush the bitmap to disk. Caller is responsible for doing this.
 	pub fn new(path: Option<PathBuf>, bitmap: Bitmap) -> Result<PruneList, Error> {
 		if bitmap.contains(0) {
@@ -97,7 +99,7 @@ impl PruneList {
 	}
 
 	/// Open an existing prune_list or create a new one.
-	/// Takes an optional bitmap of new pruned pos to be combined with existing pos.
+	/// Preserves persisted roots to match the existing hash and data files.
 	pub fn open<P: AsRef<Path>>(path: P) -> Result<PruneList, Error> {
 		let file_path = PathBuf::from(path.as_ref());
 		let (bitmap, needs_flush) = match read_bitmap(&file_path) {
@@ -109,8 +111,16 @@ impl PruneList {
 			return Err(Error::InternalError("bitmap contains unexpected 0".into()));
 		}
 
-		let mut prune_list = PruneList::new(Some(file_path), bitmap.clone())?;
-		prune_list.needs_flush = needs_flush || prune_list.bitmap != bitmap;
+		// Imported sibling roots can still have separate hashes in the file.
+		// Rebuilding through `new` would roll them up without removing those hashes.
+		let mut prune_list = PruneList {
+			path: Some(file_path),
+			bitmap_bak: bitmap.clone(),
+			bitmap,
+			needs_flush,
+			shift_cache: vec![],
+			leaf_shift_cache: vec![],
+		};
 
 		// Now build the shift caches from the bitmap we read from disk
 		prune_list.init_caches()?;
@@ -685,6 +695,37 @@ mod tests {
 	use super::*;
 	use mwc_crates::filetime::{set_file_mtime, FileTime};
 	use std::fs;
+
+	#[test]
+	fn open_preserves_imported_roots_on_flush_and_discard() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("prune.bin");
+		{
+			let mut prunes = PruneList::open(&path).unwrap();
+			prunes.append_exact(2).unwrap();
+			prunes.append_exact(5).unwrap();
+			prunes.flush().unwrap();
+		}
+
+		let old_time = FileTime::from_unix_time(1, 0);
+		set_file_mtime(&path, old_time).unwrap();
+		let mut reopened = PruneList::open(&path).unwrap();
+		assert_eq!(reopened.to_vec(), [3, 6]);
+		assert_eq!(reopened.get_total_shift().unwrap(), 4);
+		assert_eq!(reopened.get_total_leaf_shift().unwrap(), 4);
+
+		reopened.append_exact(9).unwrap();
+		reopened.discard().unwrap();
+		assert_eq!(reopened.to_vec(), [3, 6]);
+		assert_eq!(reopened.get_total_shift().unwrap(), 4);
+		assert_eq!(reopened.get_total_leaf_shift().unwrap(), 4);
+		reopened.flush().unwrap();
+		assert_eq!(read_bitmap(&path).unwrap(), Bitmap::of(&[3, 6]));
+		assert_eq!(
+			FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+			old_time
+		);
+	}
 
 	#[test]
 	fn flush_skips_clean_bitmaps_but_persists_new_and_changed_lists() {

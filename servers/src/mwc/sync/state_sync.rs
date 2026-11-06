@@ -1087,7 +1087,16 @@ impl StateSync {
 				error!("{}", message);
 				scores.report_error_response(&response.peer, message);
 			} else {
-				error!("Failed to commit snapshot batch: {}", error);
+				error!("Failed to apply snapshot batch: {}", error);
+				// Unattributed errors include invalid authenticated bitmaps. Ban
+				// the selected root's endorsers before reset so the same peers
+				// cannot repeatedly restart sync with that bad root. For simplicity,
+				// storage failures also trigger this conservative ban, even when
+				// endorsers are honest. ChainRestartRequired only means the local
+				// session was invalidated and must not trigger a ban.
+				if !matches!(&error, mwc_chain::Error::ChainRestartRequired) {
+					self.ban_this_session(desegmenter.get_bitmap_root_hash(), scores);
+				}
 			}
 			// Reverse the removals to restore every task at its original position.
 			// The application lock and pinned session keep these positions valid.
@@ -2209,9 +2218,10 @@ mod task_tests {
 	}
 
 	#[test]
-	fn batch_marker_failure_restores_tasks_and_requires_recovery() {
+	fn batch_marker_failure_restores_tasks_and_bans_session_endorsers() {
 		let f = Fixture::new();
 		let (peer, _messages) = f.peer(1);
+		let (endorser, _endorser_messages) = f.peer(2);
 		let session = f.sync.live_desegmenter().unwrap();
 		f.sync
 			.send_requests(&[peer.clone()], &session, &f.scores)
@@ -2265,10 +2275,8 @@ mod task_tests {
 			.get_store_for_tests()
 			.set_pending_chain_operation(&mwc_chain::store::PendingChainOperation::PibdReset)
 			.unwrap();
-		// One more supplier error would trigger a ban. This local commit failure
-		// must not count as invalid data from the supplier.
-		f.scores
-			.report_error_response(&peer.info.addr, "Earlier invalid response".into());
+		// The conservative session policy also bans root endorsers on local
+		// commit failures, even without any previous supplier errors.
 		let result = f.sync.apply_ready_tasks(&session.desegmenter, &f.scores);
 		assert!(
 			matches!(&result, Err(mwc_chain::Error::StoreErr(..))),
@@ -2301,7 +2309,81 @@ mod task_tests {
 			Err(mwc_chain::Error::ChainRestartRequired)
 		));
 		f.scores.apply_peers_status(&f.peers);
-		assert!(f.scores.get_banned_peers().is_empty());
+		assert_eq!(
+			f.scores.get_banned_peers(),
+			HashSet::from([peer.info.addr.clone(), endorser.info.addr.clone()])
+		);
+		assert!(!peer.is_connected());
+		assert!(!endorser.is_connected());
+	}
+
+	#[test]
+	fn invalid_authenticated_bitmap_bans_only_its_root_endorsers() {
+		let f = Fixture::new();
+		let (supplier, _supplier_messages) = f.peer(1);
+		let (endorser, _endorser_messages) = f.peer(2);
+		let (other_root_peer, _other_messages) = f.peer(3);
+		// The fixture has one output. Bit 1 is its permitted synthetic sibling;
+		// bit 2 is impossible, even with a valid proof against the endorsed root.
+		let mut chunk = BitmapChunk::new();
+		chunk.set(0, true).unwrap();
+		chunk.set(2, true).unwrap();
+		let mut accumulator = mwc_chain::txhashset::BitmapAccumulator::new(0);
+		accumulator.append_chunk(chunk.clone()).unwrap();
+		let root = accumulator.root().unwrap();
+		*f.sync.desegmenter.write() =
+			Some(Arc::new(f.sync.chain.init_desegmenter(0, root).unwrap()));
+		for peer in [&supplier, &endorser] {
+			f.sync
+				.responded_root_hash
+				.write()
+				.insert(peer.info.addr.clone(), (root, Instant::now()));
+		}
+		let session = f.sync.live_desegmenter().unwrap();
+		f.sync
+			.send_requests(&[supplier.clone(), endorser.clone()], &session, &f.scores)
+			.unwrap();
+		let before = session.desegmenter.get_pibd_progress(0);
+		let id = f.sync.download.lock().tasks[0].id.identifier;
+		let original = f.source.segmenter().unwrap().bitmap_segment(id).unwrap();
+		let segment = Segment::from_parts(
+			id,
+			vec![],
+			vec![],
+			vec![0],
+			vec![chunk],
+			original.proof().clone(),
+		)
+		.unwrap();
+		f.sync
+			.receive_bitmap_segment(
+				&supplier.info.addr,
+				&session.archive_hash,
+				segment,
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
+		assert!(f.sync.download.lock().tasks[0].received.is_some());
+		assert!(matches!(
+			f.sync.apply_ready_tasks(&session.desegmenter, &f.scores),
+			Err(mwc_chain::Error::InvalidSegment(_))
+		));
+		assert!(!session.desegmenter.is_current());
+		assert_eq!(session.desegmenter.get_pibd_progress(0), before);
+		assert!(f.sync.reset_desegmenter.load(Ordering::Relaxed));
+		assert!(f.sync.download.lock().tasks[0].received.is_some());
+		drop(session);
+		// Clearing the failed session must preserve the independently queued bans.
+		f.sync.reset_desegmenter_data();
+		f.scores.apply_peers_status(&f.peers);
+		assert_eq!(
+			f.scores.get_banned_peers(),
+			HashSet::from([supplier.info.addr.clone(), endorser.info.addr.clone()])
+		);
+		assert!(!supplier.is_connected());
+		assert!(!endorser.is_connected());
+		assert!(other_root_peer.is_connected());
 	}
 
 	#[test]
