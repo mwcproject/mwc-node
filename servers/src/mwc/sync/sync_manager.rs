@@ -41,6 +41,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const MIN_SYNC_TARGET_RESPONSES: usize = 2;
+const MIN_HEADER_FALLBACK_PEERS: usize = 2;
 const MAX_PIBD_BLOCK_FAILURES: usize = 3;
 
 /// Sync Manager is reponsible for coordination of all syncing process
@@ -347,6 +348,8 @@ impl SyncManager {
 
 	/// Release a header-only branch whose suppliers have disappeared. Leave room
 	/// for a remaining peer's advertised work to start an ordinary header download.
+	/// Runtime fallback requires at least two outbound peers with known tips,
+	/// all advertising less work than our selected headers.
 	/// Startup runs after local validation and before peer connections or PIBD,
 	/// so it does not require this sync session to have established state readiness.
 	pub fn truncate_header_head(&self, peers: &Arc<Peers>, startup: bool) -> Result<(), Error> {
@@ -362,24 +365,35 @@ impl SyncManager {
 		if body.height == 0 || headers.last_block_h == body.last_block_h {
 			return Ok(());
 		}
-		// Height-zero peers cannot supply ordinary header downloads yet. Their
-		// handshake work must not keep an unsupported header branch selected.
-		let best_work = peers
+		// A disconnect or an inbound advertisement is not enough evidence to
+		// discard sync progress. Handshakes without a height cannot vote either.
+		let peer_tips: Vec<_> = peers
 			.iter()
 			.connected()
-			.filter(|peer| peer.info.has_known_tip())
+			.filter(move |peer| peer.info.has_known_tip() && (startup || peer.info.is_outbound()))
 			.into_iter()
-			.map(|peer| peer.info.get_height_and_difficulty().1)
-			.max();
-		if best_work.is_some_and(|work| work >= headers.total_difficulty) {
+			.map(|peer| peer.info.get_height_and_difficulty())
+			.collect();
+		if !startup && peer_tips.len() < MIN_HEADER_FALLBACK_PEERS {
+			return Ok(());
+		}
+		let best_tip = peer_tips
+			.into_iter()
+			.max_by_key(|(height, work)| (*work, *height));
+		if best_tip.is_some_and(|(_, work)| work >= headers.total_difficulty) {
 			return Ok(());
 		}
 		let mut target = self.chain.get_block_header(&body.last_block_h)?;
-		if let Some(work) = best_work.filter(|work| *work > body.total_difficulty) {
+		if let Some((height, work)) = best_tip.filter(|(_, work)| *work > body.total_difficulty) {
 			target = self.chain.get_block_header(&headers.last_block_h)?;
-			// Stop below the peer's work so HeaderSync requests its branch even
-			// when the peer's advertised height matches our selected height.
-			while target.total_difficulty() >= work {
+			// An exact height/work match on our body branch can start body sync
+			// immediately. On a competing branch, or without an exact match, stop
+			// below the peer's work so HeaderSync can discover its actual headers.
+			let extends_body =
+				self.chain.fork_point()?.hash(self.chain.get_context_id())? == body.last_block_h;
+			while target.total_difficulty() > work
+				|| (target.total_difficulty() == work && (target.height != height || !extends_body))
+			{
 				let previous = self.chain.get_previous_header(&target)?;
 				if previous.height.checked_add(1) != Some(target.height)
 					|| previous.total_difficulty() >= target.total_difficulty()
@@ -404,8 +418,8 @@ impl SyncManager {
 			},
 		)? {
 			info!(
-				"Truncated unsupported header head from {} at {} to height {} with work {}; best peer work {:?}",
-				headers.last_block_h, headers.height, target.height, target.total_difficulty(), best_work
+				"Truncated unsupported header head from {} at {} to height {} with work {}; best peer tip {:?}",
+				headers.last_block_h, headers.height, target.height, target.total_difficulty(), best_tip
 			);
 		}
 		Ok(())

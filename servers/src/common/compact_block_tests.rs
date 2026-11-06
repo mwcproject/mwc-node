@@ -146,6 +146,29 @@ impl Fixture {
 		receiver
 	}
 
+	fn connect_peer_at(
+		&self,
+		port: u16,
+		direction: Direction,
+		tip: mwc_chain::Tip,
+	) -> (
+		Arc<mwc_p2p::Peer>,
+		mwc_crates::crossbeam::channel::Receiver<mwc_p2p::msg::Msg>,
+	) {
+		let info = PeerInfo {
+			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
+			direction,
+			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+			..self.peer.clone()
+		};
+		info.update(tip.height, tip.total_difficulty);
+		let (peer, messages) =
+			mwc_p2p::Peer::connected_for_test(info, self.context, self.peers.clone());
+		let peer = Arc::new(peer);
+		self.peers.add_connected(peer.clone()).unwrap();
+		(peer, messages)
+	}
+
 	fn block(&mut self, txs: &[Transaction]) -> core::Block {
 		next_block(&self.chain, &mut self.secp, &self.keychain, txs)
 	}
@@ -535,6 +558,7 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	for (port, tip) in [(3540, strong_tip), (3541, other_tip)] {
 		let info = PeerInfo {
 			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
+			direction: Direction::Outbound,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
 			..f.peer.clone()
 		};
@@ -561,6 +585,9 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 	// An alternative joins after the original body requests were assigned.
 	f.peers.add_connected(other_peer.clone()).unwrap();
 	f.peers.remove_connected(&strong_peer.info.addr);
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), strong_tip);
+	let (_behind, _behind_messages) = f.connect_peer_at(3542, Direction::OutboundTor, body);
 	f.manager.truncate_header_head(&f.peers, false).unwrap();
 	f.manager.sync_request(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap(), body);
@@ -668,7 +695,7 @@ fn unsupported_headers_fall_back_to_body_only_after_snapshot_validation() {
 		let abandoned = f.chain.header_head().unwrap();
 		if equal_work {
 			// A mined body can tie a previously selected header on another fork.
-			// With no suppliers, the fallback must still select the body branch.
+			// With two outbound peers below that work, select the body branch.
 			let block = f.block(&[]);
 			f.chain
 				.process_block(&mut f.secp, block.clone(), Options::NONE, HashSet::new())
@@ -681,15 +708,24 @@ fn unsupported_headers_fall_back_to_body_only_after_snapshot_validation() {
 			);
 		}
 		let body = f.chain.head().unwrap();
-		let _messages = if connect_behind {
-			f.peer.update(body.height, body.total_difficulty);
-			let (peer, messages) =
-				mwc_p2p::Peer::connected_for_test(f.peer.clone(), f.context, f.peers.clone());
-			f.peers.add_connected(Arc::new(peer)).unwrap();
-			Some(messages)
+		let advertised = if equal_work {
+			mwc_chain::Tip::try_from_header(&f.history[2].header).unwrap()
 		} else {
-			None
+			body
 		};
+		let mut suppliers = Vec::new();
+		if connect_behind {
+			suppliers.push(f.connect_peer_at(3550, Direction::Outbound, advertised));
+		}
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), abandoned);
+		while suppliers.len() < 2 {
+			suppliers.push(f.connect_peer_at(
+				3550 + suppliers.len() as u16,
+				Direction::Outbound,
+				advertised,
+			));
+		}
 		let status = Arc::new(SyncState::new());
 		let pending = SyncManager::new(f.chain.clone(), status.clone(), Arc::new(StopState::new()));
 		pending.truncate_header_head(&f.peers, false).unwrap();
@@ -979,6 +1015,10 @@ fn unsupported_headers_wrong_height_peer_is_fined_until_defunct() {
 			assert_eq!(messages.try_iter().count(), 0);
 		}
 		f.manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		let (_first, _first_messages) = f.connect_peer_at(3553, Direction::Outbound, body);
+		let (_second, _second_messages) = f.connect_peer_at(3554, Direction::Outbound, body);
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
 		assert_eq!(f.chain.header_head().unwrap(), body);
 		assert_eq!(f.chain.head().unwrap(), body);
 		assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
@@ -1001,6 +1041,7 @@ fn zero_height_peers_cannot_pin_unsupported_headers() {
 			tip.total_difficulty
 		};
 		let info = PeerInfo {
+			direction: Direction::Outbound,
 			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(work))),
 			..f.peer.clone()
 		};
@@ -1020,12 +1061,60 @@ fn zero_height_peers_cannot_pin_unsupported_headers() {
 			f.manager.apply_header_scores_for_test(&f.peers);
 			assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
 		}
-		// Work without a height must not prevent falling back to the body tip.
+		// Unknown heights do not count toward the two outbound peers, and their
+		// work does not prevent fallback once two known outbound tips exist.
+		let (_first, _first_messages) = f.connect_peer_at(3555, Direction::Outbound, body);
+		f.manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		let (_second, _second_messages) = f.connect_peer_at(3556, Direction::OutboundTor, body);
 		f.manager.truncate_header_head(&f.peers, false).unwrap();
 		assert_eq!(f.chain.header_head().unwrap(), body);
 		assert_eq!(f.chain.head().unwrap(), body);
 		assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
 	}
+}
+
+#[test]
+fn runtime_header_fallback_requires_two_known_outbound_tips() {
+	let mut f = Fixture::new(1_934_055);
+	let body = f.chain.head().unwrap();
+	let block = f.block(&[]);
+	f.chain
+		.process_block_header(&block.header, Options::NONE)
+		.unwrap();
+	let tip = f.chain.header_head().unwrap();
+	let (_inbound_a, _inbound_a_messages) = f.connect_peer_at(3560, Direction::Inbound, tip);
+	let (_inbound_b, _inbound_b_messages) = f.connect_peer_at(3561, Direction::Inbound, body);
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), tip);
+	let (_outbound, _outbound_messages) = f.connect_peer_at(3562, Direction::Outbound, body);
+	let (_unknown, _unknown_messages) = f.connect_peer_at(
+		3563,
+		Direction::OutboundTor,
+		mwc_chain::Tip { height: 0, ..tip },
+	);
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), tip);
+
+	// One supporting outbound peer vetoes fallback, at equal or greater work.
+	let (supporting, _supporting_messages) = f.connect_peer_at(3564, Direction::Outbound, tip);
+	let (_second, _second_messages) = f.connect_peer_at(3565, Direction::OutboundTor, body);
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), tip);
+	supporting.info.update(
+		tip.height + 1,
+		(tip.total_difficulty + Difficulty::from_num(1)).unwrap(),
+	);
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), tip);
+
+	// Once it disconnects, the two lower outbound tips permit fallback even
+	// though an inbound peer and a height-zero outbound peer claim more work.
+	f.peers.remove_connected(&supporting.info.addr);
+	f.manager.truncate_header_head(&f.peers, false).unwrap();
+	assert_eq!(f.chain.header_head().unwrap(), body);
+	assert_eq!(f.chain.head().unwrap(), body);
+	assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
 }
 
 #[test]

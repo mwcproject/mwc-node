@@ -1690,6 +1690,197 @@ mod tests {
 	}
 
 	#[test]
+	fn archive_sync_preserves_headers_across_peer_loss() {
+		use crate::mwc::sync::sync_manager::SyncManager;
+
+		let mut f = Fixture::new(1_935_091, 12);
+		assert!(f.chain.archive_mode());
+		f.chain
+			.process_block(
+				&mut f.secp,
+				f.blocks[0].clone(),
+				Options::NONE,
+				HashSet::new(),
+			)
+			.unwrap();
+		let tip = f.chain.header_head().unwrap();
+		let status = Arc::new(SyncState::new());
+		status.reset();
+		let manager = SyncManager::new(
+			f.chain.clone(),
+			status.clone(),
+			Arc::new(mwc_util::StopState::new()),
+		);
+		assert!(manager.state_is_ready());
+		// Losing all suppliers must preserve downloaded headers, even before
+		// the outer loop updates NoSync to reflect the body backlog.
+		manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+
+		let (supplier, _messages) = f.supplier(4191);
+		manager.sync_request(&f.peers).unwrap();
+		assert!(matches!(status.status(), SyncStatus::BodySync { .. }));
+		supplier.stop();
+		f.peers.remove_connected(&supplier.info.addr);
+		manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		assert_eq!(
+			manager.sync_request(&f.peers).unwrap().response,
+			SyncRequestResponses::WaitingForPeers
+		);
+		// SyncRunner publishes AwaitingPeers on this response. Preserve progress
+		// while waiting for peers, including when only one weaker outbound joins.
+		status.update(SyncStatus::AwaitingPeers);
+		manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		let (behind, _behind_messages) = f.peer(
+			4192,
+			2,
+			f.blocks[1].header.total_difficulty(),
+			Capabilities::BLOCK_HIST | Capabilities::BLOCK_EXTRA,
+		);
+		manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		f.peers.remove_connected(&behind.info.addr);
+
+		let (supplier, _messages) = f.supplier(4193);
+		for block in &f.blocks[1..11] {
+			manager.sync_request(&f.peers).unwrap();
+			assert!(manager.has_block_request(
+				&supplier.info.addr,
+				&block.hash(f.chain.get_context_id()).unwrap()
+			));
+			assert!(manager
+				.receive_block(&mut f.secp, block, &supplier.info, false)
+				.unwrap());
+		}
+		manager.sync_request(&f.peers).unwrap();
+		assert_eq!(f.chain.head().unwrap().height, tip.height - 1);
+		assert!(matches!(status.status(), SyncStatus::BodySync { .. }));
+		// is_syncing() intentionally tolerates small gaps. An unfinished archive
+		// download must retain its final headers even inside that tolerance.
+		assert!(!status.is_syncing());
+		supplier.stop();
+		f.peers.remove_connected(&supplier.info.addr);
+		manager.truncate_header_head(&f.peers, false).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+
+		let (supplier, _messages) = f.supplier(4194);
+		manager.sync_request(&f.peers).unwrap();
+		assert!(manager
+			.receive_block(&mut f.secp, &f.blocks[11], &supplier.info, false)
+			.unwrap());
+		assert_eq!(f.chain.head().unwrap(), tip);
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		assert_eq!(
+			manager.sync_request(&f.peers).unwrap().response,
+			SyncRequestResponses::SyncDone
+		);
+	}
+
+	#[test]
+	fn archive_sync_falls_back_to_the_best_of_two_outbound_tips() {
+		use crate::mwc::sync::sync_manager::SyncManager;
+
+		for (context, exact_match) in [(1_935_093, true), (1_935_094, false)] {
+			let mut f = Fixture::new(context, 12);
+			f.chain
+				.process_block(
+					&mut f.secp,
+					f.blocks[0].clone(),
+					Options::NONE,
+					HashSet::new(),
+				)
+				.unwrap();
+			let tip = f.chain.header_head().unwrap();
+			let status = Arc::new(SyncState::new());
+			status.reset();
+			let manager = SyncManager::new(
+				f.chain.clone(),
+				status.clone(),
+				Arc::new(mwc_util::StopState::new()),
+			);
+			let work = f.blocks[9].header.total_difficulty();
+			let (best, best_messages) = f.peer(
+				4195,
+				if exact_match { 10 } else { 9 },
+				work,
+				Capabilities::BLOCK_HIST | Capabilities::BLOCK_EXTRA,
+			);
+			let (lower, _lower_messages) = f.peer(
+				4196,
+				8,
+				f.blocks[7].header.total_difficulty(),
+				Capabilities::BLOCK_HIST | Capabilities::BLOCK_EXTRA,
+			);
+			manager.sync_request(&f.peers).unwrap();
+			assert!(matches!(status.status(), SyncStatus::BodySync { .. }));
+			manager.truncate_header_head(&f.peers, false).unwrap();
+			let retained = f.chain.header_head().unwrap();
+			assert_eq!(retained.height, if exact_match { 10 } else { 9 });
+			assert_eq!(f.chain.head().unwrap().height, 1);
+			assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
+			best_messages.try_iter().for_each(drop);
+			manager.sync_request(&f.peers).unwrap();
+			if exact_match {
+				assert_eq!(retained.total_difficulty, work);
+				assert!(manager.header_download_for_test(&best.info.addr).is_none());
+				// Matching the best peer leaves body download active without an
+				// extra header round-trip. Deliver its next requested block.
+				let hash = f.blocks[1].hash(context).unwrap();
+				let supplier = if manager.has_block_request(&best.info.addr, &hash) {
+					&best
+				} else {
+					&lower
+				};
+				assert!(manager.has_block_request(&supplier.info.addr, &hash));
+				assert!(manager
+					.receive_block(&mut f.secp, &f.blocks[1], &supplier.info, false)
+					.unwrap());
+				assert_eq!(f.chain.head().unwrap().height, 2);
+			} else {
+				assert!(retained.total_difficulty < work);
+				assert!(manager.header_download_for_test(&best.info.addr).is_some());
+				assert!(best_messages.try_iter().any(
+					|message| message.message_type_for_test() == mwc_p2p::msg::Type::GetHeaders
+				));
+			}
+		}
+	}
+
+	#[test]
+	fn archive_startup_still_truncates_headers_above_retained_bodies() {
+		use crate::mwc::sync::sync_manager::SyncManager;
+
+		let mut f = Fixture::new(1_935_092, 3);
+		assert!(f.chain.archive_mode());
+		let tip = f.chain.header_head().unwrap();
+		let status = Arc::new(SyncState::new());
+		let manager = SyncManager::new(
+			f.chain.clone(),
+			status,
+			Arc::new(mwc_util::StopState::new()),
+		);
+		// Keep the existing genesis exception, then model a resumed archive.
+		manager.truncate_header_head(&f.peers, true).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), tip);
+		f.chain
+			.process_block(
+				&mut f.secp,
+				f.blocks[0].clone(),
+				Options::NONE,
+				HashSet::new(),
+			)
+			.unwrap();
+		let body = f.chain.head().unwrap();
+		manager.truncate_header_head(&f.peers, true).unwrap();
+		assert_eq!(f.chain.header_head().unwrap(), body);
+		assert_eq!(f.chain.head().unwrap(), body);
+		assert!(f.chain.get_block_header(&tip.last_block_h).is_ok());
+		assert!(f.chain.get_block_for_header(&f.blocks[0].header).is_ok());
+	}
+
+	#[test]
 	fn resumed_archive_download_progress_starts_at_the_existing_body_height() {
 		let mut f = Fixture::new(1_935_090, 3);
 		assert!(f.chain.archive_mode());
