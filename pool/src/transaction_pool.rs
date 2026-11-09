@@ -259,12 +259,13 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
-		let (context_id, adapter, pending_validations) = {
+		let (context_id, adapter, pending_validations, blockchain) = {
 			let tx_pool = tx_pool.read_recursive();
 			(
 				tx_pool.context_id,
 				tx_pool.adapter.clone(),
 				tx_pool.pending_validations.clone(),
+				tx_pool.blockchain.clone(),
 			)
 		};
 
@@ -272,6 +273,7 @@ where
 		// and excessive weight before hashing or consulting admission state. This
 		// deliberately skips rangeproof and kernel-signature verification.
 		tx.validate_read(context_id)?;
+		blockchain.verify_tx_not_confirmed(&tx)?;
 		let tx_hash = tx.hash(context_id)?;
 
 		// Fast read-only admission preflight. Never use private stempool
@@ -366,6 +368,10 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<PoolAddOutcome, PoolError> {
+		// A block may have confirmed this transaction during signature/proof validation.
+		self.blockchain
+			.verify_tx_not_confirmed(entry.transaction())?;
+
 		// Quick check for duplicate txs.
 		// Our stempool is private and we do not want to reveal anything about the txs contained.
 		// If this is a stem tx and is already present in stempool then fluff by adding to txpool.

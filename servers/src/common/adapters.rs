@@ -1603,6 +1603,17 @@ fn chain_validation_error_to_pool_error(e: mwc_chain::Error, context: &str) -> m
 }
 
 impl mwc_pool::BlockChain for PoolToChainAdapter {
+	fn verify_tx_not_confirmed(&self, tx: &Transaction) -> Result<(), mwc_pool::PoolError> {
+		if self
+			.chain()?
+			.has_mined_kernel(tx)
+			.map_err(|e| chain_validation_error_to_pool_error(e, "check mined kernels"))?
+		{
+			return Err(mwc_pool::PoolError::TransactionAlreadyConfirmed);
+		}
+		Ok(())
+	}
+
 	fn chain_head(&self) -> Result<BlockHeader, mwc_pool::PoolError> {
 		let chain = self.chain()?;
 		chain

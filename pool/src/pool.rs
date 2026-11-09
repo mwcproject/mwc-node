@@ -1051,17 +1051,18 @@ where
 		Ok(ValidatedPoolAggregate(aggregate))
 	}
 
-	/// Run the cheap, pool-local portion of admission before any component
+	/// Run cheap chain and pool checks before any component
 	/// authentication or pool-wide aggregate construction.
 	fn prepare_entry_for_admission(
 		&self,
 		entry: &PoolEntry,
 	) -> Result<PoolEntryIndexKeys, PoolError> {
+		entry.tx.validate_read(self.context_id)?;
+		self.blockchain.verify_tx_not_confirmed(&entry.tx)?;
 		if self.contains_tx(&entry.tx)? {
 			return Err(PoolError::DuplicateTx);
 		}
 
-		entry.tx.validate_read(self.context_id)?;
 		let entry_index_keys = PoolEntryIndexKeys::from_transaction(self.context_id, &entry.tx)?;
 		self.indexes.check_conflicts(&entry_index_keys)?;
 		Ok(entry_index_keys)
@@ -1224,6 +1225,8 @@ where
 		header: &BlockHeader,
 		secp: &Secp256k1,
 	) -> Result<BlockSums, PoolError> {
+		blockchain.verify_tx_not_confirmed(tx)?;
+
 		// NRD kernels are only valid once HF3/header version 4 rules apply.
 		if tx.kernels().iter().any(|k| k.is_nrd()) {
 			if !global::is_nrd_enabled(context_id) {
@@ -1952,6 +1955,10 @@ mod tests {
 	struct AcceptingChain;
 
 	impl BlockChain for AcceptingChain {
+		fn verify_tx_not_confirmed(&self, _tx: &Transaction) -> Result<(), PoolError> {
+			Ok(())
+		}
+
 		fn verify_coinbase_maturity(&self, _inputs: &Inputs) -> Result<(), PoolError> {
 			Ok(())
 		}
@@ -2012,6 +2019,10 @@ mod tests {
 	}
 
 	impl BlockChain for SelectiveChain {
+		fn verify_tx_not_confirmed(&self, _tx: &Transaction) -> Result<(), PoolError> {
+			Ok(())
+		}
+
 		fn verify_coinbase_maturity(&self, _inputs: &Inputs) -> Result<(), PoolError> {
 			Ok(())
 		}

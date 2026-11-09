@@ -331,6 +331,22 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		std::collections::HashSet::new(),
 	)?;
 
+	// Preflight rejects an existing kernel even when the inputs are unspent
+	// and consensus would allow reuse of this NRD kernel.
+	global::set_local_accept_fee_base(1).unwrap();
+	use mwc_core::core::transaction_preflight::{MempoolAcceptRequest, PreflightTransaction};
+	let request = MempoolAcceptRequest::single(
+		PreflightTransaction::from_transaction(0, &tx2, true).unwrap(),
+	);
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert!(!result.checks_passed);
+	assert!(!result.transactions[0].balance_checked);
+	assert_eq!(result.transactions[0].failures.len(), 1);
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
+
 	// Block at height 11 is valid with tx2 as NRD rule is met (relative_height=2).
 	let block_valid_11 = build_block(&mut secp, &chain, &keychain, &key_id11, vec![tx2.clone()])?;
 	chain.process_block(
@@ -339,6 +355,65 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		Options::NONE,
 		std::collections::HashSet::new(),
 	)?;
+
+	// Reposting tx1 after tx2 spent its output is a confirmation, not a replay.
+	let mut request = MempoolAcceptRequest::single(
+		PreflightTransaction::from_transaction(0, &tx1, true).unwrap(),
+	);
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert!(!result.checks_passed);
+	assert_eq!(result.transactions[0].failures.len(), 1, "{result:?}");
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
+
+	assert!(!result.transactions[0].balance_checked);
+
+	// Kernel lookup uses the excess and also works before a signature is final.
+	request.transactions[0].kernels[0].kernel_hash = None;
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
+
+	// An unknown kernel proceeds through the ordinary validation checks.
+	let mut unknown = request.clone();
+	unknown.transactions[0].kernels[0].excess = Some(secp.commit_value(42).unwrap());
+	let result = chain.test_mempool_accept(&unknown, &[], &secp)?;
+	assert!(result.transactions[0].balance_checked);
+	assert!(result.transactions[0]
+		.failures
+		.iter()
+		.any(|f| f.check == "replay"));
+	assert!(result.transactions[0]
+		.failures
+		.iter()
+		.any(|f| f.check == "input_missing"));
+
+	// Age the spend beyond the replay window. The full kernel index still
+	// identifies the repost before even attempting balance or input checks.
+	let old_spend_height = chain.head()?.height;
+	let after_window = old_spend_height + u64::from(global::cut_through_horizon(0)) / 2 + 1;
+	for height in old_spend_height + 1..=after_window {
+		let key = ExtKeychain::derive_key_id(1, height as u32, 0, 0, 0).unwrap();
+		let block = build_block(&mut secp, &chain, &keychain, &key, vec![])?;
+		chain.process_block(&mut secp, block, Options::NONE, Default::default())?;
+	}
+	let result = chain.test_mempool_accept(&unknown, &[], &secp)?;
+	assert!(!result.transactions[0]
+		.failures
+		.iter()
+		.any(|f| f.check == "replay"));
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert!(!result.checks_passed);
+	assert!(!result.transactions[0].balance_checked);
+	assert_eq!(result.transactions[0].failures.len(), 1);
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
 
 	clean_output_dir(chain_dir);
 	Ok(())

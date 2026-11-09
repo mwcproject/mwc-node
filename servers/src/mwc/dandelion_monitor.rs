@@ -189,6 +189,9 @@ fn process_fluff_phase(
 				// Another inbound path may have fluffed this same batch meanwhile.
 				debug!("dand_mon: fluff batch was already present in txpool");
 			}
+			Err(PoolError::TransactionAlreadyConfirmed) => {
+				debug!("dand_mon: fluff batch was already confirmed on chain");
+			}
 			Err(e) => return Err(e),
 		}
 	}
@@ -286,6 +289,13 @@ fn process_expired_entries(
 				"dand_mon: embargo-expired tx {} was already present in txpool",
 				txhash
 			),
+			Err(PoolError::TransactionAlreadyConfirmed) => {
+				debug!(
+					"dand_mon: embargo-expired tx {} was already confirmed on chain",
+					txhash
+				);
+				tx_pool.write().stempool.remove_tx(&entry.tx)?;
+			}
 			Err(e) => {
 				warn!(
 					"dand_mon: failed to fluff expired tx {}, evicting from stempool: {:?}",

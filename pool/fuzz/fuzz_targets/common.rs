@@ -148,6 +148,17 @@ pub struct ChainAdapter {
 
 // Same as from pool/tests/common.rs
 impl BlockChain for ChainAdapter {
+	fn verify_tx_not_confirmed(&self, tx: &Transaction) -> Result<(), PoolError> {
+		if self
+			.chain
+			.has_mined_kernel(tx)
+			.map_err(|e| PoolError::Other(format!("failed to check mined kernels, {}", e)))?
+		{
+			return Err(PoolError::TransactionAlreadyConfirmed);
+		}
+		Ok(())
+	}
+
 	fn chain_head(&self) -> Result<BlockHeader, PoolError> {
 		self.chain
 			.head_header()

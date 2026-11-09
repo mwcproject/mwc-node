@@ -2304,12 +2304,39 @@ impl Chain {
 								return Ok(response);
 							}
 						}
+						if !batch.is_kernel_pos_index_complete()? {
+							return Err(Error::KernelPosIndexIncomplete);
+						}
 						let mut dependencies = PreflightDependencies::default();
 						let empty_pool = PreflightPoolState::default();
 						for (index, (request, tx)) in
 							request.transactions.iter().zip(&transactions).enumerate()
 						{
 							let result = &mut response.transactions[index];
+							// Check mined kernels before any balance, UTXO or replay checks.
+							// The full kernel index has no replay-window age limit.
+							let mut already_confirmed = false;
+							for kernel in &request.kernels {
+								if let Some(excess) = kernel.excess {
+									if batch
+										.kernel_pos_iter(&excess)?
+										.next()
+										.transpose()?
+										.is_some()
+									{
+										already_confirmed = true;
+										break;
+									}
+								}
+							}
+							if already_confirmed {
+								result.reject(
+									"already_confirmed",
+									"Transaction kernel already confirmed on the current chain"
+										.into(),
+								);
+								continue;
+							}
 							let pool = pool_state.get(index).unwrap_or(&empty_pool);
 							result.already_known = pool.already_known;
 							for conflict in &pool.conflicts {
@@ -2423,6 +2450,28 @@ impl Chain {
 				)
 			});
 		}
+	}
+
+	/// Whether any transaction kernel is already mined on the current body chain.
+	/// Read the full kernel index in one chain snapshot, without an age limit.
+	pub fn has_mined_kernel(&self, tx: &Transaction) -> Result<bool, Error> {
+		self.with_robust_chain_read(|_, _| {
+			let batch = self.store.batch_read()?;
+			if !batch.is_kernel_pos_index_complete()? {
+				return Err(Error::KernelPosIndexIncomplete);
+			}
+			for kernel in tx.kernels() {
+				if batch
+					.kernel_pos_iter(&kernel.excess)?
+					.next()
+					.transpose()?
+					.is_some()
+				{
+					return Ok(true);
+				}
+			}
+			Ok(false)
+		})
 	}
 
 	/// Validate the tx against the current UTXO set and recent kernels (NRD relative lock heights).

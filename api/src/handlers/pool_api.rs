@@ -145,6 +145,7 @@ fn pool_error_to_api_error(e: mwc_pool::PoolError) -> Error {
 		| DuplicateCommitment
 		| DuplicateKernelOrDuplicateSpent(_)
 		| DuplicateTx
+		| TransactionAlreadyConfirmed
 		| NRDKernelPreHF3
 		| NRDKernelNotEnabled
 		| NRDKernelRelativeHeight => Error::RequestError(format!("Transaction rejected: {}", e)),
@@ -287,6 +288,20 @@ mod tests {
 				assert!(msg.contains("duplicate query parameter fluff"), "{}", msg);
 			}
 			other => panic!("expected request error, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn mined_transaction_returns_confirmed_request_error() {
+		let err = pool_error_to_api_error(mwc_pool::PoolError::TransactionAlreadyConfirmed);
+		match err {
+			Error::RequestError(message) => {
+				assert_eq!(
+					message,
+					"Transaction rejected: Transaction already confirmed on the current chain"
+				);
+			}
+			other => panic!("expected confirmed transaction rejection, got {:?}", other),
 		}
 	}
 
