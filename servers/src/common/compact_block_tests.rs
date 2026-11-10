@@ -50,6 +50,17 @@ impl Fixture {
 		global::init_global_accept_fee_base(context, 1).unwrap();
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let keychain = ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
+		// Server restart requires an owner-only data directory, independently of
+		// the test process's umask (TempDir::new() uses default permissions).
+		#[cfg(unix)]
+		let chain_dir = {
+			use std::os::unix::fs::PermissionsExt;
+			mwc_crates::tempfile::Builder::new()
+				.permissions(std::fs::Permissions::from_mode(0o700))
+				.tempdir()
+				.unwrap()
+		};
+		#[cfg(not(unix))]
 		let chain_dir = TempDir::new().unwrap();
 		let peer_dir = TempDir::new().unwrap();
 		let sync_state = Arc::new(SyncState::new());
