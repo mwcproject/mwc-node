@@ -280,7 +280,7 @@ mod tests {
 		CoinbaseBindingContext {
 			genesis_hash: Hash::from_vec(&[1; 32]),
 			prev_hash: Hash::from_vec(&[2; 32]),
-			height: 3_632_000,
+			height: 3_680_000,
 			input_hash: canonical_input_hash(&[]).unwrap(),
 			bitmap_hash: Hash::from_vec(&[3; 32]),
 			output_leaf_count: 42,
@@ -525,9 +525,11 @@ mod tests {
 			context.input_hash.to_hex(),
 			"e0f3df58a43c72e247e4f86c8a004f33da0750b937aef4285e0d5a4e5fe7aa43"
 		);
+		// Independently generated with Python hashlib.blake2b(digest_size=32)
+		// over the V3 context encoding, including height 3_680_000.
 		assert_eq!(
 			context.digest().unwrap().to_hex(),
-			"345da247d567085a1ef2fb8be0e7405b82b103d956e8565636ae12854c12379f"
+			"644e6044543ac1cc00b02f4d9362cecac635e7c3c3abdca5c06c06b47fc4880b"
 		);
 		context.height = 0;
 		assert!(context.digest().is_err());
@@ -813,7 +815,7 @@ mod tests {
 	fn activation_boundaries_are_fixed_for_every_network() {
 		use crate::{consensus, global};
 		for (network, height) in [
-			(global::ChainTypes::Mainnet, 3_632_000),
+			(global::ChainTypes::Mainnet, 3_680_000),
 			(global::ChainTypes::Floonet, 1_748_700),
 			(global::ChainTypes::AutomatedTesting, 4),
 			(global::ChainTypes::UserTesting, 4),

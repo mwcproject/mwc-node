@@ -103,7 +103,7 @@ remove_dir_all = "0.7"
 same-file = "1"
 tempfile = "3.27"
 walkdir = "2.5"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # Secp256k1
 secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", version = "0.8.1", tag = "0.8.1", features = ["bullet-proof-sizing"] }
