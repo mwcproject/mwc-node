@@ -24,7 +24,7 @@ use mwc_core::core::{
 	BlockHeader,
 };
 use mwc_crates::log::{debug, info};
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::rand::seq::IteratorRandom;
 use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -451,7 +451,7 @@ impl HeaderPibdSync {
 				.as_ref()
 				.ok_or_else(|| Error::Other("Missing header hashes desegmenter".into()))?;
 			{
-				let desegmenter = desegmenter.read_recursive();
+				let desegmenter = desegmenter.read();
 				if desegmenter.get_target_height() != hashes.target_archive_height {
 					return Err(Error::Other("Checkpoint target changed".into()));
 				}
@@ -500,14 +500,14 @@ impl HeaderPibdSync {
 		headers: &[BlockHeader],
 		remaining: u64,
 		scores: &SyncPeers,
-		hashes: Option<Arc<RwLock<HeaderHashesDesegmenter>>>,
+		hashes: Option<Arc<RecursiveRwLock<HeaderHashesDesegmenter>>>,
 		peers: &Arc<Peers>,
 	) -> Result<bool, Error> {
 		let Some(hashes) = hashes else {
 			return Ok(false);
 		};
 		let handled = {
-			let hashes = hashes.read_recursive();
+			let hashes = hashes.read();
 			let mut download = self.download.lock();
 			let Some(download) = download
 				.as_mut()
@@ -772,7 +772,9 @@ mod tests {
 			version: ProtocolVersion::local(),
 			addr: peer.clone(),
 			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				pow::Difficulty::min(),
+			))),
 			tx_base_fee: 0,
 		};
 		let (supplier, _receiver) = Peer::connected_for_test(info, 0, Arc::new(DummyAdapter {}));
@@ -1327,7 +1329,9 @@ mod tests {
 				version: ProtocolVersion::local(),
 				addr: addr(id),
 				direction: Direction::Outbound,
-				live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+				live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+					pow::Difficulty::min(),
+				))),
 				tx_base_fee: 0,
 			};
 			info.update(
@@ -1874,7 +1878,7 @@ mod tests {
 				&headers,
 				0,
 				&f.scores,
-				Some(Arc::new(RwLock::new(hashes))),
+				Some(Arc::new(RecursiveRwLock::new(hashes))),
 				&f.peers,
 			),
 			Err(Error::Orphan(_))
@@ -2086,7 +2090,7 @@ mod tests {
 				&headers,
 				0,
 				&f.scores,
-				Some(Arc::new(RwLock::new(first))),
+				Some(Arc::new(RecursiveRwLock::new(first))),
 				&f.peers
 			)
 			.unwrap());
@@ -2304,7 +2308,7 @@ mod tests {
 			agreed_peers: HashSet::new(),
 			target_archive_height: 100,
 			pibd_headers_are_loaded: false,
-			headers_hash_desegmenter: Some(Arc::new(RwLock::new(checkpoint_hashes(
+			headers_hash_desegmenter: Some(Arc::new(RecursiveRwLock::new(checkpoint_hashes(
 				&[genesis.hash(f.sync.chain.get_context_id()).unwrap()],
 				100,
 			)))),
@@ -2399,7 +2403,7 @@ mod tests {
 				agreed_peers: HashSet::new(),
 				target_archive_height: target,
 				pibd_headers_are_loaded: false,
-				headers_hash_desegmenter: Some(Arc::new(RwLock::new(checkpoint_hashes(
+				headers_hash_desegmenter: Some(Arc::new(RecursiveRwLock::new(checkpoint_hashes(
 					&checkpoints,
 					target,
 				)))),

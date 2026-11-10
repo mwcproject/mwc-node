@@ -46,7 +46,7 @@ use mwc_core::try_iter_map_vec;
 use mwc_crates::enum_primitive::{
 	enum_from_primitive, enum_from_primitive_impl, enum_from_primitive_impl_ty,
 };
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_crates::secp::Secp256k1;
@@ -1016,7 +1016,7 @@ pub struct PeerInfo {
 	pub version: ProtocolVersion,
 	pub addr: PeerAddr,
 	pub direction: Direction,
-	pub live_info: Arc<RwLock<PeerLiveInfo>>,
+	pub live_info: Arc<RecursiveRwLock<PeerLiveInfo>>,
 	pub tx_base_fee: u64,
 }
 
@@ -1036,7 +1036,7 @@ impl PeerLiveInfo {
 impl PeerInfo {
 	/// The best advertised or received height/work pair, read under one lock.
 	pub fn get_height_and_difficulty(&self) -> (u64, Difficulty) {
-		let info = self.live_info.read_recursive();
+		let info = self.live_info.read();
 		(info.height, info.total_difficulty)
 	}
 
@@ -1069,12 +1069,12 @@ impl PeerInfo {
 	/// Time of the latest update qualifying for liveness. Outbound updates must
 	/// provide a nonzero height and difficulty with at least the stored work.
 	pub fn last_seen(&self) -> DateTime<Utc> {
-		self.live_info.read_recursive().last_seen
+		self.live_info.read().last_seen
 	}
 
 	/// Time of first_seen for this peer.
 	pub fn first_seen(&self) -> DateTime<Utc> {
-		self.live_info.read_recursive().first_seen
+		self.live_info.read().first_seen
 	}
 
 	/// Retain the best total difficulty and its height. Refresh outbound liveness
@@ -1139,7 +1139,7 @@ pub struct PeerInfoDisplay {
 
 impl From<PeerInfo> for PeerInfoDisplay {
 	fn from(info: PeerInfo) -> PeerInfoDisplay {
-		let peer_last_seen = info.live_info.read_recursive().last_seen;
+		let peer_last_seen = info.live_info.read().last_seen;
 		let last_seen = last_seen_seconds_ago(peer_last_seen);
 		let (height, total_difficulty) = info.get_height_and_difficulty();
 		PeerInfoDisplay {
@@ -1435,7 +1435,9 @@ mod tests {
 			version: ProtocolVersion::local(),
 			addr: PeerAddr::Ip(([127, 0, 0, 1], 3414).into()),
 			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::from_num(100)))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				Difficulty::from_num(100),
+			))),
 			tx_base_fee: 0,
 		};
 		for (height, work) in [(0, 100), (0, 101), (9, 99)] {

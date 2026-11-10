@@ -30,7 +30,7 @@ use mwc_chain::{Chain, ChainHeadReset, Error, SyncState, SyncStatus};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::{Block, BlockHeader, OutputIdentifier, Segment, TxKernel};
 use mwc_crates::log::{debug, info, warn};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::{Capabilities, PeerAddr, PeerInfo, Peers};
@@ -48,8 +48,8 @@ const MAX_PIBD_BLOCK_FAILURES: usize = 3;
 pub struct SyncManager {
 	chain: Arc<Chain>,
 	// Distinct failed suppliers for the retained PIBD import. Cleared on reset/completion.
-	pibd_failed_peers: RwLock<HashSet<PeerAddr>>,
-	headers_hashes: RwLock<HeadersPibdHashSync>,
+	pibd_failed_peers: RecursiveRwLock<HashSet<PeerAddr>>,
+	headers_hashes: RecursiveRwLock<HeadersPibdHashSync>,
 	pibd_headers: HeaderPibdSync,
 	state: StateSync,
 	body: BodySync,
@@ -71,8 +71,8 @@ impl SyncManager {
 	pub fn new(chain: Arc<Chain>, sync_state: Arc<SyncState>, stop_state: Arc<StopState>) -> Self {
 		SyncManager {
 			chain: chain.clone(),
-			pibd_failed_peers: RwLock::new(HashSet::new()),
-			headers_hashes: RwLock::new(HeadersPibdHashSync::new(chain.clone())),
+			pibd_failed_peers: RecursiveRwLock::new(HashSet::new()),
+			headers_hashes: RecursiveRwLock::new(HeadersPibdHashSync::new(chain.clone())),
 			pibd_headers: HeaderPibdSync::new(chain.clone()),
 			state: StateSync::new(chain.clone()),
 			body: BodySync::new(chain.clone()),
@@ -212,10 +212,7 @@ impl SyncManager {
 		};
 
 		self.best_height.store(best_height, Ordering::Relaxed);
-		let r = self
-			.headers_hashes
-			.read_recursive()
-			.request_pre(best_height)?;
+		let r = self.headers_hashes.read().request_pre(best_height)?;
 		let headers_hash_resp = match r {
 			Some(resp) => resp,
 			None => self.headers_hashes.write().request_impl(
@@ -238,7 +235,7 @@ impl SyncManager {
 
 		let snapshot = self
 			.headers_hashes
-			.read_recursive()
+			.read()
 			.snapshot_for_best_height(best_height);
 		let headers = self.pibd_headers.request(
 			peers,
@@ -515,10 +512,7 @@ impl SyncManager {
 		let result = (|| match regular {
 			Ok(true) => Ok(true),
 			Ok(false) if !self.state_ready.load(Ordering::Acquire) => {
-				let desegmenter = self
-					.headers_hashes
-					.read_recursive()
-					.get_headers_hash_desegmenter();
+				let desegmenter = self.headers_hashes.read().get_headers_hash_desegmenter();
 				self.pibd_headers.receive_headers(
 					&peer.addr,
 					bhs,
@@ -930,7 +924,7 @@ mod pibd_successor_flow {
 		}
 
 		fn failures(&self) -> usize {
-			self.manager.pibd_failed_peers.read_recursive().len()
+			self.manager.pibd_failed_peers.read().len()
 		}
 
 		fn report_error(&self, block: Block, peer: PeerAddr, error: &Error) {
@@ -988,7 +982,9 @@ mod pibd_successor_flow {
 			version: mwc_core::ser::ProtocolVersion::local(),
 			addr: peer(id),
 			direction: mwc_p2p::types::Direction::Outbound,
-			live_info: Arc::new(RwLock::new(mwc_p2p::types::PeerLiveInfo::new(difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(mwc_p2p::types::PeerLiveInfo::new(
+				difficulty,
+			))),
 			tx_base_fee: 0,
 		};
 		info.update(tip.height + u64::from(better), difficulty);
@@ -1586,22 +1582,14 @@ mod pibd_successor_flow {
 			Arc::new(StopState::new()),
 		);
 		assert!(fixture.manager.state.imported_state().is_none());
-		assert!(fixture
-			.manager
-			.pibd_failed_peers
-			.read_recursive()
-			.is_empty());
+		assert!(fixture.manager.pibd_failed_peers.read().is_empty());
 
 		// This is an ordinary rejected block after restart, not a third vote
 		// against the previous PIBD group. It must not recreate the session.
 		fixture.deliver(3, false);
 		assert_eq!(fixture.failures(), 0);
 		assert!(fixture.manager.state.imported_state().is_none());
-		assert!(fixture
-			.manager
-			.pibd_failed_peers
-			.read_recursive()
-			.is_empty());
+		assert!(fixture.manager.pibd_failed_peers.read().is_empty());
 		fixture
 			.manager
 			.state_sync_peers

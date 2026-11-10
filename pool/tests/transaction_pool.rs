@@ -20,7 +20,7 @@ use mwc_core::core::hash::Hashed;
 use mwc_core::core::{transaction, Weighting};
 use mwc_core::global;
 use mwc_core::ser;
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_keychain::{ExtKeychain, Keychain};
@@ -96,7 +96,7 @@ fn fluff_relay_runs_after_pool_write_lock_is_released() {
 	let tx = test_transaction_spending_coinbase(&mut secp, &keychain, &header_1, vec![500]);
 
 	let adapter = Arc::new(RelayLockCheckingAdapter::default());
-	let pool = Arc::new(RwLock::new(TransactionPool::new(
+	let pool = Arc::new(RecursiveRwLock::new(TransactionPool::new(
 		0,
 		PoolConfig {
 			tx_fee_base: mwc_pool::types::default_tx_fee_base(),
@@ -122,7 +122,7 @@ fn fluff_relay_runs_after_pool_write_lock_is_released() {
 		.unwrap();
 
 	assert!(adapter.relay_observed_unlocked_pool.load(Ordering::SeqCst));
-	assert_eq!(pool.read_recursive().total_size(), 1);
+	assert_eq!(pool.read().total_size(), 1);
 
 	let header_2 = chain.get_header_by_height(2).unwrap();
 	let expired = test_transaction_spending_coinbase(&mut secp, &keychain, &header_2, vec![501]);
@@ -150,8 +150,8 @@ fn fluff_relay_runs_after_pool_write_lock_is_released() {
 		PromotionOutcome::Accepted
 	);
 	assert!(adapter.relay_observed_unlocked_pool.load(Ordering::SeqCst));
-	assert_eq!(pool.read_recursive().total_size(), 2);
-	assert!(pool.read_recursive().stempool.is_empty());
+	assert_eq!(pool.read().total_size(), 2);
+	assert!(pool.read().stempool.is_empty());
 	clean_output_dir(db_root.into());
 }
 

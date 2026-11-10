@@ -12,7 +12,7 @@ use mwc_core::core::{
 };
 use mwc_core::global;
 use mwc_core::libtx::{build, ProofBuilder};
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::secp::{pedersen::Commitment, ContextFlag, Secp256k1};
 use mwc_keychain::{ExtKeychain, Keychain};
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use std::time::Instant;
 
 struct TestChain {
 	header: BlockHeader,
-	utxos: RwLock<HashMap<Commitment, OutputIdentifier>>,
+	utxos: RecursiveRwLock<HashMap<Commitment, OutputIdentifier>>,
 	rejected_output: Mutex<Option<Commitment>>,
 	validate_calls: AtomicUsize,
 }
@@ -49,7 +49,7 @@ impl BlockChain for TestChain {
 
 	fn validate_outputs(&self, outputs: &[Output]) -> Result<(), PoolError> {
 		let rejected = *self.rejected_output.lock();
-		let utxos = self.utxos.read_recursive();
+		let utxos = self.utxos.read();
 		if outputs.iter().any(|output| {
 			Some(output.commitment()) == rejected || utxos.contains_key(&output.commitment())
 		}) {
@@ -59,7 +59,7 @@ impl BlockChain for TestChain {
 	}
 
 	fn validate_inputs(&self, inputs: &Inputs) -> Result<Vec<OutputIdentifier>, PoolError> {
-		let utxos = self.utxos.read_recursive();
+		let utxos = self.utxos.read();
 		inputs
 			.to_commit_wrappers(0)?
 			.iter()
@@ -89,7 +89,7 @@ impl BlockChain for TestChain {
 }
 
 struct Fixture {
-	pool: RwLock<TransactionPool<TestChain, NoopPoolAdapter>>,
+	pool: RecursiveRwLock<TransactionPool<TestChain, NoopPoolAdapter>>,
 	chain: Arc<TestChain>,
 	keychain: ExtKeychain,
 	secp: Secp256k1,
@@ -104,12 +104,12 @@ impl Fixture {
 		let keychain = ExtKeychain::from_seed(&secp, &[71u8; 32], false).unwrap();
 		let chain = Arc::new(TestChain {
 			header: global::get_genesis_block(&secp, 0).unwrap().header,
-			utxos: RwLock::new(HashMap::new()),
+			utxos: RecursiveRwLock::new(HashMap::new()),
 			rejected_output: Mutex::new(None),
 			validate_calls: AtomicUsize::new(0),
 		});
 		Self {
-			pool: RwLock::new(TransactionPool::new(
+			pool: RecursiveRwLock::new(TransactionPool::new(
 				0,
 				PoolConfig::default(),
 				chain.clone(),
@@ -189,7 +189,7 @@ impl Fixture {
 
 	fn stem_timestamp(&self, tx: &Transaction) -> Instant {
 		self.pool
-			.read_recursive()
+			.read()
 			.stempool
 			.ordered_entry_refs()
 			.find(|entry| entry.tx.eq_by_hash(0, tx).unwrap())
@@ -210,7 +210,7 @@ fn expiry_promotions_avoid_repeated_reconciliation_fallback() {
 			PromotionOutcome::Accepted
 		);
 	}
-	let pool = fixture.pool.read_recursive();
+	let pool = fixture.pool.read();
 	assert!(pool.stempool.is_empty());
 	assert_eq!(pool.txpool.size(), txs.len());
 	// One public aggregate per promotion, plus one private/public aggregate
@@ -237,10 +237,10 @@ fn expiry_budget_defers_without_evicting_or_resetting_embargo() {
 		);
 		assert_eq!(fixture.stem_timestamp(&txs[1]), timestamp);
 		{
-			let pool = fixture.pool.read_recursive();
+			let pool = fixture.pool.read();
 			assert_eq!(pool.txpool.size(), 1);
 			assert_eq!(pool.stempool.size(), 2);
-			assert_eq!(pool.reorg_cache.read_recursive().len(), 1);
+			assert_eq!(pool.reorg_cache.read().len(), 1);
 		}
 		// The next monitor pass can continue immediately using the same entry.
 		let mut next_pass = PromotionBudget::new();
@@ -250,7 +250,7 @@ fn expiry_budget_defers_without_evicting_or_resetting_embargo() {
 				PromotionOutcome::Accepted
 			);
 		}
-		assert!(fixture.pool.read_recursive().stempool.is_empty());
+		assert!(fixture.pool.read().stempool.is_empty());
 	}
 }
 
@@ -273,7 +273,7 @@ fn expiry_budget_allows_one_oversized_pool_operation_to_make_progress() {
 			);
 		}
 	}
-	assert!(fixture.pool.read_recursive().stempool.is_empty());
+	assert!(fixture.pool.read().stempool.is_empty());
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn expiry_reconciliation_fallback_spends_the_shared_budget() {
 		PromotionOutcome::Accepted
 	);
 	{
-		let pool = fixture.pool.read_recursive();
+		let pool = fixture.pool.read();
 		assert_eq!(pool.txpool.size(), 1);
 		assert_eq!(pool.stempool.size(), 1);
 		assert!(!pool.stempool.contains_tx(&txs[1]).unwrap());
@@ -319,12 +319,12 @@ fn expiry_finishes_committed_admission_when_invalid_fallback_exceeds_budget() {
 		fixture.promote(&txs[0], &mut budget).unwrap(),
 		PromotionOutcome::Accepted
 	);
-	let pool = fixture.pool.read_recursive();
+	let pool = fixture.pool.read();
 	assert!(pool.txpool.contains_tx(&txs[0]).unwrap());
 	// Preserve the existing conservative eviction policy for an invalid bulk
 	// candidate when individual filtering cannot fit; never defer post-insert.
 	assert!(pool.stempool.is_empty());
-	assert_eq!(pool.reorg_cache.read_recursive().len(), 1);
+	assert_eq!(pool.reorg_cache.read().len(), 1);
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn failed_public_admission_does_not_remove_the_stem_entry() {
 		fixture.promote(&txs[0], &mut PromotionBudget::new()),
 		Err(PoolError::DuplicateCommitment)
 	));
-	assert!(fixture.pool.read_recursive().txpool.is_empty());
+	assert!(fixture.pool.read().txpool.is_empty());
 	assert_eq!(fixture.stem_timestamp(&txs[0]), timestamp);
 }
 
@@ -360,7 +360,7 @@ fn promoting_parent_preserves_dependent_stem_for_later_promotion() {
 		fixture.promote(&child, &mut budget).unwrap(),
 		PromotionOutcome::Accepted
 	);
-	let pool = fixture.pool.read_recursive();
+	let pool = fixture.pool.read();
 	assert_eq!(pool.txpool.size(), 2);
 	assert!(pool.stempool.is_empty());
 }
@@ -377,7 +377,7 @@ fn aggregate_promotion_filters_overlapping_stems_and_keeps_unrelated_entries() {
 		PromotionOutcome::Accepted
 	);
 	{
-		let pool = fixture.pool.read_recursive();
+		let pool = fixture.pool.read();
 		assert_eq!(pool.txpool.size(), 1);
 		assert_eq!(pool.stempool.size(), 1);
 	}
@@ -386,5 +386,5 @@ fn aggregate_promotion_filters_overlapping_stems_and_keeps_unrelated_entries() {
 		fixture.promote(&txs[2], &mut budget).unwrap(),
 		PromotionOutcome::Accepted
 	);
-	assert!(fixture.pool.read_recursive().stempool.is_empty());
+	assert!(fixture.pool.read().stempool.is_empty());
 }

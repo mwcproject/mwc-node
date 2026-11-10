@@ -24,7 +24,7 @@ use mwc_core::core::{Block, BlockHeader};
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, Readable, Reader, Writeable, Writer};
 use mwc_crates::log::{debug, info};
-use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::parking_lot::{RecursiveRwLock, RecursiveRwLockWriteGuard};
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::Secp256k1;
 use std::collections::HashSet;
@@ -273,7 +273,7 @@ pub enum SyncStatus {
 
 /// Current sync state. Encapsulates the current SyncStatus.
 pub struct SyncState {
-	current: RwLock<SyncStateData>,
+	current: RecursiveRwLock<SyncStateData>,
 }
 
 struct SyncStateData {
@@ -287,7 +287,7 @@ impl SyncState {
 	/// Return a new SyncState initialize to NoSync
 	pub fn new() -> SyncState {
 		SyncState {
-			current: RwLock::new(SyncStateData {
+			current: RecursiveRwLock::new(SyncStateData {
 				status: SyncStatus::Initial,
 				header_start: None,
 				body_start: None,
@@ -303,7 +303,7 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		match self.current.read_recursive().status {
+		match self.current.read().status {
 			SyncStatus::NoSync => false,
 			SyncStatus::BodySync {
 				archive_height: _,
@@ -316,7 +316,7 @@ impl SyncState {
 
 	/// Check if headers download process is done. In this case it make sense to request more top headers
 	pub fn are_headers_done(&self) -> bool {
-		match self.current.read_recursive().status {
+		match self.current.read().status {
 			SyncStatus::Initial => false,
 			SyncStatus::HeaderHashSync {
 				completed_blocks: _,
@@ -330,7 +330,7 @@ impl SyncState {
 	/// Whether the node is in a long txhashset/header PMMR validation phase.
 	pub fn is_txhashset_validation(&self) -> bool {
 		matches!(
-			self.current.read_recursive().status,
+			self.current.read().status,
 			SyncStatus::ValidatingKernelsHistory { .. }
 				| SyncStatus::TxHashsetKernelsPosValidation { .. }
 				| SyncStatus::TxHashsetOutputPosIndexBuild { .. }
@@ -343,17 +343,17 @@ impl SyncState {
 
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
-		self.current.read_recursive().status
+		self.current.read().status
 	}
 
 	/// Starting header height retained throughout the current download.
 	pub fn header_sync_start_height(&self) -> Option<u64> {
-		self.current.read_recursive().header_start
+		self.current.read().header_start
 	}
 
 	/// Starting body height retained throughout the current download.
 	pub fn body_sync_start_height(&self) -> Option<u64> {
-		self.current.read_recursive().body_start
+		self.current.read().body_start
 	}
 
 	/// Update the syncing status
@@ -365,7 +365,7 @@ impl SyncState {
 	fn update_with_guard(
 		&self,
 		mut new_status: SyncStatus,
-		mut state: RwLockWriteGuard<SyncStateData>,
+		mut state: RecursiveRwLockWriteGuard<SyncStateData>,
 	) -> bool {
 		match &mut new_status {
 			SyncStatus::HeaderSync {

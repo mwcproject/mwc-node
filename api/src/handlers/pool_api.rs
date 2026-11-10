@@ -24,7 +24,7 @@ use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::bytes::Bytes;
 use mwc_crates::hyper::{Request, StatusCode};
 use mwc_crates::log::{error, info};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_pool::{self, BlockChain, PoolAdapter};
@@ -39,7 +39,7 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	pub tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 }
 
 impl<B, P> Handler for PoolInfoHandler<B, P>
@@ -49,7 +49,7 @@ where
 {
 	fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
 		let pool_arc = w_fut!(&self.tx_pool);
-		let pool = pool_arc.read_recursive();
+		let pool = pool_arc.read();
 
 		json_response(&PoolInfo {
 			pool_size: pool.total_size(),
@@ -62,7 +62,7 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	pub tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 }
 
 impl<B, P> PoolHandler<B, P>
@@ -72,13 +72,13 @@ where
 {
 	pub fn get_pool_size(&self) -> Result<usize, Error> {
 		let pool_arc = w(&self.tx_pool)?;
-		let pool = pool_arc.read_recursive();
+		let pool = pool_arc.read();
 		Ok(pool.total_size())
 	}
 	pub fn get_unconfirmed_transactions(&self) -> Result<Vec<Transaction>, Error> {
 		// Return a bounded snapshot of the txpool.
 		let pool_arc = w(&self.tx_pool)?;
-		let txpool = pool_arc.read_recursive();
+		let txpool = pool_arc.read();
 		Ok(txpool
 			.txpool
 			.ordered_entry_refs()
@@ -105,7 +105,7 @@ where
 		);
 
 		let blockchain = {
-			let tx_pool = pool_arc.read_recursive();
+			let tx_pool = pool_arc.read();
 			tx_pool.blockchain.clone()
 		};
 		let header = blockchain
@@ -167,7 +167,7 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	pub tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 }
 
 fn parse_fluff_param(params: &QueryParams) -> Result<bool, Error> {
@@ -182,7 +182,7 @@ fn parse_fluff_param(params: &QueryParams) -> Result<bool, Error> {
 }
 
 async fn update_pool<B, P>(
-	pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	req: Request<Bytes>,
 ) -> Result<(), Error>
 where
@@ -204,7 +204,7 @@ where
 
 	// All wallet api interaction explicitly uses protocol version 1 for now.
 	let version = ProtocolVersion(1);
-	let context_id = pool.read_recursive().get_context_id();
+	let context_id = pool.read().get_context_id();
 	let tx_bin_len = tx_bin.len();
 	let tx: Transaction = ser::deserialize_strict(&mut &tx_bin[..], version, context_id, true)
 		.map_err(|e| {

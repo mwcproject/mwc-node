@@ -33,7 +33,7 @@ struct Fixture {
 	secp: Secp256k1,
 	keychain: ExtKeychain,
 	chain: Arc<mwc_chain::Chain>,
-	pool: Arc<RwLock<TestPool>>,
+	pool: Arc<RecursiveRwLock<TestPool>>,
 	adapter: Arc<NetToChainAdapter<PoolToChainAdapter, NoopPoolAdapter>>,
 	manager: Arc<SyncManager>,
 	peers: Arc<Peers>,
@@ -55,7 +55,7 @@ impl Fixture {
 		let sync_state = Arc::new(SyncState::new());
 		sync_state.reset();
 		let pool_chain = Arc::new(PoolToChainAdapter::new());
-		let pool = Arc::new(RwLock::new(TransactionPool::new(
+		let pool = Arc::new(RecursiveRwLock::new(TransactionPool::new(
 			context,
 			PoolConfig::default(),
 			pool_chain.clone(),
@@ -102,7 +102,7 @@ impl Fixture {
 			version: ProtocolVersion::local(),
 			addr: PeerAddr::Ip("127.0.0.1:3414".parse().unwrap()),
 			direction: Direction::Inbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
 			tx_base_fee: 1,
 		};
 		let mut fixture = Self {
@@ -158,7 +158,9 @@ impl Fixture {
 		let info = PeerInfo {
 			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
 			direction,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				tip.total_difficulty,
+			))),
 			..self.peer.clone()
 		};
 		info.update(tip.height, tip.total_difficulty);
@@ -462,7 +464,7 @@ fn sync_loop_selects_all_ahead_peers_after_pong_updates() {
 		let work = Difficulty::from_num(head.total_difficulty.to_num() + extra_work);
 		let mut info = f.peer.clone();
 		info.addr = PeerAddr::Ip(([127, 0, 0, 1], 3530 + index as u16).into());
-		info.live_info = Arc::new(RwLock::new(PeerLiveInfo::new(work)));
+		info.live_info = Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(work)));
 		info.update(head.height + extra_work, work);
 		let (peer, receiver) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
 		let peer = Arc::new(peer);
@@ -559,7 +561,9 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 		let info = PeerInfo {
 			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
 			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				tip.total_difficulty,
+			))),
 			..f.peer.clone()
 		};
 		info.update(tip.height, tip.total_difficulty);
@@ -963,7 +967,9 @@ fn unsupported_headers_wrong_height_peer_is_fined_until_defunct() {
 		let mut headers: Vec<_> = f.history.iter().map(|block| block.header.clone()).collect();
 		headers.push(block.header.clone());
 		let info = PeerInfo {
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				tip.total_difficulty,
+			))),
 			..f.peer.clone()
 		};
 		info.update(advertised_height, tip.total_difficulty);
@@ -1042,7 +1048,7 @@ fn zero_height_peers_cannot_pin_unsupported_headers() {
 		};
 		let info = PeerInfo {
 			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(work))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(work))),
 			..f.peer.clone()
 		};
 		let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
@@ -1123,7 +1129,9 @@ fn zero_height_peer_waits_for_advertisement_before_header_download() {
 	let block = f.block(&[]);
 	let tip = mwc_chain::Tip::try_from_header(&block.header).unwrap();
 	let info = PeerInfo {
-		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(tip.total_difficulty))),
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+			tip.total_difficulty,
+		))),
 		..f.peer.clone()
 	};
 	let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, f.context, f.peers.clone());
@@ -1473,7 +1481,7 @@ fn reconnect_retires_old_header_requests_and_timeouts_through_the_adapter() {
 	let promised = (last.total_difficulty() + Difficulty::from_num(100)).unwrap();
 	let info = PeerInfo {
 		capabilities: Capabilities::HEADER_HIST,
-		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(promised))),
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(promised))),
 		..f.peer.clone()
 	};
 	info.update(last.height + 100, promised);
@@ -1499,7 +1507,7 @@ fn reconnect_retires_old_header_requests_and_timeouts_through_the_adapter() {
 	peer.stop();
 	f.peers.remove_connected(&peer.info.addr);
 	let info = PeerInfo {
-		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(promised))),
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(promised))),
 		..peer.info.clone()
 	};
 	let (replacement, messages) =
@@ -1633,18 +1641,13 @@ fn compact_proof_variant_requests_full_block_without_banning_sender() {
 	assert!(f.manager.has_block_request(&f.peer.addr, &hash));
 	// An immediate repeat must not start another reconstruction attempt. Its
 	// cached completion timestamp must remain unchanged throughout the cooldown.
-	let finished = f
-		.adapter
-		.compact_block_reconstruction_cache
-		.read_recursive()[&hash];
+	let finished = f.adapter.compact_block_reconstruction_cache.read()[&hash];
 	assert!(f
 		.peers
 		.compact_block_received(&mut f.secp, compact, &f.peer)
 		.unwrap());
 	assert_eq!(
-		f.adapter
-			.compact_block_reconstruction_cache
-			.read_recursive()[&hash],
+		f.adapter.compact_block_reconstruction_cache.read()[&hash],
 		finished
 	);
 
@@ -1761,7 +1764,7 @@ fn header_before_pong_is_accepted_and_body_requests_wait_for_a_known_tip() {
 			block.header.total_difficulty()
 		};
 		let info = PeerInfo {
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(handshake_work))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(handshake_work))),
 			..f.peer.clone()
 		};
 		let (peer, messages) = mwc_p2p::Peer::connected_for_test(info, context, f.peers.clone());
@@ -1820,7 +1823,7 @@ fn announced_headers_request_their_bodies_and_relay_the_completed_tip() {
 	f.peers.add_connected(first.clone()).unwrap();
 	let second_info = PeerInfo {
 		addr: PeerAddr::Ip("127.0.0.2:3435".parse().unwrap()),
-		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
 		..f.peer.clone()
 	};
 	let (second, second_messages) =
@@ -2134,7 +2137,7 @@ fn a_full_response_replaces_a_buffered_reconstruction_without_blame() {
 	assert_eq!(f.chain.head().unwrap().height, 3);
 	let full_supplier = PeerInfo {
 		addr: PeerAddr::Ip("127.0.0.2:3438".parse().unwrap()),
-		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
 		..f.peer.clone()
 	};
 	assert!(f
@@ -2187,7 +2190,7 @@ fn body_sync_bans_buffered_child_supplier_without_banning_parent_supplier() {
 	assert_eq!(requests.try_iter().count(), 2);
 	let bad_peer = PeerInfo {
 		addr: PeerAddr::Ip("127.0.0.2:3431".parse().unwrap()),
-		live_info: Arc::new(RwLock::new(PeerLiveInfo::new(
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
 			child.header.total_difficulty(),
 		))),
 		..f.peer.clone()
@@ -2291,7 +2294,7 @@ fn peer_cleanup_counts_incompatible_and_lagging_tips_independently() {
 			} else {
 				Direction::Outbound
 			},
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(work))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(work))),
 			..f.peer.clone()
 		};
 		info.update(height, work);

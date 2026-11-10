@@ -215,7 +215,7 @@ fn build_block(
 	// Extract current "mineable" transactions from the pool.
 	// Only copy the bounded snapshot under the read lock. Selection and chain
 	// validation must not hold up pool admission or reconciliation.
-	let mining_snapshot = { tx_pool.read_recursive().mining_snapshot() };
+	let mining_snapshot = { tx_pool.read().mining_snapshot() };
 	// If this fails for *any* reason then fallback to an empty vec of txs.
 	// This will allow us to mine an "empty" block if the txpool is in an
 	// invalid (and unexpected) state.

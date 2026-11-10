@@ -13,8 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Mwc server commands processing
 use mwc_crates::ctrlc;
+/// Mwc server commands processing
+use mwc_util::cli::ArgMatchesExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -181,7 +182,7 @@ fn start_server_tui(
 /// configuration.
 pub fn server_command(
 	context_id: u32,
-	server_args: Option<&ArgMatches<'_>>,
+	server_args: Option<&ArgMatches>,
 	global_config: GlobalConfig,
 	tui_logs: Option<TuiLogBuffer>,
 	skip_start_blockchain_validation: bool,
@@ -246,7 +247,7 @@ pub fn server_command(
 
 	if let Some(a) = server_args {
 		match a.subcommand() {
-			("run", _) => {
+			Some(("run", _)) => {
 				start_server(
 					context_id,
 					server_config,
@@ -255,12 +256,12 @@ pub fn server_command(
 					skip_start_blockchain_validation,
 				)?;
 			}
-			("", _) => {
+			None => {
 				return Err(Error::ArgumentError(
 					"Subcommand required, use 'mwc help server' for details".into(),
 				));
 			}
-			(cmd, _) => {
+			Some((cmd, _)) => {
 				return Err(Error::ArgumentError(format!(
 					"Unknown server command '{}', use 'mwc help server' for details",
 					cmd
@@ -310,14 +311,17 @@ fn api_http_addr_from_host_port(api_host: &str, api_port: &str) -> Result<String
 #[cfg(all(test, unix))]
 mod tests {
 	use super::*;
-	use mwc_crates::clap::{App, Arg, YamlLoader};
+	use mwc_crates::clap::builder::OsStringValueParser;
+	use mwc_crates::clap::{Arg, ArgAction, Command};
+	use mwc_crates::yaml_rust2::YamlLoader;
+	use mwc_util::cli::command_from_yaml;
 	use std::ffi::OsString;
 	use std::os::unix::ffi::OsStringExt;
 
 	fn server_command_with_args(args: Vec<OsString>) -> Result<(), Error> {
 		let yaml = YamlLoader::load_from_str(include_str!("../mwc.yml")).unwrap();
-		let matches = App::from_yaml(&yaml[0])
-			.get_matches_from_safe(args)
+		let matches = command_from_yaml(&yaml[0])
+			.try_get_matches_from(args)
 			.unwrap();
 		// Omitting the run subcommand validates arguments without starting services.
 		let server_args = matches.subcommand_matches("server").unwrap();
@@ -348,14 +352,14 @@ mod tests {
 
 	#[test]
 	fn server_command_rejects_non_utf8_after_valid_seed() {
-		let matches = App::new("server")
+		let matches = Command::new("server")
 			.arg(
-				Arg::with_name("seed")
+				Arg::new("seed")
 					.long("seed")
-					.takes_value(true)
-					.multiple(true),
+					.action(ArgAction::Append)
+					.value_parser(OsStringValueParser::new()),
 			)
-			.get_matches_from_safe(vec![
+			.try_get_matches_from(vec![
 				OsString::from("server"),
 				"--seed".into(),
 				"127.0.0.1:3414".into(),

@@ -24,7 +24,7 @@ use mwc_core::core::hash::Hash;
 use mwc_core::core::{hash::Hashed, pmmr::segment::SegmentType};
 use mwc_core::core::{OutputIdentifier, Segment, SegmentTypeIdentifier, TxKernel};
 use mwc_crates::log::{debug, error, info, warn};
-use mwc_crates::parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock, RecursiveRwLockReadGuard};
 use mwc_crates::rand;
 use mwc_crates::rand::prelude::IteratorRandom;
 use mwc_crates::secp::pedersen::RangeProof;
@@ -69,16 +69,16 @@ pub struct StateSync {
 	chain: Arc<Chain>,
 	// Write on initialization/reset. Receivers pin the session while validating
 	// and buffering; the sync loop pins it while applying and scheduling tasks.
-	desegmenter: RwLock<Option<Arc<Desegmenter>>>,
+	desegmenter: RecursiveRwLock<Option<Arc<Desegmenter>>>,
 	reset_desegmenter: AtomicBool,
 
 	// Target height needs to be calculated by the top peers, can be different from headers, it is no problem
 	target_archive_height: AtomicU64,
-	target_archive_hash: RwLock<Hash>,
-	requested_root_hash: RwLock<HashMap<PeerAddr, Instant>>, // Lock 1
+	target_archive_hash: RecursiveRwLock<Hash>,
+	requested_root_hash: RecursiveRwLock<HashMap<PeerAddr, Instant>>, // Lock 1
 	// Session-long peer commitments. Retain these across disconnect/reconnect so
 	// the peer remains tied to its advertised root and can be banned on failure.
-	responded_root_hash: RwLock<HashMap<PeerAddr, (Hash, Instant)>>, // Lock 2
+	responded_root_hash: RecursiveRwLock<HashMap<PeerAddr, (Hash, Instant)>>, // Lock 2
 	// Serialize application and request planning. Lock before download, with the
 	// session pinned; storage writes release download so proof checks can proceed.
 	apply_lock: Mutex<()>,
@@ -202,14 +202,14 @@ impl StateDownload {
 enum DesegmenterValidation<'a> {
 	Valid {
 		// Bind validation and buffering to the live PIBD session.
-		_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
+		_guard: RecursiveRwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
 		desegmenter: Arc<Desegmenter>,
 	},
 	// Keep the current session pinned until the caller has updated request
 	// tracking. Otherwise a reset can replace the session between validation and
 	// tracking, allowing this response to remove a new session's request.
 	PeerMismatch {
-		_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
+		_guard: RecursiveRwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
 	},
 	// The response belongs to an inactive, locally invalidated, or replaced
 	// session. It must not affect peer scoring or current-session requests.
@@ -221,7 +221,7 @@ pub(super) struct LiveDesegmenter<'a> {
 	// the PIBD session starts by taking the desegmenter write lock, so this
 	// guard prevents target_archive_hash and request caches from being cleared
 	// or replaced while tasks are selected, sent, and registered.
-	_guard: RwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
+	_guard: RecursiveRwLockReadGuard<'a, Option<Arc<Desegmenter>>>,
 	pub(super) desegmenter: Arc<Desegmenter>,
 	pub(super) archive_hash: Hash,
 	pub(super) root_hash: Hash,
@@ -245,12 +245,12 @@ impl StateSync {
 		StateSync {
 			pibd_params: chain.get_pibd_params().clone(),
 			chain,
-			desegmenter: RwLock::new(None),
+			desegmenter: RecursiveRwLock::new(None),
 			reset_desegmenter: AtomicBool::new(false),
 			target_archive_height: AtomicU64::new(0),
-			target_archive_hash: RwLock::new(Hash::default()),
-			requested_root_hash: RwLock::new(HashMap::new()),
-			responded_root_hash: RwLock::new(HashMap::new()),
+			target_archive_hash: RecursiveRwLock::new(Hash::default()),
+			requested_root_hash: RecursiveRwLock::new(HashMap::new()),
+			responded_root_hash: RecursiveRwLock::new(HashMap::new()),
 			apply_lock: Mutex::new(()),
 			download: Mutex::new(StateDownload::new()),
 			is_complete: AtomicBool::new(false),
@@ -334,7 +334,7 @@ impl StateSync {
 				// Normal block processing has advanced beyond the imported state.
 				self.complete_pibd_sync();
 			} else {
-				let archive_hash = *self.target_archive_hash.read_recursive();
+				let archive_hash = *self.target_archive_hash.read();
 				let session = self.live_desegmenter();
 				let archive = self.chain.get_header_by_height(height)?;
 				let context_id = self.chain.get_context_id();
@@ -434,7 +434,7 @@ impl StateSync {
 			}
 		};
 		let archive_header_hash = archive_header.hash(self.chain.get_context_id())?;
-		let prev_archive_header_hash = *self.target_archive_hash.read_recursive();
+		let prev_archive_header_hash = *self.target_archive_hash.read();
 		if prev_archive_header_hash != Hash::default()
 			&& prev_archive_header_hash != archive_header_hash
 		{
@@ -446,7 +446,7 @@ impl StateSync {
 		}
 		let stale_desegmenter = self
 			.desegmenter
-			.read_recursive()
+			.read()
 			.as_ref()
 			.map(|desegmenter| !desegmenter.is_current())
 			.unwrap_or(false);
@@ -482,7 +482,7 @@ impl StateSync {
 			self.download.lock().expire_requests(now, sync_peers);
 		}
 		let peers = self.eligible_peers(in_peers);
-		if peers.is_empty() && self.desegmenter.read_recursive().is_none() {
+		if peers.is_empty() && self.desegmenter.read().is_none() {
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::WaitingForPeers,
 				Capabilities::PIBD_HIST,
@@ -494,7 +494,7 @@ impl StateSync {
 
 		{
 			let mut requested_root_hash = self.requested_root_hash.write();
-			let responded_root_hash = self.responded_root_hash.read_recursive();
+			let responded_root_hash = self.responded_root_hash.read();
 			let mut remaining_root_peer_capacity = Self::remaining_pibd_root_peer_capacity(
 				&requested_root_hash,
 				&responded_root_hash,
@@ -541,14 +541,14 @@ impl StateSync {
 		}
 
 		// Checking if need to init desegmenter
-		if self.desegmenter.read_recursive().is_none() {
+		if self.desegmenter.read().is_none() {
 			sync_state.update(SyncStatus::TxHashsetPibd {
 				recieved_segments: 0,
 				total_segments: 100,
 			});
 			let mut first_response = now;
-			let requested_root_hash = self.requested_root_hash.read_recursive();
-			let responded_root_hash = self.responded_root_hash.read_recursive();
+			let requested_root_hash = self.requested_root_hash.read();
+			let responded_root_hash = self.responded_root_hash.read();
 
 			if requested_root_hash.is_empty()
 				&& responded_root_hash.is_empty()
@@ -810,7 +810,7 @@ impl StateSync {
 		let mut other_hashes = 0;
 		for p in peers {
 			let addr = &p.info.addr;
-			if let Some((hash, _)) = self.responded_root_hash.read_recursive().get(addr) {
+			if let Some((hash, _)) = self.responded_root_hash.read().get(addr) {
 				if hash == &session.root_hash {
 					root_hash_peers.push(p.clone());
 				} else {
@@ -861,8 +861,7 @@ impl StateSync {
 	// return true: PIBD import is complete, and we still retain the peers’ root endorsements for the first-block failure handling.
 	// return false: Either import is not complete, or those endorsements have already been cleared.
 	fn has_imported_state(&self) -> bool {
-		self.is_complete.load(Ordering::Acquire)
-			&& !self.responded_root_hash.read_recursive().is_empty()
+		self.is_complete.load(Ordering::Acquire) && !self.responded_root_hash.read().is_empty()
 	}
 
 	/// Pin a completed import and its retained root endorsements while the sync
@@ -876,7 +875,7 @@ impl StateSync {
 		error!("Banning all peers joind for root hash {}", root_hash);
 		// Banning all peers that was agree with that hash...
 		{
-			let responded_root_hash = self.responded_root_hash.read_recursive();
+			let responded_root_hash = self.responded_root_hash.read();
 			for (peer, (hash, _)) in &*responded_root_hash {
 				if *hash == *root_hash {
 					sync_peers.ban_peer(peer, "bad root hash".into());
@@ -947,7 +946,7 @@ impl StateSync {
 		// root collection. Ignore them and let the pending request naturally
 		// time out so retry logic can ask again for the current archive.
 		if header_height != self.target_archive_height.load(Ordering::Relaxed)
-			|| header_hash != *self.target_archive_hash.read_recursive()
+			|| header_hash != *self.target_archive_hash.read()
 		{
 			return;
 		}
@@ -987,7 +986,7 @@ impl StateSync {
 		peer: &PeerAddr,
 		archive_header_hash: &Hash,
 	) -> DesegmenterValidation<'_> {
-		let guard = self.desegmenter.read_recursive();
+		let guard = self.desegmenter.read();
 		let desegmenter = match guard.as_ref().cloned() {
 			Some(desegmenter) => desegmenter,
 			None => return DesegmenterValidation::Stale,
@@ -996,11 +995,11 @@ impl StateSync {
 			self.reset_desegmenter.store(true, Ordering::Relaxed);
 			return DesegmenterValidation::Stale;
 		}
-		if *self.target_archive_hash.read_recursive() != *archive_header_hash {
+		if *self.target_archive_hash.read() != *archive_header_hash {
 			return DesegmenterValidation::Stale;
 		}
 
-		let hash_for_peer = self.responded_root_hash.read_recursive().get(peer).cloned();
+		let hash_for_peer = self.responded_root_hash.read().get(peer).cloned();
 		match hash_for_peer {
 			Some((hash, _)) if *desegmenter.get_bitmap_root_hash() == hash => {
 				DesegmenterValidation::Valid {
@@ -1013,13 +1012,13 @@ impl StateSync {
 	}
 
 	fn live_desegmenter(&self) -> Option<LiveDesegmenter<'_>> {
-		let guard = self.desegmenter.read_recursive();
+		let guard = self.desegmenter.read();
 		let desegmenter = guard.as_ref().cloned()?;
 		if !desegmenter.is_current() {
 			self.reset_desegmenter.store(true, Ordering::Relaxed);
 			return None;
 		}
-		let archive_hash = self.target_archive_hash.read_recursive().clone();
+		let archive_hash = self.target_archive_hash.read().clone();
 		if archive_hash == Hash::default() {
 			return None;
 		}
@@ -1611,7 +1610,9 @@ mod task_tests {
 				version: ProtocolVersion::local(),
 				addr: addr.clone(),
 				direction,
-				live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+				live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+					pow::Difficulty::min(),
+				))),
 				tx_base_fee: 0,
 			};
 			info.update(1, pow::Difficulty::min());
@@ -1656,9 +1657,9 @@ mod task_tests {
 			.requested_root_hash
 			.write()
 			.insert(peer.info.addr.clone(), Instant::now());
-		let commitment = f.sync.responded_root_hash.read_recursive()[&peer.info.addr];
+		let commitment = f.sync.responded_root_hash.read()[&peer.info.addr];
 		f.sync.clear_peer_requests(&peer.info.addr);
-		assert!(f.sync.requested_root_hash.read_recursive().is_empty());
+		assert!(f.sync.requested_root_hash.read().is_empty());
 		assert!(f
 			.sync
 			.download
@@ -1667,7 +1668,7 @@ mod task_tests {
 			.iter()
 			.all(|task| task.request.is_none()));
 		assert_eq!(
-			f.sync.responded_root_hash.read_recursive()[&peer.info.addr],
+			f.sync.responded_root_hash.read()[&peer.info.addr],
 			commitment
 		);
 		f.sync
@@ -2053,7 +2054,7 @@ mod task_tests {
 			reset.0.join().unwrap();
 		});
 		assert!(desegmenter.is_complete());
-		assert!(f.sync.desegmenter.read_recursive().is_none());
+		assert!(f.sync.desegmenter.read().is_none());
 		assert!(f.sync.download.lock().tasks.is_empty());
 		assert_eq!(
 			first_messages.try_iter().count()

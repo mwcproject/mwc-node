@@ -30,7 +30,7 @@ use std::ffi::CString;
 use std::sync::Arc;
 
 fn ensure_lib_callback_registered(callback_name: &str) -> Result<(), String> {
-	if LIB_CALLBACKS.read_recursive().contains_key(callback_name) {
+	if LIB_CALLBACKS.read().contains_key(callback_name) {
 		Ok(())
 	} else {
 		Err(format!(
@@ -41,7 +41,7 @@ fn ensure_lib_callback_registered(callback_name: &str) -> Result<(), String> {
 }
 
 fn call_lib_callback(callback_name: &str, message: *const libc::c_char) {
-	let callbacks = LIB_CALLBACKS.read_recursive();
+	let callbacks = LIB_CALLBACKS.read();
 	if let Some((cb, ctx)) = callbacks.get(callback_name) {
 		// Keep the registry read lock until the C callback returns. This makes
 		// unregister_lib_callback wait before the caller-owned context can be

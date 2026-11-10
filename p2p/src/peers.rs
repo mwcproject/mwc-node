@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use mwc_crates::chrono;
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::rand;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -127,17 +127,18 @@ impl PeerCleanupSummary {
 pub struct Peers {
 	pub adapter: Arc<dyn ChainAdapter>,
 	store: PeerStore,
-	peers: RwLock<HashMap<PeerAddr, Arc<Peer>>>,
-	last_add_peer_timestamp: RwLock<Option<Instant>>,
+	peers: RecursiveRwLock<HashMap<PeerAddr, Arc<Peer>>>,
+	last_add_peer_timestamp: RecursiveRwLock<Option<Instant>>,
 	last_outbound_eviction: Mutex<Instant>,
 	config: P2PConfig,
 	// Peers removed from the live map but whose connection threads still need
 	// to be joined. Holding them here preserves the StopHandle until the reader
 	// thread drops its Codec and any Tor read-half active object.
 	stopped_peers: Mutex<Vec<Arc<Peer>>>,
-	boost_peers_capabilities: RwLock<PeersCapabilities>,
-	advertised_peers: Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>>,
-	advertised_peer_source_limits: Arc<RwLock<HashMap<PeerAddr, AdvertisedPeerSourceLimit>>>,
+	boost_peers_capabilities: RecursiveRwLock<PeersCapabilities>,
+	advertised_peers: Arc<RecursiveRwLock<HashMap<PeerAddr, PeerAdvertised>>>,
+	advertised_peer_source_limits:
+		Arc<RecursiveRwLock<HashMap<PeerAddr, AdvertisedPeerSourceLimit>>>,
 }
 
 impl Peers {
@@ -146,16 +147,16 @@ impl Peers {
 			adapter,
 			store,
 			config: config.clone_without_secrets(),
-			peers: RwLock::new(HashMap::new()),
+			peers: RecursiveRwLock::new(HashMap::new()),
 			stopped_peers: Mutex::new(Vec::new()),
-			last_add_peer_timestamp: RwLock::new(None),
+			last_add_peer_timestamp: RecursiveRwLock::new(None),
 			last_outbound_eviction: Mutex::new(Instant::now()),
-			boost_peers_capabilities: RwLock::new(PeersCapabilities {
+			boost_peers_capabilities: RecursiveRwLock::new(PeersCapabilities {
 				capabilities: Capabilities::UNKNOWN,
 				time: None,
 			}),
-			advertised_peers: Arc::new(RwLock::new(HashMap::new())),
-			advertised_peer_source_limits: Arc::new(RwLock::new(HashMap::new())),
+			advertised_peers: Arc::new(RecursiveRwLock::new(HashMap::new())),
+			advertised_peer_source_limits: Arc::new(RecursiveRwLock::new(HashMap::new())),
 		}
 	}
 
@@ -173,7 +174,7 @@ impl Peers {
 
 	/// Boosting required fast peers num increasing, so it is limited by time
 	pub fn is_boosting_mode(&self) -> bool {
-		let boost_peers_capabilities = self.boost_peers_capabilities.read_recursive();
+		let boost_peers_capabilities = self.boost_peers_capabilities.read();
 		if boost_peers_capabilities.capabilities == Capabilities::UNKNOWN {
 			return false;
 		}
@@ -187,15 +188,12 @@ impl Peers {
 	}
 
 	pub fn get_boost_peers_capabilities(&self) -> Capabilities {
-		self.boost_peers_capabilities
-			.read_recursive()
-			.capabilities
-			.clone()
+		self.boost_peers_capabilities.read().capabilities.clone()
 	}
 
 	/// Number of peers that already has connection. The total number of connections needs tobe be limited
 	pub fn get_number_connected_peers(&self) -> usize {
-		self.peers.read_recursive().len()
+		self.peers.read().len()
 	}
 
 	/// Adds the peer to our internal peer mapping. Note that the peer is still
@@ -276,11 +274,9 @@ impl Peers {
 
 	/// Whether an outbound peer was added recently.
 	pub fn was_peer_added_within(&self, seconds: u64) -> bool {
-		self.last_add_peer_timestamp
-			.read_recursive()
-			.map_or(false, |time| {
-				time.elapsed() < StdDuration::from_secs(seconds)
-			})
+		self.last_add_peer_timestamp.read().map_or(false, |time| {
+			time.elapsed() < StdDuration::from_secs(seconds)
+		})
 	}
 
 	/// Add a peer as banned to block future connections, usually due to failed
@@ -330,14 +326,14 @@ impl Peers {
 	/// and this attempt fails then return an error allowing the caller
 	/// to decide how best to handle this.
 	pub fn is_known(&self, addr: &PeerAddr) -> bool {
-		self.peers.read_recursive().contains_key(addr)
+		self.peers.read().contains_key(addr)
 	}
 
 	/// Iterator over our current peers.
 	/// This allows us to hide try_read_for() behind a cleaner interface.
 	/// PeersIter lets us chain various adaptors for convenience.
 	pub fn iter(&self) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
-		let peers: Vec<Arc<Peer>> = self.peers.read_recursive().values().cloned().collect();
+		let peers: Vec<Arc<Peer>> = self.peers.read().values().cloned().collect();
 
 		PeersIter {
 			iter: peers.into_iter(),
@@ -360,7 +356,7 @@ impl Peers {
 
 	pub(crate) fn is_connected_same(&self, peer: &Arc<Peer>) -> bool {
 		self.peers
-			.read_recursive()
+			.read()
 			.get(&peer.info.addr)
 			.map_or(false, |current| Arc::ptr_eq(current, peer))
 	}
@@ -895,7 +891,7 @@ impl Peers {
 		let mut evictions = vec![];
 		// Sync exclusions affect request selection, not connection maintenance.
 		// Keep one snapshot and remove candidates from it as each stage decides.
-		let mut remaining: Vec<_> = self.peers.read_recursive().values().cloned().collect();
+		let mut remaining: Vec<_> = self.peers.read().values().cloned().collect();
 
 		// 1. Remove unusable peers from the snapshot before counting capacity.
 		// This cleanup is uncapped and also applies to preferred peers. Check
@@ -1275,12 +1271,8 @@ impl Peers {
 
 	/// Returns recently advertised peers ordered by connection priority.
 	pub fn ranked_advertised_peers(&self) -> Vec<PeerAdvertised> {
-		let mut advertised_peers: Vec<PeerAdvertised> = self
-			.advertised_peers
-			.read_recursive()
-			.values()
-			.cloned()
-			.collect();
+		let mut advertised_peers: Vec<PeerAdvertised> =
+			self.advertised_peers.read().values().cloned().collect();
 		advertised_peers.sort_by_key(|peer| -peer.calc_rank());
 		advertised_peers
 	}
@@ -2068,7 +2060,7 @@ mod tests {
 			assert_eq!(accepted.len(), 1);
 		}
 
-		let source_limits = peers.advertised_peer_source_limits.read_recursive();
+		let source_limits = peers.advertised_peer_source_limits.read();
 		assert_eq!(source_limits.len(), MAX_ADVERTISED_PEER_SOURCE_LIMITS);
 		assert!(!source_limits.contains_key(&test_source_addr(0)));
 		assert!(source_limits.contains_key(&test_source_addr(MAX_ADVERTISED_PEER_SOURCE_LIMITS)));

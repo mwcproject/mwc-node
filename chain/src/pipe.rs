@@ -33,7 +33,7 @@ use mwc_crates::crossbeam;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::{debug, error, info};
 use mwc_crates::num_cpus;
-use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::parking_lot::{RecursiveRwLock, RecursiveRwLockWriteGuard};
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::Secp256k1;
 use mwc_store::Error::NotFoundErr;
@@ -56,7 +56,7 @@ pub struct BlockContext<'a> {
 	pub header_pmmr: &'a mut txhashset::PMMRHandle<BlockHeader>,
 	/// The active batch to use for block processing.
 	pub batch: store::Batch<'a>,
-	pub(crate) difficulty_cache: RwLockWriteGuard<'a, DifficultyCache>,
+	pub(crate) difficulty_cache: RecursiveRwLockWriteGuard<'a, DifficultyCache>,
 }
 
 impl<'a> BlockContext<'a> {
@@ -67,8 +67,8 @@ impl<'a> BlockContext<'a> {
 }
 
 lazy_static! {
-	static ref INVALID_BLOCK_HASHES: RwLock<HashMap<u32, HashSet<Hash>>> =
-		RwLock::new(HashMap::new());
+	static ref INVALID_BLOCK_HASHES: RecursiveRwLock<HashMap<u32, HashSet<Hash>>> =
+		RecursiveRwLock::new(HashMap::new());
 }
 
 // Known/duplicate blocks are normal control-flow outcomes for header processing.
@@ -127,7 +127,7 @@ pub fn validate_header_context_id(context_id: u32, header: &BlockHeader) -> Resu
 
 /// Validate the block hash, check if it is banned
 pub fn validate_header_hash(context_id: u32, hash: &Hash) -> Result<(), Error> {
-	let hashes = INVALID_BLOCK_HASHES.read_recursive();
+	let hashes = INVALID_BLOCK_HASHES.read();
 	if let Some(blocked_hashes) = hashes.get(&context_id) {
 		if blocked_hashes.contains(&hash) {
 			error!("Invalid header found: {}. Rejecting it!", hash);
@@ -1430,7 +1430,7 @@ fn rewind_and_apply_header_fork_impl(
 	let invalid_block_hashes = if recovery_authenticator.is_some() {
 		HashSet::new()
 	} else {
-		let invalid_hashes = INVALID_BLOCK_HASHES.read_recursive();
+		let invalid_hashes = INVALID_BLOCK_HASHES.read();
 		if let Some(blocked_hashes) = invalid_hashes.get(&context_id) {
 			blocked_hashes.clone()
 		} else {
@@ -1727,7 +1727,7 @@ mod tests {
 			VariableSizeMetadataValidation::Full,
 		)
 		.unwrap();
-		let difficulty = RwLock::new(DifficultyCache::new());
+		let difficulty = RecursiveRwLock::new(DifficultyCache::new());
 		let batch = store.batch_write().unwrap();
 		let mut parent = BlockHeader::default(CONTEXT);
 		parent.height = 3;

@@ -25,7 +25,7 @@ use crate::Error::NotFoundErr;
 use mwc_core::global;
 use mwc_core::ser::{self, ProtocolVersion};
 use mwc_crates::log::{debug, info, trace};
-use mwc_crates::parking_lot::{RwLock, RwLockReadGuard};
+use mwc_crates::parking_lot::{RecursiveRwLock, RecursiveRwLockReadGuard};
 
 /// number of bytes to grow the database by when needed
 pub const ALLOC_CHUNK_SIZE_DEFAULT: usize = 134_217_728; //128 MB
@@ -159,8 +159,8 @@ const DEFAULT_DB_VERSION: ProtocolVersion = ProtocolVersion(3);
 /// are done through a Batch abstraction providing atomicity.
 pub struct Store {
 	env: Arc<lmdb_zero::Environment>,
-	db: Arc<RwLock<Option<Arc<lmdb_zero::Database<'static>>>>>,
-	resize_lock: Arc<RwLock<()>>,
+	db: Arc<RecursiveRwLock<Option<Arc<lmdb_zero::Database<'static>>>>>,
+	resize_lock: Arc<RecursiveRwLock<()>>,
 	name: String,
 	version: ProtocolVersion,
 	alloc_chunk_size: usize,
@@ -210,8 +210,8 @@ impl Store {
 		debug!("DB Mapsize for {} is {}", full_path, env.info()?.mapsize);
 		let res = Store {
 			env: Arc::new(env),
-			db: Arc::new(RwLock::new(None)),
-			resize_lock: Arc::new(RwLock::new(())),
+			db: Arc::new(RecursiveRwLock::new(None)),
+			resize_lock: Arc::new(RecursiveRwLock::new(())),
 			name: db_name,
 			version: DEFAULT_DB_VERSION,
 			alloc_chunk_size,
@@ -259,7 +259,7 @@ impl Store {
 
 	/// Opens the database environment
 	pub fn open(&self) -> Result<(), Error> {
-		let _resize_guard = self.resize_lock.read_recursive();
+		let _resize_guard = self.resize_lock.read();
 		let mut w = self.db.write();
 		if w.is_some() {
 			return Ok(());
@@ -274,7 +274,7 @@ impl Store {
 
 	/// Determines whether the environment needs a resize based on a simple percentage threshold
 	pub fn needs_resize(&self) -> Result<bool, Error> {
-		let _resize_guard = self.resize_lock.read_recursive();
+		let _resize_guard = self.resize_lock.read();
 		let env_info = self.env.info()?;
 		let stat = self.env.stat()?;
 
@@ -395,8 +395,8 @@ impl Store {
 	/// Database values use the full block format, including block extras.
 	/// Note: Creates a new read transaction so will *not* see any uncommitted data.
 	pub fn get_ser<T: ser::Readable>(&self, key: &[u8]) -> Result<Option<T>, Error> {
-		let _resize_guard = self.resize_lock.read_recursive();
-		let lock = self.db.read_recursive();
+		let _resize_guard = self.resize_lock.read();
+		let lock = self.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -410,8 +410,8 @@ impl Store {
 
 	/// Whether the provided key exists
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let _resize_guard = self.resize_lock.read_recursive();
-		let lock = self.db.read_recursive();
+		let _resize_guard = self.resize_lock.read();
+		let lock = self.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -431,8 +431,8 @@ impl Store {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let resize_guard = self.resize_lock.read_recursive();
-		let lock = self.db.read_recursive();
+		let resize_guard = self.resize_lock.read();
+		let lock = self.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -449,7 +449,7 @@ impl Store {
 
 	/// Builds a new read only batch to be used with this store.
 	pub fn batch_read(&self) -> Result<Batch<'_>, Error> {
-		let resize_guard = self.resize_lock.read_recursive();
+		let resize_guard = self.resize_lock.read();
 		let tx = lmdb_zero::ReadTransaction::new(self.env.clone())?;
 		Ok(Batch {
 			store: self,
@@ -465,7 +465,7 @@ impl Store {
 		if self.needs_resize()? {
 			self.do_resize()?;
 		}
-		let resize_guard = self.resize_lock.read_recursive();
+		let resize_guard = self.resize_lock.read();
 		let tx = lmdb_zero::WriteTransaction::new(self.env.clone())?;
 		Ok(Batch {
 			store: self,
@@ -481,13 +481,13 @@ pub struct Batch<'a> {
 	store: &'a Store,
 	tx_w: Option<lmdb_zero::WriteTransaction<'a>>,
 	tx_r: Option<lmdb_zero::ReadTransaction<'a>>,
-	_resize_guard: Option<RwLockReadGuard<'a, ()>>,
+	_resize_guard: Option<RecursiveRwLockReadGuard<'a, ()>>,
 }
 
 impl<'a> Batch<'a> {
 	/// Writes a single key/value pair to the db
 	pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read_recursive();
+		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -540,7 +540,7 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.store.db.read_recursive();
+		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -559,7 +559,7 @@ impl<'a> Batch<'a> {
 	/// Whether the provided key exists.
 	/// This is in the context of the current write transaction.
 	pub fn exists(&self, key: &[u8]) -> Result<bool, Error> {
-		let lock = self.store.db.read_recursive();
+		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -598,7 +598,7 @@ impl<'a> Batch<'a> {
 	where
 		F: Fn(&[u8], &[u8]) -> Result<T, Error>,
 	{
-		let lock = self.store.db.read_recursive();
+		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -651,7 +651,7 @@ impl<'a> Batch<'a> {
 
 	/// Deletes a key/value pair from the db
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
-		let lock = self.store.db.read_recursive();
+		let lock = self.store.db.read();
 		let db = lock
 			.as_ref()
 			.ok_or_else(|| Error::DbUnavailable("chain db is None".to_string()))?;
@@ -710,7 +710,7 @@ where
 	prefix: Vec<u8>,
 	seek_key: Vec<u8>,
 	deserialize: F,
-	_resize_guard: Option<RwLockReadGuard<'txn, ()>>,
+	_resize_guard: Option<RecursiveRwLockReadGuard<'txn, ()>>,
 }
 
 enum PrefixIteratorTransaction<'txn, 'env> {
@@ -786,7 +786,7 @@ where
 	fn new_owned_read(
 		tx: Arc<lmdb_zero::ReadTransaction<'static>>,
 		cursor: lmdb_zero::Cursor<'txn, 'static>,
-		resize_guard: Option<RwLockReadGuard<'txn, ()>>,
+		resize_guard: Option<RecursiveRwLockReadGuard<'txn, ()>>,
 		prefix: &[u8],
 		deserialize: F,
 	) -> PrefixIterator<'txn, 'env, F, T> {

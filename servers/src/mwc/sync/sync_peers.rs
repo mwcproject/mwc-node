@@ -16,7 +16,7 @@
 // Normally we would put that into the base class, but rust doesn't support that.
 
 use mwc_crates::log::{debug, info, warn};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_p2p::{PeerAddr, Peers, ReasonForBan, State};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -161,17 +161,17 @@ impl PeerPibdStatus {
 }
 
 pub struct SyncPeers {
-	peers_status: RwLock<HashMap<String, PeerPibdStatus>>,
-	banned_peers: RwLock<HashMap<PeerAddr, Instant>>, // collecting banned peers because we might need to unban them.
-	new_events_peers: RwLock<HashSet<String>>,
+	peers_status: RecursiveRwLock<HashMap<String, PeerPibdStatus>>,
+	banned_peers: RecursiveRwLock<HashMap<PeerAddr, Instant>>, // collecting banned peers because we might need to unban them.
+	new_events_peers: RecursiveRwLock<HashSet<String>>,
 }
 
 impl SyncPeers {
 	pub fn new() -> Self {
 		SyncPeers {
-			peers_status: RwLock::new(HashMap::new()),
-			banned_peers: RwLock::new(HashMap::new()),
-			new_events_peers: RwLock::new(HashSet::new()),
+			peers_status: RecursiveRwLock::new(HashMap::new()),
+			banned_peers: RecursiveRwLock::new(HashMap::new()),
+			new_events_peers: RecursiveRwLock::new(HashSet::new()),
 		}
 	}
 
@@ -182,7 +182,7 @@ impl SyncPeers {
 	}
 
 	pub fn get_banned_peers(&self) -> HashSet<PeerAddr> {
-		self.banned_peers.read_recursive().keys().cloned().collect()
+		self.banned_peers.read().keys().cloned().collect()
 	}
 
 	pub fn report_no_response(&self, peer: &PeerAddr, message: String) {
@@ -409,7 +409,7 @@ mod tests {
 			version: mwc_core::ser::ProtocolVersion::local(),
 			addr: addr.clone(),
 			direction: mwc_p2p::Direction::Outbound,
-			live_info: Arc::new(RwLock::new(mwc_p2p::types::PeerLiveInfo::new(
+			live_info: Arc::new(RecursiveRwLock::new(mwc_p2p::types::PeerLiveInfo::new(
 				mwc_core::pow::Difficulty::min(),
 			))),
 			tx_base_fee: 0,
@@ -454,7 +454,7 @@ mod tests {
 		// bad-data error must still combine with a new error to cause a ban.
 		scores.clear_no_response(&addr);
 		{
-			let statuses = scores.peers_status.read_recursive();
+			let statuses = scores.peers_status.read();
 			let retained = &statuses[&addr.as_key()].responses;
 			assert_eq!(retained.len(), 2);
 			assert!(matches!(&retained[0].1, PeerStatusEvent::Success));
@@ -551,14 +551,11 @@ mod tests {
 		scores.apply_peers_status(&peers);
 		assert!(!peer.is_connected());
 		assert!(peers.get_connected_peer(&addr).is_none());
-		assert!(scores
-			.new_events_peers
-			.read_recursive()
-			.contains(&addr.as_key()));
+		assert!(scores.new_events_peers.read().contains(&addr.as_key()));
 		peers.save_peer(&stored).unwrap();
 		scores.apply_peers_status(&peers);
 		assert_eq!(peers.get_peer(&addr).unwrap().flags, State::Defunct);
-		assert!(scores.new_events_peers.read_recursive().is_empty());
+		assert!(scores.new_events_peers.read().is_empty());
 		assert!(scores.get_banned_peers().is_empty());
 	}
 
@@ -573,7 +570,7 @@ mod tests {
 
 		sync_peers.ban_peer(&peer, "bad root hash".into());
 
-		let peers_status = sync_peers.peers_status.read_recursive();
+		let peers_status = sync_peers.peers_status.read();
 		let status = peers_status.get(&peer_key).expect("peer status");
 		assert!(status.peer_addr.matches_exactly(&peer));
 	}
@@ -588,14 +585,14 @@ mod tests {
 
 		sync_peers.report_no_response(&peer, "timeout".into());
 		{
-			let peers_status = sync_peers.peers_status.read_recursive();
+			let peers_status = sync_peers.peers_status.read();
 			let status = peers_status.get(&peer_key).expect("peer status");
 			assert!(status.peer_addr.matches_exactly(&peer));
 		}
 
 		sync_peers.ban_peer(&updated_peer, "bad root hash".into());
 
-		let peers_status = sync_peers.peers_status.read_recursive();
+		let peers_status = sync_peers.peers_status.read();
 		let status = peers_status.get(&peer_key).expect("peer status");
 		assert!(status.peer_addr.matches_exactly(&updated_peer));
 	}
@@ -611,16 +608,16 @@ mod tests {
 		}
 		scores.report_ok_response(&peer);
 		scores.report_error_response(&peer, "invalid data".into());
-		let retained_times: Vec<_> = scores.peers_status.read_recursive()[&peer.as_key()]
+		let retained_times: Vec<_> = scores.peers_status.read()[&peer.as_key()]
 			.responses
 			.iter()
 			.skip(4)
 			.map(|(time, _)| *time)
 			.collect();
-		let last_updated = scores.peers_status.read_recursive()[&peer.as_key()].last_updated;
+		let last_updated = scores.peers_status.read()[&peer.as_key()].last_updated;
 		scores.clear_no_response(&peer);
 		{
-			let statuses = scores.peers_status.read_recursive();
+			let statuses = scores.peers_status.read();
 			let status = &statuses[&peer.as_key()];
 			assert_eq!(status.responses.len(), 2);
 			assert!(matches!(&status.responses[0].1, PeerStatusEvent::Success));
@@ -659,7 +656,7 @@ mod tests {
 		scores.report_no_response(&other, "other timeout".into());
 		scores.clear_no_response(&peer);
 		{
-			let statuses = scores.peers_status.read_recursive();
+			let statuses = scores.peers_status.read();
 			assert_eq!(statuses[&peer.as_key()].responses.len(), 1);
 			assert!(
 				matches!(&statuses[&peer.as_key()].responses[0].1, PeerStatusEvent::Ban(msg) if msg == "invalid root")
@@ -782,7 +779,7 @@ mod tests {
 			for request in 0..8 {
 				sync_peers.report_no_response(&peer, format!("timeout {}", request));
 			}
-			let peers_status = sync_peers.peers_status.read_recursive();
+			let peers_status = sync_peers.peers_status.read();
 			let status = peers_status.get(&peer.as_key()).unwrap();
 			assert_eq!(status.responses.len(), 1);
 			assert!(matches!(
@@ -805,8 +802,8 @@ mod tests {
 		let newest_key = peer_for_idx(MAX_PEER_STATUS_ENTRIES).as_key();
 		sync_peers.report_ok_response(&peer_for_idx(MAX_PEER_STATUS_ENTRIES));
 
-		let peers_status = sync_peers.peers_status.read_recursive();
-		let new_events_peers = sync_peers.new_events_peers.read_recursive();
+		let peers_status = sync_peers.peers_status.read();
+		let new_events_peers = sync_peers.new_events_peers.read();
 
 		assert_eq!(peers_status.len(), MAX_PEER_STATUS_ENTRIES);
 		assert!(!peers_status.contains_key(&oldest_key));
@@ -829,8 +826,8 @@ mod tests {
 		sync_peers.report_ok_response(&refreshed_peer);
 		sync_peers.report_ok_response(&peer_for_idx(MAX_PEER_STATUS_ENTRIES));
 
-		let peers_status = sync_peers.peers_status.read_recursive();
-		let new_events_peers = sync_peers.new_events_peers.read_recursive();
+		let peers_status = sync_peers.peers_status.read();
+		let new_events_peers = sync_peers.new_events_peers.read();
 
 		assert_eq!(peers_status.len(), MAX_PEER_STATUS_ENTRIES);
 		assert!(peers_status.contains_key(&refreshed_key));
@@ -853,7 +850,7 @@ mod tests {
 		sync_peers.ban_peer(&newest_peer, "bad root hash".into());
 		sync_peers.apply_peers_status(&peers);
 
-		let banned_peers = sync_peers.banned_peers.read_recursive();
+		let banned_peers = sync_peers.banned_peers.read();
 
 		assert_eq!(banned_peers.len(), MAX_BANNED_PEERS);
 		assert!(!banned_peers.contains_key(&oldest_peer));
@@ -876,7 +873,7 @@ mod tests {
 		sync_peers.ban_peer(&newest_peer, "bad root hash".into());
 		sync_peers.apply_peers_status(&peers);
 
-		let banned_peers = sync_peers.banned_peers.read_recursive();
+		let banned_peers = sync_peers.banned_peers.read();
 		assert_eq!(banned_peers.len(), MAX_BANNED_PEERS);
 		assert!(banned_peers.contains_key(&refreshed_peer));
 		assert!(!banned_peers.contains_key(&evicted_peer));

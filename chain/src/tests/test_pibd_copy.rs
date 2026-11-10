@@ -279,12 +279,7 @@ impl DesegmenterRequestor {
 	}
 
 	pub fn check_roots(&self, archive_header_height: u64) {
-		let roots = self
-			.chain
-			.get_txhashset_for_test()
-			.read_recursive()
-			.roots()
-			.unwrap();
+		let roots = self.chain.get_txhashset_for_test().read().roots().unwrap();
 		let archive_header = self
 			.chain
 			.get_header_by_height(archive_header_height)

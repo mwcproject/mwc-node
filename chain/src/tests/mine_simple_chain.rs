@@ -28,7 +28,7 @@ use mwc_core::libtx::{self, Error, ProofBuilder};
 use mwc_core::pow::Difficulty;
 use mwc_core::{consensus, genesis, global, pow};
 use mwc_crates::chrono::Duration;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
@@ -52,11 +52,11 @@ use super::chain_test_helper::{
 
 /// Adapter to retrieve last status
 pub struct StatusAdapter {
-	pub last_status: RwLock<Option<BlockStatus>>,
+	pub last_status: RecursiveRwLock<Option<BlockStatus>>,
 }
 
 impl StatusAdapter {
-	pub fn new(last_status: RwLock<Option<BlockStatus>>) -> Self {
+	pub fn new(last_status: RecursiveRwLock<Option<BlockStatus>>) -> Self {
 		StatusAdapter { last_status }
 	}
 }
@@ -698,7 +698,7 @@ fn init_output_pos_index_rebuilds_missing_genesis_output_at_height_zero() {
 
 	{
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let batch = store.batch_write().unwrap();
 		txhashset.init_output_pos_index(&batch, None, None).unwrap();
 		batch.commit().unwrap();
@@ -875,7 +875,7 @@ fn check_compacted_pibd_reset(mode: Option<crate::PibdResetMode>) {
 			.is_none());
 
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let (_, pos) = txhashset
 			.get_unspent(genesis_commit)
 			.unwrap()
@@ -1296,7 +1296,7 @@ fn init_output_pos_index_maps_missing_outputs_from_body_chain() {
 
 	{
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let batch = store.batch_write().unwrap();
 		txhashset.init_output_pos_index(&batch, None, None).unwrap();
 		batch.commit().unwrap();
@@ -1331,7 +1331,7 @@ fn init_output_pos_index_errors_on_unmapped_missing_output() {
 
 	{
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let batch = store.batch_write().unwrap();
 		let res = txhashset.init_output_pos_index(&batch, None, None);
 		assert!(matches!(
@@ -2029,7 +2029,7 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -2090,7 +2090,7 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -2152,7 +2152,7 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -2214,7 +2214,7 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -2285,7 +2285,7 @@ fn mine_reorg() {
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
 	{
 		// Create chain that reports last block status
-		let last_status = RwLock::new(None);
+		let last_status = RecursiveRwLock::new(None);
 		let adapter = Arc::new(StatusAdapter::new(last_status));
 		let chain = setup_with_status_adapter(&secp, &chain_dir, genesis.clone(), adapter.clone());
 
@@ -2332,7 +2332,7 @@ fn mine_reorg() {
 		// Check that reorg is correctly reported in block status
 		let fork_point = chain.get_header_by_height(1).unwrap();
 		assert_eq!(
-			*adapter.last_status.read_recursive(),
+			*adapter.last_status.read(),
 			Some(BlockStatus::Reorg {
 				prev: Tip::try_from_header(&fork_head).unwrap(),
 				prev_head: head,
@@ -2789,7 +2789,7 @@ fn migrate_spent_index_converts_legacy_entries() {
 
 		{
 			let txhashset = chain.get_txhashset_for_test();
-			let txhashset = txhashset.read_recursive();
+			let txhashset = txhashset.read();
 			Chain::migrate_spent_index(&store, &txhashset, None).unwrap();
 		}
 
@@ -2903,7 +2903,7 @@ fn migrate_spent_index_deletes_records_outside_active_window() {
 
 		{
 			let txhashset = chain.get_txhashset_for_test();
-			let txhashset = txhashset.read_recursive();
+			let txhashset = txhashset.read();
 			Chain::migrate_spent_index(&store, &txhashset, None).unwrap();
 		}
 
@@ -3832,7 +3832,7 @@ fn interrupted_compaction_recovers_recorded_body_tail() {
 		// before BODY_TAIL is staged and the enclosing LMDB batch commits.
 		{
 			let header_pmmr = chain.get_header_pmmr_for_test();
-			let _header_pmmr = header_pmmr.read_recursive();
+			let _header_pmmr = header_pmmr.read();
 			let txhashset = chain.get_txhashset_for_test();
 			let mut txhashset = txhashset.write();
 			let batch = store.batch_write().unwrap();

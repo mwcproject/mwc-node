@@ -19,7 +19,7 @@ use mwc_core::global;
 use mwc_core::global::ChainTypes;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::info;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_p2p::tor::arti;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -31,7 +31,7 @@ lazy_static! {
 	/// Context lifecycle flags.
 	/// `reserved` keeps ids unavailable while allocation or release is in progress.
 	/// `ready` contains fully initialized ids that can be released.
-	static ref CONTEXTS: RwLock<ContextRegistry> = RwLock::new(ContextRegistry::default());
+	static ref CONTEXTS: RecursiveRwLock<ContextRegistry> = RecursiveRwLock::new(ContextRegistry::default());
 	/// Context id index. We don't want to reuse imediatelly. Let's have some cooling down time instead.
 	static ref CURRENT_CONTEXT_IDX: AtomicU32 = AtomicU32::new(0);
 }

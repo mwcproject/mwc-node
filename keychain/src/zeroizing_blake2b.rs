@@ -237,8 +237,11 @@ fn quarter_round(
 mod tests {
 	use super::zeroizing_blake2b;
 	use blake2::{
-		digest::{FixedOutput, KeyInit, Update, VariableOutput},
-		Blake2bMac512, Blake2bVar,
+		digest::{
+			consts::{U1, U16, U32, U64},
+			Digest, FixedOutput, KeyInit, Update,
+		},
+		Blake2b, Blake2bMac512,
 	};
 	use mwc_crates::blake2_rfc::blake2b::blake2b;
 
@@ -277,10 +280,13 @@ mod tests {
 		for outlen in outlens {
 			for data_len in data_lens {
 				let data = seq(data_len);
-				let mut expected = vec![0; outlen];
-				let mut hasher = Blake2bVar::new(outlen).unwrap();
-				hasher.update(&data);
-				hasher.finalize_variable(&mut expected).unwrap();
+				let expected = match outlen {
+					1 => Blake2b::<U1>::digest(&data).to_vec(),
+					16 => Blake2b::<U16>::digest(&data).to_vec(),
+					32 => Blake2b::<U32>::digest(&data).to_vec(),
+					64 => Blake2b::<U64>::digest(&data).to_vec(),
+					_ => unreachable!("test output length"),
+				};
 
 				let actual = zeroizing_blake2b(outlen, &[], &data);
 				assert_eq!(

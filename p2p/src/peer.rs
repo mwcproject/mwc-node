@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use crate::serv::Server;
-use mwc_crates::parking_lot::{Condvar, Mutex, RwLock};
+use mwc_crates::parking_lot::{Condvar, Mutex, RecursiveRwLock};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -60,10 +60,10 @@ enum State {
 
 pub struct Peer {
 	pub info: PeerInfo,
-	state: Arc<RwLock<State>>,
+	state: Arc<RecursiveRwLock<State>>,
 	adapter: Arc<dyn NetAdapter>,
 	// Hashes received from this peer, shared with the protocol to suppress rebroadcasts.
-	received: Arc<RwLock<LruCache<Hash, ()>>>,
+	received: Arc<RecursiveRwLock<LruCache<Hash, ()>>>,
 	tracker: Arc<conn::Tracker>,
 	latency: Mutex<LatencyTracker>,
 	connection: Mutex<Option<PeerConnection>>,
@@ -90,13 +90,13 @@ impl fmt::Debug for Peer {
 impl Peer {
 	// Only accept and connect can be externally used to build a peer
 	fn new(info: PeerInfo, adapter: Arc<dyn NetAdapter>, context_id: u32) -> Peer {
-		let state = Arc::new(RwLock::new(State::Connected));
+		let state = Arc::new(RecursiveRwLock::new(State::Connected));
 		let tracker = Arc::new(conn::Tracker::new());
 		Peer {
 			info,
 			state,
 			adapter,
-			received: Arc::new(RwLock::new(LruCache::new(RECEIVED_CACHE_SIZE))),
+			received: Arc::new(RecursiveRwLock::new(LruCache::new(RECEIVED_CACHE_SIZE))),
 			tracker,
 			latency: Mutex::new(LatencyTracker::new()),
 			connection: Mutex::new(None),
@@ -331,7 +331,7 @@ impl Peer {
 
 	/// Whether this peer is currently connected.
 	pub fn is_connected(&self) -> bool {
-		if State::Connected != *self.state.read_recursive() {
+		if State::Connected != *self.state.read() {
 			return false;
 		}
 		self.connection
@@ -360,17 +360,17 @@ impl Peer {
 
 	/// Whether this peer has been banned.
 	pub fn is_banned(&self) -> bool {
-		State::Banned == *self.state.read_recursive()
+		State::Banned == *self.state.read()
 	}
 
 	/// Whether this peer has failed in a way that should mark it defunct.
 	pub fn is_defunct(&self) -> bool {
-		State::Defunct == *self.state.read_recursive()
+		State::Defunct == *self.state.read()
 	}
 
 	/// Return advertised work, height and ping timeout from one live-info snapshot.
 	pub fn check_liveness(&self) -> (Difficulty, u64, bool) {
-		let peer_live_info = self.info.live_info.read_recursive();
+		let peer_live_info = self.info.live_info.read();
 		let now = Utc::now().timestamp();
 		// Ten ping intervals without a response make a peer unresponsive.
 		let dead_ping = (now - peer_live_info.last_seen.timestamp())
@@ -906,7 +906,7 @@ mod tests {
 			version: ProtocolVersion::local(),
 			addr: PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], port))),
 			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
 			tx_base_fee,
 		};
 		Peer::new(peer_info, Arc::new(DummyAdapter {}), 0)

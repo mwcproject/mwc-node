@@ -23,7 +23,7 @@ use mwc_core::core::hash::Hash;
 use mwc_core::core::hash::Hashed;
 use mwc_core::core::{Segment, SegmentIdentifier};
 use mwc_crates::log::{error, info, warn};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::rand;
 use mwc_crates::rand::prelude::IteratorRandom;
 use mwc_p2p::{self, Capabilities, Peer};
@@ -59,7 +59,7 @@ pub enum HeadersPibdHashResponseStatus {
 pub struct HeadersPibdHashSync {
 	chain: Arc<Chain>,
 	// The headers sync data
-	headers_hash_desegmenter: Option<Arc<RwLock<HeaderHashesDesegmenter>>>,
+	headers_hash_desegmenter: Option<Arc<RecursiveRwLock<HeaderHashesDesegmenter>>>,
 
 	// sync tracking
 	target_archive_height: u64,
@@ -70,9 +70,9 @@ pub struct HeadersPibdHashSync {
 	tasks: VecDeque<HeaderHashTask>,
 	latency: LatencyTracker,
 	// pibd ready archive height for quick response during waiting time intervals
-	pibd_headers_are_loaded: RwLock<Option<u64>>,
+	pibd_headers_are_loaded: RecursiveRwLock<Option<u64>>,
 
-	cached_response: RwLock<Option<CachedResponse<PibdArchiveHeightCachedResponse>>>,
+	cached_response: RecursiveRwLock<Option<CachedResponse<PibdArchiveHeightCachedResponse>>>,
 	pibd_params: Arc<PibdParams>,
 }
 
@@ -96,26 +96,24 @@ struct ReceivedHeaderHashes {
 
 /// A point-in-time view of the header-hash sync state for HeaderPibdSync.
 ///
-/// SyncManager builds this while holding the outer HeadersPibdHashSync RwLock,
+/// SyncManager builds this while holding the outer HeadersPibdHashSync RecursiveRwLock,
 /// then drops that guard before HeaderPibdSync applies cached headers, schedules
 /// requests, or sends network messages. The desegmenter is shared separately
-/// through its own Arc<RwLock<_>>, so callers only lock the desegmenter when
+/// through its own Arc<RecursiveRwLock<_>>, so callers only lock the desegmenter when
 /// they actually need desegmenter state.
 #[derive(Clone)]
 pub struct HeadersPibdHashSyncSnapshot {
 	pub agreed_peers: HashSet<PeerAddr>,
 	pub target_archive_height: u64,
 	pub pibd_headers_are_loaded: bool,
-	pub headers_hash_desegmenter: Option<Arc<RwLock<HeaderHashesDesegmenter>>>,
+	pub headers_hash_desegmenter: Option<Arc<RecursiveRwLock<HeaderHashesDesegmenter>>>,
 }
 
 impl HeadersPibdHashSyncSnapshot {
 	pub fn is_complete(&self) -> bool {
 		self.headers_hash_desegmenter
 			.as_ref()
-			.map_or(false, |desegmenter| {
-				desegmenter.read_recursive().is_complete()
-			})
+			.map_or(false, |desegmenter| desegmenter.read().is_complete())
 	}
 }
 
@@ -144,14 +142,14 @@ impl HeadersPibdHashSync {
 			responded_with_another_height: HashMap::new(),
 			tasks: VecDeque::new(),
 			latency: LatencyTracker::new(),
-			pibd_headers_are_loaded: RwLock::new(None),
-			cached_response: RwLock::new(None),
+			pibd_headers_are_loaded: RecursiveRwLock::new(None),
+			cached_response: RecursiveRwLock::new(None),
 		}
 	}
 
 	pub fn is_pibd_headers_are_loaded(&self, target_archive_height: u64) -> bool {
 		self.pibd_headers_are_loaded
-			.read_recursive()
+			.read()
 			.map_or(false, |loaded_archive_height| {
 				loaded_archive_height == target_archive_height
 			})
@@ -164,7 +162,7 @@ impl HeadersPibdHashSync {
 			.headers_hash_desegmenter
 			.as_ref()
 			.map(|desegmenter| {
-				let root = *desegmenter.read_recursive().get_headers_root_hash();
+				let root = *desegmenter.read().get_headers_root_hash();
 				self.responded_headers_hash_from
 					.keys()
 					.filter(|peer| self.agrees_on_headers_root(peer, root))
@@ -192,7 +190,9 @@ impl HeadersPibdHashSync {
 		*self.cached_response.write() = None;
 	}
 
-	pub fn get_headers_hash_desegmenter(&self) -> Option<Arc<RwLock<HeaderHashesDesegmenter>>> {
+	pub fn get_headers_hash_desegmenter(
+		&self,
+	) -> Option<Arc<RecursiveRwLock<HeaderHashesDesegmenter>>> {
 		self.headers_hash_desegmenter.clone()
 	}
 
@@ -327,9 +327,7 @@ impl HeadersPibdHashSync {
 		debug_assert!(self.headers_hash_desegmenter.is_some());
 
 		if let Some(headers_hash_desegmenter) = self.headers_hash_desegmenter.as_ref() {
-			let root_hash = *headers_hash_desegmenter
-				.read_recursive()
-				.get_headers_root_hash();
+			let root_hash = *headers_hash_desegmenter.read().get_headers_root_hash();
 
 			// Ban/unban in this reset path is intentionally best effort. ban_peer()
 			// returns the result of persisting the ban through add_banned/save_peer,
@@ -381,7 +379,7 @@ impl HeadersPibdHashSync {
 			}
 		}
 
-		let cached_response = self.cached_response.read_recursive().clone();
+		let cached_response = self.cached_response.read().clone();
 		if let Some(cached_response) = cached_response {
 			if !cached_response.is_expired() {
 				let cached_response = cached_response.to_response();
@@ -519,7 +517,8 @@ impl HeadersPibdHashSync {
 							Err(e) => return Err(e),
 						};
 						let segment_num = desegmenter.get_segments_total();
-						self.headers_hash_desegmenter = Some(Arc::new(RwLock::new(desegmenter)));
+						self.headers_hash_desegmenter =
+							Some(Arc::new(RecursiveRwLock::new(desegmenter)));
 						sync_state.update(SyncStatus::HeaderHashSync {
 							completed_blocks: 0,
 							total_blocks: segment_num,
@@ -675,7 +674,7 @@ impl HeadersPibdHashSync {
 		}
 
 		self.apply_ready_tasks(&mut headers_hash_desegmenter.write(), sync_peers)?;
-		if headers_hash_desegmenter.read_recursive().is_complete() {
+		if headers_hash_desegmenter.read().is_complete() {
 			// Continue root discovery on later passes so new agreed peers can
 			// participate in the following checkpoint-header download.
 			return Ok(SyncResponse::new(
@@ -686,7 +685,7 @@ impl HeadersPibdHashSync {
 		}
 
 		let headers_root_hash = {
-			let desegmenter = headers_hash_desegmenter.read_recursive();
+			let desegmenter = headers_hash_desegmenter.read();
 			self.fill_tasks(&desegmenter)?;
 			let buffered = self
 				.tasks
@@ -921,7 +920,7 @@ impl HeadersPibdHashSync {
 		let Some(desegmenter) = self.headers_hash_desegmenter.clone() else {
 			return Ok(());
 		};
-		if *desegmenter.read_recursive().get_headers_root_hash() != header_hashes_root {
+		if *desegmenter.read().get_headers_root_hash() != header_hashes_root {
 			return Ok(()); // Delayed response for another root.
 		}
 		let id = *segment.id();
@@ -941,7 +940,7 @@ impl HeadersPibdHashSync {
 			return Ok(());
 		}
 		let received_at = Instant::now();
-		let validated = desegmenter.read_recursive().validate_segment(segment);
+		let validated = desegmenter.read().validate_segment(segment);
 		let segment = match validated {
 			Ok(segment) => segment,
 			Err(error) => {
@@ -1130,7 +1129,7 @@ mod task_tests {
 				* interval;
 			let mut sync = HeadersPibdHashSync::new(chain);
 			sync.target_archive_height = target;
-			sync.headers_hash_desegmenter = Some(Arc::new(RwLock::new(
+			sync.headers_hash_desegmenter = Some(Arc::new(RecursiveRwLock::new(
 				HeaderHashesDesegmenter::new(0, hashes[0], target, root).unwrap(),
 			)));
 			let peer_dir = TempDir::new().unwrap();
@@ -1159,7 +1158,9 @@ mod task_tests {
 				version: ProtocolVersion::local(),
 				addr: addr.clone(),
 				direction: Direction::Outbound,
-				live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+				live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+					pow::Difficulty::min(),
+				))),
 				tx_base_fee: 0,
 			};
 			info.update(
@@ -1259,7 +1260,7 @@ mod task_tests {
 		let interval = global::txhashset_archive_interval(0);
 		let target = (100 * 4096 * u64::from(HEADERS_PER_BATCH)).div_ceil(interval) * interval;
 		f.sync.target_archive_height = target;
-		f.sync.headers_hash_desegmenter = Some(Arc::new(RwLock::new(
+		f.sync.headers_hash_desegmenter = Some(Arc::new(RecursiveRwLock::new(
 			HeaderHashesDesegmenter::new(0, f.hashes[0], target, f.root).unwrap(),
 		)));
 		let (first, first_messages) = f.peer(1, f.root);

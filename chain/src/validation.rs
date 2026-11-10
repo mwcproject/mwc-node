@@ -9,7 +9,7 @@
 use crate::Error;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::info;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,8 +30,8 @@ pub(crate) struct ValidationFlags {
 }
 
 lazy_static! {
-	static ref CONTEXT_VALIDATIONS: RwLock<HashMap<u32, ValidationFlags>> =
-		RwLock::new(HashMap::new());
+	static ref CONTEXT_VALIDATIONS: RecursiveRwLock<HashMap<u32, ValidationFlags>> =
+		RecursiveRwLock::new(HashMap::new());
 }
 
 pub(crate) fn get(context_id: u32) -> ValidationFlags {

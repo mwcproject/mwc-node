@@ -30,7 +30,7 @@ use mwc_core::ser::ProtocolVersion;
 use mwc_crates::crossbeam;
 use mwc_crates::crossbeam::channel::{RecvTimeoutError, TryRecvError};
 use mwc_crates::log::{debug, error, info, trace, warn};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_util::RateCounter;
 use std::any::Any;
@@ -276,15 +276,15 @@ pub(crate) fn test_handles() -> (ConnHandle, StopHandle, crossbeam::channel::Rec
 
 pub struct Tracker {
 	/// Bytes we've sent.
-	pub sent_bytes: Arc<RwLock<RateCounter>>,
+	pub sent_bytes: Arc<RecursiveRwLock<RateCounter>>,
 	/// Bytes we've received.
-	pub received_bytes: Arc<RwLock<RateCounter>>,
+	pub received_bytes: Arc<RecursiveRwLock<RateCounter>>,
 }
 
 impl Tracker {
 	pub fn new() -> Tracker {
-		let received_bytes = Arc::new(RwLock::new(RateCounter::new()));
-		let sent_bytes = Arc::new(RwLock::new(RateCounter::new()));
+		let received_bytes = Arc::new(RecursiveRwLock::new(RateCounter::new()));
+		let sent_bytes = Arc::new(RecursiveRwLock::new(RateCounter::new()));
 		Tracker {
 			received_bytes,
 			sent_bytes,

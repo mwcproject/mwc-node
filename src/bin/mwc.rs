@@ -17,9 +17,10 @@
 
 use mwc_config::config::SERVER_CONFIG_FILE_NAME;
 use mwc_core::global;
+use mwc_util::cli::{command_from_yaml, ArgMatchesExt};
 
-use mwc_crates::clap::{App, YamlLoader};
 use mwc_crates::log::{debug, error, info, warn};
+use mwc_crates::yaml_rust2::YamlLoader;
 use mwc_util::escape_to_printable_ascii;
 
 mod cmd;
@@ -70,7 +71,7 @@ fn real_main() -> i32 {
 		println!("Error loading command line configuration: empty YAML");
 		return -1;
 	};
-	let args = App::from_yaml(yml)
+	let args = command_from_yaml(yml)
 		.version(built_info::PKG_VERSION)
 		.get_matches();
 
@@ -84,9 +85,9 @@ fn real_main() -> i32 {
 	let skip_start_blockchain_validation = args.is_present("skip_start_blockchain_validation");
 
 	// Deal with configuration file creation
-	if let ("server", Some(server_args)) = args.subcommand() {
+	if let Some(("server", server_args)) = args.subcommand() {
 		// If it's just a server config command, do it and exit
-		if let ("config", Some(_)) = server_args.subcommand() {
+		if let Some(("config", _)) = server_args.subcommand() {
 			return res_to_ret_val(cmd::config_command_server(
 				&chain_type,
 				SERVER_CONFIG_FILE_NAME,
@@ -97,7 +98,7 @@ fn real_main() -> i32 {
 	// Load relevant config
 	let config = match args.subcommand() {
 		// When the subscommand is 'server' take into account the 'config_file' flag
-		("server", Some(server_args)) => {
+		Some(("server", server_args)) => {
 			if let Some(path) = server_args.value_of_os("config_file") {
 				let path = match cmd::utf8_arg_value("config_file", path) {
 					Ok(path) => path,
@@ -182,7 +183,7 @@ fn real_main() -> i32 {
 	// Execute subcommand
 	let mut res = match args.subcommand() {
 		// server commands and options
-		("server", Some(server_args)) => res_to_ret_val(cmd::server_command(
+		Some(("server", server_args)) => res_to_ret_val(cmd::server_command(
 			context_id,
 			Some(server_args),
 			config,
@@ -190,11 +191,11 @@ fn real_main() -> i32 {
 			skip_start_blockchain_validation,
 		)),
 		// client commands and options
-		("client", Some(client_args)) => {
+		Some(("client", client_args)) => {
 			res_to_ret_val(cmd::client_command(context_id, client_args, config))
 		}
 		// clean command
-		("clean", _) => {
+		Some(("clean", _)) => {
 			let db_root_path = &config.members.server.db_root;
 			warn!("Cleaning chain data directory: {}", db_root_path);
 			match mwc_servers::Server::clean_chain_data(&config.members.server) {
@@ -237,7 +238,7 @@ mod tests {
 	#[test]
 	fn parses_skip_start_blockchain_validation_global_flag() {
 		let yml = YamlLoader::load_from_str(include_str!("mwc.yml")).unwrap();
-		let args = App::from_yaml(yml.first().unwrap()).get_matches_from(vec![
+		let args = command_from_yaml(yml.first().unwrap()).get_matches_from(vec![
 			"mwc",
 			"--skip_start_blockchain_validation",
 			"server",

@@ -29,7 +29,7 @@ use mwc_core::core::{Block, BlockHeader, HeaderVersion, Inputs, OutputIdentifier
 use mwc_core::global;
 use mwc_crates::log::{debug, log_enabled};
 use mwc_crates::log::{warn, Level};
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::secp::Secp256k1;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -57,7 +57,7 @@ pub enum PromotionOutcome {
 /// cryptographic portion of public pool admission.
 ///
 /// This is intentionally independent of the pool lock. Holding either side of
-/// the pool `RwLock` while validating rangeproofs and kernel signatures would
+/// the pool `RecursiveRwLock` while validating rangeproofs and kernel signatures would
 /// block otherwise unrelated pool work. The key is the full transaction hash,
 /// so this suppresses byte-for-byte concurrent submissions without using the
 /// private stempool as an externally observable duplicate cache.
@@ -99,7 +99,7 @@ where
 	/// Our Dandelion "stempool".
 	pub stempool: Pool<B>,
 	/// Cache of previous txs in case of a re-org.
-	pub reorg_cache: Arc<RwLock<VecDeque<PoolEntry>>>,
+	pub reorg_cache: Arc<RecursiveRwLock<VecDeque<PoolEntry>>>,
 	/// The blockchain
 	pub blockchain: Arc<B>,
 	/// The pool adapter
@@ -121,7 +121,7 @@ where
 			config,
 			txpool: Pool::new(context_id, chain.clone(), "txpool".to_string()),
 			stempool: Pool::new(context_id, chain.clone(), "stempool".to_string()),
-			reorg_cache: Arc::new(RwLock::new(VecDeque::new())),
+			reorg_cache: Arc::new(RecursiveRwLock::new(VecDeque::new())),
 			blockchain: chain,
 			adapter,
 			context_id,
@@ -268,7 +268,7 @@ where
 	/// under the write lock, and public fluff relay happens after the lock is
 	/// released.
 	pub fn submit_to_pool(
-		tx_pool: &RwLock<Self>,
+		tx_pool: &RecursiveRwLock<Self>,
 		src: TxSource,
 		tx: Transaction,
 		stem: bool,
@@ -281,7 +281,7 @@ where
 	/// Promote an expired transaction using a budget shared across the monitor
 	/// pass. Deferred transactions retain their original embargo timestamps.
 	pub fn submit_expired_to_pool(
-		tx_pool: &RwLock<Self>,
+		tx_pool: &RecursiveRwLock<Self>,
 		tx: Transaction,
 		header: &BlockHeader,
 		budget: &mut PromotionBudget,
@@ -299,7 +299,7 @@ where
 	}
 
 	fn submit_to_pool_internal(
-		tx_pool: &RwLock<Self>,
+		tx_pool: &RecursiveRwLock<Self>,
 		src: TxSource,
 		tx: Transaction,
 		stem: bool,
@@ -313,7 +313,7 @@ where
 			}
 		}
 		let (context_id, adapter, pending_validations, blockchain) = {
-			let tx_pool = tx_pool.read_recursive();
+			let tx_pool = tx_pool.read();
 			(
 				tx_pool.context_id,
 				tx_pool.adapter.clone(),
@@ -334,7 +334,7 @@ where
 		// transaction is allowed through so the locked path can preserve the
 		// documented stem-to-fluff promotion behavior.
 		{
-			let tx_pool = tx_pool.read_recursive();
+			let tx_pool = tx_pool.read();
 			if tx_pool.context_id != context_id {
 				return Err(PoolError::Other(format!(
 					"transaction context {} does not match pool context {}",
@@ -365,7 +365,7 @@ where
 		// and registration in the in-flight set. Avoid cryptographic work in that
 		// case as well.
 		{
-			let tx_pool = tx_pool.read_recursive();
+			let tx_pool = tx_pool.read();
 			if tx_pool.context_id != context_id {
 				return Err(PoolError::Other(format!(
 					"transaction context {} does not match pool context {}",
@@ -600,7 +600,7 @@ where
 
 	pub fn reconcile_reorg_cache(&mut self, header: &BlockHeader, secp: &mut Secp256k1) {
 		let entries = {
-			let cache = self.reorg_cache.read_recursive();
+			let cache = self.reorg_cache.read();
 			cache.iter().cloned().collect::<Vec<_>>()
 		};
 		debug!(
@@ -747,7 +747,7 @@ where
 			debug!("reconcile_block Started for block {:?}", block);
 
 			debug!("---------------- BEFORE START --------------");
-			let reorg_cache = self.reorg_cache.read_recursive();
+			let reorg_cache = self.reorg_cache.read();
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -781,7 +781,7 @@ where
 
 		if log_enabled!(Level::Debug) {
 			debug!("---------------- AFTER START --------------");
-			let reorg_cache = self.reorg_cache.read_recursive();
+			let reorg_cache = self.reorg_cache.read();
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {

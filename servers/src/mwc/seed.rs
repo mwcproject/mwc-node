@@ -263,14 +263,21 @@ pub fn connect_and_monitor(
 					}
 				}
 
-				let mut system = System::new_with_specifics(
-					RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
+				let system = System::new_with_specifics(
+					RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_usage()),
 				);
 
 				thread::sleep(time::Duration::from_secs(1));
-				system.refresh_cpu_usage();
-
-				cpu_usage = normalized_cpu_usage(system.cpus().iter().map(|cpu| cpu.cpu_usage()));
+				cpu_usage = match system.map(|mut system| {
+					system.refresh_cpu_usage();
+					normalized_cpu_usage(system.cpus().iter().map(|cpu| cpu.usage()))
+				}) {
+					Ok(usage) => usage,
+					Err(e) => {
+						warn!("Unable to query CPU usage: {}", e);
+						0.0
+					}
+				};
 			}
 
 			if let Err(e) = join_connection_threads(&mut connection_threads) {

@@ -19,7 +19,7 @@
 use mwc_core::core::hash::Hash;
 use mwc_core::ser::ProtocolVersion;
 use mwc_crates::atomic_float::AtomicF64;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::serde::{self, Serialize};
 use std::sync::atomic::*;
 use std::sync::Arc;
@@ -163,7 +163,7 @@ pub struct StratumStats {
 	/// The minimum acceptable share difficulty to request from miners
 	pub minimum_share_difficulty: AtomicU64,
 	/// Individual worker status
-	worker_stats: RwLock<Vec<WorkerStats>>,
+	worker_stats: RecursiveRwLock<Vec<WorkerStats>>,
 }
 
 impl serde::Serialize for StratumStats {
@@ -194,7 +194,7 @@ impl serde::Serialize for StratumStats {
 		)?;
 
 		// snapshot the worker list while we hold the lock
-		let workers = self.worker_stats.read_recursive();
+		let workers = self.worker_stats.read();
 		state.serialize_field("worker_stats", &*workers)?;
 
 		state.end()
@@ -310,10 +310,7 @@ impl StratumStats {
 
 	/// Get worker Stat info
 	pub fn get_stats(&self, worker_id: usize) -> Option<WorkerStats> {
-		self.worker_stats
-			.read_recursive()
-			.get(worker_id)
-			.map(|ws| ws.clone())
+		self.worker_stats.read().get(worker_id).map(|ws| ws.clone())
 	}
 
 	/// Update stats record for the worker
@@ -330,7 +327,7 @@ impl StratumStats {
 
 	/// Copy stat data. Expected that caller is understand the impact of this call.
 	pub fn get_worker_stats(&self) -> Vec<WorkerStats> {
-		self.worker_stats.read_recursive().clone()
+		self.worker_stats.read().clone()
 	}
 }
 
@@ -362,13 +359,8 @@ impl PeerStats {
 			height,
 			direction: direction.to_string(),
 			last_seen: peer.info.last_seen(),
-			sent_bytes_per_sec: peer.tracker().sent_bytes.read_recursive().bytes_per_min() / 60,
-			received_bytes_per_sec: peer
-				.tracker()
-				.received_bytes
-				.read_recursive()
-				.bytes_per_min()
-				/ 60,
+			sent_bytes_per_sec: peer.tracker().sent_bytes.read().bytes_per_min() / 60,
+			received_bytes_per_sec: peer.tracker().received_bytes.read().bytes_per_min() / 60,
 			capabilities: peer.info.capabilities,
 		}
 	}
@@ -402,7 +394,7 @@ impl Default for StratumStats {
 			blocks_found: AtomicUsize::new(0),
 			network_hashrate: AtomicF64::new(0.0),
 			minimum_share_difficulty: AtomicU64::new(1),
-			worker_stats: RwLock::new(Vec::new()),
+			worker_stats: RecursiveRwLock::new(Vec::new()),
 		}
 	}
 }

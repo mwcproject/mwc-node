@@ -114,3 +114,4 @@ pub use zip;
 
 pub use ed25519_dalek;
 pub use x25519_dalek;
+pub use yaml_rust2;

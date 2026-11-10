@@ -40,7 +40,7 @@ use std::sync::Arc;
 #[allow(unused_macros)]
 macro_rules! submit_to_pool {
 	($pool:expr, $src:expr, $tx:expr, $stem:expr, $header:expr, $secp:expr) => {{
-		let tx_pool_lock = mwc_crates::parking_lot::RwLock::new($pool);
+		let tx_pool_lock = mwc_crates::parking_lot::RecursiveRwLock::new($pool);
 		let result = mwc_pool::TransactionPool::submit_to_pool(
 			&tx_pool_lock,
 			$src,

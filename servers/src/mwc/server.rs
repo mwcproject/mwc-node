@@ -17,7 +17,7 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use std::convert::TryFrom;
 use std::fs;
 use std::fs::File;
@@ -63,7 +63,7 @@ const SERVER_LOCK_FILE: &str = "mwc.lock";
 
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
 pub type ServerTxPool =
-	Arc<RwLock<mwc_pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
+	Arc<RecursiveRwLock<mwc_pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
 
 /// Pending p2p listener startup. Waiting on this can block on TCP bind/Tor
 /// readiness, so callers should not hold global registry locks while waiting.
@@ -196,7 +196,7 @@ impl Server {
 			context_id,
 			config.dandelion_config.clone(),
 		));
-		let tx_pool = Arc::new(RwLock::new(mwc_pool::TransactionPool::new(
+		let tx_pool = Arc::new(RecursiveRwLock::new(mwc_pool::TransactionPool::new(
 			context_id,
 			config.pool_config.clone(),
 			pool_adapter.clone(),
@@ -808,7 +808,7 @@ impl Server {
 		// acquire various read locks with a timeout.
 
 		let tx_stats = {
-			let pool = self.tx_pool.read_recursive();
+			let pool = self.tx_pool.read();
 			TxStats {
 				tx_pool_size: pool.txpool.size(),
 				tx_pool_kernels: pool.txpool.kernel_count(),

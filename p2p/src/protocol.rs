@@ -29,7 +29,7 @@ use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
 use mwc_chain::txhashset::BitmapSegment;
 use mwc_crates::log::{debug, error, info, trace, warn};
 use mwc_crates::lru::LruCache;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::Secp256k1;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
 	server: Server,
-	received: Arc<RwLock<LruCache<Hash, ()>>>,
+	received: Arc<RecursiveRwLock<LruCache<Hash, ()>>>,
 }
 
 impl Protocol {
@@ -46,7 +46,7 @@ impl Protocol {
 		adapter: Arc<dyn NetAdapter>,
 		peer_info: PeerInfo,
 		server: Server,
-		received: Arc<RwLock<LruCache<Hash, ()>>>,
+		received: Arc<RecursiveRwLock<LruCache<Hash, ()>>>,
 	) -> Protocol {
 		Protocol {
 			adapter,

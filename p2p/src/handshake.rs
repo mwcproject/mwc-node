@@ -32,7 +32,7 @@ use mwc_core::ser::{BinWriter, ProtocolVersion, Writeable, Writer};
 use mwc_crates::chrono::prelude::Utc;
 use mwc_crates::ed25519_dalek::Signature as DalekSignature;
 use mwc_crates::log::{debug, info, trace};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::rand::TryRng;
 use mwc_crates::tor_llcrypto::pk::ed25519::ExpandedKeypair;
@@ -146,13 +146,13 @@ fn read_shake_message(
 pub struct Handshake {
 	/// Ring buffer of nonces sent to detect self connections without requiring
 	/// a node id.
-	nonces: Arc<RwLock<VecDeque<u64>>>,
+	nonces: Arc<RecursiveRwLock<VecDeque<u64>>>,
 	/// Ring buffer of self addr(s) collected from PeerWithSelf detection (by nonce).
-	pub addrs: Arc<RwLock<VecDeque<PeerAddr>>>,
+	pub addrs: Arc<RecursiveRwLock<VecDeque<PeerAddr>>>,
 	/// Recent receiver addresses advertised by inbound Hand requests, paired
 	/// with the source peer that reported them. Used to learn the address peers
 	/// use to reach IP-based nodes.
-	ip_receiver_addrs: Arc<RwLock<VecDeque<IpReceiverAddrSample>>>,
+	ip_receiver_addrs: Arc<RecursiveRwLock<VecDeque<IpReceiverAddrSample>>>,
 	/// The genesis block header of the chain seen by this node.
 	/// We only want to connect to other nodes seeing the same chain (forks are
 	/// ok).
@@ -183,9 +183,9 @@ impl Handshake {
 			.transpose();
 
 		Handshake {
-			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
-			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
-			ip_receiver_addrs: Arc::new(RwLock::new(VecDeque::with_capacity(
+			nonces: Arc::new(RecursiveRwLock::new(VecDeque::with_capacity(NONCES_CAP))),
+			addrs: Arc::new(RecursiveRwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
+			ip_receiver_addrs: Arc::new(RecursiveRwLock::new(VecDeque::with_capacity(
 				IP_RECEIVER_ADDRS_CAP,
 			))),
 			genesis,
@@ -311,7 +311,7 @@ impl Handshake {
 	}
 
 	fn learned_ip_receiver_addr(&self) -> Option<SocketAddr> {
-		let receiver_addrs = self.ip_receiver_addrs.read_recursive();
+		let receiver_addrs = self.ip_receiver_addrs.read();
 		learned_ip_receiver_addr_from_samples(&receiver_addrs)
 	}
 
@@ -598,7 +598,9 @@ impl Handshake {
 			},
 			addr: peer_addr,
 			version: negotiated_version,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(shake.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				shake.total_difficulty,
+			))),
 			tx_base_fee: shake.tx_fee_base,
 		};
 
@@ -652,7 +654,7 @@ impl Handshake {
 
 		let addr = resolve_peer_addr(&hand, &conn)?;
 		// Check the nonce to see if we are trying to connect to ourselves.
-		let peer_with_self = self.nonces.read_recursive().contains(&hand.nonce);
+		let peer_with_self = self.nonces.read().contains(&hand.nonce);
 
 		self.verify_onion_hand_proof(&hand, adapter)?;
 
@@ -729,7 +731,9 @@ impl Handshake {
 			},
 			addr,
 			version: negotiated_version,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				hand.total_difficulty,
+			))),
 			tx_base_fee: hand.tx_fee_base,
 		};
 
@@ -1292,10 +1296,7 @@ mod tests {
 
 		receiver_hs.record_peer_with_self_addr(&hand, &sender_addr);
 
-		assert_eq!(
-			receiver_hs.addrs.read_recursive().front().cloned(),
-			Some(sender_addr)
-		);
+		assert_eq!(receiver_hs.addrs.read().front().cloned(), Some(sender_addr));
 	}
 
 	#[test]
@@ -1321,7 +1322,7 @@ mod tests {
 		receiver_hs.record_peer_with_self_addr(&legacy_hand, &sender_addr);
 		receiver_hs.record_peer_with_self_addr(&unsigned_v5_hand, &sender_addr);
 
-		assert!(receiver_hs.addrs.read_recursive().is_empty());
+		assert!(receiver_hs.addrs.read().is_empty());
 	}
 
 	#[test]
@@ -1341,11 +1342,7 @@ mod tests {
 		receiver_hs.observe_inbound_receiver_addr(&hand, &source_addr);
 
 		assert_eq!(
-			receiver_hs
-				.ip_receiver_addrs
-				.read_recursive()
-				.front()
-				.cloned(),
+			receiver_hs.ip_receiver_addrs.read().front().cloned(),
 			match receiver_addr {
 				PeerAddr::Ip(receiver_addr) => Some((receiver_addr, source_addr)),
 				PeerAddr::Onion(_) => None,
@@ -1398,7 +1395,7 @@ mod tests {
 			receiver_hs.record_ip_receiver_addr(learned_addr, sender_addr.clone());
 		}
 
-		let samples = receiver_hs.ip_receiver_addrs.read_recursive();
+		let samples = receiver_hs.ip_receiver_addrs.read();
 		assert_eq!(samples.len(), 1);
 		assert_eq!(learned_ip_receiver_addr_from_samples(&samples), None);
 	}
@@ -1413,7 +1410,7 @@ mod tests {
 			receiver_hs.record_ip_receiver_addr(learned_addr, sender_addr);
 		}
 
-		let samples = receiver_hs.ip_receiver_addrs.read_recursive();
+		let samples = receiver_hs.ip_receiver_addrs.read();
 		assert_eq!(samples.len(), 1);
 		assert_eq!(learned_ip_receiver_addr_from_samples(&samples), None);
 	}

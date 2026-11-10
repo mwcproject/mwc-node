@@ -23,7 +23,7 @@ use mwc_crates::http_body_util::Full;
 use mwc_crates::hyper::service::Service;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::error;
-use mwc_crates::parking_lot::{Condvar, Mutex, RwLock};
+use mwc_crates::parking_lot::{Condvar, Mutex, RecursiveRwLock};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::tor::arti;
 use mwc_p2p::TorConfig;
@@ -36,14 +36,14 @@ use std::sync::{Arc, Weak};
 lazy_static! {
 		/// Global chain status flags. It is expected that init call will set them first for every needed context
 		/// Note, both node and wallet will need to set it up. Any param can be set once
-	static ref SERVER_CONTEXT: RwLock<HashMap<u32, RegisteredServer>> =
-		RwLock::new(HashMap::new());
+	static ref SERVER_CONTEXT: RecursiveRwLock<HashMap<u32, RegisteredServer>> =
+		RecursiveRwLock::new(HashMap::new());
 
-	static ref SERVER_LIFECYCLE_CONTEXT: RwLock<HashMap<u32, Weak<ServerLifecycle>>> =
-		RwLock::new(HashMap::new());
+	static ref SERVER_LIFECYCLE_CONTEXT: RecursiveRwLock<HashMap<u32, Weak<ServerLifecycle>>> =
+		RecursiveRwLock::new(HashMap::new());
 
-	static ref CALL_ROUTER_CONTEXT: RwLock<HashMap<u32, Arc<CallRouterEntry>>> =
-		RwLock::new(HashMap::new());
+	static ref CALL_ROUTER_CONTEXT: RecursiveRwLock<HashMap<u32, Arc<CallRouterEntry>>> =
+		RecursiveRwLock::new(HashMap::new());
 }
 
 /// Identity token for one server instance stored under a reusable context ID.
@@ -95,13 +95,13 @@ impl ServerLifecycle {
 
 struct CallRouterEntry {
 	/// `None` permanently closes this generation after all active readers finish.
-	router: RwLock<Option<Router>>,
+	router: RecursiveRwLock<Option<Router>>,
 }
 
 impl CallRouterEntry {
 	fn new(router: Router) -> Self {
 		CallRouterEntry {
-			router: RwLock::new(Some(router)),
+			router: RecursiveRwLock::new(Some(router)),
 		}
 	}
 
@@ -117,7 +117,7 @@ enum BeginServerRelease {
 
 fn server_lifecycle(context_id: u32) -> Arc<ServerLifecycle> {
 	if let Some(lifecycle) = SERVER_LIFECYCLE_CONTEXT
-		.read_recursive()
+		.read()
 		.get(&context_id)
 		.and_then(Weak::upgrade)
 	{
@@ -291,7 +291,7 @@ pub fn create_server(
 	let _operation = lifecycle.operation.lock();
 	register_server_start(&lifecycle, stop_state.clone())?;
 
-	if SERVER_CONTEXT.read_recursive().contains_key(&context_id) {
+	if SERVER_CONTEXT.read().contains_key(&context_id) {
 		finish_server_start(&lifecycle, &stop_state);
 		return Err(Error::ContextError(
 			"Node server already created for this context".into(),
@@ -504,7 +504,7 @@ pub fn start_rest_api(context_id: u32) -> Result<(), Error> {
 
 /// Init router for lib based API
 pub fn init_call_api(context_id: u32) -> Result<(), Error> {
-	let servers = SERVER_CONTEXT.read_recursive();
+	let servers = SERVER_CONTEXT.read();
 	let router = match servers.get(&context_id) {
 		Some(serv) => serv
 			.server
@@ -529,7 +529,7 @@ pub fn process_call(
 	body: String,
 ) -> Result<http::Response<Full<Bytes>>, Error> {
 	let router_entry = {
-		let routers = CALL_ROUTER_CONTEXT.read_recursive();
+		let routers = CALL_ROUTER_CONTEXT.read();
 		routers.get(&context_id).cloned()
 	}
 	.ok_or_else(|| Error::ServerError(format!("Call API not exist for context {}", context_id)))?;
@@ -550,7 +550,7 @@ pub fn process_call(
 
 	// Keep this per-context read guard until the response is complete. Shutdown
 	// removes the registry entry, then takes the write guard to drain these calls.
-	let router_guard = router_entry.router.read_recursive();
+	let router_guard = router_entry.router.read();
 	let router = router_guard.as_ref().ok_or_else(|| {
 		Error::ServerError(format!(
 			"Call API is shutting down for context {}",
@@ -590,7 +590,7 @@ pub fn start_dandelion(context_id: u32) -> Result<(), Error> {
 
 /// Get server stats data, used by node UI.
 pub fn get_server_stats(context_id: u32) -> Result<ServerStats, Error> {
-	match SERVER_CONTEXT.try_read_recursive() {
+	match SERVER_CONTEXT.try_read() {
 		Some(servers) => match servers.get(&context_id) {
 			Some(serv) => Ok(serv.server.get_server_stats().map_err(|e| {
 				Error::ServerError(format!("Unable to get server stat data, {}", e))
@@ -711,7 +711,7 @@ mod tests {
 			.unwrap();
 		replace_call_router(context_id, router);
 		let stale_entry = CALL_ROUTER_CONTEXT
-			.read_recursive()
+			.read()
 			.get(&context_id)
 			.cloned()
 			.unwrap();
@@ -728,10 +728,7 @@ mod tests {
 		});
 
 		let deadline = Instant::now() + Duration::from_secs(1);
-		while CALL_ROUTER_CONTEXT
-			.read_recursive()
-			.contains_key(&context_id)
-		{
+		while CALL_ROUTER_CONTEXT.read().contains_key(&context_id) {
 			assert!(
 				Instant::now() < deadline,
 				"release did not revoke the router"
@@ -746,7 +743,7 @@ mod tests {
 		assert!(call_thread.join().unwrap().is_ok());
 		released_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 		release_thread.join().unwrap();
-		assert!(stale_entry.router.read_recursive().is_none());
+		assert!(stale_entry.router.read().is_none());
 	}
 
 	#[test]
@@ -768,8 +765,6 @@ mod tests {
 
 		assert!(lifecycle_weak.upgrade().is_none());
 		drop(server_lifecycle(prune_trigger_id));
-		assert!(!SERVER_LIFECYCLE_CONTEXT
-			.read_recursive()
-			.contains_key(&context_id));
+		assert!(!SERVER_LIFECYCLE_CONTEXT.read().contains_key(&context_id));
 	}
 }

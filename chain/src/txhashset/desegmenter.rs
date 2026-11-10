@@ -32,7 +32,7 @@ use mwc_core::core::{
 };
 use mwc_core::ser::PMMRable;
 use mwc_crates::num_cpus;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_util::StopState;
 use std::collections::HashSet;
@@ -50,8 +50,8 @@ const MAX_NON_PRUNABLE_SEGMENT_HEIGHT: u8 = 127;
 /// Desegmenter for rebuilding a txhashset from PIBD segments
 /// Note!!! header_pmmr, txhashset & store are from the Chain. Same locking rules are applicable
 pub struct Desegmenter {
-	txhashset: Arc<RwLock<TxHashSet>>,
-	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
+	txhashset: Arc<RecursiveRwLock<TxHashSet>>,
+	header_pmmr: Arc<RecursiveRwLock<txhashset::PMMRHandle<BlockHeader>>>,
 	archive_header: BlockHeader,
 	bitmap_root_hash: Hash, // bitmap root hash must come as a result of handshake process
 	store: Arc<store::ChainStore>,
@@ -61,13 +61,13 @@ pub struct Desegmenter {
 	state_generation: Arc<AtomicU64>,
 	created_at_state_generation: u64,
 
-	outputs_bitmap_accumulator: RwLock<BitmapAccumulator>, // Lock 1
+	outputs_bitmap_accumulator: RecursiveRwLock<BitmapAccumulator>, // Lock 1
 	outputs_bitmap_mmr_size: u64,
 	/// In-memory 'raw' bitmap corresponding to contents of bitmap accumulator
-	outputs_bitmap: RwLock<Option<Bitmap>>,
+	outputs_bitmap: RecursiveRwLock<Option<Bitmap>>,
 
 	// Only layouts and committed cursors live here. StateSync owns response buffers.
-	segments: RwLock<Vec<SegmentProgress>>,
+	segments: RecursiveRwLock<Vec<SegmentProgress>>,
 
 	progress_logged: AtomicU64,
 }
@@ -338,8 +338,8 @@ impl Desegmenter {
 	/// Create a desegmenter tied to the chain-state generation from which its
 	/// archive header, bitmap accumulator, and accepted-segment cursors derive.
 	pub(crate) fn new_guarded(
-		txhashset: Arc<RwLock<TxHashSet>>,
-		header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>,
+		txhashset: Arc<RecursiveRwLock<TxHashSet>>,
+		header_pmmr: Arc<RecursiveRwLock<txhashset::PMMRHandle<BlockHeader>>>,
 		archive_header: BlockHeader,
 		bitmap_root_hash: Hash,
 		genesis: BlockHeader,
@@ -372,14 +372,14 @@ impl Desegmenter {
 			requires_init_recovery,
 			state_generation,
 			created_at_state_generation,
-			outputs_bitmap_accumulator: RwLock::new(BitmapAccumulator::new(context_id)),
+			outputs_bitmap_accumulator: RecursiveRwLock::new(BitmapAccumulator::new(context_id)),
 			outputs_bitmap_mmr_size: bitmap_mmr_size,
-			segments: RwLock::new(vec![SegmentProgress {
+			segments: RecursiveRwLock::new(vec![SegmentProgress {
 				kind: SegmentType::Bitmap,
 				required: bitmap_segments,
 				applied: 0,
 			}]),
-			outputs_bitmap: RwLock::new(None),
+			outputs_bitmap: RecursiveRwLock::new(None),
 			progress_logged: AtomicU64::new(0),
 		})
 	}
@@ -396,7 +396,7 @@ impl Desegmenter {
 
 	/// Completion requires all four layouts to have been applied.
 	pub fn is_complete(&self) -> bool {
-		let segments = self.segments.read_recursive();
+		let segments = self.segments.read();
 		self.is_current()
 			&& segments.len() == 4
 			&& segments
@@ -406,7 +406,7 @@ impl Desegmenter {
 
 	/// Include authenticated responses buffered by StateSync in download progress.
 	pub fn get_pibd_progress(&self, buffered: usize) -> SyncStatus {
-		let segments = self.segments.read_recursive();
+		let segments = self.segments.read();
 		let mut required: usize = segments.iter().map(|plan| plan.required.len()).sum();
 		if segments.len() == 1 {
 			// Retain the existing estimate until the bitmap determines the layouts.
@@ -427,7 +427,7 @@ impl Desegmenter {
 	/// match the bitmap (particularly in the case of outputs being spent after a PIBD catch-up)
 	pub fn check_update_leaf_set_state(&self) -> Result<(), Error> {
 		self.ensure_robust()?;
-		let outputs_bitmap = self.outputs_bitmap.read_recursive();
+		let outputs_bitmap = self.outputs_bitmap.read();
 		let outputs_bitmap = outputs_bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
 
 		let mut header_pmmr = self.header_pmmr.write();
@@ -492,10 +492,7 @@ impl Desegmenter {
 					let (start_height, end_height) =
 						kernel_validation_thread_range(current.height, thr_idx, num_cores)?;
 					let start_block_hash = header_pmmr.get_header_hash_by_height(start_height)?;
-					let start_block = self
-						.txhashset
-						.read_recursive()
-						.get_block_header(&start_block_hash)?;
+					let start_block = self.txhashset.read().get_block_header(&start_block_hash)?;
 					let processed = processed.clone();
 					let actual_start_block_hash = start_block.hash(context_id)?;
 					if actual_start_block_hash != start_block_hash {
@@ -519,37 +516,33 @@ impl Desegmenter {
 					std::thread::Builder::new()
 						.name(thread_name)
 						.spawn(move || {
-							txhashset::rewindable_kernel_view(
-								&*txhashset.read_recursive(),
-								|view, batch| {
-									let mut start_block = start_block.clone();
-									let mut visited = HashSet::new();
-									while start_block.height > end_height {
-										view.rewind(&start_block)?;
-										view.validate_root()?;
-										start_block = crate::checked_previous_header(
-											context_id,
-											&start_block,
-											&mut visited,
-											"Desegmenter::validate_kernel_history_parallel",
-											|hash| batch.get_block_header(hash),
-										)?;
-										let completed = processed
-											.fetch_add(1, Ordering::Relaxed)
-											.saturating_add(1);
-										if status_throttle.should_update(completed == total) {
-											status.update(SyncStatus::ValidatingKernelsHistory {
-												headers: completed,
-												headers_total: total,
-											});
-										}
-										if stop_state.is_stopped() {
-											return Err(Error::Stopped);
-										}
+							txhashset::rewindable_kernel_view(&*txhashset.read(), |view, batch| {
+								let mut start_block = start_block.clone();
+								let mut visited = HashSet::new();
+								while start_block.height > end_height {
+									view.rewind(&start_block)?;
+									view.validate_root()?;
+									start_block = crate::checked_previous_header(
+										context_id,
+										&start_block,
+										&mut visited,
+										"Desegmenter::validate_kernel_history_parallel",
+										|hash| batch.get_block_header(hash),
+									)?;
+									let completed =
+										processed.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+									if status_throttle.should_update(completed == total) {
+										status.update(SyncStatus::ValidatingKernelsHistory {
+											headers: completed,
+											headers_total: total,
+										});
 									}
-									Ok(())
-								},
-							)
+									if stop_state.is_stopped() {
+										return Err(Error::Stopped);
+									}
+								}
+								Ok(())
+							})
 						})
 						.map_err(|e| {
 							Error::Other(format!(
@@ -603,7 +596,7 @@ impl Desegmenter {
 		self.ensure_robust()?;
 		// Quick root check first:
 		{
-			let txhashset = self.txhashset.read_recursive();
+			let txhashset = self.txhashset.read();
 			txhashset.roots()?.validate(&self.archive_header)?;
 		}
 
@@ -617,10 +610,10 @@ impl Desegmenter {
 				stop_state.clone(),
 				"validating_kernel_history",
 			)?;
-			let header_pmmr = self.header_pmmr.read_recursive();
+			let header_pmmr = self.header_pmmr.read();
 			self.ensure_archive_header_canonical(&header_pmmr)?;
 			self.ensure_robust()?;
-			let txhashset = self.txhashset.read_recursive();
+			let txhashset = self.txhashset.read();
 			let batch = self.store.batch_write()?;
 			validation::run(
 				self.store.get_context_id(),
@@ -783,7 +776,7 @@ impl Desegmenter {
 		limit: usize,
 	) -> Result<Vec<SegmentTypeIdentifier>, Error> {
 		self.ensure_robust()?;
-		let segments = self.segments.read_recursive();
+		let segments = self.segments.read();
 		let Some(plan) = segments.iter().find(|plan| &plan.kind == kind) else {
 			return Ok(Vec::new()); // The bitmap has not produced this layout yet.
 		};
@@ -801,14 +794,11 @@ impl Desegmenter {
 
 	/// Finalize the bitmap and derive the remaining segment layouts.
 	fn finalize_bitmap(&self, segments: &mut Vec<SegmentProgress>) -> Result<(), Error> {
-		if self.outputs_bitmap.read_recursive().is_some() {
+		if self.outputs_bitmap.read().is_some() {
 			return Ok(());
 		}
 
-		let bitmap = self
-			.outputs_bitmap_accumulator
-			.read_recursive()
-			.build_bitmap()?;
+		let bitmap = self.outputs_bitmap_accumulator.read().build_bitmap()?;
 
 		let rangeproof_leaf_size = RangeProof::elmt_size()
 			.map(usize::from)
@@ -924,7 +914,7 @@ impl Desegmenter {
 				)?)
 			}
 			StateSegment::Output(segment) => {
-				let bitmap = self.outputs_bitmap.read_recursive();
+				let bitmap = self.outputs_bitmap.read();
 				let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
 				StateSegment::Output(segment.validate(
 					context_id,
@@ -934,7 +924,7 @@ impl Desegmenter {
 				)?)
 			}
 			StateSegment::RangeProof(segment) => {
-				let bitmap = self.outputs_bitmap.read_recursive();
+				let bitmap = self.outputs_bitmap.read();
 				let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
 				StateSegment::RangeProof(segment.validate(
 					context_id,
@@ -1055,7 +1045,7 @@ impl Desegmenter {
 					}
 				}
 			} else {
-				let bitmap = self.outputs_bitmap.read_recursive();
+				let bitmap = self.outputs_bitmap.read();
 				let bitmap = bitmap.as_ref().ok_or(Error::BitmapNotReady)?;
 				let mut header_pmmr = self.header_pmmr.write();
 				let mut txhashset = self.txhashset.write();

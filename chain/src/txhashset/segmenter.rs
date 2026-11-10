@@ -25,7 +25,7 @@ use mwc_core::core::{BlockHeader, OutputIdentifier, Segment, SegmentIdentifier, 
 use mwc_core::ser::PMMRable;
 use mwc_crates::croaring::Bitmap;
 use mwc_crates::log::debug;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::pedersen::RangeProof;
 use std::convert::TryFrom;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -228,8 +228,8 @@ pub fn validate_header_hashes_segment_request(
 #[derive(Clone)]
 pub struct Segmenter {
 	// every 512th header (HEADERS_PER_BATCH) must be here, we don't need all header hashes
-	header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
-	txhashset: Arc<RwLock<TxHashSet>>,
+	header_pmmr: Arc<RecursiveRwLock<VecBackend<Hash>>>,
+	txhashset: Arc<RecursiveRwLock<TxHashSet>>,
 	bitmap_snapshot: Arc<BitmapAccumulator>,
 	bitmap: Bitmap,
 	header: BlockHeader,
@@ -241,8 +241,8 @@ pub struct Segmenter {
 impl Segmenter {
 	/// Create a new segmenter based on the provided txhashset.
 	pub fn new(
-		header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
-		txhashset: Arc<RwLock<TxHashSet>>,
+		header_pmmr: Arc<RecursiveRwLock<VecBackend<Hash>>>,
+		txhashset: Arc<RecursiveRwLock<TxHashSet>>,
 		bitmap_snapshot: BitmapAccumulator,
 		header: BlockHeader,
 	) -> Result<Segmenter, Error> {
@@ -260,8 +260,8 @@ impl Segmenter {
 	/// Create a segmenter tied to the chain-state generation that produced
 	/// its immutable bitmap and header-hash snapshots.
 	pub(crate) fn new_guarded(
-		header_pmmr: Arc<RwLock<VecBackend<Hash>>>,
-		txhashset: Arc<RwLock<TxHashSet>>,
+		header_pmmr: Arc<RecursiveRwLock<VecBackend<Hash>>>,
+		txhashset: Arc<RecursiveRwLock<TxHashSet>>,
 		bitmap_snapshot: BitmapAccumulator,
 		header: BlockHeader,
 		requires_init_recovery: Arc<AtomicBool>,
@@ -319,7 +319,7 @@ impl Segmenter {
 	/// Root hash for headers Hashes MMR
 	pub fn headers_root(&self) -> Result<Hash, Error> {
 		self.ensure_current()?;
-		let header_pmmr = self.header_pmmr.read_recursive();
+		let header_pmmr = self.header_pmmr.read();
 		let pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
 		let root = pmmr.root()?;
 		self.ensure_current()?;
@@ -364,7 +364,7 @@ impl Segmenter {
 	pub fn headers_segment(&self, id: SegmentIdentifier) -> Result<Segment<Hash>, Error> {
 		self.ensure_current()?;
 		let now = Instant::now();
-		let header_pmmr = self.header_pmmr.read_recursive();
+		let header_pmmr = self.header_pmmr.read();
 		let header_pmmr = ReadonlyPMMR::at(&*header_pmmr, header_pmmr.size());
 		let segment = Segment::<Hash>::from_pmmr(
 			id,
@@ -392,7 +392,7 @@ impl Segmenter {
 	) -> Result<Segment<OutputIdentifier>, Error> {
 		self.ensure_current()?;
 		let now = Instant::now();
-		let txhashset = self.txhashset.read_recursive();
+		let txhashset = self.txhashset.read();
 		// A writer may have failed while this request waited for txhashset.
 		self.ensure_current()?;
 		let output_pmmr = txhashset.output_pmmr_at(&self.header);
@@ -423,7 +423,7 @@ impl Segmenter {
 	pub fn kernel_segment(&self, id: SegmentIdentifier) -> Result<Segment<TxKernel>, Error> {
 		self.ensure_current()?;
 		let now = Instant::now();
-		let txhashset = self.txhashset.read_recursive();
+		let txhashset = self.txhashset.read();
 		// A writer may have failed while this request waited for txhashset.
 		self.ensure_current()?;
 		let kernel_pmmr = txhashset.kernel_pmmr_at(&self.header);
@@ -450,7 +450,7 @@ impl Segmenter {
 	pub fn rangeproof_segment(&self, id: SegmentIdentifier) -> Result<Segment<RangeProof>, Error> {
 		self.ensure_current()?;
 		let now = Instant::now();
-		let txhashset = self.txhashset.read_recursive();
+		let txhashset = self.txhashset.read();
 		// A writer may have failed while this request waited for txhashset.
 		self.ensure_current()?;
 		let pmmr = txhashset.rangeproof_pmmr_at(&self.header);

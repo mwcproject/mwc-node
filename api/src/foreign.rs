@@ -31,7 +31,7 @@ use mwc_core::core::hash::Hash;
 use mwc_core::core::hash::Hashed;
 use mwc_core::core::transaction::Transaction;
 use mwc_crates::log::warn;
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::secp::Secp256k1;
 use mwc_crates::sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use mwc_p2p::types::PeerInfoDisplayLegacy;
@@ -55,7 +55,7 @@ pub struct ProcessHostMetrics {
 }
 
 pub struct ProcessStatusCache {
-	system: System,
+	system: Option<System>,
 	sampled_at: Instant,
 	updated_at: Option<Instant>,
 	metrics: ProcessHostMetrics,
@@ -63,11 +63,7 @@ pub struct ProcessStatusCache {
 
 impl ProcessStatusCache {
 	pub fn new() -> Self {
-		let system = System::new_with_specifics(
-			RefreshKind::nothing()
-				.with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-				.with_memory(MemoryRefreshKind::everything()),
-		);
+		let system = Self::new_system();
 		ProcessStatusCache {
 			system,
 			sampled_at: Instant::now(),
@@ -94,27 +90,47 @@ impl ProcessStatusCache {
 		self.metrics
 	}
 
+	fn new_system() -> Option<System> {
+		System::new_with_specifics(
+			RefreshKind::nothing()
+				.with_cpu(CpuRefreshKind::nothing().with_usage())
+				.with_memory(MemoryRefreshKind::everything()),
+		)
+		.map_err(|e| warn!("Unable to initialize host metrics: {}", e))
+		.ok()
+	}
+
 	fn refresh(&mut self) {
-		self.system.refresh_memory();
+		if self.system.is_none() {
+			self.system = Self::new_system();
+			self.sampled_at = Instant::now();
+			self.updated_at = None;
+		}
+		let Some(system) = self.system.as_mut() else {
+			// Keep status requests available and retry after the normal cache age.
+			self.updated_at = Some(Instant::now());
+			return;
+		};
+		system.refresh_memory();
 		if self.updated_at.is_none() {
 			std::thread::sleep(
 				mwc_crates::sysinfo::MINIMUM_CPU_UPDATE_INTERVAL
 					.saturating_sub(self.sampled_at.elapsed()),
 			);
 		}
-		self.system.refresh_cpu_usage();
+		system.refresh_cpu_usage();
 		self.sampled_at = Instant::now();
 
-		let cpus = self.system.cpus();
-		let cpu_usage_sum = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>();
+		let cpus = system.cpus();
+		let cpu_usage_sum = cpus.iter().map(|cpu| cpu.usage()).sum::<f32>();
 		let host_cpu_usage = (cpu_usage_sum / max(1, cpus.len()) as f32) as f64;
-		let total_ram = self.system.total_memory();
-		let total_swap = self.system.total_swap();
+		let total_ram = system.total_memory();
+		let total_swap = system.total_swap();
 
 		self.metrics = ProcessHostMetrics {
 			host_cpu_usage,
-			host_ram_usage: self.system.used_memory() as f64 / max(1u64, total_ram) as f64,
-			host_swap_usage: self.system.used_swap() as f64 / max(1u64, total_swap) as f64,
+			host_ram_usage: system.used_memory() as f64 / max(1u64, total_ram) as f64,
+			host_swap_usage: system.used_swap() as f64 / max(1u64, total_swap) as f64,
 		};
 		self.updated_at = Some(Instant::now());
 	}
@@ -134,7 +150,7 @@ where
 {
 	pub peers: Weak<mwc_p2p::Peers>,
 	pub chain: Weak<Chain>,
-	pub tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
 	pub process_status_cache: Arc<Mutex<ProcessStatusCache>>,
 	start_time: Instant,
@@ -161,7 +177,7 @@ where
 	pub fn new(
 		peers: Weak<mwc_p2p::Peers>,
 		chain: Weak<Chain>,
-		tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+		tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 		sync_state: Weak<SyncState>,
 		start_time: Instant,
 		process_status_cache: Arc<Mutex<ProcessStatusCache>>,
@@ -496,7 +512,7 @@ where
 		let secp = Secp256k1::with_caps(mwc_crates::secp::ContextFlag::Commit)?;
 		// Hold the public pool view through the chain snapshot. Pool admission
 		// uses the same pool-then-chain lock order. Do not examine stempool.
-		let pool = pool_arc.read_recursive();
+		let pool = pool_arc.read();
 		let pool_state = request
 			.transactions
 			.iter()

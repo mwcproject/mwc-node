@@ -47,7 +47,7 @@ use mwc_core::ser;
 use mwc_core::ser::ProtocolVersion;
 use mwc_core::{genesis, global};
 use mwc_crates::log::{debug, error, info, trace, warn};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::pedersen::{Commitment, RangeProof};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_store::types::VariableSizeMetadataValidation;
@@ -158,14 +158,14 @@ pub struct Chain {
 	db_root: String,
 	store: Arc<store::ChainStore>, // Lock order (with childrer):   3
 	adapter: Arc<dyn ChainAdapter + Send + Sync>,
-	txhashset: Arc<RwLock<txhashset::TxHashSet>>, // Lock order (with childrer):   2
-	header_pmmr: Arc<RwLock<txhashset::PMMRHandle<BlockHeader>>>, // Lock order  (with childrer):  1
-	pibd_segmenter: Arc<RwLock<Option<Segmenter>>>,
+	txhashset: Arc<RecursiveRwLock<txhashset::TxHashSet>>, // Lock order (with childrer):   2
+	header_pmmr: Arc<RecursiveRwLock<txhashset::PMMRHandle<BlockHeader>>>, // Lock order  (with childrer):  1
+	pibd_segmenter: Arc<RecursiveRwLock<Option<Segmenter>>>,
 	// POW verification function
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
 	archive_mode: bool,
 	genesis: Block,
-	cache_header_difficulty: Arc<RwLock<DifficultyCache>>,
+	cache_header_difficulty: Arc<RecursiveRwLock<DifficultyCache>>,
 	pibd_params: Arc<PibdParams>,
 	stop_state: Option<Arc<StopState>>,
 	requires_init_recovery: Arc<AtomicBool>,
@@ -177,7 +177,8 @@ pub struct Chain {
 	#[cfg(test)]
 	fail_next_committed_recovery_with_bad_data: AtomicBool,
 	#[cfg(test)]
-	rewind_bad_block_after_body_sync_hook: RwLock<Option<Arc<RewindBadBlockAfterBodySyncHook>>>,
+	rewind_bad_block_after_body_sync_hook:
+		RecursiveRwLock<Option<Arc<RewindBadBlockAfterBodySyncHook>>>,
 }
 
 /// A coherent read-only view of the header PMMR, body PMMRs, and chain store.
@@ -472,7 +473,7 @@ impl Chain {
 	{
 		self.ensure_chain_robust()?;
 		loop {
-			let header_pmmr = self.header_pmmr.read_recursive();
+			let header_pmmr = self.header_pmmr.read();
 			if self.requires_init_recovery.load(Ordering::SeqCst) {
 				drop(header_pmmr);
 				self.ensure_chain_robust()?;
@@ -488,8 +489,8 @@ impl Chain {
 	{
 		self.ensure_chain_robust()?;
 		loop {
-			let header_pmmr = self.header_pmmr.read_recursive();
-			let txhashset = self.txhashset.read_recursive();
+			let header_pmmr = self.header_pmmr.read();
+			let txhashset = self.txhashset.read();
 			// A writer may have failed while this reader was waiting for locks.
 			// Do not read txhashset/header state that now requires recovery.
 			if self.requires_init_recovery.load(Ordering::SeqCst) {
@@ -614,10 +615,7 @@ impl Chain {
 
 	#[cfg(test)]
 	fn wait_after_rewind_bad_block_body_sync(&self) {
-		let hook = self
-			.rewind_bad_block_after_body_sync_hook
-			.read_recursive()
-			.clone();
+		let hook = self.rewind_bad_block_after_body_sync_hook.read().clone();
 		if let Some(hook) = hook {
 			hook.reached
 				.send(())
@@ -1005,13 +1003,13 @@ impl Chain {
 			db_root,
 			store,
 			adapter,
-			txhashset: Arc::new(RwLock::new(txhashset)),
-			header_pmmr: Arc::new(RwLock::new(header_pmmr)),
-			pibd_segmenter: Arc::new(RwLock::new(None)),
+			txhashset: Arc::new(RecursiveRwLock::new(txhashset)),
+			header_pmmr: Arc::new(RecursiveRwLock::new(header_pmmr)),
+			pibd_segmenter: Arc::new(RecursiveRwLock::new(None)),
 			pow_verifier,
 			archive_mode,
 			genesis: genesis,
-			cache_header_difficulty: Arc::new(RwLock::new(DifficultyCache::new())),
+			cache_header_difficulty: Arc::new(RecursiveRwLock::new(DifficultyCache::new())),
 			pibd_params,
 			stop_state,
 			requires_init_recovery: Arc::new(AtomicBool::new(false)),
@@ -1023,7 +1021,7 @@ impl Chain {
 			#[cfg(test)]
 			fail_next_committed_recovery_with_bad_data: AtomicBool::new(false),
 			#[cfg(test)]
-			rewind_bad_block_after_body_sync_hook: RwLock::new(None),
+			rewind_bad_block_after_body_sync_hook: RecursiveRwLock::new(None),
 		};
 
 		chain.apply_invalid_blocks(secp, invalid_blocks)?;
@@ -1204,14 +1202,14 @@ impl Chain {
 	/// Return our shared header MMR handle.
 	/// Note, caller is responsible for locking in correct order. See the comment at declaration
 	#[cfg(test)]
-	pub fn get_header_pmmr_for_test(&self) -> Arc<RwLock<PMMRHandle<BlockHeader>>> {
+	pub fn get_header_pmmr_for_test(&self) -> Arc<RecursiveRwLock<PMMRHandle<BlockHeader>>> {
 		self.header_pmmr.clone()
 	}
 
 	/// Return our shared txhashset instance.
 	/// Note, caller is responsible for locking in correct order. See the comment at declaration
 	#[cfg(test)]
-	pub fn get_txhashset_for_test(&self) -> Arc<RwLock<TxHashSet>> {
+	pub fn get_txhashset_for_test(&self) -> Arc<RecursiveRwLock<TxHashSet>> {
 		self.txhashset.clone()
 	}
 
@@ -2847,7 +2845,7 @@ impl Chain {
 
 			// Use the cached segmenter only if it was built after the most recent
 			// recovery and recovery has not been latched again.
-			if let Some(x) = self.pibd_segmenter.read_recursive().as_ref() {
+			if let Some(x) = self.pibd_segmenter.read().as_ref() {
 				if x.header() == &archive_header && x.is_current() {
 					return Ok(x.clone());
 				}
@@ -3057,7 +3055,7 @@ impl Chain {
 		debug!("init_segmenter: done, took {}ms", now.elapsed().as_millis());
 
 		Segmenter::new_guarded(
-			Arc::new(RwLock::new(segm_header_pmmr_backend)),
+			Arc::new(RecursiveRwLock::new(segm_header_pmmr_backend)),
 			self.txhashset.clone(),
 			bitmap_snapshot,
 			header.clone(),
@@ -3372,7 +3370,7 @@ impl Chain {
 		{
 			self.validate_kernel_history(&header, &txhashset)?;
 
-			let header_pmmr = self.header_pmmr.read_recursive();
+			let header_pmmr = self.header_pmmr.read();
 			let batch = self.store.batch_write()?;
 			txhashset.verify_kernel_pos_index(
 				&self.genesis.header,
@@ -3723,7 +3721,7 @@ impl Chain {
 
 		let cleanup_tail = {
 			// Take a write lock on the txhashet and start a new writeable db batch.
-			let header_pmmr = self.header_pmmr.read_recursive();
+			let header_pmmr = self.header_pmmr.read();
 			let mut txhashset = self.txhashset.write();
 			if stop_state.is_stopped() {
 				return Err(Error::Stopped);
@@ -4809,7 +4807,7 @@ impl Chain {
 	) -> Result<(), Error> {
 		self.ensure_chain_robust()?;
 		loop {
-			let txhashset = self.txhashset.read_recursive();
+			let txhashset = self.txhashset.read();
 			if self.requires_init_recovery.load(Ordering::SeqCst) {
 				drop(txhashset);
 				self.ensure_chain_robust()?;
@@ -7093,10 +7091,10 @@ mod tests {
 
 	#[derive(Default)]
 	struct RecordingAdapter {
-		accepted: RwLock<Vec<(Hash, BlockStatus)>>,
-		rejected: RwLock<Vec<(Hash, HashSet<String>)>>,
+		accepted: RecursiveRwLock<Vec<(Hash, BlockStatus)>>,
+		rejected: RecursiveRwLock<Vec<(Hash, HashSet<String>)>>,
 		// Full terminal reports, including local failures that must not blame peers.
-		reported: RwLock<Vec<(Block, HashSet<String>, bool)>>,
+		reported: RecursiveRwLock<Vec<(Block, HashSet<String>, bool)>>,
 	}
 
 	impl ChainAdapter for RecordingAdapter {
@@ -8551,7 +8549,7 @@ mod tests {
 			.unwrap_err()
 			.is_bad_data());
 		assert_eq!(chain.head().unwrap().height, 0);
-		assert!(adapter.accepted.read_recursive().is_empty());
+		assert!(adapter.accepted.read().is_empty());
 		for block in &blocks {
 			assert!(!chain.block_exists(&block.hash(0).unwrap()).unwrap());
 		}
@@ -8566,7 +8564,7 @@ mod tests {
 		assert_eq!(tip.height, 2);
 		assert!(chain.store.pending_chain_operation().unwrap().is_none());
 		assert!(!chain.requires_init_recovery.load(Ordering::SeqCst));
-		let accepted = adapter.accepted.read_recursive();
+		let accepted = adapter.accepted.read();
 		assert_eq!(accepted.len(), 2);
 		for (entry, block) in accepted.iter().zip(&blocks) {
 			assert_eq!(entry.0, block.hash(0).unwrap());
@@ -8613,7 +8611,7 @@ mod tests {
 		assert_eq!(tip.last_block_h, block_hash);
 		assert!(!chain.requires_init_recovery.load(Ordering::SeqCst));
 		assert!(chain.store.pending_chain_operation().unwrap().is_none());
-		let accepted = adapter.accepted.read_recursive();
+		let accepted = adapter.accepted.read();
 		assert_eq!(accepted.len(), 1);
 		assert_eq!(accepted[0].0, block_hash);
 		assert!(accepted[0].1.is_next());
@@ -8621,7 +8619,7 @@ mod tests {
 
 		let retry = chain.process_block(&mut secp, block, Options::SKIP_POW, HashSet::new());
 		assert!(matches!(retry, Err(ref e) if e.is_known_block()));
-		assert_eq!(adapter.accepted.read_recursive().len(), 1);
+		assert_eq!(adapter.accepted.read().len(), 1);
 
 		drop(chain);
 		drop(source);
@@ -8656,7 +8654,7 @@ mod tests {
 			)
 			.unwrap_err();
 		assert!(matches!(error, Error::InvalidHeaderContext { .. }));
-		let reported = adapter.reported.read_recursive();
+		let reported = adapter.reported.read();
 		assert_eq!(reported.len(), 1);
 		assert_eq!(
 			mwc_crates::serde_json::to_value(&reported[0].0).unwrap(),
@@ -8709,7 +8707,7 @@ mod tests {
 			);
 			assert!(matches!(result, Err(Error::Orphan(_))));
 		}
-		assert!(adapter.reported.read_recursive().is_empty());
+		assert!(adapter.reported.read().is_empty());
 		assert!(!chain.block_exists(&child_hash).unwrap());
 		chain
 			.process_block(
@@ -8722,7 +8720,7 @@ mod tests {
 		// The early child was discarded: accepting its parent does not replay it.
 		assert_eq!(chain.head().unwrap().height, 1);
 		assert!(!chain.block_exists(&child_hash).unwrap());
-		assert!(adapter.reported.read_recursive().is_empty());
+		assert!(adapter.reported.read().is_empty());
 		// A new delivery is checked against the now-available parent state.
 		// Only this delivery's supplier is responsible for the invalid body.
 		let sources = HashSet::from(["redelivery-peer".to_owned()]);
@@ -8730,7 +8728,7 @@ mod tests {
 			.process_block(&mut secp, child.clone(), Options::SKIP_POW, sources.clone())
 			.unwrap_err();
 		assert!(error.is_bad_data());
-		let reported = adapter.reported.read_recursive();
+		let reported = adapter.reported.read();
 		assert_eq!(reported.len(), 1);
 		assert_eq!(
 			mwc_crates::serde_json::to_value(&reported[0].0).unwrap(),
@@ -8738,7 +8736,7 @@ mod tests {
 		);
 		assert_eq!(reported[0].1, sources);
 		assert!(reported[0].2);
-		assert_eq!(adapter.accepted.read_recursive().len(), 1);
+		assert_eq!(adapter.accepted.read().len(), 1);
 		assert_eq!(chain.head().unwrap().height, 1);
 		assert!(!chain.block_exists(&child_hash).unwrap());
 	}
@@ -8811,20 +8809,20 @@ mod tests {
 		assert!(matches!(&error, Error::Orphan(_)));
 		assert!(!error.is_bad_data());
 		assert!(!chain.block_exists(&hash).unwrap());
-		assert!(adapter.rejected.read_recursive().is_empty());
+		assert!(adapter.rejected.read().is_empty());
 
 		chain
 			.process_block(&mut secp, blocks[2].clone(), Options::NONE, HashSet::new())
 			.unwrap();
 		assert_eq!(chain.head().unwrap().height, 3);
 		assert!(!chain.block_exists(&hash).unwrap());
-		assert!(adapter.reported.read_recursive().is_empty());
+		assert!(adapter.reported.read().is_empty());
 
 		chain
 			.process_block(&mut secp, good, Options::NONE, honest_sources)
 			.unwrap();
 		assert_eq!(chain.head().unwrap().height, 4);
-		let rejected = adapter.rejected.read_recursive();
+		let rejected = adapter.rejected.read();
 		assert!(rejected.is_empty());
 	}
 
@@ -8859,7 +8857,7 @@ mod tests {
 		assert!(matches!(err, Error::OldBlock));
 		assert!(err.is_bad_data());
 		assert!(err.is_known_block());
-		assert!(adapter.rejected.read_recursive().is_empty());
+		assert!(adapter.rejected.read().is_empty());
 
 		drop(chain);
 		clean_output_dir(&chain_dir);
@@ -8970,7 +8968,7 @@ mod tests {
 		assert!(err.is_bad_data());
 		assert!(!err.is_known_block());
 
-		let rejected = adapter.rejected.read_recursive();
+		let rejected = adapter.rejected.read();
 		assert_eq!(rejected.as_slice(), &[(block_hash, source_peers)]);
 		drop(rejected);
 
@@ -9023,9 +9021,9 @@ mod tests {
 		assert_eq!(chain.store.head().unwrap().last_block_h, block_hash);
 		assert!(chain.store.pending_chain_operation().unwrap().is_some());
 		assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
-		assert!(adapter.accepted.read_recursive().is_empty());
-		assert!(adapter.rejected.read_recursive().is_empty());
-		let reported = adapter.reported.read_recursive();
+		assert!(adapter.accepted.read().is_empty());
+		assert!(adapter.rejected.read().is_empty());
+		let reported = adapter.reported.read();
 		assert_eq!(reported.len(), 1);
 		assert_eq!(reported[0].0.hash(0).unwrap(), block_hash);
 		assert!(
@@ -9090,8 +9088,8 @@ mod tests {
 		assert_eq!(chain.store.head().unwrap().height, 0);
 		assert!(chain.store.pending_chain_operation().unwrap().is_some());
 		assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
-		assert!(adapter.accepted.read_recursive().is_empty());
-		assert!(adapter.rejected.read_recursive().is_empty());
+		assert!(adapter.accepted.read().is_empty());
+		assert!(adapter.rejected.read().is_empty());
 
 		chain.ensure_chain_robust().unwrap();
 		assert!(chain.store.pending_chain_operation().unwrap().is_none());
@@ -9179,8 +9177,8 @@ mod tests {
 		assert!(chain.store.pending_chain_operation().unwrap().is_some());
 		assert!(chain.requires_init_recovery.load(Ordering::SeqCst));
 		assert!(!chain.store.block_exists(&block_two_hash).unwrap());
-		assert_eq!(adapter.accepted.read_recursive().len(), 1);
-		assert!(adapter.rejected.read_recursive().is_empty());
+		assert_eq!(adapter.accepted.read().len(), 1);
+		assert!(adapter.rejected.read().is_empty());
 
 		chain.ensure_chain_robust().unwrap();
 		assert!(chain.store.pending_chain_operation().unwrap().is_none());
@@ -9227,7 +9225,7 @@ mod tests {
 			));
 			assert!(!chain.block_exists(&block.hash(0).unwrap()).unwrap());
 		}
-		assert!(adapter.reported.read_recursive().is_empty());
+		assert!(adapter.reported.read().is_empty());
 		for block in &blocks {
 			let tip = chain
 				.process_block(&mut secp, block.clone(), Options::NONE, peers.clone())
@@ -9237,8 +9235,8 @@ mod tests {
 			assert_eq!(chain.head().unwrap().height, block.header.height);
 		}
 		assert_eq!(chain.head().unwrap(), source.head().unwrap());
-		assert!(adapter.reported.read_recursive().is_empty());
-		let accepted = adapter.accepted.read_recursive();
+		assert!(adapter.reported.read().is_empty());
+		let accepted = adapter.accepted.read();
 		assert_eq!(accepted.len(), blocks.len());
 		for ((hash, status), block) in accepted.iter().zip(&blocks) {
 			assert_eq!(*hash, block.hash(0).unwrap());
@@ -9795,12 +9793,7 @@ mod tests {
 		let fresh_segmenter = chain.segmenter().unwrap();
 		assert!(fresh_segmenter.is_current());
 		assert!(fresh_segmenter.bitmap_root().is_ok());
-		assert!(chain
-			.pibd_segmenter
-			.read_recursive()
-			.as_ref()
-			.unwrap()
-			.is_current());
+		assert!(chain.pibd_segmenter.read().as_ref().unwrap().is_current());
 
 		drop(chain);
 		let _ = fs::remove_dir_all(&chain_dir);
@@ -10253,12 +10246,7 @@ mod tests {
 		);
 		assert!(!old_segmenter.is_current());
 		assert!(old_segmenter.bitmap_root().is_err());
-		assert!(!chain
-			.pibd_segmenter
-			.read_recursive()
-			.as_ref()
-			.unwrap()
-			.is_current());
+		assert!(!chain.pibd_segmenter.read().as_ref().unwrap().is_current());
 
 		let fresh_segmenter = chain.segmenter().unwrap();
 		assert!(fresh_segmenter.is_current());

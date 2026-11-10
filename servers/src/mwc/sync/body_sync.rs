@@ -943,7 +943,7 @@ mod tests {
 	use mwc_core::ser::ProtocolVersion;
 	use mwc_core::{consensus, core, pow};
 	use mwc_crates::chrono;
-	use mwc_crates::parking_lot::RwLock;
+	use mwc_crates::parking_lot::RecursiveRwLock;
 	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use mwc_crates::tempfile::TempDir;
 	use mwc_keychain::{ExtKeychain, Keychain};
@@ -1097,7 +1097,7 @@ mod tests {
 				version: ProtocolVersion::local(),
 				addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
 				direction: Direction::Outbound,
-				live_info: Arc::new(RwLock::new(PeerLiveInfo::new(difficulty))),
+				live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(difficulty))),
 				tx_base_fee: 0,
 			};
 			info.update(height, difficulty);

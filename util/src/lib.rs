@@ -61,6 +61,7 @@ pub enum Error {
 
 // Re-export so only has to be included once
 // Logging related
+pub mod cli;
 pub mod logger;
 pub use crate::logger::{init_logger, init_test_logger};
 
@@ -94,15 +95,16 @@ pub use crate::async_runtime::run_global_async_block;
 
 pub use crate::logger::is_console_output_enabled;
 
-pub use mwc_crates::parking_lot::{Mutex, RwLock};
+// Chain and wallet callers acquire nested read guards, including while writers wait.
+pub use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 
-/// Encapsulation of a RwLock<Option<T>> for one-time initialization.
+/// Encapsulation of a RecursiveRwLock<Option<T>> for one-time initialization.
 /// Misuse is reported as an error if borrowed before initialization or
 /// initialized more than once without override.
 #[derive(Clone)]
 pub struct OneTime<T> {
 	/// The inner value.
-	inner: Arc<RwLock<Option<T>>>,
+	inner: Arc<RecursiveRwLock<Option<T>>>,
 }
 
 impl<T> OneTime<T>
@@ -112,7 +114,7 @@ where
 	/// Builds a new uninitialized OneTime.
 	pub fn new() -> OneTime<T> {
 		OneTime {
-			inner: Arc::new(RwLock::new(None)),
+			inner: Arc::new(RecursiveRwLock::new(None)),
 		}
 	}
 
@@ -133,13 +135,13 @@ where
 
 	/// Borrows the OneTime, returning an error if it has not been initialized.
 	pub fn borrow(&self) -> Result<T, Error> {
-		let inner = self.inner.read_recursive();
+		let inner = self.inner.read();
 		inner.clone().ok_or(Error::OneTimeNotInitialized)
 	}
 
 	/// Has this OneTime been initialized?
 	pub fn is_init(&self) -> bool {
-		self.inner.read_recursive().is_some()
+		self.inner.read().is_some()
 	}
 }
 

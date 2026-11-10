@@ -31,7 +31,7 @@ use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::error;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::Secp256k1;
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::cell::RefCell;
@@ -208,7 +208,7 @@ impl ChainGlobalParams {
 lazy_static! {
 	/// Global chain status flags. It is expected that init call will set them first for every needed context
 	/// Note, both node and wallet will need to set it up. Any param can be set once
-	static ref GLOBAL_CHAIN_PARAMS: RwLock<HashMap<u32, ChainGlobalParams>> = RwLock::new(HashMap::new());
+	static ref GLOBAL_CHAIN_PARAMS: RecursiveRwLock<HashMap<u32, ChainGlobalParams>> = RecursiveRwLock::new(HashMap::new());
 }
 
 thread_local! {
@@ -234,7 +234,7 @@ pub fn set_local_chain_type(new_type: ChainTypes) {
 pub fn get_chain_type(context_id: u32) -> ChainTypes {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().chain_type {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
+			let params = GLOBAL_CHAIN_PARAMS.read();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.chain_type {
@@ -322,7 +322,7 @@ pub fn set_local_nrd_enabled(enabled: bool) {
 pub fn is_nrd_enabled(context_id: u32) -> bool {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().nrd_feature_enabled {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
+			let params = GLOBAL_CHAIN_PARAMS.read();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.nrd_feature_enabled {
@@ -414,7 +414,7 @@ pub fn set_local_accept_fee_base(new_base: u64) -> Result<(), Error> {
 pub fn get_accept_fee_base(context_id: u32) -> u64 {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().accept_fee_base {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
+			let params = GLOBAL_CHAIN_PARAMS.read();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.accept_fee_base {

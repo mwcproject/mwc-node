@@ -26,7 +26,7 @@ use mwc_crates::tokio::net::TcpListener;
 use mwc_crates::tokio_util::codec::{Framed, LinesCodec};
 
 use mwc_crates::indexmap::IndexSet;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::rand::{rng, RngExt};
 use mwc_crates::serde_json::Value;
 use std::convert::TryFrom;
@@ -516,7 +516,7 @@ struct Handler {
 	sync_state: Arc<SyncState>,
 	stop_state: Arc<StopState>,
 	chain: Arc<mwc_chain::Chain>,
-	current_state: Arc<RwLock<State>>,
+	current_state: Arc<RecursiveRwLock<State>>,
 	ip_pool: Arc<connections::StratumIpPool>,
 	worker_connections: Arc<AtomicU32>,
 	config: StratumServerConfig,
@@ -532,7 +532,7 @@ impl Handler {
 			sync_state: stratum.sync_state.clone(),
 			stop_state: stratum.stop_state.clone(),
 			chain: stratum.chain.clone(),
-			current_state: Arc::new(RwLock::new(State::new(
+			current_state: Arc::new(RecursiveRwLock::new(State::new(
 				stratum.config.minimum_share_difficulty,
 			))),
 			ip_pool: stratum.ip_pool.clone(),
@@ -696,7 +696,7 @@ impl Handler {
 
 		let height = self
 			.current_state
-			.read_recursive()
+			.read()
 			.current_block_versions
 			.last()
 			.ok_or_else(|| RpcError::internal_error("No blocks in task buffer"))?
@@ -749,7 +749,7 @@ impl Handler {
 	// Build and return a JobTemplate for mining the current block
 	fn build_block_template(&self) -> Result<JobTemplate, RpcError> {
 		let (bh, job_id, difficulty) = {
-			let state = self.current_state.read_recursive();
+			let state = self.current_state.read();
 
 			(
 				state
@@ -801,7 +801,7 @@ impl Handler {
 		let params: SubmitParams = parse_params(params)?;
 
 		let (b, header_height, minimum_share_difficulty, current_difficulty) = {
-			let state = self.current_state.read_recursive();
+			let state = self.current_state.read();
 
 			(
 				state.get_block_version(params.job_id),
@@ -1162,7 +1162,7 @@ impl Handler {
 						None
 					};
 					let current_block_fees = {
-						let state = self.current_state.read_recursive();
+						let state = self.current_state.read();
 						state.current_block_fees.clone()
 					};
 					// Build the new block (version)
@@ -2003,7 +2003,7 @@ mod tests {
 				sync_state: Arc::new(SyncState::new()),
 				stop_state: Arc::new(StopState::new()),
 				chain,
-				current_state: Arc::new(RwLock::new(state)),
+				current_state: Arc::new(RecursiveRwLock::new(state)),
 				ip_pool: Arc::new(connections::StratumIpPool::new(5, 5, -1)),
 				worker_connections: Arc::new(AtomicU32::new(0)),
 				config,
@@ -2102,7 +2102,7 @@ mod tests {
 		let mut block = fixture
 			.handler
 			.current_state
-			.read_recursive()
+			.read()
 			.get_block_version(0)
 			.unwrap();
 		let original_hash = block.hash(0).unwrap();
@@ -2122,7 +2122,7 @@ mod tests {
 		assert!(fixture
 			.handler
 			.current_state
-			.read_recursive()
+			.read()
 			.accepted_share_hashes
 			.is_empty());
 		assert_eq!(
@@ -2271,7 +2271,7 @@ mod tests {
 			fixture
 				.handler
 				.current_state
-				.read_recursive()
+				.read()
 				.accepted_share_hashes
 				.len(),
 			MAX_TRACKED_SHARES

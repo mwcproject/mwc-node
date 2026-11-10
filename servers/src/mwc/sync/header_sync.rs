@@ -21,7 +21,7 @@ use mwc_core::core::{
 };
 use mwc_core::pow::Difficulty;
 use mwc_crates::log::info;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_p2p::{Peer, PeerAddr, PeerInfo, Peers};
 use std::collections::{hash_map::Entry, HashMap, VecDeque};
 use std::sync::Arc;
@@ -93,21 +93,21 @@ impl HeadersRequest {
 /// Ordinary header downloads, with one independent request per supplier.
 pub struct HeaderSync {
 	chain: Arc<Chain>,
-	headers: RwLock<VecDeque<HeadersRequest>>,
+	headers: RecursiveRwLock<VecDeque<HeadersRequest>>,
 }
 
 impl HeaderSync {
 	pub fn new(chain: Arc<Chain>) -> Self {
 		HeaderSync {
 			chain,
-			headers: RwLock::new(VecDeque::new()),
+			headers: RecursiveRwLock::new(VecDeque::new()),
 		}
 	}
 
 	#[cfg(all(test, feature = "test-support"))]
 	pub(crate) fn download_for_test(&self, peer: &PeerAddr) -> Option<(u64, Difficulty)> {
 		self.headers
-			.read_recursive()
+			.read()
 			.iter()
 			.find(|req| req.addr == *peer)
 			.map(|req| (req.init_ts, req.expected_difficulty))
@@ -245,7 +245,7 @@ impl HeaderSync {
 		let now = Instant::now();
 		let timeout = Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64);
 		self.headers
-			.read_recursive()
+			.read()
 			.iter()
 			.filter(|request| {
 				request
@@ -538,7 +538,9 @@ mod tests {
 			version: ProtocolVersion::local(),
 			addr: PeerAddr::Ip(([127, 0, 0, 1], port).into()),
 			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(pow::Difficulty::min()))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				pow::Difficulty::min(),
+			))),
 			tx_base_fee: 0,
 		}
 	}
@@ -608,7 +610,7 @@ mod tests {
 			fn deadline(&self) -> Instant {
 				self.requests
 					.headers
-					.read_recursive()
+					.read()
 					.iter()
 					.filter_map(|req| req.sent)
 					.max()
@@ -642,13 +644,13 @@ mod tests {
 			let deadline = f.deadline();
 			f.requests.clear_peer_requests(&f.peer.info.addr);
 			assert!(!f.check(deadline));
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 			f.dispatch();
 			assert_eq!(f.receiver.try_iter().count(), 2);
 			// A connection that disappears without reconnecting also earns no fine.
 			f.peer.stop();
 			assert!(!f.check(f.deadline()));
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 		}
 
 		// Start one download, then add peers with more work or an inconsistent equal-work tip.
@@ -661,7 +663,7 @@ mod tests {
 			let difficulty = f.expected_difficulty();
 			f.peer.info.update(10, difficulty);
 			f.requests.request(&f.peers, &f.scores).unwrap();
-			let sent_at = f.requests.headers.read_recursive()[0].sent;
+			let sent_at = f.requests.headers.read()[0].sent;
 			let mut receivers = Vec::new();
 			for port in 3460..3472 {
 				let info = peer_info(port, Capabilities::UNKNOWN);
@@ -706,9 +708,9 @@ mod tests {
 			assert_eq!(f.receiver.try_iter().count(), 1);
 			assert!(receivers.iter().all(|rx| rx.try_iter().count() == 1));
 			assert!(ignored.iter().all(|rx| rx.try_iter().count() == 0));
-			assert_eq!(f.requests.headers.read_recursive().len(), 14);
-			assert_eq!(f.requests.headers.read_recursive()[0].sent, sent_at);
-			assert_eq!(f.requests.headers.read_recursive()[0].expected_height, 100);
+			assert_eq!(f.requests.headers.read().len(), 14);
+			assert_eq!(f.requests.headers.read()[0].sent, sent_at);
+			assert_eq!(f.requests.headers.read()[0].expected_height, 100);
 			// A new advertisement cannot move either part of an active task's target.
 			f.peer
 				.info
@@ -725,11 +727,8 @@ mod tests {
 			f.requests.headers.write()[0].sent = None;
 			f.dispatch();
 			assert_eq!(f.receiver.try_iter().count(), 1);
-			assert_eq!(
-				f.requests.headers.read_recursive()[0].expected_difficulty,
-				difficulty
-			);
-			assert_eq!(f.requests.headers.read_recursive()[0].expected_height, 100);
+			assert_eq!(f.requests.headers.read()[0].expected_difficulty, difficulty);
+			assert_eq!(f.requests.headers.read()[0].expected_height, 100);
 			assert!(receivers.iter().all(|rx| rx.try_iter().count() == 0));
 			assert!(ignored.iter().all(|rx| rx.try_iter().count() == 0));
 		}
@@ -795,7 +794,7 @@ mod tests {
 			// Repeated sync polls share the original task and its send time.
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			assert_eq!(f.receiver.try_iter().count(), 1);
-			assert_eq!(f.requests.headers.read_recursive().len(), 1);
+			assert_eq!(f.requests.headers.read().len(), 1);
 			let deadline = f.deadline();
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			f.dispatch();
@@ -805,7 +804,7 @@ mod tests {
 			assert!(!f.check(deadline - Duration::from_millis(1)));
 			assert!(f.check(deadline));
 
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			assert_eq!(f.receiver.try_iter().count(), 1);
 			f.dispatch();
@@ -843,7 +842,7 @@ mod tests {
 				assert_eq!(f.peer.is_connected(), attempt < 4);
 			}
 			f.dispatch();
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 		}
 
 		// Keep the peer connected and advertising more work while withholding all headers.
@@ -861,7 +860,7 @@ mod tests {
 				f.dispatch();
 				assert_eq!(f.receiver.try_iter().count(), 1);
 				{
-					let headers = f.requests.headers.read_recursive();
+					let headers = f.requests.headers.read();
 					assert_eq!(headers.len(), 1);
 					assert_eq!(headers[0].addr, *addr);
 					assert_eq!(
@@ -886,7 +885,7 @@ mod tests {
 				for _ in 0..20 {
 					assert!(!f.check(deadline + Duration::from_secs(60)));
 				}
-				assert!(f.requests.headers.read_recursive().is_empty());
+				assert!(f.requests.headers.read().is_empty());
 				f.scores.apply_peers_status(&f.peers);
 				assert!(!f.peers.is_banned(addr).unwrap());
 				assert_eq!(
@@ -897,7 +896,7 @@ mod tests {
 			}
 			assert_eq!(f.receiver.try_iter().count(), 0);
 			f.dispatch();
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 			assert_eq!(f.receiver.try_iter().count(), 0);
 		}
 
@@ -930,7 +929,7 @@ mod tests {
 				.receive_headers(peer, &[last], 0, &f.scores, &f.peers)
 				.unwrap_err();
 			assert!(!f.check(deadline + Duration::from_secs(60)));
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 			// Start a separate attempt for the broken-fragment case below.
 			f.requests.request(&f.peers, &f.scores).unwrap();
 			f.dispatch();
@@ -973,7 +972,7 @@ mod tests {
 			);
 			assert!(f.requests.active_target_height(&f.peers).is_none());
 			assert!(f.check(f.deadline()));
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 			f.dispatch();
 			assert!(!f
 				.requests
@@ -1040,7 +1039,7 @@ mod tests {
 				assert!(!checked.recv_timeout(Duration::from_secs(5)).unwrap());
 				check.join().unwrap();
 			});
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 		}
 
 		// Request the same locator from two peers, with the second deadline slightly later.
@@ -1092,7 +1091,7 @@ mod tests {
 				.unwrap());
 			assert!(f.check(deadline));
 			{
-				let requests = f.requests.headers.read_recursive();
+				let requests = f.requests.headers.read();
 				assert!(!requests.iter().any(|req| req.addr == f.peer.info.addr));
 				let second = requests
 					.iter()
@@ -1117,12 +1116,12 @@ mod tests {
 			assert!(f.requests.active_target_height(&f.peers).is_none());
 			assert!(error.to_string().contains("Failed to send headers request"));
 			assert!(error.to_string().contains(&f.peer.info.addr.to_string()));
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 
 			assert!(!f.check(Instant::now() + Duration::from_secs(300)));
 			assert!(!f.peer.is_connected());
 			assert!(f.requests.request(&f.peers, &f.scores).unwrap());
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 		}
 
 		// Connect two peers ahead of us and break the first peer's outgoing channel.
@@ -1158,7 +1157,7 @@ mod tests {
 			let error = f.requests.request(&f.peers, &f.scores).unwrap_err();
 			assert!(error.to_string().contains(&failed.to_string()));
 			assert_eq!(receiver.try_iter().count(), 1);
-			let requests = f.requests.headers.read_recursive();
+			let requests = f.requests.headers.read();
 			assert_eq!(requests.len(), 1);
 			assert_ne!(requests[0].addr, failed);
 		}
@@ -1176,7 +1175,7 @@ mod tests {
 				.receive_headers(&f.peer.info.addr, &headers, 0, &f.scores, &f.peers)
 				.unwrap_err();
 			assert!(matches!(error, mwc_chain::Error::InvalidBlocksSeries(_)));
-			assert!(f.requests.headers.read_recursive().is_empty());
+			assert!(f.requests.headers.read().is_empty());
 			assert!(!f.check(Instant::now() + Duration::from_secs(300)));
 		}
 	}

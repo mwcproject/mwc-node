@@ -160,10 +160,10 @@ fuzz_target!(|data: &[u8]| {
 				&mut fuzzer.secp,
 			) {
 				Ok(_) if i => {
-					let pool = fuzzer.pool.read_recursive();
+					let pool = fuzzer.pool.read();
 					assert!(pool.stempool.size() >= 1 || pool.total_size() >= 1)
 				}
-				Ok(_) => assert!(fuzzer.pool.read_recursive().total_size() >= 1),
+				Ok(_) => assert!(fuzzer.pool.read().total_size() >= 1),
 				Err(_) => continue,
 			}
 		}

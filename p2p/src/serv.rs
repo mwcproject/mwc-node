@@ -35,7 +35,7 @@ use mwc_core::core::{OutputIdentifier, Segment, SegmentIdentifier, TxKernel};
 use mwc_core::global;
 use mwc_core::pow::Difficulty;
 use mwc_crates::log::{debug, error, trace, warn};
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_crates::secp::{Secp256k1, SecretKey};
@@ -68,7 +68,7 @@ pub struct Server {
 	stop_state: Arc<StopState>,
 	genesis: Hash,
 	db_root: String,
-	handshake: Arc<RwLock<Option<Arc<Handshake>>>>,
+	handshake: Arc<RecursiveRwLock<Option<Arc<Handshake>>>>,
 	context_id: u32,
 }
 
@@ -135,7 +135,7 @@ impl Server {
 			stop_state,
 			genesis,
 			db_root: String::from(db_root),
-			handshake: Arc::new(RwLock::new(None)),
+			handshake: Arc::new(RecursiveRwLock::new(None)),
 			context_id,
 		})
 	}
@@ -143,7 +143,7 @@ impl Server {
 	/// Return true if server is ready to connect to the others peers.
 	/// Server is ready when handshake record is built.
 	pub fn is_ready(&self) -> bool {
-		self.handshake.read_recursive().is_some()
+		self.handshake.read().is_some()
 	}
 
 	pub fn listen(
@@ -442,11 +442,11 @@ impl Server {
 		}
 
 		let self_onion_address = if global::is_production_mode(self.context_id) {
-			let hs = self.handshake.read_recursive();
+			let hs = self.handshake.read();
 			let hs = hs
 				.as_ref()
 				.ok_or(Error::TorConnect("handshake is empty".into()))?;
-			let addrs = hs.addrs.read_recursive();
+			let addrs = hs.addrs.read();
 			if addrs.contains(addr) {
 				debug!("connect: ignore connecting to PeerWithSelf, addr: {}", addr);
 				return Err(Error::PeerWithSelf);
@@ -558,7 +558,7 @@ impl Server {
 		let total_diff = self.peers.get_head()?.total_difficulty();
 		let hs = self
 			.handshake
-			.read_recursive()
+			.read()
 			.as_ref()
 			.cloned()
 			.ok_or(Error::TorConnect("handshake is empty".into()))?;
@@ -705,7 +705,7 @@ impl Server {
 
 		let hs = self
 			.handshake
-			.read_recursive()
+			.read()
 			.as_ref()
 			.cloned()
 			.ok_or(Error::TorConnect("handshake is empty".into()))?;
@@ -807,7 +807,7 @@ impl Server {
 	pub fn get_self_onion_address(&self) -> Result<Option<String>, Error> {
 		let addr = self
 			.handshake
-			.read_recursive()
+			.read()
 			.as_ref()
 			.ok_or(Error::TorConnect("handshake is not defined".into()))?
 			.onion_address

@@ -47,7 +47,7 @@ use mwc_crates::crossbeam;
 use mwc_crates::crossbeam::thread::ScopedJoinHandle;
 use mwc_crates::log::{debug, error, info, trace, warn};
 use mwc_crates::num_cpus;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::pedersen::{Commitment, RangeProof};
 use mwc_crates::secp::Secp256k1;
 use mwc_store::pmmr::PMMRBackend;
@@ -3084,7 +3084,7 @@ struct RewindBlockPlan {
 pub struct Extension<'a> {
 	head: Tip,
 	// Derived only from this extension; never survives rollback or commit.
-	bitmap_cache: RwLock<Option<UnspentBitmap>>,
+	bitmap_cache: RecursiveRwLock<Option<UnspentBitmap>>,
 
 	output_pmmr: PMMR<'a, OutputIdentifier, PMMRBackend<OutputIdentifier>>,
 	rproof_pmmr: PMMR<'a, RangeProof, PMMRBackend<RangeProof>>,
@@ -3098,7 +3098,7 @@ impl<'a> Extension<'a> {
 	fn new(context_id: u32, trees: &'a mut TxHashSet, head: Tip) -> Extension<'a> {
 		Extension {
 			head,
-			bitmap_cache: RwLock::new(None),
+			bitmap_cache: RecursiveRwLock::new(None),
 			output_pmmr: PMMR::at(&mut trees.output_pmmr_h.backend, trees.output_pmmr_h.size),
 			rproof_pmmr: PMMR::at(&mut trees.rproof_pmmr_h.backend, trees.rproof_pmmr_h.size),
 			kernel_pmmr: PMMR::at(&mut trees.kernel_pmmr_h.backend, trees.kernel_pmmr_h.size),

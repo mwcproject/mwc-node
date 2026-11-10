@@ -16,7 +16,7 @@
 //! Adapters connecting new block, new transaction, and accepted transaction
 //! events to consumers of those events.
 
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -61,22 +61,22 @@ const CHAIN_LIVENESS_DEFER_GRACE_INTERVALS: u64 = 3;
 // NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
 // This cache will drop sequence of the events during the second
 struct EventCache {
-	event: RwLock<Hash>,
-	time: RwLock<Option<Instant>>,
+	event: RecursiveRwLock<Hash>,
+	time: RecursiveRwLock<Option<Instant>>,
 }
 
 impl EventCache {
 	fn new() -> Self {
 		EventCache {
-			event: RwLock::new(Hash::default()),
-			time: RwLock::new(None),
+			event: RecursiveRwLock::new(Hash::default()),
+			time: RecursiveRwLock::new(None),
 		}
 	}
 
 	// Check if it is contain the hash value
 	pub fn contains(&self, hash: &Hash, update: bool) -> bool {
 		let now = Instant::now();
-		let cached_at = *self.time.read_recursive();
+		let cached_at = *self.time.read();
 		// This is an elapsed-time freshness check, so use monotonic time. Wall-clock
 		// UTC can move backward after NTP or manual clock updates and would keep a
 		// cached hash suppressed longer than the intended one-second window.
@@ -95,7 +95,7 @@ impl EventCache {
 			return false;
 		}
 
-		if *self.event.read_recursive() == *hash {
+		if *self.event.read() == *hash {
 			true
 		} else {
 			if update {
@@ -230,13 +230,13 @@ struct LegacyV2BlockConversionThrottle {
 	// rather than attempting to enforce an aggregate anti-Sybil limit here.
 	// Stale entries are pruned so disconnected legacy peers do not grow this map
 	// indefinitely.
-	peers: RwLock<HashMap<PeerAddr, LegacyV2BlockConversionBucket>>,
+	peers: RecursiveRwLock<HashMap<PeerAddr, LegacyV2BlockConversionBucket>>,
 }
 
 impl LegacyV2BlockConversionThrottle {
 	fn new() -> Self {
 		LegacyV2BlockConversionThrottle {
-			peers: RwLock::new(HashMap::new()),
+			peers: RecursiveRwLock::new(HashMap::new()),
 		}
 	}
 
@@ -263,7 +263,7 @@ impl LegacyV2BlockConversionThrottle {
 }
 
 fn reserve_compact_block_reconstruction(
-	cache: &RwLock<HashMap<Hash, Instant>>,
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
 	block_hash: &Hash,
 ) -> bool {
 	reserve_compact_block_reconstruction_at(cache, block_hash, Instant::now())
@@ -276,7 +276,7 @@ fn reserve_compact_block_reconstruction(
 /// elapsed. Use monotonic time so wall-clock adjustments do not extend or
 /// shorten the retry and stale-entry windows.
 fn reserve_compact_block_reconstruction_at(
-	cache: &RwLock<HashMap<Hash, Instant>>,
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
 	block_hash: &Hash,
 	now: Instant,
 ) -> bool {
@@ -298,7 +298,10 @@ fn reserve_compact_block_reconstruction_at(
 	true
 }
 
-fn finish_compact_block_reconstruction(cache: &RwLock<HashMap<Hash, Instant>>, block_hash: &Hash) {
+fn finish_compact_block_reconstruction(
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
+	block_hash: &Hash,
+) {
 	finish_compact_block_reconstruction_at(cache, block_hash, Instant::now());
 }
 
@@ -308,7 +311,7 @@ fn finish_compact_block_reconstruction(cache: &RwLock<HashMap<Hash, Instant>>, b
 /// the cache's purpose is to suppress repeated compact-block processing, not
 /// only repeated full-block requests.
 fn finish_compact_block_reconstruction_at(
-	cache: &RwLock<HashMap<Hash, Instant>>,
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
 	block_hash: &Hash,
 	now: Instant,
 ) {
@@ -346,7 +349,7 @@ where
 	sync_state: Arc<SyncState>,
 	sync_manager: Arc<SyncManager>,
 	chain: Weak<mwc_chain::Chain>,
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	context_id: u32,
@@ -365,8 +368,8 @@ where
 	///
 	/// Entries are also pruned by age and capped by count so hostile peers cannot
 	/// grow this in-memory cache without bound.
-	compact_block_reconstruction_cache: RwLock<HashMap<Hash, Instant>>,
-	chain_liveness_deferred_until: RwLock<Option<Instant>>,
+	compact_block_reconstruction_cache: RecursiveRwLock<HashMap<Hash, Instant>>,
+	chain_liveness_deferred_until: RecursiveRwLock<Option<Instant>>,
 }
 
 impl<B, P> mwc_p2p::ChainAdapter for NetToChainAdapter<B, P>
@@ -401,7 +404,7 @@ where
 		kernel_hash: Hash,
 	) -> Result<Option<core::Transaction>, mwc_chain::Error> {
 		self.tx_pool
-			.read_recursive()
+			.read()
 			.retrieve_tx_by_kernel_hash(kernel_hash)
 			.map_err(|e| {
 				mwc_chain::Error::Other(format!(
@@ -421,10 +424,7 @@ where
 			return Ok(true);
 		}
 
-		let has_tx = self
-			.tx_pool
-			.read_recursive()
-			.contains_tx_by_kernel_hash(kernel_hash);
+		let has_tx = self.tx_pool.read().contains_tx_by_kernel_hash(kernel_hash);
 
 		if !has_tx {
 			// Transaction kernel announcements are gossip hints. Requesting the
@@ -647,7 +647,7 @@ where
 			let result = (|| {
 				let (txs, missing_short_ids) = self
 					.tx_pool
-					.read_recursive()
+					.read()
 					.retrieve_transactions(cb_hash, cb.nonce, cb.kern_ids())
 					.map_err(|e| {
 						mwc_chain::Error::Other(format!(
@@ -1083,7 +1083,7 @@ where
 		sync_state: Arc<SyncState>,
 		chain: Arc<mwc_chain::Chain>,
 		sync_manager: Arc<SyncManager>,
-		tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+		tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	) -> Result<Self, mwc_chain::Error> {
 		Ok(NetToChainAdapter {
@@ -1096,8 +1096,8 @@ where
 			context_id,
 			processed_transactions: EventCache::new(),
 			legacy_v2_block_conversion_throttle: LegacyV2BlockConversionThrottle::new(),
-			compact_block_reconstruction_cache: RwLock::new(HashMap::new()),
-			chain_liveness_deferred_until: RwLock::new(None),
+			compact_block_reconstruction_cache: RecursiveRwLock::new(HashMap::new()),
+			chain_liveness_deferred_until: RecursiveRwLock::new(None),
 		})
 	}
 
@@ -1226,7 +1226,7 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	sync_state: Arc<SyncState>,
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
 	sync_manager: OneTime<Weak<SyncManager>>,
@@ -1246,7 +1246,7 @@ where
 		header_head: mwc_chain::Tip,
 	) {
 		// Trigger all registered "on_block_accepted" hooks (logging and webhooks).
-		let context_id = self.tx_pool.read_recursive().get_context_id();
+		let context_id = self.tx_pool.read().get_context_id();
 		for hook in &self.hooks {
 			hook.on_block_accepted(context_id, b, status);
 		}
@@ -1368,7 +1368,7 @@ where
 {
 	/// Construct a ChainToPoolAndNetAdapter instance.
 	pub fn new(
-		tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+		tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 		sync_state: Arc<SyncState>,
 		hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 	) -> Self {
@@ -1413,7 +1413,7 @@ where
 /// transactions that have been accepted.
 pub struct PoolToNetAdapter {
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
-	dandelion_epoch: Arc<RwLock<DandelionEpoch>>,
+	dandelion_epoch: Arc<RecursiveRwLock<DandelionEpoch>>,
 }
 
 /// Adapter between the Dandelion monitor and the current Dandelion "epoch".
@@ -1434,11 +1434,11 @@ pub trait DandelionAdapter: Send + Sync {
 
 impl DandelionAdapter for PoolToNetAdapter {
 	fn is_stem(&self) -> bool {
-		self.dandelion_epoch.read_recursive().is_stem()
+		self.dandelion_epoch.read().is_stem()
 	}
 
 	fn is_expired(&self) -> bool {
-		self.dandelion_epoch.read_recursive().is_expired()
+		self.dandelion_epoch.read().is_expired()
 	}
 
 	fn next_epoch(&self) {
@@ -1517,7 +1517,9 @@ impl PoolToNetAdapter {
 	pub fn new(context_id: u32, config: mwc_pool::DandelionConfig) -> PoolToNetAdapter {
 		PoolToNetAdapter {
 			peers: OneTime::new(),
-			dandelion_epoch: Arc::new(RwLock::new(DandelionEpoch::new(context_id, config))),
+			dandelion_epoch: Arc::new(RecursiveRwLock::new(DandelionEpoch::new(
+				context_id, config,
+			))),
 		}
 	}
 
@@ -1899,12 +1901,12 @@ mod test {
 		let now = Instant::now();
 
 		assert_eq!(throttle.delay_for_at(&stale_peer, now), None);
-		assert!(throttle.peers.read_recursive().contains_key(&stale_peer));
+		assert!(throttle.peers.read().contains_key(&stale_peer));
 
 		let later = now + Duration::from_secs(LEGACY_V2_BLOCK_CONVERSION_STALE_SECS + 1);
 		assert_eq!(throttle.delay_for_at(&active_peer, later), None);
 
-		let peers = throttle.peers.read_recursive();
+		let peers = throttle.peers.read();
 		assert!(!peers.contains_key(&stale_peer));
 		assert!(peers.contains_key(&active_peer));
 	}
@@ -1968,7 +1970,7 @@ mod test {
 		));
 		let pool_chain = Arc::new(PoolToChainAdapter::new());
 		pool_chain.set_chain(chain.clone()).unwrap();
-		let pool = Arc::new(RwLock::new(mwc_pool::TransactionPool::new(
+		let pool = Arc::new(RecursiveRwLock::new(mwc_pool::TransactionPool::new(
 			CONTEXT,
 			PoolConfig::default(),
 			pool_chain,
@@ -1989,7 +1991,7 @@ mod test {
 			version: ProtocolVersion::local(),
 			addr: test_peer_addr(3414),
 			direction: Direction::Inbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
 			tx_base_fee: 0,
 		};
 
@@ -2056,7 +2058,7 @@ mod test {
 					.unwrap());
 				assert!(adapter
 					.compact_block_reconstruction_cache
-					.read_recursive()
+					.read()
 					.contains_key(&hash));
 				adapter.compact_block_reconstruction_cache.write().clear();
 			}
@@ -2084,10 +2086,7 @@ mod test {
 					.unwrap());
 			}
 		}
-		assert!(adapter
-			.compact_block_reconstruction_cache
-			.read_recursive()
-			.is_empty());
+		assert!(adapter.compact_block_reconstruction_cache.read().is_empty());
 
 		// Exactly at the horizon, continue normal validation. Mutating a pruned
 		// header's height makes it invalid; silently skipping it would hide an
@@ -2101,7 +2100,7 @@ mod test {
 
 	#[test]
 	fn compact_block_reconstruction_cache_suppresses_attempts_for_retry_window() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let hash =
 			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
 				.unwrap();
@@ -2127,7 +2126,7 @@ mod test {
 
 	#[test]
 	fn compact_block_reconstruction_cache_retries_after_window() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let hash =
 			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
 				.unwrap();
@@ -2159,7 +2158,7 @@ mod test {
 
 	#[test]
 	fn compact_block_reconstruction_cache_prunes_stale_blocks() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let stale_hash =
 			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
 				.unwrap();
@@ -2173,7 +2172,7 @@ mod test {
 			true
 		);
 		finish_compact_block_reconstruction_at(&cache, &stale_hash, now);
-		assert!(cache.read_recursive().contains_key(&stale_hash));
+		assert!(cache.read().contains_key(&stale_hash));
 
 		let later = now + Duration::from_secs(COMPACT_BLOCK_RECONSTRUCTION_STALE_SECS + 1);
 		assert_eq!(
@@ -2181,14 +2180,14 @@ mod test {
 			true
 		);
 
-		let blocks = cache.read_recursive();
+		let blocks = cache.read();
 		assert!(!blocks.contains_key(&stale_hash));
 		assert!(blocks.contains_key(&active_hash));
 	}
 
 	#[test]
 	fn compact_block_reconstruction_cache_evicts_oldest_entry_at_capacity() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let now = Instant::now();
 		let oldest_hash = test_hash(0);
 
@@ -2213,7 +2212,7 @@ mod test {
 			true
 		);
 
-		let blocks = cache.read_recursive();
+		let blocks = cache.read();
 		assert_eq!(blocks.len(), COMPACT_BLOCK_RECONSTRUCTION_MAX_ENTRIES);
 		assert!(!blocks.contains_key(&oldest_hash));
 		assert!(blocks.contains_key(&new_hash));

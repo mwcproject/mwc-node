@@ -2349,8 +2349,8 @@ mod tests {
 	#[test]
 	fn mining_validates_a_fitting_snapshot_once_without_holding_the_pool_lock() {
 		let (pool, chain, txs, _, mut secp) = populated_test_pool();
-		let pool = mwc_util::RwLock::new(pool);
-		let snapshot = { pool.read_recursive().mining_snapshot(250) };
+		let pool = mwc_util::RecursiveRwLock::new(pool);
+		let snapshot = { pool.read().mining_snapshot(250) };
 		let writer = pool
 			.try_write()
 			.expect("mining snapshot must release the pool");

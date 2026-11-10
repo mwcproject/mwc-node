@@ -134,7 +134,7 @@ struct ArtiOnlineSince {
 
 lazy_static! {
 	// It is a tor server only running instance, in case of libraries can be shared by multiple nodes and wallets
-	static ref TOR_ARTI_INSTANCE: mwc_crates::parking_lot::RwLock<Option<ArtiCore>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_ARTI_INSTANCE: mwc_crates::parking_lot::RecursiveRwLock<Option<ArtiCore>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Tor instance ID. We can't store it with ArtiCore because of the access
 	static ref TOR_ARTI_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	// Tor service full restart request. Value 0 - not requsted. Otherwise next ArtiCore instance_id
@@ -142,20 +142,20 @@ lazy_static! {
 	// Start of the currently published Arti generation. Pairing the timestamp
 	// with its generation prevents a reader from applying an old timestamp to a
 	// newly published client while a restart is in progress.
-	static ref TOR_ONLINE_SINCE: mwc_crates::parking_lot::RwLock<Option<ArtiOnlineSince>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_ONLINE_SINCE: mwc_crates::parking_lot::RecursiveRwLock<Option<ArtiOnlineSince>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Monitoring thread. Only one instance is allowed
-	static ref TOR_MONITORING_THREAD : mwc_crates::parking_lot::RwLock<Option<std::thread::JoinHandle<()>>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_MONITORING_THREAD : mwc_crates::parking_lot::RecursiveRwLock<Option<std::thread::JoinHandle<()>>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Stores monitor thread panics observed outside stop_arti() so synchronous cleanup can report them.
-	static ref TOR_MONITORING_THREAD_ERROR: mwc_crates::parking_lot::RwLock<Option<String>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_MONITORING_THREAD_ERROR: mwc_crates::parking_lot::RecursiveRwLock<Option<String>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Serialize start/stop so callers never observe a partially published Arti startup or shutdown.
 	static ref TOR_ARTI_START_STOP_LOCK: mwc_crates::parking_lot::Mutex<()> = mwc_crates::parking_lot::Mutex::new(());
 	// Reistered active objects. We don't want to restart TOR until any onject does exist
-	static ref TOR_ACTIVE_OBJECTS:  mwc_crates::parking_lot::RwLock<HashSet<String>> = mwc_crates::parking_lot::RwLock::new(HashSet::new());
+	static ref TOR_ACTIVE_OBJECTS:  mwc_crates::parking_lot::RecursiveRwLock<HashSet<String>> = mwc_crates::parking_lot::RecursiveRwLock::new(HashSet::new());
 	// Since arti os global, using the global flag for Atri beetstrap interruption.
 	// Needed for clear exit while tor is still starting
 	static ref SHUTDOWN_ARTI: CancellationToken = CancellationToken::new();
 	/// It is ARTI session long token. For example when we want stop the wallet/node, but not the whole app.
-	static ref CANCELLING_ARTI: mwc_crates::parking_lot::RwLock<HashMap<u32,CancellationToken>> = mwc_crates::parking_lot::RwLock::new(HashMap::new());
+	static ref CANCELLING_ARTI: mwc_crates::parking_lot::RecursiveRwLock<HashMap<u32,CancellationToken>> = mwc_crates::parking_lot::RecursiveRwLock::new(HashMap::new());
 }
 
 pub fn init_arti_cancelling(context_id: u32) {
@@ -229,7 +229,7 @@ pub fn is_arti_cancelled(context_id: u32) -> bool {
 	// token registered. Treating a missing registration as cancelled is the more
 	// conservative behavior we want for context-scoped operations.
 	CANCELLING_ARTI
-		.read_recursive()
+		.read()
 		.get(&context_id)
 		.map(CancellationToken::is_cancelled)
 		.unwrap_or(true)
@@ -242,7 +242,7 @@ pub fn is_arti_cancelled(context_id: u32) -> bool {
 /// cancel the shared token stored in CANCELLING_ARTI.
 pub fn get_arti_cancell_token(context_id: u32) -> Option<CancellationToken> {
 	CANCELLING_ARTI
-		.read_recursive()
+		.read()
 		.get(&context_id)
 		.filter(|token| !token.is_cancelled())
 		.map(|token| token.child_token())
@@ -341,7 +341,7 @@ pub fn get_arti_online_duration() -> Option<Duration> {
 		return None;
 	}
 
-	let online_since = (*TOR_ONLINE_SINCE.read_recursive())?;
+	let online_since = (*TOR_ONLINE_SINCE.read())?;
 	let tor_version = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst);
 	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::SeqCst);
 	if online_since.generation != tor_version || restart_requested != tor_version {
@@ -356,7 +356,7 @@ pub fn is_arti_healthy() -> bool {
 		return false;
 	}
 
-	let guard = match TOR_ARTI_INSTANCE.try_read_recursive() {
+	let guard = match TOR_ARTI_INSTANCE.try_read() {
 		Some(guard) => guard,
 		None => return false,
 	};
@@ -488,7 +488,7 @@ pub fn start_arti(
 			let mut last_running_time = Instant::now();
 			let mut expiration_time = expiration_time;
 			loop {
-				if TOR_MONITORING_THREAD.read_recursive().is_none() || is_shutdown_arti() {
+				if TOR_MONITORING_THREAD.read().is_none() || is_shutdown_arti() {
 					break;
 				}
 
@@ -532,7 +532,7 @@ pub fn start_arti(
 					continue;
 				}
 				for _ in 0..30 {
-					if TOR_MONITORING_THREAD.read_recursive().is_none() || is_shutdown_arti() {
+					if TOR_MONITORING_THREAD.read().is_none() || is_shutdown_arti() {
 						break;
 					}
 					thread::sleep(Duration::from_secs(1));
@@ -613,12 +613,12 @@ fn stop_start_arti(start_new_client: bool) -> i64 {
 	let context_ids = release_arti_cancelling_all();
 
 	let mut wait_counter = 0;
-	while TOR_ACTIVE_OBJECTS.read_recursive().len() > 0 {
+	while TOR_ACTIVE_OBJECTS.read().len() > 0 {
 		thread::sleep(Duration::from_secs(1));
 		wait_counter += 1;
 		if wait_counter % 20 == 0 {
 			let objects = TOR_ACTIVE_OBJECTS
-				.read_recursive()
+				.read()
 				.iter()
 				.cloned()
 				.collect::<Vec<_>>()
@@ -657,7 +657,7 @@ pub fn stop_arti() -> Result<(), Error> {
 		}
 	}
 
-	if TOR_ARTI_INSTANCE.read_recursive().is_some() {
+	if TOR_ARTI_INSTANCE.read().is_some() {
 		stop_start_arti(false);
 		TOR_RESTART_REQUEST.store(
 			TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst),
@@ -666,9 +666,9 @@ pub fn stop_arti() -> Result<(), Error> {
 	}
 
 	// Checking if nothing left alive
-	debug_assert!(TOR_ARTI_INSTANCE.read_recursive().is_none());
-	debug_assert!(TOR_MONITORING_THREAD.read_recursive().is_none());
-	debug_assert!(TOR_ACTIVE_OBJECTS.read_recursive().len() == 0);
+	debug_assert!(TOR_ARTI_INSTANCE.read().is_none());
+	debug_assert!(TOR_MONITORING_THREAD.read().is_none());
+	debug_assert!(TOR_ACTIVE_OBJECTS.read().len() == 0);
 
 	if let Some(e) = first_error {
 		Err(e)
@@ -684,7 +684,7 @@ where
 	if is_arti_restarting() {
 		return Err(Error::TorRestarting);
 	}
-	let guard = TOR_ARTI_INSTANCE.read_recursive();
+	let guard = TOR_ARTI_INSTANCE.read();
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	f(&arti.tor_client)
 }
@@ -699,7 +699,7 @@ where
 		return Err(Error::TorRestarting);
 	}
 
-	let guard = TOR_ARTI_INSTANCE.read_recursive();
+	let guard = TOR_ARTI_INSTANCE.read();
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	let atri_rt = &arti.tor_runtime;
 
@@ -1698,7 +1698,7 @@ fn active_object_tracking_rejects_restart_duplicate_and_missing_entries() {
 		register_arti_active_object(name.clone()),
 		Err(Error::TorRestarting)
 	));
-	assert!(!TOR_ACTIVE_OBJECTS.read_recursive().contains(&name));
+	assert!(!TOR_ACTIVE_OBJECTS.read().contains(&name));
 
 	TOR_RESTART_REQUEST.store(current_id, Ordering::SeqCst);
 	register_arti_active_object(name.clone()).unwrap();

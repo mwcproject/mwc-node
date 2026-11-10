@@ -17,9 +17,9 @@
 //! Note these are for experimentation via compilation, not meant to be exposed as
 //! configuration parameters anywhere
 
-use mwc_crates::log::debug;
+use mwc_crates::log::{debug, warn};
 use mwc_crates::num_cpus;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use std::cmp;
 use std::sync::Arc;
@@ -56,7 +56,16 @@ impl SysMemoryInfo {
 		let sys = System::new_with_specifics(
 			RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
 		);
-		let available_memory_mb = sys.available_memory() / 1024 / 1024;
+		let available_memory_mb = match sys {
+			Ok(sys) => sys.available_memory() / 1024 / 1024,
+			Err(e) => {
+				warn!(
+					"Unable to query system memory, using minimum PIBD buffers: {}",
+					e
+				);
+				0
+			}
+		};
 		debug!("System Available Memory: {} mb", available_memory_mb);
 		SysMemoryInfo {
 			available_memory_mb,
@@ -73,8 +82,8 @@ struct NetworkSpeed {
 /// Pibd Sync related params. Note, most of settings are dynamic calculated to match available resources.
 pub struct PibdParams {
 	cpu_num: usize,
-	sys_memory_info: Arc<RwLock<SysMemoryInfo>>,
-	network_speed: RwLock<NetworkSpeed>,
+	sys_memory_info: Arc<RecursiveRwLock<SysMemoryInfo>>,
+	network_speed: RecursiveRwLock<NetworkSpeed>,
 }
 
 impl PibdParams {
@@ -84,8 +93,8 @@ impl PibdParams {
 		let mem_info = SysMemoryInfo::update();
 		let res = PibdParams {
 			cpu_num: num_cores,
-			sys_memory_info: Arc::new(RwLock::new(mem_info)),
-			network_speed: RwLock::new(NetworkSpeed {
+			sys_memory_info: Arc::new(RecursiveRwLock::new(mem_info)),
+			network_speed: RecursiveRwLock::new(NetworkSpeed {
 				last_network_speed_update: Instant::now(),
 				network_speed_multiplier: 1.0,
 			}),
@@ -93,7 +102,7 @@ impl PibdParams {
 		debug!(
 			"PibdParams config: cpu_num={}, available_memory_mb={}",
 			res.cpu_num,
-			res.sys_memory_info.read_recursive().available_memory_mb
+			res.sys_memory_info.read().available_memory_mb
 		);
 		res
 	}
@@ -203,7 +212,7 @@ impl PibdParams {
 		}
 		let update_interval = Duration::from_secs(5);
 		{
-			let network_speed = self.network_speed.read_recursive();
+			let network_speed = self.network_speed.read();
 			if network_speed.last_network_speed_update.elapsed() <= update_interval {
 				return network_speed.network_speed_multiplier;
 			}
@@ -310,7 +319,8 @@ mod tests {
 		// CPUs and processes are filled!
 		let mut sys = System::new_with_specifics(
 			RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
-		);
+		)
+		.unwrap();
 
 		sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
 

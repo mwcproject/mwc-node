@@ -15,7 +15,7 @@
 //! Some tools to easy stratum server attacks
 
 use mwc_crates::log::debug;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
@@ -204,7 +204,7 @@ pub struct StratumIpPool {
 	// Acceptable connection pace. It is average pace for last 3-10 connections.  -1 - disabled
 	connection_pace_ms: i64,
 
-	connection_info: RwLock<HashMap<String, StratumConnections>>,
+	connection_info: RecursiveRwLock<HashMap<String, StratumConnections>>,
 }
 
 impl StratumIpPool {
@@ -215,7 +215,7 @@ impl StratumIpPool {
 		connection_pace_ms: i64,
 	) -> StratumIpPool {
 		StratumIpPool {
-			connection_info: RwLock::new(HashMap::new()),
+			connection_info: RecursiveRwLock::new(HashMap::new()),
 			ban_action_limit,
 			shares_weight,
 			connection_pace_ms,
@@ -225,7 +225,7 @@ impl StratumIpPool {
 	/// Get a set of banned IPs
 	pub fn get_banned_ips(&self) -> HashSet<String> {
 		self.connection_info
-			.read_recursive()
+			.read()
 			.values()
 			.filter(|conn| {
 				conn.is_banned(
@@ -244,7 +244,7 @@ impl StratumIpPool {
 	/// return: (ip, profitability(0-1_000_000), number_of_workers)
 	pub fn get_ip_profitability(&self) -> Vec<(String, i64, u32)> {
 		self.connection_info
-			.read_recursive()
+			.read()
 			.values()
 			.filter(|conn| {
 				!conn.is_banned(
@@ -278,7 +278,7 @@ impl StratumIpPool {
 	/// Check if this IP is banned
 	pub fn is_banned(&self, ip: &String, new_worker: bool) -> bool {
 		self.connection_info
-			.read_recursive()
+			.read()
 			.get(ip)
 			.map(|con| {
 				con.is_banned(
@@ -358,7 +358,7 @@ impl StratumIpPool {
 	pub fn get_ip_list(&self, get_banned: bool, get_active: bool) -> Vec<StratumIpPrintable> {
 		let mut res: Vec<StratumIpPrintable> = Vec::new();
 
-		for ip_info in self.connection_info.read_recursive().values() {
+		for ip_info in self.connection_info.read().values() {
 			let banned = ip_info.is_banned(
 				self.ban_action_limit,
 				self.shares_weight,
@@ -381,7 +381,7 @@ impl StratumIpPool {
 
 	/// Get IP info info for API
 	pub fn get_ip_info(&self, ip: &str) -> Option<StratumIpPrintable> {
-		let connection_info = self.connection_info.read_recursive();
+		let connection_info = self.connection_info.read();
 		connection_info.get(ip).map(|con| {
 			StratumIpPrintable::from_stratum_connection(
 				con,
