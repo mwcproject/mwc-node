@@ -25,8 +25,11 @@ mod pool;
 pub mod transaction_pool;
 pub mod types;
 
-pub use crate::pool::{MiningSnapshot, Pool};
-pub use crate::transaction_pool::TransactionPool;
+#[cfg(all(test, feature = "test-support"))]
+mod promotion_tests;
+
+pub use crate::pool::{MiningSnapshot, Pool, PromotionBudget};
+pub use crate::transaction_pool::{PromotionOutcome, TransactionPool};
 pub use crate::types::{
 	BlockChain, DandelionConfig, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource,
 };

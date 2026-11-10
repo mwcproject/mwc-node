@@ -19,7 +19,8 @@
 //! valid chain state.
 
 use crate::pool::{
-	MiningSnapshot, Pool, ReconcileWorkBudget, ValidatedPoolAggregate, ValidatedPoolEntry,
+	MiningSnapshot, Pool, PromotionBudget, ReconcileWorkBudget, ValidatedPoolAggregate,
+	ValidatedPoolEntry,
 };
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use mwc_core::core::hash::{Hash, Hashed};
@@ -41,6 +42,15 @@ enum PoolAddOutcome {
 	/// The transaction was accepted into the public txpool and should be
 	/// broadcast on a best-effort basis.
 	Fluff(PoolEntry),
+}
+
+/// Outcome of an embargo-expiry submission with a shared work allowance.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PromotionOutcome {
+	/// Accepted locally; network relay remains best effort.
+	Accepted,
+	/// The pass has insufficient work remaining. No pool entries were mutated.
+	Deferred,
 }
 
 /// Tracks a transaction while it is undergoing the expensive, state-independent
@@ -135,7 +145,7 @@ where
 		match self.txpool.validated_pool_aggregate(secp)? {
 			Some(txpool_tx) => self
 				.stempool
-				.reconcile_with_pool_aggregate(txpool_tx, header, secp),
+				.reconcile_with_pool_aggregate(txpool_tx, header, secp, None),
 			None => self.stempool.reconcile(None, header, secp),
 		}
 	}
@@ -209,10 +219,16 @@ where
 		entry: &ValidatedPoolEntry,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<(), PoolError> {
 		let txpool_agg = self
 			.txpool
 			.add_entry_with_pool_aggregate(entry.clone(), header, secp)?;
+
+		// Remove the exact promoted entry only after public admission succeeds.
+		// Otherwise its presence in both pools forces bulk reconciliation to
+		// fail and re-authenticate every remaining stem entry on each promotion.
+		self.stempool.remove_tx(entry.transaction())?;
 
 		// We now need to reconcile the stempool based on the new state of the txpool.
 		// Some stempool txs may no longer be valid and we need to evict them.
@@ -221,7 +237,7 @@ where
 		// rebuilding the aggregate and rechecking every proof and signature here would
 		// add pool-size-amplified cryptographic work while the pool write lock is held.
 		self.stempool
-			.reconcile_with_pool_aggregate(txpool_agg, header, secp)?;
+			.reconcile_with_pool_aggregate(txpool_agg, header, secp, promotion_budget)?;
 
 		Ok(())
 	}
@@ -259,6 +275,43 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
+		Self::submit_to_pool_internal(tx_pool, src, tx, stem, header, secp, None).map(|_| ())
+	}
+
+	/// Promote an expired transaction using a budget shared across the monitor
+	/// pass. Deferred transactions retain their original embargo timestamps.
+	pub fn submit_expired_to_pool(
+		tx_pool: &RwLock<Self>,
+		tx: Transaction,
+		header: &BlockHeader,
+		budget: &mut PromotionBudget,
+		secp: &mut Secp256k1,
+	) -> Result<PromotionOutcome, PoolError> {
+		Self::submit_to_pool_internal(
+			tx_pool,
+			TxSource::EmbargoExpired,
+			tx,
+			false,
+			header,
+			secp,
+			Some(budget),
+		)
+	}
+
+	fn submit_to_pool_internal(
+		tx_pool: &RwLock<Self>,
+		src: TxSource,
+		tx: Transaction,
+		stem: bool,
+		header: &BlockHeader,
+		secp: &mut Secp256k1,
+		mut promotion_budget: Option<&mut PromotionBudget>,
+	) -> Result<PromotionOutcome, PoolError> {
+		if let Some(budget) = promotion_budget.as_deref_mut() {
+			if !budget.charge_transaction(&tx) {
+				return Ok(PromotionOutcome::Deferred);
+			}
+		}
 		let (context_id, adapter, pending_validations, blockchain) = {
 			let tx_pool = tx_pool.read_recursive();
 			(
@@ -348,7 +401,19 @@ where
 					context_id, tx_pool.context_id
 				)));
 			}
-			tx_pool.admit_prevalidated(entry, stem, header, secp)?
+			// Reserve both full-pool aggregate passes against the current sizes
+			// under the write lock, before any admission mutation. Fallback uses
+			// the same budget after insertion; it never receives a fresh allowance.
+			if let Some(budget) = promotion_budget.as_deref_mut() {
+				if !budget.reserve_pool_work(
+					tx_pool.txpool.component_count(),
+					tx_pool.stempool.component_count(),
+					entry.transaction(),
+				) {
+					return Ok(PromotionOutcome::Deferred);
+				}
+			}
+			tx_pool.admit_prevalidated(entry, stem, header, secp, promotion_budget)?
 		};
 
 		if let PoolAddOutcome::Fluff(entry) = outcome {
@@ -358,7 +423,7 @@ where
 			}
 		}
 
-		Ok(())
+		Ok(PromotionOutcome::Accepted)
 	}
 
 	fn admit_prevalidated(
@@ -367,6 +432,7 @@ where
 		stem: bool,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<PoolAddOutcome, PoolError> {
 		// A block may have confirmed this transaction during signature/proof validation.
 		self.blockchain
@@ -377,7 +443,7 @@ where
 		// If this is a stem tx and is already present in stempool then fluff by adding to txpool.
 		// Otherwise if already present in txpool return a "duplicate tx" error.
 		if stem && self.stempool.contains_tx(entry.transaction())? {
-			return self.admit_prevalidated(entry, false, header, secp);
+			return self.admit_prevalidated(entry, false, header, secp, promotion_budget);
 		} else if self.txpool.contains_tx(entry.transaction())? {
 			return Err(PoolError::DuplicateTx);
 		}
@@ -469,7 +535,7 @@ where
 		// already been inserted into stempool. Roll that insertion back if the
 		// fluff fallback also fails so a rejected submission cannot be relayed
 		// later by the Dandelion monitor.
-		if let Err(add_err) = self.add_to_txpool(&entry, header, secp) {
+		if let Err(add_err) = self.add_to_txpool(&entry, header, secp, promotion_budget) {
 			if stem {
 				if let Err(remove_err) = self.stempool.remove_tx(entry.transaction()) {
 					return Err(PoolError::Other(format!(

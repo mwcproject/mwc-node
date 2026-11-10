@@ -24,7 +24,10 @@ use mwc_crates::parking_lot::{Mutex, RwLock};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_keychain::{ExtKeychain, Keychain};
-use mwc_pool::{PoolAdapter, PoolConfig, PoolEntry, PoolError, TransactionPool, TxSource};
+use mwc_pool::{
+	PoolAdapter, PoolConfig, PoolEntry, PoolError, PromotionBudget, PromotionOutcome,
+	TransactionPool, TxSource,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -120,6 +123,35 @@ fn fluff_relay_runs_after_pool_write_lock_is_released() {
 
 	assert!(adapter.relay_observed_unlocked_pool.load(Ordering::SeqCst));
 	assert_eq!(pool.read_recursive().total_size(), 1);
+
+	let header_2 = chain.get_header_by_height(2).unwrap();
+	let expired = test_transaction_spending_coinbase(&mut secp, &keychain, &header_2, vec![501]);
+	TransactionPool::submit_to_pool(
+		pool.as_ref(),
+		test_source(),
+		expired.clone(),
+		true,
+		&header,
+		&mut secp,
+	)
+	.unwrap();
+	adapter
+		.relay_observed_unlocked_pool
+		.store(false, Ordering::SeqCst);
+	assert_eq!(
+		TransactionPool::submit_expired_to_pool(
+			pool.as_ref(),
+			expired,
+			&header,
+			&mut PromotionBudget::new(),
+			&mut secp,
+		)
+		.unwrap(),
+		PromotionOutcome::Accepted
+	);
+	assert!(adapter.relay_observed_unlocked_pool.load(Ordering::SeqCst));
+	assert_eq!(pool.read_recursive().total_size(), 2);
+	assert!(pool.read_recursive().stempool.is_empty());
 	clean_output_dir(db_root.into());
 }
 

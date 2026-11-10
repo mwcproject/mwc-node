@@ -1,19 +1,23 @@
 # MWC tor-ptmgr patch
 
-This directory vendors `tor-ptmgr` 0.47.0 from crates.io, whose source commit is
-[`ce8bc6e0998bd5a4efdf06dd62dce53c98ea1087`](https://gitlab.torproject.org/tpo/core/arti/-/tree/ce8bc6e0998bd5a4efdf06dd62dce53c98ea1087/crates/tor-ptmgr).
+This directory vendors `tor-ptmgr` 0.48.0 from crates.io, whose source commit is
+[`7c038125baef924a4bf287429c192c5af606f79c`](https://gitlab.torproject.org/tpo/core/arti/-/tree/7c038125baef924a4bf287429c192c5af606f79c/crates/tor-ptmgr).
 
 ## Upgrade review
 
-The published 0.47.0 Rust sources, including `src/ipc.rs`, are byte-for-byte
-identical to 0.46.0. Upstream has not fixed quiet-child shutdown or reaping after
-forced termination. Both manifests are refreshed from the published 0.47.0
-crate, including Rust 1.92 and the updated non-Tor dependencies. The existing
-process supervisor and quiet-child regression test remain necessary.
+The published 0.48.0 `src/ipc.rs` is byte-for-byte identical to 0.47.0.
+Upstream has not fixed quiet-child shutdown or reaping after forced termination.
+The manifest is refreshed from the published 0.48.0 crate, including the updated
+Tor and non-Tor dependencies. The new upstream lint declarations in `src/lib.rs`
+are also included. The existing process supervisor and quiet-child regression
+test remain necessary and are unchanged.
+
+See [the vendor review](../README.md) for the other patch removed during this
+upgrade.
 
 ## Problem
 
-Upstream 0.47.0 moves the `Child`, its `ChildStdin`, and its blocking stdout
+Upstream 0.48.0 moves the `Child`, its `ChildStdin`, and its blocking stdout
 reader into one OS thread. That thread notices that `AsyncPtChild` was dropped
 only when it tries to forward another stdout line into the disconnected channel.
 After PT negotiation, `webtunnelclient` is normally quiet while waiting for

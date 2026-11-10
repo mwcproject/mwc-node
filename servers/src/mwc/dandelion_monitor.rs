@@ -22,7 +22,8 @@ use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::rand::{rng, RngExt};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_pool::{
-	BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TransactionPool, TxSource,
+	BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, PromotionBudget, PromotionOutcome,
+	TransactionPool, TxSource,
 };
 use mwc_util::StopState;
 use std::sync::Arc;
@@ -110,13 +111,14 @@ pub fn monitor_transactions(
 
 // Query the pool for transactions older than the cutoff.
 // Used for both periodic fluffing and handling expired embargo timer.
-fn select_txs_cutoff<B>(pool: &Pool<B>, cutoff_secs: u32) -> Vec<PoolEntry>
+fn select_txs_cutoff<B>(pool: &Pool<B>, cutoff_secs: u32, max_entries: usize) -> Vec<PoolEntry>
 where
 	B: BlockChain,
 {
 	let cutoff = Duration::from_secs(cutoff_secs as u64);
 	pool.ordered_entry_refs()
 		.filter(|x| x.tx_at.elapsed() > cutoff)
+		.take(max_entries)
 		.cloned()
 		.collect()
 }
@@ -134,7 +136,7 @@ fn process_fluff_phase(
 	}
 
 	let cutoff_secs = dandelion_config.aggregation_secs as u32;
-	let cutoff_entries = select_txs_cutoff(&pool.stempool, cutoff_secs);
+	let cutoff_entries = select_txs_cutoff(&pool.stempool, cutoff_secs, 1);
 
 	// If epoch is expired, fluff *all* outstanding entries in stempool.
 	// If *any* entry older than aggregation_secs (30s) then fluff *all* entries.
@@ -259,7 +261,8 @@ fn process_expired_entries(
 	let pool = tx_pool.write();
 
 	let embargo_secs = dandelion_config.embargo_secs as u32 + rng().random_range(0..31);
-	let expired_entries = select_txs_cutoff(&pool.stempool, embargo_secs);
+	let expired_entries =
+		select_txs_cutoff(&pool.stempool, embargo_secs, PromotionBudget::MAX_ENTRIES);
 
 	if expired_entries.is_empty() {
 		return Ok(());
@@ -271,20 +274,26 @@ fn process_expired_entries(
 	let context_id = pool.get_context_id();
 	drop(pool);
 
+	let mut budget = PromotionBudget::new();
 	for entry in expired_entries {
 		let txhash = entry.tx.hash(context_id)?;
-		match TransactionPool::submit_to_pool(
+		match TransactionPool::submit_expired_to_pool(
 			tx_pool.as_ref(),
-			TxSource::EmbargoExpired,
 			entry.tx.clone(),
-			false,
 			&header,
+			&mut budget,
 			secp,
 		) {
-			Ok(()) => info!(
+			Ok(PromotionOutcome::Accepted) => info!(
 				"dand_mon: embargo expired for {}, fluffed successfully.",
 				txhash
 			),
+			Ok(PromotionOutcome::Deferred) => {
+				// Keep the remaining entries and their original embargo timestamps
+				// so the next monitor pass can resume without a new embargo.
+				debug!("dand_mon: expiry work budget exhausted; deferring remaining txs");
+				break;
+			}
 			Err(PoolError::DuplicateTx) => debug!(
 				"dand_mon: embargo-expired tx {} was already present in txpool",
 				txhash

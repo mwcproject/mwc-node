@@ -13,14 +13,11 @@ edition = "2024"
 
 [workspace]
 members = ["api", "chain", "config", "core", "keychain", "mwc_crates", "p2p", "servers", "store", "util", "pool", "node_workflow", "mwc_node_lib"]
-exclude = ["etc/gen_gen", "vendor/saturating-time", "vendor/tor-ptmgr"]
+exclude = ["etc/gen_gen", "vendor/tor-ptmgr"]
 
 [patch.crates-io]
-# Arti 0.44+ exercises a Windows hang in saturating-time 0.4.0 while parsing a consensus.
-saturating-time = { path = "vendor/saturating-time" }
-# Arti 0.46's PT stdout worker cannot observe transport destruction while a
-# quiet child is blocked without producing another stdout line. Keep the
-# managed child supervisor under our control until the fix is released upstream.
+# Arti 0.48 still leaves quiet PT children running after transport destruction.
+# Keep the shutdown/reaping fix until it is released upstream; see vendor/README.md.
 tor-ptmgr = { path = "vendor/tor-ptmgr" }
 
 [workspace.dependencies]

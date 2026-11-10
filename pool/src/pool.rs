@@ -71,6 +71,86 @@ fn transaction_components(tx: &Transaction) -> u128 {
 		.saturating_add(tx.body.kernels.len() as u128)
 }
 
+/// Cumulative work allowance for one Dandelion embargo-expiry pass.
+/// Counts transaction authentication and projected aggregate components before
+/// cut-through, including reconciliation fallback. This bounds repeated work,
+/// not wall-clock time. One initial pool operation may exceed the nominal work
+/// allowance so an existing large pool cannot indefinitely prevent progress.
+pub struct PromotionBudget {
+	attempts: usize,
+	remaining_work: u128,
+	pool_work_started: bool,
+}
+
+impl PromotionBudget {
+	/// Also bounds the number of expired entries copied for a monitor pass.
+	pub const MAX_ENTRIES: usize = MAX_RECONCILE_FALLBACK_ENTRIES;
+
+	/// Start a new monitor pass with the same work ceiling as reconciliation.
+	pub fn new() -> Self {
+		Self::with_work_limit(MAX_RECONCILE_FALLBACK_WORK)
+	}
+
+	pub(crate) fn with_work_limit(remaining_work: u128) -> Self {
+		Self {
+			attempts: 0,
+			remaining_work,
+			pool_work_started: false,
+		}
+	}
+
+	pub(crate) fn charge_transaction(&mut self, tx: &Transaction) -> bool {
+		if self.attempts >= Self::MAX_ENTRIES
+			|| !self.charge_work(transaction_components(tx).max(1))
+		{
+			return false;
+		}
+		self.attempts += 1;
+		true
+	}
+
+	pub(crate) fn reserve_pool_work(
+		&mut self,
+		txpool_components: u128,
+		stempool_components: u128,
+		tx: &Transaction,
+	) -> bool {
+		let public_aggregate = txpool_components.saturating_add(transaction_components(tx));
+		// Public insertion and the subsequent combined stempool aggregate. Keep
+		// the promoted entry in this estimate as a conservative upper bound.
+		let mut work = public_aggregate
+			.saturating_mul(2)
+			.saturating_add(stempool_components);
+		if tx.kernels().len() > 1 {
+			// Deaggregation can additionally visit the matching public components.
+			work = work.saturating_add(public_aggregate);
+		}
+		if !self.charge_work(work) {
+			if self.pool_work_started {
+				return false;
+			}
+			// Permit one full-pool operation, then defer all further submissions.
+			self.remaining_work = 0;
+		}
+		self.pool_work_started = true;
+		true
+	}
+
+	fn charge_work(&mut self, work: u128) -> bool {
+		if work > self.remaining_work {
+			return false;
+		}
+		self.remaining_work -= work;
+		true
+	}
+}
+
+impl Default for PromotionBudget {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 /// Bounds paths that repeatedly add a transaction to an already growing pool
 /// aggregate. Work is measured as the cumulative number of transaction body
 /// components visited across all projected aggregate prefixes.
@@ -1450,11 +1530,13 @@ where
 	/// kernel-signature verification. Reconciliation still checks all structural,
 	/// aggregate-kernel-sum, and current-chain-state properties; it skips only the
 	/// redundant cryptographic authentication of unchanged components.
+	/// Expiry promotions also charge fallback work to the shared pass budget.
 	pub(crate) fn reconcile_with_pool_aggregate(
 		&mut self,
 		extra_tx: ValidatedPoolAggregate,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<(), PoolError> {
 		let existing_entries = self.all_entries();
 		if existing_entries.is_empty() {
@@ -1467,6 +1549,7 @@ where
 			header,
 			secp,
 			RECONCILE_FALLBACK_LIMITS,
+			promotion_budget,
 		)
 	}
 
@@ -1496,6 +1579,7 @@ where
 			header,
 			secp,
 			fallback_limits,
+			None,
 		)
 	}
 
@@ -1508,6 +1592,7 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 		fallback_limits: ReconcileFallbackLimits,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<(), PoolError> {
 		// Reconciliation normally retains the complete pool. Validate that aggregate
 		// once instead of clearing the pool and validating every growing prefix, which
@@ -1548,6 +1633,12 @@ where
 				false
 			}
 		});
+		// Reserve the entire fallback before clearing or re-adding any entries.
+		// Public admission has already committed, so a failed bulk candidate
+		// must use the existing conservative eviction policy if filtering cannot
+		// fit. A new promotion can only be deferred before public insertion.
+		let fallback_is_bounded = fallback_is_bounded
+			&& promotion_budget.map_or(true, |budget| budget.charge_work(fallback_budget.work));
 		if !fallback_is_bounded {
 			warn!(
 				"reconcile [{}]: bulk validation failed; dropping {} entries because individual filtering exceeds the reconciliation work budget",
