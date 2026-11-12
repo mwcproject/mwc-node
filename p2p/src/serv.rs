@@ -898,7 +898,6 @@ impl ChainAdapter for DummyAdapter {
 	}
 	fn compact_block_received(
 		&self,
-		_secp: &mut Secp256k1,
 		_cb: core::CompactBlock,
 		_peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
@@ -911,12 +910,7 @@ impl ChainAdapter for DummyAdapter {
 	) -> Result<bool, mwc_chain::Error> {
 		Ok(true)
 	}
-	fn block_received(
-		&self,
-		_secp: &mut Secp256k1,
-		_: core::Block,
-		_: &PeerInfo,
-	) -> Result<bool, mwc_chain::Error> {
+	fn block_received(&self, _: core::Block, _: &PeerInfo) -> Result<bool, mwc_chain::Error> {
 		Ok(true)
 	}
 	fn headers_received(

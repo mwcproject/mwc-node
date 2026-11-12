@@ -1231,14 +1231,12 @@ pub trait ChainAdapter: Sync + Send {
 	/// may result in the peer being banned.
 	fn block_received(
 		&self,
-		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error>;
 
 	fn compact_block_received(
 		&self,
-		secp: &mut Secp256k1,
 		cb: core::CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error>;

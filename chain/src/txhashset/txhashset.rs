@@ -63,9 +63,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(test)]
-use mwc_core::libtx::coinbase_binding::unspent_bitmap_hash;
-
 const TXHASHSET_SUBDIR: &str = "txhashset";
 const KERNEL_POS_INDEX_REBUILD_CHUNK_SIZE: usize = 10_000;
 const COMMIT_SUM_BATCH_SIZE: usize = 10_000;
@@ -9456,6 +9453,7 @@ mod tests {
 mod coinbase_binding_tests {
 	use super::*;
 	use mwc_core::core::{FeeFields, Input, OutputFeatures, Transaction};
+	use mwc_core::libtx::coinbase_binding::unspent_bitmap_hash;
 	use mwc_core::libtx::proof::ProofBuilder;
 	use mwc_core::libtx::{aggsig, reward};
 	use mwc_core::pow::{Difficulty, Proof};

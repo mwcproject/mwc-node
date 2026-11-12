@@ -507,6 +507,7 @@ mod tests {
 			.into_owned()
 	}
 
+	#[cfg(feature = "test-support")]
 	#[test]
 	fn height_queries_follow_body_head_during_header_sync_and_reorg() {
 		use super::super::chain_api::OutputHandler;

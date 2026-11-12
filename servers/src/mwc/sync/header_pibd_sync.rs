@@ -457,6 +457,8 @@ impl HeaderPibdSync {
 				}
 				self.prepare_download(&desegmenter, &hashes.agreed_peers)?;
 			}
+			// Completed responses free peer slots before chain validation and commits.
+			self.send_requests(peers, scores)?;
 			self.apply_ready_tasks(scores)?;
 			let pending_target = {
 				let download = self.download.lock();
@@ -501,36 +503,28 @@ impl HeaderPibdSync {
 		remaining: u64,
 		scores: &SyncPeers,
 		hashes: Option<Arc<RecursiveRwLock<HeaderHashesDesegmenter>>>,
-		peers: &Arc<Peers>,
 	) -> Result<bool, Error> {
 		let Some(hashes) = hashes else {
 			return Ok(false);
 		};
-		let handled = {
-			let hashes = hashes.read();
-			let mut download = self.download.lock();
-			let Some(download) = download
-				.as_mut()
-				.filter(|download| download.matches(&hashes))
-			else {
-				return Ok(false);
-			};
-			download.receive_headers(
-				peer,
-				headers,
-				remaining,
-				self.chain.get_context_id(),
-				Instant::now(),
-				scores,
-			)?
+		let hashes = hashes.read();
+		let mut download = self.download.lock();
+		let Some(download) = download
+			.as_mut()
+			.filter(|download| download.matches(&hashes))
+		else {
+			return Ok(false);
 		};
-		if handled {
-			if let Some(_work) = self.work_lock.try_lock() {
-				self.apply_ready_tasks(scores)?;
-				self.send_requests(peers, scores)?;
-			}
-		}
-		Ok(handled)
+		// Assemble and check the response here. The sync loop applies ready tasks,
+		// so peer readers never wait for chain validation or storage writes.
+		download.receive_headers(
+			peer,
+			headers,
+			remaining,
+			self.chain.get_context_id(),
+			Instant::now(),
+			scores,
+		)
 	}
 
 	// Called with work_lock held. Pop only after the chain commits this task.
@@ -616,7 +610,12 @@ impl HeaderPibdSync {
 				})
 				.collect();
 			let best_latency = latencies.iter().flatten().copied().min().unwrap_or(1);
-			let last_index = download.tasks.len().saturating_sub(1);
+			let last_index = download
+				.tasks
+				.iter()
+				.filter(|task| !task.is_ready())
+				.count()
+				.saturating_sub(1);
 			let candidates: Vec<_> = candidates
 				.iter()
 				.zip(latencies)
@@ -636,6 +635,7 @@ impl HeaderPibdSync {
 			for request in download
 				.tasks
 				.iter()
+				.filter(|task| !task.is_ready())
 				.filter_map(|task| task.request.as_ref())
 			{
 				if now < request.expires_at {
@@ -655,14 +655,23 @@ impl HeaderPibdSync {
 			let mut rng = mwc_crates::rand::rng();
 			// Ready buffers also occupy this window, so a stalled first task
 			// cannot cause unbounded accumulation of later responses.
-			for (index, task) in download.tasks.iter_mut().take(task_limit).enumerate() {
+			// Ready tasks retain their supplier for attribution, but no longer
+			// consume an on-wire allowance or shift missing tasks' latency indices.
+			for (missing_index, (index, task)) in download
+				.tasks
+				.iter_mut()
+				.take(task_limit)
+				.enumerate()
+				.filter(|(_, task)| !task.is_ready())
+				.enumerate()
+			{
 				if task.request.is_some() {
 					continue;
 				}
 				let Some(peer) = candidates
 					.iter()
 					.filter(|(peer, first_index)| {
-						index >= *first_index
+						missing_index >= *first_index
 							&& counts.get(&peer.info.addr).copied().unwrap_or(0) < per_peer
 					})
 					.map(|(peer, _)| *peer)
@@ -670,7 +679,7 @@ impl HeaderPibdSync {
 				else {
 					// Beyond the slowest available peer's starting index, all peers
 					// are eligible. A failed selection means their capacity is full.
-					if index >= max_first_index {
+					if missing_index >= max_first_index {
 						break;
 					}
 					continue;
@@ -1534,6 +1543,41 @@ mod tests {
 			.as_ref()
 			.unwrap()
 			.peer == addr(2)));
+		drop(state);
+
+		// Received buffers retain attribution, while freeing the fast peer's
+		// allowance and leaving the first missing task at latency index zero.
+		{
+			let mut state = f.sync.download.lock();
+			for (index, task) in state.as_mut().unwrap().tasks.iter_mut().enumerate() {
+				if index < 2 {
+					task.request.as_mut().unwrap().headers = dummy_headers(task.height, task.hash);
+				} else {
+					task.reset();
+				}
+			}
+		}
+		f.sync.send_requests(&f.peers, &f.scores).unwrap();
+		assert_eq!(fast.try_iter().count(), per_peer);
+		assert_eq!(slow.try_iter().count(), per_peer);
+		let state = f.sync.download.lock();
+		let tasks = &state.as_ref().unwrap().tasks;
+		assert!(tasks.iter().take(2).all(HeaderPibdTask::is_ready));
+		assert!(tasks.iter().skip(2).take(per_peer).all(|task| task
+			.request
+			.as_ref()
+			.unwrap()
+			.peer == addr(1)));
+		assert!(tasks
+			.iter()
+			.skip(per_peer + 2)
+			.take(2)
+			.all(|task| task.request.is_none()));
+		assert!(tasks
+			.iter()
+			.skip(slow_index + 2)
+			.take(per_peer)
+			.all(|task| task.request.as_ref().unwrap().peer == addr(2)));
 	}
 
 	// Supply enough agreed peers to fill the header buffer while many more tasks remain.
@@ -1851,8 +1895,8 @@ mod tests {
 	}
 
 	// Assemble a complete task whose parent is absent from the local chain.
-	// Both direct application and the receive path must propagate the orphan error
-	// and retain the ready task so its headers are not lost.
+	// Application propagates the orphan error and retains the ready task. Receipt
+	// only buffers data and must not retry storage or return that local error.
 	#[test]
 	fn local_apply_failure_retains_the_complete_task() {
 		let f = Fixture::new();
@@ -1872,17 +1916,16 @@ mod tests {
 			f.sync.apply_ready_tasks(&f.scores),
 			Err(Error::Orphan(_))
 		));
-		assert!(matches!(
-			f.sync.receive_headers(
+		assert!(f
+			.sync
+			.receive_headers(
 				&addr(1),
 				&headers,
 				0,
 				&f.scores,
 				Some(Arc::new(RecursiveRwLock::new(hashes))),
-				&f.peers,
-			),
-			Err(Error::Orphan(_))
-		));
+			)
+			.unwrap());
 		assert!(f.sync.download.lock().as_ref().unwrap().tasks[0].is_ready());
 	}
 
@@ -1997,7 +2040,6 @@ mod tests {
 				480,
 				&f.scores,
 				Some(desegmenter.clone()),
-				&f.peers,
 			)
 			.unwrap());
 		first.try_iter().for_each(drop);
@@ -2091,7 +2133,6 @@ mod tests {
 				0,
 				&f.scores,
 				Some(Arc::new(RecursiveRwLock::new(first))),
-				&f.peers
 			)
 			.unwrap());
 		f.sync.prepare_download(&next_target, &agreed).unwrap();
@@ -2297,6 +2338,86 @@ mod tests {
 			headers.push(header);
 		}
 		headers
+	}
+
+	#[test]
+	fn header_receipt_returns_before_storage_and_requests_refill_before_application() {
+		let mut f = Fixture::with_context(971_204);
+		f.sync.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let context = f.sync.chain.get_context_id();
+		let headers = mine_headers(f.sync.chain.genesis(), HEADERS_PER_BATCH as u64);
+		let interval = global::txhashset_archive_interval(context);
+		let target = HEADERS_PER_BATCH as u64 * 3 / interval * interval;
+		let checkpoints = [
+			f.sync.chain.genesis().hash(context).unwrap(),
+			headers.last().unwrap().hash(context).unwrap(),
+			hash(3),
+			hash(4),
+		];
+		let hashes = Arc::new(RecursiveRwLock::new(checkpoint_hashes(
+			&checkpoints[..(target / HEADERS_PER_BATCH as u64 + 1) as usize],
+			target,
+		)));
+		let snapshot = HeadersPibdHashSyncSnapshot {
+			agreed_peers: HashSet::from([addr(1)]),
+			target_archive_height: target,
+			pibd_headers_are_loaded: false,
+			headers_hash_desegmenter: Some(hashes.clone()),
+		};
+		let messages = f.peer(1, target);
+		let state = SyncState::new();
+		f.sync
+			.request(&f.peers, &state, &f.scores, &snapshot, target)
+			.unwrap();
+		assert_eq!(messages.try_iter().count(), 2);
+
+		std::thread::scope(|scope| {
+			let store = f.sync.chain.get_store_for_tests();
+			let writer = store.batch_write().unwrap();
+			let (sent, received) = std::sync::mpsc::channel();
+			let sync = &f.sync;
+			let scores = &f.scores;
+			let headers = &headers;
+			scope.spawn(move || {
+				sent.send(sync.receive_headers(&addr(1), headers, 0, scores, Some(hashes)))
+					.unwrap();
+			});
+			let response = received.recv_timeout(Duration::from_secs(2));
+			// Release storage before assertions, so a regression fails without hanging.
+			drop(writer);
+			assert!(response.unwrap().unwrap());
+		});
+		assert_eq!(f.sync.chain.header_head().unwrap().height, 0);
+		assert!(f.sync.download.lock().as_ref().unwrap().tasks[0].is_ready());
+		assert_eq!(messages.try_iter().count(), 0);
+
+		std::thread::scope(|scope| {
+			let store = f.sync.chain.get_store_for_tests();
+			let writer = store.batch_write().unwrap();
+			let poll = scope.spawn(|| {
+				global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+				f.sync
+					.request(&f.peers, &state, &f.scores, &snapshot, target)
+			});
+			let request = messages.recv_timeout(Duration::from_secs(2));
+			drop(writer);
+			assert_eq!(
+				request.unwrap().message_type_for_test(),
+				mwc_p2p::msg::Type::GetHeaders
+			);
+			poll.join().unwrap().unwrap();
+		});
+		assert_eq!(
+			f.sync.chain.header_head().unwrap().height,
+			HEADERS_PER_BATCH as u64
+		);
+		let download = f.sync.download.lock();
+		let tasks = &download.as_ref().unwrap().tasks;
+		assert_eq!(tasks.len(), 2);
+		assert!(tasks
+			.iter()
+			.all(|task| task.request.is_some() && !task.is_ready()));
+		assert_eq!(messages.try_iter().count(), 0);
 	}
 
 	#[test]

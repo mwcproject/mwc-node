@@ -4360,8 +4360,8 @@ impl Chain {
 			let head = match batch.head() {
 				Ok(head) => head,
 				Err(e) if e.store_error_is_not_found() => {
-					// Fresh DB before head setup: no blocks to migrate yet. The
-					// flag is set on a later start, once a head exists.
+					// No head yet. setup_head sets the flag with genesis after
+					// verifying that this is a fresh database.
 					return Ok(());
 				}
 				Err(e) => return Err(Error::StoreErr(e, "spent index migration read head".into())),
@@ -7031,6 +7031,9 @@ fn setup_head(
 				Ok(())
 			})?;
 
+			// A verified fresh store contains only current-format spent indexes.
+			// Commit the marker with genesis so the first restart skips migration.
+			batch.set_spent_index_migrated(true)?;
 			info!("init: saved genesis: {}", genesis_hash);
 		}
 		Err(e) => return Err(Error::StoreErr(e, "chain init load head".to_owned())),
@@ -12386,6 +12389,7 @@ mod tests {
 					assert_eq!(store.head().unwrap(), genesis_tip);
 					assert!(store.pending_chain_operation().unwrap().is_none());
 					let batch = store.batch_read().unwrap();
+					assert!(batch.is_spent_index_migrated().unwrap());
 					assert!(!batch.is_kernel_pos_index_complete().unwrap());
 				}
 
@@ -12407,6 +12411,7 @@ mod tests {
 				.unwrap();
 				assert_eq!(restarted.head().unwrap(), genesis_tip);
 				let batch = restarted.store.batch_read().unwrap();
+				assert!(batch.is_spent_index_migrated().unwrap());
 				assert!(batch.is_output_pos_index_complete().unwrap());
 				assert!(batch.is_kernel_pos_index_complete().unwrap());
 				assert!(batch.is_spent_commitment_record_index_complete().unwrap());

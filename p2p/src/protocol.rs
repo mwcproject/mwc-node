@@ -183,7 +183,7 @@ impl MessageHandler for Protocol {
 					b.header.height, hash
 				);
 				self.received.write().put(hash, ());
-				adapter.block_received(secp, b, &self.peer_info)?;
+				adapter.block_received(b, &self.peer_info)?;
 				Consumed::None
 			}
 
@@ -212,7 +212,7 @@ impl MessageHandler for Protocol {
 					.hash(self.server.get_context_id())
 					.map_err(mwc_chain::Error::from)?;
 				self.received.write().put(hash, ());
-				adapter.compact_block_received(secp, b, &self.peer_info)?;
+				adapter.compact_block_received(b, &self.peer_info)?;
 				Consumed::None
 			}
 			Message::TorAddress(tor_address) => {

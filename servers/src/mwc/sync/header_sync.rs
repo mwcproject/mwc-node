@@ -420,15 +420,9 @@ impl HeaderSync {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use mwc_chain::pibd_params;
-	use mwc_chain::types::NoopAdapter;
-	use mwc_core::{genesis, global, pow, ser::ProtocolVersion};
-	use mwc_crates::secp::{ContextFlag, Secp256k1};
+	use mwc_core::{global, pow, ser::ProtocolVersion};
 	use mwc_p2p::types::{Capabilities, Direction, PeerLiveInfo};
 	use mwc_p2p::PeerInfo;
-	use std::collections::HashSet;
-	use std::fs;
-	use std::time::Duration;
 
 	fn header_at(height: u64, work: u64) -> BlockHeader {
 		let mut header = BlockHeader::default(0);
@@ -495,7 +489,14 @@ mod tests {
 		}
 	}
 
+	#[cfg(feature = "test-support")]
 	fn test_requests() -> (HeaderSync, String) {
+		use mwc_chain::types::NoopAdapter;
+		use mwc_core::genesis;
+		use mwc_crates::secp::{ContextFlag, Secp256k1};
+		use std::collections::HashSet;
+		use std::fs;
+
 		global::set_local_chain_type(global::ChainTypes::Floonet);
 		global::set_local_nrd_enabled(false);
 
@@ -548,8 +549,11 @@ mod tests {
 	#[cfg(feature = "test-support")]
 	mod headers {
 		use super::*;
+		use mwc_chain::pibd_params;
 		use mwc_core::core::{hash::Hashed, BlockHeader};
 		use mwc_p2p::{msg::Msg, Peer};
+		use std::fs;
+		use std::time::Duration;
 
 		// Start with a genesis-only chain and a connected peer advertising more work.
 		// The receiver exposes outgoing requests without using a network connection.
