@@ -24,6 +24,7 @@ pub mod id;
 pub mod merkle_proof;
 pub mod pmmr;
 pub mod transaction;
+pub mod transaction_preflight;
 
 pub use self::block::*;
 pub use self::block_sums::*;

@@ -24,6 +24,7 @@
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::needless_pass_by_value)]
 #![warn(clippy::option_option)]
+#![warn(clippy::or_fun_call)]
 #![deny(clippy::print_stderr)]
 #![deny(clippy::print_stdout)]
 #![warn(clippy::rc_buffer)]
@@ -45,6 +46,7 @@
 #![allow(clippy::collapsible_if)] // See arti#2342
 #![deny(clippy::unused_async)]
 #![deny(clippy::string_slice)] // See arti#2571
+#![allow(recursion_depth_exceeding_limit)] // arti#2715, rust/issues/159228
 //! <!-- @@ end lint list maintained by maint/add_warning @@ -->
 
 pub mod config;
@@ -217,6 +219,10 @@ impl<R: Runtime> PtMgr<R> {
 		}
 		// We don't have any way of propagating this sanely; the caller will find out the reactor
 		// has died later on anyway.
+		// TODO(#2634):
+		// PT reactor doesn't appear to update its running list when Reconfigured.
+		// Change logic in PtReactor::run_one_step(...)
+		// to update the running list upon receiving a reconfigured message.
 		#[cfg(feature = "managed-pts")]
 		let _ = self.tx.unbounded_send(PtReactorMessage::Reconfigured);
 		Ok(())

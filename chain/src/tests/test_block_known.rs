@@ -165,7 +165,6 @@ fn sync_headers_rejects_known_hash_with_different_header() {
 	clean_output_dir(chain_dir);
 
 	let chain = mine_chain(chain_dir, 2);
-	let sync_head = chain.header_head().unwrap();
 	let original = chain.get_header_by_height(1).unwrap();
 	let original_hash = original.hash(0).unwrap();
 
@@ -175,7 +174,8 @@ fn sync_headers_rejects_known_hash_with_different_header() {
 	assert_ne!(conflicting, original);
 	assert_eq!(conflicting.hash(0).unwrap(), original_hash);
 
-	let res = chain.sync_block_headers(&[conflicting], sync_head, Options::SKIP_POW);
+	let base_time = crate::store::header_creation_time(&conflicting).unwrap();
+	let res = chain.sync_block_headers(&[conflicting], Options::SKIP_POW, base_time);
 	assert!(matches!(
 		res,
 		Err(Error::Block(block::Error::Other(ref s)))
@@ -215,11 +215,7 @@ fn reset_to_genesis_rebuilds_missing_genesis_body_mmrs() {
 
 	let chain = init_chain(&secp, chain_dir, genesis.clone());
 	let genesis_header = chain.genesis();
-	let roots = chain
-		.get_txhashset_for_test()
-		.read_recursive()
-		.roots()
-		.unwrap();
+	let roots = chain.get_txhashset_for_test().read().roots().unwrap();
 	roots.validate(&genesis_header).unwrap();
 	assert_eq!(
 		(

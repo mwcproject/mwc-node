@@ -15,5 +15,5 @@ fuzz_target!(|data: &[u8]| {
 	let mut reader = Cursor::new(data);
 	// Note, result is intentionally ignored. It is a fuzz test, deserialize is expected to fail
 	let _t: Result<Transaction, ser::Error> =
-		ser::deserialize_strict(&mut reader, ser::ProtocolVersion(2), 0);
+		ser::deserialize_strict(&mut reader, ser::ProtocolVersion(2), 0, true);
 });

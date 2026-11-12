@@ -130,21 +130,18 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 		pos0: u64,
 		hashes: &[Hash],
 	) -> Result<(), Error> {
-		let mut next = self.clone();
-		next.append_pruned_subtree(hash, pos0)?;
+		// Subtree validation completes before any mutation, and parent hash
+		// appends are infallible. Errors therefore leave the backend unchanged
+		// without cloning the accumulated segment for every pruned subtree.
+		self.append_pruned_subtree(hash, pos0)?;
 		for hash in hashes {
-			next.append_hash(*hash)?;
+			self.push_hash(*hash);
 		}
-		*self = next;
 		Ok(())
 	}
 
 	fn append_hash(&mut self, hash: Hash) -> Result<(), Error> {
-		let pos0 = self.hashes.len() as u64;
-		self.hashes.push(Some(hash));
-		self.compacted.remove(&pos0);
-		self.removed.remove(&pos0);
-
+		self.push_hash(hash);
 		Ok(())
 	}
 
@@ -376,6 +373,13 @@ impl<T: PMMRable> Backend<T> for VecBackend<T> {
 }
 
 impl<T: PMMRable> VecBackend<T> {
+	fn push_hash(&mut self, hash: Hash) {
+		let pos0 = self.hashes.len() as u64;
+		self.hashes.push(Some(hash));
+		self.compacted.remove(&pos0);
+		self.removed.remove(&pos0);
+	}
+
 	/// Instantiates a new empty vec backend for a specific consensus context.
 	pub fn new(context_id: u32) -> VecBackend<T> {
 		VecBackend {

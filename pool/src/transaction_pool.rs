@@ -18,7 +18,10 @@
 //! resulting tx pool can be added to the current chain state to produce a
 //! valid chain state.
 
-use crate::pool::{Pool, ReconcileWorkBudget, ValidatedPoolAggregate, ValidatedPoolEntry};
+use crate::pool::{
+	MiningSnapshot, Pool, PromotionBudget, ReconcileWorkBudget, ValidatedPoolAggregate,
+	ValidatedPoolEntry,
+};
 use crate::types::{BlockChain, PoolAdapter, PoolConfig, PoolEntry, PoolError, TxSource};
 use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::id::ShortId;
@@ -26,7 +29,7 @@ use mwc_core::core::{Block, BlockHeader, HeaderVersion, Inputs, OutputIdentifier
 use mwc_core::global;
 use mwc_crates::log::{debug, log_enabled};
 use mwc_crates::log::{warn, Level};
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::secp::Secp256k1;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -41,11 +44,20 @@ enum PoolAddOutcome {
 	Fluff(PoolEntry),
 }
 
+/// Outcome of an embargo-expiry submission with a shared work allowance.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PromotionOutcome {
+	/// Accepted locally; network relay remains best effort.
+	Accepted,
+	/// The pass has insufficient work remaining. No pool entries were mutated.
+	Deferred,
+}
+
 /// Tracks a transaction while it is undergoing the expensive, state-independent
 /// cryptographic portion of public pool admission.
 ///
 /// This is intentionally independent of the pool lock. Holding either side of
-/// the pool `RwLock` while validating rangeproofs and kernel signatures would
+/// the pool `RecursiveRwLock` while validating rangeproofs and kernel signatures would
 /// block otherwise unrelated pool work. The key is the full transaction hash,
 /// so this suppresses byte-for-byte concurrent submissions without using the
 /// private stempool as an externally observable duplicate cache.
@@ -87,7 +99,7 @@ where
 	/// Our Dandelion "stempool".
 	pub stempool: Pool<B>,
 	/// Cache of previous txs in case of a re-org.
-	pub reorg_cache: Arc<RwLock<VecDeque<PoolEntry>>>,
+	pub reorg_cache: Arc<RecursiveRwLock<VecDeque<PoolEntry>>>,
 	/// The blockchain
 	pub blockchain: Arc<B>,
 	/// The pool adapter
@@ -109,7 +121,7 @@ where
 			config,
 			txpool: Pool::new(context_id, chain.clone(), "txpool".to_string()),
 			stempool: Pool::new(context_id, chain.clone(), "stempool".to_string()),
-			reorg_cache: Arc::new(RwLock::new(VecDeque::new())),
+			reorg_cache: Arc::new(RecursiveRwLock::new(VecDeque::new())),
 			blockchain: chain,
 			adapter,
 			context_id,
@@ -133,7 +145,7 @@ where
 		match self.txpool.validated_pool_aggregate(secp)? {
 			Some(txpool_tx) => self
 				.stempool
-				.reconcile_with_pool_aggregate(txpool_tx, header, secp),
+				.reconcile_with_pool_aggregate(txpool_tx, header, secp, None),
 			None => self.stempool.reconcile(None, header, secp),
 		}
 	}
@@ -207,10 +219,16 @@ where
 		entry: &ValidatedPoolEntry,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<(), PoolError> {
 		let txpool_agg = self
 			.txpool
 			.add_entry_with_pool_aggregate(entry.clone(), header, secp)?;
+
+		// Remove the exact promoted entry only after public admission succeeds.
+		// Otherwise its presence in both pools forces bulk reconciliation to
+		// fail and re-authenticate every remaining stem entry on each promotion.
+		self.stempool.remove_tx(entry.transaction())?;
 
 		// We now need to reconcile the stempool based on the new state of the txpool.
 		// Some stempool txs may no longer be valid and we need to evict them.
@@ -219,7 +237,7 @@ where
 		// rebuilding the aggregate and rechecking every proof and signature here would
 		// add pool-size-amplified cryptographic work while the pool write lock is held.
 		self.stempool
-			.reconcile_with_pool_aggregate(txpool_agg, header, secp)?;
+			.reconcile_with_pool_aggregate(txpool_agg, header, secp, promotion_budget)?;
 
 		Ok(())
 	}
@@ -250,19 +268,57 @@ where
 	/// under the write lock, and public fluff relay happens after the lock is
 	/// released.
 	pub fn submit_to_pool(
-		tx_pool: &RwLock<Self>,
+		tx_pool: &RecursiveRwLock<Self>,
 		src: TxSource,
 		tx: Transaction,
 		stem: bool,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<(), PoolError> {
-		let (context_id, adapter, pending_validations) = {
-			let tx_pool = tx_pool.read_recursive();
+		Self::submit_to_pool_internal(tx_pool, src, tx, stem, header, secp, None).map(|_| ())
+	}
+
+	/// Promote an expired transaction using a budget shared across the monitor
+	/// pass. Deferred transactions retain their original embargo timestamps.
+	pub fn submit_expired_to_pool(
+		tx_pool: &RecursiveRwLock<Self>,
+		tx: Transaction,
+		header: &BlockHeader,
+		budget: &mut PromotionBudget,
+		secp: &mut Secp256k1,
+	) -> Result<PromotionOutcome, PoolError> {
+		Self::submit_to_pool_internal(
+			tx_pool,
+			TxSource::EmbargoExpired,
+			tx,
+			false,
+			header,
+			secp,
+			Some(budget),
+		)
+	}
+
+	fn submit_to_pool_internal(
+		tx_pool: &RecursiveRwLock<Self>,
+		src: TxSource,
+		tx: Transaction,
+		stem: bool,
+		header: &BlockHeader,
+		secp: &mut Secp256k1,
+		mut promotion_budget: Option<&mut PromotionBudget>,
+	) -> Result<PromotionOutcome, PoolError> {
+		if let Some(budget) = promotion_budget.as_deref_mut() {
+			if !budget.charge_transaction(&tx) {
+				return Ok(PromotionOutcome::Deferred);
+			}
+		}
+		let (context_id, adapter, pending_validations, blockchain) = {
+			let tx_pool = tx_pool.read();
 			(
 				tx_pool.context_id,
 				tx_pool.adapter.clone(),
 				tx_pool.pending_validations.clone(),
+				tx_pool.blockchain.clone(),
 			)
 		};
 
@@ -270,6 +326,7 @@ where
 		// and excessive weight before hashing or consulting admission state. This
 		// deliberately skips rangeproof and kernel-signature verification.
 		tx.validate_read(context_id)?;
+		blockchain.verify_tx_not_confirmed(&tx)?;
 		let tx_hash = tx.hash(context_id)?;
 
 		// Fast read-only admission preflight. Never use private stempool
@@ -277,7 +334,7 @@ where
 		// transaction is allowed through so the locked path can preserve the
 		// documented stem-to-fluff promotion behavior.
 		{
-			let tx_pool = tx_pool.read_recursive();
+			let tx_pool = tx_pool.read();
 			if tx_pool.context_id != context_id {
 				return Err(PoolError::Other(format!(
 					"transaction context {} does not match pool context {}",
@@ -308,7 +365,7 @@ where
 		// and registration in the in-flight set. Avoid cryptographic work in that
 		// case as well.
 		{
-			let tx_pool = tx_pool.read_recursive();
+			let tx_pool = tx_pool.read();
 			if tx_pool.context_id != context_id {
 				return Err(PoolError::Other(format!(
 					"transaction context {} does not match pool context {}",
@@ -344,7 +401,19 @@ where
 					context_id, tx_pool.context_id
 				)));
 			}
-			tx_pool.admit_prevalidated(entry, stem, header, secp)?
+			// Reserve both full-pool aggregate passes against the current sizes
+			// under the write lock, before any admission mutation. Fallback uses
+			// the same budget after insertion; it never receives a fresh allowance.
+			if let Some(budget) = promotion_budget.as_deref_mut() {
+				if !budget.reserve_pool_work(
+					tx_pool.txpool.component_count(),
+					tx_pool.stempool.component_count(),
+					entry.transaction(),
+				) {
+					return Ok(PromotionOutcome::Deferred);
+				}
+			}
+			tx_pool.admit_prevalidated(entry, stem, header, secp, promotion_budget)?
 		};
 
 		if let PoolAddOutcome::Fluff(entry) = outcome {
@@ -354,7 +423,7 @@ where
 			}
 		}
 
-		Ok(())
+		Ok(PromotionOutcome::Accepted)
 	}
 
 	fn admit_prevalidated(
@@ -363,13 +432,18 @@ where
 		stem: bool,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<PoolAddOutcome, PoolError> {
+		// A block may have confirmed this transaction during signature/proof validation.
+		self.blockchain
+			.verify_tx_not_confirmed(entry.transaction())?;
+
 		// Quick check for duplicate txs.
 		// Our stempool is private and we do not want to reveal anything about the txs contained.
 		// If this is a stem tx and is already present in stempool then fluff by adding to txpool.
 		// Otherwise if already present in txpool return a "duplicate tx" error.
 		if stem && self.stempool.contains_tx(entry.transaction())? {
-			return self.admit_prevalidated(entry, false, header, secp);
+			return self.admit_prevalidated(entry, false, header, secp, promotion_budget);
 		} else if self.txpool.contains_tx(entry.transaction())? {
 			return Err(PoolError::DuplicateTx);
 		}
@@ -461,7 +535,7 @@ where
 		// already been inserted into stempool. Roll that insertion back if the
 		// fluff fallback also fails so a rejected submission cannot be relayed
 		// later by the Dandelion monitor.
-		if let Err(add_err) = self.add_to_txpool(&entry, header, secp) {
+		if let Err(add_err) = self.add_to_txpool(&entry, header, secp, promotion_budget) {
 			if stem {
 				if let Err(remove_err) = self.stempool.remove_tx(entry.transaction()) {
 					return Err(PoolError::Other(format!(
@@ -526,7 +600,7 @@ where
 
 	pub fn reconcile_reorg_cache(&mut self, header: &BlockHeader, secp: &mut Secp256k1) {
 		let entries = {
-			let cache = self.reorg_cache.read_recursive();
+			let cache = self.reorg_cache.read();
 			cache.iter().cloned().collect::<Vec<_>>()
 		};
 		debug!(
@@ -673,7 +747,7 @@ where
 			debug!("reconcile_block Started for block {:?}", block);
 
 			debug!("---------------- BEFORE START --------------");
-			let reorg_cache = self.reorg_cache.read_recursive();
+			let reorg_cache = self.reorg_cache.read();
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -707,7 +781,7 @@ where
 
 		if log_enabled!(Level::Debug) {
 			debug!("---------------- AFTER START --------------");
-			let reorg_cache = self.reorg_cache.read_recursive();
+			let reorg_cache = self.reorg_cache.read();
 
 			debug!("reorg_cache size: {}", reorg_cache.len());
 			for pe in reorg_cache.iter() {
@@ -786,12 +860,19 @@ where
 
 	/// Returns a vector of transactions from the txpool so we can build a
 	/// block from them.
+	/// For a locked pool, use `mining_snapshot` and release the lock before selection.
 	pub fn prepare_mineable_transactions(
 		&self,
 		secp: &mut Secp256k1,
 	) -> Result<Vec<Transaction>, PoolError> {
 		self.txpool
 			.prepare_mineable_transactions(self.config.mineable_max_weight, secp)
+	}
+
+	/// Capture authenticated public-pool entries for mining. Release the pool
+	/// lock before calling `prepare_mineable_transactions` on the owned snapshot.
+	pub fn mining_snapshot(&self) -> MiningSnapshot<B> {
+		self.txpool.mining_snapshot(self.config.mineable_max_weight)
 	}
 
 	// App sessions id

@@ -3039,8 +3039,9 @@ mod test {
 		// Test explicit protocol version.
 		for version in vec![ProtocolVersion(1), ProtocolVersion(2)] {
 			let mut vec = vec![];
-			ser::serialize(&mut vec, version, 0, &kernel).expect("serialized failed");
-			let kernel2: TxKernel = ser::deserialize_strict(&mut &vec[..], version, 0).unwrap();
+			ser::serialize(&mut vec, version, 0, &kernel, true).expect("serialized failed");
+			let kernel2: TxKernel =
+				ser::deserialize_strict(&mut &vec[..], version, 0, true).unwrap();
 			assert_eq!(
 				kernel2.features,
 				KernelFeatures::Plain {
@@ -3053,8 +3054,8 @@ mod test {
 
 		// Test with "default" protocol version.
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &kernel).expect("serialized failed");
-		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+		ser::serialize_default(0, &mut vec, &kernel, true).expect("serialized failed");
+		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 		assert_eq!(
 			kernel2.features,
 			KernelFeatures::Plain {
@@ -3073,8 +3074,8 @@ mod test {
 		.unwrap();
 		let mut bytes = vec![];
 
-		ser::serialize_default(0, &mut bytes, &kernel).unwrap();
-		let decoded: TxKernel = ser::deserialize_default(0, &mut &bytes[..]).unwrap();
+		ser::serialize_default(0, &mut bytes, &kernel, true).unwrap();
+		let decoded: TxKernel = ser::deserialize_default(0, &mut &bytes[..], true).unwrap();
 
 		assert_eq!(decoded.excess, kernel.excess);
 		assert_eq!(decoded.excess_sig, AggSigSignature::blank());
@@ -3094,8 +3095,8 @@ mod test {
 		};
 		let mut bytes = vec![];
 
-		ser::serialize_default(0, &mut bytes, &kernel).unwrap();
-		assert!(ser::deserialize_default::<TxKernel, _>(0, &mut &bytes[..]).is_err());
+		ser::serialize_default(0, &mut bytes, &kernel, true).unwrap();
+		assert!(ser::deserialize_default::<TxKernel, _>(0, &mut &bytes[..], true).is_err());
 	}
 
 	#[test]
@@ -3124,8 +3125,9 @@ mod test {
 		// Test explicit protocol version.
 		for version in vec![ProtocolVersion(1), ProtocolVersion(2)] {
 			let mut vec = vec![];
-			ser::serialize(&mut vec, version, 0, &kernel).expect("serialized failed");
-			let kernel2: TxKernel = ser::deserialize_strict(&mut &vec[..], version, 0).unwrap();
+			ser::serialize(&mut vec, version, 0, &kernel, true).expect("serialized failed");
+			let kernel2: TxKernel =
+				ser::deserialize_strict(&mut &vec[..], version, 0, true).unwrap();
 			assert_eq!(kernel.features, kernel2.features);
 			assert_eq!(kernel2.excess, commit);
 			assert_eq!(kernel2.excess_sig, sig.clone());
@@ -3133,8 +3135,8 @@ mod test {
 
 		// Test with "default" protocol version.
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &kernel).expect("serialized failed");
-		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+		ser::serialize_default(0, &mut vec, &kernel, true).expect("serialized failed");
+		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 		assert_eq!(kernel.features, kernel2.features);
 		assert_eq!(kernel2.excess, commit);
 		assert_eq!(kernel2.excess_sig, sig.clone());
@@ -3167,8 +3169,9 @@ mod test {
 		// Test explicit protocol version.
 		for version in vec![ProtocolVersion(1), ProtocolVersion(2)] {
 			let mut vec = vec![];
-			ser::serialize(&mut vec, version, 0, &kernel).expect("serialized failed");
-			let kernel2: TxKernel = ser::deserialize_strict(&mut &vec[..], version, 0).unwrap();
+			ser::serialize(&mut vec, version, 0, &kernel, true).expect("serialized failed");
+			let kernel2: TxKernel =
+				ser::deserialize_strict(&mut &vec[..], version, 0, true).unwrap();
 			assert_eq!(kernel.features, kernel2.features);
 			assert_eq!(kernel2.excess, commit);
 			assert_eq!(kernel2.excess_sig, sig.clone());
@@ -3176,8 +3179,8 @@ mod test {
 
 		// Test with "default" protocol version.
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &kernel).expect("serialized failed");
-		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+		ser::serialize_default(0, &mut vec, &kernel, true).expect("serialized failed");
+		let kernel2: TxKernel = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 		assert_eq!(kernel.features, kernel2.features);
 		assert_eq!(kernel2.excess, commit);
 		assert_eq!(kernel2.excess_sig, sig.clone());
@@ -3319,14 +3322,14 @@ mod test {
 		let expected = KernelFeatures::Plain {
 			fee: 10u32.try_into().unwrap(),
 		};
-		ser::serialize_default(0, &mut vec, &expected)?;
-		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
+		ser::serialize_default(0, &mut vec, &expected, true)?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..], true)?;
 		assert_eq!(features, expected);
 
 		let mut vec = vec![];
 		let expected = KernelFeatures::Coinbase;
-		ser::serialize_default(0, &mut vec, &expected)?;
-		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
+		ser::serialize_default(0, &mut vec, &expected, true)?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..], true)?;
 		assert_eq!(features, expected);
 
 		let mut vec = vec![];
@@ -3334,14 +3337,15 @@ mod test {
 			fee: 10u32.try_into().unwrap(),
 			lock_height: 100,
 		};
-		ser::serialize_default(0, &mut vec, &expected)?;
-		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
+		ser::serialize_default(0, &mut vec, &expected, true)?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..], true)?;
 		assert_eq!(features, expected);
 
 		// NRD kernel support not enabled by default.
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &(3u8, 10u64, 100u16)).expect("serialized failed");
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
+		ser::serialize_default(0, &mut vec, &(3u8, 10u64, 100u16), true)
+			.expect("serialized failed");
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..], true);
 		assert!(matches!(
 			res,
 			Err(ser::Error::CorruptedData(ref msg)) if msg == "NRD is disabled"
@@ -3349,8 +3353,8 @@ mod test {
 
 		// Additional kernel features unsupported.
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &(4u8)).expect("serialized failed");
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
+		ser::serialize_default(0, &mut vec, &(4u8), true).expect("serialized failed");
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..], true);
 		assert!(matches!(
 			res,
 			Err(ser::Error::CorruptedData(ref msg)) if msg == "Unknown kernel feature 4"
@@ -3365,8 +3369,8 @@ mod test {
 		global::set_local_nrd_enabled(true);
 
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &(3u8, 10u64, 100u16))?;
-		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..])?;
+		ser::serialize_default(0, &mut vec, &(3u8, 10u64, 100u16), true)?;
+		let features: KernelFeatures = ser::deserialize_default(0, &mut &vec[..], true)?;
 		assert_eq!(
 			features,
 			KernelFeatures::NoRecentDuplicate {
@@ -3377,8 +3381,8 @@ mod test {
 
 		// NRD with relative height 0 is invalid.
 		vec.clear();
-		ser::serialize_default(0, &mut vec, &(3u8, 10u64, 0u16))?;
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
+		ser::serialize_default(0, &mut vec, &(3u8, 10u64, 0u16), true)?;
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..], true);
 		assert!(matches!(
 			res,
 			Err(ser::Error::CorruptedData(ref msg))
@@ -3388,8 +3392,8 @@ mod test {
 		// NRD with relative height WEEK_HEIGHT+1 is invalid.
 		vec.clear();
 		let invalid_height = consensus::WEEK_HEIGHT + 1;
-		ser::serialize_default(0, &mut vec, &(3u8, 10u64, invalid_height as u16))?;
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
+		ser::serialize_default(0, &mut vec, &(3u8, 10u64, invalid_height as u16), true)?;
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..], true);
 		assert!(matches!(
 			res,
 			Err(ser::Error::CorruptedData(ref msg))
@@ -3398,8 +3402,8 @@ mod test {
 
 		// Kernel variant 4 (and above) is invalid.
 		let mut vec = vec![];
-		ser::serialize_default(0, &mut vec, &(4u8))?;
-		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..]);
+		ser::serialize_default(0, &mut vec, &(4u8), true)?;
+		let res: Result<KernelFeatures, _> = ser::deserialize_default(0, &mut &vec[..], true);
 		assert!(matches!(
 			res,
 			Err(ser::Error::CorruptedData(ref msg)) if msg == "Unknown kernel feature 4"

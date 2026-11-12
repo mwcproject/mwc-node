@@ -30,7 +30,7 @@ use mwc_core::ser::ProtocolVersion;
 use mwc_crates::crossbeam;
 use mwc_crates::crossbeam::channel::{RecvTimeoutError, TryRecvError};
 use mwc_crates::log::{debug, error, info, trace, warn};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_util::RateCounter;
 use std::any::Any;
@@ -253,9 +253,14 @@ impl ConnHandle {
 
 #[cfg(test)]
 pub(crate) fn disconnected_test_handles() -> (ConnHandle, StopHandle) {
-	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
-	drop(send_rx);
+	let (send, stop, receiver) = test_handles();
+	drop(receiver);
+	(send, stop)
+}
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn test_handles() -> (ConnHandle, StopHandle, crossbeam::channel::Receiver<Msg>) {
+	let (send_tx, send_rx) = crossbeam::channel::bounded(SEND_CHANNEL_CAP);
 	(
 		ConnHandle {
 			send_channel: send_tx,
@@ -265,20 +270,21 @@ pub(crate) fn disconnected_test_handles() -> (ConnHandle, StopHandle) {
 			reader_thread: None,
 			writer_thread: None,
 		},
+		send_rx,
 	)
 }
 
 pub struct Tracker {
 	/// Bytes we've sent.
-	pub sent_bytes: Arc<RwLock<RateCounter>>,
+	pub sent_bytes: Arc<RecursiveRwLock<RateCounter>>,
 	/// Bytes we've received.
-	pub received_bytes: Arc<RwLock<RateCounter>>,
+	pub received_bytes: Arc<RecursiveRwLock<RateCounter>>,
 }
 
 impl Tracker {
 	pub fn new() -> Tracker {
-		let received_bytes = Arc::new(RwLock::new(RateCounter::new()));
-		let sent_bytes = Arc::new(RwLock::new(RateCounter::new()));
+		let received_bytes = Arc::new(RecursiveRwLock::new(RateCounter::new()));
+		let sent_bytes = Arc::new(RecursiveRwLock::new(RateCounter::new()));
 		Tracker {
 			received_bytes,
 			sent_bytes,
@@ -301,6 +307,7 @@ pub fn listen<H>(
 	stream: TcpDataStream,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	tracker: Arc<Tracker>,
 	sync_state: Arc<SyncState>,
 	peer_name: String,
@@ -322,6 +329,7 @@ where
 		conn_handle.clone(),
 		version,
 		context_id,
+		block_extra,
 		handler,
 		send_rx,
 		stopped.clone(),
@@ -345,6 +353,7 @@ fn poll<H>(
 	conn_handle: ConnHandle,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	handler: H,
 	send_rx: crossbeam::channel::Receiver<Msg>,
 	stopped: Arc<AtomicBool>,
@@ -375,7 +384,7 @@ where
 				stopped: reader_stopped.clone(),
 			};
 			debug!("Started peer_read thread for {}", peer_name1);
-			let mut codec = Codec::new(version, context_id, reader);
+			let mut codec = Codec::new(version, context_id, block_extra, reader);
 
 			let mut secp = match Secp256k1::with_caps(ContextFlag::Commit) {
 				Ok(s) => s,
@@ -579,6 +588,7 @@ mod tests {
 			},
 			ProtocolVersion(5),
 			SEND_FULL_TEST_CONTEXT_ID,
+			false,
 		)
 		.unwrap();
 
@@ -611,6 +621,7 @@ mod tests {
 				},
 				ProtocolVersion(5),
 				SEND_BATCH_TEST_CONTEXT_ID,
+				false,
 			)
 			.unwrap();
 			send_channel.send(msg).unwrap();

@@ -125,7 +125,7 @@ impl HeaderHandler {
 			Err(e) => return Err(e),
 		}
 		if let Some(height) = parse_canonical_height(&input) {
-			match w(&self.chain)?.get_header_by_height(height) {
+			match w(&self.chain)?.get_body_header_by_height(height) {
 				Ok(header) => return Ok(BlockHeaderPrintable::from_header(&header)?),
 				Err(e) => {
 					let msg = format!("Header for height {}, {}", height, e);
@@ -192,7 +192,7 @@ impl HeaderHandler {
 		commit: Option<String>,
 	) -> Result<Hash, Error> {
 		if let Some(height) = height {
-			match w(&self.chain)?.get_header_by_height(height) {
+			match w(&self.chain)?.get_body_header_by_height(height) {
 				Ok(header) => return Ok(header.hash(w(&self.chain)?.get_context_id())?),
 				Err(e) => {
 					let msg = format!("Header for height {}, {}", height, e);
@@ -328,7 +328,7 @@ impl BlockHandler {
 			};
 			let mut block_count = 0;
 			for h in start_height..=end_height {
-				let header = match snapshot.get_header_by_height(h).map_err(|e| {
+				let header = match snapshot.get_body_header_by_height(h).map_err(|e| {
 					let msg = format!("Header for height {}, {}", h, e);
 					Error::chain_read_error(e, msg)
 				}) {
@@ -405,7 +405,7 @@ impl BlockHandler {
 	// Try to decode the string as a height or a hash.
 	fn parse_input(&self, input: String) -> Result<Hash, Error> {
 		if let Some(height) = parse_canonical_height(&input) {
-			match w(&self.chain)?.get_header_by_height(height) {
+			match w(&self.chain)?.get_body_header_by_height(height) {
 				Ok(header) => return Ok(header.hash(w(&self.chain)?.get_context_id())?),
 				Err(e) => {
 					let msg = format!("Header for height {}, {}", height, e);
@@ -424,7 +424,7 @@ impl BlockHandler {
 		commit: Option<String>,
 	) -> Result<Hash, Error> {
 		if let Some(height) = height {
-			match w(&self.chain)?.get_header_by_height(height) {
+			match w(&self.chain)?.get_body_header_by_height(height) {
 				Ok(header) => return Ok(header.hash(w(&self.chain)?.get_context_id())?),
 				Err(e) => {
 					let msg = format!("Header for height {}, {}", height, e);
@@ -505,6 +505,167 @@ mod tests {
 			))
 			.to_string_lossy()
 			.into_owned()
+	}
+
+	#[test]
+	fn height_queries_follow_body_head_during_header_sync_and_reorg() {
+		use super::super::chain_api::OutputHandler;
+		use mwc_chain::Options;
+		use mwc_core::core::{transaction, Block};
+		use mwc_core::libtx::{reward, ProofBuilder};
+		use mwc_core::{consensus, global, pow};
+		use mwc_crates::chrono::Duration;
+		use mwc_keychain::{ExtKeychain, Keychain};
+		use std::collections::HashSet;
+
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let chain_dir = unique_test_dir("height_queries_body_head");
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				0,
+				chain_dir.clone(),
+				Arc::new(mwc_chain::types::NoopAdapter {}),
+				global::get_genesis_block(&secp, 0).unwrap(),
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let keychain = ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
+		let make_block = |secp: &mut Secp256k1, prev: &BlockHeader, work: u32| {
+			let key = ExtKeychain::derive_key_id(1, work, 0, 0, 0).unwrap();
+			let txs = transaction::aggregate(0, &[], secp).unwrap();
+			let binding = chain
+				.coinbase_binding_for_template(secp, prev, &txs.body)
+				.unwrap();
+			let (output, kernel, opening) = reward::output_s2c(
+				0,
+				&keychain,
+				&ProofBuilder::new(secp, &keychain).unwrap(),
+				&key,
+				0,
+				prev.height + 1,
+				secp,
+				binding.digest().unwrap(),
+			)
+			.unwrap();
+			let mut block = Block::new(
+				0,
+				prev,
+				&[],
+				pow::Difficulty::from_num(u64::from(work)),
+				(output, kernel),
+				secp,
+			)
+			.unwrap();
+			block.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
+			block.header.timestamp = prev.timestamp + Duration::seconds(60);
+			block.header.pow.proof = pow::Proof::random(0, global::proofsize(0)).unwrap();
+			chain.set_txhashset_roots(secp, &mut block).unwrap();
+			block
+		};
+
+		// Apply A -> B, then learn header C without its body. Height-based API
+		// queries must still stop at B, while internal header sync can see C.
+		let a = make_block(&mut secp, &chain.head_header().unwrap(), 1);
+		chain
+			.process_block(&mut secp, a.clone(), Options::SKIP_POW, HashSet::new())
+			.unwrap();
+		let b = make_block(&mut secp, &a.header, 2);
+		chain
+			.process_block(&mut secp, b.clone(), Options::SKIP_POW, HashSet::new())
+			.unwrap();
+		let c = make_block(&mut secp, &b.header, 3);
+		chain
+			.process_block_header(&c.header, Options::SKIP_POW)
+			.unwrap();
+		let headers = HeaderHandler {
+			chain: Arc::downgrade(&chain),
+		};
+		let blocks = BlockHandler {
+			chain: Arc::downgrade(&chain),
+		};
+		let outputs = OutputHandler {
+			chain: Arc::downgrade(&chain),
+		};
+		assert_eq!(chain.get_header_by_height(3).unwrap(), c.header);
+		assert!(matches!(
+			headers.get_header("3".into()),
+			Err(Error::NotFound(_))
+		));
+		assert!(matches!(
+			headers.parse_inputs(Some(3), None, None),
+			Err(Error::NotFound(_))
+		));
+		assert!(matches!(
+			blocks.parse_input("3".into()),
+			Err(Error::NotFound(_))
+		));
+		assert!(matches!(
+			blocks.parse_inputs(Some(3), None, None),
+			Err(Error::NotFound(_))
+		));
+		assert!(matches!(
+			outputs.get_outputs_v2(None, Some(3), Some(3), None, None),
+			Err(Error::NotFound(_))
+		));
+		let listing = blocks.get_blocks(1, 10, 10, None).unwrap();
+		assert_eq!(listing.last_retrieved_height, 2);
+		assert_eq!(listing.blocks.len(), 2);
+		assert!(blocks
+			.get_blocks(3, 10, 10, None)
+			.unwrap()
+			.blocks
+			.is_empty());
+
+		// A higher-work header B' switches the header PMMR to A -> B'. The body
+		// head remains B. Both REST/RPC height selectors, ranges, and outputs must
+		// keep returning B and its unspent outputs, rather than the header-only fork.
+		let fork = make_block(&mut secp, &a.header, 10);
+		chain
+			.process_block_header(&fork.header, Options::SKIP_POW)
+			.unwrap();
+		let b_hash = b.hash(0).unwrap();
+		assert_eq!(chain.head().unwrap().last_block_h, b_hash);
+		assert_eq!(
+			chain.header_head().unwrap().last_block_h,
+			fork.hash(0).unwrap()
+		);
+		assert_eq!(
+			headers.get_header("2".into()).unwrap().hash,
+			b_hash.to_hex()
+		);
+		assert_eq!(headers.parse_inputs(Some(2), None, None).unwrap(), b_hash);
+		assert_eq!(blocks.parse_input("2".into()).unwrap(), b_hash);
+		assert_eq!(blocks.parse_inputs(Some(2), None, None).unwrap(), b_hash);
+		let listing = blocks.get_blocks(1, 10, 10, None).unwrap();
+		assert_eq!(listing.last_retrieved_height, 2);
+		assert_eq!(listing.blocks.len(), 2);
+		assert_eq!(listing.blocks[0].header.hash, a.hash(0).unwrap().to_hex());
+		assert_eq!(listing.blocks[1].header.hash, b_hash.to_hex());
+		let body_outputs = outputs
+			.get_outputs_v2(None, Some(2), Some(2), Some(false), Some(false))
+			.unwrap();
+		assert_eq!(body_outputs.len(), b.outputs().len());
+		assert_eq!(body_outputs[0].commit, b.outputs()[0].commitment());
+		assert!(!body_outputs[0].spent);
+
+		// Explicit hash requests still allow inspection of the competing header.
+		assert_eq!(
+			headers.get_header_v2(&fork.hash(0).unwrap()).unwrap().hash,
+			fork.hash(0).unwrap().to_hex()
+		);
+		drop(chain);
+		mwc_chain::pipe::release_context_data(0);
+		let _ = fs::remove_dir_all(&chain_dir);
 	}
 
 	#[test]

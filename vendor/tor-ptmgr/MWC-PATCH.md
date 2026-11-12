@@ -1,17 +1,29 @@
 # MWC tor-ptmgr patch
 
-This directory vendors `tor-ptmgr` 0.45.0 from crates.io, whose source commit is
-`009354f78d1a61214a878d6f1712a50844e6c215`.
+This directory vendors `tor-ptmgr` 0.48.0 from crates.io, whose source commit is
+[`7c038125baef924a4bf287429c192c5af606f79c`](https://gitlab.torproject.org/tpo/core/arti/-/tree/7c038125baef924a4bf287429c192c5af606f79c/crates/tor-ptmgr).
+
+## Upgrade review
+
+The published 0.48.0 `src/ipc.rs` is byte-for-byte identical to 0.47.0.
+Upstream has not fixed quiet-child shutdown or reaping after forced termination.
+The manifest is refreshed from the published 0.48.0 crate, including the updated
+Tor and non-Tor dependencies. The new upstream lint declarations in `src/lib.rs`
+are also included. The existing process supervisor and quiet-child regression
+test remain necessary and are unchanged.
+
+See [the vendor review](../README.md) for the other patch removed during this
+upgrade.
 
 ## Problem
 
-Upstream 0.45.0 moves the `Child`, its `ChildStdin`, and its blocking stdout
+Upstream 0.48.0 moves the `Child`, its `ChildStdin`, and its blocking stdout
 reader into one OS thread. That thread notices that `AsyncPtChild` was dropped
 only when it tries to forward another stdout line into the disconnected channel.
 After PT negotiation, `webtunnelclient` is normally quiet while waiting for
 SOCKS connections, so the blocked stdout read may never return and stdin stays
 open. A failed Arti bridge attempt can therefore leave its old
-`webtunnelclient` running while subsequent bridges start more instances.
+`webtunnelclient` running while subsequent connection attempts start more instances.
 
 ## Exact changes
 
@@ -26,7 +38,7 @@ open. A failed Arti bridge attempt can therefore leave its old
   message and joins the supervisor. The supervisor closes stdin, waits up to
   `GRACEFUL_EXIT_TIME` (five seconds), then kills and reaps a child which did not
   exit. Joining guarantees that a failed PT is gone before Arti can start the
-  next bridge attempt.
+  next connection attempt.
 - [`src/ipc.rs`](src/ipc.rs),
   `dropping_quiet_child_stops_and_reaps_process`: adds a regression test whose
   child becomes quiet and exits only after stdin EOF. This reproduces the
@@ -34,10 +46,7 @@ open. A failed Arti bridge attempt can therefore leave its old
 - [`../../p2p/src/tor/arti.rs`](../../p2p/src/tor/arti.rs),
   `ArtiCore::bootstrap_tor_client`: gives failed Arti runtime destruction ten
   seconds, so the supervisor's bounded five-second graceful/forced shutdown can
-  finish before the next bridge is tried.
-- [`../../p2p/src/tor/arti.rs`](../../p2p/src/tor/arti.rs),
-  `ArtiCore::webtunnel_client_filename`: uses the target platform's executable
-  suffix, allowing Windows builds to find the packaged `webtunnelclient.exe`.
+  finish before retrying the configured connection.
 - [`../../Cargo.toml`](../../Cargo.toml), `[patch.crates-io]`: redirects
   `tor-ptmgr` to this patched source.
 

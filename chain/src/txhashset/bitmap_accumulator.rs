@@ -1153,7 +1153,7 @@ mod tests {
 
 		// Serialize
 		let mut cursor = Cursor::new(Vec::<u8>::new());
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Writeable::write(&block, &mut writer).unwrap();
 
 		// Check encoding type and length
@@ -1165,14 +1165,14 @@ mod tests {
 
 		// Deserialize
 		cursor.set_position(0);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		let block2: BitmapBlock = Readable::read(&mut reader).unwrap();
 		assert_eq!(block, block2);
 	}
 
 	fn serialized_bitmap_segment_prefix(identifier: SegmentIdentifier, n_blocks: u16) -> Vec<u8> {
 		let mut cursor = Cursor::new(Vec::<u8>::new());
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Writeable::write(&identifier, &mut writer).unwrap();
 		writer.write_u16(n_blocks).unwrap();
 		cursor.into_inner()
@@ -1181,7 +1181,7 @@ mod tests {
 	fn append_empty_bitmap_block(bytes: &mut Vec<u8>, n_chunks: u8) {
 		let mut cursor = Cursor::new(bytes);
 		cursor.set_position(cursor.get_ref().len() as u64);
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		writer.write_u8(n_chunks).unwrap();
 		Writeable::write(&BitmapBlockSerialization::Positive, &mut writer).unwrap();
 		writer.write_u16(0).unwrap();
@@ -1194,13 +1194,13 @@ mod tests {
 	fn append_empty_segment_proof(bytes: &mut Vec<u8>) {
 		let mut cursor = Cursor::new(bytes);
 		cursor.set_position(cursor.get_ref().len() as u64);
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		writer.write_u64(0).unwrap();
 	}
 
 	fn read_bitmap_segment(bytes: Vec<u8>) -> Result<BitmapSegment, ser::Error> {
 		let mut cursor = Cursor::new(bytes);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Readable::read(&mut reader)
 	}
 
@@ -1208,7 +1208,7 @@ mod tests {
 		let mut bytes = Vec::<u8>::new();
 		append_empty_segment_proof(&mut bytes);
 		let mut cursor = Cursor::new(bytes);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Readable::read(&mut reader).unwrap()
 	}
 
@@ -1272,14 +1272,14 @@ mod tests {
 		chunk.set((BitmapChunk::LEN_BITS - 1) as u64, true).unwrap();
 
 		let mut cursor = Cursor::new(Vec::<u8>::new());
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Writeable::write(&chunk, &mut writer).unwrap();
 		writer.write_u8(7).unwrap();
 
 		assert_eq!(cursor.get_ref().len(), BitmapChunk::LEN_BYTES + 1);
 
 		cursor.set_position(0);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		let chunk2: BitmapChunk = Readable::read(&mut reader).unwrap();
 		assert_eq!(chunk, chunk2);
 		assert_eq!(reader.read_u8().unwrap(), 7);
@@ -1297,7 +1297,7 @@ mod tests {
 	fn bitmap_chunk_read_rejects_truncated_input() {
 		let bytes = vec![0u8; BitmapChunk::LEN_BYTES - 1];
 		let mut cursor = Cursor::new(bytes);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 
 		assert!(Readable::read(&mut reader)
 			.map(|_: BitmapChunk| ())
@@ -1489,7 +1489,7 @@ mod tests {
 
 	fn write_block(block: &BitmapBlock) -> Result<(), ser::Error> {
 		let mut bytes = Vec::<u8>::new();
-		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut bytes, ProtocolVersion(1), 0, true);
 		Writeable::write(block, &mut writer)
 	}
 
@@ -1594,7 +1594,7 @@ mod tests {
 	) -> Result<BitmapBlock, ser::Error> {
 		let mut bytes = Vec::<u8>::new();
 		let mut cursor = Cursor::new(&mut bytes);
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		writer.write_u8(n_chunks).unwrap();
 		Writeable::write(&mode, &mut writer).unwrap();
 		writer.write_u16(indexes.len() as u16).unwrap();
@@ -1605,7 +1605,7 @@ mod tests {
 		drop(cursor);
 
 		let mut cursor = Cursor::new(bytes);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Readable::read(&mut reader)
 	}
 
@@ -1616,7 +1616,7 @@ mod tests {
 	) -> Result<BitmapBlock, ser::Error> {
 		let mut bytes = Vec::<u8>::new();
 		let mut cursor = Cursor::new(&mut bytes);
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		writer.write_u8(n_chunks).unwrap();
 		Writeable::write(&mode, &mut writer).unwrap();
 		writer.write_u16(count).unwrap();
@@ -1624,14 +1624,14 @@ mod tests {
 		drop(cursor);
 
 		let mut cursor = Cursor::new(bytes);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Readable::read(&mut reader)
 	}
 
 	fn read_raw_bitmap_block(n_chunks: u8, bytes: &[u8]) -> Result<BitmapBlock, ser::Error> {
 		let mut encoded = Vec::<u8>::new();
 		let mut cursor = Cursor::new(&mut encoded);
-		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut writer = BinWriter::new(&mut cursor, ProtocolVersion(1), 0, true);
 		writer.write_u8(n_chunks).unwrap();
 		Writeable::write(&BitmapBlockSerialization::Raw, &mut writer).unwrap();
 		writer.write_fixed_bytes(bytes).unwrap();
@@ -1639,7 +1639,7 @@ mod tests {
 		drop(cursor);
 
 		let mut cursor = Cursor::new(encoded);
-		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0);
+		let mut reader = BinReader::new(&mut cursor, ProtocolVersion(1), 0, true);
 		Readable::read(&mut reader)
 	}
 

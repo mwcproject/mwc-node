@@ -16,8 +16,6 @@ use crate::network_status;
 use crate::tor::arti;
 use crate::types::TorConfig;
 use crate::Error;
-use mwc_crates::arti_client::config::pt::TransportConfigBuilder;
-use mwc_crates::arti_client::config::BridgeConfigBuilder;
 use mwc_crates::arti_client::{BootstrapBehavior, TorClient, TorClientConfig};
 use mwc_crates::chrono::Utc;
 use mwc_crates::digest::Digest;
@@ -28,7 +26,6 @@ use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::{error, info};
 use mwc_crates::rand;
 use mwc_crates::rand::seq::IndexedRandom;
-use mwc_crates::rand::RngExt;
 use mwc_crates::rustls;
 use mwc_crates::safelog::DisplayRedacted;
 use mwc_crates::sha2::Sha256;
@@ -58,87 +55,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
-
-static COMMUNITY_TNLS: &[&str] = &[
-	"010D2A4DD97D7E58698FBE84788986387016AA74",
-	"explorer.floonet.mwc.mw",
-	"",
-	"8E67E5AFA67083259FA67A7AD4150D39BA4F2691",
-	"mwc7132.mwc.mw",
-	"mwc7132",
-	"E930242BA63962484760BDAEBA30903054A42672",
-	"host1.mwc.mw",
-	"host1",
-	"FE913D629480F54C92F9C70CC5E64C1604C0898B",
-	"host2.mwc.mw",
-	"host2",
-	"9DADEB404DFA3896737326676A7FB9F8440B6FC8",
-	"mwc713.mwc.mw",
-	"713",
-	"392170959815E0227C185A1EC8807BAFF31C2074",
-	"host4.mwc.mw",
-	"host4",
-	"CA1D23F317B14992EF74DF60BA8ABCD1A3AC8E5C",
-	"host5.mwc.mw",
-	"hst5",
-	"A61D94F88CE58CA0F92F54E733052A5051AE84DD",
-	"seed1.mwc.mw",
-	"sd1",
-	"19C9B10CAC330B8CC4ED8563104C1050E2C59320",
-	"host6.mwc.mw",
-	"h6",
-	"799B148FDAF71E5AED9550B8FB6B4D597FCBE4EA",
-	"mwc7135.mwc.mw",
-	"c7135",
-	"4731F1D06F75E78FD18F5D64A64C4E2CA5DD0FB9",
-	"mainnet.seed2.mwc.mw",
-	"mseed2",
-	"16AE81F9464924F8BEA110B6089017E14461E9D5",
-	"host8.mwc.mw",
-	"ht8",
-	"795455F7DFBD4B6FB6A6D18E06658F91666D1AAE",
-	"host9.mwc.mw",
-	"hot9",
-	"1FC6FA74E7AC1B804A15D90241DFD2DF4F670054",
-	"mwc7134.mwc.mw",
-	"7134",
-	"51F94DC699C4433947FB7F72B74A55FD8F596D1A",
-	"host10.mwc.mw",
-	"ht10",
-	"9DF6CCC1C2D3941CD885EA23B126C94A04C8B9BE",
-	"host7.mwc.mw",
-	"host7",
-	"730D9CB09F0E61B158CBD53AB8B99F29B285BA79",
-	"seed2.mwc.mw",
-	"sd2",
-	"5C0F860654F2746B13302D259828B85FB3EE83C5",
-	"mwcseed.ddns.net",
-	"mwseed",
-	"F346EE08880288F4D9DD56B27E366CC18EB79B7C",
-	"explorer.mwc.mw",
-	"expmn",
-	"C144204E91CE41B28E040EB99CE8F8CF3DE83FF6",
-	"host11.mwc.mw",
-	"h11",
-	"6AA6EE7EF3D9A0318AEAEC17612F6B18FA681B08",
-	"mqs.mwc.mw",
-	"mqs",
-	"FB1502CA83CC6AD00831B15C4362D7F0327615CE",
-	"ftp.mwc.mw",
-	"ftp",
-	"76DFFC7657F839FB123241CB92A050F686B33FC4",
-	"host13.mwc.mw",
-	"hs13",
-	"9DF6CCC1C2D3941CD885EA23B126C94A04C8B9BE",
-	"host7.mwc.mw",
-	"host7",
-	"F2508B6EE2004317142CF950EDCD8BA57C37C1D9",
-	"host14.mwc.mw",
-	"host14",
-	"CA4F7DE40C06D2DB092E1CA54C4E0244803BB488",
-	"host12.mwc.mw",
-	"st12",
-];
 
 static ARTI_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -218,7 +134,7 @@ struct ArtiOnlineSince {
 
 lazy_static! {
 	// It is a tor server only running instance, in case of libraries can be shared by multiple nodes and wallets
-	static ref TOR_ARTI_INSTANCE: mwc_crates::parking_lot::RwLock<Option<ArtiCore>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_ARTI_INSTANCE: mwc_crates::parking_lot::RecursiveRwLock<Option<ArtiCore>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Tor instance ID. We can't store it with ArtiCore because of the access
 	static ref TOR_ARTI_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	// Tor service full restart request. Value 0 - not requsted. Otherwise next ArtiCore instance_id
@@ -226,20 +142,20 @@ lazy_static! {
 	// Start of the currently published Arti generation. Pairing the timestamp
 	// with its generation prevents a reader from applying an old timestamp to a
 	// newly published client while a restart is in progress.
-	static ref TOR_ONLINE_SINCE: mwc_crates::parking_lot::RwLock<Option<ArtiOnlineSince>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_ONLINE_SINCE: mwc_crates::parking_lot::RecursiveRwLock<Option<ArtiOnlineSince>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Monitoring thread. Only one instance is allowed
-	static ref TOR_MONITORING_THREAD : mwc_crates::parking_lot::RwLock<Option<std::thread::JoinHandle<()>>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_MONITORING_THREAD : mwc_crates::parking_lot::RecursiveRwLock<Option<std::thread::JoinHandle<()>>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Stores monitor thread panics observed outside stop_arti() so synchronous cleanup can report them.
-	static ref TOR_MONITORING_THREAD_ERROR: mwc_crates::parking_lot::RwLock<Option<String>> = mwc_crates::parking_lot::RwLock::new(None);
+	static ref TOR_MONITORING_THREAD_ERROR: mwc_crates::parking_lot::RecursiveRwLock<Option<String>> = mwc_crates::parking_lot::RecursiveRwLock::new(None);
 	// Serialize start/stop so callers never observe a partially published Arti startup or shutdown.
 	static ref TOR_ARTI_START_STOP_LOCK: mwc_crates::parking_lot::Mutex<()> = mwc_crates::parking_lot::Mutex::new(());
 	// Reistered active objects. We don't want to restart TOR until any onject does exist
-	static ref TOR_ACTIVE_OBJECTS:  mwc_crates::parking_lot::RwLock<HashSet<String>> = mwc_crates::parking_lot::RwLock::new(HashSet::new());
+	static ref TOR_ACTIVE_OBJECTS:  mwc_crates::parking_lot::RecursiveRwLock<HashSet<String>> = mwc_crates::parking_lot::RecursiveRwLock::new(HashSet::new());
 	// Since arti os global, using the global flag for Atri beetstrap interruption.
 	// Needed for clear exit while tor is still starting
 	static ref SHUTDOWN_ARTI: CancellationToken = CancellationToken::new();
 	/// It is ARTI session long token. For example when we want stop the wallet/node, but not the whole app.
-	static ref CANCELLING_ARTI: mwc_crates::parking_lot::RwLock<HashMap<u32,CancellationToken>> = mwc_crates::parking_lot::RwLock::new(HashMap::new());
+	static ref CANCELLING_ARTI: mwc_crates::parking_lot::RecursiveRwLock<HashMap<u32,CancellationToken>> = mwc_crates::parking_lot::RecursiveRwLock::new(HashMap::new());
 }
 
 pub fn init_arti_cancelling(context_id: u32) {
@@ -313,7 +229,7 @@ pub fn is_arti_cancelled(context_id: u32) -> bool {
 	// token registered. Treating a missing registration as cancelled is the more
 	// conservative behavior we want for context-scoped operations.
 	CANCELLING_ARTI
-		.read_recursive()
+		.read()
 		.get(&context_id)
 		.map(CancellationToken::is_cancelled)
 		.unwrap_or(true)
@@ -326,7 +242,7 @@ pub fn is_arti_cancelled(context_id: u32) -> bool {
 /// cancel the shared token stored in CANCELLING_ARTI.
 pub fn get_arti_cancell_token(context_id: u32) -> Option<CancellationToken> {
 	CANCELLING_ARTI
-		.read_recursive()
+		.read()
 		.get(&context_id)
 		.filter(|token| !token.is_cancelled())
 		.map(|token| token.child_token())
@@ -425,7 +341,7 @@ pub fn get_arti_online_duration() -> Option<Duration> {
 		return None;
 	}
 
-	let online_since = (*TOR_ONLINE_SINCE.read_recursive())?;
+	let online_since = (*TOR_ONLINE_SINCE.read())?;
 	let tor_version = TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst);
 	let restart_requested = TOR_RESTART_REQUEST.load(Ordering::SeqCst);
 	if online_since.generation != tor_version || restart_requested != tor_version {
@@ -440,7 +356,7 @@ pub fn is_arti_healthy() -> bool {
 		return false;
 	}
 
-	let guard = match TOR_ARTI_INSTANCE.try_read_recursive() {
+	let guard = match TOR_ARTI_INSTANCE.try_read() {
 		Some(guard) => guard,
 		None => return false,
 	};
@@ -480,7 +396,7 @@ fn shutdown_bootstrapped_tor_client(tor_rt: Option<(Arc<TorClient<PreferredRunti
 // after the wrapping all old ids will be free
 pub fn allocate_arti_object_id() -> u64 {
 	ARTI_OBJECT_ID
-		.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+		.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
 			Some(current.wrapping_add(1))
 		})
 		.unwrap_or(0)
@@ -572,7 +488,7 @@ pub fn start_arti(
 			let mut last_running_time = Instant::now();
 			let mut expiration_time = expiration_time;
 			loop {
-				if TOR_MONITORING_THREAD.read_recursive().is_none() || is_shutdown_arti() {
+				if TOR_MONITORING_THREAD.read().is_none() || is_shutdown_arti() {
 					break;
 				}
 
@@ -616,7 +532,7 @@ pub fn start_arti(
 					continue;
 				}
 				for _ in 0..30 {
-					if TOR_MONITORING_THREAD.read_recursive().is_none() || is_shutdown_arti() {
+					if TOR_MONITORING_THREAD.read().is_none() || is_shutdown_arti() {
 						break;
 					}
 					thread::sleep(Duration::from_secs(1));
@@ -697,12 +613,12 @@ fn stop_start_arti(start_new_client: bool) -> i64 {
 	let context_ids = release_arti_cancelling_all();
 
 	let mut wait_counter = 0;
-	while TOR_ACTIVE_OBJECTS.read_recursive().len() > 0 {
+	while TOR_ACTIVE_OBJECTS.read().len() > 0 {
 		thread::sleep(Duration::from_secs(1));
 		wait_counter += 1;
 		if wait_counter % 20 == 0 {
 			let objects = TOR_ACTIVE_OBJECTS
-				.read_recursive()
+				.read()
 				.iter()
 				.cloned()
 				.collect::<Vec<_>>()
@@ -741,7 +657,7 @@ pub fn stop_arti() -> Result<(), Error> {
 		}
 	}
 
-	if TOR_ARTI_INSTANCE.read_recursive().is_some() {
+	if TOR_ARTI_INSTANCE.read().is_some() {
 		stop_start_arti(false);
 		TOR_RESTART_REQUEST.store(
 			TOR_ARTI_INSTANCE_ID.load(Ordering::SeqCst),
@@ -750,9 +666,9 @@ pub fn stop_arti() -> Result<(), Error> {
 	}
 
 	// Checking if nothing left alive
-	debug_assert!(TOR_ARTI_INSTANCE.read_recursive().is_none());
-	debug_assert!(TOR_MONITORING_THREAD.read_recursive().is_none());
-	debug_assert!(TOR_ACTIVE_OBJECTS.read_recursive().len() == 0);
+	debug_assert!(TOR_ARTI_INSTANCE.read().is_none());
+	debug_assert!(TOR_MONITORING_THREAD.read().is_none());
+	debug_assert!(TOR_ACTIVE_OBJECTS.read().len() == 0);
 
 	if let Some(e) = first_error {
 		Err(e)
@@ -768,7 +684,7 @@ where
 	if is_arti_restarting() {
 		return Err(Error::TorRestarting);
 	}
-	let guard = TOR_ARTI_INSTANCE.read_recursive();
+	let guard = TOR_ARTI_INSTANCE.read();
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	f(&arti.tor_client)
 }
@@ -783,7 +699,7 @@ where
 		return Err(Error::TorRestarting);
 	}
 
-	let guard = TOR_ARTI_INSTANCE.read_recursive();
+	let guard = TOR_ARTI_INSTANCE.read();
 	let arti = guard.as_ref().ok_or(Error::TorNotInitialized)?;
 	let atri_rt = &arti.tor_runtime;
 
@@ -793,10 +709,11 @@ where
 
 	// slow path: already inside the global runtime → spawn + join
 	let res = thread::scope(|s| {
-		let r = s
-			.spawn(|| {
+		let r = thread::Builder::new()
+			.spawn_scoped(s, || {
 				atri_rt.block_on(fut) // runs on different thread
 			})
+			.map_err(|e| Error::Internal(format!("failed to spawn Arti async worker: {}", e)))?
 			.join()
 			.map_err(|_| Error::Internal("run_async_block join error".into()))?;
 		Ok::<R, Error>(r)
@@ -840,7 +757,7 @@ fn restart_arti(start_new_client: bool, context_ids: Vec<u32>) -> i64 {
 	// reconnect without manual intervention once Tor/network conditions recover.
 	//
 	// ArtiCore::new can also fail before bootstrap for local setup/configuration
-	// reasons such as malformed bridge config, missing webtunnelclient,
+	// reasons such as malformed bridge/proxy config, an unavailable transport helper,
 	// invalid create_time.txt, or filesystem errors. Separating those permanent
 	// failures from retryable bootstrap failures would require more state than
 	// this monitor currently carries: restart_arti/stop_start_arti would need to
@@ -902,9 +819,6 @@ pub struct ArtiCore {
 	base_dir: PathBuf,
 }
 
-const WEB: &str = "web";
-const TNL: &str = "tunnel";
-
 impl ArtiCore {
 	/// Init tor service. Note, the service might be reset and recreated, so all dependent objects might be dropped
 	/// Return: <ArtiCore, expiration time>
@@ -925,92 +839,42 @@ impl ArtiCore {
 			return Err(Error::Interrupted);
 		}
 
-		let (mut tor_client_config, mut expiration_time) = Self::build_config(
-			&config.webtunnel_bridge,
-			base_dir,
-			print_start_message,
-			cleanup_arti_data,
-		)?;
-		// We now let the Arti client start and bootstrap a connection to the network.
-		// (This takes a while to gather the necessary consensus state, etc.)
-
-		let (mut tor_rt, mut error) = match Self::bootstrap_tor_client(tor_client_config) {
-			Ok(tor_rt) => (Some(tor_rt), None),
-			Err(e) => {
-				if print_start_message {
-					println!("Unable to start Tor with direct connection to Tor network...");
+		let (tor_client_config, expiration_time) =
+			Self::build_config(config, base_dir, print_start_message, cleanup_arti_data)?;
+		// Bootstrap only the route the user selected. A failed direct connection
+		// must never opt the user into a bridge, and a failed bridge/proxy must
+		// never fall back to a direct connection.
+		let tor_rt = match Self::bootstrap_tor_client(tor_client_config) {
+			Ok(tor_rt) => tor_rt,
+			Err(error) => {
+				if is_shutdown_arti() {
+					return Err(Error::Interrupted);
 				}
-				(None, Some(e))
+				if print_start_message {
+					println!(
+						"Unable to start Tor with the configured connection to the Tor network."
+					);
+				}
+				info!("Arti bootstrap error report: {}", error.report());
+				return Err(error);
 			}
 		};
 
 		if is_shutdown_arti() {
-			shutdown_bootstrapped_tor_client(tor_rt.take());
+			shutdown_bootstrapped_tor_client(Some(tor_rt));
 			return Err(Error::Interrupted);
 		}
 
-		if tor_rt.is_none() && config.webtunnel_bridge.is_none() {
-			// connecting to the bridges
-
-			// Let's try to connect to some of community bridges
-			let mut bridge_num = 0;
-			let mut rng = rand::rng();
-			for _ in 0..3 {
-				debug_assert!(COMMUNITY_TNLS.len() % 3 == 0);
-				let br_idx = rng.random_range(0..COMMUNITY_TNLS.len() / 3);
-
-				let bridge = format!(
-					"{}{} {} {} url=https://{}/{}{}{}",
-					WEB,
-					TNL,
-					"10.0.0.2:443",
-					COMMUNITY_TNLS[br_idx * 3],
-					COMMUNITY_TNLS[br_idx * 3 + 1],
-					WEB,
-					TNL,
-					COMMUNITY_TNLS[br_idx * 3 + 2]
-				);
-
-				(tor_client_config, expiration_time) = Self::build_config(
-					&Some(bridge.to_string()),
-					base_dir,
-					print_start_message,
-					cleanup_arti_data,
-				)?;
-
-				(tor_rt, error) = match Self::bootstrap_tor_client(tor_client_config) {
-					Ok(cl) => (Some(cl), None),
-					Err(e) => (None, Some(e)),
-				};
-
-				if is_shutdown_arti() {
-					shutdown_bootstrapped_tor_client(tor_rt.take());
-					return Err(Error::Interrupted);
-				}
-
-				bridge_num += 1;
-				if tor_rt.is_some() || bridge_num >= 3 {
-					break;
-				}
-			}
-		}
-
-		match tor_rt {
-			Some((tor_client, rt)) => Ok((
-				ArtiCore {
-					tor_runtime: rt,
-					tor_client,
-					config: config.clone(),
-					base_dir: base_dir.into(),
-				},
-				expiration_time,
-			)),
-			None => {
-				let error = error.unwrap_or(Error::Internal("Unknown tor bootstrap error".into()));
-				info!("Arti bootstrap error report: {}", error.report());
-				return Err(error);
-			}
-		}
+		let (tor_client, tor_runtime) = tor_rt;
+		Ok((
+			ArtiCore {
+				tor_runtime,
+				tor_client,
+				config: config.clone(),
+				base_dir: base_dir.into(),
+			},
+			expiration_time,
+		))
 	}
 
 	fn bootstrap_tor_client(
@@ -1097,7 +961,10 @@ impl ArtiCore {
 						} else {
 							let elapsed = Instant::now().duration_since(last_new_progress_time);
 							if elapsed >= Duration::from_secs(120) {
-								error!("Arti not able to make any bootstrap progress during {} seconds", elapsed.as_secs());
+								error!(
+									"Arti not able to make any bootstrap progress during {} seconds",
+									elapsed.as_secs()
+								);
 								let error = abort_bootstrap_process(
 									bootstap_process,
 									Error::TorProcess(
@@ -1145,7 +1012,7 @@ impl ArtiCore {
 			Err(e) => {
 				// The managed PT gets five seconds to exit gracefully before its
 				// supervisor kills and reaps it. Give runtime destruction enough
-				// time to finish that cleanup before trying the next bridge.
+				// time to finish that cleanup before retrying the configured connection.
 				arti_rt.shutdown_timeout(Duration::from_secs(10));
 				Err(e)
 			}
@@ -1298,78 +1165,57 @@ impl ArtiCore {
 		res
 	}
 
-	fn webtunnel_client_filename() -> String {
-		// Release builds use the native executable suffix. In particular, the
-		// Windows package contains webtunnelclient.exe, while Unix packages use
-		// webtunnelclient without a suffix.
-		format!("webtunnelclient{}", std::env::consts::EXE_SUFFIX)
-	}
-
-	// return config and expiration time
+	// Return the Arti config and its cache expiration time.
 	fn build_config(
-		webtunnel_bridge: &Option<String>,
+		config: &TorConfig,
 		base_dir: &Path,
 		print_start_message: bool,
 		cleanup_arti_data: bool,
 	) -> Result<(TorClientConfig, i64), Error> {
 		let mut builder = TorClientConfig::builder();
-
-		// Usually we are using tunnel if without tunnel tor didn't start
-		let mut connection_path = "direct".to_string();
-		if let Some(bridge_line) = webtunnel_bridge {
-			// bridge_line - tunnel connection string
-			// Tor bridge lines are not treated as secrets here; normally they are
-			// publicly available bridge descriptors rather than credentials.
-			connection_path = format!("bridge_{}", Self::hash_str(bridge_line));
-
+		let connection_path = if let Some(connection) = &config.tor_bridge {
+			connection.apply(&mut builder)?;
+			for (index, transport) in connection.transports.iter().enumerate() {
+				if let Some(path) = &transport.path {
+					let metadata = fs::metadata(path).map_err(|error| {
+						Error::TorConfig(format!(
+							"Unable to access tor_bridge transport {} helper {}: {}. Install the helper and configure its executable path.",
+							index + 1, path, error
+						))
+					})?;
+					if !metadata.is_file() {
+						return Err(Error::TorConfig(format!(
+							"tor_bridge transport {} helper must be an executable file: {}",
+							index + 1,
+							path
+						)));
+					}
+				}
+			}
+			// Hash every route option, including proxy and transport settings, to
+			// keep independent route state separate without exposing credentials
+			// or bridge parameters in directory names or application logs.
+			// tor_bridge is ordinary configuration under the project's security policy;
+			// this serialized copy does not require zeroization.
+			let encoded = mwc_crates::serde_json::to_string(&connection)
+				.map_err(|_| Error::TorConfig("Unable to encode Tor connection settings".into()))?;
 			if print_start_message {
-				println!("Starting Tor with a bridge connection to Tor network, please wait...");
+				println!(
+					"Starting Tor with the configured bridge/proxy connection, please wait..."
+				);
 			}
-
-			info!("Starting Arti with a bridge {}", bridge_line);
-			// webtunnelclient location. Should be located in the same dir where our executable is located
-			let exe = std::env::current_exe().map_err(|e| {
-				Error::TorConfig(format!("Failed to locate executable path, {}", e))
-			})?; // /full/path/to/my_bin
-			let path = exe
-				.parent()
-				.ok_or(Error::TorConfig("Failed to locate executable path".into()))?;
-			let client_path = path.join(Self::webtunnel_client_filename());
-
-			if !client_path.try_exists().map_err(|e| {
-				Error::TorConfig(format!(
-					"Unable to check pluggable webtunnel client {}: {}",
-					client_path.display(),
-					e
-				))
-			})? {
-				return Err(Error::TorConfig(format!(
-					"Unable to find pluggable webtunnel client {}",
-					client_path.display()
-				)));
-			}
-
-			let bridge: BridgeConfigBuilder = bridge_line.parse().map_err(|e| {
-				Error::TorConfig(format!(
-					"Unable to parse the bridge line: {}  Error: {}",
-					bridge_line, e
-				))
-			})?;
-			builder.bridges().bridges().push(bridge);
-			let mut transport = TransportConfigBuilder::default();
-			transport
-				.protocols(vec!["webtunnel".parse().map_err(|e| {
-					Error::TorConfig(format!("Unknown protocol, {}", e))
-				})?])
-				.path(CfgPath::new_literal(client_path))
-				.run_on_startup(true);
-			builder.bridges().transports().push(transport);
+			info!("Starting Arti with an explicitly configured bridge/proxy connection");
+			format!("bridge_{}", Self::hash_str(&encoded))
 		} else {
+			builder.bridges().enabled(BoolOrAuto::Explicit(false));
 			if print_start_message {
-				println!("Starting Tor with a direct connection to Tor network, please wait...");
+				println!(
+					"Starting Tor with a direct connection to the Tor network, please wait..."
+				);
 			}
-			info!("Starting Arti without a bridge");
-		}
+			info!("Starting Arti with a direct connection");
+			"direct".to_string()
+		};
 
 		// Setup Ethemeral Key Store because we don't want store tor keys anywhere
 		builder
@@ -1702,7 +1548,8 @@ fn build_config_handles_extreme_creation_timestamps() {
 		fs::write(&timestamp_file, timestamp.to_string()).unwrap();
 
 		let before = Utc::now().timestamp();
-		let (_, expiration_time) = ArtiCore::build_config(&None, dir.path(), false, false).unwrap();
+		let (_, expiration_time) =
+			ArtiCore::build_config(&TorConfig::default(), dir.path(), false, false).unwrap();
 		let rewritten_timestamp = fs::read_to_string(&timestamp_file)
 			.unwrap()
 			.trim()
@@ -1728,7 +1575,7 @@ fn build_config_rejects_malformed_creation_timestamp_without_cleanup() {
 	fs::write(&timestamp_file, "not-a-timestamp").unwrap();
 	fs::write(&marker_file, "keep").unwrap();
 
-	let res = ArtiCore::build_config(&None, dir.path(), false, false);
+	let res = ArtiCore::build_config(&TorConfig::default(), dir.path(), false, false);
 
 	assert!(matches!(
 		res,
@@ -1740,17 +1587,67 @@ fn build_config_rejects_malformed_creation_timestamp_without_cleanup() {
 }
 
 #[test]
-fn webtunnel_client_filename_uses_target_executable_suffix() {
-	let filename = ArtiCore::webtunnel_client_filename();
-	assert_eq!(
-		filename,
-		format!("webtunnelclient{}", std::env::consts::EXE_SUFFIX)
-	);
+fn build_config_keeps_direct_and_explicit_proxy_state_separate() {
+	let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+	ArtiCore::build_config(&TorConfig::default(), dir.path(), false, false).unwrap();
+	for port in [1080, 1081] {
+		let config: TorConfig = mwc_crates::toml::from_str(&format!(
+			"tor_bridge = {{ proxy = \"socks5://user:private_password@127.0.0.1:{port}\" }}"
+		))
+		.unwrap();
+		ArtiCore::build_config(&config, dir.path(), false, false).unwrap();
+	}
+	let routes: Vec<_> = fs::read_dir(dir.path().join("arti"))
+		.unwrap()
+		.map(|entry| entry.unwrap().file_name().into_string().unwrap())
+		.collect();
+	assert_eq!(routes.len(), 3);
+	assert!(routes.iter().any(|route| route == "direct"));
+	for route in routes.iter().filter(|route| *route != "direct") {
+		let digest = route.strip_prefix("bridge_").unwrap();
+		assert_eq!(digest.len(), 64);
+		assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+	}
+}
 
-	#[cfg(windows)]
-	assert_eq!(filename, "webtunnelclient.exe");
-	#[cfg(not(windows))]
-	assert_eq!(filename, "webtunnelclient");
+#[test]
+fn build_config_rejects_invalid_route_without_creating_direct_state() {
+	let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+	let config: TorConfig = mwc_crates::toml::from_str(
+		"tor_bridge = { bridges = [\"custom 192.0.2.1:443 0123456789ABCDEF0123456789ABCDEF01234567\"] }",
+	)
+	.unwrap();
+	assert!(matches!(
+		ArtiCore::build_config(&config, dir.path(), false, false),
+		Err(Error::TorConfig(_))
+	));
+	assert!(!dir.path().join("arti").exists());
+}
+
+#[test]
+fn build_config_reports_missing_transport_helper_before_bootstrap() {
+	use crate::types::{TorBridgeConfig, TorTransportConfig};
+
+	let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+	let config = TorConfig {
+		tor_bridge: Some(TorBridgeConfig {
+			bridges: vec![
+				"webtunnel 192.0.2.1:443 0123456789ABCDEF0123456789ABCDEF01234567 url=https://bridge.example/secret".into(),
+			],
+			transports: vec![TorTransportConfig {
+				protocols: vec!["webtunnel".into()],
+				path: Some(dir.path().join("missing-helper").to_str().unwrap().into()),
+				..Default::default()
+			}],
+			..Default::default()
+		}),
+		..Default::default()
+	};
+	assert!(matches!(
+		ArtiCore::build_config(&config, dir.path(), false, false),
+		Err(Error::TorConfig(message)) if message.contains("Install the helper")
+	));
+	assert!(!dir.path().join("arti").exists());
 }
 
 #[test]
@@ -1801,7 +1698,7 @@ fn active_object_tracking_rejects_restart_duplicate_and_missing_entries() {
 		register_arti_active_object(name.clone()),
 		Err(Error::TorRestarting)
 	));
-	assert!(!TOR_ACTIVE_OBJECTS.read_recursive().contains(&name));
+	assert!(!TOR_ACTIVE_OBJECTS.read().contains(&name));
 
 	TOR_RESTART_REQUEST.store(current_id, Ordering::SeqCst);
 	register_arti_active_object(name.clone()).unwrap();

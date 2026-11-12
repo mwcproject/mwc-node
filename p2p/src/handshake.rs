@@ -32,7 +32,7 @@ use mwc_core::ser::{BinWriter, ProtocolVersion, Writeable, Writer};
 use mwc_crates::chrono::prelude::Utc;
 use mwc_crates::ed25519_dalek::Signature as DalekSignature;
 use mwc_crates::log::{debug, info, trace};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::rand::TryRng;
 use mwc_crates::tor_llcrypto::pk::ed25519::ExpandedKeypair;
@@ -79,15 +79,16 @@ fn bad_handshake(message: impl Into<String>) -> Error {
 	Error::BadHandshake(message.into())
 }
 
+// Hand/Shake messages have no block extras, and peer capabilities are not known yet.
 fn read_hand_message<R: Read>(
 	stream: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
 ) -> Result<Hand, Error> {
-	match read_header(stream, version, context_id)? {
+	match read_header(stream, version, context_id, true)? {
 		MsgHeaderWrapper::Known(header) => {
 			if header.msg_type == Type::Hand {
-				read_body(&header, stream, version, context_id)
+				read_body(&header, stream, version, context_id, true)
 			} else {
 				Err(Error::BadMessage(format!(
 					"header.msg_type={:?} but expected {:?}",
@@ -112,10 +113,10 @@ fn read_shake_message(
 	timeout: Duration,
 ) -> Result<Shake, Error> {
 	let mut reader = conn.deadline_reader(timeout);
-	let shake = match read_header(&mut reader, version, context_id) {
+	let shake = match read_header(&mut reader, version, context_id, true) {
 		Ok(MsgHeaderWrapper::Known(header)) => {
 			if header.msg_type == Type::Shake {
-				read_body(&header, &mut reader, version, context_id)
+				read_body(&header, &mut reader, version, context_id, true)
 			} else {
 				Err(Error::BadMessage(format!(
 					"header.msg_type={:?} but expected {:?}",
@@ -145,13 +146,13 @@ fn read_shake_message(
 pub struct Handshake {
 	/// Ring buffer of nonces sent to detect self connections without requiring
 	/// a node id.
-	nonces: Arc<RwLock<VecDeque<u64>>>,
+	nonces: Arc<RecursiveRwLock<VecDeque<u64>>>,
 	/// Ring buffer of self addr(s) collected from PeerWithSelf detection (by nonce).
-	pub addrs: Arc<RwLock<VecDeque<PeerAddr>>>,
+	pub addrs: Arc<RecursiveRwLock<VecDeque<PeerAddr>>>,
 	/// Recent receiver addresses advertised by inbound Hand requests, paired
 	/// with the source peer that reported them. Used to learn the address peers
 	/// use to reach IP-based nodes.
-	ip_receiver_addrs: Arc<RwLock<VecDeque<IpReceiverAddrSample>>>,
+	ip_receiver_addrs: Arc<RecursiveRwLock<VecDeque<IpReceiverAddrSample>>>,
 	/// The genesis block header of the chain seen by this node.
 	/// We only want to connect to other nodes seeing the same chain (forks are
 	/// ok).
@@ -182,9 +183,9 @@ impl Handshake {
 			.transpose();
 
 		Handshake {
-			nonces: Arc::new(RwLock::new(VecDeque::with_capacity(NONCES_CAP))),
-			addrs: Arc::new(RwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
-			ip_receiver_addrs: Arc::new(RwLock::new(VecDeque::with_capacity(
+			nonces: Arc::new(RecursiveRwLock::new(VecDeque::with_capacity(NONCES_CAP))),
+			addrs: Arc::new(RecursiveRwLock::new(VecDeque::with_capacity(ADDRS_CAP))),
+			ip_receiver_addrs: Arc::new(RecursiveRwLock::new(VecDeque::with_capacity(
 				IP_RECEIVER_ADDRS_CAP,
 			))),
 			genesis,
@@ -310,7 +311,7 @@ impl Handshake {
 	}
 
 	fn learned_ip_receiver_addr(&self) -> Option<SocketAddr> {
-		let receiver_addrs = self.ip_receiver_addrs.read_recursive();
+		let receiver_addrs = self.ip_receiver_addrs.read();
 		learned_ip_receiver_addr_from_samples(&receiver_addrs)
 	}
 
@@ -368,7 +369,7 @@ impl Handshake {
 		// by the onion identity signature.
 		let mut transcript = Vec::new();
 		{
-			let mut writer = BinWriter::new(&mut transcript, version, self.context_id);
+			let mut writer = BinWriter::new(&mut transcript, version, self.context_id, true);
 			writer.write_bytes(ONION_HAND_PROOF_DOMAIN)?;
 			sender_addr.write(&mut writer)?;
 			receiver_addr.write(&mut writer)?;
@@ -544,7 +545,8 @@ impl Handshake {
 
 		let hand = Hand {
 			version: self.protocol_version,
-			capabilities,
+			// Always advertise block-extra support, including for custom capability sets.
+			capabilities: capabilities | Capabilities::BLOCK_EXTRA,
 			nonce,
 			genesis: self.genesis,
 			total_difficulty,
@@ -557,7 +559,13 @@ impl Handshake {
 		};
 
 		// write and read the handshake response
-		let msg = Msg::new(Type::Hand, hand, self.protocol_version, self.context_id)?;
+		let msg = Msg::new(
+			Type::Hand,
+			hand,
+			self.protocol_version,
+			self.context_id,
+			true,
+		)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		// Bound the complete Shake response to one deadline. Repeated partial reads
@@ -590,7 +598,9 @@ impl Handshake {
 			},
 			addr: peer_addr,
 			version: negotiated_version,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(shake.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				shake.total_difficulty,
+			))),
 			tx_base_fee: shake.tx_fee_base,
 		};
 
@@ -644,7 +654,7 @@ impl Handshake {
 
 		let addr = resolve_peer_addr(&hand, &conn)?;
 		// Check the nonce to see if we are trying to connect to ourselves.
-		let peer_with_self = self.nonces.read_recursive().contains(&hand.nonce);
+		let peer_with_self = self.nonces.read().contains(&hand.nonce);
 
 		self.verify_onion_hand_proof(&hand, adapter)?;
 
@@ -691,14 +701,21 @@ impl Handshake {
 		// send our reply with our info
 		let shake = Shake {
 			version: self.protocol_version,
-			capabilities: capab,
+			// Match the mandatory support advertised by outbound handshakes.
+			capabilities: capab | Capabilities::BLOCK_EXTRA,
 			genesis: self.genesis,
 			total_difficulty: total_difficulty,
 			user_agent: USER_AGENT.to_string(),
 			tx_fee_base: global::get_accept_fee_base(self.context_id),
 		};
 
-		let msg = Msg::new(Type::Shake, shake, negotiated_version, self.context_id)?;
+		let msg = Msg::new(
+			Type::Shake,
+			shake,
+			negotiated_version,
+			self.context_id,
+			true,
+		)?;
 		write_message(conn, &vec![msg], self.tracker.clone())?;
 
 		self.observe_inbound_receiver_addr(&hand, &addr);
@@ -714,7 +731,9 @@ impl Handshake {
 			},
 			addr,
 			version: negotiated_version,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(hand.total_difficulty))),
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				hand.total_difficulty,
+			))),
 			tx_base_fee: hand.tx_fee_base,
 		};
 
@@ -942,6 +961,7 @@ mod tests {
 			0,
 			&MsgHeader::new(0, Type::Ping, 10),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
 		header[2] = 255;
@@ -974,6 +994,7 @@ mod tests {
 			0,
 			&MsgHeader::new(0, Type::Ping, 10),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
 		header[2] = 255;
@@ -1014,6 +1035,7 @@ mod tests {
 			0,
 			&MsgHeader::new(0, Type::Shake, 0),
 			ProtocolVersion::local(),
+			true,
 		)
 		.unwrap();
 
@@ -1274,10 +1296,7 @@ mod tests {
 
 		receiver_hs.record_peer_with_self_addr(&hand, &sender_addr);
 
-		assert_eq!(
-			receiver_hs.addrs.read_recursive().front().cloned(),
-			Some(sender_addr)
-		);
+		assert_eq!(receiver_hs.addrs.read().front().cloned(), Some(sender_addr));
 	}
 
 	#[test]
@@ -1303,7 +1322,7 @@ mod tests {
 		receiver_hs.record_peer_with_self_addr(&legacy_hand, &sender_addr);
 		receiver_hs.record_peer_with_self_addr(&unsigned_v5_hand, &sender_addr);
 
-		assert!(receiver_hs.addrs.read_recursive().is_empty());
+		assert!(receiver_hs.addrs.read().is_empty());
 	}
 
 	#[test]
@@ -1323,11 +1342,7 @@ mod tests {
 		receiver_hs.observe_inbound_receiver_addr(&hand, &source_addr);
 
 		assert_eq!(
-			receiver_hs
-				.ip_receiver_addrs
-				.read_recursive()
-				.front()
-				.cloned(),
+			receiver_hs.ip_receiver_addrs.read().front().cloned(),
 			match receiver_addr {
 				PeerAddr::Ip(receiver_addr) => Some((receiver_addr, source_addr)),
 				PeerAddr::Onion(_) => None,
@@ -1380,7 +1395,7 @@ mod tests {
 			receiver_hs.record_ip_receiver_addr(learned_addr, sender_addr.clone());
 		}
 
-		let samples = receiver_hs.ip_receiver_addrs.read_recursive();
+		let samples = receiver_hs.ip_receiver_addrs.read();
 		assert_eq!(samples.len(), 1);
 		assert_eq!(learned_ip_receiver_addr_from_samples(&samples), None);
 	}
@@ -1395,7 +1410,7 @@ mod tests {
 			receiver_hs.record_ip_receiver_addr(learned_addr, sender_addr);
 		}
 
-		let samples = receiver_hs.ip_receiver_addrs.read_recursive();
+		let samples = receiver_hs.ip_receiver_addrs.read();
 		assert_eq!(samples.len(), 1);
 		assert_eq!(learned_ip_receiver_addr_from_samples(&samples), None);
 	}

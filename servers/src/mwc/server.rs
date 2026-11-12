@@ -17,7 +17,7 @@
 //! the peer-to-peer server, the blockchain and the transaction pool) and acts
 //! as a facade.
 
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use std::convert::TryFrom;
 use std::fs;
 use std::fs::File;
@@ -59,9 +59,11 @@ use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::secp::Secp256k1;
 use mwc_p2p::Capabilities;
 
+const SERVER_LOCK_FILE: &str = "mwc.lock";
+
 /// Arcified  thread-safe TransactionPool with type parameters used by server components
 pub type ServerTxPool =
-	Arc<RwLock<mwc_pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
+	Arc<RecursiveRwLock<mwc_pool::TransactionPool<PoolToChainAdapter, PoolToNetAdapter>>>;
 
 /// Pending p2p listener startup. Waiting on this can block on TCP bind/Tor
 /// readiness, so callers should not hold global registry locks while waiting.
@@ -194,7 +196,7 @@ impl Server {
 			context_id,
 			config.dandelion_config.clone(),
 		));
-		let tx_pool = Arc::new(RwLock::new(mwc_pool::TransactionPool::new(
+		let tx_pool = Arc::new(RecursiveRwLock::new(mwc_pool::TransactionPool::new(
 			context_id,
 			config.pool_config.clone(),
 			pool_adapter.clone(),
@@ -202,8 +204,6 @@ impl Server {
 		)));
 
 		let sync_state = Arc::new(SyncState::new());
-		// Defaults to None (optional) in config file.
-		// This translates to false here so we do not skip by default.
 		sync_state.update(SyncStatus::AwaitingPeers);
 
 		let hooks = init_hooks(&config)?;
@@ -259,6 +259,10 @@ impl Server {
 			return Err(Error::ServerError("Server start was cancelled".into()));
 		}
 
+		// Chain initialization has finished, including any index rebuilds. Clear
+		// their final validation status so startup truncation cannot be skipped.
+		sync_state.update(SyncStatus::AwaitingPeers);
+
 		pool_adapter
 			.set_chain(shared_chain.clone())
 			.map_err(|e| Error::ServerError(e.to_string()))?;
@@ -276,7 +280,6 @@ impl Server {
 				shared_chain.clone(),
 				sync_manager.clone(),
 				tx_pool.clone(),
-				config.chain_validation_mode.clone(),
 				net_hooks,
 			)
 			.map_err(|e| {
@@ -305,8 +308,17 @@ impl Server {
 			.map_err(|e| Error::ServerError(e.to_string()))?,
 		);
 
+		// Finish header selection before this server can start any peer jobs.
+		// A failure aborts startup instead of leaving unsupported headers in place
+		// while the sync loop waits for peers or state readiness.
+		sync_manager
+			.truncate_header_head(&p2p_server.peers, true)
+			.map_err(|e| {
+				Error::ServerError(format!("Startup header head truncation failed: {}", e))
+			})?;
+
 		// Initialize various adapters with our dynamic set of connected peers.
-		chain_adapter.init(p2p_server.peers.clone())?;
+		chain_adapter.init(p2p_server.peers.clone(), sync_manager.clone())?;
 		pool_net_adapter
 			.init(p2p_server.peers.clone())
 			.map_err(|e| Error::ServerError(e.to_string()))?;
@@ -581,7 +593,7 @@ impl Server {
 			))
 		})?;
 
-		let path = path.join("mwc.lock");
+		let path = path.join(SERVER_LOCK_FILE);
 		let lock_file = fs::OpenOptions::new()
 			.read(true)
 			.write(true)
@@ -613,6 +625,20 @@ impl Server {
 				))
 			})?;
 		Ok(Arc::new(lock_file))
+	}
+
+	/// Remove chain data only while holding the server's exclusive database lock.
+	/// Keep the directory and lock file so concurrent server starts continue to
+	/// lock the same file throughout cleanup and after it completes.
+	pub fn clean_chain_data(config: &ServerConfig) -> Result<(), Error> {
+		let _lock_file = Self::one_mwc_at_a_time(config)?;
+		for entry in fs::read_dir(&config.db_root)? {
+			let entry = entry?;
+			if entry.file_name() != SERVER_LOCK_FILE {
+				mwc_util::file::delete(entry.path())?;
+			}
+		}
+		Ok(())
 	}
 
 	/// Number of peers
@@ -782,7 +808,7 @@ impl Server {
 		// acquire various read locks with a timeout.
 
 		let tx_stats = {
-			let pool = self.tx_pool.read_recursive();
+			let pool = self.tx_pool.read();
 			TxStats {
 				tx_pool_size: pool.txpool.size(),
 				tx_pool_kernels: pool.txpool.kernel_count(),

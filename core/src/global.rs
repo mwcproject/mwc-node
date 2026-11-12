@@ -31,7 +31,7 @@ use crate::pow::{self, new_cuckarood_ctx, new_cuckatoo_ctx, PoWContext, Proof};
 use crate::ser::ProtocolVersion;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::error;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::Secp256k1;
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use std::cell::RefCell;
@@ -92,10 +92,6 @@ pub const TESTING_MAX_BLOCK_WEIGHT: u64 = 250;
 ///Note, the default fees was reduced on Jul 13 2025. There is no hardfork because of that
 /// Default unit of fee per tx weight, making each output cost about a Mwccent/100
 pub const DEFAULT_ACCEPT_FEE_BASE: u64 = consensus::MILLI_MWC / 1000; // Keeping default base is same, no changes for MWC     MWC_BASE / 100 / 20; // 500_000
-
-/// If a peer's last updated difficulty is 2 hours ago and its difficulty's lower than ours,
-/// we're sure this peer is a stuck node, and we will kick out such kind of stuck peers.
-pub const STUCK_PEER_KICK_TIME_SECONDS: u64 = 2 * 3600;
 
 /// Peers ping interval. It is expected that peers should respond for the ping. Otherwise peer
 /// will be kicked out
@@ -212,12 +208,14 @@ impl ChainGlobalParams {
 lazy_static! {
 	/// Global chain status flags. It is expected that init call will set them first for every needed context
 	/// Note, both node and wallet will need to set it up. Any param can be set once
-	static ref GLOBAL_CHAIN_PARAMS: RwLock<HashMap<u32, ChainGlobalParams>> = RwLock::new(HashMap::new());
+	static ref GLOBAL_CHAIN_PARAMS: RecursiveRwLock<HashMap<u32, ChainGlobalParams>> = RecursiveRwLock::new(HashMap::new());
 }
 
 thread_local! {
 	/// Local chain status flags. Normally used by tests. Any param can be set multiple times.
 	static LOCAL_CHAIN_PARAMS: RefCell<ChainGlobalParams> = RefCell::new(ChainGlobalParams::new());
+	#[cfg(feature = "test-support")]
+	static LOCAL_MAX_BLOCK_WEIGHT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Release
@@ -236,7 +234,7 @@ pub fn set_local_chain_type(new_type: ChainTypes) {
 pub fn get_chain_type(context_id: u32) -> ChainTypes {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().chain_type {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
+			let params = GLOBAL_CHAIN_PARAMS.read();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.chain_type {
@@ -324,7 +322,7 @@ pub fn set_local_nrd_enabled(enabled: bool) {
 pub fn is_nrd_enabled(context_id: u32) -> bool {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().nrd_feature_enabled {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
+			let params = GLOBAL_CHAIN_PARAMS.read();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.nrd_feature_enabled {
@@ -416,7 +414,7 @@ pub fn set_local_accept_fee_base(new_base: u64) -> Result<(), Error> {
 pub fn get_accept_fee_base(context_id: u32) -> u64 {
 	LOCAL_CHAIN_PARAMS.with(|chain_params| match chain_params.borrow().accept_fee_base {
 		None => {
-			let params = GLOBAL_CHAIN_PARAMS.read_recursive();
+			let params = GLOBAL_CHAIN_PARAMS.read();
 			match params.get(&context_id) {
 				Some(params) => {
 					match &params.accept_fee_base {
@@ -525,8 +523,20 @@ pub fn initial_graph_weight(context_id: u32) -> u32 {
 	}
 }
 
+/// Override only the block/transaction weight limit on this test thread.
+/// This lets size-boundary tests retain the automated chain's mining parameters.
+#[cfg(feature = "test-support")]
+pub fn set_local_max_block_weight(max_weight: Option<u64>) {
+	assert!(max_weight.is_none_or(|weight| weight > BLOCK_OUTPUT_WEIGHT + BLOCK_KERNEL_WEIGHT));
+	LOCAL_MAX_BLOCK_WEIGHT.with(|weight| weight.set(max_weight));
+}
+
 /// Maximum allowed block weight.
 pub fn max_block_weight(context_id: u32) -> u64 {
+	#[cfg(feature = "test-support")]
+	if let Some(weight) = LOCAL_MAX_BLOCK_WEIGHT.with(|weight| weight.get()) {
+		return weight;
+	}
 	match get_chain_type(context_id) {
 		ChainTypes::AutomatedTesting => TESTING_MAX_BLOCK_WEIGHT,
 		ChainTypes::UserTesting => TESTING_MAX_BLOCK_WEIGHT,
@@ -646,7 +656,7 @@ mod test {
 
 	fn test_header_len(genesis: Block) {
 		let mut raw = Vec::<u8>::with_capacity(1_024);
-		let mut writer = BinWriter::new(&mut raw, ProtocolVersion::local(), 0);
+		let mut writer = BinWriter::new(&mut raw, ProtocolVersion::local(), 0, true);
 		genesis.header.write(&mut writer).unwrap();
 		assert_eq!(
 			raw.len(),

@@ -326,7 +326,7 @@ fn segment_read_rejects_oversized_counts_before_allocation() {
 	let mut bytes = vec![0];
 	bytes.extend_from_slice(&0u64.to_be_bytes());
 	bytes.extend_from_slice(&oversized_count.to_be_bytes());
-	match ser::deserialize_default::<Segment<TestElem>, _>(0, &mut &bytes[..]) {
+	match ser::deserialize_default::<Segment<TestElem>, _>(0, &mut &bytes[..], true) {
 		Err(ser::Error::TooLargeReadErr(msg)) => {
 			assert!(msg.contains("Segment::read n_hashes"), "{}", msg);
 		}
@@ -337,7 +337,7 @@ fn segment_read_rejects_oversized_counts_before_allocation() {
 	bytes.extend_from_slice(&0u64.to_be_bytes());
 	bytes.extend_from_slice(&0u64.to_be_bytes());
 	bytes.extend_from_slice(&oversized_count.to_be_bytes());
-	match ser::deserialize_default::<Segment<TestElem>, _>(0, &mut &bytes[..]) {
+	match ser::deserialize_default::<Segment<TestElem>, _>(0, &mut &bytes[..], true) {
 		Err(ser::Error::TooLargeReadErr(msg)) => {
 			assert!(msg.contains("Segment::read n_leaves"), "{}", msg);
 		}
@@ -350,7 +350,7 @@ fn segment_proof_read_rejects_protocol_oversized_hash_count_before_allocation() 
 	let protocol_limit = u64::from(u64::BITS) * 2 + 1;
 	let mut bytes = Vec::new();
 	bytes.extend_from_slice(&(protocol_limit + 1).to_be_bytes());
-	match ser::deserialize_default::<SegmentProof, _>(0, &mut &bytes[..]) {
+	match ser::deserialize_default::<SegmentProof, _>(0, &mut &bytes[..], true) {
 		Err(ser::Error::TooLargeReadErr(msg)) => {
 			assert!(msg.contains("SegmentProof::read n_hashes"), "{}", msg);
 			assert!(msg.contains("protocol limit"), "{}", msg);
@@ -371,7 +371,7 @@ fn segment_proof_read_allows_protocol_hash_count_limit() {
 		bytes.extend_from_slice(Hash::default().as_ref());
 	}
 
-	let proof = ser::deserialize_default::<SegmentProof, _>(0, &mut &bytes[..]).unwrap();
+	let proof = ser::deserialize_default::<SegmentProof, _>(0, &mut &bytes[..], true).unwrap();
 
 	assert_eq!(proof.size(), protocol_limit as usize);
 }
@@ -391,11 +391,12 @@ fn segment_validate_rejects_trailing_proof_hashes() {
 	valid.clone().validate(0, mmr_size, None, &root).unwrap();
 	let (id, hash_pos, hashes, leaf_pos, leaf_data, proof) = valid.parts();
 
-	let mut proof_bytes = ser::ser_vec(0, &proof, ser::ProtocolVersion(1)).unwrap();
+	let mut proof_bytes = ser::ser_vec(0, &proof, ser::ProtocolVersion(1), true).unwrap();
 	let proof_hashes = u64::from_be_bytes(proof_bytes[..8].try_into().unwrap());
 	proof_bytes[..8].copy_from_slice(&proof_hashes.checked_add(1).unwrap().to_be_bytes());
 	proof_bytes.extend_from_slice(Hash::default().as_ref());
-	let proof = ser::deserialize_default::<SegmentProof, _>(0, &mut &proof_bytes[..]).unwrap();
+	let proof =
+		ser::deserialize_default::<SegmentProof, _>(0, &mut &proof_bytes[..], true).unwrap();
 	let segment = Segment::from_parts(id, hash_pos, hashes, leaf_pos, leaf_data, proof).unwrap();
 
 	assert!(matches!(
@@ -407,7 +408,8 @@ fn segment_validate_rejects_trailing_proof_hashes() {
 #[test]
 fn segment_proof_reconstruct_root_rejects_incomplete_mmr_size() {
 	let proof_bytes = 0u64.to_be_bytes();
-	let proof = ser::deserialize_default::<SegmentProof, _>(0, &mut &proof_bytes[..]).unwrap();
+	let proof =
+		ser::deserialize_default::<SegmentProof, _>(0, &mut &proof_bytes[..], true).unwrap();
 
 	assert!(matches!(
 		proof.reconstruct_root(0, 5, 3, 3, Hash::default(), 3),

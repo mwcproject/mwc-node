@@ -54,10 +54,14 @@ impl TUIStatusView {
 				completed_blocks, total_blocks
 			)),
 			SyncStatus::HeaderSync {
+				start_height,
 				current_height,
-				archive_height,
+				target_height,
 			} => {
-				let percent = Self::percent(current_height, archive_height);
+				let percent = Self::percent(
+					current_height.saturating_sub(start_height),
+					target_height.saturating_sub(start_height),
+				);
 				Cow::Owned(format!("Sync step 1/10: Downloading headers: {}%", percent))
 			}
 			SyncStatus::TxHashsetPibd {
@@ -450,11 +454,36 @@ fn test_status_txhashset_state_validation_displays_running_step_from_one() {
 }
 
 #[test]
+fn test_download_progress_starts_at_zero_for_fresh_and_resumed_nodes() {
+	for start in [0, 500, 1_746_000] {
+		for completed in [0, 50, 100] {
+			for status in [
+				SyncStatus::HeaderSync {
+					start_height: start,
+					current_height: start + completed,
+					target_height: start + 100,
+				},
+				SyncStatus::BodySync {
+					archive_height: start,
+					current_height: start + completed,
+					highest_height: start + 100,
+				},
+			] {
+				assert!(
+					TUIStatusView::update_sync_status(status).ends_with(&format!("{}%", completed))
+				);
+			}
+		}
+	}
+}
+
+#[test]
 fn test_status_percent_uses_u128_arithmetic() {
 	let statuses = [
 		SyncStatus::HeaderSync {
+			start_height: 0,
 			current_height: u64::MAX,
-			archive_height: u64::MAX,
+			target_height: u64::MAX,
 		},
 		SyncStatus::TxHashsetPibd {
 			recieved_segments: usize::MAX,

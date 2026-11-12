@@ -1,0 +1,78 @@
+# Embedded Arti connects directly by default. Most users should leave tor_bridge unset.
+# No bridge/helper is downloaded or selected automatically, including after connection failures.
+# Users who need a bridge or upstream proxy must configure it themselves; helpers are not bundled.
+# Set ONE tor_bridge line below, replacing example addresses, fingerprints, parameters and paths.
+# Examples use non-working documentation addresses and placeholder bridge credentials.
+# Obtain complete bridge lines from https://bridges.torproject.org/ or your bridge operator.
+# Multiple bridges and transports can be listed inside the same single-line inline table.
+# bridges: Tor bridge lines, without the optional leading "Bridge" keyword.
+# transports: protocols plus either an absolute executable path (managed) or proxy_addr (unmanaged).
+# Managed arguments is an optional array of individual command-line arguments, not a shell command.
+# run_on_startup defaults to false (start the helper when needed); true starts it with Arti.
+# proxy: optional upstream proxy URI. Omit unused fields. Invalid settings fail without direct fallback.
+
+# Plain/vanilla Tor bridge: no transport helper; traffic still uses the normal Tor protocol.
+# tor_bridge = { bridges = ["192.0.2.10:9001 0123456789ABCDEF0123456789ABCDEF01234567"] }
+
+# obfs4: authenticated traffic obfuscation; use Lyrebird or obfs4proxy and the operator's cert.
+# tor_bridge = { bridges = ["obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=REPLACE_CERT iat-mode=0"], transports = [{ protocols = ["obfs4"], path = "/absolute/path/lyrebird" }] }
+
+# WebTunnel: tunnels Tor over HTTPS; the complete url= parameter comes from the bridge operator.
+# Use Lyrebird or a separately built webtunnel client.
+# tor_bridge = { bridges = ["webtunnel 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 url=https://bridge.example/REPLACE_PATH ver=0.0.1"], transports = [{ protocols = ["webtunnel"], path = "/absolute/path/webtunnel-client" }] }
+
+# Snowflake: reaches a bridge through temporary volunteer WebRTC proxies.
+# Use the current complete Snowflake bridge line (including broker/front/ICE parameters) from Tor.
+# tor_bridge = { bridges = ["snowflake 192.0.2.3:80 0123456789ABCDEF0123456789ABCDEF01234567 fingerprint=0123456789ABCDEF0123456789ABCDEF01234567 url=https://broker.example/ front=front.example ice=stun:stun.example:3478"], transports = [{ protocols = ["snowflake"], path = "/absolute/path/lyrebird" }] }
+
+# meek_lite: HTTPS/domain-fronting transport provided by Lyrebird; use operator-supplied url/front.
+# tor_bridge = { bridges = ["meek_lite 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 url=https://bridge.example/ front=front.example"], transports = [{ protocols = ["meek_lite"], path = "/absolute/path/lyrebird" }] }
+
+# Conjure: uses a registration service and temporary proxy addresses; requires its own client.
+# Obtain the current registration URL, bridge and transport parameters from the Conjure operator.
+# tor_bridge = { bridges = ["conjure 192.0.2.10:80 0123456789ABCDEF0123456789ABCDEF01234567 url=https://registration.example/ fronts=front.example transport=min"], transports = [{ protocols = ["conjure"], path = "/absolute/path/conjure-client" }] }
+
+# Legacy Lyrebird protocols require compatible bridges; use only when your operator supplies them.
+# obfs2 and obfs3 are older traffic-obfuscation protocols.
+# tor_bridge = { bridges = ["obfs2 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567"], transports = [{ protocols = ["obfs2"], path = "/absolute/path/lyrebird" }] }
+# tor_bridge = { bridges = ["obfs3 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567"], transports = [{ protocols = ["obfs3"], path = "/absolute/path/lyrebird" }] }
+# ScrambleSuit uses traffic obfuscation with an operator-supplied shared password.
+# tor_bridge = { bridges = ["scramblesuit 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 password=REPLACE_PASSWORD"], transports = [{ protocols = ["scramblesuit"], path = "/absolute/path/lyrebird" }] }
+
+# Arti accepts other Tor-compatible pluggable transports by protocol name, without a fixed allowlist.
+# Install that transport's client, follow its operator's bridge/argument instructions, and use this form.
+# One helper can advertise several protocols: protocols = ["obfs4", "webtunnel", "snowflake"].
+# tor_bridge = { bridges = ["custom_transport 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 key=value"], transports = [{ protocols = ["custom_transport"], path = "/absolute/path/transport-client", arguments = ["--option", "value"], run_on_startup = true }] }
+
+# Unmanaged transport: you start/maintain its Tor-compatible SOCKS5 transport listener separately.
+# proxy_addr is its IP:port, NOT a general upstream proxy. Do not also set path/arguments/run_on_startup.
+# tor_bridge = { bridges = ["obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=REPLACE_CERT iat-mode=0"], transports = [{ protocols = ["obfs4"], proxy_addr = "127.0.0.1:1081" }] }
+
+# Upstream proxies carry Arti's outbound Tor connections; they are not an external Tor SOCKS service.
+# Supported URI schemes: socks4, socks4a, socks5, socks5h and http (HTTP CONNECT, not https).
+# The proxy endpoint must be a literal IPv4/IPv6 address with a port (IPv6 example: [::1]:1080).
+# SOCKS4/4a support a username only; SOCKS5/5h and HTTP support username:password authentication.
+# Percent-encode reserved URI characters in credentials. SOCKS4 and SOCKS4a are equivalent here,
+# as are SOCKS5 and SOCKS5h: Arti connects to Tor relay IP addresses, without local hostname lookup.
+# tor_bridge = { proxy = "socks4://127.0.0.1:1080" }
+# tor_bridge = { proxy = "socks4a://user@127.0.0.1:1080" }
+# tor_bridge = { proxy = "socks5://127.0.0.1:1080" }
+# tor_bridge = { proxy = "socks5h://user:password@127.0.0.1:1080" }
+# tor_bridge = { proxy = "http://user:password@127.0.0.1:8080" }
+# A proxy may accompany plain bridges or managed transports that support the TOR_PT_PROXY protocol.
+# It cannot accompany unmanaged transports; configure their upstream proxy in the external process.
+# tor_bridge = { bridges = ["192.0.2.10:9001 0123456789ABCDEF0123456789ABCDEF01234567"], proxy = "socks5://127.0.0.1:1080" }
+
+# Helper installation/build instructions (install only if you choose a transport that needs one):
+# Tor Expert Bundle includes Lyrebird (obfs4, WebTunnel, Snowflake, meek_lite and legacy protocols):
+# https://support.torproject.org/little-t-tor/circumvention/using-bridges/
+# Lyrebird build: https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird#installation
+# WebTunnel client source/build: https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel
+# To build its standalone client, install the Go version required by go.mod, clone that repository,
+# and run from its root: go build -o webtunnelclient ./main/client (use webtunnelclient.exe on Windows).
+# To host your own WebTunnel bridge: https://community.torproject.org/relay/setup/webtunnel/source/
+# Snowflake client build: https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/-/tree/main/client
+# Conjure client build: https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/conjure
+# Arti transport configuration: https://arti.torproject.org/censorship/pluggable-transports/
+# These upstream guides may show torrc/arti.toml syntax; use the single-line tor_bridge syntax here.
+# On Windows use an absolute .exe path with forward slashes, e.g. C:/Tor/pluggable_transports/lyrebird.exe.

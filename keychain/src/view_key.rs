@@ -226,8 +226,14 @@ impl ViewKey {
 		amount: u64,
 		switch: SwitchCommitmentType,
 	) -> Result<PublicKey, Error> {
-		let value_key = secp.commit_value(amount)?.to_pubkey(secp)?;
-		let pub_key = PublicKey::from_combination(secp, vec![&self.public_key, &value_key])?;
+		let pub_key = if amount == 0 {
+			// Zero contributes the point at infinity, which cannot be encoded as a
+			// standalone commitment. The base commitment is simply the public key.
+			self.public_key
+		} else {
+			let value_key = secp.commit_value(amount)?.to_pubkey(secp)?;
+			PublicKey::from_combination(secp, vec![&self.public_key, &value_key])?
+		};
 		match switch {
 			SwitchCommitmentType::None => Ok(pub_key),
 			SwitchCommitmentType::Regular => {
@@ -298,27 +304,26 @@ mod tests {
 	}
 
 	#[test]
-	fn view_key_regular_commit_matches_keychain_commit() {
+	fn view_key_commit_matches_keychain_commit() {
 		let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-		let keychain =
-			ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
-				.unwrap();
+		let keychain = ExtKeychain::from_seed(&secp, &[1u8; 32], false).unwrap();
 		let mut hasher = keychain.hasher();
 		let view_key =
 			ViewKey::create(&secp, keychain.master_key().unwrap(), &mut hasher, false).unwrap();
-		let amount = 5;
 		let id = ExtKeychain::root_key_id().unwrap();
-		let keychain_commit = keychain
-			.commit(&secp, amount, &id, SwitchCommitmentType::Regular)
-			.unwrap()
-			.to_pubkey(&secp)
-			.unwrap();
 
-		let view_key_commit = view_key
-			.commit(&secp, amount, SwitchCommitmentType::Regular)
-			.unwrap();
+		for switch in [SwitchCommitmentType::None, SwitchCommitmentType::Regular] {
+			for amount in [0, 1, u64::MAX] {
+				let keychain_commit = keychain
+					.commit(&secp, amount, &id, switch)
+					.unwrap()
+					.to_pubkey(&secp)
+					.unwrap();
+				let view_key_commit = view_key.commit(&secp, amount, switch).unwrap();
 
-		assert_eq!(view_key_commit, keychain_commit);
+				assert_eq!(view_key_commit, keychain_commit);
+			}
+		}
 	}
 
 	#[test]

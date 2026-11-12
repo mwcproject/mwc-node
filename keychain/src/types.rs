@@ -805,7 +805,7 @@ mod test {
 		let ret_path = id.to_path().unwrap();
 		assert_eq!(path, ret_path);
 
-		let path = ExtKeychainPath::new(1, <u32>::max_value(), 0, 0, 0).unwrap();
+		let path = ExtKeychainPath::new(1, u32::MAX, 0, 0, 0).unwrap();
 		let id = Identifier::from_path(&path).unwrap();
 		let ret_path = id.to_path().unwrap();
 		assert_eq!(path, ret_path);

@@ -13,9 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use mwc_chain::pibd_params::PibdParams;
 use mwc_chain::txhashset::BitmapChunk;
-use mwc_chain::txhashset::{Desegmenter, HeaderHashesDesegmenter, HeadersRecieveCache};
+use mwc_chain::txhashset::StateSegment;
+use mwc_chain::txhashset::{Desegmenter, HeaderHashesDesegmenter};
 use mwc_chain::types::NoopAdapter;
 use mwc_chain::types::HEADERS_PER_BATCH;
 use mwc_chain::{Error, Options, SyncState};
@@ -26,17 +26,15 @@ use mwc_core::core::{
 };
 use mwc_core::{genesis, global, pow};
 use mwc_crates::log::debug;
-use mwc_crates::rand::prelude::IndexedRandom;
 use mwc_crates::rand::seq::SliceRandom;
 use mwc_crates::rand::{rng, RngExt};
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_util::StopState;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
-use std::{cmp, fs, io};
+use std::{fs, io};
 
 use super::chain_test_helper::{clean_output_dir, init_chain, test_chain_dir};
 
@@ -179,7 +177,9 @@ impl DesegmenterRequestor {
 		archive_header_height: u64,
 		bitmap_root_hash: Hash,
 	) -> Desegmenter {
-		self.chain.reset_pibd_chain().unwrap();
+		self.chain
+			.reset_pibd_chain(crate::PibdResetMode::Body)
+			.unwrap();
 
 		self.chain
 			.init_desegmenter(archive_header_height, bitmap_root_hash)
@@ -192,186 +192,94 @@ impl DesegmenterRequestor {
 		header_desegmenter: &mut HeaderHashesDesegmenter,
 		header_root_hash: &Hash,
 	) -> bool {
-		let empty_map: HashMap<(SegmentType, u64), u8> = HashMap::new();
-		let empty_map = &empty_map;
-		let asks = header_desegmenter
-			.next_desired_segments(10, &empty_map)
-			.unwrap();
-
-		debug!("Next segment IDS: {:?}", asks);
-
-		// let's satisfy one item...
-		if asks.is_empty() {
-			assert!(header_desegmenter.is_complete());
-			return true;
+		assert_eq!(header_desegmenter.get_headers_root_hash(), header_root_hash);
+		// Deliver a window out of order, authenticate each response, then apply
+		// the validated hashes in layout order. The caller owns the buffers.
+		let ids = header_desegmenter.next_segments(0, 10).unwrap();
+		let mut order: Vec<_> = (0..ids.len()).collect();
+		order.shuffle(&mut rng());
+		let mut received: Vec<_> = ids.iter().map(|_| None).collect();
+		for index in order {
+			let segment = self.responder.get_headers_segment(ids[index]);
+			received[index] = Some(header_desegmenter.validate_segment(segment).unwrap());
 		}
-
-		let mut rng = rng();
-		let target_segment = asks.choose(&mut rng).unwrap();
-
-		debug!("Applying segment: {:?}", target_segment);
-
-		let segment = self.responder.get_headers_segment(target_segment.clone());
-		header_desegmenter
-			.add_headers_hash_segment(segment, header_root_hash)
-			.unwrap();
-
-		false
+		for segment in received {
+			header_desegmenter.apply_segment(&segment.unwrap()).unwrap();
+		}
+		header_desegmenter.is_complete()
 	}
 
 	// return whether is complete
-	pub fn continue_copy_headers(
-		&mut self,
-		header_desegmenter: &HeaderHashesDesegmenter,
-		headers_cache: &mut HeadersRecieveCache,
-	) -> bool {
-		if headers_cache.is_complete().unwrap() {
+	pub fn continue_copy_headers(&mut self, header_desegmenter: &HeaderHashesDesegmenter) -> bool {
+		let tip = self.chain.header_head().unwrap();
+		let target = header_desegmenter.get_target_height();
+		if tip.height >= target {
 			return true;
 		}
-		let empty_map: HashMap<Hash, u8> = HashMap::new();
-		let empty_map = &empty_map;
-		let (hashes, _reply_hashes, _) = headers_cache
-			.next_desired_headers(header_desegmenter, 15, &empty_map, 100)
-			.unwrap();
-		if hashes.is_empty() {
-			assert!(false);
-			return false;
-		}
-
-		debug!("Next hashes requested: {:?}", hashes);
-
-		let mut rng = rng();
-		let target_hash = hashes.choose(&mut rng).unwrap().0;
-
-		debug!("Selected Hash: {:?}", target_hash);
-
+		let hashes = header_desegmenter.get_header_hashes().unwrap();
+		let index = (tip.height / HEADERS_PER_BATCH as u64) as usize;
 		let src_chain = self.responder.chain();
-
-		// Code similar to what we have at locate_headers
-		{
-			let max_height = src_chain.header_head().unwrap().height;
-
-			let header_pmmr = src_chain.get_header_pmmr_for_test();
-			let header_pmmr = header_pmmr.read_recursive();
-
-			let header = src_chain.get_block_header(&target_hash).unwrap();
-
-			// looks like we know one, getting as many following headers as allowed
-			let hh = header.height;
-
-			let mut headers = vec![];
-			for h in (hh + 1)..=(hh + (HEADERS_PER_BATCH as u64)) {
-				if h > max_height {
-					break;
-				}
-
-				if let Ok(hash) = header_pmmr.get_header_hash_by_height(h) {
-					let header = src_chain.get_block_header(&hash).unwrap();
-					headers.push(header);
-				} else {
-					panic!("Failed to locate headers successfully.");
-				}
-			}
-
-			assert_eq!(headers.len(), HEADERS_PER_BATCH as usize);
-			if let Err((peer, err)) =
-				headers_cache.add_headers_to_cache(header_desegmenter, headers, "0".to_string())
-			{
-				panic!("Error {}, for peer id {}", err, peer);
-			}
-			while headers_cache.apply_cache().unwrap() {
-				debug!("Applying headers cache once more...");
-			}
-		}
-
+		let start = src_chain.get_block_header(&hashes[index]).unwrap().height;
+		let headers = ((start + 1)..=(start + HEADERS_PER_BATCH as u64).min(target))
+			.map(|height| src_chain.get_header_by_height(height).unwrap())
+			.collect::<Vec<_>>();
+		let time = crate::store::header_creation_time(headers.last().unwrap()).unwrap();
+		self.chain
+			.sync_block_headers(&headers, Options::NONE, time)
+			.unwrap();
 		false
 	}
 
 	// Emulate `continue_pibd` function, which would be called from state sync
 	// return whether is complete
 	pub fn continue_pibd(&mut self, bitmap_root_hash: Hash, desegmenter: &Desegmenter) -> bool {
-		//let archive_header = self.chain.txhashset_archive_header_header_only().unwrap();
-
-		// Figure out the next segments we need
-		// (12 is divisible by 3, to try and evenly spread the requests among the 3
-		// main pmmrs. Bitmaps segments will always be requested first)
-		let now = Instant::now();
-		let empty_map: HashMap<(SegmentType, u64), u8> = HashMap::new();
-		let empty_map = &empty_map;
-		let (mut next_segment_ids, _retry_ids, _) =
-			desegmenter.next_desired_segments(60, &empty_map).unwrap();
-		debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
-		let is_complete = desegmenter.is_complete();
-
-		debug!("Next segment IDS: {:?}", next_segment_ids);
-		let mut rng = rng();
-		next_segment_ids.shuffle(&mut rng);
-
-		// For each segment, pick a desirable peer and send message
-		for seg_id in next_segment_ids.iter() {
-			// Perform request and response
-			match seg_id.segment_type {
+		assert_eq!(&bitmap_root_hash, desegmenter.get_bitmap_root_hash());
+		// The caller now owns the response window. Deliver segments out of order,
+		// authenticate them immediately, then apply the window in stream order.
+		let mut tasks = Vec::new();
+		for kind in [
+			SegmentType::Bitmap,
+			SegmentType::Output,
+			SegmentType::RangeProof,
+			SegmentType::Kernel,
+		] {
+			tasks.extend(
+				desegmenter
+					.next_segments(&kind, 0, 60)
+					.unwrap()
+					.into_iter()
+					.map(|id| (id, None)),
+			);
+		}
+		let mut order: Vec<_> = (0..tasks.len()).collect();
+		order.shuffle(&mut rng());
+		for index in order {
+			let id = tasks[index].0.clone();
+			let segment = match id.segment_type {
 				SegmentType::Bitmap => {
-					let seg = self.responder.get_bitmap_segment(seg_id.identifier.clone());
-					let now = Instant::now();
-					desegmenter
-						.add_bitmap_segment(seg, &bitmap_root_hash)
-						.unwrap();
-					debug!("next_desired_segments took {}ms", now.elapsed().as_millis());
+					StateSegment::Bitmap(self.responder.get_bitmap_segment(id.identifier))
 				}
 				SegmentType::Output => {
-					let seg = self.responder.get_output_segment(seg_id.identifier.clone());
-					let now = Instant::now();
-					let id = seg.id().clone();
-					desegmenter
-						.add_output_segment(seg, &bitmap_root_hash)
-						.unwrap();
-					debug!(
-						"Added output segment {}, took {}ms",
-						id,
-						now.elapsed().as_millis()
-					);
+					StateSegment::Output(self.responder.get_output_segment(id.identifier))
 				}
 				SegmentType::RangeProof => {
-					let seg = self
-						.responder
-						.get_rangeproof_segment(seg_id.identifier.clone());
-					let now = Instant::now();
-					let id = seg.id().clone();
-					desegmenter
-						.add_rangeproof_segment(seg, &bitmap_root_hash)
-						.unwrap();
-					debug!(
-						"Added rangeproof segment {}, took {}ms",
-						id,
-						now.elapsed().as_millis()
-					);
+					StateSegment::RangeProof(self.responder.get_rangeproof_segment(id.identifier))
 				}
 				SegmentType::Kernel => {
-					let seg = self.responder.get_kernel_segment(seg_id.identifier.clone());
-					let now = Instant::now();
-					let id = seg.id().clone();
-					desegmenter
-						.add_kernel_segment(seg, &bitmap_root_hash)
-						.unwrap();
-					debug!(
-						"Added kernels segment {}, took {}ms",
-						id,
-						now.elapsed().as_millis()
-					);
+					StateSegment::Kernel(self.responder.get_kernel_segment(id.identifier))
 				}
 			};
+			tasks[index].1 = Some(desegmenter.validate_segment(segment).unwrap());
 		}
-		is_complete
+		// The complete requested window is ready; tasks were created in stream order.
+		for (_, segment) in tasks {
+			desegmenter.apply_segment(&segment.unwrap()).unwrap();
+		}
+		desegmenter.is_complete()
 	}
 
 	pub fn check_roots(&self, archive_header_height: u64) {
-		let roots = self
-			.chain
-			.get_txhashset_for_test()
-			.read_recursive()
-			.roots()
-			.unwrap();
+		let roots = self.chain.get_txhashset_for_test().read().roots().unwrap();
 		let archive_header = self
 			.chain
 			.get_header_by_height(archive_header_height)
@@ -412,27 +320,17 @@ fn test_pibd_copy_impl(secp: &Secp256k1, src_root_dir: &str, dest_root_dir: &str
 	let bitmap_root_hash = src_responder.get_bitmap_root_hash();
 	let genesis_hash = src_responder.chain.genesis().hash(0).unwrap();
 
-	let pibd_params = Arc::new(PibdParams::new());
-
 	let mut dest_requestor =
 		DesegmenterRequestor::new(secp, dest_root_dir, genesis.clone(), src_responder);
 
-	let mut header_desegmenter = HeaderHashesDesegmenter::new(
-		0,
-		genesis_hash,
-		archive_header_height,
-		headers_root_hash,
-		pibd_params.clone(),
-	)
-	.unwrap();
+	let mut header_desegmenter =
+		HeaderHashesDesegmenter::new(0, genesis_hash, archive_header_height, headers_root_hash)
+			.unwrap();
 
 	while !dest_requestor.continue_headers_pibd(&mut header_desegmenter, &headers_root_hash) {}
 
-	// Heads must be done. Now we should be able to request series of headers as we can do now
-	let mut headers_cache =
-		HeadersRecieveCache::new(dest_requestor.chain.clone(), &header_desegmenter).unwrap();
-
-	while !dest_requestor.continue_copy_headers(&header_desegmenter, &mut headers_cache) {}
+	// Copy the headers selected by the authenticated checkpoint list.
+	while !dest_requestor.continue_copy_headers(&header_desegmenter) {}
 
 	let desegmenter = dest_requestor.init_desegmenter(archive_header_height, bitmap_root_hash);
 
@@ -445,12 +343,12 @@ fn test_pibd_copy_impl(secp: &Secp256k1, src_root_dir: &str, dest_root_dir: &str
 }
 
 #[test]
-fn headers_receive_cache_rejects_missing_header_hash_entry() {
+fn checkpoint_hashes_are_unavailable_until_complete() {
 	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	global::set_local_nrd_enabled(false);
 
 	let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
-	let chain_dir = test_chain_dir("headers_receive_cache_missing_header_hash");
+	let chain_dir = test_chain_dir("checkpoint_hashes_incomplete");
 	clean_output_dir(&chain_dir);
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
 	let chain = Arc::new(init_chain(&secp, &chain_dir, genesis.clone()));
@@ -460,14 +358,13 @@ fn headers_receive_cache_rejects_missing_header_hash_entry() {
 		genesis.hash(context_id).unwrap(),
 		u64::from(HEADERS_PER_BATCH),
 		Hash::default(),
-		Arc::new(PibdParams::new()),
 	)
 	.unwrap();
 
-	let res = HeadersRecieveCache::<String>::new(chain.clone(), &header_desegmenter);
+	let res = header_desegmenter.get_header_hashes();
 	assert!(matches!(
 		res,
-		Err(Error::Other(msg)) if msg.contains("missing header hash at index 0")
+		Err(Error::Other(msg)) if msg.contains("not complete")
 	));
 
 	mwc_chain::pipe::release_context_data(context_id);
@@ -549,7 +446,7 @@ fn test_chain_validation() {
 		src_head.height, dst_head.height
 	);
 
-	// see BodySync::body_sync  for details. We are trying to mimic this logic
+	// Continue downloading headers and applying bodies after the snapshot import.
 
 	let mut headers_are_done = false;
 	let mut blocks_are_done = false;
@@ -580,71 +477,34 @@ fn test_chain_validation() {
 			);
 
 			if !headers.is_empty() {
+				let base_time =
+					crate::store::header_creation_time(headers.last().unwrap()).unwrap();
 				dst_chain
-					.sync_block_headers(&headers, header_head, Options::NONE)
+					.sync_block_headers(&headers, Options::NONE, base_time)
 					.unwrap();
 				headers_are_done = false;
 			} else {
 				headers_are_done = true;
 			}
 		} else {
-			// let's sync with one block
+			// After the snapshot and headers are ready, apply bodies in chain order.
+			// Out-of-order network buffering is covered by the BodySync task tests.
 			let header_head = dst_chain.header_head().unwrap();
 			let fork_point = dst_chain.fork_point().unwrap();
-
-			debug!(
-				"header_head at {}, fork_point at {}",
-				header_head.height, fork_point.height
-			);
-
-			// here is what we have at block_hashes_to_sync
-			let count = 256;
-			let mut hashes = vec![];
-			let max_height = cmp::min(fork_point.height + count, header_head.height);
-			let mut current = dst_chain.get_header_by_height(max_height).unwrap();
-			while current.height > fork_point.height {
-				let current_hash = current.hash(0).unwrap();
-				if !dst_chain.is_orphan(&current_hash) {
-					hashes.push(current_hash);
+			blocks_are_done = fork_point.height == header_head.height;
+			for height in (fork_point.height + 1)..=header_head.height {
+				let header = dst_chain.get_header_by_height(height).unwrap();
+				let block = src_chain.get_block_for_header(&header).unwrap();
+				match dst_chain.process_block(
+					&mut secp,
+					block,
+					Options::NONE,
+					std::collections::HashSet::new(),
+				) {
+					Ok(_) => {}
+					Err(error) if error.is_known_block() => {}
+					Err(error) => panic!("Body synchronization failed: {}", error),
 				}
-				current = dst_chain.get_previous_header(&current).unwrap();
-			}
-			hashes.reverse();
-
-			// Now select random hash so we get a block for it....
-			if hashes.is_empty() {
-				debug!("No new blocks are NOT needed (2)!");
-				blocks_are_done = true;
-				continue;
-			}
-
-			blocks_are_done = false;
-
-			let block_hash = hashes.choose(&mut rng).unwrap();
-			let header = src_chain.get_block_header(block_hash).unwrap();
-			let block = src_chain.get_block_for_header(&header).unwrap();
-
-			debug!(
-				"Request size: {},  requested block {} at height {}",
-				hashes.len(),
-				block_hash,
-				block.header.height
-			);
-
-			// Code similar to what we have in Adapters
-			if dst_chain.is_known(&block.header).is_err() {
-				panic!("block expected to be know");
-			}
-
-			match dst_chain.process_block(
-				&mut secp,
-				block,
-				Options::NONE,
-				std::collections::HashSet::new(),
-			) {
-				Ok(tip) => debug!("Accepted SOME!!! New tip now at {}", tip.unwrap().height),
-				Err(Error::Orphan(_)) => {}
-				Err(e) => panic!("Unexpected error is occured, {}", e),
 			}
 		}
 	}

@@ -665,7 +665,7 @@ fn fixed_size_data_file_flush_truncates_prior_partial_append() {
 	// failed before the in-memory buffer was cleared.
 	fs::write(
 		&path,
-		mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1)).unwrap(),
+		mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1), true).unwrap(),
 	)
 	.unwrap();
 
@@ -800,12 +800,13 @@ fn variable_size_data_file_rebuilds_size_file_with_bad_offsets() {
 		SizeEntry { offset: 4, size: 4 },
 		SizeEntry { offset: 0, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -842,12 +843,13 @@ fn variable_size_data_file_rebuilds_size_file_with_bad_boundaries() {
 		SizeEntry { offset: 0, size: 3 },
 		SizeEntry { offset: 3, size: 5 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -885,12 +887,13 @@ fn variable_size_data_file_rebuilds_size_file_with_zero_size_entry() {
 		SizeEntry { offset: 4, size: 0 },
 		SizeEntry { offset: 4, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -928,7 +931,8 @@ fn variable_size_data_file_fast_validation_skips_data_deserialize() {
 		SizeEntry { offset: 0, size: 4 },
 		SizeEntry { offset: 4, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	fs::write(&data_path, [1u8, 2, 3, 4, 5, 6, 7, 8]).unwrap();
@@ -964,12 +968,13 @@ fn variable_size_data_file_fast_validation_rebuilds_bad_offsets() {
 		SizeEntry { offset: 4, size: 4 },
 		SizeEntry { offset: 0, size: 4 },
 	] {
-		size_bytes.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1)).unwrap());
+		size_bytes
+			.extend(mwc_core::ser::ser_vec(0, &size_entry, ProtocolVersion(1), true).unwrap());
 	}
 	fs::write(&size_path, size_bytes).unwrap();
 	let mut data_bytes = vec![];
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1)).unwrap());
-	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1)).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(1), ProtocolVersion(1), true).unwrap());
+	data_bytes.extend(mwc_core::ser::ser_vec(0, &TestElem(2), ProtocolVersion(1), true).unwrap());
 	fs::write(&data_path, data_bytes).unwrap();
 
 	let size_file = AppendOnlyFile::<SizeEntry>::open(
@@ -1074,14 +1079,14 @@ fn variable_size_data_file_replace_with_tmp_rejects_unsynced_size_state() {
 		)
 		.unwrap();
 		data_file.append(&elems[0]).unwrap();
-		let data_len = mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1))
+		let data_len = mwc_core::ser::ser_vec(0, &elems[0], ProtocolVersion(1), true)
 			.unwrap()
 			.len() as u64;
 		data_file.rewind(0).unwrap();
 		data_file.flush().unwrap();
 		fs::write(
 			&tmp_path,
-			mwc_core::ser::ser_vec(0, &elems[1], ProtocolVersion(1)).unwrap(),
+			mwc_core::ser::ser_vec(0, &elems[1], ProtocolVersion(1), true).unwrap(),
 		)
 		.unwrap();
 		data_file.append(&elems[2]).unwrap();
@@ -1512,6 +1517,52 @@ fn push_consecutive_pruned_leaf_subtrees_reads_stored_sibling_hash() {
 	}
 
 	teardown(data_dir);
+}
+
+#[test]
+fn imported_sibling_subtrees_preserve_hashes_and_size_after_reopen() {
+	for (left_pos, right_pos, parent_pos) in [(0, 1, 2), (2, 5, 6)] {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let open = || {
+			mwc_store::pmmr::PMMRBackend::<TestElem>::new(
+				dir.path(),
+				true,
+				ProtocolVersion(1),
+				0,
+				None,
+				VariableSizeMetadataValidation::Full,
+			)
+			.unwrap()
+		};
+		let left = Hash::from_vec(&[1]);
+		let right = Hash::from_vec(&[2]);
+		let parent = (left, right).hash_with_index(0, parent_pos).unwrap();
+		{
+			let mut backend = open();
+			{
+				let mut pmmr = PMMR::new(&mut backend);
+				pmmr.push_pruned_subtree(left, left_pos).unwrap();
+				pmmr.push_pruned_subtree(right, right_pos).unwrap();
+			}
+			assert_eq!(backend.unpruned_size().unwrap(), parent_pos + 1);
+			assert_eq!(backend.get_from_file(parent_pos).unwrap(), Some(parent));
+			backend.sync().unwrap();
+			assert_eq!(backend.hash_size().unwrap(), 3);
+		}
+
+		// Reopening and syncing must preserve the exact stored roots each time.
+		for _ in 0..2 {
+			let mut backend = open();
+			assert_eq!(backend.unpruned_size().unwrap(), parent_pos + 1);
+			assert_eq!(backend.hash_size().unwrap(), 3);
+			assert_eq!(backend.get_from_file(left_pos).unwrap(), Some(left));
+			assert_eq!(backend.get_from_file(right_pos).unwrap(), Some(right));
+			assert_eq!(backend.get_from_file(parent_pos).unwrap(), Some(parent));
+			let pmmr = PMMR::at(&mut backend, parent_pos + 1);
+			assert_eq!(pmmr.root().unwrap(), parent);
+			backend.sync().unwrap();
+		}
+	}
 }
 
 #[test]

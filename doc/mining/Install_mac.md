@@ -317,18 +317,30 @@ Please periodically check if logs don't have errors with:
 > cat ~/.mwc/main/mwc-wallet.log | grep 'ERROR'
 ```
 
-Check if Foreign listener API runs well with the command:
+Verify that the wallet can build a Coinbase using the mining API:
+
 ```
-kbay$  curl -d '{"jsonrpc": "2.0", "method": "build_coinbase", "id": 1, "params": { "block_fees": 7000000}}' http://localhost:3415/v2/foreign
+kbay$ curl -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"build_coinbase","id":1,"params":{"block_fees":{"fees":0,"height":5,"key_id":null,"binding_digest":"0101010101010101010101010101010101010101010101010101010101010101"}}}' http://localhost:3415/v2/foreign
+```
+
+Expect `result.Ok` with the following fields (hex values vary by wallet and are abbreviated here):
+
+```json
 {
-  "error": {
-    "code": -32602,
-    "message": "InvalidArgStructure \"block_fees\" at position 0."
-  },
   "id": 1,
-  "jsonrpc": "2.0"
+  "jsonrpc": "2.0",
+  "result": {
+    "Ok": {
+      "output": {"features": "Coinbase", "commit": "<hex>", "proof": "<hex>"},
+      "kernel": {"features": "Coinbase", "excess": "<hex>", "excess_sig": "<hex>"},
+      "key_id": "<wallet key identifier>",
+      "coinbase_opening": "<66 hex characters>"
+    }
+  }
 }
 ```
+
+This call creates an unconfirmed Coinbase record in the wallet. The example height and `binding_digest` are for this API check only. During mining, mwc-node supplies the actual height and calculates the digest from each block template and its parent chain state.
 
 ## Setup mwc-node to run miner locally
 

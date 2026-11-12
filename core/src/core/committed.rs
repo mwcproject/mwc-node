@@ -115,11 +115,21 @@ where
 			}
 
 			let chunk_to_sum = std::mem::replace(&mut chunk, Vec::with_capacity(batch_size));
-			running_tasks.push_back(s.spawn(move |_| {
-				let chunk_len = chunk_to_sum.len();
-				let sum = CommitSumChunk::from_commits(chunk_to_sum)?;
-				Ok((sum, chunk_len))
-			}));
+			// Scope::spawn panics on creation failure; scope only returns child-thread panics.
+			let handle = s
+				.builder()
+				.spawn(move |_| {
+					let chunk_len = chunk_to_sum.len();
+					let sum = CommitSumChunk::from_commits(chunk_to_sum)?;
+					Ok((sum, chunk_len))
+				})
+				.map_err(|e| {
+					E::from(Error::Other(format!(
+						"failed to spawn commitment sum worker: {}",
+						e
+					)))
+				})?;
+			running_tasks.push_back(handle);
 			wait_for_commit_sum_task(
 				max_workers,
 				&mut running_tasks,

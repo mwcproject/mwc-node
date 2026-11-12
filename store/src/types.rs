@@ -447,7 +447,7 @@ where
 
 	/// Append element to append-only file by serializing it to bytes and appending the bytes.
 	fn append_elmt(&mut self, data: &T) -> io::Result<()> {
-		let mut bytes = ser::ser_vec(self.context_id, data, self.version)
+		let mut bytes = ser::ser_vec(self.context_id, data, self.version, true)
 			.map_err(|e| ser_error_to_io("Fail to append data", e))?;
 		self.validate_serialized_elmt_size(bytes.len())?;
 		self.append(&mut bytes)?;
@@ -493,7 +493,7 @@ where
 		let file_len = reader.metadata()?.len();
 		let mut buf_reader = BufReader::new(reader);
 		let mut streaming_reader =
-			StreamingReader::new(&mut buf_reader, self.version, self.context_id);
+			StreamingReader::new(&mut buf_reader, self.version, self.context_id, true);
 
 		let mut pos = 0u64;
 		let mut current_offset = 0u64;
@@ -902,7 +902,15 @@ where
 
 	/// Syncs all writes (fsync), reallocating the memory map to make the newly
 	/// written data accessible.
+	///
+	/// A flush failure, including disk-full or related storage errors, is fatal
+	/// to continued node operation. Callers are not expected to restore this
+	/// object's state or recover by retrying the flush. An error may leave data
+	/// partially persisted and memory maps unavailable.
 	pub fn flush(&mut self) -> io::Result<()> {
+		if !self.needs_flush() {
+			return Ok(());
+		}
 		let buffer_start_offset = self.buffer_start_offset()?;
 		// Drop and recreate, or Windows throws an access error on set_len().
 		self.mmap = None;
@@ -912,21 +920,19 @@ where
 		})?;
 		self.parent_dir_needs_sync |= created;
 
-		// Make flush retry-safe. If a previous flush wrote bytes but failed
-		// before clearing the buffer, truncate back to the logical buffered
-		// start before writing the buffer again.
+		// Truncate back to the logical buffer start before writing. This applies
+		// pending rewinds and removes any bytes left by an incomplete write.
 		file.set_len(buffer_start_offset)?;
 		file.seek(SeekFrom::Start(buffer_start_offset))?;
 		file.write_all(&self.buffer[..])?;
-		file.sync_all()?;
+		mwc_util::file::sync_file(&file)?;
 		if self.parent_dir_needs_sync {
 			sync_parent_dir(&self.path)?;
 			self.parent_dir_needs_sync = false;
 		}
 
 		if let SizeInfo::VariableSize(size_file) = &mut self.size_info {
-			// Flush size metadata only after the data file is durable. If this
-			// fails, a later retry will truncate and rewrite the data buffer.
+			// Flush size metadata only after the data file is durable.
 			size_file.flush()?
 		}
 
@@ -944,6 +950,18 @@ where
 		self.file = Some(file);
 
 		Ok(())
+	}
+
+	fn needs_flush(&self) -> bool {
+		// A failed flush leaves file=None. New files must also make their directory
+		// entries durable, including variable-size metadata created during open.
+		self.file.is_none()
+			|| self.parent_dir_needs_sync
+			|| self.has_unsynced_state()
+			|| match &self.size_info {
+				SizeInfo::VariableSize(size_file) => size_file.needs_flush(),
+				SizeInfo::FixedSize(_) => false,
+			}
 	}
 
 	/// Discard the current non-flushed data.
@@ -1002,7 +1020,7 @@ where
 			Some(data) => data,
 			None => return Ok(None),
 		};
-		ser::deserialize_strict(&mut &data[..], self.version, self.context_id)
+		ser::deserialize_strict(&mut &data[..], self.version, self.context_id, true)
 			.map(Some)
 			.map_err(|e| ser_error_to_io("Fail to deserialize data", e))
 	}
@@ -1103,7 +1121,7 @@ where
 		let file_len = reader.metadata()?.len();
 		let mut buf_reader = BufReader::new(reader);
 		let mut streaming_reader =
-			StreamingReader::new(&mut buf_reader, self.version, self.context_id);
+			StreamingReader::new(&mut buf_reader, self.version, self.context_id, true);
 
 		let mut options = OpenOptions::new();
 		options.write(true).create(true).truncate(true);
@@ -1112,7 +1130,8 @@ where
 		let mut current_pos = 0u64;
 		let mut prune_pos = prune_pos;
 		{
-			let mut bin_writer = BinWriter::new(&mut buf_writer, self.version, self.context_id);
+			let mut bin_writer =
+				BinWriter::new(&mut buf_writer, self.version, self.context_id, true);
 			while streaming_reader.total_bytes_read() < file_len {
 				let bytes_before = streaming_reader.total_bytes_read();
 				let elmt = T::read(&mut streaming_reader)
@@ -1155,7 +1174,7 @@ where
 			));
 		}
 		buf_writer.flush()?;
-		buf_writer.get_ref().sync_all()?;
+		mwc_util::file::sync_file(buf_writer.get_ref())?;
 		Ok(())
 	}
 
@@ -1200,7 +1219,7 @@ where
 				let file_len = reader.metadata()?.len();
 				let mut buf_reader = BufReader::new(reader);
 				let mut streaming_reader =
-					StreamingReader::new(&mut buf_reader, self.version, self.context_id);
+					StreamingReader::new(&mut buf_reader, self.version, self.context_id, true);
 
 				let mut options = OpenOptions::new();
 				options.write(true).create(true).truncate(true);
@@ -1209,7 +1228,7 @@ where
 				let mut current_offset = 0;
 				{
 					let mut bin_writer =
-						BinWriter::new(&mut buf_writer, self.version, self.context_id);
+						BinWriter::new(&mut buf_writer, self.version, self.context_id, true);
 					while streaming_reader.total_bytes_read() < file_len {
 						T::read(&mut streaming_reader)
 							.map_err(|e| ser_error_to_io("Fail to read at rebuild_size_file", e))?;
@@ -1255,7 +1274,7 @@ where
 					}
 				}
 				buf_writer.flush()?;
-				buf_writer.get_ref().sync_all()?;
+				mwc_util::file::sync_file(buf_writer.get_ref())?;
 			}
 
 			// Replace the underlying file for our size_file -
@@ -1321,6 +1340,117 @@ mod tests {
 	impl Writeable for TestElem {
 		fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
 			writer.write_u32(0)
+		}
+	}
+
+	fn test_file(path: &Path, variable_size: bool) -> AppendOnlyFile<TestElem> {
+		let size_info = if variable_size {
+			SizeInfo::VariableSize(Box::new(
+				AppendOnlyFile::<SizeEntry>::open(
+					path.with_extension("size"),
+					SizeInfo::FixedSize(SizeEntry::LEN),
+					ProtocolVersion(1),
+					0,
+					VariableSizeMetadataValidation::Full,
+				)
+				.unwrap(),
+			))
+		} else {
+			SizeInfo::FixedSize(4)
+		};
+		AppendOnlyFile::open(
+			path,
+			size_info,
+			ProtocolVersion(1),
+			0,
+			VariableSizeMetadataValidation::Full,
+		)
+		.unwrap()
+	}
+
+	#[test]
+	fn clean_flush_preserves_files_while_append_and_rewind_are_persisted() {
+		use mwc_crates::filetime::{set_file_mtime, FileTime};
+		for variable_size in [false, true] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().join("data.bin");
+			let mut file = test_file(&path, variable_size);
+			assert!(file.parent_dir_needs_sync);
+			file.flush().unwrap();
+			assert!(!file.parent_dir_needs_sync);
+			if let SizeInfo::VariableSize(size_file) = &file.size_info {
+				assert!(!size_file.parent_dir_needs_sync);
+			}
+			file.append_elmt(&TestElem).unwrap();
+			file.append_elmt(&TestElem).unwrap();
+			file.flush().unwrap();
+			assert_eq!(fs::metadata(&path).unwrap().len(), 8);
+			let mut paths = vec![path.clone()];
+			if variable_size {
+				paths.push(path.with_extension("size"));
+			}
+			let old_time = FileTime::from_unix_time(1, 0);
+			for path in &paths {
+				set_file_mtime(path, old_time).unwrap();
+			}
+			file.flush().unwrap();
+			drop(file);
+			let mut file = test_file(&path, variable_size);
+			file.flush().unwrap();
+			for path in &paths {
+				assert_eq!(
+					FileTime::from_last_modification_time(&fs::metadata(path).unwrap()),
+					old_time
+				);
+			}
+			assert!(file.read(1).unwrap().is_some());
+			file.rewind(1).unwrap();
+			file.flush().unwrap();
+			assert_eq!(fs::metadata(&path).unwrap().len(), 4);
+			drop(file);
+			let file = test_file(&path, variable_size);
+			assert_eq!(file.size_unsync_in_elmts().unwrap(), 1);
+			assert!(file.read(0).unwrap().is_some());
+		}
+	}
+
+	#[test]
+	fn failed_metadata_flush_is_not_skipped_even_after_discard() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("data.bin");
+		let size_path = path.with_extension("size");
+		let backup_path = dir.path().join("backup.size");
+		let mut file = test_file(&path, true);
+		file.flush().unwrap();
+		for discard in [false, true] {
+			file.append_elmt(&TestElem).unwrap();
+			fs::rename(&size_path, &backup_path).unwrap();
+			fs::create_dir(&size_path).unwrap();
+			assert!(file.flush().is_err());
+			if discard {
+				file.discard();
+			}
+			fs::remove_dir(&size_path).unwrap();
+			fs::rename(&backup_path, &size_path).unwrap();
+			if discard {
+				// Metadata no longer has its read map after the failed flush.
+				// Recovery must still see that error; treating this as a clean
+				// no-op would hide data written before metadata sync failed.
+				assert_eq!(
+					file.flush().unwrap_err().kind(),
+					io::ErrorKind::UnexpectedEof
+				);
+				continue;
+			}
+			file.flush().unwrap();
+			// Retrying the first append must write it exactly once.
+			assert_eq!(fs::metadata(&path).unwrap().len(), 4);
+			assert_eq!(
+				fs::metadata(&size_path).unwrap().len(),
+				u64::from(SizeEntry::LEN)
+			);
+			assert!(file.read(0).unwrap().is_some());
+			assert!(file.read(1).unwrap().is_none());
 		}
 	}
 
@@ -1484,7 +1614,7 @@ mod tests {
 		] {
 			size_file
 				.buffer
-				.extend(ser::ser_vec(0, &entry, ProtocolVersion(1)).unwrap());
+				.extend(ser::ser_vec(0, &entry, ProtocolVersion(1), true).unwrap());
 		}
 
 		let err = file.rewind(2).unwrap_err();

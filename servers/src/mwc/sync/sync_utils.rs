@@ -15,18 +15,28 @@
 // sync_utils contain banch of shared between mutiple sync modules routines
 // Normally we would put that into the base class, but rust doesn't support that.
 
-use crate::mwc::sync::sync_peers::SyncPeers;
-use mwc_chain::txhashset::request_lookup::RequestLookup;
-use mwc_chain::{pibd_params, Chain, Error};
-use mwc_crates::parking_lot::RwLock;
-use mwc_p2p::{Capabilities, Peer, PeerAddr, Peers};
+use mwc_chain::{Chain, Error};
+use mwc_p2p::{Capabilities, Peer, Peers};
 use std::cmp;
-use std::cmp::max;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::convert::TryFrom;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+
+// current height back to 0 decreasing in powers of 2
+pub fn get_locator_heights(height: u64) -> Vec<u64> {
+	let mut current = height;
+	let mut heights = vec![];
+	while current > 0 {
+		heights.push(current);
+		if heights.len() >= (mwc_p2p::MAX_LOCATORS as usize) - 1 {
+			break;
+		}
+		let next = 2u64.pow(heights.len() as u32);
+		current = if current > next { current - next } else { 0 }
+	}
+	heights.push(0);
+	heights
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SyncRequestResponses {
@@ -39,7 +49,6 @@ pub enum SyncRequestResponses {
 	HasMoreHeadersToApply,
 	WaitingForHeaders,
 	StatePibdReady,
-	BadState, // need update state, probably horizon was changed, need to retry
 	BodyReady,
 	SyncDone,
 }
@@ -146,348 +155,10 @@ impl<T> CachedResponse<T> {
 	}
 }
 
-#[derive(Clone)]
-pub struct PeerTrackData {
-	requests: usize,
-}
-
-impl PeerTrackData {
-	fn new(requests: usize) -> Self {
-		PeerTrackData { requests }
-	}
-}
-
-pub struct RequestData {
-	token: Arc<()>,
-	peer: PeerAddr,
-	request_time: Instant,
-	request_message: String, // for logging and debugging
-}
-
-impl RequestData {
-	fn new(token: Arc<()>, peer: PeerAddr, request_message: String) -> Self {
-		RequestData {
-			token,
-			peer,
-			request_time: Instant::now(),
-			request_message,
-		}
-	}
-}
-
-/// Opaque identity for one exact request registration.
-pub struct RequestToken(Arc<()>);
-
-struct LatencyTracker {
-	latency_history: VecDeque<i64>,
-	latency_sum: i64,
-}
-
-impl LatencyTracker {
-	fn new() -> Self {
-		LatencyTracker {
-			latency_history: VecDeque::new(),
-			latency_sum: 0,
-		}
-	}
-
-	fn clear(&mut self) {
-		self.latency_history.clear();
-		self.latency_sum = 0;
-	}
-
-	fn add_latency(&mut self, latency_ms: i64) {
-		if latency_ms <= 0 {
-			return;
-		}
-		self.latency_history.push_back(latency_ms);
-		// Safe: request latency is measured from an in-process timestamp and the
-		// history is capped at 15 entries, so the accumulated milliseconds stay
-		// far below i64::MAX.
-		self.latency_sum += latency_ms;
-		while self.latency_history.len() > 15 {
-			let Some(lt) = self.latency_history.pop_front() else {
-				break;
-			};
-			// Safe: lt was previously included in latency_sum.
-			self.latency_sum -= lt;
-		}
-	}
-
-	fn get_average_latency(&self) -> Option<Duration> {
-		if self.latency_history.is_empty() {
-			None
-		} else {
-			let latency_ms = self.latency_sum / self.latency_history.len() as i64;
-			if latency_ms <= 0 {
-				Some(Duration::ZERO)
-			} else {
-				Some(Duration::from_millis(latency_ms as u64))
-			}
-		}
-	}
-}
-
-/// Utility class or tracking requests. Here we put common request related functionality
-/// Idea behind that is to make sync tolerate stale peer. We don't want to wait slow peer for full timeout,
-/// instead we want to utilize more faster peers. Also, we don't want superfast peer to take more
-/// traffic. In other words, we don't want peers be able to manipulate traffic shceduler.
-pub struct RequestTracker<K>
-where
-	K: std::cmp::Eq + std::hash::Hash,
-{
-	// Values: token, peer, time, message.
-	requested: RwLock<HashMap<K, RequestData>>, //  Lock 1
-	// there are so many peers and many requests, so we better to hande 'slow' peer cases
-	peers_stats: RwLock<HashMap<PeerAddr, PeerTrackData>>, // Lock 2
-	requests_to_next_ask: AtomicUsize,
-	// latency in MS
-	latency_tracker: RwLock<LatencyTracker>,
-}
-
-impl<K> RequestLookup<K> for RequestTracker<K>
-where
-	K: std::cmp::Eq + std::hash::Hash,
-{
-	fn contains_request(&self, key: &K) -> bool {
-		self.requested.read_recursive().contains_key(key)
-	}
-}
-
-impl<K> RequestTracker<K>
-where
-	K: std::cmp::Eq + std::hash::Hash,
-{
-	pub fn new() -> Self {
-		RequestTracker {
-			requested: RwLock::new(HashMap::new()),
-			peers_stats: RwLock::new(HashMap::new()),
-			requests_to_next_ask: AtomicUsize::new(0),
-			latency_tracker: RwLock::new(LatencyTracker::new()),
-		}
-	}
-
-	fn decrement_peer_requests(
-		peers_stats: &mut HashMap<PeerAddr, PeerTrackData>,
-		peer: &PeerAddr,
-	) {
-		let remove_peer = match peers_stats.get_mut(peer) {
-			Some(peer_stat) => {
-				peer_stat.requests = peer_stat.requests.saturating_sub(1);
-				peer_stat.requests == 0
-			}
-			None => false,
-		};
-		if remove_peer {
-			peers_stats.remove(peer);
-		}
-	}
-
-	pub fn retain_expired(
-		&self,
-		expiration_time_interval_sec: u32,
-		sync_peers: &SyncPeers,
-	) -> HashSet<PeerAddr> {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
-		let expiration_time_interval = Duration::from_secs(expiration_time_interval_sec as u64);
-
-		let mut res: HashSet<PeerAddr> = HashSet::new();
-
-		// first let's clean up stale requests...
-		requested.retain(|_, request_data| {
-			if request_data.request_time.elapsed() > expiration_time_interval {
-				sync_peers
-					.report_no_response(&request_data.peer, request_data.request_message.clone());
-				res.insert(request_data.peer.clone());
-				Self::decrement_peer_requests(peers_stats, &request_data.peer);
-				return false;
-			}
-			true
-		});
-		res
-	}
-
-	pub fn clear(&self) {
-		let mut requested = self.requested.write();
-		let mut peers_stats = self.peers_stats.write();
-		requested.clear();
-		peers_stats.clear();
-		self.requests_to_next_ask.store(0, Ordering::Relaxed);
-		self.latency_tracker.write().clear();
-	}
-
-	/// Calculate how many new requests we can make to the peers. This call updates requests_to_next_ask
-	pub fn calculate_needed_requests(
-		&self,
-		peer_num: usize,
-		excluded_requests: usize,
-		_excluded_peers: usize,
-		request_per_peer: usize,
-		requests_limit: usize,
-	) -> usize {
-		let requests_in_queue = self
-			.requested
-			.read_recursive()
-			.len()
-			.saturating_sub(excluded_requests);
-		let expected_total_request =
-			cmp::min(peer_num.saturating_mul(request_per_peer), requests_limit);
-		self.requests_to_next_ask.store(
-			max(
-				1,
-				expected_total_request.saturating_add(excluded_requests) / 5,
-			),
-			Ordering::Relaxed,
-		);
-		expected_total_request.saturating_sub(requests_in_queue)
-	}
-
-	pub fn get_requests_num(&self) -> usize {
-		self.requested.read_recursive().len()
-	}
-
-	pub fn has_request(&self, req: &K) -> bool {
-		self.requested.read_recursive().contains_key(req)
-	}
-
-	pub fn get_update_requests_to_next_ask(&self) -> usize {
-		self.requests_to_next_ask
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-				Some(current.saturating_sub(1))
-			})
-			.unwrap_or_else(|current| current)
-	}
-
-	pub fn get_peer_track_data(&self, peer: &PeerAddr) -> Option<PeerTrackData> {
-		self.peers_stats.read_recursive().get(peer).cloned()
-	}
-
-	pub fn register_request(&self, key: K, peer: PeerAddr, message: String) -> RequestToken {
-		let token = Arc::new(());
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
-
-		if let Some(request_data) =
-			requested.insert(key, RequestData::new(token.clone(), peer.clone(), message))
-		{
-			Self::decrement_peer_requests(peers_stats, &request_data.peer);
-		}
-
-		match peers_stats.get_mut(&peer) {
-			Some(n) => {
-				n.requests = n.requests.saturating_add(1);
-			}
-			None => {
-				peers_stats.insert(peer.clone(), PeerTrackData::new(1));
-			}
-		}
-
-		RequestToken(token)
-	}
-
-	/// Roll back a request that could not be sent. The token check prevents a late
-	/// send failure from removing a newer request registered for the same key.
-	/// Unlike response removal, rollback must not contribute a latency sample.
-	pub fn rollback_request(&self, key: &K, request_token: &RequestToken) -> bool {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
-		let matches_request = requested.get(key).map_or(false, |request_data| {
-			Arc::ptr_eq(&request_data.token, &request_token.0)
-		});
-		if !matches_request {
-			return false;
-		}
-
-		if let Some(request_data) = requested.remove(key) {
-			Self::decrement_peer_requests(peers_stats, &request_data.peer);
-			true
-		} else {
-			false
-		}
-	}
-
-	/// Cancel obsolete requests without treating them as responses or timeouts.
-	pub fn cancel_requests<'a, I>(&self, keys: I) -> usize
-	where
-		K: 'a,
-		I: IntoIterator<Item = &'a K>,
-	{
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
-		let mut removed = 0usize;
-
-		for key in keys {
-			if let Some(request_data) = requested.remove(key) {
-				Self::decrement_peer_requests(peers_stats, &request_data.peer);
-				removed = removed.saturating_add(1);
-			}
-		}
-
-		removed
-	}
-
-	pub fn remove_request(&self, key: &K, peer: &PeerAddr) -> Option<PeerAddr> {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
-
-		if let Some(request_data) = requested.get(key) {
-			let res_peer = request_data.peer.clone();
-			if request_data.peer == *peer {
-				let latency_ms = i64::try_from(request_data.request_time.elapsed().as_millis())
-					.unwrap_or(i64::MAX / 15);
-				self.latency_tracker.write().add_latency(latency_ms);
-				requested.remove(key);
-				Self::decrement_peer_requests(peers_stats, &res_peer);
-			}
-			Some(res_peer)
-		} else {
-			None
-		}
-	}
-
-	pub fn remove_request_by_key(&self, key: &K, peer: &PeerAddr) -> Option<PeerAddr> {
-		let mut requested = self.requested.write();
-		let peers_stats = &mut self.peers_stats.write();
-
-		if let Some(request_data) = requested.remove(key) {
-			let res_peer = request_data.peer.clone();
-			Self::decrement_peer_requests(peers_stats, &res_peer);
-			if request_data.peer == *peer {
-				let latency_ms = i64::try_from(request_data.request_time.elapsed().as_millis())
-					.unwrap_or(i64::MAX / 15);
-				self.latency_tracker.write().add_latency(latency_ms);
-			}
-			Some(res_peer)
-		} else {
-			None
-		}
-	}
-
-	pub fn get_average_latency(&self) -> Option<Duration> {
-		self.latency_tracker.read_recursive().get_average_latency()
-	}
-
-	pub fn get_average_latency_ms(&self) -> Option<u32> {
-		// If latency no longer fits in u32 milliseconds, drop the statistic.
-		// Latency that large only indicates severe network issues, and treating
-		// it as missing statistics is adequate here.
-		self.get_average_latency()
-			.and_then(|latency| u32::try_from(latency.as_millis()).ok())
-	}
-
-	pub fn get_retry_latency(&self) -> Duration {
-		self.get_average_latency()
-			.unwrap_or_else(|| Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64))
-	}
-
-	pub fn get_expected_peer(&self, key: &K) -> Option<PeerAddr> {
-		if let Some(req_data) = self.requested.read_recursive().get(key) {
-			Some(req_data.peer.clone())
-		} else {
-			None
-		}
-	}
+/// A lost connection cannot answer its old requests. Use the original Peer,
+/// since a replacement connection at the same address is a different supplier.
+pub(super) fn request_peer_is_connected(supplier: &Weak<Peer>) -> bool {
+	supplier.upgrade().is_some_and(|peer| peer.is_connected())
 }
 
 /// Get a list of qualify peers. Peers that has needed height and capability
@@ -501,112 +172,22 @@ pub fn get_qualify_peers(
 		.iter()
 		.outbound()
 		.connected()
+		.filter(|peer| peer.info.has_known_tip())
 		.into_iter()
 		.filter(|peer| {
-			Chain::height_2_archive_height(peers.get_context_id(), peer.info.height())
-				== archive_height
+			let (height, _) = peer.info.get_height_and_difficulty();
+			Chain::height_2_archive_height(peers.get_context_id(), height) == archive_height
 				&& peer.info.capabilities.contains(capability)
 		})
 		.collect()
 }
 
-// return: (peers, number of excluded requests)
-pub fn get_sync_peers<T: std::cmp::Eq + std::hash::Hash>(
-	peers: &Arc<Peers>,
-	expected_requests_per_peer: usize,
-	capabilities: Capabilities,
-	min_height: u64,
-	exact_archive_height: Option<u64>,
-	request_tracker: &RequestTracker<T>,
-	excluded_peer_addr: &HashSet<PeerAddr>,
-) -> (Vec<Arc<Peer>>, usize, usize) {
-	// Excluding peers with totally full Q
-	let peer_requests_limit = expected_requests_per_peer;
-	let mut res: Vec<Arc<Peer>> = Vec::new();
-	// for excluded we nned to cover offline prrs as well. That is why we are counting back
-	let mut excluded_requests: usize = request_tracker.get_requests_num();
-	let mut excluded_peers = 0;
-	let mut found_outbound = false;
-	let context_id = peers.get_context_id();
-	let mismatched_archive_height = |peer: &Arc<Peer>| {
-		exact_archive_height
-			.map(|archive_height| {
-				Chain::height_2_archive_height(context_id, peer.info.height()) != archive_height
-			})
-			.unwrap_or(false)
-	};
-	for peer in peers
-		.iter()
-		.with_capabilities(capabilities)
-		.connected()
-		.outbound()
-		.with_min_height(min_height)
-	{
-		if mismatched_archive_height(&peer) {
-			continue;
-		}
-
-		let mut excluded = excluded_peer_addr.contains(&peer.info.addr);
-		found_outbound = true;
-		if let Some(track_data) = request_tracker.get_peer_track_data(&peer.info.addr) {
-			if !excluded && track_data.requests < peer_requests_limit {
-				excluded_requests = excluded_requests.saturating_sub(track_data.requests);
-			} else {
-				excluded = true;
-			}
-		}
-		if !excluded {
-			res.push(peer);
-		} else {
-			excluded_peers += 1;
-		}
-	}
-	if !found_outbound {
-		// adding inbounds since no outbound is found...
-		for peer in peers
-			.iter()
-			.with_capabilities(capabilities)
-			.connected()
-			.inbound()
-			.with_min_height(min_height)
-		{
-			if mismatched_archive_height(&peer) {
-				continue;
-			}
-
-			let mut excluded = excluded_peer_addr.contains(&peer.info.addr);
-			if let Some(track_data) = request_tracker.get_peer_track_data(&peer.info.addr) {
-				if !excluded && track_data.requests < peer_requests_limit {
-					excluded_requests = excluded_requests.saturating_sub(track_data.requests);
-				} else {
-					excluded = true;
-				}
-			}
-			if !excluded {
-				res.push(peer);
-			} else {
-				excluded_peers += 1;
-			}
-		}
-	}
-	(res, excluded_requests, excluded_peers)
-}
-
 #[cfg(test)]
 mod tests {
-	use super::{CachedResponse, LatencyTracker, QuorumSelection, RequestTracker};
-	use crate::mwc::sync::sync_peers::SyncPeers;
+	use super::{CachedResponse, QuorumSelection};
 	use mwc_chain::pibd_params;
-	use mwc_p2p::PeerAddr;
-	use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-	use std::time::{Duration, Instant};
-
-	fn peer_for_idx(idx: u8) -> PeerAddr {
-		PeerAddr::Ip(SocketAddr::new(
-			IpAddr::V4(Ipv4Addr::new(8, 8, 8, idx)),
-			3414,
-		))
-	}
+	use mwc_util::LatencyTracker;
+	use std::time::Duration;
 
 	#[test]
 	fn empty_latency_history_has_no_average() {
@@ -704,190 +285,29 @@ mod tests {
 			Some(Duration::from_millis(timeout_ms as u64))
 		);
 	}
+}
+
+#[cfg(test)]
+mod locator_tests {
+	use super::get_locator_heights;
 
 	#[test]
-	fn retry_latency_uses_timeout_without_samples() {
-		let tracker = RequestTracker::<u64>::new();
-
+	fn test_get_locator_heights() {
+		assert_eq!(get_locator_heights(0), vec![0]);
+		assert_eq!(get_locator_heights(1), vec![1, 0]);
+		assert_eq!(get_locator_heights(2), vec![2, 0]);
+		assert_eq!(get_locator_heights(3), vec![3, 1, 0]);
+		assert_eq!(get_locator_heights(10), vec![10, 8, 4, 0]);
+		assert_eq!(get_locator_heights(100), vec![100, 98, 94, 86, 70, 38, 0]);
 		assert_eq!(
-			tracker.get_retry_latency(),
-			Duration::from_secs(pibd_params::PIBD_REQUESTS_TIMEOUT_SECS as u64)
+			get_locator_heights(1000),
+			vec![1000, 998, 994, 986, 970, 938, 874, 746, 490, 0]
 		);
-	}
-
-	#[test]
-	fn duplicate_request_for_same_peer_keeps_single_count() {
-		let tracker = RequestTracker::<u64>::new();
-		let peer = peer_for_idx(1);
-
-		tracker.register_request(42, peer.clone(), "first".into());
-		tracker.register_request(42, peer.clone(), "second".into());
-
-		assert_eq!(tracker.get_requests_num(), 1);
+		// check the locator is still a manageable length, even for large numbers of
+		// headers
 		assert_eq!(
-			tracker
-				.get_peer_track_data(&peer)
-				.expect("peer stats")
-				.requests,
-			1
+			get_locator_heights(10000),
+			vec![10000, 9998, 9994, 9986, 9970, 9938, 9874, 9746, 9490, 8978, 7954, 5906, 1810, 0,]
 		);
-
-		assert_eq!(tracker.remove_request(&42, &peer), Some(peer.clone()));
-		assert_eq!(tracker.get_requests_num(), 0);
-		assert!(tracker.get_peer_track_data(&peer).is_none());
-	}
-
-	#[test]
-	fn replacing_request_key_decrements_previous_peer() {
-		let tracker = RequestTracker::<u64>::new();
-		let first_peer = peer_for_idx(1);
-		let second_peer = peer_for_idx(2);
-
-		tracker.register_request(42, first_peer.clone(), "first".into());
-		tracker.register_request(42, second_peer.clone(), "second".into());
-
-		assert_eq!(tracker.get_requests_num(), 1);
-		assert_eq!(tracker.get_expected_peer(&42), Some(second_peer.clone()));
-		assert!(tracker.get_peer_track_data(&first_peer).is_none());
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&second_peer)
-				.expect("second peer stats")
-				.requests,
-			1
-		);
-
-		assert_eq!(
-			tracker.remove_request(&42, &second_peer),
-			Some(second_peer.clone())
-		);
-		assert!(tracker.get_peer_track_data(&second_peer).is_none());
-	}
-
-	#[test]
-	fn unmatched_remove_request_keeps_original_request() {
-		let tracker = RequestTracker::<u64>::new();
-		let original_peer = peer_for_idx(1);
-		let duplicate_peer = peer_for_idx(2);
-
-		tracker.register_request(42, original_peer.clone(), "original".into());
-
-		assert_eq!(
-			tracker.remove_request(&42, &duplicate_peer),
-			Some(original_peer.clone())
-		);
-		assert_eq!(tracker.get_requests_num(), 1);
-		assert_eq!(tracker.get_expected_peer(&42), Some(original_peer.clone()));
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&original_peer)
-				.expect("original peer stats")
-				.requests,
-			1
-		);
-	}
-
-	#[test]
-	fn remove_request_by_key_clears_unmatched_request() {
-		let tracker = RequestTracker::<u64>::new();
-		let original_peer = peer_for_idx(1);
-		let duplicate_peer = peer_for_idx(2);
-
-		tracker.register_request(42, original_peer.clone(), "original".into());
-
-		assert_eq!(
-			tracker.remove_request_by_key(&42, &duplicate_peer),
-			Some(original_peer.clone())
-		);
-		assert_eq!(tracker.get_requests_num(), 0);
-		assert_eq!(tracker.get_expected_peer(&42), None);
-		assert!(tracker.get_peer_track_data(&original_peer).is_none());
-		assert!(tracker.get_peer_track_data(&duplicate_peer).is_none());
-		assert_eq!(tracker.get_average_latency(), None);
-	}
-
-	#[test]
-	fn rollback_request_removes_matching_registration_without_latency() {
-		let tracker = RequestTracker::<u64>::new();
-		let peer = peer_for_idx(1);
-		let request_token = tracker.register_request(42, peer.clone(), "request".into());
-
-		assert!(tracker.rollback_request(&42, &request_token));
-		assert_eq!(tracker.get_requests_num(), 0);
-		assert!(tracker.get_peer_track_data(&peer).is_none());
-		assert_eq!(tracker.get_average_latency(), None);
-	}
-
-	#[test]
-	fn rollback_request_does_not_remove_newer_registration() {
-		let tracker = RequestTracker::<u64>::new();
-		let first_peer = peer_for_idx(1);
-		let second_peer = peer_for_idx(2);
-		let first_request_token = tracker.register_request(42, first_peer.clone(), "first".into());
-		let second_request_token =
-			tracker.register_request(42, second_peer.clone(), "second".into());
-
-		assert!(!tracker.rollback_request(&42, &first_request_token));
-		assert_eq!(tracker.get_expected_peer(&42), Some(second_peer.clone()));
-		assert_eq!(
-			tracker
-				.get_peer_track_data(&second_peer)
-				.expect("second peer stats")
-				.requests,
-			1
-		);
-		assert!(tracker.rollback_request(&42, &second_request_token));
-		assert_eq!(tracker.get_requests_num(), 0);
-		assert!(tracker.get_peer_track_data(&first_peer).is_none());
-		assert!(tracker.get_peer_track_data(&second_peer).is_none());
-	}
-
-	#[test]
-	fn cancel_requests_clears_accounting_without_latency() {
-		let tracker = RequestTracker::<u64>::new();
-		let first_peer = peer_for_idx(1);
-		let second_peer = peer_for_idx(2);
-		tracker.register_request(41, first_peer.clone(), "first".into());
-		tracker.register_request(42, second_peer.clone(), "second".into());
-
-		assert_eq!(tracker.cancel_requests([&41, &42]), 2);
-		assert_eq!(tracker.get_requests_num(), 0);
-		assert!(tracker.get_peer_track_data(&first_peer).is_none());
-		assert!(tracker.get_peer_track_data(&second_peer).is_none());
-		assert_eq!(tracker.get_average_latency(), None);
-	}
-
-	#[test]
-	fn expired_request_removes_peer_stats() {
-		let tracker = RequestTracker::<u64>::new();
-		let peer = peer_for_idx(1);
-		tracker.register_request(42, peer.clone(), "request".into());
-		tracker
-			.requested
-			.write()
-			.get_mut(&42)
-			.expect("request")
-			.request_time = Instant::now()
-			.checked_sub(Duration::from_secs(2))
-			.expect("valid request time");
-
-		let expired = tracker.retain_expired(1, &SyncPeers::new());
-
-		assert_eq!(expired, std::collections::HashSet::from([peer.clone()]));
-		assert_eq!(tracker.get_requests_num(), 0);
-		assert!(tracker.get_peer_track_data(&peer).is_none());
-	}
-
-	#[test]
-	fn sequential_peer_replacement_does_not_accumulate_peer_stats() {
-		let tracker = RequestTracker::<u64>::new();
-
-		for idx in 1..=100 {
-			tracker.register_request(42, peer_for_idx(idx), "request".into());
-			assert_eq!(tracker.peers_stats.read_recursive().len(), 1);
-		}
-
-		assert_eq!(tracker.cancel_requests([&42]), 1);
-		assert!(tracker.peers_stats.read_recursive().is_empty());
 	}
 }

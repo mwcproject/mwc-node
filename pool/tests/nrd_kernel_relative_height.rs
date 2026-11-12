@@ -182,73 +182,42 @@ fn test_nrd_kernel_relative_height() -> Result<(), PoolError> {
 	assert_eq!(pool.txpool.size(), 0);
 	assert_eq!(pool.stempool.size(), 0);
 
-	// Confirm we cannot add tx2 to stempool with tx1 in previous block (NRD relative_height=2)
-	assert!(matches!(
-		submit_to_pool!(pool, test_source(), tx2.clone(), true, &header, &mut secp),
-		Err(PoolError::NRDKernelRelativeHeight)
-	));
+	// Once the excess is mined, admission rejects it before the NRD height check.
+	for stem in [false, true] {
+		assert!(matches!(
+			submit_to_pool!(pool, test_source(), tx2.clone(), stem, &header, &mut secp),
+			Err(PoolError::TransactionAlreadyConfirmed)
+		));
+	}
 
-	// Confirm we cannot add tx2 to txpool with tx1 in previous block (NRD relative_height=2)
-	assert!(matches!(
-		submit_to_pool!(pool, test_source(), tx2.clone(), false, &header, &mut secp),
-		Err(PoolError::NRDKernelRelativeHeight)
-	));
-
-	// Add another block so NRD relative_height rule is now met.
+	// Passing the NRD relative-height delay does not permit reposting a mined excess.
 	add_block(&mut secp, &chain, &[], &keychain);
 	let header = chain.head_header().unwrap();
-
-	// Confirm we can now add tx2 to stempool with NRD relative_height rule met.
-	assert!(submit_to_pool!(pool, test_source(), tx2.clone(), true, &header, &mut secp).is_ok());
-	assert_eq!(pool.total_size(), 0);
+	for tx in [&tx2, &tx3] {
+		for stem in [false, true] {
+			assert!(matches!(
+				submit_to_pool!(pool, test_source(), tx.clone(), stem, &header, &mut secp),
+				Err(PoolError::TransactionAlreadyConfirmed)
+			));
+		}
+	}
 	assert_eq!(pool.txpool.size(), 0);
-	assert_eq!(pool.stempool.size(), 1);
-
-	// Confirm we cannot yet add tx3 to stempool (NRD relative_height=1)
-	assert!(matches!(
-		submit_to_pool!(pool, test_source(), tx3.clone(), true, &header, &mut secp),
-		Err(PoolError::NRDKernelRelativeHeight)
-	));
-
-	// Confirm we can now add tx2 to txpool with NRD relative_height rule met.
-	assert!(submit_to_pool!(pool, test_source(), tx2.clone(), false, &header, &mut secp).is_ok());
-
-	// Confirm we cannot yet add tx3 to txpool (NRD relative_height=1)
-	assert!(matches!(
-		submit_to_pool!(pool, test_source(), tx3.clone(), false, &header, &mut secp),
-		Err(PoolError::NRDKernelRelativeHeight)
-	));
-
-	assert_eq!(pool.total_size(), 1);
-	assert_eq!(pool.txpool.size(), 1);
 	assert_eq!(pool.stempool.size(), 0);
+	assert!(pool
+		.prepare_mineable_transactions(&mut secp)
+		.unwrap()
+		.is_empty());
 
-	let txs = pool.prepare_mineable_transactions(&mut secp).unwrap();
-	assert_eq!(txs.len(), 1);
-
-	// Mine block containing tx2 from the txpool.
-	add_block(&mut secp, &chain, &txs, &keychain);
+	// This is transaction admission policy; block consensus still enforces NRD delays.
+	add_block(&mut secp, &chain, &[tx2], &keychain);
 	let header = chain.head_header().unwrap();
-	let block = chain.get_block_for_header(&header).unwrap();
-	pool.reconcile_block(&block, &mut secp);
-
-	assert_eq!(pool.total_size(), 0);
-	assert_eq!(pool.txpool.size(), 0);
-	assert_eq!(pool.stempool.size(), 0);
-
-	// Confirm we can now add tx3 to stempool with tx2 in immediate previous block (NRD relative_height=1)
-	assert!(submit_to_pool!(pool, test_source(), tx3.clone(), true, &header, &mut secp).is_ok());
-
-	assert_eq!(pool.total_size(), 0);
-	assert_eq!(pool.txpool.size(), 0);
-	assert_eq!(pool.stempool.size(), 1);
-
-	// Confirm we can now add tx3 to txpool with tx2 in immediate previous block (NRD relative_height=1)
-	assert!(submit_to_pool!(pool, test_source(), tx3.clone(), false, &header, &mut secp).is_ok());
-
-	assert_eq!(pool.total_size(), 1);
-	assert_eq!(pool.txpool.size(), 1);
-	assert_eq!(pool.stempool.size(), 0);
+	for stem in [false, true] {
+		assert!(matches!(
+			submit_to_pool!(pool, test_source(), tx3.clone(), stem, &header, &mut secp),
+			Err(PoolError::TransactionAlreadyConfirmed)
+		));
+	}
+	add_block(&mut secp, &chain, &[tx3], &keychain);
 
 	// Cleanup db directory
 	clean_output_dir(db_root.into());

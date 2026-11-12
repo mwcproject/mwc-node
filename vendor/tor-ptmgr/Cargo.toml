@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.92"
 name = "tor-ptmgr"
-version = "0.45.0"
+version = "0.48.0"
 authors = [
     "The Tor Project, Inc.",
     "Nick Mathewson <nickm@torproject.org>",
@@ -83,13 +83,13 @@ path = "examples/run-pt.rs"
 required-features = ["experimental-api"]
 
 [dependencies.async-trait]
-version = "0.1.54"
+version = "0.1.92"
 
 [dependencies.cfg-if]
-version = "1.0.0"
+version = "1.0.5"
 
 [dependencies.derive-deftly]
-version = "~1.11.4"
+version = "~1.14.0"
 features = [
     "full",
     "beta",
@@ -100,72 +100,72 @@ version = "0.11.2"
 package = "derive_builder_fork_arti"
 
 [dependencies.fs-mistrust]
-version = "0.15.0"
+version = "0.16.1"
 
 [dependencies.futures]
-version = "0.3.14"
+version = "0.3.34"
 
 [dependencies.itertools]
 version = "0.15.0"
 
 [dependencies.oneshot-fused-workaround]
-version = "0.7.0"
+version = "0.8.0"
 
 [dependencies.serde]
-version = "1.0.103"
+version = "1.0.229"
 features = ["derive"]
 
 [dependencies.thiserror]
 version = "2"
 
 [dependencies.tor-async-utils]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tor-basic-utils]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tor-chanmgr]
-version = "0.45.0"
+version = "0.48.0"
 features = ["pt-client"]
 
 [dependencies.tor-config]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tor-config-path]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tor-error]
-version = "0.45.0"
+version = "0.48.0"
 features = ["tracing"]
 
 [dependencies.tor-linkspec]
-version = "0.45.0"
+version = "0.48.0"
 features = ["pt-client"]
 
 [dependencies.tor-proto]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tor-rtcompat]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tor-socksproto]
-version = "0.45.0"
+version = "0.48.0"
 
 [dependencies.tracing]
-version = "0.1.36"
+version = "0.1.44"
 
 [dependencies.visibility]
-version = "0.1.0"
+version = "0.1.1"
 optional = true
 
 [dependencies.web-time-compat]
-version = "0.2.0"
+version = "0.3.0"
 
 [dev-dependencies.anyhow]
-version = "1.0.23"
+version = "1.0.104"
 
 [dev-dependencies.tokio]
-version = "1.47.1"
+version = "1.54.1"
 features = [
     "rt",
     "rt-multi-thread",
@@ -176,11 +176,11 @@ features = [
 ]
 
 [dev-dependencies.tor-rtcompat]
-version = "0.45.0"
+version = "0.48.0"
 features = [
     "tokio",
     "native-tls",
 ]
 
 [dev-dependencies.tracing-subscriber]
-version = "0.3.20"
+version = "0.3.23"

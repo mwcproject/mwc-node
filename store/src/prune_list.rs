@@ -54,6 +54,8 @@ pub struct PruneList {
 	/// Bitmap representing pruned root node positions.
 	bitmap: Bitmap,
 	bitmap_bak: Bitmap,
+	// Preserve first-write and retry requirements even after discard.
+	needs_flush: bool,
 	// These caches are derived from the bitmap and are used by get_shift() and
 	// get_leaf_shift() while translating logical PMMR positions to compacted
 	// file positions. Scanning the full prune bitmap for every lookup is too
@@ -65,6 +67,8 @@ pub struct PruneList {
 
 impl PruneList {
 	/// Instantiate a new prune list from the provided path and 1-based bitmap.
+	/// Rolls up pruned siblings; the backing files must reflect the same compaction.
+	/// Use `open` to restore persisted roots without changing their physical offsets.
 	/// Note: Does not flush the bitmap to disk. Caller is responsible for doing this.
 	pub fn new(path: Option<PathBuf>, bitmap: Bitmap) -> Result<PruneList, Error> {
 		if bitmap.contains(0) {
@@ -74,6 +78,7 @@ impl PruneList {
 			path,
 			bitmap: Bitmap::new(),
 			bitmap_bak: Bitmap::new(),
+			needs_flush: true,
 			shift_cache: vec![],
 			leaf_shift_cache: vec![],
 		};
@@ -94,19 +99,28 @@ impl PruneList {
 	}
 
 	/// Open an existing prune_list or create a new one.
-	/// Takes an optional bitmap of new pruned pos to be combined with existing pos.
+	/// Preserves persisted roots to match the existing hash and data files.
 	pub fn open<P: AsRef<Path>>(path: P) -> Result<PruneList, Error> {
 		let file_path = PathBuf::from(path.as_ref());
-		let bitmap = match read_bitmap(&file_path) {
-			Ok(bitmap) => bitmap,
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bitmap::new(),
+		let (bitmap, needs_flush) = match read_bitmap(&file_path) {
+			Ok(bitmap) => (bitmap, false),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Bitmap::new(), true),
 			Err(e) => return Err(e.into()),
 		};
 		if bitmap.contains(0) {
 			return Err(Error::InternalError("bitmap contains unexpected 0".into()));
 		}
 
-		let mut prune_list = PruneList::new(Some(file_path), bitmap)?;
+		// Imported sibling roots can still have separate hashes in the file.
+		// Rebuilding through `new` would roll them up without removing those hashes.
+		let mut prune_list = PruneList {
+			path: Some(file_path),
+			bitmap_bak: bitmap.clone(),
+			bitmap,
+			needs_flush,
+			shift_cache: vec![],
+			leaf_shift_cache: vec![],
+		};
 
 		// Now build the shift caches from the bitmap we read from disk
 		prune_list.init_caches()?;
@@ -133,6 +147,10 @@ impl PruneList {
 
 	/// Save the prune_list to disk.
 	pub fn flush(&mut self) -> io::Result<()> {
+		if !self.needs_flush && self.bitmap == self.bitmap_bak {
+			return Ok(());
+		}
+		self.needs_flush = true;
 		// Run the optimization step on the bitmap.
 		self.bitmap.run_optimize();
 
@@ -144,6 +162,7 @@ impl PruneList {
 		}
 
 		self.bitmap_bak = self.bitmap.clone();
+		self.needs_flush = false;
 		Ok(())
 	}
 
@@ -674,6 +693,88 @@ impl<I: Iterator<Item = Range<u64>>> Iterator for UnprunedIterator<I> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use mwc_crates::filetime::{set_file_mtime, FileTime};
+	use std::fs;
+
+	#[test]
+	fn open_preserves_imported_roots_on_flush_and_discard() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("prune.bin");
+		{
+			let mut prunes = PruneList::open(&path).unwrap();
+			prunes.append_exact(2).unwrap();
+			prunes.append_exact(5).unwrap();
+			prunes.flush().unwrap();
+		}
+
+		let old_time = FileTime::from_unix_time(1, 0);
+		set_file_mtime(&path, old_time).unwrap();
+		let mut reopened = PruneList::open(&path).unwrap();
+		assert_eq!(reopened.to_vec(), [3, 6]);
+		assert_eq!(reopened.get_total_shift().unwrap(), 4);
+		assert_eq!(reopened.get_total_leaf_shift().unwrap(), 4);
+
+		reopened.append_exact(9).unwrap();
+		reopened.discard().unwrap();
+		assert_eq!(reopened.to_vec(), [3, 6]);
+		assert_eq!(reopened.get_total_shift().unwrap(), 4);
+		assert_eq!(reopened.get_total_leaf_shift().unwrap(), 4);
+		reopened.flush().unwrap();
+		assert_eq!(read_bitmap(&path).unwrap(), Bitmap::of(&[3, 6]));
+		assert_eq!(
+			FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+			old_time
+		);
+	}
+
+	#[test]
+	fn flush_skips_clean_bitmaps_but_persists_new_and_changed_lists() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("prune.bin");
+		let mut prunes = PruneList::open(&path).unwrap();
+		prunes.flush().unwrap();
+		assert!(read_bitmap(&path).unwrap().is_empty());
+		prunes.append(2).unwrap();
+		prunes.flush().unwrap();
+		assert_eq!(read_bitmap(&path).unwrap(), Bitmap::of(&[3]));
+
+		let old_time = FileTime::from_unix_time(1, 0);
+		set_file_mtime(&path, old_time).unwrap();
+		prunes.flush().unwrap();
+		assert_eq!(
+			FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+			old_time
+		);
+		let mut reopened = PruneList::open(&path).unwrap();
+		reopened.flush().unwrap();
+		assert_eq!(
+			FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+			old_time
+		);
+
+		// A supplied bitmap is new state even when it equals its backup.
+		let mut replacement = PruneList::new(Some(path.clone()), Bitmap::of(&[7])).unwrap();
+		replacement.flush().unwrap();
+		assert_eq!(read_bitmap(&path).unwrap(), Bitmap::of(&[7]));
+	}
+
+	#[test]
+	fn failed_flush_then_discard_still_rewrites_the_persisted_bitmap() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("prune.bin");
+		let mut prunes = PruneList::open(&path).unwrap();
+		prunes.flush().unwrap();
+		prunes.append(2).unwrap();
+		fs::remove_file(&path).unwrap();
+		fs::create_dir(&path).unwrap();
+		assert!(prunes.flush().is_err());
+		fs::remove_dir(&path).unwrap();
+		// Model a failed flush that replaced the file before directory sync failed.
+		fs::write(&path, prunes.bitmap.serialize::<Portable>()).unwrap();
+		prunes.discard().unwrap();
+		prunes.flush().unwrap();
+		assert!(read_bitmap(&path).unwrap().is_empty());
+	}
 
 	#[test]
 	fn get_cache_rejects_rank_beyond_cache_len() {

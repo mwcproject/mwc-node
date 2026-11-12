@@ -24,7 +24,7 @@ use mwc_core::core::{Block, BlockHeader};
 use mwc_core::pow::Difficulty;
 use mwc_core::ser::{self, Readable, Reader, Writeable, Writer};
 use mwc_crates::log::{debug, info};
-use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::parking_lot::{RecursiveRwLock, RecursiveRwLockWriteGuard};
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::Secp256k1;
 use std::collections::HashSet;
@@ -38,19 +38,42 @@ bitflags! {
 	pub struct Options: u32 {
 		/// No flags
 		const NONE = 0b0000_0000;
-		/// Runs without checking the Proof of Work.
-		/// This is accepted only for cfg(test) builds or non-production chain modes.
-		#[cfg(test)]
+		/// Test-only bypass of Proof of Work and difficulty validation.
+		/// Available only in unit tests or explicit `test-support` builds.
+		#[cfg(any(test, feature = "test-support"))]
 		const SKIP_POW = 0b0000_0001;
-		/// Adds block while in syncing mode.
-		const SYNC = 0b0000_0010;
 		/// Block validation on a block we mined ourselves
 		const MINE = 0b0000_0100;
 	}
 }
 
+/// Which chain heads an explicit reset may change.
+#[derive(Debug, Clone, Copy)]
+pub enum ChainHeadReset {
+	/// Reset body state while preserving the selected header chain.
+	Body,
+	/// Truncate headers while preserving body state and rechecking the selected tip.
+	Headers {
+		/// Header head observed when choosing the target.
+		expected_head: Hash,
+	},
+	/// Reset both body state and the selected header chain.
+	Both,
+}
+
+/// State to discard when rebuilding a PIBD session from genesis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PibdResetMode {
+	/// Rebuild body state while retaining the validated header chain.
+	Body,
+	/// Rebuild both heads and remove all non-genesis headers and bodies.
+	Both,
+}
+
 /// We receive 512 headers from a peer in a batch. Let's use it for planning.
 pub const HEADERS_PER_BATCH: u32 = 512;
+/// Distance from the tip used to decide whether to display download status.
+pub const SYNC_STATUS_TIP_DISTANCE: u64 = 10;
 pub(crate) const SYNC_STATUS_UPDATE_INTERVAL_MS: u64 = 200;
 
 /// Helper for sync phases that can produce progress faster than the UI can use.
@@ -166,10 +189,13 @@ pub enum SyncStatus {
 	},
 	/// Downloading block headers below archive height
 	HeaderSync {
+		/// Header height when this download started.
+		#[serde(default)]
+		start_height: u64,
 		/// current sync head
 		current_height: u64,
 		/// height of the most advanced peer
-		archive_height: u64,
+		target_height: u64,
 	},
 	/// Performing PIBD reconstruction of txhashset
 	/// If PIBD syncer determines there's not enough
@@ -231,9 +257,10 @@ pub enum SyncStatus {
 		/// kernels in total
 		kernels_total: u64,
 	},
-	/// Downloading blocks above the archive (horizon) height
+	/// Downloading blocks on the selected header chain.
 	BodySync {
-		/// Archive header height. Starting height to download the blocks (if running in archive_mode, must be 0)
+		/// Body height when this download started, including resumed archive downloads.
+		/// The field name is retained for API compatibility.
 		archive_height: u64,
 		/// current node height
 		current_height: u64,
@@ -246,14 +273,25 @@ pub enum SyncStatus {
 
 /// Current sync state. Encapsulates the current SyncStatus.
 pub struct SyncState {
-	current: RwLock<SyncStatus>,
+	current: RecursiveRwLock<SyncStateData>,
+}
+
+struct SyncStateData {
+	status: SyncStatus,
+	// Keep both baselines while header and body downloads run in parallel.
+	header_start: Option<u64>,
+	body_start: Option<u64>,
 }
 
 impl SyncState {
 	/// Return a new SyncState initialize to NoSync
 	pub fn new() -> SyncState {
 		SyncState {
-			current: RwLock::new(SyncStatus::Initial),
+			current: RecursiveRwLock::new(SyncStateData {
+				status: SyncStatus::Initial,
+				header_start: None,
+				body_start: None,
+			}),
 		}
 	}
 
@@ -265,29 +303,26 @@ impl SyncState {
 	/// Whether the current state matches any active syncing operation.
 	/// Note: This includes our "initial" state.
 	pub fn is_syncing(&self) -> bool {
-		match *self.current.read_recursive() {
+		match self.current.read().status {
 			SyncStatus::NoSync => false,
 			SyncStatus::BodySync {
 				archive_height: _,
 				current_height,
 				highest_height,
-			} => highest_height.saturating_sub(current_height) > 10,
+			} => highest_height.saturating_sub(current_height) > SYNC_STATUS_TIP_DISTANCE,
 			_ => true,
 		}
 	}
 
 	/// Check if headers download process is done. In this case it make sense to request more top headers
 	pub fn are_headers_done(&self) -> bool {
-		match *self.current.read_recursive() {
+		match self.current.read().status {
 			SyncStatus::Initial => false,
 			SyncStatus::HeaderHashSync {
 				completed_blocks: _,
 				total_blocks: _,
 			} => false,
-			SyncStatus::HeaderSync {
-				current_height: _,
-				archive_height: _,
-			} => false,
+			SyncStatus::HeaderSync { .. } => false,
 			_ => true,
 		}
 	}
@@ -295,7 +330,7 @@ impl SyncState {
 	/// Whether the node is in a long txhashset/header PMMR validation phase.
 	pub fn is_txhashset_validation(&self) -> bool {
 		matches!(
-			*self.current.read_recursive(),
+			self.current.read().status,
 			SyncStatus::ValidatingKernelsHistory { .. }
 				| SyncStatus::TxHashsetKernelsPosValidation { .. }
 				| SyncStatus::TxHashsetOutputPosIndexBuild { .. }
@@ -308,7 +343,17 @@ impl SyncState {
 
 	/// Current syncing status
 	pub fn status(&self) -> SyncStatus {
-		*self.current.read_recursive()
+		self.current.read().status
+	}
+
+	/// Starting header height retained throughout the current download.
+	pub fn header_sync_start_height(&self) -> Option<u64> {
+		self.current.read().header_start
+	}
+
+	/// Starting body height retained throughout the current download.
+	pub fn body_sync_start_height(&self) -> Option<u64> {
+		self.current.read().body_start
 	}
 
 	/// Update the syncing status
@@ -319,15 +364,42 @@ impl SyncState {
 
 	fn update_with_guard(
 		&self,
-		new_status: SyncStatus,
-		mut status: RwLockWriteGuard<SyncStatus>,
+		mut new_status: SyncStatus,
+		mut state: RecursiveRwLockWriteGuard<SyncStateData>,
 	) -> bool {
-		if *status == new_status {
+		match &mut new_status {
+			SyncStatus::HeaderSync {
+				start_height,
+				current_height,
+				..
+			} => {
+				let start = state.header_start.get_or_insert(*start_height);
+				*start = (*start).min(*current_height);
+				*start_height = *start;
+			}
+			SyncStatus::BodySync {
+				archive_height,
+				current_height,
+				..
+			} => {
+				let start = state.body_start.get_or_insert(*archive_height);
+				*start = (*start).min(*current_height);
+				*archive_height = *start;
+			}
+			SyncStatus::AwaitingPeers => (),
+			_ => {
+				state.header_start = None;
+				state.body_start = None;
+			}
+		}
+		if state.status == new_status {
 			return false;
 		}
+		state.status = new_status;
+		// Logging callbacks may read the sync state synchronously.
+		drop(state);
 		// Sync status is needed for QT wallet sync tracking. Please keep this message as info
 		info!("mwc-node sync status: {:?}", new_status);
-		*status = new_status;
 		true
 	}
 
@@ -337,11 +409,78 @@ impl SyncState {
 		F: Fn(SyncStatus) -> bool,
 	{
 		let status = self.current.write();
-		if f(*status) {
+		if f(status.status) {
 			self.update_with_guard(new_status, status)
 		} else {
 			false
 		}
+	}
+}
+
+#[cfg(test)]
+mod sync_progress_tests {
+	use super::{SyncState, SyncStatus};
+
+	#[test]
+	fn download_baselines_survive_parallel_sync_and_peer_waits() {
+		let state = SyncState::new();
+		let headers = |height| SyncStatus::HeaderSync {
+			start_height: height,
+			current_height: height,
+			target_height: 200,
+		};
+		let bodies = |height| SyncStatus::BodySync {
+			archive_height: height,
+			current_height: height,
+			highest_height: 200,
+		};
+		state.update(headers(100));
+		state.update(bodies(50));
+		state.update(SyncStatus::AwaitingPeers);
+		state.update(headers(150));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::HeaderSync {
+				start_height: 100,
+				current_height: 150,
+				..
+			}
+		));
+		state.update(bodies(125));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::BodySync {
+				archive_height: 50,
+				current_height: 125,
+				..
+			}
+		));
+		// A rewind cannot leave the baseline above the current height.
+		state.update(bodies(25));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::BodySync {
+				archive_height: 25,
+				..
+			}
+		));
+		state.reset();
+		state.update(headers(180));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::HeaderSync {
+				start_height: 180,
+				..
+			}
+		));
+		state.update(bodies(175));
+		assert!(matches!(
+			state.status(),
+			SyncStatus::BodySync {
+				archive_height: 175,
+				..
+			}
+		));
 	}
 }
 
@@ -625,18 +764,22 @@ impl ser::Readable for Tip {
 /// importantly the broadcasting of blocks to our peers.
 pub trait ChainAdapter {
 	/// The blockchain pipeline has accepted this block as valid and added
-	/// it to our chain.
+	/// it to our chain. `header_head` is from the same committed state as
+	/// `status`, so consumers can identify a block that completed body catch-up.
 	fn block_accepted(
 		&self,
 		secp: &mut Secp256k1,
 		block: &Block,
 		status: BlockStatus,
-		opts: Options,
+		header_head: Tip,
 	);
 
-	/// A sourced block failed validation. The source peers are string encoded
-	/// to avoid coupling chain internals to p2p address types.
-	fn block_rejected(&self, _hash: &Hash, _source_peers: &HashSet<String>, _err: &Error) {}
+	/// A sourced block reached a terminal processing error. Called after PMMR
+	/// locks are released; the adapter must
+	/// distinguish invalid remote data from local failures before penalizing peers.
+	/// The full body preserves its header and input identity for sync bookkeeping.
+	/// Source peers are strings to avoid coupling chain internals to P2P types.
+	fn block_rejected(&self, _block: &Block, _source_peers: &HashSet<String>, _err: &Error) {}
 }
 
 /// Dummy adapter used as a placeholder for real implementations
@@ -648,7 +791,7 @@ impl ChainAdapter for NoopAdapter {
 		_secp: &mut Secp256k1,
 		_b: &Block,
 		_status: BlockStatus,
-		_opts: Options,
+		_header_head: Tip,
 	) {
 	}
 }

@@ -21,7 +21,7 @@ use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use mwc_chain::{Chain, Error, Options};
 use mwc_core::core::hash::Hashed;
 use mwc_core::core::{
-	Block, BlockHeader, KernelFeatures, NRDRelativeHeight, Transaction, TxKernel,
+	Block, BlockHeader, KernelFeatures, NRDRelativeHeight, OutputFeatures, Transaction, TxKernel,
 };
 use mwc_core::libtx::{aggsig, reward, ProofBuilder};
 use mwc_core::{consensus, global, pow};
@@ -100,17 +100,21 @@ where
 	)
 	.map_err(|e| Error::Other(format!("Difficulty calculation error, {}", e)))?;
 	let fee = txs.iter().map(|x| x.fee().unwrap()).sum();
-	let reward = reward::output(
+	let aggregate = mwc_core::core::transaction::aggregate(0, &txs, secp)
+		.map_err(mwc_core::core::block::Error::from)?;
+	let binding = chain.coinbase_binding_for_template(secp, prev, &aggregate.body)?;
+	let (output, kernel, opening) = reward::output_s2c(
 		0,
 		keychain,
 		&ProofBuilder::new(secp, keychain).unwrap(),
 		key_id,
 		fee,
-		false,
 		prev.height + 1,
 		secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 
 	let mut block = Block::new(
 		0,
@@ -122,6 +126,8 @@ where
 	)
 	.map_err(|e| Error::Block(e))?;
 
+	block.coinbase_opening =
+		consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -194,11 +200,11 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+	let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+	let key_id3 = ExtKeychainPath::new(3, 0, 0, 3, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
@@ -207,8 +213,16 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		0,
 		&mut secp,
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				key_id2.clone(),
+				1,
+			),
 		],
 		kernel.clone(),
 		excess.clone(),
@@ -221,8 +235,16 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		0,
 		&mut secp,
 		&[
-			build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id3.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				OutputFeatures::Plain,
+				key_id2.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 40000,
+				key_id3.clone(),
+				1,
+			),
 		],
 		kernel.clone(),
 		excess.clone(),
@@ -309,6 +331,22 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		std::collections::HashSet::new(),
 	)?;
 
+	// Preflight rejects an existing kernel even when the inputs are unspent
+	// and consensus would allow reuse of this NRD kernel.
+	global::set_local_accept_fee_base(1).unwrap();
+	use mwc_core::core::transaction_preflight::{MempoolAcceptRequest, PreflightTransaction};
+	let request = MempoolAcceptRequest::single(
+		PreflightTransaction::from_transaction(0, &tx2, true).unwrap(),
+	);
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert!(!result.checks_passed);
+	assert!(!result.transactions[0].balance_checked);
+	assert_eq!(result.transactions[0].failures.len(), 1);
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
+
 	// Block at height 11 is valid with tx2 as NRD rule is met (relative_height=2).
 	let block_valid_11 = build_block(&mut secp, &chain, &keychain, &key_id11, vec![tx2.clone()])?;
 	chain.process_block(
@@ -317,6 +355,65 @@ fn process_block_nrd_validation() -> Result<(), Error> {
 		Options::NONE,
 		std::collections::HashSet::new(),
 	)?;
+
+	// Reposting tx1 after tx2 spent its output is a confirmation, not a replay.
+	let mut request = MempoolAcceptRequest::single(
+		PreflightTransaction::from_transaction(0, &tx1, true).unwrap(),
+	);
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert!(!result.checks_passed);
+	assert_eq!(result.transactions[0].failures.len(), 1, "{result:?}");
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
+
+	assert!(!result.transactions[0].balance_checked);
+
+	// Kernel lookup uses the excess and also works before a signature is final.
+	request.transactions[0].kernels[0].kernel_hash = None;
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
+
+	// An unknown kernel proceeds through the ordinary validation checks.
+	let mut unknown = request.clone();
+	unknown.transactions[0].kernels[0].excess = Some(secp.commit_value(42).unwrap());
+	let result = chain.test_mempool_accept(&unknown, &[], &secp)?;
+	assert!(result.transactions[0].balance_checked);
+	assert!(result.transactions[0]
+		.failures
+		.iter()
+		.any(|f| f.check == "replay"));
+	assert!(result.transactions[0]
+		.failures
+		.iter()
+		.any(|f| f.check == "input_missing"));
+
+	// Age the spend beyond the replay window. The full kernel index still
+	// identifies the repost before even attempting balance or input checks.
+	let old_spend_height = chain.head()?.height;
+	let after_window = old_spend_height + u64::from(global::cut_through_horizon(0)) / 2 + 1;
+	for height in old_spend_height + 1..=after_window {
+		let key = ExtKeychain::derive_key_id(1, height as u32, 0, 0, 0).unwrap();
+		let block = build_block(&mut secp, &chain, &keychain, &key, vec![])?;
+		chain.process_block(&mut secp, block, Options::NONE, Default::default())?;
+	}
+	let result = chain.test_mempool_accept(&unknown, &[], &secp)?;
+	assert!(!result.transactions[0]
+		.failures
+		.iter()
+		.any(|f| f.check == "replay"));
+	let result = chain.test_mempool_accept(&request, &[], &secp)?;
+	assert!(!result.checks_passed);
+	assert!(!result.transactions[0].balance_checked);
+	assert_eq!(result.transactions[0].failures.len(), 1);
+	assert_eq!(
+		result.transactions[0].failures[0].check,
+		"already_confirmed"
+	);
 
 	clean_output_dir(chain_dir);
 	Ok(())
@@ -377,11 +474,11 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+	let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+	let key_id3 = ExtKeychainPath::new(3, 0, 0, 3, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
@@ -390,8 +487,16 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 		0,
 		&mut secp,
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				key_id2.clone(),
+				1,
+			),
 		],
 		kernel.clone(),
 		excess.clone(),
@@ -404,8 +509,16 @@ fn process_block_nrd_validation_relative_height_1() -> Result<(), Error> {
 		0,
 		&mut secp,
 		&[
-			build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id3.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				OutputFeatures::Plain,
+				key_id2.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 40000,
+				key_id3.clone(),
+				1,
+			),
 		],
 		kernel.clone(),
 		excess.clone(),
@@ -529,11 +642,11 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+	let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id3 = ExtKeychainPath::new(1, 3, 0, 0, 0)
+	let key_id3 = ExtKeychainPath::new(3, 0, 0, 3, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
@@ -542,8 +655,16 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 		0,
 		&mut secp,
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				key_id2.clone(),
+				1,
+			),
 		],
 		kernel.clone(),
 		excess.clone(),
@@ -556,8 +677,16 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 		0,
 		&mut secp,
 		&[
-			build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id3.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				OutputFeatures::Plain,
+				key_id2.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 40000,
+				key_id3.clone(),
+				1,
+			),
 		],
 		kernel.clone(),
 		excess.clone(),
@@ -614,12 +743,14 @@ fn process_block_nrd_validation_fork() -> Result<(), Error> {
 	// Process an alternative "fork" block also at height 9.
 	// The "other" block at height 9 should not affect this one in terms of NRD kernels
 	// as the recent kernel index should be rewound.
+	// S2C signing is deterministic; use a distinct reward key to create a fork.
+	let fork_key_id9 = ExtKeychain::derive_key_id(1, 19, 0, 0, 0).unwrap();
 	let block_valid_9b = build_block_from_prev(
 		&mut secp,
 		&header_8,
 		&chain,
 		&keychain,
-		&key_id9,
+		&fork_key_id9,
 		vec![tx1.clone()],
 	)?;
 	chain.process_block(

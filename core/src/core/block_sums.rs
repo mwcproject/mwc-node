@@ -208,7 +208,7 @@ mod tests {
 	fn legacy_bytes(utxo_sum: Commitment, kernel_sum: Commitment) -> Vec<u8> {
 		let mut bytes = vec![];
 		{
-			let mut writer = BinWriter::default(0, &mut bytes);
+			let mut writer = BinWriter::default(0, &mut bytes, true);
 			writer.write_fixed_bytes(&utxo_sum).unwrap();
 			writer.write_fixed_bytes(&kernel_sum).unwrap();
 		}
@@ -221,10 +221,10 @@ mod tests {
 		let zero_commit = secp_static::commit_to_zero_value();
 		let mut bytes = vec![];
 
-		serialize_default(0, &mut bytes, &sums).unwrap();
+		serialize_default(0, &mut bytes, &sums, true).unwrap();
 
 		assert_eq!(bytes, legacy_bytes(zero_commit, zero_commit));
-		let decoded: BlockSums = deserialize_default(0, &mut &bytes[..]).unwrap();
+		let decoded: BlockSums = deserialize_default(0, &mut &bytes[..], true).unwrap();
 		assert!(matches!(decoded, BlockSums::Empty));
 	}
 
@@ -235,10 +235,10 @@ mod tests {
 		let sums = BlockSums::new(utxo_sum, kernel_sum);
 		let mut bytes = vec![];
 
-		serialize_default(0, &mut bytes, &sums).unwrap();
+		serialize_default(0, &mut bytes, &sums, true).unwrap();
 
 		assert_eq!(bytes, legacy_bytes(utxo_sum, kernel_sum));
-		let decoded: BlockSums = deserialize_default(0, &mut &bytes[..]).unwrap();
+		let decoded: BlockSums = deserialize_default(0, &mut &bytes[..], true).unwrap();
 		match decoded {
 			BlockSums::NonEmpty {
 				utxo_sum: decoded_utxo_sum,
@@ -256,7 +256,7 @@ mod tests {
 		let zero_commit = secp_static::commit_to_zero_value();
 		let bytes = legacy_bytes(zero_commit, commitment(1));
 
-		match deserialize_default::<BlockSums, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<BlockSums, _>(0, &mut &bytes[..], true) {
 			Err(ser::Error::CorruptedData(msg)) => {
 				assert!(msg.contains("legacy empty sentinel"), "{}", msg);
 			}
@@ -269,7 +269,7 @@ mod tests {
 		let sums = BlockSums::new(secp_static::commit_to_zero_value(), commitment(1));
 		let mut bytes = vec![];
 
-		match serialize_default(0, &mut bytes, &sums) {
+		match serialize_default(0, &mut bytes, &sums, true) {
 			Err(ser::Error::CorruptedData(msg)) => {
 				assert!(msg.contains("legacy empty sentinel"), "{}", msg);
 			}
@@ -291,7 +291,7 @@ mod tests {
 		] {
 			let mut bytes = vec![];
 
-			match serialize_default(0, &mut bytes, &sums) {
+			match serialize_default(0, &mut bytes, &sums, true) {
 				Err(ser::Error::CorruptedData(msg)) => {
 					assert!(msg.contains(expected), "{}", msg);
 				}

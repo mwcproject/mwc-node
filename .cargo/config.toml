@@ -2,3 +2,7 @@
 rustflags = ["-Ctarget-feature=+crt-static"]
 [target.i686-pc-windows-msvc]
 rustflags = ["-Ctarget-feature=+crt-static"]
+
+[env]
+# Chain tests share context 0, including its global validation completion flags.
+RUST_TEST_THREADS = "1"

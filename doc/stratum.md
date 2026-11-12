@@ -519,6 +519,7 @@ Mwc Stratum protocol implementation contains the following error message:
 | -32501      | Share rejected due to low difficulty   |
 | -32502      | Failed to validate solution            |
 | -32503      | Solution Submitted too late            |
+| -32505      | Duplicate share                        |
 | -32600      | Invalid Request                        |
 | -32601      | Method not found                       |
 

@@ -61,7 +61,7 @@ use mwc_crates::http_body_util::Full;
 use mwc_crates::hyper;
 use mwc_crates::hyper::{Request, Response, StatusCode};
 use mwc_crates::log::{error, warn};
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::serde::Serialize;
 use mwc_crates::serde_json;
 use mwc_crates::zeroize::Zeroizing;
@@ -83,7 +83,7 @@ pub struct NodeApiThreads {
 /// port and wrapping the calls
 pub fn build_node_router<B, P>(
 	chain: Arc<Chain>,
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	peers: Arc<mwc_p2p::Peers>,
 	sync_state: Arc<SyncState>,
 	api_secret: Option<Zeroizing<String>>,
@@ -163,7 +163,7 @@ where
 pub fn node_apis<B, P>(
 	addr: &str,
 	chain: Arc<Chain>,
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	peers: Arc<mwc_p2p::Peers>,
 	sync_state: Arc<SyncState>,
 	api_secret: Option<Zeroizing<String>>,
@@ -291,7 +291,7 @@ where
 {
 	pub peers: Weak<mwc_p2p::Peers>,
 	pub chain: Weak<Chain>,
-	pub tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	pub sync_state: Weak<SyncState>,
 	start_time: Instant,
 	process_status_cache: Arc<Mutex<ProcessStatusCache>>,
@@ -306,7 +306,7 @@ where
 	pub fn new(
 		peers: Weak<mwc_p2p::Peers>,
 		chain: Weak<Chain>,
-		tx_pool: Weak<RwLock<mwc_pool::TransactionPool<B, P>>>,
+		tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 		sync_state: Weak<SyncState>,
 	) -> Self {
 		ForeignAPIHandlerV2 {
@@ -493,7 +493,7 @@ fn response<T: Into<Bytes>>(status: StatusCode, text: T) -> Response<Full<Bytes>
 )]*/
 pub fn build_router<B, P>(
 	chain: Arc<Chain>,
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	peers: Arc<mwc_p2p::Peers>,
 	sync_state: Arc<SyncState>,
 	stop_state: Arc<StopState>,

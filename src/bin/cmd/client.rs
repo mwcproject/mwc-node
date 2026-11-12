@@ -17,11 +17,13 @@ use mwc_crates::serde;
 use mwc_crates::serde_json;
 use mwc_crates::term;
 use mwc_crates::url::{Host, Url};
+use mwc_util::cli::ArgMatchesExt;
 /// Mwc client commands processing
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use crate::cmd::error::Error;
+use crate::cmd::utf8_arg_value;
 use mwc_api::client::HttpClient;
 use mwc_api::json_rpc;
 use mwc_api::types::Status;
@@ -474,7 +476,7 @@ fn is_trusted_plaintext_host(url: &Url) -> bool {
 
 pub fn client_command(
 	context_id: u32,
-	client_args: &ArgMatches<'_>,
+	client_args: &ArgMatches,
 	global_config: GlobalConfig,
 ) -> Result<(), Error> {
 	// just get defaults from the global config
@@ -484,32 +486,35 @@ pub fn client_command(
 	let node_client = HTTPNodeClient::new(context_id, &node_url, api_secret)?;
 
 	match client_args.subcommand() {
-		("status", Some(_)) => {
+		Some(("status", _)) => {
 			node_client.show_status()?;
 		}
-		("listconnectedpeers", Some(_)) => {
+		Some(("listconnectedpeers", _)) => {
 			node_client.list_connected_peers()?;
 		}
-		("resetchainhead", Some(args)) => {
-			let hash = args.value_of("hash").ok_or(Error::ArgumentError(
+		Some(("resetchainhead", args)) => {
+			let hash = args.value_of_os("hash").ok_or(Error::ArgumentError(
 				"Not found expected argument 'hash'".into(),
 			))?;
+			let hash = utf8_arg_value("hash", hash)?;
 			node_client.reset_chain_head(hash.to_string())?;
 		}
-		("invalidateheader", Some(args)) => {
-			let hash = args.value_of("hash").ok_or(Error::ArgumentError(
+		Some(("invalidateheader", args)) => {
+			let hash = args.value_of_os("hash").ok_or(Error::ArgumentError(
 				"Not found expected argument 'hash'".into(),
 			))?;
+			let hash = utf8_arg_value("hash", hash)?;
 			node_client.invalidate_header(hash.to_string())?;
 		}
-		("verify-chain", Some(args)) => {
+		Some(("verify-chain", args)) => {
 			let assume_valid_rangeproofs_kernels = args.is_present("fast");
 			node_client.verify_chain(assume_valid_rangeproofs_kernels)?;
 		}
-		("ban", Some(peer_args)) => {
-			let peer = peer_args.value_of("peer").ok_or(Error::ArgumentError(
+		Some(("ban", peer_args)) => {
+			let peer = peer_args.value_of_os("peer").ok_or(Error::ArgumentError(
 				"Not found expected argument 'peer'".into(),
 			))?;
+			let peer = utf8_arg_value("peer", peer)?;
 
 			if let Ok(addr) = peer.parse() {
 				node_client.ban_peer(&addr)?;
@@ -517,10 +522,11 @@ pub fn client_command(
 				return Err(Error::ArgumentError("Invalid peer address format".into()));
 			}
 		}
-		("unban", Some(peer_args)) => {
-			let peer = peer_args.value_of("peer").ok_or(Error::ArgumentError(
+		Some(("unban", peer_args)) => {
+			let peer = peer_args.value_of_os("peer").ok_or(Error::ArgumentError(
 				"Not found expected argument 'peer'".into(),
 			))?;
+			let peer = utf8_arg_value("peer", peer)?;
 
 			if let Ok(addr) = peer.parse() {
 				node_client.unban_peer(&addr)?;
@@ -540,6 +546,48 @@ pub fn client_command(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(unix)]
+	#[test]
+	fn client_command_rejects_non_utf8_arguments() {
+		use mwc_crates::yaml_rust2::YamlLoader;
+		use mwc_util::cli::command_from_yaml;
+		use std::ffi::OsString;
+		use std::os::unix::ffi::OsStringExt;
+
+		let yaml = YamlLoader::load_from_str(include_str!("../mwc.yml")).unwrap();
+		for (command, name) in [
+			("ban", "peer"),
+			("unban", "peer"),
+			("resetchainhead", "hash"),
+			("invalidateheader", "hash"),
+		] {
+			let mut args: Vec<OsString> = vec!["mwc".into(), "client".into(), command.into()];
+			if name == "peer" {
+				args.push("--peer".into());
+			}
+			args.push(OsString::from_vec(vec![0xff]));
+			let matches = command_from_yaml(&yaml[0])
+				.try_get_matches_from(args)
+				.unwrap();
+			let client_args = matches.subcommand_matches("client").unwrap();
+			let mut config = GlobalConfig::default();
+			config.members.server.api_secret_path = None;
+
+			match client_command(0, client_args, config) {
+				Err(Error::ArgumentError(message)) => assert_eq!(
+					message,
+					format!("Invalid value for --{}: value must be valid UTF-8", name),
+					"unexpected error for {}",
+					command
+				),
+				other => panic!(
+					"expected UTF-8 argument error for {}, got {:?}",
+					command, other
+				),
+			}
+		}
+	}
 
 	fn api_secret() -> Zeroizing<String> {
 		Zeroizing::new("secret".to_owned())

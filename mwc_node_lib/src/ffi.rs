@@ -16,7 +16,7 @@ use crate::mwc_node_calls::call_mwc_node_request;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::libc;
 use mwc_crates::log::{error, info};
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use safer_ffi::prelude::*;
 use std::collections::HashMap;
 
@@ -37,8 +37,8 @@ lazy_static! {
 	// Integration callers must account for that boundary: the context must stay
 	// valid until unregister returns and must be safe to use from any logging or
 	// webhook thread that can invoke the registered callback.
-	pub static ref LIB_CALLBACKS: RwLock<HashMap<String, (CallbackFn, usize)>> =
-		RwLock::new(HashMap::new());
+	pub static ref LIB_CALLBACKS: RecursiveRwLock<HashMap<String, (CallbackFn, usize)>> =
+		RecursiveRwLock::new(HashMap::new());
 }
 
 /// Register a callback and context pointer from C.

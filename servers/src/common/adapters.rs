@@ -16,7 +16,7 @@
 //! Adapters connecting new block, new transaction, and accepted transaction
 //! events to consumers of those events.
 
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ use mwc_chain::txhashset::BitmapChunk;
 use mwc_chain::{self, BlockStatus, ChainAdapter, Options, SyncState, SyncStatus};
 
 use crate::common::hooks::{ChainEvents, NetEvents};
-use crate::common::types::{ChainValidationMode, DandelionEpoch};
+use crate::common::types::DandelionEpoch;
 use crate::mwc::sync::get_locator_heights;
 use crate::mwc::sync::sync_manager::SyncManager;
 use mwc_chain::txhashset::Segmenter;
@@ -61,22 +61,22 @@ const CHAIN_LIVENESS_DEFER_GRACE_INTERVALS: u64 = 3;
 // NetToChainAdapter need a memory cache to prevent data overloading for network core nodes (non leaf nodes)
 // This cache will drop sequence of the events during the second
 struct EventCache {
-	event: RwLock<Hash>,
-	time: RwLock<Option<Instant>>,
+	event: RecursiveRwLock<Hash>,
+	time: RecursiveRwLock<Option<Instant>>,
 }
 
 impl EventCache {
 	fn new() -> Self {
 		EventCache {
-			event: RwLock::new(Hash::default()),
-			time: RwLock::new(None),
+			event: RecursiveRwLock::new(Hash::default()),
+			time: RecursiveRwLock::new(None),
 		}
 	}
 
 	// Check if it is contain the hash value
 	pub fn contains(&self, hash: &Hash, update: bool) -> bool {
 		let now = Instant::now();
-		let cached_at = *self.time.read_recursive();
+		let cached_at = *self.time.read();
 		// This is an elapsed-time freshness check, so use monotonic time. Wall-clock
 		// UTC can move backward after NTP or manual clock updates and would keep a
 		// cached hash suppressed longer than the intended one-second window.
@@ -95,7 +95,7 @@ impl EventCache {
 			return false;
 		}
 
-		if *self.event.read_recursive() == *hash {
+		if *self.event.read() == *hash {
 			true
 		} else {
 			if update {
@@ -230,13 +230,13 @@ struct LegacyV2BlockConversionThrottle {
 	// rather than attempting to enforce an aggregate anti-Sybil limit here.
 	// Stale entries are pruned so disconnected legacy peers do not grow this map
 	// indefinitely.
-	peers: RwLock<HashMap<PeerAddr, LegacyV2BlockConversionBucket>>,
+	peers: RecursiveRwLock<HashMap<PeerAddr, LegacyV2BlockConversionBucket>>,
 }
 
 impl LegacyV2BlockConversionThrottle {
 	fn new() -> Self {
 		LegacyV2BlockConversionThrottle {
-			peers: RwLock::new(HashMap::new()),
+			peers: RecursiveRwLock::new(HashMap::new()),
 		}
 	}
 
@@ -263,7 +263,7 @@ impl LegacyV2BlockConversionThrottle {
 }
 
 fn reserve_compact_block_reconstruction(
-	cache: &RwLock<HashMap<Hash, Instant>>,
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
 	block_hash: &Hash,
 ) -> bool {
 	reserve_compact_block_reconstruction_at(cache, block_hash, Instant::now())
@@ -276,7 +276,7 @@ fn reserve_compact_block_reconstruction(
 /// elapsed. Use monotonic time so wall-clock adjustments do not extend or
 /// shorten the retry and stale-entry windows.
 fn reserve_compact_block_reconstruction_at(
-	cache: &RwLock<HashMap<Hash, Instant>>,
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
 	block_hash: &Hash,
 	now: Instant,
 ) -> bool {
@@ -298,7 +298,10 @@ fn reserve_compact_block_reconstruction_at(
 	true
 }
 
-fn finish_compact_block_reconstruction(cache: &RwLock<HashMap<Hash, Instant>>, block_hash: &Hash) {
+fn finish_compact_block_reconstruction(
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
+	block_hash: &Hash,
+) {
 	finish_compact_block_reconstruction_at(cache, block_hash, Instant::now());
 }
 
@@ -308,7 +311,7 @@ fn finish_compact_block_reconstruction(cache: &RwLock<HashMap<Hash, Instant>>, b
 /// the cache's purpose is to suppress repeated compact-block processing, not
 /// only repeated full-block requests.
 fn finish_compact_block_reconstruction_at(
-	cache: &RwLock<HashMap<Hash, Instant>>,
+	cache: &RecursiveRwLock<HashMap<Hash, Instant>>,
 	block_hash: &Hash,
 	now: Instant,
 ) {
@@ -346,9 +349,8 @@ where
 	sync_state: Arc<SyncState>,
 	sync_manager: Arc<SyncManager>,
 	chain: Weak<mwc_chain::Chain>,
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
-	chain_validation_mode: ChainValidationMode,
 	hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	context_id: u32,
 
@@ -366,12 +368,8 @@ where
 	///
 	/// Entries are also pruned by age and capped by count so hostile peers cannot
 	/// grow this in-memory cache without bound.
-	compact_block_reconstruction_cache: RwLock<HashMap<Hash, Instant>>,
-	/// Last accepted peer-difficulty notification per peer. Admission is capped at
-	/// once per half ping interval before any chain or locator reads are performed.
-	peer_difficulty_request_cache: RwLock<HashMap<PeerAddr, Instant>>,
-	cached_tip: RwLock<(Difficulty, u64)>,
-	chain_liveness_deferred_until: RwLock<Option<Instant>>,
+	compact_block_reconstruction_cache: RecursiveRwLock<HashMap<Hash, Instant>>,
+	chain_liveness_deferred_until: RecursiveRwLock<Option<Instant>>,
 }
 
 impl<B, P> mwc_p2p::ChainAdapter for NetToChainAdapter<B, P>
@@ -379,12 +377,22 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		Ok(self.current_tip_for_peer_liveness()?.0)
+	fn peer_connected(&self, peer: &PeerInfo) {
+		self.sync_manager.peer_connected(&peer.addr);
 	}
 
-	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		Ok(self.current_tip_for_peer_liveness()?.1)
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
+		self.chain()?.head_header()
+	}
+
+	fn is_known_or_better_tip(
+		&self,
+		height: u64,
+		difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		let chain = self.chain()?;
+		// A header-only lead must not evict a supplier that can advance our bodies.
+		chain.is_known_or_better_tip(height, difficulty, chain.head()?)
 	}
 
 	fn is_chain_liveness_deferred(&self) -> bool {
@@ -396,7 +404,7 @@ where
 		kernel_hash: Hash,
 	) -> Result<Option<core::Transaction>, mwc_chain::Error> {
 		self.tx_pool
-			.read_recursive()
+			.read()
 			.retrieve_tx_by_kernel_hash(kernel_hash)
 			.map_err(|e| {
 				mwc_chain::Error::Other(format!(
@@ -416,10 +424,7 @@ where
 			return Ok(true);
 		}
 
-		let has_tx = self
-			.tx_pool
-			.read_recursive()
-			.contains_tx_by_kernel_hash(kernel_hash);
+		let has_tx = self.tx_pool.read().contains_tx_by_kernel_hash(kernel_hash);
 
 		if !has_tx {
 			// Transaction kernel announcements are gossip hints. Requesting the
@@ -497,7 +502,6 @@ where
 		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: Options,
 	) -> Result<bool, mwc_chain::Error> {
 		let b_hash = b.hash(self.context_id)?;
 		if self.sync_state.is_txhashset_validation() {
@@ -522,8 +526,7 @@ where
 			b.kernels().len(),
 			b.header.prev_hash,
 		);
-		let processed = self.process_block(secp, b, peer_info, opts)?;
-		Ok(processed)
+		self.sync_manager.receive_block(secp, &b, peer_info, false)
 	}
 
 	fn compact_block_received(
@@ -532,22 +535,39 @@ where
 		cb: CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
-		if self.sync_state.is_txhashset_validation() {
-			let cb_hash = cb.hash(self.context_id)?;
+		if !self.sync_manager.state_is_ready() {
 			info!(
-				"compact_block_received: skipping {} at {} from {} while txhashset validation holds chain PMMR locks",
-				cb_hash, cb.header.height, peer_info.addr
+				"compact_block_received: skipping at height {} from {} until the state snapshot is ready",
+				cb.header.height, peer_info.addr
+			);
+			return Ok(true);
+		}
+
+		let chain = self.chain()?;
+		// Pruned blocks retain their headers, so is_known() alone cannot reject
+		// historical replays. Apply the full-block horizon before reconstruction
+		// or scheduling requests for missing transactions.
+		let horizon = chain
+			.head()?
+			.height
+			.saturating_sub(u64::from(global::cut_through_horizon(self.context_id)));
+		if cb.header.height < horizon {
+			debug!(
+				"compact_block_received: skipping block at {} below horizon {} from {}",
+				cb.header.height, horizon, peer_info.addr
 			);
 			return Ok(true);
 		}
 
 		// No need to process this compact block if we have previously accepted the _full block_.
-		let chain = self.chain()?;
 		match chain.is_known(&cb.header) {
 			Ok(()) => {}
 			Err(e) => {
 				if let mwc_chain::Error::Unfit(msg) = &e {
 					if msg == "duplicate block" {
+						// This shortcut only checked the hash; use the validated stored header.
+						let header = chain.get_block_header(&cb.hash(self.context_id)?)?;
+						peer_info.update(header.height, header.total_difficulty());
 						return Ok(true);
 					}
 				}
@@ -556,15 +576,15 @@ where
 		}
 
 		let cb_hash = cb.hash(self.context_id)?;
-		debug!(
-				"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
-				cb_hash,
-				cb.header.height,
-				peer_info.addr,
-				cb.out_full().len(),
-				cb.kern_full().len(),
-				cb.kern_ids().len(),
-			);
+		info!(
+			"Received compact_block {} at {} from {} [out/kern/kern_ids: {}/{}/{}] going to process.",
+			cb_hash,
+			cb.header.height,
+			peer_info.addr,
+			cb.out_full().len(),
+			cb.kern_full().len(),
+			cb.kern_ids().len(),
+		);
 
 		if cb.kern_ids().is_empty() {
 			// push the freshly hydrated block through the chain pipeline
@@ -581,7 +601,14 @@ where
 							hook.on_block_received(self.context_id, &block, &peer_info.addr);
 						}
 					}
-					self.process_block(secp, block, peer_info, Options::NONE)
+					let result = self.block_received(secp, block, peer_info);
+					if let Err(error) = &result {
+						error!(
+							"Failed to process hydrated block {} from {}: {}",
+							cb_hash, peer_info.addr, error
+						);
+					}
+					result
 				}
 				Err(e) => {
 					debug!("Invalid hydrated block {}: {:?}", cb_hash, e);
@@ -598,10 +625,13 @@ where
 				if matches!(e, mwc_chain::Error::Orphan(_)) || e.is_not_found() {
 					// Missing previous headers are expected during propagation or sync races.
 					// Treat them as recoverable; local chain failures still propagate below.
+					peer_info.update(cb.header.height, cb.header.total_difficulty());
 					return Ok(true);
 				}
 				return Err(e);
 			}
+
+			peer_info.update(cb.header.height, cb.header.total_difficulty());
 
 			if !reserve_compact_block_reconstruction(
 				&self.compact_block_reconstruction_cache,
@@ -614,129 +644,53 @@ where
 				return Ok(true);
 			}
 
-			let (txs, missing_short_ids) = match {
-				self.tx_pool.read_recursive().retrieve_transactions(
-					cb_hash,
-					cb.nonce,
-					cb.kern_ids(),
-				)
-			} {
-				Ok(result) => result,
-				Err(e) => {
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
-					return Err(mwc_chain::Error::Other(format!(
-						"Failed to retrieve compact block transactions from tx pool, {}",
-						e
-					)));
-				}
-			};
+			let result = (|| {
+				let (txs, missing_short_ids) = self
+					.tx_pool
+					.read()
+					.retrieve_transactions(cb_hash, cb.nonce, cb.kern_ids())
+					.map_err(|e| {
+						mwc_chain::Error::Other(format!(
+							"Failed to retrieve compact block transactions from tx pool, {}",
+							e
+						))
+					})?;
 
-			debug!(
-				"compact_block_received: txs from tx pool - {}, (unknown kern_ids: {})",
-				txs.len(),
-				missing_short_ids.len(),
-			);
-
-			// If we have missing kernels then we know we cannot hydrate this compact block.
-			if !missing_short_ids.is_empty() {
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
+				debug!(
+					"compact_block_received: txs from tx pool - {}, (unknown kern_ids: {})",
+					txs.len(),
+					missing_short_ids.len(),
 				);
-				self.sync_manager.add_block_request(
-					&peer_info.addr,
-					cb.header.height,
-					cb.header.hash(self.context_id)?,
-					Options::NONE,
-				);
-				return Ok(true);
-			}
 
-			let block = match core::Block::hydrate_from(cb.clone(), &txs) {
-				Ok(block) => {
-					if !self.sync_state.is_syncing() {
-						for hook in &self.hooks {
-							hook.on_block_received(self.context_id, &block, &peer_info.addr);
-						}
-					}
-					block
-				}
-				Err(e) => {
-					debug!("Invalid hydrated block {}: {:?}", cb_hash, e);
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
-					return Ok(false);
-				}
-			};
-
-			let prev = match chain.get_previous_header(&cb.header) {
-				Ok(prev) => prev,
-				Err(e) if e.is_not_found() => {
-					debug!(
-						"compact_block_received: missing previous header for {} at {}, likely syncing",
-						cb_hash, cb.header.height
-					);
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
+				if !missing_short_ids.is_empty() {
 					return Ok(true);
 				}
-				Err(e) => {
-					finish_compact_block_reconstruction(
-						&self.compact_block_reconstruction_cache,
-						&cb_hash,
-					);
-					return Err(e);
-				}
-			};
 
-			// Keep compact-block reconstruction conservative: any validation
-			// failure means the hydrated block is treated as invalid. This is
-			// acceptable because the node can request the full block and let the
-			// normal block-processing path validate it with complete data.
-			if block
-				.validate(self.context_id, &prev.total_kernel_offset, secp)
-				.is_ok()
-			{
-				debug!(
-					"successfully hydrated block: {} at {} ({})",
-					block.header.hash(self.context_id)?,
-					block.header.height,
-					block.inputs().version_str(),
-				);
-				let result = self.process_block(secp, block, peer_info, Options::NONE);
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
-				);
-				result
-			} else if self.sync_state.status() == SyncStatus::NoSync {
-				debug!("adapter: block invalid after hydration, requesting full block");
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
-				);
-				self.sync_manager.add_block_request(
-					&peer_info.addr,
-					cb.header.height,
-					cb.header.hash(self.context_id)?,
-					Options::NONE,
-				);
-				Ok(true)
-			} else {
-				debug!("block invalid after hydration, ignoring it, cause still syncing");
-				finish_compact_block_reconstruction(
-					&self.compact_block_reconstruction_cache,
-					&cb_hash,
-				);
-				Ok(true)
-			}
+				// Example: a transaction owner gives our pool a valid rangeproof A,
+				// but the miner includes another valid proof B for the same output.
+				// The kernel (and its short ID) is identical, so we reconstruct with A.
+				// Block::validate can pass even though the header commits to B's proof
+				// root. This body mixes peer data and local guesses; even a failure
+				// during hydration leaves BodySync to fetch complete data before blaming the peer.
+				let block = match core::Block::hydrate_from(cb, &txs) {
+					Ok(block) => block,
+					Err(e) => {
+						debug!("Failed to hydrate compact block {}: {:?}", cb_hash, e);
+						return Ok(true);
+					}
+				};
+				if !self.sync_state.is_syncing() {
+					for hook in &self.hooks {
+						hook.on_block_received(self.context_id, &block, &peer_info.addr);
+					}
+				}
+
+				self.sync_manager
+					.receive_block(secp, &block, peer_info, true)
+			})();
+			// Finish on every outcome, including local errors and full-block fallback.
+			finish_compact_block_reconstruction(&self.compact_block_reconstruction_cache, &cb_hash);
+			result
 		}
 	}
 
@@ -748,99 +702,33 @@ where
 		let bh_hash = bh.hash(self.context_id)?;
 		debug!("header_received, processing {}, {}", bh.height, bh_hash);
 
-		if matches!(self.sync_state.status(), SyncStatus::HeaderSync { .. }) {
-			debug!(
-				"header_received: skipping single header {} at {} from {} during header sync",
-				bh_hash, bh.height, peer_info.addr
-			);
-			return Ok(true);
-		}
-
-		if self.sync_state.is_txhashset_validation() {
+		if !self.sync_manager.state_is_ready() {
 			info!(
-				"header_received: skipping {} at {} from {} while txhashset validation holds chain PMMR locks",
+				"header_received: skipping {} at {} from {} until the state snapshot is ready",
 				bh_hash, bh.height, peer_info.addr
 			);
 			return Ok(true);
 		}
 
-		let chain = self.chain()?;
 		if !self.sync_state.is_syncing() {
 			for hook in &self.hooks {
 				hook.on_header_received(self.context_id, &bh, &peer_info.addr);
 			}
 		}
 
-		// pushing the new block header through the header chain pipeline
-		// we will go ask for the block if this is a new header
-		let res = chain.process_block_header(&bh, Options::NONE);
-
-		if let Err(e) = res {
-			debug!(
-				"Block header {} refused by chain: {:?}",
-				bh.hash(self.context_id)?,
-				e
+		if let Err(e) = self
+			.sync_manager
+			.receive_header(&bh, peer_info, &self.peers()?)
+		{
+			info!(
+				"Header {} from {} could not be processed: {}",
+				bh_hash, peer_info.addr, e
 			);
-			if e.is_bad_data() {
+			if e.is_bad_data() && !e.requires_chain_recovery() {
 				return Ok(false);
 			}
-
-			let recoverable_header_error =
-				matches!(&e, mwc_chain::Error::Orphan(_)) || e.is_not_found();
-			if !recoverable_header_error {
-				return Err(e);
-			}
-
-			if self.sync_state.are_headers_done() {
-				// we got an error when trying to process the block header
-				// but nothing serious enough to need to ban the peer upstream
-				// Probably child block doesn't exist, let's request them
-				let head = chain.head()?;
-				debug!(
-					"Got unknown header, requesting headers from the peer {} at height {}",
-					peer_info.addr, head.height
-				);
-				let heights = get_locator_heights(head.height);
-				let locator = chain.get_locator_hashes(head, &heights)?;
-				self.sync_manager.add_header_request(
-					&peer_info.addr,
-					Some(bh_hash),
-					bh.height,
-					locator,
-				);
-
-				if !self.sync_state.is_syncing() {
-					let tip = chain.head()?;
-					// Requesting of orphans buffer is large enough to finish the job with request
-					if bh.height > tip.height
-						&& bh.height - tip.height
-							< chain.get_pibd_params().get_orphans_num_limit() as u64
-					{
-						self.sync_manager.add_block_request(
-							&peer_info.addr,
-							bh.height,
-							bh_hash,
-							Options::NONE,
-						);
-					}
-				}
-			}
-			return Ok(true);
+			return Err(e);
 		}
-
-		// we have successfully processed a block header
-		// If we already have the full block, skip the compact-block request. This
-		// check is intentionally after process_block_header so a same-hash but
-		// different header cannot bypass header validation.
-		if chain.block_exists(&bh_hash)? {
-			return Ok(true);
-		}
-
-		// we have successfully processed a new block header
-		// so we can go request the block itself
-		self.request_compact_block(bh_hash, peer_info)?;
-
-		// done receiving the header
 		Ok(true)
 	}
 
@@ -868,37 +756,13 @@ where
 			return Ok(());
 		}
 
-		self.sync_manager
-			.receive_headers(&peer_info.addr, bhs, remaining, self.peers()?)?;
-
-		if let Some(last) = bhs.last() {
-			if !self.sync_state.is_syncing() && last.total_difficulty() > self.total_difficulty()? {
-				// check if any header
-				let chain = self.chain()?;
-				for bh in bhs.iter() {
-					let hash = bh.hash(self.context_id)?;
-					// Header is already processed, checking here if it was accepted
-					match chain.get_block_header(&hash) {
-						Ok(_) => {
-							if !chain.block_exists(&hash)? {
-								self.sync_manager.add_block_request(
-									&peer_info.addr,
-									bh.height,
-									hash,
-									Options::NONE,
-								);
-							}
-						}
-						Err(e) if e.is_not_found() => {
-							break;
-						}
-						Err(e) => {
-							return Err(e);
-						}
-					}
-				}
-			}
+		if !self
+			.sync_manager
+			.receive_headers(peer_info, bhs, remaining, self.peers()?)?
+		{
+			return Ok(());
 		}
+
 		Ok(())
 	}
 
@@ -1206,51 +1070,6 @@ where
 		)?;
 		Ok(())
 	}
-
-	/// Heard total_difficulty from a connected peer (via ping/pong).
-	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64) {
-		let res = || -> Result<(), mwc_chain::Error> {
-			if self.is_chain_liveness_deferred_now() || self.sync_state.is_syncing() {
-				return Ok(());
-			}
-
-			// Do not sleep or delay Pong responses. Atomically suppress only the
-			// expensive chain/locator work until half the expected ping interval passes.
-			{
-				let now = Instant::now();
-				let cooldown = Duration::from_secs(global::PEER_PING_INTERVAL_SECONDS) / 2;
-				let mut peers = self.peer_difficulty_request_cache.write();
-				peers.retain(|_, reserved_at| {
-					now.saturating_duration_since(*reserved_at) < cooldown
-				});
-				if peers.contains_key(peer) {
-					return Ok(());
-				}
-				peers.insert(peer.clone(), now);
-			}
-
-			let chain = self.chain()?;
-			let tip = chain.head()?;
-			if difficulty > tip.total_difficulty {
-				let tip_height = tip.height;
-				let heights = get_locator_heights(tip_height);
-				let locator = chain.get_locator_hashes(tip, &heights)?;
-				if !self.sync_state.is_syncing() {
-					self.sync_manager
-						.add_header_request(peer, None, tip_height + 1, locator);
-				}
-			}
-
-			Ok(())
-		}();
-
-		if let Err(e) = res {
-			error!(
-				"peer_difficulty: failed to handle advertised difficulty from peer {} (height {}, difficulty {}): {}",
-				peer, height, difficulty, e
-			);
-		}
-	}
 }
 
 impl<B, P> NetToChainAdapter<B, P>
@@ -1264,39 +1083,22 @@ where
 		sync_state: Arc<SyncState>,
 		chain: Arc<mwc_chain::Chain>,
 		sync_manager: Arc<SyncManager>,
-		tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
-		chain_validation_mode: ChainValidationMode,
+		tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 		hooks: Vec<Box<dyn NetEvents + Send + Sync>>,
 	) -> Result<Self, mwc_chain::Error> {
-		let tip = chain.head()?;
-		let cached_tip = (tip.total_difficulty, tip.height);
 		Ok(NetToChainAdapter {
 			sync_state,
 			sync_manager,
 			chain: Arc::downgrade(&chain),
 			tx_pool,
 			peers: OneTime::new(),
-			chain_validation_mode,
 			hooks,
 			context_id,
 			processed_transactions: EventCache::new(),
 			legacy_v2_block_conversion_throttle: LegacyV2BlockConversionThrottle::new(),
-			compact_block_reconstruction_cache: RwLock::new(HashMap::new()),
-			peer_difficulty_request_cache: RwLock::new(HashMap::new()),
-			cached_tip: RwLock::new(cached_tip),
-			chain_liveness_deferred_until: RwLock::new(None),
+			compact_block_reconstruction_cache: RecursiveRwLock::new(HashMap::new()),
+			chain_liveness_deferred_until: RecursiveRwLock::new(None),
 		})
-	}
-
-	fn current_tip_for_peer_liveness(&self) -> Result<(Difficulty, u64), mwc_chain::Error> {
-		if self.is_chain_liveness_deferred_now() {
-			return Ok(*self.cached_tip.read_recursive());
-		}
-
-		let tip = self.chain()?.head()?;
-		let cached_tip = (tip.total_difficulty, tip.height);
-		*self.cached_tip.write() = cached_tip;
-		Ok(cached_tip)
 	}
 
 	fn is_chain_liveness_deferred_now(&self) -> bool {
@@ -1378,183 +1180,8 @@ where
 		Ok(segmenter)
 	}
 
-	// pushing the new block through the chain pipeline
-	// remembering to reset the head if we have a bad block
-	fn process_block(
-		&self,
-		secp: &mut Secp256k1,
-		b: core::Block,
-		peer_info: &PeerInfo,
-		opts: Options,
-	) -> Result<bool, mwc_chain::Error> {
-		// We cannot process blocks earlier than the horizon so check for this here.
-		let chain = self.chain()?;
-		let peers = self.peers()?;
-
-		let head = {
-			let head = chain.head()?;
-			let horizon = head
-				.height
-				.saturating_sub(global::cut_through_horizon(self.context_id) as u64);
-			if b.header.height < horizon {
-				debug!("Got block is below horizon from peer {}", peer_info.addr);
-				return Ok(true);
-			}
-			head
-		};
-
-		let bhash = b.hash(self.context_id)?;
-		match chain.process_block(
-			secp,
-			b.clone(),
-			opts,
-			std::iter::once(peer_info.addr.to_string()).collect(),
-		) {
-			Ok(_) => {
-				self.validate_chain(secp, &bhash)?;
-				//self.check_compact();  Currently Sync process does that. No needs, also we don't want collision to happens
-				self.sync_manager.recieve_block_reporting(
-					Some(true),
-					&peer_info.addr,
-					b,
-					Options::SYNC,
-					&peers,
-				)?;
-				Ok(true)
-			}
-			Err(e) => {
-				if e.is_known_block() {
-					debug!(
-						"process_block: block {} from peer {} is already known: {}",
-						bhash, peer_info.addr, e
-					);
-					// This may still be a response to an outstanding body-sync request.
-					// Clear the request tracker without running orphan bookkeeping for an
-					// already-known block.
-					self.sync_manager.recieve_block_reporting(
-						Some(true),
-						&peer_info.addr,
-						b,
-						opts,
-						&peers,
-					)?;
-					return Ok(true);
-				}
-
-				if e.is_bad_data() {
-					warn!("process_block: block {} from peer {} is bad. Block is rejected, peer is banned. Error: {}", bhash, peer_info.addr, e);
-					self.validate_chain(secp, &bhash)?;
-					self.sync_manager.recieve_block_reporting(
-						Some(false),
-						&peer_info.addr,
-						b,
-						opts,
-						&peers,
-					)?;
-					return Ok(false);
-				}
-
-				if !(matches!(&e, mwc_chain::Error::Orphan(_)) || e.is_not_found()) {
-					info!(
-						"process_block: block {} from peer {} failed chain processing: {}",
-						bhash, peer_info.addr, e
-					);
-					return Err(e);
-				}
-				let prev_block_hash = b.header.prev_hash.clone();
-				let block_height = b.header.height;
-				let previous_known = match chain.get_previous_header(&b.header) {
-					Ok(_) => true,
-					Err(e) if e.is_not_found() => false,
-					Err(e) => return Err(e),
-				};
-				let need_request_prev_block = self.sync_manager.recieve_block_reporting(
-					None,
-					&peer_info.addr,
-					b,
-					opts,
-					&peers,
-				)?;
-				if !previous_known {
-					// requesting headers from that peer, intentionally without  self.sync_manager.add_header_request
-					if let Some(peer) = peers.get_connected_peer(&peer_info.addr) {
-						debug!("Got block with unknow headers, requesting headers from the peer {} at height {}", peer_info.addr, head.height);
-						let heights = get_locator_heights(head.height);
-						let locator = chain.get_locator_hashes(head, &heights)?;
-						if let Err(e) = peer.send_header_request(locator) {
-							warn!(
-								"process_block: failed to request recovery headers from peer {}: {}",
-								peer_info.addr, e
-							);
-						}
-					}
-				}
-				if need_request_prev_block && block_height > 0 {
-					// requesting headers from that peer
-					// requesting prev block from that peer
-					debug!(
-						"Got block with unknown child, requesting prev block {} from the peer {}",
-						prev_block_hash, peer_info.addr
-					);
-					self.sync_manager.add_block_request(
-						&peer_info.addr,
-						block_height - 1,
-						prev_block_hash,
-						Options::NONE,
-					);
-				}
-				Ok(true)
-			}
-		}
-	}
-
-	fn validate_chain(&self, secp: &Secp256k1, bhash: &Hash) -> Result<(), mwc_chain::Error> {
-		// If we are running in "validate the full chain every block" then
-		// panic here if validation fails for any reason.
-		// We are out of consensus at this point and want to track the problem
-		// down as soon as possible.
-		// Skip this if we are currently syncing (too slow).
-
-		let chain = self.chain()?;
-
-		if self.chain_validation_mode == ChainValidationMode::EveryBlock
-			&& chain.head()?.height > 0
-			&& !self.sync_state.is_syncing()
-		{
-			let now = Instant::now();
-
-			debug!(
-				"process_block: ***** validating full chain state at {}",
-				bhash,
-			);
-
-			chain
-				.validate(secp, false)
-				.expect("chain validation failed, hard stop");
-
-			debug!(
-				"process_block: ***** done validating full chain state, took {}s",
-				now.elapsed().as_secs(),
-			);
-		}
-		Ok(())
-	}
-
 	fn request_transaction(&self, h: Hash, peer_info: &PeerInfo) -> bool {
 		self.send_tx_request_to_peer(h, peer_info, |peer, h| peer.send_tx_request(h))
-	}
-
-	// After we have received a block header in "header first" propagation
-	// we need to go request the block (compact representation) from the
-	// same peer that gave us the header (unless we have already accepted the block)
-	fn request_compact_block(
-		&self,
-		bh_hash: Hash,
-		peer_info: &PeerInfo,
-	) -> Result<(), mwc_chain::Error> {
-		self.send_block_request_to_peer(bh_hash, peer_info, |peer, h| {
-			peer.send_compact_block_request(h)
-		})
 	}
 
 	fn send_tx_request_to_peer<F>(&self, h: Hash, peer_info: &PeerInfo, f: F) -> bool
@@ -1567,7 +1194,7 @@ where
 		let peers = match self.peers() {
 			Ok(peers) => peers,
 			Err(e) => {
-				error!("send_tx_request_to_peer: failed to access peers: {:?}", e);
+				warn!("send_tx_request_to_peer: failed to access peers: {:?}", e);
 				return false;
 			}
 		};
@@ -1582,44 +1209,10 @@ where
 			}
 			Some(peer) => {
 				if let Err(e) = f(&peer, h) {
-					error!("send_tx_request_to_peer: failed: {:?}", e);
+					info!("send_tx_request_to_peer: failed: {:?}", e);
 					return false;
 				}
 				true
-			}
-		}
-	}
-
-	fn send_block_request_to_peer<F>(
-		&self,
-		h: Hash,
-		peer_info: &PeerInfo,
-		f: F,
-	) -> Result<(), mwc_chain::Error>
-	where
-		F: Fn(&mwc_p2p::Peer, Hash) -> Result<(), mwc_p2p::Error>,
-	{
-		let peers = self.peers()?;
-		let chain = self.chain()?;
-
-		if chain.block_exists(&h)? {
-			debug!("send_block_request_to_peer: block {} already known", h);
-			return Ok(());
-		}
-
-		match peers.get_connected_peer(&peer_info.addr) {
-			None => Err(mwc_chain::Error::Other(format!(
-				"send_block_request_to_peer: can't send request to peer {:?}, not connected",
-				peer_info.addr
-			))),
-			Some(peer) => {
-				f(&peer, h).map_err(|e| {
-					mwc_chain::Error::Other(format!(
-						"send_block_request_to_peer: failed to send request to peer {:?}: {}",
-						peer_info.addr, e
-					))
-				})?;
-				Ok(())
 			}
 		}
 	}
@@ -1633,9 +1226,10 @@ where
 	B: BlockChain,
 	P: PoolAdapter,
 {
-	tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 	sync_state: Arc<SyncState>,
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
+	sync_manager: OneTime<Weak<SyncManager>>,
 	hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 }
 
@@ -1649,43 +1243,33 @@ where
 		secp: &mut Secp256k1,
 		b: &core::Block,
 		status: BlockStatus,
-		opts: Options,
+		header_head: mwc_chain::Tip,
 	) {
 		// Trigger all registered "on_block_accepted" hooks (logging and webhooks).
-		let context_id = self.tx_pool.read_recursive().get_context_id();
+		let context_id = self.tx_pool.read().get_context_id();
 		for hook in &self.hooks {
 			hook.on_block_accepted(context_id, b, status);
 		}
 
-		// Suppress broadcast of new blocks received during sync.
-		if !opts.contains(Options::SYNC) {
-			// If we mined the block then we want to broadcast the compact block.
-			// If we received the block from another node then broadcast "header first"
-			// to minimize network traffic.
-			match self.peers() {
-				Ok(peers) => {
-					if opts.contains(Options::MINE) {
-						// propagate compact block out if we mined the block
-						match CompactBlock::from(b.clone()) {
-							Ok(cb) => {
-								if let Err(e) = peers.broadcast_compact_block(&cb) {
-									error!("Failed to broadcast compact block: {}", e);
-								}
-							}
-							Err(e) => {
-								error!("Failed convert Block into CompactBlock, {}", e);
-							}
-						}
-					} else {
-						// "header first" propagation if we are not the originator of this block
-						if let Err(e) = peers.broadcast_header(&b.header) {
-							error!("Failed to broadcast block header: {}", e);
-						}
-					}
+		// Next/Reorg means this block became the body head. Compare with the
+		// header tip from that same commit, so neither older bodies nor losing
+		// forks are relayed. Mined and received blocks use the same message type
+		// to avoid identifying the mining node by its announcement format.
+		if status.is_next() || status.is_reorg() {
+			let broadcast = (|| -> Result<(), mwc_chain::Error> {
+				if b.hash(context_id)? != header_head.last_block_h {
+					return Ok(());
 				}
-				Err(e) => {
-					error!("Failed to obtain the peers list, {}", e);
-				}
+				let compact = CompactBlock::from(b.clone())?;
+				let peers = self
+					.peers()
+					.map_err(|error| mwc_chain::Error::Other(error.to_string()))?;
+				peers
+					.broadcast_compact_block(&compact)
+					.map_err(|error| mwc_chain::Error::Other(error.to_string()))
+			})();
+			if let Err(error) = broadcast {
+				info!("Failed to broadcast accepted compact block: {}", error);
 			}
 		}
 
@@ -1713,57 +1297,65 @@ where
 		}
 	}
 
-	fn block_rejected(&self, hash: &Hash, source_peers: &HashSet<String>, err: &mwc_chain::Error) {
+	fn block_rejected(
+		&self,
+		block: &core::Block,
+		source_peers: &HashSet<String>,
+		err: &mwc_chain::Error,
+	) {
 		if source_peers.is_empty() {
 			return;
 		}
-		if err.is_known_block() {
-			// The same valid block can arrive from several peers or remain in an
-			// orphan cache after another response stores it. Known-block outcomes
-			// are stale/redundant data, not a bad-block signal.
-			debug!(
-				"Skipping peer ban for known block {} from {:?}, syncing={}: {}",
-				hash,
-				source_peers,
-				self.sync_state.is_syncing(),
-				err
-			);
-			return;
-		}
-
+		info!(
+			"Rejected block at {} from {:?}, syncing={}: {}",
+			block.header.height,
+			source_peers,
+			self.sync_state.is_syncing(),
+			err
+		);
 		let peers = match self.peers() {
 			Ok(peers) => peers,
 			Err(e) => {
-				error!(
-					"Unable to ban peers for bad block {}: failed to obtain peers list: {}",
-					hash, e
+				warn!(
+					"Unable to report rejected block at {}: {}",
+					block.header.height, e
 				);
 				return;
 			}
 		};
-
+		let sync_manager = self
+			.sync_manager
+			.borrow()
+			.ok()
+			.and_then(|manager| manager.upgrade());
+		let bad_peer_data =
+			err.is_bad_data() && !err.is_known_block() && !err.requires_chain_recovery();
 		for source_peer in source_peers {
 			let parse_peer = source_peer.strip_prefix("tor://").unwrap_or(source_peer);
 			let peer_addr = match PeerAddr::from_str(parse_peer) {
 				Ok(peer_addr) => peer_addr,
 				Err(e) => {
-					warn!(
-						"Unable to parse source peer {} for bad block {}: {}",
-						source_peer, hash, e
-					);
+					warn!("Unable to parse block source peer {}: {}", source_peer, e);
 					continue;
 				}
 			};
-
-			let message = format!(
-				"Got bad block with hash: {} during validation: {}",
-				hash, err
-			);
-			if let Err(e) = peers.ban_peer(&peer_addr, mwc_p2p::ReasonForBan::BadBlock, &message) {
-				warn!(
-					"Failed to ban peer {} for bad block {}: {}",
-					peer_addr, hash, e
-				);
+			if bad_peer_data {
+				let message = format!("Invalid block at height {}: {}", block.header.height, err);
+				if let Err(e) =
+					peers.ban_peer(&peer_addr, mwc_p2p::ReasonForBan::BadBlock, &message)
+				{
+					warn!("Failed to ban peer {} for invalid block: {}", peer_addr, e);
+				}
+			}
+			// Report PIBD failures without reentering BodySync's task lock.
+			// Local errors do not count against the snapshot's endorsing peers.
+			if let Some(manager) = &sync_manager {
+				if let Err(e) = manager.report_block_result(block, &peer_addr, Some(Err(err))) {
+					warn!(
+						"Rejected block sync reporting failed for {}: {}",
+						peer_addr, e
+					);
+				}
 			}
 		}
 	}
@@ -1776,7 +1368,7 @@ where
 {
 	/// Construct a ChainToPoolAndNetAdapter instance.
 	pub fn new(
-		tx_pool: Arc<RwLock<mwc_pool::TransactionPool<B, P>>>,
+		tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
 		sync_state: Arc<SyncState>,
 		hooks: Vec<Box<dyn ChainEvents + Send + Sync>>,
 	) -> Self {
@@ -1784,15 +1376,23 @@ where
 			tx_pool,
 			sync_state,
 			peers: OneTime::new(),
+			sync_manager: OneTime::new(),
 			hooks: hooks,
 		}
 	}
 
-	/// Initialize a ChainToPoolAndNetAdapter instance with handle to a Peers
-	/// object. Should only be called once.
-	pub fn init(&self, peers: Arc<mwc_p2p::Peers>) -> Result<(), crate::Error> {
+	/// Initialize network and sync references once. Weak references avoid a
+	/// cycle through SyncManager's chain and this chain adapter.
+	pub fn init(
+		&self,
+		peers: Arc<mwc_p2p::Peers>,
+		sync_manager: Arc<SyncManager>,
+	) -> Result<(), crate::Error> {
 		self.peers
 			.init(Arc::downgrade(&peers))
+			.map_err(|e| crate::Error::ServerError(e.to_string()))?;
+		self.sync_manager
+			.init(Arc::downgrade(&sync_manager))
 			.map_err(|e| crate::Error::ServerError(e.to_string()))
 	}
 
@@ -1813,7 +1413,7 @@ where
 /// transactions that have been accepted.
 pub struct PoolToNetAdapter {
 	peers: OneTime<Weak<mwc_p2p::Peers>>,
-	dandelion_epoch: Arc<RwLock<DandelionEpoch>>,
+	dandelion_epoch: Arc<RecursiveRwLock<DandelionEpoch>>,
 }
 
 /// Adapter between the Dandelion monitor and the current Dandelion "epoch".
@@ -1834,11 +1434,11 @@ pub trait DandelionAdapter: Send + Sync {
 
 impl DandelionAdapter for PoolToNetAdapter {
 	fn is_stem(&self) -> bool {
-		self.dandelion_epoch.read_recursive().is_stem()
+		self.dandelion_epoch.read().is_stem()
 	}
 
 	fn is_expired(&self) -> bool {
-		self.dandelion_epoch.read_recursive().is_expired()
+		self.dandelion_epoch.read().is_expired()
 	}
 
 	fn next_epoch(&self) {
@@ -1847,7 +1447,7 @@ impl DandelionAdapter for PoolToNetAdapter {
 			Err(e) => {
 				// Keep the current epoch state and relay peer. Since the epoch remains
 				// expired, the Dandelion monitor will retry once peers are available.
-				error!(
+				warn!(
 					"PoolToNetAdapter next_epoch failed because peers are not available, will retry: {}",
 					e
 				)
@@ -1889,12 +1489,12 @@ impl mwc_pool::PoolAdapter for PoolToNetAdapter {
 								Ok(())
 							}
 							Err(e) => {
-								error!("Stemming tx failed. Fluffing. {:?}", e);
+								info!("Stemming tx failed. Fluffing. {:?}", e);
 								Err(mwc_pool::PoolError::DandelionError)
 							}
 						}
 					} else {
-						error!("No relay peer. Fluffing.");
+						info!("No relay peer. Fluffing.");
 						Err(mwc_pool::PoolError::DandelionError)
 					}
 				}
@@ -1902,7 +1502,7 @@ impl mwc_pool::PoolAdapter for PoolToNetAdapter {
 					return Err(mwc_pool::PoolError::Other(format!(
 						"PoolToNetAdapter::stem_tx_accepted, peers are not available, {}",
 						e
-					)))
+					)));
 				}
 			}
 		} else {
@@ -1917,7 +1517,9 @@ impl PoolToNetAdapter {
 	pub fn new(context_id: u32, config: mwc_pool::DandelionConfig) -> PoolToNetAdapter {
 		PoolToNetAdapter {
 			peers: OneTime::new(),
-			dandelion_epoch: Arc::new(RwLock::new(DandelionEpoch::new(context_id, config))),
+			dandelion_epoch: Arc::new(RecursiveRwLock::new(DandelionEpoch::new(
+				context_id, config,
+			))),
 		}
 	}
 
@@ -2003,6 +1605,17 @@ fn chain_validation_error_to_pool_error(e: mwc_chain::Error, context: &str) -> m
 }
 
 impl mwc_pool::BlockChain for PoolToChainAdapter {
+	fn verify_tx_not_confirmed(&self, tx: &Transaction) -> Result<(), mwc_pool::PoolError> {
+		if self
+			.chain()?
+			.has_mined_kernel(tx)
+			.map_err(|e| chain_validation_error_to_pool_error(e, "check mined kernels"))?
+		{
+			return Err(mwc_pool::PoolError::TransactionAlreadyConfirmed);
+		}
+		Ok(())
+	}
+
 	fn chain_head(&self) -> Result<BlockHeader, mwc_pool::PoolError> {
 		let chain = self.chain()?;
 		chain
@@ -2079,11 +1692,14 @@ impl mwc_pool::BlockChain for PoolToChainAdapter {
 	}
 }
 
+#[cfg(all(test, feature = "test-support"))]
+#[path = "compact_block_tests.rs"]
+mod compact_block_tests;
+
 #[cfg(test)]
 mod test {
 	use super::*;
 	use mwc_crates::secp::pedersen::Commitment;
-	use std::thread;
 	use std::time::Duration;
 
 	fn test_peer_addr(port: u16) -> PeerAddr {
@@ -2285,19 +1901,206 @@ mod test {
 		let now = Instant::now();
 
 		assert_eq!(throttle.delay_for_at(&stale_peer, now), None);
-		assert!(throttle.peers.read_recursive().contains_key(&stale_peer));
+		assert!(throttle.peers.read().contains_key(&stale_peer));
 
 		let later = now + Duration::from_secs(LEGACY_V2_BLOCK_CONVERSION_STALE_SECS + 1);
 		assert_eq!(throttle.delay_for_at(&active_peer, later), None);
 
-		let peers = throttle.peers.read_recursive();
+		let peers = throttle.peers.read();
 		assert!(!peers.contains_key(&stale_peer));
 		assert!(peers.contains_key(&active_peer));
 	}
 
 	#[test]
+	#[cfg(feature = "test-support")]
+	fn compact_block_received_skips_pruned_blocks_before_reconstruction() {
+		use mwc_chain::types::NoopAdapter;
+		use mwc_core::core::TransactionBody;
+		use mwc_core::libtx::{reward, ProofBuilder};
+		use mwc_core::{consensus, pow};
+		use mwc_crates::chrono;
+		use mwc_crates::secp::ContextFlag;
+		use mwc_crates::tempfile::TempDir;
+		use mwc_keychain::{ExtKeychain, Keychain};
+		use mwc_p2p::types::{Direction, PeerLiveInfo};
+		use mwc_p2p::{Capabilities, ChainAdapter};
+		use mwc_pool::types::{NoopPoolAdapter, PoolConfig};
+		use mwc_util::StopState;
+
+		fn with_missing_kernel(mut block: core::Block) -> CompactBlock {
+			// Kernel IDs are peer-supplied hints; the validated header does not
+			// prevent a peer from advertising an ID absent from our pool.
+			block.body.kernels.push(
+				TxKernel::with_features(core::KernelFeatures::Plain {
+					fee: 1u64.try_into().unwrap(),
+				})
+				.unwrap(),
+			);
+			CompactBlock::from(block).unwrap()
+		}
+
+		const CONTEXT: u32 = 1_932_001;
+		global::init_global_chain_type(CONTEXT, global::ChainTypes::AutomatedTesting).unwrap();
+		global::init_global_nrd_enabled(CONTEXT, false).unwrap();
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let dir = TempDir::new().unwrap();
+		let chain = Arc::new(
+			mwc_chain::Chain::init(
+				&secp,
+				CONTEXT,
+				dir.path().to_str().unwrap().to_string(),
+				Arc::new(NoopAdapter {}),
+				global::get_genesis_block(&secp, CONTEXT).unwrap(),
+				pow::verify_size,
+				false,
+				HashSet::new(),
+				None,
+				None,
+				false,
+			)
+			.unwrap(),
+		);
+		let sync_state = Arc::new(SyncState::new());
+		sync_state.reset();
+		let stop_state = Arc::new(StopState::new());
+		let sync_manager = Arc::new(SyncManager::new(
+			chain.clone(),
+			sync_state.clone(),
+			stop_state.clone(),
+		));
+		let pool_chain = Arc::new(PoolToChainAdapter::new());
+		pool_chain.set_chain(chain.clone()).unwrap();
+		let pool = Arc::new(RecursiveRwLock::new(mwc_pool::TransactionPool::new(
+			CONTEXT,
+			PoolConfig::default(),
+			pool_chain,
+			Arc::new(NoopPoolAdapter {}),
+		)));
+		let adapter = NetToChainAdapter::new(
+			CONTEXT,
+			sync_state,
+			chain.clone(),
+			sync_manager,
+			pool,
+			vec![],
+		)
+		.unwrap();
+		let peer = PeerInfo {
+			capabilities: Capabilities::BLOCK_EXTRA,
+			user_agent: "test".into(),
+			version: ProtocolVersion::local(),
+			addr: test_peer_addr(3414),
+			direction: Direction::Inbound,
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+			tx_base_fee: 0,
+		};
+
+		let keychain = ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
+		let builder = ProofBuilder::new(&secp, &keychain).unwrap();
+		let final_horizon = 10;
+		let head_height = u64::from(global::cut_through_horizon(CONTEXT)) + final_horizon;
+		let mut old_blocks = Vec::new();
+		for height in 1..=head_height {
+			let parent = chain.head_header().unwrap();
+			let key =
+				ExtKeychain::derive_key_id(1, u32::try_from(height).unwrap(), 0, 0, 0).unwrap();
+			let binding = chain
+				.coinbase_binding_for_template(&secp, &parent, &TransactionBody::empty())
+				.unwrap();
+			let (output, kernel, opening) = reward::output_s2c(
+				CONTEXT,
+				&keychain,
+				&builder,
+				&key,
+				0,
+				height,
+				&mut secp,
+				binding.digest().unwrap(),
+			)
+			.unwrap();
+			let next = consensus::next_difficulty(
+				CONTEXT,
+				height,
+				chain.difficulty_iter().unwrap(),
+				&mut consensus::DifficultyCache::new(),
+			)
+			.unwrap();
+			let mut block = core::Block::new(
+				CONTEXT,
+				&parent,
+				&[],
+				next.difficulty,
+				(output, kernel),
+				&secp,
+			)
+			.unwrap();
+			block.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(CONTEXT, height).then_some(opening);
+			block.header.timestamp = parent.timestamp + chrono::Duration::seconds(60);
+			block.header.pow.secondary_scaling = next.secondary_scaling;
+			chain.set_txhashset_roots(&secp, &mut block).unwrap();
+			pow::pow_size(
+				CONTEXT,
+				&mut block.header,
+				next.difficulty,
+				global::proofsize(CONTEXT),
+				global::min_edge_bits(CONTEXT),
+			)
+			.unwrap();
+
+			if height == 1 {
+				// With a head below the horizon length, new compact blocks must
+				// still reach reconstruction (saturating subtraction).
+				let cb = with_missing_kernel(block.clone());
+				let hash = cb.hash(CONTEXT).unwrap();
+				assert!(adapter
+					.compact_block_received(&mut secp, cb, &peer)
+					.unwrap());
+				assert!(adapter
+					.compact_block_reconstruction_cache
+					.read()
+					.contains_key(&hash));
+				adapter.compact_block_reconstruction_cache.write().clear();
+			}
+			if height < final_horizon {
+				old_blocks.push(block.clone());
+			}
+			chain
+				.process_block(&mut secp, block, Options::NONE, HashSet::new())
+				.unwrap();
+		}
+		chain.compact(None, stop_state).unwrap();
+		assert_eq!(chain.tail().unwrap().height, final_horizon);
+
+		for block in &old_blocks {
+			let hash = block.hash(CONTEXT).unwrap();
+			assert!(!chain.block_exists(&hash).unwrap());
+			assert!(chain.get_block_header(&hash).is_ok());
+			chain.is_known(&block.header).unwrap();
+			for cb in [
+				CompactBlock::from(block.clone()).unwrap(),
+				with_missing_kernel(block.clone()),
+			] {
+				assert!(adapter
+					.compact_block_received(&mut secp, cb, &peer)
+					.unwrap());
+			}
+		}
+		assert!(adapter.compact_block_reconstruction_cache.read().is_empty());
+
+		// Exactly at the horizon, continue normal validation. Mutating a pruned
+		// header's height makes it invalid; silently skipping it would hide an
+		// off-by-one error in the admission check.
+		let mut boundary = with_missing_kernel(old_blocks.pop().unwrap());
+		boundary.header.height = final_horizon;
+		assert!(!adapter
+			.compact_block_received(&mut secp, boundary, &peer)
+			.unwrap());
+	}
+
+	#[test]
 	fn compact_block_reconstruction_cache_suppresses_attempts_for_retry_window() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let hash =
 			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
 				.unwrap();
@@ -2323,7 +2126,7 @@ mod test {
 
 	#[test]
 	fn compact_block_reconstruction_cache_retries_after_window() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let hash =
 			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
 				.unwrap();
@@ -2355,7 +2158,7 @@ mod test {
 
 	#[test]
 	fn compact_block_reconstruction_cache_prunes_stale_blocks() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let stale_hash =
 			Hash::from_hex("735cf2a4492b437e292a295549c31df5f1e8e6d09e58ed20abdd808c2261d1f1")
 				.unwrap();
@@ -2369,7 +2172,7 @@ mod test {
 			true
 		);
 		finish_compact_block_reconstruction_at(&cache, &stale_hash, now);
-		assert!(cache.read_recursive().contains_key(&stale_hash));
+		assert!(cache.read().contains_key(&stale_hash));
 
 		let later = now + Duration::from_secs(COMPACT_BLOCK_RECONSTRUCTION_STALE_SECS + 1);
 		assert_eq!(
@@ -2377,14 +2180,14 @@ mod test {
 			true
 		);
 
-		let blocks = cache.read_recursive();
+		let blocks = cache.read();
 		assert!(!blocks.contains_key(&stale_hash));
 		assert!(blocks.contains_key(&active_hash));
 	}
 
 	#[test]
 	fn compact_block_reconstruction_cache_evicts_oldest_entry_at_capacity() {
-		let cache = RwLock::new(HashMap::new());
+		let cache = RecursiveRwLock::new(HashMap::new());
 		let now = Instant::now();
 		let oldest_hash = test_hash(0);
 
@@ -2409,7 +2212,7 @@ mod test {
 			true
 		);
 
-		let blocks = cache.read_recursive();
+		let blocks = cache.read();
 		assert_eq!(blocks.len(), COMPACT_BLOCK_RECONSTRUCTION_MAX_ENTRIES);
 		assert!(!blocks.contains_key(&oldest_hash));
 		assert!(blocks.contains_key(&new_hash));
@@ -2444,7 +2247,8 @@ mod test {
 
 		assert_eq!(cache.contains(&def_hash1, true), false);
 		assert_eq!(cache.contains(&def_hash2, true), true);
-		thread::sleep(Duration::from_millis(1050));
+		*cache.time.write() =
+			Some(Instant::now() - Duration::from_millis(EVENT_CACHE_LOCK_MILLIS + 1));
 		assert_eq!(cache.contains(&def_hash1, false), false);
 		assert_eq!(cache.contains(&def_hash1, true), false);
 		assert_eq!(cache.contains(&def_hash2, true), true);

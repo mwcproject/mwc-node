@@ -15,7 +15,8 @@
 
 use crate::conn::MessageHandler;
 use crate::{Capabilities, ReasonForBan};
-use mwc_core::core::{hash::Hashed, CompactBlock, Segment};
+use mwc_core::core::hash::{Hash, Hashed};
+use mwc_core::core::{CompactBlock, Segment};
 
 use crate::msg::{
 	ArchiveHeaderData, Consumed, Headers, HeadersHashSegmentResponse, Message, Msg,
@@ -27,6 +28,8 @@ use crate::tor::arti::is_valid_onion_v3;
 use crate::types::{Error, NetAdapter, PeerAddr, PeerInfo};
 use mwc_chain::txhashset::BitmapSegment;
 use mwc_crates::log::{debug, error, info, trace, warn};
+use mwc_crates::lru::LruCache;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::Secp256k1;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -35,14 +38,21 @@ pub struct Protocol {
 	adapter: Arc<dyn NetAdapter>,
 	peer_info: PeerInfo,
 	server: Server,
+	received: Arc<RecursiveRwLock<LruCache<Hash, ()>>>,
 }
 
 impl Protocol {
-	pub fn new(adapter: Arc<dyn NetAdapter>, peer_info: PeerInfo, server: Server) -> Protocol {
+	pub(super) fn new(
+		adapter: Arc<dyn NetAdapter>,
+		peer_info: PeerInfo,
+		server: Server,
+		received: Arc<RecursiveRwLock<LruCache<Hash, ()>>>,
+	) -> Protocol {
 		Protocol {
 			adapter,
 			peer_info,
 			server,
+			received,
 		}
 	}
 }
@@ -50,6 +60,7 @@ impl Protocol {
 impl MessageHandler for Protocol {
 	fn consume(&self, secp: &mut Secp256k1, message: Message) -> Result<Consumed, Error> {
 		let adapter = &self.adapter;
+		let block_extra = self.peer_info.is_block_extra();
 
 		// If we received a msg from a banned peer then log and drop it.
 		// If we are getting a lot of these then maybe we are not cleaning
@@ -76,20 +87,22 @@ impl MessageHandler for Protocol {
 			}
 
 			Message::Ping(ping) => {
-				adapter.peer_difficulty(&self.peer_info.addr, ping.total_difficulty, ping.height);
+				self.peer_info.update(ping.height, ping.total_difficulty);
+				let head = adapter.get_head()?;
 				Consumed::Response(Msg::new(
 					Type::Pong,
 					Pong {
-						total_difficulty: adapter.total_difficulty()?,
-						height: adapter.total_height()?,
+						total_difficulty: head.total_difficulty(),
+						height: head.height,
 					},
 					self.peer_info.version,
 					self.server.get_context_id(),
+					block_extra,
 				)?)
 			}
 
 			Message::Pong(pong) => {
-				adapter.peer_difficulty(&self.peer_info.addr, pong.total_difficulty, pong.height);
+				self.peer_info.update(pong.height, pong.total_difficulty);
 				Consumed::None
 			}
 
@@ -100,6 +113,7 @@ impl MessageHandler for Protocol {
 
 			Message::TransactionKernel(h) => {
 				debug!("handle_payload: received tx kernel: {}", h);
+				self.received.write().put(h, ());
 				adapter.tx_kernel_received(h, &self.peer_info)?;
 				Consumed::None
 			}
@@ -113,6 +127,7 @@ impl MessageHandler for Protocol {
 						tx,
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?)
 				} else {
 					Consumed::None
@@ -121,12 +136,22 @@ impl MessageHandler for Protocol {
 
 			Message::Transaction(tx) => {
 				debug!("handle_payload: received tx");
+				let kernel = tx.kernels().first().ok_or_else(|| {
+					mwc_chain::Error::Transaction(mwc_core::core::transaction::Error::Generic(
+						"received transaction with no kernels".into(),
+					))
+				})?;
+				let hash = kernel
+					.hash(self.server.get_context_id())
+					.map_err(mwc_chain::Error::from)?;
+				self.received.write().put(hash, ());
 				adapter.transaction_received(secp, tx, false)?;
 				Consumed::None
 			}
 
 			Message::StemTransaction(tx) => {
 				debug!("handle_payload: received stem tx");
+				// Do not track stem transactions so fluff and embargo expiration still work.
 				adapter.transaction_received(secp, tx, true)?;
 				Consumed::None
 			}
@@ -135,12 +160,14 @@ impl MessageHandler for Protocol {
 				trace!("handle_payload: GetBlock: {}", h);
 				let bo = adapter.get_block(secp, h, &self.peer_info)?;
 				if let Some(b) = bo {
-					Consumed::Response(Msg::new(
+					let response = Msg::new(
 						Type::Block,
-						b,
+						&b,
 						self.peer_info.version,
 						self.server.get_context_id(),
-					)?)
+						block_extra,
+					)?;
+					Consumed::Response(response)
 				} else {
 					Consumed::None
 				}
@@ -148,16 +175,15 @@ impl MessageHandler for Protocol {
 
 			Message::Block(b) => {
 				let b: mwc_core::core::Block = b.into();
+				let hash = b
+					.hash(self.server.get_context_id())
+					.map_err(mwc_chain::Error::from)?;
 				debug!(
 					"handle_payload: received block {}, {}",
-					b.header.height,
-					b.hash(self.server.get_context_id())?
+					b.header.height, hash
 				);
-				// We default to NONE opts here as we do not know know yet why this block was
-				// received.
-				// If we requested this block from a peer due to our node syncing then
-				// the peer adapter will override opts to reflect this.
-				adapter.block_received(secp, b, &self.peer_info, mwc_chain::Options::NONE)?;
+				self.received.write().put(hash, ());
+				adapter.block_received(secp, b, &self.peer_info)?;
 				Consumed::None
 			}
 
@@ -166,12 +192,14 @@ impl MessageHandler for Protocol {
 					let cb: CompactBlock = CompactBlock::from(b).map_err(|e| {
 						Error::Internal(format!("Unable to build COmpact block, {}", e))
 					})?;
-					Consumed::Response(Msg::new(
+					let response = Msg::new(
 						Type::CompactBlock,
-						cb,
+						&cb,
 						self.peer_info.version,
 						self.server.get_context_id(),
-					)?)
+						block_extra,
+					)?;
+					Consumed::Response(response)
 				} else {
 					Consumed::None
 				}
@@ -179,7 +207,12 @@ impl MessageHandler for Protocol {
 
 			Message::CompactBlock(b) => {
 				debug!("handle_payload: received compact block");
-				adapter.compact_block_received(secp, b.into(), &self.peer_info)?;
+				let b: CompactBlock = b.into();
+				let hash = b
+					.hash(self.server.get_context_id())
+					.map_err(mwc_chain::Error::from)?;
+				self.received.write().put(hash, ());
+				adapter.compact_block_received(secp, b, &self.peer_info)?;
 				Consumed::None
 			}
 			Message::TorAddress(tor_address) => {
@@ -201,13 +234,19 @@ impl MessageHandler for Protocol {
 					Headers { headers },
 					self.peer_info.version,
 					self.server.get_context_id(),
+					block_extra,
 				)?)
 			}
 
 			// "header first" block propagation - if we have not yet seen this block
 			// we can go request it from some of our peers
 			Message::Header(header) => {
-				adapter.header_received(header.into(), &self.peer_info)?;
+				let header: mwc_core::core::BlockHeader = header.into();
+				let hash = header
+					.hash(self.server.get_context_id())
+					.map_err(mwc_chain::Error::from)?;
+				self.received.write().put(hash, ());
+				adapter.header_received(header, &self.peer_info)?;
 				Consumed::None
 			}
 
@@ -245,6 +284,7 @@ impl MessageHandler for Protocol {
 					PeerAddrs { peers },
 					self.peer_info.version,
 					self.server.get_context_id(),
+					block_extra,
 				)?)
 			}
 
@@ -340,6 +380,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?));
 				}
 				match self.adapter.prepare_segmenter() {
@@ -354,6 +395,7 @@ impl MessageHandler for Protocol {
 								},
 								self.peer_info.version,
 								self.server.get_context_id(),
+								block_extra,
 							)?)
 						} else {
 							Consumed::Response(Msg::new(
@@ -364,6 +406,7 @@ impl MessageHandler for Protocol {
 								},
 								self.peer_info.version,
 								self.server.get_context_id(),
+								block_extra,
 							)?)
 						}
 					}
@@ -414,6 +457,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?),
 					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -424,6 +468,7 @@ impl MessageHandler for Protocol {
 							},
 							self.peer_info.version,
 							self.server.get_context_id(),
+							block_extra,
 						)?)
 					}
 					Err(e) => {
@@ -477,6 +522,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?));
 				}
 				match self.adapter.prepare_segmenter() {
@@ -504,6 +550,7 @@ impl MessageHandler for Protocol {
 								},
 								self.peer_info.version,
 								self.server.get_context_id(),
+								block_extra,
 							)?)
 						} else {
 							Consumed::Response(Msg::new(
@@ -514,6 +561,7 @@ impl MessageHandler for Protocol {
 								},
 								self.peer_info.version,
 								self.server.get_context_id(),
+								block_extra,
 							)?)
 						}
 					}
@@ -541,6 +589,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?),
 					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -551,6 +600,7 @@ impl MessageHandler for Protocol {
 							},
 							self.peer_info.version,
 							self.server.get_context_id(),
+							block_extra,
 						)?)
 					}
 					Err(e) => {
@@ -579,6 +629,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?),
 					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -589,6 +640,7 @@ impl MessageHandler for Protocol {
 							},
 							self.peer_info.version,
 							self.server.get_context_id(),
+							block_extra,
 						)?)
 					}
 					Err(e) => {
@@ -614,6 +666,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?),
 					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -624,6 +677,7 @@ impl MessageHandler for Protocol {
 							},
 							self.peer_info.version,
 							self.server.get_context_id(),
+							block_extra,
 						)?)
 					}
 					Err(e) => {
@@ -650,6 +704,7 @@ impl MessageHandler for Protocol {
 						},
 						self.peer_info.version,
 						self.server.get_context_id(),
+						block_extra,
 					)?),
 					Err(mwc_chain::Error::SegmenterHeaderMismatch(hash, height)) => {
 						Consumed::Response(Msg::new(
@@ -660,6 +715,7 @@ impl MessageHandler for Protocol {
 							},
 							self.peer_info.version,
 							self.server.get_context_id(),
+							block_extra,
 						)?)
 					}
 					Err(e) => {

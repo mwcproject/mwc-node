@@ -1,6 +1,6 @@
 [package]
 name = "mwc_crates"
-version = "7.1.0"
+version = "7.2.0"
 authors = ["Mwc Developers <info@mwc.mw>"]
 description = "Shared third-party dependency facade for mwc-node and mwc-wallet"
 license = "Apache-2.0"
@@ -17,32 +17,32 @@ backtrace = "0.3"
 built = { version = "0.8", features = ["git2"] }
 crossbeam = "0.8"
 crossbeam_utils = { package = "crossbeam-utils", version = "0.8" }
-dirs = "6.0"
+dirs = "7.0"
 env_logger = "0.11"
 lazy_static = "1.5"
 log = "0.4"
 log4rs = { version = "1.4", features = ["rolling_file_appender", "compound_policy", "size_trigger", "fixed_window_roller", "gzip"] }
 indexmap = "2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 regex = "1.12"
-serial_test = "3.4"
+serial_test = "4.0"
 
 # Tor / Arti onion-service stack used by `p2p/src/tor/*` and the Tor playground.
-arti_client = { package = "arti-client", version = "0.45", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
-safelog = "0.9"
-tor_cell = { package = "tor-cell", version = "0.45.0" }
-tor_config = { package = "tor-config", version = "0.45.0" }
-tor_error = { package = "tor-error", version = "0.45.0" }
-tor_hscrypto = { package = "tor-hscrypto", version = "0.45.0" }
-tor_hsservice = { package = "tor-hsservice", version = "0.45.0" }
-tor_keymgr = { package = "tor-keymgr", version = "0.45.0" }
-tor_llcrypto = { package = "tor-llcrypto", version = "0.45.0" }
-tor_proto = { package = "tor-proto", version = "0.45.0", features = ["stream-ctrl"] }
-tor_rtcompat = { package = "tor-rtcompat", version = "0.45.0", default-features = false, features = ["tokio", "rustls"] }
+arti_client = { package = "arti-client", version = "0.48", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "pt-client", "keymgr", "ephemeral-keystore", "experimental-api"] }
+safelog = "0.10"
+tor_cell = { package = "tor-cell", version = "0.48.0" }
+tor_config = { package = "tor-config", version = "0.48.0" }
+tor_error = { package = "tor-error", version = "0.48.0" }
+tor_hscrypto = { package = "tor-hscrypto", version = "0.48.0" }
+tor_hsservice = { package = "tor-hsservice", version = "0.48.0" }
+tor_keymgr = { package = "tor-keymgr", version = "0.48.0" }
+tor_llcrypto = { package = "tor-llcrypto", version = "0.48.0" }
+tor_proto = { package = "tor-proto", version = "0.48.0", features = ["stream-ctrl"] }
+tor_rtcompat = { package = "tor-rtcompat", version = "0.48.0", default-features = false, features = ["tokio", "rustls"] }
 tracing = "0.1"
 tracing_subscriber = { package = "tracing-subscriber", version = "0.3", default-features = false, features = ["registry", "std"] }
-# Windows build linking fix, need only include the crate, no usage requred
-rusqlite = { version = "0.39", features = ["bundled"] }
+# Bundle SQLite for Windows; use 0.40.x within Arti 0.48's supported range.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Async runtimes and transport glue shared by Tor, REST, stratum, and p2p networking.
 async_std = { package = "async-std", version = "1.13" }
@@ -69,8 +69,9 @@ reqwest = { version = "0.13", default-features = false, features = ["http2", "sy
 ureq = "3"
 
 # CLI / TUI and operator-facing tools used by the node binaries.
-# Clap cn't be upgraded because they drop yaml support that is used to read config files
-clap = { version = "=2.33.3", features = ["yaml"] }
+# The embedded YAML command schemas are loaded by mwc_util::cli.
+clap = { version = "4.6", features = ["string"] }
+yaml_rust2 = { package = "yaml-rust2", version = "0.13", default-features = false }
 colored = "3.1"
 ctrlc = { version = "3.5", features = ["termination"] }
 cursive = { version = "0.21", default-features = false, features = ["pancurses-backend"] }
@@ -80,16 +81,16 @@ linefeed = "0.6"
 prettytable = { package = "prettytable-rs", version = "0.10" }
 qr_code = "2.0"
 rpassword = "7.4"
-rustyline = "17"
+rustyline = "19"
 term = "1.2"
 
 # Serialization, config parsing, and data formatting used across APIs and config files.
-base64 = "0.22"
+base64 = "0.23"
 bigdecimal = "0.4"
 bitstream_io = { package = "bitstream-io", version = "4.9" }
 chrono = { version = "0.4", features = ["serde"] }
 enum_primitive = "0.1"
-shlex = "1.3.0"
+shlex = "2.0"
 toml = "1.0"
 uuid = { version = "1.22", features = ["serde", "v4"] }
 
@@ -99,23 +100,24 @@ filetime = "0.2"
 fs2 = "0.4"
 lmdb_zero = { package = "lmdb-zero", version = "0.4.4" }
 memmap2 = "0.9"
-remove_dir_all = "0.7"
+remove_dir_all = "1.0"
 same-file = "1"
 tempfile = "3.27"
 walkdir = "2.5"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # Secp256k1
-secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", version = "0.8.0", tag = "0.8.0", features = ["bullet-proof-sizing"] }
+secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", version = "0.8.1", tag = "0.8.1", features = ["bullet-proof-sizing"] }
 #secp256k1zkp = { package = "mwc_secp256k1zkp", git = "https://github.com/mwcproject/rust-secp256k1-zkp", branch = "audit", features = ["bullet-proof-sizing"]}
 #secp256k1zkp = { package = "mwc_secp256k1zkp", path = "../../rust-secp256k1-zkp", features = ["bullet-proof-sizing"]}
 # Dalek based encryption
-ed25519_dalek = { package = "ed25519-dalek", version = "2" }
-x25519_dalek = { package = "x25519-dalek", version = "2" }
+ed25519_dalek = { package = "ed25519-dalek", version = "3" }
+# Slatepack requires StaticSecret independently of the features enabled by Arti.
+x25519_dalek = { package = "x25519-dalek", version = "3", features = ["static_secrets"] }
 
 # Crypto primitives and encodings shared by core, keychain, API, and p2p.
-argon2 = { version = "0.5", features = ["zeroize"] }
-bit_vec = { package = "bit-vec", version = "0.9" }
+argon2 = { version = "0.6", features = ["zeroize"] }
+bit_vec = { package = "bit-vec", version = "0.10" }
 bitflags = { version = "2", features = ["serde"] }
 blake2_rfc = { package = "blake2-rfc", version = "0.2" }
 bs58 = "0.5"
@@ -124,24 +126,23 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 crc = "3.4"
 # Keep the shared digest stack aligned with sha2, hmac, pbkdf2 and ripemd
 digest = "0.11"
-sha2 = { version = "0.11", features = ["zeroize"] }
 hex = "0.4"
 hmac = { version = "0.13", features = ["zeroize"] }
 pbkdf2 = "0.13"
 ring = "0.17"
 subtle = "2"
 ripemd = "0.2"
-signature = "2.2"
+signature = "3"
 siphasher = "1.0"
 
 # Numeric, caching, and system-introspection utilities used throughout the node.
-lru = "0.16"
-nanoid = "0.4"
+lru = "0.19"
+nanoid = "0.5"
 num = "0.4"
-num_bigint = { package = "num-bigint", version = "0.4" }
+num_bigint = { package = "num-bigint", version = "0.5" }
 num_cpus = "1"
 semver = "1.0"
-sysinfo = "0.38"
+sysinfo = "0.40"
 
 # Platform-specific TLS connector for webhook posting in `servers/src/common/hooks.rs`.
 # We keep Android/non-Android definitions separate because Rust otherwise unifies

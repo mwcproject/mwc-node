@@ -329,10 +329,13 @@ impl PeerStore {
 		let mut corrupt_keys = Vec::new();
 		{
 			let iter = self.db.iter(&key, move |k, mut v| {
-				Ok(
-					ser::deserialize_strict::<PeerData, _>(&mut v, protocol_version, context_id)
-						.map_err(|_| k.to_vec()),
+				Ok(ser::deserialize_strict::<PeerData, _>(
+					&mut v,
+					protocol_version,
+					context_id,
+					true,
 				)
+				.map_err(|_| k.to_vec()))
 			})?;
 
 			for row in iter {

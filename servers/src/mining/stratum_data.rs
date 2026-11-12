@@ -21,7 +21,7 @@ use crate::common::stats::{StratumStats, WorkerStats};
 use mwc_core::consensus::graph_weight;
 use mwc_crates::futures::channel::oneshot;
 use mwc_crates::log::error;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::tokio::sync::mpsc;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ pub struct Worker {
 	pub login: Option<String>,
 	pub authenticated: bool,
 	tx: Arc<Tx>, // private, please use send_to method
-	kill_switch: Arc<RwLock<Option<oneshot::Sender<()>>>>,
+	kill_switch: Arc<RecursiveRwLock<Option<oneshot::Sender<()>>>>,
 }
 
 impl Worker {
@@ -75,7 +75,7 @@ impl Worker {
 			login: None,
 			authenticated: false,
 			tx: Arc::new(tx),
-			kill_switch: Arc::new(RwLock::new(Some(kill_switch))),
+			kill_switch: Arc::new(RecursiveRwLock::new(Some(kill_switch))),
 		}
 	}
 
@@ -138,19 +138,19 @@ pub struct WorkerRef {
 
 /// Collection of the active workers
 struct WorkersMap {
-	workers: RwLock<HashMap<usize, Worker>>,
+	workers: RecursiveRwLock<HashMap<usize, Worker>>,
 }
 
 impl WorkersMap {
 	pub fn new() -> Self {
 		WorkersMap {
-			workers: RwLock::new(HashMap::new()),
+			workers: RecursiveRwLock::new(HashMap::new()),
 		}
 	}
 
 	#[allow(dead_code)]
 	fn size(&self) -> usize {
-		self.workers.read_recursive().len()
+		self.workers.read().len()
 	}
 
 	/// Add a new worker, return total number of registered workers
@@ -169,7 +169,7 @@ impl WorkersMap {
 
 	/// Get worker data
 	fn get(&self, worker_id: &usize) -> Option<Worker> {
-		match self.workers.read_recursive().get(worker_id) {
+		match self.workers.read().get(worker_id) {
 			Some(worker) => Some(worker.clone()),
 			_ => None,
 		}
@@ -213,11 +213,7 @@ impl WorkersMap {
 	}
 
 	fn get_workers_list(&self) -> Vec<Worker> {
-		self.workers
-			.read_recursive()
-			.values()
-			.map(|w| w.clone())
-			.collect()
+		self.workers.read().values().map(|w| w.clone()).collect()
 	}
 }
 
@@ -239,7 +235,7 @@ impl WorkersList {
 
 	fn next_connection_id(&self) -> Result<u64, &'static str> {
 		self.next_connection_id
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next_id| {
+			.try_update(Ordering::Relaxed, Ordering::Relaxed, |next_id| {
 				next_id.checked_add(1)
 			})
 			.map_err(|_| "connection id space exhausted")
@@ -434,7 +430,7 @@ impl WorkersList {
 	}
 
 	pub fn increment_block_found(&self) {
-		let _ = self.stratum_stats.blocks_found.fetch_update(
+		let _ = self.stratum_stats.blocks_found.try_update(
 			Ordering::Relaxed,
 			Ordering::Relaxed,
 			|blocks_found| Some(blocks_found.saturating_add(1)),

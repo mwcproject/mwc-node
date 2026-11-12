@@ -32,6 +32,7 @@ pub mod pipe;
 pub mod store;
 pub mod txhashset;
 pub mod types;
+mod validation;
 
 #[cfg(test)]
 mod tests;
@@ -42,7 +43,8 @@ pub use crate::chain::{Chain, OutputReadSnapshot};
 pub use crate::error::Error;
 pub use crate::store::ChainStore;
 pub use crate::types::{
-	BlockStatus, ChainAdapter, Options, SyncState, SyncStatus, Tip, TxHashsetStateValidationStage,
+	BlockStatus, ChainAdapter, ChainHeadReset, Options, PibdResetMode, SyncState, SyncStatus, Tip,
+	TxHashsetStateValidationStage,
 };
 
 use mwc_core::core::hash::{Hash, Hashed};

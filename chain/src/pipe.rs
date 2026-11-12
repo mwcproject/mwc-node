@@ -33,7 +33,7 @@ use mwc_crates::crossbeam;
 use mwc_crates::lazy_static::lazy_static;
 use mwc_crates::log::{debug, error, info};
 use mwc_crates::num_cpus;
-use mwc_crates::parking_lot::{RwLock, RwLockWriteGuard};
+use mwc_crates::parking_lot::{RecursiveRwLock, RecursiveRwLockWriteGuard};
 use mwc_crates::secp::pedersen::Commitment;
 use mwc_crates::secp::Secp256k1;
 use mwc_store::Error::NotFoundErr;
@@ -56,26 +56,19 @@ pub struct BlockContext<'a> {
 	pub header_pmmr: &'a mut txhashset::PMMRHandle<BlockHeader>,
 	/// The active batch to use for block processing.
 	pub batch: store::Batch<'a>,
-	pub(crate) difficulty_cache: RwLockWriteGuard<'a, DifficultyCache>,
+	pub(crate) difficulty_cache: RecursiveRwLockWriteGuard<'a, DifficultyCache>,
 }
 
 impl<'a> BlockContext<'a> {
+	#[cfg(any(test, feature = "test-support"))]
 	fn skip_pow(&self) -> bool {
-		#[cfg(test)]
-		{
-			self.opts.contains(Options::SKIP_POW)
-		}
-		#[cfg(not(test))]
-		{
-			let _ = self;
-			false
-		}
+		self.opts.contains(Options::SKIP_POW)
 	}
 }
 
 lazy_static! {
-	static ref INVALID_BLOCK_HASHES: RwLock<HashMap<u32, HashSet<Hash>>> =
-		RwLock::new(HashMap::new());
+	static ref INVALID_BLOCK_HASHES: RecursiveRwLock<HashMap<u32, HashSet<Hash>>> =
+		RecursiveRwLock::new(HashMap::new());
 }
 
 // Known/duplicate blocks are normal control-flow outcomes for header processing.
@@ -106,6 +99,7 @@ impl KnownStatus {
 /// Release Context related data
 pub fn release_context_data(context_id: u32) {
 	INVALID_BLOCK_HASHES.write().remove(&context_id);
+	crate::validation::release_context(context_id);
 }
 
 /// Setup the banned header hashes defined at the config.
@@ -133,7 +127,7 @@ pub fn validate_header_context_id(context_id: u32, header: &BlockHeader) -> Resu
 
 /// Validate the block hash, check if it is banned
 pub fn validate_header_hash(context_id: u32, hash: &Hash) -> Result<(), Error> {
-	let hashes = INVALID_BLOCK_HASHES.read_recursive();
+	let hashes = INVALID_BLOCK_HASHES.read();
 	if let Some(blocked_hashes) = hashes.get(&context_id) {
 		if blocked_hashes.contains(&hash) {
 			error!("Invalid header found: {}. Rejecting it!", hash);
@@ -300,9 +294,9 @@ fn validate_pow_only(
 	context_id: u32,
 	header: &BlockHeader,
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
-	skip_pow: bool,
+	#[cfg(any(test, feature = "test-support"))] skip_pow: bool,
 ) -> Result<(), Error> {
-	// Some of our tests require this check to be skipped (we should revisit this).
+	#[cfg(any(test, feature = "test-support"))]
 	if skip_pow {
 		return Ok(());
 	}
@@ -336,18 +330,34 @@ fn validate_pow_batch_parallel(
 	headers: &[BlockHeader],
 	ctx: &BlockContext<'_>,
 ) -> Result<(), Error> {
-	validate_pow_batch_parallel_inner(context_id, headers, ctx.pow_verifier, ctx.skip_pow())
+	validate_pow_batch_parallel_inner(
+		context_id,
+		headers,
+		ctx.pow_verifier,
+		#[cfg(any(test, feature = "test-support"))]
+		ctx.skip_pow(),
+	)
 }
 
 fn validate_pow_batch_parallel_inner(
 	context_id: u32,
 	headers: &[BlockHeader],
 	pow_verifier: fn(u32, &BlockHeader) -> Result<(), pow::Error>,
-	skip_pow: bool,
+	#[cfg(any(test, feature = "test-support"))] skip_pow: bool,
 ) -> Result<(), Error> {
-	if skip_pow || headers.len() <= 32 {
+	#[cfg(any(test, feature = "test-support"))]
+	if skip_pow {
+		return Ok(());
+	}
+	if headers.len() <= 32 {
 		for header in headers {
-			validate_pow_only(context_id, header, pow_verifier, skip_pow)?;
+			validate_pow_only(
+				context_id,
+				header,
+				pow_verifier,
+				#[cfg(any(test, feature = "test-support"))]
+				false,
+			)?;
 		}
 		return Ok(());
 	}
@@ -371,7 +381,13 @@ fn validate_pow_batch_parallel_inner(
 						if cancelled.load(Ordering::Relaxed) {
 							return Ok(());
 						}
-						validate_pow_only(context_id, header, pow_verifier, false)?;
+						validate_pow_only(
+							context_id,
+							header,
+							pow_verifier,
+							#[cfg(any(test, feature = "test-support"))]
+							false,
+						)?;
 					}
 					Ok::<(), Error>(())
 				}));
@@ -524,7 +540,7 @@ fn validate_header_difficulty(
 /// Returns new head if chain head updated and the "fork point" rewound to when processing the new block.
 pub fn process_blocks_series(
 	context_id: u32,
-	blocks: &Vec<Block>,
+	blocks: &[Block],
 	ctx: &mut BlockContext<'_>,
 	state_may_have_changed: &mut bool,
 	secp: &mut Secp256k1,
@@ -577,16 +593,21 @@ pub fn process_blocks_series(
 		"process_blocks_series blocks are empty".into(),
 	))?;
 	let series_has_more_work = has_more_work(&last_block.header, &head);
+	#[cfg(any(test, feature = "test-support"))]
 	let skip_pow = ctx.skip_pow();
 
 	for b in blocks {
 		// Validate block for deny list, just in case
 		validate_header_hash(context_id, &b.header.hash(context_id)?)?;
 
-		// Quick pow validation. No point proceeding if this is invalid.
-		// We want to do this before we add the block to the orphan pool so we
-		// want to do this now and not later during header validation.
-		validate_pow_only(context_id, &b.header, ctx.pow_verifier, skip_pow)?;
+		// Reject invalid proof of work before any body/state processing.
+		validate_pow_only(
+			context_id,
+			&b.header,
+			ctx.pow_verifier,
+			#[cfg(any(test, feature = "test-support"))]
+			skip_pow,
+		)?;
 
 		// Process the header for the block.
 		// Note: We still want to process the full block if we have seen this header before
@@ -758,15 +779,16 @@ pub fn replay_attack_check(
 /// Process a batch of sequential block headers.
 /// This is only used during header sync.
 /// Will update header_head locally if this batch of headers increases total work.
-/// Returns the updated sync_head, which may be on a fork.
+/// Returns the maximum stored progress time, or zero for an empty batch.
+/// `base_time` is the caller-selected progress timestamp in Unix microseconds.
 pub fn process_block_headers(
 	context_id: u32,
 	headers: &[BlockHeader],
-	sync_head: Tip,
 	ctx: &mut BlockContext<'_>,
-) -> Result<Option<Tip>, Error> {
+	base_time: u64,
+) -> Result<u64, Error> {
 	if headers.is_empty() {
-		return Ok(None);
+		return Ok(0);
 	}
 	for header in headers {
 		validate_header_context_id(context_id, header)?;
@@ -782,7 +804,10 @@ pub fn process_block_headers(
 		"process_block_headers internal error, headers param is empty".into(),
 	))?;
 	let mut prev = prev_header_store(first_header, &ctx.batch)?;
+	#[cfg(any(test, feature = "test-support"))]
 	let skip_pow = ctx.skip_pow();
+	#[cfg(not(any(test, feature = "test-support")))]
+	let skip_pow = false;
 	let mut batch_difficulty_cache = DifficultyCache::new();
 	if !skip_pow {
 		batch_difficulty_cache
@@ -850,34 +875,31 @@ pub fn process_block_headers(
 
 	validate_pow_batch_parallel(context_id, headers, ctx)?;
 
+	let mut progress_time = 0;
 	for header in headers {
-		add_block_header(header, &ctx.batch)?;
+		let time = ctx
+			.batch
+			.save_block_header(header, base_time)
+			.map_err(|e| Error::StoreErr(e, "pipe save header progress".into()))?;
+		progress_time = progress_time.max(time);
 	}
 
 	// Now apply this entire chunk of headers to the header MMR.
 	txhashset::header_extending(&mut ctx.header_pmmr, &mut ctx.batch, |ext, batch| {
-		rewind_and_apply_header_fork(context_id, &last_header, ext, batch)?;
-
-		// If previous sync_head is not on the "current" chain then
-		// these headers are on an alternative fork to sync_head.
-		let alt_fork = !ext.is_on_current_chain(sync_head, batch)?;
+		rewind_and_apply_header_fork(context_id, last_header, ext, batch)?;
 
 		// Update our "header_head" if this batch results in an increase in total work.
 		// Otherwise rollback this header extension.
 		// Note the outer batch may still be committed to db assuming no errors occur in the extension.
-		let last_tip = Tip::try_from_header(last_header)?;
 		if has_more_work(last_header, &head) {
+			let last_tip = Tip::try_from_header(last_header)?;
 			update_header_head(&last_tip, &batch)?;
 		} else {
 			ext.force_rollback();
-		};
-
-		if alt_fork || has_more_work(last_header, &sync_head) {
-			Ok(Some(last_tip))
-		} else {
-			Ok(None)
 		}
-	})
+		Ok(())
+	})?;
+	Ok(progress_time)
 }
 
 fn validate_header_batch_contiguous(context_id: u32, headers: &[BlockHeader]) -> Result<(), Error> {
@@ -933,14 +955,19 @@ pub fn process_block_header(
 		return Ok(());
 	}
 
-	// Check this header is not an orphan, we must know about the previous header
-	// to continue. A missing parent must not bypass standalone PoW validation:
-	// callers may use the proof-derived header hash as an orphan-cache key, and
-	// that hash binds the rest of the header only after its PoW is authenticated.
+	// We need the previous header to continue. Even when it is missing, validate
+	// standalone PoW before callers treat this as an announcement of a peer tip:
+	// the proof-derived hash binds the other header fields only after this check.
 	let prev_header = match prev_header_store(header, &ctx.batch) {
 		Ok(prev_header) => prev_header,
 		Err(e @ Error::Orphan(_)) => {
-			validate_pow_only(context_id, header, ctx.pow_verifier, ctx.skip_pow())?;
+			validate_pow_only(
+				context_id,
+				header,
+				ctx.pow_verifier,
+				#[cfg(any(test, feature = "test-support"))]
+				ctx.skip_pow(),
+			)?;
 			return Err(e);
 		}
 		Err(e) => return Err(e),
@@ -1081,8 +1108,8 @@ fn check_known_exact_full_block(
 		)));
 	}
 
-	// This is a trusted-store-versus-candidate comparison, not orphan
-	// deduplication. Normalize v2 input features only for this known-block
+	// Compare against the trusted stored body. Normalize v2 input features only
+	// for this known-block
 	// decision; see blocks_equal_as_v3 for the safety boundary and tradeoff.
 	if !blocks_equal_as_v3(context_id, &existing, block)? {
 		return Err(Error::Unfit(format!(
@@ -1161,23 +1188,30 @@ fn validate_header(
 	// so now we can check the total_difficulty increase is also valid
 	// check the pow hash shows a difficulty at least as large
 	// as the target difficulty
-	let skipping_pow = ctx.skip_pow();
-	if !skipping_pow {
-		// Quick check of this header in isolation. No point proceeding if this fails.
-		// We can do this without needing to iterate over previous headers.
-		validate_pow_only(context_id, header, ctx.pow_verifier, false)?;
-
-		let diff_iter = store::DifficultyIter::from_batch(prev.hash(context_id)?, &ctx.batch);
-		let next_header_info = consensus::next_difficulty(
-			context_id,
-			header.height,
-			diff_iter,
-			&mut *ctx.difficulty_cache,
-		)
-		.map_err(|e| Error::Other(format!("Difficulty calculation error, {}", e)))?;
-
-		validate_header_difficulty(context_id, header, &prev, &next_header_info)?;
+	#[cfg(any(test, feature = "test-support"))]
+	if ctx.skip_pow() {
+		return Ok(());
 	}
+	// Quick check of this header in isolation. No point proceeding if this fails.
+	// We can do this without needing to iterate over previous headers.
+	validate_pow_only(
+		context_id,
+		header,
+		ctx.pow_verifier,
+		#[cfg(any(test, feature = "test-support"))]
+		false,
+	)?;
+
+	let diff_iter = store::DifficultyIter::from_batch(prev.hash(context_id)?, &ctx.batch);
+	let next_header_info = consensus::next_difficulty(
+		context_id,
+		header.height,
+		diff_iter,
+		&mut *ctx.difficulty_cache,
+	)
+	.map_err(|e| Error::Other(format!("Difficulty calculation error, {}", e)))?;
+
+	validate_header_difficulty(context_id, header, &prev, &next_header_info)?;
 
 	Ok(())
 }
@@ -1188,6 +1222,12 @@ fn validate_block(
 	ctx: &mut BlockContext<'_>,
 	secp: &mut Secp256k1,
 ) -> Result<(), Error> {
+	// Reject blocks missing the required opening before further validation.
+	if consensus::is_coinbase_binding_enabled(context_id, block.header.height)
+		&& block.coinbase_opening.is_none()
+	{
+		return Err(Error::BlockMissCoinbaseOpening);
+	}
 	let prev = prev_header_store(&block.header, &ctx.batch)?;
 	block
 		.validate(context_id, &prev.total_kernel_offset, secp)
@@ -1271,8 +1311,10 @@ fn update_body_tail(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Er
 
 /// Officially adds the block header to our header chain.
 fn add_block_header(bh: &BlockHeader, batch: &store::Batch<'_>) -> Result<(), Error> {
+	let received_at = u64::try_from(mwc_crates::chrono::Utc::now().timestamp_micros())
+		.map_err(|_| Error::Other("negative local receipt time".into()))?;
 	batch
-		.save_block_header(bh)
+		.save_block_header(bh, received_at)
 		.map_err(|e| Error::StoreErr(e, "pipe save header".to_owned()))?;
 	Ok(())
 }
@@ -1388,7 +1430,7 @@ fn rewind_and_apply_header_fork_impl(
 	let invalid_block_hashes = if recovery_authenticator.is_some() {
 		HashSet::new()
 	} else {
-		let invalid_hashes = INVALID_BLOCK_HASHES.read_recursive();
+		let invalid_hashes = INVALID_BLOCK_HASHES.read();
 		if let Some(blocked_hashes) = invalid_hashes.get(&context_id) {
 			blocked_hashes.clone()
 		} else {
@@ -1660,6 +1702,67 @@ mod tests {
 		assert_eq!(POW_TEST_CALLS.load(Ordering::SeqCst), chunk_count);
 	}
 
+	#[cfg(feature = "test-support")]
+	#[test]
+	fn incomplete_coinbase_block_is_bad_data() {
+		use mwc_core::ser::ProtocolVersion;
+		use mwc_crates::secp::s2c::Opening;
+		use mwc_store::types::VariableSizeMetadataValidation;
+
+		const CONTEXT: u32 = 2_984_100;
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().to_str().unwrap().to_owned();
+		let store = Arc::new(store::ChainStore::new(CONTEXT, &path).unwrap());
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let mut trees = txhashset::TxHashSet::open(path, store.clone(), None, &secp).unwrap();
+		let mut headers = txhashset::PMMRHandle::<BlockHeader>::new(
+			dir.path().join("headers"),
+			false,
+			ProtocolVersion(1),
+			CONTEXT,
+			None,
+			VariableSizeMetadataValidation::Full,
+		)
+		.unwrap();
+		let difficulty = RecursiveRwLock::new(DifficultyCache::new());
+		let batch = store.batch_write().unwrap();
+		let mut parent = BlockHeader::default(CONTEXT);
+		parent.height = 3;
+		batch
+			.save_block_header(
+				&parent,
+				crate::store::header_creation_time(&parent).unwrap(),
+			)
+			.unwrap();
+		let mut ctx = BlockContext {
+			opts: Options::SKIP_POW,
+			pow_verifier: |_, _| Ok(()),
+			txhashset: &mut trees,
+			header_pmmr: &mut headers,
+			batch,
+			difficulty_cache: difficulty.write(),
+		};
+		let mut incomplete = Block::default(CONTEXT);
+		incomplete.header.height = 4;
+		incomplete.header.prev_hash = parent.hash(CONTEXT).unwrap();
+		// This body also fails ordinary coinbase validation. Report the missing
+		// opening first; both errors are bad block data.
+		let err = validate_block(CONTEXT, &incomplete, &mut ctx, &mut secp).unwrap_err();
+		assert!(matches!(err, Error::BlockMissCoinbaseOpening));
+		assert!(err.is_bad_data());
+		let bytes = mwc_util::from_hex(
+			"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+		)
+		.unwrap();
+		incomplete.coinbase_opening = Some(Opening::from_slice(&secp, &bytes).unwrap());
+		let err = validate_block(CONTEXT, &incomplete, &mut ctx, &mut secp).unwrap_err();
+		assert!(matches!(err, Error::Block(_)));
+		assert!(err.is_bad_data());
+	}
+
 	#[test]
 	fn known_full_block_preflight_rejects_later_series_conflict() {
 		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
@@ -1690,9 +1793,19 @@ mod tests {
 		assert_eq!(second_hash, conflicting_second.hash(0).unwrap());
 
 		let batch = chain_store.batch_write().unwrap();
-		batch.save_block_header(&first.header).unwrap();
+		batch
+			.save_block_header(
+				&first.header,
+				crate::store::header_creation_time(&first.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&first).unwrap();
-		batch.save_block_header(&stored_second.header).unwrap();
+		batch
+			.save_block_header(
+				&stored_second.header,
+				crate::store::header_creation_time(&stored_second.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&stored_second).unwrap();
 
 		// Even though the first element is already the current head, preflight

@@ -147,7 +147,7 @@ impl MerkleProof {
 	/// Serialize the Merkle proof as a hex string (for api json endpoints)
 	pub fn to_hex(&self, context_id: u32) -> Result<String, MerkleProofError> {
 		let mut vec = Vec::new();
-		match ser::serialize_default(context_id, &mut vec, &self) {
+		match ser::serialize_default(context_id, &mut vec, &self, true) {
 			Ok(_) => Ok(vec.to_hex()),
 			Err(e) => Err(MerkleProofError::Generic(format!(
 				"serializetion error, {}",
@@ -161,7 +161,7 @@ impl MerkleProof {
 		let bytes = util::from_hex(hex)
 			.map_err(|e| MerkleProofError::Generic(format!("MerkleProof::from_hex, {}", e)))?;
 		let mut input = &bytes[..];
-		let res = ser::deserialize_default(context_id, &mut input).map_err(|e| {
+		let res = ser::deserialize_default(context_id, &mut input, true).map_err(|e| {
 			MerkleProofError::Generic(format!("MerkleProof::from_hex, deserialize failed, {}", e))
 		})?;
 		if !input.is_empty() {

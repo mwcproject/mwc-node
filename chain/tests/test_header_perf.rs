@@ -93,7 +93,6 @@ fn test_header_perf_impl(
 		debug!("Horizon header: {:?}", horizon_header);
 
 		// Copy the headers from source to output in chunks
-		let dest_sync_head = dest_chain.header_head().unwrap();
 		let copy_chunk_size = 1000;
 		let mut copied_header_index = 1;
 		let mut src_headers = vec![];
@@ -106,15 +105,20 @@ fn test_header_perf_impl(
 					"Copying headers to {} of {}",
 					copied_header_index, horizon_header.height
 				);
+				let base_time =
+					u64::try_from(src_headers.last().unwrap().timestamp.timestamp_micros())
+						.unwrap();
 				dest_chain
-					.sync_block_headers(&src_headers, dest_sync_head, Options::NONE)
+					.sync_block_headers(&src_headers, Options::NONE, base_time)
 					.unwrap();
 				src_headers = vec![];
 			}
 		}
 		if !src_headers.is_empty() {
+			let base_time =
+				u64::try_from(src_headers.last().unwrap().timestamp.timestamp_micros()).unwrap();
 			dest_chain
-				.sync_block_headers(&src_headers, dest_sync_head, Options::NONE)
+				.sync_block_headers(&src_headers, Options::NONE, base_time)
 				.unwrap();
 		}
 	}

@@ -35,6 +35,8 @@ use std::sync::Arc;
 const STORE_SUBPATH: &str = "chain";
 
 const BLOCK_HEADER_PREFIX: u8 = b'h';
+// Local metadata, deliberately separate from the consensus/wire header encoding.
+const HEADER_PROGRESS_TIME_PREFIX: u8 = b'J';
 const BLOCK_PREFIX: u8 = b'b';
 const HEAD_PREFIX: u8 = b'H';
 const TAIL_PREFIX: u8 = b'T';
@@ -75,6 +77,12 @@ const SPENT_COMMITMENT_RECORD_INDEX_COMPLETE: &str = "spent_commitment_record_in
 /// migrated to the exact `SpentOutput` occurrence format.
 const SPENT_INDEX_MIGRATED: &str = "spent_index_migrated";
 
+pub(crate) fn header_creation_time(header: &BlockHeader) -> Result<u64, Error> {
+	u64::try_from(header.timestamp.timestamp_micros())
+		.map(|time| time.max(1))
+		.map_err(|_| Error::DataOverflow("negative header creation time".into()))
+}
+
 /// Compare a trusted stored block with a candidate using the canonical v3
 /// database representation. V3 intentionally normalizes legacy
 /// feature-bearing inputs to commitment-only inputs.
@@ -83,13 +91,13 @@ pub(crate) fn blocks_equal_as_v3(
 	stored: &Block,
 	candidate: &Block,
 ) -> Result<bool, ser::Error> {
-	if stored.header != candidate.header {
+	if stored.header != candidate.header || stored.coinbase_opening != candidate.coinbase_opening {
 		return Ok(false);
 	}
 
 	let version = ProtocolVersion(3);
-	Ok(ser::ser_vec(context_id, &stored.body, version)?
-		== ser::ser_vec(context_id, &candidate.body, version)?)
+	Ok(ser::ser_vec(context_id, &stored.body, version, true)?
+		== ser::ser_vec(context_id, &candidate.body, version, true)?)
 }
 
 /// All chain-related database operations
@@ -101,6 +109,7 @@ impl ChainStore {
 	/// Create new chain store
 	pub fn new(context_id: u32, db_root: &str) -> Result<ChainStore, Error> {
 		let db = mwc_store::Store::new(context_id, db_root, None, Some(STORE_SUBPATH), None)?;
+		crate::validation::reset(context_id);
 		Ok(ChainStore { db })
 	}
 
@@ -133,6 +142,87 @@ impl ChainStore {
 		})
 	}
 
+	/// Schedule a full body reset instead of converting obsolete storage.
+	/// Databases without the v3 migration flag and activated blocks without S2C
+	/// openings must sync again. Commit format flags with the existing reset
+	/// marker; shared recovery clears bodies and rebuilds genesis while retaining
+	/// headers. An empty database only needs its format flags initialized.
+	pub(crate) fn reset_legacy_blocks(&self) -> Result<(), Error> {
+		const CHECKED: &str = "coinbase_s2c_blocks_checked";
+
+		let batch = self.batch_write()?;
+		let v3_migrated = batch.is_blocks_v3_migrated()?;
+		if v3_migrated && batch.get_bool_flag(CHECKED)? {
+			return Ok(());
+		}
+		let mut reset = false;
+		if !v3_migrated {
+			// Old bodies may not be readable by the current decoder. Raw presence
+			// also catches orphan records when no body head was ever committed.
+			reset = batch.db.exists(&[HEAD_PREFIX])?
+				|| batch.blocks_raw_iter()?.next().transpose()?.is_some();
+			if reset {
+				mwc_crates::log::warn!(
+					"Block database has no completed v3 migration; scheduling body chain reset to genesis for resynchronization",
+				);
+			}
+		} else {
+			let context_id = self.get_context_id();
+			for item in batch.blocks_raw_iter()? {
+				let (key, data) = item?;
+				let header: BlockHeader = ser::deserialize_permissive(
+					&mut data.as_slice(),
+					batch.protocol_version(),
+					context_id,
+					true,
+				)?;
+				if !consensus::is_coinbase_binding_enabled(context_id, header.height) {
+					continue;
+				}
+				if let Err(current_error) = ser::deserialize_strict::<Block, _>(
+					&mut data.as_slice(),
+					batch.protocol_version(),
+					context_id,
+					true,
+				) {
+					// Only an exactly complete legacy v3 record authorizes this reset.
+					// Truncated openings and unrelated corruption remain errors.
+					let mut bytes = data.as_slice();
+					let mut reader =
+						ser::BufReader::new(&mut bytes, ProtocolVersion(3), context_id, false);
+					let block = match reader.body_full::<Block>() {
+						Ok(block) => block,
+						Err(_) => return Err(current_error.into()),
+					};
+					let hash = block.hash(context_id)?;
+					if key != to_key(BLOCK_PREFIX, hash)
+						|| batch.get_block_header(&hash)? != block.header
+					{
+						return Err(Error::OtherErr(
+							"legacy Coinbase block/header mismatch".into(),
+						));
+					}
+					mwc_crates::log::warn!(
+						"Legacy block at height {} has no Coinbase S2C opening; scheduling body chain reset to genesis for resynchronization",
+						block.header.height,
+					);
+					reset = true;
+					break;
+				}
+			}
+		}
+		if reset {
+			batch.set_chain_marker(
+				ChainMarker::LastChainOperation,
+				&PendingChainOperation::ResetToGenesis,
+			)?;
+		}
+		batch.set_blocks_v3_migrated(true)?;
+		batch.set_bool_flag(CHECKED, true)?;
+		batch.commit()?;
+		Ok(())
+	}
+
 	/// Does this full block exist?
 	pub fn block_exists(&self, h: &Hash) -> Result<bool, Error> {
 		self.db.exists(&to_key(BLOCK_PREFIX, h))
@@ -155,6 +245,11 @@ impl ChainStore {
 		option_to_not_found(self.db.get_ser(&to_key(BLOCK_HEADER_PREFIX, h)), || {
 			format!("BLOCK HEADER: {}", h)
 		})
+	}
+
+	/// Local progress time in microseconds. Legacy headers use creation time.
+	pub fn get_header_progress_time(&self, h: &Hash) -> Result<u64, Error> {
+		self.batch_read()?.get_header_progress_time(h)
 	}
 
 	/// Get PMMR pos for the given output commitment.
@@ -343,6 +438,7 @@ impl<'a> Batch<'a> {
 	/// before `setup_head()` even when the chain database has never held a block.
 	pub(crate) fn has_any_auxiliary_chain_state(&self) -> Result<bool, Error> {
 		for prefix in [
+			HEADER_PROGRESS_TIME_PREFIX,
 			OUTPUT_POS_PREFIX,
 			KERNEL_POS_PREFIX,
 			NRD_KERNEL_LIST_PREFIX,
@@ -608,28 +704,53 @@ impl<'a> Batch<'a> {
 		self.db.delete(&to_key(CHAIN_MARKER_PREFIX, marker.name()))
 	}
 
-	/// Migrate a block stored in the db reading from one protocol version and writing
-	/// with new protocol version.
-	pub fn migrate_block(
-		&self,
-		key: &[u8],
-		from_version: ProtocolVersion,
-		to_version: ProtocolVersion,
-	) -> Result<(), Error> {
-		let context_id = self.db.get_context_id();
-		let block: Block = option_to_not_found(
-			self.db.get_with(key, move |_, mut v| {
-				ser::deserialize_strict(&mut v, from_version, context_id).map_err(From::from)
-			}),
-			|| format!("BLOCK: {:?}", key),
-		)?;
-		self.db.put_ser_with_version(key, &block, to_version)?;
-		Ok(())
-	}
-
 	/// Low level function to delete directly by raw key.
 	pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
 		self.db.delete(key)
+	}
+
+	/// Clear all full blocks and their derived metadata for a full genesis reset.
+	/// Delete raw records so obsolete body encodings do not need to be decoded.
+	/// Headers, chain selectors, and the durable reset marker are preserved.
+	/// The caller rebuilds genesis in this batch and completes the spent index
+	/// before clearing the reset marker.
+	pub(crate) fn clear_block_data(&self) -> Result<(), Error> {
+		for prefix in [
+			BLOCK_PREFIX,
+			BLOCK_INPUT_BITMAP_PREFIX,
+			BLOCK_SUMS_PREFIX,
+			BLOCK_SPENT_PREFIX,
+			BLOCK_SPENT_COMMITMENT_PREFIX,
+		] {
+			let keys = self
+				.db
+				.iter(&to_key(prefix, ""), |key, _| Ok(key.to_vec()))?
+				.collect::<Result<Vec<_>, Error>>()?;
+			for key in keys {
+				self.db.delete(&key)?;
+			}
+		}
+		self.set_spent_index_migrated(true)?;
+		self.set_spent_commitment_record_index_complete(false)?;
+		Ok(())
+	}
+
+	/// Remove discarded headers and progress records, including stored forks.
+	/// Only a marked full reset may call this, after rebuilding the body at genesis.
+	pub(crate) fn clear_header_data_except_genesis(&self, genesis: &Hash) -> Result<(), Error> {
+		for prefix in [BLOCK_HEADER_PREFIX, HEADER_PROGRESS_TIME_PREFIX] {
+			let genesis_key = to_key(prefix, genesis);
+			let keys = self
+				.db
+				.iter(&to_key(prefix, ""), |key, _| Ok(key.to_vec()))?
+				.collect::<Result<Vec<_>, Error>>()?;
+			for key in keys {
+				if key != genesis_key {
+					self.db.delete(&key)?;
+				}
+			}
+		}
+		Ok(())
 	}
 
 	/// Delete a full block. Does not delete any record associated with a block
@@ -695,11 +816,14 @@ impl<'a> Batch<'a> {
 
 	/// Delete a block header.
 	pub fn delete_block_header(&self, h: &Hash) -> Result<(), Error> {
+		Self::ignore_not_found(self.db.delete(&to_key(HEADER_PROGRESS_TIME_PREFIX, h)))?;
 		self.db.delete(&to_key(BLOCK_HEADER_PREFIX, h)[..])
 	}
 
-	/// Save block header to db.
-	pub fn save_block_header(&self, header: &BlockHeader) -> Result<(), Error> {
+	/// Save the header and its progress time atomically. Known headers retain
+	/// their stored time; missing metadata is initialized with `base_time`.
+	/// `base_time` is a Unix timestamp in microseconds. Returns the stored time.
+	pub fn save_block_header(&self, header: &BlockHeader, base_time: u64) -> Result<u64, Error> {
 		let hash = header.hash(self.get_context_id())?;
 		// Defense in depth for local persistence. This is not a cryptographic
 		// collision check: normal PoW validation is what binds the complete header
@@ -711,16 +835,24 @@ impl<'a> Batch<'a> {
 					hash
 				)));
 			}
-			Ok(_) => return Ok(()),
-			Err(e) if e.store_error_is_not_found() => {}
+			Ok(_) => {
+				if let Some(time) = self
+					.db
+					.get_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, hash))?
+				{
+					return Ok(time);
+				}
+			}
+			Err(e) if e.store_error_is_not_found() => {
+				self.db
+					.put_ser(&to_key(BLOCK_HEADER_PREFIX, hash), header)?;
+			}
 			Err(e) => return Err(e),
 		}
-
-		// Store the header itself indexed by hash.
 		self.db
-			.put_ser(&to_key(BLOCK_HEADER_PREFIX, hash)[..], header)?;
+			.put_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, hash), &base_time)?;
 
-		Ok(())
+		Ok(base_time)
 	}
 
 	/// Save output_pos and block height to index.
@@ -757,7 +889,7 @@ impl<'a> Batch<'a> {
 		let protocol_version = self.db.protocol_version();
 		let context_id = self.db.get_context_id();
 		self.db.iter(&key, move |_, mut v| {
-			ser::deserialize_strict(&mut v, protocol_version, context_id).map_err(From::from)
+			ser::deserialize_strict(&mut v, protocol_version, context_id, true).map_err(From::from)
 		})
 	}
 
@@ -849,7 +981,7 @@ impl<'a> Batch<'a> {
 		let protocol_version = self.db.protocol_version();
 		let context_id = self.db.get_context_id();
 		self.db.iter(&key, move |k, mut v| {
-			ser::deserialize_strict(&mut v, protocol_version, context_id)
+			ser::deserialize_strict(&mut v, protocol_version, context_id, true)
 				.map(|pos| (k.to_vec(), pos))
 				.map_err(From::from)
 		})
@@ -884,6 +1016,14 @@ impl<'a> Batch<'a> {
 		option_to_not_found(self.db.get_ser(&to_key(BLOCK_HEADER_PREFIX, h)), || {
 			format!("BLOCK HEADER: {}", h)
 		})
+	}
+
+	/// Read local progress metadata, with a deterministic legacy fallback.
+	pub fn get_header_progress_time(&self, h: &Hash) -> Result<u64, Error> {
+		match self.db.get_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, h))? {
+			Some(time) => Ok(time),
+			None => header_creation_time(&self.get_block_header(h)?),
+		}
 	}
 
 	/// Delete the block spent index.
@@ -1019,7 +1159,7 @@ impl<'a> Batch<'a> {
 		let protocol_version = self.db.protocol_version();
 		let context_id = self.db.get_context_id();
 		self.db.iter(&key, move |raw_key, mut v| {
-			let block: Block = ser::deserialize_strict(&mut v, protocol_version, context_id)?;
+			let block: Block = ser::deserialize_strict(&mut v, protocol_version, context_id, true)?;
 			let block_hash = block.hash(context_id)?;
 			let expected_key = to_key(BLOCK_PREFIX, block_hash);
 			if raw_key != expected_key.as_slice() {
@@ -1306,6 +1446,8 @@ impl Readable for ChainOperationKind {
 pub enum PendingChainOperation {
 	/// PIBD reset was interrupted.
 	PibdReset,
+	/// Full PIBD body and header reset was interrupted.
+	PibdResetBoth,
 	/// Reset to genesis was interrupted.
 	ResetToGenesis,
 	/// Chain-head reset was interrupted.
@@ -1384,7 +1526,9 @@ impl PendingChainOperation {
 	/// Operation kind for logging and recovery decisions.
 	pub fn kind(&self) -> ChainOperationKind {
 		match self {
-			PendingChainOperation::PibdReset => ChainOperationKind::PibdReset,
+			PendingChainOperation::PibdReset | PendingChainOperation::PibdResetBoth => {
+				ChainOperationKind::PibdReset
+			}
 			PendingChainOperation::ResetToGenesis => ChainOperationKind::ResetToGenesis,
 			PendingChainOperation::ResetChainHead { .. } => ChainOperationKind::ResetChainHead,
 			PendingChainOperation::ReconcileHeads { kind, .. } => *kind,
@@ -1433,6 +1577,7 @@ impl Writeable for PendingChainOperation {
 				original_header_head.write(writer)?;
 				target_body_tail.write(writer)
 			}
+			PendingChainOperation::PibdResetBoth => writer.write_u8(5),
 		}
 	}
 }
@@ -1489,6 +1634,7 @@ impl Readable for PendingChainOperation {
 				original_header_head: Tip::read(reader)?,
 				target_body_tail: Tip::read(reader)?,
 			}),
+			5 => Ok(PendingChainOperation::PibdResetBoth),
 			x => Err(ser::Error::CorruptedData(format!(
 				"Invalid pending chain operation variant {}",
 				x
@@ -1536,10 +1682,277 @@ mod tests {
 	use mwc_crates::secp::{ContextFlag, Secp256k1};
 	use std::fs;
 
+	fn progress_header(height: u64, previous: Hash) -> BlockHeader {
+		let mut header = BlockHeader::default(0);
+		header.height = height;
+		header.prev_hash = previous;
+		header.timestamp =
+			mwc_crates::chrono::DateTime::from_timestamp(100 + height as i64, 0).unwrap();
+		*header.pow.proof.nonces.last_mut().unwrap() = height;
+		header
+	}
+
+	#[test]
+	fn pibd_reset_markers_preserve_body_only_encoding() {
+		for (operation, bytes) in [
+			(PendingChainOperation::PibdReset, vec![1, 0]),
+			(PendingChainOperation::PibdResetBoth, vec![1, 5]),
+		] {
+			assert_eq!(
+				ser::ser_vec(0, &operation, ProtocolVersion::local(), true).unwrap(),
+				bytes
+			);
+			let decoded: PendingChainOperation =
+				ser::deserialize_strict(&mut bytes.as_slice(), ProtocolVersion::local(), 0, true)
+					.unwrap();
+			assert_eq!(decoded, operation);
+			assert_eq!(decoded.kind(), ChainOperationKind::PibdReset);
+		}
+	}
+
+	#[test]
+	fn header_progress_persists_without_changing_wire_or_json_and_is_not_refreshed() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let parent = progress_header(0, mwc_core::core::hash::ZERO_HASH);
+		let header = progress_header(1, parent.hash(0).unwrap());
+		let child = progress_header(2, header.hash(0).unwrap());
+		let hash = header.hash(0).unwrap();
+		let child_hash = child.hash(0).unwrap();
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		{
+			let batch = store.batch_write().unwrap();
+			batch
+				.save_block_header(&parent, header_creation_time(&parent).unwrap())
+				.unwrap();
+			assert_eq!(
+				batch.save_block_header(&header, 200_000_000).unwrap(),
+				200_000_000
+			);
+			// Store the supplied creation time even when it predates the parent's time.
+			batch
+				.save_block_header(&child, header_creation_time(&child).unwrap())
+				.unwrap();
+			assert_eq!(
+				batch.get_header_progress_time(&child_hash).unwrap(),
+				102_000_000
+			);
+			batch.commit().unwrap();
+		}
+		drop(store);
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		assert_eq!(store.get_header_progress_time(&hash).unwrap(), 200_000_000);
+		{
+			let batch = store.batch_write().unwrap();
+			assert_eq!(
+				batch.save_block_header(&header, 900_000_000).unwrap(),
+				200_000_000
+			);
+			batch.commit().unwrap();
+		}
+		let stored = store.get_block_header(&hash).unwrap();
+		assert_eq!(stored, header);
+		for version in [
+			ProtocolVersion(1),
+			ProtocolVersion(2),
+			ProtocolVersion(3),
+			ProtocolVersion::local(),
+		] {
+			assert_eq!(
+				ser::ser_vec(0, &stored, version, true).unwrap(),
+				ser::ser_vec(0, &header, version, true).unwrap()
+			);
+		}
+		let json = mwc_crates::serde_json::to_value(&stored).unwrap();
+		assert!(json.get("progress_time").is_none());
+		assert_eq!(json, mwc_crates::serde_json::to_value(&header).unwrap());
+
+		let uncommitted = progress_header(3, child_hash);
+		{
+			let batch = store.batch_write().unwrap();
+			batch.save_block_header(&uncommitted, 300_000_000).unwrap();
+		}
+		assert!(store
+			.get_header_progress_time(&uncommitted.hash(0).unwrap())
+			.unwrap_err()
+			.store_error_is_not_found());
+		let batch = store.batch_write().unwrap();
+		batch.delete_block_header(&hash).unwrap();
+		batch.commit().unwrap();
+		assert!(store
+			.get_header_progress_time(&hash)
+			.unwrap_err()
+			.store_error_is_not_found());
+	}
+
+	#[test]
+	fn legacy_header_progress_is_initialized_once_from_base_time() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		let parent = progress_header(0, mwc_core::core::hash::ZERO_HASH);
+		let header = progress_header(1, parent.hash(0).unwrap());
+		let hash = header.hash(0).unwrap();
+		{
+			// This is exactly the old DB representation, with no metadata record.
+			let batch = store.batch_write().unwrap();
+			batch
+				.db
+				.put_ser(
+					&to_key(BLOCK_HEADER_PREFIX, parent.hash(0).unwrap()),
+					&parent,
+				)
+				.unwrap();
+			batch
+				.db
+				.put_ser(&to_key(BLOCK_HEADER_PREFIX, hash), &header)
+				.unwrap();
+			batch.commit().unwrap();
+		}
+		assert_eq!(store.get_header_progress_time(&hash).unwrap(), 101_000_000);
+		let batch = store.batch_write().unwrap();
+		assert_eq!(
+			batch.save_block_header(&header, 900_000_000).unwrap(),
+			900_000_000
+		);
+		assert_eq!(
+			batch.save_block_header(&header, 950_000_000).unwrap(),
+			900_000_000
+		);
+		batch.commit().unwrap();
+		let persisted: Option<u64> = store
+			.db
+			.get_ser(&to_key(HEADER_PROGRESS_TIME_PREFIX, hash))
+			.unwrap();
+		assert_eq!(persisted, Some(900_000_000));
+	}
+
 	fn read_bool_flag(bytes: &[u8]) -> Result<BoolFlag, ser::Error> {
 		let mut source = bytes;
-		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0);
+		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0, true);
 		BoolFlag::read(&mut reader)
+	}
+
+	#[test]
+	fn legacy_storage_upgrade_initializes_empty_database_without_reset() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+		store.reset_legacy_blocks().unwrap();
+		assert!(store.pending_chain_operation().unwrap().is_none());
+		assert!(!store.db.exists(&[HEAD_PREFIX]).unwrap());
+		let batch = store.batch_read().unwrap();
+		assert!(batch.is_blocks_v3_migrated().unwrap());
+		assert!(batch.get_bool_flag("coinbase_s2c_blocks_checked").unwrap());
+	}
+
+	#[test]
+	fn legacy_storage_upgrade_schedules_reset_without_decoding_bodies() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for (has_head, has_body) in [(true, false), (false, true), (true, true)] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let store = ChainStore::new(0, dir.path().to_str().unwrap()).unwrap();
+			let block = Block::default(0);
+			let hash = block.hash(0).unwrap();
+			let tip = Tip::try_from_header(&block.header).unwrap();
+			let body_key = to_key(BLOCK_PREFIX, hash);
+			let metadata_keys = [
+				BLOCK_INPUT_BITMAP_PREFIX,
+				BLOCK_SUMS_PREFIX,
+				BLOCK_SPENT_PREFIX,
+				BLOCK_SPENT_COMMITMENT_PREFIX,
+			]
+			.map(|prefix| to_key(prefix, hash));
+			{
+				let batch = store.batch_write().unwrap();
+				batch
+					.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+					.unwrap();
+				batch.save_header_head(&tip).unwrap();
+				if has_head {
+					batch.save_body_head(&tip).unwrap();
+				}
+				if has_body {
+					// An obsolete format must never reach the current block reader.
+					batch.db.put(&body_key, b"obsolete block bytes").unwrap();
+				}
+				for key in &metadata_keys {
+					batch.db.put(key, b"obsolete index bytes").unwrap();
+				}
+				// The S2C check alone must not skip the old database format reset.
+				batch
+					.set_bool_flag("coinbase_s2c_blocks_checked", true)
+					.unwrap();
+				batch
+					.set_spent_commitment_record_index_complete(true)
+					.unwrap();
+				batch.commit().unwrap();
+			}
+
+			store.reset_legacy_blocks().unwrap();
+			assert_eq!(store.block_exists(&hash).unwrap(), has_body);
+			for key in &metadata_keys {
+				assert!(store.db.exists(key).unwrap());
+			}
+			assert_eq!(store.get_block_header(&hash).unwrap(), block.header);
+			assert_eq!(store.header_head().unwrap(), tip);
+			assert_eq!(
+				store.pending_chain_operation().unwrap(),
+				Some(PendingChainOperation::ResetToGenesis)
+			);
+			{
+				let batch = store.batch_read().unwrap();
+				assert!(batch.is_blocks_v3_migrated().unwrap());
+				assert!(batch.get_bool_flag("coinbase_s2c_blocks_checked").unwrap());
+				assert!(!batch.is_spent_index_migrated().unwrap());
+				assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+			}
+			// Restarting between this transaction and PMMR recovery retains the
+			// same durable reset request, even with both format flags complete.
+			store.reset_legacy_blocks().unwrap();
+			assert_eq!(
+				store.pending_chain_operation().unwrap(),
+				Some(PendingChainOperation::ResetToGenesis)
+			);
+
+			// Cleanup is part of the caller's genesis transaction. Aborting it
+			// must retain both body data and the original index flags for retry.
+			{
+				let batch = store.batch_write().unwrap();
+				batch.clear_block_data().unwrap();
+				assert!(!batch.block_exists(&hash).unwrap());
+			}
+			assert_eq!(store.block_exists(&hash).unwrap(), has_body);
+			for key in &metadata_keys {
+				assert!(store.db.exists(key).unwrap());
+			}
+			{
+				let batch = store.batch_read().unwrap();
+				assert!(!batch.is_spent_index_migrated().unwrap());
+				assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+			}
+			// Raw cleanup also handles unreadable legacy bodies. Repeating the
+			// committed cleanup leaves retained headers and the reset marker intact.
+			for _ in 0..2 {
+				let batch = store.batch_write().unwrap();
+				batch.clear_block_data().unwrap();
+				batch.commit().unwrap();
+			}
+			assert!(!store.block_exists(&hash).unwrap());
+			for key in &metadata_keys {
+				assert!(!store.db.exists(key).unwrap());
+			}
+			assert_eq!(store.get_block_header(&hash).unwrap(), block.header);
+			assert_eq!(store.header_head().unwrap(), tip);
+			assert_eq!(store.db.exists(&[HEAD_PREFIX]).unwrap(), has_head);
+			assert_eq!(
+				store.pending_chain_operation().unwrap(),
+				Some(PendingChainOperation::ResetToGenesis)
+			);
+			let batch = store.batch_read().unwrap();
+			assert!(batch.is_spent_index_migrated().unwrap());
+			assert!(!batch.is_spent_commitment_record_index_complete().unwrap());
+		}
 	}
 
 	#[test]
@@ -1554,18 +1967,29 @@ mod tests {
 		expected_block.header.pow.proof.nonces[0] = 1;
 		let expected_hash = expected_block.hash(0).unwrap();
 		let mut altered_block = expected_block.clone();
-		altered_block.header.height = 99;
+		altered_block.header.height = 3;
 		assert_eq!(altered_block.hash(0).unwrap(), expected_hash);
 		assert_ne!(altered_block.header, expected_block.header);
 
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&expected_block.header).unwrap();
+		batch
+			.save_block_header(
+				&expected_block.header,
+				header_creation_time(&expected_block.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&expected_block).unwrap();
 		match batch.save_block(&altered_block).unwrap_err() {
 			Error::OtherErr(msg) => assert!(msg.contains("separately stored header"), "{}", msg),
 			other => panic!("expected full-block header mismatch, got {:?}", other),
 		}
-		match batch.save_block_header(&altered_block.header).unwrap_err() {
+		match batch
+			.save_block_header(
+				&altered_block.header,
+				header_creation_time(&altered_block.header).unwrap(),
+			)
+			.unwrap_err()
+		{
 			Error::OtherErr(msg) => assert!(msg.contains("different complete header"), "{}", msg),
 			other => panic!(
 				"expected stored-header overwrite rejection, got {:?}",
@@ -1625,7 +2049,12 @@ mod tests {
 
 		let block_hash = stored.hash(0).unwrap();
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&stored.header).unwrap();
+		batch
+			.save_block_header(
+				&stored.header,
+				header_creation_time(&stored.header).unwrap(),
+			)
+			.unwrap();
 		batch.save_block(&stored).unwrap();
 		batch.save_block(&equivalent).unwrap();
 		match batch.save_block(&conflicting).unwrap_err() {
@@ -1660,7 +2089,9 @@ mod tests {
 		{
 			let batch = store.batch_write().unwrap();
 			assert!(!batch.delete_block_if_exists(&block_hash).unwrap());
-			batch.save_block_header(&block.header).unwrap();
+			batch
+				.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+				.unwrap();
 			batch.save_block(&block).unwrap();
 			batch.commit().unwrap();
 		}
@@ -1720,7 +2151,9 @@ mod tests {
 
 		{
 			let batch = store.batch_write().unwrap();
-			batch.save_block_header(&block.header).unwrap();
+			batch
+				.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+				.unwrap();
 			batch.save_block(&block).unwrap();
 			batch
 				.save_spent_index(
@@ -2214,5 +2647,93 @@ mod tests {
 			Error::OtherErr(msg) if msg.contains("conflicting spent commitment records")
 		));
 		assert_eq!(records, vec![original]);
+	}
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod s2c_storage_tests {
+	use super::*;
+	use mwc_core::global;
+	use mwc_crates::secp::s2c::Opening;
+	use mwc_crates::secp::{self, Secp256k1};
+
+	#[test]
+	fn s2c_storage_upgrade_schedules_reset_only_for_exact_legacy_records() {
+		for (case, context_id) in [(0, 943_120), (1, 943_121), (2, 943_122)] {
+			global::init_global_chain_type(context_id, global::ChainTypes::AutomatedTesting)
+				.unwrap();
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let store = ChainStore::new(context_id, dir.path().to_str().unwrap()).unwrap();
+			let secp = Secp256k1::with_caps(secp::ContextFlag::Commit).unwrap();
+			let secret = secp::key::SecretKey::from_slice(&secp, &[1; 32]).unwrap();
+			let point = secp::key::PublicKey::from_secret_key(&secp, &secret).unwrap();
+			let mut block = Block::default(context_id);
+			block.header.height = 4;
+			block.coinbase_opening = Some(
+				Opening::from_slice(&secp, &point.serialize_vec(&secp, true).unwrap()).unwrap(),
+			);
+			let hash = block.hash(context_id).unwrap();
+			let version = ProtocolVersion(3);
+			let mut bytes = Vec::new();
+			block
+				.write_legacy(&mut ser::BinWriter::new(
+					&mut bytes, version, context_id, true,
+				))
+				.unwrap();
+			if case != 0 {
+				bytes.extend_from_slice(&block.coinbase_opening.unwrap().serialize());
+			}
+			if case == 2 {
+				bytes.pop();
+			}
+			{
+				let batch = store.batch_write().unwrap();
+				batch.set_blocks_v3_migrated(true).unwrap();
+				batch
+					.save_block_header(&block.header, header_creation_time(&block.header).unwrap())
+					.unwrap();
+				batch.db.put(&to_key(BLOCK_PREFIX, hash), &bytes).unwrap();
+				batch
+					.save_body_head(&Tip::try_from_header(&block.header).unwrap())
+					.unwrap();
+				batch
+					.save_header_head(&Tip::try_from_header(&block.header).unwrap())
+					.unwrap();
+				batch.commit().unwrap();
+			}
+			let result = store.reset_legacy_blocks();
+			if case == 0 {
+				result.unwrap();
+				assert!(store.block_exists(&hash).unwrap());
+				assert_eq!(
+					store.pending_chain_operation().unwrap(),
+					Some(PendingChainOperation::ResetToGenesis)
+				);
+				assert_eq!(store.get_block_header(&hash).unwrap(), block.header);
+				// A crash before PMMR recovery must retain the same reset request.
+				store.reset_legacy_blocks().unwrap();
+				assert_eq!(
+					store.pending_chain_operation().unwrap(),
+					Some(PendingChainOperation::ResetToGenesis)
+				);
+			} else if case == 1 {
+				result.unwrap();
+				let restored = store.get_block(&hash).unwrap();
+				assert_eq!(restored.coinbase_opening, block.coinbase_opening);
+				assert!(store.pending_chain_operation().unwrap().is_none());
+				let mut conflicting = block.clone();
+				conflicting.coinbase_opening = None;
+				assert!(!blocks_equal_as_v3(context_id, &restored, &conflicting).unwrap());
+				assert!(store
+					.batch_write()
+					.unwrap()
+					.save_block(&conflicting)
+					.is_err());
+			} else {
+				assert!(result.is_err());
+				assert!(store.block_exists(&hash).unwrap());
+				assert!(store.pending_chain_operation().unwrap().is_none());
+			}
+		}
 	}
 }

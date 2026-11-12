@@ -16,9 +16,7 @@
 //! Mining Stratum Server
 
 use mwc_crates::async_stream;
-use mwc_crates::futures;
 use mwc_crates::futures::channel::oneshot;
-use mwc_crates::futures::pin_mut;
 use mwc_crates::futures::{SinkExt, StreamExt, TryStreamExt};
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_crates::serde_json;
@@ -27,7 +25,9 @@ use mwc_crates::tokio::io::AsyncWriteExt;
 use mwc_crates::tokio::net::TcpListener;
 use mwc_crates::tokio_util::codec::{Framed, LinesCodec};
 
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::indexmap::IndexSet;
+use mwc_crates::parking_lot::RecursiveRwLock;
+use mwc_crates::rand::{rng, RngExt};
 use mwc_crates::serde_json::Value;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
@@ -44,15 +44,14 @@ use crate::Error;
 use crate::ServerTxPool;
 use mwc_api::client::HttpClient;
 use mwc_chain::{self, SyncState};
-use mwc_core::core::hash::Hashed;
+use mwc_core::core::hash::{Hash, Hashed};
 use mwc_core::core::Block;
 use mwc_core::global;
 use mwc_core::stratum::connections;
 use mwc_core::{pow, ser};
 use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
-use mwc_crates::tokio::sync::{mpsc, Mutex};
-use mwc_keychain;
+use mwc_crates::tokio::sync::mpsc;
 use mwc_util;
 use mwc_util::ToHex;
 use mwc_util::{global_runtime, run_global_async_block, secp_static, StopState};
@@ -65,6 +64,10 @@ const MIN_IP_POOL_BAN_HISTORY_S: u64 = 10;
 const IP_POOL_BAN_HISTORY_MS_FACTOR: u64 = 1000;
 const MAX_STRATUM_LINE_LENGTH: usize = 64 * 1024;
 const MAX_CURRENT_BLOCK_VERSIONS: usize = 100;
+// A fixed upper bound shared by all workers and jobs for the current chain tip.
+// At capacity, new shares replace a randomly selected hash. Duplicate detection
+// only covers retained hashes; an evicted share can earn credit again.
+const MAX_TRACKED_SHARES: usize = 1_000_000;
 const STRATUM_ACCEPT_ERROR_INITIAL_BACKOFF_MS: u64 = 100;
 const STRATUM_ACCEPT_ERROR_MAX_BACKOFF_MS: u64 = 1_000;
 
@@ -153,7 +156,7 @@ fn cleanup_worker_registration(
 fn reserve_worker_connection(handler: &Handler) -> bool {
 	handler
 		.worker_connections
-		.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+		.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
 			if count >= handler.config.workers_connection_limit {
 				None
 			} else {
@@ -164,12 +167,11 @@ fn reserve_worker_connection(handler: &Handler) -> bool {
 }
 
 fn release_worker_connection(handler: &Handler) {
-	let _ =
-		handler
-			.worker_connections
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-				Some(count.saturating_sub(1))
-			});
+	let _ = handler
+		.worker_connections
+		.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+			Some(count.saturating_sub(1))
+		});
 }
 
 fn trigger_worker_shutdown(workers: &WorkersList) {
@@ -180,6 +182,21 @@ fn trigger_worker_shutdown(workers: &WorkersList) {
 				worker.id, e
 			);
 		}
+	}
+}
+
+async fn run_worker_io(
+	read: impl std::future::Future<Output = Result<(), ()>>,
+	write: impl std::future::Future<Output = Result<(), ()>>,
+	kill_switch_receiver: oneshot::Receiver<()>,
+) {
+	// Own both futures so finishing either direction or receiving a kill signal
+	// drops both socket halves before registration cleanup. Do not flush on
+	// disconnect: a peer that stops reading must not hold a connection slot.
+	tokio::select! {
+		_ = read => {},
+		_ = write => {},
+		_ = kill_switch_receiver => {},
 	}
 }
 
@@ -276,6 +293,12 @@ impl RpcError {
 			message: "Worker not logged in".to_string(),
 		}
 	}
+	pub fn duplicate_share() -> Self {
+		RpcError {
+			code: -32505,
+			message: "Duplicate share".to_string(),
+		}
+	}
 }
 
 impl From<RpcError> for Value {
@@ -347,11 +370,10 @@ struct State {
 	current_block_versions: Vec<Block>,
 	current_block_versions_first_job_id: u64,
 	next_job_id: u64,
-	// to prevent the wallet from generating a new HD key derivation for each
-	// iteration, we keep the returned derivation to provide it back when
-	// nothing has changed. We only want to create a key_id for each new block,
-	// and reuse it when we rebuild the current block to add new tx.
-	current_key_id: Option<mwc_keychain::Identifier>,
+	accepted_share_hashes: IndexSet<Hash>,
+	// Reuse the coinbase key only while the candidate height and fees match.
+	// A fee change needs a separate output because an older job can still win.
+	current_block_fees: Option<mine_block::BlockFees>,
 	current_difficulty: u64,       // scaled
 	minimum_share_difficulty: u64, // unscaled
 }
@@ -362,7 +384,8 @@ impl State {
 			current_block_versions: Vec::new(),
 			current_block_versions_first_job_id: 0,
 			next_job_id: 0,
-			current_key_id: None,
+			accepted_share_hashes: IndexSet::new(),
+			current_block_fees: None,
 			current_difficulty: 0,
 			minimum_share_difficulty,
 		}
@@ -386,6 +409,30 @@ impl State {
 	fn clear_block_versions(&mut self) {
 		self.current_block_versions.clear();
 		self.current_block_versions_first_job_id = self.next_job_id;
+		self.accepted_share_hashes.clear();
+	}
+
+	// Called only after validating a non-block share, under current_state.write().
+	// Check and insert atomically across workers, and recheck the job because it
+	// may have expired during validation. Retain history across template rebuilds
+	// and job eviction, subject to random replacement at MAX_TRACKED_SHARES.
+	fn record_share(&mut self, job_id: u64, share_hash: Hash) -> Result<(), RpcError> {
+		if job_id < self.current_block_versions_first_job_id
+			|| self.latest_job_id().map_or(true, |last| job_id > last)
+		{
+			return Err(RpcError::too_late());
+		}
+		if self.accepted_share_hashes.contains(&share_hash) {
+			return Err(RpcError::duplicate_share());
+		}
+		if self.accepted_share_hashes.len() >= MAX_TRACKED_SHARES {
+			let index = rng().random_range(0..self.accepted_share_hashes.len());
+			// The index is in bounds. Swap removal avoids scanning a million hashes
+			// or shifting entries while holding the shared state lock.
+			let _ = self.accepted_share_hashes.swap_remove_index(index);
+		}
+		self.accepted_share_hashes.insert(share_hash);
+		Ok(())
 	}
 
 	fn push_block_version(&mut self, block: Block) -> Result<(), Error> {
@@ -469,7 +516,7 @@ struct Handler {
 	sync_state: Arc<SyncState>,
 	stop_state: Arc<StopState>,
 	chain: Arc<mwc_chain::Chain>,
-	current_state: Arc<RwLock<State>>,
+	current_state: Arc<RecursiveRwLock<State>>,
 	ip_pool: Arc<connections::StratumIpPool>,
 	worker_connections: Arc<AtomicU32>,
 	config: StratumServerConfig,
@@ -485,7 +532,7 @@ impl Handler {
 			sync_state: stratum.sync_state.clone(),
 			stop_state: stratum.stop_state.clone(),
 			chain: stratum.chain.clone(),
-			current_state: Arc::new(RwLock::new(State::new(
+			current_state: Arc::new(RecursiveRwLock::new(State::new(
 				stratum.config.minimum_share_difficulty,
 			))),
 			ip_pool: stratum.ip_pool.clone(),
@@ -580,7 +627,7 @@ impl Handler {
 							}
 						};
 						if let Ok((_, true)) = res {
-							self.current_state.write().current_key_id = None;
+							self.current_state.write().current_block_fees = None;
 						}
 						res.map(|(v, _)| v)
 					},
@@ -649,7 +696,7 @@ impl Handler {
 
 		let height = self
 			.current_state
-			.read_recursive()
+			.read()
 			.current_block_versions
 			.last()
 			.ok_or_else(|| RpcError::internal_error("No blocks in task buffer"))?
@@ -702,7 +749,7 @@ impl Handler {
 	// Build and return a JobTemplate for mining the current block
 	fn build_block_template(&self) -> Result<JobTemplate, RpcError> {
 		let (bh, job_id, difficulty) = {
-			let state = self.current_state.read_recursive();
+			let state = self.current_state.read();
 
 			(
 				state
@@ -721,7 +768,8 @@ impl Handler {
 		// Serialize the block header into pre and post nonce strings
 		let mut header_buf = vec![];
 		{
-			let mut writer = ser::BinWriter::default(self.chain.get_context_id(), &mut header_buf);
+			let mut writer =
+				ser::BinWriter::default(self.chain.get_context_id(), &mut header_buf, true);
 			bh.write_pre_pow(&mut writer).map_err(|e| {
 				RpcError::internal_error(&format!("Unable write into buffer, {}", e))
 			})?;
@@ -753,7 +801,7 @@ impl Handler {
 		let params: SubmitParams = parse_params(params)?;
 
 		let (b, header_height, minimum_share_difficulty, current_difficulty) = {
-			let state = self.current_state.read_recursive();
+			let state = self.current_state.read();
 
 			(
 				state.get_block_version(params.job_id),
@@ -943,6 +991,23 @@ impl Handler {
 				})?;
 				return Err(RpcError::cannot_validate());
 			}
+
+			// Only validated shares enter the bounded history. Full block solutions
+			// above use the chain's duplicate-block checks.
+			let recorded = self
+				.current_state
+				.write()
+				.record_share(params.job_id, block_hash);
+			if let Err(err) = recorded {
+				self.update_worker_stats(worker_id, |worker_stats| {
+					if err.code == RpcError::too_late().code {
+						worker_stats.num_stale = worker_stats.num_stale.saturating_add(1);
+					} else {
+						worker_stats.num_rejected = worker_stats.num_rejected.saturating_add(1);
+					}
+				})?;
+				return Err(err);
+			}
 		}
 		// Log this as a valid share
 		self.workers.update_edge_bits(edge_bits_u8 as u16);
@@ -1096,16 +1161,24 @@ impl Handler {
 					} else {
 						None
 					};
-					let current_key_id = {
-						let state = self.current_state.read_recursive();
-						state.current_key_id.clone()
+					let current_block_fees = {
+						let state = self.current_state.read();
+						state.current_block_fees.clone()
 					};
 					// Build the new block (version)
+					// get_block retries transient failures until a template is available or
+					// shutdown is requested, delaying login-timeout and IP maintenance below.
+					// This is an accepted availability tradeoff: persistent build failures
+					// already prevent fresh mining jobs. The listener continues running but
+					// independently enforces workers_connection_limit, bounding retained
+					// connections, and maintenance resumes after recovery. This delay alone
+					// does not establish a separate mining outage; independent maintenance
+					// would be a responsiveness improvement.
 					let built_block = match mine_block::get_block(
 						&mut secp,
 						&self.chain,
 						tx_pool,
-						current_key_id,
+						current_block_fees,
 						wallet_listener_url,
 						&mining_wallet_client,
 						&self.stop_state,
@@ -1113,6 +1186,9 @@ impl Handler {
 						Ok(built_block) => built_block,
 						Err(e) => {
 							error!("Build block error {}", e);
+							if matches!(&e, crate::common::types::Error::WalletBinding(_)) {
+								return Err(Error::ServerError(e.to_string()));
+							}
 							continue;
 						}
 					};
@@ -1133,7 +1209,7 @@ impl Handler {
 						})?
 						.to_num();
 
-						state.current_key_id = built_block.fees.key_id();
+						state.current_block_fees = Some(built_block.fees.clone());
 
 						current_hash = new_parent_hash;
 						// set the minimum acceptable share unscaled difficulty for this block
@@ -1407,6 +1483,9 @@ fn accept_connections(
 				async move {
 					let config = &handler.config;
 
+					// IP lists are expected to contain IPv4 addresses and use exact text matching.
+					// For other address forms, users must explicitly list all required variants
+					// as rendered by peer_addr.ip().to_string(), including IPv4-mapped IPv6.
 					let ip_is_white_listed = config.ip_white_list.contains(&ip);
 					let accepting_connection = if ip_is_white_listed {
 						true
@@ -1473,8 +1552,7 @@ fn accept_connections(
 						socket,
 						LinesCodec::new_with_max_length(MAX_STRATUM_LINE_LENGTH),
 					);
-                    let (writer, mut reader) = framed.split();
-					let writer = Arc::new(Mutex::new(writer));
+                    let (mut writer, mut reader) = framed.split();
 
                     let h = handler.clone();
                     let workers = h.workers.clone();
@@ -1550,14 +1628,13 @@ fn accept_connections(
 						Result::<_, ()>::Ok(())
 					};
 
-					let writer2 = writer.clone();
 					let write = async move {
 						while let Some(line) = rx.recv().await {
 							// No need to add line separator for the client, because
 							// Frames with LinesCodec does that.
 							tokio::time::timeout(
 								Duration::from_secs(10),
-								writer2.lock().await.send(line),
+								writer.send(line),
 							)
 								.await
 								.map_err(|_| {
@@ -1575,12 +1652,8 @@ fn accept_connections(
 					let task_handler = handler.clone();
 					let task_ip_pool_disconnect = ip_pool_disconnect.clone();
 					let task_ip_disconnect = ip_disconnect.clone();
-					let task_writer = writer.clone();
 					let task = async move {
-						pin_mut!(read, write);
-						let rw = futures::future::select(read, write);
-						futures::future::select(rw, kill_switch_receiver).await;
-						let _ = task_writer.lock().await.close().await;
+						run_worker_io(read, write, kill_switch_receiver).await;
 						cleanup_worker_registration(
 							&task_handler,
 							&task_ip_pool_disconnect,
@@ -1597,7 +1670,6 @@ fn accept_connections(
 						Err(e) => {
 							error!("Unable to spawn stratum worker task: {}", e);
 							drop(task);
-							let _ = writer.lock().await.close().await;
 							cleanup_worker_registration(
 								&handler,
 								&ip_pool,
@@ -1836,6 +1908,493 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use mwc_crates::futures::poll;
+	use mwc_crates::tempfile::TempDir;
+	use mwc_crates::tokio::io::AsyncReadExt;
+	use mwc_keychain;
+	use mwc_keychain::Keychain;
+	use std::collections::HashSet;
+
+	struct SubmitFixture {
+		handler: Handler,
+		params: Value,
+		_chain_dir: TempDir,
+	}
+
+	impl SubmitFixture {
+		fn new() -> Self {
+			global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+			global::set_local_nrd_enabled(false);
+			let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			let chain_dir = TempDir::new().unwrap();
+			let chain = Arc::new(
+				mwc_chain::Chain::init(
+					&secp,
+					0,
+					chain_dir.path().to_str().unwrap().into(),
+					Arc::new(mwc_chain::types::NoopAdapter {}),
+					global::get_genesis_block(&secp, 0).unwrap(),
+					pow::verify_size,
+					false,
+					HashSet::new(),
+					None,
+					None,
+					false,
+				)
+				.unwrap(),
+			);
+			// Mine a real block so the same fixture can exercise both the share
+			// path and submission to the chain when share tracking is full.
+			let parent = chain.head_header().unwrap();
+			let keychain = mwc_keychain::ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
+			let builder = mwc_core::libtx::ProofBuilder::new(&secp, &keychain).unwrap();
+			let key = mwc_keychain::ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+			let binding = chain
+				.coinbase_binding_for_template(
+					&secp,
+					&parent,
+					&mwc_core::core::TransactionBody::empty(),
+				)
+				.unwrap();
+			let (output, kernel, _) = mwc_core::libtx::reward::output_s2c(
+				0,
+				&keychain,
+				&builder,
+				&key,
+				0,
+				1,
+				&mut secp,
+				binding.digest().unwrap(),
+			)
+			.unwrap();
+			let next = mwc_core::consensus::next_difficulty(
+				0,
+				1,
+				chain.difficulty_iter().unwrap(),
+				&mut mwc_core::consensus::DifficultyCache::new(),
+			)
+			.unwrap();
+			let mut block =
+				Block::new(0, &parent, &[], next.difficulty, (output, kernel), &secp).unwrap();
+			block.header.timestamp = parent.timestamp + mwc_crates::chrono::Duration::seconds(60);
+			block.header.pow.secondary_scaling = next.secondary_scaling;
+			chain.set_txhashset_roots(&secp, &mut block).unwrap();
+			pow::pow_size(
+				0,
+				&mut block.header,
+				next.difficulty,
+				global::proofsize(0),
+				global::min_edge_bits(0),
+			)
+			.unwrap();
+			assert!(block.header.pow.to_difficulty(0, 1).unwrap().to_num() < u64::MAX);
+			let params = serde_json::json!({
+				"height": 1, "job_id": 0, "nonce": block.header.pow.nonce,
+				"edge_bits": block.header.pow.proof.edge_bits, "pow": block.header.pow.proof.nonces,
+			});
+			let mut state = State::new(1);
+			state.current_difficulty = u64::MAX;
+			state.push_block_version(block).unwrap();
+			let mut config = StratumServerConfig::default();
+			config.ip_tracking = true;
+			let handler = Handler {
+				id: "share-test".into(),
+				workers: Arc::new(WorkersList::new(Arc::new(StratumStats::default()))),
+				sync_state: Arc::new(SyncState::new()),
+				stop_state: Arc::new(StopState::new()),
+				chain,
+				current_state: Arc::new(RecursiveRwLock::new(state)),
+				ip_pool: Arc::new(connections::StratumIpPool::new(5, 5, -1)),
+				worker_connections: Arc::new(AtomicU32::new(0)),
+				config,
+			};
+			Self {
+				handler,
+				params,
+				_chain_dir: chain_dir,
+			}
+		}
+
+		fn add_worker(&self, ip: &String) -> usize {
+			self.handler.ip_pool.add_worker(ip);
+			add_test_worker(&self.handler.workers, ip)
+		}
+
+		fn submit(&self, worker_id: usize, ip: &String, params: Value, id: u32) -> Value {
+			let request = RpcRequest {
+				id: JsonId::IntId(id),
+				jsonrpc: "2.0".into(),
+				method: "submit".into(),
+				params: Some(params),
+			};
+			serde_json::from_str(&self.handler.handle_rpc_requests(request, worker_id, ip)).unwrap()
+		}
+	}
+
+	#[test]
+	fn submit_replay_does_not_credit_worker_or_ip() {
+		let fixture = SubmitFixture::new();
+		let ip = "192.0.2.1".to_string();
+		let worker = fixture.add_worker(&ip);
+		assert_eq!(
+			fixture.submit(worker, &ip, fixture.params.clone(), 1)["result"],
+			"ok"
+		);
+		for id in 2..=12 {
+			let response = fixture.submit(worker, &ip, fixture.params.clone(), id);
+			assert_eq!(response["error"]["code"], RpcError::duplicate_share().code);
+		}
+		let other_ip = "192.0.2.2".to_string();
+		let other_worker = fixture.add_worker(&other_ip);
+		let response = fixture.submit(other_worker, &other_ip, fixture.params.clone(), 13);
+		assert_eq!(response["error"]["code"], RpcError::duplicate_share().code);
+		assert_eq!(
+			fixture
+				.handler
+				.workers
+				.get_stats(worker)
+				.unwrap()
+				.num_accepted,
+			1
+		);
+		assert_eq!(
+			fixture
+				.handler
+				.workers
+				.get_stats(worker)
+				.unwrap()
+				.num_rejected,
+			11
+		);
+		assert_eq!(
+			fixture
+				.handler
+				.workers
+				.get_stats(other_worker)
+				.unwrap()
+				.num_accepted,
+			0
+		);
+		assert_eq!(
+			fixture.handler.ip_pool.get_ip_info(&ip).unwrap().ok_shares,
+			1
+		);
+		assert_eq!(
+			fixture
+				.handler
+				.ip_pool
+				.get_ip_info(&other_ip)
+				.unwrap()
+				.ok_shares,
+			0
+		);
+		for _ in 0..40 {
+			fixture.handler.ip_pool.report_fail_noise(&ip).unwrap();
+		}
+		assert!(fixture.handler.ip_pool.is_banned(&ip, false));
+	}
+
+	#[test]
+	fn invalid_share_does_not_reserve_hash() {
+		let fixture = SubmitFixture::new();
+		let ip = "192.0.2.1".to_string();
+		let worker = fixture.add_worker(&ip);
+		let mut block = fixture
+			.handler
+			.current_state
+			.read()
+			.get_block_version(0)
+			.unwrap();
+		let original_hash = block.hash(0).unwrap();
+		loop {
+			block.header.pow.nonce = block.header.pow.nonce.wrapping_add(1);
+			if pow::verify_size(0, &block.header).is_err() {
+				break;
+			}
+		}
+		// Header hashes identify the proof; changing the header nonce alone
+		// must not let an invalid submission reserve a valid miner's proof hash.
+		assert_eq!(block.hash(0).unwrap(), original_hash);
+		let mut invalid = fixture.params.clone();
+		invalid["nonce"] = block.header.pow.nonce.into();
+		let response = fixture.submit(worker, &ip, invalid, 1);
+		assert_eq!(response["error"]["code"], RpcError::cannot_validate().code);
+		assert!(fixture
+			.handler
+			.current_state
+			.read()
+			.accepted_share_hashes
+			.is_empty());
+		assert_eq!(
+			fixture.submit(worker, &ip, fixture.params.clone(), 2)["result"],
+			"ok"
+		);
+	}
+
+	#[test]
+	fn concurrent_submissions_credit_share_once() {
+		let fixture = SubmitFixture::new();
+		let workers: Vec<_> = (1..=8)
+			.map(|n| {
+				let ip = format!("192.0.2.{}", n);
+				(fixture.add_worker(&ip), ip)
+			})
+			.collect();
+		let barrier = std::sync::Barrier::new(workers.len());
+		let responses = thread::scope(|scope| {
+			let handles: Vec<_> = workers
+				.iter()
+				.map(|(worker, ip)| {
+					let fixture = &fixture;
+					let barrier = &barrier;
+					scope.spawn(move || {
+						global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+						global::set_local_nrd_enabled(false);
+						barrier.wait();
+						fixture.submit(*worker, ip, fixture.params.clone(), 1)
+					})
+				})
+				.collect();
+			handles
+				.into_iter()
+				.map(|handle| handle.join().unwrap())
+				.collect::<Vec<_>>()
+		});
+		assert_eq!(responses.iter().filter(|r| r["result"] == "ok").count(), 1);
+		assert_eq!(
+			responses
+				.iter()
+				.filter(|r| r["error"]["code"] == RpcError::duplicate_share().code)
+				.count(),
+			7
+		);
+		assert_eq!(
+			workers
+				.iter()
+				.map(|(id, _)| fixture.handler.workers.get_stats(*id).unwrap().num_accepted)
+				.sum::<u64>(),
+			1
+		);
+		assert_eq!(
+			workers
+				.iter()
+				.map(|(_, ip)| fixture.handler.ip_pool.get_ip_info(ip).unwrap().ok_shares)
+				.sum::<usize>(),
+			1
+		);
+	}
+
+	#[test]
+	fn full_share_history_evicts_and_accepts_new_shares_and_blocks() {
+		let fixture = SubmitFixture::new();
+		let ip = "192.0.2.1".to_string();
+		let worker = fixture.add_worker(&ip);
+		let capacity = {
+			let mut state = fixture.handler.current_state.write();
+			for n in 0..MAX_TRACKED_SHARES {
+				state
+					.record_share(0, Hash::from_vec(&n.to_le_bytes()))
+					.unwrap();
+			}
+			assert_eq!(
+				state
+					.record_share(0, Hash::from_vec(&0usize.to_le_bytes()))
+					.unwrap_err()
+					.code,
+				RpcError::duplicate_share().code
+			);
+			state.accepted_share_hashes.capacity()
+		};
+		let response = fixture.submit(worker, &ip, fixture.params.clone(), 1);
+		assert_eq!(response["result"], "ok");
+		assert_eq!(
+			fixture
+				.handler
+				.workers
+				.get_stats(worker)
+				.unwrap()
+				.num_accepted,
+			1
+		);
+		let info = fixture.handler.ip_pool.get_ip_info(&ip).unwrap();
+		assert_eq!(info.ok_shares, 1);
+		assert_eq!(
+			info.failed_requests, 0,
+			"capacity exhaustion must not penalize the miner"
+		);
+		let response = fixture.submit(worker, &ip, fixture.params.clone(), 2);
+		assert_eq!(response["error"]["code"], RpcError::duplicate_share().code);
+		{
+			let mut state = fixture.handler.current_state.write();
+			assert_eq!(state.accepted_share_hashes.len(), MAX_TRACKED_SHARES);
+			assert!(state.accepted_share_hashes.capacity() <= capacity);
+			let share_hash = state.get_block_version(0).unwrap().hash(0).unwrap();
+			assert!(state.accepted_share_hashes.contains(&share_hash));
+			let evicted: Vec<_> = (0..MAX_TRACKED_SHARES)
+				.map(|n| Hash::from_vec(&n.to_le_bytes()))
+				.filter(|hash| !state.accepted_share_hashes.contains(hash))
+				.collect();
+			assert_eq!(
+				evicted.len(),
+				1,
+				"new share must evict exactly one old hash"
+			);
+			// This is the deliberate tradeoff of random eviction: a forgotten
+			// share can be recorded again. The replacement must remain bounded.
+			state.record_share(0, evicted[0]).unwrap();
+			assert!(state.accepted_share_hashes.contains(&evicted[0]));
+			for n in MAX_TRACKED_SHARES..MAX_TRACKED_SHARES + 1024 {
+				state
+					.record_share(0, Hash::from_vec(&n.to_le_bytes()))
+					.unwrap();
+				assert_eq!(state.accepted_share_hashes.len(), MAX_TRACKED_SHARES);
+				assert!(state.accepted_share_hashes.capacity() <= capacity);
+			}
+			state.current_difficulty = 1;
+		}
+		let response = fixture.submit(worker, &ip, fixture.params.clone(), 4);
+		assert!(response["result"]
+			.as_str()
+			.unwrap()
+			.starts_with("blockfound - "));
+		assert_eq!(fixture.handler.chain.head().unwrap().height, 1);
+		assert_eq!(
+			fixture
+				.handler
+				.workers
+				.get_stats(worker)
+				.unwrap()
+				.num_accepted,
+			2
+		);
+		assert_eq!(
+			fixture
+				.handler
+				.current_state
+				.read()
+				.accepted_share_hashes
+				.len(),
+			MAX_TRACKED_SHARES
+		);
+		let response = fixture.submit(worker, &ip, fixture.params.clone(), 5);
+		assert!(response["error"].is_object());
+		assert_eq!(
+			fixture.handler.ip_pool.get_ip_info(&ip).unwrap().ok_shares,
+			2
+		);
+	}
+
+	#[test]
+	fn share_tracking_survives_job_rotation_and_resets_with_chain_tip() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		let mut state = State::new(1);
+		let hash = Hash::from_vec(&[42; 32]);
+		state.push_block_version(Block::default(0)).unwrap();
+		state.record_share(0, hash).unwrap();
+		for _ in 0..MAX_CURRENT_BLOCK_VERSIONS {
+			state.push_block_version(Block::default(0)).unwrap();
+		}
+		assert_eq!(
+			state.record_share(0, hash).unwrap_err().code,
+			RpcError::too_late().code
+		);
+		let job_id = state.latest_job_id().unwrap();
+		assert_eq!(
+			state.record_share(job_id, hash).unwrap_err().code,
+			RpcError::duplicate_share().code
+		);
+		assert_eq!(state.accepted_share_hashes.len(), 1);
+		state.clear_block_versions();
+		assert!(state.accepted_share_hashes.is_empty());
+		assert_eq!(
+			state.record_share(job_id, hash).unwrap_err().code,
+			RpcError::too_late().code
+		);
+		state.push_block_version(Block::default(0)).unwrap();
+		assert_eq!(
+			state.record_share(job_id, hash).unwrap_err().code,
+			RpcError::too_late().code
+		);
+		state
+			.record_share(state.latest_job_id().unwrap(), hash)
+			.unwrap();
+		assert_eq!(state.accepted_share_hashes.len(), 1);
+	}
+
+	enum WorkerDisconnect {
+		Kill,
+		ReadEof,
+		WriteTimeout,
+	}
+
+	async fn assert_worker_disconnect_drops_blocked_io(disconnect: WorkerDisconnect) {
+		let (socket, mut peer) = tokio::io::duplex(1);
+		let (mut writer, mut reader) = Framed::new(
+			socket,
+			LinesCodec::new_with_max_length(MAX_STRATUM_LINE_LENGTH),
+		)
+		.split();
+		let (tx, mut rx) = mpsc::channel(WORKER_RESPONSE_QUEUE_CAPACITY);
+		tx.try_send("response longer than the transport buffer".to_string())
+			.unwrap();
+		let (kill_switch, kill_switch_receiver) = oneshot::channel();
+		let send_timeout = match disconnect {
+			WorkerDisconnect::WriteTimeout => Duration::from_millis(10),
+			_ => Duration::from_secs(10),
+		};
+		let read = async move { reader.try_next().await.map(|_| ()).map_err(|_| ()) };
+		let write = async move {
+			while let Some(line) = rx.recv().await {
+				tokio::time::timeout(send_timeout, writer.send(line))
+					.await
+					.map_err(|_| ())?
+					.map_err(|_| ())?;
+			}
+			Ok(())
+		};
+		let mut io = Box::pin(run_worker_io(read, write, kill_switch_receiver));
+
+		// Poll once to fill the one-byte transport and suspend the write. Keep the
+		// peer's receiving side open and unread until disconnection has finished.
+		assert!(poll!(io.as_mut()).is_pending());
+		match disconnect {
+			WorkerDisconnect::Kill => kill_switch.send(()).unwrap(),
+			WorkerDisconnect::ReadEof => peer.shutdown().await.unwrap(),
+			WorkerDisconnect::WriteTimeout => {}
+		}
+		tokio::time::timeout(Duration::from_secs(1), io)
+			.await
+			.expect("worker I/O must finish without waiting for the peer to read");
+
+		assert!(
+			tx.is_closed(),
+			"the pending write must release its response queue"
+		);
+		let mut received = Vec::new();
+		tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut received))
+			.await
+			.expect("both socket halves must be dropped before cleanup")
+			.unwrap();
+		assert_eq!(
+			received, b"r",
+			"disconnect must discard the buffered response"
+		);
+	}
+
+	#[tokio::test]
+	async fn worker_kill_drops_blocked_io() {
+		assert_worker_disconnect_drops_blocked_io(WorkerDisconnect::Kill).await;
+	}
+
+	#[tokio::test]
+	async fn worker_read_eof_drops_blocked_io() {
+		assert_worker_disconnect_drops_blocked_io(WorkerDisconnect::ReadEof).await;
+	}
+
+	#[tokio::test]
+	async fn worker_send_timeout_drops_blocked_io() {
+		assert_worker_disconnect_drops_blocked_io(WorkerDisconnect::WriteTimeout).await;
+	}
 
 	#[test]
 	fn internal_error_hides_diagnostic() {

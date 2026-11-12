@@ -20,11 +20,14 @@ use mwc_core::core::hash::Hashed;
 use mwc_core::core::{transaction, Weighting};
 use mwc_core::global;
 use mwc_core::ser;
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
 use mwc_keychain::{ExtKeychain, Keychain};
-use mwc_pool::{PoolAdapter, PoolConfig, PoolEntry, PoolError, TransactionPool, TxSource};
+use mwc_pool::{
+	PoolAdapter, PoolConfig, PoolEntry, PoolError, PromotionBudget, PromotionOutcome,
+	TransactionPool, TxSource,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -93,7 +96,7 @@ fn fluff_relay_runs_after_pool_write_lock_is_released() {
 	let tx = test_transaction_spending_coinbase(&mut secp, &keychain, &header_1, vec![500]);
 
 	let adapter = Arc::new(RelayLockCheckingAdapter::default());
-	let pool = Arc::new(RwLock::new(TransactionPool::new(
+	let pool = Arc::new(RecursiveRwLock::new(TransactionPool::new(
 		0,
 		PoolConfig {
 			tx_fee_base: mwc_pool::types::default_tx_fee_base(),
@@ -119,7 +122,36 @@ fn fluff_relay_runs_after_pool_write_lock_is_released() {
 		.unwrap();
 
 	assert!(adapter.relay_observed_unlocked_pool.load(Ordering::SeqCst));
-	assert_eq!(pool.read_recursive().total_size(), 1);
+	assert_eq!(pool.read().total_size(), 1);
+
+	let header_2 = chain.get_header_by_height(2).unwrap();
+	let expired = test_transaction_spending_coinbase(&mut secp, &keychain, &header_2, vec![501]);
+	TransactionPool::submit_to_pool(
+		pool.as_ref(),
+		test_source(),
+		expired.clone(),
+		true,
+		&header,
+		&mut secp,
+	)
+	.unwrap();
+	adapter
+		.relay_observed_unlocked_pool
+		.store(false, Ordering::SeqCst);
+	assert_eq!(
+		TransactionPool::submit_expired_to_pool(
+			pool.as_ref(),
+			expired,
+			&header,
+			&mut PromotionBudget::new(),
+			&mut secp,
+		)
+		.unwrap(),
+		PromotionOutcome::Accepted
+	);
+	assert!(adapter.relay_observed_unlocked_pool.load(Ordering::SeqCst));
+	assert_eq!(pool.read().total_size(), 2);
+	assert!(pool.read().stempool.is_empty());
 	clean_output_dir(db_root.into());
 }
 
@@ -600,4 +632,133 @@ fn test_transaction_pool_capacity_limits() {
 	}
 
 	clean_output_dir(db_root.into());
+}
+
+#[test]
+fn mined_transactions_are_rejected_across_admission_paths() {
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+	global::set_local_accept_fee_base(1).unwrap();
+	global::set_local_nrd_enabled(false);
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let keychain = ExtKeychain::from_seed(&secp, &[42; 32], false).unwrap();
+	let dir = mwc_crates::tempfile::tempdir().unwrap();
+	let chain = Arc::new(init_chain(
+		&secp,
+		dir.path().to_str().unwrap(),
+		genesis_block(&keychain),
+	));
+	add_some_blocks(&mut secp, &chain, 12, &keychain);
+	let before = chain.head_header().unwrap();
+	let funding = chain.get_header_by_height(1).unwrap();
+	let tx = test_transaction_spending_coinbase(&mut secp, &keychain, &funding, vec![500, 600]);
+	let mut pool = init_transaction_pool(Arc::new(ChainAdapter {
+		chain: chain.clone(),
+	}));
+	assert!(!chain.has_mined_kernel(&tx).unwrap());
+	submit_to_pool!(
+		pool,
+		TxSource::PushApi,
+		tx.clone(),
+		false,
+		&before,
+		&mut secp
+	)
+	.unwrap();
+	add_block(&mut secp, &chain, &[tx.clone()], &keychain);
+	let header = chain.head_header().unwrap();
+	assert!(chain.has_mined_kernel(&tx).unwrap());
+
+	// The confirmed result takes precedence even while the public pool still
+	// contains the transaction and has not reconciled the new block.
+	for source in [
+		TxSource::PushApi,
+		TxSource::Broadcast,
+		TxSource::Fluff,
+		TxSource::EmbargoExpired,
+		TxSource::Deaggregate,
+	] {
+		for stem in [false, true] {
+			let result = submit_to_pool!(pool, source, tx.clone(), stem, &header, &mut secp);
+			assert!(
+				matches!(result, Err(PoolError::TransactionAlreadyConfirmed)),
+				"{source:?}, stem={stem}: {result:?}"
+			);
+		}
+	}
+	let mut invalid_proof = tx.clone();
+	invalid_proof.body.outputs[0].proof.proof[0] ^= 1;
+	assert!(matches!(
+		submit_to_pool!(
+			pool,
+			TxSource::PushApi,
+			invalid_proof,
+			false,
+			&header,
+			&mut secp
+		),
+		Err(PoolError::TransactionAlreadyConfirmed)
+	));
+
+	// Mining and reorg-cache insertion must also reject stale confirmed entries.
+	assert!(pool
+		.prepare_mineable_transactions(&mut secp)
+		.unwrap()
+		.is_empty());
+	pool.txpool.clear();
+	pool.reconcile_reorg_cache(&header, &mut secp);
+	assert_eq!(pool.txpool.size(), 0);
+	assert_eq!(pool.stempool.size(), 0);
+
+	let spend = test_transaction(&mut secp, &keychain, vec![500, 600], vec![900]);
+	add_block(&mut secp, &chain, &[spend], &keychain);
+	assert!(matches!(
+		chain.replay_attack_check(&tx),
+		Err(mwc_chain::Error::ReplayAttack(_, _, _))
+	));
+	let header = chain.head_header().unwrap();
+	assert!(matches!(
+		submit_to_pool!(
+			pool,
+			TxSource::PushApi,
+			tx.clone(),
+			false,
+			&header,
+			&mut secp
+		),
+		Err(PoolError::TransactionAlreadyConfirmed)
+	));
+
+	add_some_blocks(
+		&mut secp,
+		&chain,
+		u64::from(global::cut_through_horizon(0)) / 2 + 1,
+		&keychain,
+	);
+	// The spent-output check no longer rejects this transaction, but its kernel remains.
+	chain.replay_attack_check(&tx).unwrap();
+	let header = chain.head_header().unwrap();
+	for source in [
+		TxSource::PushApi,
+		TxSource::Broadcast,
+		TxSource::Fluff,
+		TxSource::EmbargoExpired,
+		TxSource::Deaggregate,
+	] {
+		for stem in [false, true] {
+			assert!(matches!(
+				submit_to_pool!(pool, source, tx.clone(), stem, &header, &mut secp),
+				Err(PoolError::TransactionAlreadyConfirmed)
+			));
+		}
+	}
+	assert_eq!(pool.txpool.size(), 0);
+	assert_eq!(pool.stempool.size(), 0);
+
+	// Confirmation follows the current body chain, so a rewound transaction can return.
+	chain
+		.reset_chain_head(&secp, &before, mwc_chain::types::ChainHeadReset::Body)
+		.unwrap();
+	assert!(!chain.has_mined_kernel(&tx).unwrap());
+	submit_to_pool!(pool, TxSource::PushApi, tx, false, &before, &mut secp).unwrap();
+	assert_eq!(pool.txpool.size(), 1);
 }

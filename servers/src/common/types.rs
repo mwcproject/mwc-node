@@ -72,6 +72,9 @@ pub enum Error {
 	/// Wallet communication error
 	#[error("Wallet coomunication error, {0}")]
 	WalletComm(String),
+	/// A bound coinbase cannot be obtained; operator intervention is required.
+	#[error("Mining wallet coinbase binding error, {0}")]
+	WalletBinding(String),
 	/// Error originating from some I/O operation (likely a file on disk).
 	#[error("IO error, {0}")]
 	IOError(#[from] std::io::Error),
@@ -92,23 +95,6 @@ impl From<core::transaction::Error> for Error {
 			core::transaction::Error::DataOverflow(msg) => Error::DataOverflow(msg),
 			e => Error::Transaction(e),
 		}
-	}
-}
-
-/// Type of seeding the server will use to find other peers on the network.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(crate = "serde")]
-pub enum ChainValidationMode {
-	/// Run full chain validation after processing every block.
-	EveryBlock,
-	/// Do not automatically run chain validation during normal block
-	/// processing.
-	Disabled,
-}
-
-impl Default for ChainValidationMode {
-	fn default() -> ChainValidationMode {
-		ChainValidationMode::Disabled
 	}
 }
 
@@ -137,10 +123,6 @@ pub struct ServerConfig {
 	/// Setup the server for tests, testnet or mainnet
 	#[serde(default)]
 	pub chain_type: ChainTypes,
-
-	/// Automatically run full chain validation during normal block processing?
-	#[serde(default)]
-	pub chain_validation_mode: ChainValidationMode,
 
 	/// Whether this node is a full archival node or a fast-sync, pruned node
 	pub archive_mode: Option<bool>,
@@ -203,7 +185,6 @@ impl Default for ServerConfig {
 			stratum_mining_config: StratumServerConfig::default(),
 			chain_type: ChainTypes::default(),
 			archive_mode: Some(false),
-			chain_validation_mode: ChainValidationMode::default(),
 			pool_config: mwc_pool::PoolConfig::default(),
 			skip_sync_wait: Some(false),
 			invalid_block_hashes: Some(vec![]),

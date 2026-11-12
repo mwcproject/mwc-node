@@ -139,7 +139,7 @@ impl Owner {
 			Error::chain_read_error(e, msg)
 		})?;
 		let sync_state = w(&self.sync_state)?;
-		chain.reset_chain_head(secp, &header, true)?;
+		chain.reset_chain_head(secp, &header, mwc_chain::ChainHeadReset::Both)?;
 
 		// Reset the sync status and clear out any sync error.
 		sync_state.reset();

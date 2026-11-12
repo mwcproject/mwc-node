@@ -55,5 +55,6 @@ fn default_capabilities() {
 			| Capabilities::TOR_ADDRESS
 			| Capabilities::PIBD_HIST
 			| Capabilities::HEADERS_HASH
+			| Capabilities::BLOCK_EXTRA
 	);
 }

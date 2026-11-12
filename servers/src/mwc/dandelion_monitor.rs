@@ -22,7 +22,8 @@ use mwc_crates::log::{debug, error, info, warn};
 use mwc_crates::rand::{rng, RngExt};
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_pool::{
-	BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, TransactionPool, TxSource,
+	BlockChain, DandelionConfig, Pool, PoolEntry, PoolError, PromotionBudget, PromotionOutcome,
+	TransactionPool, TxSource,
 };
 use mwc_util::StopState;
 use std::sync::Arc;
@@ -110,13 +111,14 @@ pub fn monitor_transactions(
 
 // Query the pool for transactions older than the cutoff.
 // Used for both periodic fluffing and handling expired embargo timer.
-fn select_txs_cutoff<B>(pool: &Pool<B>, cutoff_secs: u32) -> Vec<PoolEntry>
+fn select_txs_cutoff<B>(pool: &Pool<B>, cutoff_secs: u32, max_entries: usize) -> Vec<PoolEntry>
 where
 	B: BlockChain,
 {
 	let cutoff = Duration::from_secs(cutoff_secs as u64);
 	pool.ordered_entry_refs()
 		.filter(|x| x.tx_at.elapsed() > cutoff)
+		.take(max_entries)
 		.cloned()
 		.collect()
 }
@@ -134,7 +136,7 @@ fn process_fluff_phase(
 	}
 
 	let cutoff_secs = dandelion_config.aggregation_secs as u32;
-	let cutoff_entries = select_txs_cutoff(&pool.stempool, cutoff_secs);
+	let cutoff_entries = select_txs_cutoff(&pool.stempool, cutoff_secs, 1);
 
 	// If epoch is expired, fluff *all* outstanding entries in stempool.
 	// If *any* entry older than aggregation_secs (30s) then fluff *all* entries.
@@ -188,6 +190,9 @@ fn process_fluff_phase(
 				// Admission is deliberately done after releasing the stempool lock.
 				// Another inbound path may have fluffed this same batch meanwhile.
 				debug!("dand_mon: fluff batch was already present in txpool");
+			}
+			Err(PoolError::TransactionAlreadyConfirmed) => {
+				debug!("dand_mon: fluff batch was already confirmed on chain");
 			}
 			Err(e) => return Err(e),
 		}
@@ -256,7 +261,8 @@ fn process_expired_entries(
 	let pool = tx_pool.write();
 
 	let embargo_secs = dandelion_config.embargo_secs as u32 + rng().random_range(0..31);
-	let expired_entries = select_txs_cutoff(&pool.stempool, embargo_secs);
+	let expired_entries =
+		select_txs_cutoff(&pool.stempool, embargo_secs, PromotionBudget::MAX_ENTRIES);
 
 	if expired_entries.is_empty() {
 		return Ok(());
@@ -268,24 +274,37 @@ fn process_expired_entries(
 	let context_id = pool.get_context_id();
 	drop(pool);
 
+	let mut budget = PromotionBudget::new();
 	for entry in expired_entries {
 		let txhash = entry.tx.hash(context_id)?;
-		match TransactionPool::submit_to_pool(
+		match TransactionPool::submit_expired_to_pool(
 			tx_pool.as_ref(),
-			TxSource::EmbargoExpired,
 			entry.tx.clone(),
-			false,
 			&header,
+			&mut budget,
 			secp,
 		) {
-			Ok(()) => info!(
+			Ok(PromotionOutcome::Accepted) => info!(
 				"dand_mon: embargo expired for {}, fluffed successfully.",
 				txhash
 			),
+			Ok(PromotionOutcome::Deferred) => {
+				// Keep the remaining entries and their original embargo timestamps
+				// so the next monitor pass can resume without a new embargo.
+				debug!("dand_mon: expiry work budget exhausted; deferring remaining txs");
+				break;
+			}
 			Err(PoolError::DuplicateTx) => debug!(
 				"dand_mon: embargo-expired tx {} was already present in txpool",
 				txhash
 			),
+			Err(PoolError::TransactionAlreadyConfirmed) => {
+				debug!(
+					"dand_mon: embargo-expired tx {} was already confirmed on chain",
+					txhash
+				);
+				tx_pool.write().stempool.remove_tx(&entry.tx)?;
+			}
 			Err(e) => {
 				warn!(
 					"dand_mon: failed to fluff expired tx {}, evicting from stempool: {:?}",
@@ -303,7 +322,7 @@ mod tests {
 	#![cfg_attr(not(feature = "test-support"), allow(unused_imports))]
 
 	use super::*;
-	use mwc_core::core::KernelFeatures;
+	use mwc_core::core::{KernelFeatures, OutputFeatures};
 	use mwc_core::global;
 	use mwc_core::libtx::{build, ProofBuilder};
 	use mwc_crates::rand::rngs::SysRng;
@@ -317,8 +336,8 @@ mod tests {
 		keychain: &ExtKeychain,
 		idx: u32,
 	) -> transaction::Transaction {
-		let input_key_id = ExtKeychain::derive_key_id(1, 10_000 + idx, 0, 0, 0).unwrap();
-		let output_key_id = ExtKeychain::derive_key_id(1, 20_000 + idx, 0, 0, 0).unwrap();
+		let input_key_id = ExtKeychain::derive_key_id(3, 10_000 + idx, 0, 0, 0).unwrap();
+		let output_key_id = ExtKeychain::derive_key_id(3, 20_000 + idx, 0, 0, 0).unwrap();
 		let builder = ProofBuilder::new(secp, keychain).unwrap();
 
 		build::transaction(
@@ -328,8 +347,8 @@ mod tests {
 				fee: 10u32.try_into().unwrap(),
 			},
 			&[
-				build::input(1_000 + u64::from(idx), input_key_id),
-				build::output(990 + u64::from(idx), output_key_id),
+				build::feature_input(1_000 + u64::from(idx), OutputFeatures::Plain, input_key_id),
+				build::height_tagged_output(990 + u64::from(idx), output_key_id, 1),
 			],
 			keychain,
 			&builder,

@@ -17,9 +17,9 @@
 //! Note these are for experimentation via compilation, not meant to be exposed as
 //! configuration parameters anywhere
 
-use mwc_crates::log::debug;
+use mwc_crates::log::{debug, warn};
 use mwc_crates::num_cpus;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use std::cmp;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ const BITMAPS_BUFFER_LEN: [usize; 4] = [10, 20, 30, 40];
 const SEGMENTS_BUFFER_LEN: [usize; 4] = [30, 40, 50, 60];
 
 // One block can be up to 1.5Mb in size. We still need some to run the node
-const ORPHANS_BUFFER_LEN: [usize; 4] = [15, 50, 125, 250];
+const BLOCKS_BUFFER_LEN: [usize; 4] = [15, 50, 125, 250];
 
 const SEGMENTS_REQUEST_LIMIT: [usize; 4] = [20, 30, 40, 40];
 
@@ -56,7 +56,16 @@ impl SysMemoryInfo {
 		let sys = System::new_with_specifics(
 			RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
 		);
-		let available_memory_mb = sys.available_memory() / 1024 / 1024;
+		let available_memory_mb = match sys {
+			Ok(sys) => sys.available_memory() / 1024 / 1024,
+			Err(e) => {
+				warn!(
+					"Unable to query system memory, using minimum PIBD buffers: {}",
+					e
+				);
+				0
+			}
+		};
 		debug!("System Available Memory: {} mb", available_memory_mb);
 		SysMemoryInfo {
 			available_memory_mb,
@@ -73,8 +82,8 @@ struct NetworkSpeed {
 /// Pibd Sync related params. Note, most of settings are dynamic calculated to match available resources.
 pub struct PibdParams {
 	cpu_num: usize,
-	sys_memory_info: Arc<RwLock<SysMemoryInfo>>,
-	network_speed: RwLock<NetworkSpeed>,
+	sys_memory_info: Arc<RecursiveRwLock<SysMemoryInfo>>,
+	network_speed: RecursiveRwLock<NetworkSpeed>,
 }
 
 impl PibdParams {
@@ -84,8 +93,8 @@ impl PibdParams {
 		let mem_info = SysMemoryInfo::update();
 		let res = PibdParams {
 			cpu_num: num_cores,
-			sys_memory_info: Arc::new(RwLock::new(mem_info)),
-			network_speed: RwLock::new(NetworkSpeed {
+			sys_memory_info: Arc::new(RecursiveRwLock::new(mem_info)),
+			network_speed: RecursiveRwLock::new(NetworkSpeed {
 				last_network_speed_update: Instant::now(),
 				network_speed_multiplier: 1.0,
 			}),
@@ -93,9 +102,17 @@ impl PibdParams {
 		debug!(
 			"PibdParams config: cpu_num={}, available_memory_mb={}",
 			res.cpu_num,
-			res.sys_memory_info.read_recursive().available_memory_mb
+			res.sys_memory_info.read().available_memory_mb
 		);
 		res
+	}
+
+	/// Use a fixed CPU count so capacity tests need not fill the host's largest buffers.
+	#[cfg(feature = "test-support")]
+	pub fn with_cpu_count_for_test(cpu_num: usize) -> Self {
+		let mut params = Self::new();
+		params.cpu_num = cpu_num;
+		params
 	}
 
 	/// Buffer size for header hashes
@@ -138,10 +155,10 @@ impl PibdParams {
 		.expect("PIBD memory parameter values must not be empty")
 	}
 
-	/// Man number of orphans to keep
-	pub fn get_orphans_num_limit(&self) -> usize {
+	/// Resource-based capacity for buffered and requested blocks.
+	pub fn get_blocks_buffer_size(&self) -> usize {
 		Self::calc_mem_adequate_val2(
-			&ORPHANS_BUFFER_LEN,
+			&BLOCKS_BUFFER_LEN,
 			self.get_available_memory_mb(),
 			self.cpu_num,
 		)
@@ -153,9 +170,9 @@ impl PibdParams {
 		self.cpu_num.saturating_mul(2).min(8)
 	}
 
-	/// Maxumum number of blocks that can await into the DB as orphans
+	/// Maximum body-sync tasks, including unanswered requests and buffered blocks.
 	pub fn get_blocks_request_limit(&self, average_latency_ms: Option<u32>) -> usize {
-		let req_limit = self.get_orphans_num_limit() / 2;
+		let req_limit = self.get_blocks_buffer_size() / 2;
 		cmp::max(
 			1,
 			(req_limit as f64 * self.get_network_speed_multiplier(average_latency_ms)).round()
@@ -195,7 +212,7 @@ impl PibdParams {
 		}
 		let update_interval = Duration::from_secs(5);
 		{
-			let network_speed = self.network_speed.read_recursive();
+			let network_speed = self.network_speed.read();
 			if network_speed.last_network_speed_update.elapsed() <= update_interval {
 				return network_speed.network_speed_multiplier;
 			}
@@ -302,7 +319,8 @@ mod tests {
 		// CPUs and processes are filled!
 		let mut sys = System::new_with_specifics(
 			RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
-		);
+		)
+		.unwrap();
 
 		sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
 

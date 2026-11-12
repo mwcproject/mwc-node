@@ -264,6 +264,9 @@ pub enum PoolError {
 	/// Attempt to add a duplicate tx to the pool.
 	#[error("Tx Pool Duplicate tx")]
 	DuplicateTx,
+	/// A transaction kernel is already mined on the current chain.
+	#[error("Transaction already confirmed on the current chain")]
+	TransactionAlreadyConfirmed,
 	/// NRD kernels will not be accepted by the txpool/stempool pre-HF3.
 	#[error("NRD kernel pre-HF3")]
 	NRDKernelPreHF3,
@@ -290,6 +293,9 @@ impl From<transaction::Error> for PoolError {
 
 /// Interface that the pool requires from a blockchain implementation.
 pub trait BlockChain: Sync + Send {
+	/// Reject transactions containing a kernel already mined on the current chain.
+	fn verify_tx_not_confirmed(&self, tx: &Transaction) -> Result<(), PoolError>;
+
 	/// Verify any coinbase outputs being spent
 	/// have matured sufficiently.
 	fn verify_coinbase_maturity(&self, inputs: &Inputs) -> Result<(), PoolError>;

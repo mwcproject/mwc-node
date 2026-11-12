@@ -357,7 +357,7 @@ where
 	RangeProof::deserialize(val.into_deserializer())
 }
 
-/// Serializes a RangeProof as hex after validating its public length.
+/// Serializes a RangeProof as hex after validating its length.
 pub fn rangeproof_as_hex<S>(proof: &RangeProof, serializer: S) -> Result<S::Ok, S::Error>
 where
 	S: Serializer,

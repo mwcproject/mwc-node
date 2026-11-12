@@ -54,10 +54,101 @@ const RECONCILE_FALLBACK_LIMITS: ReconcileFallbackLimits = ReconcileFallbackLimi
 	max_work: MAX_RECONCILE_FALLBACK_WORK,
 };
 
+// Mining must finish even when the pool is much larger than a block. Bound the
+// snapshot copied under the pool lock, dependent-transaction bucketing, and
+// selection after a bulk candidate fails. Work counts inputs, outputs and
+// kernels before cut-through, including every repeated aggregation attempt.
+// Unexamined entries stay in the pool for later templates; hitting a budget
+// may produce a smaller block.
+const MAX_MINING_SNAPSHOT_ENTRIES: usize = 4_096;
+const MAX_MINING_SNAPSHOT_COMPONENTS: u128 = 80_000;
+const MAX_MINING_BUCKET_WORK: u128 = 1_000_000;
+const MAX_MINING_SELECTION_WORK: u128 = 1_000_000;
+
 fn transaction_components(tx: &Transaction) -> u128 {
 	(tx.body.inputs.len() as u128)
 		.saturating_add(tx.body.outputs.len() as u128)
 		.saturating_add(tx.body.kernels.len() as u128)
+}
+
+/// Cumulative work allowance for one Dandelion embargo-expiry pass.
+/// Counts transaction authentication and projected aggregate components before
+/// cut-through, including reconciliation fallback. This bounds repeated work,
+/// not wall-clock time. One initial pool operation may exceed the nominal work
+/// allowance so an existing large pool cannot indefinitely prevent progress.
+pub struct PromotionBudget {
+	attempts: usize,
+	remaining_work: u128,
+	pool_work_started: bool,
+}
+
+impl PromotionBudget {
+	/// Also bounds the number of expired entries copied for a monitor pass.
+	pub const MAX_ENTRIES: usize = MAX_RECONCILE_FALLBACK_ENTRIES;
+
+	/// Start a new monitor pass with the same work ceiling as reconciliation.
+	pub fn new() -> Self {
+		Self::with_work_limit(MAX_RECONCILE_FALLBACK_WORK)
+	}
+
+	pub(crate) fn with_work_limit(remaining_work: u128) -> Self {
+		Self {
+			attempts: 0,
+			remaining_work,
+			pool_work_started: false,
+		}
+	}
+
+	pub(crate) fn charge_transaction(&mut self, tx: &Transaction) -> bool {
+		if self.attempts >= Self::MAX_ENTRIES
+			|| !self.charge_work(transaction_components(tx).max(1))
+		{
+			return false;
+		}
+		self.attempts += 1;
+		true
+	}
+
+	pub(crate) fn reserve_pool_work(
+		&mut self,
+		txpool_components: u128,
+		stempool_components: u128,
+		tx: &Transaction,
+	) -> bool {
+		let public_aggregate = txpool_components.saturating_add(transaction_components(tx));
+		// Public insertion and the subsequent combined stempool aggregate. Keep
+		// the promoted entry in this estimate as a conservative upper bound.
+		let mut work = public_aggregate
+			.saturating_mul(2)
+			.saturating_add(stempool_components);
+		if tx.kernels().len() > 1 {
+			// Deaggregation can additionally visit the matching public components.
+			work = work.saturating_add(public_aggregate);
+		}
+		if !self.charge_work(work) {
+			if self.pool_work_started {
+				return false;
+			}
+			// Permit one full-pool operation, then defer all further submissions.
+			self.remaining_work = 0;
+		}
+		self.pool_work_started = true;
+		true
+	}
+
+	fn charge_work(&mut self, work: u128) -> bool {
+		if work > self.remaining_work {
+			return false;
+		}
+		self.remaining_work -= work;
+		true
+	}
+}
+
+impl Default for PromotionBudget {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 /// Bounds paths that repeatedly add a transaction to an already growing pool
@@ -501,6 +592,103 @@ where
 	context_id: u32,
 }
 
+/// Owned, bounded snapshot of authenticated pool entries for mining.
+///
+/// Fields are private and snapshots can only be obtained from a pool. This
+/// preserves the admission checks on every proof and signature while allowing
+/// selection and chain-state validation to run after releasing the pool lock.
+pub struct MiningSnapshot<B: BlockChain> {
+	context_id: u32,
+	blockchain: Arc<B>,
+	txs: Vec<Transaction>,
+	max_weight: u64,
+}
+
+impl<B: BlockChain> MiningSnapshot<B> {
+	/// Select mineable transactions without borrowing or locking the source pool.
+	pub fn prepare_mineable_transactions(
+		self,
+		secp: &mut Secp256k1,
+	) -> Result<Vec<Transaction>, PoolError> {
+		self.prepare_with_limits(secp, MAX_MINING_BUCKET_WORK, MAX_MINING_SELECTION_WORK)
+	}
+
+	fn prepare_with_limits(
+		self,
+		secp: &mut Secp256k1,
+		max_bucket_work: u128,
+		max_selection_work: u128,
+	) -> Result<Vec<Transaction>, PoolError> {
+		let txs = Pool::<B>::bucket_transactions_from_entries(
+			self.context_id,
+			"mining",
+			self.txs,
+			secp,
+			Some(max_bucket_work),
+		)?;
+		if txs.is_empty() {
+			return Ok(vec![]);
+		}
+		let header = self.blockchain.chain_head()?;
+		let weighting = Weighting::AsLimitedTransaction(self.max_weight);
+		let validate = |tx: &Transaction, secp: &Secp256k1| {
+			tx.validate_aggregate_from_validated_components(self.context_id, weighting, secp)?;
+			Pool::<B>::validate_transaction_state(
+				self.context_id,
+				self.blockchain.as_ref(),
+				tx,
+				&header,
+				secp,
+			)
+		};
+
+		// Try the complete candidate once. Split rejected batches in fee order
+		// until they fit or individual stale transactions can be skipped. This
+		// also avoids growing-prefix validation when a healthy pool exceeds one
+		// block. Charge every attempt, including rejected ones, so adversarial
+		// dependencies or chain changes cannot make fallback work unbounded.
+		// Aggregation preserves authenticated proofs/signatures; structure,
+		// sums and chain state are checked here, and the completed block still
+		// receives full validation.
+		let mut remaining_work = max_selection_work;
+		let mut accepted = Vec::new();
+		let mut accepted_components = 0u128;
+		let mut pending = vec![txs.as_slice()];
+		while let Some(batch) = pending.pop() {
+			let batch_components = batch
+				.iter()
+				.map(transaction_components)
+				.fold(0u128, u128::saturating_add);
+			let candidate_components = accepted_components.saturating_add(batch_components);
+			if candidate_components > remaining_work {
+				debug!("mining: selection work budget exhausted; retaining selected transactions");
+				break;
+			}
+			remaining_work -= candidate_components;
+			let accepted_len = accepted.len();
+			accepted.extend_from_slice(batch);
+			let aggregate = transaction::aggregate(self.context_id, &accepted, secp)?;
+			match validate(&aggregate, secp) {
+				Ok(_) => accepted_components = candidate_components,
+				Err(e) => {
+					debug!(
+						"mining: rejecting batch of {} transactions due to validation error: {}",
+						batch.len(),
+						e
+					);
+					accepted.truncate(accepted_len);
+					if batch.len() > 1 {
+						let (left, right) = batch.split_at(batch.len() / 2);
+						pending.push(right);
+						pending.push(left);
+					}
+				}
+			}
+		}
+		Ok(accepted)
+	}
+}
+
 impl<B> Pool<B>
 where
 	B: BlockChain,
@@ -616,6 +804,78 @@ where
 		self.indexes.clear();
 	}
 
+	/// Public-pool metadata for unsigned preflight. Call only on txpool, never
+	/// stempool: querying private stem conflicts would expose embargoed traffic.
+	pub fn preflight_state(
+		&self,
+		request: &mwc_core::core::transaction_preflight::PreflightTransaction,
+	) -> Result<mwc_core::core::transaction_preflight::PreflightPoolState, PoolError> {
+		use mwc_core::core::transaction_preflight::PreflightTransaction;
+		let mut known_owner = None;
+		if request.is_complete {
+			if let Some(owner) = request
+				.inputs
+				.first()
+				.and_then(|i| self.indexes.spent_inputs.get(&i.commitment))
+			{
+				if let Some(entry) = self.entries.get(owner) {
+					let existing =
+						PreflightTransaction::from_transaction(self.context_id, &entry.tx, true)?;
+					if request.same_transaction(&existing) {
+						known_owner = Some(*owner);
+					}
+				}
+			}
+		}
+		let mut available = Vec::new();
+		let mut conflicts = Vec::new();
+		for input in &request.inputs {
+			if let Some(owner) = self.indexes.spent_inputs.get(&input.commitment) {
+				if Some(*owner) != known_owner {
+					conflicts.push("Input is already spent in the public pool".into());
+				}
+			}
+			if let Some(output) = self.indexes.produced_outputs.get(&input.commitment) {
+				available.push(OutputIdentifier::new(output.features, &input.commitment));
+			}
+		}
+		for output in &request.outputs {
+			if let Some(existing) = self.indexes.produced_outputs.get(&output.commitment) {
+				if Some(existing.owner) != known_owner {
+					conflicts.push("Output already exists in the public pool".into());
+				}
+			}
+		}
+		for kernel in &request.kernels {
+			if let Some(hash) = kernel.kernel_hash {
+				if let Some(owner) = self.indexes.kernels.get(&hash) {
+					if Some(*owner) != known_owner {
+						conflicts.push("Kernel already exists in the public pool".into());
+					}
+				}
+			}
+			if matches!(
+				kernel.features,
+				mwc_core::core::KernelFeatures::NoRecentDuplicate { .. }
+			) {
+				if let Some(owner) = kernel
+					.excess
+					.as_ref()
+					.and_then(|e| self.indexes.nrd_excesses.get(e))
+				{
+					if Some(*owner) != known_owner {
+						conflicts.push("NRD excess already exists in the public pool".into());
+					}
+				}
+			}
+		}
+		Ok(mwc_core::core::transaction_preflight::PreflightPoolState {
+			already_known: known_owner.is_some(),
+			available_inputs: available,
+			conflicts,
+		})
+	}
+
 	pub fn ordered_entry_refs(&self) -> impl Iterator<Item = &PoolEntry> {
 		self.entries.values()
 	}
@@ -693,25 +953,23 @@ where
 
 		// Rehash all entries in the pool using short_ids based on provided hash and nonce.
 		'outer: for x in self.entries.values() {
+			let mut selected = false;
 			for k in x.tx.kernels() {
 				// rehash each kernel to calculate the block specific short_id
 				let short_id = k.short_id(self.context_id, &hash, nonce)?;
 				let short_id_hash = short_id.hash(self.context_id)?;
 				if kern_id_hashes.contains(&short_id_hash) {
-					txs.push(x.tx.clone());
+					// Pool entries are unique transactions. Clone each selected entry
+					// once, but continue scanning its kernels to account for every ID.
+					if !selected {
+						txs.push(x.tx.clone());
+						selected = true;
+					}
 					found_id_hashes.insert(short_id_hash);
 				}
 				if found_id_hashes.len() == kern_id_hashes.len() {
 					break 'outer;
 				}
-			}
-		}
-
-		let mut dedup_txs = Vec::with_capacity(txs.len());
-		let mut dedup_tx_hashes = HashSet::with_capacity(txs.len());
-		for tx in txs {
-			if dedup_tx_hashes.insert(tx.hash(self.context_id)?) {
-				dedup_txs.push(tx);
 			}
 		}
 
@@ -722,33 +980,56 @@ where
 			}
 		}
 
-		Ok((dedup_txs, missing_short_ids))
+		Ok((txs, missing_short_ids))
 	}
 
 	/// Take pool transactions, filtering and ordering them in a way that's
 	/// appropriate to put in a mined block. Aggregates chains of dependent
 	/// transactions, orders by fee over weight and ensures the total weight
 	/// does not exceed the provided max_weight (miner defined block weight).
+	/// For a locked pool, use `mining_snapshot` and release the lock before selection.
 	pub fn prepare_mineable_transactions(
 		&self,
 		max_weight: u64,
 		secp: &mut Secp256k1,
 	) -> Result<Vec<Transaction>, PoolError> {
-		let weighting = Weighting::AsLimitedTransaction(max_weight);
+		self.mining_snapshot(max_weight)
+			.prepare_mineable_transactions(secp)
+	}
 
-		// Sort the txs in the pool via the "bucket" logic to -
-		//   * maintain dependency ordering
-		//   * maximize cut-through
-		//   * maximize overall fees
-		let txs = self.bucket_transactions(secp)?;
+	/// Copy a bounded insertion-ordered prefix of authenticated entries. No
+	/// hashing, cryptographic checks or chain calls take place under this borrow.
+	/// Callers holding a pool lock should release it before preparing the snapshot.
+	pub fn mining_snapshot(&self, max_weight: u64) -> MiningSnapshot<B> {
+		self.mining_snapshot_with_limits(
+			max_weight,
+			MAX_MINING_SNAPSHOT_ENTRIES,
+			MAX_MINING_SNAPSHOT_COMPONENTS,
+		)
+	}
 
-		// Iteratively apply the txs to the current chain state,
-		// rejecting any that do not result in a valid state.
-		// Verify these txs produce an aggregated tx below max_weight.
-		// Return a vec of all the valid txs.
-		let header = self.blockchain.chain_head()?;
-		let valid_txs = self.validate_raw_txs(&txs, None, &header, weighting, secp)?;
-		Ok(valid_txs)
+	fn mining_snapshot_with_limits(
+		&self,
+		max_weight: u64,
+		max_entries: usize,
+		max_components: u128,
+	) -> MiningSnapshot<B> {
+		let mut txs = Vec::new();
+		let mut remaining_components = max_components;
+		for entry in self.entries.values().take(max_entries) {
+			let components = transaction_components(&entry.tx);
+			if components > remaining_components {
+				break;
+			}
+			remaining_components -= components;
+			txs.push(entry.tx.clone());
+		}
+		MiningSnapshot {
+			context_id: self.context_id,
+			blockchain: self.blockchain.clone(),
+			txs,
+			max_weight,
+		}
 	}
 
 	pub fn all_transactions(&self) -> Vec<Transaction> {
@@ -850,17 +1131,18 @@ where
 		Ok(ValidatedPoolAggregate(aggregate))
 	}
 
-	/// Run the cheap, pool-local portion of admission before any component
+	/// Run cheap chain and pool checks before any component
 	/// authentication or pool-wide aggregate construction.
 	fn prepare_entry_for_admission(
 		&self,
 		entry: &PoolEntry,
 	) -> Result<PoolEntryIndexKeys, PoolError> {
+		entry.tx.validate_read(self.context_id)?;
+		self.blockchain.verify_tx_not_confirmed(&entry.tx)?;
 		if self.contains_tx(&entry.tx)? {
 			return Err(PoolError::DuplicateTx);
 		}
 
-		entry.tx.validate_read(self.context_id)?;
 		let entry_index_keys = PoolEntryIndexKeys::from_transaction(self.context_id, &entry.tx)?;
 		self.indexes.check_conflicts(&entry_index_keys)?;
 		Ok(entry_index_keys)
@@ -1007,9 +1289,27 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 	) -> Result<BlockSums, PoolError> {
+		Self::validate_transaction_state(
+			self.context_id,
+			self.blockchain.as_ref(),
+			tx,
+			header,
+			secp,
+		)
+	}
+
+	fn validate_transaction_state(
+		context_id: u32,
+		blockchain: &B,
+		tx: &Transaction,
+		header: &BlockHeader,
+		secp: &Secp256k1,
+	) -> Result<BlockSums, PoolError> {
+		blockchain.verify_tx_not_confirmed(tx)?;
+
 		// NRD kernels are only valid once HF3/header version 4 rules apply.
 		if tx.kernels().iter().any(|k| k.is_nrd()) {
-			if !global::is_nrd_enabled(self.context_id) {
+			if !global::is_nrd_enabled(context_id) {
 				return Err(PoolError::NRDKernelNotEnabled);
 			}
 			if header.version < HeaderVersion(4) {
@@ -1018,31 +1318,31 @@ where
 		}
 
 		// Re-run context-sensitive admission checks for aggregate candidates.
-		self.blockchain.verify_tx_lock_height(tx)?;
-		self.blockchain.replay_attack_check(tx)?;
+		blockchain.verify_tx_lock_height(tx)?;
+		blockchain.replay_attack_check(tx)?;
 
 		// Validate the tx against current chain state.
 		// Check all inputs are in the current UTXO set.
 		// Check all outputs are unique in current UTXO set.
-		self.blockchain.validate_tx(tx)?;
+		blockchain.validate_tx(tx)?;
 
 		// validate_tx() does not expose spent output metadata, so look up the
 		// spent UTXO identifiers here for the coinbase maturity check.
-		let spent_utxo = self.blockchain.validate_inputs(&tx.inputs())?;
+		let spent_utxo = blockchain.validate_inputs(&tx.inputs())?;
 		let coinbase_inputs: Vec<_> = spent_utxo
 			.iter()
 			.filter(|x| x.is_coinbase())
 			.cloned()
 			.collect();
 		let coinbase_inputs =
-			Inputs::from_output_identifiers(self.context_id, coinbase_inputs.as_slice())?;
-		self.blockchain.verify_coinbase_maturity(&coinbase_inputs)?;
+			Inputs::from_output_identifiers(context_id, coinbase_inputs.as_slice())?;
+		blockchain.verify_coinbase_maturity(&coinbase_inputs)?;
 
 		// The supplied header is not required to match the current chain head.
 		// It represents the block header the caller is building or setting, so
 		// trust this header data here; the pool cannot validate it against the
 		// live chain state.
-		let new_sums = self.apply_tx_to_block_sums(tx, header, secp)?;
+		let new_sums = Self::apply_tx_to_block_sums(context_id, blockchain, tx, header, secp)?;
 		Ok(new_sums)
 	}
 
@@ -1187,7 +1487,8 @@ where
 	}
 
 	fn apply_tx_to_block_sums(
-		&self,
+		context_id: u32,
+		blockchain: &B,
 		tx: &Transaction,
 		header: &BlockHeader,
 		secp: &Secp256k1,
@@ -1196,9 +1497,7 @@ where
 
 		let offset = { header.total_kernel_offset().add(&tx.offset, &secp) }?;
 
-		let block_sums = self
-			.blockchain
-			.get_block_sums(&header.hash(self.context_id)?)?;
+		let block_sums = blockchain.get_block_sums(&header.hash(context_id)?)?;
 
 		// Verify the kernel sums for the block_sums with the new tx applied,
 		// accounting for overage and offset.
@@ -1231,11 +1530,13 @@ where
 	/// kernel-signature verification. Reconciliation still checks all structural,
 	/// aggregate-kernel-sum, and current-chain-state properties; it skips only the
 	/// redundant cryptographic authentication of unchanged components.
+	/// Expiry promotions also charge fallback work to the shared pass budget.
 	pub(crate) fn reconcile_with_pool_aggregate(
 		&mut self,
 		extra_tx: ValidatedPoolAggregate,
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<(), PoolError> {
 		let existing_entries = self.all_entries();
 		if existing_entries.is_empty() {
@@ -1248,6 +1549,7 @@ where
 			header,
 			secp,
 			RECONCILE_FALLBACK_LIMITS,
+			promotion_budget,
 		)
 	}
 
@@ -1277,6 +1579,7 @@ where
 			header,
 			secp,
 			fallback_limits,
+			None,
 		)
 	}
 
@@ -1289,6 +1592,7 @@ where
 		header: &BlockHeader,
 		secp: &mut Secp256k1,
 		fallback_limits: ReconcileFallbackLimits,
+		promotion_budget: Option<&mut PromotionBudget>,
 	) -> Result<(), PoolError> {
 		// Reconciliation normally retains the complete pool. Validate that aggregate
 		// once instead of clearing the pool and validating every growing prefix, which
@@ -1329,6 +1633,12 @@ where
 				false
 			}
 		});
+		// Reserve the entire fallback before clearing or re-adding any entries.
+		// Public admission has already committed, so a failed bulk candidate
+		// must use the existing conservative eviction policy if filtering cannot
+		// fit. A new promotion can only be deferred before public insertion.
+		let fallback_is_bounded = fallback_is_bounded
+			&& promotion_budget.map_or(true, |budget| budget.charge_work(fallback_budget.work));
 		if !fallback_is_bounded {
 			warn!(
 				"reconcile [{}]: bulk validation failed; dropping {} entries because individual filtering exceeds the reconciliation work budget",
@@ -1401,18 +1711,47 @@ where
 	/// Sorting the buckets by fee_rate will therefore preserve dependency ordering,
 	/// maximizing both cut-through and overall fees.
 	fn bucket_transactions(&self, secp: &mut Secp256k1) -> Result<Vec<Transaction>, PoolError> {
+		Self::bucket_transactions_from_entries(
+			self.context_id,
+			&self.name,
+			self.entries.values().map(|entry| entry.tx.clone()),
+			secp,
+			None,
+		)
+	}
+
+	fn bucket_transactions_from_entries(
+		context_id: u32,
+		name: &str,
+		txs: impl IntoIterator<Item = Transaction>,
+		secp: &mut Secp256k1,
+		mut remaining_work: Option<u128>,
+	) -> Result<Vec<Transaction>, PoolError> {
 		let mut tx_buckets: Vec<Bucket> = Vec::new();
 		let mut output_commits = HashMap::new();
 		let mut rejected = HashSet::new();
 
-		for entry in self.entries.values() {
+		for tx in txs {
+			if let Some(remaining) = remaining_work.as_mut() {
+				let components = transaction_components(&tx);
+				if components > *remaining {
+					debug!("mining: bucket work budget exhausted; retaining ordered transactions");
+					break;
+				}
+				*remaining -= components;
+			}
 			// check the commits index to find parents and their position
 			// if single parent then we are good, we can bucket it with its parent
 			// if multiple parents then we need to combine buckets, but for now simply reject it (rare case)
 			let mut insert_pos = None;
 			let mut is_rejected = false;
+			let tx_outputs = tx
+				.outputs()
+				.iter()
+				.map(|out| out.commitment())
+				.collect::<Vec<_>>();
 
-			let tx_inputs = entry.tx.inputs().into_commit_wrappers(self.context_id)?;
+			let tx_inputs = tx.inputs().into_commit_wrappers(context_id)?;
 			for input in tx_inputs {
 				if rejected.contains(&input.commitment()) {
 					// Depends on a rejected tx, so reject this one.
@@ -1432,9 +1771,7 @@ where
 
 			// If this tx is rejected then store all output commitments in our rejected set.
 			if is_rejected {
-				for out in entry.tx.outputs() {
-					rejected.insert(out.commitment());
-				}
+				rejected.extend(tx_outputs);
 
 				// Done with this entry (rejected), continue to next entry.
 				continue;
@@ -1446,7 +1783,7 @@ where
 					// This is the common case for non 0-conf txs in the txpool.
 					// We assume the tx is valid here as we validated it on the way into the txpool.
 					insert_pos = Some(tx_buckets.len());
-					tx_buckets.push(Bucket::new(entry.tx.clone(), tx_buckets.len())?);
+					tx_buckets.push(Bucket::new(tx, tx_buckets.len())?);
 				}
 				Some(pos) => {
 					// We found a single parent tx, so aggregate in the bucket
@@ -1454,7 +1791,17 @@ where
 					// Otherwise discard and let the next block pick this tx up.
 					let bucket = &tx_buckets[pos];
 
-					match bucket.aggregate_with_tx(self.context_id, entry.tx.clone(), secp) {
+					if let Some(remaining) = remaining_work.as_mut() {
+						let components = bucket
+							.components
+							.saturating_add(transaction_components(&tx));
+						if components > *remaining {
+							debug!("mining: bucket aggregation budget exhausted; retaining ordered transactions");
+							break;
+						}
+						*remaining -= components;
+					}
+					match bucket.aggregate_with_tx(context_id, tx.clone(), secp) {
 						Ok(new_bucket) => {
 							if new_bucket.fee_rate >= bucket.fee_rate {
 								// Only aggregate if it would not reduce the fee_rate ratio.
@@ -1464,14 +1811,14 @@ where
 								// Note: This bucket will have a lower fee_rate
 								// than the bucket it depends on.
 								insert_pos = Some(tx_buckets.len());
-								tx_buckets.push(Bucket::new(entry.tx.clone(), tx_buckets.len())?);
+								tx_buckets.push(Bucket::new(tx, tx_buckets.len())?);
 							}
 						}
 						Err(e) => {
-							let tx_hash = entry.tx.hash(self.context_id).unwrap_or(Hash::default());
+							let tx_hash = tx.hash(context_id).unwrap_or(Hash::default());
 							warn!(
 								"bucket_transactions [{}]: rejecting tx {} due to bucket aggregation error: {}",
-								self.name, tx_hash, e,
+								name, tx_hash, e,
 							);
 							// Be conservative here: aggregate_with_tx can fail in lower-level
 							// aggregation or fee-rate calculation. We intentionally avoid full
@@ -1484,14 +1831,12 @@ where
 			}
 
 			if is_rejected {
-				for out in entry.tx.outputs() {
-					rejected.insert(out.commitment());
-				}
+				rejected.extend(tx_outputs);
 			} else if let Some(insert_pos) = insert_pos {
 				// We successfully added this tx to our set of buckets.
 				// Update commits index for subsequent txs.
-				for out in entry.tx.outputs() {
-					output_commits.insert(out.commitment(), insert_pos);
+				for commitment in tx_outputs {
+					output_commits.insert(commitment, insert_pos);
 				}
 			}
 		}
@@ -1645,6 +1990,7 @@ where
 
 struct Bucket {
 	raw_txs: Vec<Transaction>,
+	components: u128,
 	fee_rate: u64,
 	age_idx: usize,
 }
@@ -1657,6 +2003,7 @@ impl Bucket {
 	fn new(tx: Transaction, age_idx: usize) -> Result<Bucket, PoolError> {
 		Ok(Bucket {
 			fee_rate: tx.fee_rate()?,
+			components: transaction_components(&tx),
 			raw_txs: vec![tx],
 			age_idx,
 		})
@@ -1668,11 +2015,15 @@ impl Bucket {
 		new_tx: Transaction,
 		secp: &mut Secp256k1,
 	) -> Result<Bucket, PoolError> {
+		let components = self
+			.components
+			.saturating_add(transaction_components(&new_tx));
 		let mut raw_txs = self.raw_txs.clone();
 		raw_txs.push(new_tx);
 		let agg_tx = transaction::aggregate(context_id, &raw_txs, secp)?;
 		Ok(Bucket {
 			fee_rate: agg_tx.fee_rate()?,
+			components,
 			raw_txs: raw_txs,
 			age_idx: self.age_idx,
 		})
@@ -1695,6 +2046,10 @@ mod tests {
 	struct AcceptingChain;
 
 	impl BlockChain for AcceptingChain {
+		fn verify_tx_not_confirmed(&self, _tx: &Transaction) -> Result<(), PoolError> {
+			Ok(())
+		}
+
 		fn verify_coinbase_maturity(&self, _inputs: &Inputs) -> Result<(), PoolError> {
 			Ok(())
 		}
@@ -1734,6 +2089,7 @@ mod tests {
 
 	#[derive(Default)]
 	struct SelectiveChain {
+		head: Mutex<Option<BlockHeader>>,
 		rejected_output: Mutex<Option<Commitment>>,
 		validate_output_calls: AtomicUsize,
 		validate_calls: AtomicUsize,
@@ -1754,6 +2110,10 @@ mod tests {
 	}
 
 	impl BlockChain for SelectiveChain {
+		fn verify_tx_not_confirmed(&self, _tx: &Transaction) -> Result<(), PoolError> {
+			Ok(())
+		}
+
 		fn verify_coinbase_maturity(&self, _inputs: &Inputs) -> Result<(), PoolError> {
 			Ok(())
 		}
@@ -1793,7 +2153,11 @@ mod tests {
 		}
 
 		fn chain_head(&self) -> Result<BlockHeader, PoolError> {
-			Err(PoolError::Other("unused test method".into()))
+			self.head
+				.lock()
+				.unwrap()
+				.clone()
+				.ok_or_else(|| PoolError::Other("test chain head unavailable".into()))
 		}
 
 		fn get_block_header(&self, _hash: &Hash) -> Result<BlockHeader, PoolError> {
@@ -1816,8 +2180,8 @@ mod tests {
 		keychain: &ExtKeychain,
 		secp: &mut Secp256k1,
 	) -> Transaction {
-		let input_id = ExtKeychain::derive_key_id(1, key_index, 0, 0, 0).unwrap();
-		let output_id = ExtKeychain::derive_key_id(1, key_index + 1, 0, 0, 0).unwrap();
+		let input_id = ExtKeychain::derive_key_id(3, key_index, 0, 0, 0).unwrap();
+		let output_id = ExtKeychain::derive_key_id(3, key_index + 1, 0, 0, 0).unwrap();
 		build::transaction(
 			0,
 			secp,
@@ -1825,8 +2189,8 @@ mod tests {
 				fee: (input_value - output_value).try_into().unwrap(),
 			},
 			&[
-				build::input(input_value, input_id),
-				build::output(output_value, output_id),
+				build::feature_input(input_value, OutputFeatures::Plain, input_id),
+				build::height_tagged_output(output_value, output_id, 1),
 			],
 			keychain,
 			&ProofBuilder::new(secp, keychain).unwrap(),
@@ -1856,14 +2220,14 @@ mod tests {
 		kernel.excess_sig = aggsig::sign_with_blinding(secp, &msg, excess, &public_key).unwrap();
 		kernel.verify(0, secp).unwrap();
 
-		let input_id = ExtKeychain::derive_key_id(1, input_key_index, 0, 0, 0).unwrap();
-		let output_id = ExtKeychain::derive_key_id(1, output_key_index, 0, 0, 0).unwrap();
+		let input_id = ExtKeychain::derive_key_id(3, input_key_index, 0, 0, 0).unwrap();
+		let output_id = ExtKeychain::derive_key_id(3, output_key_index, 0, 0, 0).unwrap();
 		build::transaction_with_kernel(
 			0,
 			secp,
 			&[
-				build::input(input_value, input_id),
-				build::output(output_value, output_id),
+				build::feature_input(input_value, OutputFeatures::Plain, input_id),
+				build::height_tagged_output(output_value, output_id, 1),
 			],
 			kernel,
 			excess.clone(),
@@ -1885,7 +2249,10 @@ mod tests {
 		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
 		let keychain = ExtKeychain::from_seed(&secp, &[11u8; 32], false).unwrap();
 		let header = global::get_genesis_block(&secp, 0).unwrap().header;
-		let chain = Arc::new(SelectiveChain::default());
+		let chain = Arc::new(SelectiveChain {
+			head: Mutex::new(Some(header.clone())),
+			..Default::default()
+		});
 		let mut pool = Pool::new(0, chain.clone(), "test".into());
 		let txs = vec![
 			test_transaction(10, 8, 1, &keychain, &mut secp),
@@ -1904,6 +2271,41 @@ mod tests {
 		}
 
 		(pool, chain, txs, header, secp)
+	}
+
+	#[test]
+	fn preflight_public_pool_conflicts_parents_and_known_transaction_are_read_only() {
+		use mwc_core::core::transaction_preflight::{PreflightInput, PreflightTransaction};
+		let (pool, _, transactions, _, _) = populated_test_pool();
+		let original = pool.all_transactions();
+		let request = PreflightTransaction::from_transaction(0, &transactions[0], true).unwrap();
+		let state = pool.preflight_state(&request).unwrap();
+		assert!(state.already_known && state.conflicts.is_empty());
+		let mut partial = request.clone();
+		partial.is_complete = false;
+		let state = pool.preflight_state(&partial).unwrap();
+		assert!(!state.already_known && !state.conflicts.is_empty());
+		partial.outputs.clear();
+		partial.kernels.clear();
+		partial.offset = None;
+		partial.inputs = vec![PreflightInput {
+			commitment: transactions[0].outputs()[0].commitment(),
+			features: Some(OutputFeatures::Plain),
+		}];
+		let state = pool.preflight_state(&partial).unwrap();
+		let available = state.available_inputs;
+		assert!(state.conflicts.is_empty());
+		assert_eq!(available.len(), 1);
+		assert_eq!(
+			available[0].commitment(),
+			transactions[0].outputs()[0].commitment()
+		);
+		assert_eq!(available[0].features, OutputFeatures::Plain);
+		assert_eq!(
+			mwc_crates::serde_json::to_value(pool.all_transactions()).unwrap(),
+			mwc_crates::serde_json::to_value(original).unwrap()
+		);
+		assert_pool_indexes_consistent(&pool);
 	}
 
 	fn assert_pool_indexes_consistent<B: BlockChain>(pool: &Pool<B>) {
@@ -1942,6 +2344,223 @@ mod tests {
 		assert_eq!(pool.indexes.kernels, expected_kernels);
 		assert_eq!(pool.indexes.nrd_excesses, expected_nrd_excesses);
 		assert_eq!(pool.indexes.component_count, expected_components);
+	}
+
+	#[test]
+	fn mining_validates_a_fitting_snapshot_once_without_holding_the_pool_lock() {
+		let (pool, chain, txs, _, mut secp) = populated_test_pool();
+		let pool = mwc_util::RecursiveRwLock::new(pool);
+		let snapshot = { pool.read().mining_snapshot(250) };
+		let writer = pool
+			.try_write()
+			.expect("mining snapshot must release the pool");
+		let calls_before = chain.validate_calls();
+
+		let selected = snapshot.prepare_mineable_transactions(&mut secp).unwrap();
+
+		assert_eq!(selected.len(), txs.len());
+		assert_eq!(chain.validate_calls() - calls_before, 1);
+		assert_eq!(writer.size(), txs.len());
+		transaction::aggregate(0, &selected, &secp)
+			.unwrap()
+			.validate(0, Weighting::AsLimitedTransaction(250), &mut secp)
+			.unwrap();
+	}
+
+	#[test]
+	fn mining_filters_stale_entries_with_bounded_fallback() {
+		let (pool, chain, txs, _, mut secp) = populated_test_pool();
+		for (max_work, expected_count, expected_calls) in [(27, 1, 4), (33, 2, 5)] {
+			let snapshot = pool.mining_snapshot(250);
+			// Chain state can change after the snapshot is copied. Selection must
+			// recheck it, and rejected batches must consume the work budget too.
+			chain.reject_output(txs[1].outputs()[0].commitment());
+			let calls_before = chain.validate_calls();
+			let selected = snapshot
+				.prepare_with_limits(&mut secp, MAX_MINING_BUCKET_WORK, max_work)
+				.unwrap();
+
+			assert_eq!(chain.validate_calls() - calls_before, expected_calls);
+			assert_eq!(selected.len(), expected_count);
+			assert_eq!(selected[0].hash(0).unwrap(), txs[0].hash(0).unwrap());
+			if expected_count == 2 {
+				assert_eq!(selected[1].hash(0).unwrap(), txs[2].hash(0).unwrap());
+			}
+			assert_eq!(pool.size(), 3);
+			assert_pool_indexes_consistent(&pool);
+		}
+	}
+
+	#[test]
+	fn mining_snapshot_bounds_copying_without_evicting_entries() {
+		let (pool, _, _, _, mut secp) = populated_test_pool();
+		for (max_entries, max_components, expected_count) in [
+			(2, MAX_MINING_SNAPSHOT_COMPONENTS, 2),
+			(MAX_MINING_SNAPSHOT_ENTRIES, 5, 1),
+		] {
+			let selected = pool
+				.mining_snapshot_with_limits(250, max_entries, max_components)
+				.prepare_mineable_transactions(&mut secp)
+				.unwrap();
+			assert_eq!(selected.len(), expected_count);
+			assert_eq!(pool.size(), 3);
+			assert_pool_indexes_consistent(&pool);
+		}
+	}
+
+	#[test]
+	fn mining_bounds_repeated_dependent_bucket_aggregation() {
+		let (mut pool, chain, _, header, mut secp) = populated_test_pool();
+		pool.clear();
+		let keychain = ExtKeychain::from_seed(&secp, &[11u8; 32], false).unwrap();
+		let txs = [
+			test_transaction(10, 8, 1, &keychain, &mut secp),
+			test_transaction(8, 6, 2, &keychain, &mut secp),
+			test_transaction(6, 4, 3, &keychain, &mut secp),
+		];
+		for tx in &txs {
+			pool.add_entry(
+				PoolEntry::new(tx.clone(), TxSource::Broadcast),
+				None,
+				&header,
+				&mut secp,
+			)
+			.unwrap();
+		}
+
+		// Three scans cost 9 components. Aggregating the second and third
+		// entries costs another 6 + 9, so a budget of 23 must stop at two.
+		for (max_work, expected_count) in [(23, 2), (24, 3)] {
+			let calls_before = chain.validate_calls();
+			let selected = pool
+				.mining_snapshot(250)
+				.prepare_with_limits(&mut secp, max_work, MAX_MINING_SELECTION_WORK)
+				.unwrap();
+			assert_eq!(selected.len(), expected_count);
+			assert_eq!(chain.validate_calls() - calls_before, 1);
+			let aggregate = transaction::aggregate(0, &selected, &secp).unwrap();
+			assert_eq!(aggregate.inputs().len(), 1);
+			assert_eq!(aggregate.outputs().len(), 1);
+			aggregate
+				.validate(0, Weighting::AsLimitedTransaction(250), &mut secp)
+				.unwrap();
+			assert_eq!(pool.size(), 3);
+		}
+	}
+
+	#[test]
+	fn mining_reuses_authenticated_components_but_raw_validation_does_not() {
+		let (mut pool, _, _, header, mut secp) = populated_test_pool();
+		// These mutations are test canaries, possible only through private
+		// access after admission. They expose repeated proof/signature checks
+		// without timing assertions. Public admission rejects both corruptions.
+		let first_sig = pool.entries.values().next().unwrap().tx.kernels()[0].excess_sig;
+		pool.entries.values_mut().next().unwrap().tx.body.outputs[0]
+			.proof
+			.proof[0] ^= 1;
+		pool.entries.values_mut().nth(1).unwrap().tx.body.kernels[0].excess_sig = first_sig;
+		let txs = pool.all_transactions();
+		for tx in &txs[..2] {
+			assert!(tx.validate(0, Weighting::AsTransaction, &mut secp).is_err());
+		}
+		assert!(pool
+			.validate_raw_txs(
+				&txs[..2],
+				None,
+				&header,
+				Weighting::AsTransaction,
+				&mut secp,
+			)
+			.unwrap()
+			.is_empty());
+
+		let selected = pool.prepare_mineable_transactions(250, &mut secp).unwrap();
+		assert_eq!(selected.len(), 3);
+	}
+
+	#[test]
+	fn mining_propagates_chain_head_errors() {
+		let (pool, chain, _, _, mut secp) = populated_test_pool();
+		*chain.head.lock().unwrap() = None;
+		let calls_before = chain.validate_calls();
+		let error = pool
+			.prepare_mineable_transactions(250, &mut secp)
+			.unwrap_err();
+		assert!(matches!(error, PoolError::Other(_)));
+		assert_eq!(chain.validate_calls(), calls_before);
+	}
+
+	#[test]
+	fn retrieve_transactions_handles_aggregates_and_missing_kernels() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		global::set_local_nrd_enabled(false);
+		let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+		let keychain = ExtKeychain::from_seed(&secp, &[43u8; 32], false).unwrap();
+		let header = global::get_genesis_block(&secp, 0).unwrap().header;
+		let mut pool = Pool::new(0, Arc::new(AcceptingChain), "test".into());
+
+		let first = test_transaction(10, 8, 1, &keychain, &mut secp);
+		let second = test_transaction(11, 9, 3, &keychain, &mut secp);
+		let aggregate = transaction::aggregate(0, &[first, second], &secp).unwrap();
+		let single = test_transaction(12, 10, 5, &keychain, &mut secp);
+		let absent = test_transaction(13, 11, 7, &keychain, &mut secp);
+		for tx in [&aggregate, &single] {
+			pool.add_entry(
+				PoolEntry::new(tx.clone(), TxSource::Broadcast),
+				None,
+				&header,
+				&mut secp,
+			)
+			.unwrap();
+		}
+
+		let hash = header.hash(0).unwrap();
+		let nonce = 42;
+		let aggregate_ids = aggregate
+			.kernels()
+			.iter()
+			.map(|kernel| kernel.short_id(0, &hash, nonce).unwrap())
+			.collect::<Vec<_>>();
+		let single_id = single.kernels()[0].short_id(0, &hash, nonce).unwrap();
+		let absent_id = absent.kernels()[0].short_id(0, &hash, nonce).unwrap();
+
+		// All kernels of the aggregate must be marked found even though its
+		// transaction is selected once. Lookup must also reach the next entry.
+		let mut ids = aggregate_ids.clone();
+		ids.push(single_id);
+		let (found, missing) = pool.retrieve_transactions(hash, nonce, &ids).unwrap();
+		assert_eq!(found.len(), 2);
+		assert_eq!(found[0].hash(0).unwrap(), aggregate.hash(0).unwrap());
+		assert_eq!(found[1].hash(0).unwrap(), single.hash(0).unwrap());
+		assert!(missing.is_empty());
+
+		let mut ids = aggregate_ids.clone();
+		ids.push(absent_id.clone());
+		let (found, missing) = pool.retrieve_transactions(hash, nonce, &ids).unwrap();
+		assert_eq!(found.len(), 1);
+		assert_eq!(found[0].hash(0).unwrap(), aggregate.hash(0).unwrap());
+		assert_eq!(missing.len(), 1);
+		assert_eq!(missing[0].as_ref(), absent_id.as_ref());
+
+		// A subset of an aggregate's kernels still selects that transaction;
+		// the caller validates whether it reconstructs the requested block.
+		let (found, missing) = pool
+			.retrieve_transactions(hash, nonce, &aggregate_ids[..1])
+			.unwrap();
+		assert_eq!(found.len(), 1);
+		assert_eq!(found[0].hash(0).unwrap(), aggregate.hash(0).unwrap());
+		assert!(missing.is_empty());
+
+		let (found, missing) = pool
+			.retrieve_transactions(hash, nonce, &[absent_id.clone()])
+			.unwrap();
+		assert!(found.is_empty());
+		assert_eq!(missing.len(), 1);
+		assert_eq!(missing[0].as_ref(), absent_id.as_ref());
+
+		let (found, missing) = pool.retrieve_transactions(hash, nonce, &[]).unwrap();
+		assert!(found.is_empty());
+		assert!(missing.is_empty());
 	}
 
 	#[test]
@@ -2112,6 +2731,7 @@ mod tests {
 		assert_eq!(fluffable_txs[0].hash(0).unwrap(), stem_hash);
 
 		let block = Block {
+			coinbase_opening: None,
 			header,
 			body: Default::default(),
 		};
@@ -2167,7 +2787,10 @@ mod tests {
 		let header = global::get_genesis_block(&secp, 0).unwrap().header;
 		let mut pool = Pool::new(0, Arc::new(AcceptingChain), "test".into());
 
-		let tx = test_transaction(10, 8, 1, &keychain, &mut secp);
+		let mut tx = test_transaction(10, 8, 1, &keychain, &mut secp);
+		// Model the commitment-only inputs received over the node protocol.
+		let inputs = Inputs::CommitOnly(tx.inputs().into_commit_wrappers(0).unwrap());
+		tx.body = tx.body.replace_inputs(0, inputs).unwrap();
 		let mut entry =
 			ValidatedPoolEntry::authenticate(0, tx, TxSource::Broadcast, &mut secp).unwrap();
 		let resolved_inputs = entry

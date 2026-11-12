@@ -54,17 +54,17 @@ fn test_capabilities() {
 		mwc_p2p::types::Capabilities::UNKNOWN
 	);
 	assert_eq!(
-		mwc_p2p::types::Capabilities::from_bits_truncate(0b1_0000_0000 as u32),
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b10_0000_0000 as u32),
 		mwc_p2p::types::Capabilities::UNKNOWN
 	);
 
 	assert_eq!(
 		expected,
-		mwc_p2p::types::Capabilities::from_bits_truncate(0b_1011_1111 as u32),
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b1_1011_1111 as u32),
 	);
 
 	assert!(
-		mwc_p2p::types::Capabilities::from_bits_truncate(0b_1111_1111 as u32).contains(expected)
+		mwc_p2p::types::Capabilities::from_bits_truncate(0b1_1111_1111 as u32).contains(expected)
 	);
 
 	assert!(

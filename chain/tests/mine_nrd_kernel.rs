@@ -19,7 +19,7 @@ mod chain_test_helper;
 use self::chain_test_helper::build;
 use self::chain_test_helper::{clean_output_dir, genesis_block, init_chain};
 use mwc_chain::{Chain, Options};
-use mwc_core::core::{Block, KernelFeatures, NRDRelativeHeight, Transaction};
+use mwc_core::core::{Block, KernelFeatures, NRDRelativeHeight, OutputFeatures, Transaction};
 use mwc_core::libtx::{reward, ProofBuilder};
 use mwc_core::{consensus, global, pow};
 use mwc_crates::chrono::Duration;
@@ -77,17 +77,22 @@ where
 	)
 	.unwrap();
 	let fee = txs.iter().map(|x| x.fee().unwrap()).sum();
-	let reward = reward::output(
+	let aggregate = mwc_core::core::transaction::aggregate(0, &txs, &mut secp).unwrap();
+	let binding = chain
+		.coinbase_binding_for_template(&mut secp, &prev, &aggregate.body)
+		.unwrap();
+	let (output, kernel, opening) = reward::output_s2c(
 		0,
 		keychain,
 		&ProofBuilder::new(&secp, keychain).unwrap(),
 		key_id,
 		fee,
-		false,
 		prev.height + 1,
 		&mut secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 
 	let mut block = Block::new(
 		0,
@@ -99,6 +104,8 @@ where
 	)
 	.unwrap();
 
+	block.coinbase_opening =
+		consensus::is_coinbase_binding_enabled(0, block.header.height).then_some(opening);
 	block.header.timestamp = prev.timestamp + Duration::seconds(60);
 	block.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
@@ -157,7 +164,7 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+	let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
@@ -169,8 +176,16 @@ fn mine_block_with_nrd_kernel_and_nrd_feature_enabled() {
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				key_id2.clone(),
+				1,
+			),
 		],
 		&keychain,
 		&pb,
@@ -234,7 +249,7 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 		.unwrap()
 		.to_identifier()
 		.unwrap();
-	let key_id2 = ExtKeychainPath::new(1, 2, 0, 0, 0)
+	let key_id2 = ExtKeychainPath::new(3, 0, 0, 2, 0)
 		.unwrap()
 		.to_identifier()
 		.unwrap();
@@ -246,8 +261,16 @@ fn mine_invalid_block_with_nrd_kernel_and_nrd_feature_enabled_before_hf() {
 			relative_height: NRDRelativeHeight::new(1440).unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id2.clone()),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 20000,
+				key_id2.clone(),
+				1,
+			),
 		],
 		&keychain,
 		&pb,

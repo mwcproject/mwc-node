@@ -287,6 +287,7 @@ fn append_pruned_subtree_capacity_error_does_not_mutate() {
 			pmmr.push(x).unwrap();
 		}
 		assert_eq!(pmmr.unpruned_size(), 4);
+		assert!(pmmr.prune(0).unwrap());
 	}
 
 	let hashes = backend.hashes.clone();
@@ -294,21 +295,56 @@ fn append_pruned_subtree_capacity_error_does_not_mutate() {
 	assert!(!backend.is_compacted(0).unwrap());
 	assert!(!backend.is_compacted(1).unwrap());
 
-	match backend.append_pruned_subtree(Hash::from_vec(&[9]), 2) {
-		Err(mwc_core::core::pmmr::Error::SerializationError(msg)) => {
-			assert!(
-				msg.contains("data is out of capacity"),
-				"unexpected error: {}",
-				msg
-			);
+	for with_parent_hashes in [false, true] {
+		let result = if with_parent_hashes {
+			backend.append_pruned_subtree_hashes(Hash::from_vec(&[9]), 2, &[Hash::from_vec(&[10])])
+		} else {
+			backend.append_pruned_subtree(Hash::from_vec(&[9]), 2)
+		};
+		match result {
+			Err(mwc_core::core::pmmr::Error::SerializationError(msg)) => {
+				assert!(
+					msg.contains("data is out of capacity"),
+					"unexpected error: {}",
+					msg
+				);
+			}
+			other => panic!("expected data capacity rejection, got {:?}", other),
 		}
-		other => panic!("expected data capacity rejection, got {:?}", other),
-	}
 
-	assert_eq!(backend.hashes, hashes);
-	assert_eq!(backend.data, data);
-	assert!(!backend.is_compacted(0).unwrap());
-	assert!(!backend.is_compacted(1).unwrap());
+		assert_eq!(backend.hashes, hashes);
+		assert_eq!(backend.data, data);
+		assert!(!backend.is_compacted(0).unwrap());
+		assert!(!backend.is_compacted(1).unwrap());
+		assert_eq!(backend.get_hash(0).unwrap(), None);
+	}
+}
+
+#[test]
+fn append_pruned_subtree_hashes_overflow_does_not_mutate() {
+	for mut backend in [VecBackend::new(0), VecBackend::new_hash_only(0)] {
+		{
+			let mut pmmr = PMMR::new(&mut backend);
+			pmmr.push(&TestElem([0, 0, 0, 1])).unwrap();
+			assert!(pmmr.prune(0).unwrap());
+		}
+		let hashes = backend.hashes.clone();
+		let data = backend.data.clone();
+
+		assert!(matches!(
+			backend.append_pruned_subtree_hashes(
+				Hash::from_vec(&[9]),
+				u64::MAX,
+				&[Hash::from_vec(&[10])]
+			),
+			Err(mwc_core::core::pmmr::Error::DataOverflow(_))
+		));
+
+		assert_eq!(backend.hashes, hashes);
+		assert_eq!(backend.data, data);
+		assert!(!backend.is_compacted(0).unwrap());
+		assert_eq!(backend.get_hash(0).unwrap(), None);
+	}
 }
 
 #[test]

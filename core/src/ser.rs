@@ -32,6 +32,7 @@ use mwc_crates::secp::constants::{
 };
 use mwc_crates::secp::key::PublicKey;
 use mwc_crates::secp::pedersen::{Commitment, RangeProof};
+use mwc_crates::secp::s2c::Opening;
 use mwc_crates::secp::AggSigSignature;
 use mwc_crates::serde::{self, Deserialize, Serialize};
 use mwc_crates::zeroize::Zeroizing;
@@ -133,6 +134,9 @@ pub trait Writer {
 	/// Protocol version for version specific serialization rules.
 	fn protocol_version(&self) -> ProtocolVersion;
 
+	/// Include negotiated block extra data. Canonical storage includes it.
+	fn block_extra(&self) -> bool;
+
 	/// Return context Id for this writing session
 	fn get_context_id(&self) -> u32;
 
@@ -223,6 +227,9 @@ pub trait Reader {
 	/// Access to underlying protocol version to support
 	/// version specific deserialization logic.
 	fn protocol_version(&self) -> ProtocolVersion;
+
+	/// Expect negotiated block extra data. Canonical storage includes it.
+	fn block_extra(&self) -> bool;
 
 	/// Return context Id for this reading session
 	fn get_context_id(&self) -> u32;
@@ -322,7 +329,7 @@ pub struct ProtocolVersion(pub u32);
 
 impl ProtocolVersion {
 	/// The max protocol version supported.
-	pub const MAX: u32 = std::u32::MAX;
+	pub const MAX: u32 = u32::MAX;
 
 	/// Protocol version as u32 to allow for convenient exhaustive matching on values.
 	pub fn value(self) -> u32 {
@@ -382,24 +389,28 @@ where
 }
 
 /// Deserializes a Readable and requires the input to end exactly after it.
+/// The caller specifies whether the selected format includes block extra data.
 pub fn deserialize_strict<T: Readable, R: Read>(
 	source: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 ) -> Result<T, Error> {
-	let mut reader = BinReader::new(source, version, context_id);
+	let mut reader = BinReader::new(source, version, context_id, block_extra);
 	let value = T::read(&mut reader)?;
 	reader.expect_end()?;
 	Ok(value)
 }
 
 /// Deserializes a Readable while allowing forward-compatible trailing bytes.
+/// The caller specifies whether the selected format includes block extra data.
 pub fn deserialize_permissive<T: Readable, R: Read>(
 	source: &mut R,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 ) -> Result<T, Error> {
-	let mut reader = BinReader::new(source, version, context_id);
+	let mut reader = BinReader::new(source, version, context_id, block_extra);
 	T::read(&mut reader)
 }
 
@@ -407,18 +418,21 @@ pub fn deserialize_permissive<T: Readable, R: Read>(
 pub fn deserialize_default<T: Readable, R: Read>(
 	context_id: u32,
 	source: &mut R,
+	block_extra: bool,
 ) -> Result<T, Error> {
-	deserialize_strict(source, ProtocolVersion::local(), context_id)
+	deserialize_strict(source, ProtocolVersion::local(), context_id, block_extra)
 }
 
 /// Serializes a Writeable into any std::io::Write implementation.
+/// The caller specifies whether the selected format includes block extra data.
 pub fn serialize<W: Writeable>(
 	sink: &mut dyn Write,
 	version: ProtocolVersion,
 	context_id: u32,
 	thing: &W,
+	block_extra: bool,
 ) -> Result<(), Error> {
-	let mut writer = BinWriter::new(sink, version, context_id);
+	let mut writer = BinWriter::new(sink, version, context_id, block_extra);
 	thing.write(&mut writer)
 }
 
@@ -427,8 +441,15 @@ pub fn serialize_default<W: Writeable>(
 	context_id: u32,
 	sink: &mut dyn Write,
 	thing: &W,
+	block_extra: bool,
 ) -> Result<(), Error> {
-	serialize(sink, ProtocolVersion::local(), context_id, thing)
+	serialize(
+		sink,
+		ProtocolVersion::local(),
+		context_id,
+		thing,
+		block_extra,
+	)
 }
 
 /// Utility function to serialize a writeable directly in memory using a
@@ -437,9 +458,10 @@ pub fn ser_vec<W: Writeable>(
 	context_id: u32,
 	thing: &W,
 	version: ProtocolVersion,
+	block_extra: bool,
 ) -> Result<Vec<u8>, Error> {
 	let mut vec = vec![];
-	serialize(&mut vec, version, context_id, thing)?;
+	serialize(&mut vec, version, context_id, thing, block_extra)?;
 	Ok(vec)
 }
 
@@ -448,16 +470,23 @@ pub struct BinReader<'a, R: Read> {
 	source: &'a mut R,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	bytes_read: u64,
 }
 
 impl<'a, R: Read> BinReader<'a, R> {
 	/// Constructor for a new BinReader for the provided source and protocol version.
-	pub fn new(source: &'a mut R, version: ProtocolVersion, context_id: u32) -> Self {
+	pub fn new(
+		source: &'a mut R,
+		version: ProtocolVersion,
+		context_id: u32,
+		block_extra: bool,
+	) -> Self {
 		BinReader {
 			source,
 			version,
 			context_id,
+			block_extra,
 			bytes_read: 0,
 		}
 	}
@@ -602,6 +631,10 @@ impl<'a, R: Read> Reader for BinReader<'a, R> {
 		self.version
 	}
 
+	fn block_extra(&self) -> bool {
+		self.block_extra
+	}
+
 	fn get_context_id(&self) -> u32 {
 		self.context_id
 	}
@@ -613,21 +646,24 @@ pub struct StreamingReader<'a> {
 	total_bytes_read: u64,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 	stream: &'a mut dyn Read,
 }
 
 impl<'a> StreamingReader<'a> {
 	/// Create a new streaming reader with the provided underlying stream.
-	/// Also takes a duration to be used for each individual read_exact call.
+	/// The caller specifies whether block extra data is present.
 	pub fn new(
 		stream: &'a mut dyn Read,
 		version: ProtocolVersion,
 		context_id: u32,
+		block_extra: bool,
 	) -> StreamingReader<'a> {
 		StreamingReader {
 			total_bytes_read: 0,
 			version,
 			context_id,
+			block_extra,
 			stream,
 		}
 	}
@@ -704,6 +740,10 @@ impl<'a> Reader for StreamingReader<'a> {
 		self.version
 	}
 
+	fn block_extra(&self) -> bool {
+		self.block_extra
+	}
+
 	fn get_context_id(&self) -> u32 {
 		self.context_id
 	}
@@ -715,16 +755,23 @@ pub struct BufReader<'a, B: Buf> {
 	version: ProtocolVersion,
 	context_id: u32,
 	bytes_read: u64,
+	block_extra: bool,
 }
 
 impl<'a, B: Buf> BufReader<'a, B> {
 	/// Construct a new BufReader
-	pub fn new(buf: &'a mut B, version: ProtocolVersion, context_id: u32) -> Self {
+	pub fn new(
+		buf: &'a mut B,
+		version: ProtocolVersion,
+		context_id: u32,
+		block_extra: bool,
+	) -> Self {
 		Self {
 			inner: buf,
 			version,
 			context_id,
 			bytes_read: 0,
+			block_extra,
 		}
 	}
 
@@ -765,6 +812,10 @@ impl<'a, B: Buf> BufReader<'a, B> {
 }
 
 impl<'a, B: Buf> Reader for BufReader<'a, B> {
+	fn block_extra(&self) -> bool {
+		self.block_extra
+	}
+
 	fn bytes_read(&self) -> u64 {
 		self.bytes_read
 	}
@@ -895,13 +946,7 @@ impl Readable for Identifier {
 
 impl Writeable for RangeProof {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		if self.plen > MAX_PROOF_SIZE {
-			return Err(Error::TooLargeWriteErr(format!(
-				"RangeProof length {}, but max is {}",
-				self.plen, MAX_PROOF_SIZE
-			)));
-		}
-		writer.write_bytes(self)
+		writer.write_bytes(self.bytes()?)
 	}
 }
 
@@ -916,12 +961,7 @@ impl Readable for RangeProof {
 		}
 		let max_len = cmp::min(len as usize, MAX_PROOF_SIZE);
 		let p = reader.read_fixed_bytes(max_len)?;
-		let mut proof = [0; MAX_PROOF_SIZE];
-		proof[..p.len()].clone_from_slice(&p[..]);
-		Ok(RangeProof {
-			plen: p.len(),
-			proof,
-		})
+		Ok(RangeProof::from_bytes(&p)?)
 	}
 }
 
@@ -962,16 +1002,10 @@ impl PMMRIndexHashable for RangeProofPmmr {
 
 impl Writeable for RangeProofPmmr {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		if self.proof.plen > MAX_PROOF_SIZE {
-			return Err(Error::TooLargeWriteErr(format!(
-				"RangeProof PMMR length {}, but max is {}",
-				self.proof.plen, MAX_PROOF_SIZE
-			)));
-		}
-
-		writer.write_u64(self.proof.plen as u64)?;
+		let bytes = self.proof.bytes()?;
+		writer.write_u64(bytes.len() as u64)?;
 		let mut proof = [0; MAX_PROOF_SIZE];
-		proof[..self.proof.plen].copy_from_slice(&self.proof.proof[..self.proof.plen]);
+		proof[..bytes.len()].copy_from_slice(bytes);
 		writer.write_fixed_bytes(&proof)
 	}
 }
@@ -993,10 +1027,8 @@ impl Readable for RangeProofPmmr {
 				"RangeProof PMMR element contains non-zero padding".to_string(),
 			));
 		}
-		let mut proof = [0; MAX_PROOF_SIZE];
-		proof[..plen].clone_from_slice(&p[..plen]);
 		Ok(RangeProofPmmr {
-			proof: RangeProof { plen, proof },
+			proof: RangeProof::from_bytes(&p[..plen])?,
 		})
 	}
 }
@@ -1005,12 +1037,7 @@ impl PMMRable for RangeProof {
 	type E = RangeProofPmmr;
 
 	fn as_elmt(&self) -> Result<RangeProofPmmr, Error> {
-		if self.plen > MAX_PROOF_SIZE {
-			return Err(Error::CorruptedData(format!(
-				"RangeProof PMMR element length {}, max {}",
-				self.plen, MAX_PROOF_SIZE
-			)));
-		}
+		self.bytes()?;
 		Ok(RangeProofPmmr::from(*self))
 	}
 
@@ -1075,6 +1102,23 @@ impl Writeable for AggSigSignature {
 		})?;
 		reverse_aggsig_component_byte_order(&mut bytes);
 		writer.write_fixed_bytes(bytes)
+	}
+}
+
+// S2C openings use exactly 33 compressed SEC1 bytes, without a length prefix.
+impl Writeable for Opening {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		writer.write_fixed_bytes(self.serialize())
+	}
+}
+
+impl Readable for Opening {
+	fn read<R: Reader>(reader: &mut R) -> Result<Self, Error> {
+		let bytes = reader.read_fixed_bytes(COMPRESSED_PUBLIC_KEY_SIZE)?;
+		secp_static::with_commit(Error::from, |secp| {
+			Self::from_slice(secp, &bytes)
+				.map_err(|e| Error::CorruptedData(format!("Invalid S2C opening: {}", e)))
+		})
 	}
 }
 
@@ -1324,6 +1368,7 @@ pub struct BinWriter<'a> {
 	sink: &'a mut dyn Write,
 	version: ProtocolVersion,
 	context_id: u32,
+	block_extra: bool,
 }
 
 impl<'a> BinWriter<'a> {
@@ -1332,21 +1377,27 @@ impl<'a> BinWriter<'a> {
 		sink: &'a mut dyn Write,
 		version: ProtocolVersion,
 		context_id: u32,
+		block_extra: bool,
 	) -> BinWriter<'a> {
 		BinWriter {
 			sink,
 			version,
 			context_id,
+			block_extra,
 		}
 	}
 
 	/// Constructor for BinWriter with default "local" protocol version.
-	pub fn default(context_id: u32, sink: &'a mut dyn Write) -> BinWriter<'a> {
-		BinWriter::new(sink, ProtocolVersion::local(), context_id)
+	pub fn default(context_id: u32, sink: &'a mut dyn Write, block_extra: bool) -> BinWriter<'a> {
+		BinWriter::new(sink, ProtocolVersion::local(), context_id, block_extra)
 	}
 }
 
 impl<'a> Writer for BinWriter<'a> {
+	fn block_extra(&self) -> bool {
+		self.block_extra
+	}
+
 	fn serialization_mode(&self) -> SerializationMode {
 		SerializationMode::Full
 	}
@@ -1548,7 +1599,7 @@ mod tests {
 	fn commitment_read_rejects_invalid_pedersen_commitment() {
 		let bytes = [1u8; PEDERSEN_COMMITMENT_SIZE];
 
-		match deserialize_default::<Commitment, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<Commitment, _>(0, &mut &bytes[..], true) {
 			Err(Error::CorruptedData(msg)) => {
 				assert!(msg.contains("Pedersen commitment"), "{}", msg);
 			}
@@ -1562,8 +1613,8 @@ mod tests {
 		let commit = secp.commit_value(1).unwrap();
 		let mut bytes = vec![];
 
-		serialize_default(0, &mut bytes, &commit).unwrap();
-		let decoded: Commitment = deserialize_default(0, &mut &bytes[..]).unwrap();
+		serialize_default(0, &mut bytes, &commit, true).unwrap();
+		let decoded: Commitment = deserialize_default(0, &mut &bytes[..], true).unwrap();
 
 		assert_eq!(decoded, commit);
 	}
@@ -1573,10 +1624,10 @@ mod tests {
 		let sig = AggSigSignature::blank();
 		let mut bytes = vec![];
 
-		serialize_default(0, &mut bytes, &sig).unwrap();
+		serialize_default(0, &mut bytes, &sig, true).unwrap();
 		assert_eq!(bytes, [0; AGG_SIGNATURE_SIZE]);
 
-		let decoded: AggSigSignature = deserialize_default(0, &mut &bytes[..]).unwrap();
+		let decoded: AggSigSignature = deserialize_default(0, &mut &bytes[..], true).unwrap();
 		assert_eq!(decoded, sig);
 		assert!(!decoded.is_valid(&Secp256k1::without_caps().unwrap()));
 	}
@@ -1586,7 +1637,7 @@ mod tests {
 		let mut bytes = [0; AGG_SIGNATURE_SIZE];
 		bytes[AGG_SIGNATURE_SIZE - 1] = 1;
 
-		assert!(deserialize_default::<AggSigSignature, _>(0, &mut &bytes[..]).is_err());
+		assert!(deserialize_default::<AggSigSignature, _>(0, &mut &bytes[..], true).is_err());
 	}
 
 	#[test]
@@ -1607,10 +1658,10 @@ mod tests {
 		let sig = AggSigSignature::from_compact(&secp, &compact).unwrap();
 		let mut bytes = vec![];
 
-		serialize_default(0, &mut bytes, &sig).unwrap();
+		serialize_default(0, &mut bytes, &sig, true).unwrap();
 		assert_eq!(bytes, canonical);
 
-		let decoded: AggSigSignature = deserialize_default(0, &mut &bytes[..]).unwrap();
+		let decoded: AggSigSignature = deserialize_default(0, &mut &bytes[..], true).unwrap();
 		assert_eq!(decoded, sig);
 	}
 
@@ -1618,7 +1669,7 @@ mod tests {
 	fn deserialize_rejects_trailing_bytes() {
 		let bytes = [7u8, 8u8];
 
-		match deserialize_default::<u8, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<u8, _>(0, &mut &bytes[..], true) {
 			Err(Error::CorruptedData(msg)) => {
 				assert!(msg.contains("Trailing bytes"), "{}", msg);
 			}
@@ -1630,7 +1681,7 @@ mod tests {
 	fn read_len_prefix_rejects_oversized_u64_before_cast() {
 		let bytes = u64::MAX.to_be_bytes();
 		let mut source = &bytes[..];
-		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0);
+		let mut reader = BinReader::new(&mut source, ProtocolVersion::local(), 0, true);
 
 		match reader.read_bytes_len_prefix() {
 			Err(Error::TooLargeReadErr(_)) => {}
@@ -1641,7 +1692,7 @@ mod tests {
 	#[test]
 	fn streaming_reader_rejects_oversized_fixed_read_before_allocation() {
 		let mut source = io::empty();
-		let mut reader = StreamingReader::new(&mut source, ProtocolVersion::local(), 0);
+		let mut reader = StreamingReader::new(&mut source, ProtocolVersion::local(), 0, true);
 
 		match reader.read_fixed_bytes(READ_CHUNK_LIMIT + 1) {
 			Err(Error::TooLargeReadErr(_)) => {}
@@ -1650,30 +1701,16 @@ mod tests {
 	}
 
 	#[test]
-	fn rangeproof_pmmr_element_rejects_oversized_lengths() {
-		let proof = RangeProof {
-			plen: MAX_PROOF_SIZE + 1,
-			proof: [0; MAX_PROOF_SIZE],
-		};
-
-		match proof.as_elmt() {
-			Err(Error::CorruptedData(msg)) => {
-				assert!(msg.contains("PMMR element length"), "{}", msg);
-			}
-			other => panic!(
-				"expected oversized PMMR rangeproof rejection, got {:?}",
-				other
-			),
-		}
+	fn rangeproof_pmmr_read_rejects_oversized_lengths() {
+		let bytes = ((MAX_PROOF_SIZE + 1) as u64).to_be_bytes();
+		let err = deserialize_default::<RangeProofPmmr, _>(0, &mut &bytes[..], true).unwrap_err();
+		assert!(matches!(err, Error::TooLargeReadErr(_)));
 	}
 
 	#[test]
 	fn rangeproof_pmmr_element_accepts_variable_size_length() {
 		for plen in [0, 3, MAX_PROOF_SIZE] {
-			let proof = RangeProof {
-				plen,
-				proof: [0; MAX_PROOF_SIZE],
-			};
+			let proof = RangeProof::from_bytes(&[0; MAX_PROOF_SIZE][..plen]).unwrap();
 
 			assert_eq!(proof.as_elmt().unwrap().into_inner(), proof);
 		}
@@ -1681,28 +1718,20 @@ mod tests {
 
 	#[test]
 	fn rangeproof_pmmr_serialization_pads_to_fixed_size() {
-		let mut proof = [9; MAX_PROOF_SIZE];
-		proof[..3].copy_from_slice(&[1, 2, 3]);
-		let proof = RangeProof { plen: 3, proof };
+		let mut proof = RangeProof::from_bytes(&[1, 2, 3]).unwrap();
+		proof.proof[3..].fill(9);
 		let mut bytes = vec![];
 
-		serialize_default(0, &mut bytes, &proof.as_elmt().unwrap()).unwrap();
+		serialize_default(0, &mut bytes, &proof.as_elmt().unwrap(), true).unwrap();
 
 		assert_eq!(bytes.len(), 8 + MAX_PROOF_SIZE);
 		assert_eq!(&bytes[8..11], &[1, 2, 3]);
 		assert!(bytes[11..].iter().all(|&b| b == 0));
 
-		let decoded: RangeProofPmmr = deserialize_default(0, &mut &bytes[..]).unwrap();
+		let decoded: RangeProofPmmr = deserialize_default(0, &mut &bytes[..], true).unwrap();
 		assert_eq!(
 			decoded.into_inner(),
-			RangeProof {
-				plen: 3,
-				proof: {
-					let mut p = [0; MAX_PROOF_SIZE];
-					p[..3].copy_from_slice(&[1, 2, 3]);
-					p
-				},
-			}
+			RangeProof::from_bytes(&[1, 2, 3]).unwrap()
 		);
 	}
 
@@ -1714,7 +1743,7 @@ mod tests {
 		bytes.extend_from_slice(&vec![0; MAX_PROOF_SIZE - 4]);
 		bytes.push(1);
 
-		match deserialize_default::<RangeProofPmmr, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<RangeProofPmmr, _>(0, &mut &bytes[..], true) {
 			Err(Error::CorruptedData(msg)) => {
 				assert!(msg.contains("non-zero padding"), "{}", msg);
 			}
@@ -1724,12 +1753,8 @@ mod tests {
 
 	#[test]
 	fn rangeproof_pmmr_hashes_like_inner_proof() {
-		let mut proof_bytes = [9; MAX_PROOF_SIZE];
-		proof_bytes[..3].copy_from_slice(&[1, 2, 3]);
-		let proof = RangeProof {
-			plen: 3,
-			proof: proof_bytes,
-		};
+		let mut proof = RangeProof::from_bytes(&[1, 2, 3]).unwrap();
+		proof.proof[3..].fill(9);
 		let elmt = proof.as_elmt().unwrap();
 
 		assert_eq!(
@@ -1742,7 +1767,7 @@ mod tests {
 	fn vec_read_accepts_clean_eof_after_complete_elements() {
 		let bytes = [0u8, 1u8, 0u8, 2u8];
 
-		let decoded: Vec<u16> = deserialize_default(0, &mut &bytes[..]).unwrap();
+		let decoded: Vec<u16> = deserialize_default(0, &mut &bytes[..], true).unwrap();
 
 		assert_eq!(decoded, vec![1, 2]);
 	}
@@ -1751,7 +1776,7 @@ mod tests {
 	fn vec_read_rejects_partial_final_element() {
 		let bytes = [0u8];
 
-		match deserialize_default::<Vec<u16>, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<Vec<u16>, _>(0, &mut &bytes[..], true) {
 			Err(Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
 			other => panic!(
 				"expected truncated vector element rejection, got {:?}",
@@ -1764,7 +1789,7 @@ mod tests {
 	fn vec_read_rejects_partial_final_element_with_buf_reader() {
 		let bytes = [0u8];
 		let mut source = &bytes[..];
-		let mut reader = BufReader::new(&mut source, ProtocolVersion::local(), 0);
+		let mut reader = BufReader::new(&mut source, ProtocolVersion::local(), 0, true);
 
 		match Vec::<u16>::read(&mut reader) {
 			Err(Error::IOErr(err)) if err.kind() == io::ErrorKind::UnexpectedEof => {}
@@ -1779,7 +1804,7 @@ mod tests {
 	fn vec_read_rejects_zero_byte_elements() {
 		let bytes = [1u8];
 
-		match deserialize_default::<Vec<EmptyReadable>, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<Vec<EmptyReadable>, _>(0, &mut &bytes[..], true) {
 			Err(Error::CorruptedData(msg)) => {
 				assert!(msg.contains("consumed no bytes"), "{}", msg);
 			}
@@ -1791,7 +1816,7 @@ mod tests {
 	fn vec_read_rejects_too_many_elements() {
 		let bytes = vec![0u8; READ_VEC_SIZE_LIMIT as usize + 1];
 
-		match deserialize_default::<Vec<u8>, _>(0, &mut &bytes[..]) {
+		match deserialize_default::<Vec<u8>, _>(0, &mut &bytes[..], true) {
 			Err(Error::TooLargeReadErr(msg)) => {
 				assert!(msg.contains("limit is 100K"), "{}", msg);
 			}

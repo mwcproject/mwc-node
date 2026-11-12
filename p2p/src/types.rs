@@ -24,7 +24,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
 
 use mwc_crates::chrono::prelude::*;
 use mwc_crates::serde::de::{Error as SerdeDeError, SeqAccess, Visitor};
@@ -47,7 +46,7 @@ use mwc_core::try_iter_map_vec;
 use mwc_crates::enum_primitive::{
 	enum_from_primitive, enum_from_primitive_impl, enum_from_primitive_impl_ty,
 };
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_crates::secp::Secp256k1;
@@ -639,19 +638,61 @@ fn config_addr_onion_host(addr: &str) -> Option<&str> {
 
 /// Type for Tor Configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(crate = "serde")]
+#[serde(crate = "serde", deny_unknown_fields)]
 pub struct TorConfig {
 	/// Whether to start tor listener on listener startup (default true)
 	pub tor_enabled: Option<bool>,
-	/// alternative webtunnel bridge. In not specified, the community bridges might be used
-	pub webtunnel_bridge: Option<String>,
+	/// Explicit bridge, transport, and upstream proxy configuration. Unset means direct Tor.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tor_bridge: Option<TorBridgeConfig>,
+}
+
+/// Settings represented by the single `tor_bridge = { ... }` configuration line.
+///
+/// Security policy: tor_bridge is classified as ordinary configuration and does
+/// not require zeroization, including its temporary serialized copies. This
+/// applies to bridge parameters, helper arguments, and proxy settings, including
+/// any embedded authentication fields. Debug and validation errors still omit
+/// these values to avoid accidental logging.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde", deny_unknown_fields)]
+pub struct TorBridgeConfig {
+	/// Tor bridge lines, including any per-bridge transport parameters.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub bridges: Vec<String>,
+	/// Executable helpers or existing SOCKS5 pluggable transport endpoints.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub transports: Vec<TorTransportConfig>,
+	/// Optional SOCKS4, SOCKS5, or HTTP CONNECT upstream proxy URI.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub proxy: Option<String>,
+}
+
+/// One managed or unmanaged Arti pluggable transport.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde", deny_unknown_fields)]
+pub struct TorTransportConfig {
+	/// Protocol names supplied by this transport, such as obfs4 or webtunnel.
+	pub protocols: Vec<String>,
+	/// Absolute path of an installed helper; mutually exclusive with proxy_addr.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub path: Option<String>,
+	/// Arguments passed directly to the helper, without invoking a shell.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub arguments: Vec<String>,
+	/// Whether to start a managed helper immediately instead of when first needed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub run_on_startup: Option<bool>,
+	/// IP:port of a SOCKS5 transport already running outside Arti.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub proxy_addr: Option<String>,
 }
 
 impl Default for TorConfig {
 	fn default() -> TorConfig {
 		TorConfig {
 			tor_enabled: None,
-			webtunnel_bridge: None,
+			tor_bridge: None,
 		}
 	}
 }
@@ -660,14 +701,14 @@ impl TorConfig {
 	pub fn no_tor_config() -> Self {
 		TorConfig {
 			tor_enabled: Some(false),
-			webtunnel_bridge: None,
+			tor_bridge: None,
 		}
 	}
 
 	pub fn arti_tor_config() -> Self {
 		TorConfig {
 			tor_enabled: Some(true),
-			webtunnel_bridge: None,
+			tor_bridge: None,
 		}
 	}
 	/// If tor service is enabled. Default: true
@@ -713,6 +754,11 @@ pub struct P2PConfig {
 	pub dandelion_peer: Option<PeerAddr>,
 
 	/// Expanded key (for seed nodes). The key to generate the onion service
+	///
+	/// Accepted risk: if deserialization reads this key and then fails before
+	/// constructing P2PConfig, the temporary String is freed without zeroization
+	/// because P2PConfig::drop never runs. We consider this risk very minor and
+	/// accept it to keep the field type and derived deserializer simple.
 	pub onion_expanded_key: Option<String>,
 }
 
@@ -839,6 +885,8 @@ bitflags! {
 		const BLOCK_HIST = 0b0100_0000;
 		/// Can provide PIBD Headers Hashes
 		const HEADERS_HASH = 0b1000_0000;
+		/// Negotiates the Coinbase S2C opening in ordinary Block/CompactBlock messages.
+		const BLOCK_EXTRA = 0b1_0000_0000;
 	}
 }
 
@@ -851,7 +899,8 @@ impl Capabilities {
 			| Capabilities::PEER_LIST
 			| Capabilities::TX_KERNEL_HASH
 			| Capabilities::PIBD_HIST
-			| Capabilities::HEADERS_HASH;
+			| Capabilities::HEADERS_HASH
+			| Capabilities::BLOCK_EXTRA;
 		if tor {
 			res |= Capabilities::TOR_ADDRESS;
 		}
@@ -950,10 +999,12 @@ impl PeerAdvertised {
 #[derive(Clone, Debug)]
 pub struct PeerLiveInfo {
 	pub total_difficulty: Difficulty,
-	pub max_total_difficulty: Difficulty,
 	pub height: u64,
+	/// Consecutive incompatible-tip results from peer cleanup.
+	pub(crate) incompatible_tip_count: u8,
+	/// Consecutive checks with lower work and more than one block behind.
+	pub(crate) lagging_tip_count: u8,
 	pub last_seen: DateTime<Utc>,
-	pub stuck_detector: Instant,
 	pub first_seen: DateTime<Utc>,
 }
 
@@ -965,7 +1016,7 @@ pub struct PeerInfo {
 	pub version: ProtocolVersion,
 	pub addr: PeerAddr,
 	pub direction: Direction,
-	pub live_info: Arc<RwLock<PeerLiveInfo>>,
+	pub live_info: Arc<RecursiveRwLock<PeerLiveInfo>>,
 	pub tx_base_fee: u64,
 }
 
@@ -973,19 +1024,27 @@ impl PeerLiveInfo {
 	pub fn new(difficulty: Difficulty) -> PeerLiveInfo {
 		PeerLiveInfo {
 			total_difficulty: difficulty,
-			max_total_difficulty: difficulty,
 			height: 0,
+			incompatible_tip_count: 0,
+			lagging_tip_count: 0,
 			first_seen: Utc::now(),
 			last_seen: Utc::now(),
-			stuck_detector: Instant::now(),
 		}
 	}
 }
 
 impl PeerInfo {
-	/// The current total_difficulty of the peer.
-	pub fn total_difficulty(&self) -> Difficulty {
-		self.live_info.read_recursive().total_difficulty
+	/// The best advertised or received height/work pair, read under one lock.
+	pub fn get_height_and_difficulty(&self) -> (u64, Difficulty) {
+		let info = self.live_info.read();
+		(info.height, info.total_difficulty)
+	}
+
+	/// A handshake supplies work without height. Wait for a complete tip before
+	/// using this connection as a sync supplier.
+	pub fn has_known_tip(&self) -> bool {
+		let (height, difficulty) = self.get_height_and_difficulty();
+		height > 0 && difficulty != Difficulty::zero()
 	}
 
 	pub fn is_outbound(&self) -> bool {
@@ -996,33 +1055,56 @@ impl PeerInfo {
 		self.direction == Direction::Inbound || self.direction == Direction::InboundTor
 	}
 
-	/// The current height of the peer.
-	pub fn height(&self) -> u64 {
-		self.live_info.read_recursive().height
+	/// Whether this peer supports block extras.
+	pub fn is_block_extra(&self) -> bool {
+		self.capabilities.contains(Capabilities::BLOCK_EXTRA)
 	}
 
-	/// Time of last_seen for this peer (via ping/pong).
+	/// Whether this peer can supply the encoding required at this block height.
+	pub fn can_serve_block(&self, context_id: u32, height: u64) -> bool {
+		!mwc_core::consensus::is_coinbase_binding_enabled(context_id, height)
+			|| self.is_block_extra()
+	}
+
+	/// Time of the latest update qualifying for liveness. Outbound updates must
+	/// provide a nonzero height and difficulty with at least the stored work.
 	pub fn last_seen(&self) -> DateTime<Utc> {
-		self.live_info.read_recursive().last_seen
+		self.live_info.read().last_seen
 	}
 
 	/// Time of first_seen for this peer.
 	pub fn first_seen(&self) -> DateTime<Utc> {
-		self.live_info.read_recursive().first_seen
+		self.live_info.read().first_seen
 	}
 
-	/// Update the total_difficulty, height and last_seen of the peer.
+	/// Retain the best total difficulty and its height. Refresh outbound liveness
+	/// only for nonzero height/work updates with at least the stored difficulty.
 	/// Takes a write lock on the live_info.
 	pub fn update(&self, height: u64, total_difficulty: Difficulty) {
-		let now = Utc::now();
 		let mut live_info = self.live_info.write();
-		if total_difficulty > live_info.max_total_difficulty {
-			live_info.max_total_difficulty = total_difficulty;
-			live_info.stuck_detector = Instant::now();
+		// Validate outbound updates against the previous tip before changing any
+		// state. Zero-height or weaker updates must not keep an unusable connection
+		// alive. Inbound genesis peers can still refresh the normal liveness timer.
+		if self.is_outbound()
+			&& (height == 0
+				|| total_difficulty == Difficulty::zero()
+				|| total_difficulty < live_info.total_difficulty)
+		{
+			return;
 		}
-		live_info.height = height;
-		live_info.total_difficulty = total_difficulty;
-		live_info.last_seen = now
+		// Keep the best work/height pair from advertisements and received headers/blocks.
+		// Otherwise a peer could advertise slightly lower work or change only its height
+		// after supplying canonical data, avoiding selection as a canonical block supplier.
+		// The handshake supplies work without height; allow its first matching height.
+		// Zero-height updates cannot reopen the handshake-height exception.
+		if height != 0
+			&& (total_difficulty > live_info.total_difficulty
+				|| (live_info.height == 0 && total_difficulty == live_info.total_difficulty))
+		{
+			live_info.height = height;
+			live_info.total_difficulty = total_difficulty;
+		}
+		live_info.last_seen = Utc::now();
 	}
 }
 
@@ -1057,16 +1139,17 @@ pub struct PeerInfoDisplay {
 
 impl From<PeerInfo> for PeerInfoDisplay {
 	fn from(info: PeerInfo) -> PeerInfoDisplay {
-		let peer_last_seen = info.live_info.read_recursive().last_seen;
+		let peer_last_seen = info.live_info.read().last_seen;
 		let last_seen = last_seen_seconds_ago(peer_last_seen);
+		let (height, total_difficulty) = info.get_height_and_difficulty();
 		PeerInfoDisplay {
 			capabilities: info.capabilities,
 			user_agent: info.user_agent.clone(),
 			version: info.version,
 			addr: info.clone().addr,
 			direction: info.direction,
-			total_difficulty: info.total_difficulty(),
-			height: info.height(),
+			total_difficulty,
+			height,
 			last_seen,
 		}
 	}
@@ -1101,11 +1184,22 @@ pub struct ProcessStatus {
 /// forwarding or querying of blocks and transactions from the network among
 /// other things.
 pub trait ChainAdapter: Sync + Send {
-	/// Current total difficulty on our chain
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error>;
+	/// A new connection passed the handshake and admission checks. Called without
+	/// peer-map locks, before the server starts this connection's message threads.
+	fn peer_connected(&self, _peer: &PeerInfo) {}
 
-	/// Current total height
-	fn total_height(&self) -> Result<u64, mwc_chain::Error>;
+	/// Body-chain head. Read once when using its height and total difficulty together.
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error>;
+
+	/// Whether an advertised tip is consistent with our body chain or has more work.
+	/// Adapters without chain access cannot establish that a peer is on a weaker fork.
+	fn is_known_or_better_tip(
+		&self,
+		_height: u64,
+		_difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		Ok(true)
+	}
 
 	/// Whether local chain maintenance can delay peer ping/pong processing.
 	fn is_chain_liveness_deferred(&self) -> bool {
@@ -1140,7 +1234,6 @@ pub trait ChainAdapter: Sync + Send {
 		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: mwc_chain::Options,
 	) -> Result<bool, mwc_chain::Error>;
 
 	fn compact_block_received(
@@ -1282,9 +1375,6 @@ pub trait ChainAdapter: Sync + Send {
 		archive_header_hash: Hash,
 		segment: Segment<TxKernel>,
 	) -> Result<(), mwc_chain::Error>;
-
-	/// Heard total_difficulty from a connected peer (via ping/pong).
-	fn peer_difficulty(&self, peer: &PeerAddr, difficulty: Difficulty, height: u64);
 }
 
 /// Additional methods required by the protocol that don't need to be
@@ -1332,7 +1422,66 @@ pub struct AttachmentUpdate {
 mod tests {
 	use super::*;
 	use mwc_crates::chrono::Duration;
-	use std::time::Duration as StdDuration;
+
+	// Fill the height omitted by the handshake only at matching or higher work. Keep
+	// the best pair through zero-height advertisements, weaker work and conflicting
+	// heights at equal work. Outbound liveness requires a nonzero tip with equal or
+	// greater work. Higher work must replace both values even at a lower height.
+	#[test]
+	fn peer_updates_preserve_best_work_and_its_height() {
+		let info = PeerInfo {
+			capabilities: Capabilities::UNKNOWN,
+			user_agent: "best-tip-test".into(),
+			version: ProtocolVersion::local(),
+			addr: PeerAddr::Ip(([127, 0, 0, 1], 3414).into()),
+			direction: Direction::Outbound,
+			live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(
+				Difficulty::from_num(100),
+			))),
+			tx_base_fee: 0,
+		};
+		for (height, work) in [(0, 100), (0, 101), (9, 99)] {
+			let last_seen = Utc::now() - Duration::seconds(60);
+			info.live_info.write().last_seen = last_seen;
+			info.update(height, Difficulty::from_num(work));
+			assert_eq!(
+				info.get_height_and_difficulty(),
+				(0, Difficulty::from_num(100))
+			);
+			assert!(!info.has_known_tip());
+			assert_eq!(info.last_seen(), last_seen);
+		}
+		let last_seen = info.last_seen();
+		info.update(10, Difficulty::from_num(100));
+		assert!(info.has_known_tip());
+		assert!(info.last_seen() > last_seen);
+		assert_eq!(
+			info.get_height_and_difficulty(),
+			(10, Difficulty::from_num(100))
+		);
+		for (height, work, refreshes) in [
+			(0, 101, false),
+			(11, 100, true),
+			(11, 99, false),
+			(9, 100, true),
+		] {
+			let last_seen = Utc::now() - Duration::seconds(60);
+			info.live_info.write().last_seen = last_seen;
+			info.update(height, Difficulty::from_num(work));
+			assert_eq!(
+				info.get_height_and_difficulty(),
+				(10, Difficulty::from_num(100))
+			);
+			assert_eq!(info.last_seen() > last_seen, refreshes);
+		}
+		info.update(8, Difficulty::from_num(101));
+		assert_eq!(
+			info.get_height_and_difficulty(),
+			(8, Difficulty::from_num(101))
+		);
+		info.live_info.write().total_difficulty = Difficulty::zero();
+		assert!(!info.has_known_tip());
+	}
 
 	#[test]
 	fn outbound_connect_failure_ignores_local_and_ambiguous_failures() {
@@ -1390,6 +1539,7 @@ mod tests {
 				0,
 				&PeerAddr::Ip(SocketAddr::V6(addr)),
 				ProtocolVersion::local(),
+				true,
 			) {
 				Err(ser::Error::CorruptedData(msg)) => {
 					assert!(msg.contains("nonzero flowinfo or scope_id"));
@@ -1556,36 +1706,6 @@ mod tests {
 			config.onion_expanded_key.as_deref(),
 			Some("0123456789abcdef")
 		);
-	}
-
-	#[test]
-	fn peer_update_only_refreshes_stuck_detector_on_new_max_difficulty() {
-		let peer_info = PeerInfo {
-			capabilities: Capabilities::UNKNOWN,
-			user_agent: "test".to_string(),
-			version: ProtocolVersion::local(),
-			addr: PeerAddr::Ip(SocketAddr::from(([127, 0, 0, 1], 3414))),
-			direction: Direction::Outbound,
-			live_info: Arc::new(RwLock::new(PeerLiveInfo::new(Difficulty::from_num(100)))),
-			tx_base_fee: 0,
-		};
-		let old_stuck_detector = Instant::now() - StdDuration::from_secs(60);
-		peer_info.live_info.write().stuck_detector = old_stuck_detector;
-
-		peer_info.update(1, Difficulty::from_num(99));
-		assert_eq!(
-			peer_info.live_info.read_recursive().stuck_detector,
-			old_stuck_detector
-		);
-
-		peer_info.update(2, Difficulty::from_num(100));
-		assert_eq!(
-			peer_info.live_info.read_recursive().stuck_detector,
-			old_stuck_detector
-		);
-
-		peer_info.update(3, Difficulty::from_num(101));
-		assert!(peer_info.live_info.read_recursive().stuck_detector > old_stuck_detector);
 	}
 
 	#[test]

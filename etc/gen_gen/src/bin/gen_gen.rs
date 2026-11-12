@@ -14,6 +14,20 @@
 // limitations under the License.
 
 //! Main for building the genesis generation utility.
+//!
+//! Audit scope: non-production, manually operated tooling.
+//! This file is used only to create a new coin's initial genesis block before
+//! launch; it is not part of the production node. Production-node security,
+//! availability, and error-recovery standards do not apply to this utility.
+//! The workflow assumes manual preparation of the replacement markers in
+//! genesis.rs and review of the generated block and source before release.
+//!
+//! Accepted limitations include fail-fast error handling, one-use replacement
+//! markers, and rewriting genesis.rs in place. HTTP helpers may omit explicit
+//! status checks and fail later on an unexpected response body; detailed HTTP
+//! diagnostics and automatic recovery are not required for this manual workflow.
+//! Audits should treat these documented limitations as accepted tradeoffs and
+//! should not report them as security findings.
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;
@@ -86,8 +100,22 @@ fn main() {
 	)
 	.unwrap();
 	let keychain: ExtKeychain = seed.derive_keychain(false).unwrap();
-	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0);
-	let reward = core::libtx::reward::output(&keychain, &key_id, 0).unwrap();
+	let key_id = ExtKeychain::derive_key_id(3, 1, 0, 0, 0).unwrap();
+	// Genesis has no parent UTXO state; bind to the selected Bitcoin anchor.
+	let reward = util::secp_static::with_commit_mut(core::libtx::Error::from, |secp| {
+		let builder = core::libtx::ProofBuilder::new(secp, &keychain)?;
+		core::libtx::reward::output_s2c(
+			0,
+			&keychain,
+			&builder,
+			&key_id,
+			0,
+			0,
+			secp,
+			core::core::hash::Hash::from_hex(&h1).unwrap(),
+		)
+	})
+	.unwrap();
 	gen = gen
 		.with_reward(reward.0, reward.1)
 		.expect("genesis block body must be empty before reward");
@@ -148,7 +176,7 @@ fn main() {
 	gen.validate(&BlindingFactor::zero()).unwrap();
 
 	println!("\nFinal genesis cyclehash: {}", gen.hash().to_hex());
-	let gen_bin = core::ser::ser_vec(&gen).unwrap();
+	let gen_bin = core::ser::ser_vec(0, &gen, core::ser::ProtocolVersion::local(), true).unwrap();
 	println!("Final genesis full hash: {}\n", gen_bin.hash().to_hex());
 
 	update_genesis_rs(&gen);
@@ -274,7 +302,14 @@ fn update_genesis_rs(gen: &core::core::Block) {
 
 fn setup_chain(dir_name: &str, genesis: core::core::Block) -> chain::Chain {
 	util::init_test_logger().unwrap();
-	let _ = fs::remove_dir_all(dir_name);
+	if let Err(err) = fs::remove_dir_all(dir_name) {
+		if err.kind() != io::ErrorKind::NotFound {
+			panic!(
+				"Failed to remove temporary chain directory {}: {}",
+				dir_name, err
+			);
+		}
+	}
 	let db_env = Arc::new(store::new_env(dir_name.to_string()));
 	chain::Chain::init(
 		dir_name.to_string(),

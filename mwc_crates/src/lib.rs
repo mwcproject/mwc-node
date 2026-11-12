@@ -79,10 +79,10 @@ pub use secp256k1zkp::libc;
 pub use secp256k1zkp::rand;
 pub use secp256k1zkp::serde;
 pub use secp256k1zkp::serde_json;
+pub use secp256k1zkp::sha2;
 pub use secp256k1zkp::zeroize;
 pub use semver;
 pub use serial_test;
-pub use sha2;
 pub use shlex;
 pub use signature;
 pub use siphasher;
@@ -114,3 +114,4 @@ pub use zip;
 
 pub use ed25519_dalek;
 pub use x25519_dalek;
+pub use yaml_rust2;

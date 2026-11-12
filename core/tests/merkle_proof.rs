@@ -38,8 +38,8 @@ fn merkle_proof_ser_deser() {
 	let proof = pmmr.merkle_proof(8).unwrap();
 
 	let mut vec = Vec::new();
-	ser::serialize_default(0, &mut vec, &proof).expect("serialization failed");
-	let proof_2: MerkleProof = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+	ser::serialize_default(0, &mut vec, &proof, true).expect("serialization failed");
+	let proof_2: MerkleProof = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 
 	assert_eq!(proof, proof_2);
 }
@@ -75,7 +75,7 @@ fn merkle_proof_ser_rejects_implausible_path_len() {
 	};
 	let mut vec = Vec::new();
 
-	match ser::serialize_default(0, &mut vec, &proof) {
+	match ser::serialize_default(0, &mut vec, &proof, true) {
 		Err(ser::Error::CorruptedData(msg)) => {
 			assert!(msg.contains("MerkleProof path length"), "{}", msg);
 		}
@@ -89,7 +89,7 @@ fn merkle_proof_deser_rejects_oversized_path_len() {
 	bytes.extend_from_slice(&1u64.to_be_bytes());
 	bytes.extend_from_slice(&(ser::READ_VEC_SIZE_LIMIT + 1).to_be_bytes());
 
-	match ser::deserialize_default::<MerkleProof, _>(0, &mut &bytes[..]) {
+	match ser::deserialize_default::<MerkleProof, _>(0, &mut &bytes[..], true) {
 		Err(ser::Error::TooLargeReadErr(msg)) => {
 			assert!(msg.contains("MerkleProof path length"), "{}", msg);
 		}

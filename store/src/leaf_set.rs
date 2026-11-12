@@ -38,6 +38,9 @@ pub struct LeafSet {
 	path: PathBuf,
 	bitmap: Bitmap,
 	bitmap_bak: Bitmap,
+	// First writes, snapshot copies and failed flushes must be retried even if
+	// the bitmap equals its backup (for example after discard).
+	needs_flush: bool,
 }
 
 impl LeafSet {
@@ -54,9 +57,11 @@ impl LeafSet {
 
 	fn open_impl<P: AsRef<Path>>(path: P, create_if_missing: bool) -> io::Result<LeafSet> {
 		let file_path = path.as_ref();
-		let bitmap = match read_bitmap(&file_path) {
-			Ok(bitmap) => bitmap,
-			Err(e) if e.kind() == io::ErrorKind::NotFound && create_if_missing => Bitmap::new(),
+		let (bitmap, needs_flush) = match read_bitmap(&file_path) {
+			Ok(bitmap) => (bitmap, false),
+			Err(e) if e.kind() == io::ErrorKind::NotFound && create_if_missing => {
+				(Bitmap::new(), true)
+			}
 			Err(e) => return Err(e),
 		};
 		Self::validate_bitmap(&bitmap)?;
@@ -73,6 +78,7 @@ impl LeafSet {
 			path: file_path.to_path_buf(),
 			bitmap_bak: bitmap.clone(),
 			bitmap,
+			needs_flush,
 		})
 	}
 
@@ -105,6 +111,7 @@ impl LeafSet {
 			path: path.as_ref().to_path_buf(),
 			bitmap_bak: bitmap.clone(),
 			bitmap,
+			needs_flush: true,
 		};
 
 		leaf_set.flush()?;
@@ -235,6 +242,10 @@ impl LeafSet {
 
 	/// Flush the leaf_set to file.
 	pub fn flush(&mut self) -> io::Result<()> {
+		if !self.needs_flush && self.bitmap == self.bitmap_bak {
+			return Ok(());
+		}
+		self.needs_flush = true;
 		// First run the optimization step on the bitmap.
 		self.bitmap.run_optimize();
 
@@ -245,6 +256,7 @@ impl LeafSet {
 
 		// Make sure our backup in memory is up to date.
 		self.bitmap_bak = self.bitmap.clone();
+		self.needs_flush = false;
 
 		Ok(())
 	}
@@ -351,7 +363,60 @@ impl LeafSet {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use mwc_crates::filetime::{set_file_mtime, FileTime};
 	use std::fs;
+
+	#[test]
+	fn flush_skips_clean_bitmaps_but_persists_changes_and_snapshots() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("leaf.bin");
+		let mut leaves = LeafSet::open_or_create(&path).unwrap();
+		leaves.flush().unwrap();
+		assert!(read_bitmap(&path).unwrap().is_empty());
+		leaves.add(0).unwrap();
+		leaves.flush().unwrap();
+		assert_eq!(read_bitmap(&path).unwrap(), Bitmap::of(&[1]));
+
+		let old_time = FileTime::from_unix_time(1, 0);
+		set_file_mtime(&path, old_time).unwrap();
+		leaves.flush().unwrap();
+		assert_eq!(
+			FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+			old_time
+		);
+		let mut reopened = LeafSet::open(&path).unwrap();
+		reopened.flush().unwrap();
+		assert_eq!(
+			FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+			old_time
+		);
+
+		// Copying a snapshot must overwrite the destination even though the
+		// copied bitmap equals its in-memory backup.
+		let snapshot_path = dir.path().join("snapshot.bin");
+		let mut snapshot = LeafSet::open_or_create(&snapshot_path).unwrap();
+		snapshot.flush().unwrap();
+		LeafSet::copy_snapshot(&path, &snapshot_path).unwrap();
+		assert!(read_bitmap(&path).unwrap().is_empty());
+	}
+
+	#[test]
+	fn failed_flush_then_discard_still_rewrites_the_persisted_bitmap() {
+		let dir = mwc_crates::tempfile::tempdir().unwrap();
+		let path = dir.path().join("leaf.bin");
+		let mut leaves = LeafSet::open_or_create(&path).unwrap();
+		leaves.flush().unwrap();
+		leaves.add(0).unwrap();
+		fs::remove_file(&path).unwrap();
+		fs::create_dir(&path).unwrap();
+		assert!(leaves.flush().is_err());
+		fs::remove_dir(&path).unwrap();
+		// Model a failed flush that replaced the file before directory sync failed.
+		fs::write(&path, leaves.bitmap.serialize::<Portable>()).unwrap();
+		leaves.discard();
+		leaves.flush().unwrap();
+		assert!(read_bitmap(&path).unwrap().is_empty());
+	}
 
 	#[test]
 	fn rewind_filters_invalid_restore_positions() {
@@ -359,6 +424,7 @@ mod tests {
 			path: PathBuf::new(),
 			bitmap: Bitmap::of(&vec![1, 2, 4, 5, 8]),
 			bitmap_bak: Bitmap::new(),
+			needs_flush: true,
 		};
 
 		leaf_set
@@ -381,6 +447,7 @@ mod tests {
 			path: PathBuf::new(),
 			bitmap: Bitmap::new(),
 			bitmap_bak: Bitmap::new(),
+			needs_flush: true,
 		};
 
 		match leaf_set.add(2) {
@@ -398,6 +465,7 @@ mod tests {
 			path: PathBuf::new(),
 			bitmap: Bitmap::of(&[1]),
 			bitmap_bak: Bitmap::new(),
+			needs_flush: true,
 		};
 
 		assert!(leaf_set.remove(0).unwrap());
@@ -464,6 +532,7 @@ mod tests {
 			path: path.clone(),
 			bitmap: Bitmap::new(),
 			bitmap_bak: Bitmap::new(),
+			needs_flush: true,
 		};
 		let header = BlockHeader::default(0);
 		let full_hash = header.hash(0).unwrap().to_hex();

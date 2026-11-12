@@ -65,6 +65,7 @@ pub fn u64_to_key(prefix: u8, val: u64) -> Result<Vec<u8>, Error> {
 use mwc_crates::log::error;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::rand::TryRng;
+use mwc_util::file::sync_file;
 use std::ffi::OsStr;
 use std::fs::{remove_file, rename, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -102,7 +103,7 @@ where
 	}
 
 	// force an fsync on the temp file to ensure bytes are on disk
-	if let Err(e) = temp_file.sync_all() {
+	if let Err(e) = sync_file(&temp_file) {
 		drop(temp_file);
 		remove_temp_file_or_log(&temp_path, "temp file sync error");
 		return Err(e);
@@ -222,11 +223,17 @@ fn set_file_mode(file: &File, mode: u32) -> Result<(), std::io::Error> {
 
 #[cfg(unix)]
 pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
-	File::open(normalized_parent(path))?.sync_all()
+	sync_file(&File::open(normalized_parent(path))?)
 }
 
 #[cfg(not(unix))]
 pub(crate) fn sync_parent_dir(_path: &Path) -> Result<(), std::io::Error> {
+	// On Windows, the temporary file's contents are synced before rename, but
+	// the rename itself is not forced to disk. A power failure can therefore
+	// lose the replacement even after a successful flush, leaving an old or
+	// missing destination file. We accept this Windows durability limitation
+	// to avoid complicating the implementation with Windows-specific
+	// persistence handling.
 	Ok(())
 }
 

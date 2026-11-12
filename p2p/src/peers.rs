@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use mwc_crates::chrono;
-use mwc_crates::parking_lot::{Mutex, RwLock};
+use mwc_crates::parking_lot::{Mutex, RecursiveRwLock};
 use mwc_crates::rand;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -62,6 +62,8 @@ const MAX_ADVERTISED_PEERS: usize = 100;
 const MAX_ADVERTISED_PEER_SOURCE_LIMITS: usize = 1000;
 const MAX_ADVERTISED_PEERS_PER_SOURCE_PER_HOUR: usize = 100;
 const ADVERTISED_PEERS_SOURCE_LIMIT_WINDOW: i64 = 60 * 60;
+const OUTBOUND_ROTATION_INTERVAL: StdDuration = StdDuration::from_secs(600);
+const MAX_OUTBOUND_EVICTIONS_PER_PASS: usize = 2;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BroadcastSummary {
@@ -96,6 +98,11 @@ impl PeerCheckSummary {
 #[derive(Debug, Default)]
 pub struct PeerCleanupSummary {
 	pub removed_peers: u32,
+	/// Healthy outbound peers removed proactively; put these addresses on cooldown.
+	/// Each cleanup pass reports at most MAX_OUTBOUND_EVICTIONS_PER_PASS addresses.
+	pub rotated_outbound_peers: Vec<PeerAddr>,
+	/// Replacement attempts to schedule without refilling excess capacity.
+	pub outbound_replacement_attempts: usize,
 	pub persistence_failures: u32,
 	first_persistence_error: Option<Error>,
 }
@@ -120,17 +127,18 @@ impl PeerCleanupSummary {
 pub struct Peers {
 	pub adapter: Arc<dyn ChainAdapter>,
 	store: PeerStore,
-	peers: RwLock<HashMap<PeerAddr, Arc<Peer>>>,
-	last_add_peer_timestamp: RwLock<Option<Instant>>,
+	peers: RecursiveRwLock<HashMap<PeerAddr, Arc<Peer>>>,
+	last_add_peer_timestamp: RecursiveRwLock<Option<Instant>>,
+	last_outbound_eviction: Mutex<Instant>,
 	config: P2PConfig,
 	// Peers removed from the live map but whose connection threads still need
 	// to be joined. Holding them here preserves the StopHandle until the reader
 	// thread drops its Codec and any Tor read-half active object.
 	stopped_peers: Mutex<Vec<Arc<Peer>>>,
-	boost_peers_capabilities: RwLock<PeersCapabilities>,
-	excluded_peers: Arc<RwLock<HashSet<PeerAddr>>>,
-	advertised_peers: Arc<RwLock<HashMap<PeerAddr, PeerAdvertised>>>,
-	advertised_peer_source_limits: Arc<RwLock<HashMap<PeerAddr, AdvertisedPeerSourceLimit>>>,
+	boost_peers_capabilities: RecursiveRwLock<PeersCapabilities>,
+	advertised_peers: Arc<RecursiveRwLock<HashMap<PeerAddr, PeerAdvertised>>>,
+	advertised_peer_source_limits:
+		Arc<RecursiveRwLock<HashMap<PeerAddr, AdvertisedPeerSourceLimit>>>,
 }
 
 impl Peers {
@@ -139,29 +147,22 @@ impl Peers {
 			adapter,
 			store,
 			config: config.clone_without_secrets(),
-			peers: RwLock::new(HashMap::new()),
+			peers: RecursiveRwLock::new(HashMap::new()),
 			stopped_peers: Mutex::new(Vec::new()),
-			last_add_peer_timestamp: RwLock::new(None),
-			boost_peers_capabilities: RwLock::new(PeersCapabilities {
+			last_add_peer_timestamp: RecursiveRwLock::new(None),
+			last_outbound_eviction: Mutex::new(Instant::now()),
+			boost_peers_capabilities: RecursiveRwLock::new(PeersCapabilities {
 				capabilities: Capabilities::UNKNOWN,
 				time: None,
 			}),
-			excluded_peers: Arc::new(RwLock::new(HashSet::new())),
-			advertised_peers: Arc::new(RwLock::new(HashMap::new())),
-			advertised_peer_source_limits: Arc::new(RwLock::new(HashMap::new())),
-		}
-	}
-
-	/// Mark those peers as excluded, so the will never be in 'connected' list
-	pub fn set_excluded_peers(&self, peers: &Vec<PeerAddr>) {
-		let mut excluded_peers = self.excluded_peers.write();
-		excluded_peers.clear();
-		for p in peers {
-			excluded_peers.insert(p.clone());
+			advertised_peers: Arc::new(RecursiveRwLock::new(HashMap::new())),
+			advertised_peer_source_limits: Arc::new(RecursiveRwLock::new(HashMap::new())),
 		}
 	}
 
 	pub fn set_boost_peers_capabilities(&self, boost_peers_capabilities: Capabilities) {
+		// Block extras are a connection preference; block requests enforce them by height.
+		let boost_peers_capabilities = boost_peers_capabilities & !Capabilities::BLOCK_EXTRA;
 		let mut bpc = self.boost_peers_capabilities.write();
 		if bpc.capabilities != boost_peers_capabilities {
 			*bpc = PeersCapabilities {
@@ -173,7 +174,7 @@ impl Peers {
 
 	/// Boosting required fast peers num increasing, so it is limited by time
 	pub fn is_boosting_mode(&self) -> bool {
-		let boost_peers_capabilities = self.boost_peers_capabilities.read_recursive();
+		let boost_peers_capabilities = self.boost_peers_capabilities.read();
 		if boost_peers_capabilities.capabilities == Capabilities::UNKNOWN {
 			return false;
 		}
@@ -187,15 +188,12 @@ impl Peers {
 	}
 
 	pub fn get_boost_peers_capabilities(&self) -> Capabilities {
-		self.boost_peers_capabilities
-			.read_recursive()
-			.capabilities
-			.clone()
+		self.boost_peers_capabilities.read().capabilities.clone()
 	}
 
 	/// Number of peers that already has connection. The total number of connections needs tobe be limited
 	pub fn get_number_connected_peers(&self) -> usize {
-		self.peers.read_recursive().len()
+		self.peers.read().len()
 	}
 
 	/// Adds the peer to our internal peer mapping. Note that the peer is still
@@ -259,6 +257,9 @@ impl Peers {
 				return Err(e);
 			}
 		}
+		// Retire the previous connection's sync requests/history before this
+		// connection can receive advertisements and become a sync supplier.
+		self.adapter.peer_connected(&peer.info);
 		// Reset success outbound counter, so seed thread can boost peers connections if needed
 		if peer.info.is_outbound() {
 			self.reset_last_peer_add_timestamp();
@@ -273,11 +274,9 @@ impl Peers {
 
 	/// Whether an outbound peer was added recently.
 	pub fn was_peer_added_within(&self, seconds: u64) -> bool {
-		self.last_add_peer_timestamp
-			.read_recursive()
-			.map_or(false, |time| {
-				time.elapsed() < StdDuration::from_secs(seconds)
-			})
+		self.last_add_peer_timestamp.read().map_or(false, |time| {
+			time.elapsed() < StdDuration::from_secs(seconds)
+		})
 	}
 
 	/// Add a peer as banned to block future connections, usually due to failed
@@ -327,21 +326,14 @@ impl Peers {
 	/// and this attempt fails then return an error allowing the caller
 	/// to decide how best to handle this.
 	pub fn is_known(&self, addr: &PeerAddr) -> bool {
-		self.peers.read_recursive().contains_key(addr)
+		self.peers.read().contains_key(addr)
 	}
 
 	/// Iterator over our current peers.
 	/// This allows us to hide try_read_for() behind a cleaner interface.
 	/// PeersIter lets us chain various adaptors for convenience.
 	pub fn iter(&self) -> PeersIter<impl Iterator<Item = Arc<Peer>>> {
-		let excluded_peers = self.excluded_peers.read_recursive();
-		let peers: Vec<Arc<Peer>> = self
-			.peers
-			.read_recursive()
-			.values()
-			.filter(|p| !excluded_peers.contains(&p.info.addr))
-			.cloned()
-			.collect();
+		let peers: Vec<Arc<Peer>> = self.peers.read().values().cloned().collect();
 
 		PeersIter {
 			iter: peers.into_iter(),
@@ -355,12 +347,16 @@ impl Peers {
 
 	/// Remove a peer from the live map without changing its persisted state.
 	pub fn remove_connected(&self, addr: &PeerAddr) -> Option<Arc<Peer>> {
-		self.peers.write().remove(addr)
+		let removed = self.peers.write().remove(addr);
+		if removed.as_ref().is_some_and(|peer| peer.info.is_outbound()) {
+			*self.last_outbound_eviction.lock() = Instant::now();
+		}
+		removed
 	}
 
 	pub(crate) fn is_connected_same(&self, peer: &Arc<Peer>) -> bool {
 		self.peers
-			.read_recursive()
+			.read()
 			.get(&peer.info.addr)
 			.map_or(false, |current| Arc::ptr_eq(current, peer))
 	}
@@ -372,6 +368,9 @@ impl Peers {
 			.map_or(false, |current| Arc::ptr_eq(current, peer))
 		{
 			peers.remove(&peer.info.addr);
+			if peer.info.is_outbound() {
+				*self.last_outbound_eviction.lock() = Instant::now();
+			}
 			true
 		} else {
 			false
@@ -475,9 +474,8 @@ impl Peers {
 		// cache before delayed bad-block attribution fired.
 		let ban_result = self.add_banned(peer_addr.clone(), ban_reason, message);
 
-		// Remove the peer directly from the live map. Do not use
-		// get_connected_peer() here because it filters excluded peers, and banning
-		// must stop any live connection for the address.
+		// Remove the peer directly from the live map so banning stops any
+		// connection for the address, regardless of its current state.
 		if let Some(peer) = self.remove_connected(peer_addr) {
 			debug!(
 				"Updating online peer with Ban {}, ban_reason {:?}",
@@ -574,7 +572,7 @@ impl Peers {
 	}
 
 	/// Broadcast a compact block to all our connected peers.
-	/// This is only used when initially broadcasting a newly mined block.
+	/// Used for both newly mined blocks and accepted blocks relayed from peers.
 	pub fn broadcast_compact_block(&self, b: &core::CompactBlock) -> Result<(), Error> {
 		let summary = self.broadcast("compact block", |p| p.send_compact_block(b))?;
 		Self::ensure_broadcast_progress("compact block", summary)?;
@@ -719,6 +717,24 @@ impl Peers {
 		self.store.find_peers(state, cap).map_err(From::from)
 	}
 
+	/// Prefer known block-extra candidates, falling back only after eligibility
+	/// filtering (connected addresses, retry cooldowns, and configured restrictions).
+	pub fn find_connection_peers(
+		&self,
+		cap: Capabilities,
+		eligible: impl Fn(&PeerAddr) -> bool,
+	) -> Result<Vec<PeerData>, Error> {
+		let mut candidates = self.find_peers(State::Healthy, cap & !Capabilities::BLOCK_EXTRA)?;
+		candidates.retain(|peer| eligible(&peer.addr));
+		if candidates
+			.iter()
+			.any(|peer| peer.capabilities.contains(Capabilities::BLOCK_EXTRA))
+		{
+			candidates.retain(|peer| peer.capabilities.contains(Capabilities::BLOCK_EXTRA));
+		}
+		Ok(candidates)
+	}
+
 	/// Get peer in store by address
 	pub fn get_peer(&self, peer_addr: &PeerAddr) -> Result<PeerData, Error> {
 		self.store.get_peer(peer_addr).map_err(From::from)
@@ -815,6 +831,45 @@ impl Peers {
 		boost_capability: Capabilities,
 		config: P2PConfig,
 	) -> PeerCleanupSummary {
+		let head = match self.adapter.get_head() {
+			Ok(head) => Some(head),
+			Err(error) => {
+				warn!(
+					"Skipping peer tip comparisons and activation-based rotation: {}",
+					error
+				);
+				None
+			}
+		};
+		self.clean_peers_at(
+			max_inbound_count,
+			max_outbound_count,
+			boost_capability,
+			config,
+			Instant::now(),
+			head,
+		)
+	}
+
+	/// Clean up in three steps: remove unusable peers from consideration, select
+	/// healthy peers for capacity/rotation cleanup, then apply all removals.
+	///
+	/// Healthy outbound removals share a two-peer limit per pass. The ten-minute
+	/// timer alone selects only one peer. Preferred peers are exempt from healthy
+	/// cleanup, and underfilled pools are replenished before further rotation.
+	/// `now` and the body head snapshot are explicit for testing.
+	pub(crate) fn clean_peers_at(
+		&self,
+		max_inbound_count: usize,
+		max_outbound_count: usize,
+		boost_capability: Capabilities,
+		config: P2PConfig,
+		now: Instant,
+		head: Option<core::BlockHeader>,
+	) -> PeerCleanupSummary {
+		// Sync capabilities can influence rotation; BLOCK_EXTRA has its own
+		// height-dependent preference and must not become a connection requirement.
+		let boost_capability = boost_capability & !Capabilities::BLOCK_EXTRA;
 		self.reap_finished_stopped_peers();
 		let mut summary = PeerCleanupSummary::default();
 		let liveness_deferred = self.adapter.is_chain_liveness_deferred();
@@ -826,153 +881,269 @@ impl Peers {
 			.clone()
 			.unwrap_or(PeerAddrs::default());
 
-		enum CleanupStateUpdate {
-			MarkHealthyOnStop,
-			PreserveState,
+		enum CleanupReason {
+			Unhealthy,
+			Disconnected,
+			ExcessInbound,
+			OutboundRotation,
 		}
 
-		let mut rm = vec![];
+		let mut evictions = vec![];
+		// Sync exclusions affect request selection, not connection maintenance.
+		// Keep one snapshot and remove candidates from it as each stage decides.
+		let mut remaining: Vec<_> = self.peers.read().values().cloned().collect();
 
-		// build a list of peers to be cleaned up
-		{
-			for peer in self.iter() {
-				if peer.is_banned() {
-					info!("clean_peers {:?}, peer banned", peer.info.addr);
-					rm.push((peer.clone(), CleanupStateUpdate::PreserveState));
-				} else if peer.is_defunct() {
-					info!("clean_peers {:?}, peer defunct", peer.info.addr);
+		// 1. Remove unusable peers from the snapshot before counting capacity.
+		// This cleanup is uncapped and also applies to preferred peers. Check
+		// abuse before disconnection so closing a connection cannot bypass a ban.
+		remaining.retain(|peer| {
+			let reason = if peer.is_banned() {
+				info!("clean_peers {:?}, peer banned", peer.info.addr);
+				Some(CleanupReason::Unhealthy)
+			} else if peer.is_abusive() {
+				let received = peer.tracker().received_bytes.write().count_per_min();
+				let sent = peer.tracker().sent_bytes.write().count_per_min();
+				info!(
+					"clean_peers {:?}, abusive ({} sent, {} recv)",
+					peer.info.addr, sent, received,
+				);
+				// Cache pruning can remove a live peer's row. Create the ban
+				// record if needed so reconnecting cannot bypass abuse cleanup.
+				if let Err(e) = self.add_banned(
+					peer.info.addr.clone(),
+					ReasonForBan::BadRequest,
+					"Abusive message rate",
+				) {
+					error!(
+						"failed to mark abusive peer {} banned: {}",
+						peer.info.addr, e
+					);
+					summary.record_persistence_failure(e);
+				}
+				Some(CleanupReason::Unhealthy)
+			} else if peer.is_defunct() {
+				info!("clean_peers {:?}, peer defunct", peer.info.addr);
+				if let Err(e) = self.update_state(&peer.info.addr, State::Defunct) {
+					error!("failed to mark peer {} defunct: {}", peer.info.addr, e);
+					summary.record_persistence_failure(e);
+				}
+				Some(CleanupReason::Unhealthy)
+			} else if !peer.is_connected() {
+				info!("clean_peers {:?}, not connected", peer.info.addr);
+				Some(CleanupReason::Disconnected)
+			} else if liveness_deferred {
+				let mut live_info = peer.info.live_info.write();
+				live_info.incompatible_tip_count = 0;
+				live_info.lagging_tip_count = 0;
+				trace!(
+					"clean_peers {:?}, liveness checks deferred by local chain maintenance",
+					peer.info.addr
+				);
+				None
+			} else {
+				let (diff, height, dead_ping) = peer.check_liveness();
+				// Outbound peers on weaker forks have a shorter grace period
+				// than peers merely lagging behind our accepted body chain.
+				let stuck_outbound = if peer.info.is_outbound() {
+					let incompatible = match &head {
+						Some(head) => self
+							.adapter
+							.is_known_or_better_tip(height, diff)
+							.map(|compatible| !compatible && diff < head.total_difficulty()),
+						None => Ok(false),
+					};
+					let incompatible = match incompatible {
+						Ok(incompatible) => incompatible,
+						Err(e) => {
+							// Local chain failures must not cause peer eviction.
+							warn!("Skipping peer tip comparison for {}: {}", peer.info.addr, e);
+							false
+						}
+					};
+
+					let lagging_peer = head.as_ref().is_some_and(|head| {
+						diff < head.total_difficulty() && head.height.saturating_sub(height) > 1
+					});
+
+					// Count the two conditions independently. Clearing a condition
+					// or failing its local lookup resets the corresponding streak.
+					let mut live_info = peer.info.live_info.write();
+					live_info.incompatible_tip_count = if incompatible {
+						live_info.incompatible_tip_count.saturating_add(1)
+					} else {
+						0
+					};
+					live_info.lagging_tip_count = if lagging_peer {
+						live_info.lagging_tip_count.saturating_add(1)
+					} else {
+						0
+					};
+					live_info.incompatible_tip_count >= 2 || live_info.lagging_tip_count >= 10
+				} else {
+					false
+				};
+				if dead_ping || stuck_outbound {
+					info!(
+						"clean_peers {:?}, dead ping: {} stuck_outbound: {}",
+						peer.info.addr, dead_ping, stuck_outbound
+					);
 					if let Err(e) = self.update_state(&peer.info.addr, State::Defunct) {
 						error!("failed to mark peer {} defunct: {}", peer.info.addr, e);
 						summary.record_persistence_failure(e);
 					}
-					rm.push((peer.clone(), CleanupStateUpdate::PreserveState));
-				} else if !peer.is_connected() {
-					info!("clean_peers {:?}, not connected", peer.info.addr);
-					rm.push((peer.clone(), CleanupStateUpdate::MarkHealthyOnStop));
-				} else if peer.is_abusive() {
-					let received = peer.tracker().received_bytes.write().count_per_min();
-					let sent = peer.tracker().sent_bytes.write().count_per_min();
-					info!(
-						"clean_peers {:?}, abusive ({} sent, {} recv)",
-						peer.info.addr, sent, received,
-					);
-					if let Err(e) = self.update_state(&peer.info.addr, State::Banned) {
-						error!(
-							"failed to mark abusive peer {} banned: {}",
-							peer.info.addr, e
-						);
-						summary.record_persistence_failure(e);
-					}
-					rm.push((peer.clone(), CleanupStateUpdate::PreserveState));
-				} else if liveness_deferred {
-					trace!(
-						"clean_peers {:?}, liveness checks deferred by local chain maintenance",
-						peer.info.addr
-					);
+					Some(CleanupReason::Unhealthy)
 				} else {
-					let (stuck, diff, dead_ping) = peer.is_stuck();
-					let stuck_peer = match self.adapter.total_difficulty() {
-						Ok(total_difficulty) => stuck && diff < total_difficulty,
-						Err(e) => {
-							error!("failed to get total difficulty: {:?}", e);
-							// If local chain state cannot be read, do not evict peers
-							// based on stuck-peer heuristics during this cleanup pass.
-							false
-						}
-					};
-					if dead_ping || stuck_peer {
-						info!(
-							"clean_peers {:?}, dead ping: {} stuck peer: {}",
-							peer.info.addr, dead_ping, stuck_peer
-						);
-						if let Err(e) = self.update_state(&peer.info.addr, State::Defunct) {
-							error!(
-								"failed to mark stuck peer {} defunct: {}",
-								peer.info.addr, e
-							);
-							summary.record_persistence_failure(e);
-						}
-						rm.push((peer.clone(), CleanupStateUpdate::PreserveState));
-					}
+					None
+				}
+			};
+			if let Some(reason) = reason {
+				evictions.push((peer.clone(), reason));
+				false
+			} else {
+				true
+			}
+		});
+
+		// 2. Select healthy peers for eviction. Count all live outbound survivors,
+		// including preferred peers; inbound peers do not affect
+		// the outbound target or the BLOCK_EXTRA fraction.
+		let outbound_count = remaining.iter().filter(|p| p.info.is_outbound()).count();
+		let mut block_extra_remaining = remaining
+			.iter()
+			.filter(|p| p.info.is_outbound() && p.info.is_block_extra())
+			.count();
+		// Once the body head activates binding, aim for
+		// at least half BLOCK_EXTRA outbound peers, rounding up for odd totals.
+		let activated = head.as_ref().is_some_and(|head| {
+			mwc_core::consensus::is_coinbase_binding_enabled(self.get_context_id(), head.height)
+		});
+		let initially_below_half = activated && block_extra_remaining < outbound_count.div_ceil(2);
+		let outbound_target = config.peer_min_preferred_outbound_count(
+			self.get_context_id(),
+			boost_capability != Capabilities::UNKNOWN,
+		) as usize;
+		// A pass may rotate up to two peers at the target, then subsequent passes
+		// wait for refill. The last healthy outbound is protected below.
+		let can_rotate = outbound_count >= outbound_target;
+		// An outbound removal already scheduled by health cleanup satisfies the
+		// timer for this pass. Inbound removals must not postpone outbound rotation.
+		let outbound_health_removal = evictions.iter().any(|(peer, _)| peer.info.is_outbound());
+		let rotation_due = !outbound_health_removal
+			&& now.saturating_duration_since(*self.last_outbound_eviction.lock())
+				>= OUTBOUND_ROTATION_INTERVAL;
+		let mut outbound_remaining = outbound_count;
+		let mut excess_inbound = remaining
+			.iter()
+			.filter(|p| p.info.is_inbound())
+			.count()
+			.saturating_sub(max_inbound_count);
+		// Try to keep peers lacking the sync capability within half the capacity.
+		// UNKNOWN is an empty mask, so every peer matches it outside sync mode.
+		let mut excess_without_sync = remaining
+			.iter()
+			.filter(|p| p.info.is_outbound() && !p.info.capabilities.contains(boost_capability))
+			.count()
+			.saturating_sub(max_outbound_count / 2);
+
+		remaining.shuffle(&mut rand::rng());
+		// Preserve the existing preference for removing peers unsuited to the
+		// sync stage, without ranking untrusted height/work/fee claims.
+		if excess_without_sync > 0 {
+			remaining.sort_by_key(|peer| peer.info.capabilities.contains(boost_capability));
+		}
+		let mut outbound_evictions = 0;
+		for peer in remaining {
+			if preferred_peers.contains(&peer.info.addr) {
+				continue;
+			}
+			// Inbound cleanup only enforces its capacity, without consuming the
+			// shared outbound limit or triggering replacement connections.
+			if peer.info.is_inbound() {
+				if excess_inbound > 0 {
+					excess_inbound -= 1;
+					evictions.push((peer, CleanupReason::ExcessInbound));
+				}
+				continue;
+			}
+			// All healthy outbound eviction reasons share this limit. Health and
+			// inbound cleanup above are independent and may remove more peers.
+			if outbound_evictions >= MAX_OUTBOUND_EVICTIONS_PER_PASS {
+				continue;
+			}
+
+			let currently_below_half =
+				activated && block_extra_remaining < outbound_remaining.div_ceil(2);
+			// When a pass starts below half, keep every BLOCK_EXTRA peer for the
+			// whole pass. Also protect them if an earlier eviction creates a deficit.
+			// This protection applies even when trimming excess capacity.
+			if (initially_below_half || currently_below_half) && peer.info.is_block_extra() {
+				continue;
+			}
+
+			let lacks_sync = !peer.info.capabilities.contains(boost_capability);
+			if outbound_remaining <= max_outbound_count {
+				// Below capacity, require a rotation reason. Fill an under-target
+				// pool first, and never rotate away its last healthy outbound peer.
+				if !can_rotate || outbound_remaining <= 1 {
+					continue;
+				}
+				let improve_block_extra_share = initially_below_half && currently_below_half;
+				let improve_sync_share = excess_without_sync > 0 && lacks_sync;
+				// Timer-only rotation removes one peer; another eviction this pass
+				// already provides turnover and must not get a timer eviction on top.
+				let timer_rotation = rotation_due && outbound_evictions == 0;
+				if !improve_block_extra_share && !improve_sync_share && !timer_rotation {
+					continue;
 				}
 			}
-		}
-
-		// closure to build an iterator of our inbound peers
-		let outbound_peers = || self.iter().outbound().connected().into_iter();
-
-		if boost_capability != Capabilities::UNKNOWN {
-			// at max half of peers can be with wrong capability. Others let's close. Random order is fine
-			let excess_outgoing_count = outbound_peers()
-				.count()
-				.saturating_sub(max_outbound_count / 2);
-			let mut addrs = outbound_peers()
-				.filter(|x| {
-					!preferred_peers.contains(&x.info.addr)
-						&& !x.info.capabilities.contains(boost_capability)
-				})
-				.map(|x| (x, CleanupStateUpdate::MarkHealthyOnStop))
-				.take(excess_outgoing_count)
-				.collect();
-			rm.append(&mut addrs);
-		}
-
-		// check here to make sure we don't have too many outgoing connections
-		// Preferred peers are treated preferentially here.
-		// Capacity cleanup is independent of peer liveness and remains active while
-		// local chain maintenance is running.
-		// Reducing outbound connections gradually.
-		let excess_outgoing_count = cmp::min(
-			2,
-			outbound_peers().count().saturating_sub(max_outbound_count),
-		);
-
-		let mut peer_infos: Vec<Arc<Peer>> = outbound_peers()
-			.filter(|x| !preferred_peers.contains(&x.info.addr))
-			.collect();
-
-		if excess_outgoing_count > 0 {
-			// Height, total difficulty, and fee are advertised by the remote peer.
-			// Do not let those unverified values influence which connection survives.
-			peer_infos.shuffle(&mut rand::rng());
-			let mut addrs = peer_infos
-				.into_iter()
-				.map(|x| (x, CleanupStateUpdate::MarkHealthyOnStop))
-				.take(excess_outgoing_count)
-				.collect();
-			rm.append(&mut addrs);
-		}
-
-		// closure to build an iterator of our inbound peers
-		let inbound_peers = || self.iter().inbound().connected().into_iter();
-
-		// check here to make sure we don't have too many incoming connections
-		let excess_incoming_count = inbound_peers().count().saturating_sub(max_inbound_count);
-		if excess_incoming_count > 0 {
-			let mut addrs: Vec<_> = inbound_peers()
-				.filter(|x| !preferred_peers.contains(&x.info.addr))
-				.take(excess_incoming_count)
-				.map(|x| (x, CleanupStateUpdate::MarkHealthyOnStop))
-				.collect();
-			rm.append(&mut addrs);
-		}
-
-		// now clean up peer map based on the list to remove
-		for (peer, state_update) in rm {
-			if self.remove_connected_if_same(&peer) {
-				if matches!(state_update, CleanupStateUpdate::MarkHealthyOnStop) {
-					if let Err(e) = self.update_stop_healthy_state(&peer.info.addr) {
-						error!(
-							"Failed to persist Healthy state for removed peer {}: {}",
-							peer.info.addr, e
-						);
-						summary.record_persistence_failure(e);
-					}
-				}
-				self.stop_and_reap_peer(peer);
-				summary.removed_peers += 1;
+			// Above capacity, no rotation reason is needed (even for a zero limit).
+			outbound_evictions += 1;
+			outbound_remaining -= 1;
+			if peer.info.is_block_extra() {
+				block_extra_remaining -= 1;
 			}
+			if lacks_sync {
+				excess_without_sync = excess_without_sync.saturating_sub(1);
+			}
+			evictions.push((peer, CleanupReason::OutboundRotation));
 		}
+
+		// 3. Apply the decisions. A connection may have been replaced since the
+		// snapshot: remove only that same connection and report only actual removals.
+		for (peer, reason) in evictions {
+			if !self.remove_connected_if_same(&peer) {
+				continue;
+			}
+			if peer.info.is_outbound() {
+				let mut last_eviction = self.last_outbound_eviction.lock();
+				*last_eviction = (*last_eviction).max(now);
+			}
+			if matches!(reason, CleanupReason::OutboundRotation) {
+				// Bounded by outbound_evictions above. The seed loop uses these
+				// addresses for reconnect cooldown; the vector is local to this pass.
+				summary.rotated_outbound_peers.push(peer.info.addr.clone());
+			}
+			// Preserve bans/Defunct states recorded during health cleanup. Healthy
+			// rotation is not a ban; those peers remain eligible after cooldown.
+			if !matches!(reason, CleanupReason::Unhealthy) {
+				if let Err(e) = self.update_stop_healthy_state(&peer.info.addr) {
+					error!(
+						"Failed to persist Healthy state for removed peer {}: {}",
+						peer.info.addr, e
+					);
+					summary.record_persistence_failure(e);
+				}
+			}
+			self.stop_and_reap_peer(peer);
+			summary.removed_peers += 1;
+		}
+		// Ask for replacements even when the survivors still meet the target,
+		// but do not refill slots removed solely to reduce excess capacity.
+		let capacity_reduction = outbound_count.saturating_sub(max_outbound_count);
+		summary.outbound_replacement_attempts = summary
+			.rotated_outbound_peers
+			.len()
+			.saturating_sub(capacity_reduction);
 
 		self.reap_finished_stopped_peers();
 		summary
@@ -1013,6 +1184,11 @@ impl Peers {
 		} else {
 			Ok(())
 		}
+	}
+
+	/// Required connection capabilities; block-extra support is a selection preference.
+	pub fn get_peer_discovery_capabilities(&self) -> Capabilities {
+		self.get_boost_peers_capabilities() & !Capabilities::BLOCK_EXTRA
 	}
 
 	/// We have enough outbound connected peers
@@ -1095,12 +1271,8 @@ impl Peers {
 
 	/// Returns recently advertised peers ordered by connection priority.
 	pub fn ranked_advertised_peers(&self) -> Vec<PeerAdvertised> {
-		let mut advertised_peers: Vec<PeerAdvertised> = self
-			.advertised_peers
-			.read_recursive()
-			.values()
-			.cloned()
-			.collect();
+		let mut advertised_peers: Vec<PeerAdvertised> =
+			self.advertised_peers.read().values().cloned().collect();
 		advertised_peers.sort_by_key(|peer| -peer.calc_rank());
 		advertised_peers
 	}
@@ -1247,12 +1419,16 @@ impl Peers {
 }
 
 impl ChainAdapter for Peers {
-	fn total_difficulty(&self) -> Result<Difficulty, mwc_chain::Error> {
-		self.adapter.total_difficulty()
+	fn get_head(&self) -> Result<core::BlockHeader, mwc_chain::Error> {
+		self.adapter.get_head()
 	}
 
-	fn total_height(&self) -> Result<u64, mwc_chain::Error> {
-		self.adapter.total_height()
+	fn is_known_or_better_tip(
+		&self,
+		height: u64,
+		difficulty: Difficulty,
+	) -> Result<bool, mwc_chain::Error> {
+		self.adapter.is_known_or_better_tip(height, difficulty)
 	}
 
 	fn is_chain_liveness_deferred(&self) -> bool {
@@ -1288,10 +1464,9 @@ impl ChainAdapter for Peers {
 		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
-		opts: mwc_chain::Options,
 	) -> Result<bool, mwc_chain::Error> {
 		let hash = b.hash(self.store.get_context_id())?;
-		if !self.adapter.block_received(secp, b, peer_info, opts)? {
+		if !self.adapter.block_received(secp, b, peer_info)? {
 			// if the peer sent us a block that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(
@@ -1508,13 +1683,6 @@ impl ChainAdapter for Peers {
 		self.adapter
 			.receive_kernel_segment(peer, archive_header_hash, segment)
 	}
-
-	fn peer_difficulty(&self, addr: &PeerAddr, diff: Difficulty, height: u64) {
-		if let Some(peer) = self.get_connected_peer(addr) {
-			peer.info.update(height, diff);
-		}
-		self.adapter.peer_difficulty(addr, diff, height)
-	}
 }
 
 impl NetAdapter for Peers {
@@ -1684,7 +1852,9 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 		F: Fn(Difficulty) -> bool,
 	{
 		PeersIter {
-			iter: self.iter.filter(move |p| f(p.info.total_difficulty())),
+			iter: self
+				.iter
+				.filter(move |p| f(p.info.get_height_and_difficulty().1)),
 		}
 	}
 
@@ -1709,7 +1879,7 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 		PeersIter {
 			iter: self
 				.iter
-				.filter(move |p| p.info.live_info.read_recursive().height >= height),
+				.filter(move |p| p.info.get_height_and_difficulty().0 >= height),
 		}
 	}
 
@@ -1726,7 +1896,9 @@ impl<I: Iterator<Item = Arc<Peer>>> PeersIter<I> {
 
 	/// Find the max difficulty of the current (filtered) peers.
 	pub fn max_difficulty(self) -> Option<Difficulty> {
-		self.iter.map(|p| p.info.total_difficulty()).max()
+		self.iter
+			.map(|p| p.info.get_height_and_difficulty().1)
+			.max()
 	}
 
 	/// Count the current (filtered) peers.
@@ -1766,6 +1938,42 @@ mod tests {
 			ban_reason: ReasonForBan::None,
 			last_connected,
 			version: ProtocolVersion::local(),
+		}
+	}
+
+	#[test]
+	fn connection_candidates_prefer_extras_only_after_eligibility_filtering() {
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+		for stage in [
+			Capabilities::UNKNOWN,
+			Capabilities::HEADER_HIST,
+			Capabilities::HEADERS_HASH,
+			Capabilities::PIBD_HIST,
+			Capabilities::BLOCK_HIST | Capabilities::HEADER_HIST,
+		] {
+			let dir = mwc_crates::tempfile::TempDir::new().unwrap();
+			let store = PeerStore::new(1, dir.path().to_str().unwrap()).unwrap();
+			let peers = Peers::new(store, Arc::new(DummyAdapter {}), &P2PConfig::default());
+			let mut extra = test_peer_data(1, State::Healthy, 1);
+			extra.capabilities = stage | Capabilities::BLOCK_EXTRA;
+			let mut legacy = test_peer_data(2, State::Healthy, 2);
+			legacy.capabilities = stage;
+			let unknown = test_peer_data(3, State::Healthy, 0);
+			let mut banned = test_peer_data(4, State::Banned, 4);
+			banned.capabilities = extra.capabilities;
+			peers
+				.save_peers(vec![extra.clone(), legacy.clone(), unknown.clone(), banned])
+				.unwrap();
+			let selected = peers.find_connection_peers(stage, |_| true).unwrap();
+			assert_eq!(selected.len(), 1);
+			assert_eq!(selected[0].addr, extra.addr);
+			// An already-connected/cooling-down extra peer cannot suppress fallback.
+			let selected = peers
+				.find_connection_peers(stage, |addr| addr != &extra.addr)
+				.unwrap();
+			assert_eq!(selected.len(), 2);
+			assert!(selected.iter().any(|p| p.addr == legacy.addr));
+			assert!(selected.iter().any(|p| p.addr == unknown.addr));
 		}
 	}
 
@@ -1852,7 +2060,7 @@ mod tests {
 			assert_eq!(accepted.len(), 1);
 		}
 
-		let source_limits = peers.advertised_peer_source_limits.read_recursive();
+		let source_limits = peers.advertised_peer_source_limits.read();
 		assert_eq!(source_limits.len(), MAX_ADVERTISED_PEER_SOURCE_LIMITS);
 		assert!(!source_limits.contains_key(&test_source_addr(0)));
 		assert!(source_limits.contains_key(&test_source_addr(MAX_ADVERTISED_PEER_SOURCE_LIMITS)));

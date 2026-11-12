@@ -143,8 +143,8 @@ fn transaction_validate_read_rejects_nrd_when_disabled() -> Result<(), Error> {
 	let keychain =
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0)?;
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0)?;
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0)?;
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0)?;
 
 	let tx = build::transaction(
 		0,
@@ -153,7 +153,10 @@ fn transaction_validate_read_rejects_nrd_when_disabled() -> Result<(), Error> {
 			fee: 10u32.try_into().unwrap(),
 			relative_height: NRDRelativeHeight::new(1).unwrap(),
 		},
-		&[build::input(12, key_id1), build::output(2, key_id2)],
+		&[
+			build::feature_input(12, OutputFeatures::Plain, key_id1),
+			build::height_tagged_output(2, key_id2, 1),
+		],
 		&keychain,
 		&builder,
 	)
@@ -260,7 +263,7 @@ fn commit_wrapper_write_rejects_invalid_commitment() {
 	let input = CommitWrapper::from(invalid_commit);
 	let mut bytes = vec![];
 
-	let err = ser::serialize_default(0, &mut bytes, &input).unwrap_err();
+	let err = ser::serialize_default(0, &mut bytes, &input, true).unwrap_err();
 	assert!(err
 		.to_string()
 		.contains("Unable to write Pedersen commitment"));
@@ -277,7 +280,7 @@ fn input_write_rejects_invalid_commitment() {
 	let input = Input::new(OutputFeatures::Plain, invalid_commit);
 	let mut bytes = vec![];
 
-	let err = ser::serialize_default(0, &mut bytes, &input).unwrap_err();
+	let err = ser::serialize_default(0, &mut bytes, &input, true).unwrap_err();
 	assert!(err
 		.to_string()
 		.contains("Unable to write Pedersen commitment"));
@@ -304,7 +307,7 @@ fn output_identifier_write_rejects_invalid_commitment() {
 	};
 	let mut bytes = vec![];
 
-	let err = ser::serialize_default(0, &mut bytes, &identifier).unwrap_err();
+	let err = ser::serialize_default(0, &mut bytes, &identifier, true).unwrap_err();
 	assert!(err
 		.to_string()
 		.contains("Unable to write Pedersen commitment"));
@@ -314,11 +317,8 @@ fn output_identifier_write_rejects_invalid_commitment() {
 		.to_string()
 		.contains("Unable to write Pedersen commitment"));
 
-	let output = identifier.into_output(RangeProof {
-		plen: 0,
-		proof: [0; MAX_PROOF_SIZE],
-	});
-	let err = ser::serialize_default(0, &mut bytes, &output).unwrap_err();
+	let output = identifier.into_output(RangeProof::zero());
+	let err = ser::serialize_default(0, &mut bytes, &output, true).unwrap_err();
 	assert!(err
 		.to_string()
 		.contains("Unable to write Pedersen commitment"));
@@ -370,8 +370,8 @@ fn test_output_ser_deser() {
 	let out = Output::new(OutputFeatures::Plain, commit, proof);
 
 	let mut vec = vec![];
-	ser::serialize_default(0, &mut vec, &out).expect("serialized failed");
-	let dout: Output = ser::deserialize_default(0, &mut &vec[..]).unwrap();
+	ser::serialize_default(0, &mut vec, &out, true).expect("serialized failed");
+	let dout: Output = ser::deserialize_default(0, &mut &vec[..], true).unwrap();
 
 	assert_eq!(dout.features(), OutputFeatures::Plain);
 	assert_eq!(dout.commitment(), out.commitment());
@@ -381,56 +381,29 @@ fn test_output_ser_deser() {
 #[test]
 fn output_proof_bytes_returns_canonical_proof_length() {
 	let commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
-	let mut proof = [0; MAX_PROOF_SIZE];
-	proof[..3].copy_from_slice(&[1, 2, 3]);
-	proof[3] = 4;
-	let output = Output::new(OutputFeatures::Plain, commit, RangeProof { plen: 3, proof });
+	let mut proof = RangeProof::from_bytes(&[1, 2, 3]).unwrap();
+	proof.proof[3] = 4;
+	let output = Output::new(OutputFeatures::Plain, commit, proof);
 
 	assert_eq!(output.proof_bytes().unwrap(), &[1, 2, 3]);
 }
 
 #[test]
-fn output_proof_bytes_rejects_oversized_public_length() {
-	let commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
-	let output = Output::new(
-		OutputFeatures::Plain,
-		commit,
-		RangeProof {
-			plen: MAX_PROOF_SIZE + 1,
-			proof: [0; MAX_PROOF_SIZE],
-		},
-	);
-
-	assert!(output.proof_bytes().is_err());
+fn rangeproof_construction_rejects_oversized_input() {
+	assert!(RangeProof::from_bytes(&[0; MAX_PROOF_SIZE + 1]).is_err());
 }
 
 #[test]
-fn output_json_ser_rejects_oversized_rangeproof_without_panic() {
-	let commit = Commitment::from_vec(vec![0; PEDERSEN_COMMITMENT_SIZE]).unwrap();
-	let output = Output::new(
-		OutputFeatures::Plain,
-		commit,
-		RangeProof {
-			plen: MAX_PROOF_SIZE + 1,
-			proof: [0; MAX_PROOF_SIZE],
-		},
-	);
-
-	let res = serde_json::to_string(&output);
-
-	assert!(res.is_err());
+fn rangeproof_json_deser_rejects_oversized_input() {
+	let json = serde_json::to_string(&vec![0u8; MAX_PROOF_SIZE + 1]).unwrap();
+	assert!(serde_json::from_str::<RangeProof>(&json).is_err());
 }
 
 #[test]
-fn rangeproof_write_rejects_oversized_public_length() {
-	let proof = RangeProof {
-		plen: MAX_PROOF_SIZE + 1,
-		proof: [0; MAX_PROOF_SIZE],
-	};
-
-	let mut vec = vec![];
-	let err = ser::serialize_default(0, &mut vec, &proof).unwrap_err();
-	assert!(matches!(err, ser::Error::TooLargeWriteErr(_)));
+fn rangeproof_read_rejects_oversized_length() {
+	let bytes = ((MAX_PROOF_SIZE + 1) as u64).to_be_bytes();
+	let err = ser::deserialize_default::<RangeProof, _>(0, &mut &bytes[..], true).unwrap_err();
+	assert!(matches!(err, ser::Error::TooLargeReadErr(_)));
 }
 
 // Test coverage for verifying cut-through during transaction validation.
@@ -445,9 +418,9 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 	let keychain =
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	let builder = proof::ProofBuilder::new(&secp, &keychain).unwrap();
 
@@ -458,11 +431,11 @@ fn test_verify_cut_through_plain() -> Result<(), Error> {
 			fee: 1u32.try_into().unwrap(),
 		},
 		&[
-			build::input(10, key_id1.clone()),
-			build::input(10, key_id2.clone()),
-			build::output(10, key_id1.clone()),
-			build::output(6, key_id2.clone()),
-			build::output(3, key_id3.clone()),
+			build::feature_input(10, OutputFeatures::Plain, key_id1.clone()),
+			build::feature_input(10, OutputFeatures::Plain, key_id2.clone()),
+			build::height_tagged_output(10, key_id1.clone(), 1),
+			build::height_tagged_output(6, key_id2.clone(), 1),
+			build::height_tagged_output(3, key_id3.clone(), 1),
 		],
 		&keychain,
 		&builder,
@@ -511,9 +484,9 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 	let keychain =
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
-	let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0).unwrap();
-	let key_id3 = ExtKeychain::derive_key_id(1, 3, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
+	let key_id2 = ExtKeychain::derive_key_id(3, 0, 0, 2, 0).unwrap();
+	let key_id3 = ExtKeychain::derive_key_id(3, 0, 0, 3, 0).unwrap();
 
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 
@@ -524,14 +497,23 @@ fn test_verify_cut_through_coinbase() -> Result<(), Error> {
 			fee: 1u32.try_into().unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
-			build::output(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone()),
-			build::output(
-				consensus::MWC_FIRST_GROUP_REWARD - 100_000_001,
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::feature_input(
+				consensus::MWC_FIRST_GROUP_REWARD,
+				OutputFeatures::Coinbase,
 				key_id2.clone(),
 			),
-			build::output(100_000_000, key_id3.clone()),
+			build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD, key_id1.clone(), 1),
+			build::height_tagged_output(
+				consensus::MWC_FIRST_GROUP_REWARD - 100_000_001,
+				key_id2.clone(),
+				1,
+			),
+			build::height_tagged_output(100_000_000, key_id3.clone(), 1),
 		],
 		&keychain,
 		&builder,
@@ -593,7 +575,7 @@ fn test_fee_fields() -> Result<(), Error> {
 	let keychain =
 		ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)?;
 
-	let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0).unwrap();
+	let key_id1 = ExtKeychain::derive_key_id(3, 0, 0, 1, 0).unwrap();
 
 	let builder = ProofBuilder::new(&secp, &keychain).unwrap();
 
@@ -604,8 +586,12 @@ fn test_fee_fields() -> Result<(), Error> {
 			fee: FeeFields::new(42).unwrap(),
 		},
 		&[
-			build::coinbase_input(consensus::calc_mwc_block_reward(0, 1), key_id1.clone()),
-			build::output(60_000_000_000 - 84 - 42 - 21, key_id1.clone()),
+			build::feature_input(
+				consensus::calc_mwc_block_reward(0, 1),
+				OutputFeatures::Coinbase,
+				key_id1.clone(),
+			),
+			build::height_tagged_output(60_000_000_000 - 84 - 42 - 21, key_id1.clone(), 1),
 		],
 		&keychain,
 		&builder,

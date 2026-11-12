@@ -28,7 +28,7 @@ use mwc_core::libtx::{self, Error, ProofBuilder};
 use mwc_core::pow::Difficulty;
 use mwc_core::{consensus, genesis, global, pow};
 use mwc_crates::chrono::Duration;
-use mwc_crates::parking_lot::RwLock;
+use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::rand::rngs::SysRng;
 use mwc_crates::secp;
 use mwc_crates::secp::{ContextFlag, Secp256k1, SecretKey};
@@ -44,6 +44,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+// Use a fixed proof construction height below so recreated outputs keep the same proof.
 use super::chain_test_helper::build::{self, Append};
 use super::chain_test_helper::{
 	clean_output_dir, genesis_block, init_chain, mine_chain, test_chain_dir,
@@ -51,11 +52,11 @@ use super::chain_test_helper::{
 
 /// Adapter to retrieve last status
 pub struct StatusAdapter {
-	pub last_status: RwLock<Option<BlockStatus>>,
+	pub last_status: RecursiveRwLock<Option<BlockStatus>>,
 }
 
 impl StatusAdapter {
-	pub fn new(last_status: RwLock<Option<BlockStatus>>) -> Self {
+	pub fn new(last_status: RecursiveRwLock<Option<BlockStatus>>) -> Self {
 		StatusAdapter { last_status }
 	}
 }
@@ -66,7 +67,7 @@ impl ChainAdapter for StatusAdapter {
 		_secp: &mut Secp256k1,
 		_b: &Block,
 		status: BlockStatus,
-		_opts: Options,
+		_header_head: Tip,
 	) {
 		*self.last_status.write() = Some(status);
 	}
@@ -176,7 +177,7 @@ fn known_block_check_normalizes_nonempty_v2_inputs_to_v3() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let output_key = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let output_key = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -187,8 +188,16 @@ fn known_block_check_normalizes_nonempty_v2_inputs_to_v3() {
 				fee: 20_000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, coinbase_key),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20_000, output_key),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					coinbase_key,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20_000,
+					output_key,
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -334,9 +343,107 @@ fn locate_headers_returns_header_pmmr_lookup_error() {
 
 	let res = chain.locate_headers(&[genesis_hash], 32);
 
-	assert!(matches!(res, Err(mwc_chain::Error::InvalidHeaderHeight(1))));
+	assert!(matches!(res, Err(mwc_chain::Error::InvalidHeaderHeight(_))));
 
 	clean_output_dir(chain_dir);
+}
+
+#[test]
+fn locate_headers_stops_at_body_head() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = test_chain_dir("locate_headers_stops_at_body_head");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, &chain_dir, genesis);
+	let context_id = chain.get_context_id();
+	let genesis_hash = chain.genesis().hash(context_id).unwrap();
+
+	// Apply two bodies, then validate only the next header. Serving GetHeaders
+	// must stop at the body head even though the header chain is further ahead.
+	let a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &a);
+	let b = prepare_block(&mut secp, &kc, &a.header, &chain, 2);
+	process_block(&mut secp, &chain, &b);
+	let c = prepare_block(&mut secp, &kc, &b.header, &chain, 3);
+	process_header(&chain, &c.header);
+	assert_eq!(chain.head().unwrap().height, 2);
+	assert_eq!(chain.header_head().unwrap().height, 3);
+	assert_eq!(
+		chain.locate_headers(&[genesis_hash], 512).unwrap(),
+		vec![a.header.clone(), b.header.clone()]
+	);
+
+	// Keep the requested limit and ascending order, and return nothing after
+	// the body head. A locator above that head must not select header-only data.
+	assert_eq!(
+		chain.locate_headers(&[genesis_hash], 1).unwrap(),
+		vec![a.header]
+	);
+	assert!(chain.locate_headers(&[genesis_hash], 0).unwrap().is_empty());
+	assert!(chain
+		.locate_headers(
+			&[c.hash(context_id).unwrap(), b.hash(context_id).unwrap()],
+			512,
+		)
+		.unwrap()
+		.is_empty());
+
+	mwc_chain::pipe::release_context_data(context_id);
+	drop(chain);
+	clean_output_dir(&chain_dir);
+}
+
+#[test]
+fn locate_headers_uses_body_branch_when_header_head_forks() {
+	let mut secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+	let chain_dir = test_chain_dir("locate_headers_uses_body_branch_when_header_head_forks");
+	clean_output_dir(&chain_dir);
+	global::set_local_chain_type(ChainTypes::AutomatedTesting);
+	global::set_local_nrd_enabled(false);
+	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
+		.unwrap();
+	let genesis = global::get_genesis_block(&secp, 0).unwrap();
+	let chain = init_chain(&secp, &chain_dir, genesis);
+	let context_id = chain.get_context_id();
+	let genesis_hash = chain.genesis().hash(context_id).unwrap();
+	let a = prepare_block(&mut secp, &kc, &chain.head_header().unwrap(), &chain, 1);
+	process_block(&mut secp, &chain, &a);
+	let b = prepare_block(&mut secp, &kc, &a.header, &chain, 2);
+	process_block(&mut secp, &chain, &b);
+
+	// A competing header with more work switches the header PMMR to another
+	// branch, while the applied body chain remains genesis -> A -> B.
+	let fork = prepare_block(&mut secp, &kc, &a.header, &chain, 3).header;
+	process_header(&chain, &fork);
+	let a_hash = a.hash(context_id).unwrap();
+	let b_hash = b.hash(context_id).unwrap();
+	let fork_hash = fork.hash(context_id).unwrap();
+	assert_eq!(chain.head().unwrap().last_block_h, b_hash);
+	assert_eq!(chain.header_head().unwrap().last_block_h, fork_hash);
+	assert_eq!(
+		chain.locate_headers(&[genesis_hash], 512).unwrap(),
+		vec![a.header, b.header.clone()]
+	);
+
+	// Ignore the competing locator and start after the common body ancestor.
+	// A locator containing only the competing header has no body-chain match.
+	assert_eq!(
+		chain.locate_headers(&[fork_hash, a_hash], 512).unwrap(),
+		vec![b.header]
+	);
+	assert!(chain.locate_headers(&[fork_hash], 512).unwrap().is_empty());
+	assert!(chain
+		.locate_headers(&[b_hash, genesis_hash], 512)
+		.unwrap()
+		.is_empty());
+
+	mwc_chain::pipe::release_context_data(context_id);
+	drop(chain);
+	clean_output_dir(&chain_dir);
 }
 
 #[test]
@@ -508,7 +615,12 @@ fn block_height_range_to_pmmr_indices_rejects_body_chain_predecessor_skip() {
 
 	{
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&corrupt_head).unwrap();
+		batch
+			.save_block_header(
+				&corrupt_head,
+				crate::store::header_creation_time(&corrupt_head).unwrap(),
+			)
+			.unwrap();
 		batch.save_body_head(&corrupt_tip).unwrap();
 		batch.commit().unwrap();
 	}
@@ -539,7 +651,12 @@ fn block_height_range_to_pmmr_indices_rejects_non_decreasing_body_predecessor() 
 
 	{
 		let batch = store.batch_write().unwrap();
-		batch.save_block_header(&corrupt_head).unwrap();
+		batch
+			.save_block_header(
+				&corrupt_head,
+				crate::store::header_creation_time(&corrupt_head).unwrap(),
+			)
+			.unwrap();
 		batch.save_body_head(&corrupt_tip).unwrap();
 		batch.commit().unwrap();
 	}
@@ -581,7 +698,7 @@ fn init_output_pos_index_rebuilds_missing_genesis_output_at_height_zero() {
 
 	{
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let batch = store.batch_write().unwrap();
 		txhashset.init_output_pos_index(&batch, None, None).unwrap();
 		batch.commit().unwrap();
@@ -598,7 +715,17 @@ fn init_output_pos_index_rebuilds_missing_genesis_output_at_height_zero() {
 }
 
 #[test]
-fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
+fn pibd_resets_compacted_body_and_selects_headers_by_mode() {
+	for mode in [
+		None,
+		Some(crate::PibdResetMode::Body),
+		Some(crate::PibdResetMode::Both),
+	] {
+		check_compacted_pibd_reset(mode);
+	}
+}
+
+fn check_compacted_pibd_reset(mode: Option<crate::PibdResetMode>) {
 	let chain_dir = test_chain_dir("pibd_restart_genesis_after_compaction");
 	clean_output_dir(&chain_dir);
 	global::set_local_chain_type(ChainTypes::AutomatedTesting);
@@ -645,7 +772,7 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -657,8 +784,12 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&keychain,
 			&proof_builder,
@@ -676,7 +807,8 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 			)
 			.unwrap();
 
-		for n in 7..30 {
+		// The spend is at height 5; retain one block beyond the compaction point.
+		for n in 7..9 {
 			let b = prepare_block(&mut secp, &keychain, &head, &chain, n);
 			head = b.header.clone();
 			chain
@@ -690,7 +822,7 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 		}
 
 		let store = chain.get_store_for_tests();
-		let horizon_header = chain.get_header_by_height(20).unwrap();
+		let horizon_header = chain.get_header_by_height(6).unwrap();
 		{
 			let txhashset = chain.get_txhashset_for_test();
 			let mut txhashset = txhashset.write();
@@ -701,7 +833,13 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 
 		let retained_header_head = chain.header_head().unwrap();
 		let genesis_head = Tip::try_from_header(&genesis.header).unwrap();
-		{
+		assert!(chain.tail().unwrap().height > 0);
+		if let Some(mode) = mode {
+			chain.reset_pibd_chain(mode).unwrap();
+			assert!(!chain
+				.block_exists(&retained_header_head.last_block_h)
+				.unwrap());
+		} else {
 			let store = chain.get_store_for_tests();
 			let batch = store.batch_write().unwrap();
 			batch.save_body_head(&genesis_head).unwrap();
@@ -710,12 +848,26 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 		}
 		drop(chain);
 
-		// A completed PIBD reset leaves HEAD at genesis while subsequently applied
-		// segments can leave compacted body PMMR roots beyond it. Restart must
-		// discard that incomplete body state without discarding downloaded headers.
+		// None models an interrupted import: restart must discard its body while
+		// keeping headers. Explicit resets must retain their chosen header policy
+		// across restart, including after physical compaction of spent outputs.
 		let chain = init_chain_accepting_test_pow(&secp, &chain_dir, genesis.clone());
 		assert_eq!(chain.head().unwrap(), genesis_head);
-		assert_eq!(chain.header_head().unwrap(), retained_header_head);
+		let expected_headers = if mode == Some(crate::PibdResetMode::Both) {
+			assert!(chain
+				.get_block_header(&retained_header_head.last_block_h)
+				.unwrap_err()
+				.is_not_found());
+			assert!(chain
+				.get_header_progress_time(&retained_header_head.last_block_h)
+				.unwrap_err()
+				.is_not_found());
+			genesis_head
+		} else {
+			retained_header_head
+		};
+		assert_eq!(chain.header_head().unwrap(), expected_headers);
+		assert_eq!(chain.tail().unwrap(), genesis_head);
 		assert!(chain
 			.get_store_for_tests()
 			.pending_chain_operation()
@@ -723,7 +875,7 @@ fn restart_during_pibd_resets_compacted_body_and_keeps_headers() {
 			.is_none());
 
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let (_, pos) = txhashset
 			.get_unspent(genesis_commit)
 			.unwrap()
@@ -1144,7 +1296,7 @@ fn init_output_pos_index_maps_missing_outputs_from_body_chain() {
 
 	{
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let batch = store.batch_write().unwrap();
 		txhashset.init_output_pos_index(&batch, None, None).unwrap();
 		batch.commit().unwrap();
@@ -1179,7 +1331,7 @@ fn init_output_pos_index_errors_on_unmapped_missing_output() {
 
 	{
 		let txhashset = chain.get_txhashset_for_test();
-		let txhashset = txhashset.read_recursive();
+		let txhashset = txhashset.read();
 		let batch = store.batch_write().unwrap();
 		let res = txhashset.init_output_pos_index(&batch, None, None);
 		assert!(matches!(
@@ -1431,7 +1583,9 @@ fn marked_body_recovery_ignores_denylist_on_durable_competing_fork() {
 
 	// Encountering the existing marker latches in-process recovery without
 	// changing either durable head.
-	let trigger_err = chain.reset_pibd_chain().unwrap_err();
+	let trigger_err = chain
+		.reset_pibd_chain(crate::PibdResetMode::Body)
+		.unwrap_err();
 	assert!(matches!(
 		trigger_err,
 		mwc_chain::Error::Other(msg)
@@ -1875,7 +2029,7 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -1936,7 +2090,7 @@ fn test_block_a_block_b_block_b_fork_header_c_fork_block_c_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -1998,7 +2152,7 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -2060,7 +2214,7 @@ fn test_block_a_header_b_header_b_fork_block_b_fork_block_b_block_c_fork() {
 	let kc = ExtKeychain::from_seed(&secp, &SecretKey::new(&secp, &mut SysRng).unwrap().0, false)
 		.unwrap();
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
-	let last_status = RwLock::new(None);
+	let last_status = RecursiveRwLock::new(None);
 	let adapter = Arc::new(StatusAdapter::new(last_status));
 	let chain = setup_with_status_adapter(&secp, chain_dir, genesis.clone(), adapter.clone());
 
@@ -2131,7 +2285,7 @@ fn mine_reorg() {
 	let genesis = global::get_genesis_block(&secp, 0).unwrap();
 	{
 		// Create chain that reports last block status
-		let last_status = RwLock::new(None);
+		let last_status = RecursiveRwLock::new(None);
 		let adapter = Arc::new(StatusAdapter::new(last_status));
 		let chain = setup_with_status_adapter(&secp, &chain_dir, genesis.clone(), adapter.clone());
 
@@ -2178,7 +2332,7 @@ fn mine_reorg() {
 		// Check that reorg is correctly reported in block status
 		let fork_point = chain.get_header_by_height(1).unwrap();
 		assert_eq!(
-			*adapter.last_status.read_recursive(),
+			*adapter.last_status.read(),
 			Some(BlockStatus::Reorg {
 				prev: Tip::try_from_header(&fork_head).unwrap(),
 				prev_head: head,
@@ -2474,7 +2628,7 @@ fn spend_rewind_spend() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2486,8 +2640,16 @@ fn spend_rewind_spend() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase.clone(),
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -2565,7 +2727,7 @@ fn migrate_spent_index_converts_legacy_entries() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2576,8 +2738,12 @@ fn migrate_spent_index_converts_legacy_entries() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -2623,7 +2789,7 @@ fn migrate_spent_index_converts_legacy_entries() {
 
 		{
 			let txhashset = chain.get_txhashset_for_test();
-			let txhashset = txhashset.read_recursive();
+			let txhashset = txhashset.read();
 			Chain::migrate_spent_index(&store, &txhashset, None).unwrap();
 		}
 
@@ -2714,7 +2880,12 @@ fn migrate_spent_index_deletes_records_outside_active_window() {
 			fork_header.pow.proof.nonces[0] = fork_header.pow.proof.nonces[0].wrapping_add(1);
 			let fork_hash = fork_header.hash(0).unwrap();
 			assert_ne!(fork_hash, body_head_hash);
-			batch.save_block_header(&fork_header).unwrap();
+			batch
+				.save_block_header(
+					&fork_header,
+					crate::store::header_creation_time(&fork_header).unwrap(),
+				)
+				.unwrap();
 			batch
 				.save_header_head(&Tip::try_from_header(&fork_header).unwrap())
 				.unwrap();
@@ -2732,7 +2903,7 @@ fn migrate_spent_index_deletes_records_outside_active_window() {
 
 		{
 			let txhashset = chain.get_txhashset_for_test();
-			let txhashset = txhashset.read_recursive();
+			let txhashset = txhashset.read();
 			Chain::migrate_spent_index(&store, &txhashset, None).unwrap();
 		}
 
@@ -2825,7 +2996,7 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2836,8 +3007,16 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_1,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -2855,7 +3034,7 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 			)
 			.unwrap();
 
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2866,8 +3045,12 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31, 1),
 			],
 			&kc,
 			&pb,
@@ -2892,8 +3075,12 @@ fn spent_output_replay_within_cut_through_horizon_is_rejected() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_2,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -2981,11 +3168,11 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -2997,8 +3184,16 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_1,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3019,8 +3214,12 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31, 1),
 			],
 			&kc,
 			&pb,
@@ -3042,8 +3241,12 @@ fn replay_cutoff_uses_shorter_higher_work_candidate_tip() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_2,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -3115,7 +3318,7 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3126,8 +3329,16 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_1),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_1,
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3145,7 +3356,7 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 			)
 			.unwrap();
 
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3156,8 +3367,12 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31, 1),
 			],
 			&kc,
 			&pb,
@@ -3183,8 +3398,12 @@ fn spent_output_replay_below_cut_through_horizon_is_accepted() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id_coinbase_2),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id_coinbase_2,
+				),
+				build::height_tagged_output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30, 1),
 			],
 			&kc,
 			&pb,
@@ -3294,11 +3513,11 @@ fn spend_in_fork_and_compact() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3310,8 +3529,16 @@ fn spend_in_fork_and_compact() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(consensus::MWC_FIRST_GROUP_REWARD, key_id2.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD,
+					OutputFeatures::Coinbase,
+					key_id2.clone(),
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					key_id30.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3338,8 +3565,16 @@ fn spend_in_fork_and_compact() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::input(consensus::MWC_FIRST_GROUP_REWARD - 20000, key_id30.clone()),
-				build::output(consensus::MWC_FIRST_GROUP_REWARD - 40000, key_id31.clone()),
+				build::feature_input(
+					consensus::MWC_FIRST_GROUP_REWARD - 20000,
+					OutputFeatures::Plain,
+					key_id30.clone(),
+				),
+				build::height_tagged_output(
+					consensus::MWC_FIRST_GROUP_REWARD - 40000,
+					key_id31.clone(),
+					1,
+				),
 			],
 			&kc,
 			&pb,
@@ -3597,7 +3832,7 @@ fn interrupted_compaction_recovers_recorded_body_tail() {
 		// before BODY_TAIL is staged and the enclosing LMDB batch commits.
 		{
 			let header_pmmr = chain.get_header_pmmr_for_test();
-			let _header_pmmr = header_pmmr.read_recursive();
+			let _header_pmmr = header_pmmr.read();
 			let txhashset = chain.get_txhashset_for_test();
 			let mut txhashset = txhashset.write();
 			let batch = store.batch_write().unwrap();
@@ -3660,17 +3895,25 @@ fn output_header_mappings() {
 				.unwrap()
 				.to_identifier()
 				.unwrap();
-			let reward = libtx::reward::output(
+			let binding = chain
+				.coinbase_binding_for_template(
+					&mut secp,
+					&prev,
+					&mwc_core::core::TransactionBody::empty(),
+				)
+				.unwrap();
+			let (output, kernel, opening) = libtx::reward::output_s2c(
 				0,
 				&keychain,
 				&libtx::ProofBuilder::new(&secp, &keychain).unwrap(),
 				&pk,
 				0,
-				false,
 				prev.height + 1,
 				&mut secp,
+				binding.digest().unwrap(),
 			)
 			.unwrap();
+			let reward = (output, kernel);
 			reward_outputs.push(reward.0.clone());
 			let mut b = Block::new(
 				0,
@@ -3684,6 +3927,8 @@ fn output_header_mappings() {
 			b.header.timestamp = prev.timestamp + Duration::seconds(60);
 			b.header.pow.secondary_scaling = next_header_info.secondary_scaling;
 
+			b.coinbase_opening =
+				consensus::is_coinbase_binding_enabled(0, b.header.height).then_some(opening);
 			chain.set_txhashset_roots(&secp, &mut b).unwrap();
 
 			let edge_bits = global::min_edge_bits(0);
@@ -3711,9 +3956,8 @@ fn output_header_mappings() {
 				.get_header_for_output(reward_outputs[n - 1].commitment())
 				.unwrap();
 			assert_eq!(header_for_output.height, n as u64);
-
-			chain.validate(&secp, false).unwrap();
 		}
+		chain.validate(&secp, false).unwrap();
 
 		// Check all output positions are as expected
 		for n in 1..15 {
@@ -3832,15 +4076,15 @@ fn test_overflow_cached_rangeproof() {
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id30 = ExtKeychainPath::new(1, 30, 0, 0, 0)
+		let key_id30 = ExtKeychainPath::new(3, 0, 0, 30, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id31 = ExtKeychainPath::new(1, 31, 0, 0, 0)
+		let key_id31 = ExtKeychainPath::new(3, 0, 0, 31, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
-		let key_id32 = ExtKeychainPath::new(1, 32, 0, 0, 0)
+		let key_id32 = ExtKeychainPath::new(3, 0, 0, 32, 0)
 			.unwrap()
 			.to_identifier()
 			.unwrap();
@@ -3853,13 +4097,15 @@ fn test_overflow_cached_rangeproof() {
 				fee: 20000u32.try_into().unwrap(),
 			},
 			&[
-				build::coinbase_input(
+				build::feature_input(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height),
+					OutputFeatures::Coinbase,
 					key_id2.clone(),
 				),
-				build::output(
+				build::height_tagged_output(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000,
 					key_id30.clone(),
+					1,
 				),
 			],
 			&kc,
@@ -3890,15 +4136,17 @@ fn test_overflow_cached_rangeproof() {
 				fee: tx2_fee.try_into().unwrap(),
 			},
 			&[
-				build::input(
+				build::feature_input(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height) - 20000,
+					OutputFeatures::Plain,
 					key_id30.clone(),
 				),
-				build::output(
+				build::height_tagged_output(
 					consensus::calc_mwc_block_reward(0, chain.head().unwrap().height)
 						- 20000 - u64::from(tx2_fee)
 						+ 1_000_000_000_000_000,
 					key_id31.clone(),
+					1,
 				),
 				build_output_negative(1_000_000_000_000_000, key_id32.clone()),
 			],
@@ -3962,7 +4210,7 @@ fn prepare_block_key_idx<K>(
 where
 	K: Keychain,
 {
-	let mut b = prepare_block_nosum(secp, kc, prev, diff, key_idx, &[]);
+	let mut b = prepare_block_nosum(secp, kc, prev, chain, diff, key_idx, &[]);
 	chain.set_txhashset_roots(secp, &mut b).unwrap();
 	b
 }
@@ -3995,7 +4243,7 @@ fn prepare_block_tx_key_idx<K>(
 where
 	K: Keychain,
 {
-	let mut b = prepare_block_nosum(secp, kc, prev, diff, key_idx, txs);
+	let mut b = prepare_block_nosum(secp, kc, prev, chain, diff, key_idx, txs);
 	chain.set_txhashset_roots(secp, &mut b).unwrap();
 	b
 }
@@ -4004,6 +4252,7 @@ fn prepare_block_nosum<K>(
 	secp: &mut Secp256k1,
 	kc: &K,
 	prev: &BlockHeader,
+	chain: &Chain,
 	diff: u64,
 	key_idx: u32,
 	txs: &[Transaction],
@@ -4019,17 +4268,22 @@ where
 		.unwrap();
 
 	let fees = txs.iter().map(|tx| tx.fee().unwrap()).sum();
-	let reward = libtx::reward::output(
+	let aggregate = mwc_core::core::transaction::aggregate(context_id, txs, secp).unwrap();
+	let binding = chain
+		.coinbase_binding_for_template(secp, prev, &aggregate.body)
+		.unwrap();
+	let (output, kernel, opening) = libtx::reward::output_s2c(
 		context_id,
 		kc,
 		&libtx::ProofBuilder::new(secp, kc).unwrap(),
 		&key_id,
 		fees,
-		false,
 		prev.height + 1,
 		secp,
+		binding.digest().unwrap(),
 	)
 	.unwrap();
+	let reward = (output, kernel);
 	let mut b = match Block::new(
 		context_id,
 		prev,
@@ -4041,6 +4295,8 @@ where
 		Err(e) => panic!("{:?}", e),
 		Ok(b) => b,
 	};
+	b.coinbase_opening =
+		consensus::is_coinbase_binding_enabled(context_id, b.header.height).then_some(opening);
 	b.header.timestamp = prev.timestamp + Duration::seconds(60);
 	b.header.pow.total_difficulty = (prev.total_difficulty() + Difficulty::from_num(diff)).unwrap();
 	b.header.pow.proof = pow::Proof::random(context_id, proof_size).unwrap();
