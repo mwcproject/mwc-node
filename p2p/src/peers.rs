@@ -1461,12 +1461,11 @@ impl ChainAdapter for Peers {
 
 	fn block_received(
 		&self,
-		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
 		let hash = b.hash(self.store.get_context_id())?;
-		if !self.adapter.block_received(secp, b, peer_info)? {
+		if !self.adapter.block_received(b, peer_info)? {
 			// if the peer sent us a block that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			self.ban_peer(
@@ -1483,12 +1482,11 @@ impl ChainAdapter for Peers {
 
 	fn compact_block_received(
 		&self,
-		secp: &mut Secp256k1,
 		cb: core::CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
 		let hash = cb.hash(self.store.get_context_id())?;
-		if !self.adapter.compact_block_received(secp, cb, peer_info)? {
+		if !self.adapter.compact_block_received(cb, peer_info)? {
 			// if the peer sent us a block that's intrinsically bad
 			// they are either mistaken or malevolent, both of which require a ban
 			let msg = format!(

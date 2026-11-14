@@ -34,7 +34,7 @@ use mwc_crates::parking_lot::RecursiveRwLock;
 use mwc_crates::secp::pedersen::RangeProof;
 use mwc_crates::secp::{ContextFlag, Secp256k1};
 use mwc_p2p::{Capabilities, PeerAddr, PeerInfo, Peers};
-use mwc_util::StopState;
+use mwc_util::{secp_static, StopState};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -125,9 +125,10 @@ impl SyncManager {
 	}
 
 	pub fn sync_request(&self, peers: &Arc<Peers>) -> Result<SyncResponse, Error> {
-		self.clear_inactive_pibd_failures();
+		let timeout_cutoff = self.stage_block_inbox(peers)?;
+		self.check_pibd_progress()?;
 		if !self.state_is_ready() {
-			self.body.reset(&self.state_sync_peers);
+			self.body.reset(&self.state_sync_peers, timeout_cutoff);
 		}
 		self.tip_headers
 			.check_header_requests(peers, &self.headers_sync_peers, Instant::now());
@@ -149,7 +150,7 @@ impl SyncManager {
 			} else {
 				header_height
 			};
-			return self.request_chain(peers, height);
+			return self.request_chain(peers, height, timeout_cutoff);
 		}
 		let context_id = peers.get_context_id();
 		let sync_target_votes: Vec<(u64, u64)> = peers
@@ -255,11 +256,16 @@ impl SyncManager {
 			}
 			_ => return Ok(headers),
 		}
-		self.request_chain(peers, best_height)
+		self.request_chain(peers, best_height, timeout_cutoff)
 	}
 
 	/// The snapshot gate is shared by regular header and body synchronization.
-	fn request_chain(&self, peers: &Arc<Peers>, best_height: u64) -> Result<SyncResponse, Error> {
+	fn request_chain(
+		&self,
+		peers: &Arc<Peers>,
+		best_height: u64,
+		timeout_cutoff: Instant,
+	) -> Result<SyncResponse, Error> {
 		self.best_height.store(best_height, Ordering::Relaxed);
 		let state = self.state.request(
 			peers,
@@ -268,11 +274,11 @@ impl SyncManager {
 			self.stop_state.clone(),
 			best_height,
 		)?;
-		self.clear_inactive_pibd_failures();
+		self.check_pibd_progress()?;
 		if state.response != SyncRequestResponses::StatePibdReady {
 			self.state_ready.store(false, Ordering::Release);
 			self.tip_headers.reset();
-			self.body.reset(&self.state_sync_peers);
+			self.body.reset(&self.state_sync_peers, timeout_cutoff);
 			return Ok(state);
 		}
 		self.state_ready.store(true, Ordering::Release);
@@ -290,7 +296,9 @@ impl SyncManager {
 			&self.sync_state,
 			&self.state_sync_peers,
 			header_target.is_some(),
+			timeout_cutoff,
 		)?;
+		self.check_pibd_progress()?;
 		if peers.iter().connected().count() == 0 {
 			return Ok(SyncResponse::new(
 				SyncRequestResponses::WaitingForPeers,
@@ -519,7 +527,6 @@ impl SyncManager {
 					remaining,
 					&self.headers_sync_peers,
 					desegmenter,
-					&peers,
 				)
 			}
 			Ok(false) => {
@@ -628,13 +635,19 @@ impl SyncManager {
 		)
 	}
 
-	fn clear_inactive_pibd_failures(&self) {
-		// Match report_block_result's lock order so an old session observation
-		// cannot clear failures recorded for a newly completed import.
+	fn check_pibd_progress(&self) -> Result<(), Error> {
+		// Match report_block_result's lock order. Staged replies are not yet
+		// accepted; finish the import only after body application advances head.
 		let mut failed_peers = self.pibd_failed_peers.write();
-		if self.state.imported_state().is_none() {
-			failed_peers.clear();
+		match self.state.imported_state() {
+			Some(session) if self.chain.head()?.height > session.desegmenter.header().height => {
+				self.state.complete_pibd_sync();
+				failed_peers.clear();
+			}
+			None => failed_peers.clear(),
+			Some(_) => {}
 		}
+		Ok(())
 	}
 
 	/// Account for accepted blocks or invalid bodies following a PIBD import.
@@ -697,30 +710,66 @@ impl SyncManager {
 		Ok(())
 	}
 
-	/// Route full and reconstructed bodies through the same bounded task queue.
-	/// Reconstructed bodies contain local guesses and must not implicate their peer.
+	/// Receipt only queues data. Validation and peer attribution run on the
+	/// existing sync thread; a full inbox is not evidence of a bad peer.
 	pub fn receive_block(
 		&self,
-		secp: &mut Secp256k1,
 		block: &Block,
 		peer: &PeerInfo,
 		reconstructed: bool,
 	) -> Result<bool, Error> {
-		let state_ready = self.state_is_ready();
-		let accepted = self.body.receive_block(
-			secp,
-			block,
-			peer,
-			reconstructed,
-			state_ready,
-			&self.state_sync_peers,
-		)?;
-		if state_ready {
-			// Application can drain several buffered blocks. The current head,
-			// rather than receipt alone, determines whether PIBD has succeeded.
-			self.report_block_result(block, &peer.addr, None)?;
+		if !self.body.enqueue_block(block, peer, reconstructed) {
+			warn!(
+				"Block inbox full; leaving response from {} for request retry",
+				peer.addr
+			);
 		}
-		Ok(accepted)
+		Ok(true)
+	}
+
+	fn stage_block_inbox(&self, peers: &Arc<Peers>) -> Result<Instant, Error> {
+		let (incoming_blocks, timeout_cutoff) = self.body.take_inbox();
+		if incoming_blocks.is_empty() {
+			return Ok(timeout_cutoff);
+		}
+		// Unprocessed entries retain their outstanding requests if a local error
+		// interrupts this batch, allowing the normal timeout/retry path to recover.
+		secp_static::with_commit_mut(Error::from, |secp| {
+			for incoming in incoming_blocks {
+				let state_ready = self.state_is_ready();
+				let accepted = self.body.stage_block(
+					secp,
+					&incoming.block,
+					&incoming.peer,
+					incoming.reconstructed,
+					state_ready,
+					&self.state_sync_peers,
+					incoming.received_at,
+				)?;
+				if !accepted {
+					// This used to be returned to Peers::block_received. Preserve its
+					// ban for invalid peer data now that receipt completes asynchronously.
+					peers
+						.ban_peer(
+							&incoming.peer.addr,
+							mwc_p2p::ReasonForBan::BadBlock,
+							&format!(
+								"Invalid queued block at height {}",
+								incoming.block.header.height
+							),
+						)
+						.map_err(|error| Error::Other(format!("ban peer error {}", error)))?;
+				}
+			}
+			Ok(timeout_cutoff)
+		})
+	}
+
+	#[cfg(all(test, feature = "test-support"))]
+	pub(crate) fn process_block_inbox_for_test(&self, peers: &Arc<Peers>) -> Result<(), Error> {
+		self.stage_block_inbox(peers)?;
+		self.body.apply_blocks_for_test(&self.state_sync_peers)?;
+		self.check_pibd_progress()
 	}
 }
 
@@ -946,7 +995,7 @@ mod pibd_successor_flow {
 						+ u64::from(global::state_sync_threshold(self.chain.get_context_id())),
 				)
 				.unwrap();
-			self.manager.clear_inactive_pibd_failures();
+			self.manager.check_pibd_progress().unwrap();
 			response
 		}
 	}
@@ -1047,7 +1096,7 @@ mod pibd_successor_flow {
 			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
 		fixture
 			.manager
-			.request_chain(&fixture.peers, best_height)
+			.request_chain(&fixture.peers, best_height, Instant::now())
 			.unwrap();
 		assert_eq!(header_rx.try_iter().count(), 0);
 		assert_eq!(replacement_rx.try_iter().count(), 1);
@@ -1075,7 +1124,7 @@ mod pibd_successor_flow {
 		let poll = || {
 			fixture
 				.manager
-				.request_chain(&fixture.peers, best_height)
+				.request_chain(&fixture.peers, best_height, Instant::now())
 				.unwrap()
 		};
 		assert_eq!(poll().response, SyncRequestResponses::WaitingForHeaders);
@@ -1153,7 +1202,7 @@ mod pibd_successor_flow {
 			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
 		fixture
 			.manager
-			.request_chain(&fixture.peers, best_height)
+			.request_chain(&fixture.peers, best_height, Instant::now())
 			.unwrap();
 		assert_eq!(header_rx.try_iter().count(), 1);
 		assert_eq!(body_rx.try_iter().count(), 1);
@@ -1180,7 +1229,7 @@ mod pibd_successor_flow {
 			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
 		let result = fixture
 			.manager
-			.request_chain(&fixture.peers, best_height)
+			.request_chain(&fixture.peers, best_height, Instant::now())
 			.unwrap();
 		assert_ne!(result.response, SyncRequestResponses::SyncDone);
 		assert!(!fixture.manager.state_ready.load(Ordering::Acquire));
@@ -1193,13 +1242,13 @@ mod pibd_successor_flow {
 	// leaving the body head and snapshot-validation status unchanged.
 	#[test]
 	fn snapshot_validation_still_settles_outstanding_body_responses() {
-		let mut fixture = Fixture::new(961_115);
+		let fixture = Fixture::new(961_115);
 		let rx = connect_sync_supplier(&fixture, 1, false);
 		let best_height = ARCHIVE_HEIGHT
 			+ u64::from(global::state_sync_threshold(fixture.chain.get_context_id()));
 		fixture
 			.manager
-			.request_chain(&fixture.peers, best_height)
+			.request_chain(&fixture.peers, best_height, Instant::now())
 			.unwrap();
 		assert_eq!(rx.try_iter().count(), 1);
 		let hash = fixture.block.hash(fixture.chain.get_context_id()).unwrap();
@@ -1214,8 +1263,9 @@ mod pibd_successor_flow {
 		let supplier = fixture.peers.get_connected_peer(&peer(1)).unwrap();
 		assert!(fixture
 			.manager
-			.receive_block(&mut fixture.secp, &fixture.block, &supplier.info, false,)
+			.receive_block(&fixture.block, &supplier.info, false)
 			.unwrap());
+		fixture.manager.sync_request(&fixture.peers).unwrap();
 		assert!(!fixture.manager.has_block_request(&peer(1), &hash));
 		assert_eq!(fixture.chain.head().unwrap(), head);
 		assert!(!fixture.chain.block_exists(&hash).unwrap());
@@ -1248,7 +1298,7 @@ mod pibd_successor_flow {
 		assert!(!fixture.manager.state_ready.load(Ordering::Acquire));
 		fixture
 			.manager
-			.request_chain(&fixture.peers, best_height)
+			.request_chain(&fixture.peers, best_height, Instant::now())
 			.unwrap();
 		assert!(fixture.manager.state_ready.load(Ordering::Acquire));
 		assert_eq!(header_rx.try_iter().count(), 1);

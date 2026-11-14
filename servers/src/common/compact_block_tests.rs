@@ -24,6 +24,33 @@ use mwc_util::StopState;
 
 type TestPool = TransactionPool<PoolToChainAdapter, NoopPoolAdapter>;
 
+#[test]
+fn inbox_defers_validation_and_bans_only_the_invalid_supplier() {
+	let mut f = Fixture::new(1_934_999);
+	let block = f.block(&[]);
+	f.chain
+		.process_block_header(&block.header, Options::NONE)
+		.unwrap();
+	let mut invalid = block.clone();
+	invalid.header.height += 1;
+	let bad_peer = PeerInfo {
+		addr: PeerAddr::Ip("127.0.0.2:3481".parse().unwrap()),
+		live_info: Arc::new(RecursiveRwLock::new(PeerLiveInfo::new(Difficulty::min()))),
+		..f.peer.clone()
+	};
+	assert!(f.peers.block_received(invalid, &bad_peer).unwrap());
+	assert!(f.peers.block_received(block.clone(), &f.peer).unwrap());
+	assert_eq!(f.chain.head().unwrap().height, 3);
+	assert!(!f.peers.is_banned(&bad_peer.addr).unwrap());
+	f.manager.sync_request(&f.peers).unwrap();
+	assert_eq!(
+		f.chain.head().unwrap().last_block_h,
+		block.hash(f.context).unwrap()
+	);
+	assert!(f.peers.is_banned(&bad_peer.addr).unwrap());
+	assert!(!f.peers.is_banned(&f.peer.addr).unwrap());
+}
+
 // Each fixture has its own context and temporary chain/peer stores. It starts
 // at height 3, with the height-1 coinbase mature enough to spend. Using the real
 // chain adapter and PeerStore exposes bans from both chain rejection callbacks
@@ -653,10 +680,8 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 		assert!(f
 			.manager
 			.has_block_request(&other_peer.info.addr, &block.hash(f.context).unwrap()));
-		assert!(f
-			.peers
-			.block_received(&mut f.secp, block, &other_peer.info)
-			.unwrap());
+		assert!(f.peers.block_received(block, &other_peer.info).unwrap());
+		f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	}
 	assert_eq!(requests, vec![mwc_p2p::msg::Type::GetBlock; 2]);
 	assert_eq!(f.chain.head().unwrap(), other_tip);
@@ -668,8 +693,9 @@ fn unsupported_headers_switch_to_the_remaining_peers_branch() {
 		.unwrap();
 	assert!(f
 		.manager
-		.receive_block(&mut f.secp, &late, &strong_peer.info, false)
+		.receive_block(&late, &strong_peer.info, false)
 		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(!f
 		.manager
 		.has_block_request(&strong_peer.info.addr, &requested_hash));
@@ -906,10 +932,8 @@ fn missing_ancestry_announcements_wait_for_the_sync_loop() {
 		let peer = Arc::new(peer);
 		f.peers.add_connected(peer.clone()).unwrap();
 		if full_block {
-			assert!(f
-				.peers
-				.block_received(&mut f.secp, child.clone(), &peer.info)
-				.unwrap());
+			assert!(f.peers.block_received(child.clone(), &peer.info).unwrap());
+			f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 		} else {
 			assert!(f
 				.peers
@@ -945,20 +969,16 @@ fn missing_ancestry_announcements_wait_for_the_sync_loop() {
 		// request both bodies, and accepting the parent must not replay a child.
 		f.manager.sync_request(&f.peers).unwrap();
 		assert_eq!(receiver.try_iter().count(), 2);
-		assert!(f
-			.peers
-			.block_received(&mut f.secp, parent, &peer.info)
-			.unwrap());
+		assert!(f.peers.block_received(parent, &peer.info).unwrap());
+		f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 		assert_eq!(f.chain.head().unwrap().height, 4);
 		assert!(!f
 			.chain
 			.block_exists(&child.hash(f.context).unwrap())
 			.unwrap());
 		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
-		assert!(f
-			.peers
-			.block_received(&mut f.secp, child, &peer.info)
-			.unwrap());
+		assert!(f.peers.block_received(child, &peer.info).unwrap());
+		f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 		assert_eq!(f.chain.head().unwrap().height, 5);
 	}
 }
@@ -1643,8 +1663,9 @@ fn compact_proof_variant_requests_full_block_without_banning_sender() {
 	f.add_transaction(local);
 	assert!(f
 		.peers
-		.compact_block_received(&mut f.secp, compact.clone(), &f.peer)
+		.compact_block_received(compact.clone(), &f.peer)
 		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 3);
 	assert!(!f.peers.is_banned(&f.peer.addr).unwrap());
 	let requests = f.request_missing_bodies();
@@ -1653,10 +1674,8 @@ fn compact_proof_variant_requests_full_block_without_banning_sender() {
 	// An immediate repeat must not start another reconstruction attempt. Its
 	// cached completion timestamp must remain unchanged throughout the cooldown.
 	let finished = f.adapter.compact_block_reconstruction_cache.read()[&hash];
-	assert!(f
-		.peers
-		.compact_block_received(&mut f.secp, compact, &f.peer)
-		.unwrap());
+	assert!(f.peers.compact_block_received(compact, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		f.adapter.compact_block_reconstruction_cache.read()[&hash],
 		finished
@@ -1666,14 +1685,13 @@ fn compact_proof_variant_requests_full_block_without_banning_sender() {
 	// actually supplies this incorrect full body must still be penalized.
 	let mut bad_peer = f.peer.clone();
 	bad_peer.addr = PeerAddr::Ip("127.0.0.2:3414".parse().unwrap());
-	assert!(!f
-		.peers
-		.block_received(&mut f.secp, hydrated, &bad_peer)
-		.unwrap());
+	assert!(f.peers.block_received(hydrated, &bad_peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(f.peers.is_banned(&bad_peer.addr).unwrap());
 	// Complete the fallback with the exact mined body. The earlier failed local
 	// guess must not prevent acceptance or leave the honest sender banned.
-	assert!(f.peers.block_received(&mut f.secp, block, &f.peer).unwrap());
+	assert!(f.peers.block_received(block, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 4);
 	assert!(!f.peers.is_banned(&f.peer.addr).unwrap());
 }
@@ -1698,17 +1716,16 @@ fn compact_matching_transaction_is_accepted_without_full_block_request() {
 	f.peers.add_connected(Arc::new(observer)).unwrap();
 	assert!(f
 		.peers
-		.compact_block_received(&mut f.secp, compact.clone(), &f.peer)
+		.compact_block_received(compact.clone(), &f.peer)
 		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 4);
 	assert_eq!(
 		broadcasts.try_recv().unwrap().message_type_for_test(),
 		mwc_p2p::msg::Type::CompactBlock
 	);
-	assert!(f
-		.peers
-		.compact_block_received(&mut f.secp, compact, &f.peer)
-		.unwrap());
+	assert!(f.peers.compact_block_received(compact, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(broadcasts.try_iter().count(), 0);
 	let requests = f.request_missing_bodies();
 	assert_eq!(requests.try_iter().count(), 0);
@@ -1743,15 +1760,11 @@ fn body_catch_up_relays_only_the_completed_header_tip() {
 		.update(child.header.height, child.header.total_difficulty());
 	let messages = f.request_missing_bodies();
 	assert_eq!(messages.try_iter().count(), 2);
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, child.clone(), &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(child.clone(), &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(messages.try_iter().count(), 0);
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, parent, &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(parent, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		f.chain.head().unwrap().last_block_h,
 		child.hash(f.context).unwrap()
@@ -1866,27 +1879,21 @@ fn announced_headers_request_their_bodies_and_relay_the_completed_tip() {
 		.headers_received(&[child.header.clone()], 0, &second.info)
 		.unwrap();
 	assert_eq!(second_messages.try_iter().count(), 0);
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, child.clone(), &first.info)
-		.unwrap());
+	assert!(f.peers.block_received(child.clone(), &first.info).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(!f
 		.manager
 		.has_block_request(&second.info.addr, &child.hash(f.context).unwrap()));
 	let mut duplicate = child.clone();
 	duplicate.body.outputs[0].proof.proof[0] ^= 1;
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, duplicate, &second.info)
-		.unwrap());
+	assert!(f.peers.block_received(duplicate, &second.info).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		first_messages.try_iter().count() + second_messages.try_iter().count(),
 		0
 	);
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, parent, &first.info)
-		.unwrap());
+	assert!(f.peers.block_received(parent, &first.info).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap(), f.chain.header_head().unwrap());
 	assert_eq!(
 		f.chain.head().unwrap().last_block_h,
@@ -1928,17 +1935,13 @@ fn reorg_bodies_relay_only_when_the_new_branch_reaches_the_header_tip() {
 	let messages = f.request_missing_bodies();
 	assert_eq!(messages.try_iter().count(), 4);
 	for block in &fork[..3] {
-		assert!(f
-			.peers
-			.block_received(&mut f.secp, block.clone(), &f.peer)
-			.unwrap());
+		assert!(f.peers.block_received(block.clone(), &f.peer).unwrap());
+		f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 		assert_eq!(f.chain.head().unwrap(), old_head);
 		assert_eq!(messages.try_iter().count(), 0);
 	}
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, fork[3].clone(), &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(fork[3].clone(), &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap(), target);
 	assert_eq!(
 		messages.try_recv().unwrap().message_type_for_test(),
@@ -1972,18 +1975,13 @@ fn unsolicited_headers_and_blocks_wait_for_snapshot_validation() {
 	f.peers
 		.headers_received(&[block.header.clone()], 0, &peer.info)
 		.unwrap();
+	assert!(f.peers.block_received(block.clone(), &peer.info).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(f
 		.peers
-		.block_received(&mut f.secp, block.clone(), &peer.info)
+		.compact_block_received(CompactBlock::from(block.clone()).unwrap(), &peer.info)
 		.unwrap());
-	assert!(f
-		.peers
-		.compact_block_received(
-			&mut f.secp,
-			CompactBlock::from(block.clone()).unwrap(),
-			&peer.info
-		)
-		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap(), old_head);
 	assert_eq!(f.chain.header_head().unwrap(), old_head);
 	assert_eq!(messages.try_iter().count(), 0);
@@ -2028,10 +2026,8 @@ fn accepted_fork_does_not_relay_while_existing_heads_match() {
 		messages.try_recv().unwrap().message_type_for_test(),
 		mwc_p2p::msg::Type::CompactBlock
 	);
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, fork.clone(), &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(fork.clone(), &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(!f
 		.chain
 		.block_exists(&fork.hash(f.context).unwrap())
@@ -2085,10 +2081,8 @@ fn compact_missing_parent_fetches_full_body_into_body_sync_queue() {
 		.process_block_header(&parent.header, Options::NONE)
 		.unwrap();
 	f.add_transaction(local);
-	assert!(f
-		.peers
-		.compact_block_received(&mut f.secp, compact, &f.peer)
-		.unwrap());
+	assert!(f.peers.compact_block_received(compact, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(!f.chain.block_exists(&hash).unwrap());
 	let requests = f.request_missing_bodies();
 	assert!(requests.try_iter().count() > 0);
@@ -2097,15 +2091,14 @@ fn compact_missing_parent_fetches_full_body_into_body_sync_queue() {
 
 	// The requested full response stays in its task until the parent arrives.
 	// It must not be applied early or inherit the failed local reconstruction.
-	assert!(f.peers.block_received(&mut f.secp, child, &f.peer).unwrap());
+	assert!(f.peers.block_received(child, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(!f.chain.block_exists(&hash).unwrap());
 	assert_eq!(f.chain.head().unwrap().height, 3);
 	// Parent arrival applies the ready prefix, preserving the child's supplier
 	// identity through deferred validation.
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, parent, &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(parent, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 5);
 	assert!(!f.peers.is_banned(&f.peer.addr).unwrap());
 }
@@ -2139,12 +2132,9 @@ fn a_full_response_replaces_a_buffered_reconstruction_without_blame() {
 	f.add_transaction(local);
 	assert!(f
 		.peers
-		.compact_block_received(
-			&mut f.secp,
-			CompactBlock::from(child.clone()).unwrap(),
-			&f.peer
-		)
+		.compact_block_received(CompactBlock::from(child.clone()).unwrap(), &f.peer)
 		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 3);
 	let full_supplier = PeerInfo {
 		addr: PeerAddr::Ip("127.0.0.2:3438".parse().unwrap()),
@@ -2153,12 +2143,11 @@ fn a_full_response_replaces_a_buffered_reconstruction_without_blame() {
 	};
 	assert!(f
 		.peers
-		.block_received(&mut f.secp, child.clone(), &full_supplier)
+		.block_received(child.clone(), &full_supplier)
 		.unwrap());
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, parent, &f.peer)
-		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
+	assert!(f.peers.block_received(parent, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		f.chain.head().unwrap().last_block_h,
 		child.hash(f.context).unwrap()
@@ -2208,16 +2197,12 @@ fn body_sync_bans_buffered_child_supplier_without_banning_parent_supplier() {
 	};
 	let mut invalid_child = child.clone();
 	invalid_child.body.outputs[0].proof.proof[0] ^= 1;
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, invalid_child, &bad_peer)
-		.unwrap());
+	assert!(f.peers.block_received(invalid_child, &bad_peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 3);
 	assert!(!f.peers.is_banned(&bad_peer.addr).unwrap());
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, parent, &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(parent, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 4);
 	assert!(f.peers.is_banned(&bad_peer.addr).unwrap());
 	assert!(!f.peers.is_banned(&f.peer.addr).unwrap());
@@ -2226,7 +2211,8 @@ fn body_sync_bans_buffered_child_supplier_without_banning_parent_supplier() {
 	assert!(f
 		.manager
 		.has_block_request(&f.peer.addr, &child.hash(f.context).unwrap()));
-	assert!(f.peers.block_received(&mut f.secp, child, &f.peer).unwrap());
+	assert!(f.peers.block_received(child, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(f.chain.head().unwrap().height, 5);
 	assert!(!f.peers.is_banned(&f.peer.addr).unwrap());
 }
@@ -2238,28 +2224,25 @@ fn body_sync_bans_buffered_child_supplier_without_banning_parent_supplier() {
 fn full_blocks_preserve_best_peer_tip() {
 	let mut f = Fixture::new(1_934_030);
 	let known = f.history.last().unwrap().clone();
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, known.clone(), &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(known.clone(), &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		f.peer.get_height_and_difficulty(),
 		(known.header.height, known.header.total_difficulty())
 	);
 
 	let block = f.block(&[]);
-	assert!(f
-		.peers
-		.block_received(&mut f.secp, block.clone(), &f.peer)
-		.unwrap());
+	assert!(f.peers.block_received(block.clone(), &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		f.peer.get_height_and_difficulty(),
 		(block.header.height, block.header.total_difficulty())
 	);
 	assert!(f
 		.peers
-		.block_received(&mut f.secp, f.history[0].clone(), &f.peer)
+		.block_received(f.history[0].clone(), &f.peer)
 		.unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert_eq!(
 		f.peer.get_height_and_difficulty(),
 		(block.header.height, block.header.total_difficulty())
@@ -2278,10 +2261,8 @@ fn compact_invalid_header_still_bans_sender() {
 	let block = f.block(&[tx]);
 	let mut compact = CompactBlock::from(block).unwrap();
 	compact.header.height += 1;
-	assert!(!f
-		.peers
-		.compact_block_received(&mut f.secp, compact, &f.peer)
-		.unwrap());
+	assert!(!f.peers.compact_block_received(compact, &f.peer).unwrap());
+	f.manager.process_block_inbox_for_test(&f.peers).unwrap();
 	assert!(f.peers.is_banned(&f.peer.addr).unwrap());
 	assert_eq!(f.peer.get_height_and_difficulty(), (0, Difficulty::min()));
 }

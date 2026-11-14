@@ -499,7 +499,6 @@ where
 
 	fn block_received(
 		&self,
-		secp: &mut Secp256k1,
 		b: core::Block,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
@@ -512,13 +511,9 @@ where
 			return Ok(true);
 		}
 
-		let chain = self.chain()?;
-		let total_blocks = chain.header_head()?.height;
-
 		info!(
-			"Received block {} of {} hash {} from {} [in/out/kern: {}/{}/{}] going to process. Prev block Hash: {}",
+			"Received block {} hash {} from {} [in/out/kern: {}/{}/{}] queuing for processing. Prev block Hash: {}",
 			b.header.height,
-			total_blocks,
 			b_hash,
 			peer_info.addr,
 			b.inputs().len(),
@@ -526,12 +521,11 @@ where
 			b.kernels().len(),
 			b.header.prev_hash,
 		);
-		self.sync_manager.receive_block(secp, &b, peer_info, false)
+		self.sync_manager.receive_block(&b, peer_info, false)
 	}
 
 	fn compact_block_received(
 		&self,
-		secp: &mut Secp256k1,
 		cb: CompactBlock,
 		peer_info: &PeerInfo,
 	) -> Result<bool, mwc_chain::Error> {
@@ -601,7 +595,7 @@ where
 							hook.on_block_received(self.context_id, &block, &peer_info.addr);
 						}
 					}
-					let result = self.block_received(secp, block, peer_info);
+					let result = self.block_received(block, peer_info);
 					if let Err(error) = &result {
 						error!(
 							"Failed to process hydrated block {} from {}: {}",
@@ -685,8 +679,7 @@ where
 					}
 				}
 
-				self.sync_manager
-					.receive_block(secp, &block, peer_info, true)
+				self.sync_manager.receive_block(&block, peer_info, true)
 			})();
 			// Finish on every outcome, including local errors and full-block fallback.
 			finish_compact_block_reconstruction(&self.compact_block_reconstruction_cache, &cb_hash);
@@ -2053,9 +2046,7 @@ mod test {
 				// still reach reconstruction (saturating subtraction).
 				let cb = with_missing_kernel(block.clone());
 				let hash = cb.hash(CONTEXT).unwrap();
-				assert!(adapter
-					.compact_block_received(&mut secp, cb, &peer)
-					.unwrap());
+				assert!(adapter.compact_block_received(cb, &peer).unwrap());
 				assert!(adapter
 					.compact_block_reconstruction_cache
 					.read()
@@ -2081,9 +2072,7 @@ mod test {
 				CompactBlock::from(block.clone()).unwrap(),
 				with_missing_kernel(block.clone()),
 			] {
-				assert!(adapter
-					.compact_block_received(&mut secp, cb, &peer)
-					.unwrap());
+				assert!(adapter.compact_block_received(cb, &peer).unwrap());
 			}
 		}
 		assert!(adapter.compact_block_reconstruction_cache.read().is_empty());
@@ -2093,9 +2082,7 @@ mod test {
 		// off-by-one error in the admission check.
 		let mut boundary = with_missing_kernel(old_blocks.pop().unwrap());
 		boundary.header.height = final_horizon;
-		assert!(!adapter
-			.compact_block_received(&mut secp, boundary, &peer)
-			.unwrap());
+		assert!(!adapter.compact_block_received(boundary, &peer).unwrap());
 	}
 
 	#[test]

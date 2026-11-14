@@ -705,7 +705,21 @@ impl StateSync {
 			.live_desegmenter()
 			.ok_or(mwc_chain::Error::Other("Desegmenter is not created".into()))?;
 		let desegmenter = session.desegmenter.as_ref();
-		self.apply_ready_tasks(desegmenter, sync_peers)?;
+		// Keep request suppliers bound to the pinned session and selected root.
+		let mut root_hash_peers: Vec<Arc<Peer>> = Vec::new();
+		let mut other_hashes = 0;
+		for p in peers {
+			let addr = &p.info.addr;
+			if let Some((hash, _)) = self.responded_root_hash.read().get(addr) {
+				if hash == &session.root_hash {
+					root_hash_peers.push(p.clone());
+				} else {
+					other_hashes += 1;
+				}
+			}
+		}
+
+		let response = self.request_segments(&root_hash_peers, &session, sync_peers)?;
 
 		if desegmenter.is_complete() {
 			// Be very conservative once the PIBD state is complete: any failure
@@ -805,20 +819,6 @@ impl StateSync {
 			.count();
 		sync_state.update(desegmenter.get_pibd_progress(buffered));
 
-		// let's check what peers with root hash are exist
-		let mut root_hash_peers: Vec<Arc<Peer>> = Vec::new();
-		let mut other_hashes = 0;
-		for p in peers {
-			let addr = &p.info.addr;
-			if let Some((hash, _)) = self.responded_root_hash.read().get(addr) {
-				if hash == &session.root_hash {
-					root_hash_peers.push(p.clone());
-				} else {
-					other_hashes += 1;
-				}
-			}
-		}
-
 		if root_hash_peers.is_empty() {
 			if other_hashes > 0 {
 				// No peers committed to the selected root remain available while
@@ -855,7 +855,7 @@ impl StateSync {
 			}
 		}
 
-		self.send_requests(&root_hash_peers, &session, sync_peers)
+		Ok(response)
 	}
 
 	// return true: PIBD import is complete, and we still retain the peers’ root endorsements for the first-block failure handling.
@@ -1268,6 +1268,19 @@ impl StateSync {
 		)
 	}
 
+	fn request_segments(
+		&self,
+		peers: &[Arc<Peer>],
+		session: &LiveDesegmenter<'_>,
+		scores: &SyncPeers,
+	) -> Result<SyncResponse, mwc_chain::Error> {
+		// Reuse settled peer slots while storage applies the ready batch, then
+		// refill the task-window space freed by committed segments this tick.
+		self.send_requests(peers, session, scores)?;
+		self.apply_ready_tasks(&session.desegmenter, scores)?;
+		self.send_requests(peers, session, scores)
+	}
+
 	fn send_requests(
 		&self,
 		peers: &[Arc<Peer>],
@@ -1277,11 +1290,18 @@ impl StateSync {
 		// Planning uses committed cursors plus queued tasks. It must not observe
 		// the queue while a removed task is still being applied.
 		let _apply = self.apply_lock.lock();
+		// Refilling now precedes application, so retain its local-recovery check
+		// before planning or sending anything against an invalidated session.
+		if !session.desegmenter.is_current() {
+			return Err(mwc_chain::Error::ChainRestartRequired);
+		}
 		let mut download = self.download.lock();
 		if let Err(error) = download.fill_tasks(&session.desegmenter, &self.pibd_params) {
 			// Keep the existing session recovery policy for planning failures.
 			error!("Failed to plan snapshot segments: {}", error);
-			self.ban_this_session(&session.root_hash, scores);
+			if !matches!(&error, mwc_chain::Error::ChainRestartRequired) {
+				self.ban_this_session(&session.root_hash, scores);
+			}
 			return Err(error);
 		}
 		let per_peer = self.pibd_params.get_segments_request_per_peer();
@@ -1311,7 +1331,12 @@ impl StateSync {
 			.filter_map(|(_, latency)| *latency)
 			.min()
 			.unwrap_or(1);
-		let last_index = download.tasks.len().saturating_sub(1);
+		let last_index = download
+			.tasks
+			.iter()
+			.filter(|task| task.received.is_none())
+			.count()
+			.saturating_sub(1);
 		let candidates: Vec<_> = latencies
 			.into_iter()
 			.map(|(peer, latency)| {
@@ -1331,8 +1356,15 @@ impl StateSync {
 		// No available peer means there is no reason to scan the task queue.
 		if let Some(max_first_index) = max_first_index {
 			let mut rng = rand::rng();
-			for (index, task) in download.tasks.iter_mut().enumerate() {
-				if task.request.is_some() || task.received.is_some() {
+			// Buffered segments still occupy the window, but the first missing
+			// segment keeps index zero even before the ready batch is applied.
+			for (index, task) in download
+				.tasks
+				.iter_mut()
+				.filter(|task| task.received.is_none())
+				.enumerate()
+			{
+				if task.request.is_some() {
 					continue;
 				}
 				let Some(peer) = candidates
@@ -1530,10 +1562,7 @@ mod task_tests {
 		fn poll(&self) {
 			let session = self.sync.live_desegmenter().unwrap();
 			self.sync
-				.apply_ready_tasks(&session.desegmenter, &self.scores)
-				.unwrap();
-			self.sync
-				.send_requests(
+				.request_segments(
 					&self.sync.eligible_peers(&self.peers),
 					&session,
 					&self.scores,
@@ -1895,6 +1924,86 @@ mod task_tests {
 			first_messages.try_iter().count() + second_messages.try_iter().count(),
 			0
 		);
+	}
+
+	#[test]
+	fn segment_requests_refill_before_storage_and_after_bitmap_application() {
+		let mut f = Fixture::new();
+		f.sync.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let (peer, messages) = f.peer(1);
+		let session = f.sync.live_desegmenter().unwrap();
+		let segmenter = f.source.segmenter().unwrap();
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 1);
+		let bitmap = f.sync.download.lock().tasks[0].id.identifier;
+		f.sync
+			.receive_bitmap_segment(
+				&peer.info.addr,
+				&session.archive_hash,
+				segmenter.bitmap_segment(bitmap).unwrap(),
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
+		// Applying the bitmap makes the other streams requestable in this tick.
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 2);
+		let output = f
+			.sync
+			.download
+			.lock()
+			.tasks
+			.iter()
+			.find(|task| task.id.segment_type == SegmentType::Output)
+			.unwrap()
+			.id
+			.identifier;
+		f.sync
+			.receive_output_segment(
+				&peer.info.addr,
+				&session.archive_hash,
+				segmenter.output_segment(output).unwrap(),
+				&f.peers,
+				&f.scores,
+			)
+			.unwrap();
+		assert_eq!(
+			f.sync
+				.download
+				.lock()
+				.tasks
+				.iter()
+				.filter(|task| task.received.is_some())
+				.count(),
+			1
+		);
+
+		std::thread::scope(|scope| {
+			let store = f.sync.chain.get_store_for_tests();
+			let writer = store.batch_write().unwrap();
+			let poll = scope.spawn(|| {
+				global::set_local_chain_type(global::ChainTypes::Floonet);
+				global::set_local_nrd_enabled(false);
+				f.poll();
+			});
+			let request = messages.recv_timeout(Duration::from_secs(2));
+			// A missing refill must fail without leaving the writer blocked on storage.
+			drop(writer);
+			assert_eq!(
+				request.unwrap().message_type_for_test(),
+				mwc_p2p::msg::Type::GetKernelSegment
+			);
+			poll.join().unwrap();
+		});
+		let download = f.sync.download.lock();
+		assert_eq!(download.tasks.len(), 2);
+		assert!(download
+			.tasks
+			.iter()
+			.all(|task| task.id.segment_type != SegmentType::Output
+				&& task.request.is_some()
+				&& task.received.is_none()));
+		assert_eq!(messages.try_iter().count(), 0);
 	}
 
 	#[test]
@@ -2415,7 +2524,8 @@ mod task_tests {
 			.unwrap();
 		for _ in 0..2 {
 			assert!(matches!(
-				f.sync.apply_ready_tasks(&session.desegmenter, &f.scores),
+				f.sync
+					.request_segments(&[peer.clone()], &session, &f.scores),
 				Err(mwc_chain::Error::ChainRestartRequired)
 			));
 		}

@@ -23,9 +23,9 @@ use mwc_core::global;
 use mwc_crates::log::{debug, info};
 use mwc_crates::parking_lot::Mutex;
 use mwc_crates::rand::prelude::*;
-use mwc_crates::secp::{ContextFlag, Secp256k1};
+use mwc_crates::secp::Secp256k1;
 use mwc_p2p::{Capabilities, Peer, PeerAddr, PeerInfo, Peers};
-use mwc_util::LatencyTracker;
+use mwc_util::{secp_static, LatencyTracker};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -49,6 +49,18 @@ struct ReceivedBlock {
 	// A compact body can contain local txpool guesses. Never blame its peer
 	// for those guesses, and allow a full response to replace them.
 	reconstructed: bool,
+}
+
+pub(super) struct IncomingBlock {
+	pub block: Block,
+	pub peer: PeerInfo,
+	pub reconstructed: bool,
+	pub received_at: Instant,
+}
+
+struct BlockInbox {
+	blocks: VecDeque<IncomingBlock>,
+	capacity: usize,
 }
 
 struct BodyTaskRequest {
@@ -134,7 +146,10 @@ impl BodyDownload {
 pub struct BodySync {
 	chain: Arc<Chain>,
 	pibd_params: Arc<PibdParams>,
-	// Serialize scheduling, receipt and application. Chain rejection callbacks
+	// Peer readers only acquire this lock. The sync thread releases it before
+	// touching the task queue, chain locks or disk.
+	inbox: Mutex<BlockInbox>,
+	// Serialize scheduling, response processing and application. Chain rejection callbacks
 	// report bans and PIBD failures without reentering this queue.
 	download: Mutex<BodyDownload>,
 }
@@ -157,14 +172,51 @@ impl BodySync {
 	}
 
 	pub fn new(chain: Arc<Chain>) -> Self {
+		let inbox_capacity = chain
+			.get_pibd_params()
+			.get_blocks_request_limit(None)
+			.saturating_mul(2);
 		Self {
 			pibd_params: chain.get_pibd_params().clone(),
 			chain,
+			inbox: Mutex::new(BlockInbox {
+				blocks: VecDeque::new(),
+				capacity: inbox_capacity,
+			}),
 			download: Mutex::new(BodyDownload {
 				tasks: VecDeque::new(),
 				latency: LatencyTracker::new(),
 			}),
 		}
+	}
+
+	/// Queue a response without waiting for block application. Overflow leaves
+	/// its request unanswered so the normal timeout/retry path can recover it.
+	pub(super) fn enqueue_block(
+		&self,
+		block: &Block,
+		peer: &PeerInfo,
+		reconstructed: bool,
+	) -> bool {
+		let received_at = Instant::now();
+		let mut inbox = self.inbox.lock();
+		if inbox.blocks.len() >= inbox.capacity {
+			return false;
+		}
+		inbox.blocks.push_back(IncomingBlock {
+			block: block.clone(),
+			peer: peer.clone(),
+			reconstructed,
+			received_at,
+		});
+		true
+	}
+
+	/// Take the entire buffer for local processing. Replies arriving afterwards
+	/// stay in the inbox; request expiry uses the same cutoff as this transfer.
+	pub(super) fn take_inbox(&self) -> (VecDeque<IncomingBlock>, Instant) {
+		let mut inbox = self.inbox.lock();
+		(std::mem::take(&mut inbox.blocks), Instant::now())
 	}
 
 	#[cfg(all(test, feature = "test-support"))]
@@ -174,11 +226,11 @@ impl BodySync {
 		})
 	}
 
-	pub(super) fn reset(&self, scores: &SyncPeers) {
+	pub(super) fn reset(&self, scores: &SyncPeers, timeout_cutoff: Instant) {
 		let mut download = self.download.lock();
 		download.obsolete_from(0);
 		// Continue accounting for requests even while snapshot work pauses BodySync.
-		download.expire_requests(Instant::now(), scores);
+		download.expire_requests(timeout_cutoff, scores);
 	}
 
 	fn get_task_num_limit(&self, download: &BodyDownload) -> usize {
@@ -225,6 +277,9 @@ impl BodySync {
 	/// bodies: those can be stored even while head() still belongs to another branch.
 	fn fill_tasks(&self, download: &mut BodyDownload) -> Result<(), Error> {
 		let limit = self.get_task_num_limit(download);
+		// Cache the allowed window, not its current occupancy (which may be zero).
+		// A lower limit never discards replies already queued.
+		self.inbox.lock().capacity = limit.saturating_mul(2);
 		let tasks = &mut download.tasks;
 		// A smaller limit stops refilling; existing requests and buffered blocks
 		// stay until applied, answered or expired. Obsolete requests still consume space.
@@ -335,10 +390,12 @@ impl BodySync {
 	}
 
 	/// Collect the consecutive prefix of received full bodies eligible for batching.
+	/// The flag is true at the tip, the end of the queue, or a boundary requiring
+	/// individual processing; false means we are waiting for another downloaded body.
 	fn ready_full_blocks(
 		&self,
 		download: &BodyDownload,
-	) -> Result<(Vec<Block>, Vec<usize>), Error> {
+	) -> Result<(Vec<Block>, Vec<usize>, bool), Error> {
 		let target = self.chain.header_head()?.height;
 		let mut blocks = Vec::new();
 		let mut indices = Vec::new();
@@ -350,19 +407,21 @@ impl BodySync {
 		{
 			// A shared PMMR/DB commit breaks rewind by one block. Apply every
 			// block within SINGLE_BLOCK_TIP_DISTANCE of the tip individually instead.
-			if target.saturating_sub(task.height) < SINGLE_BLOCK_TIP_DISTANCE {
-				break;
+			if target.saturating_sub(task.height) < SINGLE_BLOCK_TIP_DISTANCE
+				|| self.chain.block_exists(&task.hash)?
+			{
+				return Ok((blocks, indices, true));
 			}
 			let Some(response) = &task.received else {
-				break;
+				return Ok((blocks, indices, false));
 			};
 			if response.reconstructed || self.get_task_canonical_header(task)?.is_none() {
-				break;
+				return Ok((blocks, indices, true));
 			}
 			blocks.push(response.block.clone());
 			indices.push(index);
 		}
-		Ok((blocks, indices))
+		Ok((blocks, indices, true))
 	}
 
 	/// Apply only the ready prefix, including bodies already stored after a rewind.
@@ -374,7 +433,11 @@ impl BodySync {
 		secp: &mut Secp256k1,
 		scores: &SyncPeers,
 	) -> Result<Option<PeerAddr>, Error> {
-		let (blocks, indices) = self.ready_full_blocks(download)?;
+		let (blocks, indices, reached_boundary) = self.ready_full_blocks(download)?;
+		let minimum_batch = (download.tasks.len() / 3).min(10);
+		if !reached_boundary && blocks.len() < minimum_batch {
+			return Ok(None);
+		}
 		if blocks.len() > 1 {
 			match self
 				.chain
@@ -536,6 +599,7 @@ impl BodySync {
 		sync_state: &SyncState,
 		scores: &SyncPeers,
 		headers_in_flight: bool,
+		timeout_cutoff: Instant,
 	) -> Result<SyncResponse, Error> {
 		let target = self.chain.header_head()?;
 		let head = self.chain.head()?;
@@ -552,7 +616,7 @@ impl BodySync {
 				"Processing body tasks".into(),
 			));
 		};
-		download.expire_requests(Instant::now(), scores);
+		download.expire_requests(timeout_cutoff, scores);
 		scores.apply_peers_status(peers);
 		if head.last_block_h == target.last_block_h {
 			download.obsolete_from(0);
@@ -563,8 +627,12 @@ impl BodySync {
 			));
 		}
 		self.retire_noncanonical_tasks(&mut download)?;
-		let mut secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-		self.apply_ready_tasks(&mut download, &mut secp, scores)?;
+		// Refill settled request slots before validation and disk commits, so
+		// peers can send the next replies while the ready batch is applied.
+		let mut required_capabilities = self.refill_requests(&mut download, peers, scores)?;
+		secp_static::with_commit_mut(Error::from, |secp| {
+			self.apply_ready_tasks(&mut download, secp, scores)
+		})?;
 		let head = self.chain.head()?;
 		let target = self.chain.header_head()?;
 		if head.last_block_h == target.last_block_h {
@@ -575,31 +643,10 @@ impl BodySync {
 				format!("Body and header heads match at {}", head.height),
 			));
 		}
-		self.fill_tasks(&mut download)?;
-		let horizon = u64::from(global::cut_through_horizon(self.chain.get_context_id()));
-		let horizon_height = target.height.saturating_sub(horizon);
+		// Committing the prefix frees task-window capacity as well. Fill that
+		// space now, without waiting for the next sync cycle.
+		required_capabilities |= self.refill_requests(&mut download, peers, scores)?;
 
-		// Snapshot peer latencies once per pass. Eligibility and the
-		// best latency are determined per block, since suppliers differ by height.
-		let candidates: Vec<_> = self
-			.canonical_peers(peers)?
-			.into_iter()
-			.map(|(peer, height)| {
-				let latency = peer
-					.response_latency()
-					.map(|latency| latency.as_millis().max(1));
-				(peer, height, latency)
-			})
-			.collect();
-		let per_peer = self.pibd_params.get_blocks_request_per_peer();
-		let mut peer_requests = HashMap::<PeerAddr, usize>::new();
-		for request in download
-			.tasks
-			.iter()
-			.filter_map(|task| task.request.as_ref())
-		{
-			*peer_requests.entry(request.peer.clone()).or_default() += 1;
-		}
 		let fork = self.chain.fork_point()?;
 		let current_height = download
 			.tasks
@@ -624,8 +671,51 @@ impl BodySync {
 					|| target.height.saturating_sub(head.height) >= SYNC_STATUS_TIP_DISTANCE
 			},
 		);
-		// Determine peer-discovery requirements even when all current suppliers
-		// are at capacity and the assignment loop can be skipped.
+		let requests = download
+			.tasks
+			.iter()
+			.filter(|task| !task.obsolete && task.request.is_some())
+			.count();
+		Ok(SyncResponse::new(
+			if sync_state.status() == SyncStatus::NoSync
+				&& target.height.saturating_sub(head.height) < SYNC_STATUS_TIP_DISTANCE
+			{
+				SyncRequestResponses::SyncDone
+			} else if requests == 0 {
+				// Connected peers may not qualify until their advertised headers
+				// are verified. That is a header wait, not missing peers.
+				if headers_in_flight {
+					SyncRequestResponses::WaitingForHeaders
+				} else {
+					SyncRequestResponses::WaitingForPeers
+				}
+			} else {
+				SyncRequestResponses::Syncing
+			},
+			required_capabilities,
+			format!(
+				"Canonical bodies {}..{}, {} tasks, {} active requests",
+				fork.height,
+				target.height,
+				download.tasks.len(),
+				requests
+			),
+		))
+	}
+
+	/// Called with download locked; ready responses still occupy the task window.
+	fn refill_requests(
+		&self,
+		download: &mut BodyDownload,
+		peers: &Arc<Peers>,
+		scores: &SyncPeers,
+	) -> Result<Capabilities, Error> {
+		self.fill_tasks(download)?;
+		// Determine peer-discovery requirements before assignment, even when all
+		// current suppliers are at capacity and the assignment loop can be skipped.
+		let target = self.chain.header_head()?;
+		let horizon = u64::from(global::cut_through_horizon(self.chain.get_context_id()));
+		let horizon_height = target.height.saturating_sub(horizon);
 		let mut required_capabilities = Capabilities::UNKNOWN;
 		for task in download.tasks.iter().filter(|task| {
 			!task.obsolete
@@ -638,6 +728,27 @@ impl BodySync {
 				break;
 			}
 		}
+		// Snapshot peer latencies once per pass. Eligibility and the
+		// best latency are determined per block, since suppliers differ by height.
+		let candidates: Vec<_> = self
+			.canonical_peers(peers)?
+			.into_iter()
+			.map(|(peer, height)| {
+				let latency = peer
+					.response_latency()
+					.map(|latency| latency.as_millis().max(1));
+				(peer, height, latency)
+			})
+			.collect();
+		let per_peer = self.pibd_params.get_blocks_request_per_peer();
+		let mut peer_requests = HashMap::<PeerAddr, usize>::new();
+		for request in download
+			.tasks
+			.iter()
+			.filter_map(|task| task.request.as_ref())
+		{
+			*peer_requests.entry(request.peer.clone()).or_default() += 1;
+		}
 		let mut available_requests: usize = candidates
 			.iter()
 			.map(|(peer, _, _)| {
@@ -646,19 +757,21 @@ impl BodySync {
 			.sum();
 		if available_requests > 0 {
 			let mut rng = mwc_crates::rand::rng();
-			let last_index = download.tasks.len().saturating_sub(1);
-			// Retained requests from obsolete branches consume capacity, but must
-			// not shift the latency offsets of the active queue.
+			let last_index = download
+				.tasks
+				.iter()
+				.filter(|task| !task.obsolete && task.received.is_none())
+				.count()
+				.saturating_sub(1);
+			// Buffered bodies and obsolete requests still consume capacity, but
+			// must not shift the latency index of the earliest missing body.
 			for (index, task) in download
 				.tasks
 				.iter_mut()
-				.filter(|task| !task.obsolete)
+				.filter(|task| !task.obsolete && task.received.is_none())
 				.enumerate()
 			{
-				if task.request.is_some()
-					|| task.received.is_some()
-					|| self.chain.block_exists(&task.hash)?
-				{
+				if task.request.is_some() || self.chain.block_exists(&task.hash)? {
 					continue;
 				}
 				let eligible = candidates.iter().filter(|(peer, peer_height, _)| {
@@ -695,43 +808,14 @@ impl BodySync {
 				}
 			}
 		}
-		let requests = download
-			.tasks
-			.iter()
-			.filter(|task| !task.obsolete && task.request.is_some())
-			.count();
-		Ok(SyncResponse::new(
-			if sync_state.status() == SyncStatus::NoSync
-				&& target.height.saturating_sub(head.height) < SYNC_STATUS_TIP_DISTANCE
-			{
-				SyncRequestResponses::SyncDone
-			} else if requests == 0 {
-				// Connected peers may not qualify until their advertised headers
-				// are verified. That is a header wait, not missing peers.
-				if headers_in_flight {
-					SyncRequestResponses::WaitingForHeaders
-				} else {
-					SyncRequestResponses::WaitingForPeers
-				}
-			} else {
-				SyncRequestResponses::Syncing
-			},
-			required_capabilities,
-			format!(
-				"Canonical bodies {}..{}, {} tasks, {} active requests",
-				fork.height,
-				target.height,
-				download.tasks.len(),
-				requests
-			),
-		))
+		Ok(required_capabilities)
 	}
 
-	/// Accept matching responses from any supplier, or append the next canonical
-	/// body while capacity permits. With no active tasks, only a direct child of
-	/// head() may be applied. While state is not ready, only settle obsolete requests.
+	/// Stage matching responses and settle their requests before body application.
+	/// With no active tasks, preserve immediate handling of a direct child of head().
+	/// While state is not ready, only settle obsolete requests.
 	/// False identifies invalid peer data; ignored data returns true.
-	pub fn receive_block(
+	pub(super) fn stage_block(
 		&self,
 		secp: &mut Secp256k1,
 		block: &Block,
@@ -739,6 +823,7 @@ impl BodySync {
 		reconstructed: bool,
 		state_ready: bool,
 		scores: &SyncPeers,
+		received_at: Instant,
 	) -> Result<bool, Error> {
 		let hash = block.hash(self.chain.get_context_id())?;
 		let mut download = self.download.lock();
@@ -903,14 +988,21 @@ impl BodySync {
 		}
 		// A locally reconstructed guess is not a full response. Preserve the
 		// outstanding request until the actual body arrives or its deadline expires.
-		let latency = if reconstructed {
+		let latency = if reconstructed
+			|| task
+				.request
+				.as_ref()
+				.is_some_and(|req| received_at < req.sent_at)
+		{
+			// An older inbox entry cannot settle a request sent after it arrived
+			// (for example after reconnecting). Keep that on-wire allowance.
 			None
 		} else {
 			task.request
 				.take()
 				.filter(|req| req.peer == peer.addr)
 				.map(|req| {
-					let latency = Instant::now().saturating_duration_since(req.sent_at);
+					let latency = received_at.saturating_duration_since(req.sent_at);
 					if let Some(supplier) = req.supplier.upgrade() {
 						supplier.record_response_latency(latency);
 					}
@@ -927,8 +1019,65 @@ impl BodySync {
 				download.latency.add_latency(latency_ms);
 			}
 		}
-		let rejected = self.apply_ready_tasks(&mut download, secp, scores)?;
+		Ok(true)
+	}
+
+	#[cfg(all(test, feature = "test-support"))]
+	pub(super) fn apply_blocks_for_test(&self, scores: &SyncPeers) -> Result<(), Error> {
+		secp_static::with_commit_mut(Error::from, |secp| {
+			self.apply_ready_tasks(&mut self.download.lock(), secp, scores)
+				.map(|_| ())
+		})
+	}
+
+	// Single-delivery tests retain their original validation/attribution behavior.
+	#[cfg(all(test, feature = "test-support"))]
+	fn process_block(
+		&self,
+		secp: &mut Secp256k1,
+		block: &Block,
+		peer: &PeerInfo,
+		reconstructed: bool,
+		state_ready: bool,
+		scores: &SyncPeers,
+		received_at: Instant,
+	) -> Result<bool, Error> {
+		if !self.stage_block(
+			secp,
+			block,
+			peer,
+			reconstructed,
+			state_ready,
+			scores,
+			received_at,
+		)? {
+			return Ok(false);
+		}
+		let rejected = self.apply_ready_tasks(&mut self.download.lock(), secp, scores)?;
 		Ok(rejected.as_ref() != Some(&peer.addr))
+	}
+
+	// Existing task/validation tests exercise one processing-side delivery at a
+	// time. Runtime receipt always goes through the independently locked inbox.
+	#[cfg(all(test, feature = "test-support"))]
+	fn receive_block(
+		&self,
+		secp: &mut Secp256k1,
+		block: &Block,
+		peer: &PeerInfo,
+		reconstructed: bool,
+		state_ready: bool,
+		scores: &SyncPeers,
+	) -> Result<bool, Error> {
+		self.process_block(
+			secp,
+			block,
+			peer,
+			reconstructed,
+			state_ready,
+			scores,
+			Instant::now(),
+		)
 	}
 }
 
@@ -950,6 +1099,302 @@ mod tests {
 	use mwc_p2p::types::{Direction, PeerLiveInfo};
 	use mwc_p2p::{DummyAdapter, P2PConfig, PeerInfo};
 	use std::collections::HashSet;
+
+	#[test]
+	fn inbox_receipt_does_not_wait_for_the_processing_lock() {
+		let f = Fixture::new(1_935_097, 1);
+		let (peer, _messages) = f.supplier(4297);
+		f.poll();
+		std::thread::scope(|scope| {
+			let processing = f.body.download.lock();
+			let (tx, rx) = std::sync::mpsc::channel();
+			let body = &f.body;
+			let block = &f.blocks[0];
+			let info = &peer.info;
+			scope.spawn(move || {
+				tx.send(body.enqueue_block(block, info, false)).unwrap();
+			});
+			let received = rx.recv_timeout(Duration::from_secs(2));
+			// Release before asserting/joining, so a regression fails without hanging.
+			drop(processing);
+			assert_eq!(received.unwrap(), true);
+		});
+		assert_eq!(f.chain.head().unwrap().height, 0);
+		assert_eq!(f.body.inbox.lock().blocks.len(), 1);
+		let (incoming_blocks, _) = f.body.take_inbox();
+		assert_eq!(incoming_blocks.len(), 1);
+		assert!(f.body.inbox.lock().blocks.is_empty());
+		assert!(f.body.enqueue_block(&f.blocks[0], &peer.info, false));
+		// New arrivals use the shared buffer while the taken batch stays local.
+		assert_eq!(incoming_blocks.len(), 1);
+		assert_eq!(f.body.take_inbox().0.len(), 1);
+	}
+
+	#[test]
+	fn inbox_capacity_uses_the_task_limit_and_overflow_leaves_requests_retryable() {
+		let mut f = Fixture::new(1_935_098, 2);
+		f.body.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let (peer, messages) = f.supplier(4298);
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 2);
+		let capacity = f.body.inbox.lock().capacity;
+		assert_eq!(
+			capacity,
+			2 * f.body.get_task_num_limit(&f.body.download.lock())
+		);
+		assert!(capacity > 2 * f.body.download.lock().tasks.len());
+		for _ in 0..capacity {
+			assert!(f.body.enqueue_block(&f.blocks[0], &peer.info, false));
+		}
+		assert!(!f.body.enqueue_block(&f.blocks[1], &peer.info, false));
+		assert_eq!(f.body.inbox.lock().blocks.len(), capacity);
+		assert_eq!(f.requests_num(), 2);
+		let (incoming_blocks, _) = f.body.take_inbox();
+		assert_eq!(incoming_blocks.len(), capacity);
+		assert!(f.body.inbox.lock().blocks.is_empty());
+		for incoming in incoming_blocks {
+			f.body
+				.process_block(
+					&mut f.secp,
+					&incoming.block,
+					&incoming.peer,
+					incoming.reconstructed,
+					true,
+					&f.scores,
+					incoming.received_at,
+				)
+				.unwrap();
+		}
+		assert_eq!(f.chain.head().unwrap().height, 1);
+		f.expire_requests();
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 1);
+		assert_eq!(f.requests_num(), 1);
+		assert!(!f.peers.is_banned(&peer.info.addr).unwrap());
+	}
+
+	#[test]
+	fn inbox_latency_uses_arrival_time_before_timeout_processing() {
+		let mut f = Fixture::new(1_935_099, 2);
+		let (peer, messages) = f.supplier(4299);
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 2);
+		let sent_at = Instant::now() - Duration::from_secs(10);
+		{
+			let mut download = f.body.download.lock();
+			let request = download.tasks[1].request.as_mut().unwrap();
+			request.sent_at = sent_at;
+			request.expires_at = sent_at + Duration::from_secs(1);
+		}
+		assert!(f.body.enqueue_block(&f.blocks[1], &peer.info, false));
+		f.body.inbox.lock().blocks[0].received_at = sent_at + Duration::from_millis(100);
+		let (mut incoming_blocks, cutoff) = f.body.take_inbox();
+		let incoming = incoming_blocks.pop_front().unwrap();
+		f.body
+			.process_block(
+				&mut f.secp,
+				&incoming.block,
+				&incoming.peer,
+				incoming.reconstructed,
+				true,
+				&f.scores,
+				incoming.received_at,
+			)
+			.unwrap();
+		f.body
+			.request(&f.peers, &f.state, &f.scores, false, cutoff)
+			.unwrap();
+		assert_eq!(peer.response_latency(), Some(Duration::from_millis(100)));
+		assert_eq!(messages.try_iter().count(), 0);
+		assert_eq!(f.requests_num(), 1);
+		assert!(f.body.download.lock().tasks[1].received.is_some());
+	}
+
+	#[test]
+	fn inbox_replies_arriving_during_processing_wait_for_the_next_pass_without_timeout() {
+		let mut f = Fixture::new(1_935_100, 1);
+		let (peer, messages) = f.supplier(4300);
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 1);
+		let (incoming_blocks, cutoff) = f.body.take_inbox();
+		assert!(incoming_blocks.is_empty());
+		let deadline = cutoff + Duration::from_nanos(1);
+		f.body.download.lock().tasks[0]
+			.request
+			.as_mut()
+			.unwrap()
+			.expires_at = deadline;
+		assert!(f.body.enqueue_block(&f.blocks[0], &peer.info, false));
+		assert!(Instant::now() > deadline);
+		f.body
+			.request(&f.peers, &f.state, &f.scores, false, cutoff)
+			.unwrap();
+		assert_eq!(messages.try_iter().count(), 0);
+		assert_eq!(f.requests_num(), 1);
+		assert_eq!(f.body.inbox.lock().blocks.len(), 1);
+		let incoming = f.body.take_inbox().0.pop_front().unwrap();
+		f.body
+			.process_block(
+				&mut f.secp,
+				&incoming.block,
+				&incoming.peer,
+				incoming.reconstructed,
+				true,
+				&f.scores,
+				incoming.received_at,
+			)
+			.unwrap();
+		assert_eq!(f.chain.head().unwrap().height, 1);
+		assert!(peer.is_connected());
+	}
+
+	#[test]
+	fn inbox_reply_does_not_settle_a_request_sent_after_its_arrival() {
+		let mut f = Fixture::new(1_935_101, 1);
+		let (peer, _messages) = f.supplier(4301);
+		f.poll();
+		assert!(f.body.enqueue_block(&f.blocks[0], &peer.info, false));
+		let incoming = f.body.take_inbox().0.pop_front().unwrap();
+		f.body.download.lock().tasks[0]
+			.request
+			.as_mut()
+			.unwrap()
+			.sent_at = incoming.received_at + Duration::from_nanos(1);
+		f.body
+			.process_block(
+				&mut f.secp,
+				&incoming.block,
+				&incoming.peer,
+				incoming.reconstructed,
+				true,
+				&f.scores,
+				incoming.received_at,
+			)
+			.unwrap();
+		assert_eq!(f.chain.head().unwrap().height, 1);
+		assert_eq!(peer.response_latency(), None);
+		assert_eq!(f.requests_num(), 1);
+		assert!(f.body.download.lock().tasks[0].obsolete);
+		f.deliver(0, &peer.info.addr);
+		assert_eq!(f.requests_num(), 0);
+	}
+
+	#[test]
+	fn settled_requests_are_refilled_before_applying_received_blocks() {
+		let mut f = Fixture::new(1_935_102, 8);
+		f.body.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let (peer, messages) = f.supplier(4302);
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 2);
+		for block in &f.blocks[..2] {
+			assert!(f.body.enqueue_block(block, &peer.info, false));
+		}
+		let cutoff = f.stage_inbox();
+		assert_eq!(f.chain.head().unwrap().height, 0);
+		assert_eq!(f.requests_num(), 0);
+
+		std::thread::scope(|scope| {
+			// Hold the database writer while leaving request-side reads available.
+			let store = f.chain.get_store_for_tests();
+			let applying = store.batch_write().unwrap();
+			let body = &f.body;
+			let peers = &f.peers;
+			let state = &f.state;
+			let scores = &f.scores;
+			let request = scope.spawn(move || body.request(peers, state, scores, false, cutoff));
+			let first = messages.recv_timeout(Duration::from_secs(2));
+			let second = messages.recv_timeout(Duration::from_secs(2));
+			// Release before assertions/joining, so a regression cannot deadlock the test.
+			drop(applying);
+			assert_eq!(
+				first.unwrap().message_type_for_test(),
+				mwc_p2p::msg::Type::GetBlock
+			);
+			assert_eq!(
+				second.unwrap().message_type_for_test(),
+				mwc_p2p::msg::Type::GetBlock
+			);
+			request.join().unwrap().unwrap();
+		});
+		assert_eq!(f.chain.head().unwrap().height, 2);
+		assert_eq!(f.requests_num(), 2);
+		assert_eq!(messages.try_iter().count(), 0);
+		for block in &f.blocks[2..4] {
+			assert!(f.body.has_block_request(
+				&peer.info.addr,
+				&block.hash(f.chain.get_context_id()).unwrap()
+			));
+		}
+	}
+
+	#[test]
+	fn buffered_prefix_does_not_shift_latency_priority_before_application() {
+		let mut f = Fixture::new(1_935_104, 8);
+		f.body.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let (fast, fast_messages) = f.supplier(4304);
+		fast.record_response_latency(Duration::from_millis(100));
+		f.retain_window(7);
+		for block in &f.blocks[..2] {
+			assert!(f.body.enqueue_block(block, &fast.info, false));
+		}
+		f.stage_inbox();
+		assert_eq!(f.chain.head().unwrap().height, 0);
+		// Keep the fast peer busy with the first two missing bodies. The next
+		// missing body must wait for it; the slower peer starts at index three.
+		for block in &f.blocks[2..4] {
+			f.body
+				.request_header_block(&block.header, &fast, &f.scores)
+				.unwrap();
+		}
+		assert_eq!(fast_messages.try_iter().count(), 2);
+		let (slow, slow_messages) = f.supplier(4305);
+		slow.record_response_latency(Duration::from_millis(400));
+		let mut download = f.body.download.lock();
+		f.body
+			.refill_requests(&mut download, &f.peers, &f.scores)
+			.unwrap();
+		assert_eq!(fast_messages.try_iter().count(), 0);
+		assert_eq!(slow_messages.try_iter().count(), 2);
+		assert!(download.tasks[4].request.is_none());
+		for index in 5..7 {
+			assert_eq!(
+				download.tasks[index].request.as_ref().unwrap().peer,
+				slow.info.addr
+			);
+		}
+	}
+
+	#[test]
+	fn committed_blocks_free_task_capacity_for_requests_in_the_same_cycle() {
+		let mut f = Fixture::new(1_935_103, 12);
+		f.body.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+		let (peer, messages) = f.supplier(4303);
+		f.poll();
+		assert_eq!(messages.try_iter().count(), 2);
+		let limit = f.body.get_task_num_limit(&f.body.download.lock());
+		assert_eq!(f.body.download.lock().tasks.len(), limit);
+		assert!(limit + 2 <= f.blocks.len());
+		for block in &f.blocks[..limit] {
+			assert!(f.body.enqueue_block(block, &peer.info, false));
+		}
+		let cutoff = f.stage_inbox();
+		assert_eq!(f.chain.head().unwrap().height, 0);
+		assert_eq!(f.requests_num(), 0);
+		f.body
+			.request(&f.peers, &f.state, &f.scores, false, cutoff)
+			.unwrap();
+		assert_eq!(f.chain.head().unwrap().height, limit as u64);
+		assert_eq!(messages.try_iter().count(), 2);
+		assert_eq!(f.requests_num(), 2);
+		for block in &f.blocks[limit..limit + 2] {
+			assert!(f.body.has_block_request(
+				&peer.info.addr,
+				&block.hash(f.chain.get_context_id()).unwrap()
+			));
+		}
+		let download = f.body.download.lock();
+		assert!(download.tasks.len() <= f.body.get_task_num_limit(&download));
+	}
 
 	// Import valid headers from a separate mined chain, leaving their bodies missing
 	// locally. Tests control body delivery and inspect outgoing peer request channels.
@@ -1129,8 +1574,33 @@ mod tests {
 
 		fn poll(&self) -> SyncResponse {
 			self.body
-				.request(&self.peers, &self.state, &self.scores, false)
+				.request(
+					&self.peers,
+					&self.state,
+					&self.scores,
+					false,
+					Instant::now(),
+				)
 				.unwrap()
+		}
+
+		fn stage_inbox(&mut self) -> Instant {
+			let (incoming_blocks, cutoff) = self.body.take_inbox();
+			for incoming in incoming_blocks {
+				assert!(self
+					.body
+					.stage_block(
+						&mut self.secp,
+						&incoming.block,
+						&incoming.peer,
+						incoming.reconstructed,
+						true,
+						&self.scores,
+						incoming.received_at,
+					)
+					.unwrap());
+			}
+			cutoff
 		}
 
 		fn deliver(&mut self, index: usize, peer: &PeerAddr) {
@@ -1169,6 +1639,25 @@ mod tests {
 				.count()
 		}
 
+		// Model an existing queue retained across resource-limit changes so batch
+		// thresholds do not depend on the test host's memory or CPU count.
+		fn retain_window(&self, count: u64) {
+			self.body.download.lock().tasks = (1..=count)
+				.map(|height| BodyTask {
+					hash: self
+						.chain
+						.get_header_by_height(height)
+						.unwrap()
+						.hash(self.chain.get_context_id())
+						.unwrap(),
+					height,
+					obsolete: false,
+					request: None,
+					received: None,
+				})
+				.collect();
+		}
+
 		// Mine a competing branch and import only its headers. Pending body
 		// requests still refer to the original blocks in self.blocks.
 		fn select_fork(&mut self, count: usize) -> Vec<Block> {
@@ -1186,6 +1675,28 @@ mod tests {
 				blocks.push(block);
 			}
 			blocks
+		}
+	}
+
+	#[test]
+	fn sequential_archive_responses_accumulate_before_application() {
+		for (context, window, batch) in [(1_935_095, 6, 2), (1_935_096, 30, 10)] {
+			let mut f = Fixture::new(context, batch);
+			f.body.pibd_params = Arc::new(PibdParams::with_cpu_count_for_test(1));
+			f.extend_headers_to(SINGLE_BLOCK_TIP_DISTANCE + window);
+			let (peer, _rx) = f.supplier(4295);
+			f.retain_window(window);
+			for index in 0..batch - 1 {
+				f.deliver(index, &peer.info.addr);
+				assert_eq!(f.chain.head().unwrap().height, 0);
+			}
+			// A normal scheduling pass must preserve the batch threshold too.
+			f.poll();
+			assert!(!f.body.ready_full_blocks(&f.body.download.lock()).unwrap().2);
+			assert_eq!(f.chain.head().unwrap().height, 0);
+			f.deliver(batch - 1, &peer.info.addr);
+			assert_eq!(f.chain.head().unwrap().height, batch as u64);
+			f.chain.validate(&f.secp, false).unwrap();
 		}
 	}
 
@@ -1262,17 +1773,17 @@ mod tests {
 					.as_mut()
 					.unwrap()
 					.reconstructed = true;
-				assert_eq!(
-					f.body.ready_full_blocks(&download).unwrap().0.len(),
-					(height - 2) as usize
-				);
+				let (blocks, _, reached_boundary) = f.body.ready_full_blocks(&download).unwrap();
+				assert_eq!(blocks.len(), (height - 2) as usize);
+				assert!(reached_boundary);
 				download.tasks[index]
 					.received
 					.as_mut()
 					.unwrap()
 					.reconstructed = false;
 			}
-			let (blocks, _) = f.body.ready_full_blocks(&download).unwrap();
+			let (blocks, _, reached_boundary) = f.body.ready_full_blocks(&download).unwrap();
+			assert!(reached_boundary);
 			assert_eq!(
 				blocks
 					.iter()
@@ -1508,13 +2019,13 @@ mod tests {
 			f.scores
 				.report_no_response(&peer.info.addr, "earlier request".into());
 		}
-		f.body.reset(&f.scores);
+		f.body.reset(&f.scores, Instant::now());
 		assert_eq!(f.requests_num(), 1);
 		f.scores.elapse_no_response_merge_interval(&peer.info.addr);
 		f.expire_requests();
 		for _ in 0..2 {
 			f.scores.elapse_no_response_merge_interval(&peer.info.addr);
-			f.body.reset(&f.scores);
+			f.body.reset(&f.scores, Instant::now());
 			f.scores.apply_peers_status(&f.peers);
 			assert!(f.body.download.lock().tasks.is_empty());
 			assert_eq!(rx.try_iter().count(), 0);
@@ -1548,7 +2059,7 @@ mod tests {
 		for _ in 0..9 {
 			f.poll();
 			assert_eq!(rx.try_iter().count(), 1);
-			f.body.reset(&f.scores);
+			f.body.reset(&f.scores, Instant::now());
 			f.deliver(0, &peer.info.addr);
 			assert!(f.body.download.lock().tasks.is_empty());
 			assert_eq!(f.chain.head().unwrap().height, 0);
@@ -1588,7 +2099,7 @@ mod tests {
 			.iter()
 			.map(|task| (task.hash, task.request.as_ref().unwrap().expires_at))
 			.collect();
-		f.body.reset(&f.scores);
+		f.body.reset(&f.scores, Instant::now());
 		f.poll();
 		assert_eq!(rx.try_iter().count(), 0);
 		let download = f.body.download.lock();
@@ -1750,9 +2261,7 @@ mod tests {
 				&supplier.info.addr,
 				&block.hash(f.chain.get_context_id()).unwrap()
 			));
-			assert!(manager
-				.receive_block(&mut f.secp, block, &supplier.info, false)
-				.unwrap());
+			assert!(manager.receive_block(block, &supplier.info, false).unwrap());
 		}
 		manager.sync_request(&f.peers).unwrap();
 		assert_eq!(f.chain.head().unwrap().height, tip.height - 1);
@@ -1768,8 +2277,9 @@ mod tests {
 		let (supplier, _messages) = f.supplier(4194);
 		manager.sync_request(&f.peers).unwrap();
 		assert!(manager
-			.receive_block(&mut f.secp, &f.blocks[11], &supplier.info, false)
+			.receive_block(&f.blocks[11], &supplier.info, false)
 			.unwrap());
+		manager.process_block_inbox_for_test(&f.peers).unwrap();
 		assert_eq!(f.chain.head().unwrap(), tip);
 		assert_eq!(f.chain.header_head().unwrap(), tip);
 		assert_eq!(
@@ -1835,8 +2345,9 @@ mod tests {
 				};
 				assert!(manager.has_block_request(&supplier.info.addr, &hash));
 				assert!(manager
-					.receive_block(&mut f.secp, &f.blocks[1], &supplier.info, false)
+					.receive_block(&f.blocks[1], &supplier.info, false)
 					.unwrap());
+				manager.process_block_inbox_for_test(&f.peers).unwrap();
 				assert_eq!(f.chain.head().unwrap().height, 2);
 			} else {
 				assert!(retained.total_difficulty < work);
@@ -1996,9 +2507,12 @@ mod tests {
 		let slow_index = per_peer + 2;
 		fast.record_response_latency(Duration::from_millis(100));
 		slow.record_response_latency(Duration::from_millis((slow_index as u64 + 1) * 100));
+		// Retain a full window even on smaller hosts, leaving an unassigned tail
+		// after both peers use their initial allowances.
+		f.retain_window(24);
 		// A retained old request consumes a slot without moving the active head.
 		let sent_at = Instant::now();
-		f.body.download.lock().tasks.push_back(BodyTask {
+		f.body.download.lock().tasks.push_front(BodyTask {
 			hash: Hash::default(),
 			height: 0,
 			obsolete: true,
@@ -2051,8 +2565,8 @@ mod tests {
 				.map(|task| task.request.as_ref().map(|request| request.expires_at))
 				.collect::<Vec<_>>()
 		);
-		// The timed-out peer moves to the tail. The retained obsolete request
-		// still counts toward the queue length until it also expires.
+		// The timed-out peer moves to the last missing body immediately. The
+		// obsolete request consumes a slot but cannot shift that index past the tail.
 		f.body
 			.download
 			.lock()
@@ -2065,23 +2579,33 @@ mod tests {
 			.unwrap()
 			.expires_at = Instant::now();
 		f.poll();
-		assert_eq!(fast_messages.try_iter().count(), 0);
-		assert_eq!(slow_messages.try_iter().count(), 0);
-		f.body.download.lock().tasks[0]
-			.request
-			.as_mut()
-			.unwrap()
-			.expires_at = Instant::now();
-		f.poll();
 		assert_eq!(fast_messages.try_iter().count(), 1);
+		assert_eq!(slow_messages.try_iter().count(), 0);
+		let mut download = f.body.download.lock();
+		assert_eq!(
+			download
+				.tasks
+				.iter()
+				.filter_map(|task| task.request.as_ref())
+				.filter(|request| request.peer == fast.info.addr)
+				.count(),
+			per_peer
+		);
+		let tail_request = download.tasks.back().unwrap().request.as_ref().unwrap();
+		assert_eq!(tail_request.peer, fast.info.addr);
+		let tail_deadline = tail_request.expires_at;
+		download.tasks[0].request.as_mut().unwrap().expires_at = Instant::now();
+		drop(download);
+		// Expiring the obsolete request must not resend or renew the tail request.
+		f.poll();
+		assert_eq!(fast_messages.try_iter().count(), 0);
 		assert_eq!(slow_messages.try_iter().count(), 0);
 		let download = f.body.download.lock();
 		let mut active = download.tasks.iter().filter(|task| !task.obsolete);
 		assert!(active.next().unwrap().request.is_none());
-		assert_eq!(
-			active.last().unwrap().request.as_ref().unwrap().peer,
-			fast.info.addr
-		);
+		let tail_request = active.last().unwrap().request.as_ref().unwrap();
+		assert_eq!(tail_request.peer, fast.info.addr);
+		assert_eq!(tail_request.expires_at, tail_deadline);
 	}
 
 	// Request one missing body and repeatedly age its unanswered request past the timeout.
@@ -2483,8 +3007,8 @@ mod tests {
 	}
 
 	// Accept three bodies, then rewind the body head to height 1 while retaining headers
-	// and stored blocks through height 3. The first poll queues the stored bodies;
-	// the next poll applies them and finishes without peers or download requests.
+	// and stored blocks through height 3. One poll queues and reapplies the stored
+	// bodies, finishing without peers or download requests.
 	#[test]
 	fn stored_bodies_are_reapplied_after_a_rewind_without_downloads() {
 		let mut f = Fixture::new(1_935_008, 3);
@@ -2506,9 +3030,10 @@ mod tests {
 			.chain
 			.block_exists(&f.blocks[2].hash(f.chain.get_context_id()).unwrap())
 			.unwrap());
-		assert_eq!(f.poll().response, SyncRequestResponses::SyncDone);
-		assert_eq!(f.chain.head().unwrap().height, 1);
+		assert_eq!(f.poll().response, SyncRequestResponses::BodyReady);
+		assert_eq!(f.chain.head().unwrap().height, 3);
 		assert_eq!(f.requests_num(), 0);
+		assert!(f.body.download.lock().tasks.is_empty());
 		assert_eq!(f.poll().response, SyncRequestResponses::BodyReady);
 		assert_eq!(f.chain.head().unwrap().height, 3);
 		assert_eq!(f.requests_num(), 0);
